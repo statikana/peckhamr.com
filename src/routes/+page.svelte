@@ -8,7 +8,7 @@
 
 <div id="main-personal">
     <div id="me">
-        <p id="name">
+        <p id=name class=glow>
             Ryan Peckham
         </p>
         <div id="info">
@@ -38,33 +38,44 @@
         </details>
     </div>
 
+    <h2 class="titlebar glow">My Stuff</h2>
+
     <div class="center" id="projects">
         <div class="project">
-            <p>Project One</p>
+            <p>This Site</p>
             <div class="project-desc">
-                I hope to someday put things here...
+                Of course, I made this site using HTML, CSS, and JS. I also used <a href="https://svelte.dev/" target="_blank">Svelte</a> for routing and 
+                dynamic rendering. To protect my privacy, this site's code is not publicly linked to my github, but you are free to inspect the page source.
             </div>
         </div>
         <hr class="line-break">
         <div class="project">
-            <p>Project Two</p>
+            <p>PyTenno [<a href="https://github.com/statikana/PyTenno" target=_blank>Source</a>]</p>
             <div class="project-desc">
-                It feels so empty in this website...
+                A relatively simple asynchonous HTTPS wrapper for <a href="https://warframe.market/" target="_blank">warframe.market</a>, a website where users can
+                buy and sell items in the video game <a href="https://www.warframe.com/game/about" target="_blank">Warframe</a>. Written in Python, it translates API endpoints
+                and JSON structures into Python functions and data structures. It was my first package which I published on <a href="https://pypi.org/project/pytenno/" target=_blank>PyPI</a> (Python's Package Index). 
+                It includes comprehensive documentation on <a href="https://pytenno.readthedocs.io/en/latest/index.html" target="_blank">readthedocs.io</a>, though it isn't maintained any more.
             </div>
         </div>
         <hr class="line-break">
         <div class="project">
-            <p>Project Three</p>
+            <p>Download Manager [<a href="https://github.com/statikana/dlm" target=_blank>Source</a>]</p>
             <div class="project-desc">
-                I should start making stuff...
+                Also made in Python, I used this to explore multithreading. It uses concurrent threads on your device to read and write data from a website (e.g., a file server) faster than you are normally able to.
+                Each thread reads a different segment of the source file, and writes to the associated segment of the new file being created on your computer. Uses file locks to
+                prevent race conditions. Shows substantial improvements in download times, depending on the file size and the number of concurrent threads used.
             </div>
         </div>
         <hr class="line-break">
         <div class="project">
-            <p>Project Four</p>
-            
+            <p>Vanir [<a href="https://github.com/statikana/Vanir" target=_blank>Source</a>]</p>
             <div class="project-desc">
-                Why are you still reading these?
+                One of my first substantial projects. Uses <a href=https://discord.com/ target=_blank>Discord</a>'s API to create an interactive bot-agent which users
+                can send commands to. Notable features include: <ul>
+                    <li>An SQL-based currency system with robust normalization</li>
+                    <li>Safe, sandboxed arbitrary code execution for many languages via <a href=https://github.com/engineer-man/piston target=_blank>Piston</a></li>
+                </ul> 
             </div>
         </div>
     </div>
@@ -91,6 +102,10 @@
         scrollbar-arrow-color: #0000;
     }
 
+    #terminal-container > details {
+        max-height: 500px;
+    }
+
     #terminal-container > details > summary:hover {
         cursor:pointer;
     }
@@ -101,7 +116,19 @@
         align-items: center;
     }
 
+    .glow {
+        color: #fff;
+        text-shadow: 0 0 10px #fff8;
+    }
 
+    .titlebar {
+        margin-top: 3%;
+        margin-bottom: 0;
+    }
+
+    ul {
+        margin-top: .5%;
+    }
 
     div#me {
         border-style: hidden;
@@ -145,7 +172,6 @@
 
 
     div.center {
-        margin-top: 2%;
         margin-bottom: 2%;
 
         color: #fff;
@@ -158,6 +184,8 @@
     }
 
     div.project > div.project-desc {
-        margin-left: 5%;
+        margin-left: 2.5%;
+        color: #fffa;
+        font-size: 1em
     }
 </style>

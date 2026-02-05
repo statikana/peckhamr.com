@@ -578,19 +578,22 @@ function writeIntroText(introText: string[], reset = false) {
             <span id="default-text" ></span>
             
             <div id="secondary-input">
+                <div id=entry>
                 <input 
                     class="line inline" id="terminal-input" autocomplete="off" autocapitalize="off"
                     onkeydown={updateKeyDown} onkeyup={updateKeyUp} 
                     onfocusout={disableInput} onfocusin={enableInput}
                     bind:value={terminal_text}
                 />
+                <span id="cursor"></span>
+
+                </div>
                 <ul id=autofill class="inline autofill-component">
                     {#each current_autofill_recs as rec}
                         {@render autofillRec(rec)}
                     {/each}
                 </ul>
             </div>
-            <span id="cursor"></span>
         </div>
     </div>
 
@@ -676,10 +679,10 @@ function writeIntroText(introText: string[], reset = false) {
 }
 
 #cursor {
-    width: 1ch;
+    width: .7ch;
+    height: 2.2ch;
     background-color: white;
     animation-name: cursorBlink;
-    /* set by focusin */
     animation-duration: 1s;
     animation-iteration-count: infinite;
 }
@@ -702,8 +705,8 @@ function writeIntroText(introText: string[], reset = false) {
     list-style-type: none;
     visibility: "hidden";
     color: #ffffff80;
-    position: absolute;
-    margin-top: 2.2ch;
+    margin-top: .1ch;
+    left: -5px; /* adjust for highlight's width */
 }
 
 .autofill-text-rec {
@@ -714,7 +717,6 @@ function writeIntroText(introText: string[], reset = false) {
 .autofill-text-rec-highlight {
     flex: 0;
     min-width: 5px;
-    /* linked to updateAutofill's adjustment */
     min-height: 100%;
     background-color: #efa368;
 }
