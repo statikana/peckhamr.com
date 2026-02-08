@@ -688,13 +688,9 @@ function writeIntroText(introText: string[], reset = false) {
 }
 
 @keyframes cursorBlink {
-    from {
-        background-color: white;
-    }
+    from { background-color: white; }
 
-    to {
-        background-color: #ffffff00;
-    }
+    to { background-color: #ffffff00; }
 }
 
 #autofill {
