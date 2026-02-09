@@ -348,13 +348,11 @@ function updateKeyDown(e) {
             Array.prototype.forEach.call(document.getElementsByClassName("autofill-text-rec-highlight"), function(rec_highlight) {
                 rec_highlight.style.visibility = "hidden";
             });
-
         } else if (e.key === "Tab" || e.key === "Enter") {
             // pressing Enter without a autofill selection is handled above
             if (autofill_selected_index === null) {
                 autofill_selected_index = 0;
-            }
-            if (current_autofill_recs.length !== 0) {
+            } if (current_autofill_recs.length !== 0) {
                 e.preventDefault();
             } else {
                 return;
@@ -465,8 +463,6 @@ function enableInput() {
 }
 
 function disableInput() {
-
-    // helllllla sketch, but it works
     let autofillRect = document.getElementById("autofill")?.getBoundingClientRect();
     let isAutofillClick = (
         cursor_x >= autofillRect.left &&
@@ -648,6 +644,12 @@ function writeIntroText(introText: string[], reset = false) {
     visibility: hidden;
 }
 
+#entry {
+    display: flex;
+    flex-direction: row;
+    align-items: top;
+}
+
 .prefix {
     flex-shrink: 0;
     color: rgb(155, 232, 177);
@@ -676,11 +678,14 @@ function writeIntroText(introText: string[], reset = false) {
 #terminal-input {
     caret-color: transparent;
     font-family: monospace !important;
+    top: -1px;
+    position: relative;
 }
 
 #cursor {
-    width: .7ch;
-    height: 2.2ch;
+    width: 1ch;
+    height: 18px;
+    display: inline-block;
     background-color: white;
     animation-name: cursorBlink;
     animation-duration: 1s;
