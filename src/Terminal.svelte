@@ -4,37 +4,25 @@
 import DOMPurify from "dompurify";
 import { onMount } from 'svelte';
 
-onMount(() => {
-
-    let introText = getIntroText();
-    writeIntroText(introText);
-
-    document.onmousemove = (event) => {
-        cursor_x = event.pageX;
-        cursor_y = event.pageY;
-    }
+export const data = $state({
+    terminal_text: "",
+    history: []
 });
 
+let terminal_text = $state(data.terminal_text);
+let history = $state(data.history);
+let current_history_index = 0;
+
+let current_autofill_recs = $state([]);
+let autofill_selected_index = null;
+let ignore_next_history = false;
+
+var cursor_x = -1;
+var cursor_y = -1;
+
+/* cats */
 
 const cats = [
-//     `\
-//            __..--''\`\`---....___   _..._    __
-//  /// //_.-'    .-/";  \`        \`\`<._  \`\`.''_ \`. / // /
-// ///_.-' _..--.'_    \\                    \`( ) ) // //
-// / (_..-' // (< _     ;_..__               ; \`' / ///
-//  / // // //  \`-._,_)' // / \`\`--...____..-' /// / //`,
-//     `\
-//    ,-.       _,---._ __  / \\
-//  /  )    .-'       \`./ /   \\
-// (  (   ,'            \`/    /|
-//  \\  \`-"             \\'\\   / |
-//   \`.              ,  \\ \\ /  |
-//    /\`.          ,'-\`----Y   |
-//   (            ;        |   '
-//   |  ,-.    ,-'         |  /
-//   |  | (   |        hjw | /
-//   )  |  \\  \`.___________|/
-//   \`--'   \`--'`,
     `\
          _
        \\\`*-.
@@ -58,28 +46,10 @@ const cats = [
  ___/ \`   ' ,""+ \\  sk
 (__...'   __\\    |\`.___.';
   (_,...'(_,.\`__)/'.....+`,
-]
+];
 
-export const data = $state({
-    terminal_text: "",
-    history: []
-})
+/* command defs */
 
-let terminal_text = $state(data.terminal_text);
-let history = $state(data.history);
-
-let current_history_index = 0;
-
-var cursor_x = -1;
-var cursor_y = -1;
-
-
-let current_autofill_recs = $state([]);
-
-let autofill_selected_index = null;
-let ignore_next_history = false;
-
-/* COMMANDS */
 class Command {
     constructor(name, short, usage, func, help_func = null, rec_pool = () => {return [];}) {
         this.name = name;
@@ -90,6 +60,7 @@ class Command {
         this.rec_pool = rec_pool;
     }
 }
+
 let commands = {
     help: new Command(
         "help",
@@ -128,7 +99,6 @@ let commands = {
         "Get Ryan's GitHub",
         "github",
         (args) => makeLink("https://github.com/statikana"),
-
     ),
     helloworld: new Command(
         "helloworld",
@@ -176,9 +146,10 @@ let commands = {
                 return "You're already full-screened right now (try " + makeLink("/", "back to root") + "?)";
             }
         }
-
     )
 };
+
+/* command funcs */
 
 function commandHelp(args) {
     if (args.length === 0) {
@@ -207,7 +178,6 @@ function commandHelp(args) {
 }
 
 function commandWhoIs(args) {
-    // TODO: This
     return "He's just a silly little guy ngl";
 }
 
@@ -254,9 +224,192 @@ function _getHelpSignatures(cmds) {
     return sigs.join("\n");
 }
 
-/* util */
+/* terminal stuff */
+
+function submitCommand() {
+    let responseArr = getResponse();
+
+    if (!ignore_next_history) {
+        history.push([terminal_text, responseArr, current_history_index]);
+        current_history_index += 1;
+    } else {
+        ignore_next_history = false;
+    }
+    terminal_text = "";
+}
+
+function getResponse() {
+    let args = terminal_text.trim().split(" ");
+    let command = args[0].toLowerCase();
+
+    let response = commands[command];
+
+    if (response === undefined) {
+        if (terminal_text.trim() === "") {
+            return "";
+        }
+        return "Unknown command " +
+            makeCode(command) +
+            " Try " +
+            makeCode("help");
+    } else {
+        return response.func(args.splice(1)).trim();
+    }
+}
+
+/* keyboard handlers */
+
+function updateKeyDown(e) {
+    const ignoredChars = ["Alt", "Meta", "Shift"];
+    
+    if (e.key === "Enter" && (autofill_selected_index === null)) {
+        e.preventDefault();
+        submitCommand();
+    } else {
+        let input = document.getElementById("terminal-input");
+        // @ts-ignore
+        let size = input.value.length;
+
+        if (["ArrowRight", "Escape"].includes(e.key)) {
+            // remove selected autofill
+            e.preventDefault();
+            autofill_selected_index = null;
+            Array.prototype.forEach.call(document.getElementsByClassName("autofill-text-rec-highlight"), function(rec_highlight) {
+                rec_highlight.style.visibility = "hidden";
+            });
+        } else if (e.key === "Tab" || e.key === "Enter") {
+            // pressing Enter without a autofill selection is handled above
+            if (autofill_selected_index === null) {
+                autofill_selected_index = 0;
+            }
+            if (current_autofill_recs.length !== 0) {
+                e.preventDefault();
+            } else {
+                return;
+            }
+            let args = terminal_text.split(" ")
+            terminal_text = (args.slice(0, args.length-1).join(" ") + " " + current_autofill_recs[autofill_selected_index]).trim();
+
+            document.getElementById("autofill").style.visibility = "hidden";
+            Array.prototype.forEach.call(document.getElementsByClassName("autofill-text-rec-highlight"), function(rec_highlight) {
+                rec_highlight.style.visibility = "hidden";
+            })
+            autofill_selected_index = null;
+
+        } else if (["ArrowDown", "ArrowUp"].includes(e.key) && current_autofill_recs.length !== 0) {
+            e.preventDefault();
+
+            let min_index = 0;
+            let max_index = current_autofill_recs.length - 1;
+
+            if (e.key === "ArrowDown") {
+                if (autofill_selected_index === null || autofill_selected_index === max_index) {
+                    autofill_selected_index = min_index;
+                } else {
+                    autofill_selected_index += 1;
+                }
+            } else {
+                if (autofill_selected_index === null || autofill_selected_index === min_index) {
+                    autofill_selected_index = max_index;
+                } else {
+                    autofill_selected_index -= 1;
+                }
+            }
+
+            let index = 0;
+
+            /* iterate through highlight elements to update visibility based on selected index */
+            Array.prototype.forEach.call(document.getElementsByClassName("autofill-text-rec-highlight"), function(rec_highlight) {
+                if (index === autofill_selected_index) {
+                    rec_highlight.style.visibility = "visible";
+                } else {
+                    rec_highlight.style.visibility = "hidden";
+                }
+                index += 1;
+            });
+
+        } else if (e.key === "Backspace") {
+            document.getElementById("autofill").style.visibility = "visible";
+            size -= 1;
+        } else if (e.key === "Escape" || e.key === "ArrowRight" || e.key === "ArrowLeft") {
+            autofill_selected_index = null;
+            e.preventDefault();
+        } else if (!ignoredChars.includes(e.key)) {
+            document.getElementById("autofill").style.visibility = "visible";
+            autofill_selected_index = null;
+            size += 1;
+        } else {
+            e.preventDefault();
+        }
+
+        input.style.width = size + "ch";
+    }
+    updateAutofill();
+}
+
+function updateKeyUp(e) {
+    let input = document.getElementById("terminal-input");
+    input.style.width = input.value.length + "ch";
+    updateAutofill();
+}
+
+/* autofill */
+
+function updateAutofill() {
+    if (!terminal_text || terminal_text.length === 0) {
+        current_autofill_recs = [];
+    } else {
+        let args = terminal_text.split(" ");
+        if (args.length === 1) {
+            /* just general commands */
+            current_autofill_recs = filterAutofillStrings(Object.keys(commands), terminal_text);
+        } else {
+            if (Object.keys(commands).includes(args[0])) {
+                current_autofill_recs = filterAutofillStrings(commands[args[0]].rec_pool(), args[1]);
+            }
+        }
+    }
+}
+
+function filterAutofillStrings(pool, test) {
+    return pool.filter((str) => str.split(" ")[0].startsWith(test.toLowerCase()) && str !== test);
+}
+
+/* terminal */
+
+function focusTerminal() {
+    document.getElementById("terminal-input").focus();
+}
+
+function enableInput() {
+    document.getElementById("cursor").style.visibility = "visible";
+    document.getElementById("autofill").style.visibility = "visible";
+    document.getElementById("default-text").innerHTML = "";
+}
+
+function disableInput() {
+    let autofillRect = document.getElementById("autofill")?.getBoundingClientRect();
+    let isAutofillClick = (
+        cursor_x >= autofillRect.left &&
+        cursor_x <= (autofillRect.left + autofillRect.width)
+    ) && (
+        cursor_y >= autofillRect.top &&
+        cursor_y <= (autofillRect.top + autofillRect.height)
+    )
+
+    if (isAutofillClick) {
+        return;
+    }
+    document.getElementById("cursor").style.visibility = "hidden";
+    document.getElementById("autofill").style.visibility = "hidden";
+    autofill_selected_index = null;
+    document.getElementById("default-text").innerHTML = (history.length !== 0 || terminal_text !== "") ? "" : "try typing here...";
+}
+
+/* utils for other stuff */
+
 function typewrite(text, element, delay = 10, reset = false, on_finish = () => {}, on_finish_delay = 0) {
-    /* text is an array */
+    /* text is an array? NO MORE */
     if (reset) {
         element.innerHTML = "";
     }
@@ -286,201 +439,6 @@ function map(func, iter) {
     return post;
 }
 
-function submitCommand() {
-    let responseArr = getResponse();
-
-
-    if (!ignore_next_history) {
-        history.push([terminal_text, responseArr, current_history_index]);
-        // write history
-        // setTimeout((index) => {
-        //     let history_element = document.querySelector("[data-history-index=\"" + index + "\"]");
-        //     typewrite(responseArr, history_element, 10);
-        // }, .05, current_history_index)
-        current_history_index += 1;
-    } else {
-        ignore_next_history = false;
-    }
-    terminal_text = "";
-}
-
-
-
-function getResponse() {
-    let args = terminal_text.trim().split(" ");
-    let command = args[0].toLowerCase();
-
-    let response = commands[command];
-
-    if (response === undefined) {
-        // text is sanitized on input
-        if (terminal_text.trim() === "") {
-            return "";
-        }
-        return "Unknown command " +
-            makeCode(command) +
-            " Try " +
-            makeCode("help");
-    } else {
-        return response.func(args.splice(1)).trim();
-    }
-}
-
-
-/* key listening */
-
-function updateKeyDown(e) {
-    /* listen for input submission */
-    const ignoredChars = ["Alt", "Meta", "Shift"];
-    if (e.key === "Enter" && (autofill_selected_index === null)) {
-        e.preventDefault();
-        submitCommand();
-    } else {
-        let input = document.getElementById("terminal-input");
-
-        // @ts-ignore
-        let size = input.value.length; // set to the current size (in ch)
-
-        if (["ArrowRight", "Escape"].includes(e.key)) {
-            // Remove selected autofill
-            e.preventDefault();
-            autofill_selected_index = null;
-            Array.prototype.forEach.call(document.getElementsByClassName("autofill-text-rec-highlight"), function(rec_highlight) {
-                rec_highlight.style.visibility = "hidden";
-            });
-        } else if (e.key === "Tab" || e.key === "Enter") {
-            // pressing Enter without a autofill selection is handled above
-            if (autofill_selected_index === null) {
-                autofill_selected_index = 0;
-            } if (current_autofill_recs.length !== 0) {
-                e.preventDefault();
-            } else {
-                return;
-            }
-            let args = terminal_text.split(" ")
-            terminal_text = (args.slice(0, args.length-1).join(" ") + " " + current_autofill_recs[autofill_selected_index]).trim();
-
-            document.getElementById("autofill").style.visibility = "hidden";
-            Array.prototype.forEach.call(document.getElementsByClassName("autofill-text-rec-highlight"), function(rec_highlight) {
-                rec_highlight.style.visibility = "hidden";
-            })
-            autofill_selected_index = null;
-
-        } else if (["ArrowDown", "ArrowUp"].includes(e.key) && current_autofill_recs.length !== 0) {
-            e.preventDefault();
-            // document.getElementById("autofill").style.visibility = "visible";
-
-            let min_index = 0;
-            let max_index = current_autofill_recs.length - 1;
-
-            if (e.key === "ArrowDown") {
-                if (autofill_selected_index === null || autofill_selected_index === max_index) {
-                    autofill_selected_index = min_index;
-                } else {
-                    autofill_selected_index += 1;
-                }
-
-            } else {
-                if (autofill_selected_index === null || autofill_selected_index === min_index) {
-                    autofill_selected_index = max_index;
-                } else {
-                    autofill_selected_index -= 1;
-                }
-            }
-
-            let index = 0;
-
-            /* Iterate through highlight elements to update visibility based on selected index
-            of going through each rec element and then getting the highlight element */
-
-            Array.prototype.forEach.call(document.getElementsByClassName("autofill-text-rec-highlight"), function(rec_highlight) {
-                if (index === autofill_selected_index) {
-                    rec_highlight.style.visibility = "visible";
-                } else {
-                    rec_highlight.style.visibility = "hidden";
-                }
-                index += 1;
-            });
-
-        } else if (e.key === "Backspace") {
-            document.getElementById("autofill").style.visibility = "visible";
-            size -= 1;
-        } else if (e.key === "Escape" || e.key === "ArrowRight" || e.key === "ArrowLeft") {
-            autofill_selected_index = null;
-            e.preventDefault();
-        } else if (!ignoredChars.includes(e.key)) {
-            document.getElementById("autofill").style.visibility = "visible";
-
-            autofill_selected_index = null;
-
-            size += 1;
-        } else {
-            e.preventDefault();
-        }
-
-        input.style.width = size + "ch";
-    }
-    updateAutofill();
-
-}
-
-function updateKeyUp(e) {
-    let input = document.getElementById("terminal-input"); // make sure its the right one
-    input.style.width = input.value.length + "ch";
-    updateAutofill();
-}
-
-
-/* page functions */
-function focusTerminal() {
-    document.getElementById("terminal-input").focus();
-}
-
-function updateAutofill() {
-    if (!terminal_text || terminal_text.length === 0) {
-        current_autofill_recs = [];
-    } else {
-        let args = terminal_text.split(" ");
-        if (args.length === 1) {
-            /* just general commands */
-            current_autofill_recs = filterAutofillStrings(Object.keys(commands), terminal_text);
-        } else {
-            if (Object.keys(commands).includes(args[0])) {
-                current_autofill_recs = filterAutofillStrings(commands[args[0]].rec_pool(), args[1]);
-            }
-        }
-    }
-}
-
-function filterAutofillStrings(pool, test) {
-    return pool.filter((str) => str.split(" ")[0].startsWith(test.toLowerCase()) && str !== test);
-}
-
-function enableInput() {
-    document.getElementById("cursor").style.visibility = "visible";
-    document.getElementById("autofill").style.visibility = "visible";
-    document.getElementById("default-text").innerHTML = "";
-}
-
-function disableInput() {
-    let autofillRect = document.getElementById("autofill")?.getBoundingClientRect();
-    let isAutofillClick = (
-        cursor_x >= autofillRect.left &&
-        cursor_x <= (autofillRect.left + autofillRect.width)
-    ) && (
-        cursor_y >= autofillRect.top &&
-        cursor_y <= (autofillRect.top + autofillRect.height)
-    )
-
-    if (isAutofillClick) {
-        return;
-    }
-    document.getElementById("cursor").style.visibility = "hidden";
-    document.getElementById("autofill").style.visibility = "hidden";
-    autofill_selected_index = null;
-    document.getElementById("default-text").innerHTML = (history.length !== 0 || terminal_text !== "") ? "" : "try typing here...";
-}
-
 function sanitize(html) {
     return DOMPurify.sanitize(html, {
         ALLOWED_TAGS: ["span", "b", "i", "u", "pre", "br"],
@@ -493,13 +451,12 @@ function getCat() {
 }
 
 function getIntroText() {
-    let t =  (getCat() + "\n\nhi, im ryan. i like making stuff. try the ").split("").concat(makeCode("help")).concat(" command".split(""));
+    let t = (getCat() + "\n\nhi, im ryan. i like making stuff. try the ").split("").concat(makeCode("help")).concat(" command".split(""));
     let url = URL.parse(window.location.href);
     if (url?.pathname === "/terminal") {
         t = t.concat("\nyou can also use the ".split("")).concat(makeCode("home")).concat(" command to go back to my main site".split(""))
     }
     return t;
-
 }
 
 function writeIntroText(introText: string[], reset = false) {
@@ -519,7 +476,19 @@ function writeIntroText(introText: string[], reset = false) {
     )
 }
 
+onMount(() => {
+    let introText = getIntroText();
+    writeIntroText(introText);
+
+    document.onmousemove = (event) => {
+        cursor_x = event.pageX;
+        cursor_y = event.pageY;
+    }
+});
+
 </script>
+
+<!-- snippets -->
 
 {#snippet prefix(is_main)}
     <span class="prefix">
@@ -554,9 +523,13 @@ function writeIntroText(introText: string[], reset = false) {
     </li>
 {/snippet}
 
+<!-- template -->
+
 <div id=main-terminal>
+    <!-- animation/intro Text -->
     <pre id=animation></pre>
 
+    <!-- command history -->
     {#each history as h}
         <div class="input-row">
             {@render prefix(false)}
@@ -566,24 +539,26 @@ function writeIntroText(introText: string[], reset = false) {
         <br />
     {/each}
 
+    <!-- current input -->
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <!-- svelte-ignore a11y_click_events_have_key_events -->
     <div id="input-container">
         <div class="input-row current-input-row" onclick={focusTerminal}>
             {@render prefix(true)}
-            <span id="default-text" ></span>
+            <span id="default-text"></span>
             
             <div id="secondary-input">
                 <div id=entry>
-                <input 
-                    class="line inline" id="terminal-input" autocomplete="off" autocapitalize="off"
-                    onkeydown={updateKeyDown} onkeyup={updateKeyUp} 
-                    onfocusout={disableInput} onfocusin={enableInput}
-                    bind:value={terminal_text}
-                />
-                <span id="cursor"></span>
-
+                    <input 
+                        class="line inline" id="terminal-input" autocomplete="off" autocapitalize="off"
+                        onkeydown={updateKeyDown} onkeyup={updateKeyUp} 
+                        onfocusout={disableInput} onfocusin={enableInput}
+                        bind:value={terminal_text}
+                    />
+                    <span id="cursor"></span>
                 </div>
+                
+                <!-- autofill suggestions -->
                 <ul id=autofill class="inline autofill-component">
                     {#each current_autofill_recs as rec}
                         {@render autofillRec(rec)}
@@ -598,14 +573,14 @@ function writeIntroText(introText: string[], reset = false) {
 
 <style>
 
+/* page layout */
+
 #main-terminal {
-    padding: 0;
+    padding: 1%;
     margin: 0;
     display: flex;
     flex-direction: column;
-    padding: 1%;
     background-color: #242426;
-
     font-family: monospace !important;
     font-size: 14px !important;
 }
@@ -615,14 +590,13 @@ function writeIntroText(introText: string[], reset = false) {
     width: 90vw;
 }
 
+/* layout */
+
 .input-row {
     display: flex;
     flex-direction: row;
     border: none;
     outline: none;
-}
-
-.input-row {
     color: #efa368;
 }
 
@@ -630,6 +604,27 @@ function writeIntroText(introText: string[], reset = false) {
     display: flex;
     flex-direction: column;
 }
+
+#entry {
+    display: flex;
+    flex-direction: row;
+    align-items: top;
+}
+
+#input-container {
+    visibility: hidden;
+}
+
+/* prefix */
+
+.prefix {
+    flex-shrink: 0;
+    color: rgb(155, 232, 177);
+    user-select: none;
+    display: flex;
+}
+
+/* text display */
 
 .history-text,
 #animation {
@@ -640,32 +635,17 @@ function writeIntroText(introText: string[], reset = false) {
     flex: 1;
 }
 
-#input-container {
-    visibility: hidden;
-}
-
-#entry {
-    display: flex;
-    flex-direction: row;
-    align-items: top;
-}
-
-.prefix {
-    flex-shrink: 0;
-    color: rgb(155, 232, 177);
-    /* text-shadow: rgb(0, 81, 23) 1px 0 10px; */
+#default-text {
+    color: #ffffff80;
     user-select: none;
-    display: flex;
 }
 
-/* applies to both the divs and current input */
+/* input */
+
 .line {
     width: 0ch;
-    /* flex: 1; */
-
     border: none;
     outline: none;
-
     color: inherit;
     background-color: inherit;
 }
@@ -682,6 +662,8 @@ function writeIntroText(introText: string[], reset = false) {
     position: relative;
 }
 
+/* cusrsor */
+
 #cursor {
     width: 1ch;
     height: 18px;
@@ -694,9 +676,10 @@ function writeIntroText(introText: string[], reset = false) {
 
 @keyframes cursorBlink {
     from { background-color: white; }
-
     to { background-color: #ffffff00; }
 }
+
+/* autofill */
 
 #autofill {
     display: flex;
@@ -722,10 +705,6 @@ function writeIntroText(introText: string[], reset = false) {
     background-color: #efa368;
 }
 
-#default-text {
-    color: #ffffff80;
-    user-select: none;
-}
 
 :global(.fmt-code) {
     background-color: #ffffff1a;
