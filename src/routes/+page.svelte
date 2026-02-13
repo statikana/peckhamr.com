@@ -231,7 +231,6 @@
         font-size: 1em
     }
 
-    /* Add this media query at the end of your style section */
     @media (max-width: 768px) {
         .row-shell {
             flex-direction: column;
