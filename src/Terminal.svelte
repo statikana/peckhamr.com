@@ -100,6 +100,12 @@ let commands = {
         "github",
         (args) => makeLink("https://github.com/statikana"),
     ),
+    resume: new Command(
+        "resume",
+        "Get Ryan's resume",
+        "resume",
+        (args) => window.location.href = "/Ryan_Peckham_Resume.pdf"
+    ),
     helloworld: new Command(
         "helloworld",
         "Hello World!!",
