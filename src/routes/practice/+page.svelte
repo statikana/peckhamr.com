@@ -1,5 +1,6 @@
 <script lang="ts">
 // @ts-nocheck
+// 
 import { onMount } from "svelte";
 
 // --- types ---
@@ -14,8 +15,9 @@ interface Word {
 type Side = "chinese" | "english" | "pinyin";
 
 // --- props ---
-let { data } = $props(); 
-const serverFiles: string[] = data?.serverFiles ?? [];
+
+let filePaths = import.meta.glob("/static/vocab/*.csv");
+let serverFiles = $state([]);
 
 // --- state ---
 let loadedFiles = $state<{ name: string; words: Word[]; fromServer: boolean }[]>([]); 
@@ -72,6 +74,7 @@ let knownCount = $derived(knownSet.size);
 
 // --- csv parsing ---
 function parseCSV(text: string, filename: string): Word[] { 
+    console.log("parse csv", filename);
     const lines = text.trim().split(/\r?\n/).filter((l) => l.trim());
     const words: Word[] = []; 
     const isHeader = (line: string) =>
@@ -127,7 +130,7 @@ async function toggleServerFile(filename: string) {
     }
     loadingServerFile = filename;
     try { 
-        const fileRes = await fetch(`/api/vocab?file=${encodeURIComponent(filename)}`);
+        const fileRes = await fetch(`/vocab/${encodeURIComponent(filename)}`);
         const text = await fileRes.text();
         const words = parseCSV(text, filename); 
         if (words.length > 0) {
@@ -216,6 +219,19 @@ onMount(() => {
         else if (e.key === "k") markKnown();
     }; 
     window.addEventListener("keydown", handler);
+
+    console.log(filePaths);
+    for (const path in filePaths) {
+        // console.log("PATH", path);
+        let filename = path.substring(path.lastIndexOf('/') + 1);
+        serverFiles.push(filename);
+        // const data_p = fetch(path)
+        //     .then(data => data.text())
+        //     .then(text => parseCSV(text, filename))
+        //     .then(result => serverFiles.push(result));
+
+    }
+    console.log(serverFiles);
     return () => window.removeEventListener("keydown", handler);
 });
 </script>
@@ -509,9 +525,9 @@ header { display: flex; align-items: baseline; margin-bottom: 2rem; font-size: 1
 .ctrl-btn:hover { border-color: #efa36870; color: #efa368; } 
 .ctrl-btn.active { background: #efa36818; border-color: #efa368; color: #efa368; }
 
-.hint-row { display: flex; gap: 1.5rem; margin-top: 0.75rem; }
+/* .hint-row { display: flex; gap: 1.5rem; margin-top: 0.75rem; }
 .hint { font-size: 11px;
-    color: #ffffff20; } 
+    color: #ffffff20; }  */
 
 .card-section { display: flex; flex-direction: column; gap: 1rem; }
 
