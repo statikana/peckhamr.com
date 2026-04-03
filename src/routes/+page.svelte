@@ -278,6 +278,8 @@
         justify-content: center;
         padding-left: 5rem;
         padding-right: 5rem;
+
+        padding-bottom: 2rem;
     }
 
     .link-chip {
@@ -305,10 +307,6 @@
         box-shadow: 0 0 5px 4px #fff;
     }
 
-    .chip-link {
-        
-    }
-
     .chip-desc {
         color: #fff;
         padding-top: 1.5rem;
@@ -316,10 +314,11 @@
 
     /* change to vertical layout with mobile (>=768px width ig) */
     @media (max-width: 768px) {
-        .row-shell {
+        .row-shell,
+        .link-chips {
             flex-direction: column;
         }
-        
+
         #terminal-container {
             margin-left: 0;
             margin-bottom: 2%;
