@@ -266,6 +266,7 @@ onMount(() => {
         {/if}
 
         <div class="sub-label">upload local</div>
+        
         <div class="drop-zone" class:drag-active={dragOver}
             ondrop={(e) => { e.preventDefault(); dragOver = false; if (e.dataTransfer?.files) loadLocalFiles(e.dataTransfer.files); }}
             ondragover={(e) => { e.preventDefault(); dragOver = true; }} 

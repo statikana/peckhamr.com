@@ -51,6 +51,25 @@
         </div>
     </div>
 
+    <!-- chips to other links -->
+    <section class="link-chips">
+        <div class="link-chip" onclick={() => document.location='/practice'}>
+            <div class="chip-link">
+                <span style="color:#fff5">peckhamr.com/</span><span style="color:#efa368">practice</span>
+            </div>
+            <div class="chip-desc">
+                Chinese study flashcards for personal use
+            </div>
+        </div>
+        <div class="link-chip" onclick={() => document.location='/terminal'}>
+            <div class="chip-link" >
+                <span style="color:#fff5">peckhamr.com/</span><span style="color:#efa368">terminal</span>
+            </div>
+            <div class="chip-desc">
+                Interactive terminal with commands and links to my other socials
+            </div>
+        </div>
+    </section>
     <!-- inner stuff -->
     <div class="row-shell">
         <!-- terminal -->
@@ -251,6 +270,48 @@
         margin-left: 2.5%;
         color: #fffa;
         font-size: 1em;
+    }
+
+    .link-chips {
+        display: flex;
+        flex-direction: row;
+        justify-content: center;
+        padding-left: 5rem;
+        padding-right: 5rem;
+    }
+
+    .link-chip {
+        flex: 1;
+        border: 1px solid #ffffff18;
+        border-radius: 4px;
+        padding: 1rem;
+        margin-bottom: 1.25rem;
+        margin-left: 2rem;
+        margin-right: 2rem;
+        position: relative;
+        text-justify: center;
+        
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+
+        transition: box-shadow 0.3s ease; 
+
+    }
+
+    .link-chip:hover {
+        cursor: pointer;
+        
+        box-shadow: 0 0 5px 4px #fff;
+    }
+
+    .chip-link {
+        
+    }
+
+    .chip-desc {
+        color: #fff;
+        padding-top: 1.5rem;
     }
 
     /* change to vertical layout with mobile (>=768px width ig) */
