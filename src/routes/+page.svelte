@@ -53,6 +53,7 @@
 
     <!-- chips to other links -->
     <section class="link-chips">
+    <!--
         <div class="link-chip" onclick={() => document.location='/practice'}>
             <div class="chip-link">
                 <span style="color:#fff5">peckhamr.com/</span><span style="color:#efa368">practice</span>
@@ -60,7 +61,7 @@
             <div class="chip-desc">
                 Chinese study flashcards for personal use
             </div>
-        </div>
+        </div> -->
         <div class="link-chip" onclick={() => document.location='/terminal'}>
             <div class="chip-link" >
                 <span style="color:#fff5">peckhamr.com/</span><span style="color:#efa368">terminal</span>
