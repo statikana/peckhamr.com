@@ -457,7 +457,7 @@ function getCat() {
 }
 
 function getIntroText() {
-    let t = (getCat() + "\n\nhi, im ryan. i like making stuff. try the ").split("").concat(makeCode("help")).concat(" command".split(""));
+    let t = (getCat() + "\n\nhi, im ryan. i like making stuff. try the ").split("").concat(makeCode("help")).concat(" command.\nuse arrow keys + [TAB] to use autocomplete".split(""));
     let url = URL.parse(window.location.href);
     if (url?.pathname === "/terminal") {
         t = t.concat("\nyou can also use the ".split("")).concat(makeCode("home")).concat(" command to go back to my main site".split(""))

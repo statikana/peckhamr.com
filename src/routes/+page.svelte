@@ -92,13 +92,24 @@
                     <p>This Site</p>
                     <div class="project-desc">
                         Of course, I made this site using HTML, CSS, and JS. I also used <a href="https://svelte.dev/" target="_blank">Svelte</a> for routing and 
-                        dynamic rendering. To protect my privacy, this site's code is not publicly linked to my github, but you are free to inspect the page source.
+                        dynamic rendering. For privacy, this site's code is not publicly linked to my github. AI was not used in the creation of this website.
                     </div>
                 </div>
                 <hr class="line-break">
 
-                <!-- pytenno -->
                 <div class="project">
+                    <p>M-AST Flight Stack [<a href="https://github.com/Michigan-AST/Flight_Stack" target="_blank">Source</a>]</p>
+                    <div class="project-desc">
+                        As Vice President of Software of the Michigan Automonous Security Team, I've recently helped develop and improve sensor integration software for our team's
+                        quadcopter drone. I have also advised my peers on routing software and operating system management, via a Raspberry Pi running Debian Linux.
+                    </div>
+                </div>
+                <hr class="line-break">
+
+                ... as I gain more experience, I'll more highlight projects I'm proud of here. I have a whole slew of minor side-projects public on <a href="https://github.com/statikana">my GitHub</a> as well.
+
+                <!-- pytenno -->
+                <!-- <div class="project">
                     <p>PyTenno [<a href="https://github.com/statikana/PyTenno" target="_blank">Source</a>]</p>
                     <div class="project-desc">
                         A relatively simple asynchonous HTTPS wrapper for <a href="https://warframe.market/" target="_blank">warframe.market</a>, a website where users can
@@ -107,10 +118,10 @@
                         It includes comprehensive documentation on <a href="https://pytenno.readthedocs.io/en/latest/index.html" target="_blank">readthedocs.io</a>, though it isn't maintained any more.
                     </div>
                 </div>
-                <hr class="line-break">
+                <hr class="line-break"> -->
 
                 <!-- DLM -->
-                <div class="project">
+                <!-- <div class="project">
                     <p>Download Manager [<a href="https://github.com/statikana/dlm" target="_blank">Source</a>]</p>
                     <div class="project-desc">
                         Also made in Python, I used this to explore multithreading. It uses concurrent threads on your device to read and write data from a website (e.g., a file server) faster than you are normally able to.
@@ -118,10 +129,10 @@
                         prevent race conditions. Shows substantial improvements in download times, depending on the file size and the number of concurrent threads used.
                     </div>
                 </div>
-                <hr class="line-break">
+                <hr class="line-break"> -->
 
                 <!-- Vanir -->
-                <div class="project">
+                <!-- <div class="project">
                     <p>Vanir [<a href="https://github.com/statikana/Vanir" target="_blank">Source</a>]</p>
                     <div class="project-desc">
                         One of my first substantial projects. Uses <a href="https://discord.com/" target="_blank">Discord</a>'s API to create an interactive bot-agent which users
@@ -131,7 +142,7 @@
                             <li>Safe, sandboxed arbitrary code execution for many languages via <a href="https://github.com/engineer-man/piston" target="_blank">Piston</a></li>
                         </ul> 
                     </div>
-                </div>
+                </div> -->
             </div>
         </div>
     </div>
@@ -263,9 +274,9 @@
         padding: 1%;
     }
 
-    ul {
+    /* ul {
         margin-top: 0.5%;
-    }
+    } */
 
     div.project > div.project-desc {
         margin-left: 2.5%;
