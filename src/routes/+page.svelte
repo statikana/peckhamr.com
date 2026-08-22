@@ -45,7 +45,7 @@
             <a class="social-link" href="https://www.instagram.com/that.ryguy/" aria-label="instagram" target="_blank">
                 <i class="fa-brands fa-instagram"></i>
             </a>
-            <a class="social-link" href="/Ryan_Peckham_Resume.pdf" aria-label="resume" target="_blank">
+            <a class="social-link" href="/ryan_peckham_resume_latest.pdf" aria-label="resume" target="_blank">
                 <i class="fa-regular fa-file"></i>
             </a>
         </div>

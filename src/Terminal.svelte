@@ -104,7 +104,7 @@ let commands = {
         "resume",
         "Get Ryan's resume",
         "resume",
-        (args) => window.location.href = "/Ryan_Peckham_Resume.pdf"
+        (args) => window.location.href = "/ryan_peckham_resume_latest.pdf"
     ),
     helloworld: new Command(
         "helloworld",
