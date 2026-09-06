@@ -304,7 +304,7 @@
         margin-right: 2rem;
         position: relative;
         text-justify: center;
-        
+
         display: flex;
         flex-direction: column;
         align-items: center;
@@ -329,6 +329,16 @@
         .row-shell,
         .link-chips {
             flex-direction: column;
+        }
+
+        .link-chips {
+            padding-left: 1rem;
+            padding-right: 1rem;
+        }
+
+        .link-chip {
+            margin-left: 0;
+            margin-right: 0;
         }
 
         #terminal-container {
