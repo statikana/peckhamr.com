@@ -104,7 +104,6 @@
                         quadcopter drone. I have also advised my peers on routing software and operating system management, via a Raspberry Pi running Debian Linux.
                     </div>
                 </div>
-                <hr class="line-break">
 
 
                 <!-- pytenno -->
