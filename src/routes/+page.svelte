@@ -106,7 +106,7 @@
                 </div>
                 <hr class="line-break">
 
-                ... as I gain more experience, I'll more highlight projects I'm proud of here. I have a whole slew of minor side-projects public on <a href="https://github.com/statikana">my GitHub</a> as well.
+                ... as I gain more experience, I'll highlight more projects I'm proud of here. I have a whole slew of small, unpolished side-projects public on <a href="https://github.com/statikana">my GitHub</a> as well.
 
                 <!-- pytenno -->
                 <!-- <div class="project">
