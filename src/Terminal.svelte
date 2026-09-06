@@ -184,7 +184,16 @@ function commandHelp(args) {
 }
 
 function commandWhoIs(args) {
-    return "He's just a silly little guy ngl";
+    // Pulled from my AboutMe section on my linkedin profile. Would be neat to have it automatically pull from linkedin.com but there's an authwall and
+    // its not really worth devising a solution for that
+    return `I'm a Computer Engineering student at the University of Michigan building practical solutions that combine hardware and software. I work as Vice President of Software at Michigan Autonomous Security Team, where I'm leading sensor integration and software architecture for a prototype drone. I've also worked on machine learning fundamentals and built my personal website from scratch.
+
+My technical foundation includes Python, C, C++, C#, and Java, with experience in full-stack development, database design, and embedded systems. I've learned as much from personal projects as I have from coursework. I'm comfortable with both the software side (Git, Docker, PostgreSQL) and the hands-on hardware work (soldering, CNC machines, welding). I am also highly interested in exploring the applications of Computer Engineering in the field of quantum physics and mechanics.
+
+Before university, I was part of my high school's FIRST Robotics team where we won District Champions and multiple awards. I've also done customer-facing work at Target and local businesses, which taught me the importance of clear communication and attention to detail.
+
+I'm always looking to deepen my engineering skills and work on projects that challenge me and have a real impact.`
+    // return "He's just a silly little guy ngl";
 }
 
 function commandEcho(args) {
@@ -631,7 +640,10 @@ onMount(() => {
 }
 
 /* text display */
-
+.history-text {
+    overflow-wrap: break-word;
+    white-space: pre-wrap;
+}
 .history-text,
 #animation {
     color: white;
