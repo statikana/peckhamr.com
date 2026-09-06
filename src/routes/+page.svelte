@@ -117,19 +117,18 @@
                         and JSON structures into Python functions and data structures. It was my first package which I published on <a href="https://pypi.org/project/pytenno/" target="_blank">PyPI</a> (Python's Package Index). 
                         It includes comprehensive documentation on <a href="https://pytenno.readthedocs.io/en/latest/index.html" target="_blank">readthedocs.io</a>, though it isn't maintained any more.
                     </div>
-                </div>
-                <hr class="line-break"> -->
+                </div> -->
+                <hr class="line-break">
 
                 <!-- DLM -->
-                <!-- <div class="project">
-                    <p>Download Manager [<a href="https://github.com/statikana/dlm" target="_blank">Source</a>]</p>
+                <div class="project">
+                    <p>Downloader [<a href="https://github.com/statikana/dlm" target="_blank">Source</a>]</p>
                     <div class="project-desc">
-                        Also made in Python, I used this to explore multithreading. It uses concurrent threads on your device to read and write data from a website (e.g., a file server) faster than you are normally able to.
+                        Uses concurrent threads to read and write data from a website (e.g., a file server) faster than you are normally able to.
                         Each thread reads a different segment of the source file, and writes to the associated segment of the new file being created on your computer. Uses file locks to
-                        prevent race conditions. Shows substantial improvements in download times, depending on the file size and the number of concurrent threads used.
+                        prevent race conditions, and chunked writing to balance memory usage and performance. Shows substantial improvements in download times, depending on the file size and the number of concurrent threads used.
                     </div>
                 </div>
-                <hr class="line-break"> -->
 
                 <!-- Vanir -->
                 <!-- <div class="project">
