@@ -85,7 +85,7 @@
 
         <!-- projects -->
         <div class="col-shell">
-            <h2 class="titlebar glow">My Stuff</h2>
+            <h2 class="titlebar glow">Some of My Stuff</h2>
             <div class="center" id="projects">
                 <!-- this site -->
                 <div class="project">
@@ -141,8 +141,6 @@
                         </ul> 
                     </div>
                 </div> -->
-                ... as I gain more experience, I'll highlight more projects I'm proud of here. I have a whole slew of small, unpolished side-projects public on <a href="https://github.com/statikana">my GitHub</a> as well.
-
             </div>
         </div>
     </div>
