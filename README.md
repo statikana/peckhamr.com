@@ -1,13 +1,13 @@
 # peckhamr.com
 
-Personal portfolio site for Ryan Peckham. Built with [SvelteKit](https://kit.svelte.dev/) and statically generated to plain HTML/CSS/JS via `@sveltejs/adapter-static`.
+Personal portfolio site made by me. Built with [SvelteKit](https://kit.svelte.dev/) and statically generated to plain HTML/CSS/JS via `@sveltejs/adapter-static`.
 
 ## Tech Stack
 
-- **SvelteKit**: file-based routing, layout composition, and static prerendering (`+layout.js` sets `trailingSlash: 'always'`; each route exports `prerender = true`).
-- **Svelte 5**: reactivity through `$state` runes; component composition via `{#snippet}` blocks and `{@render}`.
-- **Vite 7**: dev server and production bundler (`vite.config.ts` loads the `sveltekit()` plugin).
-- **DOMPurify**: sanitises all user-generated HTML before rendering to prevent XSS in terminal output.
+- SvelteKit: file-based routing, layout composition, and static prerendering (`+layout.js` sets `trailingSlash: 'always'`; each route exports `prerender = true`).
+- Svelte 5: reactivity through `$state` runes; component composition via `{#snippet}` blocks and `{@render}`.
+- Vite 7: dev server and production bundler (`vite.config.ts` loads the `sveltekit()` plugin).
+- DOMPurify: sanitises all user-generated HTML before rendering to prevent XSS in terminal output.
 
 ## Project Structure
 
