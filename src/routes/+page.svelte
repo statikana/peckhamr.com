@@ -31,7 +31,7 @@
             </p>
         </div>
         <p id="bio">
-            Computer Engineering<br>
+            Computer Engineering and Applied Physics<br>
             University of Michigan<br>
             <span>Class of 2029</span>
         </p>
@@ -85,14 +85,14 @@
 
         <!-- projects -->
         <div class="col-shell">
-            <h2 class="titlebar glow">Some of My Stuff</h2>
+            <h2 class="titlebar glow">Computer Science Personal Projects</h2>
             <div class="center" id="projects">
                 <!-- this site -->
                 <div class="project">
-                    <p>This Site</p>
+                    <p>This Site [<a href="https://github.com/statikana/peckhamr.com">Source</a>]</p>
                     <div class="project-desc">
-                        Of course, I made this site using HTML, CSS, and JS. I also used <a href="https://svelte.dev/" target="_blank">Svelte</a> for routing and 
-                        dynamic rendering. For privacy, this site's code is not publicly linked to my github. AI was not used in the creation of this website.
+                        I made this site using HTML, CSS, and JS. I also used <a href="https://svelte.dev/" target="_blank">Svelte</a> for routing and
+                        dynamic rendering, and Git for version control.
                     </div>
                 </div>
                 <hr class="line-break">
