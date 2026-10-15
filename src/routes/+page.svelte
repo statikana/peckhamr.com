@@ -44,7 +44,7 @@
             <a class="social-link" href="https://github.com/statikana" aria-label="github" target="_blank">
                 <i class="fa-brands fa-github"></i>
             </a>
-            <a class="social-link" href="https://www.linkedin.com/in/ryan-peckham-9b4114399/" aria-label="linkedin" target="_blank">
+            <a class="social-link" href="https://www.linkedin.com/in/peckhamr/" aria-label="linkedin" target="_blank">
                 <i class="fa-brands fa-linkedin"></i>
             </a>
             <a class="social-link" href="https://www.instagram.com/that.ryguy/" aria-label="instagram" target="_blank">

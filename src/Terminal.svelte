@@ -86,7 +86,7 @@ let commands = {
         "linkedin",
         "Get Ryan's linkedin",
         "linkedin",
-        (args) => makeLink("https://www.linkedin.com/in/ryan-peckham-9b4114399/")
+        (args) => makeLink("https://www.linkedin.com/in/peckhamr/")
     ),
     instagram: new Command(
         "instagram",
