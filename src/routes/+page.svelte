@@ -35,6 +35,11 @@
             University of Michigan<br>
             <span>Class of 2029</span>
         </p>
+        <div id="resume-row">
+            <a class="resume-link" href="/ryan_peckham_resume.pdf" aria-label="resume" target="_blank">
+                <i class="fa-regular fa-file-pdf"></i> résumé
+            </a>
+        </div>
         <div id="links">
             <a class="social-link" href="https://github.com/statikana" aria-label="github" target="_blank">
                 <i class="fa-brands fa-github"></i>
@@ -44,9 +49,6 @@
             </a>
             <a class="social-link" href="https://www.instagram.com/that.ryguy/" aria-label="instagram" target="_blank">
                 <i class="fa-brands fa-instagram"></i>
-            </a>
-            <a class="social-link" href="/ryan_peckham_resume.pdf" aria-label="resume" target="_blank">
-                <i class="fa-regular fa-file"></i>
             </a>
         </div>
     </div>
@@ -227,8 +229,32 @@
         color: #fff5;
     }
 
+    #resume-row {
+        margin-bottom: 0.75rem;
+    }
+
+    a.resume-link {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5em;
+        color: #0c0c0c;
+        background-color: #efa368;
+        text-decoration: none;
+        font-size: 95%;
+        font-weight: 600;
+        padding: 0.45em 1.1em;
+        border-radius: 999px;
+        box-shadow: 0 0 0 0 #efa36800;
+        transition: box-shadow 0.25s ease, transform 0.25s ease;
+    }
+
+    a.resume-link:hover {
+        box-shadow: 0 0 12px 2px #efa36888;
+        transform: translateY(-1px);
+    }
+
     #links {
-        font-size: 200%;
+        font-size: 150%;
     }
 
     /* links */
