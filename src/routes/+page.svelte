@@ -225,14 +225,14 @@
             <hr class="line-break">
 
             <!-- Koda -->
-            <div class="project">
+            <!-- <div class="project">
                 <p>Koda [<a href="https://github.com/statikana/antlr-project" target="_blank">Source</a>]</p>
                 <div class="project-desc">
                     A custom interpreted programming language written in C++, using the ANTLR4 parser generator for lexing and parsing.
                     Involved designing my own type system and building the AST generation and execution engine from scratch. One of my
                     favorite personal projects, and a deep dive into how programming languages actually work under the hood.
                 </div>
-            </div>
+            </div> -->
 
             <hr class="line-break">
 
