@@ -23,6 +23,7 @@
     "wrangler": "^4.151.1"
   },
   "dependencies": {
+    "@types/node": "^26.6.5",
     "dompurify": "^3.3.1"
   },
   "allowScripts": {
