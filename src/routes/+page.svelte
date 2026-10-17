@@ -4,6 +4,9 @@
     let activeTab = $state('experience');
     let showTerminal = $state(false);
 
+    /**
+     * @param {string} tab
+     */
     function goToTab(tab) {
         activeTab = tab;
         document.getElementById('work')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -18,6 +21,7 @@
     <div class="nav-inner">
         <a class="nav-brand" href="#top">Ryan Peckham</a>
         <div class="nav-links">
+            <button type="button" class="nav-link-btn" onclick={() => document.location.href="/cosmo"}>Cosmo</button>
             <button type="button" class="nav-link-btn" onclick={() => goToTab('experience')}>Experience</button>
             <button type="button" class="nav-link-btn" onclick={() => goToTab('projects')}>Projects</button>
             <a href="#terminal">Terminal</a>

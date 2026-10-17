@@ -131,7 +131,7 @@ let commands = {
         "home",
         (args) => {
             let url = URL.parse(window.location.href);
-            if (url?.pathname === "/terminal/") {
+            if (url?.pathname === "/terminal/" || url?.pathname === "/terminal") {
                 window.location.href = "/";
                 return "Bye!";
             } else {
