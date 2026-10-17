@@ -1,0 +1,19 @@
+name = "peckhamr"
+
+"$schema" = "./node_modules/wrangler/config-schema.json"
+
+compatibility_date = "2026-10-17"
+compatibility_flags = [
+    "nodejs_als",
+    "nodejs_compat"
+]
+
+workers_dev = true
+preview_urls = true
+
+main = ".svelte-kit/cloudflare/_worker.js"
+
+[assets]
+binding = "ASSETS"  # name used to refer to the assets
+directory = ".svelte-kit/cloudflare"  # build assets to be served
+
