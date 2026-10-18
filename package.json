@@ -1,5 +1,5 @@
 {
-  "name": "peckhamr-sv",
+  "name": "peckhamr",
   "private": true,
   "version": "0.0.1",
   "type": "module",
@@ -13,21 +13,22 @@
     "gen": "wrangler types"
   },
   "devDependencies": {
-    "@sveltejs/adapter-cloudflare": "^7.2.9",
-    "@sveltejs/kit": "^2.50.1",
-    "@sveltejs/vite-plugin-svelte": "^6.2.4",
-    "svelte": "^5.48.2",
-    "svelte-check": "^4.3.5",
-    "typescript": "^5.9.3",
-    "vite": "^7.3.6",
+    "@sveltejs/adapter-cloudflare": "^8.0.1",
+    "@sveltejs/kit": "^3.1.0",
+    "@sveltejs/vite-plugin-svelte": "^7.3.1",
+    "svelte": "^5.57.2",
+    "svelte-check": "^4.7.7",
+    "typescript": "^6.0.3",
+    "vite": "^8.3.4",
     "wrangler": "^4.151.1"
   },
   "dependencies": {
     "@types/node": "^26.6.5",
-    "dompurify": "^3.3.1"
+    "better-auth": "^1.7.10",
+    "dompurify": "^3.4.17"
   },
   "allowScripts": {
-    "esbuild@0.28.2": true,
-    "workerd@1.20261012.1": true
+    "esbuild": true,
+    "workerd": true
   }
 }

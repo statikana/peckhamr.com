@@ -17,3 +17,9 @@ main = ".svelte-kit/cloudflare/_worker.js"
 binding = "ASSETS"  # name used to refer to the assets
 directory = ".svelte-kit/cloudflare"  # build assets to be served
 
+# D1 Database: SQLite
+# Stores user and password information
+[[d1_databases]]
+binding = "cosmo_users"  # referred to by worker
+database_name = "cosmo_users"  # referred to by JS
+database_id = "ca0da580-dd9a-4885-86f6-8c20bc14db1f"
