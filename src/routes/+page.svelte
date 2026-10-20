@@ -23,6 +23,12 @@
     </a>
 {/snippet}
 
+{#snippet siteBadge(href = '')}
+    <a class="project-source" {href} target="_blank">
+        <i class="fa-solid fa-arrow-up-right-from-square"></i> Visit Site
+    </a>
+{/snippet}
+
 <nav id="site-nav">
     <div class="nav-inner">
         <a class="nav-brand" href="#top">Ryan Peckham</a>
@@ -223,6 +229,22 @@
                 <div class="project-desc">
                     As Chief Software Engineer of the Michigan Autonomous Security Team, I've recently helped develop and improve sensor integration software for our team's
                     quadcopter drone. I have also advised my peers on routing software and operating system management, via a Raspberry Pi running Debian Linux.
+                </div>
+            </div>
+
+            <hr class="line-break">
+
+            <!-- Flymast -->
+            <div class="project">
+                <div class="project-head">
+                    <span class="project-name">flymast.com</span>
+                    {@render siteBadge("https://flymast.com")}
+                    {@render sourceBadge("https://github.com/Michigan-AST/flymast.com")}
+                </div>
+                <div class="project-desc">
+                    The public website for the Michigan Autonomous Security Team, built end-to-end by me using Svelte. Designed around
+                    heavy modularization, so adding new components, announcements, images, or team members is straightforward without
+                    touching the core site structure.
                 </div>
             </div>
 
