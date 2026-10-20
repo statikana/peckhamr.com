@@ -17,11 +17,17 @@
     <script src="https://kit.fontawesome.com/e469a2ed37.js" crossorigin="anonymous"></script>
 </svelte:head>
 
+{#snippet sourceBadge(href = '')}
+    <a class="project-source" {href} target="_blank">
+        <i class="fa-brands fa-github"></i> Source Code
+    </a>
+{/snippet}
+
 <nav id="site-nav">
     <div class="nav-inner">
         <a class="nav-brand" href="#top">Ryan Peckham</a>
         <div class="nav-links">
-            <button type="button" class="nav-link-btn" onclick={() => document.location.href="/cosmo"}>Cosmo</button>
+            <!-- <button type="button" class="nav-link-btn" onclick={() => document.location.href="/cosmo"}>Cosmo</button> -->
             <button type="button" class="nav-link-btn" onclick={() => goToTab('experience')}>Experience</button>
             <button type="button" class="nav-link-btn" onclick={() => goToTab('projects')}>Projects</button>
             <a href="#terminal">Terminal</a>
@@ -198,7 +204,10 @@
         <div class="center" id="projects-list">
             <!-- this site -->
             <div class="project">
-                <p>This Site [<a href="https://github.com/statikana/peckhamr.com">Source</a>]</p>
+                <div class="project-head">
+                    <span class="project-name">This Site</span>
+                    {@render sourceBadge("https://github.com/statikana/peckhamr.com")}
+                </div>
                 <div class="project-desc">
                     I made this site using HTML, CSS, and JS. I also used <a href="https://svelte.dev/" target="_blank">Svelte</a> for routing and
                     dynamic rendering, and Git for version control.
@@ -207,7 +216,10 @@
             <hr class="line-break">
 
             <div class="project">
-                <p>M-AST Flight Stack [<a href="https://github.com/Michigan-AST/Flight_Stack" target="_blank">Source</a>]</p>
+                <div class="project-head">
+                    <span class="project-name">M-AST Flight Stack</span>
+                    {@render sourceBadge("https://github.com/Michigan-AST/Flight_Stack")}
+                </div>
                 <div class="project-desc">
                     As Chief Software Engineer of the Michigan Autonomous Security Team, I've recently helped develop and improve sensor integration software for our team's
                     quadcopter drone. I have also advised my peers on routing software and operating system management, via a Raspberry Pi running Debian Linux.
@@ -218,15 +230,16 @@
 
             <!-- DLM -->
             <div class="project">
-                <p>Downloader [<a href="https://github.com/statikana/dlm" target="_blank">Source</a>]</p>
+                <div class="project-head">
+                    <span class="project-name">Downloader</span>
+                    {@render sourceBadge("https://github.com/statikana/dlm")}
+                </div>
                 <div class="project-desc">
                     Uses concurrent threads to read and write data from a website (e.g., a file server) faster than you are normally able to.
                     Each thread reads a different segment of the source file, and writes to the associated segment of the new file being created on your computer. Uses file locks to
                     prevent race conditions, and chunked writing to balance memory usage and performance. Shows substantial improvements in download times, depending on the file size and the number of concurrent threads used.
                 </div>
             </div>
-
-            <hr class="line-break">
 
             <!-- Koda -->
             <!-- <div class="project">
@@ -242,7 +255,10 @@
 
             <!-- Cosmo -->
             <div class="project">
-                <p>Cosmo [<a href="https://github.com/statikana/cosmo" target="_blank">Source</a>]</p>
+                <div class="project-head">
+                    <span class="project-name">Cosmo</span>
+                    {@render sourceBadge("https://github.com/statikana/cosmo")}
+                </div>
                 <div class="project-desc">
                     A small self-hosted file server: a single-page upload/download web app backed by a lightweight Python WSGI app
                     behind Apache. Handles concurrent uploads safely using thread locks, so simultaneous writes don't clobber each
@@ -254,7 +270,10 @@
 
             <!-- PyTenno -->
             <div class="project">
-                <p>PyTenno [<a href="https://github.com/statikana/PyTenno" target="_blank">Source</a>]</p>
+                <div class="project-head">
+                    <span class="project-name">PyTenno</span>
+                    {@render sourceBadge("https://github.com/statikana/PyTenno")}
+                </div>
                 <div class="project-desc">
                     An asynchronous API wrapper for <a href="https://warframe.market/" target="_blank">warframe.market</a>, a marketplace
                     for the video game <a href="https://www.warframe.com/game/about" target="_blank">Warframe</a>. Translates the site's
@@ -408,6 +427,10 @@
         margin-top: 0;
         margin-bottom: 1.25rem;
         font-size: 1.5rem;
+    }
+
+    .line-break {
+        color: transparent;
     }
 
     /* personal */
@@ -590,7 +613,7 @@
         gap: 0.5rem 1rem;
     }
 
-    .xp-role {
+    .xp-role, .project-name {
         font-weight: 600;
         font-size: 1.05rem;
     }
@@ -631,8 +654,44 @@
         color: #fff;
     }
 
+    .project {
+        margin-bottom: 1.5rem;
+    }
+
+    .project-head {
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        /* justify-content: space-between; */
+        flex-wrap: wrap;
+        gap: 0.4rem 0.75rem;
+    }
+
+    .project-source {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.4em;
+        color: #9FFDD8;
+        font-family: var(--mono-font);
+        font-size: 0.78rem;
+        font-weight: 500;
+        letter-spacing: 0.02em;
+        background-color: #9FFDD818;
+        border: 1px solid #9FFDD82a;
+        border-radius: 999px;
+        padding: 0.2em 0.75em;
+        text-decoration: none;
+        transition: background-color 0.2s ease, transform 0.2s ease;
+    }
+
+    .project-source:hover {
+        background-color: #9FFDD830;
+        transform: translateY(-1px);
+    }
+
     div.project > div.project-desc {
-        margin-left: 2.5%;
+        margin-left: 0;
+        margin-top: 0.4rem;
         color: #fffa;
         font-size: 1em;
         line-height: 1.5;
