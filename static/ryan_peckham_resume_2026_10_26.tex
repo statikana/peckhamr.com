@@ -1,0 +1,183 @@
+\documentclass[letterpaper,11pt]{article}
+
+\usepackage{latexsym}
+\usepackage[empty]{fullpage}
+\usepackage{titlesec}
+\usepackage{marvosym}
+\usepackage[usenames,dvipsnames]{color}
+\usepackage{verbatim}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{fancyhdr}
+\usepackage[english]{babel}
+\usepackage{tabularx}
+\input{glyphtounicode}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot{}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+
+\addtolength{\oddsidemargin}{-0.5in}
+\addtolength{\evensidemargin}{-0.5in}
+\addtolength{\textwidth}{1in}
+\addtolength{\topmargin}{-.7in}
+\addtolength{\textheight}{1.3in}
+
+\urlstyle{same}
+
+\raggedbottom
+\raggedright
+\setlength{\tabcolsep}{0in}
+
+\titleformat{\section}{
+  \vspace{-5pt}\scshape\raggedright\large
+}{}{0em}{}[\color{black}\titlerule \vspace{-5pt}]
+
+\pdfgentounicode=1
+
+\newcommand{\resumeItem}[1]{
+  \item\small{#1 \vspace{-2pt}}
+}
+
+\newcommand{\resumeSubheading}[4]{
+  \vspace{-2pt}\item
+    \begin{tabular*}{\textwidth}{l@{\extracolsep{\fill}}r}
+      \textbf{#1} & #2 \
+      \small#3 & \small #4 \
+    \end{tabular*}\vspace{-4pt}
+}
+
+\newcommand{\resumeSubheadingSoftTwo}[2]{
+  \vspace{-8pt}\item
+    \begin{tabular*}{\textwidth}{l@{\extracolsep{\fill}}r}
+      #1 & #2 \
+    \end{tabular*}\vspace{-20pt}
+}
+
+\newcommand{\resumeSubheadingSoftFour}[4]{
+  \vspace{-2pt}\item
+    \begin{tabular*}{\textwidth}{l@{\extracolsep{\fill}}r}
+      #1 & #2 \
+      \small#3 & \small #4 \
+    \end{tabular*}\vspace{-4pt}
+}
+\newcommand{\resumeSubSubheading}[2]{
+    \item
+    \begin{tabular*}{\textwidth}{l@{\extracolsep{\fill}}r}
+      \textit{\small#1} & \textit{\small #2} \
+    \end{tabular*}\vspace{-4pt}
+}
+
+\newcommand{\resumeProjectHeading}[2]{
+    \item
+    \begin{tabular*}{\textwidth}{l@{\extracolsep{\fill}}r}
+      \small#1 & #2 \
+    \end{tabular*}\vspace{-4pt}
+}
+
+\renewcommand\labelitemii{$\vcenter{\hbox{\tiny$\bullet$}}$}
+
+\setlist[itemize]{itemsep=1pt, topsep=2pt, parsep=0pt, partopsep=0pt}
+
+\newcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=0.15in, label={}]}
+\newcommand{\resumeSubHeadingListEnd}{\end{itemize}}
+\newcommand{\resumeItemListStart}{\begin{itemize}[leftmargin=0.15in]}
+\newcommand{\resumeItemListEnd}{\end{itemize}\vspace{-5pt}}
+
+\begin{document}
+
+\begin{center}
+    \textbf{\Huge \scshape Ryan Peckham} \ \vspace{3pt}
+    \small \href{mailto:peckhamr@umich.edu}{peckhamr@umich.edu} $\cdot$
+    \href{https://peckhamr.com}{peckhamr.com} $\cdot$
+    +1 (616) 834-2160 $\cdot$
+    Ann Arbor, MI
+\end{center}
+
+\section{Education}
+\resumeSubHeadingListStart
+  \resumeSubheading
+    {University of Michigan}{Ann Arbor, MI}
+    {B.S. Computer Engineering and Applied Physics; GPA: 3.35/4.0}{Aug. 2025 -- Present}
+        \resumeItem{\vspace{3pt}Sophomore -- Anticipated Graduation May 2029}
+      \resumeItem{\textbf{Coursework:} Multivariable \& Vector Calculus, Electricity \& Magnetism, Quantum Photonics, Discrete Mathematics, Solar Energy Systems, Mandarin, Probabilistic Statistics}
+    
+\resumeSubHeadingListEnd
+
+\section{Skills}
+\resumeSubHeadingListStart
+  \small{\item{
+    \textbf{Programming Languages}{: Python, Rust, C, C++, C\#, Java, SQL, JavaScript, HTML/CSS, Svelte, MATLAB} \
+    \textbf{Systems}{: Git \& GitHub, PostgreSQL, WSL, Docker, Database Normalization, Threading} \
+    \textbf{Operating Systems}{: Windows, Linux (Ubuntu, Debian, NixOS), MacOS} \
+    \textbf{Hardware}{: Soldering, Shielded Metal Arc Welding, CNC Machines, Lathes, Mills}
+  }}
+\resumeSubHeadingListEnd
+
+\section{Experience}
+\resumeSubHeadingListStart
+
+  \resumeSubheading
+    {Michigan Autonomous Security Team (M-AST), Chief Software Engineer}{Jan. 2026 -- Present}
+    {University of Michigan}{}
+    \resumeItemListStart
+      \resumeItem{Lead and mentor a team of engineers to install, program, and validate gyroscope, magnetometer, barometer, and GPS sensors on a prototype autonomous drone}
+      \resumeItem{Own code quality across a large, multi-contributor codebase by reviewing pull requests and enforcing consistent structure and standards}
+      \resumeItem{Co-designed the drone's system architecture with the M-AST President, defining data flow between subsystems and supporting software-in-the-loop (SITL) and hardware-in-the-loop (HITL) runtimes}
+      \resumeItem{Integrated ROS2, OpenCV, telemetry, and path-finding modules into a cohesive flight software stack}
+    \resumeItemListEnd
+
+  \resumeSubheading
+    {Michigan Hackers, Machine Learning Team, Member}{Nov. 2025 -- Present}
+    {University of Michigan}{}
+    \resumeItemListStart
+      \resumeItem{Built a foundation in machine learning theory, including Markov chains, Bayes' theorem, and a range of ML methodologies and their real-world applications}
+      \resumeItem{Led peer lectures and contributed to technical discussions on the modern development and deployment of AI}
+    \resumeItemListEnd
+
+  \resumeSubheading
+    {Engineering 100}{Aug. 2025 -- Dec. 2025}
+    {University of Michigan}{}
+    \resumeItemListStart
+      \resumeItem{Built a sun-tracking solar panel on a Raspberry Pi, writing the C++ control code and wiring and soldering photoresistors, stepper motors, voltage limiters, and a battery}
+      % \resumeItem{Engaged in a comprehensive engineering process including identifying a problem in modern technology, thoroughly researching the subject, and presenting a proposed solution to Engineering faculty; tested the solution and presented results, data, and conclusions to faculty}
+      \resumeItem{Collaborated in a design team to prioritize tasks, balance planning with execution, and draw meaningful conclusions from test data}
+    \resumeItemListEnd
+
+  \resumeSubheading
+    {FIRST Robotics Competition (FRC), Team 141 ``WOBOT''}{Aug. 2023 -- Oct. 2024}
+    {West Ottawa High School, Programming Sub-team}{}
+    \resumeItemListStart
+      \resumeItem{Developed robot input-handling and movement code, implementing and tuning PIDF control loops for precise, responsive motion}
+      \resumeItem{Contributed to a District Championship-winning team that also earned the Engineering Inspiration, Sustainability, and Entrepreneurship awards}
+    \resumeItemListEnd
+
+  \resumeSubheading
+    {Cultural, Technological, and Environmental Exchange (CTEE) Club}{Sep. 2024 -- Apr. 2025}
+    {West Ottawa High School}{}
+    \resumeItemListStart
+      \resumeItem{Diagnosed, repaired, and tested 2--3 community-donated desktop computers and monitors per week}
+      \resumeItem{Gained hands-on experience with desktop and motherboard architecture by safely identifying and replacing faulty components}
+      \resumeItem{Installed and configured Windows to deliver ready-to-use systems for shipment to developing nations and communities}
+    \resumeItemListEnd
+
+\resumeSubHeadingListEnd
+
+\section{Personal Projects}
+\resumeItemListStart
+  \resumeItem{Designed, built, and deployed my personal website \href{https://peckhamr.com}{peckhamr.com} with Svelte, JavaScript, HTML, and CSS, teaching myself domain registration, web hosting, and maintainable codebase design}
+  \resumeItem{Designed and built M-AST's public website, \href{https://flymast.com}{flymast.com}, delivering a polished, professional presence for prospective members and sponsors}
+\resumeItemListEnd
+
+
+\section{Work Experience}
+\resumeSubHeadingListStart
+\resumeSubheadingSoftTwo{Ace Hardware, Delivery and Repair Technician}{May 2026 - Aug. 2026}
+
+\resumeSubheadingSoftTwo{Chick-fil-A, Crew Member}{Feb. 2024 - Jan. 2026}
+
+\resumeSubheadingSoftTwo{Target, Electronics Consultant \& Team Leader}{Nov. 2020 - Aug. 2022}
+\resumeSubHeadingListEnd
+\end{document}
