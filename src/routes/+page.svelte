@@ -52,7 +52,7 @@
             Ryan Peckham
         </p>
         <p id="tagline">
-            Computer Engineering &amp; Applied Physics student at the University of Michigan
+            Computer Engineering student at the University of Michigan
         </p>
         <div id="info">
             <p id="info-bits">
@@ -109,7 +109,7 @@
             <div class="xp-item">
                 <div class="xp-head">
                     <span class="xp-role">Chief Software Engineer <span class="xp-org">Michigan Autonomous Security Team, University of Michigan</span></span>
-                    <span class="xp-date">Jan 2026 – Present</span>
+                    <span class="xp-date">Jan 2026 - Present</span>
                 </div>
                 <p class="xp-desc">
                     Leading a team of engineers building the software for a prototype autonomous drone,
@@ -121,7 +121,7 @@
             <div class="xp-item">
                 <div class="xp-head">
                     <span class="xp-role">Machine Learning Team, Member <span class="xp-org">Michigan Hackers, University of Michigan</span></span>
-                    <span class="xp-date">Nov 2025 – Present</span>
+                    <span class="xp-date">Nov 2025 - Present</span>
                 </div>
                 <p class="xp-desc">
                     Studying and applying core machine learning concepts with a group of peers through
@@ -132,7 +132,7 @@
             <div class="xp-item">
                 <div class="xp-head">
                     <span class="xp-role">Engineering 100 Team Project <span class="xp-org">University of Michigan</span></span>
-                    <span class="xp-date">Aug 2025 – Dec 2025</span>
+                    <span class="xp-date">Aug 2025 - Dec 2025</span>
                 </div>
                 <p class="xp-desc">
                     As part of a 5-person team, researched, designed, and built a sun-tracking solar panel
@@ -143,7 +143,7 @@
             <div class="xp-item">
                 <div class="xp-head">
                     <span class="xp-role">Programming Sub-team <span class="xp-org">FIRST Robotics Competition, Team 141 "WOBOT", West Ottawa High School</span></span>
-                    <span class="xp-date">Aug 2023 – Oct 2024</span>
+                    <span class="xp-date">Aug 2023 - Oct 2024</span>
                 </div>
                 <p class="xp-desc">
                     Wrote control software for our competition robot. Our team won District Champions,
@@ -154,7 +154,7 @@
             <div class="xp-item">
                 <div class="xp-head">
                     <span class="xp-role">Volunteer <span class="xp-org">Cultural, Technological, and Environmental Exchange Club, West Ottawa High School</span></span>
-                    <span class="xp-date">Sep 2024 – Apr 2025</span>
+                    <span class="xp-date">Sep 2024 - Apr 2025</span>
                 </div>
                 <p class="xp-desc">
                     Repaired donated desktop computers each week and prepared them for shipment to
@@ -168,7 +168,7 @@
             <div class="xp-item">
                 <div class="xp-head">
                     <span class="xp-role">Assembly and Repair Technician <span class="xp-org">Ace Hardware</span></span>
-                    <span class="xp-date">May 2026 – Aug 2026</span>
+                    <span class="xp-date">May 2026 - Aug 2026</span>
                 </div>
                 <p class="xp-desc">
                     Completed complex equipment repairs and assemblies, diagnosing and resolving
@@ -181,10 +181,10 @@
             <div class="xp-item">
                 <div class="xp-head">
                     <span class="xp-role">Crew Member <span class="xp-org">Chick-fil-A</span></span>
-                    <span class="xp-date">Feb 2024 – Jan 2026</span>
+                    <span class="xp-date">June 2025 - Jan 2026</span>
                 </div>
                 <p class="xp-desc">
-                    Nearly two years as a crew member at Michigan's highest-volume Chick-fil-A location,
+                    Crew member at Michigan's highest-volume Chick-fil-A location,
                     managing guest service, desserts, and drive-thru operations with consistently
                     positive customer interactions and high work standards.
                 </p>
@@ -193,7 +193,7 @@
             <div class="xp-item">
                 <div class="xp-head">
                     <span class="xp-role">Team Lead <span class="xp-org">Target</span></span>
-                    <span class="xp-date">Nov 2020 – Aug 2022</span>
+                    <span class="xp-date">Nov 2022 - Aug 2024</span>
                 </div>
                 <p class="xp-desc">
                     Promoted from team member to team lead after demonstrating strong performance.
