@@ -242,7 +242,7 @@
                     {@render sourceBadge("https://github.com/Michigan-AST/flymast.com")}
                 </div>
                 <div class="project-desc">
-                    The public website for the Michigan Autonomous Security Team, built end-to-end by me using Svelte. Designed around
+                    The public website for the Michigan Autonomous Security Team. Designed around
                     heavy modularization, so adding new components, announcements, images, or team members is straightforward without
                     touching the core site structure.
                 </div>
