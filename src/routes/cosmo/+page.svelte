@@ -350,6 +350,8 @@
 			<a href="/" class="brand">peckhamr.com</a>
 			<span class="sep">/</span>
 			<span class="current">cosmo</span>
+			<span class="sep">/</span>
+			<a href="/media/" class="brand">media</a>
 		</div>
 		<div class="right">
 			{#if statusMsg}
