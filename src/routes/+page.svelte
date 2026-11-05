@@ -33,7 +33,7 @@
     <div class="nav-inner">
         <a class="nav-brand" href="#top">Ryan Peckham</a>
         <div class="nav-links">
-            <!-- <button type="button" class="nav-link-btn" onclick={() => document.location.href="/cosmo"}>Cosmo</button> -->
+            <a href="/cosmo/">Cosmo</a>
             <button type="button" class="nav-link-btn" onclick={() => goToTab('experience')}>Experience</button>
             <button type="button" class="nav-link-btn" onclick={() => goToTab('projects')}>Projects</button>
             <a href="#terminal">Terminal</a>
