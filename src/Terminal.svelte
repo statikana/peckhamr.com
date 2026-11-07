@@ -2,7 +2,7 @@
 //@ts-nocheck
 
 import DOMPurify from "dompurify";
-import { onMount } from 'svelte';
+import { onMount, tick } from "svelte";
 
 export const data = $state({
     terminal_text: "",
@@ -14,13 +14,16 @@ let history = $state(data.history);
 let current_history_index = 0;
 
 let current_autofill_recs = $state([]);
-let autofill_selected_index = null;
+let autofill_selected_index = $state(0);
+let user_navigated_autofill = $state(false);
+let show_autofill = $state(false);
+let is_focused = $state(false);
+let cmd_history_cursor = $state(null);
 let ignore_next_history = false;
 
-var cursor_x = -1;
-var cursor_y = -1;
-
 /* cats */
+
+let last_cat_index = -1;
 
 const cats = [
     `\
@@ -46,12 +49,66 @@ const cats = [
  ___/ \`   ' ,""+ \\    
 (__...'   __\\    |\`.___.';
   (_,...'(_,.\`__)/'.....+`,
+    `\
+      |\\      _,,,---,,_
+ZZZzz /, \`.-'\`'    -.  ;-;;,_
+     |,4-  ) )-,_. ,\\ (  \`'-'
+    '---''(_/--'  \`-'\\_)`,
+    `\
+  /\\_/\\  (
+ ( ^.^ ) _)
+   \\"/  (
+ ( | | )
+(__d b__)`,
+    `\
+    /\\_____/\\
+   /  o   o  \\
+  ( ==  ^  == )
+   )         (
+  (           )
+ ( (  )   (  ) )
+(__(__)___(__)__)`,
+    `\
+      /\\_/\\
+ /\\  / o o \\
+//\\\\ \\~(*)~/
+\`  \\/   ^ /
+   | \\|| ||
+   \\ '|| ||
+    \\)()-())`,
+    `\
+   |\\__/,|   (\`\\
+ _.|o o  |_   ) )
+-(((---(((--------`,
+    `\
+       _     _
+      |\\\\_,-~/
+      / _  _ |    ,--.
+     (  @  @ )   / ,-'
+      \\  _T_/-._( (
+      /         \`. \\
+     |         _  \\ |
+      \\ \\ ,  /      |
+       || |-_\\__   /
+      ((_/\`(____,-'`,
+    `\
+   /\\_/\\
+  ( -.- )___
+   |      _ \\
+   |  |  | \\ \\
+   (__|__)  \\_\\`,
+    `\
+    |\\__/,|   (\`\\
+  _.| ^ ^ |_   ) )
+ -(((---(((--------
+  |  [  box  ]  |
+  '-------------'`,
 ];
 
 /* command defs */
 
 class Command {
-    constructor(name, short, usage, func, help_func = null, rec_pool = () => {return [];}) {
+    constructor(name, short, usage, func, help_func = null, rec_pool = () => { return []; }) {
         this.name = name;
         this.short = short;
         this.usage = usage;
@@ -68,11 +125,11 @@ let commands = {
         "help [Command Name]",
         commandHelp,
         null,
-        () => {return ["terminal"].concat(Object.keys(commands))}
+        () => { return ["terminal"].concat(Object.keys(commands)); }
     ),
     echo: new Command(
         "echo",
-        "Repeats back anything you give you it",
+        "Repeats back anything you give it",
         "echo [Any Text]*",
         commandEcho,
     ),
@@ -84,13 +141,13 @@ let commands = {
     ),
     linkedin: new Command(
         "linkedin",
-        "Get Ryan's linkedin",
+        "Get Ryan's LinkedIn",
         "linkedin",
         (args) => makeLink("https://www.linkedin.com/in/peckhamr/")
     ),
     instagram: new Command(
         "instagram",
-        "Get Ryan's instagram",
+        "Get Ryan's Instagram",
         "instagram",
         (args) => makeLink("https://www.instagram.com/that.ryguy/")
     ),
@@ -114,7 +171,7 @@ let commands = {
     ),
     clear: new Command(
         "clear",
-        "Clear's the terminal's history",
+        "Clears the terminal's history",
         "clear [Limit]",
         commandClear,
         null,
@@ -161,16 +218,17 @@ function commandHelp(args) {
     if (args.length === 0) {
         return "Hello! Here are the available commands:\n" +
             _getHelpSignatures(Object.values(commands)) +
-            "\n\nUse " + makeCode(commands["help"].usage) +" for more details\nUse " + makeCode("help terminal") + " for terminal controls.\n\n"
+            "\n\nUse " + makeCode(commands["help"].usage) + " for more details\nUse " + makeCode("help terminal") + " for terminal controls.";
     } else if (args.length === 1) {
-        let arg = args[0];
+        let arg = args[0].toLowerCase();
         if (arg === "terminal") {
             return "Terminal Controls:\n" +
-            "- Use " + makeCode("Tab") + " or " + makeCode("Enter") + " to choose the autofill\n" +
-            "- Use " + makeCode("ArrowUp") + " and " + makeCode("ArrowDown") + " to change selection";
+                "- Use " + makeCode("Tab") + " or " + makeCode("ArrowRight") + " to accept the active suggestion\n" +
+                "- Use " + makeCode("ArrowUp") + " and " + makeCode("ArrowDown") + " to navigate suggestions or command history\n" +
+                "- Press " + makeCode("Tab") + " on an empty line to browse all commands";
         }
         if (Object.keys(commands).includes(arg)) {
-            let cmd = commands[args[0]];
+            let cmd = commands[arg];
             if (cmd.help_func === null) {
                 return "Command: " +
                     makeCode(cmd.name) +
@@ -180,20 +238,19 @@ function commandHelp(args) {
                 return cmd.help_func(args);
             }
         }
+        return "Unknown topic " + makeCode(arg) + ". Try " + makeCode("help");
     }
+    return "Usage: " + makeCode(commands["help"].usage);
 }
 
 function commandWhoIs(args) {
-    // Pulled from my AboutMe section on my linkedin profile. Would be neat to have it automatically pull from linkedin.com but there's an authwall and
-    // its not really worth devising a solution for that
     return `I'm a Computer Engineering student at the University of Michigan building practical solutions that combine hardware and software. I work as Vice President of Software at Michigan Autonomous Security Team, where I'm leading sensor integration and software architecture for a prototype drone. I've also worked on machine learning fundamentals and built my personal website from scratch.
 
 My technical foundation includes Python, C, C++, C#, and Java, with experience in full-stack development, database design, and embedded systems. I've learned as much from personal projects as I have from coursework. I'm comfortable with both the software side (Git, Docker, PostgreSQL) and the hands-on hardware work (soldering, CNC machines, welding). I am also highly interested in exploring the applications of Computer Engineering in the field of quantum physics and mechanics.
 
 Before university, I was part of my high school's FIRST Robotics team where we won District Champions and multiple awards. I've also done customer-facing work at Target and local businesses, which taught me the importance of clear communication and attention to detail.
 
-I'm always looking to deepen my engineering skills and work on projects that challenge me and have a real impact.`
-    // return "He's just a silly little guy ngl";
+I'm always looking to deepen my engineering skills and work on projects that challenge me and have a real impact.`;
 }
 
 function commandEcho(args) {
@@ -209,14 +266,14 @@ function commandClear(args) {
         let limit = args[0];
         let as_float = parseFloat(limit);
         if (isNaN(as_float) || !Number.isInteger(as_float) || as_float < 0) {
-            return makeCode("clear") + " only takes positive, integer inputs (1, 2, 3, ...)"
+            return makeCode("clear") + " only takes positive, integer inputs (1, 2, 3, ...)";
         } else {
             history.splice(history.length - as_float);
             ignore_next_history = true;
             return "";
         }
     } else {
-        return makeCode("clear") + " only takes one argument"
+        return makeCode("clear") + " only takes one argument";
     }
 }
 
@@ -239,192 +296,295 @@ function _getHelpSignatures(cmds) {
     return sigs.join("\n");
 }
 
-/* terminal stuff */
+/* terminal execution */
 
-function submitCommand() {
+async function submitCommand() {
+    let rawCmd = terminal_text;
     let responseArr = getResponse();
 
     if (!ignore_next_history) {
-        history.push([terminal_text, responseArr, current_history_index]);
+        history.push([rawCmd, responseArr, current_history_index]);
         current_history_index += 1;
     } else {
         ignore_next_history = false;
     }
     terminal_text = "";
+    cmd_history_cursor = null;
+    current_autofill_recs = [];
+    show_autofill = false;
+    user_navigated_autofill = false;
+
+    await tick();
+    scrollTerminalToBottom();
+}
+
+function scrollTerminalToBottom() {
+    const container = document.getElementById("terminal-container");
+    if (container) {
+        container.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
+    } else {
+        window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
+    }
 }
 
 function getResponse() {
-    let args = terminal_text.trim().split(" ");
+    let trimmed = terminal_text.trim();
+    if (trimmed === "") {
+        return "";
+    }
+    let args = trimmed.split(/\s+/);
     let command = args[0].toLowerCase();
 
     let response = commands[command];
 
     if (response === undefined) {
-        if (terminal_text.trim() === "") {
-            return "";
-        }
         return "Unknown command " +
             makeCode(command) +
-            " Try " +
+            ". Try " +
             makeCode("help");
     } else {
-        return response.func(args.splice(1)).trim();
+        return (response.func(args.slice(1)) || "").trim();
     }
 }
 
-/* keyboard handlers */
+/* autocomplete & keyboard handlers */
+
+function applyAutofillSelection(index = autofill_selected_index ?? 0) {
+    if (current_autofill_recs.length === 0) return false;
+    const target = current_autofill_recs[index] || current_autofill_recs[0];
+    if (!target) return false;
+
+    const hasLeadingCmd = terminal_text.includes(" ");
+    if (!hasLeadingCmd) {
+        // Completing primary command
+        const cmdObj = commands[target.value];
+        const hasArgs = cmdObj && cmdObj.rec_pool().length > 0;
+        terminal_text = target.value + (hasArgs ? " " : "");
+    } else {
+        // Completing subcommand/argument
+        const parts = terminal_text.split(" ");
+        parts[parts.length - 1] = target.value;
+        terminal_text = parts.join(" ");
+    }
+
+    user_navigated_autofill = false;
+    updateAutofill(false);
+    focusTerminal();
+    return true;
+}
 
 function updateKeyDown(e) {
-    const ignoredChars = ["Alt", "Meta", "Shift"];
-    
-    if (e.key === "Enter" && (autofill_selected_index === null)) {
+    if (e.key === "Enter") {
         e.preventDefault();
-        submitCommand();
-    } else {
-        let input = document.getElementById("terminal-input");
-        // @ts-ignore
-        let size = input.value.length;
-
-        if (["ArrowRight", "Escape"].includes(e.key)) {
-            // remove selected autofill
-            e.preventDefault();
-            autofill_selected_index = null;
-            Array.prototype.forEach.call(document.getElementsByClassName("autofill-text-rec-highlight"), function(rec_highlight) {
-                rec_highlight.style.visibility = "hidden";
-            });
-        } else if (e.key === "Tab" || e.key === "Enter") {
-            // pressing Enter without a autofill selection is handled above
-            if (autofill_selected_index === null) {
-                autofill_selected_index = 0;
-            }
-            if (current_autofill_recs.length !== 0) {
-                e.preventDefault();
-            } else {
-                return;
-            }
-            let args = terminal_text.split(" ")
-            terminal_text = (args.slice(0, args.length-1).join(" ") + " " + current_autofill_recs[autofill_selected_index]).trim();
-
-            document.getElementById("autofill").style.visibility = "hidden";
-            Array.prototype.forEach.call(document.getElementsByClassName("autofill-text-rec-highlight"), function(rec_highlight) {
-                rec_highlight.style.visibility = "hidden";
-            })
-            autofill_selected_index = null;
-
-        } else if (["ArrowDown", "ArrowUp"].includes(e.key) && current_autofill_recs.length !== 0) {
-            e.preventDefault();
-
-            let min_index = 0;
-            let max_index = current_autofill_recs.length - 1;
-
-            if (e.key === "ArrowDown") {
-                if (autofill_selected_index === null || autofill_selected_index === max_index) {
-                    autofill_selected_index = min_index;
-                } else {
-                    autofill_selected_index += 1;
-                }
-            } else {
-                if (autofill_selected_index === null || autofill_selected_index === min_index) {
-                    autofill_selected_index = max_index;
-                } else {
-                    autofill_selected_index -= 1;
-                }
-            }
-
-            let index = 0;
-
-            /* iterate through highlight elements to update visibility based on selected index */
-            Array.prototype.forEach.call(document.getElementsByClassName("autofill-text-rec-highlight"), function(rec_highlight) {
-                if (index === autofill_selected_index) {
-                    rec_highlight.style.visibility = "visible";
-                } else {
-                    rec_highlight.style.visibility = "hidden";
-                }
-                index += 1;
-            });
-
-        } else if (e.key === "Backspace") {
-            document.getElementById("autofill").style.visibility = "visible";
-            size -= 1;
-        } else if (e.key === "Escape" || e.key === "ArrowRight" || e.key === "ArrowLeft") {
-            autofill_selected_index = null;
-            e.preventDefault();
-        } else if (!ignoredChars.includes(e.key)) {
-            document.getElementById("autofill").style.visibility = "visible";
-            autofill_selected_index = null;
-            size += 1;
+        if (show_autofill && user_navigated_autofill && current_autofill_recs.length > 0) {
+            applyAutofillSelection(autofill_selected_index ?? 0);
         } else {
+            submitCommand();
+        }
+        return;
+    }
+
+    if (e.key === "Tab") {
+        e.preventDefault();
+        if (terminal_text.trim() === "" && (!show_autofill || current_autofill_recs.length === 0)) {
+            // Show all commands when pressing Tab on an empty input
+            updateAutofill(true);
+            user_navigated_autofill = true;
+            tick().then(scrollTerminalToBottom);
+            return;
+        }
+        if (show_autofill && current_autofill_recs.length > 0) {
+            applyAutofillSelection(autofill_selected_index ?? 0);
+        } else {
+            updateAutofill(false);
+        }
+        return;
+    }
+
+    if (e.key === "ArrowRight") {
+        const input = document.getElementById("terminal-input");
+        const atEnd = !input || input.selectionStart === terminal_text.length;
+        if (atEnd && show_autofill && current_autofill_recs.length > 0 && terminal_text.length > 0) {
             e.preventDefault();
+            applyAutofillSelection(autofill_selected_index ?? 0);
+            return;
+        }
+    }
+
+    if (e.key === "Escape") {
+        if (show_autofill) {
+            e.preventDefault();
+            show_autofill = false;
+            user_navigated_autofill = false;
+        }
+        return;
+    }
+
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        if (show_autofill && current_autofill_recs.length > 0) {
+            e.preventDefault();
+            const len = current_autofill_recs.length;
+            if (e.key === "ArrowDown") {
+                if (!user_navigated_autofill) {
+                    user_navigated_autofill = true;
+                    autofill_selected_index = len > 1 ? 1 : 0;
+                } else {
+                    autofill_selected_index = (autofill_selected_index + 1) % len;
+                }
+            } else {
+                user_navigated_autofill = true;
+                autofill_selected_index = (autofill_selected_index - 1 + len) % len;
+            }
+            return;
         }
 
-        input.style.width = size + "ch";
+        // Command history recall when autocomplete is closed
+        const cmdHistory = history.map((h) => h[0]).filter((c) => c && c.trim() !== "");
+        if (cmdHistory.length > 0) {
+            e.preventDefault();
+            if (e.key === "ArrowUp") {
+                if (cmd_history_cursor === null) {
+                    cmd_history_cursor = cmdHistory.length - 1;
+                } else if (cmd_history_cursor > 0) {
+                    cmd_history_cursor -= 1;
+                }
+                terminal_text = cmdHistory[cmd_history_cursor];
+            } else {
+                if (cmd_history_cursor !== null) {
+                    if (cmd_history_cursor < cmdHistory.length - 1) {
+                        cmd_history_cursor += 1;
+                        terminal_text = cmdHistory[cmd_history_cursor];
+                    } else {
+                        cmd_history_cursor = null;
+                        terminal_text = "";
+                    }
+                }
+            }
+        }
+        return;
     }
-    updateAutofill();
 }
 
-function updateKeyUp(e) {
-    let input = document.getElementById("terminal-input");
-    input.style.width = input.value.length + "ch";
-    updateAutofill();
+function handleInput() {
+    cmd_history_cursor = null;
+    user_navigated_autofill = false;
+    updateAutofill(false);
 }
 
-/* autofill */
+/* autofill builder */
 
-function updateAutofill() {
+function getRecDescription(cmdContext, value) {
+    if (!cmdContext) {
+        return commands[value]?.short || "";
+    }
+    if (cmdContext === "help") {
+        if (value === "terminal") return "Keyboard shortcuts & autocomplete controls";
+        return commands[value]?.short || "";
+    }
+    return "";
+}
+
+function buildRecItems(pool, query, cmdContext = null) {
+    const q = (query || "").toLowerCase();
+    const prefixMatches = [];
+    const substringMatches = [];
+
+    for (const item of pool) {
+        const token = item.split(" ")[0];
+        const lower = token.toLowerCase();
+        if (lower === q && cmdContext !== "help") continue;
+        if (q === "" || lower.startsWith(q)) {
+            prefixMatches.push({
+                value: token,
+                matchPrefix: token.slice(0, q.length),
+                rest: token.slice(q.length),
+                isPrefix: true,
+                desc: getRecDescription(cmdContext, token)
+            });
+        } else if (lower.includes(q)) {
+            substringMatches.push({
+                value: token,
+                matchPrefix: "",
+                rest: token,
+                isPrefix: false,
+                desc: getRecDescription(cmdContext, token)
+            });
+        }
+    }
+
+    return prefixMatches.concat(substringMatches);
+}
+
+function updateAutofill(forceShowAll = false) {
+    if (forceShowAll) {
+        current_autofill_recs = buildRecItems(Object.keys(commands), "", null);
+        autofill_selected_index = 0;
+        show_autofill = current_autofill_recs.length > 0;
+        return;
+    }
+
     if (!terminal_text || terminal_text.length === 0) {
         current_autofill_recs = [];
-    } else {
-        let args = terminal_text.split(" ");
-        if (args.length === 1) {
-            /* just general commands */
-            current_autofill_recs = filterAutofillStrings(Object.keys(commands), terminal_text);
-        } else {
-            if (Object.keys(commands).includes(args[0])) {
-                current_autofill_recs = filterAutofillStrings(commands[args[0]].rec_pool(), args[1]);
-            }
-        }
+        show_autofill = false;
+        autofill_selected_index = 0;
+        return;
     }
+
+    const args = terminal_text.split(" ");
+    if (args.length === 1) {
+        current_autofill_recs = buildRecItems(Object.keys(commands), args[0], null);
+    } else if (args.length === 2) {
+        const cmdName = args[0].toLowerCase();
+        if (Object.keys(commands).includes(cmdName)) {
+            const pool = commands[cmdName].rec_pool();
+            if (pool.length > 0 && args[1].toLowerCase() !== pool.find((p) => p.toLowerCase() === args[1].toLowerCase())) {
+                current_autofill_recs = buildRecItems(pool, args[1], cmdName);
+            } else {
+                current_autofill_recs = [];
+            }
+        } else {
+            current_autofill_recs = [];
+        }
+    } else {
+        current_autofill_recs = [];
+    }
+
+    autofill_selected_index = 0;
+    show_autofill = current_autofill_recs.length > 0;
 }
 
-function filterAutofillStrings(pool, test) {
-    return pool.filter((str) => str.split(" ")[0].startsWith(test.toLowerCase()) && str !== test);
-}
+let ghostSuffix = $derived.by(() => {
+    if (!is_focused || !show_autofill || current_autofill_recs.length === 0 || !terminal_text) {
+        return "";
+    }
+    const active = current_autofill_recs[autofill_selected_index ?? 0];
+    if (!active || !active.isPrefix) return "";
+    return active.rest;
+});
 
-/* terminal */
+/* terminal focus */
 
 function focusTerminal() {
-    document.getElementById("terminal-input").focus();
+    document.getElementById("terminal-input")?.focus();
 }
 
 function enableInput() {
-    document.getElementById("cursor").style.visibility = "visible";
-    document.getElementById("autofill").style.visibility = "visible";
-    document.getElementById("default-text").innerHTML = "";
+    is_focused = true;
+    if (current_autofill_recs.length > 0) {
+        show_autofill = true;
+    }
 }
 
 function disableInput() {
-    let autofillRect = document.getElementById("autofill")?.getBoundingClientRect();
-    let isAutofillClick = (
-        cursor_x >= autofillRect.left &&
-        cursor_x <= (autofillRect.left + autofillRect.width)
-    ) && (
-        cursor_y >= autofillRect.top &&
-        cursor_y <= (autofillRect.top + autofillRect.height)
-    )
-
-    if (isAutofillClick) {
-        return;
-    }
-    document.getElementById("cursor").style.visibility = "hidden";
-    document.getElementById("autofill").style.visibility = "hidden";
-    autofill_selected_index = null;
-    document.getElementById("default-text").innerHTML = (history.length !== 0 || terminal_text !== "") ? "" : "try typing here...";
+    is_focused = false;
+    show_autofill = false;
+    user_navigated_autofill = false;
 }
 
-/* utils for other stuff */
+/* utils */
 
 function typewrite(text, element, delay = 10, reset = false, on_finish = () => {}, on_finish_delay = 0) {
-    /* text is an array? NO MORE */
+    if (!element) return;
     if (reset) {
         element.innerHTML = "";
     }
@@ -441,11 +601,11 @@ function typewrite(text, element, delay = 10, reset = false, on_finish = () => {
 }
 
 function makeCode(text) {
-    return "<span class=fmt-code>" + sanitize(text) + "</span>"
+    return "<span class=fmt-code>" + sanitize(text) + "</span>";
 }
 
-function makeLink(url, text="") {
-    return "<a class=fmt-link href=" + sanitize(url) + " target=_blank>" + sanitize(text? text : url) + "</a>"
+function makeLink(url, text = "") {
+    return "<a class=fmt-link href=" + sanitize(url) + " target=_blank>" + sanitize(text ? text : url) + "</a>";
 }
 
 function map(func, iter) {
@@ -462,14 +622,20 @@ function sanitize(html) {
 }
 
 function getCat() {
-    return cats[Math.floor(Math.random() * cats.length)];
+    if (cats.length <= 1) return cats[0];
+    let idx = Math.floor(Math.random() * cats.length);
+    while (idx === last_cat_index) {
+        idx = Math.floor(Math.random() * cats.length);
+    }
+    last_cat_index = idx;
+    return cats[idx];
 }
 
 function getIntroText() {
-    let t = (getCat() + "\n\nhi, im ryan. i like making stuff. try the ").split("").concat(makeCode("help")).concat(" command, or ".split("")).concat(makeCode("home")).concat(" to go back to where you were.\nuse arrow keys + [TAB] to use autocomplete".split(""));
+    let t = (getCat() + "\n\nhi, im ryan. i like making stuff. try the ").split("").concat(makeCode("help")).concat(" command, or ".split("")).concat(makeCode("whois")).concat(" to learn more about me.\npress ".split("")).concat(makeCode("Tab")).concat(" to autocomplete commands (or ".split("")).concat(makeCode("↑")).concat(" / ".split("")).concat(makeCode("↓")).concat(" to navigate).".split(""));
     let url = URL.parse(window.location.href);
     if (url?.pathname === "/terminal") {
-        t = t.concat("\nyou can also use the ".split("")).concat(makeCode("home")).concat(" command to go back to my main site".split(""))
+        t = t.concat("\nyou can also use the ".split("")).concat(makeCode("home")).concat(" command to go back to my main site.".split(""));
     }
     return t;
 }
@@ -481,78 +647,55 @@ function writeIntroText(introText: string[], reset = false) {
         0,
         reset,
         () => {
-            document.getElementById("terminal-input")?.focus();
-            //@ts-ignore
-            document.getElementById("input-container").style.visibility = "visible";
+            const inputContainer = document.getElementById("input-container");
+            if (inputContainer) {
+                inputContainer.style.visibility = "visible";
+            }
             enableInput();
             focusTerminal();
         },
-        350
-    )
+        200
+    );
 }
 
 onMount(() => {
     let introText = getIntroText();
     writeIntroText(introText);
-
-    document.onmousemove = (event) => {
-        cursor_x = event.pageX;
-        cursor_y = event.pageY;
-    }
 });
-
 </script>
 
 <!-- snippets -->
 
 {#snippet prefix(is_main)}
-    <span class="prefix">
-        <pre class="inline" id={is_main? "current-prefix" : ""}>guest@peckhamr.com> </pre>
-    </span>
+    <span class="prefix" id={is_main ? "current-prefix" : ""}>guest@peckhamr.com&gt;</span>
 {/snippet}
 
-{#snippet autofillRec(rec)}
-    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <li class="autofill-text-rec inline autofill-component" 
-        onclick={ () => { 
-            focusTerminal(); 
-            let args = terminal_text.split(" ");
-            args[args.length-1] = rec;
-            terminal_text = args.join(" "); 
-            let input = document.getElementById("terminal-input");
-
-            //@ts-ignore
-            input.style.width = terminal_text.length + "ch";
-            updateAutofill();
-        } }
-    >
-        <div class="autofill-text-rec-highlight" style="visibility: hidden;"></div>
-        <span style="color:white">{
-            rec.slice(0, terminal_text.split(" ")[terminal_text.split(" ").length - 1].length)
-        }
-        </span>
-        <span>
-            {rec.slice(terminal_text.split(" ")[terminal_text.split(" ").length - 1].length)}
-        </span>
-    </li>
-{/snippet}
-
-<!-- template -->
-
-<div id=main-terminal>
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<!-- svelte-ignore a11y_click_events_have_key_events -->
+<div id="main-terminal" onclick={() => {
+    if (!window.getSelection()?.toString()) {
+        focusTerminal();
+    }
+}}>
     <!-- animation/intro Text -->
-    <pre id=animation></pre>
+    <pre id="animation"></pre>
 
     <!-- command history -->
-    {#each history as h}
-        <div class="input-row">
-            {@render prefix(false)}
-            <div class="line history-input">{h[0]}</div>
+    {#if history.length > 0}
+        <div class="history-list">
+            {#each history as h (h[2])}
+                <div class="history-entry">
+                    <div class="input-row history-cmd-row">
+                        {@render prefix(false)}
+                        <div class="history-input">{h[0]}</div>
+                    </div>
+                    {#if h[1]}
+                        <pre class="history-text" data-history-index={h[2]}>{@html h[1]}</pre>
+                    {/if}
+                </div>
+            {/each}
         </div>
-        <pre class="history-text inline" data-history-index={h[2]}>{@html h[1]}</pre>
-        <br />
-    {/each}
+    {/if}
 
     <!-- current input -->
     <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -560,112 +703,193 @@ onMount(() => {
     <div id="input-container">
         <div class="input-row current-input-row" onclick={focusTerminal}>
             {@render prefix(true)}
-            <span id="default-text"></span>
-            
+
             <div id="secondary-input">
-                <div id=entry>
-                    <input 
-                        class="line inline" id="terminal-input" autocomplete="off" autocapitalize="off"
-                        onkeydown={updateKeyDown} onkeyup={updateKeyUp} 
-                        onfocusout={disableInput} onfocusin={enableInput}
+                <div id="entry">
+                    {#if !is_focused && history.length === 0 && terminal_text === ""}
+                        <span id="default-text">try typing 'help' or press Tab...</span>
+                    {/if}
+                    <input
+                        class="line inline"
+                        id="terminal-input"
+                        autocomplete="off"
+                        autocapitalize="off"
+                        spellcheck="false"
+                        style:width="{terminal_text.length}ch"
+                        onkeydown={updateKeyDown}
+                        oninput={handleInput}
+                        onfocusout={disableInput}
+                        onfocusin={enableInput}
                         bind:value={terminal_text}
                     />
-                    <span id="cursor"></span>
+                    <span id="cursor" class:cursor-visible={is_focused}></span>
+                    {#if ghostSuffix}
+                        <span class="ghost-completion">{ghostSuffix}<span class="ghost-tab-badge">Tab</span></span>
+                    {/if}
                 </div>
-                
+
                 <!-- autofill suggestions -->
-                <ul id=autofill class="inline autofill-component">
-                    {#each current_autofill_recs as rec}
-                        {@render autofillRec(rec)}
-                    {/each}
-                </ul>
+                {#if show_autofill && current_autofill_recs.length > 0}
+                    <div class="autofill-popover">
+                        <div class="autofill-header">
+                            <span>Suggestions</span>
+                            <span class="autofill-hint"><kbd>Tab</kbd> complete · <kbd>↑↓</kbd> select</span>
+                        </div>
+                        <ul id="autofill" class="inline autofill-component">
+                            {#each current_autofill_recs as rec, idx}
+                                <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+                                <li
+                                    class="autofill-text-rec"
+                                    class:selected={idx === autofill_selected_index}
+                                    onmouseenter={() => {
+                                        autofill_selected_index = idx;
+                                    }}
+                                    onmousedown={(e) => {
+                                        e.preventDefault();
+                                        applyAutofillSelection(idx);
+                                    }}
+                                >
+                                    <span class="autofill-cmd-name">
+                                        <span class="autofill-match">{rec.matchPrefix}</span><span>{rec.rest}</span>
+                                    </span>
+                                    {#if rec.desc}
+                                        <span class="autofill-desc">{rec.desc}</span>
+                                    {/if}
+                                </li>
+                            {/each}
+                        </ul>
+                    </div>
+                {/if}
             </div>
         </div>
     </div>
 
-    <div id=screen-spacer></div>
+    <div id="screen-spacer"></div>
 </div>
 
 <style>
-
-/* page layout */
-
 #main-terminal {
-    padding: 1%;
+    padding: 0;
     margin: 0;
+    width: 100%;
+    min-height: 100%;
+    box-sizing: border-box;
     display: flex;
     flex-direction: column;
-    background-color: #242426;
-    font-family: monospace !important;
+    gap: 0.75rem;
+    background-color: transparent;
+    color: var(--mp-text, #2d2a2e);
+    font-family: var(--mono-font, monospace) !important;
     font-size: 14px !important;
+    line-height: 1.6;
+    transition: background-color 0.18s ease, color 0.18s ease;
 }
 
 #screen-spacer {
-    min-height: 5vh;
-    width: 90vw;
+    min-height: 2.5rem;
+    width: 100%;
 }
 
-/* layout */
+/* Intro / ASCII Cat */
+#animation {
+    margin: 0;
+    padding: 0 0 0.35rem 0;
+    color: var(--mp-text, #2d2a2e);
+    font-family: var(--mono-font, monospace);
+    line-height: 1.5;
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+    border-bottom: 1px dashed var(--mp-border);
+}
+
+/* Command History */
+.history-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.9rem;
+    padding-top: 0.2rem;
+}
+
+.history-entry {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+}
 
 .input-row {
     display: flex;
     flex-direction: row;
+    align-items: flex-start;
+    gap: 0.65rem;
     border: none;
     outline: none;
-    color: #efa368;
+    color: var(--mp-orange, #fc9867);
+}
+
+.current-input-row {
+    padding: 0.2rem 0;
+}
+
+.prefix {
+    flex-shrink: 0;
+    color: var(--mp-green, #a9dc76);
+    font-weight: 600;
+    user-select: none;
+    line-height: 1.55;
+}
+
+.history-input {
+    flex: 1;
+    font-weight: 500;
+    line-height: 1.55;
+    word-break: break-all;
+}
+
+.history-text {
+    margin: 0;
+    padding: 0.25rem 0 0.25rem 0.85rem;
+    border-left: 2px solid var(--mp-border-strong);
+    color: var(--mp-text, #2d2a2e);
+    font-family: var(--mono-font, monospace);
+    line-height: 1.65;
+    overflow-wrap: break-word;
+    white-space: pre-wrap;
+}
+
+/* Input Area */
+#input-container {
+    visibility: hidden;
 }
 
 #secondary-input {
     display: flex;
     flex-direction: column;
+    flex: 1;
+    min-width: 0;
 }
 
 #entry {
     display: flex;
     flex-direction: row;
-    align-items: top;
-}
-
-#input-container {
-    visibility: hidden;
-}
-
-/* prefix */
-
-.prefix {
-    flex-shrink: 0;
-    color: rgb(155, 232, 177);
-    user-select: none;
-    display: flex;
-}
-
-/* text display */
-.history-text {
-    overflow-wrap: break-word;
-    white-space: pre-wrap;
-}
-.history-text,
-#animation {
-    color: white;
-}
-
-.history-input {
-    flex: 1;
+    align-items: center;
+    min-height: 1.55em;
+    flex-wrap: nowrap;
 }
 
 #default-text {
-    color: #ffffff80;
+    color: var(--mp-text-muted, #939293);
     user-select: none;
+    font-style: italic;
+    margin-right: 0.35rem;
 }
-
-/* input */
 
 .line {
     width: 0ch;
     border: none;
     outline: none;
-    color: inherit;
-    background-color: inherit;
+    color: var(--mp-orange, #fc9867);
+    font-weight: 500;
+    background-color: transparent;
 }
 
 .inline {
@@ -675,68 +899,157 @@ onMount(() => {
 
 #terminal-input {
     caret-color: transparent;
-    font-family: monospace !important;
-    top: -1px;
-    position: relative;
+    font-family: var(--mono-font, monospace) !important;
+    font-size: 14px !important;
+    line-height: 1.55;
+    margin: 0;
+    padding: 0;
+    background-color: transparent;
 }
 
-/* cusrsor */
-
+/* Cursor & Ghost Completion */
 #cursor {
-    width: 1ch;
-    height: 18px;
+    width: 0.9ch;
+    height: 1.15em;
     display: inline-block;
-    background-color: white;
-    animation-name: cursorBlink;
-    animation-duration: 1s;
-    animation-iteration-count: infinite;
+    background-color: var(--mp-text, #fcfcfa);
+    vertical-align: middle;
+    visibility: hidden;
+    animation: cursorBlink 1s steps(2, start) infinite;
+    border-radius: 1px;
+}
+
+#cursor.cursor-visible {
+    visibility: visible;
 }
 
 @keyframes cursorBlink {
-    from { background-color: white; }
-    to { background-color: #ffffff00; }
+    0%, 49% { opacity: 1; }
+    50%, 100% { opacity: 0; }
 }
 
-/* autofill */
+.ghost-completion {
+    color: var(--mp-text-faint, #918889);
+    user-select: none;
+    pointer-events: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+}
+
+.ghost-tab-badge {
+    font-size: 0.68rem;
+    padding: 0.04rem 0.32rem;
+    border-radius: 3px;
+    border: 1px solid var(--mp-border);
+    background-color: var(--mp-bg-subtle);
+    color: var(--mp-text-muted);
+    line-height: 1.3;
+}
+
+/* Autocomplete Popover */
+.autofill-popover {
+    margin-top: 0.45rem;
+    max-width: 34rem;
+    background-color: var(--mp-bg);
+    border: 1px solid var(--mp-border-strong);
+    border-radius: 6px;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.12);
+    overflow: hidden;
+}
+
+.autofill-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.32rem 0.7rem;
+    background-color: var(--mp-bg-subtle);
+    border-bottom: 1px solid var(--mp-border);
+    font-size: 0.72rem;
+    color: var(--mp-text-muted);
+    user-select: none;
+}
+
+.autofill-hint kbd {
+    font-family: var(--mono-font, monospace);
+    font-size: 0.68rem;
+    padding: 0.05rem 0.3rem;
+    border-radius: 3px;
+    border: 1px solid var(--mp-border-strong);
+    background-color: var(--mp-bg-elevated);
+    color: var(--mp-text-body);
+}
 
 #autofill {
     display: flex;
     flex-direction: column;
-    justify-content: flex-start;
-    position: relative;
     list-style-type: none;
-    visibility: "hidden";
-    color: #ffffff80;
-    margin-top: .1ch;
-    left: -5px; /* adjust for highlight's width */
+    margin: 0;
+    padding: 0.25rem;
+    max-height: 13.5rem;
+    overflow-y: auto;
 }
 
 .autofill-text-rec {
     display: flex;
-    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.34rem 0.6rem;
+    border-radius: 4px;
+    border-left: 3px solid transparent;
+    color: var(--mp-text-body);
+    cursor: pointer;
+    transition: background-color 0.1s ease, border-color 0.1s ease;
 }
 
-.autofill-text-rec-highlight {
-    flex: 0;
-    min-width: 5px;
-    min-height: 100%;
-    background-color: #efa368;
+.autofill-text-rec.selected {
+    background-color: var(--mp-bg-subtle);
+    border-left-color: var(--mp-orange);
 }
 
+.autofill-cmd-name {
+    font-weight: 500;
+    color: var(--mp-text);
+    flex-shrink: 0;
+}
 
+.autofill-match {
+    color: var(--mp-orange);
+    font-weight: 700;
+}
+
+.autofill-desc {
+    font-size: 0.76rem;
+    color: var(--mp-text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Formatted Inline Spans */
 :global(.fmt-code) {
-    background-color: #ffffff1a;
-    padding-left: .5ch;
-    padding-right: .5ch;
-    border-radius: .35ch;
+    background-color: var(--mp-bg-subtle, #2d2a2e);
+    color: var(--mp-red, #ff6188);
+    border: 1px solid var(--mp-border);
+    padding: 0.08rem 0.42rem;
+    margin: 0 0.08rem;
+    border-radius: 4px;
+    font-weight: 500;
 }
 
 :global(.fmt-link) {
-    color: #de81c7;
+    color: var(--mp-purple, #ab9df2);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+}
+
+:global(.fmt-link:hover) {
+    color: var(--mp-red, #ff6188);
 }
 
 ::selection {
-    color: #2c2c2c;
-    background-color: #ffffff;
+    color: var(--mp-bg, #221f22);
+    background-color: var(--mp-text, #fcfcfa);
 }
 </style>

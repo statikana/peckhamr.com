@@ -55,6 +55,24 @@
 	let activeSrt = $state('');
 	let activeVtt = $state('');
 	let activeGuitarTab = $state('');
+	let theme = $state<'light' | 'dark'>('light');
+
+	function applyTheme(next: 'light' | 'dark') {
+		theme = next === 'dark' ? 'dark' : 'light';
+		if (typeof document !== 'undefined') {
+			document.documentElement.setAttribute('data-theme', theme);
+		}
+		try {
+			localStorage.setItem('peckhamr-theme', theme);
+		} catch {}
+		if (activeTab === 'audio' && currentFile) {
+			drawAudioWaveform(currentFile);
+		}
+	}
+
+	function toggleTheme() {
+		applyTheme(theme === 'light' ? 'dark' : 'light');
+	}
 
 	// Mic / Camera capture inside converter
 	let isRecordingAudio = $state(false);
@@ -89,6 +107,16 @@
 	let photoStripExif = $state(true);
 	let photoTranscribe = $state(false);
 	let photoTranscribeHint = $state('');
+
+	// PDF Input & Output options
+	let pdfTotalPages = $state(0);
+	let pdfPreviewPage = $state(1);
+	let pdfPageMode = $state<'all' | 'current' | 'stitch' | 'range'>('all');
+	let pdfPageRange = $state('');
+	let pdfDpi = $state(200);
+	let pdfPageLayout = $state<'fit' | 'letter' | 'a4'>('fit');
+	let pdfMergeQueue = $state(true);
+	let pdfLoadingPreview = $state(false);
 
 	// VIDEO options
 	let videoFormat = $state('mp4');
@@ -137,6 +165,12 @@
 	let waveformCanvasEl: HTMLCanvasElement | undefined = $state();
 
 	let currentFile = $derived(filesQueue[selectedIdx] || null);
+	let isPdfInput = $derived(
+		currentFile
+			? (currentFile.type || '').toLowerCase() === 'application/pdf' ||
+					currentFile.name.toLowerCase().endsWith('.pdf')
+			: false
+	);
 
 	let cssFilterPreview = $derived.by(() => {
 		if (activeTab !== 'photo') return '';
@@ -184,6 +218,12 @@
 	}
 
 	onMount(() => {
+		try {
+			const saved = localStorage.getItem('peckhamr-theme');
+			applyTheme(saved === 'dark' ? 'dark' : 'light');
+		} catch {
+			applyTheme('light');
+		}
 		pollBackendStatus();
 		const timer = setInterval(pollBackendStatus, 5000);
 
@@ -198,6 +238,78 @@
 			window.removeEventListener('paste', onPaste);
 		};
 	});
+
+	function isFilePdf(file: File): boolean {
+		const t = (file.type || '').toLowerCase();
+		const ext = file.name.split('.').pop()?.toLowerCase() || '';
+		return t === 'application/pdf' || ext === 'pdf';
+	}
+
+	let _pdfJsPromise: Promise<any> | null = null;
+	async function getPdfJs(): Promise<any> {
+		if (!_pdfJsPromise) {
+			_pdfJsPromise = (async () => {
+				const pdfjs = await import(
+					/* @vite-ignore */ 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.min.mjs'
+				);
+				pdfjs.GlobalWorkerOptions.workerSrc =
+					'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs';
+				return pdfjs;
+			})();
+		}
+		return _pdfJsPromise;
+	}
+
+	async function renderPdfPageToCanvas(
+		pdfDoc: any,
+		pageNum: number,
+		scale: number
+	): Promise<HTMLCanvasElement> {
+		const page = await pdfDoc.getPage(Math.max(1, Math.min(pdfDoc.numPages, pageNum)));
+		const viewport = page.getViewport({ scale });
+		const canvas = document.createElement('canvas');
+		canvas.width = Math.max(1, Math.round(viewport.width));
+		canvas.height = Math.max(1, Math.round(viewport.height));
+		const ctx = canvas.getContext('2d')!;
+		ctx.fillStyle = '#ffffff';
+		ctx.fillRect(0, 0, canvas.width, canvas.height);
+		await page.render({ canvasContext: ctx, viewport }).promise;
+		return canvas;
+	}
+
+	async function loadPdfPreview(file: File, pageNum = 1) {
+		pdfLoadingPreview = true;
+		try {
+			const pdfjs = await getPdfJs();
+			const buf = await file.arrayBuffer();
+			const pdfDoc = await pdfjs.getDocument({ data: buf }).promise;
+			pdfTotalPages = pdfDoc.numPages;
+			const targetPage = Math.max(1, Math.min(pdfDoc.numPages, pageNum));
+			pdfPreviewPage = targetPage;
+			const canvas = await renderPdfPageToCanvas(pdfDoc, targetPage, pdfDpi / 72);
+			mediaWidth = canvas.width;
+			mediaHeight = canvas.height;
+			photoCustomW = canvas.width;
+			photoCustomH = canvas.height;
+			const blob: Blob | null = await new Promise((r) => canvas.toBlob(r, 'image/png'));
+			if (blob) {
+				if (previewUrl) URL.revokeObjectURL(previewUrl);
+				previewUrl = URL.createObjectURL(blob);
+			}
+		} catch (err: any) {
+			statusMsg = `pdf preview error: ${err?.message || err}`;
+		} finally {
+			pdfLoadingPreview = false;
+		}
+	}
+
+	async function stepPdfPreviewPage(delta: number) {
+		if (!currentFile || !isFilePdf(currentFile) || pdfTotalPages <= 1) return;
+		const next = Math.max(1, Math.min(pdfTotalPages, pdfPreviewPage + delta));
+		if (next !== pdfPreviewPage) {
+			await loadPdfPreview(currentFile, next);
+		}
+	}
 
 	function detectMediaKind(file: File): MediaKind {
 		const t = (file.type || '').toLowerCase();
@@ -224,14 +336,22 @@
 		const f = filesQueue[idx];
 		if (!f) return;
 		if (previewUrl) URL.revokeObjectURL(previewUrl);
-		previewUrl = URL.createObjectURL(f);
+		previewUrl = '';
 		const kind = detectMediaKind(f);
 		activeTab = kind;
 		mediaWidth = 0;
 		mediaHeight = 0;
 		mediaDuration = 0;
+		pdfTotalPages = 0;
+		pdfPreviewPage = 1;
 
-		if (kind === 'photo') {
+		if (isFilePdf(f)) {
+			if (photoFormat === 'pdf') {
+				photoFormat = 'png';
+			}
+			loadPdfPreview(f, 1);
+		} else if (kind === 'photo') {
+			previewUrl = URL.createObjectURL(f);
 			const img = new Image();
 			img.onload = () => {
 				mediaWidth = img.naturalWidth;
@@ -240,8 +360,11 @@
 				photoCustomH = img.naturalHeight;
 			};
 			img.src = previewUrl;
-		} else if (kind === 'audio') {
-			drawAudioWaveform(f);
+		} else {
+			previewUrl = URL.createObjectURL(f);
+			if (kind === 'audio') {
+				drawAudioWaveform(f);
+			}
 		}
 	}
 
@@ -258,9 +381,12 @@
 				if (!ctx) return;
 				const w = (waveformCanvasEl.width = waveformCanvasEl.clientWidth || 500);
 				const h = (waveformCanvasEl.height = 72);
-				ctx.fillStyle = '#09090b';
+				const styles = getComputedStyle(document.documentElement);
+				const bgColor = styles.getPropertyValue('--mp-bg').trim() || (theme === 'dark' ? '#19181a' : '#faf4f2');
+				const strokeColor = styles.getPropertyValue('--mp-green').trim() || (theme === 'dark' ? '#a9dc76' : '#218859');
+				ctx.fillStyle = bgColor;
 				ctx.fillRect(0, 0, w, h);
-				ctx.strokeStyle = '#9ffdd8';
+				ctx.strokeStyle = strokeColor;
 				ctx.lineWidth = 1.2;
 				ctx.beginPath();
 				const step = Math.max(1, Math.floor(raw.length / w));
@@ -409,12 +535,12 @@
 		}
 	}
 
-	// Browser-side Photo Conversion (instant fallback & zero-latency)
-	async function convertPhotoInBrowser(file: File): Promise<JobResult> {
-		const t0 = performance.now();
-		const bitmap = await createImageBitmap(file);
-		let srcW = bitmap.width;
-		let srcH = bitmap.height;
+	function applyPhotoAdjustmentsToCanvas(
+		source: ImageBitmap | HTMLCanvasElement,
+		allowCustomDims = true
+	): HTMLCanvasElement {
+		const srcW = source.width;
+		const srcH = source.height;
 
 		// Aspect ratio crop calculation
 		let cropX = 0;
@@ -444,7 +570,12 @@
 		// Target dimensions
 		let outW = cropW;
 		let outH = cropH;
-		if (photoCustomW > 0 && photoCustomH > 0 && (photoCustomW !== mediaWidth || photoCustomH !== mediaHeight)) {
+		if (
+			allowCustomDims &&
+			photoCustomW > 0 &&
+			photoCustomH > 0 &&
+			(photoCustomW !== mediaWidth || photoCustomH !== mediaHeight)
+		) {
 			outW = photoCustomW;
 			outH = photoCustomH;
 		} else if (photoMaxDim > 0 && Math.max(outW, outH) > photoMaxDim) {
@@ -457,7 +588,7 @@
 			outH = Math.max(1, Math.round(outH * s));
 		}
 
-		const totalRot = ((photoRotateDeg + photoFineAngle) % 360 + 360) % 360;
+		const totalRot = (((photoRotateDeg + photoFineAngle) % 360) + 360) % 360;
 		const swapDims = totalRot === 90 || totalRot === 270;
 		const canvasW = swapDims ? outH : outW;
 		const canvasH = swapDims ? outW : outH;
@@ -477,8 +608,188 @@
 		ctx.translate(canvasW / 2, canvasH / 2);
 		if (totalRot !== 0) ctx.rotate((totalRot * Math.PI) / 180);
 		ctx.scale(photoFlipH ? -1 : 1, photoFlipV ? -1 : 1);
-		ctx.drawImage(bitmap, cropX, cropY, cropW, cropH, -outW / 2, -outH / 2, outW, outH);
+		ctx.drawImage(source, cropX, cropY, cropW, cropH, -outW / 2, -outH / 2, outW, outH);
 		ctx.restore();
+		ctx.filter = 'none';
+
+		if (photoAutocontrast) {
+			const imgData = ctx.getImageData(0, 0, canvasW, canvasH);
+			const d = imgData.data;
+			let minLum = 255;
+			let maxLum = 0;
+			for (let i = 0; i < d.length; i += 4) {
+				const lum = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+				if (lum < minLum) minLum = lum;
+				if (lum > maxLum) maxLum = lum;
+			}
+			const span = Math.max(1, maxLum - minLum);
+			if (span < 250) {
+				const scale = 255 / span;
+				for (let i = 0; i < d.length; i += 4) {
+					d[i] = Math.max(0, Math.min(255, (d[i] - minLum) * scale));
+					d[i + 1] = Math.max(0, Math.min(255, (d[i + 1] - minLum) * scale));
+					d[i + 2] = Math.max(0, Math.min(255, (d[i + 2] - minLum) * scale));
+				}
+				ctx.putImageData(imgData, 0, 0);
+			}
+		}
+
+		return canvas;
+	}
+
+	function buildPdfFromCanvases(
+		canvases: HTMLCanvasElement[],
+		pageLayout: 'fit' | 'letter' | 'a4',
+		qualityPct: number
+	): Blob {
+		const enc = new TextEncoder();
+		const q = Math.max(0.1, Math.min(1.0, qualityPct / 100));
+
+		interface PageAsset {
+			jpegBytes: Uint8Array;
+			imgW: number;
+			imgH: number;
+			pageW: number;
+			pageH: number;
+			drawW: number;
+			drawH: number;
+			offX: number;
+			offY: number;
+		}
+
+		const pages: PageAsset[] = canvases.map((srcCanvas) => {
+			// Ensure white background before JPEG encode
+			const rgbCanvas = document.createElement('canvas');
+			rgbCanvas.width = srcCanvas.width;
+			rgbCanvas.height = srcCanvas.height;
+			const rctx = rgbCanvas.getContext('2d')!;
+			rctx.fillStyle = '#ffffff';
+			rctx.fillRect(0, 0, rgbCanvas.width, rgbCanvas.height);
+			rctx.drawImage(srcCanvas, 0, 0);
+
+			const dataUrl = rgbCanvas.toDataURL('image/jpeg', q);
+			const b64 = dataUrl.split(',')[1] || '';
+			const binStr = atob(b64);
+			const jpegBytes = new Uint8Array(binStr.length);
+			for (let i = 0; i < binStr.length; i++) {
+				jpegBytes[i] = binStr.charCodeAt(i);
+			}
+
+			const imgW = rgbCanvas.width;
+			const imgH = rgbCanvas.height;
+			let pageW = Math.max(1, Number((imgW * 0.75).toFixed(2)));
+			let pageH = Math.max(1, Number((imgH * 0.75).toFixed(2)));
+			let drawW = pageW;
+			let drawH = pageH;
+			let offX = 0;
+			let offY = 0;
+
+			if (pageLayout === 'letter' || pageLayout === 'a4') {
+				const baseW = pageLayout === 'letter' ? 612 : 595.28;
+				const baseH = pageLayout === 'letter' ? 792 : 841.89;
+				const landscape = imgW > imgH;
+				pageW = landscape ? baseH : baseW;
+				pageH = landscape ? baseW : baseH;
+				const margin = 18;
+				const availW = pageW - margin * 2;
+				const availH = pageH - margin * 2;
+				const scale = Math.min(availW / Math.max(1, imgW), availH / Math.max(1, imgH));
+				drawW = Number((imgW * scale).toFixed(2));
+				drawH = Number((imgH * scale).toFixed(2));
+				offX = Number(((pageW - drawW) / 2).toFixed(2));
+				offY = Number(((pageH - drawH) / 2).toFixed(2));
+			}
+
+			return { jpegBytes, imgW, imgH, pageW, pageH, drawW, drawH, offX, offY };
+		});
+
+		const chunks: Uint8Array[] = [];
+		let byteOffset = 0;
+		const pushBytes = (arr: Uint8Array) => {
+			chunks.push(arr);
+			byteOffset += arr.byteLength;
+		};
+		const pushStr = (s: string) => pushBytes(enc.encode(s));
+
+		// PDF Header with binary comment marker
+		pushBytes(new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34, 0x0a, 0x25, 0xe2, 0xe3, 0xcf, 0xd3, 0x0a]));
+
+		const totalObjects = 2 + pages.length * 3;
+		const offsets = new Array<number>(totalObjects + 1).fill(0);
+
+		// Object 1: Catalog
+		offsets[1] = byteOffset;
+		pushStr('1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n');
+
+		// Object 2: Pages
+		const kidsRefs = pages.map((_, idx) => `${3 + idx * 3} 0 R`).join(' ');
+		offsets[2] = byteOffset;
+		pushStr(`2 0 obj\n<< /Type /Pages /Kids [ ${kidsRefs} ] /Count ${pages.length} >>\nendobj\n`);
+
+		// Per-page objects: Page (3 + 3i), Contents (4 + 3i), Image XObject (5 + 3i)
+		pages.forEach((p, idx) => {
+			const pageObjId = 3 + idx * 3;
+			const contentObjId = 4 + idx * 3;
+			const imgObjId = 5 + idx * 3;
+
+			offsets[pageObjId] = byteOffset;
+			pushStr(
+				`${pageObjId} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [ 0 0 ${p.pageW} ${p.pageH} ] /Resources << /XObject << /Im0 ${imgObjId} 0 R >> >> /Contents ${contentObjId} 0 R >>\nendobj\n`
+			);
+
+			const contentStream = `q\n${p.drawW} 0 0 ${p.drawH} ${p.offX} ${p.offY} cm\n/Im0 Do\nQ\n`;
+			const contentBytes = enc.encode(contentStream);
+			offsets[contentObjId] = byteOffset;
+			pushStr(`${contentObjId} 0 obj\n<< /Length ${contentBytes.byteLength} >>\nstream\n`);
+			pushBytes(contentBytes);
+			pushStr('\nendstream\nendobj\n');
+
+			offsets[imgObjId] = byteOffset;
+			pushStr(
+				`${imgObjId} 0 obj\n<< /Type /XObject /Subtype /Image /Width ${p.imgW} /Height ${p.imgH} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${p.jpegBytes.byteLength} >>\nstream\n`
+			);
+			pushBytes(p.jpegBytes);
+			pushStr('\nendstream\nendobj\n');
+		});
+
+		const xrefOffset = byteOffset;
+		pushStr(`xref\n0 ${totalObjects + 1}\n0000000000 65535 f \n`);
+		for (let id = 1; id <= totalObjects; id++) {
+			pushStr(`${String(offsets[id]).padStart(10, '0')} 00000 n \n`);
+		}
+		pushStr(
+			`trailer\n<< /Size ${totalObjects + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`
+		);
+
+		return new Blob(chunks, { type: 'application/pdf' });
+	}
+
+	async function canvasToJobResult(
+		canvas: HTMLCanvasElement,
+		inputName: string,
+		origSize: number,
+		stemSuffix: string,
+		t0: number,
+		engineLabel = 'browser-canvas'
+	): Promise<JobResult> {
+		const stem = inputName.replace(/\.[^.]+$/, '');
+		if (photoFormat === 'pdf') {
+			const pdfBlob = buildPdfFromCanvases([canvas], pdfPageLayout, photoQuality);
+			const url = URL.createObjectURL(pdfBlob);
+			const outName = `${stem}${stemSuffix}.pdf`;
+			return {
+				id: `pdf_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+				inputName,
+				outputName: outName,
+				mediaType: 'photo',
+				origSize,
+				outSize: pdfBlob.size,
+				dimensions: `${canvas.width}x${canvas.height} (PDF)`,
+				downloadUrl: url,
+				elapsedSec: Number(((performance.now() - t0) / 1000).toFixed(2)),
+				engine: `${engineLabel} (pdf)`
+			};
+		}
 
 		const mimeMap: Record<string, string> = {
 			jpg: 'image/jpeg',
@@ -486,27 +797,196 @@
 			webp: 'image/webp',
 			avif: 'image/avif',
 			ico: 'image/png',
-			bmp: 'image/bmp'
+			bmp: 'image/bmp',
+			tiff: 'image/png',
+			gif: 'image/png'
 		};
 		const mime = mimeMap[photoFormat] || 'image/jpeg';
 		const blob: Blob = await new Promise((resolve) =>
 			canvas.toBlob((b) => resolve(b || new Blob()), mime, photoQuality / 100)
 		);
 		const url = URL.createObjectURL(blob);
-		const stem = file.name.replace(/\.[^.]+$/, '');
-		const outName = `${stem}_${canvasW}x${canvasH}.${photoFormat}`;
+		const outName = `${stem}${stemSuffix}_${canvas.width}x${canvas.height}.${photoFormat}`;
 
 		return {
 			id: `photo_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-			inputName: file.name,
+			inputName,
 			outputName: outName,
 			mediaType: 'photo',
-			origSize: file.size,
+			origSize,
 			outSize: blob.size,
-			dimensions: `${canvasW}x${canvasH}`,
+			dimensions: `${canvas.width}x${canvas.height}`,
 			downloadUrl: url,
 			elapsedSec: Number(((performance.now() - t0) / 1000).toFixed(2)),
-			engine: 'browser-canvas'
+			engine: engineLabel
+		};
+	}
+
+	// Browser-side Photo Conversion (instant fallback & zero-latency, including Image -> PDF)
+	async function convertPhotoInBrowser(file: File): Promise<JobResult> {
+		if (isFilePdf(file)) {
+			const jobs = await convertPdfInBrowser(file);
+			return jobs[0];
+		}
+		const t0 = performance.now();
+		const bitmap = await createImageBitmap(file);
+		const canvas = applyPhotoAdjustmentsToCanvas(bitmap, true);
+		return canvasToJobResult(canvas, file.name, file.size, '', t0, 'browser-canvas');
+	}
+
+	function parsePageRangeIndices(totalPages: number): number[] {
+		if (pdfPageMode === 'current') {
+			return [Math.max(1, Math.min(totalPages, pdfPreviewPage))];
+		}
+		if (pdfPageMode === 'range') {
+			const pages: number[] = [];
+			for (const part of pdfPageRange.split(',')) {
+				const s = part.trim();
+				if (!s) continue;
+				if (s.includes('-')) {
+					const [aStr, bStr] = s.split('-', 2);
+					const a = parseInt(aStr.trim(), 10);
+					const b = parseInt(bStr.trim(), 10);
+					if (!isNaN(a) && !isNaN(b)) {
+						for (let p = Math.min(a, b); p <= Math.max(a, b); p++) {
+							if (p >= 1 && p <= totalPages && !pages.includes(p)) pages.push(p);
+						}
+					}
+				} else {
+					const p = parseInt(s, 10);
+					if (!isNaN(p) && p >= 1 && p <= totalPages && !pages.includes(p)) pages.push(p);
+				}
+			}
+			return pages.length > 0 ? pages : [Math.max(1, Math.min(totalPages, pdfPreviewPage))];
+		}
+		return Array.from({ length: totalPages }, (_, i) => i + 1);
+	}
+
+	// Browser-side PDF -> Image (or PDF -> multi-page PDF) via pdf.js
+	async function convertPdfInBrowser(file: File): Promise<JobResult[]> {
+		const t0 = performance.now();
+		const pdfjs = await getPdfJs();
+		const buf = await file.arrayBuffer();
+		const pdfDoc = await pdfjs.getDocument({ data: buf }).promise;
+		const pageNumbers = parsePageRangeIndices(pdfDoc.numPages);
+		const scale = Math.max(72, Math.min(400, pdfDpi)) / 72;
+
+		const rawPageCanvases: { pageNum: number; canvas: HTMLCanvasElement }[] = [];
+		for (const pNum of pageNumbers) {
+			statusMsg = `rendering pdf page ${pNum}/${pdfDoc.numPages}...`;
+			const c = await renderPdfPageToCanvas(pdfDoc, pNum, scale);
+			rawPageCanvases.push({ pageNum: pNum, canvas: c });
+		}
+
+		// Stitch all selected pages vertically into 1 image
+		if (pdfPageMode === 'stitch' && rawPageCanvases.length > 1) {
+			const maxW = Math.max(...rawPageCanvases.map((p) => p.canvas.width));
+			const totalH = rawPageCanvases.reduce((acc, p) => acc + p.canvas.height, 0);
+			const stitched = document.createElement('canvas');
+			stitched.width = maxW;
+			stitched.height = totalH;
+			const sctx = stitched.getContext('2d')!;
+			sctx.fillStyle = '#ffffff';
+			sctx.fillRect(0, 0, maxW, totalH);
+			let yOff = 0;
+			for (const p of rawPageCanvases) {
+				const xOff = Math.floor((maxW - p.canvas.width) / 2);
+				sctx.drawImage(p.canvas, xOff, yOff);
+				yOff += p.canvas.height;
+			}
+			const adjusted = applyPhotoAdjustmentsToCanvas(stitched, false);
+			const job = await canvasToJobResult(
+				adjusted,
+				file.name,
+				file.size,
+				`_stitched_${rawPageCanvases.length}p`,
+				t0,
+				'browser-pdf.js'
+			);
+			return [job];
+		}
+
+		// If target format is PDF, combine all adjusted page canvases into a single PDF
+		if (photoFormat === 'pdf') {
+			const adjustedCanvases = rawPageCanvases.map((p) =>
+				applyPhotoAdjustmentsToCanvas(p.canvas, rawPageCanvases.length === 1)
+			);
+			const pdfBlob = buildPdfFromCanvases(adjustedCanvases, pdfPageLayout, photoQuality);
+			const url = URL.createObjectURL(pdfBlob);
+			const stem = file.name.replace(/\.[^.]+$/, '');
+			return [
+				{
+					id: `pdf_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+					inputName: file.name,
+					outputName: `${stem}_${adjustedCanvases.length}p.pdf`,
+					mediaType: 'photo',
+					origSize: file.size,
+					outSize: pdfBlob.size,
+					dimensions: `${adjustedCanvases.length} page(s)`,
+					downloadUrl: url,
+					elapsedSec: Number(((performance.now() - t0) / 1000).toFixed(2)),
+					engine: 'browser-pdf.js'
+				}
+			];
+		}
+
+		// Otherwise export each selected PDF page as an image (.png, .jpg, .webp, .avif, etc.)
+		const jobs: JobResult[] = [];
+		for (const p of rawPageCanvases) {
+			const adjusted = applyPhotoAdjustmentsToCanvas(p.canvas, rawPageCanvases.length === 1);
+			const suffix = pdfDoc.numPages > 1 ? `_p${p.pageNum}` : '';
+			const job = await canvasToJobResult(
+				adjusted,
+				file.name,
+				file.size,
+				suffix,
+				t0,
+				'browser-pdf.js'
+			);
+			jobs.push(job);
+		}
+		return jobs;
+	}
+
+	// Merge multiple queued images/PDFs into a single multi-page PDF in the browser
+	async function convertQueueToMergedPdfInBrowser(files: File[]): Promise<JobResult> {
+		const t0 = performance.now();
+		const allCanvases: HTMLCanvasElement[] = [];
+		let totalOrigSize = 0;
+
+		for (let i = 0; i < files.length; i++) {
+			const f = files[i];
+			totalOrigSize += f.size;
+			statusMsg = `adding ${i + 1}/${files.length} to pdf: ${f.name}`;
+			if (isFilePdf(f)) {
+				const pdfjs = await getPdfJs();
+				const buf = await f.arrayBuffer();
+				const pdfDoc = await pdfjs.getDocument({ data: buf }).promise;
+				const scale = Math.max(72, Math.min(400, pdfDpi)) / 72;
+				for (let pNum = 1; pNum <= pdfDoc.numPages; pNum++) {
+					const c = await renderPdfPageToCanvas(pdfDoc, pNum, scale);
+					allCanvases.push(applyPhotoAdjustmentsToCanvas(c, false));
+				}
+			} else {
+				const bitmap = await createImageBitmap(f);
+				allCanvases.push(applyPhotoAdjustmentsToCanvas(bitmap, false));
+			}
+		}
+
+		const pdfBlob = buildPdfFromCanvases(allCanvases, pdfPageLayout, photoQuality);
+		const url = URL.createObjectURL(pdfBlob);
+		const firstStem = files[0].name.replace(/\.[^.]+$/, '');
+		return {
+			id: `pdf_merged_${Date.now()}`,
+			inputName: `${files.length} files`,
+			outputName: `${firstStem}_merged_${allCanvases.length}p.pdf`,
+			mediaType: 'photo',
+			origSize: totalOrigSize,
+			outSize: pdfBlob.size,
+			dimensions: `${allCanvases.length} pages (PDF)`,
+			downloadUrl: url,
+			elapsedSec: Number(((performance.now() - t0) / 1000).toFixed(2)),
+			engine: 'browser-pdf-builder'
 		};
 	}
 
@@ -666,7 +1146,12 @@
 				doc_scan: photoDocScan,
 				strip_exif: photoStripExif,
 				transcribe: photoTranscribe,
-				transcribe_hint: photoTranscribeHint
+				transcribe_hint: photoTranscribeHint,
+				pdf_page: pdfPreviewPage,
+				pdf_page_mode: pdfPageMode,
+				pdf_page_range: pdfPageRange,
+				pdf_dpi: pdfDpi,
+				pdf_page_layout: pdfPageLayout
 			};
 		}
 		if (activeTab === 'video') {
@@ -836,6 +1321,26 @@
 		statusMsg = 'processing...';
 		const options = buildOptionsPayload();
 
+		// Multi-file Image/PDF -> single merged PDF in browser
+		if (
+			activeTab === 'photo' &&
+			photoFormat === 'pdf' &&
+			filesQueue.length > 1 &&
+			pdfMergeQueue &&
+			!photoTranscribe
+		) {
+			try {
+				const mergedJob = await convertQueueToMergedPdfInBrowser(filesQueue);
+				results = [mergedJob, ...results];
+				statusMsg = `merged ${filesQueue.length} files into 1 PDF`;
+			} catch (err: any) {
+				statusMsg = `error: ${err?.message || err}`;
+			} finally {
+				processing = false;
+			}
+			return;
+		}
+
 		const needsServer =
 			enginePref === 'server' ||
 			(enginePref === 'auto' &&
@@ -843,7 +1348,6 @@
 				(activeTab === 'video' ||
 					photoTranscribe ||
 					photoDocScan ||
-					photoFormat === 'pdf' ||
 					photoFormat === 'tiff' ||
 					audioTranscribe ||
 					audioGuitarTab ||
@@ -853,12 +1357,25 @@
 			for (let i = 0; i < filesQueue.length; i++) {
 				const f = filesQueue[i];
 				statusMsg = `converting ${i + 1}/${filesQueue.length}: ${f.name}`;
+
+				// Multi-page PDF -> multiple individual images in browser (unless OCR/doc_scan requires server)
+				if (activeTab === 'photo' && isFilePdf(f) && !needsServer) {
+					const pdfJobs = await convertPdfInBrowser(f);
+					results = [...pdfJobs.reverse(), ...results];
+					continue;
+				}
+
 				let job: JobResult;
 				if (needsServer) {
 					try {
 						job = await convertViaServerOrBridge(f, options);
 					} catch (srvErr) {
 						if (activeTab === 'photo') {
+							if (isFilePdf(f)) {
+								const pdfJobs = await convertPdfInBrowser(f);
+								results = [...pdfJobs.reverse(), ...results];
+								continue;
+							}
 							job = await convertPhotoInBrowser(f);
 						} else if (activeTab === 'audio') {
 							job = await convertAudioInBrowser(f);
@@ -881,6 +1398,17 @@
 		} finally {
 			processing = false;
 		}
+	}
+
+	function downloadAllResults() {
+		results.forEach((r, idx) => {
+			setTimeout(() => {
+				const a = document.createElement('a');
+				a.href = r.downloadUrl;
+				a.download = r.outputName;
+				a.click();
+			}, idx * 140);
+		});
 	}
 
 	function downloadTextBlob(content: string, filename: string) {
@@ -906,6 +1434,8 @@
 			<a href="/cosmo/" class="brand">cosmo</a>
 			<span class="sep">/</span>
 			<span class="current">media</span>
+			<span class="sep">/</span>
+			<a href="/notes/" class="brand">notes</a>
 		</div>
 		<div class="right">
 			{#if statusMsg}
@@ -920,6 +1450,16 @@
 				<span class="dot"></span>
 				{localDaemonOnline ? 'local:8766' : device.online ? 'nixos:online' : 'browser-only'}
 			</span>
+			<button
+				type="button"
+				class="theme-btn"
+				onclick={toggleTheme}
+				aria-label="Toggle color theme"
+				title={theme === 'light' ? 'Switch to Monokai Pro Dark' : 'Switch to Monokai Pro Light'}
+			>
+				<span class="theme-icon">{theme === 'light' ? '☾' : '☀'}</span>
+				<span class="theme-label">{theme === 'light' ? 'Dark' : 'Light'}</span>
+			</button>
 		</div>
 	</header>
 
@@ -927,7 +1467,7 @@
 	<div class="mode-bar">
 		<div class="tabs">
 			<button type="button" class:active={activeTab === 'photo'} onclick={() => (activeTab = 'photo')}>
-				photo
+				photo / pdf
 			</button>
 			<button type="button" class:active={activeTab === 'video'} onclick={() => (activeTab = 'video')}>
 				video
@@ -951,7 +1491,7 @@
 	<input
 		type="file"
 		multiple
-		accept="image/*,video/*,audio/*,.heic,.heif,.mkv,.flac,.opus,.webm"
+		accept="image/*,video/*,audio/*,application/pdf,.pdf,.heic,.heif,.mkv,.flac,.opus,.webm"
 		style="display:none"
 		bind:this={fileInputEl}
 		onchange={(e) => loadFiles((e.currentTarget as HTMLInputElement).files)}
@@ -965,6 +1505,7 @@
 				{#if currentFile}
 					<span class="muted">
 						{currentFile.name} · {formatBytes(currentFile.size)}
+						{isPdfInput && pdfTotalPages ? ` · ${pdfTotalPages}p PDF` : ''}
 						{mediaWidth ? ` · ${mediaWidth}×${mediaHeight}` : ''}
 						{mediaDuration ? ` · ${formatTime(mediaDuration)}` : ''}
 					</span>
@@ -990,18 +1531,49 @@
 				onclick={() => fileInputEl?.click()}
 				onkeydown={(e) => e.key === 'Enter' && fileInputEl?.click()}
 			>
-				{currentFile ? 'drop / click / paste (ctrl+v) to replace files' : 'drop photo, video, or audio · click to browse · paste (ctrl+v)'}
+				{currentFile
+					? 'drop / click / paste (ctrl+v) to replace files'
+					: 'drop photo, pdf, video, or audio · click to browse · paste (ctrl+v)'}
 			</div>
 
-			{#if currentFile && previewUrl}
+			{#if currentFile && (previewUrl || pdfLoadingPreview)}
 				<div class="stage">
 					{#if activeTab === 'photo'}
-						<img
-							src={previewUrl}
-							alt="preview"
-							class="stage-img"
-							style="filter: {cssFilterPreview}; transform: {cssTransformPreview};"
-						/>
+						{#if pdfLoadingPreview && !previewUrl}
+							<span class="muted">rendering pdf preview...</span>
+						{:else if previewUrl}
+							<img
+								src={previewUrl}
+								alt="preview"
+								class="stage-img"
+								style="filter: {cssFilterPreview}; transform: {cssTransformPreview};"
+							/>
+						{/if}
+						{#if isPdfInput && pdfTotalPages > 0}
+							<div class="stage-bar">
+								<span class="muted">
+									pdf page {pdfPreviewPage} / {pdfTotalPages} ({pdfDpi} dpi)
+								</span>
+								{#if pdfTotalPages > 1}
+									<button
+										type="button"
+										class="btn-xs"
+										disabled={pdfPreviewPage <= 1 || pdfLoadingPreview}
+										onclick={() => stepPdfPreviewPage(-1)}
+									>
+										◀ prev
+									</button>
+									<button
+										type="button"
+										class="btn-xs"
+										disabled={pdfPreviewPage >= pdfTotalPages || pdfLoadingPreview}
+										onclick={() => stepPdfPreviewPage(1)}
+									>
+										next ▶
+									</button>
+								{/if}
+							</div>
+						{/if}
 					{:else if activeTab === 'video'}
 						<!-- svelte-ignore a11y_media_has_caption -->
 						<video
@@ -1068,16 +1640,16 @@
 		<section class="panel controls-panel">
 			{#if activeTab === 'photo'}
 				<div class="panel-head">
-					<span>photo parameters</span>
+					<span>{isPdfInput ? 'pdf → image / document parameters' : 'photo / pdf parameters'}</span>
 					<button type="button" class="btn-link" onclick={resetPhotoAdjustments}>reset</button>
 				</div>
 
 				<div class="ctrl-grid">
 					<label class="field">
-						<span>format</span>
+						<span>output format</span>
 						<select bind:value={photoFormat}>
-							<option value="jpg">jpg</option>
-							<option value="png">png</option>
+							<option value="png">png (lossless image)</option>
+							<option value="jpg">jpg (photo)</option>
 							<option value="webp">webp</option>
 							<option value="avif">avif</option>
 							<option value="pdf">pdf (document)</option>
@@ -1092,6 +1664,66 @@
 						<span>quality ({photoQuality}%)</span>
 						<input type="range" min="5" max="100" bind:value={photoQuality} />
 					</label>
+
+					{#if isPdfInput}
+						<label class="field">
+							<span>pdf pages to convert</span>
+							<select bind:value={pdfPageMode}>
+								<option value="all">all pages ({pdfTotalPages || 'all'} images)</option>
+								<option value="current">current page only (p.{pdfPreviewPage})</option>
+								<option value="stitch">stitch vertically (1 tall image)</option>
+								<option value="range">custom range (e.g. 1-3, 5)</option>
+							</select>
+						</label>
+
+						<label class="field">
+							<span>pdf render dpi</span>
+							<select
+								bind:value={pdfDpi}
+								onchange={() => {
+									if (currentFile && isFilePdf(currentFile)) {
+										loadPdfPreview(currentFile, pdfPreviewPage);
+									}
+								}}
+							>
+								<option value={120}>120 dpi (compact)</option>
+								<option value={150}>150 dpi (standard)</option>
+								<option value={200}>200 dpi (sharp)</option>
+								<option value={300}>300 dpi (print / ocr)</option>
+							</select>
+						</label>
+
+						{#if pdfPageMode === 'range'}
+							<label class="field" style="grid-column: 1 / -1;">
+								<span>page range (1..{pdfTotalPages || 'N'})</span>
+								<input
+									type="text"
+									placeholder="e.g. 1-3, 5"
+									bind:value={pdfPageRange}
+								/>
+							</label>
+						{/if}
+					{/if}
+
+					{#if photoFormat === 'pdf'}
+						<label class="field">
+							<span>pdf page size</span>
+							<select bind:value={pdfPageLayout}>
+								<option value="fit">fit to image (exact px)</option>
+								<option value="letter">us letter (8.5 × 11 in)</option>
+								<option value="a4">a4 (210 × 297 mm)</option>
+							</select>
+						</label>
+
+						{#if filesQueue.length > 1}
+							<div class="field" style="justify-content: flex-end;">
+								<label class="chk" style="padding-bottom: 0.3rem;">
+									<input type="checkbox" bind:checked={pdfMergeQueue} />
+									<span>merge all {filesQueue.length} files into 1 pdf</span>
+								</label>
+							</div>
+						{/if}
+					{/if}
 
 					<label class="field">
 						<span>downscale %</span>
@@ -1497,7 +2129,14 @@
 		<div class="panel-head">
 			<span>outputs ({results.length})</span>
 			{#if results.length > 0}
-				<button type="button" class="btn-link" onclick={() => (results = [])}>clear</button>
+				<div class="row">
+					{#if results.length > 1}
+						<button type="button" class="btn-xs accent-link" onclick={downloadAllResults}>
+							save all ({results.length})
+						</button>
+					{/if}
+					<button type="button" class="btn-link" onclick={() => (results = [])}>clear</button>
+				</div>
 			{/if}
 		</div>
 
@@ -1537,9 +2176,10 @@
 	.wrap {
 		max-width: 68rem;
 		margin: 1.25rem auto 3rem auto;
+		padding: 0 1rem;
 		font-family: var(--mono-font);
 		font-size: 0.82rem;
-		color: #e4e4e7;
+		color: var(--mp-text);
 		display: flex;
 		flex-direction: column;
 		gap: 0.75rem;
@@ -1552,7 +2192,7 @@
 		flex-wrap: wrap;
 		gap: 0.5rem;
 		padding-bottom: 0.55rem;
-		border-bottom: 1px solid #ffffff1a;
+		border-bottom: 1px solid var(--mp-border);
 	}
 
 	.left,
@@ -1560,58 +2200,90 @@
 		display: flex;
 		align-items: center;
 		gap: 0.55rem;
+		flex-wrap: wrap;
 	}
 
 	.brand {
-		color: #a1a1aa;
+		color: var(--mp-text-muted);
 		text-decoration: none;
+		transition: color 0.14s ease;
 	}
 	.brand:hover {
-		color: #fff;
+		color: var(--mp-text);
 	}
 	.sep {
-		color: #52525b;
+		color: var(--mp-text-faint);
 	}
 	.current {
-		color: #fff;
+		color: var(--mp-text);
 		font-weight: 600;
 	}
 	.msg {
-		color: #9ffdd8;
+		color: var(--mp-green);
+		font-weight: 500;
 	}
 
 	.mini-select {
 		padding: 0.18rem 0.45rem;
 		font-size: 0.75rem;
-		background: #18181b;
-		border: 1px solid #27272a;
-		color: #a1a1aa;
+		background: var(--mp-bg-elevated);
+		border: 1px solid var(--mp-border);
+		color: var(--mp-text-body);
 		border-radius: 4px;
+		width: auto;
 	}
 
 	.status {
 		display: inline-flex;
 		align-items: center;
 		gap: 0.35rem;
-		color: #a1a1aa;
-		background: #18181b;
-		border: 1px solid #27272a;
+		color: var(--mp-text-muted);
+		background: var(--mp-bg-elevated);
+		border: 1px solid var(--mp-border);
 		padding: 0.18rem 0.5rem;
 		border-radius: 4px;
 		font-size: 0.75rem;
 	}
 	.status.online {
-		color: #e4e4e7;
-		border-color: #9ffdd844;
+		color: var(--mp-text);
+		border-color: var(--mp-green);
 	}
 	.dot {
 		width: 6px;
 		height: 6px;
 		border-radius: 50%;
-		background: #71717a;
+		background: var(--mp-text-faint);
 	}
 	.status.online .dot {
-		background: #9ffdd8;
+		background: var(--mp-green);
+	}
+
+	.theme-btn {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		gap: 0.35rem;
+		min-width: 4.5rem;
+		background: var(--mp-bg-elevated);
+		color: var(--mp-text-body);
+		border: 1px solid var(--mp-border-strong);
+		border-radius: 6px;
+		padding: 0.2rem 0.55rem;
+		font-family: var(--mono-font);
+		font-size: 0.75rem;
+		font-weight: 500;
+		cursor: pointer;
+		transition: background 0.14s ease, color 0.14s ease, border-color 0.14s ease;
+	}
+	.theme-btn:hover {
+		background: var(--mp-bg-subtle);
+		color: var(--mp-text);
+		border-color: var(--mp-accent);
+	}
+	.theme-icon {
+		color: var(--mp-accent);
+		font-size: 0.85rem;
+		line-height: 1;
 	}
 
 	.mode-bar {
@@ -1627,19 +2299,24 @@
 		gap: 0.35rem;
 	}
 	.tabs button {
-		background: #18181b;
-		color: #a1a1aa;
-		border: 1px solid #27272a;
+		background: var(--mp-bg-elevated);
+		color: var(--mp-text-muted);
+		border: 1px solid var(--mp-border);
 		border-radius: 4px;
 		padding: 0.35rem 0.85rem;
 		font-family: var(--mono-font);
 		font-size: 0.8rem;
 		cursor: pointer;
+		transition: background 0.14s ease, color 0.14s ease, border-color 0.14s ease;
+	}
+	.tabs button:hover {
+		color: var(--mp-text);
+		border-color: var(--mp-border-strong);
 	}
 	.tabs button.active {
-		background: #27272a;
-		color: #9ffdd8;
-		border-color: #9ffdd866;
+		background: var(--mp-bg-subtle);
+		color: var(--mp-green);
+		border-color: var(--mp-green);
 		font-weight: 600;
 	}
 
@@ -1660,8 +2337,8 @@
 	}
 
 	.panel {
-		background: #18181b;
-		border: 1px solid #27272a;
+		background: var(--mp-bg-elevated);
+		border: 1px solid var(--mp-border);
 		border-radius: 6px;
 		padding: 0.75rem;
 		display: flex;
@@ -1674,20 +2351,21 @@
 		justify-content: space-between;
 		align-items: center;
 		font-weight: 600;
-		color: #a1a1aa;
+		color: var(--mp-text-muted);
 		font-size: 0.75rem;
 		text-transform: uppercase;
 		letter-spacing: 0.04em;
 	}
 
 	.dropzone {
-		border: 1px dashed #3f3f46;
-		background: #121214;
+		border: 1px dashed var(--mp-border-strong);
+		background: var(--mp-bg);
 		border-radius: 4px;
 		padding: 1.6rem 0.75rem;
 		text-align: center;
-		color: #a1a1aa;
+		color: var(--mp-text-muted);
 		cursor: pointer;
+		transition: border-color 0.14s ease, color 0.14s ease, background 0.14s ease;
 	}
 	.dropzone.compact {
 		padding: 0.55rem;
@@ -1695,13 +2373,14 @@
 	}
 	.dropzone:hover,
 	.dropzone.drag {
-		border-color: #9ffdd8;
-		color: #9ffdd8;
+		border-color: var(--mp-green);
+		color: var(--mp-green);
+		background: var(--mp-bg-subtle);
 	}
 
 	.stage {
-		background: #09090b;
-		border: 1px solid #27272a;
+		background: var(--mp-bg);
+		border: 1px solid var(--mp-border);
 		border-radius: 4px;
 		padding: 0.5rem;
 		display: flex;
@@ -1729,7 +2408,7 @@
 		width: 100%;
 		height: 72px;
 		border-radius: 3px;
-		border: 1px solid #27272a;
+		border: 1px solid var(--mp-border);
 	}
 	.stage-audio {
 		width: 100%;
@@ -1754,9 +2433,9 @@
 		padding-bottom: 0.2rem;
 	}
 	.batch-pill {
-		background: #121214;
-		color: #a1a1aa;
-		border: 1px solid #27272a;
+		background: var(--mp-bg);
+		color: var(--mp-text-muted);
+		border: 1px solid var(--mp-border);
 		border-radius: 3px;
 		padding: 0.2rem 0.5rem;
 		font-family: var(--mono-font);
@@ -1765,8 +2444,8 @@
 		cursor: pointer;
 	}
 	.batch-pill.selected {
-		border-color: #9ffdd8;
-		color: #9ffdd8;
+		border-color: var(--mp-green);
+		color: var(--mp-green);
 	}
 
 	.ctrl-grid {
@@ -1785,7 +2464,7 @@
 		flex-direction: column;
 		gap: 0.2rem;
 		font-size: 0.74rem;
-		color: #a1a1aa;
+		color: var(--mp-text-muted);
 	}
 
 	select,
@@ -1793,9 +2472,9 @@
 	input[type='number'],
 	.input,
 	.transcript-box {
-		background: #121214;
-		color: #e4e4e7;
-		border: 1px solid #27272a;
+		background: var(--mp-bg);
+		color: var(--mp-text);
+		border: 1px solid var(--mp-border);
 		border-radius: 4px;
 		padding: 0.3rem 0.5rem;
 		font-family: var(--mono-font);
@@ -1803,10 +2482,18 @@
 		width: 100%;
 		box-sizing: border-box;
 	}
+	select:focus,
+	input[type='text']:focus,
+	input[type='number']:focus,
+	.input:focus,
+	.transcript-box:focus {
+		outline: none;
+		border-color: var(--mp-cyan);
+	}
 
 	input[type='range'] {
 		width: 100%;
-		accent-color: #9ffdd8;
+		accent-color: var(--mp-green);
 	}
 
 	.toggles-row {
@@ -1814,7 +2501,7 @@
 		flex-wrap: wrap;
 		gap: 0.45rem 0.85rem;
 		padding-top: 0.25rem;
-		border-top: 1px solid #27272a;
+		border-top: 1px solid var(--mp-border);
 	}
 
 	.chk {
@@ -1822,11 +2509,11 @@
 		align-items: center;
 		gap: 0.3rem;
 		font-size: 0.75rem;
-		color: #d4d4d8;
+		color: var(--mp-text-body);
 		cursor: pointer;
 	}
 	.chk input {
-		accent-color: #9ffdd8;
+		accent-color: var(--mp-green);
 	}
 
 	.btn-group,
@@ -1837,27 +2524,34 @@
 	}
 
 	.btn {
-		background: #27272a;
-		color: #e4e4e7;
-		border: 1px solid #3f3f46;
+		background: var(--mp-bg-subtle);
+		color: var(--mp-text);
+		border: 1px solid var(--mp-border-strong);
 		border-radius: 4px;
 		padding: 0.35rem 0.7rem;
 		font-family: var(--mono-font);
 		font-size: 0.78rem;
 		cursor: pointer;
+		transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease;
 	}
 	.btn:hover {
-		border-color: #71717a;
+		border-color: var(--mp-text-muted);
+		background: var(--mp-bg-hover);
 	}
 	.btn.accent {
-		background: #9ffdd8;
-		color: #09090b;
-		border-color: #9ffdd8;
+		background: var(--mp-btn-bg);
+		color: var(--mp-btn-fg);
+		border-color: var(--mp-btn-bg);
 		font-weight: 600;
 	}
+	.btn.accent:hover {
+		background: var(--mp-btn-hover);
+		color: var(--mp-btn-hover-fg);
+		border-color: var(--mp-btn-hover);
+	}
 	.btn.rec {
-		border-color: #f87171;
-		color: #f87171;
+		border-color: var(--mp-red);
+		color: var(--mp-red);
 	}
 	.btn:disabled {
 		opacity: 0.5;
@@ -1865,38 +2559,39 @@
 	}
 
 	.btn-xs {
-		background: #121214;
-		color: #d4d4d8;
-		border: 1px solid #27272a;
+		background: var(--mp-bg);
+		color: var(--mp-text-body);
+		border: 1px solid var(--mp-border);
 		border-radius: 3px;
 		padding: 0.2rem 0.45rem;
 		font-family: var(--mono-font);
 		font-size: 0.72rem;
 		cursor: pointer;
 		text-decoration: none;
+		transition: border-color 0.14s ease, color 0.14s ease, background 0.14s ease;
 	}
 	.btn-xs:hover,
 	.btn-xs.on {
-		border-color: #9ffdd8;
-		color: #9ffdd8;
+		border-color: var(--mp-green);
+		color: var(--mp-green);
 	}
 	.btn-xs.accent-link {
-		background: #9ffdd81a;
-		border-color: #9ffdd855;
-		color: #9ffdd8;
+		background: var(--mp-bg-subtle);
+		border-color: var(--mp-green);
+		color: var(--mp-green);
 	}
 
 	.btn-link {
 		background: none;
 		border: none;
-		color: #71717a;
+		color: var(--mp-text-muted);
 		font-family: var(--mono-font);
 		font-size: 0.74rem;
 		cursor: pointer;
 		padding: 0;
 	}
 	.btn-link:hover {
-		color: #e4e4e7;
+		color: var(--mp-text);
 	}
 
 	.transcript-box {
@@ -1906,13 +2601,13 @@
 	}
 
 	.muted {
-		color: #71717a;
+		color: var(--mp-text-muted);
 		font-weight: 400;
 		text-transform: none;
 	}
 
 	.empty {
-		color: #52525b;
+		color: var(--mp-text-faint);
 		font-size: 0.78rem;
 	}
 
@@ -1925,31 +2620,31 @@
 		align-items: center;
 		gap: 0.55rem;
 		padding: 0.38rem 0;
-		border-top: 1px solid #27272a;
+		border-top: 1px solid var(--mp-border);
 		flex-wrap: wrap;
 	}
 	.fname {
-		color: #e4e4e7;
+		color: var(--mp-text);
 		text-decoration: none;
 		font-weight: 500;
 	}
 	.fname:hover {
-		color: #9ffdd8;
+		color: var(--mp-cyan);
 	}
 	.tag {
 		font-size: 0.7rem;
 		padding: 0.05rem 0.38rem;
 		border-radius: 3px;
-		background: #27272a;
-		color: #a1a1aa;
+		background: var(--mp-bg-subtle);
+		color: var(--mp-text-muted);
 	}
 	.path {
-		color: #9ffdd8;
+		color: var(--mp-green);
 		font-size: 0.74rem;
 	}
 	.meta {
 		margin-left: auto;
-		color: #71717a;
+		color: var(--mp-text-muted);
 		font-size: 0.73rem;
 	}
 </style>

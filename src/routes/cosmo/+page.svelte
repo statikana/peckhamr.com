@@ -53,6 +53,21 @@
 	let uploadProgress = $state('');
 	let statusMsg = $state('');
 	let dragActive = $state(false);
+	let theme = $state<'light' | 'dark'>('light');
+
+	function applyTheme(next: 'light' | 'dark') {
+		theme = next === 'dark' ? 'dark' : 'light';
+		if (typeof document !== 'undefined') {
+			document.documentElement.setAttribute('data-theme', theme);
+		}
+		try {
+			localStorage.setItem('peckhamr-theme', theme);
+		} catch {}
+	}
+
+	function toggleTheme() {
+		applyTheme(theme === 'light' ? 'dark' : 'light');
+	}
 
 	let fileInputEl: HTMLInputElement | undefined = $state();
 	let cameraInputEl: HTMLInputElement | undefined = $state();
@@ -155,6 +170,12 @@
 	}
 
 	onMount(() => {
+		try {
+			const saved = localStorage.getItem('peckhamr-theme');
+			applyTheme(saved === 'dark' ? 'dark' : 'light');
+		} catch {
+			applyTheme('light');
+		}
 		fetchState();
 		const timer = setInterval(fetchState, 3500);
 		return () => clearInterval(timer);
@@ -352,6 +373,8 @@
 			<span class="current">cosmo</span>
 			<span class="sep">/</span>
 			<a href="/media/" class="brand">media</a>
+			<span class="sep">/</span>
+			<a href="/notes/" class="brand">notes</a>
 		</div>
 		<div class="right">
 			{#if statusMsg}
@@ -364,6 +387,16 @@
 			{#if device.tunnel_url && device.online}
 				<a class="link" href="{device.tunnel_url}/mobile" target="_blank">tunnel</a>
 			{/if}
+			<button
+				type="button"
+				class="theme-btn"
+				onclick={toggleTheme}
+				aria-label="Toggle color theme"
+				title={theme === 'light' ? 'Switch to Monokai Pro Dark' : 'Switch to Monokai Pro Light'}
+			>
+				<span class="theme-icon">{theme === 'light' ? '☾' : '☀'}</span>
+				<span class="theme-label">{theme === 'light' ? 'Dark' : 'Light'}</span>
+			</button>
 		</div>
 	</header>
 
@@ -512,9 +545,10 @@
 	.wrap {
 		max-width: 56rem;
 		margin: 1.5rem auto 3rem auto;
+		padding: 0 1rem;
 		font-family: var(--mono-font);
 		font-size: 0.85rem;
-		color: #e4e4e7;
+		color: var(--mp-text);
 		display: flex;
 		flex-direction: column;
 		gap: 0.85rem;
@@ -527,7 +561,7 @@
 		flex-wrap: wrap;
 		gap: 0.5rem;
 		padding-bottom: 0.65rem;
-		border-bottom: 1px solid #ffffff1a;
+		border-bottom: 1px solid var(--mp-border);
 	}
 
 	.left,
@@ -535,55 +569,86 @@
 		display: flex;
 		align-items: center;
 		gap: 0.65rem;
+		flex-wrap: wrap;
 	}
 
 	.brand {
-		color: #a1a1aa;
+		color: var(--mp-text-muted);
 		text-decoration: none;
+		transition: color 0.14s ease;
 	}
 	.brand:hover {
-		color: #fff;
+		color: var(--mp-text);
 	}
 	.sep {
-		color: #52525b;
+		color: var(--mp-text-faint);
 	}
 	.current {
-		color: #fff;
+		color: var(--mp-text);
 		font-weight: 600;
 	}
 
 	.msg {
-		color: #9ffdd8;
+		color: var(--mp-green);
+		font-weight: 500;
 	}
 
 	.status {
 		display: inline-flex;
 		align-items: center;
 		gap: 0.4rem;
-		color: #a1a1aa;
-		background: #18181b;
-		border: 1px solid #27272a;
+		color: var(--mp-text-muted);
+		background: var(--mp-bg-elevated);
+		border: 1px solid var(--mp-border);
 		padding: 0.2rem 0.55rem;
 		border-radius: 4px;
 		font-size: 0.78rem;
 	}
 	.status.online {
-		color: #e4e4e7;
-		border-color: #9ffdd844;
+		color: var(--mp-text);
+		border-color: var(--mp-green);
 	}
 	.dot {
 		width: 6px;
 		height: 6px;
 		border-radius: 50%;
-		background: #71717a;
+		background: var(--mp-text-faint);
 	}
 	.status.online .dot {
-		background: #9ffdd8;
+		background: var(--mp-green);
 	}
 
 	.link {
-		color: #9ffdd8;
+		color: var(--mp-cyan);
 		font-size: 0.78rem;
+	}
+
+	.theme-btn {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		gap: 0.35rem;
+		min-width: 4.5rem;
+		background: var(--mp-bg-elevated);
+		color: var(--mp-text-body);
+		border: 1px solid var(--mp-border-strong);
+		border-radius: 6px;
+		padding: 0.22rem 0.58rem;
+		font-family: var(--mono-font);
+		font-size: 0.76rem;
+		font-weight: 500;
+		cursor: pointer;
+		transition: background 0.14s ease, color 0.14s ease, border-color 0.14s ease;
+	}
+	.theme-btn:hover {
+		background: var(--mp-bg-subtle);
+		color: var(--mp-text);
+		border-color: var(--mp-accent);
+	}
+	.theme-icon {
+		color: var(--mp-accent);
+		font-size: 0.85rem;
+		line-height: 1;
 	}
 
 	.grid {
@@ -598,8 +663,8 @@
 	}
 
 	.panel {
-		background: #18181b;
-		border: 1px solid #27272a;
+		background: var(--mp-bg-elevated);
+		border: 1px solid var(--mp-border);
 		border-radius: 6px;
 		padding: 0.75rem;
 		display: flex;
@@ -612,7 +677,7 @@
 		justify-content: space-between;
 		align-items: center;
 		font-weight: 600;
-		color: #a1a1aa;
+		color: var(--mp-text-muted);
 		font-size: 0.78rem;
 		text-transform: uppercase;
 		letter-spacing: 0.04em;
@@ -629,14 +694,20 @@
 	select,
 	.input,
 	.textarea {
-		background: #121214;
-		color: #e4e4e7;
-		border: 1px solid #27272a;
+		background: var(--mp-bg);
+		color: var(--mp-text);
+		border: 1px solid var(--mp-border);
 		border-radius: 4px;
 		padding: 0.35rem 0.55rem;
 		font-family: var(--mono-font);
 		font-size: 0.82rem;
 		box-sizing: border-box;
+	}
+	select:focus,
+	.input:focus,
+	.textarea:focus {
+		outline: none;
+		border-color: var(--mp-cyan);
 	}
 
 	.chk {
@@ -644,23 +715,28 @@
 		align-items: center;
 		gap: 0.3rem;
 		font-size: 0.78rem;
-		color: #a1a1aa;
+		color: var(--mp-text-muted);
 		cursor: pointer;
+	}
+	.chk input {
+		accent-color: var(--mp-green);
 	}
 
 	.drop {
-		border: 1px dashed #3f3f46;
-		background: #121214;
+		border: 1px dashed var(--mp-border-strong);
+		background: var(--mp-bg);
 		border-radius: 4px;
 		padding: 1.35rem 0.75rem;
 		text-align: center;
-		color: #a1a1aa;
+		color: var(--mp-text-muted);
 		cursor: pointer;
+		transition: border-color 0.14s ease, color 0.14s ease, background 0.14s ease;
 	}
 	.drop:hover,
 	.drop.drag {
-		border-color: #9ffdd8;
-		color: #9ffdd8;
+		border-color: var(--mp-green);
+		color: var(--mp-green);
+		background: var(--mp-bg-subtle);
 	}
 
 	.textarea {
@@ -679,58 +755,65 @@
 	}
 
 	.btn {
-		background: #27272a;
-		color: #e4e4e7;
-		border: 1px solid #3f3f46;
+		background: var(--mp-bg-subtle);
+		color: var(--mp-text);
+		border: 1px solid var(--mp-border-strong);
 		border-radius: 4px;
 		padding: 0.4rem 0.75rem;
 		font-family: var(--mono-font);
 		font-size: 0.8rem;
 		cursor: pointer;
+		transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease;
 	}
 	.btn:hover {
-		border-color: #71717a;
+		border-color: var(--mp-text-muted);
+		background: var(--mp-bg-hover);
 	}
 	.btn.accent {
-		background: #9ffdd8;
-		color: #09090b;
-		border-color: #9ffdd8;
+		background: var(--mp-btn-bg);
+		color: var(--mp-btn-fg);
+		border-color: var(--mp-btn-bg);
 		font-weight: 600;
 	}
+	.btn.accent:hover {
+		background: var(--mp-btn-hover);
+		color: var(--mp-btn-hover-fg);
+		border-color: var(--mp-btn-hover);
+	}
 	.btn.rec {
-		border-color: #f87171;
-		color: #f87171;
+		border-color: var(--mp-red);
+		color: var(--mp-red);
 	}
 	.btn.has-voice {
-		border-color: #9ffdd8;
-		color: #9ffdd8;
+		border-color: var(--mp-green);
+		color: var(--mp-green);
 	}
 
 	.btn-link,
 	.del {
 		background: none;
 		border: none;
-		color: #71717a;
+		color: var(--mp-text-muted);
 		font-family: var(--mono-font);
 		font-size: 0.76rem;
 		cursor: pointer;
 		padding: 0;
 	}
 	.btn-link:hover {
-		color: #e4e4e7;
+		color: var(--mp-text);
 	}
 	.del:hover {
-		color: #f87171;
+		color: var(--mp-red);
 	}
 
 	.muted {
-		color: #71717a;
+		color: var(--mp-text-muted);
 		font-weight: 400;
 		text-transform: none;
 	}
 
 	.empty {
-		color: #52525b;
+		color: var(--mp-text-faint);
 		font-size: 0.8rem;
 	}
 
@@ -744,41 +827,41 @@
 		align-items: center;
 		gap: 0.65rem;
 		padding: 0.4rem 0;
-		border-top: 1px solid #27272a;
+		border-top: 1px solid var(--mp-border);
 		flex-wrap: wrap;
 	}
 
 	.fname {
-		color: #e4e4e7;
+		color: var(--mp-text);
 		text-decoration: none;
 		font-weight: 500;
 	}
 	.fname:hover {
-		color: #9ffdd8;
+		color: var(--mp-cyan);
 	}
 
 	.tag {
 		font-size: 0.72rem;
 		padding: 0.05rem 0.4rem;
 		border-radius: 3px;
-		background: #27272a;
-		color: #a1a1aa;
+		background: var(--mp-bg-subtle);
+		color: var(--mp-text-muted);
 	}
 	.tag.sync {
-		color: #38bdf8;
+		color: var(--mp-cyan);
 	}
 	.tag.ok {
-		color: #9ffdd8;
+		color: var(--mp-green);
 	}
 
 	.path {
-		color: #9ffdd8;
+		color: var(--mp-green);
 		font-size: 0.76rem;
 	}
 
 	.meta {
 		margin-left: auto;
-		color: #71717a;
+		color: var(--mp-text-muted);
 		font-size: 0.75rem;
 	}
 </style>

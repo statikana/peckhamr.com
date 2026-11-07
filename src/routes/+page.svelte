@@ -1,806 +1,1084 @@
 <script>
+    import { onMount } from "svelte";
     import Terminal from "../Terminal.svelte";
 
-    let activeTab = $state('experience');
-    let showTerminal = $state(false);
+    let activeSection = $state("experience");
+    let terminalOpen = $state(false);
+    let theme = $state("light");
 
-    /**
-     * @param {string} tab
-     */
-    function goToTab(tab) {
-        activeTab = tab;
-        document.getElementById('work')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    const sections = [
+        { id: "experience", num: "01", label: "Experience" },
+        { id: "projects", num: "02", label: "Projects" },
+        { id: "work", num: "03", label: "Work History" },
+        { id: "terminal", num: "04", label: "Terminal" }
+    ];
+
+    function applyTheme(nextTheme) {
+        theme = nextTheme === "dark" ? "dark" : "light";
+        if (typeof document !== "undefined") {
+            document.documentElement.setAttribute("data-theme", theme);
+        }
+        try {
+            localStorage.setItem("peckhamr-theme", theme);
+        } catch (e) {}
     }
+
+    function toggleTheme() {
+        applyTheme(theme === "light" ? "dark" : "light");
+    }
+
+    onMount(() => {
+        try {
+            const saved = localStorage.getItem("peckhamr-theme");
+            applyTheme(saved === "dark" ? "dark" : "light");
+        } catch (e) {
+            applyTheme("light");
+        }
+
+        const observer = new IntersectionObserver(
+            (entries) => {
+                for (const entry of entries) {
+                    if (entry.isIntersecting) {
+                        activeSection = entry.target.id;
+                    }
+                }
+            },
+            { rootMargin: "-15% 0px -65% 0px", threshold: 0 }
+        );
+
+        for (const s of sections) {
+            const el = document.getElementById(s.id);
+            if (el) observer.observe(el);
+        }
+
+        return () => observer.disconnect();
+    });
 </script>
 
-<svelte:head>
-    <script src="https://kit.fontawesome.com/e469a2ed37.js" crossorigin="anonymous"></script>
-</svelte:head>
+<div class="page-grid">
+    <!-- Left Sticky Rail: Identity, Theme Switcher, Quick Actions, Section Index, Contact -->
+    <aside class="rail">
+        <div class="rail-inner">
+            <header class="identity">
+                <div class="identity-top">
+                    <h1 class="name">Ryan Peckham</h1>
+                    <button
+                        type="button"
+                        class="theme-toggle"
+                        onclick={toggleTheme}
+                        aria-label="Switch between Monokai Pro Light and Dark mode"
+                        title={theme === "light" ? "Switch to Monokai Pro Dark" : "Switch to Monokai Pro Light"}
+                    >
+                        <span class="theme-icon" aria-hidden="true">{theme === "light" ? "☾" : "☀"}</span>
+                        <span class="theme-label">{theme === "light" ? "Dark" : "Light"}</span>
+                    </button>
+                </div>
+                <p class="degree">Computer Engineering Student</p>
+                <p class="school">University of Michigan · Ann Arbor, MI</p>
+            </header>
 
-{#snippet sourceBadge(href = '')}
-    <a class="project-source" {href} target="_blank">
-        <i class="fa-brands fa-github"></i> Source Code
-    </a>
-{/snippet}
-
-{#snippet siteBadge(href = '')}
-    <a class="project-source" {href} target="_blank">
-        <i class="fa-solid fa-arrow-up-right-from-square"></i> Visit Site
-    </a>
-{/snippet}
-
-<nav id="site-nav">
-    <div class="nav-inner">
-        <a class="nav-brand" href="#top">Ryan Peckham</a>
-        <div class="nav-links">
-            <button type="button" class="nav-link-btn" onclick={() => goToTab('experience')}>Experience</button>
-            <button type="button" class="nav-link-btn" onclick={() => goToTab('projects')}>Projects</button>
-            <a href="#terminal">Terminal</a>
-            <a class="nav-resume" href="/ryan_peckham_resume.pdf" target="_blank">
-                <i class="fa-regular fa-file-pdf"></i> Résumé
-            </a>
-        </div>
-    </div>
-</nav>
-
-<div id="main-personal">
-    <div id="top"></div>
-    <!-- personal -->
-    <div id="me">
-        <p id="name" class="glow">
-            Ryan Peckham
-        </p>
-        <p id="tagline">
-            Computer Engineering student at the University of Michigan
-        </p>
-        <div id="info">
-            <p id="info-bits">
-                <a class="link" href="emailto:peckhamr@umich.edu">peckhamr@umich.edu</a>
-                •
-                <span>Ann Arbor, MI</span>
+            <p class="bio">
+                I build software, work with hardware, and like figuring out how things work end to end.
+                Currently leading software for a student-built autonomous drone team, with a background
+                in robotics and machine learning.
             </p>
-        </div>
-        <p id="bio">
-            I build software, work with hardware, and like figuring out how things work end to end.
-            Currently leading software for a student-built autonomous drone team, with a background
-            in robotics and machine learning.
-        </p>
-        <div id="cta-row">
-            <a class="btn btn-primary" href="/ryan_peckham_resume.pdf" aria-label="resume" target="_blank">
-                <i class="fa-regular fa-file-pdf"></i> View résumé
-            </a>
-            <button type="button" class="btn btn-secondary" onclick={() => goToTab('experience')}>
-                <i class="fa-regular fa-id-badge"></i> Experience
-            </button>
-            <button type="button" class="btn btn-secondary" onclick={() => goToTab('projects')}>
-                <i class="fa-regular fa-folder-open"></i> Projects
-            </button>
-        </div>
-        <div id="links">
-            <a class="social-link" href="https://github.com/statikana" aria-label="github" target="_blank">
-                <i class="fa-brands fa-github"></i>
-            </a>
-            <a class="social-link" href="https://www.linkedin.com/in/peckhamr/" aria-label="linkedin" target="_blank">
-                <i class="fa-brands fa-linkedin"></i>
-            </a>
-            <a class="social-link" href="https://www.instagram.com/that.ryguy/" aria-label="instagram" target="_blank">
-                <i class="fa-brands fa-instagram"></i>
-            </a>
-        </div>
-    </div>
 
-    <!-- experience / projects tabs -->
-    <section id="work" class="section">
-        <div class="tab-switch">
-            <button type="button" class:active={activeTab === 'experience'} onclick={() => activeTab = 'experience'}>
-                <i class="fa-regular fa-id-badge"></i> Experience
-            </button>
-            <button type="button" class:active={activeTab === 'projects'} onclick={() => activeTab = 'projects'}>
-                <i class="fa-regular fa-folder-open"></i> Projects
-            </button>
-        </div>
-
-        <div class="tab-viewport">
-            <div class="tab-track" class:show-projects={activeTab === 'projects'}>
-            <div class="tab-panel">
-        <h2 class="section-title glow">Experience</h2>
-        <div class="experience-list">
-            <div class="xp-item">
-                <div class="xp-head">
-                    <span class="xp-role">Chief Software Engineer <span class="xp-org">Michigan Autonomous Security Team, University of Michigan</span></span>
-                    <span class="xp-date">Jan 2026 - Present</span>
-                </div>
-                <p class="xp-desc">
-                    Leading a team of engineers building the software for a prototype autonomous drone,
-                    including sensor integration (GPS, gyroscope, barometer), system architecture, and
-                    code review.
-                </p>
+            <!-- Clear, approachable primary actions for any visitor -->
+            <div class="primary-actions">
+                <a class="action-primary" href="/ryan_peckham_resume.pdf" target="_blank">
+                    View Résumé (PDF) <span aria-hidden="true">↗</span>
+                </a>
+                <a class="action-secondary" href="mailto:peckhamr@umich.edu">
+                    Email Me
+                </a>
             </div>
 
-            <div class="xp-item">
-                <div class="xp-head">
-                    <span class="xp-role">Machine Learning Team, Member <span class="xp-org">Michigan Hackers, University of Michigan</span></span>
-                    <span class="xp-date">Nov 2025 - Present</span>
-                </div>
-                <p class="xp-desc">
-                    Studying and applying core machine learning concepts with a group of peers through
-                    regular lectures and hands-on practice.
-                </p>
-            </div>
+            <nav class="index-nav" aria-label="Page sections">
+                <div class="rail-heading">ON THIS PAGE</div>
+                {#each sections as s}
+                    <a
+                        href="#{s.id}"
+                        class="index-link"
+                        class:active={activeSection === s.id}
+                        onclick={() => (activeSection = s.id)}
+                    >
+                        <span class="index-num">{s.num}</span>
+                        <span class="index-label">{s.label}</span>
+                        <span class="index-arrow" aria-hidden="true">→</span>
+                    </a>
+                {/each}
+            </nav>
 
-            <div class="xp-item">
-                <div class="xp-head">
-                    <span class="xp-role">Engineering 100 Team Project <span class="xp-org">University of Michigan</span></span>
-                    <span class="xp-date">Aug 2025 - Dec 2025</span>
-                </div>
-                <p class="xp-desc">
-                    As part of a 5-person team, researched, designed, and built a sun-tracking solar panel
-                    on a Raspberry Pi, then presented our process and results to engineering faculty.
-                </p>
-            </div>
-
-            <div class="xp-item">
-                <div class="xp-head">
-                    <span class="xp-role">Programming Sub-team <span class="xp-org">FIRST Robotics Competition, Team 141 "WOBOT", West Ottawa High School</span></span>
-                    <span class="xp-date">Aug 2023 - Oct 2024</span>
-                </div>
-                <p class="xp-desc">
-                    Wrote control software for our competition robot. Our team won District Champions,
-                    along with awards for Engineering Inspiration, Sustainability, and Entrepreneurship.
-                </p>
-            </div>
-
-            <div class="xp-item">
-                <div class="xp-head">
-                    <span class="xp-role">Volunteer <span class="xp-org">Cultural, Technological, and Environmental Exchange Club, West Ottawa High School</span></span>
-                    <span class="xp-date">Sep 2024 - Apr 2025</span>
-                </div>
-                <p class="xp-desc">
-                    Repaired donated desktop computers each week and prepared them for shipment to
-                    communities in need in Haiti.
-                </p>
+            <div class="directory">
+                <div class="rail-heading">CONTACT &amp; LINKS</div>
+                <dl class="meta-table">
+                    <div class="meta-row">
+                        <dt>Email</dt>
+                        <dd><a href="mailto:peckhamr@umich.edu">peckhamr@umich.edu</a></dd>
+                    </div>
+                    <div class="meta-row">
+                        <dt>LinkedIn</dt>
+                        <dd><a href="https://www.linkedin.com/in/peckhamr/" target="_blank">linkedin.com/in/peckhamr ↗</a></dd>
+                    </div>
+                    <div class="meta-row">
+                        <dt>GitHub</dt>
+                        <dd><a href="https://github.com/statikana" target="_blank">github.com/statikana ↗</a></dd>
+                    </div>
+                    <div class="meta-row">
+                        <dt>Instagram</dt>
+                        <dd><a href="https://www.instagram.com/that.ryguy/" target="_blank">@that.ryguy ↗</a></dd>
+                    </div>
+                </dl>
             </div>
         </div>
+    </aside>
 
-        <h3 class="subsection-title">Work Experience</h3>
-        <div class="experience-list">
-            <div class="xp-item">
-                <div class="xp-head">
-                    <span class="xp-role">Assembly and Repair Technician <span class="xp-org">Ace Hardware</span></span>
-                    <span class="xp-date">May 2026 - Aug 2026</span>
-                </div>
-                <p class="xp-desc">
-                    Completed complex equipment repairs and assemblies, diagnosing and resolving
-                    technical issues independently. Built strong foundational knowledge of hardware
-                    systems, tools, and specifications. Received consistently positive feedback from
-                    customers and management for reliability, problem-solving, and quality of work.
-                </p>
+    <!-- Right Main Column: Structured Ledger -->
+    <main class="ledger">
+        <!-- 01 / EXPERIENCE -->
+        <section id="experience" class="ledger-section">
+            <div class="section-bar">
+                <span class="section-index">01</span>
+                <h2 class="section-title">Experience</h2>
+                <span class="section-rule"></span>
+                <span class="section-caption">ENGINEERING &amp; LEADERSHIP</span>
             </div>
 
-            <div class="xp-item">
-                <div class="xp-head">
-                    <span class="xp-role">Crew Member <span class="xp-org">Chick-fil-A</span></span>
-                    <span class="xp-date">June 2025 - Jan 2026</span>
-                </div>
-                <p class="xp-desc">
-                    Crew member at Michigan's highest-volume Chick-fil-A location,
-                    managing guest service, desserts, and drive-thru operations with consistently
-                    positive customer interactions and high work standards.
-                </p>
+            <div class="timeline">
+                <article class="timeline-row">
+                    <div class="timeline-meta">
+                        <span class="timeline-date">Jan 2026 — Present</span>
+                        <span class="timeline-tag">Autonomous Drone Team</span>
+                    </div>
+                    <div class="timeline-body">
+                        <div class="timeline-header">
+                            <h3 class="role">Chief Software Engineer</h3>
+                            <span class="org">Michigan Autonomous Security Team, University of Michigan</span>
+                        </div>
+                        <p class="desc">
+                            Leading a team of engineers building the software for a prototype autonomous drone,
+                            including sensor integration (GPS, gyroscope, barometer), system architecture, and
+                            code review.
+                        </p>
+                    </div>
+                </article>
+
+                <article class="timeline-row">
+                    <div class="timeline-meta">
+                        <span class="timeline-date">Nov 2025 — Present</span>
+                        <span class="timeline-tag">Student Organization</span>
+                    </div>
+                    <div class="timeline-body">
+                        <div class="timeline-header">
+                            <h3 class="role">Machine Learning Team Member</h3>
+                            <span class="org">Michigan Hackers, University of Michigan</span>
+                        </div>
+                        <p class="desc">
+                            Studying and applying core machine learning concepts with a group of peers through
+                            regular lectures and hands-on practice.
+                        </p>
+                    </div>
+                </article>
+
+                <article class="timeline-row">
+                    <div class="timeline-meta">
+                        <span class="timeline-date">Aug — Dec 2025</span>
+                        <span class="timeline-tag">Engineering Project</span>
+                    </div>
+                    <div class="timeline-body">
+                        <div class="timeline-header">
+                            <h3 class="role">Engineering 100 Team Project</h3>
+                            <span class="org">University of Michigan</span>
+                        </div>
+                        <p class="desc">
+                            As part of a 5-person team, researched, designed, and built a sun-tracking solar panel
+                            powered by a Raspberry Pi, then presented our process and results to engineering faculty.
+                        </p>
+                    </div>
+                </article>
+
+                <article class="timeline-row">
+                    <div class="timeline-meta">
+                        <span class="timeline-date">Sep 2024 — Apr 2025</span>
+                        <span class="timeline-tag">Community Volunteering</span>
+                    </div>
+                    <div class="timeline-body">
+                        <div class="timeline-header">
+                            <h3 class="role">Volunteer Computer Technician</h3>
+                            <span class="org">Cultural, Technological, and Environmental Exchange Club</span>
+                        </div>
+                        <p class="desc">
+                            Repaired donated desktop computers each week and prepared them for shipment to
+                            communities in need in Haiti.
+                        </p>
+                    </div>
+                </article>
+
+                <article class="timeline-row">
+                    <div class="timeline-meta">
+                        <span class="timeline-date">Aug 2023 — Oct 2024</span>
+                        <span class="timeline-tag">Robotics Competition</span>
+                    </div>
+                    <div class="timeline-body">
+                        <div class="timeline-header">
+                            <h3 class="role">Programming Sub-team</h3>
+                            <span class="org">FIRST Robotics Team 141 "WOBOT", West Ottawa High School</span>
+                        </div>
+                        <p class="desc">
+                            Wrote control software for our competition robot. Our team won District Champions,
+                            along with awards for Engineering Inspiration, Sustainability, and Entrepreneurship.
+                        </p>
+                    </div>
+                </article>
+            </div>
+        </section>
+
+        <!-- 02 / PROJECTS -->
+        <section id="projects" class="ledger-section">
+            <div class="section-bar">
+                <span class="section-index">02</span>
+                <h2 class="section-title">Projects</h2>
+                <span class="section-rule"></span>
+                <span class="section-caption">THINGS I'VE BUILT</span>
             </div>
 
-            <div class="xp-item">
-                <div class="xp-head">
-                    <span class="xp-role">Team Lead <span class="xp-org">Target</span></span>
-                    <span class="xp-date">Nov 2022 - Aug 2024</span>
-                </div>
-                <p class="xp-desc">
-                    Promoted from team member to team lead after demonstrating strong performance.
-                    Trained and supervised team members on department operations and customer service
-                    standards, managed inventory receiving and auditing, and took ownership of daily
-                    department operations.
-                </p>
+            <div class="project-table">
+                <article class="project-row">
+                    <div class="project-num">01</div>
+                    <div class="project-main">
+                        <div class="project-top">
+                            <h3 class="project-name">M-AST Drone Flight Stack</h3>
+                            <span class="project-stack">Python · Linux · Raspberry Pi</span>
+                        </div>
+                        <p class="desc">
+                            Onboard flight and sensor software for our student team's autonomous quadcopter drone.
+                            Reads real-time data from the GPS, gyroscope, and barometer, and manages networking and
+                            operating system tasks on an onboard Raspberry Pi computer.
+                        </p>
+                    </div>
+                    <div class="project-links">
+                        <a href="https://github.com/Michigan-AST/Flight_Stack" target="_blank">View Code ↗</a>
+                    </div>
+                </article>
+
+                <article class="project-row">
+                    <div class="project-num">02</div>
+                    <div class="project-main">
+                        <div class="project-top">
+                            <h3 class="project-name">flymast.com (Team Website)</h3>
+                            <span class="project-stack">Web Design · Modular Components</span>
+                        </div>
+                        <p class="desc">
+                            The public website for the Michigan Autonomous Security Team. Built around reusable
+                            components so team members can easily post announcements, photos, and roster updates
+                            without having to rewrite the site's core code.
+                        </p>
+                    </div>
+                    <div class="project-links">
+                        <a href="https://flymast.com" target="_blank">Visit Site ↗</a>
+                        <a href="https://github.com/Michigan-AST/flymast.com" target="_blank">View Code ↗</a>
+                    </div>
+                </article>
+
+                <article class="project-row">
+                    <div class="project-num">03</div>
+                    <div class="project-main">
+                        <div class="project-top">
+                            <h3 class="project-name">Multi-Threaded File Downloader</h3>
+                            <span class="project-stack">Parallel Programming · Systems</span>
+                        </div>
+                        <p class="desc">
+                            A tool that downloads large files significantly faster than a standard browser download
+                            by splitting the file into pieces, downloading multiple pieces at the same time in parallel,
+                            and safely stitching them together on disk.
+                        </p>
+                    </div>
+                    <div class="project-links">
+                        <a href="https://github.com/statikana/dlm" target="_blank">View Code ↗</a>
+                    </div>
+                </article>
+
+                <article class="project-row">
+                    <div class="project-num">04</div>
+                    <div class="project-main">
+                        <div class="project-top">
+                            <h3 class="project-name">Cosmo (Personal Cloud Server)</h3>
+                            <span class="project-stack">Python · Web Server · Self-Hosted</span>
+                        </div>
+                        <p class="desc">
+                            A lightweight, self-hosted file server and web app for uploading and sharing files across
+                            devices, built to safely handle multiple uploads happening at the same time.
+                        </p>
+                    </div>
+                    <div class="project-links">
+                        <a href="https://github.com/statikana/cosmo" target="_blank">View Code ↗</a>
+                    </div>
+                </article>
+
+                <article class="project-row">
+                    <div class="project-num">05</div>
+                    <div class="project-main">
+                        <div class="project-top">
+                            <h3 class="project-name">PyTenno (Published Python Library)</h3>
+                            <span class="project-stack">Python · Open-Source Package</span>
+                        </div>
+                        <p class="desc">
+                            An open-source software library that lets Python developers easily fetch live marketplace
+                            data for the video game <a href="https://www.warframe.com/game/about" target="_blank">Warframe</a>.
+                            My first package published on the official <a href="https://pypi.org/project/pytenno/" target="_blank">Python Package Index (PyPI)</a>,
+                            complete with user documentation.
+                        </p>
+                    </div>
+                    <div class="project-links">
+                        <a href="https://pytenno.readthedocs.io/en/latest/index.html" target="_blank">Documentation ↗</a>
+                        <a href="https://github.com/statikana/PyTenno" target="_blank">View Code ↗</a>
+                    </div>
+                </article>
+
+                <article class="project-row">
+                    <div class="project-num">06</div>
+                    <div class="project-main">
+                        <div class="project-top">
+                            <h3 class="project-name">This Website (peckhamr.com)</h3>
+                            <span class="project-stack">Svelte · HTML/CSS · JavaScript</span>
+                        </div>
+                        <p class="desc">
+                            Designed and built from scratch using HTML, CSS, JavaScript, and
+                            <a href="https://svelte.dev/" target="_blank">Svelte</a>.
+                        </p>
+                    </div>
+                    <div class="project-links">
+                        <a href="https://github.com/statikana/peckhamr.com" target="_blank">View Code ↗</a>
+                    </div>
+                </article>
             </div>
-        </div>
+        </section>
+
+        <!-- 03 / WORK HISTORY -->
+        <section id="work" class="ledger-section">
+            <div class="section-bar">
+                <span class="section-index">03</span>
+                <h2 class="section-title">Work History</h2>
+                <span class="section-rule"></span>
+                <span class="section-caption">JOBS &amp; CUSTOMER SERVICE</span>
             </div>
 
-            <div class="tab-panel">
-        <h2 class="section-title glow">Projects</h2>
-        <div class="center" id="projects-list">
-            <!-- this site -->
-            <div class="project">
-                <div class="project-head">
-                    <span class="project-name">This Site</span>
-                    {@render sourceBadge("https://github.com/statikana/peckhamr.com")}
-                </div>
-                <div class="project-desc">
-                    I made this site using HTML, CSS, and JS. I also used <a href="https://svelte.dev/" target="_blank">Svelte</a> for routing and
-                    dynamic rendering, and Git for version control.
-                </div>
+            <div class="work-grid">
+                <article class="work-cell">
+                    <div class="work-date">May 2026 — Aug 2026</div>
+                    <h3 class="work-role">Assembly &amp; Repair Technician</h3>
+                    <div class="work-company">Ace Hardware</div>
+                    <p class="work-desc">
+                        Completed equipment repairs and assemblies, diagnosing and resolving technical hardware
+                        issues independently. Received consistently positive feedback from customers and management
+                        for reliability and quality of work.
+                    </p>
+                </article>
+
+                <article class="work-cell">
+                    <div class="work-date">Jun 2025 — Jan 2026</div>
+                    <h3 class="work-role">Crew Member</h3>
+                    <div class="work-company">Chick-fil-A</div>
+                    <p class="work-desc">
+                        Crew member at Michigan's highest-volume Chick-fil-A location, managing guest service,
+                        desserts, and drive-thru operations with fast, friendly customer interactions.
+                    </p>
+                </article>
+
+                <article class="work-cell">
+                    <div class="work-date">Nov 2022 — Aug 2024</div>
+                    <h3 class="work-role">Team Lead</h3>
+                    <div class="work-company">Target</div>
+                    <p class="work-desc">
+                        Promoted from team member to team lead. Trained and supervised team members on customer
+                        service and operations, managed inventory auditing, and ran daily department operations.
+                    </p>
+                </article>
             </div>
-            <hr class="line-break">
+        </section>
 
-            <div class="project">
-                <div class="project-head">
-                    <span class="project-name">M-AST Flight Stack</span>
-                    {@render sourceBadge("https://github.com/Michigan-AST/Flight_Stack")}
-                </div>
-                <div class="project-desc">
-                    As Chief Software Engineer of the Michigan Autonomous Security Team, I've recently helped develop and improve sensor integration software for our team's
-                    quadcopter drone. I have also advised my peers on routing software and operating system management, via a Raspberry Pi running Debian Linux.
-                </div>
-            </div>
-
-            <hr class="line-break">
-
-            <!-- Flymast -->
-            <div class="project">
-                <div class="project-head">
-                    <span class="project-name">flymast.com</span>
-                    {@render siteBadge("https://flymast.com")}
-                    {@render sourceBadge("https://github.com/Michigan-AST/flymast.com")}
-                </div>
-                <div class="project-desc">
-                    The public website for the Michigan Autonomous Security Team. Designed around
-                    heavy modularization, so adding new components, announcements, images, or team members is straightforward without
-                    touching the core site structure.
-                </div>
-            </div>
-
-            <hr class="line-break">
-
-            <!-- DLM -->
-            <div class="project">
-                <div class="project-head">
-                    <span class="project-name">Downloader</span>
-                    {@render sourceBadge("https://github.com/statikana/dlm")}
-                </div>
-                <div class="project-desc">
-                    Uses concurrent threads to read and write data from a website (e.g., a file server) faster than you are normally able to.
-                    Each thread reads a different segment of the source file, and writes to the associated segment of the new file being created on your computer. Uses file locks to
-                    prevent race conditions, and chunked writing to balance memory usage and performance. Shows substantial improvements in download times, depending on the file size and the number of concurrent threads used.
-                </div>
+        <!-- 04 / TERMINAL -->
+        <section id="terminal" class="ledger-section terminal-section">
+            <div class="section-bar">
+                <span class="section-index">04</span>
+                <h2 class="section-title">Interactive Terminal</h2>
+                <span class="section-rule"></span>
+                <span class="section-caption">JUST FOR FUN</span>
             </div>
 
-            <!-- Koda -->
-            <!-- <div class="project">
-                <p>Koda [<a href="https://github.com/statikana/antlr-project" target="_blank">Source</a>]</p>
-                <div class="project-desc">
-                    A custom interpreted programming language written in C++, using the ANTLR4 parser generator for lexing and parsing.
-                    Involved designing my own type system and building the AST generation and execution engine from scratch. One of my
-                    favorite personal projects, and a deep dive into how programming languages actually work under the hood.
+            <p class="terminal-intro">
+                I also built a small interactive command-line version of this site. Feel free to open it up and
+                type <code>help</code> or <code>whois</code> to explore.
+            </p>
+
+            <div class="console-frame">
+                <div class="console-bar">
+                    <span class="console-prompt">guest@peckhamr.com:~</span>
+                    <div class="console-actions">
+                        <button type="button" class="console-toggle-btn" onclick={() => (terminalOpen = !terminalOpen)}>
+                            {terminalOpen ? "Hide terminal" : "Open terminal here"}
+                        </button>
+                        <a href="/terminal" class="console-link">Full screen ↗</a>
+                    </div>
                 </div>
-            </div> -->
-
-            <hr class="line-break">
-
-            <!-- Cosmo -->
-            <div class="project">
-                <div class="project-head">
-                    <span class="project-name">Cosmo</span>
-                    {@render sourceBadge("https://github.com/statikana/cosmo")}
-                </div>
-                <div class="project-desc">
-                    A small self-hosted file server: a single-page upload/download web app backed by a lightweight Python WSGI app
-                    behind Apache. Handles concurrent uploads safely using thread locks, so simultaneous writes don't clobber each
-                    other's data.
-                </div>
+                {#if terminalOpen}
+                    <div id="terminal-container">
+                        <Terminal />
+                    </div>
+                {/if}
             </div>
-
-            <hr class="line-break">
-
-            <!-- PyTenno -->
-            <div class="project">
-                <div class="project-head">
-                    <span class="project-name">PyTenno</span>
-                    {@render sourceBadge("https://github.com/statikana/PyTenno")}
-                </div>
-                <div class="project-desc">
-                    An asynchronous API wrapper for <a href="https://warframe.market/" target="_blank">warframe.market</a>, a marketplace
-                    for the video game <a href="https://www.warframe.com/game/about" target="_blank">Warframe</a>. Translates the site's
-                    API endpoints into Python functions and data structures, and was my first package published on
-                    <a href="https://pypi.org/project/pytenno/" target="_blank">PyPI</a>, with full documentation on
-                    <a href="https://pytenno.readthedocs.io/en/latest/index.html" target="_blank">Read the Docs</a>.
-                </div>
-            </div>
-        </div>
-            </div>
-            </div>
-        </div>
-    </section>
-
-    <!-- terminal, de-emphasized for non-technical visitors -->
-    <section id="terminal" class="section terminal-section">
-        <h2 class="section-title glow">For the curious</h2>
-        <p class="terminal-blurb">
-            I also built a little interactive terminal into this site, just for fun; feel free to poke around.
-        </p>
-        <div class="terminal-actions">
-            <a class="btn btn-secondary" href="/terminal">
-                <i class="fa-solid fa-terminal"></i> Open the terminal
-            </a>
-            <button type="button" class="btn btn-secondary" onclick={() => showTerminal = !showTerminal}>
-                <i class="fa-solid fa-chevron-down" class:flipped={showTerminal}></i>
-                {showTerminal ? 'Hide it' : 'Show it here instead'}
-            </button>
-        </div>
-        {#if showTerminal}
-            <div id="terminal-container">
-                <Terminal />
-            </div>
-        {/if}
-    </section>
-
-    <!-- a little spot to talk about the accent color -->
-    <footer id="site-footer">
-        <span class="accent-swatch" aria-label="accent color #9FFDD8"></span>
-        <p class="accent-note">
-            Accent color: Seafoam Nectar <code>#9FFDD8</code> is the loveliest color
-        </p>
-    </footer>
+        </section>
+    </main>
 </div>
 
 <style>
-    :global(html) {
-        scroll-behavior: smooth;
-    }
-
-    :global(body) {
-        margin: 0;
-    }
-
-    /* nav */
-    #site-nav {
-        position: sticky;
-        top: 0;
-        z-index: 10;
-        background-color: #242426ee;
-        backdrop-filter: blur(6px);
-        border-bottom: 1px solid #ffffff14;
-        margin: 0 -5%;
-        padding: 0 5%;
-    }
-
-    .nav-inner {
-        display: flex;
-        flex-direction: row;
-        align-items: center;
-        justify-content: space-between;
-        padding: 0.9rem 0;
-        max-width: 68rem;
+    /* Master Asymmetric Two-Column Layout */
+    .page-grid {
+        display: grid;
+        grid-template-columns: 335px minmax(0, 1fr);
+        gap: 3.75rem;
+        max-width: 76rem;
         margin: 0 auto;
+        padding: 3.5rem 1.5rem 5rem 1.5rem;
+        align-items: start;
     }
 
-    .nav-brand {
-        color: #fff;
-        font-family: var(--mono-font);
-        font-weight: 600;
-        font-size: 1.05rem;
-        text-decoration: none;
+    /* Left Sticky Rail */
+    .rail {
+        position: sticky;
+        top: 2.75rem;
     }
 
-    .nav-links {
-        display: flex;
-        flex-direction: row;
-        align-items: center;
-        gap: 1.75rem;
-        font-family: var(--mono-font);
-    }
-
-    .nav-links > a {
-        color: #ffffffcc;
-        text-decoration: none;
-        font-size: 0.9rem;
-    }
-
-    .nav-links > a:hover {
-        color: #9FFDD8;
-    }
-
-    .nav-link-btn {
-        color: #ffffffcc;
-        background: none;
-        border: none;
-        padding: 0;
-        font: inherit;
-        font-size: 0.9rem;
-        cursor: pointer;
-    }
-
-    .nav-link-btn:hover {
-        color: #9FFDD8;
-    }
-
-    .nav-resume {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.4em;
-        color: #0c0c0c !important;
-        background-color: #9FFDD8;
-        padding: 0.4em 0.9em;
-        border-radius: 999px;
-        font-weight: 600;
-    }
-
-    .nav-resume:hover {
-        color: #0c0c0c !important;
-    }
-
-    /* main layout */
-    #main-personal {
+    .rail-inner {
         display: flex;
         flex-direction: column;
-        max-width: 68rem;
-        margin: 0 auto;
+        gap: 1.75rem;
+        border-right: 1px solid var(--mp-border);
+        padding-right: 2.15rem;
     }
 
-    .glow {
-        color: #fff;
+    .identity-top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        padding-bottom: 0.15rem;
     }
 
-    .section {
-        margin-top: 2rem;
-        padding-top: 1.5rem;
-        border-top: 1px solid #ffffff14;
+    .identity .name {
+        margin: 0;
+        padding-right: 0.25rem;
+        font-size: 1.8rem;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+        color: var(--mp-text);
+        line-height: 1.15;
+        white-space: nowrap;
+    }
+
+    .theme-toggle {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.35rem;
+        min-width: 4.85rem;
+        padding: 0.32rem 0.65rem;
+        font-family: var(--mono-font);
+        font-size: 0.75rem;
+        font-weight: 600;
+        white-space: nowrap;
+        color: var(--mp-text);
+        background-color: var(--mp-bg-elevated);
+        border: 1px solid var(--mp-border-strong);
+        border-radius: 4px;
+        cursor: pointer;
+        flex-shrink: 0;
+        transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+    }
+
+    .theme-toggle:hover {
+        background-color: var(--mp-bg-subtle);
+        border-color: var(--mp-accent);
+        color: var(--mp-accent);
+    }
+
+    .theme-icon {
+        font-size: 0.85rem;
+        line-height: 1;
+        color: var(--mp-orange);
+    }
+
+    .identity .degree {
+        margin: 0.45rem 0 0 0;
+        font-size: 0.95rem;
+        font-weight: 600;
+        color: var(--mp-red);
+    }
+
+    .identity .school {
+        margin: 0.2rem 0 0 0;
+        font-size: 0.85rem;
+        color: var(--mp-text-muted);
+    }
+
+    .bio {
+        margin: 0;
+        font-size: 0.94rem;
+        line-height: 1.6;
+        color: var(--mp-text-body);
+    }
+
+    /* Clear, tactile primary actions for non-technical & technical visitors alike */
+    .primary-actions {
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        gap: 0.5rem;
+    }
+
+    .action-primary,
+    .action-secondary {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.35rem;
+        padding: 0.5rem 0.72rem;
+        font-size: 0.82rem;
+        font-weight: 600;
+         line-height: 1.2;
+        white-space: nowrap;
+        text-decoration: none;
+        border-radius: 4px;
+        transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+    }
+
+    .action-primary {
+        background-color: var(--mp-btn-bg);
+        color: var(--mp-btn-fg);
+        border: 1px solid transparent;
+        flex: 1;
+    }
+
+    .action-primary:hover {
+        background-color: var(--mp-btn-hover);
+        color: var(--mp-btn-hover-fg);
+    }
+
+    .action-secondary {
+        background-color: var(--mp-bg-elevated);
+        border: 1px solid var(--mp-border-strong);
+        color: var(--mp-text);
+    }
+
+    .action-secondary:hover {
+        background-color: var(--mp-bg-subtle);
+        border-color: var(--mp-cyan);
+        color: var(--mp-cyan);
+    }
+
+    .rail-heading {
+        font-family: var(--mono-font);
+        font-size: 0.7rem;
+        font-weight: 600;
+        letter-spacing: 0.1em;
+        color: var(--mp-text-muted);
+        margin-bottom: 0.55rem;
+    }
+
+    /* Section Index Navigation */
+    .index-nav {
+        display: flex;
+        flex-direction: column;
+    }
+
+    .index-link {
+        display: grid;
+        grid-template-columns: 2rem 1fr auto;
+        align-items: center;
+        padding: 0.45rem 0;
+        border-top: 1px solid var(--mp-border-subtle);
+        color: var(--mp-text-muted);
+        text-decoration: none;
+        font-size: 0.92rem;
+        transition: color 0.15s ease;
+    }
+
+    .index-link:last-child {
+        border-bottom: 1px solid var(--mp-border-subtle);
+    }
+
+    .index-num {
+        font-family: var(--mono-font);
+        font-size: 0.75rem;
+        color: var(--mp-text-faint);
+    }
+
+    .index-arrow {
+        font-family: var(--mono-font);
+        font-size: 0.8rem;
+        opacity: 0;
+        transform: translateX(-4px);
+        transition: opacity 0.15s ease, transform 0.15s ease;
+    }
+
+    .index-link:hover,
+    .index-link.active {
+        color: var(--mp-text);
+        font-weight: 600;
+    }
+
+    .index-link.active .index-num {
+        color: var(--mp-red);
+    }
+
+    .index-link:hover .index-arrow,
+    .index-link.active .index-arrow {
+        opacity: 1;
+        transform: translateX(0);
+        color: var(--mp-red);
+    }
+
+    /* Key-Value Contact Table */
+    .meta-table {
+        margin: 0;
+        display: flex;
+        flex-direction: column;
+    }
+
+    .meta-row {
+        display: grid;
+        grid-template-columns: 76px 1fr;
+        align-items: baseline;
+        padding: 0.4rem 0;
+        border-top: 1px solid var(--mp-border-subtle);
+        font-size: 0.84rem;
+    }
+
+    .meta-row:last-child {
+        border-bottom: 1px solid var(--mp-border-subtle);
+    }
+
+    .meta-row dt {
+        color: var(--mp-text-muted);
+        font-size: 0.8rem;
+    }
+
+    .meta-row dd {
+        margin: 0;
+        color: var(--mp-text-body);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .meta-row a {
+        color: var(--mp-text-body);
+        text-decoration: none;
+        border-bottom: 1px solid var(--mp-border-strong);
+    }
+
+    .meta-row a:hover {
+        color: var(--mp-cyan);
+        border-bottom-color: var(--mp-cyan);
+    }
+
+    /* Right Column: Ledger Sections */
+    .ledger {
+        display: flex;
+        flex-direction: column;
+        gap: 4rem;
+        min-width: 0;
+    }
+
+    .ledger-section {
+        scroll-margin-top: 2.5rem;
+    }
+
+    .section-bar {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        margin-bottom: 1.5rem;
+    }
+
+    .section-index {
+        font-family: var(--mono-font);
+        font-size: 0.82rem;
+        font-weight: 600;
+        color: var(--mp-red);
     }
 
     .section-title {
-        margin-top: 0;
-        margin-bottom: 1.25rem;
-        font-size: 1.5rem;
-    }
-
-    .line-break {
-        color: transparent;
-    }
-
-    /* personal */
-    div#me {
-        margin: 4rem 0 2.5rem 0;
-        text-align: center;
-        color: #fff;
-    }
-
-    div#me > p#name {
-        padding-bottom: 0;
         margin: 0;
-        font-size: 2.6rem;
-        font-weight: 700;
-    }
-
-    #tagline {
-        margin: 0.4rem 0 0 0;
-        color: #ffffffcc;
-        font-size: 1.1rem;
-    }
-
-    #info-bits {
-        color: #fff5;
-        padding: 0;
-        margin: 0.75rem 0 0 0;
-    }
-
-    div#me > p#bio {
-        margin: 1rem auto 0 auto;
-        max-width: 38rem;
-        line-height: 1.5;
-        color: #ffffffcc;
-    }
-
-    #cta-row {
-        display: flex;
-        flex-direction: row;
-        flex-wrap: wrap;
-        justify-content: center;
-        gap: 0.75rem;
-        margin: 1.5rem 0 1.25rem 0;
-    }
-
-    .btn {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.5em;
-        text-decoration: none;
-        font-family: inherit;
-        font-size: 0.95rem;
+        font-size: 1.3rem;
         font-weight: 600;
-        padding: 0.55em 1.2em;
-        border-radius: 999px;
-        border: none;
-        cursor: pointer;
-        transition: box-shadow 0.25s ease, transform 0.25s ease;
+        color: var(--mp-text);
+        letter-spacing: -0.01em;
     }
 
-    .btn:hover {
-        transform: translateY(-1px);
+    .section-rule {
+        flex: 1;
+        height: 1px;
+        background-color: var(--mp-border);
     }
 
-    .btn-primary {
-        color: #0c0c0c;
-        background-color: #9FFDD8;
-    }
-
-    .btn-primary:hover {
-        box-shadow: 0 0 12px 2px #9FFDD888;
-    }
-
-    .btn-secondary {
-        color: #fff;
-        background-color: #ffffff12;
-        border: 1px solid #ffffff2a;
-    }
-
-    .btn-secondary:hover {
-        background-color: #ffffff1e;
-    }
-
-    #links {
-        font-size: 140%;
-    }
-
-    /* links */
-    a.link,
-    a.social-link {
-        color: inherit;
-        text-decoration: underline;
-        text-decoration-color: #fff3;
-    }
-
-    /* work tabs */
-    .tab-switch {
-        display: flex;
-        flex-direction: row;
-        gap: 0.5rem;
-        margin-bottom: 1.5rem;
-    }
-
-    .tab-switch > button {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.5em;
+    .section-caption {
         font-family: var(--mono-font);
-        font-size: 0.95rem;
-        font-weight: 600;
-        color: #ffffffa0;
-        background: none;
-        border: none;
-        border-bottom: 2px solid transparent;
-        padding: 0.4em 0.1em;
-        cursor: pointer;
-        transition: color 0.2s ease, border-color 0.2s ease;
+        font-size: 0.7rem;
+        letter-spacing: 0.08em;
+        color: var(--mp-text-muted);
     }
 
-    .tab-switch > button:hover {
-        color: #fff;
-    }
-
-    .tab-switch > button.active {
-        color: #fff;
-        border-bottom-color: #9FFDD8;
-    }
-
-    .tab-switch > button + button {
-        margin-left: 1rem;
-    }
-
-    .tab-viewport {
-        overflow: hidden;
-        width: 100%;
-    }
-
-    .tab-track {
-        display: flex;
-        width: 200%;
-        transform: translateX(0%);
-        transition: transform 0.35s ease;
-    }
-
-    .tab-track.show-projects {
-        transform: translateX(-50%);
-    }
-
-    .tab-panel {
-        width: 50%;
-        flex-shrink: 0;
-        box-sizing: border-box;
-        padding-right: 1.5rem;
-    }
-
-    /* experience */
-    .subsection-title {
-        color: #ffffffb0;
-        font-size: 1rem;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-        margin: 2.25rem 0 1.25rem 0;
-    }
-
-    .experience-list {
+    /* 01 / Experience Timeline */
+    .timeline {
         display: flex;
         flex-direction: column;
+    }
+
+    .timeline-row {
+        display: grid;
+        grid-template-columns: 165px 1fr;
         gap: 1.5rem;
+        padding: 1.35rem 0;
+        border-top: 1px solid var(--mp-border-subtle);
     }
 
-    .xp-item {
-        color: #fff;
+    .timeline-row:first-child {
+        padding-top: 0.25rem;
+        border-top: none;
     }
 
-    .xp-head {
+    .timeline-meta {
         display: flex;
-        flex-direction: row;
+        flex-direction: column;
+        gap: 0.25rem;
+        padding-top: 0.15rem;
+    }
+
+    .timeline-date {
+        font-family: var(--mono-font);
+        font-size: 0.8rem;
+        color: var(--mp-orange);
+        font-weight: 500;
+    }
+
+    .timeline-tag {
+        font-size: 0.78rem;
+        color: var(--mp-text-muted);
+    }
+
+    .timeline-header {
+        display: flex;
+        flex-direction: column;
+        gap: 0.15rem;
+        margin-bottom: 0.45rem;
+    }
+
+    .role {
+        margin: 0;
+        font-size: 1.05rem;
+        font-weight: 600;
+        color: var(--mp-text);
+    }
+
+    .org {
+        font-size: 0.9rem;
+        color: var(--mp-purple);
+        font-weight: 500;
+    }
+
+    .desc {
+        margin: 0;
+        font-size: 0.95rem;
+        line-height: 1.6;
+        color: var(--mp-text-body);
+    }
+
+    .desc a {
+        color: var(--mp-cyan);
+        border-bottom: 1px solid var(--mp-border-strong);
+    }
+
+    .desc a:hover {
+        color: var(--mp-red);
+        border-bottom-color: var(--mp-red);
+    }
+
+    /* 02 / Projects Specification Table */
+    .project-table {
+        display: flex;
+        flex-direction: column;
+        border-top: 1px solid var(--mp-border);
+    }
+
+    .project-row {
+        display: grid;
+        grid-template-columns: 2.25rem 1fr auto;
+        gap: 1.25rem;
+        padding: 1.35rem 0.5rem;
+        border-bottom: 1px solid var(--mp-border);
+        align-items: start;
+        transition: background-color 0.15s ease;
+    }
+
+    .project-row:hover {
+        background-color: var(--mp-bg-hover);
+    }
+
+    .project-num {
+        font-family: var(--mono-font);
+        font-size: 0.8rem;
+        color: var(--mp-text-faint);
+        padding-top: 0.2rem;
+    }
+
+    .project-top {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 0.35rem 0.85rem;
+        margin-bottom: 0.4rem;
+    }
+
+    .project-name {
+        margin: 0;
+        font-size: 1.05rem;
+        font-weight: 600;
+        color: var(--mp-text);
+    }
+
+    .project-stack {
+        font-family: var(--mono-font);
+        font-size: 0.75rem;
+        color: var(--mp-green);
+        font-weight: 500;
+    }
+
+    .project-links {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 0.4rem;
+        font-size: 0.84rem;
+        font-weight: 600;
+        white-space: nowrap;
+        padding-top: 0.1rem;
+    }
+
+    .project-links a {
+        color: var(--mp-cyan);
+        text-decoration: none;
+        border-bottom: 1px solid var(--mp-border-strong);
+        padding-bottom: 1px;
+    }
+
+    .project-links a:hover {
+        color: var(--mp-red);
+        border-bottom-color: var(--mp-red);
+    }
+
+    /* 03 / Work History 3-Column Strip */
+    .work-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        border-top: 1px solid var(--mp-border);
+        border-bottom: 1px solid var(--mp-border);
+    }
+
+    .work-cell {
+        padding: 1.35rem 1.25rem 1.35rem 0;
+    }
+
+    .work-cell + .work-cell {
+        border-left: 1px solid var(--mp-border);
+        padding-left: 1.25rem;
+    }
+
+    .work-date {
+        font-family: var(--mono-font);
+        font-size: 0.75rem;
+        color: var(--mp-orange);
+        font-weight: 500;
+        margin-bottom: 0.4rem;
+    }
+
+    .work-role {
+        margin: 0;
+        font-size: 0.98rem;
+        font-weight: 600;
+        color: var(--mp-text);
+    }
+
+    .work-company {
+        font-size: 0.86rem;
+        color: var(--mp-purple);
+        font-weight: 500;
+        margin-top: 0.15rem;
+        margin-bottom: 0.55rem;
+    }
+
+    .work-desc {
+        margin: 0;
+        font-size: 0.88rem;
+        line-height: 1.55;
+        color: var(--mp-text-body);
+    }
+
+    /* 04 / Terminal Console Frame */
+    .terminal-intro {
+        margin: 0 0 1rem 0;
+        font-size: 0.94rem;
+        line-height: 1.55;
+        color: var(--mp-text-body);
+    }
+
+    .terminal-intro code {
+        font-family: var(--mono-font);
+        font-size: 0.85em;
+        color: var(--mp-red);
+        background-color: var(--mp-bg-subtle);
+        padding: 0.1rem 0.35rem;
+        border-radius: 3px;
+    }
+
+    .console-frame {
+        border: 1px solid var(--mp-border-strong);
+        border-radius: 6px;
+        background-color: var(--mp-bg-elevated);
+        overflow: hidden;
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.04);
+        transition: background-color 0.18s ease, border-color 0.18s ease;
+    }
+
+    .console-bar {
+        display: flex;
+        align-items: center;
         justify-content: space-between;
         flex-wrap: wrap;
-        gap: 0.5rem 1rem;
-    }
-
-    .xp-role, .project-name {
-        font-weight: 600;
-        font-size: 1.05rem;
-    }
-
-    .xp-date {
-        color: #ffffffb0;
-        font-family: var(--mono-font);
-        font-size: 0.78rem;
-        font-weight: 500;
-        letter-spacing: 0.02em;
-        background-color: #ffffff12;
-        border-radius: 999px;
-        padding: 0.2em 0.75em;
-        white-space: nowrap;
-        align-self: flex-start;
-    }
-
-    .xp-org {
-        color: #9FFDD8;
-        font-family: var(--mono-font);
-        font-size: 0.85rem;
-        font-weight: 500;
-        background-color: #9FFDD818;
-        border-radius: 0.4em;
-        padding: 0.1em 0.5em;
-        margin-left: 0.3em;
-        display: inline-block;
-    }
-
-    .xp-desc {
-        color: #ffffffcc;
-        margin: 0.4rem 0 0 0;
-        line-height: 1.5;
-    }
-
-    /* projects */
-    div.center {
-        color: #fff;
-    }
-
-    .project {
-        margin-bottom: 1.5rem;
-    }
-
-    .project-head {
-        display: flex;
-        flex-direction: row;
-        align-items: center;
-        /* justify-content: space-between; */
-        flex-wrap: wrap;
-        gap: 0.4rem 0.75rem;
-    }
-
-    .project-source {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.4em;
-        color: #9FFDD8;
-        font-family: var(--mono-font);
-        font-size: 0.78rem;
-        font-weight: 500;
-        letter-spacing: 0.02em;
-        background-color: #9FFDD818;
-        border: 1px solid #9FFDD82a;
-        border-radius: 999px;
-        padding: 0.2em 0.75em;
-        text-decoration: none;
-        transition: background-color 0.2s ease, transform 0.2s ease;
-    }
-
-    .project-source:hover {
-        background-color: #9FFDD830;
-        transform: translateY(-1px);
-    }
-
-    div.project > div.project-desc {
-        margin-left: 0;
-        margin-top: 0.4rem;
-        color: #fffa;
-        font-size: 1em;
-        line-height: 1.5;
-    }
-
-    /* terminal (de-emphasized) */
-    .terminal-section {
-        padding-bottom: 3rem;
-    }
-
-    .terminal-blurb {
-        color: #ffffffb0;
-        max-width: 38rem;
-    }
-
-    .terminal-actions {
-        display: flex;
-        flex-direction: row;
-        flex-wrap: wrap;
         gap: 0.75rem;
-        margin: 1rem 0 1.25rem 0;
+        padding: 0.75rem 1.35rem;
+        background-color: var(--mp-bg-subtle);
+        border-bottom: 1px solid var(--mp-border);
+        font-size: 0.84rem;
+        color: var(--mp-text-muted);
+        transition: background-color 0.18s ease, border-color 0.18s ease, color 0.18s ease;
     }
 
-    .terminal-actions i.fa-chevron-down {
-        transition: transform 0.2s ease;
+    .console-prompt {
+        font-family: var(--mono-font);
+        font-size: 0.78rem;
+        color: var(--mp-green);
+        font-weight: 600;
     }
 
-    .terminal-actions i.fa-chevron-down.flipped {
-        transform: rotate(180deg);
+    .console-actions {
+        display: flex;
+        align-items: center;
+        gap: 0.85rem;
+    }
+
+    .console-toggle-btn {
+        background-color: var(--mp-bg);
+        border: 1px solid var(--mp-border-strong);
+        border-radius: 4px;
+        padding: 0.3rem 0.7rem;
+        font-family: inherit;
+        font-size: 0.82rem;
+        font-weight: 600;
+        color: var(--mp-text);
+        cursor: pointer;
+    }
+
+    .console-toggle-btn:hover {
+        background-color: var(--mp-bg-hover);
+        border-color: var(--mp-red);
+        color: var(--mp-red);
+    }
+
+    .console-link {
+        font-size: 0.82rem;
+        color: var(--mp-cyan);
+        text-decoration: none;
+        border-bottom: 1px solid var(--mp-border-strong);
+    }
+
+    .console-link:hover {
+        color: var(--mp-red);
+        border-bottom-color: var(--mp-red);
     }
 
     #terminal-container {
-        padding: 1.5rem;
-        color: white;
-        border: 1px solid #ffffff2a;
-        border-radius: 15px;
+        padding: 1.5rem 1.75rem;
+        background-color: var(--mp-bg-elevated);
+        color: var(--mp-text);
         overflow-y: auto;
         overflow-x: hidden;
-        max-height: 500px;
-        margin-top: 1rem;
-        scrollbar-color: #fff #0000;
-        scrollbar-arrow-color: #0000;
+        min-height: 320px;
+        max-height: 520px;
+        scrollbar-width: thin;
+        scrollbar-color: var(--mp-border-strong) transparent;
+        transition: background-color 0.18s ease, color 0.18s ease;
     }
 
-    /* footer / accent blurb */
-    #site-footer {
-        display: flex;
-        flex-direction: row;
-        align-items: center;
-        justify-content: center;
-        gap: 0.6rem;
-        margin: 1rem 0 3rem 0;
-        padding-top: 1.5rem;
-        border-top: 1px solid #ffffff14;
-        text-align: center;
-    }
-
-    .accent-swatch {
-        display: inline-block;
-        width: 0.9rem;
-        height: 0.9rem;
-        border-radius: 999px;
-        background-color: #9FFDD8;
-        flex-shrink: 0;
-    }
-
-    .accent-note {
-        margin: 0;
-        color: #ffffff80;
-        font-family: var(--mono-font);
-        font-size: 0.82rem;
-        max-width: 34rem;
-    }
-
-    .accent-note code {
-        color: #9FFDD8;
-        background-color: #9FFDD818;
-        border-radius: 0.35ch;
-        padding: 0 0.5ch;
-    }
-
-    @media (max-width: 768px) {
-        .nav-links {
-            gap: 1rem;
+    /* Responsive Breakpoints */
+    @media (max-width: 960px) {
+        .page-grid {
+            grid-template-columns: 1fr;
+            gap: 2.75rem;
+            padding-top: 2.25rem;
         }
 
-        .nav-links > a:not(.nav-resume) {
+        .rail {
+            position: static;
+        }
+
+        .rail-inner {
+            border-right: none;
+            border-bottom: 1px solid var(--mp-border);
+            padding-right: 0;
+            padding-bottom: 2rem;
+        }
+
+        .index-nav {
             display: none;
+        }
+    }
+
+    @media (max-width: 720px) {
+        .timeline-row {
+            grid-template-columns: 1fr;
+            gap: 0.35rem;
+        }
+
+        .timeline-meta {
+            flex-direction: row;
+            justify-content: space-between;
+        }
+
+        .project-row {
+            grid-template-columns: 1.75rem 1fr;
+        }
+
+        .project-links {
+            grid-column: 2;
+            flex-direction: row;
+            justify-content: flex-start;
+            gap: 1rem;
+            margin-top: 0.25rem;
+        }
+
+        .work-grid {
+            grid-template-columns: 1fr;
+        }
+
+        .work-cell {
+            padding: 1rem 0;
+        }
+
+        .work-cell + .work-cell {
+            border-left: none;
+            border-top: 1px solid var(--mp-border);
+            padding-left: 0;
         }
     }
 </style>
