@@ -351,6 +351,23 @@
                         <a href="https://github.com/statikana/peckhamr.com" target="_blank">View Code ↗</a>
                     </div>
                 </article>
+
+                <article class="project-row">
+                    <div class="project-num">07</div>
+                    <div class="project-main">
+                        <div class="project-top">
+                            <h3 class="project-name">MTG Commander Arena (/magic)</h3>
+                            <span class="project-stack">Svelte 5 · Cloudflare D1 · Rules Engine</span>
+                        </div>
+                        <p class="desc">
+                            A live, strictly rules-enforced Magic: The Gathering Commander service with OAuth accounts,
+                            Scryfall deck importing, private invite-code lobbies, configurable host rules, VFX, and live chat.
+                        </p>
+                    </div>
+                    <div class="project-links">
+                        <a href="/magic/">Launch Arena ↗</a>
+                    </div>
+                </article>
             </div>
         </section>
 
