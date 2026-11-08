@@ -352,7 +352,7 @@ function checkIfAllKeptMulligan(state: GameState): void {
 		state.turnNumber = 1;
 		state.activePlayerIndex = 0;
 		state.priorityPlayerIndex = 0;
-		state.phase = 'untap';
+		beginPhase(state, 'untap');
 		addLog(state, 'system', `All players kept their opening hands. Turn 1 begins for ${state.players[0].username}!`);
 		runBeginningOfTurn(state);
 	}
@@ -766,7 +766,7 @@ export function evaluateTriggerCondition(
 }
 
 function runDrawStepAndEnterMain1(state: GameState, activePlayer: PlayerGameState): void {
-	state.phase = 'draw';
+	beginPhase(state, 'draw');
 	const shouldSkipFirstDraw =
 		state.turnNumber === 1 && state.players.length === 2 && !state.rules.firstTurnDraw;
 	if (!shouldSkipFirstDraw) {
@@ -788,7 +788,7 @@ function runDrawStepAndEnterMain1(state: GameState, activePlayer: PlayerGameStat
 	}
 
 	if (state.stack.length === 0) {
-		state.phase = 'main1';
+		beginPhase(state, 'main1');
 	}
 	state.priorityPlayerIndex = state.activePlayerIndex;
 	state.passedPriorityPlayerIds = [];
@@ -813,7 +813,7 @@ export function runBeginningOfTurn(state: GameState): void {
 	activePlayer.spellsCastThisTurn = 0;
 
 	// 1. Untap step (CR 502)
-	state.phase = 'untap';
+	beginPhase(state, 'untap');
 	activePlayer.landsPlayedThisTurn = 0;
 	activePlayer.maxLandsPerTurn = 1;
 	activePlayer.manaPool = createEmptyManaPool();
@@ -848,7 +848,7 @@ export function runBeginningOfTurn(state: GameState): void {
 	}
 
 	// 2. Upkeep step (CR 503)
-	state.phase = 'upkeep';
+	beginPhase(state, 'upkeep');
 
 	// 2a. Suspend Upkeep Triggers (CR 702.62a): Remove 1 time counter from each suspended card in exile; when last is removed, cast it without paying its mana cost!
 	const suspendedCards = activePlayer.exile.filter(
@@ -939,7 +939,24 @@ export function runBeginningOfTurn(state: GameState): void {
 	runDrawStepAndEnterMain1(state, activePlayer);
 }
 
+/**
+ * Applies one player action. Events emitted while it runs are dispatched synchronously and the
+ * queue is drained when the outermost call returns (see runtime/events.ts).
+ */
 export function applyGameAction(
+	state: GameState,
+	actorId: string,
+	action: GameActionPayload
+): { ok: boolean; error?: string } {
+	beginAction(state);
+	try {
+		return applyGameActionInner(state, actorId, action);
+	} finally {
+		endAction(state);
+	}
+}
+
+function applyGameActionInner(
 	state: GameState,
 	actorId: string,
 	action: GameActionPayload
@@ -1353,8 +1370,8 @@ export function applyGameAction(
 				label: inst.card.name
 			});
 
-			// Fire "Whenever you cast..." triggers
-			triggerOnSpellCast(state, actor, inst);
+			// Fire "Whenever you cast..." triggers (dispatched synchronously to triggerOnSpellCast)
+			emitEvent(state, { kind: 'Cast', playerId: actor.playerId, objectId: inst.instanceId, object: inst });
 			checkStateBasedActions(state);
 			return { ok: true };
 		}
@@ -1621,9 +1638,14 @@ export function applyGameAction(
 					amount: validAttackers.length,
 					label: `${validAttackers.length} Attacker(s)`
 				});
-				triggerOnAttack(state, actor, validAttackers.map((a) => a.attackerInstanceId));
+				// Dispatched synchronously to triggerOnAttack
+				emitEvent(state, {
+					kind: 'AttackDeclared',
+					playerId: actor.playerId,
+					attackerIds: validAttackers.map((a) => a.attackerInstanceId)
+				});
 				// Advance into declare_blockers step and give priority to defending player(s) in turn order
-				state.phase = 'declare_blockers';
+				beginPhase(state, 'declare_blockers');
 				const defendersInOrder = getAttackedDefenderIdsInTurnOrder(state);
 				const firstDefenderId = defendersInOrder[0] || validAttackers[0].defenderPlayerId;
 				const defIdx = state.players.findIndex((p) => p.playerId === firstDefenderId);
@@ -1633,7 +1655,7 @@ export function applyGameAction(
 				// No attackers declared -> skip straight to Postcombat Main Phase (main2)
 				addLog(state, 'combat', `${actor.username} declared no attackers. Moving to Main Phase 2.`, actorId);
 				state.combat.active = false;
-				state.phase = 'main2';
+				beginPhase(state, 'main2');
 				state.priorityPlayerIndex = state.activePlayerIndex;
 				state.passedPriorityPlayerIds = [];
 			}
@@ -1777,7 +1799,7 @@ export function applyGameAction(
 
 			// If in declare_attackers with empty stack and active player passes without attacking, treat as 0 attackers
 			if (state.phase === 'declare_attackers' && state.stack.length === 0 && !state.combat.active) {
-				state.phase = 'main2';
+				beginPhase(state, 'main2');
 				state.priorityPlayerIndex = state.activePlayerIndex;
 				state.passedPriorityPlayerIds = [];
 				addLog(state, 'combat', `${actor.username} skipped combat and moved to Main Phase 2.`, actorId);
@@ -2429,6 +2451,24 @@ export function addCountersToPermanent(
 		effectiveAmount = amount * multiplier;
 	}
 	perm.counters[type] = (perm.counters[type] || 0) + effectiveAmount;
+	// Dispatched synchronously to triggerOnCounterPlaced
+	emitEvent(state, {
+		kind: 'CounterPlaced',
+		objectId: perm.instanceId,
+		object: perm,
+		counterType: type,
+		amount: effectiveAmount
+	});
+	return effectiveAmount;
+}
+
+/** "Whenever one or more +1/+1 counters are put on ~" (was inline in addCountersToPermanent). */
+function triggerOnCounterPlaced(
+	state: GameState,
+	perm: CardInstance,
+	type: CounterType,
+	effectiveAmount: number
+): void {
 	if (
 		type === '+1/+1' &&
 		effectiveAmount > 0 &&
@@ -2445,8 +2485,31 @@ export function addCountersToPermanent(
 			}
 		}
 	}
-	return effectiveAmount;
 }
+
+/** Sets the current phase/step and emits PhaseBegin. */
+function beginPhase(state: GameState, phase: GamePhase): void {
+	state.phase = phase;
+	emitEvent(state, {
+		kind: 'PhaseBegin',
+		phase,
+		activePlayerId: state.players[state.activePlayerIndex]?.playerId ?? null
+	});
+}
+
+// Event dispatch (Phase 2). Each handler is the direct call it replaced, at the same point, so
+// ordering is unchanged. Phase 5 replaces these with trigger matching over the event queue.
+registerEventHandler('Cast', (state, ev) => {
+	const caster = state.players.find((p) => p.playerId === ev.playerId);
+	if (caster) triggerOnSpellCast(state, caster, ev.object);
+});
+registerEventHandler('AttackDeclared', (state, ev) => {
+	const attacker = state.players.find((p) => p.playerId === ev.playerId);
+	if (attacker) triggerOnAttack(state, attacker, ev.attackerIds);
+});
+registerEventHandler('CounterPlaced', (state, ev) => {
+	triggerOnCounterPlaced(state, ev.object, ev.counterType, ev.amount);
+});
 
 export function resolveTopOfStack(state: GameState): void {
 	const item = state.stack.pop();
@@ -3241,6 +3304,16 @@ function executeParsedEffect(
 					if (!opp.lifeTotalCannotChangeThisTurn && !opp.protectionFromEverythingThisTurn) {
 						opp.life -= amount;
 					}
+					if (!opp.protectionFromEverythingThisTurn) {
+						emitEvent(state, {
+							kind: 'DamageDealt',
+							sourceId: item.sourceInstanceId,
+							targetId: opp.playerId,
+							targetKind: 'player',
+							amount,
+							combat: false
+						});
+					}
 					emitVfx(state, {
 						kind: 'damage',
 						sourceId: controller.playerId,
@@ -3258,6 +3331,14 @@ function executeParsedEffect(
 					if (perm.phasedOut) continue;
 					if (evaluatePermanent(state, perm).typeLine.includes('Creature')) {
 						perm.damageMarked += eff.amount;
+						emitEvent(state, {
+							kind: 'DamageDealt',
+							sourceId: item.sourceInstanceId,
+							targetId: perm.instanceId,
+							targetKind: 'permanent',
+							amount: eff.amount,
+							combat: false
+						});
 						emitVfx(state, {
 							kind: 'damage',
 							targetId: perm.instanceId,
@@ -3666,7 +3747,7 @@ export function endTheTurnImmediately(state: GameState, actorId: string): void {
  * If the Stack is non-empty, priority is given to `activePlayer` so they can respond (e.g. with Obeka or Sundial!).
  */
 export function enterEndStep(state: GameState, activePlayer: PlayerGameState): void {
-	state.phase = 'end_step';
+	beginPhase(state, 'end_step');
 	emitVfx(state, { kind: 'phase_change', label: 'End Step' });
 
 	// 1. Permanent beginning-of-end-step triggers (e.g., Atraxa, Dress Down)
@@ -3847,7 +3928,12 @@ export function executeSuspendFreeCastFromExile(
 		`${owner.username} cast ${suspCard.card.name} from Exile without paying its mana cost via Suspend (CR 702.62a)!`,
 		owner.playerId
 	);
-	triggerOnSpellCast(state, owner, suspCard);
+	emitEvent(state, {
+		kind: 'Cast',
+		playerId: owner.playerId,
+		objectId: suspCard.instanceId,
+		object: suspCard
+	});
 	// Resolve immediately if no players are holding interaction or during upkeep automation
 	resolveTopOfStack(state);
 	if (suspCard.card.typeLine.includes('Creature')) {
@@ -4469,27 +4555,27 @@ export function advancePhaseOrStep(state: GameState): void {
 			if (activePlayer) {
 				runDrawStepAndEnterMain1(state, activePlayer);
 			} else {
-				state.phase = 'main1';
+				beginPhase(state, 'main1');
 			}
 			break;
 		case 'draw':
-			state.phase = 'main1';
+			beginPhase(state, 'main1');
 			break;
 
 		case 'main1':
-			state.phase = 'declare_attackers';
+			beginPhase(state, 'declare_attackers');
 			emitVfx(state, { kind: 'phase_change', label: 'Combat — Declare Attackers' });
 			break;
 
 		case 'begin_combat':
-			state.phase = 'declare_attackers';
+			beginPhase(state, 'declare_attackers');
 			break;
 
 		case 'declare_attackers':
 			if (state.combat.active && state.combat.attackers.length > 0) {
-				state.phase = 'declare_blockers';
+				beginPhase(state, 'declare_blockers');
 			} else {
-				state.phase = 'main2';
+				beginPhase(state, 'main2');
 			}
 			break;
 
@@ -4497,29 +4583,29 @@ export function advancePhaseOrStep(state: GameState): void {
 			// Check if any combatant has First strike or Double strike
 			const hasFirstStrike = checkAnyCombatantHasFirstStrike(state);
 			if (hasFirstStrike) {
-				state.phase = 'first_strike_damage';
+				beginPhase(state, 'first_strike_damage');
 				executeCombatDamageStep(state, true);
 			} else {
-				state.phase = 'combat_damage';
+				beginPhase(state, 'combat_damage');
 				executeCombatDamageStep(state, false);
 			}
 			break;
 		}
 
 		case 'first_strike_damage':
-			state.phase = 'combat_damage';
+			beginPhase(state, 'combat_damage');
 			executeCombatDamageStep(state, false);
 			break;
 
 		case 'combat_damage':
 			state.combat.active = false;
 			state.combat.attackers = [];
-			state.phase = 'main2';
+			beginPhase(state, 'main2');
 			emitVfx(state, { kind: 'phase_change', label: 'Postcombat Main Phase 2' });
 			break;
 
 		case 'end_combat':
-			state.phase = 'main2';
+			beginPhase(state, 'main2');
 			break;
 
 		case 'main2':
@@ -4608,6 +4694,14 @@ function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): 
 						defPlayer.life -= remainingDamage;
 					}
 					totalDealtByAttacker += remainingDamage;
+					emitEvent(state, {
+						kind: 'DamageDealt',
+						sourceId: attacker.instanceId,
+						targetId: defPlayer.playerId,
+						targetKind: 'player',
+						amount: remainingDamage,
+						combat: true
+					});
 				}
 
 				emitVfx(state, {
@@ -4706,6 +4800,14 @@ function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): 
 							b.damageMarked += dmgToBlocker;
 						}
 						if (atkDeathtouch) b.deathtouchDamageMarked = true;
+						emitEvent(state, {
+							kind: 'DamageDealt',
+							sourceId: attacker.instanceId,
+							targetId: b.instanceId,
+							targetKind: 'permanent',
+							amount: dmgToBlocker,
+							combat: true
+						});
 						remainingDamage -= dmgToBlocker;
 						totalDealtByAttacker += dmgToBlocker;
 						emitVfx(state, {
@@ -4730,6 +4832,14 @@ function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): 
 							defPlayer.commanderDamageTaken[attacker.instanceId] =
 								(defPlayer.commanderDamageTaken[attacker.instanceId] || 0) + remainingDamage;
 						}
+						emitEvent(state, {
+							kind: 'DamageDealt',
+							sourceId: attacker.instanceId,
+							targetId: defPlayer.playerId,
+							targetKind: 'player',
+							amount: remainingDamage,
+							combat: true
+						});
 					}
 					emitVfx(state, {
 						kind: 'damage',
@@ -4778,6 +4888,14 @@ function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): 
 					if (hasKeyword(b, 'Deathtouch', state)) {
 						attacker.deathtouchDamageMarked = true;
 					}
+					emitEvent(state, {
+						kind: 'DamageDealt',
+						sourceId: b.instanceId,
+						targetId: attacker.instanceId,
+						targetKind: 'permanent',
+						amount: bPower,
+						combat: true
+					});
 					if (hasKeyword(b, 'Lifelink', state) && !defPlayer.lifeTotalCannotChangeThisTurn) {
 						defPlayer.life += bPower;
 					}
@@ -4802,7 +4920,7 @@ function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): 
 }
 
 function runCleanupStep(state: GameState): void {
-	state.phase = 'cleanup';
+	beginPhase(state, 'cleanup');
 	const activePlayer = state.players[state.activePlayerIndex];
 
 	// Check if activePlayer has Reliquary Tower / Thought Vessel for unlimited hand size
@@ -6357,6 +6475,16 @@ function applyDamageToTarget(
 		if (!pTarget.lifeTotalCannotChangeThisTurn && !pTarget.protectionFromEverythingThisTurn) {
 			pTarget.life -= amount;
 		}
+		if (!pTarget.protectionFromEverythingThisTurn) {
+			emitEvent(state, {
+				kind: 'DamageDealt',
+				sourceId: sourcePlayerId,
+				targetId: pTarget.playerId,
+				targetKind: 'player',
+				amount,
+				combat: false
+			});
+		}
 		emitVfx(state, {
 			kind: 'damage',
 			sourceId: sourcePlayerId,
@@ -6372,6 +6500,14 @@ function applyDamageToTarget(
 		} else {
 			permFound.inst.damageMarked += amount;
 		}
+		emitEvent(state, {
+			kind: 'DamageDealt',
+			sourceId: sourcePlayerId,
+			targetId: permFound.inst.instanceId,
+			targetKind: 'permanent',
+			amount,
+			combat: false
+		});
 		emitVfx(state, {
 			kind: 'damage',
 			sourceId: sourcePlayerId,
