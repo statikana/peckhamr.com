@@ -20,6 +20,13 @@ import type {
 	TargetRequirementInfo,
 	ZoneType
 } from './types.ts';
+import {
+	crossCheckLayerResult,
+	getBoardSnapshot,
+	layerCacheCheckEnabled,
+	type BoardEntry,
+	type BoardSnapshot
+} from './runtime/layerCache.ts';
 
 export type RulePath =
 	| 'cast.normal'
@@ -1085,6 +1092,338 @@ const CANONICAL_COMBAT_KEYWORDS: Array<{ key: string; label: string; regex: RegE
 	{ key: 'cascade', label: 'Cascade', regex: /\bcascade\b/i }
 ];
 
+// ----------------------------------------------------------------------------
+// Phase 6a: pure text memos for the layer code. Every function here is a pure function of its
+// string arguments, so the memos can never go stale; they're bounded by the card pool's texts.
+// ----------------------------------------------------------------------------
+
+const TEXT_MEMO_LIMIT = 200_000;
+let textMemoSize = 0;
+const lowerMemo = new Map<string, string>();
+const linesMemo = new Map<string, string[]>();
+const matchMemo = new Map<RegExp, Map<string, RegExpMatchArray | null>>();
+const keywordsInMemo = new Map<string, Array<{ key: string; label: string; regex: RegExp }>>();
+const wordRegexMemo = new Map<string, RegExp>();
+
+function noteTextMemoEntry(): void {
+	textMemoSize += 1;
+	if (textMemoSize > TEXT_MEMO_LIMIT) {
+		lowerMemo.clear();
+		linesMemo.clear();
+		matchMemo.clear();
+		keywordsInMemo.clear();
+		wordRegexMemo.clear();
+		textMemoSize = 0;
+	}
+}
+
+/** `s.toLowerCase()`, memoised. */
+function lowerOf(s: string): string {
+	let v = lowerMemo.get(s);
+	if (v === undefined) {
+		v = s.toLowerCase();
+		noteTextMemoEntry();
+		lowerMemo.set(s, v);
+	}
+	return v;
+}
+
+/** `s.split('\n')`, memoised. The returned array is shared: never mutate it. */
+function linesOf(s: string): readonly string[] {
+	let v = linesMemo.get(s);
+	if (v === undefined) {
+		v = s.split('\n');
+		noteTextMemoEntry();
+		linesMemo.set(s, v);
+	}
+	return v;
+}
+
+/**
+ * `s.match(re)` for a non-global regex, memoised per (regex object, string). The regex must be a
+ * module-level constant (a literal inside a function is a new object on every evaluation). The
+ * returned match is shared: never mutate it.
+ */
+function memoMatch(re: RegExp, s: string): RegExpMatchArray | null {
+	let byText = matchMemo.get(re);
+	if (!byText) {
+		byText = new Map();
+		matchMemo.set(re, byText);
+	}
+	let v = byText.get(s);
+	if (v === undefined) {
+		v = s.match(re);
+		noteTextMemoEntry();
+		byText.set(s, v);
+	}
+	return v;
+}
+
+/** `re.test(s)` for a non-global regex, memoised. */
+function memoTest(re: RegExp, s: string): boolean {
+	return memoMatch(re, s) !== null;
+}
+
+/** The canonical keywords whose regex matches `s`, in table order. Shared: never mutate. */
+function keywordsIn(s: string): ReadonlyArray<{ key: string; label: string; regex: RegExp }> {
+	let v = keywordsInMemo.get(s);
+	if (v === undefined) {
+		v = CANONICAL_COMBAT_KEYWORDS.filter((kw) => kw.regex.test(s));
+		noteTextMemoEntry();
+		keywordsInMemo.set(s, v);
+	}
+	return v;
+}
+
+/** `new RegExp(`\\b${word}\\b`, 'i')`, memoised by word. */
+function wordRegex(word: string): RegExp {
+	let v = wordRegexMemo.get(word);
+	if (v === undefined) {
+		v = new RegExp(`\\b${word}\\b`, 'i');
+		noteTextMemoEntry();
+		wordRegexMemo.set(word, v);
+	}
+	return v;
+}
+
+/** The single place the layer code reads a card's rules text. */
+function layerCardText(card: ScryfallCard): string {
+	return card.oracleText;
+}
+
+// Layer-code patterns, hoisted so `memoMatch` can key on them. Each is used exactly as the inline
+// literal it replaced, against the same (original-case or lowercased) string.
+const RE_ENCHANTED_LOSES_ALL =
+	/enchanted (?:creature|permanent)\b.*\bloses all (?:other )?(?:card types and )?abilities/i;
+const RE_LOSES_ALL_ABILITIES = /loses all abilities/i;
+const RE_OPALESCENCE = /each other non-aura enchantment is a creature in addition/i;
+const RE_ENCHANTED_ART_CREATURE =
+	/enchanted (?:creature|permanent)\b[^.\n]*?\bis an? ([a-z]+) artifact creature\b/i;
+const RE_ENCHANTED_CREATURE_SUB =
+	/enchanted (?:creature|permanent)\b[^.\n]*?\bis an? (?:(?:white|blue|black|red|green|colorless) )?([a-z]+) creature\b/i;
+const RE_ENCHANTED_LAND =
+	/enchanted (?:creature|permanent)\b[^.\n]*?\bis a (?:colorless )?(?:(plains|island|swamp|mountain|forest) )?land\b/i;
+const RE_ALL_CREATURES_LOSE = /(?:^|\b)all creatures lose all abilities/i;
+const RE_CREATURES_LOSE_LINE = /^creatures lose all abilities/im;
+const RE_NONBASIC_LANDS_ARE_TEST = /nonbasic lands are (?:plains|islands|swamps|mountains|forests)\b/i;
+const RE_NONBASIC_LANDS_ARE = /nonbasic lands are (plains|islands|swamps|mountains|forests)\b/i;
+const RE_BASE_PT = /base power and toughness (\d+)\/(\d+)/i;
+const RE_EACH_LAND_IS = /each land is an? (plains|island|swamp|mountain|forest) in addition/i;
+const RE_ALL_PERMANENTS_ARTIFACTS = /all permanents are artifacts in addition/i;
+const RE_EVERY_CREATURE_TYPE = /creatures you control are every creature type/i;
+const RE_WITH_TAP_ADD_SYM = /with "\{t\}:\s*add \{([wubrgc])\}"/i;
+const RE_ATTACHED_PT = /(?:equipped|enchanted) creature gets ([+-]\d+)\/([+-]\d+)/i;
+const RE_LANDS_ANY_COLOR = /lands you control have "\{t\}:\s*add one mana of any color\.?"/i;
+const RE_PW_AND_CREATURES_HAVE =
+	/(?:you,\s*)?planeswalkers you control,?\s*and (other )?creatures you control have ([^.\n]+)/i;
+const RE_PT_LORD = /^(other )?(?:([a-z]+) )?creatures you control get ([+-]\d+)\/([+-]\d+)/i;
+const RE_KW_LORD =
+	/^(other )?(?:([a-z]+) )?creatures you control (?:get [+-]\d+\/[+-]\d+ and )?have ([^.\n]+)/i;
+const RE_PROTECTION_FROM = /\b(protection from [a-z ,]+?)(?:[.\n]|$)/i;
+const RE_OPPONENTS_LOSE = /(creatures|permanents) your opponents control lose ([^.\n]+)/i;
+
+function isEnchantedLosesAllText(low: string): boolean {
+	return memoTest(RE_ENCHANTED_LOSES_ALL, low) || memoTest(RE_LOSES_ALL_ABILITIES, low);
+}
+
+function isGlobalCreaturesLoseAllText(low: string): boolean {
+	return memoTest(RE_ALL_CREATURES_LOSE, low) || memoTest(RE_CREATURES_LOSE_LINE, low);
+}
+
+// ----------------------------------------------------------------------------
+// Phase 6a: per-board layer view (see runtime/layerCache.ts for the validation strategy).
+// ----------------------------------------------------------------------------
+
+type StripSource = { name: string; timestamp: number };
+
+interface LayerEntry extends BoardEntry {
+	name: string;
+	text: string;
+	low: string;
+	/** Has an attached ability-stripping Aura (that isn't itself stripped). */
+	stripped: boolean;
+	/** Text has a controller-scoped grant (anthem, lord, land mana, every creature type). */
+	hasControllerGrant: boolean;
+}
+
+interface LayerView {
+	snap: BoardSnapshot;
+	/** Active objects in board order. */
+	entries: LayerEntry[];
+	/** Active objects in timestamp order. */
+	sorted: LayerEntry[];
+	/** Unstripped Opalescence-style sources, in board order. */
+	opalescenceSourceIds: string[];
+	/** Unstripped objects that can make something lose all abilities, in board order. */
+	lostRelevant: LayerEntry[];
+	/** Unstripped "nonbasic lands are <type>" sources, in timestamp order. */
+	nonbasicLandSetters: LayerEntry[];
+	/** Unstripped additive type changers (Opalescence, Urborg, Mycosynth, Maskwood), timestamp order. */
+	additiveTypeSources: LayerEntry[];
+	/** Unstripped "(all) creatures lose all abilities" sources, in timestamp order. */
+	globalLoseAllSources: LayerEntry[];
+	/** "<…> your opponents control lose <…>" sources (stripped or not), in timestamp order. */
+	opponentKeywordRemovers: LayerEntry[];
+	stripMemo: Map<string, StripSource[]>;
+	lostMemo: Map<CardInstance, { lost: boolean; sources: string[] }>;
+}
+
+const LAYER_VIEW_KEY = 'ruleTree.layerView';
+
+function computeStripSources(
+	snap: BoardSnapshot,
+	permId: string,
+	visited: Set<string>
+): StripSource[] {
+	if (visited.has(permId)) return [];
+	visited.add(permId);
+	const result: StripSource[] = [];
+	for (const other of snap.attachedTo.get(permId) ?? []) {
+		const oCard = other.card;
+		const oLow = lowerOf(layerCardText(oCard));
+		if (isEnchantedLosesAllText(oLow)) {
+			if (computeStripSources(snap, other.perm.instanceId, visited).length === 0) {
+				result.push({ name: oCard.name, timestamp: other.timestamp });
+			}
+		}
+	}
+	return result;
+}
+
+/**
+ * Checks whether a battlefield permanent has lost all of its innate abilities due to an attached Aura
+ * (`Darksteel Mutation`, `Kenrith's Transformation`, `Imprisoned in the Moon`, `Song of the Dryads`).
+ * Memoised per board; the result is shared: never mutate it.
+ */
+function getAttachedAbilityStrippingAuraSources(view: LayerView, permId: string): StripSource[] {
+	let v = view.stripMemo.get(permId);
+	if (v === undefined) {
+		v = computeStripSources(view.snap, permId, new Set());
+		view.stripMemo.set(permId, v);
+	}
+	return v;
+}
+
+function getLayerView(snap: BoardSnapshot): LayerView {
+	const cached = snap.memo.get(LAYER_VIEW_KEY) as LayerView | undefined;
+	if (cached) return cached;
+	const view: LayerView = {
+		snap,
+		entries: [],
+		sorted: [],
+		opalescenceSourceIds: [],
+		lostRelevant: [],
+		nonbasicLandSetters: [],
+		additiveTypeSources: [],
+		globalLoseAllSources: [],
+		opponentKeywordRemovers: [],
+		stripMemo: new Map(),
+		lostMemo: new Map()
+	};
+	const byEntry = new Map<BoardEntry, LayerEntry>();
+	for (const e of snap.active) {
+		const text = layerCardText(e.card);
+		const le: LayerEntry = {
+			...e,
+			name: e.card.name,
+			text,
+			low: lowerOf(text),
+			stripped: getAttachedAbilityStrippingAuraSources(view, e.perm.instanceId).length > 0,
+			hasControllerGrant: false
+		};
+		le.hasControllerGrant = textHasControllerGrant(text, le.low);
+		byEntry.set(e, le);
+		view.entries.push(le);
+		if (le.stripped) continue;
+		if (memoTest(RE_OPALESCENCE, le.text)) view.opalescenceSourceIds.push(le.perm.instanceId);
+		if (
+			isEnchantedLosesAllText(le.low) ||
+			isGlobalCreaturesLoseAllText(le.low) ||
+			memoTest(RE_NONBASIC_LANDS_ARE_TEST, le.low)
+		) {
+			view.lostRelevant.push(le);
+		}
+	}
+	view.sorted = snap.sorted.map((e) => byEntry.get(e)!);
+	for (const le of view.sorted) {
+		if (memoTest(RE_OPPONENTS_LOSE, le.text)) view.opponentKeywordRemovers.push(le);
+		if (le.stripped) continue;
+		if (memoTest(RE_NONBASIC_LANDS_ARE, le.low)) view.nonbasicLandSetters.push(le);
+		if (
+			memoTest(RE_OPALESCENCE, le.low) ||
+			memoTest(RE_EACH_LAND_IS, le.low) ||
+			memoTest(RE_ALL_PERMANENTS_ARTIFACTS, le.low) ||
+			memoTest(RE_EVERY_CREATURE_TYPE, le.low)
+		) {
+			view.additiveTypeSources.push(le);
+		}
+		if (isGlobalCreaturesLoseAllText(le.low)) view.globalLoseAllSources.push(le);
+	}
+	snap.memo.set(LAYER_VIEW_KEY, view);
+	return view;
+}
+
+/**
+ * Whether the controller-scoped grant block of the layer evaluation can do anything for an object
+ * with this text: it only acts on these patterns (the lines loop skips trigger and activated lines).
+ */
+function textHasControllerGrant(text: string, low: string): boolean {
+	if (memoTest(RE_LANDS_ANY_COLOR, low) || memoTest(RE_EVERY_CREATURE_TYPE, low)) return true;
+	for (const line of linesOf(text)) {
+		const lLow = lowerOf(line);
+		if (lLow.startsWith('whenever ') || lLow.startsWith('when ') || lLow.includes(':')) continue;
+		if (
+			memoTest(RE_PW_AND_CREATURES_HAVE, line) ||
+			memoTest(RE_PT_LORD, line) ||
+			memoTest(RE_KW_LORD, line)
+		) {
+			return true;
+		}
+	}
+	return false;
+}
+
+function currentLayerView(state: GameState): LayerView {
+	return getLayerView(getBoardSnapshot(state));
+}
+
+// ----------------------------------------------------------------------------
+
+const INNATE_MEMO = new WeakMap<
+	ScryfallCard,
+	{
+		text: string;
+		typeLine: string;
+		keywords: string[] | undefined;
+		keywordsKey: string;
+		result: Array<{ canonicalKey: string; name: string; kind: 'keyword' | 'ability' }>;
+	}
+>();
+
+/**
+ * Memoised `extractSelfInnateKeywordsAndAbilities`, keyed by card object and re-validated against
+ * the fields it reads. The result is shared: never mutate it (callers copy each entry).
+ */
+function innateKeywordsAndAbilitiesOf(
+	card: ScryfallCard
+): ReadonlyArray<{ canonicalKey: string; name: string; kind: 'keyword' | 'ability' }> {
+	const text = layerCardText(card);
+	const keywordsKey = (card.keywords || []).join('\u0000');
+	const hit = INNATE_MEMO.get(card);
+	if (
+		hit &&
+		hit.text === text &&
+		hit.typeLine === card.typeLine &&
+		hit.keywords === card.keywords &&
+		hit.keywordsKey === keywordsKey
+	) {
+		return hit.result;
+	}
+	const result = extractSelfInnateKeywordsAndAbilities(card);
+	INNATE_MEMO.set(card, { text, typeLine: card.typeLine, keywords: card.keywords, keywordsKey, result });
+	return result;
+}
+
 function extractSelfInnateKeywordsAndAbilities(card: ScryfallCard): Array<{
 	canonicalKey: string;
 	name: string;
@@ -1100,7 +1439,7 @@ function extractSelfInnateKeywordsAndAbilities(card: ScryfallCard): Array<{
 		results.push({ canonicalKey: k, name, kind });
 	};
 
-	const lines = (card.oracleText || '')
+	const lines = (layerCardText(card) || '')
 		.split('\n')
 		.map((l) => l.trim())
 		.filter(Boolean);
@@ -1248,95 +1587,63 @@ function extractSelfInnateKeywordsAndAbilities(card: ScryfallCard): Array<{
 
 	return results;
 }
-
 /**
- * Checks whether a battlefield permanent has lost all of its innate abilities due to an attached Aura
+ * Checks whether a permanent has lost all of its abilities due to an attached Aura
  * (`Darksteel Mutation`, `Kenrith's Transformation`, `Imprisoned in the Moon`, `Song of the Dryads`)
  * or a global enchantment (`Humility`, `Dress Down`, `Blood Moon`).
  */
-function getAttachedAbilityStrippingAuraSources(
-	perm: CardInstance,
-	state: GameState,
-	visited: Set<string> = new Set()
-): Array<{ name: string; timestamp: number }> {
-	if (visited.has(perm.instanceId)) return [];
-	visited.add(perm.instanceId);
-	const result: Array<{ name: string; timestamp: number }> = [];
-	let fallbackOrder = 0;
-	for (const p of state.players) {
-		if (p.lost) continue;
-		for (const other of p.battlefield) {
-			if (other.phasedOut) continue;
-			fallbackOrder += 1;
-			if (other.attachedToId !== perm.instanceId) continue;
-			const oCard = other.copiableCard ?? other.card;
-			const oLow = oCard.oracleText.toLowerCase();
-			if (
-				/enchanted (?:creature|permanent)\b.*\bloses all (?:other )?(?:card types and )?abilities/i.test(
-					oLow
-				) ||
-				/loses all abilities/i.test(oLow)
-			) {
-				if (getAttachedAbilityStrippingAuraSources(other, state, visited).length === 0) {
-					result.push({
-						name: oCard.name,
-						timestamp: other.enteredTimestamp ?? fallbackOrder
-					});
-				}
-			}
-		}
-	}
-	return result;
-}
-
 export function permanentHasLostAllAbilities(
 	perm: CardInstance,
 	state: GameState
 ): { lost: boolean; sources: string[] } {
+	const r = lostAllAbilitiesIn(currentLayerView(state), perm);
+	const out = { lost: r.lost, sources: [...r.sources] };
+	if (layerCacheCheckEnabled()) {
+		crossCheckLayerResult('permanentHasLostAllAbilities', out, () =>
+			permanentHasLostAllAbilities(perm, state)
+		);
+	}
+	return out;
+}
+
+/**
+ * Memoised per board for objects that are on the battlefield (their own fields are part of the
+ * board fingerprint). The result is shared: never mutate it.
+ */
+function lostAllAbilitiesIn(
+	view: LayerView,
+	perm: CardInstance
+): { lost: boolean; sources: string[] } {
+	const cacheable = view.snap.objects.has(perm);
+	if (cacheable) {
+		const hit = view.lostMemo.get(perm);
+		if (hit) return hit;
+	}
+	const r = computeLostAllAbilities(view, perm);
+	if (cacheable) view.lostMemo.set(perm, r);
+	return r;
+}
+
+function computeLostAllAbilities(
+	view: LayerView,
+	perm: CardInstance
+): { lost: boolean; sources: string[] } {
 	const sources: string[] = [];
 	const baseCard = perm.copiableCard ?? perm.card;
-	const hasOpalescenceOnBoard = state.players.some(
-		(pl) =>
-			!pl.lost &&
-			pl.battlefield.some(
-				(b) =>
-					!b.phasedOut &&
-					b.instanceId !== perm.instanceId &&
-					getAttachedAbilityStrippingAuraSources(b, state).length === 0 &&
-					/each other non-aura enchantment is a creature in addition/i.test(
-						(b.copiableCard ?? b.card).oracleText
-					)
-			)
-	);
+	const hasOpalescenceOnBoard = view.opalescenceSourceIds.some((id) => id !== perm.instanceId);
 
 	let effectiveTypeLine = perm.isFaceDown ? 'Creature' : baseCard.typeLine;
-	const attachedTypePerms: Array<{ perm: CardInstance; timestamp: number }> = [];
-	let order = 0;
-	for (const p of state.players) {
-		if (p.lost) continue;
-		for (const other of p.battlefield) {
-			if (other.phasedOut) continue;
-			order += 1;
-			if (other.attachedToId === perm.instanceId) {
-				attachedTypePerms.push({ perm: other, timestamp: other.enteredTimestamp ?? order });
-			}
-		}
-	}
-	attachedTypePerms.sort((a, b) => a.timestamp - b.timestamp);
-	for (const { perm: att } of attachedTypePerms) {
-		if (getAttachedAbilityStrippingAuraSources(att, state).length > 0) continue;
-		const aCard = att.copiableCard ?? att.card;
-		const artCreatureMatch = aCard.oracleText.match(
-			/enchanted (?:creature|permanent)\b[^.\n]*?\bis an? ([a-z]+) artifact creature\b/i
-		);
+	const attachedTypePerms = [...(view.snap.attachedTo.get(perm.instanceId) ?? [])].sort(
+		(a, b) => a.timestamp - b.timestamp
+	);
+	for (const att of attachedTypePerms) {
+		if (getAttachedAbilityStrippingAuraSources(view, att.perm.instanceId).length > 0) continue;
+		const aText = layerCardText(att.card);
+		const artCreatureMatch = memoMatch(RE_ENCHANTED_ART_CREATURE, aText);
 		const creatureSubMatch = !artCreatureMatch
-			? aCard.oracleText.match(
-					/enchanted (?:creature|permanent)\b[^.\n]*?\bis an? (?:(?:white|blue|black|red|green|colorless) )?([a-z]+) creature\b/i
-				)
+			? memoMatch(RE_ENCHANTED_CREATURE_SUB, aText)
 			: null;
-		const landMatch = aCard.oracleText.match(
-			/enchanted (?:creature|permanent)\b[^.\n]*?\bis a (?:colorless )?(?:(plains|island|swamp|mountain|forest) )?land\b/i
-		);
+		const landMatch = memoMatch(RE_ENCHANTED_LAND, aText);
 		if (artCreatureMatch) {
 			effectiveTypeLine = `Artifact Creature — ${artCreatureMatch[1]}`;
 		} else if (creatureSubMatch) {
@@ -1354,40 +1661,23 @@ export function permanentHasLostAllAbilities(
 	const isNonBasicLand =
 		effectiveTypeLine.includes('Land') && !baseCard.typeLine.includes('Basic');
 
-	for (const p of state.players) {
-		if (p.lost) continue;
-		for (const other of p.battlefield) {
-			if (other.phasedOut) continue;
-			if (getAttachedAbilityStrippingAuraSources(other, state).length > 0) continue;
-			const oCard = other.copiableCard ?? other.card;
-			const oName = oCard.name;
-			const oLow = oCard.oracleText.toLowerCase();
+	// Only unstripped objects with one of the three patterns can contribute (in board order).
+	for (const other of view.lostRelevant) {
+		const oName = other.name;
+		const oLow = other.low;
 
-			if (other.attachedToId === perm.instanceId) {
-				if (
-					/enchanted (?:creature|permanent)\b.*\bloses all (?:other )?(?:card types and )?abilities/i.test(
-						oLow
-					) ||
-					/loses all abilities/i.test(oLow)
-				) {
-					if (!sources.includes(oName)) sources.push(oName);
-				}
-			}
-
-			if (
-				isCreature &&
-				(/(?:^|\b)all creatures lose all abilities/i.test(oLow) ||
-					/^creatures lose all abilities/im.test(oLow))
-			) {
+		if (other.perm.attachedToId === perm.instanceId) {
+			if (isEnchantedLosesAllText(oLow)) {
 				if (!sources.includes(oName)) sources.push(oName);
 			}
+		}
 
-			if (
-				isNonBasicLand &&
-				/nonbasic lands are (?:plains|islands|swamps|mountains|forests)\b/i.test(oLow)
-			) {
-				if (!sources.includes(oName)) sources.push(oName);
-			}
+		if (isCreature && isGlobalCreaturesLoseAllText(oLow)) {
+			if (!sources.includes(oName)) sources.push(oName);
+		}
+
+		if (isNonBasicLand && memoTest(RE_NONBASIC_LANDS_ARE_TEST, oLow)) {
+			if (!sources.includes(oName)) sources.push(oName);
 		}
 	}
 
@@ -1432,6 +1722,20 @@ const BASIC_LAND_MANA_MAP: Record<string, { subtype: string; sym: string }> = {
 export function inspectCardContinuousBreakdown(
 	cardOrInst: CardInstance | ScryfallCard,
 	state?: GameState
+): CardContinuousBreakdown {
+	const out = inspectCardContinuousBreakdownIn(cardOrInst, state, null);
+	if (state && layerCacheCheckEnabled()) {
+		crossCheckLayerResult('inspectCardContinuousBreakdown', out, () =>
+			inspectCardContinuousBreakdown(cardOrInst, state)
+		);
+	}
+	return out;
+}
+
+function inspectCardContinuousBreakdownIn(
+	cardOrInst: CardInstance | ScryfallCard,
+	state: GameState | undefined,
+	viewIn: LayerView | null
 ): CardContinuousBreakdown {
 	let inst: CardInstance | null = null;
 	let card: ScryfallCard;
@@ -1485,7 +1789,7 @@ export function inspectCardContinuousBreakdown(
 	const ptModifiedBy: string[] = [];
 
 	// 1. Seed innate keywords & abilities from the card itself (empty if face-down per CR 702.37a)
-	const innateList = isFaceDown ? [] : extractSelfInnateKeywordsAndAbilities(card);
+	const innateList = isFaceDown ? [] : innateKeywordsAndAbilitiesOf(card);
 	const itemTimestamps = new Map<string, number>();
 	const items: AttributedKeywordOrEffect[] = innateList.map((entry, idx) => {
 		const id = `innate_${idx}_${entry.canonicalKey}`;
@@ -1507,7 +1811,7 @@ export function inspectCardContinuousBreakdown(
 			state &&
 			!inst.phasedOut &&
 			(inst.zone === 'battlefield' ||
-				state.players.some((p) => p.battlefield.some((b) => b.instanceId === inst!.instanceId)))
+				(viewIn?.snap ?? getBoardSnapshot(state)).instanceIds.has(inst.instanceId))
 	);
 
 	if (!inst || !state || !isOnBattlefield) {
@@ -1525,6 +1829,7 @@ export function inspectCardContinuousBreakdown(
 		};
 	}
 
+	const view = viewIn ?? currentLayerView(state);
 	const isLegendary = baseTypeLine.includes('Legendary');
 	const prefixLegendary = isLegendary ? 'Legendary ' : '';
 	const allAbilityRemovalSources: string[] = [];
@@ -1542,22 +1847,9 @@ export function inspectCardContinuousBreakdown(
 		}
 	};
 
-	// Collect all active (non-phased-out) battlefield permanents sorted by timestamp (CR 613.7)
-	const allBattlefieldPerms: Array<{ perm: CardInstance; playerId: string; timestamp: number }> = [];
-	let fallbackOrder = 0;
-	for (const player of state.players) {
-		if (player.lost) continue;
-		for (const perm of player.battlefield) {
-			if (perm.phasedOut) continue;
-			fallbackOrder += 1;
-			allBattlefieldPerms.push({
-				perm,
-				playerId: player.playerId,
-				timestamp: perm.enteredTimestamp ?? fallbackOrder
-			});
-		}
-	}
-	allBattlefieldPerms.sort((a, b) => a.timestamp - b.timestamp);
+	// All active (non-phased-out) battlefield permanents sorted by timestamp (CR 613.7), from the
+	// per-board view. Shared: never mutate.
+	const allBattlefieldPerms = view.sorted;
 
 	// Track Layer 7b base P/T setting effects with timestamps so later timestamps win (CR 613.4b & 613.7)
 	const layer7bSetters: Array<{
@@ -1619,34 +1911,27 @@ export function inspectCardContinuousBreakdown(
 	};
 
 	// 2. Layer 4 (Type-changing effects) & Layer 6 (Loses all abilities) & collect Layer 7b Base P/T setters
-	for (const { perm, timestamp } of allBattlefieldPerms) {
-		if (getAttachedAbilityStrippingAuraSources(perm, state).length > 0) continue;
-		const pCard = perm.copiableCard ?? perm.card;
-		const pName = pCard.name;
-		const pLow = pCard.oracleText.toLowerCase();
+	for (const entry of allBattlefieldPerms) {
+		if (entry.perm.attachedToId !== inst.instanceId) continue;
+		const { timestamp } = entry;
+		if (entry.stripped) continue;
+		const pName = entry.name;
+		const pText = entry.text;
+		const pLow = entry.low;
 
 		// Check attached Auras/Equipment on `inst`
-		if (perm.attachedToId === inst.instanceId) {
-			const losesAbilities =
-				/enchanted (?:creature|permanent)\b.*\bloses all (?:other )?(?:card types and )?abilities/i.test(
-					pLow
-				) || /loses all abilities/i.test(pLow);
+		{
+			const losesAbilities = isEnchantedLosesAllText(pLow);
 			if (losesAbilities) {
 				recordAbilityRemoval(pName, timestamp);
 			}
 
-			const basePtMatch = pLow.match(/base power and toughness (\d+)\/(\d+)/i);
-			const artCreatureMatch = pCard.oracleText.match(
-				/enchanted (?:creature|permanent)\b[^.\n]*?\bis an? ([a-z]+) artifact creature\b/i
-			);
+			const basePtMatch = memoMatch(RE_BASE_PT, pLow);
+			const artCreatureMatch = memoMatch(RE_ENCHANTED_ART_CREATURE, pText);
 			const creatureSubMatch = !artCreatureMatch
-				? pCard.oracleText.match(
-						/enchanted (?:creature|permanent)\b[^.\n]*?\bis an? (?:(?:white|blue|black|red|green|colorless) )?([a-z]+) creature\b/i
-					)
+				? memoMatch(RE_ENCHANTED_CREATURE_SUB, pText)
 				: null;
-			const landMatch = pCard.oracleText.match(
-				/enchanted (?:creature|permanent)\b[^.\n]*?\bis a (?:colorless )?(?:(plains|island|swamp|mountain|forest) )?land\b/i
-			);
+			const landMatch = memoMatch(RE_ENCHANTED_LAND, pText);
 
 			if (artCreatureMatch) {
 				const sub = capitalizeWord(artCreatureMatch[1]);
@@ -1679,15 +1964,12 @@ export function inspectCardContinuousBreakdown(
 	}
 
 	// Global Layer 4 Pass A: Type-overwriting effects ("Nonbasic lands are Mountains.")
-	for (const { perm, timestamp } of allBattlefieldPerms) {
-		if (getAttachedAbilityStrippingAuraSources(perm, state).length > 0) continue;
-		const pCard = perm.copiableCard ?? perm.card;
-		const pName = pCard.name;
-		const pLow = pCard.oracleText.toLowerCase();
+	for (const entry of view.nonbasicLandSetters) {
+		const { timestamp } = entry;
+		const pName = entry.name;
+		const pLow = entry.low;
 
-		const nonbasicLandMatch = pLow.match(
-			/nonbasic lands are (plains|islands|swamps|mountains|forests)\b/i
-		);
+		const nonbasicLandMatch = memoMatch(RE_NONBASIC_LANDS_ARE, pLow);
 		if (
 			nonbasicLandMatch &&
 			effectiveTypeLine.includes('Land') &&
@@ -1705,14 +1987,14 @@ export function inspectCardContinuousBreakdown(
 	}
 
 	// Global Layer 4 Pass B (Additive types: Opalescence, Urborg, Yavimaya, Mycosynth Lattice, Maskwood Nexus)
-	for (const { perm, playerId, timestamp } of allBattlefieldPerms) {
-		if (getAttachedAbilityStrippingAuraSources(perm, state).length > 0) continue;
-		const pCard = perm.copiableCard ?? perm.card;
-		const pName = pCard.name;
-		const pLow = pCard.oracleText.toLowerCase();
+	for (const entry of view.additiveTypeSources) {
+		const { playerId, timestamp } = entry;
+		const perm = entry.perm;
+		const pName = entry.name;
+		const pLow = entry.low;
 
 		if (
-			/each other non-aura enchantment is a creature in addition/i.test(pLow) &&
+			memoTest(RE_OPALESCENCE, pLow) &&
 			perm.instanceId !== inst.instanceId &&
 			effectiveTypeLine.includes('Enchantment') &&
 			!effectiveTypeLine.includes('Aura')
@@ -1727,9 +2009,7 @@ export function inspectCardContinuousBreakdown(
 			});
 		}
 
-		const eachLandMatch = pLow.match(
-			/each land is an? (plains|island|swamp|mountain|forest) in addition/i
-		);
+		const eachLandMatch = memoMatch(RE_EACH_LAND_IS, pLow);
 		if (eachLandMatch && effectiveTypeLine.includes('Land')) {
 			const info = BASIC_LAND_MANA_MAP[eachLandMatch[1].toLowerCase()];
 			if (info) {
@@ -1741,7 +2021,7 @@ export function inspectCardContinuousBreakdown(
 			}
 		}
 
-		if (/all permanents are artifacts in addition/i.test(pLow)) {
+		if (memoTest(RE_ALL_PERMANENTS_ARTIFACTS, pLow)) {
 			const nextType = addCardTypeToTypeLine(effectiveTypeLine, 'Artifact');
 			if (nextType !== effectiveTypeLine) {
 				effectiveTypeLine = nextType;
@@ -1751,7 +2031,7 @@ export function inspectCardContinuousBreakdown(
 
 		if (
 			playerId === inst.controllerId &&
-			/creatures you control are every creature type/i.test(pLow) &&
+			memoTest(RE_EVERY_CREATURE_TYPE, pLow) &&
 			effectiveTypeLine.includes('Creature')
 		) {
 			effectiveTypeLine = addSubtypeToTypeLine(effectiveTypeLine, 'All-Types');
@@ -1760,19 +2040,14 @@ export function inspectCardContinuousBreakdown(
 	}
 
 	// Global Layer 6 ("All creatures lose all abilities..." / "Creatures lose all abilities.") & Layer 7b registration
-	for (const { perm, timestamp } of allBattlefieldPerms) {
-		if (getAttachedAbilityStrippingAuraSources(perm, state).length > 0) continue;
-		const pCard = perm.copiableCard ?? perm.card;
-		const pName = pCard.name;
-		const pLow = pCard.oracleText.toLowerCase();
+	for (const entry of view.globalLoseAllSources) {
+		const { timestamp } = entry;
+		const pName = entry.name;
+		const pLow = entry.low;
 
-		if (
-			effectiveTypeLine.includes('Creature') &&
-			(/(?:^|\b)all creatures lose all abilities/i.test(pLow) ||
-				/^creatures lose all abilities/im.test(pLow))
-		) {
+		if (effectiveTypeLine.includes('Creature') && isGlobalCreaturesLoseAllText(pLow)) {
 			recordAbilityRemoval(pName, timestamp);
-			const ptMatch = pLow.match(/base power and toughness (\d+)\/(\d+)/i);
+			const ptMatch = memoMatch(RE_BASE_PT, pLow);
 			if (ptMatch) {
 				layer7bSetters.push({
 					sourceName: pName,
@@ -1792,7 +2067,7 @@ export function inspectCardContinuousBreakdown(
 			allAbilityRemovalSources.length === 0 &&
 			(card.power === '*' || card.toughness === '*')
 		) {
-			const cLow = card.oracleText.toLowerCase();
+			const cLow = lowerOf(layerCardText(card));
 			if (cLow.includes('number of creatures you control')) {
 				const ctrl = state.players.find((p) => p.playerId === inst!.controllerId);
 				const count =
@@ -1842,28 +2117,23 @@ export function inspectCardContinuousBreakdown(
 	}
 
 	// 3. Grant new abilities from Layer 4 / Layer 6 continuous effects & Layer 7c P/T modifiers in timestamp order
-	for (const { perm, playerId, timestamp } of allBattlefieldPerms) {
-		applyRemovalsUpTo(timestamp);
-		if (getAttachedAbilityStrippingAuraSources(perm, state).length > 0) continue;
-		const pCard = perm.copiableCard ?? perm.card;
-		const pName = pCard.name;
-		const pLow = pCard.oracleText.toLowerCase();
+	for (const entry of allBattlefieldPerms) {
+		const { perm, playerId, timestamp } = entry;
+		if (abilityRemovalEvents.length > 0) applyRemovalsUpTo(timestamp);
+		if (entry.stripped) continue;
+		const pName = entry.name;
+		const pText = entry.text;
+		const pLow = entry.low;
 
 		// Attached Auras & Equipment
 		if (perm.attachedToId === inst.instanceId) {
-			const basePtMatch = pLow.match(/base power and toughness (\d+)\/(\d+)/i);
+			const basePtMatch = memoMatch(RE_BASE_PT, pLow);
 			const ptSuffix = basePtMatch ? ` (${basePtMatch[1]}/${basePtMatch[2]})` : '';
-			const artCreatureMatch = pCard.oracleText.match(
-				/enchanted (?:creature|permanent)\b[^.\n]*?\bis an? ([a-z]+) artifact creature\b/i
-			);
+			const artCreatureMatch = memoMatch(RE_ENCHANTED_ART_CREATURE, pText);
 			const creatureSubMatch = !artCreatureMatch
-				? pCard.oracleText.match(
-						/enchanted (?:creature|permanent)\b[^.\n]*?\bis an? (?:(?:white|blue|black|red|green|colorless) )?([a-z]+) creature\b/i
-					)
+				? memoMatch(RE_ENCHANTED_CREATURE_SUB, pText)
 				: null;
-			const landMatch = pCard.oracleText.match(
-				/enchanted (?:creature|permanent)\b[^.\n]*?\bis a (?:colorless )?(?:(plains|island|swamp|mountain|forest) )?land\b/i
-			);
+			const landMatch = memoMatch(RE_ENCHANTED_LAND, pText);
 
 			if (artCreatureMatch) {
 				const sub = capitalizeWord(artCreatureMatch[1]);
@@ -1903,7 +2173,7 @@ export function inspectCardContinuousBreakdown(
 						);
 					}
 				} else {
-					const addSymMatch = pCard.oracleText.match(/with "\{t\}:\s*add \{([wubrgc])\}"/i);
+					const addSymMatch = memoMatch(RE_WITH_TAP_ADD_SYM, pText);
 					if (addSymMatch) {
 						const sym = addSymMatch[1].toUpperCase();
 						grantItem(
@@ -1919,20 +2189,18 @@ export function inspectCardContinuousBreakdown(
 			}
 
 			// Generic attached Equipment / Aura keyword parser
-			for (const line of pCard.oracleText.split('\n')) {
-				const lLow = line.toLowerCase();
+			for (const line of linesOf(pText)) {
+				const lLow = lowerOf(line);
 				if (
 					(lLow.includes('equipped creature') ||
 						lLow.includes('enchanted creature') ||
 						lLow.includes('enchanted permanent')) &&
 					(lLow.includes('has ') || lLow.includes('gains ') || lLow.includes('and '))
 				) {
-					for (const kw of CANONICAL_COMBAT_KEYWORDS) {
-						if (kw.regex.test(line)) {
-							grantItem(kw.key, kw.label, 'keyword', pName, timestamp);
-						}
+					for (const kw of keywordsIn(line)) {
+						grantItem(kw.key, kw.label, 'keyword', pName, timestamp);
 					}
-					const protMatch = line.match(/\b(protection from [a-z ,]+?)(?:[.\n]|$)/i);
+					const protMatch = memoMatch(RE_PROTECTION_FROM, line);
 					if (protMatch) {
 						const label =
 							protMatch[1].charAt(0).toUpperCase() + protMatch[1].slice(1).trim();
@@ -1942,9 +2210,7 @@ export function inspectCardContinuousBreakdown(
 			}
 
 			// Attached P/T modifier (e.g., "Equipped creature gets +1/+1")
-			const eqPtMatch = pCard.oracleText.match(
-				/(?:equipped|enchanted) creature gets ([+-]\d+)\/([+-]\d+)/i
-			);
+			const eqPtMatch = memoMatch(RE_ATTACHED_PT, pText);
 			if (eqPtMatch && workingPower !== null && workingToughness !== null) {
 				const dp = parseInt(eqPtMatch[1], 10) || 0;
 				const dt = parseInt(eqPtMatch[2], 10) || 0;
@@ -1958,9 +2224,7 @@ export function inspectCardContinuousBreakdown(
 		}
 
 		// Global Land Type-Grants
-		const nonbasicLandMatch = pLow.match(
-			/nonbasic lands are (plains|islands|swamps|mountains|forests)\b/i
-		);
+		const nonbasicLandMatch = memoMatch(RE_NONBASIC_LANDS_ARE, pLow);
 		if (
 			nonbasicLandMatch &&
 			effectiveTypeLine.includes('Land') &&
@@ -1987,9 +2251,7 @@ export function inspectCardContinuousBreakdown(
 			}
 		}
 
-		const eachLandMatch = pLow.match(
-			/each land is an? (plains|island|swamp|mountain|forest) in addition/i
-		);
+		const eachLandMatch = memoMatch(RE_EACH_LAND_IS, pLow);
 		if (eachLandMatch && effectiveTypeLine.includes('Land')) {
 			const info = BASIC_LAND_MANA_MAP[eachLandMatch[1].toLowerCase()];
 			if (info) {
@@ -2012,26 +2274,26 @@ export function inspectCardContinuousBreakdown(
 			}
 		}
 
-		// Controller-scoped Anthems & Lords
-		if (playerId === inst.controllerId) {
-			const permLostAbilities = permanentHasLostAllAbilities(perm, state).lost;
+		// Controller-scoped Anthems & Lords (skipped when the text has none of the patterns below)
+		if (playerId === inst.controllerId && entry.hasControllerGrant) {
+			const permLostAbilities = lostAllAbilitiesIn(view, perm).lost;
 			if (!permLostAbilities) {
 				if (
-					/lands you control have "\{t\}:\s*add one mana of any color\.?"/i.test(pLow) &&
+					memoTest(RE_LANDS_ANY_COLOR, pLow) &&
 					effectiveTypeLine.includes('Land')
 				) {
 					grantItem('mana_any', 'Mana Ability: Add Any Color', 'ability', pName, timestamp);
 				}
 
 				if (
-					/creatures you control are every creature type/i.test(pLow) &&
+					memoTest(RE_EVERY_CREATURE_TYPE, pLow) &&
 					effectiveTypeLine.includes('Creature')
 				) {
 					grantItem('changeling', 'Changeling (All Creature Types)', 'keyword', pName, timestamp);
 				}
 
-				for (const line of pCard.oracleText.split('\n')) {
-					const lLow = line.toLowerCase();
+				for (const line of linesOf(pText)) {
+					const lLow = lowerOf(line);
 					if (
 						lLow.startsWith('whenever ') ||
 						lLow.startsWith('when ') ||
@@ -2041,9 +2303,7 @@ export function inspectCardContinuousBreakdown(
 					}
 
 					// Multi-type grant: "You, planeswalkers you control, and other creatures you control have <kw>."
-					const pwAndCreatureMatch = line.match(
-						/(?:you,\s*)?planeswalkers you control,?\s*and (other )?creatures you control have ([^.\n]+)/i
-					);
+					const pwAndCreatureMatch = memoMatch(RE_PW_AND_CREATURES_HAVE, line);
 					if (pwAndCreatureMatch) {
 						const isOtherCreature = Boolean(pwAndCreatureMatch[1]);
 						const appliesToInst =
@@ -2052,12 +2312,10 @@ export function inspectCardContinuousBreakdown(
 								(!isOtherCreature || perm.instanceId !== inst.instanceId));
 						if (appliesToInst) {
 							const kwClause = pwAndCreatureMatch[2];
-							for (const kw of CANONICAL_COMBAT_KEYWORDS) {
-								if (kw.regex.test(kwClause)) {
-									grantItem(kw.key, kw.label, 'keyword', pName, timestamp);
-								}
+							for (const kw of keywordsIn(kwClause)) {
+								grantItem(kw.key, kw.label, 'keyword', pName, timestamp);
 							}
-							const protMatch = kwClause.match(/\b(protection from [a-z ,]+?)(?:[.\n]|$)/i);
+							const protMatch = memoMatch(RE_PROTECTION_FROM, kwClause);
 							if (protMatch) {
 								const label =
 									protMatch[1].charAt(0).toUpperCase() + protMatch[1].slice(1).trim();
@@ -2068,12 +2326,8 @@ export function inspectCardContinuousBreakdown(
 					}
 
 					// Creature / Subtype Lord & Anthem: "[Other] [<Subtype>] creatures you control [get +X/+Y] [and] [have <keywords>]"
-					const ptLordMatch = line.match(
-						/^(other )?(?:([a-z]+) )?creatures you control get ([+-]\d+)\/([+-]\d+)/i
-					);
-					const kwLordMatch = line.match(
-						/^(other )?(?:([a-z]+) )?creatures you control (?:get [+-]\d+\/[+-]\d+ and )?have ([^.\n]+)/i
-					);
+					const ptLordMatch = memoMatch(RE_PT_LORD, line);
+					const kwLordMatch = memoMatch(RE_KW_LORD, line);
 
 					if ((ptLordMatch || kwLordMatch) && effectiveTypeLine.includes('Creature')) {
 						const isOtherOnly = Boolean((ptLordMatch ?? kwLordMatch)?.[1]);
@@ -2082,7 +2336,7 @@ export function inspectCardContinuousBreakdown(
 						const subtypeReq = (ptLordMatch ?? kwLordMatch)?.[2];
 						const matchesSubtype =
 							!subtypeReq ||
-							new RegExp(`\\b${subtypeReq}\\b`, 'i').test(effectiveTypeLine) ||
+							wordRegex(subtypeReq).test(effectiveTypeLine) ||
 							effectiveTypeLine.includes('All-Types') ||
 							items.some((i) => i.canonicalKey === 'changeling' && !i.removed);
 
@@ -2099,12 +2353,10 @@ export function inspectCardContinuousBreakdown(
 							}
 							if (kwLordMatch) {
 								const kwClause = kwLordMatch[3];
-								for (const kw of CANONICAL_COMBAT_KEYWORDS) {
-									if (kw.regex.test(kwClause)) {
-										grantItem(kw.key, kw.label, 'keyword', pName, timestamp);
-									}
+								for (const kw of keywordsIn(kwClause)) {
+									grantItem(kw.key, kw.label, 'keyword', pName, timestamp);
 								}
-								const protMatch = kwClause.match(/\b(protection from [a-z ,]+?)(?:[.\n]|$)/i);
+								const protMatch = memoMatch(RE_PROTECTION_FROM, kwClause);
 								if (protMatch) {
 									const label =
 										protMatch[1].charAt(0).toUpperCase() + protMatch[1].slice(1).trim();
@@ -2173,7 +2425,7 @@ export function inspectCardContinuousBreakdown(
 			if (controller) {
 				const kwGainRegex = new RegExp(`\\bgains?\\b[^.\\n]*\\b${gLow}\\b`, 'i');
 				const matchingSource = controller.battlefield.find(
-					(b) => !b.phasedOut && kwGainRegex.test((b.copiableCard ?? b.card).oracleText)
+					(b) => !b.phasedOut && kwGainRegex.test(layerCardText(b.copiableCard ?? b.card))
 				);
 				if (matchingSource) {
 					sourceLabel = (matchingSource.copiableCard ?? matchingSource.card).name;
@@ -2193,24 +2445,21 @@ export function inspectCardContinuousBreakdown(
 		removedKeywordMap.set(k, list);
 	};
 
-	for (const { perm, playerId } of allBattlefieldPerms) {
+	// Only objects whose text has the "<…> your opponents control lose <…>" pattern can contribute.
+	for (const entry of view.opponentKeywordRemovers) {
+		const { perm, playerId } = entry;
 		if (playerId === inst.controllerId) continue;
-		if (permanentHasLostAllAbilities(perm, state).lost) continue;
-		const pCard = perm.copiableCard ?? perm.card;
-		const pName = pCard.name;
+		if (lostAllAbilitiesIn(view, perm).lost) continue;
+		const pName = entry.name;
 
 		// Generic parser for "<creatures|permanents> your opponents control lose <keywords>"
-		const loseMatch = pCard.oracleText.match(
-			/(creatures|permanents) your opponents control lose ([^.\n]+)/i
-		);
+		const loseMatch = memoMatch(RE_OPPONENTS_LOSE, entry.text);
 		if (loseMatch) {
 			const targetScope = loseMatch[1].toLowerCase();
 			const loseClause = loseMatch[2].toLowerCase();
 			if (targetScope === 'permanents' || effectiveTypeLine.includes('Creature')) {
-				for (const kw of CANONICAL_COMBAT_KEYWORDS) {
-					if (kw.regex.test(loseClause)) {
-						markKeywordRemoved(kw.key, pName);
-					}
+				for (const kw of keywordsIn(loseClause)) {
+					markKeywordRemoved(kw.key, pName);
 				}
 			}
 		}
@@ -2268,9 +2517,10 @@ export interface EvaluatedPermanent {
 }
 
 export function evaluatePermanent(state: GameState, inst: CardInstance): EvaluatedPermanent {
-	const breakdown = inspectCardContinuousBreakdown(inst, state);
+	const view = currentLayerView(state);
+	const breakdown = inspectCardContinuousBreakdownIn(inst, state, view);
 	const tLine = breakdown.effectiveTypeLine;
-	const lostInfo = permanentHasLostAllAbilities(inst, state);
+	const lostInfo = lostAllAbilitiesIn(view, inst);
 	const activeKeywords = breakdown.items
 		.filter((it) => it.kind === 'keyword' && !it.removed)
 		.map((it) => it.name);
@@ -2279,7 +2529,7 @@ export function evaluatePermanent(state: GameState, inst: CardInstance): Evaluat
 		breakdown.items.some((it) => it.canonicalKey === 'changeling' && !it.removed);
 	const baseCard = inst.copiableCard ?? inst.card;
 
-	return {
+	const result: EvaluatedPermanent = {
 		instanceId: inst.instanceId,
 		effectiveName: inst.isFaceDown ? 'Face-Down Creature' : baseCard.name,
 		effectiveTypeLine: tLine,
@@ -2293,7 +2543,7 @@ export function evaluatePermanent(state: GameState, inst: CardInstance): Evaluat
 		hasAllCreatureTypes,
 		losesAllAbilities: lostInfo.lost,
 		hasLostAllAbilities: lostInfo.lost,
-		lostAllAbilitiesBy: lostInfo.sources,
+		lostAllAbilitiesBy: [...lostInfo.sources],
 		power: breakdown.effectivePower ?? 0,
 		toughness: breakdown.effectiveToughness ?? 0,
 		activeKeywords,
@@ -2304,6 +2554,10 @@ export function evaluatePermanent(state: GameState, inst: CardInstance): Evaluat
 			return new RegExp(`\\b${subType}\\b`, 'i').test(tLine);
 		}
 	};
+	if (layerCacheCheckEnabled()) {
+		crossCheckLayerResult('evaluatePermanent', result, () => evaluatePermanent(state, inst));
+	}
+	return result;
 }
 
 export function playerCannotLoseGame(
