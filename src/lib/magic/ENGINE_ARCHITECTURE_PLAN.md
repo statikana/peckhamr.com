@@ -537,6 +537,33 @@ while it runs), **entry**, **work**, **exit**, and **ratchet target**.
 - **Exit:** snapshots unchanged (or changed only where a rules bug was fixed and documented);
   layer code has no `oracleText` reads; `evaluatePermanent` is O(1) after the first call per state
   version. Baseline test `C/D-Audit-4` passes, if no other agent has fixed it already.
+- **Entry snapshots ✅ (2026-11-08, test-only):** `layers.snapshot.test.ts` with fixture
+  `layers.snapshot.json`. **40 scenarios, 145 permanent snapshots** (real precon cards plus synthetic
+  ones with invented names). Each permanent records the effective type line, type flags, base /
+  breakdown / evaluated P/T, `typeModifiedBy`, `ptModifiedBy`, active keywords, lost-all-abilities
+  with sources, and every breakdown item with its sources and `removedBy`. Instance and player ids
+  are mapped to card-name labels. Regenerate with
+  `UPDATE_LAYER_SNAPSHOTS=1 node --test src/lib/magic/layers.snapshot.test.ts` (refused when `CI`
+  is set) and review the diff. Covered: attached type changers in both timestamp orders, "loses
+  all abilities" (Aura, Humility, Dress Down), anthems before/after Humility, Humility + Opalescence
+  in both orders (both match the Oracle ruling today), Blood Moon, Urborg/Yavimaya, Mycosynth,
+  Maskwood, 7b setters in both orders, 7a CDAs (also under Humility), lords with "other" and
+  subtypes, Equipment/Aura grants, Chromatic Lantern, opponents' keyword removal, counters, pumps,
+  7d switching, face-down, suspend haste, granted-keyword attribution, phasing, and a layer-1 copy.
+- **Known wrong today (a snapshot change here is a fix; update the fixture and this list):**
+  - Song of the Dryads (Oracle text) keeps the enchanted permanent's rules-text abilities: on a
+    flyer and on an Opalescence-animated enchantment. CR 205.1a / 305.7. Tracked by **D-Audit-5**.
+  - Blood Moon + Urborg: every land is still also a Swamp (Forest is "Forest Swamp"). Urborg's
+    effect depends on Blood Moon's (CR 613.8), so no land is a Swamp.
+  - Negative power is clamped to 0 (a 2/2 with "-3/-0" reports 0/2, not -1/2). CR 107.1b.
+  - `C/D-Audit-4` (observer triggers ignoring layer-4 subtypes) is a trigger bug, not layer output;
+    it isn't in the snapshots.
+  - Not evaluated at all, so not snapshotted: colour (layer 5; Kenrith's "green", Imprisoned's
+    "colorless") and control-changing (layer 2).
+- **Timing baseline (Node 24):** `evaluatePermanent` once per permanent on a 4-player board of 60
+  permanents (lands, lords, anthems, Equipment): **~230 ms per full pass, ~3.8 ms per call**
+  (median of 7). Each call re-scans every permanent's text, so cost grows with the square of
+  board size. This is the number the per-state-version cache must beat.
 
 ### Phase 7: Replacement effects and rule modifiers
 - **Owns:** `runtime/replace.ts`; the rule helpers at the end of `ruleTree.ts`, draw-from-empty,

@@ -1,0 +1,7718 @@
+{
+	"aura/darksteel-mutation": {
+		"description": "Darksteel Mutation on a flyer: Insect artifact creature 0/1, indestructible, other abilities lost.",
+		"permanents": {
+			"Skyreach Sentinel": {
+				"controller": "P1",
+				"effectiveTypeLine": "Artifact Creature — Insect",
+				"is": {
+					"creature": true,
+					"artifact": true,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					2,
+					2
+				],
+				"breakdownPT": [
+					0,
+					1
+				],
+				"evaluatedPT": [
+					0,
+					1
+				],
+				"typeModifiedBy": [
+					"Darksteel Mutation"
+				],
+				"ptModifiedBy": [
+					"Darksteel Mutation (base 0/1)"
+				],
+				"activeKeywords": [
+					"Indestructible"
+				],
+				"lostAllAbilities": {
+					"lost": true,
+					"sources": [
+						"Darksteel Mutation"
+					]
+				},
+				"items": [
+					{
+						"key": "flying",
+						"name": "Flying",
+						"kind": "keyword",
+						"innate": true,
+						"sources": [
+							"innate"
+						],
+						"removedBy": [
+							"Darksteel Mutation"
+						]
+					},
+					{
+						"key": "type_insect",
+						"name": "Type: Artifact Creature — Insect (0/1)",
+						"kind": "type_mod",
+						"sources": [
+							"Darksteel Mutation"
+						]
+					},
+					{
+						"key": "indestructible",
+						"name": "Indestructible",
+						"kind": "keyword",
+						"sources": [
+							"Darksteel Mutation"
+						]
+					}
+				]
+			},
+			"Darksteel Mutation": {
+				"controller": "P1",
+				"attachedTo": "<Skyreach Sentinel>",
+				"effectiveTypeLine": "Enchantment — Aura",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": true,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [
+					"Enchant creature"
+				],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "enchant",
+						"name": "Enchant creature",
+						"kind": "keyword",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					},
+					{
+						"key": "ability_enchant_mod",
+						"name": "Modifies Enchanted Permanent",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					}
+				]
+			}
+		}
+	},
+	"aura/kenrith's-transformation": {
+		"description": "Kenrith's Transformation on a 5/5 trampler: green Elk 3/3 with no abilities.",
+		"permanents": {
+			"Thornwood Brute": {
+				"controller": "P1",
+				"effectiveTypeLine": "Creature — Elk",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					5,
+					5
+				],
+				"breakdownPT": [
+					3,
+					3
+				],
+				"evaluatedPT": [
+					3,
+					3
+				],
+				"typeModifiedBy": [
+					"Kenrith's Transformation"
+				],
+				"ptModifiedBy": [
+					"Kenrith's Transformation (base 3/3)"
+				],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": true,
+					"sources": [
+						"Kenrith's Transformation"
+					]
+				},
+				"items": [
+					{
+						"key": "trample",
+						"name": "Trample",
+						"kind": "keyword",
+						"innate": true,
+						"sources": [
+							"innate"
+						],
+						"removedBy": [
+							"Kenrith's Transformation"
+						]
+					},
+					{
+						"key": "type_elk",
+						"name": "Type: Creature — Elk (3/3)",
+						"kind": "type_mod",
+						"sources": [
+							"Kenrith's Transformation"
+						]
+					}
+				]
+			},
+			"Kenrith's Transformation": {
+				"controller": "P1",
+				"attachedTo": "<Thornwood Brute>",
+				"effectiveTypeLine": "Enchantment — Aura",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": true,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [
+					"Enchant creature"
+				],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "enchant",
+						"name": "Enchant creature",
+						"kind": "keyword",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					},
+					{
+						"key": "ability_etb",
+						"name": "Enters Battlefield Trigger",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					},
+					{
+						"key": "ability_enchant_mod",
+						"name": "Modifies Enchanted Permanent",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					}
+				]
+			}
+		}
+	},
+	"aura/imprisoned-in-the-moon-on-creature": {
+		"description": "Imprisoned in the Moon on a flyer: colorless land with \"{T}: Add {C}\", no other types or abilities.",
+		"permanents": {
+			"Skyreach Sentinel": {
+				"controller": "P1",
+				"effectiveTypeLine": "Land",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": false,
+					"land": true,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					2,
+					2
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [
+					"Imprisoned in the Moon"
+				],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": true,
+					"sources": [
+						"Imprisoned in the Moon"
+					]
+				},
+				"items": [
+					{
+						"key": "flying",
+						"name": "Flying",
+						"kind": "keyword",
+						"innate": true,
+						"sources": [
+							"innate"
+						],
+						"removedBy": [
+							"Imprisoned in the Moon"
+						]
+					},
+					{
+						"key": "mana_c",
+						"name": "Mana Ability: Add {C}",
+						"kind": "ability",
+						"sources": [
+							"Imprisoned in the Moon"
+						]
+					},
+					{
+						"key": "type_land",
+						"name": "Type: Colorless Land",
+						"kind": "type_mod",
+						"sources": [
+							"Imprisoned in the Moon"
+						]
+					}
+				]
+			},
+			"Imprisoned in the Moon": {
+				"controller": "P1",
+				"attachedTo": "<Skyreach Sentinel>",
+				"effectiveTypeLine": "Enchantment — Aura",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": true,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [
+					"Enchant creature, land, or planeswalker"
+				],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "enchant",
+						"name": "Enchant creature, land, or planeswalker",
+						"kind": "keyword",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					},
+					{
+						"key": "ability_enchant_mod",
+						"name": "Modifies Enchanted Permanent",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					}
+				]
+			}
+		}
+	},
+	"aura/imprisoned-in-the-moon-on-land": {
+		"description": "Imprisoned in the Moon on Command Tower.",
+		"permanents": {
+			"Command Tower": {
+				"controller": "P1",
+				"effectiveTypeLine": "Land",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": false,
+					"land": true,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [
+					"Imprisoned in the Moon"
+				],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": true,
+					"sources": [
+						"Imprisoned in the Moon"
+					]
+				},
+				"items": [
+					{
+						"key": "ability_mana",
+						"name": "Mana Ability: Add one mana of any color in your commander's color identity",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						],
+						"removedBy": [
+							"Imprisoned in the Moon"
+						]
+					},
+					{
+						"key": "mana_c",
+						"name": "Mana Ability: Add {C}",
+						"kind": "ability",
+						"sources": [
+							"Imprisoned in the Moon"
+						]
+					},
+					{
+						"key": "type_land",
+						"name": "Type: Colorless Land",
+						"kind": "type_mod",
+						"sources": [
+							"Imprisoned in the Moon"
+						]
+					}
+				]
+			},
+			"Imprisoned in the Moon": {
+				"controller": "P1",
+				"attachedTo": "<Command Tower>",
+				"effectiveTypeLine": "Enchantment — Aura",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": true,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [
+					"Enchant creature, land, or planeswalker"
+				],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "enchant",
+						"name": "Enchant creature, land, or planeswalker",
+						"kind": "keyword",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					},
+					{
+						"key": "ability_enchant_mod",
+						"name": "Modifies Enchanted Permanent",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					}
+				]
+			}
+		}
+	},
+	"aura/song-of-the-dryads-oracle-text": {
+		"description": "Song of the Dryads (current Oracle text: \"is a colorless Forest land.\") on a flyer.",
+		"knownWrong": [
+			{
+				"permanent": "Skyreach Sentinel",
+				"note": "Keeps Flying and is not marked as having lost its abilities. CR 305.7: setting a basic land type removes the abilities from its rules text; CR 205.1a: the new card type replaces Creature.",
+				"todo": "D-Audit-5"
+			}
+		],
+		"permanents": {
+			"Skyreach Sentinel": {
+				"controller": "P1",
+				"effectiveTypeLine": "Land — Forest",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": false,
+					"land": true,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					2,
+					2
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [
+					"Song of the Dryads"
+				],
+				"ptModifiedBy": [],
+				"activeKeywords": [
+					"Flying"
+				],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "flying",
+						"name": "Flying",
+						"kind": "keyword",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					},
+					{
+						"key": "mana_g",
+						"name": "Mana Ability: Add {G}",
+						"kind": "ability",
+						"sources": [
+							"Song of the Dryads"
+						]
+					},
+					{
+						"key": "type_forest",
+						"name": "Type: Land — Forest",
+						"kind": "type_mod",
+						"sources": [
+							"Song of the Dryads"
+						]
+					}
+				]
+			},
+			"Song of the Dryads": {
+				"controller": "P1",
+				"attachedTo": "<Skyreach Sentinel>",
+				"effectiveTypeLine": "Enchantment — Aura",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": true,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [
+					"Enchant permanent"
+				],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "enchant",
+						"name": "Enchant permanent",
+						"kind": "keyword",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					},
+					{
+						"key": "ability_enchant_mod",
+						"name": "Modifies Enchanted Permanent",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					}
+				]
+			}
+		}
+	},
+	"aura/forest-land-explicit-wording": {
+		"description": "Synthetic Song-style Aura that spells out \"loses all other card types and abilities\".",
+		"permanents": {
+			"Skyreach Sentinel": {
+				"controller": "P1",
+				"effectiveTypeLine": "Land — Forest",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": false,
+					"land": true,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					2,
+					2
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [
+					"Verdant Sealing Hymn"
+				],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": true,
+					"sources": [
+						"Verdant Sealing Hymn"
+					]
+				},
+				"items": [
+					{
+						"key": "flying",
+						"name": "Flying",
+						"kind": "keyword",
+						"innate": true,
+						"sources": [
+							"innate"
+						],
+						"removedBy": [
+							"Verdant Sealing Hymn"
+						]
+					},
+					{
+						"key": "mana_g",
+						"name": "Mana Ability: Add {G}",
+						"kind": "ability",
+						"sources": [
+							"Verdant Sealing Hymn"
+						]
+					},
+					{
+						"key": "type_forest",
+						"name": "Type: Land — Forest",
+						"kind": "type_mod",
+						"sources": [
+							"Verdant Sealing Hymn"
+						]
+					}
+				]
+			},
+			"Verdant Sealing Hymn": {
+				"controller": "P1",
+				"attachedTo": "<Skyreach Sentinel>",
+				"effectiveTypeLine": "Enchantment — Aura",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": true,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [
+					"Enchant permanent"
+				],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "enchant",
+						"name": "Enchant permanent",
+						"kind": "keyword",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					},
+					{
+						"key": "ability_enchant_mod",
+						"name": "Modifies Enchanted Permanent",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					}
+				]
+			}
+		}
+	},
+	"aura/timestamps-mutation-then-forest": {
+		"description": "Darksteel Mutation (earlier) then the Forest-land Aura (later) on the same creature: later wins in layer 4.",
+		"permanents": {
+			"Hearthfield Bear": {
+				"controller": "P1",
+				"effectiveTypeLine": "Land — Forest",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": false,
+					"land": true,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					2,
+					2
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [
+					"Darksteel Mutation",
+					"Verdant Sealing Hymn"
+				],
+				"ptModifiedBy": [
+					"Darksteel Mutation (base 0/1)"
+				],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": true,
+					"sources": [
+						"Darksteel Mutation",
+						"Verdant Sealing Hymn"
+					]
+				},
+				"items": [
+					{
+						"key": "type_insect",
+						"name": "Type: Artifact Creature — Insect (0/1)",
+						"kind": "type_mod",
+						"sources": [
+							"Darksteel Mutation"
+						]
+					},
+					{
+						"key": "indestructible",
+						"name": "Indestructible",
+						"kind": "keyword",
+						"sources": [
+							"Darksteel Mutation"
+						],
+						"removedBy": [
+							"Verdant Sealing Hymn"
+						]
+					},
+					{
+						"key": "mana_g",
+						"name": "Mana Ability: Add {G}",
+						"kind": "ability",
+						"sources": [
+							"Verdant Sealing Hymn"
+						]
+					},
+					{
+						"key": "type_forest",
+						"name": "Type: Land — Forest",
+						"kind": "type_mod",
+						"sources": [
+							"Verdant Sealing Hymn"
+						]
+					}
+				]
+			},
+			"Darksteel Mutation": {
+				"controller": "P1",
+				"attachedTo": "<Hearthfield Bear>",
+				"effectiveTypeLine": "Enchantment — Aura",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": true,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [
+					"Enchant creature"
+				],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "enchant",
+						"name": "Enchant creature",
+						"kind": "keyword",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					},
+					{
+						"key": "ability_enchant_mod",
+						"name": "Modifies Enchanted Permanent",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					}
+				]
+			},
+			"Verdant Sealing Hymn": {
+				"controller": "P1",
+				"attachedTo": "<Hearthfield Bear>",
+				"effectiveTypeLine": "Enchantment — Aura",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": true,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [
+					"Enchant permanent"
+				],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "enchant",
+						"name": "Enchant permanent",
+						"kind": "keyword",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					},
+					{
+						"key": "ability_enchant_mod",
+						"name": "Modifies Enchanted Permanent",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					}
+				]
+			}
+		}
+	},
+	"aura/timestamps-forest-then-mutation": {
+		"description": "The Forest-land Aura (earlier) then Darksteel Mutation (later).",
+		"permanents": {
+			"Hearthfield Bear": {
+				"controller": "P1",
+				"effectiveTypeLine": "Artifact Creature — Insect",
+				"is": {
+					"creature": true,
+					"artifact": true,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					2,
+					2
+				],
+				"breakdownPT": [
+					0,
+					1
+				],
+				"evaluatedPT": [
+					0,
+					1
+				],
+				"typeModifiedBy": [
+					"Verdant Sealing Hymn",
+					"Darksteel Mutation"
+				],
+				"ptModifiedBy": [
+					"Darksteel Mutation (base 0/1)"
+				],
+				"activeKeywords": [
+					"Indestructible"
+				],
+				"lostAllAbilities": {
+					"lost": true,
+					"sources": [
+						"Verdant Sealing Hymn",
+						"Darksteel Mutation"
+					]
+				},
+				"items": [
+					{
+						"key": "mana_g",
+						"name": "Mana Ability: Add {G}",
+						"kind": "ability",
+						"sources": [
+							"Verdant Sealing Hymn"
+						],
+						"removedBy": [
+							"Darksteel Mutation"
+						]
+					},
+					{
+						"key": "type_forest",
+						"name": "Type: Land — Forest",
+						"kind": "type_mod",
+						"sources": [
+							"Verdant Sealing Hymn"
+						]
+					},
+					{
+						"key": "type_insect",
+						"name": "Type: Artifact Creature — Insect (0/1)",
+						"kind": "type_mod",
+						"sources": [
+							"Darksteel Mutation"
+						]
+					},
+					{
+						"key": "indestructible",
+						"name": "Indestructible",
+						"kind": "keyword",
+						"sources": [
+							"Darksteel Mutation"
+						]
+					}
+				]
+			},
+			"Verdant Sealing Hymn": {
+				"controller": "P1",
+				"attachedTo": "<Hearthfield Bear>",
+				"effectiveTypeLine": "Enchantment — Aura",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": true,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [
+					"Enchant permanent"
+				],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "enchant",
+						"name": "Enchant permanent",
+						"kind": "keyword",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					},
+					{
+						"key": "ability_enchant_mod",
+						"name": "Modifies Enchanted Permanent",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					}
+				]
+			},
+			"Darksteel Mutation": {
+				"controller": "P1",
+				"attachedTo": "<Hearthfield Bear>",
+				"effectiveTypeLine": "Enchantment — Aura",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": true,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [
+					"Enchant creature"
+				],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "enchant",
+						"name": "Enchant creature",
+						"kind": "keyword",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					},
+					{
+						"key": "ability_enchant_mod",
+						"name": "Modifies Enchanted Permanent",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					}
+				]
+			}
+		}
+	},
+	"aura/mutation-then-kenrith": {
+		"description": "Darksteel Mutation then Kenrith's Transformation on the same creature (two type + base P/T setters).",
+		"permanents": {
+			"Thornwood Brute": {
+				"controller": "P1",
+				"effectiveTypeLine": "Creature — Elk",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					5,
+					5
+				],
+				"breakdownPT": [
+					3,
+					3
+				],
+				"evaluatedPT": [
+					3,
+					3
+				],
+				"typeModifiedBy": [
+					"Darksteel Mutation",
+					"Kenrith's Transformation"
+				],
+				"ptModifiedBy": [
+					"Darksteel Mutation (base 0/1)",
+					"Kenrith's Transformation (base 3/3)"
+				],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": true,
+					"sources": [
+						"Darksteel Mutation",
+						"Kenrith's Transformation"
+					]
+				},
+				"items": [
+					{
+						"key": "trample",
+						"name": "Trample",
+						"kind": "keyword",
+						"innate": true,
+						"sources": [
+							"innate"
+						],
+						"removedBy": [
+							"Darksteel Mutation",
+							"Kenrith's Transformation"
+						]
+					},
+					{
+						"key": "type_insect",
+						"name": "Type: Artifact Creature — Insect (0/1)",
+						"kind": "type_mod",
+						"sources": [
+							"Darksteel Mutation"
+						]
+					},
+					{
+						"key": "indestructible",
+						"name": "Indestructible",
+						"kind": "keyword",
+						"sources": [
+							"Darksteel Mutation"
+						],
+						"removedBy": [
+							"Kenrith's Transformation"
+						]
+					},
+					{
+						"key": "type_elk",
+						"name": "Type: Creature — Elk (3/3)",
+						"kind": "type_mod",
+						"sources": [
+							"Kenrith's Transformation"
+						]
+					}
+				]
+			},
+			"Darksteel Mutation": {
+				"controller": "P1",
+				"attachedTo": "<Thornwood Brute>",
+				"effectiveTypeLine": "Enchantment — Aura",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": true,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [
+					"Enchant creature"
+				],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "enchant",
+						"name": "Enchant creature",
+						"kind": "keyword",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					},
+					{
+						"key": "ability_enchant_mod",
+						"name": "Modifies Enchanted Permanent",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					}
+				]
+			},
+			"Kenrith's Transformation": {
+				"controller": "P1",
+				"attachedTo": "<Thornwood Brute>",
+				"effectiveTypeLine": "Enchantment — Aura",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": true,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [
+					"Enchant creature"
+				],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "enchant",
+						"name": "Enchant creature",
+						"kind": "keyword",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					},
+					{
+						"key": "ability_etb",
+						"name": "Enters Battlefield Trigger",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					},
+					{
+						"key": "ability_enchant_mod",
+						"name": "Modifies Enchanted Permanent",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					}
+				]
+			}
+		}
+	},
+	"abilities/aura-on-lord": {
+		"description": "An Aura that removes all abilities from an Elf lord: the lord bonus stops applying.",
+		"permanents": {
+			"Elvenwood Marshal": {
+				"controller": "P1",
+				"effectiveTypeLine": "Creature — Elf Warrior",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					2,
+					2
+				],
+				"breakdownPT": [
+					2,
+					2
+				],
+				"evaluatedPT": [
+					2,
+					2
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": true,
+					"sources": [
+						"Veil of Unmaking"
+					]
+				},
+				"items": [
+					{
+						"key": "ability_lord",
+						"name": "Anthem / Lord Effect",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						],
+						"removedBy": [
+							"Veil of Unmaking"
+						]
+					}
+				]
+			},
+			"Mossback Elf": {
+				"controller": "P1",
+				"effectiveTypeLine": "Creature — Elf Druid",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					1,
+					1
+				],
+				"breakdownPT": [
+					1,
+					1
+				],
+				"evaluatedPT": [
+					1,
+					1
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": []
+			},
+			"Veil of Unmaking": {
+				"controller": "P1",
+				"attachedTo": "<Elvenwood Marshal>",
+				"effectiveTypeLine": "Enchantment — Aura",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": true,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [
+					"Enchant creature"
+				],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "enchant",
+						"name": "Enchant creature",
+						"kind": "keyword",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					},
+					{
+						"key": "ability_enchant_mod",
+						"name": "Modifies Enchanted Permanent",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					}
+				]
+			}
+		}
+	},
+	"abilities/humility": {
+		"description": "Humility with a flyer, a trampler, an Elf lord and its Elf, and a creature with +1/+1 counters.",
+		"permanents": {
+			"Skyreach Sentinel": {
+				"controller": "P1",
+				"effectiveTypeLine": "Creature — Bird Soldier",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					2,
+					2
+				],
+				"breakdownPT": [
+					1,
+					1
+				],
+				"evaluatedPT": [
+					1,
+					1
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [
+					"Humility (base 1/1)"
+				],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": true,
+					"sources": [
+						"Humility"
+					]
+				},
+				"items": [
+					{
+						"key": "flying",
+						"name": "Flying",
+						"kind": "keyword",
+						"innate": true,
+						"sources": [
+							"innate"
+						],
+						"removedBy": [
+							"Humility"
+						]
+					}
+				]
+			},
+			"Thornwood Brute": {
+				"controller": "P1",
+				"effectiveTypeLine": "Creature — Beast",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					5,
+					5
+				],
+				"breakdownPT": [
+					1,
+					1
+				],
+				"evaluatedPT": [
+					1,
+					1
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [
+					"Humility (base 1/1)"
+				],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": true,
+					"sources": [
+						"Humility"
+					]
+				},
+				"items": [
+					{
+						"key": "trample",
+						"name": "Trample",
+						"kind": "keyword",
+						"innate": true,
+						"sources": [
+							"innate"
+						],
+						"removedBy": [
+							"Humility"
+						]
+					}
+				]
+			},
+			"Elvenwood Marshal": {
+				"controller": "P1",
+				"effectiveTypeLine": "Creature — Elf Warrior",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					2,
+					2
+				],
+				"breakdownPT": [
+					1,
+					1
+				],
+				"evaluatedPT": [
+					1,
+					1
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [
+					"Humility (base 1/1)"
+				],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": true,
+					"sources": [
+						"Humility"
+					]
+				},
+				"items": [
+					{
+						"key": "ability_lord",
+						"name": "Anthem / Lord Effect",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						],
+						"removedBy": [
+							"Humility"
+						]
+					}
+				]
+			},
+			"Mossback Elf": {
+				"controller": "P1",
+				"effectiveTypeLine": "Creature — Elf Druid",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					1,
+					1
+				],
+				"breakdownPT": [
+					1,
+					1
+				],
+				"evaluatedPT": [
+					1,
+					1
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [
+					"Humility (base 1/1)"
+				],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": true,
+					"sources": [
+						"Humility"
+					]
+				},
+				"items": []
+			},
+			"Hearthfield Bear": {
+				"controller": "P1",
+				"effectiveTypeLine": "Creature — Bear",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					2,
+					2
+				],
+				"breakdownPT": [
+					3,
+					3
+				],
+				"evaluatedPT": [
+					3,
+					3
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [
+					"Humility (base 1/1)",
+					"+2/+2 (+1/+1 Counters)"
+				],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": true,
+					"sources": [
+						"Humility"
+					]
+				},
+				"items": [
+					{
+						"key": "counters_plus",
+						"name": "+2/+2",
+						"kind": "stat_mod",
+						"sources": [
+							"+1/+1 Counters"
+						]
+					}
+				]
+			},
+			"Humility": {
+				"controller": "P1",
+				"effectiveTypeLine": "Enchantment",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": true,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": []
+			}
+		}
+	},
+	"abilities/dress-down": {
+		"description": "Dress Down (\"Creatures lose all abilities.\") with a flyer and an Elf lord.",
+		"permanents": {
+			"Skyreach Sentinel": {
+				"controller": "P1",
+				"effectiveTypeLine": "Creature — Bird Soldier",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					2,
+					2
+				],
+				"breakdownPT": [
+					2,
+					2
+				],
+				"evaluatedPT": [
+					2,
+					2
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": true,
+					"sources": [
+						"Dress Down"
+					]
+				},
+				"items": [
+					{
+						"key": "flying",
+						"name": "Flying",
+						"kind": "keyword",
+						"innate": true,
+						"sources": [
+							"innate"
+						],
+						"removedBy": [
+							"Dress Down"
+						]
+					}
+				]
+			},
+			"Elvenwood Marshal": {
+				"controller": "P1",
+				"effectiveTypeLine": "Creature — Elf Warrior",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					2,
+					2
+				],
+				"breakdownPT": [
+					2,
+					2
+				],
+				"evaluatedPT": [
+					2,
+					2
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": true,
+					"sources": [
+						"Dress Down"
+					]
+				},
+				"items": [
+					{
+						"key": "ability_lord",
+						"name": "Anthem / Lord Effect",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						],
+						"removedBy": [
+							"Dress Down"
+						]
+					}
+				]
+			},
+			"Mossback Elf": {
+				"controller": "P1",
+				"effectiveTypeLine": "Creature — Elf Druid",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					1,
+					1
+				],
+				"breakdownPT": [
+					1,
+					1
+				],
+				"evaluatedPT": [
+					1,
+					1
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": true,
+					"sources": [
+						"Dress Down"
+					]
+				},
+				"items": []
+			},
+			"Dress Down": {
+				"controller": "P1",
+				"effectiveTypeLine": "Enchantment",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": true,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [
+					"Flash"
+				],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "flash",
+						"name": "Flash",
+						"kind": "keyword",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					},
+					{
+						"key": "ability_etb",
+						"name": "Enters Battlefield Trigger",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					}
+				]
+			}
+		}
+	},
+	"abilities/anthem-before-humility": {
+		"description": "An anthem enchantment, then Humility: 7b sets 1/1, 7c adds +1/+1 whatever the timestamps.",
+		"permanents": {
+			"Banner of the Hollow Vale": {
+				"controller": "P1",
+				"effectiveTypeLine": "Enchantment",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": true,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "ability_lord",
+						"name": "Anthem / Lord Effect",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					}
+				]
+			},
+			"Humility": {
+				"controller": "P1",
+				"effectiveTypeLine": "Enchantment",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": true,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": []
+			},
+			"Hearthfield Bear": {
+				"controller": "P1",
+				"effectiveTypeLine": "Creature — Bear",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					2,
+					2
+				],
+				"breakdownPT": [
+					2,
+					2
+				],
+				"evaluatedPT": [
+					2,
+					2
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [
+					"Humility (base 1/1)",
+					"+1/+1 (Banner of the Hollow Vale)"
+				],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": true,
+					"sources": [
+						"Humility"
+					]
+				},
+				"items": [
+					{
+						"key": "pt_<Banner of the Hollow Vale>",
+						"name": "+1/+1",
+						"kind": "stat_mod",
+						"sources": [
+							"Banner of the Hollow Vale"
+						]
+					}
+				]
+			}
+		}
+	},
+	"abilities/anthem-after-humility": {
+		"description": "Humility, then an anthem enchantment.",
+		"permanents": {
+			"Humility": {
+				"controller": "P1",
+				"effectiveTypeLine": "Enchantment",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": true,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": []
+			},
+			"Banner of the Hollow Vale": {
+				"controller": "P1",
+				"effectiveTypeLine": "Enchantment",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": true,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "ability_lord",
+						"name": "Anthem / Lord Effect",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					}
+				]
+			},
+			"Hearthfield Bear": {
+				"controller": "P1",
+				"effectiveTypeLine": "Creature — Bear",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					2,
+					2
+				],
+				"breakdownPT": [
+					2,
+					2
+				],
+				"evaluatedPT": [
+					2,
+					2
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [
+					"Humility (base 1/1)",
+					"+1/+1 (Banner of the Hollow Vale)"
+				],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": true,
+					"sources": [
+						"Humility"
+					]
+				},
+				"items": [
+					{
+						"key": "pt_<Banner of the Hollow Vale>",
+						"name": "+1/+1",
+						"kind": "stat_mod",
+						"sources": [
+							"Banner of the Hollow Vale"
+						]
+					}
+				]
+			}
+		}
+	},
+	"opalescence/basic": {
+		"description": "Opalescence animates other non-Aura enchantments (base P/T = mana value), not Auras or itself.",
+		"permanents": {
+			"Opalescence": {
+				"controller": "P1",
+				"effectiveTypeLine": "Enchantment",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": true,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": []
+			},
+			"Lanternlit Shrine": {
+				"controller": "P1",
+				"effectiveTypeLine": "Enchantment Creature",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": true,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					3,
+					3
+				],
+				"evaluatedPT": [
+					3,
+					3
+				],
+				"typeModifiedBy": [
+					"Opalescence"
+				],
+				"ptModifiedBy": [
+					"Opalescence (base 3/3)"
+				],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "ability_cast_trig",
+						"name": "Spell Cast Trigger",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					}
+				]
+			},
+			"Rest in Peace": {
+				"controller": "P1",
+				"effectiveTypeLine": "Enchantment Creature",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": true,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					2,
+					2
+				],
+				"evaluatedPT": [
+					2,
+					2
+				],
+				"typeModifiedBy": [
+					"Opalescence"
+				],
+				"ptModifiedBy": [
+					"Opalescence (base 2/2)"
+				],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "ability_etb",
+						"name": "Enters Battlefield Trigger",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					}
+				]
+			},
+			"Hearthfield Bear": {
+				"controller": "P1",
+				"effectiveTypeLine": "Creature — Bear",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					2,
+					2
+				],
+				"breakdownPT": [
+					2,
+					2
+				],
+				"evaluatedPT": [
+					2,
+					2
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": true,
+					"sources": [
+						"Veil of Unmaking"
+					]
+				},
+				"items": []
+			},
+			"Veil of Unmaking": {
+				"controller": "P1",
+				"attachedTo": "<Hearthfield Bear>",
+				"effectiveTypeLine": "Enchantment — Aura",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": true,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [
+					"Enchant creature"
+				],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "enchant",
+						"name": "Enchant creature",
+						"kind": "keyword",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					},
+					{
+						"key": "ability_enchant_mod",
+						"name": "Modifies Enchanted Permanent",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					}
+				]
+			}
+		}
+	},
+	"opalescence/humility-first": {
+		"description": "Humility (earlier) then Opalescence (later). Oracle ruling: Humility and the other enchantment are 4/4 and 3/3 (their mana values); other creatures are 1/1; all creatures lose their abilities.",
+		"permanents": {
+			"Humility": {
+				"controller": "P1",
+				"effectiveTypeLine": "Enchantment Creature",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": true,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					4,
+					4
+				],
+				"evaluatedPT": [
+					4,
+					4
+				],
+				"typeModifiedBy": [
+					"Opalescence"
+				],
+				"ptModifiedBy": [
+					"Humility (base 1/1)",
+					"Opalescence (base 4/4)"
+				],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": true,
+					"sources": [
+						"Humility"
+					]
+				},
+				"items": []
+			},
+			"Opalescence": {
+				"controller": "P1",
+				"effectiveTypeLine": "Enchantment",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": true,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": []
+			},
+			"Lanternlit Shrine": {
+				"controller": "P1",
+				"effectiveTypeLine": "Enchantment Creature",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": true,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					3,
+					3
+				],
+				"evaluatedPT": [
+					3,
+					3
+				],
+				"typeModifiedBy": [
+					"Opalescence"
+				],
+				"ptModifiedBy": [
+					"Humility (base 1/1)",
+					"Opalescence (base 3/3)"
+				],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": true,
+					"sources": [
+						"Humility"
+					]
+				},
+				"items": [
+					{
+						"key": "ability_cast_trig",
+						"name": "Spell Cast Trigger",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						],
+						"removedBy": [
+							"Humility"
+						]
+					}
+				]
+			},
+			"Hearthfield Bear": {
+				"controller": "P1",
+				"effectiveTypeLine": "Creature — Bear",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					2,
+					2
+				],
+				"breakdownPT": [
+					1,
+					1
+				],
+				"evaluatedPT": [
+					1,
+					1
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [
+					"Humility (base 1/1)"
+				],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": true,
+					"sources": [
+						"Humility"
+					]
+				},
+				"items": []
+			}
+		}
+	},
+	"opalescence/opalescence-first": {
+		"description": "Opalescence (earlier) then Humility (later). Oracle ruling: every creature, including the animated enchantments, is 1/1 with no abilities.",
+		"permanents": {
+			"Opalescence": {
+				"controller": "P1",
+				"effectiveTypeLine": "Enchantment",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": true,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": []
+			},
+			"Humility": {
+				"controller": "P1",
+				"effectiveTypeLine": "Enchantment Creature",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": true,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					1,
+					1
+				],
+				"evaluatedPT": [
+					1,
+					1
+				],
+				"typeModifiedBy": [
+					"Opalescence"
+				],
+				"ptModifiedBy": [
+					"Opalescence (base 4/4)",
+					"Humility (base 1/1)"
+				],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": true,
+					"sources": [
+						"Humility"
+					]
+				},
+				"items": []
+			},
+			"Lanternlit Shrine": {
+				"controller": "P1",
+				"effectiveTypeLine": "Enchantment Creature",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": true,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					1,
+					1
+				],
+				"evaluatedPT": [
+					1,
+					1
+				],
+				"typeModifiedBy": [
+					"Opalescence"
+				],
+				"ptModifiedBy": [
+					"Opalescence (base 3/3)",
+					"Humility (base 1/1)"
+				],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": true,
+					"sources": [
+						"Humility"
+					]
+				},
+				"items": [
+					{
+						"key": "ability_cast_trig",
+						"name": "Spell Cast Trigger",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						],
+						"removedBy": [
+							"Humility"
+						]
+					}
+				]
+			},
+			"Hearthfield Bear": {
+				"controller": "P1",
+				"effectiveTypeLine": "Creature — Bear",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					2,
+					2
+				],
+				"breakdownPT": [
+					1,
+					1
+				],
+				"evaluatedPT": [
+					1,
+					1
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [
+					"Humility (base 1/1)"
+				],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": true,
+					"sources": [
+						"Humility"
+					]
+				},
+				"items": []
+			}
+		}
+	},
+	"opalescence/forest-land-on-animated-enchantment": {
+		"description": "The explicit Forest-land Aura on an Opalescence-animated enchantment: it is only a land.",
+		"permanents": {
+			"Opalescence": {
+				"controller": "P1",
+				"effectiveTypeLine": "Enchantment",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": true,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": []
+			},
+			"Lanternlit Shrine": {
+				"controller": "P1",
+				"effectiveTypeLine": "Land — Forest",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": false,
+					"land": true,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [
+					"Verdant Sealing Hymn"
+				],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": true,
+					"sources": [
+						"Verdant Sealing Hymn"
+					]
+				},
+				"items": [
+					{
+						"key": "ability_cast_trig",
+						"name": "Spell Cast Trigger",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						],
+						"removedBy": [
+							"Verdant Sealing Hymn"
+						]
+					},
+					{
+						"key": "mana_g",
+						"name": "Mana Ability: Add {G}",
+						"kind": "ability",
+						"sources": [
+							"Verdant Sealing Hymn"
+						]
+					},
+					{
+						"key": "type_forest",
+						"name": "Type: Land — Forest",
+						"kind": "type_mod",
+						"sources": [
+							"Verdant Sealing Hymn"
+						]
+					}
+				]
+			},
+			"Verdant Sealing Hymn": {
+				"controller": "P1",
+				"attachedTo": "<Lanternlit Shrine>",
+				"effectiveTypeLine": "Enchantment — Aura",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": true,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [
+					"Enchant permanent"
+				],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "enchant",
+						"name": "Enchant permanent",
+						"kind": "keyword",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					},
+					{
+						"key": "ability_enchant_mod",
+						"name": "Modifies Enchanted Permanent",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					}
+				]
+			}
+		}
+	},
+	"opalescence/song-of-the-dryads-on-animated-enchantment": {
+		"description": "Song of the Dryads (Oracle text) on an Opalescence-animated enchantment.",
+		"knownWrong": [
+			{
+				"permanent": "Lanternlit Shrine",
+				"note": "Not marked as having lost its rules-text abilities. CR 305.7 removes them when Song sets the Forest land type.",
+				"todo": "D-Audit-5"
+			}
+		],
+		"permanents": {
+			"Opalescence": {
+				"controller": "P1",
+				"effectiveTypeLine": "Enchantment",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": true,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": []
+			},
+			"Lanternlit Shrine": {
+				"controller": "P1",
+				"effectiveTypeLine": "Land — Forest",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": false,
+					"land": true,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [
+					"Song of the Dryads"
+				],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "ability_cast_trig",
+						"name": "Spell Cast Trigger",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					},
+					{
+						"key": "mana_g",
+						"name": "Mana Ability: Add {G}",
+						"kind": "ability",
+						"sources": [
+							"Song of the Dryads"
+						]
+					},
+					{
+						"key": "type_forest",
+						"name": "Type: Land — Forest",
+						"kind": "type_mod",
+						"sources": [
+							"Song of the Dryads"
+						]
+					}
+				]
+			},
+			"Song of the Dryads": {
+				"controller": "P1",
+				"attachedTo": "<Lanternlit Shrine>",
+				"effectiveTypeLine": "Enchantment — Aura",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": true,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [
+					"Enchant permanent"
+				],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "enchant",
+						"name": "Enchant permanent",
+						"kind": "keyword",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					},
+					{
+						"key": "ability_enchant_mod",
+						"name": "Modifies Enchanted Permanent",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					}
+				]
+			}
+		}
+	},
+	"lands/blood-moon": {
+		"description": "Blood Moon: nonbasic lands (including legendary ones) are Mountains and lose their abilities; basics are unaffected.",
+		"knownWrong": [
+			{
+				"permanent": "Command Tower",
+				"note": "Also a Swamp, from Urborg's ability, although Blood Moon made Urborg a Mountain with no abilities. Urborg's effect depends on Blood Moon's (CR 613.8), so no land is a Swamp; Forest is just a Forest."
+			},
+			{
+				"permanent": "Duskmire Watchtower",
+				"note": "Also a Swamp, from Urborg's ability, although Blood Moon made Urborg a Mountain with no abilities. Urborg's effect depends on Blood Moon's (CR 613.8), so no land is a Swamp; Forest is just a Forest."
+			},
+			{
+				"permanent": "Urborg, Tomb of Yawgmoth",
+				"note": "Also a Swamp, from Urborg's ability, although Blood Moon made Urborg a Mountain with no abilities. Urborg's effect depends on Blood Moon's (CR 613.8), so no land is a Swamp; Forest is just a Forest."
+			},
+			{
+				"permanent": "Forest",
+				"note": "Also a Swamp, from Urborg's ability, although Blood Moon made Urborg a Mountain with no abilities. Urborg's effect depends on Blood Moon's (CR 613.8), so no land is a Swamp; Forest is just a Forest."
+			}
+		],
+		"permanents": {
+			"Command Tower": {
+				"controller": "P1",
+				"effectiveTypeLine": "Land — Mountain Swamp",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": false,
+					"land": true,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [
+					"Blood Moon",
+					"Urborg, Tomb of Yawgmoth"
+				],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": true,
+					"sources": [
+						"Blood Moon"
+					]
+				},
+				"items": [
+					{
+						"key": "ability_mana",
+						"name": "Mana Ability: Add one mana of any color in your commander's color identity",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						],
+						"removedBy": [
+							"Blood Moon"
+						]
+					},
+					{
+						"key": "mana_b",
+						"name": "Mana Ability: Add {B}",
+						"kind": "ability",
+						"sources": [
+							"Urborg, Tomb of Yawgmoth"
+						],
+						"removedBy": [
+							"Blood Moon"
+						]
+					},
+					{
+						"key": "type_swamp",
+						"name": "Subtype: +Swamp",
+						"kind": "type_mod",
+						"sources": [
+							"Urborg, Tomb of Yawgmoth"
+						]
+					},
+					{
+						"key": "mana_r",
+						"name": "Mana Ability: Add {R}",
+						"kind": "ability",
+						"sources": [
+							"Blood Moon"
+						]
+					},
+					{
+						"key": "type_mountain",
+						"name": "Type: Land — Mountain",
+						"kind": "type_mod",
+						"sources": [
+							"Blood Moon"
+						]
+					}
+				]
+			},
+			"Duskmire Watchtower": {
+				"controller": "P1",
+				"effectiveTypeLine": "Land — Mountain Swamp",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": false,
+					"land": true,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [
+					"Blood Moon",
+					"Urborg, Tomb of Yawgmoth"
+				],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": true,
+					"sources": [
+						"Blood Moon"
+					]
+				},
+				"items": [
+					{
+						"key": "ability_mana",
+						"name": "Mana Ability: Add {C}",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						],
+						"removedBy": [
+							"Blood Moon"
+						]
+					},
+					{
+						"key": "mana_b",
+						"name": "Mana Ability: Add {B}",
+						"kind": "ability",
+						"sources": [
+							"Urborg, Tomb of Yawgmoth"
+						],
+						"removedBy": [
+							"Blood Moon"
+						]
+					},
+					{
+						"key": "type_swamp",
+						"name": "Subtype: +Swamp",
+						"kind": "type_mod",
+						"sources": [
+							"Urborg, Tomb of Yawgmoth"
+						]
+					},
+					{
+						"key": "mana_r",
+						"name": "Mana Ability: Add {R}",
+						"kind": "ability",
+						"sources": [
+							"Blood Moon"
+						]
+					},
+					{
+						"key": "type_mountain",
+						"name": "Type: Land — Mountain",
+						"kind": "type_mod",
+						"sources": [
+							"Blood Moon"
+						]
+					}
+				]
+			},
+			"Urborg, Tomb of Yawgmoth": {
+				"controller": "P1",
+				"effectiveTypeLine": "Legendary Land — Mountain Swamp",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": false,
+					"land": true,
+					"planeswalker": false,
+					"legendary": true,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [
+					"Blood Moon",
+					"Urborg, Tomb of Yawgmoth"
+				],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": true,
+					"sources": [
+						"Blood Moon"
+					]
+				},
+				"items": [
+					{
+						"key": "mana_b",
+						"name": "Mana Ability: Add {B}",
+						"kind": "ability",
+						"sources": [
+							"Urborg, Tomb of Yawgmoth"
+						],
+						"removedBy": [
+							"Blood Moon"
+						]
+					},
+					{
+						"key": "type_swamp",
+						"name": "Subtype: +Swamp",
+						"kind": "type_mod",
+						"sources": [
+							"Urborg, Tomb of Yawgmoth"
+						]
+					},
+					{
+						"key": "mana_r",
+						"name": "Mana Ability: Add {R}",
+						"kind": "ability",
+						"sources": [
+							"Blood Moon"
+						]
+					},
+					{
+						"key": "type_mountain",
+						"name": "Type: Land — Mountain",
+						"kind": "type_mod",
+						"sources": [
+							"Blood Moon"
+						]
+					}
+				]
+			},
+			"Forest": {
+				"controller": "P1",
+				"effectiveTypeLine": "Basic Land — Forest Swamp",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": false,
+					"land": true,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [
+					"Urborg, Tomb of Yawgmoth"
+				],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "ability_activated",
+						"name": "Activated Ability",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					},
+					{
+						"key": "mana_b",
+						"name": "Mana Ability: Add {B}",
+						"kind": "ability",
+						"sources": [
+							"Urborg, Tomb of Yawgmoth"
+						]
+					},
+					{
+						"key": "type_swamp",
+						"name": "Subtype: +Swamp",
+						"kind": "type_mod",
+						"sources": [
+							"Urborg, Tomb of Yawgmoth"
+						]
+					}
+				]
+			},
+			"Blood Moon": {
+				"controller": "P1",
+				"effectiveTypeLine": "Enchantment",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": true,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": []
+			}
+		}
+	},
+	"lands/urborg-and-yavimaya": {
+		"description": "Urborg and Yavimaya: each land is a Swamp and a Forest in addition to its other types.",
+		"permanents": {
+			"Island": {
+				"controller": "P1",
+				"effectiveTypeLine": "Basic Land — Island Swamp Forest",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": false,
+					"land": true,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [
+					"Urborg, Tomb of Yawgmoth",
+					"Yavimaya, Cradle of Growth"
+				],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "ability_activated",
+						"name": "Activated Ability",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					},
+					{
+						"key": "mana_b",
+						"name": "Mana Ability: Add {B}",
+						"kind": "ability",
+						"sources": [
+							"Urborg, Tomb of Yawgmoth"
+						]
+					},
+					{
+						"key": "type_swamp",
+						"name": "Subtype: +Swamp",
+						"kind": "type_mod",
+						"sources": [
+							"Urborg, Tomb of Yawgmoth"
+						]
+					},
+					{
+						"key": "mana_g",
+						"name": "Mana Ability: Add {G}",
+						"kind": "ability",
+						"sources": [
+							"Yavimaya, Cradle of Growth"
+						]
+					},
+					{
+						"key": "type_forest_add",
+						"name": "Subtype: +Forest",
+						"kind": "type_mod",
+						"sources": [
+							"Yavimaya, Cradle of Growth"
+						]
+					}
+				]
+			},
+			"Command Tower": {
+				"controller": "P1",
+				"effectiveTypeLine": "Land — Swamp Forest",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": false,
+					"land": true,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [
+					"Urborg, Tomb of Yawgmoth",
+					"Yavimaya, Cradle of Growth"
+				],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "ability_mana",
+						"name": "Mana Ability: Add one mana of any color in your commander's color identity",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					},
+					{
+						"key": "mana_b",
+						"name": "Mana Ability: Add {B}",
+						"kind": "ability",
+						"sources": [
+							"Urborg, Tomb of Yawgmoth"
+						]
+					},
+					{
+						"key": "type_swamp",
+						"name": "Subtype: +Swamp",
+						"kind": "type_mod",
+						"sources": [
+							"Urborg, Tomb of Yawgmoth"
+						]
+					},
+					{
+						"key": "mana_g",
+						"name": "Mana Ability: Add {G}",
+						"kind": "ability",
+						"sources": [
+							"Yavimaya, Cradle of Growth"
+						]
+					},
+					{
+						"key": "type_forest_add",
+						"name": "Subtype: +Forest",
+						"kind": "type_mod",
+						"sources": [
+							"Yavimaya, Cradle of Growth"
+						]
+					}
+				]
+			},
+			"Urborg, Tomb of Yawgmoth": {
+				"controller": "P1",
+				"effectiveTypeLine": "Legendary Land — Swamp Forest",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": false,
+					"land": true,
+					"planeswalker": false,
+					"legendary": true,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [
+					"Urborg, Tomb of Yawgmoth",
+					"Yavimaya, Cradle of Growth"
+				],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "mana_b",
+						"name": "Mana Ability: Add {B}",
+						"kind": "ability",
+						"sources": [
+							"Urborg, Tomb of Yawgmoth"
+						]
+					},
+					{
+						"key": "type_swamp",
+						"name": "Subtype: +Swamp",
+						"kind": "type_mod",
+						"sources": [
+							"Urborg, Tomb of Yawgmoth"
+						]
+					},
+					{
+						"key": "mana_g",
+						"name": "Mana Ability: Add {G}",
+						"kind": "ability",
+						"sources": [
+							"Yavimaya, Cradle of Growth"
+						]
+					},
+					{
+						"key": "type_forest_add",
+						"name": "Subtype: +Forest",
+						"kind": "type_mod",
+						"sources": [
+							"Yavimaya, Cradle of Growth"
+						]
+					}
+				]
+			},
+			"Yavimaya, Cradle of Growth": {
+				"controller": "P1",
+				"effectiveTypeLine": "Legendary Land — Swamp Forest",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": false,
+					"land": true,
+					"planeswalker": false,
+					"legendary": true,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [
+					"Urborg, Tomb of Yawgmoth",
+					"Yavimaya, Cradle of Growth"
+				],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "mana_b",
+						"name": "Mana Ability: Add {B}",
+						"kind": "ability",
+						"sources": [
+							"Urborg, Tomb of Yawgmoth"
+						]
+					},
+					{
+						"key": "type_swamp",
+						"name": "Subtype: +Swamp",
+						"kind": "type_mod",
+						"sources": [
+							"Urborg, Tomb of Yawgmoth"
+						]
+					},
+					{
+						"key": "mana_g",
+						"name": "Mana Ability: Add {G}",
+						"kind": "ability",
+						"sources": [
+							"Yavimaya, Cradle of Growth"
+						]
+					},
+					{
+						"key": "type_forest_add",
+						"name": "Subtype: +Forest",
+						"kind": "type_mod",
+						"sources": [
+							"Yavimaya, Cradle of Growth"
+						]
+					}
+				]
+			},
+			"Duskmire Watchtower": {
+				"controller": "P2",
+				"effectiveTypeLine": "Land — Swamp Forest",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": false,
+					"land": true,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [
+					"Urborg, Tomb of Yawgmoth",
+					"Yavimaya, Cradle of Growth"
+				],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "ability_mana",
+						"name": "Mana Ability: Add {C}",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					},
+					{
+						"key": "mana_b",
+						"name": "Mana Ability: Add {B}",
+						"kind": "ability",
+						"sources": [
+							"Urborg, Tomb of Yawgmoth"
+						]
+					},
+					{
+						"key": "type_swamp",
+						"name": "Subtype: +Swamp",
+						"kind": "type_mod",
+						"sources": [
+							"Urborg, Tomb of Yawgmoth"
+						]
+					},
+					{
+						"key": "mana_g",
+						"name": "Mana Ability: Add {G}",
+						"kind": "ability",
+						"sources": [
+							"Yavimaya, Cradle of Growth"
+						]
+					},
+					{
+						"key": "type_forest_add",
+						"name": "Subtype: +Forest",
+						"kind": "type_mod",
+						"sources": [
+							"Yavimaya, Cradle of Growth"
+						]
+					}
+				]
+			}
+		}
+	},
+	"lands/forest-land-aura-on-yavimaya": {
+		"description": "The explicit Forest-land Aura on Yavimaya removes its \"each land is a Forest\" ability.",
+		"permanents": {
+			"Yavimaya, Cradle of Growth": {
+				"controller": "P1",
+				"effectiveTypeLine": "Legendary Land — Forest",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": false,
+					"land": true,
+					"planeswalker": false,
+					"legendary": true,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [
+					"Verdant Sealing Hymn"
+				],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": true,
+					"sources": [
+						"Verdant Sealing Hymn"
+					]
+				},
+				"items": [
+					{
+						"key": "mana_g",
+						"name": "Mana Ability: Add {G}",
+						"kind": "ability",
+						"sources": [
+							"Verdant Sealing Hymn"
+						]
+					},
+					{
+						"key": "type_forest",
+						"name": "Type: Land — Forest",
+						"kind": "type_mod",
+						"sources": [
+							"Verdant Sealing Hymn"
+						]
+					}
+				]
+			},
+			"Island": {
+				"controller": "P1",
+				"effectiveTypeLine": "Basic Land — Island",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": false,
+					"land": true,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "ability_activated",
+						"name": "Activated Ability",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					}
+				]
+			},
+			"Verdant Sealing Hymn": {
+				"controller": "P1",
+				"attachedTo": "<Yavimaya, Cradle of Growth>",
+				"effectiveTypeLine": "Enchantment — Aura",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": true,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [
+					"Enchant permanent"
+				],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "enchant",
+						"name": "Enchant permanent",
+						"kind": "keyword",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					},
+					{
+						"key": "ability_enchant_mod",
+						"name": "Modifies Enchanted Permanent",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					}
+				]
+			}
+		}
+	},
+	"lands/chromatic-lantern": {
+		"description": "Chromatic Lantern grants \"{T}: Add one mana of any color\" to its controller's lands only.",
+		"permanents": {
+			"Chromatic Lantern": {
+				"controller": "P1",
+				"effectiveTypeLine": "Artifact",
+				"is": {
+					"creature": false,
+					"artifact": true,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "ability_activated",
+						"name": "Activated Ability",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					},
+					{
+						"key": "ability_mana",
+						"name": "Mana Ability: Add one mana of any color",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					}
+				]
+			},
+			"Forest": {
+				"controller": "P1",
+				"effectiveTypeLine": "Basic Land — Forest",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": false,
+					"land": true,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "ability_activated",
+						"name": "Activated Ability",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					},
+					{
+						"key": "mana_any",
+						"name": "Mana Ability: Add Any Color",
+						"kind": "ability",
+						"sources": [
+							"Chromatic Lantern"
+						]
+					}
+				]
+			},
+			"Command Tower": {
+				"controller": "P1",
+				"effectiveTypeLine": "Land",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": false,
+					"land": true,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "ability_mana",
+						"name": "Mana Ability: Add one mana of any color in your commander's color identity",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					},
+					{
+						"key": "mana_any",
+						"name": "Mana Ability: Add Any Color",
+						"kind": "ability",
+						"sources": [
+							"Chromatic Lantern"
+						]
+					}
+				]
+			},
+			"Island": {
+				"controller": "P2",
+				"effectiveTypeLine": "Basic Land — Island",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": false,
+					"land": true,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "ability_activated",
+						"name": "Activated Ability",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					}
+				]
+			}
+		}
+	},
+	"types/mycosynth-lattice": {
+		"description": "Mycosynth Lattice: all permanents are artifacts in addition to their other types.",
+		"permanents": {
+			"Mycosynth Lattice": {
+				"controller": "P1",
+				"effectiveTypeLine": "Artifact",
+				"is": {
+					"creature": false,
+					"artifact": true,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": []
+			},
+			"Hearthfield Bear": {
+				"controller": "P1",
+				"effectiveTypeLine": "Creature Artifact — Bear",
+				"is": {
+					"creature": true,
+					"artifact": true,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					2,
+					2
+				],
+				"breakdownPT": [
+					3,
+					3
+				],
+				"evaluatedPT": [
+					3,
+					3
+				],
+				"typeModifiedBy": [
+					"Mycosynth Lattice"
+				],
+				"ptModifiedBy": [
+					"+1/+1 (Banner of the Hollow Vale)"
+				],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "pt_<Banner of the Hollow Vale>",
+						"name": "+1/+1",
+						"kind": "stat_mod",
+						"sources": [
+							"Banner of the Hollow Vale"
+						]
+					}
+				]
+			},
+			"Forest": {
+				"controller": "P1",
+				"effectiveTypeLine": "Basic Land Artifact — Forest",
+				"is": {
+					"creature": false,
+					"artifact": true,
+					"enchantment": false,
+					"land": true,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [
+					"Mycosynth Lattice"
+				],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "ability_activated",
+						"name": "Activated Ability",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					}
+				]
+			},
+			"Banner of the Hollow Vale": {
+				"controller": "P1",
+				"effectiveTypeLine": "Enchantment Artifact",
+				"is": {
+					"creature": false,
+					"artifact": true,
+					"enchantment": true,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [
+					"Mycosynth Lattice"
+				],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "ability_lord",
+						"name": "Anthem / Lord Effect",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					}
+				]
+			},
+			"Sol Ring": {
+				"controller": "P2",
+				"effectiveTypeLine": "Artifact",
+				"is": {
+					"creature": false,
+					"artifact": true,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "ability_mana",
+						"name": "Mana Ability: Add {C}{C}",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					}
+				]
+			}
+		}
+	},
+	"types/maskwood-nexus": {
+		"description": "Maskwood Nexus: its controller's creatures are every creature type, so an Elf lord pumps a Bear; the opponent's Bear is unaffected.",
+		"permanents": {
+			"Maskwood Nexus": {
+				"controller": "P1",
+				"effectiveTypeLine": "Artifact",
+				"is": {
+					"creature": false,
+					"artifact": true,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "ability_activated",
+						"name": "Activated Ability",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					}
+				]
+			},
+			"Elvish Archdruid": {
+				"controller": "P1",
+				"effectiveTypeLine": "Creature — Elf Druid All-Types",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": true
+				},
+				"basePT": [
+					2,
+					2
+				],
+				"breakdownPT": [
+					2,
+					2
+				],
+				"evaluatedPT": [
+					2,
+					2
+				],
+				"typeModifiedBy": [
+					"Maskwood Nexus"
+				],
+				"ptModifiedBy": [],
+				"activeKeywords": [
+					"Changeling (All Creature Types)"
+				],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "ability_lord",
+						"name": "Anthem / Lord Effect",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					},
+					{
+						"key": "ability_mana",
+						"name": "Mana Ability: Add {G} for each Elf you control",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					},
+					{
+						"key": "changeling",
+						"name": "Changeling (All Creature Types)",
+						"kind": "keyword",
+						"sources": [
+							"Maskwood Nexus"
+						]
+					}
+				]
+			},
+			"Hearthfield Bear": {
+				"controller": "P1",
+				"effectiveTypeLine": "Creature — Bear All-Types",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": true
+				},
+				"basePT": [
+					2,
+					2
+				],
+				"breakdownPT": [
+					3,
+					3
+				],
+				"evaluatedPT": [
+					3,
+					3
+				],
+				"typeModifiedBy": [
+					"Maskwood Nexus"
+				],
+				"ptModifiedBy": [
+					"+1/+1 (Elvish Archdruid)"
+				],
+				"activeKeywords": [
+					"Changeling (All Creature Types)"
+				],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "changeling",
+						"name": "Changeling (All Creature Types)",
+						"kind": "keyword",
+						"sources": [
+							"Maskwood Nexus"
+						]
+					},
+					{
+						"key": "pt_<Elvish Archdruid>",
+						"name": "+1/+1",
+						"kind": "stat_mod",
+						"sources": [
+							"Elvish Archdruid"
+						]
+					}
+				]
+			},
+			"Hearthfield Bear #2": {
+				"controller": "P2",
+				"effectiveTypeLine": "Creature — Bear",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					2,
+					2
+				],
+				"breakdownPT": [
+					2,
+					2
+				],
+				"evaluatedPT": [
+					2,
+					2
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": []
+			}
+		}
+	},
+	"pt/base-setters-small-then-large": {
+		"description": "Base P/T 0/1 Aura (earlier) then base P/T 4/4 Aura (later): the later one wins.",
+		"permanents": {
+			"Thornwood Brute": {
+				"controller": "P1",
+				"effectiveTypeLine": "Creature — Beast",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					5,
+					5
+				],
+				"breakdownPT": [
+					4,
+					4
+				],
+				"evaluatedPT": [
+					4,
+					4
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [
+					"Gloomweave Shroud (base 0/1)",
+					"Titanbone Mantle (base 4/4)"
+				],
+				"activeKeywords": [
+					"Trample"
+				],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "trample",
+						"name": "Trample",
+						"kind": "keyword",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					}
+				]
+			},
+			"Gloomweave Shroud": {
+				"controller": "P1",
+				"attachedTo": "<Thornwood Brute>",
+				"effectiveTypeLine": "Enchantment — Aura",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": true,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [
+					"Enchant creature"
+				],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "enchant",
+						"name": "Enchant creature",
+						"kind": "keyword",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					},
+					{
+						"key": "ability_enchant_mod",
+						"name": "Modifies Enchanted Permanent",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					}
+				]
+			},
+			"Titanbone Mantle": {
+				"controller": "P1",
+				"attachedTo": "<Thornwood Brute>",
+				"effectiveTypeLine": "Enchantment — Aura",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": true,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [
+					"Enchant creature"
+				],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "enchant",
+						"name": "Enchant creature",
+						"kind": "keyword",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					},
+					{
+						"key": "ability_enchant_mod",
+						"name": "Modifies Enchanted Permanent",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					}
+				]
+			}
+		}
+	},
+	"pt/base-setters-large-then-small": {
+		"description": "Base P/T 4/4 Aura (earlier) then base P/T 0/1 Aura (later).",
+		"permanents": {
+			"Thornwood Brute": {
+				"controller": "P1",
+				"effectiveTypeLine": "Creature — Beast",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					5,
+					5
+				],
+				"breakdownPT": [
+					0,
+					1
+				],
+				"evaluatedPT": [
+					0,
+					1
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [
+					"Titanbone Mantle (base 4/4)",
+					"Gloomweave Shroud (base 0/1)"
+				],
+				"activeKeywords": [
+					"Trample"
+				],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "trample",
+						"name": "Trample",
+						"kind": "keyword",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					}
+				]
+			},
+			"Titanbone Mantle": {
+				"controller": "P1",
+				"attachedTo": "<Thornwood Brute>",
+				"effectiveTypeLine": "Enchantment — Aura",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": true,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [
+					"Enchant creature"
+				],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "enchant",
+						"name": "Enchant creature",
+						"kind": "keyword",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					},
+					{
+						"key": "ability_enchant_mod",
+						"name": "Modifies Enchanted Permanent",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					}
+				]
+			},
+			"Gloomweave Shroud": {
+				"controller": "P1",
+				"attachedTo": "<Thornwood Brute>",
+				"effectiveTypeLine": "Enchantment — Aura",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": true,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [
+					"Enchant creature"
+				],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "enchant",
+						"name": "Enchant creature",
+						"kind": "keyword",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					},
+					{
+						"key": "ability_enchant_mod",
+						"name": "Modifies Enchanted Permanent",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					}
+				]
+			}
+		}
+	},
+	"pt/cda-creature-count": {
+		"description": "*/* equal to the number of creatures you control (counts itself; the opponent's creature does not count).",
+		"permanents": {
+			"Hollowroot Colossus": {
+				"controller": "P1",
+				"effectiveTypeLine": "Creature — Plant",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					3,
+					3
+				],
+				"evaluatedPT": [
+					3,
+					3
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [
+					"Hollowroot Colossus CDA (3/3)"
+				],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": []
+			},
+			"Hearthfield Bear": {
+				"controller": "P1",
+				"effectiveTypeLine": "Creature — Bear",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					2,
+					2
+				],
+				"breakdownPT": [
+					2,
+					2
+				],
+				"evaluatedPT": [
+					2,
+					2
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": []
+			},
+			"Mossback Elf": {
+				"controller": "P1",
+				"effectiveTypeLine": "Creature — Elf Druid",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					1,
+					1
+				],
+				"breakdownPT": [
+					1,
+					1
+				],
+				"evaluatedPT": [
+					1,
+					1
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": []
+			},
+			"Hearthfield Bear #2": {
+				"controller": "P2",
+				"effectiveTypeLine": "Creature — Bear",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					2,
+					2
+				],
+				"breakdownPT": [
+					2,
+					2
+				],
+				"evaluatedPT": [
+					2,
+					2
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": []
+			}
+		}
+	},
+	"pt/cda-graveyard-creatures": {
+		"description": "*/* equal to the number of creature cards in all graveyards (noncreature cards don't count).",
+		"permanents": {
+			"Gravesworn Horror": {
+				"controller": "P1",
+				"effectiveTypeLine": "Creature — Horror",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					2,
+					2
+				],
+				"evaluatedPT": [
+					2,
+					2
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [
+					"Gravesworn Horror CDA (2/2)"
+				],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": []
+			}
+		}
+	},
+	"pt/cda-under-humility": {
+		"description": "A */* creature under Humility: 1/1 with no abilities.",
+		"permanents": {
+			"Hollowroot Colossus": {
+				"controller": "P1",
+				"effectiveTypeLine": "Creature — Plant",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					1,
+					1
+				],
+				"evaluatedPT": [
+					1,
+					1
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [
+					"Humility (base 1/1)"
+				],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": true,
+					"sources": [
+						"Humility"
+					]
+				},
+				"items": []
+			},
+			"Hearthfield Bear": {
+				"controller": "P1",
+				"effectiveTypeLine": "Creature — Bear",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					2,
+					2
+				],
+				"breakdownPT": [
+					1,
+					1
+				],
+				"evaluatedPT": [
+					1,
+					1
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [
+					"Humility (base 1/1)"
+				],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": true,
+					"sources": [
+						"Humility"
+					]
+				},
+				"items": []
+			},
+			"Humility": {
+				"controller": "P1",
+				"effectiveTypeLine": "Enchantment",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": true,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": []
+			}
+		}
+	},
+	"grants/lords-and-anthems": {
+		"description": "Subtype lords (\"other\" and self-inclusive), an anthem, and an opposing Elf that none of them affect.",
+		"permanents": {
+			"Elvish Archdruid": {
+				"controller": "P1",
+				"effectiveTypeLine": "Creature — Elf Druid",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					2,
+					2
+				],
+				"breakdownPT": [
+					4,
+					4
+				],
+				"evaluatedPT": [
+					4,
+					4
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [
+					"+1/+1 (Elvenwood Marshal)",
+					"+1/+1 (Banner of the Hollow Vale)"
+				],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "ability_lord",
+						"name": "Anthem / Lord Effect",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					},
+					{
+						"key": "ability_mana",
+						"name": "Mana Ability: Add {G} for each Elf you control",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					},
+					{
+						"key": "pt_<Elvenwood Marshal>",
+						"name": "+1/+1",
+						"kind": "stat_mod",
+						"sources": [
+							"Elvenwood Marshal"
+						]
+					},
+					{
+						"key": "pt_<Banner of the Hollow Vale>",
+						"name": "+1/+1",
+						"kind": "stat_mod",
+						"sources": [
+							"Banner of the Hollow Vale"
+						]
+					}
+				]
+			},
+			"Elvenwood Marshal": {
+				"controller": "P1",
+				"effectiveTypeLine": "Creature — Elf Warrior",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					2,
+					2
+				],
+				"breakdownPT": [
+					4,
+					4
+				],
+				"evaluatedPT": [
+					4,
+					4
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [
+					"+1/+1 (Elvish Archdruid)",
+					"+1/+1 (Banner of the Hollow Vale)"
+				],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "ability_lord",
+						"name": "Anthem / Lord Effect",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					},
+					{
+						"key": "pt_<Elvish Archdruid>",
+						"name": "+1/+1",
+						"kind": "stat_mod",
+						"sources": [
+							"Elvish Archdruid"
+						]
+					},
+					{
+						"key": "pt_<Banner of the Hollow Vale>",
+						"name": "+1/+1",
+						"kind": "stat_mod",
+						"sources": [
+							"Banner of the Hollow Vale"
+						]
+					}
+				]
+			},
+			"Mossback Elf": {
+				"controller": "P1",
+				"effectiveTypeLine": "Creature — Elf Druid",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					1,
+					1
+				],
+				"breakdownPT": [
+					4,
+					4
+				],
+				"evaluatedPT": [
+					4,
+					4
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [
+					"+1/+1 (Elvish Archdruid)",
+					"+1/+1 (Elvenwood Marshal)",
+					"+1/+1 (Banner of the Hollow Vale)"
+				],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "pt_<Elvish Archdruid>",
+						"name": "+1/+1",
+						"kind": "stat_mod",
+						"sources": [
+							"Elvish Archdruid"
+						]
+					},
+					{
+						"key": "pt_<Elvenwood Marshal>",
+						"name": "+1/+1",
+						"kind": "stat_mod",
+						"sources": [
+							"Elvenwood Marshal"
+						]
+					},
+					{
+						"key": "pt_<Banner of the Hollow Vale>",
+						"name": "+1/+1",
+						"kind": "stat_mod",
+						"sources": [
+							"Banner of the Hollow Vale"
+						]
+					}
+				]
+			},
+			"Emberhorn Chieftain": {
+				"controller": "P1",
+				"effectiveTypeLine": "Creature — Goblin",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					2,
+					2
+				],
+				"breakdownPT": [
+					4,
+					4
+				],
+				"evaluatedPT": [
+					4,
+					4
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [
+					"+1/+1 (Emberhorn Chieftain)",
+					"+1/+1 (Banner of the Hollow Vale)"
+				],
+				"activeKeywords": [
+					"Haste"
+				],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "haste",
+						"name": "Haste",
+						"kind": "keyword",
+						"innate": true,
+						"sources": [
+							"innate",
+							"Emberhorn Chieftain"
+						]
+					},
+					{
+						"key": "ability_lord",
+						"name": "Anthem / Lord Effect",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					},
+					{
+						"key": "pt_<Emberhorn Chieftain>",
+						"name": "+1/+1",
+						"kind": "stat_mod",
+						"sources": [
+							"Emberhorn Chieftain"
+						]
+					},
+					{
+						"key": "pt_<Banner of the Hollow Vale>",
+						"name": "+1/+1",
+						"kind": "stat_mod",
+						"sources": [
+							"Banner of the Hollow Vale"
+						]
+					}
+				]
+			},
+			"Banner of the Hollow Vale": {
+				"controller": "P1",
+				"effectiveTypeLine": "Enchantment",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": true,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "ability_lord",
+						"name": "Anthem / Lord Effect",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					}
+				]
+			},
+			"Hearthfield Bear": {
+				"controller": "P1",
+				"effectiveTypeLine": "Creature — Bear",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					2,
+					2
+				],
+				"breakdownPT": [
+					3,
+					3
+				],
+				"evaluatedPT": [
+					3,
+					3
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [
+					"+1/+1 (Banner of the Hollow Vale)"
+				],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "pt_<Banner of the Hollow Vale>",
+						"name": "+1/+1",
+						"kind": "stat_mod",
+						"sources": [
+							"Banner of the Hollow Vale"
+						]
+					}
+				]
+			},
+			"Mossback Elf #2": {
+				"controller": "P2",
+				"effectiveTypeLine": "Creature — Elf Druid",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					1,
+					1
+				],
+				"breakdownPT": [
+					1,
+					1
+				],
+				"evaluatedPT": [
+					1,
+					1
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": []
+			}
+		}
+	},
+	"grants/akroma-and-shalai": {
+		"description": "Akroma's Memorial keywords and Shalai's \"other creatures you control have hexproof\"; the opponent's creature gets nothing.",
+		"permanents": {
+			"Akroma's Memorial": {
+				"controller": "P1",
+				"effectiveTypeLine": "Legendary Artifact",
+				"is": {
+					"creature": false,
+					"artifact": true,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": true,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "ability_lord",
+						"name": "Anthem / Lord Effect",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					}
+				]
+			},
+			"Shalai, Voice of Plenty": {
+				"controller": "P1",
+				"effectiveTypeLine": "Legendary Creature — Angel",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": true,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					3,
+					4
+				],
+				"breakdownPT": [
+					3,
+					4
+				],
+				"evaluatedPT": [
+					3,
+					4
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [
+					"Flying",
+					"First strike",
+					"Haste",
+					"Trample",
+					"Vigilance",
+					"Protection from black and from red"
+				],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "flying",
+						"name": "Flying",
+						"kind": "keyword",
+						"innate": true,
+						"sources": [
+							"innate",
+							"Akroma's Memorial"
+						]
+					},
+					{
+						"key": "ability_lord",
+						"name": "Anthem / Lord Effect",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					},
+					{
+						"key": "ability_activated",
+						"name": "Activated Ability",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					},
+					{
+						"key": "first strike",
+						"name": "First strike",
+						"kind": "keyword",
+						"sources": [
+							"Akroma's Memorial"
+						]
+					},
+					{
+						"key": "haste",
+						"name": "Haste",
+						"kind": "keyword",
+						"sources": [
+							"Akroma's Memorial"
+						]
+					},
+					{
+						"key": "trample",
+						"name": "Trample",
+						"kind": "keyword",
+						"sources": [
+							"Akroma's Memorial"
+						]
+					},
+					{
+						"key": "vigilance",
+						"name": "Vigilance",
+						"kind": "keyword",
+						"sources": [
+							"Akroma's Memorial"
+						]
+					},
+					{
+						"key": "protection",
+						"name": "Protection from black and from red",
+						"kind": "keyword",
+						"sources": [
+							"Akroma's Memorial"
+						]
+					}
+				]
+			},
+			"Hearthfield Bear": {
+				"controller": "P1",
+				"effectiveTypeLine": "Creature — Bear",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					2,
+					2
+				],
+				"breakdownPT": [
+					2,
+					2
+				],
+				"evaluatedPT": [
+					2,
+					2
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [
+					"Flying",
+					"First strike",
+					"Haste",
+					"Trample",
+					"Vigilance",
+					"Protection from black and from red",
+					"Hexproof"
+				],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "flying",
+						"name": "Flying",
+						"kind": "keyword",
+						"sources": [
+							"Akroma's Memorial"
+						]
+					},
+					{
+						"key": "first strike",
+						"name": "First strike",
+						"kind": "keyword",
+						"sources": [
+							"Akroma's Memorial"
+						]
+					},
+					{
+						"key": "haste",
+						"name": "Haste",
+						"kind": "keyword",
+						"sources": [
+							"Akroma's Memorial"
+						]
+					},
+					{
+						"key": "trample",
+						"name": "Trample",
+						"kind": "keyword",
+						"sources": [
+							"Akroma's Memorial"
+						]
+					},
+					{
+						"key": "vigilance",
+						"name": "Vigilance",
+						"kind": "keyword",
+						"sources": [
+							"Akroma's Memorial"
+						]
+					},
+					{
+						"key": "protection",
+						"name": "Protection from black and from red",
+						"kind": "keyword",
+						"sources": [
+							"Akroma's Memorial"
+						]
+					},
+					{
+						"key": "hexproof",
+						"name": "Hexproof",
+						"kind": "keyword",
+						"sources": [
+							"Shalai, Voice of Plenty"
+						]
+					}
+				]
+			},
+			"Hearthfield Bear #2": {
+				"controller": "P2",
+				"effectiveTypeLine": "Creature — Bear",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					2,
+					2
+				],
+				"breakdownPT": [
+					2,
+					2
+				],
+				"evaluatedPT": [
+					2,
+					2
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": []
+			}
+		}
+	},
+	"grants/equipment-and-auras": {
+		"description": "Equipment and Aura keyword and P/T grants, including a -3/-0 Aura on a 2/2.",
+		"knownWrong": [
+			{
+				"permanent": "Hearthfield Bear #3",
+				"note": "Power is reported as 0; it is -1. CR 107.1b: power can be less than 0 (it matters once another effect adds power)."
+			}
+		],
+		"permanents": {
+			"Hearthfield Bear": {
+				"controller": "P1",
+				"effectiveTypeLine": "Creature — Bear",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					2,
+					2
+				],
+				"breakdownPT": [
+					2,
+					2
+				],
+				"evaluatedPT": [
+					2,
+					2
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [
+					"Haste",
+					"Shroud"
+				],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "haste",
+						"name": "Haste",
+						"kind": "keyword",
+						"sources": [
+							"Lightning Greaves"
+						]
+					},
+					{
+						"key": "shroud",
+						"name": "Shroud",
+						"kind": "keyword",
+						"sources": [
+							"Lightning Greaves"
+						]
+					}
+				]
+			},
+			"Lightning Greaves": {
+				"controller": "P1",
+				"attachedTo": "<Hearthfield Bear>",
+				"effectiveTypeLine": "Artifact — Equipment",
+				"is": {
+					"creature": false,
+					"artifact": true,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [
+					"Equip {0}"
+				],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "equip",
+						"name": "Equip {0}",
+						"kind": "keyword",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					},
+					{
+						"key": "ability_equip_buff",
+						"name": "Grants Equipped Creature Buff",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					}
+				]
+			},
+			"Mossback Elf": {
+				"controller": "P1",
+				"effectiveTypeLine": "Creature — Elf Druid",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					1,
+					1
+				],
+				"breakdownPT": [
+					1,
+					1
+				],
+				"evaluatedPT": [
+					1,
+					1
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [
+					"Haste",
+					"Hexproof"
+				],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "haste",
+						"name": "Haste",
+						"kind": "keyword",
+						"sources": [
+							"Swiftfoot Boots"
+						]
+					},
+					{
+						"key": "hexproof",
+						"name": "Hexproof",
+						"kind": "keyword",
+						"sources": [
+							"Swiftfoot Boots"
+						]
+					}
+				]
+			},
+			"Swiftfoot Boots": {
+				"controller": "P1",
+				"attachedTo": "<Mossback Elf>",
+				"effectiveTypeLine": "Artifact — Equipment",
+				"is": {
+					"creature": false,
+					"artifact": true,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [
+					"Equip {1}"
+				],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "equip",
+						"name": "Equip {1}",
+						"kind": "keyword",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					},
+					{
+						"key": "ability_equip_buff",
+						"name": "Grants Equipped Creature Buff",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					}
+				]
+			},
+			"Thornwood Brute": {
+				"controller": "P1",
+				"effectiveTypeLine": "Creature — Beast",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					5,
+					5
+				],
+				"breakdownPT": [
+					8,
+					8
+				],
+				"evaluatedPT": [
+					8,
+					8
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [
+					"+1/+1 (Shadowspear)",
+					"+2/+2 (Wingsteel Harness)"
+				],
+				"activeKeywords": [
+					"Trample",
+					"Lifelink",
+					"Flying"
+				],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "trample",
+						"name": "Trample",
+						"kind": "keyword",
+						"innate": true,
+						"sources": [
+							"innate",
+							"Shadowspear"
+						]
+					},
+					{
+						"key": "lifelink",
+						"name": "Lifelink",
+						"kind": "keyword",
+						"sources": [
+							"Shadowspear"
+						]
+					},
+					{
+						"key": "pt_shadowspear",
+						"name": "+1/+1",
+						"kind": "stat_mod",
+						"sources": [
+							"Shadowspear"
+						]
+					},
+					{
+						"key": "flying",
+						"name": "Flying",
+						"kind": "keyword",
+						"sources": [
+							"Wingsteel Harness"
+						]
+					},
+					{
+						"key": "pt_wingsteel harness",
+						"name": "+2/+2",
+						"kind": "stat_mod",
+						"sources": [
+							"Wingsteel Harness"
+						]
+					}
+				]
+			},
+			"Shadowspear": {
+				"controller": "P1",
+				"attachedTo": "<Thornwood Brute>",
+				"effectiveTypeLine": "Legendary Artifact — Equipment",
+				"is": {
+					"creature": false,
+					"artifact": true,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": true,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [
+					"Equip {2}"
+				],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "equip",
+						"name": "Equip {2}",
+						"kind": "keyword",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					},
+					{
+						"key": "ability_equip_buff",
+						"name": "Grants Equipped Creature Buff",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					},
+					{
+						"key": "ability_strip_kw",
+						"name": "Removes Opponent Keywords",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					}
+				]
+			},
+			"Wingsteel Harness": {
+				"controller": "P1",
+				"attachedTo": "<Thornwood Brute>",
+				"effectiveTypeLine": "Artifact — Equipment",
+				"is": {
+					"creature": false,
+					"artifact": true,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [
+					"Equip {2}"
+				],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "equip",
+						"name": "Equip {2}",
+						"kind": "keyword",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					},
+					{
+						"key": "ability_equip_buff",
+						"name": "Grants Equipped Creature Buff",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					}
+				]
+			},
+			"Hearthfield Bear #2": {
+				"controller": "P1",
+				"effectiveTypeLine": "Creature — Bear",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					2,
+					2
+				],
+				"breakdownPT": [
+					2,
+					2
+				],
+				"evaluatedPT": [
+					2,
+					2
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": []
+			},
+			"Hearthfield Bear #3": {
+				"controller": "P1",
+				"effectiveTypeLine": "Creature — Bear",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					2,
+					2
+				],
+				"breakdownPT": [
+					0,
+					2
+				],
+				"evaluatedPT": [
+					0,
+					2
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [
+					"-3/+0 (Crushing Weight Hex)"
+				],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "pt_crushing weight hex",
+						"name": "-3/+0",
+						"kind": "stat_mod",
+						"sources": [
+							"Crushing Weight Hex"
+						]
+					}
+				]
+			},
+			"Crushing Weight Hex": {
+				"controller": "P1",
+				"attachedTo": "<Hearthfield Bear #3>",
+				"effectiveTypeLine": "Enchantment — Aura",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": true,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [
+					"Enchant creature"
+				],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "enchant",
+						"name": "Enchant creature",
+						"kind": "keyword",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					},
+					{
+						"key": "ability_enchant_mod",
+						"name": "Modifies Enchanted Permanent",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					}
+				]
+			}
+		}
+	},
+	"removal/archetype-of-imagination": {
+		"description": "Archetype of Imagination: its controller's creatures fly; opponents' creatures lose flying, innate or granted by Equipment.",
+		"permanents": {
+			"Archetype of Imagination": {
+				"controller": "P1",
+				"effectiveTypeLine": "Enchantment Creature — Human Wizard",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": true,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					3,
+					2
+				],
+				"breakdownPT": [
+					3,
+					2
+				],
+				"evaluatedPT": [
+					3,
+					2
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [
+					"Flying"
+				],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "ability_lord",
+						"name": "Anthem / Lord Effect",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					},
+					{
+						"key": "ability_strip_kw",
+						"name": "Removes Opponent Keywords",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					},
+					{
+						"key": "flying",
+						"name": "Flying",
+						"kind": "keyword",
+						"sources": [
+							"Archetype of Imagination"
+						]
+					}
+				]
+			},
+			"Hearthfield Bear": {
+				"controller": "P1",
+				"effectiveTypeLine": "Creature — Bear",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					2,
+					2
+				],
+				"breakdownPT": [
+					2,
+					2
+				],
+				"evaluatedPT": [
+					2,
+					2
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [
+					"Flying"
+				],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "flying",
+						"name": "Flying",
+						"kind": "keyword",
+						"sources": [
+							"Archetype of Imagination"
+						]
+					}
+				]
+			},
+			"Skyreach Sentinel": {
+				"controller": "P2",
+				"effectiveTypeLine": "Creature — Bird Soldier",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					2,
+					2
+				],
+				"breakdownPT": [
+					2,
+					2
+				],
+				"evaluatedPT": [
+					2,
+					2
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "flying",
+						"name": "Flying",
+						"kind": "keyword",
+						"innate": true,
+						"sources": [
+							"innate"
+						],
+						"removedBy": [
+							"Archetype of Imagination"
+						]
+					}
+				]
+			},
+			"Hearthfield Bear #2": {
+				"controller": "P2",
+				"effectiveTypeLine": "Creature — Bear",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					2,
+					2
+				],
+				"breakdownPT": [
+					4,
+					4
+				],
+				"evaluatedPT": [
+					4,
+					4
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [
+					"+2/+2 (Wingsteel Harness)"
+				],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "flying",
+						"name": "Flying",
+						"kind": "keyword",
+						"sources": [
+							"Wingsteel Harness"
+						],
+						"removedBy": [
+							"Archetype of Imagination"
+						]
+					},
+					{
+						"key": "pt_wingsteel harness",
+						"name": "+2/+2",
+						"kind": "stat_mod",
+						"sources": [
+							"Wingsteel Harness"
+						]
+					}
+				]
+			},
+			"Wingsteel Harness": {
+				"controller": "P2",
+				"attachedTo": "<Hearthfield Bear #2>",
+				"effectiveTypeLine": "Artifact — Equipment",
+				"is": {
+					"creature": false,
+					"artifact": true,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [
+					"Equip {2}"
+				],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "equip",
+						"name": "Equip {2}",
+						"kind": "keyword",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					},
+					{
+						"key": "ability_equip_buff",
+						"name": "Grants Equipped Creature Buff",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					}
+				]
+			}
+		}
+	},
+	"removal/synthetic-flying-removal": {
+		"description": "A synthetic \"Creatures your opponents control lose flying.\" enchantment.",
+		"permanents": {
+			"Grounding Sigil": {
+				"controller": "P1",
+				"effectiveTypeLine": "Enchantment",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": true,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "ability_strip_kw",
+						"name": "Removes Opponent Keywords",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					}
+				]
+			},
+			"Skyreach Sentinel": {
+				"controller": "P1",
+				"effectiveTypeLine": "Creature — Bird Soldier",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					2,
+					2
+				],
+				"breakdownPT": [
+					2,
+					2
+				],
+				"evaluatedPT": [
+					2,
+					2
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [
+					"Flying"
+				],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "flying",
+						"name": "Flying",
+						"kind": "keyword",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					}
+				]
+			},
+			"Skyreach Sentinel #2": {
+				"controller": "P2",
+				"effectiveTypeLine": "Creature — Bird Soldier",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					2,
+					2
+				],
+				"breakdownPT": [
+					2,
+					2
+				],
+				"evaluatedPT": [
+					2,
+					2
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "flying",
+						"name": "Flying",
+						"kind": "keyword",
+						"innate": true,
+						"sources": [
+							"innate"
+						],
+						"removedBy": [
+							"Grounding Sigil"
+						]
+					}
+				]
+			}
+		}
+	},
+	"instance/counters-pumps-switch": {
+		"description": "+1/+1 and -1/-1 counters, a temporary pump, and a P/T switch (7d) applied after an anthem (7c).",
+		"permanents": {
+			"Banner of the Hollow Vale": {
+				"controller": "P1",
+				"effectiveTypeLine": "Enchantment",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": true,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "ability_lord",
+						"name": "Anthem / Lord Effect",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					}
+				]
+			},
+			"Hearthfield Bear": {
+				"controller": "P1",
+				"effectiveTypeLine": "Creature — Bear",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					2,
+					2
+				],
+				"breakdownPT": [
+					5,
+					5
+				],
+				"evaluatedPT": [
+					5,
+					5
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [
+					"+1/+1 (Banner of the Hollow Vale)",
+					"+2/+2 (+1/+1 Counters)"
+				],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "pt_<Banner of the Hollow Vale>",
+						"name": "+1/+1",
+						"kind": "stat_mod",
+						"sources": [
+							"Banner of the Hollow Vale"
+						]
+					},
+					{
+						"key": "counters_plus",
+						"name": "+2/+2",
+						"kind": "stat_mod",
+						"sources": [
+							"+1/+1 Counters"
+						]
+					}
+				]
+			},
+			"Hearthfield Bear #2": {
+				"controller": "P1",
+				"effectiveTypeLine": "Creature — Bear",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					2,
+					2
+				],
+				"breakdownPT": [
+					2,
+					2
+				],
+				"evaluatedPT": [
+					2,
+					2
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [
+					"+1/+1 (Banner of the Hollow Vale)",
+					"-1/-1 (-1/-1 Counters)"
+				],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "pt_<Banner of the Hollow Vale>",
+						"name": "+1/+1",
+						"kind": "stat_mod",
+						"sources": [
+							"Banner of the Hollow Vale"
+						]
+					},
+					{
+						"key": "counters_minus",
+						"name": "-1/-1",
+						"kind": "stat_mod",
+						"sources": [
+							"-1/-1 Counters"
+						]
+					}
+				]
+			},
+			"Hearthfield Bear #3": {
+				"controller": "P1",
+				"effectiveTypeLine": "Creature — Bear",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					2,
+					2
+				],
+				"breakdownPT": [
+					6,
+					3
+				],
+				"evaluatedPT": [
+					6,
+					3
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [
+					"+1/+1 (Banner of the Hollow Vale)",
+					"+3/+0 (Temporary Effect)"
+				],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "pt_<Banner of the Hollow Vale>",
+						"name": "+1/+1",
+						"kind": "stat_mod",
+						"sources": [
+							"Banner of the Hollow Vale"
+						]
+					},
+					{
+						"key": "temp_pt",
+						"name": "+3/+0",
+						"kind": "stat_mod",
+						"sources": [
+							"Temporary Effect"
+						]
+					}
+				]
+			},
+			"Thornwood Brute": {
+				"controller": "P1",
+				"effectiveTypeLine": "Creature — Beast",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					5,
+					5
+				],
+				"breakdownPT": [
+					6,
+					2
+				],
+				"evaluatedPT": [
+					6,
+					2
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [
+					"+1/+1 (Banner of the Hollow Vale)",
+					"-4/+0 (Temporary Effect)",
+					"Switched P/T (6/2)"
+				],
+				"activeKeywords": [
+					"Trample"
+				],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "trample",
+						"name": "Trample",
+						"kind": "keyword",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					},
+					{
+						"key": "pt_<Banner of the Hollow Vale>",
+						"name": "+1/+1",
+						"kind": "stat_mod",
+						"sources": [
+							"Banner of the Hollow Vale"
+						]
+					},
+					{
+						"key": "temp_pt",
+						"name": "-4/+0",
+						"kind": "stat_mod",
+						"sources": [
+							"Temporary Effect"
+						]
+					},
+					{
+						"key": "switched_pt",
+						"name": "Switched P/T (6/2)",
+						"kind": "stat_mod",
+						"sources": [
+							"P/T Switch"
+						]
+					}
+				]
+			}
+		}
+	},
+	"instance/face-down-and-suspend": {
+		"description": "A face-down creature (2/2, no name, no abilities) and a creature cast via suspend (gains haste).",
+		"permanents": {
+			"Skyreach Sentinel": {
+				"controller": "P1",
+				"effectiveTypeLine": "Creature",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					2,
+					2
+				],
+				"breakdownPT": [
+					2,
+					2
+				],
+				"evaluatedPT": [
+					2,
+					2
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": []
+			},
+			"Hearthfield Bear": {
+				"controller": "P1",
+				"effectiveTypeLine": "Creature — Bear",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					2,
+					2
+				],
+				"breakdownPT": [
+					2,
+					2
+				],
+				"evaluatedPT": [
+					2,
+					2
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [
+					"Haste"
+				],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "haste",
+						"name": "Haste",
+						"kind": "keyword",
+						"sources": [
+							"Suspend"
+						]
+					}
+				]
+			}
+		}
+	},
+	"instance/granted-keyword-attribution": {
+		"description": "Temporary granted keywords are attributed to a permanent whose text \"gains\" that keyword, else to \"Temporary Effect\".",
+		"permanents": {
+			"Rallying Warhorn": {
+				"controller": "P1",
+				"effectiveTypeLine": "Artifact",
+				"is": {
+					"creature": false,
+					"artifact": true,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "ability_activated",
+						"name": "Activated Ability",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					}
+				]
+			},
+			"Hearthfield Bear": {
+				"controller": "P1",
+				"effectiveTypeLine": "Creature — Bear",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					2,
+					2
+				],
+				"breakdownPT": [
+					2,
+					2
+				],
+				"evaluatedPT": [
+					2,
+					2
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [
+					"Haste"
+				],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "haste",
+						"name": "Haste",
+						"kind": "keyword",
+						"sources": [
+							"Rallying Warhorn"
+						]
+					}
+				]
+			},
+			"Mossback Elf": {
+				"controller": "P1",
+				"effectiveTypeLine": "Creature — Elf Druid",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					1,
+					1
+				],
+				"breakdownPT": [
+					1,
+					1
+				],
+				"evaluatedPT": [
+					1,
+					1
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [
+					"Lifelink"
+				],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "lifelink",
+						"name": "Lifelink",
+						"kind": "keyword",
+						"sources": [
+							"Temporary Effect"
+						]
+					}
+				]
+			}
+		}
+	},
+	"instance/phased-out": {
+		"description": "Phased-out sources apply nothing (an anthem, Humility); a phased-out creature reports its printed values.",
+		"permanents": {
+			"Banner of the Hollow Vale": {
+				"controller": "P1",
+				"phasedOut": true,
+				"effectiveTypeLine": "Enchantment",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": true,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "ability_lord",
+						"name": "Anthem / Lord Effect",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					}
+				]
+			},
+			"Humility": {
+				"controller": "P1",
+				"phasedOut": true,
+				"effectiveTypeLine": "Enchantment",
+				"is": {
+					"creature": false,
+					"artifact": false,
+					"enchantment": true,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					null,
+					null
+				],
+				"breakdownPT": [
+					null,
+					null
+				],
+				"evaluatedPT": [
+					0,
+					0
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": []
+			},
+			"Skyreach Sentinel": {
+				"controller": "P1",
+				"effectiveTypeLine": "Creature — Bird Soldier",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					2,
+					2
+				],
+				"breakdownPT": [
+					2,
+					2
+				],
+				"evaluatedPT": [
+					2,
+					2
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [
+					"Flying"
+				],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "flying",
+						"name": "Flying",
+						"kind": "keyword",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					}
+				]
+			},
+			"Thornwood Brute": {
+				"controller": "P1",
+				"phasedOut": true,
+				"effectiveTypeLine": "Creature — Beast",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					5,
+					5
+				],
+				"breakdownPT": [
+					5,
+					5
+				],
+				"evaluatedPT": [
+					5,
+					5
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [],
+				"activeKeywords": [
+					"Trample"
+				],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "trample",
+						"name": "Trample",
+						"kind": "keyword",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					}
+				]
+			}
+		}
+	},
+	"instance/copy-effect": {
+		"description": "Layer 1: a Clone copying the Elf lord; each lord pumps the other and the Elf gets both bonuses.",
+		"permanents": {
+			"Elvenwood Marshal": {
+				"controller": "P1",
+				"effectiveTypeLine": "Creature — Elf Warrior",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					2,
+					2
+				],
+				"breakdownPT": [
+					3,
+					3
+				],
+				"evaluatedPT": [
+					3,
+					3
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [
+					"+1/+1 (Elvenwood Marshal)"
+				],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "ability_lord",
+						"name": "Anthem / Lord Effect",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					},
+					{
+						"key": "pt_<Clone>",
+						"name": "+1/+1",
+						"kind": "stat_mod",
+						"sources": [
+							"Elvenwood Marshal"
+						]
+					}
+				]
+			},
+			"Clone": {
+				"controller": "P1",
+				"effectiveTypeLine": "Creature — Elf Warrior",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					2,
+					2
+				],
+				"breakdownPT": [
+					3,
+					3
+				],
+				"evaluatedPT": [
+					3,
+					3
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [
+					"+1/+1 (Elvenwood Marshal)"
+				],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "ability_lord",
+						"name": "Anthem / Lord Effect",
+						"kind": "ability",
+						"innate": true,
+						"sources": [
+							"innate"
+						]
+					},
+					{
+						"key": "pt_<Elvenwood Marshal>",
+						"name": "+1/+1",
+						"kind": "stat_mod",
+						"sources": [
+							"Elvenwood Marshal"
+						]
+					}
+				]
+			},
+			"Mossback Elf": {
+				"controller": "P1",
+				"effectiveTypeLine": "Creature — Elf Druid",
+				"is": {
+					"creature": true,
+					"artifact": false,
+					"enchantment": false,
+					"land": false,
+					"planeswalker": false,
+					"legendary": false,
+					"allCreatureTypes": false
+				},
+				"basePT": [
+					1,
+					1
+				],
+				"breakdownPT": [
+					3,
+					3
+				],
+				"evaluatedPT": [
+					3,
+					3
+				],
+				"typeModifiedBy": [],
+				"ptModifiedBy": [
+					"+1/+1 (Elvenwood Marshal)",
+					"+1/+1 (Elvenwood Marshal)"
+				],
+				"activeKeywords": [],
+				"lostAllAbilities": {
+					"lost": false,
+					"sources": []
+				},
+				"items": [
+					{
+						"key": "pt_<Elvenwood Marshal>",
+						"name": "+1/+1",
+						"kind": "stat_mod",
+						"sources": [
+							"Elvenwood Marshal"
+						]
+					},
+					{
+						"key": "pt_<Clone>",
+						"name": "+1/+1",
+						"kind": "stat_mod",
+						"sources": [
+							"Elvenwood Marshal"
+						]
+					}
+				]
+			}
+		}
+	}
+}
