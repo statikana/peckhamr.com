@@ -1365,8 +1365,7 @@ export function parseStructuredTriggeredAbilities(
 				(low.startsWith('when ') || low.startsWith('whenever ')) &&
 				(low.includes(`${nameLow} enters`) ||
 					low.includes(`${shortName} enters`) ||
-					low.includes('this creature enters') ||
-					low.includes('this permanent enters'));
+					/\bthis (?:creature|permanent|enchantment|aura|artifact|land|equipment|vehicle) enters\b/.test(low));
 		} else if (triggerType === 'attack') {
 			matchesTrigger =
 				low.startsWith('whenever ') &&

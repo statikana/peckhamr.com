@@ -10,7 +10,8 @@ import {
 	parseActivatedAbilities,
 	parseAdditionalCostsAndRestrictions,
 	parseManaCost,
-	parseSpellOrAbilityEffects
+	parseSpellOrAbilityEffects,
+	parseTriggeredEffects
 } from './oracle.ts';
 import {
 	applyGameAction,
@@ -4555,6 +4556,33 @@ describe('28. Stage E: AI Evaluator — Effective Layer Types & Phased-Out Perma
 //     Generic Non-Green Power Mana Dorks, Overload castMode & Player Hexproof
 // ============================================================================
 describe('29. Stage C & D Deep Audit: Timestamp Precedence, Layer-Aware Subtypes/Types & Generic Oracle Dispatch', () => {
+	// Song of the Dryads' Oracle text is now "Enchanted permanent is a colorless Forest land.", which
+	// removes the other card types and the rules-text abilities only through CR 205.1a and 305.7. The
+	// legacy layer code needs the explicit wording, so these timestamp tests use a synthetic Aura that
+	// spells it out. The real card is covered by the Phase 6 todo below.
+	function explicitForestAura(): ScryfallCard {
+		return makeTestCard({
+			name: 'Verdant Sealing Hymn',
+			manaCost: '{2}{G}',
+			cmc: 3,
+			typeLine: 'Enchantment — Aura',
+			oracleText:
+				'Enchant permanent\nEnchanted permanent is a colorless Forest land and loses all other card types and abilities.',
+			colors: ['G'],
+			colorIdentity: ['G']
+		});
+	}
+
+	it('D-Audit-5: Song of the Dryads (current Oracle text) removes other card types and rules-text abilities via CR 205.1a and 305.7', { todo: 'Phase 6 (layers from IR): setting a basic land type must remove rules-text abilities (CR 305.7)' }, () => {
+		const { state, p1Id, p2Id } = createActiveTwoPlayerGame();
+		const humility = addCardToZone(state, p2Id, getCardByName('Humility')!, 'battlefield');
+		const song = addCardToZone(state, p1Id, getCardByName('Song of the Dryads')!, 'battlefield');
+		song.attachedToId = humility.instanceId;
+		const evaluated = evaluatePermanent(state, humility);
+		assert.equal(evaluated.isLand, true);
+		assert.equal(permanentHasLostAllAbilities(humility, state).lost, true, 'Humility loses its rules-text abilities (CR 305.7)');
+	});
+
 	it('D-Audit-1: enforces CR 613 timestamp order between simultaneous Layer 4/6 Auras (Darksteel Mutation vs Song of the Dryads) and global Layer 6 effects (Akroma\'s Memorial vs Humility)', () => {
 		// Case 1A: Darksteel Mutation (ts 10) then Song of the Dryads (ts 20)
 		// Song of the Dryads has later timestamp -> permanent is a colorless Land — Forest (not Artifact Creature — Insect)
@@ -4585,7 +4613,7 @@ describe('29. Stage C & D Deep Audit: Timestamp Precedence, Layer-Aware Subtypes
 		const song1 = addCardToZone(
 			game1.state,
 			game1.p2Id,
-			getCardByName('Song of the Dryads')!,
+			explicitForestAura(),
 			'battlefield'
 		);
 		song1.attachedToId = target1.instanceId;
@@ -4620,7 +4648,7 @@ describe('29. Stage C & D Deep Audit: Timestamp Precedence, Layer-Aware Subtypes
 		const song2 = addCardToZone(
 			game2.state,
 			game2.p2Id,
-			getCardByName('Song of the Dryads')!,
+			explicitForestAura(),
 			'battlefield'
 		);
 		song2.attachedToId = target2.instanceId;
@@ -4729,7 +4757,7 @@ describe('29. Stage C & D Deep Audit: Timestamp Precedence, Layer-Aware Subtypes
 		const songOnYav = addCardToZone(
 			state,
 			p2Id,
-			getCardByName('Song of the Dryads')!,
+			explicitForestAura(),
 			'battlefield'
 		);
 		songOnYav.attachedToId = yavimaya.instanceId;
@@ -4759,7 +4787,7 @@ describe('29. Stage C & D Deep Audit: Timestamp Precedence, Layer-Aware Subtypes
 		const songOnHumility = addCardToZone(
 			state,
 			p1Id,
-			getCardByName('Song of the Dryads')!,
+			explicitForestAura(),
 			'battlefield'
 		);
 		songOnHumility.attachedToId = humility.instanceId;
@@ -5057,5 +5085,26 @@ describe('30. Phase 0 baseline repairs', () => {
 			targets: []
 		});
 		assert.equal(res.ok, false, 'A normal-mode Cyclonic Rift needs a target');
+	});
+});
+
+describe('30. Self-referencing ETB triggers use current Oracle templating', () => {
+	it('recognises "When this enchantment/Aura/artifact enters" as a self ETB trigger', () => {
+		for (const [typeLine, noun] of [
+			['Enchantment', 'enchantment'],
+			['Enchantment — Aura', 'Aura'],
+			['Artifact', 'artifact']
+		]) {
+			const card = makeTestCard({
+				name: 'Quiet Lantern Vigil',
+				typeLine,
+				oracleText: `When this ${noun} enters, draw a card.`
+			});
+			assert.deepEqual(
+				parseTriggeredEffects(card, 'etb').map((e) => e.kind),
+				['draw'],
+				`"When this ${noun} enters" should be a self ETB trigger`
+			);
+		}
 	});
 });

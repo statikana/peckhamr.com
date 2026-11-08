@@ -1,0 +1,2271 @@
+{
+	"Forest": {
+		"oracleId": "card_forest",
+		"compilerVersion": 1,
+		"textHash": "feeeded1",
+		"name": "Forest",
+		"faces": [
+			{
+				"name": "Forest",
+				"characteristics": {
+					"manaCost": "",
+					"types": [
+						"Land"
+					],
+					"subtypes": [
+						"Forest"
+					],
+					"supertypes": [
+						"Basic"
+					],
+					"colors": []
+				},
+				"abilities": [
+					{
+						"kind": "activated",
+						"cost": [
+							{
+								"k": "tapSelf"
+							}
+						],
+						"targets": [],
+						"effect": [
+							{
+								"verb": "addMana",
+								"subject": {
+									"k": "none"
+								},
+								"amount": {
+									"k": "const",
+									"n": 1
+								},
+								"params": {
+									"mana": [
+										"G"
+									]
+								},
+								"span": {
+									"start": 0,
+									"end": 0
+								}
+							}
+						],
+						"timing": "mana",
+						"isMana": true,
+						"intrinsic": true,
+						"span": {
+							"start": 0,
+							"end": 0
+						}
+					}
+				]
+			}
+		],
+		"fullySupported": true
+	},
+	"Sol Ring": {
+		"oracleId": "card_sol_ring",
+		"compilerVersion": 1,
+		"textHash": "828d16e9",
+		"name": "Sol Ring",
+		"faces": [
+			{
+				"name": "Sol Ring",
+				"characteristics": {
+					"manaCost": "{1}",
+					"types": [
+						"Artifact"
+					],
+					"subtypes": [],
+					"supertypes": [],
+					"colors": []
+				},
+				"abilities": [
+					{
+						"kind": "activated",
+						"cost": [
+							{
+								"k": "tapSelf"
+							}
+						],
+						"targets": [],
+						"effect": [
+							{
+								"verb": "addMana",
+								"subject": {
+									"k": "none"
+								},
+								"amount": {
+									"k": "const",
+									"n": 2
+								},
+								"params": {
+									"mana": [
+										"C",
+										"C"
+									]
+								},
+								"span": {
+									"start": 0,
+									"end": 16
+								}
+							}
+						],
+						"timing": "mana",
+						"isMana": true,
+						"span": {
+							"start": 0,
+							"end": 16
+						}
+					}
+				]
+			}
+		],
+		"fullySupported": true
+	},
+	"Command Tower": {
+		"oracleId": "card_command_tower",
+		"compilerVersion": 1,
+		"textHash": "ca67ac9f",
+		"name": "Command Tower",
+		"faces": [
+			{
+				"name": "Command Tower",
+				"characteristics": {
+					"manaCost": "",
+					"types": [
+						"Land"
+					],
+					"subtypes": [],
+					"supertypes": [],
+					"colors": []
+				},
+				"abilities": [
+					{
+						"kind": "activated",
+						"cost": [
+							{
+								"k": "tapSelf"
+							}
+						],
+						"targets": [],
+						"effect": [
+							{
+								"verb": "addMana",
+								"subject": {
+									"k": "none"
+								},
+								"amount": {
+									"k": "const",
+									"n": 1
+								},
+								"params": {
+									"manaChoice": "commanderIdentity"
+								},
+								"span": {
+									"start": 0,
+									"end": 66
+								}
+							}
+						],
+						"timing": "mana",
+						"isMana": true,
+						"span": {
+							"start": 0,
+							"end": 66
+						}
+					}
+				]
+			}
+		],
+		"fullySupported": true
+	},
+	"Arcane Signet": {
+		"oracleId": "card_arcane_signet",
+		"compilerVersion": 1,
+		"textHash": "8880be04",
+		"name": "Arcane Signet",
+		"faces": [
+			{
+				"name": "Arcane Signet",
+				"characteristics": {
+					"manaCost": "{2}",
+					"types": [
+						"Artifact"
+					],
+					"subtypes": [],
+					"supertypes": [],
+					"colors": []
+				},
+				"abilities": [
+					{
+						"kind": "activated",
+						"cost": [
+							{
+								"k": "tapSelf"
+							}
+						],
+						"targets": [],
+						"effect": [
+							{
+								"verb": "addMana",
+								"subject": {
+									"k": "none"
+								},
+								"amount": {
+									"k": "const",
+									"n": 1
+								},
+								"params": {
+									"manaChoice": "commanderIdentity"
+								},
+								"span": {
+									"start": 0,
+									"end": 66
+								}
+							}
+						],
+						"timing": "mana",
+						"isMana": true,
+						"span": {
+							"start": 0,
+							"end": 66
+						}
+					}
+				]
+			}
+		],
+		"fullySupported": true
+	},
+	"Mind Stone": {
+		"oracleId": "card_mind_stone",
+		"compilerVersion": 1,
+		"textHash": "99d414d7",
+		"name": "Mind Stone",
+		"faces": [
+			{
+				"name": "Mind Stone",
+				"characteristics": {
+					"manaCost": "{2}",
+					"types": [
+						"Artifact"
+					],
+					"subtypes": [],
+					"supertypes": [],
+					"colors": []
+				},
+				"abilities": [
+					{
+						"kind": "activated",
+						"cost": [
+							{
+								"k": "tapSelf"
+							}
+						],
+						"targets": [],
+						"effect": [
+							{
+								"verb": "addMana",
+								"subject": {
+									"k": "none"
+								},
+								"amount": {
+									"k": "const",
+									"n": 1
+								},
+								"params": {
+									"mana": [
+										"C"
+									]
+								},
+								"span": {
+									"start": 0,
+									"end": 13
+								}
+							}
+						],
+						"timing": "mana",
+						"isMana": true,
+						"span": {
+							"start": 0,
+							"end": 13
+						}
+					},
+					{
+						"kind": "activated",
+						"cost": [
+							{
+								"k": "mana",
+								"cost": "{1}"
+							},
+							{
+								"k": "tapSelf"
+							},
+							{
+								"k": "sacrifice",
+								"count": {
+									"k": "const",
+									"n": 1
+								},
+								"filter": "self"
+							}
+						],
+						"targets": [],
+						"effect": [
+							{
+								"verb": "draw",
+								"subject": {
+									"k": "player",
+									"filter": {
+										"relation": "you"
+									}
+								},
+								"amount": {
+									"k": "const",
+									"n": 1
+								},
+								"span": {
+									"start": 14,
+									"end": 49
+								}
+							}
+						],
+						"timing": "instant",
+						"isMana": false,
+						"span": {
+							"start": 14,
+							"end": 49
+						}
+					}
+				]
+			}
+		],
+		"fullySupported": true
+	},
+	"Elvish Archdruid": {
+		"oracleId": "card_elvish_archdruid",
+		"compilerVersion": 1,
+		"textHash": "7139654d",
+		"name": "Elvish Archdruid",
+		"faces": [
+			{
+				"name": "Elvish Archdruid",
+				"characteristics": {
+					"manaCost": "{1}{G}{G}",
+					"types": [
+						"Creature"
+					],
+					"subtypes": [
+						"Elf",
+						"Druid"
+					],
+					"supertypes": [],
+					"colors": [
+						"G"
+					],
+					"power": 2,
+					"toughness": 2
+				},
+				"abilities": [
+					{
+						"kind": "unsupported",
+						"reason": "static_not_compiled",
+						"text": "Other Elf creatures you control get +1/+1.",
+						"span": {
+							"start": 0,
+							"end": 42
+						},
+						"unparsed": [
+							{
+								"start": 0,
+								"end": 42
+							}
+						]
+					},
+					{
+						"kind": "activated",
+						"cost": [
+							{
+								"k": "tapSelf"
+							}
+						],
+						"targets": [],
+						"effect": [
+							{
+								"verb": "addMana",
+								"subject": {
+									"k": "none"
+								},
+								"amount": {
+									"k": "count",
+									"of": {
+										"zone": "battlefield",
+										"subtypes": [
+											"Elf"
+										],
+										"controller": "you"
+									}
+								},
+								"params": {
+									"mana": [
+										"G"
+									]
+								},
+								"span": {
+									"start": 43,
+									"end": 81
+								}
+							}
+						],
+						"timing": "mana",
+						"isMana": true,
+						"span": {
+							"start": 43,
+							"end": 81
+						}
+					}
+				]
+			}
+		],
+		"fullySupported": false
+	},
+	"Marwyn, the Nurturer": {
+		"oracleId": "card_marwyn",
+		"compilerVersion": 1,
+		"textHash": "f70c3491",
+		"name": "Marwyn, the Nurturer",
+		"faces": [
+			{
+				"name": "Marwyn, the Nurturer",
+				"characteristics": {
+					"manaCost": "{2}{G}",
+					"types": [
+						"Creature"
+					],
+					"subtypes": [
+						"Elf",
+						"Druid"
+					],
+					"supertypes": [
+						"Legendary"
+					],
+					"colors": [
+						"G"
+					],
+					"power": 1,
+					"toughness": 1
+				},
+				"abilities": [
+					{
+						"kind": "triggered",
+						"trigger": {
+							"event": "zoneChange",
+							"filter": {
+								"object": {
+									"subtypes": [
+										"Elf"
+									],
+									"controller": "you",
+									"other": true
+								},
+								"to": "battlefield"
+							}
+						},
+						"targets": [],
+						"effect": [
+							{
+								"verb": "putCounters",
+								"subject": {
+									"k": "self"
+								},
+								"amount": {
+									"k": "const",
+									"n": 1
+								},
+								"params": {
+									"counter": "+1/+1"
+								},
+								"span": {
+									"start": 0,
+									"end": 66
+								}
+							}
+						],
+						"span": {
+							"start": 0,
+							"end": 66
+						}
+					},
+					{
+						"kind": "activated",
+						"cost": [
+							{
+								"k": "tapSelf"
+							}
+						],
+						"targets": [],
+						"effect": [
+							{
+								"verb": "addMana",
+								"subject": {
+									"k": "none"
+								},
+								"amount": {
+									"k": "stat",
+									"of": {
+										"k": "self"
+									},
+									"stat": "power"
+								},
+								"params": {
+									"mana": [
+										"G"
+									]
+								},
+								"span": {
+									"start": 67,
+									"end": 112
+								}
+							}
+						],
+						"timing": "mana",
+						"isMana": true,
+						"span": {
+							"start": 67,
+							"end": 112
+						}
+					}
+				]
+			}
+		],
+		"fullySupported": true
+	},
+	"Swords to Plowshares": {
+		"oracleId": "card_swords_to_plowshares",
+		"compilerVersion": 1,
+		"textHash": "4b95d180",
+		"name": "Swords to Plowshares",
+		"faces": [
+			{
+				"name": "Swords to Plowshares",
+				"characteristics": {
+					"manaCost": "{W}",
+					"types": [
+						"Instant"
+					],
+					"subtypes": [],
+					"supertypes": [],
+					"colors": [
+						"W"
+					]
+				},
+				"abilities": [
+					{
+						"kind": "spell",
+						"additionalCosts": [],
+						"targets": [
+							{
+								"kind": "object",
+								"filter": {
+									"zone": "battlefield",
+									"types": [
+										"Creature"
+									],
+									"controller": "any"
+								},
+								"min": 1,
+								"max": 1
+							}
+						],
+						"effect": [
+							{
+								"verb": "exile",
+								"subject": {
+									"k": "target",
+									"index": 0
+								},
+								"span": {
+									"start": 0,
+									"end": 68
+								}
+							},
+							{
+								"verb": "gainLife",
+								"subject": {
+									"k": "playerRef",
+									"ref": {
+										"k": "controllerOf",
+										"of": {
+											"k": "target",
+											"index": 0
+										}
+									}
+								},
+								"amount": {
+									"k": "stat",
+									"of": {
+										"k": "target",
+										"index": 0
+									},
+									"stat": "power",
+									"lki": true
+								},
+								"span": {
+									"start": 0,
+									"end": 68
+								}
+							}
+						],
+						"span": {
+							"start": 0,
+							"end": 68
+						}
+					}
+				]
+			}
+		],
+		"fullySupported": true
+	},
+	"Counterspell": {
+		"oracleId": "card_counterspell",
+		"compilerVersion": 1,
+		"textHash": "d86d3ca0",
+		"name": "Counterspell",
+		"faces": [
+			{
+				"name": "Counterspell",
+				"characteristics": {
+					"manaCost": "{U}{U}",
+					"types": [
+						"Instant"
+					],
+					"subtypes": [],
+					"supertypes": [],
+					"colors": [
+						"U"
+					]
+				},
+				"abilities": [
+					{
+						"kind": "spell",
+						"additionalCosts": [],
+						"targets": [
+							{
+								"kind": "object",
+								"filter": {
+									"zone": "stack",
+									"controller": "any"
+								},
+								"min": 1,
+								"max": 1
+							}
+						],
+						"effect": [
+							{
+								"verb": "counterSpell",
+								"subject": {
+									"k": "target",
+									"index": 0
+								},
+								"span": {
+									"start": 0,
+									"end": 21
+								}
+							}
+						],
+						"span": {
+							"start": 0,
+							"end": 21
+						}
+					}
+				]
+			}
+		],
+		"fullySupported": true
+	},
+	"Cyclonic Rift": {
+		"oracleId": "card_cyclonic_rift",
+		"compilerVersion": 1,
+		"textHash": "7dd3cb4f",
+		"name": "Cyclonic Rift",
+		"faces": [
+			{
+				"name": "Cyclonic Rift",
+				"characteristics": {
+					"manaCost": "{1}{U}",
+					"types": [
+						"Instant"
+					],
+					"subtypes": [],
+					"supertypes": [],
+					"colors": [
+						"U"
+					]
+				},
+				"abilities": [
+					{
+						"kind": "keyword",
+						"keyword": {
+							"name": "overload",
+							"cost": "{6}{U}"
+						},
+						"span": {
+							"start": 71,
+							"end": 86
+						}
+					},
+					{
+						"kind": "spell",
+						"additionalCosts": [],
+						"targets": [
+							{
+								"kind": "object",
+								"filter": {
+									"zone": "battlefield",
+									"notTypes": [
+										"Land"
+									],
+									"controller": "opponent"
+								},
+								"min": 1,
+								"max": 1
+							}
+						],
+						"effect": [
+							{
+								"verb": "bounce",
+								"subject": {
+									"k": "target",
+									"index": 0
+								},
+								"span": {
+									"start": 0,
+									"end": 70
+								}
+							}
+						],
+						"span": {
+							"start": 0,
+							"end": 70
+						}
+					}
+				]
+			}
+		],
+		"fullySupported": true
+	},
+	"Wrath of God": {
+		"oracleId": "card_wrath_of_god",
+		"compilerVersion": 1,
+		"textHash": "eb8e805b",
+		"name": "Wrath of God",
+		"faces": [
+			{
+				"name": "Wrath of God",
+				"characteristics": {
+					"manaCost": "{2}{W}{W}",
+					"types": [
+						"Sorcery"
+					],
+					"subtypes": [],
+					"supertypes": [],
+					"colors": [
+						"W"
+					]
+				},
+				"abilities": [
+					{
+						"kind": "spell",
+						"additionalCosts": [],
+						"targets": [],
+						"effect": [
+							{
+								"verb": "destroy",
+								"subject": {
+									"k": "all",
+									"filter": {
+										"zone": "battlefield",
+										"types": [
+											"Creature"
+										]
+									}
+								},
+								"span": {
+									"start": 0,
+									"end": 49
+								}
+							}
+						],
+						"span": {
+							"start": 0,
+							"end": 49
+						}
+					}
+				]
+			}
+		],
+		"fullySupported": true
+	},
+	"Toxic Deluge": {
+		"oracleId": "card_toxic_deluge",
+		"compilerVersion": 1,
+		"textHash": "ee4cb8fb",
+		"name": "Toxic Deluge",
+		"faces": [
+			{
+				"name": "Toxic Deluge",
+				"characteristics": {
+					"manaCost": "{2}{B}",
+					"types": [
+						"Sorcery"
+					],
+					"subtypes": [],
+					"supertypes": [],
+					"colors": [
+						"B"
+					]
+				},
+				"abilities": [
+					{
+						"kind": "unsupported",
+						"reason": "unparsed",
+						"text": "As an additional cost to cast ~, pay X life.\nAll creatures get -X/-X until end of turn.",
+						"span": {
+							"start": 0,
+							"end": 87
+						},
+						"unparsed": [
+							{
+								"start": 0,
+								"end": 44
+							},
+							{
+								"start": 0,
+								"end": 87
+							},
+							{
+								"start": 45,
+								"end": 87
+							}
+						]
+					}
+				]
+			}
+		],
+		"fullySupported": false
+	},
+	"Farewell": {
+		"oracleId": "card_farewell",
+		"compilerVersion": 1,
+		"textHash": "0cd82709",
+		"name": "Farewell",
+		"faces": [
+			{
+				"name": "Farewell",
+				"characteristics": {
+					"manaCost": "{4}{W}{W}",
+					"types": [
+						"Sorcery"
+					],
+					"subtypes": [],
+					"supertypes": [],
+					"colors": [
+						"W"
+					]
+				},
+				"abilities": [
+					{
+						"kind": "unsupported",
+						"reason": "unparsed",
+						"text": "Choose one or more —\n• Exile all artifacts.\n• Exile all creatures.\n• Exile all enchantments.\n• Exile all graveyards.",
+						"span": {
+							"start": 0,
+							"end": 116
+						},
+						"unparsed": [
+							{
+								"start": 23,
+								"end": 43
+							},
+							{
+								"start": 69,
+								"end": 92
+							}
+						]
+					}
+				]
+			}
+		],
+		"fullySupported": false
+	},
+	"Cultivate": {
+		"oracleId": "card_cultivate",
+		"compilerVersion": 1,
+		"textHash": "4a773009",
+		"name": "Cultivate",
+		"faces": [
+			{
+				"name": "Cultivate",
+				"characteristics": {
+					"manaCost": "{2}{G}",
+					"types": [
+						"Sorcery"
+					],
+					"subtypes": [],
+					"supertypes": [],
+					"colors": [
+						"G"
+					]
+				},
+				"abilities": [
+					{
+						"kind": "spell",
+						"additionalCosts": [],
+						"targets": [],
+						"effect": [
+							{
+								"verb": "search",
+								"subject": {
+									"k": "player",
+									"filter": {
+										"relation": "you"
+									}
+								},
+								"amount": {
+									"k": "const",
+									"n": 2
+								},
+								"params": {
+									"search": {
+										"filter": {
+											"types": [
+												"Land"
+											],
+											"supertypes": [
+												"Basic"
+											]
+										},
+										"count": 2,
+										"upTo": true,
+										"statedQuality": true,
+										"destinations": [
+											{
+												"zone": "battlefield",
+												"tapped": true
+											},
+											{
+												"zone": "hand"
+											}
+										]
+									},
+									"tapped": true
+								},
+								"span": {
+									"start": 0,
+									"end": 151
+								}
+							}
+						],
+						"span": {
+							"start": 0,
+							"end": 151
+						}
+					}
+				]
+			}
+		],
+		"fullySupported": true
+	},
+	"Ponder": {
+		"oracleId": "card_ponder",
+		"compilerVersion": 1,
+		"textHash": "63c3c96a",
+		"name": "Ponder",
+		"faces": [
+			{
+				"name": "Ponder",
+				"characteristics": {
+					"manaCost": "{U}",
+					"types": [
+						"Sorcery"
+					],
+					"subtypes": [],
+					"supertypes": [],
+					"colors": [
+						"U"
+					]
+				},
+				"abilities": [
+					{
+						"kind": "spell",
+						"additionalCosts": [],
+						"targets": [],
+						"effect": [
+							{
+								"verb": "lookAndReorder",
+								"subject": {
+									"k": "player",
+									"filter": {
+										"relation": "you"
+									}
+								},
+								"amount": {
+									"k": "const",
+									"n": 3
+								},
+								"params": {
+									"mayShuffle": true
+								},
+								"span": {
+									"start": 0,
+									"end": 107
+								}
+							},
+							{
+								"verb": "draw",
+								"subject": {
+									"k": "player",
+									"filter": {
+										"relation": "you"
+									}
+								},
+								"amount": {
+									"k": "const",
+									"n": 1
+								},
+								"span": {
+									"start": 0,
+									"end": 107
+								}
+							}
+						],
+						"span": {
+							"start": 0,
+							"end": 107
+						}
+					}
+				]
+			}
+		],
+		"fullySupported": true
+	},
+	"Final Fortune": {
+		"oracleId": "card_final_fortune",
+		"compilerVersion": 1,
+		"textHash": "f57e3f86",
+		"name": "Final Fortune",
+		"faces": [
+			{
+				"name": "Final Fortune",
+				"characteristics": {
+					"manaCost": "{R}{R}",
+					"types": [
+						"Instant"
+					],
+					"subtypes": [],
+					"supertypes": [],
+					"colors": [
+						"R"
+					]
+				},
+				"abilities": [
+					{
+						"kind": "spell",
+						"additionalCosts": [],
+						"targets": [],
+						"effect": [
+							{
+								"verb": "extraTurn",
+								"subject": {
+									"k": "player",
+									"filter": {
+										"relation": "you"
+									}
+								},
+								"span": {
+									"start": 0,
+									"end": 95
+								},
+								"delayed": {
+									"trigger": {
+										"event": "phaseBegin",
+										"filter": {
+											"phase": "end_step"
+										},
+										"scope": "controller_turn"
+									},
+									"effect": [
+										{
+											"verb": "lose",
+											"subject": {
+												"k": "player",
+												"filter": {
+													"relation": "you"
+												}
+											},
+											"span": {
+												"start": 35,
+												"end": 95
+											}
+										}
+									]
+								}
+							}
+						],
+						"span": {
+							"start": 0,
+							"end": 95
+						}
+					}
+				]
+			}
+		],
+		"fullySupported": true
+	},
+	"Rift Bolt": {
+		"oracleId": "card_rift_bolt",
+		"compilerVersion": 1,
+		"textHash": "96014176",
+		"name": "Rift Bolt",
+		"faces": [
+			{
+				"name": "Rift Bolt",
+				"characteristics": {
+					"manaCost": "{2}{R}",
+					"types": [
+						"Sorcery"
+					],
+					"subtypes": [],
+					"supertypes": [],
+					"colors": [
+						"R"
+					]
+				},
+				"abilities": [
+					{
+						"kind": "keyword",
+						"keyword": {
+							"name": "suspend",
+							"n": 1,
+							"cost": "{R}"
+						},
+						"span": {
+							"start": 32,
+							"end": 45
+						}
+					},
+					{
+						"kind": "spell",
+						"additionalCosts": [],
+						"targets": [
+							{
+								"kind": "objectOrPlayer",
+								"filter": {
+									"zone": "battlefield",
+									"types": [
+										"Creature",
+										"Planeswalker",
+										"Battle"
+									]
+								},
+								"player": {
+									"relation": "any"
+								},
+								"min": 1,
+								"max": 1
+							}
+						],
+						"effect": [
+							{
+								"verb": "damage",
+								"subject": {
+									"k": "target",
+									"index": 0
+								},
+								"amount": {
+									"k": "const",
+									"n": 3
+								},
+								"span": {
+									"start": 0,
+									"end": 31
+								}
+							}
+						],
+						"span": {
+							"start": 0,
+							"end": 31
+						}
+					}
+				]
+			}
+		],
+		"fullySupported": true
+	},
+	"Lightning Greaves": {
+		"oracleId": "card_lightning_greaves",
+		"compilerVersion": 1,
+		"textHash": "78d62bb0",
+		"name": "Lightning Greaves",
+		"faces": [
+			{
+				"name": "Lightning Greaves",
+				"characteristics": {
+					"manaCost": "{2}",
+					"types": [
+						"Artifact"
+					],
+					"subtypes": [
+						"Equipment"
+					],
+					"supertypes": [],
+					"colors": []
+				},
+				"abilities": [
+					{
+						"kind": "unsupported",
+						"reason": "static_not_compiled",
+						"text": "Equipped creature has haste and shroud.",
+						"span": {
+							"start": 0,
+							"end": 39
+						},
+						"unparsed": [
+							{
+								"start": 0,
+								"end": 39
+							}
+						]
+					},
+					{
+						"kind": "keyword",
+						"keyword": {
+							"name": "equip",
+							"cost": "{0}"
+						},
+						"span": {
+							"start": 40,
+							"end": 49
+						}
+					}
+				]
+			}
+		],
+		"fullySupported": false
+	},
+	"Craterhoof Behemoth": {
+		"oracleId": "card_craterhoof_behemoth",
+		"compilerVersion": 1,
+		"textHash": "950c93b3",
+		"name": "Craterhoof Behemoth",
+		"faces": [
+			{
+				"name": "Craterhoof Behemoth",
+				"characteristics": {
+					"manaCost": "{5}{G}{G}{G}",
+					"types": [
+						"Creature"
+					],
+					"subtypes": [
+						"Beast"
+					],
+					"supertypes": [],
+					"colors": [
+						"G"
+					],
+					"power": 5,
+					"toughness": 5
+				},
+				"abilities": [
+					{
+						"kind": "keyword",
+						"keyword": {
+							"name": "haste"
+						},
+						"span": {
+							"start": 0,
+							"end": 5
+						}
+					},
+					{
+						"kind": "triggered",
+						"trigger": {
+							"event": "zoneChange",
+							"filter": {
+								"object": "self",
+								"to": "battlefield"
+							}
+						},
+						"targets": [],
+						"effect": [
+							{
+								"verb": "grant",
+								"subject": {
+									"k": "all",
+									"filter": {
+										"zone": "battlefield",
+										"types": [
+											"Creature"
+										],
+										"controller": "you"
+									}
+								},
+								"params": {
+									"keywords": [
+										"trample"
+									],
+									"duration": "endOfTurn"
+								},
+								"span": {
+									"start": 6,
+									"end": 136
+								}
+							},
+							{
+								"verb": "pump",
+								"subject": {
+									"k": "all",
+									"filter": {
+										"zone": "battlefield",
+										"types": [
+											"Creature"
+										],
+										"controller": "you"
+									}
+								},
+								"amount": {
+									"k": "count",
+									"of": {
+										"zone": "battlefield",
+										"types": [
+											"Creature"
+										],
+										"controller": "you"
+									}
+								},
+								"params": {
+									"toughness": {
+										"k": "count",
+										"of": {
+											"zone": "battlefield",
+											"types": [
+												"Creature"
+											],
+											"controller": "you"
+										}
+									},
+									"duration": "endOfTurn"
+								},
+								"span": {
+									"start": 6,
+									"end": 136
+								}
+							}
+						],
+						"span": {
+							"start": 6,
+							"end": 136
+						}
+					}
+				]
+			}
+		],
+		"fullySupported": true
+	},
+	"Lathril, Blade of the Elves": {
+		"oracleId": "cmd_lathril",
+		"compilerVersion": 1,
+		"textHash": "ae19645b",
+		"name": "Lathril, Blade of the Elves",
+		"faces": [
+			{
+				"name": "Lathril, Blade of the Elves",
+				"characteristics": {
+					"manaCost": "{2}{B}{G}",
+					"types": [
+						"Creature"
+					],
+					"subtypes": [
+						"Elf",
+						"Noble"
+					],
+					"supertypes": [
+						"Legendary"
+					],
+					"colors": [
+						"B",
+						"G"
+					],
+					"power": 2,
+					"toughness": 3
+				},
+				"abilities": [
+					{
+						"kind": "keyword",
+						"keyword": {
+							"name": "menace"
+						},
+						"span": {
+							"start": 0,
+							"end": 6
+						}
+					},
+					{
+						"kind": "triggered",
+						"trigger": {
+							"event": "dealsDamage",
+							"filter": {
+								"object": "self",
+								"combat": true,
+								"damageTo": "player"
+							}
+						},
+						"targets": [],
+						"effect": [
+							{
+								"verb": "createToken",
+								"subject": {
+									"k": "none"
+								},
+								"amount": {
+									"k": "eventAmount"
+								},
+								"params": {
+									"token": {
+										"name": "Elf Warrior Token",
+										"power": 1,
+										"toughness": 1,
+										"colors": [
+											"G"
+										],
+										"typeLine": "Token Creature — Elf Warrior",
+										"keywords": []
+									}
+								},
+								"span": {
+									"start": 7,
+									"end": 106
+								}
+							}
+						],
+						"span": {
+							"start": 7,
+							"end": 106
+						}
+					},
+					{
+						"kind": "activated",
+						"cost": [
+							{
+								"k": "tapSelf"
+							},
+							{
+								"k": "tapOthers",
+								"count": {
+									"k": "const",
+									"n": 10
+								},
+								"filter": {
+									"subtypes": [
+										"Elf"
+									],
+									"controller": "you",
+									"tapped": false
+								}
+							}
+						],
+						"targets": [],
+						"effect": [
+							{
+								"verb": "gainLife",
+								"subject": {
+									"k": "player",
+									"filter": {
+										"relation": "you"
+									}
+								},
+								"amount": {
+									"k": "const",
+									"n": 10
+								},
+								"span": {
+									"start": 107,
+									"end": 197
+								}
+							},
+							{
+								"verb": "loseLife",
+								"subject": {
+									"k": "player",
+									"filter": {
+										"relation": "each_opponent"
+									}
+								},
+								"amount": {
+									"k": "const",
+									"n": 10
+								},
+								"span": {
+									"start": 107,
+									"end": 197
+								}
+							}
+						],
+						"timing": "instant",
+						"isMana": false,
+						"span": {
+							"start": 107,
+							"end": 197
+						}
+					}
+				]
+			}
+		],
+		"fullySupported": true
+	},
+	"Atraxa, Praetors' Voice": {
+		"oracleId": "cmd_atraxa",
+		"compilerVersion": 1,
+		"textHash": "14c19e13",
+		"name": "Atraxa, Praetors' Voice",
+		"faces": [
+			{
+				"name": "Atraxa, Praetors' Voice",
+				"characteristics": {
+					"manaCost": "{G}{W}{U}{B}",
+					"types": [
+						"Creature"
+					],
+					"subtypes": [
+						"Phyrexian",
+						"Angel",
+						"Horror"
+					],
+					"supertypes": [
+						"Legendary"
+					],
+					"colors": [
+						"W",
+						"U",
+						"B",
+						"G"
+					],
+					"power": 4,
+					"toughness": 4
+				},
+				"abilities": [
+					{
+						"kind": "keyword",
+						"keyword": {
+							"name": "flying"
+						},
+						"span": {
+							"start": 0,
+							"end": 6
+						}
+					},
+					{
+						"kind": "keyword",
+						"keyword": {
+							"name": "vigilance"
+						},
+						"span": {
+							"start": 8,
+							"end": 17
+						}
+					},
+					{
+						"kind": "keyword",
+						"keyword": {
+							"name": "deathtouch"
+						},
+						"span": {
+							"start": 19,
+							"end": 29
+						}
+					},
+					{
+						"kind": "keyword",
+						"keyword": {
+							"name": "lifelink"
+						},
+						"span": {
+							"start": 31,
+							"end": 39
+						}
+					},
+					{
+						"kind": "triggered",
+						"trigger": {
+							"event": "phaseBegin",
+							"filter": {
+								"phase": "end_step"
+							},
+							"scope": "controller_turn"
+						},
+						"targets": [],
+						"effect": [
+							{
+								"verb": "proliferate",
+								"subject": {
+									"k": "none"
+								},
+								"span": {
+									"start": 40,
+									"end": 87
+								}
+							}
+						],
+						"span": {
+							"start": 40,
+							"end": 87
+						}
+					}
+				]
+			}
+		],
+		"fullySupported": true
+	},
+	"Nether Shadow": {
+		"oracleId": "card_nether_shadow",
+		"compilerVersion": 1,
+		"textHash": "17f689a9",
+		"name": "Nether Shadow",
+		"faces": [
+			{
+				"name": "Nether Shadow",
+				"characteristics": {
+					"manaCost": "{B}{B}",
+					"types": [
+						"Creature"
+					],
+					"subtypes": [
+						"Spirit"
+					],
+					"supertypes": [],
+					"colors": [
+						"B"
+					],
+					"power": 1,
+					"toughness": 1
+				},
+				"abilities": [
+					{
+						"kind": "keyword",
+						"keyword": {
+							"name": "haste"
+						},
+						"span": {
+							"start": 0,
+							"end": 5
+						}
+					},
+					{
+						"kind": "triggered",
+						"trigger": {
+							"event": "phaseBegin",
+							"filter": {
+								"phase": "upkeep"
+							},
+							"scope": "controller_turn",
+							"fromZone": "graveyard"
+						},
+						"condition": {
+							"k": "graveyardAbove",
+							"filter": {
+								"types": [
+									"Creature"
+								]
+							},
+							"count": 3
+						},
+						"targets": [],
+						"effect": [
+							{
+								"verb": "move",
+								"subject": {
+									"k": "self"
+								},
+								"params": {
+									"from": "graveyard",
+									"to": "battlefield"
+								},
+								"span": {
+									"start": 6,
+									"end": 144
+								}
+							}
+						],
+						"span": {
+							"start": 6,
+							"end": 144
+						}
+					}
+				]
+			}
+		],
+		"fullySupported": true
+	},
+	"Felidar Sovereign": {
+		"oracleId": "card_felidar_sovereign",
+		"compilerVersion": 1,
+		"textHash": "e7a3b7ab",
+		"name": "Felidar Sovereign",
+		"faces": [
+			{
+				"name": "Felidar Sovereign",
+				"characteristics": {
+					"manaCost": "{4}{W}{W}",
+					"types": [
+						"Creature"
+					],
+					"subtypes": [
+						"Cat",
+						"Beast"
+					],
+					"supertypes": [],
+					"colors": [
+						"W"
+					],
+					"power": 4,
+					"toughness": 6
+				},
+				"abilities": [
+					{
+						"kind": "keyword",
+						"keyword": {
+							"name": "vigilance"
+						},
+						"span": {
+							"start": 0,
+							"end": 9
+						}
+					},
+					{
+						"kind": "keyword",
+						"keyword": {
+							"name": "lifelink"
+						},
+						"span": {
+							"start": 10,
+							"end": 18
+						}
+					},
+					{
+						"kind": "triggered",
+						"trigger": {
+							"event": "phaseBegin",
+							"filter": {
+								"phase": "upkeep"
+							},
+							"scope": "controller_turn"
+						},
+						"condition": {
+							"k": "compare",
+							"left": {
+								"k": "life",
+								"of": {
+									"k": "you"
+								}
+							},
+							"op": ">=",
+							"right": {
+								"k": "const",
+								"n": 40
+							}
+						},
+						"targets": [],
+						"effect": [
+							{
+								"verb": "win",
+								"subject": {
+									"k": "player",
+									"filter": {
+										"relation": "you"
+									}
+								},
+								"span": {
+									"start": 19,
+									"end": 98
+								}
+							}
+						],
+						"span": {
+							"start": 19,
+							"end": 98
+						}
+					}
+				]
+			}
+		],
+		"fullySupported": true
+	},
+	"Guttersnipe": {
+		"oracleId": "card_guttersnipe",
+		"compilerVersion": 1,
+		"textHash": "70f96721",
+		"name": "Guttersnipe",
+		"faces": [
+			{
+				"name": "Guttersnipe",
+				"characteristics": {
+					"manaCost": "{2}{R}",
+					"types": [
+						"Creature"
+					],
+					"subtypes": [
+						"Goblin",
+						"Shaman"
+					],
+					"supertypes": [],
+					"colors": [
+						"R"
+					],
+					"power": 2,
+					"toughness": 2
+				},
+				"abilities": [
+					{
+						"kind": "triggered",
+						"trigger": {
+							"event": "cast",
+							"filter": {
+								"object": {
+									"types": [
+										"Instant",
+										"Sorcery"
+									]
+								},
+								"player": {
+									"relation": "you"
+								}
+							}
+						},
+						"targets": [],
+						"effect": [
+							{
+								"verb": "damage",
+								"subject": {
+									"k": "player",
+									"filter": {
+										"relation": "each_opponent"
+									}
+								},
+								"amount": {
+									"k": "const",
+									"n": 2
+								},
+								"span": {
+									"start": 0,
+									"end": 81
+								}
+							}
+						],
+						"span": {
+							"start": 0,
+							"end": 81
+						}
+					}
+				]
+			}
+		],
+		"fullySupported": true
+	},
+	"Veyran, Voice of Duality": {
+		"oracleId": "cmd_veyran",
+		"compilerVersion": 1,
+		"textHash": "b045a127",
+		"name": "Veyran, Voice of Duality",
+		"faces": [
+			{
+				"name": "Veyran, Voice of Duality",
+				"characteristics": {
+					"manaCost": "{1}{U}{R}",
+					"types": [
+						"Creature"
+					],
+					"subtypes": [
+						"Efreet",
+						"Wizard"
+					],
+					"supertypes": [
+						"Legendary"
+					],
+					"colors": [
+						"U",
+						"R"
+					],
+					"power": 2,
+					"toughness": 2
+				},
+				"abilities": [
+					{
+						"kind": "triggered",
+						"trigger": {
+							"event": "cast",
+							"filter": {
+								"object": {
+									"types": [
+										"Instant",
+										"Sorcery"
+									]
+								},
+								"player": {
+									"relation": "you"
+								}
+							}
+						},
+						"targets": [],
+						"effect": [
+							{
+								"verb": "pump",
+								"subject": {
+									"k": "self"
+								},
+								"amount": {
+									"k": "const",
+									"n": 1
+								},
+								"params": {
+									"toughness": {
+										"k": "const",
+										"n": 1
+									},
+									"duration": "endOfTurn"
+								},
+								"span": {
+									"start": 0,
+									"end": 98
+								}
+							}
+						],
+						"span": {
+							"start": 0,
+							"end": 98
+						}
+					},
+					{
+						"kind": "static",
+						"static": {
+							"k": "multiplier",
+							"what": "triggers",
+							"factor": 2,
+							"filter": {
+								"controller": "you"
+							}
+						},
+						"span": {
+							"start": 99,
+							"end": 260
+						}
+					}
+				]
+			}
+		],
+		"fullySupported": true
+	},
+	"Bramblecrest, Warden of Ash": {
+		"oracleId": "synthetic_bramblecrest_warden_of_ash",
+		"compilerVersion": 1,
+		"textHash": "d696e9e8",
+		"name": "Bramblecrest, Warden of Ash",
+		"faces": [
+			{
+				"name": "Bramblecrest, Warden of Ash",
+				"characteristics": {
+					"manaCost": "{1}{G}",
+					"types": [
+						"Creature"
+					],
+					"subtypes": [
+						"Elf",
+						"Druid"
+					],
+					"supertypes": [
+						"Legendary"
+					],
+					"colors": [
+						"G"
+					],
+					"power": 1,
+					"toughness": 2
+				},
+				"abilities": [
+					{
+						"kind": "keyword",
+						"keyword": {
+							"name": "flying"
+						},
+						"span": {
+							"start": 0,
+							"end": 6
+						}
+					},
+					{
+						"kind": "keyword",
+						"keyword": {
+							"name": "vigilance"
+						},
+						"span": {
+							"start": 8,
+							"end": 17
+						}
+					},
+					{
+						"kind": "triggered",
+						"trigger": {
+							"event": "zoneChange",
+							"filter": {
+								"object": "self",
+								"to": "battlefield"
+							}
+						},
+						"targets": [],
+						"effect": [
+							{
+								"verb": "draw",
+								"subject": {
+									"k": "player",
+									"filter": {
+										"relation": "you"
+									}
+								},
+								"amount": {
+									"k": "const",
+									"n": 1
+								},
+								"span": {
+									"start": 18,
+									"end": 45
+								}
+							}
+						],
+						"span": {
+							"start": 18,
+							"end": 45
+						}
+					},
+					{
+						"kind": "activated",
+						"cost": [
+							{
+								"k": "tapSelf"
+							}
+						],
+						"targets": [],
+						"effect": [
+							{
+								"verb": "addMana",
+								"subject": {
+									"k": "none"
+								},
+								"amount": {
+									"k": "count",
+									"of": {
+										"zone": "battlefield",
+										"subtypes": [
+											"Elf"
+										],
+										"controller": "you"
+									}
+								},
+								"params": {
+									"mana": [
+										"G"
+									]
+								},
+								"span": {
+									"start": 46,
+									"end": 84
+								}
+							}
+						],
+						"timing": "mana",
+						"isMana": true,
+						"span": {
+							"start": 46,
+							"end": 84
+						}
+					},
+					{
+						"kind": "unsupported",
+						"reason": "unparsed",
+						"text": "{2}, {T}, Sacrifice ~: Draw a card.",
+						"span": {
+							"start": 85,
+							"end": 120
+						},
+						"unparsed": [
+							{
+								"start": 95,
+								"end": 106
+							}
+						]
+					}
+				]
+			}
+		],
+		"fullySupported": false
+	},
+	"Glimmerfen Overseer": {
+		"oracleId": "synthetic_glimmerfen_overseer",
+		"compilerVersion": 1,
+		"textHash": "82e62bd9",
+		"name": "Glimmerfen Overseer",
+		"faces": [
+			{
+				"name": "Glimmerfen Overseer",
+				"characteristics": {
+					"manaCost": "",
+					"types": [
+						"Creature"
+					],
+					"subtypes": [
+						"Faerie"
+					],
+					"supertypes": [],
+					"colors": [],
+					"toughness": 3,
+					"ptDefinedByAbility": true
+				},
+				"abilities": [
+					{
+						"kind": "triggered",
+						"trigger": {
+							"event": "zoneChange",
+							"filter": {
+								"object": {
+									"types": [
+										"Land"
+									],
+									"controller": "you"
+								},
+								"to": "battlefield"
+							}
+						},
+						"targets": [],
+						"effect": [
+							{
+								"verb": "gainLife",
+								"subject": {
+									"k": "player",
+									"filter": {
+										"relation": "you"
+									}
+								},
+								"amount": {
+									"k": "const",
+									"n": 1
+								},
+								"span": {
+									"start": 0,
+									"end": 63
+								}
+							}
+						],
+						"span": {
+							"start": 0,
+							"end": 63
+						}
+					},
+					{
+						"kind": "triggered",
+						"trigger": {
+							"event": "phaseBegin",
+							"filter": {
+								"phase": "upkeep"
+							},
+							"scope": "controller_turn"
+						},
+						"condition": {
+							"k": "compare",
+							"left": {
+								"k": "life",
+								"of": {
+									"k": "you"
+								}
+							},
+							"op": ">=",
+							"right": {
+								"k": "const",
+								"n": 40
+							}
+						},
+						"targets": [],
+						"effect": [
+							{
+								"verb": "win",
+								"subject": {
+									"k": "player",
+									"filter": {
+										"relation": "you"
+									}
+								},
+								"span": {
+									"start": 64,
+									"end": 143
+								}
+							}
+						],
+						"span": {
+							"start": 64,
+							"end": 143
+						}
+					},
+					{
+						"kind": "unsupported",
+						"reason": "static_not_compiled",
+						"text": "~'s power is equal to the number of cards in your hand.",
+						"span": {
+							"start": 144,
+							"end": 199
+						},
+						"unparsed": [
+							{
+								"start": 144,
+								"end": 199
+							}
+						]
+					}
+				]
+			}
+		],
+		"fullySupported": false
+	},
+	"Twinned Lantern Wardens": {
+		"oracleId": "synthetic_twinned_lantern_wardens",
+		"compilerVersion": 1,
+		"textHash": "a21395a4",
+		"name": "Twinned Lantern Wardens",
+		"faces": [
+			{
+				"name": "Twinned Lantern Wardens",
+				"characteristics": {
+					"manaCost": "",
+					"types": [
+						"Creature"
+					],
+					"subtypes": [
+						"Human",
+						"Soldier"
+					],
+					"supertypes": [],
+					"colors": []
+				},
+				"abilities": [
+					{
+						"kind": "unsupported",
+						"reason": "multiface",
+						"text": "Ward {2}\nKicker {1}{W}",
+						"span": {
+							"start": 0,
+							"end": 22
+						},
+						"unparsed": []
+					}
+				]
+			}
+		],
+		"fullySupported": false
+	}
+}

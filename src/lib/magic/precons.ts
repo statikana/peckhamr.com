@@ -160,7 +160,7 @@ reg({
 	cmc: 0,
 	typeLine: 'Land',
 	oracleText:
-		"Path of Ancestry enters tapped.\n{T}: Add one mana of any color in your commander's color identity.",
+		'This land enters tapped.\n{T}: Add one mana of any color in your commander\'s color identity. When that mana is spent to cast a creature spell that shares a creature type with your commander, scry 1. (Look at the top card of your library. You may put that card on the bottom.)',
 	colors: [],
 	colorIdentity: []
 });
@@ -188,7 +188,7 @@ reg({
 	cmc: 4,
 	typeLine: 'Legendary Creature — Elf Noble',
 	oracleText:
-		'Menace\nWhenever Lathril, Blade of the Elves deals combat damage to a player, create that many 1/1 green Elf Warrior creature tokens.\n{T}, Tap ten untapped Elves you control: Each opponent loses 10 life and you gain 10 life.',
+		'Menace (This creature can\'t be blocked except by two or more creatures.)\nWhenever Lathril deals combat damage to a player, create that many 1/1 green Elf Warrior creature tokens.\n{T}, Tap ten untapped Elves you control: Each opponent loses 10 life and you gain 10 life.',
 	colors: ['B', 'G'],
 	colorIdentity: ['B', 'G'],
 	keywords: ['Menace'],
@@ -203,7 +203,7 @@ reg({
 	cmc: 3,
 	typeLine: 'Legendary Creature — Efreet Wizard',
 	oracleText:
-		'Magecraft — Whenever you cast or copy an instant or sorcery spell, Veyran, Voice of Duality gets +1/+1 until end of turn.\nIf you casting or copying an instant or sorcery spell causes a triggered ability of a permanent you control to trigger, that ability triggers an additional time.',
+		'Magecraft — Whenever you cast or copy an instant or sorcery spell, Veyran gets +1/+1 until end of turn.\nIf you casting or copying an instant or sorcery spell causes a triggered ability of a permanent you control to trigger, that ability triggers an additional time.',
 	colors: ['U', 'R'],
 	colorIdentity: ['U', 'R'],
 	keywords: ['Magecraft'],
@@ -284,7 +284,7 @@ reg({
 	manaCost: '{2}',
 	cmc: 2,
 	typeLine: 'Artifact',
-	oracleText: '{T}: Add {C}.\n{1}, {T}, Sacrifice Mind Stone: Draw a card.',
+	oracleText: '{T}: Add {C}.\n{1}, {T}, Sacrifice this artifact: Draw a card.',
 	colors: [],
 	colorIdentity: []
 });
@@ -295,7 +295,7 @@ reg({
 	cmc: 3,
 	typeLine: 'Artifact',
 	oracleText:
-		"{T}: Add one mana of any color in your commander's color identity.\nSacrifice Commander's Sphere: Draw a card.",
+		'{T}: Add one mana of any color in your commander\'s color identity.\nSacrifice this artifact: Draw a card.',
 	colors: [],
 	colorIdentity: []
 });
@@ -305,7 +305,7 @@ reg({
 	manaCost: '{2}',
 	cmc: 2,
 	typeLine: 'Artifact — Equipment',
-	oracleText: 'Equipped creature has haste and shroud.\nEquip {0}',
+	oracleText: 'Equipped creature has haste and shroud. (It can\'t be the target of spells or abilities.)\nEquip {0}',
 	colors: [],
 	colorIdentity: [],
 	keywords: ['Equip']
@@ -316,7 +316,7 @@ reg({
 	manaCost: '{2}',
 	cmc: 2,
 	typeLine: 'Artifact — Equipment',
-	oracleText: 'Equipped creature has hexproof and haste.\nEquip {1}',
+	oracleText: 'Equipped creature has hexproof and haste. (It can\'t be the target of spells or abilities your opponents control. It can attack and {T} no matter when it came under your control.)\nEquip {1} ({1}: Attach to target creature you control. Equip only as a sorcery.)',
 	colors: [],
 	colorIdentity: [],
 	keywords: ['Equip']
@@ -447,7 +447,7 @@ reg({
 	cmc: 3,
 	typeLine: 'Legendary Creature — Elf Druid',
 	oracleText:
-		'Whenever another Elf enters the battlefield under your control, put a +1/+1 counter on Marwyn, the Nurturer.\n{T}: Add an amount of {G} equal to Marwyn, the Nurturer\'s power.',
+		'Whenever another Elf you control enters, put a +1/+1 counter on Marwyn.\n{T}: Add an amount of {G} equal to Marwyn\'s power.',
 	colors: ['G'],
 	colorIdentity: ['G'],
 	power: '1',
@@ -460,7 +460,7 @@ reg({
 	cmc: 8,
 	typeLine: 'Creature — Beast',
 	oracleText:
-		'Haste\nWhen Craterhoof Behemoth enters, creatures you control gain trample and get +3/+3 until end of turn.',
+		'Haste\nWhen this creature enters, creatures you control gain trample and get +X/+X until end of turn, where X is the number of creatures you control.',
 	colors: ['G'],
 	colorIdentity: ['G'],
 	keywords: ['Haste', 'Trample'],
@@ -494,7 +494,7 @@ reg({
 	cmc: 3,
 	typeLine: 'Creature — Human Shaman',
 	oracleText:
-		'When Eternal Witness enters, you may return target card from your graveyard to your hand.',
+		'When this creature enters, you may return target card from your graveyard to your hand.',
 	colors: ['G'],
 	colorIdentity: ['G'],
 	power: '2',
@@ -551,7 +551,7 @@ reg({
 	cmc: 4,
 	typeLine: 'Enchantment',
 	oracleText:
-		'Whenever an opponent draws a card, that player may pay {2}. If the player doesn\'t, you create a Treasure token.',
+		'Whenever an opponent draws a card, that player may pay {2}. If the player doesn\'t, you create a Treasure token. (It\'s an artifact with "{T}, Sacrifice this token: Add one mana of any color.")',
 	colors: ['W'],
 	colorIdentity: ['W']
 });
@@ -583,7 +583,7 @@ reg({
 	manaCost: '{1}{U}',
 	cmc: 2,
 	typeLine: 'Instant',
-	oracleText: 'Counter target spell. Draw a card.',
+	oracleText: 'Counter target spell. Its controller may draw up to two cards at the beginning of the next turn\'s upkeep.\nYou draw a card at the beginning of the next turn\'s upkeep.',
 	colors: ['U'],
 	colorIdentity: ['U']
 });
@@ -604,7 +604,7 @@ reg({
 	cmc: 2,
 	typeLine: 'Instant',
 	oracleText:
-		"Return target nonland permanent you don't control to its owner's hand.\nOverload {6}{U}",
+		'Return target nonland permanent you don\'t control to its owner\'s hand.\nOverload {6}{U} (You may cast this spell for its overload cost. If you do, change "target" in its text to "each.")',
 	colors: ['U'],
 	colorIdentity: ['U']
 });
@@ -625,7 +625,7 @@ reg({
 	manaCost: '{U}',
 	cmc: 1,
 	typeLine: 'Instant',
-	oracleText: 'Draw three cards, then put two cards from your hand on top of your library.',
+	oracleText: 'Draw three cards, then put two cards from your hand on top of your library in any order.',
 	colors: ['U'],
 	colorIdentity: ['U']
 });
@@ -646,7 +646,7 @@ reg({
 	manaCost: '{U}',
 	cmc: 1,
 	typeLine: 'Sorcery',
-	oracleText: 'Scry 2, then draw a card.',
+	oracleText: 'Scry 2, then draw a card. (To scry 2, look at the top two cards of your library, then put any number of them on the bottom and the rest on top in any order.)',
 	colors: ['U'],
 	colorIdentity: ['U']
 });
@@ -656,7 +656,7 @@ reg({
 	manaCost: '{U}',
 	cmc: 1,
 	typeLine: 'Instant',
-	oracleText: 'Scry 1. Draw a card.',
+	oracleText: 'Scry 1. (Look at the top card of your library. You may put that card on the bottom.)\nDraw a card.',
 	colors: ['U'],
 	colorIdentity: ['U']
 });
@@ -703,7 +703,7 @@ reg({
 	manaCost: '{2}{B}',
 	cmc: 3,
 	typeLine: 'Sorcery',
-	oracleText: 'Destroy all creatures.',
+	oracleText: 'As an additional cost to cast this spell, pay X life.\nAll creatures get -X/-X until end of turn.',
 	colors: ['B'],
 	colorIdentity: ['B']
 });
@@ -713,7 +713,7 @@ reg({
 	manaCost: '{1}{B}',
 	cmc: 2,
 	typeLine: 'Sorcery',
-	oracleText: 'Destroy target creature or enchantment an opponent controls.',
+	oracleText: 'Destroy target creature or enchantment an opponent controls. You lose life equal to that permanent\'s mana value.',
 	colors: ['B'],
 	colorIdentity: ['B']
 });
@@ -733,7 +733,7 @@ reg({
 	manaCost: '{1}{B}',
 	cmc: 2,
 	typeLine: 'Sorcery',
-	oracleText: 'You draw two cards and you lose 2 life.',
+	oracleText: 'You draw two cards and lose 2 life.',
 	colors: ['B'],
 	colorIdentity: ['B']
 });
@@ -743,7 +743,7 @@ reg({
 	manaCost: '{B}{B}',
 	cmc: 2,
 	typeLine: 'Sorcery',
-	oracleText: 'Draw two cards. You lose 2 life.',
+	oracleText: 'Target player draws two cards and loses 2 life.',
 	colors: ['B'],
 	colorIdentity: ['B']
 });
@@ -753,7 +753,7 @@ reg({
 	manaCost: '{2}{B}',
 	cmc: 3,
 	typeLine: 'Sorcery',
-	oracleText: 'Scry 2, then draw two cards. You lose 2 life.',
+	oracleText: 'Scry 2, then draw two cards. You lose 2 life. (To scry 2, look at the top two cards of your library, then put any number of them on the bottom and the rest on top in any order.)',
 	colors: ['B'],
 	colorIdentity: ['B']
 });
@@ -763,7 +763,7 @@ reg({
 	manaCost: '{B}',
 	cmc: 1,
 	typeLine: 'Sorcery',
-	oracleText: 'Put target creature card from a graveyard onto the battlefield under your control.',
+	oracleText: 'Put target creature card from a graveyard onto the battlefield under your control. You lose life equal to that card\'s mana value.',
 	colors: ['B'],
 	colorIdentity: ['B']
 });
@@ -774,7 +774,7 @@ reg({
 	cmc: 3,
 	typeLine: 'Creature — Elf Shaman',
 	oracleText:
-		'When Shaman of the Pack enters, target opponent loses life equal to the number of Elves you control.',
+		'When this creature enters, target opponent loses life equal to the number of Elves you control.',
 	colors: ['B', 'G'],
 	colorIdentity: ['B', 'G'],
 	power: '3',
@@ -796,7 +796,7 @@ reg({
 	manaCost: '{2}{B}{B}{G}{G}',
 	cmc: 6,
 	typeLine: 'Sorcery',
-	oracleText: 'Destroy target permanent.',
+	oracleText: 'Choose one or more —\n• Destroy target artifact.\n• Destroy target creature.\n• Destroy target enchantment.\n• Destroy target land.\n• Destroy target planeswalker.',
 	colors: ['B', 'G'],
 	colorIdentity: ['B', 'G']
 });
@@ -818,7 +818,7 @@ reg({
 	manaCost: '{2}{R}',
 	cmc: 3,
 	typeLine: 'Instant',
-	oracleText: 'Destroy target permanent.',
+	oracleText: 'The owner of target permanent shuffles it into their library, then reveals the top card of their library. If it\'s a permanent card, they put it onto the battlefield.',
 	colors: ['R'],
 	colorIdentity: ['R']
 });
@@ -839,7 +839,7 @@ reg({
 	manaCost: '{2}{R}',
 	cmc: 3,
 	typeLine: 'Creature — Goblin Shaman',
-	oracleText: 'Whenever you cast an instant or sorcery spell, Guttersnipe deals 2 damage to each opponent.',
+	oracleText: 'Whenever you cast an instant or sorcery spell, this creature deals 2 damage to each opponent.',
 	colors: ['R'],
 	colorIdentity: ['R'],
 	power: '2',
@@ -865,7 +865,7 @@ reg({
 	cmc: 4,
 	typeLine: 'Creature — Dwarf Shaman',
 	oracleText:
-		'Magecraft — Whenever you cast or copy an instant or sorcery spell, create a Treasure token.',
+		'This creature gets +1/+0 for each artifact you control.\nMagecraft — Whenever you cast or copy an instant or sorcery spell, create a Treasure token. (It\'s an artifact with "{T}, Sacrifice this token: Add one mana of any color.")',
 	colors: ['R'],
 	colorIdentity: ['R'],
 	power: '2',
@@ -889,7 +889,7 @@ reg({
 	manaCost: '{U}{R}',
 	cmc: 2,
 	typeLine: 'Sorcery',
-	oracleText: 'Draw two cards.',
+	oracleText: 'Look at the top three cards of your library. Put one of them into your hand, put one of them on the bottom of your library, and exile one of them. You may play the exiled card this turn.',
 	colors: ['U', 'R'],
 	colorIdentity: ['U', 'R']
 });
@@ -899,7 +899,7 @@ reg({
 	manaCost: '{2}{R}',
 	cmc: 3,
 	typeLine: 'Sorcery',
-	oracleText: 'Add {R}{R}{R}{R}. Draw two cards.',
+	oracleText: 'Choose one. If you control a commander as you cast this spell, you may choose both instead.\n• Add {R} for each card in target opponent\'s hand.\n• Exile the top three cards of your library. You may play them this turn.',
 	colors: ['R'],
 	colorIdentity: ['R']
 });
@@ -912,7 +912,7 @@ reg({
 	cmc: 6,
 	typeLine: 'Legendary Creature — Dragon Spirit',
 	oracleText:
-		'Flying, ward {2}\nWhenever another nontoken Dragon enters the battlefield under your control, create a token that\'s a copy of it.',
+		'Flying, ward {2}\nWhenever another nontoken Dragon you control enters, create a token that\'s a copy of it, except the token isn\'t legendary.',
 	colors: ['G', 'U', 'R'],
 	colorIdentity: ['G', 'U', 'R'],
 	keywords: ['Flying', 'Ward'],
@@ -926,7 +926,7 @@ reg({
 	cmc: 5,
 	typeLine: 'Creature — Dragon',
 	oracleText:
-		'Flying\nWhenever another creature enters the battlefield under your control, Terror of the Peaks deals damage equal to that creature\'s power to any target.',
+		'Flying\nSpells your opponents cast that target this creature cost an additional 3 life to cast.\nWhenever another creature you control enters, this creature deals damage equal to that creature\'s power to any target.',
 	colors: ['R'],
 	colorIdentity: ['R'],
 	keywords: ['Flying'],
@@ -940,7 +940,7 @@ reg({
 	cmc: 6,
 	typeLine: 'Legendary Creature — Dragon',
 	oracleText:
-		'Flying\nWhenever another nontoken Dragon enters the battlefield under your control, create a 5/5 red Dragon creature token with flying.',
+		'Flying\nWhenever another nontoken Dragon you control enters, create a 5/5 red Dragon creature token with flying.\n{1}{R}: Dragons you control get +1/+0 until end of turn.',
 	colors: ['R'],
 	colorIdentity: ['R'],
 	keywords: ['Flying'],
@@ -967,7 +967,7 @@ reg({
 	manaCost: '{4}{R}{R}',
 	cmc: 6,
 	typeLine: 'Creature — Dragon',
-	oracleText: 'Flying, haste',
+	oracleText: 'Flying, haste\nWhenever this creature attacks, you may pay {5}{R}{R}. If you do, untap all attacking creatures and after this phase, there is an additional combat phase.',
 	colors: ['R'],
 	colorIdentity: ['R'],
 	keywords: ['Flying', 'Haste'],
@@ -980,7 +980,7 @@ reg({
 	manaCost: '{3}{R}{R}',
 	cmc: 5,
 	typeLine: 'Creature — Dragon',
-	oracleText: 'Flying, haste\nWhenever Goldspan Dragon attacks, create a Treasure token.',
+	oracleText: 'Flying, haste\nWhenever this creature attacks or becomes the target of a spell, create a Treasure token.\nTreasures you control have "{T}, Sacrifice this artifact: Add two mana of any one color."',
 	colors: ['R'],
 	colorIdentity: ['R'],
 	keywords: ['Flying', 'Haste'],
@@ -994,7 +994,7 @@ reg({
 	cmc: 5,
 	typeLine: 'Creature — Dragon',
 	oracleText:
-		'Flying\nWhenever Scourge of Valkas or another Dragon enters the battlefield under your control, it deals 3 damage to any target.',
+		'Flying\nWhenever this creature or another Dragon you control enters, it deals X damage to any target, where X is the number of Dragons you control.\n{R}: This creature gets +1/+0 until end of turn.',
 	colors: ['R'],
 	colorIdentity: ['R'],
 	keywords: ['Flying'],
@@ -1008,7 +1008,7 @@ reg({
 	cmc: 4,
 	typeLine: 'Creature — Elemental',
 	oracleText:
-		'Whenever a player casts a spell, you may put a +1/+1 counter on Forgotten Ancient.',
+		'Whenever a player casts a spell, you may put a +1/+1 counter on this creature.\nAt the beginning of your upkeep, you may move any number of +1/+1 counters from this creature onto other creatures.',
 	colors: ['G'],
 	colorIdentity: ['G'],
 	power: '0',
@@ -1021,7 +1021,7 @@ reg({
 	cmc: 4,
 	typeLine: 'Creature — Human Wizard',
 	oracleText:
-		'Evolve\nWhenever a +1/+1 counter is placed on Fathom Mage, you may draw a card.',
+		'Evolve (Whenever a creature you control enters, if that creature has greater power or toughness than this creature, put a +1/+1 counter on this creature.)\nWhenever a +1/+1 counter is put on this creature, you may draw a card.',
 	colors: ['G', 'U'],
 	colorIdentity: ['G', 'U'],
 	power: '1',
@@ -1034,7 +1034,7 @@ reg({
 	cmc: 4,
 	typeLine: 'Artifact Creature — Construct',
 	oracleText:
-		'When Crystalline Crawler enters, put two +1/+1 counters on it.\n{T}: Add one mana of any color.',
+		'Converge — This creature enters with a +1/+1 counter on it for each color of mana spent to cast it.\nRemove a +1/+1 counter from this creature: Add one mana of any color.\n{T}: Put a +1/+1 counter on this creature.',
 	colors: [],
 	colorIdentity: [],
 	power: '1',
@@ -1047,7 +1047,7 @@ reg({
 	cmc: 3,
 	typeLine: 'Creature — Elf Druid',
 	oracleText:
-		'Landfall — Whenever a land enters the battlefield under your control, proliferate.',
+		'Landfall — Whenever a land you control enters, proliferate. (Choose any number of permanents and/or players, then give each another counter of each kind already there.)',
 	colors: ['G'],
 	colorIdentity: ['G'],
 	power: '3',
@@ -1059,7 +1059,7 @@ reg({
 	manaCost: '{2}{U}',
 	cmc: 3,
 	typeLine: 'Creature — Human Wizard',
-	oracleText: 'Whenever you cast a noncreature spell, proliferate.',
+	oracleText: 'Whenever you cast a noncreature spell, proliferate. (Choose any number of permanents and/or players, then give each another counter of each kind already there.)',
 	colors: ['U'],
 	colorIdentity: ['U'],
 	power: '2',
@@ -1072,7 +1072,7 @@ reg({
 	cmc: 2,
 	typeLine: 'Creature — Spirit',
 	oracleText:
-		'Flying\nWhenever Grateful Apparition deals combat damage to a player or planeswalker, proliferate.',
+		'Flying\nWhenever this creature deals combat damage to a player or planeswalker, proliferate. (Choose any number of permanents and/or players, then give each another counter of each kind already there.)',
 	colors: ['W'],
 	colorIdentity: ['W'],
 	keywords: ['Flying'],
@@ -1160,7 +1160,7 @@ reg({
 	cmc: 2,
 	typeLine: 'Enchantment',
 	oracleText:
-		'When Bonds of Mortality enters, draw a card.\n{G}: Creatures your opponents control lose hexproof and indestructible until end of turn.',
+		'When this enchantment enters, draw a card.\n{G}: Creatures your opponents control lose hexproof and indestructible until end of turn.',
 	colors: ['G'],
 	colorIdentity: ['G']
 });
@@ -1183,7 +1183,7 @@ reg({
 	cmc: 2,
 	typeLine: 'Enchantment — Aura',
 	oracleText:
-		"Enchant creature\nWhen Kenrith's Transformation enters, draw a card.\nEnchanted creature loses all abilities and is a green Elk creature with base power and toughness 3/3.",
+		'Enchant creature\nWhen this Aura enters, draw a card.\nEnchanted creature loses all abilities and is a green Elk creature with base power and toughness 3/3. (It loses all other card types and creature types.)',
 	colors: ['G'],
 	colorIdentity: ['G'],
 	keywords: ['Enchant']
@@ -1207,7 +1207,7 @@ reg({
 	cmc: 3,
 	typeLine: 'Enchantment — Aura',
 	oracleText:
-		'Enchant permanent\nEnchanted permanent is a colorless Forest land and loses all other card types and abilities.',
+		'Enchant permanent\nEnchanted permanent is a colorless Forest land.',
 	colors: ['G'],
 	colorIdentity: ['G'],
 	keywords: ['Enchant']
@@ -1260,7 +1260,7 @@ reg({
 	cmc: 4,
 	typeLine: 'Artifact',
 	oracleText:
-		'Creatures you control are every creature type. The same is true for creature spells you control and creature cards you own that aren\'t on the battlefield.',
+		'Creatures you control are every creature type. The same is true for creature spells you control and creature cards you own that aren\'t on the battlefield.\n{3}, {T}: Create a 2/2 blue Shapeshifter creature token with changeling. (It is every creature type.)',
 	colors: [],
 	colorIdentity: []
 });
@@ -1281,7 +1281,7 @@ reg({
 	cmc: 2,
 	typeLine: 'Enchantment',
 	oracleText:
-		'Flash\nWhen Dress Down enters, draw a card.\nCreatures lose all abilities.\nAt the beginning of the end step, sacrifice Dress Down.',
+		'Flash\nWhen this enchantment enters, draw a card.\nCreatures lose all abilities.\nAt the beginning of the end step, sacrifice this enchantment.',
 	colors: ['U'],
 	colorIdentity: ['U'],
 	keywords: ['Flash']
@@ -1318,7 +1318,7 @@ reg({
 	manaCost: '{1}{U}{B}{R}',
 	cmc: 4,
 	typeLine: 'Legendary Creature — Ogre Wizard',
-	oracleText: '{T}: The player whose turn it is may end the turn.',
+	oracleText: '{T}: The player whose turn it is may end the turn. (Exile all spells and abilities from the stack. The player whose turn it is discards down to their maximum hand size. Damage wears off, and "this turn" and "until end of turn" effects end.)',
 	colors: ['U', 'B', 'R'],
 	colorIdentity: ['U', 'B', 'R'],
 	power: '3',
@@ -1331,7 +1331,7 @@ reg({
 	manaCost: '{2}',
 	cmc: 2,
 	typeLine: 'Artifact',
-	oracleText: '{1}, {T}: End the turn. Activate only during your turn.',
+	oracleText: '{1}, {T}: End the turn. Activate only during your turn. (Exile all spells and abilities from the stack. Discard down to your maximum hand size. Damage wears off, and "this turn" and "until end of turn" effects end.)',
 	colors: [],
 	colorIdentity: []
 });
@@ -1341,7 +1341,7 @@ reg({
 	manaCost: '{4}{U}{U}',
 	cmc: 6,
 	typeLine: 'Instant',
-	oracleText: 'End the turn.',
+	oracleText: 'End the turn. (Exile all spells and abilities, including this spell. The player whose turn it is discards down to their maximum hand size. Damage heals and "this turn" and "until end of turn" effects end.)',
 	colors: ['U'],
 	colorIdentity: ['U']
 });
@@ -1372,7 +1372,7 @@ reg({
 	manaCost: '',
 	cmc: 0,
 	typeLine: 'Artifact',
-	oracleText: 'Suspend 3—{1}\n{T}: Add {C}{C}.',
+	oracleText: 'Suspend 3—{1} (Rather than cast this card from your hand, pay {1} and exile it with three time counters on it. At the beginning of your upkeep, remove a time counter. When the last is removed, you may cast it without paying its mana cost.)\n{T}: Add {C}{C}.',
 	colors: [],
 	colorIdentity: [],
 	keywords: ['Suspend']
@@ -1383,7 +1383,7 @@ reg({
 	manaCost: '',
 	cmc: 0,
 	typeLine: 'Sorcery',
-	oracleText: 'Suspend 4—{U}\nTarget player draws three cards.',
+	oracleText: 'Suspend 4—{U} (Rather than cast this card from your hand, pay {U} and exile it with four time counters on it. At the beginning of your upkeep, remove a time counter. When the last is removed, you may cast it without paying its mana cost.)\nTarget player draws three cards.',
 	colors: ['U'],
 	colorIdentity: ['U'],
 	keywords: ['Suspend']
@@ -1394,7 +1394,7 @@ reg({
 	manaCost: '{2}{R}',
 	cmc: 3,
 	typeLine: 'Sorcery',
-	oracleText: 'Rift Bolt deals 3 damage to any target.\nSuspend 1—{R}',
+	oracleText: 'Rift Bolt deals 3 damage to any target.\nSuspend 1—{R} (Rather than cast this card from your hand, you may pay {R} and exile it with a time counter on it. At the beginning of your upkeep, remove a time counter. When the last is removed, you may cast it without paying its mana cost.)',
 	colors: ['R'],
 	colorIdentity: ['R'],
 	keywords: ['Suspend']
@@ -1406,7 +1406,7 @@ reg({
 	cmc: 3,
 	typeLine: 'Instant',
 	oracleText:
-		"Until your next turn, your life total can't change and you gain protection from everything. All permanents you control phase out.",
+		'Until your next turn, your life total can\'t change and you gain protection from everything. All permanents you control phase out. (While they\'re phased out, they\'re treated as though they don\'t exist. They phase in before you untap during your untap step.)\nExile Teferi\'s Protection.',
 	colors: ['W'],
 	colorIdentity: ['W']
 });
@@ -1416,7 +1416,7 @@ reg({
 	manaCost: '{U}',
 	cmc: 1,
 	typeLine: 'Instant',
-	oracleText: 'Put a +1/+1 counter on target creature. It phases out.',
+	oracleText: 'Put a +1/+1 counter on target creature. It phases out. (Treat it and anything attached to it as though they don\'t exist until its controller\'s next turn.)',
 	colors: ['U'],
 	colorIdentity: ['U']
 });
@@ -1427,7 +1427,7 @@ reg({
 	cmc: 2,
 	typeLine: 'Enchantment',
 	oracleText:
-		'When Rest in Peace enters, exile all graveyards.\nIf a card or token would be put into a graveyard from anywhere, exile it instead.',
+		'When this enchantment enters, exile all graveyards.\nIf a card or token would be put into a graveyard from anywhere, exile it instead.',
 	colors: ['W'],
 	colorIdentity: ['W']
 });
@@ -1451,7 +1451,7 @@ reg({
 	cmc: 2,
 	typeLine: 'Creature — Merfolk Wizard',
 	oracleText:
-		"When Thassa's Oracle enters, look at the top X cards of your library, where X is your devotion to blue. If X is greater than or equal to the number of cards in your library, you win the game.",
+		'When this creature enters, look at the top X cards of your library, where X is your devotion to blue. Put up to one of them on top of your library and the rest on the bottom of your library in a random order. If X is greater than or equal to the number of cards in your library, you win the game. (Each {U} in the mana costs of permanents you control counts toward your devotion to blue.)',
 	colors: ['U'],
 	colorIdentity: ['U'],
 	power: '1',
@@ -1476,7 +1476,7 @@ reg({
 	cmc: 6,
 	typeLine: 'Creature — Cat Beast',
 	oracleText:
-		'Vigilance, lifelink\nAt the beginning of your upkeep, if you have 40 or more life, you win the game.',
+		'Vigilance (Attacking doesn\'t cause this creature to tap.)\nLifelink (Damage dealt by this creature also causes you to gain that much life.)\nAt the beginning of your upkeep, if you have 40 or more life, you win the game.',
 	colors: ['W'],
 	colorIdentity: ['W'],
 	keywords: ['Vigilance', 'Lifelink'],
@@ -1522,7 +1522,7 @@ reg({
 	cmc: 4,
 	typeLine: 'Enchantment',
 	oracleText:
-		'If Leyline of Anticipation is in your opening hand, you may begin the game with it on the battlefield.\nYou may cast spells as though they had flash.',
+		'If this card is in your opening hand, you may begin the game with it on the battlefield.\nYou may cast spells as though they had flash.',
 	colors: ['U'],
 	colorIdentity: ['U']
 });
@@ -1554,7 +1554,7 @@ reg({
 	manaCost: '{3}{U}',
 	cmc: 4,
 	typeLine: 'Creature — Shapeshifter',
-	oracleText: 'You may have Clone enter as a copy of any creature on the battlefield.',
+	oracleText: 'You may have this creature enter as a copy of any creature on the battlefield.',
 	colors: ['U'],
 	colorIdentity: ['U'],
 	power: '0',
@@ -1588,7 +1588,7 @@ reg({
 	cmc: 2,
 	typeLine: 'Creature — Spirit',
 	oracleText:
-		'Haste\nAt the beginning of your upkeep, if Nether Shadow is in your graveyard with three or more creature cards above it, you may put Nether Shadow onto the battlefield.',
+		'Haste\nAt the beginning of your upkeep, if this card is in your graveyard with three or more creature cards above it, you may put this card onto the battlefield.',
 	colors: ['B'],
 	colorIdentity: ['B'],
 	keywords: ['Haste'],
@@ -1602,7 +1602,7 @@ reg({
 	cmc: 3,
 	typeLine: 'Instant',
 	oracleText:
-		'Return the top creature card of your graveyard to the battlefield. That creature gains haste until end of turn. Exile it at the beginning of the next end step.',
+		'Buyback {2} (You may pay an additional {2} as you cast this spell. If you do, put this card into your hand as it resolves.)\nReturn the top creature card of your graveyard to the battlefield. That creature gains haste until end of turn. Exile it at the beginning of the next end step.',
 	colors: ['B'],
 	colorIdentity: ['B']
 });
@@ -1648,7 +1648,7 @@ reg({
 	cmc: 1,
 	typeLine: 'Instant',
 	oracleText:
-		'Search your library for a card, then shuffle and put that card on top.\nYou lose 2 life.',
+		'Search your library for a card, then shuffle and put that card on top. You lose 2 life.',
 	colors: ['B'],
 	colorIdentity: ['B']
 });
@@ -1659,7 +1659,7 @@ reg({
 	cmc: 1,
 	typeLine: 'Sorcery',
 	oracleText:
-		'Search your library for an Equipment card, reveal it, put it into your hand, then shuffle.',
+		'Search your library for an Equipment card, reveal that card, put it into your hand, then shuffle.',
 	colors: ['W'],
 	colorIdentity: ['W']
 });

@@ -43,7 +43,9 @@ These numbers drift; re-measure at the start of every phase.
 | Scryfall data | `~/data/scryfall/oracle-cards.jsonl.gz` (symlink to a dated file; gzipped JSON Lines, ~39k entries including tokens/art cards). **Never** copy it into the repo or into D1/R2. Refresh by downloading a new dated file and moving the symlink. |
 | Compiled IR storage | **No D1 table.** The user wants to avoid Cloudflare storage costs and wholesale database rewrites when the IR format changes. Compile at runtime, cache per isolate, keyed by `oracleId + textHash + COMPILER_VERSION`. Phase 1 measures compile time for a 4×100-card game to confirm cold starts are acceptable. |
 | Games in progress at deploy | **End them.** On deploy of an incompatible `engineVersion`, active games are finished with a system log entry; no compatibility path. |
-| Unsupported abilities | *Open: ask the user.* Proposed default: allowed, resolved through the guided manual prompt, with a lobby rule to block them. |
+| Unsupported abilities | **Decided (2026-11-08): allowed.** Unsupported activated/triggered/spell abilities resolve through the guided manual prompt; unsupported statics are shown as "not enforced". Lobby rule `rules.allowUnsupportedCards`, default **true**, lets a host block them. See §2.7. |
+| Saved-deck coverage input | **Decided:** `scripts/magic-coverage.ts --decks <file>` reads a JSON export the user runs (`npx wrangler d1 execute cosmo_users --remote --json --command "SELECT id, commanders_json, cards_json FROM MagicDecks"`). The script never contacts Cloudflare. |
+| Saved game state size | *Open, for the user; not scheduled.* A local lobby row was 516 KB because every `CardInstance` and `StackItem` embeds a full `ScryfallCard`. Storing card references (oracleId / printing id) instead could matter for Cloudflare storage costs. |
 | UI testing | The user play-tests UI-affecting phases (especially Phase 8) and reports results. |
 | CI | `.github/workflows/magic-engine.yml`: tests + ratchet + type check (magic files only) on every push touching the engine. |
 
@@ -313,9 +315,11 @@ Design notes:
   the cache.
 - The engine runs on Cloudflare Workers (`@sveltejs/adapter-cloudflare`). Module caches are
   per-isolate, so a cold start recompiles. **Decided:** no persisted IR (no D1 table); compile at
-  runtime and cache in memory. Phase 1 measures the compile time for a 4×100-card game. If it's too
-  slow, the fallback is a build-time precompiled bundle for cards in saved decks, not database
-  storage.
+  runtime and cache in memory. **Measured in Phase 1:** 400 distinct cards (a 4×100-card game with no
+  repeats, both caches empty) compile in ~40 ms in Node 24 (~0.1 ms/card). Not measured in workerd,
+  but even several times slower is negligible next to a request, so **the per-isolate in-memory
+  cache is enough**; no build-time bundle is needed. Revisit if the grammar compiler is much slower
+  than the adapter.
 - Add `GameState.engineVersion`. **Decided:** games created under an older version are ended at
   deploy with a system log entry.
 - Shrinking state (storing printing IDs instead of full card objects) is a separate,
@@ -369,9 +373,8 @@ while it runs), **entry**, **work**, **exit**, and **ratchet target**.
   the wrong-argument calls above went unnoticed for that reason.
 - **Not done (moved to Phase 1):** `scripts/magic-coverage.ts`.
 
-### Phase 1: IR types, compiler shell, coverage tooling, key decisions
-- *In progress 2026-11-08 (branch `engine-rewrite`). Baseline re-measured: 83 pass, 2 todo, 0 fail;
-  ratchet unchanged from Phase 0.*
+### Phase 1: IR types, compiler shell, coverage tooling, key decisions ✅ done 2026-11-08
+- *Baseline at start: 83 pass, 2 todo, 0 fail; ratchet unchanged from Phase 0.*
 - **Owns:** `ir.ts` (new), `compiler/**` (new), `scripts/magic-coverage.ts`.
 - **Entry:** Phase 0 done.
 - **Work:**
@@ -393,6 +396,44 @@ while it runs), **entry**, **work**, **exit**, and **ratchet target**.
 - **Exit:** `compileCard` runs over the whole bulk file without throwing; the coverage report
   exists; IR snapshot tests exist for ~20 representative cards.
 - **Ratchet:** unchanged.
+- **Done:**
+  - `ir.ts` per §2.1, with these settled details: instant/sorcery effects are an `AbilityDef` of kind
+    `spell` (no separate `spell` field); `addMana` has `mana` (exact symbols) vs `manaChoice`
+    (one of a set, or symbolic `'any'` / `'commanderIdentity'`, so IR never depends on the deck);
+    `Selector` has `playerRef` and `none`; `UnsupportedAbility` carries a `reason`
+    (`unparsed`, `keyword_not_implemented`, `static_not_compiled`, `multiface`) and the
+    `unparsed` spans; CR 305.6 basic-land mana abilities are `intrinsic` with an empty span.
+  - `compiler/normalize.ts` (reminder text, `~`, ability words, sentence spans),
+    `compiler/adapter.ts` (legacy parser output → IR), `compiler/index.ts` (`compileCard`, cache,
+    `COMPILER_VERSION`). Legacy parsers always get the raw card and a fixed WUBRG identity.
+  - `scripts/magic-coverage.ts`; the report is `COVERAGE.md`. First run: 35,062 game cards,
+    **0 compiler errors**, 12.6% fully supported (24.4% ignoring statics); precon cards 53.2%
+    (76.3%). **These are legacy-claimed numbers, an upper bound**: a sentence counts as claimed if
+    the legacy parser finds any effect in it, and that parser often drops part of a sentence
+    (Felidar's "if you have 40 or more life", "+X/+X where X is…"). Real coverage comes only
+    from the grammar.
+  - `compiler/compiler.test.ts`: IR snapshots for 25 real precon cards + 3 synthetic cards
+    (`__snapshots__/ir.json`, regenerate with `UPDATE_IR_SNAPSHOTS=1`), a rename-invariance test,
+    span checks, and the precon integrity test against `precon-oracle.fixture.json` (generated
+    from bulk data by the coverage script; the bulk file itself is never committed).
+  - `precons.ts`: all **63** cards whose text differed from Oracle were replaced with Oracle text
+    (Craterhoof, Toxic Deluge, Jeska's Will, Chaos Warp, Casualties of War, … plus "enters"
+    templating). Consequences, all intended:
+    - Cards whose old fake text "worked" now resolve through guided manual resolution (Toxic
+      Deluge, Jeska's Will, Chaos Warp, Expressive Iteration, Arcane Denial, …).
+    - "When this enchantment/Aura/artifact enters" wasn't a self-ETB trigger for the legacy
+      parser; widened in `oracle.ts` (test 30 written to fail first).
+    - Song of the Dryads now reads "is a colorless Forest land."; losing other types and
+      rules-text abilities follows from CR 205.1a / 305.7, which the legacy layer code doesn't
+      apply. D-Audit-1/2 now use a synthetic Aura with the explicit wording; **D-Audit-5** (real
+      card) is `todo` → **Phase 6**.
+  - Found, not fixed (→ **Phase 5**): the engine never fires Lathril's combat-damage trigger.
+    `getCardRuleTree` splits a trigger header at the first comma, which falls inside
+    "Lathril, Blade of the Elves", so the header check fails.
+  - Suite: 118 pass (84 + 34 compiler tests), 3 todo, 0 fail; 0 magic type errors.
+- **Next (suggested):** begin the real grammar with one narrow area, costs (`compiler/costs.ts`,
+  including "Tap N untapped <filter> you control"), run it alongside the adapter and compare outputs
+  over the card pool rather than replacing the adapter wholesale.
 
 ### Phase 2: Central zone changes and event bus (behaviour-preserving)
 - **Owns:** `runtime/zones.ts`, `runtime/events.ts` (new); zone-mutation sites in `engine.ts`.
@@ -417,6 +458,8 @@ while it runs), **entry**, **work**, **exit**, and **ratchet target**.
   approximated as any color).
 - **Exit:** `executeParsedEffect` and `ParsedEffect` deleted; `parseSpellOrAbilityEffects` deleted
   or reduced to a compatibility wrapper used by tests only. Lathril's effect order is correct.
+  `compiler/adapter.ts` (Phase 1 scaffolding) is deleted; don't add features to it beyond what
+  measurement needs.
 - **Ratchet:** name checks in effect code → 0.
 
 ### Phase 4: Costs and activated abilities
