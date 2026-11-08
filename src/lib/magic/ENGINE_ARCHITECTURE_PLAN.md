@@ -370,6 +370,8 @@ while it runs), **entry**, **work**, **exit**, and **ratchet target**.
 - **Not done (moved to Phase 1):** `scripts/magic-coverage.ts`.
 
 ### Phase 1: IR types, compiler shell, coverage tooling, key decisions
+- *In progress 2026-11-08 (branch `engine-rewrite`). Baseline re-measured: 83 pass, 2 todo, 0 fail;
+  ratchet unchanged from Phase 0.*
 - **Owns:** `ir.ts` (new), `compiler/**` (new), `scripts/magic-coverage.ts`.
 - **Entry:** Phase 0 done.
 - **Work:**

@@ -34,7 +34,7 @@ jobs:
       # Unit tests and the architecture ratchet (ENGINE_ARCHITECTURE_PLAN.md section 1).
       # Node strips types without checking them, so the type check below is a separate step.
       - name: Tests
-        run: node --test src/lib/magic/*.test.ts
+        run: node --test 'src/lib/magic/**/*.test.ts'
 
       # Other parts of the site have unrelated type errors, so only magic files fail the build.
       - name: Type check (magic only)
