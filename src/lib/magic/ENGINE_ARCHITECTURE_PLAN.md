@@ -505,7 +505,8 @@ while it runs), **entry**, **work**, **exit**, and **ratchet target**.
     `EventFilter.orCopy`; `TriggerDef.or` for "enters or attacks". `adaptCard`'s optional log is now
     `AdapterLog` (costs and triggers).
 
-### Phase 2: Central zone changes and event bus (behaviour-preserving)
+### Phase 2: Central zone changes and event bus (behaviour-preserving) ✅ done 2026-11-08
+- **Status:** done on branch `engine-rewrite-phase2` (on top of `5fd62fe`); not yet merged.
 - **Owns:** `runtime/zones.ts`, `runtime/events.ts` (new); zone-mutation sites in `engine.ts`.
 - **Work:** route all 72 direct zone mutations through `moveObject`. Emit `ZoneChange`, `Cast`,
   `AttackDeclared`, `DamageDealt`, `PhaseBegin` and `CounterPlaced` events. **The existing
@@ -514,6 +515,80 @@ while it runs), **entry**, **work**, **exit**, and **ratchet target**.
 - **Exit:** suite green; the ratchet's zone-mutation count is 0 outside `zones.ts`; a test asserts
   that every zone change emits exactly one event.
 - **Ratchet:** zone mutations → 0.
+- **Results (2026-11-08):**
+  - `directZoneMutation` engine.ts **72 → 0** (allowance lowered in the same commits). Other
+    allowances unchanged. Suite: 163 tests, 160 pass, 3 todo, 0 fail; 0 magic type errors.
+  - **Safety net first:** `runtime/golden.test.ts` plays four seeded all-bot games (fake clock and
+    RNG) and compares with `runtime/__snapshots__/golden.json` (full final state, digests of
+    intermediate states). Regenerate after an *intended* behaviour change with
+    `UPDATE_GOLDEN_SNAPSHOTS=1 node --test src/lib/magic/runtime/golden.test.ts` and review the
+    diff. `runtime/zones.pin.test.ts` (28 tests) pins each human-prompt/effect site the bots don't
+    reach. Both were committed before the refactor; their expectations didn't change during it.
+  - **`moveObject(state, obj, to, opts): ZoneType`** (`runtime/zones.ts`) does every zone change
+    and emits exactly one `ZoneChange`. Nothing is implicit: `opts.from` (`{player, zone}` /
+    `'anyBattlefield'` / `'stack'` / `'none'`), `toPlayer` (default owner), `insert`
+    (`'end'`/`'start'`/index/`'deferred'`, or a function of the actual destination),
+    `bumpVersion`, `newTimestamp`, `setZone`, `controllerId`, `leaveBattlefieldReset`,
+    `detachAttachments`, `graveyardReplacement`, `commanderRedirect`, `ceaseToExist`
+    (`'tokens'`/`'always'`), `beforeInsert`. `movePermanentToZone` is now a preset over it.
+    Non-zone-changes live in the same file and emit nothing: `shuffleLibrary(player, keepTop)`,
+    `setZoneOrder`, `rearrangeLibrary` (scry), `placeDeferred`, `transferBattlefieldControl`
+    (elimination), `removeFromGame` (token clean-up, CR 800.4a), `mulliganRedraw`.
+    `allocateTimestamp`, `createEmptyCounters`, `shuffleArray` moved here (engine.ts re-exports).
+  - **Events** (`runtime/events.ts`) are transient: a `WeakMap<GameState, queue>`, never in
+    `GameState` (so never saved to D1 or sent to clients, where they'd leak draws). Dispatch is
+    synchronous; `applyGameAction` drains the queue when its outermost call returns. Ids come from
+    a counter, not `Math.random`/`Date.now`. `subscribeEvents` is for tests.
+    - `ZoneChange`: every `moveObject`. `Cast`: both cast sites → `triggerOnSpellCast`.
+      `AttackDeclared` → `triggerOnAttack`. `CounterPlaced`: `addCountersToPermanent` →
+      `triggerOnCounterPlaced` (extracted). `PhaseBegin`: `beginPhase()` at all 21 phase changes.
+      `DamageDealt`: combat damage (both directions, trample), `applyDamageToTarget`,
+      `damage_all_creatures`, `damage_each_opponent` (emit-only). `PhaseBegin` for `upkeep` and
+      `end_step` dispatches to `runUpkeepTriggers` / `runEndStepTriggers` (the loops extracted
+      unchanged from `runBeginningOfTurn` and `enterEndStep`); the stack checks after them stay
+      inline. In `enterEndStep` the phase is now set just after its `emitVfx` (which doesn't read it).
+  - `runtime/events.test.ts` replays ZoneChange events against an independent model of where every
+    object is (seeded 2–4 bot games) and checks the real state after every event. Every entry
+    point in `zones.pin.test.ts` is wrapped in the same check, so the human-prompt and effect sites
+    bots don't reach are covered too; elimination is checked to emit no ZoneChange. Both fail if a
+    site stops emitting (mutation-tested). Also checked: reorders emit nothing; `GameState` is
+    plain data, survives `JSON.stringify`/`parse` mid-game and plays on identically.
+  - **Preserved as explicit special cases** (they look like bugs; see below): the per-site
+    version/timestamp differences; Treasure sacrifice is a bare removal (`ceaseToExist: 'always'`,
+    `setZone: false`); suspend free cast leaves `zone === 'exile'`; `exile_all_graveyards` reverses
+    order; the bot "search, shuffle, put on top" keeps found cards out of the library during the
+    shuffle and ETB triggers (`insert: 'deferred'`); `return_self_from_graveyard` checks haste
+    between removal and insertion (`beforeInsert`); mulligans still copy card objects.
+- **Deferred to Phase 5:**
+  - `triggerOnEtb` (10 call sites) and `triggerOnAttach` (2) stay **direct calls**. Dispatching
+    them from `ZoneChange` would move them before each site's log line / `landsPlayedThisTurn++`,
+    and would newly fire ETBs for `create_token` tokens and elimination control transfers.
+  - Combat-damage-to-player triggers stay inline in `executeCombatDamageStep` (engine.ts:4757);
+    they use locals of the damage loop. `DamageDealt` carries what Phase 5 needs.
+  - Dies triggers stay at the `movePermanentToZone` call sites (destroy, wrath, SBA).
+- **Bugs found, not fixed** (behaviour-preserving phase; each is pinned, so a fix must update its
+  pin). Line numbers are at the end of Phase 2:
+  - engine.ts:6467 `isTargetStillValid` has no `card_in_graveyard` branch, so a spell whose only
+    targets are `card_in_graveyard` always fizzles.
+  - engine.ts:3557 `create_token` → `createTokenOnBoard` (engine.ts:4220) never calls
+    `triggerOnEtb`: no observer ETB or Landfall for tokens (`copy_target_permanent` tokens do).
+  - CR 400.7 bookkeeping is inconsistent. Neither `objectVersion` nor timestamp changes for:
+    search to hand (engine.ts:2124 human, 4133 bot), discard to hand size (2003 human, 4962 bot),
+    London bottom (1889), commander → command zone (1975 prompt, 5176 bot SBA). Version bumped
+    without a new timestamp: graveyard-target return/exile (2765), `return_from_graveyard_to_hand`
+    (3122), `exile_all_graveyards` (3100). A resolving permanent spell is a fresh
+    `createCardInstance` (2840) with `objectVersion` 1, lower than its stack `sourceObjectVersion`.
+  - engine.ts:5368 `movePermanentToZone` doesn't reset `controllerId`, `summoningSick` or
+    `usedLoyaltyThisTurn` when a permanent leaves the battlefield.
+  - runtime/zones.ts:181 (`commanderRedirect`) sends a commander going to hand/library to the
+    command zone only for bots; humans get no choice for those zones (CR 903.9a/b).
+  - engine.ts:3100 `exile_all_graveyards` reverses each graveyard's order in exile.
+  - engine.ts:1317 Treasure sacrifice for mana is a name check, skips the graveyard (no
+    leaves-the-battlefield handling) and would remove a nontoken card named Treasure from the game.
+  - engine.ts:3923 suspend free cast leaves the card's `zone` as `'exile'` while it's on the stack.
+  - engine.ts:5270 `cleanupEliminatedPlayer` doesn't clear the eliminated player's graveyard or
+    command zone, or their cards in other players' graveyards/hands/libraries (CR 800.4a).
+  - engine.ts:4194 `autoFetchBasicLandToBattlefield` is dead code (no callers).
 
 ### Phase 3: Real grammar for effects, and the effect interpreter
 - **Owns:** `compiler/effects.ts`, `runtime/effects.ts`; `executeParsedEffect` in `engine.ts`.

@@ -75,6 +75,27 @@ export {
 };
 import { STAPLE_CARDS } from './precons.ts';
 import {
+	allocateTimestamp,
+	createEmptyCounters,
+	mulliganRedraw,
+	moveObject,
+	placeDeferred,
+	rearrangeLibrary,
+	removeFromGame,
+	setZoneOrder,
+	shuffleArray,
+	shuffleLibrary,
+	transferBattlefieldControl
+} from './runtime/zones.ts';
+import {
+	beginAction,
+	emitEvent,
+	endAction,
+	registerEventHandler
+} from './runtime/events.ts';
+
+export { allocateTimestamp, shuffleArray };
+import {
 	PHASE_LABELS,
 	type CardInstance,
 	type CounterType,
@@ -105,24 +126,6 @@ import {
 
 function uid(prefix: string): string {
 	return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-}
-
-export function allocateTimestamp(state: GameState): number {
-	state.nextTimestamp = (state.nextTimestamp || 100) + 1;
-	return state.nextTimestamp;
-}
-
-function createEmptyCounters(): Record<CounterType, number> {
-	return {
-		'+1/+1': 0,
-		'-1/-1': 0,
-		loyalty: 0,
-		charge: 0,
-		shield: 0,
-		stun: 0,
-		lore: 0,
-		time: 0
-	};
 }
 
 let globalInstanceTimestampSeed = 1;
@@ -167,15 +170,6 @@ export function createCardInstance(
 		castViaSuspend: false,
 		switchedPTCount: 0
 	};
-}
-
-export function shuffleArray<T>(items: T[]): T[] {
-	const arr = [...items];
-	for (let i = arr.length - 1; i > 0; i--) {
-		const j = Math.floor(Math.random() * (i + 1));
-		[arr[i], arr[j]] = [arr[j], arr[i]];
-	}
-	return arr;
 }
 
 export function addLog(
@@ -319,9 +313,7 @@ export function createInitialGameState(
 			const landCount = p.hand.filter((c) => c.card.typeLine.includes('Land')).length;
 			if (landCount < 2 || landCount > 5) {
 				// Take 1 free mulligan
-				p.library.push(...p.hand.map((c) => ({ ...c, zone: 'library' as ZoneType })));
-				p.library = shuffleArray(p.library);
-				p.hand = p.library.splice(0, 7).map((c) => ({ ...c, zone: 'hand' as ZoneType }));
+				mulliganRedraw(state, p);
 			}
 			p.hasKeptHand = true;
 		} else {
@@ -360,7 +352,7 @@ function checkIfAllKeptMulligan(state: GameState): void {
 		state.turnNumber = 1;
 		state.activePlayerIndex = 0;
 		state.priorityPlayerIndex = 0;
-		state.phase = 'untap';
+		beginPhase(state, 'untap');
 		addLog(state, 'system', `All players kept their opening hands. Turn 1 begins for ${state.players[0].username}!`);
 		runBeginningOfTurn(state);
 	}
@@ -709,11 +701,12 @@ export function drawCards(state: GameState, player: PlayerGameState, count: numb
 			);
 			return;
 		}
-		const card = player.library.shift()!;
-		card.zone = 'hand';
-		card.enteredTimestamp = allocateTimestamp(state);
-		card.objectVersion = (card.objectVersion || 1) + 1;
-		player.hand.push(card);
+		moveObject(state, player.library[0], 'hand', {
+			from: { player, zone: 'library' },
+			toPlayer: player,
+			newTimestamp: true,
+			bumpVersion: true
+		});
 	}
 }
 
@@ -773,7 +766,7 @@ export function evaluateTriggerCondition(
 }
 
 function runDrawStepAndEnterMain1(state: GameState, activePlayer: PlayerGameState): void {
-	state.phase = 'draw';
+	beginPhase(state, 'draw');
 	const shouldSkipFirstDraw =
 		state.turnNumber === 1 && state.players.length === 2 && !state.rules.firstTurnDraw;
 	if (!shouldSkipFirstDraw) {
@@ -795,7 +788,7 @@ function runDrawStepAndEnterMain1(state: GameState, activePlayer: PlayerGameStat
 	}
 
 	if (state.stack.length === 0) {
-		state.phase = 'main1';
+		beginPhase(state, 'main1');
 	}
 	state.priorityPlayerIndex = state.activePlayerIndex;
 	state.passedPriorityPlayerIds = [];
@@ -820,7 +813,7 @@ export function runBeginningOfTurn(state: GameState): void {
 	activePlayer.spellsCastThisTurn = 0;
 
 	// 1. Untap step (CR 502)
-	state.phase = 'untap';
+	beginPhase(state, 'untap');
 	activePlayer.landsPlayedThisTurn = 0;
 	activePlayer.maxLandsPerTurn = 1;
 	activePlayer.manaPool = createEmptyManaPool();
@@ -854,79 +847,9 @@ export function runBeginningOfTurn(state: GameState): void {
 		perm.usedLoyaltyThisTurn = false;
 	}
 
-	// 2. Upkeep step (CR 503)
-	state.phase = 'upkeep';
-
-	// 2a. Suspend Upkeep Triggers (CR 702.62a): Remove 1 time counter from each suspended card in exile; when last is removed, cast it without paying its mana cost!
-	const suspendedCards = activePlayer.exile.filter(
-		(c) => c.isSuspended && (c.counters.time || 0) > 0
-	);
-	for (const susp of suspendedCards) {
-		susp.counters.time = Math.max(0, (susp.counters.time || 0) - 1);
-		addLog(
-			state,
-			'trigger',
-			`Suspend (CR 702.62): Removed a time counter from ${susp.card.name} (${susp.counters.time} remaining).`,
-			activePlayer.playerId
-		);
-		if (susp.counters.time === 0) {
-			executeSuspendFreeCastFromExile(state, activePlayer, susp);
-		}
-	}
-
-	// 2b. Graveyard Upkeep Triggers (CR 404.2 Graveyard Order — e.g., Nether Shadow)
-	for (const gCard of [...activePlayer.graveyard]) {
-		const upkeepAbilities = parseStructuredTriggeredAbilities(gCard.card, 'upkeep');
-		for (const ab of upkeepAbilities) {
-			if (
-				ab.condition?.kind === 'graveyard_creatures_above_at_least' &&
-				matchesTriggerScope(ab.scope, activePlayer.playerId, activePlayer.playerId) &&
-				evaluateTriggerCondition(state, activePlayer, gCard.instanceId, ab.condition)
-			) {
-				executeTriggeredCardEffects(state, activePlayer, gCard, ab.effects, 'Graveyard Upkeep');
-			}
-		}
-	}
-
-	// 2c. Battlefield Upkeep Triggers (e.g., Felidar Sovereign)
-	for (const p of state.players) {
-		if (p.lost) continue;
-		for (const perm of [...p.battlefield]) {
-			if (perm.phasedOut || permanentHasLostAllAbilities(perm, state).lost) continue;
-			const pCard = perm.copiableCard ?? perm.card;
-			const upkeepAbilities = parseStructuredTriggeredAbilities(pCard, 'upkeep');
-			for (const ab of upkeepAbilities) {
-				if (!matchesTriggerScope(ab.scope, p.playerId, activePlayer.playerId)) continue;
-				if (!evaluateTriggerCondition(state, p, perm.instanceId, ab.condition)) continue;
-				const stkItem: StackItem = {
-					id: uid('stk'),
-					sourceInstanceId: perm.instanceId,
-					card: pCard,
-					controllerId: p.playerId,
-					kind: 'triggered',
-					title: `${pCard.name} (Upkeep Trigger)`,
-					oracleText: ab.clause,
-					targets: [],
-					xValue: 0,
-					parsedEffects: ab.effects,
-					requiresGuidedResolution: false,
-					createdAt: Date.now(),
-					interveningIfCondition: ab.condition,
-					interveningIfClause:
-						ab.condition?.kind === 'life_at_least' && ab.condition.amount === 40
-							? 'life_40_or_more'
-							: undefined
-				};
-				state.stack.push(stkItem);
-				addLog(
-					state,
-					'trigger',
-					`${pCard.name}'s Upkeep trigger was put onto the Stack.`,
-					p.playerId
-				);
-			}
-		}
-	}
+	// 2. Upkeep step (CR 503). Beginning-of-upkeep triggers run from the PhaseBegin handler
+	// (runUpkeepTriggers), synchronously, before the stack check below.
+	beginPhase(state, 'upkeep', activePlayer);
 
 	// If any upkeep triggers are on the stack, pause in Upkeep so players can respond (CR 503.1)
 	if (state.stack.length > 0) {
@@ -946,7 +869,24 @@ export function runBeginningOfTurn(state: GameState): void {
 	runDrawStepAndEnterMain1(state, activePlayer);
 }
 
+/**
+ * Applies one player action. Events emitted while it runs are dispatched synchronously and the
+ * queue is drained when the outermost call returns (see runtime/events.ts).
+ */
 export function applyGameAction(
+	state: GameState,
+	actorId: string,
+	action: GameActionPayload
+): { ok: boolean; error?: string } {
+	beginAction(state);
+	try {
+		return applyGameActionInner(state, actorId, action);
+	} finally {
+		endAction(state);
+	}
+}
+
+function applyGameActionInner(
 	state: GameState,
 	actorId: string,
 	action: GameActionPayload
@@ -1049,13 +989,13 @@ export function applyGameAction(
 
 		case 'play_land': {
 			let landInst: CardInstance | undefined;
-			let sourceArray: CardInstance[] = actor.hand;
-			let sourceZone: ZoneType = 'hand';
+			let sourcePlayer: PlayerGameState = actor;
+			let sourceZone: 'hand' | 'exile' = 'hand';
 
 			const handIdx = actor.hand.findIndex((c) => c.instanceId === action.instanceId);
 			if (handIdx >= 0) {
 				landInst = actor.hand[handIdx];
-				sourceArray = actor.hand;
+				sourcePlayer = actor;
 				sourceZone = 'hand';
 			} else {
 				for (const p of state.players) {
@@ -1064,7 +1004,7 @@ export function applyGameAction(
 					);
 					if (exIdx >= 0) {
 						landInst = p.exile[exIdx];
-						sourceArray = p.exile;
+						sourcePlayer = p;
 						sourceZone = 'exile';
 						break;
 					}
@@ -1080,17 +1020,16 @@ export function applyGameAction(
 				return landLegality;
 			}
 
-			const removeIdx = sourceArray.findIndex((c) => c.instanceId === landInst!.instanceId);
-			if (removeIdx >= 0) sourceArray.splice(removeIdx, 1);
-
 			const exSourceName = landInst.playableFromExileBy?.sourceName;
 			landInst.playableFromExileBy = undefined;
-			landInst.zone = 'battlefield';
-			landInst.controllerId = actorId;
-			landInst.enteredTimestamp = allocateTimestamp(state);
-			landInst.objectVersion = (landInst.objectVersion || 1) + 1;
 			landInst.tapped = cardEntersTapped(landInst.card);
-			actor.battlefield.push(landInst);
+			moveObject(state, landInst, 'battlefield', {
+				from: { player: sourcePlayer, zone: sourceZone },
+				toPlayer: actor,
+				controllerId: actorId,
+				newTimestamp: true,
+				bumpVersion: true
+			});
 			actor.landsPlayedThisTurn += 1;
 
 			addLog(
@@ -1125,14 +1064,15 @@ export function applyGameAction(
 				};
 			}
 
-			actor.hand.splice(handIdx, 1);
-			inst.zone = 'exile';
 			inst.isSuspended = true;
 			inst.counters = createEmptyCounters();
 			inst.counters.time = suspClause.timeCounters;
-			inst.enteredTimestamp = allocateTimestamp(state);
-			inst.objectVersion = (inst.objectVersion || 1) + 1;
-			actor.exile.push(inst);
+			moveObject(state, inst, 'exile', {
+				from: { player: actor, zone: 'hand' },
+				toPlayer: actor,
+				newTimestamp: true,
+				bumpVersion: true
+			});
 
 			addLog(
 				state,
@@ -1170,7 +1110,7 @@ export function applyGameAction(
 				byId.delete(id);
 				reordered.push(found);
 			}
-			actor.graveyard = reordered;
+			setZoneOrder(actor, 'graveyard', reordered);
 			const topCard = actor.graveyard[actor.graveyard.length - 1];
 			addLog(
 				state,
@@ -1192,19 +1132,17 @@ export function applyGameAction(
 
 			// Locate card in hand, command zone, or playable exile
 			let inst: CardInstance | undefined;
-			let sourceArray: CardInstance[] = actor.hand;
-			let sourceZone: ZoneType = 'hand';
+			let sourcePlayer: PlayerGameState = actor;
+			let sourceZone: 'hand' | 'command' | 'exile' = 'hand';
 
 			const handIdx = actor.hand.findIndex((c) => c.instanceId === action.instanceId);
 			if (handIdx >= 0) {
 				inst = actor.hand[handIdx];
-				sourceArray = actor.hand;
 				sourceZone = 'hand';
 			} else {
 				const cmdIdx = actor.command.findIndex((c) => c.instanceId === action.instanceId);
 				if (cmdIdx >= 0) {
 					inst = actor.command[cmdIdx];
-					sourceArray = actor.command;
 					sourceZone = 'command';
 				} else {
 					for (const p of state.players) {
@@ -1215,7 +1153,7 @@ export function applyGameAction(
 						);
 						if (exIdx >= 0) {
 							inst = p.exile[exIdx];
-							sourceArray = p.exile;
+							sourcePlayer = p;
 							sourceZone = 'exile';
 							break;
 						}
@@ -1290,20 +1228,23 @@ export function applyGameAction(
 					const disc = otherCards[d];
 					const idx = actor.hand.findIndex((c) => c.instanceId === disc.instanceId);
 					if (idx >= 0) {
-						const [removed] = actor.hand.splice(idx, 1);
-						const rep = checkGraveyardReplacementZone(state, 'graveyard');
-						removed.zone = rep.dest;
-						removed.enteredTimestamp = allocateTimestamp(state);
-						removed.objectVersion = (removed.objectVersion || 1) + 1;
-						if (rep.dest === 'exile') actor.exile.push(removed);
-						else actor.graveyard.push(removed);
+						moveObject(state, actor.hand[idx], 'graveyard', {
+							from: { player: actor, zone: 'hand' },
+							toPlayer: actor,
+							graveyardReplacement: true,
+							newTimestamp: true,
+							bumpVersion: true
+						});
 					}
 				}
 			}
 
 			// Remove from hand/command/exile zone and push onto the Stack
-			const removeIdx = sourceArray.findIndex((c) => c.instanceId === inst!.instanceId);
-			if (removeIdx >= 0) sourceArray.splice(removeIdx, 1);
+			moveObject(state, inst, 'stack', {
+				from: { player: sourcePlayer, zone: sourceZone },
+				newTimestamp: true,
+				bumpVersion: true
+			});
 			const exSourceName = inst.playableFromExileBy?.sourceName;
 			inst.playableFromExileBy = undefined;
 
@@ -1315,9 +1256,6 @@ export function applyGameAction(
 				inst.commanderCastCount = prevCastCount + 1;
 				actor.commanderCastCounts[inst.instanceId] = inst.commanderCastCount;
 			}
-			inst.zone = 'stack';
-			inst.enteredTimestamp = allocateTimestamp(state);
-			inst.objectVersion = (inst.objectVersion || 1) + 1;
 			actor.spellsCastThisTurn = (actor.spellsCastThisTurn || 0) + 1;
 
 			const resolvedCastMode: 'normal' | 'overload' = isOverloadCastMode(inst.card, xVal, castMode)
@@ -1362,8 +1300,8 @@ export function applyGameAction(
 				label: inst.card.name
 			});
 
-			// Fire "Whenever you cast..." triggers
-			triggerOnSpellCast(state, actor, inst);
+			// Fire "Whenever you cast..." triggers (dispatched synchronously to triggerOnSpellCast)
+			emitEvent(state, { kind: 'Cast', playerId: actor.playerId, objectId: inst.instanceId, object: inst });
 			checkStateBasedActions(state);
 			return { ok: true };
 		}
@@ -1377,8 +1315,13 @@ export function applyGameAction(
 
 			// Special handling for Treasure token sacrifice for mana
 			if (perm.card.name === 'Treasure' && action.abilityId === 'treasure_sac') {
-				const idx = actor.battlefield.findIndex((c) => c.instanceId === perm.instanceId);
-				if (idx >= 0) actor.battlefield.splice(idx, 1);
+				// Pinned behaviour: a bare removal (no graveyard, no attachment clean-up, no bookkeeping).
+				moveObject(state, perm, 'graveyard', {
+					from: { player: actor, zone: 'battlefield' },
+					toPlayer: actor,
+					setZone: false,
+					ceaseToExist: 'always'
+				});
 				const cmdCols = getPlayerCommanderIdentity(actor);
 				const col = cmdCols[0] || 'C';
 				actor.manaPool[col] += 1;
@@ -1625,9 +1568,14 @@ export function applyGameAction(
 					amount: validAttackers.length,
 					label: `${validAttackers.length} Attacker(s)`
 				});
-				triggerOnAttack(state, actor, validAttackers.map((a) => a.attackerInstanceId));
+				// Dispatched synchronously to triggerOnAttack
+				emitEvent(state, {
+					kind: 'AttackDeclared',
+					playerId: actor.playerId,
+					attackerIds: validAttackers.map((a) => a.attackerInstanceId)
+				});
 				// Advance into declare_blockers step and give priority to defending player(s) in turn order
-				state.phase = 'declare_blockers';
+				beginPhase(state, 'declare_blockers');
 				const defendersInOrder = getAttackedDefenderIdsInTurnOrder(state);
 				const firstDefenderId = defendersInOrder[0] || validAttackers[0].defenderPlayerId;
 				const defIdx = state.players.findIndex((p) => p.playerId === firstDefenderId);
@@ -1637,7 +1585,7 @@ export function applyGameAction(
 				// No attackers declared -> skip straight to Postcombat Main Phase (main2)
 				addLog(state, 'combat', `${actor.username} declared no attackers. Moving to Main Phase 2.`, actorId);
 				state.combat.active = false;
-				state.phase = 'main2';
+				beginPhase(state, 'main2');
 				state.priorityPlayerIndex = state.activePlayerIndex;
 				state.passedPriorityPlayerIds = [];
 			}
@@ -1781,7 +1729,7 @@ export function applyGameAction(
 
 			// If in declare_attackers with empty stack and active player passes without attacking, treat as 0 attackers
 			if (state.phase === 'declare_attackers' && state.stack.length === 0 && !state.combat.active) {
-				state.phase = 'main2';
+				beginPhase(state, 'main2');
 				state.priorityPlayerIndex = state.activePlayerIndex;
 				state.passedPriorityPlayerIds = [];
 				addLog(state, 'combat', `${actor.username} skipped combat and moved to Main Phase 2.`, actorId);
@@ -1915,9 +1863,7 @@ function handleMulliganAction(
 
 	if (action.type === 'mulligan_take') {
 		actor.mulliganCount += 1;
-		actor.library.push(...actor.hand.map((c) => ({ ...c, zone: 'library' as ZoneType })));
-		actor.library = shuffleArray(actor.library);
-		actor.hand = actor.library.splice(0, 7).map((c) => ({ ...c, zone: 'hand' as ZoneType }));
+		mulliganRedraw(state, actor);
 		addLog(
 			state,
 			'rule',
@@ -1940,9 +1886,10 @@ function handleMulliganAction(
 		for (const id of ids) {
 			const hIdx = actor.hand.findIndex((c) => c.instanceId === id);
 			if (hIdx >= 0) {
-				const [card] = actor.hand.splice(hIdx, 1);
-				card.zone = 'library';
-				actor.library.push(card);
+				moveObject(state, actor.hand[hIdx], 'library', {
+					from: { player: actor, zone: 'hand' },
+					toPlayer: actor
+				});
 			}
 		}
 		state.pendingPrompts.splice(prIdx, 1);
@@ -2014,15 +1961,18 @@ function handlePromptResolution(
 			const gIdx = actor.graveyard.findIndex((c) => c.instanceId === prompt.commanderInstanceId);
 			const eIdx = actor.exile.findIndex((c) => c.instanceId === prompt.commanderInstanceId);
 			let cmd: CardInstance | undefined;
-			if (gIdx >= 0) [cmd] = actor.graveyard.splice(gIdx, 1);
-			else if (eIdx >= 0) [cmd] = actor.exile.splice(eIdx, 1);
+			let cmdFrom: 'graveyard' | 'exile' = 'graveyard';
+			if (gIdx >= 0) cmd = actor.graveyard[gIdx];
+			else if (eIdx >= 0) {
+				cmd = actor.exile[eIdx];
+				cmdFrom = 'exile';
+			}
 
 			if (cmd) {
-				cmd.zone = 'command';
 				cmd.damageMarked = 0;
 				cmd.deathtouchDamageMarked = false;
 				cmd.tapped = false;
-				actor.command.push(cmd);
+				moveObject(state, cmd, 'command', { from: { player: actor, zone: cmdFrom }, toPlayer: actor });
 				addLog(
 					state,
 					'rule',
@@ -2050,10 +2000,10 @@ function handlePromptResolution(
 		for (const id of action.instanceIds) {
 			const idx = actor.hand.findIndex((c) => c.instanceId === id);
 			if (idx >= 0) {
-				const [c] = actor.hand.splice(idx, 1);
-				c.zone = gyDest;
-				if (gyDest === 'exile') actor.exile.push(c);
-				else actor.graveyard.push(c);
+				moveObject(state, actor.hand[idx], gyDest, {
+					from: { player: actor, zone: 'hand' },
+					toPlayer: actor
+				});
 			}
 		}
 		state.pendingPrompts.splice(promptIdx, 1);
@@ -2108,11 +2058,9 @@ function handlePromptResolution(
 		if (action.instanceId) {
 			const idx = libraryOwner.library.findIndex((c) => c.instanceId === action.instanceId);
 			if (idx >= 0) {
-				const [found] = libraryOwner.library.splice(idx, 1);
+				const found = libraryOwner.library[idx];
+				const fromLibrary = { player: libraryOwner, zone: 'library' as const };
 				if (prompt.interceptedBy?.exilesFoundCards) {
-					found.zone = 'exile';
-					found.enteredTimestamp = allocateTimestamp(state);
-					found.objectVersion = (found.objectVersion || 1) + 1;
 					if (prompt.interceptedBy.grantPlayFromExile) {
 						found.playableFromExileBy = {
 							playerId: prompt.interceptedBy.controllerId,
@@ -2120,7 +2068,12 @@ function handlePromptResolution(
 							sourceName: prompt.interceptedBy.sourceName
 						};
 					}
-					libraryOwner.exile.push(found);
+					moveObject(state, found, 'exile', {
+						from: fromLibrary,
+						toPlayer: libraryOwner,
+						newTimestamp: true,
+						bumpVersion: true
+					});
 					emitVfx(state, {
 						kind: 'exile',
 						sourceId: actor.playerId,
@@ -2134,13 +2087,15 @@ function handlePromptResolution(
 						actor.playerId
 					);
 				} else if (prompt.destinationZone === 'battlefield') {
-					found.zone = 'battlefield';
-					found.controllerId = libraryOwner.playerId;
 					const selfEntersTapped = cardEntersTapped(found.card);
 					found.tapped = Boolean(prompt.enterTapped) || selfEntersTapped;
-					found.enteredTimestamp = allocateTimestamp(state);
-					found.objectVersion = (found.objectVersion || 1) + 1;
-					libraryOwner.battlefield.push(found);
+					moveObject(state, found, 'battlefield', {
+						from: fromLibrary,
+						toPlayer: libraryOwner,
+						controllerId: libraryOwner.playerId,
+						newTimestamp: true,
+						bumpVersion: true
+					});
 					addLog(
 						state,
 						'rule',
@@ -2149,11 +2104,15 @@ function handlePromptResolution(
 					);
 					triggerOnEtb(state, libraryOwner, found);
 				} else if (prompt.destinationZone === 'library' && prompt.putOnTop) {
-					libraryOwner.library = shuffleArray(libraryOwner.library);
-					found.zone = 'library';
-					found.enteredTimestamp = allocateTimestamp(state);
-					found.objectVersion = (found.objectVersion || 1) + 1;
-					libraryOwner.library.unshift(found);
+					// Put it on top, then shuffle the rest: the same as the old "remove, shuffle, put on top".
+					moveObject(state, found, 'library', {
+						from: fromLibrary,
+						toPlayer: libraryOwner,
+						insert: 'start',
+						newTimestamp: true,
+						bumpVersion: true
+					});
+					shuffleLibrary(libraryOwner, 1);
 					alreadyShuffledWithTopCard = true;
 					addLog(
 						state,
@@ -2162,8 +2121,7 @@ function handlePromptResolution(
 						libraryOwner.playerId
 					);
 				} else {
-					found.zone = 'hand';
-					libraryOwner.hand.push(found);
+					moveObject(state, found, 'hand', { from: fromLibrary, toPlayer: libraryOwner });
 					addLog(
 						state,
 						'rule',
@@ -2230,7 +2188,7 @@ function handlePromptResolution(
 		}
 
 		if (!alreadyShuffledWithTopCard) {
-			libraryOwner.library = shuffleArray(libraryOwner.library);
+			shuffleLibrary(libraryOwner);
 		}
 		if (prompt.continuationEffects && prompt.continuationEffects.length > 0 && prompt.stackItem) {
 			for (const eff of prompt.continuationEffects) {
@@ -2245,11 +2203,8 @@ function handlePromptResolution(
 		const candidateIds = prompt.candidateInstanceIds || [];
 		const extracted: CardInstance[] = [];
 		for (const cid of candidateIds) {
-			const idx = actor.library.findIndex((c) => c.instanceId === cid);
-			if (idx >= 0) {
-				const [c] = actor.library.splice(idx, 1);
-				extracted.push(c);
-			}
+			const c = actor.library.find((l) => l.instanceId === cid);
+			if (c && !extracted.includes(c)) extracted.push(c);
 		}
 		const byId = new Map(extracted.map((c) => [c.instanceId, c]));
 		const usedIds = new Set<string>();
@@ -2280,11 +2235,10 @@ function handlePromptResolution(
 			}
 		}
 
-		actor.library.unshift(...topList);
-		actor.library.push(...bottomList);
+		rearrangeLibrary(actor, extracted, topList, bottomList);
 
 		if (prompt.allowShuffle && action.shuffleAfter) {
-			actor.library = shuffleArray(actor.library);
+			shuffleLibrary(actor);
 			addLog(
 				state,
 				'rule',
@@ -2401,8 +2355,7 @@ export function moveStackSpellToZone(
 	);
 	cardInst.instanceId = stackItem.sourceInstanceId;
 	cardInst.commanderCastCount = castCount;
-	if (actualDest === 'exile') owner.exile.push(cardInst);
-	else owner.graveyard.push(cardInst);
+	moveObject(state, cardInst, actualDest, { from: 'stack', toPlayer: owner });
 }
 
 export function addCountersToPermanent(
@@ -2428,6 +2381,24 @@ export function addCountersToPermanent(
 		effectiveAmount = amount * multiplier;
 	}
 	perm.counters[type] = (perm.counters[type] || 0) + effectiveAmount;
+	// Dispatched synchronously to triggerOnCounterPlaced
+	emitEvent(state, {
+		kind: 'CounterPlaced',
+		objectId: perm.instanceId,
+		object: perm,
+		counterType: type,
+		amount: effectiveAmount
+	});
+	return effectiveAmount;
+}
+
+/** "Whenever one or more +1/+1 counters are put on ~" (was inline in addCountersToPermanent). */
+function triggerOnCounterPlaced(
+	state: GameState,
+	perm: CardInstance,
+	type: CounterType,
+	effectiveAmount: number
+): void {
 	if (
 		type === '+1/+1' &&
 		effectiveAmount > 0 &&
@@ -2444,8 +2415,202 @@ export function addCountersToPermanent(
 			}
 		}
 	}
-	return effectiveAmount;
 }
+
+/** Beginning-of-upkeep triggers (was inline in runBeginningOfTurn; dispatched from PhaseBegin). */
+function runUpkeepTriggers(state: GameState, activePlayer: PlayerGameState): void {
+	// 2a. Suspend Upkeep Triggers (CR 702.62a): Remove 1 time counter from each suspended card in exile; when last is removed, cast it without paying its mana cost!
+	const suspendedCards = activePlayer.exile.filter(
+		(c) => c.isSuspended && (c.counters.time || 0) > 0
+	);
+	for (const susp of suspendedCards) {
+		susp.counters.time = Math.max(0, (susp.counters.time || 0) - 1);
+		addLog(
+			state,
+			'trigger',
+			`Suspend (CR 702.62): Removed a time counter from ${susp.card.name} (${susp.counters.time} remaining).`,
+			activePlayer.playerId
+		);
+		if (susp.counters.time === 0) {
+			executeSuspendFreeCastFromExile(state, activePlayer, susp);
+		}
+	}
+
+	// 2b. Graveyard Upkeep Triggers (CR 404.2 Graveyard Order — e.g., Nether Shadow)
+	for (const gCard of [...activePlayer.graveyard]) {
+		const upkeepAbilities = parseStructuredTriggeredAbilities(gCard.card, 'upkeep');
+		for (const ab of upkeepAbilities) {
+			if (
+				ab.condition?.kind === 'graveyard_creatures_above_at_least' &&
+				matchesTriggerScope(ab.scope, activePlayer.playerId, activePlayer.playerId) &&
+				evaluateTriggerCondition(state, activePlayer, gCard.instanceId, ab.condition)
+			) {
+				executeTriggeredCardEffects(state, activePlayer, gCard, ab.effects, 'Graveyard Upkeep');
+			}
+		}
+	}
+
+	// 2c. Battlefield Upkeep Triggers (e.g., Felidar Sovereign)
+	for (const p of state.players) {
+		if (p.lost) continue;
+		for (const perm of [...p.battlefield]) {
+			if (perm.phasedOut || permanentHasLostAllAbilities(perm, state).lost) continue;
+			const pCard = perm.copiableCard ?? perm.card;
+			const upkeepAbilities = parseStructuredTriggeredAbilities(pCard, 'upkeep');
+			for (const ab of upkeepAbilities) {
+				if (!matchesTriggerScope(ab.scope, p.playerId, activePlayer.playerId)) continue;
+				if (!evaluateTriggerCondition(state, p, perm.instanceId, ab.condition)) continue;
+				const stkItem: StackItem = {
+					id: uid('stk'),
+					sourceInstanceId: perm.instanceId,
+					card: pCard,
+					controllerId: p.playerId,
+					kind: 'triggered',
+					title: `${pCard.name} (Upkeep Trigger)`,
+					oracleText: ab.clause,
+					targets: [],
+					xValue: 0,
+					parsedEffects: ab.effects,
+					requiresGuidedResolution: false,
+					createdAt: Date.now(),
+					interveningIfCondition: ab.condition,
+					interveningIfClause:
+						ab.condition?.kind === 'life_at_least' && ab.condition.amount === 40
+							? 'life_40_or_more'
+							: undefined
+				};
+				state.stack.push(stkItem);
+				addLog(
+					state,
+					'trigger',
+					`${pCard.name}'s Upkeep trigger was put onto the Stack.`,
+					p.playerId
+				);
+			}
+		}
+	}
+}
+
+/** Beginning-of-end-step and delayed end-step triggers (was inline in enterEndStep; dispatched from PhaseBegin). */
+function runEndStepTriggers(state: GameState, activePlayer: PlayerGameState): void {
+	// 1. Permanent beginning-of-end-step triggers (e.g., Atraxa, Dress Down)
+	for (const p of state.players) {
+		if (p.lost) continue;
+		for (const perm of [...p.battlefield]) {
+			if (perm.phasedOut || permanentHasLostAllAbilities(perm, state).lost) continue;
+			const pCard = perm.copiableCard ?? perm.card;
+			const endStepAbilities = parseStructuredTriggeredAbilities(pCard, 'end_step');
+			for (const ab of endStepAbilities) {
+				if (!matchesTriggerScope(ab.scope, p.playerId, activePlayer.playerId)) continue;
+				if (!evaluateTriggerCondition(state, p, perm.instanceId, ab.condition)) continue;
+				// Push onto stack so player can respond with Obeka/Sundial if desired
+				const stkItem: StackItem = {
+					id: uid('stk'),
+					sourceInstanceId: perm.instanceId,
+					card: pCard,
+					controllerId: p.playerId,
+					kind: 'triggered',
+					title: `${pCard.name} (End Step Trigger)`,
+					oracleText: ab.clause,
+					targets: [],
+					xValue: 0,
+					parsedEffects: ab.effects,
+					requiresGuidedResolution: false,
+					createdAt: Date.now(),
+					interveningIfCondition: ab.condition
+				};
+				state.stack.push(stkItem);
+				addLog(
+					state,
+					'trigger',
+					`${pCard.name}'s End Step trigger was put onto the Stack.`,
+					p.playerId
+				);
+			}
+		}
+	}
+
+	// 2. Delayed End Step triggers (e.g., Final Fortune, Corpse Dance)
+	if (state.delayedTriggers && state.delayedTriggers.length > 0) {
+		const remainingDelayed: DelayedTrigger[] = [];
+		for (const dt of state.delayedTriggers) {
+			const matchesTurn =
+				(!dt.targetPlayerId || dt.targetPlayerId === activePlayer.playerId) &&
+				(!dt.waitUntilAfterTurn || state.turnNumber > dt.waitUntilAfterTurn);
+			if (dt.triggerPhase === 'end_step' && matchesTurn) {
+				const targets: TargetRef[] = [];
+				if (dt.targetInstanceId) {
+					const found = findPermanentOnBoard(state, dt.targetInstanceId);
+					if (found) {
+						targets.push({
+							kind: 'permanent',
+							id: found.inst.instanceId,
+							label: found.inst.card.name
+						});
+					}
+				}
+				const stkItem: StackItem = {
+					id: uid('stk'),
+					sourceInstanceId: dt.id,
+					card: dt.sourceCard,
+					controllerId: dt.controllerId,
+					kind: 'triggered',
+					title: `${dt.sourceCard.name} (Delayed End Step Trigger)`,
+					oracleText: dt.description || dt.oracleText || '',
+					targets,
+					xValue: 0,
+					parsedEffects: dt.effects,
+					requiresGuidedResolution: false,
+					createdAt: Date.now()
+				};
+				state.stack.push(stkItem);
+				addLog(
+					state,
+					'trigger',
+					`Delayed trigger from ${dt.sourceCard.name} went onto the Stack: "${dt.description}"`,
+					dt.controllerId
+				);
+			} else {
+				remainingDelayed.push(dt);
+			}
+		}
+		state.delayedTriggers = remainingDelayed;
+	}
+}
+
+/**
+ * Sets the current phase/step and emits PhaseBegin. `activePlayer` defaults to the player at
+ * `activePlayerIndex`; enterEndStep passes the player it was given.
+ */
+function beginPhase(state: GameState, phase: GamePhase, activePlayer?: PlayerGameState): void {
+	state.phase = phase;
+	emitEvent(state, {
+		kind: 'PhaseBegin',
+		phase,
+		activePlayerId: (activePlayer ?? state.players[state.activePlayerIndex])?.playerId ?? null
+	});
+}
+
+// Event dispatch (Phase 2). Each handler is the direct call it replaced, at the same point, so
+// ordering is unchanged. Phase 5 replaces these with trigger matching over the event queue.
+registerEventHandler('Cast', (state, ev) => {
+	const caster = state.players.find((p) => p.playerId === ev.playerId);
+	if (caster) triggerOnSpellCast(state, caster, ev.object);
+});
+registerEventHandler('AttackDeclared', (state, ev) => {
+	const attacker = state.players.find((p) => p.playerId === ev.playerId);
+	if (attacker) triggerOnAttack(state, attacker, ev.attackerIds);
+});
+registerEventHandler('PhaseBegin', (state, ev) => {
+	if (ev.phase !== 'upkeep' && ev.phase !== 'end_step') return;
+	const activePlayer = state.players.find((p) => p.playerId === ev.activePlayerId);
+	if (!activePlayer) return;
+	if (ev.phase === 'upkeep') runUpkeepTriggers(state, activePlayer);
+	else runEndStepTriggers(state, activePlayer);
+});
+registerEventHandler('CounterPlaced', (state, ev) => {
+	triggerOnCounterPlaced(state, ev.object, ev.counterType, ev.amount);
+});
 
 export function resolveTopOfStack(state: GameState): void {
 	const item = state.stack.pop();
@@ -2602,10 +2767,12 @@ export function resolveTopOfStack(state: GameState): void {
 				for (const p of state.players) {
 					const gIdx = p.graveyard.findIndex((c) => c.instanceId === gt.id);
 					if (gIdx >= 0) {
-						const [card] = p.graveyard.splice(gIdx, 1);
-						card.zone = 'hand';
-						card.objectVersion = (card.objectVersion || 1) + 1;
-						p.hand.push(card);
+						const card = p.graveyard[gIdx];
+						moveObject(state, card, 'hand', {
+							from: { player: p, zone: 'graveyard' },
+							toPlayer: p,
+							bumpVersion: true
+						});
 						addLog(
 							state,
 							'cast',
@@ -2621,10 +2788,12 @@ export function resolveTopOfStack(state: GameState): void {
 				for (const p of state.players) {
 					const gIdx = p.graveyard.findIndex((c) => c.instanceId === gt.id);
 					if (gIdx >= 0) {
-						const [card] = p.graveyard.splice(gIdx, 1);
-						card.zone = 'exile';
-						card.objectVersion = (card.objectVersion || 1) + 1;
-						p.exile.push(card);
+						const card = p.graveyard[gIdx];
+						moveObject(state, card, 'exile', {
+							from: { player: p, zone: 'graveyard' },
+							toPlayer: p,
+							bumpVersion: true
+						});
 						addLog(
 							state,
 							'cast',
@@ -2721,7 +2890,7 @@ export function resolveTopOfStack(state: GameState): void {
 			if (tLine.includes('Aura') && item.targets[0]?.kind === 'permanent') {
 				perm.attachedToId = item.targets[0].id;
 			}
-			controller.battlefield.push(perm);
+			moveObject(state, perm, 'battlefield', { from: 'stack', toPlayer: controller });
 			addLog(
 				state,
 				'cast',
@@ -2905,13 +3074,18 @@ function executeParsedEffect(
 		case 'return_self_from_graveyard': {
 			const gIdx = controller.graveyard.findIndex((c) => c.instanceId === item.sourceInstanceId);
 			if (gIdx >= 0) {
-				const [card] = controller.graveyard.splice(gIdx, 1);
-				card.zone = 'battlefield';
-				card.controllerId = controller.playerId;
-				card.enteredTimestamp = allocateTimestamp(state);
-				card.objectVersion = (card.objectVersion || 1) + 1;
-				card.summoningSick = !hasKeyword(card, 'Haste', state);
-				controller.battlefield.push(card);
+				const card = controller.graveyard[gIdx];
+				moveObject(state, card, 'battlefield', {
+					from: { player: controller, zone: 'graveyard' },
+					toPlayer: controller,
+					controllerId: controller.playerId,
+					newTimestamp: true,
+					bumpVersion: true,
+					// Haste was checked with the card out of the graveyard but not yet on the battlefield.
+					beforeInsert: (c) => {
+						c.summoningSick = !hasKeyword(c, 'Haste', state);
+					}
+				});
 				addLog(
 					state,
 					'trigger',
@@ -2926,11 +3100,13 @@ function executeParsedEffect(
 		case 'exile_all_graveyards': {
 			let exiledTotal = 0;
 			for (const p of state.players) {
+				// Top card first, so exile receives the graveyard in reverse order (pinned behaviour).
 				while (p.graveyard.length > 0) {
-					const c = p.graveyard.pop()!;
-					c.zone = 'exile';
-					c.objectVersion = (c.objectVersion || 1) + 1;
-					p.exile.push(c);
+					moveObject(state, p.graveyard[p.graveyard.length - 1], 'exile', {
+						from: { player: p, zone: 'graveyard' },
+						toPlayer: p,
+						bumpVersion: true
+					});
 					exiledTotal++;
 				}
 			}
@@ -2955,10 +3131,12 @@ function executeParsedEffect(
 				gIdx = controller.graveyard.length - 1;
 			}
 			if (gIdx >= 0) {
-				const [ret] = controller.graveyard.splice(gIdx, 1);
-				ret.zone = 'hand';
-				ret.objectVersion = (ret.objectVersion || 1) + 1;
-				controller.hand.push(ret);
+				const ret = controller.graveyard[gIdx];
+				moveObject(state, ret, 'hand', {
+					from: { player: controller, zone: 'graveyard' },
+					toPlayer: controller,
+					bumpVersion: true
+				});
 				addLog(
 					state,
 					'trigger',
@@ -2986,7 +3164,7 @@ function executeParsedEffect(
 				);
 				tokenInst.copiableCard = baseCardToCopy;
 				tokenInst.summoningSick = baseCardToCopy.typeLine.includes('Creature');
-				controller.battlefield.push(tokenInst);
+				moveObject(state, tokenInst, 'battlefield', { from: 'none', toPlayer: controller });
 				addLog(
 					state,
 					'trigger',
@@ -3054,7 +3232,7 @@ function executeParsedEffect(
 			const count = Math.min(eff.amount, controller.library.length);
 			if (count <= 0) break;
 			if (controller.isBot) {
-				const topCards = controller.library.splice(0, count);
+				const topCards = controller.library.slice(0, count);
 				const landCount =
 					controller.battlefield.filter((b) => b.card.typeLine.includes('Land')).length +
 					controller.hand.filter((h) => h.card.typeLine.includes('Land')).length;
@@ -3068,8 +3246,7 @@ function executeParsedEffect(
 						keepTop.push(c);
 					}
 				}
-				controller.library.unshift(...keepTop);
-				controller.library.push(...putBottom);
+				rearrangeLibrary(controller, topCards, keepTop, putBottom);
 				addLog(
 					state,
 					'rule',
@@ -3097,7 +3274,7 @@ function executeParsedEffect(
 			const count = Math.min(eff.amount, controller.library.length);
 			if (count <= 0) break;
 			if (controller.isBot) {
-				const topCards = controller.library.splice(0, count);
+				const topCards = controller.library.slice(0, count);
 				const landCount =
 					controller.battlefield.filter((b) => b.card.typeLine.includes('Land')).length +
 					controller.hand.filter((h) => h.card.typeLine.includes('Land')).length;
@@ -3106,7 +3283,7 @@ function executeParsedEffect(
 					const bLand = b.card.typeLine.includes('Land') ? 1 : 0;
 					return landCount < 3 ? bLand - aLand : aLand - bLand;
 				});
-				controller.library.unshift(...topCards);
+				rearrangeLibrary(controller, topCards, topCards, []);
 				addLog(
 					state,
 					'rule',
@@ -3228,6 +3405,16 @@ function executeParsedEffect(
 					if (!opp.lifeTotalCannotChangeThisTurn && !opp.protectionFromEverythingThisTurn) {
 						opp.life -= amount;
 					}
+					if (!opp.protectionFromEverythingThisTurn) {
+						emitEvent(state, {
+							kind: 'DamageDealt',
+							sourceId: item.sourceInstanceId,
+							targetId: opp.playerId,
+							targetKind: 'player',
+							amount,
+							combat: false
+						});
+					}
 					emitVfx(state, {
 						kind: 'damage',
 						sourceId: controller.playerId,
@@ -3245,6 +3432,14 @@ function executeParsedEffect(
 					if (perm.phasedOut) continue;
 					if (evaluatePermanent(state, perm).typeLine.includes('Creature')) {
 						perm.damageMarked += eff.amount;
+						emitEvent(state, {
+							kind: 'DamageDealt',
+							sourceId: item.sourceInstanceId,
+							targetId: perm.instanceId,
+							targetKind: 'permanent',
+							amount: eff.amount,
+							combat: false
+						});
 						emitVfx(state, {
 							kind: 'damage',
 							targetId: perm.instanceId,
@@ -3492,16 +3687,18 @@ function executeParsedEffect(
 					}
 				}
 				if (topIdx >= 0) {
-					const [reanimated] = controller.graveyard.splice(topIdx, 1);
-					reanimated.zone = 'battlefield';
-					reanimated.controllerId = controller.playerId;
-					reanimated.enteredTimestamp = allocateTimestamp(state);
-					reanimated.objectVersion = (reanimated.objectVersion || 1) + 1;
+					const reanimated = controller.graveyard[topIdx];
 					reanimated.summoningSick = false;
 					if (!reanimated.grantedKeywords.includes('Haste')) {
 						reanimated.grantedKeywords.push('Haste');
 					}
-					controller.battlefield.push(reanimated);
+					moveObject(state, reanimated, 'battlefield', {
+						from: { player: controller, zone: 'graveyard' },
+						toPlayer: controller,
+						controllerId: controller.playerId,
+						newTimestamp: true,
+						bumpVersion: true
+					});
 					addLog(
 						state,
 						'cast',
@@ -3534,13 +3731,15 @@ function executeParsedEffect(
 					for (const p of state.players) {
 						const gIdx = p.graveyard.findIndex((c) => c.instanceId === gt.id);
 						if (gIdx >= 0) {
-							const [reanimated] = p.graveyard.splice(gIdx, 1);
-							reanimated.zone = 'battlefield';
-							reanimated.controllerId = controller.playerId;
-							reanimated.enteredTimestamp = allocateTimestamp(state);
-							reanimated.objectVersion = (reanimated.objectVersion || 1) + 1;
+							const reanimated = p.graveyard[gIdx];
 							reanimated.summoningSick = reanimated.card.typeLine.includes('Creature');
-							controller.battlefield.push(reanimated);
+							moveObject(state, reanimated, 'battlefield', {
+								from: { player: p, zone: 'graveyard' },
+								toPlayer: controller,
+								controllerId: controller.playerId,
+								newTimestamp: true,
+								bumpVersion: true
+							});
 							addLog(
 								state,
 								'cast',
@@ -3564,13 +3763,15 @@ function executeParsedEffect(
 					}
 				}
 				if (gIdx >= 0) {
-					const [creature] = p.graveyard.splice(gIdx, 1);
-					creature.zone = 'battlefield';
-					creature.controllerId = controller.playerId;
-					creature.enteredTimestamp = allocateTimestamp(state);
-					creature.objectVersion = (creature.objectVersion || 1) + 1;
+					const creature = p.graveyard[gIdx];
 					creature.summoningSick = true;
-					controller.battlefield.push(creature);
+					moveObject(state, creature, 'battlefield', {
+						from: { player: p, zone: 'graveyard' },
+						toPlayer: controller,
+						controllerId: controller.playerId,
+						newTimestamp: true,
+						bumpVersion: true
+					});
 					addLog(
 						state,
 						'cast',
@@ -3647,92 +3848,10 @@ export function endTheTurnImmediately(state: GameState, actorId: string): void {
  * If the Stack is non-empty, priority is given to `activePlayer` so they can respond (e.g. with Obeka or Sundial!).
  */
 export function enterEndStep(state: GameState, activePlayer: PlayerGameState): void {
-	state.phase = 'end_step';
 	emitVfx(state, { kind: 'phase_change', label: 'End Step' });
-
-	// 1. Permanent beginning-of-end-step triggers (e.g., Atraxa, Dress Down)
-	for (const p of state.players) {
-		if (p.lost) continue;
-		for (const perm of [...p.battlefield]) {
-			if (perm.phasedOut || permanentHasLostAllAbilities(perm, state).lost) continue;
-			const pCard = perm.copiableCard ?? perm.card;
-			const endStepAbilities = parseStructuredTriggeredAbilities(pCard, 'end_step');
-			for (const ab of endStepAbilities) {
-				if (!matchesTriggerScope(ab.scope, p.playerId, activePlayer.playerId)) continue;
-				if (!evaluateTriggerCondition(state, p, perm.instanceId, ab.condition)) continue;
-				// Push onto stack so player can respond with Obeka/Sundial if desired
-				const stkItem: StackItem = {
-					id: uid('stk'),
-					sourceInstanceId: perm.instanceId,
-					card: pCard,
-					controllerId: p.playerId,
-					kind: 'triggered',
-					title: `${pCard.name} (End Step Trigger)`,
-					oracleText: ab.clause,
-					targets: [],
-					xValue: 0,
-					parsedEffects: ab.effects,
-					requiresGuidedResolution: false,
-					createdAt: Date.now(),
-					interveningIfCondition: ab.condition
-				};
-				state.stack.push(stkItem);
-				addLog(
-					state,
-					'trigger',
-					`${pCard.name}'s End Step trigger was put onto the Stack.`,
-					p.playerId
-				);
-			}
-		}
-	}
-
-	// 2. Delayed End Step triggers (e.g., Final Fortune, Corpse Dance)
-	if (state.delayedTriggers && state.delayedTriggers.length > 0) {
-		const remainingDelayed: DelayedTrigger[] = [];
-		for (const dt of state.delayedTriggers) {
-			const matchesTurn =
-				(!dt.targetPlayerId || dt.targetPlayerId === activePlayer.playerId) &&
-				(!dt.waitUntilAfterTurn || state.turnNumber > dt.waitUntilAfterTurn);
-			if (dt.triggerPhase === 'end_step' && matchesTurn) {
-				const targets: TargetRef[] = [];
-				if (dt.targetInstanceId) {
-					const found = findPermanentOnBoard(state, dt.targetInstanceId);
-					if (found) {
-						targets.push({
-							kind: 'permanent',
-							id: found.inst.instanceId,
-							label: found.inst.card.name
-						});
-					}
-				}
-				const stkItem: StackItem = {
-					id: uid('stk'),
-					sourceInstanceId: dt.id,
-					card: dt.sourceCard,
-					controllerId: dt.controllerId,
-					kind: 'triggered',
-					title: `${dt.sourceCard.name} (Delayed End Step Trigger)`,
-					oracleText: dt.description || dt.oracleText || '',
-					targets,
-					xValue: 0,
-					parsedEffects: dt.effects,
-					requiresGuidedResolution: false,
-					createdAt: Date.now()
-				};
-				state.stack.push(stkItem);
-				addLog(
-					state,
-					'trigger',
-					`Delayed trigger from ${dt.sourceCard.name} went onto the Stack: "${dt.description}"`,
-					dt.controllerId
-				);
-			} else {
-				remainingDelayed.push(dt);
-			}
-		}
-		state.delayedTriggers = remainingDelayed;
-	}
+	// Beginning-of-end-step and delayed end-step triggers run from the PhaseBegin handler
+	// (runEndStepTriggers), synchronously.
+	beginPhase(state, 'end_step', activePlayer);
 
 	state.priorityPlayerIndex = state.activePlayerIndex;
 	state.passedPriorityPlayerIds = [];
@@ -3801,7 +3920,8 @@ export function executeSuspendFreeCastFromExile(
 		chosenTargets.push(preferred);
 	}
 
-	owner.exile.splice(eIdx, 1);
+	// Pinned behaviour: `zone` stays 'exile' and there's no objectVersion/timestamp change.
+	moveObject(state, suspCard, 'stack', { from: { player: owner, zone: 'exile' }, setZone: false });
 	suspCard.isSuspended = false;
 	suspCard.castViaSuspend = true;
 	owner.spellsCastThisTurn = (owner.spellsCastThisTurn || 0) + 1;
@@ -3827,7 +3947,12 @@ export function executeSuspendFreeCastFromExile(
 		`${owner.username} cast ${suspCard.card.name} from Exile without paying its mana cost via Suspend (CR 702.62a)!`,
 		owner.playerId
 	);
-	triggerOnSpellCast(state, owner, suspCard);
+	emitEvent(state, {
+		kind: 'Cast',
+		playerId: owner.playerId,
+		objectId: suspCard.instanceId,
+		object: suspCard
+	});
 	// Resolve immediately if no players are holding interaction or during upkeep automation
 	resolveTopOfStack(state);
 	if (suspCard.card.typeLine.includes('Creature')) {
@@ -3955,12 +4080,10 @@ function initiateLibrarySearch(
 				matchesLibrarySearchSpec(c.card, searchSpec)
 			);
 			if (idx < 0) break;
-			const [found] = searchingPlayer.library.splice(idx, 1);
+			const found = searchingPlayer.library[idx];
+			const fromLibrary = { player: searchingPlayer, zone: 'library' as const };
 
 			if (interceptor?.exilesFoundCards) {
-				found.zone = 'exile';
-				found.enteredTimestamp = allocateTimestamp(state);
-				found.objectVersion = (found.objectVersion || 1) + 1;
 				if (interceptor.grantPlayFromExile) {
 					found.playableFromExileBy = {
 						playerId: interceptor.controllerId,
@@ -3968,7 +4091,12 @@ function initiateLibrarySearch(
 						sourceName: interceptor.sourceName
 					};
 				}
-				searchingPlayer.exile.push(found);
+				moveObject(state, found, 'exile', {
+					from: fromLibrary,
+					toPlayer: searchingPlayer,
+					newTimestamp: true,
+					bumpVersion: true
+				});
 				addLog(
 					state,
 					'rule',
@@ -3976,13 +4104,15 @@ function initiateLibrarySearch(
 					decisionPlayer.playerId
 				);
 			} else if (dest.zone === 'battlefield') {
-				found.zone = 'battlefield';
-				found.controllerId = searchingPlayer.playerId;
 				const selfEntersTapped = cardEntersTapped(found.card);
 				found.tapped = Boolean(dest.tapped) || selfEntersTapped;
-				found.enteredTimestamp = allocateTimestamp(state);
-				found.objectVersion = (found.objectVersion || 1) + 1;
-				searchingPlayer.battlefield.push(found);
+				moveObject(state, found, 'battlefield', {
+					from: fromLibrary,
+					toPlayer: searchingPlayer,
+					controllerId: searchingPlayer.playerId,
+					newTimestamp: true,
+					bumpVersion: true
+				});
 				addLog(
 					state,
 					'rule',
@@ -3991,13 +4121,16 @@ function initiateLibrarySearch(
 				);
 				triggerOnEtb(state, searchingPlayer, found);
 			} else if (dest.zone === 'library' && dest.onTop) {
-				found.zone = 'library';
-				found.enteredTimestamp = allocateTimestamp(state);
-				found.objectVersion = (found.objectVersion || 1) + 1;
+				moveObject(state, found, 'library', {
+					from: fromLibrary,
+					toPlayer: searchingPlayer,
+					insert: 'deferred',
+					newTimestamp: true,
+					bumpVersion: true
+				});
 				topCardsToPlace.push(found);
 			} else {
-				found.zone = 'hand';
-				searchingPlayer.hand.push(found);
+				moveObject(state, found, 'hand', { from: fromLibrary, toPlayer: searchingPlayer });
 				addLog(
 					state,
 					'rule',
@@ -4006,9 +4139,9 @@ function initiateLibrarySearch(
 				);
 			}
 		}
-		searchingPlayer.library = shuffleArray(searchingPlayer.library);
+		shuffleLibrary(searchingPlayer);
 		if (topCardsToPlace.length > 0) {
-			searchingPlayer.library.unshift(...topCardsToPlace);
+			placeDeferred(searchingPlayer, 'library', topCardsToPlace, 'start');
 			addLog(
 				state,
 				'rule',
@@ -4020,7 +4153,7 @@ function initiateLibrarySearch(
 	}
 
 	if (matchingCards.length === 0 && !interceptor) {
-		searchingPlayer.library = shuffleArray(searchingPlayer.library);
+		shuffleLibrary(searchingPlayer);
 		addLog(
 			state,
 			'rule',
@@ -4065,13 +4198,15 @@ function autoFetchBasicLandToBattlefield(
 ): void {
 	const idx = player.library.findIndex((c) => c.card.typeLine.includes('Basic Land'));
 	if (idx >= 0) {
-		const [land] = player.library.splice(idx, 1);
-		land.zone = 'battlefield';
-		land.controllerId = player.playerId;
+		const land = player.library[idx];
 		land.tapped = tapped;
-		land.enteredTimestamp = allocateTimestamp(state);
-		land.objectVersion = (land.objectVersion || 1) + 1;
-		player.battlefield.push(land);
+		moveObject(state, land, 'battlefield', {
+			from: { player, zone: 'library' },
+			toPlayer: player,
+			controllerId: player.playerId,
+			newTimestamp: true,
+			bumpVersion: true
+		});
 		addLog(
 			state,
 			'rule',
@@ -4120,7 +4255,7 @@ export function createTokenOnBoard(
 		allocateTimestamp(state)
 	);
 	inst.summoningSick = spec.typeLine.includes('Creature');
-	controller.battlefield.push(inst);
+	moveObject(state, inst, 'battlefield', { from: 'none', toPlayer: controller });
 	emitVfx(state, {
 		kind: 'token_create',
 		sourceId: controller.playerId,
@@ -4439,27 +4574,27 @@ export function advancePhaseOrStep(state: GameState): void {
 			if (activePlayer) {
 				runDrawStepAndEnterMain1(state, activePlayer);
 			} else {
-				state.phase = 'main1';
+				beginPhase(state, 'main1');
 			}
 			break;
 		case 'draw':
-			state.phase = 'main1';
+			beginPhase(state, 'main1');
 			break;
 
 		case 'main1':
-			state.phase = 'declare_attackers';
+			beginPhase(state, 'declare_attackers');
 			emitVfx(state, { kind: 'phase_change', label: 'Combat — Declare Attackers' });
 			break;
 
 		case 'begin_combat':
-			state.phase = 'declare_attackers';
+			beginPhase(state, 'declare_attackers');
 			break;
 
 		case 'declare_attackers':
 			if (state.combat.active && state.combat.attackers.length > 0) {
-				state.phase = 'declare_blockers';
+				beginPhase(state, 'declare_blockers');
 			} else {
-				state.phase = 'main2';
+				beginPhase(state, 'main2');
 			}
 			break;
 
@@ -4467,29 +4602,29 @@ export function advancePhaseOrStep(state: GameState): void {
 			// Check if any combatant has First strike or Double strike
 			const hasFirstStrike = checkAnyCombatantHasFirstStrike(state);
 			if (hasFirstStrike) {
-				state.phase = 'first_strike_damage';
+				beginPhase(state, 'first_strike_damage');
 				executeCombatDamageStep(state, true);
 			} else {
-				state.phase = 'combat_damage';
+				beginPhase(state, 'combat_damage');
 				executeCombatDamageStep(state, false);
 			}
 			break;
 		}
 
 		case 'first_strike_damage':
-			state.phase = 'combat_damage';
+			beginPhase(state, 'combat_damage');
 			executeCombatDamageStep(state, false);
 			break;
 
 		case 'combat_damage':
 			state.combat.active = false;
 			state.combat.attackers = [];
-			state.phase = 'main2';
+			beginPhase(state, 'main2');
 			emitVfx(state, { kind: 'phase_change', label: 'Postcombat Main Phase 2' });
 			break;
 
 		case 'end_combat':
-			state.phase = 'main2';
+			beginPhase(state, 'main2');
 			break;
 
 		case 'main2':
@@ -4578,6 +4713,14 @@ function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): 
 						defPlayer.life -= remainingDamage;
 					}
 					totalDealtByAttacker += remainingDamage;
+					emitEvent(state, {
+						kind: 'DamageDealt',
+						sourceId: attacker.instanceId,
+						targetId: defPlayer.playerId,
+						targetKind: 'player',
+						amount: remainingDamage,
+						combat: true
+					});
 				}
 
 				emitVfx(state, {
@@ -4676,6 +4819,14 @@ function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): 
 							b.damageMarked += dmgToBlocker;
 						}
 						if (atkDeathtouch) b.deathtouchDamageMarked = true;
+						emitEvent(state, {
+							kind: 'DamageDealt',
+							sourceId: attacker.instanceId,
+							targetId: b.instanceId,
+							targetKind: 'permanent',
+							amount: dmgToBlocker,
+							combat: true
+						});
 						remainingDamage -= dmgToBlocker;
 						totalDealtByAttacker += dmgToBlocker;
 						emitVfx(state, {
@@ -4700,6 +4851,14 @@ function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): 
 							defPlayer.commanderDamageTaken[attacker.instanceId] =
 								(defPlayer.commanderDamageTaken[attacker.instanceId] || 0) + remainingDamage;
 						}
+						emitEvent(state, {
+							kind: 'DamageDealt',
+							sourceId: attacker.instanceId,
+							targetId: defPlayer.playerId,
+							targetKind: 'player',
+							amount: remainingDamage,
+							combat: true
+						});
 					}
 					emitVfx(state, {
 						kind: 'damage',
@@ -4748,6 +4907,14 @@ function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): 
 					if (hasKeyword(b, 'Deathtouch', state)) {
 						attacker.deathtouchDamageMarked = true;
 					}
+					emitEvent(state, {
+						kind: 'DamageDealt',
+						sourceId: b.instanceId,
+						targetId: attacker.instanceId,
+						targetKind: 'permanent',
+						amount: bPower,
+						combat: true
+					});
 					if (hasKeyword(b, 'Lifelink', state) && !defPlayer.lifeTotalCannotChangeThisTurn) {
 						defPlayer.life += bPower;
 					}
@@ -4772,7 +4939,7 @@ function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): 
 }
 
 function runCleanupStep(state: GameState): void {
-	state.phase = 'cleanup';
+	beginPhase(state, 'cleanup');
 	const activePlayer = state.players[state.activePlayerIndex];
 
 	// Check if activePlayer has Reliquary Tower / Thought Vessel for unlimited hand size
@@ -4792,11 +4959,12 @@ function runCleanupStep(state: GameState): void {
 		const excess = activePlayer.hand.length - maxHand;
 		if (activePlayer.isBot) {
 			const gyDest = checkGraveyardReplacementZone(state, 'graveyard').dest;
-			activePlayer.hand.splice(0, excess).forEach((c) => {
-				c.zone = gyDest;
-				if (gyDest === 'exile') activePlayer.exile.push(c);
-				else activePlayer.graveyard.push(c);
-			});
+			for (const c of activePlayer.hand.slice(0, excess)) {
+				moveObject(state, c, gyDest, {
+					from: { player: activePlayer, zone: 'hand' },
+					toPlayer: activePlayer
+				});
+			}
 			completeTurnCleanupAndPassTurn(state);
 		} else {
 			state.pendingPrompts.push({
@@ -4984,9 +5152,9 @@ export function checkStateBasedActions(state: GameState): void {
 			const prevGraveLen = p.graveyard.length;
 			const prevExileLen = p.exile.length;
 			const prevHandLen = p.hand.length;
-			p.graveyard = p.graveyard.filter((c) => !c.isToken);
-			p.exile = p.exile.filter((c) => !c.isToken);
-			p.hand = p.hand.filter((c) => !c.isToken);
+			removeFromGame(p, 'graveyard', (c) => c.isToken);
+			removeFromGame(p, 'exile', (c) => c.isToken);
+			removeFromGame(p, 'hand', (c) => c.isToken);
 			if (
 				p.graveyard.length !== prevGraveLen ||
 				p.exile.length !== prevExileLen ||
@@ -5002,13 +5170,13 @@ export function checkStateBasedActions(state: GameState): void {
 			];
 			for (const cmd of commandersInGraveOrExile) {
 				if (p.isBot) {
-					p.graveyard = p.graveyard.filter((c) => c.instanceId !== cmd.instanceId);
-					p.exile = p.exile.filter((c) => c.instanceId !== cmd.instanceId);
-					cmd.zone = 'command';
 					cmd.damageMarked = 0;
 					cmd.deathtouchDamageMarked = false;
 					cmd.tapped = false;
-					p.command.push(cmd);
+					moveObject(state, cmd, 'command', {
+						from: { player: p, zone: p.graveyard.includes(cmd) ? 'graveyard' : 'exile' },
+						toPlayer: p
+					});
 					addLog(
 						state,
 						'sba',
@@ -5132,20 +5300,20 @@ export function cleanupEliminatedPlayer(state: GameState, eliminated: PlayerGame
 			if (owner) {
 				perm.controllerId = owner.playerId;
 				perm.attachedToId = null;
-				owner.battlefield.push(perm);
+				transferBattlefieldControl(perm, eliminated, owner);
 			}
 		}
 	}
-	eliminated.battlefield = [];
+	removeFromGame(eliminated, 'battlefield');
 
 	// Also remove any cards on other players' battlefields or zones owned by the eliminated player (CR 800.4a)
-	eliminated.exile = [];
-	eliminated.hand = [];
-	eliminated.library = [];
+	removeFromGame(eliminated, 'exile');
+	removeFromGame(eliminated, 'hand');
+	removeFromGame(eliminated, 'library');
 	for (const other of state.players) {
 		if (other.playerId === elimId) continue;
-		other.battlefield = other.battlefield.filter((c) => c.ownerId !== elimId);
-		other.exile = other.exile.filter((c) => c.ownerId !== elimId);
+		removeFromGame(other, 'battlefield', (c) => c.ownerId === elimId);
+		removeFromGame(other, 'exile', (c) => c.ownerId === elimId);
 		for (const exCard of other.exile) {
 			if (exCard.playableFromExileBy?.playerId === elimId) {
 				exCard.playableFromExileBy = undefined;
@@ -5202,59 +5370,18 @@ export function movePermanentToZone(
 	inst: CardInstance,
 	dest: ZoneType
 ): ZoneType {
-	for (const p of state.players) {
-		const idx = p.battlefield.findIndex((c) => c.instanceId === inst.instanceId);
-		if (idx >= 0) {
-			p.battlefield.splice(idx, 1);
-		}
-		for (const perm of p.battlefield) {
-			if (perm.attachedToId === inst.instanceId) {
-				perm.attachedToId = null;
-			}
-		}
-	}
-	const owner = state.players.find((p) => p.playerId === inst.ownerId);
-	if (!owner) return dest;
-
-	let actualDest: ZoneType = dest;
-	if (dest === 'graveyard') {
-		actualDest = checkGraveyardReplacementZone(state, 'graveyard').dest;
-	} else if (inst.isCommander && (dest === 'hand' || dest === 'library') && owner.isBot) {
-		// CR 903.9b replacement effect for Commander going to hand or library
-		actualDest = 'command';
-	}
-
-	// Restore original card if it was a Clone copy (CR 400.7)
-	if (inst.copiableCard) {
-		inst.copiableCard = undefined;
-	}
-
-	inst.zone = actualDest;
-	inst.tapped = false;
-	inst.damageMarked = 0;
-	inst.deathtouchDamageMarked = false;
-	inst.tempPowerMod = 0;
-	inst.tempToughnessMod = 0;
-	inst.grantedKeywords = [];
-	inst.attachedToId = null;
-	inst.counters = createEmptyCounters();
-	inst.phasedOut = false;
-	inst.phasedOutIndirectly = false;
-	inst.isSuspended = false;
-	inst.castViaSuspend = false;
-	inst.switchedPTCount = 0;
-	inst.objectVersion = (inst.objectVersion || 1) + 1;
-	inst.enteredTimestamp = allocateTimestamp(state);
-
-	if (inst.isToken) return actualDest; // Tokens cease to exist outside battlefield
-
-	if (actualDest === 'graveyard') owner.graveyard.push(inst);
-	else if (actualDest === 'exile') owner.exile.push(inst);
-	else if (actualDest === 'hand') owner.hand.push(inst);
-	else if (actualDest === 'command') owner.command.push(inst);
-	else if (actualDest === 'library') owner.library.unshift(inst);
-
-	return actualDest;
+	return moveObject(state, inst, dest, {
+		from: 'anyBattlefield',
+		detachAttachments: true,
+		graveyardReplacement: true,
+		commanderRedirect: true,
+		leaveBattlefieldReset: true,
+		bumpVersion: true,
+		newTimestamp: true,
+		// The old code put cards on top of the library and at the end of every other zone.
+		insert: (actual) => (actual === 'library' ? 'start' : 'end'),
+		ceaseToExist: 'tokens'
+	});
 }
 
 export function matchesPermanentTypeFilter(
@@ -6367,6 +6494,16 @@ function applyDamageToTarget(
 		if (!pTarget.lifeTotalCannotChangeThisTurn && !pTarget.protectionFromEverythingThisTurn) {
 			pTarget.life -= amount;
 		}
+		if (!pTarget.protectionFromEverythingThisTurn) {
+			emitEvent(state, {
+				kind: 'DamageDealt',
+				sourceId: sourcePlayerId,
+				targetId: pTarget.playerId,
+				targetKind: 'player',
+				amount,
+				combat: false
+			});
+		}
 		emitVfx(state, {
 			kind: 'damage',
 			sourceId: sourcePlayerId,
@@ -6382,6 +6519,14 @@ function applyDamageToTarget(
 		} else {
 			permFound.inst.damageMarked += amount;
 		}
+		emitEvent(state, {
+			kind: 'DamageDealt',
+			sourceId: sourcePlayerId,
+			targetId: permFound.inst.instanceId,
+			targetKind: 'permanent',
+			amount,
+			combat: false
+		});
 		emitVfx(state, {
 			kind: 'damage',
 			sourceId: sourcePlayerId,
