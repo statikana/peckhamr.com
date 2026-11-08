@@ -233,24 +233,55 @@ try {
 }
 
 /**
- * Cross-check helper: recomputes `fresh` with caching disabled and throws if its JSON form differs
- * from `cached`'s. Functions (e.g. `hasSubType`) are ignored by JSON.
+ * An independent implementation of the three public layer queries (tests register the frozen
+ * pre-cache copy from layerReference.test.ts) that the cross-check also compares against.
  */
-export function crossCheckLayerResult<T>(label: string, cached: T, fresh: () => T): void {
-	checkDepth += 1;
-	let expected: T;
-	try {
-		expected = withoutLayerCache(fresh);
-	} finally {
-		checkDepth -= 1;
-	}
-	checkCount += 1;
+export interface LayerReferenceImpl {
+	inspectCardContinuousBreakdown(cardOrInst: CardInstance | ScryfallCard, state?: GameState): unknown;
+	permanentHasLostAllAbilities(perm: CardInstance, state: GameState): unknown;
+	evaluatePermanent(state: GameState, inst: CardInstance): unknown;
+}
+
+let reference: LayerReferenceImpl | null = null;
+
+/** Registers (or with `null` clears) the reference implementation used by the cross-check. */
+export function setLayerReference(impl: LayerReferenceImpl | null): void {
+	reference = impl;
+}
+
+function compareLayerResult(label: string, what: string, cached: unknown, expected: unknown): void {
 	const a = JSON.stringify(cached);
 	const b = JSON.stringify(expected);
 	if (a !== b) {
 		mismatchCount += 1;
 		// Logged as well as thrown, in case a caller swallows the error.
-		console.error(`[layerCache] mismatch in ${label}`);
-		throw new Error(`Layer cache mismatch in ${label}:\ncached: ${a}\nfresh:  ${b}`);
+		console.error(`[layerCache] mismatch in ${label} (vs ${what})`);
+		throw new Error(`Layer cache mismatch in ${label} (vs ${what}):\ncached:   ${a}\nexpected: ${b}`);
 	}
+}
+
+/**
+ * Cross-check helper: recomputes `fresh` with caching disabled (and, when a reference
+ * implementation is registered, `viaReference`) and throws if a JSON form differs from `cached`'s.
+ * Functions (e.g. `hasSubType`) are ignored by JSON.
+ */
+export function crossCheckLayerResult<T>(
+	label: string,
+	cached: T,
+	fresh: () => T,
+	viaReference?: (ref: LayerReferenceImpl) => unknown
+): void {
+	checkDepth += 1;
+	let expected: T;
+	let expectedRef: unknown;
+	const ref = reference;
+	try {
+		expected = withoutLayerCache(fresh);
+		if (ref && viaReference) expectedRef = viaReference(ref);
+	} finally {
+		checkDepth -= 1;
+	}
+	checkCount += 1;
+	compareLayerResult(label, 'fresh snapshot', cached, expected);
+	if (ref && viaReference) compareLayerResult(label, 'reference', cached, expectedRef);
 }

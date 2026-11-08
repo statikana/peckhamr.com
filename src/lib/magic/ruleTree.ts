@@ -1599,8 +1599,11 @@ export function permanentHasLostAllAbilities(
 	const r = lostAllAbilitiesIn(currentLayerView(state), perm);
 	const out = { lost: r.lost, sources: [...r.sources] };
 	if (layerCacheCheckEnabled()) {
-		crossCheckLayerResult('permanentHasLostAllAbilities', out, () =>
-			permanentHasLostAllAbilities(perm, state)
+		crossCheckLayerResult(
+			'permanentHasLostAllAbilities',
+			out,
+			() => permanentHasLostAllAbilities(perm, state),
+			(ref) => ref.permanentHasLostAllAbilities(perm, state)
 		);
 	}
 	return out;
@@ -1725,8 +1728,11 @@ export function inspectCardContinuousBreakdown(
 ): CardContinuousBreakdown {
 	const out = inspectCardContinuousBreakdownIn(cardOrInst, state, null);
 	if (state && layerCacheCheckEnabled()) {
-		crossCheckLayerResult('inspectCardContinuousBreakdown', out, () =>
-			inspectCardContinuousBreakdown(cardOrInst, state)
+		crossCheckLayerResult(
+			'inspectCardContinuousBreakdown',
+			out,
+			() => inspectCardContinuousBreakdown(cardOrInst, state),
+			(ref) => ref.inspectCardContinuousBreakdown(cardOrInst, state)
 		);
 	}
 	return out;
@@ -2555,7 +2561,12 @@ export function evaluatePermanent(state: GameState, inst: CardInstance): Evaluat
 		}
 	};
 	if (layerCacheCheckEnabled()) {
-		crossCheckLayerResult('evaluatePermanent', result, () => evaluatePermanent(state, inst));
+		crossCheckLayerResult(
+			'evaluatePermanent',
+			result,
+			() => evaluatePermanent(state, inst),
+			(ref) => ref.evaluatePermanent(state, inst)
+		);
 	}
 	return result;
 }

@@ -4,8 +4,6 @@
  * boards. It's a .test.ts file only so the architecture ratchet treats it as test code; delete it in
  * Phase 6 proper once the layer engine is rewritten (its oracle-text reads are intentional).
  */
-import { describe, it } from 'node:test';
-import assert from 'node:assert/strict';
 import type { CardInstance, GameState, ScryfallCard } from '../types.ts';
 import type { AttributedKeywordOrEffect, CardContinuousBreakdown, EvaluatedPermanent } from '../ruleTree.ts';
 
@@ -1229,9 +1227,3 @@ export function evaluatePermanent(state: GameState, inst: CardInstance): Evaluat
 		}
 	};
 }
-
-describe('layer reference implementation', () => {
-	it('loads', () => {
-		assert.equal(typeof inspectCardContinuousBreakdown, 'function');
-	});
-});
