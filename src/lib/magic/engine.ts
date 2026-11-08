@@ -847,79 +847,9 @@ export function runBeginningOfTurn(state: GameState): void {
 		perm.usedLoyaltyThisTurn = false;
 	}
 
-	// 2. Upkeep step (CR 503)
-	beginPhase(state, 'upkeep');
-
-	// 2a. Suspend Upkeep Triggers (CR 702.62a): Remove 1 time counter from each suspended card in exile; when last is removed, cast it without paying its mana cost!
-	const suspendedCards = activePlayer.exile.filter(
-		(c) => c.isSuspended && (c.counters.time || 0) > 0
-	);
-	for (const susp of suspendedCards) {
-		susp.counters.time = Math.max(0, (susp.counters.time || 0) - 1);
-		addLog(
-			state,
-			'trigger',
-			`Suspend (CR 702.62): Removed a time counter from ${susp.card.name} (${susp.counters.time} remaining).`,
-			activePlayer.playerId
-		);
-		if (susp.counters.time === 0) {
-			executeSuspendFreeCastFromExile(state, activePlayer, susp);
-		}
-	}
-
-	// 2b. Graveyard Upkeep Triggers (CR 404.2 Graveyard Order — e.g., Nether Shadow)
-	for (const gCard of [...activePlayer.graveyard]) {
-		const upkeepAbilities = parseStructuredTriggeredAbilities(gCard.card, 'upkeep');
-		for (const ab of upkeepAbilities) {
-			if (
-				ab.condition?.kind === 'graveyard_creatures_above_at_least' &&
-				matchesTriggerScope(ab.scope, activePlayer.playerId, activePlayer.playerId) &&
-				evaluateTriggerCondition(state, activePlayer, gCard.instanceId, ab.condition)
-			) {
-				executeTriggeredCardEffects(state, activePlayer, gCard, ab.effects, 'Graveyard Upkeep');
-			}
-		}
-	}
-
-	// 2c. Battlefield Upkeep Triggers (e.g., Felidar Sovereign)
-	for (const p of state.players) {
-		if (p.lost) continue;
-		for (const perm of [...p.battlefield]) {
-			if (perm.phasedOut || permanentHasLostAllAbilities(perm, state).lost) continue;
-			const pCard = perm.copiableCard ?? perm.card;
-			const upkeepAbilities = parseStructuredTriggeredAbilities(pCard, 'upkeep');
-			for (const ab of upkeepAbilities) {
-				if (!matchesTriggerScope(ab.scope, p.playerId, activePlayer.playerId)) continue;
-				if (!evaluateTriggerCondition(state, p, perm.instanceId, ab.condition)) continue;
-				const stkItem: StackItem = {
-					id: uid('stk'),
-					sourceInstanceId: perm.instanceId,
-					card: pCard,
-					controllerId: p.playerId,
-					kind: 'triggered',
-					title: `${pCard.name} (Upkeep Trigger)`,
-					oracleText: ab.clause,
-					targets: [],
-					xValue: 0,
-					parsedEffects: ab.effects,
-					requiresGuidedResolution: false,
-					createdAt: Date.now(),
-					interveningIfCondition: ab.condition,
-					interveningIfClause:
-						ab.condition?.kind === 'life_at_least' && ab.condition.amount === 40
-							? 'life_40_or_more'
-							: undefined
-				};
-				state.stack.push(stkItem);
-				addLog(
-					state,
-					'trigger',
-					`${pCard.name}'s Upkeep trigger was put onto the Stack.`,
-					p.playerId
-				);
-			}
-		}
-	}
+	// 2. Upkeep step (CR 503). Beginning-of-upkeep triggers run from the PhaseBegin handler
+	// (runUpkeepTriggers), synchronously, before the stack check below.
+	beginPhase(state, 'upkeep', activePlayer);
 
 	// If any upkeep triggers are on the stack, pause in Upkeep so players can respond (CR 503.1)
 	if (state.stack.length > 0) {
@@ -2487,13 +2417,177 @@ function triggerOnCounterPlaced(
 	}
 }
 
-/** Sets the current phase/step and emits PhaseBegin. */
-function beginPhase(state: GameState, phase: GamePhase): void {
+/** Beginning-of-upkeep triggers (was inline in runBeginningOfTurn; dispatched from PhaseBegin). */
+function runUpkeepTriggers(state: GameState, activePlayer: PlayerGameState): void {
+	// 2a. Suspend Upkeep Triggers (CR 702.62a): Remove 1 time counter from each suspended card in exile; when last is removed, cast it without paying its mana cost!
+	const suspendedCards = activePlayer.exile.filter(
+		(c) => c.isSuspended && (c.counters.time || 0) > 0
+	);
+	for (const susp of suspendedCards) {
+		susp.counters.time = Math.max(0, (susp.counters.time || 0) - 1);
+		addLog(
+			state,
+			'trigger',
+			`Suspend (CR 702.62): Removed a time counter from ${susp.card.name} (${susp.counters.time} remaining).`,
+			activePlayer.playerId
+		);
+		if (susp.counters.time === 0) {
+			executeSuspendFreeCastFromExile(state, activePlayer, susp);
+		}
+	}
+
+	// 2b. Graveyard Upkeep Triggers (CR 404.2 Graveyard Order — e.g., Nether Shadow)
+	for (const gCard of [...activePlayer.graveyard]) {
+		const upkeepAbilities = parseStructuredTriggeredAbilities(gCard.card, 'upkeep');
+		for (const ab of upkeepAbilities) {
+			if (
+				ab.condition?.kind === 'graveyard_creatures_above_at_least' &&
+				matchesTriggerScope(ab.scope, activePlayer.playerId, activePlayer.playerId) &&
+				evaluateTriggerCondition(state, activePlayer, gCard.instanceId, ab.condition)
+			) {
+				executeTriggeredCardEffects(state, activePlayer, gCard, ab.effects, 'Graveyard Upkeep');
+			}
+		}
+	}
+
+	// 2c. Battlefield Upkeep Triggers (e.g., Felidar Sovereign)
+	for (const p of state.players) {
+		if (p.lost) continue;
+		for (const perm of [...p.battlefield]) {
+			if (perm.phasedOut || permanentHasLostAllAbilities(perm, state).lost) continue;
+			const pCard = perm.copiableCard ?? perm.card;
+			const upkeepAbilities = parseStructuredTriggeredAbilities(pCard, 'upkeep');
+			for (const ab of upkeepAbilities) {
+				if (!matchesTriggerScope(ab.scope, p.playerId, activePlayer.playerId)) continue;
+				if (!evaluateTriggerCondition(state, p, perm.instanceId, ab.condition)) continue;
+				const stkItem: StackItem = {
+					id: uid('stk'),
+					sourceInstanceId: perm.instanceId,
+					card: pCard,
+					controllerId: p.playerId,
+					kind: 'triggered',
+					title: `${pCard.name} (Upkeep Trigger)`,
+					oracleText: ab.clause,
+					targets: [],
+					xValue: 0,
+					parsedEffects: ab.effects,
+					requiresGuidedResolution: false,
+					createdAt: Date.now(),
+					interveningIfCondition: ab.condition,
+					interveningIfClause:
+						ab.condition?.kind === 'life_at_least' && ab.condition.amount === 40
+							? 'life_40_or_more'
+							: undefined
+				};
+				state.stack.push(stkItem);
+				addLog(
+					state,
+					'trigger',
+					`${pCard.name}'s Upkeep trigger was put onto the Stack.`,
+					p.playerId
+				);
+			}
+		}
+	}
+}
+
+/** Beginning-of-end-step and delayed end-step triggers (was inline in enterEndStep; dispatched from PhaseBegin). */
+function runEndStepTriggers(state: GameState, activePlayer: PlayerGameState): void {
+	// 1. Permanent beginning-of-end-step triggers (e.g., Atraxa, Dress Down)
+	for (const p of state.players) {
+		if (p.lost) continue;
+		for (const perm of [...p.battlefield]) {
+			if (perm.phasedOut || permanentHasLostAllAbilities(perm, state).lost) continue;
+			const pCard = perm.copiableCard ?? perm.card;
+			const endStepAbilities = parseStructuredTriggeredAbilities(pCard, 'end_step');
+			for (const ab of endStepAbilities) {
+				if (!matchesTriggerScope(ab.scope, p.playerId, activePlayer.playerId)) continue;
+				if (!evaluateTriggerCondition(state, p, perm.instanceId, ab.condition)) continue;
+				// Push onto stack so player can respond with Obeka/Sundial if desired
+				const stkItem: StackItem = {
+					id: uid('stk'),
+					sourceInstanceId: perm.instanceId,
+					card: pCard,
+					controllerId: p.playerId,
+					kind: 'triggered',
+					title: `${pCard.name} (End Step Trigger)`,
+					oracleText: ab.clause,
+					targets: [],
+					xValue: 0,
+					parsedEffects: ab.effects,
+					requiresGuidedResolution: false,
+					createdAt: Date.now(),
+					interveningIfCondition: ab.condition
+				};
+				state.stack.push(stkItem);
+				addLog(
+					state,
+					'trigger',
+					`${pCard.name}'s End Step trigger was put onto the Stack.`,
+					p.playerId
+				);
+			}
+		}
+	}
+
+	// 2. Delayed End Step triggers (e.g., Final Fortune, Corpse Dance)
+	if (state.delayedTriggers && state.delayedTriggers.length > 0) {
+		const remainingDelayed: DelayedTrigger[] = [];
+		for (const dt of state.delayedTriggers) {
+			const matchesTurn =
+				(!dt.targetPlayerId || dt.targetPlayerId === activePlayer.playerId) &&
+				(!dt.waitUntilAfterTurn || state.turnNumber > dt.waitUntilAfterTurn);
+			if (dt.triggerPhase === 'end_step' && matchesTurn) {
+				const targets: TargetRef[] = [];
+				if (dt.targetInstanceId) {
+					const found = findPermanentOnBoard(state, dt.targetInstanceId);
+					if (found) {
+						targets.push({
+							kind: 'permanent',
+							id: found.inst.instanceId,
+							label: found.inst.card.name
+						});
+					}
+				}
+				const stkItem: StackItem = {
+					id: uid('stk'),
+					sourceInstanceId: dt.id,
+					card: dt.sourceCard,
+					controllerId: dt.controllerId,
+					kind: 'triggered',
+					title: `${dt.sourceCard.name} (Delayed End Step Trigger)`,
+					oracleText: dt.description || dt.oracleText || '',
+					targets,
+					xValue: 0,
+					parsedEffects: dt.effects,
+					requiresGuidedResolution: false,
+					createdAt: Date.now()
+				};
+				state.stack.push(stkItem);
+				addLog(
+					state,
+					'trigger',
+					`Delayed trigger from ${dt.sourceCard.name} went onto the Stack: "${dt.description}"`,
+					dt.controllerId
+				);
+			} else {
+				remainingDelayed.push(dt);
+			}
+		}
+		state.delayedTriggers = remainingDelayed;
+	}
+}
+
+/**
+ * Sets the current phase/step and emits PhaseBegin. `activePlayer` defaults to the player at
+ * `activePlayerIndex`; enterEndStep passes the player it was given.
+ */
+function beginPhase(state: GameState, phase: GamePhase, activePlayer?: PlayerGameState): void {
 	state.phase = phase;
 	emitEvent(state, {
 		kind: 'PhaseBegin',
 		phase,
-		activePlayerId: state.players[state.activePlayerIndex]?.playerId ?? null
+		activePlayerId: (activePlayer ?? state.players[state.activePlayerIndex])?.playerId ?? null
 	});
 }
 
@@ -2506,6 +2600,13 @@ registerEventHandler('Cast', (state, ev) => {
 registerEventHandler('AttackDeclared', (state, ev) => {
 	const attacker = state.players.find((p) => p.playerId === ev.playerId);
 	if (attacker) triggerOnAttack(state, attacker, ev.attackerIds);
+});
+registerEventHandler('PhaseBegin', (state, ev) => {
+	if (ev.phase !== 'upkeep' && ev.phase !== 'end_step') return;
+	const activePlayer = state.players.find((p) => p.playerId === ev.activePlayerId);
+	if (!activePlayer) return;
+	if (ev.phase === 'upkeep') runUpkeepTriggers(state, activePlayer);
+	else runEndStepTriggers(state, activePlayer);
 });
 registerEventHandler('CounterPlaced', (state, ev) => {
 	triggerOnCounterPlaced(state, ev.object, ev.counterType, ev.amount);
@@ -3747,92 +3848,10 @@ export function endTheTurnImmediately(state: GameState, actorId: string): void {
  * If the Stack is non-empty, priority is given to `activePlayer` so they can respond (e.g. with Obeka or Sundial!).
  */
 export function enterEndStep(state: GameState, activePlayer: PlayerGameState): void {
-	beginPhase(state, 'end_step');
 	emitVfx(state, { kind: 'phase_change', label: 'End Step' });
-
-	// 1. Permanent beginning-of-end-step triggers (e.g., Atraxa, Dress Down)
-	for (const p of state.players) {
-		if (p.lost) continue;
-		for (const perm of [...p.battlefield]) {
-			if (perm.phasedOut || permanentHasLostAllAbilities(perm, state).lost) continue;
-			const pCard = perm.copiableCard ?? perm.card;
-			const endStepAbilities = parseStructuredTriggeredAbilities(pCard, 'end_step');
-			for (const ab of endStepAbilities) {
-				if (!matchesTriggerScope(ab.scope, p.playerId, activePlayer.playerId)) continue;
-				if (!evaluateTriggerCondition(state, p, perm.instanceId, ab.condition)) continue;
-				// Push onto stack so player can respond with Obeka/Sundial if desired
-				const stkItem: StackItem = {
-					id: uid('stk'),
-					sourceInstanceId: perm.instanceId,
-					card: pCard,
-					controllerId: p.playerId,
-					kind: 'triggered',
-					title: `${pCard.name} (End Step Trigger)`,
-					oracleText: ab.clause,
-					targets: [],
-					xValue: 0,
-					parsedEffects: ab.effects,
-					requiresGuidedResolution: false,
-					createdAt: Date.now(),
-					interveningIfCondition: ab.condition
-				};
-				state.stack.push(stkItem);
-				addLog(
-					state,
-					'trigger',
-					`${pCard.name}'s End Step trigger was put onto the Stack.`,
-					p.playerId
-				);
-			}
-		}
-	}
-
-	// 2. Delayed End Step triggers (e.g., Final Fortune, Corpse Dance)
-	if (state.delayedTriggers && state.delayedTriggers.length > 0) {
-		const remainingDelayed: DelayedTrigger[] = [];
-		for (const dt of state.delayedTriggers) {
-			const matchesTurn =
-				(!dt.targetPlayerId || dt.targetPlayerId === activePlayer.playerId) &&
-				(!dt.waitUntilAfterTurn || state.turnNumber > dt.waitUntilAfterTurn);
-			if (dt.triggerPhase === 'end_step' && matchesTurn) {
-				const targets: TargetRef[] = [];
-				if (dt.targetInstanceId) {
-					const found = findPermanentOnBoard(state, dt.targetInstanceId);
-					if (found) {
-						targets.push({
-							kind: 'permanent',
-							id: found.inst.instanceId,
-							label: found.inst.card.name
-						});
-					}
-				}
-				const stkItem: StackItem = {
-					id: uid('stk'),
-					sourceInstanceId: dt.id,
-					card: dt.sourceCard,
-					controllerId: dt.controllerId,
-					kind: 'triggered',
-					title: `${dt.sourceCard.name} (Delayed End Step Trigger)`,
-					oracleText: dt.description || dt.oracleText || '',
-					targets,
-					xValue: 0,
-					parsedEffects: dt.effects,
-					requiresGuidedResolution: false,
-					createdAt: Date.now()
-				};
-				state.stack.push(stkItem);
-				addLog(
-					state,
-					'trigger',
-					`Delayed trigger from ${dt.sourceCard.name} went onto the Stack: "${dt.description}"`,
-					dt.controllerId
-				);
-			} else {
-				remainingDelayed.push(dt);
-			}
-		}
-		state.delayedTriggers = remainingDelayed;
-	}
+	// Beginning-of-end-step and delayed end-step triggers run from the PhaseBegin handler
+	// (runEndStepTriggers), synchronously.
+	beginPhase(state, 'end_step', activePlayer);
 
 	state.priorityPlayerIndex = state.activePlayerIndex;
 	state.passedPriorityPlayerIds = [];

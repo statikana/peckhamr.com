@@ -2,15 +2,16 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-	applyGameAction,
-	checkStateBasedActions,
+	applyGameAction as rawApplyGameAction,
+	checkStateBasedActions as rawCheckStateBasedActions,
 	createCardInstance,
 	createInitialGameState,
-	createTokenOnBoard,
-	drawCards,
-	movePermanentToZone,
-	resolveTopOfStack
+	createTokenOnBoard as rawCreateTokenOnBoard,
+	drawCards as rawDrawCards,
+	movePermanentToZone as rawMovePermanentToZone,
+	resolveTopOfStack as rawResolveTopOfStack
 } from '../engine.ts';
+import { subscribeEvents, type GameEvent } from './events.ts';
 import { PRECON_DECKS, STAPLE_CARDS } from '../precons.ts';
 import {
 	DEFAULT_LOBBY_RULES,
@@ -31,7 +32,63 @@ import {
  * the bottom. These tests pin each site's current behaviour so the move to a single moveObject()
  * can't silently unify them. Several pinned behaviours are probably rules bugs (listed in the
  * Phase 2 notes of ENGINE_ARCHITECTURE_PLAN.md); fixing one should update its pin deliberately.
+ *
+ * Every engine entry point used here is wrapped in `checkZoneChanges`, so each pinned site is also
+ * checked for emitting exactly one ZoneChange per zone change.
  */
+
+/** Where every object is right now: instanceId -> zone ('stack' for spells on the stack). */
+function locate(state: GameState): Map<string, string> {
+	const where = new Map<string, string>();
+	const add = (id: string, zone: string) => {
+		assert.ok(!where.has(id), `object ${id} is in two places (${where.get(id)} and ${zone})`);
+		where.set(id, zone);
+	};
+	for (const p of state.players) {
+		for (const z of ['library', 'hand', 'battlefield', 'graveyard', 'exile', 'command'] as const) {
+			for (const c of p[z]) add(c.instanceId, z);
+		}
+	}
+	for (const item of state.stack) {
+		if (item.kind === 'spell' && !item.isCopy) add(item.sourceInstanceId, 'stack');
+	}
+	return where;
+}
+
+/**
+ * Runs `fn`, replaying its ZoneChange events against a model of where every object was before it
+ * ran. Fails unless the replayed model matches the real state afterwards: a zone change without an
+ * event, or an event without a zone change, both show up.
+ */
+function checkZoneChanges<T>(state: GameState, fn: () => T): T {
+	const model = locate(state);
+	const unsubscribe = subscribeEvents(state, (_s, ev) => {
+		if (ev.kind !== 'ZoneChange') return;
+		assert.equal(model.get(ev.objectId) ?? null, ev.from, `${ev.object.card.name} left ${ev.from}?`);
+		if (ev.ceasedToExist) model.delete(ev.objectId);
+		else model.set(ev.objectId, ev.to);
+	});
+	try {
+		const result = fn();
+		assert.deepEqual(locate(state), model, 'zone changes and ZoneChange events disagree');
+		return result;
+	} finally {
+		unsubscribe();
+	}
+}
+
+const applyGameAction: typeof rawApplyGameAction = (state, actorId, action) =>
+	checkZoneChanges(state, () => rawApplyGameAction(state, actorId, action));
+const checkStateBasedActions: typeof rawCheckStateBasedActions = (state) =>
+	checkZoneChanges(state, () => rawCheckStateBasedActions(state));
+const createTokenOnBoard: typeof rawCreateTokenOnBoard = (state, controller, spec) =>
+	checkZoneChanges(state, () => rawCreateTokenOnBoard(state, controller, spec));
+const drawCards: typeof rawDrawCards = (state, player, count) =>
+	checkZoneChanges(state, () => rawDrawCards(state, player, count));
+const movePermanentToZone: typeof rawMovePermanentToZone = (state, inst, dest) =>
+	checkZoneChanges(state, () => rawMovePermanentToZone(state, inst, dest));
+const resolveTopOfStack: typeof rawResolveTopOfStack = (state) =>
+	checkZoneChanges(state, () => rawResolveTopOfStack(state));
 
 function staple(name: string): ScryfallCard {
 	const c = STAPLE_CARDS[name.toLowerCase()];
@@ -658,7 +715,16 @@ describe('Zone-change behaviour pins: leaving the battlefield', () => {
 		p2Card.controllerId = p1.playerId;
 		p1.battlefield.push(p2Card);
 		const mb = marks(borrowed);
-		assert.equal(applyGameAction(state, p2.playerId, { type: 'concede' }).ok, true);
+		// Leaving the game is not a zone change (CR 800.4a): no ZoneChange for anything p2 had.
+		const events: GameEvent[] = [];
+		const unsubscribe = subscribeEvents(state, (_s, ev) => events.push(ev));
+		assert.equal(rawApplyGameAction(state, p2.playerId, { type: 'concede' }).ok, true);
+		unsubscribe();
+		const touched = new Set([borrowed.instanceId, own.instanceId, p2Card.instanceId]);
+		assert.deepEqual(
+			events.filter((e) => e.kind === 'ZoneChange' && touched.has(e.objectId)),
+			[]
+		);
 		assert.equal(p1.battlefield[p1.battlefield.length - 1], borrowed);
 		assert.equal(borrowed.controllerId, p1.playerId);
 		assert.equal(borrowed.attachedToId, null);

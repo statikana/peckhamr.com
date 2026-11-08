@@ -135,13 +135,16 @@ const GAMES: Array<{ name: string; seed: number; seats: number; rounds: number }
 
 describe('Golden bot games (behaviour pin for refactors)', () => {
 	const results = Object.fromEntries(GAMES.map((g) => [g.name, playGame(g.seed, g.seats, g.rounds)]));
-	if (UPDATE || !existsSync(SNAPSHOT_PATH)) {
+	if (UPDATE) {
 		mkdirSync(dirname(SNAPSHOT_PATH), { recursive: true });
 		writeFileSync(SNAPSHOT_PATH, JSON.stringify(results, null, '\t') + '\n');
 	}
-	const expected = JSON.parse(readFileSync(SNAPSHOT_PATH, 'utf8')) as Record<string, unknown>;
+	const expected = existsSync(SNAPSHOT_PATH)
+		? (JSON.parse(readFileSync(SNAPSHOT_PATH, 'utf8')) as Record<string, unknown>)
+		: {};
 	for (const g of GAMES) {
 		it(`${g.name} matches the golden snapshot`, () => {
+			assert.ok(g.name in expected, `No golden snapshot for "${g.name}"; run with UPDATE_GOLDEN_SNAPSHOTS=1`);
 			assert.deepEqual(JSON.parse(JSON.stringify(results[g.name])), expected[g.name]);
 		});
 	}
