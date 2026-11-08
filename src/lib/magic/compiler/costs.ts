@@ -8,7 +8,7 @@
  *
  * Runs alongside the Phase 1 adapter for now. scripts/magic-costs-diff.ts compares the two.
  */
-import type { Amount, CostDef, ObjectFilter, Span } from '../ir.ts';
+import type { Amount, Compare, CostDef, ObjectFilter, Span, StaticDef } from '../ir.ts';
 import type { CounterType } from '../types.ts';
 
 export interface CostParse {
@@ -120,14 +120,32 @@ function noun(word: string): Noun | null {
  * Returns null unless the whole phrase is understood.
  */
 export function parseObjectPhrase(phrase: string): ObjectFilter | null {
-	const words = phrase.trim().split(/\s+/).filter(Boolean);
 	const filter: ObjectFilter = {};
+	let rest = phrase.trim();
 
-	// Trailing qualifiers.
-	if (words.slice(-2).join(' ').toLowerCase() === 'you control') {
-		filter.controller = 'you';
-		words.splice(-2);
+	// Trailing qualifiers, in either order: "creature you control with power 4 or greater".
+	for (;;) {
+		const youControl = rest.match(/^(.+?)\s+you control$/i);
+		if (youControl && !filter.controller) {
+			filter.controller = 'you';
+			rest = youControl[1];
+			continue;
+		}
+		const withStat = rest.match(/^(.+?)\s+with (power|mana value) (\S+)(?: or (greater|more|less|fewer))?$/i);
+		if (withStat) {
+			const value = count(withStat[3]);
+			if (!value || value.k === 'const' && withStat[3].toLowerCase() === 'a') return null;
+			const dir = withStat[4]?.toLowerCase();
+			const cmp: Compare = { op: !dir ? '=' : dir === 'greater' || dir === 'more' ? '>=' : '<=', value };
+			const key = withStat[2].toLowerCase() === 'power' ? 'power' : 'manaValue';
+			if (filter[key]) return null;
+			filter[key] = cmp;
+			rest = withStat[1];
+			continue;
+		}
+		break;
 	}
+	const words = rest.split(/\s+/).filter(Boolean);
 
 	// Leading modifiers.
 	while (words.length > 0) {
@@ -215,6 +233,15 @@ const payLife: Production = (part) => {
 	return amount ? [{ k: 'payLife', amount }] : null;
 };
 
+/** "Pay {3}{B}" (an option of a choice between costs). */
+const payMana: Production = (part) => {
+	const m = part.match(/^pay ((?:\{[^}]+\})+)$/i);
+	if (!m) return null;
+	const symbols = m[1].match(/\{[^}]+\}/g)!;
+	if (symbols.some((s) => /^\{(?:T|Q|E|TK|P)\}$/i.test(s))) return null;
+	return [{ k: 'mana', cost: m[1] }];
+};
+
 /** "Sacrifice ~", "Sacrifice a creature", "Sacrifice two Foods", "Sacrifice another creature". */
 const sacrifice: Production = (part) => {
 	const m = part.match(/^sacrifice (.+)$/i);
@@ -282,7 +309,30 @@ const removeCounters: Production = (part) => {
 	return n && counter ? [{ k: 'removeCounters', counter, count: n, from: 'self' }] : null;
 };
 
-const PRODUCTIONS: Production[] = [manaSymbols, payLife, sacrifice, tapOthers, discard, exileFrom, removeCounters];
+const PRODUCTIONS: Production[] = [
+	manaSymbols,
+	payLife,
+	payMana,
+	sacrifice,
+	tapOthers,
+	discard,
+	exileFrom,
+	removeCounters
+];
+
+const OR_BEFORE_VERB = new RegExp(`\\s+or\\s+(?=(?:${COST_VERBS})\\b)`, 'i');
+
+function parsePart(text: string): CostDef[] | null {
+	const out = PRODUCTIONS.reduce<CostDef[] | null>((acc, p) => acc ?? p(text), null);
+	if (out) return out;
+	// A choice between costs: "sacrifice a creature or pay {3}{B}", "discard a card or pay 3 life".
+	// An "or" inside an object phrase ("an artifact or creature") isn't followed by a cost verb.
+	const alts = text.split(new RegExp(OR_BEFORE_VERB.source, 'gi'));
+	if (alts.length < 2) return null;
+	const options = alts.map((a) => parsePart(a.trim()));
+	if (options.some((o) => !o)) return null;
+	return [{ k: 'choice', options: options as CostDef[][] }];
+}
 
 // ---- Entry points ---------------------------------------------------------------------------
 
@@ -322,7 +372,7 @@ export function parseCost(text: string, offset = 0): CostParse {
 	const defs: CostDef[] = [];
 	const unparsed: Span[] = [];
 	for (const part of splitCostParts(text, offset)) {
-		const out = PRODUCTIONS.reduce<CostDef[] | null>((acc, p) => acc ?? p(part.text), null);
+		const out = parsePart(part.text);
 		if (out) defs.push(...out);
 		else unparsed.push(part.span);
 	}
@@ -331,17 +381,73 @@ export function parseCost(text: string, offset = 0): CostParse {
 
 /**
  * Parses an additional-cost sentence: "As an additional cost to cast ~, <cost>." Returns null if the
- * sentence isn't one. Alternatives ("sacrifice a creature or pay 3 life") are a choice between
- * costs, which CostDef[] can't express yet, so they are reported as unparsed.
+ * sentence isn't one. "<cost> or <cost>" is a `choice`; "you may <cost>" is `optional`.
  */
 export function parseAdditionalCostSentence(sentence: string, offset = 0): CostParse | null {
 	const m = sentence.match(/^as an additional cost to cast ~, (.+?)\.?$/i);
 	if (!m) return null;
 	const start = offset + sentence.indexOf(m[1]);
-	const body = m[1];
-	if (/\bor (?:sacrifice|discard|pay|exile|tap|remove|return|reveal)\b/i.test(body)) {
-		return { defs: [], unparsed: [{ start, end: start + body.length }] };
+	const may = m[1].match(/^you may (.+)$/i);
+	if (may) {
+		const inner = parseCost(may[1], start + m[1].length - may[1].length);
+		if (inner.unparsed.length > 0 || inner.defs.length === 0) {
+			return { defs: [], unparsed: [{ start, end: start + m[1].length }] };
+		}
+		return { defs: [{ k: 'optional', cost: inner.defs }], unparsed: [] };
 	}
 	// The cost starts lower-case after the comma; productions match case-insensitively.
-	return parseCost(body, start);
+	return parseCost(m[1], start);
+}
+
+// ---- Cost modifiers -------------------------------------------------------------------------
+
+/**
+ * Parses a static cost-modifying sentence into a `costModifier` StaticDef:
+ * - "<object phrase> spells you cast cost {N} less/more to cast." (any type or subtype; "other" excludes
+ *   the source; "As long as ~ is in the command zone or on the battlefield, ..." also works from the
+ *   command zone)
+ * - "This spell costs {N} less to cast for each <object phrase> on the battlefield."
+ * Returns null unless the whole sentence is understood. Input is normalised (`~`, no reminder text).
+ */
+export function parseCostModifierSentence(sentence: string): StaticDef | null {
+	const text = sentence.trim().replace(/\.$/, '');
+	const self = text.match(/^(?:this spell|~) costs \{(\d+)\} (less|more) to cast for each (.+?) on the battlefield$/i);
+	if (self) {
+		const per = parseObjectPhrase(self[3]);
+		if (!per || per.controller) return null;
+		return {
+			k: 'costModifier',
+			affects: { k: 'self' },
+			delta: {
+				mode: self[2].toLowerCase() === 'less' ? 'reduce' : 'increase',
+				generic: parseInt(self[1], 10),
+				per: { k: 'count', of: { ...per, zone: 'battlefield' } }
+			},
+			who: { relation: 'you' }
+		};
+	}
+
+	const m = text.match(
+		/^(as long as ~ is in the command zone or on the battlefield, )?(.+?) spells you cast cost \{(\d+)\} (less|more) to cast$/i
+	);
+	if (!m) return null;
+	let phrase = m[2];
+	let other = false;
+	const otherMatch = phrase.match(/^other (.+)$/i);
+	if (otherMatch) {
+		other = true;
+		phrase = otherMatch[1];
+	}
+	// "Instant and sorcery spells" means instant spells and sorcery spells: any of them.
+	phrase = phrase.replace(/\s+and\s+/gi, ' or ');
+	// "Noncreature spells": only modifiers, so the noun is the spell itself (any card).
+	const filter = parseObjectPhrase(phrase) ?? parseObjectPhrase(`${phrase} card`);
+	if (!filter || filter.controller || filter.other) return null;
+	return {
+		k: 'costModifier',
+		affects: { k: 'spell', filter: other ? { ...filter, other: true } : filter },
+		delta: { mode: m[4].toLowerCase() === 'less' ? 'reduce' : 'increase', generic: parseInt(m[3], 10) },
+		who: { relation: 'you' },
+		activeZones: m[1] ? ['battlefield', 'command'] : undefined
+	};
 }

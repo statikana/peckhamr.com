@@ -21,6 +21,7 @@ import {
 	parseSpellOrAbilityEffects,
 	parseStructuredTriggeredAbilities
 } from '../oracle.ts';
+import { parseAdditionalCostSentence, parseCost, parseCostModifierSentence } from './costs.ts';
 import {
 	getCardRuleTree,
 	type ActionRuleNode,
@@ -549,7 +550,11 @@ function adaptActivated(ctx: AdapterContext, line: NormalizedLine): AbilityDef[]
 		if (effect.length === 0 && unparsed.length === 0) unparsed.push(line.bodySpan);
 	}
 
-	if (unparsed.length > 0) return [unsupported('unparsed', line.text, line.span, unparsed)];
+	if (unparsed.length > 0) {
+		// Phase 4: the runtime still pays the cost of an ability whose effect the legacy path resolves.
+		const u = unsupported('unparsed', line.text, line.span, unparsed);
+		return [{ ...u, legacyId: node.id, cost: cost.defs, costComplete: cost.unparsed.length === 0 }];
+	}
 
 	const ability: ActivatedAbility = {
 		kind: 'activated',
@@ -558,6 +563,7 @@ function adaptActivated(ctx: AdapterContext, line: NormalizedLine): AbilityDef[]
 		effect,
 		timing: node.timing,
 		isMana: node.path === 'activated.mana',
+		legacyId: node.id,
 		span: line.span
 	};
 	return [ability];
@@ -575,42 +581,8 @@ function translateCost(
 		return { defs, unparsed };
 	}
 
-	let cursor = 0;
-	for (const part of costText.split(/,\s*/)) {
-		const start = offset + costText.indexOf(part, cursor);
-		cursor = costText.indexOf(part, cursor) + part.length;
-		const span = { start, end: start + part.length };
-		const low = part.toLowerCase();
-
-		const symbols: string[] = part.match(/\{[^}]+\}/g) ?? [];
-		if (symbols.length > 0 && symbols.join('') === part.replace(/\s+/g, '')) {
-			const mana = symbols.filter((s) => s !== '{T}' && s !== '{Q}').join('');
-			if (symbols.includes('{Q}')) unparsed.push(span);
-			if (symbols.includes('{T}')) defs.push({ k: 'tapSelf' });
-			if (mana) defs.push({ k: 'mana', cost: mana });
-			continue;
-		}
-		if (low === 'sacrifice ~' && node.requiresSacrificeSelf) {
-			defs.push({ k: 'sacrifice', count: { k: 'const', n: 1 }, filter: 'self' });
-			continue;
-		}
-		const life = low.match(/^pay (\d+) life$/);
-		if (life && node.lifeCost > 0) {
-			defs.push({ k: 'payLife', amount: { k: 'const', n: node.lifeCost } });
-			continue;
-		}
-		// The runtime pays this one cost by matching its text (engine.ts); Phase 4 generalises it.
-		if (low === 'tap ten untapped elves you control') {
-			defs.push({
-				k: 'tapOthers',
-				count: { k: 'const', n: 10 },
-				filter: { subtypes: ['Elf'], controller: 'you', tapped: false }
-			});
-			continue;
-		}
-		unparsed.push(span);
-	}
-	return { defs, unparsed };
+	// Phase 4: the cost grammar (compiler/costs.ts) replaces the legacy cost translation.
+	return parseCost(costText, offset);
 }
 
 function manaStep(effectText: string, node: ActionRuleNode, span: Span): EffectStep {
@@ -673,6 +645,7 @@ function adaptSpell(ctx: AdapterContext, lines: NormalizedLine[]): AbilityDef[] 
 	const span = { start: lines[0].span.start, end: lines[lines.length - 1].span.end };
 	const text = lines.map((l) => l.text).join('\n');
 	const additional = parseAdditionalCostsAndRestrictions(ctx.card);
+	const statics: AbilityDef[] = [];
 
 	const unparsed: Span[] = [];
 	const additionalCosts: CostDef[] = [];
@@ -690,17 +663,21 @@ function adaptSpell(ctx: AdapterContext, lines: NormalizedLine[]): AbilityDef[] 
 		}
 		for (const s of group[0].sentences) {
 			const low = s.text.toLowerCase();
-			if (low.startsWith('as an additional cost to cast ~,')) {
-				const costs = additionalCostDefs(additional);
-				if (costs.length === 0) unparsed.push(s.span);
+			const costModifier = parseCostModifierSentence(s.text);
+			if (costModifier) {
+				statics.push({ kind: 'static', static: costModifier, span: s.span });
+			} else if (low.startsWith('as an additional cost to cast ~,')) {
+				// Phase 4: the cost grammar replaces the legacy additional-cost translation.
+				const parsed = parseAdditionalCostSentence(s.text, s.span.start) ?? { defs: [], unparsed: [s.span] };
+				unparsed.push(...parsed.unparsed);
 				ctx.log?.costs.push({
 					kind: 'additional',
 					rawIndex: group[0].rawIndex,
 					text: s.text,
-					defs: costs,
-					complete: costs.length > 0
+					defs: parsed.defs,
+					complete: parsed.unparsed.length === 0
 				});
-				additionalCosts.push(...costs);
+				additionalCosts.push(...parsed.defs);
 			} else if (
 				(low === 'cast ~ only during combat.' && additional.onlyDuringCombat) ||
 				(low === 'cast ~ only during your turn.' && additional.onlyDuringYourTurn) ||
@@ -730,9 +707,10 @@ function adaptSpell(ctx: AdapterContext, lines: NormalizedLine[]): AbilityDef[] 
 	if (!modal && effect.length === 0 && unparsed.length === 0) unparsed.push(span);
 	if (!castNode || castNode.requiresGuidedResolution) unparsed.push(span);
 
-	if (unparsed.length > 0) return [unsupported('unparsed', text, span, dedupeSpans(unparsed))];
+	if (unparsed.length > 0) return [...statics, unsupported('unparsed', text, span, dedupeSpans(unparsed))];
 	if (delayed.length > 0 && effect.length > 0) effect[effect.length - 1].delayed = delayed[0];
 	return [
+		...statics,
 		{
 			kind: 'spell',
 			additionalCosts,
@@ -774,19 +752,6 @@ function adaptModes(ctx: AdapterContext, group: NormalizedLine[]): { modal?: Mod
 	return { modal: { min: range[0], max: range[1], modes }, unparsed };
 }
 
-function additionalCostDefs(add: ReturnType<typeof parseAdditionalCostsAndRestrictions>): CostDef[] {
-	const out: CostDef[] = [];
-	if (add.sacrificePermanentType) {
-		const filter: ObjectFilter =
-			add.sacrificePermanentType === 'Permanent' ? {} : { types: [add.sacrificePermanentType] };
-		if (add.sacrificeAnother) filter.other = true;
-		out.push({ k: 'sacrifice', count: { k: 'const', n: 1 }, filter: { ...filter, controller: 'you' } });
-	}
-	if (add.discardCount > 0) out.push({ k: 'discard', count: { k: 'const', n: add.discardCount } });
-	if (add.lifeCost > 0) out.push({ k: 'payLife', amount: { k: 'const', n: add.lifeCost } });
-	return out;
-}
-
 // ---- Statics --------------------------------------------------------------------------------
 
 /**
@@ -797,6 +762,8 @@ function adaptStatic(ctx: AdapterContext, group: NormalizedLine[]): AbilityDef {
 	const span = groupSpan(group);
 	const text = groupText(group);
 	if (group.length === 1) {
+		const costModifier = parseCostModifierSentence(group[0].body);
+		if (costModifier) return { kind: 'static', static: costModifier, span };
 		const lineTree = getCardRuleTree({ ...ctx.card, oracleText: group[0].raw }, ALL_COLORS);
 		const defs = lineTree.hooks.map(translateHook).filter((d): d is StaticDef => d !== null);
 		if (defs.length === 1) return { kind: 'static', static: defs[0], span };

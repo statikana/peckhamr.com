@@ -89,6 +89,12 @@ export interface ActivatedAbility {
 	 * abilities have an empty span.
 	 */
 	intrinsic?: boolean;
+	/**
+	 * Transitional (until Phase 10): the id of the legacy ParsedActivatedAbility this ability was
+	 * adapted from (`act_3`, `loyalty_1`, `mana_tap`), so the runtime can find the IR cost of the
+	 * ability a player activates.
+	 */
+	legacyId?: string;
 	span: Span;
 }
 
@@ -133,6 +139,15 @@ export interface UnsupportedAbility {
 	span: Span;
 	/** The parts of `text` nothing claimed, if narrower than the whole ability. */
 	unparsed: Span[];
+	/** Transitional: see ActivatedAbility.legacyId. Set for activated-ability lines. */
+	legacyId?: string;
+	/**
+	 * For an activated ability whose effect (or part of whose cost) is unsupported: the cost parts the
+	 * cost grammar did understand. The runtime still pays these when the legacy path resolves the
+	 * effect. `costComplete` is false if part of the cost itself is unparsed.
+	 */
+	cost?: CostDef[];
+	costComplete?: boolean;
 }
 
 export type Timing = 'instant' | 'sorcery' | 'mana';
@@ -244,7 +259,11 @@ export type CostDef =
 	| { k: 'payLife'; amount: Amount }
 	| { k: 'loyalty'; delta: number }
 	| { k: 'removeCounters'; counter: CounterType; count: Amount; from: 'self' | ObjectFilter }
-	| { k: 'exileFrom'; zone: ZoneType; count: Amount; filter?: ObjectFilter | 'self' };
+	| { k: 'exileFrom'; zone: ZoneType; count: Amount; filter?: ObjectFilter | 'self' }
+	/** Pay exactly one of the options ("discard a card or pay 3 life", "sacrifice a creature or pay {3}{B}"). */
+	| { k: 'choice'; options: CostDef[][] }
+	/** The player may pay this cost or not ("As an additional cost to cast ~, you may sacrifice an artifact."). */
+	| { k: 'optional'; cost: CostDef[] };
 
 // ---- Effects --------------------------------------------------------------------------------
 
@@ -427,11 +446,15 @@ export interface CostDelta {
 	/** 'setZero' makes the cost {0}; 'reduce'/'increase' change the generic component. */
 	mode: 'setZero' | 'reduce' | 'increase';
 	generic: number;
+	/** The change is `generic` for each of this ("costs {1} less to cast for each creature on the battlefield"). */
+	per?: Amount;
 }
 
 export type SpellOrAbilityFilter =
 	| { k: 'spell'; filter: ObjectFilter }
-	| { k: 'ability'; keyword: string };
+	| { k: 'ability'; keyword: string }
+	/** The spell that has this ability ("This spell costs {1} less to cast ..."); works while it's being cast. */
+	| { k: 'self' };
 
 export type RuleModKind =
 	| 'noMaxHandSize'

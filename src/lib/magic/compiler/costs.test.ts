@@ -65,7 +65,7 @@ describe('Cost grammar: activated ability costs', () => {
 			'Remove a counter from ~',
 			'Remove an oil counter from ~',
 			'Return ~ to its owner\'s hand',
-			'Sacrifice a creature with power 4 or greater',
+			'Sacrifice a creature that dealt damage this turn',
 			'{E}{E}'
 		]) {
 			assert.equal(parseCost(text).unparsed.length, 1, text);
@@ -89,17 +89,14 @@ describe('Cost grammar: additional costs', () => {
 		assert.deepEqual(parsed?.defs.map((d) => d.k), ['discard', 'sacrifice']);
 	});
 
-	it('leaves a choice between costs and optional costs unparsed', () => {
-		for (const s of [
-			'As an additional cost to cast ~, discard a card or pay 3 life.',
-			'As an additional cost to cast ~, sacrifice a creature or pay {3}{B}.',
-			'As an additional cost to cast ~, you may sacrifice an artifact.'
-		]) {
-			const parsed = parseAdditionalCostSentence(s);
-			assert.ok(parsed, s);
-			assert.equal(parsed.defs.length, 0, s);
-			assert.equal(parsed.unparsed.length, 1, s);
-		}
+	it('leaves a choice it cannot fully parse unparsed', () => {
+		// "modified" isn't in the object-phrase grammar, so neither option may be claimed.
+		const parsed = parseAdditionalCostSentence(
+			'As an additional cost to cast ~, sacrifice a creature or sacrifice a modified creature.'
+		);
+		assert.ok(parsed);
+		assert.equal(parsed.defs.length, 0);
+		assert.equal(parsed.unparsed.length, 1);
 	});
 
 	it('ignores sentences that are not additional costs', () => {
