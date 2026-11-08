@@ -75,6 +75,26 @@ export {
 };
 import { STAPLE_CARDS } from './precons.ts';
 import {
+	allocateTimestamp,
+	createEmptyCounters,
+	mulliganRedraw,
+	moveObject,
+	rearrangeLibrary,
+	removeFromGame,
+	setZoneOrder,
+	shuffleArray,
+	shuffleLibrary,
+	transferBattlefieldControl
+} from './runtime/zones.ts';
+import {
+	beginAction,
+	emitEvent,
+	endAction,
+	registerEventHandler
+} from './runtime/events.ts';
+
+export { allocateTimestamp, shuffleArray };
+import {
 	PHASE_LABELS,
 	type CardInstance,
 	type CounterType,
@@ -105,24 +125,6 @@ import {
 
 function uid(prefix: string): string {
 	return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-}
-
-export function allocateTimestamp(state: GameState): number {
-	state.nextTimestamp = (state.nextTimestamp || 100) + 1;
-	return state.nextTimestamp;
-}
-
-function createEmptyCounters(): Record<CounterType, number> {
-	return {
-		'+1/+1': 0,
-		'-1/-1': 0,
-		loyalty: 0,
-		charge: 0,
-		shield: 0,
-		stun: 0,
-		lore: 0,
-		time: 0
-	};
 }
 
 let globalInstanceTimestampSeed = 1;
@@ -167,15 +169,6 @@ export function createCardInstance(
 		castViaSuspend: false,
 		switchedPTCount: 0
 	};
-}
-
-export function shuffleArray<T>(items: T[]): T[] {
-	const arr = [...items];
-	for (let i = arr.length - 1; i > 0; i--) {
-		const j = Math.floor(Math.random() * (i + 1));
-		[arr[i], arr[j]] = [arr[j], arr[i]];
-	}
-	return arr;
 }
 
 export function addLog(
@@ -709,11 +702,12 @@ export function drawCards(state: GameState, player: PlayerGameState, count: numb
 			);
 			return;
 		}
-		const card = player.library.shift()!;
-		card.zone = 'hand';
-		card.enteredTimestamp = allocateTimestamp(state);
-		card.objectVersion = (card.objectVersion || 1) + 1;
-		player.hand.push(card);
+		moveObject(state, player.library[0], 'hand', {
+			from: { player, zone: 'library' },
+			toPlayer: player,
+			newTimestamp: true,
+			bumpVersion: true
+		});
 	}
 }
 
@@ -1049,13 +1043,13 @@ export function applyGameAction(
 
 		case 'play_land': {
 			let landInst: CardInstance | undefined;
-			let sourceArray: CardInstance[] = actor.hand;
-			let sourceZone: ZoneType = 'hand';
+			let sourcePlayer: PlayerGameState = actor;
+			let sourceZone: 'hand' | 'exile' = 'hand';
 
 			const handIdx = actor.hand.findIndex((c) => c.instanceId === action.instanceId);
 			if (handIdx >= 0) {
 				landInst = actor.hand[handIdx];
-				sourceArray = actor.hand;
+				sourcePlayer = actor;
 				sourceZone = 'hand';
 			} else {
 				for (const p of state.players) {
@@ -1064,7 +1058,7 @@ export function applyGameAction(
 					);
 					if (exIdx >= 0) {
 						landInst = p.exile[exIdx];
-						sourceArray = p.exile;
+						sourcePlayer = p;
 						sourceZone = 'exile';
 						break;
 					}
@@ -1080,17 +1074,16 @@ export function applyGameAction(
 				return landLegality;
 			}
 
-			const removeIdx = sourceArray.findIndex((c) => c.instanceId === landInst!.instanceId);
-			if (removeIdx >= 0) sourceArray.splice(removeIdx, 1);
-
 			const exSourceName = landInst.playableFromExileBy?.sourceName;
 			landInst.playableFromExileBy = undefined;
-			landInst.zone = 'battlefield';
-			landInst.controllerId = actorId;
-			landInst.enteredTimestamp = allocateTimestamp(state);
-			landInst.objectVersion = (landInst.objectVersion || 1) + 1;
 			landInst.tapped = cardEntersTapped(landInst.card);
-			actor.battlefield.push(landInst);
+			moveObject(state, landInst, 'battlefield', {
+				from: { player: sourcePlayer, zone: sourceZone },
+				toPlayer: actor,
+				controllerId: actorId,
+				newTimestamp: true,
+				bumpVersion: true
+			});
 			actor.landsPlayedThisTurn += 1;
 
 			addLog(
@@ -1125,14 +1118,15 @@ export function applyGameAction(
 				};
 			}
 
-			actor.hand.splice(handIdx, 1);
-			inst.zone = 'exile';
 			inst.isSuspended = true;
 			inst.counters = createEmptyCounters();
 			inst.counters.time = suspClause.timeCounters;
-			inst.enteredTimestamp = allocateTimestamp(state);
-			inst.objectVersion = (inst.objectVersion || 1) + 1;
-			actor.exile.push(inst);
+			moveObject(state, inst, 'exile', {
+				from: { player: actor, zone: 'hand' },
+				toPlayer: actor,
+				newTimestamp: true,
+				bumpVersion: true
+			});
 
 			addLog(
 				state,
@@ -1170,7 +1164,7 @@ export function applyGameAction(
 				byId.delete(id);
 				reordered.push(found);
 			}
-			actor.graveyard = reordered;
+			setZoneOrder(actor, 'graveyard', reordered);
 			const topCard = actor.graveyard[actor.graveyard.length - 1];
 			addLog(
 				state,
@@ -1192,19 +1186,17 @@ export function applyGameAction(
 
 			// Locate card in hand, command zone, or playable exile
 			let inst: CardInstance | undefined;
-			let sourceArray: CardInstance[] = actor.hand;
-			let sourceZone: ZoneType = 'hand';
+			let sourcePlayer: PlayerGameState = actor;
+			let sourceZone: 'hand' | 'command' | 'exile' = 'hand';
 
 			const handIdx = actor.hand.findIndex((c) => c.instanceId === action.instanceId);
 			if (handIdx >= 0) {
 				inst = actor.hand[handIdx];
-				sourceArray = actor.hand;
 				sourceZone = 'hand';
 			} else {
 				const cmdIdx = actor.command.findIndex((c) => c.instanceId === action.instanceId);
 				if (cmdIdx >= 0) {
 					inst = actor.command[cmdIdx];
-					sourceArray = actor.command;
 					sourceZone = 'command';
 				} else {
 					for (const p of state.players) {
@@ -1215,7 +1207,7 @@ export function applyGameAction(
 						);
 						if (exIdx >= 0) {
 							inst = p.exile[exIdx];
-							sourceArray = p.exile;
+							sourcePlayer = p;
 							sourceZone = 'exile';
 							break;
 						}
@@ -1290,20 +1282,23 @@ export function applyGameAction(
 					const disc = otherCards[d];
 					const idx = actor.hand.findIndex((c) => c.instanceId === disc.instanceId);
 					if (idx >= 0) {
-						const [removed] = actor.hand.splice(idx, 1);
-						const rep = checkGraveyardReplacementZone(state, 'graveyard');
-						removed.zone = rep.dest;
-						removed.enteredTimestamp = allocateTimestamp(state);
-						removed.objectVersion = (removed.objectVersion || 1) + 1;
-						if (rep.dest === 'exile') actor.exile.push(removed);
-						else actor.graveyard.push(removed);
+						moveObject(state, actor.hand[idx], 'graveyard', {
+							from: { player: actor, zone: 'hand' },
+							toPlayer: actor,
+							graveyardReplacement: true,
+							newTimestamp: true,
+							bumpVersion: true
+						});
 					}
 				}
 			}
 
 			// Remove from hand/command/exile zone and push onto the Stack
-			const removeIdx = sourceArray.findIndex((c) => c.instanceId === inst!.instanceId);
-			if (removeIdx >= 0) sourceArray.splice(removeIdx, 1);
+			moveObject(state, inst, 'stack', {
+				from: { player: sourcePlayer, zone: sourceZone },
+				newTimestamp: true,
+				bumpVersion: true
+			});
 			const exSourceName = inst.playableFromExileBy?.sourceName;
 			inst.playableFromExileBy = undefined;
 
@@ -1315,9 +1310,6 @@ export function applyGameAction(
 				inst.commanderCastCount = prevCastCount + 1;
 				actor.commanderCastCounts[inst.instanceId] = inst.commanderCastCount;
 			}
-			inst.zone = 'stack';
-			inst.enteredTimestamp = allocateTimestamp(state);
-			inst.objectVersion = (inst.objectVersion || 1) + 1;
 			actor.spellsCastThisTurn = (actor.spellsCastThisTurn || 0) + 1;
 
 			const resolvedCastMode: 'normal' | 'overload' = isOverloadCastMode(inst.card, xVal, castMode)
@@ -1377,8 +1369,13 @@ export function applyGameAction(
 
 			// Special handling for Treasure token sacrifice for mana
 			if (perm.card.name === 'Treasure' && action.abilityId === 'treasure_sac') {
-				const idx = actor.battlefield.findIndex((c) => c.instanceId === perm.instanceId);
-				if (idx >= 0) actor.battlefield.splice(idx, 1);
+				// Pinned behaviour: a bare removal (no graveyard, no attachment clean-up, no bookkeeping).
+				moveObject(state, perm, 'graveyard', {
+					from: { player: actor, zone: 'battlefield' },
+					toPlayer: actor,
+					setZone: false,
+					ceaseToExist: 'always'
+				});
 				const cmdCols = getPlayerCommanderIdentity(actor);
 				const col = cmdCols[0] || 'C';
 				actor.manaPool[col] += 1;
@@ -2401,8 +2398,7 @@ export function moveStackSpellToZone(
 	);
 	cardInst.instanceId = stackItem.sourceInstanceId;
 	cardInst.commanderCastCount = castCount;
-	if (actualDest === 'exile') owner.exile.push(cardInst);
-	else owner.graveyard.push(cardInst);
+	moveObject(state, cardInst, actualDest, { from: 'stack', toPlayer: owner });
 }
 
 export function addCountersToPermanent(
@@ -5202,59 +5198,18 @@ export function movePermanentToZone(
 	inst: CardInstance,
 	dest: ZoneType
 ): ZoneType {
-	for (const p of state.players) {
-		const idx = p.battlefield.findIndex((c) => c.instanceId === inst.instanceId);
-		if (idx >= 0) {
-			p.battlefield.splice(idx, 1);
-		}
-		for (const perm of p.battlefield) {
-			if (perm.attachedToId === inst.instanceId) {
-				perm.attachedToId = null;
-			}
-		}
-	}
-	const owner = state.players.find((p) => p.playerId === inst.ownerId);
-	if (!owner) return dest;
-
-	let actualDest: ZoneType = dest;
-	if (dest === 'graveyard') {
-		actualDest = checkGraveyardReplacementZone(state, 'graveyard').dest;
-	} else if (inst.isCommander && (dest === 'hand' || dest === 'library') && owner.isBot) {
-		// CR 903.9b replacement effect for Commander going to hand or library
-		actualDest = 'command';
-	}
-
-	// Restore original card if it was a Clone copy (CR 400.7)
-	if (inst.copiableCard) {
-		inst.copiableCard = undefined;
-	}
-
-	inst.zone = actualDest;
-	inst.tapped = false;
-	inst.damageMarked = 0;
-	inst.deathtouchDamageMarked = false;
-	inst.tempPowerMod = 0;
-	inst.tempToughnessMod = 0;
-	inst.grantedKeywords = [];
-	inst.attachedToId = null;
-	inst.counters = createEmptyCounters();
-	inst.phasedOut = false;
-	inst.phasedOutIndirectly = false;
-	inst.isSuspended = false;
-	inst.castViaSuspend = false;
-	inst.switchedPTCount = 0;
-	inst.objectVersion = (inst.objectVersion || 1) + 1;
-	inst.enteredTimestamp = allocateTimestamp(state);
-
-	if (inst.isToken) return actualDest; // Tokens cease to exist outside battlefield
-
-	if (actualDest === 'graveyard') owner.graveyard.push(inst);
-	else if (actualDest === 'exile') owner.exile.push(inst);
-	else if (actualDest === 'hand') owner.hand.push(inst);
-	else if (actualDest === 'command') owner.command.push(inst);
-	else if (actualDest === 'library') owner.library.unshift(inst);
-
-	return actualDest;
+	return moveObject(state, inst, dest, {
+		from: 'anyBattlefield',
+		detachAttachments: true,
+		graveyardReplacement: true,
+		commanderRedirect: true,
+		leaveBattlefieldReset: true,
+		bumpVersion: true,
+		newTimestamp: true,
+		// The old code put cards on top of the library and at the end of every other zone.
+		insert: (actual) => (actual === 'library' ? 'start' : 'end'),
+		ceaseToExist: 'tokens'
+	});
 }
 
 export function matchesPermanentTypeFilter(
