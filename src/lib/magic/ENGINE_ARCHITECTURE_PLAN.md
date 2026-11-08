@@ -453,6 +453,7 @@ while it runs), **entry**, **work**, **exit**, and **ratchet target**.
   over the card pool rather than replacing the adapter wholesale.
 
 ### Phase 2: Central zone changes and event bus (behaviour-preserving)
+- **Status:** in progress (2026-11-08, branch `engine-rewrite-phase2`).
 - **Owns:** `runtime/zones.ts`, `runtime/events.ts` (new); zone-mutation sites in `engine.ts`.
 - **Work:** route all 72 direct zone mutations through `moveObject`. Emit `ZoneChange`, `Cast`,
   `AttackDeclared`, `DamageDealt`, `PhaseBegin` and `CounterPlaced` events. **The existing
