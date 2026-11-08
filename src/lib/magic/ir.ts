@@ -363,11 +363,19 @@ export type EventKind =
 	| 'phaseBegin'
 	| 'counterPlaced'
 	| 'becomesTarget'
-	| 'attached';
+	| 'attached'
+	| 'becomesBlocked'
+	| 'becomesTapped'
+	| 'dealtDamage'
+	| 'drawCard'
+	| 'gainLife';
 
 export interface EventFilter {
-	/** The object the event is about; 'self' is the source of the trigger. */
-	object?: ObjectFilter | 'self';
+	/**
+	 * The object the event is about; 'self' is the source of the trigger, 'attachedTo' the object it
+	 * is attached to ("Whenever equipped creature attacks").
+	 */
+	object?: ObjectFilter | 'self' | 'attachedTo';
 	/** Also matches the source itself ("Whenever ~ or another Elf enters"). */
 	orSelf?: boolean;
 	from?: ZoneType;
@@ -376,7 +384,9 @@ export interface EventFilter {
 	player?: PlayerFilter;
 	phase?: GamePhase;
 	combat?: boolean;
-	damageTo?: 'player' | 'creature' | 'any';
+	damageTo?: 'player' | 'playerOrPlaneswalker' | 'creature' | 'any';
+	/** cast: also triggers when the spell is copied ("Whenever you cast or copy ..."). */
+	orCopy?: boolean;
 	counter?: CounterType;
 	/** "Whenever one or more ... attack": triggers once per event batch. */
 	oneOrMore?: boolean;
@@ -388,6 +398,8 @@ export interface TriggerDef {
 	scope?: TriggerScope;
 	/** The trigger functions while its source is in this zone (Nether Shadow: graveyard). */
 	fromZone?: ZoneType;
+	/** "Whenever ~ enters or attacks": the ability also triggers on each of these events. */
+	or?: TriggerDef[];
 }
 
 export type Condition =

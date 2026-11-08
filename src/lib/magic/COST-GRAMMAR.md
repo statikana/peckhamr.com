@@ -5,9 +5,9 @@ cost to cast ~, ..." sentence is parsed by the cost grammar (`compiler/costs.ts`
 Phase 1 adapter. A side "understands" a cost only if it consumes every part of it.
 
 "Line not claimed" means the legacy parser didn't turn the line into an ability at all, so there
-is no adapter cost to compare; the grammar parsing those costs is not by itself a gain.
+is no adapter result to compare; the grammar parsing it is not by itself a gain.
 
-| Pool | Costs | Agree | Grammar only | Adapter only | Differ | Neither | Line not claimed, grammar parses | Line not claimed, grammar doesn't |
+| Pool | Items | Agree | Grammar only | Adapter only | Differ | Neither | Line not claimed, grammar parses | Line not claimed, grammar doesn't |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
 | Precon cards | 35 | 33 | 2 | 0 | 0 | 0 | 0 | 0 |
 | All game cards | 10226 | 7318 | 1510 | 21 | 20 | 1071 | 202 | 84 |
@@ -18,33 +18,33 @@ Either a gap in the grammar or the adapter claiming more than it understood. The
 additional-cost handling is the engine's own `parseAdditionalCostsAndRestrictions`, so an
 over-claim here is also what the engine enforces at cast time.
 
-| Card | Kind | Cost | Grammar | Adapter |
+| Card | Kind | Text | Grammar | Adapter |
 |---|---|---|---|---|
-| Voltage Surge | additional | As an additional cost to cast ~, you may sacrifice an artifact. | (not claimed) | `[{"k":"sacrifice","count":{"k":"const","n":1},"filter":{"types":["Artifact"],"controller":"you"}}]` |
-| Spark Harvest | additional | As an additional cost to cast ~, sacrifice a creature or pay {3}{B}. | (not claimed) | `[{"k":"sacrifice","count":{"k":"const","n":1},"filter":{"types":["Creature"],"controller":"you"}}]` |
-| Pumpkin Bombardment | additional | As an additional cost to cast ~, discard a card or pay {2}. | (not claimed) | `[{"k":"discard","count":{"k":"const","n":1}}]` |
-| Silence the Echo | additional | As an additional cost to cast ~, sacrifice a creature or planeswalker or pay {3}. | (not claimed) | `[{"k":"sacrifice","count":{"k":"const","n":1},"filter":{"types":["Creature"],"controller":"you"}}]` |
-| Lethal Throwdown | additional | As an additional cost to cast ~, sacrifice a creature or sacrifice a modified creature. | (not claimed) | `[{"k":"sacrifice","count":{"k":"const","n":1},"filter":{"types":["Creature"],"controller":"you"}}]` |
-| Treacherous Greed | additional | As an additional cost to cast ~, sacrifice a creature that dealt damage this turn. | (not claimed) | `[{"k":"sacrifice","count":{"k":"const","n":1},"filter":{"types":["Creature"],"controller":"you"}}]` |
-| Lash of the Balrog | additional | As an additional cost to cast ~, sacrifice a creature or pay {4}. | (not claimed) | `[{"k":"sacrifice","count":{"k":"const","n":1},"filter":{"types":["Creature"],"controller":"you"}}]` |
-| Minion Missile | additional | As an additional cost to cast ~, sacrifice a creature or discard a card. | (not claimed) | `[{"k":"sacrifice","count":{"k":"const","n":1},"filter":{"types":["Creature"],"controller":"you"}},{"k":"discard","count":{"k":"const","n":1}}]` |
-| Bone Shards | additional | As an additional cost to cast ~, sacrifice a creature or discard a card. | (not claimed) | `[{"k":"sacrifice","count":{"k":"const","n":1},"filter":{"types":["Creature"],"controller":"you"}},{"k":"discard","count":{"k":"const","n":1}}]` |
-| Bitter Triumph | additional | As an additional cost to cast ~, discard a card or pay 3 life. | (not claimed) | `[{"k":"discard","count":{"k":"const","n":1}},{"k":"payLife","amount":{"k":"const","n":3}}]` |
-| Lightning Axe | additional | As an additional cost to cast ~, discard a card or pay {5}. | (not claimed) | `[{"k":"discard","count":{"k":"const","n":1}}]` |
-| Savage Order | additional | As an additional cost to cast ~, sacrifice a creature with power 4 or greater. | (not claimed) | `[{"k":"sacrifice","count":{"k":"const","n":1},"filter":{"types":["Creature"],"controller":"you"}}]` |
-| Annihilating Glare | additional | As an additional cost to cast ~, pay {4} or sacrifice an artifact or creature. | (not claimed) | `[{"k":"sacrifice","count":{"k":"const","n":1},"filter":{"types":["Artifact"],"controller":"you"}}]` |
-| Nahiri's Sacrifice | additional | As an additional cost to cast ~, sacrifice an artifact or creature with mana value X. | (not claimed) | `[{"k":"sacrifice","count":{"k":"const","n":1},"filter":{"types":["Artifact"],"controller":"you"}}]` |
-| Betrayer's Bargain | additional | As an additional cost to cast ~, sacrifice a creature or enchantment or pay {2}. | (not claimed) | `[{"k":"sacrifice","count":{"k":"const","n":1},"filter":{"types":["Creature"],"controller":"you"}}]` |
-| Demand Answers | additional | As an additional cost to cast ~, sacrifice an artifact or discard a card. | (not claimed) | `[{"k":"sacrifice","count":{"k":"const","n":1},"filter":{"types":["Artifact"],"controller":"you"}},{"k":"discard","count":{"k":"const","n":1}}]` |
-| Redirect Lightning | additional | As an additional cost to cast ~, pay 5 life or pay {2}. | (not claimed) | `[{"k":"payLife","amount":{"k":"const","n":5}}]` |
-| Deadly Precision | additional | As an additional cost to cast ~, pay {4} or sacrifice an artifact or creature. | (not claimed) | `[{"k":"sacrifice","count":{"k":"const","n":1},"filter":{"types":["Artifact"],"controller":"you"}}]` |
-| Eaten Alive | additional | As an additional cost to cast ~, sacrifice a creature or pay {3}{B}. | (not claimed) | `[{"k":"sacrifice","count":{"k":"const","n":1},"filter":{"types":["Creature"],"controller":"you"}}]` |
-| Stir Up Trouble | additional | As an additional cost to cast ~, sacrifice an artifact or creature or pay {4}. | (not claimed) | `[{"k":"sacrifice","count":{"k":"const","n":1},"filter":{"types":["Artifact"],"controller":"you"}}]` |
-| Final Payment | additional | As an additional cost to cast ~, pay 5 life or sacrifice a creature or enchantment. | (not claimed) | `[{"k":"sacrifice","count":{"k":"const","n":1},"filter":{"types":["Creature"],"controller":"you"}},{"k":"payLife","amount":{"k":"const","n":5}}]` |
+| Voltage Surge | additional | As an additional cost to cast ~, you may sacrifice an artifact. | (incomplete) | `[{"k":"sacrifice","count":{"k":"const","n":1},"filter":{"types":["Artifact"],"controller":"you"}}]` |
+| Spark Harvest | additional | As an additional cost to cast ~, sacrifice a creature or pay {3}{B}. | (incomplete) | `[{"k":"sacrifice","count":{"k":"const","n":1},"filter":{"types":["Creature"],"controller":"you"}}]` |
+| Pumpkin Bombardment | additional | As an additional cost to cast ~, discard a card or pay {2}. | (incomplete) | `[{"k":"discard","count":{"k":"const","n":1}}]` |
+| Silence the Echo | additional | As an additional cost to cast ~, sacrifice a creature or planeswalker or pay {3}. | (incomplete) | `[{"k":"sacrifice","count":{"k":"const","n":1},"filter":{"types":["Creature"],"controller":"you"}}]` |
+| Lethal Throwdown | additional | As an additional cost to cast ~, sacrifice a creature or sacrifice a modified creature. | (incomplete) | `[{"k":"sacrifice","count":{"k":"const","n":1},"filter":{"types":["Creature"],"controller":"you"}}]` |
+| Treacherous Greed | additional | As an additional cost to cast ~, sacrifice a creature that dealt damage this turn. | (incomplete) | `[{"k":"sacrifice","count":{"k":"const","n":1},"filter":{"types":["Creature"],"controller":"you"}}]` |
+| Lash of the Balrog | additional | As an additional cost to cast ~, sacrifice a creature or pay {4}. | (incomplete) | `[{"k":"sacrifice","count":{"k":"const","n":1},"filter":{"types":["Creature"],"controller":"you"}}]` |
+| Minion Missile | additional | As an additional cost to cast ~, sacrifice a creature or discard a card. | (incomplete) | `[{"k":"sacrifice","count":{"k":"const","n":1},"filter":{"types":["Creature"],"controller":"you"}},{"k":"discard","count":{"k":"const","n":1}}]` |
+| Bone Shards | additional | As an additional cost to cast ~, sacrifice a creature or discard a card. | (incomplete) | `[{"k":"sacrifice","count":{"k":"const","n":1},"filter":{"types":["Creature"],"controller":"you"}},{"k":"discard","count":{"k":"const","n":1}}]` |
+| Bitter Triumph | additional | As an additional cost to cast ~, discard a card or pay 3 life. | (incomplete) | `[{"k":"discard","count":{"k":"const","n":1}},{"k":"payLife","amount":{"k":"const","n":3}}]` |
+| Lightning Axe | additional | As an additional cost to cast ~, discard a card or pay {5}. | (incomplete) | `[{"k":"discard","count":{"k":"const","n":1}}]` |
+| Savage Order | additional | As an additional cost to cast ~, sacrifice a creature with power 4 or greater. | (incomplete) | `[{"k":"sacrifice","count":{"k":"const","n":1},"filter":{"types":["Creature"],"controller":"you"}}]` |
+| Annihilating Glare | additional | As an additional cost to cast ~, pay {4} or sacrifice an artifact or creature. | (incomplete) | `[{"k":"sacrifice","count":{"k":"const","n":1},"filter":{"types":["Artifact"],"controller":"you"}}]` |
+| Nahiri's Sacrifice | additional | As an additional cost to cast ~, sacrifice an artifact or creature with mana value X. | (incomplete) | `[{"k":"sacrifice","count":{"k":"const","n":1},"filter":{"types":["Artifact"],"controller":"you"}}]` |
+| Betrayer's Bargain | additional | As an additional cost to cast ~, sacrifice a creature or enchantment or pay {2}. | (incomplete) | `[{"k":"sacrifice","count":{"k":"const","n":1},"filter":{"types":["Creature"],"controller":"you"}}]` |
+| Demand Answers | additional | As an additional cost to cast ~, sacrifice an artifact or discard a card. | (incomplete) | `[{"k":"sacrifice","count":{"k":"const","n":1},"filter":{"types":["Artifact"],"controller":"you"}},{"k":"discard","count":{"k":"const","n":1}}]` |
+| Redirect Lightning | additional | As an additional cost to cast ~, pay 5 life or pay {2}. | (incomplete) | `[{"k":"payLife","amount":{"k":"const","n":5}}]` |
+| Deadly Precision | additional | As an additional cost to cast ~, pay {4} or sacrifice an artifact or creature. | (incomplete) | `[{"k":"sacrifice","count":{"k":"const","n":1},"filter":{"types":["Artifact"],"controller":"you"}}]` |
+| Eaten Alive | additional | As an additional cost to cast ~, sacrifice a creature or pay {3}{B}. | (incomplete) | `[{"k":"sacrifice","count":{"k":"const","n":1},"filter":{"types":["Creature"],"controller":"you"}}]` |
+| Stir Up Trouble | additional | As an additional cost to cast ~, sacrifice an artifact or creature or pay {4}. | (incomplete) | `[{"k":"sacrifice","count":{"k":"const","n":1},"filter":{"types":["Artifact"],"controller":"you"}}]` |
+| Final Payment | additional | As an additional cost to cast ~, pay 5 life or sacrifice a creature or enchantment. | (incomplete) | `[{"k":"sacrifice","count":{"k":"const","n":1},"filter":{"types":["Creature"],"controller":"you"}},{"k":"payLife","amount":{"k":"const","n":5}}]` |
 
 ## Differ
 
-Both sides claim the whole cost but produce different CostDefs; one of them is wrong.
+Both sides claim the whole item but produce different IR; one of them is wrong.
 
 ### Precon cards
 
@@ -95,7 +95,7 @@ None.
 | 12 | {COST}, Tap an untapped creature you control | Loam Dryad: {T}, Tap an untapped creature you control |
 | 12 | Tap an untapped creature you control | Bramblesnap: Tap an untapped creature you control |
 
-## Neither: unparsed cost parts, top templates
+## Not understood by the grammar, top templates
 
 | Cards | Template | Example |
 |---:|---|---|

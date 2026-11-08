@@ -171,8 +171,23 @@ export interface LegacyCostClaim {
 	complete: boolean;
 }
 
-/** Pass `costLog` to collect the adapter's cost decisions (scripts/magic-costs-diff.ts). */
-export function adaptCard(card: ScryfallCard, costLog?: LegacyCostClaim[]): FaceDefinition[] {
+/** What the adapter decided about one trigger condition, for comparing against the trigger grammar. */
+export interface LegacyTriggerClaim {
+	rawIndex: number;
+	trigger: TriggerDef;
+	condition?: Condition;
+	/** False when the legacy parser matched the line but the runtime would not honour it as written. */
+	complete: boolean;
+}
+
+/** Decisions the adapter made, collected for the grammar comparison scripts. */
+export interface AdapterLog {
+	costs: LegacyCostClaim[];
+	triggers: LegacyTriggerClaim[];
+}
+
+/** Pass `log` to collect the adapter's decisions (scripts/magic-costs-diff.ts, magic-triggers-diff.ts). */
+export function adaptCard(card: ScryfallCard, log?: AdapterLog): FaceDefinition[] {
 	const characteristics = buildCharacteristics(card);
 
 	if (card.backFace || card.oracleText.includes('\n//\n')) {
@@ -188,7 +203,7 @@ export function adaptCard(card: ScryfallCard, costLog?: LegacyCostClaim[]): Face
 	}
 
 	const norm = normalizeFace(card.name, card.oracleText);
-	const ctx = new AdapterContext(card, costLog);
+	const ctx = new AdapterContext(card, log);
 	const abilities: AbilityDef[] = [];
 	const spellLines: NormalizedLine[] = [];
 
@@ -226,12 +241,12 @@ class AdapterContext {
 	readonly isInstantOrSorcery: boolean;
 	readonly tree: CardRuleTree;
 	readonly structured: Array<{ type: 'etb' | 'attack' | 'dies' | 'upkeep' | 'end_step'; ab: StructuredTriggeredAbility }>;
-	readonly costLog?: LegacyCostClaim[];
+	readonly log?: AdapterLog;
 	private manaTapClaimed = false;
 
-	constructor(card: ScryfallCard, costLog?: LegacyCostClaim[]) {
+	constructor(card: ScryfallCard, log?: AdapterLog) {
 		this.card = card;
-		this.costLog = costLog;
+		this.log = log;
 		this.isInstantOrSorcery = card.typeLine.includes('Instant') || card.typeLine.includes('Sorcery');
 		this.tree = getCardRuleTree(card, ALL_COLORS);
 		this.structured = (['etb', 'attack', 'dies', 'upkeep', 'end_step'] as const).flatMap((type) =>
@@ -345,6 +360,7 @@ function adaptTrigger(ctx: AdapterContext, line: NormalizedLine): AbilityDef[] |
 			// conditional ones; only upkeep and end-step triggers check intervening-if conditions.
 			const conditionHonoured = structured.type === 'upkeep' || structured.type === 'end_step';
 			if (!condition || !conditionHonoured) {
+				ctx.log?.triggers.push({ rawIndex: line.rawIndex, trigger, condition, complete: false });
 				return [unsupported('unparsed', line.text, span, [line.bodySpan])];
 			}
 		}
@@ -353,6 +369,7 @@ function adaptTrigger(ctx: AdapterContext, line: NormalizedLine): AbilityDef[] |
 		trigger = ruleNodeTriggerDef(node!);
 		effects = node!.effects;
 	}
+	ctx.log?.triggers.push({ rawIndex: line.rawIndex, trigger, condition, complete: true });
 
 	// Effects start after the trigger header and any intervening-if clause.
 	const effectSentences = trimLeadingClause(line, structured?.ab.condition ? 2 : 1);
@@ -514,7 +531,7 @@ function adaptActivated(ctx: AdapterContext, line: NormalizedLine): AbilityDef[]
 
 	const cost = translateCost(node, costText, line.bodySpan.start);
 	const unparsed = [...cost.unparsed];
-	ctx.costLog?.push({
+	ctx.log?.costs.push({
 		kind: 'activated',
 		rawIndex: line.rawIndex,
 		text: costText,
@@ -676,7 +693,7 @@ function adaptSpell(ctx: AdapterContext, lines: NormalizedLine[]): AbilityDef[] 
 			if (low.startsWith('as an additional cost to cast ~,')) {
 				const costs = additionalCostDefs(additional);
 				if (costs.length === 0) unparsed.push(s.span);
-				ctx.costLog?.push({
+				ctx.log?.costs.push({
 					kind: 'additional',
 					rawIndex: group[0].rawIndex,
 					text: s.text,

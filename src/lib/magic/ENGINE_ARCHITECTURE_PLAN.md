@@ -474,6 +474,36 @@ while it runs), **entry**, **work**, **exit**, and **ratchet target**.
     choices between costs, and conjunctive filters ("artifact creature", "Elf Warrior"), which
     `ObjectFilter`'s any-of lists can't express.
   - `ir.ts` (additive): `exileFrom.filter` may be `'self'`.
+- **Follow-up: trigger-condition grammar (2026-11-08), alongside the adapter.** `compiler/triggers.ts`
+  parses the head of a triggered ability and its intervening-if clause into `TriggerDef` +
+  `Condition` and reports where the effect starts (for the effect grammar to pick up). Like the
+  cost grammar, it doesn't feed `compileCard` or the engine yet; Phase 5 owns the switch-over.
+  `scripts/magic-triggers-diff.ts` compares it with the adapter (report: `TRIGGER-GRAMMAR.md`); the
+  two diff scripts share `scripts/magic-diff.ts`.
+  - 15,888 trigger heads in the bulk data: the grammar parses **11,182 (70%)**; 2,982 agree with the
+    adapter. Precons: 36 of 37 parsed; 27 agree, 4 differ, 1 adapter-only.
+  - **Engine bugs for Phase 5** (all "differ" / "adapter only" rows are the legacy rule tree or
+    `parseStructuredTriggeredAbilities` dropping part of the trigger):
+    - "enters **or attacks**" / "enters **or dies**" / "attacks **or blocks**" fire on the first event
+      only (50 + 15 + 4 cards, …);
+    - "cast **or copy** an instant or sorcery spell" ignores copies: **precon Archmage Emeritus,
+      Storm-Kiln Artist, Veyran**;
+    - "combat damage to a player **or planeswalker**" ignores planeswalkers: **precon Grateful
+      Apparition**;
+    - "attacks **or becomes the target of a spell**" fires on attacks only: **precon Goldspan Dragon**;
+    - qualifiers are ignored, so the trigger fires unconditionally: "while saddled", "and isn't
+      blocked", "enters untapped", "attacks a player", "enters from your graveyard";
+    - intervening-if clauses the rule tree doesn't model are dropped on cast triggers ("if at least
+      four mana was spent to cast it"), so those fire every time;
+    - a few lines are matched to the wrong event (Springheart Nantuko's landfall line becomes an
+      "attached" trigger; Sanguine Soothsayer's attack trigger becomes an ETB).
+  - Not yet in the grammar (long tail): face-up/morph, "second card/spell each turn", cycle,
+    mutate, specialize, kicker and "this turn" conditions, "attacks alone", "deals damage to an
+    opponent", sacrifice/discard/scry events.
+  - `ir.ts` (additive): event kinds `becomesBlocked`, `becomesTapped`, `dealtDamage`, `drawCard`,
+    `gainLife`; `EventFilter.object` may be `'attachedTo'`; `damageTo: 'playerOrPlaneswalker'`;
+    `EventFilter.orCopy`; `TriggerDef.or` for "enters or attacks". `adaptCard`'s optional log is now
+    `AdapterLog` (costs and triggers).
 
 ### Phase 2: Central zone changes and event bus (behaviour-preserving)
 - **Owns:** `runtime/zones.ts`, `runtime/events.ts` (new); zone-mutation sites in `engine.ts`.
