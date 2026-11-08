@@ -27,12 +27,25 @@ These numbers drift; re-measure at the start of every phase.
 | `evaluatePermanent(` call sites | engine.ts 34, ai.ts 7, ruleTree.ts 3 | |
 | Effect kinds handled in `executeParsedEffect` | 39 `case`s | |
 
-**Failing tests at baseline.** These look like tests another agent wrote ahead of its
-implementation. They are **not** regressions caused by this plan; confirm they're owned before
-touching them:
-- `C-Audit-3`: non-green power-based mana dorks (`{T}: Add an amount of {R} equal to ~'s power`)
-- `C/D-Audit-4`: Layer-4 effective subtypes (Maskwood Nexus, Mycosynth Lattice, Song of the Dryads)
-- `E3`: bot blocks a printed "can't be blocked" attacker under Humility
+**Failing tests at baseline, now resolved (Phase 0):**
+- `C-Audit-3`: was a test bug (the helper starts every pool at 10 of each colour). Fixed; passes.
+- `C/D-Audit-4`: marked `todo` → **Phase 5/6** (observer triggers ignore layer-4 subtypes). Its body
+  also called `getSpellCostRequirement` with the wrong arguments; the calls are fixed, the behaviour
+  isn't yet.
+- `E3`: marked `todo` → **Phase 9** (`ai.ts` reads printed "can't be blocked").
+
+## Project decisions (2026-11-08)
+
+| Topic | Decision |
+|---|---|
+| Branch | All work on `engine-rewrite`, one commit (or more) per phase. |
+| Comprehensive Rules | `src/lib/rules.txt` (effective 2026-11-06). Cite rules by number from this file. |
+| Scryfall data | `~/data/scryfall/oracle-cards.jsonl.gz` (symlink to a dated file; gzipped JSON Lines, ~39k entries including tokens/art cards). **Never** copy it into the repo or into D1/R2. Refresh by downloading a new dated file and moving the symlink. |
+| Compiled IR storage | **No D1 table.** The user wants to avoid Cloudflare storage costs and wholesale database rewrites when the IR format changes. Compile at runtime, cache per isolate, keyed by `oracleId + textHash + COMPILER_VERSION`. Phase 1 measures compile time for a 4×100-card game to confirm cold starts are acceptable. |
+| Games in progress at deploy | **End them.** On deploy of an incompatible `engineVersion`, active games are finished with a system log entry; no compatibility path. |
+| Unsupported abilities | *Open: ask the user.* Proposed default: allowed, resolved through the guided manual prompt, with a lobby rule to block them. |
+| UI testing | The user play-tests UI-affecting phases (especially Phase 8) and reports results. |
+| CI | `.github/workflows/magic-engine.yml`: tests + ratchet + type check (magic files only) on every push touching the engine. |
 
 ### What the current code already does right (keep it)
 - **`CardRuleTree` / `getCardRuleTree`** (`ruleTree.ts`) is a memoized compile step with
@@ -299,13 +312,12 @@ Design notes:
   state.** The runtime looks up `CardDefinition` by `card.oracleId` (fall back to `card.id`) from
   the cache.
 - The engine runs on Cloudflare Workers (`@sveltejs/adapter-cloudflare`). Module caches are
-  per-isolate, so a cold start recompiles. **Decision for Phase 1:** compile when a deck is saved
-  or a game starts. Optionally persist compiled IR in a new D1 table
-  `MagicCardDefinitions(oracle_id, text_hash, compiler_version, ir_json)`, recompiling when the
-  version doesn't match. Measure the compile time for a 4×100-card game before deciding whether
-  persistence is needed.
-- Add `GameState.engineVersion`. Games in progress created under an older version finish on a
-  compatibility path or are ended gracefully at deploy. Decide which in Phase 1 and document it.
+  per-isolate, so a cold start recompiles. **Decided:** no persisted IR (no D1 table); compile at
+  runtime and cache in memory. Phase 1 measures the compile time for a 4×100-card game. If it's too
+  slow, the fallback is a build-time precompiled bundle for cards in saved decks, not database
+  storage.
+- Add `GameState.engineVersion`. **Decided:** games created under an older version are ended at
+  deploy with a system log entry.
 - Shrinking state (storing printing IDs instead of full card objects) is a separate,
   optional cleanup and not required by this plan.
 
@@ -333,12 +345,29 @@ Design notes:
 Each phase lists: **owns** (files only this phase's agent edits; others treat them as read-only
 while it runs), **entry**, **work**, **exit**, and **ratchet target**.
 
-### Phase 0: Guardrails (small, do immediately)
+### Phase 0: Guardrails ✅ done 2026-11-08
 - **Owns:** `architecture.test.ts`, `architecture-allowances.json` (new).
-- **Work:** add the ratchet test (§1) with today's counts as the allowances. Add a
-  `scripts/magic-coverage.ts` stub (filled in during Phase 1).
-- **Exit:** ratchet test passes on the current tree; documented in this file.
-- **Ratchet:** freeze at baseline.
+- **Done:**
+  - Ratchet test added. It scans every non-exempt `.ts` file under `src/lib/magic`, recursively, so
+    new files default to an allowance of 0. It fails if a count goes **up** or **down** without the
+    table being updated, so progress is locked in. Verified that it catches a new file containing a
+    name comparison.
+  - CI workflow added (tests + ratchet + magic-only type check).
+  - Baseline repaired: suite green (83 pass, 2 todo, 0 fail) and 0 type errors in magic files.
+  - Two engine bugs that type checking exposed were fixed, each with a test written to fail first:
+    - `castMode` was silently dropped by `checkSpellCastLegality`, `hasRequiredLegalTargets` and
+      `validateChosenTargets`. An explicit overload cast with no X value was rejected for lacking a
+      target, and an explicit normal cast with `xValue >= 1` skipped target checks. Now decided by
+      `isOverloadCastMode` everywhere.
+    - Player hexproof recognised only two exact phrases plus a Shalai name check. The C-Audit-5
+      assertion passed without testing anything because its arguments were in the wrong order.
+      Replaced by one grammar rule ("you" as a subject of "have hexproof") reading the copiable card.
+- **Ratchet after Phase 0:** cardNameComparison engine.ts 9; oracleTextRead engine.ts 44,
+  ruleTree.ts 38, ai.ts 2; directZoneMutation engine.ts 72.
+- **Lesson for every phase:** `node --test` doesn't type-check. Always run the type check
+  (`npx svelte-check --tsconfig ./tsconfig.json --output machine | grep 'src/lib/magic'`) as well;
+  the wrong-argument calls above went unnoticed for that reason.
+- **Not done (moved to Phase 1):** `scripts/magic-coverage.ts`.
 
 ### Phase 1: IR types, compiler shell, coverage tooling, key decisions
 - **Owns:** `ir.ts` (new), `compiler/**` (new), `scripts/magic-coverage.ts`.
@@ -348,8 +377,10 @@ while it runs), **entry**, **work**, **exit**, and **ratchet target**.
   2. Write `compileCard(card): CardDefinition`. **First as an adapter** that converts today's
      `CardRuleTree` + `parseStructuredTriggeredAbilities` + `parseActivatedAbilities` output into IR,
      marking as `unsupported` any line no existing parser claimed. No engine changes yet.
-  3. **Coverage script:** reads Scryfall `oracle-cards` bulk JSON from a path passed as an argument
-     (downloaded outside `src/`, **never committed**). Compiles every card and writes a report:
+  3. **Coverage script:** streams `~/data/scryfall/oracle-cards.jsonl.gz` (path passed as an
+     argument; gzipped JSON Lines, read with `zlib` + `readline`; **never committed**). Skip
+     non-game layouts (`token`, `art_series`, `emblem`, `double_faced_token`, etc.) and report them
+     separately. Compiles every card and writes a report:
      % of cards fully supported, % of abilities supported, and **unparsed spans clustered by
      normalised template** (numbers → `N`, subtypes → `<SUBTYPE>`, `~` kept), ranked by number of
      cards affected. Also reports the coverage of the cards in `precons.ts` and in all saved decks.

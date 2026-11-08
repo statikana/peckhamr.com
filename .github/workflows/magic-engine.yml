@@ -1,0 +1,48 @@
+name: Magic engine
+
+on:
+  push:
+    paths:
+      - 'src/lib/magic/**'
+      - 'src/routes/magic/**'
+      - 'src/lib/rules.txt'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/magic-engine.yml'
+  pull_request:
+    paths:
+      - 'src/lib/magic/**'
+      - 'src/routes/magic/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/magic-engine.yml'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      # Unit tests and the architecture ratchet (ENGINE_ARCHITECTURE_PLAN.md section 1).
+      # Node strips types without checking them, so the type check below is a separate step.
+      - name: Tests
+        run: node --test src/lib/magic/*.test.ts
+
+      # Other parts of the site have unrelated type errors, so only magic files fail the build.
+      - name: Type check (magic only)
+        run: |
+          npx svelte-kit sync
+          npx svelte-check --tsconfig ./tsconfig.json --output machine > svelte-check.txt || true
+          if grep -E ' ERROR "src/(lib|routes)/magic' svelte-check.txt; then
+            echo "::error::Type errors in magic engine files"
+            exit 1
+          fi
+          echo "No type errors in magic engine files."

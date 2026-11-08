@@ -5352,9 +5352,10 @@ export function playerHasHexproofFrom(
 	if (targetPlayer.protectionFromEverythingThisTurn) return true;
 	return targetPlayer.battlefield.some((perm) => {
 		if (perm.phasedOut || permanentHasLostAllAbilities(perm, state).lost) return false;
-		if (perm.card.name === 'Shalai, Voice of Plenty') return true;
-		const low = perm.card.oracleText.toLowerCase();
-		return low.includes('you have hexproof') || low.includes('you, planeswalkers you control, and other creatures you control have hexproof');
+		// "You have hexproof", "You and other creatures you control have hexproof", "You, planeswalkers you control, and ... have hexproof"
+		return /(?:^|[.\n]\s*)you(?: have|(?:,| and)[^.\n]*? have) hexproof\b/i.test(
+			(perm.copiableCard ?? perm.card).oracleText
+		);
 	});
 }
 
@@ -5716,13 +5717,10 @@ export function validateChosenTargets(
 	info: TargetRequirementInfo,
 	sourceCard?: ScryfallCard,
 	sourceInstanceId?: string,
-	xValue = 0
+	xValue = 0,
+	castMode?: 'normal' | 'overload'
 ): { ok: boolean; error?: string } {
-	if (
-		sourceCard &&
-		xValue >= 1 &&
-		getCardRuleTree(sourceCard).actions.some((a) => a.path === 'cast.overload')
-	) {
+	if (isOverloadCastMode(sourceCard, xValue, castMode)) {
 		return { ok: true };
 	}
 
@@ -5736,7 +5734,8 @@ export function validateChosenTargets(
 				branch,
 				sourceCard,
 				sourceInstanceId,
-				xValue
+				xValue,
+				castMode
 			);
 			if (res.ok) return { ok: true };
 			if (res.error) lastErr = res.error;
@@ -5857,24 +5856,21 @@ export function hasRequiredLegalTargets(
 	info: TargetRequirementInfo,
 	sourceCard?: ScryfallCard,
 	sourceInstanceId?: string,
-	xValue = 0
+	xValue = 0,
+	castMode?: 'normal' | 'overload'
 ): { ok: boolean; error?: string } {
 	if (!info.requiresTarget || info.minTargets <= 0) {
 		return { ok: true };
 	}
 
-	if (
-		sourceCard &&
-		xValue >= 1 &&
-		getCardRuleTree(sourceCard).actions.some((a) => a.path === 'cast.overload')
-	) {
+	if (isOverloadCastMode(sourceCard, xValue, castMode)) {
 		return { ok: true };
 	}
 
 	if (info.isModal && info.modalBranches && info.modalBranches.length > 0) {
 		for (const branch of info.modalBranches) {
 			if (
-				hasRequiredLegalTargets(state, actorId, branch, sourceCard, sourceInstanceId, xValue).ok
+				hasRequiredLegalTargets(state, actorId, branch, sourceCard, sourceInstanceId, xValue, castMode).ok
 			) {
 				return { ok: true };
 			}
@@ -6003,7 +5999,8 @@ export function checkSpellCastLegality(
 	actorId: string,
 	inst: CardInstance,
 	fromZone: ZoneType = 'hand',
-	xValue = 0
+	xValue = 0,
+	castMode?: 'normal' | 'overload'
 ): { ok: boolean; error?: string } {
 	if (state.status !== 'active') {
 		return { ok: false, error: 'Game is not currently active.' };
@@ -6140,7 +6137,7 @@ export function checkSpellCastLegality(
 			error: `${inst.card.name} has no mana cost and cannot be cast normally from hand (use Suspend instead).`
 		};
 	}
-	const costReq = getSpellCostRequirement(actor, inst, state, xValue);
+	const costReq = getSpellCostRequirement(actor, inst, state, xValue, castMode);
 	if (!canPayOrAutoTap(actor, costReq, state)) {
 		return {
 			ok: false,
@@ -6156,7 +6153,8 @@ export function checkSpellCastLegality(
 		parsed.targetInfo,
 		inst.card,
 		inst.instanceId,
-		xValue
+		xValue,
+		castMode
 	);
 	if (!targetCheck.ok) {
 		return targetCheck;
