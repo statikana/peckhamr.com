@@ -22,7 +22,7 @@ only what reaches the IR.
 - Bulk file: `oracle-cards.jsonl.gz`. Non-game layouts skipped: 4226 (art_series 2411, double_faced_token 80, emblem 89, front_card 291, planar 207, scheme 102, token 939, vanguard 107).
 - Compiler errors: 0.
 - Unsupported abilities by reason: unparsed 27692, keyword_not_implemented 4525, static_not_compiled 10394, multiface 895.
-- Cold start (Node v24.21.0, not workerd): 400 distinct cards compiled in 38 ms (0.09 ms/card), both caches empty.
+- Cold start (Node v24.21.0, not workerd): 400 distinct cards compiled in 33 ms (0.08 ms/card), both caches empty.
 - Whole run: 7.6 s for 35062 cards.
 - Saved decks: not measured (pass `--decks`).
 

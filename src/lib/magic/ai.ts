@@ -10,7 +10,7 @@ import {
 	getPlayerCommanderIdentity,
 	hasKeyword
 } from './engine.ts';
-import { parseSpellOrAbilityEffects } from './oracle.ts';
+import { cardHasPrintedUnblockable, parseSpellOrAbilityEffects } from './oracle.ts';
 import type { CardInstance, GameState, PlayerGameState, TargetRef } from './types.ts';
 
 export function hasAnyLegalInstantResponse(state: GameState, player: PlayerGameState): boolean {
@@ -116,7 +116,7 @@ function executeBotStep(
 					(c) => !c.phasedOut && c.instanceId === atk.attackerInstanceId
 				);
 				if (!atkCard) continue;
-				if (atkCard.card.oracleText.toLowerCase().includes("can't be blocked")) continue;
+				if (cardHasPrintedUnblockable(atkCard.card)) continue;
 				if (hasKeyword(atkCard, 'Menace', state)) continue; // Keep simple single blocks safe
 
 				const atkFly = hasKeyword(atkCard, 'Flying', state);

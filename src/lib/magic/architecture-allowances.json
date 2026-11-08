@@ -4,9 +4,9 @@
 		"engine.ts": 9
 	},
 	"oracleTextRead": {
-		"engine.ts": 44,
+		"engine.ts": 40,
 		"ruleTree.ts": 38,
-		"ai.ts": 2
+		"ai.ts": 1
 	},
 	"directZoneMutation": {
 		"engine.ts": 72

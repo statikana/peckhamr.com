@@ -418,19 +418,36 @@ while it runs), **entry**, **work**, **exit**, and **ratchet target**.
     from bulk data by the coverage script; the bulk file itself is never committed).
   - `precons.ts`: all **63** cards whose text differed from Oracle were replaced with Oracle text
     (Craterhoof, Toxic Deluge, Jeska's Will, Chaos Warp, Casualties of War, … plus "enters"
-    templating). Consequences, all intended:
-    - Cards whose old fake text "worked" now resolve through guided manual resolution (Toxic
-      Deluge, Jeska's Will, Chaos Warp, Expressive Iteration, Arcane Denial, …).
+    templating). Legacy-parser output was diffed card by card before and after (getCardRuleTree,
+    suspend, delayed triggers, mana, additional costs, structured triggers). Consequences:
+    - Instants/sorceries the legacy parser no longer understands at all resolve through guided
+      manual resolution: Toxic Deluge, Jeska's Will, Chaos Warp, Expressive Iteration.
+    - §2.7 isn't wired into the runtime yet, so everything else that lost support **silently does
+      less**: Scourge of Valkas's ETB trigger no longer fires; Crystalline Crawler has no ETB
+      counters or mana ability (Converge isn't implemented); Sign in Blood draws for the caster
+      and loses no life; Arcane Denial counters but its delayed draws don't happen; new activated
+      abilities on Goldspan Dragon, Lathliss, Maskwood Nexus and Scourge of Valkas show up but
+      may resolve with no effect.
+    - Improvements: Craterhoof gets +X/+X; Lathril's combat-damage trigger now fires (see below).
+    - Regressions found and fixed, each with a test written to fail first (test 31):
+      reminder text doubled suspend costs (Rift Bolt `{R}{R}`); "draw two cards and lose 2 life"
+      lost no life; "This land enters tapped." entered untapped; Menace's reminder text made a
+      creature unblockable (engine and bots). The last two moved into `cardEntersTapped` /
+      `cardHasPrintedUnblockable` in `oracle.ts`, lowering the ratchet (engine.ts 44 → 40,
+      ai.ts 2 → 1).
     - "When this enchantment/Aura/artifact enters" wasn't a self-ETB trigger for the legacy
       parser; widened in `oracle.ts` (test 30 written to fail first).
     - Song of the Dryads now reads "is a colorless Forest land."; losing other types and
       rules-text abilities follows from CR 205.1a / 305.7, which the legacy layer code doesn't
       apply. D-Audit-1/2 now use a synthetic Aura with the explicit wording; **D-Audit-5** (real
       card) is `todo` → **Phase 6**.
-  - Found, not fixed (→ **Phase 5**): the engine never fires Lathril's combat-damage trigger.
-    `getCardRuleTree` splits a trigger header at the first comma, which falls inside
-    "Lathril, Blade of the Elves", so the header check fails.
-  - Suite: 118 pass (84 + 34 compiler tests), 3 todo, 0 fail; 0 magic type errors.
+  - Found, not fixed (→ **Phase 5**): `getCardRuleTree` splits a trigger header at the first
+    comma, so an observer/combat-damage trigger written with a full name containing a comma
+    ("Whenever Lathril, Blade of the Elves deals …") never matches. Current Oracle text uses the
+    short name, so precon Lathril works; imported cards with older templating may not.
+  - `--decks` checked against a synthetic export in the wrangler envelope; the local D1 has no
+    decks, so the real saved-deck number needs the `--remote` export.
+  - Suite: 122 pass (incl. 34 compiler tests), 3 todo, 0 fail; 0 magic type errors.
 - **Next (suggested):** begin the real grammar with one narrow area, costs (`compiler/costs.ts`,
   including "Tap N untapped <filter> you control"), run it alongside the adapter and compare outputs
   over the card pool rather than replacing the adapter wholesale.

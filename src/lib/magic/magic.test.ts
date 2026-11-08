@@ -11,6 +11,7 @@ import {
 	parseAdditionalCostsAndRestrictions,
 	parseManaCost,
 	parseSpellOrAbilityEffects,
+	parseSuspendClause,
 	parseTriggeredEffects
 } from './oracle.ts';
 import {
@@ -5106,5 +5107,88 @@ describe('30. Self-referencing ETB triggers use current Oracle templating', () =
 				`"When this ${noun} enters" should be a self ETB trigger`
 			);
 		}
+	});
+});
+
+describe('31. Oracle text with reminder text and current templating', () => {
+	it('reads the suspend cost without the reminder text ("Suspend 1—{R} (… pay {R} …)")', () => {
+		const card = makeTestCard({
+			name: 'Cinder Rift Volley',
+			typeLine: 'Sorcery',
+			oracleText:
+				'Cinder Rift Volley deals 3 damage to any target.\nSuspend 1—{R} (Rather than cast this card from your hand, you may pay {R} and exile it with a time counter on it. At the beginning of your upkeep, remove a time counter. When the last is removed, you may cast it without paying its mana cost.)'
+		});
+		assert.equal(parseSuspendClause(card)?.suspendCost, '{R}');
+	});
+
+	it('"You draw two cards and lose 2 life." loses the life', () => {
+		const card = makeTestCard({
+			name: 'Dusk Ledger',
+			typeLine: 'Sorcery',
+			oracleText: 'You draw two cards and lose 2 life.'
+		});
+		assert.deepEqual(
+			parseSpellOrAbilityEffects(card).effects.map((e) => [e.kind, e.amount]),
+			[
+				['draw', 2],
+				['gain_life', -2]
+			]
+		);
+	});
+
+	it('a land with "This land enters tapped." enters tapped when played', () => {
+		const { state, p1Id } = createActiveTwoPlayerGame();
+		state.phase = 'main1';
+		const land = addCardToZone(
+			state,
+			p1Id,
+			makeTestCard({
+				name: 'Mistveil Crossing',
+				typeLine: 'Land',
+				oracleText: 'This land enters tapped.\n{T}: Add {C}.'
+			}),
+			'hand'
+		);
+		assert.equal(applyGameAction(state, p1Id, { type: 'play_land', instanceId: land.instanceId }).ok, true);
+		assert.equal(land.tapped, true);
+	});
+
+	it('menace reminder text ("can\'t be blocked except by two or more creatures") does not make a creature unblockable', () => {
+		const { state, p1Id, p2Id } = createActiveTwoPlayerGame();
+		const attacker = addCardToZone(
+			state,
+			p1Id,
+			makeTestCard({
+				name: 'Thornback Marauder',
+				typeLine: 'Creature — Elf',
+				oracleText: "Menace (This creature can't be blocked except by two or more creatures.)",
+				keywords: ['Menace'],
+				power: '2',
+				toughness: '2'
+			}),
+			'battlefield'
+		);
+		attacker.summoningSick = false;
+		const blockers = [1, 2].map((i) =>
+			addCardToZone(
+				state,
+				p2Id,
+				makeTestCard({ name: `Ground Bear ${i}`, typeLine: 'Creature — Bear', power: '2', toughness: '2' }),
+				'battlefield'
+			)
+		);
+		state.phase = 'declare_attackers';
+		assert.equal(
+			applyGameAction(state, p1Id, {
+				type: 'declare_attackers',
+				assignments: [{ attackerInstanceId: attacker.instanceId, defenderPlayerId: p2Id }]
+			}).ok,
+			true
+		);
+		const res = applyGameAction(state, p2Id, {
+			type: 'declare_blockers',
+			assignments: blockers.map((b) => ({ blockerInstanceId: b.instanceId, attackerInstanceId: attacker.instanceId }))
+		});
+		assert.equal(res.ok, true, res.ok ? '' : (res.error ?? ''));
 	});
 });

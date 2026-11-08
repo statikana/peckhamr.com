@@ -1,6 +1,8 @@
 import {
 	createEmptyManaPool,
 	canPayManaCost,
+	cardEntersTapped,
+	cardHasPrintedUnblockable,
 	deductManaFromPool,
 	describeLibrarySearchDestination,
 	detectTargetRequirement,
@@ -1087,9 +1089,7 @@ export function applyGameAction(
 			landInst.controllerId = actorId;
 			landInst.enteredTimestamp = allocateTimestamp(state);
 			landInst.objectVersion = (landInst.objectVersion || 1) + 1;
-			landInst.tapped = landInst.card.oracleText
-				.toLowerCase()
-				.includes(`${landInst.card.name.toLowerCase()} enters tapped`);
+			landInst.tapped = cardEntersTapped(landInst.card);
 			actor.battlefield.push(landInst);
 			actor.landsPlayedThisTurn += 1;
 
@@ -1694,7 +1694,7 @@ export function applyGameAction(
 					}
 					if (
 						!permanentHasLostAllAbilities(atkCard, state).lost &&
-						atkCard.card.oracleText.toLowerCase().includes("can't be blocked")
+						cardHasPrintedUnblockable(atkCard.card)
 					) {
 						return {
 							ok: false,
@@ -2136,9 +2136,7 @@ function handlePromptResolution(
 				} else if (prompt.destinationZone === 'battlefield') {
 					found.zone = 'battlefield';
 					found.controllerId = libraryOwner.playerId;
-					const selfEntersTapped = found.card.oracleText
-						.toLowerCase()
-						.includes(`${found.card.name.toLowerCase()} enters tapped`);
+					const selfEntersTapped = cardEntersTapped(found.card);
 					found.tapped = Boolean(prompt.enterTapped) || selfEntersTapped;
 					found.enteredTimestamp = allocateTimestamp(state);
 					found.objectVersion = (found.objectVersion || 1) + 1;
@@ -3980,9 +3978,7 @@ function initiateLibrarySearch(
 			} else if (dest.zone === 'battlefield') {
 				found.zone = 'battlefield';
 				found.controllerId = searchingPlayer.playerId;
-				const selfEntersTapped = found.card.oracleText
-					.toLowerCase()
-					.includes(`${found.card.name.toLowerCase()} enters tapped`);
+				const selfEntersTapped = cardEntersTapped(found.card);
 				found.tapped = Boolean(dest.tapped) || selfEntersTapped;
 				found.enteredTimestamp = allocateTimestamp(state);
 				found.objectVersion = (found.objectVersion || 1) + 1;

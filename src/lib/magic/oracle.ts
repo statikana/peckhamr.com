@@ -13,6 +13,8 @@ import type {
 	TriggerScope
 } from './types.ts';
 
+import { replaceSelfReferences, stripReminderText } from './compiler/normalize.ts';
+
 export type { ParsedActivatedAbility };
 
 export interface ManaCostRequirement {
@@ -946,7 +948,7 @@ export function parseSpellOrAbilityEffects(
 	if (gainLifeMatch) {
 		effects.push({ kind: 'gain_life', amount: parseInt(gainLifeMatch[1], 10) });
 	}
-	const loseLifeSelfMatch = low.match(/you lose (\d+) life/i);
+	const loseLifeSelfMatch = low.match(/(?:you|you draw \w+ cards? and) lose (\d+) life/i);
 	if (loseLifeSelfMatch) {
 		effects.push({ kind: 'gain_life', amount: -parseInt(loseLifeSelfMatch[1], 10) });
 	}
@@ -1206,7 +1208,7 @@ export function parseSpellOrAbilityEffects(
 export function parseSuspendClause(
 	card: ScryfallCard
 ): { timeCounters: number; suspendCost: string; cost: string } | null {
-	const m = card.oracleText.match(/Suspend\s+(\d+)\s*[—\-]\s*(\{[^\n]+)/i);
+	const m = card.oracleText.replace(/\([^)]*\)/g, '').match(/Suspend\s+(\d+)\s*[—\-]\s*(\{[^\n]+)/i);
 	if (!m) return null;
 	const timeCounters = Math.max(1, parseInt(m[1], 10) || 1);
 	const suspendCost = (m[2].match(/\{[^}]+\}/g) || []).join('') || '{1}';
@@ -1759,3 +1761,20 @@ export function describeLibrarySearchDestination(dest: LibrarySearchDestination)
 	return 'into hand';
 }
 
+/**
+ * "~ enters tapped." Phase 7 replaces this with a replacement effect compiled into the IR. Reminder
+ * text is ignored and self-references are normalised, so "This land enters tapped." matches too.
+ */
+export function cardEntersTapped(card: ScryfallCard): boolean {
+	return card.oracleText
+		.split('\n')
+		.some((line) => /^~ enters tapped\b/i.test(replaceSelfReferences(stripReminderText(line), card.name)));
+}
+
+/**
+ * Printed "can't be blocked" text, ignoring reminder text such as Menace's "can't be blocked except
+ * by two or more creatures". Phase 9 replaces this with an evaluated static ability.
+ */
+export function cardHasPrintedUnblockable(card: ScryfallCard): boolean {
+	return stripReminderText(card.oracleText).toLowerCase().includes("can't be blocked");
+}
