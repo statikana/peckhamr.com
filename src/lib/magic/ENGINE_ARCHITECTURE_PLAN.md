@@ -452,8 +452,8 @@ while it runs), **entry**, **work**, **exit**, and **ratchet target**.
   including "Tap N untapped <filter> you control"), run it alongside the adapter and compare outputs
   over the card pool rather than replacing the adapter wholesale.
 
-### Phase 2: Central zone changes and event bus (behaviour-preserving)
-- **Status:** in progress (2026-11-08, branch `engine-rewrite-phase2`).
+### Phase 2: Central zone changes and event bus (behaviour-preserving) ✅ done 2026-11-08
+- **Status:** done on branch `engine-rewrite-phase2` (on top of `5fd62fe`); not yet merged.
 - **Owns:** `runtime/zones.ts`, `runtime/events.ts` (new); zone-mutation sites in `engine.ts`.
 - **Work:** route all 72 direct zone mutations through `moveObject`. Emit `ZoneChange`, `Cast`,
   `AttackDeclared`, `DamageDealt`, `PhaseBegin` and `CounterPlaced` events. **The existing
@@ -462,6 +462,72 @@ while it runs), **entry**, **work**, **exit**, and **ratchet target**.
 - **Exit:** suite green; the ratchet's zone-mutation count is 0 outside `zones.ts`; a test asserts
   that every zone change emits exactly one event.
 - **Ratchet:** zone mutations → 0.
+- **Results (2026-11-08):**
+  - `directZoneMutation` engine.ts **72 → 0** (allowance lowered in the same commits). Other
+    allowances unchanged. Suite: 163 tests, 160 pass, 3 todo, 0 fail; 0 magic type errors.
+  - **Safety net first:** `runtime/golden.test.ts` plays four seeded all-bot games (fake clock and
+    RNG) and compares with `runtime/__snapshots__/golden.json` (full final state, digests of
+    intermediate states). Regenerate after an *intended* behaviour change with
+    `UPDATE_GOLDEN_SNAPSHOTS=1 node --test src/lib/magic/runtime/golden.test.ts` and review the
+    diff. `runtime/zones.pin.test.ts` (28 tests) pins each human-prompt/effect site the bots don't
+    reach. Both were committed before the refactor and didn't change during it.
+  - **`moveObject(state, obj, to, opts): ZoneType`** (`runtime/zones.ts`) does every zone change
+    and emits exactly one `ZoneChange`. Nothing is implicit: `opts.from` (`{player, zone}` /
+    `'anyBattlefield'` / `'stack'` / `'none'`), `toPlayer` (default owner), `insert`
+    (`'end'`/`'start'`/index/`'deferred'`, or a function of the actual destination),
+    `bumpVersion`, `newTimestamp`, `setZone`, `controllerId`, `leaveBattlefieldReset`,
+    `detachAttachments`, `graveyardReplacement`, `commanderRedirect`, `ceaseToExist`
+    (`'tokens'`/`'always'`), `beforeInsert`. `movePermanentToZone` is now a preset over it.
+    Non-zone-changes live in the same file and emit nothing: `shuffleLibrary(player, keepTop)`,
+    `setZoneOrder`, `rearrangeLibrary` (scry), `placeDeferred`, `transferBattlefieldControl`
+    (elimination), `removeFromGame` (token clean-up, CR 800.4a), `mulliganRedraw`.
+    `allocateTimestamp`, `createEmptyCounters`, `shuffleArray` moved here (engine.ts re-exports).
+  - **Events** (`runtime/events.ts`) are transient: a `WeakMap<GameState, queue>`, never in
+    `GameState` (so never saved to D1 or sent to clients, where they'd leak draws). Dispatch is
+    synchronous; `applyGameAction` drains the queue when its outermost call returns. Ids come from
+    a counter, not `Math.random`/`Date.now`. `subscribeEvents` is for tests.
+    - `ZoneChange`: every `moveObject`. `Cast`: both cast sites → `triggerOnSpellCast`.
+      `AttackDeclared` → `triggerOnAttack`. `CounterPlaced`: `addCountersToPermanent` →
+      `triggerOnCounterPlaced` (extracted). `PhaseBegin`: `beginPhase()` at all 21 phase changes.
+      `DamageDealt`: combat damage (both directions, trample), `applyDamageToTarget`,
+      `damage_all_creatures`, `damage_each_opponent`. PhaseBegin and DamageDealt are emit-only.
+  - `runtime/events.test.ts` replays ZoneChange events against an independent model of where every
+    object is (seeded 2–4 bot games) and checks the real state after every event. It fails if a
+    single site stops emitting (mutation-tested). It also checks that reorders emit nothing, and that
+    `GameState` is plain data, survives `JSON.stringify`/`parse` mid-game and plays on identically.
+  - **Preserved as explicit special cases** (they look like bugs; see below): the per-site
+    version/timestamp differences; Treasure sacrifice is a bare removal (`ceaseToExist: 'always'`,
+    `setZone: false`); suspend free cast leaves `zone === 'exile'`; `exile_all_graveyards` reverses
+    order; the bot "search, shuffle, put on top" keeps found cards out of the library during the
+    shuffle and ETB triggers (`insert: 'deferred'`); `return_self_from_graveyard` checks haste
+    between removal and insertion (`beforeInsert`); mulligans still copy card objects.
+- **Deferred to Phase 5:**
+  - `triggerOnEtb` (10 call sites) and `triggerOnAttach` (2) stay **direct calls**. Dispatching them from
+    `ZoneChange` would move them before each site's log line / `landsPlayedThisTurn++`, and would
+    newly fire ETBs for `create_token` tokens and elimination transfers.
+  - Upkeep and end-step trigger loops stay inline (they `return` mid-flow). Combat-damage-to-player
+    triggers stay inline in `executeCombatDamageStep`. `PhaseBegin`/`DamageDealt` are ready for them.
+  - Dies triggers stay at the `movePermanentToZone` call sites.
+- **Bugs found, not fixed (behaviour-preserving phase; each is pinned, so a fix must update its pin):**
+  - `isTargetStillValid` (engine.ts ~6448) has no `card_in_graveyard` branch, so a spell whose
+    only targets are `card_in_graveyard` always fizzles.
+  - `create_token` tokens (`createTokenOnBoard`) never call `triggerOnEtb`: no observer ETB or
+    Landfall for tokens (`copy_target_permanent` tokens do).
+  - CR 400.7 bookkeeping is inconsistent: search-to-hand (both paths), discard to hand size (human
+    and bot), London bottom and commander → command zone bump neither `objectVersion` nor the
+    timestamp; graveyard-target return/exile, `return_from_graveyard_to_hand` and
+    `exile_all_graveyards` bump the version but not the timestamp; a permanent spell enters with
+    `objectVersion` reset to 1 (lower than its `sourceObjectVersion` on the stack).
+  - `movePermanentToZone` doesn't reset `controllerId`, `summoningSick` or `usedLoyaltyThisTurn`.
+  - The commander redirect to the command zone from hand/library applies only to bots; humans get
+    no choice for those zones (CR 903.9a/b).
+  - `exile_all_graveyards` reverses each graveyard's order in exile.
+  - Treasure sacrifice for mana skips the graveyard (no leaves-the-battlefield handling), removes
+    a nontoken card named Treasure from the game, and relies on a name check.
+  - Suspend free cast leaves the card's `zone` as `'exile'` while it's on the stack.
+  - `cleanupEliminatedPlayer` doesn't clear the eliminated player's graveyard or command zone, or
+    their cards in other players' graveyards/hands/libraries (CR 800.4a).
+  - `autoFetchBasicLandToBattlefield` is dead code (no callers).
 
 ### Phase 3: Real grammar for effects, and the effect interpreter
 - **Owns:** `compiler/effects.ts`, `runtime/effects.ts`; `executeParsedEffect` in `engine.ts`.
