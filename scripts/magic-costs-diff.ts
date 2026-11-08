@@ -11,6 +11,10 @@
  *   adapterOnly  only the adapter claims it: a grammar gap, or the adapter over-claiming
  *   differ       both claim it but disagree (one of them is wrong)
  *   neither      neither understands it (the grammar's next work)
+ *
+ * Lines the legacy parser never claimed as an ability at all (e.g. a second "{T}: Add" line) have no
+ * adapter cost to compare against; they go in `unclaimedParsed` / `unclaimedUnparsed` instead, so
+ * ability-level gaps aren't counted as cost-grammar gains.
  */
 import { writeFileSync } from 'node:fs';
 
@@ -22,8 +26,23 @@ import type { CostDef } from '../src/lib/magic/ir.ts';
 import type { ScryfallCard } from '../src/lib/magic/types.ts';
 import { buildTemplater, NON_GAME_LAYOUTS, preconCards, readBulk } from './magic-shared.ts';
 
-type Bucket = 'agree' | 'grammarOnly' | 'adapterOnly' | 'differ' | 'neither';
-const BUCKETS: Bucket[] = ['agree', 'grammarOnly', 'adapterOnly', 'differ', 'neither'];
+type Bucket =
+	| 'agree'
+	| 'grammarOnly'
+	| 'adapterOnly'
+	| 'differ'
+	| 'neither'
+	| 'unclaimedParsed'
+	| 'unclaimedUnparsed';
+const BUCKETS: Bucket[] = [
+	'agree',
+	'grammarOnly',
+	'adapterOnly',
+	'differ',
+	'neither',
+	'unclaimedParsed',
+	'unclaimedUnparsed'
+];
 
 interface Row {
 	card: string;
@@ -45,7 +64,8 @@ function key(defs: CostDef[]): string {
 
 function classify(grammar: CostParse, adapter: LegacyCostClaim | undefined): Bucket {
 	const g = grammar.unparsed.length === 0;
-	const a = Boolean(adapter?.complete);
+	if (!adapter) return g ? 'unclaimedParsed' : 'unclaimedUnparsed';
+	const a = adapter.complete;
 	if (g && a) return key(grammar.defs) === key(adapter!.defs) ? 'agree' : 'differ';
 	if (g) return 'grammarOnly';
 	if (a) return 'adapterOnly';
@@ -164,8 +184,11 @@ async function main(): Promise<void> {
 		'cost to cast ~, ..." sentence is parsed by the cost grammar (`compiler/costs.ts`) and by the',
 		'Phase 1 adapter. A side "understands" a cost only if it consumes every part of it.',
 		'',
-		'| Pool | Costs | Agree | Grammar only | Adapter only | Differ | Neither |',
-		'|---|---:|---:|---:|---:|---:|---:|',
+		'"Line not claimed" means the legacy parser didn\'t turn the line into an ability at all, so there',
+		'is no adapter cost to compare; the grammar parsing those costs is not by itself a gain.',
+		'',
+		'| Pool | Costs | Agree | Grammar only | Adapter only | Differ | Neither | Line not claimed, grammar parses | Line not claimed, grammar doesn\'t |',
+		'|---|---:|---:|---:|---:|---:|---:|---:|---:|',
 		summary('Precon cards', precon),
 		summary('All game cards', bulk),
 		'',
@@ -202,7 +225,7 @@ async function main(): Promise<void> {
 						)
 				]),
 		'',
-		'## Grammar only (gains), top templates',
+		'## Grammar only (gains on claimed lines), top templates',
 		'',
 		'| Cards | Template | Example |',
 		'|---:|---|---|',
@@ -218,7 +241,7 @@ async function main(): Promise<void> {
 		'| Cards | Template | Example |',
 		'|---:|---|---|',
 		...rank(
-			bulk.filter((r) => r.bucket === 'neither' || r.bucket === 'adapterOnly'),
+			bulk.filter((r) => r.bucket === 'neither' || r.bucket === 'adapterOnly' || r.bucket === 'unclaimedUnparsed'),
 			(r) => r.fragments
 		)
 			.slice(0, 50)

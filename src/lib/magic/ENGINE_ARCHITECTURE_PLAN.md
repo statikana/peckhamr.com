@@ -453,14 +453,21 @@ while it runs), **entry**, **work**, **exit**, and **ratchet target**.
   sentences, with an object-phrase parser (`parseObjectPhrase`) that later productions can reuse.
   It does **not** feed `compileCard` or the engine yet; Phase 4 switches over after Phase 2 merges.
   `scripts/magic-costs-diff.ts` compares it with the adapter (report: `COST-GRAMMAR.md`):
-  - 10,226 costs in the bulk data: 7,318 agree, **1,712 only the grammar understands** (sacrifice/
-    discard/exile/remove-counter/tap-untapped costs), 1,155 neither, 0 regressions on precons.
+  - 10,226 costs in the bulk data: 7,318 agree, **1,510 only the grammar understands** on lines the
+    adapter claimed (sacrifice/discard/exile/remove-counter/tap-untapped costs), 1,071 neither.
+    286 more sit on lines the legacy parser never made into an ability (202 of them the grammar
+    parses); those are ability-level gaps, not cost gains. Precons: 33 agree, 2 grammar-only,
+    nothing else.
   - The 21 "adapter only" and 20 "differ" rows are all the adapter (= the engine's
     `parseAdditionalCostsAndRestrictions`) over-claiming, so **these are live engine bugs for
     Phase 4**: "discard a card or pay 3 life" (Bitter Triumph) is enforced as *both*; "sacrifice a
     creature or pay {3}{B}" as a mandatory sacrifice; optional "you may sacrifice" as mandatory;
     "sacrifice a creature with power 4 or greater" as any creature; "an artifact or creature" as
-    artifact only; "discard a card at random" as a chosen discard.
+    artifact only; "discard a card at random" as a chosen discard. Confirmed in the cast path
+    (`engine.ts`, "Pay additional costs"): every part found is checked and paid. The engine also
+    picks the sacrificed permanent (cheapest, tokens first) and the discarded cards (first in hand)
+    itself instead of asking the player. No precon card is affected; imported cards are (Bitter
+    Triumph, Bone Shards, Lightning Axe, Savage Order, …).
   - Not yet in the grammar (by cards affected): `Discard ~` (channel-style, 79), energy `{E}`
     (41+), keyword/ability-word prefixes before a cost ("Channel —", "Exhaust —", "Boast —"),
     counter kinds outside `CounterType` (spore, oil, quest, …), "Return … to its owner's hand",
