@@ -79,6 +79,7 @@ import {
 	createEmptyCounters,
 	mulliganRedraw,
 	moveObject,
+	placeDeferred,
 	rearrangeLibrary,
 	removeFromGame,
 	setZoneOrder,
@@ -312,9 +313,7 @@ export function createInitialGameState(
 			const landCount = p.hand.filter((c) => c.card.typeLine.includes('Land')).length;
 			if (landCount < 2 || landCount > 5) {
 				// Take 1 free mulligan
-				p.library.push(...p.hand.map((c) => ({ ...c, zone: 'library' as ZoneType })));
-				p.library = shuffleArray(p.library);
-				p.hand = p.library.splice(0, 7).map((c) => ({ ...c, zone: 'hand' as ZoneType }));
+				mulliganRedraw(state, p);
 			}
 			p.hasKeptHand = true;
 		} else {
@@ -1912,9 +1911,7 @@ function handleMulliganAction(
 
 	if (action.type === 'mulligan_take') {
 		actor.mulliganCount += 1;
-		actor.library.push(...actor.hand.map((c) => ({ ...c, zone: 'library' as ZoneType })));
-		actor.library = shuffleArray(actor.library);
-		actor.hand = actor.library.splice(0, 7).map((c) => ({ ...c, zone: 'hand' as ZoneType }));
+		mulliganRedraw(state, actor);
 		addLog(
 			state,
 			'rule',
@@ -1937,9 +1934,10 @@ function handleMulliganAction(
 		for (const id of ids) {
 			const hIdx = actor.hand.findIndex((c) => c.instanceId === id);
 			if (hIdx >= 0) {
-				const [card] = actor.hand.splice(hIdx, 1);
-				card.zone = 'library';
-				actor.library.push(card);
+				moveObject(state, actor.hand[hIdx], 'library', {
+					from: { player: actor, zone: 'hand' },
+					toPlayer: actor
+				});
 			}
 		}
 		state.pendingPrompts.splice(prIdx, 1);
@@ -2011,15 +2009,18 @@ function handlePromptResolution(
 			const gIdx = actor.graveyard.findIndex((c) => c.instanceId === prompt.commanderInstanceId);
 			const eIdx = actor.exile.findIndex((c) => c.instanceId === prompt.commanderInstanceId);
 			let cmd: CardInstance | undefined;
-			if (gIdx >= 0) [cmd] = actor.graveyard.splice(gIdx, 1);
-			else if (eIdx >= 0) [cmd] = actor.exile.splice(eIdx, 1);
+			let cmdFrom: 'graveyard' | 'exile' = 'graveyard';
+			if (gIdx >= 0) cmd = actor.graveyard[gIdx];
+			else if (eIdx >= 0) {
+				cmd = actor.exile[eIdx];
+				cmdFrom = 'exile';
+			}
 
 			if (cmd) {
-				cmd.zone = 'command';
 				cmd.damageMarked = 0;
 				cmd.deathtouchDamageMarked = false;
 				cmd.tapped = false;
-				actor.command.push(cmd);
+				moveObject(state, cmd, 'command', { from: { player: actor, zone: cmdFrom }, toPlayer: actor });
 				addLog(
 					state,
 					'rule',
@@ -2047,10 +2048,10 @@ function handlePromptResolution(
 		for (const id of action.instanceIds) {
 			const idx = actor.hand.findIndex((c) => c.instanceId === id);
 			if (idx >= 0) {
-				const [c] = actor.hand.splice(idx, 1);
-				c.zone = gyDest;
-				if (gyDest === 'exile') actor.exile.push(c);
-				else actor.graveyard.push(c);
+				moveObject(state, actor.hand[idx], gyDest, {
+					from: { player: actor, zone: 'hand' },
+					toPlayer: actor
+				});
 			}
 		}
 		state.pendingPrompts.splice(promptIdx, 1);
@@ -2105,11 +2106,9 @@ function handlePromptResolution(
 		if (action.instanceId) {
 			const idx = libraryOwner.library.findIndex((c) => c.instanceId === action.instanceId);
 			if (idx >= 0) {
-				const [found] = libraryOwner.library.splice(idx, 1);
+				const found = libraryOwner.library[idx];
+				const fromLibrary = { player: libraryOwner, zone: 'library' as const };
 				if (prompt.interceptedBy?.exilesFoundCards) {
-					found.zone = 'exile';
-					found.enteredTimestamp = allocateTimestamp(state);
-					found.objectVersion = (found.objectVersion || 1) + 1;
 					if (prompt.interceptedBy.grantPlayFromExile) {
 						found.playableFromExileBy = {
 							playerId: prompt.interceptedBy.controllerId,
@@ -2117,7 +2116,12 @@ function handlePromptResolution(
 							sourceName: prompt.interceptedBy.sourceName
 						};
 					}
-					libraryOwner.exile.push(found);
+					moveObject(state, found, 'exile', {
+						from: fromLibrary,
+						toPlayer: libraryOwner,
+						newTimestamp: true,
+						bumpVersion: true
+					});
 					emitVfx(state, {
 						kind: 'exile',
 						sourceId: actor.playerId,
@@ -2131,13 +2135,15 @@ function handlePromptResolution(
 						actor.playerId
 					);
 				} else if (prompt.destinationZone === 'battlefield') {
-					found.zone = 'battlefield';
-					found.controllerId = libraryOwner.playerId;
 					const selfEntersTapped = cardEntersTapped(found.card);
 					found.tapped = Boolean(prompt.enterTapped) || selfEntersTapped;
-					found.enteredTimestamp = allocateTimestamp(state);
-					found.objectVersion = (found.objectVersion || 1) + 1;
-					libraryOwner.battlefield.push(found);
+					moveObject(state, found, 'battlefield', {
+						from: fromLibrary,
+						toPlayer: libraryOwner,
+						controllerId: libraryOwner.playerId,
+						newTimestamp: true,
+						bumpVersion: true
+					});
 					addLog(
 						state,
 						'rule',
@@ -2146,11 +2152,15 @@ function handlePromptResolution(
 					);
 					triggerOnEtb(state, libraryOwner, found);
 				} else if (prompt.destinationZone === 'library' && prompt.putOnTop) {
-					libraryOwner.library = shuffleArray(libraryOwner.library);
-					found.zone = 'library';
-					found.enteredTimestamp = allocateTimestamp(state);
-					found.objectVersion = (found.objectVersion || 1) + 1;
-					libraryOwner.library.unshift(found);
+					// Put it on top, then shuffle the rest: the same as the old "remove, shuffle, put on top".
+					moveObject(state, found, 'library', {
+						from: fromLibrary,
+						toPlayer: libraryOwner,
+						insert: 'start',
+						newTimestamp: true,
+						bumpVersion: true
+					});
+					shuffleLibrary(libraryOwner, 1);
 					alreadyShuffledWithTopCard = true;
 					addLog(
 						state,
@@ -2159,8 +2169,7 @@ function handlePromptResolution(
 						libraryOwner.playerId
 					);
 				} else {
-					found.zone = 'hand';
-					libraryOwner.hand.push(found);
+					moveObject(state, found, 'hand', { from: fromLibrary, toPlayer: libraryOwner });
 					addLog(
 						state,
 						'rule',
@@ -2227,7 +2236,7 @@ function handlePromptResolution(
 		}
 
 		if (!alreadyShuffledWithTopCard) {
-			libraryOwner.library = shuffleArray(libraryOwner.library);
+			shuffleLibrary(libraryOwner);
 		}
 		if (prompt.continuationEffects && prompt.continuationEffects.length > 0 && prompt.stackItem) {
 			for (const eff of prompt.continuationEffects) {
@@ -2242,11 +2251,8 @@ function handlePromptResolution(
 		const candidateIds = prompt.candidateInstanceIds || [];
 		const extracted: CardInstance[] = [];
 		for (const cid of candidateIds) {
-			const idx = actor.library.findIndex((c) => c.instanceId === cid);
-			if (idx >= 0) {
-				const [c] = actor.library.splice(idx, 1);
-				extracted.push(c);
-			}
+			const c = actor.library.find((l) => l.instanceId === cid);
+			if (c && !extracted.includes(c)) extracted.push(c);
 		}
 		const byId = new Map(extracted.map((c) => [c.instanceId, c]));
 		const usedIds = new Set<string>();
@@ -2277,11 +2283,10 @@ function handlePromptResolution(
 			}
 		}
 
-		actor.library.unshift(...topList);
-		actor.library.push(...bottomList);
+		rearrangeLibrary(actor, extracted, topList, bottomList);
 
 		if (prompt.allowShuffle && action.shuffleAfter) {
-			actor.library = shuffleArray(actor.library);
+			shuffleLibrary(actor);
 			addLog(
 				state,
 				'rule',
@@ -2598,10 +2603,12 @@ export function resolveTopOfStack(state: GameState): void {
 				for (const p of state.players) {
 					const gIdx = p.graveyard.findIndex((c) => c.instanceId === gt.id);
 					if (gIdx >= 0) {
-						const [card] = p.graveyard.splice(gIdx, 1);
-						card.zone = 'hand';
-						card.objectVersion = (card.objectVersion || 1) + 1;
-						p.hand.push(card);
+						const card = p.graveyard[gIdx];
+						moveObject(state, card, 'hand', {
+							from: { player: p, zone: 'graveyard' },
+							toPlayer: p,
+							bumpVersion: true
+						});
 						addLog(
 							state,
 							'cast',
@@ -2617,10 +2624,12 @@ export function resolveTopOfStack(state: GameState): void {
 				for (const p of state.players) {
 					const gIdx = p.graveyard.findIndex((c) => c.instanceId === gt.id);
 					if (gIdx >= 0) {
-						const [card] = p.graveyard.splice(gIdx, 1);
-						card.zone = 'exile';
-						card.objectVersion = (card.objectVersion || 1) + 1;
-						p.exile.push(card);
+						const card = p.graveyard[gIdx];
+						moveObject(state, card, 'exile', {
+							from: { player: p, zone: 'graveyard' },
+							toPlayer: p,
+							bumpVersion: true
+						});
 						addLog(
 							state,
 							'cast',
@@ -2717,7 +2726,7 @@ export function resolveTopOfStack(state: GameState): void {
 			if (tLine.includes('Aura') && item.targets[0]?.kind === 'permanent') {
 				perm.attachedToId = item.targets[0].id;
 			}
-			controller.battlefield.push(perm);
+			moveObject(state, perm, 'battlefield', { from: 'stack', toPlayer: controller });
 			addLog(
 				state,
 				'cast',
@@ -2901,13 +2910,18 @@ function executeParsedEffect(
 		case 'return_self_from_graveyard': {
 			const gIdx = controller.graveyard.findIndex((c) => c.instanceId === item.sourceInstanceId);
 			if (gIdx >= 0) {
-				const [card] = controller.graveyard.splice(gIdx, 1);
-				card.zone = 'battlefield';
-				card.controllerId = controller.playerId;
-				card.enteredTimestamp = allocateTimestamp(state);
-				card.objectVersion = (card.objectVersion || 1) + 1;
-				card.summoningSick = !hasKeyword(card, 'Haste', state);
-				controller.battlefield.push(card);
+				const card = controller.graveyard[gIdx];
+				moveObject(state, card, 'battlefield', {
+					from: { player: controller, zone: 'graveyard' },
+					toPlayer: controller,
+					controllerId: controller.playerId,
+					newTimestamp: true,
+					bumpVersion: true,
+					// Haste was checked with the card out of the graveyard but not yet on the battlefield.
+					beforeInsert: (c) => {
+						c.summoningSick = !hasKeyword(c, 'Haste', state);
+					}
+				});
 				addLog(
 					state,
 					'trigger',
@@ -2922,11 +2936,13 @@ function executeParsedEffect(
 		case 'exile_all_graveyards': {
 			let exiledTotal = 0;
 			for (const p of state.players) {
+				// Top card first, so exile receives the graveyard in reverse order (pinned behaviour).
 				while (p.graveyard.length > 0) {
-					const c = p.graveyard.pop()!;
-					c.zone = 'exile';
-					c.objectVersion = (c.objectVersion || 1) + 1;
-					p.exile.push(c);
+					moveObject(state, p.graveyard[p.graveyard.length - 1], 'exile', {
+						from: { player: p, zone: 'graveyard' },
+						toPlayer: p,
+						bumpVersion: true
+					});
 					exiledTotal++;
 				}
 			}
@@ -2951,10 +2967,12 @@ function executeParsedEffect(
 				gIdx = controller.graveyard.length - 1;
 			}
 			if (gIdx >= 0) {
-				const [ret] = controller.graveyard.splice(gIdx, 1);
-				ret.zone = 'hand';
-				ret.objectVersion = (ret.objectVersion || 1) + 1;
-				controller.hand.push(ret);
+				const ret = controller.graveyard[gIdx];
+				moveObject(state, ret, 'hand', {
+					from: { player: controller, zone: 'graveyard' },
+					toPlayer: controller,
+					bumpVersion: true
+				});
 				addLog(
 					state,
 					'trigger',
@@ -2982,7 +3000,7 @@ function executeParsedEffect(
 				);
 				tokenInst.copiableCard = baseCardToCopy;
 				tokenInst.summoningSick = baseCardToCopy.typeLine.includes('Creature');
-				controller.battlefield.push(tokenInst);
+				moveObject(state, tokenInst, 'battlefield', { from: 'none', toPlayer: controller });
 				addLog(
 					state,
 					'trigger',
@@ -3050,7 +3068,7 @@ function executeParsedEffect(
 			const count = Math.min(eff.amount, controller.library.length);
 			if (count <= 0) break;
 			if (controller.isBot) {
-				const topCards = controller.library.splice(0, count);
+				const topCards = controller.library.slice(0, count);
 				const landCount =
 					controller.battlefield.filter((b) => b.card.typeLine.includes('Land')).length +
 					controller.hand.filter((h) => h.card.typeLine.includes('Land')).length;
@@ -3064,8 +3082,7 @@ function executeParsedEffect(
 						keepTop.push(c);
 					}
 				}
-				controller.library.unshift(...keepTop);
-				controller.library.push(...putBottom);
+				rearrangeLibrary(controller, topCards, keepTop, putBottom);
 				addLog(
 					state,
 					'rule',
@@ -3093,7 +3110,7 @@ function executeParsedEffect(
 			const count = Math.min(eff.amount, controller.library.length);
 			if (count <= 0) break;
 			if (controller.isBot) {
-				const topCards = controller.library.splice(0, count);
+				const topCards = controller.library.slice(0, count);
 				const landCount =
 					controller.battlefield.filter((b) => b.card.typeLine.includes('Land')).length +
 					controller.hand.filter((h) => h.card.typeLine.includes('Land')).length;
@@ -3102,7 +3119,7 @@ function executeParsedEffect(
 					const bLand = b.card.typeLine.includes('Land') ? 1 : 0;
 					return landCount < 3 ? bLand - aLand : aLand - bLand;
 				});
-				controller.library.unshift(...topCards);
+				rearrangeLibrary(controller, topCards, topCards, []);
 				addLog(
 					state,
 					'rule',
@@ -3488,16 +3505,18 @@ function executeParsedEffect(
 					}
 				}
 				if (topIdx >= 0) {
-					const [reanimated] = controller.graveyard.splice(topIdx, 1);
-					reanimated.zone = 'battlefield';
-					reanimated.controllerId = controller.playerId;
-					reanimated.enteredTimestamp = allocateTimestamp(state);
-					reanimated.objectVersion = (reanimated.objectVersion || 1) + 1;
+					const reanimated = controller.graveyard[topIdx];
 					reanimated.summoningSick = false;
 					if (!reanimated.grantedKeywords.includes('Haste')) {
 						reanimated.grantedKeywords.push('Haste');
 					}
-					controller.battlefield.push(reanimated);
+					moveObject(state, reanimated, 'battlefield', {
+						from: { player: controller, zone: 'graveyard' },
+						toPlayer: controller,
+						controllerId: controller.playerId,
+						newTimestamp: true,
+						bumpVersion: true
+					});
 					addLog(
 						state,
 						'cast',
@@ -3530,13 +3549,15 @@ function executeParsedEffect(
 					for (const p of state.players) {
 						const gIdx = p.graveyard.findIndex((c) => c.instanceId === gt.id);
 						if (gIdx >= 0) {
-							const [reanimated] = p.graveyard.splice(gIdx, 1);
-							reanimated.zone = 'battlefield';
-							reanimated.controllerId = controller.playerId;
-							reanimated.enteredTimestamp = allocateTimestamp(state);
-							reanimated.objectVersion = (reanimated.objectVersion || 1) + 1;
+							const reanimated = p.graveyard[gIdx];
 							reanimated.summoningSick = reanimated.card.typeLine.includes('Creature');
-							controller.battlefield.push(reanimated);
+							moveObject(state, reanimated, 'battlefield', {
+								from: { player: p, zone: 'graveyard' },
+								toPlayer: controller,
+								controllerId: controller.playerId,
+								newTimestamp: true,
+								bumpVersion: true
+							});
 							addLog(
 								state,
 								'cast',
@@ -3560,13 +3581,15 @@ function executeParsedEffect(
 					}
 				}
 				if (gIdx >= 0) {
-					const [creature] = p.graveyard.splice(gIdx, 1);
-					creature.zone = 'battlefield';
-					creature.controllerId = controller.playerId;
-					creature.enteredTimestamp = allocateTimestamp(state);
-					creature.objectVersion = (creature.objectVersion || 1) + 1;
+					const creature = p.graveyard[gIdx];
 					creature.summoningSick = true;
-					controller.battlefield.push(creature);
+					moveObject(state, creature, 'battlefield', {
+						from: { player: p, zone: 'graveyard' },
+						toPlayer: controller,
+						controllerId: controller.playerId,
+						newTimestamp: true,
+						bumpVersion: true
+					});
 					addLog(
 						state,
 						'cast',
@@ -3797,7 +3820,8 @@ export function executeSuspendFreeCastFromExile(
 		chosenTargets.push(preferred);
 	}
 
-	owner.exile.splice(eIdx, 1);
+	// Pinned behaviour: `zone` stays 'exile' and there's no objectVersion/timestamp change.
+	moveObject(state, suspCard, 'stack', { from: { player: owner, zone: 'exile' }, setZone: false });
 	suspCard.isSuspended = false;
 	suspCard.castViaSuspend = true;
 	owner.spellsCastThisTurn = (owner.spellsCastThisTurn || 0) + 1;
@@ -3951,12 +3975,10 @@ function initiateLibrarySearch(
 				matchesLibrarySearchSpec(c.card, searchSpec)
 			);
 			if (idx < 0) break;
-			const [found] = searchingPlayer.library.splice(idx, 1);
+			const found = searchingPlayer.library[idx];
+			const fromLibrary = { player: searchingPlayer, zone: 'library' as const };
 
 			if (interceptor?.exilesFoundCards) {
-				found.zone = 'exile';
-				found.enteredTimestamp = allocateTimestamp(state);
-				found.objectVersion = (found.objectVersion || 1) + 1;
 				if (interceptor.grantPlayFromExile) {
 					found.playableFromExileBy = {
 						playerId: interceptor.controllerId,
@@ -3964,7 +3986,12 @@ function initiateLibrarySearch(
 						sourceName: interceptor.sourceName
 					};
 				}
-				searchingPlayer.exile.push(found);
+				moveObject(state, found, 'exile', {
+					from: fromLibrary,
+					toPlayer: searchingPlayer,
+					newTimestamp: true,
+					bumpVersion: true
+				});
 				addLog(
 					state,
 					'rule',
@@ -3972,13 +3999,15 @@ function initiateLibrarySearch(
 					decisionPlayer.playerId
 				);
 			} else if (dest.zone === 'battlefield') {
-				found.zone = 'battlefield';
-				found.controllerId = searchingPlayer.playerId;
 				const selfEntersTapped = cardEntersTapped(found.card);
 				found.tapped = Boolean(dest.tapped) || selfEntersTapped;
-				found.enteredTimestamp = allocateTimestamp(state);
-				found.objectVersion = (found.objectVersion || 1) + 1;
-				searchingPlayer.battlefield.push(found);
+				moveObject(state, found, 'battlefield', {
+					from: fromLibrary,
+					toPlayer: searchingPlayer,
+					controllerId: searchingPlayer.playerId,
+					newTimestamp: true,
+					bumpVersion: true
+				});
 				addLog(
 					state,
 					'rule',
@@ -3987,13 +4016,16 @@ function initiateLibrarySearch(
 				);
 				triggerOnEtb(state, searchingPlayer, found);
 			} else if (dest.zone === 'library' && dest.onTop) {
-				found.zone = 'library';
-				found.enteredTimestamp = allocateTimestamp(state);
-				found.objectVersion = (found.objectVersion || 1) + 1;
+				moveObject(state, found, 'library', {
+					from: fromLibrary,
+					toPlayer: searchingPlayer,
+					insert: 'deferred',
+					newTimestamp: true,
+					bumpVersion: true
+				});
 				topCardsToPlace.push(found);
 			} else {
-				found.zone = 'hand';
-				searchingPlayer.hand.push(found);
+				moveObject(state, found, 'hand', { from: fromLibrary, toPlayer: searchingPlayer });
 				addLog(
 					state,
 					'rule',
@@ -4002,9 +4034,9 @@ function initiateLibrarySearch(
 				);
 			}
 		}
-		searchingPlayer.library = shuffleArray(searchingPlayer.library);
+		shuffleLibrary(searchingPlayer);
 		if (topCardsToPlace.length > 0) {
-			searchingPlayer.library.unshift(...topCardsToPlace);
+			placeDeferred(searchingPlayer, 'library', topCardsToPlace, 'start');
 			addLog(
 				state,
 				'rule',
@@ -4016,7 +4048,7 @@ function initiateLibrarySearch(
 	}
 
 	if (matchingCards.length === 0 && !interceptor) {
-		searchingPlayer.library = shuffleArray(searchingPlayer.library);
+		shuffleLibrary(searchingPlayer);
 		addLog(
 			state,
 			'rule',
@@ -4061,13 +4093,15 @@ function autoFetchBasicLandToBattlefield(
 ): void {
 	const idx = player.library.findIndex((c) => c.card.typeLine.includes('Basic Land'));
 	if (idx >= 0) {
-		const [land] = player.library.splice(idx, 1);
-		land.zone = 'battlefield';
-		land.controllerId = player.playerId;
+		const land = player.library[idx];
 		land.tapped = tapped;
-		land.enteredTimestamp = allocateTimestamp(state);
-		land.objectVersion = (land.objectVersion || 1) + 1;
-		player.battlefield.push(land);
+		moveObject(state, land, 'battlefield', {
+			from: { player, zone: 'library' },
+			toPlayer: player,
+			controllerId: player.playerId,
+			newTimestamp: true,
+			bumpVersion: true
+		});
 		addLog(
 			state,
 			'rule',
@@ -4116,7 +4150,7 @@ export function createTokenOnBoard(
 		allocateTimestamp(state)
 	);
 	inst.summoningSick = spec.typeLine.includes('Creature');
-	controller.battlefield.push(inst);
+	moveObject(state, inst, 'battlefield', { from: 'none', toPlayer: controller });
 	emitVfx(state, {
 		kind: 'token_create',
 		sourceId: controller.playerId,
@@ -4788,11 +4822,12 @@ function runCleanupStep(state: GameState): void {
 		const excess = activePlayer.hand.length - maxHand;
 		if (activePlayer.isBot) {
 			const gyDest = checkGraveyardReplacementZone(state, 'graveyard').dest;
-			activePlayer.hand.splice(0, excess).forEach((c) => {
-				c.zone = gyDest;
-				if (gyDest === 'exile') activePlayer.exile.push(c);
-				else activePlayer.graveyard.push(c);
-			});
+			for (const c of activePlayer.hand.slice(0, excess)) {
+				moveObject(state, c, gyDest, {
+					from: { player: activePlayer, zone: 'hand' },
+					toPlayer: activePlayer
+				});
+			}
 			completeTurnCleanupAndPassTurn(state);
 		} else {
 			state.pendingPrompts.push({
@@ -4980,9 +5015,9 @@ export function checkStateBasedActions(state: GameState): void {
 			const prevGraveLen = p.graveyard.length;
 			const prevExileLen = p.exile.length;
 			const prevHandLen = p.hand.length;
-			p.graveyard = p.graveyard.filter((c) => !c.isToken);
-			p.exile = p.exile.filter((c) => !c.isToken);
-			p.hand = p.hand.filter((c) => !c.isToken);
+			removeFromGame(p, 'graveyard', (c) => c.isToken);
+			removeFromGame(p, 'exile', (c) => c.isToken);
+			removeFromGame(p, 'hand', (c) => c.isToken);
 			if (
 				p.graveyard.length !== prevGraveLen ||
 				p.exile.length !== prevExileLen ||
@@ -4998,13 +5033,13 @@ export function checkStateBasedActions(state: GameState): void {
 			];
 			for (const cmd of commandersInGraveOrExile) {
 				if (p.isBot) {
-					p.graveyard = p.graveyard.filter((c) => c.instanceId !== cmd.instanceId);
-					p.exile = p.exile.filter((c) => c.instanceId !== cmd.instanceId);
-					cmd.zone = 'command';
 					cmd.damageMarked = 0;
 					cmd.deathtouchDamageMarked = false;
 					cmd.tapped = false;
-					p.command.push(cmd);
+					moveObject(state, cmd, 'command', {
+						from: { player: p, zone: p.graveyard.includes(cmd) ? 'graveyard' : 'exile' },
+						toPlayer: p
+					});
 					addLog(
 						state,
 						'sba',
@@ -5128,20 +5163,20 @@ export function cleanupEliminatedPlayer(state: GameState, eliminated: PlayerGame
 			if (owner) {
 				perm.controllerId = owner.playerId;
 				perm.attachedToId = null;
-				owner.battlefield.push(perm);
+				transferBattlefieldControl(perm, eliminated, owner);
 			}
 		}
 	}
-	eliminated.battlefield = [];
+	removeFromGame(eliminated, 'battlefield');
 
 	// Also remove any cards on other players' battlefields or zones owned by the eliminated player (CR 800.4a)
-	eliminated.exile = [];
-	eliminated.hand = [];
-	eliminated.library = [];
+	removeFromGame(eliminated, 'exile');
+	removeFromGame(eliminated, 'hand');
+	removeFromGame(eliminated, 'library');
 	for (const other of state.players) {
 		if (other.playerId === elimId) continue;
-		other.battlefield = other.battlefield.filter((c) => c.ownerId !== elimId);
-		other.exile = other.exile.filter((c) => c.ownerId !== elimId);
+		removeFromGame(other, 'battlefield', (c) => c.ownerId === elimId);
+		removeFromGame(other, 'exile', (c) => c.ownerId === elimId);
 		for (const exCard of other.exile) {
 			if (exCard.playableFromExileBy?.playerId === elimId) {
 				exCard.playableFromExileBy = undefined;

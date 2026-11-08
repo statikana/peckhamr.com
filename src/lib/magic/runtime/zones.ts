@@ -23,7 +23,7 @@ export interface ZoneLocation {
 	zone: PlayerZone;
 }
 
-type InsertAt = 'end' | 'start' | number;
+type InsertAt = 'end' | 'start' | number | 'deferred';
 
 export interface MoveOptions {
 	/**
@@ -43,7 +43,10 @@ export interface MoveOptions {
 	/**
 	 * Array position in the receiving zone: 'end' (push; default), 'start' (unshift) or an index.
 	 * The top of a library is index 0; the top of a graveyard is the end. A function picks the
-	 * position from the actual destination (after replacement effects).
+	 * position from the actual destination (after replacement effects). 'deferred' removes the
+	 * object and does the bookkeeping now but inserts it nowhere; the caller must put it in place
+	 * later with `placeDeferred`. (A bot's "search, shuffle, then put the cards on top" needs the
+	 * cards out of the library while it shuffles and while ETB triggers from the same search run.)
 	 */
 	insert?: InsertAt | ((dest: ZoneType) => InsertAt);
 	/** Increment objectVersion (CR 400.7 new object). */
@@ -112,7 +115,11 @@ function removeFirst(list: CardInstance[], instanceId: string): boolean {
 	return true;
 }
 
-function insertInto(list: CardInstance[], obj: CardInstance, at: InsertAt | undefined): void {
+function insertInto(
+	list: CardInstance[],
+	obj: CardInstance,
+	at: Exclude<InsertAt, 'deferred'> | undefined
+): void {
 	if (at === undefined || at === 'end') list.push(obj);
 	else if (at === 'start') list.unshift(obj);
 	else list.splice(at, 0, obj);
@@ -203,7 +210,7 @@ export function moveObject(
 		(opts.ceaseToExist === 'tokens' && obj.isToken && dest !== 'battlefield');
 	if (dest !== 'stack' && !ceases) {
 		const at = typeof opts.insert === 'function' ? opts.insert(dest) : opts.insert;
-		insertInto(receiver[dest as PlayerZone], obj, at);
+		if (at !== 'deferred') insertInto(receiver[dest as PlayerZone], obj, at);
 	}
 	emitZoneChange(
 		state,
@@ -247,6 +254,20 @@ function emitZoneChange(
 // ---------------------------------------------------------------------------------------------
 // Not zone changes: reordering within a zone, control changes, and leaving the game. No events.
 // ---------------------------------------------------------------------------------------------
+
+/**
+ * Inserts objects that an earlier `moveObject(..., { insert: 'deferred' })` already moved (and
+ * reported). 'start' keeps their order, so cards[0] ends up first.
+ */
+export function placeDeferred(
+	player: PlayerGameState,
+	zone: PlayerZone,
+	cards: CardInstance[],
+	at: 'start' | 'end'
+): void {
+	if (at === 'start') player[zone].unshift(...cards);
+	else player[zone].push(...cards);
+}
 
 /** Shuffles a library. With `keepTop`, the top `keepTop` cards stay where they are. */
 export function shuffleLibrary(player: PlayerGameState, keepTop = 0): void {
