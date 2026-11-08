@@ -448,9 +448,25 @@ while it runs), **entry**, **work**, **exit**, and **ratchet target**.
   - `--decks` checked against a synthetic export in the wrangler envelope; the local D1 has no
     decks, so the real saved-deck number needs the `--remote` export.
   - Suite: 122 pass (incl. 34 compiler tests), 3 todo, 0 fail; 0 magic type errors.
-- **Next (suggested):** begin the real grammar with one narrow area, costs (`compiler/costs.ts`,
-  including "Tap N untapped <filter> you control"), run it alongside the adapter and compare outputs
-  over the card pool rather than replacing the adapter wholesale.
+- **Follow-up: cost grammar (2026-11-08), alongside the adapter.** `compiler/costs.ts` is the
+  first real grammar production: activated-ability costs and "As an additional cost to cast ~, …"
+  sentences, with an object-phrase parser (`parseObjectPhrase`) that later productions can reuse.
+  It does **not** feed `compileCard` or the engine yet; Phase 4 switches over after Phase 2 merges.
+  `scripts/magic-costs-diff.ts` compares it with the adapter (report: `COST-GRAMMAR.md`):
+  - 10,226 costs in the bulk data: 7,318 agree, **1,712 only the grammar understands** (sacrifice/
+    discard/exile/remove-counter/tap-untapped costs), 1,155 neither, 0 regressions on precons.
+  - The 21 "adapter only" and 20 "differ" rows are all the adapter (= the engine's
+    `parseAdditionalCostsAndRestrictions`) over-claiming, so **these are live engine bugs for
+    Phase 4**: "discard a card or pay 3 life" (Bitter Triumph) is enforced as *both*; "sacrifice a
+    creature or pay {3}{B}" as a mandatory sacrifice; optional "you may sacrifice" as mandatory;
+    "sacrifice a creature with power 4 or greater" as any creature; "an artifact or creature" as
+    artifact only; "discard a card at random" as a chosen discard.
+  - Not yet in the grammar (by cards affected): `Discard ~` (channel-style, 79), energy `{E}`
+    (41+), keyword/ability-word prefixes before a cost ("Channel —", "Exhaust —", "Boast —"),
+    counter kinds outside `CounterType` (spore, oil, quest, …), "Return … to its owner's hand",
+    choices between costs, and conjunctive filters ("artifact creature", "Elf Warrior"), which
+    `ObjectFilter`'s any-of lists can't express.
+  - `ir.ts` (additive): `exileFrom.filter` may be `'self'`.
 
 ### Phase 2: Central zone changes and event bus (behaviour-preserving)
 - **Owns:** `runtime/zones.ts`, `runtime/events.ts` (new); zone-mutation sites in `engine.ts`.

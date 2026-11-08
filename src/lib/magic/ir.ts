@@ -244,7 +244,7 @@ export type CostDef =
 	| { k: 'payLife'; amount: Amount }
 	| { k: 'loyalty'; delta: number }
 	| { k: 'removeCounters'; counter: CounterType; count: Amount; from: 'self' | ObjectFilter }
-	| { k: 'exileFrom'; zone: ZoneType; count: Amount; filter?: ObjectFilter };
+	| { k: 'exileFrom'; zone: ZoneType; count: Amount; filter?: ObjectFilter | 'self' };
 
 // ---- Effects --------------------------------------------------------------------------------
 

@@ -159,7 +159,20 @@ const NEUTRAL_SENTENCES: RegExp[] = [
 
 // ---- Entry point ----------------------------------------------------------------------------
 
-export function adaptCard(card: ScryfallCard): FaceDefinition[] {
+/** What the adapter decided about one cost, for comparing against the cost grammar. */
+export interface LegacyCostClaim {
+	kind: 'activated' | 'additional';
+	/** Index of the line in the original rules text. */
+	rawIndex: number;
+	/** Normalised cost text. */
+	text: string;
+	defs: CostDef[];
+	/** True if every part of the cost was understood. */
+	complete: boolean;
+}
+
+/** Pass `costLog` to collect the adapter's cost decisions (scripts/magic-costs-diff.ts). */
+export function adaptCard(card: ScryfallCard, costLog?: LegacyCostClaim[]): FaceDefinition[] {
 	const characteristics = buildCharacteristics(card);
 
 	if (card.backFace || card.oracleText.includes('\n//\n')) {
@@ -175,7 +188,7 @@ export function adaptCard(card: ScryfallCard): FaceDefinition[] {
 	}
 
 	const norm = normalizeFace(card.name, card.oracleText);
-	const ctx = new AdapterContext(card);
+	const ctx = new AdapterContext(card, costLog);
 	const abilities: AbilityDef[] = [];
 	const spellLines: NormalizedLine[] = [];
 
@@ -213,10 +226,12 @@ class AdapterContext {
 	readonly isInstantOrSorcery: boolean;
 	readonly tree: CardRuleTree;
 	readonly structured: Array<{ type: 'etb' | 'attack' | 'dies' | 'upkeep' | 'end_step'; ab: StructuredTriggeredAbility }>;
+	readonly costLog?: LegacyCostClaim[];
 	private manaTapClaimed = false;
 
-	constructor(card: ScryfallCard) {
+	constructor(card: ScryfallCard, costLog?: LegacyCostClaim[]) {
 		this.card = card;
+		this.costLog = costLog;
 		this.isInstantOrSorcery = card.typeLine.includes('Instant') || card.typeLine.includes('Sorcery');
 		this.tree = getCardRuleTree(card, ALL_COLORS);
 		this.structured = (['etb', 'attack', 'dies', 'upkeep', 'end_step'] as const).flatMap((type) =>
@@ -499,6 +514,13 @@ function adaptActivated(ctx: AdapterContext, line: NormalizedLine): AbilityDef[]
 
 	const cost = translateCost(node, costText, line.bodySpan.start);
 	const unparsed = [...cost.unparsed];
+	ctx.costLog?.push({
+		kind: 'activated',
+		rawIndex: line.rawIndex,
+		text: costText,
+		defs: cost.defs,
+		complete: cost.unparsed.length === 0
+	});
 
 	let effect: EffectStep[];
 	if (node.path === 'activated.mana') {
@@ -654,6 +676,13 @@ function adaptSpell(ctx: AdapterContext, lines: NormalizedLine[]): AbilityDef[] 
 			if (low.startsWith('as an additional cost to cast ~,')) {
 				const costs = additionalCostDefs(additional);
 				if (costs.length === 0) unparsed.push(s.span);
+				ctx.costLog?.push({
+					kind: 'additional',
+					rawIndex: group[0].rawIndex,
+					text: s.text,
+					defs: costs,
+					complete: costs.length > 0
+				});
 				additionalCosts.push(...costs);
 			} else if (
 				(low === 'cast ~ only during combat.' && additional.onlyDuringCombat) ||
