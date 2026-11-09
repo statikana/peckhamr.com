@@ -245,6 +245,7 @@ describe('Layer cache stable-input scopes (Phase 6c)', () => {
 		const f = fixture();
 		const s = f.b.state;
 		// Without check mode the scope trusts its first validation (this is the contract callers keep).
+		setLayerCacheCheck(false);
 		withStableLayerInputs(s, () => {
 			assert.equal(permanentHasLostAllAbilities(f.warden, s).lost, false);
 			f.veil.attachedToId = f.warden.instanceId;
