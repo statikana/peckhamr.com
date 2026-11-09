@@ -753,6 +753,7 @@ export interface GameState {
 	stackTriggersEnabled?: boolean;
 	rngState?: number;
 	nextUid?: number;
+	idSalt?: number;
 }
 
 export interface MagicLobby {

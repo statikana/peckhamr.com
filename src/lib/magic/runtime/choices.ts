@@ -35,6 +35,49 @@ export {
 	type PromptPurpose
 };
 
+export const ALL_CHOICE_KINDS: readonly ChoiceKind[] = [
+	'yesNo',
+	'chooseObjects',
+	'chooseMode',
+	'chooseNumber',
+	'orderObjects',
+	'chooseReplacement'
+] as const;
+
+export const ALL_PROMPT_PURPOSES: readonly PromptPurpose[] = [
+	'mulligan',
+	'london_bottom',
+	'discard_to_hand_size',
+	'commander_zone_choice',
+	'end_turn',
+	'search_library',
+	'scry_choice',
+	'guided_resolution',
+	'legend_rule',
+	'cost_choice',
+	'trigger_targets',
+	'trigger_order',
+	'trigger_may',
+	'generic'
+] as const;
+
+/** Compile-time and runtime exhaustiveness guard over all `ChoiceRequest['kind']` variants. */
+export function assertExhaustiveChoiceKind(choice: ChoiceRequest): ChoiceKind {
+	switch (choice.kind) {
+		case 'yesNo':
+		case 'chooseObjects':
+		case 'chooseMode':
+		case 'chooseNumber':
+		case 'orderObjects':
+		case 'chooseReplacement':
+			return choice.kind;
+		default: {
+			const _exhaustive: never = choice;
+			return _exhaustive;
+		}
+	}
+}
+
 /**
  * A named prompt handler: code registered once at module load, referred to from a prompt by name
  * (`continuation: { kind: 'handler', name, data }`). The prompt itself holds only plain data, so it

@@ -141,7 +141,7 @@ import {
 } from './runtime/effects.ts';
 import { botAcceptsOptionalTrigger, chooseBotTriggerTargets } from './ai.ts';
 import type { CostDef, EffectStep, TargetSpec, TokenSpec } from './ir.ts';
-import { freshRngSeed, type RngHolder } from './runtime/random.ts';
+import { deriveIdSalt, freshRngSeed, hash32, type RngHolder } from './runtime/random.ts';
 import { cardAbilityDisplayText, enteringNotices, stackItemDisplayText } from './compiler/support.ts';
 import {
 	buildCostChoiceRequest,
@@ -161,6 +161,7 @@ import {
 	PHASE_LABELS,
 	type CardInstance,
 	type ChoiceAnswer,
+	type ChoiceRequest,
 	type CostPayment,
 	type CounterType,
 	type DelayedTrigger,
@@ -176,10 +177,12 @@ import {
 	type LobbyRulesConfig,
 	type LobbySeat,
 	type MagicDeck,
+	type MagicLobby,
 	type ManaColor,
 	type ManaPool,
 	type PendingPrompt,
 	type PlayerGameState,
+	type PromptPurpose,
 	type ScryfallCard,
 	type StackItem,
 	type TriggerEventLki,
@@ -193,10 +196,19 @@ export { ENGINE_VERSION };
 
 let fallbackUidCounter = 0;
 
-function uid(prefix: string, state?: { nextUid?: number }): string {
+interface UidHolder {
+	nextUid?: number;
+	idSalt?: number;
+	rngState?: number;
+}
+
+function uid(prefix: string, state?: UidHolder): string {
 	if (state) {
+		if (state.idSalt === undefined) {
+			state.idSalt = deriveIdSalt(state.rngState ?? 0);
+		}
 		state.nextUid = (state.nextUid ?? 0) + 1;
-		return `${prefix}_${state.nextUid}`;
+		return `${prefix}_${hash32(state.idSalt, state.nextUid).toString(36)}`;
 	}
 	fallbackUidCounter += 1;
 	return `${prefix}_ext_${fallbackUidCounter}`;
@@ -211,7 +223,7 @@ export function createCardInstance(
 	isCommander = false,
 	isToken = false,
 	enteredTimestamp?: number,
-	uidHolder?: { nextUid?: number }
+	uidHolder?: UidHolder
 ): CardInstance {
 	const counters = createEmptyCounters();
 	if (card.loyalty && zone === 'battlefield') {
@@ -287,8 +299,10 @@ export function createInitialGameState(
 	const now = Date.now();
 	const activeSeats = seats.filter((s) => s.userId !== null || s.isBot);
 	// ENGINE_INVARIANTS.md 7.2: one seed per game; every shuffle and random choice draws from it.
-	const rng: RngHolder = { rngState: freshRngSeed() };
-	const uidHolder: { nextUid?: number } = { nextUid: 0 };
+	const initialSeed = freshRngSeed();
+	const rng: RngHolder = { rngState: initialSeed };
+	const idSalt = deriveIdSalt(initialSeed);
+	const uidHolder: UidHolder = { nextUid: 0, idSalt };
 
 	const players: PlayerGameState[] = activeSeats.map((seat, idx) => {
 		const playerId = seat.userId || `bot_${seat.seatIndex}`;
@@ -384,6 +398,7 @@ export function createInitialGameState(
 		pendingPrompts: [],
 		rngState: rng.rngState,
 		nextUid: uidHolder.nextUid,
+		idSalt,
 		recentVfxEvents: [],
 		log: [],
 		turnStartedAt: now,
@@ -1135,6 +1150,37 @@ export function applyGameAction(
 	}
 }
 
+/**
+ * Ends an active or mulligan game whose `engineVersion` is missing or mismatches `ENGINE_VERSION`
+ * (PLAN §2.6). Returns `true` when it transitioned the game to `'finished'` and appended a system
+ * log entry; returns `false` if the version matches or the game was already `'finished'`.
+ */
+export function enforceEngineVersion(state: GameState): boolean {
+	if (state.engineVersion === ENGINE_VERSION) return false;
+	if (state.status === 'finished') return false;
+	state.status = 'finished';
+	addLog(
+		state,
+		'system',
+		`Match ended: game state engineVersion (${state.engineVersion ?? 'missing'}) is incompatible with current engineVersion (${ENGINE_VERSION}).`
+	);
+	return true;
+}
+
+/**
+ * Load-time version gate for a `MagicLobby`: if the lobby has an active/mulligan `gameState` with a
+ * missing or mismatched `engineVersion`, ends the game and marks the lobby `'finished'`, bumps
+ * `lobby.version`, and returns `true` so the caller can persist the ended state before responding.
+ */
+export function enforceLobbyEngineVersion(lobby: MagicLobby, now = Date.now()): boolean {
+	if (!lobby.gameState) return false;
+	if (!enforceEngineVersion(lobby.gameState)) return false;
+	lobby.status = 'finished';
+	lobby.version += 1;
+	lobby.updatedAt = now;
+	return true;
+}
+
 function applyGameActionInner(
 	state: GameState,
 	actorId: string,
@@ -1144,16 +1190,10 @@ function applyGameActionInner(
 		return { ok: false, error: 'Game has already finished.' };
 	}
 
-	if (state.engineVersion !== undefined && state.engineVersion !== ENGINE_VERSION) {
-		state.status = 'finished';
-		addLog(
-			state,
-			'system',
-			`Match ended: game state engineVersion (${state.engineVersion}) is incompatible with current engineVersion (${ENGINE_VERSION}).`
-		);
+	if (enforceEngineVersion(state)) {
 		return {
 			ok: false,
-			error: `Match ended due to incompatible engineVersion (${state.engineVersion} vs ${ENGINE_VERSION}).`
+			error: `Match ended due to incompatible engineVersion (${state.engineVersion ?? 'missing'} vs ${ENGINE_VERSION}).`
 		};
 	}
 
@@ -3211,7 +3251,15 @@ function applyGuidedOperations(state: GameState, actor: PlayerGameState, ops: Gu
 						newTimestamp: true
 					});
 				}
-				addLog(state, 'rule', `${found.inst.card.name} was moved from ${found.zone} to ${dest} (manual).`, actor.playerId);
+				const isHiddenToHidden =
+					(found.zone === 'hand' || found.zone === 'library') &&
+					(dest === 'hand' || dest === 'library');
+				addLog(
+					state,
+					'rule',
+					`${isHiddenToHidden ? 'A card' : found.inst.card.name} was moved from ${found.zone} to ${dest} (manual).`,
+					actor.playerId
+				);
 				if (dest === 'battlefield') flushTriggers(state);
 				break;
 			}
@@ -8092,8 +8140,110 @@ function applyDamageToTarget(
 	}
 }
 
+/**
+ * Purposes whose candidate lists and descriptions are already public on the table:
+ * - `trigger_targets`: target candidates on the battlefield (CR 603.3d).
+ * - `trigger_order`: triggered ability items already placed on the stack (CR 603.3b).
+ * All other purposes default to redacted for non-viewing players.
+ */
+const PUBLIC_PROMPT_PURPOSES: ReadonlySet<PromptPurpose> = new Set<PromptPurpose>([
+	'trigger_targets',
+	'trigger_order'
+]);
+
+function isPublicPromptForOpponent(pr: PendingPrompt): boolean {
+	const purpose = effectivePromptPurpose(pr);
+	if (!PUBLIC_PROMPT_PURPOSES.has(purpose)) return false;
+	if (purpose === 'trigger_targets') {
+		return !pr.choice || (pr.choice.kind === 'chooseObjects' && pr.choice.zone === 'battlefield');
+	}
+	return true;
+}
+
+function redactChoiceForOpponent(choice: ChoiceRequest): ChoiceRequest {
+	switch (choice.kind) {
+		case 'yesNo':
+			return { kind: 'yesNo', question: 'Opponent is choosing…' };
+		case 'chooseObjects':
+			return {
+				kind: 'chooseObjects',
+				candidates: [],
+				min: choice.min,
+				max: choice.max,
+				zone: choice.zone,
+				reason: 'Opponent is choosing…'
+			};
+		case 'chooseMode':
+			return {
+				kind: 'chooseMode',
+				modes: [],
+				min: choice.min,
+				max: choice.max
+			};
+		case 'chooseNumber':
+			return {
+				kind: 'chooseNumber',
+				min: choice.min,
+				max: choice.max,
+				reason: 'Opponent is choosing…'
+			};
+		case 'orderObjects':
+			return {
+				kind: 'orderObjects',
+				objectIds: [],
+				...(choice.allowSplitBottom !== undefined
+					? { allowSplitBottom: choice.allowSplitBottom }
+					: {}),
+				...(choice.allowShuffle !== undefined ? { allowShuffle: choice.allowShuffle } : {}),
+				reason: 'Opponent is choosing…'
+			};
+		case 'chooseReplacement':
+			return { kind: 'chooseReplacement', options: [] };
+	}
+}
+
+function redactPromptForOpponent(pr: PendingPrompt): PendingPrompt {
+	if (isPublicPromptForOpponent(pr)) {
+		return {
+			id: pr.id,
+			playerId: pr.playerId,
+			kind: pr.kind,
+			...(pr.purpose !== undefined ? { purpose: pr.purpose } : {}),
+			title: pr.title,
+			description: pr.description,
+			...(pr.choice !== undefined ? { choice: pr.choice } : {}),
+			...(pr.triggerStackItemId !== undefined
+				? { triggerStackItemId: pr.triggerStackItemId }
+				: {}),
+			...(pr.triggerTargetSpecIndex !== undefined
+				? { triggerTargetSpecIndex: pr.triggerTargetSpecIndex }
+				: {})
+		};
+	}
+	return {
+		id: pr.id,
+		playerId: pr.playerId,
+		kind: pr.kind,
+		...(pr.purpose !== undefined ? { purpose: pr.purpose } : {}),
+		title: pr.title,
+		description: 'Opponent is choosing…',
+		...(pr.choice !== undefined ? { choice: redactChoiceForOpponent(pr.choice) } : {}),
+		...(pr.triggerStackItemId !== undefined
+			? { triggerStackItemId: pr.triggerStackItemId }
+			: {})
+	};
+}
+
 export function sanitizeGameStateForViewer(state: GameState, viewerId: string | null): GameState {
 	const clone: GameState = JSON.parse(JSON.stringify(state));
+	delete clone.rngState;
+	delete clone.nextUid;
+	delete clone.idSalt;
+
+	for (const item of clone.stack) {
+		delete item.effectResume;
+	}
+
 	for (const p of clone.players) {
 		p.handCount = p.hand.length;
 		p.libraryCount = p.library.length;
@@ -8129,6 +8279,17 @@ export function sanitizeGameStateForViewer(state: GameState, viewerId: string | 
 			p.library = [];
 		}
 	}
+
+	clone.pendingPrompts = clone.pendingPrompts.map((pr) => {
+		if (pr.playerId === viewerId) {
+			if (pr.stackItem) {
+				delete pr.stackItem.effectResume;
+			}
+			return pr;
+		}
+		return redactPromptForOpponent(pr);
+	});
+
 	return clone;
 }
 

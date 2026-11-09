@@ -4025,6 +4025,9 @@
 							</button>
 						{/each}
 					</div>
+				{:else}
+					{@const _exhaustiveChoice: never = myChoice}
+					<p class="modal-desc">{String(_exhaustiveChoice)}</p>
 				{/if}
 			</div>
 		</div>
