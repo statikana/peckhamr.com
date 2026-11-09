@@ -425,10 +425,15 @@ describe('Phase 5 bug: lines matched to the wrong event', () => {
 		resolveStack(state);
 		assert.equal(boots.attachedToId, bear.instanceId);
 		assert.equal(tokens(), 0, 'attaching an Equipment does not trigger the Landfall line');
+		assert.equal(state.stack.length + state.pendingPrompts.length, 0, 'nothing triggered on attach');
 		const forest = put(state, p[0], staple('Forest'), 'hand');
 		assert.equal(applyGameAction(state, p[0].playerId, { type: 'play_land', instanceId: forest.instanceId }).ok, true);
-		resolveTriggers(state);
-		assert.equal(tokens(), 1, 'a land entering does');
+		// Step F: the Landfall effect ("you may pay ... if ...") isn't automated, so it is resolved
+		// manually; what this test pins is that the land entering (not the attach) triggers it.
+		const landfall = () =>
+			state.stack.filter((s) => s.kind === 'triggered' && s.card.name === 'Springheart Nantuko').length +
+			state.pendingPrompts.filter((pr) => pr.continuation?.kind === 'manual_resolution').length;
+		assert.equal(landfall(), 1, 'a land entering does');
 	});
 
 	it("Sanguine Soothsayer's attack trigger does not fire when it enters", () => {

@@ -1,7 +1,7 @@
 {
 	"Forest": {
 		"oracleId": "card_forest",
-		"compilerVersion": 3,
+		"compilerVersion": 4,
 		"textHash": "feeeded1",
 		"name": "Forest",
 		"faces": [
@@ -23,6 +23,7 @@
 				"abilities": [
 					{
 						"kind": "activated",
+						"id": "mana_tap",
 						"cost": [
 							{
 								"k": "tapSelf"
@@ -65,7 +66,7 @@
 	},
 	"Sol Ring": {
 		"oracleId": "card_sol_ring",
-		"compilerVersion": 3,
+		"compilerVersion": 4,
 		"textHash": "828d16e9",
 		"name": "Sol Ring",
 		"faces": [
@@ -83,6 +84,7 @@
 				"abilities": [
 					{
 						"kind": "activated",
+						"id": "mana_tap",
 						"cost": [
 							{
 								"k": "tapSelf"
@@ -106,14 +108,14 @@
 									]
 								},
 								"span": {
-									"start": 0,
-									"end": 16
+									"start": 5,
+									"end": 15
 								}
 							}
 						],
 						"timing": "mana",
 						"isMana": true,
-						"legacyId": "mana_tap",
+						"text": "{T}: Add {C}{C}.",
 						"span": {
 							"start": 0,
 							"end": 16
@@ -126,7 +128,7 @@
 	},
 	"Command Tower": {
 		"oracleId": "card_command_tower",
-		"compilerVersion": 3,
+		"compilerVersion": 4,
 		"textHash": "ca67ac9f",
 		"name": "Command Tower",
 		"faces": [
@@ -144,6 +146,7 @@
 				"abilities": [
 					{
 						"kind": "activated",
+						"id": "mana_tap",
 						"cost": [
 							{
 								"k": "tapSelf"
@@ -164,14 +167,14 @@
 									"manaChoice": "commanderIdentity"
 								},
 								"span": {
-									"start": 0,
-									"end": 66
+									"start": 5,
+									"end": 65
 								}
 							}
 						],
 						"timing": "mana",
 						"isMana": true,
-						"legacyId": "mana_tap",
+						"text": "{T}: Add one mana of any color in your commander's color identity.",
 						"span": {
 							"start": 0,
 							"end": 66
@@ -184,7 +187,7 @@
 	},
 	"Arcane Signet": {
 		"oracleId": "card_arcane_signet",
-		"compilerVersion": 3,
+		"compilerVersion": 4,
 		"textHash": "8880be04",
 		"name": "Arcane Signet",
 		"faces": [
@@ -202,6 +205,7 @@
 				"abilities": [
 					{
 						"kind": "activated",
+						"id": "mana_tap",
 						"cost": [
 							{
 								"k": "tapSelf"
@@ -222,14 +226,14 @@
 									"manaChoice": "commanderIdentity"
 								},
 								"span": {
-									"start": 0,
-									"end": 66
+									"start": 5,
+									"end": 65
 								}
 							}
 						],
 						"timing": "mana",
 						"isMana": true,
-						"legacyId": "mana_tap",
+						"text": "{T}: Add one mana of any color in your commander's color identity.",
 						"span": {
 							"start": 0,
 							"end": 66
@@ -242,7 +246,7 @@
 	},
 	"Mind Stone": {
 		"oracleId": "card_mind_stone",
-		"compilerVersion": 3,
+		"compilerVersion": 4,
 		"textHash": "99d414d7",
 		"name": "Mind Stone",
 		"faces": [
@@ -260,6 +264,7 @@
 				"abilities": [
 					{
 						"kind": "activated",
+						"id": "mana_tap",
 						"cost": [
 							{
 								"k": "tapSelf"
@@ -282,14 +287,14 @@
 									]
 								},
 								"span": {
-									"start": 0,
-									"end": 13
+									"start": 5,
+									"end": 12
 								}
 							}
 						],
 						"timing": "mana",
 						"isMana": true,
-						"legacyId": "mana_tap",
+						"text": "{T}: Add {C}.",
 						"span": {
 							"start": 0,
 							"end": 13
@@ -297,6 +302,7 @@
 					},
 					{
 						"kind": "activated",
+						"id": "act_1",
 						"cost": [
 							{
 								"k": "mana",
@@ -329,14 +335,14 @@
 									"n": 1
 								},
 								"span": {
-									"start": 14,
-									"end": 49
+									"start": 37,
+									"end": 48
 								}
 							}
 						],
 						"timing": "instant",
 						"isMana": false,
-						"legacyId": "act_1",
+						"text": "{1}, {T}, Sacrifice ~: Draw a card.",
 						"span": {
 							"start": 14,
 							"end": 49
@@ -349,7 +355,7 @@
 	},
 	"Elvish Archdruid": {
 		"oracleId": "card_elvish_archdruid",
-		"compilerVersion": 3,
+		"compilerVersion": 4,
 		"textHash": "7139654d",
 		"name": "Elvish Archdruid",
 		"faces": [
@@ -406,6 +412,7 @@
 					},
 					{
 						"kind": "activated",
+						"id": "mana_tap",
 						"cost": [
 							{
 								"k": "tapSelf"
@@ -421,10 +428,10 @@
 								"amount": {
 									"k": "count",
 									"of": {
-										"zone": "battlefield",
 										"subtypes": [
 											"Elf"
 										],
+										"zone": "battlefield",
 										"controller": "you"
 									}
 								},
@@ -434,14 +441,14 @@
 									]
 								},
 								"span": {
-									"start": 43,
-									"end": 81
+									"start": 48,
+									"end": 80
 								}
 							}
 						],
 						"timing": "mana",
 						"isMana": true,
-						"legacyId": "mana_tap",
+						"text": "{T}: Add {G} for each Elf you control.",
 						"span": {
 							"start": 43,
 							"end": 81
@@ -454,7 +461,7 @@
 	},
 	"Marwyn, the Nurturer": {
 		"oracleId": "card_marwyn",
-		"compilerVersion": 3,
+		"compilerVersion": 4,
 		"textHash": "f70c3491",
 		"name": "Marwyn, the Nurturer",
 		"faces": [
@@ -509,11 +516,12 @@
 									"counter": "+1/+1"
 								},
 								"span": {
-									"start": 0,
-									"end": 66
+									"start": 41,
+									"end": 65
 								}
 							}
 						],
+						"text": "Whenever another Elf you control enters, put a +1/+1 counter on ~.",
 						"span": {
 							"start": 0,
 							"end": 66
@@ -521,6 +529,7 @@
 					},
 					{
 						"kind": "activated",
+						"id": "mana_tap",
 						"cost": [
 							{
 								"k": "tapSelf"
@@ -546,14 +555,14 @@
 									]
 								},
 								"span": {
-									"start": 67,
-									"end": 112
+									"start": 72,
+									"end": 111
 								}
 							}
 						],
 						"timing": "mana",
 						"isMana": true,
-						"legacyId": "mana_tap",
+						"text": "{T}: Add an amount of {G} equal to ~'s power.",
 						"span": {
 							"start": 67,
 							"end": 112
@@ -566,7 +575,7 @@
 	},
 	"Swords to Plowshares": {
 		"oracleId": "card_swords_to_plowshares",
-		"compilerVersion": 3,
+		"compilerVersion": 4,
 		"textHash": "4b95d180",
 		"name": "Swords to Plowshares",
 		"faces": [
@@ -591,11 +600,10 @@
 							{
 								"kind": "object",
 								"filter": {
-									"zone": "battlefield",
 									"types": [
 										"Creature"
 									],
-									"controller": "any"
+									"zone": "battlefield"
 								},
 								"min": 1,
 								"max": 1
@@ -610,8 +618,9 @@
 								},
 								"span": {
 									"start": 0,
-									"end": 68
-								}
+									"end": 21
+								},
+								"bindAs": "b0"
 							},
 							{
 								"verb": "gainLife",
@@ -620,23 +629,23 @@
 									"ref": {
 										"k": "controllerOf",
 										"of": {
-											"k": "target",
-											"index": 0
+											"k": "binding",
+											"name": "b0"
 										}
 									}
 								},
 								"amount": {
 									"k": "stat",
 									"of": {
-										"k": "target",
-										"index": 0
+										"k": "binding",
+										"name": "b0"
 									},
 									"stat": "power",
 									"lki": true
 								},
 								"span": {
-									"start": 0,
-									"end": 68
+									"start": 23,
+									"end": 67
 								}
 							}
 						],
@@ -652,7 +661,7 @@
 	},
 	"Counterspell": {
 		"oracleId": "card_counterspell",
-		"compilerVersion": 3,
+		"compilerVersion": 4,
 		"textHash": "d86d3ca0",
 		"name": "Counterspell",
 		"faces": [
@@ -677,8 +686,7 @@
 							{
 								"kind": "object",
 								"filter": {
-									"zone": "stack",
-									"controller": "any"
+									"zone": "stack"
 								},
 								"min": 1,
 								"max": 1
@@ -693,7 +701,7 @@
 								},
 								"span": {
 									"start": 0,
-									"end": 21
+									"end": 20
 								}
 							}
 						],
@@ -709,7 +717,7 @@
 	},
 	"Cyclonic Rift": {
 		"oracleId": "card_cyclonic_rift",
-		"compilerVersion": 3,
+		"compilerVersion": 4,
 		"textHash": "7dd3cb4f",
 		"name": "Cyclonic Rift",
 		"faces": [
@@ -745,10 +753,10 @@
 							{
 								"kind": "object",
 								"filter": {
-									"zone": "battlefield",
 									"notTypes": [
 										"Land"
 									],
+									"zone": "battlefield",
 									"controller": "opponent"
 								},
 								"min": 1,
@@ -764,7 +772,7 @@
 								},
 								"span": {
 									"start": 0,
-									"end": 70
+									"end": 69
 								}
 							}
 						],
@@ -780,7 +788,7 @@
 	},
 	"Wrath of God": {
 		"oracleId": "card_wrath_of_god",
-		"compilerVersion": 3,
+		"compilerVersion": 4,
 		"textHash": "eb8e805b",
 		"name": "Wrath of God",
 		"faces": [
@@ -808,15 +816,15 @@
 								"subject": {
 									"k": "all",
 									"filter": {
-										"zone": "battlefield",
 										"types": [
 											"Creature"
-										]
+										],
+										"zone": "battlefield"
 									}
 								},
 								"span": {
 									"start": 0,
-									"end": 49
+									"end": 21
 								}
 							}
 						],
@@ -832,7 +840,7 @@
 	},
 	"Toxic Deluge": {
 		"oracleId": "card_toxic_deluge",
-		"compilerVersion": 3,
+		"compilerVersion": 4,
 		"textHash": "ee4cb8fb",
 		"name": "Toxic Deluge",
 		"faces": [
@@ -851,25 +859,8 @@
 				},
 				"abilities": [
 					{
-						"kind": "unsupported",
-						"reason": "unparsed",
-						"text": "As an additional cost to cast ~, pay X life.\nAll creatures get -X/-X until end of turn.",
-						"span": {
-							"start": 0,
-							"end": 87
-						},
-						"unparsed": [
-							{
-								"start": 0,
-								"end": 87
-							},
-							{
-								"start": 45,
-								"end": 87
-							}
-						],
-						"legacyId": "cast_normal",
-						"cost": [
+						"kind": "spell",
+						"additionalCosts": [
 							{
 								"k": "payLife",
 								"amount": {
@@ -877,16 +868,53 @@
 								}
 							}
 						],
-						"costComplete": true
+						"targets": [],
+						"effect": [
+							{
+								"verb": "pump",
+								"subject": {
+									"k": "all",
+									"filter": {
+										"types": [
+											"Creature"
+										],
+										"zone": "battlefield"
+									}
+								},
+								"amount": {
+									"k": "negate",
+									"of": {
+										"k": "x"
+									}
+								},
+								"params": {
+									"toughness": {
+										"k": "negate",
+										"of": {
+											"k": "x"
+										}
+									},
+									"duration": "endOfTurn"
+								},
+								"span": {
+									"start": 45,
+									"end": 86
+								}
+							}
+						],
+						"span": {
+							"start": 0,
+							"end": 87
+						}
 					}
 				]
 			}
 		],
-		"fullySupported": false
+		"fullySupported": true
 	},
 	"Farewell": {
 		"oracleId": "card_farewell",
-		"compilerVersion": 3,
+		"compilerVersion": 4,
 		"textHash": "0cd82709",
 		"name": "Farewell",
 		"faces": [
@@ -905,32 +933,126 @@
 				},
 				"abilities": [
 					{
-						"kind": "unsupported",
-						"reason": "unparsed",
-						"text": "Choose one or more —\n• Exile all artifacts.\n• Exile all creatures.\n• Exile all enchantments.\n• Exile all graveyards.",
+						"kind": "spell",
+						"additionalCosts": [],
+						"targets": [],
+						"effect": [],
+						"modal": {
+							"min": 1,
+							"max": 4,
+							"modes": [
+								{
+									"targets": [],
+									"effect": [
+										{
+											"verb": "exile",
+											"subject": {
+												"k": "all",
+												"filter": {
+													"types": [
+														"Artifact"
+													],
+													"zone": "battlefield"
+												}
+											},
+											"span": {
+												"start": 23,
+												"end": 42
+											}
+										}
+									],
+									"span": {
+										"start": 21,
+										"end": 43
+									}
+								},
+								{
+									"targets": [],
+									"effect": [
+										{
+											"verb": "exile",
+											"subject": {
+												"k": "all",
+												"filter": {
+													"types": [
+														"Creature"
+													],
+													"zone": "battlefield"
+												}
+											},
+											"span": {
+												"start": 46,
+												"end": 65
+											}
+										}
+									],
+									"span": {
+										"start": 44,
+										"end": 66
+									}
+								},
+								{
+									"targets": [],
+									"effect": [
+										{
+											"verb": "exile",
+											"subject": {
+												"k": "all",
+												"filter": {
+													"types": [
+														"Enchantment"
+													],
+													"zone": "battlefield"
+												}
+											},
+											"span": {
+												"start": 69,
+												"end": 91
+											}
+										}
+									],
+									"span": {
+										"start": 67,
+										"end": 92
+									}
+								},
+								{
+									"targets": [],
+									"effect": [
+										{
+											"verb": "exile",
+											"subject": {
+												"k": "all",
+												"filter": {
+													"zone": "graveyard"
+												}
+											},
+											"span": {
+												"start": 95,
+												"end": 115
+											}
+										}
+									],
+									"span": {
+										"start": 93,
+										"end": 116
+									}
+								}
+							]
+						},
 						"span": {
 							"start": 0,
 							"end": 116
-						},
-						"unparsed": [
-							{
-								"start": 23,
-								"end": 43
-							},
-							{
-								"start": 69,
-								"end": 92
-							}
-						]
+						}
 					}
 				]
 			}
 		],
-		"fullySupported": false
+		"fullySupported": true
 	},
 	"Cultivate": {
 		"oracleId": "card_cultivate",
-		"compilerVersion": 3,
+		"compilerVersion": 4,
 		"textHash": "4a773009",
 		"name": "Cultivate",
 		"faces": [
@@ -956,10 +1078,7 @@
 							{
 								"verb": "search",
 								"subject": {
-									"k": "player",
-									"filter": {
-										"relation": "you"
-									}
+									"k": "none"
 								},
 								"amount": {
 									"k": "const",
@@ -986,13 +1105,14 @@
 											{
 												"zone": "hand"
 											}
-										]
+										],
+										"description": "up to two basic land cards"
 									},
 									"tapped": true
 								},
 								"span": {
 									"start": 0,
-									"end": 151
+									"end": 150
 								}
 							}
 						],
@@ -1008,7 +1128,7 @@
 	},
 	"Ponder": {
 		"oracleId": "card_ponder",
-		"compilerVersion": 3,
+		"compilerVersion": 4,
 		"textHash": "63c3c96a",
 		"name": "Ponder",
 		"faces": [
@@ -1043,12 +1163,12 @@
 									"k": "const",
 									"n": 3
 								},
-								"params": {
-									"mayShuffle": true
-								},
 								"span": {
 									"start": 0,
-									"end": 107
+									"end": 76
+								},
+								"params": {
+									"mayShuffle": true
 								}
 							},
 							{
@@ -1064,8 +1184,8 @@
 									"n": 1
 								},
 								"span": {
-									"start": 0,
-									"end": 107
+									"start": 95,
+									"end": 106
 								}
 							}
 						],
@@ -1081,7 +1201,7 @@
 	},
 	"Final Fortune": {
 		"oracleId": "card_final_fortune",
-		"compilerVersion": 3,
+		"compilerVersion": 4,
 		"textHash": "f57e3f86",
 		"name": "Final Fortune",
 		"faces": [
@@ -1114,7 +1234,13 @@
 								},
 								"span": {
 									"start": 0,
-									"end": 95
+									"end": 33
+								}
+							},
+							{
+								"verb": "delayedTrigger",
+								"subject": {
+									"k": "none"
 								},
 								"delayed": {
 									"trigger": {
@@ -1139,6 +1265,10 @@
 											}
 										}
 									]
+								},
+								"span": {
+									"start": 35,
+									"end": 95
 								}
 							}
 						],
@@ -1154,7 +1284,7 @@
 	},
 	"Rift Bolt": {
 		"oracleId": "card_rift_bolt",
-		"compilerVersion": 3,
+		"compilerVersion": 4,
 		"textHash": "96014176",
 		"name": "Rift Bolt",
 		"faces": [
@@ -1218,7 +1348,7 @@
 								},
 								"span": {
 									"start": 0,
-									"end": 31
+									"end": 30
 								}
 							}
 						],
@@ -1234,7 +1364,7 @@
 	},
 	"Lightning Greaves": {
 		"oracleId": "card_lightning_greaves",
-		"compilerVersion": 3,
+		"compilerVersion": 4,
 		"textHash": "78d62bb0",
 		"name": "Lightning Greaves",
 		"faces": [
@@ -1280,7 +1410,8 @@
 						"span": {
 							"start": 40,
 							"end": 49
-						}
+						},
+						"id": "equip_1"
 					}
 				]
 			}
@@ -1289,7 +1420,7 @@
 	},
 	"Craterhoof Behemoth": {
 		"oracleId": "card_craterhoof_behemoth",
-		"compilerVersion": 3,
+		"compilerVersion": 4,
 		"textHash": "950c93b3",
 		"name": "Craterhoof Behemoth",
 		"faces": [
@@ -1337,22 +1468,22 @@
 								"subject": {
 									"k": "all",
 									"filter": {
-										"zone": "battlefield",
 										"types": [
 											"Creature"
 										],
+										"zone": "battlefield",
 										"controller": "you"
 									}
 								},
 								"params": {
 									"keywords": [
-										"trample"
+										"Trample"
 									],
 									"duration": "endOfTurn"
 								},
 								"span": {
-									"start": 6,
-									"end": 136
+									"start": 21,
+									"end": 87
 								}
 							},
 							{
@@ -1360,20 +1491,20 @@
 								"subject": {
 									"k": "all",
 									"filter": {
-										"zone": "battlefield",
 										"types": [
 											"Creature"
 										],
+										"zone": "battlefield",
 										"controller": "you"
 									}
 								},
 								"amount": {
 									"k": "count",
 									"of": {
-										"zone": "battlefield",
 										"types": [
 											"Creature"
 										],
+										"zone": "battlefield",
 										"controller": "you"
 									}
 								},
@@ -1381,21 +1512,22 @@
 									"toughness": {
 										"k": "count",
 										"of": {
-											"zone": "battlefield",
 											"types": [
 												"Creature"
 											],
+											"zone": "battlefield",
 											"controller": "you"
 										}
 									},
 									"duration": "endOfTurn"
 								},
 								"span": {
-									"start": 6,
-									"end": 136
+									"start": 21,
+									"end": 87
 								}
 							}
 						],
+						"text": "When ~ enters, creatures you control gain trample and get +X/+X until end of turn, where X is the number of creatures you control.",
 						"span": {
 							"start": 6,
 							"end": 136
@@ -1408,7 +1540,7 @@
 	},
 	"Lathril, Blade of the Elves": {
 		"oracleId": "cmd_lathril",
-		"compilerVersion": 3,
+		"compilerVersion": 4,
 		"textHash": "ae19645b",
 		"name": "Lathril, Blade of the Elves",
 		"faces": [
@@ -1477,11 +1609,12 @@
 									}
 								},
 								"span": {
-									"start": 7,
-									"end": 106
+									"start": 51,
+									"end": 105
 								}
 							}
 						],
+						"text": "Whenever ~ deals combat damage to a player, create that many 1/1 green Elf Warrior creature tokens.",
 						"span": {
 							"start": 7,
 							"end": 106
@@ -1489,6 +1622,7 @@
 					},
 					{
 						"kind": "activated",
+						"id": "act_2",
 						"cost": [
 							{
 								"k": "tapSelf"
@@ -1511,23 +1645,6 @@
 						"targets": [],
 						"effect": [
 							{
-								"verb": "gainLife",
-								"subject": {
-									"k": "player",
-									"filter": {
-										"relation": "you"
-									}
-								},
-								"amount": {
-									"k": "const",
-									"n": 10
-								},
-								"span": {
-									"start": 107,
-									"end": 197
-								}
-							},
-							{
 								"verb": "loseLife",
 								"subject": {
 									"k": "player",
@@ -1540,14 +1657,31 @@
 									"n": 10
 								},
 								"span": {
-									"start": 107,
-									"end": 197
+									"start": 148,
+									"end": 175
+								}
+							},
+							{
+								"verb": "gainLife",
+								"subject": {
+									"k": "player",
+									"filter": {
+										"relation": "you"
+									}
+								},
+								"amount": {
+									"k": "const",
+									"n": 10
+								},
+								"span": {
+									"start": 180,
+									"end": 196
 								}
 							}
 						],
 						"timing": "instant",
 						"isMana": false,
-						"legacyId": "act_2",
+						"text": "{T}, Tap ten untapped Elves you control: Each opponent loses 10 life and you gain 10 life.",
 						"span": {
 							"start": 107,
 							"end": 197
@@ -1560,7 +1694,7 @@
 	},
 	"Atraxa, Praetors' Voice": {
 		"oracleId": "cmd_atraxa",
-		"compilerVersion": 3,
+		"compilerVersion": 4,
 		"textHash": "14c19e13",
 		"name": "Atraxa, Praetors' Voice",
 		"faces": [
@@ -1646,11 +1780,12 @@
 									"k": "none"
 								},
 								"span": {
-									"start": 40,
-									"end": 87
+									"start": 75,
+									"end": 86
 								}
 							}
 						],
+						"text": "At the beginning of your end step, proliferate.",
 						"span": {
 							"start": 40,
 							"end": 87
@@ -1663,7 +1798,7 @@
 	},
 	"Nether Shadow": {
 		"oracleId": "card_nether_shadow",
-		"compilerVersion": 3,
+		"compilerVersion": 4,
 		"textHash": "17f689a9",
 		"name": "Nether Shadow",
 		"faces": [
@@ -1726,11 +1861,17 @@
 									"to": "battlefield"
 								},
 								"span": {
-									"start": 6,
-									"end": 144
+									"start": 109,
+									"end": 143
+								},
+								"optional": {
+									"chooser": {
+										"k": "you"
+									}
 								}
 							}
 						],
+						"text": "At the beginning of your upkeep, if ~ is in your graveyard with three or more creature cards above it, you may put ~ onto the battlefield.",
 						"span": {
 							"start": 6,
 							"end": 144
@@ -1743,7 +1884,7 @@
 	},
 	"Felidar Sovereign": {
 		"oracleId": "card_felidar_sovereign",
-		"compilerVersion": 3,
+		"compilerVersion": 4,
 		"textHash": "e7a3b7ab",
 		"name": "Felidar Sovereign",
 		"faces": [
@@ -1820,11 +1961,12 @@
 									}
 								},
 								"span": {
-									"start": 19,
-									"end": 98
+									"start": 81,
+									"end": 97
 								}
 							}
 						],
+						"text": "At the beginning of your upkeep, if you have 40 or more life, you win the game.",
 						"span": {
 							"start": 19,
 							"end": 98
@@ -1837,7 +1979,7 @@
 	},
 	"Guttersnipe": {
 		"oracleId": "card_guttersnipe",
-		"compilerVersion": 3,
+		"compilerVersion": 4,
 		"textHash": "70f96721",
 		"name": "Guttersnipe",
 		"faces": [
@@ -1891,11 +2033,12 @@
 									"n": 2
 								},
 								"span": {
-									"start": 0,
-									"end": 81
+									"start": 47,
+									"end": 80
 								}
 							}
 						],
+						"text": "Whenever you cast an instant or sorcery spell, ~ deals 2 damage to each opponent.",
 						"span": {
 							"start": 0,
 							"end": 81
@@ -1908,7 +2051,7 @@
 	},
 	"Veyran, Voice of Duality": {
 		"oracleId": "cmd_veyran",
-		"compilerVersion": 3,
+		"compilerVersion": 4,
 		"textHash": "b045a127",
 		"name": "Veyran, Voice of Duality",
 		"faces": [
@@ -1970,11 +2113,12 @@
 									"duration": "endOfTurn"
 								},
 								"span": {
-									"start": 0,
-									"end": 98
+									"start": 67,
+									"end": 97
 								}
 							}
 						],
+						"text": "Magecraft — Whenever you cast or copy an instant or sorcery spell, ~ gets +1/+1 until end of turn.",
 						"span": {
 							"start": 0,
 							"end": 98
@@ -2017,7 +2161,7 @@
 	},
 	"Bramblecrest, Warden of Ash": {
 		"oracleId": "synthetic_bramblecrest_warden_of_ash",
-		"compilerVersion": 3,
+		"compilerVersion": 4,
 		"textHash": "d696e9e8",
 		"name": "Bramblecrest, Warden of Ash",
 		"faces": [
@@ -2086,11 +2230,12 @@
 									"n": 1
 								},
 								"span": {
-									"start": 18,
-									"end": 45
+									"start": 33,
+									"end": 44
 								}
 							}
 						],
+						"text": "When ~ enters, draw a card.",
 						"span": {
 							"start": 18,
 							"end": 45
@@ -2098,6 +2243,7 @@
 					},
 					{
 						"kind": "activated",
+						"id": "mana_tap",
 						"cost": [
 							{
 								"k": "tapSelf"
@@ -2113,10 +2259,10 @@
 								"amount": {
 									"k": "count",
 									"of": {
-										"zone": "battlefield",
 										"subtypes": [
 											"Elf"
 										],
+										"zone": "battlefield",
 										"controller": "you"
 									}
 								},
@@ -2126,14 +2272,14 @@
 									]
 								},
 								"span": {
-									"start": 46,
-									"end": 84
+									"start": 51,
+									"end": 83
 								}
 							}
 						],
 						"timing": "mana",
 						"isMana": true,
-						"legacyId": "mana_tap",
+						"text": "{T}: Add {G} for each Elf you control.",
 						"span": {
 							"start": 46,
 							"end": 84
@@ -2141,6 +2287,7 @@
 					},
 					{
 						"kind": "activated",
+						"id": "act_3",
 						"cost": [
 							{
 								"k": "mana",
@@ -2173,14 +2320,14 @@
 									"n": 1
 								},
 								"span": {
-									"start": 85,
-									"end": 120
+									"start": 108,
+									"end": 119
 								}
 							}
 						],
 						"timing": "instant",
 						"isMana": false,
-						"legacyId": "act_3",
+						"text": "{2}, {T}, Sacrifice ~: Draw a card.",
 						"span": {
 							"start": 85,
 							"end": 120
@@ -2193,7 +2340,7 @@
 	},
 	"Glimmerfen Overseer": {
 		"oracleId": "synthetic_glimmerfen_overseer",
-		"compilerVersion": 3,
+		"compilerVersion": 4,
 		"textHash": "82e62bd9",
 		"name": "Glimmerfen Overseer",
 		"faces": [
@@ -2242,11 +2389,12 @@
 									"n": 1
 								},
 								"span": {
-									"start": 0,
-									"end": 63
+									"start": 47,
+									"end": 62
 								}
 							}
 						],
+						"text": "Landfall — Whenever a land you control enters, you gain 1 life.",
 						"span": {
 							"start": 0,
 							"end": 63
@@ -2286,11 +2434,12 @@
 									}
 								},
 								"span": {
-									"start": 64,
-									"end": 143
+									"start": 126,
+									"end": 142
 								}
 							}
 						],
+						"text": "At the beginning of your upkeep, if you have 40 or more life, you win the game.",
 						"span": {
 							"start": 64,
 							"end": 143
@@ -2318,7 +2467,7 @@
 	},
 	"Twinned Lantern Wardens": {
 		"oracleId": "synthetic_twinned_lantern_wardens",
-		"compilerVersion": 3,
+		"compilerVersion": 4,
 		"textHash": "a21395a4",
 		"name": "Twinned Lantern Wardens",
 		"faces": [

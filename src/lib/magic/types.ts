@@ -435,6 +435,12 @@ export interface StackItem {
 	 * re-check the intervening-if condition on resolution (CR 603.4) without storing IR in state.
 	 */
 	triggeredAbilityIndex?: number;
+	/** Step F: id of an activated ability on its source card (`act_0`, `loyalty_1`, `equip_2`). */
+	abilityId?: string;
+	/** Step F: chosen mode indices of a modal spell (CR 700.2, 601.2b). */
+	chosenModes?: number[];
+	/** Step F: plain-data payload for a delayed trigger created by a resolving effect. */
+	delayedEffect?: DelayedTriggerEffect;
 	targetObjectVersions?: Record<string, number>;
 	/**
 	 * Steps C+D: the trigger event a triggered ability refers to ("that creature", "that player",
@@ -501,6 +507,11 @@ export interface TriggerEventLki {
 	manaValue: number;
 }
 
+export type DelayedTriggerEffect =
+	| { kind: 'exile'; targetInstanceId: string; targetObjectVersion?: number }
+	| { kind: 'lose' }
+	| { kind: 'draw'; playerId: string; amount: number; upTo?: boolean };
+
 export interface DelayedTrigger {
 	id: string;
 	controllerId: string;
@@ -512,10 +523,13 @@ export interface DelayedTrigger {
 	targetInstanceId?: string;
 	targetObjectVersion?: number;
 	waitUntilAfterTurn?: number;
+	/** Step F: `${turnNumber}:${activePlayerIndex}` of a turn in which it must not trigger ("the next turn's upkeep"). */
+	notDuringTurn?: string;
 	title?: string;
 	oracleText?: string;
 	description?: string;
 	effects: ParsedEffect[];
+	delayedEffect?: DelayedTriggerEffect;
 	createdAtTurn?: number;
 }
 
@@ -865,6 +879,7 @@ export type GameActionPayload =
 			type: 'cast_spell';
 			instanceId: string;
 			targets?: TargetRef[];
+			modes?: number[];
 			xValue?: number;
 			castMode?: 'normal' | 'overload';
 			fromZone?: 'hand' | 'command' | 'graveyard' | 'exile';

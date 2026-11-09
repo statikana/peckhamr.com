@@ -11,7 +11,8 @@ import {
 	getCreatureToughness,
 	getEffectiveActivatedAbilities,
 	getPlayerCommanderIdentity,
-	hasKeyword
+	hasKeyword,
+	specTargetCandidates
 } from './engine.ts';
 import type { EffectStep, RestrictionKind, TargetSpec } from './ir.ts';
 import { parseSpellOrAbilityEffects } from './oracle.ts';
@@ -101,6 +102,55 @@ function cardSpellTargetSpec(card: ScryfallCard): TargetSpec | undefined {
 		if (ab.kind === 'spell' && ab.targets.length > 0) return ab.targets[0];
 	}
 	return undefined;
+}
+
+function chooseBotModalSpell(
+	state: GameState,
+	bot: PlayerGameState,
+	cardInst: CardInstance
+): { modes: number[]; targets: TargetRef[] } | null {
+	const modal = compileSpellEffects(cardInst.card)?.modal;
+	if (!modal) return null;
+	const modes: number[] = [];
+	const targets: TargetRef[] = [];
+	const ownerOf = (t: TargetRef): string | undefined => {
+		if (t.kind === 'player') return t.id;
+		for (const p of state.players) {
+			if (p.battlefield.some((c) => c.instanceId === t.id)) {
+				return p.battlefield.find((c) => c.instanceId === t.id)!.controllerId;
+			}
+			if (p.graveyard.some((c) => c.instanceId === t.id)) return p.playerId;
+		}
+		return undefined;
+	};
+	for (let i = 0; i < modal.modes.length && modes.length < modal.max; i++) {
+		const mode = modal.modes[i];
+		if (mode.targets.length === 0) {
+			modes.push(i);
+			continue;
+		}
+		const modeTargets: TargetRef[] = [];
+		let ok = true;
+		for (let sIdx = 0; sIdx < mode.targets.length; sIdx++) {
+			const spec = mode.targets[sIdx];
+			const harmful = targetIsHarmed(mode.effect, sIdx);
+			const legal = specTargetCandidates(state, bot.playerId, cardInst.card, cardInst, spec).filter(
+				(t) => (ownerOf(t) === bot.playerId) !== harmful
+			);
+			const chosen = chooseBotTriggerTargets(state, bot, mode.effect, sIdx, spec, legal);
+			if (chosen.length < spec.min) {
+				ok = false;
+				break;
+			}
+			modeTargets.push(...chosen);
+		}
+		if (ok) {
+			modes.push(i);
+			targets.push(...modeTargets);
+		}
+	}
+	if (modes.length < modal.min) return null;
+	return { modes, targets };
 }
 
 export function hasAnyLegalInstantResponse(state: GameState, player: PlayerGameState): boolean {
@@ -337,6 +387,21 @@ function executeBotStep(
 			.sort((a, b) => a.card.cmc - b.card.cmc);
 
 		for (const cardInst of castable) {
+			const modal = compileSpellEffects(cardInst.card)?.modal;
+			if (modal) {
+				const chosen = chooseBotModalSpell(state, bot, cardInst);
+				if (!chosen) continue;
+				const costPayment = chooseBotSpellCostPayment(state, bot, cardInst, 0);
+				const res = applyGameAction(state, bot.playerId, {
+					type: 'cast_spell',
+					instanceId: cardInst.instanceId,
+					targets: chosen.targets,
+					modes: chosen.modes,
+					...(costPayment ? { costPayment } : {})
+				});
+				if (res.ok) return true;
+				continue;
+			}
 			const targets = chooseBotTargetsForCard(state, bot, cardInst);
 			const spec = cardSpellTargetSpec(cardInst.card);
 			const parsed = parseSpellOrAbilityEffects(cardInst.card);

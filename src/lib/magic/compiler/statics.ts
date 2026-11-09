@@ -221,8 +221,10 @@ function parseGrantedManaAbility(quoted: string): AbilityDef | null {
 		params = { mana: syms };
 		amount = syms.length;
 	} else return null;
+	const colors = params.mana ? [...new Set(params.mana)].join('').toLowerCase() : 'any';
 	return {
 		kind: 'activated',
+		id: `granted_mana_${colors}`,
 		cost: cost.defs,
 		targets: [],
 		effect: [{ verb: 'addMana', subject: { k: 'none' }, amount: n(amount), params, span }],

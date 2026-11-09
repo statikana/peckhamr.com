@@ -48,7 +48,7 @@ function abilitiesOf(card: ScryfallCard): AbilityDef[] {
  */
 export function activatedAbilityCost(card: ScryfallCard, ab: ParsedActivatedAbility): CostSource {
 	const ir = abilitiesOf(card).find(
-		(a) => (a.kind === 'activated' || a.kind === 'unsupported') && a.legacyId === ab.id
+		(a) => (a.kind === 'activated' || a.kind === 'unsupported') && a.id === ab.id
 	);
 	if (ir?.kind === 'activated') return { defs: ir.cost, complete: true };
 	if (ir?.kind === 'unsupported' && ir.cost) return { defs: ir.cost, complete: ir.costComplete ?? false };
@@ -70,7 +70,7 @@ export function legacyCostDefs(ab: ParsedActivatedAbility): CostDef[] {
 export function spellAdditionalCost(card: ScryfallCard): CostSource | null {
 	for (const a of abilitiesOf(card)) {
 		if (a.kind === 'spell' && a.additionalCosts.length > 0) return { defs: a.additionalCosts, complete: true };
-		if (a.kind === 'unsupported' && a.legacyId === 'cast_normal') {
+		if (a.kind === 'unsupported' && a.id === 'cast') {
 			return { defs: a.cost ?? [], complete: a.costComplete ?? false };
 		}
 	}
@@ -226,7 +226,7 @@ export function effectiveSpellManaCost(
 export function manaAbilityAmount(card: ScryfallCard, ab: ParsedActivatedAbility): Amount | null {
 	const abilities = abilitiesOf(card);
 	const ir =
-		abilities.find((a) => a.kind === 'activated' && a.legacyId === ab.id) ??
+		abilities.find((a) => a.kind === 'activated' && a.id === ab.id) ??
 		(ab.id === 'mana_tap' ? abilities.find((a) => a.kind === 'activated' && a.isMana && !a.intrinsic) : undefined);
 	if (ir?.kind !== 'activated') return null;
 	const step = ir.effect.find((e) => e.verb === 'addMana');

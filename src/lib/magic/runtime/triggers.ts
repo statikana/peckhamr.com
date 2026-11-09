@@ -631,7 +631,11 @@ function matchAttack(state: GameState, attackingPlayerId: string, attackerIds: s
 									attackers: matching.map((s) => s.obj)
 								})
 							: 1;
-					record(state, source, ability, 'attacks', { label: 'Attack', times });
+					record(state, source, ability, 'attacks', {
+						label: 'Attack',
+						times,
+						...(f.oneOrMore ? { amount: matching.length } : {})
+					});
 				} else {
 					for (const s of matching) {
 						const times =
@@ -765,7 +769,7 @@ function matchTargeted(state: GameState, ev: Extract<GameEvent, { kind: 'BecameT
 				return objectMatches(a.filter, subject, source);
 			});
 			if (alt) {
-				const label = ability.legacy.effects[0]?.kind === 'ward_trigger' ? 'Ward' : 'Targeted';
+				const label = ability.ward ? 'Ward' : 'Targeted';
 				record(state, source, ability, 'becomesTarget', {
 					label,
 					eventObject: found.obj,

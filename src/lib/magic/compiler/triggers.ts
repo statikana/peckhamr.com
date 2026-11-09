@@ -6,11 +6,10 @@
  * Condition, and says where the effect text starts. Input is normalised text (self-references are
  * `~`, ability words already stripped). Anything not understood is reported as an unparsed span.
  *
- * Runs alongside the Phase 1 adapter for now. scripts/magic-triggers-diff.ts compares the two.
+ * compiler/card.ts uses it for every "When/Whenever/At" line.
  */
-import type { Amount, CardDefinition, Condition, EventFilter, ObjectFilter, Span, TriggerDef } from '../ir.ts';
-import type { GamePhase, ParsedEffect, TriggerScope } from '../types.ts';
-import type { EffectParse } from './effects.ts';
+import type { Amount, CardDefinition, Condition, CostDef, EffectStep, EventFilter, ObjectFilter, Span, TargetSpec, TriggerDef } from '../ir.ts';
+import type { GamePhase, TriggerScope } from '../types.ts';
 import { parseObjectPhrase } from './costs.ts';
 
 export interface TriggerParse {
@@ -447,38 +446,7 @@ export function runtimeTriggerProblem(def: TriggerDef): string | null {
 	return null;
 }
 
-// ---- Legacy execution shim (Phase 5 -> Phase 3) ---------------------------------------------
-
-/**
- * How a triggered ability's effect is executed until Phase 3's IR interpreter replaces the
- * ParsedEffect path: the legacy parser's effects for the ability's line, and the line's text (shown
- * on the stack). Attached to the compiled ability object; never stored in GameState.
- */
-export interface LegacyTriggerExecution {
-	effects: ParsedEffect[];
-	/** The ability's line as printed (for the stack item and the log). */
-	clause: string;
-	/** True if the legacy rule tree / structured parser claimed this line (the pre-Phase-5 engine ran it). */
-	legacyClaimed: boolean;
-}
-
-const LEGACY_EXECUTION = new WeakMap<object, LegacyTriggerExecution>();
-
-export function setLegacyTriggerExecution(ability: object, exec: LegacyTriggerExecution): void {
-	LEGACY_EXECUTION.set(ability, exec);
-}
-
-const TRIGGER_EFFECT = new WeakMap<object, EffectParse>();
-
-/** The effect grammar's parse of a triggered ability's effect clause (set by the adapter). */
-export function setTriggerEffect(ability: object, effect: EffectParse): void {
-	TRIGGER_EFFECT.set(ability, effect);
-}
-
-/** True if the effect grammar understood the whole effect clause (it may still need a legacy verb). */
-export function triggerEffectComplete(effect: EffectParse | undefined): effect is EffectParse {
-	return Boolean(effect && effect.unparsed.length === 0 && !effect.modal && effect.steps.length > 0);
-}
+// ---- Runtime view ---------------------------------------------------------------------------
 
 /** One triggered ability as the runtime matches it. */
 export interface RuntimeTrigger {
@@ -486,25 +454,32 @@ export interface RuntimeTrigger {
 	abilityIndex: number;
 	trigger: TriggerDef;
 	condition?: Condition;
-	/** The IR effect is fully understood (kind 'triggered'); false: only the trigger head is. */
+	/** The IR effect is fully understood and interpretable (kind 'triggered'). */
 	effectSupported: boolean;
-	legacy: LegacyTriggerExecution;
+	/** The ability's normalised text (`~` for the card's name), shown on the stack. Display only. */
+	text: string;
 	/**
-	 * The effect compiled by the effect grammar (steps, target specs, unparsed spans). The runtime
-	 * resolves the ability on the IR interpreter when this is interpretable, and on `legacy` otherwise.
+	 * The compiled effect (steps and target specs) when the ability is automated. Absent for an
+	 * ability whose effect the compiler marked unsupported: it still triggers and goes on the stack,
+	 * and is resolved manually (plan section 2.7).
 	 */
-	effect?: EffectParse;
+	effect?: { steps: EffectStep[]; targets: TargetSpec[]; unparsed: [] };
+	/**
+	 * Ward (CR 702.21a), a keyword the engine implements itself: "Whenever this permanent becomes the
+	 * target of a spell or ability an opponent controls, counter it unless that player pays [cost]."
+	 */
+	ward?: { cost: string; costDefs?: CostDef[] };
 }
 
 const RUNTIME_TRIGGERS = new WeakMap<CardDefinition, RuntimeTrigger[]>();
 
 /**
  * The triggered abilities the runtime matches for a compiled card:
- * - abilities of kind 'triggered' (trigger, condition and effect understood), and
+ * - abilities of kind 'triggered' (trigger, condition and effect understood and interpretable),
  * - unsupported abilities whose trigger head is understood but whose effect isn't. Step E2 (plan
- *   section 2.7): they trigger and go on the stack like any other; on resolution the engine runs
- *   them on the IR interpreter if it can, otherwise a human controller resolves them manually and a
- *   bot uses the legacy effects if the pre-Phase-5 engine ran them (`legacyClaimed`), or skips them.
+ *   section 2.7): they trigger and go on the stack like any other; a human controller resolves them
+ *   manually and a bot skips them, and
+ * - Ward keywords.
  * Abilities whose trigger head isn't understood (or names an event the engine never emits) can't
  * be matched; the engine mentions them when the permanent enters (compiler/support.ts).
  */
@@ -514,37 +489,32 @@ export function runtimeTriggers(def: CardDefinition): RuntimeTrigger[] {
 	const out: RuntimeTrigger[] = [];
 	(def.faces[0]?.abilities ?? []).forEach((ab, abilityIndex) => {
 		if (ab.kind === 'keyword' && ab.keyword.name === 'ward') {
-			const wardCost = ab.keyword.cost ?? ab.keyword.param ?? '{1}';
+			const cost = ab.keyword.cost ?? ab.keyword.param ?? '{1}';
 			out.push({
 				abilityIndex,
 				trigger: {
 					event: 'becomesTarget',
-					filter: {
-						object: 'self',
-						targetedBy: 'spellOrAbility',
-						player: { relation: 'opponent' }
-					}
+					filter: { object: 'self', targetedBy: 'spellOrAbility', player: { relation: 'opponent' } }
 				},
-				effectSupported: false,
-				legacy: {
-					effects: [{ kind: 'ward_trigger', amount: 1, wardCost }],
-					clause: `Ward ${wardCost}`,
-					legacyClaimed: true
-				}
+				effectSupported: true,
+				text: `Ward ${cost}`,
+				ward: { cost, costDefs: ab.keyword.costDefs }
 			});
 			return;
 		}
-		const legacy = LEGACY_EXECUTION.get(ab);
-		if (!legacy) return;
-		const effect = TRIGGER_EFFECT.get(ab);
 		if (ab.kind === 'triggered') {
-			out.push({ abilityIndex, trigger: ab.trigger, condition: ab.condition, effectSupported: true, legacy, effect });
+			out.push({
+				abilityIndex,
+				trigger: ab.trigger,
+				condition: ab.condition,
+				effectSupported: true,
+				text: ab.text ?? '',
+				effect: { steps: ab.effect, targets: ab.targets, unparsed: [] }
+			});
 		} else if (ab.kind === 'unsupported' && ab.reason === 'unparsed' && ab.trigger) {
 			// An unparsed intervening-if leaves `condition` undefined: such abilities are 'unparsed' via
-			// the trigger head (no ab.trigger), so they never get here. Legacy effects the pre-Phase-5
-			// engine never ran are not a fallback (they were never trusted).
-			const fallback = legacy.legacyClaimed ? legacy : { ...legacy, effects: [] };
-			out.push({ abilityIndex, trigger: ab.trigger, condition: ab.condition, effectSupported: false, legacy: fallback, effect });
+			// the trigger head (no ab.trigger), so they never get here.
+			out.push({ abilityIndex, trigger: ab.trigger, condition: ab.condition, effectSupported: false, text: ab.text });
 		}
 	});
 	RUNTIME_TRIGGERS.set(def, out);

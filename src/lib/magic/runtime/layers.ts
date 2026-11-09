@@ -480,7 +480,7 @@ function extractInnateFromIR(card: ScryfallCard): InnateEntry[] {
 					addResult('ability_lord', 'Anthem / Lord Effect', 'ability');
 				}
 			}
-		} else if (ab.kind === 'unsupported' && ab.legacyId?.startsWith('act_')) {
+		} else if (ab.kind === 'unsupported' && ab.id?.startsWith('act_')) {
 			if (ab.text.toLowerCase().includes('opponents control lose')) {
 				addResult('ability_strip_kw', 'Removes Opponent Keywords', 'ability');
 			} else {
@@ -1012,7 +1012,7 @@ function computeBoardLayerCache(state: GameState, snap: BoardSnapshot): BoardLay
 							}
 						}
 					}
-				} else if (ab.kind === 'unsupported' && ab.legacyId?.startsWith('act_')) {
+				} else if (ab.kind === 'unsupported' && ab.id?.startsWith('act_')) {
 					for (const kw of Object.keys(KEYWORD_LABELS)) {
 						if (new RegExp(`\\bgains?\\b[^.\\n]*\\b${kw}\\b`, 'i').test(ab.text)) {
 							grantsKeywordViaAbility.add(kw);
