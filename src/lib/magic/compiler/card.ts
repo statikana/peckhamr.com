@@ -238,12 +238,21 @@ function keywordLine(line: NormalizedLine): AbilityDef[] | null {
 			return;
 		}
 		if (keyword.name === 'enchant') {
-			// CR 303.4a: an Aura spell targets the object its enchant ability can enchant.
-			const filter = parseObjectPhrase((keyword.param ?? '').trim());
-			if (filter) keyword.enchantFilter = filter;
-			else {
-				out.push(unsupported('keyword_not_implemented', part, span, [span]));
-				return;
+			// CR 303.4a: an Aura spell targets the object or player its enchant ability can enchant.
+			const rawParam = (keyword.param ?? '').trim().toLowerCase();
+			if (rawParam === 'player') {
+				keyword.enchantPlayer = { relation: 'any' };
+			} else if (rawParam === 'opponent' || rawParam === 'an opponent') {
+				keyword.enchantPlayer = { relation: 'opponent' };
+			} else if (rawParam === 'you') {
+				keyword.enchantPlayer = { relation: 'you' };
+			} else {
+				const filter = parseObjectPhrase((keyword.param ?? '').trim());
+				if (filter) keyword.enchantFilter = filter;
+				else {
+					out.push(unsupported('keyword_not_implemented', part, span, [span]));
+					return;
+				}
 			}
 		}
 		out.push({ kind: 'keyword', keyword, span, ...(keyword.name === 'equip' ? { id: `equip_${line.rawIndex}` } : {}) });

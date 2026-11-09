@@ -169,19 +169,33 @@ export function getSpellTargetRequirement(card: ScryfallCard): TargetRequirement
 	const types = def.faces[0]?.characteristics.types ?? [];
 	const subtypes = def.faces[0]?.characteristics.subtypes ?? [];
 	if (subtypes.includes('Aura')) {
+		const enchantSpecs: TargetSpec[] = [];
 		for (const ab of abilities) {
 			if (ab.kind === 'keyword') {
-				const { name: kwName, enchantFilter } = ab.keyword;
+				const { name: kwName, enchantFilter, enchantPlayer } = ab.keyword;
 				if (kwName === 'enchant') {
-					const spec: TargetSpec = {
+					if (enchantPlayer) {
+						return targetRequirementFromSpecs([
+							{
+								kind: 'player',
+								filter: {},
+								player: enchantPlayer,
+								min: 1,
+								max: 1
+							}
+						]);
+					}
+					enchantSpecs.push({
 						kind: 'object',
 						filter: { zone: 'battlefield', ...(enchantFilter ?? {}) },
-						min: 1,
-						max: 1
-					};
-					return targetRequirementFromSpecs([spec]);
+						min: enchantSpecs.length === 0 ? 1 : 0,
+						max: enchantSpecs.length === 0 ? 1 : 0
+					});
 				}
 			}
+		}
+		if (enchantSpecs.length > 0) {
+			return targetRequirementFromSpecs(enchantSpecs);
 		}
 		return targetRequirementFromSpecs([
 			{ kind: 'object', filter: { zone: 'battlefield' }, min: 1, max: 1 }

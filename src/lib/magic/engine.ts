@@ -4297,7 +4297,10 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 				}
 			}
 
-			if (tLine.includes('Aura') && item.targets[0]?.kind === 'permanent') {
+			if (
+				tLine.includes('Aura') &&
+				(item.targets[0]?.kind === 'permanent' || item.targets[0]?.kind === 'player')
+			) {
 				perm.attachedToId = item.targets[0].id;
 			}
 			applySelfEtbReplacements(state, perm);
@@ -5697,33 +5700,42 @@ function completeTurnCleanupAndPassTurn(state: GameState): void {
 	runBeginningOfTurn(state);
 }
 
-function isAuraAttachmentLegal(
-	state: GameState,
-	aura: CardInstance,
-	auraController: PlayerGameState,
-	evalAura: EvaluatedPermanent,
-	host: CardInstance,
-	hostController: PlayerGameState
-): boolean {
-	if (host.phasedOut) return false;
-	if (hasProtectionFrom(host, aura.copiableCard ?? aura.card, state)) return false;
-
-	let enchantParam: string | undefined;
-	const kwLine = evalAura.keywords.find((k) => k.toLowerCase().startsWith('enchant '));
-	if (kwLine) {
-		enchantParam = kwLine.slice('enchant '.length).trim();
-	} else if (!evalAura.losesAllAbilities) {
+function getAuraEnchantParams(aura: CardInstance, evalAura: EvaluatedPermanent): string[] {
+	const params: string[] = [];
+	if (!evalAura.losesAllAbilities) {
 		const def = compileCard(aura.copiableCard ?? aura.card);
 		for (const ab of def.faces[0]?.abilities ?? []) {
 			if (ab.kind === 'keyword' && ab.keyword.name.toLowerCase() === 'enchant') {
-				enchantParam = ab.keyword.param ?? 'permanent';
-				break;
+				params.push((ab.keyword.param ?? 'permanent').trim());
 			}
 		}
 	}
-	if (!enchantParam) return true;
+	for (const kwLine of evalAura.keywords) {
+		if (kwLine.toLowerCase().startsWith('enchant ')) {
+			const p = kwLine.slice('enchant '.length).trim();
+			if (p && !params.some((existing) => existing.toLowerCase() === p.toLowerCase())) {
+				params.push(p);
+			}
+		}
+	}
+	return params;
+}
 
+function matchesSingleEnchantParamOnPermanent(
+	enchantParam: string,
+	auraController: PlayerGameState,
+	evalHost: EvaluatedPermanent,
+	hostController: PlayerGameState
+): boolean {
 	let param = enchantParam.toLowerCase().trim();
+	if (
+		param === 'player' ||
+		param === 'opponent' ||
+		param === 'an opponent' ||
+		param === 'you'
+	) {
+		return false;
+	}
 	if (param.includes('you control')) {
 		if (hostController.playerId !== auraController.playerId) return false;
 		param = param.replace(/\byou control\b/g, '').trim();
@@ -5732,7 +5744,6 @@ function isAuraAttachmentLegal(
 		param = param.replace(/\ban?\s+opponent controls\b|\bopponent controls\b/g, '').trim();
 	}
 
-	const evalHost = evaluatePermanent(state, host);
 	if (param.includes('nonland')) {
 		if (evalHost.isLand) return false;
 		param = param.replace(/\bnonland\b/g, '').trim();
@@ -5753,6 +5764,64 @@ function isAuraAttachmentLegal(
 		if (d === 'planeswalker') return evalHost.isPlaneswalker;
 		if (d === 'battle') return evalHost.typeLine.includes('Battle');
 		return evalHost.hasSubType(d) || evalHost.typeLine.toLowerCase().includes(d);
+	});
+}
+
+function isAuraAttachmentLegal(
+	state: GameState,
+	aura: CardInstance,
+	auraController: PlayerGameState,
+	evalAura: EvaluatedPermanent,
+	host: CardInstance,
+	hostController: PlayerGameState
+): boolean {
+	// CR 303.4d: An Aura can't enchant itself. If this occurs somehow, the Aura is put into its owner's graveyard.
+	// CR 303.4d: An Aura that's also a creature can't enchant anything.
+	if (aura.instanceId === host.instanceId) return false;
+	if (evalAura.isCreature) return false;
+	if (host.phasedOut) return false;
+	if (hasProtectionFrom(host, aura.copiableCard ?? aura.card, state)) return false;
+
+	const enchantParams = getAuraEnchantParams(aura, evalAura);
+	// CR 704.5m / 303.4c: If an Aura has lost all its enchant abilities, it can't legally enchant anything.
+	if (enchantParams.length === 0) return !evalAura.losesAllAbilities;
+
+	const evalHost = evaluatePermanent(state, host);
+	// CR 702.5c: If an Aura has multiple instances of enchant, all of its enchant abilities must be satisfied.
+	return enchantParams.every((p) =>
+		matchesSingleEnchantParamOnPermanent(p, auraController, evalHost, hostController)
+	);
+}
+
+function isAuraPlayerAttachmentLegal(
+	aura: CardInstance,
+	auraController: PlayerGameState,
+	evalAura: EvaluatedPermanent,
+	hostPlayer: PlayerGameState
+): boolean {
+	if (hostPlayer.lost) return false;
+	if (evalAura.isCreature) return false;
+	if (hostPlayer.protectionFromEverythingThisTurn) return false;
+
+	const enchantParams = getAuraEnchantParams(aura, evalAura);
+	if (enchantParams.length === 0) return false;
+
+	// CR 702.5c: All enchant abilities on the Aura must be satisfied by the enchanted player.
+	return enchantParams.every((raw) => {
+		const param = raw.toLowerCase().trim();
+		if (param === 'player' || param.includes('player')) {
+			if (param.includes('opponent')) {
+				return hostPlayer.playerId !== auraController.playerId;
+			}
+			return true;
+		}
+		if (param === 'opponent' || param === 'an opponent') {
+			return hostPlayer.playerId !== auraController.playerId;
+		}
+		if (param === 'you') {
+			return hostPlayer.playerId === auraController.playerId;
+		}
+		return false;
 	});
 }
 
@@ -5842,20 +5911,33 @@ export function checkStateBasedActions(state: GameState): void {
 							queueToGraveyard(perm, p, 'aura');
 						} else {
 							const targetFound = findPermanentOnBoard(state, perm.attachedToId);
-							if (
-								!targetFound ||
-								!isAuraAttachmentLegal(
-									state,
-									perm,
-									p,
-									evalPerm,
-									targetFound.inst,
-									targetFound.controller
-								)
-							) {
-								perm.attachedToId = null;
-								noteLayerInputsChanged(state);
-								queueToGraveyard(perm, p, 'aura');
+							if (targetFound) {
+								if (
+									!isAuraAttachmentLegal(
+										state,
+										perm,
+										p,
+										evalPerm,
+										targetFound.inst,
+										targetFound.controller
+									)
+								) {
+									perm.attachedToId = null;
+									noteLayerInputsChanged(state);
+									queueToGraveyard(perm, p, 'aura');
+								}
+							} else {
+								const targetPlayer = state.players.find(
+									(pl) => pl.playerId === perm.attachedToId && !pl.lost
+								);
+								if (
+									!targetPlayer ||
+									!isAuraPlayerAttachmentLegal(perm, p, evalPerm, targetPlayer)
+								) {
+									perm.attachedToId = null;
+									noteLayerInputsChanged(state);
+									queueToGraveyard(perm, p, 'aura');
+								}
 							}
 						}
 					} else if (isEquipment && perm.attachedToId) {
@@ -6911,7 +6993,11 @@ function validateTargetLegalityInner(
 				controllerId: actorId,
 				source: sourceInst
 			};
-			if (!objectSpecs.some((ts) => matchesObjectFilter(found.inst, ts.filter, fctx))) {
+			const isAuraSpell = Boolean(sourceCard?.typeLine.includes('Aura'));
+			const matchesFilter = isAuraSpell
+				? objectSpecs.every((ts) => matchesObjectFilter(found.inst, ts.filter, fctx))
+				: objectSpecs.some((ts) => matchesObjectFilter(found.inst, ts.filter, fctx));
+			if (!matchesFilter) {
 				return {
 					ok: false,
 					error: `Strict Rules Violation: ${found.inst.card.name} is not a legal target.`

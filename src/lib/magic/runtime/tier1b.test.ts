@@ -526,4 +526,88 @@ describe('Tier 1b CR fixes', () => {
 			assert.equal(p1.graveyard.length, 0, 'Copy of instant spell ceases to exist');
 		});
 	});
+
+	describe('Item 11: Enchant-player Auras attach to players and survive SBAs (CR 303.4, 702.5c-d, 704.5m)', () => {
+		it('targets and attaches an Enchant player Aura to a player on resolution, survives SBAs, and dies when that player leaves', () => {
+			const { state, players } = makeGame(3);
+			const [p1, p2, p3] = players;
+
+			const curseCard = synthCard({
+				name: 'Curse of Opulence',
+				manaCost: '{R}',
+				cmc: 1,
+				typeLine: 'Enchantment — Aura Curse',
+				oracleText: 'Enchant player'
+			});
+			const curse = createCardInstance(curseCard, p1.playerId);
+			curse.zone = 'hand';
+			p1.hand.push(curse);
+			p1.manaPool = { W: 0, U: 0, B: 0, R: 1, G: 0, C: 0 };
+
+			const bear = createCardInstance(
+				synthCard({ name: 'Target Bear', typeLine: 'Creature — Bear' }),
+				p2.playerId
+			);
+			p2.battlefield.push(bear);
+
+			// CR 702.5d: Enchant player Aura cannot target a permanent
+			assert.equal(
+				applyGameAction(state, p1.playerId, {
+					type: 'cast_spell',
+					instanceId: curse.instanceId,
+					targets: [{ kind: 'permanent', id: bear.instanceId }]
+				}).ok,
+				false
+			);
+
+			// Cast targeting Player 2
+			assert.equal(
+				applyGameAction(state, p1.playerId, {
+					type: 'cast_spell',
+					instanceId: curse.instanceId,
+					targets: [{ kind: 'player', id: p2.playerId }]
+				}).ok,
+				true
+			);
+
+			// Resolve the Aura spell across all 3 players
+			assert.equal(applyGameAction(state, p1.playerId, { type: 'pass_priority' }).ok, true);
+			assert.equal(applyGameAction(state, p2.playerId, { type: 'pass_priority' }).ok, true);
+			assert.equal(applyGameAction(state, p3.playerId, { type: 'pass_priority' }).ok, true);
+
+			assert.equal(p1.battlefield.length, 1, 'Curse remains on battlefield after resolution and SBA check');
+			assert.equal(p1.battlefield[0].attachedToId, p2.playerId, 'Curse is attached to Player 2');
+			assert.equal(p1.graveyard.length, 0);
+
+			// When Player 2 leaves the game, the Curse attached to Player 2 goes to p1's graveyard (CR 303.4c / 704.5m)
+			assert.equal(applyGameAction(state, p2.playerId, { type: 'concede' }).ok, true);
+			assert.equal(p1.battlefield.length, 0, 'Curse is removed from battlefield when enchanted player leaves');
+			assert.equal(p1.graveyard.length, 1, 'Curse is put into owner graveyard');
+		});
+
+		it('enforces all Enchant abilities when an Aura has multiple instances of enchant (CR 702.5c)', () => {
+			const { state, p1 } = makeGame(2);
+			const multiAuraCard = synthCard({
+				name: 'Mechanized Bond',
+				manaCost: '{W}',
+				cmc: 1,
+				typeLine: 'Enchantment — Aura',
+				oracleText: 'Enchant creature\nEnchant artifact'
+			});
+			const plainBear = createCardInstance(
+				synthCard({ name: 'Plain Bear', typeLine: 'Creature — Bear' }),
+				p1.playerId
+			);
+			const multiAura = createCardInstance(multiAuraCard, p1.playerId);
+			multiAura.attachedToId = plainBear.instanceId;
+			p1.battlefield.push(plainBear, multiAura);
+
+			checkStateBasedActions(state);
+			assert.equal(
+				p1.graveyard.some((c) => c.instanceId === multiAura.instanceId),
+				true,
+				'Aura with Enchant artifact + Enchant creature falls off a non-artifact creature'
+			);
+		});
+	});
 });

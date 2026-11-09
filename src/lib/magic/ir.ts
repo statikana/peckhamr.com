@@ -205,6 +205,8 @@ export interface KeywordDef {
 	equipFilter?: ObjectFilter;
 	/** Enchant [quality] (CR 303.4a, 702.5): what the Aura can enchant (and so, as a spell, target). */
 	enchantFilter?: ObjectFilter;
+	/** Enchant player / opponent / you (CR 303.4a, 702.5a): player filter for player-enchanting Auras. */
+	enchantPlayer?: PlayerFilter;
 }
 
 // ---- Filters --------------------------------------------------------------------------------
