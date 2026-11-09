@@ -165,13 +165,12 @@ import type { EffectStep, TargetSpec } from './ir.ts';
 import { compiledStackItemEffects } from './compiler/effects.ts';
 import {
 	buildCostChoiceRequest,
-	clearRegisteredChoiceCallback,
 	effectivePromptChoice,
 	effectivePromptPurpose,
 	inferObjectsZone,
 	normalizePromptAction,
 	enqueueChoicePrompt,
-	resolveRegisteredChoiceCallback,
+	runPromptHandler,
 	validateChoiceAnswer
 } from './runtime/choices.ts';
 
@@ -188,6 +187,7 @@ import {
 	type GameLogEntry,
 	type GamePhase,
 	type GameState,
+	type GuidedOperation,
 	type LibrarySearchDestination,
 	type LibrarySearchSpec,
 	type LobbyRulesConfig,
@@ -2326,7 +2326,6 @@ function handlePromptResolution(
 				pending.type !== 'activate_ability' &&
 				pending.type !== 'tap_mana')
 		) {
-			clearRegisteredChoiceCallback(state, prompt.id);
 			return { ok: true };
 		}
 		const valid = validateChoiceAnswer(choice, normalized.answer);
@@ -2377,7 +2376,6 @@ function handlePromptResolution(
 				actor.playerId
 			);
 		}
-		resolveRegisteredChoiceCallback(state, prompt.id, normalized.answer);
 		checkStateBasedActions(state);
 		return { ok: true };
 	}
@@ -2415,7 +2413,6 @@ function handlePromptResolution(
 			`${actor.username} resolved the Legend Rule (CR 704.5j).`,
 			actor.playerId
 		);
-		resolveRegisteredChoiceCallback(state, prompt.id, normalized.answer);
 		checkStateBasedActions(state);
 		return { ok: true };
 	}
@@ -2463,7 +2460,6 @@ function handlePromptResolution(
 				actor.playerId
 			);
 		}
-		resolveRegisteredChoiceCallback(state, prompt.id, normalized.answer);
 		return { ok: true };
 	}
 
@@ -2494,7 +2490,6 @@ function handlePromptResolution(
 			`${actor.username} discarded ${req} card(s) down to maximum hand size.`,
 			actor.playerId
 		);
-		resolveRegisteredChoiceCallback(state, prompt.id, normalized.answer);
 		completeTurnCleanupAndPassTurn(state);
 		return { ok: true };
 	}
@@ -2701,7 +2696,6 @@ function handlePromptResolution(
 				executeParsedEffect(state, libraryOwner, prompt.stackItem, eff);
 			}
 		}
-		resolveRegisteredChoiceCallback(state, prompt.id, normalized.answer);
 		checkStateBasedActions(state);
 		return { ok: true };
 	}
@@ -2789,7 +2783,6 @@ function handlePromptResolution(
 			}
 			checkStateBasedActions(state);
 		}
-		resolveRegisteredChoiceCallback(state, prompt.id, normalized.answer);
 		return { ok: true };
 	}
 
@@ -2798,39 +2791,48 @@ function handlePromptResolution(
 		if (!valid.ok || normalized.answer?.kind !== 'yesNo') {
 			return { ok: false, error: valid.ok ? 'Invalid guided resolution answer.' : valid.error };
 		}
+		const ops = normalized.answer.yes ? (normalized.operations ?? []) : [];
+		const opsValid = validateGuidedOperations(state, ops);
+		if (!opsValid.ok) return opsValid;
 		state.pendingPrompts.splice(promptIdx, 1);
-		if (normalized.answer.yes) {
-			for (const op of normalized.operations ?? []) {
-				if (op.op === 'draw_cards' && op.amount) {
-					drawCards(state, actor, op.amount);
-				} else if (op.op === 'modify_life' && op.targetId && op.amount) {
-					const tp = state.players.find((p) => p.playerId === op.targetId);
-					if (tp && !tp.lifeTotalCannotChangeThisTurn) tp.life += op.amount;
-				} else if (op.op === 'deal_damage' && op.targetId && op.amount) {
-					applyDamageToTarget(
-						state,
-						actor.playerId,
-						{ kind: 'permanent', id: op.targetId, label: 'target' },
-						op.amount
-					);
-				} else if (op.op === 'move_zone' && op.targetId && op.destinationZone) {
-					const found = findPermanentOnBoard(state, op.targetId);
-					if (found) {
-						movePermanentToZone(state, found.inst, op.destinationZone);
-					}
-				}
+		applyGuidedOperations(state, actor, ops);
+		const c = prompt.continuation;
+		if (c?.kind === 'manual_resolution') {
+			const item = state.stack.find((s) => s.id === c.stackItemId);
+			addLog(state, 'cast', `${actor.username} resolved ${item?.title ?? prompt.title} manually${ops.length > 0 ? ` (${ops.length} operation${ops.length === 1 ? '' : 's'})` : ''}.`, actor.playerId);
+			if (item) {
+				item.manualResolution = 'done';
+				resumeStackItem(state, item);
 			}
+			return { ok: true };
 		}
-		addLog(state, 'cast', `${actor.username} completed guided resolution for ${prompt.title}.`, actor.playerId);
-		resolveRegisteredChoiceCallback(state, prompt.id, normalized.answer);
+		if (c?.kind === 'manual_ability') {
+			addLog(state, 'cast', `${actor.username} applied an ability of ${prompt.title.replace(/^Resolve Manually: /, '')} manually${ops.length > 0 ? ` (${ops.length} operation${ops.length === 1 ? '' : 's'})` : ''}.`, actor.playerId);
+		} else {
+			addLog(state, 'cast', `${actor.username} completed guided resolution for ${prompt.title}.`, actor.playerId);
+		}
 		checkStateBasedActions(state);
+		return { ok: true };
+	}
+
+	// Step E2: a paused IR resolution waiting for this player's choice (sacrifice, discard).
+	if (prompt.continuation?.kind === 'effect_choice') {
+		const valid = validateChoiceAnswer(choice, normalized.answer);
+		if (!valid.ok || normalized.answer?.kind !== 'chooseObjects') {
+			return { ok: false, error: valid.ok ? 'Choose the required objects.' : valid.error };
+		}
+		const c = prompt.continuation;
+		state.pendingPrompts.splice(promptIdx, 1);
+		const item = state.stack.find((s) => s.id === c.stackItemId);
+		if (!item?.effectResume || item.effectResume.stepIndex !== c.stepIndex) return { ok: true };
+		item.effectResume.answers[actor.playerId] = normalized.answer.objectIds;
+		resumeStackItem(state, item);
 		return { ok: true };
 	}
 
 	// Standalone generic choice prompt (yesNo, chooseObjects, chooseMode, chooseNumber, chooseReplacement)
 	if (normalized.cancel && prompt.cancellable) {
 		state.pendingPrompts.splice(promptIdx, 1);
-		clearRegisteredChoiceCallback(state, prompt.id);
 		return { ok: true };
 	}
 	const valid = validateChoiceAnswer(choice, normalized.answer);
@@ -2838,9 +2840,177 @@ function handlePromptResolution(
 		return { ok: false, error: valid.ok ? 'Missing choice answer.' : valid.error };
 	}
 	state.pendingPrompts.splice(promptIdx, 1);
-	resolveRegisteredChoiceCallback(state, prompt.id, normalized.answer);
+	// A generic prompt continues only through a named handler (plain data). Without one, answering
+	// just records the answer in the log.
+	if (!runPromptHandler(state, prompt, normalized.answer)) {
+		addLog(state, 'rule', `${actor.username} answered "${prompt.title}".`, actor.playerId);
+	}
 	checkStateBasedActions(state);
 	return { ok: true };
+}
+
+// ---- Step E2: guided (manual) operations ------------------------------------------------------
+
+const GUIDED_MAX_AMOUNT = 100;
+const GUIDED_ZONES: ReadonlySet<ZoneType> = new Set<ZoneType>(['battlefield', 'graveyard', 'exile', 'hand', 'library', 'command']);
+
+/** Any card in any player's zones (not the stack). */
+function findCardAnywhere(state: GameState, id: string): { inst: CardInstance; holder: PlayerGameState; zone: ZoneType } | null {
+	for (const zone of ['battlefield', 'graveyard', 'exile', 'hand', 'library', 'command'] as const) {
+		for (const p of state.players) {
+			const inst = p[zone].find((c) => c.instanceId === id);
+			if (inst) return { inst, holder: p, zone };
+		}
+	}
+	return null;
+}
+
+/** Server-side check of a guided resolution's operations (the client is not trusted). */
+function validateGuidedOperations(state: GameState, ops: GuidedOperation[]): { ok: true } | { ok: false; error: string } {
+	if (!Array.isArray(ops)) return { ok: false, error: 'Operations must be a list.' };
+	if (ops.length > 50) return { ok: false, error: 'Too many operations.' };
+	for (const op of ops) {
+		const amount = op.amount ?? 0;
+		if (!Number.isInteger(amount) || Math.abs(amount) > GUIDED_MAX_AMOUNT) {
+			return { ok: false, error: `Amounts must be whole numbers up to ${GUIDED_MAX_AMOUNT}.` };
+		}
+		const player = op.targetId ? state.players.find((p) => p.playerId === op.targetId) : undefined;
+		const card = op.targetId ? findCardAnywhere(state, op.targetId) : null;
+		switch (op.op) {
+			case 'draw_cards':
+			case 'mill':
+				if (amount < 0) return { ok: false, error: 'Card counts cannot be negative.' };
+				if (op.targetId && !player) return { ok: false, error: 'Choose a player.' };
+				break;
+			case 'modify_life':
+				if (!player) return { ok: false, error: 'Choose a player whose life changes.' };
+				break;
+			case 'deal_damage':
+				if (amount < 0) return { ok: false, error: 'Damage cannot be negative.' };
+				if (!player && card?.zone !== 'battlefield') return { ok: false, error: 'Choose a player or permanent to damage.' };
+				break;
+			case 'move_zone':
+				if (!card) return { ok: false, error: 'Choose a card to move.' };
+				if (!op.destinationZone || !GUIDED_ZONES.has(op.destinationZone)) return { ok: false, error: 'Choose a destination zone.' };
+				break;
+			case 'add_counter':
+				if (card?.zone !== 'battlefield') return { ok: false, error: 'Choose a permanent for the counters.' };
+				if (!op.counterType || !(op.counterType in card.inst.counters)) return { ok: false, error: 'Choose a counter type.' };
+				break;
+			case 'tap':
+			case 'untap':
+				if (card?.zone !== 'battlefield') return { ok: false, error: 'Choose a permanent to tap or untap.' };
+				break;
+			case 'create_token':
+				if (amount < 0 || amount > 20) return { ok: false, error: 'Create between 1 and 20 tokens.' };
+				if ((op.tokenPower ?? 0) < 0 || (op.tokenToughness ?? 0) < 0) return { ok: false, error: 'Token power and toughness cannot be negative.' };
+				break;
+			default:
+				return { ok: false, error: 'Unknown operation.' };
+		}
+	}
+	return { ok: true };
+}
+
+/**
+ * Applies a guided resolution's operations, each through the normal engine primitive (zone moves
+ * through moveObject, damage through the damage pipeline, ...), in order. Validated beforehand.
+ */
+function applyGuidedOperations(state: GameState, actor: PlayerGameState, ops: GuidedOperation[]): void {
+	for (const op of ops) {
+		const amount = op.amount ?? 0;
+		const player = op.targetId ? state.players.find((p) => p.playerId === op.targetId) : undefined;
+		const found = op.targetId ? findCardAnywhere(state, op.targetId) : null;
+		switch (op.op) {
+			case 'draw_cards':
+				if (amount > 0) drawCards(state, player ?? actor, amount);
+				break;
+			case 'mill': {
+				const who = player ?? actor;
+				const n = Math.min(amount, who.library.length);
+				for (let i = 0; i < n; i++) {
+					moveObject(state, who.library[0], 'graveyard', {
+						from: { player: who, zone: 'library' },
+						toPlayer: who,
+						graveyardReplacement: true,
+						bumpVersion: true,
+						newTimestamp: true
+					});
+				}
+				if (n > 0) addLog(state, 'rule', `${who.username} milled ${n} card(s) (manual).`, actor.playerId);
+				break;
+			}
+			case 'modify_life':
+				if (player && amount !== 0 && !player.lifeTotalCannotChangeThisTurn) {
+					player.life += amount;
+					addLog(state, 'life', `${player.username} ${amount > 0 ? 'gained' : 'lost'} ${Math.abs(amount)} life (manual).`, actor.playerId);
+				}
+				break;
+			case 'deal_damage':
+				if (amount > 0) {
+					applyDamageToTarget(
+						state,
+						actor.playerId,
+						player
+							? { kind: 'player', id: player.playerId, label: player.username }
+							: { kind: 'permanent', id: op.targetId!, label: found?.inst.card.name ?? 'target' },
+						amount
+					);
+				}
+				break;
+			case 'move_zone': {
+				if (!found || !op.destinationZone || found.zone === op.destinationZone) break;
+				const dest = op.destinationZone;
+				if (found.zone === 'battlefield') {
+					movePermanentToZone(state, found.inst, dest);
+				} else {
+					const owner = state.players.find((p) => p.playerId === found.inst.ownerId) ?? found.holder;
+					const toPlayer = dest === 'battlefield' ? actor : owner;
+					if (dest === 'battlefield') found.inst.summoningSick = found.inst.card.typeLine.includes('Creature');
+					moveObject(state, found.inst, dest, {
+						from: { player: found.holder, zone: found.zone as Exclude<ZoneType, 'stack'> },
+						toPlayer,
+						...(dest === 'battlefield' ? { controllerId: actor.playerId } : {}),
+						bumpVersion: true,
+						newTimestamp: true
+					});
+				}
+				addLog(state, 'rule', `${found.inst.card.name} was moved from ${found.zone} to ${dest} (manual).`, actor.playerId);
+				if (dest === 'battlefield') flushTriggers(state);
+				break;
+			}
+			case 'add_counter':
+				if (found && op.counterType) {
+					if (amount > 0) addCountersToPermanent(state, found.inst, op.counterType, amount);
+					else if (amount < 0) found.inst.counters[op.counterType] = Math.max(0, (found.inst.counters[op.counterType] ?? 0) + amount);
+					addLog(state, 'rule', `${found.inst.card.name}: ${amount > 0 ? '+' : ''}${amount} ${op.counterType} counter(s) (manual).`, actor.playerId);
+				}
+				break;
+			case 'tap':
+			case 'untap':
+				if (found) {
+					found.inst.tapped = op.op === 'tap';
+					addLog(state, 'rule', `${found.inst.card.name} was ${op.op === 'tap' ? 'tapped' : 'untapped'} (manual).`, actor.playerId);
+				}
+				break;
+			case 'create_token':
+				for (let i = 0; i < Math.max(1, amount); i++) {
+					const power = op.tokenPower ?? 0;
+					const toughness = op.tokenToughness ?? 0;
+					const isCreature = op.tokenPower !== undefined || op.tokenToughness !== undefined;
+					createTokenOnBoard(state, actor, {
+						name: (op.tokenName ?? '').trim().slice(0, 40) || 'Token',
+						power,
+						toughness,
+						colors: [],
+						typeLine: isCreature ? 'Token Creature' : 'Token Artifact',
+						keywords: []
+					});
+				}
+				addLog(state, 'rule', `${actor.username} created ${Math.max(1, amount)} token(s) (manual).`, actor.playerId);
+				break;
+		}
+	}
 }
 
 function getAttackedDefenderIdsInTurnOrder(state: GameState): string[] {
@@ -3492,7 +3662,8 @@ function resolveTriggerPrompt(
 	// trigger_may: record the answer and finish resolving the ability (it stayed on the stack).
 	if (answer?.kind !== 'yesNo') return { ok: true };
 	item.optionalAccepted = answer.yes;
-	if (state.stack[state.stack.length - 1] === item) resolveTopOfStack(state);
+	// Resume by id: triggers that fired meanwhile may sit above it on the stack.
+	resumeStackItem(state, item);
 	return { ok: true };
 }
 
@@ -3511,13 +3682,37 @@ export function setEffectInterpreterEnabled(on: boolean): void {
  * on the stack afterwards, once state-based actions have been checked (CR 603.3, 704.3).
  */
 export function resolveTopOfStack(state: GameState): void {
-	withTriggersDeferred(state, () => resolveTopOfStackNow(state));
+	const item = state.stack[state.stack.length - 1];
+	if (!item) return;
+	resumeStackItem(state, item);
+}
+
+/**
+ * Resolves (or continues resolving) a specific stack item. A resolution that paused for a prompt
+ * resumes here by id once the prompt is answered: triggers that fired before the pause were put on
+ * the stack above it, so it isn't necessarily on top (a minor deviation: under CR 603.3 they would
+ * wait until the resolution finished; the pending-trigger queue isn't kept across the pause because
+ * it isn't part of the saved state). Those triggers still resolve first.
+ */
+function resumeStackItem(state: GameState, item: StackItem): void {
+	if (!state.stack.includes(item)) return;
+	withTriggersDeferred(state, () => resolveStackItemNow(state, item));
 	flushTriggers(state);
 }
 
-function resolveTopOfStackNow(state: GameState): void {
-	const item = state.stack[state.stack.length - 1];
-	if (!item) return;
+/** Whether a resolving item still waits for one of its prompts (it must not resolve again meanwhile). */
+function stackItemAwaitsPrompt(state: GameState, item: StackItem): boolean {
+	return state.pendingPrompts.some(
+		(p) =>
+			p.triggerStackItemId === item.id ||
+			(p.continuation?.kind === 'effect_choice' && p.continuation.stackItemId === item.id) ||
+			(p.continuation?.kind === 'manual_resolution' && p.continuation.stackItemId === item.id)
+	);
+}
+
+function resolveStackItemNow(state: GameState, item: StackItem): void {
+	if (stackItemAwaitsPrompt(state, item)) return;
+	const resuming = Boolean(item.resolutionStarted);
 	const removeItemFromStack = () => {
 		const idx = state.stack.lastIndexOf(item);
 		if (idx >= 0) state.stack.splice(idx, 1);
@@ -3531,6 +3726,7 @@ function resolveTopOfStackNow(state: GameState): void {
 
 	// Check intervening-if clause on resolution (CR 603.4)
 	if (
+		!resuming &&
 		item.triggeredAbilityIndex !== undefined &&
 		!stackTriggerConditionHolds(
 			state,
@@ -3554,7 +3750,7 @@ function resolveTopOfStackNow(state: GameState): void {
 	}
 
 	// Check if all targets are still legal (Fizzle rule CR 608.2b)
-	if (item.targets.length > 0) {
+	if (!resuming && item.targets.length > 0) {
 		const triggerSpecs = item.kind === 'triggered' ? triggerItemTargetSpecs(item) : [];
 		const validTargets = item.targets.filter((t) =>
 			isTargetStillValid(state, t, item.controllerId, item.card, item) &&
@@ -3590,12 +3786,16 @@ function resolveTopOfStackNow(state: GameState): void {
 		}
 	}
 
-	emitVfx(state, {
-		kind: 'stack_resolve',
-		sourceId: item.controllerId,
-		targetId: item.targets[0]?.id,
-		label: `Resolved: ${item.title}`
-	});
+	if (!resuming) {
+		emitVfx(state, {
+			kind: 'stack_resolve',
+			sourceId: item.controllerId,
+			targetId: item.targets[0]?.id,
+			label: `Resolved: ${item.title}`
+		});
+		// From here on, a pause for a prompt resumes without repeating the checks and VFX above.
+		item.resolutionStarted = true;
+	}
 
 	let turnEndedDuringResolution = false;
 
@@ -3663,8 +3863,13 @@ function resolveTopOfStackNow(state: GameState): void {
 				overload,
 				...triggerEventContext(item)
 			},
-			steps
+			steps,
+			item.effectResume
 		);
+		// Step E2: a human must choose first (sacrifice, discard). The item stays on the stack with its
+		// resume frame (CR 608.2n) and resolves on, by id, once the prompt is answered.
+		if (result.paused) return;
+		delete item.effectResume;
 		if (state.delayedTriggers) {
 			for (const dt of state.delayedTriggers) {
 				if (dt.targetInstanceId && dt.targetObjectVersion === undefined) {

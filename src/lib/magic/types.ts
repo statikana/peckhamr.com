@@ -422,7 +422,6 @@ export interface StackItem {
 	createdAt: number;
 	isCopy?: boolean;
 	sourceObjectVersion?: number;
-	interveningIfCondition?: TriggerCondition;
 	lkiPower?: number;
 	lkiToughness?: number;
 	lkiTypeLine?: string;
@@ -457,6 +456,39 @@ export interface StackItem {
 	legacyEventTarget?: TargetRef;
 	/** "You may" triggered abilities: the controller's answer, once asked on resolution. */
 	optionalAccepted?: boolean;
+	/**
+	 * Step E2: resolution has started (targets re-checked, LKI captured, resolve VFX shown). Set
+	 * when a resolution pauses for a prompt, so resuming it doesn't repeat those one-time steps.
+	 */
+	resolutionStarted?: boolean;
+	/**
+	 * Step E2: where the IR interpreter paused for a human's choice (CR 608.2n: the spell or ability
+	 * stays on the stack until it finishes resolving). Plain data, so it survives the server's JSON
+	 * round trip; the steps themselves are recompiled from the card on resume, never stored.
+	 */
+	effectResume?: EffectResumeFrame;
+	/**
+	 * Step E2 (plan section 2.7): the ability isn't automated and its human controller is applying it
+	 * by hand (`'awaiting'`: guided prompt open; `'done'`: finish resolving without effects).
+	 */
+	manualResolution?: 'awaiting' | 'done';
+}
+
+/** One binding of the IR interpreter ("it", "that creature"): the objects and their LKI. */
+export interface EffectBindingSnapshot {
+	id: string;
+	lki: TriggerEventLki;
+}
+
+/**
+ * Step E2: a paused IR resolution. `stepIndex` is the step that asked for a choice; it runs again
+ * from its start on resume, with `answers` (chosen object ids per player) filling in the choices.
+ */
+export interface EffectResumeFrame {
+	stepIndex: number;
+	bindings: Array<[string, EffectBindingSnapshot[]]>;
+	exileSelf?: boolean;
+	answers: Record<string, string[]>;
 }
 
 /** Last known information of a trigger's event object (plain data, JSON-serialisable). */
@@ -556,7 +588,11 @@ export interface GuidedOperation {
 		| 'add_counter'
 		| 'draw_cards'
 		| 'create_token'
-		| 'deal_damage';
+		| 'deal_damage'
+		/** Step E2: tap / untap a permanent; mill `amount` cards from player `targetId`'s library. */
+		| 'tap'
+		| 'untap'
+		| 'mill';
 	targetId?: string;
 	destinationZone?: ZoneType;
 	amount?: number;
@@ -636,7 +672,29 @@ export interface PendingPrompt {
 	triggerStackItemId?: string;
 	/** trigger_targets: which of the ability's target specs this prompt chooses for. */
 	triggerTargetSpecIndex?: number;
+	/**
+	 * Step E2: what answering this prompt continues. Plain data (never a callback), so a prompt
+	 * answered after the server reloads the state from JSON still continues the game.
+	 */
+	continuation?: PromptContinuation;
 }
+
+/**
+ * Step E2: data-only prompt continuations, handled in engine.ts `handlePromptResolution`.
+ * - `effect_choice`: a paused IR resolution (sacrifice / discard choice); the answer is stored in
+ *   the stack item's `effectResume.answers` and the item resumes resolving.
+ * - `manual_resolution`: an unsupported spell or ability being applied by hand (guided operations);
+ *   the item then finishes resolving.
+ * - `manual_ability`: the "Resolve manually" escape hatch for any ability of a card; never touches
+ *   the stack.
+ * - `handler`: a named handler registered at module load (runtime/choices.ts
+ *   `registerPromptHandler`), for generic prompts that need no engine state.
+ */
+export type PromptContinuation =
+	| { kind: 'effect_choice'; stackItemId: string; stepIndex: number }
+	| { kind: 'manual_resolution'; stackItemId: string }
+	| { kind: 'manual_ability'; sourceInstanceId: string }
+	| { kind: 'handler'; name: string; data?: Record<string, string | number | boolean | null> };
 
 /**
  * The player's choices for paying a cost (CR 601.2b/h, 602.2b), validated by the server. Indices
@@ -861,6 +919,12 @@ export type GameActionPayload =
 			type: 'guided_resolution_finish';
 			operations?: GuidedOperation[];
 	  }
+	/**
+	 * Step E2 escape hatch: open a guided (manual) resolution for one of a card's abilities while the
+	 * player has priority. `abilityIndex` indexes `cardSupportReport(card).unsupported`; without it
+	 * the card's whole text is shown. Never uses the stack.
+	 */
+	| { type: 'resolve_manually'; instanceId: string; abilityIndex?: number }
 	| { type: 'toggle_full_control'; enabled: boolean }
 	| { type: 'toggle_stop_phase'; phase: GamePhase }
 	| { type: 'concede' };

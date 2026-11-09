@@ -23,6 +23,7 @@ import {
 	chooseBotAnswer,
 	effectivePromptChoice,
 	enqueueChoicePrompt,
+	registerPromptHandler,
 	validateChoiceAnswer
 } from './choices.ts';
 import { moveObject } from './zones.ts';
@@ -322,30 +323,29 @@ describe('Phase 8: Generic choice protocol — all 6 choice kinds', () => {
 	it('3. chooseMode: validates mode indices and resolves modal choices via { type: "choice" }', () => {
 		const { state, p1 } = newGame();
 		let chosenIndices: number[] | null = null;
-		const prompt = enqueueChoicePrompt(
-			state,
-			{
-				id: 'prm_mode',
-				playerId: p1.playerId,
+		// Step E2: the prompt continues through a named handler (plain data), not a callback.
+		registerPromptHandler('test.prm_mode', (_st, _prompt, ans) => {
+			if (ans.kind === 'chooseMode') chosenIndices = ans.indices;
+		});
+		const prompt = enqueueChoicePrompt(state, {
+			id: 'prm_mode',
+			continuation: { kind: 'handler', name: 'test.prm_mode' },
+			playerId: p1.playerId,
+			kind: 'chooseMode',
+			title: 'Choose Two Modes',
+			description: 'Choose two:',
+			choice: {
 				kind: 'chooseMode',
-				title: 'Choose Two Modes',
-				description: 'Choose two:',
-				choice: {
-					kind: 'chooseMode',
-					modes: [
-						'Destroy all artifacts',
-						'Destroy all creatures',
-						'Destroy all enchantments',
-						'Exile all graveyards'
-					],
-					min: 2,
-					max: 2
-				}
-			},
-			(_st, ans) => {
-				if (ans.kind === 'chooseMode') chosenIndices = ans.indices;
+				modes: [
+					'Destroy all artifacts',
+					'Destroy all creatures',
+					'Destroy all enchantments',
+					'Exile all graveyards'
+				],
+				min: 2,
+				max: 2
 			}
-		);
+		});
 
 		// Too few modes rejected
 		assert.equal(
@@ -389,25 +389,24 @@ describe('Phase 8: Generic choice protocol — all 6 choice kinds', () => {
 	it('4. chooseNumber: validates numeric bounds and resolves via { type: "choice" }', () => {
 		const { state, p1 } = newGame();
 		let pickedNumber: number | null = null;
-		const prompt = enqueueChoicePrompt(
-			state,
-			{
-				id: 'prm_num',
-				playerId: p1.playerId,
+		// Step E2: the prompt continues through a named handler (plain data), not a callback.
+		registerPromptHandler('test.prm_num', (_st, _prompt, ans) => {
+			if (ans.kind === 'chooseNumber') pickedNumber = ans.n;
+		});
+		const prompt = enqueueChoicePrompt(state, {
+			id: 'prm_num',
+			continuation: { kind: 'handler', name: 'test.prm_num' },
+			playerId: p1.playerId,
+			kind: 'chooseNumber',
+			title: 'Choose a Number',
+			description: 'Choose a number between 1 and 5.',
+			choice: {
 				kind: 'chooseNumber',
-				title: 'Choose a Number',
-				description: 'Choose a number between 1 and 5.',
-				choice: {
-					kind: 'chooseNumber',
-					min: 1,
-					max: 5,
-					reason: 'Choose a number between 1 and 5.'
-				}
-			},
-			(_st, ans) => {
-				if (ans.kind === 'chooseNumber') pickedNumber = ans.n;
+				min: 1,
+				max: 5,
+				reason: 'Choose a number between 1 and 5.'
 			}
-		);
+		});
 
 		// Out of bounds or non-integer rejected
 		assert.equal(
@@ -516,26 +515,25 @@ describe('Phase 8: Generic choice protocol — all 6 choice kinds', () => {
 	it('6. chooseReplacement: validates replacement option id and resolves via { type: "choice" }', () => {
 		const { state, p1 } = newGame();
 		let chosenReplacementId: string | null = null;
-		const prompt = enqueueChoicePrompt(
-			state,
-			{
-				id: 'prm_rep',
-				playerId: p1.playerId,
+		// Step E2: the prompt continues through a named handler (plain data), not a callback.
+		registerPromptHandler('test.prm_rep', (_st, _prompt, ans) => {
+			if (ans.kind === 'chooseReplacement') chosenReplacementId = ans.id;
+		});
+		const prompt = enqueueChoicePrompt(state, {
+			id: 'prm_rep',
+			continuation: { kind: 'handler', name: 'test.prm_rep' },
+			playerId: p1.playerId,
+			kind: 'chooseReplacement',
+			title: 'Choose Replacement Effect (CR 616.1)',
+			description: 'Multiple replacement effects would modify this event. Choose which applies first:',
+			choice: {
 				kind: 'chooseReplacement',
-				title: 'Choose Replacement Effect (CR 616.1)',
-				description: 'Multiple replacement effects would modify this event. Choose which applies first:',
-				choice: {
-					kind: 'chooseReplacement',
-					options: [
-						{ id: 'rep_rest_in_peace', label: 'Exile card instead (Rest in Peace)' },
-						{ id: 'rep_commander', label: 'Move Commander to Command Zone (CR 903.9a)' }
-					]
-				}
-			},
-			(_st, ans) => {
-				if (ans.kind === 'chooseReplacement') chosenReplacementId = ans.id;
+				options: [
+					{ id: 'rep_rest_in_peace', label: 'Exile card instead (Rest in Peace)' },
+					{ id: 'rep_commander', label: 'Move Commander to Command Zone (CR 903.9a)' }
+				]
 			}
-		);
+		});
 
 		// Unknown replacement id rejected
 		assert.equal(
@@ -696,26 +694,25 @@ describe('Phase 8: Bot generic choice answering (ai.ts / runtime/choices.ts)', (
 		const { state, p1 } = newGame();
 		p1.isBot = true;
 		let resolvedReplacement: string | null = null;
-		enqueueChoicePrompt(
-			state,
-			{
-				id: 'prm_bot_rep',
-				playerId: p1.playerId,
+		// Step E2: the prompt continues through a named handler (plain data), not a callback.
+		registerPromptHandler('test.prm_bot_rep', (_st, _prompt, ans) => {
+			if (ans.kind === 'chooseReplacement') resolvedReplacement = ans.id;
+		});
+		enqueueChoicePrompt(state, {
+			id: 'prm_bot_rep',
+			continuation: { kind: 'handler', name: 'test.prm_bot_rep' },
+			playerId: p1.playerId,
+			kind: 'chooseReplacement',
+			title: 'Bot Replacement Choice',
+			description: 'Choose replacement:',
+			choice: {
 				kind: 'chooseReplacement',
-				title: 'Bot Replacement Choice',
-				description: 'Choose replacement:',
-				choice: {
-					kind: 'chooseReplacement',
-					options: [
-						{ id: 'opt_1', label: 'Option 1' },
-						{ id: 'opt_2', label: 'Option 2' }
-					]
-				}
-			},
-			(_st, ans) => {
-				if (ans.kind === 'chooseReplacement') resolvedReplacement = ans.id;
+				options: [
+					{ id: 'opt_1', label: 'Option 1' },
+					{ id: 'opt_2', label: 'Option 2' }
+				]
 			}
-		);
+		});
 
 		const botAns = chooseBotAnswer(state, p1, state.pendingPrompts[0]);
 		assert.deepEqual(botAns, { kind: 'chooseReplacement', id: 'opt_1' });

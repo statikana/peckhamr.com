@@ -34,6 +34,8 @@ import type {
 	CardInstance,
 	CounterType,
 	DelayedTrigger,
+	EffectBindingSnapshot,
+	EffectResumeFrame,
 	GameState,
 	LibrarySearchSpec,
 	ManaColor,
@@ -147,20 +149,17 @@ export interface EffectResult {
 	turnEnded: boolean;
 	/** The spell exiles itself as it resolves ("Exile ~."). */
 	exileSelf: boolean;
+	/**
+	 * Step E2: a human must choose before the steps can go on. The prompt is queued and the resume
+	 * frame is stored on the stack item (`item.effectResume`); the caller leaves the item on the stack
+	 * (CR 608.2n) and resolves it again, by id, once the prompt is answered.
+	 */
+	paused?: boolean;
 }
 
-interface Snapshot {
-	controllerId: string;
-	ownerId: string;
-	power: number;
-	toughness: number;
-	manaValue: number;
-}
-
-interface Bound {
-	id: string;
-	lki: Snapshot;
-}
+/** Plain data (JSON-safe): bindings are serialised into the stack item when resolution pauses. */
+type Snapshot = EffectBindingSnapshot['lki'];
+type Bound = EffectBindingSnapshot;
 
 type Bindings = Map<string, Bound[]>;
 
@@ -355,10 +354,64 @@ class Run {
 	readonly ctx: EffectContext;
 	readonly bindings: Bindings = new Map();
 	readonly result: EffectResult = { turnEnded: false, exileSelf: false };
+	/** Index of the step being executed. */
+	stepIndex = 0;
+	/** Choices made by humans for the current step while it was paused (playerId -> object ids). */
+	answers: Record<string, string[]> = {};
+	/** Can this run pause for a human (the item is on the stack, so it can be resumed by id)? */
+	readonly canPause: boolean;
 
-	constructor(state: GameState, ctx: EffectContext) {
+	constructor(state: GameState, ctx: EffectContext, resume?: EffectResumeFrame) {
 		this.state = state;
 		this.ctx = ctx;
+		this.canPause = state.stack.some((s) => s.id === ctx.item.id);
+		if (resume) {
+			this.stepIndex = resume.stepIndex;
+			for (const [name, bound] of resume.bindings) this.bindings.set(name, bound.map((b) => ({ id: b.id, lki: { ...b.lki } })));
+			this.result.exileSelf = Boolean(resume.exileSelf);
+			this.answers = { ...resume.answers };
+		}
+	}
+
+	/**
+	 * A human must choose objects for the current step. Queues a chooseObjects prompt whose
+	 * continuation names this stack item and step, saves the resume frame on the stack item, and
+	 * stops the run. Nothing of the step has happened yet (the step runs again from its start on
+	 * resume, with `answers` filled in), so simultaneous choices stay simultaneous (CR 101.4).
+	 */
+	pauseForChoice(chooser: PlayerGameState, title: string, description: string, candidates: string[], count: number, zone: 'battlefield' | 'hand'): void {
+		const item = this.state.stack.find((s) => s.id === this.ctx.item.id)!;
+		item.effectResume = {
+			stepIndex: this.stepIndex,
+			bindings: [...this.bindings.entries()].map(([name, bound]) => [name, bound.map((b) => ({ id: b.id, lki: { ...b.lki } }))]),
+			exileSelf: this.result.exileSelf || undefined,
+			answers: { ...this.answers }
+		};
+		enqueueChoicePrompt(this.state, {
+			id: P().uid('prompt'),
+			kind: 'chooseObjects',
+			playerId: chooser.playerId,
+			title,
+			description,
+			candidateInstanceIds: candidates,
+			countRequired: count,
+			continuation: { kind: 'effect_choice', stackItemId: item.id, stepIndex: this.stepIndex },
+			choice: { kind: 'chooseObjects', candidates, min: count, max: count, zone, reason: title }
+		});
+		this.result.paused = true;
+	}
+
+	/**
+	 * The objects `chooser` picks for the current step: a human's stored answer, or null when the
+	 * human hasn't answered yet (the caller pauses). Answers naming objects that are no longer
+	 * candidates are dropped, and missing picks are filled from the remaining candidates.
+	 */
+	answered(chooser: PlayerGameState, candidates: CardInstance[], count: number): CardInstance[] | null {
+		const ids = this.answers[chooser.playerId];
+		if (!ids) return null;
+		const picked = ids.map((id) => candidates.find((c) => c.instanceId === id)).filter((c): c is CardInstance => Boolean(c));
+		for (const c of candidates) if (picked.length < count && !picked.includes(c)) picked.push(c);
+		return picked.slice(0, count);
 	}
 
 	get you(): PlayerGameState {
@@ -647,9 +700,11 @@ class Run {
 	// ---- Steps
 
 	run(steps: EffectStep[]): void {
-		for (const step of steps) {
+		for (; this.stepIndex < steps.length; this.stepIndex++) {
 			if (this.result.turnEnded) return;
-			this.step(step);
+			this.step(steps[this.stepIndex]);
+			if (this.result.paused) return;
+			this.answers = {};
 		}
 	}
 
@@ -1299,6 +1354,9 @@ class Run {
 		const filter: ObjectFilter =
 			sel.k === 'all' ? { ...sel.filter, controller: undefined } : {};
 
+		// CR 701.21a / 101.4: each player chooses (in turn order), then all are sacrificed at once. A
+		// human with a real choice gets a prompt; resolution pauses until every such human answered.
+		const choices: Array<{ actor: PlayerGameState; candidates: CardInstance[]; count: number }> = [];
 		for (const actor of actors) {
 			const candidates = actor.battlefield.filter(
 				(c) => !c.phasedOut && c.controllerId === actor.playerId && this.matches(c, filter, 'battlefield')
@@ -1309,62 +1367,37 @@ class Run {
 					? candidates.length
 					: Math.min(candidates.length, Math.max(0, this.amount(step.amount, 1)));
 			if (count <= 0) continue;
-
-			if ((step.params as { atRandom?: boolean } | undefined)?.atRandom) {
+			choices.push({ actor, candidates, count });
+		}
+		const atRandom = Boolean((step.params as { atRandom?: boolean } | undefined)?.atRandom);
+		if (!atRandom && this.canPause) {
+			for (const { actor, candidates, count } of choices) {
+				if (actor.isBot || candidates.length <= count || this.answers[actor.playerId]) continue;
+				const title = `${this.ctx.title} — Sacrifice ${count} permanent(s)`;
+				this.pauseForChoice(actor, title, `Choose ${count} permanent(s) to sacrifice.`, candidates.map((c) => c.instanceId), count, 'battlefield');
+				return;
+			}
+		}
+		const sacrificed: Array<{ actor: PlayerGameState; objs: CardInstance[] }> = [];
+		for (const { actor, candidates, count } of choices) {
+			let chosen: CardInstance[];
+			if (atRandom) {
 				const pool = [...candidates];
-				const chosen: CardInstance[] = [];
+				chosen = [];
 				for (let i = 0; i < count && pool.length > 0; i++) {
 					const idx = Math.floor(nextRandom(s) * pool.length);
 					chosen.push(pool.splice(idx, 1)[0]);
 				}
-				this.bind(step, chosen);
-				for (const o of chosen) {
-					p.moveFromBattlefield(s, o, 'graveyard');
-					p.addLog(s, 'rule', `${actor.username} sacrificed ${o.card.name}.`, actor.playerId);
-				}
-			} else if (!actor.isBot && candidates.length > count) {
-				enqueueChoicePrompt(
-					s,
-					{
-						id: p.uid('prompt'),
-						kind: 'chooseObjects',
-						playerId: actor.playerId,
-						title: `${this.ctx.title} — Sacrifice ${count} permanent(s)`,
-						description: `Choose ${count} permanent(s) to sacrifice.`,
-						candidateInstanceIds: candidates.map((c) => c.instanceId),
-						countRequired: count,
-						choice: {
-							kind: 'chooseObjects',
-							candidates: candidates.map((c) => c.instanceId),
-							min: count,
-							max: count,
-							zone: 'battlefield',
-							reason: `${this.ctx.title} — Sacrifice ${count} permanent(s)`
-						}
-					},
-					(_st, reply) => {
-						if (reply.kind !== 'chooseObjects') return;
-						const chosen = reply.objectIds
-							.map((id) =>
-								actor.battlefield.find(
-									(c) => c.instanceId === id && c.controllerId === actor.playerId
-								)
-							)
-							.filter((c): c is CardInstance => Boolean(c));
-						this.bind(step, chosen);
-						for (const o of chosen) {
-							p.moveFromBattlefield(s, o, 'graveyard');
-							p.addLog(s, 'rule', `${actor.username} sacrificed ${o.card.name}.`, actor.playerId);
-						}
-					}
-				);
 			} else {
-				const chosen = candidates.slice(0, count);
-				this.bind(step, chosen);
-				for (const o of chosen) {
-					p.moveFromBattlefield(s, o, 'graveyard');
-					p.addLog(s, 'rule', `${actor.username} sacrificed ${o.card.name}.`, actor.playerId);
-				}
+				chosen = this.answered(actor, candidates, count) ?? candidates.slice(0, count);
+			}
+			sacrificed.push({ actor, objs: chosen });
+		}
+		this.bind(step, sacrificed.flatMap((x) => x.objs));
+		for (const { actor, objs } of sacrificed) {
+			for (const o of objs) {
+				p.moveFromBattlefield(s, o, 'graveyard');
+				p.addLog(s, 'rule', `${actor.username} sacrificed ${o.card.name}.`, actor.playerId);
 			}
 		}
 	}
@@ -1410,6 +1443,9 @@ class Run {
 		const filter: ObjectFilter | null =
 			sel.k === 'all' ? { ...sel.filter, controller: undefined, owner: undefined } : null;
 
+		// CR 701.8: each player chooses (in turn order), then all discard at once. A human with a real
+		// choice gets a prompt; resolution pauses until every such human answered.
+		const choices: Array<{ pl: PlayerGameState; candidates: CardInstance[]; count: number }> = [];
 		for (const pl of actors) {
 			const candidates = filter
 				? pl.hand.filter((c) => this.matches(c, filter, 'hand'))
@@ -1420,65 +1456,36 @@ class Run {
 					? candidates.length
 					: Math.min(candidates.length, Math.max(0, this.amount(step.amount, 1)));
 			if (count <= 0) continue;
-
-			if (step.params?.atRandom) {
+			choices.push({ pl, candidates, count });
+		}
+		const atRandom = Boolean(step.params?.atRandom);
+		if (!atRandom && this.canPause) {
+			for (const { pl, candidates, count } of choices) {
+				if (pl.isBot || candidates.length <= count || this.answers[pl.playerId]) continue;
+				const title = `${this.ctx.title} — Discard ${count} card(s)`;
+				this.pauseForChoice(pl, title, `Choose ${count} card(s) to discard.`, candidates.map((c) => c.instanceId), count, 'hand');
+				return;
+			}
+		}
+		const discarded: Array<{ pl: PlayerGameState; cards: CardInstance[] }> = [];
+		for (const { pl, candidates, count } of choices) {
+			let chosen: CardInstance[];
+			if (atRandom) {
 				const pool = [...candidates];
-				const chosen: CardInstance[] = [];
+				chosen = [];
 				for (let i = 0; i < count && pool.length > 0; i++) {
 					const idx = Math.floor(nextRandom(s) * pool.length);
 					chosen.push(pool.splice(idx, 1)[0]);
 				}
-				this.bind(step, chosen);
-				for (const c of chosen) discardCard(pl, c);
-				p.addLog(
-					s,
-					'rule',
-					`${pl.username} discarded ${chosen.length} card(s) at random.`,
-					pl.playerId
-				);
-			} else if (!pl.isBot && candidates.length > count) {
-				enqueueChoicePrompt(
-					s,
-					{
-						id: p.uid('prompt'),
-						kind: 'chooseObjects',
-						playerId: pl.playerId,
-						title: `${this.ctx.title} — Discard ${count} card(s)`,
-						description: `Choose ${count} card(s) to discard.`,
-						candidateInstanceIds: candidates.map((c) => c.instanceId),
-						countRequired: count,
-						choice: {
-							kind: 'chooseObjects',
-							candidates: candidates.map((c) => c.instanceId),
-							min: count,
-							max: count,
-							zone: 'hand',
-							reason: `${this.ctx.title} — Discard ${count} card(s)`
-						}
-					},
-					(_st, reply) => {
-						if (reply.kind !== 'chooseObjects') return;
-						const chosen = reply.objectIds
-							.map((id) => pl.hand.find((c) => c.instanceId === id))
-							.filter((c): c is CardInstance => Boolean(c));
-						this.bind(step, chosen);
-						for (const c of chosen) discardCard(pl, c);
-						if (chosen.length > 0) {
-							p.addLog(
-								s,
-								'rule',
-								`${pl.username} discarded ${chosen.length} card(s).`,
-								pl.playerId
-							);
-						}
-					}
-				);
 			} else {
-				const chosen = candidates.slice(0, count);
-				this.bind(step, chosen);
-				for (const c of chosen) discardCard(pl, c);
-				p.addLog(s, 'rule', `${pl.username} discarded ${chosen.length} card(s).`, pl.playerId);
+				chosen = this.answered(pl, candidates, count) ?? candidates.slice(0, count);
 			}
+			discarded.push({ pl, cards: chosen });
+		}
+		this.bind(step, discarded.flatMap((x) => x.cards));
+		for (const { pl, cards } of discarded) {
+			for (const c of cards) discardCard(pl, c);
+			p.addLog(s, 'rule', `${pl.username} discarded ${cards.length} card(s)${atRandom ? ' at random' : ''}.`, pl.playerId);
 		}
 	}
 
@@ -1755,9 +1762,12 @@ export function manaChoiceColors(
 	return opponentLandColors(state, controller);
 }
 
-/** Runs `steps` in order against `state`. */
-export function executeEffectSteps(state: GameState, ctx: EffectContext, steps: EffectStep[]): EffectResult {
-	const run = new Run(state, ctx);
+/**
+ * Runs `steps` in order against `state`. With `resume` (a stack item's `effectResume`), continues a
+ * paused resolution at the step that asked for a choice, with the stored bindings and answers.
+ */
+export function executeEffectSteps(state: GameState, ctx: EffectContext, steps: EffectStep[], resume?: EffectResumeFrame): EffectResult {
+	const run = new Run(state, ctx, resume);
 	run.run(steps);
 	return run.result;
 }

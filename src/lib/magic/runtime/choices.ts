@@ -5,8 +5,8 @@
  * `chooseNumber`, `orderObjects`, `chooseReplacement`) and a single `{ type: 'choice', promptId,
  * answer, cancel }` action payload, while normalizing legacy action aliases into the same flow.
  *
- * Transient on-resolve callbacks for standalone choice prompts live in a `WeakMap<GameState, ...>`
- * so `GameState` stays plain JSON-serializable data (Invariant 4).
+ * Step E2: prompts carry their continuation as plain data (`PendingPrompt.continuation`); there are
+ * no callbacks, so a prompt answered after the server reloads the state from JSON still continues.
  */
 import type { CostQuestion } from './costs.ts';
 import {
@@ -35,55 +35,48 @@ export {
 	type PromptPurpose
 };
 
-export type ChoiceResolutionCallback = (state: GameState, answer: ChoiceAnswer) => void;
+/**
+ * A named prompt handler: code registered once at module load, referred to from a prompt by name
+ * (`continuation: { kind: 'handler', name, data }`). The prompt itself holds only plain data, so it
+ * still works after the server reloads the state from JSON (Invariant 7.1). There is deliberately no
+ * way to attach a closure to a prompt.
+ */
+export type PromptHandler = (
+	state: GameState,
+	prompt: PendingPrompt,
+	answer: ChoiceAnswer
+) => void;
 
-const choiceCallbacks = new WeakMap<GameState, Map<string, ChoiceResolutionCallback>>();
+const promptHandlers = new Map<string, PromptHandler>();
 
-function callbackMap(state: GameState): Map<string, ChoiceResolutionCallback> {
-	let map = choiceCallbacks.get(state);
-	if (!map) {
-		map = new Map();
-		choiceCallbacks.set(state, map);
-	}
-	return map;
+/** Registers (or replaces) the handler for `continuation: { kind: 'handler', name }` prompts. */
+export function registerPromptHandler(name: string, handler: PromptHandler): void {
+	promptHandlers.set(name, handler);
+}
+
+/** Runs the named handler of an answered prompt, if it has one. Returns whether one ran. */
+export function runPromptHandler(state: GameState, prompt: PendingPrompt, answer: ChoiceAnswer): boolean {
+	const c = prompt.continuation;
+	if (c?.kind !== 'handler') return false;
+	const handler = promptHandlers.get(c.name);
+	if (!handler) return false;
+	handler(state, prompt, answer);
+	return true;
 }
 
 /**
- * Pushes a choice prompt onto `state.pendingPrompts` and optionally registers a transient callback
- * invoked when the player (or bot) answers the prompt via `{ type: 'choice', promptId, answer }`.
+ * Pushes a choice prompt onto `state.pendingPrompts`, filling in its generic `choice` and
+ * `purpose`. What happens when it's answered is described by the prompt's data (`purpose`,
+ * `continuation`, `triggerStackItemId`, ...), never by a callback.
  */
-export function enqueueChoicePrompt(
-	state: GameState,
-	prompt: PendingPrompt,
-	onResolve?: ChoiceResolutionCallback
-): PendingPrompt {
+export function enqueueChoicePrompt(state: GameState, prompt: PendingPrompt): PendingPrompt {
 	const enriched: PendingPrompt = {
 		...prompt,
 		choice: prompt.choice ?? effectivePromptChoice(prompt, state),
 		purpose: prompt.purpose ?? effectivePromptPurpose(prompt)
 	};
 	state.pendingPrompts.push(enriched);
-	if (onResolve) {
-		callbackMap(state).set(enriched.id, onResolve);
-	}
 	return enriched;
-}
-
-export function resolveRegisteredChoiceCallback(
-	state: GameState,
-	promptId: string,
-	answer: ChoiceAnswer
-): boolean {
-	const map = choiceCallbacks.get(state);
-	const cb = map?.get(promptId);
-	if (!cb) return false;
-	map!.delete(promptId);
-	cb(state, answer);
-	return true;
-}
-
-export function clearRegisteredChoiceCallback(state: GameState, promptId: string): void {
-	choiceCallbacks.get(state)?.delete(promptId);
 }
 
 /** Builds the generic `ChoiceRequest` for a Phase 4 `CostQuestion`. */
