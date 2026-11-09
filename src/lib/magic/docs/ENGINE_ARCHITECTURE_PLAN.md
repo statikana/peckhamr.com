@@ -1105,6 +1105,41 @@ games pass without regenerating.
   - `oracleTextRead["ruleTree.ts"]` lowered `14 → 13` (`layerCardText` deleted).
   - `runtime/layers.ts` has 0 `oracleTextRead`, 0 `cardNameComparison`, and 0 `directZoneMutation`.
 
+#### Phase 6c: cache validation regression fix ✅ done 2026-11-09 (branch `engine-rewrite-perf2`)
+Results are unchanged: layer snapshots and golden games pass without regenerating.
+- **Problem:** after 6b and Phase 7, evaluation was cheap but *validation* wasn't. Every query
+  re-walked the board (snapshot fingerprint) and rebuilt the 6b dynamic fingerprint as a fresh
+  array, and Phase 7's `activePermanents` asked `permanentHasLostAllAbilities` once per permanent.
+  That made rule-modifier scans O(n²) and SBA / mana-ability scans O(n²)–O(n³). Bot turns at 60–69
+  permanents took 1.3–1.8 s.
+- **Strategy:** there's still no `state.version`, because mutations aren't funnelled.
+  - `abilityActivePermanents(state)` in `runtime/layers.ts` validates once and returns the
+    ability-active permanents (with `compileCard` results), memoised on the board layer cache.
+    `replace.ts`'s `activePermanents` uses it.
+  - The dynamic fingerprint is compared in place, without allocating.
+  - **Stable-input scopes** in `runtime/layerCache.ts`: inside
+    `withStableLayerInputs(state, fn)`, the first query validates and later ones reuse that
+    result. `fn` must be synchronous and must not change a fingerprinted input unless it calls
+    `noteLayerInputsChanged(state)` straight after. `moveObject` (via `whileLayerInputsChange`,
+    which also suspends trust for the duration) and the other zone funnels drop trust as
+    defense in depth.
+  - Scoped regions:
+    - `activeRuleModifiers` and `hasRestriction`;
+    - the `engine.ts` `getEffectiveActivatedAbilities` wrapper;
+    - the auto-tap candidate scan;
+    - SBA step 0 (LKI pre-scan), and steps 2–4 with a note after each `attachedToId = null`.
+    - Batch moves and step 1 (counter annihilation) stay unscoped.
+- **Checks:**
+  - Under `MAGIC_LAYER_CACHE_CHECK`, every trusted hit is re-validated and a violation throws
+    (`layerCacheCheckStats().scopeChecks`).
+  - `abilityActivePermanents` is cross-checked against the original per-player scan.
+  - `runtime/layerCache.scope.test.ts` mutates boards inside and outside scopes (noted, un-noted,
+    via funnels, mid-change, nested, SBAs, a seeded game).
+- **Timing (Node 24, `measure.mts`, max CPU per bot tick):** 60–69 permanents, seed 1:
+  1.82 s → 214 ms; seed 2: 1.62 s → 202 ms. 90–99 permanents, seed 1: 2.47 s → 686 ms (a combat
+  tick in which ~30 permanents die, so most of the cost is real re-evaluation); seed 2:
+  2.79 s → 398 ms.
+
 ### Phase 7: Replacement effects and rule modifiers ✅ done 2026-11-08 (branch `engine-rewrite-phase7`)
 - **Owns:** `runtime/replace.ts`; the rule helpers at the end of `ruleTree.ts`, draw-from-empty,
   hand size, attack tax, player hexproof in `engine.ts`.

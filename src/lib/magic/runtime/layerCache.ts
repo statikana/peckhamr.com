@@ -18,8 +18,12 @@
  * Per-target inputs that aren't in the fingerprint (counters, temporary P/T, switched P/T, granted
  * keywords, suspend haste, graveyards for CDAs) are never cached; they're evaluated on every call.
  *
+ * Phase 6c: read-only code that asks many queries in a row runs inside `withStableLayerInputs`,
+ * which validates once per scope instead of once per query (see "Stable-input scopes" below).
+ *
  * Debug: set `MAGIC_LAYER_CACHE_CHECK=1` to recompute every query on a fresh snapshot and throw
- * on any difference (see `layerCacheCheckEnabled`).
+ * on any difference (see `layerCacheCheckEnabled`). Inside scopes it also re-validates every
+ * trusted hit.
  */
 import type { CardInstance, GameState, PlayerGameState, ScryfallCard } from '../types.ts';
 
