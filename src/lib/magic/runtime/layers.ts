@@ -63,10 +63,41 @@ export interface EvaluatedPermanent {
 	lostAllAbilitiesBy: string[];
 	power: number;
 	toughness: number;
+	unclampedToughness?: number | null;
+	colors: ManaColor[];
 	activeKeywords: string[];
 	keywords: string[];
 	breakdown: CardContinuousBreakdown;
 	hasSubType: (subType: string) => boolean;
+}
+
+/**
+ * CR 205.3m: Split the right-hand subtype list of a type line, preserving the
+ * two-word creature subtype "Time Lord" as a single subtype token.
+ */
+export function splitSubtypes(right: string): string[] {
+	const out: string[] = [];
+	for (const m of right.matchAll(/Time\s+Lord|\S+/gi)) {
+		out.push(/^time\s+lord$/i.test(m[0]) ? 'Time Lord' : m[0]);
+	}
+	return out;
+}
+
+function normalizeSubtypes(subs: readonly string[]): string[] {
+	const out: string[] = [];
+	for (let i = 0; i < subs.length; i++) {
+		if (
+			subs[i].toLowerCase() === 'time' &&
+			i + 1 < subs.length &&
+			subs[i + 1].toLowerCase() === 'lord'
+		) {
+			out.push('Time Lord');
+			i++;
+		} else {
+			out.push(subs[i]);
+		}
+	}
+	return out;
 }
 
 // ---- Constants & Formatting -----------------------------------------------------------------
@@ -899,7 +930,7 @@ function computeBoardLayerCache(state: GameState, snap: BoardSnapshot): BoardLay
 		const baseTypeLine = isFaceDown ? 'Creature' : baseCard.typeLine;
 		const supertypes = isFaceDown ? [] : [...chars.supertypes];
 		const types = isFaceDown ? ['Creature'] : [...chars.types];
-		const subtypes = isFaceDown ? [] : [...chars.subtypes];
+		const subtypes = isFaceDown ? [] : normalizeSubtypes(chars.subtypes);
 		const colors = isFaceDown ? [] : [...chars.colors];
 		const isLegendary = baseTypeLine.includes('Legendary');
 		const prefixLegendary = isLegendary ? 'Legendary ' : '';
@@ -1068,6 +1099,10 @@ function computeBoardLayerCache(state: GameState, snap: BoardSnapshot): BoardLay
 					}
 				} else if (st.layer === '5' && st.mod.k === 'setColors') {
 					target.colors = [...st.mod.colors];
+				} else if (st.layer === '5' && st.mod.k === 'addColors') {
+					for (const c of st.mod.colors) {
+						if (!target.colors.includes(c)) target.colors.push(c);
+					}
 				} else if (st.layer === '7b' && st.mod.k === 'setBasePT') {
 					const p = evaluateLayerAmount(st.mod.power, state, workList, att, target);
 					const t = evaluateLayerAmount(st.mod.toughness, state, workList, att, target);
@@ -1160,6 +1195,36 @@ function computeBoardLayerCache(state: GameState, snap: BoardSnapshot): BoardLay
 					target.effectiveTypeLine = addSubtypeToTypeLine(target.effectiveTypeLine, 'All-Types');
 					if (!target.typeModifiedBy.includes(source.name)) {
 						target.typeModifiedBy.push(source.name);
+					}
+				}
+			}
+		}
+	}
+
+	// 4b. Layer 5: Color-changing effects (CR 613.1e — setColors / addColors on self or filter)
+	for (const source of workList) {
+		if (source.strippedByAttachment || source.abilityRemovalEvents.length > 0) continue;
+		for (const st of source.statics) {
+			if (st.k !== 'continuous' || st.layer !== '5') continue;
+			if (st.affected === 'attachedTo') continue;
+			const targets =
+				st.affected === 'self'
+					? [source]
+					: typeof st.affected === 'object'
+						? workList.filter((t) => matchesLayerFilter(st.affected as ObjectFilter, t, source))
+						: [];
+			for (const target of targets) {
+				if (
+					st.condition &&
+					!evaluateLayerCondition(st.condition, state, workList, source, target)
+				) {
+					continue;
+				}
+				if (st.mod.k === 'setColors') {
+					target.colors = [...st.mod.colors];
+				} else if (st.mod.k === 'addColors') {
+					for (const c of st.mod.colors) {
+						if (!target.colors.includes(c)) target.colors.push(c);
 					}
 				}
 			}
@@ -1689,12 +1754,19 @@ function computeBoardLayerCache(state: GameState, snap: BoardSnapshot): BoardLay
 			lostAllAbilitiesBy: [...lost.sources],
 			power: breakdown.effectivePower ?? 0,
 			toughness: breakdown.effectiveToughness ?? 0,
+			unclampedToughness: work.workingToughness,
+			colors: [...work.colors],
 			activeKeywords,
 			keywords: activeKeywords,
 			breakdown,
 			hasSubType: (subType: string) => {
 				if (tLine.includes('Creature') && hasAllCreatureTypes && !NON_CREATURE_SUBTYPES.has(subType)) {
 					return true;
+				}
+				const dashIdx = tLine.indexOf('—');
+				if (dashIdx !== -1) {
+					const right = tLine.slice(dashIdx + 1).trim();
+					return splitSubtypes(right).some((s) => s.toLowerCase() === subType.toLowerCase());
 				}
 				return new RegExp(`\\b${subType}\\b`, 'i').test(tLine);
 			}
@@ -1891,12 +1963,19 @@ export function evaluatePermanent(state: GameState, inst: CardInstance): Evaluat
 			lostAllAbilitiesBy: [],
 			power: breakdown.effectivePower ?? 0,
 			toughness: breakdown.effectiveToughness ?? 0,
+			unclampedToughness: breakdown.effectiveToughness,
+			colors: inst.isFaceDown ? [] : [...(baseCard.colors ?? [])],
 			activeKeywords,
 			keywords: activeKeywords,
 			breakdown,
 			hasSubType: (subType: string) => {
 				if (tLine.includes('Creature') && hasAllCreatureTypes && !NON_CREATURE_SUBTYPES.has(subType)) {
 					return true;
+				}
+				const dashIdx = tLine.indexOf('—');
+				if (dashIdx !== -1) {
+					const right = tLine.slice(dashIdx + 1).trim();
+					return splitSubtypes(right).some((s) => s.toLowerCase() === subType.toLowerCase());
 				}
 				return new RegExp(`\\b${subType}\\b`, 'i').test(tLine);
 			}
