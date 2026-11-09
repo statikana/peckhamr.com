@@ -548,12 +548,12 @@
 					"Song of the Dryads"
 				],
 				"ptModifiedBy": [],
-				"activeKeywords": [
-					"Flying"
-				],
+				"activeKeywords": [],
 				"lostAllAbilities": {
-					"lost": false,
-					"sources": []
+					"lost": true,
+					"sources": [
+						"Song of the Dryads"
+					]
 				},
 				"items": [
 					{
@@ -563,6 +563,9 @@
 						"innate": true,
 						"sources": [
 							"innate"
+						],
+						"removedBy": [
+							"Song of the Dryads"
 						]
 					},
 					{
@@ -3008,8 +3011,10 @@
 				"ptModifiedBy": [],
 				"activeKeywords": [],
 				"lostAllAbilities": {
-					"lost": false,
-					"sources": []
+					"lost": true,
+					"sources": [
+						"Song of the Dryads"
+					]
 				},
 				"items": [
 					{
@@ -3019,6 +3024,9 @@
 						"innate": true,
 						"sources": [
 							"innate"
+						],
+						"removedBy": [
+							"Song of the Dryads"
 						]
 					},
 					{
@@ -3119,7 +3127,7 @@
 		"permanents": {
 			"Command Tower": {
 				"controller": "P1",
-				"effectiveTypeLine": "Land — Mountain Swamp",
+				"effectiveTypeLine": "Land — Mountain",
 				"is": {
 					"creature": false,
 					"artifact": false,
@@ -3142,8 +3150,7 @@
 					0
 				],
 				"typeModifiedBy": [
-					"Blood Moon",
-					"Urborg, Tomb of Yawgmoth"
+					"Blood Moon"
 				],
 				"ptModifiedBy": [],
 				"activeKeywords": [],
@@ -3167,25 +3174,6 @@
 						]
 					},
 					{
-						"key": "mana_b",
-						"name": "Mana Ability: Add {B}",
-						"kind": "ability",
-						"sources": [
-							"Urborg, Tomb of Yawgmoth"
-						],
-						"removedBy": [
-							"Blood Moon"
-						]
-					},
-					{
-						"key": "type_swamp",
-						"name": "Subtype: +Swamp",
-						"kind": "type_mod",
-						"sources": [
-							"Urborg, Tomb of Yawgmoth"
-						]
-					},
-					{
 						"key": "mana_r",
 						"name": "Mana Ability: Add {R}",
 						"kind": "ability",
@@ -3205,7 +3193,7 @@
 			},
 			"Duskmire Watchtower": {
 				"controller": "P1",
-				"effectiveTypeLine": "Land — Mountain Swamp",
+				"effectiveTypeLine": "Land — Mountain",
 				"is": {
 					"creature": false,
 					"artifact": false,
@@ -3228,8 +3216,7 @@
 					0
 				],
 				"typeModifiedBy": [
-					"Blood Moon",
-					"Urborg, Tomb of Yawgmoth"
+					"Blood Moon"
 				],
 				"ptModifiedBy": [],
 				"activeKeywords": [],
@@ -3253,25 +3240,6 @@
 						]
 					},
 					{
-						"key": "mana_b",
-						"name": "Mana Ability: Add {B}",
-						"kind": "ability",
-						"sources": [
-							"Urborg, Tomb of Yawgmoth"
-						],
-						"removedBy": [
-							"Blood Moon"
-						]
-					},
-					{
-						"key": "type_swamp",
-						"name": "Subtype: +Swamp",
-						"kind": "type_mod",
-						"sources": [
-							"Urborg, Tomb of Yawgmoth"
-						]
-					},
-					{
 						"key": "mana_r",
 						"name": "Mana Ability: Add {R}",
 						"kind": "ability",
@@ -3291,7 +3259,7 @@
 			},
 			"Urborg, Tomb of Yawgmoth": {
 				"controller": "P1",
-				"effectiveTypeLine": "Legendary Land — Mountain Swamp",
+				"effectiveTypeLine": "Legendary Land — Mountain",
 				"is": {
 					"creature": false,
 					"artifact": false,
@@ -3314,8 +3282,7 @@
 					0
 				],
 				"typeModifiedBy": [
-					"Blood Moon",
-					"Urborg, Tomb of Yawgmoth"
+					"Blood Moon"
 				],
 				"ptModifiedBy": [],
 				"activeKeywords": [],
@@ -3326,25 +3293,6 @@
 					]
 				},
 				"items": [
-					{
-						"key": "mana_b",
-						"name": "Mana Ability: Add {B}",
-						"kind": "ability",
-						"sources": [
-							"Urborg, Tomb of Yawgmoth"
-						],
-						"removedBy": [
-							"Blood Moon"
-						]
-					},
-					{
-						"key": "type_swamp",
-						"name": "Subtype: +Swamp",
-						"kind": "type_mod",
-						"sources": [
-							"Urborg, Tomb of Yawgmoth"
-						]
-					},
 					{
 						"key": "mana_r",
 						"name": "Mana Ability: Add {R}",
@@ -3365,7 +3313,7 @@
 			},
 			"Forest": {
 				"controller": "P1",
-				"effectiveTypeLine": "Basic Land — Forest Swamp",
+				"effectiveTypeLine": "Basic Land — Forest",
 				"is": {
 					"creature": false,
 					"artifact": false,
@@ -3387,9 +3335,7 @@
 					0,
 					0
 				],
-				"typeModifiedBy": [
-					"Urborg, Tomb of Yawgmoth"
-				],
+				"typeModifiedBy": [],
 				"ptModifiedBy": [],
 				"activeKeywords": [],
 				"lostAllAbilities": {
@@ -3404,22 +3350,6 @@
 						"innate": true,
 						"sources": [
 							"innate"
-						]
-					},
-					{
-						"key": "mana_b",
-						"name": "Mana Ability: Add {B}",
-						"kind": "ability",
-						"sources": [
-							"Urborg, Tomb of Yawgmoth"
-						]
-					},
-					{
-						"key": "type_swamp",
-						"name": "Subtype: +Swamp",
-						"kind": "type_mod",
-						"sources": [
-							"Urborg, Tomb of Yawgmoth"
 						]
 					}
 				]
@@ -6389,11 +6319,11 @@
 					2
 				],
 				"breakdownPT": [
-					0,
+					-1,
 					2
 				],
 				"evaluatedPT": [
-					0,
+					-1,
 					2
 				],
 				"typeModifiedBy": [],

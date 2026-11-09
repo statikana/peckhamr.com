@@ -21,15 +21,13 @@ import {
 	getBoardSnapshot,
 	layerCacheCheckStats,
 	setLayerCacheCheck,
-	setLayerReference,
 	withoutLayerCache
 } from './layerCache.ts';
-import * as reference from './layerReference.test.ts';
 
 /**
- * Phase 6a: the cached layer evaluation must give exactly the same answers as (a) a fresh,
- * uncached computation and (b) the frozen pre-cache implementation (layerReference.test.ts), on
- * boards that are mutated between evaluations so a stale cache would show.
+ * Phase 6: the cached IR layer evaluation must give the exact same answers as a fresh, uncached
+ * computation (`withoutLayerCache`), on boards that are mutated between evaluations so a stale
+ * cache would show.
  */
 
 // ---- Cards ----------------------------------------------------------------------------------
@@ -70,7 +68,7 @@ const HARNESS = card({ name: 'Gullwing Rig', typeLine: 'Artifact — Equipment',
 const COLOSSUS = card({ name: 'Mossheap Giant', typeLine: 'Creature — Plant', power: '*', toughness: '*', oracleText: "Mossheap Giant's power and toughness are each equal to the number of creatures you control." });
 const GRAVESWORN = card({ name: 'Cryptwalker Shade', typeLine: 'Creature — Shade', power: '*', toughness: '*', oracleText: "Cryptwalker Shade's power and toughness are each equal to the number of creature cards in all graveyards." });
 const SIGIL = card({ name: 'Downdraft Ward', typeLine: 'Enchantment', oracleText: 'Creatures your opponents control lose flying.' });
-const MUTATE = card({ name: 'Glasswing Curse', typeLine: 'Enchantment — Aura', oracleText: 'Enchant creature\nEnchanted creature is a Frog artifact creature with base power and toughness 1/1 and loses all other abilities.' });
+const MUTATE = card({ name: 'Glasswing Curse', typeLine: 'Enchantment — Aura', oracleText: 'Enchant creature\nEnchanted creature is a Frog artifact creature with base power and toughness 1/1 and loses all other abilities, card types, and creature types.' });
 
 // ---- Board ----------------------------------------------------------------------------------
 
@@ -144,7 +142,7 @@ function objectsOf(state: GameState): CardInstance[] {
 const SUBTYPES = ['Elf', 'Bird', 'Frog', 'Forest', 'Swamp', 'Goblin'];
 
 /**
- * Asserts the cached answer equals the uncached one and the frozen reference's, for every object.
+ * Asserts the cached answer equals the fresh uncached one, for every object.
  * Runs the cached queries first so the cache is warm for the next mutation.
  */
 function assertMatchesReference(state: GameState, context: string): void {
@@ -158,29 +156,25 @@ function assertMatchesReference(state: GameState, context: string): void {
 			lost: permanentHasLostAllAbilities(inst, state),
 			eval: evaluatePermanent(state, inst)
 		}));
-		const refEval = reference.evaluatePermanent(state, inst);
 
 		assert.deepStrictEqual(cachedInspect, fresh.inspect, `${label}: inspect vs fresh`);
-		assert.deepStrictEqual(cachedInspect, json(reference.inspectCardContinuousBreakdown(inst, state)), `${label}: inspect vs reference`);
 		assert.deepStrictEqual(cachedLost, fresh.lost, `${label}: lost vs fresh`);
-		assert.deepStrictEqual(cachedLost, reference.permanentHasLostAllAbilities(inst, state), `${label}: lost vs reference`);
 		assert.deepStrictEqual(json(cachedEval), json(fresh.eval), `${label}: evaluate vs fresh`);
-		assert.deepStrictEqual(json(cachedEval), json(refEval), `${label}: evaluate vs reference`);
 		for (const sub of SUBTYPES) {
-			assert.equal(cachedEval.hasSubType(sub), refEval.hasSubType(sub), `${label}: hasSubType(${sub})`);
+			assert.equal(cachedEval.hasSubType(sub), fresh.eval.hasSubType(sub), `${label}: hasSubType(${sub})`);
 		}
 	}
 	// The ScryfallCard entry point (used by the UI inspector) looks the instance up by id/name.
 	for (const inst of state.players.flatMap((p) => p.battlefield)) {
 		assert.deepStrictEqual(
 			json(inspectCardContinuousBreakdown(inst.card, state)),
-			json(reference.inspectCardContinuousBreakdown(inst.card, state)),
+			withoutLayerCache(() => json(inspectCardContinuousBreakdown(inst.card, state))),
 			`${context}: inspect(card) ${inst.card.name}`
 		);
 	}
 }
 
-/** Warm the cache, mutate, and compare again; each step is checked against the reference. */
+/** Warm the cache, mutate, and compare again; each step is checked against fresh uncached evaluation. */
 function scenario(build: (b: Board) => void, steps: Array<[string, (b: Board) => void]>): void {
 	const b = new Board(2);
 	build(b);
@@ -195,7 +189,6 @@ function scenario(build: (b: Board) => void, steps: Array<[string, (b: Board) =>
 
 afterEach(() => {
 	setLayerCacheCheck(null);
-	setLayerReference(null);
 });
 
 // ---- Mutation scenarios ---------------------------------------------------------------------
@@ -374,8 +367,29 @@ describe('Layer cache: results track board mutations (Phase 6a)', () => {
 		);
 	});
 
-	it('the cross-check flag compares every call against a fresh computation and the reference', () => {
-		setLayerReference(reference);
+	it('repeated evaluatePermanent calls without state mutation reuse the cached result and invalidate on state mutation', () => {
+		const b = new Board(2);
+		const target = b.add(SKY);
+		b.add(BANNER);
+		const first = evaluatePermanent(b.state, target);
+		const second = evaluatePermanent(b.state, target);
+		assert.equal(second, first, 'unchanged board reuses the exact cached EvaluatedPermanent instance');
+
+		// Mutating a counter invalidates the dynamic fingerprint and produces a new EvaluatedPermanent
+		target.counters['+1/+1'] = 2;
+		const afterCounter = evaluatePermanent(b.state, target);
+		assert.notEqual(afterCounter, first, 'counter mutation invalidates cached EvaluatedPermanent');
+		assert.equal(afterCounter.power, 5);
+		assert.equal(evaluatePermanent(b.state, target), afterCounter, 're-cached after counter mutation');
+
+		// Adding a permanent invalidates the board snapshot and produces a new EvaluatedPermanent
+		b.add(VEIL, { attachTo: target });
+		const afterAura = evaluatePermanent(b.state, target);
+		assert.notEqual(afterAura, afterCounter, 'board mutation invalidates cached EvaluatedPermanent');
+		assert.equal(afterAura.losesAllAbilities, true);
+	});
+
+	it('the cross-check flag compares every call against a fresh computation', () => {
 		setLayerCacheCheck(true);
 		const before = layerCacheCheckStats();
 		const b = new Board(2);
@@ -421,13 +435,12 @@ function botSeats(count: number): LobbySeat[] {
 	}));
 }
 
-describe('Layer cache: seeded 4-bot games match the reference on every call (Phase 6a)', () => {
+describe('Layer cache: seeded 4-bot games match fresh evaluation on every call (Phase 6)', () => {
 	for (const seed of [1, 2]) {
 		it(`seed ${seed}: every layer query during play, and every object after each tick`, () => {
 			let clock = 1_700_000_000_000;
 			mock.method(Math, 'random', mulberry32(seed));
 			mock.method(Date, 'now', () => (clock += 7));
-			setLayerReference(reference);
 			setLayerCacheCheck(true);
 			const before = layerCacheCheckStats();
 			try {

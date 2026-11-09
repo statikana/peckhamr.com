@@ -346,8 +346,12 @@ const ruleModifiers: Production = (s) => {
 		const kws = parseKeywordList(shalai[3]);
 		const a = parseAffected(shalai[1]);
 		const b = parseAffected(shalai[2]);
-		if (kws && a && b && kws.length === 1 && (kws[0] === 'hexproof' || kws[0] === 'shroud')) {
-			return [rule(kws[0] === 'hexproof' ? 'playerHexproof' : 'playerShroud', 'you'), keywordGrant(a, kws), keywordGrant(b, kws)];
+		if (kws && a && b && kws.length >= 1) {
+			const out: StaticItem[] = [];
+			if (kws.includes('hexproof')) out.push(rule('playerHexproof', 'you'));
+			if (kws.includes('shroud')) out.push(rule('playerShroud', 'you'));
+			out.push(keywordGrant(a, kws), keywordGrant(b, kws));
+			return out;
 		}
 	}
 	const tax = s.match(/^Creatures can't attack you unless their controller pays (\{\d+\}) for each creature they control that's attacking you$/);
@@ -457,10 +461,11 @@ const attachedTypeChange: Production = (s) => {
 	const steps: Array<[RegExp, (mm: RegExpMatchArray) => boolean]> = [
 		[/^(?:, and it|, and|and it|and|,)(?=\s)/, () => true],
 		[/^loses all other abilities, card types, and creature types/, () => ((losesAll = true), (losesTypes = true), true)],
+		[/^loses all other card types and creature types/, () => ((losesTypes = true), true)],
 		[/^loses all other card types and abilities/, () => ((losesAll = true), (losesTypes = true), true)],
 		[/^loses all (?:other )?abilities/, () => ((losesAll = true), true)],
 		[/^is an? (.+?)(?= with |,? and |$)/, (mm) => ((typeDesc = parseTypeDescription(mm[1])), (sawIs = true), typeDesc !== null)],
-		[/^with base power and toughness (\d+)\/(\d+)/, (mm) => ((basePT = [parseInt(mm[1], 10), parseInt(mm[2], 10)]), true)],
+		[/^(?:with|has) base power and toughness (\d+)\/(\d+)/, (mm) => ((basePT = [parseInt(mm[1], 10), parseInt(mm[2], 10)]), true)],
 		[/^with "([^"]+)"/, (mm) => ((granted = parseGrantedManaAbility(mm[1]) ?? undefined), granted !== undefined)],
 		[/^has (.+?)(?=,? and it |$)/, (mm) => ((keywords = parseKeywordList(mm[1]) ?? undefined), keywords !== undefined)]
 	];
@@ -476,7 +481,7 @@ const attachedTypeChange: Production = (s) => {
 		}
 		if (!matched) return null;
 	}
-	if (!sawIs && !losesAll) return null; // "Enchanted creature gets/has ..." is handled by grants.
+	if (!sawIs && !losesAll && !basePT) return null; // "Enchanted creature gets/has ..." is handled by grants.
 
 	const items: StaticItem[] = [];
 	const desc = typeDesc as ReturnType<typeof parseTypeDescription>;
@@ -509,7 +514,7 @@ const globalChanges: Production = (s) => {
 	}
 	const eachLand = s.match(/^Each land is an? (Plains|Island|Swamp|Mountain|Forest) in addition to its other land types$/);
 	if (eachLand) return [continuous('4', { types: ['Land'] }, { k: 'addTypes', types: [], subtypes: [eachLand[1]] })];
-	const addType = s.match(/^(?:Each|All) (.+?) (?:is|are) (?:an? )?([a-z]+?)s? in addition to (?:its|their) other types( and (?:has|have) base power and base toughness each equal to (?:its|their) mana value)?$/);
+	const addType = s.match(/^(?:Each|All) (.+?) (?:is|are) (?:an? )?([a-z]+?)s? in addition to (?:its|their) other types( and (?:has|have) base power and (?:base )?toughness each equal to (?:its|their) mana value)?$/);
 	if (addType && CARD_TYPES[addType[2]]) {
 		const affected = parseAffected(addType[1]);
 		if (!affected || typeof affected !== 'object') return null;
@@ -524,6 +529,9 @@ const globalChanges: Production = (s) => {
 	if (every) {
 		const affected = parseAffected(every[1]);
 		return affected ? [continuous('4', affected, { k: 'allCreatureTypes' })] : null;
+	}
+	if (/^The same is true for creature spells you control and creature cards you own that aren't on the battlefield$/i.test(s)) {
+		return [];
 	}
 	return null;
 };
@@ -604,8 +612,23 @@ function withCondition(items: StaticItem[], condition: Condition): boolean {
 	return true;
 }
 
+function parseStaticCondition(clause: string): Condition | null {
+	const cond = parseCondition(`if ${clause}`);
+	if (cond) return cond;
+	const twoColor = clause.trim().match(/^you control (?:a|an) (white|blue|black|red|green) or (white|blue|black|red|green) permanent$/i);
+	if (twoColor) {
+		return {
+			k: 'compare',
+			left: { k: 'count', of: { colors: [COLORS[twoColor[1].toLowerCase()], COLORS[twoColor[2].toLowerCase()]], controller: 'you' } },
+			op: '>=',
+			right: n(1)
+		};
+	}
+	return null;
+}
+
 function parseSentence(sentence: string, span: Span): StaticItem[] | null {
-	let s = sentence.replace(/\.$/, '');
+	let s = sentence.replace(/’/g, "'").replace(/\.$/, '');
 
 	const eminence = s.match(EMINENCE);
 	if (eminence) {
@@ -617,7 +640,7 @@ function parseSentence(sentence: string, span: Span): StaticItem[] | null {
 	const prefix = s.match(AS_LONG_AS_PREFIX);
 	const suffix = !prefix ? s.match(AS_LONG_AS_SUFFIX) : null;
 	if (prefix || suffix) {
-		const cond = parseCondition(`if ${(prefix ?? suffix)![1]}`);
+		const cond = parseStaticCondition((prefix ?? suffix)![1]);
 		if (!cond) return null;
 		condition = cond;
 		s = prefix ? s.slice(prefix[0].length) : s.slice(0, suffix!.index);
@@ -640,7 +663,7 @@ export function parseStaticAbility(text: string, offset = 0): StaticParse {
 	const unparsed: Span[] = [];
 	for (const sentence of splitSentences(text, offset)) {
 		const parsed = parseSentence(sentence.text, sentence.span);
-		if (parsed) items.push(...parsed);
+		if (parsed && (parsed.length > 0 || items.length > 0)) items.push(...parsed);
 		else unparsed.push(sentence.span);
 	}
 	return { items, unparsed };
