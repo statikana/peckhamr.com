@@ -1,6 +1,7 @@
 import { checkGraveyardReplacementZone, evaluatePermanent } from '../ruleTree.ts';
 import type { CardInstance, CounterType, GameState, PlayerGameState, ZoneType } from '../types.ts';
 import { emitEvent, type LeftBattlefieldInfo } from './events.ts';
+import { noteLayerInputsChanged, whileLayerInputsChange } from './layerCache.ts';
 import { counterMultiplier } from './replace.ts';
 
 /**
@@ -133,6 +134,16 @@ function insertInto(
  * went to (after replacement effects), which is also the event's `to`.
  */
 export function moveObject(
+	state: GameState,
+	obj: CardInstance,
+	to: ZoneType,
+	opts: MoveOptions
+): ZoneType {
+	// Phase 6c: a zone change ends any layer-cache stable-input scope's trust (no-op outside one).
+	return whileLayerInputsChange(state, () => moveObjectInner(state, obj, to, opts));
+}
+
+function moveObjectInner(
 	state: GameState,
 	obj: CardInstance,
 	to: ZoneType,
@@ -366,6 +377,7 @@ export function placeDeferred(
 ): void {
 	if (at === 'start') player[zone].unshift(...cards);
 	else player[zone].push(...cards);
+	noteLayerInputsChanged();
 }
 
 /** Shuffles a library. With `keepTop`, the top `keepTop` cards stay where they are. */
@@ -383,6 +395,7 @@ export function shuffleLibrary(player: PlayerGameState, keepTop = 0): void {
 /** Replaces a zone's order. `ordered` must contain exactly the zone's current objects. */
 export function setZoneOrder(player: PlayerGameState, zone: PlayerZone, ordered: CardInstance[]): void {
 	player[zone] = ordered;
+	noteLayerInputsChanged();
 }
 
 /**
@@ -415,6 +428,7 @@ export function transferBattlefieldControl(
 	perm.controllerId = toPlayer.playerId;
 	perm.summoningSick = true;
 	toPlayer.battlefield.push(perm);
+	noteLayerInputsChanged(state);
 	if (state?.combat) {
 		state.combat.attackers = state.combat.attackers.filter(
 			(atk) => atk.attackerInstanceId !== perm.instanceId
@@ -437,6 +451,7 @@ export function removeFromGame(
 ): number {
 	const before = player[zone].length;
 	player[zone] = player[zone].filter((c) => !pred(c));
+	noteLayerInputsChanged();
 	return before - player[zone].length;
 }
 
