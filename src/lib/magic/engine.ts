@@ -139,7 +139,7 @@ import {
 	type CostQuestion
 } from './runtime/costs.ts';
 import { evaluateAmount, matchesObjectFilter, type FilterContext } from './runtime/objectFilter.ts';
-import { compileCard } from './compiler/index.ts';
+import { compileCard, compiledTriggerEffect } from './compiler/index.ts';
 import {
 	flushTriggers,
 	matchTriggers,
@@ -189,6 +189,7 @@ import {
 	type ScryfallCard,
 	type StackItem,
 	type TargetKind,
+	type TriggerEventLki,
 	type TargetRef,
 	type TargetRequirementInfo,
 	type VfxEvent,
@@ -3037,24 +3038,57 @@ registerEventHandler('PhaseBegin', (state, ev) => {
 });
 
 /**
+ * The target the pre-IR engine passed to a triggered ability's legacy effects: the stack item that
+ * targeted the source (Ward), the player dealt damage, or the object the event was about. Only the
+ * legacy executeParsedEffect fallback uses it (step F deletes it); it is never a real target.
+ */
+function legacyEventTarget(state: GameState, t: PendingTrigger): TargetRef | undefined {
+	if (t.targetStackItemId) return { kind: 'stack', id: t.targetStackItemId, label: t.targetStackItemId };
+	if (t.eventPlayerId) {
+		const pl = state.players.find((p) => p.playerId === t.eventPlayerId);
+		return { kind: 'player', id: t.eventPlayerId, label: pl?.username ?? t.eventPlayerId };
+	}
+	if (t.eventObject) return { kind: 'permanent', id: t.eventObject.instanceId, label: t.eventObject.card.name };
+	return undefined;
+}
+
+/** How the trigger's event object last existed on the battlefield (CR 603.10a, 608.2h). */
+function triggerEventLki(state: GameState, t: PendingTrigger): TriggerEventLki | undefined {
+	const obj = t.eventObject ?? t.source;
+	const onBattlefield = findPermanentOnBoard(state, obj.instanceId);
+	if (onBattlefield && onBattlefield.inst.objectVersion === obj.objectVersion) {
+		const ev = evaluatePermanent(state, onBattlefield.inst);
+		return {
+			controllerId: onBattlefield.controller.playerId,
+			ownerId: obj.ownerId,
+			power: ev.power,
+			toughness: ev.toughness,
+			manaValue: obj.card.cmc
+		};
+	}
+	const lki = t.eventLki;
+	return {
+		controllerId: lki?.controllerId ?? obj.controllerId,
+		ownerId: obj.ownerId,
+		power: lki?.power ?? obj.lastKnownPower ?? (parseInt(obj.card.power ?? '0', 10) || 0),
+		toughness: lki?.toughness ?? obj.lastKnownToughness ?? (parseInt(obj.card.toughness ?? '0', 10) || 0),
+		manaValue: obj.card.cmc
+	};
+}
+
+/**
  * Builds the stack item for a triggered ability (also the "dummy" item an inline trigger resolves
- * with). `targets[0]` is the object or player the event was about, as the old triggerOnX functions
- * passed it; `lkiPower` is the damage dealt or the entering creature's power.
+ * with). The event the ability refers to is recorded in the `event*` fields, never in `targets`
+ * ("that creature", "that player", "that many"; CR 603.7c); `eventObjectId` defaults to the source
+ * ("When ~ enters, ... it ..."). `targets` holds only the targets chosen for the ability.
  */
 function triggeredStackItem(state: GameState, t: PendingTrigger, idPrefix: string): StackItem {
-	const targets: TargetRef[] = [];
-	if (t.targetStackItemId) {
-		targets.push({ kind: 'stack', id: t.targetStackItemId, label: t.targetStackItemId });
-	} else if (t.eventPlayerId) {
-		const pl = state.players.find((p) => p.playerId === t.eventPlayerId);
-		targets.push({ kind: 'player', id: t.eventPlayerId, label: pl?.username ?? t.eventPlayerId });
-	} else if (t.eventObject) {
-		targets.push({ kind: 'permanent', id: t.eventObject.instanceId, label: t.eventObject.card.name });
-	}
 	const foundSource = findPermanentOnBoard(state, t.source.instanceId);
 	const sourceEval = foundSource ? evaluatePermanent(state, foundSource.inst) : undefined;
 	const sourceLkiPower = sourceEval?.power ?? t.source.lastKnownPower;
 	const sourceLkiToughness = sourceEval?.toughness ?? t.source.lastKnownToughness;
+	const eventObj = t.eventObject ?? t.source;
+	const legacyTarget = legacyEventTarget(state, t);
 	return withStackItemText(
 		{
 			id: uid(idPrefix),
@@ -3066,27 +3100,102 @@ function triggeredStackItem(state: GameState, t: PendingTrigger, idPrefix: strin
 			controllerId: t.controllerId,
 			kind: 'triggered',
 			title: `${t.sourceCard.name} (${t.label})`,
-			targets,
+			targets: [],
 			xValue: 0,
 			parsedEffects: t.ability.legacy.effects,
 			requiresGuidedResolution: false,
 			createdAt: Date.now(),
 			lkiPower: t.amount,
-			triggeredAbilityIndex: t.ability.abilityIndex
+			triggeredAbilityIndex: t.ability.abilityIndex,
+			eventObjectId: eventObj.instanceId,
+			eventObjectVersion: eventObj.objectVersion,
+			...(t.eventPlayer ? { eventPlayerId: t.eventPlayer } : {}),
+			...(t.amount !== undefined ? { eventAmount: t.amount } : {}),
+			...(t.targetStackItemId ? { eventStackItemId: t.targetStackItemId } : {}),
+			eventLki: triggerEventLki(state, t),
+			...(legacyTarget ? { legacyEventTarget: legacyTarget } : {})
 		},
 		t.ability.legacy.clause
 	);
 }
 
 /**
- * Executes a triggered ability's effect. THE single place trigger effects run (inline triggers here;
- * stacked ones through resolveTopOfStack's parsedEffects loop). It uses the legacy ParsedEffect path
- * until Phase 3's IR interpreter replaces this body with one call (interpret t.ability's effect).
+ * How many triggered abilities resolved on each path since the last reset (module-level, never in
+ * GameState). For tests and diagnostics only.
+ */
+const triggerPathCounts = { interpreter: 0, legacy: 0 };
+
+export function triggerResolutionCounts(reset = false): { interpreter: number; legacy: number } {
+	const out = { ...triggerPathCounts };
+	if (reset) {
+		triggerPathCounts.interpreter = 0;
+		triggerPathCounts.legacy = 0;
+	}
+	return out;
+}
+
+/** The compiled IR effect of a triggered stack item, or null (no compiled effect: legacy only). */
+function triggerItemEffect(item: StackItem) {
+	if (item.kind !== 'triggered' || item.triggeredAbilityIndex === undefined) return null;
+	return compiledTriggerEffect(item.card, item.triggeredAbilityIndex);
+}
+
+/** The interpreter's EffectContext fields for a triggered ability's event (CR 603.7c). */
+function triggerEventContext(item: StackItem) {
+	return {
+		eventObjectId: item.eventObjectId,
+		eventObjectVersion: item.eventObjectVersion,
+		eventPlayerId: item.eventPlayerId,
+		eventAmount: item.eventAmount,
+		eventLki: item.eventLki
+	};
+}
+
+/**
+ * Executes a triggered ability's effect: on the IR interpreter when its compiled effect is
+ * interpretable, otherwise on the legacy ParsedEffect path (with the legacy event target, as the
+ * pre-IR engine passed it). Used by inline triggers; stacked ones go through resolveTopOfStack,
+ * which makes the same choice.
  */
 function executeTriggerEffects(state: GameState, controller: PlayerGameState, item: StackItem): void {
-	for (const eff of item.parsedEffects) {
-		executeParsedEffect(state, controller, item, eff);
+	const compiled = effectInterpreterEnabled ? triggerItemEffect(item) : null;
+	if (compiled && staticallyInterpretable(compiled) && interpretableNow(state, item, compiled, controller, false)) {
+		triggerPathCounts.interpreter++;
+		executeEffectSteps(
+			state,
+			{
+				controller,
+				sourceId: item.sourceInstanceId,
+				sourceCard: item.card,
+				title: item.title,
+				item,
+				targets: item.targets,
+				targetSpecs: compiled.targets,
+				xValue: item.xValue,
+				...triggerEventContext(item)
+			},
+			compiled.steps
+		);
+		return;
 	}
+	triggerPathCounts.legacy++;
+	const legacyItem = withLegacyEventTarget(item);
+	for (const eff of legacyItem.parsedEffects) {
+		executeParsedEffect(state, controller, legacyItem, eff);
+	}
+}
+
+/** For the legacy fallback: the item with its legacy event target in `targets` (see legacyEventTarget). */
+function withLegacyEventTarget(item: StackItem): StackItem {
+	if (item.kind !== 'triggered' || !item.legacyEventTarget || item.targets.length > 0) return item;
+	item.targets = [item.legacyEventTarget];
+	return item;
+}
+
+/** Whether the engine can execute a triggered ability: legacy effects, or an interpretable IR effect. */
+function canExecuteTrigger(t: { legacy: { effects: ParsedEffect[] }; effect?: Parameters<typeof staticallyInterpretable>[0] }): boolean {
+	if (t.legacy.effects.length > 0) return true;
+	return Boolean(t.effect && staticallyInterpretable(t.effect));
 }
 
 registerTriggerHost({
@@ -3104,7 +3213,8 @@ registerTriggerHost({
 	putOnStack(state, t) {
 		state.stack.push(triggeredStackItem(state, t, 'stk'));
 		addLog(state, 'trigger', `${t.sourceCard.name}'s ${t.label} was put onto the Stack.`, t.controllerId);
-	}
+	},
+	canExecute: canExecuteTrigger
 });
 
 let effectInterpreterEnabled = true;
@@ -3203,7 +3313,11 @@ export function resolveTopOfStack(state: GameState): void {
 	// Phase 3: a spell or activated ability whose every step the grammar and the IR interpreter
 	// support resolves on the interpreter (runtime/effects.ts); anything else uses the legacy
 	// executeParsedEffect path below.
-	const compiled = effectInterpreterEnabled ? compiledStackItemEffects(item) : null;
+	const compiled = !effectInterpreterEnabled
+		? null
+		: item.kind === 'triggered'
+			? triggerItemEffect(item)
+			: compiledStackItemEffects(item);
 	const overload = item.castMode === 'overload';
 	const interpreted =
 		compiled !== null &&
@@ -3222,7 +3336,8 @@ export function resolveTopOfStack(state: GameState): void {
 				targets: item.targets,
 				targetSpecs: compiled.targets,
 				xValue: item.xValue,
-				overload
+				overload,
+				...triggerEventContext(item)
 			},
 			compiled.steps
 		);
@@ -3240,6 +3355,9 @@ export function resolveTopOfStack(state: GameState): void {
 		exiledBySelfReference = result.exileSelf;
 	}
 
+	if (item.kind === 'triggered') triggerPathCounts[interpreted ? 'interpreter' : 'legacy']++;
+	// Legacy fallback for triggered abilities: their legacy effects read the event ref as targets[0].
+	if (!interpreted) withLegacyEventTarget(item);
 	// Execute parsed effects (pausing continuation effects if a human Scry or Library Search prompt is created)
 	for (let i = 0; !interpreted && i < item.parsedEffects.length; i++) {
 		const eff = item.parsedEffects[i];

@@ -10,6 +10,7 @@
  */
 import type { Amount, CardDefinition, Condition, EventFilter, ObjectFilter, Span, TriggerDef } from '../ir.ts';
 import type { GamePhase, ParsedEffect, TriggerScope } from '../types.ts';
+import type { EffectParse } from './effects.ts';
 import { parseObjectPhrase } from './costs.ts';
 
 export interface TriggerParse {
@@ -458,6 +459,18 @@ export function setLegacyTriggerExecution(ability: object, exec: LegacyTriggerEx
 	LEGACY_EXECUTION.set(ability, exec);
 }
 
+const TRIGGER_EFFECT = new WeakMap<object, EffectParse>();
+
+/** The effect grammar's parse of a triggered ability's effect clause (set by the adapter). */
+export function setTriggerEffect(ability: object, effect: EffectParse): void {
+	TRIGGER_EFFECT.set(ability, effect);
+}
+
+/** True if the effect grammar understood the whole effect clause (it may still need a legacy verb). */
+export function triggerEffectComplete(effect: EffectParse | undefined): effect is EffectParse {
+	return Boolean(effect && effect.unparsed.length === 0 && !effect.modal && effect.steps.length > 0);
+}
+
 /** One triggered ability as the runtime matches it. */
 export interface RuntimeTrigger {
 	/** Index in compileCard(card).faces[0].abilities (stored on stack items, CR 603.4 re-check). */
@@ -467,6 +480,11 @@ export interface RuntimeTrigger {
 	/** The IR effect is fully understood (kind 'triggered'); false: only the trigger head is. */
 	effectSupported: boolean;
 	legacy: LegacyTriggerExecution;
+	/**
+	 * The effect compiled by the effect grammar (steps, target specs, unparsed spans). The runtime
+	 * resolves the ability on the IR interpreter when this is interpretable, and on `legacy` otherwise.
+	 */
+	effect?: EffectParse;
 }
 
 const RUNTIME_TRIGGERS = new WeakMap<CardDefinition, RuntimeTrigger[]>();
@@ -506,11 +524,23 @@ export function runtimeTriggers(def: CardDefinition): RuntimeTrigger[] {
 			return;
 		}
 		const legacy = LEGACY_EXECUTION.get(ab);
-		if (!legacy || legacy.effects.length === 0) return;
+		if (!legacy) return;
+		const effect = TRIGGER_EFFECT.get(ab);
+		const grammarComplete = triggerEffectComplete(effect);
+		// Legacy effects exist, or the effect grammar understood the whole clause (the runtime then
+		// checks that the interpreter supports every step; see runtime/triggers.ts `executable`).
+		if (legacy.effects.length === 0 && !grammarComplete) return;
 		if (ab.kind === 'triggered') {
-			out.push({ abilityIndex, trigger: ab.trigger, condition: ab.condition, effectSupported: true, legacy });
-		} else if (ab.kind === 'unsupported' && ab.reason === 'unparsed' && ab.trigger && legacy.legacyClaimed) {
-			out.push({ abilityIndex, trigger: ab.trigger, condition: ab.condition, effectSupported: false, legacy });
+			out.push({ abilityIndex, trigger: ab.trigger, condition: ab.condition, effectSupported: true, legacy, effect });
+		} else if (
+			ab.kind === 'unsupported' &&
+			ab.reason === 'unparsed' &&
+			ab.trigger &&
+			((legacy.legacyClaimed && legacy.effects.length > 0) || grammarComplete)
+		) {
+			// An unparsed intervening-if leaves `condition` undefined: such abilities are 'unparsed' via
+			// the trigger head (no ab.trigger), so they never get here.
+			out.push({ abilityIndex, trigger: ab.trigger, condition: ab.condition, effectSupported: false, legacy, effect });
 		}
 	});
 	RUNTIME_TRIGGERS.set(def, out);

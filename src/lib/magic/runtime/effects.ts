@@ -42,6 +42,7 @@ import type {
 	ScryfallCard,
 	StackItem,
 	TargetRef,
+	TriggerEventLki,
 	VfxEvent
 } from '../types.ts';
 import { compileCard } from '../compiler/index.ts';
@@ -134,6 +135,11 @@ export interface EffectContext {
 	/** Triggered abilities (Phase 5): the object and amount the trigger event was about. */
 	eventObjectId?: string;
 	eventAmount?: number;
+	/** Steps C+D: the event object's version when the event happened (CR 400.7) and its LKI. */
+	eventObjectVersion?: number;
+	eventLki?: TriggerEventLki;
+	/** "That player": the player the trigger event was about. */
+	eventPlayerId?: string;
 }
 
 export interface EffectResult {
@@ -206,7 +212,7 @@ export const INTERPRETED_VERBS: ReadonlySet<Verb> = new Set<Verb>([
 const PROMPTING_VERBS: ReadonlySet<Verb> = new Set<Verb>(['scry', 'lookAndReorder', 'search']);
 
 function selectorSupported(sel: Selector): boolean {
-	return ['self', 'binding', 'target', 'all', 'player', 'playerRef', 'none'].includes(sel.k);
+	return ['self', 'binding', 'target', 'all', 'player', 'playerRef', 'none', 'eventObject'].includes(sel.k);
 }
 
 function stepSupported(step: EffectStep): boolean {
@@ -301,6 +307,7 @@ export function interpretableNow(
 function playerFromRefStatic(state: GameState, ref: PlayerRef, item: StackItem, controller: PlayerGameState): PlayerGameState | null {
 	if (ref.k === 'you') return controller;
 	if (ref.k === 'activePlayer') return state.players[state.activePlayerIndex] ?? null;
+	if (ref.k === 'eventPlayer') return state.players.find((p) => p.playerId === item.eventPlayerId) ?? null;
 	if (ref.k === 'controllerOf' || ref.k === 'ownerOf') {
 		const t = item.targets[0];
 		if (!t) return null;
@@ -406,6 +413,17 @@ class Run {
 		}
 		const id = this.refId(ref);
 		const found = id ? this.locate(id) : null;
+		if (ref.k === 'eventObject') {
+			// CR 608.2h / 400.7: the event object as it is now if it's still the same object on the
+			// battlefield; otherwise (it died, or a "dies" trigger) as it last existed there.
+			const same =
+				found &&
+				found.zone === 'battlefield' &&
+				(this.ctx.eventObjectVersion === undefined || found.inst.objectVersion === this.ctx.eventObjectVersion);
+			if (same) return this.snapshot(found.inst);
+			if (this.ctx.eventLki) return { ...this.ctx.eventLki };
+			return found ? this.snapshot(found.inst) : null;
+		}
 		if (ref.k === 'self') {
 			const expectedVer = this.ctx.item?.sourceObjectVersion;
 			const stillOnBattlefield =
@@ -457,6 +475,8 @@ class Run {
 				return this.you;
 			case 'activePlayer':
 				return this.state.players[this.state.activePlayerIndex] ?? null;
+			case 'eventPlayer':
+				return this.ctx.eventPlayerId ? (this.player(this.ctx.eventPlayerId) ?? null) : null;
 			case 'target': {
 				const t = this.ctx.targets[ref.index];
 				return t?.kind === 'player' ? (this.player(t.id) ?? null) : null;
@@ -533,8 +553,11 @@ class Run {
 					.filter((c): c is CardInstance => Boolean(c && !c.phasedOut));
 			}
 			case 'eventObject': {
+				// CR 400.7: once the event object changes zones again it's a new object.
 				const f = this.ctx.eventObjectId ? this.locate(this.ctx.eventObjectId) : null;
-				return f ? [f.inst] : [];
+				if (!f || f.inst.phasedOut) return [];
+				if (this.ctx.eventObjectVersion !== undefined && f.inst.objectVersion !== this.ctx.eventObjectVersion) return [];
+				return [f.inst];
 			}
 			case 'all': {
 				const zone = sel.filter.zone ?? 'battlefield';

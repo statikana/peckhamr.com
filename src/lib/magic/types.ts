@@ -432,6 +432,35 @@ export interface StackItem {
 	 */
 	triggeredAbilityIndex?: number;
 	targetObjectVersions?: Record<string, number>;
+	/**
+	 * Steps C+D: the trigger event a triggered ability refers to ("that creature", "that player",
+	 * "that many"). Not targets: they are never checked for legality (CR 603.7c, 608.2b).
+	 * `eventObjectId` is the object the event was about (the source itself for "When ~ enters");
+	 * `eventLki` is how it last existed on the battlefield (CR 603.10a, 608.2h).
+	 */
+	eventObjectId?: string;
+	eventObjectVersion?: number;
+	eventPlayerId?: string;
+	eventAmount?: number;
+	/** The spell or ability that targeted the source (Ward). */
+	eventStackItemId?: string;
+	eventLki?: TriggerEventLki;
+	/**
+	 * Transitional (step F deletes it): the event ref the pre-IR engine passed to a triggered
+	 * ability's legacy ParsedEffects as `targets[0]`. Used only by the legacy fallback.
+	 */
+	legacyEventTarget?: TargetRef;
+	/** "You may" triggered abilities: the controller's answer, once asked on resolution. */
+	optionalAccepted?: boolean;
+}
+
+/** Last known information of a trigger's event object (plain data, JSON-serialisable). */
+export interface TriggerEventLki {
+	controllerId: string;
+	ownerId: string;
+	power: number;
+	toughness: number;
+	manaValue: number;
 }
 
 export interface DelayedTrigger {

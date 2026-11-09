@@ -249,7 +249,9 @@ export type PlayerRef =
 	| { k: 'controllerOf'; of: Ref }
 	| { k: 'ownerOf'; of: Ref }
 	| { k: 'target'; index: number }
-	| { k: 'activePlayer' };
+	| { k: 'activePlayer' }
+	/** The player the trigger event was about ("that player": the player dealt damage, the caster). */
+	| { k: 'eventPlayer' };
 
 export type Amount =
 	| { k: 'const'; n: number }

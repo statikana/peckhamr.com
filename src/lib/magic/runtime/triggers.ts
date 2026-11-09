@@ -48,12 +48,16 @@ export interface PendingTrigger {
 	label: string;
 	/** The object the event was about, when it isn't the source ("that creature"). */
 	eventObject?: CardInstance;
-	/** The player the event was about (the player dealt combat damage). */
+	/** The player dealt damage (the pre-IR engine passed this player to legacy effects as a target). */
 	eventPlayerId?: string;
+	/** "That player": the player the event was about (dealt damage, the caster, the active player). */
+	eventPlayer?: string;
 	/** The stack item that targeted this permanent (for Ward). */
 	targetStackItemId?: string;
 	/** The amount the event carried: damage dealt, or the entering creature's power. */
 	amount?: number;
+	/** How the event object last existed on the battlefield (dies / leaves triggers, CR 603.10a). */
+	eventLki?: { controllerId: string; power?: number; toughness?: number };
 	/** Match order (deterministic tie-break for a player's own simultaneous triggers). */
 	order: number;
 }
@@ -64,6 +68,11 @@ export interface TriggerHost {
 	executeInline(state: GameState, trigger: PendingTrigger): void;
 	/** Puts one triggered ability on the stack. */
 	putOnStack(state: GameState, trigger: PendingTrigger): void;
+	/**
+	 * Whether the engine can execute this ability at all (legacy effects, or a compiled effect the IR
+	 * interpreter supports). Abilities it can't execute never trigger.
+	 */
+	canExecute?(trigger: RuntimeTrigger): boolean;
 }
 
 let host: TriggerHost | null = null;
@@ -85,7 +94,7 @@ const CARD_TRIGGERS = new WeakMap<ScryfallCard, CardTriggers>();
 function triggersOf(card: ScryfallCard): CardTriggers {
 	let entry = CARD_TRIGGERS.get(card);
 	if (!entry) {
-		const all = runtimeTriggers(compileCard(card));
+		const all = runtimeTriggers(compileCard(card)).filter((t) => !host?.canExecute || host.canExecute(t));
 		const events = new Set<EventKind>();
 		for (const t of all) for (const alt of alternatives(t.trigger)) events.add(alt.event);
 		entry = { all, events };
@@ -343,6 +352,8 @@ interface MatchExtras {
 	targetStackItemId?: string;
 	amount?: number;
 	times?: number;
+	eventLki?: PendingTrigger['eventLki'];
+	eventPlayer?: string;
 }
 
 function record(state: GameState, source: Source, ability: RuntimeTrigger, kind: EventKind, extras: MatchExtras): void {
@@ -363,6 +374,8 @@ function record(state: GameState, source: Source, ability: RuntimeTrigger, kind:
 			eventPlayerId: extras.eventPlayerId,
 			targetStackItemId: extras.targetStackItemId,
 			amount: extras.amount,
+			eventLki: extras.eventLki,
+			eventPlayer: extras.eventPlayer ?? extras.eventPlayerId,
 			order: ch.nextOrder++
 		});
 	}
@@ -489,7 +502,14 @@ function matchZoneChange(state: GameState, ev: Extract<GameEvent, { kind: 'ZoneC
 							lki: ev.lki
 						})
 					: 1;
-			record(state, source, ability, 'zoneChange', { label: label(source, alt), eventObject: obj, amount: enteredPower(), times });
+			const eventLki = enters
+				? undefined
+				: objBatchInfo
+					? { controllerId: objBatchInfo.controllerId }
+					: ev.lki
+						? { controllerId: ev.lki.controllerId, power: ev.lki.power, toughness: ev.lki.toughness }
+						: undefined;
+			record(state, source, ability, 'zoneChange', { label: label(source, alt), eventObject: obj, amount: enteredPower(), times, eventLki });
 		}
 	}
 }
@@ -519,7 +539,7 @@ function matchCast(state: GameState, casterId: string, spell: CardInstance, isCo
 							isCopy
 						})
 					: 1;
-			record(state, source, ability, 'cast', { label: 'On Cast', times });
+			record(state, source, ability, 'cast', { label: 'On Cast', times, eventPlayer: casterId });
 		}
 	}
 }
@@ -667,7 +687,9 @@ function matchPhase(state: GameState, ev: Extract<GameEvent, { kind: 'PhaseBegin
 			if (scope === 'opponent_turn' && source.controllerId === ev.activePlayerId) continue;
 			const step = ev.phase === 'upkeep' ? 'Upkeep' : ev.phase === 'end_step' ? 'End Step' : 'Phase';
 			record(state, source, ability, 'phaseBegin', {
-				label: source.zone === 'graveyard' ? `Graveyard ${step}` : `${step} Trigger`
+				label: source.zone === 'graveyard' ? `Graveyard ${step}` : `${step} Trigger`,
+				// "At the beginning of each opponent's upkeep, that player ...": the active player.
+				eventPlayer: ev.activePlayerId ?? undefined
 			});
 		}
 	}
