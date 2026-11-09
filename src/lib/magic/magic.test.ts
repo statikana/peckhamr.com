@@ -927,6 +927,8 @@ describe('6. Combat Engine & Niche Keyword Interactions', () => {
 			true
 		);
 		assert.equal(flyerMenaceVigilance.tapped, false);
+		assert.equal(applyGameAction(state, p1Id, { type: 'pass_priority' }).ok, true);
+		assert.equal(applyGameAction(state, p2Id, { type: 'pass_priority' }).ok, true);
 		assert.equal(state.phase, 'declare_blockers');
 
 		// Ground blocker without Flying or Reach cannot block a Flyer
@@ -1054,6 +1056,8 @@ describe('6. Combat Engine & Niche Keyword Interactions', () => {
 			}).ok,
 			true
 		);
+		assert.equal(applyGameAction(state, p1Id, { type: 'pass_priority' }).ok, true);
+		assert.equal(applyGameAction(state, p2Id, { type: 'pass_priority' }).ok, true);
 
 		assert.equal(
 			applyGameAction(state, p2Id, {
@@ -1121,6 +1125,8 @@ describe('6. Combat Engine & Niche Keyword Interactions', () => {
 			}).ok,
 			true
 		);
+		assert.equal(applyGameAction(state, p1Id, { type: 'pass_priority' }).ok, true);
+		assert.equal(applyGameAction(state, p2Id, { type: 'pass_priority' }).ok, true);
 		assert.equal(
 			applyGameAction(state, p2Id, {
 				type: 'declare_blockers',
@@ -1455,6 +1461,8 @@ describe('9. Niche Mechanics: Modal Spells, Cyclonic Rift Overload, Infect, Doub
 			}).ok,
 			true
 		);
+		assert.equal(applyGameAction(state, p1Id, { type: 'pass_priority' }).ok, true);
+		assert.equal(applyGameAction(state, p2Id, { type: 'pass_priority' }).ok, true);
 
 		// Trying to block Blighted Agent ("can't be blocked") fails
 		assert.equal(
@@ -1527,6 +1535,8 @@ describe('9. Niche Mechanics: Modal Spells, Cyclonic Rift Overload, Infect, Doub
 			}).ok,
 			true
 		);
+		assert.equal(applyGameAction(state, p1Id, { type: 'pass_priority' }).ok, true);
+		assert.equal(applyGameAction(state, p2Id, { type: 'pass_priority' }).ok, true);
 		assert.equal(
 			applyGameAction(state, p2Id, { type: 'declare_blockers', assignments: [] }).ok,
 			true
@@ -2083,6 +2093,12 @@ describe('14. End Turn Action & 1v1 AI Turn Progression', () => {
 		assert.equal(state.turnNumber, 2);
 		assert.equal(state.activePlayerIndex, 0);
 		assert.equal(state.priorityPlayerIndex, 0);
+		assert.equal(state.phase, 'upkeep');
+		assert.equal(applyGameAction(state, 'human_1', { type: 'pass_priority' }).ok, true);
+		runAutomatedPriorityAndBots(state);
+		assert.equal(state.phase, 'draw');
+		assert.equal(applyGameAction(state, 'human_1', { type: 'pass_priority' }).ok, true);
+		runAutomatedPriorityAndBots(state);
 		assert.equal(state.phase, 'main1');
 		assert.equal(
 			state.players[1].battlefield.some((c) => c.card.name === 'Forest'),
@@ -2477,6 +2493,12 @@ describe('18. CR 721 Premature Turn Ending (Obeka, Brute Chronologist / Sundial 
 		p1.hand = []; // avoid discard prompt
 		assert.equal(applyGameAction(state, p1Id, { type: 'end_turn' }).ok, true);
 		assert.equal(state.activePlayerIndex, 0, 'Alice begins her extra turn');
+		assert.equal(state.phase, 'upkeep');
+		applyGameAction(state, p1Id, { type: 'pass_priority' });
+		applyGameAction(state, p2Id, { type: 'pass_priority' });
+		assert.equal(state.phase, 'draw');
+		applyGameAction(state, p1Id, { type: 'pass_priority' });
+		applyGameAction(state, p2Id, { type: 'pass_priority' });
 		assert.equal(state.phase, 'main1');
 
 		// Now advance to End Step of the Extra Turn -> Final Fortune's "you lose the game" trigger goes onto the Stack!
@@ -2692,6 +2714,9 @@ describe('21. Stax Restrictions (Rule of Law, Drannith Magistrate), Flash Permis
 		// Advance to declare_attackers and attack Bob
 		applyGameAction(state, p1Id, { type: 'pass_priority' });
 		applyGameAction(state, p2Id, { type: 'pass_priority' });
+		assert.equal(state.phase, 'begin_combat');
+		applyGameAction(state, p1Id, { type: 'pass_priority' });
+		applyGameAction(state, p2Id, { type: 'pass_priority' });
 		assert.equal(state.phase, 'declare_attackers');
 		assert.equal(
 			applyGameAction(state, p1Id, {
@@ -2700,6 +2725,8 @@ describe('21. Stax Restrictions (Rule of Law, Drannith Magistrate), Flash Permis
 			}).ok,
 			true
 		);
+		applyGameAction(state, p1Id, { type: 'pass_priority' });
+		applyGameAction(state, p2Id, { type: 'pass_priority' });
 
 		// Bob blocks with Llanowar Elves
 		assert.equal(state.phase, 'declare_blockers');
@@ -2799,6 +2826,8 @@ describe('22. Combat Damage Forecast Layover & Aura/Equipment Attachment Helpers
 		);
 
 		// Advance to declare_attackers: trampler attacks Bob, knight attacks Jace
+		applyGameAction(state, p1Id, { type: 'pass_priority' });
+		applyGameAction(state, p2Id, { type: 'pass_priority' });
 		applyGameAction(state, p1Id, { type: 'pass_priority' });
 		applyGameAction(state, p2Id, { type: 'pass_priority' });
 		applyGameAction(state, p1Id, {
@@ -3264,6 +3293,10 @@ describe('24. Stage A: Live Bug Fixes (A1 Intervening-If, A2 End Step Scope, A3 
 		p1.life = 25;
 		const handBefore25 = p1.hand.length;
 		runBeginningOfTurn(state);
+		assert.equal(state.phase, 'upkeep');
+		applyGameAction(state, p1Id, { type: 'pass_priority' });
+		applyGameAction(state, p2Id, { type: 'pass_priority' });
+		assert.equal(state.phase, 'draw');
 		// Only normal draw step card (1 card), no upkeep trigger draw
 		assert.equal(p1.hand.length, handBefore25 + 1, 'Did not trigger upkeep draw at 25 life');
 
@@ -3276,11 +3309,14 @@ describe('24. Stage A: Live Bug Fixes (A1 Intervening-If, A2 End Step Scope, A3 
 		applyGameAction(state, p1Id, { type: 'pass_priority' });
 		applyGameAction(state, p2Id, { type: 'pass_priority' });
 		assert.equal(p1.hand.length, handBefore40 + 1, 'Upkeep trigger resolved and drew 1 card');
-		// Pass priority on empty upkeep stack to advance through Draw Step into Main Phase 1
+		// Pass priority on empty upkeep stack to advance to Draw Step and then Main Phase 1
 		applyGameAction(state, p1Id, { type: 'pass_priority' });
 		applyGameAction(state, p2Id, { type: 'pass_priority' });
-		assert.equal(state.phase, 'main1', 'Advanced to main1 after upkeep stack resolved');
-		assert.equal(p1.hand.length, handBefore40 + 2, 'Normal turn draw also occurred when advancing from upkeep to main1');
+		assert.equal(state.phase, 'draw');
+		assert.equal(p1.hand.length, handBefore40 + 2, 'Normal turn draw also occurred when advancing from upkeep to draw');
+		applyGameAction(state, p1Id, { type: 'pass_priority' });
+		applyGameAction(state, p2Id, { type: 'pass_priority' });
+		assert.equal(state.phase, 'main1', 'Advanced to main1 after draw step priority passed');
 
 		// 4. Felidar Sovereign at 40 life puts trigger on stack; if life drops below 40 before resolution, CR 603.4 prevents win; at 40+ life, resolving wins!
 		p1.battlefield = [];
@@ -3825,6 +3861,9 @@ describe('26. Stage C: Grammar-Driven Triggers, Target-Controller Effects, Cost 
 		// Advance to declare_attackers
 		applyGameAction(state, p1Id, { type: 'pass_priority' });
 		applyGameAction(state, p2Id, { type: 'pass_priority' });
+		assert.equal(state.phase, 'begin_combat');
+		applyGameAction(state, p1Id, { type: 'pass_priority' });
+		applyGameAction(state, p2Id, { type: 'pass_priority' });
 		assert.equal(state.phase, 'declare_attackers');
 		assert.equal(
 			applyGameAction(state, p1Id, {
@@ -3838,6 +3877,8 @@ describe('26. Stage C: Grammar-Driven Triggers, Target-Controller Effects, Cost 
 			true,
 			'Synthetic Hoard Drake created a Treasure token on attack'
 		);
+		applyGameAction(state, p1Id, { type: 'pass_priority' });
+		applyGameAction(state, p2Id, { type: 'pass_priority' });
 
 		// No blockers -> advance to combat_damage
 		applyGameAction(state, p2Id, { type: 'declare_blockers', assignments: [] });
@@ -5187,6 +5228,8 @@ describe('31. Oracle text with reminder text and current templating', () => {
 			}).ok,
 			true
 		);
+		applyGameAction(state, p1Id, { type: 'pass_priority' });
+		applyGameAction(state, p2Id, { type: 'pass_priority' });
 		const res = applyGameAction(state, p2Id, {
 			type: 'declare_blockers',
 			assignments: blockers.map((b) => ({ blockerInstanceId: b.instanceId, attackerInstanceId: attacker.instanceId }))

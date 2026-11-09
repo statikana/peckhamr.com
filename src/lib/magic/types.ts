@@ -457,6 +457,8 @@ export interface CombatState {
 	declaredBlockersPlayerIds: string[];
 	damageDealtFirstStrike: boolean;
 	damageDealtNormal: boolean;
+	dealtFirstStrikeDamageIds?: string[];
+	blockersDeclared?: boolean;
 }
 
 export const ENGINE_VERSION = 1;

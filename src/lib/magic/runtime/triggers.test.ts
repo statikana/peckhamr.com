@@ -126,6 +126,8 @@ function cast(state: GameState, player: PlayerGameState, inst: CardInstance, tar
 function attack(state: GameState, attacker: PlayerGameState, defender: PlayerGameState, attackers: CardInstance[], planeswalker?: CardInstance): void {
 	assert.equal(state.phase, 'main1');
 	for (const pl of state.players) applyGameAction(state, pl.playerId, { type: 'pass_priority' });
+	assert.equal(state.phase, 'begin_combat');
+	for (const pl of state.players) applyGameAction(state, pl.playerId, { type: 'pass_priority' });
 	assert.equal(state.phase, 'declare_attackers');
 	const res = applyGameAction(state, attacker.playerId, {
 		type: 'declare_attackers',
@@ -136,6 +138,7 @@ function attack(state: GameState, attacker: PlayerGameState, defender: PlayerGam
 		}))
 	});
 	assert.equal(res.ok, true, res.error ?? '');
+	for (const pl of state.players) applyGameAction(state, pl.playerId, { type: 'pass_priority' });
 }
 
 /** From declare_blockers: declare `blocks` for the defender, then pass through combat damage. */
@@ -146,7 +149,7 @@ function blockAndDealDamage(state: GameState, defender: PlayerGameState, blocks:
 		assignments: blocks.map(([b, a]) => ({ blockerInstanceId: b.instanceId, attackerInstanceId: a.instanceId }))
 	});
 	assert.equal(res.ok, true, res.error ?? '');
-	for (let i = 0; i < 6 && (state.phase as GameState['phase']) !== 'main2' && (state.phase as GameState['phase']) !== 'end_step'; i++) {
+	for (let i = 0; i < 10 && (state.phase as GameState['phase']) !== 'main2' && (state.phase as GameState['phase']) !== 'end_step'; i++) {
 		const prio = state.players[state.priorityPlayerIndex];
 		applyGameAction(state, prio.playerId, { type: 'pass_priority' });
 	}

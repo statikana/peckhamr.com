@@ -422,9 +422,14 @@ function checkIfAllKeptMulligan(state: GameState): void {
 		state.turnNumber = 1;
 		state.activePlayerIndex = 0;
 		state.priorityPlayerIndex = 0;
-		beginPhase(state, 'untap');
 		addLog(state, 'system', `All players kept their opening hands. Turn 1 begins for ${state.players[0].username}!`);
 		runBeginningOfTurn(state);
+		if (state.status === 'active' && state.stack.length === 0 && state.pendingPrompts.length === 0) {
+			advancePhaseOrStep(state);
+		}
+		if (state.status === 'active' && state.stack.length === 0 && state.pendingPrompts.length === 0) {
+			advancePhaseOrStep(state);
+		}
 	}
 }
 
@@ -840,8 +845,128 @@ export function drawCards(
 	}
 }
 
-function runDrawStepAndEnterMain1(state: GameState, activePlayer: PlayerGameState): void {
-	beginPhase(state, 'draw');
+export function emptyAllPlayersManaPools(state: GameState): void {
+	for (const p of state.players) {
+		p.manaPool = createEmptyManaPool();
+	}
+}
+
+function executeUntapTurnBasedActions(state: GameState, activePlayer: PlayerGameState): void {
+	activePlayer.landsPlayedThisTurn = 0;
+	activePlayer.maxLandsPerTurn = 1;
+
+	// CR 502.1 & CR 702.26a/g: Before untapping, phasing in and phasing out happen simultaneously!
+	// 1. Collect all permanents that will phase in:
+	//    - activePlayer's directly phased-out permanents
+	//    - any indirectly phased-out attachments across ALL players' battlefields attached to a permanent phasing in (CR 702.26g)
+	const phasingInIds = new Set<string>();
+	for (const perm of activePlayer.battlefield) {
+		if (perm.phasedOut && !perm.phasedOutIndirectly) {
+			phasingInIds.add(perm.instanceId);
+		}
+	}
+	let addedPhaseIn = true;
+	while (addedPhaseIn) {
+		addedPhaseIn = false;
+		for (const p of state.players) {
+			for (const perm of p.battlefield) {
+				if (
+					perm.phasedOut &&
+					perm.phasedOutIndirectly &&
+					perm.attachedToId &&
+					phasingInIds.has(perm.attachedToId) &&
+					!phasingInIds.has(perm.instanceId)
+				) {
+					phasingInIds.add(perm.instanceId);
+					addedPhaseIn = true;
+				}
+			}
+		}
+	}
+
+	// 2. Collect all currently phased-in permanents that will phase out:
+	//    - activePlayer's phased-in permanents with the Phasing keyword (CR 702.26a)
+	//    - any phased-in attachments across ALL players' battlefields attached to a permanent phasing out (indirectly)
+	const phasingOutDirectIds = new Set<string>();
+	const phasingOutIndirectIds = new Set<string>();
+	for (const perm of activePlayer.battlefield) {
+		if (!perm.phasedOut && hasKeyword(perm, 'Phasing', state)) {
+			phasingOutDirectIds.add(perm.instanceId);
+		}
+	}
+	let addedPhaseOut = true;
+	while (addedPhaseOut) {
+		addedPhaseOut = false;
+		for (const p of state.players) {
+			for (const perm of p.battlefield) {
+				if (
+					!perm.phasedOut &&
+					perm.attachedToId &&
+					(phasingOutDirectIds.has(perm.attachedToId) ||
+						phasingOutIndirectIds.has(perm.attachedToId)) &&
+					!phasingOutDirectIds.has(perm.instanceId) &&
+					!phasingOutIndirectIds.has(perm.instanceId)
+				) {
+					phasingOutIndirectIds.add(perm.instanceId);
+					addedPhaseOut = true;
+				}
+			}
+		}
+	}
+
+	// 3. Apply phasing in and phasing out simultaneously
+	const phasedInNames: string[] = [];
+	const phasedOutNames: string[] = [];
+	for (const p of state.players) {
+		for (const perm of p.battlefield) {
+			if (phasingInIds.has(perm.instanceId)) {
+				perm.phasedOut = false;
+				perm.phasedOutIndirectly = false;
+				phasedInNames.push(perm.card.name);
+			} else if (phasingOutDirectIds.has(perm.instanceId)) {
+				perm.phasedOut = true;
+				perm.phasedOutIndirectly = false;
+				phasedOutNames.push(perm.card.name);
+			} else if (phasingOutIndirectIds.has(perm.instanceId)) {
+				perm.phasedOut = true;
+				perm.phasedOutIndirectly = true;
+				phasedOutNames.push(perm.card.name);
+			}
+		}
+	}
+	if (phasedInNames.length > 0) {
+		addLog(
+			state,
+			'rule',
+			`Phasing (CR 702.26): ${phasedInNames.join(', ')} phased in for ${activePlayer.username}.`,
+			activePlayer.playerId
+		);
+	}
+	if (phasedOutNames.length > 0) {
+		addLog(
+			state,
+			'rule',
+			`Phasing (CR 702.26): ${phasedOutNames.join(', ')} phased out for ${activePlayer.username}.`,
+			activePlayer.playerId
+		);
+	}
+
+	// 4. Untap step (CR 502.3 & CR 122.1d stun counter replacement)
+	for (const perm of activePlayer.battlefield) {
+		if (perm.phasedOut) continue;
+		if (perm.tapped && !hasRestriction(state, perm, 'doesntUntap')) {
+			if (perm.counters.stun > 0) {
+				perm.counters.stun -= 1;
+			} else {
+				perm.tapped = false;
+			}
+		}
+		perm.summoningSick = false;
+		perm.usedLoyaltyThisTurn = false;
+	}
+}
+
+function executeDrawTurnBasedAction(state: GameState, activePlayer: PlayerGameState): void {
 	const shouldSkipFirstDraw =
 		state.turnNumber === 1 && state.players.length === 2 && !state.rules.firstTurnDraw;
 	if (!shouldSkipFirstDraw) {
@@ -861,19 +986,6 @@ function runDrawStepAndEnterMain1(state: GameState, activePlayer: PlayerGameStat
 			activePlayer.playerId
 		);
 	}
-
-	if (state.stack.length === 0) {
-		beginPhase(state, 'main1');
-	}
-	state.priorityPlayerIndex = state.activePlayerIndex;
-	state.passedPriorityPlayerIds = [];
-	state.turnStartedAt = Date.now();
-	state.priorityUpdatedAt = Date.now();
-	emitVfx(state, {
-		kind: 'phase_change',
-		label: `Turn ${state.turnNumber}: ${activePlayer.username} — Main Phase 1`
-	});
-	checkStateBasedActions(state);
 }
 
 export function runBeginningOfTurn(state: GameState): void {
@@ -887,61 +999,21 @@ export function runBeginningOfTurn(state: GameState): void {
 	activePlayer.preventAllCombatDamageThisTurn = false;
 	activePlayer.spellsCastThisTurn = 0;
 
-	// 1. Untap step (CR 502)
-	beginPhase(state, 'untap');
-	activePlayer.landsPlayedThisTurn = 0;
-	activePlayer.maxLandsPerTurn = 1;
-	activePlayer.manaPool = createEmptyManaPool();
+	// 1. Untap step (CR 502): turn-based actions execute before PhaseBegin('untap') triggers (CR 703.3)
+	beginPhase(state, 'untap', activePlayer);
+	emptyAllPlayersManaPools(state);
 
-	// CR 502.1 & CR 702.26: Before untapping, all phased-out permanents controlled by activePlayer phase in simultaneously (without triggering ETB!)
-	const phasedInNames: string[] = [];
-	for (const perm of activePlayer.battlefield) {
-		if (perm.phasedOut) {
-			perm.phasedOut = false;
-			perm.phasedOutIndirectly = false;
-			phasedInNames.push(perm.card.name);
-		}
-	}
-	if (phasedInNames.length > 0) {
-		addLog(
-			state,
-			'rule',
-			`Phasing (CR 702.26): ${phasedInNames.join(', ')} phased in for ${activePlayer.username}.`,
-			activePlayer.playerId
-		);
-	}
-
-	for (const perm of activePlayer.battlefield) {
-		if (perm.phasedOut) continue;
-		if (perm.counters.stun > 0) {
-			perm.counters.stun -= 1;
-		} else if (!hasRestriction(state, perm, 'doesntUntap')) {
-			perm.tapped = false;
-		}
-		perm.summoningSick = false;
-		perm.usedLoyaltyThisTurn = false;
-	}
-
-	// 2. Upkeep step (CR 503). Beginning-of-upkeep triggers run from the PhaseBegin handler
-	// (runUpkeepTriggers), synchronously, before the stack check below.
+	// 2. Upkeep step (CR 503): active player receives priority in upkeep (CR 503.1a / 500.2)
 	beginPhase(state, 'upkeep', activePlayer);
-
-	// If any upkeep triggers are on the stack, pause in Upkeep so players can respond (CR 503.1)
-	if (state.stack.length > 0) {
-		state.priorityPlayerIndex = state.activePlayerIndex;
-		state.passedPriorityPlayerIds = [];
-		state.turnStartedAt = Date.now();
-		state.priorityUpdatedAt = Date.now();
-		emitVfx(state, {
-			kind: 'phase_change',
-			label: `Turn ${state.turnNumber}: ${activePlayer.username} — Upkeep`
-		});
-		checkStateBasedActions(state);
-		return;
-	}
-
-	// 3. Draw step & enter Precombat Main Phase (main1)
-	runDrawStepAndEnterMain1(state, activePlayer);
+	state.priorityPlayerIndex = state.activePlayerIndex;
+	state.passedPriorityPlayerIds = [];
+	state.turnStartedAt = Date.now();
+	state.priorityUpdatedAt = Date.now();
+	emitVfx(state, {
+		kind: 'phase_change',
+		label: `Turn ${state.turnNumber}: ${activePlayer.username} — Upkeep`
+	});
+	checkStateBasedActions(state);
 }
 
 /**
@@ -1483,11 +1555,23 @@ function applyGameActionInner(
 			if (state.phase !== 'declare_attackers') {
 				return { ok: false, error: 'Attackers can only be declared during the Declare Attackers step.' };
 			}
+			if (state.stack.length > 0) {
+				return { ok: false, error: 'Cannot declare attackers while the Stack is not empty.' };
+			}
+			if (state.combat.active) {
+				return { ok: false, error: 'Attackers have already been declared this combat.' };
+			}
 
 			const validAttackers = [];
 			let totalPropagandaTaxGeneric = 0;
+			const seenAttackerIds = new Set<string>();
 
 			for (const assign of action.assignments) {
+				if (seenAttackerIds.has(assign.attackerInstanceId)) {
+					return { ok: false, error: 'Duplicate attacking creature assignment.' };
+				}
+				seenAttackerIds.add(assign.attackerInstanceId);
+
 				const creature = actor.battlefield.find(
 					(c) => c.instanceId === assign.attackerInstanceId
 				);
@@ -1515,6 +1599,40 @@ function applyGameActionInner(
 				);
 				if (!defender || defender.playerId === actorId) {
 					return { ok: false, error: 'Invalid defending player.' };
+				}
+
+				// CR 508.1b: Validate defenderPlaneswalkerId if provided
+				if (assign.defenderPlaneswalkerId) {
+					const targetPw = defender.battlefield.find(
+						(c) => !c.phasedOut && c.instanceId === assign.defenderPlaneswalkerId
+					);
+					if (!targetPw || !evaluatePermanent(state, targetPw).isPlaneswalker) {
+						return {
+							ok: false,
+							error: 'Invalid defending planeswalker (CR 508.1b).'
+						};
+					}
+				}
+
+				// CR 701.15b: Goad requires attacking a player other than the goader if able
+				if (creature.goadedByPlayerIds && creature.goadedByPlayerIds.length > 0) {
+					const nonGoaderAvailable = state.players.some(
+						(p) =>
+							p.playerId !== actorId &&
+							!p.lost &&
+							!creature.goadedByPlayerIds!.includes(p.playerId) &&
+							getAttackTaxGeneric(state, p) === 0
+					);
+					if (
+						nonGoaderAvailable &&
+						(creature.goadedByPlayerIds.includes(defender.playerId) ||
+							Boolean(assign.defenderPlaneswalkerId))
+					) {
+						return {
+							ok: false,
+							error: `Strict Rules Violation: ${creature.card.name} is Goaded and must attack a player other than its goader if able (CR 701.15b).`
+						};
+					}
 				}
 
 				// Check Propaganda / Ghostly Prison tax on defending player (CR 508.1d)
@@ -1575,11 +1693,13 @@ function applyGameActionInner(
 				});
 			}
 
-			state.combat.active = validAttackers.length > 0;
+			state.combat.active = true;
 			state.combat.attackers = validAttackers;
 			state.combat.declaredBlockersPlayerIds = [];
+			state.combat.blockersDeclared = false;
 			state.combat.damageDealtFirstStrike = false;
 			state.combat.damageDealtNormal = false;
+			state.combat.dealtFirstStrikeDamageIds = [];
 
 			if (validAttackers.length > 0) {
 				addLog(
@@ -1599,23 +1719,14 @@ function applyGameActionInner(
 					playerId: actor.playerId,
 					attackerIds: validAttackers.map((a) => a.attackerInstanceId)
 				});
-				// Attack triggers ran here before Phase 5.
 				flushTriggers(state);
-				// Advance into declare_blockers step and give priority to defending player(s) in turn order
-				beginPhase(state, 'declare_blockers');
-				const defendersInOrder = getAttackedDefenderIdsInTurnOrder(state);
-				const firstDefenderId = defendersInOrder[0] || validAttackers[0].defenderPlayerId;
-				const defIdx = state.players.findIndex((p) => p.playerId === firstDefenderId);
-				state.priorityPlayerIndex = defIdx >= 0 ? defIdx : state.activePlayerIndex;
-				state.passedPriorityPlayerIds = [];
 			} else {
-				// No attackers declared -> skip straight to Postcombat Main Phase (main2)
-				addLog(state, 'combat', `${actor.username} declared no attackers. Moving to Main Phase 2.`, actorId);
-				state.combat.active = false;
-				beginPhase(state, 'main2');
-				state.priorityPlayerIndex = state.activePlayerIndex;
-				state.passedPriorityPlayerIds = [];
+				addLog(state, 'combat', `${actor.username} declared no attackers.`, actorId);
 			}
+
+			// CR 508.2: Active player receives priority in declare_attackers after attackers are declared
+			state.priorityPlayerIndex = state.activePlayerIndex;
+			state.passedPriorityPlayerIds = [];
 			state.priorityUpdatedAt = Date.now();
 			return { ok: true };
 		}
@@ -1624,10 +1735,29 @@ function applyGameActionInner(
 			if (state.phase !== 'declare_blockers') {
 				return { ok: false, error: 'Blockers can only be declared during the Declare Blockers step.' };
 			}
+			if (state.stack.length > 0) {
+				return { ok: false, error: 'Cannot declare blockers while the Stack is not empty.' };
+			}
+			if (
+				state.combat.blockersDeclared ||
+				(state.combat.declaredBlockersPlayerIds &&
+					state.combat.declaredBlockersPlayerIds.includes(actorId))
+			) {
+				return { ok: false, error: 'Blockers have already been declared this step.' };
+			}
 
-			// Validate each blocker assignment (including Flying, Reach, Menace!)
+			// Validate each blocker assignment (including duplicate blockerInstanceId, Flying, Reach, Menace, Protection!)
 			const blockerCountsByAttacker = new Map<string, string[]>();
+			const seenBlockerIds = new Set<string>();
 			for (const assign of action.assignments) {
+				if (seenBlockerIds.has(assign.blockerInstanceId)) {
+					return {
+						ok: false,
+						error: 'Strict Rules Violation: A creature cannot block more than one attacking creature (CR 509.1a).'
+					};
+				}
+				seenBlockerIds.add(assign.blockerInstanceId);
+
 				const blocker = actor.battlefield.find(
 					(c) => c.instanceId === assign.blockerInstanceId
 				);
@@ -1680,6 +1810,13 @@ function applyGameActionInner(
 							error: `Strict Rules Violation: ${atkCard.card.name} cannot be blocked.`
 						};
 					}
+					// CR 702.16e: Attacker with Protection from [quality] cannot be blocked by creatures with that quality
+					if (hasProtectionFrom(atkCard, blocker.copiableCard ?? blocker.card, state)) {
+						return {
+							ok: false,
+							error: `Strict Rules Violation: ${blocker.card.name} cannot block ${atkCard.card.name} due to Protection (CR 702.16e).`
+						};
+					}
 				}
 
 				const list = blockerCountsByAttacker.get(atkEntry.attackerInstanceId) || [];
@@ -1721,6 +1858,9 @@ function applyGameActionInner(
 							hasRestriction(state, atk, 'cantBeBlocked') ||
 							(!permanentHasLostAllAbilities(atk, state).lost && cardHasPrintedUnblockable(atk.card))
 						) {
+							return false;
+						}
+						if (hasProtectionFrom(atk, perm.copiableCard ?? perm.card, state)) {
 							return false;
 						}
 						if (
@@ -1794,6 +1934,7 @@ function applyGameActionInner(
 				state.priorityPlayerIndex = nextDefIdx >= 0 ? nextDefIdx : state.activePlayerIndex;
 			} else {
 				// All attacked defenders have declared blockers -> give priority back to active player
+				state.combat.blockersDeclared = true;
 				state.priorityPlayerIndex = state.activePlayerIndex;
 			}
 			state.passedPriorityPlayerIds = [];
@@ -1804,15 +1945,6 @@ function applyGameActionInner(
 		case 'pass_priority': {
 			if (priorityPlayer.playerId !== actorId) {
 				return { ok: false, error: 'You do not currently hold priority.' };
-			}
-
-			// If in declare_attackers with empty stack and active player passes without attacking, treat as 0 attackers
-			if (state.phase === 'declare_attackers' && state.stack.length === 0 && !state.combat.active) {
-				beginPhase(state, 'main2');
-				state.priorityPlayerIndex = state.activePlayerIndex;
-				state.passedPriorityPlayerIds = [];
-				addLog(state, 'combat', `${actor.username} skipped combat and moved to Main Phase 2.`, actorId);
-				return { ok: true };
 			}
 
 			// If an attacked defender passes priority in declare_blockers without having declared blockers yet, record 0 blockers
@@ -1838,6 +1970,8 @@ function applyGameActionInner(
 							state.priorityUpdatedAt = Date.now();
 							return { ok: true };
 						}
+					} else {
+						state.combat.blockersDeclared = true;
 					}
 				}
 			}
@@ -1886,8 +2020,14 @@ function applyGameActionInner(
 
 			if (state.phase !== 'end_step') {
 				addLog(state, 'rule', `${actor.username} ended their turn.`, actorId);
+				emptyAllPlayersManaPools(state);
 				enterEndStep(state, activePlayer);
+				if (state.stack.length === 0 && state.pendingPrompts.length === 0) {
+					emptyAllPlayersManaPools(state);
+					runCleanupStep(state);
+				}
 			} else if (state.stack.length === 0) {
+				emptyAllPlayersManaPools(state);
 				runCleanupStep(state);
 			}
 			state.priorityUpdatedAt = Date.now();
@@ -2741,13 +2881,31 @@ function runDelayedEndStepTriggers(state: GameState, activePlayer: PlayerGameSta
  */
 function beginPhase(state: GameState, phase: GamePhase, activePlayer?: PlayerGameState): void {
 	state.phase = phase;
+	const active = activePlayer ?? state.players[state.activePlayerIndex];
+	// CR 703.3: Turn-based actions at the beginning of a step happen FIRST, before any
+	// "At the beginning of [step]" triggers go onto the stack.
+	if (phase === 'untap' && active) {
+		executeUntapTurnBasedActions(state, active);
+	} else if (phase === 'draw' && active) {
+		executeDrawTurnBasedAction(state, active);
+		if (state.status === 'finished') return;
+	} else if (phase === 'first_strike_damage') {
+		executeCombatDamageStep(state, true);
+	} else if (phase === 'combat_damage') {
+		executeCombatDamageStep(state, false);
+	} else if (phase === 'cleanup') {
+		clearEndOfTurnAndDamage(state);
+	}
 	emitEvent(state, {
 		kind: 'PhaseBegin',
 		phase,
-		activePlayerId: (activePlayer ?? state.players[state.activePlayerIndex])?.playerId ?? null
+		activePlayerId: active?.playerId ?? null
 	});
 	// Beginning-of-step triggers go on the stack now: the callers check the stack right after this.
 	flushTriggers(state);
+	if (phase === 'first_strike_damage' || phase === 'combat_damage') {
+		checkStateBasedActions(state);
+	}
 }
 
 // Event dispatch (Phase 5). Every event is matched against compiled triggered abilities
@@ -4264,6 +4422,7 @@ export function endTheTurnImmediately(state: GameState, actorId: string): void {
  * If the Stack is non-empty, priority is given to `activePlayer` so they can respond (e.g. with Obeka or Sundial!).
  */
 export function enterEndStep(state: GameState, activePlayer: PlayerGameState): void {
+	emptyAllPlayersManaPools(state);
 	emitVfx(state, { kind: 'phase_change', label: 'End Step' });
 	// Beginning-of-end-step and delayed end-step triggers run from the PhaseBegin handler
 	// (runEndStepTriggers), synchronously.
@@ -4271,11 +4430,6 @@ export function enterEndStep(state: GameState, activePlayer: PlayerGameState): v
 
 	state.priorityPlayerIndex = state.activePlayerIndex;
 	state.passedPriorityPlayerIds = [];
-
-	// If nothing is on the stack during the End Step, proceed to Cleanup Step automatically
-	if (state.stack.length === 0) {
-		runCleanupStep(state);
-	}
 }
 
 /**
@@ -4694,40 +4848,59 @@ export function executeProliferate(state: GameState, controller: PlayerGameState
 }
 
 export function advancePhaseOrStep(state: GameState): void {
-	// Drain unspent mana pools at the end of each step/phase (CR 500.4)
-	for (const p of state.players) {
-		p.manaPool = createEmptyManaPool();
-	}
+	// Drain unspent mana pools at the end of each step/phase (CR 106.4 / 500.4)
+	emptyAllPlayersManaPools(state);
 
 	const activePlayer = state.players[state.activePlayerIndex];
 
 	switch (state.phase) {
 		case 'untap':
+			beginPhase(state, 'upkeep', activePlayer);
+			break;
 		case 'upkeep':
-			if (activePlayer) {
-				runDrawStepAndEnterMain1(state, activePlayer);
-			} else {
-				beginPhase(state, 'main1');
-			}
+			beginPhase(state, 'draw', activePlayer);
+			emitVfx(state, {
+				kind: 'phase_change',
+				label: `Turn ${state.turnNumber}: ${activePlayer?.username ?? ''} — Draw Step`
+			});
 			break;
 		case 'draw':
-			beginPhase(state, 'main1');
+			beginPhase(state, 'main1', activePlayer);
+			emitVfx(state, {
+				kind: 'phase_change',
+				label: `Turn ${state.turnNumber}: ${activePlayer?.username ?? ''} — Main Phase 1`
+			});
 			break;
 
 		case 'main1':
-			beginPhase(state, 'declare_attackers');
-			emitVfx(state, { kind: 'phase_change', label: 'Combat — Declare Attackers' });
+			beginPhase(state, 'begin_combat', activePlayer);
+			emitVfx(state, { kind: 'phase_change', label: 'Combat — Beginning of Combat' });
 			break;
 
 		case 'begin_combat':
-			beginPhase(state, 'declare_attackers');
+			beginPhase(state, 'declare_attackers', activePlayer);
+			emitVfx(state, { kind: 'phase_change', label: 'Combat — Declare Attackers' });
 			break;
 
 		case 'declare_attackers':
 			if (state.combat.active && state.combat.attackers.length > 0) {
-				beginPhase(state, 'declare_blockers');
+				beginPhase(state, 'declare_blockers', activePlayer);
+				const defendersInOrder = getAttackedDefenderIdsInTurnOrder(state);
+				const firstDefenderId = defendersInOrder[0] || state.combat.attackers[0].defenderPlayerId;
+				const defIdx = state.players.findIndex((p) => p.playerId === firstDefenderId);
+				state.priorityPlayerIndex = defIdx >= 0 ? defIdx : state.activePlayerIndex;
+				state.passedPriorityPlayerIds = [];
+				checkStateBasedActions(state);
+				return;
 			} else {
-				beginPhase(state, 'main2');
+				// CR 508.8: If no creatures are declared as attackers, skip declare_blockers, combat_damage, and end_combat
+				state.combat.active = false;
+				state.combat.attackers = [];
+				state.combat.declaredBlockersPlayerIds = [];
+				state.combat.blockersDeclared = false;
+				state.combat.dealtFirstStrikeDamageIds = [];
+				beginPhase(state, 'main2', activePlayer);
+				emitVfx(state, { kind: 'phase_change', label: 'Postcombat Main Phase 2' });
 			}
 			break;
 
@@ -4735,29 +4908,32 @@ export function advancePhaseOrStep(state: GameState): void {
 			// Check if any combatant has First strike or Double strike
 			const hasFirstStrike = checkAnyCombatantHasFirstStrike(state);
 			if (hasFirstStrike) {
-				beginPhase(state, 'first_strike_damage');
-				executeCombatDamageStep(state, true);
+				beginPhase(state, 'first_strike_damage', activePlayer);
 			} else {
-				beginPhase(state, 'combat_damage');
-				executeCombatDamageStep(state, false);
+				beginPhase(state, 'combat_damage', activePlayer);
 			}
 			break;
 		}
 
 		case 'first_strike_damage':
-			beginPhase(state, 'combat_damage');
-			executeCombatDamageStep(state, false);
+			beginPhase(state, 'combat_damage', activePlayer);
 			break;
 
 		case 'combat_damage':
-			state.combat.active = false;
-			state.combat.attackers = [];
-			beginPhase(state, 'main2');
-			emitVfx(state, { kind: 'phase_change', label: 'Postcombat Main Phase 2' });
+			// CR 511.1 / 511.3: Advance to end_combat; creatures remain attacking/blocking until end_combat ends
+			beginPhase(state, 'end_combat', activePlayer);
+			emitVfx(state, { kind: 'phase_change', label: 'Combat — End of Combat' });
 			break;
 
 		case 'end_combat':
-			beginPhase(state, 'main2');
+			// CR 511.3: At the end of the end of combat step, all creatures are removed from combat
+			state.combat.active = false;
+			state.combat.attackers = [];
+			state.combat.declaredBlockersPlayerIds = [];
+			state.combat.blockersDeclared = false;
+			state.combat.dealtFirstStrikeDamageIds = [];
+			beginPhase(state, 'main2', activePlayer);
+			emitVfx(state, { kind: 'phase_change', label: 'Postcombat Main Phase 2' });
 			break;
 
 		case 'main2':
@@ -4766,11 +4942,11 @@ export function advancePhaseOrStep(state: GameState): void {
 
 		case 'end_step':
 			runCleanupStep(state);
-			break;
+			return;
 
 		case 'cleanup':
-			completeTurnCleanupAndPassTurn(state);
-			break;
+			runCleanupStep(state);
+			return;
 	}
 
 	state.priorityPlayerIndex = state.activePlayerIndex;
@@ -4803,6 +4979,61 @@ function checkAnyCombatantHasFirstStrike(state: GameState): boolean {
 }
 
 function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): void {
+	if (!state.combat.dealtFirstStrikeDamageIds) {
+		state.combat.dealtFirstStrikeDamageIds = [];
+	}
+
+	// CR 510.2: All combat damage in a step is assigned and dealt simultaneously.
+	// Snapshot combatant characteristics BEFORE any Infect -1/-1 counters or damageMarked mutations apply!
+	interface CombatantSnapshot {
+		power: number;
+		toughness: number;
+		damageMarkedBefore: number;
+		hasFS: boolean;
+		hasDS: boolean;
+		hasDeathtouch: boolean;
+		hasLifelink: boolean;
+		hasTrample: boolean;
+		hasInfect: boolean;
+		dealsNow: boolean;
+	}
+	const snapshots = new Map<string, CombatantSnapshot>();
+	const recordSnapshot = (perm: CardInstance) => {
+		if (snapshots.has(perm.instanceId)) return;
+		const hasFS = hasKeyword(perm, 'First strike', state);
+		const hasDS = hasKeyword(perm, 'Double strike', state);
+		const alreadyDealtFS = state.combat.dealtFirstStrikeDamageIds!.includes(perm.instanceId);
+		// CR 702.7c: In regular combat damage step, creatures that did NOT deal first-strike damage deal combat damage,
+		// as do creatures that currently have Double strike.
+		const dealsNow = isFirstStrikeStep ? hasFS || hasDS : hasDS || !alreadyDealtFS;
+		snapshots.set(perm.instanceId, {
+			power: getCreaturePower(perm, state),
+			toughness: getCreatureToughness(perm, state),
+			damageMarkedBefore: perm.damageMarked,
+			hasFS,
+			hasDS,
+			hasDeathtouch: hasKeyword(perm, 'Deathtouch', state),
+			hasLifelink: hasKeyword(perm, 'Lifelink', state),
+			hasTrample: hasKeyword(perm, 'Trample', state),
+			hasInfect: hasKeyword(perm, 'Infect', state),
+			dealsNow
+		});
+	};
+
+	for (const atkEntry of state.combat.attackers) {
+		const atkPlayer = state.players.find((p) => p.playerId === atkEntry.controllerId);
+		const defPlayer = state.players.find((p) => p.playerId === atkEntry.defenderPlayerId);
+		if (!atkPlayer || !defPlayer) continue;
+		const attacker = atkPlayer.battlefield.find(
+			(c) => !c.phasedOut && c.instanceId === atkEntry.attackerInstanceId
+		);
+		if (attacker) recordSnapshot(attacker);
+		for (const id of atkEntry.blockerInstanceIds) {
+			const b = defPlayer.battlefield.find((c) => !c.phasedOut && c.instanceId === id);
+			if (b) recordSnapshot(b);
+		}
+	}
+
 	for (const atkEntry of state.combat.attackers) {
 		const atkPlayer = state.players.find((p) => p.playerId === atkEntry.controllerId);
 		const defPlayer = state.players.find((p) => p.playerId === atkEntry.defenderPlayerId);
@@ -4813,17 +5044,19 @@ function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): 
 		);
 		if (!attacker) continue;
 
-		const atkHasFS = hasKeyword(attacker, 'First strike', state);
-		const atkHasDS = hasKeyword(attacker, 'Double strike', state);
-		const attackerDealsNow = isFirstStrikeStep
-			? atkHasFS || atkHasDS
-			: !atkHasFS || atkHasDS || !state.combat.damageDealtFirstStrike;
+		const atkSnap = snapshots.get(attacker.instanceId)!;
+		const attackerDealsNow = atkSnap.dealsNow;
+		if (isFirstStrikeStep && attackerDealsNow) {
+			if (!state.combat.dealtFirstStrikeDamageIds.includes(attacker.instanceId)) {
+				state.combat.dealtFirstStrikeDamageIds.push(attacker.instanceId);
+			}
+		}
 
-		const atkPower = getCreaturePower(attacker, state);
-		const atkDeathtouch = hasKeyword(attacker, 'Deathtouch', state);
-		const atkLifelink = hasKeyword(attacker, 'Lifelink', state);
-		const atkTrample = hasKeyword(attacker, 'Trample', state);
-		const atkInfect = hasKeyword(attacker, 'Infect', state);
+		const atkPower = atkSnap.power;
+		const atkDeathtouch = atkSnap.hasDeathtouch;
+		const atkLifelink = atkSnap.hasLifelink;
+		const atkTrample = atkSnap.hasTrample;
+		const atkInfect = atkSnap.hasInfect;
 
 		const blockers = atkEntry.blockerInstanceIds
 			.map((id) => defPlayer.battlefield.find((c) => !c.phasedOut && c.instanceId === id))
@@ -4871,7 +5104,6 @@ function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): 
 						`${attacker.card.name} dealt ${remainingDamage} unblocked combat damage to ${defWalker.card.name}.`,
 						atkPlayer.playerId
 					);
-					flushTriggers(state);
 				} else {
 					// Unblocked -> deals combat damage to defending player
 					if (!defPlayer.protectionFromEverythingThisTurn) {
@@ -4917,8 +5149,6 @@ function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): 
 							atkPlayer.playerId
 						);
 					}
-
-					flushTriggers(state);
 				}
 			} else if (atkEntry.wasBlocked && blockers.length === 0 && !atkTrample) {
 				// CR 509.1h / 510.1c: An attacking creature that became blocked remains blocked even if all blockers
@@ -4933,7 +5163,8 @@ function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): 
 				// Blocked -> assign lethal damage to remaining blockers in order
 				for (let i = 0; i < blockers.length; i++) {
 					const b = blockers[i];
-					const bTough = getCreatureToughness(b, state);
+					const bSnap = snapshots.get(b.instanceId)!;
+					const bTough = bSnap.toughness;
 					const remTough = Math.max(1, bTough - b.damageMarked);
 					const lethalNeeded = atkDeathtouch ? 1 : remTough;
 
@@ -4969,41 +5200,70 @@ function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): 
 					}
 				}
 
-				// Trample excess damage carries over to defending player!
+				// CR 702.19c: Trample excess damage carries over to the player or planeswalker being attacked!
 				if (atkTrample && remainingDamage > 0) {
-					if (!defPlayer.protectionFromEverythingThisTurn) {
-						if (atkInfect) {
-							defPlayer.poison += remainingDamage;
-						} else if (!defPlayer.lifeTotalCannotChangeThisTurn) {
-							defPlayer.life -= remainingDamage;
-						}
+					if (defWalker) {
+						defWalker.counters.loyalty = Math.max(
+							0,
+							(defWalker.counters.loyalty || 0) - remainingDamage
+						);
 						totalDealtByAttacker += remainingDamage;
-						if (attacker.isCommander) {
-							defPlayer.commanderDamageTaken[attacker.instanceId] =
-								(defPlayer.commanderDamageTaken[attacker.instanceId] || 0) + remainingDamage;
-						}
 						emitEvent(state, {
 							kind: 'DamageDealt',
 							sourceId: attacker.instanceId,
-							targetId: defPlayer.playerId,
-							targetKind: 'player',
+							targetId: defWalker.instanceId,
+							targetKind: 'permanent',
 							amount: remainingDamage,
 							combat: true
 						});
+						emitVfx(state, {
+							kind: 'damage',
+							sourceId: attacker.instanceId,
+							targetId: defWalker.instanceId,
+							amount: remainingDamage,
+							label: `Trample -${remainingDamage} Loyalty`
+						});
+						addLog(
+							state,
+							'combat',
+							`${attacker.card.name} trampled over for ${remainingDamage} combat damage to ${defWalker.card.name}!`,
+							atkPlayer.playerId
+						);
+					} else {
+						if (!defPlayer.protectionFromEverythingThisTurn) {
+							if (atkInfect) {
+								defPlayer.poison += remainingDamage;
+							} else if (!defPlayer.lifeTotalCannotChangeThisTurn) {
+								defPlayer.life -= remainingDamage;
+							}
+							totalDealtByAttacker += remainingDamage;
+							if (attacker.isCommander) {
+								defPlayer.commanderDamageTaken[attacker.instanceId] =
+									(defPlayer.commanderDamageTaken[attacker.instanceId] || 0) + remainingDamage;
+							}
+							emitEvent(state, {
+								kind: 'DamageDealt',
+								sourceId: attacker.instanceId,
+								targetId: defPlayer.playerId,
+								targetKind: 'player',
+								amount: remainingDamage,
+								combat: true
+							});
+						}
+						emitVfx(state, {
+							kind: 'damage',
+							sourceId: attacker.instanceId,
+							targetId: defPlayer.playerId,
+							amount: remainingDamage,
+							label: atkInfect ? `Trample +${remainingDamage} Poison` : `Trample -${remainingDamage}`
+						});
+						addLog(
+							state,
+							'combat',
+							`${attacker.card.name} trampled over for ${remainingDamage} ${atkInfect ? 'Infect (Poison) ' : ''}combat damage to ${defPlayer.username}!`,
+							atkPlayer.playerId
+						);
 					}
-					emitVfx(state, {
-						kind: 'damage',
-						sourceId: attacker.instanceId,
-						targetId: defPlayer.playerId,
-						amount: remainingDamage,
-						label: atkInfect ? `Trample +${remainingDamage} Poison` : `Trample -${remainingDamage}`
-					});
-					addLog(
-						state,
-						'combat',
-						`${attacker.card.name} trampled over for ${remainingDamage} ${atkInfect ? 'Infect (Poison) ' : ''}combat damage to ${defPlayer.username}!`,
-						atkPlayer.playerId
-					);
 				}
 			}
 
@@ -5018,16 +5278,18 @@ function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): 
 			}
 		}
 
-		// Blockers deal combat damage to Attacker
+		// Blockers deal combat damage to Attacker using snapshotted power/keywords (CR 510.2)
 		if (!combatDamagePrevented) {
 			for (const b of blockers) {
-				const bHasFS = hasKeyword(b, 'First strike', state);
-				const bHasDS = hasKeyword(b, 'Double strike', state);
-				const blockerDealsNow = isFirstStrikeStep
-					? bHasFS || bHasDS
-					: !bHasFS || bHasDS || !state.combat.damageDealtFirstStrike;
-				const bPower = getCreaturePower(b, state);
-				const bInfect = hasKeyword(b, 'Infect', state);
+				const bSnap = snapshots.get(b.instanceId)!;
+				const blockerDealsNow = bSnap.dealsNow;
+				if (isFirstStrikeStep && blockerDealsNow) {
+					if (!state.combat.dealtFirstStrikeDamageIds.includes(b.instanceId)) {
+						state.combat.dealtFirstStrikeDamageIds.push(b.instanceId);
+					}
+				}
+				const bPower = bSnap.power;
+				const bInfect = bSnap.hasInfect;
 
 				if (blockerDealsNow && bPower > 0) {
 					if (bInfect) {
@@ -5035,7 +5297,7 @@ function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): 
 					} else {
 						attacker.damageMarked += bPower;
 					}
-					if (hasKeyword(b, 'Deathtouch', state)) {
+					if (bSnap.hasDeathtouch) {
 						attacker.deathtouchDamageMarked = true;
 					}
 					emitEvent(state, {
@@ -5046,7 +5308,7 @@ function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): 
 						amount: bPower,
 						combat: true
 					});
-					if (hasKeyword(b, 'Lifelink', state) && !defPlayer.lifeTotalCannotChangeThisTurn) {
+					if (bSnap.hasLifelink && !defPlayer.lifeTotalCannotChangeThisTurn) {
 						defPlayer.life += bPower;
 					}
 					emitVfx(state, {
@@ -5065,13 +5327,25 @@ function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): 
 	} else {
 		state.combat.damageDealtNormal = true;
 	}
+}
 
-	flushTriggers(state);
-	checkStateBasedActions(state);
+function clearEndOfTurnAndDamage(state: GameState): void {
+	for (const p of state.players) {
+		p.manaPool = createEmptyManaPool();
+		p.preventAllCombatDamageThisTurn = false;
+		for (const perm of p.battlefield) {
+			perm.damageMarked = 0;
+			perm.deathtouchDamageMarked = false;
+			perm.tempPowerMod = 0;
+			perm.tempToughnessMod = 0;
+			perm.grantedKeywords = [];
+			perm.switchedPTCount = 0;
+		}
+	}
 }
 
 function runCleanupStep(state: GameState): void {
-	beginPhase(state, 'cleanup');
+	emptyAllPlayersManaPools(state);
 	const activePlayer = state.players[state.activePlayerIndex];
 
 	// Check if activePlayer has Reliquary Tower / Thought Vessel for unlimited hand size
@@ -5089,8 +5363,10 @@ function runCleanupStep(state: GameState): void {
 					toPlayer: activePlayer
 				});
 			}
+			beginPhase(state, 'cleanup', activePlayer);
 			completeTurnCleanupAndPassTurn(state);
 		} else {
+			beginPhase(state, 'cleanup', activePlayer);
 			const candidateIds = activePlayer.hand.map((c) => c.instanceId);
 			const description = `Cleanup Step: Select ${excess} card(s) from your hand to discard.`;
 			state.pendingPrompts.push({
@@ -5115,22 +5391,23 @@ function runCleanupStep(state: GameState): void {
 		return;
 	}
 
+	beginPhase(state, 'cleanup', activePlayer);
 	completeTurnCleanupAndPassTurn(state);
 }
 
 function completeTurnCleanupAndPassTurn(state: GameState): void {
 	// Clear marked damage, temporary EOT buffs, and Layer 7d P/T switches on all permanents (CR 514.2)
-	for (const p of state.players) {
-		p.manaPool = createEmptyManaPool();
-		p.preventAllCombatDamageThisTurn = false;
-		for (const perm of p.battlefield) {
-			perm.damageMarked = 0;
-			perm.deathtouchDamageMarked = false;
-			perm.tempPowerMod = 0;
-			perm.tempToughnessMod = 0;
-			perm.grantedKeywords = [];
-			perm.switchedPTCount = 0;
-		}
+	clearEndOfTurnAndDamage(state);
+
+	// CR 514.3a: Check SBAs and flush any triggers that triggered during cleanup
+	checkStateBasedActions(state);
+	flushTriggers(state);
+	if (state.status === 'finished') return;
+	if (state.stack.length > 0 || state.pendingPrompts.length > 0) {
+		state.phase = 'cleanup';
+		state.priorityPlayerIndex = state.activePlayerIndex;
+		state.passedPriorityPlayerIds = [];
+		return;
 	}
 
 	// CR 500.7: Check if there is a queued extra turn in LIFO order
