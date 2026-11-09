@@ -17,12 +17,61 @@ import { replaceSelfReferences, stripReminderText } from './compiler/normalize.t
 
 export type { ParsedActivatedAbility };
 
+export interface FlexibleManaSymbol {
+	primaryColor: ManaColor;
+	altColor?: ManaColor;
+	altGeneric?: number;
+	altLife?: number;
+}
+
 export interface ManaCostRequirement {
 	colored: Record<ManaColor, number>;
 	generic: number;
 	hasX: boolean;
 	xCount: number;
 	totalCmc: number;
+	flexibleSymbols?: FlexibleManaSymbol[];
+}
+
+export function getCardRulesText(card: ScryfallCard): string {
+	return card.oracleText || '';
+}
+
+export function getStackItemRulesText(item: { card: ScryfallCard; oracleText?: string }): string {
+	return item.oracleText || item.card.oracleText || '';
+}
+
+export function getStackItemTargetRequirement(
+	item: { kind: string; card: ScryfallCard; oracleText?: string },
+	sourceCard?: ScryfallCard
+): TargetRequirementInfo | null {
+	const text = item.oracleText || '';
+	if (item.kind !== 'spell' && item.kind !== 'activated' && !/\btarget\b/i.test(text)) {
+		return null;
+	}
+	return item.kind === 'spell' && sourceCard
+		? detectTargetRequirement(sourceCard.oracleText || '')
+		: detectTargetRequirement(text);
+}
+
+export function cardEntersAsCopyOfAnyCreature(card: ScryfallCard): boolean {
+	return /enter(?:s)? (?:the battlefield )?as a copy of any creature/i.test(card.oracleText || '');
+}
+
+export function spellExilesSelfOnResolution(card: ScryfallCard): boolean {
+	return /exile\s+~|exile\s+teferi's protection|exile\s+time stop/i.test(card.oracleText || '');
+}
+
+export function getCardExtraLandPlays(card: ScryfallCard): number {
+	const text = card.oracleText || '';
+	const m = text.match(/\byou may play (an|one|two|three|four|\d+) additional lands?\b/i);
+	if (!m) return 0;
+	const word = m[1].toLowerCase();
+	if (word === 'an' || word === 'one') return 1;
+	if (word === 'two') return 2;
+	if (word === 'three') return 3;
+	if (word === 'four') return 4;
+	return parseInt(word, 10) || 1;
 }
 
 export function createEmptyManaPool(): ManaPool {
@@ -43,6 +92,8 @@ export function parseManaCost(
 	let generic = Math.max(0, additionalGeneric);
 	let hasX = false;
 	let xCount = 0;
+	let hybridExtraCmc = 0;
+	const flexibleSymbols: FlexibleManaSymbol[] = [];
 
 	const symbols = manaCostStr.match(/\{([^}]+)\}/g) || [];
 	for (const rawSym of symbols) {
@@ -55,13 +106,30 @@ export function parseManaCost(
 		} else if (sym === 'W' || sym === 'U' || sym === 'B' || sym === 'R' || sym === 'G' || sym === 'C') {
 			colored[sym] += 1;
 		} else if (sym.includes('/')) {
-			// Hybrid or Phyrexian mana: use first valid color
+			// CR 107.4e-f / 202.3f: Hybrid {W/U}, monocolored hybrid {2/W} (MV 2), or Phyrexian {W/P}
 			const parts = sym.split('/');
-			const firstCol = parts.find(
-				(p) => p === 'W' || p === 'U' || p === 'B' || p === 'R' || p === 'G' || p === 'C'
-			) as ManaColor | undefined;
+			const cols = parts.filter(
+				(p): p is ManaColor =>
+					p === 'W' || p === 'U' || p === 'B' || p === 'R' || p === 'G' || p === 'C'
+			);
+			const numPart = parts.find((p) => /^\d+$/.test(p));
+			const hasPhyrexian = parts.includes('P');
+			const firstCol = cols[0];
 			if (firstCol) {
 				colored[firstCol] += 1;
+				if (cols.length >= 2) {
+					flexibleSymbols.push({ primaryColor: firstCol, altColor: cols[1] });
+				} else if (numPart) {
+					const numVal = parseInt(numPart, 10);
+					flexibleSymbols.push({ primaryColor: firstCol, altGeneric: numVal });
+					if (numVal > 1) {
+						hybridExtraCmc += numVal - 1;
+					}
+				} else if (hasPhyrexian) {
+					flexibleSymbols.push({ primaryColor: firstCol, altLife: 2 });
+				}
+			} else if (numPart) {
+				generic += parseInt(numPart, 10);
 			} else {
 				generic += 1;
 			}
@@ -77,30 +145,81 @@ export function parseManaCost(
 		generic,
 		hasX,
 		xCount,
-		totalCmc: totalColored + generic
+		totalCmc: totalColored + generic + hybridExtraCmc,
+		...(flexibleSymbols.length > 0 ? { flexibleSymbols } : {})
 	};
 }
 
-export function canPayManaCost(pool: ManaPool, req: ManaCostRequirement): boolean {
+export function resolveFlexibleManaRequirement(
+	pool: ManaPool,
+	req: ManaCostRequirement,
+	availableLife?: number
+): {
+	colored: Record<ManaColor, number>;
+	generic: number;
+	lifePaid: number;
+} {
+	const colored: Record<ManaColor, number> = { ...req.colored };
+	let generic = req.generic;
+	let lifePaid = 0;
+
+	if (req.flexibleSymbols && req.flexibleSymbols.length > 0) {
+		for (const flex of req.flexibleSymbols) {
+			if (pool[flex.primaryColor] < colored[flex.primaryColor]) {
+				if (flex.altColor !== undefined && pool[flex.altColor] > colored[flex.altColor]) {
+					colored[flex.primaryColor] -= 1;
+					colored[flex.altColor] += 1;
+				} else if (flex.altGeneric !== undefined) {
+					colored[flex.primaryColor] -= 1;
+					generic += flex.altGeneric;
+				} else if (
+					flex.altLife !== undefined &&
+					availableLife !== undefined &&
+					availableLife >= lifePaid + flex.altLife
+				) {
+					colored[flex.primaryColor] -= 1;
+					lifePaid += flex.altLife;
+				}
+			}
+		}
+	}
+
+	return { colored, generic, lifePaid };
+}
+
+export function canPayManaCost(
+	pool: ManaPool,
+	req: ManaCostRequirement,
+	availableLife?: number
+): boolean {
+	const resolved = resolveFlexibleManaRequirement(pool, req, availableLife);
 	const colors: ManaColor[] = ['W', 'U', 'B', 'R', 'G', 'C'];
 	let remainingPool = 0;
 	for (const c of colors) {
-		if (pool[c] < req.colored[c]) {
+		if (pool[c] < resolved.colored[c]) {
 			return false;
 		}
-		remainingPool += pool[c] - req.colored[c];
+		remainingPool += pool[c] - resolved.colored[c];
 	}
-	return remainingPool >= req.generic;
+	return remainingPool >= resolved.generic;
 }
 
-export function deductManaFromPool(pool: ManaPool, req: ManaCostRequirement): ManaPool {
+export function deductManaFromPool(
+	pool: ManaPool,
+	req: ManaCostRequirement,
+	onPayLife?: (life: number) => void
+): ManaPool {
+	const resolved = resolveFlexibleManaRequirement(pool, req);
+	if (resolved.lifePaid > 0 && onPayLife) {
+		onPayLife(resolved.lifePaid);
+	}
 	const next: ManaPool = { ...pool };
 	const colors: ManaColor[] = ['W', 'U', 'B', 'R', 'G', 'C'];
 	for (const c of colors) {
-		next[c] = Math.max(0, next[c] - req.colored[c]);
+		next[c] = Math.max(0, next[c] - resolved.colored[c]);
 	}
 
-	let remGeneric = req.generic;
+	let remGeneric = resolved.generic;
 	// Spend colorless C first for generic costs, then colors with highest surplus
 	if (remGeneric > 0 && next.C > 0) {
 		const take = Math.min(next.C, remGeneric);
@@ -159,9 +278,9 @@ export function getPermanentManaProduction(
 		return { canTapForMana: true, colors: ['C'], amount: 2 };
 	}
 
-	// Command Tower / Arcane Signet / Commander's Sphere / Exotic Orchard / Chromatic Lantern
+	// Command Tower / Arcane Signet / Commander's Sphere / Chromatic Lantern (anchored so Exotic Orchard is not treated as unconditional)
 	if (
-		/\{T\}:\s*Add\s+one\s+mana\s+of\s+any\s+color/i.test(cleanText) ||
+		/\{T\}:\s*Add\s+one\s+mana\s+of\s+any\s+color\s*\.?$/im.test(cleanText) ||
 		cleanText.toLowerCase().includes("commander's color identity")
 	) {
 		const cols: ManaColor[] =
@@ -193,14 +312,6 @@ export function getPermanentManaProduction(
 			const col = dynManaMatch[1].toUpperCase() as ManaColor;
 			return { canTapForMana: true, colors: [col], amount: 1 };
 		}
-	}
-
-	if (tLine.includes('Land')) {
-		return {
-			canTapForMana: true,
-			colors: card.colorIdentity.length > 0 ? card.colorIdentity : ['C'],
-			amount: 1
-		};
 	}
 
 	return { canTapForMana: false, colors: [], amount: 0 };
@@ -294,7 +405,7 @@ export function parseActivatedAbilities(
 		}
 
 		const colonIdx = line.indexOf(':');
-		if (colonIdx <= 0 || colonIdx > 75) return;
+		if (colonIdx <= 0) return;
 		const costPart = line.slice(0, colonIdx).trim();
 		const effectPart = line.slice(colonIdx + 1).trim();
 

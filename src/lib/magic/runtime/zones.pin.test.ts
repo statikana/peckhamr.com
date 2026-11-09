@@ -667,7 +667,7 @@ describe('Zone-change behaviour pins: leaving the battlefield', () => {
 		assert.equal(stolen.counters['+1/+1'], 0);
 		assert.equal(stolen.objectVersion, ms.v + 1);
 		assert.equal(stolen.enteredTimestamp, state.nextTimestamp);
-		assert.equal(stolen.controllerId, p1.playerId, 'controllerId is not reset (pinned)');
+		assert.equal(stolen.controllerId, p2.playerId, 'controllerId is reset to ownerId (CR 108.4a)');
 
 		const token = createTokenOnBoard(state, p1, { name: 'Pin Token', power: 1, toughness: 1, colors: [], typeLine: 'Token Creature — Pin', keywords: [] });
 		assert.equal(movePermanentToZone(state, token, 'graveyard'), 'graveyard');
