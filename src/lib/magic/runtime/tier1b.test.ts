@@ -13,6 +13,7 @@ import {
 } from '../engine.ts';
 import { manaChoiceColors } from './effects.ts';
 import { triggerMultiplier } from './replace.ts';
+import { transferBattlefieldControl } from './zones.ts';
 import { PRECON_DECKS } from '../precons.ts';
 import {
 	DEFAULT_LOBBY_RULES,
@@ -100,9 +101,12 @@ export function synthCard(overrides: Partial<ScryfallCard> & { name: string }): 
 		loyalty: overrides.loyalty ?? undefined,
 		imageUrl: '',
 		artCropUrl: '',
-		setName: 'Test',
-		setCode: 'TST',
-		rarity: 'common'
+		rarity: 'common',
+		legalCommander: true,
+		canBeCommander: false,
+		hasPartner: false,
+		hasChooseBackground: false,
+		isBackground: false
 	};
 }
 
@@ -110,8 +114,8 @@ function finishCurrentTurn(state: GameState): void {
 	const active = state.players[state.activePlayerIndex];
 	active.hand = [];
 	enterEndStep(state, active);
-	const aliveCount = state.players.filter((p) => !p.lost).length;
-	for (let i = 0; i < aliveCount; i++) {
+	let guard = 20;
+	while ((state.phase === 'end_step' || state.stack.length > 0) && guard-- > 0) {
 		const priorityPlayer = state.players[state.priorityPlayerIndex];
 		assert.equal(applyGameAction(state, priorityPlayer.playerId, { type: 'pass_priority' }).ok, true);
 	}
@@ -166,6 +170,7 @@ describe('Tier 1b CR fixes', () => {
 						colors: []
 					}),
 					p1.playerId,
+					'command',
 					true
 				)
 			];
@@ -181,7 +186,8 @@ describe('Tier 1b CR fixes', () => {
 					typeLine: 'Land',
 					oracleText: "{T}: Add one mana of any color in your commander's color identity."
 				}),
-				p1.playerId
+				p1.playerId,
+				'battlefield'
 			);
 			commandTower.summoningSick = false;
 			p1.battlefield.push(commandTower);
@@ -211,7 +217,8 @@ describe('Tier 1b CR fixes', () => {
 					typeLine: 'Land',
 					oracleText: '{T}: Add one mana of any color that a land an opponent controls could produce.'
 				}),
-				p2.playerId
+				p2.playerId,
+				'battlefield'
 			);
 			p2.battlefield.push(orchard);
 			assert.deepEqual(manaChoiceColors(state, p2, 'opponentLandColors'), []);
@@ -234,7 +241,8 @@ describe('Tier 1b CR fixes', () => {
 					power: '0',
 					toughness: '1'
 				}),
-				p1.playerId
+				p1.playerId,
+				'battlefield'
 			);
 			bop.summoningSick = false;
 			p1.battlefield.push(bop);
@@ -261,7 +269,8 @@ describe('Tier 1b CR fixes', () => {
 					power: '6',
 					toughness: '6'
 				}),
-				p1.playerId
+				p1.playerId,
+				'battlefield'
 			);
 			p1.battlefield.push(persecutor);
 
@@ -296,8 +305,8 @@ describe('Tier 1b CR fixes', () => {
 					'If an artifact or creature entering the battlefield causes a triggered ability of a permanent you control to trigger, that ability triggers an additional time.'
 			});
 
-			p1.battlefield.push(createCardInstance(panharmoniconCard, p1.playerId));
-			p1.battlefield.push(createCardInstance(panharmoniconCard, p1.playerId));
+			p1.battlefield.push(createCardInstance(panharmoniconCard, p1.playerId, 'battlefield'));
+			p1.battlefield.push(createCardInstance(panharmoniconCard, p1.playerId, 'battlefield'));
 
 			const clericCard = synthCard({
 				name: 'Soul Cleric',
@@ -308,7 +317,7 @@ describe('Tier 1b CR fixes', () => {
 				power: '1',
 				toughness: '1'
 			});
-			const cleric = createCardInstance(clericCard, p1.playerId);
+			const cleric = createCardInstance(clericCard, p1.playerId, 'hand');
 			cleric.zone = 'hand';
 			p1.hand.push(cleric);
 			p1.manaPool = { W: 1, U: 0, B: 0, R: 0, G: 0, C: 1 };
@@ -349,7 +358,8 @@ describe('Tier 1b CR fixes', () => {
 					power: '2',
 					toughness: '2'
 				}),
-				p1.playerId
+				p1.playerId,
+				'battlefield'
 			);
 			const transformation = createCardInstance(
 				synthCard({
@@ -358,7 +368,8 @@ describe('Tier 1b CR fixes', () => {
 					oracleText:
 						'Enchant creature\nEnchanted creature loses all abilities and is a green Elk creature with base power and toughness 3/3.'
 				}),
-				p1.playerId
+				p1.playerId,
+				'battlefield'
 			);
 			transformation.attachedToId = snowBear.instanceId;
 			p1.battlefield.push(snowBear, transformation);
@@ -373,7 +384,8 @@ describe('Tier 1b CR fixes', () => {
 					typeLine: 'Basic Snow Land — Island',
 					oracleText: '({T}: Add {U}.)'
 				}),
-				p1.playerId
+				p1.playerId,
+				'battlefield'
 			);
 			const imprisoned = createCardInstance(
 				synthCard({
@@ -382,7 +394,8 @@ describe('Tier 1b CR fixes', () => {
 					oracleText:
 						'Enchant creature, land, or planeswalker\nEnchanted permanent is a colorless land with "{T}: Add {C}" and loses all other card types and abilities.'
 				}),
-				p1.playerId
+				p1.playerId,
+				'battlefield'
 			);
 			imprisoned.attachedToId = basicSnowIsland.instanceId;
 			p1.battlefield.push(basicSnowIsland, imprisoned);
@@ -397,7 +410,8 @@ describe('Tier 1b CR fixes', () => {
 					typeLine: 'Artifact Land',
 					oracleText: 'Indestructible\n{T}: Add {C}.'
 				}),
-				p1.playerId
+				p1.playerId,
+				'battlefield'
 			);
 			const snowDual = createCardInstance(
 				synthCard({
@@ -405,7 +419,8 @@ describe('Tier 1b CR fixes', () => {
 					typeLine: 'Snow Land — Forest Island',
 					oracleText: '({T}: Add {G} or {U}.)'
 				}),
-				p1.playerId
+				p1.playerId,
+				'battlefield'
 			);
 			const dryadArbor = createCardInstance(
 				synthCard({
@@ -415,7 +430,8 @@ describe('Tier 1b CR fixes', () => {
 					power: '1',
 					toughness: '1'
 				}),
-				p1.playerId
+				p1.playerId,
+				'battlefield'
 			);
 			const bloodMoon = createCardInstance(
 				synthCard({
@@ -423,7 +439,8 @@ describe('Tier 1b CR fixes', () => {
 					typeLine: 'Enchantment',
 					oracleText: 'Nonbasic lands are Mountains.'
 				}),
-				p1.playerId
+				p1.playerId,
+				'battlefield'
 			);
 			p1.battlefield.push(darksteelCitadel, snowDual, dryadArbor, bloodMoon);
 
@@ -457,7 +474,7 @@ describe('Tier 1b CR fixes', () => {
 				power: '2',
 				toughness: '2'
 			});
-			const bear = createCardInstance(bearCard, p1.playerId);
+			const bear = createCardInstance(bearCard, p1.playerId, 'hand');
 			bear.zone = 'hand';
 			p1.hand.push(bear);
 			p1.manaPool = { W: 0, U: 0, B: 0, R: 0, G: 1, C: 1 };
@@ -514,6 +531,7 @@ describe('Tier 1b CR fixes', () => {
 				kind: 'spell',
 				isCopy: true,
 				title: boltCard.name,
+				oracleText: boltCard.oracleText,
 				targets: [],
 				xValue: 0,
 				requiresGuidedResolution: false,
@@ -539,14 +557,15 @@ describe('Tier 1b CR fixes', () => {
 				typeLine: 'Enchantment — Aura Curse',
 				oracleText: 'Enchant player'
 			});
-			const curse = createCardInstance(curseCard, p1.playerId);
+			const curse = createCardInstance(curseCard, p1.playerId, 'hand');
 			curse.zone = 'hand';
 			p1.hand.push(curse);
 			p1.manaPool = { W: 0, U: 0, B: 0, R: 1, G: 0, C: 0 };
 
 			const bear = createCardInstance(
 				synthCard({ name: 'Target Bear', typeLine: 'Creature — Bear' }),
-				p2.playerId
+				p2.playerId,
+				'battlefield'
 			);
 			p2.battlefield.push(bear);
 
@@ -555,7 +574,7 @@ describe('Tier 1b CR fixes', () => {
 				applyGameAction(state, p1.playerId, {
 					type: 'cast_spell',
 					instanceId: curse.instanceId,
-					targets: [{ kind: 'permanent', id: bear.instanceId }]
+					targets: [{ kind: 'permanent', id: bear.instanceId, label: bear.card.name }]
 				}).ok,
 				false
 			);
@@ -565,7 +584,7 @@ describe('Tier 1b CR fixes', () => {
 				applyGameAction(state, p1.playerId, {
 					type: 'cast_spell',
 					instanceId: curse.instanceId,
-					targets: [{ kind: 'player', id: p2.playerId }]
+					targets: [{ kind: 'player', id: p2.playerId, label: p2.username }]
 				}).ok,
 				true
 			);
@@ -596,9 +615,10 @@ describe('Tier 1b CR fixes', () => {
 			});
 			const plainBear = createCardInstance(
 				synthCard({ name: 'Plain Bear', typeLine: 'Creature — Bear' }),
-				p1.playerId
+				p1.playerId,
+				'battlefield'
 			);
-			const multiAura = createCardInstance(multiAuraCard, p1.playerId);
+			const multiAura = createCardInstance(multiAuraCard, p1.playerId, 'battlefield');
 			multiAura.attachedToId = plainBear.instanceId;
 			p1.battlefield.push(plainBear, multiAura);
 
@@ -608,6 +628,179 @@ describe('Tier 1b CR fixes', () => {
 				true,
 				'Aura with Enchant artifact + Enchant creature falls off a non-artifact creature'
 			);
+		});
+	});
+
+	describe('Item 12: Eliminated-player cleanup for stolen vs default-controlled permanents, stack spells, and active-player turn completion (CR 800.4a, 800.4c, 800.4j)', () => {
+		it('returns control-changed permanents to their default controller but exiles foreign-owned permanents and stack spells whose default controller is the eliminated player (CR 800.4a, 800.4c)', () => {
+			const { state, players } = makeGame(3);
+			const [p1, p2, p3] = players;
+
+			// 1. Stolen Bear: entered on p1's battlefield (defaultController = p1), then p2 gained control of it
+			const stolenBear = createCardInstance(
+				synthCard({ name: 'Stolen Bear', typeLine: 'Creature — Bear', power: '2', toughness: '2' }),
+				p1.playerId,
+				'battlefield'
+			);
+			p1.battlefield.push(stolenBear);
+			transferBattlefieldControl(stolenBear, p1, p2, state);
+
+			// 2. Reanimated Angel: owned by p1 in p1's graveyard, put onto the battlefield under p2's default control via Reanimate
+			const angel = createCardInstance(
+				synthCard({ name: 'Reanimated Angel', typeLine: 'Creature — Angel', manaCost: '{3}{W}{W}', cmc: 5, power: '4', toughness: '4' }),
+				p1.playerId,
+				'graveyard'
+			);
+			p1.graveyard.push(angel);
+
+			// Advance to p2's turn so p2 can cast Reanimate
+			finishCurrentTurn(state);
+			assert.equal(state.activePlayerIndex, 1);
+			state.phase = 'main1';
+			state.priorityPlayerIndex = 1;
+			state.passedPriorityPlayerIds = [];
+
+			const reanimate = createCardInstance(
+				synthCard({
+					name: 'Reanimate',
+					manaCost: '{B}',
+					cmc: 1,
+					typeLine: 'Sorcery',
+					oracleText: 'Return target creature card from a graveyard to the battlefield under your control. You lose life equal to its mana value.'
+				}),
+				p2.playerId,
+				'hand'
+			);
+			p2.hand.push(reanimate);
+			p2.manaPool = { W: 5, U: 5, B: 5, R: 5, G: 5, C: 5 };
+			assert.equal(
+				applyGameAction(state, p2.playerId, {
+					type: 'cast_spell',
+					instanceId: reanimate.instanceId,
+					targets: [{ kind: 'graveyard_card', id: angel.instanceId, label: angel.card.name }]
+				}).ok,
+				true
+			);
+			assert.equal(applyGameAction(state, p2.playerId, { type: 'pass_priority' }).ok, true);
+			assert.equal(applyGameAction(state, p3.playerId, { type: 'pass_priority' }).ok, true);
+			assert.equal(applyGameAction(state, p1.playerId, { type: 'pass_priority' }).ok, true);
+			assert.equal(
+				p2.battlefield.some((c) => c.instanceId === angel.instanceId),
+				true,
+				'Reanimated Angel is on p2 battlefield under p2 default control'
+			);
+
+			// 3. Foreign-owned spell on the stack controlled by p2: p1's card in exile with playableFromExileBy p2
+			const foreignSpell = createCardInstance(
+				synthCard({
+					name: 'Stolen Bolt',
+					manaCost: '{R}',
+					cmc: 1,
+					typeLine: 'Instant',
+					oracleText: 'Stolen Bolt deals 3 damage to any target.'
+				}),
+				p1.playerId,
+				'exile'
+			);
+			foreignSpell.playableFromExileBy = {
+				playerId: p2.playerId,
+				spendManaAsAnyColor: true,
+				sourceName: 'Test Impulse'
+			};
+			p1.exile.push(foreignSpell);
+			assert.equal(
+				applyGameAction(state, p2.playerId, {
+					type: 'cast_spell',
+					instanceId: foreignSpell.instanceId,
+					fromZone: 'exile',
+					targets: [{ kind: 'player', id: p3.playerId, label: p3.username }]
+				}).ok,
+				true
+			);
+
+			// 4. Also put a spell owned by p2 on the stack that is controlled by p3 (CR 800.4a: owned by p2 -> leaves game)
+			state.stack.push({
+				id: 'stk_p2_owned',
+				sourceInstanceId: 'inst_p2_owned',
+				card: synthCard({ name: 'P2 Owned Spell', typeLine: 'Instant', oracleText: 'Draw a card.' }),
+				ownerId: p2.playerId,
+				controllerId: p3.playerId,
+				kind: 'spell',
+				title: 'P2 Owned Spell',
+				oracleText: 'Draw a card.',
+				targets: [],
+				xValue: 0,
+				requiresGuidedResolution: false,
+				createdAt: 0
+			});
+
+			// Now p2 leaves the game (concedes)
+			assert.equal(applyGameAction(state, p2.playerId, { type: 'concede' }).ok, true);
+
+			// Stolen Bear (default controller p1) returned to p1's battlefield
+			assert.equal(
+				p1.battlefield.some((c) => c.instanceId === stolenBear.instanceId),
+				true,
+				'Control-changed permanent reverts to default controller p1'
+			);
+			// Reanimated Angel (default controller p2, owner p1) was EXILED, not returned to p1's battlefield!
+			assert.equal(
+				p1.battlefield.some((c) => c.instanceId === angel.instanceId),
+				false,
+				'Permanent put onto battlefield under p2 default control does not return to p1 battlefield'
+			);
+			assert.equal(
+				p1.exile.some((c) => c.instanceId === angel.instanceId),
+				true,
+				'Permanent put onto battlefield under p2 default control is exiled (CR 800.4a)'
+			);
+			// Stolen Bolt (foreign-owned spell on stack controlled by p2) was EXILED to p1's exile zone!
+			assert.equal(
+				p1.exile.some((c) => c.instanceId === foreignSpell.instanceId),
+				true,
+				'Foreign-owned spell on stack controlled by p2 is exiled (CR 800.4a)'
+			);
+			// P2-owned spell on stack controlled by p3 left the game
+			assert.equal(state.stack.length, 0, 'Stack is empty after p2 owned/controlled spells are cleaned up');
+		});
+
+		it('continues the turn without an active player when the active player leaves the game mid-turn (CR 800.4j)', () => {
+			const { state, players } = makeGame(3);
+			const [p1, p2] = players;
+
+			// Put an "At the beginning of each end step, you gain 2 life" enchantment on p2's battlefield
+			const shrine = createCardInstance(
+				synthCard({
+					name: 'Twilight Shrine',
+					manaCost: '{1}{W}',
+					cmc: 2,
+					typeLine: 'Enchantment',
+					oracleText: 'At the beginning of each end step, you gain 2 life.'
+				}),
+				p2.playerId,
+				'battlefield'
+			);
+			p2.battlefield.push(shrine);
+			const p2LifeBefore = p2.life;
+
+			// During p1's Main Phase 1 (activePlayerIndex = 0), p1 concedes
+			assert.equal(state.activePlayerIndex, 0);
+			assert.equal(state.phase, 'main1');
+			assert.equal(applyGameAction(state, p1.playerId, { type: 'concede' }).ok, true);
+
+			// CR 800.4j: The turn continues to its completion without an active player;
+			// priority passes to the next player in turn order (p2, index 1) in main1.
+			assert.equal(state.phase, 'main1', 'Turn continues in main1 without aborting');
+			assert.equal(state.activePlayerIndex, 0, 'Turn anchor remains on seat 0 (no active player)');
+			assert.equal(state.priorityPlayerIndex, 1, 'Next player in turn order (p2) receives priority');
+
+			// Finish the current turn by passing priority for alive players through end_step
+			finishCurrentTurn(state);
+
+			// End-step trigger on p2's shrine fired and resolved during the completion of seat 0's turn,
+			// and then the next turn began for p2 (activePlayerIndex = 1)!
+			assert.equal(p2.life, p2LifeBefore + 2, 'Each-end-step trigger fired before turn ended (CR 800.4j)');
+			assert.equal(state.activePlayerIndex, 1, 'Turn advances to p2 after the active-less turn completes');
 		});
 	});
 });

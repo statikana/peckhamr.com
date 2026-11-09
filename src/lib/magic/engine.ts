@@ -1098,7 +1098,7 @@ export function runBeginningOfTurn(state: GameState): void {
 
 	// 2. Upkeep step (CR 503): active player receives priority in upkeep (CR 503.1a / 500.2)
 	beginPhase(state, 'upkeep', activePlayer);
-	state.priorityPlayerIndex = state.activePlayerIndex;
+	givePriorityToActiveOrNextPlayer(state);
 	state.passedPriorityPlayerIds = [];
 	state.turnStartedAt = Date.now();
 	state.priorityUpdatedAt = Date.now();
@@ -1316,6 +1316,7 @@ function applyGameActionInner(
 			const exSourceName = landInst.playableFromExileBy?.sourceName;
 			landInst.playableFromExileBy = undefined;
 			landInst.tapped = false;
+			landInst.defaultControllerId = actorId;
 			applySelfEtbReplacements(state, landInst);
 			moveObject(state, landInst, 'battlefield', {
 				from: { player: sourcePlayer, zone: sourceZone },
@@ -1948,7 +1949,7 @@ function applyGameActionInner(
 			}
 
 			// CR 508.2: Active player receives priority in declare_attackers after attackers are declared
-			state.priorityPlayerIndex = state.activePlayerIndex;
+			givePriorityToActiveOrNextPlayer(state);
 			state.passedPriorityPlayerIds = [];
 			state.priorityUpdatedAt = Date.now();
 			return { ok: true };
@@ -2147,11 +2148,15 @@ function applyGameActionInner(
 			);
 			if (nextUndecidedDefenderId) {
 				const nextDefIdx = state.players.findIndex((p) => p.playerId === nextUndecidedDefenderId);
-				state.priorityPlayerIndex = nextDefIdx >= 0 ? nextDefIdx : state.activePlayerIndex;
+				if (nextDefIdx >= 0) {
+					state.priorityPlayerIndex = nextDefIdx;
+				} else {
+					givePriorityToActiveOrNextPlayer(state);
+				}
 			} else {
 				// All attacked defenders have declared blockers -> give priority back to active player
 				state.combat.blockersDeclared = true;
-				state.priorityPlayerIndex = state.activePlayerIndex;
+				givePriorityToActiveOrNextPlayer(state);
 			}
 			state.passedPriorityPlayerIds = [];
 			state.priorityUpdatedAt = Date.now();
@@ -2677,6 +2682,7 @@ function handlePromptResolution(
 					);
 				} else if (prompt.destinationZone === 'battlefield') {
 					found.tapped = Boolean(prompt.enterTapped);
+					found.defaultControllerId = libraryOwner.playerId;
 					applySelfEtbReplacements(state, found);
 					moveObject(state, found, 'battlefield', {
 						from: fromLibrary,
@@ -3149,6 +3155,17 @@ function advancePriorityToNextPlayer(state: GameState): void {
 	}
 }
 
+/**
+ * CR 800.4j: If the active player has left the game during their turn, the turn continues
+ * without an active player and the next player in turn order receives priority instead.
+ */
+function givePriorityToActiveOrNextPlayer(state: GameState): void {
+	state.priorityPlayerIndex = state.activePlayerIndex;
+	if (state.players[state.priorityPlayerIndex]?.lost) {
+		advancePriorityToNextPlayer(state);
+	}
+}
+
 export function moveStackSpellToZone(
 	state: GameState,
 	stackItem: StackItem,
@@ -3306,9 +3323,9 @@ function beginPhase(state: GameState, phase: GamePhase, activePlayer?: PlayerGam
 	// "At the beginning of [step]" triggers go onto the stack. Triggers from the turn-based action
 	// (combat damage) wait until state-based actions have been checked (CR 704.3, 603.3).
 	withTriggersDeferred(state, () => {
-		if (phase === 'untap' && active) {
+		if (phase === 'untap' && active && !active.lost) {
 			executeUntapTurnBasedActions(state, active);
-		} else if (phase === 'draw' && active) {
+		} else if (phase === 'draw' && active && !active.lost) {
 			executeDrawTurnBasedAction(state, active);
 		} else if (phase === 'first_strike_damage') {
 			executeCombatDamageStep(state, true);
@@ -4031,7 +4048,7 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 			`${item.title} did not resolve because its intervening-if condition is no longer met (CR 603.4).`,
 			controller.playerId
 		);
-		state.priorityPlayerIndex = state.activePlayerIndex;
+		givePriorityToActiveOrNextPlayer(state);
 		state.passedPriorityPlayerIds = [];
 		checkStateBasedActions(state);
 		return;
@@ -4055,7 +4072,7 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 			// CR 608.2b: If a spell is countered on resolution because all its targets are illegal,
 			// it is put into its owner's graveyard (or Exile if Rest in Peace is active).
 			moveStackSpellToZone(state, item, 'graveyard');
-			state.priorityPlayerIndex = state.activePlayerIndex;
+			givePriorityToActiveOrNextPlayer(state);
 			state.passedPriorityPlayerIds = [];
 			checkStateBasedActions(state);
 			return;
@@ -4090,7 +4107,7 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 		resolveWardTrigger(state, item, controller, ward);
 		triggerPathCounts.interpreter++;
 		removeItemFromStack();
-		state.priorityPlayerIndex = state.activePlayerIndex;
+		givePriorityToActiveOrNextPlayer(state);
 		state.passedPriorityPlayerIds = [];
 		checkStateBasedActions(state);
 		return;
@@ -4099,7 +4116,7 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 		resolveDelayedTriggerEffect(state, item, controller, item.delayedEffect);
 		triggerPathCounts.interpreter++;
 		removeItemFromStack();
-		state.priorityPlayerIndex = state.activePlayerIndex;
+		givePriorityToActiveOrNextPlayer(state);
 		state.passedPriorityPlayerIds = [];
 		checkStateBasedActions(state);
 		return;
@@ -4234,7 +4251,7 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 				wasCommander,
 				Boolean(item.isCopy),
 				allocateTimestamp(state),
-				state
+				item.isCopy ? state : undefined
 			);
 			const idTaken =
 				Boolean(item.isCopy) &&
@@ -4244,6 +4261,7 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 				perm.instanceId = item.sourceInstanceId;
 			}
 			perm.controllerId = controller.playerId;
+			perm.defaultControllerId = controller.playerId;
 			perm.commanderCastCount = castCount;
 			perm.summoningSick = tLine.includes('Creature');
 			perm.enteredWithX = item.xValue;
@@ -4348,7 +4366,7 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 		}
 	}
 
-	state.priorityPlayerIndex = state.activePlayerIndex;
+	givePriorityToActiveOrNextPlayer(state);
 	state.passedPriorityPlayerIds = [];
 	checkStateBasedActions(state);
 }
@@ -4682,7 +4700,7 @@ export function enterEndStep(state: GameState, activePlayer: PlayerGameState): v
 	// (runEndStepTriggers), synchronously.
 	beginPhase(state, 'end_step', activePlayer);
 
-	state.priorityPlayerIndex = state.activePlayerIndex;
+	givePriorityToActiveOrNextPlayer(state);
 	state.passedPriorityPlayerIds = [];
 }
 
@@ -4888,6 +4906,7 @@ function initiateLibrarySearch(
 				);
 			} else if (dest.zone === 'battlefield') {
 				found.tapped = Boolean(dest.tapped);
+				found.defaultControllerId = searchingPlayer.playerId;
 				applySelfEtbReplacements(state, found);
 				moveObject(state, found, 'battlefield', {
 					from: fromLibrary,
@@ -5137,7 +5156,11 @@ export function advancePhaseOrStep(state: GameState): void {
 				const defendersInOrder = getAttackedDefenderIdsInTurnOrder(state);
 				const firstDefenderId = defendersInOrder[0] || state.combat.attackers[0].defenderPlayerId;
 				const defIdx = state.players.findIndex((p) => p.playerId === firstDefenderId);
-				state.priorityPlayerIndex = defIdx >= 0 ? defIdx : state.activePlayerIndex;
+				if (defIdx >= 0) {
+					state.priorityPlayerIndex = defIdx;
+				} else {
+					givePriorityToActiveOrNextPlayer(state);
+				}
 				state.passedPriorityPlayerIds = [];
 				checkStateBasedActions(state);
 				return;
@@ -5198,7 +5221,7 @@ export function advancePhaseOrStep(state: GameState): void {
 			return;
 	}
 
-	state.priorityPlayerIndex = state.activePlayerIndex;
+	givePriorityToActiveOrNextPlayer(state);
 	state.passedPriorityPlayerIds = [];
 	checkStateBasedActions(state);
 }
@@ -5602,7 +5625,7 @@ function runCleanupStep(state: GameState): void {
 		state.rules.maxHandSize >= 99 || playerHasNoMaxHandSize(state, activePlayer);
 
 	const maxHand = hasNoMaxHandSize ? 999 : state.rules.maxHandSize;
-	if (activePlayer.hand.length > maxHand) {
+	if (!activePlayer.lost && activePlayer.hand.length > maxHand) {
 		const excess = activePlayer.hand.length - maxHand;
 		if (activePlayer.isBot) {
 			const gyDest = checkGraveyardReplacementZone(state, 'graveyard').dest;
@@ -5654,7 +5677,7 @@ function completeTurnCleanupAndPassTurn(state: GameState): void {
 	if (state.status === 'finished') return;
 	if (state.stack.length > 0 || state.pendingPrompts.length > 0) {
 		state.phase = 'cleanup';
-		state.priorityPlayerIndex = state.activePlayerIndex;
+		givePriorityToActiveOrNextPlayer(state);
 		state.passedPriorityPlayerIds = [];
 		return;
 	}
@@ -6399,11 +6422,34 @@ export function checkStateBasedActions(state: GameState): void {
 export function cleanupEliminatedPlayer(state: GameState, eliminated: PlayerGameState): void {
 	const elimId = eliminated.playerId;
 
-	// 1. Remove pending prompts for eliminated player
+	// 1. Remove pending prompts and delayed triggers for eliminated player (CR 800.4d)
 	state.pendingPrompts = state.pendingPrompts.filter((pr) => pr.playerId !== elimId);
+	if (state.delayedTriggers) {
+		state.delayedTriggers = state.delayedTriggers.filter((dt) => dt.controllerId !== elimId);
+	}
 
-	// 2. Remove spells/abilities controlled by eliminated player from the Stack (CR 800.4a)
-	state.stack = state.stack.filter((item) => item.controllerId !== elimId);
+	// 2. Clean up the Stack for the eliminated player (CR 800.4a)
+	// - Objects owned by the eliminated player leave the game.
+	// - Objects on the stack not represented by cards controlled by the eliminated player cease to exist.
+	// - Card-backed spells still controlled by the eliminated player are exiled.
+	const remainingStack: StackItem[] = [];
+	for (const item of state.stack) {
+		const itemOwnerId = item.ownerId || item.controllerId;
+		if (itemOwnerId === elimId) {
+			continue;
+		}
+		if (item.controllerId === elimId) {
+			if (item.kind === 'spell' && !item.isCopy) {
+				const owner = state.players.find((pl) => pl.playerId === itemOwnerId && !pl.lost);
+				if (owner) {
+					moveStackSpellToZone(state, item, 'exile');
+				}
+			}
+			continue;
+		}
+		remainingStack.push(item);
+	}
+	state.stack = remainingStack;
 
 	// 3. Remove eliminated player's attackers/blockers from combat
 	const elimPermIds = new Set(eliminated.battlefield.map((c) => c.instanceId));
@@ -6422,14 +6468,29 @@ export function cleanupEliminatedPlayer(state: GameState, eliminated: PlayerGame
 		state.combat.active = false;
 	}
 
-	// 4. Return any permanents owned by other players or remove objects owned by eliminated player (CR 800.4a)
+	// 4. Handle permanents on the eliminated player's battlefield (CR 800.4a, 800.4c):
+	// - First, control-changing effects giving the eliminated player control end, returning control
+	//   to the permanent's default controller if that player is still in the game.
+	// - Second, any foreign-owned permanents still controlled by the eliminated player (because the
+	//   eliminated player is their default controller, or their default controller has left the game)
+	//   are exiled.
+	// - Finally, all objects owned by the eliminated player leave the game.
 	for (const perm of [...eliminated.battlefield]) {
 		if (perm.ownerId !== elimId) {
-			const owner = state.players.find((pl) => pl.playerId === perm.ownerId && !pl.lost);
-			if (owner) {
-				perm.controllerId = owner.playerId;
+			const defaultCtrlId = perm.defaultControllerId ?? perm.ownerId;
+			const defaultCtrl =
+				defaultCtrlId !== elimId
+					? state.players.find((pl) => pl.playerId === defaultCtrlId && !pl.lost)
+					: undefined;
+			if (defaultCtrl) {
+				perm.controllerId = defaultCtrl.playerId;
 				perm.attachedToId = null;
-				transferBattlefieldControl(perm, eliminated, owner);
+				transferBattlefieldControl(perm, eliminated, defaultCtrl);
+			} else {
+				const owner = state.players.find((pl) => pl.playerId === perm.ownerId && !pl.lost);
+				if (owner) {
+					movePermanentToZone(state, perm, 'exile');
+				}
 			}
 		}
 	}
@@ -6466,15 +6527,27 @@ export function cleanupEliminatedPlayer(state: GameState, eliminated: PlayerGame
 
 	state.passedPriorityPlayerIds = state.passedPriorityPlayerIds.filter((id) => id !== elimId);
 
-	// 5. If the game continues (2+ alive players remain), advance active turn or priority if held by eliminated player
+	// 5. CR 800.4a / 800.4j: If the game continues (2+ alive players remain) and the eliminated
+	// player held priority, pass priority to the next alive player in turn order (or resolve top
+	// of stack / end phase if all remaining players had already passed priority). The turn
+	// continues to completion without an active player if the active player left the game.
 	const alive = state.players.filter((p) => !p.lost);
 	if (alive.length > 1 && state.status === 'active') {
-		const activePlayer = state.players[state.activePlayerIndex];
 		const priorityPlayer = state.players[state.priorityPlayerIndex];
-		if (activePlayer?.playerId === elimId) {
-			completeTurnCleanupAndPassTurn(state);
-		} else if (priorityPlayer?.playerId === elimId) {
-			advancePriorityToNextPlayer(state);
+		if (priorityPlayer?.playerId === elimId) {
+			const allAlivePassed =
+				state.passedPriorityPlayerIds.length > 0 &&
+				alive.every((p) => state.passedPriorityPlayerIds.includes(p.playerId));
+			if (allAlivePassed) {
+				state.passedPriorityPlayerIds = [];
+				if (state.stack.length > 0) {
+					resolveTopOfStack(state);
+				} else {
+					advancePhaseOrStep(state);
+				}
+			} else {
+				advancePriorityToNextPlayer(state);
+			}
 		}
 	}
 }
@@ -6508,6 +6581,7 @@ export function movePermanentToZone(
 	inst: CardInstance,
 	dest: ZoneType
 ): ZoneType {
+	inst.defaultControllerId = undefined;
 	return moveObject(state, inst, dest, {
 		from: 'anyBattlefield',
 		detachAttachments: true,

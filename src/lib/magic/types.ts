@@ -283,6 +283,8 @@ export interface CardInstance {
 	card: ScryfallCard;
 	ownerId: string;
 	controllerId: string;
+	/** CR 110.2 / 800.4a / 800.4c: The player under whose control this permanent entered the battlefield. */
+	defaultControllerId?: string;
 	zone: ZoneType;
 	tapped: boolean;
 	summoningSick: boolean;

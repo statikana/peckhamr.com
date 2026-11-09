@@ -1723,9 +1723,9 @@ describe('9. Niche Mechanics: Modal Spells, Cyclonic Rift Overload, Infect, Doub
 		// P1's spell on the stack and permanents on the battlefield are removed immediately
 		assert.equal(state.stack.length, 0);
 		assert.equal(state.players[0].battlefield.length, 0);
-		// Game continues for the remaining 3 players, with active turn passed to P2!
+		// Game continues for the remaining 3 players, with priority passed to P2 while the turn finishes without an active player (CR 800.4a, 800.4j)!
 		assert.equal(state.status, 'active');
-		assert.equal(state.activePlayerIndex, 1);
+		assert.equal(state.priorityPlayerIndex, 1);
 	});
 });
 
