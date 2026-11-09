@@ -177,6 +177,7 @@ import {
 	type LobbyRulesConfig,
 	type LobbySeat,
 	type MagicDeck,
+	type MagicLobby,
 	type ManaColor,
 	type ManaPool,
 	type PendingPrompt,
@@ -1149,6 +1150,37 @@ export function applyGameAction(
 	}
 }
 
+/**
+ * Ends an active or mulligan game whose `engineVersion` is missing or mismatches `ENGINE_VERSION`
+ * (PLAN §2.6). Returns `true` when it transitioned the game to `'finished'` and appended a system
+ * log entry; returns `false` if the version matches or the game was already `'finished'`.
+ */
+export function enforceEngineVersion(state: GameState): boolean {
+	if (state.engineVersion === ENGINE_VERSION) return false;
+	if (state.status === 'finished') return false;
+	state.status = 'finished';
+	addLog(
+		state,
+		'system',
+		`Match ended: game state engineVersion (${state.engineVersion ?? 'missing'}) is incompatible with current engineVersion (${ENGINE_VERSION}).`
+	);
+	return true;
+}
+
+/**
+ * Load-time version gate for a `MagicLobby`: if the lobby has an active/mulligan `gameState` with a
+ * missing or mismatched `engineVersion`, ends the game and marks the lobby `'finished'`, bumps
+ * `lobby.version`, and returns `true` so the caller can persist the ended state before responding.
+ */
+export function enforceLobbyEngineVersion(lobby: MagicLobby, now = Date.now()): boolean {
+	if (!lobby.gameState) return false;
+	if (!enforceEngineVersion(lobby.gameState)) return false;
+	lobby.status = 'finished';
+	lobby.version += 1;
+	lobby.updatedAt = now;
+	return true;
+}
+
 function applyGameActionInner(
 	state: GameState,
 	actorId: string,
@@ -1158,16 +1190,10 @@ function applyGameActionInner(
 		return { ok: false, error: 'Game has already finished.' };
 	}
 
-	if (state.engineVersion !== undefined && state.engineVersion !== ENGINE_VERSION) {
-		state.status = 'finished';
-		addLog(
-			state,
-			'system',
-			`Match ended: game state engineVersion (${state.engineVersion}) is incompatible with current engineVersion (${ENGINE_VERSION}).`
-		);
+	if (enforceEngineVersion(state)) {
 		return {
 			ok: false,
-			error: `Match ended due to incompatible engineVersion (${state.engineVersion} vs ${ENGINE_VERSION}).`
+			error: `Match ended due to incompatible engineVersion (${state.engineVersion ?? 'missing'} vs ${ENGINE_VERSION}).`
 		};
 	}
 

@@ -19,6 +19,7 @@ import {
 import {
 	applyGameAction,
 	createInitialGameState,
+	enforceLobbyEngineVersion,
 	sanitizeGameStateForViewer
 } from '../../../../lib/magic/engine';
 import { unsupportedCardsStartError } from '../../../../lib/magic/compiler/support';
@@ -129,7 +130,7 @@ export const GET: RequestHandler = async ({ url, request, platform }) => {
 	}
 
 	const now = Date.now();
-	let shouldSave = false;
+	let shouldSave = enforceLobbyEngineVersion(lobby, now);
 
 	// Enforce server-side Rope Timer (turnTimerSeconds) if active and expired
 	if (
@@ -291,6 +292,18 @@ export const POST: RequestHandler = async ({ request, platform }) => {
 				  }
 				: undefined
 		);
+	}
+
+	if (enforceLobbyEngineVersion(lobby, now)) {
+		await saveLobby(platform, lobby);
+		if (action === 'game_action') {
+			const chat = await getLobbyChatMessages(platform, code, 80);
+			return jsonResponse({
+				ok: true,
+				lobby: sanitizeLobbyForUser(lobby, user.id),
+				chat
+			});
+		}
 	}
 
 	if (action === 'join') {

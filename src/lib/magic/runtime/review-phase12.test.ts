@@ -10,12 +10,15 @@ import {
 } from '../engine.ts';
 import { PRECON_DECKS } from '../precons.ts';
 import {
-	DEFAULT_LOBBY_RULES,
+	 DEFAULT_LOBBY_RULES,
+	ENGINE_VERSION,
 	type CardInstance,
 	type GameState,
 	type LobbySeat,
+	type MagicLobby,
 	type ScryfallCard
 } from '../types.ts';
+import * as engineMod from '../engine.ts';
 
 function makeCard(overrides: Partial<ScryfallCard> & { name: string }): ScryfallCard {
 	return {
@@ -245,7 +248,7 @@ describe('Phase 1 (§2.1 + §2.2): Secret stripping and opponent prompt redactio
 			playerId: 'p1',
 			kind: 'guided_resolution',
 			purpose: 'guided_resolution',
-			title: 'Brainstorm',
+			title: 'Guided Action',
 			description: 'Put a card from hand on library',
 			choice: { kind: 'yesNo', question: 'Apply?' }
 		});
@@ -330,4 +333,90 @@ describe('Phase 1 (§2.3): Opaque instance IDs', () => {
 		);
 	});
 });
+
+describe('Phase 2 (§3): Engine-version gate (enforceEngineVersion)', () => {
+	it('ends a game whose engineVersion is undefined (missing) in both enforceEngineVersion and applyGameAction', () => {
+		const enforce = (engineMod as Record<string, unknown>).enforceEngineVersion as
+			| ((s: GameState) => boolean)
+			| undefined;
+		assert.equal(typeof enforce, 'function', 'enforceEngineVersion must be exported from engine.ts');
+
+		const state1 = makeTwoPlayerGame();
+		delete (state1 as { engineVersion?: number }).engineVersion;
+		const changed = enforce!(state1);
+		assert.equal(changed, true);
+		assert.equal(state1.status, 'finished');
+		assert.ok(
+			state1.log.some((l) => l.kind === 'system' && l.text.includes('engineVersion')),
+			'Expected system log line when missing engineVersion ends the game'
+		);
+
+		// Also verify applyGameAction backstop catches missing engineVersion
+		const state2 = makeTwoPlayerGame();
+		delete (state2 as { engineVersion?: number }).engineVersion;
+		const res = applyGameAction(state2, 'p1', { type: 'mulligan_keep' });
+		assert.equal(res.ok, false);
+		assert.equal(state2.status, 'finished');
+	});
+
+	it('ends a game with an old engineVersion once and does not duplicate log entries on repeated calls', () => {
+		const enforce = (engineMod as Record<string, unknown>).enforceEngineVersion as
+			| ((s: GameState) => boolean)
+			| undefined;
+		assert.equal(typeof enforce, 'function');
+
+		const state = makeTwoPlayerGame();
+		state.engineVersion = ENGINE_VERSION - 1;
+		const logCountBefore = state.log.length;
+
+		assert.equal(enforce!(state), true);
+		assert.equal(state.status, 'finished');
+		assert.equal(state.log.length, logCountBefore + 1);
+
+		// Second call on already-finished state is a no-op
+		assert.equal(enforce!(state), false);
+		assert.equal(state.log.length, logCountBefore + 1);
+	});
+
+	it('transitions lobby status, bumps version, and triggers save in load -> enforceLobbyEngineVersion -> save flow', () => {
+		const enforceLobby = (engineMod as Record<string, unknown>).enforceLobbyEngineVersion as
+			| ((lobby: MagicLobby, now?: number) => boolean)
+			| undefined;
+		assert.equal(
+			typeof enforceLobby,
+			'function',
+			'enforceLobbyEngineVersion must be exported from engine.ts'
+		);
+
+		const state = makeTwoPlayerGame();
+		delete (state as { engineVersion?: number }).engineVersion;
+		const lobby: MagicLobby = {
+			code: 'REV12',
+			name: 'Test Pod',
+			hostUserId: 'p1',
+			status: 'active',
+			isPrivate: true,
+			rules: { ...DEFAULT_LOBBY_RULES },
+			seats: [],
+			gameState: state,
+			version: 5,
+			createdAt: 1000,
+			updatedAt: 1000
+		};
+
+		let savedLobby: MagicLobby | null = null;
+		const changed = enforceLobby!(lobby, 2000);
+		if (changed) {
+			savedLobby = JSON.parse(JSON.stringify(lobby));
+		}
+
+		assert.equal(changed, true);
+		assert.ok(savedLobby, 'Incompatible lobby must be saved when loaded');
+		assert.equal(savedLobby.status, 'finished');
+		assert.equal(savedLobby.gameState?.status, 'finished');
+		assert.equal(savedLobby.version, 6);
+		assert.equal(savedLobby.updatedAt, 2000);
+	});
+});
+
 
