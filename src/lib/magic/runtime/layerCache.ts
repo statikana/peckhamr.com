@@ -21,12 +21,14 @@
  * Debug: set `MAGIC_LAYER_CACHE_CHECK=1` to recompute every query on a fresh snapshot and throw
  * on any difference (see `layerCacheCheckEnabled`).
  */
-import type { CardInstance, GameState, ScryfallCard } from '../types.ts';
+import type { CardInstance, GameState, PlayerGameState, ScryfallCard } from '../types.ts';
 
 export interface BoardEntry {
 	perm: CardInstance;
 	/** The player whose battlefield holds the object. */
 	playerId: string;
+	/** That player's state object. */
+	player: PlayerGameState;
 	/** 1-based position among active (non-phased-out, non-lost-player) objects, in board order. */
 	order: number;
 	/** `enteredTimestamp ?? order` (CR 613.7). */
@@ -127,6 +129,7 @@ export function buildBoardSnapshot(state: GameState): BoardSnapshot {
 			const entry: BoardEntry = {
 				perm,
 				playerId: p.playerId,
+				player: p,
 				order,
 				timestamp: perm.enteredTimestamp ?? order,
 				card: perm.copiableCard ?? perm.card

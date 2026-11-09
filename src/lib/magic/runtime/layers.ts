@@ -9,13 +9,15 @@ import { compileCard } from '../compiler/index.ts';
 import type {
 	ActivatedAbility,
 	Amount,
+	CardDefinition,
 	Condition,
 	ObjectFilter,
 	Span,
 	StaticDef
 } from '../ir.ts';
-import type { CardInstance, GameState, ManaColor, ScryfallCard } from '../types.ts';
+import type { CardInstance, GameState, ManaColor, PlayerGameState, ScryfallCard } from '../types.ts';
 import {
+	buildBoardSnapshot,
 	crossCheckLayerResult,
 	getBoardSnapshot,
 	layerCacheCheckEnabled,
@@ -873,6 +875,8 @@ interface BoardLayerCache {
 			evaluated: EvaluatedPermanent;
 		}
 	>;
+	/** Lazily built by `abilityActivePermanents` (Phase 6c). */
+	abilityActive?: readonly AbilityActivePermanent[];
 }
 
 const BOARD_CACHE_KEY = 'phase6_board_layer_cache';
@@ -1850,6 +1854,76 @@ function buildOffBattlefieldBreakdown(
 }
 
 // ---- Public Entry Points --------------------------------------------------------------------
+
+/**
+ * A battlefield permanent whose abilities function: not phased out, on a player who hasn't lost,
+ * and not affected by a "loses all abilities" effect (CR 613.1f, 702.26b).
+ */
+export interface AbilityActivePermanent {
+	perm: CardInstance;
+	/** Copiable values (`copiableCard ?? card`). */
+	card: ScryfallCard;
+	/** The player whose battlefield holds the permanent. */
+	controllerId: string;
+	player: PlayerGameState;
+	/** `compileCard(card)`. */
+	compiled: CardDefinition;
+}
+
+function projectAbilityActive(list: readonly AbilityActivePermanent[]): unknown[] {
+	return list.map((a) => [a.perm.instanceId, a.controllerId, a.player.playerId, a.card.id, a.card.name]);
+}
+
+/**
+ * Every permanent whose abilities function, in board order (players in seat order, then
+ * battlefield order). Equivalent to filtering each battlefield with
+ * `!perm.phasedOut && !permanentHasLostAllAbilities(perm, state).lost`, but validates the layer
+ * cache once instead of once per permanent (Phase 6c). The returned array is shared: don't mutate it.
+ */
+export function abilityActivePermanents(state: GameState): readonly AbilityActivePermanent[] {
+	const { snap, cache } = getBoardLayerCache(state);
+	let list = cache.abilityActive;
+	if (!list) {
+		const built: AbilityActivePermanent[] = [];
+		for (const entry of snap.active) {
+			if (cache.byInstance.get(entry.perm)?.lost.lost) continue;
+			built.push({
+				perm: entry.perm,
+				card: entry.card,
+				controllerId: entry.playerId,
+				player: entry.player,
+				compiled: compileCard(entry.card)
+			});
+		}
+		list = built;
+		cache.abilityActive = list;
+	}
+	if (layerCacheCheckEnabled()) {
+		crossCheckLayerResult('abilityActivePermanents', projectAbilityActive(list), () => {
+			// Independent of the cached snapshot: the original per-player scan over one fresh board
+			// evaluation.
+			const fresh = computeBoardLayerCache(state, buildBoardSnapshot(state));
+			const out: AbilityActivePermanent[] = [];
+			for (const player of state.players) {
+				if (player.lost) continue;
+				for (const perm of player.battlefield) {
+					if (perm.phasedOut) continue;
+					if (fresh.byInstance.get(perm)?.lost.lost) continue;
+					const card = perm.copiableCard ?? perm.card;
+					out.push({
+						perm,
+						card,
+						controllerId: player.playerId,
+						player,
+						compiled: compileCard(card)
+					});
+				}
+			}
+			return projectAbilityActive(out);
+		});
+	}
+	return list;
+}
 
 export function permanentHasLostAllAbilities(
 	perm: CardInstance,

@@ -31,6 +31,7 @@ import type {
 	ZoneType
 } from '../types.ts';
 import type { LeftBattlefieldInfo } from './events.ts';
+import { abilityActivePermanents, type AbilityActivePermanent } from './layers.ts';
 import {
 	evaluateAmount,
 	evaluateCondition,
@@ -121,29 +122,14 @@ export function evalReplaceCondition(cond: Condition | undefined, ctx: FilterCon
 
 // ---- Active Permanent Discovery -------------------------------------------------------------
 
-interface ActivePermanent {
-	perm: CardInstance;
-	card: ScryfallCard;
-	controllerId: string;
-	player: PlayerGameState;
-}
+type ActivePermanent = AbilityActivePermanent;
 
-function activePermanents(state: GameState): ActivePermanent[] {
-	const out: ActivePermanent[] = [];
-	for (const player of state.players) {
-		if (player.lost) continue;
-		for (const perm of player.battlefield) {
-			if (perm.phasedOut) continue;
-			if (permanentHasLostAllAbilities(perm, state).lost) continue;
-			out.push({
-				perm,
-				card: perm.copiableCard ?? perm.card,
-				controllerId: player.playerId,
-				player
-			});
-		}
-	}
-	return out;
+/**
+ * Active permanents whose abilities function. One layer-cache validation per call (Phase 6c),
+ * rather than one `permanentHasLostAllAbilities` lookup per permanent.
+ */
+function activePermanents(state: GameState): readonly ActivePermanent[] {
+	return abilityActivePermanents(state);
 }
 
 function resolvePlayer(
@@ -201,8 +187,7 @@ export function activeRuleModifiers(
 	affectedPlayerId?: string
 ): ActiveRuleModifier[] {
 	const out: ActiveRuleModifier[] = [];
-	for (const { perm, card, controllerId } of activePermanents(state)) {
-		const compiled = compileCard(card);
+	for (const { perm, card, controllerId, compiled } of activePermanents(state)) {
 		const face = compiled.faces[0];
 		if (!face) continue;
 		for (const ability of face.abilities) {
@@ -565,8 +550,7 @@ export function hasRestriction(
 		}
 	}
 
-	for (const { perm, card, controllerId } of activePermanents(state)) {
-		const compiled = compileCard(card);
+	for (const { perm, card, controllerId, compiled } of activePermanents(state)) {
 		const face = compiled.faces[0];
 		if (!face) continue;
 		for (const ability of face.abilities) {
@@ -651,8 +635,7 @@ export function applicableReplacements(
 	ctx?: ReplacementQueryContext
 ): ActiveReplacement[] {
 	const out: ActiveReplacement[] = [];
-	for (const { perm, card, controllerId } of activePermanents(state)) {
-		const compiled = compileCard(card);
+	for (const { perm, card, controllerId, compiled } of activePermanents(state)) {
 		const face = compiled.faces[0];
 		if (!face) continue;
 		for (const ability of face.abilities) {
@@ -829,8 +812,7 @@ export function counterMultiplier(
 	counterType: CounterType
 ): number {
 	let factor = 1;
-	for (const { perm: source, card, controllerId } of activePermanents(state)) {
-		const compiled = compileCard(card);
+	for (const { perm: source, card, controllerId, compiled } of activePermanents(state)) {
 		const face = compiled.faces[0];
 		if (!face) continue;
 		for (const ability of face.abilities) {
@@ -867,8 +849,7 @@ export function counterMultiplier(
  */
 export function tokenMultiplier(state: GameState, recipientPlayerId: string): number {
 	let factor = 1;
-	for (const { perm: source, card, controllerId } of activePermanents(state)) {
-		const compiled = compileCard(card);
+	for (const { perm: source, card, controllerId, compiled } of activePermanents(state)) {
 		const face = compiled.faces[0];
 		if (!face) continue;
 		for (const ability of face.abilities) {
@@ -918,8 +899,7 @@ export function triggerMultiplier(
 			? triggeredPerm
 			: { ...triggeredPerm, controllerId: triggeredControllerId };
 
-	for (const { perm: source, card, controllerId } of activePermanents(state)) {
-		const compiled = compileCard(card);
+	for (const { perm: source, card, controllerId, compiled } of activePermanents(state)) {
 		const face = compiled.faces[0];
 		if (!face) continue;
 		for (const ability of face.abilities) {
