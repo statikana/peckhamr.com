@@ -963,11 +963,14 @@ function executeUntapTurnBasedActions(state: GameState, activePlayer: PlayerGame
 	//    - any phased-in attachments across ALL players' battlefields attached to a permanent phasing out (indirectly)
 	const phasingOutDirectIds = new Set<string>();
 	const phasingOutIndirectIds = new Set<string>();
-	for (const perm of activePlayer.battlefield) {
-		if (!perm.phasedOut && hasKeyword(perm, 'Phasing', state)) {
-			phasingOutDirectIds.add(perm.instanceId);
+	// Read-only scan: validate the layer cache once (Phase 6d).
+	withStableLayerInputs(state, () => {
+		for (const perm of activePlayer.battlefield) {
+			if (!perm.phasedOut && hasKeyword(perm, 'Phasing', state)) {
+				phasingOutDirectIds.add(perm.instanceId);
+			}
 		}
-	}
+	});
 	let addedPhaseOut = true;
 	while (addedPhaseOut) {
 		addedPhaseOut = false;
@@ -1026,9 +1029,21 @@ function executeUntapTurnBasedActions(state: GameState, activePlayer: PlayerGame
 	}
 
 	// 4. Untap step (CR 502.3 & CR 122.1d stun counter replacement)
+	// CR 502.3: the active player's permanents untap simultaneously, so which ones "don't untap" is
+	// decided against the board before any of them untaps. Deciding it inside the untap loop made
+	// every `perm.tapped = false` invalidate the layer cache for the next permanent's check, a full
+	// board re-evaluation per permanent (Phase 6d).
+	const keptTapped = withStableLayerInputs(state, () => {
+		const ids = new Set<string>();
+		for (const perm of activePlayer.battlefield) {
+			if (perm.phasedOut || !perm.tapped) continue;
+			if (hasRestriction(state, perm, 'doesntUntap')) ids.add(perm.instanceId);
+		}
+		return ids;
+	});
 	for (const perm of activePlayer.battlefield) {
 		if (perm.phasedOut) continue;
-		if (perm.tapped && !hasRestriction(state, perm, 'doesntUntap')) {
+		if (perm.tapped && !keptTapped.has(perm.instanceId)) {
 			if (perm.counters.stun > 0) {
 				perm.counters.stun -= 1;
 			} else {
@@ -1860,6 +1875,19 @@ function applyGameActionInner(
 				}
 			}
 
+			// CR 508.1f: attackers tap as they're declared, all at once, so vigilance is read from the
+			// board before any of them taps (tapping one between checks invalidated the layer cache
+			// for the next; Phase 6d).
+			const vigilantIds = withStableLayerInputs(state, () => {
+				const ids = new Set<string>();
+				for (const assign of action.assignments) {
+					const creature = actor.battlefield.find(
+						(c) => c.instanceId === assign.attackerInstanceId
+					)!;
+					if (hasKeyword(creature, 'Vigilance', state)) ids.add(creature.instanceId);
+				}
+				return ids;
+			});
 			for (const assign of action.assignments) {
 				const creature = actor.battlefield.find(
 					(c) => c.instanceId === assign.attackerInstanceId
@@ -1867,7 +1895,7 @@ function applyGameActionInner(
 				const defender = state.players.find(
 					(p) => p.playerId === assign.defenderPlayerId && !p.lost
 				)!;
-				if (!hasKeyword(creature, 'Vigilance', state)) {
+				if (!vigilantIds.has(creature.instanceId)) {
 					creature.tapped = true;
 				}
 				validAttackers.push({
