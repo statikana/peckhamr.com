@@ -6283,8 +6283,10 @@ export function checkStateBasedActions(state: GameState): void {
 			'All remaining players lost simultaneously — the game is a draw (CR 104.4a)!'
 		);
 	} else if (remaining.length === 1 && state.players.length > 1) {
+		// CR 104.2a: A player still in the game wins if all opponents have left the game.
+		// This happens immediately and overrides all effects that would preclude that player from winning.
 		const winner = remaining[0];
-		if (winner && !playerCannotWinGame(state, winner).blocked) {
+		if (winner) {
 			state.status = 'finished';
 			state.winnerPlayerId = winner.playerId;
 			state.winnerId = winner.playerId;

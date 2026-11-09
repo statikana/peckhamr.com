@@ -56,8 +56,8 @@ These are bugs where a mechanic the engine actively supports produces the wrong 
 6. ~~**Colorless commander / no commander `manaChoiceColors` falls back to all 5 colors (`CR 106.5, 903.4f`)**~~ — **Fixed (`commanderIdentity` returns `[]` when colorless/absent while staying a mana ability; `'any'` separated from `'commanderIdentity'` in `manaStepProduction`)**
    - `manaChoiceColors` (`runtime/effects.ts`), `opponentLandColors` / `manaStepProduction` (`ruleTree.ts`), and `tap_mana` (`engine.ts`) now produce 0 mana when a player has a colorless commander or no commander, and `manaStepProduction` returns all 5 colors for `'any'`.
 
-7. **Last-player-standing win is blocked by `playerCannotWinGame` (`CR 104.2a vs 104.3h`)** — **Size: S**
-   - In `checkStateBasedActions` (`engine.ts:7016`), when all other players have lost and `remaining.length === 1`, the engine checks `if (winner && !playerCannotWinGame(state, winner).blocked)`. Under `CR 104.2a` / `104.3h`, if a player controls *Abyssal Persecutor* ("Your opponents can't win the game") and loses, or if only one player remains in the game, that last remaining player still wins after the permanent leaves; blocking the win when all opponents are already `lost = true` leaves the game permanently stuck with 1 active player.
+7. ~~**Last-player-standing win is blocked by `playerCannotWinGame` (`CR 104.2a vs 104.3h`)**~~ — **Fixed (`CR 104.2a` last-player-standing win overrides effects precluding winning)**
+   - In `checkStateBasedActions` (`engine.ts`), when all other players have left the game (`remaining.length === 1`), the remaining player now wins immediately regardless of `playerCannotWinGame` per `CR 104.2a` ("overrides all effects that would preclude that player from winning the game"). (`CR 104.3h` only applies to Limited Range of Influence.)
 
 8. **Multiple trigger-multiplier effects multiply (`2 * 2 = 4`) instead of adding (`1 + 1 + 1 = 3`) (`CR 603.2d`)** — **Size: S**
    - `triggerMultiplier` (`runtime/replace.ts:952`) computes `factor *= def.factor` instead of `factor += (def.factor - 1)` ("triggers an additional time").

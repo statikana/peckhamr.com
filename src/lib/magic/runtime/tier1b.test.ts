@@ -2,11 +2,13 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
 	applyGameAction,
+	checkStateBasedActions,
 	createCardInstance,
 	createInitialGameState,
 	enterEndStep,
 	getEffectiveActivatedAbilities,
-	getPlayerCommanderIdentity
+	getPlayerCommanderIdentity,
+	winTheGame
 } from '../engine.ts';
 import { manaChoiceColors } from './effects.ts';
 import { PRECON_DECKS } from '../precons.ts';
@@ -239,6 +241,44 @@ describe('Tier 1b CR fixes', () => {
 			const manaAb = abilities.find((a) => a.isManaAbility);
 			assert.ok(manaAb);
 			assert.deepEqual(manaAb.producesMana, ['W', 'U', 'B', 'R', 'G']);
+		});
+	});
+
+	describe('Item 7: Last player standing wins regardless of cant-win effects (CR 104.2a)', () => {
+		it('overrides effects precluding a player from winning when all opponents have left the game', () => {
+			const { state, p1, p2 } = makeGame(2);
+
+			// p1 controls Abyssal Persecutor ("You can't win the game and your opponents can't lose the game.")
+			const persecutor = createCardInstance(
+				synthCard({
+					name: 'Abyssal Persecutor',
+					manaCost: '{2}{B}{B}',
+					cmc: 4,
+					typeLine: 'Creature — Demon',
+					oracleText: "Flying, trample\nYou can't win the game and your opponents can't lose the game.",
+					power: '6',
+					toughness: '6'
+				}),
+				p1.playerId
+			);
+			p1.battlefield.push(persecutor);
+
+			// CR 104.2b: Effect-based win ("You win the game") is blocked while p1 controls Abyssal Persecutor
+			assert.equal(winTheGame(state, p1, 'Alternate win'), false);
+			assert.equal(state.status, 'active');
+
+			//Opponent at 0 life cannot lose to SBA while p1 controls Abyssal Persecutor
+			p2.life = 0;
+			checkStateBasedActions(state);
+			assert.equal(p2.lost, false);
+			assert.equal(state.status, 'active');
+
+			// CR 104.3a + CR 104.2a: Opponent concedes and leaves the game; p1 is the last player standing
+			// and immediately wins despite controlling "You can't win the game".
+			assert.equal(applyGameAction(state, p2.playerId, { type: 'concede' }).ok, true);
+			assert.equal(p2.lost, true);
+			assert.equal(state.status, 'finished');
+			assert.equal(state.winnerPlayerId, p1.playerId);
 		});
 	});
 });
