@@ -7007,7 +7007,7 @@ function getAllLegalTargetsForRequirementInner(
 	if (info.zone === 'stack' || info.targetKind === 'spell') {
 		for (const item of state.stack) {
 			const ref: TargetRef = { kind: 'stack', id: item.id, label: item.title };
-			if (validateTargetLegality(state, actorId, ref, info, sourceCard, sourceInstanceId).ok) {
+			if (validateTargetLegalityInner(state, actorId, ref, info, sourceCard, sourceInstanceId).ok) {
 				results.push(ref);
 			}
 		}
@@ -7018,7 +7018,7 @@ function getAllLegalTargetsForRequirementInner(
 		for (const p of state.players) {
 			for (const c of p.graveyard) {
 				const ref: TargetRef = { kind: 'graveyard_card', id: c.instanceId, label: c.card.name };
-				if (validateTargetLegality(state, actorId, ref, info, sourceCard, sourceInstanceId).ok) {
+				if (validateTargetLegalityInner(state, actorId, ref, info, sourceCard, sourceInstanceId).ok) {
 					results.push(ref);
 				}
 			}
@@ -7030,7 +7030,7 @@ function getAllLegalTargetsForRequirementInner(
 		for (const p of state.players) {
 			if (p.lost) continue;
 			const ref: TargetRef = { kind: 'player', id: p.playerId, label: p.username };
-			if (validateTargetLegality(state, actorId, ref, info, sourceCard, sourceInstanceId).ok) {
+			if (validateTargetLegalityInner(state, actorId, ref, info, sourceCard, sourceInstanceId).ok) {
 				results.push(ref);
 			}
 		}
@@ -7042,7 +7042,7 @@ function getAllLegalTargetsForRequirementInner(
 			for (const perm of p.battlefield) {
 				if (perm.phasedOut) continue;
 				const ref: TargetRef = { kind: 'permanent', id: perm.instanceId, label: perm.card.name };
-				if (validateTargetLegality(state, actorId, ref, info, sourceCard, sourceInstanceId).ok) {
+				if (validateTargetLegalityInner(state, actorId, ref, info, sourceCard, sourceInstanceId).ok) {
 					results.push(ref);
 				}
 			}

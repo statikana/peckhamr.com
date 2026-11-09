@@ -1040,9 +1040,25 @@ function computeBoardLayerCache(state: GameState, snap: BoardSnapshot): BoardLay
 
 /** Evaluates layers 1–7d for every active permanent (the uncached computation). */
 function evaluateBoard(state: GameState, snap: BoardSnapshot): BoardLayerCache['byInstance'] {
+	// Split into one function per pass (Phase 6d): same code, but V8 optimises and re-optimises
+	// the passes separately instead of recompiling one ~850-line function after every deopt.
 	const workList: PermWorkState[] = [];
 	const workMap = new Map<string, PermWorkState>();
+	evaluateLayer1(state, snap, workList, workMap);
+	evaluateAttachedTypes(state, snap, workList, workMap);
+	evaluateTypeOverwrites(state, snap, workList, workMap);
+	evaluateAdditiveTypesAndColors(state, snap, workList, workMap);
+	evaluateGlobalAbilityLoss(state, snap, workList, workMap);
+	evaluatePerPermanent(state, snap, workList, workMap);
+	return buildBoardResults(workList);
+}
 
+function evaluateLayer1(
+	state: GameState,
+	snap: BoardSnapshot,
+	workList: PermWorkState[],
+	workMap: Map<string, PermWorkState>
+): void {
 	// 1. Layer 1 (Copy effects & face-down characteristics) + Innate items
 	for (const entry of snap.sorted) {
 		const inst = entry.perm;
@@ -1181,7 +1197,14 @@ function evaluateBoard(state: GameState, snap: BoardSnapshot): BoardLayerCache['
 		workList.push(work);
 		workMap.set(inst.instanceId, work);
 	}
+}
 
+function evaluateAttachedTypes(
+	state: GameState,
+	snap: BoardSnapshot,
+	workList: PermWorkState[],
+	workMap: Map<string, PermWorkState>
+): void {
 	// 2. Layer 4 Pass A: Attached type-setting effects, attached ability-removal registration, and attached 7b setters
 	for (const target of workList) {
 		for (const att of workList) {
@@ -1242,7 +1265,14 @@ function evaluateBoard(state: GameState, snap: BoardSnapshot): BoardLayerCache['
 			}
 		}
 	}
+}
 
+function evaluateTypeOverwrites(
+	state: GameState,
+	snap: BoardSnapshot,
+	workList: PermWorkState[],
+	workMap: Map<string, PermWorkState>
+): void {
 	// 3. Layer 4 Pass B: Global type-overwriting effects ("Nonbasic lands are Mountains." — CR 613.8 before additive land types)
 	for (const source of workList) {
 		if (source.strippedByAttachment || source.abilityRemovalEvents.length > 0) continue;
@@ -1269,7 +1299,14 @@ function evaluateBoard(state: GameState, snap: BoardSnapshot): BoardLayerCache['
 			}
 		}
 	}
+}
 
+function evaluateAdditiveTypesAndColors(
+	state: GameState,
+	snap: BoardSnapshot,
+	workList: PermWorkState[],
+	workMap: Map<string, PermWorkState>
+): void {
 	// 4. Layer 4 Pass C: Global additive type effects (Opalescence, Urborg, Yavimaya, Mycosynth Lattice, Maskwood Nexus)
 	for (const source of workList) {
 		if (source.strippedByAttachment || source.abilityRemovalEvents.length > 0) continue;
@@ -1353,7 +1390,14 @@ function evaluateBoard(state: GameState, snap: BoardSnapshot): BoardLayerCache['
 			}
 		}
 	}
+}
 
+function evaluateGlobalAbilityLoss(
+	state: GameState,
+	snap: BoardSnapshot,
+	workList: PermWorkState[],
+	workMap: Map<string, PermWorkState>
+): void {
 	// 5. Layer 6 Global "lose all abilities" (Humility, Dress Down) & Global Layer 7b setters (Humility, Opalescence)
 	for (const source of workList) {
 		if (source.strippedByAttachment) continue;
@@ -1392,7 +1436,14 @@ function evaluateBoard(state: GameState, snap: BoardSnapshot): BoardLayerCache['
 			}
 		}
 	}
+}
 
+function evaluatePerPermanent(
+	state: GameState,
+	snap: BoardSnapshot,
+	workList: PermWorkState[],
+	workMap: Map<string, PermWorkState>
+): void {
 	// 6. Per-permanent Layer 7a, 7b, innate removal, Layer 6/7c grants, counters, temp mods, Layer 7d, and keyword removal
 	for (const target of workList) {
 		const isCreature = target.types.includes('Creature');
@@ -1819,7 +1870,9 @@ function evaluateBoard(state: GameState, snap: BoardSnapshot): BoardLayerCache['
 			}
 		}
 	}
+}
 
+function buildBoardResults(workList: PermWorkState[]): BoardLayerCache['byInstance'] {
 	// Build final results map
 	const byInstance = new Map<
 		CardInstance,
