@@ -380,6 +380,8 @@ export interface StackItem {
 	eventLki?: TriggerEventLki;
 	/** "You may" triggered abilities: the controller's answer, once asked on resolution. */
 	optionalAccepted?: boolean;
+	/** Triggered abilities: targets grouped by TargetSpec index so prompted and forced specs flatten in spec order. */
+	targetsBySpec?: TargetRef[][];
 	/**
 	 * Step E2: resolution has started (targets re-checked, LKI captured, resolve VFX shown). Set
 	 * when a resolution pauses for a prompt, so resuming it doesn't repeat those one-time steps.
@@ -596,7 +598,7 @@ export interface PendingPrompt {
 	 * merges the choice into its `costPayment` and runs it again from scratch.
 	 */
 	pendingAction?: GameActionPayload;
-	costQuestion?: { kind: 'option' | 'objects'; index: number };
+	costQuestion?: { kind: 'option' | 'objects' | 'phyrexian'; index: number };
 	costOptionLabels?: string[];
 	/** trigger_targets / trigger_may: the triggered ability's stack item (by id; state stays plain data). */
 	triggerStackItemId?: string;
@@ -638,6 +640,7 @@ export type PromptContinuation =
 export interface CostPayment {
 	options?: number[];
 	objects?: string[][];
+	phyrexianLifeCount?: number;
 }
 
 export interface VfxEvent {
@@ -725,6 +728,7 @@ export interface GameState {
 	winnerId?: string;
 	rules: LobbyRulesConfig;
 	turnNumber: number;
+	turnSerial?: number;
 	activePlayerIndex: number;
 	priorityPlayerIndex: number;
 	passedPriorityPlayerIds: string[];

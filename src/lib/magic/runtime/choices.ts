@@ -262,7 +262,11 @@ export function effectivePromptChoice(prompt: PendingPrompt, state?: GameState):
 		}
 
 		case 'cost_choice': {
-			if (prompt.costQuestion?.kind === 'option' || prompt.costOptionLabels) {
+			if (
+				prompt.costQuestion?.kind === 'option' ||
+				prompt.costQuestion?.kind === 'phyrexian' ||
+				prompt.costOptionLabels
+			) {
 				const labels = prompt.costOptionLabels ?? [];
 				const isOptional =
 					labels.length === 2 &&
@@ -516,7 +520,10 @@ export function normalizePromptAction(
 			if (action.cancel) {
 				return { promptId: action.promptId, cancel: true };
 			}
-			if (prompt.costQuestion?.kind === 'option') {
+			if (
+				prompt.costQuestion?.kind === 'option' ||
+				prompt.costQuestion?.kind === 'phyrexian'
+			) {
 				if (action.option === undefined) {
 					return { promptId: action.promptId, answer: undefined };
 				}
