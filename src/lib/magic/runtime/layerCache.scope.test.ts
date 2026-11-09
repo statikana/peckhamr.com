@@ -325,6 +325,19 @@ describe('Layer cache stable-input scopes (Phase 6c)', () => {
 		assert.equal(layerCacheCheckStats().mismatches, before.mismatches);
 	});
 
+	it('a scope only trusts the state it declared; other states revalidate', () => {
+		setLayerCacheCheck(false);
+		const f = fixture();
+		const other = fixture();
+		withStableLayerInputs(f.b.state, () => {
+			evaluatePermanent(f.b.state, f.kite);
+			assert.equal(permanentHasLostAllAbilities(other.warden, other.b.state).lost, false);
+			other.veil.attachedToId = other.warden.instanceId; // no note: `other` isn't declared
+			assert.equal(permanentHasLostAllAbilities(other.warden, other.b.state).lost, true);
+			assertFresh(other.b.state, 'undeclared state in scope');
+		});
+	});
+
 	it('nested scopes share trust and the outer scope keeps it after the inner one exits', () => {
 		setLayerCacheCheck(true);
 		const before = layerCacheCheckStats();

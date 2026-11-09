@@ -183,6 +183,8 @@ export interface ScopeTrust {
 }
 
 let scopeDepth = 0;
+/** States declared stable by an open scope, with their nesting depth. Only these are trusted. */
+const DECLARED = new Map<GameState, number>();
 const TRUST = new Map<GameState, ScopeTrust>();
 
 /**
@@ -192,10 +194,18 @@ const TRUST = new Map<GameState, ScopeTrust>();
  */
 export function withStableLayerInputs<T>(state: GameState, fn: () => T): T {
 	scopeDepth += 1;
+	DECLARED.set(state, (DECLARED.get(state) ?? 0) + 1);
 	try {
 		return fn();
 	} finally {
 		scopeDepth -= 1;
+		const depth = (DECLARED.get(state) ?? 1) - 1;
+		if (depth > 0) {
+			DECLARED.set(state, depth);
+		} else {
+			DECLARED.delete(state);
+			TRUST.delete(state);
+		}
 		if (scopeDepth === 0) TRUST.clear();
 	}
 }
@@ -235,11 +245,12 @@ export function inStableLayerScope(): boolean {
 }
 
 /**
- * The trust record for `state` in the current scope, or `null` outside a scope (or while the
- * cache is bypassed). Callers store what they validated on it.
+ * The trust record for `state` in the current scope, or `null` when no open scope declared
+ * `state` (other states, e.g. clones, are validated as usual) or while the cache is bypassed.
+ * Callers store what they validated on it.
  */
 export function scopeTrust(state: GameState): ScopeTrust | null {
-	if (scopeDepth === 0 || changingDepth > 0 || bypassCache) return null;
+	if (scopeDepth === 0 || changingDepth > 0 || bypassCache || !DECLARED.has(state)) return null;
 	let t = TRUST.get(state);
 	if (!t) {
 		t = {};
