@@ -31,6 +31,7 @@ import type {
 	ZoneType
 } from '../types.ts';
 import type { LeftBattlefieldInfo } from './events.ts';
+import { withStableLayerInputs } from './layerCache.ts';
 import { abilityActivePermanents, type AbilityActivePermanent } from './layers.ts';
 import {
 	evaluateAmount,
@@ -182,6 +183,15 @@ export interface ActiveRuleModifier {
  * player affected by `def.who`.
  */
 export function activeRuleModifiers(
+	state: GameState,
+	rule?: RuleModKind,
+	affectedPlayerId?: string
+): ActiveRuleModifier[] {
+	// Read-only: condition checks reuse one layer-cache validation (Phase 6c).
+	return withStableLayerInputs(state, () => activeRuleModifiersInner(state, rule, affectedPlayerId));
+}
+
+function activeRuleModifiersInner(
 	state: GameState,
 	rule?: RuleModKind,
 	affectedPlayerId?: string
@@ -519,6 +529,15 @@ function isOnBattlefield(state: GameState, instanceId: string): boolean {
  * from its own static abilities or from any active permanent on the battlefield.
  */
 export function hasRestriction(
+	state: GameState,
+	obj: CardInstance,
+	restriction: RestrictionKind
+): boolean {
+	// Read-only: one layer-cache validation for the whole scan (Phase 6c).
+	return withStableLayerInputs(state, () => hasRestrictionInner(state, obj, restriction));
+}
+
+function hasRestrictionInner(
 	state: GameState,
 	obj: CardInstance,
 	restriction: RestrictionKind

@@ -156,17 +156,138 @@ export function buildBoardSnapshot(state: GameState): BoardSnapshot {
 
 let bypassCache = false;
 
+// ---- Stable-input scopes (Phase 6c) ---------------------------------------------------------
+//
+// Validating the fingerprints is O(n) per query, and some read-only code asks O(n) queries in a
+// row (state-based action scans, mana-ability enumeration), which is O(n²) per pass. Inside
+// `withStableLayerInputs(state, fn)` the caller promises that `fn` doesn't change any layer input
+// of `state` (any fingerprinted field) except where it calls `noteLayerInputsChanged(state)`
+// right after. The first query in the scope validates as usual; later queries reuse that result
+// without re-walking the board. Mutation funnels (`runtime/zones.ts`) also call
+// `noteLayerInputsChanged`, so a scope stays correct if one is reached by accident.
+//
+// Under `MAGIC_LAYER_CACHE_CHECK`, every trusted hit re-runs the full validation and throws if the
+// promise was broken (counted in `layerCacheCheckStats`), on top of the fresh-recompute checks.
+//
+// Scopes must be synchronous: the trust table is module-global and cleared when the outermost
+// scope exits.
+
+/** Per-state results validated inside the current scope. `layer` is owned by `layers.ts`. */
+export interface ScopeTrust {
+	snap?: BoardSnapshot;
+	layer?: unknown;
+}
+
+let scopeDepth = 0;
+const TRUST = new Map<GameState, ScopeTrust>();
+
+/**
+ * Runs `fn` with `state`'s layer inputs declared stable: repeated layer queries validate the
+ * cache once instead of once per query. `fn` must be synchronous and must call
+ * `noteLayerInputsChanged(state)` after any change to a layer input it makes.
+ */
+export function withStableLayerInputs<T>(state: GameState, fn: () => T): T {
+	scopeDepth += 1;
+	try {
+		return fn();
+	} finally {
+		scopeDepth -= 1;
+		if (scopeDepth === 0) TRUST.clear();
+	}
+}
+
+/**
+ * Declares that a layer input of `state` may have changed: the next query revalidates. A no-op
+ * outside `withStableLayerInputs`.
+ */
+export function noteLayerInputsChanged(state?: GameState): void {
+	if (scopeDepth === 0) return;
+	if (state) TRUST.delete(state);
+	else TRUST.clear();
+}
+
+let changingDepth = 0;
+
+/**
+ * Runs a mutation funnel: trust is dropped before and after `fn`, and no query inside `fn` is
+ * trusted (it may see a half-applied change). Without a `state`, trust for every state is dropped.
+ * Costs nothing outside `withStableLayerInputs`.
+ */
+export function whileLayerInputsChange<T>(state: GameState | undefined, fn: () => T): T {
+	if (scopeDepth === 0) return fn();
+	noteLayerInputsChanged(state);
+	changingDepth += 1;
+	try {
+		return fn();
+	} finally {
+		changingDepth -= 1;
+		noteLayerInputsChanged(state);
+	}
+}
+
+/** True while inside a `withStableLayerInputs` scope (tests). */
+export function inStableLayerScope(): boolean {
+	return scopeDepth > 0;
+}
+
+/**
+ * The trust record for `state` in the current scope, or `null` outside a scope (or while the
+ * cache is bypassed). Callers store what they validated on it.
+ */
+export function scopeTrust(state: GameState): ScopeTrust | null {
+	if (scopeDepth === 0 || changingDepth > 0 || bypassCache) return null;
+	let t = TRUST.get(state);
+	if (!t) {
+		t = {};
+		TRUST.set(state, t);
+	}
+	return t;
+}
+
+/**
+ * Check mode: `stillValid` says whether a value trusted inside a scope would still pass full
+ * validation. Throws (and counts a mismatch) when it wouldn't.
+ */
+export function verifyScopeTrust(label: string, stillValid: boolean): void {
+	checkCount += 1;
+	if (!stillValid) {
+		mismatchCount += 1;
+		console.error(`[layerCache] stable-scope violation in ${label}`);
+		throw new Error(
+			`Layer cache stable-scope violation in ${label}: a layer input changed inside ` +
+				'withStableLayerInputs without noteLayerInputsChanged'
+		);
+	}
+}
+
 /**
  * Returns the board snapshot for `state`, reusing the cached one when the fingerprint still
  * matches. O(n) in the number of battlefield objects.
  */
 export function getBoardSnapshot(state: GameState): BoardSnapshot {
 	if (bypassCache) return buildBoardSnapshot(state);
+	const trust = scopeTrust(state);
+	if (trust?.snap) {
+		if (layerCacheCheckEnabled()) {
+			verifyScopeTrust('getBoardSnapshot', fingerprintMatches(state, trust.snap.fingerprint));
+		}
+		return trust.snap;
+	}
 	const prev = SNAPSHOTS.get(state);
-	if (prev && fingerprintMatches(state, prev.fingerprint)) return prev;
-	const snap = buildBoardSnapshot(state);
-	SNAPSHOTS.set(state, snap);
+	let snap: BoardSnapshot;
+	if (prev && fingerprintMatches(state, prev.fingerprint)) {
+		snap = prev;
+	} else {
+		snap = buildBoardSnapshot(state);
+		SNAPSHOTS.set(state, snap);
+	}
+	if (trust) trust.snap = snap;
 	return snap;
+}
+
+/** True when `snap` still matches `state`'s board (check-mode verification). */
+export function boardSnapshotMatches(state: GameState, snap: BoardSnapshot): boolean {
+	return fingerprintMatches(state, snap.fingerprint);
 }
 
 /** Runs `fn` with caching disabled: every snapshot is built fresh. Used by the cross-check. */
@@ -183,6 +304,7 @@ export function withoutLayerCache<T>(fn: () => T): T {
 /** Drops the cached snapshot for `state` (tests). */
 export function invalidateLayerCache(state: GameState): void {
 	SNAPSHOTS.delete(state);
+	TRUST.delete(state);
 }
 
 const CHECK_ENABLED = (() => {

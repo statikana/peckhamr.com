@@ -17,10 +17,13 @@ import type {
 } from '../ir.ts';
 import type { CardInstance, GameState, ManaColor, PlayerGameState, ScryfallCard } from '../types.ts';
 import {
+	boardSnapshotMatches,
 	buildBoardSnapshot,
 	crossCheckLayerResult,
 	getBoardSnapshot,
 	layerCacheCheckEnabled,
+	scopeTrust,
+	verifyScopeTrust,
 	type BoardSnapshot
 } from './layerCache.ts';
 
@@ -912,12 +915,48 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot): unknown
 	return fp;
 }
 
-function dynamicFingerprintMatches(a: unknown[], b: unknown[]): boolean {
-	if (a.length !== b.length) return false;
-	for (let i = 0; i < a.length; i++) {
-		if (a[i] !== b[i]) return false;
+/**
+ * Compares `fp` (from `buildDynamicFingerprint`) against the current state in place, without
+ * allocating, bailing at the first difference. Must read exactly what the builder pushes, in order.
+ */
+function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: unknown[]): boolean {
+	let i = 0;
+	if (
+		fp[i++] !== (state as { version?: number }).version ||
+		fp[i++] !== state.turnNumber ||
+		fp[i++] !== state.activePlayerIndex
+	) {
+		return false;
 	}
-	return true;
+	for (const p of state.players) {
+		if (fp[i++] !== p.life || fp[i++] !== p.hand.length || fp[i++] !== p.graveyard.length) {
+			return false;
+		}
+		for (const g of p.graveyard) {
+			if (fp[i++] !== g.card || fp[i++] !== g.copiableCard) return false;
+		}
+	}
+	for (const entry of snap.active) {
+		const perm = entry.perm;
+		const granted = perm.grantedKeywords;
+		const grantedLen = granted?.length || 0;
+		if (
+			fp[i++] !== perm.tapped ||
+			fp[i++] !== (perm.counters['+1/+1'] || 0) ||
+			fp[i++] !== (perm.counters['-1/-1'] || 0) ||
+			fp[i++] !== (perm.tempPowerMod || 0) ||
+			fp[i++] !== (perm.tempToughnessMod || 0) ||
+			fp[i++] !== (perm.switchedPTCount || 0) ||
+			fp[i++] !== Boolean(perm.castViaSuspend) ||
+			fp[i++] !== grantedLen
+		) {
+			return false;
+		}
+		if (grantedLen) {
+			for (const kw of granted) if (fp[i++] !== kw) return false;
+		}
+	}
+	return i === fp.length;
 }
 
 function computeBoardLayerCache(state: GameState, snap: BoardSnapshot): BoardLayerCache {
@@ -1786,11 +1825,32 @@ function computeBoardLayerCache(state: GameState, snap: BoardSnapshot): BoardLay
 }
 
 function getBoardLayerCache(state: GameState): { snap: BoardSnapshot; cache: BoardLayerCache } {
+	// Inside `withStableLayerInputs`, reuse what the first query in the scope validated (Phase 6c).
+	const trust = scopeTrust(state);
+	const trusted = trust?.layer as { snap: BoardSnapshot; cache: BoardLayerCache } | undefined;
+	if (trusted) {
+		if (layerCacheCheckEnabled()) {
+			verifyScopeTrust(
+				'getBoardLayerCache',
+				boardSnapshotMatches(state, trusted.snap) &&
+					dynamicFingerprintMatches(state, trusted.snap, trusted.cache.dynamicFingerprint)
+			);
+		}
+		return trusted;
+	}
+	const result = getBoardLayerCacheUntrusted(state);
+	if (trust) trust.layer = result;
+	return result;
+}
+
+function getBoardLayerCacheUntrusted(state: GameState): {
+	snap: BoardSnapshot;
+	cache: BoardLayerCache;
+} {
 	const snap = getBoardSnapshot(state);
 	const existing = snap.memo.get(BOARD_CACHE_KEY) as BoardLayerCache | undefined;
 	if (existing) {
-		const currentDynamic = buildDynamicFingerprint(state, snap);
-		if (dynamicFingerprintMatches(existing.dynamicFingerprint, currentDynamic)) {
+		if (dynamicFingerprintMatches(state, snap, existing.dynamicFingerprint)) {
 			return { snap, cache: existing };
 		}
 	}

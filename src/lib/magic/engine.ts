@@ -86,7 +86,10 @@ export function getEffectiveActivatedAbilities(
 	perm: CardInstance,
 	commanderIdentity: ManaColor[] = ['W', 'U', 'B', 'R', 'G']
 ): ParsedActivatedAbility[] {
-	return getEffectiveActivatedAbilitiesRaw(state, actor, perm, commanderIdentity).map((ab) =>
+	// Read-only: one layer-cache validation for all of this permanent's ability lookups (Phase 6c).
+	return withStableLayerInputs(state, () =>
+		getEffectiveActivatedAbilitiesRaw(state, actor, perm, commanderIdentity)
+	).map((ab) =>
 		ab.id.startsWith('equip_') && ab.manaCost === '{0}' && !ab.costText.includes('{0}')
 			? { ...ab, costText: 'Equip {0}' }
 			: ab
@@ -140,6 +143,7 @@ import {
 } from './runtime/costs.ts';
 import { evaluateAmount, matchesObjectFilter, type FilterContext } from './runtime/objectFilter.ts';
 import { compileCard } from './compiler/index.ts';
+import { noteLayerInputsChanged, withStableLayerInputs } from './runtime/layerCache.ts';
 import {
 	flushTriggers,
 	matchTriggers,
@@ -697,29 +701,32 @@ function simulateOrExecuteAutoTap(
 	};
 
 	// Sort untapped mana sources: most-constrained (fewest colors) first, and non-creatures before creatures
-	const candidates = player.battlefield
-		.filter((perm) => {
-			if (perm.phasedOut || perm.tapped) return false;
-			const evalPerm = evaluatePermanent(state, perm);
-			if (
-				evalPerm.isCreature &&
-				perm.summoningSick &&
-				!hasKeyword(perm, 'Haste', state)
-			) {
-				return false;
-			}
-			return manaAbilitiesOf(perm).length > 0;
-		})
-		.sort((a, b) => {
-			const ca = manaAbilitiesOf(a)[0]?.producesMana ?? getPermanentManaProduction(a.card, cmdIdentity).colors;
-			const cb = manaAbilitiesOf(b)[0]?.producesMana ?? getPermanentManaProduction(b.card, cmdIdentity).colors;
-			if (ca.length !== cb.length) {
-				return ca.length - cb.length;
-			}
-			const aIsCreature = evaluatePermanent(state, a).isCreature ? 1 : 0;
-			const bIsCreature = evaluatePermanent(state, b).isCreature ? 1 : 0;
-			return aIsCreature - bIsCreature;
-		});
+	// Read-only scan: validate the layer cache once (Phase 6c).
+	const candidates = withStableLayerInputs(state, () =>
+		player.battlefield
+			.filter((perm) => {
+				if (perm.phasedOut || perm.tapped) return false;
+				const evalPerm = evaluatePermanent(state, perm);
+				if (
+					evalPerm.isCreature &&
+					perm.summoningSick &&
+					!hasKeyword(perm, 'Haste', state)
+				) {
+					return false;
+				}
+				return manaAbilitiesOf(perm).length > 0;
+			})
+			.sort((a, b) => {
+				const ca = manaAbilitiesOf(a)[0]?.producesMana ?? getPermanentManaProduction(a.card, cmdIdentity).colors;
+				const cb = manaAbilitiesOf(b)[0]?.producesMana ?? getPermanentManaProduction(b.card, cmdIdentity).colors;
+				if (ca.length !== cb.length) {
+					return ca.length - cb.length;
+				}
+				const aIsCreature = evaluatePermanent(state, a).isCreature ? 1 : 0;
+				const bIsCreature = evaluatePermanent(state, b).isCreature ? 1 : 0;
+				return aIsCreature - bIsCreature;
+			})
+	);
 
 	const tappedSet = new Set<string>();
 	const manaChoices = new Map<string, { color: ManaColor; amount: number }>();
@@ -5779,16 +5786,19 @@ export function checkStateBasedActions(state: GameState): void {
 			string,
 			{ counters: Record<CounterType, number>; evalPerm: EvaluatedPermanent }
 		>();
-		for (const p of state.players) {
-			if (p.lost) continue;
-			for (const perm of p.battlefield) {
-				if (perm.phasedOut) continue;
-				prePassSnapshot.set(perm.instanceId, {
-					counters: { ...perm.counters },
-					evalPerm: evaluatePermanent(state, perm)
-				});
+		// Read-only scan: validate the layer cache once (Phase 6c).
+		withStableLayerInputs(state, () => {
+			for (const p of state.players) {
+				if (p.lost) continue;
+				for (const perm of p.battlefield) {
+					if (perm.phasedOut) continue;
+					prePassSnapshot.set(perm.instanceId, {
+						counters: { ...perm.counters },
+						evalPerm: evaluatePermanent(state, perm)
+					});
+				}
 			}
-		}
+		});
 
 		// 1. +1/+1 and -1/-1 counter annihilation (CR 704.5q)
 		for (const p of state.players) {
@@ -5825,103 +5835,110 @@ export function checkStateBasedActions(state: GameState): void {
 			sbaGraveyardBatch.push({ perm, controller, kind, legName });
 		};
 
-		for (const p of state.players) {
-			if (p.lost) continue;
+		// Steps 2-4 only read layer results, except the `attachedToId` writes, each followed by
+		// noteLayerInputsChanged (Phase 6c).
+		withStableLayerInputs(state, () => {
+			for (const p of state.players) {
+				if (p.lost) continue;
 
-			// 2. Unattach Auras/Equipment attached to illegal/missing/non-creature permanents (CR 303.4d, 702.16c-d, 704.5m-n)
-			for (const perm of p.battlefield) {
-				if (perm.phasedOut) continue;
-				const evalPerm = evaluatePermanent(state, perm);
-				const isAura = evalPerm.hasSubType('Aura') || evalPerm.typeLine.includes('Aura');
-				const isEquipment =
-					evalPerm.hasSubType('Equipment') || evalPerm.typeLine.includes('Equipment');
+				// 2. Unattach Auras/Equipment attached to illegal/missing/non-creature permanents (CR 303.4d, 702.16c-d, 704.5m-n)
+				for (const perm of p.battlefield) {
+					if (perm.phasedOut) continue;
+					const evalPerm = evaluatePermanent(state, perm);
+					const isAura = evalPerm.hasSubType('Aura') || evalPerm.typeLine.includes('Aura');
+					const isEquipment =
+						evalPerm.hasSubType('Equipment') || evalPerm.typeLine.includes('Equipment');
 
-				if (isAura) {
-					if (!perm.attachedToId) {
-						queueToGraveyard(perm, p, 'aura');
-					} else {
+					if (isAura) {
+						if (!perm.attachedToId) {
+							queueToGraveyard(perm, p, 'aura');
+						} else {
+							const targetFound = findPermanentOnBoard(state, perm.attachedToId);
+							if (
+								!targetFound ||
+								!isAuraAttachmentLegal(
+									state,
+									perm,
+									p,
+									evalPerm,
+									targetFound.inst,
+									targetFound.controller
+								)
+							) {
+								perm.attachedToId = null;
+								noteLayerInputsChanged(state);
+								queueToGraveyard(perm, p, 'aura');
+							}
+						}
+					} else if (isEquipment && perm.attachedToId) {
 						const targetFound = findPermanentOnBoard(state, perm.attachedToId);
 						if (
 							!targetFound ||
-							!isAuraAttachmentLegal(
-								state,
-								perm,
-								p,
-								evalPerm,
-								targetFound.inst,
-								targetFound.controller
-							)
+							!evaluatePermanent(state, targetFound.inst).typeLine.includes('Creature') ||
+							hasProtectionFrom(targetFound.inst, perm.copiableCard ?? perm.card, state)
 						) {
 							perm.attachedToId = null;
-							queueToGraveyard(perm, p, 'aura');
+							noteLayerInputsChanged(state);
+							anyActionTaken = true;
+						}
+					} else if (perm.attachedToId) {
+						const targetFound = findPermanentOnBoard(state, perm.attachedToId);
+						if (!targetFound) {
+							perm.attachedToId = null;
+							noteLayerInputsChanged(state);
+							anyActionTaken = true;
 						}
 					}
-				} else if (isEquipment && perm.attachedToId) {
-					const targetFound = findPermanentOnBoard(state, perm.attachedToId);
-					if (
-						!targetFound ||
-						!evaluatePermanent(state, targetFound.inst).typeLine.includes('Creature') ||
-						hasProtectionFrom(targetFound.inst, perm.copiableCard ?? perm.card, state)
-					) {
-						perm.attachedToId = null;
-						anyActionTaken = true;
-					}
-				} else if (perm.attachedToId) {
-					const targetFound = findPermanentOnBoard(state, perm.attachedToId);
-					if (!targetFound) {
-						perm.attachedToId = null;
-						anyActionTaken = true;
-					}
 				}
-			}
 
-			// 3. Creature lethal damage / 0 toughness / Deathtouch SBA (CR 704.5f-h) & Planeswalker 0 loyalty (CR 704.5i)
-			for (const perm of p.battlefield) {
-				if (perm.phasedOut || queuedIds.has(perm.instanceId)) continue;
-				const evalPerm = evaluatePermanent(state, perm);
-				let dies = false;
-				if (evalPerm.typeLine.includes('Creature')) {
-					const tough = evalPerm.toughness;
-					if (tough <= 0) {
-						dies = true;
-					} else if (perm.damageMarked >= tough || perm.deathtouchDamageMarked) {
-						if (!evalPerm.keywords.some((k) => k.toLowerCase() === 'indestructible')) {
+				// 3. Creature lethal damage / 0 toughness / Deathtouch SBA (CR 704.5f-h) & Planeswalker 0 loyalty (CR 704.5i)
+				for (const perm of p.battlefield) {
+					if (perm.phasedOut || queuedIds.has(perm.instanceId)) continue;
+					const evalPerm = evaluatePermanent(state, perm);
+					let dies = false;
+					if (evalPerm.typeLine.includes('Creature')) {
+						const tough = evalPerm.toughness;
+						if (tough <= 0) {
 							dies = true;
-						} else if (perm.deathtouchDamageMarked) {
-							// CR 704.5h: Clear deathtouch damage flag once SBAs have been checked and creature survived
-							perm.deathtouchDamageMarked = false;
+						} else if (perm.damageMarked >= tough || perm.deathtouchDamageMarked) {
+							if (!evalPerm.keywords.some((k) => k.toLowerCase() === 'indestructible')) {
+								dies = true;
+							} else if (perm.deathtouchDamageMarked) {
+								// CR 704.5h: Clear deathtouch damage flag once SBAs have been checked and creature survived
+								perm.deathtouchDamageMarked = false;
+							}
+						}
+					}
+					if (!dies && evalPerm.typeLine.includes('Planeswalker') && perm.counters.loyalty <= 0) {
+						dies = true;
+					}
+					if (dies) {
+						queueToGraveyard(perm, p, 'dying');
+					}
+				}
+
+				// 4. Legend Rule (CR 704.5j): Duplicate legendary permanents with the same name (skipping face-down per CR 201.2a / 708.2a)
+				const legendaryByName = new Map<string, CardInstance[]>();
+				for (const perm of p.battlefield) {
+					if (perm.phasedOut || perm.isFaceDown || queuedIds.has(perm.instanceId)) continue;
+					const evalPerm = evaluatePermanent(state, perm);
+					const name = evalPerm.effectiveName || perm.card.name;
+					if (evalPerm.typeLine.includes('Legendary') && name) {
+						const list = legendaryByName.get(name) || [];
+						list.push(perm);
+						legendaryByName.set(name, list);
+					}
+				}
+				for (const [legName, list] of legendaryByName.entries()) {
+					if (list.length > 1) {
+						// Keep the newest copy and put earlier copies into graveyard (not destruction, so Indestructible doesn't prevent it)
+						for (let i = 0; i < list.length - 1; i++) {
+							queueToGraveyard(list[i], p, 'legend', legName);
 						}
 					}
 				}
-				if (!dies && evalPerm.typeLine.includes('Planeswalker') && perm.counters.loyalty <= 0) {
-					dies = true;
-				}
-				if (dies) {
-					queueToGraveyard(perm, p, 'dying');
-				}
 			}
-
-			// 4. Legend Rule (CR 704.5j): Duplicate legendary permanents with the same name (skipping face-down per CR 201.2a / 708.2a)
-			const legendaryByName = new Map<string, CardInstance[]>();
-			for (const perm of p.battlefield) {
-				if (perm.phasedOut || perm.isFaceDown || queuedIds.has(perm.instanceId)) continue;
-				const evalPerm = evaluatePermanent(state, perm);
-				const name = evalPerm.effectiveName || perm.card.name;
-				if (evalPerm.typeLine.includes('Legendary') && name) {
-					const list = legendaryByName.get(name) || [];
-					list.push(perm);
-					legendaryByName.set(name, list);
-				}
-			}
-			for (const [legName, list] of legendaryByName.entries()) {
-				if (list.length > 1) {
-					// Keep the newest copy and put earlier copies into graveyard (not destruction, so Indestructible doesn't prevent it)
-					for (let i = 0; i < list.length - 1; i++) {
-						queueToGraveyard(list[i], p, 'legend', legName);
-					}
-				}
-			}
-		}
+		});
 
 		// Execute all simultaneous battlefield-to-graveyard SBAs for this pass (CR 603.10a, CR 704.8),
 		// preserving per-player SBA processing order while keeping all batch permanents on the battlefield
