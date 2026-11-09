@@ -1108,7 +1108,11 @@ export function applyGameAction(
 ): { ok: boolean; error?: string } {
 	beginAction(state);
 	try {
-		return applyGameActionInner(state, actorId, action);
+		const res = applyGameActionInner(state, actorId, action);
+		// Pending triggers live outside GameState (runtime/triggers.ts); none may outlive the action,
+		// or the lobby server's JSON round trip would drop them. Normally already flushed.
+		flushTriggers(state);
+		return res;
 	} finally {
 		endAction(state);
 	}
@@ -3240,6 +3244,12 @@ registerTriggerHost({
  * the stack (and the bot loop) without end. Past this size new triggers are not put on the stack.
  */
 const MAX_STACK_FOR_TRIGGERS = 300;
+/**
+ * The other runaway shape: each resolution triggers exactly one new ability ("Whenever another
+ * creature you control enters, create a 1/1 token"), so the stack stays shallow forever. Past this
+ * many triggered abilities in one turn, new ones are not put on the stack.
+ */
+export const MAX_TRIGGERS_PER_TURN = 200;
 
 /** Target specs the trigger target choice supports (zones it can enumerate). */
 function triggerSpecsSupported(specs: TargetSpec[]): boolean {
@@ -3329,6 +3339,21 @@ function putTriggerOnStack(state: GameState, t: PendingTrigger): StackItem | nul
 		);
 		return null;
 	}
+	const placed =
+		state.triggersPlacedThisTurn?.turn === state.turnNumber ? state.triggersPlacedThisTurn : { turn: state.turnNumber, count: 0 };
+	state.triggersPlacedThisTurn = placed;
+	if (placed.count >= MAX_TRIGGERS_PER_TURN) {
+		if (placed.count === MAX_TRIGGERS_PER_TURN) {
+			addLog(
+				state,
+				'rule',
+				`Triggered abilities are no longer put onto the Stack this turn: ${MAX_TRIGGERS_PER_TURN} already were (runaway trigger loop safety cap).`,
+				t.controllerId
+			);
+			placed.count++;
+		}
+		return null;
+	}
 	const controller = state.players.find((p) => p.playerId === t.controllerId);
 	if (!controller) return null;
 	const item = triggeredStackItem(state, t, 'stk');
@@ -3345,6 +3370,7 @@ function putTriggerOnStack(state: GameState, t: PendingTrigger): StackItem | nul
 		return null;
 	}
 	state.stack.push(item);
+	placed.count++;
 	addLog(state, 'trigger', `${t.sourceCard.name}'s ${t.label} was put onto the Stack.`, t.controllerId);
 	const steps = triggerItemEffect(item)?.steps ?? [];
 	specs.forEach((spec, i) => {

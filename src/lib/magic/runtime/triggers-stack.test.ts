@@ -1,7 +1,15 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { applyGameAction, createCardInstance, createInitialGameState, createTokenOnBoard, enterEndStep } from '../engine.ts';
+import { runAutomatedPriorityAndBots } from '../ai.ts';
+import {
+	applyGameAction,
+	createCardInstance,
+	createInitialGameState,
+	createTokenOnBoard,
+	enterEndStep,
+	MAX_TRIGGERS_PER_TURN
+} from '../engine.ts';
 import { PRECON_DECKS, STAPLE_CARDS } from '../precons.ts';
 import {
 	DEFAULT_LOBBY_RULES,
@@ -94,7 +102,7 @@ function game(players = 2, bots: boolean[] = []): { state: GameState; p: PlayerG
 		const pl = state.players.find((x) => x.playerId === s.userId)!;
 		const wasBot = pl.isBot;
 		pl.isBot = false;
-		assert.equal(applyGameAction(state, s.userId!, { type: 'mulligan_keep' }).ok, true);
+		if (state.status === 'mulligan') assert.equal(applyGameAction(state, s.userId!, { type: 'mulligan_keep' }).ok, true);
 		pl.isBot = wasBot;
 	}
 	assert.equal(state.phase, 'main1');
@@ -391,5 +399,44 @@ describe('Step D: triggered abilities use the stack', () => {
 		}
 		settle(state);
 		assert.equal(p[0].life, life + 7);
+	});
+
+	it('a target-player trigger offers the players as candidates (3 players), surviving a JSON round trip', () => {
+		let { state, p } = game(3);
+		const hex = put(state, p[0], creature('Hexmire Crone', 'When this creature enters, target opponent loses 2 life.', '1', '1', 'Warlock'), 'hand');
+		cast(state, p[0], hex);
+		resolveTop(state);
+		const prompt = state.pendingPrompts[0];
+		assert.ok(prompt && prompt.purpose === 'trigger_targets');
+		const candidates = prompt.choice?.kind === 'chooseObjects' ? prompt.choice.candidates : [];
+		assert.deepEqual([...candidates].sort(), [p[1].playerId, p[2].playerId].sort(), 'both opponents, not the controller');
+		state = roundTrip(state);
+		p = state.players;
+		const life1 = p[1].life;
+		const life2 = p[2].life;
+		const res = applyGameAction(state, p[0].playerId, { type: 'choice', promptId: prompt.id, answer: { kind: 'chooseObjects', objectIds: [p[2].playerId] } });
+		assert.equal(res.ok, true, res.error ?? '');
+		assert.deepEqual(state.stack[0].targets, [{ kind: 'player', id: p[2].playerId, label: p[2].username }]);
+		settle(state);
+		assert.equal(p[2].life, life2 - 2);
+		assert.equal(p[1].life, life1);
+	});
+
+	it('a self-retriggering loop stops at the per-turn trigger cap, with a log line, and the bot loop terminates', () => {
+		const { state, p } = game(2, [true, true]);
+		put(state, p[0], creature('Endless Sporewright', 'Whenever another creature you control enters, create a 1/1 green Saproling creature token.', '1', '1', 'Fungus'), 'battlefield');
+		createTokenOnBoard(state, p[0], { name: 'Saproling', power: 1, toughness: 1, colors: ['G'], typeLine: 'Token Creature — Saproling', keywords: [] });
+		assert.equal(state.stack.length, 1, 'the loop starts');
+		const turn = state.turnNumber;
+		const capped = () => state.log.some((l) => /runaway trigger loop safety cap/.test(l.text));
+		for (let i = 0; i < 100 && !capped() && state.turnNumber === turn && state.status === 'active'; i++) {
+			runAutomatedPriorityAndBots(state, { maxSteps: 50 });
+		}
+		assert.ok(capped(), 'the cap was hit (with a log line) in the same turn');
+		const saprolings = tokens(p[0], 'Saproling');
+		assert.ok(saprolings >= MAX_TRIGGERS_PER_TURN && saprolings <= MAX_TRIGGERS_PER_TURN + 1, `${saprolings} tokens: one per allowed trigger`);
+		// The bot loop keeps the game going: the stack empties and play continues.
+		for (let i = 0; i < 20 && state.stack.length > 0; i++) runAutomatedPriorityAndBots(state, { maxSteps: 50 });
+		assert.equal(state.stack.length, 0);
 	});
 });

@@ -742,6 +742,11 @@ export interface GameState {
 	priorityUpdatedAt: number;
 	nextTimestamp?: number;
 	delayedTriggers?: DelayedTrigger[];
+	/**
+	 * Steps C+D: how many triggered abilities were put on the stack this turn (runaway-loop cap; a
+	 * trigger that retriggers itself keeps the stack shallow but never ends).
+	 */
+	triggersPlacedThisTurn?: { turn: number; count: number };
 	extraTurnQueue?: string[];
 	stackTriggersEnabled?: boolean;
 	rngState?: number;
