@@ -743,6 +743,11 @@ export interface GameState {
 	 */
 	triggersPlacedThisTurn?: { turn: number; count: number };
 	extraTurnQueue?: string[];
+	/**
+	 * CR 500.7: Seat index of the player whose normal turn most recently ran before a chain of one or
+	 * more extra turns began, so normal turn order resumes from the next seat after extra turns finish.
+	 */
+	lastNormalTurnPlayerIndex?: number;
 	stackTriggersEnabled?: boolean;
 	rngState?: number;
 	nextUid?: number;

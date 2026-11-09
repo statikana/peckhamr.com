@@ -47,8 +47,8 @@ These are bugs where a mechanic the engine actively supports produces the wrong 
 3. **Permanents leaving the battlefield or losing creature type are never removed from `state.combat` (`CR 506.4, 506.4a`)** — **Size: S**
    - `moveObject` (`runtime/zones.ts:187-309`) only cleans up `state.combat` inside `transferBattlefieldControl`. If an attacker or blocker is destroyed, exiled, bounced, or flickered mid-combat (or stops being a creature), its `instanceId` remains in `state.combat.attackers` / `blockerInstanceIds`.
 
-4. **Extra turns overwrite `activePlayerIndex` and skip intermediate players' normal turns (`CR 500.7`)** — **Size: S**
-   - In `completeTurnCleanupAndPassTurn` (`engine.ts:6440-6457`), popping an extra turn from `extraTurnQueue` sets `state.activePlayerIndex = extraIdx` without preserving whose normal turn was next in the turn order. When an extra turn is taken by a player out of turn order, intermediate seats have their normal turn skipped after the extra turn ends.
+4. ~~**Extra turns overwrite `activePlayerIndex` and skip intermediate players' normal turns (`CR 500.7`)**~~ — **Fixed (`lastNormalTurnPlayerIndex` saved on extra-turn entry and used to resume normal turn order)**
+   - In `completeTurnCleanupAndPassTurn` (`engine.ts`), popping an extra turn from `extraTurnQueue` now records `state.lastNormalTurnPlayerIndex` before switching `activePlayerIndex`, and resumes normal turn order from that seat once `extraTurnQueue` empties.
 
 5. **`end_turn` UI action jumps from any phase straight to `end_step`/`cleanup` without passing priority (`CR 500.2, 513.1, 703.4i`)** — **Size: M**
    - `case 'end_turn':` (`engine.ts:2152-2184`) lets the active player jump directly from `upkeep`, `main1`, or `declare_attackers` (bypassing `attacksEachCombat` / `Goad` requirements) into `enterEndStep`, and if no end-step triggers are queued, immediately calls `runCleanupStep` without giving opponents priority in any intermediate step or in `end_step`.

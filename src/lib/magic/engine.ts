@@ -5645,6 +5645,9 @@ function completeTurnCleanupAndPassTurn(state: GameState): void {
 			const extraPlayerId = state.extraTurnQueue.pop()!;
 			const extraIdx = state.players.findIndex((p) => p.playerId === extraPlayerId && !p.lost);
 			if (extraIdx >= 0) {
+				if (state.lastNormalTurnPlayerIndex === undefined) {
+					state.lastNormalTurnPlayerIndex = state.activePlayerIndex;
+				}
 				state.activePlayerIndex = extraIdx;
 				state.turnNumber += 1;
 				addLog(
@@ -5659,12 +5662,14 @@ function completeTurnCleanupAndPassTurn(state: GameState): void {
 		}
 	}
 
-	// Otherwise advance activePlayerIndex to next alive player in normal turn order
+	// Otherwise advance activePlayerIndex to next alive player in normal turn order (CR 500.7)
+	const baseIdx = state.lastNormalTurnPlayerIndex ?? state.activePlayerIndex;
+	state.lastNormalTurnPlayerIndex = undefined;
 	const count = state.players.length;
 	for (let step = 1; step <= count; step++) {
-		const nextIdx = (state.activePlayerIndex + step) % count;
+		const nextIdx = (baseIdx + step) % count;
 		if (!state.players[nextIdx].lost) {
-			if (nextIdx <= state.activePlayerIndex) {
+			if (nextIdx <= baseIdx) {
 				state.turnNumber += 1;
 			}
 			state.activePlayerIndex = nextIdx;
