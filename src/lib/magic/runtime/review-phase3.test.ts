@@ -236,3 +236,76 @@ describe('Phase 3 (§4.1): Modal and multi-requirement target validation (#6, CR
 		assert.match(res.error ?? '', /mode 2/i);
 	});
 });
+
+describe('Phase 3 (§4.2): Trigger target order (#8, CR 603.3d)', () => {
+	it('stores trigger targets in TargetSpec order and updates targetObjectVersions when Spec 0 is prompted and Spec 1 is forced', () => {
+		const { state, p } = setupGame(2, [false, false]);
+		const [p1, p2] = p;
+
+		// Spec 0 ("target creature you control") has 2 legal candidates (prompted for human P1).
+		// Spec 1 ("target creature an opponent controls") has 1 legal candidate (forced).
+		const ally1 = put(state, p1, creature('Ally Alpha'), 'battlefield');
+		const ally2 = put(state, p1, creature('Ally Beta'), 'battlefield');
+		const enemy = put(state, p2, creature('Enemy Ogre'), 'battlefield');
+
+		const etbCard = creature(
+			'Vanguard Marshal',
+			'When Vanguard Marshal enters, target creature you control gets +2/+2 until end of turn. Destroy target creature an opponent controls.'
+		);
+		const etbInst = put(state, p1, etbCard, 'hand');
+
+		assert.equal(
+			applyGameAction(state, p1.playerId, { type: 'cast_spell', instanceId: etbInst.instanceId }).ok,
+			true
+		);
+		// Resolve the creature spell so its ETB trigger is placed onto the stack
+		assert.equal(applyGameAction(state, p1.playerId, { type: 'pass_priority' }).ok, true);
+		assert.equal(applyGameAction(state, p2.playerId, { type: 'pass_priority' }).ok, true);
+
+		assert.equal(state.stack.length, 1);
+		const prompt = state.pendingPrompts[0];
+		assert.ok(prompt, 'Expected a trigger_targets prompt for Spec 0');
+		assert.equal(prompt.purpose, 'trigger_targets');
+		assert.equal(prompt.triggerTargetSpecIndex, 0);
+
+		// Human answers Spec 0 by choosing ally1
+		const choiceRes = applyGameAction(state, p1.playerId, {
+			type: 'choice',
+			promptId: prompt.id,
+			answer: { kind: 'chooseObjects', objectIds: [ally1.instanceId] }
+		});
+		assert.equal(choiceRes.ok, true);
+
+		const triggerItem = state.stack[0];
+		assert.ok(triggerItem);
+		assert.deepEqual(
+			triggerItem.targets.map((t) => t.id),
+			[ally1.instanceId, enemy.instanceId],
+			'item.targets must be in [spec0Target, spec1Target] order'
+		);
+		assert.ok(
+			triggerItem.targetObjectVersions?.[ally1.instanceId] !== undefined &&
+				triggerItem.targetObjectVersions?.[enemy.instanceId] !== undefined,
+			'targetObjectVersions must include both prompted and forced targets'
+		);
+
+		// Resolve the triggered ability: ally1 gets +2/+2 and stays on board; enemy is destroyed
+		assert.equal(applyGameAction(state, p1.playerId, { type: 'pass_priority' }).ok, true);
+		assert.equal(applyGameAction(state, p2.playerId, { type: 'pass_priority' }).ok, true);
+
+		assert.equal(state.stack.length, 0);
+		assert.equal(
+			p1.battlefield.some((c) => c.instanceId === ally1.instanceId),
+			true,
+			'ally1 (Spec 0) should still be on the battlefield'
+		);
+		assert.equal(ally1.tempPowerMod, 2, 'ally1 (Spec 0) should have received +2/+2');
+		assert.equal(ally2.tempPowerMod, 0);
+		assert.equal(
+			p2.battlefield.some((c) => c.instanceId === enemy.instanceId),
+			false,
+			'enemy (Spec 1) should have been destroyed'
+		);
+	});
+});
+

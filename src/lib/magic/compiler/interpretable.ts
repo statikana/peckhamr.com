@@ -130,8 +130,7 @@ export function staticallyInterpretable(
 		);
 	}
 	if (parse.steps.length === 0) return false;
-	const hasFight = parse.steps.some((s) => s.verb === 'fight');
-	if (parse.targets.length > (hasFight ? 2 : 1)) return false;
+	if (parse.targets.length > 1 && !parse.targets.every((t) => t.min === 1 && t.max === 1)) return false;
 	if (allowOptionalPrefix) {
 		const k = optionalPrefix(parse.steps);
 		if (k < 0) return false;

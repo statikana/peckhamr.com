@@ -3856,15 +3856,17 @@ function putTriggerOnStack(state: GameState, t: PendingTrigger): StackItem | nul
 	placed.count++;
 	addLog(state, 'trigger', `${t.sourceCard.name}'s ${t.label} was put onto the Stack.`, t.controllerId);
 	const steps = triggerItemEffect(item)?.steps ?? [];
+	const targetsBySpec: TargetRef[][] = specs.map(() => []);
 	specs.forEach((spec, i) => {
 		const legal = candidates[i];
 		const max = Math.min(spec.max, legal.length);
 		if (controller.isBot) {
-			item.targets.push(...chooseBotTriggerTargets(state, controller, steps, i, spec, legal));
+			targetsBySpec[i] = chooseBotTriggerTargets(state, controller, steps, i, spec, legal);
 		} else if (legal.length === spec.min && max === spec.min) {
 			// Forced: exactly as many legal targets as required.
-			item.targets.push(...legal);
+			targetsBySpec[i] = [...legal];
 		} else {
+			targetsBySpec[i] = [];
 			const reason = `Choose ${spec.min === max ? max : `${spec.min}–${max}`} target(s) for ${item.title}.`;
 			enqueueChoicePrompt(state, {
 				id: uid('prm', state),
@@ -3888,6 +3890,10 @@ function putTriggerOnStack(state: GameState, t: PendingTrigger): StackItem | nul
 			});
 		}
 	});
+	if (specs.length > 0) {
+		item.targetsBySpec = targetsBySpec;
+		item.targets = targetsBySpec.flat();
+	}
 	item.targetObjectVersions = captureTargetObjectVersions(state, item.targets);
 	return item;
 }
@@ -3949,13 +3955,21 @@ function resolveTriggerPrompt(
 	if (!item) return { ok: true };
 	if (purpose === 'trigger_targets') {
 		if (answer?.kind !== 'chooseObjects') return { ok: true };
-		const spec = triggerItemTargetSpecs(item)[prompt.triggerTargetSpecIndex ?? 0];
+		const specIdx = prompt.triggerTargetSpecIndex ?? 0;
+		const specs = triggerItemTargetSpecs(item);
+		const spec = specs[specIdx];
 		if (!spec) return { ok: true };
 		const legal = triggerTargetCandidates(state, item, spec);
 		const chosen = answer.objectIds
 			.map((id) => legal.find((c) => c.id === id))
 			.filter((c): c is TargetRef => Boolean(c));
-		item.targets.push(...chosen);
+		if (!item.targetsBySpec) {
+			item.targetsBySpec = specs.map((_, idx) =>
+				idx === specIdx ? [] : idx === 0 ? [...item.targets] : []
+			);
+		}
+		item.targetsBySpec[specIdx] = chosen;
+		item.targets = item.targetsBySpec.flat();
 		item.targetObjectVersions = captureTargetObjectVersions(state, item.targets);
 		addLog(
 			state,

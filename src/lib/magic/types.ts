@@ -380,6 +380,8 @@ export interface StackItem {
 	eventLki?: TriggerEventLki;
 	/** "You may" triggered abilities: the controller's answer, once asked on resolution. */
 	optionalAccepted?: boolean;
+	/** Triggered abilities: targets grouped by TargetSpec index so prompted and forced specs flatten in spec order. */
+	targetsBySpec?: TargetRef[][];
 	/**
 	 * Step E2: resolution has started (targets re-checked, LKI captured, resolve VFX shown). Set
 	 * when a resolution pauses for a prompt, so resuming it doesn't repeat those one-time steps.
