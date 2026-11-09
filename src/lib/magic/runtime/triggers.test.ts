@@ -24,6 +24,30 @@ import {
 } from '../types.ts';
 
 /**
+ * Steps C+D: triggered abilities use the stack. Resolves the triggered abilities on top of the stack
+ * (not the spells under them) by passing priority, keeping the default order for order prompts and
+ * answering "you may" with yes.
+ */
+function resolveTriggers(state: GameState, max = 40): void {
+	for (let i = 0; i < max; i++) {
+		const prompt = state.pendingPrompts[0];
+		if (prompt?.purpose === 'trigger_order' && prompt.choice?.kind === 'orderObjects') {
+			applyGameAction(state, prompt.playerId, { type: 'choice', promptId: prompt.id, answer: { kind: 'orderObjects', topIds: prompt.choice.objectIds, bottomIds: [], shuffle: false } });
+			continue;
+		}
+		if (prompt?.purpose === 'trigger_may') {
+			applyGameAction(state, prompt.playerId, { type: 'choice', promptId: prompt.id, answer: { kind: 'yesNo', yes: true } });
+			continue;
+		}
+		if (prompt) return;
+		const top = state.stack[state.stack.length - 1];
+		if (!top || top.kind !== 'triggered') return;
+		const prio = state.players[state.priorityPlayerIndex];
+		if (!applyGameAction(state, prio.playerId, { type: 'pass_priority' }).ok) return;
+	}
+}
+
+/**
  * Phase 5: triggered abilities matched from the IR via the event bus (runtime/triggers.ts).
  * Each "bug" test below was written to fail on the pre-Phase-5 engine.
  */
@@ -183,9 +207,11 @@ describe('Phase 5 bug: created tokens fire ETB triggers', () => {
 		}), 'battlefield');
 
 		createTokenOnBoard(state, p[0], { name: 'Saproling', power: 1, toughness: 1, colors: ['G'], typeLine: 'Token Creature — Saproling', keywords: [] });
+		resolveTriggers(state);
 		assert.equal(keeper.counters['+1/+1'], 1, 'observer ETB fired for the creature token');
 
 		createTokenOnBoard(state, p[0], { name: 'Wastes Token', power: 0, toughness: 0, colors: [], typeLine: 'Token Land', keywords: [] });
+		resolveTriggers(state);
 		assert.equal(keeper.counters['+1/+1'], 2, 'Landfall (proliferate) fired for the land token');
 	});
 });
@@ -260,6 +286,7 @@ describe('Phase 5 bug: "cast or copy" triggers on copies', () => {
 		emitEvent(state, { kind: 'SpellCopied', playerId: p[0].playerId, objectId: spell.instanceId, object: spell } as never);
 		const { flushTriggers } = await import('./triggers.ts');
 		flushTriggers(state);
+		resolveTriggers(state);
 		assert.equal(p[0].hand.length, handBefore + 2, 'Archmage drew twice for one copy (Veyran)');
 	});
 });
@@ -305,6 +332,7 @@ describe('Phase 5 bug: Goldspan Dragon "or becomes the target of a spell"', () =
 		const goldspan = put(state, p[0], staple('Goldspan Dragon'), 'battlefield');
 		const pump = put(state, p[0], card({ name: 'Quick Surge', manaCost: '{G}', typeLine: 'Instant', oracleText: 'Target creature gets +3/+3 until end of turn.' }), 'hand');
 		cast(state, p[0], pump, [{ kind: 'permanent', id: goldspan.instanceId, label: goldspan.card.name }]);
+		resolveTriggers(state);
 		assert.equal(treasures(p[0]), 1);
 	});
 });
@@ -393,6 +421,7 @@ describe('Phase 5 bug: lines matched to the wrong event', () => {
 		assert.equal(tokens(), 0, 'attaching an Equipment does not trigger the Landfall line');
 		const forest = put(state, p[0], staple('Forest'), 'hand');
 		assert.equal(applyGameAction(state, p[0].playerId, { type: 'play_land', instanceId: forest.instanceId }).ok, true);
+		resolveTriggers(state);
 		assert.equal(tokens(), 1, 'a land entering does');
 	});
 
@@ -475,10 +504,21 @@ describe('Phase 5 rules: APNAP ordering, intervening-if, LKI look-back, graveyar
 			'hand'
 		);
 		cast(state, p[0], cantrip);
+		// Steps C+D: both triggers go on the stack, the active player's first (CR 603.3b), so the
+		// non-active player's is on top and resolves first.
 		const trigLogs = state.log.slice(logBefore).filter((l) => l.kind === 'trigger');
 		assert.equal(trigLogs.length, 2);
-		assert.ok(trigLogs[0].text.includes('Bob Witness'), 'non-active player trigger resolved first');
-		assert.ok(trigLogs[1].text.includes('Alice Witness'), 'active player trigger resolved second');
+		assert.ok(trigLogs[0].text.includes('Alice Witness'), 'active player trigger put on the stack first');
+		assert.ok(trigLogs[1].text.includes('Bob Witness'), 'non-active player trigger put on the stack second');
+		const top = state.stack[state.stack.length - 1];
+		assert.ok(top.title.includes('Bob Witness'), 'non-active player trigger resolves first');
+		assert.ok(state.stack[state.stack.length - 2].title.includes('Alice Witness'), 'active player trigger resolves second');
+		const bobLife = p[1].life;
+		const aliceLife = p[0].life;
+		applyGameAction(state, p[0].playerId, { type: 'pass_priority' });
+		applyGameAction(state, p[1].playerId, { type: 'pass_priority' });
+		assert.equal(p[1].life, bobLife + 1, "Bob's resolved");
+		assert.equal(p[0].life, aliceLife, "Alice's not yet");
 	});
 
 	it('checks intervening-if at trigger time and again on resolution (CR 603.4)', () => {
@@ -544,6 +584,7 @@ describe('Phase 5 rules: APNAP ordering, intervening-if, LKI look-back, graveyar
 
 		put(state, p[0], bear(3), 'graveyard');
 		runBeginningOfTurn(state);
+		resolveTriggers(state);
 		assert.ok(p[0].battlefield.some((c) => c.instanceId === shadow.instanceId), 'returns to battlefield with 3 creatures above');
 	});
 

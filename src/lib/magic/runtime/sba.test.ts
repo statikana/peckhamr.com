@@ -21,6 +21,30 @@ import {
 } from '../types.ts';
 import { PRECON_DECKS, STAPLE_CARDS } from '../precons.ts';
 
+/**
+ * Steps C+D: triggered abilities use the stack. Resolves the triggered abilities on top of the stack
+ * (not the spells under them) by passing priority, keeping the default order for order prompts and
+ * answering "you may" with yes.
+ */
+function resolveTriggers(state: GameState, max = 40): void {
+	for (let i = 0; i < max; i++) {
+		const prompt = state.pendingPrompts[0];
+		if (prompt?.purpose === 'trigger_order' && prompt.choice?.kind === 'orderObjects') {
+			applyGameAction(state, prompt.playerId, { type: 'choice', promptId: prompt.id, answer: { kind: 'orderObjects', topIds: prompt.choice.objectIds, bottomIds: [], shuffle: false } });
+			continue;
+		}
+		if (prompt?.purpose === 'trigger_may') {
+			applyGameAction(state, prompt.playerId, { type: 'choice', promptId: prompt.id, answer: { kind: 'yesNo', yes: true } });
+			continue;
+		}
+		if (prompt) return;
+		const top = state.stack[state.stack.length - 1];
+		if (!top || top.kind !== 'triggered') return;
+		const prio = state.players[state.priorityPlayerIndex];
+		if (!applyGameAction(state, prio.playerId, { type: 'pass_priority' }).ok) return;
+	}
+}
+
 function card(overrides: Partial<ScryfallCard> & { name: string }): ScryfallCard {
 	return {
 		id: `test_${overrides.name.toLowerCase().replace(/[^a-z0-9]/g, '_')}`,
@@ -188,6 +212,7 @@ describe('Wave 3B: State-Based Actions, Simultaneous Deaths, Elimination & Comma
 
 			assert.equal(p1.battlefield.length, 0);
 			assert.equal(p2.battlefield.length, 0);
+			resolveTriggers(state);
 			// Observer must trigger for itself, bear1, AND bear2 (3 deaths total = +3 life).
 			assert.equal(p1.life, lifeBefore + 3);
 		}
@@ -222,6 +247,7 @@ describe('Wave 3B: State-Based Actions, Simultaneous Deaths, Elimination & Comma
 		martyr.damageMarked = 1;
 		const lifeBeforeM = p1M.life;
 		checkStateBasedActions(stateM);
+		resolveTriggers(stateM);
 		assert.equal(p1M.life, lifeBeforeM + 4);
 	});
 
@@ -257,6 +283,7 @@ describe('Wave 3B: State-Based Actions, Simultaneous Deaths, Elimination & Comma
 
 		assert.equal(p1.battlefield.length, 0);
 		assert.equal(p1.graveyard.length, 2);
+		resolveTriggers(state);
 		assert.equal(p1.life, lifeBefore + 5);
 	});
 

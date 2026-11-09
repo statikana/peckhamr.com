@@ -416,7 +416,6 @@ export interface StackItem {
 	createdAt: number;
 	isCopy?: boolean;
 	sourceObjectVersion?: number;
-	interveningIfClause?: string;
 	interveningIfCondition?: TriggerCondition;
 	lkiPower?: number;
 	lkiToughness?: number;
@@ -584,6 +583,12 @@ export type PromptPurpose =
 	| 'guided_resolution'
 	| 'legend_rule'
 	| 'cost_choice'
+	/** Steps C+D: choosing a triggered ability's targets as it's put on the stack (CR 603.3d). */
+	| 'trigger_targets'
+	/** Steps C+D: ordering a player's simultaneous triggered abilities (CR 603.3b). */
+	| 'trigger_order'
+	/** Steps C+D: "you may" in a resolving triggered ability. */
+	| 'trigger_may'
 	| 'generic';
 
 export interface PendingPrompt {
@@ -621,6 +626,10 @@ export interface PendingPrompt {
 	pendingAction?: GameActionPayload;
 	costQuestion?: { kind: 'option' | 'objects'; index: number };
 	costOptionLabels?: string[];
+	/** trigger_targets / trigger_may: the triggered ability's stack item (by id; state stays plain data). */
+	triggerStackItemId?: string;
+	/** trigger_targets: which of the ability's target specs this prompt chooses for. */
+	triggerTargetSpecIndex?: number;
 }
 
 /**

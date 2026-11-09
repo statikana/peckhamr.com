@@ -251,11 +251,40 @@ function delayedSupported(step: EffectStep): boolean {
  * understood all of it, it isn't modal, every step uses an interpreted verb, and it has at most one
  * target spec (legacy targeting chooses targets for one requirement).
  */
-export function staticallyInterpretable(parse: { steps: EffectStep[]; targets: TargetSpec[]; modal?: unknown; unparsed: unknown[] }): boolean {
+export function staticallyInterpretable(
+	parse: { steps: EffectStep[]; targets: TargetSpec[]; modal?: unknown; unparsed: unknown[] },
+	allowOptionalPrefix = false
+): boolean {
 	if (parse.unparsed.length > 0 || parse.modal || parse.steps.length === 0) return false;
 	const hasFight = parse.steps.some((s) => s.verb === 'fight');
 	if (parse.targets.length > (hasFight ? 2 : 1)) return false;
+	if (allowOptionalPrefix) {
+		const k = optionalPrefix(parse.steps);
+		if (k < 0) return false;
+		return withoutOptional(parse.steps, k).every(stepSupported);
+	}
 	return parse.steps.every(stepSupported);
+}
+
+/**
+ * "You may ..." leading a triggered ability: the number of leading steps that are optional with the
+ * controller as chooser (one "you may" clause), 0 if none is optional, or -1 if an optional step
+ * appears later or with another chooser (not supported: the interpreter can't pause mid-ability).
+ * The caller asks the controller once, on resolution, before any step runs.
+ */
+export function optionalPrefix(steps: EffectStep[]): number {
+	let k = 0;
+	while (k < steps.length && steps[k].optional && steps[k].optional!.chooser.k === 'you') k++;
+	return steps.slice(k).some((s) => s.optional && s.verb !== 'search') ? -1 : k;
+}
+
+/** The steps with the first `k` steps' `optional` removed (they were accepted). */
+export function withoutOptional(steps: EffectStep[], k: number): EffectStep[] {
+	return steps.map((s, i) => {
+		if (i >= k || !s.optional) return s;
+		const { optional: _opt, ...rest } = s;
+		return rest;
+	});
 }
 
 function targetRefMatchesSpec(t: TargetRef, spec: TargetSpec): boolean {

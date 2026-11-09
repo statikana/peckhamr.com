@@ -28,11 +28,11 @@ interface Row {
 function rows(card: ScryfallCard): Row[] {
 	if (card.backFace || card.oracleText.includes('\n//\n')) return [];
 	return runtimeTriggers(compileCard(card))
-		.filter((t: RuntimeTrigger) => t.legacy.effects.length > 0 || Boolean(t.effect && staticallyInterpretable(t.effect)))
+		.filter((t: RuntimeTrigger) => t.legacy.effects.length > 0 || Boolean(t.effect && staticallyInterpretable(t.effect, true)))
 		.map((t) => ({
 			card: card.name,
 			clause: t.legacy.clause,
-			interpreter: Boolean(t.effect && staticallyInterpretable(t.effect)),
+			interpreter: Boolean(t.effect && staticallyInterpretable(t.effect, true)),
 			targeted: (t.effect?.targets.length ?? 0) > 0
 		}));
 }

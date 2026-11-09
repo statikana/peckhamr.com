@@ -426,7 +426,9 @@ export type EventKind =
 	| 'becomesTapped'
 	| 'dealtDamage'
 	| 'drawCard'
-	| 'gainLife';
+	| 'gainLife'
+	/** A permanent was tapped for mana ("Whenever you tap a land for mana"); CR 605.1b. */
+	| 'tappedForMana';
 
 export interface EventFilter {
 	/**

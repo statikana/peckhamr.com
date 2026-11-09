@@ -1,5 +1,6 @@
 import { compileCard, compileSpellEffects } from './compiler/index.ts';
 import {
+	addLog,
 	applyGameAction,
 	checkAbilityActivationLegality,
 	checkSpellCastLegality,
@@ -16,7 +17,7 @@ import type { EffectStep, RestrictionKind, TargetSpec } from './ir.ts';
 import { parseSpellOrAbilityEffects } from './oracle.ts';
 import { chooseBotAnswer } from './runtime/choices.ts';
 import { evaluateCondition, matchesObjectFilter } from './runtime/objectFilter.ts';
-import type { CardInstance, GameState, PlayerGameState, ScryfallCard, TargetRef } from './types.ts';
+import type { CardInstance, GameState, PlayerGameState, ScryfallCard, StackItem, TargetRef } from './types.ts';
 
 /**
  * Whether `perm` currently has any of `restriction` active on the battlefield, from its own
@@ -131,11 +132,28 @@ export function hasAnyLegalInstantResponse(state: GameState, player: PlayerGameS
 	return false;
 }
 
-export function runAutomatedPriorityAndBots(state: GameState): void {
-	let safetyCounter = 0;
-	const MAX_STEPS = 240;
+/**
+ * Steps a bot loop may take per call. Tests and the golden games use the default; the lobby server
+ * passes a larger budget because every triggered ability now uses the stack (a pass round per
+ * trigger), and logs when even that is used up (a runaway loop, or a very long all-bot stretch).
+ */
+const DEFAULT_MAX_BOT_STEPS = 240;
+export const SERVER_MAX_BOT_STEPS = 1500;
 
-	while (safetyCounter < MAX_STEPS && state.status === 'active') {
+export function runAutomatedPriorityAndBots(
+	state: GameState,
+	opts: { maxSteps?: number; logOnCap?: boolean } = {}
+): void {
+	let safetyCounter = 0;
+	const MAX_STEPS = opts.maxSteps ?? DEFAULT_MAX_BOT_STEPS;
+
+	while (state.status === 'active') {
+		if (safetyCounter >= MAX_STEPS) {
+			if (opts.logOnCap) {
+				addLog(state, 'system', `Automated play paused after ${MAX_STEPS} steps (safety cap); it continues with the next action.`);
+			}
+			break;
+		}
 		safetyCounter++;
 		if (state.pendingPrompts.length > 0) {
 			const pr = state.pendingPrompts[0];
@@ -173,9 +191,11 @@ export function runAutomatedPriorityAndBots(state: GameState): void {
 		if (!priorityPlayer.fullControl && priorityPlayer.autoPassEmptyStack && !isDefendingInBlockers) {
 			const shouldAutoPassEmptyOffTurn =
 				priorityPlayer.playerId !== activePlayer.playerId && state.stack.length === 0;
+			// Steps C+D: the player's own triggered abilities don't stop auto-pass either (MTG Arena
+			// resolves them unless Full Control is on); their own spells still do.
 			const shouldAutoPassUnrespondableOpponentStack =
 				state.stack.length > 0 &&
-				state.stack.every((s) => s.controllerId !== priorityPlayer.playerId) &&
+				state.stack.every((s) => s.controllerId !== priorityPlayer.playerId || s.kind === 'triggered') &&
 				!hasAnyLegalInstantResponse(state, priorityPlayer);
 
 			if (shouldAutoPassEmptyOffTurn || shouldAutoPassUnrespondableOpponentStack) {
@@ -512,4 +532,107 @@ function chooseBotTargetsForCard(
 	}
 
 	return [];
+}
+
+// ---- Triggered abilities (steps C+D) -----------------------------------------------------------
+
+/** Verbs that are bad for the object or player they act on. */
+const HARMFUL_VERBS = new Set<EffectStep['verb']>([
+	'destroy',
+	'exile',
+	'bounce',
+	'damage',
+	'loseLife',
+	'sacrifice',
+	'tap',
+	'discard',
+	'mill',
+	'counterSpell',
+	'phaseOut',
+	'fight',
+	'lose'
+]);
+
+/** Whether the steps acting on target `index` hurt it (true), help it (false). */
+function targetIsHarmed(steps: EffectStep[], index: number): boolean {
+	const acting = steps.filter(
+		(s) =>
+			(s.subject.k === 'target' && s.subject.index === index) ||
+			(s.subject.k === 'playerRef' && s.subject.ref.k === 'target' && s.subject.ref.index === index)
+	);
+	if (acting.length === 0) return true;
+	return acting.some((s) => {
+		if (s.verb === 'pump') return (s.amount?.k === 'const' && s.amount.n < 0) || s.amount?.k === 'negate';
+		if (s.verb === 'putCounters') return s.params?.counter === '-1/-1' || s.params?.counter === 'stun';
+		// Returning a card from a graveyard to hand or the battlefield helps; exiling it hurts.
+		if (s.verb === 'move') return s.params?.to === 'exile';
+		return HARMFUL_VERBS.has(s.verb);
+	});
+}
+
+/**
+ * A bot's targets for one target spec of its triggered ability (CR 603.3d), from the legal
+ * candidates the engine computed: opponents' best permanents (or the opponent with the least life)
+ * for harmful effects, its own for helpful ones. Optional targets ("up to one") are only taken when
+ * a candidate is on the right side.
+ */
+export function chooseBotTriggerTargets(
+	state: GameState,
+	bot: PlayerGameState,
+	steps: EffectStep[],
+	index: number,
+	spec: TargetSpec,
+	legal: TargetRef[]
+): TargetRef[] {
+	const harmful = targetIsHarmed(steps, index);
+	const ownerOf = (t: TargetRef): string | undefined => {
+		if (t.kind === 'player') return t.id;
+		for (const p of state.players) {
+			if (p.battlefield.some((c) => c.instanceId === t.id)) {
+				return p.battlefield.find((c) => c.instanceId === t.id)!.controllerId;
+			}
+			if (p.graveyard.some((c) => c.instanceId === t.id)) return p.playerId;
+		}
+		return undefined;
+	};
+	const value = (t: TargetRef): number => {
+		if (t.kind === 'player') {
+			const p = state.players.find((x) => x.playerId === t.id);
+			return p ? 100 - p.life : 0;
+		}
+		for (const p of state.players) {
+			const c = p.battlefield.find((x) => x.instanceId === t.id) ?? p.graveyard.find((x) => x.instanceId === t.id);
+			if (c) return c.card.cmc + (c.zone === 'battlefield' && evaluatePermanent(state, c).isCreature ? getCreaturePower(c, state) : 0);
+		}
+		return 0;
+	};
+	const good = (t: TargetRef) => (ownerOf(t) === bot.playerId) !== harmful;
+	const ranked = [...legal].sort((a, b) => {
+		const ga = good(a) ? 1 : 0;
+		const gb = good(b) ? 1 : 0;
+		if (ga !== gb) return gb - ga;
+		// On the wrong side, prefer the least valuable; on the right side, the most.
+		return ga ? value(b) - value(a) : value(a) - value(b);
+	});
+	const wanted = Math.max(spec.min, Math.min(spec.max, ranked.filter(good).length));
+	return ranked.slice(0, Math.min(wanted, spec.max));
+}
+
+/**
+ * Whether a bot uses the optional ("you may") part of its resolving triggered ability. Bots take
+ * optional effects unless they would deck themselves or sacrifice their own permanents.
+ */
+export function botAcceptsOptionalTrigger(
+	state: GameState,
+	bot: PlayerGameState,
+	optionalSteps: EffectStep[],
+	item: StackItem
+): boolean {
+	void state;
+	void item;
+	for (const s of optionalSteps) {
+		if (s.verb === 'draw' && bot.library.length <= 3) return false;
+		if (s.verb === 'sacrifice' || s.verb === 'loseLife' || s.verb === 'discard') return false;
+	}
+	return true;
 }

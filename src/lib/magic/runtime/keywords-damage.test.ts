@@ -33,6 +33,30 @@ import {
 } from './effects.ts';
 import { matchesObjectFilter, objectPower, splitTypeLine } from './objectFilter.ts';
 
+/**
+ * Steps C+D: triggered abilities use the stack. Resolves the triggered abilities on top of the stack
+ * (not the spells under them) by passing priority, keeping the default order for order prompts and
+ * answering "you may" with yes.
+ */
+function resolveTriggers(state: GameState, max = 40): void {
+	for (let i = 0; i < max; i++) {
+		const prompt = state.pendingPrompts[0];
+		if (prompt?.purpose === 'trigger_order' && prompt.choice?.kind === 'orderObjects') {
+			applyGameAction(state, prompt.playerId, { type: 'choice', promptId: prompt.id, answer: { kind: 'orderObjects', topIds: prompt.choice.objectIds, bottomIds: [], shuffle: false } });
+			continue;
+		}
+		if (prompt?.purpose === 'trigger_may') {
+			applyGameAction(state, prompt.playerId, { type: 'choice', promptId: prompt.id, answer: { kind: 'yesNo', yes: true } });
+			continue;
+		}
+		if (prompt) return;
+		const top = state.stack[state.stack.length - 1];
+		if (!top || top.kind !== 'triggered') return;
+		const prio = state.players[state.priorityPlayerIndex];
+		if (!applyGameAction(state, prio.playerId, { type: 'pass_priority' }).ok) return;
+	}
+}
+
 function staple(name: string): ScryfallCard {
 	const c = STAPLE_CARDS[name.toLowerCase()];
 	assert.ok(c, `missing staple ${name}`);
@@ -556,6 +580,7 @@ describe('Wave 3D: Effect Fixes (CR 101.4, 122.1c-d, 603.10a, 613.7e, 700.5, 701
 		assert.equal(p1.graveyard.some((c) => c.instanceId === bear1.instanceId), true);
 		assert.equal(p2.graveyard.some((c) => c.instanceId === bear2.instanceId), true);
 
+		resolveTriggers(state);
 		// Soul Celebrant ("Whenever another creature dies") saw both Bear One and Bear Two die simultaneously!
 		assert.equal(p2.life, 38);
 	});

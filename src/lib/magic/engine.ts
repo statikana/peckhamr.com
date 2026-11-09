@@ -145,14 +145,19 @@ import {
 	matchTriggers,
 	registerTriggerHost,
 	stackTriggerConditionHolds,
+	withTriggersDeferred,
 	type PendingTrigger
 } from './runtime/triggers.ts';
 import {
 	executeEffectSteps,
 	interpretableNow,
+	optionalPrefix,
 	registerEffectPorts,
-	staticallyInterpretable
+	staticallyInterpretable,
+	withoutOptional
 } from './runtime/effects.ts';
+import { botAcceptsOptionalTrigger, chooseBotTriggerTargets } from './ai.ts';
+import type { EffectStep, TargetSpec } from './ir.ts';
 import { compiledStackItemEffects } from './compiler/effects.ts';
 import {
 	buildCostChoiceRequest,
@@ -161,6 +166,7 @@ import {
 	effectivePromptPurpose,
 	inferObjectsZone,
 	normalizePromptAction,
+	enqueueChoicePrompt,
 	resolveRegisteredChoiceCallback,
 	validateChoiceAnswer
 } from './runtime/choices.ts';
@@ -170,6 +176,7 @@ import {
 	ENGINE_VERSION,
 	PHASE_LABELS,
 	type CardInstance,
+	type ChoiceAnswer,
 	type CostPayment,
 	type CounterType,
 	type DelayedTrigger,
@@ -185,6 +192,7 @@ import {
 	type ManaColor,
 	type ManaPool,
 	type ParsedEffect,
+	type PendingPrompt,
 	type PlayerGameState,
 	type ScryfallCard,
 	type StackItem,
@@ -1211,6 +1219,9 @@ function applyGameActionInner(
 
 			const paid = payPlannedCosts(ctx, plan);
 			actor.manaPool[chosenColor] += amount;
+			// CR 605.1b: triggered mana abilities ("Whenever you tap a land for mana") resolve now.
+			emitEvent(state, { kind: 'TappedForMana', playerId: actorId, objectId: perm.instanceId, object: perm });
+			flushTriggers(state);
 			if (paid.descriptions.length > 0 || cost.defs.some((d) => d.k === 'sacrifice' && d.filter === 'self')) {
 				addLog(
 					state,
@@ -2287,6 +2298,11 @@ function handlePromptResolution(
 	const choice = effectivePromptChoice(prompt, state);
 	const purpose = effectivePromptPurpose(prompt);
 
+	// Steps C+D: triggered-ability target, order and "you may" prompts.
+	if (purpose === 'trigger_targets' || purpose === 'trigger_order' || purpose === 'trigger_may') {
+		return resolveTriggerPrompt(state, prompt, promptIdx, normalized.answer);
+	}
+
 	// Phase 4/8: a cost choice. The answer is merged into the waiting action's costPayment and the
 	// action runs again from scratch (re-checking legality); on failure the prompt is restored.
 	if (purpose === 'cost_choice') {
@@ -2985,29 +3001,32 @@ function beginPhase(state: GameState, phase: GamePhase, activePlayer?: PlayerGam
 	state.phase = phase;
 	const active = activePlayer ?? state.players[state.activePlayerIndex];
 	// CR 703.3: Turn-based actions at the beginning of a step happen FIRST, before any
-	// "At the beginning of [step]" triggers go onto the stack.
-	if (phase === 'untap' && active) {
-		executeUntapTurnBasedActions(state, active);
-	} else if (phase === 'draw' && active) {
-		executeDrawTurnBasedAction(state, active);
-		if (state.status === 'finished') return;
-	} else if (phase === 'first_strike_damage') {
-		executeCombatDamageStep(state, true);
-	} else if (phase === 'combat_damage') {
-		executeCombatDamageStep(state, false);
-	} else if (phase === 'cleanup') {
-		clearEndOfTurnAndDamage(state);
-	}
+	// "At the beginning of [step]" triggers go onto the stack. Triggers from the turn-based action
+	// (combat damage) wait until state-based actions have been checked (CR 704.3, 603.3).
+	withTriggersDeferred(state, () => {
+		if (phase === 'untap' && active) {
+			executeUntapTurnBasedActions(state, active);
+		} else if (phase === 'draw' && active) {
+			executeDrawTurnBasedAction(state, active);
+		} else if (phase === 'first_strike_damage') {
+			executeCombatDamageStep(state, true);
+		} else if (phase === 'combat_damage') {
+			executeCombatDamageStep(state, false);
+		} else if (phase === 'cleanup') {
+			clearEndOfTurnAndDamage(state);
+		}
+		if (phase === 'first_strike_damage' || phase === 'combat_damage') {
+			checkStateBasedActions(state);
+		}
+	});
+	if (state.status === 'finished') return;
 	emitEvent(state, {
 		kind: 'PhaseBegin',
 		phase,
 		activePlayerId: active?.playerId ?? null
 	});
-	// Beginning-of-step triggers go on the stack now: the callers check the stack right after this.
+	// Triggered abilities go on the stack now: the callers check the stack right after this.
 	flushTriggers(state);
-	if (phase === 'first_strike_damage' || phase === 'combat_damage') {
-		checkStateBasedActions(state);
-	}
 }
 
 // Event dispatch (Phase 5). Every event is matched against compiled triggered abilities
@@ -3023,7 +3042,8 @@ for (const kind of [
 	'DamageDealt',
 	'CounterPlaced',
 	'BecameTarget',
-	'Attached'
+	'Attached',
+	'TappedForMana'
 ] as const) {
 	registerEventHandler(kind, (state, ev) => matchTriggers(state, ev));
 }
@@ -3195,7 +3215,7 @@ function withLegacyEventTarget(item: StackItem): StackItem {
 /** Whether the engine can execute a triggered ability: legacy effects, or an interpretable IR effect. */
 function canExecuteTrigger(t: { legacy: { effects: ParsedEffect[] }; effect?: Parameters<typeof staticallyInterpretable>[0] }): boolean {
 	if (t.legacy.effects.length > 0) return true;
-	return Boolean(t.effect && staticallyInterpretable(t.effect));
+	return Boolean(t.effect && staticallyInterpretable(t.effect, true));
 }
 
 registerTriggerHost({
@@ -3210,12 +3230,238 @@ registerTriggerHost({
 			controller.playerId
 		);
 	},
-	putOnStack(state, t) {
-		state.stack.push(triggeredStackItem(state, t, 'stk'));
-		addLog(state, 'trigger', `${t.sourceCard.name}'s ${t.label} was put onto the Stack.`, t.controllerId);
-	},
+	putOnStack: putTriggerOnStack,
+	orderSimultaneous: askTriggerOrder,
 	canExecute: canExecuteTrigger
 });
+
+/**
+ * A runaway safety cap: triggered abilities that keep retriggering each other would otherwise grow
+ * the stack (and the bot loop) without end. Past this size new triggers are not put on the stack.
+ */
+const MAX_STACK_FOR_TRIGGERS = 300;
+
+/** Target specs the trigger target choice supports (zones it can enumerate). */
+function triggerSpecsSupported(specs: TargetSpec[]): boolean {
+	return specs.every((sp) => {
+		if (sp.kind === 'player') return true;
+		const z = sp.filter.zone ?? 'battlefield';
+		return z === 'battlefield' || z === 'graveyard';
+	});
+}
+
+/** The target specs a triggered stack item chooses on the interpreter path (empty: none / legacy). */
+function triggerItemTargetSpecs(item: StackItem): TargetSpec[] {
+	const compiled = effectInterpreterEnabled ? triggerItemEffect(item) : null;
+	if (!compiled || !staticallyInterpretable(compiled, true) || !triggerSpecsSupported(compiled.targets)) return [];
+	return compiled.targets;
+}
+
+/** The object a triggered ability's source is (wherever it is now), for "another" filters. */
+function triggerSourceObject(state: GameState, item: StackItem): CardInstance | undefined {
+	for (const p of state.players) {
+		for (const zone of [p.battlefield, p.graveyard, p.exile, p.hand, p.command, p.library]) {
+			const c = zone.find((x) => x.instanceId === item.sourceInstanceId);
+			if (c) return c;
+		}
+	}
+	return undefined;
+}
+
+/** Whether a permanent can be targeted by an ability of `controllerId` from `sourceCard` (CR 702.11, 702.18, 702.16). */
+function permanentTargetable(state: GameState, inst: CardInstance, controllerId: string, owner: string, sourceCard: ScryfallCard): boolean {
+	if (hasKeyword(inst, 'Shroud', state)) return false;
+	if (owner !== controllerId && hasKeyword(inst, 'Hexproof', state)) return false;
+	return !hasProtectionFrom(inst, sourceCard, state);
+}
+
+/** Every legal target for one target spec of a triggered ability (CR 115, 603.3d). */
+function triggerTargetCandidates(state: GameState, item: StackItem, spec: TargetSpec): TargetRef[] {
+	const out: TargetRef[] = [];
+	const controllerId = item.controllerId;
+	if (spec.kind === 'player' || spec.kind === 'objectOrPlayer') {
+		const rel = spec.player?.relation ?? 'any';
+		for (const p of state.players) {
+			if (p.lost) continue;
+			if ((rel === 'opponent' || rel === 'each_opponent') && p.playerId === controllerId) continue;
+			if (rel === 'you' && p.playerId !== controllerId) continue;
+			if (playerHasShroud(state, p) || playerHasHexproofFrom(state, p, controllerId)) continue;
+			out.push({ kind: 'player', id: p.playerId, label: p.username });
+		}
+	}
+	if (spec.kind === 'player') return out;
+	const ctx: FilterContext = { state, controllerId, source: triggerSourceObject(state, item) };
+	const zone = spec.filter.zone ?? 'battlefield';
+	for (const p of state.players) {
+		if (p.lost) continue;
+		if (zone === 'battlefield') {
+			for (const perm of p.battlefield) {
+				if (perm.phasedOut || !matchesObjectFilter(perm, spec.filter, ctx)) continue;
+				if (!permanentTargetable(state, perm, controllerId, p.playerId, item.card)) continue;
+				out.push({ kind: 'permanent', id: perm.instanceId, label: perm.card.name });
+			}
+		} else if (zone === 'graveyard') {
+			for (const c of p.graveyard) {
+				if (matchesObjectFilter(c, spec.filter, ctx)) out.push({ kind: 'graveyard_card', id: c.instanceId, label: c.card.name });
+			}
+		}
+	}
+	return out;
+}
+
+/** CR 608.2b for a triggered ability on the interpreter path: is `t` still legal for some spec? */
+function triggerTargetStillLegal(state: GameState, item: StackItem, specs: TargetSpec[], t: TargetRef): boolean {
+	return specs.some((spec) => triggerTargetCandidates(state, item, spec).some((c) => c.kind === t.kind && c.id === t.id));
+}
+
+/**
+ * Puts a triggered ability on the stack (CR 603.3), choosing its targets from the compiled target
+ * specs (CR 603.3d): a bot chooses via ai.ts; a human gets a chooseObjects prompt (unless the choice
+ * is forced). An ability with a required target and no legal one is removed, with a log line.
+ */
+function putTriggerOnStack(state: GameState, t: PendingTrigger): StackItem | null {
+	if (state.stack.length >= MAX_STACK_FOR_TRIGGERS) {
+		addLog(
+			state,
+			'rule',
+			`${t.sourceCard.name}'s ${t.label} was not put onto the Stack: the stack already holds ${state.stack.length} objects (runaway trigger loop safety cap).`,
+			t.controllerId
+		);
+		return null;
+	}
+	const controller = state.players.find((p) => p.playerId === t.controllerId);
+	if (!controller) return null;
+	const item = triggeredStackItem(state, t, 'stk');
+	const specs = triggerItemTargetSpecs(item);
+	const candidates = specs.map((spec) => triggerTargetCandidates(state, item, spec));
+	const impossible = specs.findIndex((spec, i) => spec.min > 0 && candidates[i].length < spec.min);
+	if (impossible >= 0) {
+		addLog(
+			state,
+			'rule',
+			`${item.title} was removed from the Stack: it has no legal targets (CR 603.3d).`,
+			t.controllerId
+		);
+		return null;
+	}
+	state.stack.push(item);
+	addLog(state, 'trigger', `${t.sourceCard.name}'s ${t.label} was put onto the Stack.`, t.controllerId);
+	const steps = triggerItemEffect(item)?.steps ?? [];
+	specs.forEach((spec, i) => {
+		const legal = candidates[i];
+		const max = Math.min(spec.max, legal.length);
+		if (controller.isBot) {
+			item.targets.push(...chooseBotTriggerTargets(state, controller, steps, i, spec, legal));
+		} else if (legal.length === spec.min && max === spec.min) {
+			// Forced: exactly as many legal targets as required.
+			item.targets.push(...legal);
+		} else {
+			const reason = `Choose ${spec.min === max ? max : `${spec.min}–${max}`} target(s) for ${item.title}.`;
+			enqueueChoicePrompt(state, {
+				id: uid('prm'),
+				playerId: controller.playerId,
+				kind: 'chooseObjects',
+				purpose: 'trigger_targets',
+				title: `Choose Targets (${item.card.name})`,
+				description: `${reason} (Its text is shown on the stack.)`,
+				triggerStackItemId: item.id,
+				triggerTargetSpecIndex: i,
+				candidateInstanceIds: legal.map((c) => c.id),
+				countRequired: spec.min,
+				choice: {
+					kind: 'chooseObjects',
+					candidates: legal.map((c) => c.id),
+					min: spec.min,
+					max,
+					zone: (spec.filter.zone as ZoneType | undefined) ?? 'battlefield',
+					reason
+				}
+			});
+		}
+	});
+	item.targetObjectVersions = captureTargetObjectVersions(state, item.targets);
+	return item;
+}
+
+/**
+ * CR 603.3b: a human who controls several simultaneous triggered abilities chooses their order on
+ * the stack (an orderObjects prompt; `topIds[0]` resolves first). Bots keep the match order.
+ */
+function askTriggerOrder(state: GameState, controllerId: string, itemIds: string[]): void {
+	const controller = state.players.find((p) => p.playerId === controllerId);
+	if (!controller || controller.isBot) return;
+	const topFirst = [...itemIds].reverse();
+	const reason = 'Order your triggered abilities: the first one resolves first.';
+	enqueueChoicePrompt(state, {
+		id: uid('prm'),
+		playerId: controllerId,
+		kind: 'orderObjects',
+		purpose: 'trigger_order',
+		title: 'Order Triggered Abilities',
+		description: reason,
+		candidateInstanceIds: topFirst,
+		choice: { kind: 'orderObjects', objectIds: topFirst, allowSplitBottom: false, allowShuffle: false, reason }
+	});
+}
+
+/** Answers to the trigger prompts (targets, order, "you may"); plain data, no callbacks. */
+function resolveTriggerPrompt(
+	state: GameState,
+	prompt: PendingPrompt,
+	promptIdx: number,
+	answer: ChoiceAnswer | undefined
+): { ok: boolean; error?: string } {
+	const choice = effectivePromptChoice(prompt, state);
+	const valid = validateChoiceAnswer(choice, answer);
+	if (!valid.ok) return { ok: false, error: valid.error };
+	const purpose = effectivePromptPurpose(prompt);
+	if (purpose === 'trigger_order') {
+		if (answer?.kind !== 'orderObjects') return { ok: false, error: 'Order your triggered abilities.' };
+		const ids = choice.kind === 'orderObjects' ? choice.objectIds : [];
+		if (answer.topIds.length !== ids.length || (answer.bottomIds?.length ?? 0) > 0) {
+			return { ok: false, error: 'Put every triggered ability in order.' };
+		}
+		state.pendingPrompts.splice(promptIdx, 1);
+		const positions = ids
+			.map((id) => state.stack.findIndex((s) => s.id === id))
+			.filter((i) => i >= 0)
+			.sort((a, b) => a - b);
+		const byId = new Map(state.stack.map((s) => [s.id, s]));
+		// The lowest position resolves last: fill positions bottom-up with the answer reversed.
+		const bottomFirst = [...answer.topIds].reverse().map((id) => byId.get(id)).filter((x): x is StackItem => Boolean(x));
+		if (bottomFirst.length === positions.length) {
+			positions.forEach((pos, k) => (state.stack[pos] = bottomFirst[k]));
+			addLog(state, 'trigger', `${state.players.find((p) => p.playerId === prompt.playerId)?.username ?? 'A player'} ordered their triggered abilities (CR 603.3b).`, prompt.playerId);
+		}
+		return { ok: true };
+	}
+	const item = state.stack.find((s) => s.id === prompt.triggerStackItemId);
+	state.pendingPrompts.splice(promptIdx, 1);
+	if (!item) return { ok: true };
+	if (purpose === 'trigger_targets') {
+		if (answer?.kind !== 'chooseObjects') return { ok: true };
+		const spec = triggerItemTargetSpecs(item)[prompt.triggerTargetSpecIndex ?? 0];
+		if (!spec) return { ok: true };
+		const legal = triggerTargetCandidates(state, item, spec);
+		const chosen = answer.objectIds
+			.map((id) => legal.find((c) => c.id === id))
+			.filter((c): c is TargetRef => Boolean(c));
+		item.targets.push(...chosen);
+		item.targetObjectVersions = captureTargetObjectVersions(state, item.targets);
+		addLog(
+			state,
+			'trigger',
+			`${item.title} targets ${chosen.length > 0 ? chosen.map((c) => c.label).join(', ') : 'nothing'}.`,
+			item.controllerId
+		);
+		return { ok: true };
+	}
+	// trigger_may: record the answer and finish resolving the ability (it stayed on the stack).
+	if (answer?.kind !== 'yesNo') return { ok: true };
+	item.optionalAccepted = answer.yes;
+	if (state.stack[state.stack.length - 1] === item) resolveTopOfStack(state);
+	return { ok: true };
+}
 
 let effectInterpreterEnabled = true;
 
@@ -3227,7 +3473,16 @@ export function setEffectInterpreterEnabled(on: boolean): void {
 	effectInterpreterEnabled = on;
 }
 
+/**
+ * Resolves the top object of the stack. Triggered abilities that trigger while it resolves are put
+ * on the stack afterwards, once state-based actions have been checked (CR 603.3, 704.3).
+ */
 export function resolveTopOfStack(state: GameState): void {
+	withTriggersDeferred(state, () => resolveTopOfStackNow(state));
+	flushTriggers(state);
+}
+
+function resolveTopOfStackNow(state: GameState): void {
 	const item = state.stack[state.stack.length - 1];
 	if (!item) return;
 	const removeItemFromStack = () => {
@@ -3243,15 +3498,14 @@ export function resolveTopOfStack(state: GameState): void {
 
 	// Check intervening-if clause on resolution (CR 603.4)
 	if (
-		(item.triggeredAbilityIndex !== undefined &&
-			!stackTriggerConditionHolds(
-				state,
-				item.card,
-				item.triggeredAbilityIndex,
-				item.controllerId,
-				item.sourceInstanceId
-			)) ||
-		(item.interveningIfClause === 'life_40_or_more' && controller.life < 40)
+		item.triggeredAbilityIndex !== undefined &&
+		!stackTriggerConditionHolds(
+			state,
+			item.card,
+			item.triggeredAbilityIndex,
+			item.controllerId,
+			item.sourceInstanceId
+		)
 	) {
 		removeItemFromStack();
 		addLog(
@@ -3268,8 +3522,10 @@ export function resolveTopOfStack(state: GameState): void {
 
 	// Check if all targets are still legal (Fizzle rule CR 608.2b)
 	if (item.targets.length > 0) {
+		const triggerSpecs = item.kind === 'triggered' ? triggerItemTargetSpecs(item) : [];
 		const validTargets = item.targets.filter((t) =>
-			isTargetStillValid(state, t, item.controllerId, item.card, item)
+			isTargetStillValid(state, t, item.controllerId, item.card, item) &&
+			(triggerSpecs.length === 0 || triggerTargetStillLegal(state, item, triggerSpecs, t))
 		);
 		if (validTargets.length === 0) {
 			removeItemFromStack();
@@ -3321,9 +3577,44 @@ export function resolveTopOfStack(state: GameState): void {
 	const overload = item.castMode === 'overload';
 	const interpreted =
 		compiled !== null &&
-		staticallyInterpretable(compiled) &&
+		staticallyInterpretable(compiled, item.kind === 'triggered') &&
 		interpretableNow(state, item, compiled, controller, overload);
 	let exiledBySelfReference = false;
+	let steps: EffectStep[] = compiled?.steps ?? [];
+	if (interpreted && item.kind === 'triggered') {
+		// "You may ...": the controller decides as the ability resolves; the ability stays on the
+		// stack while a human answers (CR 608.2n).
+		const k = optionalPrefix(steps);
+		if (k > 0) {
+			if (item.optionalAccepted === undefined) {
+				if (controller.isBot) {
+					item.optionalAccepted = botAcceptsOptionalTrigger(state, controller, steps.slice(0, k), item);
+				} else {
+					const question = `Use the optional effect of ${item.title}? (Its text is shown on the stack.)`;
+					enqueueChoicePrompt(state, {
+						id: uid('prm'),
+						playerId: controller.playerId,
+						kind: 'yesNo',
+						purpose: 'trigger_may',
+						title: `Optional Ability (${item.card.name})`,
+						description: question,
+						triggerStackItemId: item.id,
+						yesLabel: 'Yes',
+						noLabel: 'No',
+						choice: { kind: 'yesNo', question }
+					});
+					return;
+				}
+			}
+			addLog(
+				state,
+				'trigger',
+				`${controller.username} ${item.optionalAccepted ? 'chose to' : 'declined to'} use ${item.title}'s optional effect.`,
+				controller.playerId
+			);
+			steps = item.optionalAccepted ? withoutOptional(steps, k) : steps.slice(k);
+		}
+	}
 	if (interpreted) {
 		const result = executeEffectSteps(
 			state,
@@ -3339,7 +3630,7 @@ export function resolveTopOfStack(state: GameState): void {
 				overload,
 				...triggerEventContext(item)
 			},
-			compiled.steps
+			steps
 		);
 		if (state.delayedTriggers) {
 			for (const dt of state.delayedTriggers) {
@@ -7593,7 +7884,8 @@ function isTargetStillValid(
 	if (hasProtectionFrom(found.inst, sourceCard, state)) {
 		return false;
 	}
-	if (item) {
+	// A triggered ability with compiled target specs is checked against them instead (resolveTopOfStack).
+	if (item && !(item.kind === 'triggered' && triggerItemTargetSpecs(item).length > 0)) {
 		const targetInfo = getStackItemTargetRequirement(item, sourceCard);
 		if (targetInfo && targetInfo.requiresTarget) {
 			if (targetInfo.isModal && targetInfo.modalBranches && targetInfo.modalBranches.length > 0) {

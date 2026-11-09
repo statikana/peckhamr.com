@@ -86,7 +86,7 @@ interface Subject {
 
 function objectSubject(text: string): Subject | null {
 	if (text === '~') return { object: 'self' };
-	if (text === 'equipped creature' || text === 'enchanted creature' || text === 'enchanted permanent') {
+	if (text === 'equipped creature' || text === 'enchanted creature' || text === 'enchanted permanent' || text === 'enchanted land') {
 		return { object: 'attachedTo' };
 	}
 	const orSelf = text.match(/^~ or (another .+)$/);
@@ -189,6 +189,8 @@ function objectEvent(verb: string, subject: Subject): TriggerDef | null {
 			return def('becomesTarget', { targetedBy: 'spell' });
 		case 'becomes the target of an ability':
 			return def('becomesTarget', { targetedBy: 'ability' });
+		case 'is tapped for mana':
+			return def('tappedForMana');
 		case 'becomes attached to a creature':
 			return def('attached', { host: { types: ['Creature'] } });
 		case 'becomes attached to a creature you control':
@@ -233,6 +235,12 @@ function playerEvent(player: EventFilter['player'], rest: string): TriggerDef | 
 		return { event: 'attacks', filter: { player, oneOrMore: true } };
 	}
 	if (rest === 'gain life' || rest === 'gains life') return { event: 'gainLife', filter: { player } };
+	// "Whenever you tap a land for mana" / "Whenever a player taps a Forest for mana".
+	const tap = rest.match(/^taps? (?:a|an) (.+) for mana$/);
+	if (tap) {
+		const object = parseObjectPhrase(tap[1]);
+		if (object) return { event: 'tappedForMana', filter: { object, player } };
+	}
 	if (rest === 'draw a card' || rest === 'draws a card') return { event: 'drawCard', filter: { player } };
 	return null;
 }
@@ -391,7 +399,8 @@ const RUNTIME_EVENT_FIELDS: Partial<Record<TriggerDef['event'], ReadonlySet<stri
 	phaseBegin: new Set(['phase']),
 	counterPlaced: new Set(['object', 'counter']),
 	becomesTarget: new Set(['object', 'targetedBy']),
-	attached: new Set(['object', 'host'])
+	attached: new Set(['object', 'host']),
+	tappedForMana: new Set(['object', 'player'])
 };
 
 function objectFilterProblem(f: ObjectFilter | undefined): string | null {
@@ -421,7 +430,7 @@ export function runtimeTriggerProblem(def: TriggerDef): string | null {
 	const p = objectFilterProblem(f.host);
 	if (p) return p;
 	// The object an Aura/Equipment is attached to has already been detached when it leaves.
-	if (f.object === 'attachedTo' && !['attacks', 'dealsDamage'].includes(def.event)) {
+	if (f.object === 'attachedTo' && !['attacks', 'dealsDamage', 'tappedForMana'].includes(def.event)) {
 		return `"${def.event}" of the attached-to object`;
 	}
 	if (def.event === 'phaseBegin' && (!f.phase || !RUNTIME_PHASES.has(f.phase))) return `phase "${f.phase}"`;
