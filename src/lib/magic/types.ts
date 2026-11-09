@@ -358,6 +358,8 @@ export interface CardInstance {
 	enteredTimestamp?: number;
 	objectVersion?: number;
 	copiableCard?: ScryfallCard;
+	printedCard?: ScryfallCard;
+	enteredWithX?: number;
 	phasedOut?: boolean;
 	phasedOutIndirectly?: boolean;
 	isSuspended?: boolean;
@@ -423,6 +425,7 @@ export interface StackItem {
 	 * re-check the intervening-if condition on resolution (CR 603.4) without storing IR in state.
 	 */
 	triggeredAbilityIndex?: number;
+	targetObjectVersions?: Record<string, number>;
 }
 
 export interface DelayedTrigger {
@@ -434,6 +437,7 @@ export interface DelayedTrigger {
 	onlyOnPlayerTurnId?: string;
 	targetPlayerId?: string;
 	targetInstanceId?: string;
+	targetObjectVersion?: number;
 	waitUntilAfterTurn?: number;
 	title?: string;
 	oracleText?: string;

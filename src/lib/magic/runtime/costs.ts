@@ -152,7 +152,7 @@ export function effectiveSpellManaCost(
 		sourceInst: CardInstance
 	): boolean => {
 		if (mod.affects.k !== 'spell') return false;
-		if (mod.affects.filter.other && (sourceInst.instanceId === inst.instanceId || sourceInst.card.id === card.id)) {
+		if (mod.affects.filter.other && sourceInst.instanceId === inst.instanceId) {
 			return false;
 		}
 		const fctx: FilterContext = {
@@ -214,7 +214,7 @@ export function effectiveSpellManaCost(
 		}
 	}
 
-	if (forceZeroCost) return parseManaCost('{0}');
+	if (forceZeroCost) return parseManaCost('', 0, genericIncrease, genericReduction);
 	return parseManaCost(baseCostStr, effectiveX, genericIncrease, genericReduction);
 }
 
@@ -286,6 +286,13 @@ export function describeCost(defs: CostDef[]): string {
 					return d.options.map((o) => describeCost(o)).join(' or ');
 				case 'optional':
 					return `You may: ${describeCost(d.cost)}`;
+				default: {
+					const extra = d as { k: string; count?: Amount };
+					if (extra.k === 'mill' && extra.count) {
+						return `Mill ${amountText(extra.count)} card(s)`;
+					}
+					return '';
+				}
 			}
 		})
 		.join(', ');
@@ -418,8 +425,16 @@ function checkSimple(def: CostDef, ctx: CostContext): string | null {
 				}
 			}
 			return null;
-		default:
+		default: {
+			const extra = def as { k: string; count?: Amount };
+			if (extra.k === 'mill' && extra.count) {
+				const amount = n(extra.count, ctx);
+				if (ctx.player.library.length < amount) {
+					return `Not enough cards in library to mill ${amount}.`;
+				}
+			}
 			return null;
+		}
 	}
 }
 
@@ -770,8 +785,22 @@ export function payPlannedCosts(ctx: CostContext, plan: Extract<CostPlan, { part
 				descriptions.push(`exiled ${cards.map((c) => c.card.name).join(', ')} from ${def.zone}`);
 				break;
 			}
-			default:
+			default: {
+				const extra = def as { k: string; count?: Amount };
+				if (extra.k === 'mill' && extra.count) {
+					const amount = n(extra.count, ctx);
+					const milled: CardInstance[] = [];
+					for (let i = 0; i < amount && player.library.length > 0; i++) {
+						const top = player.library[0];
+						moveFromZone(ctx, top, 'library', 'graveyard');
+						milled.push(top);
+					}
+					if (milled.length > 0) {
+						descriptions.push(`milled ${milled.map((c) => c.card.name).join(', ')}`);
+					}
+				}
 				break;
+			}
 		}
 	}
 	return { descriptions };

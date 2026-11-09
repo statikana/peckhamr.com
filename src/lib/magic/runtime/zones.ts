@@ -1,6 +1,7 @@
 import { checkGraveyardReplacementZone, evaluatePermanent } from '../ruleTree.ts';
 import type { CardInstance, CounterType, GameState, PlayerGameState, ZoneType } from '../types.ts';
 import { emitEvent, type LeftBattlefieldInfo } from './events.ts';
+import { counterMultiplier } from './replace.ts';
 
 /**
  * The single zone-change module (ENGINE_ARCHITECTURE_PLAN.md section 2.3, Phase 2).
@@ -136,6 +137,25 @@ export function moveObject(
 	opts: MoveOptions
 ): ZoneType {
 	const { from } = opts;
+	// CR 304.4 / 307.4: If an instant or sorcery would enter the battlefield, it remains in its previous zone.
+	if (to === 'battlefield') {
+		const effectiveTypeLine = (obj.copiableCard ?? obj.card).typeLine;
+		const isInstantOrSorcery =
+			effectiveTypeLine.includes('Instant') || effectiveTypeLine.includes('Sorcery');
+		const hasPermanentType =
+			effectiveTypeLine.includes('Creature') ||
+			effectiveTypeLine.includes('Artifact') ||
+			effectiveTypeLine.includes('Enchantment') ||
+			effectiveTypeLine.includes('Land') ||
+			effectiveTypeLine.includes('Planeswalker') ||
+			effectiveTypeLine.includes('Battle');
+		if (isInstantOrSorcery && !hasPermanentType) {
+			if (typeof from === 'object') return from.zone;
+			if (from === 'anyBattlefield') return 'battlefield';
+			if (from === 'stack') return 'stack';
+			return obj.zone;
+		}
+	}
 	let fromZone: ZoneType | null = null;
 	let fromPlayerId: string | null = null;
 	// CR 603.10a: leaves-the-battlefield triggers look back at the object as it was on the battlefield.
@@ -188,9 +208,22 @@ export function moveObject(
 		dest = 'command';
 	}
 
-	if (opts.leaveBattlefieldReset && obj.copiableCard) obj.copiableCard = undefined;
+	// CR 400.3: A card moving to hand, graveyard, library, or command zone always goes to its owner's zone.
+	const effectiveReceiver =
+		(dest === 'hand' || dest === 'graveyard' || dest === 'library' || dest === 'command') && owner
+			? owner
+			: receiver;
+
+	if (opts.leaveBattlefieldReset) {
+		if (obj.printedCard) {
+			obj.card = obj.printedCard;
+			obj.printedCard = undefined;
+		}
+		if (obj.copiableCard) obj.copiableCard = undefined;
+	}
 	if (opts.setZone !== false) obj.zone = dest;
 	if (opts.leaveBattlefieldReset) {
+		obj.controllerId = obj.ownerId;
 		obj.tapped = false;
 		obj.damageMarked = 0;
 		obj.deathtouchDamageMarked = false;
@@ -204,10 +237,31 @@ export function moveObject(
 		obj.isSuspended = false;
 		obj.castViaSuspend = false;
 		obj.switchedPTCount = 0;
+		obj.usedLoyaltyThisTurn = false;
+		obj.transformed = false;
+		obj.isFaceDown = false;
+		obj.goadedByPlayerIds = undefined;
+		obj.playableFromExileBy = undefined;
+		obj.enteredWithX = undefined;
 	}
 	if (opts.controllerId !== undefined) obj.controllerId = opts.controllerId;
 	if (opts.bumpVersion) obj.objectVersion = (obj.objectVersion || 1) + 1;
 	if (opts.newTimestamp) obj.enteredTimestamp = allocateTimestamp(state);
+	// CR 306.5b: A planeswalker entering the battlefield receives starting loyalty counters (with counter multipliers).
+	if (dest === 'battlefield') {
+		const effectiveCard = obj.copiableCard ?? obj.card;
+		if (
+			effectiveCard.typeLine.includes('Planeswalker') &&
+			effectiveCard.loyalty !== undefined &&
+			(obj.counters.loyalty || 0) === 0
+		) {
+			const baseLoyalty = parseInt(String(effectiveCard.loyalty), 10) || 0;
+			if (baseLoyalty > 0) {
+				const mult = counterMultiplier(state, obj, 'loyalty');
+				obj.counters.loyalty = baseLoyalty * mult;
+			}
+		}
+	}
 	opts.beforeInsert?.(obj, dest);
 
 	const ceases =
@@ -215,7 +269,7 @@ export function moveObject(
 		(opts.ceaseToExist === 'tokens' && obj.isToken && dest !== 'battlefield');
 	if (dest !== 'stack' && !ceases) {
 		const at = typeof opts.insert === 'function' ? opts.insert(dest) : opts.insert;
-		if (at !== 'deferred') insertInto(receiver[dest as PlayerZone], obj, at);
+		if (at !== 'deferred') insertInto(effectiveReceiver[dest as PlayerZone], obj, at);
 	}
 	emitZoneChange(
 		state,
@@ -223,7 +277,7 @@ export function moveObject(
 		fromZone,
 		dest,
 		fromPlayerId,
-		dest === 'stack' || ceases ? null : receiver.playerId,
+		dest === 'stack' || ceases ? null : effectiveReceiver.playerId,
 		ceases,
 		lki
 	);

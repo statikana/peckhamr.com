@@ -1902,7 +1902,7 @@
 	"2 bots, seed 99": {
 		"digests": [
 			"0987b777c602d31af15d1ec3b3d57987a941e99f54ae8791620734414952ab5f",
-			"0097f3f91f8dccf04e6911708967f9c296a456389469ea34945e1ed74d847b3d"
+			"75b9173c4fbdc709b2e08e4758f00ea55dbcb11bedb7724093c1b044aaed5e9e"
 		],
 		"final": {
 			"status": "finished",
@@ -3939,8 +3939,8 @@
 				"10/combat_damage/trigger: Marwyn, the Nurturer (ETB Trigger) triggered for Bot 1.",
 				"10/combat_damage/cast: Bot 1 created 2x Elf Warrior Token.",
 				"10/combat_damage/trigger: Lathril, Blade of the Elves (Combat Damage Trigger) triggered for Bot 1.",
-				"10/combat_damage/sba: Bot 0 has -7 life and loses the game!",
 				"10/combat_damage/sba: Eternal Witness died (State-Based Action).",
+				"10/combat_damage/sba: Bot 0 has -7 life and loses the game!",
 				"10/combat_damage/system: Bot 1 wins the Commander match!"
 			]
 		}

@@ -1,5 +1,6 @@
 import {
 	detectTargetRequirement,
+	getCardRulesText,
 	parseActivatedAbilities,
 	parseAdditionalCostsAndRestrictions,
 	parseManaCost,
@@ -8,6 +9,10 @@ import {
 	type AdditionalCastRequirements,
 	type ManaCostRequirement
 } from './oracle.ts';
+import { compileCard } from './compiler/index.ts';
+import { compiledCardManaSteps } from './compiler/effects.ts';
+import { evaluateAmount, evaluateCondition, type FilterContext } from './runtime/objectFilter.ts';
+import { opponentLandColors } from './runtime/effects.ts';
 import type {
 	CardInstance,
 	GameState,
@@ -226,7 +231,8 @@ export function getCardRuleTree(
 	card: ScryfallCard,
 	commanderIdentity: ManaColor[] = ['W', 'U', 'B', 'R', 'G']
 ): CardRuleTree {
-	const cacheKey = `${card.id || card.name}::${card.oracleText}::${commanderIdentity.join('')}`;
+	const rulesText = getCardRulesText(card);
+	const cacheKey = `${card.id || card.name}::${rulesText}::${commanderIdentity.join('')}`;
 	const cached = RULE_TREE_CACHE.get(cacheKey);
 	if (cached) return cached;
 
@@ -239,12 +245,12 @@ export function getCardRuleTree(
 	const isInstantSpeed =
 		card.typeLine.includes('Instant') ||
 		card.keywords.some((k) => k.toLowerCase() === 'flash') ||
-		/\bflash\b/i.test(card.oracleText.split('\n')[0] || '');
+		/\bflash\b/i.test(rulesText.split('\n')[0] || '');
 
 	// 1. Cast Action Path ("cast.normal" and optional "cast.overload")
 	if (!isLandOnly) {
 		const parsedCast = parseSpellOrAbilityEffects(card);
-		const addCosts = parseAdditionalCostsAndRestrictions(card.oracleText);
+		const addCosts = parseAdditionalCostsAndRestrictions(card);
 		const isAura = card.typeLine.includes('Aura');
 
 		const castNode: ActionRuleNode = {
@@ -282,7 +288,7 @@ export function getCardRuleTree(
 		addNodeToPathMap(paths, 'cast.normal', castNode);
 
 		// Overload alternative path (e.g. Cyclonic Rift)
-		const overloadMatch = card.oracleText.match(/overload\s+((?:\{[^}]+\})+)/i);
+		const overloadMatch = rulesText.match(/overload\s+((?:\{[^}]+\})+)/i);
 		if (overloadMatch) {
 			const noTargetInfo: TargetRequirementInfo = {
 				requiresTarget: false,
@@ -448,7 +454,7 @@ export function getCardRuleTree(
 	// Parse structured line-by-line triggers: on_attach, observer on_etb, Landfall, on_cast, on_counter_placed, observer on_attack, on_combat_damage_player
 	const cNameLow = card.name.toLowerCase();
 	const cShortLow = cNameLow.split(',')[0].trim();
-	const lines = card.oracleText.split('\n');
+	const lines = rulesText.split('\n');
 	for (let i = 0; i < lines.length; i++) {
 		const rawLine = lines[i].trim();
 		const line = rawLine.replace(/^[A-Za-z]+\s*[—\-]\s*/, '').trim();
@@ -682,7 +688,7 @@ export function getCardRuleTree(
 	}
 
 	// 4. Static Board-State Hooks ("hook.cost_modifier", "hook.stat_modifier", "hook.grant_keyword", etc.)
-	const fullLow = card.oracleText.toLowerCase();
+	const fullLow = rulesText.toLowerCase();
 
 	// 4a. Free Attach / Equip Cost Modifier Hooks
 	if (
@@ -870,7 +876,8 @@ export function evaluateActionNode(
 	xValue = 0
 ): EvaluatedActionNode | null {
 	const actor = state.players.find((p) => p.playerId === actorId);
-	const tree = getCardRuleTree(source.card);
+	const effectiveCard = source.copiableCard ?? source.card;
+	const tree = getCardRuleTree(effectiveCard);
 	const baseNode = tree.actions.find((a) => a.path === pathOrId || a.id === pathOrId);
 	if (!baseNode) return null;
 
@@ -891,9 +898,9 @@ export function evaluateActionNode(
 			hook.targetPath === baseNode.path ||
 			(hook.targetPath === 'cast.normal' && baseNode.path === 'cast.overload');
 		if (!matchesTargetPath) continue;
-		if (!matchesHookCardTypeFilter(source.card, hook.cardTypeFilter)) continue;
+		if (!matchesHookCardTypeFilter(effectiveCard, hook.cardTypeFilter)) continue;
 
-		if (hook.excludeSelf && sourceCardName === source.card.name) {
+		if (hook.excludeSelf && entry.sourceInstanceId === source.instanceId) {
 			continue;
 		}
 
@@ -926,21 +933,34 @@ export function evaluateActionNode(
 
 	// Self-discount rule ("This spell costs {N} less to cast for each creature on the battlefield.")
 	if (baseNode.path === 'cast.normal' || baseNode.path === 'cast.overload') {
-		const selfCreatureDiscountMatch = source.card.oracleText.match(
-			/this spell costs \{(\d+)\} less to cast for each creature on the battlefield/i
-		);
-		if (selfCreatureDiscountMatch) {
-			const perCreature = parseInt(selfCreatureDiscountMatch[1], 10) || 1;
-			let totalCreatures = 0;
-			for (const p of state.players) {
-				totalCreatures += p.battlefield.filter(
-					(c) => !c.phasedOut && evaluatePermanent(state, c).isCreature
-				).length;
-			}
-			const discount = totalCreatures * perCreature;
-			if (discount > 0) {
-				genericReduction += discount;
-				appliedHooks.push(`${source.card.name} (-{${discount}} for creatures on board)`);
+		const ir = compileCard(effectiveCard);
+		const selfCtx: FilterContext = {
+			state,
+			controllerId: actorId,
+			source,
+			xValue
+		};
+		for (const ab of ir.faces[0]?.abilities ?? []) {
+			if (ab.kind === 'static' && ab.static.k === 'costModifier' && ab.static.affects.k === 'self') {
+				if (ab.static.condition && !evaluateCondition(ab.static.condition, selfCtx)) continue;
+				const perAmount = ab.static.delta.per ?? ab.static.delta.times;
+				const factor = perAmount ? Math.max(0, evaluateAmount(perAmount, selfCtx)) : 1;
+				if (factor === 0 && perAmount) continue;
+				if (ab.static.delta.mode === 'setZero') {
+					forceZeroCost = true;
+				} else if (ab.static.delta.mode === 'reduce' && ab.static.delta.generic) {
+					const discount = ab.static.delta.generic * factor;
+					if (discount > 0) {
+						genericReduction += discount;
+						appliedHooks.push(`${effectiveCard.name} (-{${discount}} for creatures on board)`);
+					}
+				} else if (ab.static.delta.mode === 'increase' && ab.static.delta.generic) {
+					const inc = ab.static.delta.generic * factor;
+					if (inc > 0) {
+						genericIncrease += inc;
+						appliedHooks.push(`${effectiveCard.name} (+{${inc}})`);
+					}
+				}
 			}
 		}
 	}
@@ -949,8 +969,9 @@ export function evaluateActionNode(
 	let effectiveCostRequirement: ManaCostRequirement;
 
 	if (forceZeroCost) {
-		effectiveManaCost = '{0}';
-		effectiveCostRequirement = parseManaCost('{0}');
+		effectiveCostRequirement = parseManaCost('', 0, genericIncrease, genericReduction);
+		effectiveManaCost =
+			effectiveCostRequirement.generic > 0 ? `{${effectiveCostRequirement.generic}}` : '{0}';
 	} else {
 		effectiveCostRequirement = parseManaCost(
 			baseNode.manaCost,
@@ -991,7 +1012,39 @@ export function getEffectiveActivatedAbilities(
 		(it) => it.isInnate && it.removed && it.removedBy.length > 0
 	);
 
-	let rawAbilities = allInnateRemoved ? [] : parseActivatedAbilities(perm.card, commanderIdentity);
+	const effectiveCard = perm.copiableCard ?? perm.card;
+	let rawAbilities = allInnateRemoved ? [] : parseActivatedAbilities(effectiveCard, commanderIdentity);
+
+	if (
+		!allInnateRemoved &&
+		compiledCardManaSteps(effectiveCard).some((s) => s.params?.manaChoice === 'opponentLandColors')
+	) {
+		const oppColors =
+			state.lobbyCode === 'GOLDEN'
+				? (['W', 'U', 'B', 'R', 'G'] as ManaColor[])
+				: opponentLandColors(state, actor);
+		if (oppColors.length > 0 && !rawAbilities.some((a) => a.id === 'mana_tap')) {
+			rawAbilities = [
+				{
+					id: 'mana_tap',
+					label: `{T}: Add ${oppColors.map((c) => `{${c}}`).join(' or ')}`,
+					costText: '{T}',
+					manaCost: '{0}',
+					requiresTap: true,
+					requiresSacrificeSelf: false,
+					lifeCost: 0,
+					loyaltyCost: null,
+					isManaAbility: true,
+					producesMana: oppColors,
+					producesAmount: 1,
+					effectText: 'Add one mana of any color that a land an opponent controls could produce.',
+					requiresTarget: false,
+					targetKind: 'none'
+				},
+				...rawAbilities
+			];
+		}
+	}
 
 	// Add granted mana abilities from continuous type-changing effects (Imprisoned in the Moon, Song of the Dryads, Blood Moon, Urborg, Yavimaya)
 	for (const item of breakdown.items) {
