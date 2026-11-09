@@ -245,6 +245,9 @@ function counterEvent(head: string): TriggerDef | null {
 function triggerHead(head: string): TriggerDef | null {
 	const at = head.match(/^at the beginning of (.+)$/i);
 	if (at) return phaseBegin(at[1].toLowerCase());
+	if (/^at (?:the )?end of combat$/i.test(head)) {
+		return { event: 'phaseBegin', filter: { phase: 'end_combat' }, scope: 'each_turn' };
+	}
 
 	const ww = head.match(/^(?:when|whenever) (.+)$/i);
 	if (!ww) return null;
@@ -351,8 +354,16 @@ export function parseTriggerHeader(body: string, offset = 0): TriggerParse | nul
 
 // ---- What the runtime can match (Phase 5) ----------------------------------------------------
 
-/** Phases the engine emits PhaseBegin for (beginPhase). It never begins `begin_combat`. */
-const RUNTIME_PHASES: ReadonlySet<GamePhase> = new Set<GamePhase>(['upkeep', 'draw', 'main1', 'main2', 'end_step']);
+/** Phases the engine emits PhaseBegin for (beginPhase). */
+const RUNTIME_PHASES: ReadonlySet<GamePhase> = new Set<GamePhase>([
+	'upkeep',
+	'draw',
+	'main1',
+	'begin_combat',
+	'end_combat',
+	'main2',
+	'end_step'
+]);
 
 /** ObjectFilter fields runtime/triggers.ts checks. A filter using any other field never matches. */
 const RUNTIME_OBJECT_FIELDS: ReadonlySet<string> = new Set([

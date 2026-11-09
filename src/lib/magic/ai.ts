@@ -133,7 +133,7 @@ export function hasAnyLegalInstantResponse(state: GameState, player: PlayerGameS
 
 export function runAutomatedPriorityAndBots(state: GameState): void {
 	let safetyCounter = 0;
-	const MAX_STEPS = 80;
+	const MAX_STEPS = 240;
 
 	while (safetyCounter < MAX_STEPS && state.status === 'active') {
 		safetyCounter++;

@@ -526,6 +526,8 @@ describe('Phase 7: runtime/replace.ts — Restrictions', () => {
 			}).ok,
 			true
 		);
+		assert.equal(applyGameAction(state, p1Id, { type: 'pass_priority' }).ok, true);
+		assert.equal(applyGameAction(state, p2Id, { type: 'pass_priority' }).ok, true);
 
 		// Now in declare_blockers -> Bound Bear cannot block because of attached Chains of Stillness.
 		assert.equal(state.phase, 'declare_blockers');

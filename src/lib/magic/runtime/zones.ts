@@ -330,10 +330,21 @@ export function rearrangeLibrary(
 export function transferBattlefieldControl(
 	perm: CardInstance,
 	fromPlayer: PlayerGameState,
-	toPlayer: PlayerGameState
+	toPlayer: PlayerGameState,
+	state?: GameState
 ): void {
 	removeFirst(fromPlayer.battlefield, perm.instanceId);
+	perm.controllerId = toPlayer.playerId;
+	perm.summoningSick = true;
 	toPlayer.battlefield.push(perm);
+	if (state?.combat) {
+		state.combat.attackers = state.combat.attackers.filter(
+			(atk) => atk.attackerInstanceId !== perm.instanceId
+		);
+		for (const atk of state.combat.attackers) {
+			atk.blockerInstanceIds = atk.blockerInstanceIds.filter((id) => id !== perm.instanceId);
+		}
+	}
 }
 
 /**
