@@ -88,6 +88,27 @@ export function splitSubtypes(right: string): string[] {
 	return out;
 }
 
+const LOWER_SUBTYPES = new Map<string, Set<string> | null>();
+
+/**
+ * The lowercased subtypes after the type line's dash, or null when it has no dash. A pure memo
+ * keyed by the type line string, so it can't go stale; `hasSubType` asks it on every call (SBAs ask
+ * every permanent each pass), and splitting the line each time was a hot spot (Phase 6d).
+ */
+function lowerSubtypesOf(typeLine: string): Set<string> | null {
+	let subs = LOWER_SUBTYPES.get(typeLine);
+	if (subs === undefined) {
+		const dashIdx = typeLine.indexOf('—');
+		subs =
+			dashIdx === -1
+				? null
+				: new Set(splitSubtypes(typeLine.slice(dashIdx + 1).trim()).map((s) => s.toLowerCase()));
+		if (LOWER_SUBTYPES.size > 10_000) LOWER_SUBTYPES.clear();
+		LOWER_SUBTYPES.set(typeLine, subs);
+	}
+	return subs;
+}
+
 function normalizeSubtypes(subs: readonly string[]): string[] {
 	const out: string[] = [];
 	for (let i = 0; i < subs.length; i++) {
@@ -690,7 +711,10 @@ function matchesLayerFilter(
 	if (filter.colors?.length) {
 		if (!filter.colors.some((c) => target.colors.includes(c))) return false;
 	}
-	if (filter.tapped !== undefined && Boolean(target.inst.tapped) !== filter.tapped) return false;
+	if (filter.tapped !== undefined) {
+		layerReads |= READ_TAPPED;
+		if (Boolean(target.inst.tapped) !== filter.tapped) return false;
+	}
 	if (filter.token !== undefined && Boolean(target.inst.isToken) !== filter.token) return false;
 	return true;
 }
@@ -715,10 +739,12 @@ function evaluateLayerAmount(
 			return 0;
 		}
 		case 'life': {
+			layerReads |= READ_LIFE;
 			const p = state.players.find((pl) => pl.playerId === source.inst.controllerId);
 			return p?.life ?? 0;
 		}
 		case 'cardsIn': {
+			layerReads |= READ_ZONE_SIZES;
 			const p = state.players.find((pl) => pl.playerId === source.inst.controllerId);
 			if (!p) return 0;
 			if (amount.zone === 'hand') return p.hand.length;
@@ -754,6 +780,7 @@ function evaluateLayerAmount(
 				return total;
 			}
 			if (zone === 'graveyard') {
+				layerReads |= READ_GRAVEYARDS;
 				let total = 0;
 				for (const pl of state.players) {
 					if (f.controller === 'you' && pl.playerId !== source.inst.controllerId) continue;
@@ -801,6 +828,7 @@ function evaluateLayerCondition(
 		case 'not':
 			return !evaluateLayerCondition(cond.of, state, workList, source, affected);
 		case 'isTurnOf': {
+			layerReads |= READ_ACTIVE_PLAYER;
 			const activePlayer = state.players[state.activePlayerIndex];
 			return activePlayer?.playerId === source.inst.controllerId;
 		}
@@ -884,22 +912,51 @@ interface BoardLayerCache {
 
 const BOARD_CACHE_KEY = 'phase6_board_layer_cache';
 
-function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot): unknown[] {
-	const fp: unknown[] = [
-		(state as { version?: number }).version,
-		state.turnNumber,
-		state.activePlayerIndex
-	];
+// ---- Read tracking (Phase 6d) ---------------------------------------------------------------
+//
+// Besides the board snapshot and each active permanent's own counters / temporary P/T / switch /
+// suspend / granted keywords (always fingerprinted), a board evaluation reads game state only at
+// these points, each of which sets its bit in `layerReads` while `computeBoardLayerCache` runs:
+//
+// - `matchesLayerFilter` with a `tapped` filter: every active permanent's `tapped`;
+// - `evaluateLayerAmount` `life`: life totals; `cardsIn`: zone sizes; `count` in graveyards:
+//   graveyard contents;
+// - `evaluateLayerCondition` `isTurnOf`: the active player.
+//
+// The dynamic fingerprint holds only the inputs the evaluation actually read. That's sound: with
+// every read input unchanged, re-running the evaluation takes the same path and reads the same
+// inputs, so it produces the same result. Before 6d every evaluation was keyed on all of them, so
+// a land tapping for mana, a card drawn or a point of damage re-evaluated the whole board even when
+// no static ability looked at them.
+
+const READ_TAPPED = 1;
+const READ_LIFE = 2;
+const READ_ZONE_SIZES = 4;
+const READ_GRAVEYARDS = 8;
+const READ_ACTIVE_PLAYER = 16;
+
+/** Inputs read by the evaluation in progress (bits above). */
+let layerReads = 0;
+
+function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: number): unknown[] {
+	const fp: unknown[] = [(state as { version?: number }).version, reads];
+	if (reads & READ_ACTIVE_PLAYER) fp.push(state.activePlayerIndex);
 	for (const p of state.players) {
-		fp.push(p.life, p.hand.length, p.graveyard.length);
-		for (const g of p.graveyard) {
-			fp.push(g.card, g.copiableCard);
+		if (reads & READ_LIFE) fp.push(p.life);
+		if (reads & READ_ZONE_SIZES) {
+			fp.push(p.hand.length, p.graveyard.length, p.library.length, p.exile.length, p.command.length);
+		}
+		if (reads & READ_GRAVEYARDS) {
+			fp.push(p.graveyard.length);
+			for (const g of p.graveyard) {
+				fp.push(g.card, g.copiableCard);
+			}
 		}
 	}
 	for (const entry of snap.active) {
 		const perm = entry.perm;
+		if (reads & READ_TAPPED) fp.push(perm.tapped);
 		fp.push(
-			perm.tapped,
 			perm.counters['+1/+1'] || 0,
 			perm.counters['-1/-1'] || 0,
 			perm.tempPowerMod || 0,
@@ -921,27 +978,35 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot): unknown
  */
 function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: unknown[]): boolean {
 	let i = 0;
-	if (
-		fp[i++] !== (state as { version?: number }).version ||
-		fp[i++] !== state.turnNumber ||
-		fp[i++] !== state.activePlayerIndex
-	) {
-		return false;
-	}
+	if (fp[i++] !== (state as { version?: number }).version) return false;
+	const reads = fp[i++] as number;
+	if (reads & READ_ACTIVE_PLAYER && fp[i++] !== state.activePlayerIndex) return false;
 	for (const p of state.players) {
-		if (fp[i++] !== p.life || fp[i++] !== p.hand.length || fp[i++] !== p.graveyard.length) {
+		if (reads & READ_LIFE && fp[i++] !== p.life) return false;
+		if (
+			reads & READ_ZONE_SIZES &&
+			(fp[i++] !== p.hand.length ||
+				fp[i++] !== p.graveyard.length ||
+				fp[i++] !== p.library.length ||
+				fp[i++] !== p.exile.length ||
+				fp[i++] !== p.command.length)
+		) {
 			return false;
 		}
-		for (const g of p.graveyard) {
-			if (fp[i++] !== g.card || fp[i++] !== g.copiableCard) return false;
+		if (reads & READ_GRAVEYARDS) {
+			if (fp[i++] !== p.graveyard.length) return false;
+			for (const g of p.graveyard) {
+				if (fp[i++] !== g.card || fp[i++] !== g.copiableCard) return false;
+			}
 		}
 	}
+	const readsTapped = (reads & READ_TAPPED) !== 0;
 	for (const entry of snap.active) {
 		const perm = entry.perm;
 		const granted = perm.grantedKeywords;
 		const grantedLen = granted?.length || 0;
+		if (readsTapped && fp[i++] !== perm.tapped) return false;
 		if (
-			fp[i++] !== perm.tapped ||
 			fp[i++] !== (perm.counters['+1/+1'] || 0) ||
 			fp[i++] !== (perm.counters['-1/-1'] || 0) ||
 			fp[i++] !== (perm.tempPowerMod || 0) ||
@@ -960,9 +1025,40 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 }
 
 function computeBoardLayerCache(state: GameState, snap: BoardSnapshot): BoardLayerCache {
+	const outer = layerReads;
+	layerReads = 0;
+	try {
+		const byInstance = evaluateBoard(state, snap);
+		return {
+			dynamicFingerprint: buildDynamicFingerprint(state, snap, layerReads),
+			byInstance
+		};
+	} finally {
+		layerReads |= outer;
+	}
+}
+
+/** Evaluates layers 1–7d for every active permanent (the uncached computation). */
+function evaluateBoard(state: GameState, snap: BoardSnapshot): BoardLayerCache['byInstance'] {
+	// Split into one function per pass (Phase 6d): same code, but V8 optimises and re-optimises
+	// the passes separately instead of recompiling one ~850-line function after every deopt.
 	const workList: PermWorkState[] = [];
 	const workMap = new Map<string, PermWorkState>();
+	evaluateLayer1(state, snap, workList, workMap);
+	evaluateAttachedTypes(state, snap, workList, workMap);
+	evaluateTypeOverwrites(state, snap, workList, workMap);
+	evaluateAdditiveTypesAndColors(state, snap, workList, workMap);
+	evaluateGlobalAbilityLoss(state, snap, workList, workMap);
+	evaluatePerPermanent(state, snap, workList, workMap);
+	return buildBoardResults(workList);
+}
 
+function evaluateLayer1(
+	state: GameState,
+	snap: BoardSnapshot,
+	workList: PermWorkState[],
+	workMap: Map<string, PermWorkState>
+): void {
 	// 1. Layer 1 (Copy effects & face-down characteristics) + Innate items
 	for (const entry of snap.sorted) {
 		const inst = entry.perm;
@@ -1101,7 +1197,14 @@ function computeBoardLayerCache(state: GameState, snap: BoardSnapshot): BoardLay
 		workList.push(work);
 		workMap.set(inst.instanceId, work);
 	}
+}
 
+function evaluateAttachedTypes(
+	state: GameState,
+	snap: BoardSnapshot,
+	workList: PermWorkState[],
+	workMap: Map<string, PermWorkState>
+): void {
 	// 2. Layer 4 Pass A: Attached type-setting effects, attached ability-removal registration, and attached 7b setters
 	for (const target of workList) {
 		for (const att of workList) {
@@ -1162,7 +1265,14 @@ function computeBoardLayerCache(state: GameState, snap: BoardSnapshot): BoardLay
 			}
 		}
 	}
+}
 
+function evaluateTypeOverwrites(
+	state: GameState,
+	snap: BoardSnapshot,
+	workList: PermWorkState[],
+	workMap: Map<string, PermWorkState>
+): void {
 	// 3. Layer 4 Pass B: Global type-overwriting effects ("Nonbasic lands are Mountains." — CR 613.8 before additive land types)
 	for (const source of workList) {
 		if (source.strippedByAttachment || source.abilityRemovalEvents.length > 0) continue;
@@ -1189,7 +1299,14 @@ function computeBoardLayerCache(state: GameState, snap: BoardSnapshot): BoardLay
 			}
 		}
 	}
+}
 
+function evaluateAdditiveTypesAndColors(
+	state: GameState,
+	snap: BoardSnapshot,
+	workList: PermWorkState[],
+	workMap: Map<string, PermWorkState>
+): void {
 	// 4. Layer 4 Pass C: Global additive type effects (Opalescence, Urborg, Yavimaya, Mycosynth Lattice, Maskwood Nexus)
 	for (const source of workList) {
 		if (source.strippedByAttachment || source.abilityRemovalEvents.length > 0) continue;
@@ -1273,7 +1390,14 @@ function computeBoardLayerCache(state: GameState, snap: BoardSnapshot): BoardLay
 			}
 		}
 	}
+}
 
+function evaluateGlobalAbilityLoss(
+	state: GameState,
+	snap: BoardSnapshot,
+	workList: PermWorkState[],
+	workMap: Map<string, PermWorkState>
+): void {
 	// 5. Layer 6 Global "lose all abilities" (Humility, Dress Down) & Global Layer 7b setters (Humility, Opalescence)
 	for (const source of workList) {
 		if (source.strippedByAttachment) continue;
@@ -1312,7 +1436,14 @@ function computeBoardLayerCache(state: GameState, snap: BoardSnapshot): BoardLay
 			}
 		}
 	}
+}
 
+function evaluatePerPermanent(
+	state: GameState,
+	snap: BoardSnapshot,
+	workList: PermWorkState[],
+	workMap: Map<string, PermWorkState>
+): void {
 	// 6. Per-permanent Layer 7a, 7b, innate removal, Layer 6/7c grants, counters, temp mods, Layer 7d, and keyword removal
 	for (const target of workList) {
 		const isCreature = target.types.includes('Creature');
@@ -1739,7 +1870,9 @@ function computeBoardLayerCache(state: GameState, snap: BoardSnapshot): BoardLay
 			}
 		}
 	}
+}
 
+function buildBoardResults(workList: PermWorkState[]): BoardLayerCache['byInstance'] {
 	// Build final results map
 	const byInstance = new Map<
 		CardInstance,
@@ -1806,11 +1939,8 @@ function computeBoardLayerCache(state: GameState, snap: BoardSnapshot): BoardLay
 				if (tLine.includes('Creature') && hasAllCreatureTypes && !NON_CREATURE_SUBTYPES.has(subType)) {
 					return true;
 				}
-				const dashIdx = tLine.indexOf('—');
-				if (dashIdx !== -1) {
-					const right = tLine.slice(dashIdx + 1).trim();
-					return splitSubtypes(right).some((s) => s.toLowerCase() === subType.toLowerCase());
-				}
+				const subs = lowerSubtypesOf(tLine);
+				if (subs) return subs.has(subType.toLowerCase());
 				return new RegExp(`\\b${subType}\\b`, 'i').test(tLine);
 			}
 		};
@@ -1818,10 +1948,7 @@ function computeBoardLayerCache(state: GameState, snap: BoardSnapshot): BoardLay
 		byInstance.set(work.inst, { breakdown, lost, evaluated });
 	}
 
-	return {
-		dynamicFingerprint: buildDynamicFingerprint(state, snap),
-		byInstance
-	};
+	return byInstance;
 }
 
 function getBoardLayerCache(state: GameState): { snap: BoardSnapshot; cache: BoardLayerCache } {
@@ -2106,11 +2233,8 @@ export function evaluatePermanent(state: GameState, inst: CardInstance): Evaluat
 				if (tLine.includes('Creature') && hasAllCreatureTypes && !NON_CREATURE_SUBTYPES.has(subType)) {
 					return true;
 				}
-				const dashIdx = tLine.indexOf('—');
-				if (dashIdx !== -1) {
-					const right = tLine.slice(dashIdx + 1).trim();
-					return splitSubtypes(right).some((s) => s.toLowerCase() === subType.toLowerCase());
-				}
+				const subs = lowerSubtypesOf(tLine);
+				if (subs) return subs.has(subType.toLowerCase());
 				return new RegExp(`\\b${subType}\\b`, 'i').test(tLine);
 			}
 		};

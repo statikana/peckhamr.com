@@ -963,11 +963,14 @@ function executeUntapTurnBasedActions(state: GameState, activePlayer: PlayerGame
 	//    - any phased-in attachments across ALL players' battlefields attached to a permanent phasing out (indirectly)
 	const phasingOutDirectIds = new Set<string>();
 	const phasingOutIndirectIds = new Set<string>();
-	for (const perm of activePlayer.battlefield) {
-		if (!perm.phasedOut && hasKeyword(perm, 'Phasing', state)) {
-			phasingOutDirectIds.add(perm.instanceId);
+	// Read-only scan: validate the layer cache once (Phase 6d).
+	withStableLayerInputs(state, () => {
+		for (const perm of activePlayer.battlefield) {
+			if (!perm.phasedOut && hasKeyword(perm, 'Phasing', state)) {
+				phasingOutDirectIds.add(perm.instanceId);
+			}
 		}
-	}
+	});
 	let addedPhaseOut = true;
 	while (addedPhaseOut) {
 		addedPhaseOut = false;
@@ -1026,9 +1029,21 @@ function executeUntapTurnBasedActions(state: GameState, activePlayer: PlayerGame
 	}
 
 	// 4. Untap step (CR 502.3 & CR 122.1d stun counter replacement)
+	// CR 502.3: the active player's permanents untap simultaneously, so which ones "don't untap" is
+	// decided against the board before any of them untaps. Deciding it inside the untap loop made
+	// every `perm.tapped = false` invalidate the layer cache for the next permanent's check, a full
+	// board re-evaluation per permanent (Phase 6d).
+	const keptTapped = withStableLayerInputs(state, () => {
+		const ids = new Set<string>();
+		for (const perm of activePlayer.battlefield) {
+			if (perm.phasedOut || !perm.tapped) continue;
+			if (hasRestriction(state, perm, 'doesntUntap')) ids.add(perm.instanceId);
+		}
+		return ids;
+	});
 	for (const perm of activePlayer.battlefield) {
 		if (perm.phasedOut) continue;
-		if (perm.tapped && !hasRestriction(state, perm, 'doesntUntap')) {
+		if (perm.tapped && !keptTapped.has(perm.instanceId)) {
 			if (perm.counters.stun > 0) {
 				perm.counters.stun -= 1;
 			} else {
@@ -1860,6 +1875,19 @@ function applyGameActionInner(
 				}
 			}
 
+			// CR 508.1f: attackers tap as they're declared, all at once, so vigilance is read from the
+			// board before any of them taps (tapping one between checks invalidated the layer cache
+			// for the next; Phase 6d).
+			const vigilantIds = withStableLayerInputs(state, () => {
+				const ids = new Set<string>();
+				for (const assign of action.assignments) {
+					const creature = actor.battlefield.find(
+						(c) => c.instanceId === assign.attackerInstanceId
+					)!;
+					if (hasKeyword(creature, 'Vigilance', state)) ids.add(creature.instanceId);
+				}
+				return ids;
+			});
 			for (const assign of action.assignments) {
 				const creature = actor.battlefield.find(
 					(c) => c.instanceId === assign.attackerInstanceId
@@ -1867,7 +1895,7 @@ function applyGameActionInner(
 				const defender = state.players.find(
 					(p) => p.playerId === assign.defenderPlayerId && !p.lost
 				)!;
-				if (!hasKeyword(creature, 'Vigilance', state)) {
+				if (!vigilantIds.has(creature.instanceId)) {
 					creature.tapped = true;
 				}
 				validAttackers.push({
@@ -6161,9 +6189,14 @@ export function checkStateBasedActions(state: GameState): void {
 			reason: string;
 			logText: string;
 		}> = [];
+		// Read-only: one layer-cache validation for every player's "can't lose" check (Phase 6d).
+		const cannotLose = withStableLayerInputs(
+			state,
+			() => new Set(state.players.filter((p) => !p.lost && playerCannotLoseGame(state, p).protected))
+		);
 		for (const p of state.players) {
 			if (p.lost) continue;
-			if (playerCannotLoseGame(state, p).protected) {
+			if (cannotLose.has(p)) {
 				if (p.attemptedEmptyLibraryDraw) {
 					// CR 704.5b only checks if the player attempted to draw from an empty library since the last SBA check
 					p.attemptedEmptyLibraryDraw = false;
@@ -6520,7 +6553,21 @@ function normalizeTargetRequirement(
 	};
 }
 
+/** Whether `target` is legal for the requirement. Read-only, one validation (Phase 6d). */
 export function validateTargetLegality(
+	state: GameState,
+	actorId: string,
+	target: TargetRef,
+	targetRequirementOrKind: TargetRequirementInfo | string,
+	sourceCard?: ScryfallCard,
+	sourceInstanceId?: string
+): { ok: boolean; error?: string } {
+	return withStableLayerInputs(state, () =>
+		validateTargetLegalityInner(state, actorId, target, targetRequirementOrKind, sourceCard, sourceInstanceId)
+	);
+}
+
+function validateTargetLegalityInner(
 	state: GameState,
 	actorId: string,
 	target: TargetRef,
@@ -6935,7 +6982,20 @@ export function validateChosenTargets(
 	return { ok: true };
 }
 
+/** Every legal target for `info`. Read-only: one validation for all candidates (Phase 6d). */
 export function getAllLegalTargetsForRequirement(
+	state: GameState,
+	actorId: string,
+	info: TargetRequirementInfo,
+	sourceCard?: ScryfallCard,
+	sourceInstanceId?: string
+): TargetRef[] {
+	return withStableLayerInputs(state, () =>
+		getAllLegalTargetsForRequirementInner(state, actorId, info, sourceCard, sourceInstanceId)
+	);
+}
+
+function getAllLegalTargetsForRequirementInner(
 	state: GameState,
 	actorId: string,
 	info: TargetRequirementInfo,
@@ -6947,7 +7007,7 @@ export function getAllLegalTargetsForRequirement(
 	if (info.zone === 'stack' || info.targetKind === 'spell') {
 		for (const item of state.stack) {
 			const ref: TargetRef = { kind: 'stack', id: item.id, label: item.title };
-			if (validateTargetLegality(state, actorId, ref, info, sourceCard, sourceInstanceId).ok) {
+			if (validateTargetLegalityInner(state, actorId, ref, info, sourceCard, sourceInstanceId).ok) {
 				results.push(ref);
 			}
 		}
@@ -6958,7 +7018,7 @@ export function getAllLegalTargetsForRequirement(
 		for (const p of state.players) {
 			for (const c of p.graveyard) {
 				const ref: TargetRef = { kind: 'graveyard_card', id: c.instanceId, label: c.card.name };
-				if (validateTargetLegality(state, actorId, ref, info, sourceCard, sourceInstanceId).ok) {
+				if (validateTargetLegalityInner(state, actorId, ref, info, sourceCard, sourceInstanceId).ok) {
 					results.push(ref);
 				}
 			}
@@ -6970,7 +7030,7 @@ export function getAllLegalTargetsForRequirement(
 		for (const p of state.players) {
 			if (p.lost) continue;
 			const ref: TargetRef = { kind: 'player', id: p.playerId, label: p.username };
-			if (validateTargetLegality(state, actorId, ref, info, sourceCard, sourceInstanceId).ok) {
+			if (validateTargetLegalityInner(state, actorId, ref, info, sourceCard, sourceInstanceId).ok) {
 				results.push(ref);
 			}
 		}
@@ -6982,7 +7042,7 @@ export function getAllLegalTargetsForRequirement(
 			for (const perm of p.battlefield) {
 				if (perm.phasedOut) continue;
 				const ref: TargetRef = { kind: 'permanent', id: perm.instanceId, label: perm.card.name };
-				if (validateTargetLegality(state, actorId, ref, info, sourceCard, sourceInstanceId).ok) {
+				if (validateTargetLegalityInner(state, actorId, ref, info, sourceCard, sourceInstanceId).ok) {
 					results.push(ref);
 				}
 			}
@@ -6992,7 +7052,22 @@ export function getAllLegalTargetsForRequirement(
 	return results;
 }
 
+/** Whether enough legal targets exist for `info`. Read-only, one validation (Phase 6d). */
 export function hasRequiredLegalTargets(
+	state: GameState,
+	actorId: string,
+	info: TargetRequirementInfo,
+	sourceCard?: ScryfallCard,
+	sourceInstanceId?: string,
+	xValue = 0,
+	castMode?: 'normal' | 'overload'
+): { ok: boolean; error?: string } {
+	return withStableLayerInputs(state, () =>
+		hasRequiredLegalTargetsInner(state, actorId, info, sourceCard, sourceInstanceId, xValue, castMode)
+	);
+}
+
+function hasRequiredLegalTargetsInner(
 	state: GameState,
 	actorId: string,
 	info: TargetRequirementInfo,
@@ -7084,7 +7159,17 @@ export function hasRequiredLegalTargets(
 	return { ok: true };
 }
 
+/** Whether `actorId` may play the land `inst` now. Read-only, one validation (Phase 6d). */
 export function checkLandPlayLegality(
+	state: GameState,
+	actorId: string,
+	inst: CardInstance,
+	fromZone: ZoneType = 'hand'
+): { ok: boolean; error?: string } {
+	return withStableLayerInputs(state, () => checkLandPlayLegalityInner(state, actorId, inst, fromZone));
+}
+
+function checkLandPlayLegalityInner(
 	state: GameState,
 	actorId: string,
 	inst: CardInstance,
@@ -7150,7 +7235,24 @@ export function checkLandPlayLegality(
 	return { ok: true };
 }
 
+/**
+ * Whether `actorId` may cast `inst` now. Read-only: the whole check (cost, auto-tap simulation,
+ * targets) shares one layer-cache validation (Phase 6d).
+ */
 export function checkSpellCastLegality(
+	state: GameState,
+	actorId: string,
+	inst: CardInstance,
+	fromZone: ZoneType = 'hand',
+	xValue = 0,
+	castMode?: 'normal' | 'overload'
+): { ok: boolean; error?: string } {
+	return withStableLayerInputs(state, () =>
+		checkSpellCastLegalityInner(state, actorId, inst, fromZone, xValue, castMode)
+	);
+}
+
+function checkSpellCastLegalityInner(
 	state: GameState,
 	actorId: string,
 	inst: CardInstance,
@@ -7304,7 +7406,17 @@ export function checkSpellCastLegality(
 	return { ok: true };
 }
 
+/** Whether `actorId` may activate `ab` of `perm` now. Read-only, one validation (Phase 6d). */
 export function checkAbilityActivationLegality(
+	state: GameState,
+	actorId: string,
+	perm: CardInstance,
+	ab: EffectiveActivatedAbility
+): { ok: boolean; error?: string } {
+	return withStableLayerInputs(state, () => checkAbilityActivationLegalityInner(state, actorId, perm, ab));
+}
+
+function checkAbilityActivationLegalityInner(
 	state: GameState,
 	actorId: string,
 	perm: CardInstance,

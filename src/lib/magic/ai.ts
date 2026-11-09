@@ -15,6 +15,7 @@ import {
 } from './engine.ts';
 import type { EffectStep, RestrictionKind, TargetSpec } from './ir.ts';
 import { chooseBotAnswer } from './runtime/choices.ts';
+import { withStableLayerInputs } from './runtime/layerCache.ts';
 import { evaluateCondition, matchesObjectFilter } from './runtime/objectFilter.ts';
 import type { CardInstance, GameState, PlayerGameState, ScryfallCard, StackItem, TargetRef } from './types.ts';
 
@@ -24,6 +25,15 @@ import type { CardInstance, GameState, PlayerGameState, ScryfallCard, StackItem,
  * Aura/Equipment, or from another active permanent's static restriction filter.
  */
 export function hasRestriction(
+	state: GameState,
+	perm: CardInstance,
+	restriction: RestrictionKind | RestrictionKind[]
+): boolean {
+	// Read-only: one layer-cache validation for the whole scan (Phase 6d).
+	return withStableLayerInputs(state, () => hasRestrictionInner(state, perm, restriction));
+}
+
+function hasRestrictionInner(
 	state: GameState,
 	perm: CardInstance,
 	restriction: RestrictionKind | RestrictionKind[]
@@ -162,6 +172,11 @@ function chooseBotModalSpell(
 }
 
 export function hasAnyLegalInstantResponse(state: GameState, player: PlayerGameState): boolean {
+	// Read-only (Phase 6d).
+	return withStableLayerInputs(state, () => hasAnyLegalInstantResponseInner(state, player));
+}
+
+function hasAnyLegalInstantResponseInner(state: GameState, player: PlayerGameState): boolean {
 	for (const cardInst of player.hand) {
 		const types = compileCard(cardInst.card).faces[0].characteristics.types;
 		if (types.includes('Land') && !types.includes('Creature')) {
@@ -287,41 +302,45 @@ function executeBotStep(
 			attacksAgainstBot.length > 0 &&
 			!(state.combat.declaredBlockersPlayerIds || []).includes(bot.playerId)
 		) {
-			const assignments: Array<{ blockerInstanceId: string; attackerInstanceId: string }> = [];
-			const usedBlockers = new Set<string>();
+			// Decide the blocks in one read-only pass (Phase 6d); the action is applied outside it.
+			const assignments = withStableLayerInputs(state, () => {
+				const assignments: Array<{ blockerInstanceId: string; attackerInstanceId: string }> = [];
+				const usedBlockers = new Set<string>();
 
-			for (const atk of attacksAgainstBot) {
-				if (atk.blockerInstanceIds.length > 0) continue;
-				const atkOwner = state.players.find((p) => p.playerId === atk.controllerId);
-				const atkCard = atkOwner?.battlefield.find(
-					(c) => !c.phasedOut && c.instanceId === atk.attackerInstanceId
-				);
-				if (!atkCard) continue;
-				if (hasRestriction(state, atkCard, 'cantBeBlocked')) continue;
-				if (hasKeyword(atkCard, 'Menace', state)) continue; // Keep simple single blocks safe
+				for (const atk of attacksAgainstBot) {
+					if (atk.blockerInstanceIds.length > 0) continue;
+					const atkOwner = state.players.find((p) => p.playerId === atk.controllerId);
+					const atkCard = atkOwner?.battlefield.find(
+						(c) => !c.phasedOut && c.instanceId === atk.attackerInstanceId
+					);
+					if (!atkCard) continue;
+					if (hasRestriction(state, atkCard, 'cantBeBlocked')) continue;
+					if (hasKeyword(atkCard, 'Menace', state)) continue; // Keep simple single blocks safe
 
-				const atkFly = hasKeyword(atkCard, 'Flying', state);
-				const candidate = bot.battlefield.find((b) => {
-					if (b.phasedOut || usedBlockers.has(b.instanceId) || b.tapped) return false;
-					if (!evaluatePermanent(state, b).isCreature) return false;
-					if (hasRestriction(state, b, ['cantBlock', 'cantAttackOrBlock'])) return false;
-					if (atkFly && !hasKeyword(b, 'Flying', state) && !hasKeyword(b, 'Reach', state)) {
-						return false;
-					}
-					const bTough = getCreatureToughness(b, state);
-					const aPwr = getCreaturePower(atkCard, state);
-					// Block if blocker survives OR attacker is lethal/big (>4 power)
-					return bTough > aPwr || aPwr >= 4 || bot.life <= aPwr;
-				});
-
-				if (candidate) {
-					usedBlockers.add(candidate.instanceId);
-					assignments.push({
-						blockerInstanceId: candidate.instanceId,
-						attackerInstanceId: atk.attackerInstanceId
+					const atkFly = hasKeyword(atkCard, 'Flying', state);
+					const candidate = bot.battlefield.find((b) => {
+						if (b.phasedOut || usedBlockers.has(b.instanceId) || b.tapped) return false;
+						if (!evaluatePermanent(state, b).isCreature) return false;
+						if (hasRestriction(state, b, ['cantBlock', 'cantAttackOrBlock'])) return false;
+						if (atkFly && !hasKeyword(b, 'Flying', state) && !hasKeyword(b, 'Reach', state)) {
+							return false;
+						}
+						const bTough = getCreatureToughness(b, state);
+						const aPwr = getCreaturePower(atkCard, state);
+						// Block if blocker survives OR attacker is lethal/big (>4 power)
+						return bTough > aPwr || aPwr >= 4 || bot.life <= aPwr;
 					});
+
+					if (candidate) {
+						usedBlockers.add(candidate.instanceId);
+						assignments.push({
+							blockerInstanceId: candidate.instanceId,
+							attackerInstanceId: atk.attackerInstanceId
+						});
+					}
 				}
-			}
+				return assignments;
+			});
 
 			const bRes = applyGameAction(state, bot.playerId, {
 				type: 'declare_blockers',
@@ -349,9 +368,17 @@ function executeBotStep(
 
 		// 2b. Try casting Commander from Command Zone if affordable and legal
 		for (const cmd of bot.command) {
-			if (checkSpellCastLegality(state, bot.playerId, cmd, 'command', 0).ok) {
-				const targets = chooseBotTargetsForCard(state, bot, cmd);
-				const costPayment = chooseBotSpellCostPayment(state, bot, cmd, 0);
+			// Read-only decision (Phase 6d); the cast is applied outside the scope.
+			const plan = withStableLayerInputs(state, () =>
+				checkSpellCastLegality(state, bot.playerId, cmd, 'command', 0).ok
+					? {
+							targets: chooseBotTargetsForCard(state, bot, cmd),
+							costPayment: chooseBotSpellCostPayment(state, bot, cmd, 0)
+						}
+					: null
+			);
+			if (plan) {
+				const { targets, costPayment } = plan;
 				const res = applyGameAction(state, bot.playerId, {
 					type: 'cast_spell',
 					instanceId: cmd.instanceId,
@@ -364,42 +391,51 @@ function executeBotStep(
 		}
 
 		// 2c. Try casting a playable non-counterspell card from hand (prioritize ramp/artifacts/creatures)
-		const opponentCreatureCount = state.players
-			.filter((p) => p.playerId !== bot.playerId && !p.lost)
-			.reduce(
-				(acc, p) =>
-					acc +
-					p.battlefield.filter((b) => !b.phasedOut && evaluatePermanent(state, b).isCreature)
-						.length,
-				0
-			);
-		const ownPermanentCount = bot.battlefield.filter(
-			(b) => !b.phasedOut && !evaluatePermanent(state, b).isLand
-		).length;
+		// Read-only: the castable list is computed in one layer-cache validation (Phase 6d).
+		const castable = withStableLayerInputs(state, () => {
+			const opponentCreatureCount = state.players
+				.filter((p) => p.playerId !== bot.playerId && !p.lost)
+				.reduce(
+					(acc, p) =>
+						acc +
+						p.battlefield.filter((b) => !b.phasedOut && evaluatePermanent(state, b).isCreature)
+							.length,
+					0
+				);
+			const ownPermanentCount = bot.battlefield.filter(
+				(b) => !b.phasedOut && !evaluatePermanent(state, b).isLand
+			).length;
 
-		const castable = bot.hand
-			.filter((c) => {
-				const types = compileCard(c.card).faces[0].characteristics.types;
-				if (types.includes('Land')) return false;
-				if (isCounterSpellCard(c.card)) return false;
-				// Do not waste pure protection tricks on an empty board / proactive main phase
-				if (isProtectionTrickCard(c.card)) {
-					return false;
-				}
-				// Do not cast board wipes if opponents control fewer than 2 creatures
-				if (isCreatureBoardWipeCard(c.card) && opponentCreatureCount < 2) {
-					return false;
-				}
-				return checkSpellCastLegality(state, bot.playerId, c, 'hand', 0).ok;
-			})
-			.sort((a, b) => a.card.cmc - b.card.cmc);
+			return bot.hand
+				.filter((c) => {
+					const types = compileCard(c.card).faces[0].characteristics.types;
+					if (types.includes('Land')) return false;
+					if (isCounterSpellCard(c.card)) return false;
+					// Do not waste pure protection tricks on an empty board / proactive main phase
+					if (isProtectionTrickCard(c.card)) {
+						return false;
+					}
+					// Do not cast board wipes if opponents control fewer than 2 creatures
+					if (isCreatureBoardWipeCard(c.card) && opponentCreatureCount < 2) {
+						return false;
+					}
+					return checkSpellCastLegality(state, bot.playerId, c, 'hand', 0).ok;
+				})
+				.sort((a, b) => a.card.cmc - b.card.cmc);
+		});
 
 		for (const cardInst of castable) {
 			const modal = compileSpellEffects(cardInst.card)?.modal;
 			if (modal) {
-				const chosen = chooseBotModalSpell(state, bot, cardInst);
-				if (!chosen) continue;
-				const costPayment = chooseBotSpellCostPayment(state, bot, cardInst, 0);
+				// Read-only decision (Phase 6d).
+				const planned = withStableLayerInputs(state, () => {
+					const chosen = chooseBotModalSpell(state, bot, cardInst);
+					return chosen
+						? { chosen, costPayment: chooseBotSpellCostPayment(state, bot, cardInst, 0) }
+						: null;
+				});
+				if (!planned) continue;
+				const { chosen, costPayment } = planned;
 				const res = applyGameAction(state, bot.playerId, {
 					type: 'cast_spell',
 					instanceId: cardInst.instanceId,
@@ -410,12 +446,16 @@ function executeBotStep(
 				if (res.ok) return true;
 				continue;
 			}
-			const targets = chooseBotTargetsForCard(state, bot, cardInst);
-			const spec = cardSpellTargetSpec(cardInst.card);
-			const minTargets = spec ? spec.min : 0;
-			if (minTargets > 0 && targets.length < minTargets) continue;
-
-			const costPayment = chooseBotSpellCostPayment(state, bot, cardInst, 0);
+			// Read-only decision (Phase 6d).
+			const planned = withStableLayerInputs(state, () => {
+				const targets = chooseBotTargetsForCard(state, bot, cardInst);
+				const spec = cardSpellTargetSpec(cardInst.card);
+				const minTargets = spec ? spec.min : 0;
+				if (minTargets > 0 && targets.length < minTargets) return null;
+				return { targets, costPayment: chooseBotSpellCostPayment(state, bot, cardInst, 0) };
+			});
+			if (!planned) continue;
+			const { targets, costPayment } = planned;
 			const res = applyGameAction(state, bot.playerId, {
 				type: 'cast_spell',
 				instanceId: cardInst.instanceId,
@@ -426,54 +466,70 @@ function executeBotStep(
 		}
 
 		// 2d. Try activating unattached Equipment (activated.attach) onto a controlled creature
-		const ownCreatures = bot.battlefield
-			.filter(
-				(perm) =>
-					!perm.phasedOut &&
-					evaluatePermanent(state, perm).isCreature &&
-					!hasKeyword(perm, 'Shroud', state)
-			)
-			.sort((a, b) => getCreaturePower(b, state) - getCreaturePower(a, state));
+		// Read-only (Phase 6d).
+		const ownCreatures = withStableLayerInputs(state, () =>
+			bot.battlefield
+				.filter(
+					(perm) =>
+						!perm.phasedOut &&
+						evaluatePermanent(state, perm).isCreature &&
+						!hasKeyword(perm, 'Shroud', state)
+				)
+				.sort((a, b) => getCreaturePower(b, state) - getCreaturePower(a, state))
+		);
 		if (ownCreatures.length > 0) {
 			const cmdId = getPlayerCommanderIdentity(bot);
-			for (const perm of bot.battlefield) {
-				if (perm.phasedOut || perm.attachedToId) continue;
-				const abilities = getEffectiveActivatedAbilities(state, bot, perm, cmdId);
-				const equipAb = abilities.find((ab) => ab.id.startsWith('equip_'));
-				if (
-					equipAb &&
-					checkAbilityActivationLegality(state, bot.playerId, perm, equipAb).ok
-				) {
-					const targetCreature = ownCreatures[0];
-					const res = applyGameAction(state, bot.playerId, {
-						type: 'activate_ability',
-						instanceId: perm.instanceId,
-						abilityId: equipAb.id,
-						targets: [
-							{
-								kind: 'permanent',
-								id: targetCreature.instanceId,
-								label: targetCreature.card.name
-							}
-						]
-					});
-					if (res.ok) return true;
-				}
+			// Scan the battlefield in order for the next activatable Equip ability, in one read-only
+			// pass per attempt (Phase 6d); a failed activation resumes the scan after that permanent.
+			let next = 0;
+			for (;;) {
+				const found = withStableLayerInputs(state, () => {
+					for (; next < bot.battlefield.length; next++) {
+						const perm = bot.battlefield[next];
+						if (perm.phasedOut || perm.attachedToId) continue;
+						const abilities = getEffectiveActivatedAbilities(state, bot, perm, cmdId);
+						const ab = abilities.find((a) => a.id.startsWith('equip_'));
+						if (ab && checkAbilityActivationLegality(state, bot.playerId, perm, ab).ok) {
+							next += 1;
+							return { perm, equipAb: ab };
+						}
+					}
+					return null;
+				});
+				if (!found) break;
+				const { perm, equipAb } = found;
+				const targetCreature = ownCreatures[0];
+				const res = applyGameAction(state, bot.playerId, {
+					type: 'activate_ability',
+					instanceId: perm.instanceId,
+					abilityId: equipAb.id,
+					targets: [
+						{
+							kind: 'permanent',
+							id: targetCreature.instanceId,
+							label: targetCreature.card.name
+						}
+					]
+				});
+				if (res.ok) return true;
 			}
 		}
 	}
 
 	// 3. If it's the bot's Declare Attackers step and Stack is empty
 	if (isBotsTurn && state.phase === 'declare_attackers' && state.stack.length === 0 && !state.combat.active) {
-		const eligibleAttackers = bot.battlefield.filter(
-			(c) =>
-				!c.phasedOut &&
-				evaluatePermanent(state, c).isCreature &&
-				!c.tapped &&
-				(!c.summoningSick || hasKeyword(c, 'Haste', state)) &&
-				!hasKeyword(c, 'Defender', state) &&
-				!hasRestriction(state, c, ['cantAttack', 'cantAttackOrBlock']) &&
-				getCreaturePower(c, state) >= 2
+		// Read-only (Phase 6d).
+		const eligibleAttackers = withStableLayerInputs(state, () =>
+			bot.battlefield.filter(
+				(c) =>
+					!c.phasedOut &&
+					evaluatePermanent(state, c).isCreature &&
+					!c.tapped &&
+					(!c.summoningSick || hasKeyword(c, 'Haste', state)) &&
+					!hasKeyword(c, 'Defender', state) &&
+					!hasRestriction(state, c, ['cantAttack', 'cantAttackOrBlock']) &&
+					getCreaturePower(c, state) >= 2
+			)
 		);
 
 		const opponents = state.players
@@ -646,6 +702,20 @@ function targetIsHarmed(steps: EffectStep[], index: number): boolean {
  * a candidate is on the right side.
  */
 export function chooseBotTriggerTargets(
+	state: GameState,
+	bot: PlayerGameState,
+	steps: EffectStep[],
+	index: number,
+	spec: TargetSpec,
+	legal: TargetRef[]
+): TargetRef[] {
+	// Read-only (Phase 6d).
+	return withStableLayerInputs(state, () =>
+		chooseBotTriggerTargetsInner(state, bot, steps, index, spec, legal)
+	);
+}
+
+function chooseBotTriggerTargetsInner(
 	state: GameState,
 	bot: PlayerGameState,
 	steps: EffectStep[],

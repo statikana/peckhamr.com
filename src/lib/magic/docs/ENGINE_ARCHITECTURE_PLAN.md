@@ -1139,6 +1139,70 @@ Results are unchanged: layer snapshots and golden games pass without regeneratin
   tick in which ~30 permanents die, so most of the cost is real re-evaluation); seed 2:
   2.79 s → 398 ms.
 
+#### Phase 6d: second cache regression fix ✅ done 2026-11-09 (branch `engine-rewrite-perf3`)
+Results are unchanged: layer snapshots and golden games pass without regenerating, and six seeded
+4-bot games (seeds 1–6) hash identically, tick by tick, to `bddf961`.
+- **Problem:** read-only queries added after 6c ran outside any trust scope, each doing an O(n)
+  validation, often once per permanent. The board was also re-evaluated far more often than
+  needed, for two reasons:
+  - the untap step and attacker tapping interleaved `tapped` writes with layer queries, so each
+    write invalidated the cache for the next permanent's check;
+  - the dynamic fingerprint keyed every evaluation on tapped state, life, hand and graveyard sizes,
+    the turn and the active player, even when no static ability read them.
+
+  On top of that, V8 kept deoptimising and recompiling the single ~850-line board evaluation
+  (TurboFan compiles of ~150 ms each).
+- **Strategy:** there is still no `state.version`.
+  - **Untap and attack decisions are hoisted.** CR 502.3 and 508.1f make these simultaneous, so
+    "doesn't untap" and vigilance are decided in one scope before any permanent changes. Before
+    committing, an in-loop assertion confirmed this agrees with the old order across the suite
+    and six games.
+  - **One scope per read-only entry point:**
+    - `checkSpellCastLegality`, `checkAbilityActivationLegality`, `checkLandPlayLegality`,
+      `validateTargetLegality`, `getAllLegalTargetsForRequirement` and `hasRequiredLegalTargets`;
+    - `effectiveSpellManaCost` and `effectiveAbilityManaCost`;
+    - `matchTriggers`;
+    - SBA step 7's can't-lose scan;
+    - `ai.ts`: `hasRestriction`, `hasAnyLegalInstantResponse`, `chooseBotTriggerTargets`, and each
+      bot decision pass. `applyGameAction` always runs outside the scopes.
+
+    `canPayManaAfterTaps`, which taps hypothetically, notes the change before and after.
+  - **Read-tracked fingerprint.** The evaluation records which non-board inputs it read, and the
+    fingerprint keeps only those:
+    - a `tapped` filter;
+    - life;
+    - zone sizes (`cardsIn`, now including library, exile and command);
+    - graveyard contents;
+    - the active player (`isTurnOf`).
+
+    Each permanent's own counters, temporary P/T, switch, suspend and granted keywords are always
+    fingerprinted. The evaluation is a deterministic function of what it reads, so unchanged
+    reads mean an unchanged result.
+  - **The evaluation is split into one function per pass,** moved verbatim.
+  - **Pure memos:**
+    - `compileCard` keeps a `WeakMap` from each card object to its definition, re-checking every
+      field the key reads;
+    - `hasSubType` uses a per-type-line subtype set.
+- **Checks:**
+  - Full suite under `MAGIC_LAYER_CACHE_CHECK=verbose`: 875/875 pass, 2,377,578 checks
+    (1,159,691 scope checks). The 2 mismatches are the two deliberate stale-scope tests.
+  - Seeded games under the cross-check, 0 mismatches:
+    - seed 1: 1,713,025 checks (848,507 scope checks);
+    - seed 2: 2,165,257 checks (1,073,666 scope checks).
+  - New tests: `runtime/layerCache.phase6d.test.ts`.
+- **Timing (Node 24, `measure.mts`, max CPU per bot tick, median of 3 runs, same machine and
+  session):**
+
+  | Permanents | seed 1 before | seed 1 after | seed 2 before | seed 2 after |
+  |---|---|---|---|---|
+  | 60–69 | 207 ms | 58 ms | 291 ms | 83 ms |
+  | 70–79 | 275 ms | 94 ms | 379 ms | 129 ms |
+  | 80–89 | 258 ms | 105 ms | 281 ms | 81 ms |
+  | 100–109 | 357 ms | 88 ms | 506 ms | 114 ms |
+
+  `measure.mts` counts process CPU, including V8's GC and compiler threads. The worst main-thread
+  wall time per tick fell from ~230 / 365 ms to ~50 ms.
+
 ### Phase 7: Replacement effects and rule modifiers ✅ done 2026-11-08 (branch `engine-rewrite-phase7`)
 - **Owns:** `runtime/replace.ts`; the rule helpers at the end of `ruleTree.ts`, draw-from-empty,
   hand size, attack tax, player hexproof in `engine.ts`.

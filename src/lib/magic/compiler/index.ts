@@ -18,8 +18,61 @@ export const COMPILER_VERSION = 4;
 
 const CACHE = new Map<string, CardDefinition>();
 
+/**
+ * Phase 6d: the definition last returned for each card object, so repeat calls with the same object
+ * skip rebuilding and hashing the source text. A hit also requires every field `sourceText` and the
+ * key read to be unchanged, so a card mutated in place still recompiles.
+ */
+interface CardMemo {
+	def: CardDefinition;
+	oracleId: string | undefined;
+	id: string;
+	name: string;
+	manaCost: string;
+	typeLine: string;
+	oracleText: string;
+	power: string | undefined;
+	toughness: string | undefined;
+	loyalty: string | undefined;
+	colors: string[];
+	backFace: ScryfallCard['backFace'];
+	backName: string | undefined;
+	backManaCost: string | undefined;
+	backTypeLine: string | undefined;
+	backOracleText: string | undefined;
+}
+
+let BY_CARD = new WeakMap<ScryfallCard, CardMemo>();
+
 export function clearCompileCache(): void {
 	CACHE.clear();
+	BY_CARD = new WeakMap();
+}
+
+function memoMatches(m: CardMemo, card: ScryfallCard): boolean {
+	const back = card.backFace;
+	if (
+		m.oracleId !== card.oracleId ||
+		m.id !== card.id ||
+		m.name !== card.name ||
+		m.manaCost !== card.manaCost ||
+		m.typeLine !== card.typeLine ||
+		m.oracleText !== card.oracleText ||
+		m.power !== card.power ||
+		m.toughness !== card.toughness ||
+		m.loyalty !== card.loyalty ||
+		m.backFace !== back ||
+		m.backName !== back?.name ||
+		m.backManaCost !== back?.manaCost ||
+		m.backTypeLine !== back?.typeLine ||
+		m.backOracleText !== back?.oracleText
+	) {
+		return false;
+	}
+	const colors = card.colors;
+	if (m.colors.length !== colors.length) return false;
+	for (let i = 0; i < colors.length; i++) if (m.colors[i] !== colors[i]) return false;
+	return true;
 }
 
 function sourceText(card: ScryfallCard): string {
@@ -38,6 +91,32 @@ function sourceText(card: ScryfallCard): string {
 }
 
 export function compileCard(card: ScryfallCard): CardDefinition {
+	const memo = BY_CARD.get(card);
+	if (memo && memoMatches(memo, card)) return memo.def;
+	const def = compileCardByText(card);
+	const back = card.backFace;
+	BY_CARD.set(card, {
+		def,
+		oracleId: card.oracleId,
+		id: card.id,
+		name: card.name,
+		manaCost: card.manaCost,
+		typeLine: card.typeLine,
+		oracleText: card.oracleText,
+		power: card.power,
+		toughness: card.toughness,
+		loyalty: card.loyalty,
+		colors: [...card.colors],
+		backFace: back,
+		backName: back?.name,
+		backManaCost: back?.manaCost,
+		backTypeLine: back?.typeLine,
+		backOracleText: back?.oracleText
+	});
+	return def;
+}
+
+function compileCardByText(card: ScryfallCard): CardDefinition {
 	const oracleId = card.oracleId ?? card.id;
 	const textHash = hashText(sourceText(card));
 	const key = `${oracleId}:${textHash}:${COMPILER_VERSION}`;
