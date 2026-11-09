@@ -850,7 +850,17 @@
 								"start": 45,
 								"end": 87
 							}
-						]
+						],
+						"legacyId": "cast_normal",
+						"cost": [
+							{
+								"k": "payLife",
+								"amount": {
+									"k": "x"
+								}
+							}
+						],
+						"costComplete": true
 					}
 				]
 			}

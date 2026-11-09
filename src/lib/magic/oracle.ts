@@ -314,6 +314,9 @@ export function parseActivatedAbilities(
 		const sorcerySpeedOnly = /activate only as a sorcery|equip only as a sorcery/i.test(effectPart);
 
 		const targetInfo = detectTargetRequirement(effectPart);
+		// CR 605.1a: no target, adds mana, not a loyalty ability. Its cost can be more than {T}
+		// ("{T}, Sacrifice this artifact: Add one mana of any color." on a Treasure).
+		const manaEffect = targetInfo.requiresTarget ? null : parseManaEffect(effectPart, commanderIdentity);
 		abilities.push({
 			id: `act_${idx}`,
 			label: `${costPart}: ${effectPart.slice(0, 45)}`,
@@ -323,10 +326,10 @@ export function parseActivatedAbilities(
 			requiresSacrificeSelf,
 			lifeCost,
 			loyaltyCost: null,
-			isManaAbility: false,
+			isManaAbility: manaEffect !== null,
 			sorcerySpeedOnly,
-			producesMana: [],
-			producesAmount: 0,
+			producesMana: manaEffect?.colors ?? [],
+			producesAmount: manaEffect?.amount ?? 0,
 			effectText: effectPart,
 			requiresTarget: targetInfo.requiresTarget,
 			targetKind: targetInfo.targetKind
@@ -334,6 +337,31 @@ export function parseActivatedAbilities(
 	});
 
 	return abilities;
+}
+
+/** The mana an "Add ..." effect produces, or null if the effect isn't (only) adding mana. */
+function parseManaEffect(
+	effectText: string,
+	commanderIdentity: ManaColor[]
+): { colors: ManaColor[]; amount: number } | null {
+	const text = effectText.replace(/\([^)]*\)/g, '').trim();
+	const anyColors: ManaColor[] = commanderIdentity.length > 0 ? commanderIdentity : ['W', 'U', 'B', 'R', 'G'];
+	if (/^add one mana of any color(?: in your commander's color identity)?\.$/i.test(text)) {
+		return { colors: anyColors, amount: 1 };
+	}
+	const anyOne = text.match(/^add (two|three) mana of any one color\.$/i);
+	if (anyOne) return { colors: anyColors, amount: anyOne[1].toLowerCase() === 'two' ? 2 : 3 };
+	const syms = (s: string) => (s.match(/\{([WUBRGC])\}/gi) || []).map((m) => m[1].toUpperCase() as ManaColor);
+	if (/^add (?:\{[WUBRGC]\})+\.$/i.test(text)) {
+		const all = syms(text);
+		return { colors: Array.from(new Set(all)), amount: all.length };
+	}
+	if (/^add \{[WUBRGC]\}(?:, \{[WUBRGC]\})*,? or \{[WUBRGC]\}\.$/i.test(text)) {
+		return { colors: Array.from(new Set(syms(text))), amount: 1 };
+	}
+	const dynamic = text.match(/^add (?:\{([WUBRGC])\} for each\b|an amount of \{([WUBRGC])\})/i);
+	if (dynamic) return { colors: [(dynamic[1] ?? dynamic[2]).toUpperCase() as ManaColor], amount: 1 };
+	return null;
 }
 
 function escapeRegex(s: string): string {

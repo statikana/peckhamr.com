@@ -646,6 +646,8 @@ function adaptSpell(ctx: AdapterContext, lines: NormalizedLine[]): AbilityDef[] 
 	const text = lines.map((l) => l.text).join('\n');
 	const additional = parseAdditionalCostsAndRestrictions(ctx.card);
 	const statics: AbilityDef[] = [];
+	let hasAdditionalCost = false;
+	let additionalCostComplete = true;
 
 	const unparsed: Span[] = [];
 	const additionalCosts: CostDef[] = [];
@@ -670,6 +672,8 @@ function adaptSpell(ctx: AdapterContext, lines: NormalizedLine[]): AbilityDef[] 
 				// Phase 4: the cost grammar replaces the legacy additional-cost translation.
 				const parsed = parseAdditionalCostSentence(s.text, s.span.start) ?? { defs: [], unparsed: [s.span] };
 				unparsed.push(...parsed.unparsed);
+				hasAdditionalCost = true;
+				if (parsed.unparsed.length > 0) additionalCostComplete = false;
 				ctx.log?.costs.push({
 					kind: 'additional',
 					rawIndex: group[0].rawIndex,
@@ -707,7 +711,14 @@ function adaptSpell(ctx: AdapterContext, lines: NormalizedLine[]): AbilityDef[] 
 	if (!modal && effect.length === 0 && unparsed.length === 0) unparsed.push(span);
 	if (!castNode || castNode.requiresGuidedResolution) unparsed.push(span);
 
-	if (unparsed.length > 0) return [...statics, unsupported('unparsed', text, span, dedupeSpans(unparsed))];
+	if (unparsed.length > 0) {
+		const u = unsupported('unparsed', text, span, dedupeSpans(unparsed));
+		// Phase 4: the runtime still pays the additional cost of a spell the legacy path resolves.
+		const costInfo = hasAdditionalCost
+			? { legacyId: 'cast_normal', cost: additionalCosts, costComplete: additionalCostComplete }
+			: {};
+		return [...statics, { ...u, ...costInfo }];
+	}
 	if (delayed.length > 0 && effect.length > 0) effect[effect.length - 1].delayed = delayed[0];
 	return [
 		...statics,
@@ -764,6 +775,17 @@ function adaptStatic(ctx: AdapterContext, group: NormalizedLine[]): AbilityDef {
 	if (group.length === 1) {
 		const costModifier = parseCostModifierSentence(group[0].body);
 		if (costModifier) return { kind: 'static', static: costModifier, span };
+		// A permanent spell's additional cost. The IR has no ability kind for it yet, so it stays
+		// unsupported but carries the parsed cost for the runtime (Phase 4).
+		const additional = parseAdditionalCostSentence(group[0].body, group[0].bodySpan.start);
+		if (additional) {
+			return {
+				...unsupported('static_not_compiled', text, span, [span]),
+				legacyId: 'cast_normal',
+				cost: additional.defs,
+				costComplete: additional.unparsed.length === 0
+			};
+		}
 		const lineTree = getCardRuleTree({ ...ctx.card, oracleText: group[0].raw }, ALL_COLORS);
 		const defs = lineTree.hooks.map(translateHook).filter((d): d is StaticDef => d !== null);
 		if (defs.length === 1) return { kind: 'static', static: defs[0], span };

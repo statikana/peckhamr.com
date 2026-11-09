@@ -8,6 +8,7 @@ import {
 	createInitialGameState,
 	createTokenOnBoard as rawCreateTokenOnBoard,
 	drawCards as rawDrawCards,
+	getEffectiveActivatedAbilities,
 	movePermanentToZone as rawMovePermanentToZone,
 	resolveTopOfStack as rawResolveTopOfStack
 } from '../engine.ts';
@@ -273,7 +274,10 @@ describe('Zone-change behaviour pins: draw, land, cast, suspend', () => {
 		assert.notEqual(talisman.enteredTimestamp, before.ts);
 	});
 
-	it('treasure_sac: the token just disappears from the battlefield (no graveyard, no bookkeeping)', () => {
+	it('Treasure (Phase 4 fix): its parsed mana ability sacrifices it like any permanent; the token then ceases to exist', () => {
+		// Was: a name check and a bare removal (no graveyard, no bookkeeping). Now "{T}, Sacrifice this
+		// artifact: Add one mana of any color." is paid from the IR: battlefield -> graveyard (one
+		// ZoneChange, checked by the wrapper), and the token ceases to exist there (CR 111.7).
 		const { state, p1 } = newGame();
 		const treasure = createTokenOnBoard(state, p1, {
 			name: 'Treasure',
@@ -284,17 +288,19 @@ describe('Zone-change behaviour pins: draw, land, cast, suspend', () => {
 			keywords: []
 		});
 		assert.equal(p1.battlefield[p1.battlefield.length - 1], treasure);
-		assert.equal(treasure.enteredTimestamp, state.nextTimestamp);
+		const ab = getEffectiveActivatedAbilities(state, p1, treasure).find((a) => a.isManaAbility);
+		assert.ok(ab, 'the Treasure has a mana ability');
 		const gyBefore = p1.graveyard.length;
-		const ts = state.nextTimestamp;
+		const manaBefore = Object.values(p1.manaPool).reduce((a, b) => a + b, 0);
+		const before = marks(treasure);
 		assert.equal(
-			applyGameAction(state, p1.playerId, { type: 'activate_ability', instanceId: treasure.instanceId, abilityId: 'treasure_sac' }).ok,
+			applyGameAction(state, p1.playerId, { type: 'activate_ability', instanceId: treasure.instanceId, abilityId: ab.id }).ok,
 			true
 		);
 		assert.ok(!p1.battlefield.includes(treasure));
 		assert.equal(p1.graveyard.length, gyBefore);
-		assert.equal(treasure.zone, 'battlefield');
-		assert.equal(state.nextTimestamp, ts);
+		assert.equal(Object.values(p1.manaPool).reduce((a, b) => a + b, 0), manaBefore + 1);
+		assert.equal(treasure.objectVersion, before.v + 1);
 	});
 });
 

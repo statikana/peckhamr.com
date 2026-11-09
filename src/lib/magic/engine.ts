@@ -93,11 +93,27 @@ import {
 	endAction,
 	registerEventHandler
 } from './runtime/events.ts';
+import {
+	ALTERNATIVE_COST_KEYWORDS,
+	activatedAbilityCost,
+	canPayCosts,
+	chooseCostPayment,
+	effectiveSpellManaCost,
+	keywordCost,
+	manaAbilityAmount,
+	payPlannedCosts,
+	planCosts,
+	spellAdditionalCost,
+	type CostContext,
+	type CostQuestion
+} from './runtime/costs.ts';
+import { evaluateAmount } from './runtime/objectFilter.ts';
 
 export { allocateTimestamp, shuffleArray };
 import {
 	PHASE_LABELS,
 	type CardInstance,
+	type CostPayment,
 	type CounterType,
 	type DelayedTrigger,
 	type GameActionPayload,
@@ -413,7 +429,8 @@ function isOverloadCastMode(
 	castMode?: 'normal' | 'overload'
 ): boolean {
 	if (!card) return false;
-	const hasOverload = getCardRuleTree(card).actions.some((a) => a.path === 'cast.overload');
+	const hasOverload =
+		Boolean(ALTERNATIVE_COST_KEYWORDS.overload) && keywordCost(card, 'overload') !== null;
 	if (!hasOverload) return false;
 	if (castMode === 'overload') return true;
 	if (castMode === 'normal') return false;
@@ -446,69 +463,112 @@ export function getSpellCostRequirement(
 		return req;
 	};
 
-	// Evaluate via the standardized CardRuleTree + active BoardModifierHookNodes
 	const isOverload = isOverloadCastMode(inst.card, xValue, castMode);
-	const targetCastPath = isOverload ? 'cast.overload' : 'cast.normal';
-	const evaluated = evaluateActionNode(
-		state,
-		player.playerId,
-		inst,
-		targetCastPath,
-		isOverload ? 0 : xValue
-	);
-	if (evaluated) {
-		return applyAnyColorPermission(evaluated.effectiveCostRequirement);
-	}
-
-	return applyAnyColorPermission(parseManaCost(inst.card.manaCost, xValue));
+	return applyAnyColorPermission(effectiveSpellManaCost(state, player, inst, xValue, isOverload));
 }
 
+export function chooseBotSpellCostPayment(
+	state: GameState,
+	player: PlayerGameState,
+	inst: CardInstance,
+	xValue = 0,
+	castMode?: 'normal' | 'overload'
+): CostPayment | undefined {
+	const additional = spellAdditionalCost(inst.card);
+	if (!additional || additional.defs.length === 0) return undefined;
+	const costReq = getSpellCostRequirement(player, inst, state, xValue, castMode);
+	return chooseCostPayment(costContext(state, player, inst, xValue, true, costReq), additional.defs) ?? undefined;
+}
+
+/**
+ * The amount a mana ability adds. Dynamic amounts ("for each Elf you control", "equal to ~'s power")
+ * come from the IR (Phase 4); otherwise the legacy amount. A count of zero adds no mana.
+ */
 function getDynamicManaProducedAmount(
 	state: GameState,
 	player: PlayerGameState,
 	perm: CardInstance,
-	baseAmount: number
+	baseAmount: number,
+	ab?: ParsedActivatedAbility
 ): number {
 	const evalPerm = evaluatePermanent(state, perm);
 	if (evalPerm.losesAllAbilities) return baseAmount;
-
 	const pCard = perm.copiableCard ?? perm.card;
-	const oText = pCard.oracleText || '';
+	const fallback = { id: 'mana_tap' } as ParsedActivatedAbility;
+	const amount = manaAbilityAmount(pCard, ab ?? fallback);
+	if (!amount) return baseAmount;
+	return Math.max(0, evaluateAmount(amount, { state, controllerId: player.playerId, source: perm }));
+}
 
-	const eachControlledMatch = oText.match(
-		/add \{[wubrgc]\} for each ([a-zA-Z]+) you control/i
+/** Builds the context runtime/costs.ts pays costs in. */
+function costContext(
+	state: GameState,
+	player: PlayerGameState,
+	source: CardInstance,
+	xValue: number,
+	isSpell: boolean,
+	baseMana: ManaCostRequirement | null
+): CostContext {
+	return {
+		state,
+		player,
+		source,
+		xValue,
+		isSpell,
+		baseMana,
+		canPayMana: (req) => canPayOrAutoTap(player, req, state),
+		payMana: (req) => payManaWithAutoTap(player, req, state)
+	};
+}
+
+/**
+ * A cost needs the player's choice. Humans get a `cost_choice` prompt holding the action, which is
+ * run again with the answer; bots must send their choices (ai.ts), so for them it's an error.
+ */
+function askCostChoice(
+	state: GameState,
+	actor: PlayerGameState,
+	action: GameActionPayload,
+	question: CostQuestion,
+	sourceName: string
+): { ok: boolean; error?: string } {
+	if (actor.isBot) {
+		return { ok: false, error: `A cost choice is required to pay for ${sourceName}.` };
+	}
+	state.pendingPrompts.push({
+		id: uid('prm'),
+		playerId: actor.playerId,
+		kind: 'cost_choice',
+		title: `Pay the cost of ${sourceName}`,
+		description:
+			question.kind === 'option'
+				? question.optional
+					? 'This cost is optional. Pay it?'
+					: 'Choose which cost to pay.'
+				: `Choose ${question.count}: ${question.label}.`,
+		countRequired: question.kind === 'objects' ? question.count : undefined,
+		candidateInstanceIds: question.kind === 'objects' ? question.candidateIds : undefined,
+		costQuestion: { kind: question.kind, index: question.index },
+		costOptionLabels: question.kind === 'option' ? question.labels : undefined,
+		pendingAction: action
+	});
+	return { ok: true };
+}
+
+/** Mana abilities whose whole cost is {T}: the ones auto-tapping may use (never a sacrifice). */
+function tapOnlyManaAbilities(
+	state: GameState,
+	player: PlayerGameState,
+	perm: CardInstance,
+	cmdIdentity: ManaColor[]
+): ParsedActivatedAbility[] {
+	return getEffectiveActivatedAbilities(state, player, perm, cmdIdentity).filter(
+		(a) =>
+			a.isManaAbility &&
+			activatedAbilityCost(perm.card, a).defs.every(
+				(d) => d.k === 'tapSelf' || (d.k === 'mana' && /^(\{0\})*$/.test(d.cost))
+			)
 	);
-	if (eachControlledMatch) {
-		const rawSub = eachControlledMatch[1];
-		const subtype = rawSub.charAt(0).toUpperCase() + rawSub.slice(1).toLowerCase();
-		return Math.max(
-			1,
-			player.battlefield.filter(
-				(b) => !b.phasedOut && evaluatePermanent(state, b).hasSubType(subtype)
-			).length
-		);
-	}
-
-	const eachOnBoardMatch = oText.match(
-		/add \{[wubrgc]\} for each ([a-zA-Z]+) on the battlefield/i
-	);
-	if (eachOnBoardMatch) {
-		const rawSub = eachOnBoardMatch[1];
-		const subtype = rawSub.charAt(0).toUpperCase() + rawSub.slice(1).toLowerCase();
-		let total = 0;
-		for (const p of state.players) {
-			total += p.battlefield.filter(
-				(b) => !b.phasedOut && evaluatePermanent(state, b).hasSubType(subtype)
-			).length;
-		}
-		return Math.max(1, total);
-	}
-
-	if (/add an amount of \{[wubrgc]\} equal to .+'s power/i.test(oText)) {
-		return Math.max(1, getCreaturePower(perm, state));
-	}
-
-	return baseAmount;
 }
 
 function simulateOrExecuteAutoTap(
@@ -529,6 +589,15 @@ function simulateOrExecuteAutoTap(
 
 	const getProducedAmount = (perm: CardInstance, prodAmount: number): number =>
 		getDynamicManaProducedAmount(state, player, perm, prodAmount);
+	const tapOnly = new Map<string, ParsedActivatedAbility[]>();
+	const manaAbilitiesOf = (perm: CardInstance) => {
+		let abs = tapOnly.get(perm.instanceId);
+		if (!abs) {
+			abs = tapOnlyManaAbilities(state, player, perm, cmdIdentity);
+			tapOnly.set(perm.instanceId, abs);
+		}
+		return abs;
+	};
 
 	// Sort untapped mana sources: most-constrained (fewest colors) first, and non-creatures before creatures
 	const candidates = player.battlefield
@@ -542,9 +611,7 @@ function simulateOrExecuteAutoTap(
 			) {
 				return false;
 			}
-			return getEffectiveActivatedAbilities(state, player, perm, cmdIdentity).some(
-				(a) => a.isManaAbility
-			);
+			return manaAbilitiesOf(perm).length > 0;
 		})
 		.sort((a, b) => {
 			const pa = getPermanentManaProduction(a.card, cmdIdentity);
@@ -565,10 +632,7 @@ function simulateOrExecuteAutoTap(
 		while (pool[col] < req.colored[col]) {
 			const perm = candidates.find((c) => {
 				if (tappedSet.has(c.instanceId)) return false;
-				const manaAbs = getEffectiveActivatedAbilities(state, player, c, cmdIdentity).filter(
-					(a) => a.isManaAbility
-				);
-				return manaAbs.some((a) => a.producesMana.includes(col));
+				return manaAbilitiesOf(c).some((a) => a.producesMana.includes(col));
 			});
 			if (!perm) {
 				return false;
@@ -587,10 +651,7 @@ function simulateOrExecuteAutoTap(
 		if (!perm) {
 			return false;
 		}
-		const manaAbs = getEffectiveActivatedAbilities(state, player, perm, cmdIdentity).filter(
-			(a) => a.isManaAbility
-		);
-		const chosenColor: ManaColor = manaAbs[0]?.producesMana[0] || 'C';
+		const chosenColor: ManaColor = manaAbilitiesOf(perm)[0]?.producesMana[0] || 'C';
 		const prod = getPermanentManaProduction(perm.card, cmdIdentity);
 		const amount = getProducedAmount(perm, prod.amount);
 		tappedSet.add(perm.instanceId);
@@ -953,37 +1014,39 @@ function applyGameActionInner(
 			if (!perm || perm.phasedOut) {
 				return { ok: false, error: 'Permanent not found on your battlefield.' };
 			}
-			if (perm.tapped) return { ok: false, error: `${perm.card.name} is already tapped.` };
 			const evalPerm = evaluatePermanent(state, perm);
-			if (
-				evalPerm.isCreature &&
-				perm.summoningSick &&
-				!hasKeyword(perm, 'Haste', state)
-			) {
-				return {
-					ok: false,
-					error: `${perm.card.name} has summoning sickness and cannot tap for mana yet.`
-				};
-			}
-
 			const cmdId = getPlayerCommanderIdentity(actor);
 			const manaAbs = getEffectiveActivatedAbilities(state, actor, perm, cmdId).filter((a) => a.isManaAbility);
 			if (manaAbs.length === 0) {
 				return { ok: false, error: `${perm.card.name} does not have an active mana ability.` };
 			}
-
-			const allColors = Array.from(new Set(manaAbs.flatMap((a) => a.producesMana)));
+			const preferred = action.preferredColor;
+			const ab = (preferred && manaAbs.find((a) => a.producesMana.includes(preferred))) || manaAbs[0];
 			const chosenColor: ManaColor =
-				action.preferredColor && allColors.includes(action.preferredColor)
-					? action.preferredColor
-					: allColors[0] || 'C';
+				preferred && ab.producesMana.includes(preferred) ? preferred : ab.producesMana[0] || 'C';
+
+			// Phase 4: the ability's whole cost from the IR ({T}, and e.g. "Sacrifice this artifact").
+			const cost = activatedAbilityCost(perm.card, ab);
+			const ctx = costContext(state, actor, perm, 0, false, parseManaCost(ab.manaCost === '{0}' ? '' : ab.manaCost));
+			const plan = planCosts(ctx, cost.defs, action.costPayment);
+			if (!plan.ok) return { ok: false, error: plan.error };
+			if (plan.question) return askCostChoice(state, actor, action, plan.question, perm.card.name);
 
 			const prod = getPermanentManaProduction(perm.card, cmdId);
-			const baseAmount = evalPerm.losesAllAbilities ? 1 : Math.max(1, prod.amount);
-			const amount = getDynamicManaProducedAmount(state, actor, perm, baseAmount);
+			const legacyAmount = ab.id === 'mana_tap' ? prod.amount : ab.producesAmount;
+			const baseAmount = evalPerm.losesAllAbilities ? 1 : Math.max(1, legacyAmount);
+			const amount = getDynamicManaProducedAmount(state, actor, perm, baseAmount, ab);
 
-			perm.tapped = true;
+			const paid = payPlannedCosts(ctx, plan);
 			actor.manaPool[chosenColor] += amount;
+			if (paid.descriptions.length > 0 || cost.defs.some((d) => d.k === 'sacrifice' && d.filter === 'self')) {
+				addLog(
+					state,
+					'rule',
+					`${actor.username} activated ${perm.card.name} for ${amount > 1 ? `${amount}x ` : ''}{${chosenColor}}${paid.descriptions.length > 0 ? ` (${paid.descriptions.join('; ')})` : ''}.`,
+					actorId
+				);
+			}
 			return { ok: true };
 		}
 
@@ -1190,53 +1253,25 @@ function applyGameActionInner(
 
 			// Check & pay mana cost (including Commander Tax if from Command Zone, or any-color mana if exiled with Opposition Agent!)
 			const costReq = getSpellCostRequirement(actor, inst, state, xVal, castMode);
-			if (!payManaWithAutoTap(actor, costReq, state)) {
-				return {
-					ok: false,
-					error: `Insufficient mana to cast ${inst.card.name} (requires ${inst.card.manaCost || '{0}'}${sourceZone === 'command' && inst.commanderCastCount > 0 ? ` + {${inst.commanderCastCount * state.rules.commanderTaxIncrement}} Commander Tax` : ''}).`
-				};
-			}
+			const manaError = `Insufficient mana to cast ${inst.card.name} (requires ${inst.card.manaCost || '{0}'}${sourceZone === 'command' && inst.commanderCastCount > 0 ? ` + {${inst.commanderCastCount * state.rules.commanderTaxIncrement}} Commander Tax` : ''}).`;
 
-			// Pay additional costs (life, sacrifice, discard)
-			const addCosts = parseAdditionalCostsAndRestrictions(inst.card.oracleText);
-			if (addCosts.lifeCost > 0) {
-				if (!actor.lifeTotalCannotChangeThisTurn) {
-					actor.life -= addCosts.lifeCost;
+			// Phase 4: additional costs from the IR, paid together with the mana (nothing is paid unless
+			// everything can be). Choices the player hasn't made become a cost_choice prompt.
+			const additional = spellAdditionalCost(inst.card);
+			if (additional && additional.defs.length > 0) {
+				const ctx = costContext(state, actor, inst, xVal, true, costReq);
+				const plan = planCosts(ctx, additional.defs, action.costPayment);
+				if (!plan.ok) return { ok: false, error: plan.error.startsWith('Insufficient mana') ? manaError : plan.error };
+				if (plan.question) return askCostChoice(state, actor, action, plan.question, inst.card.name);
+				const paid = payPlannedCosts(ctx, plan);
+				if (paid.descriptions.length > 0) {
+					addLog(state, 'rule', `${actor.username} ${paid.descriptions.join('; ')} as an additional cost.`, actorId);
 				}
+			} else if (!payManaWithAutoTap(actor, costReq, state)) {
+				return { ok: false, error: manaError };
 			}
-			if (addCosts.sacrificePermanentType) {
-				const sacType = addCosts.sacrificePermanentType;
-				const sacCandidate = [...actor.battlefield]
-					.filter((perm) => !perm.phasedOut && matchesPermanentTypeFilter(perm, sacType, state))
-					.sort((a, b) => {
-						if (a.isToken !== b.isToken) return a.isToken ? -1 : 1;
-						return a.card.cmc - b.card.cmc;
-					})[0];
-				if (sacCandidate) {
-					movePermanentToZone(state, sacCandidate, 'graveyard');
-					addLog(
-						state,
-						'rule',
-						`${actor.username} sacrificed ${sacCandidate.card.name} as an additional cost.`,
-						actorId
-					);
-				}
-			}
-			if (addCosts.discardCount > 0) {
-				const otherCards = actor.hand.filter((c) => c.instanceId !== inst!.instanceId);
-				for (let d = 0; d < addCosts.discardCount && d < otherCards.length; d++) {
-					const disc = otherCards[d];
-					const idx = actor.hand.findIndex((c) => c.instanceId === disc.instanceId);
-					if (idx >= 0) {
-						moveObject(state, actor.hand[idx], 'graveyard', {
-							from: { player: actor, zone: 'hand' },
-							toPlayer: actor,
-							graveyardReplacement: true,
-							newTimestamp: true,
-							bumpVersion: true
-						});
-					}
-				}
+			if (additional && !additional.complete) {
+				addLog(state, 'rule', `The additional cost of ${inst.card.name} isn't automated; pay it manually.`, actorId);
 			}
 
 			// Remove from hand/command/exile zone and push onto the Stack
@@ -1313,22 +1348,6 @@ function applyGameActionInner(
 				return { ok: false, error: 'Permanent not found on your battlefield.' };
 			}
 
-			// Special handling for Treasure token sacrifice for mana
-			if (perm.card.name === 'Treasure' && action.abilityId === 'treasure_sac') {
-				// Pinned behaviour: a bare removal (no graveyard, no attachment clean-up, no bookkeeping).
-				moveObject(state, perm, 'graveyard', {
-					from: { player: actor, zone: 'battlefield' },
-					toPlayer: actor,
-					setZone: false,
-					ceaseToExist: 'always'
-				});
-				const cmdCols = getPlayerCommanderIdentity(actor);
-				const col = cmdCols[0] || 'C';
-				actor.manaPool[col] += 1;
-				addLog(state, 'rule', `${actor.username} sacrificed a Treasure for {${col}}.`, actorId);
-				return { ok: true };
-			}
-
 			const cmdId = getPlayerCommanderIdentity(actor);
 			const abilities = getEffectiveActivatedAbilities(state, actor, perm, cmdId);
 			const ab = abilities.find((a) => a.id === action.abilityId);
@@ -1337,7 +1356,9 @@ function applyGameActionInner(
 			if (ab.isManaAbility) {
 				return applyGameAction(state, actorId, {
 					type: 'tap_mana',
-					instanceId: perm.instanceId
+					instanceId: perm.instanceId,
+					preferredColor: ab.producesMana[0],
+					costPayment: action.costPayment
 				});
 			}
 
@@ -1378,46 +1399,22 @@ function applyGameActionInner(
 				}
 			}
 
-			const effectiveManaCost = evaluatedNode ? evaluatedNode.effectiveManaCost : ab.manaCost;
-			if (effectiveManaCost) {
-				const req = evaluatedNode
-					? evaluatedNode.effectiveCostRequirement
-					: parseManaCost(effectiveManaCost);
-				if (!payManaWithAutoTap(actor, req, state)) {
-					return { ok: false, error: `Insufficient mana to pay ${effectiveManaCost}.` };
-				}
+			// Phase 4: pay the whole cost from the IR. Mana comes from the evaluated action node (cost
+			// modifiers applied); everything else from the ability's CostDefs.
+			const abilityCost = activatedAbilityCost(perm.card, ab);
+			const abilityMana = evaluatedNode
+				? evaluatedNode.effectiveCostRequirement
+				: parseManaCost(ab.manaCost === '{0}' ? '' : ab.manaCost);
+			const abilityCtx = costContext(state, actor, perm, 0, false, abilityMana);
+			const abilityPlan = planCosts(abilityCtx, abilityCost.defs, action.costPayment);
+			if (!abilityPlan.ok) return { ok: false, error: abilityPlan.error };
+			if (abilityPlan.question) return askCostChoice(state, actor, action, abilityPlan.question, perm.card.name);
+			const abilityPaid = payPlannedCosts(abilityCtx, abilityPlan);
+			if (abilityPaid.descriptions.length > 0) {
+				addLog(state, 'rule', `${actor.username} ${abilityPaid.descriptions.join('; ')} to activate ${perm.card.name}.`, actorId);
 			}
-
-			if (ab.lifeCost > 0) {
-				if (actor.life <= ab.lifeCost) {
-					return { ok: false, error: `Not enough life to pay ${ab.lifeCost} life.` };
-				}
-				if (!actor.lifeTotalCannotChangeThisTurn) {
-					actor.life -= ab.lifeCost;
-				}
-			}
-
-			if (ab.requiresTap) perm.tapped = true;
-			if (/tap ten untapped elves you control/i.test(ab.costText)) {
-				const otherUntappedElves = actor.battlefield.filter(
-					(c) =>
-						!c.phasedOut &&
-						c.instanceId !== perm.instanceId &&
-						!c.tapped &&
-						evaluatePermanent(state, c).hasSubType('Elf')
-				);
-				for (let i = 0; i < 10 && i < otherUntappedElves.length; i++) {
-					otherUntappedElves[i].tapped = true;
-				}
-			}
-
-			if (ab.loyaltyCost !== null) {
-				perm.counters.loyalty += ab.loyaltyCost;
-				perm.usedLoyaltyThisTurn = true;
-			}
-
-			if (ab.requiresSacrificeSelf) {
-				movePermanentToZone(state, perm, 'graveyard');
+			if (!abilityCost.complete) {
+				addLog(state, 'rule', `Part of the cost of ${perm.card.name}'s ability isn't automated; pay it manually.`, actorId);
 			}
 
 			const parsed = parseSpellOrAbilityEffects(perm.card, ab.effectText);
@@ -1914,6 +1911,38 @@ function handlePromptResolution(
 	action: GameActionPayload
 ): { ok: boolean; error?: string } {
 	const prompt = state.pendingPrompts[promptIdx];
+
+	// Phase 4: a cost choice. The answer is merged into the waiting action's costPayment and the
+	// action runs again from scratch (re-checking legality); on failure the prompt is restored.
+	if (prompt.kind === 'cost_choice' && action.type === 'cost_choice') {
+		if (action.promptId !== prompt.id) return { ok: false, error: 'That cost choice is no longer pending.' };
+		state.pendingPrompts.splice(promptIdx, 1);
+		const pending = prompt.pendingAction;
+		if (
+			action.cancel ||
+			!pending ||
+			(pending.type !== 'cast_spell' && pending.type !== 'activate_ability' && pending.type !== 'tap_mana')
+		) {
+			return { ok: true };
+		}
+		const payment = {
+			options: [...(pending.costPayment?.options ?? [])],
+			objects: [...(pending.costPayment?.objects ?? [])]
+		};
+		const q = prompt.costQuestion;
+		if (q?.kind === 'option') {
+			if (action.option === undefined) {
+				state.pendingPrompts.splice(promptIdx, 0, prompt);
+				return { ok: false, error: 'Choose one of the options.' };
+			}
+			payment.options[q.index] = action.option;
+		} else if (q?.kind === 'objects') {
+			payment.objects[q.index] = action.instanceIds ?? [];
+		}
+		const result = applyGameAction(state, actor.playerId, { ...pending, costPayment: payment });
+		if (!result.ok) state.pendingPrompts.splice(promptIdx, 0, prompt);
+		return result;
+	}
 
 	if (prompt.kind === 'obeka_end_turn_choice' && action.type === 'obeka_end_turn_choice') {
 		state.pendingPrompts.splice(promptIdx, 1);
@@ -6226,33 +6255,6 @@ export function checkSpellCastLegality(
 		}
 	}
 
-	if (addCosts.lifeCost > 0 && actor.life < addCosts.lifeCost) {
-		return {
-			ok: false,
-			error: `Illegal Cast: Requires paying ${addCosts.lifeCost} life as an additional cost.`
-		};
-	}
-	if (addCosts.sacrificePermanentType) {
-		const hasSacTarget = actor.battlefield.some((perm) =>
-			matchesPermanentTypeFilter(perm, addCosts.sacrificePermanentType!, state)
-		);
-		if (!hasSacTarget) {
-			return {
-				ok: false,
-				error: `Illegal Cast: Requires sacrificing a ${addCosts.sacrificePermanentType} as an additional cost, and you control none.`
-			};
-		}
-	}
-	if (addCosts.discardCount > 0) {
-		const otherHandCards = actor.hand.filter((c) => c.instanceId !== inst.instanceId).length;
-		if (otherHandCards < addCosts.discardCount) {
-			return {
-				ok: false,
-				error: `Illegal Cast: Requires discarding ${addCosts.discardCount} card(s) as an additional cost, and you do not have enough cards in hand.`
-			};
-		}
-	}
-
 	// Check mana payment (cards with no mana cost like Ancestral Vision / Sol Talisman cannot be cast normally from hand)
 	if (inst.card.manaCost === '' && !inst.card.typeLine.includes('Land') && fromZone === 'hand') {
 		return {
@@ -6265,6 +6267,18 @@ export function checkSpellCastLegality(
 		return {
 			ok: false,
 			error: `Insufficient mana to cast ${inst.card.name}.`
+		};
+	}
+	// Phase 4: additional costs from the IR, together with the mana.
+	const additional = spellAdditionalCost(inst.card);
+	if (
+		additional &&
+		additional.defs.length > 0 &&
+		!canPayCosts(costContext(state, actor, inst, xValue, true, costReq), additional.defs)
+	) {
+		return {
+			ok: false,
+			error: `Illegal Cast: you can't pay the additional cost of ${inst.card.name}.`
 		};
 	}
 
@@ -6314,24 +6328,22 @@ export function checkAbilityActivationLegality(
 		};
 	}
 
-	const evalPerm = evaluatePermanent(state, perm);
-
-	if (ab.requiresTap) {
-		if (perm.tapped) return { ok: false, error: `${perm.card.name} is already tapped.` };
-		if (
-			evalPerm.typeLine.includes('Creature') &&
-			perm.summoningSick &&
-			!hasKeyword(perm, 'Haste', state)
-		) {
-			return {
-				ok: false,
-				error: `${perm.card.name} has summoning sickness and cannot use {T} abilities yet.`
-			};
-		}
-	}
+	// Phase 4: the whole cost from the IR ({T}/{Q} with summoning sickness, sacrifices, discards,
+	// "tap N untapped ...", life, counters and mana), checked by runtime/costs.ts.
+	const evaluatedNode = evaluateActionNode(state, actorId, perm, ab.id);
+	const abilityMana = evaluatedNode
+		? evaluatedNode.effectiveCostRequirement
+		: parseManaCost(ab.manaCost === '{0}' ? '' : ab.manaCost);
+	const abilityCost = activatedAbilityCost(perm.card, ab);
+	const costCtx = costContext(state, actor, perm, 0, false, abilityMana);
+	const checkCost = (): { ok: boolean; error?: string } => {
+		if (canPayCosts(costCtx, abilityCost.defs)) return { ok: true };
+		const plan = planCosts(costCtx, abilityCost.defs);
+		return { ok: false, error: plan.ok ? `You can't pay the cost of ${perm.card.name}'s ability.` : plan.error };
+	};
 
 	if (ab.isManaAbility) {
-		return { ok: true };
+		return checkCost();
 	}
 
 	const activePlayer = state.players[state.activePlayerIndex];
@@ -6380,41 +6392,10 @@ export function checkAbilityActivationLegality(
 				error: 'This Planeswalker has already activated a loyalty ability this turn.'
 			};
 		}
-		if (ab.loyaltyCost < 0 && perm.counters.loyalty < Math.abs(ab.loyaltyCost)) {
-			return { ok: false, error: 'Not enough loyalty counters.' };
-		}
 	}
 
-	if (/tap ten untapped elves you control/i.test(ab.costText)) {
-		const otherUntappedElves = actor.battlefield.filter(
-			(c) =>
-				!c.phasedOut &&
-				c.instanceId !== perm.instanceId &&
-				!c.tapped &&
-				evaluatePermanent(state, c).typeLine.includes('Elf')
-		).length;
-		if (otherUntappedElves < 10) {
-			return {
-				ok: false,
-				error: `${perm.card.name} requires tapping ten other untapped Elves you control.`
-			};
-		}
-	}
-
-	if (ab.lifeCost > 0 && actor.life <= ab.lifeCost) {
-		return { ok: false, error: `Not enough life to pay ${ab.lifeCost} life.` };
-	}
-
-	const evaluatedNode = evaluateActionNode(state, actorId, perm, ab.id);
-	const effectiveManaCost = evaluatedNode ? evaluatedNode.effectiveManaCost : ab.manaCost;
-	if (effectiveManaCost) {
-		const req = evaluatedNode
-			? evaluatedNode.effectiveCostRequirement
-			: parseManaCost(effectiveManaCost);
-		if (!canPayOrAutoTap(actor, req, state)) {
-			return { ok: false, error: `Insufficient mana to pay ${effectiveManaCost}.` };
-		}
-	}
+	const costCheck = checkCost();
+	if (!costCheck.ok) return costCheck;
 
 	if (ab.requiresTarget) {
 		const abTargetInfo: TargetRequirementInfo =

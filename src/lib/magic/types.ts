@@ -461,7 +461,8 @@ export interface PendingPrompt {
 		| 'scry_choice'
 		| 'guided_resolution'
 		| 'legend_rule'
-		| 'obeka_end_turn_choice';
+		| 'obeka_end_turn_choice'
+		| 'cost_choice';
 	title: string;
 	description: string;
 	countRequired?: number;
@@ -481,6 +482,26 @@ export interface PendingPrompt {
 	targetLibraryOwnerId?: string;
 	canFailToFind?: boolean;
 	interceptedBy?: LibrarySearchInterceptorInfo;
+	/**
+	 * cost_choice (Phase 4; Phase 8 generalises it): the cast/activate/tap action waiting for a cost
+	 * choice. Answering merges the choice into its `costPayment` and runs it again from scratch.
+	 * The question is either a choice between `costOptionLabels` (answer: option index) or picking
+	 * `countRequired` of `candidateInstanceIds` (answer: instance ids).
+	 */
+	pendingAction?: GameActionPayload;
+	costQuestion?: { kind: 'option' | 'objects'; index: number };
+	costOptionLabels?: string[];
+}
+
+/**
+ * The player's choices for paying a cost (CR 601.2b/h, 602.2b), validated by the server. Indices
+ * follow the order of the costs: `options[i]` answers the i-th choice between costs (an optional
+ * cost is the choice [pay, don't pay]); `objects[j]` lists the objects chosen for the j-th cost that
+ * needs objects (sacrifice, discard, tap untapped ..., exile from a zone), counted after choices.
+ */
+export interface CostPayment {
+	options?: number[];
+	objects?: string[][];
 }
 
 export interface VfxEvent {
@@ -615,7 +636,7 @@ export type GameActionPayload =
 	| { type: 'pass_priority' }
 	| { type: 'end_turn' }
 	| { type: 'play_land'; instanceId: string; fromZone?: 'hand' | 'exile' }
-	| { type: 'tap_mana'; instanceId: string; preferredColor?: ManaColor }
+	| { type: 'tap_mana'; instanceId: string; preferredColor?: ManaColor; costPayment?: CostPayment }
 	| {
 			type: 'cast_spell';
 			instanceId: string;
@@ -623,13 +644,17 @@ export type GameActionPayload =
 			xValue?: number;
 			castMode?: 'normal' | 'overload';
 			fromZone?: 'hand' | 'command' | 'graveyard' | 'exile';
+			costPayment?: CostPayment;
 	  }
 	| {
 			type: 'activate_ability';
 			instanceId: string;
 			abilityId: string;
 			targets?: TargetRef[];
+			costPayment?: CostPayment;
 	  }
+	/** Answers a `cost_choice` prompt. */
+	| { type: 'cost_choice'; promptId: string; option?: number; instanceIds?: string[]; cancel?: boolean }
 	| { type: 'suspend_card'; instanceId: string }
 	| { type: 'reorder_graveyard'; instanceIds: string[] }
 	| { type: 'obeka_end_turn_choice'; endTurn: boolean }
