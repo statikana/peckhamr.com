@@ -169,19 +169,33 @@ export function getSpellTargetRequirement(card: ScryfallCard): TargetRequirement
 	const types = def.faces[0]?.characteristics.types ?? [];
 	const subtypes = def.faces[0]?.characteristics.subtypes ?? [];
 	if (subtypes.includes('Aura')) {
+		const enchantSpecs: TargetSpec[] = [];
 		for (const ab of abilities) {
 			if (ab.kind === 'keyword') {
-				const { name: kwName, enchantFilter } = ab.keyword;
+				const { name: kwName, enchantFilter, enchantPlayer } = ab.keyword;
 				if (kwName === 'enchant') {
-					const spec: TargetSpec = {
+					if (enchantPlayer) {
+						return targetRequirementFromSpecs([
+							{
+								kind: 'player',
+								filter: {},
+								player: enchantPlayer,
+								min: 1,
+								max: 1
+							}
+						]);
+					}
+					enchantSpecs.push({
 						kind: 'object',
 						filter: { zone: 'battlefield', ...(enchantFilter ?? {}) },
-						min: 1,
-						max: 1
-					};
-					return targetRequirementFromSpecs([spec]);
+						min: enchantSpecs.length === 0 ? 1 : 0,
+						max: enchantSpecs.length === 0 ? 1 : 0
+					});
 				}
 			}
+		}
+		if (enchantSpecs.length > 0) {
+			return targetRequirementFromSpecs(enchantSpecs);
 		}
 		return targetRequirementFromSpecs([
 			{ kind: 'object', filter: { zone: 'battlefield' }, min: 1, max: 1 }
@@ -243,9 +257,7 @@ function opponentLandColors(state: GameState, actor: PlayerGameState): ManaColor
 						choice === 'any'
 							? ['W', 'U', 'B', 'R', 'G']
 							: choice === 'commanderIdentity'
-								? oppCmdId.length > 0
-									? oppCmdId
-									: ['W', 'U', 'B', 'R', 'G']
+								? oppCmdId
 								: Array.isArray(choice)
 									? choice
 									: (s.params?.mana ?? []);
@@ -267,8 +279,7 @@ function manaStepProduction(
 ): { colors: ManaColor[]; amount: number; opponentLandColors?: boolean } | null {
 	const addSteps = steps.filter((s) => s.verb === 'addMana');
 	if (addSteps.length === 0) return null;
-	const anyColors: ManaColor[] =
-		commanderIdentity.length > 0 ? commanderIdentity : ['W', 'U', 'B', 'R', 'G'];
+	const cmdColors: ManaColor[] = commanderIdentity.filter((c) => c !== 'C');
 	const colors: ManaColor[] = [];
 	let totalAmount = 0;
 	let opponentLands = false;
@@ -278,8 +289,13 @@ function manaStepProduction(
 		if (choice === 'opponentLandColors') {
 			opponentLands = true;
 			totalAmount += amt;
-		} else if (choice === 'any' || choice === 'commanderIdentity') {
-			for (const c of anyColors) {
+		} else if (choice === 'any') {
+			for (const c of ['W', 'U', 'B', 'R', 'G'] as ManaColor[]) {
+				if (!colors.includes(c)) colors.push(c);
+			}
+			totalAmount += amt;
+		} else if (choice === 'commanderIdentity') {
+			for (const c of cmdColors) {
 				if (!colors.includes(c)) colors.push(c);
 			}
 			totalAmount += amt;
@@ -307,7 +323,7 @@ function manaStepProduction(
  */
 export function getCardActivatedAbilities(
 	card: ScryfallCard,
-	commanderIdentity: ManaColor[] = ['W', 'U', 'B', 'R', 'G'],
+	commanderIdentity: ManaColor[] = [],
 	resolveOpponentLandColors?: () => ManaColor[]
 ): EffectiveActivatedAbility[] {
 	const abilities = compileCard(card).faces[0]?.abilities ?? [];
@@ -418,6 +434,7 @@ export function getCardActivatedAbilities(
 
 			let producesMana: ManaColor[] = [];
 			let producesAmount = 0;
+			let hasManaProduction = false;
 			if (isMana) {
 				const prod = manaStepProduction(effect, commanderIdentity);
 				if (prod?.opponentLandColors) {
@@ -425,19 +442,22 @@ export function getCardActivatedAbilities(
 					if (oppColors.length === 0) continue;
 					producesMana = oppColors;
 					producesAmount = prod.amount;
-				} else if (prod && prod.colors.length > 0) {
+					hasManaProduction = true;
+				} else if (prod) {
 					producesMana = prod.colors;
-					producesAmount = prod.amount;
+					producesAmount = prod.colors.length > 0 ? prod.amount : 0;
+					hasManaProduction = true;
 				}
 			}
 
 			const targetInfo = targetRequirementFromSpecs(targets);
 			const isPureTapMana = isMana && ab.id === 'mana_tap';
-			const label = isPureTapMana
-				? `Tap: Add ${producesAmount > 1 ? `${producesAmount}x ` : ''}${producesMana.map((c) => `{${c}}`).join('/')}`
-				: loyaltyCost !== null
-					? `${loyaltyCost >= 0 ? `+${loyaltyCost}` : loyaltyCost}: ${effectPart.slice(0, 48)}`
-					: `${costPart}: ${effectPart.slice(0, 45)}`;
+			const label =
+				isPureTapMana && producesMana.length > 0
+					? `Tap: Add ${producesAmount > 1 ? `${producesAmount}x ` : ''}${producesMana.map((c) => `{${c}}`).join('/')}`
+					: loyaltyCost !== null
+						? `${loyaltyCost >= 0 ? `+${loyaltyCost}` : loyaltyCost}: ${effectPart.slice(0, 48)}`
+						: `${costPart}: ${effectPart.slice(0, 45)}`;
 			const costText = isPureTapMana
 				? '{T}'
 				: loyaltyCost !== null
@@ -455,7 +475,7 @@ export function getCardActivatedAbilities(
 				requiresSacrificeSelf,
 				lifeCost,
 				loyaltyCost,
-				isManaAbility: isMana && producesMana.length > 0,
+				isManaAbility: isMana && hasManaProduction,
 				sorcerySpeedOnly: timing === 'sorcery',
 				producesMana,
 				producesAmount,
@@ -478,7 +498,7 @@ export function getEffectiveActivatedAbilities(
 	state: GameState,
 	actor: PlayerGameState,
 	perm: CardInstance,
-	commanderIdentity: ManaColor[] = ['W', 'U', 'B', 'R', 'G']
+	commanderIdentity: ManaColor[] = []
 ): EffectiveActivatedAbility[] {
 	const breakdown = inspectCardContinuousBreakdown(perm, state);
 	const allInnateRemoved = breakdown.items.some(

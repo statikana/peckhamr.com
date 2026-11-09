@@ -283,6 +283,8 @@ export interface CardInstance {
 	card: ScryfallCard;
 	ownerId: string;
 	controllerId: string;
+	/** CR 110.2 / 800.4a / 800.4c: The player under whose control this permanent entered the battlefield. */
+	defaultControllerId?: string;
 	zone: ZoneType;
 	tapped: boolean;
 	summoningSick: boolean;
@@ -743,6 +745,11 @@ export interface GameState {
 	 */
 	triggersPlacedThisTurn?: { turn: number; count: number };
 	extraTurnQueue?: string[];
+	/**
+	 * CR 500.7: Seat index of the player whose normal turn most recently ran before a chain of one or
+	 * more extra turns began, so normal turn order resumes from the next seat after extra turns finish.
+	 */
+	lastNormalTurnPlayerIndex?: number;
 	stackTriggersEnabled?: boolean;
 	rngState?: number;
 	nextUid?: number;

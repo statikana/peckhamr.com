@@ -138,6 +138,25 @@ const BASIC_LAND_MANA_BY_SUBTYPE: Record<string, { subtype: string; sym: string 
 
 const BASIC_LAND_SUBTYPES = new Set(['Plains', 'Island', 'Swamp', 'Mountain', 'Forest']);
 
+const LAND_SUBTYPES = new Set([
+	'Plains',
+	'Island',
+	'Swamp',
+	'Mountain',
+	'Forest',
+	'Gate',
+	'Locus',
+	'Cave',
+	'Desert',
+	'Lair',
+	'Sphere',
+	'Tower',
+	'Mine',
+	'Power-Plant',
+	'Town',
+	"Urza's"
+]);
+
 const NON_CREATURE_SUBTYPES = new Set([
 	'Plains',
 	'Island',
@@ -1220,12 +1239,14 @@ function evaluateAttachedTypes(
 				if (st.mod.k === 'removeAllAbilities') {
 					losesAbilities = true;
 				} else if (st.layer === '4' && st.mod.k === 'setTypes') {
+					// CR 205.4b: Changing card types or subtypes does not change supertypes.
 					target.types = [...st.mod.types];
 					target.subtypes = [...(st.mod.subtypes ?? [])];
-					target.supertypes = target.isLegendary ? ['Legendary'] : [];
+					const superPrefix =
+						target.supertypes.length > 0 ? `${target.supertypes.join(' ')} ` : '';
 					const typeStr = target.types.join(' ');
 					const subStr = target.subtypes.length > 0 ? ` — ${target.subtypes.join(' ')}` : '';
-					target.effectiveTypeLine = `${target.prefixLegendary}${typeStr}${subStr}`;
+					target.effectiveTypeLine = `${superPrefix}${typeStr}${subStr}`;
 					if (!target.typeModifiedBy.includes(att.name)) target.typeModifiedBy.push(att.name);
 
 					// CR 305.7: setting a basic land subtype on a land removes rules-text abilities
@@ -1290,8 +1311,17 @@ function evaluateTypeOverwrites(
 				if (st.condition && !evaluateLayerCondition(st.condition, state, workList, source, target)) {
 					continue;
 				}
-				target.subtypes = [...st.mod.subtypes];
-				target.effectiveTypeLine = `${target.prefixLegendary}Land — ${st.mod.subtypes.join(' ')}`;
+				// CR 205.1a, 205.4b, 305.7: Setting land subtypes replaces only land subtypes while
+				// preserving supertypes, all card types (e.g. Artifact, Creature), and non-land subtypes.
+				const settingLandSubtypes = st.mod.subtypes.some((sub) => LAND_SUBTYPES.has(sub));
+				const retainedSubtypes = settingLandSubtypes
+					? target.subtypes.filter((sub) => !LAND_SUBTYPES.has(sub))
+					: [];
+				target.subtypes = [...st.mod.subtypes, ...retainedSubtypes];
+				const superPrefix = target.supertypes.length > 0 ? `${target.supertypes.join(' ')} ` : '';
+				const typeStr = target.types.join(' ');
+				const subStr = target.subtypes.length > 0 ? ` — ${target.subtypes.join(' ')}` : '';
+				target.effectiveTypeLine = `${superPrefix}${typeStr}${subStr}`;
 				if (!target.typeModifiedBy.includes(source.name)) target.typeModifiedBy.push(source.name);
 				if (st.mod.subtypes.some((sub) => BASIC_LAND_SUBTYPES.has(sub))) {
 					recordAbilityRemoval(target, source.name, source.timestamp);

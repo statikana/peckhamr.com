@@ -1595,6 +1595,7 @@ class Run {
 			for (const o of chosen) {
 				o.summoningSick = o.card.typeLine.includes('Creature');
 				o.tapped = Boolean(params.tapped);
+				o.defaultControllerId = you.playerId;
 				moveObject(s, o, 'battlefield', {
 					from: { player: you, zone: 'hand' },
 					toPlayer: you,
@@ -1623,6 +1624,7 @@ class Run {
 			const controller = params.underYourControl ? you : (this.player(o.ownerId) ?? holder);
 			o.summoningSick = o.card.typeLine.includes('Creature') && !o.card.keywords.includes('Haste');
 			o.tapped = Boolean(params.tapped);
+			o.defaultControllerId = controller.playerId;
 			moveObject(s, o, 'battlefield', {
 				from: { player: holder, zone: 'graveyard' },
 				toPlayer: controller,
@@ -1893,8 +1895,7 @@ export function manaChoiceColors(
 	if (Array.isArray(choice)) return choice;
 	if (choice === 'any') return [...FIVE_COLORS];
 	if (choice === 'commanderIdentity') {
-		const cols = commanderColors(controller);
-		return cols.length > 0 ? cols : [...FIVE_COLORS];
+		return commanderColors(controller);
 	}
 	return opponentLandColors(state, controller);
 }

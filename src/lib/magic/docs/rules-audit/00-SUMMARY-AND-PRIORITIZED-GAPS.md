@@ -42,32 +42,32 @@ These are bugs where a mechanic the engine actively supports produces the wrong 
 3. **[FIXED] Permanents leaving the battlefield or losing creature type are never removed from `state.combat` (`CR 506.4, 506.4a`)** — **Size: S**
    - Fixed in `moveObject` (`runtime/zones.ts`) via `removeFromCombat` and in `checkStateBasedActions` (`engine.ts`) for permanents that stop being creatures or become battles, while preserving `wasBlocked` on attackers whose blockers leave combat (`CR 510.1c`).
 
-4. **Extra turns overwrite `activePlayerIndex` and skip intermediate players' normal turns (`CR 500.7`)** — **Size: S**
-   - In `completeTurnCleanupAndPassTurn` (`engine.ts:6440-6457`), popping an extra turn from `extraTurnQueue` sets `state.activePlayerIndex = extraIdx` without preserving whose normal turn was next in the turn order. When an extra turn is taken by a player out of turn order, intermediate seats have their normal turn skipped after the extra turn ends.
+4. ~~**Extra turns overwrite `activePlayerIndex` and skip intermediate players' normal turns (`CR 500.7`)**~~ — **Fixed (`lastNormalTurnPlayerIndex` saved on extra-turn entry and used to resume normal turn order)**
+   - In `completeTurnCleanupAndPassTurn` (`engine.ts`), popping an extra turn from `extraTurnQueue` now records `state.lastNormalTurnPlayerIndex` before switching `activePlayerIndex`, and resumes normal turn order from that seat once `extraTurnQueue` empties.
 
 5. **[FIXED] `end_turn` UI action jumps from any phase straight to `end_step`/`cleanup` without passing priority (`CR 500.2, 508.1d, 513.1, 703.4i`)** — **Size: M**
    - Fixed in `case 'end_turn':` and `case 'pass_priority':` (`engine.ts`) via `findMandatoryAttackerViolation`: ending the turn (or passing out of `declare_attackers` without declaring attackers) enforces mandatory attack requirements (`attacksEachCombat` and Goad, exempting opponents with Propaganda/Ghostly Prison attack taxes per `CR 508.1d`) and steps sequentially through remaining phases/steps via `advancePhaseOrStep`, executing step turn-based actions (such as drawing for turn in `draw`), flushing step-begin triggers, and stopping whenever triggers/prompts exist or a player holds `fullControl`, `!autoPassEmptyStack`, or an explicit step stop (such as `'end_step'`).
 
-6. **Colorless commander / no commander `manaChoiceColors` falls back to all 5 colors (`CR 106.5, 903.4f`)** — **Size: S**
-   - In `runtime/effects.ts:1772-1775` (and `oracle.ts:343, 524`), when `commanderColors(controller)` is empty (`[]`), `manaChoiceColors` falls back to `['W', 'U', 'B', 'R', 'G']` instead of producing no mana.
+6. ~~**Colorless commander / no commander `manaChoiceColors` falls back to all 5 colors (`CR 106.5, 903.4f`)**~~ — **Fixed (`commanderIdentity` returns `[]` when colorless/absent while staying a mana ability; `'any'` separated from `'commanderIdentity'` in `manaStepProduction`)**
+   - `manaChoiceColors` (`runtime/effects.ts`), `opponentLandColors` / `manaStepProduction` (`ruleTree.ts`), and `tap_mana` (`engine.ts`) now produce 0 mana when a player has a colorless commander or no commander, and `manaStepProduction` returns all 5 colors for `'any'`.
 
-7. **Last-player-standing win is blocked by `playerCannotWinGame` (`CR 104.2a vs 104.3h`)** — **Size: S**
-   - In `checkStateBasedActions` (`engine.ts:7016`), when all other players have lost and `remaining.length === 1`, the engine checks `if (winner && !playerCannotWinGame(state, winner).blocked)`. Under `CR 104.2a` / `104.3h`, if a player controls *Abyssal Persecutor* ("Your opponents can't win the game") and loses, or if only one player remains in the game, that last remaining player still wins after the permanent leaves; blocking the win when all opponents are already `lost = true` leaves the game permanently stuck with 1 active player.
+7. ~~**Last-player-standing win is blocked by `playerCannotWinGame` (`CR 104.2a vs 104.3h`)**~~ — **Fixed (`CR 104.2a` last-player-standing win overrides effects precluding winning)**
+   - In `checkStateBasedActions` (`engine.ts`), when all other players have left the game (`remaining.length === 1`), the remaining player now wins immediately regardless of `playerCannotWinGame` per `CR 104.2a` ("overrides all effects that would preclude that player from winning the game"). (`CR 104.3h` only applies to Limited Range of Influence.)
 
-8. **Multiple trigger-multiplier effects multiply (`2 * 2 = 4`) instead of adding (`1 + 1 + 1 = 3`) (`CR 603.2d`)** — **Size: S**
-   - `triggerMultiplier` (`runtime/replace.ts:952`) computes `factor *= def.factor` instead of `factor += (def.factor - 1)` ("triggers an additional time").
+8. ~~**Multiple trigger-multiplier effects multiply (`2 * 2 = 4`) instead of adding (`1 + 1 + 1 = 3`) (`CR 603.2d`)**~~ — **Fixed (`triggerMultiplier` adds `def.factor - 1` per effect)**
+   - `triggerMultiplier` (`runtime/replace.ts`) now computes `times += Math.max(0, def.factor - 1)` ("triggers an additional time") per `CR 603.2d`.
 
-9. **Layer 4 `setTypes` / `setSubtypes` drops `Basic`/`Snow` supertypes and non-land types on artifact lands (`CR 205.1a–b, 205.4b, 305.7`)** — **Size: S**
-   - In `runtime/layers.ts:1120-1125` and `1183-1185`, rewriting `effectiveTypeLine` only preserves `Legendary`, dropping `Basic`/`Snow`/`World` supertypes and dropping `Artifact` on artifact lands under *Blood Moon* (`layers.ts:1789`).
+9. ~~**Layer 4 `setTypes` / `setSubtypes` drops `Basic`/`Snow` supertypes and non-land types on artifact lands (`CR 205.1a–b, 205.4b, 305.7`)**~~ — **Fixed (`setTypes` / `setSubtypes` preserve all supertypes and `setSubtypes` preserves non-land card types and subtypes)**
+   - In `runtime/layers.ts`, `evaluateAttachedTypes` (`setTypes`) and `evaluateTypeOverwrites` (`setSubtypes`) now preserve all supertypes (`Basic`, `Legendary`, `Snow`, `World`, `Ongoing`), and `setSubtypes` preserves existing card types (`Artifact`, `Creature`) and non-land subtypes per `CR 205.1a`, `205.4b`, and `305.7`.
 
-10. **Permanent spell copies (`item.isCopy`) vanish on resolution instead of becoming token permanents (`CR 111.13, 608.3f, 707.10f`)** — **Size: S**
-    - `resolveStackItemNow` (`engine.ts:4171`) checks `if (item.kind === 'spell' && !item.isCopy)`, so a copy of a permanent spell simply disappears from the stack when it resolves.
+10. ~~**Permanent spell copies (`item.isCopy`) vanish on resolution instead of becoming token permanents (`CR 111.13, 608.3f, 707.10f`)**~~ — **Fixed (`resolveStackItemNow` puts resolving permanent spell copies onto the battlefield as tokens)**
+    - `resolveStackItemNow` (`engine.ts`) now enters resolving permanent spells with `item.isCopy === true` onto the battlefield as token permanents (`isToken: true`, without applying token creation multipliers per `CR 111.13` / `608.3f`), while instant/sorcery spell copies still cease to exist.
 
-11. **`Enchant player` Auras (Curses) fail to attach on resolution and immediately die to SBAs (`CR 303.4b–c, 702.5c, 704.5m`)** — **Size: S**
-    - `resolveTopOfStack` (`engine.ts:4241-4243`) only sets `attachedToId` when `item.targets[0]?.kind === 'permanent'`, and `checkStateBasedActions` (`engine.ts:6619-6634`) only looks up `attachedToId` via `findPermanentOnBoard`, immediately putting player-attached Auras into the graveyard.
+11. ~~**`Enchant player` Auras (Curses) fail to attach on resolution and immediately die to SBAs (`CR 303.4b–c, 702.5c, 704.5m`)**~~ — **Fixed (player-enchanting Auras compile, target players, attach on resolution, and validate all Enchant abilities under SBAs)**
+    - `compiler/card.ts` and `ruleTree.ts` now compile `Enchant player` / `Enchant opponent` / `Enchant you` into `enchantPlayer` target specs, `resolveStackItemNow` (`engine.ts`) attaches Auras to player targets (`item.targets[0]?.kind === 'player'`), and `checkStateBasedActions` (`engine.ts`) validates both player attachments (`isAuraPlayerAttachmentLegal`) and multi-`Enchant` requirements (`CR 702.5c`).
 
-12. **Eliminated player cleanup mishandles stolen permanents, stack spells, and active-player mid-turn elimination (`CR 800.4a, 800.4c, 800.4j`)** — **Size: M**
-    - `cleanupEliminatedPlayer` (`engine.ts:7042, 7062-7070, 7110-7111`) returns all foreign-owned permanents on the eliminated player's battlefield to their owners (even when put onto the battlefield under the eliminated player's default control via *Reanimate*/*Bribery*, which `CR 800.4a` exiles), drops foreign-owned stack spells without exiling them, and aborts the current turn when the active player is eliminated instead of finishing the turn without an active player (`CR 800.4j`).
+12. ~~**Eliminated player cleanup mishandles stolen permanents, stack spells, and active-player mid-turn elimination (`CR 800.4a, 800.4c, 800.4j`)**~~ — **Fixed (`defaultControllerId` tracking, stack spell exile/owner removal, and active-less turn continuation)**
+    - `CardInstance` now tracks `defaultControllerId` on battlefield entry (`CR 110.2`), so `cleanupEliminatedPlayer` (`engine.ts`) returns control-changed permanents to their default controller while exiling foreign-owned permanents whose default controller left the game (`CR 800.4a, 800.4c`), exiles foreign-owned spells on the stack controlled by the eliminated player while removing stack objects owned by the eliminated player (`CR 800.4a`), and continues the turn to completion without an active player via `givePriorityToActiveOrNextPlayer` (`CR 800.4j`).
 
 ---
 

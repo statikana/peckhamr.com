@@ -51,7 +51,7 @@ export function getEffectiveActivatedAbilities(
 	state: GameState,
 	actor: PlayerGameState,
 	perm: CardInstance,
-	commanderIdentity: ManaColor[] = ['W', 'U', 'B', 'R', 'G']
+	commanderIdentity: ManaColor[] = []
 ): EffectiveActivatedAbility[] {
 	// Read-only: one layer-cache validation for all of this permanent's ability lookups (Phase 6c).
 	return withStableLayerInputs(state, () =>
@@ -671,6 +671,7 @@ function tapOnlyManaAbilities(
 	return getEffectiveActivatedAbilities(state, player, perm, cmdIdentity).filter(
 		(a) =>
 			a.isManaAbility &&
+			a.producesMana.length > 0 &&
 			activatedAbilityCost(perm.card, a).defs.every(
 				(d) => d.k === 'tapSelf' || (d.k === 'mana' && /^(\{0\})*$/.test(d.cost))
 			)
@@ -1102,7 +1103,7 @@ export function runBeginningOfTurn(state: GameState): void {
 
 	// 2. Upkeep step (CR 503): active player receives priority in upkeep (CR 503.1a / 500.2)
 	beginPhase(state, 'upkeep', activePlayer);
-	state.priorityPlayerIndex = state.activePlayerIndex;
+	givePriorityToActiveOrNextPlayer(state);
 	state.passedPriorityPlayerIds = [];
 	state.turnStartedAt = Date.now();
 	state.priorityUpdatedAt = Date.now();
@@ -1247,9 +1248,12 @@ function applyGameActionInner(
 				return { ok: false, error: `${perm.card.name} does not have an active mana ability.` };
 			}
 			const preferred = action.preferredColor;
-			const ab = (preferred && manaAbs.find((a) => a.producesMana.includes(preferred))) || manaAbs[0];
-			const chosenColor: ManaColor =
-				preferred && ab.producesMana.includes(preferred) ? preferred : ab.producesMana[0] || 'C';
+			const ab =
+				(preferred && manaAbs.find((a) => a.producesMana.includes(preferred))) ||
+				manaAbs.find((a) => a.producesMana.length > 0) ||
+				manaAbs[0];
+			const chosenColor: ManaColor | undefined =
+				preferred && ab.producesMana.includes(preferred) ? preferred : ab.producesMana[0];
 
 			// Phase 4: the ability's whole cost from the IR ({T}, and e.g. "Sacrifice this artifact").
 			const cost = activatedAbilityCost(perm.card, ab);
@@ -1259,10 +1263,12 @@ function applyGameActionInner(
 			if (plan.question) return askCostChoice(state, actor, action, plan.question, perm.card.name);
 
 			const baseAmount = evalPerm.losesAllAbilities ? 1 : Math.max(1, ab.producesAmount);
-			const amount = getDynamicManaProducedAmount(state, actor, perm, baseAmount, ab);
+			const amount = chosenColor ? getDynamicManaProducedAmount(state, actor, perm, baseAmount, ab) : 0;
 
 			const paid = payPlannedCosts(ctx, plan);
-			actor.manaPool[chosenColor] += amount;
+			if (chosenColor && amount > 0) {
+				actor.manaPool[chosenColor] += amount;
+			}
 			// CR 605.1b: triggered mana abilities ("Whenever you tap a land for mana") resolve now.
 			emitEvent(state, { kind: 'TappedForMana', playerId: actorId, objectId: perm.instanceId, object: perm });
 			flushTriggers(state);
@@ -1270,7 +1276,9 @@ function applyGameActionInner(
 				addLog(
 					state,
 					'rule',
-					`${actor.username} activated ${perm.card.name} for ${amount > 1 ? `${amount}x ` : ''}{${chosenColor}}${paid.descriptions.length > 0 ? ` (${paid.descriptions.join('; ')})` : ''}.`,
+					chosenColor && amount > 0
+						? `${actor.username} activated ${perm.card.name} for ${amount > 1 ? `${amount}x ` : ''}{${chosenColor}}${paid.descriptions.length > 0 ? ` (${paid.descriptions.join('; ')})` : ''}.`
+						: `${actor.username} activated ${perm.card.name} for no mana (CR 106.5)${paid.descriptions.length > 0 ? ` (${paid.descriptions.join('; ')})` : ''}.`,
 					actorId
 				);
 			}
@@ -1313,6 +1321,7 @@ function applyGameActionInner(
 			const exSourceName = landInst.playableFromExileBy?.sourceName;
 			landInst.playableFromExileBy = undefined;
 			landInst.tapped = false;
+			landInst.defaultControllerId = actorId;
 			applySelfEtbReplacements(state, landInst);
 			moveObject(state, landInst, 'battlefield', {
 				from: { player: sourcePlayer, zone: sourceZone },
@@ -1931,7 +1940,7 @@ function applyGameActionInner(
 			}
 
 			// CR 508.2: Active player receives priority in declare_attackers after attackers are declared
-			state.priorityPlayerIndex = state.activePlayerIndex;
+			givePriorityToActiveOrNextPlayer(state);
 			state.passedPriorityPlayerIds = [];
 			state.priorityUpdatedAt = Date.now();
 			return { ok: true };
@@ -2130,11 +2139,15 @@ function applyGameActionInner(
 			);
 			if (nextUndecidedDefenderId) {
 				const nextDefIdx = state.players.findIndex((p) => p.playerId === nextUndecidedDefenderId);
-				state.priorityPlayerIndex = nextDefIdx >= 0 ? nextDefIdx : state.activePlayerIndex;
+				if (nextDefIdx >= 0) {
+					state.priorityPlayerIndex = nextDefIdx;
+				} else {
+					givePriorityToActiveOrNextPlayer(state);
+				}
 			} else {
 				// All attacked defenders have declared blockers -> give priority back to active player
 				state.combat.blockersDeclared = true;
-				state.priorityPlayerIndex = state.activePlayerIndex;
+				givePriorityToActiveOrNextPlayer(state);
 			}
 			state.passedPriorityPlayerIds = [];
 			state.priorityUpdatedAt = Date.now();
@@ -2788,6 +2801,7 @@ function handlePromptResolution(
 					);
 				} else if (prompt.destinationZone === 'battlefield') {
 					found.tapped = Boolean(prompt.enterTapped);
+					found.defaultControllerId = libraryOwner.playerId;
 					applySelfEtbReplacements(state, found);
 					moveObject(state, found, 'battlefield', {
 						from: fromLibrary,
@@ -3260,6 +3274,17 @@ function advancePriorityToNextPlayer(state: GameState): void {
 	}
 }
 
+/**
+ * CR 800.4j: If the active player has left the game during their turn, the turn continues
+ * without an active player and the next player in turn order receives priority instead.
+ */
+function givePriorityToActiveOrNextPlayer(state: GameState): void {
+	state.priorityPlayerIndex = state.activePlayerIndex;
+	if (state.players[state.priorityPlayerIndex]?.lost) {
+		advancePriorityToNextPlayer(state);
+	}
+}
+
 export function moveStackSpellToZone(
 	state: GameState,
 	stackItem: StackItem,
@@ -3417,9 +3442,9 @@ function beginPhase(state: GameState, phase: GamePhase, activePlayer?: PlayerGam
 	// "At the beginning of [step]" triggers go onto the stack. Triggers from the turn-based action
 	// (combat damage) wait until state-based actions have been checked (CR 704.3, 603.3).
 	withTriggersDeferred(state, () => {
-		if (phase === 'untap' && active) {
+		if (phase === 'untap' && active && !active.lost) {
 			executeUntapTurnBasedActions(state, active);
-		} else if (phase === 'draw' && active) {
+		} else if (phase === 'draw' && active && !active.lost) {
 			executeDrawTurnBasedAction(state, active);
 		} else if (phase === 'first_strike_damage') {
 			executeCombatDamageStep(state, true);
@@ -4142,7 +4167,7 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 			`${item.title} did not resolve because its intervening-if condition is no longer met (CR 603.4).`,
 			controller.playerId
 		);
-		state.priorityPlayerIndex = state.activePlayerIndex;
+		givePriorityToActiveOrNextPlayer(state);
 		state.passedPriorityPlayerIds = [];
 		checkStateBasedActions(state);
 		return;
@@ -4166,7 +4191,7 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 			// CR 608.2b: If a spell is countered on resolution because all its targets are illegal,
 			// it is put into its owner's graveyard (or Exile if Rest in Peace is active).
 			moveStackSpellToZone(state, item, 'graveyard');
-			state.priorityPlayerIndex = state.activePlayerIndex;
+			givePriorityToActiveOrNextPlayer(state);
 			state.passedPriorityPlayerIds = [];
 			checkStateBasedActions(state);
 			return;
@@ -4201,7 +4226,7 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 		resolveWardTrigger(state, item, controller, ward);
 		triggerPathCounts.interpreter++;
 		removeItemFromStack();
-		state.priorityPlayerIndex = state.activePlayerIndex;
+		givePriorityToActiveOrNextPlayer(state);
 		state.passedPriorityPlayerIds = [];
 		checkStateBasedActions(state);
 		return;
@@ -4210,7 +4235,7 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 		resolveDelayedTriggerEffect(state, item, controller, item.delayedEffect);
 		triggerPathCounts.interpreter++;
 		removeItemFromStack();
-		state.priorityPlayerIndex = state.activePlayerIndex;
+		givePriorityToActiveOrNextPlayer(state);
 		state.passedPriorityPlayerIds = [];
 		checkStateBasedActions(state);
 		return;
@@ -4317,8 +4342,9 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 	// CR 608.2n: As the final part of resolution, the resolving spell or ability leaves the stack.
 	removeItemFromStack();
 
-	// If this was a spell card, move it to Battlefield (for permanents) or Graveyard/Exile (for Instants/Sorceries)
-	if (item.kind === 'spell' && !item.isCopy) {
+	// If this was a spell, move it to Battlefield (for permanents; copies become tokens per CR 111.13 / 608.3f / 707.10f)
+	// or Graveyard/Exile (for nontoken Instants/Sorceries).
+	if (item.kind === 'spell') {
 		const tLine = item.card.typeLine;
 		const isPermanent =
 			tLine.includes('Creature') ||
@@ -4327,13 +4353,14 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 			tLine.includes('Planeswalker') ||
 			tLine.includes('Battle');
 
-		const cardOwnerId = item.ownerId || controller.playerId;
+		const cardOwnerId = item.isCopy ? controller.playerId : item.ownerId || controller.playerId;
 		const cardOwner = state.players.find((p) => p.playerId === cardOwnerId) || controller;
-		const wasCommander = cardOwner.commanderNames[item.sourceInstanceId] !== undefined;
-		const castCount =
-			cardOwner.commanderCastCounts?.[item.sourceInstanceId] ??
-			item.commanderCastCount ??
-			0;
+		const wasCommander = !item.isCopy && cardOwner.commanderNames[item.sourceInstanceId] !== undefined;
+		const castCount = item.isCopy
+			? 0
+			: (cardOwner.commanderCastCounts?.[item.sourceInstanceId] ??
+				item.commanderCastCount ??
+				0);
 
 		if (isPermanent) {
 			const perm = createCardInstance(
@@ -4341,11 +4368,19 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 				cardOwnerId,
 				'battlefield',
 				wasCommander,
-				false,
-				allocateTimestamp(state)
+				Boolean(item.isCopy),
+				allocateTimestamp(state),
+				item.isCopy ? state : undefined
 			);
-			perm.instanceId = item.sourceInstanceId;
+			const idTaken =
+				Boolean(item.isCopy) &&
+				(state.stack.some((s) => s.id !== item.id && s.sourceInstanceId === item.sourceInstanceId) ||
+					Boolean(findCardAnywhere(state, item.sourceInstanceId)));
+			if (!idTaken && item.sourceInstanceId) {
+				perm.instanceId = item.sourceInstanceId;
+			}
 			perm.controllerId = controller.playerId;
+			perm.defaultControllerId = controller.playerId;
 			perm.commanderCastCount = castCount;
 			perm.summoningSick = tLine.includes('Creature');
 			perm.enteredWithX = item.xValue;
@@ -4399,7 +4434,10 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 				}
 			}
 
-			if (tLine.includes('Aura') && item.targets[0]?.kind === 'permanent') {
+			if (
+				tLine.includes('Aura') &&
+				(item.targets[0]?.kind === 'permanent' || item.targets[0]?.kind === 'player')
+			) {
 				perm.attachedToId = item.targets[0].id;
 			}
 			applySelfEtbReplacements(state, perm);
@@ -4442,12 +4480,12 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 				}
 			}
 			flushTriggers(state);
-		} else {
+		} else if (!item.isCopy) {
 			moveStackSpellToZone(state, item, exiledBySelfReference ? 'exile' : 'graveyard');
 		}
 	}
 
-	state.priorityPlayerIndex = state.activePlayerIndex;
+	givePriorityToActiveOrNextPlayer(state);
 	state.passedPriorityPlayerIds = [];
 	checkStateBasedActions(state);
 }
@@ -4784,7 +4822,7 @@ export function enterEndStep(state: GameState, activePlayer: PlayerGameState): v
 	// (runEndStepTriggers), synchronously.
 	beginPhase(state, 'end_step', activePlayer);
 
-	state.priorityPlayerIndex = state.activePlayerIndex;
+	givePriorityToActiveOrNextPlayer(state);
 	state.passedPriorityPlayerIds = [];
 }
 
@@ -4990,6 +5028,7 @@ function initiateLibrarySearch(
 				);
 			} else if (dest.zone === 'battlefield') {
 				found.tapped = Boolean(dest.tapped);
+				found.defaultControllerId = searchingPlayer.playerId;
 				applySelfEtbReplacements(state, found);
 				moveObject(state, found, 'battlefield', {
 					from: fromLibrary,
@@ -5239,7 +5278,11 @@ export function advancePhaseOrStep(state: GameState): void {
 				const defendersInOrder = getAttackedDefenderIdsInTurnOrder(state);
 				const firstDefenderId = defendersInOrder[0] || state.combat.attackers[0].defenderPlayerId;
 				const defIdx = state.players.findIndex((p) => p.playerId === firstDefenderId);
-				state.priorityPlayerIndex = defIdx >= 0 ? defIdx : state.activePlayerIndex;
+				if (defIdx >= 0) {
+					state.priorityPlayerIndex = defIdx;
+				} else {
+					givePriorityToActiveOrNextPlayer(state);
+				}
 				state.passedPriorityPlayerIds = [];
 				checkStateBasedActions(state);
 				return;
@@ -5300,7 +5343,7 @@ export function advancePhaseOrStep(state: GameState): void {
 			return;
 	}
 
-	state.priorityPlayerIndex = state.activePlayerIndex;
+	givePriorityToActiveOrNextPlayer(state);
 	state.passedPriorityPlayerIds = [];
 	checkStateBasedActions(state);
 }
@@ -5729,7 +5772,7 @@ function runCleanupStep(state: GameState): void {
 		state.rules.maxHandSize >= 99 || playerHasNoMaxHandSize(state, activePlayer);
 
 	const maxHand = hasNoMaxHandSize ? 999 : state.rules.maxHandSize;
-	if (activePlayer.hand.length > maxHand) {
+	if (!activePlayer.lost && activePlayer.hand.length > maxHand) {
 		const excess = activePlayer.hand.length - maxHand;
 		if (activePlayer.isBot) {
 			const gyDest = checkGraveyardReplacementZone(state, 'graveyard').dest;
@@ -5781,7 +5824,7 @@ function completeTurnCleanupAndPassTurn(state: GameState): void {
 	if (state.status === 'finished') return;
 	if (state.stack.length > 0 || state.pendingPrompts.length > 0) {
 		state.phase = 'cleanup';
-		state.priorityPlayerIndex = state.activePlayerIndex;
+		givePriorityToActiveOrNextPlayer(state);
 		state.passedPriorityPlayerIds = [];
 		return;
 	}
@@ -5792,6 +5835,9 @@ function completeTurnCleanupAndPassTurn(state: GameState): void {
 			const extraPlayerId = state.extraTurnQueue.pop()!;
 			const extraIdx = state.players.findIndex((p) => p.playerId === extraPlayerId && !p.lost);
 			if (extraIdx >= 0) {
+				if (state.lastNormalTurnPlayerIndex === undefined) {
+					state.lastNormalTurnPlayerIndex = state.activePlayerIndex;
+				}
 				state.activePlayerIndex = extraIdx;
 				state.turnNumber += 1;
 				addLog(
@@ -5806,12 +5852,14 @@ function completeTurnCleanupAndPassTurn(state: GameState): void {
 		}
 	}
 
-	// Otherwise advance activePlayerIndex to next alive player in normal turn order
+	// Otherwise advance activePlayerIndex to next alive player in normal turn order (CR 500.7)
+	const baseIdx = state.lastNormalTurnPlayerIndex ?? state.activePlayerIndex;
+	state.lastNormalTurnPlayerIndex = undefined;
 	const count = state.players.length;
 	for (let step = 1; step <= count; step++) {
-		const nextIdx = (state.activePlayerIndex + step) % count;
+		const nextIdx = (baseIdx + step) % count;
 		if (!state.players[nextIdx].lost) {
-			if (nextIdx <= state.activePlayerIndex) {
+			if (nextIdx <= baseIdx) {
 				state.turnNumber += 1;
 			}
 			state.activePlayerIndex = nextIdx;
@@ -5822,33 +5870,42 @@ function completeTurnCleanupAndPassTurn(state: GameState): void {
 	runBeginningOfTurn(state);
 }
 
-function isAuraAttachmentLegal(
-	state: GameState,
-	aura: CardInstance,
-	auraController: PlayerGameState,
-	evalAura: EvaluatedPermanent,
-	host: CardInstance,
-	hostController: PlayerGameState
-): boolean {
-	if (host.phasedOut) return false;
-	if (hasProtectionFrom(host, aura.copiableCard ?? aura.card, state)) return false;
-
-	let enchantParam: string | undefined;
-	const kwLine = evalAura.keywords.find((k) => k.toLowerCase().startsWith('enchant '));
-	if (kwLine) {
-		enchantParam = kwLine.slice('enchant '.length).trim();
-	} else if (!evalAura.losesAllAbilities) {
+function getAuraEnchantParams(aura: CardInstance, evalAura: EvaluatedPermanent): string[] {
+	const params: string[] = [];
+	if (!evalAura.losesAllAbilities) {
 		const def = compileCard(aura.copiableCard ?? aura.card);
 		for (const ab of def.faces[0]?.abilities ?? []) {
 			if (ab.kind === 'keyword' && ab.keyword.name.toLowerCase() === 'enchant') {
-				enchantParam = ab.keyword.param ?? 'permanent';
-				break;
+				params.push((ab.keyword.param ?? 'permanent').trim());
 			}
 		}
 	}
-	if (!enchantParam) return true;
+	for (const kwLine of evalAura.keywords) {
+		if (kwLine.toLowerCase().startsWith('enchant ')) {
+			const p = kwLine.slice('enchant '.length).trim();
+			if (p && !params.some((existing) => existing.toLowerCase() === p.toLowerCase())) {
+				params.push(p);
+			}
+		}
+	}
+	return params;
+}
 
+function matchesSingleEnchantParamOnPermanent(
+	enchantParam: string,
+	auraController: PlayerGameState,
+	evalHost: EvaluatedPermanent,
+	hostController: PlayerGameState
+): boolean {
 	let param = enchantParam.toLowerCase().trim();
+	if (
+		param === 'player' ||
+		param === 'opponent' ||
+		param === 'an opponent' ||
+		param === 'you'
+	) {
+		return false;
+	}
 	if (param.includes('you control')) {
 		if (hostController.playerId !== auraController.playerId) return false;
 		param = param.replace(/\byou control\b/g, '').trim();
@@ -5857,7 +5914,6 @@ function isAuraAttachmentLegal(
 		param = param.replace(/\ban?\s+opponent controls\b|\bopponent controls\b/g, '').trim();
 	}
 
-	const evalHost = evaluatePermanent(state, host);
 	if (param.includes('nonland')) {
 		if (evalHost.isLand) return false;
 		param = param.replace(/\bnonland\b/g, '').trim();
@@ -5878,6 +5934,64 @@ function isAuraAttachmentLegal(
 		if (d === 'planeswalker') return evalHost.isPlaneswalker;
 		if (d === 'battle') return evalHost.typeLine.includes('Battle');
 		return evalHost.hasSubType(d) || evalHost.typeLine.toLowerCase().includes(d);
+	});
+}
+
+function isAuraAttachmentLegal(
+	state: GameState,
+	aura: CardInstance,
+	auraController: PlayerGameState,
+	evalAura: EvaluatedPermanent,
+	host: CardInstance,
+	hostController: PlayerGameState
+): boolean {
+	// CR 303.4d: An Aura can't enchant itself. If this occurs somehow, the Aura is put into its owner's graveyard.
+	// CR 303.4d: An Aura that's also a creature can't enchant anything.
+	if (aura.instanceId === host.instanceId) return false;
+	if (evalAura.isCreature) return false;
+	if (host.phasedOut) return false;
+	if (hasProtectionFrom(host, aura.copiableCard ?? aura.card, state)) return false;
+
+	const enchantParams = getAuraEnchantParams(aura, evalAura);
+	// CR 704.5m / 303.4c: If an Aura has lost all its enchant abilities, it can't legally enchant anything.
+	if (enchantParams.length === 0) return !evalAura.losesAllAbilities;
+
+	const evalHost = evaluatePermanent(state, host);
+	// CR 702.5c: If an Aura has multiple instances of enchant, all of its enchant abilities must be satisfied.
+	return enchantParams.every((p) =>
+		matchesSingleEnchantParamOnPermanent(p, auraController, evalHost, hostController)
+	);
+}
+
+function isAuraPlayerAttachmentLegal(
+	aura: CardInstance,
+	auraController: PlayerGameState,
+	evalAura: EvaluatedPermanent,
+	hostPlayer: PlayerGameState
+): boolean {
+	if (hostPlayer.lost) return false;
+	if (evalAura.isCreature) return false;
+	if (hostPlayer.protectionFromEverythingThisTurn) return false;
+
+	const enchantParams = getAuraEnchantParams(aura, evalAura);
+	if (enchantParams.length === 0) return false;
+
+	// CR 702.5c: All enchant abilities on the Aura must be satisfied by the enchanted player.
+	return enchantParams.every((raw) => {
+		const param = raw.toLowerCase().trim();
+		if (param === 'player' || param.includes('player')) {
+			if (param.includes('opponent')) {
+				return hostPlayer.playerId !== auraController.playerId;
+			}
+			return true;
+		}
+		if (param === 'opponent' || param === 'an opponent') {
+			return hostPlayer.playerId !== auraController.playerId;
+		}
+		if (param === 'you') {
+			return hostPlayer.playerId === auraController.playerId;
+		}
+		return false;
 	});
 }
 
@@ -5996,20 +6110,33 @@ export function checkStateBasedActions(state: GameState): void {
 							queueToGraveyard(perm, p, 'aura');
 						} else {
 							const targetFound = findPermanentOnBoard(state, perm.attachedToId);
-							if (
-								!targetFound ||
-								!isAuraAttachmentLegal(
-									state,
-									perm,
-									p,
-									evalPerm,
-									targetFound.inst,
-									targetFound.controller
-								)
-							) {
-								perm.attachedToId = null;
-								noteLayerInputsChanged(state);
-								queueToGraveyard(perm, p, 'aura');
+							if (targetFound) {
+								if (
+									!isAuraAttachmentLegal(
+										state,
+										perm,
+										p,
+										evalPerm,
+										targetFound.inst,
+										targetFound.controller
+									)
+								) {
+									perm.attachedToId = null;
+									noteLayerInputsChanged(state);
+									queueToGraveyard(perm, p, 'aura');
+								}
+							} else {
+								const targetPlayer = state.players.find(
+									(pl) => pl.playerId === perm.attachedToId && !pl.lost
+								);
+								if (
+									!targetPlayer ||
+									!isAuraPlayerAttachmentLegal(perm, p, evalPerm, targetPlayer)
+								) {
+									perm.attachedToId = null;
+									noteLayerInputsChanged(state);
+									queueToGraveyard(perm, p, 'aura');
+								}
 							}
 						}
 					} else if (isEquipment && perm.attachedToId) {
@@ -6446,8 +6573,10 @@ export function checkStateBasedActions(state: GameState): void {
 			'All remaining players lost simultaneously — the game is a draw (CR 104.4a)!'
 		);
 	} else if (remaining.length === 1 && state.players.length > 1) {
+		// CR 104.2a: A player still in the game wins if all opponents have left the game.
+		// This happens immediately and overrides all effects that would preclude that player from winning.
 		const winner = remaining[0];
-		if (winner && !playerCannotWinGame(state, winner).blocked) {
+		if (winner) {
 			state.status = 'finished';
 			state.winnerPlayerId = winner.playerId;
 			state.winnerId = winner.playerId;
@@ -6469,11 +6598,34 @@ export function checkStateBasedActions(state: GameState): void {
 export function cleanupEliminatedPlayer(state: GameState, eliminated: PlayerGameState): void {
 	const elimId = eliminated.playerId;
 
-	// 1. Remove pending prompts for eliminated player
+	// 1. Remove pending prompts and delayed triggers for eliminated player (CR 800.4d)
 	state.pendingPrompts = state.pendingPrompts.filter((pr) => pr.playerId !== elimId);
+	if (state.delayedTriggers) {
+		state.delayedTriggers = state.delayedTriggers.filter((dt) => dt.controllerId !== elimId);
+	}
 
-	// 2. Remove spells/abilities controlled by eliminated player from the Stack (CR 800.4a)
-	state.stack = state.stack.filter((item) => item.controllerId !== elimId);
+	// 2. Clean up the Stack for the eliminated player (CR 800.4a)
+	// - Objects owned by the eliminated player leave the game.
+	// - Objects on the stack not represented by cards controlled by the eliminated player cease to exist.
+	// - Card-backed spells still controlled by the eliminated player are exiled.
+	const remainingStack: StackItem[] = [];
+	for (const item of state.stack) {
+		const itemOwnerId = item.ownerId || item.controllerId;
+		if (itemOwnerId === elimId) {
+			continue;
+		}
+		if (item.controllerId === elimId) {
+			if (item.kind === 'spell' && !item.isCopy) {
+				const owner = state.players.find((pl) => pl.playerId === itemOwnerId && !pl.lost);
+				if (owner) {
+					moveStackSpellToZone(state, item, 'exile');
+				}
+			}
+			continue;
+		}
+		remainingStack.push(item);
+	}
+	state.stack = remainingStack;
 
 	// 3. Remove eliminated player's attackers/blockers from combat
 	const elimPermIds = new Set(eliminated.battlefield.map((c) => c.instanceId));
@@ -6492,14 +6644,29 @@ export function cleanupEliminatedPlayer(state: GameState, eliminated: PlayerGame
 		state.combat.active = false;
 	}
 
-	// 4. Return any permanents owned by other players or remove objects owned by eliminated player (CR 800.4a)
+	// 4. Handle permanents on the eliminated player's battlefield (CR 800.4a, 800.4c):
+	// - First, control-changing effects giving the eliminated player control end, returning control
+	//   to the permanent's default controller if that player is still in the game.
+	// - Second, any foreign-owned permanents still controlled by the eliminated player (because the
+	//   eliminated player is their default controller, or their default controller has left the game)
+	//   are exiled.
+	// - Finally, all objects owned by the eliminated player leave the game.
 	for (const perm of [...eliminated.battlefield]) {
 		if (perm.ownerId !== elimId) {
-			const owner = state.players.find((pl) => pl.playerId === perm.ownerId && !pl.lost);
-			if (owner) {
-				perm.controllerId = owner.playerId;
+			const defaultCtrlId = perm.defaultControllerId ?? perm.ownerId;
+			const defaultCtrl =
+				defaultCtrlId !== elimId
+					? state.players.find((pl) => pl.playerId === defaultCtrlId && !pl.lost)
+					: undefined;
+			if (defaultCtrl) {
+				perm.controllerId = defaultCtrl.playerId;
 				perm.attachedToId = null;
-				transferBattlefieldControl(perm, eliminated, owner);
+				transferBattlefieldControl(perm, eliminated, defaultCtrl);
+			} else {
+				const owner = state.players.find((pl) => pl.playerId === perm.ownerId && !pl.lost);
+				if (owner) {
+					movePermanentToZone(state, perm, 'exile');
+				}
 			}
 		}
 	}
@@ -6536,15 +6703,27 @@ export function cleanupEliminatedPlayer(state: GameState, eliminated: PlayerGame
 
 	state.passedPriorityPlayerIds = state.passedPriorityPlayerIds.filter((id) => id !== elimId);
 
-	// 5. If the game continues (2+ alive players remain), advance active turn or priority if held by eliminated player
+	// 5. CR 800.4a / 800.4j: If the game continues (2+ alive players remain) and the eliminated
+	// player held priority, pass priority to the next alive player in turn order (or resolve top
+	// of stack / end phase if all remaining players had already passed priority). The turn
+	// continues to completion without an active player if the active player left the game.
 	const alive = state.players.filter((p) => !p.lost);
 	if (alive.length > 1 && state.status === 'active') {
-		const activePlayer = state.players[state.activePlayerIndex];
 		const priorityPlayer = state.players[state.priorityPlayerIndex];
-		if (activePlayer?.playerId === elimId) {
-			completeTurnCleanupAndPassTurn(state);
-		} else if (priorityPlayer?.playerId === elimId) {
-			advancePriorityToNextPlayer(state);
+		if (priorityPlayer?.playerId === elimId) {
+			const allAlivePassed =
+				state.passedPriorityPlayerIds.length > 0 &&
+				alive.every((p) => state.passedPriorityPlayerIds.includes(p.playerId));
+			if (allAlivePassed) {
+				state.passedPriorityPlayerIds = [];
+				if (state.stack.length > 0) {
+					resolveTopOfStack(state);
+				} else {
+					advancePhaseOrStep(state);
+				}
+			} else {
+				advancePriorityToNextPlayer(state);
+			}
 		}
 	}
 }
@@ -6578,6 +6757,7 @@ export function movePermanentToZone(
 	inst: CardInstance,
 	dest: ZoneType
 ): ZoneType {
+	inst.defaultControllerId = undefined;
 	return moveObject(state, inst, dest, {
 		from: 'anyBattlefield',
 		detachAttachments: true,
@@ -7063,7 +7243,11 @@ function validateTargetLegalityInner(
 				controllerId: actorId,
 				source: sourceInst
 			};
-			if (!objectSpecs.some((ts) => matchesObjectFilter(found.inst, ts.filter, fctx))) {
+			const isAuraSpell = Boolean(sourceCard?.typeLine.includes('Aura'));
+			const matchesFilter = isAuraSpell
+				? objectSpecs.every((ts) => matchesObjectFilter(found.inst, ts.filter, fctx))
+				: objectSpecs.some((ts) => matchesObjectFilter(found.inst, ts.filter, fctx));
+			if (!matchesFilter) {
 				return {
 					ok: false,
 					error: `Strict Rules Violation: ${found.inst.card.name} is not a legal target.`
