@@ -42,6 +42,7 @@ import type {
 	ScryfallCard,
 	StackItem,
 	TargetRef,
+	TriggerEventLki,
 	VfxEvent
 } from '../types.ts';
 import { compileCard } from '../compiler/index.ts';
@@ -134,6 +135,11 @@ export interface EffectContext {
 	/** Triggered abilities (Phase 5): the object and amount the trigger event was about. */
 	eventObjectId?: string;
 	eventAmount?: number;
+	/** Steps C+D: the event object's version when the event happened (CR 400.7) and its LKI. */
+	eventObjectVersion?: number;
+	eventLki?: TriggerEventLki;
+	/** "That player": the player the trigger event was about. */
+	eventPlayerId?: string;
 }
 
 export interface EffectResult {
@@ -206,7 +212,7 @@ export const INTERPRETED_VERBS: ReadonlySet<Verb> = new Set<Verb>([
 const PROMPTING_VERBS: ReadonlySet<Verb> = new Set<Verb>(['scry', 'lookAndReorder', 'search']);
 
 function selectorSupported(sel: Selector): boolean {
-	return ['self', 'binding', 'target', 'all', 'player', 'playerRef', 'none'].includes(sel.k);
+	return ['self', 'binding', 'target', 'all', 'player', 'playerRef', 'none', 'eventObject'].includes(sel.k);
 }
 
 function stepSupported(step: EffectStep): boolean {
@@ -245,11 +251,40 @@ function delayedSupported(step: EffectStep): boolean {
  * understood all of it, it isn't modal, every step uses an interpreted verb, and it has at most one
  * target spec (legacy targeting chooses targets for one requirement).
  */
-export function staticallyInterpretable(parse: { steps: EffectStep[]; targets: TargetSpec[]; modal?: unknown; unparsed: unknown[] }): boolean {
+export function staticallyInterpretable(
+	parse: { steps: EffectStep[]; targets: TargetSpec[]; modal?: unknown; unparsed: unknown[] },
+	allowOptionalPrefix = false
+): boolean {
 	if (parse.unparsed.length > 0 || parse.modal || parse.steps.length === 0) return false;
 	const hasFight = parse.steps.some((s) => s.verb === 'fight');
 	if (parse.targets.length > (hasFight ? 2 : 1)) return false;
+	if (allowOptionalPrefix) {
+		const k = optionalPrefix(parse.steps);
+		if (k < 0) return false;
+		return withoutOptional(parse.steps, k).every(stepSupported);
+	}
 	return parse.steps.every(stepSupported);
+}
+
+/**
+ * "You may ..." leading a triggered ability: the number of leading steps that are optional with the
+ * controller as chooser (one "you may" clause), 0 if none is optional, or -1 if an optional step
+ * appears later or with another chooser (not supported: the interpreter can't pause mid-ability).
+ * The caller asks the controller once, on resolution, before any step runs.
+ */
+export function optionalPrefix(steps: EffectStep[]): number {
+	let k = 0;
+	while (k < steps.length && steps[k].optional && steps[k].optional!.chooser.k === 'you') k++;
+	return steps.slice(k).some((s) => s.optional && s.verb !== 'search') ? -1 : k;
+}
+
+/** The steps with the first `k` steps' `optional` removed (they were accepted). */
+export function withoutOptional(steps: EffectStep[], k: number): EffectStep[] {
+	return steps.map((s, i) => {
+		if (i >= k || !s.optional) return s;
+		const { optional: _opt, ...rest } = s;
+		return rest;
+	});
 }
 
 function targetRefMatchesSpec(t: TargetRef, spec: TargetSpec): boolean {
@@ -301,6 +336,7 @@ export function interpretableNow(
 function playerFromRefStatic(state: GameState, ref: PlayerRef, item: StackItem, controller: PlayerGameState): PlayerGameState | null {
 	if (ref.k === 'you') return controller;
 	if (ref.k === 'activePlayer') return state.players[state.activePlayerIndex] ?? null;
+	if (ref.k === 'eventPlayer') return state.players.find((p) => p.playerId === item.eventPlayerId) ?? null;
 	if (ref.k === 'controllerOf' || ref.k === 'ownerOf') {
 		const t = item.targets[0];
 		if (!t) return null;
@@ -406,6 +442,17 @@ class Run {
 		}
 		const id = this.refId(ref);
 		const found = id ? this.locate(id) : null;
+		if (ref.k === 'eventObject') {
+			// CR 608.2h / 400.7: the event object as it is now if it's still the same object on the
+			// battlefield; otherwise (it died, or a "dies" trigger) as it last existed there.
+			const same =
+				found &&
+				found.zone === 'battlefield' &&
+				(this.ctx.eventObjectVersion === undefined || found.inst.objectVersion === this.ctx.eventObjectVersion);
+			if (same) return this.snapshot(found.inst);
+			if (this.ctx.eventLki) return { ...this.ctx.eventLki };
+			return found ? this.snapshot(found.inst) : null;
+		}
 		if (ref.k === 'self') {
 			const expectedVer = this.ctx.item?.sourceObjectVersion;
 			const stillOnBattlefield =
@@ -457,6 +504,8 @@ class Run {
 				return this.you;
 			case 'activePlayer':
 				return this.state.players[this.state.activePlayerIndex] ?? null;
+			case 'eventPlayer':
+				return this.ctx.eventPlayerId ? (this.player(this.ctx.eventPlayerId) ?? null) : null;
 			case 'target': {
 				const t = this.ctx.targets[ref.index];
 				return t?.kind === 'player' ? (this.player(t.id) ?? null) : null;
@@ -533,8 +582,11 @@ class Run {
 					.filter((c): c is CardInstance => Boolean(c && !c.phasedOut));
 			}
 			case 'eventObject': {
+				// CR 400.7: once the event object changes zones again it's a new object.
 				const f = this.ctx.eventObjectId ? this.locate(this.ctx.eventObjectId) : null;
-				return f ? [f.inst] : [];
+				if (!f || f.inst.phasedOut) return [];
+				if (this.ctx.eventObjectVersion !== undefined && f.inst.objectVersion !== this.ctx.eventObjectVersion) return [];
+				return [f.inst];
 			}
 			case 'all': {
 				const zone = sel.filter.zone ?? 'battlefield';

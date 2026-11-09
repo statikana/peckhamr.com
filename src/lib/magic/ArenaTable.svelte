@@ -1455,6 +1455,21 @@
 		}
 	}
 
+	/** Choice candidates that aren't cards: players (target player) and stack items. */
+	function nonCardCandidates(candidateIds: string[]): Array<{ id: string; label: string }> {
+		const out: Array<{ id: string; label: string }> = [];
+		for (const id of candidateIds) {
+			const pl = gameState.players.find((p) => p.playerId === id);
+			if (pl) {
+				out.push({ id, label: `Player: ${pl.username}${pl.playerId === me?.playerId ? ' (you)' : ''} (${pl.life} life)` });
+				continue;
+			}
+			const item = gameState.stack.find((s) => s.id === id);
+			if (item) out.push({ id, label: `Stack: ${item.title}` });
+		}
+		return out;
+	}
+
 	function resolveCandidateObjects(candidateIds: string[]): CardInstance[] {
 		const idSet = new Set(candidateIds);
 		const pool: CardInstance[] = [];
@@ -3434,6 +3449,16 @@
 									<span>{c.card.name}</span>
 								</button>
 							{/each}
+							{#each nonCardCandidates(myChoice.candidates) as nc (nc.id)}
+								<button
+									type="button"
+									class="modal-card-item selectable"
+									class:selected={selectedPromptCardIds.includes(nc.id)}
+									onclick={() => togglePromptCardSelection(nc.id, maxReq)}
+								>
+									<span>{nc.label}</span>
+								</button>
+							{/each}
 						</div>
 						<div class="modal-actions">
 							<button
@@ -3569,6 +3594,61 @@
 								})}
 						>
 							Confirm ({selectedPromptNumber})
+						</button>
+					</div>
+				{:else if myChoice.kind === 'orderObjects' && myPromptPurpose === 'trigger_order'}
+					{@const stackById = new Map(gameState.stack.map((s) => [s.id, s]))}
+					<div class="scry-section">
+						<div class="scry-section-head">
+							<strong>TRIGGERED ABILITIES ({scryTopOrder.length})</strong>
+							<span class="scry-hint">#1 resolves first — use ◀ / ▶ to rearrange order</span>
+						</div>
+						<div class="modal-card-grid">
+							{#each scryTopOrder as id, idx (id)}
+								{@const item = stackById.get(id)}
+								<div class="modal-card-item scry-card-item" role="group" aria-label="Trigger #{idx + 1}">
+									<div class="scry-rank-pill top-rank">#{idx + 1}{idx === 0 ? ' (Resolves First)' : ''}</div>
+									{#if item?.card.imageUrl}
+										<img src={item.card.imageUrl} alt={item.card.name} />
+									{/if}
+									<span class="scry-card-name">{item?.title ?? id}</span>
+									<div class="scry-controls-row">
+										<button
+											type="button"
+											class="gy-move-btn"
+											disabled={idx === 0}
+											onclick={() => shiftScryCardOrder(id, -1)}
+										>
+											◀ Earlier
+										</button>
+										<button
+											type="button"
+											class="gy-move-btn"
+											disabled={idx === scryTopOrder.length - 1}
+											onclick={() => shiftScryCardOrder(id, 1)}
+										>
+											Later ▶
+										</button>
+									</div>
+								</div>
+							{/each}
+						</div>
+					</div>
+					<div class="modal-actions">
+						<button
+							type="button"
+							class="arena-main-btn can-act"
+							onclick={async () => {
+								const topIds = [...scryTopOrder];
+								scryTopOrder = [];
+								await onGameAction({
+									type: 'choice',
+									promptId: myPrompt.id,
+									answer: { kind: 'orderObjects', topIds, bottomIds: [], shuffle: false }
+								});
+							}}
+						>
+							Confirm Order
 						</button>
 					</div>
 				{:else if myChoice.kind === 'orderObjects'}

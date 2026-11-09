@@ -67,7 +67,8 @@ import {
 	type NormalizedSentence
 } from './normalize.ts';
 import { parseStaticAbility } from './statics.ts';
-import { parseTriggerHeader, runtimeTriggerProblem, setLegacyTriggerExecution } from './triggers.ts';
+import { parseEffects } from './effects.ts';
+import { parseTriggerHeader, runtimeTriggerProblem, setLegacyTriggerExecution, setTriggerEffect } from './triggers.ts';
 
 const ALL_COLORS: ManaColor[] = ['W', 'U', 'B', 'R', 'G'];
 
@@ -426,6 +427,11 @@ function adaptTrigger(ctx: AdapterContext, line: NormalizedLine): AbilityDef[] |
 				}
 			: { kind: 'triggered', trigger, condition, targets, effect, span };
 	setLegacyTriggerExecution(ability, { effects, clause: line.raw, legacyClaimed: Boolean(legacyEffects) });
+	// Steps C (ENGINE_ARCHITECTURE_PLAN.md Phase 10 roadmap): the effect clause (after the trigger head
+	// and any intervening-if) compiled by the effect grammar, for the IR interpreter. Event referents
+	// ("that creature", "it", "that player", "that many") compile to eventObject / eventPlayer /
+	// eventAmount. Cached with the CardDefinition (compileCard), never stored in GameState.
+	setTriggerEffect(ability, parseEffects(line.text.slice(head.effectStart - line.span.start), head.effectStart, 'triggered'));
 	return [ability];
 }
 

@@ -422,7 +422,6 @@ export interface StackItem {
 	createdAt: number;
 	isCopy?: boolean;
 	sourceObjectVersion?: number;
-	interveningIfClause?: string;
 	interveningIfCondition?: TriggerCondition;
 	lkiPower?: number;
 	lkiToughness?: number;
@@ -438,6 +437,35 @@ export interface StackItem {
 	 */
 	triggeredAbilityIndex?: number;
 	targetObjectVersions?: Record<string, number>;
+	/**
+	 * Steps C+D: the trigger event a triggered ability refers to ("that creature", "that player",
+	 * "that many"). Not targets: they are never checked for legality (CR 603.7c, 608.2b).
+	 * `eventObjectId` is the object the event was about (the source itself for "When ~ enters");
+	 * `eventLki` is how it last existed on the battlefield (CR 603.10a, 608.2h).
+	 */
+	eventObjectId?: string;
+	eventObjectVersion?: number;
+	eventPlayerId?: string;
+	eventAmount?: number;
+	/** The spell or ability that targeted the source (Ward). */
+	eventStackItemId?: string;
+	eventLki?: TriggerEventLki;
+	/**
+	 * Transitional (step F deletes it): the event ref the pre-IR engine passed to a triggered
+	 * ability's legacy ParsedEffects as `targets[0]`. Used only by the legacy fallback.
+	 */
+	legacyEventTarget?: TargetRef;
+	/** "You may" triggered abilities: the controller's answer, once asked on resolution. */
+	optionalAccepted?: boolean;
+}
+
+/** Last known information of a trigger's event object (plain data, JSON-serialisable). */
+export interface TriggerEventLki {
+	controllerId: string;
+	ownerId: string;
+	power: number;
+	toughness: number;
+	manaValue: number;
 }
 
 export interface DelayedTrigger {
@@ -561,6 +589,12 @@ export type PromptPurpose =
 	| 'guided_resolution'
 	| 'legend_rule'
 	| 'cost_choice'
+	/** Steps C+D: choosing a triggered ability's targets as it's put on the stack (CR 603.3d). */
+	| 'trigger_targets'
+	/** Steps C+D: ordering a player's simultaneous triggered abilities (CR 603.3b). */
+	| 'trigger_order'
+	/** Steps C+D: "you may" in a resolving triggered ability. */
+	| 'trigger_may'
 	| 'generic';
 
 export interface PendingPrompt {
@@ -598,6 +632,10 @@ export interface PendingPrompt {
 	pendingAction?: GameActionPayload;
 	costQuestion?: { kind: 'option' | 'objects'; index: number };
 	costOptionLabels?: string[];
+	/** trigger_targets / trigger_may: the triggered ability's stack item (by id; state stays plain data). */
+	triggerStackItemId?: string;
+	/** trigger_targets: which of the ability's target specs this prompt chooses for. */
+	triggerTargetSpecIndex?: number;
 }
 
 /**
@@ -710,6 +748,11 @@ export interface GameState {
 	priorityUpdatedAt: number;
 	nextTimestamp?: number;
 	delayedTriggers?: DelayedTrigger[];
+	/**
+	 * Steps C+D: how many triggered abilities were put on the stack this turn (runaway-loop cap; a
+	 * trigger that retriggers itself keeps the stack shallow but never ends).
+	 */
+	triggersPlacedThisTurn?: { turn: number; count: number };
 	extraTurnQueue?: string[];
 	stackTriggersEnabled?: boolean;
 	rngState?: number;

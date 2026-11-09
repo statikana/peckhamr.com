@@ -1,5 +1,8 @@
 import type { RequestHandler } from '@sveltejs/kit';
-import { runAutomatedPriorityAndBots } from '../../../../lib/magic/ai';
+import { runAutomatedPriorityAndBots, SERVER_MAX_BOT_STEPS } from '../../../../lib/magic/ai';
+
+/** Bot automation budget per request (every triggered ability uses the stack). */
+const BOT_LOOP_OPTS = { maxSteps: SERVER_MAX_BOT_STEPS, logOnCap: true };
 import {
 	addChatMessage,
 	CORS_HEADERS,
@@ -142,7 +145,7 @@ export const GET: RequestHandler = async ({ url, request, platform }) => {
 				type: 'pass_priority'
 			});
 			if (res.ok) {
-				runAutomatedPriorityAndBots(lobby.gameState);
+				runAutomatedPriorityAndBots(lobby.gameState, BOT_LOOP_OPTS);
 				if ((lobby.gameState.status as string) === 'finished') {
 					lobby.status = 'finished';
 				}
@@ -369,7 +372,7 @@ export const POST: RequestHandler = async ({ request, platform }) => {
 				const gp = lobby.gameState.players.find((p) => p.playerId === user.id);
 				if (gp && !gp.lost) {
 					applyGameAction(lobby.gameState, user.id, { type: 'concede' });
-					runAutomatedPriorityAndBots(lobby.gameState);
+					runAutomatedPriorityAndBots(lobby.gameState, BOT_LOOP_OPTS);
 					if (lobby.gameState.status === 'finished') {
 						lobby.status = 'finished';
 					}
@@ -660,7 +663,7 @@ export const POST: RequestHandler = async ({ request, platform }) => {
 		}
 
 		const gameState = createInitialGameState(lobby.code, occupiedSeats, decksBySeat, lobby.rules);
-		runAutomatedPriorityAndBots(gameState);
+		runAutomatedPriorityAndBots(gameState, BOT_LOOP_OPTS);
 
 		lobby.gameState = gameState;
 		lobby.status = 'active';
@@ -703,7 +706,7 @@ export const POST: RequestHandler = async ({ request, platform }) => {
 		}
 
 		// Run any automated priority passes or AI Bot turns
-		runAutomatedPriorityAndBots(lobby.gameState);
+		runAutomatedPriorityAndBots(lobby.gameState, BOT_LOOP_OPTS);
 
 		if (lobby.gameState.status === 'finished') {
 			lobby.status = 'finished';

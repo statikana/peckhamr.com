@@ -249,7 +249,9 @@ export type PlayerRef =
 	| { k: 'controllerOf'; of: Ref }
 	| { k: 'ownerOf'; of: Ref }
 	| { k: 'target'; index: number }
-	| { k: 'activePlayer' };
+	| { k: 'activePlayer' }
+	/** The player the trigger event was about ("that player": the player dealt damage, the caster). */
+	| { k: 'eventPlayer' };
 
 export type Amount =
 	| { k: 'const'; n: number }
@@ -424,7 +426,9 @@ export type EventKind =
 	| 'becomesTapped'
 	| 'dealtDamage'
 	| 'drawCard'
-	| 'gainLife';
+	| 'gainLife'
+	/** A permanent was tapped for mana ("Whenever you tap a land for mana"); CR 605.1b. */
+	| 'tappedForMana';
 
 export interface EventFilter {
 	/**

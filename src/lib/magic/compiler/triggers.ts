@@ -10,6 +10,7 @@
  */
 import type { Amount, CardDefinition, Condition, EventFilter, ObjectFilter, Span, TriggerDef } from '../ir.ts';
 import type { GamePhase, ParsedEffect, TriggerScope } from '../types.ts';
+import type { EffectParse } from './effects.ts';
 import { parseObjectPhrase } from './costs.ts';
 
 export interface TriggerParse {
@@ -85,7 +86,7 @@ interface Subject {
 
 function objectSubject(text: string): Subject | null {
 	if (text === '~') return { object: 'self' };
-	if (text === 'equipped creature' || text === 'enchanted creature' || text === 'enchanted permanent') {
+	if (text === 'equipped creature' || text === 'enchanted creature' || text === 'enchanted permanent' || text === 'enchanted land') {
 		return { object: 'attachedTo' };
 	}
 	const orSelf = text.match(/^~ or (another .+)$/);
@@ -188,6 +189,8 @@ function objectEvent(verb: string, subject: Subject): TriggerDef | null {
 			return def('becomesTarget', { targetedBy: 'spell' });
 		case 'becomes the target of an ability':
 			return def('becomesTarget', { targetedBy: 'ability' });
+		case 'is tapped for mana':
+			return def('tappedForMana');
 		case 'becomes attached to a creature':
 			return def('attached', { host: { types: ['Creature'] } });
 		case 'becomes attached to a creature you control':
@@ -232,6 +235,12 @@ function playerEvent(player: EventFilter['player'], rest: string): TriggerDef | 
 		return { event: 'attacks', filter: { player, oneOrMore: true } };
 	}
 	if (rest === 'gain life' || rest === 'gains life') return { event: 'gainLife', filter: { player } };
+	// "Whenever you tap a land for mana" / "Whenever a player taps a Forest for mana".
+	const tap = rest.match(/^taps? (?:a|an) (.+) for mana$/);
+	if (tap) {
+		const object = parseObjectPhrase(tap[1]);
+		if (object) return { event: 'tappedForMana', filter: { object, player } };
+	}
 	if (rest === 'draw a card' || rest === 'draws a card') return { event: 'drawCard', filter: { player } };
 	return null;
 }
@@ -390,7 +399,8 @@ const RUNTIME_EVENT_FIELDS: Partial<Record<TriggerDef['event'], ReadonlySet<stri
 	phaseBegin: new Set(['phase']),
 	counterPlaced: new Set(['object', 'counter']),
 	becomesTarget: new Set(['object', 'targetedBy']),
-	attached: new Set(['object', 'host'])
+	attached: new Set(['object', 'host']),
+	tappedForMana: new Set(['object', 'player'])
 };
 
 function objectFilterProblem(f: ObjectFilter | undefined): string | null {
@@ -420,7 +430,7 @@ export function runtimeTriggerProblem(def: TriggerDef): string | null {
 	const p = objectFilterProblem(f.host);
 	if (p) return p;
 	// The object an Aura/Equipment is attached to has already been detached when it leaves.
-	if (f.object === 'attachedTo' && !['attacks', 'dealsDamage'].includes(def.event)) {
+	if (f.object === 'attachedTo' && !['attacks', 'dealsDamage', 'tappedForMana'].includes(def.event)) {
 		return `"${def.event}" of the attached-to object`;
 	}
 	if (def.event === 'phaseBegin' && (!f.phase || !RUNTIME_PHASES.has(f.phase))) return `phase "${f.phase}"`;
@@ -458,6 +468,18 @@ export function setLegacyTriggerExecution(ability: object, exec: LegacyTriggerEx
 	LEGACY_EXECUTION.set(ability, exec);
 }
 
+const TRIGGER_EFFECT = new WeakMap<object, EffectParse>();
+
+/** The effect grammar's parse of a triggered ability's effect clause (set by the adapter). */
+export function setTriggerEffect(ability: object, effect: EffectParse): void {
+	TRIGGER_EFFECT.set(ability, effect);
+}
+
+/** True if the effect grammar understood the whole effect clause (it may still need a legacy verb). */
+export function triggerEffectComplete(effect: EffectParse | undefined): effect is EffectParse {
+	return Boolean(effect && effect.unparsed.length === 0 && !effect.modal && effect.steps.length > 0);
+}
+
 /** One triggered ability as the runtime matches it. */
 export interface RuntimeTrigger {
 	/** Index in compileCard(card).faces[0].abilities (stored on stack items, CR 603.4 re-check). */
@@ -467,6 +489,11 @@ export interface RuntimeTrigger {
 	/** The IR effect is fully understood (kind 'triggered'); false: only the trigger head is. */
 	effectSupported: boolean;
 	legacy: LegacyTriggerExecution;
+	/**
+	 * The effect compiled by the effect grammar (steps, target specs, unparsed spans). The runtime
+	 * resolves the ability on the IR interpreter when this is interpretable, and on `legacy` otherwise.
+	 */
+	effect?: EffectParse;
 }
 
 const RUNTIME_TRIGGERS = new WeakMap<CardDefinition, RuntimeTrigger[]>();
@@ -506,11 +533,23 @@ export function runtimeTriggers(def: CardDefinition): RuntimeTrigger[] {
 			return;
 		}
 		const legacy = LEGACY_EXECUTION.get(ab);
-		if (!legacy || legacy.effects.length === 0) return;
+		if (!legacy) return;
+		const effect = TRIGGER_EFFECT.get(ab);
+		const grammarComplete = triggerEffectComplete(effect);
+		// Legacy effects exist, or the effect grammar understood the whole clause (the runtime then
+		// checks that the interpreter supports every step; see runtime/triggers.ts `executable`).
+		if (legacy.effects.length === 0 && !grammarComplete) return;
 		if (ab.kind === 'triggered') {
-			out.push({ abilityIndex, trigger: ab.trigger, condition: ab.condition, effectSupported: true, legacy });
-		} else if (ab.kind === 'unsupported' && ab.reason === 'unparsed' && ab.trigger && legacy.legacyClaimed) {
-			out.push({ abilityIndex, trigger: ab.trigger, condition: ab.condition, effectSupported: false, legacy });
+			out.push({ abilityIndex, trigger: ab.trigger, condition: ab.condition, effectSupported: true, legacy, effect });
+		} else if (
+			ab.kind === 'unsupported' &&
+			ab.reason === 'unparsed' &&
+			ab.trigger &&
+			((legacy.legacyClaimed && legacy.effects.length > 0) || grammarComplete)
+		) {
+			// An unparsed intervening-if leaves `condition` undefined: such abilities are 'unparsed' via
+			// the trigger head (no ab.trigger), so they never get here.
+			out.push({ abilityIndex, trigger: ab.trigger, condition: ab.condition, effectSupported: false, legacy, effect });
 		}
 	});
 	RUNTIME_TRIGGERS.set(def, out);

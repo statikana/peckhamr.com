@@ -62,6 +62,30 @@ import {
 	type TargetRef
 } from './types.ts';
 
+/**
+ * Steps C+D: triggered abilities use the stack. Resolves the triggered abilities on top of the stack
+ * (not the spells under them) by passing priority, keeping the default order for order prompts and
+ * answering "you may" with yes.
+ */
+function resolveTriggers(state: GameState, max = 40): void {
+	for (let i = 0; i < max; i++) {
+		const prompt = state.pendingPrompts[0];
+		if (prompt?.purpose === 'trigger_order' && prompt.choice?.kind === 'orderObjects') {
+			applyGameAction(state, prompt.playerId, { type: 'choice', promptId: prompt.id, answer: { kind: 'orderObjects', topIds: prompt.choice.objectIds, bottomIds: [], shuffle: false } });
+			continue;
+		}
+		if (prompt?.purpose === 'trigger_may') {
+			applyGameAction(state, prompt.playerId, { type: 'choice', promptId: prompt.id, answer: { kind: 'yesNo', yes: true } });
+			continue;
+		}
+		if (prompt) return;
+		const top = state.stack[state.stack.length - 1];
+		if (!top || top.kind !== 'triggered') return;
+		const prio = state.players[state.priorityPlayerIndex];
+		if (!applyGameAction(state, prio.playerId, { type: 'pass_priority' }).ok) return;
+	}
+}
+
 function getCardByName(name: string): ScryfallCard | undefined {
 	return STAPLE_CARDS[name.toLowerCase()];
 }
@@ -1587,6 +1611,7 @@ describe('9. Niche Mechanics: Modal Spells, Cyclonic Rift Overload, Infect, Doub
 			applyGameAction(state, p1Id, { type: 'cast_spell', instanceId: brainstorm.instanceId }).ok,
 			true
 		);
+		resolveTriggers(state);
 		// Storm-Kiln Artist creates 2 Treasure tokens (doubled by Veyran!) and Veyran gets +2/+2!
 		const treasures = state.players[0].battlefield.filter((c) => c.card.name === 'Treasure');
 		assert.equal(treasures.length, 2);
@@ -1857,6 +1882,7 @@ describe('11. Land Play Legality, Landfall Proliferate, Corpsejack Doubling & Cl
 			applyGameAction(state, p1Id, { type: 'play_land', instanceId: tapland.instanceId }).ok,
 			true
 		);
+		resolveTriggers(state);
 		assert.equal(tapland.tapped, true);
 		assert.equal(sage.counters['+1/+1'], 3); // 1 + (1 * 2 from Corpsejack) = 3!
 
@@ -2013,6 +2039,7 @@ describe('13. Standardized Labeled-Path CardRuleTree & Dynamic Board-State Hooks
 		assert.equal(applyGameAction(state, p1Id, { type: 'pass_priority' }).ok, true);
 		assert.equal(applyGameAction(state, p2Id, { type: 'pass_priority' }).ok, true);
 
+		resolveTriggers(state);
 		// Boots is attached AND the on_attach trigger drew 1 card!
 		assert.equal(boots.attachedToId, creature.instanceId);
 		assert.equal(state.players[0].hand.length, handBefore + 1);
@@ -2602,6 +2629,7 @@ describe('20. CR 404.2 Graveyard Ordering (Nether Shadow, Corpse Dance) & CR 702
 		applyGameAction(state, p1Id, { type: 'end_turn' });
 		p2.hand = [];
 		applyGameAction(state, p2.playerId, { type: 'end_turn' });
+		resolveTriggers(state);
 
 		assert.equal(
 			p1.battlefield.some((b) => b.instanceId === shadow.instanceId),
@@ -3663,6 +3691,7 @@ describe('25. Stage B: Correctness Fixes (B1 Stack Owner Zone, B2 Hook Phasing/A
 			applyGameAction(state, p1Id, { type: 'play_land', instanceId: fountain.instanceId }).ok,
 			true
 		);
+		resolveTriggers(state);
 		assert.equal(
 			p1.life,
 			lifeBeforeLand + 2,
@@ -3702,6 +3731,7 @@ describe('26. Stage C: Grammar-Driven Triggers, Target-Controller Effects, Cost 
 		const c2 = addCardToZone(state, p1Id, getCardByName('Elvish Mystic')!, 'graveyard');
 		assert.ok(c1 && c2);
 		runBeginningOfTurn(state);
+		resolveTriggers(state);
 		assert.equal(
 			p1.battlefield.some((b) => b.instanceId === wraith.instanceId),
 			true,
@@ -3744,6 +3774,7 @@ describe('26. Stage C: Grammar-Driven Triggers, Target-Controller Effects, Cost 
 		);
 		applyGameAction(state, p1Id, { type: 'pass_priority' });
 		applyGameAction(state, p2Id, { type: 'pass_priority' });
+		resolveTriggers(state);
 		assert.equal(
 			mentor.counters['+1/+1'],
 			1,
@@ -3756,6 +3787,7 @@ describe('26. Stage C: Grammar-Driven Triggers, Target-Controller Effects, Cost 
 			applyGameAction(state, p1Id, { type: 'play_land', instanceId: forestHand.instanceId }).ok,
 			true
 		);
+		resolveTriggers(state);
 		assert.equal(
 			mentor.counters['+1/+1'],
 			2,
@@ -3782,6 +3814,7 @@ describe('26. Stage C: Grammar-Driven Triggers, Target-Controller Effects, Cost 
 		);
 		applyGameAction(state, p1Id, { type: 'pass_priority' });
 		applyGameAction(state, p2Id, { type: 'pass_priority' });
+		resolveTriggers(state);
 		// Elves controlled by p1: Canopy Mentor, Llanowar Elves, GroveInvoker = 3 Elves!
 		assert.equal(
 			p2.life,
@@ -3827,6 +3860,7 @@ describe('26. Stage C: Grammar-Driven Triggers, Target-Controller Effects, Cost 
 			}).ok,
 			true
 		);
+		resolveTriggers(state);
 		assert.equal(
 			p1.hand.length,
 			handBefore - 1 + 2,
@@ -3836,6 +3870,7 @@ describe('26. Stage C: Grammar-Driven Triggers, Target-Controller Effects, Cost 
 		// Resolving Slip Out the Back puts a +1/+1 counter on Simic Biomancer -> triggers Simic Biomancer to draw 1 more card!
 		applyGameAction(state, p1Id, { type: 'pass_priority' });
 		applyGameAction(state, p2Id, { type: 'pass_priority' });
+		resolveTriggers(state);
 		assert.equal(
 			p1.hand.length,
 			handBefore - 1 + 3,
@@ -3872,6 +3907,7 @@ describe('26. Stage C: Grammar-Driven Triggers, Target-Controller Effects, Cost 
 			}).ok,
 			true
 		);
+		resolveTriggers(state);
 		assert.equal(
 			p1.battlefield.some((b) => b.card.name === 'Treasure'),
 			true,
@@ -3884,6 +3920,7 @@ describe('26. Stage C: Grammar-Driven Triggers, Target-Controller Effects, Cost 
 		applyGameAction(state, p2Id, { type: 'declare_blockers', assignments: [] });
 		applyGameAction(state, p1Id, { type: 'pass_priority' });
 		applyGameAction(state, p2Id, { type: 'pass_priority' });
+		resolveTriggers(state);
 		const saprolings = p1.battlefield.filter((b) => b.card.typeLine.includes('Saproling'));
 		assert.equal(
 			saprolings.length,
@@ -4922,8 +4959,17 @@ describe('29. Stage C & D Deep Audit: Timestamp Precedence, Layer-Aware Subtypes
 			applyGameAction(state, p1Id, { type: 'cast_spell', instanceId: shamanHand.instanceId }).ok,
 			true
 		);
-		// Resolve Shaman of the Pack + any triggers
-		while (state.stack.length > 0) {
+		// Resolve Shaman of the Pack + any triggers (steps C+D: Marwyn's and Shaman's triggers go on
+		// the stack together, so P1 is asked to order them; keep the default order)
+		for (let guard = 0; state.stack.length > 0 && guard < 20; guard++) {
+			const order = state.pendingPrompts.find((pr) => pr.purpose === 'trigger_order');
+			if (order && order.choice?.kind === 'orderObjects') {
+				applyGameAction(state, order.playerId, {
+					type: 'choice',
+					promptId: order.id,
+					answer: { kind: 'orderObjects', topIds: order.choice.objectIds, bottomIds: [], shuffle: false }
+				});
+			}
 			applyGameAction(state, p1Id, {
 				type: 'pass_priority'
 			});

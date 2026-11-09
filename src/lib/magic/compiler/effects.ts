@@ -373,6 +373,13 @@ function playerPhrase(p: Parser, text: string): Selector | null {
 		return { k: 'playerRef', ref: of[1] === 'controller' ? { k: 'controllerOf', of: ref } : { k: 'ownerOf', of: ref } };
 	}
 	if (t === 'the player whose turn it is') return { k: 'playerRef', ref: { k: 'activePlayer' } };
+	if (t === 'that player' && p.context === 'triggered') {
+		// In a triggered ability "that player" is the player the event was about ("Whenever an
+		// opponent casts a spell, that player ..."), unless an earlier clause chose a target player.
+		const last = p.lastPlayer;
+		if (last && last.k === 'playerRef' && last.ref.k === 'target') return last;
+		return { k: 'playerRef', ref: { k: 'eventPlayer' } };
+	}
 	if ((t === 'that player' || t === 'they') && p.lastPlayer) return p.lastPlayer;
 	return null;
 }
@@ -397,6 +404,9 @@ function equalTo(p: Parser, text: string): Amount | null {
 		const which = stat[2] === 'mana value' ? 'manaValue' : (stat[2] as 'power' | 'toughness');
 		return it ? { k: 'stat', of: ref, stat: which, lki: true } : { k: 'stat', of: ref, stat: which };
 	}
+	// "the entering creature's power" (CR 603.6a: the object that entered, as it is now).
+	const entering = t.match(/^the entering (?:creature|permanent)'s (power|toughness)$/);
+	if (entering && p.context === 'triggered') return { k: 'stat', of: { k: 'eventObject' }, stat: entering[1] as 'power' | 'toughness' };
 	if (t === "~'s power") return { k: 'stat', of: { k: 'self' }, stat: 'power' };
 	if (t === "~'s toughness") return { k: 'stat', of: { k: 'self' }, stat: 'toughness' };
 	const num = t.match(/^the number of (.+)$/);
@@ -418,7 +428,7 @@ function numberOf(text: string): Amount | null {
 
 /** A count before a noun: "two", "X", "that many". */
 function amountWord(p: Parser, word: string): Amount | null {
-	if (word === 'that many') return p.thatMany();
+	if (word === 'that many' || word === 'that much') return p.thatMany();
 	return count(word);
 }
 
@@ -612,6 +622,14 @@ function objectPredicate(p: Parser, subject: ObjectRes, vp: string, span: Span):
 		p.push({ verb: 'damage', subject: target, amount, span }, false);
 		return true;
 	}
+	const dmgThat = text.match(/^deals (that much|that many) damage to (.+)$/);
+	if (dmgThat && !eot && subject.selector.k === 'self') {
+		const amount = amountWord(p, dmgThat[1]);
+		const target = amount && damageRecipient(p, dmgThat[2]);
+		if (!amount || !target) return false;
+		p.push({ verb: 'damage', subject: target, amount, span }, false);
+		return true;
+	}
 	const dmgEq = text.match(/^deals damage equal to (.+?) to (.+)$/);
 	if (dmgEq && !eot && subject.selector.k === 'self') {
 		const amount = equalTo(p, dmgEq[1]);
@@ -651,6 +669,20 @@ function playerPredicate(p: Parser, subject: Selector, vp: string, span: Span, f
 		const amount = count(m[1]);
 		if (!amount) return false;
 		p.push({ verb: 'draw', subject, amount, ...opt, span }, false);
+		return true;
+	}
+	m = text.match(/^draws? (that many) cards$/);
+	if (m) {
+		const amount = amountWord(p, m[1]);
+		if (!amount) return false;
+		p.push({ verb: 'draw', subject, amount, ...opt, span }, false);
+		return true;
+	}
+	m = text.match(/^(gains?|loses?) (that much|that many) life$/);
+	if (m) {
+		const amount = amountWord(p, m[2]);
+		if (!amount) return false;
+		p.push({ verb: m[1].startsWith('gain') ? 'gainLife' : 'loseLife', subject, amount, ...opt, span }, false);
 		return true;
 	}
 	m = text.match(/^draws? cards equal to (.+)$/);

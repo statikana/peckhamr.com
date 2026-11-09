@@ -1303,6 +1303,64 @@ engine.ts 7, oracle.ts 2. **Phase 10's exit now also requires both to be 0.**
 
 Then an ultra code review of the branch, doc clean-up, and push.
 
+#### Steps C+D: triggers on the IR interpreter and the stack (branch `engine-rewrite-triggers`, 2026-11-09)
+
+**Step C (commit 9fa9809): trigger effects on the IR interpreter.**
+- `compiler/adapter.ts` compiles each triggered ability's effect clause (after the trigger head and
+  any intervening-if) with the effect grammar (`parseEffects(..., 'triggered')`), attached to the
+  compiled ability and exposed as `RuntimeTrigger.effect` / `compiledTriggerEffect(card,
+  abilityIndex)` in `compiler/index.ts` (cached with the CardDefinition; the runtime never reads text).
+- Event referents: "it" / "that creature" → `eventObject`; "that player" → new `PlayerRef`
+  `{k:'eventPlayer'}` (unless an earlier clause chose a target player); "that many" / "that much" →
+  `eventAmount` (new productions: draw that many cards, gain/lose that much life, deals that much
+  damage); "the entering creature's power" → `stat` of `eventObject`.
+- `StackItem` records the event (`eventObjectId`, `eventObjectVersion`, `eventPlayerId`,
+  `eventAmount`, `eventStackItemId`, `eventLki`), never in `targets`. `eventObject` reads LKI once the
+  object left the battlefield (CR 608.2h) and stops at a new object (CR 400.7). The legacy fallback
+  gets its old `targets[0]` from the transitional `legacyEventTarget` (delete in step F).
+- Triggers the grammar fully understands but the legacy parser never claimed now fire too; the
+  engine filters out abilities it can't execute (`TriggerHost.canExecute`).
+
+**Step D: every trigger on the stack.**
+- `runtime/triggers.ts` `modeFor`: every triggered ability uses the stack (CR 603.3) except triggered
+  mana abilities (CR 605.1b), detected as abilities on the new `TappedForMana` event (emitted by the
+  `tap_mana` action; grammar "Whenever you tap a land for mana", "Whenever enchanted land is tapped
+  for mana") whose effect only adds mana; they resolve immediately (CR 605.4a).
+- Placement waits until a player would receive priority: `withTriggersDeferred` wraps stack
+  resolution (`resolveTopOfStack`) and the turn-based actions of `beginPhase` (combat damage is
+  followed by SBAs, then triggers), CR 603.3 / 704.3.
+- Targets are chosen as the ability is put on the stack, from the compiled `TargetSpec`s
+  (`putTriggerOnStack` in `engine.ts`; candidates from `matchesObjectFilter` + shroud / hexproof /
+  protection). Bots choose via `ai.ts chooseBotTriggerTargets`; humans get a `chooseObjects` prompt
+  (`purpose: 'trigger_targets'`) unless the choice is forced. A required target with no legal
+  candidate removes the ability with a log line (CR 603.3d). On resolution the targets are re-checked
+  against the same specs (CR 608.2b).
+- A human with several simultaneous triggers orders them with an `orderObjects` prompt (`purpose:
+  'trigger_order'`, `topIds[0]` resolves first, CR 603.3b); bots and single triggers get no prompt;
+  APNAP across players is unchanged.
+- "You may" (a leading optional clause with the controller as chooser): asked on resolution (`yesNo`,
+  `purpose: 'trigger_may'`); the ability stays on the stack meanwhile (CR 608.2n). Bots decide via
+  `ai.ts botAcceptsOptionalTrigger`.
+- All three prompts are plain data (`PendingPrompt.triggerStackItemId`, `triggerTargetSpecIndex`),
+  answered in `handlePromptResolution`, so they survive the server's JSON round trip between requests
+  (no `enqueueChoicePrompt` callbacks).
+- Removed the Felidar `'life_40_or_more'` hack and `StackItem.interveningIfClause` (the one
+  non-additive `types.ts` change, explicitly requested); the general intervening-if re-check stays.
+- Safety: a stack-size cap (300) and a per-turn cap (200 triggered abilities,
+  `GameState.triggersPlacedThisTurn`) stop runaway retrigger loops, with a log line; `applyGameAction`
+  flushes pending triggers before returning. The lobby server runs
+  the bot loop with a 1,500-step budget (`SERVER_MAX_BOT_STEPS`, logs when hit); tests and golden
+  games keep the 240-step default. Humans auto-pass over their own triggered abilities when they have
+  no legal response (Full Control off), as on MTG Arena.
+- UI (`ArenaTable.svelte`): `chooseObjects` renders player and stack-item candidates; a
+  `trigger_order` branch lists the stack items with ◀/▶.
+- Interpreter coverage (`scripts/magic-trigger-interpreter.ts`): precon 29 / 34 triggered abilities
+  (3 targeted); bulk 3,184 / 5,001 (644 targeted). Still legacy among precons: Ward, Miirym's copy,
+  Nether Shadow (zone move of itself), Thassa's Oracle, The Ur-Dragon.
+- Deferred: `BecameTarget` for abilities, `TappedForMana` from auto-tapping during payment, "if you
+  do" and optional clauses after the first step, delayed triggers still pushed by
+  `runDelayedEndStepTriggers` (on the stack, not ordered with other triggers).
+
 #### Step E1: unsupported-ability warnings and lobby rule ✅ done 2026-11-09 (branch `engine-rewrite-unsupported`)
 - **Helper:** `compiler/support.ts`. `cardSupportReport(card)` returns `{ fullySupported, unsupported:
   [{ face, text, reason, span, unparsed }] }`, where `unparsed` holds the fragments narrower than the

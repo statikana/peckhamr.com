@@ -140,7 +140,19 @@ export interface AttachedEvent extends EventBase {
 	host: CardInstance;
 }
 
+/**
+ * A player activated a permanent's mana ability by tapping it (the tap_mana action). Triggers on
+ * this event that only add mana are triggered mana abilities and resolve immediately (CR 605.1b).
+ */
+export interface TappedForManaEvent extends EventBase {
+	kind: 'TappedForMana';
+	playerId: string;
+	objectId: string;
+	object: CardInstance;
+}
+
 export type GameEvent =
+	| TappedForManaEvent
 	| ZoneChangeEvent
 	| CastEvent
 	| AttackDeclaredEvent

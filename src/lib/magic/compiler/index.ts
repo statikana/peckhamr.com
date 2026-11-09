@@ -10,6 +10,7 @@ import type { CardDefinition } from '../ir.ts';
 import { adaptCard } from './adapter.ts';
 import { compiledStackItemEffects, type EffectParse } from './effects.ts';
 import { hashText } from './normalize.ts';
+import { runtimeTriggers } from './triggers.ts';
 
 /** Bump whenever the IR produced for the same text could change. */
 export const COMPILER_VERSION = 3;
@@ -57,6 +58,16 @@ export function compileCard(card: ScryfallCard): CardDefinition {
 
 export function compileSpellEffects(card: ScryfallCard): EffectParse | null {
 	return compiledStackItemEffects({ kind: 'spell', card } as StackItem);
+}
+
+/**
+ * The compiled effect of a card's triggered ability (steps + target specs), by the ability's index in
+ * compileCard(card).faces[0].abilities (StackItem.triggeredAbilityIndex). Null if the effect grammar
+ * didn't produce one (Ward, or an ability the adapter never compiled). Cached with the
+ * CardDefinition, so the runtime never reads rules text.
+ */
+export function compiledTriggerEffect(card: ScryfallCard, abilityIndex: number): EffectParse | null {
+	return runtimeTriggers(compileCard(card)).find((t) => t.abilityIndex === abilityIndex)?.effect ?? null;
 }
 
 export { normalizeFace } from './normalize.ts';

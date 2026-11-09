@@ -27,12 +27,9 @@ import type { GameEvent } from './events.ts';
 import { triggerMultiplier } from './replace.ts';
 
 /**
- * How a pending trigger is executed. 'stack': a StackItem that resolves when all players pass.
- * 'inline': resolved immediately at the flush, in the order it would resolve from the stack. The
- * pre-Phase-5 engine put only battlefield upkeep / end-step triggers on the stack and ran every
- * other trigger immediately; existing tests pin that timing, so each event kind keeps it until
- * Phase 8 adds the choice protocol (ordering and target prompts) and everything moves to the stack.
- * See `modeFor`.
+ * How a pending trigger is executed. 'stack': a StackItem put on the stack the next time a player
+ * would receive priority, which resolves when all players pass (CR 603.3). 'inline': a triggered
+ * mana ability, which resolves immediately (CR 605.1b, 605.4a). See `modeFor`.
  */
 export type TriggerMode = 'stack' | 'inline';
 
@@ -48,12 +45,16 @@ export interface PendingTrigger {
 	label: string;
 	/** The object the event was about, when it isn't the source ("that creature"). */
 	eventObject?: CardInstance;
-	/** The player the event was about (the player dealt combat damage). */
+	/** The player dealt damage (the pre-IR engine passed this player to legacy effects as a target). */
 	eventPlayerId?: string;
+	/** "That player": the player the event was about (dealt damage, the caster, the active player). */
+	eventPlayer?: string;
 	/** The stack item that targeted this permanent (for Ward). */
 	targetStackItemId?: string;
 	/** The amount the event carried: damage dealt, or the entering creature's power. */
 	amount?: number;
+	/** How the event object last existed on the battlefield (dies / leaves triggers, CR 603.10a). */
+	eventLki?: { controllerId: string; power?: number; toughness?: number };
 	/** Match order (deterministic tie-break for a player's own simultaneous triggers). */
 	order: number;
 }
@@ -62,8 +63,21 @@ export interface PendingTrigger {
 export interface TriggerHost {
 	/** Resolves one triggered ability now. The single place trigger effects are executed. */
 	executeInline(state: GameState, trigger: PendingTrigger): void;
-	/** Puts one triggered ability on the stack. */
-	putOnStack(state: GameState, trigger: PendingTrigger): void;
+	/**
+	 * Puts one triggered ability on the stack, choosing its targets (CR 603.3d). Returns the stack
+	 * item, or null if the ability was removed (no legal targets).
+	 */
+	putOnStack(state: GameState, trigger: PendingTrigger): { id: string } | null;
+	/**
+	 * Called after a player's simultaneous triggers are on the stack (in match order), so the player
+	 * can choose their order (CR 603.3b). `itemIds` are bottom-to-top.
+	 */
+	orderSimultaneous?(state: GameState, controllerId: string, itemIds: string[]): void;
+	/**
+	 * Whether the engine can execute this ability at all (legacy effects, or a compiled effect the IR
+	 * interpreter supports). Abilities it can't execute never trigger.
+	 */
+	canExecute?(trigger: RuntimeTrigger): boolean;
 }
 
 let host: TriggerHost | null = null;
@@ -85,7 +99,7 @@ const CARD_TRIGGERS = new WeakMap<ScryfallCard, CardTriggers>();
 function triggersOf(card: ScryfallCard): CardTriggers {
 	let entry = CARD_TRIGGERS.get(card);
 	if (!entry) {
-		const all = runtimeTriggers(compileCard(card));
+		const all = runtimeTriggers(compileCard(card)).filter((t) => !host?.canExecute || host.canExecute(t));
 		const events = new Set<EventKind>();
 		for (const t of all) for (const alt of alternatives(t.trigger)) events.add(alt.event);
 		entry = { all, events };
@@ -174,6 +188,22 @@ export function withSimultaneousDestroyLki(
 		ch.simultaneousLki = prevMap;
 	}
 	flushTriggers(state);
+}
+
+/**
+ * Runs `fn` with trigger placement deferred: triggers that fire inside it wait until it returns, so
+ * a resolving spell or ability finishes before its triggers are put on the stack and their targets
+ * chosen (CR 603.3: the next time a player would receive priority). Triggered mana abilities wait
+ * too; nothing inside a resolution needs mana.
+ */
+export function withTriggersDeferred<T>(state: GameState, fn: () => T): T {
+	const ch = channel(state);
+	ch.deferFlush += 1;
+	try {
+		return fn();
+	} finally {
+		ch.deferFlush -= 1;
+	}
 }
 
 export function hasPendingTriggers(state: GameState): boolean {
@@ -343,6 +373,8 @@ interface MatchExtras {
 	targetStackItemId?: string;
 	amount?: number;
 	times?: number;
+	eventLki?: PendingTrigger['eventLki'];
+	eventPlayer?: string;
 }
 
 function record(state: GameState, source: Source, ability: RuntimeTrigger, kind: EventKind, extras: MatchExtras): void {
@@ -363,18 +395,25 @@ function record(state: GameState, source: Source, ability: RuntimeTrigger, kind:
 			eventPlayerId: extras.eventPlayerId,
 			targetStackItemId: extras.targetStackItemId,
 			amount: extras.amount,
+			eventLki: extras.eventLki,
+			eventPlayer: extras.eventPlayer ?? extras.eventPlayerId,
 			order: ch.nextOrder++
 		});
 	}
 }
 
 /**
- * Pre-Phase-5 timing, kept per event kind (see TriggerMode): beginning-of-step triggers of
- * permanents and Ward triggers use the stack; everything else (including graveyard upkeep triggers) runs inline.
+ * Every triggered ability uses the stack (CR 603.3), except a triggered mana ability: one without
+ * a target that triggers from a mana ability and could add mana (CR 605.1b). The only mana-ability
+ * event the engine emits is TappedForMana; an ability triggering on it whose effect only adds mana
+ * resolves immediately (CR 605.4a).
  */
-function modeFor(kind: EventKind, source: Source, ability?: RuntimeTrigger): TriggerMode {
-	if (ability?.legacy.effects[0]?.kind === 'ward_trigger') return 'stack';
-	return kind === 'phaseBegin' && source.zone === 'battlefield' ? 'stack' : 'inline';
+function modeFor(kind: EventKind, _source: Source, ability?: RuntimeTrigger): TriggerMode {
+	const e = ability?.effect;
+	if (kind === 'tappedForMana' && e && e.targets.length === 0 && e.steps.length > 0 && e.steps.every((st) => st.verb === 'addMana')) {
+		return 'inline';
+	}
+	return 'stack';
 }
 
 /** Matches one event against every triggered ability. Called for every emitted event. */
@@ -401,6 +440,25 @@ export function matchTriggers(state: GameState, ev: GameEvent): void {
 			return matchTargeted(state, ev);
 		case 'Attached':
 			return matchAttached(state, ev);
+		case 'TappedForMana':
+			return matchTappedForMana(state, ev);
+	}
+}
+
+function matchTappedForMana(state: GameState, ev: Extract<GameEvent, { kind: 'TappedForMana' }>): void {
+	const found = permanentById(state, ev.objectId);
+	if (!found) return;
+	const subject = battlefieldSubject(state, found.obj, found.controllerId);
+	for (const source of sources(state, 'tappedForMana')) {
+		for (const { ability, alts } of abilitiesFor(state, source, 'tappedForMana')) {
+			const alt = alts.find((a) => {
+				const rel = a.filter.player?.relation ?? 'any';
+				if (rel === 'you' && ev.playerId !== source.controllerId) return false;
+				if (rel === 'opponent' && ev.playerId === source.controllerId) return false;
+				return objectMatches(a.filter, subject, source);
+			});
+			if (alt) record(state, source, ability, 'tappedForMana', { label: 'Mana Trigger', eventObject: found.obj, eventPlayer: ev.playerId });
+		}
 	}
 }
 
@@ -489,7 +547,14 @@ function matchZoneChange(state: GameState, ev: Extract<GameEvent, { kind: 'ZoneC
 							lki: ev.lki
 						})
 					: 1;
-			record(state, source, ability, 'zoneChange', { label: label(source, alt), eventObject: obj, amount: enteredPower(), times });
+			const eventLki = enters
+				? undefined
+				: objBatchInfo
+					? { controllerId: objBatchInfo.controllerId }
+					: ev.lki
+						? { controllerId: ev.lki.controllerId, power: ev.lki.power, toughness: ev.lki.toughness }
+						: undefined;
+			record(state, source, ability, 'zoneChange', { label: label(source, alt), eventObject: obj, amount: enteredPower(), times, eventLki });
 		}
 	}
 }
@@ -519,7 +584,7 @@ function matchCast(state: GameState, casterId: string, spell: CardInstance, isCo
 							isCopy
 						})
 					: 1;
-			record(state, source, ability, 'cast', { label: 'On Cast', times });
+			record(state, source, ability, 'cast', { label: 'On Cast', times, eventPlayer: casterId });
 		}
 	}
 }
@@ -667,7 +732,9 @@ function matchPhase(state: GameState, ev: Extract<GameEvent, { kind: 'PhaseBegin
 			if (scope === 'opponent_turn' && source.controllerId === ev.activePlayerId) continue;
 			const step = ev.phase === 'upkeep' ? 'Upkeep' : ev.phase === 'end_step' ? 'End Step' : 'Phase';
 			record(state, source, ability, 'phaseBegin', {
-				label: source.zone === 'graveyard' ? `Graveyard ${step}` : `${step} Trigger`
+				label: source.zone === 'graveyard' ? `Graveyard ${step}` : `${step} Trigger`,
+				// "At the beginning of each opponent's upkeep, that player ...": the active player.
+				eventPlayer: ev.activePlayerId ?? undefined
 			});
 		}
 	}
@@ -744,15 +811,14 @@ function apnap(state: GameState): string[] {
 }
 
 /**
- * Puts every pending trigger on the stack (or resolves it inline). The active player's triggers are
- * put on the stack first, then each other player's in turn order (CR 603.3b), so the last
- * non-active player's resolve first; inline triggers run in that resolution order. A player's own
- * simultaneous triggers are in match order (event order, then seat/zone order of their sources).
- * CR 603.3b lets the player choose that order; the choice prompt is Phase 8.
+ * Puts every pending trigger on the stack (or resolves a triggered mana ability inline). The active
+ * player's triggers are put on the stack first, then each other player's in turn order (CR 603.3b),
+ * so the last non-active player's resolve first. A player's own simultaneous triggers go on in match
+ * order (event order, then seat/zone order of their sources); the host then lets the player
+ * reorder them (`orderSimultaneous`, CR 603.3b).
  *
- * Inline triggers run before stacked ones are pushed (the pre-Phase-5 upkeep order: graveyard
- * triggers resolved, then battlefield triggers went on the stack). Triggers that fire while a flush
- * is running are flushed by the nested flush or by the next loop iteration.
+ * Inline (mana) triggers run before stacked ones are pushed. Triggers that fire while a flush is
+ * running are flushed by the nested flush or by the next loop iteration.
  */
 export function flushTriggers(state: GameState): void {
 	if (!host) return;
@@ -774,7 +840,15 @@ export function flushTriggers(state: GameState): void {
 				if (t.ability.condition && !evaluateCondition(state, t.ability.condition, t.controllerId, t.source.instanceId)) continue;
 				host.executeInline(state, t);
 			}
-			for (const t of stacked) host.putOnStack(state, t);
+			for (const pid of order) {
+				const ids: string[] = [];
+				for (const t of stacked) {
+					if (t.controllerId !== pid) continue;
+					const item = host.putOnStack(state, t);
+					if (item) ids.push(item.id);
+				}
+				if (ids.length > 1) host.orderSimultaneous?.(state, pid, ids);
+			}
 		}
 	} finally {
 		ch.flushing -= 1;

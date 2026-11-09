@@ -44,6 +44,30 @@ import {
 	triggerMultiplier
 } from './replace.ts';
 
+/**
+ * Steps C+D: triggered abilities use the stack. Resolves the triggered abilities on top of the stack
+ * (not the spells under them) by passing priority, keeping the default order for order prompts and
+ * answering "you may" with yes.
+ */
+function resolveTriggers(state: GameState, max = 40): void {
+	for (let i = 0; i < max; i++) {
+		const prompt = state.pendingPrompts[0];
+		if (prompt?.purpose === 'trigger_order' && prompt.choice?.kind === 'orderObjects') {
+			applyGameAction(state, prompt.playerId, { type: 'choice', promptId: prompt.id, answer: { kind: 'orderObjects', topIds: prompt.choice.objectIds, bottomIds: [], shuffle: false } });
+			continue;
+		}
+		if (prompt?.purpose === 'trigger_may') {
+			applyGameAction(state, prompt.playerId, { type: 'choice', promptId: prompt.id, answer: { kind: 'yesNo', yes: true } });
+			continue;
+		}
+		if (prompt) return;
+		const top = state.stack[state.stack.length - 1];
+		if (!top || top.kind !== 'triggered') return;
+		const prio = state.players[state.priorityPlayerIndex];
+		if (!applyGameAction(state, prio.playerId, { type: 'pass_priority' }).ok) return;
+	}
+}
+
 function getCardByName(name: string): ScryfallCard | undefined {
 	const low = name.toLowerCase();
 	if (STAPLE_CARDS[low]) return STAPLE_CARDS[low];
@@ -720,6 +744,7 @@ describe('Phase 7: runtime/replace.ts — Replacements & Scoped Multipliers', ()
 		assert.equal(applyGameAction(state, p1Id, { type: 'cast_spell', instanceId: bear.instanceId }).ok, true);
 		assert.equal(applyGameAction(state, p1Id, { type: 'pass_priority' }).ok, true);
 		assert.equal(applyGameAction(state, state.players[1].playerId, { type: 'pass_priority' }).ok, true);
+		resolveTriggers(state);
 		assert.equal(state.players[0].life, startLife + 2);
 
 		// Attack trigger multiplier (Wulfgar style) + Dies trigger multiplier (Drivnod style)
