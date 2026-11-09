@@ -1578,11 +1578,23 @@ Then an ultra code review of the branch, doc clean-up, and push.
     (`CR 601.2f–h`), prompting humans via `cost_choice`, using a `life > 10` heuristic for bots, and
     enforcing static `playerLifeTotalCantChange` across Phyrexian mana, `payLife`, and Ward (`CR 119.8`,
     `#7`).
+- **Phase 4 — Trigger loop detection & backstop (`engine.ts`, `types.ts`):**
+  - Replaced the blunt 200-trigger cap (`#10`) with per-`(sourceInstanceId, abilityIndex)` cycle
+    tracking across trigger resolution waves (`LOOP_TRIGGER_THRESHOLD = 30`, reset on voluntary player
+    actions) using exact and token-normalized board fingerprints.
+  - On detecting an optional (`"you may"`) loop (`CR 731.2b`), bots automatically decline the optional
+    effect to break the loop; on detecting a mandatory loop (`CR 104.4b`), bots-only games end in a
+    draw (`winnerPlayerId: null`) while human games prompt to either end in a draw or let the loop run
+    30 more cycles.
+  - Raised `MAX_TRIGGERS_PER_TURN` to `2000` (with `MAX_STACK_FOR_TRIGGERS = 300`); hitting either hard
+    backstop logs loudly and pauses with a `guided_resolution` prompt instead of silently dropping
+    triggers.
 - **Phase 5 — False-positive guards (`ArenaTable.svelte`, `runtime/choices.ts`):**
   - Added `ALL_CHOICE_KINDS`, `ALL_PROMPT_PURPOSES`, `assertExhaustiveChoiceKind`, and a compile-time
     `_exhaustiveChoice: never` fallback in `ArenaTable.svelte` (`#2`).
-- **Suite:** **915 tests pass, 0 fail** (including 19 new fail-first tests in `runtime/review-phase12.test.ts`
-  and `runtime/review-phase3.test.ts`); all 5 architecture ratchet rules at `0`; `0` `svelte-check` errors.
+- **Suite:** **920 tests pass, 0 fail** (including 24 new fail-first tests in `runtime/review-phase12.test.ts`,
+  `runtime/review-phase3.test.ts`, and `runtime/review-phase4.test.ts`); all 5 architecture ratchet rules at
+  `0`; `0` `svelte-check` errors.
 
 *Original (superseded) entry:*
 - **Work:** remove `CardRuleTree` (or keep it as a thin view over the IR for the inspector UI),
