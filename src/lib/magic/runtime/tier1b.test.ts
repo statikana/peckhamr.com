@@ -2,9 +2,13 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
 	applyGameAction,
+	createCardInstance,
 	createInitialGameState,
-	enterEndStep
+	enterEndStep,
+	getEffectiveActivatedAbilities,
+	getPlayerCommanderIdentity
 } from '../engine.ts';
+import { manaChoiceColors } from './effects.ts';
 import { PRECON_DECKS } from '../precons.ts';
 import {
 	DEFAULT_LOBBY_RULES,
@@ -139,6 +143,102 @@ describe('Tier 1b CR fixes', () => {
 				'Normal turn order resumes with Player 2 after extra turns finish'
 			);
 			assert.equal(p2.playerId, state.players[state.activePlayerIndex].playerId);
+		});
+	});
+
+	describe('Item 6: Colorless / no commander produces no identity mana (CR 903.4f, 106.5) and any-color mana fix', () => {
+		it('produces no mana from commanderIdentity abilities when commander is colorless or absent, while staying a mana ability', () => {
+			const { state, p1, p2 } = makeGame(2);
+			// Give p1 a colorless commander and clear any precon color identity
+			p1.commanderColorIdentity = [];
+			p1.command = [
+				createCardInstance(
+					synthCard({
+						name: 'Kozilek, Butcher of Truth',
+						manaCost: '{10}',
+						cmc: 10,
+						typeLine: 'Legendary Creature — Eldrazi',
+						colorIdentity: [],
+						colors: []
+					}),
+					p1.playerId,
+					true
+				)
+			];
+
+			assert.deepEqual(getPlayerCommanderIdentity(p1), []);
+			assert.deepEqual(manaChoiceColors(state, p1, 'commanderIdentity'), []);
+
+			const commandTower = createCardInstance(
+				synthCard({
+					name: 'Command Tower',
+					manaCost: '',
+					cmc: 0,
+					typeLine: 'Land',
+					oracleText: "{T}: Add one mana of any color in your commander's color identity."
+				}),
+				p1.playerId
+			);
+			commandTower.summoningSick = false;
+			p1.battlefield.push(commandTower);
+
+			const abilities = getEffectiveActivatedAbilities(state, p1, commandTower);
+			assert.equal(abilities.length, 1);
+			assert.equal(abilities[0].isManaAbility, true, 'Command Tower ability remains a mana ability');
+			assert.deepEqual(abilities[0].producesMana, []);
+
+			// Activating Command Tower taps it without using the stack and adds 0 mana (not {C} or WUBRG)
+			const res = applyGameAction(state, p1.playerId, {
+				type: 'activate_ability',
+				instanceId: commandTower.instanceId,
+				abilityId: abilities[0].id
+			});
+			assert.equal(res.ok, true);
+			assert.equal(state.stack.length, 0, 'Mana ability does not go on the stack');
+			assert.equal(commandTower.tapped, true);
+			assert.deepEqual(p1.manaPool, { W: 0, U: 0, B: 0, R: 0, G: 0, C: 0 });
+
+			// Opponent's Exotic Orchard sees 0 colors from p1's Command Tower
+			const orchard = createCardInstance(
+				synthCard({
+					name: 'Exotic Orchard',
+					manaCost: '',
+					cmc: 0,
+					typeLine: 'Land',
+					oracleText: '{T}: Add one mana of any color that a land an opponent controls could produce.'
+				}),
+				p2.playerId
+			);
+			p2.battlefield.push(orchard);
+			assert.deepEqual(manaChoiceColors(state, p2, 'opponentLandColors'), []);
+			const orchardAbs = getEffectiveActivatedAbilities(state, p2, orchard, ['W', 'U']);
+			assert.equal(orchardAbs.length, 0);
+		});
+
+		it('does not restrict "Add one mana of any color" to commander color identity', () => {
+			const { state, p1 } = makeGame(2);
+			p1.commanderColorIdentity = ['R'];
+			p1.command = [];
+
+			const bop = createCardInstance(
+				synthCard({
+					name: 'Birds of Paradise',
+					manaCost: '{G}',
+					cmc: 1,
+					typeLine: 'Creature — Bird',
+					oracleText: 'Flying\n{T}: Add one mana of any color.',
+					power: '0',
+					toughness: '1'
+				}),
+				p1.playerId
+			);
+			bop.summoningSick = false;
+			p1.battlefield.push(bop);
+
+			const abilities = getEffectiveActivatedAbilities(state, p1, bop, ['R']);
+			const manaAb = abilities.find((a) => a.isManaAbility);
+			assert.ok(manaAb);
+			assert.deepEqual(manaAb.producesMana, ['W', 'U', 'B', 'R', 'G']);
 		});
 	});
 });

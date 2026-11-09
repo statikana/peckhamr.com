@@ -53,8 +53,8 @@ These are bugs where a mechanic the engine actively supports produces the wrong 
 5. **`end_turn` UI action jumps from any phase straight to `end_step`/`cleanup` without passing priority (`CR 500.2, 513.1, 703.4i`)** — **Size: M**
    - `case 'end_turn':` (`engine.ts:2152-2184`) lets the active player jump directly from `upkeep`, `main1`, or `declare_attackers` (bypassing `attacksEachCombat` / `Goad` requirements) into `enterEndStep`, and if no end-step triggers are queued, immediately calls `runCleanupStep` without giving opponents priority in any intermediate step or in `end_step`.
 
-6. **Colorless commander / no commander `manaChoiceColors` falls back to all 5 colors (`CR 106.5, 903.4f`)** — **Size: S**
-   - In `runtime/effects.ts:1772-1775` (and `oracle.ts:343, 524`), when `commanderColors(controller)` is empty (`[]`), `manaChoiceColors` falls back to `['W', 'U', 'B', 'R', 'G']` instead of producing no mana.
+6. ~~**Colorless commander / no commander `manaChoiceColors` falls back to all 5 colors (`CR 106.5, 903.4f`)**~~ — **Fixed (`commanderIdentity` returns `[]` when colorless/absent while staying a mana ability; `'any'` separated from `'commanderIdentity'` in `manaStepProduction`)**
+   - `manaChoiceColors` (`runtime/effects.ts`), `opponentLandColors` / `manaStepProduction` (`ruleTree.ts`), and `tap_mana` (`engine.ts`) now produce 0 mana when a player has a colorless commander or no commander, and `manaStepProduction` returns all 5 colors for `'any'`.
 
 7. **Last-player-standing win is blocked by `playerCannotWinGame` (`CR 104.2a vs 104.3h`)** — **Size: S**
    - In `checkStateBasedActions` (`engine.ts:7016`), when all other players have lost and `remaining.length === 1`, the engine checks `if (winner && !playerCannotWinGame(state, winner).blocked)`. Under `CR 104.2a` / `104.3h`, if a player controls *Abyssal Persecutor* ("Your opponents can't win the game") and loses, or if only one player remains in the game, that last remaining player still wins after the permanent leaves; blocking the win when all opponents are already `lost = true` leaves the game permanently stuck with 1 active player.

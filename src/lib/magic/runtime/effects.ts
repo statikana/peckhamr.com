@@ -1816,8 +1816,7 @@ export function manaChoiceColors(
 	if (Array.isArray(choice)) return choice;
 	if (choice === 'any') return [...FIVE_COLORS];
 	if (choice === 'commanderIdentity') {
-		const cols = commanderColors(controller);
-		return cols.length > 0 ? cols : [...FIVE_COLORS];
+		return commanderColors(controller);
 	}
 	return opponentLandColors(state, controller);
 }

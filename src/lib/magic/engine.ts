@@ -51,7 +51,7 @@ export function getEffectiveActivatedAbilities(
 	state: GameState,
 	actor: PlayerGameState,
 	perm: CardInstance,
-	commanderIdentity: ManaColor[] = ['W', 'U', 'B', 'R', 'G']
+	commanderIdentity: ManaColor[] = []
 ): EffectiveActivatedAbility[] {
 	// Read-only: one layer-cache validation for all of this permanent's ability lookups (Phase 6c).
 	return withStableLayerInputs(state, () =>
@@ -666,6 +666,7 @@ function tapOnlyManaAbilities(
 	return getEffectiveActivatedAbilities(state, player, perm, cmdIdentity).filter(
 		(a) =>
 			a.isManaAbility &&
+			a.producesMana.length > 0 &&
 			activatedAbilityCost(perm.card, a).defs.every(
 				(d) => d.k === 'tapSelf' || (d.k === 'mana' && /^(\{0\})*$/.test(d.cost))
 			)
@@ -1242,9 +1243,12 @@ function applyGameActionInner(
 				return { ok: false, error: `${perm.card.name} does not have an active mana ability.` };
 			}
 			const preferred = action.preferredColor;
-			const ab = (preferred && manaAbs.find((a) => a.producesMana.includes(preferred))) || manaAbs[0];
-			const chosenColor: ManaColor =
-				preferred && ab.producesMana.includes(preferred) ? preferred : ab.producesMana[0] || 'C';
+			const ab =
+				(preferred && manaAbs.find((a) => a.producesMana.includes(preferred))) ||
+				manaAbs.find((a) => a.producesMana.length > 0) ||
+				manaAbs[0];
+			const chosenColor: ManaColor | undefined =
+				preferred && ab.producesMana.includes(preferred) ? preferred : ab.producesMana[0];
 
 			// Phase 4: the ability's whole cost from the IR ({T}, and e.g. "Sacrifice this artifact").
 			const cost = activatedAbilityCost(perm.card, ab);
@@ -1254,10 +1258,12 @@ function applyGameActionInner(
 			if (plan.question) return askCostChoice(state, actor, action, plan.question, perm.card.name);
 
 			const baseAmount = evalPerm.losesAllAbilities ? 1 : Math.max(1, ab.producesAmount);
-			const amount = getDynamicManaProducedAmount(state, actor, perm, baseAmount, ab);
+			const amount = chosenColor ? getDynamicManaProducedAmount(state, actor, perm, baseAmount, ab) : 0;
 
 			const paid = payPlannedCosts(ctx, plan);
-			actor.manaPool[chosenColor] += amount;
+			if (chosenColor && amount > 0) {
+				actor.manaPool[chosenColor] += amount;
+			}
 			// CR 605.1b: triggered mana abilities ("Whenever you tap a land for mana") resolve now.
 			emitEvent(state, { kind: 'TappedForMana', playerId: actorId, objectId: perm.instanceId, object: perm });
 			flushTriggers(state);
@@ -1265,7 +1271,9 @@ function applyGameActionInner(
 				addLog(
 					state,
 					'rule',
-					`${actor.username} activated ${perm.card.name} for ${amount > 1 ? `${amount}x ` : ''}{${chosenColor}}${paid.descriptions.length > 0 ? ` (${paid.descriptions.join('; ')})` : ''}.`,
+					chosenColor && amount > 0
+						? `${actor.username} activated ${perm.card.name} for ${amount > 1 ? `${amount}x ` : ''}{${chosenColor}}${paid.descriptions.length > 0 ? ` (${paid.descriptions.join('; ')})` : ''}.`
+						: `${actor.username} activated ${perm.card.name} for no mana (CR 106.5)${paid.descriptions.length > 0 ? ` (${paid.descriptions.join('; ')})` : ''}.`,
 					actorId
 				);
 			}
