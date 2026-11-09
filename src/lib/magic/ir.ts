@@ -169,6 +169,10 @@ export interface ObjectFilter {
 	subtypes?: string[];
 	supertypes?: string[];
 	notTypes?: string[];
+	/** "nonbasic", "nonlegendary". */
+	notSupertypes?: string[];
+	/** "non-Aura". */
+	notSubtypes?: string[];
 	controller?: 'you' | 'opponent' | 'any';
 	owner?: 'you' | 'opponent' | 'any';
 	tapped?: boolean;
@@ -209,7 +213,9 @@ export type Ref =
 	| { k: 'self' }
 	| { k: 'target'; index: number }
 	| { k: 'binding'; name: BindingName }
-	| { k: 'eventObject' };
+	| { k: 'eventObject' }
+	/** Each object a continuous effect applies to ("base P/T equal to its mana value"). */
+	| { k: 'affected' };
 
 export type PlayerRef =
 	| { k: 'you' }
@@ -421,17 +427,35 @@ export type LayerMod =
 	| { k: 'removeAllAbilities' }
 	| { k: 'addTypes'; types: string[]; subtypes?: string[] }
 	| { k: 'setTypes'; types: string[]; subtypes?: string[] }
-	| { k: 'switchPT' };
+	| { k: 'switchPT' }
+	/**
+	 * Layer 4: replaces the subtypes of the appropriate kind ("Nonbasic lands are Mountains"). Per
+	 * CR 305.7, setting a land's subtype to a basic land type also removes the abilities from its
+	 * rules text; the layer engine applies that consequence, the IR doesn't spell it out.
+	 */
+	| { k: 'setSubtypes'; subtypes: string[] }
+	/** Layer 4: "is every creature type" (CR 205.3m). */
+	| { k: 'allCreatureTypes' }
+	/** Layer 5. An empty list is colorless. */
+	| { k: 'setColors'; colors: ManaColor[] }
+	/** Layer 6: "lose flying"; `cantHaveOrGain` for "and can't have or gain flying". */
+	| { k: 'removeKeywords'; keywords: string[]; cantHaveOrGain?: boolean }
+	/** Layer 6: a quoted ability granted to the affected objects ('have "{T}: Add {C}."'). */
+	| { k: 'grantAbility'; ability: AbilityDef };
 
 export interface CostDelta {
 	/** 'setZero' makes the cost {0}; 'reduce'/'increase' change the generic component. */
 	mode: 'setZero' | 'reduce' | 'increase';
 	generic: number;
+	/** "costs {1} less for each creature on the battlefield": `generic` is applied this many times. */
+	times?: Amount;
 }
 
 export type SpellOrAbilityFilter =
 	| { k: 'spell'; filter: ObjectFilter }
-	| { k: 'ability'; keyword: string };
+	| { k: 'ability'; keyword: string }
+	/** "This spell costs {1} less to cast": the card itself, as it's cast. */
+	| { k: 'self' };
 
 export type RuleModKind =
 	| 'noMaxHandSize'
@@ -443,7 +467,21 @@ export type RuleModKind =
 	| 'castAsThoughFlash'
 	| 'attackTax'
 	| 'playerHexproof'
-	| 'searchControl';
+	| 'searchControl'
+	| 'playerShroud'
+	| 'spendManaAsAnyColor'
+	/** "During your turn, your opponents can't cast spells". */
+	| 'opponentsCantCastDuringYourTurn';
+
+export type RestrictionKind =
+	| 'cantAttack'
+	| 'cantBlock'
+	| 'cantAttackOrBlock'
+	| 'cantBeBlocked'
+	| 'attacksEachCombat'
+	| 'blocksEachCombat'
+	| 'cantBeCountered'
+	| 'doesntUntap';
 
 export type StaticDef =
 	| {
@@ -462,12 +500,30 @@ export type StaticDef =
 			activeZones?: ZoneType[];
 			condition?: Condition;
 	  }
-	| { k: 'ruleModifier'; rule: RuleModKind; who: PlayerFilter; params?: Record<string, unknown> }
+	| {
+			k: 'ruleModifier';
+			rule: RuleModKind;
+			who: PlayerFilter;
+			params?: Record<string, unknown>;
+			condition?: Condition;
+	  }
+	| {
+			/** Combat and untap restrictions on objects ("~ can't block", "~ can't be blocked"). */
+			k: 'restriction';
+			affected: ObjectFilter | 'attachedTo' | 'self';
+			restriction: RestrictionKind;
+			condition?: Condition;
+	  }
 	| {
 			k: 'multiplier';
 			what: 'counters' | 'tokens' | 'triggers';
 			factor: number;
 			filter?: ObjectFilter;
+			/** counters: only this kind ("twice that many +1/+1 counters"). */
+			counter?: CounterType;
+			/** triggers: the event that must cause the trigger ("an artifact or creature entering"). */
+			cause?: EventPattern;
+			condition?: Condition;
 	  };
 
 export interface EventPattern {
@@ -477,6 +533,19 @@ export interface EventPattern {
 
 export interface ReplacementDef {
 	replaces: EventPattern;
-	with: EffectStep[] | { k: 'skip' } | { k: 'modify'; to?: ZoneType; amount?: Amount };
+	with:
+		| EffectStep[]
+		| { k: 'skip' }
+		| {
+				k: 'modify';
+				to?: ZoneType;
+				amount?: Amount;
+				/** "~ enters tapped". */
+				tapped?: boolean;
+				/** "~ enters with N +1/+1 counters on it". */
+				counters?: { counter: CounterType; amount: Amount };
+		  };
 	who?: PlayerFilter;
+	/** Only applies while this holds ("while your library has no cards in it"). */
+	condition?: Condition;
 }

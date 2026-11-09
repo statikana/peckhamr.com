@@ -504,6 +504,122 @@ while it runs), **entry**, **work**, **exit**, and **ratchet target**.
     `gainLife`; `EventFilter.object` may be `'attachedTo'`; `damageTo: 'playerOrPlaneswalker'`;
     `EventFilter.orCopy`; `TriggerDef.or` for "enters or attacks". `adaptCard`'s optional log is now
     `AdapterLog` (costs and triggers).
+- **Follow-up: static and replacement-effect grammar (2026-11-08), alongside the adapter.**
+  `compiler/statics.ts` parses static-ability sentences into `StaticDef` (continuous effects with
+  their layer, cost modifiers, rule modifiers, restrictions, multipliers) and `ReplacementDef`, with
+  22 unit tests in `compiler/statics.test.ts`. It does **not** feed `compileCard` or the engine yet;
+  Phases 4, 5, 6 and 7 own the switch-over. `scripts/magic-statics-diff.ts` (report:
+  `STATIC-GRAMMAR.md`) compares it (A) with the Phase 1 adapter (which only compiles cost-modifier
+  and multiplier board hooks and leaves every other static line as `static_not_compiled`) and (B)
+  with what the runtime (`evaluatePermanent`, the rule helpers in `ruleTree.ts`/`engine.ts`, and
+  `cardEntersTapped`) actually does on synthetic probe boards:
+  - **Part A (vs adapter):** 10,619 static lines in the bulk data: the grammar parses **3,142
+    (30%)** — 47 agree, 0 grammar-only, 20 differ, 42 adapter-only, 0 neither, plus **3,075** on
+    lines the adapter left as `static_not_compiled` (7,435 unparsed). Precons (48 lines): **40 of 48
+    parsed** — 2 agree, 0 grammar-only, 2 differ (**Corpsejack Menace**, **Veyran, Voice of
+    Duality**), 0 adapter-only, 0 neither, plus 36 parsed and 8 unparsed on unclaimed lines.
+  - **Part B (vs runtime on probe boards):** 9,760 observable lines in the bulk data: **1,458
+    agree**, **767 grammar-only**, **58 differ**, **613 adapter-only (runtime-only)**, 6,864
+    neither. Precons (37 lines): **26 agree**, **2 grammar-only** (**Storm-Kiln Artist**; plus
+    Chromatic Lantern, whose granted mana ability isn't probed on the board), **1 differ** (**Song
+    of the Dryads**), **2 adapter-only** (**Maskwood Nexus** and **Opposition Agent**, whose
+    multi-sentence lines have a second sentence outside the grammar while the runtime matches the
+    first), 6 neither.
+  - **Cross-check against Phase 6 known-wrong layer snapshots:**
+    - **Song of the Dryads (CR 205.1a / 305.7, D-Audit-5):** caught directly as the 1 precon
+      "differ" row in Part B (`Enchanted permanent is a colorless Forest land.`). Setting a basic
+      land subtype removes rules-text abilities (`lostAllAbilities: true`), whereas
+      `permanentHasLostAllAbilities` only strips abilities when the text literally says `loses all
+      … abilities` (or for `nonbasic lands are …`).
+    - **Blood Moon + Urborg dependency (CR 613.8):** each card agrees in isolation on a single-source
+      probe board; the bug is the two-card layer-4 interaction (`inspectCardContinuousBreakdown`
+      runs Pass B `each land is a Swamp in addition` after Pass A without checking that Urborg lost
+      its abilities under Blood Moon).
+    - **Negative power clamping (CR 107.1b):** `inspectCardContinuousBreakdown` clamps
+      `effectivePower` at 0 (`Math.max(0, workingPower)`).
+    - **Layer 5 (colour) and Layer 2 (control-changing):** confirmed unimplemented in
+      `evaluatePermanent` (the grammar emits layer-5 `setColors` for Kenrith's Transformation, Song
+      of the Dryads, Imprisoned in the Moon; the runtime drops colour changes).
+  - **Live engine bugs revealed for Phase 6 (layers) and Phase 7 (replacements / rule modifiers),
+    plus Phase 4/5 board hooks:**
+    - **Precon Storm-Kiln Artist (`~ gets +1/+0 for each artifact you control`) is a no-op:**
+      `inspectCardContinuousBreakdown` has no self `"for each"` P/T branch, so Storm-Kiln Artist
+      stays 2/2 regardless of artifact count (also Nim Lasher, Gatebreaker Ram, …).
+    - **Attached and anthem `"for each"` P/T modifiers ignore the count and apply a flat buff
+      (`ruleTree.ts:1945, 2071`):** `/(?:equipped|enchanted) creature gets ([+-]\d+)\/([+-]\d+)/i`
+      drops `for each …`, so `All That Glitters`, `Nettlecyst`, `Ethereal Armor`, `Blackblade
+      Reforged`, `Pennon Blade`, `Improvised Arsenal`, `Strong Back`, `Malefic Scythe` always give a
+      flat `+1/+1` (or `+2/+2`), and `Lashwrithe` (`for each Swamp`), `Granite Grip` (`for each
+      Mountain`), `Armored Ascension`, `Claws of Valakut` buff even with **zero** matching lands.
+      `Hold the Gates` (`Creatures you control get +0/+1 for each Gate you control and have
+      vigilance`) gives a flat `+0/+1` with 0 Gates and drops `vigilance`.
+    - **Reminder text on Auras/Equipment leaks fake keywords (`ruleTree.ts:1922`):** the attached
+      keyword scanner reads raw `oracleText` without stripping reminder text. Granting `reach` with
+      reminder text `*(It can block creatures with flying.)*` (`Spider Climb`, `Frog Tongue`,
+      `Spidersilk Net`) also grants **flying**; granting `flying` with reminder text `*(It can't be
+      blocked except by creatures with flying or reach.)*` (`Shimmering Wings`, `Future Flight`,
+      `Experimental Armor`, `Mechanical Glider`) also grants **reach**.
+    - **Negative or quoted keywords on Auras/Equipment are granted as static keywords
+      (`ruleTree.ts:1922`):** `Sky Tether` (`Enchanted creature has defender and loses flying.`)
+      **grants flying** instead of removing it; `Deviant Glee` (`… has "{R}: ~ gains trample until
+      end of turn."`), `Lunarch Mantle` (`… gains flying until end of turn."`), and `Giant's Amulet`
+      (`… has "~ has hexproof as long as it's untapped."`) permanently grant `trample`, `flying`, and
+      `hexproof`.
+    - **`"As long as …"` conditions on anthems and Auras/Equipment are ignored (`ruleTree.ts:1922,
+      1945, 2071`):** `Weapons Trainer` (`… as long as you control an Equipment`), `Nadaar, Selfless
+      Paladin` (`… as long as you've completed a dungeon`), `Abzan Runemark`, `Fists of the Demigod`,
+      `Serra's Boon`, `Armament of Nyx`, `Rune of Sustenance` apply unconditionally.
+    - **`Enchanted permanent gets +X/+Y` drops the P/T buff (`ruleTree.ts:1945`):** the regex only
+      matches `equipped|enchanted creature gets`, so `Roadside Assistance`, `Silken Strength`,
+      `Lightwheel Enhancements` grant the keyword but drop the P/T delta.
+    - **Missing keywords and over-broad hexproof on attached grants (`ruleTree.ts:1066, 1930`):**
+      `CANONICAL_COMBAT_KEYWORDS` omits `ward {N}`, `fear`, `intimidate`, `wither`, `horsemanship`,
+      `shadow`, `prowess` (`Plate Armor`, `Winged Boots`, `Lavaspur Boots`, `Sheltered by Ghosts`,
+      `Cursed Flesh`, `Blight Sickle`, `Nuka-Nuke Launcher`), while `\bhexproof\b` turns `hexproof
+      from monocolored` (`Dragonfire Blade`) into unconditional `hexproof`.
+    - **Multipliers drop their scope and cause (`ruleTree.ts:753, 766`):** **precon Corpsejack
+      Menace** (creatures you control, `+1/+1` counters only) and **precon Veyran, Voice of Duality**
+      (caused by casting/copying an instant or sorcery) compile to unscoped hooks; any card containing
+      `triggers an additional time` (`Panharmonicon`, `Elesh Norn, Mother of Machines`, `Drivnod`,
+      `Isshin`, `Wulfgar`, `Ancient Greenwarden`, `Roaming Throne`, `Harmonic Prodigy`, `Delney`, …)
+      compiles to the same instant/sorcery-only trigger doubler, and `Devouring Hellion` (`… enters
+      with twice that many +1/+1 counters`) becomes a board-wide counter doubler.
+    - **Spell cost-modifier hook drops qualifiers, conditions, and `"for each"` scaling
+      (`ruleTree.ts:724`):** `Bontu's / Kefnet's / Oketra's / Hazoret's / Rhonas's Monument` and
+      `Obscuring Aether` drop colour / face-down filters and discount all creature spells; `Starnheim
+      Courser` and `Mana Matrix` drop the first type in `A and B spells`; `Animar`, `Hamza`, `Rakdos,
+      Lord of Riots`, `Mindsplice Apparatus`, `Magnus the Red`, `Mizzix`, `Font of Magic` drop `for
+      each …` and apply a flat `{1}` discount; `Centaur Omenreader` and `Gran-Gran` ignore `as long
+      as …`.
+    - **`cardEntersTapped` (`oracle.ts`) ignores `"unless …"`:** every checkland/fastland/slowland
+      (`~ enters tapped unless …` — `Glacial Fortress`, `Rockfall Vale`, `Mystic Sanctuary`, `Sodden
+      Verdure`, …) always enters tapped; only shocklands (`pay 2 life`) are exempted.
+  - **Not yet in the grammar:** `"As ~ enters, choose a creature type / color / opponent"` and
+    shockland `"pay N life"` replacements; `"~ enters tapped unless …"` and kicked ETB counters;
+    `"You may look at the top card of your library any time"` / `"Play with the top card … revealed"`
+    / `"You may play an additional land …"`; evasion qualifiers (`"can't be blocked by creatures with
+    power N or less"`, `"can't be blocked by more than N creature"`, `"can block only creatures with
+    flying"`, `"must be blocked if able"`); Layer 2 control (`"You control enchanted creature"`);
+    non-mana quoted ability grants and compound `"gets +X/+Y and has '<ability>'"` sentences; `"for
+    each"` P/T in steps other than 1 (`"+2/+2 for each …"`, which needs multiplication in `Amount`)
+    and non-self `"for each"` spell discounts (`Animar`, `Hamza`, `Mizzix`); trigger doublers scoped
+    by source filter (`"ability of an Ally / Wizard / legendary creature you control"`, `Roaming
+    Throne`) rather than triggering cause; conjunctive filters (`"Artifact creatures you control"`,
+    `"Black creature spells"` where `parseObjectPhrase` needs subtype/type conjunctions); off-board
+    characteristic/type clauses (**precon Maskwood Nexus** second sentence, **precon Mycosynth
+    Lattice** second line); **precon Opposition Agent**'s exile-and-play replacement sentences,
+    **precon Clone**, **precon Crystalline Crawler**, **precon Goldspan Dragon**'s Treasure mana
+    grant, **precon Leyline of Anticipation**'s opening-hand ability, and **precon Terror of the
+    Peaks**'s targeting ward-like life tax.
+  - **`ir.ts` (additive, plus 4-line `notSupertypes`/`notSubtypes` export in `compiler/costs.ts`):**
+    `ObjectFilter.notSupertypes` and `notSubtypes`; `Ref` `{ k: 'affected' }`; `LayerMod` variants
+    `setSubtypes`, `allCreatureTypes`, `setColors`, `removeKeywords` (with `cantHaveOrGain`),
+    `grantAbility`; `CostDelta.times`; `SpellOrAbilityFilter` `{ k: 'self' }`; `RuleModKind`
+    `playerShroud`, `spendManaAsAnyColor`, `opponentsCantCastDuringYourTurn`; `StaticDef` variant
+    `restriction` (`RestrictionKind`: `cantAttack`, `cantBlock`, `cantAttackOrBlock`,
+    `cantBeBlocked`, `attacksEachCombat`, `blocksEachCombat`, `cantBeCountered`, `doesntUntap`);
+    `condition` on `ruleModifier` and `multiplier`; `counter` and `cause` on `multiplier`; `tapped`,
+    `counters`, and `condition` on `ReplacementDef`.
 
 ### Phase 2: Central zone changes and event bus (behaviour-preserving) ✅ done 2026-11-08
 - **Status:** done on branch `engine-rewrite-phase2` (on top of `5fd62fe`); not yet merged.

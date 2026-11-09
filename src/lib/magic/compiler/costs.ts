@@ -140,6 +140,10 @@ export function parseObjectPhrase(phrase: string): ObjectFilter | null {
 		else if (COLORS[low]) (filter.colors ??= []).push(COLORS[low]);
 		else if (/^non[a-z]+$/.test(low) && CARD_TYPES[low.slice(3)]) {
 			(filter.notTypes ??= []).push(CARD_TYPES[low.slice(3)]);
+		} else if (/^non[a-z]+$/.test(low) && SUPERTYPES[low.slice(3)]) {
+			(filter.notSupertypes ??= []).push(SUPERTYPES[low.slice(3)]);
+		} else if (/^non-[A-Z][a-z]+$/.test(words[0])) {
+			(filter.notSubtypes ??= []).push(words[0].slice(4));
 		} else break;
 		words.shift();
 	}
