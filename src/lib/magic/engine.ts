@@ -127,12 +127,17 @@ import {
 	type PendingTrigger
 } from './runtime/triggers.ts';
 import {
+	applyLifelinkGain,
+	dealDamageToPermanent,
+	dealDamageToPlayer,
 	executeEffectSteps,
 	interpretableNow,
 	optionalPrefix,
 	registerEffectPorts,
+	sourceDamageInfo,
 	staticallyInterpretable,
-	withoutOptional
+	withoutOptional,
+	type SourceDamageInfo
 } from './runtime/effects.ts';
 import { botAcceptsOptionalTrigger, chooseBotTriggerTargets } from './ai.ts';
 import type { CostDef, EffectStep, TargetSpec, TokenSpec } from './ir.ts';
@@ -5216,18 +5221,16 @@ function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): 
 	}
 
 	// CR 510.2: All combat damage in a step is assigned and dealt simultaneously.
-	// Snapshot combatant characteristics BEFORE any Infect -1/-1 counters or damageMarked mutations apply!
+	// Snapshot combatant characteristics BEFORE any Infect/Wither -1/-1 counters or damageMarked mutations apply!
 	interface CombatantSnapshot {
 		power: number;
 		toughness: number;
 		damageMarkedBefore: number;
 		hasFS: boolean;
 		hasDS: boolean;
-		hasDeathtouch: boolean;
-		hasLifelink: boolean;
 		hasTrample: boolean;
-		hasInfect: boolean;
 		dealsNow: boolean;
+		srcInfo: SourceDamageInfo;
 	}
 	const snapshots = new Map<string, CombatantSnapshot>();
 	const recordSnapshot = (perm: CardInstance) => {
@@ -5238,33 +5241,58 @@ function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): 
 		// CR 702.7c: In regular combat damage step, creatures that did NOT deal first-strike damage deal combat damage,
 		// as do creatures that currently have Double strike.
 		const dealsNow = isFirstStrikeStep ? hasFS || hasDS : hasDS || !alreadyDealtFS;
+		const srcInfo = sourceDamageInfo(state, perm, perm.copiableCard ?? perm.card);
 		snapshots.set(perm.instanceId, {
 			power: getCreaturePower(perm, state),
 			toughness: getCreatureToughness(perm, state),
 			damageMarkedBefore: perm.damageMarked,
 			hasFS,
 			hasDS,
-			hasDeathtouch: hasKeyword(perm, 'Deathtouch', state),
-			hasLifelink: hasKeyword(perm, 'Lifelink', state),
 			hasTrample: hasKeyword(perm, 'Trample', state),
-			hasInfect: hasKeyword(perm, 'Infect', state),
-			dealsNow
+			dealsNow,
+			srcInfo
 		});
 	};
 
-	for (const atkEntry of state.combat.attackers) {
-		const atkPlayer = state.players.find((p) => p.playerId === atkEntry.controllerId);
-		const defPlayer = state.players.find((p) => p.playerId === atkEntry.defenderPlayerId);
-		if (!atkPlayer || !defPlayer) continue;
-		const attacker = atkPlayer.battlefield.find(
-			(c) => !c.phasedOut && c.instanceId === atkEntry.attackerInstanceId
-		);
-		if (attacker) recordSnapshot(attacker);
-		for (const id of atkEntry.blockerInstanceIds) {
-			const b = defPlayer.battlefield.find((c) => !c.phasedOut && c.instanceId === id);
-			if (b) recordSnapshot(b);
+	withStableLayerInputs(state, () => {
+		for (const atkEntry of state.combat.attackers) {
+			const atkPlayer = state.players.find((p) => p.playerId === atkEntry.controllerId);
+			const defPlayer = state.players.find((p) => p.playerId === atkEntry.defenderPlayerId);
+			if (!atkPlayer || !defPlayer) continue;
+			const attacker = atkPlayer.battlefield.find(
+				(c) => !c.phasedOut && c.instanceId === atkEntry.attackerInstanceId
+			);
+			if (attacker) recordSnapshot(attacker);
+			for (const id of atkEntry.blockerInstanceIds) {
+				const b = defPlayer.battlefield.find((c) => !c.phasedOut && c.instanceId === id);
+				if (b) recordSnapshot(b);
+			}
 		}
+	});
+
+	type AttackerDamageAssignment =
+		| { kind: 'none_pw_left' }
+		| { kind: 'none_blocked_left' }
+		| { kind: 'planeswalker'; target: CardInstance; amount: number; mode: 'unblocked' | 'trample' }
+		| { kind: 'player'; target: PlayerGameState; amount: number; mode: 'unblocked' | 'trample' }
+		| { kind: 'blocker'; target: CardInstance; amount: number };
+
+	interface ScheduledCombatEntry {
+		attacker: CardInstance;
+		atkPlayer: PlayerGameState;
+		defPlayer: PlayerGameState;
+		atkSnap: CombatantSnapshot;
+		attackerAssignments: AttackerDamageAssignment[];
+		blockerAssignments: Array<{
+			blocker: CardInstance;
+			bSnap: CombatantSnapshot;
+			amount: number;
+		}>;
 	}
+
+	// CR 510.1: First compute all combat damage assignments before dealing any damage (CR 510.2).
+	const assignedDamageOnPerm = new Map<string, number>();
+	const scheduledCombats: ScheduledCombatEntry[] = [];
 
 	for (const atkEntry of state.combat.attackers) {
 		const atkPlayer = state.players.find((p) => p.playerId === atkEntry.controllerId);
@@ -5285,10 +5313,8 @@ function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): 
 		}
 
 		const atkPower = atkSnap.power;
-		const atkDeathtouch = atkSnap.hasDeathtouch;
-		const atkLifelink = atkSnap.hasLifelink;
+		const atkDeathtouch = atkSnap.srcInfo.hasDeathtouch;
 		const atkTrample = atkSnap.hasTrample;
-		const atkInfect = atkSnap.hasInfect;
 
 		const blockers = atkEntry.blockerInstanceIds
 			.map((id) => defPlayer.battlefield.find((c) => !c.phasedOut && c.instanceId === id))
@@ -5298,9 +5324,9 @@ function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): 
 		const combatDamagePrevented =
 			atkPlayer.preventAllCombatDamageThisTurn || defPlayer.preventAllCombatDamageThisTurn;
 
+		const attackerAssignments: AttackerDamageAssignment[] = [];
 		if (attackerDealsNow && atkPower > 0 && !combatDamagePrevented) {
 			let remainingDamage = atkPower;
-			let totalDealtByAttacker = 0;
 			const attackingPlaneswalker = Boolean(atkEntry.defenderPlaneswalkerId);
 			const defWalker =
 				atkEntry.defenderPlaneswalkerId && atkEntry.defenderPlaneswalkerId !== 'removed'
@@ -5314,106 +5340,35 @@ function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): 
 
 			if (!atkEntry.wasBlocked && blockers.length === 0) {
 				if (defWalker) {
-					// CR 120.3c: Combat damage dealt to a planeswalker removes that many loyalty counters.
-					defWalker.counters.loyalty = Math.max(
-						0,
-						(defWalker.counters.loyalty || 0) - remainingDamage
-					);
-					totalDealtByAttacker += remainingDamage;
-					emitEvent(state, {
-						kind: 'DamageDealt',
-						sourceId: attacker.instanceId,
-						targetId: defWalker.instanceId,
-						targetKind: 'permanent',
+					attackerAssignments.push({
+						kind: 'planeswalker',
+						target: defWalker,
 						amount: remainingDamage,
-						combat: true
+						mode: 'unblocked'
 					});
-					emitVfx(state, {
-						kind: 'damage',
-						sourceId: attacker.instanceId,
-						targetId: defWalker.instanceId,
-						amount: remainingDamage,
-						label: `-${remainingDamage} Loyalty`
-					});
-					addLog(
-						state,
-						'combat',
-						`${attacker.card.name} dealt ${remainingDamage} unblocked combat damage to ${defWalker.card.name}.`,
-						atkPlayer.playerId
-					);
 				} else if (!attackingPlaneswalker) {
-					// Unblocked -> deals combat damage to defending player
-					if (!defPlayer.protectionFromEverythingThisTurn) {
-						if (atkInfect) {
-							defPlayer.poison += remainingDamage;
-						} else if (!defPlayer.lifeTotalCannotChangeThisTurn) {
-							defPlayer.life -= remainingDamage;
-						}
-						totalDealtByAttacker += remainingDamage;
-						emitEvent(state, {
-							kind: 'DamageDealt',
-							sourceId: attacker.instanceId,
-							targetId: defPlayer.playerId,
-							targetKind: 'player',
-							amount: remainingDamage,
-							combat: true
-						});
-					}
-
-					emitVfx(state, {
-						kind: 'damage',
-						sourceId: attacker.instanceId,
-						targetId: defPlayer.playerId,
+					attackerAssignments.push({
+						kind: 'player',
+						target: defPlayer,
 						amount: remainingDamage,
-						label: atkInfect ? `+${remainingDamage} Poison` : `-${remainingDamage}`
+						mode: 'unblocked'
 					});
-
-					// Track Commander Combat Damage (CR 903.10a)
-					if (attacker.isCommander && !defPlayer.protectionFromEverythingThisTurn) {
-						defPlayer.commanderDamageTaken[attacker.instanceId] =
-							(defPlayer.commanderDamageTaken[attacker.instanceId] || 0) + remainingDamage;
-						addLog(
-							state,
-							'combat',
-							`Commander ${attacker.card.name} dealt ${remainingDamage} combat damage to ${defPlayer.username} (Total: ${defPlayer.commanderDamageTaken[attacker.instanceId]}/${state.rules.commanderDamageLethal || '∞'}).`,
-							atkPlayer.playerId
-						);
-					} else {
-						addLog(
-							state,
-							'combat',
-							`${attacker.card.name} dealt ${remainingDamage} unblocked ${atkInfect ? 'Infect (Poison) ' : ''}combat damage to ${defPlayer.username}.`,
-							atkPlayer.playerId
-						);
-					}
 				} else {
-					// CR 506.4c / 510.1b / 702.19f: An unblocked creature whose attacked planeswalker left combat deals no combat damage.
-					addLog(
-						state,
-						'combat',
-						`${attacker.card.name} was attacking a planeswalker that left combat, so it deals no combat damage (CR 506.4c, 510.1b).`,
-						atkPlayer.playerId
-					);
+					attackerAssignments.push({ kind: 'none_pw_left' });
 				}
 			} else if (atkEntry.wasBlocked && blockers.length === 0 && !atkTrample) {
-				// CR 509.1h / 510.1c: An attacking creature that became blocked remains blocked even if all blockers
-				// left the battlefield before combat damage. Without Trample, it assigns 0 combat damage!
-				addLog(
-					state,
-					'combat',
-					`${attacker.card.name} was blocked (its blocker left combat) and does not have Trample, so it deals no combat damage (CR 510.1c).`,
-					atkPlayer.playerId
-				);
+				attackerAssignments.push({ kind: 'none_blocked_left' });
 			} else {
 				// CR 702.19f: A creature with Trample attacking a planeswalker that left combat cannot assign excess
 				// damage to the defending player; all damage must be assigned to its blockers (or 0 if none remain).
 				const canTrampleOver = atkTrample && (!attackingPlaneswalker || Boolean(defWalker));
-				// Blocked -> assign lethal damage to remaining blockers in order
 				for (let i = 0; i < blockers.length; i++) {
 					const b = blockers[i];
 					const bSnap = snapshots.get(b.instanceId)!;
 					const bTough = bSnap.toughness;
-					const remTough = Math.max(1, bTough - b.damageMarked);
+					const alreadyAssignedOrMarked =
+						assignedDamageOnPerm.get(b.instanceId) ?? bSnap.damageMarkedBefore;
+					const remTough = Math.max(1, bTough - alreadyAssignedOrMarked);
 					const lethalNeeded = atkDeathtouch ? 1 : remTough;
 
 					const isLastBlocker = i === blockers.length - 1;
@@ -5423,110 +5378,37 @@ function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): 
 							: Math.min(remainingDamage, lethalNeeded);
 
 					if (dmgToBlocker > 0) {
-						if (atkInfect) {
-							b.counters['-1/-1'] = (b.counters['-1/-1'] || 0) + dmgToBlocker;
-						} else {
-							b.damageMarked += dmgToBlocker;
-						}
-						if (atkDeathtouch) b.deathtouchDamageMarked = true;
-						emitEvent(state, {
-							kind: 'DamageDealt',
-							sourceId: attacker.instanceId,
-							targetId: b.instanceId,
-							targetKind: 'permanent',
-							amount: dmgToBlocker,
-							combat: true
-						});
-						remainingDamage -= dmgToBlocker;
-						totalDealtByAttacker += dmgToBlocker;
-						emitVfx(state, {
-							kind: 'damage',
-							sourceId: attacker.instanceId,
-							targetId: b.instanceId,
+						assignedDamageOnPerm.set(b.instanceId, alreadyAssignedOrMarked + dmgToBlocker);
+						attackerAssignments.push({
+							kind: 'blocker',
+							target: b,
 							amount: dmgToBlocker
 						});
+						remainingDamage -= dmgToBlocker;
 					}
 				}
 
-				// CR 702.19b / 702.19f: Trample excess damage carries over to the player or planeswalker being attacked!
 				if (canTrampleOver && remainingDamage > 0) {
 					if (defWalker) {
-						defWalker.counters.loyalty = Math.max(
-							0,
-							(defWalker.counters.loyalty || 0) - remainingDamage
-						);
-						totalDealtByAttacker += remainingDamage;
-						emitEvent(state, {
-							kind: 'DamageDealt',
-							sourceId: attacker.instanceId,
-							targetId: defWalker.instanceId,
-							targetKind: 'permanent',
+						attackerAssignments.push({
+							kind: 'planeswalker',
+							target: defWalker,
 							amount: remainingDamage,
-							combat: true
+							mode: 'trample'
 						});
-						emitVfx(state, {
-							kind: 'damage',
-							sourceId: attacker.instanceId,
-							targetId: defWalker.instanceId,
-							amount: remainingDamage,
-							label: `Trample -${remainingDamage} Loyalty`
-						});
-						addLog(
-							state,
-							'combat',
-							`${attacker.card.name} trampled over for ${remainingDamage} combat damage to ${defWalker.card.name}!`,
-							atkPlayer.playerId
-						);
 					} else if (!attackingPlaneswalker) {
-						if (!defPlayer.protectionFromEverythingThisTurn) {
-							if (atkInfect) {
-								defPlayer.poison += remainingDamage;
-							} else if (!defPlayer.lifeTotalCannotChangeThisTurn) {
-								defPlayer.life -= remainingDamage;
-							}
-							totalDealtByAttacker += remainingDamage;
-							if (attacker.isCommander) {
-								defPlayer.commanderDamageTaken[attacker.instanceId] =
-									(defPlayer.commanderDamageTaken[attacker.instanceId] || 0) + remainingDamage;
-							}
-							emitEvent(state, {
-								kind: 'DamageDealt',
-								sourceId: attacker.instanceId,
-								targetId: defPlayer.playerId,
-								targetKind: 'player',
-								amount: remainingDamage,
-								combat: true
-							});
-						}
-						emitVfx(state, {
-							kind: 'damage',
-							sourceId: attacker.instanceId,
-							targetId: defPlayer.playerId,
+						attackerAssignments.push({
+							kind: 'player',
+							target: defPlayer,
 							amount: remainingDamage,
-							label: atkInfect ? `Trample +${remainingDamage} Poison` : `Trample -${remainingDamage}`
+							mode: 'trample'
 						});
-						addLog(
-							state,
-							'combat',
-							`${attacker.card.name} trampled over for ${remainingDamage} ${atkInfect ? 'Infect (Poison) ' : ''}combat damage to ${defPlayer.username}!`,
-							atkPlayer.playerId
-						);
 					}
 				}
-			}
-
-			if (atkLifelink && totalDealtByAttacker > 0 && !atkPlayer.lifeTotalCannotChangeThisTurn) {
-				atkPlayer.life += totalDealtByAttacker;
-				emitVfx(state, {
-					kind: 'heal',
-					targetId: atkPlayer.playerId,
-					amount: totalDealtByAttacker,
-					label: `+${totalDealtByAttacker} Lifelink`
-				});
 			}
 		}
 
-		// Blockers deal combat damage to Attacker using snapshotted power/keywords (CR 510.2)
+		const blockerAssignments: ScheduledCombatEntry['blockerAssignments'] = [];
 		if (!combatDamagePrevented) {
 			for (const b of blockers) {
 				const bSnap = snapshots.get(b.instanceId)!;
@@ -5536,36 +5418,168 @@ function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): 
 						state.combat.dealtFirstStrikeDamageIds.push(b.instanceId);
 					}
 				}
-				const bPower = bSnap.power;
-				const bInfect = bSnap.hasInfect;
-
-				if (blockerDealsNow && bPower > 0) {
-					if (bInfect) {
-						attacker.counters['-1/-1'] = (attacker.counters['-1/-1'] || 0) + bPower;
-					} else {
-						attacker.damageMarked += bPower;
-					}
-					if (bSnap.hasDeathtouch) {
-						attacker.deathtouchDamageMarked = true;
-					}
-					emitEvent(state, {
-						kind: 'DamageDealt',
-						sourceId: b.instanceId,
-						targetId: attacker.instanceId,
-						targetKind: 'permanent',
-						amount: bPower,
-						combat: true
-					});
-					if (bSnap.hasLifelink && !defPlayer.lifeTotalCannotChangeThisTurn) {
-						defPlayer.life += bPower;
-					}
-					emitVfx(state, {
-						kind: 'damage',
-						sourceId: b.instanceId,
-						targetId: attacker.instanceId,
-						amount: bPower
-					});
+				if (blockerDealsNow && bSnap.power > 0) {
+					blockerAssignments.push({ blocker: b, bSnap, amount: bSnap.power });
 				}
+			}
+		}
+
+		scheduledCombats.push({
+			attacker,
+			atkPlayer,
+			defPlayer,
+			atkSnap,
+			attackerAssignments,
+			blockerAssignments
+		});
+	}
+
+	// CR 510.2: Deal all assigned combat damage simultaneously through the unified damage pipeline.
+	for (const sched of scheduledCombats) {
+		const { attacker, atkPlayer, defPlayer, atkSnap, attackerAssignments, blockerAssignments } =
+			sched;
+		const atkInfect = atkSnap.srcInfo.hasInfect;
+		const atkLifelink = atkSnap.srcInfo.hasLifelink;
+		let totalDealtByAttacker = 0;
+
+		for (const asgn of attackerAssignments) {
+			if (asgn.kind === 'none_pw_left') {
+				// CR 506.4c / 510.1b / 702.19f: An unblocked creature whose attacked planeswalker left combat deals no combat damage.
+				addLog(
+					state,
+					'combat',
+					`${attacker.card.name} was attacking a planeswalker that left combat, so it deals no combat damage (CR 506.4c, 510.1b).`,
+					atkPlayer.playerId
+				);
+			} else if (asgn.kind === 'none_blocked_left') {
+				// CR 509.1h / 510.1c: An attacking creature that became blocked remains blocked even if all blockers
+				// left the battlefield before combat damage. Without Trample, it assigns 0 combat damage!
+				addLog(
+					state,
+					'combat',
+					`${attacker.card.name} was blocked (its blocker left combat) and does not have Trample, so it deals no combat damage (CR 510.1c).`,
+					atkPlayer.playerId
+				);
+			} else if (asgn.kind === 'planeswalker') {
+				const dealt = dealDamageToPermanent(
+					state,
+					asgn.target,
+					asgn.amount,
+					attacker.instanceId,
+					atkSnap.srcInfo,
+					{
+						combat: true,
+						actorId: atkPlayer.playerId,
+						vfxLabel:
+							asgn.mode === 'trample'
+								? `Trample -${asgn.amount} Loyalty`
+								: `-${asgn.amount} Loyalty`
+					}
+				);
+				totalDealtByAttacker += dealt;
+				if (dealt > 0) {
+					addLog(
+						state,
+						'combat',
+						asgn.mode === 'trample'
+							? `${attacker.card.name} trampled over for ${dealt} combat damage to ${asgn.target.card.name}!`
+							: `${attacker.card.name} dealt ${dealt} unblocked combat damage to ${asgn.target.card.name}.`,
+						atkPlayer.playerId
+					);
+				}
+			} else if (asgn.kind === 'blocker') {
+				const dealt = dealDamageToPermanent(
+					state,
+					asgn.target,
+					asgn.amount,
+					attacker.instanceId,
+					atkSnap.srcInfo,
+					{
+						combat: true,
+						actorId: atkPlayer.playerId
+					}
+				);
+				totalDealtByAttacker += dealt;
+			} else if (asgn.kind === 'player') {
+				const dealt = dealDamageToPlayer(
+					state,
+					asgn.target,
+					asgn.amount,
+					attacker.instanceId,
+					atkSnap.srcInfo,
+					{
+						combat: true,
+						vfxSourceId: attacker.instanceId,
+						vfxLabel:
+							asgn.mode === 'trample'
+								? atkInfect
+									? `Trample +${asgn.amount} Poison`
+									: `Trample -${asgn.amount}`
+								: atkInfect
+									? `+${asgn.amount} Poison`
+									: `-${asgn.amount}`
+					}
+				);
+				totalDealtByAttacker += dealt;
+				if (dealt > 0) {
+					// Track Commander Combat Damage (CR 903.10a)
+					if (attacker.isCommander) {
+						defPlayer.commanderDamageTaken[attacker.instanceId] =
+							(defPlayer.commanderDamageTaken[attacker.instanceId] || 0) + dealt;
+					}
+					if (asgn.mode === 'trample') {
+						addLog(
+							state,
+							'combat',
+							`${attacker.card.name} trampled over for ${dealt} ${atkInfect ? 'Infect (Poison) ' : ''}combat damage to ${defPlayer.username}!`,
+							atkPlayer.playerId
+						);
+					} else if (attacker.isCommander) {
+						addLog(
+							state,
+							'combat',
+							`Commander ${attacker.card.name} dealt ${dealt} combat damage to ${defPlayer.username} (Total: ${defPlayer.commanderDamageTaken[attacker.instanceId]}/${state.rules.commanderDamageLethal || '∞'}).`,
+							atkPlayer.playerId
+						);
+					} else {
+						addLog(
+							state,
+							'combat',
+							`${attacker.card.name} dealt ${dealt} unblocked ${atkInfect ? 'Infect (Poison) ' : ''}combat damage to ${defPlayer.username}.`,
+							atkPlayer.playerId
+						);
+					}
+				}
+			}
+		}
+
+		if (atkLifelink && totalDealtByAttacker > 0) {
+			const lifeBefore = atkPlayer.life;
+			applyLifelinkGain(state, atkPlayer, totalDealtByAttacker);
+			if (atkPlayer.life > lifeBefore) {
+				emitVfx(state, {
+					kind: 'heal',
+					targetId: atkPlayer.playerId,
+					amount: totalDealtByAttacker,
+					label: `+${totalDealtByAttacker} Lifelink`
+				});
+			}
+		}
+
+		for (const bAsgn of blockerAssignments) {
+			const dealtByBlocker = dealDamageToPermanent(
+				state,
+				attacker,
+				bAsgn.amount,
+				bAsgn.blocker.instanceId,
+				bAsgn.bSnap.srcInfo,
+				{
+					combat: true,
+					actorId: defPlayer.playerId
+				}
+			);
+			if (bAsgn.bSnap.srcInfo.hasLifelink && dealtByBlocker > 0) {
+				applyLifelinkGain(state, defPlayer, dealtByBlocker);
 			}
 		}
 	}

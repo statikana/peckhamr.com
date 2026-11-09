@@ -7,6 +7,7 @@ import {
 	createInitialGameState
 } from '../engine.ts';
 import { moveObject } from './zones.ts';
+import { subscribeEvents, type GameEvent } from './events.ts';
 import { PRECON_DECKS } from '../precons.ts';
 import {
 	DEFAULT_LOBBY_RULES,
@@ -546,6 +547,365 @@ describe('Tier 1 Item 2 — CR 506.4c / 510.1b / 702.19f Attacked Planeswalker R
 			survivingBlocker.damageMarked,
 			5,
 			'All 5 combat damage from trampleAtk1 was assigned to its blocker since the attacked planeswalker left combat (CR 702.19b, 702.19f)'
+		);
+	});
+});
+
+describe('Tier 1 Item 1 — CR 120.3d / 120.4 / 122.1c / 510.2 / 702.16e / 702.80a / 702.90c Unified Combat Damage Pipeline', () => {
+	it('prevents combat damage against creatures with Protection (while still allowing Trample over lethal assignment per CR 702.19b) and prevents Lifelink from prevented damage (CR 702.16e)', () => {
+		const { state, p1, p2 } = makeGame();
+
+		const redTrampler = putInZone(
+			state,
+			p1,
+			synthCard({
+				name: 'Red Lifelink Trampler',
+				power: '5',
+				toughness: '5',
+				colors: ['R'],
+				oracleText: 'Trample, lifelink',
+				keywords: ['Trample', 'Lifelink']
+			}),
+			'battlefield'
+		);
+		const proRedBlocker = putInZone(
+			state,
+			p2,
+			synthCard({
+				name: 'Pro-Red Knight',
+				power: '2',
+				toughness: '2',
+				colors: ['W'],
+				oracleText: 'Protection from red',
+				keywords: ['Protection from red']
+			}),
+			'battlefield'
+		);
+
+		state.phase = 'declare_attackers';
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'declare_attackers',
+				assignments: [{ attackerInstanceId: redTrampler.instanceId, defenderPlayerId: p2.playerId }]
+			}).ok,
+			true
+		);
+		passAll(state); // -> declare_blockers
+
+		assert.equal(
+			applyGameAction(state, p2.playerId, {
+				type: 'declare_blockers',
+				assignments: [
+					{ blockerInstanceId: proRedBlocker.instanceId, attackerInstanceId: redTrampler.instanceId }
+				]
+			}).ok,
+			true
+		);
+
+		const p1LifeBefore = p1.life;
+		const p2LifeBefore = p2.life;
+		passAll(state); // -> combat_damage
+
+		assert.equal(
+			proRedBlocker.damageMarked,
+			0,
+			'Protection from red prevented the 2 combat damage assigned to the blocker (CR 702.16e)'
+		);
+		assert.equal(
+			p2.life,
+			p2LifeBefore - 3,
+			'Trample still assigned 2 lethal to the 2/2 blocker and 3 excess to the defending player (CR 702.19b)'
+		);
+		assert.equal(
+			p1.life,
+			p1LifeBefore + 3,
+			'Lifelink only gained life equal to the 3 unprevented damage actually dealt (CR 120.3f)'
+		);
+		assert.equal(
+			redTrampler.damageMarked,
+			2,
+			'Pro-Red blocker still dealt its 2 combat damage to the attacker'
+		);
+	});
+
+	it('applies Wither as -1/-1 counters on creatures (with simultaneity under CR 510.2) and normal life loss on players (CR 120.3d, 702.80a)', () => {
+		const { state, p1, p2 } = makeGame();
+
+		const witherBlocked = putInZone(
+			state,
+			p1,
+			synthCard({
+				name: 'Wither Attacker',
+				power: '2',
+				toughness: '4',
+				oracleText: 'Wither',
+				keywords: ['Wither']
+			}),
+			'battlefield'
+		);
+		const witherUnblocked = putInZone(
+			state,
+			p1,
+			synthCard({
+				name: 'Wither Unblocked',
+				power: '3',
+				toughness: '3',
+				oracleText: 'Wither',
+				keywords: ['Wither']
+			}),
+			'battlefield'
+		);
+		const blocker = putInZone(
+			state,
+			p2,
+			synthCard({ name: 'Sturdy Blocker', power: '3', toughness: '4' }),
+			'battlefield'
+		);
+
+		state.phase = 'declare_attackers';
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'declare_attackers',
+				assignments: [
+					{ attackerInstanceId: witherBlocked.instanceId, defenderPlayerId: p2.playerId },
+					{ attackerInstanceId: witherUnblocked.instanceId, defenderPlayerId: p2.playerId }
+				]
+			}).ok,
+			true
+		);
+		passAll(state); // -> declare_blockers
+
+		assert.equal(
+			applyGameAction(state, p2.playerId, {
+				type: 'declare_blockers',
+				assignments: [{ blockerInstanceId: blocker.instanceId, attackerInstanceId: witherBlocked.instanceId }]
+			}).ok,
+			true
+		);
+
+		const counterEvents: Array<Extract<GameEvent, { kind: 'CounterPlaced' }>> = [];
+		const unsub = subscribeEvents(state, (_s, ev) => {
+			if (ev.kind === 'CounterPlaced') counterEvents.push(ev);
+		});
+
+		const p2LifeBefore = p2.life;
+		passAll(state); // -> combat_damage
+		unsub();
+
+		assert.equal(
+			blocker.counters['-1/-1'],
+			2,
+			'Wither combat damage placed two -1/-1 counters on the blocker (CR 702.80a)'
+		);
+		assert.equal(
+			counterEvents.length,
+			1,
+			'Wither/Infect combat damage routes through addCountersToPermanent and emits CounterPlaced (CR 122.6)'
+		);
+		assert.equal(counterEvents[0].objectId, blocker.instanceId);
+		assert.equal(counterEvents[0].counterType, '-1/-1');
+		assert.equal(counterEvents[0].amount, 2);
+		assert.equal(
+			blocker.damageMarked,
+			0,
+			'Wither combat damage is not marked as regular damage on the blocker (CR 120.3d)'
+		);
+		assert.equal(
+			witherBlocked.damageMarked,
+			3,
+			'Blocker dealt its full pre-damage 3 power simultaneously before Wither -1/-1 counters reduced its power (CR 510.2)'
+		);
+		assert.equal(
+			p2.life,
+			p2LifeBefore - 3,
+			'Unblocked Wither creature causes life loss (not poison) to the defending player (CR 120.3a)'
+		);
+		assert.equal(p2.poison, 0);
+	});
+
+	it('prevents combat damage with shield counters (CR 122.1c) and damagePreventionShield (CR 615.7), while SBA lethal-damage destruction does not consume a shield counter (CR 122.1c vs 704.5g)', () => {
+		const { state, p1, p2 } = makeGame();
+
+		const atk1 = putInZone(
+			state,
+			p1,
+			synthCard({ name: 'Heavy Attacker', power: '4', toughness: '4' }),
+			'battlefield'
+		);
+		const atk2 = putInZone(
+			state,
+			p1,
+			synthCard({
+				name: 'Commander Attacker',
+				typeLine: 'Legendary Creature — Warrior',
+				power: '5',
+				toughness: '5',
+				legalCommander: true,
+				canBeCommander: true
+			}),
+			'battlefield'
+		);
+		atk2.isCommander = true;
+
+		const shieldedBlocker = putInZone(
+			state,
+			p2,
+			synthCard({ name: 'Shielded Blocker', power: '1', toughness: '2' }),
+			'battlefield'
+		);
+		shieldedBlocker.counters.shield = 1;
+
+		// Prevent 2 of the 5 unblocked commander damage to P2
+		p2.damagePreventionShield = 2;
+
+		state.phase = 'declare_attackers';
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'declare_attackers',
+				assignments: [
+					{ attackerInstanceId: atk1.instanceId, defenderPlayerId: p2.playerId },
+					{ attackerInstanceId: atk2.instanceId, defenderPlayerId: p2.playerId }
+				]
+			}).ok,
+			true
+		);
+		passAll(state); // -> declare_blockers
+
+		assert.equal(
+			applyGameAction(state, p2.playerId, {
+				type: 'declare_blockers',
+				assignments: [
+					{ blockerInstanceId: shieldedBlocker.instanceId, attackerInstanceId: atk1.instanceId }
+				]
+			}).ok,
+			true
+		);
+
+		const p2LifeBefore = p2.life;
+		passAll(state); // -> combat_damage
+
+		assert.equal(
+			shieldedBlocker.counters.shield,
+			0,
+			'Shield counter was removed to prevent combat damage (CR 122.1c)'
+		);
+		assert.equal(
+			shieldedBlocker.damageMarked,
+			0,
+			'Combat damage to creature with shield counter was prevented (CR 122.1c)'
+		);
+		assert.equal(
+			p2.battlefield.some((c) => c.instanceId === shieldedBlocker.instanceId),
+			true,
+			'Shielded blocker survived combat'
+		);
+		assert.equal(
+			p2.life,
+			p2LifeBefore - 3,
+			'Player damagePreventionShield prevented 2 of 5 combat damage (CR 615.7)'
+		);
+		assert.equal(
+			p2.commanderDamageTaken[atk2.instanceId],
+			3,
+			'Commander combat damage tracks only the 3 unprevented combat damage actually dealt (CR 903.10a)'
+		);
+
+		// Verify CR 122.1c vs CR 704.5g: if a creature already has lethal damage marked and then gets a shield counter,
+		// the lethal-damage SBA still destroys it because CR 704.5g is not "destroyed as the result of an effect".
+		shieldedBlocker.damageMarked = 2;
+		shieldedBlocker.counters.shield = 1;
+		checkStateBasedActions(state);
+		assert.equal(
+			p2.battlefield.some((c) => c.instanceId === shieldedBlocker.instanceId),
+			false,
+			'Lethal damage SBA (CR 704.5g) destroys creature even with a shield counter because SBA is not an effect (CR 122.1c)'
+		);
+	});
+
+	it('respects static lifeTotalCantChange rule modifiers during combat damage and lifelink while still dealing combat damage and tracking Commander damage (CR 119.7, 120.3a, 903.10a)', () => {
+		const { state, p1, p2 } = makeGame();
+
+		// Both players have "Your life total can't change."
+		putInZone(
+			state,
+			p1,
+			synthCard({
+				name: 'P1 Emperion',
+				typeLine: 'Artifact Creature — Golem',
+				power: '8',
+				toughness: '8',
+				oracleText: "Your life total can't change."
+			}),
+			'battlefield'
+		);
+		putInZone(
+			state,
+			p2,
+			synthCard({
+				name: 'P2 Emperion',
+				typeLine: 'Artifact Creature — Golem',
+				power: '8',
+				toughness: '8',
+				oracleText: "Your life total can't change."
+			}),
+			'battlefield'
+		);
+
+		const cmdLifelinker = putInZone(
+			state,
+			p1,
+			synthCard({
+				name: 'Lifelink Commander',
+				typeLine: 'Legendary Creature — Angel',
+				power: '4',
+				toughness: '4',
+				oracleText: 'Lifelink',
+				keywords: ['Lifelink'],
+				legalCommander: true,
+				canBeCommander: true
+			}),
+			'battlefield'
+		);
+		cmdLifelinker.isCommander = true;
+
+		state.phase = 'declare_attackers';
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'declare_attackers',
+				assignments: [
+					{ attackerInstanceId: cmdLifelinker.instanceId, defenderPlayerId: p2.playerId }
+				]
+			}).ok,
+			true
+		);
+		passAll(state); // -> declare_blockers
+
+		assert.equal(
+			applyGameAction(state, p2.playerId, {
+				type: 'declare_blockers',
+				assignments: []
+			}).ok,
+			true
+		);
+
+		const p1LifeBefore = p1.life;
+		const p2LifeBefore = p2.life;
+		passAll(state); // -> combat_damage
+
+		assert.equal(
+			p2.life,
+			p2LifeBefore,
+			'Static lifeTotalCantChange modifier prevented P2 life total from decreasing (CR 119.7)'
+		);
+		assert.equal(
+			p1.life,
+			p1LifeBefore,
+			'Static lifeTotalCantChange modifier prevented P1 life total from increasing via Lifelink (CR 119.7)'
+		);
+		assert.equal(
+			p2.commanderDamageTaken[cmdLifelinker.instanceId],
+			4,
+			'Commander combat damage is still dealt and tracked even when life total cannot change (CR 120.3a, 903.10a)'
 		);
 	});
 });
