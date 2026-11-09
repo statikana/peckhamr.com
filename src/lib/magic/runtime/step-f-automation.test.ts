@@ -340,6 +340,8 @@ describe('Step F: modal "Choose one or more" spells', () => {
 		const { state, p } = game([true]);
 		const [alice, bob] = p;
 		alice.hand = [];
+		alice.command = [];
+		bob.hand = [];
 		const bear = put(state, bob, creatureCard('Bob Bear'), 'battlefield');
 		const relic = put(state, bob, card({ name: 'Bob Relic', typeLine: 'Artifact' }), 'battlefield');
 		put(state, alice, staple('Casualties of War'), 'hand');

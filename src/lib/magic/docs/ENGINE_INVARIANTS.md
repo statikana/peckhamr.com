@@ -123,12 +123,12 @@ This document defines the non-negotiable architectural, rules, and engineering i
 1. **Pure JSON-Serializable `GameState`**
    - `GameState` must be 100% plain JSON (`number`, `string`, `boolean`, `null`, arrays, plain objects)—no functions, closures, class instances, `Map`, `Set`, or `WeakMap`.
    - `JSON.parse(JSON.stringify(state))` at any point in a game (including mid-prompt) must round-trip losslessly and play on identically.
-2. **Seeded PRNG Determinism**
+2. **Seeded PRNG & Deterministic IDs**
    - All randomness (shuffling, starting player selection, `atRandom` discard/sacrifice/target selection) must draw from `nextRandom(state)` (`state.rngState`), never `Math.random()`.
-   - Given the same `rngSeed` and sequence of `GameActionPayload` inputs, game execution is strictly deterministic.
-3. **Monotonic `state.version` & Cache Equivalence**
-   - Every mutation to zones, characteristics, counters, status flags, or continuous effects increments `state.version`.
-   - Any cached query (such as `layerCache.ts`) keyed on `(state, state.version)` must return results identical to an uncached recomputation.
-4. **Monotonic Architecture Ratchet (`architecture.test.ts`)**
-   - The counts in `src/lib/magic/architecture-allowances.json` (`cardNameComparison`, `oracleTextRead`, `directZoneMutation`, `legacyParserImport`) may **only ever be lowered** until every runtime module reaches `0`.
-   - Every new module in `src/lib/magic/runtime/` and `src/lib/magic/compiler/` starts with and maintains an allowance of `0`.
+   - Runtime ID generation (`uid(prefix, state)`) uses the deterministic per-state counter `state.nextUid`, never `Math.random()` or `Date.now()`.
+   - Given the same `rngSeed` and sequence of `GameActionPayload` inputs, game execution and generated state are strictly deterministic.
+3. **Layer Evaluation Cache Equivalence (`runtime/layerCache.ts`)**
+   - `evaluatePermanent(state, perm)` caches layer breakdowns inside explicit `withStableLayerInputs(state, fn)` scopes keyed by a dynamic fingerprint of battlefield/stack/command state, attachments, counters, and timestamps.
+   - Any cached query must return results identical to an uncached recomputation (enforced by `runtime/layers-cache.test.ts`).
+4. **Monotonic Architecture Ratchet (`architecture.test.ts` & `architecture-allowances.json`)**
+   - All five ratchet categories in `src/lib/magic/architecture-allowances.json`—`cardNameComparison`, `oracleTextRead`, `directZoneMutation`, `legacyTextHelperCall`, and `cardNameInCode`—are at **`0`** across every runtime, compiler, and `oracle.ts` module and must remain **`0`**.

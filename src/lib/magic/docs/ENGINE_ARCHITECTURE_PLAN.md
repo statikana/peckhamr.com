@@ -1,7 +1,6 @@
 # MTG Engine: Master Architecture Plan: Cards as Data
 
-**Supersedes** `IMPLEMENTATION_PLAN.md` as the long-term roadmap. Don't delete or edit that file;
-other agents may still be finishing items from it. Where the two conflict, this plan wins.
+**Status:** Phases 0–10 and Steps A–F are **complete** as of 2026-11-09 (`COMPILER_VERSION = 4`, all 5 architecture ratchet categories at `0`, legacy parser/adapter/ruleTree layer retired). Ongoing card coverage expansion continues under **Phase 11+** (§3) and Comprehensive Rules gap remediation is tracked in [`rules-audit/00-SUMMARY-AND-PRIORITIZED-GAPS.md`](./rules-audit/00-SUMMARY-AND-PRIORITIZED-GAPS.md).
 
 **Goal:** the engine knows **what kinds of things abilities can do**, and nothing about specific
 cards. Each card is compiled **once** from its Oracle text into a typed data structure (the
