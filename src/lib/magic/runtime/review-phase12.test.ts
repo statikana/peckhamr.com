@@ -1,5 +1,8 @@
 import { describe, it, mock } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import * as choicesMod from './choices.ts';
 
 import {
 	applyGameAction,
@@ -9,13 +12,18 @@ import {
 	sanitizeGameStateForViewer
 } from '../engine.ts';
 import { PRECON_DECKS } from '../precons.ts';
+import { withStackItemText } from '../oracle.ts';
 import {
-	 DEFAULT_LOBBY_RULES,
+	DEFAULT_LOBBY_RULES,
 	ENGINE_VERSION,
 	type CardInstance,
+	type ChoiceKind,
+	type ChoiceRequest,
 	type GameState,
 	type LobbySeat,
 	type MagicLobby,
+	type PendingPrompt,
+	type PromptPurpose,
 	type ScryfallCard
 } from '../types.ts';
 import * as engineMod from '../engine.ts';
@@ -44,7 +52,7 @@ function makeCard(overrides: Partial<ScryfallCard> & { name: string }): Scryfall
 	};
 }
 
-function makeTwoPlayerGame(seed?: number): GameState {
+function makeTwoPlayerGame(): GameState {
 	const seats: LobbySeat[] = [
 		{
 			seatIndex: 0,
@@ -84,14 +92,13 @@ function makeTwoPlayerGame(seed?: number): GameState {
 			[0, PRECON_DECKS[0]],
 			[1, PRECON_DECKS[1]]
 		]),
-		{ ...DEFAULT_LOBBY_RULES },
-		seed !== undefined ? { rngSeed: seed } : undefined
+		{ ...DEFAULT_LOBBY_RULES }
 	);
 }
 
 describe('Phase 1 (§2.1 + §2.2): Secret stripping and opponent prompt redaction', () => {
 	it('strips rngState, nextUid, and idSalt from the viewer copy without mutating the original state', () => {
-		const state = makeTwoPlayerGame(12345);
+		const state = makeTwoPlayerGame();
 		state.idSalt = 987654321;
 		const origRng = state.rngState;
 		const origUid = state.nextUid;
@@ -118,8 +125,8 @@ describe('Phase 1 (§2.1 + §2.2): Secret stripping and opponent prompt redactio
 	});
 
 	it('redacts P1 london_bottom prompt in P2 sanitized view so no hand card IDs leak', () => {
-		const state = makeTwoPlayerGame(42);
-		state.rules.mulliganRule = 'standard_london';
+		const state = makeTwoPlayerGame();
+		state.rules.mulliganRule = 'london_1free';
 		// P1 takes two mulligans (first is free in Commander, second requires bottoming 1 card)
 		applyGameAction(state, 'p1', { type: 'mulligan_take' });
 		applyGameAction(state, 'p1', { type: 'mulligan_take' });
@@ -160,7 +167,7 @@ describe('Phase 1 (§2.1 + §2.2): Secret stripping and opponent prompt redactio
 	});
 
 	it('redacts P1 search_library prompt and stack effectResume in P2 sanitized view so no library IDs leak', () => {
-		const state = makeTwoPlayerGame(99);
+		const state = makeTwoPlayerGame();
 		applyGameAction(state, 'p1', { type: 'mulligan_keep' });
 		applyGameAction(state, 'p2', { type: 'mulligan_keep' });
 
@@ -187,23 +194,28 @@ describe('Phase 1 (§2.1 + §2.2): Secret stripping and opponent prompt redactio
 		});
 		// Also simulate a stack item with an effectResume frame holding hidden card IDs
 		const dummyCard = makeCard({ name: 'Mind Rot' });
-		state.stack.push({
-			id: 'stk_pause_test',
-			sourceInstanceId: libIds[0],
-			card: dummyCard,
-			controllerId: 'p1',
-			kind: 'spell',
-			title: 'Mind Rot',
-			targets: [],
-			xValue: 0,
-			requiresGuidedResolution: false,
-			createdAt: 0,
-			effectResume: {
-				stepIndex: 0,
-				bindings: [],
-				answers: { p1: [libIds[1], libIds[2]] }
-			}
-		});
+		state.stack.push(
+			withStackItemText(
+				{
+					id: 'stk_pause_test',
+					sourceInstanceId: libIds[0],
+					card: dummyCard,
+					controllerId: 'p1',
+					kind: 'spell',
+					title: 'Mind Rot',
+					targets: [],
+					xValue: 0,
+					requiresGuidedResolution: false,
+					createdAt: 0,
+					effectResume: {
+						stepIndex: 0,
+						bindings: [],
+						answers: { p1: [libIds[1], libIds[2]] }
+					}
+				},
+				dummyCard
+			)
+		);
 
 		const viewForP2 = sanitizeGameStateForViewer(state, 'p2');
 		assert.equal(viewForP2.players[0].library.length, 0);
@@ -231,7 +243,7 @@ describe('Phase 1 (§2.1 + §2.2): Secret stripping and opponent prompt redactio
 	});
 
 	it('does not log the private card name when a player draws a card or moves between hidden zones', () => {
-		const state = makeTwoPlayerGame(77);
+		const state = makeTwoPlayerGame();
 		applyGameAction(state, 'p1', { type: 'mulligan_keep' });
 		const p1 = state.players[0];
 		const topCardName = p1.library[0].card.name;
@@ -418,5 +430,119 @@ describe('Phase 2 (§3): Engine-version gate (enforceEngineVersion)', () => {
 		assert.equal(savedLobby.updatedAt, 2000);
 	});
 });
+
+describe('Phase 5 (§6): ChoiceSpec and PromptPurpose exhaustiveness guards (#2)', () => {
+	it('exports ChoiceKind exhaustiveness guard and renders all 6 ChoiceKind branches in ArenaTable.svelte', () => {
+		const allKinds = (choicesMod as Record<string, unknown>).ALL_CHOICE_KINDS as
+			| readonly ChoiceKind[]
+			| undefined;
+		const checkKind = (choicesMod as Record<string, unknown>).assertExhaustiveChoiceKind as
+			| ((c: ChoiceRequest) => ChoiceKind)
+			| undefined;
+		assert.ok(Array.isArray(allKinds), 'ALL_CHOICE_KINDS must be exported from runtime/choices.ts');
+		assert.equal(
+			typeof checkKind,
+			'function',
+			'assertExhaustiveChoiceKind must be exported from runtime/choices.ts'
+		);
+		assert.deepEqual(
+			[...allKinds].sort(),
+			[
+				'chooseMode',
+				'chooseNumber',
+				'chooseObjects',
+				'chooseReplacement',
+				'orderObjects',
+				'yesNo'
+			]
+		);
+
+		const sampleChoices: ChoiceRequest[] = [
+			{ kind: 'yesNo', question: 'Q?' },
+			{ kind: 'chooseObjects', candidates: [], min: 0, max: 1, zone: 'battlefield', reason: 'R' },
+			{ kind: 'chooseMode', modes: ['A'], min: 1, max: 1 },
+			{ kind: 'chooseNumber', min: 0, max: 3, reason: 'N' },
+			{ kind: 'orderObjects', objectIds: [], reason: 'O' },
+			{ kind: 'chooseReplacement', options: [{ id: 'r1', label: 'R1' }] }
+		];
+		for (const sample of sampleChoices) {
+			assert.equal(checkKind!(sample), sample.kind);
+		}
+
+		const dir = dirname(new URL(import.meta.url).pathname);
+		const arenaTableSrc = readFileSync(join(dir, '..', 'ArenaTable.svelte'), 'utf8');
+		for (const kind of allKinds!) {
+			assert.ok(
+				arenaTableSrc.includes(`myChoice.kind === '${kind}'`),
+				`ArenaTable.svelte must have a choice branch for myChoice.kind === '${kind}'`
+			);
+		}
+		assert.ok(
+			arenaTableSrc.includes('_exhaustiveChoice: never = myChoice'),
+			'ArenaTable.svelte must include a compile-time never exhaustiveness check on myChoice'
+		);
+	});
+
+	it('covers every PromptPurpose emitted by the engine with either a dedicated purpose branch or a valid ChoiceKind fallback', () => {
+		const allPurposes = (choicesMod as Record<string, unknown>).ALL_PROMPT_PURPOSES as
+			| readonly PromptPurpose[]
+			| undefined;
+		const allKinds = (choicesMod as Record<string, unknown>).ALL_CHOICE_KINDS as
+			| readonly ChoiceKind[]
+			| undefined;
+		assert.ok(Array.isArray(allPurposes), 'ALL_PROMPT_PURPOSES must be exported');
+		assert.ok(Array.isArray(allKinds), 'ALL_CHOICE_KINDS must be exported');
+
+		const dir = dirname(new URL(import.meta.url).pathname);
+		const sourceFiles = [
+			join(dir, '..', 'engine.ts'),
+			join(dir, 'triggers.ts'),
+			join(dir, 'effects.ts'),
+			join(dir, 'choices.ts')
+		];
+		const emittedPurposes = new Set<string>();
+		const purposeRegex = /\bpurpose\s*:\s*'([a-z_]+)'/g;
+		for (const file of sourceFiles) {
+			const text = readFileSync(file, 'utf8');
+			let m: RegExpExecArray | null;
+			while ((m = purposeRegex.exec(text)) !== null) {
+				emittedPurposes.add(m[1]);
+			}
+		}
+		assert.ok(emittedPurposes.size > 0, 'Should discover emitted prompt purposes in engine sources');
+		for (const ep of emittedPurposes) {
+			assert.ok(
+				allPurposes!.includes(ep as PromptPurpose),
+				`Emitted purpose '${ep}' must be listed in ALL_PROMPT_PURPOSES`
+			);
+		}
+
+		const state = makeTwoPlayerGame();
+		for (const purpose of allPurposes!) {
+			const kind =
+				purpose === 'end_turn' || purpose === 'trigger_may' || purpose === 'generic'
+					? 'yesNo'
+					: purpose === 'trigger_targets'
+						? 'chooseObjects'
+						: purpose === 'trigger_order'
+							? 'orderObjects'
+							: purpose;
+			const dummyPrompt: PendingPrompt = {
+				id: `prm_${purpose}`,
+				playerId: 'p1',
+				kind,
+				purpose,
+				title: `Test ${purpose}`,
+				description: `Description for ${purpose}`
+			};
+			const synthesized = choicesMod.effectivePromptChoice(dummyPrompt, state);
+			assert.ok(
+				allKinds!.includes(synthesized.kind),
+				`Purpose '${purpose}' must resolve to a valid ChoiceKind (got '${synthesized.kind}')`
+			);
+		}
+	});
+});
+
 
 
