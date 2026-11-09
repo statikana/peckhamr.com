@@ -11,6 +11,7 @@ import {
 	winTheGame
 } from '../engine.ts';
 import { manaChoiceColors } from './effects.ts';
+import { triggerMultiplier } from './replace.ts';
 import { PRECON_DECKS } from '../precons.ts';
 import {
 	DEFAULT_LOBBY_RULES,
@@ -279,6 +280,58 @@ describe('Tier 1b CR fixes', () => {
 			assert.equal(p2.lost, true);
 			assert.equal(state.status, 'finished');
 			assert.equal(state.winnerPlayerId, p1.playerId);
+		});
+	});
+
+	describe('Item 8: Trigger multipliers add rather than multiply (CR 603.2d)', () => {
+		it('causes two Panharmonicon effects to trigger an ability 3 times (1 + 1 + 1), not 4', () => {
+			const { state, p1, p2 } = makeGame(2);
+			const panharmoniconCard = synthCard({
+				name: 'Panharmonicon',
+				manaCost: '{4}',
+				cmc: 4,
+				typeLine: 'Artifact',
+				oracleText:
+					'If an artifact or creature entering the battlefield causes a triggered ability of a permanent you control to trigger, that ability triggers an additional time.'
+			});
+
+			p1.battlefield.push(createCardInstance(panharmoniconCard, p1.playerId));
+			p1.battlefield.push(createCardInstance(panharmoniconCard, p1.playerId));
+
+			const clericCard = synthCard({
+				name: 'Soul Cleric',
+				manaCost: '{1}{W}',
+				cmc: 2,
+				typeLine: 'Creature — Human Cleric',
+				oracleText: 'When ~ enters the battlefield, you gain 2 life.',
+				power: '1',
+				toughness: '1'
+			});
+			const cleric = createCardInstance(clericCard, p1.playerId);
+			cleric.zone = 'hand';
+			p1.hand.push(cleric);
+			p1.manaPool = { W: 1, U: 0, B: 0, R: 0, G: 0, C: 1 };
+
+			assert.equal(
+				triggerMultiplier(state, cleric, p1.playerId, {
+					event: 'zoneChange',
+					to: 'battlefield',
+					object: cleric
+				}),
+				3
+			);
+
+			assert.equal(
+				applyGameAction(state, p1.playerId, {
+					type: 'cast_spell',
+					instanceId: cleric.instanceId
+				}).ok,
+				true
+			);
+			// Resolve the creature spell -> ETB triggers should be put on the stack 3 times
+			assert.equal(applyGameAction(state, p1.playerId, { type: 'pass_priority' }).ok, true);
+			assert.equal(applyGameAction(state, p2.playerId, { type: 'pass_priority' }).ok, true);
+			assert.equal(state.stack.length, 3, 'ETB trigger triggers 3 times with two Panharmonicons');
 		});
 	});
 });

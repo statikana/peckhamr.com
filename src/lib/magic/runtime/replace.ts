@@ -1027,7 +1027,8 @@ export function triggerMultiplier(
 					}
 				}
 			}
-			times *= def.factor;
+			// CR 603.2d: Each "triggers an additional time" effect adds (def.factor - 1) additional triggers.
+			times += Math.max(0, def.factor - 1);
 		}
 	}
 	return times;

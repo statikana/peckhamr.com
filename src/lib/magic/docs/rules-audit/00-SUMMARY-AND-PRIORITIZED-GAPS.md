@@ -59,8 +59,8 @@ These are bugs where a mechanic the engine actively supports produces the wrong 
 7. ~~**Last-player-standing win is blocked by `playerCannotWinGame` (`CR 104.2a vs 104.3h`)**~~ — **Fixed (`CR 104.2a` last-player-standing win overrides effects precluding winning)**
    - In `checkStateBasedActions` (`engine.ts`), when all other players have left the game (`remaining.length === 1`), the remaining player now wins immediately regardless of `playerCannotWinGame` per `CR 104.2a` ("overrides all effects that would preclude that player from winning the game"). (`CR 104.3h` only applies to Limited Range of Influence.)
 
-8. **Multiple trigger-multiplier effects multiply (`2 * 2 = 4`) instead of adding (`1 + 1 + 1 = 3`) (`CR 603.2d`)** — **Size: S**
-   - `triggerMultiplier` (`runtime/replace.ts:952`) computes `factor *= def.factor` instead of `factor += (def.factor - 1)` ("triggers an additional time").
+8. ~~**Multiple trigger-multiplier effects multiply (`2 * 2 = 4`) instead of adding (`1 + 1 + 1 = 3`) (`CR 603.2d`)**~~ — **Fixed (`triggerMultiplier` adds `def.factor - 1` per effect)**
+   - `triggerMultiplier` (`runtime/replace.ts`) now computes `times += Math.max(0, def.factor - 1)` ("triggers an additional time") per `CR 603.2d`.
 
 9. **Layer 4 `setTypes` / `setSubtypes` drops `Basic`/`Snow` supertypes and non-land types on artifact lands (`CR 205.1a–b, 205.4b, 305.7`)** — **Size: S**
    - In `runtime/layers.ts:1120-1125` and `1183-1185`, rewriting `effectiveTypeLine` only preserves `Legendary`, dropping `Basic`/`Snow`/`World` supertypes and dropping `Artifact` on artifact lands under *Blood Moon* (`layers.ts:1789`).
