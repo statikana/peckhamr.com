@@ -630,6 +630,60 @@ while it runs), **entry**, **work**, **exit**, and **ratchet target**.
   construction.
 
 ### Phase 6: Layer engine from IR, with caching
+
+#### Phase 6a: layer evaluation caching ✅ done 2026-11-08 (branch `engine-rewrite-perf`)
+Interim performance fix ahead of Phase 6 proper. Results are unchanged: layer snapshots and golden
+games pass without regenerating.
+- **Problem:** every `evaluatePermanent` / `inspectCardContinuousBreakdown` /
+  `permanentHasLostAllAbilities` call re-scanned every permanent's text and attached Auras, nesting
+  O(n²)–O(n³) regex work per call. A 4-bot game took **40–64 s CPU per bot tick at 60–69
+  permanents**, which can't run on Workers.
+- **Strategy:** there's no `state.version` yet, because mutations aren't centralised.
+  - `runtime/layerCache.ts` keeps a **board snapshot per `GameState` in a `WeakMap`**, never inside
+    the state. Each public query re-validates it with an O(n) identity/field fingerprint:
+    - players array, each player's object, `lost`, `playerId`, and battlefield array identity and
+      length;
+    - per battlefield object: the object itself, `instanceId`, `phasedOut`, `attachedToId`,
+      `enteredTimestamp`, `card`, `copiableCard`, `isFaceDown`, `controllerId`.
+
+    A mismatch rebuilds the snapshot. The snapshot holds the active list, the timestamp order, an
+    attachment index, memoised Aura-stripping and lost-all-abilities results, and source lists
+    filtered by pattern.
+  - In `ruleTree.ts`, regex, lowercase and line-split work goes through **pure memos keyed by the
+    string**, which can't go stale.
+  - Per-target inputs are still evaluated on every call: counters, temporary/switched P/T, granted
+    keywords, suspend, CDA counts (graveyards).
+  - Card objects are assumed immutable. The engine replaces them wholesale, which the fingerprint
+    sees.
+- **Checks:**
+  - `MAGIC_LAYER_CACHE_CHECK=1` (or `=verbose`) recomputes every query on a fresh snapshot and
+    throws on any difference. `setLayerReference()` also compares against the frozen pre-cache code
+    in `runtime/layerReference.test.ts`.
+  - Full suite under the flag: ~412k checks, 0 mismatches.
+  - Full seeded 4-bot games, seeds 1 and 2, checked against the reference on every call:
+    377,545 + 390,716 = 768,261 checks, 0 mismatches.
+  - `runtime/layerCache.test.ts` mutates boards between evaluations and compares against both.
+- **Timing (Node 24, `measure.mts`, CPU per bot tick):**
+
+  | Permanents | seed 1 before (median / max) | seed 1 after | seed 2 before | seed 2 after |
+  |---|---|---|---|---|
+  | 0–9 | 400 ms | 80 ms | 414 ms | 84 ms |
+  | 30–39 | 5.9 s | 153 ms | 9.0 s | 125 ms |
+  | 50–59 | 29.3 s | 125 ms | 30.0 s | 97 ms |
+  | 60–69 | 50.7 s / 59.6 s | 161 / 265 ms | 44.8 s / 64.1 s | 179 / 199 ms |
+
+  Phase 6 timing baseline, one full `evaluatePermanent` pass over 60 permanents: ~230 ms →
+  **~1 ms**.
+- **Ratchet:** `oracleText` reads in `ruleTree.ts` went from 38 to 14. All layer-code reads go
+  through `layerCardText()`.
+- **Phase 6 proper still has to:**
+  - add `state.version` so a query is a real O(1) lookup (today each call is still O(n):
+    fingerprint plus the per-target pass);
+  - compile the statics into `StaticDef`, which removes the remaining text regexes;
+  - delete `layerReference.test.ts`, or replace it with the snapshots, once results change on
+    purpose;
+  - keep the "cards are immutable" assumption, or add text to the fingerprint.
+
 - **Owns:** `runtime/layers.ts`; `inspectCardContinuousBreakdown`, `permanentHasLostAllAbilities`,
   `evaluatePermanent` in `ruleTree.ts`.
 - **Entry:** before rewriting, add **snapshot tests** of the evaluated state (types, P/T, keywords,
