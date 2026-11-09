@@ -1383,6 +1383,50 @@ Then an ultra code review of the branch, doc clean-up, and push.
   manually". Step E2 does the manual resolution and the "logged once on entering" behaviour for
   statics.
 
+#### Step E2: manual resolution and data-only prompts (branch `engine-rewrite-e2`, 2026-11-09)
+- **Data-only prompts.** `enqueueChoicePrompt` no longer takes a callback, and the `WeakMap`
+  callback registry is deleted. A prompt says what answering it continues in
+  `PendingPrompt.continuation` (plain data): `effect_choice` / `effect_resume` (a paused IR
+  resolution, by stack item id and step index), `manual_resolution`, `manual_ability`, or `handler`
+  (a named handler registered at module load). So a prompt answered after the lobby server reloads
+  the state from JSON still continues. `runtime/prompts-roundtrip.test.ts` answers every human prompt
+  kind on a `JSON.parse(JSON.stringify(state))` copy.
+- **Pause and resume (CR 608.2n).** The IR interpreter pauses for a human's sacrifice or discard
+  choice, and after a scry or search prompt that isn't the last step. The resume frame (step index,
+  bindings with their LKI, answers) is stored in `StackItem.effectResume`. The steps are recompiled
+  on resume, never stored. The item stays on the stack and resumes by id: triggers that fired
+  before the pause sit above it and resolve first, which is a small deviation from CR 603.3.
+  `StackItem.resolutionStarted` stops the resume from repeating the fizzle and intervening-if
+  checks and the resolve VFX. That also fixes the double VFX on a "you may" trigger. Players choose
+  in turn, then everything is sacrificed or discarded at once (CR 101.4). New grammar: "[each
+  opponent / target player] sacrifice(s) N <objects>" and "[player] discard(s) N cards".
+- **Manual resolution (section 2.7).** An instant or sorcery, an activated ability, or a card's
+  triggered ability that the interpreter can't run is "not automated":
+  - A human controller gets the `guided_resolution` prompt. It shows the ability's text (via
+    `compiler/support.ts` `stackItemDisplayText`) and has an operation builder: move a card between
+    any zones, life, damage, counters, draw, mill, tokens, tap and untap. The server validates the
+    operations. The item finishes resolving afterwards, and the log says it was resolved manually.
+    While legacy effects exist, the prompt also offers "Use the engine's approximation".
+  - A bot uses the legacy effects if there are any. Otherwise it skips the ability and logs
+    "<bot> (bot) skipped unsupported ability X".
+  - Permanent spells, engine-made delayed triggers and Ward keep their current paths.
+- **Triggers.** Every ability whose trigger head is understood now triggers and goes on the stack.
+  The `canExecute` filter is gone, and only legacy effects the pre-Phase-5 engine ran count as a bot
+  fallback. Abilities whose trigger can't be recognised, and unenforced statics, replacements and
+  keywords, are logged once when the permanent enters, from the ZoneChange handler.
+- **Escape hatch.** The action `{ type: 'resolve_manually', instanceId, abilityIndex? }` (the
+  inspector's "Resolve manually" button) opens a guided prompt for any ability of a card the player
+  controls while they have priority. It never uses the stack.
+- **Inspector.** `UnsupportedAbilityReport.kind` gives each ability a label:
+  - "Not automated: resolved manually" for spells, activated abilities and triggers;
+  - "Not automated: apply it manually when it triggers" for triggers the engine can't recognise;
+  - "Not enforced" for statics and keywords;
+  - an approximation note for mana abilities.
+- **Seeded randomness.** `runtime/random.ts`. `GameState.rngState` is seeded once at game creation,
+  and shuffles and random costs use it. `uid()` still uses `Math.random` (ids only; deferred).
+- Removed the unused `StackItem.interveningIfCondition`. The `legacyTextHelperCall` ratchet for
+  engine.ts went from 29 to 28.
+
 *Original (superseded) entry:*
 - **Work:** remove `CardRuleTree` (or keep it as a thin view over the IR for the inspector UI),
   `ParsedEffect`, `ParsedActivatedAbility`, `TargetKind`, `parseTriggeredEffects` and the remaining
