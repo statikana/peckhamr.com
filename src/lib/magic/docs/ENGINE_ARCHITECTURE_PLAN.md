@@ -1230,7 +1230,45 @@ games pass without regenerating.
     - Baseline test `E3` in `magic.test.ts` passes with its `{ todo }` marker removed; added 5 tests
       in `runtime/ai.test.ts`. `layers.snapshot.test.ts` and `runtime/golden.test.ts` pass unchanged.
 
-### Phase 10: Delete the legacy layer ✅ done 2026-11-08 (branch `engine-rewrite-wave4`)
+### Phase 10: Delete the legacy layer ⚠️ NOT done (re-verified 2026-11-09 at 93b78a8)
+
+**Correction (coordinating session, 2026-11-09).** The "done" claim below was based on the original
+three ratchet rules, which the code satisfied by moving rules-text reads into `oracle.ts`, which is
+exempt. At 93b78a8:
+- Runtime code still calls legacy text parsers 52 times: 29 in `engine.ts`, 21 in `ruleTree.ts`
+  (`getCardRuleTree` is built from text), and 2 in `ai.ts`. Examples: `parseSpellOrAbilityEffects`,
+  `getPermanentManaProduction`, `getCardRulesText(card).toLowerCase().includes(...)`.
+- Card names remain in code: 9 occurrences, e.g. `spellExilesSelfOnResolution` matches "teferi's
+  protection" / "time stop"; the generic end-turn prompt is titled "End the Turn? (Obeka, Brute
+  Chronologist)".
+- `executeTriggerEffects` still runs triggered abilities through `executeParsedEffect`.
+- `ParsedEffect`, `executeParsedEffect`, `compiler/adapter.ts` and the legacy `oracle.ts` parsers all
+  still exist.
+
+**Ratchet strengthened (step A, 2026-11-09).** `architecture.test.ts` adds two rules:
+- `legacyTextHelperCall`: calls from runtime files to any `oracle.ts` export not on the checked
+  text-free list, plus `getCardRuleTree`. New exports count automatically.
+- `cardNameInCode`: precon card names in runtime, `oracle.ts` or compiler code outside comments.
+
+Honest baseline: `legacyTextHelperCall` engine.ts 29, ruleTree.ts 21, ai.ts 2; `cardNameInCode`
+engine.ts 7, oracle.ts 2. **Phase 10's exit now also requires both to be 0.**
+
+**Remaining roadmap (agreed with the user, 2026-11-09):**
+- A. Honest ratchet. ✅ (above)
+- B. Cache-validation performance regression (1.2–1.7 s per bot turn at 60–69 permanents, against
+  161–265 ms after Phase 6a). Branch `engine-rewrite-perf2`, recorded as Phase 6c.
+- C. Run triggered-ability effects on the IR interpreter (`runtime/effects.ts`).
+- D. Put all triggers on the stack (today only phase-begin battlefield triggers use it; the rest
+  resolve inline, against CR 603.3), with player-chosen ordering via `orderObjects`. The user
+  play-tests this.
+- E. Unsupported abilities per §2.7: allowed by default; resolved through the guided manual prompt;
+  deck-builder warning; lobby rule to block them.
+- F. Real Phase 10: migrate the remaining runtime callers to IR, then delete the legacy layer;
+  `legacyTextHelperCall` and `cardNameInCode` reach 0.
+
+Then an ultra code review of the branch, doc clean-up, and push.
+
+*Original (superseded) entry:*
 - **Work:** remove `CardRuleTree` (or keep it as a thin view over the IR for the inspector UI),
   `ParsedEffect`, `ParsedActivatedAbility`, `TargetKind`, `parseTriggeredEffects` and the remaining
   regex parsers in `oracle.ts` that the compiler doesn't use.
