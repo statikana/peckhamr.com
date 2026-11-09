@@ -27,6 +27,7 @@ import type {
 	ScryfallCard
 } from '../types.ts';
 import { evaluateAmount, evaluateCondition, matchesObjectFilter, type FilterContext } from './objectFilter.ts';
+import { noteLayerInputsChanged } from './layerCache.ts';
 import { moveObject, type PlayerZone } from './zones.ts';
 
 // ---- Where costs come from ------------------------------------------------------------------
@@ -703,11 +704,16 @@ function planFlat(ctx: CostContext, flat: Flat[], objects: string[][] | undefine
 /** Mana is paid after tap costs, so permanents tapped for the cost can't also tap for mana. */
 function canPayManaAfterTaps(ctx: CostContext, parts: PlannedCost[], mana: ManaCostRequirement): boolean {
 	const toTap = tapTargets(ctx, parts).filter((c) => !c.tapped);
+	if (toTap.length === 0) return ctx.canPayMana(mana);
+	// The hypothetical taps change a layer input (`tapped`): an enclosing `withStableLayerInputs`
+	// scope revalidates after tapping and again after untapping (Phase 6d).
 	for (const c of toTap) c.tapped = true;
+	noteLayerInputsChanged(ctx.state);
 	try {
 		return ctx.canPayMana(mana);
 	} finally {
 		for (const c of toTap) c.tapped = false;
+		noteLayerInputsChanged(ctx.state);
 	}
 }
 

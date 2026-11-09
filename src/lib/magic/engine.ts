@@ -6548,7 +6548,21 @@ function normalizeTargetRequirement(
 	};
 }
 
+/** Whether `target` is legal for the requirement. Read-only, one validation (Phase 6d). */
 export function validateTargetLegality(
+	state: GameState,
+	actorId: string,
+	target: TargetRef,
+	targetRequirementOrKind: TargetRequirementInfo | string,
+	sourceCard?: ScryfallCard,
+	sourceInstanceId?: string
+): { ok: boolean; error?: string } {
+	return withStableLayerInputs(state, () =>
+		validateTargetLegalityInner(state, actorId, target, targetRequirementOrKind, sourceCard, sourceInstanceId)
+	);
+}
+
+function validateTargetLegalityInner(
 	state: GameState,
 	actorId: string,
 	target: TargetRef,
@@ -6963,7 +6977,20 @@ export function validateChosenTargets(
 	return { ok: true };
 }
 
+/** Every legal target for `info`. Read-only: one validation for all candidates (Phase 6d). */
 export function getAllLegalTargetsForRequirement(
+	state: GameState,
+	actorId: string,
+	info: TargetRequirementInfo,
+	sourceCard?: ScryfallCard,
+	sourceInstanceId?: string
+): TargetRef[] {
+	return withStableLayerInputs(state, () =>
+		getAllLegalTargetsForRequirementInner(state, actorId, info, sourceCard, sourceInstanceId)
+	);
+}
+
+function getAllLegalTargetsForRequirementInner(
 	state: GameState,
 	actorId: string,
 	info: TargetRequirementInfo,
@@ -7020,7 +7047,22 @@ export function getAllLegalTargetsForRequirement(
 	return results;
 }
 
+/** Whether enough legal targets exist for `info`. Read-only, one validation (Phase 6d). */
 export function hasRequiredLegalTargets(
+	state: GameState,
+	actorId: string,
+	info: TargetRequirementInfo,
+	sourceCard?: ScryfallCard,
+	sourceInstanceId?: string,
+	xValue = 0,
+	castMode?: 'normal' | 'overload'
+): { ok: boolean; error?: string } {
+	return withStableLayerInputs(state, () =>
+		hasRequiredLegalTargetsInner(state, actorId, info, sourceCard, sourceInstanceId, xValue, castMode)
+	);
+}
+
+function hasRequiredLegalTargetsInner(
 	state: GameState,
 	actorId: string,
 	info: TargetRequirementInfo,
@@ -7112,7 +7154,17 @@ export function hasRequiredLegalTargets(
 	return { ok: true };
 }
 
+/** Whether `actorId` may play the land `inst` now. Read-only, one validation (Phase 6d). */
 export function checkLandPlayLegality(
+	state: GameState,
+	actorId: string,
+	inst: CardInstance,
+	fromZone: ZoneType = 'hand'
+): { ok: boolean; error?: string } {
+	return withStableLayerInputs(state, () => checkLandPlayLegalityInner(state, actorId, inst, fromZone));
+}
+
+function checkLandPlayLegalityInner(
 	state: GameState,
 	actorId: string,
 	inst: CardInstance,
@@ -7178,7 +7230,24 @@ export function checkLandPlayLegality(
 	return { ok: true };
 }
 
+/**
+ * Whether `actorId` may cast `inst` now. Read-only: the whole check (cost, auto-tap simulation,
+ * targets) shares one layer-cache validation (Phase 6d).
+ */
 export function checkSpellCastLegality(
+	state: GameState,
+	actorId: string,
+	inst: CardInstance,
+	fromZone: ZoneType = 'hand',
+	xValue = 0,
+	castMode?: 'normal' | 'overload'
+): { ok: boolean; error?: string } {
+	return withStableLayerInputs(state, () =>
+		checkSpellCastLegalityInner(state, actorId, inst, fromZone, xValue, castMode)
+	);
+}
+
+function checkSpellCastLegalityInner(
 	state: GameState,
 	actorId: string,
 	inst: CardInstance,
@@ -7332,7 +7401,17 @@ export function checkSpellCastLegality(
 	return { ok: true };
 }
 
+/** Whether `actorId` may activate `ab` of `perm` now. Read-only, one validation (Phase 6d). */
 export function checkAbilityActivationLegality(
+	state: GameState,
+	actorId: string,
+	perm: CardInstance,
+	ab: EffectiveActivatedAbility
+): { ok: boolean; error?: string } {
+	return withStableLayerInputs(state, () => checkAbilityActivationLegalityInner(state, actorId, perm, ab));
+}
+
+function checkAbilityActivationLegalityInner(
 	state: GameState,
 	actorId: string,
 	perm: CardInstance,

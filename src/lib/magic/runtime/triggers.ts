@@ -24,6 +24,7 @@ import type { Amount, Condition, EventFilter, EventKind, ObjectFilter, TriggerDe
 import { evaluatePermanent, permanentHasLostAllAbilities } from '../ruleTree.ts';
 import type { CardInstance, GameState, ScryfallCard } from '../types.ts';
 import type { GameEvent } from './events.ts';
+import { withStableLayerInputs } from './layerCache.ts';
 import { triggerMultiplier } from './replace.ts';
 
 /**
@@ -416,9 +417,17 @@ function modeFor(kind: EventKind, _source: Source, ability?: RuntimeTrigger): Tr
 	return 'stack';
 }
 
-/** Matches one event against every triggered ability. Called for every emitted event. */
+/**
+ * Matches one event against every triggered ability. Called for every emitted event. Matching
+ * only reads the board and records pending triggers (not a layer input), so one layer-cache
+ * validation serves every source's ability-loss and filter checks (Phase 6d).
+ */
 export function matchTriggers(state: GameState, ev: GameEvent): void {
 	if (state.status === 'mulligan') return;
+	withStableLayerInputs(state, () => matchTriggersInner(state, ev));
+}
+
+function matchTriggersInner(state: GameState, ev: GameEvent): void {
 	switch (ev.kind) {
 		case 'ZoneChange':
 			return matchZoneChange(state, ev);
