@@ -277,9 +277,10 @@ export function sourceDamageInfo(
 export function permanentProtectedFromSource(
 	state: GameState,
 	target: CardInstance,
-	srcInfo: SourceDamageInfo
+	srcInfo: SourceDamageInfo,
+	evTarget?: ReturnType<typeof evaluatePermanent>
 ): boolean {
-	const ev = evaluatePermanent(state, target);
+	const ev = evTarget ?? evaluatePermanent(state, target);
 	const colorMap: Record<string, ManaColor> = {
 		white: 'W',
 		blue: 'U',
@@ -333,8 +334,10 @@ export function dealDamageToPermanent(
 	let dmg = rawAmount;
 	if (dmg <= 0 || target.zone !== 'battlefield' || target.phasedOut) return 0;
 
+	const evTarget = evaluatePermanent(state, target);
+
 	// CR 702.16b / 702.16e: Protection prevents all damage from sources with the stated quality.
-	if (permanentProtectedFromSource(state, target, srcInfo)) return 0;
+	if (permanentProtectedFromSource(state, target, srcInfo, evTarget)) return 0;
 
 	// CR 120.3 / 615.7: Damage prevention shield on permanent.
 	if ((target.damagePreventionShield ?? 0) > 0) {
@@ -357,7 +360,6 @@ export function dealDamageToPermanent(
 		return 0;
 	}
 
-	const evTarget = evaluatePermanent(state, target);
 	if (evTarget.isPlaneswalker) {
 		// CR 120.3c / 306.8: Damage dealt to a planeswalker removes that many loyalty counters.
 		target.counters.loyalty = Math.max(0, (target.counters.loyalty || 0) - dmg);

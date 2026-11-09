@@ -909,3 +909,167 @@ describe('Tier 1 Item 1 — CR 120.3d / 120.4 / 122.1c / 510.2 / 702.16e / 702.8
 		);
 	});
 });
+
+describe('Tier 1 Item 5 — CR 500.2 / 508.1d / 513.1 / 703.4i end_turn Priority Passing & Mandatory Attack Enforcement', () => {
+	it('prevents bypassing attacksEachCombat and Goad requirements via end_turn in upkeep, draw, main1, begin_combat, or declare_attackers, or via pass_priority in declare_attackers (CR 508.1d, 701.15b, 703.4i)', () => {
+		const { state, p1, p2 } = makeGame();
+
+		const berserker = putInZone(
+			state,
+			p1,
+			synthCard({
+				name: 'Frenzied Goblin',
+				power: '2',
+				toughness: '2',
+				oracleText: 'Frenzied Goblin attacks each combat if able.'
+			}),
+			'battlefield'
+		);
+
+		for (const phase of [
+			'upkeep',
+			'draw',
+			'main1',
+			'begin_combat',
+			'declare_attackers'
+		] as const) {
+			state.phase = phase;
+			state.combat.active = false;
+			state.combat.attackers = [];
+			state.priorityPlayerIndex = 0;
+			state.passedPriorityPlayerIds = [];
+
+			const res = applyGameAction(state, p1.playerId, { type: 'end_turn' });
+			assert.equal(
+				res.ok,
+				false,
+				`end_turn must be rejected in ${phase} when an untapped creature must attack if able`
+			);
+			assert.ok(
+				res.error?.includes('must attack this combat if able'),
+				`Expected mandatory attack error in ${phase}, got: ${res.error}`
+			);
+			assert.equal(state.phase, phase, `Phase remained ${phase} after rejected end_turn`);
+		}
+
+		// Also cannot bypass mandatory attack by calling pass_priority in declare_attackers before declaring attackers
+		state.phase = 'declare_attackers';
+		state.combat.active = false;
+		const passRes = applyGameAction(state, p1.playerId, { type: 'pass_priority' });
+		assert.equal(
+			passRes.ok,
+			false,
+			'pass_priority in declare_attackers without declaring attackers must be rejected when a creature must attack'
+		);
+
+		// Replace with a Goaded creature and verify Goad also blocks end_turn across precombat/declare_attackers phases
+		moveObject(state, berserker, 'exile', {
+			from: { player: p1, zone: 'battlefield' },
+			toPlayer: p1,
+			leaveBattlefieldReset: true
+		});
+		const goaded = putInZone(
+			state,
+			p1,
+			synthCard({ name: 'Goaded Ogre', power: '3', toughness: '3' }),
+			'battlefield'
+		);
+		goaded.goadedByPlayerIds = [p2.playerId];
+
+		state.phase = 'main1';
+		const goadEndRes = applyGameAction(state, p1.playerId, { type: 'end_turn' });
+		assert.equal(
+			goadEndRes.ok,
+			false,
+			'end_turn in main1 must be rejected when a Goaded creature can legally attack'
+		);
+
+		// CR 508.1d: A player is never required to pay an attack tax (e.g. Propaganda) to obey an attacking requirement
+		putInZone(
+			state,
+			p2,
+			synthCard({
+				name: 'Propaganda Barrier',
+				typeLine: 'Enchantment',
+				oracleText: "Creatures can't attack you unless their controller pays {2} for each creature they control that's attacking you."
+			}),
+			'battlefield'
+		);
+		const taxedEndRes = applyGameAction(state, p1.playerId, { type: 'end_turn' });
+		assert.equal(
+			taxedEndRes.ok,
+			true,
+			'end_turn succeeds when all opponents require paying an attack tax (CR 508.1d)'
+		);
+	});
+
+	it('steps through intermediate phases on end_turn: draws for turn from upkeep, fires begin_combat triggers, and stops for opponent fullControl / end_step stops (CR 500.2, 504.1, 513.1)', () => {
+		const { state, p1, p2 } = makeGame();
+
+		// 1. Calling end_turn in upkeep on Turn 2 must execute the draw step TBA (CR 504.1) and stop at begin_combat if a begin_combat trigger fires
+		state.turnNumber = 2;
+		state.phase = 'upkeep';
+		p1.hand = [];
+		p2.hand = [];
+
+		putInZone(
+			state,
+			p1,
+			synthCard({
+				name: 'Combat Herald',
+				typeLine: 'Creature — Human Soldier',
+				power: '1',
+				toughness: '2',
+				oracleText: 'At the beginning of combat on your turn, you gain 2 life.'
+			}),
+			'battlefield'
+		).tapped = true;
+
+		const libBefore = p1.library.length;
+		const endFromUpkeep = applyGameAction(state, p1.playerId, { type: 'end_turn' });
+		assert.equal(endFromUpkeep.ok, true);
+		assert.equal(
+			p1.hand.length,
+			1,
+			'Active player drew a card during the draw step when ending turn from upkeep (CR 504.1)'
+		);
+		assert.equal(p1.library.length, libBefore - 1);
+		assert.equal(
+			state.phase,
+			'begin_combat',
+			'end_turn stopped in begin_combat when a beginning-of-combat trigger was placed on the stack'
+		);
+		assert.equal(state.stack.length, 1, 'Beginning-of-combat trigger is on the stack');
+
+		// Resolve the begin_combat trigger
+		passAll(state);
+		assert.equal(state.stack.length, 0);
+
+		// 2. If opponent has a stop on end_step (or fullControl), end_turn stops in end_step with priority on the opponent (CR 500.2, 513.1)
+		p2.stopPhases.push('end_step');
+		const endToEndStep = applyGameAction(state, p1.playerId, { type: 'end_turn' });
+		assert.equal(endToEndStep.ok, true);
+		assert.equal(
+			state.phase,
+			'end_step',
+			'end_turn advanced through combat and main2 into end_step and paused for opponent stop'
+		);
+		assert.equal(
+			state.priorityPlayerIndex,
+			1,
+			'Opponent holds priority in end_step before cleanup can run (CR 500.2, 513.1)'
+		);
+
+		// Opponent passes priority in end_step -> turn completes cleanup and advances to P2's turn
+		assert.equal(
+			applyGameAction(state, p2.playerId, { type: 'pass_priority' }).ok,
+			true
+		);
+		assert.equal(
+			state.activePlayerIndex,
+			1,
+			'After opponent passed priority in end_step, cleanup completed and turn passed to P2'
+		);
+	});
+});
+

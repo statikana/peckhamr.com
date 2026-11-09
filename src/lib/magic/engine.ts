@@ -1843,23 +1843,9 @@ function applyGameActionInner(
 
 			// Enforce Goad / Attack requirements (CR 508.1d: must satisfy as many requirements as possible without violating restrictions)
 			const assignedIds = new Set(action.assignments.map((a) => a.attackerInstanceId));
-			for (const perm of actor.battlefield) {
-				if (perm.phasedOut || !evaluatePermanent(state, perm).isCreature) continue;
-				const isGoaded = Boolean(perm.goadedByPlayerIds && perm.goadedByPlayerIds.length > 0);
-				const mustAttack = isGoaded || hasRestriction(state, perm, 'attacksEachCombat');
-				if (mustAttack) {
-					const canAttack =
-						!perm.tapped &&
-						(!perm.summoningSick || hasKeyword(perm, 'Haste', state)) &&
-						!hasKeyword(perm, 'Defender', state) &&
-						!hasRestriction(state, perm, 'cantAttack');
-					if (canAttack && !assignedIds.has(perm.instanceId)) {
-						return {
-							ok: false,
-							error: `Strict Rules Violation: ${perm.card.name} ${isGoaded ? 'is Goaded and ' : ''}must attack this combat if able.`
-						};
-					}
-				}
+			const mandatoryViolation = findMandatoryAttackerViolation(state, actor, assignedIds);
+			if (mandatoryViolation) {
+				return { ok: false, error: mandatoryViolation };
 			}
 
 			// Pay attack tax if applicable
@@ -2160,6 +2146,21 @@ function applyGameActionInner(
 				return { ok: false, error: 'You do not currently hold priority.' };
 			}
 
+			// CR 508.1d / 701.15b / 703.4i: Active player cannot pass out of declare_attackers without declaring attackers
+			// if they control a creature that must attack this combat if able.
+			if (
+				state.phase === 'declare_attackers' &&
+				state.stack.length === 0 &&
+				!state.combat.active &&
+				actorId === activePlayer.playerId &&
+				!actor.isBot
+			) {
+				const violation = findMandatoryAttackerViolation(state, activePlayer);
+				if (violation) {
+					return { ok: false, error: violation };
+				}
+			}
+
 			// If an attacked defender passes priority in declare_blockers without having declared blockers yet, record 0 blockers
 			if (
 				state.phase === 'declare_blockers' &&
@@ -2225,24 +2226,100 @@ function applyGameActionInner(
 				return { ok: false, error: 'Resolve all spells and abilities on the Stack before ending your turn.' };
 			}
 
-			// Clear any unconfirmed combat state and move through End Step -> Cleanup
-			state.combat.active = false;
-			state.combat.attackers = [];
-			state.combat.declaredBlockersPlayerIds = [];
-			state.passedPriorityPlayerIds = [];
-
-			if (state.phase !== 'end_step') {
-				addLog(state, 'rule', `${actor.username} ended their turn.`, actorId);
-				emptyAllPlayersManaPools(state);
-				enterEndStep(state, activePlayer);
-				if (state.stack.length === 0 && state.pendingPrompts.length === 0) {
-					emptyAllPlayersManaPools(state);
-					runCleanupStep(state);
+			// CR 508.1d / 701.15b / 703.4i: Mandatory attack requirements cannot be bypassed by ending the turn
+			// before attackers have been declared in combat.
+			const preCombatOrUnconfirmedAttackers =
+				state.phase === 'upkeep' ||
+				state.phase === 'draw' ||
+				state.phase === 'main1' ||
+				state.phase === 'begin_combat' ||
+				(state.phase === 'declare_attackers' && !state.combat.active);
+			if (preCombatOrUnconfirmedAttackers) {
+				const violation = findMandatoryAttackerViolation(state, activePlayer);
+				if (violation) {
+					return { ok: false, error: violation };
 				}
-			} else if (state.stack.length === 0) {
-				emptyAllPlayersManaPools(state);
-				runCleanupStep(state);
 			}
+
+			addLog(state, 'rule', `${actor.username} ended their turn.`, actorId);
+
+			// CR 500.2 / 513.1: Advance step-by-step through remaining phases/steps of the turn, running
+			// turn-based actions and step-begin triggers and passing priority around the table in each step.
+			const startingTurnNumber = state.turnNumber;
+			const startingActiveIndex = state.activePlayerIndex;
+			let safety = 0;
+
+			while (
+				state.status === 'active' &&
+				state.turnNumber === startingTurnNumber &&
+				state.activePlayerIndex === startingActiveIndex &&
+				state.stack.length === 0 &&
+				state.pendingPrompts.length === 0 &&
+				safety < 32
+			) {
+				safety += 1;
+
+				// Re-check mandatory attack requirements before leaving declare_attackers with 0 attackers
+				// (e.g. if an intermediate step's trigger created/untapped/goaded a creature).
+				if (state.phase === 'declare_attackers' && !state.combat.active) {
+					const violation = findMandatoryAttackerViolation(state, activePlayer);
+					if (violation) {
+						break;
+					}
+				}
+
+				if (!state.passedPriorityPlayerIds.includes(actorId)) {
+					state.passedPriorityPlayerIds.push(actorId);
+				}
+
+				let stoppedOnOpponent = false;
+				const count = state.players.length;
+				for (let step = 1; step < count; step++) {
+					const oppIdx = (state.activePlayerIndex + step) % count;
+					const opp = state.players[oppIdx];
+					if (!opp || opp.lost) continue;
+					if (state.passedPriorityPlayerIds.includes(opp.playerId)) continue;
+
+					const isDefendingInBlockers =
+						state.phase === 'declare_blockers' &&
+						state.combat.attackers.some((a) => a.defenderPlayerId === opp.playerId) &&
+						!(state.combat.declaredBlockersPlayerIds || []).includes(opp.playerId);
+					const hasExplicitPhaseStop =
+						!DEFAULT_OWN_TURN_STOP_PHASES.has(state.phase) &&
+						opp.stopPhases.includes(state.phase);
+					const wantsPriority =
+						isDefendingInBlockers ||
+						(!opp.isBot &&
+							(opp.fullControl || !opp.autoPassEmptyStack || hasExplicitPhaseStop));
+
+					if (wantsPriority) {
+						state.priorityPlayerIndex = oppIdx;
+						stoppedOnOpponent = true;
+						break;
+					}
+
+					state.passedPriorityPlayerIds.push(opp.playerId);
+				}
+
+				if (stoppedOnOpponent) {
+					break;
+				}
+
+				state.passedPriorityPlayerIds = [];
+				advancePhaseOrStep(state);
+
+				if (
+					state.status === 'active' &&
+					state.turnNumber === startingTurnNumber &&
+					state.activePlayerIndex === startingActiveIndex &&
+					state.priorityPlayerIndex === state.activePlayerIndex &&
+					!DEFAULT_OWN_TURN_STOP_PHASES.has(state.phase) &&
+					activePlayer.stopPhases.includes(state.phase)
+				) {
+					break;
+				}
+			}
+
 			state.priorityUpdatedAt = Date.now();
 			checkStateBasedActions(state);
 			return { ok: true };
@@ -2251,6 +2328,43 @@ function applyGameActionInner(
 		default:
 			return { ok: false, error: `Action ${action.type} is not valid right now.` };
 	}
+}
+
+const DEFAULT_OWN_TURN_STOP_PHASES: ReadonlySet<GamePhase> = new Set([
+	'main1',
+	'declare_attackers',
+	'declare_blockers',
+	'main2'
+]);
+
+function findMandatoryAttackerViolation(
+	state: GameState,
+	actor: PlayerGameState,
+	assignedIds: Set<string> = new Set()
+): string | null {
+	return withStableLayerInputs(state, () => {
+		let taxFreeDefenderAvailable: boolean | undefined;
+		for (const perm of actor.battlefield) {
+			if (perm.phasedOut || !evaluatePermanent(state, perm).isCreature) continue;
+			const isGoaded = Boolean(perm.goadedByPlayerIds && perm.goadedByPlayerIds.length > 0);
+			const mustAttack = isGoaded || hasRestriction(state, perm, 'attacksEachCombat');
+			if (mustAttack && !assignedIds.has(perm.instanceId)) {
+				const canAttack =
+					!perm.tapped &&
+					(!perm.summoningSick || hasKeyword(perm, 'Haste', state)) &&
+					!hasKeyword(perm, 'Defender', state) &&
+					!hasRestriction(state, perm, 'cantAttack');
+				if (canAttack) {
+					taxFreeDefenderAvailable ??= state.players.some(
+						(p) => p.playerId !== actor.playerId && !p.lost && getAttackTaxGeneric(state, p) === 0
+					);
+					if (!taxFreeDefenderAvailable) return null;
+					return `Strict Rules Violation: ${perm.card.name} ${isGoaded ? 'is Goaded and ' : ''}must attack this combat if able.`;
+				}
+			}
+		}
+		return null;
+	});
 }
 
 function handleMulliganAction(
