@@ -12,6 +12,7 @@ import {
 	hasKeyword
 } from './engine.ts';
 import { cardHasPrintedUnblockable, parseSpellOrAbilityEffects } from './oracle.ts';
+import { chooseBotAnswer } from './runtime/choices.ts';
 import type { CardInstance, GameState, PlayerGameState, TargetRef } from './types.ts';
 
 export function hasAnyLegalInstantResponse(state: GameState, player: PlayerGameState): boolean {
@@ -46,8 +47,21 @@ export function runAutomatedPriorityAndBots(state: GameState): void {
 	let safetyCounter = 0;
 	const MAX_STEPS = 80;
 
-	while (safetyCounter < MAX_STEPS && state.status === 'active' && state.pendingPrompts.length === 0) {
+	while (safetyCounter < MAX_STEPS && state.status === 'active') {
 		safetyCounter++;
+		if (state.pendingPrompts.length > 0) {
+			const pr = state.pendingPrompts[0];
+			const promptPlayer = state.players.find((p) => p.playerId === pr.playerId);
+			if (!promptPlayer || !promptPlayer.isBot) break;
+			const answer = chooseBotAnswer(state, promptPlayer, pr);
+			const res = applyGameAction(state, promptPlayer.playerId, {
+				type: 'choice',
+				promptId: pr.id,
+				answer
+			});
+			if (!res.ok) break;
+			continue;
+		}
 		const priorityPlayer = state.players[state.priorityPlayerIndex];
 		const activePlayer = state.players[state.activePlayerIndex];
 		if (!priorityPlayer || priorityPlayer.lost) break;
