@@ -842,8 +842,6 @@
 			}
 		}
 
-		if (perm.card.name === 'Treasure' && !perm.tapped) return true;
-
 		const cmdId = getPlayerCommanderIdentity(me);
 		const abilities = getEffectiveActivatedAbilities(gameState, me, perm, cmdId);
 		for (const ab of abilities) {
@@ -1315,15 +1313,6 @@
 		}
 
 		if (owner.playerId === me.playerId) {
-			if (perm.card.name === 'Treasure') {
-				await onGameAction({
-					type: 'activate_ability',
-					instanceId: perm.instanceId,
-					abilityId: 'treasure_sac'
-				});
-				return;
-			}
-
 			const cmdId = getPlayerCommanderIdentity(me);
 			const abilities = getEffectiveActivatedAbilities(gameState, me, perm, cmdId);
 			if (abilities.length === 1 && abilities[0].isManaAbility) {
@@ -3456,6 +3445,65 @@
 							{:else}
 								Keep This Top Order
 							{/if}
+						</button>
+					</div>
+				{:else if myPrompt.kind === 'cost_choice'}
+					{@const costPrompt = myPrompt}
+					{#if costPrompt.costOptionLabels}
+						<div class="modal-actions">
+							{#each costPrompt.costOptionLabels as label, i (i)}
+								<button
+									type="button"
+									class={i === 0 ? 'arena-main-btn can-act' : 'hud-btn'}
+									onclick={() => onGameAction({ type: 'cost_choice', promptId: costPrompt.id, option: i })}
+								>
+									{label}
+								</button>
+							{/each}
+						</div>
+					{:else}
+						{@const reqCount = costPrompt.countRequired || 1}
+						{@const costCandidates = [...me.battlefield, ...me.hand, ...me.graveyard, ...me.exile].filter((c) =>
+							(costPrompt.candidateInstanceIds || []).includes(c.instanceId)
+						)}
+						<div class="modal-card-grid">
+							{#each costCandidates as c (c.instanceId)}
+								<button
+									type="button"
+									class="modal-card-item selectable"
+									class:selected={selectedPromptCardIds.includes(c.instanceId)}
+									onmouseenter={() => hoverCard(c.card)}
+									onmouseleave={() => leaveCard(c.card)}
+									onclick={() => togglePromptCardSelection(c.instanceId, reqCount)}
+								>
+									<img src={c.card.imageUrl} alt={c.card.name} />
+									<span>{c.card.name}</span>
+								</button>
+							{/each}
+						</div>
+						<div class="modal-actions">
+							<button
+								type="button"
+								class="arena-main-btn"
+								class:can-act={selectedPromptCardIds.length === reqCount}
+								disabled={selectedPromptCardIds.length !== reqCount}
+								onclick={async () => {
+									const ids = [...selectedPromptCardIds];
+									selectedPromptCardIds = [];
+									await onGameAction({ type: 'cost_choice', promptId: costPrompt.id, instanceIds: ids });
+								}}
+							>
+								Confirm Selection ({selectedPromptCardIds.length}/{reqCount})
+							</button>
+						</div>
+					{/if}
+					<div class="modal-actions">
+						<button
+							type="button"
+							class="hud-btn"
+							onclick={() => onGameAction({ type: 'cost_choice', promptId: costPrompt.id, cancel: true })}
+						>
+							Cancel
 						</button>
 					</div>
 				{:else if myPrompt.kind === 'obeka_end_turn_choice'}

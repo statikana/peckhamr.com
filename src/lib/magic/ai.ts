@@ -2,6 +2,7 @@ import {
 	applyGameAction,
 	checkAbilityActivationLegality,
 	checkSpellCastLegality,
+	chooseBotSpellCostPayment,
 	evaluatePermanent,
 	getAllLegalTargetsForRequirement,
 	getCreaturePower,
@@ -167,11 +168,13 @@ function executeBotStep(
 		for (const cmd of bot.command) {
 			if (checkSpellCastLegality(state, bot.playerId, cmd, 'command', 0).ok) {
 				const targets = chooseBotTargetsForCard(state, bot, cmd);
+				const costPayment = chooseBotSpellCostPayment(state, bot, cmd, 0);
 				const res = applyGameAction(state, bot.playerId, {
 					type: 'cast_spell',
 					instanceId: cmd.instanceId,
 					fromZone: 'command',
-					targets
+					targets,
+					...(costPayment ? { costPayment } : {})
 				});
 				if (res.ok) return true;
 			}
@@ -219,10 +222,12 @@ function executeBotStep(
 			const parsed = parseSpellOrAbilityEffects(cardInst.card);
 			if (parsed.requiresTarget && targets.length < parsed.targetInfo.minTargets) continue;
 
+			const costPayment = chooseBotSpellCostPayment(state, bot, cardInst, 0);
 			const res = applyGameAction(state, bot.playerId, {
 				type: 'cast_spell',
 				instanceId: cardInst.instanceId,
-				targets
+				targets,
+				...(costPayment ? { costPayment } : {})
 			});
 			if (res.ok) return true;
 		}

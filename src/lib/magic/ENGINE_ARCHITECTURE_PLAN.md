@@ -723,7 +723,7 @@ while it runs), **entry**, **work**, **exit**, and **ratchet target**.
   measurement needs.
 - **Ratchet:** name checks in effect code → 0.
 
-### Phase 4: Costs and activated abilities
+### Phase 4: Costs and activated abilities ✅ done 2026-11-08
 - **Owns:** `compiler/costs.ts`, `runtime/costs.ts`; the cost/activation parts of `applyGameAction`,
   `checkAbilityActivationLegality`, `getSpellCostRequirement`, `evaluateActionNode`.
 - **Work:** `CostDef[]` payment and legality, with `tapOthers` (any "tap N untapped <filter>"),
@@ -734,6 +734,91 @@ while it runs), **entry**, **work**, **exit**, and **ratchet target**.
   which removes `getDynamicManaProducedAmount`'s text checks.
 - **Exit:** no `costText` regex at runtime; baseline test `C-Audit-3` passes, if no other agent has
   fixed it already.
+- **Results (2026-11-08, branch `engine-rewrite-phase4`):**
+  - **Ratchet:** `cardNameComparison` `engine.ts` **9 → 8** (removed Treasure sacrifice name check);
+    `oracleTextRead` `engine.ts` **40 → 38** (removed `getDynamicManaProducedAmount` regexes and
+    cast-time `parseAdditionalCostsAndRestrictions(inst.card.oracleText)`). All new runtime files
+    (`runtime/costs.ts`, `runtime/objectFilter.ts`) have 0 allowances.
+  - **Suite:** 305 tests in 63 suites (**302 pass, 3 todo, 0 fail**; up from 267 baseline: +13
+    compiler cost-choice/modifier grammar tests in `compiler/costs-choices.test.ts`, +25 runtime
+    cost behaviour tests in `runtime/costs.test.ts`); 0 magic type errors.
+  - **Compiler (`compiler/costs.ts`, `compiler/adapter.ts`, `ir.ts`):**
+    - Added `CostDef` variants `choice` (`options: CostDef[][]`) and `optional` (`cost: CostDef[]`),
+      `CostDelta.per?: Amount`, `SpellOrAbilityFilter` `{ k: 'self' }`, and transitional
+      `legacyId` / `cost` / `costComplete` fields on `ActivatedAbility` / `UnsupportedAbility` so
+      the runtime pays compiled IR costs even when an ability's effect is still on the legacy path.
+    - Extended `compiler/costs.ts` with `pay {N}` options, `<cost> or <cost>` choices (preserving
+      `or` inside object phrases such as `"sacrifice an artifact or creature"`), `"you may <cost>"`,
+      `"with power/mana value N [or greater/less]"` conditions, and `parseCostModifierSentence`
+      (arbitrary type/subtype, Eminence command+battlefield zones, `"This spell costs {N} less to
+      cast for each ..."`). Wired into `compiler/adapter.ts` (`COMPILER_VERSION = 2`).
+  - **Runtime (`runtime/objectFilter.ts`, `runtime/costs.ts`, `engine.ts`, `oracle.ts`, `ai.ts`):**
+    - `runtime/objectFilter.ts` evaluates `ObjectFilter`, `Amount` (`const`, `x`, `count`, `stat`,
+      `life`, `negate`, `sum`, `min`, `max`), and `Condition` against the live game state (using
+      `evaluatePermanent` on the battlefield), without reading `oracleText` or card names.
+    - `runtime/costs.ts` plans and pays `CostDef[]` in two steps (`planCosts` → `payPlannedCosts`)
+      so nothing is paid unless the entire cost can be paid: `mana`, `tapSelf`, `untapSelf` (with
+      CR 302.6 summoning-sickness checks on self only), `tapOthers` (excluding self only when
+      `{T}` is also in the cost, CR 118.3), `sacrifice` (self or filter), `discard` (chosen or
+      `random`, paid last per CR 601.2h), `payLife` (CR 119.4 `life >= amount`, CR 119.8
+      `lifeTotalCannotChangeThisTurn`), `loyalty`, `removeCounters`, `exileFrom` (self or zone
+      filter), `choice`, and `optional`. All zone changes route through `runtime/zones.ts`
+      `moveObject`.
+    - **Cost modifiers & keyword costs:** `effectiveSpellManaCost` (`runtime/costs.ts`) computes
+      `getSpellCostRequirement` from IR `costModifiersOf(card)` (self-discounts, battlefield
+      permanents that haven't phased out or lost all abilities, and command-zone Eminence) and
+      `keywordCost(card, 'overload')` / `ALTERNATIVE_COST_KEYWORDS`.
+    - **Dynamic mana & non-tap mana abilities:** `getDynamicManaProducedAmount` now evaluates
+      `manaAbilityAmount(card, ab)` from the IR (`Amount` `count` / `stat`), returning 0 when a
+      counted filter matches nothing. `oracle.ts` `parseActivatedAbilities` recognises mana
+      abilities whose cost includes more than `{T}` (CR 605.1a, e.g. Treasure's
+      `"{T}, Sacrifice this artifact: Add one mana of any color."`), while `tapOnlyManaAbilities`
+      ensures auto-tap only taps `{T}`-only mana sources and never auto-sacrifices Treasures.
+      Removed the `perm.card.name === 'Treasure'` special cases in `engine.ts` and
+      `ArenaTable.svelte` and updated the `zones.pin.test.ts` Treasure pin.
+  - **Bugs fixed (each tested in `runtime/costs.test.ts`):**
+    1. Choice costs (`"discard a card or pay 3 life"`, `"sacrifice a creature or pay {3}{B}"`)
+       paid only the chosen option instead of enforcing both.
+    2. Optional additional costs (`"you may sacrifice an artifact"`) are optional instead of
+       mandatory.
+    3. Object-phrase conditions (`"a creature with power 4 or greater"`, `"with mana value X"`)
+       and disjunctions (`"an artifact or creature"`) are enforced instead of dropped.
+    4. `"discard a card at random"` picks uniformly at random at payment time (CR 601.2h) without
+       prompting.
+    5. When multiple legal options or candidate objects exist, the player chooses instead of the
+       engine silently sacrificing/discarding the first/cheapest object.
+    6. `"Tap N untapped <filter> you control"` works for any count and filter from the IR (not a
+       hardcoded `"tap ten untapped elves"` regex), and allows tapping the source itself when `{T}`
+       is not part of the cost.
+    7. CR 119.4 (`life >= amount`, allowing paying down to 0 life) and CR 119.8
+       (`lifeTotalCannotChangeThisTurn` prevents paying life) enforced consistently for both spells
+       and activated abilities.
+  - **How cost choices work (for Phase 8 to generalise):**
+    - `GameActionPayload` (`cast_spell`, `activate_ability`, `tap_mana`) accepts an optional
+      `costPayment?: CostPayment` (`{ options?: number[]; objects?: string[][] }`).
+    - When a choice has only one legal option or `candidates.length === count`, `planCosts` selects
+      it automatically.
+    - When a human has an open choice, `askCostChoice` pushes a `PendingPrompt` of kind
+      `'cost_choice'` carrying `pendingAction`, `costQuestion`, and either `costOptionLabels` or
+      `candidateInstanceIds` + `countRequired`. Answering via `{ type: 'cost_choice', promptId,
+      option, instanceIds, cancel }` merges the choice into `pendingAction.costPayment` and
+      re-runs the action from scratch (or cancels cleanly with nothing paid). `ArenaTable.svelte`
+      renders option buttons or the card selection grid for `cost_choice`.
+    - Bots compute `costPayment` ahead of time via `chooseBotSpellCostPayment` (`ai.ts` →
+      `chooseCostPayment` in `runtime/costs.ts`: declines optional costs, picks the first legal
+      option, and chooses tokens-first then lowest-CMC objects).
+  - **Snapshots:** `layers.snapshot.test.ts` and `runtime/golden.test.ts` pass unchanged (no precon
+    card in the 4 seeded bot games triggers a different cost path).
+  - **Deferred:**
+    - Unifying `cost_choice` into the single generic choice protocol (`chooseMode` /
+      `chooseObjects` / `yesNo`) → **Phase 8**.
+    - Deleting legacy `parseAdditionalCostsAndRestrictions` in `oracle.ts` (still used for cast
+      timing restrictions like `"Cast this spell only during combat"`) and `getCardRuleTree`'s
+      legacy cost-modifier hooks (still used by `magic.test.ts` unit tests of `evaluateActionNode`
+      / `collectActiveBoardHooks`) → **Phase 7 / Phase 10**.
+    - Long-tail cost templates noted in `COST-GRAMMAR.md` (`Discard ~` channel costs, `{E}` energy,
+      ability-word prefixes, `"Return ... to its owner's hand"`, removing counters from other
+      permanents) → **Phase 11+**.
 
 ### Phase 5: Triggers via the event bus
 - **Owns:** `compiler/triggers.ts`, `runtime/triggers.ts`; the `triggerOnX` functions, the upkeep

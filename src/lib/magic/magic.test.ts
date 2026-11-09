@@ -1798,7 +1798,8 @@ describe('10. Activated Abilities: Equipment, Planeswalker Loyalty & Lathril 10-
 		// Only Lathril on board -> cannot activate!
 		const failCheck = checkAbilityActivationLegality(state, p1Id, lathril, tapTenAb);
 		assert.equal(failCheck.ok, false);
-		assert.match(failCheck.error || '', /ten other untapped Elves/i);
+		// Phase 4: the message comes from the IR cost ("Tap 10 × untapped Elf").
+		assert.match(failCheck.error || '', /untapped Elf/i);
 
 		// Add 10 untapped Elf tokens to P1's battlefield -> now legal!
 		for (let i = 0; i < 10; i++) {

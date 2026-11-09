@@ -11,7 +11,7 @@ import { adaptCard } from './adapter.ts';
 import { hashText } from './normalize.ts';
 
 /** Bump whenever the IR produced for the same text could change. */
-export const COMPILER_VERSION = 1;
+export const COMPILER_VERSION = 2;
 
 const CACHE = new Map<string, CardDefinition>();
 
