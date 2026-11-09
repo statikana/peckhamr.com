@@ -186,8 +186,15 @@ import {
 
 export { ENGINE_VERSION };
 
-function uid(prefix: string): string {
-	return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+let fallbackUidCounter = 0;
+
+function uid(prefix: string, state?: { nextUid?: number }): string {
+	if (state) {
+		state.nextUid = (state.nextUid ?? 0) + 1;
+		return `${prefix}_${state.nextUid}`;
+	}
+	fallbackUidCounter += 1;
+	return `${prefix}_ext_${fallbackUidCounter}`;
 }
 
 let globalInstanceTimestampSeed = 1;
@@ -198,7 +205,8 @@ export function createCardInstance(
 	zone: ZoneType,
 	isCommander = false,
 	isToken = false,
-	enteredTimestamp?: number
+	enteredTimestamp?: number,
+	uidHolder?: { nextUid?: number }
 ): CardInstance {
 	const counters = createEmptyCounters();
 	if (card.loyalty && zone === 'battlefield') {
@@ -206,7 +214,7 @@ export function createCardInstance(
 	}
 	globalInstanceTimestampSeed += 1;
 	return {
-		instanceId: uid(isToken ? 'tok' : isCommander ? 'cmd' : 'crd'),
+		instanceId: uid(isToken ? 'tok' : isCommander ? 'cmd' : 'crd', uidHolder),
 		card,
 		ownerId,
 		controllerId: ownerId,
@@ -241,7 +249,7 @@ export function addLog(
 	actorId?: string
 ): void {
 	state.log.push({
-		id: uid('log'),
+		id: uid('log', state),
 		timestamp: Date.now(),
 		turn: state.turnNumber,
 		phase: state.phase,
@@ -256,7 +264,7 @@ export function addLog(
 
 export function emitVfx(state: GameState, event: Omit<VfxEvent, 'id' | 'timestamp'>): void {
 	state.recentVfxEvents.push({
-		id: uid('vfx'),
+		id: uid('vfx', state),
 		timestamp: Date.now(),
 		...event
 	});
@@ -275,13 +283,14 @@ export function createInitialGameState(
 	const activeSeats = seats.filter((s) => s.userId !== null || s.isBot);
 	// ENGINE_INVARIANTS.md 7.2: one seed per game; every shuffle and random choice draws from it.
 	const rng: RngHolder = { rngState: freshRngSeed() };
+	const uidHolder: { nextUid?: number } = { nextUid: 0 };
 
 	const players: PlayerGameState[] = activeSeats.map((seat, idx) => {
 		const playerId = seat.userId || `bot_${seat.seatIndex}`;
 		const deck = decksBySeat.get(seat.seatIndex)!;
 
 		const command: CardInstance[] = deck.commanders.map((c) =>
-			createCardInstance(c, playerId, 'command', true, false)
+			createCardInstance(c, playerId, 'command', true, false, undefined, uidHolder)
 		);
 		const commanderColorIdentity = Array.from(
 			new Set(deck.commanders.flatMap((c) => c.colorIdentity))
@@ -290,7 +299,9 @@ export function createInitialGameState(
 		const rawLibrary: CardInstance[] = [];
 		for (const entry of deck.cards) {
 			for (let q = 0; q < entry.quantity; q++) {
-				rawLibrary.push(createCardInstance(entry.card, playerId, 'library', false, false));
+				rawLibrary.push(
+					createCardInstance(entry.card, playerId, 'library', false, false, undefined, uidHolder)
+				);
 			}
 		}
 
@@ -346,7 +357,7 @@ export function createInitialGameState(
 
 	const state: GameState = {
 		engineVersion: ENGINE_VERSION,
-		gameId: uid('game'),
+		gameId: uid('game', uidHolder),
 		lobbyCode,
 		status: 'mulligan',
 		winnerPlayerId: null,
@@ -367,6 +378,7 @@ export function createInitialGameState(
 		},
 		pendingPrompts: [],
 		rngState: rng.rngState,
+		nextUid: uidHolder.nextUid,
 		recentVfxEvents: [],
 		log: [],
 		turnStartedAt: now,
@@ -407,7 +419,7 @@ export function createInitialGameState(
 					? 'Friendly Mulligan: You may keep your 7-card hand or take a free 7-card mulligan.'
 					: 'London Mulligan: Your first mulligan in Commander is free (7 cards). Subsequent mulligans put 1 card per extra mulligan on the bottom of your library.';
 			state.pendingPrompts.push({
-				id: uid('prm'),
+				id: uid('prm', state),
 				playerId: p.playerId,
 				kind: 'mulligan',
 				purpose: 'mulligan',
@@ -617,7 +629,7 @@ function askCostChoice(
 		question.kind === 'objects' ? inferObjectsZone(actor, question.candidateIds) : 'battlefield';
 	const choice = buildCostChoiceRequest(question, zone);
 	state.pendingPrompts.push({
-		id: uid('prm'),
+		id: uid('prm', state),
 		playerId: actor.playerId,
 		kind: 'cost_choice',
 		purpose: 'cost_choice',
@@ -1189,7 +1201,7 @@ function applyGameActionInner(
 			const card = found.inst.copiableCard ?? found.inst.card;
 			const text = cardAbilityDisplayText(card, action.abilityIndex);
 			enqueueChoicePrompt(state, {
-				id: uid('prm'),
+				id: uid('prm', state),
 				playerId: actor.playerId,
 				kind: 'guided_resolution',
 				purpose: 'guided_resolution',
@@ -1550,7 +1562,7 @@ function applyGameActionInner(
 				: 'normal';
 			const stackItem: StackItem = withStackItemText(
 				{
-					id: uid('stk'),
+					id: uid('stk', state),
 					sourceInstanceId: inst.instanceId,
 					sourceObjectVersion: inst.objectVersion,
 					card: inst.card,
@@ -1676,7 +1688,7 @@ function applyGameActionInner(
 
 			const stackItem: StackItem = withStackItemText(
 				{
-					id: uid('stk'),
+					id: uid('stk', state),
 					sourceInstanceId: perm.instanceId,
 					sourceObjectVersion: perm.objectVersion,
 					sourceLkiPower,
@@ -2252,7 +2264,7 @@ function handleMulliganAction(
 			const description = `Select ${countReq} card(s) from your hand to place on the bottom of your library.`;
 			const candidates = actor.hand.map((c) => c.instanceId);
 			state.pendingPrompts.push({
-				id: uid('prm'),
+				id: uid('prm', state),
 				playerId: actor.playerId,
 				kind: 'london_bottom',
 				purpose: 'london_bottom',
@@ -2696,7 +2708,7 @@ function handlePromptResolution(
 							: `Choose the next matching card from your library to put ${describeLibrarySearchDestination(nextDest)}, then shuffle.`;
 						const canFailNext = prompt.canFailToFind ?? true;
 						state.pendingPrompts.push({
-							id: uid('prm'),
+							id: uid('prm', state),
 							playerId: actor.playerId,
 							targetLibraryOwnerId: libraryOwner.playerId,
 							kind: 'search_library',
@@ -3217,7 +3229,7 @@ function runDelayedTriggers(state: GameState, phase: GamePhase, activePlayer: Pl
 						: undefined);
 				const stkItem: StackItem = withStackItemText(
 					{
-						id: uid('stk'),
+						id: uid('stk', state),
 						sourceInstanceId: dt.id,
 						card: dt.sourceCard,
 						controllerId: dt.controllerId,
@@ -3374,7 +3386,7 @@ function triggeredStackItem(state: GameState, t: PendingTrigger, idPrefix: strin
 	const eventObj = t.eventObject ?? t.source;
 	return withStackItemText(
 		{
-			id: uid(idPrefix),
+			id: uid(idPrefix, state),
 			sourceInstanceId: t.source.instanceId,
 			sourceObjectVersion: t.source.objectVersion,
 			sourceLkiPower,
@@ -3648,7 +3660,7 @@ function putTriggerOnStack(state: GameState, t: PendingTrigger): StackItem | nul
 		} else {
 			const reason = `Choose ${spec.min === max ? max : `${spec.min}–${max}`} target(s) for ${item.title}.`;
 			enqueueChoicePrompt(state, {
-				id: uid('prm'),
+				id: uid('prm', state),
 				playerId: controller.playerId,
 				kind: 'chooseObjects',
 				purpose: 'trigger_targets',
@@ -3683,7 +3695,7 @@ function askTriggerOrder(state: GameState, controllerId: string, itemIds: string
 	const topFirst = [...itemIds].reverse();
 	const reason = 'Order your triggered abilities: the first one resolves first.';
 	enqueueChoicePrompt(state, {
-		id: uid('prm'),
+		id: uid('prm', state),
 		playerId: controllerId,
 		kind: 'orderObjects',
 		purpose: 'trigger_order',
@@ -3851,7 +3863,7 @@ function resolveDelayedTriggerEffect(
 			// "May draw up to N cards": the drawing player chooses how many (no silent default for a human).
 			const question = `${item.title}: how many cards do you draw (0–${eff.amount})?`;
 			enqueueChoicePrompt(state, {
-				id: uid('prm'),
+				id: uid('prm', state),
 				playerId: pl.playerId,
 				kind: 'yesNo',
 				title: item.title,
@@ -3903,7 +3915,7 @@ function openManualResolution(state: GameState, item: StackItem, controller: Pla
 	const text = `${stackItemDisplayText(item)}${targets ? `\n\nTargets: ${targets}` : ''}`;
 	const question = `${item.title} isn't automated. Apply its effect with the operations below, then finish resolving it.`;
 	enqueueChoicePrompt(state, {
-		id: uid('prm'),
+		id: uid('prm', state),
 		playerId: controller.playerId,
 		kind: 'guided_resolution',
 		purpose: 'guided_resolution',
@@ -4094,7 +4106,7 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 				} else {
 					const question = `Use the optional effect of ${item.title}? (Its text is shown on the stack.)`;
 					enqueueChoicePrompt(state, {
-						id: uid('prm'),
+						id: uid('prm', state),
 						playerId: controller.playerId,
 						kind: 'yesNo',
 						purpose: 'trigger_may',
@@ -4310,7 +4322,7 @@ function activePlayerMayEndTurn(
 	} else {
 		const description = `${controller.username} activated ${sourceName}. As the player whose turn it is, you may end the turn now (exiling all spells and abilities from the stack).`;
 		state.pendingPrompts.push({
-			id: uid('prm'),
+			id: uid('prm', state),
 			playerId: activePlayer.playerId,
 			kind: 'yesNo',
 			purpose: 'end_turn',
@@ -4346,7 +4358,8 @@ function copyPermanentAsToken(
 		'battlefield',
 		false,
 		true,
-		allocateTimestamp(state)
+		allocateTimestamp(state),
+		state
 	);
 	tokenInst.copiableCard = baseCardToCopy;
 	tokenInst.summoningSick = baseCardToCopy.typeLine.includes('Creature');
@@ -4448,7 +4461,7 @@ function scryOrRearrangeTop(
 			const topIds = topCards.map((c) => c.instanceId);
 			const description = `Look at the top ${count} card(s) of your library. Put any number on the bottom in any order and the rest on top in any order.`;
 			state.pendingPrompts.push({
-				id: uid('prm'),
+				id: uid('prm', state),
 				playerId: controller.playerId,
 				kind: 'scry_choice',
 				purpose: 'scry_choice',
@@ -4490,7 +4503,7 @@ function scryOrRearrangeTop(
 			const topIds = topCards.map((c) => c.instanceId);
 			const description = `Look at the top ${count} card(s) of your library and put them back on top in any order.${mayShuffle ? ' Or you may shuffle your library.' : ''}`;
 			state.pendingPrompts.push({
-				id: uid('prm'),
+				id: uid('prm', state),
 				playerId: controller.playerId,
 				kind: 'scry_choice',
 				purpose: 'scry_choice',
@@ -4685,7 +4698,7 @@ export function executeSuspendFreeCastFromExile(
 
 	const stackItem: StackItem = withStackItemText(
 		{
-			id: uid('stk'),
+			id: uid('stk', state),
 			sourceInstanceId: suspCard.instanceId,
 			card: suspCard.card,
 			controllerId: owner.playerId,
@@ -4896,7 +4909,7 @@ function initiateLibrarySearch(
 		: `Choose ${searchSpec.rawCriteriaText} from your library to put ${describeLibrarySearchDestination(firstDest)}${restDestinations.length > 0 ? ` (then ${restDestinations.length} more: ${restDestinations.map(describeLibrarySearchDestination).join(', ')})` : ''}, then shuffle.`;
 
 	state.pendingPrompts.push({
-		id: uid('prm'),
+		id: uid('prm', state),
 		playerId: decisionPlayer.playerId,
 		targetLibraryOwnerId: searchingPlayer.playerId,
 		kind: 'search_library',
@@ -4930,7 +4943,7 @@ export function createTokenOnBoard(
 	controller: PlayerGameState,
 	spec: TokenSpec
 ): CardInstance {
-	const tokenCard: ScryfallCard = buildTokenScryfallCard(uid('tok_scry'), spec);
+	const tokenCard: ScryfallCard = buildTokenScryfallCard(uid('tok_scry', state), spec);
 
 	const inst = createCardInstance(
 		tokenCard,
@@ -4938,7 +4951,8 @@ export function createTokenOnBoard(
 		'battlefield',
 		false,
 		true,
-		allocateTimestamp(state)
+		allocateTimestamp(state),
+		state
 	);
 	inst.summoningSick = spec.typeLine.includes('Creature');
 	moveObject(state, inst, 'battlefield', { from: 'none', toPlayer: controller });
@@ -5557,7 +5571,7 @@ function runCleanupStep(state: GameState): void {
 			const candidateIds = activePlayer.hand.map((c) => c.instanceId);
 			const description = `Cleanup Step: Select ${excess} card(s) from your hand to discard.`;
 			state.pendingPrompts.push({
-				id: uid('prm'),
+				id: uid('prm', state),
 				playerId: activePlayer.playerId,
 				kind: 'discard_to_hand_size',
 				purpose: 'discard_to_hand_size',
@@ -5855,9 +5869,55 @@ export function checkStateBasedActions(state: GameState): void {
 				}
 				for (const [legName, list] of legendaryByName.entries()) {
 					if (list.length > 1) {
-						// Keep the newest copy and put earlier copies into graveyard (not destruction, so Indestructible doesn't prevent it)
-						for (let i = 0; i < list.length - 1; i++) {
-							queueToGraveyard(list[i], p, 'legend', legName);
+						if (p.isBot) {
+							// Bots keep the best copy and put other copies into graveyard (CR 704.5j)
+							let best = list[list.length - 1];
+							let bestScore = -Infinity;
+							for (let idx = 0; idx < list.length; idx++) {
+								const cand = list[idx];
+								const ev = evaluatePermanent(state, cand);
+								const score =
+									(!cand.isToken ? 100 : 0) +
+									(ev.power + ev.toughness) * 10 +
+									(cand.counters['+1/+1'] ?? 0) * 15 -
+									(cand.counters['-1/-1'] ?? 0) * 15 +
+									(cand.counters.loyalty ?? 0) * 10 +
+									getAttachedCardsOnBoard(state, cand.instanceId).length * 20 +
+									(!cand.tapped ? 2 : 0) +
+									(!cand.summoningSick ? 2 : 0) +
+									idx;
+								if (score >= bestScore) {
+									bestScore = score;
+									best = cand;
+								}
+							}
+							for (const cand of list) {
+								if (cand.instanceId !== best.instanceId) {
+									queueToGraveyard(cand, p, 'legend', legName);
+								}
+							}
+						} else {
+							const cands = list.map((c) => c.instanceId);
+							const alreadyPrompted = state.pendingPrompts.some((pr) => {
+								if (pr.playerId !== p.playerId) return false;
+								if ((pr.purpose ?? pr.kind) !== 'legend_rule') return false;
+								const prCands =
+									pr.candidateInstanceIds ??
+									(pr.choice?.kind === 'chooseObjects' ? pr.choice.candidates : []);
+								return cands.some((id) => prCands.includes(id));
+							});
+							if (!alreadyPrompted) {
+								enqueueChoicePrompt(state, {
+									id: uid('prm', state),
+									playerId: p.playerId,
+									kind: 'legend_rule',
+									purpose: 'legend_rule',
+									title: `Legend Rule — ${legName}`,
+									description: `Choose one ${legName} to keep on the battlefield. The other(s) will be put into your graveyard (CR 704.5j).`,
+									candidateInstanceIds: cands,
+									countRequired: 1
+								});
+							}
 						}
 					}
 				}
@@ -6066,7 +6126,7 @@ export function checkStateBasedActions(state: GameState): void {
 				) {
 					const description = `${cmd.card.name} was put into your ${cmd.zone}. Under Commander Rule 903.9a, you may move it to the Command Zone.`;
 					state.pendingPrompts.push({
-						id: uid('prm'),
+						id: uid('prm', state),
 						playerId: p.playerId,
 						kind: 'commander_zone_choice',
 						purpose: 'commander_zone_choice',

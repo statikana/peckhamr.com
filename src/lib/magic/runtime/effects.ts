@@ -64,7 +64,7 @@ export { nextRandom };
 
 /** Engine primitives the interpreter uses. engine.ts registers them once at module load. */
 export interface EffectPorts {
-	uid(prefix: string): string;
+	uid(prefix: string, state?: GameState): string;
 	addLog(state: GameState, kind: 'rule' | 'cast' | 'trigger' | 'life' | 'combat', text: string, actorId?: string): void;
 	emitVfx(state: GameState, event: Omit<VfxEvent, 'id' | 'timestamp'>): void;
 	findPermanent(state: GameState, id: string): { inst: CardInstance; owner: PlayerGameState; controller: PlayerGameState } | null;
@@ -271,7 +271,7 @@ class Run {
 	): void {
 		const item = this.saveFrame(this.stepIndex, this.answers);
 		enqueueChoicePrompt(this.state, {
-			id: P().uid('prompt'),
+			id: P().uid('prompt', this.state),
 			kind: 'chooseObjects',
 			playerId: chooser.playerId,
 			title,
@@ -1625,7 +1625,7 @@ class Run {
 				const found = this.locate(b.id);
 				const label = found ? found.inst.card.name : 'it';
 				const dt: DelayedTrigger = {
-					id: p.uid('dtrig'),
+					id: p.uid('dtrig', s),
 					...base,
 					targetInstanceId: b.id,
 					title: `${this.ctx.title} — Delayed Exile Trigger`,
@@ -1643,7 +1643,7 @@ class Run {
 		}
 		if (e.verb === 'lose') {
 			s.delayedTriggers.push({
-				id: p.uid('dtrig'),
+				id: p.uid('dtrig', s),
 				...base,
 				title: `${this.ctx.title} — Delayed End Step Trigger`,
 				description: 'At the beginning of the end step, you lose the game.',
@@ -1656,7 +1656,7 @@ class Run {
 			const upTo = Boolean(e.params?.upTo);
 			for (const pl of this.players(e.subject)) {
 				s.delayedTriggers.push({
-					id: p.uid('dtrig'),
+					id: p.uid('dtrig', s),
 					...base,
 					title: `${this.ctx.title} — Delayed Upkeep Trigger`,
 					description: `At the beginning of the next turn's upkeep, ${pl.username} draws ${upTo ? `up to ${amount}` : amount} card(s).`,

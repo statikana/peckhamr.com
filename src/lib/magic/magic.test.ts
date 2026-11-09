@@ -1630,6 +1630,17 @@ describe('9. Niche Mechanics: Modal Spells, Cyclonic Rift Overload, Infect, Doub
 			'battlefield'
 		);
 		checkStateBasedActions(state);
+		const legendPrompt = state.pendingPrompts.find(
+			(pr) => pr.playerId === p1Id && (pr.purpose ?? pr.kind) === 'legend_rule'
+		);
+		assert.ok(legendPrompt, 'Human player gets a legend_rule prompt (CR 704.5j)');
+		assert.equal(
+			applyGameAction(state, p1Id, {
+				type: 'legend_rule_keep',
+				keepInstanceId: veyran2.instanceId
+			}).ok,
+			true
+		);
 		const veyransOnBoard = state.players[0].battlefield.filter(
 			(c) => c.card.name === 'Veyran, Voice of Duality'
 		);

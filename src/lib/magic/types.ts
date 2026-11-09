@@ -745,6 +745,7 @@ export interface GameState {
 	extraTurnQueue?: string[];
 	stackTriggersEnabled?: boolean;
 	rngState?: number;
+	nextUid?: number;
 }
 
 export interface MagicLobby {

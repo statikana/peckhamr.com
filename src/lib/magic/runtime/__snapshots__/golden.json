@@ -1,9 +1,9 @@
 {
 	"2 bots, seed 1": {
 		"digests": [
-			"2af942bd17a29ef7a3985cd1ba9ad64070c08e472887f738c6d085ba8e2a43fb",
-			"24f095e59ad6adc300b9156efe5448629d1ca836925979178af0965dd832db0c",
-			"d33423a5e9711d13d84b11930f6273b8a48b8de46aed5d8d0b016f18b2750727"
+			"87b523e23e35b865018c440af368199492e58aec39171c4564c4acea4937679b",
+			"a16a848db335d814e9a57364e05b71ce6de15d403e61d7de907303a0720f5956",
+			"feccdc48269b2b166c61b3585c1dd7fe43f749e09f282c1f3b399430a2cd144a"
 		],
 		"final": {
 			"status": "finished",
@@ -21,7 +21,7 @@
 					"zones": {
 						"library": [
 							[
-								"crd_loyw3vid_j4vpu2",
+								"crd_82",
 								"Island",
 								"library",
 								"bot_0",
@@ -38,7 +38,7 @@
 								false
 							],
 							[
-								"crd_loyw3vdw_x2vfw1",
+								"crd_59",
 								"Forest",
 								"library",
 								"bot_0",
@@ -55,7 +55,7 @@
 								false
 							],
 							[
-								"crd_loyw3v8g_6xvxj5",
+								"crd_31",
 								"Infernal Grasp",
 								"library",
 								"bot_0",
@@ -72,7 +72,7 @@
 								false
 							],
 							[
-								"crd_loyw3vc5_8l36om",
+								"crd_50",
 								"Path of Ancestry",
 								"library",
 								"bot_0",
@@ -89,7 +89,7 @@
 								false
 							],
 							[
-								"crd_loyw3vgt_z7c380",
+								"crd_74",
 								"Plains",
 								"library",
 								"bot_0",
@@ -106,7 +106,7 @@
 								false
 							],
 							[
-								"crd_loyw3v9f_8m6c2u",
+								"crd_36",
 								"Beast Within",
 								"library",
 								"bot_0",
@@ -123,7 +123,7 @@
 								false
 							],
 							[
-								"crd_loyw3v55_8wsh3h",
+								"crd_14",
 								"Farseek",
 								"library",
 								"bot_0",
@@ -140,7 +140,7 @@
 								false
 							],
 							[
-								"crd_loyw3v8u_gck64a",
+								"crd_33",
 								"Putrefy",
 								"library",
 								"bot_0",
@@ -157,7 +157,7 @@
 								false
 							],
 							[
-								"crd_loyw3v5c_5k8153",
+								"crd_15",
 								"Swords to Plowshares",
 								"library",
 								"bot_0",
@@ -174,7 +174,7 @@
 								false
 							],
 							[
-								"crd_loyw3vir_t35m7l",
+								"crd_84",
 								"Island",
 								"library",
 								"bot_0",
@@ -191,7 +191,7 @@
 								false
 							],
 							[
-								"crd_loyw3v73_l94vvq",
+								"crd_24",
 								"Cyclonic Rift",
 								"library",
 								"bot_0",
@@ -208,7 +208,7 @@
 								false
 							],
 							[
-								"crd_loyw3vd4_odo520",
+								"crd_55",
 								"Forest",
 								"library",
 								"bot_0",
@@ -225,7 +225,7 @@
 								false
 							],
 							[
-								"crd_loyw3v37_yv0n0f",
+								"crd_4",
 								"Chromatic Lantern",
 								"library",
 								"bot_0",
@@ -242,7 +242,7 @@
 								false
 							],
 							[
-								"crd_loyw3vg1_5zgw7p",
+								"crd_70",
 								"Plains",
 								"library",
 								"bot_0",
@@ -259,7 +259,7 @@
 								false
 							],
 							[
-								"crd_loyw3va0_bn1cym",
+								"crd_39",
 								"Forgotten Ancient",
 								"library",
 								"bot_0",
@@ -276,7 +276,7 @@
 								false
 							],
 							[
-								"crd_loyw3v5x_e7fcx0",
+								"crd_18",
 								"Farewell",
 								"library",
 								"bot_0",
@@ -293,7 +293,7 @@
 								false
 							],
 							[
-								"crd_loyw3vbr_meeaqi",
+								"crd_48",
 								"Exotic Orchard",
 								"library",
 								"bot_0",
@@ -310,7 +310,7 @@
 								false
 							],
 							[
-								"crd_loyw3vjq_w6l9ay",
+								"crd_89",
 								"Swamp",
 								"library",
 								"bot_0",
@@ -327,7 +327,7 @@
 								false
 							],
 							[
-								"crd_loyw3vea_xm95q9",
+								"crd_61",
 								"Forest",
 								"library",
 								"bot_0",
@@ -344,7 +344,7 @@
 								false
 							],
 							[
-								"crd_loyw3vk4_569tr9",
+								"crd_91",
 								"Swamp",
 								"library",
 								"bot_0",
@@ -361,7 +361,7 @@
 								false
 							],
 							[
-								"crd_loyw3vlo_obl60k",
+								"crd_99",
 								"Swamp",
 								"library",
 								"bot_0",
@@ -378,7 +378,7 @@
 								false
 							],
 							[
-								"crd_loyw3vhe_48emut",
+								"crd_77",
 								"Island",
 								"library",
 								"bot_0",
@@ -395,7 +395,7 @@
 								false
 							],
 							[
-								"crd_loyw3vl3_536j5r",
+								"crd_96",
 								"Swamp",
 								"library",
 								"bot_0",
@@ -412,7 +412,7 @@
 								false
 							],
 							[
-								"crd_loyw3vgm_4qyvx5",
+								"crd_73",
 								"Plains",
 								"library",
 								"bot_0",
@@ -429,7 +429,7 @@
 								false
 							],
 							[
-								"crd_loyw3viy_ur3czd",
+								"crd_85",
 								"Island",
 								"library",
 								"bot_0",
@@ -446,7 +446,7 @@
 								false
 							],
 							[
-								"crd_loyw3v4y_ej9460",
+								"crd_13",
 								"Rampant Growth",
 								"library",
 								"bot_0",
@@ -463,7 +463,7 @@
 								false
 							],
 							[
-								"crd_loyw3vlh_atvdpn",
+								"crd_98",
 								"Swamp",
 								"library",
 								"bot_0",
@@ -480,7 +480,7 @@
 								false
 							],
 							[
-								"crd_loyw3vcx_avvi9w",
+								"crd_54",
 								"Forest",
 								"library",
 								"bot_0",
@@ -497,7 +497,7 @@
 								false
 							],
 							[
-								"crd_loyw3v9m_r92nhh",
+								"crd_37",
 								"Heroic Intervention",
 								"library",
 								"bot_0",
@@ -514,7 +514,7 @@
 								false
 							],
 							[
-								"crd_loyw3vby_v61gm4",
+								"crd_49",
 								"Reliquary Tower",
 								"library",
 								"bot_0",
@@ -531,7 +531,7 @@
 								false
 							],
 							[
-								"crd_loyw3v7v_noxp2x",
+								"crd_28",
 								"Preordain",
 								"library",
 								"bot_0",
@@ -548,7 +548,7 @@
 								false
 							],
 							[
-								"crd_loyw3v3e_a4b5xv",
+								"crd_5",
 								"Fellwar Stone",
 								"library",
 								"bot_0",
@@ -565,7 +565,7 @@
 								false
 							],
 							[
-								"crd_loyw3v4d_ge14o3",
+								"crd_10",
 								"Swiftfoot Boots",
 								"library",
 								"bot_0",
@@ -582,7 +582,7 @@
 								false
 							],
 							[
-								"crd_loyw3v2t_izkkhj",
+								"crd_2",
 								"Sol Ring",
 								"library",
 								"bot_0",
@@ -599,7 +599,7 @@
 								false
 							],
 							[
-								"crd_loyw3vf2_aln2h0",
+								"crd_65",
 								"Plains",
 								"library",
 								"bot_0",
@@ -616,7 +616,7 @@
 								false
 							],
 							[
-								"crd_loyw3v64_rm66ww",
+								"crd_19",
 								"Smothering Tithe",
 								"library",
 								"bot_0",
@@ -633,7 +633,7 @@
 								false
 							],
 							[
-								"crd_loyw3vkw_4bqg46",
+								"crd_95",
 								"Swamp",
 								"library",
 								"bot_0",
@@ -650,7 +650,7 @@
 								false
 							],
 							[
-								"crd_loyw3vfn_xox2yh",
+								"crd_68",
 								"Plains",
 								"library",
 								"bot_0",
@@ -667,7 +667,7 @@
 								false
 							],
 							[
-								"crd_loyw3v8n_pycjcf",
+								"crd_32",
 								"Night's Whisper",
 								"library",
 								"bot_0",
@@ -684,7 +684,7 @@
 								false
 							],
 							[
-								"crd_loyw3vh0_5v9ixl",
+								"crd_75",
 								"Plains",
 								"library",
 								"bot_0",
@@ -701,7 +701,7 @@
 								false
 							],
 							[
-								"crd_loyw3v98_zswz7y",
+								"crd_35",
 								"Anguished Unmaking",
 								"library",
 								"bot_0",
@@ -718,7 +718,7 @@
 								false
 							],
 							[
-								"crd_loyw3v6p_1jdli5",
+								"crd_22",
 								"Arcane Denial",
 								"library",
 								"bot_0",
@@ -735,7 +735,7 @@
 								false
 							],
 							[
-								"crd_loyw3vlv_ng9qtz",
+								"crd_100",
 								"Swamp",
 								"library",
 								"bot_0",
@@ -752,7 +752,7 @@
 								false
 							],
 							[
-								"crd_loyw3vg8_od578f",
+								"crd_71",
 								"Plains",
 								"library",
 								"bot_0",
@@ -769,7 +769,7 @@
 								false
 							],
 							[
-								"crd_loyw3vfu_pcw9q9",
+								"crd_69",
 								"Plains",
 								"library",
 								"bot_0",
@@ -786,7 +786,7 @@
 								false
 							],
 							[
-								"crd_loyw3v7a_sr3esc",
+								"crd_25",
 								"Rhystic Study",
 								"library",
 								"bot_0",
@@ -803,7 +803,7 @@
 								false
 							],
 							[
-								"crd_loyw3v7o_7eaeca",
+								"crd_27",
 								"Ponder",
 								"library",
 								"bot_0",
@@ -820,7 +820,7 @@
 								false
 							],
 							[
-								"crd_loyw3vf9_vq2i6i",
+								"crd_66",
 								"Plains",
 								"library",
 								"bot_0",
@@ -837,7 +837,7 @@
 								false
 							],
 							[
-								"crd_loyw3vdi_x8mxtl",
+								"crd_57",
 								"Forest",
 								"library",
 								"bot_0",
@@ -854,7 +854,7 @@
 								false
 							],
 							[
-								"crd_loyw3v7h_am5g5i",
+								"crd_26",
 								"Brainstorm",
 								"library",
 								"bot_0",
@@ -871,7 +871,7 @@
 								false
 							],
 							[
-								"crd_loyw3vh7_dzb455",
+								"crd_76",
 								"Plains",
 								"library",
 								"bot_0",
@@ -888,7 +888,7 @@
 								false
 							],
 							[
-								"crd_loyw3vhz_no6pyu",
+								"crd_80",
 								"Island",
 								"library",
 								"bot_0",
@@ -905,7 +905,7 @@
 								false
 							],
 							[
-								"crd_loyw3vhl_eg0dgj",
+								"crd_78",
 								"Island",
 								"library",
 								"bot_0",
@@ -922,7 +922,7 @@
 								false
 							],
 							[
-								"crd_loyw3vcj_pux8s0",
+								"crd_52",
 								"Forest",
 								"library",
 								"bot_0",
@@ -939,7 +939,7 @@
 								false
 							],
 							[
-								"crd_loyw3vev_v9tf5c",
+								"crd_64",
 								"Forest",
 								"library",
 								"bot_0",
@@ -956,7 +956,7 @@
 								false
 							],
 							[
-								"crd_loyw3v5q_2fb7j8",
+								"crd_17",
 								"Wrath of God",
 								"library",
 								"bot_0",
@@ -973,7 +973,7 @@
 								false
 							],
 							[
-								"crd_loyw3vcq_ehdlza",
+								"crd_53",
 								"Forest",
 								"library",
 								"bot_0",
@@ -990,7 +990,7 @@
 								false
 							],
 							[
-								"crd_loyw3vjj_ax0qh9",
+								"crd_88",
 								"Island",
 								"library",
 								"bot_0",
@@ -1007,7 +1007,7 @@
 								false
 							],
 							[
-								"crd_loyw3veh_44sdf6",
+								"crd_62",
 								"Forest",
 								"library",
 								"bot_0",
@@ -1024,7 +1024,7 @@
 								false
 							],
 							[
-								"crd_loyw3v3s_py2zpm",
+								"crd_7",
 								"Mind Stone",
 								"library",
 								"bot_0",
@@ -1041,7 +1041,7 @@
 								false
 							],
 							[
-								"crd_loyw3val_5h3tw7",
+								"crd_42",
 								"Evolution Sage",
 								"library",
 								"bot_0",
@@ -1058,7 +1058,7 @@
 								false
 							],
 							[
-								"crd_loyw3vki_jrkzge",
+								"crd_93",
 								"Swamp",
 								"library",
 								"bot_0",
@@ -1075,7 +1075,7 @@
 								false
 							],
 							[
-								"crd_loyw3vdb_yalz09",
+								"crd_56",
 								"Forest",
 								"library",
 								"bot_0",
@@ -1092,7 +1092,7 @@
 								false
 							],
 							[
-								"crd_loyw3vkb_nkbx9x",
+								"crd_92",
 								"Swamp",
 								"library",
 								"bot_0",
@@ -1109,7 +1109,7 @@
 								false
 							],
 							[
-								"crd_loyw3v3z_fbtzdg",
+								"crd_8",
 								"Commander's Sphere",
 								"library",
 								"bot_0",
@@ -1126,7 +1126,7 @@
 								false
 							],
 							[
-								"crd_loyw3v4r_50232i",
+								"crd_12",
 								"Kodama's Reach",
 								"library",
 								"bot_0",
@@ -1143,7 +1143,7 @@
 								false
 							],
 							[
-								"crd_loyw3v3l_m28lye",
+								"crd_6",
 								"Thought Vessel",
 								"library",
 								"bot_0",
@@ -1160,7 +1160,7 @@
 								false
 							],
 							[
-								"crd_loyw3vb6_4kv5ez",
+								"crd_45",
 								"Shalai, Voice of Plenty",
 								"library",
 								"bot_0",
@@ -1177,7 +1177,7 @@
 								false
 							],
 							[
-								"crd_loyw3v82_jnq0o6",
+								"crd_29",
 								"Demonic Tutor",
 								"library",
 								"bot_0",
@@ -1194,7 +1194,7 @@
 								false
 							],
 							[
-								"crd_loyw3vkp_bopc24",
+								"crd_94",
 								"Swamp",
 								"library",
 								"bot_0",
@@ -1211,7 +1211,7 @@
 								false
 							],
 							[
-								"crd_loyw3v30_zbfwwg",
+								"crd_3",
 								"Arcane Signet",
 								"library",
 								"bot_0",
@@ -1228,7 +1228,7 @@
 								false
 							],
 							[
-								"crd_loyw3v5j_hlxhwv",
+								"crd_16",
 								"Path to Exile",
 								"library",
 								"bot_0",
@@ -1245,7 +1245,7 @@
 								false
 							],
 							[
-								"crd_loyw3v46_ztagjb",
+								"crd_9",
 								"Lightning Greaves",
 								"library",
 								"bot_0",
@@ -1262,7 +1262,7 @@
 								false
 							],
 							[
-								"crd_loyw3vas_q515ad",
+								"crd_43",
 								"Flux Channeler",
 								"library",
 								"bot_0",
@@ -1281,7 +1281,7 @@
 						],
 						"hand": [
 							[
-								"crd_loyw3v6i_6vdebd",
+								"crd_21",
 								"Counterspell",
 								"hand",
 								"bot_0",
@@ -1298,7 +1298,7 @@
 								false
 							],
 							[
-								"crd_loyw3v6w_fdvxkk",
+								"crd_23",
 								"Negate",
 								"hand",
 								"bot_0",
@@ -1317,7 +1317,7 @@
 						],
 						"battlefield": [
 							[
-								"crd_loyw3vbk_1r58pl",
+								"crd_47",
 								"Command Tower",
 								"battlefield",
 								"bot_0",
@@ -1334,7 +1334,7 @@
 								false
 							],
 							[
-								"crd_loyw3vfg_id1amy",
+								"crd_67",
 								"Plains",
 								"battlefield",
 								"bot_0",
@@ -1351,7 +1351,7 @@
 								false
 							],
 							[
-								"crd_loyw3vdp_oxsniz",
+								"crd_58",
 								"Forest",
 								"battlefield",
 								"bot_0",
@@ -1368,7 +1368,7 @@
 								false
 							],
 							[
-								"crd_loyw3vaz_kqxsbh",
+								"crd_44",
 								"Grateful Apparition",
 								"battlefield",
 								"bot_0",
@@ -1385,7 +1385,7 @@
 								false
 							],
 							[
-								"crd_loyw3vjx_afrevh",
+								"crd_90",
 								"Swamp",
 								"battlefield",
 								"bot_0",
@@ -1402,7 +1402,7 @@
 								false
 							],
 							[
-								"crd_loyw3vjc_5ww4sg",
+								"crd_87",
 								"Island",
 								"battlefield",
 								"bot_0",
@@ -1419,7 +1419,7 @@
 								false
 							],
 							[
-								"crd_loyw3vi6_ibqwvx",
+								"crd_81",
 								"Island",
 								"battlefield",
 								"bot_0",
@@ -1436,7 +1436,7 @@
 								false
 							],
 							[
-								"crd_loyw3ve3_u1esbb",
+								"crd_60",
 								"Forest",
 								"battlefield",
 								"bot_0",
@@ -1453,7 +1453,7 @@
 								false
 							],
 							[
-								"cmd_loyw3v2m_03jmyl",
+								"cmd_1",
 								"Atraxa, Praetors' Voice",
 								"battlefield",
 								"bot_0",
@@ -1470,7 +1470,7 @@
 								false
 							],
 							[
-								"crd_loyw3vla_2fdxw9",
+								"crd_97",
 								"Swamp",
 								"battlefield",
 								"bot_0",
@@ -1487,7 +1487,7 @@
 								false
 							],
 							[
-								"crd_loyw3vj5_9tj4n7",
+								"crd_86",
 								"Island",
 								"battlefield",
 								"bot_0",
@@ -1504,7 +1504,7 @@
 								false
 							],
 							[
-								"crd_loyw3va7_evi490",
+								"crd_40",
 								"Fathom Mage",
 								"battlefield",
 								"bot_0",
@@ -1521,7 +1521,7 @@
 								false
 							],
 							[
-								"crd_loyw3vbd_9izv6f",
+								"crd_46",
 								"Corpsejack Menace",
 								"battlefield",
 								"bot_0",
@@ -1538,7 +1538,7 @@
 								false
 							],
 							[
-								"crd_loyw3vik_2qn3pc",
+								"crd_83",
 								"Island",
 								"battlefield",
 								"bot_0",
@@ -1555,7 +1555,7 @@
 								false
 							],
 							[
-								"crd_loyw3veo_1f4hi2",
+								"crd_63",
 								"Forest",
 								"battlefield",
 								"bot_0",
@@ -1572,7 +1572,7 @@
 								false
 							],
 							[
-								"crd_loyw3vcc_zm8e9b",
+								"crd_51",
 								"Forest",
 								"battlefield",
 								"bot_0",
@@ -1589,7 +1589,7 @@
 								false
 							],
 							[
-								"crd_loyw3vae_8yz9kh",
+								"crd_41",
 								"Crystalline Crawler",
 								"battlefield",
 								"bot_0",
@@ -1606,7 +1606,7 @@
 								false
 							],
 							[
-								"crd_loyw3vhs_bobpbv",
+								"crd_79",
 								"Island",
 								"battlefield",
 								"bot_0",
@@ -1623,7 +1623,7 @@
 								false
 							],
 							[
-								"crd_loyw3vgf_y5r02k",
+								"crd_72",
 								"Plains",
 								"battlefield",
 								"bot_0",
@@ -1642,7 +1642,7 @@
 						],
 						"graveyard": [
 							[
-								"crd_loyw3v6b_aah5u9",
+								"crd_20",
 								"Generous Gift",
 								"graveyard",
 								"bot_0",
@@ -1659,7 +1659,7 @@
 								false
 							],
 							[
-								"crd_loyw3v89_raxwqa",
+								"crd_30",
 								"Toxic Deluge",
 								"graveyard",
 								"bot_0",
@@ -1676,7 +1676,7 @@
 								false
 							],
 							[
-								"crd_loyw3v91_rqgfdw",
+								"crd_34",
 								"Mortify",
 								"graveyard",
 								"bot_0",
@@ -1693,7 +1693,7 @@
 								false
 							],
 							[
-								"crd_loyw3v4k_hlgwof",
+								"crd_11",
 								"Cultivate",
 								"graveyard",
 								"bot_0",
@@ -1710,7 +1710,7 @@
 								false
 							],
 							[
-								"crd_loyw3v9t_5in0br",
+								"crd_38",
 								"Eternal Witness",
 								"graveyard",
 								"bot_0",
@@ -1742,7 +1742,7 @@
 						"battlefield": [],
 						"graveyard": [
 							[
-								"crd_loyw3vrw_v0u3xx",
+								"crd_131",
 								"Infernal Grasp",
 								"graveyard",
 								"bot_1",
@@ -1759,7 +1759,7 @@
 								false
 							],
 							[
-								"crd_loyw3vrb_vucxfe",
+								"crd_128",
 								"Demonic Tutor",
 								"graveyard",
 								"bot_1",
@@ -1776,7 +1776,7 @@
 								false
 							],
 							[
-								"crd_loyw3vsa_o33tdr",
+								"crd_133",
 								"Sign in Blood",
 								"graveyard",
 								"bot_1",
@@ -1793,7 +1793,7 @@
 								false
 							],
 							[
-								"crd_loyw3vo0_6l4p47",
+								"crd_111",
 								"Elvish Mystic",
 								"graveyard",
 								"bot_1",
@@ -1810,7 +1810,7 @@
 								false
 							],
 							[
-								"crd_loyw3vqj_5da5mz",
+								"crd_124",
 								"Kodama's Reach",
 								"graveyard",
 								"bot_1",
@@ -1827,7 +1827,7 @@
 								false
 							],
 							[
-								"crd_loyw3vpk_vb7y51",
+								"crd_119",
 								"Eternal Witness",
 								"graveyard",
 								"bot_1",
@@ -1844,7 +1844,7 @@
 								false
 							],
 							[
-								"crd_loyw3vol_bvbbaj",
+								"crd_114",
 								"Priest of Titania",
 								"graveyard",
 								"bot_1",
@@ -2032,10 +2032,10 @@
 	},
 	"2 bots, seed 99": {
 		"digests": [
-			"1510e63f073d657fde580c47c8d67b6e9475bfa99a4edc5a53844be6d11e806c",
-			"e39588c7962b87349d8d4e9f21514f2e26cfaaa703e0a51621036f24ed9db7b3",
-			"eba2fd7a71fbf3bb8d9792776f756632a252fd51da4a130df8c96c9f08a20518",
-			"ec29f1e50a6642a99c7df6803a3df90fb9d2b596f4b10b5e3c81422ca62ccc4b"
+			"d1f62668d1e02878eeaacc75c6e28b40d5c5eab3d443f95e5567c16bfd04fe81",
+			"cfcd8e9d42d7e944834c899c61e7d2b53a81c8551934a346229e48c48a2e01f0",
+			"e85c477212a27bd00d3285365e6fa2999d2d46ccc7e97a229f9578b1c53cc5f3",
+			"d1b659c82a0a6d4f5b1e0292043db349898d7e3b47d496b590a2745f9ac764d1"
 		],
 		"final": {
 			"status": "finished",
@@ -2056,7 +2056,7 @@
 						"battlefield": [],
 						"graveyard": [
 							[
-								"crd_loyw3v6b_k1mq9o",
+								"crd_20",
 								"Generous Gift",
 								"graveyard",
 								"bot_0",
@@ -2073,7 +2073,7 @@
 								false
 							],
 							[
-								"crd_loyw3v5j_ghs7r4",
+								"crd_16",
 								"Path to Exile",
 								"graveyard",
 								"bot_0",
@@ -2090,7 +2090,7 @@
 								false
 							],
 							[
-								"crd_loyw3vae_p94yds",
+								"crd_41",
 								"Crystalline Crawler",
 								"graveyard",
 								"bot_0",
@@ -2107,7 +2107,7 @@
 								false
 							],
 							[
-								"crd_loyw3v4r_c75qsl",
+								"crd_12",
 								"Kodama's Reach",
 								"graveyard",
 								"bot_0",
@@ -2124,7 +2124,7 @@
 								false
 							],
 							[
-								"crd_loyw3v3l_0epl29",
+								"crd_6",
 								"Thought Vessel",
 								"graveyard",
 								"bot_0",
@@ -2141,7 +2141,7 @@
 								false
 							],
 							[
-								"crd_loyw3v8n_appf6m",
+								"crd_32",
 								"Night's Whisper",
 								"graveyard",
 								"bot_0",
@@ -2158,7 +2158,7 @@
 								false
 							],
 							[
-								"crd_loyw3v8g_e32dkm",
+								"crd_31",
 								"Infernal Grasp",
 								"graveyard",
 								"bot_0",
@@ -2175,7 +2175,7 @@
 								false
 							],
 							[
-								"crd_loyw3v73_yyw6c6",
+								"crd_24",
 								"Cyclonic Rift",
 								"graveyard",
 								"bot_0",
@@ -2192,7 +2192,7 @@
 								false
 							],
 							[
-								"crd_loyw3v3e_tfjag8",
+								"crd_5",
 								"Fellwar Stone",
 								"graveyard",
 								"bot_0",
@@ -2209,7 +2209,7 @@
 								false
 							],
 							[
-								"crd_loyw3vfu_2eo8b5",
+								"crd_69",
 								"Plains",
 								"graveyard",
 								"bot_0",
@@ -2238,7 +2238,7 @@
 					"zones": {
 						"library": [
 							[
-								"crd_loyw3w4q_q8mlzc",
+								"crd_197",
 								"Swamp",
 								"library",
 								"bot_1",
@@ -2255,7 +2255,7 @@
 								false
 							],
 							[
-								"crd_loyw3vmg_trxjbs",
+								"crd_103",
 								"Arcane Signet",
 								"library",
 								"bot_1",
@@ -2272,7 +2272,7 @@
 								false
 							],
 							[
-								"crd_loyw3vm9_lnt6tp",
+								"crd_102",
 								"Sol Ring",
 								"library",
 								"bot_1",
@@ -2289,7 +2289,7 @@
 								false
 							],
 							[
-								"crd_loyw3vtu_5ipbph",
+								"crd_141",
 								"Path of Ancestry",
 								"library",
 								"bot_1",
@@ -2306,7 +2306,7 @@
 								false
 							],
 							[
-								"crd_loyw3vwd_zezyyy",
+								"crd_154",
 								"Forest",
 								"library",
 								"bot_1",
@@ -2323,7 +2323,7 @@
 								false
 							],
 							[
-								"crd_loyw3vvl_dzudfg",
+								"crd_150",
 								"Forest",
 								"library",
 								"bot_1",
@@ -2340,7 +2340,7 @@
 								false
 							],
 							[
-								"crd_loyw3vyb_ehfj1r",
+								"crd_164",
 								"Forest",
 								"library",
 								"bot_1",
@@ -2357,7 +2357,7 @@
 								false
 							],
 							[
-								"crd_loyw3vvs_tdn9nq",
+								"crd_151",
 								"Forest",
 								"library",
 								"bot_1",
@@ -2374,7 +2374,7 @@
 								false
 							],
 							[
-								"crd_loyw3w4j_e90x9h",
+								"crd_196",
 								"Swamp",
 								"library",
 								"bot_1",
@@ -2391,7 +2391,7 @@
 								false
 							],
 							[
-								"crd_loyw3w2s_3tavyy",
+								"crd_187",
 								"Swamp",
 								"library",
 								"bot_1",
@@ -2408,7 +2408,7 @@
 								false
 							],
 							[
-								"crd_loyw3w11_v4zehx",
+								"crd_178",
 								"Swamp",
 								"library",
 								"bot_1",
@@ -2425,7 +2425,7 @@
 								false
 							],
 							[
-								"crd_loyw3vv7_z8tjmx",
+								"crd_148",
 								"Forest",
 								"library",
 								"bot_1",
@@ -2442,7 +2442,7 @@
 								false
 							],
 							[
-								"crd_loyw3vp6_i02tfb",
+								"crd_117",
 								"Shaman of the Pack",
 								"library",
 								"bot_1",
@@ -2459,7 +2459,7 @@
 								false
 							],
 							[
-								"crd_loyw3vn8_0vg8rp",
+								"crd_107",
 								"Commander's Sphere",
 								"library",
 								"bot_1",
@@ -2476,7 +2476,7 @@
 								false
 							],
 							[
-								"crd_loyw3vso_y20auc",
+								"crd_135",
 								"Reanimate",
 								"library",
 								"bot_1",
@@ -2493,7 +2493,7 @@
 								false
 							],
 							[
-								"crd_loyw3vu8_vq2mhx",
+								"crd_143",
 								"Forest",
 								"library",
 								"bot_1",
@@ -2510,7 +2510,7 @@
 								false
 							],
 							[
-								"crd_loyw3w2e_gcniae",
+								"crd_185",
 								"Swamp",
 								"library",
 								"bot_1",
@@ -2527,7 +2527,7 @@
 								false
 							],
 							[
-								"crd_loyw3vsa_r05xo6",
+								"crd_133",
 								"Sign in Blood",
 								"library",
 								"bot_1",
@@ -2544,7 +2544,7 @@
 								false
 							],
 							[
-								"crd_loyw3vrb_ogbmh3",
+								"crd_128",
 								"Demonic Tutor",
 								"library",
 								"bot_1",
@@ -2561,7 +2561,7 @@
 								false
 							],
 							[
-								"crd_loyw3vpy_7x7rox",
+								"crd_121",
 								"Corpsejack Menace",
 								"library",
 								"bot_1",
@@ -2578,7 +2578,7 @@
 								false
 							],
 							[
-								"crd_loyw3vpk_o93b3w",
+								"crd_119",
 								"Eternal Witness",
 								"library",
 								"bot_1",
@@ -2595,7 +2595,7 @@
 								false
 							],
 							[
-								"crd_loyw3vq5_2whmxf",
+								"crd_122",
 								"Craterhoof Behemoth",
 								"library",
 								"bot_1",
@@ -2612,7 +2612,7 @@
 								false
 							],
 							[
-								"crd_loyw3vw6_twyr6q",
+								"crd_153",
 								"Forest",
 								"library",
 								"bot_1",
@@ -2629,7 +2629,7 @@
 								false
 							],
 							[
-								"crd_loyw3vn1_cvy5j0",
+								"crd_106",
 								"Mind Stone",
 								"library",
 								"bot_1",
@@ -2646,7 +2646,7 @@
 								false
 							],
 							[
-								"crd_loyw3vr4_v7tw1t",
+								"crd_127",
 								"Heroic Intervention",
 								"library",
 								"bot_1",
@@ -2663,7 +2663,7 @@
 								false
 							],
 							[
-								"crd_loyw3vtg_w67z1d",
+								"crd_139",
 								"Exotic Orchard",
 								"library",
 								"bot_1",
@@ -2680,7 +2680,7 @@
 								false
 							],
 							[
-								"crd_loyw3vri_9lltk1",
+								"crd_129",
 								"Toxic Deluge",
 								"library",
 								"bot_1",
@@ -2697,7 +2697,7 @@
 								false
 							],
 							[
-								"crd_loyw3w4c_iha6hh",
+								"crd_195",
 								"Swamp",
 								"library",
 								"bot_1",
@@ -2714,7 +2714,7 @@
 								false
 							],
 							[
-								"crd_loyw3vyw_3fqugs",
+								"crd_167",
 								"Forest",
 								"library",
 								"bot_1",
@@ -2731,7 +2731,7 @@
 								false
 							],
 							[
-								"crd_loyw3vqj_fr4flm",
+								"crd_124",
 								"Kodama's Reach",
 								"library",
 								"bot_1",
@@ -2748,7 +2748,7 @@
 								false
 							],
 							[
-								"crd_loyw3vve_gqbm03",
+								"crd_149",
 								"Forest",
 								"library",
 								"bot_1",
@@ -2765,7 +2765,7 @@
 								false
 							],
 							[
-								"crd_loyw3w3y_8l4hgb",
+								"crd_193",
 								"Swamp",
 								"library",
 								"bot_1",
@@ -2782,7 +2782,7 @@
 								false
 							],
 							[
-								"crd_loyw3vzo_bfwmr9",
+								"crd_171",
 								"Forest",
 								"library",
 								"bot_1",
@@ -2799,7 +2799,7 @@
 								false
 							],
 							[
-								"crd_loyw3vzv_0xh776",
+								"crd_172",
 								"Forest",
 								"library",
 								"bot_1",
@@ -2816,7 +2816,7 @@
 								false
 							],
 							[
-								"crd_loyw3vo0_bzkqa9",
+								"crd_111",
 								"Elvish Mystic",
 								"library",
 								"bot_1",
@@ -2833,7 +2833,7 @@
 								false
 							],
 							[
-								"crd_loyw3vxq_i6ni3e",
+								"crd_161",
 								"Forest",
 								"library",
 								"bot_1",
@@ -2850,7 +2850,7 @@
 								false
 							],
 							[
-								"crd_loyw3w1t_jt81dh",
+								"crd_182",
 								"Swamp",
 								"library",
 								"bot_1",
@@ -2867,7 +2867,7 @@
 								false
 							],
 							[
-								"crd_loyw3w2l_mj2qbw",
+								"crd_186",
 								"Swamp",
 								"library",
 								"bot_1",
@@ -2884,7 +2884,7 @@
 								false
 							],
 							[
-								"crd_loyw3vyi_f8x07e",
+								"crd_165",
 								"Forest",
 								"library",
 								"bot_1",
@@ -2901,7 +2901,7 @@
 								false
 							],
 							[
-								"crd_loyw3vwk_cm89er",
+								"crd_155",
 								"Forest",
 								"library",
 								"bot_1",
@@ -2918,7 +2918,7 @@
 								false
 							],
 							[
-								"crd_loyw3w0n_utb4aq",
+								"crd_176",
 								"Forest",
 								"library",
 								"bot_1",
@@ -2935,7 +2935,7 @@
 								false
 							],
 							[
-								"crd_loyw3w36_1ul4id",
+								"crd_189",
 								"Swamp",
 								"library",
 								"bot_1",
@@ -2952,7 +2952,7 @@
 								false
 							],
 							[
-								"crd_loyw3vvz_zy4aee",
+								"crd_152",
 								"Forest",
 								"library",
 								"bot_1",
@@ -2969,7 +2969,7 @@
 								false
 							],
 							[
-								"crd_loyw3vs3_xq3eqq",
+								"crd_132",
 								"Night's Whisper",
 								"library",
 								"bot_1",
@@ -2986,7 +2986,7 @@
 								false
 							],
 							[
-								"crd_loyw3vz3_sqmods",
+								"crd_168",
 								"Forest",
 								"library",
 								"bot_1",
@@ -3003,7 +3003,7 @@
 								false
 							],
 							[
-								"crd_loyw3vqx_o6axfb",
+								"crd_126",
 								"Beast Within",
 								"library",
 								"bot_1",
@@ -3020,7 +3020,7 @@
 								false
 							],
 							[
-								"crd_loyw3vwr_4p5qyf",
+								"crd_156",
 								"Forest",
 								"library",
 								"bot_1",
@@ -3037,7 +3037,7 @@
 								false
 							],
 							[
-								"crd_loyw3vza_kzz6hl",
+								"crd_169",
 								"Forest",
 								"library",
 								"bot_1",
@@ -3054,7 +3054,7 @@
 								false
 							],
 							[
-								"crd_loyw3voz_knx82f",
+								"crd_116",
 								"Marwyn, the Nurturer",
 								"library",
 								"bot_1",
@@ -3071,7 +3071,7 @@
 								false
 							],
 							[
-								"crd_loyw3vut_p6hpy1",
+								"crd_146",
 								"Forest",
 								"library",
 								"bot_1",
@@ -3088,7 +3088,7 @@
 								false
 							],
 							[
-								"crd_loyw3w2z_k3yvws",
+								"crd_188",
 								"Swamp",
 								"library",
 								"bot_1",
@@ -3105,7 +3105,7 @@
 								false
 							],
 							[
-								"crd_loyw3w3r_ii5gp1",
+								"crd_192",
 								"Swamp",
 								"library",
 								"bot_1",
@@ -3122,7 +3122,7 @@
 								false
 							],
 							[
-								"crd_loyw3w45_cnz4er",
+								"crd_194",
 								"Swamp",
 								"library",
 								"bot_1",
@@ -3139,7 +3139,7 @@
 								false
 							],
 							[
-								"crd_loyw3vum_1mvvyv",
+								"crd_145",
 								"Forest",
 								"library",
 								"bot_1",
@@ -3156,7 +3156,7 @@
 								false
 							],
 							[
-								"crd_loyw3vnm_bf3gzo",
+								"crd_109",
 								"Swiftfoot Boots",
 								"library",
 								"bot_1",
@@ -3173,7 +3173,7 @@
 								false
 							],
 							[
-								"crd_loyw3vxx_5v31el",
+								"crd_162",
 								"Forest",
 								"library",
 								"bot_1",
@@ -3190,7 +3190,7 @@
 								false
 							],
 							[
-								"crd_loyw3vt9_csuaxd",
+								"crd_138",
 								"Command Tower",
 								"library",
 								"bot_1",
@@ -3207,7 +3207,7 @@
 								false
 							],
 							[
-								"crd_loyw3vuf_al1wz4",
+								"crd_144",
 								"Forest",
 								"library",
 								"bot_1",
@@ -3224,7 +3224,7 @@
 								false
 							],
 							[
-								"crd_loyw3w02_2obzv9",
+								"crd_173",
 								"Forest",
 								"library",
 								"bot_1",
@@ -3241,7 +3241,7 @@
 								false
 							],
 							[
-								"crd_loyw3vwy_9jzfol",
+								"crd_157",
 								"Forest",
 								"library",
 								"bot_1",
@@ -3258,7 +3258,7 @@
 								false
 							],
 							[
-								"crd_loyw3voe_hbj6q7",
+								"crd_113",
 								"Elvish Archdruid",
 								"library",
 								"bot_1",
@@ -3275,7 +3275,7 @@
 								false
 							],
 							[
-								"crd_loyw3vnf_jbllh7",
+								"crd_108",
 								"Lightning Greaves",
 								"library",
 								"bot_1",
@@ -3292,7 +3292,7 @@
 								false
 							],
 							[
-								"crd_loyw3w0g_k5fk5f",
+								"crd_175",
 								"Forest",
 								"library",
 								"bot_1",
@@ -3309,7 +3309,7 @@
 								false
 							],
 							[
-								"crd_loyw3vxc_2mpdw5",
+								"crd_159",
 								"Forest",
 								"library",
 								"bot_1",
@@ -3326,7 +3326,7 @@
 								false
 							],
 							[
-								"crd_loyw3vtn_of4j1x",
+								"crd_140",
 								"Reliquary Tower",
 								"library",
 								"bot_1",
@@ -3343,7 +3343,7 @@
 								false
 							],
 							[
-								"crd_loyw3w1f_c6r8jd",
+								"crd_180",
 								"Swamp",
 								"library",
 								"bot_1",
@@ -3360,7 +3360,7 @@
 								false
 							],
 							[
-								"crd_loyw3vos_5hsak3",
+								"crd_115",
 								"Beast Whisperer",
 								"library",
 								"bot_1",
@@ -3377,7 +3377,7 @@
 								false
 							],
 							[
-								"crd_loyw3vmn_75w3e5",
+								"crd_104",
 								"Fellwar Stone",
 								"library",
 								"bot_1",
@@ -3394,7 +3394,7 @@
 								false
 							],
 							[
-								"crd_loyw3vmu_zpicha",
+								"crd_105",
 								"Thought Vessel",
 								"library",
 								"bot_1",
@@ -3411,7 +3411,7 @@
 								false
 							],
 							[
-								"crd_loyw3w27_7g1f86",
+								"crd_184",
 								"Swamp",
 								"library",
 								"bot_1",
@@ -3428,7 +3428,7 @@
 								false
 							],
 							[
-								"crd_loyw3vqc_zqqcl4",
+								"crd_123",
 								"Cultivate",
 								"library",
 								"bot_1",
@@ -3445,7 +3445,7 @@
 								false
 							],
 							[
-								"crd_loyw3w18_fw0021",
+								"crd_179",
 								"Swamp",
 								"library",
 								"bot_1",
@@ -3465,7 +3465,7 @@
 						"hand": [],
 						"battlefield": [
 							[
-								"crd_loyw3vv0_3xeicj",
+								"crd_147",
 								"Forest",
 								"battlefield",
 								"bot_1",
@@ -3482,7 +3482,7 @@
 								false
 							],
 							[
-								"crd_loyw3vx5_6hsoih",
+								"crd_158",
 								"Forest",
 								"battlefield",
 								"bot_1",
@@ -3499,7 +3499,7 @@
 								false
 							],
 							[
-								"crd_loyw3w3k_q3p2rr",
+								"crd_191",
 								"Swamp",
 								"battlefield",
 								"bot_1",
@@ -3516,7 +3516,7 @@
 								false
 							],
 							[
-								"crd_loyw3vzh_84qmgp",
+								"crd_170",
 								"Forest",
 								"battlefield",
 								"bot_1",
@@ -3533,7 +3533,7 @@
 								false
 							],
 							[
-								"crd_loyw3w09_26pmxk",
+								"crd_174",
 								"Forest",
 								"battlefield",
 								"bot_1",
@@ -3550,7 +3550,7 @@
 								false
 							],
 							[
-								"tok_loyw3z4u_3pop5u",
+								"tok_373",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -3567,7 +3567,7 @@
 								false
 							],
 							[
-								"tok_loyw3z5m_g5jmie",
+								"tok_376",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -3584,7 +3584,7 @@
 								false
 							],
 							[
-								"crd_loyw3vyp_hw7r55",
+								"crd_166",
 								"Forest",
 								"battlefield",
 								"bot_1",
@@ -3601,7 +3601,7 @@
 								false
 							],
 							[
-								"tok_loyw3zzd_tsvqzj",
+								"tok_427",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -3618,7 +3618,7 @@
 								false
 							],
 							[
-								"tok_loyw4005_y72lgy",
+								"tok_430",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -3635,7 +3635,7 @@
 								false
 							],
 							[
-								"crd_loyw3w20_v8fznj",
+								"crd_183",
 								"Swamp",
 								"battlefield",
 								"bot_1",
@@ -3652,7 +3652,7 @@
 								false
 							],
 							[
-								"tok_loyw40r6_ih5nb4",
+								"tok_476",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -3669,7 +3669,7 @@
 								false
 							],
 							[
-								"tok_loyw40ry_btg40p",
+								"tok_479",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -3686,7 +3686,7 @@
 								false
 							],
 							[
-								"crd_loyw3w5b_tx3wjx",
+								"crd_200",
 								"Swamp",
 								"battlefield",
 								"bot_1",
@@ -3703,7 +3703,7 @@
 								false
 							],
 							[
-								"tok_loyw41rj_u4iv0q",
+								"tok_542",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -3720,7 +3720,7 @@
 								false
 							],
 							[
-								"tok_loyw41sb_tgkxfh",
+								"tok_545",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -3737,7 +3737,7 @@
 								false
 							],
 							[
-								"crd_loyw3vy4_qq1s4w",
+								"crd_163",
 								"Forest",
 								"battlefield",
 								"bot_1",
@@ -3754,7 +3754,7 @@
 								false
 							],
 							[
-								"crd_loyw3w1m_vgn1li",
+								"crd_181",
 								"Swamp",
 								"battlefield",
 								"bot_1",
@@ -3771,7 +3771,7 @@
 								false
 							],
 							[
-								"tok_loyw42um_4d8qga",
+								"tok_614",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -3788,7 +3788,7 @@
 								false
 							],
 							[
-								"tok_loyw42ve_z29gzd",
+								"tok_617",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -3805,7 +3805,7 @@
 								false
 							],
 							[
-								"crd_loyw3w4x_itrle5",
+								"crd_198",
 								"Swamp",
 								"battlefield",
 								"bot_1",
@@ -3822,7 +3822,7 @@
 								false
 							],
 							[
-								"tok_loyw43su_s1z5p8",
+								"tok_675",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -3839,7 +3839,7 @@
 								false
 							],
 							[
-								"tok_loyw43tm_ig2br9",
+								"tok_678",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -3856,7 +3856,7 @@
 								false
 							],
 							[
-								"crd_loyw3w54_we65mv",
+								"crd_199",
 								"Swamp",
 								"battlefield",
 								"bot_1",
@@ -3873,7 +3873,7 @@
 								false
 							],
 							[
-								"cmd_loyw3vm2_u7e03x",
+								"cmd_101",
 								"Lathril, Blade of the Elves",
 								"battlefield",
 								"bot_1",
@@ -3890,7 +3890,7 @@
 								false
 							],
 							[
-								"crd_loyw3vnt_gqh0fn",
+								"crd_110",
 								"Llanowar Elves",
 								"battlefield",
 								"bot_1",
@@ -3907,7 +3907,7 @@
 								false
 							],
 							[
-								"tok_loyw45ph_ekgpaj",
+								"tok_793",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -3924,7 +3924,7 @@
 								false
 							],
 							[
-								"tok_loyw45q9_bliue4",
+								"tok_796",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -3941,7 +3941,7 @@
 								false
 							],
 							[
-								"crd_loyw3w3d_nkwnse",
+								"crd_190",
 								"Swamp",
 								"battlefield",
 								"bot_1",
@@ -3958,7 +3958,7 @@
 								false
 							],
 							[
-								"tok_loyw46cm_x4dg7k",
+								"tok_832",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -3975,7 +3975,7 @@
 								false
 							],
 							[
-								"tok_loyw46de_tt8cv5",
+								"tok_835",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -3992,7 +3992,7 @@
 								false
 							],
 							[
-								"crd_loyw3vo7_5oxkdq",
+								"crd_112",
 								"Fyndhorn Elves",
 								"battlefield",
 								"bot_1",
@@ -4009,7 +4009,7 @@
 								false
 							],
 							[
-								"tok_loyw47cl_pi0f00",
+								"tok_897",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -4026,7 +4026,7 @@
 								false
 							],
 							[
-								"tok_loyw47dd_hbfxs1",
+								"tok_900",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -4043,7 +4043,7 @@
 								false
 							],
 							[
-								"crd_loyw3w0u_kc7d6r",
+								"crd_177",
 								"Forest",
 								"battlefield",
 								"bot_1",
@@ -4060,7 +4060,7 @@
 								false
 							],
 							[
-								"tok_loyw483f_n6nm6z",
+								"tok_942",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -4077,7 +4077,7 @@
 								false
 							],
 							[
-								"tok_loyw4847_qk2lkf",
+								"tok_945",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -4094,7 +4094,7 @@
 								false
 							],
 							[
-								"crd_loyw3vxj_o3fucy",
+								"crd_160",
 								"Forest",
 								"battlefield",
 								"bot_1",
@@ -4113,7 +4113,7 @@
 						],
 						"graveyard": [
 							[
-								"crd_loyw3vu1_naowwc",
+								"crd_142",
 								"Forest",
 								"graveyard",
 								"bot_1",
@@ -4130,7 +4130,7 @@
 								false
 							],
 							[
-								"crd_loyw3vrw_bpcvvn",
+								"crd_131",
 								"Infernal Grasp",
 								"graveyard",
 								"bot_1",
@@ -4147,7 +4147,7 @@
 								false
 							],
 							[
-								"crd_loyw3vsv_i7jf2l",
+								"crd_136",
 								"Putrefy",
 								"graveyard",
 								"bot_1",
@@ -4164,7 +4164,7 @@
 								false
 							],
 							[
-								"crd_loyw3vrp_s8tgwk",
+								"crd_130",
 								"Feed the Swarm",
 								"graveyard",
 								"bot_1",
@@ -4181,7 +4181,7 @@
 								false
 							],
 							[
-								"crd_loyw3vsh_yfe1vt",
+								"crd_134",
 								"Read the Bones",
 								"graveyard",
 								"bot_1",
@@ -4198,7 +4198,7 @@
 								false
 							],
 							[
-								"crd_loyw3vqq_jgtaer",
+								"crd_125",
 								"Rampant Growth",
 								"graveyard",
 								"bot_1",
@@ -4215,7 +4215,7 @@
 								false
 							],
 							[
-								"crd_loyw3vpd_u91mjl",
+								"crd_118",
 								"Evolution Sage",
 								"graveyard",
 								"bot_1",
@@ -4232,7 +4232,7 @@
 								false
 							],
 							[
-								"crd_loyw3vt2_7rc5bs",
+								"crd_137",
 								"Casualties of War",
 								"graveyard",
 								"bot_1",
@@ -4249,7 +4249,7 @@
 								false
 							],
 							[
-								"crd_loyw3vpr_lyc87v",
+								"crd_120",
 								"Forgotten Ancient",
 								"graveyard",
 								"bot_1",
@@ -4268,7 +4268,7 @@
 						],
 						"exile": [
 							[
-								"crd_loyw3vol_pgxuv1",
+								"crd_114",
 								"Priest of Titania",
 								"exile",
 								"bot_1",
@@ -4455,9 +4455,9 @@
 	},
 	"3 bots, seed 7": {
 		"digests": [
-			"c328f074d9c5c56267d19fde307045477f50ab0339bbf9752b219e66c5eca14d",
-			"0626d0853fbb792c08a0905bb16f5449023d3382f31ef9fa2eb13c695d0a4d75",
-			"09e460de5d5d48195b6e16c3cb9aaecf03b5676615c7d65907717ff7168cdab6"
+			"0ca323298424c74fffb6c01b9ac02678b153345fc168e75c4de694210efb813f",
+			"ab6dfd67f4230873582deefa9685291ddf2b36ac0955c0101dbd943901e3ca93",
+			"c50967277ec90ed3e33042e92fab0bd2a7a1212b4f16f75ceb7bdecbff25f532"
 		],
 		"final": {
 			"status": "active",
@@ -4475,7 +4475,7 @@
 					"zones": {
 						"library": [
 							[
-								"crd_loyw3vby_os17ft",
+								"crd_49",
 								"Reliquary Tower",
 								"library",
 								"bot_0",
@@ -4492,7 +4492,7 @@
 								false
 							],
 							[
-								"crd_loyw3va0_cunb0t",
+								"crd_39",
 								"Forgotten Ancient",
 								"library",
 								"bot_0",
@@ -4509,7 +4509,7 @@
 								false
 							],
 							[
-								"crd_loyw3vkw_u01nrc",
+								"crd_95",
 								"Swamp",
 								"library",
 								"bot_0",
@@ -4526,7 +4526,7 @@
 								false
 							],
 							[
-								"crd_loyw3veh_jq1jnn",
+								"crd_62",
 								"Forest",
 								"library",
 								"bot_0",
@@ -4543,7 +4543,7 @@
 								false
 							],
 							[
-								"crd_loyw3v30_p5xvsq",
+								"crd_3",
 								"Arcane Signet",
 								"library",
 								"bot_0",
@@ -4560,7 +4560,7 @@
 								false
 							],
 							[
-								"crd_loyw3v7o_rfdz8x",
+								"crd_27",
 								"Ponder",
 								"library",
 								"bot_0",
@@ -4577,7 +4577,7 @@
 								false
 							],
 							[
-								"crd_loyw3v3l_gs8jse",
+								"crd_6",
 								"Thought Vessel",
 								"library",
 								"bot_0",
@@ -4594,7 +4594,7 @@
 								false
 							],
 							[
-								"crd_loyw3v73_5kf2l5",
+								"crd_24",
 								"Cyclonic Rift",
 								"library",
 								"bot_0",
@@ -4611,7 +4611,7 @@
 								false
 							],
 							[
-								"crd_loyw3v2t_z62lou",
+								"crd_2",
 								"Sol Ring",
 								"library",
 								"bot_0",
@@ -4628,7 +4628,7 @@
 								false
 							],
 							[
-								"crd_loyw3v6b_8wsxdv",
+								"crd_20",
 								"Generous Gift",
 								"library",
 								"bot_0",
@@ -4645,7 +4645,7 @@
 								false
 							],
 							[
-								"crd_loyw3v5c_d8vh52",
+								"crd_15",
 								"Swords to Plowshares",
 								"library",
 								"bot_0",
@@ -4662,7 +4662,7 @@
 								false
 							],
 							[
-								"crd_loyw3v9f_tslu1l",
+								"crd_36",
 								"Beast Within",
 								"library",
 								"bot_0",
@@ -4679,7 +4679,7 @@
 								false
 							],
 							[
-								"crd_loyw3vla_0inwie",
+								"crd_97",
 								"Swamp",
 								"library",
 								"bot_0",
@@ -4696,7 +4696,7 @@
 								false
 							],
 							[
-								"crd_loyw3vg8_u5zqs6",
+								"crd_71",
 								"Plains",
 								"library",
 								"bot_0",
@@ -4713,7 +4713,7 @@
 								false
 							],
 							[
-								"crd_loyw3vir_k2l7he",
+								"crd_84",
 								"Island",
 								"library",
 								"bot_0",
@@ -4730,7 +4730,7 @@
 								false
 							],
 							[
-								"crd_loyw3va7_fb7j3g",
+								"crd_40",
 								"Fathom Mage",
 								"library",
 								"bot_0",
@@ -4747,7 +4747,7 @@
 								false
 							],
 							[
-								"crd_loyw3vhs_bt5sq2",
+								"crd_79",
 								"Island",
 								"library",
 								"bot_0",
@@ -4764,7 +4764,7 @@
 								false
 							],
 							[
-								"crd_loyw3v89_jxlxfj",
+								"crd_30",
 								"Toxic Deluge",
 								"library",
 								"bot_0",
@@ -4781,7 +4781,7 @@
 								false
 							],
 							[
-								"crd_loyw3vb6_fd0uiu",
+								"crd_45",
 								"Shalai, Voice of Plenty",
 								"library",
 								"bot_0",
@@ -4798,7 +4798,7 @@
 								false
 							],
 							[
-								"crd_loyw3v37_irsjtd",
+								"crd_4",
 								"Chromatic Lantern",
 								"library",
 								"bot_0",
@@ -4815,7 +4815,7 @@
 								false
 							],
 							[
-								"crd_loyw3vkb_0c2lbf",
+								"crd_92",
 								"Swamp",
 								"library",
 								"bot_0",
@@ -4832,7 +4832,7 @@
 								false
 							],
 							[
-								"crd_loyw3v91_mh73px",
+								"crd_34",
 								"Mortify",
 								"library",
 								"bot_0",
@@ -4849,7 +4849,7 @@
 								false
 							],
 							[
-								"crd_loyw3v4y_inul7k",
+								"crd_13",
 								"Rampant Growth",
 								"library",
 								"bot_0",
@@ -4866,7 +4866,7 @@
 								false
 							],
 							[
-								"crd_loyw3v6i_vlloni",
+								"crd_21",
 								"Counterspell",
 								"library",
 								"bot_0",
@@ -4883,7 +4883,7 @@
 								false
 							],
 							[
-								"crd_loyw3vl3_mp9c7l",
+								"crd_96",
 								"Swamp",
 								"library",
 								"bot_0",
@@ -4900,7 +4900,7 @@
 								false
 							],
 							[
-								"crd_loyw3vjx_b8ukvh",
+								"crd_90",
 								"Swamp",
 								"library",
 								"bot_0",
@@ -4917,7 +4917,7 @@
 								false
 							],
 							[
-								"crd_loyw3vea_x63irq",
+								"crd_61",
 								"Forest",
 								"library",
 								"bot_0",
@@ -4934,7 +4934,7 @@
 								false
 							],
 							[
-								"crd_loyw3v8n_ohebki",
+								"crd_32",
 								"Night's Whisper",
 								"library",
 								"bot_0",
@@ -4951,7 +4951,7 @@
 								false
 							],
 							[
-								"crd_loyw3v5q_j90t29",
+								"crd_17",
 								"Wrath of God",
 								"library",
 								"bot_0",
@@ -4968,7 +4968,7 @@
 								false
 							],
 							[
-								"crd_loyw3vfg_j2sddl",
+								"crd_67",
 								"Plains",
 								"library",
 								"bot_0",
@@ -4985,7 +4985,7 @@
 								false
 							],
 							[
-								"crd_loyw3v64_z7f1x9",
+								"crd_19",
 								"Smothering Tithe",
 								"library",
 								"bot_0",
@@ -5002,7 +5002,7 @@
 								false
 							],
 							[
-								"crd_loyw3vas_rncjpw",
+								"crd_43",
 								"Flux Channeler",
 								"library",
 								"bot_0",
@@ -5019,7 +5019,7 @@
 								false
 							],
 							[
-								"crd_loyw3vbk_y2aw7u",
+								"crd_47",
 								"Command Tower",
 								"library",
 								"bot_0",
@@ -5036,7 +5036,7 @@
 								false
 							],
 							[
-								"crd_loyw3v8u_yrx7rf",
+								"crd_33",
 								"Putrefy",
 								"library",
 								"bot_0",
@@ -5053,7 +5053,7 @@
 								false
 							],
 							[
-								"crd_loyw3vhl_iktxaj",
+								"crd_78",
 								"Island",
 								"library",
 								"bot_0",
@@ -5070,7 +5070,7 @@
 								false
 							],
 							[
-								"crd_loyw3vlv_pt1cba",
+								"crd_100",
 								"Swamp",
 								"library",
 								"bot_0",
@@ -5087,7 +5087,7 @@
 								false
 							],
 							[
-								"crd_loyw3vh7_tgsrwu",
+								"crd_76",
 								"Plains",
 								"library",
 								"bot_0",
@@ -5104,7 +5104,7 @@
 								false
 							],
 							[
-								"crd_loyw3vcc_ctt560",
+								"crd_51",
 								"Forest",
 								"library",
 								"bot_0",
@@ -5121,7 +5121,7 @@
 								false
 							],
 							[
-								"crd_loyw3vgf_le4lws",
+								"crd_72",
 								"Plains",
 								"library",
 								"bot_0",
@@ -5138,7 +5138,7 @@
 								false
 							],
 							[
-								"crd_loyw3vfn_ndbhn7",
+								"crd_68",
 								"Plains",
 								"library",
 								"bot_0",
@@ -5155,7 +5155,7 @@
 								false
 							],
 							[
-								"crd_loyw3vgm_yp6ct1",
+								"crd_73",
 								"Plains",
 								"library",
 								"bot_0",
@@ -5172,7 +5172,7 @@
 								false
 							],
 							[
-								"crd_loyw3vcj_4zvfxf",
+								"crd_52",
 								"Forest",
 								"library",
 								"bot_0",
@@ -5189,7 +5189,7 @@
 								false
 							],
 							[
-								"crd_loyw3veo_tr8su2",
+								"crd_63",
 								"Forest",
 								"library",
 								"bot_0",
@@ -5206,7 +5206,7 @@
 								false
 							],
 							[
-								"crd_loyw3vgt_ytvz3o",
+								"crd_74",
 								"Plains",
 								"library",
 								"bot_0",
@@ -5223,7 +5223,7 @@
 								false
 							],
 							[
-								"crd_loyw3vjq_juzyma",
+								"crd_89",
 								"Swamp",
 								"library",
 								"bot_0",
@@ -5240,7 +5240,7 @@
 								false
 							],
 							[
-								"crd_loyw3vdw_1kjnvx",
+								"crd_59",
 								"Forest",
 								"library",
 								"bot_0",
@@ -5257,7 +5257,7 @@
 								false
 							],
 							[
-								"crd_loyw3v98_x5vqf7",
+								"crd_35",
 								"Anguished Unmaking",
 								"library",
 								"bot_0",
@@ -5274,7 +5274,7 @@
 								false
 							],
 							[
-								"crd_loyw3vg1_ykt0gu",
+								"crd_70",
 								"Plains",
 								"library",
 								"bot_0",
@@ -5291,7 +5291,7 @@
 								false
 							],
 							[
-								"crd_loyw3v3z_jx3yjc",
+								"crd_8",
 								"Commander's Sphere",
 								"library",
 								"bot_0",
@@ -5308,7 +5308,7 @@
 								false
 							],
 							[
-								"crd_loyw3v6w_566h8s",
+								"crd_23",
 								"Negate",
 								"library",
 								"bot_0",
@@ -5325,7 +5325,7 @@
 								false
 							],
 							[
-								"crd_loyw3v3s_8mxy6i",
+								"crd_7",
 								"Mind Stone",
 								"library",
 								"bot_0",
@@ -5342,7 +5342,7 @@
 								false
 							],
 							[
-								"crd_loyw3vid_r70pe5",
+								"crd_82",
 								"Island",
 								"library",
 								"bot_0",
@@ -5359,7 +5359,7 @@
 								false
 							],
 							[
-								"crd_loyw3vd4_blv5hg",
+								"crd_55",
 								"Forest",
 								"library",
 								"bot_0",
@@ -5376,7 +5376,7 @@
 								false
 							],
 							[
-								"crd_loyw3v9t_6aq2md",
+								"crd_38",
 								"Eternal Witness",
 								"library",
 								"bot_0",
@@ -5393,7 +5393,7 @@
 								false
 							],
 							[
-								"crd_loyw3v4d_9a4n53",
+								"crd_10",
 								"Swiftfoot Boots",
 								"library",
 								"bot_0",
@@ -5410,7 +5410,7 @@
 								false
 							],
 							[
-								"crd_loyw3vk4_8ixs5l",
+								"crd_91",
 								"Swamp",
 								"library",
 								"bot_0",
@@ -5427,7 +5427,7 @@
 								false
 							],
 							[
-								"crd_loyw3vev_nl72y4",
+								"crd_64",
 								"Forest",
 								"library",
 								"bot_0",
@@ -5444,7 +5444,7 @@
 								false
 							],
 							[
-								"crd_loyw3vi6_js58rj",
+								"crd_81",
 								"Island",
 								"library",
 								"bot_0",
@@ -5461,7 +5461,7 @@
 								false
 							],
 							[
-								"crd_loyw3vbr_pbga5x",
+								"crd_48",
 								"Exotic Orchard",
 								"library",
 								"bot_0",
@@ -5478,7 +5478,7 @@
 								false
 							],
 							[
-								"crd_loyw3vlo_lezhwp",
+								"crd_99",
 								"Swamp",
 								"library",
 								"bot_0",
@@ -5495,7 +5495,7 @@
 								false
 							],
 							[
-								"crd_loyw3v6p_6v9kt2",
+								"crd_22",
 								"Arcane Denial",
 								"library",
 								"bot_0",
@@ -5512,7 +5512,7 @@
 								false
 							],
 							[
-								"crd_loyw3vae_0q5c4h",
+								"crd_41",
 								"Crystalline Crawler",
 								"library",
 								"bot_0",
@@ -5529,7 +5529,7 @@
 								false
 							],
 							[
-								"crd_loyw3vhz_q2nm5p",
+								"crd_80",
 								"Island",
 								"library",
 								"bot_0",
@@ -5546,7 +5546,7 @@
 								false
 							],
 							[
-								"crd_loyw3vj5_fh9t0y",
+								"crd_86",
 								"Island",
 								"library",
 								"bot_0",
@@ -5563,7 +5563,7 @@
 								false
 							],
 							[
-								"crd_loyw3vjj_ql5yk4",
+								"crd_88",
 								"Island",
 								"library",
 								"bot_0",
@@ -5580,7 +5580,7 @@
 								false
 							],
 							[
-								"crd_loyw3vcq_4sqxhq",
+								"crd_53",
 								"Forest",
 								"library",
 								"bot_0",
@@ -5597,7 +5597,7 @@
 								false
 							],
 							[
-								"crd_loyw3ve3_omsjlb",
+								"crd_60",
 								"Forest",
 								"library",
 								"bot_0",
@@ -5614,7 +5614,7 @@
 								false
 							],
 							[
-								"crd_loyw3vc5_bwipjk",
+								"crd_50",
 								"Path of Ancestry",
 								"library",
 								"bot_0",
@@ -5631,7 +5631,7 @@
 								false
 							],
 							[
-								"crd_loyw3vf2_x45ttq",
+								"crd_65",
 								"Plains",
 								"library",
 								"bot_0",
@@ -5648,7 +5648,7 @@
 								false
 							],
 							[
-								"crd_loyw3vh0_jqy01f",
+								"crd_75",
 								"Plains",
 								"library",
 								"bot_0",
@@ -5665,7 +5665,7 @@
 								false
 							],
 							[
-								"crd_loyw3vbd_gvdx8y",
+								"crd_46",
 								"Corpsejack Menace",
 								"library",
 								"bot_0",
@@ -5682,7 +5682,7 @@
 								false
 							],
 							[
-								"crd_loyw3viy_tmtbud",
+								"crd_85",
 								"Island",
 								"library",
 								"bot_0",
@@ -5699,7 +5699,7 @@
 								false
 							],
 							[
-								"crd_loyw3vhe_07dxpo",
+								"crd_77",
 								"Island",
 								"library",
 								"bot_0",
@@ -5716,7 +5716,7 @@
 								false
 							],
 							[
-								"crd_loyw3v5x_ao1l0x",
+								"crd_18",
 								"Farewell",
 								"library",
 								"bot_0",
@@ -5733,7 +5733,7 @@
 								false
 							],
 							[
-								"crd_loyw3v9m_1ft8hf",
+								"crd_37",
 								"Heroic Intervention",
 								"library",
 								"bot_0",
@@ -5750,7 +5750,7 @@
 								false
 							],
 							[
-								"crd_loyw3vcx_wvajz1",
+								"crd_54",
 								"Forest",
 								"library",
 								"bot_0",
@@ -5767,7 +5767,7 @@
 								false
 							],
 							[
-								"crd_loyw3vdi_mrcbxe",
+								"crd_57",
 								"Forest",
 								"library",
 								"bot_0",
@@ -5784,7 +5784,7 @@
 								false
 							],
 							[
-								"crd_loyw3vkp_xyn4jg",
+								"crd_94",
 								"Swamp",
 								"library",
 								"bot_0",
@@ -5801,7 +5801,7 @@
 								false
 							],
 							[
-								"crd_loyw3v4r_ri9dlk",
+								"crd_12",
 								"Kodama's Reach",
 								"library",
 								"bot_0",
@@ -5818,7 +5818,7 @@
 								false
 							],
 							[
-								"crd_loyw3v3e_elk0pr",
+								"crd_5",
 								"Fellwar Stone",
 								"library",
 								"bot_0",
@@ -5835,7 +5835,7 @@
 								false
 							],
 							[
-								"crd_loyw3v7v_2okpry",
+								"crd_28",
 								"Preordain",
 								"library",
 								"bot_0",
@@ -5852,7 +5852,7 @@
 								false
 							],
 							[
-								"crd_loyw3val_366on4",
+								"crd_42",
 								"Evolution Sage",
 								"library",
 								"bot_0",
@@ -5869,7 +5869,7 @@
 								false
 							],
 							[
-								"crd_loyw3vdb_6uq5s4",
+								"crd_56",
 								"Forest",
 								"library",
 								"bot_0",
@@ -5888,7 +5888,7 @@
 						],
 						"hand": [
 							[
-								"crd_loyw3v55_73hmw9",
+								"crd_14",
 								"Farseek",
 								"hand",
 								"bot_0",
@@ -5905,7 +5905,7 @@
 								false
 							],
 							[
-								"crd_loyw3v4k_5m3xd7",
+								"crd_11",
 								"Cultivate",
 								"hand",
 								"bot_0",
@@ -5924,7 +5924,7 @@
 						],
 						"battlefield": [
 							[
-								"crd_loyw3vfu_w2tivm",
+								"crd_69",
 								"Plains",
 								"battlefield",
 								"bot_0",
@@ -5941,7 +5941,7 @@
 								false
 							],
 							[
-								"crd_loyw3vlh_ma37qn",
+								"crd_98",
 								"Swamp",
 								"battlefield",
 								"bot_0",
@@ -5958,7 +5958,7 @@
 								false
 							],
 							[
-								"crd_loyw3vik_z63two",
+								"crd_83",
 								"Island",
 								"battlefield",
 								"bot_0",
@@ -5975,7 +5975,7 @@
 								false
 							],
 							[
-								"crd_loyw3vki_0v752k",
+								"crd_93",
 								"Swamp",
 								"battlefield",
 								"bot_0",
@@ -5992,7 +5992,7 @@
 								false
 							],
 							[
-								"crd_loyw3vjc_n4hjot",
+								"crd_87",
 								"Island",
 								"battlefield",
 								"bot_0",
@@ -6009,7 +6009,7 @@
 								false
 							],
 							[
-								"crd_loyw3v7a_ah2mb9",
+								"crd_25",
 								"Rhystic Study",
 								"battlefield",
 								"bot_0",
@@ -6026,7 +6026,7 @@
 								false
 							],
 							[
-								"crd_loyw3vf9_47oolj",
+								"crd_66",
 								"Plains",
 								"battlefield",
 								"bot_0",
@@ -6043,7 +6043,7 @@
 								false
 							],
 							[
-								"crd_loyw3vdp_c4gdu9",
+								"crd_58",
 								"Forest",
 								"battlefield",
 								"bot_0",
@@ -6060,7 +6060,7 @@
 								false
 							],
 							[
-								"crd_loyw3v46_q9ukux",
+								"crd_9",
 								"Lightning Greaves",
 								"battlefield",
 								"bot_0",
@@ -6079,7 +6079,7 @@
 						],
 						"graveyard": [
 							[
-								"crd_loyw3v82_wv65ti",
+								"crd_29",
 								"Demonic Tutor",
 								"graveyard",
 								"bot_0",
@@ -6096,7 +6096,7 @@
 								false
 							],
 							[
-								"crd_loyw3v5j_ak1qx5",
+								"crd_16",
 								"Path to Exile",
 								"graveyard",
 								"bot_0",
@@ -6113,7 +6113,7 @@
 								false
 							],
 							[
-								"crd_loyw3v7h_jq2w0e",
+								"crd_26",
 								"Brainstorm",
 								"graveyard",
 								"bot_0",
@@ -6130,7 +6130,7 @@
 								false
 							],
 							[
-								"crd_loyw3v8g_mdmj0m",
+								"crd_31",
 								"Infernal Grasp",
 								"graveyard",
 								"bot_0",
@@ -6147,7 +6147,7 @@
 								false
 							],
 							[
-								"crd_loyw3vaz_da6mqy",
+								"crd_44",
 								"Grateful Apparition",
 								"graveyard",
 								"bot_0",
@@ -6167,7 +6167,7 @@
 						"exile": [],
 						"command": [
 							[
-								"cmd_loyw3v2m_28aq2w",
+								"cmd_1",
 								"Atraxa, Praetors' Voice",
 								"command",
 								"bot_0",
@@ -6194,7 +6194,7 @@
 					"zones": {
 						"library": [
 							[
-								"crd_loyw3vyw_x4qqt2",
+								"crd_167",
 								"Forest",
 								"library",
 								"bot_1",
@@ -6211,7 +6211,7 @@
 								false
 							],
 							[
-								"crd_loyw3w2e_p46khi",
+								"crd_185",
 								"Swamp",
 								"library",
 								"bot_1",
@@ -6228,7 +6228,7 @@
 								false
 							],
 							[
-								"crd_loyw3w11_ak23bu",
+								"crd_178",
 								"Swamp",
 								"library",
 								"bot_1",
@@ -6245,7 +6245,7 @@
 								false
 							],
 							[
-								"crd_loyw3vsv_65er2n",
+								"crd_136",
 								"Putrefy",
 								"library",
 								"bot_1",
@@ -6262,7 +6262,7 @@
 								false
 							],
 							[
-								"crd_loyw3vwd_sqmhpw",
+								"crd_154",
 								"Forest",
 								"library",
 								"bot_1",
@@ -6279,7 +6279,7 @@
 								false
 							],
 							[
-								"crd_loyw3vp6_qhr1tw",
+								"crd_117",
 								"Shaman of the Pack",
 								"library",
 								"bot_1",
@@ -6296,7 +6296,7 @@
 								false
 							],
 							[
-								"crd_loyw3vwr_k96dav",
+								"crd_156",
 								"Forest",
 								"library",
 								"bot_1",
@@ -6313,7 +6313,7 @@
 								false
 							],
 							[
-								"crd_loyw3vrb_6u4wao",
+								"crd_128",
 								"Demonic Tutor",
 								"library",
 								"bot_1",
@@ -6330,7 +6330,7 @@
 								false
 							],
 							[
-								"crd_loyw3w27_fq3ncr",
+								"crd_184",
 								"Swamp",
 								"library",
 								"bot_1",
@@ -6347,7 +6347,7 @@
 								false
 							],
 							[
-								"crd_loyw3vos_tacmj1",
+								"crd_115",
 								"Beast Whisperer",
 								"library",
 								"bot_1",
@@ -6364,7 +6364,7 @@
 								false
 							],
 							[
-								"crd_loyw3vso_h6usth",
+								"crd_135",
 								"Reanimate",
 								"library",
 								"bot_1",
@@ -6381,7 +6381,7 @@
 								false
 							],
 							[
-								"crd_loyw3w36_5ug802",
+								"crd_189",
 								"Swamp",
 								"library",
 								"bot_1",
@@ -6398,7 +6398,7 @@
 								false
 							],
 							[
-								"crd_loyw3w4x_qcu6f7",
+								"crd_198",
 								"Swamp",
 								"library",
 								"bot_1",
@@ -6415,7 +6415,7 @@
 								false
 							],
 							[
-								"crd_loyw3vmg_zi7nqb",
+								"crd_103",
 								"Arcane Signet",
 								"library",
 								"bot_1",
@@ -6432,7 +6432,7 @@
 								false
 							],
 							[
-								"crd_loyw3vsh_fswb5r",
+								"crd_134",
 								"Read the Bones",
 								"library",
 								"bot_1",
@@ -6449,7 +6449,7 @@
 								false
 							],
 							[
-								"crd_loyw3vtn_3uyufm",
+								"crd_140",
 								"Reliquary Tower",
 								"library",
 								"bot_1",
@@ -6466,7 +6466,7 @@
 								false
 							],
 							[
-								"crd_loyw3vqc_hm11e3",
+								"crd_123",
 								"Cultivate",
 								"library",
 								"bot_1",
@@ -6483,7 +6483,7 @@
 								false
 							],
 							[
-								"crd_loyw3vzv_ejmszi",
+								"crd_172",
 								"Forest",
 								"library",
 								"bot_1",
@@ -6500,7 +6500,7 @@
 								false
 							],
 							[
-								"crd_loyw3vvz_ssy4ol",
+								"crd_152",
 								"Forest",
 								"library",
 								"bot_1",
@@ -6517,7 +6517,7 @@
 								false
 							],
 							[
-								"crd_loyw3vzh_h659jt",
+								"crd_170",
 								"Forest",
 								"library",
 								"bot_1",
@@ -6534,7 +6534,7 @@
 								false
 							],
 							[
-								"crd_loyw3w0g_fpgouu",
+								"crd_175",
 								"Forest",
 								"library",
 								"bot_1",
@@ -6551,7 +6551,7 @@
 								false
 							],
 							[
-								"crd_loyw3vt2_045taz",
+								"crd_137",
 								"Casualties of War",
 								"library",
 								"bot_1",
@@ -6568,7 +6568,7 @@
 								false
 							],
 							[
-								"crd_loyw3vwy_aj9p69",
+								"crd_157",
 								"Forest",
 								"library",
 								"bot_1",
@@ -6585,7 +6585,7 @@
 								false
 							],
 							[
-								"crd_loyw3w3y_utev6u",
+								"crd_193",
 								"Swamp",
 								"library",
 								"bot_1",
@@ -6602,7 +6602,7 @@
 								false
 							],
 							[
-								"crd_loyw3w0u_jc061r",
+								"crd_177",
 								"Forest",
 								"library",
 								"bot_1",
@@ -6619,7 +6619,7 @@
 								false
 							],
 							[
-								"crd_loyw3vxj_2vp3y2",
+								"crd_160",
 								"Forest",
 								"library",
 								"bot_1",
@@ -6636,7 +6636,7 @@
 								false
 							],
 							[
-								"crd_loyw3vy4_ts9z4m",
+								"crd_163",
 								"Forest",
 								"library",
 								"bot_1",
@@ -6653,7 +6653,7 @@
 								false
 							],
 							[
-								"crd_loyw3w1m_zhwofb",
+								"crd_181",
 								"Swamp",
 								"library",
 								"bot_1",
@@ -6670,7 +6670,7 @@
 								false
 							],
 							[
-								"crd_loyw3vza_d0dyha",
+								"crd_169",
 								"Forest",
 								"library",
 								"bot_1",
@@ -6687,7 +6687,7 @@
 								false
 							],
 							[
-								"crd_loyw3vum_ekxfbh",
+								"crd_145",
 								"Forest",
 								"library",
 								"bot_1",
@@ -6704,7 +6704,7 @@
 								false
 							],
 							[
-								"crd_loyw3vpk_zncrtb",
+								"crd_119",
 								"Eternal Witness",
 								"library",
 								"bot_1",
@@ -6721,7 +6721,7 @@
 								false
 							],
 							[
-								"crd_loyw3w3r_ly6qfo",
+								"crd_192",
 								"Swamp",
 								"library",
 								"bot_1",
@@ -6738,7 +6738,7 @@
 								false
 							],
 							[
-								"crd_loyw3vmn_ned1tz",
+								"crd_104",
 								"Fellwar Stone",
 								"library",
 								"bot_1",
@@ -6755,7 +6755,7 @@
 								false
 							],
 							[
-								"crd_loyw3w5b_bfdglv",
+								"crd_200",
 								"Swamp",
 								"library",
 								"bot_1",
@@ -6772,7 +6772,7 @@
 								false
 							],
 							[
-								"crd_loyw3voe_e9fj7u",
+								"crd_113",
 								"Elvish Archdruid",
 								"library",
 								"bot_1",
@@ -6789,7 +6789,7 @@
 								false
 							],
 							[
-								"crd_loyw3vzo_tw2smy",
+								"crd_171",
 								"Forest",
 								"library",
 								"bot_1",
@@ -6806,7 +6806,7 @@
 								false
 							],
 							[
-								"crd_loyw3vrp_h73suz",
+								"crd_130",
 								"Feed the Swarm",
 								"library",
 								"bot_1",
@@ -6823,7 +6823,7 @@
 								false
 							],
 							[
-								"crd_loyw3vsa_90tib2",
+								"crd_133",
 								"Sign in Blood",
 								"library",
 								"bot_1",
@@ -6840,7 +6840,7 @@
 								false
 							],
 							[
-								"crd_loyw3w0n_c6ru2m",
+								"crd_176",
 								"Forest",
 								"library",
 								"bot_1",
@@ -6857,7 +6857,7 @@
 								false
 							],
 							[
-								"crd_loyw3vtg_0v8nve",
+								"crd_139",
 								"Exotic Orchard",
 								"library",
 								"bot_1",
@@ -6874,7 +6874,7 @@
 								false
 							],
 							[
-								"crd_loyw3vw6_j2v7e5",
+								"crd_153",
 								"Forest",
 								"library",
 								"bot_1",
@@ -6891,7 +6891,7 @@
 								false
 							],
 							[
-								"crd_loyw3vwk_eu5zs8",
+								"crd_155",
 								"Forest",
 								"library",
 								"bot_1",
@@ -6908,7 +6908,7 @@
 								false
 							],
 							[
-								"crd_loyw3vmu_sz687n",
+								"crd_105",
 								"Thought Vessel",
 								"library",
 								"bot_1",
@@ -6925,7 +6925,7 @@
 								false
 							],
 							[
-								"crd_loyw3vxx_trl689",
+								"crd_162",
 								"Forest",
 								"library",
 								"bot_1",
@@ -6942,7 +6942,7 @@
 								false
 							],
 							[
-								"crd_loyw3w2l_xinsxr",
+								"crd_186",
 								"Swamp",
 								"library",
 								"bot_1",
@@ -6959,7 +6959,7 @@
 								false
 							],
 							[
-								"crd_loyw3vnt_i8zej7",
+								"crd_110",
 								"Llanowar Elves",
 								"library",
 								"bot_1",
@@ -6976,7 +6976,7 @@
 								false
 							],
 							[
-								"crd_loyw3vut_hyp4wp",
+								"crd_146",
 								"Forest",
 								"library",
 								"bot_1",
@@ -6993,7 +6993,7 @@
 								false
 							],
 							[
-								"crd_loyw3w3d_oyioxq",
+								"crd_190",
 								"Swamp",
 								"library",
 								"bot_1",
@@ -7010,7 +7010,7 @@
 								false
 							],
 							[
-								"crd_loyw3vn8_tvuyku",
+								"crd_107",
 								"Commander's Sphere",
 								"library",
 								"bot_1",
@@ -7027,7 +7027,7 @@
 								false
 							],
 							[
-								"crd_loyw3vrw_ix8j02",
+								"crd_131",
 								"Infernal Grasp",
 								"library",
 								"bot_1",
@@ -7044,7 +7044,7 @@
 								false
 							],
 							[
-								"crd_loyw3w20_huce85",
+								"crd_183",
 								"Swamp",
 								"library",
 								"bot_1",
@@ -7061,7 +7061,7 @@
 								false
 							],
 							[
-								"crd_loyw3vvl_shtfoc",
+								"crd_150",
 								"Forest",
 								"library",
 								"bot_1",
@@ -7078,7 +7078,7 @@
 								false
 							],
 							[
-								"crd_loyw3vn1_mh7yel",
+								"crd_106",
 								"Mind Stone",
 								"library",
 								"bot_1",
@@ -7095,7 +7095,7 @@
 								false
 							],
 							[
-								"crd_loyw3vyi_fh252u",
+								"crd_165",
 								"Forest",
 								"library",
 								"bot_1",
@@ -7112,7 +7112,7 @@
 								false
 							],
 							[
-								"crd_loyw3vpd_npcvw3",
+								"crd_118",
 								"Evolution Sage",
 								"library",
 								"bot_1",
@@ -7129,7 +7129,7 @@
 								false
 							],
 							[
-								"crd_loyw3w4j_39bc9o",
+								"crd_196",
 								"Swamp",
 								"library",
 								"bot_1",
@@ -7146,7 +7146,7 @@
 								false
 							],
 							[
-								"crd_loyw3vpr_lxnyrp",
+								"crd_120",
 								"Forgotten Ancient",
 								"library",
 								"bot_1",
@@ -7163,7 +7163,7 @@
 								false
 							],
 							[
-								"crd_loyw3w4q_olrk2q",
+								"crd_197",
 								"Swamp",
 								"library",
 								"bot_1",
@@ -7180,7 +7180,7 @@
 								false
 							],
 							[
-								"crd_loyw3vr4_uqogoa",
+								"crd_127",
 								"Heroic Intervention",
 								"library",
 								"bot_1",
@@ -7197,7 +7197,7 @@
 								false
 							],
 							[
-								"crd_loyw3w09_jugl2r",
+								"crd_174",
 								"Forest",
 								"library",
 								"bot_1",
@@ -7214,7 +7214,7 @@
 								false
 							],
 							[
-								"crd_loyw3vo0_keotdb",
+								"crd_111",
 								"Elvish Mystic",
 								"library",
 								"bot_1",
@@ -7231,7 +7231,7 @@
 								false
 							],
 							[
-								"crd_loyw3vtu_vjow0m",
+								"crd_141",
 								"Path of Ancestry",
 								"library",
 								"bot_1",
@@ -7248,7 +7248,7 @@
 								false
 							],
 							[
-								"crd_loyw3vve_cykwdp",
+								"crd_149",
 								"Forest",
 								"library",
 								"bot_1",
@@ -7265,7 +7265,7 @@
 								false
 							],
 							[
-								"crd_loyw3vqx_sn7bmg",
+								"crd_126",
 								"Beast Within",
 								"library",
 								"bot_1",
@@ -7282,7 +7282,7 @@
 								false
 							],
 							[
-								"crd_loyw3vuf_6a3cz8",
+								"crd_144",
 								"Forest",
 								"library",
 								"bot_1",
@@ -7299,7 +7299,7 @@
 								false
 							],
 							[
-								"crd_loyw3w02_z31d5z",
+								"crd_173",
 								"Forest",
 								"library",
 								"bot_1",
@@ -7316,7 +7316,7 @@
 								false
 							],
 							[
-								"crd_loyw3w1f_klnawh",
+								"crd_180",
 								"Swamp",
 								"library",
 								"bot_1",
@@ -7333,7 +7333,7 @@
 								false
 							],
 							[
-								"crd_loyw3vol_7l0z3g",
+								"crd_114",
 								"Priest of Titania",
 								"library",
 								"bot_1",
@@ -7350,7 +7350,7 @@
 								false
 							],
 							[
-								"crd_loyw3w2z_nnyb66",
+								"crd_188",
 								"Swamp",
 								"library",
 								"bot_1",
@@ -7367,7 +7367,7 @@
 								false
 							],
 							[
-								"crd_loyw3vvs_pl40jf",
+								"crd_151",
 								"Forest",
 								"library",
 								"bot_1",
@@ -7384,7 +7384,7 @@
 								false
 							],
 							[
-								"crd_loyw3vm9_a0a8vy",
+								"crd_102",
 								"Sol Ring",
 								"library",
 								"bot_1",
@@ -7401,7 +7401,7 @@
 								false
 							],
 							[
-								"crd_loyw3vo7_5si4e7",
+								"crd_112",
 								"Fyndhorn Elves",
 								"library",
 								"bot_1",
@@ -7418,7 +7418,7 @@
 								false
 							],
 							[
-								"crd_loyw3w54_yq5rng",
+								"crd_199",
 								"Swamp",
 								"library",
 								"bot_1",
@@ -7435,7 +7435,7 @@
 								false
 							],
 							[
-								"crd_loyw3vu8_25wy4m",
+								"crd_143",
 								"Forest",
 								"library",
 								"bot_1",
@@ -7452,7 +7452,7 @@
 								false
 							],
 							[
-								"crd_loyw3vqq_l0vgom",
+								"crd_125",
 								"Rampant Growth",
 								"library",
 								"bot_1",
@@ -7469,7 +7469,7 @@
 								false
 							],
 							[
-								"crd_loyw3vxq_92uji4",
+								"crd_161",
 								"Forest",
 								"library",
 								"bot_1",
@@ -7486,7 +7486,7 @@
 								false
 							],
 							[
-								"crd_loyw3vpy_qig1tx",
+								"crd_121",
 								"Corpsejack Menace",
 								"library",
 								"bot_1",
@@ -7503,7 +7503,7 @@
 								false
 							],
 							[
-								"crd_loyw3vri_jz585y",
+								"crd_129",
 								"Toxic Deluge",
 								"library",
 								"bot_1",
@@ -7520,7 +7520,7 @@
 								false
 							],
 							[
-								"crd_loyw3w2s_jtnca1",
+								"crd_187",
 								"Swamp",
 								"library",
 								"bot_1",
@@ -7537,7 +7537,7 @@
 								false
 							],
 							[
-								"crd_loyw3vv0_qd3sff",
+								"crd_147",
 								"Forest",
 								"library",
 								"bot_1",
@@ -7554,7 +7554,7 @@
 								false
 							],
 							[
-								"crd_loyw3vyp_cuk326",
+								"crd_166",
 								"Forest",
 								"library",
 								"bot_1",
@@ -7573,7 +7573,7 @@
 						],
 						"hand": [
 							[
-								"crd_loyw3vz3_91q5dj",
+								"crd_168",
 								"Forest",
 								"hand",
 								"bot_1",
@@ -7590,7 +7590,7 @@
 								false
 							],
 							[
-								"crd_loyw3vyb_rvz1dk",
+								"crd_164",
 								"Forest",
 								"hand",
 								"bot_1",
@@ -7607,7 +7607,7 @@
 								false
 							],
 							[
-								"crd_loyw3w4c_amteut",
+								"crd_195",
 								"Swamp",
 								"hand",
 								"bot_1",
@@ -7624,7 +7624,7 @@
 								false
 							],
 							[
-								"crd_loyw3vu1_zdq92u",
+								"crd_142",
 								"Forest",
 								"hand",
 								"bot_1",
@@ -7643,7 +7643,7 @@
 						],
 						"battlefield": [
 							[
-								"crd_loyw3vx5_izbse3",
+								"crd_158",
 								"Forest",
 								"battlefield",
 								"bot_1",
@@ -7660,7 +7660,7 @@
 								false
 							],
 							[
-								"crd_loyw3w3k_e2haiq",
+								"crd_191",
 								"Swamp",
 								"battlefield",
 								"bot_1",
@@ -7677,7 +7677,7 @@
 								false
 							],
 							[
-								"crd_loyw3vnf_5086dv",
+								"crd_108",
 								"Lightning Greaves",
 								"battlefield",
 								"bot_1",
@@ -7688,13 +7688,13 @@
 								false,
 								0,
 								"",
-								"cmd_loyw3vm2_ztc7u7",
+								"cmd_101",
 								"",
 								0,
 								false
 							],
 							[
-								"crd_loyw3w45_dtff8d",
+								"crd_194",
 								"Swamp",
 								"battlefield",
 								"bot_1",
@@ -7711,7 +7711,7 @@
 								false
 							],
 							[
-								"crd_loyw3w18_vtwsis",
+								"crd_179",
 								"Swamp",
 								"battlefield",
 								"bot_1",
@@ -7728,7 +7728,7 @@
 								false
 							],
 							[
-								"cmd_loyw3vm2_ztc7u7",
+								"cmd_101",
 								"Lathril, Blade of the Elves",
 								"battlefield",
 								"bot_1",
@@ -7745,7 +7745,7 @@
 								false
 							],
 							[
-								"tok_loyw40b1_awow5i",
+								"tok_482",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -7762,7 +7762,7 @@
 								false
 							],
 							[
-								"crd_loyw3vt9_68em5s",
+								"crd_138",
 								"Command Tower",
 								"battlefield",
 								"bot_1",
@@ -7779,7 +7779,7 @@
 								false
 							],
 							[
-								"crd_loyw3vnm_zshbwq",
+								"crd_109",
 								"Swiftfoot Boots",
 								"battlefield",
 								"bot_1",
@@ -7790,13 +7790,13 @@
 								false,
 								0,
 								"",
-								"crd_loyw3voz_v0la8q",
+								"crd_116",
 								"",
 								0,
 								false
 							],
 							[
-								"crd_loyw3voz_v0la8q",
+								"crd_116",
 								"Marwyn, the Nurturer",
 								"battlefield",
 								"bot_1",
@@ -7813,7 +7813,7 @@
 								false
 							],
 							[
-								"tok_loyw420h_os5zrh",
+								"tok_575",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -7830,7 +7830,7 @@
 								false
 							],
 							[
-								"tok_loyw4219_nrmc3d",
+								"tok_578",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -7847,7 +7847,7 @@
 								false
 							],
 							[
-								"crd_loyw3w1t_u9xx5t",
+								"crd_182",
 								"Swamp",
 								"battlefield",
 								"bot_1",
@@ -7864,7 +7864,7 @@
 								false
 							],
 							[
-								"crd_loyw3vxc_rybm1i",
+								"crd_159",
 								"Forest",
 								"battlefield",
 								"bot_1",
@@ -7881,7 +7881,7 @@
 								false
 							],
 							[
-								"tok_loyw43g0_8mzdrt",
+								"tok_655",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -7898,7 +7898,7 @@
 								false
 							],
 							[
-								"crd_loyw3vv7_d98yhm",
+								"crd_148",
 								"Forest",
 								"battlefield",
 								"bot_1",
@@ -7915,7 +7915,7 @@
 								false
 							],
 							[
-								"crd_loyw3vq5_ye6m0g",
+								"crd_122",
 								"Craterhoof Behemoth",
 								"battlefield",
 								"bot_1",
@@ -7932,7 +7932,7 @@
 								false
 							],
 							[
-								"tok_loyw45k1_o5t3qr",
+								"tok_778",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -7949,7 +7949,7 @@
 								false
 							],
 							[
-								"tok_loyw45kt_cuk3hb",
+								"tok_781",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -7966,7 +7966,7 @@
 								false
 							],
 							[
-								"tok_loyw45ll_74pbe1",
+								"tok_784",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -7983,7 +7983,7 @@
 								false
 							],
 							[
-								"tok_loyw45md_c3a8iv",
+								"tok_787",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -8000,7 +8000,7 @@
 								false
 							],
 							[
-								"tok_loyw45n5_xwnaj8",
+								"tok_790",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -8017,7 +8017,7 @@
 								false
 							],
 							[
-								"tok_loyw45nx_52at51",
+								"tok_793",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -8034,7 +8034,7 @@
 								false
 							],
 							[
-								"tok_loyw45op_u63d1y",
+								"tok_796",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -8051,7 +8051,7 @@
 								false
 							],
 							[
-								"tok_loyw45ph_gt0can",
+								"tok_799",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -8068,7 +8068,7 @@
 								false
 							],
 							[
-								"tok_loyw45q9_ht1ecv",
+								"tok_802",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -8085,7 +8085,7 @@
 								false
 							],
 							[
-								"tok_loyw45r1_vy8b37",
+								"tok_805",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -8104,7 +8104,7 @@
 						],
 						"graveyard": [
 							[
-								"crd_loyw3vs3_6hjooy",
+								"crd_132",
 								"Night's Whisper",
 								"graveyard",
 								"bot_1",
@@ -8121,7 +8121,7 @@
 								false
 							],
 							[
-								"crd_loyw3vqj_89sazv",
+								"crd_124",
 								"Kodama's Reach",
 								"graveyard",
 								"bot_1",
@@ -8150,7 +8150,7 @@
 					"zones": {
 						"library": [
 							[
-								"crd_loyw3wff_wtq0ux",
+								"crd_252",
 								"Island",
 								"library",
 								"bot_2",
@@ -8167,7 +8167,7 @@
 								false
 							],
 							[
-								"crd_loyw3way_5io5a0",
+								"crd_229",
 								"Blasphemous Act",
 								"library",
 								"bot_2",
@@ -8184,7 +8184,7 @@
 								false
 							],
 							[
-								"crd_loyw3wm8_zkysoz",
+								"crd_287",
 								"Mountain",
 								"library",
 								"bot_2",
@@ -8201,7 +8201,7 @@
 								false
 							],
 							[
-								"crd_loyw3weu_r3ef8g",
+								"crd_249",
 								"Island",
 								"library",
 								"bot_2",
@@ -8218,7 +8218,7 @@
 								false
 							],
 							[
-								"crd_loyw3wdo_c09dvl",
+								"crd_243",
 								"Island",
 								"library",
 								"bot_2",
@@ -8235,7 +8235,7 @@
 								false
 							],
 							[
-								"crd_loyw3wcw_hr35sj",
+								"crd_239",
 								"Island",
 								"library",
 								"bot_2",
@@ -8252,7 +8252,7 @@
 								false
 							],
 							[
-								"crd_loyw3wjb_61qfj1",
+								"crd_272",
 								"Mountain",
 								"library",
 								"bot_2",
@@ -8269,7 +8269,7 @@
 								false
 							],
 							[
-								"crd_loyw3wmf_oyorcq",
+								"crd_288",
 								"Mountain",
 								"library",
 								"bot_2",
@@ -8286,7 +8286,7 @@
 								false
 							],
 							[
-								"crd_loyw3w6v_85k3ra",
+								"crd_208",
 								"Lightning Greaves",
 								"library",
 								"bot_2",
@@ -8303,7 +8303,7 @@
 								false
 							],
 							[
-								"crd_loyw3w9e_hdg4db",
+								"crd_221",
 								"Cyclonic Rift",
 								"library",
 								"bot_2",
@@ -8320,7 +8320,7 @@
 								false
 							],
 							[
-								"crd_loyw3w5w_pxkzan",
+								"crd_203",
 								"Arcane Signet",
 								"library",
 								"bot_2",
@@ -8337,7 +8337,7 @@
 								false
 							],
 							[
-								"crd_loyw3wiq_hdk0jk",
+								"crd_269",
 								"Island",
 								"library",
 								"bot_2",
@@ -8354,7 +8354,7 @@
 								false
 							],
 							[
-								"crd_loyw3wka_1bvtcg",
+								"crd_277",
 								"Mountain",
 								"library",
 								"bot_2",
@@ -8371,7 +8371,7 @@
 								false
 							],
 							[
-								"crd_loyw3wh6_2yr9u8",
+								"crd_261",
 								"Island",
 								"library",
 								"bot_2",
@@ -8388,7 +8388,7 @@
 								false
 							],
 							[
-								"crd_loyw3w72_z8gxl1",
+								"crd_209",
 								"Swiftfoot Boots",
 								"library",
 								"bot_2",
@@ -8405,7 +8405,7 @@
 								false
 							],
 							[
-								"crd_loyw3wji_rsv6ky",
+								"crd_273",
 								"Mountain",
 								"library",
 								"bot_2",
@@ -8422,7 +8422,7 @@
 								false
 							],
 							[
-								"crd_loyw3wo6_64wx36",
+								"crd_297",
 								"Mountain",
 								"library",
 								"bot_2",
@@ -8439,7 +8439,7 @@
 								false
 							],
 							[
-								"crd_loyw3wko_ptgx7a",
+								"crd_279",
 								"Mountain",
 								"library",
 								"bot_2",
@@ -8456,7 +8456,7 @@
 								false
 							],
 							[
-								"crd_loyw3wlg_n732t4",
+								"crd_283",
 								"Mountain",
 								"library",
 								"bot_2",
@@ -8473,7 +8473,7 @@
 								false
 							],
 							[
-								"crd_loyw3wm1_3ubx1w",
+								"crd_286",
 								"Mountain",
 								"library",
 								"bot_2",
@@ -8490,7 +8490,7 @@
 								false
 							],
 							[
-								"crd_loyw3weg_03guou",
+								"crd_247",
 								"Island",
 								"library",
 								"bot_2",
@@ -8507,7 +8507,7 @@
 								false
 							],
 							[
-								"crd_loyw3we2_ywmjp0",
+								"crd_245",
 								"Island",
 								"library",
 								"bot_2",
@@ -8524,7 +8524,7 @@
 								false
 							],
 							[
-								"crd_loyw3wgz_z9fvnf",
+								"crd_260",
 								"Island",
 								"library",
 								"bot_2",
@@ -8541,7 +8541,7 @@
 								false
 							],
 							[
-								"crd_loyw3why_ovxyw0",
+								"crd_265",
 								"Island",
 								"library",
 								"bot_2",
@@ -8558,7 +8558,7 @@
 								false
 							],
 							[
-								"crd_loyw3wda_oc06pl",
+								"crd_241",
 								"Island",
 								"library",
 								"bot_2",
@@ -8575,7 +8575,7 @@
 								false
 							],
 							[
-								"crd_loyw3w6o_ynpj19",
+								"crd_207",
 								"Commander's Sphere",
 								"library",
 								"bot_2",
@@ -8592,7 +8592,7 @@
 								false
 							],
 							[
-								"crd_loyw3wne_fcq352",
+								"crd_293",
 								"Mountain",
 								"library",
 								"bot_2",
@@ -8609,7 +8609,7 @@
 								false
 							],
 							[
-								"crd_loyw3wlu_3etrk0",
+								"crd_285",
 								"Mountain",
 								"library",
 								"bot_2",
@@ -8626,7 +8626,7 @@
 								false
 							],
 							[
-								"crd_loyw3wd3_xc0j3r",
+								"crd_240",
 								"Island",
 								"library",
 								"bot_2",
@@ -8643,7 +8643,7 @@
 								false
 							],
 							[
-								"crd_loyw3w7n_e2uwp8",
+								"crd_212",
 								"Archmage Emeritus",
 								"library",
 								"bot_2",
@@ -8660,7 +8660,7 @@
 								false
 							],
 							[
-								"crd_loyw3wln_bluy8v",
+								"crd_284",
 								"Mountain",
 								"library",
 								"bot_2",
@@ -8677,7 +8677,7 @@
 								false
 							],
 							[
-								"crd_loyw3wn7_ikopjj",
+								"crd_292",
 								"Mountain",
 								"library",
 								"bot_2",
@@ -8694,7 +8694,7 @@
 								false
 							],
 							[
-								"crd_loyw3wjp_awydk5",
+								"crd_274",
 								"Mountain",
 								"library",
 								"bot_2",
@@ -8711,7 +8711,7 @@
 								false
 							],
 							[
-								"crd_loyw3wod_8lkzcp",
+								"crd_298",
 								"Mountain",
 								"library",
 								"bot_2",
@@ -8728,7 +8728,7 @@
 								false
 							],
 							[
-								"crd_loyw3wfm_9rke4l",
+								"crd_253",
 								"Island",
 								"library",
 								"bot_2",
@@ -8745,7 +8745,7 @@
 								false
 							],
 							[
-								"crd_loyw3wft_l7qkr3",
+								"crd_254",
 								"Island",
 								"library",
 								"bot_2",
@@ -8762,7 +8762,7 @@
 								false
 							],
 							[
-								"crd_loyw3w9l_517jhd",
+								"crd_222",
 								"Rhystic Study",
 								"library",
 								"bot_2",
@@ -8779,7 +8779,7 @@
 								false
 							],
 							[
-								"crd_loyw3we9_uc99nq",
+								"crd_246",
 								"Island",
 								"library",
 								"bot_2",
@@ -8796,7 +8796,7 @@
 								false
 							],
 							[
-								"crd_loyw3wdv_wqswrr",
+								"crd_244",
 								"Island",
 								"library",
 								"bot_2",
@@ -8813,7 +8813,7 @@
 								false
 							],
 							[
-								"crd_loyw3wl9_u8fyqi",
+								"crd_282",
 								"Mountain",
 								"library",
 								"bot_2",
@@ -8830,7 +8830,7 @@
 								false
 							],
 							[
-								"crd_loyw3wnl_s1ub3v",
+								"crd_294",
 								"Mountain",
 								"library",
 								"bot_2",
@@ -8847,7 +8847,7 @@
 								false
 							],
 							[
-								"crd_loyw3w5p_2fcvq1",
+								"crd_202",
 								"Sol Ring",
 								"library",
 								"bot_2",
@@ -8864,7 +8864,7 @@
 								false
 							],
 							[
-								"crd_loyw3w7g_jdt1gh",
+								"crd_211",
 								"Storm-Kiln Artist",
 								"library",
 								"bot_2",
@@ -8881,7 +8881,7 @@
 								false
 							],
 							[
-								"crd_loyw3wbq_e50g7t",
+								"crd_233",
 								"Exotic Orchard",
 								"library",
 								"bot_2",
@@ -8898,7 +8898,7 @@
 								false
 							],
 							[
-								"crd_loyw3w8m_mdgvnm",
+								"crd_217",
 								"Goldspan Dragon",
 								"library",
 								"bot_2",
@@ -8915,7 +8915,7 @@
 								false
 							],
 							[
-								"crd_loyw3wen_611zf4",
+								"crd_248",
 								"Island",
 								"library",
 								"bot_2",
@@ -8932,7 +8932,7 @@
 								false
 							],
 							[
-								"crd_loyw3wc4_uv0kfj",
+								"crd_235",
 								"Path of Ancestry",
 								"library",
 								"bot_2",
@@ -8949,7 +8949,7 @@
 								false
 							],
 							[
-								"crd_loyw3wg0_9frwvk",
+								"crd_255",
 								"Island",
 								"library",
 								"bot_2",
@@ -8966,7 +8966,7 @@
 								false
 							],
 							[
-								"crd_loyw3w97_ty78dp",
+								"crd_220",
 								"Negate",
 								"library",
 								"bot_2",
@@ -8983,7 +8983,7 @@
 								false
 							],
 							[
-								"crd_loyw3wg7_skwsnq",
+								"crd_256",
 								"Island",
 								"library",
 								"bot_2",
@@ -9000,7 +9000,7 @@
 								false
 							],
 							[
-								"crd_loyw3wij_3tu17o",
+								"crd_268",
 								"Island",
 								"library",
 								"bot_2",
@@ -9017,7 +9017,7 @@
 								false
 							],
 							[
-								"crd_loyw3wa6_k55nxn",
+								"crd_225",
 								"Preordain",
 								"library",
 								"bot_2",
@@ -9034,7 +9034,7 @@
 								false
 							],
 							[
-								"crd_loyw3wic_hwt76m",
+								"crd_267",
 								"Island",
 								"library",
 								"bot_2",
@@ -9051,7 +9051,7 @@
 								false
 							],
 							[
-								"crd_loyw3wf1_3rh384",
+								"crd_250",
 								"Island",
 								"library",
 								"bot_2",
@@ -9068,7 +9068,7 @@
 								false
 							],
 							[
-								"crd_loyw3wcp_a18h2o",
+								"crd_238",
 								"Island",
 								"library",
 								"bot_2",
@@ -9085,7 +9085,7 @@
 								false
 							],
 							[
-								"crd_loyw3w8f_q4a1np",
+								"crd_216",
 								"Flux Channeler",
 								"library",
 								"bot_2",
@@ -9102,7 +9102,7 @@
 								false
 							],
 							[
-								"crd_loyw3w7u_porqn8",
+								"crd_213",
 								"Guttersnipe",
 								"library",
 								"bot_2",
@@ -9119,7 +9119,7 @@
 								false
 							],
 							[
-								"crd_loyw3wdh_sncih7",
+								"crd_242",
 								"Island",
 								"library",
 								"bot_2",
@@ -9136,7 +9136,7 @@
 								false
 							],
 							[
-								"crd_loyw3w6a_s8b180",
+								"crd_205",
 								"Thought Vessel",
 								"library",
 								"bot_2",
@@ -9153,7 +9153,7 @@
 								false
 							],
 							[
-								"crd_loyw3w63_xcc4vd",
+								"crd_204",
 								"Fellwar Stone",
 								"library",
 								"bot_2",
@@ -9170,7 +9170,7 @@
 								false
 							],
 							[
-								"crd_loyw3wk3_tyvra5",
+								"crd_276",
 								"Mountain",
 								"library",
 								"bot_2",
@@ -9187,7 +9187,7 @@
 								false
 							],
 							[
-								"crd_loyw3w79_a68mir",
+								"crd_210",
 								"Goblin Electromancer",
 								"library",
 								"bot_2",
@@ -9204,7 +9204,7 @@
 								false
 							],
 							[
-								"crd_loyw3w9z_gp7jdz",
+								"crd_224",
 								"Ponder",
 								"library",
 								"bot_2",
@@ -9221,7 +9221,7 @@
 								false
 							],
 							[
-								"crd_loyw3whd_32qtpv",
+								"crd_262",
 								"Island",
 								"library",
 								"bot_2",
@@ -9238,7 +9238,7 @@
 								false
 							],
 							[
-								"crd_loyw3w90_9sekaj",
+								"crd_219",
 								"Arcane Denial",
 								"library",
 								"bot_2",
@@ -9255,7 +9255,7 @@
 								false
 							],
 							[
-								"crd_loyw3wb5_3nvebc",
+								"crd_230",
 								"Expressive Iteration",
 								"library",
 								"bot_2",
@@ -9272,7 +9272,7 @@
 								false
 							],
 							[
-								"crd_loyw3wgs_g2vjz4",
+								"crd_259",
 								"Island",
 								"library",
 								"bot_2",
@@ -9289,7 +9289,7 @@
 								false
 							],
 							[
-								"crd_loyw3wl2_a5bufz",
+								"crd_281",
 								"Mountain",
 								"library",
 								"bot_2",
@@ -9306,7 +9306,7 @@
 								false
 							],
 							[
-								"crd_loyw3wor_vozk7a",
+								"crd_300",
 								"Mountain",
 								"library",
 								"bot_2",
@@ -9323,7 +9323,7 @@
 								false
 							],
 							[
-								"crd_loyw3wns_5uavg1",
+								"crd_295",
 								"Mountain",
 								"library",
 								"bot_2",
@@ -9340,7 +9340,7 @@
 								false
 							],
 							[
-								"crd_loyw3wmt_in8y0c",
+								"crd_290",
 								"Mountain",
 								"library",
 								"bot_2",
@@ -9357,7 +9357,7 @@
 								false
 							],
 							[
-								"crd_loyw3wad_juhjka",
+								"crd_226",
 								"Opt",
 								"library",
 								"bot_2",
@@ -9374,7 +9374,7 @@
 								false
 							],
 							[
-								"crd_loyw3whk_dq1hfr",
+								"crd_263",
 								"Island",
 								"library",
 								"bot_2",
@@ -9391,7 +9391,7 @@
 								false
 							],
 							[
-								"crd_loyw3wn0_2jr1qb",
+								"crd_291",
 								"Mountain",
 								"library",
 								"bot_2",
@@ -9408,7 +9408,7 @@
 								false
 							],
 							[
-								"crd_loyw3whr_seu1x6",
+								"crd_264",
 								"Island",
 								"library",
 								"bot_2",
@@ -9425,7 +9425,7 @@
 								false
 							],
 							[
-								"crd_loyw3wbc_abu6hq",
+								"crd_231",
 								"Jeska's Will",
 								"library",
 								"bot_2",
@@ -9442,7 +9442,7 @@
 								false
 							],
 							[
-								"crd_loyw3wi5_9sg9e5",
+								"crd_266",
 								"Island",
 								"library",
 								"bot_2",
@@ -9459,7 +9459,7 @@
 								false
 							],
 							[
-								"crd_loyw3wci_wopqrh",
+								"crd_237",
 								"Island",
 								"library",
 								"bot_2",
@@ -9476,7 +9476,7 @@
 								false
 							],
 							[
-								"crd_loyw3w9s_q0ersk",
+								"crd_223",
 								"Brainstorm",
 								"library",
 								"bot_2",
@@ -9493,7 +9493,7 @@
 								false
 							],
 							[
-								"crd_loyw3wjw_owmqi0",
+								"crd_275",
 								"Mountain",
 								"library",
 								"bot_2",
@@ -9510,7 +9510,7 @@
 								false
 							],
 							[
-								"crd_loyw3w88_mgcqcj",
+								"crd_215",
 								"Talrand, Sky Summoner",
 								"library",
 								"bot_2",
@@ -9527,7 +9527,7 @@
 								false
 							],
 							[
-								"crd_loyw3w8t_le2lkt",
+								"crd_218",
 								"Counterspell",
 								"library",
 								"bot_2",
@@ -9544,7 +9544,7 @@
 								false
 							],
 							[
-								"crd_loyw3wj4_jldbzf",
+								"crd_271",
 								"Mountain",
 								"library",
 								"bot_2",
@@ -9561,7 +9561,7 @@
 								false
 							],
 							[
-								"crd_loyw3wcb_j30zbo",
+								"crd_236",
 								"Island",
 								"library",
 								"bot_2",
@@ -9580,7 +9580,7 @@
 						],
 						"hand": [
 							[
-								"crd_loyw3wkh_6jxp1d",
+								"crd_278",
 								"Mountain",
 								"hand",
 								"bot_2",
@@ -9597,7 +9597,7 @@
 								false
 							],
 							[
-								"crd_loyw3wix_fqjphi",
+								"crd_270",
 								"Mountain",
 								"hand",
 								"bot_2",
@@ -9614,7 +9614,7 @@
 								false
 							],
 							[
-								"crd_loyw3wok_7d7a2s",
+								"crd_299",
 								"Mountain",
 								"hand",
 								"bot_2",
@@ -9633,7 +9633,7 @@
 						],
 						"battlefield": [
 							[
-								"crd_loyw3wbj_iuxjp4",
+								"crd_232",
 								"Command Tower",
 								"battlefield",
 								"bot_2",
@@ -9650,7 +9650,7 @@
 								false
 							],
 							[
-								"crd_loyw3wmm_9a2aq7",
+								"crd_289",
 								"Mountain",
 								"battlefield",
 								"bot_2",
@@ -9667,7 +9667,7 @@
 								false
 							],
 							[
-								"crd_loyw3wkv_w58qlj",
+								"crd_280",
 								"Mountain",
 								"battlefield",
 								"bot_2",
@@ -9684,7 +9684,7 @@
 								false
 							],
 							[
-								"crd_loyw3wnz_qojai2",
+								"crd_296",
 								"Mountain",
 								"battlefield",
 								"bot_2",
@@ -9701,7 +9701,7 @@
 								false
 							],
 							[
-								"crd_loyw3wgl_22ibmf",
+								"crd_258",
 								"Island",
 								"battlefield",
 								"bot_2",
@@ -9718,7 +9718,7 @@
 								false
 							],
 							[
-								"crd_loyw3wbx_wrfn6k",
+								"crd_234",
 								"Reliquary Tower",
 								"battlefield",
 								"bot_2",
@@ -9735,7 +9735,7 @@
 								false
 							],
 							[
-								"cmd_loyw3w5i_9choc6",
+								"cmd_201",
 								"Veyran, Voice of Duality",
 								"battlefield",
 								"bot_2",
@@ -9752,7 +9752,7 @@
 								false
 							],
 							[
-								"crd_loyw3wf8_2yy59q",
+								"crd_251",
 								"Island",
 								"battlefield",
 								"bot_2",
@@ -9769,7 +9769,7 @@
 								false
 							],
 							[
-								"crd_loyw3w6h_tu3mun",
+								"crd_206",
 								"Mind Stone",
 								"battlefield",
 								"bot_2",
@@ -9786,7 +9786,7 @@
 								false
 							],
 							[
-								"crd_loyw3wge_pwks96",
+								"crd_257",
 								"Island",
 								"battlefield",
 								"bot_2",
@@ -9805,7 +9805,7 @@
 						],
 						"graveyard": [
 							[
-								"crd_loyw3wak_vyvvuc",
+								"crd_227",
 								"Lightning Bolt",
 								"graveyard",
 								"bot_2",
@@ -9822,7 +9822,7 @@
 								false
 							],
 							[
-								"crd_loyw3war_yb4ppu",
+								"crd_228",
 								"Chaos Warp",
 								"graveyard",
 								"bot_2",
@@ -9841,7 +9841,7 @@
 						],
 						"exile": [
 							[
-								"crd_loyw3w81_rd3cf4",
+								"crd_214",
 								"Young Pyromancer",
 								"exile",
 								"bot_2",
@@ -10028,9 +10028,9 @@
 	},
 	"4 bots, seed 42": {
 		"digests": [
-			"4874a44059daec2cbdf20b2f82dc12ad72ba8f6beb343059a69c49136d11b42a",
-			"5da0c4db18f05916fdccea44d3c6f502d1c2c411d4e500e75a4effef5b3b4703",
-			"c94b6d781942ab1512e310dd9e5f188448269ba96c54c44fd94ff4aa9f67a024"
+			"49195d3863b293f52528bba1027f94a28c7c4f516493c4221c5ed97d76f43138",
+			"6493d350beb31d183d3b804a5a230c9e25b527ea1fac5558cd218ed2fd2d04a1",
+			"2d229c74904db59da74c20c7c6ac7ba1f95e33d6deb8651d8a88ec1a3173d08d"
 		],
 		"final": {
 			"status": "active",
@@ -10048,7 +10048,7 @@
 					"zones": {
 						"library": [
 							[
-								"crd_loyw3vjc_p0syn1",
+								"crd_87",
 								"Island",
 								"library",
 								"bot_0",
@@ -10065,7 +10065,7 @@
 								false
 							],
 							[
-								"crd_loyw3vgt_4cad7r",
+								"crd_74",
 								"Plains",
 								"library",
 								"bot_0",
@@ -10082,7 +10082,7 @@
 								false
 							],
 							[
-								"crd_loyw3vbr_a8bylf",
+								"crd_48",
 								"Exotic Orchard",
 								"library",
 								"bot_0",
@@ -10099,7 +10099,7 @@
 								false
 							],
 							[
-								"crd_loyw3v8n_hk3zro",
+								"crd_32",
 								"Night's Whisper",
 								"library",
 								"bot_0",
@@ -10116,7 +10116,7 @@
 								false
 							],
 							[
-								"crd_loyw3vdw_4xxslo",
+								"crd_59",
 								"Forest",
 								"library",
 								"bot_0",
@@ -10133,7 +10133,7 @@
 								false
 							],
 							[
-								"crd_loyw3vf2_wdtryq",
+								"crd_65",
 								"Plains",
 								"library",
 								"bot_0",
@@ -10150,7 +10150,7 @@
 								false
 							],
 							[
-								"crd_loyw3vdi_fir5fs",
+								"crd_57",
 								"Forest",
 								"library",
 								"bot_0",
@@ -10167,7 +10167,7 @@
 								false
 							],
 							[
-								"crd_loyw3vev_m11u0i",
+								"crd_64",
 								"Forest",
 								"library",
 								"bot_0",
@@ -10184,7 +10184,7 @@
 								false
 							],
 							[
-								"crd_loyw3v2t_uosn6p",
+								"crd_2",
 								"Sol Ring",
 								"library",
 								"bot_0",
@@ -10201,7 +10201,7 @@
 								false
 							],
 							[
-								"crd_loyw3v9f_1ciri2",
+								"crd_36",
 								"Beast Within",
 								"library",
 								"bot_0",
@@ -10218,7 +10218,7 @@
 								false
 							],
 							[
-								"crd_loyw3vgf_iqbvo8",
+								"crd_72",
 								"Plains",
 								"library",
 								"bot_0",
@@ -10235,7 +10235,7 @@
 								false
 							],
 							[
-								"crd_loyw3vfn_xnl6st",
+								"crd_68",
 								"Plains",
 								"library",
 								"bot_0",
@@ -10252,7 +10252,7 @@
 								false
 							],
 							[
-								"crd_loyw3v91_bi0t25",
+								"crd_34",
 								"Mortify",
 								"library",
 								"bot_0",
@@ -10269,7 +10269,7 @@
 								false
 							],
 							[
-								"crd_loyw3v30_o3z40f",
+								"crd_3",
 								"Arcane Signet",
 								"library",
 								"bot_0",
@@ -10286,7 +10286,7 @@
 								false
 							],
 							[
-								"crd_loyw3va0_lhd0fq",
+								"crd_39",
 								"Forgotten Ancient",
 								"library",
 								"bot_0",
@@ -10303,7 +10303,7 @@
 								false
 							],
 							[
-								"crd_loyw3vir_aml97w",
+								"crd_84",
 								"Island",
 								"library",
 								"bot_0",
@@ -10320,7 +10320,7 @@
 								false
 							],
 							[
-								"crd_loyw3vfu_a0m3mg",
+								"crd_69",
 								"Plains",
 								"library",
 								"bot_0",
@@ -10337,7 +10337,7 @@
 								false
 							],
 							[
-								"crd_loyw3vd4_3608i4",
+								"crd_55",
 								"Forest",
 								"library",
 								"bot_0",
@@ -10354,7 +10354,7 @@
 								false
 							],
 							[
-								"crd_loyw3vl3_sakxqg",
+								"crd_96",
 								"Swamp",
 								"library",
 								"bot_0",
@@ -10371,7 +10371,7 @@
 								false
 							],
 							[
-								"crd_loyw3v3z_v5nl2e",
+								"crd_8",
 								"Commander's Sphere",
 								"library",
 								"bot_0",
@@ -10388,7 +10388,7 @@
 								false
 							],
 							[
-								"crd_loyw3vcc_nr6f2e",
+								"crd_51",
 								"Forest",
 								"library",
 								"bot_0",
@@ -10405,7 +10405,7 @@
 								false
 							],
 							[
-								"crd_loyw3v82_0z5h8x",
+								"crd_29",
 								"Demonic Tutor",
 								"library",
 								"bot_0",
@@ -10422,7 +10422,7 @@
 								false
 							],
 							[
-								"crd_loyw3vea_0kj5zw",
+								"crd_61",
 								"Forest",
 								"library",
 								"bot_0",
@@ -10439,7 +10439,7 @@
 								false
 							],
 							[
-								"crd_loyw3vla_wkl7e3",
+								"crd_97",
 								"Swamp",
 								"library",
 								"bot_0",
@@ -10456,7 +10456,7 @@
 								false
 							],
 							[
-								"crd_loyw3vid_bmjx2v",
+								"crd_82",
 								"Island",
 								"library",
 								"bot_0",
@@ -10473,7 +10473,7 @@
 								false
 							],
 							[
-								"crd_loyw3v3e_iygp9c",
+								"crd_5",
 								"Fellwar Stone",
 								"library",
 								"bot_0",
@@ -10490,7 +10490,7 @@
 								false
 							],
 							[
-								"crd_loyw3vg8_6gsh6y",
+								"crd_71",
 								"Plains",
 								"library",
 								"bot_0",
@@ -10507,7 +10507,7 @@
 								false
 							],
 							[
-								"crd_loyw3vk4_jmlgp8",
+								"crd_91",
 								"Swamp",
 								"library",
 								"bot_0",
@@ -10524,7 +10524,7 @@
 								false
 							],
 							[
-								"crd_loyw3vfg_pwlkc8",
+								"crd_67",
 								"Plains",
 								"library",
 								"bot_0",
@@ -10541,7 +10541,7 @@
 								false
 							],
 							[
-								"crd_loyw3vdp_xx7p05",
+								"crd_58",
 								"Forest",
 								"library",
 								"bot_0",
@@ -10558,7 +10558,7 @@
 								false
 							],
 							[
-								"crd_loyw3vcq_oy8pw1",
+								"crd_53",
 								"Forest",
 								"library",
 								"bot_0",
@@ -10575,7 +10575,7 @@
 								false
 							],
 							[
-								"crd_loyw3val_7jix62",
+								"crd_42",
 								"Evolution Sage",
 								"library",
 								"bot_0",
@@ -10592,7 +10592,7 @@
 								false
 							],
 							[
-								"crd_loyw3v7a_282h0j",
+								"crd_25",
 								"Rhystic Study",
 								"library",
 								"bot_0",
@@ -10609,7 +10609,7 @@
 								false
 							],
 							[
-								"crd_loyw3veo_hcb8uj",
+								"crd_63",
 								"Forest",
 								"library",
 								"bot_0",
@@ -10626,7 +10626,7 @@
 								false
 							],
 							[
-								"crd_loyw3vhs_ktoayd",
+								"crd_79",
 								"Island",
 								"library",
 								"bot_0",
@@ -10643,7 +10643,7 @@
 								false
 							],
 							[
-								"crd_loyw3vi6_lgq4qk",
+								"crd_81",
 								"Island",
 								"library",
 								"bot_0",
@@ -10660,7 +10660,7 @@
 								false
 							],
 							[
-								"crd_loyw3vae_n8tini",
+								"crd_41",
 								"Crystalline Crawler",
 								"library",
 								"bot_0",
@@ -10677,7 +10677,7 @@
 								false
 							],
 							[
-								"crd_loyw3v9t_k1cpw7",
+								"crd_38",
 								"Eternal Witness",
 								"library",
 								"bot_0",
@@ -10694,7 +10694,7 @@
 								false
 							],
 							[
-								"crd_loyw3v5x_04zaol",
+								"crd_18",
 								"Farewell",
 								"library",
 								"bot_0",
@@ -10711,7 +10711,7 @@
 								false
 							],
 							[
-								"crd_loyw3v8g_uc4ggh",
+								"crd_31",
 								"Infernal Grasp",
 								"library",
 								"bot_0",
@@ -10728,7 +10728,7 @@
 								false
 							],
 							[
-								"crd_loyw3veh_cz4yca",
+								"crd_62",
 								"Forest",
 								"library",
 								"bot_0",
@@ -10745,7 +10745,7 @@
 								false
 							],
 							[
-								"crd_loyw3vaz_ql949x",
+								"crd_44",
 								"Grateful Apparition",
 								"library",
 								"bot_0",
@@ -10762,7 +10762,7 @@
 								false
 							],
 							[
-								"crd_loyw3v6b_u56tc5",
+								"crd_20",
 								"Generous Gift",
 								"library",
 								"bot_0",
@@ -10779,7 +10779,7 @@
 								false
 							],
 							[
-								"crd_loyw3v89_687qcy",
+								"crd_30",
 								"Toxic Deluge",
 								"library",
 								"bot_0",
@@ -10796,7 +10796,7 @@
 								false
 							],
 							[
-								"crd_loyw3vjj_zs8llk",
+								"crd_88",
 								"Island",
 								"library",
 								"bot_0",
@@ -10813,7 +10813,7 @@
 								false
 							],
 							[
-								"crd_loyw3v4r_quh4qu",
+								"crd_12",
 								"Kodama's Reach",
 								"library",
 								"bot_0",
@@ -10830,7 +10830,7 @@
 								false
 							],
 							[
-								"crd_loyw3vjx_fjqbtm",
+								"crd_90",
 								"Swamp",
 								"library",
 								"bot_0",
@@ -10847,7 +10847,7 @@
 								false
 							],
 							[
-								"crd_loyw3vkw_ba1l3r",
+								"crd_95",
 								"Swamp",
 								"library",
 								"bot_0",
@@ -10864,7 +10864,7 @@
 								false
 							],
 							[
-								"crd_loyw3ve3_3zs5wz",
+								"crd_60",
 								"Forest",
 								"library",
 								"bot_0",
@@ -10881,7 +10881,7 @@
 								false
 							],
 							[
-								"crd_loyw3vlv_tl8xq6",
+								"crd_100",
 								"Swamp",
 								"library",
 								"bot_0",
@@ -10898,7 +10898,7 @@
 								false
 							],
 							[
-								"crd_loyw3v5j_opukj4",
+								"crd_16",
 								"Path to Exile",
 								"library",
 								"bot_0",
@@ -10915,7 +10915,7 @@
 								false
 							],
 							[
-								"crd_loyw3vlo_h43vo5",
+								"crd_99",
 								"Swamp",
 								"library",
 								"bot_0",
@@ -10932,7 +10932,7 @@
 								false
 							],
 							[
-								"crd_loyw3v46_h04fa6",
+								"crd_9",
 								"Lightning Greaves",
 								"library",
 								"bot_0",
@@ -10949,7 +10949,7 @@
 								false
 							],
 							[
-								"crd_loyw3v6i_1ud7wi",
+								"crd_21",
 								"Counterspell",
 								"library",
 								"bot_0",
@@ -10966,7 +10966,7 @@
 								false
 							],
 							[
-								"crd_loyw3v3l_9u3q3z",
+								"crd_6",
 								"Thought Vessel",
 								"library",
 								"bot_0",
@@ -10983,7 +10983,7 @@
 								false
 							],
 							[
-								"crd_loyw3vhe_wzai34",
+								"crd_77",
 								"Island",
 								"library",
 								"bot_0",
@@ -11000,7 +11000,7 @@
 								false
 							],
 							[
-								"crd_loyw3v7v_j3bc63",
+								"crd_28",
 								"Preordain",
 								"library",
 								"bot_0",
@@ -11017,7 +11017,7 @@
 								false
 							],
 							[
-								"crd_loyw3v73_9lz3jo",
+								"crd_24",
 								"Cyclonic Rift",
 								"library",
 								"bot_0",
@@ -11034,7 +11034,7 @@
 								false
 							],
 							[
-								"crd_loyw3vh0_zucikx",
+								"crd_75",
 								"Plains",
 								"library",
 								"bot_0",
@@ -11051,7 +11051,7 @@
 								false
 							],
 							[
-								"crd_loyw3vhl_fmg962",
+								"crd_78",
 								"Island",
 								"library",
 								"bot_0",
@@ -11068,7 +11068,7 @@
 								false
 							],
 							[
-								"crd_loyw3vcx_xehaqp",
+								"crd_54",
 								"Forest",
 								"library",
 								"bot_0",
@@ -11085,7 +11085,7 @@
 								false
 							],
 							[
-								"crd_loyw3vg1_pfqg4u",
+								"crd_70",
 								"Plains",
 								"library",
 								"bot_0",
@@ -11102,7 +11102,7 @@
 								false
 							],
 							[
-								"crd_loyw3v98_g72c2b",
+								"crd_35",
 								"Anguished Unmaking",
 								"library",
 								"bot_0",
@@ -11119,7 +11119,7 @@
 								false
 							],
 							[
-								"crd_loyw3v3s_mho347",
+								"crd_7",
 								"Mind Stone",
 								"library",
 								"bot_0",
@@ -11136,7 +11136,7 @@
 								false
 							],
 							[
-								"crd_loyw3v4k_vr5c4o",
+								"crd_11",
 								"Cultivate",
 								"library",
 								"bot_0",
@@ -11153,7 +11153,7 @@
 								false
 							],
 							[
-								"crd_loyw3vhz_c4pawk",
+								"crd_80",
 								"Island",
 								"library",
 								"bot_0",
@@ -11170,7 +11170,7 @@
 								false
 							],
 							[
-								"crd_loyw3v4d_8zwfwi",
+								"crd_10",
 								"Swiftfoot Boots",
 								"library",
 								"bot_0",
@@ -11187,7 +11187,7 @@
 								false
 							],
 							[
-								"crd_loyw3vf9_2sjone",
+								"crd_66",
 								"Plains",
 								"library",
 								"bot_0",
@@ -11204,7 +11204,7 @@
 								false
 							],
 							[
-								"crd_loyw3v64_gy4sun",
+								"crd_19",
 								"Smothering Tithe",
 								"library",
 								"bot_0",
@@ -11221,7 +11221,7 @@
 								false
 							],
 							[
-								"crd_loyw3va7_8tqvay",
+								"crd_40",
 								"Fathom Mage",
 								"library",
 								"bot_0",
@@ -11238,7 +11238,7 @@
 								false
 							],
 							[
-								"crd_loyw3vb6_uww0lk",
+								"crd_45",
 								"Shalai, Voice of Plenty",
 								"library",
 								"bot_0",
@@ -11255,7 +11255,7 @@
 								false
 							],
 							[
-								"crd_loyw3vjq_w1p30t",
+								"crd_89",
 								"Swamp",
 								"library",
 								"bot_0",
@@ -11272,7 +11272,7 @@
 								false
 							],
 							[
-								"crd_loyw3v8u_t4hry4",
+								"crd_33",
 								"Putrefy",
 								"library",
 								"bot_0",
@@ -11289,7 +11289,7 @@
 								false
 							],
 							[
-								"crd_loyw3vik_q9bjeq",
+								"crd_83",
 								"Island",
 								"library",
 								"bot_0",
@@ -11306,7 +11306,7 @@
 								false
 							],
 							[
-								"crd_loyw3v9m_1uls24",
+								"crd_37",
 								"Heroic Intervention",
 								"library",
 								"bot_0",
@@ -11323,7 +11323,7 @@
 								false
 							],
 							[
-								"crd_loyw3vdb_xz2wtj",
+								"crd_56",
 								"Forest",
 								"library",
 								"bot_0",
@@ -11340,7 +11340,7 @@
 								false
 							],
 							[
-								"crd_loyw3vby_ajptfw",
+								"crd_49",
 								"Reliquary Tower",
 								"library",
 								"bot_0",
@@ -11357,7 +11357,7 @@
 								false
 							],
 							[
-								"crd_loyw3v55_73n2pa",
+								"crd_14",
 								"Farseek",
 								"library",
 								"bot_0",
@@ -11374,7 +11374,7 @@
 								false
 							],
 							[
-								"crd_loyw3vbk_7cmoye",
+								"crd_47",
 								"Command Tower",
 								"library",
 								"bot_0",
@@ -11391,7 +11391,7 @@
 								false
 							],
 							[
-								"crd_loyw3vj5_ucovj3",
+								"crd_86",
 								"Island",
 								"library",
 								"bot_0",
@@ -11408,7 +11408,7 @@
 								false
 							],
 							[
-								"crd_loyw3viy_g6w4os",
+								"crd_85",
 								"Island",
 								"library",
 								"bot_0",
@@ -11425,7 +11425,7 @@
 								false
 							],
 							[
-								"crd_loyw3v4y_b1vgnj",
+								"crd_13",
 								"Rampant Growth",
 								"library",
 								"bot_0",
@@ -11442,7 +11442,7 @@
 								false
 							],
 							[
-								"crd_loyw3vas_axi56w",
+								"crd_43",
 								"Flux Channeler",
 								"library",
 								"bot_0",
@@ -11459,7 +11459,7 @@
 								false
 							],
 							[
-								"crd_loyw3vbd_iad2p1",
+								"crd_46",
 								"Corpsejack Menace",
 								"library",
 								"bot_0",
@@ -11476,7 +11476,7 @@
 								false
 							],
 							[
-								"crd_loyw3v7h_6oni86",
+								"crd_26",
 								"Brainstorm",
 								"library",
 								"bot_0",
@@ -11495,7 +11495,7 @@
 						],
 						"hand": [
 							[
-								"crd_loyw3v6p_lbngun",
+								"crd_22",
 								"Arcane Denial",
 								"hand",
 								"bot_0",
@@ -11512,7 +11512,7 @@
 								false
 							],
 							[
-								"crd_loyw3v6w_14vfnk",
+								"crd_23",
 								"Negate",
 								"hand",
 								"bot_0",
@@ -11529,7 +11529,7 @@
 								false
 							],
 							[
-								"crd_loyw3vcj_oi9ye2",
+								"crd_52",
 								"Forest",
 								"hand",
 								"bot_0",
@@ -11546,7 +11546,7 @@
 								false
 							],
 							[
-								"crd_loyw3vlh_3dcxi6",
+								"crd_98",
 								"Swamp",
 								"hand",
 								"bot_0",
@@ -11565,7 +11565,7 @@
 						],
 						"battlefield": [
 							[
-								"crd_loyw3vgm_tl66jp",
+								"crd_73",
 								"Plains",
 								"battlefield",
 								"bot_0",
@@ -11582,7 +11582,7 @@
 								false
 							],
 							[
-								"crd_loyw3vkb_anivy5",
+								"crd_92",
 								"Swamp",
 								"battlefield",
 								"bot_0",
@@ -11599,7 +11599,7 @@
 								false
 							],
 							[
-								"crd_loyw3vkp_p2y8ll",
+								"crd_94",
 								"Swamp",
 								"battlefield",
 								"bot_0",
@@ -11616,7 +11616,7 @@
 								false
 							],
 							[
-								"crd_loyw3vh7_k9e08t",
+								"crd_76",
 								"Plains",
 								"battlefield",
 								"bot_0",
@@ -11633,7 +11633,7 @@
 								false
 							],
 							[
-								"crd_loyw3vki_3mqjd0",
+								"crd_93",
 								"Swamp",
 								"battlefield",
 								"bot_0",
@@ -11650,7 +11650,7 @@
 								false
 							],
 							[
-								"crd_loyw3v37_6ak47y",
+								"crd_4",
 								"Chromatic Lantern",
 								"battlefield",
 								"bot_0",
@@ -11667,7 +11667,7 @@
 								false
 							],
 							[
-								"crd_loyw3vc5_2osyam",
+								"crd_50",
 								"Path of Ancestry",
 								"battlefield",
 								"bot_0",
@@ -11686,7 +11686,7 @@
 						],
 						"graveyard": [
 							[
-								"crd_loyw3v5c_i0y19c",
+								"crd_15",
 								"Swords to Plowshares",
 								"graveyard",
 								"bot_0",
@@ -11703,7 +11703,7 @@
 								false
 							],
 							[
-								"crd_loyw3v7o_s7h6kj",
+								"crd_27",
 								"Ponder",
 								"graveyard",
 								"bot_0",
@@ -11720,7 +11720,7 @@
 								false
 							],
 							[
-								"crd_loyw3v5q_lzd4mp",
+								"crd_17",
 								"Wrath of God",
 								"graveyard",
 								"bot_0",
@@ -11740,7 +11740,7 @@
 						"exile": [],
 						"command": [
 							[
-								"cmd_loyw3v2m_g4zfzu",
+								"cmd_1",
 								"Atraxa, Praetors' Voice",
 								"command",
 								"bot_0",
@@ -11767,7 +11767,7 @@
 					"zones": {
 						"library": [
 							[
-								"crd_loyw3vwy_bpo9a5",
+								"crd_157",
 								"Forest",
 								"library",
 								"bot_1",
@@ -11784,7 +11784,7 @@
 								false
 							],
 							[
-								"crd_loyw3vwd_jo32hd",
+								"crd_154",
 								"Forest",
 								"library",
 								"bot_1",
@@ -11801,7 +11801,7 @@
 								false
 							],
 							[
-								"crd_loyw3vwk_l7qa97",
+								"crd_155",
 								"Forest",
 								"library",
 								"bot_1",
@@ -11818,7 +11818,7 @@
 								false
 							],
 							[
-								"crd_loyw3vs3_ahrutl",
+								"crd_132",
 								"Night's Whisper",
 								"library",
 								"bot_1",
@@ -11835,7 +11835,7 @@
 								false
 							],
 							[
-								"crd_loyw3vvl_w8r1mi",
+								"crd_150",
 								"Forest",
 								"library",
 								"bot_1",
@@ -11852,7 +11852,7 @@
 								false
 							],
 							[
-								"crd_loyw3vos_sizhl2",
+								"crd_115",
 								"Beast Whisperer",
 								"library",
 								"bot_1",
@@ -11869,7 +11869,7 @@
 								false
 							],
 							[
-								"crd_loyw3vqc_vj72vs",
+								"crd_123",
 								"Cultivate",
 								"library",
 								"bot_1",
@@ -11886,7 +11886,7 @@
 								false
 							],
 							[
-								"crd_loyw3vum_fmzvfa",
+								"crd_145",
 								"Forest",
 								"library",
 								"bot_1",
@@ -11903,7 +11903,7 @@
 								false
 							],
 							[
-								"crd_loyw3vol_bqzhne",
+								"crd_114",
 								"Priest of Titania",
 								"library",
 								"bot_1",
@@ -11920,7 +11920,7 @@
 								false
 							],
 							[
-								"crd_loyw3w18_u94jwu",
+								"crd_179",
 								"Swamp",
 								"library",
 								"bot_1",
@@ -11937,7 +11937,7 @@
 								false
 							],
 							[
-								"crd_loyw3w1m_g7bzut",
+								"crd_181",
 								"Swamp",
 								"library",
 								"bot_1",
@@ -11954,7 +11954,7 @@
 								false
 							],
 							[
-								"crd_loyw3w11_ix9wie",
+								"crd_178",
 								"Swamp",
 								"library",
 								"bot_1",
@@ -11971,7 +11971,7 @@
 								false
 							],
 							[
-								"crd_loyw3voz_e59a14",
+								"crd_116",
 								"Marwyn, the Nurturer",
 								"library",
 								"bot_1",
@@ -11988,7 +11988,7 @@
 								false
 							],
 							[
-								"crd_loyw3vut_f26soe",
+								"crd_146",
 								"Forest",
 								"library",
 								"bot_1",
@@ -12005,7 +12005,7 @@
 								false
 							],
 							[
-								"crd_loyw3vqj_wozbl8",
+								"crd_124",
 								"Kodama's Reach",
 								"library",
 								"bot_1",
@@ -12022,7 +12022,7 @@
 								false
 							],
 							[
-								"crd_loyw3vtu_65efmn",
+								"crd_141",
 								"Path of Ancestry",
 								"library",
 								"bot_1",
@@ -12039,7 +12039,7 @@
 								false
 							],
 							[
-								"crd_loyw3w02_wurki9",
+								"crd_173",
 								"Forest",
 								"library",
 								"bot_1",
@@ -12056,7 +12056,7 @@
 								false
 							],
 							[
-								"crd_loyw3vpy_qjp6ho",
+								"crd_121",
 								"Corpsejack Menace",
 								"library",
 								"bot_1",
@@ -12073,7 +12073,7 @@
 								false
 							],
 							[
-								"crd_loyw3vyb_bb8ge1",
+								"crd_164",
 								"Forest",
 								"library",
 								"bot_1",
@@ -12090,7 +12090,7 @@
 								false
 							],
 							[
-								"crd_loyw3w09_t7ynj4",
+								"crd_174",
 								"Forest",
 								"library",
 								"bot_1",
@@ -12107,7 +12107,7 @@
 								false
 							],
 							[
-								"crd_loyw3vxq_7y9wiy",
+								"crd_161",
 								"Forest",
 								"library",
 								"bot_1",
@@ -12124,7 +12124,7 @@
 								false
 							],
 							[
-								"crd_loyw3vnf_5vtc6k",
+								"crd_108",
 								"Lightning Greaves",
 								"library",
 								"bot_1",
@@ -12141,7 +12141,7 @@
 								false
 							],
 							[
-								"crd_loyw3vx5_ar7w21",
+								"crd_158",
 								"Forest",
 								"library",
 								"bot_1",
@@ -12158,7 +12158,7 @@
 								false
 							],
 							[
-								"crd_loyw3w2z_zfwewk",
+								"crd_188",
 								"Swamp",
 								"library",
 								"bot_1",
@@ -12175,7 +12175,7 @@
 								false
 							],
 							[
-								"crd_loyw3w4q_ocy3pd",
+								"crd_197",
 								"Swamp",
 								"library",
 								"bot_1",
@@ -12192,7 +12192,7 @@
 								false
 							],
 							[
-								"crd_loyw3vtn_5wdc87",
+								"crd_140",
 								"Reliquary Tower",
 								"library",
 								"bot_1",
@@ -12209,7 +12209,7 @@
 								false
 							],
 							[
-								"crd_loyw3vw6_lzoqqr",
+								"crd_153",
 								"Forest",
 								"library",
 								"bot_1",
@@ -12226,7 +12226,7 @@
 								false
 							],
 							[
-								"crd_loyw3vsa_9x10he",
+								"crd_133",
 								"Sign in Blood",
 								"library",
 								"bot_1",
@@ -12243,7 +12243,7 @@
 								false
 							],
 							[
-								"crd_loyw3vnm_nkg454",
+								"crd_109",
 								"Swiftfoot Boots",
 								"library",
 								"bot_1",
@@ -12260,7 +12260,7 @@
 								false
 							],
 							[
-								"crd_loyw3w3y_1xe6ew",
+								"crd_193",
 								"Swamp",
 								"library",
 								"bot_1",
@@ -12277,7 +12277,7 @@
 								false
 							],
 							[
-								"crd_loyw3vrw_pi1piv",
+								"crd_131",
 								"Infernal Grasp",
 								"library",
 								"bot_1",
@@ -12294,7 +12294,7 @@
 								false
 							],
 							[
-								"crd_loyw3vyi_4hvwgy",
+								"crd_165",
 								"Forest",
 								"library",
 								"bot_1",
@@ -12311,7 +12311,7 @@
 								false
 							],
 							[
-								"crd_loyw3vqx_lqp2rt",
+								"crd_126",
 								"Beast Within",
 								"library",
 								"bot_1",
@@ -12328,7 +12328,7 @@
 								false
 							],
 							[
-								"crd_loyw3vpk_db57hg",
+								"crd_119",
 								"Eternal Witness",
 								"library",
 								"bot_1",
@@ -12345,7 +12345,7 @@
 								false
 							],
 							[
-								"crd_loyw3w3d_uxw00k",
+								"crd_190",
 								"Swamp",
 								"library",
 								"bot_1",
@@ -12362,7 +12362,7 @@
 								false
 							],
 							[
-								"crd_loyw3w2l_e0z7n6",
+								"crd_186",
 								"Swamp",
 								"library",
 								"bot_1",
@@ -12379,7 +12379,7 @@
 								false
 							],
 							[
-								"crd_loyw3w4x_rdzure",
+								"crd_198",
 								"Swamp",
 								"library",
 								"bot_1",
@@ -12396,7 +12396,7 @@
 								false
 							],
 							[
-								"crd_loyw3w4c_63ex9b",
+								"crd_195",
 								"Swamp",
 								"library",
 								"bot_1",
@@ -12413,7 +12413,7 @@
 								false
 							],
 							[
-								"crd_loyw3vxj_o3enr2",
+								"crd_160",
 								"Forest",
 								"library",
 								"bot_1",
@@ -12430,7 +12430,7 @@
 								false
 							],
 							[
-								"crd_loyw3vv7_ech1sj",
+								"crd_148",
 								"Forest",
 								"library",
 								"bot_1",
@@ -12447,7 +12447,7 @@
 								false
 							],
 							[
-								"crd_loyw3w0u_v8g5tk",
+								"crd_177",
 								"Forest",
 								"library",
 								"bot_1",
@@ -12464,7 +12464,7 @@
 								false
 							],
 							[
-								"crd_loyw3vn8_ev2hho",
+								"crd_107",
 								"Commander's Sphere",
 								"library",
 								"bot_1",
@@ -12481,7 +12481,7 @@
 								false
 							],
 							[
-								"crd_loyw3vp6_4qa9gb",
+								"crd_117",
 								"Shaman of the Pack",
 								"library",
 								"bot_1",
@@ -12498,7 +12498,7 @@
 								false
 							],
 							[
-								"crd_loyw3vyw_1iyx3j",
+								"crd_167",
 								"Forest",
 								"library",
 								"bot_1",
@@ -12515,7 +12515,7 @@
 								false
 							],
 							[
-								"crd_loyw3vzo_doe0mx",
+								"crd_171",
 								"Forest",
 								"library",
 								"bot_1",
@@ -12532,7 +12532,7 @@
 								false
 							],
 							[
-								"crd_loyw3vwr_8h35dl",
+								"crd_156",
 								"Forest",
 								"library",
 								"bot_1",
@@ -12549,7 +12549,7 @@
 								false
 							],
 							[
-								"crd_loyw3vnt_c3d7cc",
+								"crd_110",
 								"Llanowar Elves",
 								"library",
 								"bot_1",
@@ -12566,7 +12566,7 @@
 								false
 							],
 							[
-								"crd_loyw3vpr_0ccgo6",
+								"crd_120",
 								"Forgotten Ancient",
 								"library",
 								"bot_1",
@@ -12583,7 +12583,7 @@
 								false
 							],
 							[
-								"crd_loyw3w3k_ucs05a",
+								"crd_191",
 								"Swamp",
 								"library",
 								"bot_1",
@@ -12600,7 +12600,7 @@
 								false
 							],
 							[
-								"crd_loyw3vza_7h5vn7",
+								"crd_169",
 								"Forest",
 								"library",
 								"bot_1",
@@ -12617,7 +12617,7 @@
 								false
 							],
 							[
-								"crd_loyw3vzh_hc2gdj",
+								"crd_170",
 								"Forest",
 								"library",
 								"bot_1",
@@ -12634,7 +12634,7 @@
 								false
 							],
 							[
-								"crd_loyw3vmn_pjf5e9",
+								"crd_104",
 								"Fellwar Stone",
 								"library",
 								"bot_1",
@@ -12651,7 +12651,7 @@
 								false
 							],
 							[
-								"crd_loyw3vq5_mvav9v",
+								"crd_122",
 								"Craterhoof Behemoth",
 								"library",
 								"bot_1",
@@ -12668,7 +12668,7 @@
 								false
 							],
 							[
-								"crd_loyw3w1t_59zkvy",
+								"crd_182",
 								"Swamp",
 								"library",
 								"bot_1",
@@ -12685,7 +12685,7 @@
 								false
 							],
 							[
-								"crd_loyw3w2s_jn6eu7",
+								"crd_187",
 								"Swamp",
 								"library",
 								"bot_1",
@@ -12702,7 +12702,7 @@
 								false
 							],
 							[
-								"crd_loyw3vxx_63f2pc",
+								"crd_162",
 								"Forest",
 								"library",
 								"bot_1",
@@ -12719,7 +12719,7 @@
 								false
 							],
 							[
-								"crd_loyw3vpd_v3cw0l",
+								"crd_118",
 								"Evolution Sage",
 								"library",
 								"bot_1",
@@ -12736,7 +12736,7 @@
 								false
 							],
 							[
-								"crd_loyw3vsv_7ya3hm",
+								"crd_136",
 								"Putrefy",
 								"library",
 								"bot_1",
@@ -12753,7 +12753,7 @@
 								false
 							],
 							[
-								"crd_loyw3w1f_w7a2m5",
+								"crd_180",
 								"Swamp",
 								"library",
 								"bot_1",
@@ -12770,7 +12770,7 @@
 								false
 							],
 							[
-								"crd_loyw3vr4_hm23fs",
+								"crd_127",
 								"Heroic Intervention",
 								"library",
 								"bot_1",
@@ -12787,7 +12787,7 @@
 								false
 							],
 							[
-								"crd_loyw3vmg_6f76u4",
+								"crd_103",
 								"Arcane Signet",
 								"library",
 								"bot_1",
@@ -12804,7 +12804,7 @@
 								false
 							],
 							[
-								"crd_loyw3vv0_op8ebx",
+								"crd_147",
 								"Forest",
 								"library",
 								"bot_1",
@@ -12821,7 +12821,7 @@
 								false
 							],
 							[
-								"crd_loyw3w20_m9w4mb",
+								"crd_183",
 								"Swamp",
 								"library",
 								"bot_1",
@@ -12838,7 +12838,7 @@
 								false
 							],
 							[
-								"crd_loyw3vri_1piy74",
+								"crd_129",
 								"Toxic Deluge",
 								"library",
 								"bot_1",
@@ -12855,7 +12855,7 @@
 								false
 							],
 							[
-								"crd_loyw3w45_2hv53c",
+								"crd_194",
 								"Swamp",
 								"library",
 								"bot_1",
@@ -12872,7 +12872,7 @@
 								false
 							],
 							[
-								"crd_loyw3vo7_mn2470",
+								"crd_112",
 								"Fyndhorn Elves",
 								"library",
 								"bot_1",
@@ -12889,7 +12889,7 @@
 								false
 							],
 							[
-								"crd_loyw3vu8_aj31wn",
+								"crd_143",
 								"Forest",
 								"library",
 								"bot_1",
@@ -12906,7 +12906,7 @@
 								false
 							],
 							[
-								"crd_loyw3w2e_7i3k6z",
+								"crd_185",
 								"Swamp",
 								"library",
 								"bot_1",
@@ -12923,7 +12923,7 @@
 								false
 							],
 							[
-								"crd_loyw3vm9_z0ogg0",
+								"crd_102",
 								"Sol Ring",
 								"library",
 								"bot_1",
@@ -12940,7 +12940,7 @@
 								false
 							],
 							[
-								"crd_loyw3vsh_c48ejc",
+								"crd_134",
 								"Read the Bones",
 								"library",
 								"bot_1",
@@ -12957,7 +12957,7 @@
 								false
 							],
 							[
-								"crd_loyw3vxc_bjgb71",
+								"crd_159",
 								"Forest",
 								"library",
 								"bot_1",
@@ -12974,7 +12974,7 @@
 								false
 							],
 							[
-								"crd_loyw3vu1_k70cd1",
+								"crd_142",
 								"Forest",
 								"library",
 								"bot_1",
@@ -12991,7 +12991,7 @@
 								false
 							],
 							[
-								"crd_loyw3w54_zoxee0",
+								"crd_199",
 								"Swamp",
 								"library",
 								"bot_1",
@@ -13008,7 +13008,7 @@
 								false
 							],
 							[
-								"crd_loyw3vn1_818s9y",
+								"crd_106",
 								"Mind Stone",
 								"library",
 								"bot_1",
@@ -13025,7 +13025,7 @@
 								false
 							],
 							[
-								"crd_loyw3vy4_p0p9xn",
+								"crd_163",
 								"Forest",
 								"library",
 								"bot_1",
@@ -13042,7 +13042,7 @@
 								false
 							],
 							[
-								"crd_loyw3w0n_5jro5z",
+								"crd_176",
 								"Forest",
 								"library",
 								"bot_1",
@@ -13059,7 +13059,7 @@
 								false
 							],
 							[
-								"crd_loyw3vt2_zrloh9",
+								"crd_137",
 								"Casualties of War",
 								"library",
 								"bot_1",
@@ -13076,7 +13076,7 @@
 								false
 							],
 							[
-								"crd_loyw3vz3_kshifs",
+								"crd_168",
 								"Forest",
 								"library",
 								"bot_1",
@@ -13093,7 +13093,7 @@
 								false
 							],
 							[
-								"crd_loyw3w0g_ftevzo",
+								"crd_175",
 								"Forest",
 								"library",
 								"bot_1",
@@ -13110,7 +13110,7 @@
 								false
 							],
 							[
-								"crd_loyw3vve_c3m1vf",
+								"crd_149",
 								"Forest",
 								"library",
 								"bot_1",
@@ -13127,7 +13127,7 @@
 								false
 							],
 							[
-								"crd_loyw3vuf_e7h339",
+								"crd_144",
 								"Forest",
 								"library",
 								"bot_1",
@@ -13144,7 +13144,7 @@
 								false
 							],
 							[
-								"crd_loyw3w36_hpmpz7",
+								"crd_189",
 								"Swamp",
 								"library",
 								"bot_1",
@@ -13161,7 +13161,7 @@
 								false
 							],
 							[
-								"crd_loyw3vyp_baoes6",
+								"crd_166",
 								"Forest",
 								"library",
 								"bot_1",
@@ -13178,7 +13178,7 @@
 								false
 							],
 							[
-								"crd_loyw3vo0_7g7ngf",
+								"crd_111",
 								"Elvish Mystic",
 								"library",
 								"bot_1",
@@ -13195,7 +13195,7 @@
 								false
 							],
 							[
-								"crd_loyw3vtg_zl6gd2",
+								"crd_139",
 								"Exotic Orchard",
 								"library",
 								"bot_1",
@@ -13214,7 +13214,7 @@
 						],
 						"hand": [
 							[
-								"crd_loyw3vso_11q08p",
+								"crd_135",
 								"Reanimate",
 								"hand",
 								"bot_1",
@@ -13231,7 +13231,7 @@
 								false
 							],
 							[
-								"crd_loyw3voe_vxe7xm",
+								"crd_113",
 								"Elvish Archdruid",
 								"hand",
 								"bot_1",
@@ -13248,7 +13248,7 @@
 								false
 							],
 							[
-								"crd_loyw3vrp_pee82n",
+								"crd_130",
 								"Feed the Swarm",
 								"hand",
 								"bot_1",
@@ -13265,7 +13265,7 @@
 								false
 							],
 							[
-								"crd_loyw3w3r_qrqd5n",
+								"crd_192",
 								"Swamp",
 								"hand",
 								"bot_1",
@@ -13282,7 +13282,7 @@
 								false
 							],
 							[
-								"crd_loyw3w4j_i8h925",
+								"crd_196",
 								"Swamp",
 								"hand",
 								"bot_1",
@@ -13301,7 +13301,7 @@
 						],
 						"battlefield": [
 							[
-								"crd_loyw3vvs_bs7ag5",
+								"crd_151",
 								"Forest",
 								"battlefield",
 								"bot_1",
@@ -13318,7 +13318,7 @@
 								false
 							],
 							[
-								"crd_loyw3vt9_klrn0i",
+								"crd_138",
 								"Command Tower",
 								"battlefield",
 								"bot_1",
@@ -13335,7 +13335,7 @@
 								false
 							],
 							[
-								"crd_loyw3vmu_p6ssl1",
+								"crd_105",
 								"Thought Vessel",
 								"battlefield",
 								"bot_1",
@@ -13352,7 +13352,7 @@
 								false
 							],
 							[
-								"crd_loyw3vzv_pmtebb",
+								"crd_172",
 								"Forest",
 								"battlefield",
 								"bot_1",
@@ -13369,7 +13369,7 @@
 								false
 							],
 							[
-								"crd_loyw3vvz_htuywe",
+								"crd_152",
 								"Forest",
 								"battlefield",
 								"bot_1",
@@ -13386,7 +13386,7 @@
 								false
 							],
 							[
-								"crd_loyw3w27_t2n1c2",
+								"crd_184",
 								"Swamp",
 								"battlefield",
 								"bot_1",
@@ -13403,7 +13403,7 @@
 								false
 							],
 							[
-								"crd_loyw3w5b_tdi8mp",
+								"crd_200",
 								"Swamp",
 								"battlefield",
 								"bot_1",
@@ -13422,7 +13422,7 @@
 						],
 						"graveyard": [
 							[
-								"crd_loyw3vqq_7iukwf",
+								"crd_125",
 								"Rampant Growth",
 								"graveyard",
 								"bot_1",
@@ -13439,7 +13439,7 @@
 								false
 							],
 							[
-								"crd_loyw3vrb_6mhspz",
+								"crd_128",
 								"Demonic Tutor",
 								"graveyard",
 								"bot_1",
@@ -13459,7 +13459,7 @@
 						"exile": [],
 						"command": [
 							[
-								"cmd_loyw3vm2_4ogba4",
+								"cmd_101",
 								"Lathril, Blade of the Elves",
 								"command",
 								"bot_1",
@@ -13486,7 +13486,7 @@
 					"zones": {
 						"library": [
 							[
-								"crd_loyw3weg_jq5hod",
+								"crd_247",
 								"Island",
 								"library",
 								"bot_2",
@@ -13503,7 +13503,7 @@
 								false
 							],
 							[
-								"crd_loyw3wge_i371yc",
+								"crd_257",
 								"Island",
 								"library",
 								"bot_2",
@@ -13520,7 +13520,7 @@
 								false
 							],
 							[
-								"crd_loyw3wjb_iz28rn",
+								"crd_272",
 								"Mountain",
 								"library",
 								"bot_2",
@@ -13537,7 +13537,7 @@
 								false
 							],
 							[
-								"crd_loyw3w90_q5d9bw",
+								"crd_219",
 								"Arcane Denial",
 								"library",
 								"bot_2",
@@ -13554,7 +13554,7 @@
 								false
 							],
 							[
-								"crd_loyw3wb5_kh48yv",
+								"crd_230",
 								"Expressive Iteration",
 								"library",
 								"bot_2",
@@ -13571,7 +13571,7 @@
 								false
 							],
 							[
-								"crd_loyw3wij_nswyzf",
+								"crd_268",
 								"Island",
 								"library",
 								"bot_2",
@@ -13588,7 +13588,7 @@
 								false
 							],
 							[
-								"crd_loyw3wji_6d6alc",
+								"crd_273",
 								"Mountain",
 								"library",
 								"bot_2",
@@ -13605,7 +13605,7 @@
 								false
 							],
 							[
-								"crd_loyw3wf8_04vn1d",
+								"crd_251",
 								"Island",
 								"library",
 								"bot_2",
@@ -13622,7 +13622,7 @@
 								false
 							],
 							[
-								"crd_loyw3wmf_7dmw81",
+								"crd_288",
 								"Mountain",
 								"library",
 								"bot_2",
@@ -13639,7 +13639,7 @@
 								false
 							],
 							[
-								"crd_loyw3w8t_nbd2ec",
+								"crd_218",
 								"Counterspell",
 								"library",
 								"bot_2",
@@ -13656,7 +13656,7 @@
 								false
 							],
 							[
-								"crd_loyw3whk_pas6qb",
+								"crd_263",
 								"Island",
 								"library",
 								"bot_2",
@@ -13673,7 +13673,7 @@
 								false
 							],
 							[
-								"crd_loyw3wg0_vcdal5",
+								"crd_255",
 								"Island",
 								"library",
 								"bot_2",
@@ -13690,7 +13690,7 @@
 								false
 							],
 							[
-								"crd_loyw3whr_kb0btb",
+								"crd_264",
 								"Island",
 								"library",
 								"bot_2",
@@ -13707,7 +13707,7 @@
 								false
 							],
 							[
-								"crd_loyw3w6h_g36von",
+								"crd_206",
 								"Mind Stone",
 								"library",
 								"bot_2",
@@ -13724,7 +13724,7 @@
 								false
 							],
 							[
-								"crd_loyw3w9s_pgw2nx",
+								"crd_223",
 								"Brainstorm",
 								"library",
 								"bot_2",
@@ -13741,7 +13741,7 @@
 								false
 							],
 							[
-								"crd_loyw3w7n_buta7g",
+								"crd_212",
 								"Archmage Emeritus",
 								"library",
 								"bot_2",
@@ -13758,7 +13758,7 @@
 								false
 							],
 							[
-								"crd_loyw3wbq_s937il",
+								"crd_233",
 								"Exotic Orchard",
 								"library",
 								"bot_2",
@@ -13775,7 +13775,7 @@
 								false
 							],
 							[
-								"crd_loyw3wbx_71x2y2",
+								"crd_234",
 								"Reliquary Tower",
 								"library",
 								"bot_2",
@@ -13792,7 +13792,7 @@
 								false
 							],
 							[
-								"crd_loyw3wjw_3g970m",
+								"crd_275",
 								"Mountain",
 								"library",
 								"bot_2",
@@ -13809,7 +13809,7 @@
 								false
 							],
 							[
-								"crd_loyw3wg7_fhson3",
+								"crd_256",
 								"Island",
 								"library",
 								"bot_2",
@@ -13826,7 +13826,7 @@
 								false
 							],
 							[
-								"crd_loyw3wff_5c1d0r",
+								"crd_252",
 								"Island",
 								"library",
 								"bot_2",
@@ -13843,7 +13843,7 @@
 								false
 							],
 							[
-								"crd_loyw3w6o_vmdpds",
+								"crd_207",
 								"Commander's Sphere",
 								"library",
 								"bot_2",
@@ -13860,7 +13860,7 @@
 								false
 							],
 							[
-								"crd_loyw3w6a_cn03f2",
+								"crd_205",
 								"Thought Vessel",
 								"library",
 								"bot_2",
@@ -13877,7 +13877,7 @@
 								false
 							],
 							[
-								"crd_loyw3wf1_4uqetk",
+								"crd_250",
 								"Island",
 								"library",
 								"bot_2",
@@ -13894,7 +13894,7 @@
 								false
 							],
 							[
-								"crd_loyw3wiq_so42ci",
+								"crd_269",
 								"Island",
 								"library",
 								"bot_2",
@@ -13911,7 +13911,7 @@
 								false
 							],
 							[
-								"crd_loyw3wix_jr973s",
+								"crd_270",
 								"Mountain",
 								"library",
 								"bot_2",
@@ -13928,7 +13928,7 @@
 								false
 							],
 							[
-								"crd_loyw3wj4_sz2uhs",
+								"crd_271",
 								"Mountain",
 								"library",
 								"bot_2",
@@ -13945,7 +13945,7 @@
 								false
 							],
 							[
-								"crd_loyw3w5w_upfvj8",
+								"crd_203",
 								"Arcane Signet",
 								"library",
 								"bot_2",
@@ -13962,7 +13962,7 @@
 								false
 							],
 							[
-								"crd_loyw3wok_hs9e7y",
+								"crd_299",
 								"Mountain",
 								"library",
 								"bot_2",
@@ -13979,7 +13979,7 @@
 								false
 							],
 							[
-								"crd_loyw3wln_c5u4qh",
+								"crd_284",
 								"Mountain",
 								"library",
 								"bot_2",
@@ -13996,7 +13996,7 @@
 								false
 							],
 							[
-								"crd_loyw3wdo_5bcjp2",
+								"crd_243",
 								"Island",
 								"library",
 								"bot_2",
@@ -14013,7 +14013,7 @@
 								false
 							],
 							[
-								"crd_loyw3wdh_b2n5yi",
+								"crd_242",
 								"Island",
 								"library",
 								"bot_2",
@@ -14030,7 +14030,7 @@
 								false
 							],
 							[
-								"crd_loyw3wbj_skgvaq",
+								"crd_232",
 								"Command Tower",
 								"library",
 								"bot_2",
@@ -14047,7 +14047,7 @@
 								false
 							],
 							[
-								"crd_loyw3wfm_xyftdu",
+								"crd_253",
 								"Island",
 								"library",
 								"bot_2",
@@ -14064,7 +14064,7 @@
 								false
 							],
 							[
-								"crd_loyw3wi5_ysg0ni",
+								"crd_266",
 								"Island",
 								"library",
 								"bot_2",
@@ -14081,7 +14081,7 @@
 								false
 							],
 							[
-								"crd_loyw3wlu_a88ewr",
+								"crd_285",
 								"Mountain",
 								"library",
 								"bot_2",
@@ -14098,7 +14098,7 @@
 								false
 							],
 							[
-								"crd_loyw3wgl_3k17eb",
+								"crd_258",
 								"Island",
 								"library",
 								"bot_2",
@@ -14115,7 +14115,7 @@
 								false
 							],
 							[
-								"crd_loyw3w79_xr1hbr",
+								"crd_210",
 								"Goblin Electromancer",
 								"library",
 								"bot_2",
@@ -14132,7 +14132,7 @@
 								false
 							],
 							[
-								"crd_loyw3wen_nazwj3",
+								"crd_248",
 								"Island",
 								"library",
 								"bot_2",
@@ -14149,7 +14149,7 @@
 								false
 							],
 							[
-								"crd_loyw3wn0_9l2bil",
+								"crd_291",
 								"Mountain",
 								"library",
 								"bot_2",
@@ -14166,7 +14166,7 @@
 								false
 							],
 							[
-								"crd_loyw3way_fvik50",
+								"crd_229",
 								"Blasphemous Act",
 								"library",
 								"bot_2",
@@ -14183,7 +14183,7 @@
 								false
 							],
 							[
-								"crd_loyw3wad_50bngq",
+								"crd_226",
 								"Opt",
 								"library",
 								"bot_2",
@@ -14200,7 +14200,7 @@
 								false
 							],
 							[
-								"crd_loyw3w7u_ueowzz",
+								"crd_213",
 								"Guttersnipe",
 								"library",
 								"bot_2",
@@ -14217,7 +14217,7 @@
 								false
 							],
 							[
-								"crd_loyw3w72_ckml3n",
+								"crd_209",
 								"Swiftfoot Boots",
 								"library",
 								"bot_2",
@@ -14234,7 +14234,7 @@
 								false
 							],
 							[
-								"crd_loyw3w9e_vnsb07",
+								"crd_221",
 								"Cyclonic Rift",
 								"library",
 								"bot_2",
@@ -14251,7 +14251,7 @@
 								false
 							],
 							[
-								"crd_loyw3wkh_o73dx4",
+								"crd_278",
 								"Mountain",
 								"library",
 								"bot_2",
@@ -14268,7 +14268,7 @@
 								false
 							],
 							[
-								"crd_loyw3w9z_5848gq",
+								"crd_224",
 								"Ponder",
 								"library",
 								"bot_2",
@@ -14285,7 +14285,7 @@
 								false
 							],
 							[
-								"crd_loyw3wgz_21j0wc",
+								"crd_260",
 								"Island",
 								"library",
 								"bot_2",
@@ -14302,7 +14302,7 @@
 								false
 							],
 							[
-								"crd_loyw3wbc_psf09j",
+								"crd_231",
 								"Jeska's Will",
 								"library",
 								"bot_2",
@@ -14319,7 +14319,7 @@
 								false
 							],
 							[
-								"crd_loyw3wod_b8bjr2",
+								"crd_298",
 								"Mountain",
 								"library",
 								"bot_2",
@@ -14336,7 +14336,7 @@
 								false
 							],
 							[
-								"crd_loyw3wn7_insm8i",
+								"crd_292",
 								"Mountain",
 								"library",
 								"bot_2",
@@ -14353,7 +14353,7 @@
 								false
 							],
 							[
-								"crd_loyw3wor_r0bovh",
+								"crd_300",
 								"Mountain",
 								"library",
 								"bot_2",
@@ -14370,7 +14370,7 @@
 								false
 							],
 							[
-								"crd_loyw3wmm_xzt52w",
+								"crd_289",
 								"Mountain",
 								"library",
 								"bot_2",
@@ -14387,7 +14387,7 @@
 								false
 							],
 							[
-								"crd_loyw3wh6_dcb9aa",
+								"crd_261",
 								"Island",
 								"library",
 								"bot_2",
@@ -14404,7 +14404,7 @@
 								false
 							],
 							[
-								"crd_loyw3wns_onqgdt",
+								"crd_295",
 								"Mountain",
 								"library",
 								"bot_2",
@@ -14421,7 +14421,7 @@
 								false
 							],
 							[
-								"crd_loyw3w8f_0pvq35",
+								"crd_216",
 								"Flux Channeler",
 								"library",
 								"bot_2",
@@ -14438,7 +14438,7 @@
 								false
 							],
 							[
-								"crd_loyw3wk3_257hrb",
+								"crd_276",
 								"Mountain",
 								"library",
 								"bot_2",
@@ -14455,7 +14455,7 @@
 								false
 							],
 							[
-								"crd_loyw3wm8_jbj137",
+								"crd_287",
 								"Mountain",
 								"library",
 								"bot_2",
@@ -14472,7 +14472,7 @@
 								false
 							],
 							[
-								"crd_loyw3w7g_mj7wes",
+								"crd_211",
 								"Storm-Kiln Artist",
 								"library",
 								"bot_2",
@@ -14489,7 +14489,7 @@
 								false
 							],
 							[
-								"crd_loyw3we9_j3long",
+								"crd_246",
 								"Island",
 								"library",
 								"bot_2",
@@ -14506,7 +14506,7 @@
 								false
 							],
 							[
-								"crd_loyw3war_ah46dh",
+								"crd_228",
 								"Chaos Warp",
 								"library",
 								"bot_2",
@@ -14523,7 +14523,7 @@
 								false
 							],
 							[
-								"crd_loyw3wda_by654i",
+								"crd_241",
 								"Island",
 								"library",
 								"bot_2",
@@ -14540,7 +14540,7 @@
 								false
 							],
 							[
-								"crd_loyw3wa6_9txswm",
+								"crd_225",
 								"Preordain",
 								"library",
 								"bot_2",
@@ -14557,7 +14557,7 @@
 								false
 							],
 							[
-								"crd_loyw3whd_89pc3c",
+								"crd_262",
 								"Island",
 								"library",
 								"bot_2",
@@ -14574,7 +14574,7 @@
 								false
 							],
 							[
-								"crd_loyw3wdv_i5yhkp",
+								"crd_244",
 								"Island",
 								"library",
 								"bot_2",
@@ -14591,7 +14591,7 @@
 								false
 							],
 							[
-								"crd_loyw3wkv_k722wc",
+								"crd_280",
 								"Mountain",
 								"library",
 								"bot_2",
@@ -14608,7 +14608,7 @@
 								false
 							],
 							[
-								"crd_loyw3why_3emgod",
+								"crd_265",
 								"Island",
 								"library",
 								"bot_2",
@@ -14625,7 +14625,7 @@
 								false
 							],
 							[
-								"crd_loyw3wft_2ht6cj",
+								"crd_254",
 								"Island",
 								"library",
 								"bot_2",
@@ -14642,7 +14642,7 @@
 								false
 							],
 							[
-								"crd_loyw3wak_1psd0c",
+								"crd_227",
 								"Lightning Bolt",
 								"library",
 								"bot_2",
@@ -14659,7 +14659,7 @@
 								false
 							],
 							[
-								"crd_loyw3w6v_oik7se",
+								"crd_208",
 								"Lightning Greaves",
 								"library",
 								"bot_2",
@@ -14676,7 +14676,7 @@
 								false
 							],
 							[
-								"crd_loyw3wd3_favarl",
+								"crd_240",
 								"Island",
 								"library",
 								"bot_2",
@@ -14693,7 +14693,7 @@
 								false
 							],
 							[
-								"crd_loyw3wcb_in2p6w",
+								"crd_236",
 								"Island",
 								"library",
 								"bot_2",
@@ -14710,7 +14710,7 @@
 								false
 							],
 							[
-								"crd_loyw3wo6_t5nid9",
+								"crd_297",
 								"Mountain",
 								"library",
 								"bot_2",
@@ -14727,7 +14727,7 @@
 								false
 							],
 							[
-								"crd_loyw3wcw_gixwoj",
+								"crd_239",
 								"Island",
 								"library",
 								"bot_2",
@@ -14744,7 +14744,7 @@
 								false
 							],
 							[
-								"crd_loyw3wko_o278ea",
+								"crd_279",
 								"Mountain",
 								"library",
 								"bot_2",
@@ -14761,7 +14761,7 @@
 								false
 							],
 							[
-								"crd_loyw3wjp_2t76qj",
+								"crd_274",
 								"Mountain",
 								"library",
 								"bot_2",
@@ -14778,7 +14778,7 @@
 								false
 							],
 							[
-								"crd_loyw3w5p_u4pydh",
+								"crd_202",
 								"Sol Ring",
 								"library",
 								"bot_2",
@@ -14795,7 +14795,7 @@
 								false
 							],
 							[
-								"crd_loyw3wci_fytz7r",
+								"crd_237",
 								"Island",
 								"library",
 								"bot_2",
@@ -14812,7 +14812,7 @@
 								false
 							],
 							[
-								"crd_loyw3we2_9mjt56",
+								"crd_245",
 								"Island",
 								"library",
 								"bot_2",
@@ -14829,7 +14829,7 @@
 								false
 							],
 							[
-								"crd_loyw3w9l_gs992z",
+								"crd_222",
 								"Rhystic Study",
 								"library",
 								"bot_2",
@@ -14846,7 +14846,7 @@
 								false
 							],
 							[
-								"crd_loyw3wnz_kgtmc7",
+								"crd_296",
 								"Mountain",
 								"library",
 								"bot_2",
@@ -14863,7 +14863,7 @@
 								false
 							],
 							[
-								"crd_loyw3wka_9gk196",
+								"crd_277",
 								"Mountain",
 								"library",
 								"bot_2",
@@ -14880,7 +14880,7 @@
 								false
 							],
 							[
-								"crd_loyw3wm1_tzp6il",
+								"crd_286",
 								"Mountain",
 								"library",
 								"bot_2",
@@ -14897,7 +14897,7 @@
 								false
 							],
 							[
-								"crd_loyw3wmt_y9x2rp",
+								"crd_290",
 								"Mountain",
 								"library",
 								"bot_2",
@@ -14914,7 +14914,7 @@
 								false
 							],
 							[
-								"crd_loyw3w63_lkt3pk",
+								"crd_204",
 								"Fellwar Stone",
 								"library",
 								"bot_2",
@@ -14931,7 +14931,7 @@
 								false
 							],
 							[
-								"crd_loyw3weu_fqli5s",
+								"crd_249",
 								"Island",
 								"library",
 								"bot_2",
@@ -14948,7 +14948,7 @@
 								false
 							],
 							[
-								"crd_loyw3wic_r052jx",
+								"crd_267",
 								"Island",
 								"library",
 								"bot_2",
@@ -14967,7 +14967,7 @@
 						],
 						"hand": [
 							[
-								"crd_loyw3w88_d60fl4",
+								"crd_215",
 								"Talrand, Sky Summoner",
 								"hand",
 								"bot_2",
@@ -14984,7 +14984,7 @@
 								false
 							],
 							[
-								"crd_loyw3w97_yewfag",
+								"crd_220",
 								"Negate",
 								"hand",
 								"bot_2",
@@ -15001,7 +15001,7 @@
 								false
 							],
 							[
-								"crd_loyw3wgs_tkvvix",
+								"crd_259",
 								"Island",
 								"hand",
 								"bot_2",
@@ -15018,7 +15018,7 @@
 								false
 							],
 							[
-								"crd_loyw3w8m_32t77q",
+								"crd_217",
 								"Goldspan Dragon",
 								"hand",
 								"bot_2",
@@ -15035,7 +15035,7 @@
 								false
 							],
 							[
-								"crd_loyw3wnl_xo7j80",
+								"crd_294",
 								"Mountain",
 								"hand",
 								"bot_2",
@@ -15052,7 +15052,7 @@
 								false
 							],
 							[
-								"crd_loyw3wl2_z5qemi",
+								"crd_281",
 								"Mountain",
 								"hand",
 								"bot_2",
@@ -15071,7 +15071,7 @@
 						],
 						"battlefield": [
 							[
-								"crd_loyw3wlg_ea7et7",
+								"crd_283",
 								"Mountain",
 								"battlefield",
 								"bot_2",
@@ -15088,7 +15088,7 @@
 								false
 							],
 							[
-								"crd_loyw3wne_uykw9v",
+								"crd_293",
 								"Mountain",
 								"battlefield",
 								"bot_2",
@@ -15105,7 +15105,7 @@
 								false
 							],
 							[
-								"crd_loyw3wcp_gvuysd",
+								"crd_238",
 								"Island",
 								"battlefield",
 								"bot_2",
@@ -15122,7 +15122,7 @@
 								false
 							],
 							[
-								"crd_loyw3wl9_0sompv",
+								"crd_282",
 								"Mountain",
 								"battlefield",
 								"bot_2",
@@ -15139,7 +15139,7 @@
 								false
 							],
 							[
-								"crd_loyw3wc4_nzljoy",
+								"crd_235",
 								"Path of Ancestry",
 								"battlefield",
 								"bot_2",
@@ -15158,7 +15158,7 @@
 						],
 						"graveyard": [
 							[
-								"crd_loyw3w81_5ggsqq",
+								"crd_214",
 								"Young Pyromancer",
 								"graveyard",
 								"bot_2",
@@ -15178,7 +15178,7 @@
 						"exile": [],
 						"command": [
 							[
-								"cmd_loyw3w5i_mqkkma",
+								"cmd_201",
 								"Veyran, Voice of Duality",
 								"command",
 								"bot_2",
@@ -15205,7 +15205,7 @@
 					"zones": {
 						"library": [
 							[
-								"crd_loyw3wtf_abm57w",
+								"crd_324",
 								"Cyclonic Rift",
 								"library",
 								"bot_3",
@@ -15222,7 +15222,7 @@
 								false
 							],
 							[
-								"crd_loyw3wzg_16ita7",
+								"crd_355",
 								"Mountain",
 								"library",
 								"bot_3",
@@ -15239,7 +15239,7 @@
 								false
 							],
 							[
-								"crd_loyw3wra_vlsoqx",
+								"crd_313",
 								"Miirym, Sentinel Wyrm",
 								"library",
 								"bot_3",
@@ -15256,7 +15256,7 @@
 								false
 							],
 							[
-								"crd_loyw3wv6_uhd43m",
+								"crd_333",
 								"Heroic Intervention",
 								"library",
 								"bot_3",
@@ -15273,7 +15273,7 @@
 								false
 							],
 							[
-								"crd_loyw3x26_9d4mj0",
+								"crd_369",
 								"Forest",
 								"library",
 								"bot_3",
@@ -15290,7 +15290,7 @@
 								false
 							],
 							[
-								"crd_loyw3wyh_digm11",
+								"crd_350",
 								"Mountain",
 								"library",
 								"bot_3",
@@ -15307,7 +15307,7 @@
 								false
 							],
 							[
-								"crd_loyw3wxp_1k51kd",
+								"crd_346",
 								"Mountain",
 								"library",
 								"bot_3",
@@ -15324,7 +15324,7 @@
 								false
 							],
 							[
-								"crd_loyw3wqw_v4mqky",
+								"crd_311",
 								"Rampant Growth",
 								"library",
 								"bot_3",
@@ -15341,7 +15341,7 @@
 								false
 							],
 							[
-								"crd_loyw3wt1_ow7ivp",
+								"crd_322",
 								"Smothering Tithe",
 								"library",
 								"bot_3",
@@ -15358,7 +15358,7 @@
 								false
 							],
 							[
-								"crd_loyw3x6u_7cy7ub",
+								"crd_393",
 								"Plains",
 								"library",
 								"bot_3",
@@ -15375,7 +15375,7 @@
 								false
 							],
 							[
-								"crd_loyw3wya_4d0gkp",
+								"crd_349",
 								"Mountain",
 								"library",
 								"bot_3",
@@ -15392,7 +15392,7 @@
 								false
 							],
 							[
-								"crd_loyw3wwx_fxugu2",
+								"crd_342",
 								"Mountain",
 								"library",
 								"bot_3",
@@ -15409,7 +15409,7 @@
 								false
 							],
 							[
-								"crd_loyw3wwj_ob4mn2",
+								"crd_340",
 								"Path of Ancestry",
 								"library",
 								"bot_3",
@@ -15426,7 +15426,7 @@
 								false
 							],
 							[
-								"crd_loyw3x5h_u8n9bq",
+								"crd_386",
 								"Swamp",
 								"library",
 								"bot_3",
@@ -15443,7 +15443,7 @@
 								false
 							],
 							[
-								"crd_loyw3x1z_a18je5",
+								"crd_368",
 								"Forest",
 								"library",
 								"bot_3",
@@ -15460,7 +15460,7 @@
 								false
 							],
 							[
-								"crd_loyw3x4w_89zjyw",
+								"crd_383",
 								"Island",
 								"library",
 								"bot_3",
@@ -15477,7 +15477,7 @@
 								false
 							],
 							[
-								"crd_loyw3wul_qku3sx",
+								"crd_330",
 								"Chaos Warp",
 								"library",
 								"bot_3",
@@ -15494,7 +15494,7 @@
 								false
 							],
 							[
-								"crd_loyw3wrh_bes0os",
+								"crd_314",
 								"Terror of the Peaks",
 								"library",
 								"bot_3",
@@ -15511,7 +15511,7 @@
 								false
 							],
 							[
-								"crd_loyw3x62_15ksom",
+								"crd_389",
 								"Swamp",
 								"library",
 								"bot_3",
@@ -15528,7 +15528,7 @@
 								false
 							],
 							[
-								"crd_loyw3wu7_mph00f",
+								"crd_328",
 								"Night's Whisper",
 								"library",
 								"bot_3",
@@ -15545,7 +15545,7 @@
 								false
 							],
 							[
-								"crd_loyw3x3c_s5e4qy",
+								"crd_375",
 								"Island",
 								"library",
 								"bot_3",
@@ -15562,7 +15562,7 @@
 								false
 							],
 							[
-								"crd_loyw3x5o_caqfn5",
+								"crd_387",
 								"Swamp",
 								"library",
 								"bot_3",
@@ -15579,7 +15579,7 @@
 								false
 							],
 							[
-								"crd_loyw3wz9_31u2nb",
+								"crd_354",
 								"Mountain",
 								"library",
 								"bot_3",
@@ -15596,7 +15596,7 @@
 								false
 							],
 							[
-								"crd_loyw3ws9_j6l57n",
+								"crd_318",
 								"Goldspan Dragon",
 								"library",
 								"bot_3",
@@ -15613,7 +15613,7 @@
 								false
 							],
 							[
-								"crd_loyw3wqp_o1mh46",
+								"crd_310",
 								"Kodama's Reach",
 								"library",
 								"bot_3",
@@ -15630,7 +15630,7 @@
 								false
 							],
 							[
-								"crd_loyw3x5a_kx8fpl",
+								"crd_385",
 								"Swamp",
 								"library",
 								"bot_3",
@@ -15647,7 +15647,7 @@
 								false
 							],
 							[
-								"crd_loyw3x3q_x2iw7n",
+								"crd_377",
 								"Island",
 								"library",
 								"bot_3",
@@ -15664,7 +15664,7 @@
 								false
 							],
 							[
-								"crd_loyw3x69_qg6nfa",
+								"crd_390",
 								"Swamp",
 								"library",
 								"bot_3",
@@ -15681,7 +15681,7 @@
 								false
 							],
 							[
-								"crd_loyw3wt8_5fiiz5",
+								"crd_323",
 								"Counterspell",
 								"library",
 								"bot_3",
@@ -15698,7 +15698,7 @@
 								false
 							],
 							[
-								"crd_loyw3x7f_4yzkub",
+								"crd_396",
 								"Plains",
 								"library",
 								"bot_3",
@@ -15715,7 +15715,7 @@
 								false
 							],
 							[
-								"crd_loyw3wus_pqf3f2",
+								"crd_331",
 								"Blasphemous Act",
 								"library",
 								"bot_3",
@@ -15732,7 +15732,7 @@
 								false
 							],
 							[
-								"crd_loyw3x2r_hkkzdo",
+								"crd_372",
 								"Forest",
 								"library",
 								"bot_3",
@@ -15749,7 +15749,7 @@
 								false
 							],
 							[
-								"crd_loyw3wvr_gyu3a1",
+								"crd_336",
 								"Anguished Unmaking",
 								"library",
 								"bot_3",
@@ -15766,7 +15766,7 @@
 								false
 							],
 							[
-								"crd_loyw3x1s_habc2x",
+								"crd_367",
 								"Forest",
 								"library",
 								"bot_3",
@@ -15783,7 +15783,7 @@
 								false
 							],
 							[
-								"crd_loyw3ws2_c86ktn",
+								"crd_317",
 								"Hellkite Charger",
 								"library",
 								"bot_3",
@@ -15800,7 +15800,7 @@
 								false
 							],
 							[
-								"crd_loyw3wvd_whps3e",
+								"crd_334",
 								"Putrefy",
 								"library",
 								"bot_3",
@@ -15817,7 +15817,7 @@
 								false
 							],
 							[
-								"crd_loyw3x35_3xd5st",
+								"crd_374",
 								"Forest",
 								"library",
 								"bot_3",
@@ -15834,7 +15834,7 @@
 								false
 							],
 							[
-								"crd_loyw3x0t_vz13eg",
+								"crd_362",
 								"Forest",
 								"library",
 								"bot_3",
@@ -15851,7 +15851,7 @@
 								false
 							],
 							[
-								"crd_loyw3x0m_wpzszv",
+								"crd_361",
 								"Forest",
 								"library",
 								"bot_3",
@@ -15868,7 +15868,7 @@
 								false
 							],
 							[
-								"crd_loyw3x78_i6ksei",
+								"crd_395",
 								"Plains",
 								"library",
 								"bot_3",
@@ -15885,7 +15885,7 @@
 								false
 							],
 							[
-								"crd_loyw3x3j_ot28eu",
+								"crd_376",
 								"Island",
 								"library",
 								"bot_3",
@@ -15902,7 +15902,7 @@
 								false
 							],
 							[
-								"crd_loyw3x4p_8n8m52",
+								"crd_382",
 								"Island",
 								"library",
 								"bot_3",
@@ -15919,7 +15919,7 @@
 								false
 							],
 							[
-								"crd_loyw3x01_9phu9y",
+								"crd_358",
 								"Mountain",
 								"library",
 								"bot_3",
@@ -15936,7 +15936,7 @@
 								false
 							],
 							[
-								"crd_loyw3wx4_m65oyr",
+								"crd_343",
 								"Mountain",
 								"library",
 								"bot_3",
@@ -15953,7 +15953,7 @@
 								false
 							],
 							[
-								"crd_loyw3x53_znjfrv",
+								"crd_384",
 								"Swamp",
 								"library",
 								"bot_3",
@@ -15970,7 +15970,7 @@
 								false
 							],
 							[
-								"crd_loyw3wr3_dxcsn7",
+								"crd_312",
 								"Farseek",
 								"library",
 								"bot_3",
@@ -15987,7 +15987,7 @@
 								false
 							],
 							[
-								"crd_loyw3wpc_jycsy8",
+								"crd_303",
 								"Arcane Signet",
 								"library",
 								"bot_3",
@@ -16004,7 +16004,7 @@
 								false
 							],
 							[
-								"crd_loyw3wqb_b43kxj",
+								"crd_308",
 								"Swiftfoot Boots",
 								"library",
 								"bot_3",
@@ -16021,7 +16021,7 @@
 								false
 							],
 							[
-								"crd_loyw3x5v_ndae44",
+								"crd_388",
 								"Swamp",
 								"library",
 								"bot_3",
@@ -16038,7 +16038,7 @@
 								false
 							],
 							[
-								"crd_loyw3x10_cf811f",
+								"crd_363",
 								"Forest",
 								"library",
 								"bot_3",
@@ -16055,7 +16055,7 @@
 								false
 							],
 							[
-								"crd_loyw3wue_rrhksk",
+								"crd_329",
 								"Lightning Bolt",
 								"library",
 								"bot_3",
@@ -16072,7 +16072,7 @@
 								false
 							],
 							[
-								"crd_loyw3x3x_473n77",
+								"crd_378",
 								"Island",
 								"library",
 								"bot_3",
@@ -16089,7 +16089,7 @@
 								false
 							],
 							[
-								"crd_loyw3wyo_ttbfa9",
+								"crd_351",
 								"Mountain",
 								"library",
 								"bot_3",
@@ -16106,7 +16106,7 @@
 								false
 							],
 							[
-								"crd_loyw3x80_fje07k",
+								"crd_399",
 								"Plains",
 								"library",
 								"bot_3",
@@ -16123,7 +16123,7 @@
 								false
 							],
 							[
-								"crd_loyw3wxw_6176e1",
+								"crd_347",
 								"Mountain",
 								"library",
 								"bot_3",
@@ -16140,7 +16140,7 @@
 								false
 							],
 							[
-								"crd_loyw3wz2_olmdf7",
+								"crd_353",
 								"Mountain",
 								"library",
 								"bot_3",
@@ -16157,7 +16157,7 @@
 								false
 							],
 							[
-								"crd_loyw3wwq_f5rysk",
+								"crd_341",
 								"Mountain",
 								"library",
 								"bot_3",
@@ -16174,7 +16174,7 @@
 								false
 							],
 							[
-								"crd_loyw3x1e_mkvi8k",
+								"crd_365",
 								"Forest",
 								"library",
 								"bot_3",
@@ -16191,7 +16191,7 @@
 								false
 							],
 							[
-								"crd_loyw3x6g_sr092l",
+								"crd_391",
 								"Swamp",
 								"library",
 								"bot_3",
@@ -16208,7 +16208,7 @@
 								false
 							],
 							[
-								"crd_loyw3wqi_mqhs4g",
+								"crd_309",
 								"Cultivate",
 								"library",
 								"bot_3",
@@ -16225,7 +16225,7 @@
 								false
 							],
 							[
-								"crd_loyw3ww5_hzvn90",
+								"crd_338",
 								"Exotic Orchard",
 								"library",
 								"bot_3",
@@ -16242,7 +16242,7 @@
 								false
 							],
 							[
-								"crd_loyw3x2k_ioor9w",
+								"crd_371",
 								"Forest",
 								"library",
 								"bot_3",
@@ -16259,7 +16259,7 @@
 								false
 							],
 							[
-								"crd_loyw3x17_3lbicu",
+								"crd_364",
 								"Forest",
 								"library",
 								"bot_3",
@@ -16276,7 +16276,7 @@
 								false
 							],
 							[
-								"crd_loyw3wsu_v8l1n3",
+								"crd_321",
 								"Path to Exile",
 								"library",
 								"bot_3",
@@ -16293,7 +16293,7 @@
 								false
 							],
 							[
-								"crd_loyw3wyv_u5uzt5",
+								"crd_352",
 								"Mountain",
 								"library",
 								"bot_3",
@@ -16310,7 +16310,7 @@
 								false
 							],
 							[
-								"crd_loyw3wpj_jnmu6f",
+								"crd_304",
 								"Chromatic Lantern",
 								"library",
 								"bot_3",
@@ -16327,7 +16327,7 @@
 								false
 							],
 							[
-								"crd_loyw3x1l_8ms66o",
+								"crd_366",
 								"Forest",
 								"library",
 								"bot_3",
@@ -16344,7 +16344,7 @@
 								false
 							],
 							[
-								"crd_loyw3x08_utgnh3",
+								"crd_359",
 								"Forest",
 								"library",
 								"bot_3",
@@ -16361,7 +16361,7 @@
 								false
 							],
 							[
-								"crd_loyw3x7m_2ywqaj",
+								"crd_397",
 								"Plains",
 								"library",
 								"bot_3",
@@ -16378,7 +16378,7 @@
 								false
 							],
 							[
-								"crd_loyw3wpx_zfo7bz",
+								"crd_306",
 								"Commander's Sphere",
 								"library",
 								"bot_3",
@@ -16395,7 +16395,7 @@
 								false
 							],
 							[
-								"crd_loyw3x4i_c9b9yc",
+								"crd_381",
 								"Island",
 								"library",
 								"bot_3",
@@ -16412,7 +16412,7 @@
 								false
 							],
 							[
-								"crd_loyw3wp5_oqpliz",
+								"crd_302",
 								"Sol Ring",
 								"library",
 								"bot_3",
@@ -16429,7 +16429,7 @@
 								false
 							],
 							[
-								"crd_loyw3wsn_m8qz4t",
+								"crd_320",
 								"Swords to Plowshares",
 								"library",
 								"bot_3",
@@ -16446,7 +16446,7 @@
 								false
 							],
 							[
-								"crd_loyw3wpq_yt710n",
+								"crd_305",
 								"Fellwar Stone",
 								"library",
 								"bot_3",
@@ -16463,7 +16463,7 @@
 								false
 							],
 							[
-								"crd_loyw3wy3_3iftf9",
+								"crd_348",
 								"Mountain",
 								"library",
 								"bot_3",
@@ -16480,7 +16480,7 @@
 								false
 							],
 							[
-								"crd_loyw3wxb_ptl2sq",
+								"crd_344",
 								"Mountain",
 								"library",
 								"bot_3",
@@ -16497,7 +16497,7 @@
 								false
 							],
 							[
-								"crd_loyw3wxi_in5jvz",
+								"crd_345",
 								"Mountain",
 								"library",
 								"bot_3",
@@ -16514,7 +16514,7 @@
 								false
 							],
 							[
-								"crd_loyw3x87_vc00cw",
+								"crd_400",
 								"Plains",
 								"library",
 								"bot_3",
@@ -16531,7 +16531,7 @@
 								false
 							],
 							[
-								"crd_loyw3x2y_lb4vlw",
+								"crd_373",
 								"Forest",
 								"library",
 								"bot_3",
@@ -16548,7 +16548,7 @@
 								false
 							],
 							[
-								"crd_loyw3wq4_rlgpak",
+								"crd_307",
 								"Lightning Greaves",
 								"library",
 								"bot_3",
@@ -16565,7 +16565,7 @@
 								false
 							],
 							[
-								"crd_loyw3wtm_ym13ze",
+								"crd_325",
 								"Rhystic Study",
 								"library",
 								"bot_3",
@@ -16582,7 +16582,7 @@
 								false
 							],
 							[
-								"crd_loyw3wvk_jlz2nb",
+								"crd_335",
 								"Mortify",
 								"library",
 								"bot_3",
@@ -16599,7 +16599,7 @@
 								false
 							],
 							[
-								"crd_loyw3wtt_hiowji",
+								"crd_326",
 								"Demonic Tutor",
 								"library",
 								"bot_3",
@@ -16616,7 +16616,7 @@
 								false
 							],
 							[
-								"crd_loyw3x6n_dj51l5",
+								"crd_392",
 								"Swamp",
 								"library",
 								"bot_3",
@@ -16633,7 +16633,7 @@
 								false
 							],
 							[
-								"crd_loyw3wvy_2lz2r7",
+								"crd_337",
 								"Command Tower",
 								"library",
 								"bot_3",
@@ -16650,7 +16650,7 @@
 								false
 							],
 							[
-								"crd_loyw3wrv_evkd1s",
+								"crd_316",
 								"Atarka, World Render",
 								"library",
 								"bot_3",
@@ -16667,7 +16667,7 @@
 								false
 							],
 							[
-								"crd_loyw3x0f_mjf0xy",
+								"crd_360",
 								"Forest",
 								"library",
 								"bot_3",
@@ -16686,7 +16686,7 @@
 						],
 						"hand": [
 							[
-								"crd_loyw3wuz_6owvg0",
+								"crd_332",
 								"Beast Within",
 								"hand",
 								"bot_3",
@@ -16703,7 +16703,7 @@
 								false
 							],
 							[
-								"crd_loyw3wsg_u4fsju",
+								"crd_319",
 								"Scourge of Valkas",
 								"hand",
 								"bot_3",
@@ -16720,7 +16720,7 @@
 								false
 							],
 							[
-								"crd_loyw3x7t_rt8aoh",
+								"crd_398",
 								"Plains",
 								"hand",
 								"bot_3",
@@ -16737,7 +16737,7 @@
 								false
 							],
 							[
-								"crd_loyw3x4b_16yyrq",
+								"crd_380",
 								"Island",
 								"hand",
 								"bot_3",
@@ -16754,7 +16754,7 @@
 								false
 							],
 							[
-								"crd_loyw3x2d_pxpies",
+								"crd_370",
 								"Forest",
 								"hand",
 								"bot_3",
@@ -16771,7 +16771,7 @@
 								false
 							],
 							[
-								"crd_loyw3wu0_9w6e2s",
+								"crd_327",
 								"Infernal Grasp",
 								"hand",
 								"bot_3",
@@ -16790,7 +16790,7 @@
 						],
 						"battlefield": [
 							[
-								"crd_loyw3wzn_9q9nc0",
+								"crd_356",
 								"Mountain",
 								"battlefield",
 								"bot_3",
@@ -16807,7 +16807,7 @@
 								false
 							],
 							[
-								"crd_loyw3wwc_w5luzz",
+								"crd_339",
 								"Reliquary Tower",
 								"battlefield",
 								"bot_3",
@@ -16824,7 +16824,7 @@
 								false
 							],
 							[
-								"crd_loyw3wzu_p78adt",
+								"crd_357",
 								"Mountain",
 								"battlefield",
 								"bot_3",
@@ -16841,7 +16841,7 @@
 								false
 							],
 							[
-								"crd_loyw3x44_2471v1",
+								"crd_379",
 								"Island",
 								"battlefield",
 								"bot_3",
@@ -16858,7 +16858,7 @@
 								false
 							],
 							[
-								"crd_loyw3x71_s9zk2a",
+								"crd_394",
 								"Plains",
 								"battlefield",
 								"bot_3",
@@ -16877,7 +16877,7 @@
 						],
 						"graveyard": [
 							[
-								"crd_loyw3wro_vobcxj",
+								"crd_315",
 								"Lathliss, Dragon Queen",
 								"graveyard",
 								"bot_3",
@@ -16897,7 +16897,7 @@
 						"exile": [],
 						"command": [
 							[
-								"cmd_loyw3woy_jsg4f2",
+								"cmd_301",
 								"The Ur-Dragon",
 								"command",
 								"bot_3",
