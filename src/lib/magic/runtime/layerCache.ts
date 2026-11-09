@@ -250,6 +250,7 @@ export function scopeTrust(state: GameState): ScopeTrust | null {
  */
 export function verifyScopeTrust(label: string, stillValid: boolean): void {
 	checkCount += 1;
+	scopeCheckCount += 1;
 	if (!stillValid) {
 		mismatchCount += 1;
 		console.error(`[layerCache] stable-scope violation in ${label}`);
@@ -334,10 +335,14 @@ export function setLayerCacheCheck(enabled: boolean | null): void {
 
 let checkCount = 0;
 let mismatchCount = 0;
+let scopeCheckCount = 0;
 
-/** Number of cross-checks run and mismatches found so far in this process. */
-export function layerCacheCheckStats(): { checks: number; mismatches: number } {
-	return { checks: checkCount, mismatches: mismatchCount };
+/**
+ * Number of cross-checks run and mismatches found so far in this process. `scopeChecks` is the
+ * part of `checks` that re-validated a trusted hit inside `withStableLayerInputs`.
+ */
+export function layerCacheCheckStats(): { checks: number; mismatches: number; scopeChecks: number } {
+	return { checks: checkCount, mismatches: mismatchCount, scopeChecks: scopeCheckCount };
 }
 
 // `MAGIC_LAYER_CACHE_CHECK=verbose` also prints the totals to stderr when the process exits.
@@ -349,7 +354,8 @@ try {
 	) {
 		process.on('exit', () => {
 			process.stderr.write(
-				`[layerCache] cross-checks: ${checkCount}, mismatches: ${mismatchCount}\n`
+				`[layerCache] cross-checks: ${checkCount}, mismatches: ${mismatchCount}, ` +
+					`scope checks: ${scopeCheckCount}\n`
 			);
 		});
 	}
