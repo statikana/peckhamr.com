@@ -1,6 +1,12 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import ArenaTable from '../../lib/magic/ArenaTable.svelte';
+	import {
+		cardSupportReport,
+		deckUnsupportedCards,
+		displayAbilityText,
+		type UnsupportedAbilityReport
+	} from '../../lib/magic/compiler/support';
 	import { inspectCardContinuousBreakdown } from '../../lib/magic/engine';
 	import ManaSymbol from '../../lib/magic/ManaSymbol.svelte';
 	import ManaText from '../../lib/magic/ManaText.svelte';
@@ -147,6 +153,39 @@
 	function safeCssArtUrl(url: string | undefined): string {
 		if (!url) return '';
 		return url.replace(/'/g, '%27').replace(/\(/g, '%28').replace(/\)/g, '%29');
+	}
+
+	// Plan section 2.7: abilities the engine won't automate. A warning only; never a legality error.
+	const inspectedUnsupported = $derived(
+		inspectedDeck ? deckUnsupportedCards(inspectedDeck.commanders, inspectedDeck.cards) : []
+	);
+
+	const UNSUPPORTED_REASON_LABEL: Record<UnsupportedAbilityReport['reason'], string> = {
+		unparsed: 'text not understood',
+		keyword_not_implemented: 'keyword not implemented',
+		static_not_compiled: 'static ability not enforced',
+		multiface: 'multi-face card',
+		event_not_implemented: 'trigger event not implemented'
+	};
+
+	function unsupportedCount(card: ScryfallCard): number {
+		return cardSupportReport(card).unsupported.length;
+	}
+
+	function abilitiesNotAutomatedLabel(n: number): string {
+		return `${n} ${n === 1 ? 'ability' : 'abilities'} not automated`;
+	}
+
+	/** Hover text for the per-card badge: each unsupported ability, from the card's own text. */
+	function unsupportedTooltip(card: ScryfallCard): string {
+		const lines = cardSupportReport(card).unsupported.map((u) => {
+			const text = displayAbilityText(u.text, u.face) || '(whole card)';
+			const missed = u.unparsed.length
+				? ` [not understood: ${u.unparsed.map((t) => displayAbilityText(t, u.face)).join(' … ')}]`
+				: '';
+			return `• ${text} (${UNSUPPORTED_REASON_LABEL[u.reason]})${missed}`;
+		});
+		return `Not automated: resolved manually in game\n${lines.join('\n')}`;
 	}
 
 	const filteredInspectedCommanders = $derived.by(() => {
@@ -1741,6 +1780,22 @@
 								</label>
 
 								<label>
+									<span>Cards With Unsupported Abilities</span>
+									<select
+										disabled={!isHost}
+										value={activeLobby.rules.allowUnsupportedCards === false ? 'block' : 'allow'}
+										onchange={(e) =>
+											updateHostRules({
+												allowUnsupportedCards:
+													(e.currentTarget as HTMLSelectElement).value !== 'block'
+											})}
+									>
+										<option value="allow">Allow (Players Resolve Them Manually)</option>
+										<option value="block">Block (Refuse to Start if Any Deck Has One)</option>
+									</select>
+								</label>
+
+								<label>
 									<span>MTG Arena Turn / Priority Rope Timer</span>
 									<select
 										disabled={!isHost}
@@ -1883,6 +1938,15 @@
 										<span class="legality-pill" class:legal={d.isLegal}>
 											{d.isLegal ? 'Commander Legal' : 'Rule 0 / Issues'}
 										</span>
+										{#if deckUnsupportedCards(d.commanders, d.cards).length > 0}
+											{@const n = deckUnsupportedCards(d.commanders, d.cards).length}
+											<span
+												class="unsupported-pill"
+												title="{n} {n === 1 ? 'card has' : 'cards have'} abilities that won't be automated. Open the deck to see which."
+											>
+												{n} not automated
+											</span>
+										{/if}
 										<span class="deck-mode-pill editable">Editable</span>
 									</div>
 									<h3>{d.name}</h3>
@@ -2108,6 +2172,9 @@
 							<span class="legality-pill" class:legal={inspectedDeck.isLegal}>
 								{inspectedDeck.isLegal ? 'Commander Legal' : 'Rule 0'}
 							</span>
+							{#if inspectedUnsupported.length > 0}
+								<span class="unsupported-pill">{inspectedUnsupported.length} not automated</span>
+							{/if}
 							<span class="inspect-count-tag">{inspectedDeck.cardCount} Cards</span>
 							<span class="mana-row">
 								{#if inspectedDeck.colorIdentity.length > 0}
@@ -2428,6 +2495,42 @@
 					</div>
 				{/if}
 
+				{#if inspectedUnsupported.length > 0}
+					<details class="unsupported-warn">
+						<summary>
+							<strong>
+								{inspectedUnsupported.length}
+								{inspectedUnsupported.length === 1 ? 'card has' : 'cards have'} abilities that won't be automated.
+							</strong>
+							You can still play them: in game those abilities are resolved manually. A lobby host can block such cards.
+						</summary>
+						<ul>
+							{#each inspectedUnsupported as item (item.card.name)}
+								<li>
+									<strong>{item.card.name}</strong>
+									{#if item.isCommander}<span class="ic-qty cmd-qty">CMD</span>{/if}
+									<ul>
+										{#each item.report.unsupported as u, i (i)}
+											<li>
+												<span class="unsupported-text">{displayAbilityText(u.text, u.face) || '(whole card)'}</span>
+												<span class="unsupported-reason">({UNSUPPORTED_REASON_LABEL[u.reason]})</span>
+												{#if u.unparsed.length > 0}
+													<span class="unsupported-missed">
+														Not understood:
+														{#each u.unparsed as frag, j (j)}
+															<mark>{displayAbilityText(frag, u.face)}</mark>
+														{/each}
+													</span>
+												{/if}
+											</li>
+										{/each}
+									</ul>
+								</li>
+							{/each}
+						</ul>
+					</details>
+				{/if}
+
 				<div
 					class="inspect-cards-grid"
 					style="grid-template-columns: repeat({inspectCardsPerRow}, minmax(0, 1fr));"
@@ -2468,6 +2571,11 @@
 										</button>
 									{/if}
 									<span class="inspect-card-sub">{cmd.typeLine.split('—')[0].trim()}</span>
+									{#if unsupportedCount(cmd) > 0}
+										<span class="unsupported-badge" title={unsupportedTooltip(cmd)}>
+											{abilitiesNotAutomatedLabel(unsupportedCount(cmd))}
+										</span>
+									{/if}
 								</div>
 							</div>
 
@@ -2548,6 +2656,11 @@
 										</button>
 									{/if}
 									<span class="inspect-card-sub">{entry.card.typeLine.split('—')[0].trim()}</span>
+									{#if unsupportedCount(entry.card) > 0}
+										<span class="unsupported-badge" title={unsupportedTooltip(entry.card)}>
+											{abilitiesNotAutomatedLabel(unsupportedCount(entry.card))}
+										</span>
+									{/if}
 								</div>
 							</div>
 
@@ -4474,5 +4587,63 @@
 		border-radius: 6px;
 		padding: 0.65rem;
 		font-size: 0.76rem;
+	}
+	/* Plan section 2.7: unsupported-ability warning (amber, distinct from legality errors). */
+	.unsupported-pill {
+		align-self: center;
+		font-size: 0.64rem;
+		font-weight: 700;
+		padding: 0.12rem 0.42rem;
+		border-radius: 3px;
+		background: rgba(255, 216, 102, 0.9);
+		color: #19181a;
+		white-space: nowrap;
+	}
+	.unsupported-badge {
+		margin-left: auto;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		font-size: 0.58rem;
+		font-weight: 700;
+		padding: 0.06rem 0.3rem;
+		border-radius: 3px;
+		border: 1px solid rgba(255, 216, 102, 0.6);
+		background: rgba(255, 216, 102, 0.14);
+		color: #ffd866;
+		cursor: help;
+	}
+	.unsupported-warn {
+		background: rgba(255, 216, 102, 0.08);
+		border: 1px solid rgba(255, 216, 102, 0.55);
+		border-radius: 6px;
+		padding: 0.55rem 0.65rem;
+		font-size: 0.74rem;
+	}
+	.unsupported-warn summary {
+		cursor: pointer;
+	}
+	.unsupported-warn ul {
+		margin: 0.35rem 0 0;
+		padding-left: 1.1rem;
+	}
+	.unsupported-warn li {
+		margin: 0.15rem 0;
+	}
+	.unsupported-reason {
+		color: var(--mp-text-muted);
+		font-size: 0.68rem;
+	}
+	.unsupported-missed {
+		display: block;
+		font-size: 0.68rem;
+	}
+	.unsupported-missed mark {
+		background: rgba(255, 216, 102, 0.22);
+		color: inherit;
+		padding: 0 0.15rem;
+		border-radius: 2px;
+		margin-right: 0.3rem;
 	}
 </style>
