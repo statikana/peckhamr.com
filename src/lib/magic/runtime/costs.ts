@@ -12,6 +12,7 @@
  *
  * Zone changes go through runtime/zones.ts `moveObject`.
  */
+import { nextRandom } from './random.ts';
 import { compileCard } from '../compiler/index.ts';
 import type { AbilityDef, Amount, CostDef, KeywordDef, ObjectFilter, StaticDef } from '../ir.ts';
 import { parseManaCost, type ManaCostRequirement } from '../oracle.ts';
@@ -771,7 +772,7 @@ export function payPlannedCosts(ctx: CostContext, plan: Extract<CostPlan, { part
 					const pool = [...part.random.candidates];
 					cards = [];
 					for (let i = 0; i < part.random.count && pool.length > 0; i++) {
-						cards.push(pool.splice(Math.floor(Math.random() * pool.length), 1)[0]);
+						cards.push(pool.splice(Math.floor(nextRandom(ctx.state) * pool.length), 1)[0]);
 					}
 				}
 				for (const c of cards) moveFromZone(ctx, c, 'hand', 'graveyard');

@@ -163,6 +163,7 @@ import {
 import { botAcceptsOptionalTrigger, chooseBotTriggerTargets } from './ai.ts';
 import type { EffectStep, TargetSpec } from './ir.ts';
 import { compiledStackItemEffects } from './compiler/effects.ts';
+import { freshRngSeed, type RngHolder } from './runtime/random.ts';
 import { cardAbilityDisplayText, enteringNotices, stackItemDisplayText } from './compiler/support.ts';
 import {
 	buildCostChoiceRequest,
@@ -298,6 +299,8 @@ export function createInitialGameState(
 ): GameState {
 	const now = Date.now();
 	const activeSeats = seats.filter((s) => s.userId !== null || s.isBot);
+	// ENGINE_INVARIANTS.md 7.2: one seed per game; every shuffle and random choice draws from it.
+	const rng: RngHolder = { rngState: freshRngSeed() };
 
 	const players: PlayerGameState[] = activeSeats.map((seat, idx) => {
 		const playerId = seat.userId || `bot_${seat.seatIndex}`;
@@ -317,7 +320,7 @@ export function createInitialGameState(
 			}
 		}
 
-		const shuffled = shuffleArray(rawLibrary);
+		const shuffled = shuffleArray(rng, rawLibrary);
 		const hand = shuffled.splice(0, 7).map((c) => ({ ...c, zone: 'hand' as ZoneType }));
 
 		return {
@@ -389,6 +392,7 @@ export function createInitialGameState(
 			damageDealtNormal: false
 		},
 		pendingPrompts: [],
+		rngState: rng.rngState,
 		recentVfxEvents: [],
 		log: [],
 		turnStartedAt: now,
@@ -2629,7 +2633,7 @@ function handlePromptResolution(
 						newTimestamp: true,
 						bumpVersion: true
 					});
-					shuffleLibrary(libraryOwner, 1);
+					shuffleLibrary(state, libraryOwner, 1);
 					alreadyShuffledWithTopCard = true;
 					addLog(
 						state,
@@ -2717,7 +2721,7 @@ function handlePromptResolution(
 		}
 
 		if (!alreadyShuffledWithTopCard) {
-			shuffleLibrary(libraryOwner);
+			shuffleLibrary(state, libraryOwner);
 		}
 		if (prompt.continuationEffects && prompt.continuationEffects.length > 0 && prompt.stackItem) {
 			for (const eff of prompt.continuationEffects) {
@@ -2782,7 +2786,7 @@ function handlePromptResolution(
 		rearrangeLibrary(actor, extracted, topList, bottomList);
 
 		if (allowShuffle && normalized.answer.shuffle) {
-			shuffleLibrary(actor);
+			shuffleLibrary(state, actor);
 			addLog(
 				state,
 				'rule',
@@ -5690,7 +5694,7 @@ function initiateLibrarySearch(
 				);
 			}
 		}
-		shuffleLibrary(searchingPlayer);
+		shuffleLibrary(state, searchingPlayer);
 		if (topCardsToPlace.length > 0) {
 			placeDeferred(searchingPlayer, 'library', topCardsToPlace, 'start');
 			addLog(
@@ -5704,7 +5708,7 @@ function initiateLibrarySearch(
 	}
 
 	if (matchingCards.length === 0 && !interceptor) {
-		shuffleLibrary(searchingPlayer);
+		shuffleLibrary(state, searchingPlayer);
 		addLog(
 			state,
 			'rule',

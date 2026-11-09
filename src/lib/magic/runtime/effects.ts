@@ -54,18 +54,11 @@ import { enqueueChoicePrompt } from './choices.ts';
 import { emitEvent } from './events.ts';
 import { activeRuleModifiers, tokenMultiplier } from './replace.ts';
 import { withSimultaneousDestroyLki } from './triggers.ts';
+import { nextRandom } from './random.ts';
 import { allocateTimestamp, moveObject } from './zones.ts';
 
-/**
- * Deterministic PRNG (mulberry32) advancing `state.rngState` in place.
- * Never calls `Math.random()`.
- */
-export function nextRandom(state: GameState): number {
-	let t = (state.rngState = ((state.rngState ?? 0x12345678) + 0x6d2b79f5) | 0);
-	t = Math.imul(t ^ (t >>> 15), t | 1);
-	t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-	return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-}
+/** Seeded randomness lives in runtime/random.ts (re-exported here for existing importers). */
+export { nextRandom };
 
 // ---- Engine ports ---------------------------------------------------------------------------
 
