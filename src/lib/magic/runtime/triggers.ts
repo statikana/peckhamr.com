@@ -99,10 +99,23 @@ function alternatives(def: TriggerDef): TriggerDef[] {
 
 // ---- Pending queue (transient, never in GameState) ------------------------------------------
 
+interface SimultaneousLkiEntry {
+	obj: CardInstance;
+	card: ScryfallCard;
+	controllerId: string;
+	lostAllAbilities: boolean;
+	typeLine: string;
+	hasAllCreatureTypes: boolean;
+	tapped: boolean;
+	colors: string[];
+}
+
 interface TriggerChannel {
 	pending: PendingTrigger[];
 	nextOrder: number;
 	flushing: number;
+	deferFlush: number;
+	simultaneousLki?: Map<CardInstance, SimultaneousLkiEntry>;
 }
 
 const channels = new WeakMap<GameState, TriggerChannel>();
@@ -110,10 +123,55 @@ const channels = new WeakMap<GameState, TriggerChannel>();
 function channel(state: GameState): TriggerChannel {
 	let ch = channels.get(state);
 	if (!ch) {
-		ch = { pending: [], nextOrder: 1, flushing: 0 };
+		ch = { pending: [], nextOrder: 1, flushing: 0, deferFlush: 0 };
 		channels.set(state, ch);
 	}
 	return ch;
+}
+
+/**
+ * CR 603.10a: When multiple permanents are destroyed simultaneously (e.g. "Destroy all creatures"),
+ * capture each permanent's pre-destruction LKI before any are moved from the battlefield so that
+ * every permanent leaving the battlefield in the batch sees the simultaneous zone changes of the
+ * others, then flush all resulting triggers together in APNAP order (CR 603.3b).
+ */
+export function withSimultaneousDestroyLki(
+	state: GameState,
+	perms: CardInstance[],
+	fn: () => void
+): void {
+	if (perms.length <= 1) {
+		fn();
+		flushTriggers(state);
+		return;
+	}
+	const ch = channel(state);
+	const map = new Map<CardInstance, SimultaneousLkiEntry>();
+	for (const perm of perms) {
+		if (perm.zone !== 'battlefield' || perm.phasedOut) continue;
+		const ev = evaluatePermanent(state, perm);
+		const lost = permanentHasLostAllAbilities(perm, state).lost;
+		map.set(perm, {
+			obj: perm,
+			card: perm.copiableCard ?? perm.card,
+			controllerId: perm.controllerId,
+			lostAllAbilities: lost,
+			typeLine: ev.typeLine,
+			hasAllCreatureTypes: ev.hasAllCreatureTypes,
+			tapped: perm.tapped,
+			colors: perm.isFaceDown ? [] : [...ev.colors]
+		});
+	}
+	const prevMap = ch.simultaneousLki;
+	ch.simultaneousLki = map;
+	ch.deferFlush += 1;
+	try {
+		fn();
+	} finally {
+		ch.deferFlush -= 1;
+		ch.simultaneousLki = prevMap;
+	}
+	flushTriggers(state);
 }
 
 export function hasPendingTriggers(state: GameState): boolean {
@@ -146,19 +204,21 @@ function battlefieldSubject(state: GameState, obj: CardInstance, controllerId: s
 		controllerId,
 		isToken: obj.isToken,
 		tapped: obj.tapped,
-		colors: (obj.copiableCard ?? obj.card).colors,
+		get colors() {
+			return obj.isFaceDown ? [] : ev().colors;
+		},
 		typeLine: () => ev().typeLine,
 		hasSubtype: (s) => ev().hasSubType(s)
 	};
 }
 
-function printedSubject(obj: CardInstance, card: ScryfallCard, controllerId: string, allCreatureTypes = false, typeLine = card.typeLine, tapped = obj.tapped): Subject {
+function printedSubject(obj: CardInstance, card: ScryfallCard, controllerId: string, allCreatureTypes = false, typeLine = card.typeLine, tapped = obj.tapped, colors: string[] = card.colors): Subject {
 	return {
 		obj,
 		controllerId,
 		isToken: obj.isToken,
 		tapped,
-		colors: card.colors,
+		colors,
 		typeLine: () => typeLine,
 		hasSubtype: (s) => hasWord(subtypePart(typeLine), s) || (allCreatureTypes && hasWord(typeLine, 'Creature'))
 	};
@@ -217,6 +277,7 @@ interface Source {
 	zone: 'battlefield' | 'graveyard' | 'stack';
 	/** Look-back for an object that left the battlefield (CR 603.10a). */
 	lostAllAbilities?: boolean;
+	isLookBack?: boolean;
 }
 
 /**
@@ -340,12 +401,24 @@ export function matchTriggers(state: GameState, ev: GameEvent): void {
 function matchZoneChange(state: GameState, ev: Extract<GameEvent, { kind: 'ZoneChange' }>): void {
 	const obj = ev.object;
 	if (ev.to === 'battlefield' && obj.phasedOut) return;
+	const batchLki = ev.from === 'battlefield' ? channel(state).simultaneousLki : undefined;
+	const objBatchInfo = batchLki?.get(obj);
 	const subject: Subject =
 		ev.to === 'battlefield'
 			? battlefieldSubject(state, obj, ev.toPlayerId ?? obj.controllerId)
-			: ev.lki
-				? printedSubject(obj, ev.lki.card, ev.lki.controllerId, ev.lki.hasAllCreatureTypes, ev.lki.typeLine, ev.lki.tapped)
-				: printedSubject(obj, obj.card, obj.ownerId);
+			: objBatchInfo
+				? printedSubject(
+						obj,
+						objBatchInfo.card,
+						objBatchInfo.controllerId,
+						objBatchInfo.hasAllCreatureTypes,
+						objBatchInfo.typeLine,
+						objBatchInfo.tapped,
+						objBatchInfo.colors
+					)
+				: ev.lki
+					? printedSubject(obj, ev.lki.card, ev.lki.controllerId, ev.lki.hasAllCreatureTypes, ev.lki.typeLine, ev.lki.tapped)
+					: printedSubject(obj, obj.card, obj.ownerId);
 	const enters = ev.to === 'battlefield';
 	const label = (source: Source, alt: TriggerDef) => {
 		const self = source.obj === obj;
@@ -367,22 +440,39 @@ function matchZoneChange(state: GameState, ev: Extract<GameEvent, { kind: 'ZoneC
 
 	const candidates = sources(state, 'zoneChange');
 	// CR 603.10a: an object leaving the battlefield checks its own leaves-the-battlefield abilities as
-	// it last existed there.
-	if (ev.from === 'battlefield' && ev.lki) {
-		candidates.push({
-			obj,
-			card: ev.lki.card,
-			controllerId: ev.lki.controllerId,
-			zone: 'battlefield',
-			lostAllAbilities: ev.lki.lostAllAbilities
-		});
+	// it last existed there. When multiple permanents leave simultaneously, all permanents in the batch
+	// also look back to the state immediately before the simultaneous event.
+	if (ev.from === 'battlefield') {
+		if (batchLki) {
+			for (const [peerPerm, info] of batchLki) {
+				if (candidates.some((c) => c.obj === peerPerm)) continue;
+				if (!triggersOf(info.card).events.has('zoneChange')) continue;
+				candidates.push({
+					obj: peerPerm,
+					card: info.card,
+					controllerId: info.controllerId,
+					zone: 'battlefield',
+					lostAllAbilities: info.lostAllAbilities,
+					isLookBack: true
+				});
+			}
+		} else if (ev.lki) {
+			candidates.push({
+				obj,
+				card: ev.lki.card,
+				controllerId: ev.lki.controllerId,
+				zone: 'battlefield',
+				lostAllAbilities: ev.lki.lostAllAbilities,
+				isLookBack: true
+			});
+		}
 	}
 	for (const source of candidates) {
 		for (const { ability, alts } of abilitiesFor(state, source, 'zoneChange', fits)) {
 			const alt = alts.find((a) => objectMatches(a.filter, subject, source));
 			if (!alt) continue;
-			// Only the object that left looks back; other permanents see the event normally.
-			if (source.obj === obj && ev.from === 'battlefield' && alt.filter.from !== 'battlefield') continue;
+			// Only look-back objects check leaves-the-battlefield triggers; other permanents see the event normally.
+			if ((source.obj === obj || source.isLookBack) && ev.from === 'battlefield' && alt.filter.from !== 'battlefield') continue;
 			const times =
 				source.zone === 'battlefield'
 					? triggerMultiplier(state, source.obj, source.controllerId, {
@@ -652,6 +742,7 @@ function apnap(state: GameState): string[] {
 export function flushTriggers(state: GameState): void {
 	if (!host) return;
 	const ch = channel(state);
+	if (ch.deferFlush > 0) return;
 	ch.flushing += 1;
 	try {
 		for (let guard = 0; ch.pending.length > 0 && guard < 1000; guard++) {

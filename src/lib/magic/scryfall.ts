@@ -1,4 +1,5 @@
 import { STAPLE_CARDS } from './precons.ts';
+import { splitSubtypes } from './runtime/layers.ts';
 import { isScryfallSyntaxQuery, matchesScryfallQuery } from './search.ts';
 import type { DeckCardEntry, ManaColor, ScryfallCard } from './types.ts';
 
@@ -30,11 +31,14 @@ const MULTI_COPY_CARDS = new Set([
 	"dragon's approach",
 	'slime against humanity',
 	'hare apparent',
-	'templar knight',
-	'seven dwarves',
-	'nazgûl',
-	'nazgul'
+	'templar knight'
 ]);
+
+const CAPPED_COPY_CARDS: Record<string, number> = {
+	'seven dwarves': 7,
+	'nazgûl': 9,
+	'nazgul': 9
+};
 
 export function parseDecklistText(rawText: string): {
 	commanderLines: ParsedDeckLine[];
@@ -397,6 +401,93 @@ export async function searchScryfallCards(
 	return localMatches;
 }
 
+function partnerWithTarget(card: ScryfallCard): string | null {
+	const m = card.oracleText.match(/\bPartner with ([^\n(.]+)/i);
+	return m ? m[1].trim().toLowerCase() : null;
+}
+
+function hasFriendsForever(card: ScryfallCard): boolean {
+	return (
+		card.keywords.some((k) => k.toLowerCase() === 'friends forever') ||
+		/\bfriends forever\b/i.test(card.oracleText)
+	);
+}
+
+function hasDoctorsCompanion(card: ScryfallCard): boolean {
+	return (
+		card.keywords.some((k) => k.toLowerCase() === "doctor's companion") ||
+		/\bdoctor's companion\b/i.test(card.oracleText)
+	);
+}
+
+function isTimeLordDoctor(card: ScryfallCard): boolean {
+	if (!card.typeLine.includes('Legendary') || !card.typeLine.includes('Creature')) return false;
+	const dashIdx = card.typeLine.indexOf('—');
+	if (dashIdx === -1) return false;
+	const subs = splitSubtypes(card.typeLine.slice(dashIdx + 1).trim()).map((s) => s.toLowerCase());
+	return subs.length === 2 && subs.includes('time lord') && subs.includes('doctor');
+}
+
+function hasGenericPartner(card: ScryfallCard): boolean {
+	if (partnerWithTarget(card) !== null) return false;
+	if (hasFriendsForever(card) || hasDoctorsCompanion(card)) return false;
+	return (
+		card.keywords.some((k) => k.toLowerCase() === 'partner') ||
+		/\bpartner\b/i.test(card.oracleText)
+	);
+}
+
+function hasChooseABackground(card: ScryfallCard): boolean {
+	return Boolean(card.hasChooseBackground) || /\bchoose a background\b/i.test(card.oracleText);
+}
+
+function isLegendaryBackground(card: ScryfallCard): boolean {
+	return (
+		(Boolean(card.isBackground) || /\bBackground\b/.test(card.typeLine)) &&
+		card.typeLine.includes('Legendary') &&
+		card.typeLine.includes('Enchantment')
+	);
+}
+
+function areValidCommanderPartners(c1: ScryfallCard, c2: ScryfallCard): boolean {
+	// CR 702.124a: Generic Partner + Generic Partner
+	if (c1.canBeCommander && c2.canBeCommander && hasGenericPartner(c1) && hasGenericPartner(c2)) {
+		return true;
+	}
+	// CR 702.124f: Partner with [Name] + [Name]
+	const pw1 = partnerWithTarget(c1);
+	const pw2 = partnerWithTarget(c2);
+	if (
+		c1.canBeCommander &&
+		c2.canBeCommander &&
+		pw1 !== null &&
+		pw2 !== null &&
+		pw1 === c2.name.toLowerCase() &&
+		pw2 === c1.name.toLowerCase()
+	) {
+		return true;
+	}
+	// CR 702.124j: Friends forever + Friends forever
+	if (c1.canBeCommander && c2.canBeCommander && hasFriendsForever(c1) && hasFriendsForever(c2)) {
+		return true;
+	}
+	// CR 702.124k: Choose a Background + Legendary Background enchantment
+	if (
+		(c1.canBeCommander && hasChooseABackground(c1) && isLegendaryBackground(c2)) ||
+		(c2.canBeCommander && hasChooseABackground(c2) && isLegendaryBackground(c1))
+	) {
+		return true;
+	}
+	// CR 702.124m: Doctor's companion + Legendary Time Lord Doctor with no other creature types
+	if (
+		(c1.canBeCommander && hasDoctorsCompanion(c1) && isTimeLordDoctor(c2)) ||
+		(c2.canBeCommander && hasDoctorsCompanion(c2) && isTimeLordDoctor(c1))
+	) {
+		return true;
+	}
+	return false;
+}
+
 export function validateCommanderDeck(
 	commanders: ScryfallCard[],
 	cards: DeckCardEntry[]
@@ -419,11 +510,7 @@ export function validateCommanderDeck(
 		}
 	} else if (commanders.length === 2) {
 		const [c1, c2] = commanders;
-		const validPair =
-			(c1.hasPartner && c2.hasPartner) ||
-			(c1.hasChooseBackground && c2.isBackground) ||
-			(c2.hasChooseBackground && c1.isBackground);
-		if (!validPair) {
+		if (!areValidCommanderPartners(c1, c2)) {
 			errors.push(`${c1.name} and ${c2.name} do not have valid Partner / Background pairing abilities.`);
 		}
 	}
@@ -456,11 +543,18 @@ export function validateCommanderDeck(
 
 		const isBasic =
 			BASIC_LAND_NAMES.has(cNameLow) || entry.card.typeLine.includes('Basic Land');
+		const copyCap = CAPPED_COPY_CARDS[cNameLow];
 		const allowsMulti =
 			MULTI_COPY_CARDS.has(cNameLow) ||
 			entry.card.oracleText.toLowerCase().includes('a deck can have any number of cards named');
 
-		if (!isBasic && !allowsMulti && totalForCard > 1) {
+		if (copyCap !== undefined) {
+			if (totalForCard > copyCap) {
+				errors.push(
+					`Copy limit violation: ${entry.card.name} appears ${totalForCard} times (maximum is ${copyCap}).`
+				);
+			}
+		} else if (!isBasic && !allowsMulti && totalForCard > 1) {
 			errors.push(`Singleton violation: ${entry.card.name} appears ${totalForCard} times.`);
 		}
 
@@ -490,3 +584,5 @@ export function validateCommanderDeck(
 		totalCards
 	};
 }
+
+export const validateDeck = validateCommanderDeck;

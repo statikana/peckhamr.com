@@ -44,11 +44,25 @@ import type {
 	TargetRef,
 	VfxEvent
 } from '../types.ts';
+import { compileCard } from '../compiler/index.ts';
 import { compiledCardManaSteps, legacySearchSpec } from '../compiler/effects.ts';
 import { evaluatePermanent, inspectCardContinuousBreakdown } from '../ruleTree.ts';
+import { enqueueChoicePrompt } from './choices.ts';
 import { emitEvent } from './events.ts';
-import { tokenMultiplier } from './replace.ts';
-import { moveObject } from './zones.ts';
+import { activeRuleModifiers, tokenMultiplier } from './replace.ts';
+import { withSimultaneousDestroyLki } from './triggers.ts';
+import { allocateTimestamp, moveObject } from './zones.ts';
+
+/**
+ * Deterministic PRNG (mulberry32) advancing `state.rngState` in place.
+ * Never calls `Math.random()`.
+ */
+export function nextRandom(state: GameState): number {
+	let t = (state.rngState = ((state.rngState ?? 0x12345678) + 0x6d2b79f5) | 0);
+	t = Math.imul(t ^ (t >>> 15), t | 1);
+	t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+	return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+}
 
 // ---- Engine ports ---------------------------------------------------------------------------
 
@@ -180,7 +194,12 @@ export const INTERPRETED_VERBS: ReadonlySet<Verb> = new Set<Verb>([
 	'scry',
 	'lookAndReorder',
 	'search',
-	'delayedTrigger'
+	'delayedTrigger',
+	'fight',
+	'discard',
+	'tap',
+	'untap',
+	'tapOrUntap' as Verb
 ]);
 
 /** Verbs whose chooser may get a prompt that pauses resolution. */
@@ -228,7 +247,8 @@ function delayedSupported(step: EffectStep): boolean {
  */
 export function staticallyInterpretable(parse: { steps: EffectStep[]; targets: TargetSpec[]; modal?: unknown; unparsed: unknown[] }): boolean {
 	if (parse.unparsed.length > 0 || parse.modal || parse.steps.length === 0) return false;
-	if (parse.targets.length > 1) return false;
+	const hasFight = parse.steps.some((s) => s.verb === 'fight');
+	if (parse.targets.length > (hasFight ? 2 : 1)) return false;
 	return parse.steps.every(stepSupported);
 }
 
@@ -258,6 +278,10 @@ export function interpretableNow(
 		if (item.targets.length > 0) return false;
 	} else if (overload) {
 		if (spec.kind !== 'object') return false;
+	} else if (parse.targets.length === 2 && parse.steps.some((s) => s.verb === 'fight')) {
+		if (item.targets.length !== 2) return false;
+		if (!targetRefMatchesSpec(item.targets[0], parse.targets[0])) return false;
+		if (!targetRefMatchesSpec(item.targets[1], parse.targets[1])) return false;
 	} else {
 		if (item.targets.length < Math.max(1, spec.min) && !(spec.min === 0 && item.targets.length === 0)) return false;
 		if (item.targets.length > spec.max) return false;
@@ -421,6 +445,19 @@ class Run {
 
 	// ---- Selectors
 
+	/** CR 101.4: Active Player, Non-Active Player (APNAP) turn order starting from `state.activePlayerIndex`. */
+	apnapPlayers(): PlayerGameState[] {
+		const n = this.state.players.length;
+		if (n === 0) return [];
+		const start = (((this.state.activePlayerIndex ?? 0) % n) + n) % n;
+		const out: PlayerGameState[] = [];
+		for (let i = 0; i < n; i++) {
+			const pl = this.state.players[(start + i) % n];
+			if (pl && !pl.lost) out.push(pl);
+		}
+		return out;
+	}
+
 	players(sel: Selector): PlayerGameState[] {
 		if (sel.k === 'playerRef') {
 			const p = this.playerRef(sel.ref);
@@ -438,10 +475,10 @@ class Run {
 				return [this.you];
 			case 'each_opponent':
 			case 'opponent':
-				return this.state.players.filter((p) => p.playerId !== this.you.playerId && !p.lost);
+				return this.apnapPlayers().filter((p) => p.playerId !== this.you.playerId);
 			case 'each_player':
 			case 'any':
-				return this.state.players.filter((p) => !p.lost);
+				return this.apnapPlayers();
 			case 'target':
 				return this.players({ k: 'target', index: 0 });
 		}
@@ -475,11 +512,13 @@ class Run {
 			case 'all': {
 				const zone = sel.filter.zone ?? 'battlefield';
 				const out: CardInstance[] = [];
-				for (const p of this.state.players) {
+				for (const p of this.apnapPlayers()) {
 					if (zone === 'battlefield') {
 						for (const c of p.battlefield) if (!c.phasedOut && this.matches(c, sel.filter, 'battlefield')) out.push(c);
 					} else if (zone === 'graveyard') {
 						for (const c of p.graveyard) if (this.matches(c, sel.filter, 'graveyard')) out.push(c);
+					} else if (zone === 'hand') {
+						for (const c of p.hand) if (this.matches(c, sel.filter, 'hand')) out.push(c);
 					}
 				}
 				return out;
@@ -489,25 +528,28 @@ class Run {
 		}
 	}
 
-	matches(c: CardInstance, f: ObjectFilter, zone: 'battlefield' | 'graveyard'): boolean {
+	matches(c: CardInstance, f: ObjectFilter, zone: 'battlefield' | 'graveyard' | 'hand'): boolean {
 		const ev = zone === 'battlefield' ? evaluatePermanent(this.state, c) : null;
-		const typeLine = ev ? ev.typeLine : c.card.typeLine;
-		const hasSub = (s: string) => (ev ? ev.hasSubType(s) || typeLine.includes(s) : typeLine.includes(s));
+		const card = c.copiableCard ?? c.card;
+		const typeLine = ev ? ev.typeLine : card.typeLine;
+		const hasSub = (s: string) => (ev ? ev.hasSubType(s) : typeLine.includes(s));
 		if (f.types && !f.types.some((t) => typeLine.includes(t))) return false;
 		if (f.subtypes && !f.subtypes.some(hasSub)) return false;
 		if (f.notTypes && f.notTypes.some((t) => typeLine.includes(t))) return false;
 		if (f.supertypes && !f.supertypes.every((t) => typeLine.includes(t))) return false;
 		if (f.notSupertypes && f.notSupertypes.some((t) => typeLine.includes(t))) return false;
 		const you = this.you.playerId;
-		if (f.controller === 'you' && c.controllerId !== you) return false;
-		if (f.controller === 'opponent' && c.controllerId === you) return false;
+		const controllerId = zone === 'battlefield' ? c.controllerId : c.ownerId;
+		if (f.controller === 'you' && controllerId !== you) return false;
+		if (f.controller === 'opponent' && controllerId === you) return false;
 		if (f.owner === 'you' && c.ownerId !== you) return false;
 		if (f.owner === 'opponent' && c.ownerId === you) return false;
 		if (f.tapped !== undefined && c.tapped !== f.tapped) return false;
 		if (f.token !== undefined && c.isToken !== f.token) return false;
 		if (f.other && c.instanceId === this.ctx.sourceId) return false;
-		if (f.colors && !f.colors.some((col) => c.card.colors.includes(col))) return false;
-		if (f.manaValue && !compare(c.card.cmc, f.manaValue.op, this.amount(f.manaValue.value))) return false;
+		const cols = ev ? (c.isFaceDown ? [] : ev.colors) : (card.colors ?? []);
+		if (f.colors && !f.colors.some((col) => cols.includes(col))) return false;
+		if (f.manaValue && !compare(card.cmc, f.manaValue.op, this.amount(f.manaValue.value))) return false;
 		if (f.attacking !== undefined) {
 			const attacking = this.state.combat.attackers.some((a) => a.attackerInstanceId === c.instanceId);
 			if (attacking !== f.attacking) return false;
@@ -555,7 +597,10 @@ class Run {
 						: this.players(step.subject);
 				for (const pl of targets) {
 					const delta = step.verb === 'gainLife' ? n : -n;
-					if (!pl.lifeTotalCannotChangeThisTurn) pl.life += delta;
+					const cantChange =
+						Boolean(pl.lifeTotalCannotChangeThisTurn) ||
+						activeRuleModifiers(s, 'lifeTotalCantChange', pl.playerId).length > 0;
+					if (!cantChange) pl.life += delta;
 					p.emitVfx(s, {
 						kind: delta >= 0 ? 'heal' : 'damage',
 						sourceId: you.playerId,
@@ -572,12 +617,39 @@ class Run {
 			}
 			case 'damage':
 				return this.damage(step);
+			case 'fight':
+				return this.fight(step);
 			case 'destroy': {
 				const objs = this.objects(step.subject).filter((o) => o.zone === 'battlefield');
 				this.bind(step, objs);
-				for (const o of objs) p.destroy(s, o, title, you.playerId);
+				const toDestroy: CardInstance[] = [];
+				for (const o of objs) {
+					const ev = evaluatePermanent(s, o);
+					if (ev.activeKeywords.some((k) => k.toLowerCase() === 'indestructible')) {
+						p.addLog(s, 'rule', `${o.card.name} is Indestructible and was not destroyed.`);
+						continue;
+					}
+					// CR 122.1c: If a permanent with a shield counter on it would be destroyed,
+					// instead remove a shield counter from it.
+					if ((o.counters.shield || 0) > 0) {
+						o.counters.shield = Math.max(0, (o.counters.shield || 0) - 1);
+						p.addLog(
+							s,
+							'rule',
+							`A shield counter was removed from ${o.card.name} instead of destroying it (CR 122.1c).`,
+							you.playerId
+						);
+						continue;
+					}
+					toDestroy.push(o);
+				}
+				if (toDestroy.length > 0) {
+					withSimultaneousDestroyLki(s, toDestroy, () => {
+						for (const o of toDestroy) p.destroy(s, o, title, you.playerId);
+					});
+				}
 				if (step.subject.k === 'all') {
-					p.addLog(s, 'cast', `${title} destroyed ${objs.length} permanent(s).`, you.playerId);
+					p.addLog(s, 'cast', `${title} destroyed ${toDestroy.length} permanent(s).`, you.playerId);
 				}
 				return;
 			}
@@ -689,7 +761,16 @@ class Run {
 				const found = target ? p.findPermanent(s, target.instanceId) : null;
 				if (!equipment || !found) return;
 				if (found.controller.playerId !== you.playerId || !evaluatePermanent(s, found.inst).typeLine.includes('Creature')) return;
+				// CR 701.3b: Attaching an Aura, Equipment, or Fortification to an object it's already attached to does nothing.
+				if (equipment.inst.attachedToId === found.inst.instanceId) return;
+				const wasAttached = Boolean(equipment.inst.attachedToId);
 				equipment.inst.attachedToId = found.inst.instanceId;
+				// CR 613.7e: Receives a new timestamp when it becomes attached to a different object.
+				if (wasAttached) {
+					const ts = allocateTimestamp(s);
+					equipment.inst.enteredTimestamp = ts;
+					(equipment.inst as CardInstance & { timestamp?: number }).timestamp = ts;
+				}
 				p.addLog(s, 'cast', `${you.username} attached ${equipment.inst.card.name} to ${found.inst.card.name}.`, you.playerId);
 				p.triggerOnAttach(s, you, equipment.inst, found.inst);
 				return;
@@ -735,11 +816,39 @@ class Run {
 				}
 				return;
 			}
-			case 'sacrifice': {
-				const objs = this.objects(step.subject).filter((o) => o.zone === 'battlefield' && o.controllerId === you.playerId);
+			case 'sacrifice':
+				return this.sacrifice(step);
+			case 'discard':
+				return this.discard(step);
+			case 'tap':
+			case 'untap':
+			case 'tapOrUntap' as Verb: {
+				const objs = this.objects(step.subject).filter((o) => o.zone === 'battlefield');
+				this.bind(step, objs);
+				const shouldTap =
+					step.verb === 'tap'
+						? true
+						: step.verb === 'untap'
+							? false
+							: Boolean((step.params as { tap?: boolean } | undefined)?.tap);
 				for (const o of objs) {
-					p.moveFromBattlefield(s, o, 'graveyard');
-					p.addLog(s, 'rule', `${you.username} sacrificed ${o.card.name}.`, you.playerId);
+					if (shouldTap) {
+						o.tapped = true;
+					} else if (o.tapped) {
+						// CR 122.1d: If a permanent with a stun counter on it would become untapped,
+						// instead remove a stun counter from it.
+						if ((o.counters.stun || 0) > 0) {
+							o.counters.stun = Math.max(0, (o.counters.stun || 0) - 1);
+							p.addLog(
+								s,
+								'rule',
+								`A stun counter was removed from ${o.card.name} instead of untapping it (CR 122.1d).`,
+								you.playerId
+							);
+						} else {
+							o.tapped = false;
+						}
+					}
 				}
 				return;
 			}
@@ -782,6 +891,200 @@ class Run {
 		}
 	}
 
+	sourceDamageInfo(
+		sourcePerm: CardInstance | null,
+		sourceCard: ScryfallCard
+	): {
+		hasDeathtouch: boolean;
+		hasLifelink: boolean;
+		hasInfect: boolean;
+		hasWither: boolean;
+		colors: ManaColor[];
+		types: string[];
+	} {
+		if (sourcePerm && sourcePerm.zone === 'battlefield') {
+			const ev = evaluatePermanent(this.state, sourcePerm);
+			const kws = ev.activeKeywords.map((k) => k.toLowerCase());
+			return {
+				hasDeathtouch: kws.includes('deathtouch'),
+				hasLifelink: kws.includes('lifelink'),
+				hasInfect: kws.includes('infect'),
+				hasWither: kws.includes('wither'),
+				colors: sourcePerm.isFaceDown ? [] : [...ev.colors],
+				types: ev.typeLine
+					.split(/\s+[—-]\s+/)[0]
+					.split(/\s+/)
+					.filter(Boolean)
+			};
+		}
+		const face = compileCard(sourceCard).faces[0];
+		const kws = new Set<string>((sourceCard.keywords ?? []).map((k) => k.toLowerCase()));
+		for (const ab of face.abilities) {
+			if (ab.kind === 'keyword') kws.add(ab.keyword.name.toLowerCase());
+		}
+		return {
+			hasDeathtouch: kws.has('deathtouch'),
+			hasLifelink: kws.has('lifelink'),
+			hasInfect: kws.has('infect'),
+			hasWither: kws.has('wither'),
+			colors: [...(face.characteristics.colors ?? sourceCard.colors ?? [])],
+			types: [...(face.characteristics.types ?? [])]
+		};
+	}
+
+	permanentProtectedFromSource(
+		target: CardInstance,
+		srcInfo: ReturnType<Run['sourceDamageInfo']>
+	): boolean {
+		const ev = evaluatePermanent(this.state, target);
+		const colorMap: Record<string, ManaColor> = {
+			white: 'W',
+			blue: 'U',
+			black: 'B',
+			red: 'R',
+			green: 'G'
+		};
+		const typeMap: Record<string, string> = {
+			creatures: 'Creature',
+			creature: 'Creature',
+			artifacts: 'Artifact',
+			artifact: 'Artifact',
+			enchantments: 'Enchantment',
+			enchantment: 'Enchantment',
+			lands: 'Land',
+			land: 'Land',
+			planeswalkers: 'Planeswalker',
+			planeswalker: 'Planeswalker'
+		};
+		for (const kw of ev.activeKeywords) {
+			const low = kw.toLowerCase();
+			if (!low.startsWith('protection from ')) continue;
+			const qual = low.slice('protection from '.length).trim();
+			if (qual === 'everything') return true;
+			if (qual === 'all colors' && srcInfo.colors.length > 0) return true;
+			if (colorMap[qual] && srcInfo.colors.includes(colorMap[qual])) return true;
+			if (typeMap[qual] && srcInfo.types.some((t) => t.toLowerCase() === typeMap[qual].toLowerCase())) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	dealDamageToPermanent(
+		target: CardInstance,
+		rawAmount: number,
+		sourceId: string,
+		srcInfo: ReturnType<Run['sourceDamageInfo']>
+	): number {
+		const s = this.state;
+		const p = P();
+		let dmg = rawAmount;
+		if (dmg <= 0 || target.zone !== 'battlefield' || target.phasedOut) return 0;
+
+		// CR 702.16b: Protection prevents all damage from sources with the stated quality.
+		if (this.permanentProtectedFromSource(target, srcInfo)) return 0;
+
+		// CR 120.3: Damage prevention shield on permanent.
+		if ((target.damagePreventionShield ?? 0) > 0) {
+			const prevented = Math.min(dmg, target.damagePreventionShield!);
+			target.damagePreventionShield! -= prevented;
+			dmg -= prevented;
+			if (dmg <= 0) return 0;
+		}
+
+		// CR 122.1c: If a permanent with a shield counter on it would be dealt damage,
+		// prevent that damage and remove a shield counter from it.
+		if ((target.counters.shield || 0) > 0) {
+			target.counters.shield = Math.max(0, (target.counters.shield || 0) - 1);
+			p.addLog(
+				s,
+				'rule',
+				`A shield counter prevented ${dmg} damage to ${target.card.name} and was removed (CR 122.1c).`,
+				this.you.playerId
+			);
+			return 0;
+		}
+
+		const evTarget = evaluatePermanent(s, target);
+		if (evTarget.isPlaneswalker) {
+			// CR 120.3c / 306.8: Damage dealt to a planeswalker removes that many loyalty counters.
+			target.counters.loyalty = Math.max(0, (target.counters.loyalty || 0) - dmg);
+		}
+		if (evTarget.isCreature) {
+			// CR 702.80 / 702.90b: Source with wither or infect deals damage to a creature in the form of -1/-1 counters.
+			if (srcInfo.hasInfect || srcInfo.hasWither) {
+				p.addCounters(s, target, '-1/-1', dmg);
+			} else {
+				target.damageMarked += dmg;
+				if (srcInfo.hasDeathtouch) {
+					target.deathtouchDamageMarked = true;
+				}
+			}
+		} else if (!evTarget.isPlaneswalker) {
+			target.damageMarked += dmg;
+		}
+
+		emitEvent(s, {
+			kind: 'DamageDealt',
+			sourceId,
+			targetId: target.instanceId,
+			targetKind: 'permanent',
+			amount: dmg,
+			combat: false
+		});
+		p.emitVfx(s, { kind: 'damage', targetId: target.instanceId, amount: dmg });
+		return dmg;
+	}
+
+	dealDamageToPlayer(
+		pl: PlayerGameState,
+		rawAmount: number,
+		sourceId: string,
+		srcInfo: ReturnType<Run['sourceDamageInfo']>
+	): number {
+		const s = this.state;
+		const p = P();
+		let dmg = rawAmount;
+		if (dmg <= 0 || pl.lost) return 0;
+		if (pl.protectionFromEverythingThisTurn) return 0;
+
+		if ((pl.damagePreventionShield ?? 0) > 0) {
+			const prevented = Math.min(dmg, pl.damagePreventionShield!);
+			pl.damagePreventionShield! -= prevented;
+			dmg -= prevented;
+			if (dmg <= 0) return 0;
+		}
+
+		if (srcInfo.hasInfect) {
+			// CR 702.90b: Damage dealt to a player by a source with infect is dealt in the form of poison counters.
+			pl.poison = (pl.poison || 0) + dmg;
+		} else {
+			const cantChange =
+				Boolean(pl.lifeTotalCannotChangeThisTurn) ||
+				activeRuleModifiers(s, 'lifeTotalCantChange', pl.playerId).length > 0;
+			if (!cantChange) pl.life -= dmg;
+		}
+
+		emitEvent(s, {
+			kind: 'DamageDealt',
+			sourceId,
+			targetId: pl.playerId,
+			targetKind: 'player',
+			amount: dmg,
+			combat: false
+		});
+		p.emitVfx(s, { kind: 'damage', sourceId: this.you.playerId, targetId: pl.playerId, amount: dmg });
+		return dmg;
+	}
+
+	applyLifelinkGain(controller: PlayerGameState, totalDealt: number): void {
+		if (totalDealt <= 0 || controller.lost) return;
+		const cantChange =
+			Boolean(controller.lifeTotalCannotChangeThisTurn) ||
+			activeRuleModifiers(this.state, 'lifeTotalCantChange', controller.playerId).length > 0;
+		if (!cantChange) controller.life += totalDealt;
+	}
+
 	damage(step: EffectStep): void {
 		const s = this.state;
 		const p = P();
@@ -789,26 +1092,315 @@ class Run {
 		const n = this.amount(step.amount);
 		if (n <= 0) return;
 		const sel = step.subject;
+		const srcPerm = this.locate(this.ctx.sourceId)?.inst ?? null;
+		const srcInfo = this.sourceDamageInfo(srcPerm, this.ctx.sourceCard);
+		const srcController =
+			srcPerm && srcPerm.zone === 'battlefield'
+				? (this.player(srcPerm.controllerId) ?? you)
+				: you;
+		let totalDealt = 0;
+
 		if (sel.k === 'target' && !this.ctx.overload) {
-			for (const t of this.ctx.targets) p.damageTarget(s, you.playerId, t, n);
+			const targetRefs =
+				this.ctx.targets.length > 0 && sel.index > 0 && sel.index < this.ctx.targets.length
+					? [this.ctx.targets[sel.index]]
+					: this.ctx.targets;
+			for (const t of targetRefs) {
+				if (t.kind === 'player') {
+					const pl = this.player(t.id);
+					if (pl) totalDealt += this.dealDamageToPlayer(pl, n, this.ctx.sourceId, srcInfo);
+				} else if (t.kind === 'permanent') {
+					const perm = this.locate(t.id)?.inst;
+					if (perm && perm.zone === 'battlefield') {
+						totalDealt += this.dealDamageToPermanent(perm, n, this.ctx.sourceId, srcInfo);
+					}
+				}
+			}
+			if (srcInfo.hasLifelink) this.applyLifelinkGain(srcController, totalDealt);
 			return;
 		}
 		if (sel.k === 'player' || sel.k === 'playerRef') {
 			for (const pl of this.players(sel)) {
-				if (pl.protectionFromEverythingThisTurn) continue;
-				if (!pl.lifeTotalCannotChangeThisTurn) pl.life -= n;
-				emitEvent(s, { kind: 'DamageDealt', sourceId: this.ctx.sourceId, targetId: pl.playerId, targetKind: 'player', amount: n, combat: false });
-				p.emitVfx(s, { kind: 'damage', sourceId: you.playerId, targetId: pl.playerId, amount: n });
+				totalDealt += this.dealDamageToPlayer(pl, n, this.ctx.sourceId, srcInfo);
 			}
+			if (srcInfo.hasLifelink) this.applyLifelinkGain(srcController, totalDealt);
 			return;
 		}
 		const objs = this.objects(sel).filter((o) => o.zone === 'battlefield');
 		for (const o of objs) {
-			o.damageMarked += n;
-			emitEvent(s, { kind: 'DamageDealt', sourceId: this.ctx.sourceId, targetId: o.instanceId, targetKind: 'permanent', amount: n, combat: false });
-			p.emitVfx(s, { kind: 'damage', targetId: o.instanceId, amount: n });
+			totalDealt += this.dealDamageToPermanent(o, n, this.ctx.sourceId, srcInfo);
 		}
-		if (sel.k === 'all') p.addLog(s, 'combat', `${this.ctx.title} dealt ${n} damage to ${objs.length} permanent(s)!`, you.playerId);
+		if (srcInfo.hasLifelink) this.applyLifelinkGain(srcController, totalDealt);
+		if (sel.k === 'all') {
+			p.addLog(s, 'combat', `${this.ctx.title} dealt ${n} damage to ${objs.length} permanent(s)!`, you.playerId);
+		}
+	}
+
+	resolveSingleFighter(sel: Selector): CardInstance | null {
+		if (sel.k === 'target') {
+			const t = this.ctx.targets[sel.index];
+			if (!t || t.kind === 'player' || t.kind === 'stack') return null;
+			const inst = this.locate(t.id)?.inst ?? null;
+			return inst && !inst.phasedOut ? inst : null;
+		}
+		return this.objects(sel)[0] ?? null;
+	}
+
+	fight(step: EffectStep): void {
+		const s = this.state;
+		const withSel = step.params?.with;
+		let fighterA: CardInstance | null = null;
+		let fighterB: CardInstance | null = null;
+		if (withSel) {
+			fighterA = this.resolveSingleFighter(step.subject);
+			fighterB = this.resolveSingleFighter(withSel);
+		} else if (step.subject.k === 'target' && this.ctx.targets.length >= 2) {
+			fighterA = this.resolveSingleFighter({ k: 'target', index: 0 });
+			fighterB = this.resolveSingleFighter({ k: 'target', index: 1 });
+		}
+		// CR 701.12b: If one or both creatures are no longer on the battlefield or no longer creatures,
+		// neither of them deals or is dealt damage.
+		if (!fighterA || !fighterB) return;
+		if (fighterA.zone !== 'battlefield' || fighterB.zone !== 'battlefield') return;
+		if (fighterA.phasedOut || fighterB.phasedOut) return;
+		const evA = evaluatePermanent(s, fighterA);
+		const evB = evaluatePermanent(s, fighterB);
+		if (!evA.isCreature || !evB.isCreature) return;
+
+		const powerA = Math.max(0, evA.breakdown.effectivePower ?? 0);
+		const powerB = Math.max(0, evB.breakdown.effectivePower ?? 0);
+		const infoA = this.sourceDamageInfo(fighterA, fighterA.copiableCard ?? fighterA.card);
+		const infoB = this.sourceDamageInfo(fighterB, fighterB.copiableCard ?? fighterB.card);
+		const ctrlA = this.player(fighterA.controllerId) ?? this.you;
+		const ctrlB = this.player(fighterB.controllerId) ?? this.you;
+
+		// CR 701.12c: If a creature fights itself, it deals damage to itself equal to twice its power.
+		if (fighterA.instanceId === fighterB.instanceId) {
+			const dealt = this.dealDamageToPermanent(fighterA, powerA * 2, fighterA.instanceId, infoA);
+			if (infoA.hasLifelink) this.applyLifelinkGain(ctrlA, dealt);
+			return;
+		}
+
+		// Simultaneous fight damage (power and source keywords snapshotted before either deals damage)
+		const dealtByA = this.dealDamageToPermanent(fighterB, powerA, fighterA.instanceId, infoA);
+		const dealtByB = this.dealDamageToPermanent(fighterA, powerB, fighterB.instanceId, infoB);
+		if (infoA.hasLifelink) this.applyLifelinkGain(ctrlA, dealtByA);
+		if (infoB.hasLifelink) this.applyLifelinkGain(ctrlB, dealtByB);
+	}
+
+	sacrifice(step: EffectStep): void {
+		const s = this.state;
+		const p = P();
+		const you = this.you;
+		const sel = step.subject;
+
+		// Specific object(s) (e.g. "sacrifice ~" or "sacrifice it")
+		if (sel.k === 'self' || sel.k === 'binding' || sel.k === 'target') {
+			const actor = step.actor ? (this.playerRef(step.actor) ?? you) : you;
+			const objs = this.objects(sel).filter(
+				(o) => o.zone === 'battlefield' && o.controllerId === actor.playerId
+			);
+			this.bind(step, objs);
+			for (const o of objs) {
+				p.moveFromBattlefield(s, o, 'graveyard');
+				p.addLog(s, 'rule', `${actor.username} sacrificed ${o.card.name}.`, actor.playerId);
+			}
+			return;
+		}
+
+		// Player-driven or filter-driven sacrifice ("Sacrifice a creature", "Each opponent sacrifices a creature")
+		const actors = step.actor
+			? this.players({ k: 'playerRef', ref: step.actor })
+			: sel.k === 'player' || sel.k === 'playerRef'
+				? this.players(sel)
+				: sel.k === 'all' && sel.filter.controller === 'opponent'
+					? this.players({ k: 'player', filter: { relation: 'each_opponent' } })
+					: [you];
+
+		const filter: ObjectFilter =
+			sel.k === 'all' ? { ...sel.filter, controller: undefined } : {};
+
+		for (const actor of actors) {
+			const candidates = actor.battlefield.filter(
+				(c) => !c.phasedOut && c.controllerId === actor.playerId && this.matches(c, filter, 'battlefield')
+			);
+			if (candidates.length === 0) continue;
+			const count =
+				sel.k === 'all' && !step.amount
+					? candidates.length
+					: Math.min(candidates.length, Math.max(0, this.amount(step.amount, 1)));
+			if (count <= 0) continue;
+
+			if ((step.params as { atRandom?: boolean } | undefined)?.atRandom) {
+				const pool = [...candidates];
+				const chosen: CardInstance[] = [];
+				for (let i = 0; i < count && pool.length > 0; i++) {
+					const idx = Math.floor(nextRandom(s) * pool.length);
+					chosen.push(pool.splice(idx, 1)[0]);
+				}
+				this.bind(step, chosen);
+				for (const o of chosen) {
+					p.moveFromBattlefield(s, o, 'graveyard');
+					p.addLog(s, 'rule', `${actor.username} sacrificed ${o.card.name}.`, actor.playerId);
+				}
+			} else if (!actor.isBot && candidates.length > count) {
+				enqueueChoicePrompt(
+					s,
+					{
+						id: p.uid('prompt'),
+						kind: 'chooseObjects',
+						playerId: actor.playerId,
+						title: `${this.ctx.title} — Sacrifice ${count} permanent(s)`,
+						description: `Choose ${count} permanent(s) to sacrifice.`,
+						candidateInstanceIds: candidates.map((c) => c.instanceId),
+						countRequired: count,
+						choice: {
+							kind: 'chooseObjects',
+							candidates: candidates.map((c) => c.instanceId),
+							min: count,
+							max: count,
+							zone: 'battlefield',
+							reason: `${this.ctx.title} — Sacrifice ${count} permanent(s)`
+						}
+					},
+					(_st, reply) => {
+						if (reply.kind !== 'chooseObjects') return;
+						const chosen = reply.objectIds
+							.map((id) =>
+								actor.battlefield.find(
+									(c) => c.instanceId === id && c.controllerId === actor.playerId
+								)
+							)
+							.filter((c): c is CardInstance => Boolean(c));
+						this.bind(step, chosen);
+						for (const o of chosen) {
+							p.moveFromBattlefield(s, o, 'graveyard');
+							p.addLog(s, 'rule', `${actor.username} sacrificed ${o.card.name}.`, actor.playerId);
+						}
+					}
+				);
+			} else {
+				const chosen = candidates.slice(0, count);
+				this.bind(step, chosen);
+				for (const o of chosen) {
+					p.moveFromBattlefield(s, o, 'graveyard');
+					p.addLog(s, 'rule', `${actor.username} sacrificed ${o.card.name}.`, actor.playerId);
+				}
+			}
+		}
+	}
+
+	discard(step: EffectStep): void {
+		const s = this.state;
+		const p = P();
+		const you = this.you;
+		const sel = step.subject;
+
+		const discardCard = (pl: PlayerGameState, cardInst: CardInstance) => {
+			if (!pl.hand.includes(cardInst)) return;
+			moveObject(s, cardInst, 'graveyard', {
+				from: { player: pl, zone: 'hand' },
+				toPlayer: pl,
+				graveyardReplacement: true,
+				bumpVersion: true,
+				newTimestamp: true
+			});
+		};
+
+		if (sel.k === 'self' || sel.k === 'binding') {
+			const objs = this.objects(sel).filter((o) => o.zone === 'hand');
+			this.bind(step, objs);
+			for (const o of objs) {
+				const holder = this.locate(o.instanceId)?.holder;
+				if (holder) {
+					discardCard(holder, o);
+					p.addLog(s, 'rule', `${holder.username} discarded ${o.card.name}.`, holder.playerId);
+				}
+			}
+			return;
+		}
+
+		const actors = step.actor
+			? this.players({ k: 'playerRef', ref: step.actor })
+			: sel.k === 'player' || sel.k === 'playerRef' || sel.k === 'target'
+				? this.players(sel)
+				: sel.k === 'all' && sel.filter.controller === 'opponent'
+					? this.players({ k: 'player', filter: { relation: 'each_opponent' } })
+					: [you];
+
+		const filter: ObjectFilter | null =
+			sel.k === 'all' ? { ...sel.filter, controller: undefined, owner: undefined } : null;
+
+		for (const pl of actors) {
+			const candidates = filter
+				? pl.hand.filter((c) => this.matches(c, filter, 'hand'))
+				: [...pl.hand];
+			if (candidates.length === 0) continue;
+			const count =
+				sel.k === 'all' && !step.amount
+					? candidates.length
+					: Math.min(candidates.length, Math.max(0, this.amount(step.amount, 1)));
+			if (count <= 0) continue;
+
+			if (step.params?.atRandom) {
+				const pool = [...candidates];
+				const chosen: CardInstance[] = [];
+				for (let i = 0; i < count && pool.length > 0; i++) {
+					const idx = Math.floor(nextRandom(s) * pool.length);
+					chosen.push(pool.splice(idx, 1)[0]);
+				}
+				this.bind(step, chosen);
+				for (const c of chosen) discardCard(pl, c);
+				p.addLog(
+					s,
+					'rule',
+					`${pl.username} discarded ${chosen.length} card(s) at random.`,
+					pl.playerId
+				);
+			} else if (!pl.isBot && candidates.length > count) {
+				enqueueChoicePrompt(
+					s,
+					{
+						id: p.uid('prompt'),
+						kind: 'chooseObjects',
+						playerId: pl.playerId,
+						title: `${this.ctx.title} — Discard ${count} card(s)`,
+						description: `Choose ${count} card(s) to discard.`,
+						candidateInstanceIds: candidates.map((c) => c.instanceId),
+						countRequired: count,
+						choice: {
+							kind: 'chooseObjects',
+							candidates: candidates.map((c) => c.instanceId),
+							min: count,
+							max: count,
+							zone: 'hand',
+							reason: `${this.ctx.title} — Discard ${count} card(s)`
+						}
+					},
+					(_st, reply) => {
+						if (reply.kind !== 'chooseObjects') return;
+						const chosen = reply.objectIds
+							.map((id) => pl.hand.find((c) => c.instanceId === id))
+							.filter((c): c is CardInstance => Boolean(c));
+						this.bind(step, chosen);
+						for (const c of chosen) discardCard(pl, c);
+						if (chosen.length > 0) {
+							p.addLog(
+								s,
+								'rule',
+								`${pl.username} discarded ${chosen.length} card(s).`,
+								pl.playerId
+							);
+						}
+					}
+				);
+			} else {
+				const chosen = candidates.slice(0, count);
+				this.bind(step, chosen);
+				for (const c of chosen) discardCard(pl, c);
+				p.addLog(s, 'rule', `${pl.username} discarded ${chosen.length} card(s).`, pl.playerId);
+			}
+		}
 	}
 
 	exile(step: EffectStep): void {
@@ -967,13 +1559,17 @@ function compare(a: number, op: '>=' | '<=' | '=' | '>' | '<', b: number): boole
 export function devotion(player: PlayerGameState, colors: ManaColor[]): number {
 	let total = 0;
 	for (const perm of player.battlefield) {
-		if (perm.phasedOut) continue;
-		for (const sym of perm.card.manaCost.match(/\{[^}]+\}/g) ?? []) {
-			if (colors.some((c) => sym.toUpperCase().includes(c))) total++;
+		if (perm.phasedOut || perm.isFaceDown) continue;
+		const cost = (perm.copiableCard ?? perm.card).manaCost ?? '';
+		for (const sym of cost.match(/\{[^}]+\}/g) ?? []) {
+			const upper = sym.toUpperCase();
+			if (colors.some((c) => upper.includes(c))) total++;
 		}
 	}
 	return total;
 }
+
+export const countDevotion = devotion;
 
 const FIVE_COLORS: ManaColor[] = ['W', 'U', 'B', 'R', 'G'];
 const BASIC_LAND_COLORS: Array<[string, ManaColor]> = [
