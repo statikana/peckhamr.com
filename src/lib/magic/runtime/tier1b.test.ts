@@ -444,4 +444,86 @@ describe('Tier 1b CR fixes', () => {
 			assert.equal(evalDryad.hasSubType('Forest'), false);
 		});
 	});
+
+	describe('Item 10: Copies of permanent spells become tokens on resolution (CR 111.13, 608.3f, 707.10f)', () => {
+		it('puts a resolving copy of a permanent spell onto the battlefield as a token while instant/sorcery copies cease to exist', () => {
+			const { state, p1, p2 } = makeGame(2);
+
+			const bearCard = synthCard({
+				name: 'Runeclaw Bear',
+				manaCost: '{1}{G}',
+				cmc: 2,
+				typeLine: 'Creature — Bear',
+				power: '2',
+				toughness: '2'
+			});
+			const bear = createCardInstance(bearCard, p1.playerId);
+			bear.zone = 'hand';
+			p1.hand.push(bear);
+			p1.manaPool = { W: 0, U: 0, B: 0, R: 0, G: 1, C: 1 };
+
+			assert.equal(
+				applyGameAction(state, p1.playerId, {
+					type: 'cast_spell',
+					instanceId: bear.instanceId
+				}).ok,
+				true
+			);
+			assert.equal(state.stack.length, 1);
+
+			// Push a copy of the permanent spell on top of the stack
+			const originalSpell = state.stack[0];
+			state.stack.push({
+				...originalSpell,
+				id: 'stk_copy_bear',
+				isCopy: true
+			});
+
+			// Resolve the copy on top of the stack
+			assert.equal(applyGameAction(state, p1.playerId, { type: 'pass_priority' }).ok, true);
+			assert.equal(applyGameAction(state, p2.playerId, { type: 'pass_priority' }).ok, true);
+
+			assert.equal(state.stack.length, 1, 'Original spell still on the stack');
+			assert.equal(p1.battlefield.length, 1, 'Copy of permanent spell entered the battlefield');
+			const tokenBear = p1.battlefield[0];
+			assert.equal(tokenBear.isToken, true, 'Resolved permanent spell copy is a token');
+			assert.notEqual(tokenBear.instanceId, bear.instanceId, 'Token copy has a distinct instanceId from original spell');
+
+			// Resolve the original permanent spell
+			assert.equal(applyGameAction(state, p1.playerId, { type: 'pass_priority' }).ok, true);
+			assert.equal(applyGameAction(state, p2.playerId, { type: 'pass_priority' }).ok, true);
+			assert.equal(state.stack.length, 0);
+			assert.equal(p1.battlefield.length, 2);
+			assert.equal(p1.battlefield.filter((c) => c.isToken).length, 1);
+			assert.equal(p1.battlefield.filter((c) => !c.isToken).length, 1);
+
+			// Also verify an instant spell copy resolves and ceases to exist without entering graveyard
+			const boltCard = synthCard({
+				name: 'Chain Bolt',
+				manaCost: '{R}',
+				cmc: 1,
+				typeLine: 'Instant',
+				oracleText: 'You gain 3 life.'
+			});
+			state.stack.push({
+				id: 'stk_copy_instant',
+				sourceInstanceId: 'copy_inst_src',
+				card: boltCard,
+				controllerId: p1.playerId,
+				ownerId: p1.playerId,
+				kind: 'spell',
+				isCopy: true,
+				title: boltCard.name,
+				targets: [],
+				xValue: 0,
+				requiresGuidedResolution: false,
+				createdAt: 0
+			});
+			const lifeBefore = p1.life;
+			assert.equal(applyGameAction(state, p1.playerId, { type: 'pass_priority' }).ok, true);
+			assert.equal(applyGameAction(state, p2.playerId, { type: 'pass_priority' }).ok, true);
+			assert.equal(p1.life, lifeBefore + 3);
+			assert.equal(p1.graveyard.length, 0, 'Copy of instant spell ceases to exist');
+		});
+	});
 });

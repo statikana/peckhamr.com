@@ -65,8 +65,8 @@ These are bugs where a mechanic the engine actively supports produces the wrong 
 9. ~~**Layer 4 `setTypes` / `setSubtypes` drops `Basic`/`Snow` supertypes and non-land types on artifact lands (`CR 205.1a–b, 205.4b, 305.7`)**~~ — **Fixed (`setTypes` / `setSubtypes` preserve all supertypes and `setSubtypes` preserves non-land card types and subtypes)**
    - In `runtime/layers.ts`, `evaluateAttachedTypes` (`setTypes`) and `evaluateTypeOverwrites` (`setSubtypes`) now preserve all supertypes (`Basic`, `Legendary`, `Snow`, `World`, `Ongoing`), and `setSubtypes` preserves existing card types (`Artifact`, `Creature`) and non-land subtypes per `CR 205.1a`, `205.4b`, and `305.7`.
 
-10. **Permanent spell copies (`item.isCopy`) vanish on resolution instead of becoming token permanents (`CR 111.13, 608.3f, 707.10f`)** — **Size: S**
-    - `resolveStackItemNow` (`engine.ts:4171`) checks `if (item.kind === 'spell' && !item.isCopy)`, so a copy of a permanent spell simply disappears from the stack when it resolves.
+10. ~~**Permanent spell copies (`item.isCopy`) vanish on resolution instead of becoming token permanents (`CR 111.13, 608.3f, 707.10f`)**~~ — **Fixed (`resolveStackItemNow` puts resolving permanent spell copies onto the battlefield as tokens)**
+    - `resolveStackItemNow` (`engine.ts`) now enters resolving permanent spells with `item.isCopy === true` onto the battlefield as token permanents (`isToken: true`, without applying token creation multipliers per `CR 111.13` / `608.3f`), while instant/sorcery spell copies still cease to exist.
 
 11. **`Enchant player` Auras (Curses) fail to attach on resolution and immediately die to SBAs (`CR 303.4b–c, 702.5c, 704.5m`)** — **Size: S**
     - `resolveTopOfStack` (`engine.ts:4241-4243`) only sets `attachedToId` when `item.targets[0]?.kind === 'permanent'`, and `checkStateBasedActions` (`engine.ts:6619-6634`) only looks up `attachedToId` via `findPermanentOnBoard`, immediately putting player-attached Auras into the graveyard.

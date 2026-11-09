@@ -4206,8 +4206,9 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 	// CR 608.2n: As the final part of resolution, the resolving spell or ability leaves the stack.
 	removeItemFromStack();
 
-	// If this was a spell card, move it to Battlefield (for permanents) or Graveyard/Exile (for Instants/Sorceries)
-	if (item.kind === 'spell' && !item.isCopy) {
+	// If this was a spell, move it to Battlefield (for permanents; copies become tokens per CR 111.13 / 608.3f / 707.10f)
+	// or Graveyard/Exile (for nontoken Instants/Sorceries).
+	if (item.kind === 'spell') {
 		const tLine = item.card.typeLine;
 		const isPermanent =
 			tLine.includes('Creature') ||
@@ -4216,13 +4217,14 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 			tLine.includes('Planeswalker') ||
 			tLine.includes('Battle');
 
-		const cardOwnerId = item.ownerId || controller.playerId;
+		const cardOwnerId = item.isCopy ? controller.playerId : item.ownerId || controller.playerId;
 		const cardOwner = state.players.find((p) => p.playerId === cardOwnerId) || controller;
-		const wasCommander = cardOwner.commanderNames[item.sourceInstanceId] !== undefined;
-		const castCount =
-			cardOwner.commanderCastCounts?.[item.sourceInstanceId] ??
-			item.commanderCastCount ??
-			0;
+		const wasCommander = !item.isCopy && cardOwner.commanderNames[item.sourceInstanceId] !== undefined;
+		const castCount = item.isCopy
+			? 0
+			: (cardOwner.commanderCastCounts?.[item.sourceInstanceId] ??
+				item.commanderCastCount ??
+				0);
 
 		if (isPermanent) {
 			const perm = createCardInstance(
@@ -4230,10 +4232,17 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 				cardOwnerId,
 				'battlefield',
 				wasCommander,
-				false,
-				allocateTimestamp(state)
+				Boolean(item.isCopy),
+				allocateTimestamp(state),
+				state
 			);
-			perm.instanceId = item.sourceInstanceId;
+			const idTaken =
+				Boolean(item.isCopy) &&
+				(state.stack.some((s) => s.id !== item.id && s.sourceInstanceId === item.sourceInstanceId) ||
+					Boolean(findCardAnywhere(state, item.sourceInstanceId)));
+			if (!idTaken && item.sourceInstanceId) {
+				perm.instanceId = item.sourceInstanceId;
+			}
 			perm.controllerId = controller.playerId;
 			perm.commanderCastCount = castCount;
 			perm.summoningSick = tLine.includes('Creature');
@@ -4331,7 +4340,7 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 				}
 			}
 			flushTriggers(state);
-		} else {
+		} else if (!item.isCopy) {
 			moveStackSpellToZone(state, item, exiledBySelfReference ? 'exile' : 'graveyard');
 		}
 	}
