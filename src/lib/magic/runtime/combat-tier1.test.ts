@@ -314,3 +314,238 @@ describe('Tier 1 Item 3 — CR 506.4 / 506.4a / 510.1c Removal from Combat', () 
 		);
 	});
 });
+
+describe('Tier 1 Item 2 — CR 506.4c / 510.1b / 702.19f Attacked Planeswalker Removed from Combat', () => {
+	it('deals 0 combat damage to defending player when an unblocked planeswalker attacker loses its planeswalker (left battlefield, phased out, or lost Planeswalker type)', () => {
+		const { state, p1, p2 } = makeGame();
+
+		const pw1 = putInZone(
+			state,
+			p2,
+			synthCard({
+				name: 'Targeted Walker 1',
+				typeLine: 'Legendary Planeswalker — Jace',
+				loyalty: '4',
+				power: undefined,
+				toughness: undefined
+			}),
+			'battlefield'
+		);
+		pw1.counters.loyalty = 4;
+
+		const pw2 = putInZone(
+			state,
+			p2,
+			synthCard({
+				name: 'Targeted Walker 2',
+				typeLine: 'Legendary Planeswalker — Chandra',
+				loyalty: '4',
+				power: undefined,
+				toughness: undefined
+			}),
+			'battlefield'
+		);
+		pw2.counters.loyalty = 4;
+
+		const atk1 = putInZone(
+			state,
+			p1,
+			synthCard({ name: 'Unblocked Striker', power: '4', toughness: '4' }),
+			'battlefield'
+		);
+		const atk2 = putInZone(
+			state,
+			p1,
+			synthCard({
+				name: 'Unblocked Trampler',
+				power: '5',
+				toughness: '5',
+				oracleText: 'Trample',
+				keywords: ['Trample']
+			}),
+			'battlefield'
+		);
+
+		state.phase = 'declare_attackers';
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'declare_attackers',
+				assignments: [
+					{
+						attackerInstanceId: atk1.instanceId,
+						defenderPlayerId: p2.playerId,
+						defenderPlaneswalkerId: pw1.instanceId
+					},
+					{
+						attackerInstanceId: atk2.instanceId,
+						defenderPlayerId: p2.playerId,
+						defenderPlaneswalkerId: pw2.instanceId
+					}
+				]
+			}).ok,
+			true
+		);
+		passAll(state); // -> declare_blockers
+
+		assert.equal(
+			applyGameAction(state, p2.playerId, {
+				type: 'declare_blockers',
+				assignments: []
+			}).ok,
+			true
+		);
+
+		// pw1 leaves the battlefield; pw2 stops being a planeswalker via an Aura
+		moveObject(state, pw1, 'graveyard', {
+			from: { player: p2, zone: 'battlefield' },
+			toPlayer: p2,
+			leaveBattlefieldReset: true
+		});
+		const landifyPw2 = putInZone(
+			state,
+			p1,
+			synthCard({
+				name: 'Walker into Land',
+				typeLine: 'Enchantment — Aura',
+				oracleText: 'Enchant permanent\nEnchanted permanent is a colorless Forest land.'
+			}),
+			'battlefield'
+		);
+		landifyPw2.attachedToId = pw2.instanceId;
+		checkStateBasedActions(state);
+
+		const lifeBefore = p2.life;
+		passAll(state); // -> combat_damage
+
+		assert.equal(
+			p2.life,
+			lifeBefore,
+			'Unblocked creatures attacking planeswalkers that left combat deal 0 damage to defending player (CR 506.4c, 510.1b, 702.19f)'
+		);
+		assert.equal(
+			pw2.counters.loyalty,
+			4,
+			'Permanent that stopped being a planeswalker was removed from combat and lost no loyalty counters (CR 506.4c)'
+		);
+	});
+
+	it('assigns all Trample damage to blockers (or deals 0 if blockers also left) and never redirects excess to the defending player when the attacked planeswalker left combat (CR 702.19f)', () => {
+		const { state, p1, p2 } = makeGame();
+
+		const pw = putInZone(
+			state,
+			p2,
+			synthCard({
+				name: 'Doomed Walker',
+				typeLine: 'Legendary Planeswalker — Garruk',
+				loyalty: '3',
+				power: undefined,
+				toughness: undefined
+			}),
+			'battlefield'
+		);
+		pw.counters.loyalty = 3;
+
+		const trampleAtk1 = putInZone(
+			state,
+			p1,
+			synthCard({
+				name: 'Trample Beast 1',
+				power: '5',
+				toughness: '5',
+				oracleText: 'Trample',
+				keywords: ['Trample']
+			}),
+			'battlefield'
+		);
+		const trampleAtk2 = putInZone(
+			state,
+			p1,
+			synthCard({
+				name: 'Trample Beast 2',
+				power: '4',
+				toughness: '4',
+				oracleText: 'Trample',
+				keywords: ['Trample']
+			}),
+			'battlefield'
+		);
+
+		const survivingBlocker = putInZone(
+			state,
+			p2,
+			synthCard({
+				name: 'Indestructible Blocker',
+				power: '1',
+				toughness: '2',
+				oracleText: 'Indestructible',
+				keywords: ['Indestructible']
+			}),
+			'battlefield'
+		);
+		const leavingBlocker = putInZone(
+			state,
+			p2,
+			synthCard({ name: 'Leaving Blocker', power: '1', toughness: '2' }),
+			'battlefield'
+		);
+
+		state.phase = 'declare_attackers';
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'declare_attackers',
+				assignments: [
+					{
+						attackerInstanceId: trampleAtk1.instanceId,
+						defenderPlayerId: p2.playerId,
+						defenderPlaneswalkerId: pw.instanceId
+					},
+					{
+						attackerInstanceId: trampleAtk2.instanceId,
+						defenderPlayerId: p2.playerId,
+						defenderPlaneswalkerId: pw.instanceId
+					}
+				]
+			}).ok,
+			true
+		);
+		passAll(state); // -> declare_blockers
+
+		assert.equal(
+			applyGameAction(state, p2.playerId, {
+				type: 'declare_blockers',
+				assignments: [
+					{ blockerInstanceId: survivingBlocker.instanceId, attackerInstanceId: trampleAtk1.instanceId },
+					{ blockerInstanceId: leavingBlocker.instanceId, attackerInstanceId: trampleAtk2.instanceId }
+				]
+			}).ok,
+			true
+		);
+
+		// Remove the attacked planeswalker AND leavingBlocker before combat damage
+		moveObject(state, pw, 'exile', {
+			from: { player: p2, zone: 'battlefield' },
+			toPlayer: p2,
+			leaveBattlefieldReset: true
+		});
+		moveObject(state, leavingBlocker, 'graveyard', {
+			from: { player: p2, zone: 'battlefield' },
+			toPlayer: p2,
+			leaveBattlefieldReset: true
+		});
+
+		const lifeBefore = p2.life;
+		passAll(state); // -> combat_damage
+
+		assert.equal(
+			p2.life,
+			lifeBefore,
+			'Trample attackers attacking a removed planeswalker deal 0 combat damage to the defending player (CR 702.19f)'
+		);
+		assert.equal(
+			survivingBlocker.damageMarked,
+			5,
+			'All 5 combat damage from trampleAtk1 was assigned to its blocker since the attacked planeswalker left combat (CR 702.19b, 702.19f)'
+		);
+	});
+});

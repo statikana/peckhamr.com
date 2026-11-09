@@ -426,6 +426,9 @@ export function removeFromCombat(state: GameState | undefined, instanceId: strin
 	);
 	for (const atk of state.combat.attackers) {
 		atk.blockerInstanceIds = atk.blockerInstanceIds.filter((id) => id !== instanceId);
+		if (atk.defenderPlaneswalkerId === instanceId) {
+			atk.defenderPlaneswalkerId = 'removed';
+		}
 	}
 }
 

@@ -41,8 +41,8 @@ These are bugs where a mechanic the engine actively supports produces the wrong 
      - **Static `lifeTotalCantChange` rule modifiers** (`CR 119.7`, only checking the legacy boolean `player.lifeTotalCannotChangeThisTurn`)
      - **Counter multipliers & `CounterPlaced` events on Infect** (`engine.ts:6204-6205, 6321-6322` mutates `counters['-1/-1']` directly instead of calling `addCountersToPermanent`)
 
-2. **Attacked planeswalker leaving combat redirects attacker's damage to the defending player (`CR 506.4c, 510.1b, 702.19f`)** — **Size: S**
-   - In `executeCombatDamageStep` (`engine.ts:6098-6178, 6230-6293`), if a creature is attacking a planeswalker (`defenderPlaneswalkerId !== null`) and that planeswalker leaves the battlefield or phases out before combat damage, `if (defWalker)` is false and execution falls into the `else` branch, dealing the unblocked or trample damage to `defPlayer` instead of dealing 0 combat damage.
+2. **[FIXED] Attacked planeswalker leaving combat redirects attacker's damage to the defending player (`CR 506.4c, 510.1b, 702.19f`)** — **Size: S**
+   - Fixed in `executeCombatDamageStep`, `simulateCombatForecast`, `checkStateBasedActions`, `phaseOutPermanent` (`engine.ts`), and `removeFromCombat` (`runtime/zones.ts`): when an attacked planeswalker leaves the battlefield, phases out, changes controller, or stops being a planeswalker, unblocked attackers deal 0 combat damage (`CR 506.4c, 510.1b`) and Trample attackers assign all combat damage to their blockers (or 0 if no blockers remain) without redirecting excess damage to the defending player (`CR 702.19f`).
 
 3. **[FIXED] Permanents leaving the battlefield or losing creature type are never removed from `state.combat` (`CR 506.4, 506.4a`)** — **Size: S**
    - Fixed in `moveObject` (`runtime/zones.ts`) via `removeFromCombat` and in `checkStateBasedActions` (`engine.ts`) for permanents that stop being creatures or become battles, while preserving `wasBlocked` on attackers whose blockers leave combat (`CR 510.1c`).

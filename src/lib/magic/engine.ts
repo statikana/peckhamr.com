@@ -4611,12 +4611,15 @@ export function phaseOutPermanent(state: GameState, perm: CardInstance): void {
 			}
 		}
 	}
-	// Remove from combat if attacking or blocking
+	// Remove from combat if attacking, blocking, or being attacked as a planeswalker (CR 506.4, 506.4c)
 	state.combat.attackers = state.combat.attackers.filter(
 		(a) => a.attackerInstanceId !== perm.instanceId
 	);
 	for (const atk of state.combat.attackers) {
 		atk.blockerInstanceIds = atk.blockerInstanceIds.filter((id) => id !== perm.instanceId);
+		if (atk.defenderPlaneswalkerId === perm.instanceId) {
+			atk.defenderPlaneswalkerId = 'removed';
+		}
 	}
 }
 
@@ -5298,11 +5301,16 @@ function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): 
 		if (attackerDealsNow && atkPower > 0 && !combatDamagePrevented) {
 			let remainingDamage = atkPower;
 			let totalDealtByAttacker = 0;
-			const defWalker = atkEntry.defenderPlaneswalkerId
-				? defPlayer.battlefield.find(
-						(c) => !c.phasedOut && c.instanceId === atkEntry.defenderPlaneswalkerId
-					)
-				: undefined;
+			const attackingPlaneswalker = Boolean(atkEntry.defenderPlaneswalkerId);
+			const defWalker =
+				atkEntry.defenderPlaneswalkerId && atkEntry.defenderPlaneswalkerId !== 'removed'
+					? defPlayer.battlefield.find(
+							(c) =>
+								!c.phasedOut &&
+								c.instanceId === atkEntry.defenderPlaneswalkerId &&
+								evaluatePermanent(state, c).isPlaneswalker
+						)
+					: undefined;
 
 			if (!atkEntry.wasBlocked && blockers.length === 0) {
 				if (defWalker) {
@@ -5333,7 +5341,7 @@ function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): 
 						`${attacker.card.name} dealt ${remainingDamage} unblocked combat damage to ${defWalker.card.name}.`,
 						atkPlayer.playerId
 					);
-				} else {
+				} else if (!attackingPlaneswalker) {
 					// Unblocked -> deals combat damage to defending player
 					if (!defPlayer.protectionFromEverythingThisTurn) {
 						if (atkInfect) {
@@ -5378,6 +5386,14 @@ function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): 
 							atkPlayer.playerId
 						);
 					}
+				} else {
+					// CR 506.4c / 510.1b / 702.19f: An unblocked creature whose attacked planeswalker left combat deals no combat damage.
+					addLog(
+						state,
+						'combat',
+						`${attacker.card.name} was attacking a planeswalker that left combat, so it deals no combat damage (CR 506.4c, 510.1b).`,
+						atkPlayer.playerId
+					);
 				}
 			} else if (atkEntry.wasBlocked && blockers.length === 0 && !atkTrample) {
 				// CR 509.1h / 510.1c: An attacking creature that became blocked remains blocked even if all blockers
@@ -5389,6 +5405,9 @@ function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): 
 					atkPlayer.playerId
 				);
 			} else {
+				// CR 702.19f: A creature with Trample attacking a planeswalker that left combat cannot assign excess
+				// damage to the defending player; all damage must be assigned to its blockers (or 0 if none remain).
+				const canTrampleOver = atkTrample && (!attackingPlaneswalker || Boolean(defWalker));
 				// Blocked -> assign lethal damage to remaining blockers in order
 				for (let i = 0; i < blockers.length; i++) {
 					const b = blockers[i];
@@ -5399,7 +5418,7 @@ function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): 
 
 					const isLastBlocker = i === blockers.length - 1;
 					const dmgToBlocker =
-						isLastBlocker && !atkTrample
+						isLastBlocker && !canTrampleOver
 							? remainingDamage
 							: Math.min(remainingDamage, lethalNeeded);
 
@@ -5429,8 +5448,8 @@ function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): 
 					}
 				}
 
-				// CR 702.19c: Trample excess damage carries over to the player or planeswalker being attacked!
-				if (atkTrample && remainingDamage > 0) {
+				// CR 702.19b / 702.19f: Trample excess damage carries over to the player or planeswalker being attacked!
+				if (canTrampleOver && remainingDamage > 0) {
 					if (defWalker) {
 						defWalker.counters.loyalty = Math.max(
 							0,
@@ -5458,7 +5477,7 @@ function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): 
 							`${attacker.card.name} trampled over for ${remainingDamage} combat damage to ${defWalker.card.name}!`,
 							atkPlayer.playerId
 						);
-					} else {
+					} else if (!attackingPlaneswalker) {
 						if (!defPlayer.protectionFromEverythingThisTurn) {
 							if (atkInfect) {
 								defPlayer.poison += remainingDamage;
@@ -5781,6 +5800,16 @@ export function checkStateBasedActions(state: GameState): void {
 			for (const atk of state.combat.attackers) {
 				if (atk.blockerInstanceIds.length > 0) {
 					atk.blockerInstanceIds = atk.blockerInstanceIds.filter(isCombatCreature);
+				}
+				if (atk.defenderPlaneswalkerId && atk.defenderPlaneswalkerId !== 'removed') {
+					const pwSnap = prePassSnapshot.get(atk.defenderPlaneswalkerId);
+					const defPlayer = state.players.find((p) => p.playerId === atk.defenderPlayerId);
+					const onDefBattlefield = defPlayer?.battlefield.some(
+						(c) => !c.phasedOut && c.instanceId === atk.defenderPlaneswalkerId
+					);
+					if (!pwSnap || !onDefBattlefield || !pwSnap.evalPerm.isPlaneswalker) {
+						atk.defenderPlaneswalkerId = 'removed';
+					}
 				}
 			}
 		}
@@ -7966,10 +7995,18 @@ export function computeCombatDamageForecast(
 		if (!atkFound) continue;
 		const atkCard = atkFound.inst;
 		const defPlayer = state.players.find((p) => p.playerId === atk.defenderPlayerId);
-		const defWalkerFound = atk.defenderPlaneswalkerId
-			? findPermanentOnBoard(state, atk.defenderPlaneswalkerId)
-			: null;
-		const defWalker = defWalkerFound?.inst || null;
+		const attackingPlaneswalker = Boolean(atk.defenderPlaneswalkerId);
+		const defWalkerFound =
+			atk.defenderPlaneswalkerId && atk.defenderPlaneswalkerId !== 'removed'
+				? findPermanentOnBoard(state, atk.defenderPlaneswalkerId)
+				: null;
+		const defWalker =
+			defWalkerFound &&
+			defWalkerFound.controller.playerId === atk.defenderPlayerId &&
+			!defWalkerFound.inst.phasedOut &&
+			evaluatePermanent(state, defWalkerFound.inst).isPlaneswalker
+				? defWalkerFound.inst
+				: null;
 
 		const atkPower = Math.max(0, getCreaturePower(atkCard, state));
 		const atkMaxTough = getCreatureToughness(atkCard, state);
@@ -8023,7 +8060,7 @@ export function computeCombatDamageForecast(
 				pw.loyaltyLoss += rawDmg;
 				pw.projectedLoyalty = Math.max(0, pw.currentLoyalty - pw.loyaltyLoss);
 				pw.willDie = pw.projectedLoyalty <= 0;
-			} else if (defPlayer) {
+			} else if (defPlayer && !attackingPlaneswalker) {
 				const inc = playerIncoming[defPlayer.playerId];
 				inc.unblockedCount += 1;
 				if (atkInfect) {
@@ -8119,7 +8156,7 @@ export function computeCombatDamageForecast(
 					pw.loyaltyLoss += trampleDmg;
 					pw.projectedLoyalty = Math.max(0, pw.currentLoyalty - pw.loyaltyLoss);
 					pw.willDie = pw.projectedLoyalty <= 0;
-				} else if (defPlayer) {
+				} else if (defPlayer && !attackingPlaneswalker) {
 					const inc = playerIncoming[defPlayer.playerId];
 					inc.trampleThroughDamage += trampleDmg;
 					if (atkInfect) {
