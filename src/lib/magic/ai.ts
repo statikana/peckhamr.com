@@ -500,14 +500,21 @@ function chooseBotTargetsForCard(
 		return [{ kind: 'player', id: topOpp.playerId, label: topOpp.username }];
 	}
 
+	// Last resort: any legal target except the bot's own permanents, itself and its own spells, so a
+	// removal spell is never aimed at the bot's side when opponents have nothing to hit.
 	const allLegal = getAllLegalTargetsForRequirement(
 		state,
 		bot.playerId,
 		parsed.targetInfo,
 		cardInst.card,
 		cardInst.instanceId
-	);
-	if (allLegal.length >= parsed.targetInfo.minTargets) {
+	).filter((t) => {
+		if (t.kind === 'player') return t.id !== bot.playerId;
+		if (t.kind === 'permanent') return !bot.battlefield.some((p) => p.instanceId === t.id);
+		if (t.kind === 'stack') return state.stack.find((s) => s.id === t.id)?.controllerId !== bot.playerId;
+		return true;
+	});
+	if (allLegal.length > 0 && allLegal.length >= parsed.targetInfo.minTargets) {
 		return allLegal.slice(0, parsed.targetInfo.minTargets);
 	}
 
