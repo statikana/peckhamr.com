@@ -986,12 +986,16 @@ const BASIC_LAND_COLORS: Array<[string, ManaColor]> = [
 
 function commanderColors(player: PlayerGameState): ManaColor[] {
 	const set = new Set<ManaColor>();
+	for (const col of player.commanderColorIdentity ?? []) {
+		if (col !== 'C') set.add(col);
+	}
 	const cards = [
 		...player.command,
-		...player.battlefield.filter((c) => c.isCommander),
-		...player.graveyard.filter((c) => c.isCommander),
-		...player.exile.filter((c) => c.isCommander),
-		...player.hand.filter((c) => c.isCommander)
+		...player.battlefield.filter((c) => c.isCommander && c.ownerId === player.playerId),
+		...player.graveyard.filter((c) => c.isCommander && c.ownerId === player.playerId),
+		...player.exile.filter((c) => c.isCommander && c.ownerId === player.playerId),
+		...player.hand.filter((c) => c.isCommander && c.ownerId === player.playerId),
+		...player.library.filter((c) => c.isCommander && c.ownerId === player.playerId)
 	];
 	for (const c of cards) {
 		for (const col of c.card.colorIdentity) {

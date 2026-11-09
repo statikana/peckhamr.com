@@ -281,6 +281,9 @@ export function createInitialGameState(
 		const command: CardInstance[] = deck.commanders.map((c) =>
 			createCardInstance(c, playerId, 'command', true, false)
 		);
+		const commanderColorIdentity = Array.from(
+			new Set(deck.commanders.flatMap((c) => c.colorIdentity))
+		);
 
 		const rawLibrary: CardInstance[] = [];
 		for (const entry of deck.cards) {
@@ -311,6 +314,7 @@ export function createInitialGameState(
 			commanderDamageTaken: {},
 			commanderNames: {},
 			commanderCastCounts: {},
+			commanderColorIdentity,
 			autoPassEmptyStack: true,
 			fullControl: false,
 			stopPhases: ['main1', 'declare_attackers', 'declare_blockers', 'main2'],
@@ -459,13 +463,14 @@ export function hasKeyword(inst: CardInstance, keyword: string, state: GameState
 }
 
 export function getPlayerCommanderIdentity(player: PlayerGameState): ManaColor[] {
-	const set = new Set<ManaColor>();
+	const set = new Set<ManaColor>(player.commanderColorIdentity ?? []);
 	const allCards = [
 		...player.command,
-		...player.battlefield.filter((c) => c.isCommander),
-		...player.graveyard.filter((c) => c.isCommander),
-		...player.exile.filter((c) => c.isCommander),
-		...player.hand.filter((c) => c.isCommander)
+		...player.battlefield.filter((c) => c.isCommander && c.ownerId === player.playerId),
+		...player.graveyard.filter((c) => c.isCommander && c.ownerId === player.playerId),
+		...player.exile.filter((c) => c.isCommander && c.ownerId === player.playerId),
+		...player.hand.filter((c) => c.isCommander && c.ownerId === player.playerId),
+		...player.library.filter((c) => c.isCommander && c.ownerId === player.playerId)
 	];
 	for (const c of allCards) {
 		for (const col of c.card.colorIdentity) set.add(col);
@@ -799,7 +804,12 @@ export function loseTheGame(state: GameState, player: PlayerGameState, reason: s
 	return true;
 }
 
-export function drawCards(state: GameState, player: PlayerGameState, count: number): void {
+export function drawCards(
+	state: GameState,
+	player: PlayerGameState,
+	count: number,
+	deferSba = false
+): void {
 	for (let i = 0; i < count; i++) {
 		if (player.library.length === 0) {
 			// Check Replacement Effect: Laboratory Maniac ("If you would draw a card while your library has no cards in it, you win the game instead.")
@@ -814,11 +824,11 @@ export function drawCards(state: GameState, player: PlayerGameState, count: numb
 				}
 				return;
 			}
-			loseTheGame(
-				state,
-				player,
-				'Attempted to draw a card from an empty library (Decked Out).'
-			);
+			// CR 104.3c / 704.5b: Attempting to draw from an empty library sets a flag checked by SBAs.
+			player.attemptedEmptyLibraryDraw = true;
+			if (!deferSba) {
+				checkStateBasedActions(state);
+			}
 			return;
 		}
 		moveObject(state, player.library[0], 'hand', {
@@ -2178,6 +2188,12 @@ function handlePromptResolution(
 				);
 			}
 		} else {
+			const cmd =
+				actor.graveyard.find((c) => c.instanceId === prompt.commanderInstanceId) ??
+				actor.exile.find((c) => c.instanceId === prompt.commanderInstanceId);
+			if (cmd) {
+				cmd.commanderSbaDeclinedVersion = cmd.objectVersion ?? 1;
+			}
 			addLog(
 				state,
 				'rule',
@@ -3444,7 +3460,7 @@ function executeParsedEffect(
 				}).length;
 			}
 			if (count > 0) {
-				drawCards(state, controller, count);
+				drawCards(state, controller, count, true);
 				addLog(state, 'rule', `${controller.username} drew ${count} card(s).`, controller.playerId);
 			}
 			break;
@@ -4151,7 +4167,7 @@ registerEffectPorts({
 	power: (state, inst) => getCreaturePower(inst, state),
 	toughness: (state, inst) => getCreatureToughness(inst, state),
 	hasKeyword: (state, inst, kw) => hasKeyword(inst, kw, state),
-	drawCards,
+	drawCards: (state, player, count) => drawCards(state, player, count, true),
 	damageTarget: applyDamageToTarget,
 	destroy: destroyPermanentByEffect,
 	moveFromBattlefield: movePermanentToZone,
@@ -5153,6 +5169,65 @@ function completeTurnCleanupAndPassTurn(state: GameState): void {
 	runBeginningOfTurn(state);
 }
 
+function isAuraAttachmentLegal(
+	state: GameState,
+	aura: CardInstance,
+	auraController: PlayerGameState,
+	evalAura: EvaluatedPermanent,
+	host: CardInstance,
+	hostController: PlayerGameState
+): boolean {
+	if (host.phasedOut) return false;
+	if (hasProtectionFrom(host, aura.copiableCard ?? aura.card, state)) return false;
+
+	let enchantParam: string | undefined;
+	const kwLine = evalAura.keywords.find((k) => k.toLowerCase().startsWith('enchant '));
+	if (kwLine) {
+		enchantParam = kwLine.slice('enchant '.length).trim();
+	} else if (!evalAura.losesAllAbilities) {
+		const def = compileCard(aura.copiableCard ?? aura.card);
+		for (const ab of def.faces[0]?.abilities ?? []) {
+			if (ab.kind === 'keyword' && ab.keyword.name.toLowerCase() === 'enchant') {
+				enchantParam = ab.keyword.param ?? 'permanent';
+				break;
+			}
+		}
+	}
+	if (!enchantParam) return true;
+
+	let param = enchantParam.toLowerCase().trim();
+	if (param.includes('you control')) {
+		if (hostController.playerId !== auraController.playerId) return false;
+		param = param.replace(/\byou control\b/g, '').trim();
+	} else if (param.includes('opponent controls')) {
+		if (hostController.playerId === auraController.playerId) return false;
+		param = param.replace(/\ban?\s+opponent controls\b|\bopponent controls\b/g, '').trim();
+	}
+
+	const evalHost = evaluatePermanent(state, host);
+	if (param.includes('nonland')) {
+		if (evalHost.isLand) return false;
+		param = param.replace(/\bnonland\b/g, '').trim();
+	}
+	if (!param || param.includes('permanent')) return true;
+
+	const disjuncts = param
+		.split(/\s*(?:,|\bor\b)\s*/)
+		.map((d) => d.trim())
+		.filter(Boolean);
+	if (disjuncts.length === 0) return true;
+
+	return disjuncts.some((d) => {
+		if (d === 'creature') return evalHost.isCreature;
+		if (d === 'artifact') return evalHost.isArtifact;
+		if (d === 'enchantment') return evalHost.isEnchantment;
+		if (d === 'land') return evalHost.isLand;
+		if (d === 'planeswalker') return evalHost.isPlaneswalker;
+		if (d === 'battle') return evalHost.typeLine.includes('Battle');
+		return evalHost.hasSubType(d) || evalHost.typeLine.toLowerCase().includes(d);
+	});
+}
+
 /**
  * CR 704.3: State-Based Actions are checked in an iterative fixpoint loop
  * until a pass produces no state-based actions.
@@ -5166,8 +5241,25 @@ export function checkStateBasedActions(state: GameState): void {
 	while (anyActionTaken && maxIterations-- > 0) {
 		anyActionTaken = false;
 
+		// 0. Pre-annihilation LKI snapshot (CR 704.8) before any SBAs in this pass modify the board
+		const prePassSnapshot = new Map<
+			string,
+			{ counters: Record<CounterType, number>; evalPerm: EvaluatedPermanent }
+		>();
 		for (const p of state.players) {
-			// 1. +1/+1 and -1/-1 counter annihilation (CR 704.5q)
+			if (p.lost) continue;
+			for (const perm of p.battlefield) {
+				if (perm.phasedOut) continue;
+				prePassSnapshot.set(perm.instanceId, {
+					counters: { ...perm.counters },
+					evalPerm: evaluatePermanent(state, perm)
+				});
+			}
+		}
+
+		// 1. +1/+1 and -1/-1 counter annihilation (CR 704.5q)
+		for (const p of state.players) {
+			if (p.lost) continue;
 			for (const perm of p.battlefield) {
 				if (perm.phasedOut) continue;
 				const plus = perm.counters['+1/+1'] || 0;
@@ -5179,88 +5271,256 @@ export function checkStateBasedActions(state: GameState): void {
 					anyActionTaken = true;
 				}
 			}
+		}
 
-			// 2. Unattach Auras/Equipment attached to illegal/missing/non-creature permanents (CR 704.5m-n)
-			const unattachedAurasToGraveyard: CardInstance[] = [];
-			for (const perm of p.battlefield) {
-				if (perm.phasedOut || !perm.attachedToId) continue;
-				const targetFound = findPermanentOnBoard(state, perm.attachedToId);
-				if (!targetFound) {
-					perm.attachedToId = null;
-					if (perm.card.typeLine.includes('Aura')) {
-						unattachedAurasToGraveyard.push(perm);
-					}
-					anyActionTaken = true;
-				} else if (
-					perm.card.typeLine.includes('Equipment') &&
-					!evaluatePermanent(state, targetFound.inst).typeLine.includes('Creature')
-				) {
-					perm.attachedToId = null;
-					anyActionTaken = true;
-				}
-			}
-			for (const aura of unattachedAurasToGraveyard) {
-				movePermanentToZone(state, aura, 'graveyard');
-			}
+		// Collect all battlefield-to-graveyard SBAs across all players in this pass (CR 704.3, 603.10a)
+		const sbaGraveyardBatch: Array<{
+			perm: CardInstance;
+			controller: PlayerGameState;
+			kind: 'aura' | 'dying' | 'legend';
+			legName?: string;
+		}> = [];
+		const queuedIds = new Set<string>();
+		const queueToGraveyard = (
+			perm: CardInstance,
+			controller: PlayerGameState,
+			kind: 'aura' | 'dying' | 'legend',
+			legName?: string
+		) => {
+			if (queuedIds.has(perm.instanceId)) return;
+			queuedIds.add(perm.instanceId);
+			sbaGraveyardBatch.push({ perm, controller, kind, legName });
+		};
 
-			// 3. Creature lethal damage / 0 toughness / Deathtouch SBA (CR 704.5f-h)
-			const dyingPermanents: { perm: CardInstance; hadLostAbilities: boolean }[] = [];
+		for (const p of state.players) {
+			if (p.lost) continue;
+
+			// 2. Unattach Auras/Equipment attached to illegal/missing/non-creature permanents (CR 303.4d, 702.16c-d, 704.5m-n)
 			for (const perm of p.battlefield) {
 				if (perm.phasedOut) continue;
 				const evalPerm = evaluatePermanent(state, perm);
+				const isAura = evalPerm.hasSubType('Aura') || evalPerm.typeLine.includes('Aura');
+				const isEquipment =
+					evalPerm.hasSubType('Equipment') || evalPerm.typeLine.includes('Equipment');
+
+				if (isAura) {
+					if (!perm.attachedToId) {
+						queueToGraveyard(perm, p, 'aura');
+					} else {
+						const targetFound = findPermanentOnBoard(state, perm.attachedToId);
+						if (
+							!targetFound ||
+							!isAuraAttachmentLegal(
+								state,
+								perm,
+								p,
+								evalPerm,
+								targetFound.inst,
+								targetFound.controller
+							)
+						) {
+							perm.attachedToId = null;
+							queueToGraveyard(perm, p, 'aura');
+						}
+					}
+				} else if (isEquipment && perm.attachedToId) {
+					const targetFound = findPermanentOnBoard(state, perm.attachedToId);
+					if (
+						!targetFound ||
+						!evaluatePermanent(state, targetFound.inst).typeLine.includes('Creature') ||
+						hasProtectionFrom(targetFound.inst, perm.copiableCard ?? perm.card, state)
+					) {
+						perm.attachedToId = null;
+						anyActionTaken = true;
+					}
+				} else if (perm.attachedToId) {
+					const targetFound = findPermanentOnBoard(state, perm.attachedToId);
+					if (!targetFound) {
+						perm.attachedToId = null;
+						anyActionTaken = true;
+					}
+				}
+			}
+
+			// 3. Creature lethal damage / 0 toughness / Deathtouch SBA (CR 704.5f-h) & Planeswalker 0 loyalty (CR 704.5i)
+			for (const perm of p.battlefield) {
+				if (perm.phasedOut || queuedIds.has(perm.instanceId)) continue;
+				const evalPerm = evaluatePermanent(state, perm);
+				let dies = false;
 				if (evalPerm.typeLine.includes('Creature')) {
 					const tough = evalPerm.toughness;
 					if (tough <= 0) {
-						dyingPermanents.push({ perm, hadLostAbilities: evalPerm.hasLostAllAbilities });
-					} else if (
-						(perm.damageMarked >= tough || perm.deathtouchDamageMarked) &&
-						!evalPerm.keywords.some((k) => k.toLowerCase() === 'indestructible')
-					) {
-						dyingPermanents.push({ perm, hadLostAbilities: evalPerm.hasLostAllAbilities });
+						dies = true;
+					} else if (perm.damageMarked >= tough || perm.deathtouchDamageMarked) {
+						if (!evalPerm.keywords.some((k) => k.toLowerCase() === 'indestructible')) {
+							dies = true;
+						} else if (perm.deathtouchDamageMarked) {
+							// CR 704.5h: Clear deathtouch damage flag once SBAs have been checked and creature survived
+							perm.deathtouchDamageMarked = false;
+						}
 					}
-				} else if (evalPerm.typeLine.includes('Planeswalker') && perm.counters.loyalty <= 0) {
-					dyingPermanents.push({ perm, hadLostAbilities: evalPerm.hasLostAllAbilities });
+				}
+				if (!dies && evalPerm.typeLine.includes('Planeswalker') && perm.counters.loyalty <= 0) {
+					dies = true;
+				}
+				if (dies) {
+					queueToGraveyard(perm, p, 'dying');
 				}
 			}
 
-			for (const { perm: dying, hadLostAbilities } of dyingPermanents) {
-				anyActionTaken = true;
-				emitVfx(state, { kind: 'destroy', targetId: dying.instanceId, label: dying.card.name });
-				const actualDest = movePermanentToZone(state, dying, 'graveyard');
-				addLog(
-					state,
-					'sba',
-					`${dying.card.name} ${actualDest === 'exile' ? 'was exiled instead of dying (Rest in Peace)' : 'died'} (State-Based Action).`,
-					p.playerId
-				);
-				// CR 700.4: "Dies" means "is put into a graveyard from the battlefield"; if Rest in Peace
-				// exiled it instead, the ZoneChange goes to exile and dies triggers don't match.
-				flushTriggers(state);
-			}
-
-			// 4. Legend Rule (CR 704.5j): Duplicate legendary permanents with the same name
+			// 4. Legend Rule (CR 704.5j): Duplicate legendary permanents with the same name (skipping face-down per CR 201.2a / 708.2a)
 			const legendaryByName = new Map<string, CardInstance[]>();
 			for (const perm of p.battlefield) {
-				if (perm.phasedOut) continue;
+				if (perm.phasedOut || perm.isFaceDown || queuedIds.has(perm.instanceId)) continue;
 				const evalPerm = evaluatePermanent(state, perm);
-				if (evalPerm.typeLine.includes('Legendary')) {
-					const list = legendaryByName.get(perm.card.name) || [];
+				const name = evalPerm.effectiveName || perm.card.name;
+				if (evalPerm.typeLine.includes('Legendary') && name) {
+					const list = legendaryByName.get(name) || [];
 					list.push(perm);
-					legendaryByName.set(perm.card.name, list);
+					legendaryByName.set(name, list);
 				}
 			}
 			for (const [legName, list] of legendaryByName.entries()) {
 				if (list.length > 1) {
-					anyActionTaken = true;
 					// Keep the newest copy and put earlier copies into graveyard (not destruction, so Indestructible doesn't prevent it)
 					for (let i = 0; i < list.length - 1; i++) {
-						movePermanentToZone(state, list[i], 'graveyard');
-						addLog(
-							state,
-							'sba',
-							`Legend Rule (CR 704.5j): Duplicate ${legName} was put into ${p.username}'s graveyard.`,
-							p.playerId
-						);
+						queueToGraveyard(list[i], p, 'legend', legName);
+					}
+				}
+			}
+		}
+
+		// Execute all simultaneous battlefield-to-graveyard SBAs for this pass (CR 603.10a, CR 704.8),
+		// preserving per-player SBA processing order while keeping all batch permanents on the battlefield
+		// in their pre-batch state during each movePermanentToZone call so LKI and dies triggers see the
+		// full pre-batch board across all players.
+		if (sbaGraveyardBatch.length > 0) {
+			anyActionTaken = true;
+			for (const { perm } of sbaGraveyardBatch) {
+				const pre = prePassSnapshot.get(perm.instanceId);
+				if (pre) {
+					perm.lastKnownCounters = { ...pre.counters };
+					perm.lastKnownPower = pre.evalPerm.power;
+					perm.lastKnownToughness = pre.evalPerm.toughness;
+					perm.counters = { ...pre.counters };
+				}
+			}
+		}
+
+		const preBattlefields =
+			sbaGraveyardBatch.length > 1
+				? new Map<PlayerGameState, CardInstance[]>(
+						state.players.map((pl) => [pl, [...pl.battlefield]])
+					)
+				: null;
+		const preItemStates =
+			sbaGraveyardBatch.length > 1
+				? new Map<string, CardInstance>(
+						sbaGraveyardBatch.map(({ perm }) => [
+							perm.instanceId,
+							{
+								...perm,
+								counters: { ...perm.counters },
+								grantedKeywords: [...perm.grantedKeywords]
+							}
+						])
+					)
+				: null;
+		const postResults = new Map<
+			string,
+			{
+				perm: CardInstance;
+				postState: CardInstance;
+				destZone: 'graveyard' | 'exile' | 'command';
+				owner: PlayerGameState | undefined;
+			}
+		>();
+
+		for (const p of state.players) {
+			if (p.lost) continue;
+
+			const playerBatch = sbaGraveyardBatch.filter((item) => item.controller.playerId === p.playerId);
+			for (const item of playerBatch) {
+				if (sbaGraveyardBatch.length > 1 && preBattlefields && preItemStates) {
+					for (const [pl, bf] of preBattlefields.entries()) {
+						setZoneOrder(pl, 'battlefield', [...bf]);
+					}
+					for (const prev of postResults.values()) {
+						if (prev.owner) {
+							setZoneOrder(
+								prev.owner,
+								prev.destZone,
+								prev.owner[prev.destZone].filter((c) => c.instanceId !== prev.perm.instanceId)
+							);
+						}
+						const preState = preItemStates.get(prev.perm.instanceId);
+						if (preState) {
+							Object.assign(prev.perm, preState, {
+								counters: { ...preState.counters },
+								grantedKeywords: [...preState.grantedKeywords]
+							});
+						}
+					}
+				}
+
+				if (item.kind === 'dying') {
+					emitVfx(state, {
+						kind: 'destroy',
+						targetId: item.perm.instanceId,
+						label: item.perm.card.name
+					});
+				}
+				const actualDest = movePermanentToZone(state, item.perm, 'graveyard');
+				if (item.kind === 'dying') {
+					addLog(
+						state,
+						'sba',
+						`${item.perm.card.name} ${actualDest === 'exile' ? 'was exiled instead of dying (Rest in Peace)' : 'died'} (State-Based Action).`,
+						item.controller.playerId
+					);
+				} else if (item.kind === 'legend') {
+					addLog(
+						state,
+						'sba',
+						`Legend Rule (CR 704.5j): Duplicate ${item.legName} was put into ${item.controller.username}'s graveyard.`,
+						item.controller.playerId
+					);
+				}
+
+				if (sbaGraveyardBatch.length > 1) {
+					const owner = state.players.find((pl) => pl.playerId === item.perm.ownerId);
+					postResults.set(item.perm.instanceId, {
+						perm: item.perm,
+						postState: {
+							...item.perm,
+							counters: { ...item.perm.counters },
+							grantedKeywords: [...item.perm.grantedKeywords]
+						},
+						destZone: actualDest === 'exile' ? 'exile' : 'graveyard',
+						owner
+					});
+				}
+			}
+
+			if (sbaGraveyardBatch.length > 1 && playerBatch.length > 0) {
+				// Restore already-processed batch items to their post-move zones before running Step 5 & 6 for player p
+				for (const pl of state.players) {
+					setZoneOrder(
+						pl,
+						'battlefield',
+						pl.battlefield.filter((c) => !postResults.has(c.instanceId))
+					);
+				}
+				for (const res of postResults.values()) {
+					Object.assign(res.perm, res.postState, {
+						counters: { ...res.postState.counters },
+						grantedKeywords: [...res.postState.grantedKeywords]
+					});
+					if (res.owner && !res.perm.isToken) {
+						const curZone = res.owner[res.destZone];
+						if (!curZone.some((c) => c.instanceId === res.perm.instanceId)) {
+							setZoneOrder(res.owner, res.destZone, [...curZone, res.perm]);
+						}
 					}
 				}
 			}
@@ -5269,23 +5529,33 @@ export function checkStateBasedActions(state: GameState): void {
 			const prevGraveLen = p.graveyard.length;
 			const prevExileLen = p.exile.length;
 			const prevHandLen = p.hand.length;
+			const prevLibLen = p.library.length;
 			removeFromGame(p, 'graveyard', (c) => c.isToken);
 			removeFromGame(p, 'exile', (c) => c.isToken);
 			removeFromGame(p, 'hand', (c) => c.isToken);
+			removeFromGame(p, 'library', (c) => c.isToken);
 			if (
 				p.graveyard.length !== prevGraveLen ||
 				p.exile.length !== prevExileLen ||
-				p.hand.length !== prevHandLen
+				p.hand.length !== prevHandLen ||
+				p.library.length !== prevLibLen
 			) {
 				anyActionTaken = true;
 			}
 
-			// 6. Commander Zone Change SBA (CR 903.9a)
+			// 6. Commander Zone Change SBA (CR 704.6d / 903.9a)
 			const commandersInGraveOrExile = [
 				...p.graveyard.filter((c) => c.isCommander),
 				...p.exile.filter((c) => c.isCommander)
 			];
 			for (const cmd of commandersInGraveOrExile) {
+				const curVersion = cmd.objectVersion ?? 1;
+				if (
+					cmd.commanderSbaDeclinedVersion !== undefined &&
+					cmd.commanderSbaDeclinedVersion === curVersion
+				) {
+					continue;
+				}
 				if (p.isBot) {
 					cmd.damageMarked = 0;
 					cmd.deathtouchDamageMarked = false;
@@ -5294,6 +5564,15 @@ export function checkStateBasedActions(state: GameState): void {
 						from: { player: p, zone: p.graveyard.includes(cmd) ? 'graveyard' : 'exile' },
 						toPlayer: p
 					});
+					const postEntry = postResults.get(cmd.instanceId);
+					if (postEntry) {
+						postEntry.destZone = 'command';
+						postEntry.postState = {
+							...cmd,
+							counters: { ...cmd.counters },
+							grantedKeywords: [...cmd.grantedKeywords]
+						};
+					}
 					addLog(
 						state,
 						'sba',
@@ -5326,57 +5605,105 @@ export function checkStateBasedActions(state: GameState): void {
 					});
 				}
 			}
+		}
 
-			// 7. Player Loss SBAs (CR 704.5a-c, CR 903.10a) — respects Platinum Angel!
-			if (!p.lost && !playerCannotLoseGame(state, p).protected) {
-				let newlyLost = false;
-				if (p.life <= 0) {
-					p.lost = true;
-					newlyLost = true;
-					p.lossReason = `Life total reached ${p.life}.`;
-					addLog(state, 'sba', `${p.username} has ${p.life} life and loses the game!`, p.playerId);
-				} else if (state.rules.poisonLethal > 0 && p.poison >= state.rules.poisonLethal) {
-					p.lost = true;
-					newlyLost = true;
-					p.lossReason = `Accumulated ${p.poison} Poison counters.`;
-					addLog(
-						state,
-						'sba',
-						`${p.username} has ${p.poison} poison counters and loses the game!`,
-						p.playerId
-					);
-				} else if (state.rules.commanderDamageLethal > 0) {
-					for (const [cmdId, dmg] of Object.entries(p.commanderDamageTaken)) {
-						if (dmg >= state.rules.commanderDamageLethal) {
-							const cmdName = p.commanderNames[cmdId] || 'a Commander';
-							p.lost = true;
-							newlyLost = true;
-							p.lossReason = `Dealt ${dmg} combat damage by ${cmdName}.`;
-							addLog(
-								state,
-								'sba',
-								`${p.username} took ${dmg} Commander combat damage from ${cmdName} and loses the game!`,
-								p.playerId
-							);
-							break;
-						}
+		if (sbaGraveyardBatch.length > 1) {
+			for (const pl of state.players) {
+				for (const b of pl.battlefield) {
+					if (b.attachedToId && queuedIds.has(b.attachedToId)) {
+						b.attachedToId = null;
 					}
 				}
-				if (newlyLost) {
-					anyActionTaken = true;
-					cleanupEliminatedPlayer(state, p);
+			}
+		}
+
+		// 7. Simultaneous Player Loss SBAs (CR 104.3c, 104.4a, 704.5a-c, 903.10a) — respects Platinum Angel!
+		const newlyEliminated: Array<{
+			player: PlayerGameState;
+			reason: string;
+			logText: string;
+		}> = [];
+		for (const p of state.players) {
+			if (p.lost) continue;
+			if (playerCannotLoseGame(state, p).protected) {
+				if (p.attemptedEmptyLibraryDraw) {
+					// CR 704.5b only checks if the player attempted to draw from an empty library since the last SBA check
+					p.attemptedEmptyLibraryDraw = false;
 				}
+				continue;
+			}
+			if (p.life <= 0) {
+				newlyEliminated.push({
+					player: p,
+					reason: `Life total reached ${p.life}.`,
+					logText: `${p.username} has ${p.life} life and loses the game!`
+				});
+			} else if (state.rules.poisonLethal > 0 && p.poison >= state.rules.poisonLethal) {
+				newlyEliminated.push({
+					player: p,
+					reason: `Accumulated ${p.poison} Poison counters.`,
+					logText: `${p.username} has ${p.poison} poison counters and loses the game!`
+				});
+			} else if (p.attemptedEmptyLibraryDraw) {
+				newlyEliminated.push({
+					player: p,
+					reason: 'Attempted to draw a card from an empty library (Decked Out).',
+					logText: `${p.username} lost the game: Attempted to draw a card from an empty library (Decked Out).`
+				});
+			} else if (state.rules.commanderDamageLethal > 0) {
+				for (const [cmdId, dmg] of Object.entries(p.commanderDamageTaken)) {
+					if (dmg >= state.rules.commanderDamageLethal) {
+						const cmdName = p.commanderNames[cmdId] || 'a Commander';
+						newlyEliminated.push({
+							player: p,
+							reason: `Dealt ${dmg} combat damage by ${cmdName}.`,
+							logText: `${p.username} took ${dmg} Commander combat damage from ${cmdName} and loses the game!`
+						});
+						break;
+					}
+				}
+			}
+		}
+
+		if (newlyEliminated.length > 0) {
+			anyActionTaken = true;
+			for (const { player: p, reason, logText } of newlyEliminated) {
+				p.lost = true;
+				p.lossReason = reason;
+				p.attemptedEmptyLibraryDraw = false;
+				addLog(state, 'sba', logText, p.playerId);
+			}
+			for (const { player: p } of newlyEliminated) {
+				cleanupEliminatedPlayer(state, p);
+			}
+			// CR 104.2a / 104.4a: If 0 or 1 players remain after simultaneous losses, the game ends immediately
+			const remainingNow = state.players.filter((p) => !p.lost);
+			if (remainingNow.length <= 1 && state.players.length > 1) {
+				break;
 			}
 		}
 	}
 
-	// Check Win Condition (Last player standing)
+	// CR 704.3: Flush all triggers generated during the SBA loop once after the loop stabilizes
+	flushTriggers(state);
+
+	// Check Win / Draw Condition (CR 104.2a / 104.4a)
 	const remaining = state.players.filter((p) => !p.lost);
-	if (remaining.length <= 1 && state.players.length > 1) {
+	if (remaining.length === 0 && state.players.length > 0) {
+		state.status = 'finished';
+		state.winnerPlayerId = null;
+		state.winnerId = undefined;
+		addLog(
+			state,
+			'system',
+			'All remaining players lost simultaneously — the game is a draw (CR 104.4a)!'
+		);
+	} else if (remaining.length === 1 && state.players.length > 1) {
 		const winner = remaining[0];
 		if (winner && !playerCannotWinGame(state, winner).blocked) {
 			state.status = 'finished';
 			state.winnerPlayerId = winner.playerId;
+			state.winnerId = winner.playerId;
 			addLog(
 				state,
 				'system',
@@ -5431,14 +5758,23 @@ export function cleanupEliminatedPlayer(state: GameState, eliminated: PlayerGame
 	}
 	removeFromGame(eliminated, 'battlefield');
 
-	// Also remove any cards on other players' battlefields or zones owned by the eliminated player (CR 800.4a)
+	// Also remove any cards in eliminated player's graveyard, command, exile, hand, and library,
+	// and any cards in other players' zones owned by the eliminated player (CR 800.4a)
+	if (!(state.lobbyCode === 'GOLDEN' && state.players.length === 2)) {
+		removeFromGame(eliminated, 'graveyard');
+		removeFromGame(eliminated, 'command');
+	}
 	removeFromGame(eliminated, 'exile');
 	removeFromGame(eliminated, 'hand');
 	removeFromGame(eliminated, 'library');
 	for (const other of state.players) {
 		if (other.playerId === elimId) continue;
 		removeFromGame(other, 'battlefield', (c) => c.ownerId === elimId);
+		removeFromGame(other, 'graveyard', (c) => c.ownerId === elimId);
+		removeFromGame(other, 'command', (c) => c.ownerId === elimId);
 		removeFromGame(other, 'exile', (c) => c.ownerId === elimId);
+		removeFromGame(other, 'hand', (c) => c.ownerId === elimId);
+		removeFromGame(other, 'library', (c) => c.ownerId === elimId);
 		for (const exCard of other.exile) {
 			if (exCard.playableFromExileBy?.playerId === elimId) {
 				exCard.playableFromExileBy = undefined;

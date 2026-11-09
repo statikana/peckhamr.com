@@ -366,6 +366,10 @@ export interface CardInstance {
 	isFaceDown?: boolean;
 	goadedByPlayerIds?: string[];
 	playableFromExileBy?: PlayableFromExilePermission;
+	commanderSbaDeclinedVersion?: number;
+	lastKnownCounters?: Record<CounterType, number>;
+	lastKnownPower?: number;
+	lastKnownToughness?: number;
 }
 
 export interface TargetRef {
@@ -661,6 +665,8 @@ export interface PlayerGameState {
 	protectionFromEverythingThisTurn?: boolean;
 	damagePreventionShield?: number;
 	preventAllCombatDamageThisTurn?: boolean;
+	attemptedEmptyLibraryDraw?: boolean;
+	commanderColorIdentity?: ManaColor[];
 }
 
 export interface GameState {
@@ -669,6 +675,7 @@ export interface GameState {
 	lobbyCode: string;
 	status: 'mulligan' | 'active' | 'finished';
 	winnerPlayerId: string | null;
+	winnerId?: string;
 	rules: LobbyRulesConfig;
 	turnNumber: number;
 	activePlayerIndex: number;
