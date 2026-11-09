@@ -717,8 +717,14 @@ class Run {
 			return p && !p.lost ? [p] : [];
 		}
 		if (sel.k === 'target') {
-			return this.ctx.targets
-				.filter((t) => t.kind === 'player')
+			const refs =
+				this.ctx.targetSpecs.length > 1
+					? this.ctx.targets.length === this.ctx.targetSpecs.length
+						? [this.ctx.targets[sel.index]]
+						: this.ctx.targets.filter((t) => targetRefMatchesSpec(t, this.ctx.targetSpecs[sel.index]))
+					: this.ctx.targets;
+			return refs
+				.filter((t): t is TargetRef => Boolean(t && t.kind === 'player'))
 				.map((t) => this.player(t.id))
 				.filter((p): p is PlayerGameState => Boolean(p && !p.lost));
 		}
@@ -1240,8 +1246,10 @@ class Run {
 
 		if (sel.k === 'target' && !this.ctx.overload) {
 			const targetRefs =
-				this.ctx.targets.length > 0 && sel.index > 0 && sel.index < this.ctx.targets.length
-					? [this.ctx.targets[sel.index]]
+				this.ctx.targetSpecs.length > 1
+					? this.ctx.targets.length === this.ctx.targetSpecs.length
+						? [this.ctx.targets[sel.index]].filter(Boolean)
+						: this.ctx.targets.filter((t) => targetRefMatchesSpec(t, this.ctx.targetSpecs[sel.index]))
 					: this.ctx.targets;
 			for (const t of targetRefs) {
 				if (t.kind === 'player') {

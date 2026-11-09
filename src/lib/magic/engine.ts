@@ -1480,15 +1480,21 @@ function applyGameActionInner(
 			let chosenModes = action.modes;
 			if (compiledModal && !chosenModes && compiledModal.max === 1) {
 				// "Choose one" cast without naming the mode (older clients): the mode whose targets fit.
-				const fit = compiledModal.modes.findIndex(
-					(m) =>
-						m.targets.length === targets.length &&
-						m.targets.every((spec, i) =>
-							specTargetCandidates(state, actorId, inst.card, inst, spec).some(
-								(c) => c.kind === targets[i].kind && c.id === targets[i].id
-							)
-						)
-				);
+				const fit = compiledModal.modes.findIndex((m) => {
+					const minT = m.targets.reduce((s, sp) => s + sp.min, 0);
+					const maxT = m.targets.reduce((s, sp) => s + sp.max, 0);
+					if (targets.length < minT || targets.length > maxT) return false;
+					let cur = 0;
+					return m.targets.every((spec) => {
+						const count =
+							spec.min === spec.max ? spec.min : Math.min(spec.max, targets.length - cur);
+						const slice = targets.slice(cur, cur + count);
+						cur += count;
+						if (new Set(slice.map((t) => `${t.kind}:${t.id}`)).size !== slice.length) return false;
+						const cands = specTargetCandidates(state, actorId, inst.card, inst, spec);
+						return slice.every((t) => cands.some((c) => c.kind === t.kind && c.id === t.id));
+					});
+				});
 				if (fit >= 0) chosenModes = [fit];
 			}
 			if (compiledModal) {
@@ -1505,26 +1511,55 @@ function applyGameActionInner(
 						error: `Choose ${compiledModal.min}–${compiledModal.max} mode(s) for ${inst.card.name}.`
 					};
 				}
-				const modeSpecs = modes.flatMap((m) => compiledModal.modes[m].targets);
-				if (targets.length !== modeSpecs.length) {
+				const rawSpecs: { modeIndex: number; specIndex: number; spec: TargetSpec }[] = [];
+				for (let modeIndex = 0; modeIndex < modes.length; modeIndex++) {
+					const m = modes[modeIndex];
+					compiledModal.modes[m].targets.forEach((spec, specIndex) => {
+						rawSpecs.push({ modeIndex, specIndex, spec });
+					});
+				}
+				const minRequired = rawSpecs.reduce((sum, r) => sum + r.spec.min, 0);
+				const maxAllowed = rawSpecs.reduce((sum, r) => sum + r.spec.max, 0);
+				if (targets.length < minRequired || targets.length > maxAllowed) {
 					return {
 						ok: false,
-						error: `${inst.card.name} requires ${modeSpecs.length} target(s) for the chosen mode(s).`
+						error: `${inst.card.name} requires ${minRequired === maxAllowed ? minRequired : `${minRequired}–${maxAllowed}`} target(s) for the chosen mode(s).`
 					};
 				}
-				const uniqueIds = new Set(targets.map((t) => `${t.kind}:${t.id}`));
-				if (uniqueIds.size !== targets.length) {
-					return {
-						ok: false,
-						error: 'Strict Rules Violation: The same object cannot be chosen multiple times for the same target requirement (CR 115.3).'
-					};
+				const counts = rawSpecs.map((r) => r.spec.min);
+				let extra = targets.length - minRequired;
+				for (let k = 0; k < rawSpecs.length && extra > 0; k++) {
+					const add = Math.min(extra, rawSpecs[k].spec.max - counts[k]);
+					if (add > 0) {
+						counts[k] += add;
+						extra -= add;
+					}
 				}
-				for (let i = 0; i < modeSpecs.length; i++) {
-					const legal = specTargetCandidates(state, actorId, inst.card, inst, modeSpecs[i]);
+				const targetOwner: { modeIndex: number; specIndex: number; spec: TargetSpec }[] = [];
+				let cursor = 0;
+				for (let k = 0; k < rawSpecs.length; k++) {
+					const { modeIndex, specIndex, spec } = rawSpecs[k];
+					const count = counts[k];
+					const specTargets = targets.slice(cursor, cursor + count);
+					cursor += count;
+					const uniqueInSpec = new Set(specTargets.map((t) => `${t.kind}:${t.id}`));
+					if (uniqueInSpec.size !== specTargets.length) {
+						return {
+							ok: false,
+							error: 'Strict Rules Violation: The same object cannot be chosen multiple times for the same target requirement (CR 115.3).'
+						};
+					}
+					for (let j = 0; j < count; j++) {
+						targetOwner.push({ modeIndex, specIndex, spec });
+					}
+				}
+				for (let i = 0; i < targets.length; i++) {
+					const owner = targetOwner[i];
+					const legal = specTargetCandidates(state, actorId, inst.card, inst, owner.spec);
 					if (!legal.some((c) => c.kind === targets[i].kind && c.id === targets[i].id)) {
 						return {
 							ok: false,
-							error: `Strict Rules Violation: ${targets[i].label} is not a legal target for mode ${modes[i] + 1} of ${inst.card.name}.`
+							error: `Strict Rules Violation: ${targets[i].label} is not a legal target for mode ${modes[owner.modeIndex] + 1} of ${inst.card.name}.`
 						};
 					}
 				}
@@ -7309,17 +7344,50 @@ export function validateChosenTargets(
 		};
 	}
 
-	const uniqueIds = new Set(targets.map((t) => `${t.kind}:${t.id}`));
-	if (uniqueIds.size !== targets.length) {
-		return {
-			ok: false,
-			error: 'Strict Rules Violation: The same object cannot be chosen multiple times for the same target requirement (CR 115.3).'
-		};
-	}
+	const activeSpecs = !sourceCard?.typeLine.includes('Aura')
+		? info.targetSpecs?.filter((sp) => sp.max > 0)
+		: undefined;
+	if (activeSpecs && activeSpecs.length > 1) {
+		const counts = activeSpecs.map((sp) => sp.min);
+		let extra = targets.length - counts.reduce((a, b) => a + b, 0);
+		for (let k = 0; k < activeSpecs.length && extra > 0; k++) {
+			const add = Math.min(extra, activeSpecs[k].max - counts[k]);
+			if (add > 0) {
+				counts[k] += add;
+				extra -= add;
+			}
+		}
+		let cursor = 0;
+		for (let k = 0; k < activeSpecs.length; k++) {
+			const spec = activeSpecs[k];
+			const specTargets = targets.slice(cursor, cursor + counts[k]);
+			cursor += counts[k];
+			const uniqueInSpec = new Set(specTargets.map((t) => `${t.kind}:${t.id}`));
+			if (uniqueInSpec.size !== specTargets.length) {
+				return {
+					ok: false,
+					error: 'Strict Rules Violation: The same object cannot be chosen multiple times for the same target requirement (CR 115.3).'
+				};
+			}
+			const specInfo = targetRequirementFromSpecs([spec]);
+			for (const t of specTargets) {
+				const res = validateTargetLegality(state, actorId, t, specInfo, sourceCard, sourceInstanceId);
+				if (!res.ok) return res;
+			}
+		}
+	} else {
+		const uniqueIds = new Set(targets.map((t) => `${t.kind}:${t.id}`));
+		if (uniqueIds.size !== targets.length) {
+			return {
+				ok: false,
+				error: 'Strict Rules Violation: The same object cannot be chosen multiple times for the same target requirement (CR 115.3).'
+			};
+		}
 
-	for (const t of targets) {
-		const res = validateTargetLegality(state, actorId, t, info, sourceCard, sourceInstanceId);
-		if (!res.ok) return res;
+		for (const t of targets) {
+			const res = validateTargetLegality(state, actorId, t, info, sourceCard, sourceInstanceId);
+			if (!res.ok) return res;
+		}
 	}
 
 	// Enforce single-graveyard multi-target restriction ("target two cards in a graveyard")
