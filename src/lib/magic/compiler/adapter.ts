@@ -182,10 +182,23 @@ export interface LegacyTriggerClaim {
 	complete: boolean;
 }
 
+/** What the adapter decided about one ability's effect, for comparing against the effect grammar. */
+export interface LegacyEffectClaim {
+	kind: 'spell' | 'activated' | 'triggered';
+	/** Index of the (first) line in the original rules text. */
+	rawIndex: number;
+	steps: EffectStep[];
+	modal?: ModalDef;
+	/** True if every effect sentence was claimed and translated. */
+	complete: boolean;
+}
+
 /** Decisions the adapter made, collected for the grammar comparison scripts. */
 export interface AdapterLog {
 	costs: LegacyCostClaim[];
 	triggers: LegacyTriggerClaim[];
+	/** Optional so older callers needn't pass it (scripts/magic-effects-diff.ts does). */
+	effects?: LegacyEffectClaim[];
 }
 
 /** Pass `log` to collect the adapter's decisions (scripts/magic-costs-diff.ts, magic-triggers-diff.ts). */
@@ -389,6 +402,12 @@ function adaptTrigger(ctx: AdapterContext, line: NormalizedLine): AbilityDef[] |
 	const unparsed = unclaimedSentences(ctx, effectSentences, effects);
 	const targets = targetSpecs(detectTargetRequirement(denormalize(effectText, ctx.card.name)));
 	const effect = translateEffects(effects, span, 'trigger');
+	ctx.log?.effects?.push({
+		kind: 'triggered',
+		rawIndex: line.rawIndex,
+		steps: effect,
+		complete: unparsed.length === 0 && effect.length > 0
+	});
 	const ability: AbilityDef =
 		unparsed.length > 0 || effect.length === 0
 			? {
@@ -557,6 +576,13 @@ function adaptActivated(ctx: AdapterContext, line: NormalizedLine): AbilityDef[]
 		if (effect.length === 0 && unparsed.length === 0) unparsed.push(line.bodySpan);
 	}
 
+	ctx.log?.effects?.push({
+		kind: 'activated',
+		rawIndex: line.rawIndex,
+		steps: effect,
+		// The effect is judged on its own; cost gaps are the cost grammar's report.
+		complete: unparsed.length === cost.unparsed.length && effect.length > 0
+	});
 	if (unparsed.length > 0) {
 		// Phase 4: the runtime still pays the cost of an ability whose effect the legacy path resolves.
 		const u = unsupported('unparsed', line.text, line.span, unparsed);
@@ -718,6 +744,14 @@ function adaptSpell(ctx: AdapterContext, lines: NormalizedLine[]): AbilityDef[] 
 	if (!modal && effect.length === 0 && unparsed.length === 0) unparsed.push(span);
 	if (!castNode || castNode.requiresGuidedResolution) unparsed.push(span);
 
+	if (delayed.length > 0 && effect.length > 0) effect[effect.length - 1].delayed = delayed[0];
+	ctx.log?.effects?.push({
+		kind: 'spell',
+		rawIndex: lines[0].rawIndex,
+		steps: modal ? [] : effect,
+		modal,
+		complete: unparsed.length === 0
+	});
 	if (unparsed.length > 0) {
 		const u = unsupported('unparsed', text, span, dedupeSpans(unparsed));
 		// Phase 4: the runtime still pays the additional cost of a spell the legacy path resolves.
@@ -726,7 +760,6 @@ function adaptSpell(ctx: AdapterContext, lines: NormalizedLine[]): AbilityDef[] 
 			: {};
 		return [...statics, { ...u, ...costInfo }];
 	}
-	if (delayed.length > 0 && effect.length > 0) effect[effect.length - 1].delayed = delayed[0];
 	return [
 		...statics,
 		{

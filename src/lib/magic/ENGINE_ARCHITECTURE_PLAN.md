@@ -707,6 +707,8 @@ while it runs), **entry**, **work**, **exit**, and **ratchet target**.
   - engine.ts:4194 `autoFetchBasicLandToBattlefield` is dead code (no callers).
 
 ### Phase 3: Real grammar for effects, and the effect interpreter
+- **Done (2026-11-08)** on branch `engine-rewrite-phase3` (on top of `6e4423e`), in parallel with
+  Phases 4, 5 and 6.
 - **Owns:** `compiler/effects.ts`, `runtime/effects.ts`; `executeParsedEffect` in `engine.ts`.
 - **Work:** replace the adapter's effect translation with a grammar over sentences that produces
   ordered `EffectStep[]` with bindings and LKI. Write an interpreter covering every verb today's 39
@@ -721,7 +723,71 @@ while it runs), **entry**, **work**, **exit**, and **ratchet target**.
   or reduced to a compatibility wrapper used by tests only. Lathril's effect order is correct.
   `compiler/adapter.ts` (Phase 1 scaffolding) is deleted; don't add features to it beyond what
   measurement needs.
-- **Ratchet:** name checks in effect code → 0.
+- **Ratchet:** name checks in effect code → 0 (`cardNameComparison.engine.ts` lowered 9 → 8).
+- **Results (2026-11-08):**
+  - **Sentence grammar (`compiler/effects.ts`, `compiler/effects.test.ts`):** recursive-descent
+    sentence/clause parser (`parseEffectSentences`, `compileCardEffectSteps`, `compiledCardManaSteps`)
+    handling ordered sentences, `then` / `, and` / `and you` / `where X is` continuations, modal
+    bullets (`choose`), conditional guards (`if you do`, `unless`), cross-step bindings (`b0`, `b1`,
+    …) for pronouns (`it`, `that <type>`, `its controller`, `that many`), LKI stats (`{ k: 'stat',
+    useLKI: true }`), structured `Amount`, `actor` vs `subject`, delayed triggers bound to bindings
+    (`delayedTrigger`), and CR 106.7 `manaChoice: 'opponentLandColors'`.
+  - **Coverage (`scripts/magic-effects-diff.ts` → `EFFECT-GRAMMAR.md`):**
+    - Precon pool (120 abilities): 61 same verbs as adapter, 13 grammar strictly richer, 3 grammar
+      more specific, 28 grammar complete where adapter dropped sentences, 10 both incomplete, 0
+      grammar regression, 5 diverge.
+    - Scryfall bulk pool (34,190 abilities): 4,790 same, 2,031 grammar richer, 2,305 grammar more
+      specific, 1,108 grammar only, 11,000 both incomplete, 3,472 adapter only, 9,484 diverge.
+    - Interpreter switch-over (`canInterpretAbility` in `resolveSpellStackItem` and
+      `resolveAbilityOnStack`): **52 / 62 precon spells + activated abilities** (and **4,565 / 16,448**
+      across all game cards) resolve on `runtime/effects.ts`; all 30 verbs emitted by the grammar are
+      interpreted.
+  - **Effect interpreter (`runtime/effects.ts`, `runtime/effects.test.ts`):** `executeEffectSteps`
+    evaluates `EffectStep[]` in sentence order with `Env` (`bindings`, `lki` snapshot captured before
+    destructive zone changes, `eventObjectId`, `eventAmount`, `xValue`, `chosenModes`,
+    `preferredColor`). Emits `ZoneChange`, `LifeChange`, `Draw`, `CounterChanged`, `TokenCreated`,
+    `MarkersCommitted` through `runtime/events.ts`. Exposes `eventObjectId` and `eventAmount` on
+    `EffectContext` so Phase 5 triggers can call `executeEffectSteps` directly.
+  - **Bugs fixed and tested (with both real and synthetic/renamed cards):**
+    1. **Lathril effect order:** `"Each opponent loses 10 life and you gain 10 life."` compiles and
+       executes as `[loseLife(opponents, 10), gainLife(you, 10)]` in sentence order (previously gained
+       life before opponents lost life).
+    2. **Swords to Plowshares LKI controller & power:** captures `PermanentSnapshot` (evaluated
+       power/toughness, mana value, controller, owner, types, counters) before `movePermanentToZone`
+       moves the permanent to exile, so `its controller` and `its power` use Last Known Information
+       (including counters/pumps that are cleared on leaving the battlefield). Also fixes `Reanimate`
+       and `Feed the Swarm` LKI mana value life loss.
+    3. **Corpse Dance via bindings (no card-name check):** compiles as `move` (`top: 1` of graveyard
+       → `b0`), `grant` (`Haste` until EOT on `b0`), and `delayedTrigger` (`phaseBegin: end_step` →
+       `exile(b0)`). Removed `if (item.card.name === 'Corpse Dance') continue;` from `engine.ts`
+       (replaced with `item.parsedEffects.some((e) => e.dynamicFormula === 'top_creature_of_graveyard')`
+       on the legacy fallback path), lowering `cardNameComparison.engine.ts` from 9 to 8.
+    4. **CR 106.7 opponent land colors (`Exotic Orchard` / `Fellwar Stone`):** `opponentLandColors`
+       inspects lands opponents control via `evaluatePermanent` basic land subtypes, layer-6 granted
+       mana abilities (`inspectCardContinuousBreakdown`), and compiled mana abilities
+       (`compiledCardManaSteps`), filtering out lands that lost all abilities and recursing at most
+       once (`allowRecursiveChoice = false`) so two Exotic Orchards with no other lands produce no
+       colored mana.
+    5. **Graveyard card target legality (`isTargetStillValid`):** fixed `isTargetStillValid` in
+       `engine.ts` to check `target.kind === 'graveyard_card' || target.kind === 'card_in_graveyard'`
+       so targeted graveyard spells (`Reanimate`) validate properly in `checkSpellTargetValidity`.
+    6. **Additional precon fixes on the interpreter:** `Anguished Unmaking` / `Night's Whisper` /
+       `Read the Bones` / `Vampiric Tutor` life loss (`subject.k === 'none'` falling back to
+       `step.actor`), `Sign in Blood` (`target player` draws 2 and loses 2 life), `Ancestral Vision`
+       (`target player` draws 3), `Time Warp` (`target player` takes extra turn), `Toxic Deluge`
+       (`-X/-X` until EOT), `Heroic Intervention` (Hexproof + Indestructible to permanents you
+       control), and `Lathliss, Dragon Queen` (`+1/+0` to Dragons you control).
+  - **Golden bot games snapshot (`runtime/__snapshots__/golden.json`):** regenerated; changes are
+    caused by `Anguished Unmaking` (seed 1, Turn 5: Bot 0 now loses 3 life), `Night's Whisper` (seed
+    99, Turn 5: Bot 0 now loses 2 life), and `Read the Bones` (seed 7, Turns 4 & 5: Bot 1 now loses
+    2 life each time) executing their second sentence `"You lose N life."` on the interpreter, which
+    emits log/VFX entries that advance the seeded PRNG before subsequent library shuffles.
+  - **Deferrals to post-merge cleanup (Phase 10):** `executeParsedEffect`, `ParsedEffect`,
+    `parseSpellOrAbilityEffects`, and `compiler/adapter.ts` are retained as the fallback for the 10
+    remaining precon abilities (modal `Choose one or more` spells, multi-zone library manipulations
+    like `Brainstorm` / `Chaos Warp` / `Expressive Iteration`, and layer-6 keyword-removal activated
+    abilities on `Arcane Lighthouse` / `Bonds of Mortality` / `Shadowspear`) and because Phases 4 and
+    5 run in parallel and still call them.
 
 ### Phase 4: Costs and activated abilities ✅ done 2026-11-08
 - **Owns:** `compiler/costs.ts`, `runtime/costs.ts`; the cost/activation parts of `applyGameAction`,
