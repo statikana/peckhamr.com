@@ -4,7 +4,7 @@
 		"engine.ts": 9
 	},
 	"oracleTextRead": {
-		"engine.ts": 40,
+		"engine.ts": 29,
 		"ruleTree.ts": 38,
 		"ai.ts": 1
 	},

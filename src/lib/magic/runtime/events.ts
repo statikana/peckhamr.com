@@ -1,4 +1,4 @@
-import type { CardInstance, CounterType, GamePhase, GameState, ZoneType } from '../types.ts';
+import type { CardInstance, CounterType, GamePhase, GameState, ScryfallCard, ZoneType } from '../types.ts';
 
 /**
  * Game events (ENGINE_ARCHITECTURE_PLAN.md section 2.3, Phase 2).
@@ -36,6 +36,25 @@ export interface ZoneChangeEvent extends EventBase {
 	fromPlayerId: string | null;
 	toPlayerId: string | null;
 	ceasedToExist: boolean;
+	/** Set when the object left the battlefield: how it looked just before (CR 603.10a look-back). */
+	lki?: LeftBattlefieldInfo;
+}
+
+/**
+ * Last known information of a permanent that left the battlefield, captured by moveObject before
+ * the leaves-the-battlefield reset (which clears copy effects, counters and attachments).
+ */
+export interface LeftBattlefieldInfo {
+	/** The copiable values it had (a Clone's copied card), whose abilities "dies" triggers use. */
+	card: ScryfallCard;
+	controllerId: string;
+	/** Effective type line (layer 4) and "every creature type" (Maskwood Nexus, changeling). */
+	typeLine: string;
+	hasAllCreatureTypes: boolean;
+	/** CR 613 layer 6: it had lost all abilities (Humility), so its own abilities don't trigger. */
+	lostAllAbilities: boolean;
+	isToken: boolean;
+	tapped: boolean;
 }
 
 /** A spell was cast (it is already on the stack). */
@@ -82,13 +101,52 @@ export interface CounterPlacedEvent extends EventBase {
 	amount: number;
 }
 
+/** Blockers were declared by one defending player (CR 509). */
+export interface BlockersDeclaredEvent extends EventBase {
+	kind: 'BlockersDeclared';
+	/** The defending player who declared these blocks. */
+	playerId: string;
+	blocks: Array<{ blockerId: string; attackerId: string }>;
+}
+
+/** A spell or ability targeted a permanent (CR 115.1; a spell becomes targeting when cast). */
+export interface BecameTargetEvent extends EventBase {
+	kind: 'BecameTarget';
+	objectId: string;
+	object: CardInstance;
+	by: 'spell' | 'ability';
+	/** The player who controls the targeting spell or ability. */
+	controllerId: string;
+}
+
+/** A copy of a spell was put on the stack (CR 707.10). No engine path creates copies yet. */
+export interface SpellCopiedEvent extends EventBase {
+	kind: 'SpellCopied';
+	playerId: string;
+	objectId: string;
+	object: CardInstance;
+}
+
+/** An Aura or Equipment became attached to a permanent (CR 701.3). */
+export interface AttachedEvent extends EventBase {
+	kind: 'Attached';
+	attachmentId: string;
+	attachment: CardInstance;
+	hostId: string;
+	host: CardInstance;
+}
+
 export type GameEvent =
 	| ZoneChangeEvent
 	| CastEvent
 	| AttackDeclaredEvent
 	| DamageDealtEvent
 	| PhaseBeginEvent
-	| CounterPlacedEvent;
+	| CounterPlacedEvent
+	| BlockersDeclaredEvent
+	| BecameTargetEvent
+	| SpellCopiedEvent
+	| AttachedEvent;
 
 export type GameEventKind = GameEvent['kind'];
 type EventOf<K extends GameEventKind> = Extract<GameEvent, { kind: K }>;
