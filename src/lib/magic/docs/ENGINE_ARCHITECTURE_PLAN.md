@@ -1311,7 +1311,9 @@ Then an ultra code review of the branch, doc clean-up, and push.
   (no `enqueueChoicePrompt` callbacks).
 - Removed the Felidar `'life_40_or_more'` hack and `StackItem.interveningIfClause` (the one
   non-additive `types.ts` change, explicitly requested); the general intervening-if re-check stays.
-- Safety: a stack-size cap (300) stops runaway retrigger loops, with a log line. The lobby server runs
+- Safety: a stack-size cap (300) and a per-turn cap (200 triggered abilities,
+  `GameState.triggersPlacedThisTurn`) stop runaway retrigger loops, with a log line; `applyGameAction`
+  flushes pending triggers before returning. The lobby server runs
   the bot loop with a 1,500-step budget (`SERVER_MAX_BOT_STEPS`, logs when hit); tests and golden
   games keep the 240-step default. Humans auto-pass over their own triggered abilities when they have
   no legal response (Full Control off), as on MTG Arena.
