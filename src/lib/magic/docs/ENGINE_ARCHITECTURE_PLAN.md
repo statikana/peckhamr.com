@@ -1548,6 +1548,42 @@ Then an ultra code review of the branch, doc clean-up, and push.
 - **Suite:** **862 tests pass, 0 todo, 0 fail**; **0 `svelte-check` errors** across `src/lib/magic` and
   `src/routes/magic`.
 
+#### Ultra review fixes (slice 1: `engine.ts`, 2026-11-09)
+- **Phase 1 — Hidden information & opaque instance IDs (`engine.ts`, `runtime/random.ts`, `types.ts`):**
+  - `sanitizeGameStateForViewer` strips `rngState`, `nextUid`, and `idSalt` from all viewer clones and
+    strips `effectResume` frames from stack items (`#4`).
+  - Non-viewer `pendingPrompts` are redacted through an explicit public allowlist (`trigger_targets` on
+    the battlefield, `trigger_order` on the stack), replacing private descriptions with `"Opponent is
+    choosing…"`, stripping `candidateInstanceIds`, and emptying `choice` candidate lists (`#5` part 1).
+    Hidden-to-hidden (`hand` ↔ `library`) manual zone moves log `"A card"`.
+  - `createInitialGameState` derives a deterministic 32-bit `idSalt` from the initial RNG seed without
+    advancing `rngState`, and `uid(prefix, state)` hashes `(idSalt, nextUid)` with a 32-bit bijective
+    mixer in base-36 (`#5` part 2). Regenerated `runtime/__snapshots__/golden.json` with a 1-to-1
+    instance-ID bijection verified across all 4 golden games.
+- **Phase 2 — Load-time `engineVersion` gate (`engine.ts`, `src/routes/magic/api/lobby/+server.ts`):**
+  - Exported `enforceEngineVersion(state)` and `enforceLobbyEngineVersion(lobby)` (`#3`), ending active
+    or mulligan games with missing (`undefined`) or mismatched `engineVersion` once without duplicating
+    log lines, and persisting the finished lobby state in `GET` and `POST /magic/api/lobby` before
+    responding with `ok: true`.
+- **Phase 3 — Rules bugs (`engine.ts`, `runtime/effects.ts`, `runtime/replace.ts`, `runtime/costs.ts`, `compiler/interpretable.ts`):**
+  - Enforced `CR 115.3` target uniqueness per `TargetSpec` slice rather than globally across all modal
+    or multi-spec targets, fixed modal error mode-number indexing, and fixed multi-spec target index
+    selection (`#6`).
+  - Stored triggered-ability targets per `TargetSpec` slot in `StackItem.targetsBySpec` so forced and
+    prompted target specs always flatten in `specIndex` order and recompute `targetObjectVersions` when
+    prompted targets are chosen (`#8`).
+  - Added monotonic `GameState.turnSerial` (incremented on every normal or extra turn transition) and
+    keyed `triggersPlacedThisTurn` on `turnSerial ?? turnNumber` (`#9`).
+  - Converted chosen Phyrexian mana symbols (`{W/P}`, `{U/P}`, etc.) into 2 life each before auto-tapping
+    (`CR 601.2f–h`), prompting humans via `cost_choice`, using a `life > 10` heuristic for bots, and
+    enforcing static `playerLifeTotalCantChange` across Phyrexian mana, `payLife`, and Ward (`CR 119.8`,
+    `#7`).
+- **Phase 5 — False-positive guards (`ArenaTable.svelte`, `runtime/choices.ts`):**
+  - Added `ALL_CHOICE_KINDS`, `ALL_PROMPT_PURPOSES`, `assertExhaustiveChoiceKind`, and a compile-time
+    `_exhaustiveChoice: never` fallback in `ArenaTable.svelte` (`#2`).
+- **Suite:** **915 tests pass, 0 fail** (including 19 new fail-first tests in `runtime/review-phase12.test.ts`
+  and `runtime/review-phase3.test.ts`); all 5 architecture ratchet rules at `0`; `0` `svelte-check` errors.
+
 *Original (superseded) entry:*
 - **Work:** remove `CardRuleTree` (or keep it as a thin view over the IR for the inspector UI),
   `ParsedEffect`, `ParsedActivatedAbility`, `TargetKind`, `parseTriggeredEffects` and the remaining
