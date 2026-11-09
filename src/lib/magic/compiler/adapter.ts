@@ -119,7 +119,8 @@ const IMPLEMENTED_KEYWORDS = new Set([
 	'shroud',
 	'suspend',
 	'trample',
-	'vigilance'
+	'vigilance',
+	'ward'
 ]);
 
 /** Keyword abilities (CR 702) recognised on a keyword line, whether or not they're implemented. */
@@ -352,8 +353,7 @@ function adaptKeywordLine(line: NormalizedLine): AbilityDef[] | null {
 		const keyword = keywords[i]!;
 		const implemented =
 			IMPLEMENTED_KEYWORDS.has(keyword.name) &&
-			!(keyword.name === 'hexproof' && keyword.param) &&
-			!(keyword.name === 'equip' && keyword.param);
+			!(keyword.name === 'hexproof' && keyword.param);
 		out.push(
 			implemented
 				? { kind: 'keyword', keyword, span }
@@ -1187,6 +1187,8 @@ function translateEffect(e: ParsedEffect, span: Span, ctx: EffectContext): Effec
 			return step('lose', YOU);
 		case 'sacrifice_self':
 			return step('sacrifice', { k: 'self' });
+		case 'ward_trigger':
+			return step('counterSpell', T0);
 	}
 }
 

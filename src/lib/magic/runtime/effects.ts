@@ -406,6 +406,33 @@ class Run {
 		}
 		const id = this.refId(ref);
 		const found = id ? this.locate(id) : null;
+		if (ref.k === 'self') {
+			const expectedVer = this.ctx.item?.sourceObjectVersion;
+			const stillOnBattlefield =
+				found &&
+				found.zone === 'battlefield' &&
+				(expectedVer === undefined || found.inst.objectVersion === expectedVer);
+			if (stillOnBattlefield) {
+				return this.snapshot(found.inst);
+			}
+			const lkiPower =
+				this.ctx.item?.sourceLkiPower ??
+				found?.inst.lastKnownPower ??
+				this.ctx.item?.lkiPower ??
+				(parseInt(this.ctx.sourceCard.power ?? '0', 10) || 0);
+			const lkiToughness =
+				this.ctx.item?.sourceLkiToughness ??
+				found?.inst.lastKnownToughness ??
+				this.ctx.item?.lkiToughness ??
+				(parseInt(this.ctx.sourceCard.toughness ?? '0', 10) || 0);
+			return {
+				controllerId: this.ctx.controller.playerId,
+				ownerId: found?.inst.ownerId ?? this.ctx.controller.playerId,
+				power: lkiPower,
+				toughness: lkiToughness,
+				manaValue: this.ctx.sourceCard.cmc
+			};
+		}
 		return found ? this.snapshot(found.inst) : null;
 	}
 

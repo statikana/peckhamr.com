@@ -389,14 +389,16 @@ function singlePlayer(sel: Selector): PlayerRef | null {
 /** "equal to its power", "equal to that card's mana value", "equal to the number of Elves you control". */
 function equalTo(p: Parser, text: string): Amount | null {
 	const t = text.trim();
-	const stat = t.match(/^(?:its|that card's|that creature's|that permanent's|the exiled creature's) (power|toughness|mana value)$/);
+	const stat = t.match(/^(?:(its)|that card's|that creature's|that permanent's|the exiled creature's) (power|toughness|mana value)$/);
 	if (stat) {
-		const ref = p.itRef();
+		const it = p.itRef();
+		const ref = it ?? (stat[1] ? { k: 'self' as const } : null);
 		if (!ref) return null;
-		const which = stat[1] === 'mana value' ? 'manaValue' : (stat[1] as 'power' | 'toughness');
-		return { k: 'stat', of: ref, stat: which, lki: true };
+		const which = stat[2] === 'mana value' ? 'manaValue' : (stat[2] as 'power' | 'toughness');
+		return it ? { k: 'stat', of: ref, stat: which, lki: true } : { k: 'stat', of: ref, stat: which };
 	}
 	if (t === "~'s power") return { k: 'stat', of: { k: 'self' }, stat: 'power' };
+	if (t === "~'s toughness") return { k: 'stat', of: { k: 'self' }, stat: 'toughness' };
 	const num = t.match(/^the number of (.+)$/);
 	if (num) return numberOf(num[1]);
 	return null;
@@ -758,9 +760,11 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 		p.push({ verb: 'endTurn', subject: { k: 'none' }, span }, false);
 		return true;
 	}
-	if (t === 'attach to target creature you control' || t === 'attach ~ to target creature you control') {
-		const index = p.addTarget({ kind: 'object', filter: { zone: 'battlefield', types: ['Creature'], controller: 'you' }, min: 1, max: 1 });
-		p.push({ verb: 'attach', subject: { k: 'target', index }, span }, true);
+	m = t.match(/^attach(?: ~)? to (target .+ you control)$/);
+	if (m) {
+		const obj = objectPhrase(p, m[1]);
+		if (!obj || obj.selector.k !== 'target') return false;
+		p.push({ verb: 'attach', subject: obj.selector, span }, true);
 		return true;
 	}
 	m = t.match(/^(destroy|exile) (.+)$/);

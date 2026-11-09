@@ -208,6 +208,7 @@ export interface ObjectFilter {
 	colors?: ManaColor[];
 	manaValue?: Compare;
 	power?: Compare;
+	toughness?: Compare;
 	attacking?: boolean;
 	blocking?: boolean;
 }
@@ -319,7 +320,12 @@ export type Verb =
 	/** Registers `delayed` (subject `none`); its effect may refer to this ability's bindings. */
 	| 'delayedTrigger'
 	/** Gives a player a rule for a duration ("your life total can't change"); see `playerRules`. */
-	| 'grantPlayer';
+	| 'grantPlayer'
+	| 'fight'
+	| 'discard'
+	| 'tap'
+	| 'untap'
+	| 'tapOrUntap';
 
 export type Duration = 'endOfTurn' | 'permanent' | 'untilYourNextTurn';
 
@@ -362,6 +368,10 @@ export interface EffectParams {
 	activePlayerMay?: boolean;
 	/** win: the condition under which the player wins, checked on resolution. */
 	condition?: Condition;
+	/** fight: the second creature in a fight ("~ fights target creature"). */
+	with?: Selector;
+	/** discard / sacrifice: "at random". */
+	atRandom?: boolean;
 }
 
 export interface TokenSpec {
@@ -482,6 +492,7 @@ export type LayerMod =
 	| { k: 'allCreatureTypes' }
 	/** Layer 5. An empty list is colorless. */
 	| { k: 'setColors'; colors: ManaColor[] }
+	| { k: 'addColors'; colors: ManaColor[] }
 	/** Layer 6: "lose flying"; `cantHaveOrGain` for "and can't have or gain flying". */
 	| { k: 'removeKeywords'; keywords: string[]; cantHaveOrGain?: boolean }
 	/** Layer 6: a quoted ability granted to the affected objects ('have "{T}: Add {C}."'). */
@@ -517,7 +528,8 @@ export type RuleModKind =
 	| 'playerShroud'
 	| 'spendManaAsAnyColor'
 	/** "During your turn, your opponents can't cast spells". */
-	| 'opponentsCantCastDuringYourTurn';
+	| 'opponentsCantCastDuringYourTurn'
+	| 'lifeTotalCantChange';
 
 export type RestrictionKind =
 	| 'cantAttack'

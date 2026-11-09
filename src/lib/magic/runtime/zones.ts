@@ -80,6 +80,8 @@ export interface MoveOptions {
 	 * something (e.g. haste) with the object in that in-between state.
 	 */
 	beforeInsert?: (obj: CardInstance, dest: ZoneType) => void;
+	/** Suppress ZoneChange event emission when false (e.g. pregame mulligan). */
+	emit?: boolean;
 }
 
 export function allocateTimestamp(state: GameState): number {
@@ -163,6 +165,16 @@ export function moveObject(
 		from === 'anyBattlefield' || (typeof from === 'object' && from.zone === 'battlefield')
 			? captureLki(state, obj)
 			: undefined;
+	if (lki) {
+		if (lki.power !== undefined) obj.lastKnownPower = lki.power;
+		if (lki.toughness !== undefined) obj.lastKnownToughness = lki.toughness;
+		for (const stk of state.stack) {
+			if (stk.sourceInstanceId === obj.instanceId) {
+				if (lki.power !== undefined) stk.sourceLkiPower = lki.power;
+				if (lki.toughness !== undefined) stk.sourceLkiToughness = lki.toughness;
+			}
+		}
+	}
 
 	if (from === 'anyBattlefield') {
 		fromZone = 'battlefield';
@@ -192,7 +204,9 @@ export function moveObject(
 	if (!receiver) {
 		// Unreachable in practice (players are never removed from state.players). movePermanentToZone
 		// returned here, after removal and before any bookkeeping.
-		emitZoneChange(state, obj, fromZone, to, fromPlayerId, null, true, lki);
+		if (opts.emit !== false) {
+			emitZoneChange(state, obj, fromZone, to, fromPlayerId, null, true, lki);
+		}
 		return to;
 	}
 
@@ -271,21 +285,29 @@ export function moveObject(
 		const at = typeof opts.insert === 'function' ? opts.insert(dest) : opts.insert;
 		if (at !== 'deferred') insertInto(effectiveReceiver[dest as PlayerZone], obj, at);
 	}
-	emitZoneChange(
-		state,
-		obj,
-		fromZone,
-		dest,
-		fromPlayerId,
-		dest === 'stack' || ceases ? null : effectiveReceiver.playerId,
-		ceases,
-		lki
-	);
+	if (opts.emit !== false) {
+		emitZoneChange(
+			state,
+			obj,
+			fromZone,
+			dest,
+			fromPlayerId,
+			dest === 'stack' || ceases ? null : effectiveReceiver.playerId,
+			ceases,
+			lki
+		);
+	}
 	return dest;
 }
 
 function captureLki(state: GameState, obj: CardInstance): LeftBattlefieldInfo {
 	const evaluated = evaluatePermanent(state, obj);
+	const power = evaluated.isCreature
+		? (obj.lastKnownPower ?? evaluated.breakdown.effectivePower ?? evaluated.power)
+		: undefined;
+	const toughness = evaluated.isCreature
+		? (obj.lastKnownToughness ?? evaluated.breakdown.effectiveToughness ?? evaluated.toughness)
+		: undefined;
 	return {
 		card: obj.copiableCard ?? obj.card,
 		controllerId: obj.controllerId,
@@ -293,7 +315,9 @@ function captureLki(state: GameState, obj: CardInstance): LeftBattlefieldInfo {
 		hasAllCreatureTypes: evaluated.hasAllCreatureTypes,
 		lostAllAbilities: evaluated.hasLostAllAbilities,
 		isToken: obj.isToken,
-		tapped: obj.tapped
+		tapped: obj.tapped,
+		power,
+		toughness
 	};
 }
 
@@ -422,12 +446,24 @@ export function removeFromGame(
  * object identity behaves as before. Two ZoneChange events per card (hand to library, library to
  * hand). No objectVersion or timestamp changes, as before.
  */
-export function mulliganRedraw(state: GameState, player: PlayerGameState): void {
+export function mulliganRedraw(
+	state: GameState,
+	player: PlayerGameState,
+	opts?: { emit?: boolean }
+): void {
 	for (const c of [...player.hand]) {
-		moveObject(state, { ...c }, 'library', { from: { player, zone: 'hand' }, toPlayer: player });
+		moveObject(state, { ...c }, 'library', {
+			from: { player, zone: 'hand' },
+			toPlayer: player,
+			emit: opts?.emit
+		});
 	}
 	shuffleLibrary(player);
 	for (const c of player.library.slice(0, 7)) {
-		moveObject(state, { ...c }, 'hand', { from: { player, zone: 'library' }, toPlayer: player });
+		moveObject(state, { ...c }, 'hand', {
+			from: { player, zone: 'library' },
+			toPlayer: player,
+			emit: opts?.emit
+		});
 	}
 }

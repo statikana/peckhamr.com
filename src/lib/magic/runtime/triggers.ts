@@ -50,6 +50,8 @@ export interface PendingTrigger {
 	eventObject?: CardInstance;
 	/** The player the event was about (the player dealt combat damage). */
 	eventPlayerId?: string;
+	/** The stack item that targeted this permanent (for Ward). */
+	targetStackItemId?: string;
 	/** The amount the event carried: damage dealt, or the entering creature's power. */
 	amount?: number;
 	/** Match order (deterministic tie-break for a player's own simultaneous triggers). */
@@ -338,6 +340,7 @@ interface MatchExtras {
 	label: string;
 	eventObject?: CardInstance;
 	eventPlayerId?: string;
+	targetStackItemId?: string;
 	amount?: number;
 	times?: number;
 }
@@ -354,10 +357,11 @@ function record(state: GameState, source: Source, ability: RuntimeTrigger, kind:
 			source: source.obj,
 			sourceCard: source.card,
 			controllerId: source.controllerId,
-			mode: modeFor(kind, source),
+			mode: modeFor(kind, source, ability),
 			label: extras.label,
 			eventObject: extras.eventObject && extras.eventObject !== source.obj ? extras.eventObject : undefined,
 			eventPlayerId: extras.eventPlayerId,
+			targetStackItemId: extras.targetStackItemId,
 			amount: extras.amount,
 			order: ch.nextOrder++
 		});
@@ -366,14 +370,16 @@ function record(state: GameState, source: Source, ability: RuntimeTrigger, kind:
 
 /**
  * Pre-Phase-5 timing, kept per event kind (see TriggerMode): beginning-of-step triggers of
- * permanents use the stack; everything else (including graveyard upkeep triggers) runs inline.
+ * permanents and Ward triggers use the stack; everything else (including graveyard upkeep triggers) runs inline.
  */
-function modeFor(kind: EventKind, source: Source): TriggerMode {
+function modeFor(kind: EventKind, source: Source, ability?: RuntimeTrigger): TriggerMode {
+	if (ability?.legacy.effects[0]?.kind === 'ward_trigger') return 'stack';
 	return kind === 'phaseBegin' && source.zone === 'battlefield' ? 'stack' : 'inline';
 }
 
 /** Matches one event against every triggered ability. Called for every emitted event. */
 export function matchTriggers(state: GameState, ev: GameEvent): void {
+	if (state.status === 'mulligan') return;
 	switch (ev.kind) {
 		case 'ZoneChange':
 			return matchZoneChange(state, ev);
@@ -684,12 +690,21 @@ function matchTargeted(state: GameState, ev: Extract<GameEvent, { kind: 'BecameT
 	const subject = battlefieldSubject(state, found.obj, found.controllerId);
 	for (const source of sources(state, 'becomesTarget')) {
 		for (const { ability, alts } of abilitiesFor(state, source, 'becomesTarget')) {
-			const alt = alts.find(
-				(a) =>
-					(a.filter.targetedBy === 'spellOrAbility' || a.filter.targetedBy === ev.by) &&
-					objectMatches(a.filter, subject, source)
-			);
-			if (alt) record(state, source, ability, 'becomesTarget', { label: 'Targeted', eventObject: found.obj });
+			const alt = alts.find((a) => {
+				if (a.filter.targetedBy !== 'spellOrAbility' && a.filter.targetedBy !== ev.by) return false;
+				const rel = a.filter.player?.relation ?? 'any';
+				if (rel === 'you' && ev.controllerId !== source.controllerId) return false;
+				if (rel === 'opponent' && ev.controllerId === source.controllerId) return false;
+				return objectMatches(a.filter, subject, source);
+			});
+			if (alt) {
+				const label = ability.legacy.effects[0]?.kind === 'ward_trigger' ? 'Ward' : 'Targeted';
+				record(state, source, ability, 'becomesTarget', {
+					label,
+					eventObject: found.obj,
+					targetStackItemId: ev.stackItemId
+				});
+			}
 		}
 	}
 }

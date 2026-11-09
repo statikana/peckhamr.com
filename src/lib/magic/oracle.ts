@@ -1,4 +1,5 @@
 import type {
+	DelayedTrigger,
 	LibrarySearchDestination,
 	LibrarySearchSpec,
 	ManaColor,
@@ -6,6 +7,7 @@ import type {
 	ParsedActivatedAbility,
 	ParsedEffect,
 	ScryfallCard,
+	StackItem,
 	StructuredTriggeredAbility,
 	TargetKind,
 	TargetRequirementInfo,
@@ -39,6 +41,60 @@ export function getCardRulesText(card: ScryfallCard): string {
 
 export function getStackItemRulesText(item: { card: ScryfallCard; oracleText?: string }): string {
 	return item.oracleText || item.card.oracleText || '';
+}
+
+export function withStackItemText(
+	item: Omit<StackItem, 'oracleText'>,
+	textOrCard: string | ScryfallCard
+): StackItem {
+	return {
+		...item,
+		oracleText: typeof textOrCard === 'string' ? textOrCard : textOrCard.oracleText
+	};
+}
+
+export function getDelayedTriggerText(dt: { description?: string; oracleText?: string }): string {
+	return dt.description || dt.oracleText || '';
+}
+
+export function withDelayedTriggerSpec(
+	base: Omit<DelayedTrigger, 'oracleText'>,
+	spec: { oracleText: string }
+): DelayedTrigger {
+	return {
+		...base,
+		oracleText: spec.oracleText
+	};
+}
+
+export function buildTokenScryfallCard(
+	id: string,
+	spec: NonNullable<ParsedEffect['tokenSpec']>
+): ScryfallCard {
+	const isTreasure = /\bTreasure\b/.test(spec.typeLine);
+	return {
+		id,
+		name: spec.name,
+		manaCost: '',
+		cmc: 0,
+		typeLine: spec.typeLine,
+		oracleText: isTreasure
+			? '{T}, Sacrifice this artifact: Add one mana of any color.'
+			: spec.keywords.join(', '),
+		colors: spec.colors,
+		colorIdentity: spec.colors,
+		keywords: spec.keywords,
+		power: isTreasure ? undefined : String(spec.power),
+		toughness: isTreasure ? undefined : String(spec.toughness),
+		imageUrl: `https://api.scryfall.com/cards/named?fuzzy=${encodeURIComponent(spec.name.replace(' Token', ''))}&format=image&version=normal`,
+		artCropUrl: `https://api.scryfall.com/cards/named?fuzzy=${encodeURIComponent(spec.name.replace(' Token', ''))}&format=image&version=art_crop`,
+		legalCommander: true,
+		canBeCommander: false,
+		hasPartner: false,
+		hasChooseBackground: false,
+		hasPartnerWith: undefined,
+		isBackground: false
+	} as ScryfallCard;
 }
 
 export function getStackItemTargetRequirement(
@@ -349,14 +405,23 @@ export function parseActivatedAbilities(
 		const line = rawLine.trim();
 		if (!line) return;
 
-		// Check Equipment "Equip {cost}" ability (e.g., "Equip {0}", "Equip {1}", "Equip—{2}")
-		const equipMatch = line.match(/^Equip(?:\s+[a-zA-Z ]+)?\s*[—-]?\s*(\{[0-9WUBRGCX/]+\}(?:\{[0-9WUBRGCX/]+\})*)/i);
+		// Check Equipment "Equip [quality] {cost}" ability (CR 702.6a: "Equip {0}", "Equip legendary creature {1}", "Equip Knight {2}")
+		const equipMatch = line.match(
+			/^Equip(?:\s+([a-zA-Z ]+?))?\s*[—-]?\s*(\{[0-9WUBRGCX/]+\}(?:\{[0-9WUBRGCX/]+\})*)/i
+		);
 		if (equipMatch) {
-			const equipCost = equipMatch[1];
+			const equipQualityRaw = equipMatch[1]?.trim();
+			const equipCost = equipMatch[2];
+			const equipTargetPhrase = equipQualityRaw
+				? /\bcreature\b/i.test(equipQualityRaw)
+					? equipQualityRaw
+					: `${equipQualityRaw} creature`
+				: 'creature';
+			const labelPrefix = equipQualityRaw ? `Equip ${equipQualityRaw} ${equipCost}` : `Equip ${equipCost}`;
 			abilities.push({
 				id: `equip_${idx}`,
-				label: `Equip ${equipCost}: Attach to target creature you control`,
-				costText: `Equip ${equipCost}`,
+				label: `${labelPrefix}: Attach to target ${equipTargetPhrase} you control`,
+				costText: labelPrefix,
 				manaCost: equipCost,
 				requiresTap: false,
 				requiresSacrificeSelf: false,
@@ -366,7 +431,7 @@ export function parseActivatedAbilities(
 				sorcerySpeedOnly: true,
 				producesMana: [],
 				producesAmount: 0,
-				effectText: 'Attach to target creature you control.',
+				effectText: `Attach to target ${equipTargetPhrase} you control.`,
 				requiresTarget: true,
 				targetKind: 'controlled_creature'
 			});
@@ -718,7 +783,19 @@ function detectSingleClauseTarget(rawClause: string): TargetRequirementInfo {
 		controllerFilter = 'you';
 	}
 
-	if (/\btarget creatures? you control\b/i.test(low)) {
+	const controlledCreatureMatch = low.match(
+		/\btarget\s+(?:([a-zA-Z ]+?)\s+)?creatures?\s+you\s+control\b/i
+	);
+	if (controlledCreatureMatch) {
+		const rawQualWords = (controlledCreatureMatch[1]?.trim().split(/\s+/) ?? []).filter(
+			(w) =>
+				Boolean(w) &&
+				!/^(?:other|another|attacking|blocking|tapped|untapped|one|two|three)$/i.test(w)
+		);
+		const cardTypeFilter =
+			rawQualWords.length > 0
+				? `${rawQualWords.map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ')} Creature`
+				: 'Creature';
 		return {
 			requiresTarget: minTargets > 0,
 			targetKind: 'controlled_creature',
@@ -727,7 +804,7 @@ function detectSingleClauseTarget(rawClause: string): TargetRequirementInfo {
 			zone: 'battlefield',
 			sameGraveyard: false,
 			controllerFilter: 'you',
-			cardTypeFilter: 'Creature'
+			cardTypeFilter
 		};
 	}
 

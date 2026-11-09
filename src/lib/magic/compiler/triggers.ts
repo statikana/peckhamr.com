@@ -484,6 +484,27 @@ export function runtimeTriggers(def: CardDefinition): RuntimeTrigger[] {
 	if (cached) return cached;
 	const out: RuntimeTrigger[] = [];
 	(def.faces[0]?.abilities ?? []).forEach((ab, abilityIndex) => {
+		if (ab.kind === 'keyword' && ab.keyword.name === 'ward') {
+			const wardCost = ab.keyword.cost ?? ab.keyword.param ?? '{1}';
+			out.push({
+				abilityIndex,
+				trigger: {
+					event: 'becomesTarget',
+					filter: {
+						object: 'self',
+						targetedBy: 'spellOrAbility',
+						player: { relation: 'opponent' }
+					}
+				},
+				effectSupported: false,
+				legacy: {
+					effects: [{ kind: 'ward_trigger', amount: 1, wardCost }],
+					clause: `Ward ${wardCost}`,
+					legacyClaimed: true
+				}
+			});
+			return;
+		}
 		const legacy = LEGACY_EXECUTION.get(ab);
 		if (!legacy || legacy.effects.length === 0) return;
 		if (ab.kind === 'triggered') {

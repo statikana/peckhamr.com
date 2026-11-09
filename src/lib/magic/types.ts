@@ -140,7 +140,7 @@ export interface LobbyRulesConfig {
 	commanderDamageLethal: number; // default: 21 (0 = disabled)
 	commanderTaxIncrement: number; // default: 2
 	poisonLethal: number; // default: 10 (0 = disabled)
-	mulliganRule: 'london_1free' | 'friendly_unlimited' | 'strict_london';
+	mulliganRule: 'london_1free' | 'london_standard' | 'friendly_unlimited' | 'strict_london' | 'free_all';
 	deckValidationMode: 'strict_commander' | 'rule0_relaxed';
 	turnTimerSeconds: number; // default: 90 (0 = untimed)
 	firstTurnDraw: boolean; // default: true in multiplayer Commander
@@ -314,7 +314,8 @@ export interface ParsedEffect {
 		| 'sacrifice_self'
 		| 'copy_target_permanent'
 		| 'copy_target_spell'
-		| 'return_self_from_graveyard';
+		| 'return_self_from_graveyard'
+		| 'ward_trigger';
 	amount: number;
 	toughnessAmount?: number;
 	manaColors?: ManaColor[];
@@ -333,6 +334,7 @@ export interface ParsedEffect {
 	searchSpec?: LibrarySearchSpec;
 	recipient?: 'self' | 'target_controller';
 	grantedKeyword?: string;
+	wardCost?: string;
 }
 
 export interface CardInstance {
@@ -372,6 +374,7 @@ export interface CardInstance {
 	lastKnownCounters?: Record<CounterType, number>;
 	lastKnownPower?: number;
 	lastKnownToughness?: number;
+	damagePreventionShield?: number;
 }
 
 export interface TargetRef {
@@ -419,6 +422,9 @@ export interface StackItem {
 	lkiToughness?: number;
 	lkiTypeLine?: string;
 	lkiControllerId?: string;
+	sourceLkiPower?: number;
+	sourceLkiToughness?: number;
+	declineWard?: boolean;
 	/**
 	 * Phase 5: for a triggered ability put on the stack by runtime/triggers.ts, the index of the
 	 * ability in its source card's compiled abilities (compileCard(card).faces[0].abilities). Used to
@@ -700,6 +706,7 @@ export interface GameState {
 	delayedTriggers?: DelayedTrigger[];
 	extraTurnQueue?: string[];
 	stackTriggersEnabled?: boolean;
+	rngState?: number;
 }
 
 export interface MagicLobby {

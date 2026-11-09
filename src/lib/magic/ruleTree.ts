@@ -335,29 +335,7 @@ export function getCardRuleTree(
 					? 'activated.mana'
 					: 'activated.ability';
 
-		const targetInfo: TargetRequirementInfo = isAttach
-			? {
-					requiresTarget: true,
-					targetKind: 'controlled_creature',
-					minTargets: 1,
-					maxTargets: 1,
-					zone: 'battlefield',
-					sameGraveyard: false,
-					controllerFilter: 'you',
-					cardTypeFilter: 'Creature'
-				}
-			: ab.targetKind === 'controlled_creature'
-				? {
-						requiresTarget: true,
-						targetKind: 'controlled_creature',
-						minTargets: 1,
-						maxTargets: 1,
-						zone: 'battlefield',
-						sameGraveyard: false,
-						controllerFilter: 'you',
-						cardTypeFilter: 'Creature'
-					}
-				: detectTargetRequirement(ab.effectText);
+		const targetInfo: TargetRequirementInfo = detectTargetRequirement(ab.effectText);
 
 		const parsedAbEffects = isAttach
 			? { effects: [{ kind: 'equip_target' as const, amount: 1 }], requiresGuidedResolution: false }

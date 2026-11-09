@@ -1230,12 +1230,19 @@ games pass without regenerating.
     - Baseline test `E3` in `magic.test.ts` passes with its `{ todo }` marker removed; added 5 tests
       in `runtime/ai.test.ts`. `layers.snapshot.test.ts` and `runtime/golden.test.ts` pass unchanged.
 
-### Phase 10: Delete the legacy layer
+### Phase 10: Delete the legacy layer ✅ done 2026-11-08 (branch `engine-rewrite-wave4`)
 - **Work:** remove `CardRuleTree` (or keep it as a thin view over the IR for the inspector UI),
   `ParsedEffect`, `ParsedActivatedAbility`, `TargetKind`, `parseTriggeredEffects` and the remaining
   regex parsers in `oracle.ts` that the compiler doesn't use.
 - **Exit:** ratchet allowances for `oracleText` and name checks are **0** for all runtime files.
   This is the point where the engine is fully separated from the cards.
+- **Results (2026-11-08, branch `engine-rewrite-wave4`):**
+  - **Ratchet (`architecture-allowances.json`):** `cardNameComparison`, `oracleTextRead`, and
+    `directZoneMutation` are now **`0` across all runtime files** (`engine.ts`: `0 / 0 / 0`,
+    `ruleTree.ts`: `0 / 0 / 0`, `ai.ts`: `0 / 0 / 0`, `runtime/**`: `0 / 0 / 0`).
+  - **Wave 4 CR Completion (`runtime/wave4-cr-completion.test.ts`):** Closed the remaining 5
+    Comprehensive Rules audit items (`CR 103.5 / 103.5c / 103.8a`, `CR 113.7a`, `CR 701.31a`,
+    `CR 702.6a`, `CR 702.21a`) with 5 fail-first tests and 0 `svelte-check` errors.
 
 ### Phase 11+: The coverage loop (ongoing)
 Repeat:

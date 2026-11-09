@@ -1,4 +1,5 @@
 import {
+	buildTokenScryfallCard,
 	createEmptyManaPool,
 	canPayManaCost,
 	cardEntersAsCopyOfAnyCreature,
@@ -9,6 +10,7 @@ import {
 	detectTargetRequirement,
 	getCardExtraLandPlays,
 	getCardRulesText,
+	getDelayedTriggerText,
 	getPermanentManaProduction,
 	getStackItemRulesText,
 	getStackItemTargetRequirement,
@@ -21,6 +23,8 @@ import {
 	parseSpellOrAbilityEffects,
 	parseSuspendClause,
 	spellExilesSelfOnResolution,
+	withDelayedTriggerSpec,
+	withStackItemText,
 	type ManaCostRequirement,
 	type ParsedActivatedAbility
 } from './oracle.ts';
@@ -382,12 +386,27 @@ export function createInitialGameState(
 	};
 
 	// Smart bot opening hand mulligan
+	const freeMulligans =
+		rules.mulliganRule === 'free_all' || rules.mulliganRule === 'friendly_unlimited'
+			? 7
+			: rules.mulliganRule === 'london_standard' || rules.mulliganRule === 'strict_london'
+				? 0
+				: 1;
 	for (const p of state.players) {
 		if (p.isBot) {
 			const landCount = p.hand.filter((c) => c.card.typeLine.includes('Land')).length;
 			if (landCount < 2 || landCount > 5) {
-				// Take 1 free mulligan
-				mulliganRedraw(state, p);
+				p.mulliganCount += 1;
+				mulliganRedraw(state, p, { emit: false });
+				const toBottom = Math.max(0, p.mulliganCount - freeMulligans);
+				for (let b = 0; b < toBottom && p.hand.length > 0; b++) {
+					moveObject(state, p.hand[p.hand.length - 1], 'library', {
+						from: { player: p, zone: 'hand' },
+						toPlayer: p,
+						insert: 'end',
+						emit: false
+					});
+				}
 			}
 			p.hasKeptHand = true;
 		} else {
@@ -1018,7 +1037,10 @@ function executeUntapTurnBasedActions(state: GameState, activePlayer: PlayerGame
 
 function executeDrawTurnBasedAction(state: GameState, activePlayer: PlayerGameState): void {
 	const shouldSkipFirstDraw =
-		state.turnNumber === 1 && state.players.length === 2 && !state.rules.firstTurnDraw;
+		state.turnNumber === 1 &&
+		state.activePlayerIndex === 0 &&
+		state.players.length === 2 &&
+		!state.rules.firstTurnDraw;
 	if (!shouldSkipFirstDraw) {
 		drawCards(state, activePlayer, 1);
 		if (state.status === 'finished') return;
@@ -1447,25 +1469,27 @@ function applyGameActionInner(
 			const resolvedCastMode: 'normal' | 'overload' = isOverloadCastMode(inst.card, xVal, castMode)
 				? 'overload'
 				: 'normal';
-			const stackItem: StackItem = {
-				id: uid('stk'),
-				sourceInstanceId: inst.instanceId,
-				sourceObjectVersion: inst.objectVersion,
-				card: inst.card,
-				ownerId: inst.ownerId,
-				controllerId: actorId,
-				kind: 'spell',
-				title: inst.card.name,
-				oracleText: inst.card.oracleText,
-				targets,
-				targetObjectVersions: captureTargetObjectVersions(state, targets),
-				xValue: xVal,
-				castMode: resolvedCastMode,
-				commanderCastCount: inst.commanderCastCount,
-				parsedEffects: parsed.effects,
-				requiresGuidedResolution: parsed.requiresGuidedResolution,
-				createdAt: Date.now()
-			};
+			const stackItem: StackItem = withStackItemText(
+				{
+					id: uid('stk'),
+					sourceInstanceId: inst.instanceId,
+					sourceObjectVersion: inst.objectVersion,
+					card: inst.card,
+					ownerId: inst.ownerId,
+					controllerId: actorId,
+					kind: 'spell',
+					title: inst.card.name,
+					targets,
+					targetObjectVersions: captureTargetObjectVersions(state, targets),
+					xValue: xVal,
+					castMode: resolvedCastMode,
+					commanderCastCount: inst.commanderCastCount,
+					parsedEffects: parsed.effects,
+					requiresGuidedResolution: parsed.requiresGuidedResolution,
+					createdAt: Date.now()
+				},
+				inst.card
+			);
 
 			state.stack.push(stackItem);
 			state.passedPriorityPlayerIds = [];
@@ -1492,7 +1516,14 @@ function applyGameActionInner(
 			for (const t of targets) {
 				const targeted = t.kind === 'permanent' ? findPermanentOnBoard(state, t.id) : null;
 				if (targeted) {
-					emitEvent(state, { kind: 'BecameTarget', objectId: t.id, object: targeted.inst, by: 'spell', controllerId: actor.playerId });
+					emitEvent(state, {
+						kind: 'BecameTarget',
+						objectId: t.id,
+						object: targeted.inst,
+						by: 'spell',
+						controllerId: actor.playerId,
+						stackItemId: stackItem.id
+					});
 				}
 			}
 			// "Whenever you cast ..." ran here before Phase 5.
@@ -1529,19 +1560,7 @@ function applyGameActionInner(
 
 			const evaluatedNode = evaluateActionNode(state, actorId, perm, ab.id);
 			const abTargetInfo: TargetRequirementInfo =
-				evaluatedNode?.targetLegality.targetInfo ??
-				(ab.targetKind === 'controlled_creature'
-					? {
-							requiresTarget: true,
-							targetKind: 'controlled_creature',
-							minTargets: 1,
-							maxTargets: 1,
-							zone: 'battlefield',
-							sameGraveyard: false,
-							controllerFilter: 'you',
-							cardTypeFilter: 'Creature'
-						}
-					: detectTargetRequirement(ab.effectText));
+				evaluatedNode?.targetLegality.targetInfo ?? detectTargetRequirement(ab.effectText);
 
 			const targets = action.targets || [];
 			if (ab.requiresTarget) {
@@ -1569,6 +1588,9 @@ function applyGameActionInner(
 			const abilityPlan = planCosts(abilityCtx, abilityCost.defs, action.costPayment);
 			if (!abilityPlan.ok) return { ok: false, error: abilityPlan.error };
 			if (abilityPlan.question) return askCostChoice(state, actor, action, abilityPlan.question, perm.card.name);
+			const preCostEval = evaluatePermanent(state, perm);
+			const sourceLkiPower = preCostEval.power;
+			const sourceLkiToughness = preCostEval.toughness;
 			const abilityPaid = payPlannedCosts(abilityCtx, abilityPlan);
 			if (abilityPaid.descriptions.length > 0) {
 				addLog(state, 'rule', `${actor.username} ${abilityPaid.descriptions.join('; ')} to activate ${perm.card.name}.`, actorId);
@@ -1578,26 +1600,44 @@ function applyGameActionInner(
 			}
 
 			const parsed = parseSpellOrAbilityEffects(perm.card, ab.effectText);
-			const stackItem: StackItem = {
-				id: uid('stk'),
-				sourceInstanceId: perm.instanceId,
-				sourceObjectVersion: perm.objectVersion,
-				card: perm.card,
-				controllerId: actorId,
-				kind: 'activated',
-				title: `${perm.card.name} Ability`,
-				oracleText: ab.effectText,
-				targets,
-				targetObjectVersions: captureTargetObjectVersions(state, targets),
-				xValue: 0,
-				parsedEffects: parsed.effects,
-				requiresGuidedResolution: false,
-				createdAt: Date.now()
-			};
+			const stackItem: StackItem = withStackItemText(
+				{
+					id: uid('stk'),
+					sourceInstanceId: perm.instanceId,
+					sourceObjectVersion: perm.objectVersion,
+					sourceLkiPower,
+					sourceLkiToughness,
+					card: perm.card,
+					controllerId: actorId,
+					kind: 'activated',
+					title: `${perm.card.name} Ability`,
+					targets,
+					targetObjectVersions: captureTargetObjectVersions(state, targets),
+					xValue: 0,
+					parsedEffects: parsed.effects,
+					requiresGuidedResolution: false,
+					createdAt: Date.now()
+				},
+				ab.effectText
+			);
 
 			state.stack.push(stackItem);
 			state.passedPriorityPlayerIds = [];
 			addLog(state, 'cast', `${actor.username} activated ${perm.card.name}: "${ab.effectText}".`, actorId);
+			for (const t of targets) {
+				const targeted = t.kind === 'permanent' ? findPermanentOnBoard(state, t.id) : null;
+				if (targeted) {
+					emitEvent(state, {
+						kind: 'BecameTarget',
+						objectId: t.id,
+						object: targeted.inst,
+						by: 'ability',
+						controllerId: actor.playerId,
+						stackItemId: stackItem.id
+					});
+				}
+			}
+			flushTriggers(state);
 			checkStateBasedActions(state);
 			return { ok: true };
 		}
@@ -2126,7 +2166,7 @@ function handleMulliganAction(
 	if (action.type === 'mulligan_keep') {
 		if (prIdx >= 0) state.pendingPrompts.splice(prIdx, 1);
 		const freeMulligans =
-			state.rules.mulliganRule === 'friendly_unlimited'
+			state.rules.mulliganRule === 'friendly_unlimited' || state.rules.mulliganRule === 'free_all'
 				? 99
 				: state.rules.mulliganRule === 'london_1free'
 					? 1
@@ -2904,21 +2944,23 @@ function runDelayedEndStepTriggers(state: GameState, activePlayer: PlayerGameSta
 						});
 					}
 				}
-				const stkItem: StackItem = {
-					id: uid('stk'),
-					sourceInstanceId: dt.id,
-					card: dt.sourceCard,
-					controllerId: dt.controllerId,
-					kind: 'triggered',
-					title: `${dt.sourceCard.name} (Delayed End Step Trigger)`,
-					oracleText: dt.description || dt.oracleText || '',
-					targets,
-					targetObjectVersions: captureTargetObjectVersions(state, targets),
-					xValue: 0,
-					parsedEffects: dt.effects,
-					requiresGuidedResolution: false,
-					createdAt: Date.now()
-				};
+				const stkItem: StackItem = withStackItemText(
+					{
+						id: uid('stk'),
+						sourceInstanceId: dt.id,
+						card: dt.sourceCard,
+						controllerId: dt.controllerId,
+						kind: 'triggered',
+						title: `${dt.sourceCard.name} (Delayed End Step Trigger)`,
+						targets,
+						targetObjectVersions: captureTargetObjectVersions(state, targets),
+						xValue: 0,
+						parsedEffects: dt.effects,
+						requiresGuidedResolution: false,
+						createdAt: Date.now()
+					},
+					getDelayedTriggerText(dt)
+				);
 				state.stack.push(stkItem);
 				addLog(
 					state,
@@ -3001,28 +3043,39 @@ registerEventHandler('PhaseBegin', (state, ev) => {
  */
 function triggeredStackItem(state: GameState, t: PendingTrigger, idPrefix: string): StackItem {
 	const targets: TargetRef[] = [];
-	if (t.eventPlayerId) {
+	if (t.targetStackItemId) {
+		targets.push({ kind: 'stack', id: t.targetStackItemId, label: t.targetStackItemId });
+	} else if (t.eventPlayerId) {
 		const pl = state.players.find((p) => p.playerId === t.eventPlayerId);
 		targets.push({ kind: 'player', id: t.eventPlayerId, label: pl?.username ?? t.eventPlayerId });
 	} else if (t.eventObject) {
 		targets.push({ kind: 'permanent', id: t.eventObject.instanceId, label: t.eventObject.card.name });
 	}
-	return {
-		id: uid(idPrefix),
-		sourceInstanceId: t.source.instanceId,
-		card: t.sourceCard,
-		controllerId: t.controllerId,
-		kind: 'triggered',
-		title: `${t.sourceCard.name} (${t.label})`,
-		oracleText: t.ability.legacy.clause,
-		targets,
-		xValue: 0,
-		parsedEffects: t.ability.legacy.effects,
-		requiresGuidedResolution: false,
-		createdAt: Date.now(),
-		lkiPower: t.amount,
-		triggeredAbilityIndex: t.ability.abilityIndex
-	};
+	const foundSource = findPermanentOnBoard(state, t.source.instanceId);
+	const sourceEval = foundSource ? evaluatePermanent(state, foundSource.inst) : undefined;
+	const sourceLkiPower = sourceEval?.power ?? t.source.lastKnownPower;
+	const sourceLkiToughness = sourceEval?.toughness ?? t.source.lastKnownToughness;
+	return withStackItemText(
+		{
+			id: uid(idPrefix),
+			sourceInstanceId: t.source.instanceId,
+			sourceObjectVersion: t.source.objectVersion,
+			sourceLkiPower,
+			sourceLkiToughness,
+			card: t.sourceCard,
+			controllerId: t.controllerId,
+			kind: 'triggered',
+			title: `${t.sourceCard.name} (${t.label})`,
+			targets,
+			xValue: 0,
+			parsedEffects: t.ability.legacy.effects,
+			requiresGuidedResolution: false,
+			createdAt: Date.now(),
+			lkiPower: t.amount,
+			triggeredAbilityIndex: t.ability.abilityIndex
+		},
+		t.ability.legacy.clause
+	);
 }
 
 /**
@@ -3253,20 +3306,24 @@ export function resolveTopOfStack(state: GameState): void {
 		for (const spec of delayedSpecs) {
 			if (item.parsedEffects.some((e) => e.dynamicFormula === 'top_creature_of_graveyard')) continue;
 			if (!state.delayedTriggers) state.delayedTriggers = [];
-			state.delayedTriggers.push({
-				id: uid('dtrig'),
-				sourceInstanceId: item.sourceInstanceId,
-				sourceCard: item.card,
-				controllerId: controller.playerId,
-				triggerPhase: spec.triggerPhase,
-				targetPlayerId: spec.forNextTurnOfController ? controller.playerId : undefined,
-				waitUntilAfterTurn: spec.forNextTurnOfController ? state.turnNumber : undefined,
-				title: spec.title,
-				oracleText: spec.oracleText,
-				effects: spec.effects,
-				description: spec.description,
-				createdAtTurn: state.turnNumber
-			});
+			state.delayedTriggers.push(
+				withDelayedTriggerSpec(
+					{
+						id: uid('dtrig'),
+						sourceInstanceId: item.sourceInstanceId,
+						sourceCard: item.card,
+						controllerId: controller.playerId,
+						triggerPhase: spec.triggerPhase,
+						targetPlayerId: spec.forNextTurnOfController ? controller.playerId : undefined,
+						waitUntilAfterTurn: spec.forNextTurnOfController ? state.turnNumber : undefined,
+						title: spec.title,
+						effects: spec.effects,
+						description: spec.description,
+						createdAtTurn: state.turnNumber
+					},
+					spec
+				)
+			);
 		}
 	}
 
@@ -3780,6 +3837,65 @@ function executeParsedEffect(
 				amount: Math.abs(amount),
 				label: `${amount >= 0 ? '+' : ''}${amount} Life`
 			});
+			break;
+		}
+
+		case 'ward_trigger': {
+			const targetItem = state.stack.find((s) => s.id === item.targets[0]?.id);
+			if (!targetItem) break;
+			const opp = state.players.find((p) => p.playerId === targetItem.controllerId);
+			const wardCost = (eff.wardCost ?? '{1}').trim();
+			let paid = false;
+			if (opp && !targetItem.declineWard) {
+				const lifeMatch = wardCost.match(/^pay\s+(\d+)\s+life$/i);
+				if (lifeMatch) {
+					const lifeCost = parseInt(lifeMatch[1], 10);
+					if (!opp.lifeTotalCannotChangeThisTurn && opp.life >= lifeCost) {
+						opp.life -= lifeCost;
+						paid = true;
+						addLog(
+							state,
+							'rule',
+							`${opp.username} paid ${lifeCost} life for ${item.card.name}'s Ward (CR 702.21a).`,
+							opp.playerId
+						);
+					}
+				} else {
+					const req = parseManaCost(wardCost);
+					if (canPayOrAutoTap(opp, req, state)) {
+						payManaWithAutoTap(opp, req, state);
+						paid = true;
+						addLog(
+							state,
+							'rule',
+							`${opp.username} paid ${wardCost} for ${item.card.name}'s Ward (CR 702.21a).`,
+							opp.playerId
+						);
+					}
+				}
+			}
+			if (!paid) {
+				if (targetItem.kind === 'spell' && spellCannotBeCountered(state, targetItem)) {
+					addLog(
+						state,
+						'rule',
+						`${targetItem.title} could not be countered by ${item.card.name}'s Ward (CR 702.21a)!`,
+						controller.playerId
+					);
+				} else {
+					const stkIdx = state.stack.indexOf(targetItem);
+					if (stkIdx >= 0) {
+						const [countered] = state.stack.splice(stkIdx, 1);
+						moveStackSpellToZone(state, countered, 'graveyard');
+						addLog(
+							state,
+							'cast',
+							`${item.card.name}'s Ward countered ${countered.title} (CR 702.21a)!`,
+							controller.playerId
+						);
+					}
+				}
+			}
 			break;
 		}
 
@@ -4602,21 +4718,23 @@ export function executeSuspendFreeCastFromExile(
 	suspCard.castViaSuspend = true;
 	owner.spellsCastThisTurn = (owner.spellsCastThisTurn || 0) + 1;
 
-	const stackItem: StackItem = {
-		id: uid('stk'),
-		sourceInstanceId: suspCard.instanceId,
-		card: suspCard.card,
-		controllerId: owner.playerId,
-		kind: 'spell',
-		title: `${suspCard.card.name} (Suspended Cast)`,
-		oracleText: suspCard.card.oracleText,
-		targets: chosenTargets,
-		targetObjectVersions: captureTargetObjectVersions(state, chosenTargets),
-		xValue: 0,
-		parsedEffects: parsed.effects,
-		requiresGuidedResolution: false,
-		createdAt: Date.now()
-	};
+	const stackItem: StackItem = withStackItemText(
+		{
+			id: uid('stk'),
+			sourceInstanceId: suspCard.instanceId,
+			card: suspCard.card,
+			controllerId: owner.playerId,
+			kind: 'spell',
+			title: `${suspCard.card.name} (Suspended Cast)`,
+			targets: chosenTargets,
+			targetObjectVersions: captureTargetObjectVersions(state, chosenTargets),
+			xValue: 0,
+			parsedEffects: parsed.effects,
+			requiresGuidedResolution: false,
+			createdAt: Date.now()
+		},
+		suspCard.card
+	);
 	state.stack.push(stackItem);
 	addLog(
 		state,
@@ -4881,29 +4999,7 @@ export function createTokenOnBoard(
 	controller: PlayerGameState,
 	spec: NonNullable<ParsedEffect['tokenSpec']>
 ): CardInstance {
-	const isTreasure = /\bTreasure\b/.test(spec.typeLine);
-	const tokenCard: ScryfallCard = {
-		id: uid('tok_scry'),
-		name: spec.name,
-		manaCost: '',
-		cmc: 0,
-		typeLine: spec.typeLine,
-		oracleText: isTreasure
-			? '{T}, Sacrifice this artifact: Add one mana of any color.'
-			: spec.keywords.join(', '),
-		colors: spec.colors,
-		colorIdentity: spec.colors,
-		keywords: spec.keywords,
-		power: isTreasure ? undefined : String(spec.power),
-		toughness: isTreasure ? undefined : String(spec.toughness),
-		imageUrl: `https://api.scryfall.com/cards/named?fuzzy=${encodeURIComponent(spec.name.replace(' Token', ''))}&format=image&version=normal`,
-		artCropUrl: `https://api.scryfall.com/cards/named?fuzzy=${encodeURIComponent(spec.name.replace(' Token', ''))}&format=image&version=art_crop`,
-		legalCommander: true,
-		canBeCommander: false,
-		hasPartner: false,
-		hasChooseBackground: false,
-		isBackground: false
-	};
+	const tokenCard: ScryfallCard = buildTokenScryfallCard(uid('tok_scry'), spec);
 
 	const inst = createCardInstance(
 		tokenCard,
@@ -4925,22 +5021,79 @@ export function createTokenOnBoard(
 	return inst;
 }
 
-export function executeProliferate(state: GameState, controller: PlayerGameState): void {
-	for (const perm of controller.battlefield) {
-		if (perm.phasedOut) continue;
-		if (perm.counters['+1/+1'] > 0) {
-			addCountersToPermanent(state, perm, '+1/+1', 1);
+export function executeProliferate(
+	state: GameState,
+	controller: PlayerGameState,
+	chosenIds?: string[]
+): void {
+	const allCounterTypes: CounterType[] = [
+		'+1/+1',
+		'-1/-1',
+		'loyalty',
+		'charge',
+		'shield',
+		'stun',
+		'lore',
+		'time'
+	];
+	if (chosenIds) {
+		const chosenSet = new Set(chosenIds);
+		for (const pl of state.players) {
+			for (const perm of pl.battlefield) {
+				if (perm.phasedOut || !chosenSet.has(perm.instanceId)) continue;
+				for (const cType of allCounterTypes) {
+					if ((perm.counters[cType] || 0) > 0) {
+						addCountersToPermanent(state, perm, cType, 1);
+					}
+				}
+			}
+			if (chosenSet.has(pl.playerId)) {
+				if (pl.poison > 0) pl.poison += 1;
+				if ((pl.experienceCounters || 0) > 0) {
+					pl.experienceCounters = (pl.experienceCounters || 0) + 1;
+				}
+				if ((pl.energyCounters || 0) > 0) {
+					pl.energyCounters = (pl.energyCounters || 0) + 1;
+				}
+			}
 		}
-		if (perm.counters.loyalty > 0) {
-			addCountersToPermanent(state, perm, 'loyalty', 1);
+	} else {
+		const controllerPositiveTypes: CounterType[] = [
+			'+1/+1',
+			'loyalty',
+			'charge',
+			'shield',
+			'lore',
+			'time'
+		];
+		const opponentNegativeTypes: CounterType[] = ['-1/-1', 'stun'];
+		for (const perm of controller.battlefield) {
+			if (perm.phasedOut) continue;
+			for (const cType of controllerPositiveTypes) {
+				if ((perm.counters[cType] || 0) > 0) {
+					addCountersToPermanent(state, perm, cType, 1);
+				}
+			}
 		}
-		if (perm.counters.charge > 0) {
-			addCountersToPermanent(state, perm, 'charge', 1);
+		if ((controller.experienceCounters || 0) > 0) {
+			controller.experienceCounters = (controller.experienceCounters || 0) + 1;
 		}
-	}
-	for (const opp of state.players) {
-		if (opp.playerId !== controller.playerId && opp.poison > 0) {
-			opp.poison += 1;
+		if ((controller.energyCounters || 0) > 0) {
+			controller.energyCounters = (controller.energyCounters || 0) + 1;
+		}
+		for (const opp of state.players) {
+			if (opp.playerId === controller.playerId) continue;
+			for (const perm of opp.battlefield) {
+				if (perm.phasedOut) continue;
+				for (const cType of opponentNegativeTypes) {
+					if ((perm.counters[cType] || 0) > 0) {
+						addCountersToPermanent(state, perm, cType, 1);
+					}
+				}
+			}
+			if (opp.poison > 0) {
+				opp.poison += 1;
+			}
 		}
 	}
 	emitVfx(state, {
@@ -6231,7 +6384,8 @@ export function matchesPermanentTypeFilter(
 	state?: GameState
 ): boolean {
 	if (perm.phasedOut) return false;
-	const tLine = state ? evaluatePermanent(state, perm).typeLine : perm.card.typeLine;
+	const evalPerm = state ? evaluatePermanent(state, perm) : undefined;
+	const tLine = evalPerm ? evalPerm.typeLine : perm.card.typeLine;
 	if (typeFilter === 'Permanent') return true;
 	if (typeFilter === 'ArtifactOrCreature') {
 		return tLine.includes('Artifact') || tLine.includes('Creature');
@@ -6244,6 +6398,16 @@ export function matchesPermanentTypeFilter(
 	}
 	if (typeFilter === 'NonlandPermanent') {
 		return !tLine.includes('Land');
+	}
+	if (typeFilter.includes(' ')) {
+		const tLow = tLine.toLowerCase();
+		const words = typeFilter.trim().split(/\s+/);
+		return words.every((w) => {
+			const wLow = w.toLowerCase();
+			if (wLow === 'commander') return Boolean(perm.isCommander);
+			if (evalPerm?.hasSubType(w)) return true;
+			return tLow.includes(wLow);
+		});
 	}
 	return tLine.includes(typeFilter);
 }
@@ -7207,19 +7371,7 @@ export function checkAbilityActivationLegality(
 
 	if (ab.requiresTarget) {
 		const abTargetInfo: TargetRequirementInfo =
-			evaluatedNode?.targetLegality.targetInfo ??
-			(ab.targetKind === 'controlled_creature'
-				? {
-						requiresTarget: true,
-						targetKind: 'controlled_creature',
-						minTargets: 1,
-						maxTargets: 1,
-						zone: 'battlefield',
-						sameGraveyard: false,
-						controllerFilter: 'you',
-						cardTypeFilter: 'Creature'
-					}
-				: detectTargetRequirement(ab.effectText));
+			evaluatedNode?.targetLegality.targetInfo ?? detectTargetRequirement(ab.effectText);
 
 		const targetCheck = hasRequiredLegalTargets(
 			state,

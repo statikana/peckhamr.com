@@ -55,6 +55,8 @@ export interface LeftBattlefieldInfo {
 	lostAllAbilities: boolean;
 	isToken: boolean;
 	tapped: boolean;
+	power?: number;
+	toughness?: number;
 }
 
 /** A spell was cast (it is already on the stack). */
@@ -117,6 +119,8 @@ export interface BecameTargetEvent extends EventBase {
 	by: 'spell' | 'ability';
 	/** The player who controls the targeting spell or ability. */
 	controllerId: string;
+	/** Stack item id of the targeting spell or ability, if on the stack. */
+	stackItemId?: string;
 }
 
 /** A copy of a spell was put on the stack (CR 707.10). No engine path creates copies yet. */

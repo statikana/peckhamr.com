@@ -95,13 +95,16 @@ function synthCard(overrides: Partial<ScryfallCard> & { name: string }): Scryfal
 		keywords: overrides.keywords ?? [],
 		power: overrides.power ?? '2',
 		toughness: overrides.toughness ?? '2',
-		loyalty: overrides.loyalty ?? null,
-		legalities: { commander: 'legal' },
+		loyalty: overrides.loyalty ?? undefined,
 		imageUrl: '',
 		artCropUrl: '',
 		rarity: 'common',
-		setName: 'Test',
-		setCode: 'TST'
+		setCode: 'TST',
+		legalCommander: overrides.legalCommander ?? false,
+		canBeCommander: overrides.canBeCommander ?? false,
+		hasPartner: overrides.hasPartner ?? false,
+		hasChooseBackground: overrides.hasChooseBackground ?? false,
+		isBackground: overrides.isBackground ?? false
 	};
 }
 
