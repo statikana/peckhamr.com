@@ -163,15 +163,16 @@ import {
 import { botAcceptsOptionalTrigger, chooseBotTriggerTargets } from './ai.ts';
 import type { EffectStep, TargetSpec } from './ir.ts';
 import { compiledStackItemEffects } from './compiler/effects.ts';
+import { freshRngSeed, type RngHolder } from './runtime/random.ts';
+import { cardAbilityDisplayText, enteringNotices, stackItemDisplayText } from './compiler/support.ts';
 import {
 	buildCostChoiceRequest,
-	clearRegisteredChoiceCallback,
 	effectivePromptChoice,
 	effectivePromptPurpose,
 	inferObjectsZone,
 	normalizePromptAction,
 	enqueueChoicePrompt,
-	resolveRegisteredChoiceCallback,
+	runPromptHandler,
 	validateChoiceAnswer
 } from './runtime/choices.ts';
 
@@ -188,6 +189,7 @@ import {
 	type GameLogEntry,
 	type GamePhase,
 	type GameState,
+	type GuidedOperation,
 	type LibrarySearchDestination,
 	type LibrarySearchSpec,
 	type LobbyRulesConfig,
@@ -297,6 +299,8 @@ export function createInitialGameState(
 ): GameState {
 	const now = Date.now();
 	const activeSeats = seats.filter((s) => s.userId !== null || s.isBot);
+	// ENGINE_INVARIANTS.md 7.2: one seed per game; every shuffle and random choice draws from it.
+	const rng: RngHolder = { rngState: freshRngSeed() };
 
 	const players: PlayerGameState[] = activeSeats.map((seat, idx) => {
 		const playerId = seat.userId || `bot_${seat.seatIndex}`;
@@ -316,7 +320,7 @@ export function createInitialGameState(
 			}
 		}
 
-		const shuffled = shuffleArray(rawLibrary);
+		const shuffled = shuffleArray(rng, rawLibrary);
 		const hand = shuffled.splice(0, 7).map((c) => ({ ...c, zone: 'hand' as ZoneType }));
 
 		return {
@@ -388,6 +392,7 @@ export function createInitialGameState(
 			damageDealtNormal: false
 		},
 		pendingPrompts: [],
+		rngState: rng.rngState,
 		recentVfxEvents: [],
 		log: [],
 		turnStartedAt: now,
@@ -1200,6 +1205,32 @@ function applyGameActionInner(
 	const priorityPlayer = state.players[state.priorityPlayerIndex];
 
 	switch (action.type) {
+		case 'resolve_manually': {
+			// Step E2 escape hatch: apply any ability of a card by hand (guided operations). It needs
+			// priority and never uses the stack.
+			if (priorityPlayer?.playerId !== actor.playerId) {
+				return { ok: false, error: 'You can resolve an ability manually only while you have priority.' };
+			}
+			const found = findCardAnywhere(state, action.instanceId);
+			const mine = found && (found.zone === 'battlefield' ? found.inst.controllerId === actor.playerId : found.inst.ownerId === actor.playerId);
+			if (!found || !mine) return { ok: false, error: 'Choose a card you control.' };
+			const card = found.inst.copiableCard ?? found.inst.card;
+			const text = cardAbilityDisplayText(card, action.abilityIndex);
+			enqueueChoicePrompt(state, {
+				id: uid('prm'),
+				playerId: actor.playerId,
+				kind: 'guided_resolution',
+				purpose: 'guided_resolution',
+				title: `Resolve Manually: ${card.name}`,
+				description: text,
+				yesLabel: 'Done',
+				cancellable: true,
+				continuation: { kind: 'manual_ability', sourceInstanceId: found.inst.instanceId },
+				choice: { kind: 'yesNo', question: `Apply ${card.name}'s ability with the operations below.` }
+			});
+			addLog(state, 'rule', `${actor.username} is resolving an ability of ${card.name} manually.`, actor.playerId);
+			return { ok: true };
+		}
 		case 'tap_mana': {
 			const perm = actor.battlefield.find((c) => c.instanceId === action.instanceId);
 			if (!perm || perm.phasedOut) {
@@ -2326,7 +2357,6 @@ function handlePromptResolution(
 				pending.type !== 'activate_ability' &&
 				pending.type !== 'tap_mana')
 		) {
-			clearRegisteredChoiceCallback(state, prompt.id);
 			return { ok: true };
 		}
 		const valid = validateChoiceAnswer(choice, normalized.answer);
@@ -2377,7 +2407,6 @@ function handlePromptResolution(
 				actor.playerId
 			);
 		}
-		resolveRegisteredChoiceCallback(state, prompt.id, normalized.answer);
 		checkStateBasedActions(state);
 		return { ok: true };
 	}
@@ -2415,7 +2444,6 @@ function handlePromptResolution(
 			`${actor.username} resolved the Legend Rule (CR 704.5j).`,
 			actor.playerId
 		);
-		resolveRegisteredChoiceCallback(state, prompt.id, normalized.answer);
 		checkStateBasedActions(state);
 		return { ok: true };
 	}
@@ -2463,7 +2491,6 @@ function handlePromptResolution(
 				actor.playerId
 			);
 		}
-		resolveRegisteredChoiceCallback(state, prompt.id, normalized.answer);
 		return { ok: true };
 	}
 
@@ -2494,7 +2521,6 @@ function handlePromptResolution(
 			`${actor.username} discarded ${req} card(s) down to maximum hand size.`,
 			actor.playerId
 		);
-		resolveRegisteredChoiceCallback(state, prompt.id, normalized.answer);
 		completeTurnCleanupAndPassTurn(state);
 		return { ok: true };
 	}
@@ -2607,7 +2633,7 @@ function handlePromptResolution(
 						newTimestamp: true,
 						bumpVersion: true
 					});
-					shuffleLibrary(libraryOwner, 1);
+					shuffleLibrary(state, libraryOwner, 1);
 					alreadyShuffledWithTopCard = true;
 					addLog(
 						state,
@@ -2676,7 +2702,8 @@ function handlePromptResolution(
 								reason: nextDesc
 							},
 							stackItem: prompt.stackItem,
-							continuationEffects: prompt.continuationEffects
+							continuationEffects: prompt.continuationEffects,
+							continuation: prompt.continuation
 						});
 						return { ok: true };
 					}
@@ -2694,15 +2721,15 @@ function handlePromptResolution(
 		}
 
 		if (!alreadyShuffledWithTopCard) {
-			shuffleLibrary(libraryOwner);
+			shuffleLibrary(state, libraryOwner);
 		}
 		if (prompt.continuationEffects && prompt.continuationEffects.length > 0 && prompt.stackItem) {
 			for (const eff of prompt.continuationEffects) {
 				executeParsedEffect(state, libraryOwner, prompt.stackItem, eff);
 			}
 		}
-		resolveRegisteredChoiceCallback(state, prompt.id, normalized.answer);
 		checkStateBasedActions(state);
+		resumeAfterPrompt(state, prompt);
 		return { ok: true };
 	}
 
@@ -2759,7 +2786,7 @@ function handlePromptResolution(
 		rearrangeLibrary(actor, extracted, topList, bottomList);
 
 		if (allowShuffle && normalized.answer.shuffle) {
-			shuffleLibrary(actor);
+			shuffleLibrary(state, actor);
 			addLog(
 				state,
 				'rule',
@@ -2789,48 +2816,73 @@ function handlePromptResolution(
 			}
 			checkStateBasedActions(state);
 		}
-		resolveRegisteredChoiceCallback(state, prompt.id, normalized.answer);
+		resumeAfterPrompt(state, prompt);
 		return { ok: true };
 	}
 
 	if (purpose === 'guided_resolution') {
+		if (normalized.cancel && prompt.cancellable) {
+			state.pendingPrompts.splice(promptIdx, 1);
+			return { ok: true };
+		}
 		const valid = validateChoiceAnswer(choice, normalized.answer);
 		if (!valid.ok || normalized.answer?.kind !== 'yesNo') {
 			return { ok: false, error: valid.ok ? 'Invalid guided resolution answer.' : valid.error };
 		}
-		state.pendingPrompts.splice(promptIdx, 1);
-		if (normalized.answer.yes) {
-			for (const op of normalized.operations ?? []) {
-				if (op.op === 'draw_cards' && op.amount) {
-					drawCards(state, actor, op.amount);
-				} else if (op.op === 'modify_life' && op.targetId && op.amount) {
-					const tp = state.players.find((p) => p.playerId === op.targetId);
-					if (tp && !tp.lifeTotalCannotChangeThisTurn) tp.life += op.amount;
-				} else if (op.op === 'deal_damage' && op.targetId && op.amount) {
-					applyDamageToTarget(
-						state,
-						actor.playerId,
-						{ kind: 'permanent', id: op.targetId, label: 'target' },
-						op.amount
-					);
-				} else if (op.op === 'move_zone' && op.targetId && op.destinationZone) {
-					const found = findPermanentOnBoard(state, op.targetId);
-					if (found) {
-						movePermanentToZone(state, found.inst, op.destinationZone);
-					}
-				}
+		const ops = normalized.answer.yes ? (normalized.operations ?? []) : [];
+		const opsValid = validateGuidedOperations(state, actor, ops);
+		if (!opsValid.ok) return opsValid;
+		const c = prompt.continuation;
+		if (c?.kind === 'manual_resolution' && !normalized.answer.yes) {
+			// "Use the engine's approximation": the legacy effects, while they exist (step F removes them).
+			const item = state.stack.find((s) => s.id === c.stackItemId);
+			if (item && item.parsedEffects.length === 0) return { ok: false, error: 'There is no automatic approximation for this ability.' };
+			state.pendingPrompts.splice(promptIdx, 1);
+			if (item) {
+				addLog(state, 'cast', `${actor.username} let the engine approximate ${item.title}.`, actor.playerId);
+				item.manualResolution = 'legacy';
+				resumeStackItem(state, item);
 			}
+			return { ok: true };
 		}
-		addLog(state, 'cast', `${actor.username} completed guided resolution for ${prompt.title}.`, actor.playerId);
-		resolveRegisteredChoiceCallback(state, prompt.id, normalized.answer);
+		state.pendingPrompts.splice(promptIdx, 1);
+		applyGuidedOperations(state, actor, ops);
+		if (c?.kind === 'manual_resolution') {
+			const item = state.stack.find((s) => s.id === c.stackItemId);
+			addLog(state, 'cast', `${actor.username} resolved ${item?.title ?? prompt.title} manually${ops.length > 0 ? ` (${ops.length} operation${ops.length === 1 ? '' : 's'})` : ''}.`, actor.playerId);
+			if (item) {
+				item.manualResolution = 'done';
+				resumeStackItem(state, item);
+			}
+			return { ok: true };
+		}
+		if (c?.kind === 'manual_ability') {
+			addLog(state, 'cast', `${actor.username} applied an ability of ${prompt.title.replace(/^Resolve Manually: /, '')} manually${ops.length > 0 ? ` (${ops.length} operation${ops.length === 1 ? '' : 's'})` : ''}.`, actor.playerId);
+		} else {
+			addLog(state, 'cast', `${actor.username} completed guided resolution for ${prompt.title}.`, actor.playerId);
+		}
 		checkStateBasedActions(state);
+		return { ok: true };
+	}
+
+	// Step E2: a paused IR resolution waiting for this player's choice (sacrifice, discard).
+	if (prompt.continuation?.kind === 'effect_choice') {
+		const valid = validateChoiceAnswer(choice, normalized.answer);
+		if (!valid.ok || normalized.answer?.kind !== 'chooseObjects') {
+			return { ok: false, error: valid.ok ? 'Choose the required objects.' : valid.error };
+		}
+		const c = prompt.continuation;
+		state.pendingPrompts.splice(promptIdx, 1);
+		const item = state.stack.find((s) => s.id === c.stackItemId);
+		if (!item?.effectResume || item.effectResume.stepIndex !== c.stepIndex) return { ok: true };
+		item.effectResume.answers[actor.playerId] = normalized.answer.objectIds;
+		resumeStackItem(state, item);
 		return { ok: true };
 	}
 
 	// Standalone generic choice prompt (yesNo, chooseObjects, chooseMode, chooseNumber, chooseReplacement)
 	if (normalized.cancel && prompt.cancellable) {
 		state.pendingPrompts.splice(promptIdx, 1);
-		clearRegisteredChoiceCallback(state, prompt.id);
 		return { ok: true };
 	}
 	const valid = validateChoiceAnswer(choice, normalized.answer);
@@ -2838,9 +2890,194 @@ function handlePromptResolution(
 		return { ok: false, error: valid.ok ? 'Missing choice answer.' : valid.error };
 	}
 	state.pendingPrompts.splice(promptIdx, 1);
-	resolveRegisteredChoiceCallback(state, prompt.id, normalized.answer);
+	// A generic prompt continues only through a named handler (plain data). Without one, answering
+	// just records the answer in the log.
+	if (!runPromptHandler(state, prompt, normalized.answer)) {
+		addLog(state, 'rule', `${actor.username} answered "${prompt.title}".`, actor.playerId);
+	}
 	checkStateBasedActions(state);
 	return { ok: true };
+}
+
+/**
+ * Step E2: a scry or search prompt queued by an IR step that wasn't the ability's last. Once every
+ * such prompt of the item is answered, its resolution goes on at the next step.
+ */
+function resumeAfterPrompt(state: GameState, prompt: PendingPrompt): void {
+	const c = prompt.continuation;
+	if (c?.kind !== 'effect_resume') return;
+	const item = state.stack.find((s) => s.id === c.stackItemId);
+	if (!item?.effectResume || item.effectResume.stepIndex !== c.stepIndex) return;
+	resumeStackItem(state, item);
+}
+
+// ---- Step E2: guided (manual) operations ------------------------------------------------------
+
+const GUIDED_MAX_AMOUNT = 100;
+const GUIDED_ZONES: ReadonlySet<ZoneType> = new Set<ZoneType>(['battlefield', 'graveyard', 'exile', 'hand', 'library', 'command']);
+
+/** Any card in any player's zones (not the stack). */
+function findCardAnywhere(state: GameState, id: string): { inst: CardInstance; holder: PlayerGameState; zone: ZoneType } | null {
+	for (const zone of ['battlefield', 'graveyard', 'exile', 'hand', 'library', 'command'] as const) {
+		for (const p of state.players) {
+			const inst = p[zone].find((c) => c.instanceId === id);
+			if (inst) return { inst, holder: p, zone };
+		}
+	}
+	return null;
+}
+
+/** Server-side check of a guided resolution's operations (the client is not trusted). */
+function validateGuidedOperations(state: GameState, actor: PlayerGameState, ops: GuidedOperation[]): { ok: true } | { ok: false; error: string } {
+	if (!Array.isArray(ops)) return { ok: false, error: 'Operations must be a list.' };
+	if (ops.length > 50) return { ok: false, error: 'Too many operations.' };
+	for (const op of ops) {
+		const amount = op.amount ?? 0;
+		if (!Number.isInteger(amount) || Math.abs(amount) > GUIDED_MAX_AMOUNT) {
+			return { ok: false, error: `Amounts must be whole numbers up to ${GUIDED_MAX_AMOUNT}.` };
+		}
+		const player = op.targetId ? state.players.find((p) => p.playerId === op.targetId) : undefined;
+		const card = op.targetId ? findCardAnywhere(state, op.targetId) : null;
+		// Only cards the player can see: public zones and their own hand (never a library or another
+		// player's hand).
+		if (card && (card.zone === 'library' || (card.zone === 'hand' && card.holder.playerId !== actor.playerId))) {
+			return { ok: false, error: 'You can only act on cards you can see.' };
+		}
+		switch (op.op) {
+			case 'draw_cards':
+			case 'mill':
+				if (amount < 0) return { ok: false, error: 'Card counts cannot be negative.' };
+				if (op.targetId && !player) return { ok: false, error: 'Choose a player.' };
+				break;
+			case 'modify_life':
+				if (!player) return { ok: false, error: 'Choose a player whose life changes.' };
+				break;
+			case 'deal_damage':
+				if (amount < 0) return { ok: false, error: 'Damage cannot be negative.' };
+				if (!player && card?.zone !== 'battlefield') return { ok: false, error: 'Choose a player or permanent to damage.' };
+				break;
+			case 'move_zone':
+				if (!card) return { ok: false, error: 'Choose a card to move.' };
+				if (!op.destinationZone || !GUIDED_ZONES.has(op.destinationZone)) return { ok: false, error: 'Choose a destination zone.' };
+				break;
+			case 'add_counter':
+				if (card?.zone !== 'battlefield') return { ok: false, error: 'Choose a permanent for the counters.' };
+				if (!op.counterType || !(op.counterType in card.inst.counters)) return { ok: false, error: 'Choose a counter type.' };
+				break;
+			case 'tap':
+			case 'untap':
+				if (card?.zone !== 'battlefield') return { ok: false, error: 'Choose a permanent to tap or untap.' };
+				break;
+			case 'create_token':
+				if (amount < 0 || amount > 20) return { ok: false, error: 'Create between 1 and 20 tokens.' };
+				if ((op.tokenPower ?? 0) < 0 || (op.tokenToughness ?? 0) < 0) return { ok: false, error: 'Token power and toughness cannot be negative.' };
+				break;
+			default:
+				return { ok: false, error: 'Unknown operation.' };
+		}
+	}
+	return { ok: true };
+}
+
+/**
+ * Applies a guided resolution's operations, each through the normal engine primitive (zone moves
+ * through moveObject, damage through the damage pipeline, ...), in order. Validated beforehand.
+ */
+function applyGuidedOperations(state: GameState, actor: PlayerGameState, ops: GuidedOperation[]): void {
+	for (const op of ops) {
+		const amount = op.amount ?? 0;
+		const player = op.targetId ? state.players.find((p) => p.playerId === op.targetId) : undefined;
+		const found = op.targetId ? findCardAnywhere(state, op.targetId) : null;
+		switch (op.op) {
+			case 'draw_cards':
+				if (amount > 0) drawCards(state, player ?? actor, amount);
+				break;
+			case 'mill': {
+				const who = player ?? actor;
+				const n = Math.min(amount, who.library.length);
+				for (let i = 0; i < n; i++) {
+					moveObject(state, who.library[0], 'graveyard', {
+						from: { player: who, zone: 'library' },
+						toPlayer: who,
+						graveyardReplacement: true,
+						bumpVersion: true,
+						newTimestamp: true
+					});
+				}
+				if (n > 0) addLog(state, 'rule', `${who.username} milled ${n} card(s) (manual).`, actor.playerId);
+				break;
+			}
+			case 'modify_life':
+				if (player && amount !== 0 && !player.lifeTotalCannotChangeThisTurn) {
+					player.life += amount;
+					addLog(state, 'life', `${player.username} ${amount > 0 ? 'gained' : 'lost'} ${Math.abs(amount)} life (manual).`, actor.playerId);
+				}
+				break;
+			case 'deal_damage':
+				if (amount > 0) {
+					applyDamageToTarget(
+						state,
+						actor.playerId,
+						player
+							? { kind: 'player', id: player.playerId, label: player.username }
+							: { kind: 'permanent', id: op.targetId!, label: found?.inst.card.name ?? 'target' },
+						amount
+					);
+				}
+				break;
+			case 'move_zone': {
+				if (!found || !op.destinationZone || found.zone === op.destinationZone) break;
+				const dest = op.destinationZone;
+				if (found.zone === 'battlefield') {
+					movePermanentToZone(state, found.inst, dest);
+				} else {
+					const owner = state.players.find((p) => p.playerId === found.inst.ownerId) ?? found.holder;
+					const toPlayer = dest === 'battlefield' ? actor : owner;
+					if (dest === 'battlefield') found.inst.summoningSick = found.inst.card.typeLine.includes('Creature');
+					moveObject(state, found.inst, dest, {
+						from: { player: found.holder, zone: found.zone as Exclude<ZoneType, 'stack'> },
+						toPlayer,
+						...(dest === 'battlefield' ? { controllerId: actor.playerId } : {}),
+						bumpVersion: true,
+						newTimestamp: true
+					});
+				}
+				addLog(state, 'rule', `${found.inst.card.name} was moved from ${found.zone} to ${dest} (manual).`, actor.playerId);
+				if (dest === 'battlefield') flushTriggers(state);
+				break;
+			}
+			case 'add_counter':
+				if (found && op.counterType) {
+					if (amount > 0) addCountersToPermanent(state, found.inst, op.counterType, amount);
+					else if (amount < 0) found.inst.counters[op.counterType] = Math.max(0, (found.inst.counters[op.counterType] ?? 0) + amount);
+					addLog(state, 'rule', `${found.inst.card.name}: ${amount > 0 ? '+' : ''}${amount} ${op.counterType} counter(s) (manual).`, actor.playerId);
+				}
+				break;
+			case 'tap':
+			case 'untap':
+				if (found) {
+					found.inst.tapped = op.op === 'tap';
+					addLog(state, 'rule', `${found.inst.card.name} was ${op.op === 'tap' ? 'tapped' : 'untapped'} (manual).`, actor.playerId);
+				}
+				break;
+			case 'create_token':
+				for (let i = 0; i < Math.max(1, amount); i++) {
+					const power = op.tokenPower ?? 0;
+					const toughness = op.tokenToughness ?? 0;
+					const isCreature = op.tokenPower !== undefined || op.tokenToughness !== undefined;
+					createTokenOnBoard(state, actor, {
+						name: (op.tokenName ?? '').trim().slice(0, 40) || 'Token',
+						power,
+						toughness,
+						colors: [],
+						typeLine: isCreature ? 'Token Creature' : 'Token Artifact',
+						keywords: []
+					});
+				}
+				addLog(state, 'rule', `${actor.username} created ${Math.max(1, amount)} token(s) (manual).`, actor.playerId);
+				break;
+		}
+	}
 }
 
 function getAttackedDefenderIdsInTurnOrder(state: GameState): string[] {
@@ -3045,7 +3282,6 @@ function beginPhase(state: GameState, phase: GamePhase, activePlayer?: PlayerGam
 // keyword (before matching, as the old upkeep loop did) and delayed end-step triggers (after the
 // beginning-of-end-step triggers are on the stack).
 for (const kind of [
-	'ZoneChange',
 	'Cast',
 	'SpellCopied',
 	'AttackDeclared',
@@ -3058,6 +3294,32 @@ for (const kind of [
 ] as const) {
 	registerEventHandler(kind, (state, ev) => matchTriggers(state, ev));
 }
+registerEventHandler('ZoneChange', (state, ev) => {
+	matchTriggers(state, ev);
+	if (ev.to === 'battlefield' && !ev.ceasedToExist) noteUnautomatedOnEnter(state, ev.object);
+});
+
+/**
+ * Step E2 (plan section 2.7): when a permanent enters, say once which of its abilities the engine
+ * won't act on: statics and replacement effects that aren't enforced, and triggered abilities whose
+ * trigger it can't recognise (players apply those by hand, e.g. with "Resolve manually"). Logged on
+ * entering only, never from state-based actions or layer evaluation. Display text only.
+ */
+function noteUnautomatedOnEnter(state: GameState, obj: CardInstance): void {
+	if (obj.isFaceDown) return;
+	const card = obj.copiableCard ?? obj.card;
+	for (const n of enteringNotices(card)) {
+		addLog(
+			state,
+			'rule',
+			n.kind === 'triggerUnrecognised'
+				? `${card.name} has an ability that isn't automated: ${n.text}`
+				: `${card.name}: '${n.text}' is not enforced.`,
+			obj.controllerId
+		);
+	}
+}
+
 registerEventHandler('PhaseBegin', (state, ev) => {
 	const activePlayer = state.players.find((p) => p.playerId === ev.activePlayerId);
 	if (ev.phase === 'upkeep' && activePlayer) runSuspendUpkeep(state, activePlayer);
@@ -3223,12 +3485,6 @@ function withLegacyEventTarget(item: StackItem): StackItem {
 	return item;
 }
 
-/** Whether the engine can execute a triggered ability: legacy effects, or an interpretable IR effect. */
-function canExecuteTrigger(t: { legacy: { effects: ParsedEffect[] }; effect?: Parameters<typeof staticallyInterpretable>[0] }): boolean {
-	if (t.legacy.effects.length > 0) return true;
-	return Boolean(t.effect && staticallyInterpretable(t.effect, true));
-}
-
 registerTriggerHost({
 	executeInline(state, t) {
 		const controller = state.players.find((p) => p.playerId === t.controllerId);
@@ -3242,8 +3498,9 @@ registerTriggerHost({
 		);
 	},
 	putOnStack: putTriggerOnStack,
-	orderSimultaneous: askTriggerOrder,
-	canExecute: canExecuteTrigger
+	orderSimultaneous: askTriggerOrder
+	// Step E2: no `canExecute` filter. Every matched ability triggers; one the engine can't run is
+	// resolved manually (human) or by its legacy effects / skipped (bot) as it resolves.
 });
 
 /**
@@ -3492,8 +3749,46 @@ function resolveTriggerPrompt(
 	// trigger_may: record the answer and finish resolving the ability (it stayed on the stack).
 	if (answer?.kind !== 'yesNo') return { ok: true };
 	item.optionalAccepted = answer.yes;
-	if (state.stack[state.stack.length - 1] === item) resolveTopOfStack(state);
+	// Resume by id: triggers that fired meanwhile may sit above it on the stack.
+	resumeStackItem(state, item);
 	return { ok: true };
+}
+
+/**
+ * Step E2: whether a stack item comes from a card ability the engine would have to automate (an
+ * instant or sorcery, an activated ability, a triggered ability of a card), as opposed to an object
+ * the engine makes itself (delayed triggers it created, Ward, which is implemented as a keyword) or
+ * a permanent spell (it simply enters the battlefield).
+ */
+function isUnautomatedStackItem(item: StackItem): boolean {
+	if (item.kind === 'activated') return true;
+	if (item.kind === 'spell') return /\b(?:Instant|Sorcery)\b/.test(item.card.typeLine);
+	return item.triggeredAbilityIndex !== undefined && !item.parsedEffects.some((e) => e.kind === 'ward_trigger');
+}
+
+/**
+ * Step E2: opens the guided (manual) resolution of a stack item that isn't automated. The item stays
+ * on the stack until its controller is done (CR 608.2n); the prompt names it by id (plain data).
+ */
+function openManualResolution(state: GameState, item: StackItem, controller: PlayerGameState): void {
+	item.manualResolution = 'awaiting';
+	const targets = item.targets.map((t) => t.label).join(', ');
+	const text = `${stackItemDisplayText(item)}${targets ? `\n\nTargets: ${targets}` : ''}`;
+	const hasLegacy = item.parsedEffects.length > 0;
+	const question = `${item.title} isn't automated. Apply its effect with the operations below, then finish resolving it.`;
+	enqueueChoicePrompt(state, {
+		id: uid('prm'),
+		playerId: controller.playerId,
+		kind: 'guided_resolution',
+		purpose: 'guided_resolution',
+		title: `Resolve Manually: ${item.title}`,
+		description: text,
+		yesLabel: 'Done: finish resolving',
+		...(hasLegacy ? { noLabel: "Use the engine's approximation instead" } : {}),
+		continuation: { kind: 'manual_resolution', stackItemId: item.id },
+		choice: { kind: 'yesNo', question }
+	});
+	addLog(state, 'rule', `${item.title} isn't automated: ${controller.username} resolves it manually.`, controller.playerId);
 }
 
 let effectInterpreterEnabled = true;
@@ -3511,13 +3806,37 @@ export function setEffectInterpreterEnabled(on: boolean): void {
  * on the stack afterwards, once state-based actions have been checked (CR 603.3, 704.3).
  */
 export function resolveTopOfStack(state: GameState): void {
-	withTriggersDeferred(state, () => resolveTopOfStackNow(state));
+	const item = state.stack[state.stack.length - 1];
+	if (!item) return;
+	resumeStackItem(state, item);
+}
+
+/**
+ * Resolves (or continues resolving) a specific stack item. A resolution that paused for a prompt
+ * resumes here by id once the prompt is answered: triggers that fired before the pause were put on
+ * the stack above it, so it isn't necessarily on top (a minor deviation: under CR 603.3 they would
+ * wait until the resolution finished; the pending-trigger queue isn't kept across the pause because
+ * it isn't part of the saved state). Those triggers still resolve first.
+ */
+function resumeStackItem(state: GameState, item: StackItem): void {
+	if (!state.stack.includes(item)) return;
+	withTriggersDeferred(state, () => resolveStackItemNow(state, item));
 	flushTriggers(state);
 }
 
-function resolveTopOfStackNow(state: GameState): void {
-	const item = state.stack[state.stack.length - 1];
-	if (!item) return;
+/** Whether a resolving item still waits for one of its prompts (it must not resolve again meanwhile). */
+function stackItemAwaitsPrompt(state: GameState, item: StackItem): boolean {
+	return state.pendingPrompts.some(
+		(p) =>
+			p.triggerStackItemId === item.id ||
+			((p.continuation?.kind === 'effect_choice' || p.continuation?.kind === 'effect_resume') && p.continuation.stackItemId === item.id) ||
+			(p.continuation?.kind === 'manual_resolution' && p.continuation.stackItemId === item.id)
+	);
+}
+
+function resolveStackItemNow(state: GameState, item: StackItem): void {
+	if (stackItemAwaitsPrompt(state, item)) return;
+	const resuming = Boolean(item.resolutionStarted);
 	const removeItemFromStack = () => {
 		const idx = state.stack.lastIndexOf(item);
 		if (idx >= 0) state.stack.splice(idx, 1);
@@ -3531,6 +3850,7 @@ function resolveTopOfStackNow(state: GameState): void {
 
 	// Check intervening-if clause on resolution (CR 603.4)
 	if (
+		!resuming &&
 		item.triggeredAbilityIndex !== undefined &&
 		!stackTriggerConditionHolds(
 			state,
@@ -3554,7 +3874,7 @@ function resolveTopOfStackNow(state: GameState): void {
 	}
 
 	// Check if all targets are still legal (Fizzle rule CR 608.2b)
-	if (item.targets.length > 0) {
+	if (!resuming && item.targets.length > 0) {
 		const triggerSpecs = item.kind === 'triggered' ? triggerItemTargetSpecs(item) : [];
 		const validTargets = item.targets.filter((t) =>
 			isTargetStillValid(state, t, item.controllerId, item.card, item) &&
@@ -3590,12 +3910,16 @@ function resolveTopOfStackNow(state: GameState): void {
 		}
 	}
 
-	emitVfx(state, {
-		kind: 'stack_resolve',
-		sourceId: item.controllerId,
-		targetId: item.targets[0]?.id,
-		label: `Resolved: ${item.title}`
-	});
+	if (!resuming) {
+		emitVfx(state, {
+			kind: 'stack_resolve',
+			sourceId: item.controllerId,
+			targetId: item.targets[0]?.id,
+			label: `Resolved: ${item.title}`
+		});
+		// From here on, a pause for a prompt resumes without repeating the checks and VFX above.
+		item.resolutionStarted = true;
+	}
 
 	let turnEndedDuringResolution = false;
 
@@ -3609,9 +3933,26 @@ function resolveTopOfStackNow(state: GameState): void {
 			: compiledStackItemEffects(item);
 	const overload = item.castMode === 'overload';
 	const interpreted =
+		!item.manualResolution &&
 		compiled !== null &&
 		staticallyInterpretable(compiled, item.kind === 'triggered') &&
-		interpretableNow(state, item, compiled, controller, overload);
+		(item.effectResume !== undefined || interpretableNow(state, item, compiled, controller, overload));
+	// Step E2 (plan section 2.7): a spell or ability the interpreter can't run isn't automated. A human
+	// controller resolves it manually (guided operations; the engine's legacy approximation is offered
+	// while it exists); a bot uses the legacy effects if there are any, and otherwise skips it.
+	let runLegacy = !interpreted;
+	if (!interpreted && effectInterpreterEnabled && isUnautomatedStackItem(item)) {
+		if (!controller.isBot && item.manualResolution !== 'legacy') {
+			if (item.manualResolution !== 'done') {
+				openManualResolution(state, item, controller);
+				return;
+			}
+			runLegacy = false;
+		} else if (item.parsedEffects.length === 0) {
+			addLog(state, 'rule', `${controller.username} (bot) skipped unsupported ability ${item.title}: it isn't automated.`, controller.playerId);
+			runLegacy = false;
+		}
+	}
 	let exiledBySelfReference = false;
 	let steps: EffectStep[] = compiled?.steps ?? [];
 	if (interpreted && item.kind === 'triggered') {
@@ -3663,8 +4004,13 @@ function resolveTopOfStackNow(state: GameState): void {
 				overload,
 				...triggerEventContext(item)
 			},
-			steps
+			steps,
+			item.effectResume
 		);
+		// Step E2: a human must choose first (sacrifice, discard). The item stays on the stack with its
+		// resume frame (CR 608.2n) and resolves on, by id, once the prompt is answered.
+		if (result.paused) return;
+		delete item.effectResume;
 		if (state.delayedTriggers) {
 			for (const dt of state.delayedTriggers) {
 				if (dt.targetInstanceId && dt.targetObjectVersion === undefined) {
@@ -3679,11 +4025,11 @@ function resolveTopOfStackNow(state: GameState): void {
 		exiledBySelfReference = result.exileSelf;
 	}
 
-	if (item.kind === 'triggered') triggerPathCounts[interpreted ? 'interpreter' : 'legacy']++;
+	if (item.kind === 'triggered' && (interpreted || runLegacy)) triggerPathCounts[interpreted ? 'interpreter' : 'legacy']++;
 	// Legacy fallback for triggered abilities: their legacy effects read the event ref as targets[0].
-	if (!interpreted) withLegacyEventTarget(item);
+	if (runLegacy) withLegacyEventTarget(item);
 	// Execute parsed effects (pausing continuation effects if a human Scry or Library Search prompt is created)
-	for (let i = 0; !interpreted && i < item.parsedEffects.length; i++) {
+	for (let i = 0; runLegacy && i < item.parsedEffects.length; i++) {
 		const eff = item.parsedEffects[i];
 		if (eff.kind === 'end_the_turn') {
 			endTheTurnImmediately(state, controller.playerId);
@@ -3743,7 +4089,7 @@ function resolveTopOfStackNow(state: GameState): void {
 	}
 
 	// Register any delayed triggers created by this spell (e.g., Final Fortune's end-step loss trigger)
-	if (item.kind === 'spell' && !interpreted) {
+	if (item.kind === 'spell' && runLegacy) {
 		const delayedSpecs = parseDelayedTriggersFromSpell(item.card);
 		for (const spec of delayedSpecs) {
 			if (item.parsedEffects.some((e) => e.dynamicFormula === 'top_creature_of_graveyard')) continue;
@@ -3770,7 +4116,7 @@ function resolveTopOfStackNow(state: GameState): void {
 	}
 
 	// Handle graveyard-targeting return-to-hand or exile effects
-	const graveTargets = interpreted ? [] : item.targets.filter((t) => t.kind === 'graveyard_card');
+	const graveTargets = runLegacy ? item.targets.filter((t) => t.kind === 'graveyard_card') : [];
 	if (graveTargets.length > 0) {
 		const oLow = getStackItemRulesText(item).toLowerCase();
 		if (oLow.includes('return') && oLow.includes('hand')) {
@@ -3816,24 +4162,6 @@ function resolveTopOfStackNow(state: GameState): void {
 				}
 			}
 		}
-	}
-
-	if (item.requiresGuidedResolution && !controller.isBot && !interpreted) {
-		const description = getStackItemRulesText(item);
-		state.pendingPrompts.push({
-			id: uid('prm'),
-			playerId: controller.playerId,
-			kind: 'guided_resolution',
-			purpose: 'guided_resolution',
-			title: `Resolve ${item.card.name}`,
-			description,
-			stackItem: item,
-			yesLabel: 'Done Resolving Spell',
-			choice: {
-				kind: 'yesNo',
-				question: description || `Resolve ${item.card.name}`
-			}
-		});
 	}
 
 	// CR 608.2n: As the final part of resolution, the resolving spell or ability leaves the stack.
@@ -5372,7 +5700,7 @@ function initiateLibrarySearch(
 				);
 			}
 		}
-		shuffleLibrary(searchingPlayer);
+		shuffleLibrary(state, searchingPlayer);
 		if (topCardsToPlace.length > 0) {
 			placeDeferred(searchingPlayer, 'library', topCardsToPlace, 'start');
 			addLog(
@@ -5386,7 +5714,7 @@ function initiateLibrarySearch(
 	}
 
 	if (matchingCards.length === 0 && !interceptor) {
-		shuffleLibrary(searchingPlayer);
+		shuffleLibrary(state, searchingPlayer);
 		addLog(
 			state,
 			'rule',

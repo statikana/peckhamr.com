@@ -756,6 +756,31 @@ function playerPredicate(p: Parser, subject: Selector, vp: string, span: Span, f
 		p.push({ verb: 'sacrifice', subject: { k: 'self' }, ...opt, span }, false);
 		return true;
 	}
+	// Step E2: "sacrifices a creature", "sacrifice two artifacts": the player chooses (CR 701.21a).
+	m = text.match(/^sacrifices? (a|an|one|two|three|\d+) (.+)$/);
+	if (m && !optional) {
+		const amount = count(m[1] === 'a' || m[1] === 'an' ? 'one' : m[1]);
+		const filter = amount && objectFilter(m[2]);
+		if (!amount || !filter || filter.zone || filter.controller) return false;
+		const step: EffectStep = { verb: 'sacrifice', subject: { k: 'all', filter: { ...filter, zone: 'battlefield' } }, amount, span };
+		if (subject.k === 'player' && subject.filter.relation === 'each_opponent') {
+			(step.subject as { filter: ObjectFilter }).filter.controller = 'opponent';
+		} else if (subject.k === 'playerRef' && subject.ref.k === 'target') {
+			step.actor = subject.ref;
+		} else if (!(subject.k === 'player' && subject.filter.relation === 'you')) {
+			return false;
+		}
+		p.push(step, true);
+		return true;
+	}
+	// Step E2: "discards two cards" (the player chooses, CR 701.8b).
+	m = text.match(/^discards? (a|one|two|three|\d+) cards?$/);
+	if (m && !optional && (subject.k === 'player' || (subject.k === 'playerRef' && subject.ref.k === 'target'))) {
+		const amount = count(m[1] === 'a' ? 'one' : m[1]);
+		if (!amount) return false;
+		p.push({ verb: 'discard', subject, amount, span }, true);
+		return true;
+	}
 	if (/^may end the turn$/.test(`may ${text}`) && optional && subject.k === 'playerRef' && subject.ref.k === 'activePlayer') {
 		p.push({ verb: 'endTurn', subject: { k: 'none' }, params: { activePlayerMay: true }, span }, false);
 		return true;
@@ -781,7 +806,7 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 	const t = text.trim();
 	let m: RegExpMatchArray | null;
 
-	if (/^(?:draw|gain|lose|mill|create|search|take|scry|sacrifice)\b/.test(t) && !/^lose hexproof/.test(t) && !/^create a token that's a copy\b/.test(t)) {
+	if (/^(?:draw|gain|lose|mill|create|search|take|scry|sacrifice|discard)\b/.test(t) && !/^lose hexproof/.test(t) && !/^create a token that's a copy\b/.test(t)) {
 		return playerPredicate(p, YOU, t, span, true);
 	}
 	if (t === 'proliferate') {

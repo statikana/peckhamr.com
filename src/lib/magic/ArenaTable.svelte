@@ -29,13 +29,15 @@
 		parseSuspendClause
 	} from './oracle';
 	import { matchesScryfallQuery } from './search';
-	import { cardSupportReport, displayAbilityText } from './compiler/support';
+	import { cardSupportReport, displayAbilityText, unsupportedKindLabel } from './compiler/support';
 	import { effectivePromptChoice, effectivePromptPurpose } from './runtime/choices';
 	import {
 		PHASE_LABELS,
 		PHASE_ORDER,
 		type CardInstance,
+		type CounterType,
 		type GameActionPayload,
+		type GuidedOperation,
 		type GameState,
 		type MagicChatMessage,
 		type MagicUser,
@@ -252,9 +254,6 @@
 	let selectedPromptNumber = $state<number>(0);
 	let choiceStatePromptId = $state<string | null>(null);
 
-	// Guided resolution state
-	let guidedLifeDelta = $state(3);
-	let guidedDrawCount = $state(1);
 
 	// Right dock tabs & chat
 	let dockTab = $state<'chat' | 'log'>('chat');
@@ -285,6 +284,134 @@
 	);
 	const myChoice = $derived(myPrompt ? effectivePromptChoice(myPrompt, gameState) : null);
 	const myPromptPurpose = $derived(myPrompt ? effectivePromptPurpose(myPrompt) : null);
+
+	// Guided (manual) resolution, step E2: the player builds a list of operations, applied in order by
+	// the server (which validates them) when they finish resolving.
+	type GuidedOpKind = GuidedOperation['op'];
+	const GUIDED_OP_LABELS: Record<GuidedOpKind, string> = {
+		draw_cards: 'Draw cards',
+		modify_life: 'Gain / lose life',
+		deal_damage: 'Deal damage',
+		move_zone: 'Move a card',
+		add_counter: 'Add / remove counters',
+		create_token: 'Create tokens',
+		tap: 'Tap',
+		untap: 'Untap',
+		mill: 'Mill cards'
+	};
+	const GUIDED_COUNTERS: CounterType[] = ['+1/+1', '-1/-1', 'loyalty', 'charge', 'shield', 'stun', 'lore', 'time'];
+	const GUIDED_ZONES = ['battlefield', 'hand', 'graveyard', 'exile', 'library', 'command'] as const;
+	let guidedOps = $state<GuidedOperation[]>([]);
+	let guidedOpKind = $state<GuidedOpKind>('draw_cards');
+	let guidedTargetId = $state('');
+	let guidedAmount = $state(1);
+	let guidedZone = $state<(typeof GUIDED_ZONES)[number]>('graveyard');
+	let guidedCounter = $state<CounterType>('+1/+1');
+	let guidedTokenName = $state('Token');
+	let guidedTokenPower = $state(1);
+	let guidedTokenToughness = $state(1);
+	let guidedPromptId = $state<string | null>(null);
+
+	/** Players and visible cards an operation can act on (libraries and others' hands stay hidden). */
+	const guidedTargets = $derived.by(() => {
+		const out: Array<{ id: string; label: string; kind: 'player' | 'card'; zone?: string }> = [];
+		for (const p of gameState.players) out.push({ id: p.playerId, label: `Player: ${p.username}`, kind: 'player' });
+		for (const p of gameState.players) {
+			for (const c of p.battlefield) out.push({ id: c.instanceId, label: `${c.card.name} (${p.username}'s battlefield)`, kind: 'card', zone: 'battlefield' });
+		}
+		for (const p of gameState.players) {
+			for (const zone of ['graveyard', 'exile', 'command'] as const) {
+				for (const c of p[zone]) out.push({ id: c.instanceId, label: `${c.card.name} (${p.username}'s ${zone})`, kind: 'card', zone });
+			}
+		}
+		for (const c of me?.hand ?? []) out.push({ id: c.instanceId, label: `${c.card.name} (your hand)`, kind: 'card', zone: 'hand' });
+		return out;
+	});
+	const guidedTargetChoices = $derived(
+		guidedTargets.filter((t) => {
+			switch (guidedOpKind) {
+				case 'draw_cards':
+				case 'mill':
+				case 'modify_life':
+					return t.kind === 'player';
+				case 'deal_damage':
+					return t.kind === 'player' || t.zone === 'battlefield';
+				case 'add_counter':
+				case 'tap':
+				case 'untap':
+					return t.zone === 'battlefield';
+				case 'move_zone':
+					return t.kind === 'card';
+				case 'create_token':
+					return false;
+			}
+		})
+	);
+
+	$effect(() => {
+		// A new guided prompt starts with an empty operation list.
+		const id = myPromptPurpose === 'guided_resolution' ? (myPrompt?.id ?? null) : null;
+		if (id !== guidedPromptId) {
+			guidedPromptId = id;
+			guidedOps = [];
+		}
+	});
+
+	function guidedLabel(op: GuidedOperation): string {
+		const target = op.targetId ? (guidedTargets.find((t) => t.id === op.targetId)?.label ?? 'target') : '';
+		switch (op.op) {
+			case 'draw_cards':
+			case 'mill':
+				return `${GUIDED_OP_LABELS[op.op]}: ${op.amount} (${target || 'you'})`;
+			case 'modify_life':
+				return `${target}: ${(op.amount ?? 0) > 0 ? '+' : ''}${op.amount} life`;
+			case 'deal_damage':
+				return `${op.amount} damage to ${target}`;
+			case 'move_zone':
+				return `Move ${target} to ${op.destinationZone}`;
+			case 'add_counter':
+				return `${(op.amount ?? 0) > 0 ? '+' : ''}${op.amount} ${op.counterType} counter(s) on ${target}`;
+			case 'create_token':
+				return `Create ${op.amount}× ${op.tokenName} ${op.tokenPower}/${op.tokenToughness}`;
+			case 'tap':
+			case 'untap':
+				return `${GUIDED_OP_LABELS[op.op]} ${target}`;
+		}
+	}
+
+	function addGuidedOp(): void {
+		const needsTarget = guidedOpKind !== 'create_token' && guidedOpKind !== 'draw_cards' && guidedOpKind !== 'mill';
+		const targetId = guidedTargetChoices.some((t) => t.id === guidedTargetId) ? guidedTargetId : '';
+		if (needsTarget && !targetId) return;
+		const amount = Math.trunc(Number(guidedAmount) || 0);
+		const op: GuidedOperation = { op: guidedOpKind };
+		if (targetId) op.targetId = targetId;
+		if (guidedOpKind === 'move_zone') op.destinationZone = guidedZone;
+		else if (guidedOpKind === 'add_counter') {
+			op.counterType = guidedCounter;
+			op.amount = amount;
+		} else if (guidedOpKind === 'create_token') {
+			op.amount = Math.max(1, amount);
+			op.tokenName = guidedTokenName;
+			op.tokenPower = Math.max(0, Math.trunc(Number(guidedTokenPower) || 0));
+			op.tokenToughness = Math.max(0, Math.trunc(Number(guidedTokenToughness) || 0));
+		} else if (guidedOpKind !== 'tap' && guidedOpKind !== 'untap') op.amount = amount;
+		guidedOps = [...guidedOps, op];
+	}
+
+	/** Step E2 escape hatch: the inspected card is mine and I may act, so I can apply an ability by hand. */
+	const canResolveInspectedManually = $derived(
+		Boolean(
+			inspectedInstance &&
+				me &&
+				hasPriority &&
+				!myPrompt &&
+				gameState.status === 'active' &&
+				(inspectedInstance.zone === 'battlefield'
+					? inspectedInstance.controllerId === me.playerId
+					: inspectedInstance.ownerId === me.playerId)
+		)
+	);
 
 	const myCreaturesAndWalkers = $derived(
 		(me?.battlefield || []).filter((c) => {
@@ -2703,10 +2830,23 @@
 							</div>
 							{#if inspectUnsupported.length > 0}
 								<div class="zoom-unsupported">
-									<div class="zoom-unsupported-title">Not automated: resolved manually</div>
+									<div class="zoom-unsupported-title">Not automated</div>
 									{#each inspectUnsupported as u, i (i)}
 										<div class="zoom-unsupported-row">
+											<span class="zoom-unsupported-kind">{unsupportedKindLabel(u.kind)}:</span>
 											<ManaText text={displayAbilityText(u.text, u.face) || '(whole card)'} size={13} />
+											{#if canResolveInspectedManually && inspectedInstance && u.kind !== 'mana' && u.kind !== 'multiface'}
+												<button
+													type="button"
+													class="zoom-resolve-btn"
+													title="Apply this ability by hand with guided operations (doesn't use the stack)"
+													onclick={() =>
+														inspectedInstance &&
+														onGameAction({ type: 'resolve_manually', instanceId: inspectedInstance.instanceId, abilityIndex: i })}
+												>
+													Resolve manually
+												</button>
+											{/if}
 										</div>
 									{/each}
 								</div>
@@ -3184,15 +3324,87 @@
 					{/if}
 
 					{#if myPromptPurpose === 'guided_resolution'}
-						<div class="guided-box">
-							<label>
-								Draw Cards:
-								<input type="number" min="0" max="10" bind:value={guidedDrawCount} />
-							</label>
-							<label>
-								Life Change (+/-):
-								<input type="number" min="-40" max="40" bind:value={guidedLifeDelta} />
-							</label>
+						<div class="guided-builder">
+							<div class="guided-box">
+								<label>
+									Operation
+									<select bind:value={guidedOpKind}>
+										{#each Object.entries(GUIDED_OP_LABELS) as [k, label] (k)}
+											<option value={k}>{label}</option>
+										{/each}
+									</select>
+								</label>
+								{#if guidedOpKind !== 'create_token'}
+									<label>
+										{guidedOpKind === 'draw_cards' || guidedOpKind === 'mill' ? 'Player (default: you)' : 'Target'}
+										<select bind:value={guidedTargetId}>
+											<option value="">—</option>
+											{#each guidedTargetChoices as t (t.id)}
+												<option value={t.id}>{t.label}</option>
+											{/each}
+										</select>
+									</label>
+								{/if}
+								{#if guidedOpKind === 'move_zone'}
+									<label>
+										To
+										<select bind:value={guidedZone}>
+											{#each GUIDED_ZONES as z (z)}
+												<option value={z}>{z}</option>
+											{/each}
+										</select>
+									</label>
+								{/if}
+								{#if guidedOpKind === 'add_counter'}
+									<label>
+										Counter
+										<select bind:value={guidedCounter}>
+											{#each GUIDED_COUNTERS as c (c)}
+												<option value={c}>{c}</option>
+											{/each}
+										</select>
+									</label>
+								{/if}
+								{#if guidedOpKind === 'create_token'}
+									<label>
+										Token name
+										<input type="text" maxlength="40" bind:value={guidedTokenName} />
+									</label>
+									<label>
+										P/T
+										<span class="guided-pt">
+											<input type="number" min="0" max="100" bind:value={guidedTokenPower} />
+											<input type="number" min="0" max="100" bind:value={guidedTokenToughness} />
+										</span>
+									</label>
+								{/if}
+								{#if guidedOpKind !== 'move_zone' && guidedOpKind !== 'tap' && guidedOpKind !== 'untap'}
+									<label>
+										{guidedOpKind === 'modify_life' || guidedOpKind === 'add_counter' ? 'Amount (+/-)' : 'Amount'}
+										<input type="number" min="-100" max="100" bind:value={guidedAmount} />
+									</label>
+								{/if}
+								<button type="button" class="hud-btn" onclick={addGuidedOp}>Add</button>
+							</div>
+							{#if guidedOps.length > 0}
+								<ol class="guided-op-list">
+									{#each guidedOps as op, i (i)}
+										<li>
+											{guidedLabel(op)}
+											<button
+												type="button"
+												class="guided-op-remove"
+												aria-label="Remove operation"
+												onclick={() => (guidedOps = guidedOps.filter((_, j) => j !== i))}
+											>
+												×
+											</button>
+										</li>
+									{/each}
+								</ol>
+							{:else}
+								<p class="guided-hint">No operations yet. Add what the ability does, in order, then finish.</p>
+							{/if}
 						</div>
 						<div class="modal-actions">
 							<button
@@ -3203,24 +3415,35 @@
 										type: 'choice',
 										promptId: myPrompt.id,
 										answer: { kind: 'yesNo', yes: true },
-										operations: [
-											...(guidedDrawCount > 0
-												? [{ op: 'draw_cards' as const, amount: guidedDrawCount }]
-												: []),
-											...(guidedLifeDelta !== 0
-												? [
-														{
-															op: 'modify_life' as const,
-															targetId: me.playerId,
-															amount: guidedLifeDelta
-														}
-													]
-												: [])
-										]
+										operations: guidedOps
 									})}
 							>
 								{myPrompt.yesLabel || 'Apply & Complete Resolution'}
 							</button>
+							{#if myPrompt.noLabel}
+								<button
+									type="button"
+									class="hud-btn"
+									title="Let the engine resolve it with its older text-based approximation"
+									onclick={() =>
+										onGameAction({
+											type: 'choice',
+											promptId: myPrompt.id,
+											answer: { kind: 'yesNo', yes: false }
+										})}
+								>
+									{myPrompt.noLabel}
+								</button>
+							{/if}
+							{#if myPrompt.cancellable}
+								<button
+									type="button"
+									class="hud-btn"
+									onclick={() => onGameAction({ type: 'choice', promptId: myPrompt.id, cancel: true })}
+								>
+									Cancel
+								</button>
+							{/if}
 						</div>
 					{:else}
 						{@const yesLabel =
@@ -5262,6 +5485,7 @@
 		margin: 0;
 		font-size: 0.8rem;
 		color: var(--mp-text-body);
+		white-space: pre-line;
 	}
 	.modal-card-grid {
 		display: grid;
@@ -5337,6 +5561,63 @@
 		flex-direction: column;
 		gap: 0.25rem;
 		font-size: 0.76rem;
+	}
+	.guided-builder {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+	}
+	.guided-box {
+		align-items: flex-end;
+	}
+	.guided-box select {
+		background: var(--mp-bg);
+		color: var(--mp-text);
+		border: 1px solid var(--mp-border-strong);
+		border-radius: 4px;
+		padding: 0.4rem;
+		font-family: inherit;
+		max-width: 16rem;
+	}
+	.guided-pt {
+		display: flex;
+		gap: 0.25rem;
+	}
+	.guided-pt input {
+		width: 3.5rem;
+	}
+	.guided-op-list {
+		margin: 0;
+		padding-left: 1.25rem;
+		font-size: 0.8rem;
+	}
+	.guided-op-remove {
+		margin-left: 0.4rem;
+		background: none;
+		border: none;
+		color: var(--mp-text);
+		cursor: pointer;
+	}
+	.guided-hint {
+		margin: 0;
+		font-size: 0.76rem;
+		opacity: 0.8;
+	}
+	.zoom-unsupported-kind {
+		color: #ffd866;
+		font-weight: 600;
+		margin-right: 0.25rem;
+	}
+	.zoom-resolve-btn {
+		display: block;
+		margin-top: 0.15rem;
+		font-size: 0.6rem;
+		padding: 0.1rem 0.35rem;
+		border-radius: 3px;
+		border: 1px solid rgba(255, 216, 102, 0.55);
+		background: transparent;
+		color: #ffd866;
+		cursor: pointer;
 	}
 	.guided-box input,
 	.x-selector input {

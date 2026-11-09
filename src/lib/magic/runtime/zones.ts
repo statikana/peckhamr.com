@@ -1,3 +1,4 @@
+import { shuffleWith, type RngHolder } from './random.ts';
 import { checkGraveyardReplacementZone, evaluatePermanent } from '../ruleTree.ts';
 import type { CardInstance, CounterType, GameState, PlayerGameState, ZoneType } from '../types.ts';
 import { emitEvent, type LeftBattlefieldInfo } from './events.ts';
@@ -103,13 +104,9 @@ export function createEmptyCounters(): Record<CounterType, number> {
 	};
 }
 
-export function shuffleArray<T>(items: T[]): T[] {
-	const arr = [...items];
-	for (let i = arr.length - 1; i > 0; i--) {
-		const j = Math.floor(Math.random() * (i + 1));
-		[arr[i], arr[j]] = [arr[j], arr[i]];
-	}
-	return arr;
+/** Shuffles a copy of `items` with the game's seeded generator (ENGINE_INVARIANTS.md 7.2). */
+export function shuffleArray<T>(holder: RngHolder, items: T[]): T[] {
+	return shuffleWith(holder, items);
 }
 
 function removeFirst(list: CardInstance[], instanceId: string): boolean {
@@ -381,13 +378,13 @@ export function placeDeferred(
 }
 
 /** Shuffles a library. With `keepTop`, the top `keepTop` cards stay where they are. */
-export function shuffleLibrary(player: PlayerGameState, keepTop = 0): void {
+export function shuffleLibrary(state: RngHolder, player: PlayerGameState, keepTop = 0): void {
 	if (keepTop <= 0) {
-		player.library = shuffleArray(player.library);
+		player.library = shuffleArray(state, player.library);
 	} else {
 		player.library = [
 			...player.library.slice(0, keepTop),
-			...shuffleArray(player.library.slice(keepTop))
+			...shuffleArray(state, player.library.slice(keepTop))
 		];
 	}
 }
@@ -473,7 +470,7 @@ export function mulliganRedraw(
 			emit: opts?.emit
 		});
 	}
-	shuffleLibrary(player);
+	shuffleLibrary(state, player);
 	for (const c of player.library.slice(0, 7)) {
 		moveObject(state, { ...c }, 'hand', {
 			from: { player, zone: 'library' },

@@ -501,10 +501,12 @@ const RUNTIME_TRIGGERS = new WeakMap<CardDefinition, RuntimeTrigger[]>();
 /**
  * The triggered abilities the runtime matches for a compiled card:
  * - abilities of kind 'triggered' (trigger, condition and effect understood), and
- * - unsupported abilities whose trigger head is understood but whose effect isn't, if the
- *   pre-Phase-5 engine already ran them (`legacyClaimed`), so nothing regresses. They keep running
- *   the legacy effects until Phase 3; section 2.7's guided resolution is the eventual fallback.
- * Abilities with no legacy effects never run (there's nothing to execute yet).
+ * - unsupported abilities whose trigger head is understood but whose effect isn't. Step E2 (plan
+ *   section 2.7): they trigger and go on the stack like any other; on resolution the engine runs
+ *   them on the IR interpreter if it can, otherwise a human controller resolves them manually and a
+ *   bot uses the legacy effects if the pre-Phase-5 engine ran them (`legacyClaimed`), or skips them.
+ * Abilities whose trigger head isn't understood (or names an event the engine never emits) can't
+ * be matched; the engine mentions them when the permanent enters (compiler/support.ts).
  */
 export function runtimeTriggers(def: CardDefinition): RuntimeTrigger[] {
 	const cached = RUNTIME_TRIGGERS.get(def);
@@ -535,21 +537,14 @@ export function runtimeTriggers(def: CardDefinition): RuntimeTrigger[] {
 		const legacy = LEGACY_EXECUTION.get(ab);
 		if (!legacy) return;
 		const effect = TRIGGER_EFFECT.get(ab);
-		const grammarComplete = triggerEffectComplete(effect);
-		// Legacy effects exist, or the effect grammar understood the whole clause (the runtime then
-		// checks that the interpreter supports every step; see runtime/triggers.ts `executable`).
-		if (legacy.effects.length === 0 && !grammarComplete) return;
 		if (ab.kind === 'triggered') {
 			out.push({ abilityIndex, trigger: ab.trigger, condition: ab.condition, effectSupported: true, legacy, effect });
-		} else if (
-			ab.kind === 'unsupported' &&
-			ab.reason === 'unparsed' &&
-			ab.trigger &&
-			((legacy.legacyClaimed && legacy.effects.length > 0) || grammarComplete)
-		) {
+		} else if (ab.kind === 'unsupported' && ab.reason === 'unparsed' && ab.trigger) {
 			// An unparsed intervening-if leaves `condition` undefined: such abilities are 'unparsed' via
-			// the trigger head (no ab.trigger), so they never get here.
-			out.push({ abilityIndex, trigger: ab.trigger, condition: ab.condition, effectSupported: false, legacy, effect });
+			// the trigger head (no ab.trigger), so they never get here. Legacy effects the pre-Phase-5
+			// engine never ran are not a fallback (they were never trusted).
+			const fallback = legacy.legacyClaimed ? legacy : { ...legacy, effects: [] };
+			out.push({ abilityIndex, trigger: ab.trigger, condition: ab.condition, effectSupported: false, legacy: fallback, effect });
 		}
 	});
 	RUNTIME_TRIGGERS.set(def, out);

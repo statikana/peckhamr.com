@@ -39,6 +39,12 @@ function resolveTriggers(state: GameState, max = 40): void {
 			applyGameAction(state, prompt.playerId, { type: 'choice', promptId: prompt.id, answer: { kind: 'yesNo', yes: true } });
 			continue;
 		}
+		// Step E2: a human resolves an ability that isn't automated manually; these tests pin the
+		// engine's legacy approximation of such abilities, which the guided prompt offers as "No".
+		if (prompt?.continuation?.kind === 'manual_resolution') {
+			applyGameAction(state, prompt.playerId, { type: 'choice', promptId: prompt.id, answer: { kind: 'yesNo', yes: false } });
+			continue;
+		}
 		if (prompt) return;
 		const top = state.stack[state.stack.length - 1];
 		if (!top || top.kind !== 'triggered') return;

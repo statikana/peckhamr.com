@@ -1,3 +1,4 @@
+import { nextRandom } from './random.ts';
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -223,14 +224,13 @@ describe('Phase 4 costs: filters keep their conditions and alternatives', () => 
 		const first = put(state, p1, creature('Thought One'), 'hand');
 		put(state, p1, creature('Thought Two'), 'hand');
 		const last = put(state, p1, creature('Thought Three'), 'hand');
-		const random = Math.random;
-		Math.random = () => 0.99;
-		try {
-			const res = applyGameAction(state, p1.playerId, { type: 'cast_spell', instanceId: s.instanceId });
-			assert.equal(res.ok, true, res.error ?? "");
-		} finally {
-			Math.random = random;
-		}
+		// Step E2: the random source is the game's seeded generator (invariant 7.2), not Math.random.
+		// Pick a seed whose next draw selects the last of the three cards.
+		let seed = 0;
+		while (Math.floor(nextRandom({ rngState: seed }) * 3) !== 2) seed++;
+		state.rngState = seed;
+		const res = applyGameAction(state, p1.playerId, { type: 'cast_spell', instanceId: s.instanceId });
+		assert.equal(res.ok, true, res.error ?? "");
 		assert.equal(state.pendingPrompts.length, 0, 'a random discard is not a choice');
 		assert.ok(inZone(p1, 'hand', first));
 		assert.ok(inZone(p1, 'graveyard', last));
