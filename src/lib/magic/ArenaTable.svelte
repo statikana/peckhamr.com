@@ -29,6 +29,7 @@
 		parseSuspendClause
 	} from './oracle';
 	import { matchesScryfallQuery } from './search';
+	import { effectivePromptChoice, effectivePromptPurpose } from './runtime/choices';
 	import {
 		PHASE_LABELS,
 		PHASE_ORDER,
@@ -242,8 +243,11 @@
 		);
 	}
 
-	// Prompt selections (London bottom / Discard to hand size)
+	// Prompt selections (generic chooseObjects / chooseMode / chooseNumber)
 	let selectedPromptCardIds = $state<string[]>([]);
+	let selectedPromptModes = $state<number[]>([]);
+	let selectedPromptNumber = $state<number>(0);
+	let choiceStatePromptId = $state<string | null>(null);
 
 	// Guided resolution state
 	let guidedLifeDelta = $state(3);
@@ -276,6 +280,8 @@
 	const myPrompt = $derived(
 		gameState.pendingPrompts.find((pr) => pr.playerId === me?.playerId) || null
 	);
+	const myChoice = $derived(myPrompt ? effectivePromptChoice(myPrompt, gameState) : null);
+	const myPromptPurpose = $derived(myPrompt ? effectivePromptPurpose(myPrompt) : null);
 
 	const myCreaturesAndWalkers = $derived(
 		(me?.battlefield || []).filter((c) => {
@@ -1438,18 +1444,51 @@
 		}
 	}
 
+	function togglePromptModeSelection(modeIdx: number, maxReq: number) {
+		if (selectedPromptModes.includes(modeIdx)) {
+			selectedPromptModes = selectedPromptModes.filter((idx) => idx !== modeIdx);
+		} else if (selectedPromptModes.length < maxReq) {
+			selectedPromptModes = [...selectedPromptModes, modeIdx];
+		}
+	}
+
+	function resolveCandidateObjects(candidateIds: string[]): CardInstance[] {
+		const idSet = new Set(candidateIds);
+		const pool: CardInstance[] = [];
+		for (const p of gameState.players) {
+			pool.push(...p.hand, ...p.battlefield, ...p.graveyard, ...p.exile, ...p.command, ...p.library);
+		}
+		const byId = new Map(pool.map((c) => [c.instanceId, c]));
+		return candidateIds
+			.map((id) => byId.get(id))
+			.filter((c): c is CardInstance => Boolean(c && idSet.has(c.instanceId)));
+	}
+
 	// Scry & Top-Library Rearrange (e.g., Ponder) Ordered State
 	let scryPromptId = $state<string | null>(null);
 	let scryTopOrder = $state<string[]>([]);
 	let scryBottomOrder = $state<string[]>([]);
 
 	$effect(() => {
-		if (myPrompt?.kind === 'scry_choice') {
+		if (myPrompt) {
+			if (choiceStatePromptId !== myPrompt.id) {
+				choiceStatePromptId = myPrompt.id;
+				selectedPromptCardIds = [];
+				selectedPromptModes = [];
+				selectedPromptNumber = myChoice?.kind === 'chooseNumber' ? myChoice.min : 0;
+			}
+		} else {
+			choiceStatePromptId = null;
+			selectedPromptCardIds = [];
+			selectedPromptModes = [];
+		}
+
+		if (myPrompt && myChoice?.kind === 'orderObjects') {
 			if (scryPromptId !== myPrompt.id) {
 				scryPromptId = myPrompt.id;
 				const initialIds =
-					myPrompt.candidateInstanceIds && myPrompt.candidateInstanceIds.length > 0
-						? [...myPrompt.candidateInstanceIds]
+					myChoice.objectIds.length > 0
+						? [...myChoice.objectIds]
 						: (me?.library || []).map((c) => c.instanceId);
 				scryTopOrder = initialIds;
 				scryBottomOrder = [];
@@ -3052,247 +3091,476 @@
 	{/if}
 
 	<!-- Blocking Prompts (Mulligan / London Bottom / Commander Zone Choice / Library Search / Guided Resolution) -->
-	{#if myPrompt && me}
+	{#if myPrompt && me && myChoice}
 		<div class="modal-backdrop">
 			<div class="arena-modal wide">
 				<h3>{myPrompt.title}</h3>
 				<p class="modal-desc">{myPrompt.description}</p>
 
-				{#if myPrompt.kind === 'mulligan'}
-					<div class="hand-toolbar modal-sort-bar">
-						<span class="hand-count-label">OPENING HAND ({sortedHand.length})</span>
-						<div class="hand-sort-group" role="group" aria-label="Auto-sort hand">
-							<span class="sort-caption">Sort:</span>
-							{#each ([
-								['none', 'None'],
-								['cmc', 'CMC'],
-								['name', 'Name'],
-								['color', 'Color'],
-								['type', 'Type']
-							] as const) as [mode, label]}
+				{#if myChoice.kind === 'yesNo'}
+					{#if myPromptPurpose === 'mulligan'}
+						<div class="hand-toolbar modal-sort-bar">
+							<span class="hand-count-label">OPENING HAND ({sortedHand.length})</span>
+							<div class="hand-sort-group" role="group" aria-label="Auto-sort hand">
+								<span class="sort-caption">Sort:</span>
+								{#each ([
+									['none', 'None'],
+									['cmc', 'CMC'],
+									['name', 'Name'],
+									['color', 'Color'],
+									['type', 'Type']
+								] as const) as [mode, label]}
+									<button
+										type="button"
+										class="sort-pill"
+										class:active={handSortBy === mode}
+										onclick={() => setHandSort(mode)}
+									>
+										{label}
+									</button>
+								{/each}
+								<span class="sort-divider" aria-hidden="true">|</span>
 								<button
 									type="button"
-									class="sort-pill"
-									class:active={handSortBy === mode}
-									onclick={() => setHandSort(mode)}
+									class="sort-pill dir-pill"
+									class:active={handSortBy !== 'none' && handSortDir === 'asc'}
+									title="Sort Ascending"
+									onclick={() => setHandSortDir('asc')}
 								>
-									{label}
+									ASC
 								</button>
-							{/each}
-							<span class="sort-divider" aria-hidden="true">|</span>
-							<button
-								type="button"
-								class="sort-pill dir-pill"
-								class:active={handSortBy !== 'none' && handSortDir === 'asc'}
-								title="Sort Ascending"
-								onclick={() => setHandSortDir('asc')}
-							>
-								ASC
-							</button>
-							<button
-								type="button"
-								class="sort-pill dir-pill"
-								class:active={handSortBy !== 'none' && handSortDir === 'desc'}
-								title="Sort Descending"
-								onclick={() => setHandSortDir('desc')}
-							>
-								DESC
-							</button>
-						</div>
-					</div>
-					<div class="modal-card-grid">
-						{#each sortedHand as c (c.instanceId)}
-							<!-- svelte-ignore a11y_no_static_element_interactions -->
-							<div
-								class="modal-card-item"
-								onmouseenter={() => hoverCard(c.card)}
-								onmouseleave={() => leaveCard(c.card)}
-							>
-								<img src={c.card.imageUrl} alt={c.card.name} />
-								<span>{c.card.name}</span>
+								<button
+									type="button"
+									class="sort-pill dir-pill"
+									class:active={handSortBy !== 'none' && handSortDir === 'desc'}
+									title="Sort Descending"
+									onclick={() => setHandSortDir('desc')}
+								>
+									DESC
+								</button>
 							</div>
-						{/each}
-					</div>
-					<div class="modal-actions">
-						<button
-							type="button"
-							class="arena-main-btn can-act"
-							onclick={() => onGameAction({ type: 'mulligan_keep' })}
-						>
-							Keep Hand (Mulligans taken: {me.mulliganCount})
-						</button>
-						<button
-							type="button"
-							class="hud-btn"
-							onclick={() => onGameAction({ type: 'mulligan_take' })}
-						>
-							Mulligan (Draw New 7)
-						</button>
-					</div>
-				{:else if myPrompt.kind === 'london_bottom' || myPrompt.kind === 'discard_to_hand_size'}
-					{@const reqCount = myPrompt.countRequired || 1}
-					{@const isReadyToConfirm = selectedPromptCardIds.length === reqCount}
-					<div class="hand-toolbar modal-sort-bar">
-						<span class="hand-count-label">SELECT {reqCount} CARD(S) ({selectedPromptCardIds.length}/{reqCount})</span>
-						<div class="hand-sort-group" role="group" aria-label="Auto-sort hand">
-							<span class="sort-caption">Sort:</span>
-							{#each ([
-								['none', 'None'],
-								['cmc', 'CMC'],
-								['name', 'Name'],
-								['color', 'Color'],
-								['type', 'Type']
-							] as const) as [mode, label]}
-								<button
-									type="button"
-									class="sort-pill"
-									class:active={handSortBy === mode}
-									onclick={() => setHandSort(mode)}
+						</div>
+						<div class="modal-card-grid">
+							{#each sortedHand as c (c.instanceId)}
+								<!-- svelte-ignore a11y_no_static_element_interactions -->
+								<div
+									class="modal-card-item"
+									onmouseenter={() => hoverCard(c.card)}
+									onmouseleave={() => leaveCard(c.card)}
 								>
-									{label}
-								</button>
+									<img src={c.card.imageUrl} alt={c.card.name} />
+									<span>{c.card.name}</span>
+								</div>
 							{/each}
-							<span class="sort-divider" aria-hidden="true">|</span>
+						</div>
+					{/if}
+
+					{#if myPromptPurpose === 'guided_resolution'}
+						<div class="guided-box">
+							<label>
+								Draw Cards:
+								<input type="number" min="0" max="10" bind:value={guidedDrawCount} />
+							</label>
+							<label>
+								Life Change (+/-):
+								<input type="number" min="-40" max="40" bind:value={guidedLifeDelta} />
+							</label>
+						</div>
+						<div class="modal-actions">
 							<button
 								type="button"
-								class="sort-pill dir-pill"
-								class:active={handSortBy !== 'none' && handSortDir === 'asc'}
-								title="Sort Ascending"
-								onclick={() => setHandSortDir('asc')}
+								class="arena-main-btn can-act"
+								onclick={() =>
+									onGameAction({
+										type: 'choice',
+										promptId: myPrompt.id,
+										answer: { kind: 'yesNo', yes: true },
+										operations: [
+											...(guidedDrawCount > 0
+												? [{ op: 'draw_cards' as const, amount: guidedDrawCount }]
+												: []),
+											...(guidedLifeDelta !== 0
+												? [
+														{
+															op: 'modify_life' as const,
+															targetId: me.playerId,
+															amount: guidedLifeDelta
+														}
+													]
+												: [])
+										]
+									})}
 							>
-								ASC
-							</button>
-							<button
-								type="button"
-								class="sort-pill dir-pill"
-								class:active={handSortBy !== 'none' && handSortDir === 'desc'}
-								title="Sort Descending"
-								onclick={() => setHandSortDir('desc')}
-							>
-								DESC
+								{myPrompt.yesLabel || 'Apply & Complete Resolution'}
 							</button>
 						</div>
-					</div>
-					<div class="modal-card-grid">
-						{#each sortedHand as c (c.instanceId)}
+					{:else}
+						{@const yesLabel =
+							myPrompt.yesLabel ||
+							(myPromptPurpose === 'mulligan'
+								? `Keep Hand (Mulligans taken: ${me.mulliganCount})`
+								: myPromptPurpose === 'commander_zone_choice'
+									? 'Return to Command Zone (Recommended)'
+									: myPromptPurpose === 'end_turn'
+										? 'End the Turn Now (Exile All Spells/Abilities on Stack)'
+										: 'Yes')}
+						{@const noLabel =
+							myPrompt.noLabel ||
+							(myPromptPurpose === 'mulligan'
+								? 'Mulligan (Draw New 7)'
+								: myPromptPurpose === 'commander_zone_choice'
+									? `Leave in ${myPrompt.destinationZone}`
+									: myPromptPurpose === 'end_turn'
+										? 'Decline (Continue Turn Normally)'
+										: 'No')}
+						<div class="modal-actions">
 							<button
 								type="button"
-								class="modal-card-item selectable"
-								class:selected={selectedPromptCardIds.includes(c.instanceId)}
-								onmouseenter={() => hoverCard(c.card)}
-								onmouseleave={() => leaveCard(c.card)}
-								onclick={() => togglePromptCardSelection(c.instanceId, reqCount)}
+								class="arena-main-btn can-act"
+								onclick={() =>
+									onGameAction({
+										type: 'choice',
+										promptId: myPrompt.id,
+										answer: { kind: 'yesNo', yes: true }
+									})}
 							>
-								<img src={c.card.imageUrl} alt={c.card.name} />
-								<span>{c.card.name}</span>
+								{yesLabel}
 							</button>
-						{/each}
-					</div>
-					<div class="modal-actions">
-						<button
-							type="button"
-							class="arena-main-btn"
-							class:can-act={isReadyToConfirm}
-							disabled={!isReadyToConfirm}
-							onclick={async () => {
-								if (selectedPromptCardIds.length !== reqCount) return;
-								const ids = [...selectedPromptCardIds];
-								selectedPromptCardIds = [];
-								if (myPrompt.kind === 'london_bottom') {
-									await onGameAction({ type: 'london_bottom', instanceIds: ids });
-								} else {
-									await onGameAction({ type: 'discard_cards', instanceIds: ids });
-								}
-							}}
-						>
-							Confirm Selection ({selectedPromptCardIds.length}/{reqCount})
-						</button>
-					</div>
-				{:else if myPrompt.kind === 'commander_zone_choice' && myPrompt.commanderInstanceId}
-					<div class="modal-actions">
-						<button
-							type="button"
-							class="arena-main-btn can-act"
-							onclick={() =>
-								onGameAction({
-									type: 'commander_zone_choice',
-									commanderInstanceId: myPrompt.commanderInstanceId!,
-									sendToCommandZone: true
-								})}
-						>
-							Return to Command Zone (Recommended)
-						</button>
-						<button
-							type="button"
-							class="hud-btn"
-							onclick={() =>
-								onGameAction({
-									type: 'commander_zone_choice',
-									commanderInstanceId: myPrompt.commanderInstanceId!,
-									sendToCommandZone: false
-								})}
-						>
-							Leave in {myPrompt.destinationZone}
-						</button>
-					</div>
-				{:else if myPrompt.kind === 'search_library'}
-					{@const searchedOwner =
-						gameState.players.find(
-							(p) => p.playerId === (myPrompt.targetLibraryOwnerId || me.playerId)
-						) || me}
-					{@const eligibleLibCards = myPrompt.candidateInstanceIds
-						? searchedOwner.library.filter((c) =>
-								myPrompt.candidateInstanceIds!.includes(c.instanceId)
-							)
-						: searchedOwner.library}
-					{@const filteredLibCards = eligibleLibCards.filter((c) =>
-						matchesScryfallQuery(c.card, librarySearchQuery)
-					)}
-					<div class="modal-head-row">
-						<span class="hand-count-label">
-							ELIGIBLE IN {searchedOwner.playerId === me.playerId ? 'YOUR' : `${searchedOwner.username.toUpperCase()}'S`} LIBRARY ({filteredLibCards.length}/{eligibleLibCards.length})
-						</span>
-						<input
-							type="search"
-							class="modal-scryfall-input"
-							bind:value={librarySearchQuery}
-							placeholder="Scryfall search (e.g. t:land, t:basic, mv<=2, o:draw)..."
-						/>
-					</div>
-					<div class="modal-card-grid">
-						{#each filteredLibCards as c (c.instanceId)}
 							<button
 								type="button"
-								class="modal-card-item selectable"
-								onmouseenter={() => hoverCard(c.card, c)}
-								onmouseleave={() => leaveCard(c.card)}
-								onclick={() => {
-									librarySearchQuery = '';
-									onGameAction({ type: 'search_library_pick', instanceId: c.instanceId });
+								class="hud-btn"
+								onclick={() =>
+									onGameAction({
+										type: 'choice',
+										promptId: myPrompt.id,
+										answer: { kind: 'yesNo', yes: false }
+									})}
+							>
+								{noLabel}
+							</button>
+						</div>
+						{#if myPromptPurpose === 'cost_choice'}
+							<div class="modal-actions">
+								<button
+									type="button"
+									class="hud-btn"
+									onclick={() =>
+										onGameAction({
+											type: 'choice',
+											promptId: myPrompt.id,
+											cancel: true
+										})}
+								>
+									Cancel
+								</button>
+							</div>
+						{/if}
+					{/if}
+				{:else if myChoice.kind === 'chooseObjects'}
+					{#if myChoice.zone === 'library'}
+						{@const searchedOwner =
+							gameState.players.find(
+								(p) => p.playerId === (myPrompt.targetLibraryOwnerId || me.playerId)
+							) || me}
+						{@const eligibleLibCards =
+							myChoice.candidates.length > 0
+								? searchedOwner.library.filter((c) =>
+										myChoice.candidates.includes(c.instanceId)
+									)
+								: searchedOwner.library}
+						{@const filteredLibCards = eligibleLibCards.filter((c) =>
+							matchesScryfallQuery(c.card, librarySearchQuery)
+						)}
+						<div class="modal-head-row">
+							<span class="hand-count-label">
+								ELIGIBLE IN {searchedOwner.playerId === me.playerId ? 'YOUR' : `${searchedOwner.username.toUpperCase()}'S`} LIBRARY ({filteredLibCards.length}/{eligibleLibCards.length})
+							</span>
+							<input
+								type="search"
+								class="modal-scryfall-input"
+								bind:value={librarySearchQuery}
+								placeholder="Scryfall search (e.g. t:land, t:basic, mv<=2, o:draw)..."
+							/>
+						</div>
+						<div class="modal-card-grid">
+							{#each filteredLibCards as c (c.instanceId)}
+								<button
+									type="button"
+									class="modal-card-item selectable"
+									class:selected={selectedPromptCardIds.includes(c.instanceId)}
+									onmouseenter={() => hoverCard(c.card, c)}
+									onmouseleave={() => leaveCard(c.card)}
+									onclick={() => {
+										if (myChoice.max === 1) {
+											librarySearchQuery = '';
+											onGameAction({
+												type: 'choice',
+												promptId: myPrompt.id,
+												answer: { kind: 'chooseObjects', objectIds: [c.instanceId] }
+											});
+										} else {
+											togglePromptCardSelection(c.instanceId, myChoice.max);
+										}
+									}}
+								>
+									<img src={c.card.imageUrl} alt={c.card.name} />
+									<span>{c.card.name}</span>
+								</button>
+							{/each}
+						</div>
+						<div class="modal-actions">
+							{#if myChoice.max > 1}
+								{@const isLibReady =
+									selectedPromptCardIds.length >= myChoice.min &&
+									selectedPromptCardIds.length <= myChoice.max}
+								<button
+									type="button"
+									class="arena-main-btn"
+									class:can-act={isLibReady}
+									disabled={!isLibReady}
+									onclick={async () => {
+										const ids = [...selectedPromptCardIds];
+										selectedPromptCardIds = [];
+										librarySearchQuery = '';
+										await onGameAction({
+											type: 'choice',
+											promptId: myPrompt.id,
+											answer: { kind: 'chooseObjects', objectIds: ids }
+										});
+									}}
+								>
+									Confirm Selection ({selectedPromptCardIds.length}/{myChoice.max})
+								</button>
+							{/if}
+							{#if myChoice.min === 0}
+								<button
+									type="button"
+									class="hud-btn"
+									onclick={() => {
+										librarySearchQuery = '';
+										onGameAction({
+											type: 'choice',
+											promptId: myPrompt.id,
+											answer: { kind: 'chooseObjects', objectIds: [] }
+										});
+									}}
+								>
+									Fail to Find (Shuffle Without Picking)
+								</button>
+							{/if}
+						</div>
+					{:else}
+						{@const minReq = myChoice.min}
+						{@const maxReq = myChoice.max}
+						{@const isReadyToConfirm =
+							selectedPromptCardIds.length >= minReq && selectedPromptCardIds.length <= maxReq}
+						{@const candidateCards =
+							myChoice.zone === 'hand'
+								? sortedHand.filter(
+										(c) =>
+											myChoice.candidates.length === 0 ||
+											myChoice.candidates.includes(c.instanceId)
+									)
+								: resolveCandidateObjects(myChoice.candidates)}
+						{#if myChoice.zone === 'hand'}
+							<div class="hand-toolbar modal-sort-bar">
+								<span class="hand-count-label">
+									SELECT {minReq === maxReq ? maxReq : `${minReq}-${maxReq}`} CARD(S) ({selectedPromptCardIds.length}/{maxReq})
+								</span>
+								<div class="hand-sort-group" role="group" aria-label="Auto-sort hand">
+									<span class="sort-caption">Sort:</span>
+									{#each ([
+										['none', 'None'],
+										['cmc', 'CMC'],
+										['name', 'Name'],
+										['color', 'Color'],
+										['type', 'Type']
+									] as const) as [mode, label]}
+										<button
+											type="button"
+											class="sort-pill"
+											class:active={handSortBy === mode}
+											onclick={() => setHandSort(mode)}
+										>
+											{label}
+										</button>
+									{/each}
+									<span class="sort-divider" aria-hidden="true">|</span>
+									<button
+										type="button"
+										class="sort-pill dir-pill"
+										class:active={handSortBy !== 'none' && handSortDir === 'asc'}
+										title="Sort Ascending"
+										onclick={() => setHandSortDir('asc')}
+									>
+										ASC
+									</button>
+									<button
+										type="button"
+										class="sort-pill dir-pill"
+										class:active={handSortBy !== 'none' && handSortDir === 'desc'}
+										title="Sort Descending"
+										onclick={() => setHandSortDir('desc')}
+									>
+										DESC
+									</button>
+								</div>
+							</div>
+						{/if}
+						<div class="modal-card-grid">
+							{#each candidateCards as c (c.instanceId)}
+								<button
+									type="button"
+									class="modal-card-item selectable"
+									class:selected={selectedPromptCardIds.includes(c.instanceId)}
+									onmouseenter={() => hoverCard(c.card)}
+									onmouseleave={() => leaveCard(c.card)}
+									onclick={() => togglePromptCardSelection(c.instanceId, maxReq)}
+								>
+									<img src={c.card.imageUrl} alt={c.card.name} />
+									<span>{c.card.name}</span>
+								</button>
+							{/each}
+						</div>
+						<div class="modal-actions">
+							<button
+								type="button"
+								class="arena-main-btn"
+								class:can-act={isReadyToConfirm}
+								disabled={!isReadyToConfirm}
+								onclick={async () => {
+									if (!isReadyToConfirm) return;
+									const ids = [...selectedPromptCardIds];
+									selectedPromptCardIds = [];
+									await onGameAction({
+										type: 'choice',
+										promptId: myPrompt.id,
+										answer: { kind: 'chooseObjects', objectIds: ids }
+									});
 								}}
 							>
-								<img src={c.card.imageUrl} alt={c.card.name} />
-								<span>{c.card.name}</span>
+								Confirm Selection ({selectedPromptCardIds.length}/{maxReq})
 							</button>
-						{/each}
-					</div>
-					{#if myPrompt.canFailToFind !== false}
+							{#if myPromptPurpose === 'cost_choice'}
+								<button
+									type="button"
+									class="hud-btn"
+									onclick={() =>
+										onGameAction({
+											type: 'choice',
+											promptId: myPrompt.id,
+											cancel: true
+										})}
+								>
+									Cancel
+								</button>
+							{/if}
+						</div>
+					{/if}
+				{:else if myChoice.kind === 'chooseMode'}
+					{#if myChoice.min === 1 && myChoice.max === 1}
+						<div class="modal-actions">
+							{#each myChoice.modes as label, i (i)}
+								<button
+									type="button"
+									class={i === 0 ? 'arena-main-btn can-act' : 'hud-btn'}
+									onclick={() =>
+										onGameAction({
+											type: 'choice',
+											promptId: myPrompt.id,
+											answer: { kind: 'chooseMode', indices: [i] }
+										})}
+								>
+									{label}
+								</button>
+							{/each}
+						</div>
+					{:else}
+						{@const isModeReady =
+							selectedPromptModes.length >= myChoice.min &&
+							selectedPromptModes.length <= myChoice.max}
+						<div class="modal-actions">
+							{#each myChoice.modes as label, i (i)}
+								<button
+									type="button"
+									class={selectedPromptModes.includes(i) ? 'arena-main-btn can-act' : 'hud-btn'}
+									onclick={() => togglePromptModeSelection(i, myChoice.max)}
+								>
+									{label}
+								</button>
+							{/each}
+						</div>
+						<div class="modal-actions">
+							<button
+								type="button"
+								class="arena-main-btn"
+								class:can-act={isModeReady}
+								disabled={!isModeReady}
+								onclick={async () => {
+									const indices = [...selectedPromptModes];
+									selectedPromptModes = [];
+									await onGameAction({
+										type: 'choice',
+										promptId: myPrompt.id,
+										answer: { kind: 'chooseMode', indices }
+									});
+								}}
+							>
+								Confirm Modes ({selectedPromptModes.length}/{myChoice.max})
+							</button>
+						</div>
+					{/if}
+					{#if myPromptPurpose === 'cost_choice'}
 						<div class="modal-actions">
 							<button
 								type="button"
 								class="hud-btn"
-								onclick={() => {
-									librarySearchQuery = '';
-									onGameAction({ type: 'search_library_pick', instanceId: null });
-								}}
+								onclick={() =>
+									onGameAction({
+										type: 'choice',
+										promptId: myPrompt.id,
+										cancel: true
+									})}
 							>
-								Fail to Find (Shuffle Without Picking)
+								Cancel
 							</button>
 						</div>
 					{/if}
-				{:else if myPrompt.kind === 'scry_choice'}
-					{@const canBottom = myPrompt.allowBottom !== false}
-					{@const canShuffle = Boolean(myPrompt.allowShuffle)}
+				{:else if myChoice.kind === 'chooseNumber'}
+					<div class="guided-box">
+						<label>
+							Choose Number ({myChoice.min}–{myChoice.max}):
+							<input
+								type="number"
+								min={myChoice.min}
+								max={myChoice.max}
+								bind:value={selectedPromptNumber}
+							/>
+						</label>
+					</div>
+					<div class="modal-actions">
+						<button
+							type="button"
+							class="arena-main-btn can-act"
+							onclick={() =>
+								onGameAction({
+									type: 'choice',
+									promptId: myPrompt.id,
+									answer: {
+										kind: 'chooseNumber',
+										n: Math.min(
+											myChoice.max,
+											Math.max(myChoice.min, Math.trunc(selectedPromptNumber))
+										)
+									}
+								})}
+						>
+							Confirm ({selectedPromptNumber})
+						</button>
+					</div>
+				{:else if myChoice.kind === 'orderObjects'}
+					{@const canBottom = myChoice.allowSplitBottom !== false}
+					{@const canShuffle = Boolean(myChoice.allowShuffle)}
 					{@const libMap = new Map((me?.library || []).map((c) => [c.instanceId, c]))}
 					{@const topCards = scryTopOrder.map((id) => libMap.get(id)).filter((c): c is CardInstance => Boolean(c))}
 					{@const bottomCards = scryBottomOrder.map((id) => libMap.get(id)).filter((c): c is CardInstance => Boolean(c))}
@@ -3414,10 +3682,14 @@
 									scryTopOrder = [];
 									scryBottomOrder = [];
 									await onGameAction({
-										type: 'scry_resolve',
-										topInstanceIds: topIds,
-										bottomInstanceIds: bottomIds,
-										shuffleAfter: true
+										type: 'choice',
+										promptId: myPrompt.id,
+										answer: {
+											kind: 'orderObjects',
+											topIds,
+											bottomIds,
+											shuffle: true
+										}
 									});
 								}}
 							>
@@ -3433,10 +3705,14 @@
 								scryTopOrder = [];
 								scryBottomOrder = [];
 								await onGameAction({
-									type: 'scry_resolve',
-									topInstanceIds: topIds,
-									bottomInstanceIds: bottomIds,
-									shuffleAfter: false
+									type: 'choice',
+									promptId: myPrompt.id,
+									answer: {
+										kind: 'orderObjects',
+										topIds,
+										bottomIds,
+										shuffle: false
+									}
 								});
 							}}
 						>
@@ -3447,118 +3723,22 @@
 							{/if}
 						</button>
 					</div>
-				{:else if myPrompt.kind === 'cost_choice'}
-					{@const costPrompt = myPrompt}
-					{#if costPrompt.costOptionLabels}
-						<div class="modal-actions">
-							{#each costPrompt.costOptionLabels as label, i (i)}
-								<button
-									type="button"
-									class={i === 0 ? 'arena-main-btn can-act' : 'hud-btn'}
-									onclick={() => onGameAction({ type: 'cost_choice', promptId: costPrompt.id, option: i })}
-								>
-									{label}
-								</button>
-							{/each}
-						</div>
-					{:else}
-						{@const reqCount = costPrompt.countRequired || 1}
-						{@const costCandidates = [...me.battlefield, ...me.hand, ...me.graveyard, ...me.exile].filter((c) =>
-							(costPrompt.candidateInstanceIds || []).includes(c.instanceId)
-						)}
-						<div class="modal-card-grid">
-							{#each costCandidates as c (c.instanceId)}
-								<button
-									type="button"
-									class="modal-card-item selectable"
-									class:selected={selectedPromptCardIds.includes(c.instanceId)}
-									onmouseenter={() => hoverCard(c.card)}
-									onmouseleave={() => leaveCard(c.card)}
-									onclick={() => togglePromptCardSelection(c.instanceId, reqCount)}
-								>
-									<img src={c.card.imageUrl} alt={c.card.name} />
-									<span>{c.card.name}</span>
-								</button>
-							{/each}
-						</div>
-						<div class="modal-actions">
+				{:else if myChoice.kind === 'chooseReplacement'}
+					<div class="modal-actions">
+						{#each myChoice.options as opt, i (opt.id)}
 							<button
 								type="button"
-								class="arena-main-btn"
-								class:can-act={selectedPromptCardIds.length === reqCount}
-								disabled={selectedPromptCardIds.length !== reqCount}
-								onclick={async () => {
-									const ids = [...selectedPromptCardIds];
-									selectedPromptCardIds = [];
-									await onGameAction({ type: 'cost_choice', promptId: costPrompt.id, instanceIds: ids });
-								}}
+								class={i === 0 ? 'arena-main-btn can-act' : 'hud-btn'}
+								onclick={() =>
+									onGameAction({
+										type: 'choice',
+										promptId: myPrompt.id,
+										answer: { kind: 'chooseReplacement', id: opt.id }
+									})}
 							>
-								Confirm Selection ({selectedPromptCardIds.length}/{reqCount})
+								{opt.label}
 							</button>
-						</div>
-					{/if}
-					<div class="modal-actions">
-						<button
-							type="button"
-							class="hud-btn"
-							onclick={() => onGameAction({ type: 'cost_choice', promptId: costPrompt.id, cancel: true })}
-						>
-							Cancel
-						</button>
-					</div>
-				{:else if myPrompt.kind === 'obeka_end_turn_choice'}
-					<div class="modal-actions">
-						<button
-							type="button"
-							class="arena-main-btn can-act"
-							onclick={() => onGameAction({ type: 'obeka_end_turn_choice', endTurn: true })}
-						>
-							End the Turn Now (Exile All Spells/Abilities on Stack)
-						</button>
-						<button
-							type="button"
-							class="hud-btn"
-							onclick={() => onGameAction({ type: 'obeka_end_turn_choice', endTurn: false })}
-						>
-							Decline (Continue Turn Normally)
-						</button>
-					</div>
-				{:else if myPrompt.kind === 'guided_resolution'}
-					<div class="guided-box">
-						<label>
-							Draw Cards:
-							<input type="number" min="0" max="10" bind:value={guidedDrawCount} />
-						</label>
-						<label>
-							Life Change (+/-):
-							<input type="number" min="-40" max="40" bind:value={guidedLifeDelta} />
-						</label>
-					</div>
-					<div class="modal-actions">
-						<button
-							type="button"
-							class="arena-main-btn can-act"
-							onclick={() =>
-								onGameAction({
-									type: 'guided_resolve',
-									operations: [
-										...(guidedDrawCount > 0
-											? [{ op: 'draw_cards' as const, amount: guidedDrawCount }]
-											: []),
-										...(guidedLifeDelta !== 0
-											? [
-													{
-														op: 'modify_life' as const,
-														targetId: me.playerId,
-														amount: guidedLifeDelta
-													}
-												]
-											: [])
-									]
-								})}
-						>
-							Apply &amp; Complete Resolution
-						</button>
+						{/each}
 					</div>
 				{/if}
 			</div>

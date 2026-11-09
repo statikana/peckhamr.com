@@ -455,22 +455,103 @@ export interface CombatState {
 	damageDealtNormal: boolean;
 }
 
+export const ENGINE_VERSION = 1;
+
+export type ChoiceKind =
+	| 'yesNo'
+	| 'chooseObjects'
+	| 'chooseMode'
+	| 'chooseNumber'
+	| 'orderObjects'
+	| 'chooseReplacement';
+
+export type ChoiceRequest =
+	| { kind: 'yesNo'; question: string }
+	| {
+			kind: 'chooseObjects';
+			candidates: string[];
+			min: number;
+			max: number;
+			zone: ZoneType;
+			reason: string;
+	  }
+	| { kind: 'chooseMode'; modes: string[]; min: number; max: number }
+	| { kind: 'chooseNumber'; min: number; max: number; reason: string }
+	| {
+			kind: 'orderObjects';
+			objectIds: string[];
+			allowSplitBottom?: boolean;
+			allowShuffle?: boolean;
+			reason: string;
+	  }
+	| { kind: 'chooseReplacement'; options: Array<{ id: string; label: string }> };
+
+export type ChoiceAnswer =
+	| { kind: 'yesNo'; yes: boolean }
+	| { kind: 'chooseObjects'; objectIds: string[] }
+	| { kind: 'chooseMode'; indices: number[] }
+	| { kind: 'chooseNumber'; n: number }
+	| {
+			kind: 'orderObjects';
+			topIds: string[];
+			bottomIds?: string[];
+			shuffle?: boolean;
+	  }
+	| { kind: 'chooseReplacement'; id: string };
+
+export interface GuidedOperation {
+	op:
+		| 'move_zone'
+		| 'modify_life'
+		| 'add_counter'
+		| 'draw_cards'
+		| 'create_token'
+		| 'deal_damage';
+	targetId?: string;
+	destinationZone?: ZoneType;
+	amount?: number;
+	counterType?: CounterType;
+	tokenName?: string;
+	tokenPower?: number;
+	tokenToughness?: number;
+}
+
+export type PendingPromptKind =
+	| ChoiceKind
+	| 'mulligan'
+	| 'london_bottom'
+	| 'discard_to_hand_size'
+	| 'commander_zone_choice'
+	| 'search_library'
+	| 'scry_choice'
+	| 'guided_resolution'
+	| 'legend_rule'
+	| 'cost_choice';
+
+export type PromptPurpose =
+	| 'mulligan'
+	| 'london_bottom'
+	| 'discard_to_hand_size'
+	| 'commander_zone_choice'
+	| 'end_turn'
+	| 'search_library'
+	| 'scry_choice'
+	| 'guided_resolution'
+	| 'legend_rule'
+	| 'cost_choice'
+	| 'generic';
+
 export interface PendingPrompt {
 	id: string;
 	playerId: string;
-	kind:
-		| 'mulligan'
-		| 'london_bottom'
-		| 'discard_to_hand_size'
-		| 'commander_zone_choice'
-		| 'search_library'
-		| 'scry_choice'
-		| 'guided_resolution'
-		| 'legend_rule'
-		| 'obeka_end_turn_choice'
-		| 'cost_choice';
+	kind: PendingPromptKind;
 	title: string;
 	description: string;
+	choice?: ChoiceRequest;
+	purpose?: PromptPurpose;
+	yesLabel?: string;
+	noLabel?: string;
+	cancellable?: boolean;
 	countRequired?: number;
 	candidateInstanceIds?: string[];
 	allowBottom?: boolean;
@@ -489,10 +570,8 @@ export interface PendingPrompt {
 	canFailToFind?: boolean;
 	interceptedBy?: LibrarySearchInterceptorInfo;
 	/**
-	 * cost_choice (Phase 4; Phase 8 generalises it): the cast/activate/tap action waiting for a cost
-	 * choice. Answering merges the choice into its `costPayment` and runs it again from scratch.
-	 * The question is either a choice between `costOptionLabels` (answer: option index) or picking
-	 * `countRequired` of `candidateInstanceIds` (answer: instance ids).
+	 * cost_choice (Phase 4/8): the cast/activate/tap action waiting for a cost choice. Answering
+	 * merges the choice into its `costPayment` and runs it again from scratch.
 	 */
 	pendingAction?: GameActionPayload;
 	costQuestion?: { kind: 'option' | 'objects'; index: number };
@@ -585,6 +664,7 @@ export interface PlayerGameState {
 }
 
 export interface GameState {
+	engineVersion: number;
 	gameId: string;
 	lobbyCode: string;
 	status: 'mulligan' | 'active' | 'finished';
@@ -636,6 +716,13 @@ export interface MagicChatMessage {
 }
 
 export type GameActionPayload =
+	| {
+			type: 'choice';
+			promptId: string;
+			answer?: ChoiceAnswer;
+			cancel?: boolean;
+			operations?: GuidedOperation[];
+	  }
 	| { type: 'mulligan_keep' }
 	| { type: 'mulligan_take' }
 	| { type: 'london_bottom'; instanceIds: string[] }
@@ -659,11 +746,10 @@ export type GameActionPayload =
 			targets?: TargetRef[];
 			costPayment?: CostPayment;
 	  }
-	/** Answers a `cost_choice` prompt. */
+	/** Compatibility alias for answering a `cost_choice` prompt. */
 	| { type: 'cost_choice'; promptId: string; option?: number; instanceIds?: string[]; cancel?: boolean }
 	| { type: 'suspend_card'; instanceId: string }
 	| { type: 'reorder_graveyard'; instanceIds: string[] }
-	| { type: 'obeka_end_turn_choice'; endTurn: boolean }
 	| {
 			type: 'declare_attackers';
 			assignments: Array<{
@@ -680,10 +766,18 @@ export type GameActionPayload =
 			}>;
 	  }
 	| { type: 'discard_cards'; instanceIds: string[] }
+	| { type: 'discard_hand_size'; instanceIds: string[] }
 	| { type: 'commander_zone_choice'; commanderInstanceId: string; sendToCommandZone: boolean }
+	| { type: 'commander_zone_decision'; commanderInstanceId?: string; sendToCommandZone: boolean }
 	| { type: 'search_library_pick'; instanceId: string | null }
 	| {
 			type: 'scry_resolve';
+			topInstanceIds: string[];
+			bottomInstanceIds: string[];
+			shuffleAfter?: boolean;
+	  }
+	| {
+			type: 'scry_decision';
 			topInstanceIds: string[];
 			bottomInstanceIds: string[];
 			shuffleAfter?: boolean;
@@ -692,22 +786,11 @@ export type GameActionPayload =
 	| { type: 'legend_rule_choice'; keepInstanceId: string }
 	| {
 			type: 'guided_resolve';
-			operations: Array<{
-				op:
-					| 'move_zone'
-					| 'modify_life'
-					| 'add_counter'
-					| 'draw_cards'
-					| 'create_token'
-					| 'deal_damage';
-				targetId?: string;
-				destinationZone?: ZoneType;
-				amount?: number;
-				counterType?: CounterType;
-				tokenName?: string;
-				tokenPower?: number;
-				tokenToughness?: number;
-			}>;
+			operations: GuidedOperation[];
+	  }
+	| {
+			type: 'guided_resolution_finish';
+			operations?: GuidedOperation[];
 	  }
 	| { type: 'toggle_full_control'; enabled: boolean }
 	| { type: 'toggle_stop_phase'; phase: GamePhase }

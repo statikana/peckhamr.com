@@ -131,9 +131,20 @@ import {
 	staticallyInterpretable
 } from './runtime/effects.ts';
 import { compiledStackItemEffects } from './compiler/effects.ts';
+import {
+	buildCostChoiceRequest,
+	clearRegisteredChoiceCallback,
+	effectivePromptChoice,
+	effectivePromptPurpose,
+	inferObjectsZone,
+	normalizePromptAction,
+	resolveRegisteredChoiceCallback,
+	validateChoiceAnswer
+} from './runtime/choices.ts';
 
 export { allocateTimestamp, shuffleArray };
 import {
+	ENGINE_VERSION,
 	PHASE_LABELS,
 	type CardInstance,
 	type CostPayment,
@@ -160,6 +171,8 @@ import {
 	type VfxEvent,
 	type ZoneType
 } from './types.ts';
+
+export { ENGINE_VERSION };
 
 function uid(prefix: string): string {
 	return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -314,6 +327,7 @@ export function createInitialGameState(
 	}
 
 	const state: GameState = {
+		engineVersion: ENGINE_VERSION,
 		gameId: uid('game'),
 		lobbyCode,
 		status: 'mulligan',
@@ -354,15 +368,18 @@ export function createInitialGameState(
 			}
 			p.hasKeptHand = true;
 		} else {
+			const description =
+				rules.mulliganRule === 'friendly_unlimited'
+					? 'Friendly Mulligan: You may keep your 7-card hand or take a free 7-card mulligan.'
+					: 'London Mulligan: Your first mulligan in Commander is free (7 cards). Subsequent mulligans put 1 card per extra mulligan on the bottom of your library.';
 			state.pendingPrompts.push({
 				id: uid('prm'),
 				playerId: p.playerId,
 				kind: 'mulligan',
+				purpose: 'mulligan',
 				title: 'Opening Hand Mulligan',
-				description:
-					rules.mulliganRule === 'friendly_unlimited'
-						? 'Friendly Mulligan: You may keep your 7-card hand or take a free 7-card mulligan.'
-						: 'London Mulligan: Your first mulligan in Commander is free (7 cards). Subsequent mulligans put 1 card per extra mulligan on the bottom of your library.'
+				description,
+				choice: { kind: 'yesNo', question: description }
 			});
 		}
 	}
@@ -556,10 +573,14 @@ function askCostChoice(
 	if (actor.isBot) {
 		return { ok: false, error: `A cost choice is required to pay for ${sourceName}.` };
 	}
+	const zone =
+		question.kind === 'objects' ? inferObjectsZone(actor, question.candidateIds) : 'battlefield';
+	const choice = buildCostChoiceRequest(question, zone);
 	state.pendingPrompts.push({
 		id: uid('prm'),
 		playerId: actor.playerId,
 		kind: 'cost_choice',
+		purpose: 'cost_choice',
 		title: `Pay the cost of ${sourceName}`,
 		description:
 			question.kind === 'option'
@@ -567,6 +588,13 @@ function askCostChoice(
 					? 'This cost is optional. Pay it?'
 					: 'Choose which cost to pay.'
 				: `Choose ${question.count}: ${question.label}.`,
+		choice,
+		cancellable: true,
+		yesLabel:
+			question.kind === 'option' && question.optional
+				? question.labels[0] || 'Pay Cost'
+				: undefined,
+		noLabel: question.kind === 'option' && question.optional ? "Don't Pay" : undefined,
 		countRequired: question.kind === 'objects' ? question.count : undefined,
 		candidateInstanceIds: question.kind === 'objects' ? question.candidateIds : undefined,
 		costQuestion: { kind: question.kind, index: question.index },
@@ -922,6 +950,19 @@ function applyGameActionInner(
 		return { ok: false, error: 'Game has already finished.' };
 	}
 
+	if (state.engineVersion !== undefined && state.engineVersion !== ENGINE_VERSION) {
+		state.status = 'finished';
+		addLog(
+			state,
+			'system',
+			`Match ended: game state engineVersion (${state.engineVersion}) is incompatible with current engineVersion (${ENGINE_VERSION}).`
+		);
+		return {
+			ok: false,
+			error: `Match ended due to incompatible engineVersion (${state.engineVersion} vs ${ENGINE_VERSION}).`
+		};
+	}
+
 	const actor = state.players.find((p) => p.playerId === actorId);
 	if (!actor) {
 		return { ok: false, error: 'Player is not seated in this game.' };
@@ -1150,8 +1191,8 @@ function applyGameActionInner(
 			return { ok: true };
 		}
 
-		case 'obeka_end_turn_choice': {
-			return { ok: false, error: 'No active Obeka end-the-turn prompt.' };
+		case 'choice': {
+			return { ok: false, error: 'That choice is no longer pending.' };
 		}
 
 		case 'cast_spell': {
@@ -1808,6 +1849,29 @@ function handleMulliganAction(
 	action: GameActionPayload
 ): { ok: boolean; error?: string } {
 	const prIdx = state.pendingPrompts.findIndex((p) => p.playerId === actor.playerId);
+	if (action.type === 'choice' && prIdx >= 0) {
+		const pr = state.pendingPrompts[prIdx];
+		if (action.promptId !== pr.id) {
+			return { ok: false, error: 'That choice is no longer pending.' };
+		}
+		const choice = effectivePromptChoice(pr, state);
+		const valid = validateChoiceAnswer(choice, action.answer);
+		if (!valid.ok) {
+			return { ok: false, error: valid.error };
+		}
+		if (effectivePromptPurpose(pr) === 'mulligan' && action.answer?.kind === 'yesNo') {
+			return handleMulliganAction(state, actor, {
+				type: action.answer.yes ? 'mulligan_keep' : 'mulligan_take'
+			});
+		}
+		if (effectivePromptPurpose(pr) === 'london_bottom' && action.answer?.kind === 'chooseObjects') {
+			return handleMulliganAction(state, actor, {
+				type: 'london_bottom',
+				instanceIds: action.answer.objectIds
+			});
+		}
+	}
+
 	if (action.type === 'mulligan_keep') {
 		if (prIdx >= 0) state.pendingPrompts.splice(prIdx, 1);
 		const freeMulligans =
@@ -1820,13 +1884,25 @@ function handleMulliganAction(
 
 		if (cardsToBottom > 0 && actor.hand.length > 0) {
 			const countReq = Math.min(cardsToBottom, actor.hand.length);
+			const description = `Select ${countReq} card(s) from your hand to place on the bottom of your library.`;
+			const candidates = actor.hand.map((c) => c.instanceId);
 			state.pendingPrompts.push({
 				id: uid('prm'),
 				playerId: actor.playerId,
 				kind: 'london_bottom',
+				purpose: 'london_bottom',
 				title: `Put ${countReq} Card(s) on Bottom of Library`,
-				description: `Select ${countReq} card(s) from your hand to place on the bottom of your library.`,
-				countRequired: countReq
+				description,
+				countRequired: countReq,
+				candidateInstanceIds: candidates,
+				choice: {
+					kind: 'chooseObjects',
+					candidates,
+					min: countReq,
+					max: countReq,
+					zone: 'hand',
+					reason: description
+				}
 			});
 			return { ok: true };
 		}
@@ -1894,20 +1970,50 @@ function handlePromptResolution(
 	promptIdx: number,
 	action: GameActionPayload
 ): { ok: boolean; error?: string } {
-	const prompt = state.pendingPrompts[promptIdx];
+	if (action.type === 'choice' || action.type === 'cost_choice') {
+		const byIdIdx = state.pendingPrompts.findIndex(
+			(p) => p.playerId === actor.playerId && p.id === action.promptId
+		);
+		if (byIdIdx < 0) {
+			return {
+				ok: false,
+				error:
+					action.type === 'cost_choice'
+						? 'That cost choice is no longer pending.'
+						: 'That choice is no longer pending.'
+			};
+		}
+		promptIdx = byIdIdx;
+	}
 
-	// Phase 4: a cost choice. The answer is merged into the waiting action's costPayment and the
+	const prompt = state.pendingPrompts[promptIdx];
+	const normalized = normalizePromptAction(prompt, action, state);
+	if (!normalized) {
+		return { ok: false, error: `Please resolve the active prompt: ${prompt.title}.` };
+	}
+
+	const choice = effectivePromptChoice(prompt, state);
+	const purpose = effectivePromptPurpose(prompt);
+
+	// Phase 4/8: a cost choice. The answer is merged into the waiting action's costPayment and the
 	// action runs again from scratch (re-checking legality); on failure the prompt is restored.
-	if (prompt.kind === 'cost_choice' && action.type === 'cost_choice') {
-		if (action.promptId !== prompt.id) return { ok: false, error: 'That cost choice is no longer pending.' };
+	if (purpose === 'cost_choice') {
 		state.pendingPrompts.splice(promptIdx, 1);
 		const pending = prompt.pendingAction;
 		if (
-			action.cancel ||
+			normalized.cancel ||
 			!pending ||
-			(pending.type !== 'cast_spell' && pending.type !== 'activate_ability' && pending.type !== 'tap_mana')
+			(pending.type !== 'cast_spell' &&
+				pending.type !== 'activate_ability' &&
+				pending.type !== 'tap_mana')
 		) {
+			clearRegisteredChoiceCallback(state, prompt.id);
 			return { ok: true };
+		}
+		const valid = validateChoiceAnswer(choice, normalized.answer);
+		if (!valid.ok) {
+			state.pendingPrompts.splice(promptIdx, 0, prompt);
+			return { ok: false, error: valid.error };
 		}
 		const payment = {
 			options: [...(pending.costPayment?.options ?? [])],
@@ -1915,43 +2021,69 @@ function handlePromptResolution(
 		};
 		const q = prompt.costQuestion;
 		if (q?.kind === 'option') {
-			if (action.option === undefined) {
+			const opt =
+				normalized.answer?.kind === 'yesNo'
+					? normalized.answer.yes
+						? 0
+						: 1
+					: normalized.answer?.kind === 'chooseMode'
+						? normalized.answer.indices[0]
+						: undefined;
+			if (opt === undefined) {
 				state.pendingPrompts.splice(promptIdx, 0, prompt);
 				return { ok: false, error: 'Choose one of the options.' };
 			}
-			payment.options[q.index] = action.option;
-		} else if (q?.kind === 'objects') {
-			payment.objects[q.index] = action.instanceIds ?? [];
+			payment.options[q.index] = opt;
+		} else if (q?.kind === 'objects' && normalized.answer?.kind === 'chooseObjects') {
+			payment.objects[q.index] = normalized.answer.objectIds;
 		}
 		const result = applyGameAction(state, actor.playerId, { ...pending, costPayment: payment });
 		if (!result.ok) state.pendingPrompts.splice(promptIdx, 0, prompt);
 		return result;
 	}
 
-	if (prompt.kind === 'obeka_end_turn_choice' && action.type === 'obeka_end_turn_choice') {
+	if (purpose === 'end_turn') {
+		const valid = validateChoiceAnswer(choice, normalized.answer);
+		if (!valid.ok || normalized.answer?.kind !== 'yesNo') {
+			return { ok: false, error: valid.ok ? 'Invalid end-turn choice.' : valid.error };
+		}
 		state.pendingPrompts.splice(promptIdx, 1);
-		if (action.endTurn) {
+		if (normalized.answer.yes) {
 			endTheTurnImmediately(state, actor.playerId);
 		} else {
 			addLog(
 				state,
 				'rule',
-				`${actor.username} chose not to end the turn with Obeka, Brute Chronologist.`,
+				`${actor.username} chose not to end the turn.`,
 				actor.playerId
 			);
 		}
+		resolveRegisteredChoiceCallback(state, prompt.id, normalized.answer);
 		checkStateBasedActions(state);
 		return { ok: true };
 	}
 
-	if (prompt.kind === 'legend_rule' && action.type === 'legend_rule_choice') {
-		const cands = prompt.candidateInstanceIds || [];
-		if (!cands.includes(action.keepInstanceId)) {
-			return { ok: false, error: 'Please choose one of the duplicate legendary permanents to keep.' };
+	if (purpose === 'legend_rule') {
+		const valid = validateChoiceAnswer(choice, normalized.answer);
+		if (!valid.ok || normalized.answer?.kind !== 'chooseObjects') {
+			return {
+				ok: false,
+				error: 'Please choose one of the duplicate legendary permanents to keep.'
+			};
+		}
+		const keepInstanceId = normalized.answer.objectIds[0];
+		const cands =
+			prompt.candidateInstanceIds ??
+			(choice.kind === 'chooseObjects' ? choice.candidates : []);
+		if (!cands.includes(keepInstanceId)) {
+			return {
+				ok: false,
+				error: 'Please choose one of the duplicate legendary permanents to keep.'
+			};
 		}
 		state.pendingPrompts.splice(promptIdx, 1);
 		for (const cid of cands) {
-			if (cid !== action.keepInstanceId) {
+			if (cid !== keepInstanceId) {
 				const found = findPermanentOnBoard(state, cid);
 				if (found) {
 					movePermanentToZone(state, found.inst, 'graveyard');
@@ -1964,13 +2096,18 @@ function handlePromptResolution(
 			`${actor.username} resolved the Legend Rule (CR 704.5j).`,
 			actor.playerId
 		);
+		resolveRegisteredChoiceCallback(state, prompt.id, normalized.answer);
 		checkStateBasedActions(state);
 		return { ok: true };
 	}
 
-	if (prompt.kind === 'commander_zone_choice' && action.type === 'commander_zone_choice') {
+	if (purpose === 'commander_zone_choice') {
+		const valid = validateChoiceAnswer(choice, normalized.answer);
+		if (!valid.ok || normalized.answer?.kind !== 'yesNo') {
+			return { ok: false, error: valid.ok ? 'Invalid commander zone choice.' : valid.error };
+		}
 		state.pendingPrompts.splice(promptIdx, 1);
-		if (action.sendToCommandZone) {
+		if (normalized.answer.yes) {
 			const gIdx = actor.graveyard.findIndex((c) => c.instanceId === prompt.commanderInstanceId);
 			const eIdx = actor.exile.findIndex((c) => c.instanceId === prompt.commanderInstanceId);
 			let cmd: CardInstance | undefined;
@@ -2001,16 +2138,22 @@ function handlePromptResolution(
 				actor.playerId
 			);
 		}
+		resolveRegisteredChoiceCallback(state, prompt.id, normalized.answer);
 		return { ok: true };
 	}
 
-	if (prompt.kind === 'discard_to_hand_size' && action.type === 'discard_cards') {
+	if (purpose === 'discard_to_hand_size') {
 		const req = prompt.countRequired || 1;
-		if (action.instanceIds.length !== req) {
+		const valid = validateChoiceAnswer(choice, normalized.answer);
+		if (!valid.ok || normalized.answer?.kind !== 'chooseObjects') {
+			return { ok: false, error: `You must discard exactly ${req} card(s).` };
+		}
+		const chosenIds = normalized.answer.objectIds;
+		if (chosenIds.length !== req) {
 			return { ok: false, error: `You must discard exactly ${req} card(s).` };
 		}
 		const gyDest = checkGraveyardReplacementZone(state, 'graveyard').dest;
-		for (const id of action.instanceIds) {
+		for (const id of chosenIds) {
 			const idx = actor.hand.findIndex((c) => c.instanceId === id);
 			if (idx >= 0) {
 				moveObject(state, actor.hand[idx], gyDest, {
@@ -2026,21 +2169,33 @@ function handlePromptResolution(
 			`${actor.username} discarded ${req} card(s) down to maximum hand size.`,
 			actor.playerId
 		);
+		resolveRegisteredChoiceCallback(state, prompt.id, normalized.answer);
 		completeTurnCleanupAndPassTurn(state);
 		return { ok: true };
 	}
 
-	if (prompt.kind === 'search_library' && action.type === 'search_library_pick') {
+	if (purpose === 'search_library') {
+		if (!normalized.answer || normalized.answer.kind !== 'chooseObjects') {
+			return { ok: false, error: 'Library search expects an object choice.' };
+		}
 		const libraryOwner =
 			state.players.find(
 				(p) => p.playerId === (prompt.targetLibraryOwnerId || actor.playerId)
 			) || actor;
+		const pickedIds = normalized.answer.objectIds;
+		if (pickedIds.length > 1) {
+			return { ok: false, error: 'You may pick at most 1 card per search step.' };
+		}
+		const pickedId = pickedIds[0] ?? null;
 
-		if (action.instanceId === null) {
+		if (pickedId === null) {
 			const availableCount = prompt.candidateInstanceIds
 				? prompt.candidateInstanceIds.length
 				: libraryOwner.library.length;
-			if (prompt.canFailToFind === false && availableCount > 0) {
+			const mustFind =
+				prompt.canFailToFind === false ||
+				(choice.kind === 'chooseObjects' && choice.min > 0);
+			if (mustFind && availableCount > 0) {
 				return {
 					ok: false,
 					error:
@@ -2048,16 +2203,18 @@ function handlePromptResolution(
 				};
 			}
 		} else {
-			if (
-				prompt.candidateInstanceIds &&
-				!prompt.candidateInstanceIds.includes(action.instanceId)
-			) {
+			const candidateIds =
+				prompt.candidateInstanceIds ??
+				(choice.kind === 'chooseObjects' && choice.candidates.length > 0
+					? choice.candidates
+					: undefined);
+			if (candidateIds && !candidateIds.includes(pickedId)) {
 				return {
 					ok: false,
 					error: 'Strict Rules Violation: That card does not match the required search criteria.'
 				};
 			}
-			if (!libraryOwner.library.some((c) => c.instanceId === action.instanceId)) {
+			if (!libraryOwner.library.some((c) => c.instanceId === pickedId)) {
 				return {
 					ok: false,
 					error: 'Strict Rules Violation: Card not found in the searched library.'
@@ -2068,8 +2225,8 @@ function handlePromptResolution(
 		state.pendingPrompts.splice(promptIdx, 1);
 		let alreadyShuffledWithTopCard = false;
 
-		if (action.instanceId) {
-			const idx = libraryOwner.library.findIndex((c) => c.instanceId === action.instanceId);
+		if (pickedId) {
+			const idx = libraryOwner.library.findIndex((c) => c.instanceId === pickedId);
 			if (idx >= 0) {
 				const found = libraryOwner.library[idx];
 				const fromLibrary = { player: libraryOwner, zone: 'library' as const };
@@ -2163,25 +2320,36 @@ function handlePromptResolution(
 						.map((c) => c.instanceId);
 
 					if (remainingCandidates.length > 0) {
+						const nextDesc = prompt.interceptedBy
+							? `Choose the next matching card from ${libraryOwner.username}'s library to exile via ${prompt.interceptedBy.sourceName}, or Fail to Find.`
+							: `Choose the next matching card from your library to put ${describeLibrarySearchDestination(nextDest)}, then shuffle.`;
+						const canFailNext = prompt.canFailToFind ?? true;
 						state.pendingPrompts.push({
 							id: uid('prm'),
 							playerId: actor.playerId,
 							targetLibraryOwnerId: libraryOwner.playerId,
 							kind: 'search_library',
+							purpose: 'search_library',
 							title: prompt.interceptedBy
 								? `${prompt.interceptedBy.sourceName} — Choose Next Card from ${libraryOwner.username}'s Library`
 								: `Search Library — Next Card (${describeLibrarySearchDestination(nextDest)})`,
-							description: prompt.interceptedBy
-								? `Choose the next matching card from ${libraryOwner.username}'s library to exile via ${prompt.interceptedBy.sourceName}, or Fail to Find.`
-								: `Choose the next matching card from your library to put ${describeLibrarySearchDestination(nextDest)}, then shuffle.`,
+							description: nextDesc,
 							destinationZone: nextDest.zone,
 							enterTapped: Boolean(nextDest.tapped),
 							putOnTop: Boolean(nextDest.onTop),
 							searchSpec: prompt.searchSpec,
 							remainingDestinations: nextDestinations,
-							canFailToFind: prompt.canFailToFind ?? true,
+							canFailToFind: canFailNext,
 							interceptedBy: prompt.interceptedBy,
 							candidateInstanceIds: remainingCandidates,
+							choice: {
+								kind: 'chooseObjects',
+								candidates: remainingCandidates,
+								min: canFailNext ? 0 : 1,
+								max: 1,
+								zone: 'library',
+								reason: nextDesc
+							},
 							stackItem: prompt.stackItem,
 							continuationEffects: prompt.continuationEffects
 						});
@@ -2208,12 +2376,19 @@ function handlePromptResolution(
 				executeParsedEffect(state, libraryOwner, prompt.stackItem, eff);
 			}
 		}
+		resolveRegisteredChoiceCallback(state, prompt.id, normalized.answer);
 		checkStateBasedActions(state);
 		return { ok: true };
 	}
 
-	if (prompt.kind === 'scry_choice' && action.type === 'scry_resolve') {
-		const candidateIds = prompt.candidateInstanceIds || [];
+	if (purpose === 'scry_choice' || choice.kind === 'orderObjects') {
+		const valid = validateChoiceAnswer(choice, normalized.answer);
+		if (!valid.ok || normalized.answer?.kind !== 'orderObjects') {
+			return { ok: false, error: valid.ok ? 'Invalid orderObjects answer.' : valid.error };
+		}
+		const candidateIds =
+			prompt.candidateInstanceIds ??
+			(choice.kind === 'orderObjects' ? choice.objectIds : []);
 		const extracted: CardInstance[] = [];
 		for (const cid of candidateIds) {
 			const c = actor.library.find((l) => l.instanceId === cid);
@@ -2223,16 +2398,24 @@ function handlePromptResolution(
 		const usedIds = new Set<string>();
 		const topList: CardInstance[] = [];
 		const bottomList: CardInstance[] = [];
+		const allowBottom =
+			choice.kind === 'orderObjects'
+				? choice.allowSplitBottom !== false
+				: prompt.allowBottom !== false;
+		const allowShuffle =
+			choice.kind === 'orderObjects'
+				? Boolean(choice.allowShuffle)
+				: Boolean(prompt.allowShuffle);
 
-		for (const tid of action.topInstanceIds || []) {
+		for (const tid of normalized.answer.topIds || []) {
 			const card = byId.get(tid);
 			if (card && !usedIds.has(tid)) {
 				topList.push(card);
 				usedIds.add(tid);
 			}
 		}
-		if (prompt.allowBottom !== false) {
-			for (const bid of action.bottomInstanceIds || []) {
+		if (allowBottom) {
+			for (const bid of normalized.answer.bottomIds || []) {
 				const card = byId.get(bid);
 				if (card && !usedIds.has(bid)) {
 					bottomList.push(card);
@@ -2250,7 +2433,7 @@ function handlePromptResolution(
 
 		rearrangeLibrary(actor, extracted, topList, bottomList);
 
-		if (prompt.allowShuffle && action.shuffleAfter) {
+		if (allowShuffle && normalized.answer.shuffle) {
 			shuffleLibrary(actor);
 			addLog(
 				state,
@@ -2258,7 +2441,7 @@ function handlePromptResolution(
 				`${actor.username} looked at the top ${extracted.length} card(s) and chose to shuffle their library.`,
 				actor.playerId
 			);
-		} else if (prompt.allowBottom === false) {
+		} else if (!allowBottom) {
 			addLog(
 				state,
 				'rule',
@@ -2281,37 +2464,58 @@ function handlePromptResolution(
 			}
 			checkStateBasedActions(state);
 		}
+		resolveRegisteredChoiceCallback(state, prompt.id, normalized.answer);
 		return { ok: true };
 	}
 
-	if (prompt.kind === 'guided_resolution' && action.type === 'guided_resolve') {
+	if (purpose === 'guided_resolution') {
+		const valid = validateChoiceAnswer(choice, normalized.answer);
+		if (!valid.ok || normalized.answer?.kind !== 'yesNo') {
+			return { ok: false, error: valid.ok ? 'Invalid guided resolution answer.' : valid.error };
+		}
 		state.pendingPrompts.splice(promptIdx, 1);
-		for (const op of action.operations) {
-			if (op.op === 'draw_cards' && op.amount) {
-				drawCards(state, actor, op.amount);
-			} else if (op.op === 'modify_life' && op.targetId && op.amount) {
-				const tp = state.players.find((p) => p.playerId === op.targetId);
-				if (tp && !tp.lifeTotalCannotChangeThisTurn) tp.life += op.amount;
-			} else if (op.op === 'deal_damage' && op.targetId && op.amount) {
-				applyDamageToTarget(
-					state,
-					actor.playerId,
-					{ kind: 'permanent', id: op.targetId, label: 'target' },
-					op.amount
-				);
-			} else if (op.op === 'move_zone' && op.targetId && op.destinationZone) {
-				const found = findPermanentOnBoard(state, op.targetId);
-				if (found) {
-					movePermanentToZone(state, found.inst, op.destinationZone);
+		if (normalized.answer.yes) {
+			for (const op of normalized.operations ?? []) {
+				if (op.op === 'draw_cards' && op.amount) {
+					drawCards(state, actor, op.amount);
+				} else if (op.op === 'modify_life' && op.targetId && op.amount) {
+					const tp = state.players.find((p) => p.playerId === op.targetId);
+					if (tp && !tp.lifeTotalCannotChangeThisTurn) tp.life += op.amount;
+				} else if (op.op === 'deal_damage' && op.targetId && op.amount) {
+					applyDamageToTarget(
+						state,
+						actor.playerId,
+						{ kind: 'permanent', id: op.targetId, label: 'target' },
+						op.amount
+					);
+				} else if (op.op === 'move_zone' && op.targetId && op.destinationZone) {
+					const found = findPermanentOnBoard(state, op.targetId);
+					if (found) {
+						movePermanentToZone(state, found.inst, op.destinationZone);
+					}
 				}
 			}
 		}
 		addLog(state, 'cast', `${actor.username} completed guided resolution for ${prompt.title}.`, actor.playerId);
+		resolveRegisteredChoiceCallback(state, prompt.id, normalized.answer);
 		checkStateBasedActions(state);
 		return { ok: true };
 	}
 
-	return { ok: false, error: `Please resolve the active prompt: ${prompt.title}.` };
+	// Standalone generic choice prompt (yesNo, chooseObjects, chooseMode, chooseNumber, chooseReplacement)
+	if (normalized.cancel && prompt.cancellable) {
+		state.pendingPrompts.splice(promptIdx, 1);
+		clearRegisteredChoiceCallback(state, prompt.id);
+		return { ok: true };
+	}
+	const valid = validateChoiceAnswer(choice, normalized.answer);
+	if (!valid.ok || !normalized.answer) {
+		return { ok: false, error: valid.ok ? 'Missing choice answer.' : valid.error };
+	}
+	state.pendingPrompts.splice(promptIdx, 1);
+	resolveRegisteredChoiceCallback(state, prompt.id, normalized.answer);
+	checkStateBasedActions(state);
+	return { ok: true };
 }
 
 function getAttackedDefenderIdsInTurnOrder(state: GameState): string[] {
@@ -2711,22 +2915,32 @@ export function resolveTopOfStack(state: GameState): void {
 			if (count > 0) {
 				const topCards = controller.library.slice(0, count);
 				const isRearrangeOnly = eff.kind === 'rearrange_top';
+				const topIds = topCards.map((c) => c.instanceId);
+				const description = isRearrangeOnly
+					? `Look at the top ${count} card(s) of your library and put them back on top in any order.${eff.mayShuffle ? ' Or you may shuffle your library.' : ''}`
+					: `Look at the top ${count} card(s) of your library. Put any number on the bottom in any order and the rest on top in any order.`;
 				state.pendingPrompts.push({
 					id: uid('prm'),
 					playerId: controller.playerId,
 					kind: 'scry_choice',
+					purpose: 'scry_choice',
 					title: isRearrangeOnly
 						? `Rearrange Top ${count} (${item.card.name})`
 						: `Scry ${count} (${item.card.name})`,
-					description: isRearrangeOnly
-						? `Look at the top ${count} card(s) of your library and put them back on top in any order.${eff.mayShuffle ? ' Or you may shuffle your library.' : ''}`
-						: `Look at the top ${count} card(s) of your library. Put any number on the bottom in any order and the rest on top in any order.`,
+					description,
 					countRequired: count,
-					candidateInstanceIds: topCards.map((c) => c.instanceId),
+					candidateInstanceIds: topIds,
 					allowBottom: !isRearrangeOnly,
 					allowShuffle: Boolean(eff.mayShuffle),
 					stackItem: item,
-					continuationEffects: item.parsedEffects.slice(i + 1)
+					continuationEffects: item.parsedEffects.slice(i + 1),
+					choice: {
+						kind: 'orderObjects',
+						objectIds: topIds,
+						allowSplitBottom: !isRearrangeOnly,
+						allowShuffle: Boolean(eff.mayShuffle),
+						reason: description
+					}
 				});
 				break;
 			}
@@ -2821,13 +3035,20 @@ export function resolveTopOfStack(state: GameState): void {
 	}
 
 	if (item.requiresGuidedResolution && !controller.isBot && !interpreted) {
+		const description = item.oracleText;
 		state.pendingPrompts.push({
 			id: uid('prm'),
 			playerId: controller.playerId,
 			kind: 'guided_resolution',
+			purpose: 'guided_resolution',
 			title: `Resolve ${item.card.name}`,
-			description: item.oracleText,
-			stackItem: item
+			description,
+			stackItem: item,
+			yesLabel: 'Done Resolving Spell',
+			choice: {
+				kind: 'yesNo',
+				question: description || `Resolve ${item.card.name}`
+			}
 		});
 	}
 
@@ -3687,12 +3908,20 @@ function activePlayerMayEndTurn(state: GameState, controller: PlayerGameState): 
 		// Active player is controller (or a bot): end the turn immediately!
 		endTheTurnImmediately(state, activePlayer.playerId);
 	} else {
+		const description = `${controller.username} activated Obeka, Brute Chronologist. As the player whose turn it is, you may end the turn now (exiling all spells and abilities from the stack).`;
 		state.pendingPrompts.push({
 			id: uid('prm'),
 			playerId: activePlayer.playerId,
-			kind: 'obeka_end_turn_choice',
+			kind: 'yesNo',
+			purpose: 'end_turn',
 			title: 'End the Turn? (Obeka, Brute Chronologist)',
-			description: `${controller.username} activated Obeka, Brute Chronologist. As the player whose turn it is, you may end the turn now (exiling all spells and abilities from the stack).`
+			description,
+			yesLabel: 'End the Turn Now',
+			noLabel: 'Decline (Keep Playing Turn)',
+			choice: {
+				kind: 'yesNo',
+				question: description
+			}
 		});
 	}
 }
@@ -3813,16 +4042,26 @@ function scryOrRearrangeTop(
 			);
 		} else {
 			const topCards = controller.library.slice(0, count);
+			const topIds = topCards.map((c) => c.instanceId);
+			const description = `Look at the top ${count} card(s) of your library. Put any number on the bottom in any order and the rest on top in any order.`;
 			state.pendingPrompts.push({
 				id: uid('prm'),
 				playerId: controller.playerId,
 				kind: 'scry_choice',
+				purpose: 'scry_choice',
 				title: `Scry ${count} (${item.card.name})`,
-				description: `Look at the top ${count} card(s) of your library. Put any number on the bottom in any order and the rest on top in any order.`,
+				description,
 				countRequired: count,
-				candidateInstanceIds: topCards.map((c) => c.instanceId),
+				candidateInstanceIds: topIds,
 				allowBottom: true,
-				allowShuffle: false
+				allowShuffle: false,
+				choice: {
+					kind: 'orderObjects',
+					objectIds: topIds,
+					allowSplitBottom: true,
+					allowShuffle: false,
+					reason: description
+				}
 			});
 		}
 	} else {
@@ -3845,16 +4084,26 @@ function scryOrRearrangeTop(
 			);
 		} else {
 			const topCards = controller.library.slice(0, count);
+			const topIds = topCards.map((c) => c.instanceId);
+			const description = `Look at the top ${count} card(s) of your library and put them back on top in any order.${mayShuffle ? ' Or you may shuffle your library.' : ''}`;
 			state.pendingPrompts.push({
 				id: uid('prm'),
 				playerId: controller.playerId,
 				kind: 'scry_choice',
+				purpose: 'scry_choice',
 				title: `Rearrange Top ${count} (${item.card.name})`,
-				description: `Look at the top ${count} card(s) of your library and put them back on top in any order.${mayShuffle ? ' Or you may shuffle your library.' : ''}`,
+				description,
 				countRequired: count,
-				candidateInstanceIds: topCards.map((c) => c.instanceId),
+				candidateInstanceIds: topIds,
 				allowBottom: false,
-				allowShuffle: Boolean(mayShuffle)
+				allowShuffle: Boolean(mayShuffle),
+				choice: {
+					kind: 'orderObjects',
+					objectIds: topIds,
+					allowSplitBottom: false,
+					allowShuffle: Boolean(mayShuffle),
+					reason: description
+				}
 			});
 		}
 	}
@@ -4285,17 +4534,21 @@ function initiateLibrarySearch(
 			? searchSpec.destinations
 			: [{ zone: 'hand' as const }];
 
+	const candidateIds = matchingCards.map((c) => c.instanceId);
+	const description = interceptor
+		? `You control ${searchingPlayer.username} while they search their library for ${searchSpec.rawCriteriaText}. Choose a matching card to exile (you may play it for as long as it remains exiled${interceptor.spendManaAsAnyColor ? ', spending mana as though it were mana of any color' : ''}).${canFailToFind ? ' Because the search states a card quality, you may also choose to Fail to Find.' : ' Because the search does not state a card quality, you MUST find a card (CR 701.19b).'}`
+		: `Choose ${searchSpec.rawCriteriaText} from your library to put ${describeLibrarySearchDestination(firstDest)}${restDestinations.length > 0 ? ` (then ${restDestinations.length} more: ${restDestinations.map(describeLibrarySearchDestination).join(', ')})` : ''}, then shuffle.`;
+
 	state.pendingPrompts.push({
 		id: uid('prm'),
 		playerId: decisionPlayer.playerId,
 		targetLibraryOwnerId: searchingPlayer.playerId,
 		kind: 'search_library',
+		purpose: 'search_library',
 		title: interceptor
 			? `${interceptor.sourceName} — Search ${searchingPlayer.username}'s Library (${item.card.name})`
 			: `Search Your Library (${item.card.name})`,
-		description: interceptor
-			? `You control ${searchingPlayer.username} while they search their library for ${searchSpec.rawCriteriaText}. Choose a matching card to exile (you may play it for as long as it remains exiled${interceptor.spendManaAsAnyColor ? ', spending mana as though it were mana of any color' : ''}).${canFailToFind ? ' Because the search states a card quality, you may also choose to Fail to Find.' : ' Because the search does not state a card quality, you MUST find a card (CR 701.19b).'}`
-			: `Choose ${searchSpec.rawCriteriaText} from your library to put ${describeLibrarySearchDestination(firstDest)}${restDestinations.length > 0 ? ` (then ${restDestinations.length} more: ${restDestinations.map(describeLibrarySearchDestination).join(', ')})` : ''}, then shuffle.`,
+		description,
 		destinationZone: firstDest.zone,
 		enterTapped: Boolean(firstDest.tapped),
 		putOnTop: Boolean(firstDest.onTop),
@@ -4303,8 +4556,16 @@ function initiateLibrarySearch(
 		remainingDestinations: restDestinations,
 		canFailToFind,
 		interceptedBy: interceptor || undefined,
-		candidateInstanceIds: matchingCards.map((c) => c.instanceId),
-		stackItem: item
+		candidateInstanceIds: candidateIds,
+		stackItem: item,
+		choice: {
+			kind: 'chooseObjects',
+			candidates: candidateIds,
+			min: canFailToFind || candidateIds.length === 0 ? 0 : 1,
+			max: 1,
+			zone: 'library',
+			reason: description
+		}
 	});
 }
 
@@ -4814,13 +5075,25 @@ function runCleanupStep(state: GameState): void {
 			}
 			completeTurnCleanupAndPassTurn(state);
 		} else {
+			const candidateIds = activePlayer.hand.map((c) => c.instanceId);
+			const description = `Cleanup Step: Select ${excess} card(s) from your hand to discard.`;
 			state.pendingPrompts.push({
 				id: uid('prm'),
 				playerId: activePlayer.playerId,
 				kind: 'discard_to_hand_size',
+				purpose: 'discard_to_hand_size',
 				title: `Discard Down to ${maxHand} Cards`,
-				description: `Cleanup Step: Select ${excess} card(s) from your hand to discard.`,
-				countRequired: excess
+				description,
+				countRequired: excess,
+				candidateInstanceIds: candidateIds,
+				choice: {
+					kind: 'chooseObjects',
+					candidates: candidateIds,
+					min: excess,
+					max: excess,
+					zone: 'hand',
+					reason: description
+				}
 			});
 		}
 		return;
@@ -5034,14 +5307,22 @@ export function checkStateBasedActions(state: GameState): void {
 							pr.kind === 'commander_zone_choice' && pr.commanderInstanceId === cmd.instanceId
 					)
 				) {
+					const description = `${cmd.card.name} was put into your ${cmd.zone}. Under Commander Rule 903.9a, you may move it to the Command Zone.`;
 					state.pendingPrompts.push({
 						id: uid('prm'),
 						playerId: p.playerId,
 						kind: 'commander_zone_choice',
+						purpose: 'commander_zone_choice',
 						title: `Return ${cmd.card.name} to Command Zone?`,
-						description: `${cmd.card.name} was put into your ${cmd.zone}. Under Commander Rule 903.9a, you may move it to the Command Zone.`,
+						description,
 						commanderInstanceId: cmd.instanceId,
-						destinationZone: cmd.zone
+						destinationZone: cmd.zone,
+						yesLabel: 'Yes — Move to Command Zone',
+						noLabel: `No — Leave in ${cmd.zone}`,
+						choice: {
+							kind: 'yesNo',
+							question: description
+						}
 					});
 				}
 			}
@@ -6347,19 +6628,24 @@ export function sanitizeGameStateForViewer(state: GameState, viewerId: string | 
 			clone.pendingPrompts.some(
 				(pr) =>
 					pr.playerId === viewerId &&
-					pr.kind === 'search_library' &&
+					(effectivePromptPurpose(pr) === 'search_library' ||
+						(pr.choice?.kind === 'chooseObjects' && pr.choice.zone === 'library')) &&
 					(pr.targetLibraryOwnerId || pr.playerId) === p.playerId
 			);
 		const scryPrompt =
 			p.playerId === viewerId
 				? clone.pendingPrompts.find(
-						(pr) => pr.playerId === viewerId && pr.kind === 'scry_choice'
+						(pr) =>
+							pr.playerId === viewerId &&
+							(pr.kind === 'scry_choice' || pr.choice?.kind === 'orderObjects')
 					)
 				: undefined;
-		if (scryPrompt && scryPrompt.candidateInstanceIds) {
-			p.library = p.library.filter((c) =>
-				scryPrompt.candidateInstanceIds!.includes(c.instanceId)
-			);
+		const scryIds =
+			scryPrompt?.choice?.kind === 'orderObjects'
+				? scryPrompt.choice.objectIds
+				: scryPrompt?.candidateInstanceIds;
+		if (scryIds) {
+			p.library = p.library.filter((c) => scryIds.includes(c.instanceId));
 		} else if (!isSearchingThisLibrary) {
 			p.library = [];
 		}

@@ -1100,12 +1100,46 @@ games pass without regenerating.
   opponent as a generic `ruleModifier` + replacement.
 - **Exit:** those helpers deleted; `ruleTree.ts` contains no rules-text reads.
 
-### Phase 8: Generic choice protocol and UI
+### Phase 8: Generic choice protocol and UI ✅ done 2026-11-08
+- **Status:** done on branch `engine-rewrite-phase8`; not yet merged.
 - **Owns:** `runtime/choices.ts`, `PendingPrompt`/`GameActionPayload` in `types.ts`,
   `ArenaTable.svelte` prompt rendering, the bot choice code in `ai.ts`.
 - **Work:** per §2.8. Migrate prompt kinds one at a time behind the new `choice` action; delete
   `obeka_end_turn_choice`. Bump `engineVersion`.
 - **Exit:** no card-specific prompt or action types; UI renders all choices generically.
+- **Results (2026-11-08, branch `engine-rewrite-phase8`):**
+  - **Ratchet:** `runtime/choices.ts` has 0 `oracleTextRead`, 0 `cardNameComparison`, and 0
+    `directZoneMutation`; existing allowances in `architecture-allowances.json` unchanged (`engine.ts`
+    8 / 27 / 0).
+  - **Suite:** 398 tests in 89 suites (**396 pass, 2 todo, 0 fail**; up from 386 baseline: +12 tests
+    in `runtime/choices.test.ts`); 0 magic type errors; `layers.snapshot.test.ts` and
+    `runtime/golden.test.ts` pass unchanged.
+  - **`GameState.engineVersion` (§2.6):** added `ENGINE_VERSION = 1` and `GameState.engineVersion`
+    (`types.ts`, `createInitialGameState` in `engine.ts`). `applyGameActionInner` ends any active or
+    mulligan game whose `engineVersion` is missing or mismatches `ENGINE_VERSION`, setting
+    `status = 'finished'` and logging a `'system'` message explaining that the game ended due to an
+    engine update.
+  - **Generic choice protocol (`runtime/choices.ts`, `types.ts`, `engine.ts`):**
+    - Added the six generic `ChoiceRequest` / `ChoiceAnswer` kinds (`yesNo`, `chooseObjects`,
+      `chooseMode`, `chooseNumber`, `orderObjects`, `chooseReplacement`), `PendingPrompt.choice`,
+      `PendingPrompt.purpose`, and `{ type: 'choice', promptId, answer?, cancel?, operations? }` in
+      `GameActionPayload`.
+    - Migrated every prompt creation site (`mulligan`, `london_bottom`, `commander_zone_choice`,
+      `end_turn`, `cost_choice`, `search_library`, `scry_choice`, `discard_to_hand_size`,
+      `guided_resolution`, `legend_rule`, and custom `enqueueChoicePrompt` callbacks) to populate a
+      generic `choice` descriptor and resolve through a single validated handler
+      (`validateChoiceAnswer` + `normalizePromptAction` in `runtime/choices.ts`).
+    - Deleted `'obeka_end_turn_choice'` from `PendingPromptKind`, `GameActionPayload`, `engine.ts`,
+      and `ArenaTable.svelte`; end-the-turn effects now push a generic `yesNo` prompt with
+      `purpose: 'end_turn'`. Kept thin compatibility aliases for legacy action payloads
+      (`commander_zone_choice`, `scry_resolve`, `search_library_pick`, `discard_cards`,
+      `guided_resolve`, `cost_choice`, `legend_rule_keep`) so existing pin tests continue to work.
+  - **Generic UI (`ArenaTable.svelte`) and bots (`ai.ts`, `runtime/choices.ts`):**
+    - `ArenaTable.svelte` derives `myChoice = effectivePromptChoice(myPrompt, gameState)` and renders
+      all prompts by `myChoice.kind` (`yesNo`, `chooseObjects`, `chooseMode`, `chooseNumber`,
+      `orderObjects`, `chooseReplacement`), dispatching `{ type: 'choice', promptId, answer }`.
+    - `runAutomatedPriorityAndBots` (`ai.ts`) answers pending bot prompts via `chooseBotAnswer` and
+      `{ type: 'choice', promptId, answer }`.
 
 ### Phase 9: AI on IR ✅ done 2026-11-08
 - **Owns:** `ai.ts`, `runtime/ai.test.ts`.
