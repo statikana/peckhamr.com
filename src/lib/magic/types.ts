@@ -1,3 +1,5 @@
+import type { CostDef, TargetSpec } from './ir.ts';
+
 export type ManaColor = 'W' | 'U' | 'B' | 'R' | 'G' | 'C';
 
 export type ManaPool = Record<ManaColor, number>;
@@ -195,21 +197,9 @@ export type CounterType =
 	| 'lore'
 	| 'time';
 
-export type TargetKind =
-	| 'any'
-	| 'creature'
-	| 'controlled_creature'
-	| 'player'
-	| 'permanent'
-	| 'nonland_permanent'
-	| 'artifact_or_enchantment'
-	| 'spell'
-	| 'graveyard_card'
-	| 'none';
-
 export interface TargetRequirementInfo {
 	requiresTarget: boolean;
-	targetKind: TargetKind;
+	targetKind: string;
 	minTargets: number;
 	maxTargets: number;
 	zone: 'battlefield' | 'stack' | 'graveyard' | 'player' | 'any' | 'none';
@@ -218,24 +208,28 @@ export interface TargetRequirementInfo {
 	cardTypeFilter?: string;
 	isModal?: boolean;
 	modalBranches?: TargetRequirementInfo[];
+	targetSpecs?: TargetSpec[];
 }
 
-export interface ParsedActivatedAbility {
+export interface EffectiveActivatedAbility {
 	id: string;
 	label: string;
 	costText: string;
 	manaCost: string;
+	cost: CostDef[];
+	costComplete: boolean;
 	requiresTap: boolean;
 	requiresSacrificeSelf: boolean;
 	lifeCost: number;
-	loyaltyCost: number | null; // e.g., +1, -2, -7 for planeswalkers
+	loyaltyCost: number | null;
 	isManaAbility: boolean;
 	sorcerySpeedOnly?: boolean;
 	producesMana: ManaColor[];
 	producesAmount: number;
 	effectText: string;
 	requiresTarget: boolean;
-	targetKind: TargetKind;
+	targetKind: string;
+	targetInfo: TargetRequirementInfo;
 }
 
 export interface LibrarySearchDestination {
@@ -275,72 +269,13 @@ export interface LibrarySearchInterceptorInfo {
 	spendManaAsAnyColor: boolean;
 }
 
-export interface ParsedEffect {
-	kind:
-		| 'draw'
-		| 'scry'
-		| 'rearrange_top'
-		| 'mill'
-		| 'gain_life'
-		| 'lose_life_opponents'
-		| 'damage_target'
-		| 'damage_each_opponent'
-		| 'damage_all_creatures'
-		| 'destroy_target'
-		| 'destroy_all_creatures'
-		| 'exile_target'
-		| 'counter_target_spell'
-		| 'bounce_target'
-		| 'search_land_to_battlefield'
-		| 'search_library_to_hand'
-		| 'create_token'
-		| 'add_counters_self'
-		| 'add_counters_target'
-		| 'add_counters_team'
-		| 'pump_self_eot'
-		| 'pump_target_eot'
-		| 'pump_team_eot'
-		| 'grant_keyword_target_eot'
-		| 'proliferate'
-		| 'add_mana'
-		| 'reanimate_target'
-		| 'return_from_graveyard_to_hand'
-		| 'exile_all_graveyards'
-		| 'equip_target'
-		| 'end_the_turn'
-		| 'may_end_the_turn'
-		| 'extra_turn'
-		| 'phase_out_target'
-		| 'phase_out_team'
-		| 'switch_pt_target'
-		| 'suspend_tick_down'
-		| 'suspend_cast_free'
-		| 'win_the_game'
-		| 'lose_the_game_self'
-		| 'sacrifice_self'
-		| 'copy_target_permanent'
-		| 'copy_target_spell'
-		| 'return_self_from_graveyard'
-		| 'ward_trigger';
-	amount: number;
-	toughnessAmount?: number;
-	manaColors?: ManaColor[];
-	tokenSpec?: {
-		name: string;
-		power: number;
-		toughness: number;
-		colors: ManaColor[];
-		typeLine: string;
-		keywords: string[];
-	};
-	counterType?: CounterType;
-	tapped?: boolean;
-	dynamicFormula?: string;
-	mayShuffle?: boolean;
-	searchSpec?: LibrarySearchSpec;
-	recipient?: 'self' | 'target_controller';
-	grantedKeyword?: string;
-	wardCost?: string;
+export interface TokenCreationSpec {
+	name: string;
+	power: number;
+	toughness: number;
+	colors: ManaColor[];
+	typeLine: string;
+	keywords: string[];
 }
 
 export interface CardInstance {
@@ -391,19 +326,6 @@ export interface TargetRef {
 
 export type TriggerScope = 'controller_turn' | 'each_turn' | 'opponent_turn';
 
-export type TriggerCondition =
-	| { kind: 'life_at_least'; amount: number }
-	| { kind: 'controls_count_at_least'; count: number; cardType: string }
-	| { kind: 'graveyard_creatures_above_at_least'; count: number }
-	| { kind: 'unrecognized'; raw: string };
-
-export interface StructuredTriggeredAbility {
-	scope: TriggerScope;
-	condition?: TriggerCondition;
-	effects: ParsedEffect[];
-	clause: string;
-}
-
 export interface StackItem {
 	id: string;
 	sourceInstanceId: string;
@@ -417,7 +339,6 @@ export interface StackItem {
 	xValue: number;
 	castMode?: 'normal' | 'overload';
 	commanderCastCount?: number;
-	parsedEffects: ParsedEffect[];
 	requiresGuidedResolution: boolean;
 	createdAt: number;
 	isCopy?: boolean;
@@ -455,11 +376,6 @@ export interface StackItem {
 	/** The spell or ability that targeted the source (Ward). */
 	eventStackItemId?: string;
 	eventLki?: TriggerEventLki;
-	/**
-	 * Transitional (step F deletes it): the event ref the pre-IR engine passed to a triggered
-	 * ability's legacy ParsedEffects as `targets[0]`. Used only by the legacy fallback.
-	 */
-	legacyEventTarget?: TargetRef;
 	/** "You may" triggered abilities: the controller's answer, once asked on resolution. */
 	optionalAccepted?: boolean;
 	/**
@@ -475,10 +391,9 @@ export interface StackItem {
 	effectResume?: EffectResumeFrame;
 	/**
 	 * Step E2 (plan section 2.7): the ability isn't automated and its human controller is applying it
-	 * by hand (`'awaiting'`: guided prompt open; `'done'`: finish resolving without effects;
-	 * `'legacy'`: the player chose the engine's legacy approximation instead).
+	 * by hand (`'awaiting'`: guided prompt open; `'done'`: finish resolving without effects).
 	 */
-	manualResolution?: 'awaiting' | 'done' | 'legacy';
+	manualResolution?: 'awaiting' | 'done';
 }
 
 /** One binding of the IR interpreter ("it", "that creature"): the objects and their LKI. */
@@ -528,7 +443,6 @@ export interface DelayedTrigger {
 	title?: string;
 	oracleText?: string;
 	description?: string;
-	effects: ParsedEffect[];
 	delayedEffect?: DelayedTriggerEffect;
 	createdAtTurn?: number;
 }
@@ -664,7 +578,6 @@ export interface PendingPrompt {
 	allowBottom?: boolean;
 	allowShuffle?: boolean;
 	stackItem?: StackItem;
-	continuationEffects?: ParsedEffect[];
 	commanderInstanceId?: string;
 	destinationZone?: ZoneType;
 	enterTapped?: boolean;

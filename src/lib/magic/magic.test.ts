@@ -5,14 +5,7 @@ import {
 	createEmptyManaPool,
 	canPayManaCost,
 	deductManaFromPool,
-	detectTargetRequirement,
-	getPermanentManaProduction,
-	parseActivatedAbilities,
-	parseAdditionalCostsAndRestrictions,
-	parseManaCost,
-	parseSpellOrAbilityEffects,
-	parseSuspendClause,
-	parseTriggeredEffects
+	parseManaCost
 } from './oracle.ts';
 import {
 	applyGameAction,
@@ -20,22 +13,22 @@ import {
 	checkLandPlayLegality,
 	checkSpellCastLegality,
 	checkStateBasedActions,
-	collectActiveBoardHooks,
 	computeCombatDamageForecast,
 	createCardInstance,
 	createInitialGameState,
 	enterEndStep,
-	evaluateActionNode,
 	evaluatePermanent,
 	getAllLegalTargetsForRequirement,
 	getAttachedCardsOnBoard,
-	getCardRuleTree,
+	getCardActivatedAbilities,
 	getCreaturePower,
 	getCreatureToughness,
 	getEffectiveActivatedAbilities,
 	getHostCardOnBoard,
 	getLibrarySearchInterceptor,
 	getSpellCostRequirement,
+	getSpellTargetRequirement,
+	getSuspendSpec,
 	hasKeyword,
 	hasProtectionFrom,
 	hasRequiredLegalTargets,
@@ -48,6 +41,8 @@ import {
 	validateChosenTargets,
 	validateTargetLegality
 } from './engine.ts';
+import { compileCard } from './compiler/index.ts';
+import { spellAdditionalCost, spellCastRestrictions } from './runtime/costs.ts';
 import { PRECON_DECKS, STAPLE_CARDS } from './precons.ts';
 import { validateCommanderDeck } from './scryfall.ts';
 import { matchesScryfallQuery } from './search.ts';
@@ -78,10 +73,10 @@ function resolveTriggers(state: GameState, max = 40): void {
 			applyGameAction(state, prompt.playerId, { type: 'choice', promptId: prompt.id, answer: { kind: 'yesNo', yes: true } });
 			continue;
 		}
-		// Step E2: a human resolves an ability that isn't automated manually; these tests pin the
-		// engine's legacy approximation of such abilities, which the guided prompt offers as "No".
+		// Step F: an ability that isn't automated prompts the human for manual resolution; complete
+		// the prompt with yes so any test hitting an unsupported trigger doesn't stall.
 		if (prompt?.continuation?.kind === 'manual_resolution') {
-			applyGameAction(state, prompt.playerId, { type: 'choice', promptId: prompt.id, answer: { kind: 'yesNo', yes: false } });
+			applyGameAction(state, prompt.playerId, { type: 'choice', promptId: prompt.id, answer: { kind: 'yesNo', yes: true } });
 			continue;
 		}
 		if (prompt) return;
@@ -240,10 +235,12 @@ describe('1. Oracle Parser, Mana Cost Engine & Target Requirement Detection', ()
 	});
 
 	it('detects single-graveyard vs multi-graveyard target requirements accurately', () => {
-		// "you may target two cards in a graveyard" -> sameGraveyard: true, minTargets: 2, maxTargets: 2
-		const twoInSingleGrave = detectTargetRequirement(
-			'Return two target cards in a graveyard to your hand.',
-			'Sorcery'
+		const twoInSingleGrave = getSpellTargetRequirement(
+			makeTestCard({
+				name: 'Grave Recall',
+				typeLine: 'Sorcery',
+				oracleText: 'Return two target cards in a graveyard to your hand.'
+			})
 		);
 		assert.equal(twoInSingleGrave.requiresTarget, true);
 		assert.equal(twoInSingleGrave.targetKind, 'graveyard_card');
@@ -252,20 +249,26 @@ describe('1. Oracle Parser, Mana Cost Engine & Target Requirement Detection', ()
 		assert.equal(twoInSingleGrave.maxTargets, 2);
 		assert.equal(twoInSingleGrave.sameGraveyard, true);
 
-		const youMayTargetTwo = detectTargetRequirement(
-			'You may target two cards in a graveyard.',
-			'Sorcery'
+		const twoInSameGrave = getSpellTargetRequirement(
+			makeTestCard({
+				name: 'Focused Recall',
+				typeLine: 'Sorcery',
+				oracleText: 'Return two target cards in a single graveyard to your hand.'
+			})
 		);
-		assert.equal(youMayTargetTwo.requiresTarget, true);
-		assert.equal(youMayTargetTwo.zone, 'graveyard');
-		assert.equal(youMayTargetTwo.minTargets, 2);
-		assert.equal(youMayTargetTwo.maxTargets, 2);
-		assert.equal(youMayTargetTwo.sameGraveyard, true);
+		assert.equal(twoInSameGrave.requiresTarget, true);
+		assert.equal(twoInSameGrave.zone, 'graveyard');
+		assert.equal(twoInSameGrave.minTargets, 2);
+		assert.equal(twoInSameGrave.maxTargets, 2);
+		assert.equal(twoInSameGrave.sameGraveyard, true);
 
 		// Plural "graveyards" -> sameGraveyard: false
-		const pluralGraves = detectTargetRequirement(
-			'Exile two target cards from graveyards.',
-			'Instant'
+		const pluralGraves = getSpellTargetRequirement(
+			makeTestCard({
+				name: 'Grave Purge',
+				typeLine: 'Instant',
+				oracleText: 'Exile two target cards from graveyards.'
+			})
 		);
 		assert.equal(pluralGraves.requiresTarget, true);
 		assert.equal(pluralGraves.zone, 'graveyard');
@@ -273,9 +276,12 @@ describe('1. Oracle Parser, Mana Cost Engine & Target Requirement Detection', ()
 		assert.equal(pluralGraves.sameGraveyard, false);
 
 		// "up to two target creature cards from your graveyard" -> minTargets: 0, maxTargets: 2
-		const upToTwo = detectTargetRequirement(
-			'Return up to two target creature cards from your graveyard to your hand.',
-			'Sorcery'
+		const upToTwo = getSpellTargetRequirement(
+			makeTestCard({
+				name: 'March of the Returned',
+				typeLine: 'Sorcery',
+				oracleText: 'Return up to two target creature cards from your graveyard to your hand.'
+			})
 		);
 		assert.equal(upToTwo.requiresTarget, false);
 		assert.equal(upToTwo.minTargets, 0);
@@ -286,41 +292,65 @@ describe('1. Oracle Parser, Mana Cost Engine & Target Requirement Detection', ()
 
 	it('distinguishes permanent ETB text from Aura and Instant/Sorcery spell targeting', () => {
 		// Mulldrifter / Ravenous Chupacabra creature spell on stack does not require targets to cast
-		const chupacabra = detectTargetRequirement(
-			'When Ravenous Chupacabra enters, destroy target creature an opponent controls.',
-			'Creature — Beast Horror'
+		const chupacabra = getSpellTargetRequirement(
+			makeTestCard({
+				name: 'Ravenous Chupacabra',
+				typeLine: 'Creature — Beast Horror',
+				oracleText: 'When Ravenous Chupacabra enters, destroy target creature an opponent controls.'
+			})
 		);
 		assert.equal(chupacabra.requiresTarget, false);
 
 		// Aura spell DOES require a target on the stack
-		const aura = detectTargetRequirement(
-			'Enchant creature\nEnchanted creature gets +3/+3.',
-			'Enchantment — Aura'
+		const aura = getSpellTargetRequirement(
+			makeTestCard({
+				name: 'Oakenform',
+				typeLine: 'Enchantment — Aura',
+				oracleText: 'Enchant creature\nEnchanted creature gets +3/+3.'
+			})
 		);
 		assert.equal(aura.requiresTarget, true);
 		assert.equal(aura.targetKind, 'creature');
 	});
 
 	it('parses additional costs and timing restrictions from oracle text', () => {
-		const villageRites = parseAdditionalCostsAndRestrictions(
-			'As an additional cost to cast this spell, sacrifice a creature.\nDraw two cards.'
+		const villageRites = spellAdditionalCost(
+			makeTestCard({
+				name: 'Village Rites',
+				typeLine: 'Instant',
+				oracleText: 'As an additional cost to cast this spell, sacrifice a creature.\nDraw two cards.'
+			})
 		);
-		assert.equal(villageRites.sacrificePermanentType, 'Creature');
+		assert.deepEqual(villageRites?.defs, [
+			{ k: 'sacrifice', count: { k: 'const', n: 1 }, filter: { controller: 'you', types: ['Creature'] } }
+		]);
 
-		const thrill = parseAdditionalCostsAndRestrictions(
-			'As an additional cost to cast this spell, discard a card.\nDraw two cards.'
+		const thrill = spellAdditionalCost(
+			makeTestCard({
+				name: 'Thrill of Possibility',
+				typeLine: 'Instant',
+				oracleText: 'As an additional cost to cast this spell, discard a card.\nDraw two cards.'
+			})
 		);
-		assert.equal(thrill.discardCount, 1);
+		assert.deepEqual(thrill?.defs, [{ k: 'discard', count: { k: 'const', n: 1 }, random: undefined }]);
 
-		const lifePay = parseAdditionalCostsAndRestrictions(
-			'As an additional cost to cast this spell, pay 4 life.\nDestroy target creature.'
+		const lifePay = spellAdditionalCost(
+			makeTestCard({
+				name: 'Pay in Blood',
+				typeLine: 'Sorcery',
+				oracleText: 'As an additional cost to cast this spell, pay 4 life.\nDestroy target creature.'
+			})
 		);
-		assert.equal(lifePay.lifeCost, 4);
+		assert.deepEqual(lifePay?.defs, [{ k: 'payLife', amount: { k: 'const', n: 4 } }]);
 
-		const combatOnly = parseAdditionalCostsAndRestrictions(
-			'Cast this spell only during combat.\nDestroy target attacking creature.'
+		const combatOnly = spellCastRestrictions(
+			makeTestCard({
+				name: 'Celestial Flare',
+				typeLine: 'Instant',
+				oracleText: 'Cast this spell only during combat.\nDestroy target attacking creature.'
+			})
 		);
-		assert.equal(combatOnly.onlyDuringCombat, true);
+		assert.deepEqual(combatOnly, ['duringCombat']);
 	});
 });
 
@@ -1698,7 +1728,7 @@ describe('10. Activated Abilities: Equipment, Planeswalker Loyalty & Lathril 10-
 			getCardByName('Lightning Greaves')!,
 			'battlefield'
 		);
-		const abilities = parseActivatedAbilities(greaves.card, ['W', 'U', 'B', 'G']);
+		const abilities = getCardActivatedAbilities(greaves.card, ['W', 'U', 'B', 'G']);
 		const equipAb = abilities.find((a) => a.id.startsWith('equip_'))!;
 		assert.ok(equipAb);
 
@@ -1761,7 +1791,7 @@ describe('10. Activated Abilities: Equipment, Planeswalker Loyalty & Lathril 10-
 		);
 		assert.equal(walker.counters.loyalty, 3);
 
-		const abilities = parseActivatedAbilities(walker.card, ['U']);
+		const abilities = getCardActivatedAbilities(walker.card, ['U']);
 		const plusTwo = abilities.find((a) => a.loyaltyCost === 2)!;
 		const minusOne = abilities.find((a) => a.loyaltyCost === -1)!;
 		const minusTwelve = abilities.find((a) => a.loyaltyCost === -12)!;
@@ -1832,7 +1862,7 @@ describe('10. Activated Abilities: Equipment, Planeswalker Loyalty & Lathril 10-
 		assert.ok(lathril);
 		lathril.summoningSick = false;
 
-		const abilities = parseActivatedAbilities(lathril.card, ['B', 'G']);
+		const abilities = getCardActivatedAbilities(lathril.card, ['B', 'G']);
 		const tapTenAb = abilities[0]!;
 		assert.ok(tapTenAb);
 
@@ -1947,30 +1977,28 @@ describe('12. Viewer State Sanitization (Hidden Information Security)', () => {
 	});
 });
 
-describe('13. Standardized Labeled-Path CardRuleTree & Dynamic Board-State Hooks', () => {
-	it('compiles Equip {1} into labeled path "activated.attach" with targetLegality, targetAmount, action, and emitsEvents: ["on_attach"]', () => {
+describe('13. Compiled Equip IR & Dynamic Board-State Cost Modifiers', () => {
+	it('compiles Equip {1} into a keyword ability and activated ability with sorcery timing and controlled-creature target requirement', () => {
 		const bootsCard = getCardByName('Swiftfoot Boots')!;
-		const tree = getCardRuleTree(bootsCard);
+		const def = compileCard(bootsCard);
 
-		assert.equal(tree.cardName, 'Swiftfoot Boots');
-		const attachNodes = tree.paths['activated.attach'] || [];
-		assert.equal(attachNodes.length, 1);
+		assert.equal(def.faces[0].name, 'Swiftfoot Boots');
+		const equipKw = def.faces[0].abilities.find((a) => a.kind === 'keyword' && a.keyword.name === 'equip');
+		assert.ok(equipKw && equipKw.kind === 'keyword');
+		assert.equal(equipKw.keyword.cost, '{1}');
 
-		const attachNode = tree.actions.find((a) => a.path === 'activated.attach')!;
-		assert.ok(attachNode);
-		assert.equal(attachNode.item, 'self');
-		assert.equal(attachNode.manaCost, '{1}');
-		assert.equal(attachNode.timing, 'sorcery');
-		assert.equal(attachNode.targetLegality.zone, 'battlefield');
-		assert.equal(attachNode.targetLegality.controller, 'self_controller');
-		assert.equal(attachNode.targetLegality.cardType, 'Creature');
-		assert.deepEqual(attachNode.targetAmount, { min: 1, max: 1 });
-		assert.equal(attachNode.action.op, 'attach');
-		assert.equal(attachNode.action.target, 'target[0]');
-		assert.deepEqual(attachNode.emitsEvents, ['on_attach']);
+		const attachAb = getCardActivatedAbilities(bootsCard).find((a) => a.id.startsWith('equip_'))!;
+		assert.ok(attachAb);
+		assert.equal(attachAb.manaCost, '{1}');
+		assert.equal(attachAb.sorcerySpeedOnly, true);
+		assert.equal(attachAb.targetInfo.zone, 'battlefield');
+		assert.equal(attachAb.targetInfo.controllerFilter, 'you');
+		assert.equal(attachAb.targetInfo.cardTypeFilter, 'Creature');
+		assert.equal(attachAb.targetInfo.minTargets, 1);
+		assert.equal(attachAb.targetInfo.maxTargets, 1);
 	});
 
-	it('applies board-state cost-modifier hooks to set mana_cost of all activated.attach actions to {0} and fires on_attach triggers', () => {
+	it('applies board-state cost-modifier statics to set mana_cost of Equip abilities to {0} and fires on_attach triggers', () => {
 		const { state, p1Id, p2Id } = createActiveTwoPlayerGame();
 
 		// Give P1 ZERO mana in pool and ZERO lands on board!
@@ -1991,14 +2019,12 @@ describe('13. Standardized Labeled-Path CardRuleTree & Dynamic Board-State Hooks
 			'battlefield'
 		);
 
-		// Without a free-attach hook on the board, evaluated manaCost is '{1}' and P1 cannot pay it with 0 mana
-		const evalBefore = evaluateActionNode(state, p1Id, boots, 'activated.attach')!;
-		assert.equal(evalBefore.effectiveManaCost, '{1}');
-		assert.equal(evalBefore.effectiveCostRequirement.totalCmc, 1);
+		// Without a free-attach modifier on the board, evaluated manaCost is '{1}' and P1 cannot pay it with 0 mana
 		const rawAb = getEffectiveActivatedAbilities(state, state.players[0], boots)[0]!;
+		assert.equal(rawAb.manaCost, '{1}');
 		assert.equal(checkAbilityActivationLegality(state, p1Id, boots, rawAb).ok, false);
 
-		// Now place a permanent on P1's battlefield with a free-attach board hook AND an on_attach trigger!
+		// Now place a permanent on P1's battlefield with a free-attach static AND an on_attach trigger!
 		addCardToZone(
 			state,
 			p1Id,
@@ -2012,20 +2038,6 @@ describe('13. Standardized Labeled-Path CardRuleTree & Dynamic Board-State Hooks
 			}),
 			'battlefield'
 		);
-
-		const activeHooks = collectActiveBoardHooks(state);
-		assert.equal(
-			activeHooks.some(
-				(h) => h.hook.targetPath === 'activated.attach' && h.hook.costMode === 'set_zero'
-			),
-			true
-		);
-
-		// Re-evaluating the "activated.attach" node on demand now yields effectiveManaCost === '{0}'!
-		const evalAfter = evaluateActionNode(state, p1Id, boots, 'activated.attach')!;
-		assert.equal(evalAfter.effectiveManaCost, '{0}');
-		assert.equal(evalAfter.effectiveCostRequirement.totalCmc, 0);
-		assert.ok(evalAfter.appliedHooks.length > 0);
 
 		const hookedAb = getEffectiveActivatedAbilities(state, state.players[0], boots)[0]!;
 		assert.equal(hookedAb.manaCost, '{0}');
@@ -2254,12 +2266,11 @@ describe('15. Continuous Layer & Keyword/Effect Attribution Engine (Alt-View Bre
 		assert.equal(hasKeyword(llanowar, 'Shroud', state), false);
 
 		const murderCard = getCardByName('Infernal Grasp')!;
-		const parsedMurder = parseSpellOrAbilityEffects(murderCard);
 		const targetLegality = validateTargetLegality(
 			state,
 			p2Id,
 			{ kind: 'permanent', id: stalker.instanceId, label: stalker.card.name },
-			parsedMurder.targetInfo,
+			getSpellTargetRequirement(murderCard),
 			murderCard
 		);
 		assert.equal(
@@ -2905,11 +2916,13 @@ describe('22. Combat Damage Forecast Layover & Aura/Equipment Attachment Helpers
 			ponderCard.oracleText.includes('Look at the top three cards of your library, then put them back in any order. You may shuffle.'),
 			'Ponder has its real Oracle text instead of Scry 3'
 		);
-		const parsedPonder = parseSpellOrAbilityEffects(ponderCard);
-		assert.equal(parsedPonder.effects[0].kind, 'rearrange_top');
-		assert.equal(parsedPonder.effects[0].amount, 3);
-		assert.equal(parsedPonder.effects[0].mayShuffle, true);
-		assert.equal(parsedPonder.effects[1].kind, 'draw');
+		const ponderDef = compileCard(ponderCard);
+		const ponderSpell = ponderDef.faces[0].abilities.find((a) => a.kind === 'spell');
+		assert.ok(ponderSpell && ponderSpell.kind === 'spell');
+		assert.equal(ponderSpell.effect[0].verb, 'lookAndReorder');
+		assert.deepEqual(ponderSpell.effect[0].amount, { k: 'const', n: 3 });
+		assert.equal(ponderSpell.effect[0].params?.mayShuffle, true);
+		assert.equal(ponderSpell.effect[1].verb, 'draw');
 
 		// Put 3 known cards on top of Alice's library: [cardA, cardB, cardC]
 		const cardA = createCardInstance(getCardByName('Island')!, p1Id, 'library');
@@ -3424,15 +3437,15 @@ describe('24. Stage A: Live Bug Fixes (A1 Intervening-If, A2 End Step Scope, A3 
 		assert.equal(state.stack.length, 1, '"At the beginning of each end step" triggers on opponent turn too');
 	});
 
-	it('A3: evaluates Overload cost ({6}{U} for Cyclonic Rift and {4}{R} for synthetic Overload card) via cast.overload ActionRuleNode', () => {
+	it('A3: evaluates Overload cost ({6}{U} for Cyclonic Rift and {4}{R} for synthetic Overload card) via compiled Overload keyword', () => {
 		const { state, p1Id } = createActiveTwoPlayerGame();
 		const p1 = state.players[0];
 
 		const riftCard = getCardByName('Cyclonic Rift')!;
-		const riftTree = getCardRuleTree(riftCard);
-		const overloadNode = riftTree.actions.find((a) => a.path === 'cast.overload');
-		assert.ok(overloadNode, 'Cyclonic Rift compiles a cast.overload ActionRuleNode');
-		assert.equal(overloadNode?.manaCost, '{6}{U}');
+		const riftDef = compileCard(riftCard);
+		const overloadKw = riftDef.faces[0].abilities.find((a) => a.kind === 'keyword' && a.keyword.name === 'overload');
+		assert.ok(overloadKw && overloadKw.kind === 'keyword', 'Cyclonic Rift compiles an overload KeywordDef');
+		assert.equal(overloadKw.keyword.cost, '{6}{U}');
 
 		const riftInst = addCardToZone(state, p1Id, riftCard, 'hand');
 		const normalReq = getSpellCostRequirement(p1, riftInst, state, 0);
@@ -3565,7 +3578,7 @@ describe('25. Stage B: Correctness Fixes (B1 Stack Owner Zone, B2 Hook Phasing/A
 		);
 	});
 
-	it('B2: skips phased-out and ability-stripped battlefield permanents in collectActiveBoardHooks while keeping Command-zone Eminence hooks', () => {
+	it('B2: skips phased-out and ability-stripped battlefield permanents for cost-modifier statics while keeping Command-zone Eminence cost modifiers', () => {
 		const { state, p1Id } = createActiveTwoPlayerGame();
 		const p1 = state.players[0];
 		p1.command = [];
@@ -3577,34 +3590,53 @@ describe('25. Stage B: Correctness Fixes (B1 Stack Owner Zone, B2 Hook Phasing/A
 			getCardByName('Goblin Electromancer')!,
 			'battlefield'
 		);
+		const testInstant = addCardToZone(
+			state,
+			p1Id,
+			makeTestCard({
+				name: 'Chart a Course',
+				manaCost: '{1}{U}',
+				cmc: 2,
+				typeLine: 'Instant',
+				oracleText: 'Draw a card.'
+			}),
+			'hand'
+		);
 		assert.equal(
-			collectActiveBoardHooks(state).some((h) => h.sourceInstanceId === electro.instanceId),
-			true
+			getSpellCostRequirement(p1, testInstant, state).generic,
+			0,
+			'Active Goblin Electromancer reduces {1}{U} instant generic cost to 0'
 		);
 
-		// 1. Phased-out Goblin Electromancer does not contribute hooks
+		// 1. Phased-out Goblin Electromancer does not reduce spell costs
 		electro.phasedOut = true;
 		assert.equal(
-			collectActiveBoardHooks(state).some((h) => h.sourceInstanceId === electro.instanceId),
-			false,
-			'Phased-out permanent is skipped by collectActiveBoardHooks'
+			getSpellCostRequirement(p1, testInstant, state).generic,
+			1,
+			'Phased-out Goblin Electromancer does not reduce spell costs'
 		);
 		electro.phasedOut = false;
 
-		// 2. Humility strips abilities from battlefield creatures, so Goblin Electromancer does not contribute hooks
+		// 2. Humility strips abilities from battlefield creatures, so Goblin Electromancer does not reduce spell costs
 		const humility = addCardToZone(state, p1Id, getCardByName('Humility')!, 'battlefield');
 		assert.equal(
-			collectActiveBoardHooks(state).some((h) => h.sourceInstanceId === electro.instanceId),
-			false,
-			'Ability-stripped creature is skipped by collectActiveBoardHooks'
+			getSpellCostRequirement(p1, testInstant, state).generic,
+			1,
+			'Ability-stripped Goblin Electromancer does not reduce spell costs'
 		);
 
-		// 3. The Ur-Dragon in the Command zone still contributes its Eminence hook even while Humility is on the battlefield
-		const urDragonCmd = addCardToZone(state, p1Id, getCardByName('The Ur-Dragon')!, 'command');
+		// 3. The Ur-Dragon in the Command zone still contributes its Eminence cost reduction even while Humility is on the battlefield
+		addCardToZone(state, p1Id, getCardByName('The Ur-Dragon')!, 'command');
+		const dragonSpell = addCardToZone(
+			state,
+			p1Id,
+			getCardByName('Lathliss, Dragon Queen')!,
+			'hand'
+		);
 		assert.equal(
-			collectActiveBoardHooks(state).some((h) => h.sourceInstanceId === urDragonCmd.instanceId),
-			true,
-			'Command-zone Eminence hook remains active'
+			getSpellCostRequirement(p1, dragonSpell, state).generic,
+			3,
+			'Command-zone Eminence reduces {4}{R}{R} Dragon generic cost from 4 to 3 even under Humility'
 		);
 		assert.ok(humility);
 	});
@@ -4048,12 +4080,12 @@ describe('26. Stage C: Grammar-Driven Triggers, Target-Controller Effects, Cost 
 			'Synthetic Overloaded Tempest Purge bounced opponent nonland permanents'
 		);
 
-		// C6: Every non-land card in STAPLE_CARDS has a non-null cast.normal ActionRuleNode
+		// C6: Every non-land card in STAPLE_CARDS compiles to a non-empty FaceDefinition
 		const allCards = Object.values(STAPLE_CARDS);
 		for (const c of allCards) {
 			if (!c.typeLine.includes('Land') || c.typeLine.includes('Creature')) {
-				const castNode = getCardRuleTree(c).actions.find((a) => a.path === 'cast.normal');
-				assert.ok(castNode, `Card ${c.name} should have a cast.normal ActionRuleNode`);
+				const def = compileCard(c);
+				assert.ok(def.faces.length > 0, `Card ${c.name} should compile to a FaceDefinition`);
 			}
 		}
 
@@ -4903,9 +4935,9 @@ describe('29. Stage C & D Deep Audit: Timestamp Precedence, Layer-Aware Subtypes
 		pyroDork.summoningSick = false;
 		state.players[0].manaPool = { W: 0, U: 0, B: 0, R: 0, G: 0, C: 0 };
 
-		const prod = getPermanentManaProduction(pyroDork.card, ['R']);
-		assert.equal(prod.canTapForMana, true, 'Non-green power-based mana ability is recognized');
-		assert.deepEqual(prod.colors, ['R']);
+		const manaAb = getCardActivatedAbilities(pyroDork.card, ['R']).find((a) => a.isManaAbility);
+		assert.ok(manaAb, 'Non-green power-based mana ability is recognized');
+		assert.deepEqual(manaAb.producesMana, ['R']);
 
 		assert.equal(
 			applyGameAction(state, p1Id, {
@@ -5196,10 +5228,14 @@ describe('30. Self-referencing ETB triggers use current Oracle templating', () =
 				typeLine,
 				oracleText: `When this ${noun} enters, draw a card.`
 			});
+			const trig = compileCard(card).faces[0].abilities.find((a) => a.kind === 'triggered');
+			assert.ok(trig && trig.kind === 'triggered', `"When this ${noun} enters" should compile as a triggered ability`);
+			assert.equal(trig.trigger.event, 'zoneChange');
+			assert.equal(trig.trigger.filter?.to, 'battlefield');
 			assert.deepEqual(
-				parseTriggeredEffects(card, 'etb').map((e) => e.kind),
+				trig.effect.map((s) => s.verb),
 				['draw'],
-				`"When this ${noun} enters" should be a self ETB trigger`
+				`"When this ${noun} enters" should compile a draw step`
 			);
 		}
 	});
@@ -5213,7 +5249,7 @@ describe('31. Oracle text with reminder text and current templating', () => {
 			oracleText:
 				'Cinder Rift Volley deals 3 damage to any target.\nSuspend 1—{R} (Rather than cast this card from your hand, you may pay {R} and exile it with a time counter on it. At the beginning of your upkeep, remove a time counter. When the last is removed, you may cast it without paying its mana cost.)'
 		});
-		assert.equal(parseSuspendClause(card)?.suspendCost, '{R}');
+		assert.equal(getSuspendSpec(card)?.suspendCost, '{R}');
 	});
 
 	it('"You draw two cards and lose 2 life." loses the life', () => {
@@ -5222,11 +5258,13 @@ describe('31. Oracle text with reminder text and current templating', () => {
 			typeLine: 'Sorcery',
 			oracleText: 'You draw two cards and lose 2 life.'
 		});
+		const spell = compileCard(card).faces[0].abilities.find((a) => a.kind === 'spell');
+		assert.ok(spell && spell.kind === 'spell');
 		assert.deepEqual(
-			parseSpellOrAbilityEffects(card).effects.map((e) => [e.kind, e.amount]),
+			spell.effect.map((s) => [s.verb, s.amount]),
 			[
-				['draw', 2],
-				['gain_life', -2]
+				['draw', { k: 'const', n: 2 }],
+				['loseLife', { k: 'const', n: 2 }]
 			]
 		);
 	});

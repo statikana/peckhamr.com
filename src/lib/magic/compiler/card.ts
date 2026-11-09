@@ -31,8 +31,8 @@ import type {
 	UnsupportedReason
 } from '../ir.ts';
 import type { ManaColor, ScryfallCard } from '../types.ts';
-import { parseAdditionalCostSentence, parseCost, parseCostModifierSentence } from './costs.ts';
-import { parseEffects, parseSpellFace, type EffectParse } from './effects.ts';
+import { parseAdditionalCostSentence, parseCost, parseCostModifierSentence, parseObjectPhrase } from './costs.ts';
+import { extractUnparsedTargets, parseEffects, parseSpellFace, type EffectParse } from './effects.ts';
 import { staticallyInterpretable, triggerTargetsSupported } from './interpretable.ts';
 import { normalizeFace, splitSentences, type NormalizedFace, type NormalizedLine } from './normalize.ts';
 import { parseStaticAbility } from './statics.ts';
@@ -237,6 +237,15 @@ function keywordLine(line: NormalizedLine): AbilityDef[] | null {
 			out.push(unsupported('keyword_not_implemented', part, span, [span]));
 			return;
 		}
+		if (keyword.name === 'enchant') {
+			// CR 303.4a: an Aura spell targets the object its enchant ability can enchant.
+			const filter = parseObjectPhrase((keyword.param ?? '').trim());
+			if (filter) keyword.enchantFilter = filter;
+			else {
+				out.push(unsupported('keyword_not_implemented', part, span, [span]));
+				return;
+			}
+		}
 		out.push({ kind: 'keyword', keyword, span, ...(keyword.name === 'equip' ? { id: `equip_${line.rawIndex}` } : {}) });
 	});
 	return out;
@@ -314,7 +323,18 @@ function activatedLine(ctx: Ctx, line: NormalizedLine): AbilityDef[] | null {
 	if (!costComplete || !effectOk) {
 		const gaps = [...cost.unparsed, ...(effectOk ? [] : effect.unparsed.length > 0 ? effect.unparsed : [{ start: effectStart, end: line.span.end }])];
 		const manaSteps = isMana && effect.steps.every(manaStepComplete) ? effect.steps : undefined;
-		return [{ ...unsupported('unparsed', line.text, line.span, gaps), id, cost: cost.defs, costComplete, timing, isMana, ...(manaSteps ? { effect: manaSteps } : {}) }];
+		return [
+			{
+				...unsupported('unparsed', line.text, line.span, gaps),
+				id,
+				cost: cost.defs,
+				costComplete,
+				timing,
+				isMana,
+				...(manaSteps ? { effect: manaSteps } : {}),
+				...(effect.targets.length > 0 ? { targets: effect.targets } : {})
+			}
+		];
 	}
 	const ability: ActivatedAbility = {
 		kind: 'activated',
@@ -355,9 +375,9 @@ function intrinsicManaAbility(ctx: Ctx, color: ManaColor): ActivatedAbility {
 
 /** "Cast ~ only during combat." and friends (CR 601.3). */
 const CAST_RESTRICTIONS: Array<[RegExp, NonNullable<SpellAbility['castRestrictions']>[number]]> = [
-	[/^cast ~ only during combat\.?$/i, 'duringCombat'],
-	[/^cast ~ only during your turn\.?$/i, 'duringYourTurn'],
-	[/^cast ~ only before attackers are declared\.?$/i, 'beforeAttackers']
+	[/^cast (?:~|this spell) only during combat\.?$/i, 'duringCombat'],
+	[/^cast (?:~|this spell) only during your turn\.?$/i, 'duringYourTurn'],
+	[/^cast (?:~|this spell) only before attackers are declared\.?$/i, 'beforeAttackers']
 ];
 
 /**
@@ -406,7 +426,19 @@ function spellAbility(norm: NormalizedFace, lines: NormalizedLine[]): AbilityDef
 	if (unparsed.length > 0 || !interpretable) {
 		const gaps = unparsed.length > 0 ? unparsed : [span];
 		const u = unsupported('unparsed', text, span, gaps);
-		return [...statics, { ...u, id: 'cast', cost: additionalCosts, costComplete }];
+		const fallbackTargets =
+			effect.targets.length > 0 ? effect.targets : extractUnparsedTargets(text);
+		return [
+			...statics,
+			{
+				...u,
+				id: 'cast',
+				cost: additionalCosts,
+				costComplete,
+				...(fallbackTargets.length > 0 ? { targets: fallbackTargets } : {}),
+				...(castRestrictions.length > 0 ? { castRestrictions } : {})
+			}
+		];
 	}
 	const spell: SpellAbility = {
 		kind: 'spell',

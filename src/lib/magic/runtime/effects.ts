@@ -39,7 +39,6 @@ import type {
 	GameState,
 	LibrarySearchSpec,
 	ManaColor,
-	ParsedEffect,
 	PlayerGameState,
 	ScryfallCard,
 	StackItem,
@@ -93,7 +92,7 @@ export interface EffectPorts {
 	phaseOut(state: GameState, inst: CardInstance): void;
 	endTurn(state: GameState, playerId: string): void;
 	/** "The player whose turn it is may end the turn": ends it for a bot/the controller, else prompts. */
-	activePlayerMayEndTurn(state: GameState, controller: PlayerGameState): void;
+	activePlayerMayEndTurn(state: GameState, controller: PlayerGameState, sourceName: string): void;
 	win(state: GameState, player: PlayerGameState, reason: string): void;
 	lose(state: GameState, player: PlayerGameState, reason: string): void;
 }
@@ -861,8 +860,7 @@ class Run {
 				return;
 			case 'endTurn':
 				if (step.params?.activePlayerMay) {
-					// Like the legacy path, resolution carries on afterwards (Obeka's ability isn't a spell).
-					p.activePlayerMayEndTurn(s, you);
+					p.activePlayerMayEndTurn(s, you, this.ctx.sourceCard.name);
 					return;
 				}
 				p.endTurn(s, you.playerId);
@@ -1546,7 +1544,7 @@ class Run {
 				continue;
 			}
 			const controller = params.underYourControl ? you : (this.player(o.ownerId) ?? holder);
-			o.summoningSick = o.card.typeLine.includes('Creature');
+			o.summoningSick = o.card.typeLine.includes('Creature') && !o.card.keywords.includes('Haste');
 			o.tapped = Boolean(params.tapped);
 			moveObject(s, o, 'battlefield', {
 				from: { player: holder, zone: 'graveyard' },
@@ -1626,14 +1624,12 @@ class Run {
 			for (const b of this.bindings.get(e.subject.name) ?? []) {
 				const found = this.locate(b.id);
 				const label = found ? found.inst.card.name : 'it';
-				const effects: ParsedEffect[] = [{ kind: 'exile_target', amount: 1 }];
 				const dt: DelayedTrigger = {
 					id: p.uid('dtrig'),
 					...base,
 					targetInstanceId: b.id,
 					title: `${this.ctx.title} — Delayed Exile Trigger`,
 					description: `At the beginning of the next end step, exile ${label}.`,
-					effects,
 					// CR 400.7: "it" is the object as it is now; if it changes zones again it's a new object.
 					delayedEffect: {
 						kind: 'exile',
@@ -1646,13 +1642,11 @@ class Run {
 			return;
 		}
 		if (e.verb === 'lose') {
-			const effects: ParsedEffect[] = [{ kind: 'lose_the_game_self', amount: 1 }];
 			s.delayedTriggers.push({
 				id: p.uid('dtrig'),
 				...base,
 				title: `${this.ctx.title} — Delayed End Step Trigger`,
 				description: 'At the beginning of the end step, you lose the game.',
-				effects,
 				delayedEffect: { kind: 'lose' }
 			});
 			return;
@@ -1666,7 +1660,6 @@ class Run {
 					...base,
 					title: `${this.ctx.title} — Delayed Upkeep Trigger`,
 					description: `At the beginning of the next turn's upkeep, ${pl.username} draws ${upTo ? `up to ${amount}` : amount} card(s).`,
-					effects: [],
 					delayedEffect: { kind: 'draw', playerId: pl.playerId, amount, upTo }
 				});
 			}

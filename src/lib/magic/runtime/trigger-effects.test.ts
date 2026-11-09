@@ -169,7 +169,7 @@ function attack(state: GameState, attacker: PlayerGameState, defender: PlayerGam
 const tokens = (pl: PlayerGameState, name: string) => pl.battlefield.filter((c) => c.isToken && c.card.name.includes(name)).length;
 
 /** Runs `fn` and returns how many triggered abilities resolved on each path. */
-function paths(fn: () => void): { interpreter: number; legacy: number } {
+function paths(fn: () => void): { interpreter: number; manual: number } {
 	triggerResolutionCounts(true);
 	fn();
 	return triggerResolutionCounts(true);
@@ -188,7 +188,7 @@ describe('Step C: triggered abilities on the IR interpreter', () => {
 		assert.equal(p[0].hand.length, hand - 1 + 2, 'drew two (the Scholar left the hand)');
 		assert.equal(p[1].life, life - 1, 'opponent lost 1 life');
 		assert.equal(ran.interpreter, 1);
-		assert.equal(ran.legacy, 0);
+		assert.equal(ran.manual, 0);
 	});
 
 	it('"Whenever another creature you control enters, you gain 1 life" (synthetic, observer ETB)', () => {
@@ -203,7 +203,7 @@ describe('Step C: triggered abilities on the IR interpreter', () => {
 			settle(state);
 		});
 		assert.equal(p[0].life, life + 1);
-		assert.deepEqual(ran, { interpreter: 1, legacy: 0 });
+		assert.deepEqual(ran, { interpreter: 1, manual: 0 });
 	});
 
 	it('"you gain life equal to the entering creature\'s power" reads the event object (synthetic)', () => {
@@ -215,7 +215,7 @@ describe('Step C: triggered abilities on the IR interpreter', () => {
 			settle(state);
 		});
 		assert.equal(p[0].life, life + 3);
-		assert.deepEqual(ran, { interpreter: 1, legacy: 0 });
+		assert.deepEqual(ran, { interpreter: 1, manual: 0 });
 	});
 
 	for (const name of ['Lathril, Blade of the Elves', 'Thornwake Sovereign']) {
@@ -232,7 +232,7 @@ describe('Step C: triggered abilities on the IR interpreter', () => {
 			});
 			assert.equal(tokens(p[0], 'Elf Warrior'), 3);
 			assert.ok(ran.interpreter >= 1, 'the combat damage trigger resolved on the interpreter');
-			assert.equal(ran.legacy, 0);
+			assert.equal(ran.manual, 0);
 		});
 	}
 
@@ -248,7 +248,7 @@ describe('Step C: triggered abilities on the IR interpreter', () => {
 		});
 		assert.ok(p[0].graveyard.some((c) => c.card.name === 'Emberhusk Brute'), 'it died');
 		assert.equal(p[1].life, life - 4, 'its power as it last existed on the battlefield (CR 608.2h)');
-		assert.deepEqual(ran, { interpreter: 1, legacy: 0 });
+		assert.deepEqual(ran, { interpreter: 1, manual: 0 });
 	});
 
 	it('Landfall: "Whenever a land you control enters, you gain 2 life" (synthetic)', () => {
@@ -261,7 +261,7 @@ describe('Step C: triggered abilities on the IR interpreter', () => {
 			settle(state);
 		});
 		assert.equal(p[0].life, life + 2);
-		assert.deepEqual(ran, { interpreter: 1, legacy: 0 });
+		assert.deepEqual(ran, { interpreter: 1, manual: 0 });
 	});
 
 	it('cast trigger: "Whenever you cast a noncreature spell, create a 1/1 red Elemental creature token" (synthetic)', () => {
@@ -274,7 +274,7 @@ describe('Step C: triggered abilities on the IR interpreter', () => {
 		});
 		assert.equal(tokens(p[0], 'Elemental'), 1);
 		assert.equal(ran.interpreter, 1);
-		assert.equal(ran.legacy, 0);
+		assert.equal(ran.manual, 0);
 	});
 
 	it('attack trigger: "Whenever a creature you control attacks, it gets +2/+0 until end of turn" (synthetic, "it" = the attacker)', () => {
@@ -287,7 +287,7 @@ describe('Step C: triggered abilities on the IR interpreter', () => {
 			passUntil(state, 'main2');
 		});
 		assert.equal(p[1].life, life - 4, 'the attacker dealt 4');
-		assert.deepEqual(ran, { interpreter: 1, legacy: 0 });
+		assert.deepEqual(ran, { interpreter: 1, manual: 0 });
 	});
 
 	it('"that player" in a combat damage trigger is the damaged player (synthetic)', () => {
@@ -302,6 +302,6 @@ describe('Step C: triggered abilities on the IR interpreter', () => {
 		});
 		assert.equal(p[2].life, life2 - 1 - 2, 'the damaged player lost 1 (combat) + 2');
 		assert.equal(p[1].life, life1, 'the other opponent is untouched');
-		assert.deepEqual(ran, { interpreter: 1, legacy: 0 });
+		assert.deepEqual(ran, { interpreter: 1, manual: 0 });
 	});
 });

@@ -173,15 +173,14 @@ describe('Event bus: ZoneChange accounting', () => {
 			p1.battlefield.push(bear);
 			state.stack.push({
 				id: 'stk_prolif',
-				sourceInstanceId: 'src',
+				sourceInstanceId: bear.instanceId,
 				card: bear.card,
 				controllerId: p1.playerId,
-				kind: 'triggered',
-				title: 'Proliferate',
-				oracleText: '',
+				kind: 'activated',
+				title: 'Counters',
+				oracleText: 'Put a +1/+1 counter on ~.',
 				targets: [],
 				xValue: 0,
-				parsedEffects: [{ kind: 'proliferate', amount: 1 }],
 				requiresGuidedResolution: false,
 				createdAt: 0
 			});

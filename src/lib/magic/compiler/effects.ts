@@ -128,9 +128,9 @@ const RESTRICTION_SENTENCES: RegExp[] = [
 	/^activate only once each turn\.?$/i,
 	/^activate only during your upkeep\.?$/i,
 	/^equip only as a sorcery\.?$/i,
-	/^cast ~ only during combat\.?$/i,
-	/^cast ~ only during your turn\.?$/i,
-	/^cast ~ only before attackers are declared\.?$/i,
+	/^cast (?:~|this spell) only during combat\.?$/i,
+	/^cast (?:~|this spell) only during your turn\.?$/i,
+	/^cast (?:~|this spell) only before attackers are declared\.?$/i,
 	/^~ can't be countered\.?$/i,
 	/^this spell can't be countered\.?$/i,
 	// Cost reductions of the spell itself are statics, applied when the cost is determined.
@@ -171,11 +171,18 @@ class Parser {
 		this.lastObject = { ref: { k: 'binding', name: `b${stepIndex}` }, stepIndex };
 	}
 
+	/** Records a standalone target sentence ("You may target two cards in a graveyard.") for later "them"/"it". */
+	setLastTarget(ref: Ref): void {
+		this.lastObject = { ref, stepIndex: -1 };
+	}
+
 	/** "it" / "that creature": the last object acted on, or the trigger's object. */
 	itRef(): Ref | null {
 		if (this.lastObject) {
-			const step = this.steps[this.lastObject.stepIndex];
-			if (step) step.bindAs = (this.lastObject.ref as { name: string }).name;
+			if (this.lastObject.stepIndex >= 0) {
+				const step = this.steps[this.lastObject.stepIndex];
+				if (step) step.bindAs = (this.lastObject.ref as { name: string }).name;
+			}
 			return this.lastObject.ref;
 		}
 		if (this.context === 'triggered') return { k: 'eventObject' };
@@ -283,11 +290,15 @@ function targetPhrase(text: string): Omit<TargetSpec, 'min' | 'max'> | null {
 
 	let zone: ObjectFilter['zone'] = 'battlefield';
 	let owner: ObjectFilter['owner'];
-	const gy = phrase.match(/^(.+?) (?:from|in) (a|your|an opponent's) graveyard$/);
+	let sameOwner: boolean | undefined;
+	const gy = phrase.match(/^(.+?) (?:from|in) (?:(a|a single|the same|your|an opponent's|any number of|opponents') )?(graveyards?)$/);
 	if (gy) {
 		phrase = gy[1];
 		zone = 'graveyard';
-		owner = gy[2] === 'your' ? 'you' : gy[2] === 'a' ? undefined : 'opponent';
+		const qual = gy[2];
+		const plural = gy[3] === 'graveyards';
+		owner = qual === 'your' ? 'you' : qual === "an opponent's" || qual === "opponents'" ? 'opponent' : undefined;
+		if (!plural) sameOwner = true;
 	}
 	const spell = phrase.match(/^(?:(.+) )?spells?$/);
 	if (spell && zone === 'battlefield') {
@@ -307,7 +318,7 @@ function targetPhrase(text: string): Omit<TargetSpec, 'min' | 'max'> | null {
 	const out: ObjectFilter = { ...filter, zone };
 	if (ctl.controller) out.controller = ctl.controller;
 	if (owner) out.owner = owner;
-	return { kind: 'object', filter: out };
+	return { kind: 'object', filter: out, ...(sameOwner ? { sameOwner: true } : {}) };
 }
 
 /**
@@ -332,13 +343,20 @@ function objectPhrase(p: Parser, text: string): ObjectRes | null {
 		});
 		return { selector: { k: 'target', index }, ref: { k: 'target', index } };
 	}
-	const tgt = t.match(/^(?:(up to) )?(?:(\S+) )?target (.+)$/);
+	const tgt = t.match(/^(?:(up to) )?(?:(\S+) )?target (?:(one|two|three|four|five|six|\d+) )?(.+)$/);
 	if (tgt) {
-		const c = tgt[2] ? count(tgt[2]) : n(1);
+		const countWord = tgt[2] ?? tgt[3];
+		const c = countWord ? count(countWord) : n(1);
 		if (!c || c.k !== 'const') return null;
-		const spec = targetPhrase(tgt[3]);
+		const spec = targetPhrase(tgt[4]);
 		if (!spec) return null;
-		const index = p.addTarget({ ...spec, min: tgt[1] ? 0 : c.n, max: c.n });
+		const { sameOwner, ...restSpec } = spec;
+		const index = p.addTarget({
+			...restSpec,
+			min: tgt[1] ? 0 : c.n,
+			max: c.n,
+			...(sameOwner && c.n > 1 ? { sameOwner: true } : {})
+		});
 		return { selector: { k: 'target', index }, ref: { k: 'target', index }, plural: c.n > 1 };
 	}
 	const top = t.match(/^the top (.+) card of your graveyard$/);
@@ -874,10 +892,21 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 		p.push({ verb: 'counterSpell', subject: obj.selector, span }, true);
 		return true;
 	}
+	m = t.match(/^(?:you may )?target ((?:one|two|three|four|five|six|\d+) .+)$/);
+	if (m) {
+		const obj = objectPhrase(p, `target ${m[1]}`);
+		if (!obj || !obj.ref) return false;
+		p.setLastTarget(obj.ref);
+		return true;
+	}
 	m = t.match(/^return (.+?) to (?:its|their) owners?'s? hands?$/);
 	if (m) {
 		const obj = objectPhrase(p, m[1]);
 		if (!obj || obj.fromZone) return false;
+		if (obj.selector.k === 'target' && p.targets[obj.selector.index].filter.zone === 'graveyard') {
+			p.push({ verb: 'move', subject: obj.selector, params: { from: 'graveyard', to: 'hand' }, span }, true);
+			return true;
+		}
 		p.push({ verb: 'bounce', subject: obj.selector, span }, true);
 		return true;
 	}
@@ -1358,6 +1387,48 @@ export function parseAbilityEffectText(name: string, effectText: string): Effect
 
 const STACK_CACHE = new Map<string, EffectParse>();
 const MANA_STEPS_CACHE = new Map<string, EffectStep[]>();
+
+/**
+ * Extracts best-effort `TargetSpec[]` from an unparsed spell or ability text so humans still get
+ * the target picker before manual resolution (CR 601.2c) when the effect sentence isn't automated.
+ */
+export function extractUnparsedTargets(text: string): TargetSpec[] {
+	const low = text.toLowerCase();
+	if (/\bany target\b/.test(low)) {
+		return [
+			{
+				kind: 'objectOrPlayer',
+				filter: { zone: 'battlefield', types: ['Creature', 'Planeswalker', 'Battle'] },
+				player: { relation: 'any' },
+				min: 1,
+				max: 1
+			}
+		];
+	}
+	const m = low.match(
+		/\b(?:(up to) )?(?:(one|two|three|four|five|six|\d+) )?target (?:(one|two|three|four|five|six|\d+) )?([^.,;\n]+)/
+	);
+	if (!m) return [];
+	const countWord = m[2] ?? m[3];
+	const c = countWord ? count(countWord) : n(1);
+	const countNum = c && c.k === 'const' ? c.n : 1;
+	const words = m[4].trim().split(/\s+/);
+	for (let len = Math.min(words.length, 8); len >= 1; len--) {
+		const spec = targetPhrase(words.slice(0, len).join(' '));
+		if (spec) {
+			const { sameOwner, ...restSpec } = spec;
+			return [
+				{
+					...restSpec,
+					min: m[1] ? 0 : countNum,
+					max: countNum,
+					...(sameOwner && countNum > 1 ? { sameOwner: true } : {})
+				}
+			];
+		}
+	}
+	return [];
+}
 
 /**
  * The compiled effect of a resolving spell or activated ability. Lives in the compiler because it

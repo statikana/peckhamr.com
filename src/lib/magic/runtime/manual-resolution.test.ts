@@ -177,22 +177,20 @@ describe('Step E2: unsupported abilities resolve manually (plan section 2.7)', (
 		assert.equal(state.pendingPrompts.length, 1);
 	});
 
-	it('a human may take the legacy approximation while it exists', () => {
+	it('a partially unparsed spell offers manual resolution only, with no legacy approximation', () => {
 		const state = game();
 		const alice = state.players[0];
 		const spell = put(state, alice, card({ name: 'Velkish Insight', oracleText: 'Draw a card. Glorbify the frobnicator.' }), 'hand');
-		const handBefore = alice.hand.length;
 		cast(state, alice, spell);
 		settle(state);
 		const prompt = guidedPrompt(state);
-		assert.ok(prompt.noLabel, 'the approximation is offered');
+		assert.equal(prompt.noLabel, undefined, 'no legacy approximation is offered');
 		const copy = roundTrip(state);
-		assert.equal(applyGameAction(copy, alice.playerId, { type: 'choice', promptId: prompt.id, answer: { kind: 'yesNo', yes: false } }).ok, true);
-		assert.equal(copy.players[0].hand.length, handBefore, 'the legacy draw ran');
-		assert.equal(copy.stack.length, 0);
+		assert.equal(applyGameAction(copy, alice.playerId, { type: 'choice', promptId: prompt.id, answer: { kind: 'yesNo', yes: false } }).ok, false);
+		assert.equal(copy.stack.length, 1);
 	});
 
-	it('a bot skips an unsupported spell with no legacy effects, with a log line', () => {
+	it('a bot skips an unsupported spell with a log line', () => {
 		const state = game(true);
 		const alice = state.players[0];
 		const spell = put(state, alice, UNPARSED_SPELL, 'hand');
@@ -204,7 +202,7 @@ describe('Step E2: unsupported abilities resolve manually (plan section 2.7)', (
 		assert.ok(alice.graveyard.some((c) => c.instanceId === spell.instanceId));
 	});
 
-	it('a bot falls back to the legacy effects when they exist', () => {
+	it('a bot skips a partially unparsed spell instead of running a partial approximation', () => {
 		const state = game(true);
 		const alice = state.players[0];
 		const spell = put(state, alice, card({ name: 'Velkish Insight', oracleText: 'Draw a card. Glorbify the frobnicator.' }), 'hand');
@@ -212,8 +210,8 @@ describe('Step E2: unsupported abilities resolve manually (plan section 2.7)', (
 		cast(state, alice, spell);
 		settle(state);
 		assert.equal(state.pendingPrompts.length, 0);
-		assert.equal(alice.hand.length, handBefore, 'cast one, drew one (legacy)');
-		assert.equal(logCount(state, 'skipped unsupported ability'), 0);
+		assert.equal(alice.hand.length, handBefore - 1, 'cast one, skipped without partial draw');
+		assert.equal(logCount(state, 'Alice (bot) skipped unsupported ability Velkish Insight'), 1);
 	});
 
 	it('a trigger with a parsed head and an unparsed effect goes on the stack and resolves manually', () => {

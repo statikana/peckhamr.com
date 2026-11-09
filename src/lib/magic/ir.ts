@@ -168,6 +168,10 @@ export interface UnsupportedAbility {
 	isMana?: boolean;
 	/** Mana abilities whose `addMana` step is understood even if a trailing rider ("When that mana is spent...") isn't. */
 	effect?: EffectStep[];
+	/** Target specs recognized in an activated ability or spell whose full effect is unsupported. */
+	targets?: TargetSpec[];
+	/** CR 601.3: timing restrictions recognized on an unsupported spell. */
+	castRestrictions?: Array<'duringCombat' | 'duringYourTurn' | 'beforeAttackers'>;
 	/**
 	 * Phase 5: a triggered ability whose trigger head (and intervening-if) is understood but whose
 	 * effect isn't. The runtime still knows when it triggers (section 2.7).
@@ -199,6 +203,8 @@ export interface KeywordDef {
 	costDefs?: CostDef[];
 	/** Equip [quality] (CR 702.6a): what the creature must be besides "creature you control". */
 	equipFilter?: ObjectFilter;
+	/** Enchant [quality] (CR 303.4a, 702.5): what the Aura can enchant (and so, as a spell, target). */
+	enchantFilter?: ObjectFilter;
 }
 
 // ---- Filters --------------------------------------------------------------------------------
@@ -566,7 +572,8 @@ export type RuleModKind =
 	| 'spendManaAsAnyColor'
 	/** "During your turn, your opponents can't cast spells". */
 	| 'opponentsCantCastDuringYourTurn'
-	| 'lifeTotalCantChange';
+	| 'lifeTotalCantChange'
+	| 'extraLandPlays';
 
 export type RestrictionKind =
 	| 'cantAttack'
@@ -639,6 +646,8 @@ export interface ReplacementDef {
 				tapped?: boolean;
 				/** "~ enters with N +1/+1 counters on it". */
 				counters?: { counter: CounterType; amount: Amount };
+				/** "You may have ~ enter as a copy of any creature on the battlefield" (CR 707). */
+				copyOf?: ObjectFilter;
 		  };
 	who?: PlayerFilter;
 	/** Only applies while this holds ("while your library has no cards in it"). */

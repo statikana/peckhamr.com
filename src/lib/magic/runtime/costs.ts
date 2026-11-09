@@ -21,8 +21,8 @@ import type {
 	CardInstance,
 	CostPayment,
 	CounterType,
+	EffectiveActivatedAbility,
 	GameState,
-	ParsedActivatedAbility,
 	PlayerGameState,
 	ScryfallCard
 } from '../types.ts';
@@ -42,11 +42,15 @@ function abilitiesOf(card: ScryfallCard): AbilityDef[] {
 }
 
 /**
- * The cost of an activated ability, by its legacy id. Abilities the compiler doesn't produce
- * (mana abilities granted by type-changing effects, basic land types, abilities whose line the
- * adapter couldn't match) fall back to a translation of the legacy fields, which is data, not text.
+ * The cost of an activated ability, by its id. Abilities with an explicit `cost` array on
+ * `EffectiveActivatedAbility` use that directly; otherwise look up on the compiled card.
  */
-export function activatedAbilityCost(card: ScryfallCard, ab: ParsedActivatedAbility): CostSource {
+export function activatedAbilityCost(
+	card: ScryfallCard,
+	ab: Pick<EffectiveActivatedAbility, 'id' | 'loyaltyCost' | 'manaCost' | 'requiresTap' | 'lifeCost' | 'requiresSacrificeSelf'> &
+		Partial<Pick<EffectiveActivatedAbility, 'cost' | 'costComplete'>>
+): CostSource {
+	if (ab.cost) return { defs: ab.cost, complete: ab.costComplete ?? true };
 	const ir = abilitiesOf(card).find(
 		(a) => (a.kind === 'activated' || a.kind === 'unsupported') && a.id === ab.id
 	);
@@ -56,7 +60,9 @@ export function activatedAbilityCost(card: ScryfallCard, ab: ParsedActivatedAbil
 }
 
 /** The keyword table: costs that come from a keyword ("Equip {2}", "Overload {6}{U}"). */
-export function legacyCostDefs(ab: ParsedActivatedAbility): CostDef[] {
+export function legacyCostDefs(
+	ab: Pick<EffectiveActivatedAbility, 'loyaltyCost' | 'manaCost' | 'requiresTap' | 'lifeCost' | 'requiresSacrificeSelf'>
+): CostDef[] {
 	const defs: CostDef[] = [];
 	if (ab.loyaltyCost !== null) defs.push({ k: 'loyalty', delta: ab.loyaltyCost });
 	if (ab.manaCost && ab.manaCost !== '{0}') defs.push({ k: 'mana', cost: ab.manaCost });
@@ -72,6 +78,30 @@ export function spellAdditionalCost(card: ScryfallCard): CostSource | null {
 		if (a.kind === 'spell' && a.additionalCosts.length > 0) return { defs: a.additionalCosts, complete: true };
 		if (a.kind === 'unsupported' && a.id === 'cast') {
 			return { defs: a.cost ?? [], complete: a.costComplete ?? false };
+		}
+	}
+	return null;
+}
+
+/** Cast timing restrictions on a spell from the compiled IR (CR 601.3). */
+export function spellCastRestrictions(
+	card: ScryfallCard
+): Array<'duringCombat' | 'duringYourTurn' | 'beforeAttackers'> {
+	for (const a of abilitiesOf(card)) {
+		if ((a.kind === 'spell' || (a.kind === 'unsupported' && a.id === 'cast')) && a.castRestrictions) {
+			return a.castRestrictions;
+		}
+	}
+	return [];
+}
+
+/** Suspend keyword parameters from the compiled card (CR 702.62). */
+export function getSuspendSpec(
+	card: ScryfallCard
+): { timeCounters: number; cost: string; suspendCost: string } | null {
+	for (const { name: kwName, n, cost } of keywordsOf(card)) {
+		if (kwName === 'suspend' && n !== undefined && cost) {
+			return { timeCounters: n, cost, suspendCost: cost };
 		}
 	}
 	return null;
@@ -220,10 +250,82 @@ export function effectiveSpellManaCost(
 }
 
 /**
- * The amount of mana a mana ability adds, if the IR says it's dynamic ("for each Elf you control",
- * "equal to ~'s power"). Null if the IR has no amount for it (the caller uses the legacy amount).
+ * Computes the effective mana cost requirement for an activated ability (e.g. Equip cost modifiers
+ * like Puresteel Paladin's Metalcraft or Nahiri, Storm of Stone).
  */
-export function manaAbilityAmount(card: ScryfallCard, ab: ParsedActivatedAbility): Amount | null {
+export function effectiveAbilityManaCost(
+	state: GameState,
+	actorId: string,
+	abilityId: string,
+	baseManaCost: string
+): { manaCost: string; requirement: ManaCostRequirement } {
+	const isEquip = abilityId.startsWith('equip_');
+	let forceZeroCost = false;
+	let genericReduction = 0;
+	let genericIncrease = 0;
+
+	if (isEquip) {
+		for (const p of state.players) {
+			if (p.lost) continue;
+			for (const b of p.battlefield) {
+				if (b.phasedOut || evaluatePermanent(state, b).losesAllAbilities) continue;
+				const bCard = b.copiableCard ?? b.card;
+				const ctx: FilterContext = { state, controllerId: p.playerId, source: b };
+				for (const mod of costModifiersOf(bCard)) {
+					if (mod.affects.k !== 'ability' || mod.affects.keyword !== 'equip') continue;
+					if (mod.who.relation === 'you' && p.playerId !== actorId) continue;
+					if (
+						(mod.who.relation === 'opponent' || mod.who.relation === 'each_opponent') &&
+						p.playerId === actorId
+					) {
+						continue;
+					}
+					if (mod.condition && !evaluateCondition(mod.condition, ctx)) continue;
+					const perAmount = mod.delta.per ?? mod.delta.times;
+					const factor = perAmount ? Math.max(0, evaluateAmount(perAmount, ctx)) : 1;
+					if (factor === 0 && perAmount) continue;
+					if (mod.delta.mode === 'setZero') {
+						forceZeroCost = true;
+					} else if (mod.delta.mode === 'reduce' && mod.delta.generic) {
+						genericReduction += mod.delta.generic * factor;
+					} else if (mod.delta.mode === 'increase' && mod.delta.generic) {
+						genericIncrease += mod.delta.generic * factor;
+					}
+				}
+			}
+		}
+	}
+
+	if (forceZeroCost) {
+		return {
+			manaCost: '{0}',
+			requirement: parseManaCost('', 0, genericIncrease, genericReduction)
+		};
+	}
+	const req = parseManaCost(
+		baseManaCost === '{0}' ? '' : baseManaCost,
+		0,
+		genericIncrease,
+		genericReduction
+	);
+	let effectiveManaCost = baseManaCost;
+	if (genericReduction > 0 || genericIncrease > 0) {
+		const coloredPart = (['W', 'U', 'B', 'R', 'G', 'C'] as const)
+			.flatMap((c) => Array<string>(req.colored[c]).fill(`{${c}}`))
+			.join('');
+		effectiveManaCost =
+			req.generic > 0
+				? `{${req.generic}}${coloredPart}`
+				: coloredPart || (baseManaCost ? '{0}' : '');
+	}
+	return { manaCost: effectiveManaCost, requirement: req };
+}
+
+/**
+ * The amount of mana a mana ability adds, if the IR says it's dynamic ("for each Elf you control",
+ * "equal to ~'s power"). Null if the IR has no amount for it.
+ */
+export function manaAbilityAmount(card: ScryfallCard, ab: Pick<EffectiveActivatedAbility, 'id'>): Amount | null {
 	const abilities = abilitiesOf(card);
 	const ir =
 		abilities.find((a) => a.kind === 'activated' && a.id === ab.id) ??

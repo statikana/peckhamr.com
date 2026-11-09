@@ -6,7 +6,6 @@ import {
 	checkSpellCastLegality,
 	chooseBotSpellCostPayment,
 	evaluatePermanent,
-	getAllLegalTargetsForRequirement,
 	getCreaturePower,
 	getCreatureToughness,
 	getEffectiveActivatedAbilities,
@@ -15,7 +14,6 @@ import {
 	specTargetCandidates
 } from './engine.ts';
 import type { EffectStep, RestrictionKind, TargetSpec } from './ir.ts';
-import { parseSpellOrAbilityEffects } from './oracle.ts';
 import { chooseBotAnswer } from './runtime/choices.ts';
 import { evaluateCondition, matchesObjectFilter } from './runtime/objectFilter.ts';
 import type { CardInstance, GameState, PlayerGameState, ScryfallCard, StackItem, TargetRef } from './types.ts';
@@ -98,8 +96,18 @@ function isCreatureBoardWipeCard(card: ScryfallCard): boolean {
 }
 
 function cardSpellTargetSpec(card: ScryfallCard): TargetSpec | undefined {
-	for (const ab of compileCard(card).faces[0].abilities) {
+	const face = compileCard(card).faces[0];
+	for (const ab of face.abilities) {
 		if (ab.kind === 'spell' && ab.targets.length > 0) return ab.targets[0];
+		if (ab.kind === 'keyword') {
+			const { name: kwName, enchantFilter } = ab.keyword;
+			if (kwName === 'enchant' && enchantFilter) {
+				return { kind: 'object', filter: { zone: 'battlefield', ...enchantFilter }, min: 1, max: 1 };
+			}
+		}
+		if (ab.kind === 'unsupported' && ab.id === 'cast' && ab.targets && ab.targets.length > 0) {
+			return ab.targets[0];
+		}
 	}
 	return undefined;
 }
@@ -404,8 +412,7 @@ function executeBotStep(
 			}
 			const targets = chooseBotTargetsForCard(state, bot, cardInst);
 			const spec = cardSpellTargetSpec(cardInst.card);
-			const parsed = parseSpellOrAbilityEffects(cardInst.card);
-			const minTargets = spec ? spec.min : parsed.requiresTarget ? parsed.targetInfo.minTargets : 0;
+			const minTargets = spec ? spec.min : 0;
 			if (minTargets > 0 && targets.length < minTargets) continue;
 
 			const costPayment = chooseBotSpellCostPayment(state, bot, cardInst, 0);
@@ -503,14 +510,12 @@ function chooseBotTargetsForCard(
 	cardInst: CardInstance
 ): TargetRef[] {
 	const spec = cardSpellTargetSpec(cardInst.card);
-	const parsed = parseSpellOrAbilityEffects(cardInst.card);
-	if (!spec && !parsed.requiresTarget) return [];
+	if (!spec) return [];
 
-	const isControlledCreature = spec
-		? spec.kind === 'object' &&
-			spec.filter.controller === 'you' &&
-			Boolean(spec.filter.types?.includes('Creature'))
-		: parsed.targetKind === 'controlled_creature';
+	const isControlledCreature =
+		spec.kind === 'object' &&
+		spec.filter.controller === 'you' &&
+		Boolean(spec.filter.types?.includes('Creature'));
 
 	if (isControlledCreature) {
 		const ownCreatures = bot.battlefield
@@ -536,22 +541,20 @@ function chooseBotTargetsForCard(
 	const opponents = state.players.filter((p) => p.playerId !== bot.playerId && !p.lost);
 	if (opponents.length === 0) return [];
 
-	if ((spec && spec.kind === 'player') || (!spec && parsed.targetKind === 'player')) {
+	if (spec.kind === 'player') {
 		const topOpp = opponents.sort((a, b) => b.life - a.life)[0];
 		return [{ kind: 'player', id: topOpp.playerId, label: topOpp.username }];
 	}
 
-	const creatureOnly = spec
-		? spec.kind === 'object' &&
-			spec.filter.types?.length === 1 &&
-			spec.filter.types[0] === 'Creature'
-		: parsed.targetKind === 'creature';
-	const artifactOrEnchantmentOnly = spec
-		? spec.kind === 'object' &&
-			spec.filter.types?.length === 2 &&
-			spec.filter.types.includes('Artifact') &&
-			spec.filter.types.includes('Enchantment')
-		: parsed.targetKind === 'artifact_or_enchantment';
+	const creatureOnly =
+		spec.kind === 'object' &&
+		spec.filter.types?.length === 1 &&
+		spec.filter.types[0] === 'Creature';
+	const artifactOrEnchantmentOnly =
+		spec.kind === 'object' &&
+		spec.filter.types?.length === 2 &&
+		spec.filter.types.includes('Artifact') &&
+		spec.filter.types.includes('Enchantment');
 
 	// Find highest-CMC / highest-power opponent permanent without Hexproof/Shroud
 	const enemyPermanents: Array<{ inst: CardInstance; owner: PlayerGameState }> = [];
@@ -580,27 +583,21 @@ function chooseBotTargetsForCard(
 		];
 	}
 
-	if ((spec && spec.kind === 'objectOrPlayer') || (!spec && parsed.targetKind === 'any')) {
+	if (spec.kind === 'objectOrPlayer') {
 		const topOpp = opponents.sort((a, b) => b.life - a.life)[0];
 		return [{ kind: 'player', id: topOpp.playerId, label: topOpp.username }];
 	}
 
 	// Last resort: any legal target except the bot's own permanents, itself and its own spells, so a
 	// removal spell is never aimed at the bot's side when opponents have nothing to hit.
-	const allLegal = getAllLegalTargetsForRequirement(
-		state,
-		bot.playerId,
-		parsed.targetInfo,
-		cardInst.card,
-		cardInst.instanceId
-	).filter((t) => {
+	const allLegal = specTargetCandidates(state, bot.playerId, cardInst.card, cardInst, spec).filter((t) => {
 		if (t.kind === 'player') return t.id !== bot.playerId;
 		if (t.kind === 'permanent') return !bot.battlefield.some((p) => p.instanceId === t.id);
 		if (t.kind === 'stack') return state.stack.find((s) => s.id === t.id)?.controllerId !== bot.playerId;
 		return true;
 	});
-	if (allLegal.length > 0 && allLegal.length >= parsed.targetInfo.minTargets) {
-		return allLegal.slice(0, parsed.targetInfo.minTargets);
+	if (allLegal.length > 0 && allLegal.length >= spec.min) {
+		return allLegal.slice(0, spec.min);
 	}
 
 	return [];
