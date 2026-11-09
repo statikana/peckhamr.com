@@ -6,7 +6,7 @@
 	"oracleTextRead": {
 		"engine.ts": 27,
 		"ruleTree.ts": 14,
-		"ai.ts": 1
+		"ai.ts": 0
 	},
 	"directZoneMutation": {
 		"engine.ts": 0

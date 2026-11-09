@@ -66,6 +66,7 @@ import {
 	type NormalizedLine,
 	type NormalizedSentence
 } from './normalize.ts';
+import { parseStaticAbility } from './statics.ts';
 import { parseTriggerHeader, runtimeTriggerProblem, setLegacyTriggerExecution } from './triggers.ts';
 
 const ALL_COLORS: ManaColor[] = ['W', 'U', 'B', 'R', 'G'];
@@ -193,12 +194,19 @@ export interface LegacyEffectClaim {
 	complete: boolean;
 }
 
+/** What the adapter decided about one static-ability line, for comparing against the static grammar. */
+export interface LegacyStaticClaim {
+	rawIndex: number;
+	defs: StaticDef[];
+}
+
 /** Decisions the adapter made, collected for the grammar comparison scripts. */
 export interface AdapterLog {
 	costs: LegacyCostClaim[];
 	triggers: LegacyTriggerClaim[];
 	/** Optional so older callers needn't pass it (scripts/magic-effects-diff.ts does). */
 	effects?: LegacyEffectClaim[];
+	statics?: LegacyStaticClaim[];
 }
 
 /** Pass `log` to collect the adapter's decisions (scripts/magic-costs-diff.ts, magic-triggers-diff.ts). */
@@ -242,7 +250,7 @@ export function adaptCard(card: ScryfallCard, log?: AdapterLog): FaceDefinition[
 		} else if (ctx.isInstantOrSorcery) {
 			spellLines.push(...group);
 		} else {
-			abilities.push(adaptStatic(ctx, group));
+			abilities.push(...adaptStatic(ctx, group));
 		}
 	}
 
@@ -809,28 +817,42 @@ function adaptModes(ctx: AdapterContext, group: NormalizedLine[]): { modal?: Mod
  * Statics are compiled in Phases 6/7. The only ones the legacy compiler models are the board hooks
  * (cost modifiers and multipliers), found by compiling the line on its own.
  */
-function adaptStatic(ctx: AdapterContext, group: NormalizedLine[]): AbilityDef {
+function adaptStatic(ctx: AdapterContext, group: NormalizedLine[]): AbilityDef[] {
 	const span = groupSpan(group);
 	const text = groupText(group);
 	if (group.length === 1) {
-		const costModifier = parseCostModifierSentence(group[0].body);
-		if (costModifier) return { kind: 'static', static: costModifier, span };
+		const line = group[0];
+		const lineTree = getCardRuleTree({ ...ctx.card, oracleText: line.raw }, ALL_COLORS);
+		const hookDefs = lineTree.hooks.map(translateHook).filter((d): d is StaticDef => d !== null);
+		if (hookDefs.length === 1) {
+			ctx.log?.statics?.push({ rawIndex: line.rawIndex, defs: hookDefs });
+		}
+		const costModifier = parseCostModifierSentence(line.body);
+		if (costModifier) return [{ kind: 'static', static: costModifier, span }];
+		const parsed = parseStaticAbility(line.body, line.bodySpan.start);
+		if (parsed.unparsed.length === 0 && parsed.items.length > 0) {
+			return parsed.items.map((item): AbilityDef =>
+				item.kind === 'static'
+					? { kind: 'static', static: item.static, span }
+					: { kind: 'replacement', replacement: item.replacement, span }
+			);
+		}
 		// A permanent spell's additional cost. The IR has no ability kind for it yet, so it stays
 		// unsupported but carries the parsed cost for the runtime (Phase 4).
-		const additional = parseAdditionalCostSentence(group[0].body, group[0].bodySpan.start);
+		const additional = parseAdditionalCostSentence(line.body, line.bodySpan.start);
 		if (additional) {
-			return {
-				...unsupported('static_not_compiled', text, span, [span]),
-				legacyId: 'cast_normal',
-				cost: additional.defs,
-				costComplete: additional.unparsed.length === 0
-			};
+			return [
+				{
+					...unsupported('static_not_compiled', text, span, [span]),
+					legacyId: 'cast_normal',
+					cost: additional.defs,
+					costComplete: additional.unparsed.length === 0
+				}
+			];
 		}
-		const lineTree = getCardRuleTree({ ...ctx.card, oracleText: group[0].raw }, ALL_COLORS);
-		const defs = lineTree.hooks.map(translateHook).filter((d): d is StaticDef => d !== null);
-		if (defs.length === 1) return { kind: 'static', static: defs[0], span };
+		if (hookDefs.length === 1) return [{ kind: 'static', static: hookDefs[0], span }];
 	}
-	return unsupported('static_not_compiled', text, span, [span]);
+	return [unsupported('static_not_compiled', text, span, [span])];
 }
 
 function translateHook(hook: BoardModifierHookNode): StaticDef | null {

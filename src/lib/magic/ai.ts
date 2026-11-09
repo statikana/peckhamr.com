@@ -1,3 +1,4 @@
+import { compileCard, compileSpellEffects } from './compiler/index.ts';
 import {
 	applyGameAction,
 	checkAbilityActivationLegality,
@@ -11,12 +12,99 @@ import {
 	getPlayerCommanderIdentity,
 	hasKeyword
 } from './engine.ts';
-import { cardHasPrintedUnblockable, parseSpellOrAbilityEffects } from './oracle.ts';
-import type { CardInstance, GameState, PlayerGameState, TargetRef } from './types.ts';
+import type { EffectStep, RestrictionKind, TargetSpec } from './ir.ts';
+import { parseSpellOrAbilityEffects } from './oracle.ts';
+import { evaluateCondition, matchesObjectFilter } from './runtime/objectFilter.ts';
+import type { CardInstance, GameState, PlayerGameState, ScryfallCard, TargetRef } from './types.ts';
+
+/**
+ * Whether `perm` currently has any of `restriction` active on the battlefield, from its own
+ * compiled static abilities (unless it has lost all abilities or is face down), from an attached
+ * Aura/Equipment, or from another active permanent's static restriction filter.
+ */
+export function hasRestriction(
+	state: GameState,
+	perm: CardInstance,
+	restriction: RestrictionKind | RestrictionKind[]
+): boolean {
+	const kinds = Array.isArray(restriction) ? restriction : [restriction];
+	for (const player of state.players) {
+		if (player.lost) continue;
+		for (const source of player.battlefield) {
+			if (source.phasedOut || source.isFaceDown) continue;
+			if (evaluatePermanent(state, source).losesAllAbilities) continue;
+			const card = source.copiableCard ?? source.card;
+			const ctx = {
+				state,
+				controllerId: source.controllerId || player.playerId,
+				source
+			};
+			for (const ab of compileCard(card).faces[0].abilities) {
+				if (ab.kind !== 'static' || ab.static.k !== 'restriction') continue;
+				const def = ab.static;
+				if (!kinds.includes(def.restriction)) continue;
+				const affected =
+					def.affected === 'self'
+						? source.instanceId === perm.instanceId
+						: def.affected === 'attachedTo'
+							? source.attachedToId === perm.instanceId
+							: matchesObjectFilter(perm, def.affected, ctx);
+				if (!affected) continue;
+				if (def.condition && !evaluateCondition(def.condition, ctx)) continue;
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+function cardSpellSteps(card: ScryfallCard): EffectStep[] {
+	const face = compileCard(card).faces[0];
+	const parsed = compileSpellEffects(card);
+	return [
+		...face.abilities.flatMap((a) =>
+			a.kind === 'spell' ? [...a.effect, ...(a.modal?.modes.flatMap((m) => m.effect) ?? [])] : []
+		),
+		...(parsed?.steps ?? []),
+		...(parsed?.modal?.modes.flatMap((m) => m.effect) ?? [])
+	];
+}
+
+function isCounterSpellCard(card: ScryfallCard): boolean {
+	return cardSpellSteps(card).some((s) => s.verb === 'counterSpell');
+}
+
+function isProtectionTrickCard(card: ScryfallCard): boolean {
+	const types = compileCard(card).faces[0].characteristics.types;
+	if (!types.includes('Instant')) return false;
+	return cardSpellSteps(card).some((s) => {
+		if (s.verb !== 'grant') return false;
+		const kws = (s.params?.keywords ?? []).map((k) => k.toLowerCase());
+		return kws.includes('hexproof') && kws.includes('indestructible');
+	});
+}
+
+function isCreatureBoardWipeCard(card: ScryfallCard): boolean {
+	return cardSpellSteps(card).some(
+		(s) =>
+			(s.verb === 'destroy' || s.verb === 'exile') &&
+			s.subject.k === 'all' &&
+			Boolean(s.subject.filter.types?.includes('Creature')) &&
+			!s.subject.filter.controller
+	);
+}
+
+function cardSpellTargetSpec(card: ScryfallCard): TargetSpec | undefined {
+	for (const ab of compileCard(card).faces[0].abilities) {
+		if (ab.kind === 'spell' && ab.targets.length > 0) return ab.targets[0];
+	}
+	return undefined;
+}
 
 export function hasAnyLegalInstantResponse(state: GameState, player: PlayerGameState): boolean {
 	for (const cardInst of player.hand) {
-		if (cardInst.card.typeLine.includes('Land') && !cardInst.card.typeLine.includes('Creature')) {
+		const types = compileCard(cardInst.card).faces[0].characteristics.types;
+		if (types.includes('Land') && !types.includes('Creature')) {
 			continue;
 		}
 		if (checkSpellCastLegality(state, player.playerId, cardInst, 'hand', 0).ok) {
@@ -117,13 +205,14 @@ function executeBotStep(
 					(c) => !c.phasedOut && c.instanceId === atk.attackerInstanceId
 				);
 				if (!atkCard) continue;
-				if (cardHasPrintedUnblockable(atkCard.card)) continue;
+				if (hasRestriction(state, atkCard, 'cantBeBlocked')) continue;
 				if (hasKeyword(atkCard, 'Menace', state)) continue; // Keep simple single blocks safe
 
 				const atkFly = hasKeyword(atkCard, 'Flying', state);
 				const candidate = bot.battlefield.find((b) => {
 					if (b.phasedOut || usedBlockers.has(b.instanceId) || b.tapped) return false;
 					if (!evaluatePermanent(state, b).isCreature) return false;
+					if (hasRestriction(state, b, ['cantBlock', 'cantAttackOrBlock'])) return false;
 					if (atkFly && !hasKeyword(b, 'Flying', state) && !hasKeyword(b, 'Reach', state)) {
 						return false;
 					}
@@ -154,7 +243,9 @@ function executeBotStep(
 	if (isBotsTurn && (state.phase === 'main1' || state.phase === 'main2') && state.stack.length === 0) {
 		// 2a. Play a land if available
 		if (bot.landsPlayedThisTurn < bot.maxLandsPerTurn) {
-			const land = bot.hand.find((c) => c.card.typeLine.includes('Land'));
+			const land = bot.hand.find((c) =>
+				compileCard(c.card).faces[0].characteristics.types.includes('Land')
+			);
 			if (land) {
 				const res = applyGameAction(state, bot.playerId, {
 					type: 'play_land',
@@ -196,21 +287,15 @@ function executeBotStep(
 
 		const castable = bot.hand
 			.filter((c) => {
-				if (c.card.typeLine.includes('Land')) return false;
-				const oLow = c.card.oracleText.toLowerCase();
-				if (oLow.includes('counter target')) return false;
+				const types = compileCard(c.card).faces[0].characteristics.types;
+				if (types.includes('Land')) return false;
+				if (isCounterSpellCard(c.card)) return false;
 				// Do not waste pure protection tricks on an empty board / proactive main phase
-				if (
-					c.card.typeLine.includes('Instant') &&
-					oLow.includes('gain hexproof and indestructible')
-				) {
+				if (isProtectionTrickCard(c.card)) {
 					return false;
 				}
 				// Do not cast board wipes if opponents control fewer than 2 creatures
-				if (
-					(oLow.includes('destroy all creatures') || oLow.includes('exile all creatures')) &&
-					opponentCreatureCount < 2
-				) {
+				if (isCreatureBoardWipeCard(c.card) && opponentCreatureCount < 2) {
 					return false;
 				}
 				return checkSpellCastLegality(state, bot.playerId, c, 'hand', 0).ok;
@@ -219,8 +304,10 @@ function executeBotStep(
 
 		for (const cardInst of castable) {
 			const targets = chooseBotTargetsForCard(state, bot, cardInst);
+			const spec = cardSpellTargetSpec(cardInst.card);
 			const parsed = parseSpellOrAbilityEffects(cardInst.card);
-			if (parsed.requiresTarget && targets.length < parsed.targetInfo.minTargets) continue;
+			const minTargets = spec ? spec.min : parsed.requiresTarget ? parsed.targetInfo.minTargets : 0;
+			if (minTargets > 0 && targets.length < minTargets) continue;
 
 			const costPayment = chooseBotSpellCostPayment(state, bot, cardInst, 0);
 			const res = applyGameAction(state, bot.playerId, {
@@ -279,6 +366,7 @@ function executeBotStep(
 				!c.tapped &&
 				(!c.summoningSick || hasKeyword(c, 'Haste', state)) &&
 				!hasKeyword(c, 'Defender', state) &&
+				!hasRestriction(state, c, ['cantAttack', 'cantAttackOrBlock']) &&
 				getCreaturePower(c, state) >= 2
 		);
 
@@ -315,10 +403,17 @@ function chooseBotTargetsForCard(
 	bot: PlayerGameState,
 	cardInst: CardInstance
 ): TargetRef[] {
+	const spec = cardSpellTargetSpec(cardInst.card);
 	const parsed = parseSpellOrAbilityEffects(cardInst.card);
-	if (!parsed.requiresTarget) return [];
+	if (!spec && !parsed.requiresTarget) return [];
 
-	if (parsed.targetKind === 'controlled_creature') {
+	const isControlledCreature = spec
+		? spec.kind === 'object' &&
+			spec.filter.controller === 'you' &&
+			Boolean(spec.filter.types?.includes('Creature'))
+		: parsed.targetKind === 'controlled_creature';
+
+	if (isControlledCreature) {
 		const ownCreatures = bot.battlefield
 			.filter(
 				(perm) =>
@@ -342,10 +437,22 @@ function chooseBotTargetsForCard(
 	const opponents = state.players.filter((p) => p.playerId !== bot.playerId && !p.lost);
 	if (opponents.length === 0) return [];
 
-	if (parsed.targetKind === 'player') {
+	if ((spec && spec.kind === 'player') || (!spec && parsed.targetKind === 'player')) {
 		const topOpp = opponents.sort((a, b) => b.life - a.life)[0];
 		return [{ kind: 'player', id: topOpp.playerId, label: topOpp.username }];
 	}
+
+	const creatureOnly = spec
+		? spec.kind === 'object' &&
+			spec.filter.types?.length === 1 &&
+			spec.filter.types[0] === 'Creature'
+		: parsed.targetKind === 'creature';
+	const artifactOrEnchantmentOnly = spec
+		? spec.kind === 'object' &&
+			spec.filter.types?.length === 2 &&
+			spec.filter.types.includes('Artifact') &&
+			spec.filter.types.includes('Enchantment')
+		: parsed.targetKind === 'artifact_or_enchantment';
 
 	// Find highest-CMC / highest-power opponent permanent without Hexproof/Shroud
 	const enemyPermanents: Array<{ inst: CardInstance; owner: PlayerGameState }> = [];
@@ -354,12 +461,8 @@ function chooseBotTargetsForCard(
 			if (perm.phasedOut) continue;
 			if (hasKeyword(perm, 'Hexproof', state) || hasKeyword(perm, 'Shroud', state)) continue;
 			const evalPerm = evaluatePermanent(state, perm);
-			if (parsed.targetKind === 'creature' && !evalPerm.isCreature) continue;
-			if (
-				parsed.targetKind === 'artifact_or_enchantment' &&
-				!evalPerm.isArtifact &&
-				!evalPerm.isEnchantment
-			) {
+			if (creatureOnly && !evalPerm.isCreature) continue;
+			if (artifactOrEnchantmentOnly && !evalPerm.isArtifact && !evalPerm.isEnchantment) {
 				continue;
 			}
 			if (evalPerm.isLand) continue;
@@ -378,7 +481,7 @@ function chooseBotTargetsForCard(
 		];
 	}
 
-	if (parsed.targetKind === 'any') {
+	if ((spec && spec.kind === 'objectOrPlayer') || (!spec && parsed.targetKind === 'any')) {
 		const topOpp = opponents.sort((a, b) => b.life - a.life)[0];
 		return [{ kind: 'player', id: topOpp.playerId, label: topOpp.username }];
 	}

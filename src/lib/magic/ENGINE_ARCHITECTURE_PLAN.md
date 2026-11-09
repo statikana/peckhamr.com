@@ -1107,12 +1107,27 @@ games pass without regenerating.
   `obeka_end_turn_choice`. Bump `engineVersion`.
 - **Exit:** no card-specific prompt or action types; UI renders all choices generically.
 
-### Phase 9: AI on IR
-- **Owns:** `ai.ts`.
+### Phase 9: AI on IR ✅ done 2026-11-08
+- **Owns:** `ai.ts`, `runtime/ai.test.ts`.
 - **Work:** heuristics read evaluated abilities and the IR (e.g. "can't be blocked" is an evaluated
   static, so it's removed under Humility automatically). No `oracleText` reads.
 - **Exit:** ratchet `oracleText` in `ai.ts` → 0; baseline test `E3` passes, if no other agent has
   fixed it already.
+- **Results (2026-11-08, branch `engine-rewrite-phase9`):**
+  - **Ratchet:** `oracleTextRead` in `ai.ts` **1 → 0** (`cardNameComparison`: 0, `directZoneMutation`: 0).
+  - **Adapter wiring (`compiler/adapter.ts`, `compiler/index.ts`):** wired `parseStaticAbility` into
+    `adaptStatic` (`COMPILER_VERSION = 3`) so `compileCard` emits compiled `StaticAbility` and
+    `ReplacementAbility` IR nodes, and updated `scripts/magic-statics-diff.ts` (`AdapterLog.statics`)
+    and `compiler/__snapshots__/ir.json`.
+  - **AI heuristics (`ai.ts`, `runtime/ai.test.ts`):**
+    - `hasRestriction(state, perm, restriction)` evaluates `StaticDef{k:'restriction'}` (`cantBeBlocked`,
+      `cantBlock`, `cantAttack`, `cantAttackOrBlock`) across active battlefield permanents (self,
+      attached Auras/Equipment, and `ObjectFilter` board statics), checking `evaluatePermanent(state,
+      source).losesAllAbilities` and `evaluateCondition(def.condition, ctx)`.
+    - Replaced `cardHasPrintedUnblockable` and `oracleText` spell-classification checks in `ai.ts`
+      with IR queries (`compileCard`, `compileSpellEffects`, `cardSpellTargetSpec`).
+    - Baseline test `E3` in `magic.test.ts` passes with its `{ todo }` marker removed; added 5 tests
+      in `runtime/ai.test.ts`. `layers.snapshot.test.ts` and `runtime/golden.test.ts` pass unchanged.
 
 ### Phase 10: Delete the legacy layer
 - **Work:** remove `CardRuleTree` (or keep it as a thin view over the IR for the inspector UI),

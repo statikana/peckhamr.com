@@ -4497,7 +4497,7 @@ describe('28. Stage E: AI Evaluator — Effective Layer Types & Phased-Out Perma
 		);
 	});
 
-	it('E3: bot declare_blockers blocks an attacker with printed "can\'t be blocked" when Humility removes its abilities', { todo: 'Phase 9 (AI on IR): ai.ts reads printed oracleText for "can\'t be blocked"' }, () => {
+	it('E3: bot declare_blockers blocks an attacker with printed "can\'t be blocked" when Humility removes its abilities', () => {
 		const { state, p1Id, p2Id } = createActiveTwoPlayerGame();
 		const p2 = state.players.find((p) => p.playerId === p2Id)!;
 		p2.isBot = true;

@@ -5,13 +5,14 @@
  * by oracle id + text hash + COMPILER_VERSION; nothing is persisted (section 2.6). The IR must never
  * be stored in GameState.
  */
-import type { ScryfallCard } from '../types.ts';
+import type { ScryfallCard, StackItem } from '../types.ts';
 import type { CardDefinition } from '../ir.ts';
 import { adaptCard } from './adapter.ts';
+import { compiledStackItemEffects, type EffectParse } from './effects.ts';
 import { hashText } from './normalize.ts';
 
 /** Bump whenever the IR produced for the same text could change. */
-export const COMPILER_VERSION = 2;
+export const COMPILER_VERSION = 3;
 
 const CACHE = new Map<string, CardDefinition>();
 
@@ -52,6 +53,10 @@ export function compileCard(card: ScryfallCard): CardDefinition {
 	};
 	CACHE.set(key, def);
 	return def;
+}
+
+export function compileSpellEffects(card: ScryfallCard): EffectParse | null {
+	return compiledStackItemEffects({ kind: 'spell', card } as StackItem);
 }
 
 export { normalizeFace } from './normalize.ts';

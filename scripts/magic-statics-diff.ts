@@ -15,6 +15,7 @@
  */
 import { writeFileSync } from 'node:fs';
 
+import { adaptCard, type AdapterLog } from '../src/lib/magic/compiler/adapter.ts';
 import { compileCard } from '../src/lib/magic/compiler/index.ts';
 import { normalizeFace, type NormalizedLine } from '../src/lib/magic/compiler/normalize.ts';
 import { parseStaticAbility, type StaticItem } from '../src/lib/magic/compiler/statics.ts';
@@ -72,12 +73,13 @@ function itemDefs(items: StaticItem[]): unknown[] {
 // ---- (A) adapter comparison -----------------------------------------------------------------
 
 function adapterRows(card: ScryfallCard, lines: NormalizedLine[]): DiffRow[] {
-	const def = compileCard(card);
+	const log: AdapterLog = { costs: [], triggers: [], statics: [] };
+	adaptCard(card, log);
 	return lines.map((line) => {
 		const parsed = parseStaticAbility(line.body);
 		const grammar: Side = { complete: parsed.unparsed.length === 0, value: itemDefs(parsed.items) };
-		const ab = def.faces[0].abilities.find((a) => a.span.start === line.span.start);
-		const adapter: Side | undefined = ab?.kind === 'static' ? { complete: true, value: [ab.static] } : undefined;
+		const claim = log.statics!.find((s) => s.rawIndex === line.rawIndex);
+		const adapter: Side | undefined = claim ? { complete: true, value: claim.defs } : undefined;
 		return {
 			card: card.name,
 			kind: 'static',
