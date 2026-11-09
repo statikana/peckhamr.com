@@ -1793,11 +1793,7 @@ export function describeLibrarySearchDestination(dest: LibrarySearchDestination)
  * "~ enters tapped." Phase 7 replaces this with a replacement effect compiled into the IR. Reminder
  * text is ignored and self-references are normalised, so "This land enters tapped." matches too.
  */
-export function cardEntersTapped(card: ScryfallCard): boolean {
-	return card.oracleText
-		.split('\n')
-		.some((line) => /^~ enters tapped\b/i.test(replaceSelfReferences(stripReminderText(line), card.name)));
-}
+export { cardEntersTapped } from './runtime/replace.ts';
 
 /**
  * Printed "can't be blocked" text, ignoring reminder text such as Menace's "can't be blocked except

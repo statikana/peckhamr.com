@@ -1093,12 +1093,67 @@ games pass without regenerating.
   (median of 7). Each call re-scans every permanent's text, so cost grows with the square of
   board size. This is the number the per-state-version cache must beat.
 
-### Phase 7: Replacement effects and rule modifiers
+### Phase 7: Replacement effects and rule modifiers ✅ done 2026-11-08 (branch `engine-rewrite-phase7`)
 - **Owns:** `runtime/replace.ts`; the rule helpers at the end of `ruleTree.ts`, draw-from-empty,
   hand size, attack tax, player hexproof in `engine.ts`.
 - **Work:** per §2.5. Includes the `{N}` attack tax (not fixed `{2}`) and searches controlled by an
   opponent as a generic `ruleModifier` + replacement.
 - **Exit:** those helpers deleted; `ruleTree.ts` contains no rules-text reads.
+- **Completed:**
+  - **Test counts:** 397 tests, 395 pass, 2 todo (`E3`, `D-Audit-5`), 0 fail (`11` new tests in
+    `runtime/replace.test.ts` plus new grammar tests in `compiler/statics.test.ts`). Layer snapshots
+    (`layers.snapshot.test.ts`) and golden bot games (`runtime/golden.test.ts`) pass unchanged.
+  - **Ratchet (`architecture-allowances.json`):**
+    - `cardNameComparison["engine.ts"]`: `7 → 2` (deleted hardcoded `laboratory maniac`,
+      `reliquary tower`, `thought vessel`, `ghostly prison`, `propaganda`, `corpsejack menace`;
+      only `sol ring` and `arcane signet` remain in `pickAutoPlayCard`).
+    - `oracleTextRead["engine.ts"]`: `27 → 21` (deleted regex checks in `playerHasHexproofFrom`,
+      `playerHasShroud`, `declare_attackers`, and `runCleanupStep`, plus dead
+      `autoFetchBasicLandToBattlefield`).
+    - `oracleTextRead["ruleTree.ts"]`: `14 → 8` (deleted the 5 regex rule/replacement helper bodies
+      at the end of `ruleTree.ts` and re-exported them from `runtime/replace.ts`; lines 1–2573 of
+      `ruleTree.ts` untouched for Phase 6).
+    - `runtime/replace.ts` has 0 allowances across all ratchet categories.
+  - **Compiler & Adapter (`compiler/statics.ts`, `compiler/adapter.ts`, `compiler/index.ts`):**
+    - Wired `parseStaticAbility` into `adaptStatic` (with `LegacyStaticClaim` audit logging and
+      `adaptSpell` support for `"~ can't be countered."`); bumped `COMPILER_VERSION` to `3` and
+      regenerated `compiler/__snapshots__/ir.json`.
+    - Extended `compiler/statics.ts` for Opposition Agent's 2nd line (`searchControl` params),
+      full-sentence Grand Abolisher (`opponentsCantCastDuringYourTurn`), 2-subject `"You and
+      <affected> have <hexproof|shroud>"`, `"<filter> spells can't be countered"`, and negative
+      lookbehind on `AS_LONG_AS_SUFFIX` for `"for as long as"`.
+  - **Runtime (`runtime/replace.ts`) & Bug fixes (each covered in `runtime/replace.test.ts`):**
+    1. Empty-library draw replacement (`replaceEmptyLibraryDraw`) evaluated from compiled
+       `ReplacementDef` (`event: 'draw'` with `cardsIn(library, you) = 0`) instead of card name
+       `"laboratory maniac"`, respecting Layer 6 ability removal (Humility).
+    2. Generic `{N}` attack tax (`getAttackTaxGeneric`) sums `ruleModifier: 'attackTax'` across all
+       active permanents controlled by the defending player instead of hardcoded `{2}` / card names.
+    3. Unlimited hand size (`playerHasNoMaxHandSize`) evaluated from `ruleModifier: 'noMaxHandSize'`
+       on any permanent instead of card names `"reliquary tower"` / `"thought vessel"`, respecting
+       Humility.
+    4. Player hexproof (`playerHasHexproofFrom`) and shroud (`playerHasShroud`) evaluated from
+       compiled `ruleModifier`s with condition evaluation (`"As long as it's your turn, you have
+       hexproof"`).
+    5. `playerCannotLoseGame` and `playerCannotWinGame` evaluated from `ruleModifier: 'cantLose'` /
+       `'cantWin'` with condition evaluation.
+    6. `checkGlobalCastPermissionsAndRestrictions` enforces `opponentsCantCastDuringYourTurn`,
+       `castSpellCountLimit`, and type-filtered `castAsThoughFlash` (e.g. Yeva for green creatures
+       only vs Vedalken Orrery for all spells).
+    7. `getLibrarySearchInterceptor` evaluates `ruleModifier: 'searchControl'` across opponents'
+       active permanents in CR 613.7 timestamp order.
+    8. Combat and untap restrictions (`hasRestriction`: `cantAttack`, `cantBlock`,
+       `cantAttackOrBlock`, `attacksEachCombat`, `blocksEachCombat`, `doesntUntap`) and uncounterable
+       spells (`spellCannotBeCountered`: self `cantBeCountered` on stack spells and battlefield
+       static grants like `"Creature spells you control can't be countered"`).
+    9. `cardEntersTapped` (re-exported from `oracle.ts`) checks compiled self-ETB replacement IR so
+       conditional `"~ enters tapped unless ..."` check-lands no longer unconditionally enter tapped;
+       `applySelfEtbReplacements` applies `"~ enters with N <counter> counters on it"` multiplied by
+       `counterMultiplier`.
+    10. Scoped multipliers: `counterMultiplier` (checks `def.counter` and `def.filter` so Corpsejack
+        Menace only doubles `+1/+1` counters on creatures you control, while Doubling Season doubles
+        all counters on permanents you control), `tokenMultiplier` (wired into `engine.ts` and
+        `runtime/effects.ts`), and `triggerMultiplier` (wired into `runtime/triggers.ts` for cast /
+        `SpellCopied`, ETB / dies with LKI, and attack triggers).
 
 ### Phase 8: Generic choice protocol and UI ✅ done 2026-11-08
 - **Status:** done on branch `engine-rewrite-phase8`; not yet merged.

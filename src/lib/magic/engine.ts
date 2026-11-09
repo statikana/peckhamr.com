@@ -84,6 +84,18 @@ export function getEffectiveActivatedAbilities(
 }
 import { STAPLE_CARDS } from './precons.ts';
 import {
+	applySelfEtbReplacements,
+	counterMultiplier,
+	getAttackTaxGeneric,
+	hasRestriction,
+	playerHasHexproofFrom as replacePlayerHasHexproofFrom,
+	playerHasNoMaxHandSize,
+	playerHasShroud as replacePlayerHasShroud,
+	replaceEmptyLibraryDraw,
+	spellCannotBeCountered,
+	tokenMultiplier
+} from './runtime/replace.ts';
+import {
 	allocateTimestamp,
 	createEmptyCounters,
 	mulliganRedraw,
@@ -791,17 +803,15 @@ export function drawCards(state: GameState, player: PlayerGameState, count: numb
 	for (let i = 0; i < count; i++) {
 		if (player.library.length === 0) {
 			// Check Replacement Effect: Laboratory Maniac ("If you would draw a card while your library has no cards in it, you win the game instead.")
-			const hasLabMan = player.battlefield.some(
-				(b) =>
-					!b.phasedOut &&
-					!permanentHasLostAllAbilities(b, state).lost &&
-					((b.copiableCard ?? b.card).name === 'Laboratory Maniac' ||
-						/if you would draw a card while your library has no cards in it, you win the game instead/i.test(
-							(b.copiableCard ?? b.card).oracleText
-						))
-			);
-			if (hasLabMan) {
-				winTheGame(state, player, 'Laboratory Maniac (drew from an empty library)');
+			const replaced = replaceEmptyLibraryDraw(state, player);
+			if (replaced.replaced) {
+				if (replaced.winsGame) {
+					winTheGame(
+						state,
+						player,
+						`${replaced.sourceName ?? 'Replacement Effect'} (drew from an empty library)`
+					);
+				}
 				return;
 			}
 			loseTheGame(
@@ -895,7 +905,7 @@ export function runBeginningOfTurn(state: GameState): void {
 		if (perm.phasedOut) continue;
 		if (perm.counters.stun > 0) {
 			perm.counters.stun -= 1;
-		} else {
+		} else if (!hasRestriction(state, perm, 'doesntUntap')) {
 			perm.tapped = false;
 		}
 		perm.summoningSick = false;
@@ -1486,6 +1496,9 @@ function applyGameActionInner(
 				if (hasKeyword(creature, 'Defender', state)) {
 					return { ok: false, error: `${creature.card.name} has Defender and cannot attack.` };
 				}
+				if (hasRestriction(state, creature, 'cantAttack')) {
+					return { ok: false, error: `${creature.card.name} cannot attack.` };
+				}
 
 				const defender = state.players.find(
 					(p) => p.playerId === assign.defenderPlayerId && !p.lost
@@ -1496,19 +1509,7 @@ function applyGameActionInner(
 
 				// Check Propaganda / Ghostly Prison tax on defending player (CR 508.1d)
 				if (!assign.defenderPlaneswalkerId) {
-					for (const defPerm of defender.battlefield) {
-						if (defPerm.phasedOut || permanentHasLostAllAbilities(defPerm, state).lost) continue;
-						const defCard = defPerm.copiableCard ?? defPerm.card;
-						if (
-							defCard.name === 'Propaganda' ||
-							defCard.name === 'Ghostly Prison' ||
-							/creatures can't attack you unless their controller pays \{2\} for each creature/i.test(
-								defCard.oracleText
-							)
-						) {
-							totalPropagandaTaxGeneric += 2;
-						}
-					}
+					totalPropagandaTaxGeneric += getAttackTaxGeneric(state, defender);
 				}
 			}
 
@@ -1516,15 +1517,18 @@ function applyGameActionInner(
 			const assignedIds = new Set(action.assignments.map((a) => a.attackerInstanceId));
 			for (const perm of actor.battlefield) {
 				if (perm.phasedOut || !evaluatePermanent(state, perm).isCreature) continue;
-				if (perm.goadedByPlayerIds && perm.goadedByPlayerIds.length > 0) {
+				const isGoaded = Boolean(perm.goadedByPlayerIds && perm.goadedByPlayerIds.length > 0);
+				const mustAttack = isGoaded || hasRestriction(state, perm, 'attacksEachCombat');
+				if (mustAttack) {
 					const canAttack =
 						!perm.tapped &&
 						(!perm.summoningSick || hasKeyword(perm, 'Haste', state)) &&
-						!hasKeyword(perm, 'Defender', state);
+						!hasKeyword(perm, 'Defender', state) &&
+						!hasRestriction(state, perm, 'cantAttack');
 					if (canAttack && !assignedIds.has(perm.instanceId)) {
 						return {
 							ok: false,
-							error: `Strict Rules Violation: ${perm.card.name} is Goaded and must attack this combat if able.`
+							error: `Strict Rules Violation: ${perm.card.name} ${isGoaded ? 'is Goaded and ' : ''}must attack this combat if able.`
 						};
 					}
 				}
@@ -1623,6 +1627,9 @@ function applyGameActionInner(
 				if (blocker.tapped) {
 					return { ok: false, error: `${blocker.card.name} is tapped and cannot block.` };
 				}
+				if (hasRestriction(state, blocker, 'cantBlock')) {
+					return { ok: false, error: `${blocker.card.name} cannot block.` };
+				}
 
 				const atkEntry = state.combat.attackers.find(
 					(a) => a.attackerInstanceId === assign.attackerInstanceId
@@ -1654,8 +1661,9 @@ function applyGameActionInner(
 						};
 					}
 					if (
-						!permanentHasLostAllAbilities(atkCard, state).lost &&
-						cardHasPrintedUnblockable(atkCard.card)
+						hasRestriction(state, atkCard, 'cantBeBlocked') ||
+						(!permanentHasLostAllAbilities(atkCard, state).lost &&
+							cardHasPrintedUnblockable(atkCard.card))
 					) {
 						return {
 							ok: false,
@@ -1679,6 +1687,45 @@ function applyGameActionInner(
 						return {
 							ok: false,
 							error: `Strict Rules Violation: ${atkCard.card.name} has Menace and cannot be blocked by only 1 creature (requires 2 or more blockers).`
+						};
+					}
+				}
+			}
+
+			// Enforce "blocks each combat if able" requirements (CR 509.1c)
+			const assignedBlockerIds = new Set(action.assignments.map((a) => a.blockerInstanceId));
+			const attackersAgainstActor = state.combat.attackers
+				.filter((a) => a.defenderPlayerId === actorId)
+				.map((a) => {
+					const owner = state.players.find((p) => p.playerId === a.controllerId);
+					return owner?.battlefield.find((c) => c.instanceId === a.attackerInstanceId);
+				})
+				.filter((c): c is CardInstance => Boolean(c));
+			if (attackersAgainstActor.length > 0) {
+				for (const perm of actor.battlefield) {
+					if (perm.phasedOut || perm.tapped || !evaluatePermanent(state, perm).isCreature) continue;
+					if (hasRestriction(state, perm, 'cantBlock')) continue;
+					if (!hasRestriction(state, perm, 'blocksEachCombat')) continue;
+					const canBlockAny = attackersAgainstActor.some((atk) => {
+						if (
+							hasRestriction(state, atk, 'cantBeBlocked') ||
+							(!permanentHasLostAllAbilities(atk, state).lost && cardHasPrintedUnblockable(atk.card))
+						) {
+							return false;
+						}
+						if (
+							hasKeyword(atk, 'Flying', state) &&
+							!hasKeyword(perm, 'Flying', state) &&
+							!hasKeyword(perm, 'Reach', state)
+						) {
+							return false;
+						}
+						return !hasKeyword(atk, 'Menace', state);
+					});
+					if (canBlockAny && !assignedBlockerIds.has(perm.instanceId)) {
+						return {
+							ok: false,
+							error: `Strict Rules Violation: ${perm.card.name} must block this combat if able.`
 						};
 					}
 				}
@@ -2582,21 +2629,7 @@ export function addCountersToPermanent(
 	amount: number
 ): number {
 	if (amount <= 0) return 0;
-	let effectiveAmount = amount;
-	if (type === '+1/+1') {
-		let multiplier = 1;
-		const activeHooks = collectActiveBoardHooks(state);
-		for (const entry of activeHooks) {
-			if (
-				entry.hook.path === 'hook.counter_multiplier' &&
-				entry.controllerId === perm.controllerId &&
-				entry.hook.multiplier
-			) {
-				multiplier *= entry.hook.multiplier;
-			}
-		}
-		effectiveAmount = amount * multiplier;
-	}
+	const effectiveAmount = amount * counterMultiplier(state, perm, type);
 	perm.counters[type] = (perm.counters[type] || 0) + effectiveAmount;
 	emitEvent(state, {
 		kind: 'CounterPlaced',
@@ -3124,6 +3157,7 @@ export function resolveTopOfStack(state: GameState): void {
 			if (tLine.includes('Aura') && item.targets[0]?.kind === 'permanent') {
 				perm.attachedToId = item.targets[0].id;
 			}
+			applySelfEtbReplacements(state, perm);
 			moveObject(state, perm, 'battlefield', { from: 'stack', toPlayer: controller });
 			addLog(
 				state,
@@ -3668,10 +3702,11 @@ function executeParsedEffect(
 		case 'create_token': {
 			if (eff.tokenSpec) {
 				const recipientPlayer = resolveRecipientPlayer();
-				const count =
+				const baseCount =
 					eff.dynamicFormula === 'combat_damage_dealt'
 						? Math.max(0, item.lkiPower ?? eff.amount)
 						: eff.amount;
+				const count = Math.max(0, baseCount) * tokenMultiplier(state, recipientPlayer.playerId);
 				for (let i = 0; i < count; i++) {
 					createTokenOnBoard(state, recipientPlayer, eff.tokenSpec);
 				}
@@ -3963,8 +3998,7 @@ function counterStackItemByEffect(
 	candidate: StackItem,
 	controller: PlayerGameState
 ): boolean {
-	const cLow = candidate.card.oracleText.toLowerCase();
-	if (cLow.includes("can't be countered") || cLow.includes('cannot be countered')) {
+	if (spellCannotBeCountered(state, candidate)) {
 		addLog(
 			state,
 			'rule',
@@ -4569,32 +4603,6 @@ function initiateLibrarySearch(
 	});
 }
 
-function autoFetchBasicLandToBattlefield(
-	state: GameState,
-	player: PlayerGameState,
-	tapped: boolean
-): void {
-	const idx = player.library.findIndex((c) => c.card.typeLine.includes('Basic Land'));
-	if (idx >= 0) {
-		const land = player.library[idx];
-		land.tapped = tapped;
-		moveObject(state, land, 'battlefield', {
-			from: { player, zone: 'library' },
-			toPlayer: player,
-			controllerId: player.playerId,
-			newTimestamp: true,
-			bumpVersion: true
-		});
-		addLog(
-			state,
-			'rule',
-			`${player.username} searched their library for ${land.card.name} and put it onto the battlefield${tapped ? ' tapped' : ''}.`,
-			player.playerId
-		);
-		flushTriggers(state);
-	}
-}
-
 export function createTokenOnBoard(
 	state: GameState,
 	controller: PlayerGameState,
@@ -5052,15 +5060,7 @@ function runCleanupStep(state: GameState): void {
 
 	// Check if activePlayer has Reliquary Tower / Thought Vessel for unlimited hand size
 	const hasNoMaxHandSize =
-		state.rules.maxHandSize >= 99 ||
-		activePlayer.battlefield.some(
-			(c) =>
-				!c.phasedOut &&
-				!permanentHasLostAllAbilities(c, state).lost &&
-				(c.card.name === 'Reliquary Tower' ||
-					c.card.name === 'Thought Vessel' ||
-					c.card.oracleText.toLowerCase().includes('no maximum hand size'))
-		);
+		state.rules.maxHandSize >= 99 || playerHasNoMaxHandSize(state, activePlayer);
 
 	const maxHand = hasNoMaxHandSize ? 999 : state.rules.maxHandSize;
 	if (activePlayer.hand.length > maxHand) {
@@ -5598,21 +5598,12 @@ export function playerHasHexproofFrom(
 ): boolean {
 	if (targetPlayer.playerId === actorId) return false;
 	if (targetPlayer.protectionFromEverythingThisTurn) return true;
-	return targetPlayer.battlefield.some((perm) => {
-		if (perm.phasedOut || permanentHasLostAllAbilities(perm, state).lost) return false;
-		// "You have hexproof", "You and other creatures you control have hexproof", "You, planeswalkers you control, and ... have hexproof"
-		return /(?:^|[.\n]\s*)you(?: have|(?:,| and)[^.\n]*? have) hexproof\b/i.test(
-			(perm.copiableCard ?? perm.card).oracleText
-		);
-	});
+	return replacePlayerHasHexproofFrom(state, targetPlayer, actorId);
 }
 
 export function playerHasShroud(state: GameState, targetPlayer: PlayerGameState): boolean {
 	if (targetPlayer.protectionFromEverythingThisTurn) return true;
-	return targetPlayer.battlefield.some((perm) => {
-		if (perm.phasedOut || permanentHasLostAllAbilities(perm, state).lost) return false;
-		return perm.card.oracleText.toLowerCase().includes('you have shroud');
-	});
+	return replacePlayerHasShroud(state, targetPlayer);
 }
 
 function normalizeTargetRequirement(

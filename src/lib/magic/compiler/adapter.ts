@@ -194,7 +194,7 @@ export interface LegacyEffectClaim {
 	complete: boolean;
 }
 
-/** What the adapter decided about one static-ability line, for comparing against the static grammar. */
+/** What the legacy hook translator decided about one static line, for scripts/magic-statics-diff.ts. */
 export interface LegacyStaticClaim {
 	rawIndex: number;
 	defs: StaticDef[];
@@ -708,7 +708,14 @@ function adaptSpell(ctx: AdapterContext, lines: NormalizedLine[]): AbilityDef[] 
 			const low = s.text.toLowerCase();
 			const costModifier = parseCostModifierSentence(s.text);
 			if (costModifier) {
+				ctx.log?.statics?.push({ rawIndex: group[0].rawIndex, defs: [costModifier] });
 				statics.push({ kind: 'static', static: costModifier, span: s.span });
+			} else if (low === "~ can't be countered." || low === '~ cannot be countered.') {
+				statics.push({
+					kind: 'static',
+					static: { k: 'restriction', affected: 'self', restriction: 'cantBeCountered' },
+					span: s.span
+				});
 			} else if (low.startsWith('as an additional cost to cast ~,')) {
 				// Phase 4: the cost grammar replaces the legacy additional-cost translation.
 				const parsed = parseAdditionalCostSentence(s.text, s.span.start) ?? { defs: [], unparsed: [s.span] };
@@ -814,20 +821,21 @@ function adaptModes(ctx: AdapterContext, group: NormalizedLine[]): { modal?: Mod
 // ---- Statics --------------------------------------------------------------------------------
 
 /**
- * Statics are compiled in Phases 6/7. The only ones the legacy compiler models are the board hooks
- * (cost modifiers and multipliers), found by compiling the line on its own.
+ * Statics and replacements (Phases 6/7). Tries compiler/statics.ts first; falls back to the legacy
+ * board-hook translator.
  */
 function adaptStatic(ctx: AdapterContext, group: NormalizedLine[]): AbilityDef[] {
 	const span = groupSpan(group);
 	const text = groupText(group);
 	if (group.length === 1) {
 		const line = group[0];
+		const costModifier = parseCostModifierSentence(line.body);
 		const lineTree = getCardRuleTree({ ...ctx.card, oracleText: line.raw }, ALL_COLORS);
 		const hookDefs = lineTree.hooks.map(translateHook).filter((d): d is StaticDef => d !== null);
-		if (hookDefs.length === 1) {
-			ctx.log?.statics?.push({ rawIndex: line.rawIndex, defs: hookDefs });
+		const legacyDef = costModifier ?? (hookDefs.length === 1 ? hookDefs[0] : undefined);
+		if (legacyDef) {
+			ctx.log?.statics?.push({ rawIndex: line.rawIndex, defs: [legacyDef] });
 		}
-		const costModifier = parseCostModifierSentence(line.body);
 		if (costModifier) return [{ kind: 'static', static: costModifier, span }];
 		const parsed = parseStaticAbility(line.body, line.bodySpan.start);
 		if (parsed.unparsed.length === 0 && parsed.items.length > 0) {
