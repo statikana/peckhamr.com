@@ -86,8 +86,8 @@ export interface DeckUnsupportedCard {
 
 /** The deck's distinct cards (commanders first) that have at least one unsupported ability. */
 export function deckUnsupportedCards(
-	commanders: ScryfallCard[],
-	cards: DeckCardEntry[]
+	commanders: ScryfallCard[] | undefined,
+	cards: DeckCardEntry[] | undefined
 ): DeckUnsupportedCard[] {
 	const out: DeckUnsupportedCard[] = [];
 	const seen = new Set<string>();
@@ -98,8 +98,8 @@ export function deckUnsupportedCards(
 		const report = cardSupportReport(card);
 		if (!report.fullySupported) out.push({ card, isCommander, report });
 	};
-	for (const c of commanders) visit(c, true);
-	for (const e of cards) visit(e.card, false);
+	for (const c of commanders ?? []) visit(c, true);
+	for (const e of cards ?? []) visit(e.card, false);
 	return out;
 }
 

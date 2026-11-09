@@ -221,11 +221,14 @@ describe('lobby rule allowUnsupportedCards', () => {
 	});
 
 	it('applies to precon decks (what bots play) too', () => {
-		const error = unsupportedCardsStartError({ allowUnsupportedCards: false }, [
-			{ username: 'Bot', deck: PRECON_DECKS[0] }
-		]);
-		assert.ok(error, 'every precon currently has at least one unsupported card');
-		assert.match(error, new RegExp(`Bot's deck "${PRECON_DECKS[0].name.replace(/[()]/g, '\\$&')}"`));
-		assert.match(error, /and \d+ more/);
+		for (const deck of PRECON_DECKS) {
+			const bad = deckUnsupportedCards(deck.commanders, deck.cards);
+			const error = unsupportedCardsStartError({ allowUnsupportedCards: false }, [{ username: 'Bot', deck }]);
+			assert.equal(error === null, bad.length === 0, deck.name);
+			if (!error) continue;
+			assert.ok(error.includes(`Bot's deck "${deck.name}"`), deck.name);
+			for (const b of bad.slice(0, 10)) assert.ok(error.includes(b.card.name), b.card.name);
+			if (bad.length > 10) assert.ok(error.includes(`and ${bad.length - 10} more`), deck.name);
+		}
 	});
 });
