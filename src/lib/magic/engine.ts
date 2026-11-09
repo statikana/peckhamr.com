@@ -161,6 +161,7 @@ import {
 	PHASE_LABELS,
 	type CardInstance,
 	type ChoiceAnswer,
+	type ChoiceRequest,
 	type CostPayment,
 	type CounterType,
 	type DelayedTrigger,
@@ -180,6 +181,7 @@ import {
 	type ManaPool,
 	type PendingPrompt,
 	type PlayerGameState,
+	type PromptPurpose,
 	type ScryfallCard,
 	type StackItem,
 	type TriggerEventLki,
@@ -3211,7 +3213,15 @@ function applyGuidedOperations(state: GameState, actor: PlayerGameState, ops: Gu
 						newTimestamp: true
 					});
 				}
-				addLog(state, 'rule', `${found.inst.card.name} was moved from ${found.zone} to ${dest} (manual).`, actor.playerId);
+				const isHiddenToHidden =
+					(found.zone === 'hand' || found.zone === 'library') &&
+					(dest === 'hand' || dest === 'library');
+				addLog(
+					state,
+					'rule',
+					`${isHiddenToHidden ? 'A card' : found.inst.card.name} was moved from ${found.zone} to ${dest} (manual).`,
+					actor.playerId
+				);
 				if (dest === 'battlefield') flushTriggers(state);
 				break;
 			}
@@ -8092,8 +8102,110 @@ function applyDamageToTarget(
 	}
 }
 
+/**
+ * Purposes whose candidate lists and descriptions are already public on the table:
+ * - `trigger_targets`: target candidates on the battlefield (CR 603.3d).
+ * - `trigger_order`: triggered ability items already placed on the stack (CR 603.3b).
+ * All other purposes default to redacted for non-viewing players.
+ */
+const PUBLIC_PROMPT_PURPOSES: ReadonlySet<PromptPurpose> = new Set<PromptPurpose>([
+	'trigger_targets',
+	'trigger_order'
+]);
+
+function isPublicPromptForOpponent(pr: PendingPrompt): boolean {
+	const purpose = effectivePromptPurpose(pr);
+	if (!PUBLIC_PROMPT_PURPOSES.has(purpose)) return false;
+	if (purpose === 'trigger_targets') {
+		return !pr.choice || (pr.choice.kind === 'chooseObjects' && pr.choice.zone === 'battlefield');
+	}
+	return true;
+}
+
+function redactChoiceForOpponent(choice: ChoiceRequest): ChoiceRequest {
+	switch (choice.kind) {
+		case 'yesNo':
+			return { kind: 'yesNo', question: 'Opponent is choosing…' };
+		case 'chooseObjects':
+			return {
+				kind: 'chooseObjects',
+				candidates: [],
+				min: choice.min,
+				max: choice.max,
+				zone: choice.zone,
+				reason: 'Opponent is choosing…'
+			};
+		case 'chooseMode':
+			return {
+				kind: 'chooseMode',
+				modes: [],
+				min: choice.min,
+				max: choice.max
+			};
+		case 'chooseNumber':
+			return {
+				kind: 'chooseNumber',
+				min: choice.min,
+				max: choice.max,
+				reason: 'Opponent is choosing…'
+			};
+		case 'orderObjects':
+			return {
+				kind: 'orderObjects',
+				objectIds: [],
+				...(choice.allowSplitBottom !== undefined
+					? { allowSplitBottom: choice.allowSplitBottom }
+					: {}),
+				...(choice.allowShuffle !== undefined ? { allowShuffle: choice.allowShuffle } : {}),
+				reason: 'Opponent is choosing…'
+			};
+		case 'chooseReplacement':
+			return { kind: 'chooseReplacement', options: [] };
+	}
+}
+
+function redactPromptForOpponent(pr: PendingPrompt): PendingPrompt {
+	if (isPublicPromptForOpponent(pr)) {
+		return {
+			id: pr.id,
+			playerId: pr.playerId,
+			kind: pr.kind,
+			...(pr.purpose !== undefined ? { purpose: pr.purpose } : {}),
+			title: pr.title,
+			description: pr.description,
+			...(pr.choice !== undefined ? { choice: pr.choice } : {}),
+			...(pr.triggerStackItemId !== undefined
+				? { triggerStackItemId: pr.triggerStackItemId }
+				: {}),
+			...(pr.triggerTargetSpecIndex !== undefined
+				? { triggerTargetSpecIndex: pr.triggerTargetSpecIndex }
+				: {})
+		};
+	}
+	return {
+		id: pr.id,
+		playerId: pr.playerId,
+		kind: pr.kind,
+		...(pr.purpose !== undefined ? { purpose: pr.purpose } : {}),
+		title: pr.title,
+		description: 'Opponent is choosing…',
+		...(pr.choice !== undefined ? { choice: redactChoiceForOpponent(pr.choice) } : {}),
+		...(pr.triggerStackItemId !== undefined
+			? { triggerStackItemId: pr.triggerStackItemId }
+			: {})
+	};
+}
+
 export function sanitizeGameStateForViewer(state: GameState, viewerId: string | null): GameState {
 	const clone: GameState = JSON.parse(JSON.stringify(state));
+	delete clone.rngState;
+	delete clone.nextUid;
+	delete clone.idSalt;
+
+	for (const item of clone.stack) {
+		delete item.effectResume;
+	}
+
 	for (const p of clone.players) {
 		p.handCount = p.hand.length;
 		p.libraryCount = p.library.length;
@@ -8129,6 +8241,17 @@ export function sanitizeGameStateForViewer(state: GameState, viewerId: string | 
 			p.library = [];
 		}
 	}
+
+	clone.pendingPrompts = clone.pendingPrompts.map((pr) => {
+		if (pr.playerId === viewerId) {
+			if (pr.stackItem) {
+				delete pr.stackItem.effectResume;
+			}
+			return pr;
+		}
+		return redactPromptForOpponent(pr);
+	});
+
 	return clone;
 }
 
