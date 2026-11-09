@@ -169,6 +169,8 @@ export interface ObjectFilter {
 	subtypes?: string[];
 	supertypes?: string[];
 	notTypes?: string[];
+	/** "nonbasic": none of these supertypes. */
+	notSupertypes?: string[];
 	controller?: 'you' | 'opponent' | 'any';
 	owner?: 'you' | 'opponent' | 'any';
 	tapped?: boolean;
@@ -279,9 +281,13 @@ export type Verb =
 	| 'win'
 	| 'lose'
 	| 'suspendTick'
-	| 'suspendCast';
+	| 'suspendCast'
+	/** Registers `delayed` (subject `none`); its effect may refer to this ability's bindings. */
+	| 'delayedTrigger'
+	/** Gives a player a rule for a duration ("your life total can't change"); see `playerRules`. */
+	| 'grantPlayer';
 
-export type Duration = 'endOfTurn' | 'permanent';
+export type Duration = 'endOfTurn' | 'permanent' | 'untilYourNextTurn';
 
 /** An ordered list of verb steps whose results later steps can refer to (`bindAs`). */
 export interface EffectStep {
@@ -308,10 +314,14 @@ export interface EffectParams {
 	/** addMana: the exact symbols produced, e.g. ['C', 'C'] for "Add {C}{C}". */
 	mana?: ManaColor[];
 	/** addMana: `amount` mana of one colour chosen from this set ("Add {W} or {U}", "any color"). */
-	manaChoice?: ManaColor[] | 'any' | 'commanderIdentity';
+	manaChoice?: ManaColor[] | 'any' | 'commanderIdentity' | 'opponentLandColors';
+	/** grantPlayer: the rules the player gets. */
+	playerRules?: Array<'lifeTotalCantChange' | 'protectionFromEverything'>;
 	search?: SearchSpec;
 	to?: ZoneType;
 	from?: ZoneType;
+	/** move to the battlefield: "under your control" (otherwise its owner controls it). */
+	underYourControl?: boolean;
 	/** move: only the topmost matching card of an ordered zone (CR 404.2). */
 	topmostOnly?: boolean;
 	/** endTurn: "the player whose turn it is may end the turn". */
@@ -336,6 +346,8 @@ export interface SearchSpec {
 	/** False only for unrestricted "a card" tutors (CR 701.19b: must find one if possible). */
 	statedQuality: boolean;
 	destinations: Array<{ zone: 'battlefield' | 'hand' | 'library'; tapped?: boolean; onTop?: boolean }>;
+	/** The searched-for phrase as printed ("a basic land card"), for prompts. */
+	description?: string;
 }
 
 export type Selector =

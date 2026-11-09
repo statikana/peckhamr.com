@@ -93,6 +93,13 @@ import {
 	endAction,
 	registerEventHandler
 } from './runtime/events.ts';
+import {
+	executeEffectSteps,
+	interpretableNow,
+	registerEffectPorts,
+	staticallyInterpretable
+} from './runtime/effects.ts';
+import { compiledStackItemEffects } from './compiler/effects.ts';
 
 export { allocateTimestamp, shuffleArray };
 import {
@@ -2612,6 +2619,16 @@ registerEventHandler('CounterPlaced', (state, ev) => {
 	triggerOnCounterPlaced(state, ev.object, ev.counterType, ev.amount);
 });
 
+let effectInterpreterEnabled = true;
+
+/**
+ * Kill switch for the Phase 3 effect interpreter: when off, every spell and ability resolves on the
+ * legacy executeParsedEffect path. Used by tests that compare the two paths.
+ */
+export function setEffectInterpreterEnabled(on: boolean): void {
+	effectInterpreterEnabled = on;
+}
+
 export function resolveTopOfStack(state: GameState): void {
 	const item = state.stack.pop();
 	if (!item) return;
@@ -2685,8 +2702,38 @@ export function resolveTopOfStack(state: GameState): void {
 
 	let turnEndedDuringResolution = false;
 
+	// Phase 3: a spell or activated ability whose every step the grammar and the IR interpreter
+	// support resolves on the interpreter (runtime/effects.ts); anything else uses the legacy
+	// executeParsedEffect path below.
+	const compiled = effectInterpreterEnabled ? compiledStackItemEffects(item) : null;
+	const overload = item.castMode === 'overload';
+	const interpreted =
+		compiled !== null &&
+		staticallyInterpretable(compiled) &&
+		interpretableNow(state, item, compiled, controller, overload);
+	let exiledBySelfReference = false;
+	if (interpreted) {
+		const result = executeEffectSteps(
+			state,
+			{
+				controller,
+				sourceId: item.sourceInstanceId,
+				sourceCard: item.card,
+				title: item.title,
+				item,
+				targets: item.targets,
+				targetSpecs: compiled.targets,
+				xValue: item.xValue,
+				overload
+			},
+			compiled.steps
+		);
+		if (result.turnEnded) return;
+		exiledBySelfReference = result.exileSelf;
+	}
+
 	// Execute parsed effects (pausing continuation effects if a human Scry or Library Search prompt is created)
-	for (let i = 0; i < item.parsedEffects.length; i++) {
+	for (let i = 0; !interpreted && i < item.parsedEffects.length; i++) {
 		const eff = item.parsedEffects[i];
 		if (eff.kind === 'end_the_turn') {
 			endTheTurnImmediately(state, controller.playerId);
@@ -2736,10 +2783,10 @@ export function resolveTopOfStack(state: GameState): void {
 	}
 
 	// Register any delayed triggers created by this spell (e.g., Final Fortune's end-step loss trigger)
-	if (item.kind === 'spell') {
+	if (item.kind === 'spell' && !interpreted) {
 		const delayedSpecs = parseDelayedTriggersFromSpell(item.card);
 		for (const spec of delayedSpecs) {
-			if (item.card.name === 'Corpse Dance') continue; // Corpse Dance registers its delayed trigger with the specific reanimated creature ID inside executeParsedEffect
+			if (item.parsedEffects.some((e) => e.dynamicFormula === 'top_creature_of_graveyard')) continue;
 			if (!state.delayedTriggers) state.delayedTriggers = [];
 			state.delayedTriggers.push({
 				id: uid('dtrig'),
@@ -2759,7 +2806,7 @@ export function resolveTopOfStack(state: GameState): void {
 	}
 
 	// Handle graveyard-targeting return-to-hand or exile effects
-	const graveTargets = item.targets.filter((t) => t.kind === 'graveyard_card');
+	const graveTargets = interpreted ? [] : item.targets.filter((t) => t.kind === 'graveyard_card');
 	if (graveTargets.length > 0) {
 		const oLow = item.oracleText.toLowerCase();
 		if (oLow.includes('return') && oLow.includes('hand')) {
@@ -2807,7 +2854,7 @@ export function resolveTopOfStack(state: GameState): void {
 		}
 	}
 
-	if (item.requiresGuidedResolution && !controller.isBot) {
+	if (item.requiresGuidedResolution && !controller.isBot && !interpreted) {
 		state.pendingPrompts.push({
 			id: uid('prm'),
 			playerId: controller.playerId,
@@ -2909,7 +2956,7 @@ export function resolveTopOfStack(state: GameState): void {
 			const exilesSelf = /exile\s+~|exile\s+teferi's protection|exile\s+time stop/i.test(
 				item.card.oracleText
 			);
-			moveStackSpellToZone(state, item, exilesSelf ? 'exile' : 'graveyard');
+			moveStackSpellToZone(state, item, exilesSelf || exiledBySelfReference ? 'exile' : 'graveyard');
 		}
 	}
 
@@ -2946,20 +2993,7 @@ function executeParsedEffect(
 		}
 
 		case 'may_end_the_turn': {
-			const activePlayer = state.players[state.activePlayerIndex];
-			if (!activePlayer) break;
-			if (activePlayer.playerId === controller.playerId || activePlayer.isBot) {
-				// Active player is controller (or a bot): end the turn immediately!
-				endTheTurnImmediately(state, activePlayer.playerId);
-			} else {
-				state.pendingPrompts.push({
-					id: uid('prm'),
-					playerId: activePlayer.playerId,
-					kind: 'obeka_end_turn_choice',
-					title: 'End the Turn? (Obeka, Brute Chronologist)',
-					description: `${controller.username} activated Obeka, Brute Chronologist. As the player whose turn it is, you may end the turn now (exiling all spells and abilities from the stack).`
-				});
-			}
+			activePlayerMayEndTurn(state, controller);
 			break;
 		}
 
@@ -3151,27 +3185,7 @@ function executeParsedEffect(
 			const target = item.targets[0];
 			const found = target ? findPermanentOnBoard(state, target.id) : null;
 			if (found && !found.inst.phasedOut) {
-				const baseCardToCopy = JSON.parse(
-					JSON.stringify(found.inst.copiableCard ?? found.inst.card)
-				) as ScryfallCard;
-				const tokenInst = createCardInstance(
-					baseCardToCopy,
-					controller.playerId,
-					'battlefield',
-					false,
-					true,
-					allocateTimestamp(state)
-				);
-				tokenInst.copiableCard = baseCardToCopy;
-				tokenInst.summoningSick = baseCardToCopy.typeLine.includes('Creature');
-				moveObject(state, tokenInst, 'battlefield', { from: 'none', toPlayer: controller });
-				addLog(
-					state,
-					'trigger',
-					`${item.card.name} created a token copy of ${baseCardToCopy.name}!`,
-					controller.playerId
-				);
-				triggerOnEtb(state, controller, tokenInst);
+				copyPermanentAsToken(state, controller, found.inst, item.card.name);
 			}
 			break;
 		}
@@ -3182,26 +3196,7 @@ function executeParsedEffect(
 					(s) => s.id === target.id || s.sourceInstanceId === target.id
 				);
 				if (stkIdx >= 0) {
-					const candidate = state.stack[stkIdx];
-					const cLow = candidate.card.oracleText.toLowerCase();
-					if (cLow.includes("can't be countered") || cLow.includes('cannot be countered')) {
-						addLog(
-							state,
-							'rule',
-							`${candidate.title} cannot be countered by ${item.title}!`,
-							controller.playerId
-						);
-						continue;
-					}
-					const [countered] = state.stack.splice(stkIdx, 1);
-					moveStackSpellToZone(state, countered, 'graveyard');
-					emitVfx(state, {
-						kind: 'counter_spell',
-						sourceId: controller.playerId,
-						targetId: countered.controllerId,
-						label: `Countered ${countered.title}!`
-					});
-					addLog(state, 'cast', `${item.title} countered ${countered.title}!`, controller.playerId);
+					counterStackItemByEffect(state, item, state.stack[stkIdx], controller);
 				}
 			}
 			break;
@@ -3229,81 +3224,12 @@ function executeParsedEffect(
 		}
 
 		case 'scry': {
-			const count = Math.min(eff.amount, controller.library.length);
-			if (count <= 0) break;
-			if (controller.isBot) {
-				const topCards = controller.library.slice(0, count);
-				const landCount =
-					controller.battlefield.filter((b) => b.card.typeLine.includes('Land')).length +
-					controller.hand.filter((h) => h.card.typeLine.includes('Land')).length;
-				const keepTop: CardInstance[] = [];
-				const putBottom: CardInstance[] = [];
-				for (const c of topCards) {
-					const isLand = c.card.typeLine.includes('Land');
-					if ((landCount >= 4 && isLand) || (landCount < 3 && !isLand && c.card.cmc > 4)) {
-						putBottom.push(c);
-					} else {
-						keepTop.push(c);
-					}
-				}
-				rearrangeLibrary(controller, topCards, keepTop, putBottom);
-				addLog(
-					state,
-					'rule',
-					`${controller.username} scried ${count} (${keepTop.length} on top, ${putBottom.length} on bottom).`,
-					controller.playerId
-				);
-			} else {
-				const topCards = controller.library.slice(0, count);
-				state.pendingPrompts.push({
-					id: uid('prm'),
-					playerId: controller.playerId,
-					kind: 'scry_choice',
-					title: `Scry ${count} (${item.card.name})`,
-					description: `Look at the top ${count} card(s) of your library. Put any number on the bottom in any order and the rest on top in any order.`,
-					countRequired: count,
-					candidateInstanceIds: topCards.map((c) => c.instanceId),
-					allowBottom: true,
-					allowShuffle: false
-				});
-			}
+			scryOrRearrangeTop(state, controller, item, eff.amount, 'scry', false);
 			break;
 		}
 
 		case 'rearrange_top': {
-			const count = Math.min(eff.amount, controller.library.length);
-			if (count <= 0) break;
-			if (controller.isBot) {
-				const topCards = controller.library.slice(0, count);
-				const landCount =
-					controller.battlefield.filter((b) => b.card.typeLine.includes('Land')).length +
-					controller.hand.filter((h) => h.card.typeLine.includes('Land')).length;
-				topCards.sort((a, b) => {
-					const aLand = a.card.typeLine.includes('Land') ? 1 : 0;
-					const bLand = b.card.typeLine.includes('Land') ? 1 : 0;
-					return landCount < 3 ? bLand - aLand : aLand - bLand;
-				});
-				rearrangeLibrary(controller, topCards, topCards, []);
-				addLog(
-					state,
-					'rule',
-					`${controller.username} rearranged the top ${count} card(s) of their library.`,
-					controller.playerId
-				);
-			} else {
-				const topCards = controller.library.slice(0, count);
-				state.pendingPrompts.push({
-					id: uid('prm'),
-					playerId: controller.playerId,
-					kind: 'scry_choice',
-					title: `Rearrange Top ${count} (${item.card.name})`,
-					description: `Look at the top ${count} card(s) of your library and put them back on top in any order.${eff.mayShuffle ? ' Or you may shuffle your library.' : ''}`,
-					countRequired: count,
-					candidateInstanceIds: topCards.map((c) => c.instanceId),
-					allowBottom: false,
-					allowShuffle: Boolean(eff.mayShuffle)
-				});
-			}
+			scryOrRearrangeTop(state, controller, item, eff.amount, 'rearrange', Boolean(eff.mayShuffle));
 			break;
 		}
 
@@ -3457,18 +3383,7 @@ function executeParsedEffect(
 			if (!target) break;
 			const found = findPermanentOnBoard(state, target.id);
 			if (found && !found.inst.phasedOut) {
-				if (hasKeyword(found.inst, 'Indestructible', state)) {
-					addLog(state, 'rule', `${found.inst.card.name} is Indestructible and was not destroyed.`);
-				} else {
-					emitVfx(state, { kind: 'destroy', targetId: found.inst.instanceId, label: found.inst.card.name });
-					const diesEffects = parseTriggeredEffects(found.inst.card, 'dies');
-					const hadLostAbilities = permanentHasLostAllAbilities(found.inst, state).lost;
-					const actualZone = movePermanentToZone(state, found.inst, 'graveyard');
-					addLog(state, 'cast', `${item.title} destroyed ${found.inst.card.name}.`, controller.playerId);
-					if (actualZone === 'graveyard' && diesEffects.length > 0 && !hadLostAbilities) {
-						executeTriggeredCardEffects(state, found.controller, found.inst, diesEffects, 'Dies');
-					}
-				}
+				destroyPermanentByEffect(state, found.inst, item.title, controller.playerId);
 			}
 			break;
 		}
@@ -3786,6 +3701,228 @@ function executeParsedEffect(
 		}
 	}
 }
+
+// ---- Effect primitives shared by executeParsedEffect and the IR interpreter (runtime/effects.ts)
+
+/** "The player whose turn it is may end the turn" (Obeka): ends it now for a bot or the controller. */
+function activePlayerMayEndTurn(state: GameState, controller: PlayerGameState): void {
+	const activePlayer = state.players[state.activePlayerIndex];
+	if (!activePlayer) return;
+	if (activePlayer.playerId === controller.playerId || activePlayer.isBot) {
+		// Active player is controller (or a bot): end the turn immediately!
+		endTheTurnImmediately(state, activePlayer.playerId);
+	} else {
+		state.pendingPrompts.push({
+			id: uid('prm'),
+			playerId: activePlayer.playerId,
+			kind: 'obeka_end_turn_choice',
+			title: 'End the Turn? (Obeka, Brute Chronologist)',
+			description: `${controller.username} activated Obeka, Brute Chronologist. As the player whose turn it is, you may end the turn now (exiling all spells and abilities from the stack).`
+		});
+	}
+}
+
+/** "Create a token that's a copy of ..." (CR 707.2: copiable values only). */
+function copyPermanentAsToken(
+	state: GameState,
+	controller: PlayerGameState,
+	original: CardInstance,
+	sourceName: string
+): void {
+	const baseCardToCopy = JSON.parse(
+		JSON.stringify(original.copiableCard ?? original.card)
+	) as ScryfallCard;
+	const tokenInst = createCardInstance(
+		baseCardToCopy,
+		controller.playerId,
+		'battlefield',
+		false,
+		true,
+		allocateTimestamp(state)
+	);
+	tokenInst.copiableCard = baseCardToCopy;
+	tokenInst.summoningSick = baseCardToCopy.typeLine.includes('Creature');
+	moveObject(state, tokenInst, 'battlefield', { from: 'none', toPlayer: controller });
+	addLog(
+		state,
+		'trigger',
+		`${sourceName} created a token copy of ${baseCardToCopy.name}!`,
+		controller.playerId
+	);
+	triggerOnEtb(state, controller, tokenInst);
+}
+
+/** Counters `target` unless it can't be countered. Returns true if it was countered. */
+function counterStackItemByEffect(
+	state: GameState,
+	item: StackItem,
+	candidate: StackItem,
+	controller: PlayerGameState
+): boolean {
+	const cLow = candidate.card.oracleText.toLowerCase();
+	if (cLow.includes("can't be countered") || cLow.includes('cannot be countered')) {
+		addLog(
+			state,
+			'rule',
+			`${candidate.title} cannot be countered by ${item.title}!`,
+			controller.playerId
+		);
+		return false;
+	}
+	const stkIdx = state.stack.indexOf(candidate);
+	if (stkIdx < 0) return false;
+	const [countered] = state.stack.splice(stkIdx, 1);
+	moveStackSpellToZone(state, countered, 'graveyard');
+	emitVfx(state, {
+		kind: 'counter_spell',
+		sourceId: controller.playerId,
+		targetId: countered.controllerId,
+		label: `Countered ${countered.title}!`
+	});
+	addLog(state, 'cast', `${item.title} countered ${countered.title}!`, controller.playerId);
+	return true;
+}
+
+/** Destroy (CR 701.7) by a spell or ability: indestructible, then dies triggers. */
+function destroyPermanentByEffect(
+	state: GameState,
+	inst: CardInstance,
+	title: string,
+	actorId: string
+): void {
+	if (hasKeyword(inst, 'Indestructible', state)) {
+		addLog(state, 'rule', `${inst.card.name} is Indestructible and was not destroyed.`);
+		return;
+	}
+	const found = findPermanentOnBoard(state, inst.instanceId);
+	if (!found) return;
+	emitVfx(state, { kind: 'destroy', targetId: inst.instanceId, label: inst.card.name });
+	const diesEffects = parseTriggeredEffects(inst.card, 'dies');
+	const hadLostAbilities = permanentHasLostAllAbilities(inst, state).lost;
+	const actualZone = movePermanentToZone(state, inst, 'graveyard');
+	addLog(state, 'cast', `${title} destroyed ${inst.card.name}.`, actorId);
+	if (actualZone === 'graveyard' && diesEffects.length > 0 && !hadLostAbilities) {
+		executeTriggeredCardEffects(state, found.controller, inst, diesEffects, 'Dies');
+	}
+}
+
+/** Scry N, or "look at the top N cards, then put them back in any order": bot decision or prompt. */
+function scryOrRearrangeTop(
+	state: GameState,
+	controller: PlayerGameState,
+	item: StackItem,
+	amount: number,
+	mode: 'scry' | 'rearrange',
+	mayShuffle: boolean
+): void {
+	const count = Math.min(amount, controller.library.length);
+	if (count <= 0) return;
+	if (mode === 'scry') {
+		if (controller.isBot) {
+			const topCards = controller.library.slice(0, count);
+			const landCount =
+				controller.battlefield.filter((b) => b.card.typeLine.includes('Land')).length +
+				controller.hand.filter((h) => h.card.typeLine.includes('Land')).length;
+			const keepTop: CardInstance[] = [];
+			const putBottom: CardInstance[] = [];
+			for (const c of topCards) {
+				const isLand = c.card.typeLine.includes('Land');
+				if ((landCount >= 4 && isLand) || (landCount < 3 && !isLand && c.card.cmc > 4)) {
+					putBottom.push(c);
+				} else {
+					keepTop.push(c);
+				}
+			}
+			rearrangeLibrary(controller, topCards, keepTop, putBottom);
+			addLog(
+				state,
+				'rule',
+				`${controller.username} scried ${count} (${keepTop.length} on top, ${putBottom.length} on bottom).`,
+				controller.playerId
+			);
+		} else {
+			const topCards = controller.library.slice(0, count);
+			state.pendingPrompts.push({
+				id: uid('prm'),
+				playerId: controller.playerId,
+				kind: 'scry_choice',
+				title: `Scry ${count} (${item.card.name})`,
+				description: `Look at the top ${count} card(s) of your library. Put any number on the bottom in any order and the rest on top in any order.`,
+				countRequired: count,
+				candidateInstanceIds: topCards.map((c) => c.instanceId),
+				allowBottom: true,
+				allowShuffle: false
+			});
+		}
+	} else {
+		if (controller.isBot) {
+			const topCards = controller.library.slice(0, count);
+			const landCount =
+				controller.battlefield.filter((b) => b.card.typeLine.includes('Land')).length +
+				controller.hand.filter((h) => h.card.typeLine.includes('Land')).length;
+			topCards.sort((a, b) => {
+				const aLand = a.card.typeLine.includes('Land') ? 1 : 0;
+				const bLand = b.card.typeLine.includes('Land') ? 1 : 0;
+				return landCount < 3 ? bLand - aLand : aLand - bLand;
+			});
+			rearrangeLibrary(controller, topCards, topCards, []);
+			addLog(
+				state,
+				'rule',
+				`${controller.username} rearranged the top ${count} card(s) of their library.`,
+				controller.playerId
+			);
+		} else {
+			const topCards = controller.library.slice(0, count);
+			state.pendingPrompts.push({
+				id: uid('prm'),
+				playerId: controller.playerId,
+				kind: 'scry_choice',
+				title: `Rearrange Top ${count} (${item.card.name})`,
+				description: `Look at the top ${count} card(s) of your library and put them back on top in any order.${mayShuffle ? ' Or you may shuffle your library.' : ''}`,
+				countRequired: count,
+				candidateInstanceIds: topCards.map((c) => c.instanceId),
+				allowBottom: false,
+				allowShuffle: Boolean(mayShuffle)
+			});
+		}
+	}
+}
+
+registerEffectPorts({
+	uid,
+	addLog,
+	emitVfx,
+	findPermanent: findPermanentOnBoard,
+	power: (state, inst) => getCreaturePower(inst, state),
+	toughness: (state, inst) => getCreatureToughness(inst, state),
+	hasKeyword: (state, inst, kw) => hasKeyword(inst, kw, state),
+	drawCards,
+	damageTarget: applyDamageToTarget,
+	destroy: destroyPermanentByEffect,
+	moveFromBattlefield: movePermanentToZone,
+	counterSpell: counterStackItemByEffect,
+	createToken: createTokenOnBoard,
+	copyPermanentAsToken,
+	triggerOnEtb,
+	triggerOnAttach,
+	addCounters: addCountersToPermanent,
+	proliferate: executeProliferate,
+	scry: (state, player, item, count, mode, mayShuffle) =>
+		scryOrRearrangeTop(state, player, item, count, mode, mayShuffle),
+	search: (state, player, spec, item) =>
+		initiateLibrarySearch(
+			state,
+			player,
+			{ kind: spec.destinations[0]?.zone === 'battlefield' ? 'search_land_to_battlefield' : 'search_library_to_hand', amount: spec.count, searchSpec: spec },
+			item
+		),
+	phaseOut: phaseOutPermanent,
+	endTurn: endTheTurnImmediately,
+	activePlayerMayEndTurn,
+	win: (state, player, reason) => void winTheGame(state, player, reason),
+	lose: (state, player, reason) => void loseTheGame(state, player, reason)
+});
 
 /**
  * CR 702.26: Phasing Out a permanent also indirectly phases out any Auras/Equipment attached to it.
@@ -6464,7 +6601,7 @@ function isTargetStillValid(
 	if (target.kind === 'stack') {
 		return state.stack.some((s) => s.id === target.id || s.sourceInstanceId === target.id);
 	}
-	if (target.kind === 'graveyard_card') {
+	if (target.kind === 'graveyard_card' || target.kind === 'card_in_graveyard') {
 		return state.players.some((p) => p.graveyard.some((c) => c.instanceId === target.id));
 	}
 	const found = findPermanentOnBoard(state, target.id);

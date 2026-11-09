@@ -1,7 +1,7 @@
 {
 	"_comment": "Ratchet for ENGINE_ARCHITECTURE_PLAN.md section 1. Counts may only go down. When you remove occurrences, lower the number here in the same commit. Raising a number requires a written justification in the commit message.",
 	"cardNameComparison": {
-		"engine.ts": 9
+		"engine.ts": 8
 	},
 	"oracleTextRead": {
 		"engine.ts": 40,
