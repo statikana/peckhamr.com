@@ -468,7 +468,8 @@ function mapRowToLobby(row: Record<string, any>): MagicLobby {
 		turnTimerSeconds: 90,
 		firstTurnDraw: true,
 		maxHandSize: 7,
-		maxPlayers: 4
+		maxPlayers: 4,
+		allowUnsupportedCards: true
 	};
 	let seats: LobbySeat[] = [];
 	let gameState: GameState | null = null;
