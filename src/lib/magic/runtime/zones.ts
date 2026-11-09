@@ -207,6 +207,10 @@ function moveObjectInner(
 		}
 	}
 
+	if (fromZone === 'battlefield') {
+		removeFromCombat(state, obj.instanceId);
+	}
+
 	const owner = state.players.find((p) => p.playerId === obj.ownerId);
 	const receiver = opts.toPlayer ?? owner;
 	if (!receiver) {
@@ -412,6 +416,20 @@ export function rearrangeLibrary(
 }
 
 /**
+ * CR 506.4: Removes a permanent from combat as an attacker or blocker (preserving `wasBlocked` on
+ * any attacker it was blocking per CR 509.1h / 510.1c).
+ */
+export function removeFromCombat(state: GameState | undefined, instanceId: string): void {
+	if (!state?.combat) return;
+	state.combat.attackers = state.combat.attackers.filter(
+		(atk) => atk.attackerInstanceId !== instanceId
+	);
+	for (const atk of state.combat.attackers) {
+		atk.blockerInstanceIds = atk.blockerInstanceIds.filter((id) => id !== instanceId);
+	}
+}
+
+/**
  * Moves a permanent from one player's battlefield array to another's. This is a control change,
  * not a zone change (CR 108.4, 800.4a), so no event is emitted and no bookkeeping is done.
  */
@@ -426,14 +444,7 @@ export function transferBattlefieldControl(
 	perm.summoningSick = true;
 	toPlayer.battlefield.push(perm);
 	noteLayerInputsChanged(state);
-	if (state?.combat) {
-		state.combat.attackers = state.combat.attackers.filter(
-			(atk) => atk.attackerInstanceId !== perm.instanceId
-		);
-		for (const atk of state.combat.attackers) {
-			atk.blockerInstanceIds = atk.blockerInstanceIds.filter((id) => id !== perm.instanceId);
-		}
-	}
+	removeFromCombat(state, perm.instanceId);
 }
 
 /**

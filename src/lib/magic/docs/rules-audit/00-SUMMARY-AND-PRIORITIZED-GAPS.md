@@ -44,8 +44,8 @@ These are bugs where a mechanic the engine actively supports produces the wrong 
 2. **Attacked planeswalker leaving combat redirects attacker's damage to the defending player (`CR 506.4c, 510.1b, 702.19f`)** — **Size: S**
    - In `executeCombatDamageStep` (`engine.ts:6098-6178, 6230-6293`), if a creature is attacking a planeswalker (`defenderPlaneswalkerId !== null`) and that planeswalker leaves the battlefield or phases out before combat damage, `if (defWalker)` is false and execution falls into the `else` branch, dealing the unblocked or trample damage to `defPlayer` instead of dealing 0 combat damage.
 
-3. **Permanents leaving the battlefield or losing creature type are never removed from `state.combat` (`CR 506.4, 506.4a`)** — **Size: S**
-   - `moveObject` (`runtime/zones.ts:187-309`) only cleans up `state.combat` inside `transferBattlefieldControl`. If an attacker or blocker is destroyed, exiled, bounced, or flickered mid-combat (or stops being a creature), its `instanceId` remains in `state.combat.attackers` / `blockerInstanceIds`.
+3. **[FIXED] Permanents leaving the battlefield or losing creature type are never removed from `state.combat` (`CR 506.4, 506.4a`)** — **Size: S**
+   - Fixed in `moveObject` (`runtime/zones.ts`) via `removeFromCombat` and in `checkStateBasedActions` (`engine.ts`) for permanents that stop being creatures or become battles, while preserving `wasBlocked` on attackers whose blockers leave combat (`CR 510.1c`).
 
 4. **Extra turns overwrite `activePlayerIndex` and skip intermediate players' normal turns (`CR 500.7`)** — **Size: S**
    - In `completeTurnCleanupAndPassTurn` (`engine.ts:6440-6457`), popping an extra turn from `extraTurnQueue` sets `state.activePlayerIndex = extraIdx` without preserving whose normal turn was next in the turn order. When an extra turn is taken by a player out of turn order, intermediate seats have their normal turn skipped after the extra turn ends.

@@ -5766,6 +5766,25 @@ export function checkStateBasedActions(state: GameState): void {
 			}
 		});
 
+		// CR 506.4: Remove from combat any attacking or blocking permanent that left the battlefield,
+		// phased out, stopped being a creature, or became a battle.
+		if (state.combat.active && state.combat.attackers.length > 0) {
+			const isCombatCreature = (id: string): boolean => {
+				const snap = prePassSnapshot.get(id);
+				return Boolean(
+					snap && snap.evalPerm.isCreature && !snap.evalPerm.typeLine.includes('Battle')
+				);
+			};
+			state.combat.attackers = state.combat.attackers.filter((atk) =>
+				isCombatCreature(atk.attackerInstanceId)
+			);
+			for (const atk of state.combat.attackers) {
+				if (atk.blockerInstanceIds.length > 0) {
+					atk.blockerInstanceIds = atk.blockerInstanceIds.filter(isCombatCreature);
+				}
+			}
+		}
+
 		// 1. +1/+1 and -1/-1 counter annihilation (CR 704.5q)
 		for (const p of state.players) {
 			if (p.lost) continue;
