@@ -6,6 +6,7 @@ import {
 	createCardInstance,
 	createInitialGameState,
 	enterEndStep,
+	evaluatePermanent,
 	getEffectiveActivatedAbilities,
 	getPlayerCommanderIdentity,
 	winTheGame
@@ -332,6 +333,115 @@ describe('Tier 1b CR fixes', () => {
 			assert.equal(applyGameAction(state, p1.playerId, { type: 'pass_priority' }).ok, true);
 			assert.equal(applyGameAction(state, p2.playerId, { type: 'pass_priority' }).ok, true);
 			assert.equal(state.stack.length, 3, 'ETB trigger triggers 3 times with two Panharmonicons');
+		});
+	});
+
+	describe('Item 9: Layer 4 type-setting preserves Basic/Snow supertypes and non-land types under Blood Moon (CR 205.1a-b, 205.4b, 305.7)', () => {
+		it('preserves Basic and Snow supertypes on setTypes and preserves Artifact/Creature types on lands under Blood Moon', () => {
+			const { state, p1 } = makeGame(2);
+
+			// 1. Snow Creature enchanted by Kenrith's Transformation ("Enchanted creature loses all abilities and is a green Elk creature with base power and toughness 3/3.")
+			const snowBear = createCardInstance(
+				synthCard({
+					name: 'Rimefur Bear',
+					typeLine: 'Snow Creature — Bear',
+					oracleText: 'Vigilance',
+					power: '2',
+					toughness: '2'
+				}),
+				p1.playerId
+			);
+			const transformation = createCardInstance(
+				synthCard({
+					name: "Kenrith's Transformation",
+					typeLine: 'Enchantment — Aura',
+					oracleText:
+						'Enchant creature\nEnchanted creature loses all abilities and is a green Elk creature with base power and toughness 3/3.'
+				}),
+				p1.playerId
+			);
+			transformation.attachedToId = snowBear.instanceId;
+			p1.battlefield.push(snowBear, transformation);
+
+			const evalSnowBear = evaluatePermanent(state, snowBear);
+			assert.equal(evalSnowBear.effectiveTypeLine, 'Snow Creature — Elk');
+
+			// 2. Basic Snow Land enchanted by Imprisoned in the Moon
+			const basicSnowIsland = createCardInstance(
+				synthCard({
+					name: 'Snow-Covered Island',
+					typeLine: 'Basic Snow Land — Island',
+					oracleText: '({T}: Add {U}.)'
+				}),
+				p1.playerId
+			);
+			const imprisoned = createCardInstance(
+				synthCard({
+					name: 'Imprisoned in the Moon',
+					typeLine: 'Enchantment — Aura',
+					oracleText:
+						'Enchant creature, land, or planeswalker\nEnchanted permanent is a colorless land with "{T}: Add {C}" and loses all other card types and abilities.'
+				}),
+				p1.playerId
+			);
+			imprisoned.attachedToId = basicSnowIsland.instanceId;
+			p1.battlefield.push(basicSnowIsland, imprisoned);
+
+			const evalBasicSnow = evaluatePermanent(state, basicSnowIsland);
+			assert.equal(evalBasicSnow.effectiveTypeLine, 'Basic Snow Land');
+
+			// 3. Blood Moon with Artifact Land, Snow Land, and Land Creature — Forest Dryad
+			const darksteelCitadel = createCardInstance(
+				synthCard({
+					name: 'Darksteel Citadel',
+					typeLine: 'Artifact Land',
+					oracleText: 'Indestructible\n{T}: Add {C}.'
+				}),
+				p1.playerId
+			);
+			const snowDual = createCardInstance(
+				synthCard({
+					name: 'Rimewood Falls',
+					typeLine: 'Snow Land — Forest Island',
+					oracleText: '({T}: Add {G} or {U}.)'
+				}),
+				p1.playerId
+			);
+			const dryadArbor = createCardInstance(
+				synthCard({
+					name: 'Dryad Arbor',
+					typeLine: 'Land Creature — Forest Dryad',
+					oracleText: '({T}: Add {G}.)',
+					power: '1',
+					toughness: '1'
+				}),
+				p1.playerId
+			);
+			const bloodMoon = createCardInstance(
+				synthCard({
+					name: 'Blood Moon',
+					typeLine: 'Enchantment',
+					oracleText: 'Nonbasic lands are Mountains.'
+				}),
+				p1.playerId
+			);
+			p1.battlefield.push(darksteelCitadel, snowDual, dryadArbor, bloodMoon);
+
+			const evalCitadel = evaluatePermanent(state, darksteelCitadel);
+			assert.equal(evalCitadel.effectiveTypeLine, 'Artifact Land — Mountain');
+			assert.equal(evalCitadel.isArtifact, true);
+			assert.equal(evalCitadel.isLand, true);
+
+			const evalSnowDual = evaluatePermanent(state, snowDual);
+			assert.equal(evalSnowDual.effectiveTypeLine, 'Snow Land — Mountain');
+
+			const evalDryad = evaluatePermanent(state, dryadArbor);
+			assert.equal(evalDryad.effectiveTypeLine, 'Land Creature — Mountain Dryad');
+			assert.equal(evalDryad.isCreature, true);
+			assert.equal(evalDryad.isLand, true);
+			assert.equal(evalDryad.hasSubType('Mountain'), true);
+			assert.equal(evalDryad.hasSubType('Dryad'), true);
+			assert.equal(evalDryad.hasSubType('Forest'), false);
 		});
 	});
 });
