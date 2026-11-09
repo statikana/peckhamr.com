@@ -163,6 +163,7 @@ import {
 import { botAcceptsOptionalTrigger, chooseBotTriggerTargets } from './ai.ts';
 import type { EffectStep, TargetSpec } from './ir.ts';
 import { compiledStackItemEffects } from './compiler/effects.ts';
+import { cardAbilityDisplayText, enteringNotices, stackItemDisplayText } from './compiler/support.ts';
 import {
 	buildCostChoiceRequest,
 	effectivePromptChoice,
@@ -1200,6 +1201,32 @@ function applyGameActionInner(
 	const priorityPlayer = state.players[state.priorityPlayerIndex];
 
 	switch (action.type) {
+		case 'resolve_manually': {
+			// Step E2 escape hatch: apply any ability of a card by hand (guided operations). It needs
+			// priority and never uses the stack.
+			if (priorityPlayer?.playerId !== actor.playerId) {
+				return { ok: false, error: 'You can resolve an ability manually only while you have priority.' };
+			}
+			const found = findCardAnywhere(state, action.instanceId);
+			const mine = found && (found.zone === 'battlefield' ? found.inst.controllerId === actor.playerId : found.inst.ownerId === actor.playerId);
+			if (!found || !mine) return { ok: false, error: 'Choose a card you control.' };
+			const card = found.inst.copiableCard ?? found.inst.card;
+			const text = cardAbilityDisplayText(card, action.abilityIndex);
+			enqueueChoicePrompt(state, {
+				id: uid('prm'),
+				playerId: actor.playerId,
+				kind: 'guided_resolution',
+				purpose: 'guided_resolution',
+				title: `Resolve Manually: ${card.name}`,
+				description: text,
+				yesLabel: 'Done',
+				cancellable: true,
+				continuation: { kind: 'manual_ability', sourceInstanceId: found.inst.instanceId },
+				choice: { kind: 'yesNo', question: `Apply ${card.name}'s ability with the operations below.` }
+			});
+			addLog(state, 'rule', `${actor.username} is resolving an ability of ${card.name} manually.`, actor.playerId);
+			return { ok: true };
+		}
 		case 'tap_mana': {
 			const perm = actor.battlefield.find((c) => c.instanceId === action.instanceId);
 			if (!perm || perm.phasedOut) {
@@ -2671,7 +2698,8 @@ function handlePromptResolution(
 								reason: nextDesc
 							},
 							stackItem: prompt.stackItem,
-							continuationEffects: prompt.continuationEffects
+							continuationEffects: prompt.continuationEffects,
+							continuation: prompt.continuation
 						});
 						return { ok: true };
 					}
@@ -2697,6 +2725,7 @@ function handlePromptResolution(
 			}
 		}
 		checkStateBasedActions(state);
+		resumeAfterPrompt(state, prompt);
 		return { ok: true };
 	}
 
@@ -2783,10 +2812,15 @@ function handlePromptResolution(
 			}
 			checkStateBasedActions(state);
 		}
+		resumeAfterPrompt(state, prompt);
 		return { ok: true };
 	}
 
 	if (purpose === 'guided_resolution') {
+		if (normalized.cancel && prompt.cancellable) {
+			state.pendingPrompts.splice(promptIdx, 1);
+			return { ok: true };
+		}
 		const valid = validateChoiceAnswer(choice, normalized.answer);
 		if (!valid.ok || normalized.answer?.kind !== 'yesNo') {
 			return { ok: false, error: valid.ok ? 'Invalid guided resolution answer.' : valid.error };
@@ -2794,9 +2828,21 @@ function handlePromptResolution(
 		const ops = normalized.answer.yes ? (normalized.operations ?? []) : [];
 		const opsValid = validateGuidedOperations(state, ops);
 		if (!opsValid.ok) return opsValid;
+		const c = prompt.continuation;
+		if (c?.kind === 'manual_resolution' && !normalized.answer.yes) {
+			// "Use the engine's approximation": the legacy effects, while they exist (step F removes them).
+			const item = state.stack.find((s) => s.id === c.stackItemId);
+			if (item && item.parsedEffects.length === 0) return { ok: false, error: 'There is no automatic approximation for this ability.' };
+			state.pendingPrompts.splice(promptIdx, 1);
+			if (item) {
+				addLog(state, 'cast', `${actor.username} let the engine approximate ${item.title}.`, actor.playerId);
+				item.manualResolution = 'legacy';
+				resumeStackItem(state, item);
+			}
+			return { ok: true };
+		}
 		state.pendingPrompts.splice(promptIdx, 1);
 		applyGuidedOperations(state, actor, ops);
-		const c = prompt.continuation;
 		if (c?.kind === 'manual_resolution') {
 			const item = state.stack.find((s) => s.id === c.stackItemId);
 			addLog(state, 'cast', `${actor.username} resolved ${item?.title ?? prompt.title} manually${ops.length > 0 ? ` (${ops.length} operation${ops.length === 1 ? '' : 's'})` : ''}.`, actor.playerId);
@@ -2847,6 +2893,18 @@ function handlePromptResolution(
 	}
 	checkStateBasedActions(state);
 	return { ok: true };
+}
+
+/**
+ * Step E2: a scry or search prompt queued by an IR step that wasn't the ability's last. Once every
+ * such prompt of the item is answered, its resolution goes on at the next step.
+ */
+function resumeAfterPrompt(state: GameState, prompt: PendingPrompt): void {
+	const c = prompt.continuation;
+	if (c?.kind !== 'effect_resume') return;
+	const item = state.stack.find((s) => s.id === c.stackItemId);
+	if (!item?.effectResume || item.effectResume.stepIndex !== c.stepIndex) return;
+	resumeStackItem(state, item);
 }
 
 // ---- Step E2: guided (manual) operations ------------------------------------------------------
@@ -3215,7 +3273,6 @@ function beginPhase(state: GameState, phase: GamePhase, activePlayer?: PlayerGam
 // keyword (before matching, as the old upkeep loop did) and delayed end-step triggers (after the
 // beginning-of-end-step triggers are on the stack).
 for (const kind of [
-	'ZoneChange',
 	'Cast',
 	'SpellCopied',
 	'AttackDeclared',
@@ -3228,6 +3285,32 @@ for (const kind of [
 ] as const) {
 	registerEventHandler(kind, (state, ev) => matchTriggers(state, ev));
 }
+registerEventHandler('ZoneChange', (state, ev) => {
+	matchTriggers(state, ev);
+	if (ev.to === 'battlefield' && !ev.ceasedToExist) noteUnautomatedOnEnter(state, ev.object);
+});
+
+/**
+ * Step E2 (plan section 2.7): when a permanent enters, say once which of its abilities the engine
+ * won't act on: statics and replacement effects that aren't enforced, and triggered abilities whose
+ * trigger it can't recognise (players apply those by hand, e.g. with "Resolve manually"). Logged on
+ * entering only, never from state-based actions or layer evaluation. Display text only.
+ */
+function noteUnautomatedOnEnter(state: GameState, obj: CardInstance): void {
+	if (obj.isFaceDown) return;
+	const card = obj.copiableCard ?? obj.card;
+	for (const n of enteringNotices(card)) {
+		addLog(
+			state,
+			'rule',
+			n.kind === 'triggerUnrecognised'
+				? `${card.name} has an ability that isn't automated: ${n.text}`
+				: `${card.name}: '${n.text}' is not enforced.`,
+			obj.controllerId
+		);
+	}
+}
+
 registerEventHandler('PhaseBegin', (state, ev) => {
 	const activePlayer = state.players.find((p) => p.playerId === ev.activePlayerId);
 	if (ev.phase === 'upkeep' && activePlayer) runSuspendUpkeep(state, activePlayer);
@@ -3393,12 +3476,6 @@ function withLegacyEventTarget(item: StackItem): StackItem {
 	return item;
 }
 
-/** Whether the engine can execute a triggered ability: legacy effects, or an interpretable IR effect. */
-function canExecuteTrigger(t: { legacy: { effects: ParsedEffect[] }; effect?: Parameters<typeof staticallyInterpretable>[0] }): boolean {
-	if (t.legacy.effects.length > 0) return true;
-	return Boolean(t.effect && staticallyInterpretable(t.effect, true));
-}
-
 registerTriggerHost({
 	executeInline(state, t) {
 		const controller = state.players.find((p) => p.playerId === t.controllerId);
@@ -3412,8 +3489,9 @@ registerTriggerHost({
 		);
 	},
 	putOnStack: putTriggerOnStack,
-	orderSimultaneous: askTriggerOrder,
-	canExecute: canExecuteTrigger
+	orderSimultaneous: askTriggerOrder
+	// Step E2: no `canExecute` filter. Every matched ability triggers; one the engine can't run is
+	// resolved manually (human) or by its legacy effects / skipped (bot) as it resolves.
 });
 
 /**
@@ -3667,6 +3745,42 @@ function resolveTriggerPrompt(
 	return { ok: true };
 }
 
+/**
+ * Step E2: whether a stack item comes from a card ability the engine would have to automate (an
+ * instant or sorcery, an activated ability, a triggered ability of a card), as opposed to an object
+ * the engine makes itself (delayed triggers it created, Ward, which is implemented as a keyword) or
+ * a permanent spell (it simply enters the battlefield).
+ */
+function isUnautomatedStackItem(item: StackItem): boolean {
+	if (item.kind === 'activated') return true;
+	if (item.kind === 'spell') return /\b(?:Instant|Sorcery)\b/.test(item.card.typeLine);
+	return item.triggeredAbilityIndex !== undefined && !item.parsedEffects.some((e) => e.kind === 'ward_trigger');
+}
+
+/**
+ * Step E2: opens the guided (manual) resolution of a stack item that isn't automated. The item stays
+ * on the stack until its controller is done (CR 608.2n); the prompt names it by id (plain data).
+ */
+function openManualResolution(state: GameState, item: StackItem, controller: PlayerGameState): void {
+	item.manualResolution = 'awaiting';
+	const text = stackItemDisplayText(item);
+	const hasLegacy = item.parsedEffects.length > 0;
+	const question = `${item.title} isn't automated. Apply its effect with the operations below, then finish resolving it.`;
+	enqueueChoicePrompt(state, {
+		id: uid('prm'),
+		playerId: controller.playerId,
+		kind: 'guided_resolution',
+		purpose: 'guided_resolution',
+		title: `Resolve Manually: ${item.title}`,
+		description: text,
+		yesLabel: 'Done: finish resolving',
+		...(hasLegacy ? { noLabel: "Use the engine's approximation instead" } : {}),
+		continuation: { kind: 'manual_resolution', stackItemId: item.id },
+		choice: { kind: 'yesNo', question }
+	});
+	addLog(state, 'rule', `${item.title} isn't automated: ${controller.username} resolves it manually.`, controller.playerId);
+}
+
 let effectInterpreterEnabled = true;
 
 /**
@@ -3705,7 +3819,7 @@ function stackItemAwaitsPrompt(state: GameState, item: StackItem): boolean {
 	return state.pendingPrompts.some(
 		(p) =>
 			p.triggerStackItemId === item.id ||
-			(p.continuation?.kind === 'effect_choice' && p.continuation.stackItemId === item.id) ||
+			((p.continuation?.kind === 'effect_choice' || p.continuation?.kind === 'effect_resume') && p.continuation.stackItemId === item.id) ||
 			(p.continuation?.kind === 'manual_resolution' && p.continuation.stackItemId === item.id)
 	);
 }
@@ -3809,9 +3923,26 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 			: compiledStackItemEffects(item);
 	const overload = item.castMode === 'overload';
 	const interpreted =
+		!item.manualResolution &&
 		compiled !== null &&
 		staticallyInterpretable(compiled, item.kind === 'triggered') &&
-		interpretableNow(state, item, compiled, controller, overload);
+		(item.effectResume !== undefined || interpretableNow(state, item, compiled, controller, overload));
+	// Step E2 (plan section 2.7): a spell or ability the interpreter can't run isn't automated. A human
+	// controller resolves it manually (guided operations; the engine's legacy approximation is offered
+	// while it exists); a bot uses the legacy effects if there are any, and otherwise skips it.
+	let runLegacy = !interpreted;
+	if (!interpreted && effectInterpreterEnabled && isUnautomatedStackItem(item)) {
+		if (!controller.isBot && item.manualResolution !== 'legacy') {
+			if (item.manualResolution !== 'done') {
+				openManualResolution(state, item, controller);
+				return;
+			}
+			runLegacy = false;
+		} else if (item.parsedEffects.length === 0) {
+			addLog(state, 'rule', `${controller.username} (bot) skipped unsupported ability ${item.title}: it isn't automated.`, controller.playerId);
+			runLegacy = false;
+		}
+	}
 	let exiledBySelfReference = false;
 	let steps: EffectStep[] = compiled?.steps ?? [];
 	if (interpreted && item.kind === 'triggered') {
@@ -3884,11 +4015,11 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 		exiledBySelfReference = result.exileSelf;
 	}
 
-	if (item.kind === 'triggered') triggerPathCounts[interpreted ? 'interpreter' : 'legacy']++;
+	if (item.kind === 'triggered' && (interpreted || runLegacy)) triggerPathCounts[interpreted ? 'interpreter' : 'legacy']++;
 	// Legacy fallback for triggered abilities: their legacy effects read the event ref as targets[0].
-	if (!interpreted) withLegacyEventTarget(item);
+	if (runLegacy) withLegacyEventTarget(item);
 	// Execute parsed effects (pausing continuation effects if a human Scry or Library Search prompt is created)
-	for (let i = 0; !interpreted && i < item.parsedEffects.length; i++) {
+	for (let i = 0; runLegacy && i < item.parsedEffects.length; i++) {
 		const eff = item.parsedEffects[i];
 		if (eff.kind === 'end_the_turn') {
 			endTheTurnImmediately(state, controller.playerId);
@@ -3948,7 +4079,7 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 	}
 
 	// Register any delayed triggers created by this spell (e.g., Final Fortune's end-step loss trigger)
-	if (item.kind === 'spell' && !interpreted) {
+	if (item.kind === 'spell' && runLegacy) {
 		const delayedSpecs = parseDelayedTriggersFromSpell(item.card);
 		for (const spec of delayedSpecs) {
 			if (item.parsedEffects.some((e) => e.dynamicFormula === 'top_creature_of_graveyard')) continue;
@@ -3975,7 +4106,7 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 	}
 
 	// Handle graveyard-targeting return-to-hand or exile effects
-	const graveTargets = interpreted ? [] : item.targets.filter((t) => t.kind === 'graveyard_card');
+	const graveTargets = runLegacy ? item.targets.filter((t) => t.kind === 'graveyard_card') : [];
 	if (graveTargets.length > 0) {
 		const oLow = getStackItemRulesText(item).toLowerCase();
 		if (oLow.includes('return') && oLow.includes('hand')) {
@@ -4021,24 +4152,6 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 				}
 			}
 		}
-	}
-
-	if (item.requiresGuidedResolution && !controller.isBot && !interpreted) {
-		const description = getStackItemRulesText(item);
-		state.pendingPrompts.push({
-			id: uid('prm'),
-			playerId: controller.playerId,
-			kind: 'guided_resolution',
-			purpose: 'guided_resolution',
-			title: `Resolve ${item.card.name}`,
-			description,
-			stackItem: item,
-			yesLabel: 'Done Resolving Spell',
-			choice: {
-				kind: 'yesNo',
-				question: description || `Resolve ${item.card.name}`
-			}
-		});
 	}
 
 	// CR 608.2n: As the final part of resolution, the resolving spell or ability leaves the stack.

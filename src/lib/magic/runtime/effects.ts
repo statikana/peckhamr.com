@@ -207,7 +207,7 @@ export const INTERPRETED_VERBS: ReadonlySet<Verb> = new Set<Verb>([
 	'tapOrUntap' as Verb
 ]);
 
-/** Verbs whose chooser may get a prompt that pauses resolution. */
+/** Verbs whose chooser may get an engine prompt (scry, search); resolution pauses after the step. */
 const PROMPTING_VERBS: ReadonlySet<Verb> = new Set<Verb>(['scry', 'lookAndReorder', 'search']);
 
 function selectorSupported(sel: Selector): boolean {
@@ -317,10 +317,14 @@ export function interpretableNow(
 		if (!targetRefMatchesSpec(item.targets[0], parse.targets[0])) return false;
 		if (!targetRefMatchesSpec(item.targets[1], parse.targets[1])) return false;
 	} else {
-		if (item.targets.length < Math.max(1, spec.min) && !(spec.min === 0 && item.targets.length === 0)) return false;
+		// CR 608.2b: targets that became illegal were dropped; the spell resolves with the rest.
+		if (item.targets.length === 0 && spec.min > 0) return false;
 		if (item.targets.length > spec.max) return false;
 		if (!item.targets.every((t) => targetRefMatchesSpec(t, spec))) return false;
 	}
+	// Step E2: an item on the stack can pause for a human's scry or search prompt and resume after
+	// it. Anything else (an inline triggered mana ability) can't, so a human prompt must come last.
+	if (state.stack.some((s) => s.id === item.id)) return true;
 	const last = parse.steps.length - 1;
 	for (let i = 0; i < parse.steps.length; i++) {
 		const step = parse.steps[i];
@@ -380,13 +384,7 @@ class Run {
 	 * resume, with `answers` filled in), so simultaneous choices stay simultaneous (CR 101.4).
 	 */
 	pauseForChoice(chooser: PlayerGameState, title: string, description: string, candidates: string[], count: number, zone: 'battlefield' | 'hand'): void {
-		const item = this.state.stack.find((s) => s.id === this.ctx.item.id)!;
-		item.effectResume = {
-			stepIndex: this.stepIndex,
-			bindings: [...this.bindings.entries()].map(([name, bound]) => [name, bound.map((b) => ({ id: b.id, lki: { ...b.lki } }))]),
-			exileSelf: this.result.exileSelf || undefined,
-			answers: { ...this.answers }
-		};
+		const item = this.saveFrame(this.stepIndex, this.answers);
 		enqueueChoicePrompt(this.state, {
 			id: P().uid('prompt'),
 			kind: 'chooseObjects',
@@ -399,6 +397,18 @@ class Run {
 			choice: { kind: 'chooseObjects', candidates, min: count, max: count, zone, reason: title }
 		});
 		this.result.paused = true;
+	}
+
+	/** Stores the resume frame (plain data) on the stack item and returns the item. */
+	saveFrame(stepIndex: number, answers: Record<string, string[]>): StackItem {
+		const item = this.state.stack.find((s) => s.id === this.ctx.item.id)!;
+		item.effectResume = {
+			stepIndex,
+			bindings: [...this.bindings.entries()].map(([name, bound]) => [name, bound.map((b) => ({ id: b.id, lki: { ...b.lki } }))]),
+			exileSelf: this.result.exileSelf || undefined,
+			answers: { ...answers }
+		};
+		return item;
 	}
 
 	/**
@@ -702,9 +712,20 @@ class Run {
 	run(steps: EffectStep[]): void {
 		for (; this.stepIndex < steps.length; this.stepIndex++) {
 			if (this.result.turnEnded) return;
-			this.step(steps[this.stepIndex]);
+			const step = steps[this.stepIndex];
+			const promptsBefore = this.state.pendingPrompts.length;
+			this.step(step);
 			if (this.result.paused) return;
 			this.answers = {};
+			// A scry or search step queued a human's prompt and more steps follow: pause, and resume at
+			// the next step once every such prompt is answered (the prompt does the step's own work).
+			const queued = this.state.pendingPrompts.slice(promptsBefore);
+			if (this.canPause && PROMPTING_VERBS.has(step.verb) && queued.length > 0 && this.stepIndex < steps.length - 1) {
+				const item = this.saveFrame(this.stepIndex + 1, {});
+				for (const pr of queued) pr.continuation = { kind: 'effect_resume', stackItemId: item.id, stepIndex: this.stepIndex + 1 };
+				this.result.paused = true;
+				return;
+			}
 		}
 	}
 

@@ -9,12 +9,28 @@
  * UI (for display) may read.
  */
 import type { CardDefinition, Span, UnsupportedReason } from '../ir.ts';
-import type { DeckCardEntry, LobbyRulesConfig, MagicDeck, ScryfallCard } from '../types.ts';
+import type { DeckCardEntry, LobbyRulesConfig, MagicDeck, ScryfallCard, StackItem } from '../types.ts';
 import { compileCard } from './index.ts';
+
+/**
+ * Step E2: what kind of ability isn't automated, which decides what the runtime does with it
+ * (plan section 2.7):
+ * - `spell`, `activated`, `triggered` (trigger head understood): it goes on the stack as usual and
+ *   its controller resolves it manually (guided resolution).
+ * - `triggerUnrecognised`: the trigger head isn't understood (or names an event the engine doesn't
+ *   emit), so the engine can't tell when it triggers. Logged when the permanent enters; players
+ *   apply it by hand ("Resolve manually" in the inspector).
+ * - `static` (statics and replacement effects) and `keyword`: not enforced. Logged when the
+ *   permanent enters.
+ * - `mana`: a mana ability (it doesn't use the stack); the engine's approximation is used.
+ * - `multiface`: a layout the engine doesn't support.
+ */
+export type UnsupportedAbilityKind = 'spell' | 'activated' | 'mana' | 'triggered' | 'triggerUnrecognised' | 'static' | 'keyword' | 'multiface';
 
 export interface UnsupportedAbilityReport {
 	/** Name of the face the ability is on. */
 	face: string;
+	kind: UnsupportedAbilityKind;
 	/** The whole ability's normalised text (self-references appear as `~`). */
 	text: string;
 	reason: UnsupportedReason;
@@ -42,10 +58,12 @@ export function definitionSupportReport(def: CardDefinition): CardSupportReport 
 	if (cached) return cached;
 	const unsupported: UnsupportedAbilityReport[] = [];
 	for (const face of def.faces) {
+		const isSpell = face.characteristics.types.some((t) => t === 'Instant' || t === 'Sorcery');
 		for (const ab of face.abilities) {
 			if (ab.kind !== 'unsupported') continue;
 			unsupported.push({
 				face: face.name,
+				kind: unsupportedKind(ab, isSpell),
 				text: ab.text,
 				reason: ab.reason,
 				span: ab.span,
@@ -60,6 +78,82 @@ export function definitionSupportReport(def: CardDefinition): CardSupportReport 
 	return report;
 }
 
+const TRIGGER_WORD = /^(?:when|whenever|at)\b/i;
+const MANA_EFFECT = /:\s*add\b/i;
+/** "{T}: ...", "{2}{G}, Sacrifice ~: ...", "+1: ...": a cost, a colon, then an effect. */
+const ACTIVATED_LINE = /^[^"“:]*?(?:\{[^}]+\}|[+−-]\d+|\b(?:tap|untap|sacrifice|discard|exile|pay|remove)\b)[^"“:]*:\s*\S/i;
+
+function unsupportedKind(ab: Extract<CardDefinition['faces'][number]['abilities'][number], { kind: 'unsupported' }>, isSpell: boolean): UnsupportedAbilityKind {
+	switch (ab.reason) {
+		case 'static_not_compiled':
+			return 'static';
+		case 'keyword_not_implemented':
+			return 'keyword';
+		case 'multiface':
+			return 'multiface';
+		case 'event_not_implemented':
+			return 'triggerUnrecognised';
+	}
+	const text = ab.text.trim();
+	if (ab.trigger) return 'triggered';
+	if (TRIGGER_WORD.test(text)) return 'triggerUnrecognised';
+	if (isSpell && (ab.legacyId === undefined || ab.legacyId.startsWith('cast_'))) return 'spell';
+	if (ab.legacyId !== undefined || ab.cost !== undefined || ACTIVATED_LINE.test(text)) {
+		return MANA_EFFECT.test(text) ? 'mana' : 'activated';
+	}
+	if (isSpell) return 'spell';
+	return 'static';
+}
+
+/** Inspector / log wording for an unsupported ability of this kind. */
+export function unsupportedKindLabel(kind: UnsupportedAbilityKind): string {
+	switch (kind) {
+		case 'spell':
+		case 'activated':
+		case 'triggered':
+			return 'Not automated: resolved manually';
+		case 'triggerUnrecognised':
+			return 'Not automated: apply it manually when it triggers';
+		case 'static':
+		case 'keyword':
+			return 'Not enforced';
+		case 'mana':
+			return 'Not fully automated: the engine approximates this mana ability';
+		case 'multiface':
+			return 'Not automated: this card layout isn\'t supported';
+	}
+}
+
+/**
+ * Step E2: the abilities to mention when a permanent enters the battlefield (the engine can't act on
+ * them itself): statics, replacements and keywords that aren't enforced, and triggered abilities whose
+ * trigger isn't understood. Display text only (`~` shown as the face name).
+ */
+export function enteringNotices(card: ScryfallCard): Array<{ kind: UnsupportedAbilityKind; text: string }> {
+	const report = cardSupportReport(card);
+	const first = report.unsupported[0]?.face;
+	return report.unsupported
+		.filter((u) => u.face === first && u.text.trim().length > 0 && (u.kind === 'static' || u.kind === 'keyword' || u.kind === 'triggerUnrecognised'))
+		.map((u) => ({ kind: u.kind, text: displayAbilityText(u.text, u.face) }));
+}
+
+/** The rules text a stack item shows (display only: prompts, logs). */
+export function stackItemDisplayText(item: Pick<StackItem, 'card' | 'oracleText'>): string {
+	return item.oracleText || item.card.oracleText || '';
+}
+
+/**
+ * The text of one of a card's unsupported abilities (index into `cardSupportReport(card).unsupported`),
+ * or the whole card's text without an index. Display only (the "Resolve manually" escape hatch).
+ */
+export function cardAbilityDisplayText(card: ScryfallCard, unsupportedIndex?: number): string {
+	if (unsupportedIndex !== undefined) {
+		const u = cardSupportReport(card).unsupported[unsupportedIndex];
+		if (u) return displayAbilityText(u.text, u.face);
+	}
+	return card.oracleText || '';
+}
+
 /** Which of the card's abilities the engine won't automate. Never throws; a compiler error counts
  * as one unsupported ability covering the whole card. */
 export function cardSupportReport(card: ScryfallCard): CardSupportReport {
@@ -68,7 +162,7 @@ export function cardSupportReport(card: ScryfallCard): CardSupportReport {
 	} catch {
 		return {
 			fullySupported: false,
-			unsupported: [{ face: card.name, text: '', reason: 'unparsed', span: { start: 0, end: 0 }, unparsed: [] }]
+			unsupported: [{ face: card.name, kind: 'static', text: '', reason: 'unparsed', span: { start: 0, end: 0 }, unparsed: [] }]
 		};
 	}
 }

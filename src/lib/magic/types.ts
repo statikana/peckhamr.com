@@ -469,9 +469,10 @@ export interface StackItem {
 	effectResume?: EffectResumeFrame;
 	/**
 	 * Step E2 (plan section 2.7): the ability isn't automated and its human controller is applying it
-	 * by hand (`'awaiting'`: guided prompt open; `'done'`: finish resolving without effects).
+	 * by hand (`'awaiting'`: guided prompt open; `'done'`: finish resolving without effects;
+	 * `'legacy'`: the player chose the engine's legacy approximation instead).
 	 */
-	manualResolution?: 'awaiting' | 'done';
+	manualResolution?: 'awaiting' | 'done' | 'legacy';
 }
 
 /** One binding of the IR interpreter ("it", "that creature"): the objects and their LKI. */
@@ -683,6 +684,8 @@ export interface PendingPrompt {
  * Step E2: data-only prompt continuations, handled in engine.ts `handlePromptResolution`.
  * - `effect_choice`: a paused IR resolution (sacrifice / discard choice); the answer is stored in
  *   the stack item's `effectResume.answers` and the item resumes resolving.
+ * - `effect_resume`: a scry / search prompt queued by an IR step that isn't the ability's last; the
+ *   prompt does its own work, then the item resumes at `stepIndex` (the next step).
  * - `manual_resolution`: an unsupported spell or ability being applied by hand (guided operations);
  *   the item then finishes resolving.
  * - `manual_ability`: the "Resolve manually" escape hatch for any ability of a card; never touches
@@ -692,6 +695,7 @@ export interface PendingPrompt {
  */
 export type PromptContinuation =
 	| { kind: 'effect_choice'; stackItemId: string; stepIndex: number }
+	| { kind: 'effect_resume'; stackItemId: string; stepIndex: number }
 	| { kind: 'manual_resolution'; stackItemId: string }
 	| { kind: 'manual_ability'; sourceInstanceId: string }
 	| { kind: 'handler'; name: string; data?: Record<string, string | number | boolean | null> };
