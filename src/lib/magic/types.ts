@@ -727,6 +727,7 @@ export interface GameState {
 	winnerId?: string;
 	rules: LobbyRulesConfig;
 	turnNumber: number;
+	turnSerial?: number;
 	activePlayerIndex: number;
 	priorityPlayerIndex: number;
 	passedPriorityPlayerIds: string[];

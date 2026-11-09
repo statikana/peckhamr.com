@@ -309,3 +309,74 @@ describe('Phase 3 (§4.2): Trigger target order (#8, CR 603.3d)', () => {
 	});
 });
 
+describe('Phase 3 (§4.3): Per-turn trigger counter (#9)', () => {
+	it('resets triggersPlacedThisTurn for each player turn within the same round (turnNumber === 1)', () => {
+		const { state, p } = setupGame(4, [false, false, false, false]);
+		const [p1, p2] = p;
+		assert.equal(state.turnNumber, 1);
+		assert.equal(state.activePlayerIndex, 0);
+
+		const landfallCard = card({
+			name: 'Kazandu Refuge Watcher',
+			manaCost: '{1}{G}',
+			cmc: 2,
+			typeLine: 'Creature — Elf',
+			oracleText: 'Whenever a land you control enters, you gain 1 life.',
+			power: '1',
+			toughness: '1'
+		});
+		const forestCard = card({
+			name: 'Forest',
+			manaCost: '',
+			cmc: 0,
+			typeLine: 'Basic Land — Forest',
+			oracleText: '{T}: Add {G}.'
+		});
+
+		for (let i = 0; i < 150; i++) {
+			put(state, p1, landfallCard, 'battlefield');
+		}
+		for (let i = 0; i < 100; i++) {
+			put(state, p2, landfallCard, 'battlefield');
+		}
+
+		p1.hand = [];
+		p2.hand = [];
+
+		// P1 plays a land on P1's turn -> places 150 triggers on the stack
+		const p1Forest = put(state, p1, forestCard, 'hand');
+		assert.equal(
+			applyGameAction(state, p1.playerId, { type: 'play_land', instanceId: p1Forest.instanceId }).ok,
+			true
+		);
+		assert.equal(state.stack.length, 150);
+
+		// Clear stack/prompts and pass P1's turn to P2's turn (still round turnNumber === 1)
+		state.stack = [];
+		state.pendingPrompts = [];
+		assert.equal(applyGameAction(state, p1.playerId, { type: 'end_turn' }).ok, true);
+		assert.equal(state.turnNumber, 1, 'P2 turn 1 is still round turnNumber 1');
+		assert.equal(state.activePlayerIndex, 1);
+
+		// Advance P2 from upkeep -> draw -> main1
+		while (state.phase !== 'main1') {
+			const prioId = state.players[state.priorityPlayerIndex].playerId;
+			assert.equal(applyGameAction(state, prioId, { type: 'pass_priority' }).ok, true);
+		}
+		assert.equal(state.phase, 'main1');
+
+		// P2 plays a land on P2's turn -> places 100 triggers; none should be dropped!
+		const p2Forest = put(state, p2, forestCard, 'hand');
+		assert.equal(
+			applyGameAction(state, p2.playerId, { type: 'play_land', instanceId: p2Forest.instanceId }).ok,
+			true
+		);
+		assert.equal(
+			state.stack.length,
+			100,
+			'All 100 of P2 triggers should be placed on the stack on P2 turn'
+		);
+	});
+});
+
+

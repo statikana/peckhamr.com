@@ -368,6 +368,7 @@ export function createInitialGameState(
 		winnerPlayerId: null,
 		rules,
 		turnNumber: 1,
+		turnSerial: 1,
 		activePlayerIndex: 0,
 		priorityPlayerIndex: 0,
 		passedPriorityPlayerIds: [],
@@ -455,6 +456,7 @@ function checkIfAllKeptMulligan(state: GameState): void {
 	if (state.players.every((p) => p.hasKeptHand)) {
 		state.status = 'active';
 		state.turnNumber = 1;
+		state.turnSerial = 1;
 		state.activePlayerIndex = 0;
 		state.priorityPlayerIndex = 0;
 		addLog(state, 'system', `All players kept their opening hands. Turn 1 begins for ${state.players[0].username}!`);
@@ -3822,8 +3824,11 @@ function putTriggerOnStack(state: GameState, t: PendingTrigger): StackItem | nul
 		);
 		return null;
 	}
+	const currentTurnKey = state.turnSerial ?? state.turnNumber;
 	const placed =
-		state.triggersPlacedThisTurn?.turn === state.turnNumber ? state.triggersPlacedThisTurn : { turn: state.turnNumber, count: 0 };
+		state.triggersPlacedThisTurn?.turn === currentTurnKey
+			? state.triggersPlacedThisTurn
+			: { turn: currentTurnKey, count: 0 };
 	state.triggersPlacedThisTurn = placed;
 	if (placed.count >= MAX_TRIGGERS_PER_TURN) {
 		if (placed.count === MAX_TRIGGERS_PER_TURN) {
@@ -5889,6 +5894,7 @@ function completeTurnCleanupAndPassTurn(state: GameState): void {
 				}
 				state.activePlayerIndex = extraIdx;
 				state.turnNumber += 1;
+				state.turnSerial = (state.turnSerial ?? state.turnNumber) + 1;
 				addLog(
 					state,
 					'rule',
@@ -5911,6 +5917,7 @@ function completeTurnCleanupAndPassTurn(state: GameState): void {
 			if (nextIdx <= baseIdx) {
 				state.turnNumber += 1;
 			}
+			state.turnSerial = (state.turnSerial ?? state.turnNumber) + 1;
 			state.activePlayerIndex = nextIdx;
 			break;
 		}
