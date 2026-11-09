@@ -276,6 +276,60 @@ describe('Step E2: prompts survive the JSON round trip (fail-first)', () => {
 		assert.equal(player(copy, 0).library.at(-1)?.instanceId, top0);
 	});
 
+	it('scry before another step: resolution pauses after the scry prompt and resumes on the reloaded state', () => {
+		const state = game();
+		const alice = player(state, 0);
+		const spell = put(state, alice, card({ name: 'Tidewheel Augury', typeLine: 'Instant', oracleText: 'Scry 2, then draw a card.' }), 'hand');
+		const handBefore = alice.hand.length;
+		cast(state, alice, spell);
+		settle(state);
+		const prompt = onlyPrompt(state, 0);
+		assert.equal(prompt.purpose, 'scry_choice');
+		assert.equal(prompt.continuation?.kind, 'effect_resume');
+		assert.equal(state.stack.length, 1, 'still on the stack (CR 608.2n)');
+		assert.equal(alice.hand.length, handBefore - 1, 'nothing drawn yet');
+		const [top0, top1] = ids(alice.library.slice(0, 2));
+		const copy = answerOnCopy(state, prompt, { kind: 'orderObjects', topIds: [top1], bottomIds: [top0] });
+		const a2 = player(copy, 0);
+		assert.equal(a2.hand.length, handBefore, 'the draw ran after the scry');
+		assert.ok(a2.hand.some((c) => c.instanceId === top1), 'it drew the card kept on top');
+		assert.equal(a2.library.at(-1)?.instanceId, top0);
+		assert.equal(copy.stack.length, 0);
+		assert.ok(a2.graveyard.some((c) => c.instanceId === spell.instanceId));
+	});
+
+	it('a two-card search before another step: both search prompts carry the continuation; the rest runs after the last', () => {
+		const state = game();
+		const alice = player(state, 0);
+		const forest = card({ name: 'Forest', typeLine: 'Basic Land — Forest', manaCost: '', cmc: 0 });
+		const f1 = put(state, alice, forest, 'library');
+		const f2 = put(state, alice, forest, 'library');
+		const spell = put(
+			state,
+			alice,
+			card({
+				name: 'Rootpath Survey',
+				oracleText: 'Search your library for up to two basic land cards, reveal them, put one onto the battlefield tapped and the other into your hand, then shuffle. You gain 2 life.'
+			}),
+			'hand'
+		);
+		cast(state, alice, spell);
+		settle(state);
+		const first = onlyPrompt(state, 0);
+		assert.equal(first.purpose, 'search_library');
+		assert.equal(first.continuation?.kind, 'effect_resume');
+		const s2 = answerOnCopy(state, first, { kind: 'chooseObjects', objectIds: [f1.instanceId] });
+		assert.equal(player(s2, 0).life, 40, 'no life gained between the two searches');
+		const second = onlyPrompt(s2, 0);
+		assert.equal(second.continuation?.kind, 'effect_resume');
+		const s3 = answerOnCopy(s2, second, { kind: 'chooseObjects', objectIds: [f2.instanceId] });
+		const a3 = player(s3, 0);
+		assert.ok(a3.battlefield.some((c) => c.instanceId === f1.instanceId));
+		assert.ok(a3.hand.some((c) => c.instanceId === f2.instanceId));
+		assert.equal(a3.life, 42, 'the step after the search ran');
+		assert.equal(s3.stack.length, 0);
+	});
+
 	it('trigger targets', () => {
 		const state = game();
 		const alice = player(state, 0);

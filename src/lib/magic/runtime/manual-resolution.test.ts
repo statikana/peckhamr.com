@@ -167,7 +167,9 @@ describe('Step E2: unsupported abilities resolve manually (plan section 2.7)', (
 		for (const op of [
 			{ op: 'modify_life' as const, targetId: 'nobody', amount: 2 },
 			{ op: 'draw_cards' as const, amount: 1000 },
-			{ op: 'move_zone' as const, targetId: 'missing', destinationZone: 'hand' as const }
+			{ op: 'move_zone' as const, targetId: 'missing', destinationZone: 'hand' as const },
+			{ op: 'move_zone' as const, targetId: state.players[1].library[0].instanceId, destinationZone: 'hand' as const },
+			{ op: 'move_zone' as const, targetId: state.players[1].hand[0].instanceId, destinationZone: 'graveyard' as const }
 		]) {
 			const res = applyGameAction(state, alice.playerId, { type: 'choice', promptId: prompt.id, answer: { kind: 'yesNo', yes: true }, operations: [op] });
 			assert.equal(res.ok, false, JSON.stringify(op));

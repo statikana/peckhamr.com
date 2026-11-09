@@ -5485,6 +5485,7 @@
 		margin: 0;
 		font-size: 0.8rem;
 		color: var(--mp-text-body);
+		white-space: pre-line;
 	}
 	.modal-card-grid {
 		display: grid;

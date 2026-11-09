@@ -2830,7 +2830,7 @@ function handlePromptResolution(
 			return { ok: false, error: valid.ok ? 'Invalid guided resolution answer.' : valid.error };
 		}
 		const ops = normalized.answer.yes ? (normalized.operations ?? []) : [];
-		const opsValid = validateGuidedOperations(state, ops);
+		const opsValid = validateGuidedOperations(state, actor, ops);
 		if (!opsValid.ok) return opsValid;
 		const c = prompt.continuation;
 		if (c?.kind === 'manual_resolution' && !normalized.answer.yes) {
@@ -2928,7 +2928,7 @@ function findCardAnywhere(state: GameState, id: string): { inst: CardInstance; h
 }
 
 /** Server-side check of a guided resolution's operations (the client is not trusted). */
-function validateGuidedOperations(state: GameState, ops: GuidedOperation[]): { ok: true } | { ok: false; error: string } {
+function validateGuidedOperations(state: GameState, actor: PlayerGameState, ops: GuidedOperation[]): { ok: true } | { ok: false; error: string } {
 	if (!Array.isArray(ops)) return { ok: false, error: 'Operations must be a list.' };
 	if (ops.length > 50) return { ok: false, error: 'Too many operations.' };
 	for (const op of ops) {
@@ -2938,6 +2938,11 @@ function validateGuidedOperations(state: GameState, ops: GuidedOperation[]): { o
 		}
 		const player = op.targetId ? state.players.find((p) => p.playerId === op.targetId) : undefined;
 		const card = op.targetId ? findCardAnywhere(state, op.targetId) : null;
+		// Only cards the player can see: public zones and their own hand (never a library or another
+		// player's hand).
+		if (card && (card.zone === 'library' || (card.zone === 'hand' && card.holder.playerId !== actor.playerId))) {
+			return { ok: false, error: 'You can only act on cards you can see.' };
+		}
 		switch (op.op) {
 			case 'draw_cards':
 			case 'mill':
@@ -3767,7 +3772,8 @@ function isUnautomatedStackItem(item: StackItem): boolean {
  */
 function openManualResolution(state: GameState, item: StackItem, controller: PlayerGameState): void {
 	item.manualResolution = 'awaiting';
-	const text = stackItemDisplayText(item);
+	const targets = item.targets.map((t) => t.label).join(', ');
+	const text = `${stackItemDisplayText(item)}${targets ? `\n\nTargets: ${targets}` : ''}`;
 	const hasLegacy = item.parsedEffects.length > 0;
 	const question = `${item.title} isn't automated. Apply its effect with the operations below, then finish resolving it.`;
 	enqueueChoicePrompt(state, {
