@@ -88,6 +88,27 @@ export function splitSubtypes(right: string): string[] {
 	return out;
 }
 
+const LOWER_SUBTYPES = new Map<string, Set<string> | null>();
+
+/**
+ * The lowercased subtypes after the type line's dash, or null when it has no dash. A pure memo
+ * keyed by the type line string, so it can't go stale; `hasSubType` asks it on every call (SBAs ask
+ * every permanent each pass), and splitting the line each time was a hot spot (Phase 6d).
+ */
+function lowerSubtypesOf(typeLine: string): Set<string> | null {
+	let subs = LOWER_SUBTYPES.get(typeLine);
+	if (subs === undefined) {
+		const dashIdx = typeLine.indexOf('—');
+		subs =
+			dashIdx === -1
+				? null
+				: new Set(splitSubtypes(typeLine.slice(dashIdx + 1).trim()).map((s) => s.toLowerCase()));
+		if (LOWER_SUBTYPES.size > 10_000) LOWER_SUBTYPES.clear();
+		LOWER_SUBTYPES.set(typeLine, subs);
+	}
+	return subs;
+}
+
 function normalizeSubtypes(subs: readonly string[]): string[] {
 	const out: string[] = [];
 	for (let i = 0; i < subs.length; i++) {
@@ -1806,11 +1827,8 @@ function computeBoardLayerCache(state: GameState, snap: BoardSnapshot): BoardLay
 				if (tLine.includes('Creature') && hasAllCreatureTypes && !NON_CREATURE_SUBTYPES.has(subType)) {
 					return true;
 				}
-				const dashIdx = tLine.indexOf('—');
-				if (dashIdx !== -1) {
-					const right = tLine.slice(dashIdx + 1).trim();
-					return splitSubtypes(right).some((s) => s.toLowerCase() === subType.toLowerCase());
-				}
+				const subs = lowerSubtypesOf(tLine);
+				if (subs) return subs.has(subType.toLowerCase());
 				return new RegExp(`\\b${subType}\\b`, 'i').test(tLine);
 			}
 		};
@@ -2106,11 +2124,8 @@ export function evaluatePermanent(state: GameState, inst: CardInstance): Evaluat
 				if (tLine.includes('Creature') && hasAllCreatureTypes && !NON_CREATURE_SUBTYPES.has(subType)) {
 					return true;
 				}
-				const dashIdx = tLine.indexOf('—');
-				if (dashIdx !== -1) {
-					const right = tLine.slice(dashIdx + 1).trim();
-					return splitSubtypes(right).some((s) => s.toLowerCase() === subType.toLowerCase());
-				}
+				const subs = lowerSubtypesOf(tLine);
+				if (subs) return subs.has(subType.toLowerCase());
 				return new RegExp(`\\b${subType}\\b`, 'i').test(tLine);
 			}
 		};

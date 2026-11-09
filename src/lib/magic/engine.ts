@@ -6189,9 +6189,14 @@ export function checkStateBasedActions(state: GameState): void {
 			reason: string;
 			logText: string;
 		}> = [];
+		// Read-only: one layer-cache validation for every player's "can't lose" check (Phase 6d).
+		const cannotLose = withStableLayerInputs(
+			state,
+			() => new Set(state.players.filter((p) => !p.lost && playerCannotLoseGame(state, p).protected))
+		);
 		for (const p of state.players) {
 			if (p.lost) continue;
-			if (playerCannotLoseGame(state, p).protected) {
+			if (cannotLose.has(p)) {
 				if (p.attemptedEmptyLibraryDraw) {
 					// CR 704.5b only checks if the player attempted to draw from an empty library since the last SBA check
 					p.attemptedEmptyLibraryDraw = false;

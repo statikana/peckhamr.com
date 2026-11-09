@@ -27,7 +27,7 @@ import type {
 	ScryfallCard
 } from '../types.ts';
 import { evaluateAmount, evaluateCondition, matchesObjectFilter, type FilterContext } from './objectFilter.ts';
-import { noteLayerInputsChanged } from './layerCache.ts';
+import { noteLayerInputsChanged, withStableLayerInputs } from './layerCache.ts';
 import { moveObject, type PlayerZone } from './zones.ts';
 
 // ---- Where costs come from ------------------------------------------------------------------
@@ -149,6 +149,19 @@ export function effectiveSpellManaCost(
 	xValue = 0,
 	isOverload = false
 ): ManaCostRequirement {
+	// Read-only: one layer-cache validation for the battlefield scan (Phase 6d).
+	return withStableLayerInputs(state, () =>
+		effectiveSpellManaCostInner(state, player, inst, xValue, isOverload)
+	);
+}
+
+function effectiveSpellManaCostInner(
+	state: GameState,
+	player: PlayerGameState,
+	inst: CardInstance,
+	xValue: number,
+	isOverload: boolean
+): ManaCostRequirement {
 	const card = inst.copiableCard ?? inst.card;
 	const baseCostStr = isOverload ? (keywordCost(card, 'overload') ?? card.manaCost) : card.manaCost;
 	const effectiveX = isOverload ? 0 : xValue;
@@ -255,6 +268,18 @@ export function effectiveSpellManaCost(
  * like Puresteel Paladin's Metalcraft or Nahiri, Storm of Stone).
  */
 export function effectiveAbilityManaCost(
+	state: GameState,
+	actorId: string,
+	abilityId: string,
+	baseManaCost: string
+): { manaCost: string; requirement: ManaCostRequirement } {
+	// Read-only: one layer-cache validation for the battlefield scan (Phase 6d).
+	return withStableLayerInputs(state, () =>
+		effectiveAbilityManaCostInner(state, actorId, abilityId, baseManaCost)
+	);
+}
+
+function effectiveAbilityManaCostInner(
 	state: GameState,
 	actorId: string,
 	abilityId: string,

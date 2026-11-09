@@ -479,30 +479,39 @@ function executeBotStep(
 		);
 		if (ownCreatures.length > 0) {
 			const cmdId = getPlayerCommanderIdentity(bot);
-			for (const perm of bot.battlefield) {
-				if (perm.phasedOut || perm.attachedToId) continue;
-				// Read-only decision (Phase 6d).
-				const equipAb = withStableLayerInputs(state, () => {
-					const abilities = getEffectiveActivatedAbilities(state, bot, perm, cmdId);
-					const ab = abilities.find((a) => a.id.startsWith('equip_'));
-					return ab && checkAbilityActivationLegality(state, bot.playerId, perm, ab).ok ? ab : null;
+			// Scan the battlefield in order for the next activatable Equip ability, in one read-only
+			// pass per attempt (Phase 6d); a failed activation resumes the scan after that permanent.
+			let next = 0;
+			for (;;) {
+				const found = withStableLayerInputs(state, () => {
+					for (; next < bot.battlefield.length; next++) {
+						const perm = bot.battlefield[next];
+						if (perm.phasedOut || perm.attachedToId) continue;
+						const abilities = getEffectiveActivatedAbilities(state, bot, perm, cmdId);
+						const ab = abilities.find((a) => a.id.startsWith('equip_'));
+						if (ab && checkAbilityActivationLegality(state, bot.playerId, perm, ab).ok) {
+							next += 1;
+							return { perm, equipAb: ab };
+						}
+					}
+					return null;
 				});
-				if (equipAb) {
-					const targetCreature = ownCreatures[0];
-					const res = applyGameAction(state, bot.playerId, {
-						type: 'activate_ability',
-						instanceId: perm.instanceId,
-						abilityId: equipAb.id,
-						targets: [
-							{
-								kind: 'permanent',
-								id: targetCreature.instanceId,
-								label: targetCreature.card.name
-							}
-						]
-					});
-					if (res.ok) return true;
-				}
+				if (!found) break;
+				const { perm, equipAb } = found;
+				const targetCreature = ownCreatures[0];
+				const res = applyGameAction(state, bot.playerId, {
+					type: 'activate_ability',
+					instanceId: perm.instanceId,
+					abilityId: equipAb.id,
+					targets: [
+						{
+							kind: 'permanent',
+							id: targetCreature.instanceId,
+							label: targetCreature.card.name
+						}
+					]
+				});
+				if (res.ok) return true;
 			}
 		}
 	}
