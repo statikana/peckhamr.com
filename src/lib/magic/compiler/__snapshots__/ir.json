@@ -468,11 +468,11 @@
 							"event": "zoneChange",
 							"filter": {
 								"object": {
+									"controller": "you",
+									"other": true,
 									"subtypes": [
 										"Elf"
-									],
-									"controller": "you",
-									"other": true
+									]
 								},
 								"to": "battlefield"
 							}
@@ -1926,7 +1926,8 @@
 								},
 								"player": {
 									"relation": "you"
-								}
+								},
+								"orCopy": true
 							}
 						},
 						"targets": [],
@@ -2182,10 +2183,10 @@
 							"event": "zoneChange",
 							"filter": {
 								"object": {
+									"controller": "you",
 									"types": [
 										"Land"
-									],
-									"controller": "you"
+									]
 								},
 								"to": "battlefield"
 							}

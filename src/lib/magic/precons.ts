@@ -1254,6 +1254,20 @@ reg({
 	colorIdentity: []
 });
 reg({
+	id: 'card_puresteel_paladin',
+	name: 'Puresteel Paladin',
+	manaCost: '{W}{W}',
+	cmc: 2,
+	typeLine: 'Creature — Human Knight',
+	oracleText:
+		'Whenever an Equipment you control enters, you may draw a card.\nMetalcraft — Equipment you control have equip {0} as long as you control three or more artifacts.',
+	colors: ['W'],
+	colorIdentity: ['W'],
+	keywords: ['Metalcraft'],
+	power: '2',
+	toughness: '2'
+});
+reg({
 	id: 'card_maskwood_nexus',
 	name: 'Maskwood Nexus',
 	manaCost: '{4}',

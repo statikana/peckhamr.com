@@ -479,6 +479,11 @@
 		"typeLine": "Creature — Elf Druid",
 		"manaCost": "{1}{G}"
 	},
+	"Puresteel Paladin": {
+		"oracleText": "Whenever an Equipment you control enters, you may draw a card.\nMetalcraft — Equipment you control have equip {0} as long as you control three or more artifacts.",
+		"typeLine": "Creature — Human Knight",
+		"manaCost": "{W}{W}"
+	},
 	"Propaganda": {
 		"oracleText": "Creatures can't attack you unless their controller pays {2} for each creature they control that's attacking you.",
 		"typeLine": "Enchantment",

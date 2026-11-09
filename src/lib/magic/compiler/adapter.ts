@@ -66,6 +66,7 @@ import {
 	type NormalizedLine,
 	type NormalizedSentence
 } from './normalize.ts';
+import { parseTriggerHeader, runtimeTriggerProblem, setLegacyTriggerExecution } from './triggers.ts';
 
 const ALL_COLORS: ManaColor[] = ['W', 'U', 'B', 'R', 'G'];
 
@@ -346,52 +347,58 @@ function adaptTrigger(ctx: AdapterContext, line: NormalizedLine): AbilityDef[] |
 	if (!/^(when|whenever|at)\b/i.test(line.body)) return null;
 	const span = line.span;
 
+	// Legacy decisions, for the effects (the ParsedEffect execution shim) and the diff scripts' log.
 	const node = ctx.tree.triggers.find((t) => t.id.endsWith(`_${line.rawIndex}`));
 	const structured = ctx.structured.find((s) => s.ab.clause === line.raw);
-	if (!node && !structured) return [unsupported('unparsed', line.text, span, [line.bodySpan])];
-
-	let trigger: TriggerDef;
-	let condition: Condition | undefined;
-	let effects: ParsedEffect[];
 	if (structured) {
-		trigger = structuredTriggerDef(structured.type, structured.ab);
-		if (structured.ab.condition) {
-			condition = translateCondition(structured.ab.condition);
-			// The engine reads etb/dies/attack triggers through parseTriggeredEffects, which drops
-			// conditional ones; only upkeep and end-step triggers check intervening-if conditions.
-			const conditionHonoured = structured.type === 'upkeep' || structured.type === 'end_step';
-			if (!condition || !conditionHonoured) {
-				ctx.log?.triggers.push({ rawIndex: line.rawIndex, trigger, condition, complete: false });
-				return [unsupported('unparsed', line.text, span, [line.bodySpan])];
-			}
-		}
-		effects = structured.ab.effects;
-	} else {
-		trigger = ruleNodeTriggerDef(node!);
-		effects = node!.effects;
+		const legacyTrigger = structuredTriggerDef(structured.type, structured.ab);
+		const legacyCondition = structured.ab.condition ? translateCondition(structured.ab.condition) : undefined;
+		// The pre-Phase-5 engine read etb/dies/attack triggers through parseTriggeredEffects, which
+		// dropped conditional ones; only upkeep and end-step triggers checked intervening-if conditions.
+		const conditionHonoured =
+			!structured.ab.condition ||
+			(Boolean(legacyCondition) && (structured.type === 'upkeep' || structured.type === 'end_step'));
+		ctx.log?.triggers.push({
+			rawIndex: line.rawIndex,
+			trigger: legacyTrigger,
+			condition: legacyCondition,
+			complete: conditionHonoured
+		});
+	} else if (node) {
+		ctx.log?.triggers.push({ rawIndex: line.rawIndex, trigger: ruleNodeTriggerDef(node), complete: true });
 	}
-	ctx.log?.triggers.push({ rawIndex: line.rawIndex, trigger, condition, complete: true });
 
-	// Effects start after the trigger header and any intervening-if clause.
-	const effectSentences = trimLeadingClause(line, structured?.ab.condition ? 2 : 1);
+	// Phase 5: the trigger and its intervening-if condition come from the trigger grammar.
+	const head = parseTriggerHeader(line.body, line.bodySpan.start);
+	if (!head || !head.trigger || head.unparsed.length > 0) {
+		return [unsupported('unparsed', line.text, span, head?.unparsed.length ? head.unparsed : [line.bodySpan])];
+	}
+	const { trigger, condition } = head;
+	if (runtimeTriggerProblem(trigger)) {
+		const headSpan = { start: line.bodySpan.start, end: head.effectStart };
+		return [unsupported('event_not_implemented', line.text, span, [headSpan])];
+	}
+
+	const effectSentences = splitSentences(
+		line.text.slice(head.effectStart - line.span.start),
+		head.effectStart
+	);
+	const effectText = effectSentences.map((s) => s.text).join(' ');
+	const legacyEffects = structured?.ab.effects ?? node?.effects;
+	const effects = legacyEffects ?? parseSpellOrAbilityEffects(ctx.card, denormalize(effectText, ctx.card.name)).effects;
 	const unparsed = unclaimedSentences(ctx, effectSentences, effects);
-	const targetText = effectSentences.map((s) => s.text).join(' ');
-	const targets = targetSpecs(detectTargetRequirement(denormalize(targetText, ctx.card.name)));
+	const targets = targetSpecs(detectTargetRequirement(denormalize(effectText, ctx.card.name)));
 	const effect = translateEffects(effects, span, 'trigger');
-	if (unparsed.length > 0 || effect.length === 0) {
-		return [unsupported('unparsed', line.text, span, unparsed.length > 0 ? unparsed : [line.bodySpan])];
-	}
-	return [{ kind: 'triggered', trigger, condition, targets, effect, span }];
-}
-
-/** Drops the first `commas` comma-separated clauses of a line and re-splits the rest. */
-function trimLeadingClause(line: NormalizedLine, commas: number): NormalizedSentence[] {
-	let idx = -1;
-	for (let i = 0; i < commas; i++) {
-		idx = line.body.indexOf(',', idx + 1);
-		if (idx < 0) return line.sentences;
-	}
-	return splitSentences(line.body.slice(idx + 1), line.bodySpan.start + idx + 1);
+	const ability: AbilityDef =
+		unparsed.length > 0 || effect.length === 0
+			? {
+					...unsupported('unparsed', line.text, span, unparsed.length > 0 ? unparsed : [line.bodySpan]),
+					trigger,
+					condition
+				}
+			: { kind: 'triggered', trigger, condition, targets, effect, span };
+	setLegacyTriggerExecution(ability, { effects, clause: line.raw, legacyClaimed: Boolean(legacyEffects) });
+	return [ability];
 }
 
 function structuredTriggerDef(

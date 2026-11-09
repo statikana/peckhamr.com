@@ -129,7 +129,12 @@ export type UnsupportedReason =
 	 * scanning text until then. */
 	| 'static_not_compiled'
 	/** A layout with several faces (transform, split, adventure, ...). Non-goal for this plan. */
-	| 'multiface';
+	| 'multiface'
+	/**
+	 * A triggered ability whose trigger the grammar understands but whose event (or event filter)
+	 * the runtime never emits or can't check yet (Phase 5). It never triggers.
+	 */
+	| 'event_not_implemented';
 
 export interface UnsupportedAbility {
 	kind: 'unsupported';
@@ -148,6 +153,12 @@ export interface UnsupportedAbility {
 	 */
 	cost?: CostDef[];
 	costComplete?: boolean;
+	/**
+	 * Phase 5: a triggered ability whose trigger head (and intervening-if) is understood but whose
+	 * effect isn't. The runtime still knows when it triggers (section 2.7).
+	 */
+	trigger?: TriggerDef;
+	condition?: Condition;
 }
 
 export type Timing = 'instant' | 'sorcery' | 'mana';
@@ -415,6 +426,10 @@ export interface EventFilter {
 	counter?: CounterType;
 	/** "Whenever one or more ... attack": triggers once per event batch. */
 	oneOrMore?: boolean;
+	/** becomesTarget: what kind of object targeted it ("of a spell", "of a spell or ability"). */
+	targetedBy?: 'spell' | 'ability' | 'spellOrAbility';
+	/** attached: what the object became attached to ("becomes attached to a creature you control"). */
+	host?: ObjectFilter;
 }
 
 export interface TriggerDef {

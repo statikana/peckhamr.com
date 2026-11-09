@@ -820,7 +820,8 @@ while it runs), **entry**, **work**, **exit**, and **ratchet target**.
       ability-word prefixes, `"Return ... to its owner's hand"`, removing counters from other
       permanents) → **Phase 11+**.
 
-### Phase 5: Triggers via the event bus
+### Phase 5: Triggers via the event bus ✅ done 2026-11-08
+- **Status:** done on branch `engine-rewrite-phase5`; not yet merged.
 - **Owns:** `compiler/triggers.ts`, `runtime/triggers.ts`; the `triggerOnX` functions, the upkeep
   and end-step loops, combat damage triggers.
 - **Work:** compile every trigger form into `TriggerDef` + `Condition`. Match events in one place;
@@ -829,6 +830,107 @@ while it runs), **entry**, **work**, **exit**, and **ratchet target**.
   functions and the per-phase loops.
 - **Exit:** every trigger test passes through the new path; Landfall works from every source by
   construction.
+- **Results (2026-11-08):**
+  - **Ratchet:** `oracleTextRead` in `engine.ts` **40 → 29** (-11; allowance lowered in
+    `architecture-allowances.json`). `cardNameComparison` (9) and `directZoneMutation` (0)
+    unchanged. `runtime/triggers.ts` has 0 `oracleTextRead`, 0 `cardNameComparison`, and 0
+    `directZoneMutation`.
+  - **Suite:** 288 tests, 286 pass, 2 todo (`D-Audit-5`, `E3`), 0 fail; 0 magic type errors.
+    `runtime/triggers.test.ts` adds 21 tests (15 fail-first bug regressions + 6 rules/ordering pins).
+    `C/D-Audit-4` in `magic.test.ts` now passes with its `{ todo }` marker removed.
+  - **One trigger-matching engine (`runtime/triggers.ts`):**
+    - Every emitted `GameEvent` (`ZoneChange`, `Cast`, `SpellCopied`, `AttackDeclared`,
+      `BlockersDeclared`, `DamageDealt`, `PhaseBegin`, `CounterPlaced`, `BecameTarget`, `Attached`)
+      dispatches to `matchTriggers(state, ev)`.
+    - Candidate sources are collected in seat/zone order from `state.players` (skipping eliminated
+      players, CR 800.4a, and phased-out permanents): battlefield permanents, graveyard cards whose
+      compiled abilities specify `fromZone: 'graveyard'` (Nether Shadow, CR 404.2), the spell on the
+      stack for `"When you cast ~"`, and the leaving permanent's `LeftBattlefieldInfo` look-back
+      snapshot (`ev.lki` captured by `moveObject` in `runtime/zones.ts` before
+      `leaveBattlefieldReset`) for leaves-the-battlefield / dies triggers (CR 603.10a).
+    - Subject characteristics (`battlefieldSubject`) evaluate Layer 4 effective types and subtypes
+      via `evaluatePermanent` (including `hasAllCreatureTypes` from Maskwood Nexus / Changeling) and
+      check Layer 6 ability loss (`permanentHasLostAllAbilities` or `lki.lostAllAbilities`) before
+      recording a match.
+    - Intervening-if conditions (`Condition` in IR) are evaluated via `evaluateCondition` when the
+      event is matched and re-checked on resolution (`flushTriggers` for inline triggers;
+      `stackTriggerConditionHolds` in `resolveTopOfStack` via `StackItem.triggeredAbilityIndex`,
+      CR 603.4).
+    - Cast triggers apply `hook.trigger_multiplier` board hooks (Veyran, Voice of Duality).
+    - `flushTriggers(state)` drains pending triggers in **APNAP order** (CR 603.3b): active player
+      first, then other players in turn order (`apnap(state)`), with deterministic match-order
+      tie-breaking within a player's simultaneous triggers. Beginning-of-step battlefield triggers
+      are pushed onto `state.stack` in APNAP order (so the last non-active player's resolves first);
+      inline triggers execute in reverse APNAP order (matching stack resolution order).
+  - **Single-function effect wrapper for Phase 3 (`executeTriggerEffects` in `engine.ts`):**
+    - `compiler/adapter.ts` attaches the per-line `LegacyTriggerExecution` (`effects`, `clause`,
+      `legacyClaimed`) to each compiled ability via a `WeakMap` (`setLegacyTriggerExecution` in
+      `compiler/triggers.ts`), never stored in `GameState`.
+    - `executeTriggerEffects(state, controller, item)` in `engine.ts` is the single function that
+      runs triggered ability effects via `executeParsedEffect`; swapping in Phase 3's IR effect
+      interpreter later is a one-line change in `executeTriggerEffects` (and `resolveTopOfStack`).
+  - **Capability gate (`runtimeTriggerProblem` in `compiler/triggers.ts`):**
+    - Checks every `TriggerDef` (and its `or` alternatives) against `RUNTIME_EVENT_FIELDS`,
+      `RUNTIME_OBJECT_FIELDS`, and `RUNTIME_PHASES`. Any trigger or qualifier the runtime cannot
+      honour (`while saddled`, `and isn't blocked`, `attacks a player`, `enters untapped`, or an
+      unparsed intervening-if condition) is compiled as `kind: 'unsupported'` (`reason:
+      'event_not_implemented'` or `'unparsed'`) with `legacyClaimed: false` so it never fires
+      unconditionally.
+  - **Deleted functions and loops in `engine.ts`:**
+    - Deleted `triggerOnEtb`, `triggerOnAttach`, `triggerOnSpellCast`, `triggerOnAttack`,
+      `triggerOnCounterPlaced`, `runUpkeepTriggers`, `runEndStepTriggers`,
+      `executeTriggeredCardEffects`, `matchesTriggerScope`, `evaluateTriggerCondition`, the inline
+      `on_combat_damage_player` trigger loop in `executeCombatDamageStep`, and the manual
+      `parseTriggeredEffects(card, 'dies')` calls at destroy, wrath, and SBA sites.
+    - Kept `runSuspendUpkeep` (CR 702.62a keyword action before upkeep trigger matching) and
+      `runDelayedEndStepTriggers` (Final Fortune / Corpse Dance `state.delayedTriggers` until Phase 3
+      replaces delayed effects).
+    - Replaced the 10 `triggerOnEtb` and 2 `triggerOnAttach` sites (plus `createTokenOnBoard`,
+      `declare_blockers`, `executeCombatDamageStep`, destroy/wrath/SBA) with `emitEvent` +
+      `flushTriggers(state)` positioned after each site's log line and state update
+      (`landsPlayedThisTurn++`), preserving log ordering; elimination control transfers
+      (`transferBattlefieldControl`) emit no `ZoneChange` and fire no triggers.
+  - **Bugs fixed (each covered in `runtime/triggers.test.ts` and `magic.test.ts`):**
+    1. Created tokens (`createTokenOnBoard`) now emit `ZoneChange` and flush triggers, firing self
+       ETB, observer ETB, and Landfall triggers.
+    2. `"Or"` triggers (`TriggerDef.or`: `"enters or attacks"`, `"enters or dies"`, `"attacks or
+       blocks"`) match every listed event alternative instead of only the first.
+    3. `"Cast or copy"` (`EventFilter.orCopy` on `SpellCopied` events) fires Archmage Emeritus,
+       Storm-Kiln Artist, and Veyran (with Veyran doubling).
+    4. Combat damage to a planeswalker (`atkEntry.defenderPlaneswalkerId` in
+       `executeCombatDamageStep`) removes loyalty counters (CR 120.3c) and emits `DamageDealt` with
+       `targetKind: 'permanent'`, firing `"player or planeswalker"` triggers (Grateful Apparition)
+       while not firing `"combat damage to a player"` triggers.
+    5. Goldspan Dragon's `"or becomes the target of a spell"` fires on `BecameTarget` emitted when a
+       spell is cast targeting the permanent.
+    6. Unsupported trigger qualifiers (`"while saddled"`, `"and isn't blocked"`, `"attacks a
+       player"`, `"enters untapped"`) are rejected by `runtimeTriggerProblem` and marked
+       `unsupported` instead of firing unconditionally.
+    7. Cast triggers with unmodelled intervening-if clauses (`"if at least four mana was spent to
+       cast it"`) are marked `unsupported` instead of dropping the condition and firing
+       unconditionally.
+    8. Multi-sentence cards whose effect text mentions another event (Springheart Nantuko's Landfall
+       line mentioning `"attached to a creature you control"`, Sanguine Soothsayer's attack trigger
+       granting `"When this permanent enters, draw a card"`) are matched only on their own trigger
+       head's event, never on `Attached` or `ZoneChange`.
+    9. `C/D-Audit-4` (`magic.test.ts`): observer ETB triggers (Marwyn) use Layer 4 effective
+       subtypes from `evaluatePermanent` (Maskwood Nexus); also added Puresteel Paladin to
+       `precons.ts` / `precon-oracle.fixture.json` and propagated `Equip {0}` to `costText` in
+       `getEffectiveActivatedAbilities`.
+  - **Golden snapshot diff (`runtime/__snapshots__/golden.json`):**
+    - Regenerated with `UPDATE_GOLDEN_SNAPSHOTS=1`. Across all 4 seeded bot games, every board
+      state, zone, permanent, counter, life total, timestamp, turn, and winner is identical; the
+      only diff lines are the unified `TriggerHost` log labels (`"End Step trigger"` → `"End Step
+      Trigger"`, `"(on_combat_damage_player)"` → `"(Combat Damage Trigger)"`, `"(Observer ETB)
+      triggered when ..."` → `"(ETB Trigger) triggered for ..."`) and the intermediate state digests
+      that hash `state.log`.
+  - **Deferred to later phases:**
+    - Player-chosen ordering among a single player's simultaneous triggers (CR 603.3b) and moving
+      all remaining `'inline'` trigger modes onto the stack → Phase 8 (choice protocol).
+    - Replacing `executeTriggerEffects`'s `ParsedEffect` loop and `state.delayedTriggers` with the
+      IR effect interpreter → Phase 3.
+    - Emitting `BecameTarget` for activated/triggered abilities (`targetedBy: 'ability'` /
+      `'spellOrAbility'`) and `becomesTapped` / `gainLife` / `drawCard` events → long-tail coverage.
 
 ### Phase 6: Layer engine from IR, with caching
 

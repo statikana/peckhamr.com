@@ -1,6 +1,6 @@
-import { checkGraveyardReplacementZone } from '../ruleTree.ts';
+import { checkGraveyardReplacementZone, evaluatePermanent } from '../ruleTree.ts';
 import type { CardInstance, CounterType, GameState, PlayerGameState, ZoneType } from '../types.ts';
-import { emitEvent } from './events.ts';
+import { emitEvent, type LeftBattlefieldInfo } from './events.ts';
 
 /**
  * The single zone-change module (ENGINE_ARCHITECTURE_PLAN.md section 2.3, Phase 2).
@@ -138,6 +138,11 @@ export function moveObject(
 	const { from } = opts;
 	let fromZone: ZoneType | null = null;
 	let fromPlayerId: string | null = null;
+	// CR 603.10a: leaves-the-battlefield triggers look back at the object as it was on the battlefield.
+	const lki =
+		from === 'anyBattlefield' || (typeof from === 'object' && from.zone === 'battlefield')
+			? captureLki(state, obj)
+			: undefined;
 
 	if (from === 'anyBattlefield') {
 		fromZone = 'battlefield';
@@ -167,7 +172,7 @@ export function moveObject(
 	if (!receiver) {
 		// Unreachable in practice (players are never removed from state.players). movePermanentToZone
 		// returned here, after removal and before any bookkeeping.
-		emitZoneChange(state, obj, fromZone, to, fromPlayerId, null, true);
+		emitZoneChange(state, obj, fromZone, to, fromPlayerId, null, true, lki);
 		return to;
 	}
 
@@ -219,9 +224,23 @@ export function moveObject(
 		dest,
 		fromPlayerId,
 		dest === 'stack' || ceases ? null : receiver.playerId,
-		ceases
+		ceases,
+		lki
 	);
 	return dest;
+}
+
+function captureLki(state: GameState, obj: CardInstance): LeftBattlefieldInfo {
+	const evaluated = evaluatePermanent(state, obj);
+	return {
+		card: obj.copiableCard ?? obj.card,
+		controllerId: obj.controllerId,
+		typeLine: evaluated.typeLine,
+		hasAllCreatureTypes: evaluated.hasAllCreatureTypes,
+		lostAllAbilities: evaluated.hasLostAllAbilities,
+		isToken: obj.isToken,
+		tapped: obj.tapped
+	};
 }
 
 function detachFrom(p: PlayerGameState, instanceId: string): void {
@@ -237,7 +256,8 @@ function emitZoneChange(
 	to: ZoneType,
 	fromPlayerId: string | null,
 	toPlayerId: string | null,
-	ceasedToExist: boolean
+	ceasedToExist: boolean,
+	lki?: LeftBattlefieldInfo
 ): void {
 	emitEvent(state, {
 		kind: 'ZoneChange',
@@ -247,7 +267,8 @@ function emitZoneChange(
 		to,
 		fromPlayerId,
 		toPlayerId,
-		ceasedToExist
+		ceasedToExist,
+		...(lki ? { lki } : {})
 	});
 }
 

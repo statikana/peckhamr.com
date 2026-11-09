@@ -14,10 +14,7 @@ import {
 	parseLibrarySearchSpec,
 	parseManaCost,
 	parseSpellOrAbilityEffects,
-	parseStructuredTriggeredAbilities,
 	parseSuspendClause,
-	parseTriggerCondition,
-	parseTriggeredEffects,
 	type ManaCostRequirement,
 	type ParsedActivatedAbility
 } from './oracle.ts';
@@ -28,7 +25,7 @@ import {
 	evaluateActionNode,
 	evaluatePermanent,
 	getCardRuleTree,
-	getEffectiveActivatedAbilities,
+	getEffectiveActivatedAbilities as getEffectiveActivatedAbilitiesRaw,
 	getLibrarySearchInterceptor,
 	inspectCardContinuousBreakdown,
 	permanentHasLostAllAbilities,
@@ -53,7 +50,6 @@ export {
 	evaluateActionNode,
 	evaluatePermanent,
 	getCardRuleTree,
-	getEffectiveActivatedAbilities,
 	getLibrarySearchInterceptor,
 	inspectCardContinuousBreakdown,
 	matchesLibrarySearchSpec,
@@ -73,6 +69,19 @@ export {
 	type RulePath,
 	type TriggerRuleNode
 };
+
+export function getEffectiveActivatedAbilities(
+	state: GameState,
+	actor: PlayerGameState,
+	perm: CardInstance,
+	commanderIdentity: ManaColor[] = ['W', 'U', 'B', 'R', 'G']
+): ParsedActivatedAbility[] {
+	return getEffectiveActivatedAbilitiesRaw(state, actor, perm, commanderIdentity).map((ab) =>
+		ab.id.startsWith('equip_') && ab.manaCost === '{0}' && !ab.costText.includes('{0}')
+			? { ...ab, costText: 'Equip {0}' }
+			: ab
+	);
+}
 import { STAPLE_CARDS } from './precons.ts';
 import {
 	allocateTimestamp,
@@ -108,6 +117,13 @@ import {
 	type CostQuestion
 } from './runtime/costs.ts';
 import { evaluateAmount } from './runtime/objectFilter.ts';
+import {
+	flushTriggers,
+	matchTriggers,
+	registerTriggerHost,
+	stackTriggerConditionHolds,
+	type PendingTrigger
+} from './runtime/triggers.ts';
 
 export { allocateTimestamp, shuffleArray };
 import {
@@ -134,8 +150,6 @@ import {
 	type TargetKind,
 	type TargetRef,
 	type TargetRequirementInfo,
-	type TriggerCondition,
-	type TriggerScope,
 	type VfxEvent,
 	type ZoneType
 } from './types.ts';
@@ -771,61 +785,6 @@ export function drawCards(state: GameState, player: PlayerGameState, count: numb
 	}
 }
 
-function matchesTriggerScope(
-	scope: TriggerScope,
-	controllerId: string,
-	activePlayerId: string
-): boolean {
-	if (scope === 'controller_turn') return controllerId === activePlayerId;
-	if (scope === 'opponent_turn') return controllerId !== activePlayerId;
-	return true;
-}
-
-export function evaluateTriggerCondition(
-	state: GameState,
-	controller: PlayerGameState,
-	sourceInstanceId: string,
-	condition?: TriggerCondition
-): boolean {
-	if (!condition) return true;
-
-	switch (condition.kind) {
-		case 'life_at_least':
-			return controller.life >= condition.amount;
-
-		case 'controls_count_at_least': {
-			let matching = 0;
-			for (const perm of controller.battlefield) {
-				if (perm.phasedOut) continue;
-				if (condition.cardType === 'Permanent') {
-					matching += 1;
-				} else {
-					const evalPerm = evaluatePermanent(state, perm);
-					if (evalPerm.typeLine.includes(condition.cardType)) {
-						matching += 1;
-					}
-				}
-			}
-			return matching >= condition.count;
-		}
-
-		case 'graveyard_creatures_above_at_least': {
-			const idx = controller.graveyard.findIndex((c) => c.instanceId === sourceInstanceId);
-			if (idx < 0) return false;
-			let creaturesAbove = 0;
-			for (let aboveIdx = idx + 1; aboveIdx < controller.graveyard.length; aboveIdx++) {
-				if (controller.graveyard[aboveIdx].card.typeLine.includes('Creature')) {
-					creaturesAbove += 1;
-				}
-			}
-			return creaturesAbove >= condition.count;
-		}
-
-		case 'unrecognized':
-			return false;
-	}
-}
-
 function runDrawStepAndEnterMain1(state: GameState, activePlayer: PlayerGameState): void {
 	beginPhase(state, 'draw');
 	const shouldSkipFirstDraw =
@@ -1102,7 +1061,7 @@ function applyGameActionInner(
 				actorId
 			);
 
-			triggerOnEtb(state, actor, landInst);
+			flushTriggers(state);
 
 			checkStateBasedActions(state);
 			return { ok: true };
@@ -1335,8 +1294,16 @@ function applyGameActionInner(
 				label: inst.card.name
 			});
 
-			// Fire "Whenever you cast..." triggers (dispatched synchronously to triggerOnSpellCast)
 			emitEvent(state, { kind: 'Cast', playerId: actor.playerId, objectId: inst.instanceId, object: inst });
+			// CR 115.1: each permanent the spell targets "becomes the target of a spell".
+			for (const t of targets) {
+				const targeted = t.kind === 'permanent' ? findPermanentOnBoard(state, t.id) : null;
+				if (targeted) {
+					emitEvent(state, { kind: 'BecameTarget', objectId: t.id, object: targeted.inst, by: 'spell', controllerId: actor.playerId });
+				}
+			}
+			// "Whenever you cast ..." ran here before Phase 5.
+			flushTriggers(state);
 			checkStateBasedActions(state);
 			return { ok: true };
 		}
@@ -1565,12 +1532,13 @@ function applyGameActionInner(
 					amount: validAttackers.length,
 					label: `${validAttackers.length} Attacker(s)`
 				});
-				// Dispatched synchronously to triggerOnAttack
 				emitEvent(state, {
 					kind: 'AttackDeclared',
 					playerId: actor.playerId,
 					attackerIds: validAttackers.map((a) => a.attackerInstanceId)
 				});
+				// Attack triggers ran here before Phase 5.
+				flushTriggers(state);
 				// Advance into declare_blockers step and give priority to defending player(s) in turn order
 				beginPhase(state, 'declare_blockers');
 				const defendersInOrder = getAttackedDefenderIdsInTurnOrder(state);
@@ -1698,6 +1666,15 @@ function applyGameActionInner(
 					sourceId: actorId,
 					amount: action.assignments.length
 				});
+				emitEvent(state, {
+					kind: 'BlockersDeclared',
+					playerId: actorId,
+					blocks: action.assignments.map((a) => ({
+						blockerId: a.blockerInstanceId,
+						attackerId: a.attackerInstanceId
+					}))
+				});
+				flushTriggers(state);
 			} else {
 				addLog(state, 'combat', `${actor.username} declared no blockers.`, actorId);
 			}
@@ -2131,7 +2108,7 @@ function handlePromptResolution(
 						`${libraryOwner.username} searched their library and put ${found.card.name} onto the battlefield${found.tapped ? ' tapped' : ''}.`,
 						libraryOwner.playerId
 					);
-					triggerOnEtb(state, libraryOwner, found);
+					flushTriggers(state);
 				} else if (prompt.destinationZone === 'library' && prompt.putOnTop) {
 					// Put it on top, then shuffle the rest: the same as the old "remove, shuffle, put on top".
 					moveObject(state, found, 'library', {
@@ -2410,7 +2387,6 @@ export function addCountersToPermanent(
 		effectiveAmount = amount * multiplier;
 	}
 	perm.counters[type] = (perm.counters[type] || 0) + effectiveAmount;
-	// Dispatched synchronously to triggerOnCounterPlaced
 	emitEvent(state, {
 		kind: 'CounterPlaced',
 		objectId: perm.instanceId,
@@ -2418,37 +2394,17 @@ export function addCountersToPermanent(
 		counterType: type,
 		amount: effectiveAmount
 	});
+	// "Whenever a +1/+1 counter is put on ~" ran here before Phase 5; keep that timing.
+	flushTriggers(state);
 	return effectiveAmount;
 }
 
-/** "Whenever one or more +1/+1 counters are put on ~" (was inline in addCountersToPermanent). */
-function triggerOnCounterPlaced(
-	state: GameState,
-	perm: CardInstance,
-	type: CounterType,
-	effectiveAmount: number
-): void {
-	if (
-		type === '+1/+1' &&
-		effectiveAmount > 0 &&
-		!permanentHasLostAllAbilities(perm, state).lost
-	) {
-		const ctrl = state.players.find((p) => p.playerId === perm.controllerId);
-		if (ctrl) {
-			const pCard = perm.copiableCard ?? perm.card;
-			const counterTriggers = getCardRuleTree(pCard).triggers.filter(
-				(t) => t.event === 'on_counter_placed'
-			);
-			for (const trig of counterTriggers) {
-				executeTriggeredCardEffects(state, ctrl, perm, trig.effects, 'Counter Placed');
-			}
-		}
-	}
-}
-
-/** Beginning-of-upkeep triggers (was inline in runBeginningOfTurn; dispatched from PhaseBegin). */
-function runUpkeepTriggers(state: GameState, activePlayer: PlayerGameState): void {
-	// 2a. Suspend Upkeep Triggers (CR 702.62a): Remove 1 time counter from each suspended card in exile; when last is removed, cast it without paying its mana cost!
+/**
+ * CR 702.62a suspend: at the beginning of its owner's upkeep, remove a time counter from each
+ * suspended card in exile; when the last is removed, cast it. A keyword rule, run from PhaseBegin
+ * before triggered abilities are matched (it was step 2a of the old upkeep loop).
+ */
+function runSuspendUpkeep(state: GameState, activePlayer: PlayerGameState): void {
 	const suspendedCards = activePlayer.exile.filter(
 		(c) => c.isSuspended && (c.counters.time || 0) > 0
 	);
@@ -2464,102 +2420,14 @@ function runUpkeepTriggers(state: GameState, activePlayer: PlayerGameState): voi
 			executeSuspendFreeCastFromExile(state, activePlayer, susp);
 		}
 	}
-
-	// 2b. Graveyard Upkeep Triggers (CR 404.2 Graveyard Order — e.g., Nether Shadow)
-	for (const gCard of [...activePlayer.graveyard]) {
-		const upkeepAbilities = parseStructuredTriggeredAbilities(gCard.card, 'upkeep');
-		for (const ab of upkeepAbilities) {
-			if (
-				ab.condition?.kind === 'graveyard_creatures_above_at_least' &&
-				matchesTriggerScope(ab.scope, activePlayer.playerId, activePlayer.playerId) &&
-				evaluateTriggerCondition(state, activePlayer, gCard.instanceId, ab.condition)
-			) {
-				executeTriggeredCardEffects(state, activePlayer, gCard, ab.effects, 'Graveyard Upkeep');
-			}
-		}
-	}
-
-	// 2c. Battlefield Upkeep Triggers (e.g., Felidar Sovereign)
-	for (const p of state.players) {
-		if (p.lost) continue;
-		for (const perm of [...p.battlefield]) {
-			if (perm.phasedOut || permanentHasLostAllAbilities(perm, state).lost) continue;
-			const pCard = perm.copiableCard ?? perm.card;
-			const upkeepAbilities = parseStructuredTriggeredAbilities(pCard, 'upkeep');
-			for (const ab of upkeepAbilities) {
-				if (!matchesTriggerScope(ab.scope, p.playerId, activePlayer.playerId)) continue;
-				if (!evaluateTriggerCondition(state, p, perm.instanceId, ab.condition)) continue;
-				const stkItem: StackItem = {
-					id: uid('stk'),
-					sourceInstanceId: perm.instanceId,
-					card: pCard,
-					controllerId: p.playerId,
-					kind: 'triggered',
-					title: `${pCard.name} (Upkeep Trigger)`,
-					oracleText: ab.clause,
-					targets: [],
-					xValue: 0,
-					parsedEffects: ab.effects,
-					requiresGuidedResolution: false,
-					createdAt: Date.now(),
-					interveningIfCondition: ab.condition,
-					interveningIfClause:
-						ab.condition?.kind === 'life_at_least' && ab.condition.amount === 40
-							? 'life_40_or_more'
-							: undefined
-				};
-				state.stack.push(stkItem);
-				addLog(
-					state,
-					'trigger',
-					`${pCard.name}'s Upkeep trigger was put onto the Stack.`,
-					p.playerId
-				);
-			}
-		}
-	}
 }
 
-/** Beginning-of-end-step and delayed end-step triggers (was inline in enterEndStep; dispatched from PhaseBegin). */
-function runEndStepTriggers(state: GameState, activePlayer: PlayerGameState): void {
-	// 1. Permanent beginning-of-end-step triggers (e.g., Atraxa, Dress Down)
-	for (const p of state.players) {
-		if (p.lost) continue;
-		for (const perm of [...p.battlefield]) {
-			if (perm.phasedOut || permanentHasLostAllAbilities(perm, state).lost) continue;
-			const pCard = perm.copiableCard ?? perm.card;
-			const endStepAbilities = parseStructuredTriggeredAbilities(pCard, 'end_step');
-			for (const ab of endStepAbilities) {
-				if (!matchesTriggerScope(ab.scope, p.playerId, activePlayer.playerId)) continue;
-				if (!evaluateTriggerCondition(state, p, perm.instanceId, ab.condition)) continue;
-				// Push onto stack so player can respond with Obeka/Sundial if desired
-				const stkItem: StackItem = {
-					id: uid('stk'),
-					sourceInstanceId: perm.instanceId,
-					card: pCard,
-					controllerId: p.playerId,
-					kind: 'triggered',
-					title: `${pCard.name} (End Step Trigger)`,
-					oracleText: ab.clause,
-					targets: [],
-					xValue: 0,
-					parsedEffects: ab.effects,
-					requiresGuidedResolution: false,
-					createdAt: Date.now(),
-					interveningIfCondition: ab.condition
-				};
-				state.stack.push(stkItem);
-				addLog(
-					state,
-					'trigger',
-					`${pCard.name}'s End Step trigger was put onto the Stack.`,
-					p.playerId
-				);
-			}
-		}
-	}
-
-	// 2. Delayed End Step triggers (e.g., Final Fortune, Corpse Dance)
+/**
+ * Delayed end-step triggers created by resolving effects (Final Fortune, Corpse Dance). These are
+ * stored in state with their own legacy effects, not compiled from a card's abilities; Phase 3's
+ * delayed effects replace them. Pushed after the beginning-of-end-step triggers, as before.
+ */
+function runDelayedEndStepTriggers(state: GameState, activePlayer: PlayerGameState): void {
 	if (state.delayedTriggers && state.delayedTriggers.length > 0) {
 		const remainingDelayed: DelayedTrigger[] = [];
 		for (const dt of state.delayedTriggers) {
@@ -2618,27 +2486,95 @@ function beginPhase(state: GameState, phase: GamePhase, activePlayer?: PlayerGam
 		phase,
 		activePlayerId: (activePlayer ?? state.players[state.activePlayerIndex])?.playerId ?? null
 	});
+	// Beginning-of-step triggers go on the stack now: the callers check the stack right after this.
+	flushTriggers(state);
 }
 
-// Event dispatch (Phase 2). Each handler is the direct call it replaced, at the same point, so
-// ordering is unchanged. Phase 5 replaces these with trigger matching over the event queue.
-registerEventHandler('Cast', (state, ev) => {
-	const caster = state.players.find((p) => p.playerId === ev.playerId);
-	if (caster) triggerOnSpellCast(state, caster, ev.object);
-});
-registerEventHandler('AttackDeclared', (state, ev) => {
-	const attacker = state.players.find((p) => p.playerId === ev.playerId);
-	if (attacker) triggerOnAttack(state, attacker, ev.attackerIds);
-});
+// Event dispatch (Phase 5). Every event is matched against compiled triggered abilities
+// (runtime/triggers.ts); matches wait for the next flushTriggers. PhaseBegin also runs the suspend
+// keyword (before matching, as the old upkeep loop did) and delayed end-step triggers (after the
+// beginning-of-end-step triggers are on the stack).
+for (const kind of [
+	'ZoneChange',
+	'Cast',
+	'SpellCopied',
+	'AttackDeclared',
+	'BlockersDeclared',
+	'DamageDealt',
+	'CounterPlaced',
+	'BecameTarget',
+	'Attached'
+] as const) {
+	registerEventHandler(kind, (state, ev) => matchTriggers(state, ev));
+}
 registerEventHandler('PhaseBegin', (state, ev) => {
-	if (ev.phase !== 'upkeep' && ev.phase !== 'end_step') return;
 	const activePlayer = state.players.find((p) => p.playerId === ev.activePlayerId);
-	if (!activePlayer) return;
-	if (ev.phase === 'upkeep') runUpkeepTriggers(state, activePlayer);
-	else runEndStepTriggers(state, activePlayer);
+	if (ev.phase === 'upkeep' && activePlayer) runSuspendUpkeep(state, activePlayer);
+	matchTriggers(state, ev);
+	if (ev.phase === 'end_step' && activePlayer) {
+		flushTriggers(state);
+		runDelayedEndStepTriggers(state, activePlayer);
+	}
 });
-registerEventHandler('CounterPlaced', (state, ev) => {
-	triggerOnCounterPlaced(state, ev.object, ev.counterType, ev.amount);
+
+/**
+ * Builds the stack item for a triggered ability (also the "dummy" item an inline trigger resolves
+ * with). `targets[0]` is the object or player the event was about, as the old triggerOnX functions
+ * passed it; `lkiPower` is the damage dealt or the entering creature's power.
+ */
+function triggeredStackItem(state: GameState, t: PendingTrigger, idPrefix: string): StackItem {
+	const targets: TargetRef[] = [];
+	if (t.eventPlayerId) {
+		const pl = state.players.find((p) => p.playerId === t.eventPlayerId);
+		targets.push({ kind: 'player', id: t.eventPlayerId, label: pl?.username ?? t.eventPlayerId });
+	} else if (t.eventObject) {
+		targets.push({ kind: 'permanent', id: t.eventObject.instanceId, label: t.eventObject.card.name });
+	}
+	return {
+		id: uid(idPrefix),
+		sourceInstanceId: t.source.instanceId,
+		card: t.sourceCard,
+		controllerId: t.controllerId,
+		kind: 'triggered',
+		title: `${t.sourceCard.name} (${t.label})`,
+		oracleText: t.ability.legacy.clause,
+		targets,
+		xValue: 0,
+		parsedEffects: t.ability.legacy.effects,
+		requiresGuidedResolution: false,
+		createdAt: Date.now(),
+		lkiPower: t.amount,
+		triggeredAbilityIndex: t.ability.abilityIndex
+	};
+}
+
+/**
+ * Executes a triggered ability's effect. THE single place trigger effects run (inline triggers here;
+ * stacked ones through resolveTopOfStack's parsedEffects loop). It uses the legacy ParsedEffect path
+ * until Phase 3's IR interpreter replaces this body with one call (interpret t.ability's effect).
+ */
+function executeTriggerEffects(state: GameState, controller: PlayerGameState, item: StackItem): void {
+	for (const eff of item.parsedEffects) {
+		executeParsedEffect(state, controller, item, eff);
+	}
+}
+
+registerTriggerHost({
+	executeInline(state, t) {
+		const controller = state.players.find((p) => p.playerId === t.controllerId);
+		if (!controller) return;
+		executeTriggerEffects(state, controller, triggeredStackItem(state, t, 'trg'));
+		addLog(
+			state,
+			'trigger',
+			`${t.sourceCard.name} (${t.label}) triggered for ${controller.username}.`,
+			controller.playerId
+		);
+	},
+	putOnStack(state, t) {
+		state.stack.push(triggeredStackItem(state, t, 'stk'));
+		addLog(state, 'trigger', `${t.sourceCard.name}'s ${t.label} was put onto the Stack.`, t.controllerId);
+	}
 });
 
 export function resolveTopOfStack(state: GameState): void {
@@ -2650,12 +2586,13 @@ export function resolveTopOfStack(state: GameState): void {
 
 	// Check intervening-if clause on resolution (CR 603.4)
 	if (
-		(item.interveningIfCondition &&
-			!evaluateTriggerCondition(
+		(item.triggeredAbilityIndex !== undefined &&
+			!stackTriggerConditionHolds(
 				state,
-				controller,
-				item.sourceInstanceId,
-				item.interveningIfCondition
+				item.card,
+				item.triggeredAbilityIndex,
+				item.controllerId,
+				item.sourceInstanceId
 			)) ||
 		(item.interveningIfClause === 'life_40_or_more' && controller.life < 40)
 	) {
@@ -2926,13 +2863,19 @@ export function resolveTopOfStack(state: GameState): void {
 				`${perm.card.name} entered the battlefield under ${controller.username}'s control.`,
 				controller.playerId
 			);
-			triggerOnEtb(state, controller, perm);
 			if (tLine.includes('Aura') && perm.attachedToId) {
 				const attachedTarget = findPermanentOnBoard(state, perm.attachedToId);
 				if (attachedTarget) {
-					triggerOnAttach(state, controller, perm, attachedTarget.inst);
+					emitEvent(state, {
+						kind: 'Attached',
+						attachmentId: perm.instanceId,
+						attachment: perm,
+						hostId: attachedTarget.inst.instanceId,
+						host: attachedTarget.inst
+					});
 				}
 			}
+			flushTriggers(state);
 		} else {
 			// Check if spell exiles itself on resolution (e.g. Teferi's Protection, Time Stop)
 			const exilesSelf = /exile\s+~|exile\s+teferi's protection|exile\s+time stop/i.test(
@@ -3121,7 +3064,7 @@ function executeParsedEffect(
 					`${card.card.name} returned from ${controller.username}'s graveyard to the battlefield!`,
 					controller.playerId
 				);
-				triggerOnEtb(state, controller, card);
+				flushTriggers(state);
 			}
 			break;
 		}
@@ -3200,7 +3143,7 @@ function executeParsedEffect(
 					`${item.card.name} created a token copy of ${baseCardToCopy.name}!`,
 					controller.playerId
 				);
-				triggerOnEtb(state, controller, tokenInst);
+				flushTriggers(state);
 			}
 			break;
 		}
@@ -3353,7 +3296,14 @@ function executeParsedEffect(
 					`${controller.username} attached ${equipFound.inst.card.name} to ${targetFound.inst.card.name}.`,
 					controller.playerId
 				);
-				triggerOnAttach(state, controller, equipFound.inst, targetFound.inst);
+				emitEvent(state, {
+					kind: 'Attached',
+					attachmentId: equipFound.inst.instanceId,
+					attachment: equipFound.inst,
+					hostId: targetFound.inst.instanceId,
+					host: targetFound.inst
+				});
+				flushTriggers(state);
 			}
 			break;
 		}
@@ -3490,13 +3440,9 @@ function executeParsedEffect(
 					addLog(state, 'rule', `${found.inst.card.name} is Indestructible and was not destroyed.`);
 				} else {
 					emitVfx(state, { kind: 'destroy', targetId: found.inst.instanceId, label: found.inst.card.name });
-					const diesEffects = parseTriggeredEffects(found.inst.card, 'dies');
-					const hadLostAbilities = permanentHasLostAllAbilities(found.inst, state).lost;
-					const actualZone = movePermanentToZone(state, found.inst, 'graveyard');
+					movePermanentToZone(state, found.inst, 'graveyard');
 					addLog(state, 'cast', `${item.title} destroyed ${found.inst.card.name}.`, controller.playerId);
-					if (actualZone === 'graveyard' && diesEffects.length > 0 && !hadLostAbilities) {
-						executeTriggeredCardEffects(state, found.controller, found.inst, diesEffects, 'Dies');
-					}
+					flushTriggers(state);
 				}
 			}
 			break;
@@ -3515,15 +3461,11 @@ function executeParsedEffect(
 					}
 				}
 			}
-			for (const { perm, controller: permCtrl } of toDestroy) {
+			for (const { perm } of toDestroy) {
 				emitVfx(state, { kind: isExileAll ? 'exile' : 'destroy', targetId: perm.instanceId });
-				const diesEffects = !isExileAll ? parseTriggeredEffects(perm.card, 'dies') : [];
-				const hadLostAbilities = permanentHasLostAllAbilities(perm, state).lost;
-				const actualZone = movePermanentToZone(state, perm, isExileAll ? 'exile' : 'graveyard');
-				if (actualZone === 'graveyard' && diesEffects.length > 0 && !hadLostAbilities) {
-					executeTriggeredCardEffects(state, permCtrl, perm, diesEffects, 'Dies');
-				}
+				movePermanentToZone(state, perm, isExileAll ? 'exile' : 'graveyard');
 			}
+			flushTriggers(state);
 			addLog(
 				state,
 				'cast',
@@ -3734,7 +3676,7 @@ function executeParsedEffect(
 						`Corpse Dance reanimated the top creature card of ${controller.username}'s graveyard (${reanimated.card.name}) with Haste (CR 404.2)!`,
 						controller.playerId
 					);
-					triggerOnEtb(state, controller, reanimated);
+					flushTriggers(state);
 					if (!state.delayedTriggers) state.delayedTriggers = [];
 					state.delayedTriggers.push({
 						id: uid('dtrig'),
@@ -3775,7 +3717,7 @@ function executeParsedEffect(
 								`${controller.username} reanimated ${reanimated.card.name} onto the battlefield!`,
 								controller.playerId
 							);
-							triggerOnEtb(state, controller, reanimated);
+							flushTriggers(state);
 							break;
 						}
 					}
@@ -3807,7 +3749,7 @@ function executeParsedEffect(
 						`${controller.username} reanimated ${creature.card.name} onto the battlefield!`,
 						controller.playerId
 					);
-					triggerOnEtb(state, controller, creature);
+					flushTriggers(state);
 					break;
 				}
 			}
@@ -4148,7 +4090,7 @@ function initiateLibrarySearch(
 					`${searchingPlayer.username} searched their library for ${found.card.name} and put it onto the battlefield${found.tapped ? ' tapped' : ''}.`,
 					searchingPlayer.playerId
 				);
-				triggerOnEtb(state, searchingPlayer, found);
+				flushTriggers(state);
 			} else if (dest.zone === 'library' && dest.onTop) {
 				moveObject(state, found, 'library', {
 					from: fromLibrary,
@@ -4242,7 +4184,7 @@ function autoFetchBasicLandToBattlefield(
 			`${player.username} searched their library for ${land.card.name} and put it onto the battlefield${tapped ? ' tapped' : ''}.`,
 			player.playerId
 		);
-		triggerOnEtb(state, player, land);
+		flushTriggers(state);
 	}
 }
 
@@ -4291,6 +4233,7 @@ export function createTokenOnBoard(
 		targetId: inst.instanceId,
 		label: spec.name
 	});
+	flushTriggers(state);
 	return inst;
 }
 
@@ -4317,276 +4260,6 @@ export function executeProliferate(state: GameState, controller: PlayerGameState
 		sourceId: controller.playerId,
 		label: 'Proliferate!'
 	});
-}
-
-function triggerOnSpellCast(
-	state: GameState,
-	caster: PlayerGameState,
-	castCard: CardInstance
-): void {
-	const tLine = castCard.card.typeLine;
-	const isInstantOrSorcery = tLine.includes('Instant') || tLine.includes('Sorcery');
-	const isCreature = tLine.includes('Creature');
-	const isNonCreature = !isCreature;
-
-	let magecraftMultiplier = 1;
-	if (isInstantOrSorcery) {
-		const activeHooks = collectActiveBoardHooks(state);
-		for (const entry of activeHooks) {
-			if (
-				entry.hook.path === 'hook.trigger_multiplier' &&
-				entry.controllerId === caster.playerId &&
-				entry.hook.multiplier
-			) {
-				magecraftMultiplier *= entry.hook.multiplier;
-			}
-		}
-	}
-
-	for (const p of state.players) {
-		if (p.lost) continue;
-		for (const perm of [...p.battlefield]) {
-			if (perm.phasedOut || permanentHasLostAllAbilities(perm, state).lost) continue;
-			const pCard = perm.copiableCard ?? perm.card;
-			const castTriggers = getCardRuleTree(pCard).triggers.filter((t) => t.event === 'on_cast');
-			for (const trig of castTriggers) {
-				if (trig.casterFilter === 'self' && p.playerId !== caster.playerId) continue;
-				if (trig.casterFilter === 'opponent' && p.playerId === caster.playerId) continue;
-				if (trig.spellFilter === 'InstantOrSorcery' && !isInstantOrSorcery) continue;
-				if (trig.spellFilter === 'Creature' && !isCreature) continue;
-				if (trig.spellFilter === 'Noncreature' && !isNonCreature) continue;
-
-				const times =
-					trig.isMagecraftOrInstantSorceryTrigger && p.playerId === caster.playerId
-						? magecraftMultiplier
-						: 1;
-				for (let i = 0; i < times; i++) {
-					executeTriggeredCardEffects(state, p, perm, trig.effects, 'On Cast');
-				}
-			}
-		}
-	}
-}
-
-function executeTriggeredCardEffects(
-	state: GameState,
-	controller: PlayerGameState,
-	sourceCard: CardInstance,
-	effects: ParsedEffect[],
-	triggerLabel: string
-): void {
-	if (effects.length === 0) return;
-	const dummyItem: StackItem = {
-		id: uid('trg'),
-		sourceInstanceId: sourceCard.instanceId,
-		card: sourceCard.card,
-		controllerId: controller.playerId,
-		kind: 'triggered',
-		title: `${sourceCard.card.name} (${triggerLabel})`,
-		oracleText: sourceCard.card.oracleText,
-		targets: [],
-		xValue: 0,
-		parsedEffects: effects,
-		requiresGuidedResolution: false,
-		createdAt: Date.now()
-	};
-	for (const eff of effects) {
-		executeParsedEffect(state, controller, dummyItem, eff);
-	}
-	addLog(
-		state,
-		'trigger',
-		`${sourceCard.card.name} (${triggerLabel}) triggered for ${controller.username}.`,
-		controller.playerId
-	);
-}
-
-function triggerOnAttach(
-	state: GameState,
-	controller: PlayerGameState,
-	attachment: CardInstance,
-	attachedTo: CardInstance
-): void {
-	for (const perm of controller.battlefield) {
-		if (perm.phasedOut || permanentHasLostAllAbilities(perm, state).lost) continue;
-		const tree = getCardRuleTree(perm.card);
-		const attachTriggers = tree.triggers.filter((t) => t.event === 'on_attach');
-		for (const trig of attachTriggers) {
-			if (
-				trig.appliesToSelfOnly &&
-				perm.instanceId !== attachment.instanceId &&
-				perm.instanceId !== attachedTo.instanceId
-			) {
-				continue;
-			}
-			const dummyItem: StackItem = {
-				id: uid('trg'),
-				sourceInstanceId: perm.instanceId,
-				card: perm.card,
-				controllerId: controller.playerId,
-				kind: 'triggered',
-				title: `${perm.card.name} (On Attach)`,
-				oracleText: perm.card.oracleText,
-				targets: [
-					{
-						kind: 'permanent',
-						id: attachedTo.instanceId,
-						label: attachedTo.card.name
-					}
-				],
-				xValue: 0,
-				parsedEffects: trig.effects,
-				requiresGuidedResolution: false,
-				createdAt: Date.now()
-			};
-			for (const eff of trig.effects) {
-				executeParsedEffect(state, controller, dummyItem, eff);
-			}
-			addLog(
-				state,
-				'trigger',
-				`${perm.card.name} (on_attach) triggered when ${attachment.card.name} attached to ${attachedTo.card.name}.`,
-				controller.playerId
-			);
-		}
-	}
-}
-
-function triggerOnEtb(state: GameState, controller: PlayerGameState, entered: CardInstance): void {
-	if (entered.phasedOut) return;
-	const evalEntered = evaluatePermanent(state, entered);
-	const tLine = evalEntered.typeLine;
-
-	// If Humility / Dress Down stripped all abilities on the battlefield, ETB abilities of the entering creature do not trigger!
-	if (!evalEntered.hasLostAllAbilities) {
-		const genericEtbEffects = parseTriggeredEffects(entered.copiableCard ?? entered.card, 'etb');
-		if (genericEtbEffects.length > 0) {
-			executeTriggeredCardEffects(state, controller, entered, genericEtbEffects, 'ETB');
-		}
-	}
-
-	// Check permanents on controller's battlefield for observer ETBs and Landfall (e.g., Marwyn, Lathliss, Miirym, Terror of the Peaks, Scourge of Valkas, Evolution Sage)
-	const enteredPower = tLine.includes('Creature') ? getCreaturePower(entered, state) : 0;
-	for (const perm of [...controller.battlefield]) {
-		if (perm.phasedOut) continue;
-		if (permanentHasLostAllAbilities(perm, state).lost) continue;
-		const pCard = perm.copiableCard ?? perm.card;
-		const obsTriggers = getCardRuleTree(pCard).triggers.filter(
-			(t) => t.event === 'on_etb' && !t.appliesToSelfOnly
-		);
-		for (const trig of obsTriggers) {
-			const isLandfall = trig.path === 'trigger.on_landfall';
-			if (!isLandfall && !trig.includeSelf && perm.instanceId === entered.instanceId) {
-				continue;
-			}
-			if (trig.nontokenOnly && entered.isToken) {
-				continue;
-			}
-			if (trig.enteredCardTypeFilter && !tLine.includes(trig.enteredCardTypeFilter)) {
-				continue;
-			}
-
-			const dummyItem: StackItem = {
-				id: uid('trg'),
-				sourceInstanceId: perm.instanceId,
-				card: pCard,
-				controllerId: controller.playerId,
-				kind: 'triggered',
-				title: `${pCard.name} (${isLandfall ? 'Landfall' : 'ETB Trigger'})`,
-				oracleText: pCard.oracleText,
-				targets: [
-					{
-						kind: 'permanent',
-						id: entered.instanceId,
-						label: entered.card.name
-					}
-				],
-				xValue: 0,
-				parsedEffects: trig.effects,
-				requiresGuidedResolution: false,
-				createdAt: Date.now(),
-				lkiPower: enteredPower
-			};
-			for (const eff of trig.effects) {
-				executeParsedEffect(state, controller, dummyItem, eff);
-			}
-			addLog(
-				state,
-				'trigger',
-				`${pCard.name} (${isLandfall ? 'Landfall' : 'Observer ETB'}) triggered when ${entered.card.name} entered the battlefield.`,
-				controller.playerId
-			);
-		}
-	}
-}
-
-function triggerOnAttack(
-	state: GameState,
-	attackerPlayer: PlayerGameState,
-	attackerIds: string[]
-): void {
-	const attackingCards = attackerPlayer.battlefield.filter(
-		(c) => !c.phasedOut && attackerIds.includes(c.instanceId)
-	);
-
-	// 1. Observer attack triggers across attackerPlayer's battlefield (e.g., The Ur-Dragon, Atarka, World Render)
-	for (const perm of [...attackerPlayer.battlefield]) {
-		if (perm.phasedOut || permanentHasLostAllAbilities(perm, state).lost) continue;
-		const pCard = perm.copiableCard ?? perm.card;
-		const obsAtkTriggers = getCardRuleTree(pCard).triggers.filter(
-			(t) => t.event === 'on_attack' && !t.appliesToSelfOnly
-		);
-		for (const trig of obsAtkTriggers) {
-			const matchingAttackers = trig.attackerSubtypeFilter
-				? attackingCards.filter((c) =>
-						evaluatePermanent(state, c).typeLine.includes(trig.attackerSubtypeFilter!)
-					)
-				: attackingCards;
-			if (matchingAttackers.length === 0) continue;
-
-			if (trig.id.startsWith('trig_obs_atk_each_')) {
-				for (const matchingAtk of matchingAttackers) {
-					const dummyItem: StackItem = {
-						id: uid('trg'),
-						sourceInstanceId: perm.instanceId,
-						card: pCard,
-						controllerId: attackerPlayer.playerId,
-						kind: 'triggered',
-						title: `${pCard.name} (Attack Trigger)`,
-						oracleText: pCard.oracleText,
-						targets: [
-							{
-								kind: 'permanent',
-								id: matchingAtk.instanceId,
-								label: matchingAtk.card.name
-							}
-						],
-						xValue: 0,
-						parsedEffects: trig.effects,
-						requiresGuidedResolution: false,
-						createdAt: Date.now()
-					};
-					for (const eff of trig.effects) {
-						executeParsedEffect(state, attackerPlayer, dummyItem, eff);
-					}
-				}
-			} else {
-				executeTriggeredCardEffects(state, attackerPlayer, perm, trig.effects, 'Attack');
-			}
-		}
-	}
-
-	// 2. Self attack triggers on each attacking creature (e.g., Goldspan Dragon)
-	for (const atk of attackingCards) {
-		if (permanentHasLostAllAbilities(atk, state).lost) continue;
-		const atkCard = atk.copiableCard ?? atk.card;
-		const selfAtkTriggers = getCardRuleTree(atkCard).triggers.filter(
-			(t) => t.event === 'on_attack' && t.appliesToSelfOnly
-		);
-		for (const trig of selfAtkTriggers) {
-			executeTriggeredCardEffects(state, attackerPlayer, atk, trig.effects, 'Attack');
-		}
-	}
 }
 
 export function advancePhaseOrStep(state: GameState): void {
@@ -4732,91 +4405,89 @@ function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): 
 		if (attackerDealsNow && atkPower > 0 && !combatDamagePrevented) {
 			let remainingDamage = atkPower;
 			let totalDealtByAttacker = 0;
+			const defWalker = atkEntry.defenderPlaneswalkerId
+				? defPlayer.battlefield.find(
+						(c) => !c.phasedOut && c.instanceId === atkEntry.defenderPlaneswalkerId
+					)
+				: undefined;
 
 			if (!atkEntry.wasBlocked && blockers.length === 0) {
-				// Unblocked -> deals combat damage to defending player
-				if (!defPlayer.protectionFromEverythingThisTurn) {
-					if (atkInfect) {
-						defPlayer.poison += remainingDamage;
-					} else if (!defPlayer.lifeTotalCannotChangeThisTurn) {
-						defPlayer.life -= remainingDamage;
-					}
+				if (defWalker) {
+					// CR 120.3c: Combat damage dealt to a planeswalker removes that many loyalty counters.
+					defWalker.counters.loyalty = Math.max(
+						0,
+						(defWalker.counters.loyalty || 0) - remainingDamage
+					);
 					totalDealtByAttacker += remainingDamage;
 					emitEvent(state, {
 						kind: 'DamageDealt',
 						sourceId: attacker.instanceId,
-						targetId: defPlayer.playerId,
-						targetKind: 'player',
+						targetId: defWalker.instanceId,
+						targetKind: 'permanent',
 						amount: remainingDamage,
 						combat: true
 					});
-				}
-
-				emitVfx(state, {
-					kind: 'damage',
-					sourceId: attacker.instanceId,
-					targetId: defPlayer.playerId,
-					amount: remainingDamage,
-					label: atkInfect ? `+${remainingDamage} Poison` : `-${remainingDamage}`
-				});
-
-				// Track Commander Combat Damage (CR 903.10a)
-				if (attacker.isCommander && !defPlayer.protectionFromEverythingThisTurn) {
-					defPlayer.commanderDamageTaken[attacker.instanceId] =
-						(defPlayer.commanderDamageTaken[attacker.instanceId] || 0) + remainingDamage;
+					emitVfx(state, {
+						kind: 'damage',
+						sourceId: attacker.instanceId,
+						targetId: defWalker.instanceId,
+						amount: remainingDamage,
+						label: `-${remainingDamage} Loyalty`
+					});
 					addLog(
 						state,
 						'combat',
-						`Commander ${attacker.card.name} dealt ${remainingDamage} combat damage to ${defPlayer.username} (Total: ${defPlayer.commanderDamageTaken[attacker.instanceId]}/${state.rules.commanderDamageLethal || '∞'}).`,
+						`${attacker.card.name} dealt ${remainingDamage} unblocked combat damage to ${defWalker.card.name}.`,
 						atkPlayer.playerId
 					);
+					flushTriggers(state);
 				} else {
-					addLog(
-						state,
-						'combat',
-						`${attacker.card.name} dealt ${remainingDamage} unblocked ${atkInfect ? 'Infect (Poison) ' : ''}combat damage to ${defPlayer.username}.`,
-						atkPlayer.playerId
-					);
-				}
-
-				// Combat damage to player triggers (e.g., Lathril, Grateful Apparition)
-				if (!permanentHasLostAllAbilities(attacker, state).lost && totalDealtByAttacker > 0) {
-					const atkCard = attacker.copiableCard ?? attacker.card;
-					const dmgTriggers = getCardRuleTree(atkCard).triggers.filter(
-						(t) => t.event === 'on_combat_damage_player'
-					);
-					for (const trig of dmgTriggers) {
-						const dummyItem: StackItem = {
-							id: uid('trg'),
-							sourceInstanceId: attacker.instanceId,
-							card: atkCard,
-							controllerId: atkPlayer.playerId,
-							kind: 'triggered',
-							title: `${atkCard.name} (Combat Damage Trigger)`,
-							oracleText: atkCard.oracleText,
-							targets: [
-								{
-									kind: 'player',
-									id: defPlayer.playerId,
-									label: defPlayer.username
-								}
-							],
-							xValue: 0,
-							parsedEffects: trig.effects,
-							requiresGuidedResolution: false,
-							createdAt: Date.now(),
-							lkiPower: remainingDamage
-						};
-						for (const eff of trig.effects) {
-							executeParsedEffect(state, atkPlayer, dummyItem, eff);
+					// Unblocked -> deals combat damage to defending player
+					if (!defPlayer.protectionFromEverythingThisTurn) {
+						if (atkInfect) {
+							defPlayer.poison += remainingDamage;
+						} else if (!defPlayer.lifeTotalCannotChangeThisTurn) {
+							defPlayer.life -= remainingDamage;
 						}
+						totalDealtByAttacker += remainingDamage;
+						emitEvent(state, {
+							kind: 'DamageDealt',
+							sourceId: attacker.instanceId,
+							targetId: defPlayer.playerId,
+							targetKind: 'player',
+							amount: remainingDamage,
+							combat: true
+						});
+					}
+
+					emitVfx(state, {
+						kind: 'damage',
+						sourceId: attacker.instanceId,
+						targetId: defPlayer.playerId,
+						amount: remainingDamage,
+						label: atkInfect ? `+${remainingDamage} Poison` : `-${remainingDamage}`
+					});
+
+					// Track Commander Combat Damage (CR 903.10a)
+					if (attacker.isCommander && !defPlayer.protectionFromEverythingThisTurn) {
+						defPlayer.commanderDamageTaken[attacker.instanceId] =
+							(defPlayer.commanderDamageTaken[attacker.instanceId] || 0) + remainingDamage;
 						addLog(
 							state,
-							'trigger',
-							`${atkCard.name} (on_combat_damage_player) triggered for ${atkPlayer.username}.`,
+							'combat',
+							`Commander ${attacker.card.name} dealt ${remainingDamage} combat damage to ${defPlayer.username} (Total: ${defPlayer.commanderDamageTaken[attacker.instanceId]}/${state.rules.commanderDamageLethal || '∞'}).`,
+							atkPlayer.playerId
+						);
+					} else {
+						addLog(
+							state,
+							'combat',
+							`${attacker.card.name} dealt ${remainingDamage} unblocked ${atkInfect ? 'Infect (Poison) ' : ''}combat damage to ${defPlayer.username}.`,
 							atkPlayer.playerId
 						);
 					}
+
+					flushTriggers(state);
 				}
 			} else if (atkEntry.wasBlocked && blockers.length === 0 && !atkTrample) {
 				// CR 509.1h / 510.1c: An attacking creature that became blocked remains blocked even if all blockers
@@ -4964,6 +4635,7 @@ function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): 
 		state.combat.damageDealtNormal = true;
 	}
 
+	flushTriggers(state);
 	checkStateBasedActions(state);
 }
 
@@ -5135,7 +4807,6 @@ export function checkStateBasedActions(state: GameState): void {
 			for (const { perm: dying, hadLostAbilities } of dyingPermanents) {
 				anyActionTaken = true;
 				emitVfx(state, { kind: 'destroy', targetId: dying.instanceId, label: dying.card.name });
-				const diesEffects = parseTriggeredEffects(dying.card, 'dies');
 				const actualDest = movePermanentToZone(state, dying, 'graveyard');
 				addLog(
 					state,
@@ -5143,11 +4814,9 @@ export function checkStateBasedActions(state: GameState): void {
 					`${dying.card.name} ${actualDest === 'exile' ? 'was exiled instead of dying (Rest in Peace)' : 'died'} (State-Based Action).`,
 					p.playerId
 				);
-				// CR 700.4: "Dies" means "is put into a graveyard from the battlefield".
-				// If Rest in Peace exiled it instead, dies triggers do NOT trigger!
-				if (actualDest === 'graveyard' && diesEffects.length > 0 && !hadLostAbilities) {
-					executeTriggeredCardEffects(state, p, dying, diesEffects, 'Dies');
-				}
+				// CR 700.4: "Dies" means "is put into a graveyard from the battlefield"; if Rest in Peace
+				// exiled it instead, the ZoneChange goes to exile and dies triggers don't match.
+				flushTriggers(state);
 			}
 
 			// 4. Legend Rule (CR 704.5j): Duplicate legendary permanents with the same name

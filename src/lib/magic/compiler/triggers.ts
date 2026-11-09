@@ -8,8 +8,8 @@
  *
  * Runs alongside the Phase 1 adapter for now. scripts/magic-triggers-diff.ts compares the two.
  */
-import type { Amount, Condition, EventFilter, ObjectFilter, Span, TriggerDef } from '../ir.ts';
-import type { GamePhase, TriggerScope } from '../types.ts';
+import type { Amount, CardDefinition, Condition, EventFilter, ObjectFilter, Span, TriggerDef } from '../ir.ts';
+import type { GamePhase, ParsedEffect, TriggerScope } from '../types.ts';
 import { parseObjectPhrase } from './costs.ts';
 
 export interface TriggerParse {
@@ -183,7 +183,15 @@ function objectEvent(verb: string, subject: Subject): TriggerDef | null {
 		case 'deals damage':
 			return def('dealsDamage', { damageTo: 'any' });
 		case 'becomes the target of a spell or ability':
-			return def('becomesTarget');
+			return def('becomesTarget', { targetedBy: 'spellOrAbility' });
+		case 'becomes the target of a spell':
+			return def('becomesTarget', { targetedBy: 'spell' });
+		case 'becomes the target of an ability':
+			return def('becomesTarget', { targetedBy: 'ability' });
+		case 'becomes attached to a creature':
+			return def('attached', { host: { types: ['Creature'] } });
+		case 'becomes attached to a creature you control':
+			return def('attached', { host: { types: ['Creature'], controller: 'you' } });
 		default:
 			return null;
 	}
@@ -339,4 +347,140 @@ export function parseTriggerHeader(body: string, offset = 0): TriggerParse | nul
 	const after = body.slice(effectStart);
 	effectStart += after.length - after.trimStart().length;
 	return { trigger, condition, effectStart: offset + effectStart, unparsed };
+}
+
+// ---- What the runtime can match (Phase 5) ----------------------------------------------------
+
+/** Phases the engine emits PhaseBegin for (beginPhase). It never begins `begin_combat`. */
+const RUNTIME_PHASES: ReadonlySet<GamePhase> = new Set<GamePhase>(['upkeep', 'draw', 'main1', 'main2', 'end_step']);
+
+/** ObjectFilter fields runtime/triggers.ts checks. A filter using any other field never matches. */
+const RUNTIME_OBJECT_FIELDS: ReadonlySet<string> = new Set([
+	'types',
+	'subtypes',
+	'supertypes',
+	'notTypes',
+	'controller',
+	'token',
+	'other',
+	'colors',
+	'tapped'
+]);
+
+/** EventFilter fields each event kind's matcher checks (runtime/triggers.ts). */
+const RUNTIME_EVENT_FIELDS: Partial<Record<TriggerDef['event'], ReadonlySet<string>>> = {
+	zoneChange: new Set(['object', 'orSelf', 'from', 'to']),
+	cast: new Set(['object', 'player', 'orCopy']),
+	attacks: new Set(['object', 'oneOrMore', 'player']),
+	blocks: new Set(['object']),
+	becomesBlocked: new Set(['object']),
+	dealsDamage: new Set(['object', 'orSelf', 'combat', 'damageTo']),
+	dealtDamage: new Set(['object']),
+	phaseBegin: new Set(['phase']),
+	counterPlaced: new Set(['object', 'counter']),
+	becomesTarget: new Set(['object', 'targetedBy']),
+	attached: new Set(['object', 'host'])
+};
+
+function objectFilterProblem(f: ObjectFilter | undefined): string | null {
+	if (!f) return null;
+	for (const key of Object.keys(f)) {
+		if (!RUNTIME_OBJECT_FIELDS.has(key)) return `object filter field "${key}"`;
+	}
+	return null;
+}
+
+/**
+ * Why the runtime can't honour this trigger, or null if it can. A trigger the runtime can't check
+ * exactly must never fire (it would fire on the wrong events), so the compiler marks the ability
+ * unsupported (`event_not_implemented`).
+ */
+export function runtimeTriggerProblem(def: TriggerDef): string | null {
+	const fields = RUNTIME_EVENT_FIELDS[def.event];
+	if (!fields) return `event "${def.event}" is not emitted`;
+	for (const key of Object.keys(def.filter)) {
+		if (!fields.has(key)) return `${def.event} filter field "${key}"`;
+	}
+	const f = def.filter;
+	if (typeof f.object === 'object') {
+		const p = objectFilterProblem(f.object);
+		if (p) return p;
+	}
+	const p = objectFilterProblem(f.host);
+	if (p) return p;
+	// The object an Aura/Equipment is attached to has already been detached when it leaves.
+	if (f.object === 'attachedTo' && !['attacks', 'dealsDamage'].includes(def.event)) {
+		return `"${def.event}" of the attached-to object`;
+	}
+	if (def.event === 'phaseBegin' && (!f.phase || !RUNTIME_PHASES.has(f.phase))) return `phase "${f.phase}"`;
+	if (def.event === 'becomesTarget' && f.targetedBy !== 'spell') return 'targeted by an ability';
+	if (def.event === 'cast' && f.player && !['you', 'opponent', 'any'].includes(f.player.relation)) {
+		return `caster "${f.player.relation}"`;
+	}
+	if (def.event === 'attacks' && f.player && f.player.relation !== 'you') return 'attacking player';
+	if (def.fromZone && def.fromZone !== 'graveyard') return `functions from ${def.fromZone}`;
+	for (const alt of def.or ?? []) {
+		const q = runtimeTriggerProblem(alt);
+		if (q) return q;
+	}
+	return null;
+}
+
+// ---- Legacy execution shim (Phase 5 -> Phase 3) ---------------------------------------------
+
+/**
+ * How a triggered ability's effect is executed until Phase 3's IR interpreter replaces the
+ * ParsedEffect path: the legacy parser's effects for the ability's line, and the line's text (shown
+ * on the stack). Attached to the compiled ability object; never stored in GameState.
+ */
+export interface LegacyTriggerExecution {
+	effects: ParsedEffect[];
+	/** The ability's line as printed (for the stack item and the log). */
+	clause: string;
+	/** True if the legacy rule tree / structured parser claimed this line (the pre-Phase-5 engine ran it). */
+	legacyClaimed: boolean;
+}
+
+const LEGACY_EXECUTION = new WeakMap<object, LegacyTriggerExecution>();
+
+export function setLegacyTriggerExecution(ability: object, exec: LegacyTriggerExecution): void {
+	LEGACY_EXECUTION.set(ability, exec);
+}
+
+/** One triggered ability as the runtime matches it. */
+export interface RuntimeTrigger {
+	/** Index in compileCard(card).faces[0].abilities (stored on stack items, CR 603.4 re-check). */
+	abilityIndex: number;
+	trigger: TriggerDef;
+	condition?: Condition;
+	/** The IR effect is fully understood (kind 'triggered'); false: only the trigger head is. */
+	effectSupported: boolean;
+	legacy: LegacyTriggerExecution;
+}
+
+const RUNTIME_TRIGGERS = new WeakMap<CardDefinition, RuntimeTrigger[]>();
+
+/**
+ * The triggered abilities the runtime matches for a compiled card:
+ * - abilities of kind 'triggered' (trigger, condition and effect understood), and
+ * - unsupported abilities whose trigger head is understood but whose effect isn't, if the
+ *   pre-Phase-5 engine already ran them (`legacyClaimed`), so nothing regresses. They keep running
+ *   the legacy effects until Phase 3; section 2.7's guided resolution is the eventual fallback.
+ * Abilities with no legacy effects never run (there's nothing to execute yet).
+ */
+export function runtimeTriggers(def: CardDefinition): RuntimeTrigger[] {
+	const cached = RUNTIME_TRIGGERS.get(def);
+	if (cached) return cached;
+	const out: RuntimeTrigger[] = [];
+	(def.faces[0]?.abilities ?? []).forEach((ab, abilityIndex) => {
+		const legacy = LEGACY_EXECUTION.get(ab);
+		if (!legacy || legacy.effects.length === 0) return;
+		if (ab.kind === 'triggered') {
+			out.push({ abilityIndex, trigger: ab.trigger, condition: ab.condition, effectSupported: true, legacy });
+		} else if (ab.kind === 'unsupported' && ab.reason === 'unparsed' && ab.trigger && legacy.legacyClaimed) {
+			out.push({ abilityIndex, trigger: ab.trigger, condition: ab.condition, effectSupported: false, legacy });
+		}
+	});
+	RUNTIME_TRIGGERS.set(def, out);
+	return out;
 }

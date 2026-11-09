@@ -4832,7 +4832,7 @@ describe('29. Stage C & D Deep Audit: Timestamp Precedence, Layer-Aware Subtypes
 		assert.equal(state.players[0].manaPool.R, 4, 'Tapped for 4 {R} equal to power');
 	});
 
-	it('C/D-Audit-4: uses Layer 4 effective subtypes and types (Maskwood Nexus, Mycosynth Lattice, Song of the Dryads) across ETB/attack triggers, count_subtype effects, Metalcraft, and Blasphemous Act', { todo: 'Phase 5/6: observer triggers do not use layer-4 effective subtypes' }, () => {
+	it('C/D-Audit-4: uses Layer 4 effective subtypes and types (Maskwood Nexus, Mycosynth Lattice, Song of the Dryads) across ETB/attack triggers, count_subtype effects, Metalcraft, and Blasphemous Act', () => {
 		const { state, p1Id, p2Id } = createActiveTwoPlayerGame();
 		const p1 = state.players[0];
 		const p2 = state.players[1];

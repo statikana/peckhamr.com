@@ -413,6 +413,12 @@ export interface StackItem {
 	lkiToughness?: number;
 	lkiTypeLine?: string;
 	lkiControllerId?: string;
+	/**
+	 * Phase 5: for a triggered ability put on the stack by runtime/triggers.ts, the index of the
+	 * ability in its source card's compiled abilities (compileCard(card).faces[0].abilities). Used to
+	 * re-check the intervening-if condition on resolution (CR 603.4) without storing IR in state.
+	 */
+	triggeredAbilityIndex?: number;
 }
 
 export interface DelayedTrigger {
