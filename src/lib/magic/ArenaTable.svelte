@@ -29,6 +29,7 @@
 		parseSuspendClause
 	} from './oracle';
 	import { matchesScryfallQuery } from './search';
+	import { cardSupportReport, displayAbilityText } from './compiler/support';
 	import { effectivePromptChoice, effectivePromptPurpose } from './runtime/choices';
 	import {
 		PHASE_LABELS,
@@ -94,6 +95,8 @@
 			? inspectCardContinuousBreakdown(inspectedInstance ?? inspectedCard, gameState)
 			: null
 	);
+	// Plan section 2.7: abilities the engine doesn't automate (E2 resolves them manually).
+	const inspectUnsupported = $derived(inspectedCard ? cardSupportReport(inspectedCard).unsupported : []);
 
 	// Adjustable / Resizable Section Dimensions & Hand Auto-Sort (persisted in localStorage)
 	type HandSortMode = 'none' | 'cmc' | 'name' | 'color' | 'type';
@@ -2683,6 +2686,16 @@
 							<div class="zoom-oracle">
 								<ManaText text={inspectedCard.oracleText} size={15} />
 							</div>
+							{#if inspectUnsupported.length > 0}
+								<div class="zoom-unsupported">
+									<div class="zoom-unsupported-title">Not automated: resolved manually</div>
+									{#each inspectUnsupported as u, i (i)}
+										<div class="zoom-unsupported-row">
+											<ManaText text={displayAbilityText(u.text, u.face) || '(whole card)'} size={13} />
+										</div>
+									{/each}
+								</div>
+							{/if}
 							{#if inspectBreakdown && inspectBreakdown.effectivePower !== null && inspectBreakdown.effectiveToughness !== null}
 								<div class="zoom-pt">
 									{inspectBreakdown.effectivePower}/{inspectBreakdown.effectiveToughness}
@@ -4911,6 +4924,27 @@
 		color: var(--mp-text-body);
 		line-height: 1.38;
 		font-size: 0.68rem;
+	}
+	.zoom-unsupported {
+		border: 1px solid rgba(255, 216, 102, 0.55);
+		background: rgba(255, 216, 102, 0.08);
+		border-radius: 4px;
+		padding: 0.25rem 0.35rem;
+		font-size: 0.64rem;
+		line-height: 1.3;
+	}
+	.zoom-unsupported-title {
+		color: #ffd866;
+		font-weight: 700;
+		font-size: 0.6rem;
+		letter-spacing: 0.02em;
+		margin-bottom: 0.15rem;
+	}
+	.zoom-unsupported-row {
+		color: var(--mp-text-body);
+	}
+	.zoom-unsupported-row + .zoom-unsupported-row {
+		margin-top: 0.15rem;
 	}
 	.zoom-pt {
 		align-self: flex-end;

@@ -17,6 +17,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { performance } from 'node:perf_hooks';
 
 import { clearCompileCache, compileCard, COMPILER_VERSION } from '../src/lib/magic/compiler/index.ts';
+import { definitionSupportReport } from '../src/lib/magic/compiler/support.ts';
 import { clearRuleTreeCache } from '../src/lib/magic/ruleTree.ts';
 import { normalizeScryfallCard } from '../src/lib/magic/scryfall.ts';
 import { buildTemplater, NON_GAME_LAYOUTS, preconCards, readBulk } from './magic-shared.ts';
@@ -70,27 +71,29 @@ function emptyStats(): Stats {
 		supportedExceptStatics: 0,
 		abilities: 0,
 		supportedAbilities: 0,
-		byReason: { unparsed: 0, keyword_not_implemented: 0, static_not_compiled: 0, multiface: 0 }
+		byReason: {
+			unparsed: 0,
+			keyword_not_implemented: 0,
+			static_not_compiled: 0,
+			multiface: 0,
+			event_not_implemented: 0
+		}
 	};
 }
 
 function addToStats(stats: Stats, def: CardDefinition): void {
 	stats.cards++;
-	if (def.fullySupported) stats.fullySupported++;
-	let onlyStatics = true;
+	// The same report drives the deck-builder warning and the allowUnsupportedCards lobby rule.
+	const report = definitionSupportReport(def);
+	if (report.fullySupported) stats.fullySupported++;
+	let abilities = 0;
 	for (const face of def.faces) {
-		for (const ab of face.abilities) {
-			if (ab.kind === 'activated' && ab.intrinsic) continue;
-			stats.abilities++;
-			if (ab.kind !== 'unsupported') {
-				stats.supportedAbilities++;
-				continue;
-			}
-			stats.byReason[ab.reason]++;
-			if (ab.reason !== 'static_not_compiled') onlyStatics = false;
-		}
+		for (const ab of face.abilities) if (!(ab.kind === 'activated' && ab.intrinsic)) abilities++;
 	}
-	if (onlyStatics) stats.supportedExceptStatics++;
+	stats.abilities += abilities;
+	stats.supportedAbilities += abilities - report.unsupported.length;
+	for (const u of report.unsupported) stats.byReason[u.reason]++;
+	if (report.unsupported.every((u) => u.reason === 'static_not_compiled')) stats.supportedExceptStatics++;
 }
 
 function pct(n: number, d: number): string {

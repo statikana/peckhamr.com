@@ -18,6 +18,7 @@ import {
 	createInitialGameState,
 	sanitizeGameStateForViewer
 } from '../../../../lib/magic/engine';
+import { unsupportedCardsStartError } from '../../../../lib/magic/compiler/support';
 import { PRECON_DECKS } from '../../../../lib/magic/precons';
 import {
 	DEFAULT_LOBBY_RULES,
@@ -606,7 +607,7 @@ export const POST: RequestHandler = async ({ request, platform }) => {
 			avatarUrl: '',
 			seatIdx: -1,
 			kind: 'system',
-			message: `Host updated rules: ${nextRules.startingLife} Life, ${nextRules.commanderDamageLethal || 'Off'} Cmdr Damage, +${nextRules.commanderTaxIncrement} Cmdr Tax, ${nextRules.mulliganRule === 'friendly_unlimited' ? 'Friendly Mulligans' : 'London Mulligan'}.`,
+			message: `Host updated rules: ${nextRules.startingLife} Life, ${nextRules.commanderDamageLethal || 'Off'} Cmdr Damage, +${nextRules.commanderTaxIncrement} Cmdr Tax, ${nextRules.mulliganRule === 'friendly_unlimited' ? 'Friendly Mulligans' : 'London Mulligan'}, ${nextRules.allowUnsupportedCards === false ? 'Unsupported Cards Blocked' : 'Unsupported Cards Allowed'}.`,
 			createdAt: now
 		});
 
@@ -647,6 +648,15 @@ export const POST: RequestHandler = async ({ request, platform }) => {
 				);
 			}
 			decksBySeat.set(s.seatIndex, deck);
+		}
+
+		// Plan section 2.7: rules.allowUnsupportedCards (default true). Bot seats follow it too.
+		const unsupportedError = unsupportedCardsStartError(
+			lobby.rules,
+			occupiedSeats.map((s) => ({ username: s.username, deck: decksBySeat.get(s.seatIndex)! }))
+		);
+		if (unsupportedError) {
+			return jsonResponse({ ok: false, error: unsupportedError }, 400);
 		}
 
 		const gameState = createInitialGameState(lobby.code, occupiedSeats, decksBySeat, lobby.rules);

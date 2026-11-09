@@ -1303,6 +1303,28 @@ engine.ts 7, oracle.ts 2. **Phase 10's exit now also requires both to be 0.**
 
 Then an ultra code review of the branch, doc clean-up, and push.
 
+#### Step E1: unsupported-ability warnings and lobby rule ✅ done 2026-11-09 (branch `engine-rewrite-unsupported`)
+- **Helper:** `compiler/support.ts`. `cardSupportReport(card)` returns `{ fullySupported, unsupported:
+  [{ face, text, reason, span, unparsed }] }`, where `unparsed` holds the fragments narrower than the
+  whole ability. It is cached in a `WeakMap` keyed by the cached `CardDefinition`, so it follows
+  `compileCard`'s key. `deckUnsupportedCards` lists a deck's affected cards, and
+  `unsupportedCardsStartError` decides the lobby rule. `scripts/magic-coverage.ts` counts through
+  the same helper, so the warning and COVERAGE.md agree. That also fixed a NaN for
+  `event_not_implemented`.
+- **Precons (compiler v3):** 33 of 140 precon cards have at least one unsupported ability (34
+  abilities). COVERAGE.md still shows the v1 figure (65 of 139) until it's regenerated. Every precon
+  deck has some (12, 8, 9 and 13 cards).
+- **Deck builder:** a per-card badge "N abilities not automated" shows the ability text on hover.
+  An expandable deck summary ("N cards have abilities that won't be automated") is kept separate
+  from the legality notices. `validateCommanderDeck` is unchanged, so these cards are never illegal.
+- **Lobby:** `LobbyRulesConfig.allowUnsupportedCards?` defaults to true, and an absent value counts
+  as true. `start_game` in `api/lobby/+server.ts` refuses when the rule is false and any seat's deck
+  (bots included) has such a card, naming the seat, deck and cards. Because every precon has one,
+  blocking also blocks bot seats.
+- **In game:** the `ArenaTable` inspector lists these abilities under "Not automated: resolved
+  manually". Step E2 does the manual resolution and the "logged once on entering" behaviour for
+  statics.
+
 *Original (superseded) entry:*
 - **Work:** remove `CardRuleTree` (or keep it as a thin view over the IR for the inspector UI),
   `ParsedEffect`, `ParsedActivatedAbility`, `TargetKind`, `parseTriggeredEffects` and the remaining

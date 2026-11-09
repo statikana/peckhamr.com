@@ -146,6 +146,11 @@ export interface LobbyRulesConfig {
 	firstTurnDraw: boolean; // default: true in multiplayer Commander
 	maxHandSize: number; // default: 7 (99 = unlimited)
 	maxPlayers: 2 | 3 | 4; // default: 4
+	/**
+	 * Plan section 2.7: whether decks may contain cards with abilities the engine doesn't automate.
+	 * Default true. Absent (lobbies saved before this rule) means true.
+	 */
+	allowUnsupportedCards?: boolean;
 }
 
 export const DEFAULT_LOBBY_RULES: LobbyRulesConfig = {
@@ -158,7 +163,8 @@ export const DEFAULT_LOBBY_RULES: LobbyRulesConfig = {
 	turnTimerSeconds: 90,
 	firstTurnDraw: true,
 	maxHandSize: 7,
-	maxPlayers: 4
+	maxPlayers: 4,
+	allowUnsupportedCards: true
 };
 
 export interface LobbySeat {
