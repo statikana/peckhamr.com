@@ -6,11 +6,9 @@ import {
 	createCardInstance,
 	createInitialGameState,
 	enterEndStep,
-	resolveTopOfStack,
-	setEffectInterpreterEnabled
+	resolveTopOfStack
 } from '../engine.ts';
 import { parseAbilityEffectText, parseEffects, parseSpellText } from '../compiler/effects.ts';
-import { parseSpellOrAbilityEffects } from '../oracle.ts';
 import { PRECON_DECKS, STAPLE_CARDS } from '../precons.ts';
 import {
 	DEFAULT_LOBBY_RULES,
@@ -134,7 +132,6 @@ function pushSpellOnStack(
 	const inst = putInZone(state, controller, card, 'hand');
 	const idx = controller.hand.indexOf(inst);
 	if (idx >= 0) controller.hand.splice(idx, 1);
-	const parsed = parseSpellOrAbilityEffects(card);
 	const item: StackItem = {
 		id: `stk_${inst.instanceId}`,
 		sourceInstanceId: inst.instanceId,
@@ -148,8 +145,7 @@ function pushSpellOnStack(
 		targets,
 		xValue,
 		castMode: 'normal',
-		parsedEffects: parsed.effects,
-		requiresGuidedResolution: parsed.requiresGuidedResolution,
+		requiresGuidedResolution: false,
 		createdAt: Date.now()
 	};
 	state.stack.push(item);
@@ -170,7 +166,6 @@ describe('Effect interpreter: Phase 3 bug fixes', () => {
 			});
 			const src = putInZone(state, p1, card, 'battlefield');
 			const effectText = 'Each opponent loses 10 life and you gain 10 life.';
-			const parsed = parseSpellOrAbilityEffects(card, effectText);
 			state.stack.push({
 				id: 'stk_lathril',
 				sourceInstanceId: src.instanceId,
@@ -182,7 +177,6 @@ describe('Effect interpreter: Phase 3 bug fixes', () => {
 				oracleText: effectText,
 				targets: [],
 				xValue: 0,
-				parsedEffects: parsed.effects,
 				requiresGuidedResolution: false,
 				createdAt: Date.now()
 			});
@@ -357,7 +351,6 @@ describe('Effect interpreter: Phase 3 bug fixes', () => {
 				oracleText: stone.card.oracleText,
 				targets: [],
 				xValue: 0,
-				parsedEffects: [],
 				requiresGuidedResolution: false,
 				createdAt: Date.now()
 			};
@@ -570,6 +563,5 @@ describe('Effect interpreter: Phase 5 entry point, zone events, and legacy bug f
 		resolveTopOfStack(state);
 		assert.equal(p2.battlefield.some((c) => c.instanceId === bear.instanceId), false);
 		assert.equal(p2.graveyard.some((c) => c.instanceId === bear.instanceId), true);
-		setEffectInterpreterEnabled(true);
 	});
 });

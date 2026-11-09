@@ -529,7 +529,6 @@ describe('Wave 3B: State-Based Actions, Simultaneous Deaths, Elimination & Comma
 			oracleText: wheel.oracleText,
 			targets: [],
 			xValue: 0,
-			parsedEffects: [],
 			requiresGuidedResolution: false,
 			createdAt: 0
 		});

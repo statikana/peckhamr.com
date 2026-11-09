@@ -12,12 +12,12 @@
 		"engine.ts": 0
 	},
 	"legacyTextHelperCall": {
-		"ai.ts": 2,
-		"engine.ts": 28,
-		"ruleTree.ts": 21
+		"ai.ts": 0,
+		"engine.ts": 0,
+		"ruleTree.ts": 0
 	},
 	"cardNameInCode": {
-		"engine.ts": 7,
-		"oracle.ts": 2
+		"engine.ts": 0,
+		"oracle.ts": 0
 	}
 }

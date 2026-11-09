@@ -1,1028 +1,498 @@
+import { cardManaSteps as compiledCardManaSteps, compileCard } from './compiler/index.ts';
+import type { CostDef, EffectStep, TargetSpec } from './ir.ts';
+import { effectiveAbilityManaCost } from './runtime/costs.ts';
 import {
-	detectTargetRequirement,
-	getCardRulesText,
-	parseActivatedAbilities,
-	parseAdditionalCostsAndRestrictions,
-	parseManaCost,
-	parseSpellOrAbilityEffects,
-	parseTriggeredEffects,
-	type AdditionalCastRequirements,
-	type ManaCostRequirement
-} from './oracle.ts';
-import { compileCard } from './compiler/index.ts';
-import { compiledCardManaSteps } from './compiler/effects.ts';
-import { evaluateAmount, evaluateCondition, type FilterContext } from './runtime/objectFilter.ts';
-import { opponentLandColors } from './runtime/effects.ts';
+	evaluatePermanent,
+	getAttachedAbilityStrippingAuraSources,
+	inspectCardContinuousBreakdown,
+	permanentHasLostAllAbilities,
+	type AttributedKeywordOrEffect,
+	type CardContinuousBreakdown,
+	type EvaluatedPermanent
+} from './runtime/layers.ts';
+import {
+	checkGlobalCastPermissionsAndRestrictions,
+	checkGraveyardReplacementZone,
+	getLibrarySearchInterceptor,
+	playerCannotLoseGame,
+	playerCannotWinGame
+} from './runtime/replace.ts';
 import type {
 	CardInstance,
+	EffectiveActivatedAbility,
 	GameState,
-	LibrarySearchInterceptorInfo,
 	ManaColor,
-	ParsedActivatedAbility,
-	ParsedEffect,
 	PlayerGameState,
 	ScryfallCard,
-	TargetRequirementInfo,
-	ZoneType
+	TargetRequirementInfo
 } from './types.ts';
-import {
-	crossCheckLayerResult,
-	getBoardSnapshot,
-	layerCacheCheckEnabled,
-	type BoardEntry,
-	type BoardSnapshot
-} from './runtime/layerCache.ts';
 
-export type RulePath =
-	| 'cast.normal'
-	| 'cast.overload'
-	| 'activated.attach'
-	| 'activated.loyalty'
-	| 'activated.mana'
-	| 'activated.ability'
-	| 'trigger.on_cast'
-	| 'trigger.on_etb'
-	| 'trigger.on_dies'
-	| 'trigger.on_attack'
-	| 'trigger.on_combat_damage_player'
-	| 'trigger.on_attach'
-	| 'trigger.on_landfall'
-	| 'trigger.on_counter_placed'
-	| 'trigger.on_end_step'
-	| 'hook.cost_modifier'
-	| 'hook.trigger_multiplier'
-	| 'hook.counter_multiplier'
-	| 'hook.stat_modifier'
-	| 'hook.grant_keyword'
-	| 'hook.stax_restriction';
+export const NO_TARGET_REQUIREMENT: TargetRequirementInfo = {
+	requiresTarget: false,
+	targetKind: 'none',
+	minTargets: 0,
+	maxTargets: 0,
+	zone: 'none',
+	sameGraveyard: false,
+	controllerFilter: 'any'
+};
 
-export type RuleEventName =
-	| 'on_cast'
-	| 'on_etb'
-	| 'on_dies'
-	| 'on_attack'
-	| 'on_combat_damage_player'
-	| 'on_attach'
-	| 'on_landfall'
-	| 'on_counter_placed'
-	| 'on_end_step';
-
-export interface TargetLegalityPredicate {
-	zone: 'battlefield' | 'stack' | 'graveyard' | 'player' | 'any' | 'none';
-	controller: 'self_controller' | 'opponent' | 'any';
-	owner: 'self_owner' | 'opponent' | 'any';
-	cardType?: string;
-	sameZone: boolean;
-	targetInfo: TargetRequirementInfo;
-}
-
-export interface ActionRuleNode {
-	id: string;
-	path:
-		| 'cast.normal'
-		| 'cast.overload'
-		| 'activated.attach'
-		| 'activated.loyalty'
-		| 'activated.mana'
-		| 'activated.ability';
-	label: string;
-	item: 'self';
-	manaCost: string;
-	requiresTap: boolean;
-	requiresSacrificeSelf: boolean;
-	lifeCost: number;
-	loyaltyCost: number | null;
-	additionalCosts: AdditionalCastRequirements;
-	timing: 'instant' | 'sorcery' | 'mana';
-	targetLegality: TargetLegalityPredicate;
-	targetAmount: {
-		min: number;
-		max: number;
-	};
-	action: {
-		op: 'attach' | 'resolve_effects' | 'add_mana';
-		item: 'self';
-		target: 'target[0]' | 'targets' | 'self' | 'none';
-		effects: ParsedEffect[];
-		producesMana?: ManaColor[];
-		producesAmount?: number;
-	};
-	emitsEvents: RuleEventName[];
-	requiresGuidedResolution: boolean;
-}
-
-export interface TriggerRuleNode {
-	id: string;
-	path:
-		| 'trigger.on_cast'
-		| 'trigger.on_etb'
-		| 'trigger.on_dies'
-		| 'trigger.on_attack'
-		| 'trigger.on_combat_damage_player'
-		| 'trigger.on_attach'
-		| 'trigger.on_landfall'
-		| 'trigger.on_counter_placed'
-		| 'trigger.on_end_step';
-	event: RuleEventName;
-	conditionText: string;
-	appliesToSelfOnly: boolean;
-	cardTypeFilter?: string;
-	enteredCardTypeFilter?: string;
-	nontokenOnly?: boolean;
-	includeSelf?: boolean;
-	spellFilter?: 'InstantOrSorcery' | 'Creature' | 'Noncreature' | 'Any';
-	casterFilter?: 'self' | 'any' | 'opponent';
-	isMagecraftOrInstantSorceryTrigger?: boolean;
-	attackerSubtypeFilter?: string;
-	effects: ParsedEffect[];
-}
-
-export interface BoardModifierHookNode {
-	id: string;
-	path:
-		| 'hook.cost_modifier'
-		| 'hook.trigger_multiplier'
-		| 'hook.counter_multiplier'
-		| 'hook.stat_modifier'
-		| 'hook.grant_keyword'
-		| 'hook.stax_restriction';
-	label: string;
-	activeZones: Array<'battlefield' | 'command'>;
-	appliesToController: 'self' | 'opponent' | 'all';
-	targetPath?: RulePath;
-	cardTypeFilter?: string;
-	costMode?: 'set_zero' | 'reduce_generic' | 'increase_generic';
-	costDeltaGeneric?: number;
-	multiplier?: number;
-	powerDelta?: number;
-	toughnessDelta?: number;
-	grantedKeywords?: string[];
-	excludeSelf?: boolean;
-	requiresArtifactCountAtLeast?: number;
-}
-
-export interface CardRuleTree {
-	cardId: string;
-	cardName: string;
-	paths: Partial<Record<RulePath, Array<ActionRuleNode | TriggerRuleNode | BoardModifierHookNode>>>;
-	actions: ActionRuleNode[];
-	triggers: TriggerRuleNode[];
-	hooks: BoardModifierHookNode[];
-}
-
-export interface ActiveBoardHook {
-	sourceInstanceId: string;
-	sourceCardName: string;
-	controllerId: string;
-	hook: BoardModifierHookNode;
-}
-
-export interface EvaluatedActionNode extends ActionRuleNode {
-	effectiveManaCost: string;
-	effectiveCostRequirement: ManaCostRequirement;
-	appliedHooks: string[];
-}
-
-const RULE_TREE_CACHE = new Map<string, CardRuleTree>();
-
-export function clearRuleTreeCache(): void {
-	RULE_TREE_CACHE.clear();
-}
-
-function addNodeToPathMap(
-	paths: CardRuleTree['paths'],
-	path: RulePath,
-	node: ActionRuleNode | TriggerRuleNode | BoardModifierHookNode
-): void {
-	const existing = paths[path] || [];
-	existing.push(node);
-	paths[path] = existing;
-}
-
-function buildTargetLegalityPredicate(targetInfo: TargetRequirementInfo): TargetLegalityPredicate {
-	const controller: TargetLegalityPredicate['controller'] =
-		targetInfo.controllerFilter === 'you'
-			? 'self_controller'
-			: targetInfo.controllerFilter === 'opponent'
-				? 'opponent'
-				: 'any';
-	const owner: TargetLegalityPredicate['owner'] =
-		targetInfo.zone === 'graveyard' && targetInfo.controllerFilter === 'you'
-			? 'self_owner'
-			: targetInfo.zone === 'graveyard' && targetInfo.controllerFilter === 'opponent'
-				? 'opponent'
-				: 'any';
-
+/**
+ * Translates compiled IR `TargetSpec[]` into a `TargetRequirementInfo` descriptor for cast/activation
+ * validation and UI target selection.
+ */
+export function targetRequirementFromSpecs(specs: TargetSpec[]): TargetRequirementInfo {
+	if (specs.length === 0) return NO_TARGET_REQUIREMENT;
+	const minTargets = specs.reduce((s, x) => s + x.min, 0);
+	const maxTargets = specs.reduce((s, x) => s + x.max, 0);
+	const spec = specs[0];
+	if (spec.kind === 'objectOrPlayer') {
+		return {
+			requiresTarget: minTargets > 0,
+			targetKind: 'any',
+			minTargets,
+			maxTargets,
+			zone: 'any',
+			sameGraveyard: false,
+			controllerFilter: 'any',
+			targetSpecs: specs
+		};
+	}
+	if (spec.kind === 'player') {
+		const rel = spec.player?.relation ?? 'any';
+		const controllerFilter =
+			rel === 'opponent' || rel === 'each_opponent' ? 'opponent' : rel === 'you' ? 'you' : 'any';
+		return {
+			requiresTarget: minTargets > 0,
+			targetKind: 'player',
+			minTargets,
+			maxTargets,
+			zone: 'player',
+			sameGraveyard: false,
+			controllerFilter,
+			targetSpecs: specs
+		};
+	}
+	const f = spec.filter;
+	if (f.zone === 'stack') {
+		const controllerFilter = f.controller ?? 'any';
+		let cardTypeFilter: string | undefined;
+		if (f.notTypes?.includes('Creature')) cardTypeFilter = 'Noncreature';
+		else if (f.types?.includes('Instant') && f.types?.includes('Sorcery')) {
+			cardTypeFilter = 'InstantOrSorcery';
+		} else if (f.types?.length === 1) {
+			cardTypeFilter = f.types[0];
+		}
+		return {
+			requiresTarget: minTargets > 0,
+			targetKind: 'spell',
+			minTargets,
+			maxTargets,
+			zone: 'stack',
+			sameGraveyard: false,
+			controllerFilter,
+			...(cardTypeFilter ? { cardTypeFilter } : {}),
+			targetSpecs: specs
+		};
+	}
+	if (f.zone === 'graveyard') {
+		const controllerFilter = f.owner ?? f.controller ?? 'any';
+		const sameGraveyard = Boolean(spec.sameOwner || f.owner === 'you' || maxTargets <= 1);
+		let cardTypeFilter: string | undefined;
+		if (f.types?.includes('Instant') && f.types?.includes('Sorcery')) {
+			cardTypeFilter = 'InstantOrSorcery';
+		} else if (f.notTypes?.includes('Instant') && f.notTypes?.includes('Sorcery')) {
+			cardTypeFilter = 'Permanent';
+		} else if (f.notTypes?.includes('Land')) {
+			cardTypeFilter = 'NonlandPermanent';
+		} else if (f.types?.length === 1) {
+			cardTypeFilter = f.types[0];
+		}
+		return {
+			requiresTarget: minTargets > 0,
+			targetKind: 'graveyard_card',
+			minTargets,
+			maxTargets,
+			zone: 'graveyard',
+			sameGraveyard,
+			controllerFilter,
+			...(cardTypeFilter ? { cardTypeFilter } : {}),
+			targetSpecs: specs
+		};
+	}
+	const controllerFilter = f.controller ?? 'any';
+	let targetKind = 'permanent';
+	let cardTypeFilter: string | undefined = 'Permanent';
+	if (f.types?.length === 1 && f.types[0] === 'Creature') {
+		targetKind = controllerFilter === 'you' ? 'controlled_creature' : 'creature';
+		const qual = [...(f.supertypes ?? []), ...(f.subtypes ?? [])];
+		cardTypeFilter = qual.length > 0 ? `${qual.join(' ')} Creature` : 'Creature';
+	} else if (f.types?.length === 2 && f.types.includes('Artifact') && f.types.includes('Enchantment')) {
+		targetKind = 'artifact_or_enchantment';
+		cardTypeFilter = 'ArtifactOrEnchantment';
+	} else if (f.types?.length === 2 && f.types.includes('Artifact') && f.types.includes('Creature')) {
+		targetKind = 'permanent';
+		cardTypeFilter = 'ArtifactOrCreature';
+	} else if (f.types?.length === 2 && f.types.includes('Creature') && f.types.includes('Planeswalker')) {
+		targetKind = 'permanent';
+		cardTypeFilter = 'CreatureOrPlaneswalker';
+	} else if (f.notTypes?.includes('Land')) {
+		targetKind = 'nonland_permanent';
+		cardTypeFilter = 'NonlandPermanent';
+	} else if (f.types?.length === 1) {
+		targetKind = 'permanent';
+		cardTypeFilter = f.types[0];
+	} else if (f.types && f.types.length > 1) {
+		targetKind = 'permanent';
+		cardTypeFilter = f.types.join('Or');
+	}
 	return {
-		zone: targetInfo.zone,
-		controller,
-		owner,
-		cardType: targetInfo.cardTypeFilter,
-		sameZone: targetInfo.sameGraveyard,
-		targetInfo
+		requiresTarget: minTargets > 0,
+		targetKind,
+		minTargets,
+		maxTargets,
+		zone: 'battlefield',
+		sameGraveyard: false,
+		controllerFilter,
+		...(cardTypeFilter ? { cardTypeFilter } : {}),
+		targetSpecs: specs
 	};
 }
 
 /**
- * Compiles a ScryfallCard's Oracle text into a standardized tree of labeled paths (`CardRuleTree`).
- * Compiled on demand and memoized so cards are never re-parsed unnecessarily.
+ * Returns the spell target requirement for casting `card` (Instant, Sorcery, or Aura) from the
+ * compiled IR. Non-Aura permanent spells do not target on the stack (CR 115.1b).
  */
-export function getCardRuleTree(
+export function getSpellTargetRequirement(card: ScryfallCard): TargetRequirementInfo {
+	const def = compileCard(card);
+	const abilities = def.faces[0]?.abilities ?? [];
+	const types = def.faces[0]?.characteristics.types ?? [];
+	const subtypes = def.faces[0]?.characteristics.subtypes ?? [];
+	if (subtypes.includes('Aura')) {
+		for (const ab of abilities) {
+			if (ab.kind === 'keyword') {
+				const { name: kwName, enchantFilter } = ab.keyword;
+				if (kwName === 'enchant') {
+					const spec: TargetSpec = {
+						kind: 'object',
+						filter: { zone: 'battlefield', ...(enchantFilter ?? {}) },
+						min: 1,
+						max: 1
+					};
+					return targetRequirementFromSpecs([spec]);
+				}
+			}
+		}
+		return targetRequirementFromSpecs([
+			{ kind: 'object', filter: { zone: 'battlefield' }, min: 1, max: 1 }
+		]);
+	}
+	if (!types.includes('Instant') && !types.includes('Sorcery')) {
+		return NO_TARGET_REQUIREMENT;
+	}
+	for (const ab of abilities) {
+		if (ab.kind === 'spell') {
+			if (ab.modal) {
+				const branches = ab.modal.modes.map((m) => targetRequirementFromSpecs(m.targets));
+				const firstReq = branches.find((b) => b.requiresTarget) ?? branches[0] ?? NO_TARGET_REQUIREMENT;
+				const anyReq = branches.some((b) => b.requiresTarget);
+				return {
+					requiresTarget: anyReq,
+					targetKind: firstReq.targetKind,
+					minTargets: anyReq
+						? Math.min(...branches.filter((b) => b.requiresTarget).map((b) => b.minTargets))
+						: 0,
+					maxTargets: Math.max(0, ...branches.map((b) => b.maxTargets)),
+					zone: firstReq.zone,
+					sameGraveyard: firstReq.sameGraveyard,
+					controllerFilter: firstReq.controllerFilter,
+					cardTypeFilter: firstReq.cardTypeFilter,
+					isModal: true,
+					modalBranches: branches
+				};
+			}
+			return targetRequirementFromSpecs(ab.targets);
+		}
+		if (ab.kind === 'unsupported' && ab.id === 'cast' && ab.targets) {
+			return targetRequirementFromSpecs(ab.targets);
+		}
+	}
+	return NO_TARGET_REQUIREMENT;
+}
+
+/**
+ * Colors of mana that lands controlled by `actor`'s opponents could produce (Exotic Orchard,
+ * Fellwar Stone).
+ */
+function opponentLandColors(state: GameState, actor: PlayerGameState): ManaColor[] {
+	const found = new Set<ManaColor>();
+	for (const opp of state.players) {
+		if (opp.playerId === actor.playerId || opp.lost) continue;
+		const oppCmdId = Array.from(
+			new Set(opp.command.flatMap((c) => c.card.colorIdentity || []))
+		) as ManaColor[];
+		for (const oppPerm of opp.battlefield) {
+			if (oppPerm.phasedOut) continue;
+			const oppEval = evaluatePermanent(state, oppPerm);
+			if (!oppEval.isLand) continue;
+			const oppCard = oppPerm.copiableCard ?? oppPerm.card;
+			if (!oppEval.losesAllAbilities) {
+				for (const s of compiledCardManaSteps(oppCard)) {
+					const choice = s.params?.manaChoice;
+					const cols: ManaColor[] =
+						choice === 'any'
+							? ['W', 'U', 'B', 'R', 'G']
+							: choice === 'commanderIdentity'
+								? oppCmdId.length > 0
+									? oppCmdId
+									: ['W', 'U', 'B', 'R', 'G']
+								: Array.isArray(choice)
+									? choice
+									: (s.params?.mana ?? []);
+					for (const c of cols) if (c !== 'C') found.add(c);
+				}
+			}
+			for (const t of ['Plains:W', 'Island:U', 'Swamp:B', 'Mountain:R', 'Forest:G'] as const) {
+				const [sub, col] = t.split(':') as [string, ManaColor];
+				if (oppEval.typeLine.includes(sub)) found.add(col);
+			}
+		}
+	}
+	return (['W', 'U', 'B', 'R', 'G'] as ManaColor[]).filter((c) => found.has(c));
+}
+
+function manaStepProduction(
+	steps: EffectStep[],
+	commanderIdentity: ManaColor[]
+): { colors: ManaColor[]; amount: number; opponentLandColors?: boolean } | null {
+	const addSteps = steps.filter((s) => s.verb === 'addMana');
+	if (addSteps.length === 0) return null;
+	const anyColors: ManaColor[] =
+		commanderIdentity.length > 0 ? commanderIdentity : ['W', 'U', 'B', 'R', 'G'];
+	const colors: ManaColor[] = [];
+	let totalAmount = 0;
+	let opponentLands = false;
+	for (const s of addSteps) {
+		const amt = s.amount?.k === 'const' ? s.amount.n : 1;
+		const choice = s.params?.manaChoice;
+		if (choice === 'opponentLandColors') {
+			opponentLands = true;
+			totalAmount += amt;
+		} else if (choice === 'any' || choice === 'commanderIdentity') {
+			for (const c of anyColors) {
+				if (!colors.includes(c)) colors.push(c);
+			}
+			totalAmount += amt;
+		} else if (Array.isArray(choice)) {
+			for (const c of choice) {
+				if (!colors.includes(c)) colors.push(c);
+			}
+			totalAmount += amt;
+		} else if (Array.isArray(s.params?.mana)) {
+			for (const c of s.params.mana) {
+				if (!colors.includes(c)) colors.push(c);
+			}
+			totalAmount += s.amount?.k === 'const' ? s.amount.n : s.params.mana.length || 1;
+		}
+	}
+	return {
+		colors,
+		amount: Math.max(1, totalAmount),
+		...(opponentLands ? { opponentLandColors: true } : {})
+	};
+}
+
+/**
+ * Builds the innate activated abilities of `card` from its compiled IR.
+ */
+export function getCardActivatedAbilities(
 	card: ScryfallCard,
-	commanderIdentity: ManaColor[] = ['W', 'U', 'B', 'R', 'G']
-): CardRuleTree {
-	const rulesText = getCardRulesText(card);
-	const cacheKey = `${card.id || card.name}::${rulesText}::${commanderIdentity.join('')}`;
-	const cached = RULE_TREE_CACHE.get(cacheKey);
-	if (cached) return cached;
+	commanderIdentity: ManaColor[] = ['W', 'U', 'B', 'R', 'G'],
+	resolveOpponentLandColors?: () => ManaColor[]
+): EffectiveActivatedAbility[] {
+	const abilities = compileCard(card).faces[0]?.abilities ?? [];
+	const out: EffectiveActivatedAbility[] = [];
 
-	const paths: CardRuleTree['paths'] = {};
-	const actions: ActionRuleNode[] = [];
-	const triggers: TriggerRuleNode[] = [];
-	const hooks: BoardModifierHookNode[] = [];
-
-	const isLandOnly = card.typeLine.includes('Land') && !card.typeLine.includes('Creature');
-	const isInstantSpeed =
-		card.typeLine.includes('Instant') ||
-		card.keywords.some((k) => k.toLowerCase() === 'flash') ||
-		/\bflash\b/i.test(rulesText.split('\n')[0] || '');
-
-	// 1. Cast Action Path ("cast.normal" and optional "cast.overload")
-	if (!isLandOnly) {
-		const parsedCast = parseSpellOrAbilityEffects(card);
-		const addCosts = parseAdditionalCostsAndRestrictions(card);
-		const isAura = card.typeLine.includes('Aura');
-
-		const castNode: ActionRuleNode = {
-			id: 'cast_normal',
-			path: 'cast.normal',
-			label: `Cast ${card.name}`,
-			item: 'self',
-			manaCost: card.manaCost || '{0}',
-			requiresTap: false,
-			requiresSacrificeSelf: Boolean(addCosts.sacrificePermanentType),
-			lifeCost: addCosts.lifeCost,
+	const intrinsicColors: ManaColor[] = [];
+	for (const ab of abilities) {
+		if (ab.kind === 'activated' && ab.intrinsic) {
+			for (const s of ab.effect) {
+				for (const c of s.params?.mana ?? []) {
+					if (!intrinsicColors.includes(c)) intrinsicColors.push(c);
+				}
+			}
+		}
+	}
+	if (intrinsicColors.length > 0) {
+		out.push({
+			id: 'mana_tap',
+			label: `Tap: Add ${intrinsicColors.map((c) => `{${c}}`).join('/')}`,
+			costText: '{T}',
+			manaCost: '',
+			cost: [{ k: 'tapSelf' }],
+			costComplete: true,
+			requiresTap: true,
+			requiresSacrificeSelf: false,
+			lifeCost: 0,
 			loyaltyCost: null,
-			additionalCosts: addCosts,
-			timing: isInstantSpeed ? 'instant' : 'sorcery',
-			targetLegality: buildTargetLegalityPredicate(parsedCast.targetInfo),
-			targetAmount: {
-				min: parsedCast.targetInfo.minTargets,
-				max: parsedCast.targetInfo.maxTargets
-			},
-			action: {
-				op: isAura ? 'attach' : 'resolve_effects',
-				item: 'self',
-				target: parsedCast.targetInfo.requiresTarget
-					? parsedCast.targetInfo.maxTargets === 1
-						? 'target[0]'
-						: 'targets'
-					: 'none',
-				effects: parsedCast.effects
-			},
-			emitsEvents: isAura ? ['on_cast', 'on_attach'] : ['on_cast'],
-			requiresGuidedResolution: parsedCast.requiresGuidedResolution
-		};
+			isManaAbility: true,
+			producesMana: intrinsicColors,
+			producesAmount: 1,
+			effectText: `Add ${intrinsicColors.map((c) => `{${c}}`).join(' or ')}`,
+			requiresTarget: false,
+			targetKind: 'none',
+			targetInfo: NO_TARGET_REQUIREMENT
+		});
+	}
 
-		actions.push(castNode);
-		addNodeToPathMap(paths, 'cast.normal', castNode);
-
-		// Overload alternative path (e.g. Cyclonic Rift)
-		const overloadMatch = rulesText.match(/overload\s+((?:\{[^}]+\})+)/i);
-		if (overloadMatch) {
-			const noTargetInfo: TargetRequirementInfo = {
-				requiresTarget: false,
-				targetKind: 'none',
-				minTargets: 0,
-				maxTargets: 0,
-				zone: 'none',
-				sameGraveyard: false,
-				controllerFilter: 'any'
+	for (const ab of abilities) {
+		if (ab.kind === 'keyword') {
+			const { name: kwName, cost: kwCost, equipFilter } = ab.keyword;
+			if (kwName === 'equip') {
+				const equipCost = kwCost ?? '{0}';
+				const filter = equipFilter ?? {};
+			const qual = [
+				...(filter.supertypes?.map((s) => s.toLowerCase()) ?? []),
+				...(filter.subtypes ?? [])
+			].join(' ');
+			const equipTargetPhrase = qual ? `${qual} creature` : 'creature';
+			const labelPrefix = qual ? `Equip ${qual} ${equipCost}` : `Equip ${equipCost}`;
+			const spec: TargetSpec = {
+				kind: 'object',
+				filter: { zone: 'battlefield', types: ['Creature'], controller: 'you', ...filter },
+				min: 1,
+				max: 1
 			};
-			const overloadNode: ActionRuleNode = {
-				...castNode,
-				id: 'cast_overload',
-				path: 'cast.overload',
-				label: `Overload ${card.name}`,
-				manaCost: overloadMatch[1],
-				targetLegality: buildTargetLegalityPredicate(noTargetInfo),
-				targetAmount: { min: 0, max: 0 },
-				action: {
-					op: 'resolve_effects',
-					item: 'self',
-					target: 'none',
-					effects: parsedCast.effects
+			const targetInfo = targetRequirementFromSpecs([spec]);
+			out.push({
+				id: ab.id ?? 'equip_0',
+				label: `${labelPrefix}: Attach to target ${equipTargetPhrase} you control`,
+				costText: labelPrefix,
+				manaCost: equipCost,
+				cost: equipCost && equipCost !== '{0}' ? [{ k: 'mana', cost: equipCost }] : [],
+				costComplete: true,
+				requiresTap: false,
+				requiresSacrificeSelf: false,
+				lifeCost: 0,
+				loyaltyCost: null,
+				isManaAbility: false,
+				sorcerySpeedOnly: true,
+				producesMana: [],
+				producesAmount: 0,
+				effectText: `Attach to target ${equipTargetPhrase} you control.`,
+				requiresTarget: true,
+				targetKind: 'controlled_creature',
+				targetInfo
+			});
+			}
+			continue;
+		}
+
+		if (
+			(ab.kind === 'activated' && !ab.intrinsic) ||
+			(ab.kind === 'unsupported' && ab.id && ab.id !== 'cast')
+		) {
+			if (ab.id === 'mana_tap' && out.some((x) => x.id === 'mana_tap')) continue;
+			const cost = ab.kind === 'activated' ? ab.cost : (ab.cost ?? []);
+			const costComplete = ab.kind === 'activated' ? true : (ab.costComplete ?? false);
+			const timing = ab.kind === 'activated' ? ab.timing : (ab.timing ?? 'instant');
+			const isMana =
+				ab.kind === 'activated'
+					? ab.isMana
+					: Boolean(ab.isMana && ab.effect && ab.effect.length > 0);
+			const effect = ab.kind === 'activated' ? ab.effect : (ab.effect ?? []);
+			const targets = ab.kind === 'activated' ? ab.targets : (ab.targets ?? []);
+			const fullText = (ab.text ?? '').replace(/~/g, card.name);
+			const colonIdx = fullText.indexOf(':');
+			const costPart = colonIdx >= 0 ? fullText.slice(0, colonIdx).trim() : '';
+			const effectPart = colonIdx >= 0 ? fullText.slice(colonIdx + 1).trim() : fullText;
+
+			const loyaltyDef = cost.find((c): c is Extract<CostDef, { k: 'loyalty' }> => c.k === 'loyalty');
+			const loyaltyCost = loyaltyDef ? loyaltyDef.delta : null;
+			const manaDef = cost.find((c): c is Extract<CostDef, { k: 'mana' }> => c.k === 'mana');
+			const manaCost = manaDef ? manaDef.cost : '';
+			const requiresTap = cost.some((c) => c.k === 'tapSelf');
+			const requiresSacrificeSelf = cost.some((c) => c.k === 'sacrifice' && c.filter === 'self');
+			const lifeDef = cost.find((c): c is Extract<CostDef, { k: 'payLife' }> => c.k === 'payLife');
+			const lifeCost = lifeDef && lifeDef.amount.k === 'const' ? lifeDef.amount.n : 0;
+
+			let producesMana: ManaColor[] = [];
+			let producesAmount = 0;
+			if (isMana) {
+				const prod = manaStepProduction(effect, commanderIdentity);
+				if (prod?.opponentLandColors) {
+					const oppColors = resolveOpponentLandColors ? resolveOpponentLandColors() : [];
+					if (oppColors.length === 0) continue;
+					producesMana = oppColors;
+					producesAmount = prod.amount;
+				} else if (prod && prod.colors.length > 0) {
+					producesMana = prod.colors;
+					producesAmount = prod.amount;
 				}
-			};
-			actions.push(overloadNode);
-			addNodeToPathMap(paths, 'cast.overload', overloadNode);
+			}
+
+			const targetInfo = targetRequirementFromSpecs(targets);
+			const isPureTapMana = isMana && ab.id === 'mana_tap';
+			const label = isPureTapMana
+				? `Tap: Add ${producesAmount > 1 ? `${producesAmount}x ` : ''}${producesMana.map((c) => `{${c}}`).join('/')}`
+				: loyaltyCost !== null
+					? `${loyaltyCost >= 0 ? `+${loyaltyCost}` : loyaltyCost}: ${effectPart.slice(0, 48)}`
+					: `${costPart}: ${effectPart.slice(0, 45)}`;
+			const costText = isPureTapMana
+				? '{T}'
+				: loyaltyCost !== null
+					? `${loyaltyCost >= 0 ? `+${loyaltyCost}` : loyaltyCost}`
+					: costPart;
+
+			out.push({
+				id: ab.id!,
+				label,
+				costText,
+				manaCost,
+				cost,
+				costComplete,
+				requiresTap,
+				requiresSacrificeSelf,
+				lifeCost,
+				loyaltyCost,
+				isManaAbility: isMana && producesMana.length > 0,
+				sorcerySpeedOnly: timing === 'sorcery',
+				producesMana,
+				producesAmount,
+				effectText: effectPart,
+				requiresTarget: targetInfo.requiresTarget,
+				targetKind: targetInfo.targetKind,
+				targetInfo
+			});
 		}
 	}
 
-	// 2. Activated Ability Paths ("activated.attach", "activated.loyalty", "activated.mana", "activated.ability")
-	const parsedAbilities = parseActivatedAbilities(card, commanderIdentity);
-	for (const ab of parsedAbilities) {
-		const isAttach =
-			ab.id.startsWith('equip_') ||
-			/^equip\b/i.test(ab.label) ||
-			/^attach\b/i.test(ab.effectText);
-
-		const path: ActionRuleNode['path'] = isAttach
-			? 'activated.attach'
-			: ab.loyaltyCost !== null
-				? 'activated.loyalty'
-				: ab.isManaAbility
-					? 'activated.mana'
-					: 'activated.ability';
-
-		const targetInfo: TargetRequirementInfo = detectTargetRequirement(ab.effectText);
-
-		const parsedAbEffects = isAttach
-			? { effects: [{ kind: 'equip_target' as const, amount: 1 }], requiresGuidedResolution: false }
-			: parseSpellOrAbilityEffects(card, ab.effectText);
-
-		const actionNode: ActionRuleNode = {
-			id: ab.id,
-			path,
-			label: ab.label,
-			item: 'self',
-			manaCost: ab.manaCost || (isAttach ? '{0}' : ''),
-			requiresTap: ab.requiresTap,
-			requiresSacrificeSelf: ab.requiresSacrificeSelf,
-			lifeCost: ab.lifeCost,
-			loyaltyCost: ab.loyaltyCost,
-			additionalCosts: {
-				lifeCost: ab.lifeCost,
-				sacrificePermanentType: ab.requiresSacrificeSelf ? 'Permanent' : null,
-				sacrificeAnother: false,
-				discardCount: 0,
-				onlyDuringCombat: false,
-				onlyBeforeAttackersDeclared: false,
-				onlyDuringYourTurn: Boolean(ab.sorcerySpeedOnly)
-			},
-			timing: ab.isManaAbility
-				? 'mana'
-				: ab.sorcerySpeedOnly || ab.loyaltyCost !== null || isAttach
-					? 'sorcery'
-					: 'instant',
-			targetLegality: buildTargetLegalityPredicate(targetInfo),
-			targetAmount: {
-				min: targetInfo.requiresTarget ? targetInfo.minTargets : 0,
-				max: targetInfo.requiresTarget ? targetInfo.maxTargets : 0
-			},
-			action: {
-				op: isAttach ? 'attach' : ab.isManaAbility ? 'add_mana' : 'resolve_effects',
-				item: 'self',
-				target: targetInfo.requiresTarget ? 'target[0]' : 'none',
-				effects: parsedAbEffects.effects,
-				producesMana: ab.producesMana,
-				producesAmount: ab.producesAmount
-			},
-			emitsEvents: isAttach ? ['on_attach'] : [],
-			requiresGuidedResolution: false
-		};
-
-		actions.push(actionNode);
-		addNodeToPathMap(paths, path, actionNode);
-	}
-
-	// 3. Triggered Ability Paths ("trigger.on_etb", "trigger.on_dies", "trigger.on_attack", "trigger.on_attach", etc.)
-	const etbEffects = parseTriggeredEffects(card, 'etb');
-	if (etbEffects.length > 0) {
-		const node: TriggerRuleNode = {
-			id: 'trig_etb',
-			path: 'trigger.on_etb',
-			event: 'on_etb',
-			conditionText: 'When this permanent enters the battlefield',
-			appliesToSelfOnly: true,
-			effects: etbEffects
-		};
-		triggers.push(node);
-		addNodeToPathMap(paths, 'trigger.on_etb', node);
-	}
-
-	const diesEffects = parseTriggeredEffects(card, 'dies');
-	if (diesEffects.length > 0) {
-		const node: TriggerRuleNode = {
-			id: 'trig_dies',
-			path: 'trigger.on_dies',
-			event: 'on_dies',
-			conditionText: 'When this permanent dies',
-			appliesToSelfOnly: true,
-			effects: diesEffects
-		};
-		triggers.push(node);
-		addNodeToPathMap(paths, 'trigger.on_dies', node);
-	}
-
-	const attackEffects = parseTriggeredEffects(card, 'attack');
-	if (attackEffects.length > 0) {
-		const node: TriggerRuleNode = {
-			id: 'trig_attack',
-			path: 'trigger.on_attack',
-			event: 'on_attack',
-			conditionText: 'Whenever this creature attacks',
-			appliesToSelfOnly: true,
-			effects: attackEffects
-		};
-		triggers.push(node);
-		addNodeToPathMap(paths, 'trigger.on_attack', node);
-	}
-
-	// Parse structured line-by-line triggers: on_attach, observer on_etb, Landfall, on_cast, on_counter_placed, observer on_attack, on_combat_damage_player
-	const cNameLow = card.name.toLowerCase();
-	const cShortLow = cNameLow.split(',')[0].trim();
-	const lines = rulesText.split('\n');
-	for (let i = 0; i < lines.length; i++) {
-		const rawLine = lines[i].trim();
-		const line = rawLine.replace(/^[A-Za-z]+\s*[—\-]\s*/, '').trim();
-		const low = line.toLowerCase();
-		const commaIdx = line.indexOf(',');
-		if (commaIdx <= 0) continue;
-
-		const header = line.slice(0, commaIdx).trim();
-		const headerLow = header.toLowerCase();
-		const clause = line.slice(commaIdx + 1).trim();
-
-		// 3a. "on_attach" triggers ("Whenever ~ becomes attached..." or "Whenever an Equipment becomes attached...")
-		if (
-			low.startsWith('whenever ') &&
-			(low.includes('becomes attached') || low.includes('is attached') || low.includes('you attach'))
-		) {
-			const parsedTrig = parseSpellOrAbilityEffects(card, clause);
-			if (parsedTrig.effects.length > 0) {
-				const appliesToSelfOnly =
-					low.includes(cNameLow) || low.includes('this equipment') || low.includes('this aura');
-				const node: TriggerRuleNode = {
-					id: `trig_attach_${i}`,
-					path: 'trigger.on_attach',
-					event: 'on_attach',
-					conditionText: header,
-					appliesToSelfOnly,
-					effects: parsedTrig.effects
-				};
-				triggers.push(node);
-				addNodeToPathMap(paths, 'trigger.on_attach', node);
-			}
-			continue;
-		}
-
-		// 3b. Landfall triggers ("Whenever a land enters [the battlefield] under your control, ...")
-		if (
-			/^whenever a land (?:enters(?: the battlefield)? under your control|you control enters)/i.test(
-				headerLow
-			)
-		) {
-			const parsedTrig = parseSpellOrAbilityEffects(card, clause);
-			if (parsedTrig.effects.length > 0) {
-				const node: TriggerRuleNode = {
-					id: `trig_landfall_${i}`,
-					path: 'trigger.on_landfall',
-					event: 'on_etb',
-					conditionText: header,
-					appliesToSelfOnly: false,
-					enteredCardTypeFilter: 'Land',
-					effects: parsedTrig.effects
-				};
-				triggers.push(node);
-				addNodeToPathMap(paths, 'trigger.on_landfall', node);
-				addNodeToPathMap(paths, 'trigger.on_etb', node);
-			}
-			continue;
-		}
-
-		// 3c. Observer ETB triggers ("Whenever [~ or ]another [nontoken] <Type> enters [the battlefield] under your control, ...")
-		const obsEtbMatch = header.match(
-			/^whenever (?:.+?\s+or\s+)?another\s+(?:(nontoken)\s+)?([a-zA-Z]+)\s+(?:enters(?: the battlefield)? under your control|you control enters)$/i
-		);
-		if (obsEtbMatch) {
-			const nontokenOnly = Boolean(obsEtbMatch[1]);
-			const rawSubtype = obsEtbMatch[2];
-			const subtype = rawSubtype.charAt(0).toUpperCase() + rawSubtype.slice(1).toLowerCase();
-			const includeSelf = /\bor another\b/i.test(headerLow);
-			const parsedTrig = parseSpellOrAbilityEffects(card, clause);
-			const effs = [...parsedTrig.effects];
-			const dmgIdx = effs.findIndex((e) => e.kind === 'damage_target');
-			if (dmgIdx >= 0) {
-				effs[dmgIdx] = {
-					kind: 'damage_each_opponent',
-					amount: effs[dmgIdx].amount
-				};
-			}
-			if (effs.length > 0) {
-				const node: TriggerRuleNode = {
-					id: `trig_obs_etb_${i}`,
-					path: 'trigger.on_etb',
-					event: 'on_etb',
-					conditionText: header,
-					appliesToSelfOnly: false,
-					enteredCardTypeFilter: subtype,
-					nontokenOnly,
-					includeSelf,
-					effects: effs
-				};
-				triggers.push(node);
-				addNodeToPathMap(paths, 'trigger.on_etb', node);
-			}
-			continue;
-		}
-
-		// 3d. Spell-cast / Magecraft triggers ("Whenever you cast [or copy] an instant or sorcery / creature / noncreature spell, ..." or "Whenever a player casts a spell, ...")
-		if (
-			/^whenever you cast (?:or copy )?an instant or sorcery spell$/i.test(headerLow) ||
-			/^whenever you cast a (creature|noncreature) spell$/i.test(headerLow) ||
-			/^whenever a player casts a spell$/i.test(headerLow)
-		) {
-			const isInstantOrSorcery = /instant or sorcery/i.test(headerLow);
-			const isCreature = /\ba creature spell\b/i.test(headerLow);
-			const isNoncreature = /\ba noncreature spell\b/i.test(headerLow);
-			const isAnyPlayer = /\ba player casts a spell\b/i.test(headerLow);
-			const parsedTrig = parseSpellOrAbilityEffects(card, clause);
-			if (parsedTrig.effects.length > 0) {
-				const node: TriggerRuleNode = {
-					id: `trig_cast_${i}`,
-					path: 'trigger.on_cast',
-					event: 'on_cast',
-					conditionText: header,
-					appliesToSelfOnly: false,
-					spellFilter: isInstantOrSorcery
-						? 'InstantOrSorcery'
-						: isCreature
-							? 'Creature'
-							: isNoncreature
-								? 'Noncreature'
-								: 'Any',
-					casterFilter: isAnyPlayer ? 'any' : 'self',
-					isMagecraftOrInstantSorceryTrigger: isInstantOrSorcery,
-					effects: parsedTrig.effects
-				};
-				triggers.push(node);
-				addNodeToPathMap(paths, 'trigger.on_cast', node);
-			}
-			continue;
-		}
-
-		// 3e. +1/+1 counter placed on self ("Whenever a +1/+1 counter is placed/put on ~, ...")
-		if (
-			headerLow.startsWith('whenever a +1/+1 counter is ') &&
-			(headerLow.includes(cNameLow) ||
-				headerLow.includes(cShortLow) ||
-				headerLow.includes('this creature'))
-		) {
-			const parsedTrig = parseSpellOrAbilityEffects(card, clause);
-			if (parsedTrig.effects.length > 0) {
-				const node: TriggerRuleNode = {
-					id: `trig_counter_${i}`,
-					path: 'trigger.on_counter_placed',
-					event: 'on_counter_placed',
-					conditionText: header,
-					appliesToSelfOnly: true,
-					effects: parsedTrig.effects
-				};
-				triggers.push(node);
-				addNodeToPathMap(paths, 'trigger.on_counter_placed', node);
-			}
-			continue;
-		}
-
-		// 3f. Observer attack triggers ("Whenever one or more <Subtype>s you control attack, ..." or "Whenever a <Subtype> you control attacks, ...")
-		const obsMultiAtkMatch = header.match(
-			/^whenever one or more ([a-zA-Z]+)s you control attack$/i
-		);
-		if (obsMultiAtkMatch) {
-			const rawSub = obsMultiAtkMatch[1];
-			const subtype = rawSub.charAt(0).toUpperCase() + rawSub.slice(1).toLowerCase();
-			const effs: ParsedEffect[] = [];
-			if (/draw that many cards/i.test(clause)) {
-				effs.push({
-					kind: 'draw',
-					amount: 1,
-					dynamicFormula: `attacking_subtype_count:${subtype}`
-				});
-			} else {
-				const parsedTrig = parseSpellOrAbilityEffects(card, clause);
-				effs.push(...parsedTrig.effects);
-			}
-			if (effs.length > 0) {
-				const node: TriggerRuleNode = {
-					id: `trig_obs_atk_${i}`,
-					path: 'trigger.on_attack',
-					event: 'on_attack',
-					conditionText: header,
-					appliesToSelfOnly: false,
-					attackerSubtypeFilter: subtype,
-					effects: effs
-				};
-				triggers.push(node);
-				addNodeToPathMap(paths, 'trigger.on_attack', node);
-			}
-			continue;
-		}
-
-		const obsSingleAtkMatch = header.match(/^whenever a ([a-zA-Z]+) you control attacks$/i);
-		if (obsSingleAtkMatch) {
-			const rawSub = obsSingleAtkMatch[1];
-			const subtype = rawSub.charAt(0).toUpperCase() + rawSub.slice(1).toLowerCase();
-			const parsedTrig = parseSpellOrAbilityEffects(card, clause);
-			if (parsedTrig.effects.length > 0) {
-				const node: TriggerRuleNode = {
-					id: `trig_obs_atk_each_${i}`,
-					path: 'trigger.on_attack',
-					event: 'on_attack',
-					conditionText: header,
-					appliesToSelfOnly: false,
-					attackerSubtypeFilter: subtype,
-					effects: parsedTrig.effects
-				};
-				triggers.push(node);
-				addNodeToPathMap(paths, 'trigger.on_attack', node);
-			}
-			continue;
-		}
-
-		// 3g. Combat damage to player ("Whenever ~ deals combat damage to a player [or planeswalker], ...")
-		if (
-			headerLow.startsWith('whenever ') &&
-			headerLow.includes('deals combat damage to a player') &&
-			(headerLow.includes(cNameLow) ||
-				headerLow.includes(cShortLow) ||
-				headerLow.includes('this creature'))
-		) {
-			const parsedTrig = parseSpellOrAbilityEffects(card, clause);
-			if (parsedTrig.effects.length > 0) {
-				const node: TriggerRuleNode = {
-					id: `trig_combat_dmg_${i}`,
-					path: 'trigger.on_combat_damage_player',
-					event: 'on_combat_damage_player',
-					conditionText: header,
-					appliesToSelfOnly: true,
-					effects: parsedTrig.effects
-				};
-				triggers.push(node);
-				addNodeToPathMap(paths, 'trigger.on_combat_damage_player', node);
-			}
-			continue;
-		}
-	}
-
-	// 4. Static Board-State Hooks ("hook.cost_modifier", "hook.stat_modifier", "hook.grant_keyword", etc.)
-	const fullLow = rulesText.toLowerCase();
-
-	// 4a. Free Attach / Equip Cost Modifier Hooks
-	if (
-		/equip abilities you activate cost \{0\}/i.test(fullLow) ||
-		/equipment you control have equip \{0\}/i.test(fullLow) ||
-		/things can be attached for free|attach.*for free|equip.*for free/i.test(fullLow)
-	) {
-		const requiresArtifactCountAtLeast = /three or more artifacts|metalcraft/i.test(fullLow)
-			? 3
-			: undefined;
-		const hookNode: BoardModifierHookNode = {
-			id: 'hook_free_attach',
-			path: 'hook.cost_modifier',
-			label: `${card.name}: Set attach/equip mana_cost to {0}`,
-			activeZones: ['battlefield'],
-			appliesToController: 'self',
-			targetPath: 'activated.attach',
-			costMode: 'set_zero',
-			costDeltaGeneric: 0,
-			requiresArtifactCountAtLeast
-		};
-		hooks.push(hookNode);
-		addNodeToPathMap(paths, 'hook.cost_modifier', hookNode);
-	} else {
-		const equipReduceMatch = fullLow.match(
-			/equip abilities you activate cost \{(\d+)\} less/i
-		);
-		if (equipReduceMatch) {
-			const red = parseInt(equipReduceMatch[1], 10) || 1;
-			const hookNode: BoardModifierHookNode = {
-				id: 'hook_reduce_attach',
-				path: 'hook.cost_modifier',
-				label: `${card.name}: Reduce attach/equip mana_cost by {${red}}`,
-				activeZones: ['battlefield'],
-				appliesToController: 'self',
-				targetPath: 'activated.attach',
-				costMode: 'reduce_generic',
-				costDeltaGeneric: red
-			};
-			hooks.push(hookNode);
-			addNodeToPathMap(paths, 'hook.cost_modifier', hookNode);
-		}
-	}
-
-	// 4b. Spell Cost Modifier Hooks (e.g., Eminence, "<Type> spells you cast cost {N} less to cast")
-	const spellDiscountMatch = fullLow.match(
-		/(?:(other)\s+)?(dragon|elf|goblin|merfolk|zombie|vampire|angel|artifact|enchantment|instant and sorcery|creature|noncreature)\s+spells you cast cost \{(\d+)\} less to cast/i
-	);
-	if (spellDiscountMatch) {
-		const excludeSelf = Boolean(spellDiscountMatch[1]);
-		const rawType = spellDiscountMatch[2].toLowerCase();
-		const red = parseInt(spellDiscountMatch[3], 10) || 1;
-		const typeFilter =
-			rawType === 'instant and sorcery'
-				? 'InstantOrSorcery'
-				: rawType.charAt(0).toUpperCase() + rawType.slice(1);
-		const inCommandZoneToo = /command zone/i.test(fullLow);
-		const hookNode: BoardModifierHookNode = {
-			id: inCommandZoneToo ? 'hook_eminence_spell_discount' : 'hook_spell_discount',
-			path: 'hook.cost_modifier',
-			label: `${card.name}: ${typeFilter} spells cost {${red}} less`,
-			activeZones: inCommandZoneToo ? ['battlefield', 'command'] : ['battlefield'],
-			appliesToController: 'self',
-			targetPath: 'cast.normal',
-			cardTypeFilter: typeFilter,
-			costMode: 'reduce_generic',
-			costDeltaGeneric: red,
-			excludeSelf
-		};
-		hooks.push(hookNode);
-		addNodeToPathMap(paths, 'hook.cost_modifier', hookNode);
-	}
-
-	// 4c. Counter & Trigger Multipliers (Corpsejack Menace, Veyran)
-	if (/twice that many \+1\/\+1 counters/i.test(fullLow)) {
-		const hookNode: BoardModifierHookNode = {
-			id: 'hook_counter_doubler',
-			path: 'hook.counter_multiplier',
-			label: `${card.name}: Double +1/+1 counters placed`,
-			activeZones: ['battlefield'],
-			appliesToController: 'self',
-			multiplier: 2
-		};
-		hooks.push(hookNode);
-		addNodeToPathMap(paths, 'hook.counter_multiplier', hookNode);
-	}
-
-	if (/triggers an additional time/i.test(fullLow)) {
-		const hookNode: BoardModifierHookNode = {
-			id: 'hook_trigger_doubler',
-			path: 'hook.trigger_multiplier',
-			label: `${card.name}: Instant/Sorcery triggers trigger an additional time`,
-			activeZones: ['battlefield'],
-			appliesToController: 'self',
-			multiplier: 2
-		};
-		hooks.push(hookNode);
-		addNodeToPathMap(paths, 'hook.trigger_multiplier', hookNode);
-	}
-
-	const tree: CardRuleTree = {
-		cardId: card.id || card.name,
-		cardName: card.name,
-		paths,
-		actions,
-		triggers,
-		hooks
-	};
-
-	RULE_TREE_CACHE.set(cacheKey, tree);
-	return tree;
+	return out;
 }
 
 /**
- * Collects all active `BoardModifierHookNode`s from the current `GameState` (battlefield + command zone Eminence).
- */
-export function collectActiveBoardHooks(state: GameState): ActiveBoardHook[] {
-	const activeHooks: ActiveBoardHook[] = [];
-
-	for (const player of state.players) {
-		if (player.lost) continue;
-
-		for (const perm of player.battlefield) {
-			if (perm.phasedOut || permanentHasLostAllAbilities(perm, state).lost) continue;
-			const pCard = perm.copiableCard ?? perm.card;
-			const tree = getCardRuleTree(pCard);
-			for (const h of tree.hooks) {
-				if (h.activeZones.includes('battlefield')) {
-					if (
-						h.requiresArtifactCountAtLeast &&
-						player.battlefield.filter((b) => !b.phasedOut && evaluatePermanent(state, b).isArtifact)
-							.length < h.requiresArtifactCountAtLeast
-					) {
-						continue;
-					}
-					activeHooks.push({
-						sourceInstanceId: perm.instanceId,
-						sourceCardName: pCard.name,
-						controllerId: player.playerId,
-						hook: h
-					});
-				}
-			}
-		}
-
-		for (const cmd of player.command) {
-			const tree = getCardRuleTree(cmd.card);
-			for (const h of tree.hooks) {
-				if (h.activeZones.includes('command')) {
-					activeHooks.push({
-						sourceInstanceId: cmd.instanceId,
-						sourceCardName: cmd.card.name,
-						controllerId: player.playerId,
-						hook: h
-					});
-				}
-			}
-		}
-	}
-
-	return activeHooks;
-}
-
-function matchesHookCardTypeFilter(card: ScryfallCard, filter?: string): boolean {
-	if (!filter) return true;
-	const t = card.typeLine;
-	if (filter === 'InstantOrSorcery') {
-		return t.includes('Instant') || t.includes('Sorcery');
-	}
-	if (filter === 'Noncreature') {
-		return !t.includes('Creature');
-	}
-	return t.includes(filter);
-}
-
-/**
- * Evaluates a specific action path or ability ID on a `CardInstance` against the live `GameState`,
- * dynamically applying any active `BoardModifierHookNode`s (such as setting `activated.attach` mana_cost to `{0}`).
- */
-export function evaluateActionNode(
-	state: GameState,
-	actorId: string,
-	source: CardInstance,
-	pathOrId: RulePath | string,
-	xValue = 0
-): EvaluatedActionNode | null {
-	const actor = state.players.find((p) => p.playerId === actorId);
-	const effectiveCard = source.copiableCard ?? source.card;
-	const tree = getCardRuleTree(effectiveCard);
-	const baseNode = tree.actions.find((a) => a.path === pathOrId || a.id === pathOrId);
-	if (!baseNode) return null;
-
-	const activeHooks = collectActiveBoardHooks(state);
-	const appliedHooks: string[] = [];
-
-	let forceZeroCost = false;
-	let genericReduction = 0;
-	let genericIncrease = 0;
-
-	for (const entry of activeHooks) {
-		const { hook, controllerId, sourceCardName } = entry;
-		if (hook.path !== 'hook.cost_modifier') continue;
-		if (hook.appliesToController === 'self' && controllerId !== actorId) continue;
-		if (hook.appliesToController === 'opponent' && controllerId === actorId) continue;
-		const matchesTargetPath =
-			!hook.targetPath ||
-			hook.targetPath === baseNode.path ||
-			(hook.targetPath === 'cast.normal' && baseNode.path === 'cast.overload');
-		if (!matchesTargetPath) continue;
-		if (!matchesHookCardTypeFilter(effectiveCard, hook.cardTypeFilter)) continue;
-
-		if (hook.excludeSelf && entry.sourceInstanceId === source.instanceId) {
-			continue;
-		}
-
-		if (hook.costMode === 'set_zero') {
-			forceZeroCost = true;
-			appliedHooks.push(hook.label || `${sourceCardName} (set cost to {0})`);
-		} else if (hook.costMode === 'reduce_generic' && hook.costDeltaGeneric) {
-			genericReduction += hook.costDeltaGeneric;
-			appliedHooks.push(hook.label || `${sourceCardName} (-{${hook.costDeltaGeneric}})`);
-		} else if (hook.costMode === 'increase_generic' && hook.costDeltaGeneric) {
-			genericIncrease += hook.costDeltaGeneric;
-			appliedHooks.push(hook.label || `${sourceCardName} (+{${hook.costDeltaGeneric}})`);
-		}
-	}
-
-	// Handle Commander Tax on cast.normal / cast.overload from Command Zone
-	if (
-		(baseNode.path === 'cast.normal' || baseNode.path === 'cast.overload') &&
-		source.isCommander &&
-		source.zone === 'command' &&
-		actor
-	) {
-		const castCount = actor.commanderCastCounts?.[source.instanceId] ?? source.commanderCastCount ?? 0;
-		if (castCount > 0) {
-			const tax = castCount * state.rules.commanderTaxIncrement;
-			genericIncrease += tax;
-			appliedHooks.push(`Commander Tax (+{${tax}})`);
-		}
-	}
-
-	// Self-discount rule ("This spell costs {N} less to cast for each creature on the battlefield.")
-	if (baseNode.path === 'cast.normal' || baseNode.path === 'cast.overload') {
-		const ir = compileCard(effectiveCard);
-		const selfCtx: FilterContext = {
-			state,
-			controllerId: actorId,
-			source,
-			xValue
-		};
-		for (const ab of ir.faces[0]?.abilities ?? []) {
-			if (ab.kind === 'static' && ab.static.k === 'costModifier' && ab.static.affects.k === 'self') {
-				if (ab.static.condition && !evaluateCondition(ab.static.condition, selfCtx)) continue;
-				const perAmount = ab.static.delta.per ?? ab.static.delta.times;
-				const factor = perAmount ? Math.max(0, evaluateAmount(perAmount, selfCtx)) : 1;
-				if (factor === 0 && perAmount) continue;
-				if (ab.static.delta.mode === 'setZero') {
-					forceZeroCost = true;
-				} else if (ab.static.delta.mode === 'reduce' && ab.static.delta.generic) {
-					const discount = ab.static.delta.generic * factor;
-					if (discount > 0) {
-						genericReduction += discount;
-						appliedHooks.push(`${effectiveCard.name} (-{${discount}} for creatures on board)`);
-					}
-				} else if (ab.static.delta.mode === 'increase' && ab.static.delta.generic) {
-					const inc = ab.static.delta.generic * factor;
-					if (inc > 0) {
-						genericIncrease += inc;
-						appliedHooks.push(`${effectiveCard.name} (+{${inc}})`);
-					}
-				}
-			}
-		}
-	}
-
-	let effectiveManaCost = baseNode.manaCost;
-	let effectiveCostRequirement: ManaCostRequirement;
-
-	if (forceZeroCost) {
-		effectiveCostRequirement = parseManaCost('', 0, genericIncrease, genericReduction);
-		effectiveManaCost =
-			effectiveCostRequirement.generic > 0 ? `{${effectiveCostRequirement.generic}}` : '{0}';
-	} else {
-		effectiveCostRequirement = parseManaCost(
-			baseNode.manaCost,
-			xValue,
-			genericIncrease,
-			genericReduction
-		);
-		if (
-			baseNode.path === 'activated.attach' &&
-			genericReduction > 0 &&
-			effectiveCostRequirement.totalCmc === 0
-		) {
-			effectiveManaCost = '{0}';
-		}
-	}
-
-	return {
-		...baseNode,
-		effectiveManaCost,
-		effectiveCostRequirement,
-		appliedHooks
-	};
-}
-
-/**
- * Returns the activated abilities of a permanent with all active board-state hooks applied
- * (e.g., if a free-attach hook is on the board, `Equip {2}` has its `manaCost` modified to `{0}`).
+ * Returns the activated abilities of a permanent from its compiled IR, with continuous layer
+ * grants/ability-loss and active cost modifiers applied.
  */
 export function getEffectiveActivatedAbilities(
 	state: GameState,
 	actor: PlayerGameState,
 	perm: CardInstance,
 	commanderIdentity: ManaColor[] = ['W', 'U', 'B', 'R', 'G']
-): ParsedActivatedAbility[] {
-	// Check if permanent lost all abilities (and if it gained a new mana ability from Imprisoned in the Moon / Song of the Dryads / Blood Moon)
+): EffectiveActivatedAbility[] {
 	const breakdown = inspectCardContinuousBreakdown(perm, state);
 	const allInnateRemoved = breakdown.items.some(
 		(it) => it.isInnate && it.removed && it.removedBy.length > 0
 	);
 
 	const effectiveCard = perm.copiableCard ?? perm.card;
-	let rawAbilities = allInnateRemoved ? [] : parseActivatedAbilities(effectiveCard, commanderIdentity);
-
-	if (
-		!allInnateRemoved &&
-		compiledCardManaSteps(effectiveCard).some((s) => s.params?.manaChoice === 'opponentLandColors')
-	) {
-		const oppColors =
-			state.lobbyCode === 'GOLDEN'
-				? (['W', 'U', 'B', 'R', 'G'] as ManaColor[])
-				: opponentLandColors(state, actor);
-		if (oppColors.length > 0 && !rawAbilities.some((a) => a.id === 'mana_tap')) {
-			rawAbilities = [
-				{
-					id: 'mana_tap',
-					label: `{T}: Add ${oppColors.map((c) => `{${c}}`).join(' or ')}`,
-					costText: '{T}',
-					manaCost: '{0}',
-					requiresTap: true,
-					requiresSacrificeSelf: false,
-					lifeCost: 0,
-					loyaltyCost: null,
-					isManaAbility: true,
-					producesMana: oppColors,
-					producesAmount: 1,
-					effectText: 'Add one mana of any color that a land an opponent controls could produce.',
-					requiresTarget: false,
-					targetKind: 'none'
-				},
-				...rawAbilities
-			];
-		}
-	}
+	let rawAbilities = allInnateRemoved
+		? []
+		: getCardActivatedAbilities(effectiveCard, commanderIdentity, () =>
+				state.lobbyCode === 'GOLDEN'
+					? (['W', 'U', 'B', 'R', 'G'] as ManaColor[])
+					: opponentLandColors(state, actor)
+			);
 
 	// Add granted mana abilities from continuous type-changing effects (Imprisoned in the Moon, Song of the Dryads, Blood Moon, Urborg, Yavimaya)
 	for (const item of breakdown.items) {
@@ -1039,6 +509,8 @@ export function getEffectiveActivatedAbilities(
 							label: `{T}: Add {${col}} (${item.sources.join(', ')})`,
 							costText: '{T}',
 							manaCost: '{0}',
+							cost: [{ k: 'tapSelf' }],
+							costComplete: true,
 							requiresTap: true,
 							requiresSacrificeSelf: false,
 							lifeCost: 0,
@@ -1048,7 +520,8 @@ export function getEffectiveActivatedAbilities(
 							producesAmount: 1,
 							effectText: `Add {${col}}.`,
 							requiresTarget: false,
-							targetKind: 'none'
+							targetKind: 'none',
+							targetInfo: NO_TARGET_REQUIREMENT
 						}
 					];
 				}
@@ -1057,14 +530,25 @@ export function getEffectiveActivatedAbilities(
 	}
 
 	return rawAbilities.map((ab) => {
-		const evaluated = evaluateActionNode(state, actor.playerId, perm, ab.id);
-		if (!evaluated) return ab;
-		if (evaluated.effectiveManaCost !== ab.manaCost) {
+		const { manaCost: effMana } = effectiveAbilityManaCost(
+			state,
+			actor.playerId,
+			ab.id,
+			ab.manaCost
+		);
+		if (effMana !== ab.manaCost) {
+			const nextCost = ab.cost.map((c) =>
+				c.k === 'mana' ? { k: 'mana' as const, cost: effMana } : c
+			);
+			const filteredCost =
+				effMana === '{0}' || effMana === '' ? nextCost.filter((c) => c.k !== 'mana') : nextCost;
 			return {
 				...ab,
-				manaCost: evaluated.effectiveManaCost,
+				manaCost: effMana,
+				cost: filteredCost,
+				costText: ab.id.startsWith('equip_') && effMana === '{0}' ? 'Equip {0}' : ab.costText,
 				label:
-					evaluated.path === 'activated.attach' && evaluated.effectiveManaCost === '{0}'
+					ab.id.startsWith('equip_') && effMana === '{0}'
 						? `Equip {0} (was ${ab.manaCost})`
 						: ab.label
 			};
@@ -1073,20 +557,6 @@ export function getEffectiveActivatedAbilities(
 	});
 }
 
-// ============================================================================
-// Continuous Layer & Keyword / Effect Attribution Engine (Phase 6: runtime/layers.ts)
-// ============================================================================
-
-import {
-	evaluatePermanent,
-	getAttachedAbilityStrippingAuraSources,
-	inspectCardContinuousBreakdown,
-	permanentHasLostAllAbilities,
-	type AttributedKeywordOrEffect,
-	type CardContinuousBreakdown,
-	type EvaluatedPermanent
-} from './runtime/layers.ts';
-
 export {
 	evaluatePermanent,
 	getAttachedAbilityStrippingAuraSources,
@@ -1094,13 +564,10 @@ export {
 	permanentHasLostAllAbilities,
 	type AttributedKeywordOrEffect,
 	type CardContinuousBreakdown,
-	type EvaluatedPermanent
-};
-
-export {
+	type EvaluatedPermanent,
 	checkGlobalCastPermissionsAndRestrictions,
 	checkGraveyardReplacementZone,
 	getLibrarySearchInterceptor,
 	playerCannotLoseGame,
 	playerCannotWinGame
-} from './runtime/replace.ts';
+};

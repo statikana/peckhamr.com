@@ -39,7 +39,6 @@ import type {
 	GameState,
 	LibrarySearchSpec,
 	ManaColor,
-	ParsedEffect,
 	PlayerGameState,
 	ScryfallCard,
 	StackItem,
@@ -47,15 +46,16 @@ import type {
 	TriggerEventLki,
 	VfxEvent
 } from '../types.ts';
-import { compileCard } from '../compiler/index.ts';
-import { compiledCardManaSteps, legacySearchSpec } from '../compiler/effects.ts';
+import { cardManaSteps, compileCard } from '../compiler/index.ts';
+import { legacySearchSpec } from '../compiler/effects.ts';
 import { evaluatePermanent, inspectCardContinuousBreakdown } from '../ruleTree.ts';
 import { enqueueChoicePrompt } from './choices.ts';
 import { emitEvent } from './events.ts';
 import { activeRuleModifiers, tokenMultiplier } from './replace.ts';
 import { withSimultaneousDestroyLki } from './triggers.ts';
 import { nextRandom } from './random.ts';
-import { allocateTimestamp, moveObject } from './zones.ts';
+import { allocateTimestamp, moveObject, rearrangeLibrary } from './zones.ts';
+import { PROMPTING_VERBS } from '../compiler/interpretable.ts';
 
 /** Seeded randomness lives in runtime/random.ts (re-exported here for existing importers). */
 export { nextRandom };
@@ -64,7 +64,7 @@ export { nextRandom };
 
 /** Engine primitives the interpreter uses. engine.ts registers them once at module load. */
 export interface EffectPorts {
-	uid(prefix: string): string;
+	uid(prefix: string, state?: GameState): string;
 	addLog(state: GameState, kind: 'rule' | 'cast' | 'trigger' | 'life' | 'combat', text: string, actorId?: string): void;
 	emitVfx(state: GameState, event: Omit<VfxEvent, 'id' | 'timestamp'>): void;
 	findPermanent(state: GameState, id: string): { inst: CardInstance; owner: PlayerGameState; controller: PlayerGameState } | null;
@@ -81,7 +81,7 @@ export interface EffectPorts {
 	/** Counters a spell unless it can't be countered. Returns true if it was countered. */
 	counterSpell(state: GameState, item: StackItem, target: StackItem, controller: PlayerGameState): boolean;
 	createToken(state: GameState, controller: PlayerGameState, spec: TokenSpec): CardInstance;
-	copyPermanentAsToken(state: GameState, controller: PlayerGameState, inst: CardInstance, title: string): void;
+	copyPermanentAsToken(state: GameState, controller: PlayerGameState, inst: CardInstance, title: string, notLegendary?: boolean): void;
 	triggerOnEtb(state: GameState, controller: PlayerGameState, inst: CardInstance): void;
 	triggerOnAttach(state: GameState, controller: PlayerGameState, attached: CardInstance, to: CardInstance): void;
 	addCounters(state: GameState, inst: CardInstance, counter: CounterType, amount: number): number;
@@ -92,7 +92,7 @@ export interface EffectPorts {
 	phaseOut(state: GameState, inst: CardInstance): void;
 	endTurn(state: GameState, playerId: string): void;
 	/** "The player whose turn it is may end the turn": ends it for a bot/the controller, else prompts. */
-	activePlayerMayEndTurn(state: GameState, controller: PlayerGameState): void;
+	activePlayerMayEndTurn(state: GameState, controller: PlayerGameState, sourceName: string): void;
 	win(state: GameState, player: PlayerGameState, reason: string): void;
 	lose(state: GameState, player: PlayerGameState, reason: string): void;
 }
@@ -156,128 +156,9 @@ type Bound = EffectBindingSnapshot;
 
 type Bindings = Map<string, Bound[]>;
 
-// ---- Gating ---------------------------------------------------------------------------------
+// ---- Gating (compiler/interpretable.ts) ------------------------------------------------------
 
-/**
- * Verbs that resolve on the interpreter. An ability that uses any other verb resolves on the
- * legacy executeParsedEffect path.
- */
-export const INTERPRETED_VERBS: ReadonlySet<Verb> = new Set<Verb>([
-	'draw',
-	'gainLife',
-	'loseLife',
-	'damage',
-	'destroy',
-	'exile',
-	'bounce',
-	'move',
-	'counterSpell',
-	'createToken',
-	'copyPermanent',
-	'putCounters',
-	'proliferate',
-	'pump',
-	'grant',
-	'grantPlayer',
-	'addMana',
-	'attach',
-	'phaseOut',
-	'switchPT',
-	'extraTurn',
-	'endTurn',
-	'win',
-	'lose',
-	'sacrifice',
-	'mill',
-	'scry',
-	'lookAndReorder',
-	'search',
-	'delayedTrigger',
-	'fight',
-	'discard',
-	'tap',
-	'untap',
-	'tapOrUntap' as Verb
-]);
-
-/** Verbs whose chooser may get an engine prompt (scry, search); resolution pauses after the step. */
-const PROMPTING_VERBS: ReadonlySet<Verb> = new Set<Verb>(['scry', 'lookAndReorder', 'search']);
-
-function selectorSupported(sel: Selector): boolean {
-	return ['self', 'binding', 'target', 'all', 'player', 'playerRef', 'none', 'eventObject'].includes(sel.k);
-}
-
-function stepSupported(step: EffectStep): boolean {
-	if (!INTERPRETED_VERBS.has(step.verb)) return false;
-	if (!selectorSupported(step.subject)) return false;
-	if (step.optional && step.verb !== 'search') return false;
-	if (step.verb === 'search') {
-		const s = step.params?.search;
-		if (!s) return false;
-		// "may search" is a search whose chooser can always fail to find (CR 701.19b).
-		if (step.optional && !s.statedQuality) return false;
-	}
-	if (step.verb === 'addMana' && !step.params?.mana && !step.params?.manaChoice) return false;
-	if ((step.verb === 'pump' || step.verb === 'grant' || step.verb === 'switchPT') && step.params?.duration !== 'endOfTurn') return false;
-	if (step.verb === 'createToken' && !step.params?.token) return false;
-	if (step.verb === 'delayedTrigger') return delayedSupported(step);
-	if (step.verb === 'exile' && step.subject.k === 'all' && step.subject.filter.zone === 'graveyard') return true;
-	if ((step.verb === 'destroy' || step.verb === 'exile' || step.verb === 'bounce') && step.subject.k === 'all') {
-		return step.subject.filter.zone === 'battlefield';
-	}
-	return true;
-}
-
-function delayedSupported(step: EffectStep): boolean {
-	const d = step.delayed;
-	if (!d || d.effect.length !== 1) return false;
-	if (d.trigger.event !== 'phaseBegin' || d.trigger.filter.phase !== 'end_step') return false;
-	const e = d.effect[0];
-	if (e.verb === 'exile' && e.subject.k === 'binding') return true;
-	if (e.verb === 'lose' && e.subject.k === 'player' && e.subject.filter.relation === 'you') return true;
-	return false;
-}
-
-/**
- * Whether a compiled ability can resolve on the interpreter, judged from the IR alone: the grammar
- * understood all of it, it isn't modal, every step uses an interpreted verb, and it has at most one
- * target spec (legacy targeting chooses targets for one requirement).
- */
-export function staticallyInterpretable(
-	parse: { steps: EffectStep[]; targets: TargetSpec[]; modal?: unknown; unparsed: unknown[] },
-	allowOptionalPrefix = false
-): boolean {
-	if (parse.unparsed.length > 0 || parse.modal || parse.steps.length === 0) return false;
-	const hasFight = parse.steps.some((s) => s.verb === 'fight');
-	if (parse.targets.length > (hasFight ? 2 : 1)) return false;
-	if (allowOptionalPrefix) {
-		const k = optionalPrefix(parse.steps);
-		if (k < 0) return false;
-		return withoutOptional(parse.steps, k).every(stepSupported);
-	}
-	return parse.steps.every(stepSupported);
-}
-
-/**
- * "You may ..." leading a triggered ability: the number of leading steps that are optional with the
- * controller as chooser (one "you may" clause), 0 if none is optional, or -1 if an optional step
- * appears later or with another chooser (not supported: the interpreter can't pause mid-ability).
- * The caller asks the controller once, on resolution, before any step runs.
- */
-export function optionalPrefix(steps: EffectStep[]): number {
-	let k = 0;
-	while (k < steps.length && steps[k].optional && steps[k].optional!.chooser.k === 'you') k++;
-	return steps.slice(k).some((s) => s.optional && s.verb !== 'search') ? -1 : k;
-}
-
-/** The steps with the first `k` steps' `optional` removed (they were accepted). */
-export function withoutOptional(steps: EffectStep[], k: number): EffectStep[] {
-	return steps.map((s, i) => {
-		if (i >= k || !s.optional) return s;
-		const { optional: _opt, ...rest } = s;
-		return rest;
-	});
-}
+export { INTERPRETED_VERBS, optionalPrefix, staticallyInterpretable, withoutOptional } from '../compiler/interpretable.ts';
 
 function targetRefMatchesSpec(t: TargetRef, spec: TargetSpec): boolean {
 	if (spec.kind === 'player') return t.kind === 'player';
@@ -309,6 +190,9 @@ export function interpretableNow(
 		if (item.targets.length !== 2) return false;
 		if (!targetRefMatchesSpec(item.targets[0], parse.targets[0])) return false;
 		if (!targetRefMatchesSpec(item.targets[1], parse.targets[1])) return false;
+	} else if (parse.targets.length > 1) {
+		if (item.targets.length === 0 || item.targets.length > parse.targets.length) return false;
+		if (!item.targets.every((t) => parse.targets.some((sp) => targetRefMatchesSpec(t, sp)))) return false;
 	} else {
 		// CR 608.2b: targets that became illegal were dropped; the spell resolves with the rest.
 		if (item.targets.length === 0 && spec.min > 0) return false;
@@ -376,18 +260,26 @@ class Run {
 	 * stops the run. Nothing of the step has happened yet (the step runs again from its start on
 	 * resume, with `answers` filled in), so simultaneous choices stay simultaneous (CR 101.4).
 	 */
-	pauseForChoice(chooser: PlayerGameState, title: string, description: string, candidates: string[], count: number, zone: 'battlefield' | 'hand'): void {
+	pauseForChoice(
+		chooser: PlayerGameState,
+		title: string,
+		description: string,
+		candidates: string[],
+		min: number,
+		max: number,
+		zone: 'battlefield' | 'hand' | 'library'
+	): void {
 		const item = this.saveFrame(this.stepIndex, this.answers);
 		enqueueChoicePrompt(this.state, {
-			id: P().uid('prompt'),
+			id: P().uid('prompt', this.state),
 			kind: 'chooseObjects',
 			playerId: chooser.playerId,
 			title,
 			description,
 			candidateInstanceIds: candidates,
-			countRequired: count,
+			countRequired: min,
 			continuation: { kind: 'effect_choice', stackItemId: item.id, stepIndex: this.stepIndex },
-			choice: { kind: 'chooseObjects', candidates, min: count, max: count, zone, reason: title }
+			choice: { kind: 'chooseObjects', candidates, min, max, zone, reason: title }
 		});
 		this.result.paused = true;
 	}
@@ -409,12 +301,12 @@ class Run {
 	 * human hasn't answered yet (the caller pauses). Answers naming objects that are no longer
 	 * candidates are dropped, and missing picks are filled from the remaining candidates.
 	 */
-	answered(chooser: PlayerGameState, candidates: CardInstance[], count: number): CardInstance[] | null {
+	answered(chooser: PlayerGameState, candidates: CardInstance[], min: number, max = min): CardInstance[] | null {
 		const ids = this.answers[chooser.playerId];
 		if (!ids) return null;
 		const picked = ids.map((id) => candidates.find((c) => c.instanceId === id)).filter((c): c is CardInstance => Boolean(c));
-		for (const c of candidates) if (picked.length < count && !picked.includes(c)) picked.push(c);
-		return picked.slice(0, count);
+		for (const c of candidates) if (picked.length < min && !picked.includes(c)) picked.push(c);
+		return picked.slice(0, max);
 	}
 
 	get you(): PlayerGameState {
@@ -632,7 +524,13 @@ class Run {
 					const spec = this.ctx.targetSpecs[sel.index];
 					return spec ? this.objects({ k: 'all', filter: spec.filter }) : [];
 				}
-				return this.ctx.targets
+				const refs =
+					this.ctx.targetSpecs.length > 1
+						? this.ctx.targets.length === this.ctx.targetSpecs.length
+							? [this.ctx.targets[sel.index]]
+							: this.ctx.targets.filter((t) => targetRefMatchesSpec(t, this.ctx.targetSpecs[sel.index]))
+						: this.ctx.targets;
+				return refs
 					.filter((t) => t.kind !== 'player' && t.kind !== 'stack')
 					.map((t) => this.locate(t.id)?.inst)
 					.filter((c): c is CardInstance => Boolean(c && !c.phasedOut));
@@ -816,10 +714,23 @@ class Run {
 				return this.move(step);
 			case 'counterSpell': {
 				const ids = this.ctx.targets.filter((t) => t.kind === 'stack').map((t) => t.id);
+				const countered: Bound[] = [];
 				for (const id of ids) {
 					const target = s.stack.find((x) => x.id === id || x.sourceInstanceId === id);
-					if (target) p.counterSpell(s, this.ctx.item, target, you);
+					if (!target) continue;
+					countered.push({
+						id: target.sourceInstanceId,
+						lki: {
+							controllerId: target.controllerId,
+							ownerId: target.ownerId ?? target.controllerId,
+							power: 0,
+							toughness: 0,
+							manaValue: target.card.cmc
+						}
+					});
+					p.counterSpell(s, this.ctx.item, target, you);
 				}
+				if (step.bindAs) this.bindings.set(step.bindAs, countered);
 				return;
 			}
 			case 'createToken': {
@@ -837,7 +748,8 @@ class Run {
 				const objs = this.objects(step.subject).filter((o) => o.zone === 'battlefield');
 				const actor = step.actor ? this.playerRef(step.actor) : you;
 				if (!actor) return;
-				for (const o of objs) p.copyPermanentAsToken(s, actor, o, title);
+				const notLegendary = Boolean(step.params?.notLegendary);
+				for (const o of objs) p.copyPermanentAsToken(s, actor, o, title, notLegendary);
 				return;
 			}
 			case 'putCounters': {
@@ -948,8 +860,7 @@ class Run {
 				return;
 			case 'endTurn':
 				if (step.params?.activePlayerMay) {
-					// Like the legacy path, resolution carries on afterwards (Obeka's ability isn't a spell).
-					p.activePlayerMayEndTurn(s, you);
+					p.activePlayerMayEndTurn(s, you, this.ctx.sourceCard.name);
 					return;
 				}
 				p.endTurn(s, you.playerId);
@@ -1033,6 +944,8 @@ class Run {
 			}
 			case 'delayedTrigger':
 				return this.delayed(step);
+			case 'dig':
+				return this.dig(step);
 			default:
 				// Not reachable: staticallyInterpretable rejects every other verb.
 				p.addLog(s, 'rule', `${title}: the "${step.verb}" step isn't supported yet and did nothing.`, you.playerId);
@@ -1388,7 +1301,7 @@ class Run {
 			for (const { actor, candidates, count } of choices) {
 				if (actor.isBot || candidates.length <= count || this.answers[actor.playerId]) continue;
 				const title = `${this.ctx.title} — Sacrifice ${count} permanent(s)`;
-				this.pauseForChoice(actor, title, `Choose ${count} permanent(s) to sacrifice.`, candidates.map((c) => c.instanceId), count, 'battlefield');
+				this.pauseForChoice(actor, title, `Choose ${count} permanent(s) to sacrifice.`, candidates.map((c) => c.instanceId), count, count, 'battlefield');
 				return;
 			}
 		}
@@ -1477,7 +1390,7 @@ class Run {
 			for (const { pl, candidates, count } of choices) {
 				if (pl.isBot || candidates.length <= count || this.answers[pl.playerId]) continue;
 				const title = `${this.ctx.title} — Discard ${count} card(s)`;
-				this.pauseForChoice(pl, title, `Choose ${count} card(s) to discard.`, candidates.map((c) => c.instanceId), count, 'hand');
+				this.pauseForChoice(pl, title, `Choose ${count} card(s) to discard.`, candidates.map((c) => c.instanceId), count, count, 'hand');
 				return;
 			}
 		}
@@ -1546,6 +1459,77 @@ class Run {
 		const p = P();
 		const you = this.you;
 		const params = step.params ?? {};
+		if (params.from === 'hand') {
+			const filter: ObjectFilter = step.subject.k === 'all' ? step.subject.filter : {};
+			const candidates = you.hand.filter((c) => this.matches(c, filter, 'hand'));
+			const max = Math.min(candidates.length, Math.max(0, this.amount(step.amount, 1)));
+			const min = params.upTo ? 0 : max;
+			if (max <= 0) return;
+			if (
+				!you.isBot &&
+				this.canPause &&
+				!this.answers[you.playerId] &&
+				(min < max || candidates.length > max || (params.to === 'library' && max > 1))
+			) {
+				const title = `${this.ctx.title} — Choose card(s) from hand`;
+				this.pauseForChoice(
+					you,
+					title,
+					`Choose ${min === max ? max : `up to ${max}`} card(s) from your hand.`,
+					candidates.map((c) => c.instanceId),
+					min,
+					max,
+					'hand'
+				);
+				return;
+			}
+			let chosen: CardInstance[];
+			if (this.answers[you.playerId]) {
+				chosen = this.answered(you, candidates, min, max) ?? [];
+			} else if (params.to === 'battlefield') {
+				chosen = [...candidates].sort((a, b) => b.card.cmc - a.card.cmc).slice(0, max);
+			} else {
+				chosen = candidates.slice(0, max);
+			}
+			this.bind(step, chosen);
+			if (params.to === 'library') {
+				const top = params.position !== 'bottom';
+				// Put onto top in reverse so chosen[0] ends up at library[0].
+				const ordered = top ? [...chosen].reverse() : chosen;
+				for (const c of ordered) {
+					moveObject(s, c, 'library', {
+						from: { player: you, zone: 'hand' },
+						toPlayer: you,
+						insert: top ? 'start' : 'end',
+						bumpVersion: true,
+						newTimestamp: true
+					});
+				}
+				if (chosen.length > 0) {
+					p.addLog(
+						s,
+						'rule',
+						`${you.username} put ${chosen.length} card(s) from hand on ${top ? 'top' : 'the bottom'} of their library (${this.ctx.title}).`,
+						you.playerId
+					);
+				}
+				return;
+			}
+			for (const o of chosen) {
+				o.summoningSick = o.card.typeLine.includes('Creature');
+				o.tapped = Boolean(params.tapped);
+				moveObject(s, o, 'battlefield', {
+					from: { player: you, zone: 'hand' },
+					toPlayer: you,
+					controllerId: you.playerId,
+					newTimestamp: true,
+					bumpVersion: true
+				});
+				p.addLog(s, 'cast', `${you.username} put ${o.card.name} from their hand onto the battlefield (${this.ctx.title}).`, you.playerId);
+				p.triggerOnEtb(s, you, o);
+			}
+			return;
+		}
 		let objs = this.objects(step.subject).filter((o) => o.zone === 'graveyard');
 		if (params.topmostOnly) {
 			// CR 404.2: the graveyard's order matters; the top card is the last one in the array.
@@ -1560,7 +1544,7 @@ class Run {
 				continue;
 			}
 			const controller = params.underYourControl ? you : (this.player(o.ownerId) ?? holder);
-			o.summoningSick = o.card.typeLine.includes('Creature');
+			o.summoningSick = o.card.typeLine.includes('Creature') && !o.card.keywords.includes('Haste');
 			o.tapped = Boolean(params.tapped);
 			moveObject(s, o, 'battlefield', {
 				from: { player: holder, zone: 'graveyard' },
@@ -1574,49 +1558,111 @@ class Run {
 		}
 	}
 
+	dig(step: EffectStep): void {
+		const s = this.state;
+		const p = P();
+		const dig = step.params?.dig;
+		if (!dig) return;
+		const pl = this.players(step.subject)[0] ?? this.you;
+		const count = Math.min(Math.max(0, this.amount(step.amount)), pl.library.length);
+		if (count <= 0) return;
+		const topCards = pl.library.slice(0, count);
+		const max = Math.min(dig.keep, count);
+		const min = dig.upTo ? 0 : max;
+		if (!pl.isBot && this.canPause && !this.answers[pl.playerId]) {
+			const title = `${this.ctx.title} — Look at top ${count} card(s)`;
+			this.pauseForChoice(
+				pl,
+				title,
+				`Choose ${min === max ? max : `up to ${max}`} card(s) to put on top of your library; the rest go on the bottom.`,
+				topCards.map((c) => c.instanceId),
+				min,
+				max,
+				'library'
+			);
+			return;
+		}
+		const kept = this.answered(pl, topCards, min, max) ?? topCards.slice(0, max);
+		const rest = topCards.filter((c) => !kept.includes(c));
+		if (dig.restRandom && rest.length > 1) {
+			for (let i = rest.length - 1; i > 0; i--) {
+				const j = Math.floor(nextRandom(s) * (i + 1));
+				[rest[i], rest[j]] = [rest[j], rest[i]];
+			}
+		}
+		rearrangeLibrary(pl, topCards, kept, rest);
+		p.addLog(
+			s,
+			'rule',
+			`${pl.username} looked at the top ${count} card(s) of their library (${kept.length} on top, ${rest.length} on bottom).`,
+			pl.playerId
+		);
+	}
+
 	delayed(step: EffectStep): void {
 		const s = this.state;
 		const p = P();
 		const d = step.delayed!;
 		const e = d.effect[0];
 		const thatTurn = d.trigger.scope === 'controller_turn';
+		const phase = d.trigger.filter.phase ?? 'end_step';
+		const waitAfter = thatTurn ? s.turnNumber : undefined;
 		const base = {
 			controllerId: this.you.playerId,
 			sourceInstanceId: this.ctx.sourceId,
 			sourceCard: this.ctx.sourceCard,
-			triggerPhase: 'end_step' as const,
+			triggerPhase: phase,
 			createdAtTurn: s.turnNumber,
 			// "That turn's end step" (after an extra turn): the controller's next turn, not this one.
 			targetPlayerId: thatTurn ? this.you.playerId : undefined,
-			waitUntilAfterTurn: thatTurn ? s.turnNumber : undefined
+			waitUntilAfterTurn: waitAfter,
+			// "The next turn's upkeep": not this turn's (turnNumber counts rounds, so name the turn).
+			...(d.nextTurn ? { notDuringTurn: `${s.turnNumber}:${s.activePlayerIndex}` } : {})
 		};
 		if (!s.delayedTriggers) s.delayedTriggers = [];
 		if (e.verb === 'exile' && e.subject.k === 'binding') {
 			for (const b of this.bindings.get(e.subject.name) ?? []) {
 				const found = this.locate(b.id);
 				const label = found ? found.inst.card.name : 'it';
-				const effects: ParsedEffect[] = [{ kind: 'exile_target', amount: 1 }];
 				const dt: DelayedTrigger = {
-					id: p.uid('dtrig'),
+					id: p.uid('dtrig', s),
 					...base,
 					targetInstanceId: b.id,
 					title: `${this.ctx.title} — Delayed Exile Trigger`,
 					description: `At the beginning of the next end step, exile ${label}.`,
-					effects
+					// CR 400.7: "it" is the object as it is now; if it changes zones again it's a new object.
+					delayedEffect: {
+						kind: 'exile',
+						targetInstanceId: b.id,
+						...(found?.zone === 'battlefield' ? { targetObjectVersion: found.inst.objectVersion } : {})
+					}
 				};
 				s.delayedTriggers.push(dt);
 			}
 			return;
 		}
 		if (e.verb === 'lose') {
-			const effects: ParsedEffect[] = [{ kind: 'lose_the_game_self', amount: 1 }];
 			s.delayedTriggers.push({
-				id: p.uid('dtrig'),
+				id: p.uid('dtrig', s),
 				...base,
 				title: `${this.ctx.title} — Delayed End Step Trigger`,
 				description: 'At the beginning of the end step, you lose the game.',
-				effects
+				delayedEffect: { kind: 'lose' }
 			});
+			return;
+		}
+		if (e.verb === 'draw') {
+			const amount = Math.max(0, this.amount(e.amount, 1));
+			const upTo = Boolean(e.params?.upTo);
+			for (const pl of this.players(e.subject)) {
+				s.delayedTriggers.push({
+					id: p.uid('dtrig', s),
+					...base,
+					title: `${this.ctx.title} — Delayed Upkeep Trigger`,
+					description: `At the beginning of the next turn's upkeep, ${pl.username} draws ${upTo ? `up to ${amount}` : amount} card(s).`,
+					delayedEffect: { kind: 'draw', playerId: pl.playerId, amount, upTo }
+				});
+			}
 		}
 	}
 
@@ -1719,7 +1765,7 @@ function playerLandColors(
 			for (const c of FIVE_COLORS) direct.add(c);
 		}
 		if (ev.losesAllAbilities) continue;
-		for (const step of compiledCardManaSteps(perm.card)) {
+		for (const step of cardManaSteps(perm.card)) {
 			const mana = step.params?.mana;
 			if (mana) {
 				for (const c of mana) if (c !== 'C') direct.add(c);

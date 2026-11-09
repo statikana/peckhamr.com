@@ -97,9 +97,9 @@ function unsupportedKind(ab: Extract<CardDefinition['faces'][number]['abilities'
 	const text = ab.text.trim();
 	if (ab.trigger) return 'triggered';
 	if (TRIGGER_WORD.test(text)) return 'triggerUnrecognised';
-	if (isSpell && (ab.legacyId === undefined || ab.legacyId.startsWith('cast_'))) return 'spell';
-	if (ab.legacyId !== undefined || ab.cost !== undefined || ACTIVATED_LINE.test(text)) {
-		return MANA_EFFECT.test(text) ? 'mana' : 'activated';
+	if (isSpell && (ab.id === undefined || ab.id === 'cast')) return 'spell';
+	if (ab.id !== undefined || ab.cost !== undefined || ACTIVATED_LINE.test(text)) {
+		return ab.isMana || MANA_EFFECT.test(text) ? 'mana' : 'activated';
 	}
 	if (isSpell) return 'spell';
 	return 'static';

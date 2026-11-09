@@ -388,7 +388,7 @@ export function parseCost(text: string, offset = 0): CostParse {
  * sentence isn't one. "<cost> or <cost>" is a `choice`; "you may <cost>" is `optional`.
  */
 export function parseAdditionalCostSentence(sentence: string, offset = 0): CostParse | null {
-	const m = sentence.match(/^as an additional cost to cast ~, (.+?)\.?$/i);
+	const m = sentence.match(/^as an additional cost to cast (?:~|this spell), (.+?)\.?$/i);
 	if (!m) return null;
 	const start = offset + sentence.indexOf(m[1]);
 	const may = m[1].match(/^you may (.+)$/i);

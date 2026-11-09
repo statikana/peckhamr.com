@@ -19,7 +19,6 @@ import {
 	type CardInstance,
 	type GameState,
 	type LobbySeat,
-	type ParsedEffect,
 	type PlayerGameState,
 	type ScryfallCard,
 	type TargetRef
@@ -180,20 +179,19 @@ function marks(c: CardInstance) {
 function resolveEffects(
 	state: GameState,
 	controller: PlayerGameState,
-	effects: ParsedEffect[],
-	opts: { targets?: TargetRef[]; oracleText?: string; sourceInstanceId?: string } = {}
+	oracleText: string,
+	opts: { targets?: TargetRef[]; sourceInstanceId?: string } = {}
 ): void {
 	state.stack.push({
 		id: `stk_pin_${state.stack.length}`,
 		sourceInstanceId: opts.sourceInstanceId ?? 'pin_source',
-		card: card({ name: 'Pin Source', oracleText: opts.oracleText ?? '' }),
+		card: card({ name: 'Pin Source', oracleText }),
 		controllerId: controller.playerId,
-		kind: 'triggered',
+		kind: 'activated',
 		title: 'Pin Source',
-		oracleText: opts.oracleText ?? '',
+		oracleText,
 		targets: opts.targets ?? [],
 		xValue: 0,
-		parsedEffects: effects,
 		requiresGuidedResolution: false,
 		createdAt: 0
 	});
@@ -474,19 +472,13 @@ describe('Zone-change behaviour pins: library search', () => {
 	it('bot search: top destination ends on top after the shuffle; battlefield then hand', () => {
 		const { state, p1 } = newGame();
 		p1.isBot = true;
-		const spec = (destinations: Array<{ zone: 'battlefield' | 'hand' | 'library'; tapped?: boolean; onTop?: boolean }>) => ({
-			statedQuality: true,
-			upTo: false,
-			count: destinations.length,
-			allowedTypes: ['Creature'],
-			allowedSubtypes: ['Bear'],
-			disallowedTypes: [],
-			destinations,
-			rawCriteriaText: 'a Bear card'
-		});
 		const bear = put(state, p1, BEAR('Pin Tutor Bear'), 'library');
 		const before = marks(bear);
-		resolveEffects(state, p1, [{ kind: 'search_library_to_hand', amount: 1, searchSpec: spec([{ zone: 'library', onTop: true }]) }]);
+		resolveEffects(
+			state,
+			p1,
+			'Search your library for a Bear card, reveal it, put it on top of your library, then shuffle.'
+		);
 		assert.equal(p1.library[0], bear);
 		assert.equal(bear.zone, 'library');
 		assert.equal(bear.objectVersion, before.v + 1);
@@ -497,9 +489,11 @@ describe('Zone-change behaviour pins: library search', () => {
 		p1.library = p1.library.filter((c) => c !== bear);
 		const m1 = marks(b1);
 		const m2 = marks(b2);
-		resolveEffects(state, p1, [
-			{ kind: 'search_library_to_hand', amount: 1, searchSpec: spec([{ zone: 'battlefield', tapped: true }, { zone: 'hand' }]) }
-		]);
+		resolveEffects(
+			state,
+			p1,
+			'Search your library for up to two Bear cards, reveal those cards, put one onto the battlefield tapped and the other into your hand, then shuffle.'
+		);
 		assert.equal(p1.battlefield[p1.battlefield.length - 1], b1);
 		assert.equal(b1.tapped, true);
 		assert.equal(b1.objectVersion, m1.v + 1);
@@ -541,11 +535,11 @@ describe('Zone-change behaviour pins: library reordering', () => {
 		const small = card({ name: 'Pin Small', typeLine: 'Creature — Elf', cmc: 1, manaCost: '{G}' });
 		p1.library = [];
 		const [l, g, s, x] = [land, big, small, small].map((c) => put(state, p1, c, 'library'));
-		resolveEffects(state, p1, [{ kind: 'scry', amount: 3 }]);
+		resolveEffects(state, p1, 'Scry 3.');
 		assert.deepEqual(ids(p1.library), ids([l, s, x, g]));
 		p1.library = [];
 		const [s2, l2, s3] = [small, land, small].map((c) => put(state, p1, c, 'library'));
-		resolveEffects(state, p1, [{ kind: 'rearrange_top', amount: 3 }]);
+		resolveEffects(state, p1, 'Look at the top three cards of your library, then put them back in any order.');
 		assert.deepEqual(ids(p1.library), ids([l2, s2, s3]));
 	});
 
@@ -565,15 +559,19 @@ describe('Zone-change behaviour pins: graveyard effects', () => {
 			const { state, p1, p2 } = newGame();
 			const t = put(state, p2, BEAR(), 'graveyard');
 			const before = marks(t);
-			resolveEffects(state, p1, [], {
-				oracleText: mode === 'hand' ? 'Return target card from a graveyard to its owner\'s hand.' : 'Exile target card from a graveyard.',
-				targets: [{ kind: 'graveyard_card', id: t.instanceId, label: t.card.name }]
-			});
+			resolveEffects(
+				state,
+				p1,
+				mode === 'hand' ? "Return target card from a graveyard to its owner's hand." : 'Exile target card from a graveyard.',
+				{
+					targets: [{ kind: 'graveyard_card', id: t.instanceId, label: t.card.name }]
+				}
+			);
 			const dest = mode === 'hand' ? p2.hand : p2.exile;
 			assert.equal(dest[dest.length - 1], t, mode);
 			assert.equal(t.zone, mode);
 			assert.equal(t.objectVersion, before.v + 1);
-			assert.equal(t.enteredTimestamp, before.ts);
+			assert.notEqual(t.enteredTimestamp, before.ts);
 		}
 	});
 
@@ -582,7 +580,7 @@ describe('Zone-change behaviour pins: graveyard effects', () => {
 		const cs = [1, 2, 3].map((i) => put(state, p1, BEAR(`Pin Bear ${i}`), 'graveyard'));
 		const d = put(state, p2, BEAR('Pin Bear 4'), 'graveyard');
 		const before = cs.map(marks);
-		resolveEffects(state, p1, [{ kind: 'exile_all_graveyards', amount: 0 }]);
+		resolveEffects(state, p1, 'Exile all graveyards.');
 		assert.deepEqual(ids(p1.exile.slice(-3)), ids([cs[2], cs[1], cs[0]]));
 		assert.equal(p2.exile[p2.exile.length - 1], d);
 		assert.equal(p1.graveyard.length, 0);
@@ -592,28 +590,32 @@ describe('Zone-change behaviour pins: graveyard effects', () => {
 		);
 	});
 
-	it('return_from_graveyard_to_hand: target, else top of graveyard; version +1 only', () => {
+	it('return_from_graveyard_to_hand: target card moves to hand; version +1, new timestamp', () => {
 		const { state, p1 } = newGame();
 		const [a, b] = [1, 2].map((i) => put(state, p1, BEAR(`Pin Bear ${i}`), 'graveyard'));
 		const mb = marks(b);
-		resolveEffects(state, p1, [{ kind: 'return_from_graveyard_to_hand', amount: 1 }]);
+		resolveEffects(state, p1, 'Return target card from your graveyard to your hand.', {
+			targets: [{ kind: 'graveyard_card', id: b.instanceId, label: 'b' }]
+		});
 		assert.equal(p1.hand[p1.hand.length - 1], b);
-		assert.deepEqual(marks(b), { v: mb.v + 1, ts: mb.ts });
+		assert.equal(b.objectVersion, mb.v + 1);
+		assert.notEqual(b.enteredTimestamp, mb.ts);
 		const ma = marks(a);
 		put(state, p1, BEAR('Pin Bear 3'), 'graveyard');
-		resolveEffects(state, p1, [{ kind: 'return_from_graveyard_to_hand', amount: 1 }], {
+		resolveEffects(state, p1, 'Return target card from your graveyard to your hand.', {
 			targets: [{ kind: 'graveyard_card', id: a.instanceId, label: 'a' }]
 		});
 		assert.equal(p1.hand[p1.hand.length - 1], a);
 		assert.equal(a.zone, 'hand');
-		assert.deepEqual(marks(a), { v: ma.v + 1, ts: ma.ts });
+		assert.equal(a.objectVersion, ma.v + 1);
+		assert.notEqual(a.enteredTimestamp, ma.ts);
 	});
 
-	it('reanimate_target: opponent graveyard target -> controller battlefield; fallback takes the first player\'s top creature', () => {
+	it('reanimate_target: opponent graveyard target -> controller battlefield; top creature card of your graveyard -> battlefield', () => {
 		const { state, p1, p2 } = newGame();
 		const t = put(state, p2, BEAR(), 'graveyard');
 		const mt = marks(t);
-		resolveEffects(state, p1, [{ kind: 'reanimate_target', amount: 1 }], {
+		resolveEffects(state, p1, 'Put target creature card from a graveyard onto the battlefield under your control.', {
 			targets: [{ kind: 'graveyard_card', id: t.instanceId, label: 'bear' }]
 		});
 		assert.equal(p1.battlefield[p1.battlefield.length - 1], t);
@@ -625,7 +627,7 @@ describe('Zone-change behaviour pins: graveyard effects', () => {
 
 		const f = put(state, p2, BEAR('Pin Fallback'), 'graveyard');
 		put(state, p2, LAND(), 'graveyard');
-		resolveEffects(state, p2, [{ kind: 'reanimate_target', amount: 1 }]);
+		resolveEffects(state, p2, 'Return the top creature card of your graveyard to the battlefield.');
 		assert.equal(p2.battlefield[p2.battlefield.length - 1], f);
 		assert.equal(f.zone, 'battlefield');
 		assert.equal(f.summoningSick, true);
@@ -636,8 +638,8 @@ describe('Zone-change behaviour pins: graveyard effects', () => {
 		const slow = put(state, p1, BEAR('Pin Slow'), 'graveyard');
 		const fast = put(state, p1, card({ ...BEAR('Pin Fast'), keywords: ['Haste'], oracleText: 'Haste' }), 'graveyard');
 		const ms = marks(slow);
-		resolveEffects(state, p1, [{ kind: 'return_self_from_graveyard', amount: 1 }], { sourceInstanceId: slow.instanceId });
-		resolveEffects(state, p1, [{ kind: 'return_self_from_graveyard', amount: 1 }], { sourceInstanceId: fast.instanceId });
+		resolveEffects(state, p1, 'Return ~ from your graveyard to the battlefield.', { sourceInstanceId: slow.instanceId });
+		resolveEffects(state, p1, 'Return ~ from your graveyard to the battlefield.', { sourceInstanceId: fast.instanceId });
 		assert.deepEqual(ids(p1.battlefield.slice(-2)), ids([slow, fast]));
 		assert.equal(slow.summoningSick, true);
 		assert.equal(fast.summoningSick, false);

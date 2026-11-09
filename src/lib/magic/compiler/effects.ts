@@ -32,7 +32,15 @@ import type {
 import type { CounterType, LibrarySearchSpec, ManaColor, ScryfallCard, StackItem } from '../types.ts';
 import { buildTokenSpec, parseLibrarySearchSpec } from '../oracle.ts';
 import { parseAdditionalCostSentence, parseObjectPhrase } from './costs.ts';
-import { hashText, normalizeFace, replaceSelfReferences, splitSentences, stripReminderText } from './normalize.ts';
+import {
+	hashText,
+	normalizeFace,
+	replaceSelfReferences,
+	splitSentences,
+	stripReminderText,
+	type NormalizedFace,
+	type NormalizedLine
+} from './normalize.ts';
 
 export interface EffectParse {
 	steps: EffectStep[];
@@ -120,9 +128,9 @@ const RESTRICTION_SENTENCES: RegExp[] = [
 	/^activate only once each turn\.?$/i,
 	/^activate only during your upkeep\.?$/i,
 	/^equip only as a sorcery\.?$/i,
-	/^cast ~ only during combat\.?$/i,
-	/^cast ~ only during your turn\.?$/i,
-	/^cast ~ only before attackers are declared\.?$/i,
+	/^cast (?:~|this spell) only during combat\.?$/i,
+	/^cast (?:~|this spell) only during your turn\.?$/i,
+	/^cast (?:~|this spell) only before attackers are declared\.?$/i,
 	/^~ can't be countered\.?$/i,
 	/^this spell can't be countered\.?$/i,
 	// Cost reductions of the spell itself are statics, applied when the cost is determined.
@@ -151,6 +159,8 @@ class Parser {
 	private lastObject?: { ref: Ref; stepIndex: number };
 	/** Implicit subject of a continued predicate ("Target player draws two cards and loses 2 life"). */
 	lastPlayer?: Selector;
+	/** "where X is ..." defined in an earlier sentence of the same ability (Thassa's Oracle). */
+	definedX?: Amount;
 
 	constructor(context: EffectContext) {
 		this.context = context;
@@ -161,11 +171,18 @@ class Parser {
 		this.lastObject = { ref: { k: 'binding', name: `b${stepIndex}` }, stepIndex };
 	}
 
+	/** Records a standalone target sentence ("You may target two cards in a graveyard.") for later "them"/"it". */
+	setLastTarget(ref: Ref): void {
+		this.lastObject = { ref, stepIndex: -1 };
+	}
+
 	/** "it" / "that creature": the last object acted on, or the trigger's object. */
 	itRef(): Ref | null {
 		if (this.lastObject) {
-			const step = this.steps[this.lastObject.stepIndex];
-			if (step) step.bindAs = (this.lastObject.ref as { name: string }).name;
+			if (this.lastObject.stepIndex >= 0) {
+				const step = this.steps[this.lastObject.stepIndex];
+				if (step) step.bindAs = (this.lastObject.ref as { name: string }).name;
+			}
 			return this.lastObject.ref;
 		}
 		if (this.context === 'triggered') return { k: 'eventObject' };
@@ -184,12 +201,20 @@ class Parser {
 		return null;
 	}
 
-	mark(): { steps: number; targets: number; lastPlayer?: Selector; lastObject?: { ref: Ref; stepIndex: number }; binds: Array<string | undefined> } {
+	mark(): {
+		steps: number;
+		targets: number;
+		lastPlayer?: Selector;
+		lastObject?: { ref: Ref; stepIndex: number };
+		definedX?: Amount;
+		binds: Array<string | undefined>;
+	} {
 		return {
 			steps: this.steps.length,
 			targets: this.targets.length,
 			lastPlayer: this.lastPlayer,
 			lastObject: this.lastObject,
+			definedX: this.definedX,
 			binds: this.steps.map((s) => s.bindAs)
 		};
 	}
@@ -199,6 +224,7 @@ class Parser {
 		this.targets.length = m.targets;
 		this.lastPlayer = m.lastPlayer;
 		this.lastObject = m.lastObject;
+		this.definedX = m.definedX;
 		this.steps.forEach((s, i) => {
 			if (m.binds[i] === undefined) delete s.bindAs;
 			else s.bindAs = m.binds[i];
@@ -249,6 +275,7 @@ function splitController(phrase: string): { phrase: string; controller?: ObjectF
 function objectFilter(phrase: string): ObjectFilter | null {
 	const p = phrase.trim();
 	if (/^(?:permanents?|cards?)$/i.test(p)) return {};
+	if (/^permanent cards?$/i.test(p)) return { notTypes: ['Instant', 'Sorcery'] };
 	return parseObjectPhrase(p);
 }
 
@@ -263,11 +290,15 @@ function targetPhrase(text: string): Omit<TargetSpec, 'min' | 'max'> | null {
 
 	let zone: ObjectFilter['zone'] = 'battlefield';
 	let owner: ObjectFilter['owner'];
-	const gy = phrase.match(/^(.+?) (?:from|in) (a|your|an opponent's) graveyard$/);
+	let sameOwner: boolean | undefined;
+	const gy = phrase.match(/^(.+?) (?:from|in) (?:(a|a single|the same|your|an opponent's|any number of|opponents') )?(graveyards?)$/);
 	if (gy) {
 		phrase = gy[1];
 		zone = 'graveyard';
-		owner = gy[2] === 'your' ? 'you' : gy[2] === 'a' ? undefined : 'opponent';
+		const qual = gy[2];
+		const plural = gy[3] === 'graveyards';
+		owner = qual === 'your' ? 'you' : qual === "an opponent's" || qual === "opponents'" ? 'opponent' : undefined;
+		if (!plural) sameOwner = true;
 	}
 	const spell = phrase.match(/^(?:(.+) )?spells?$/);
 	if (spell && zone === 'battlefield') {
@@ -287,7 +318,7 @@ function targetPhrase(text: string): Omit<TargetSpec, 'min' | 'max'> | null {
 	const out: ObjectFilter = { ...filter, zone };
 	if (ctl.controller) out.controller = ctl.controller;
 	if (owner) out.owner = owner;
-	return { kind: 'object', filter: out };
+	return { kind: 'object', filter: out, ...(sameOwner ? { sameOwner: true } : {}) };
 }
 
 /**
@@ -312,13 +343,20 @@ function objectPhrase(p: Parser, text: string): ObjectRes | null {
 		});
 		return { selector: { k: 'target', index }, ref: { k: 'target', index } };
 	}
-	const tgt = t.match(/^(?:(up to) )?(?:(\S+) )?target (.+)$/);
+	const tgt = t.match(/^(?:(up to) )?(?:(\S+) )?target (?:(one|two|three|four|five|six|\d+) )?(.+)$/);
 	if (tgt) {
-		const c = tgt[2] ? count(tgt[2]) : n(1);
+		const countWord = tgt[2] ?? tgt[3];
+		const c = countWord ? count(countWord) : n(1);
 		if (!c || c.k !== 'const') return null;
-		const spec = targetPhrase(tgt[3]);
+		const spec = targetPhrase(tgt[4]);
 		if (!spec) return null;
-		const index = p.addTarget({ ...spec, min: tgt[1] ? 0 : c.n, max: c.n });
+		const { sameOwner, ...restSpec } = spec;
+		const index = p.addTarget({
+			...restSpec,
+			min: tgt[1] ? 0 : c.n,
+			max: c.n,
+			...(sameOwner && c.n > 1 ? { sameOwner: true } : {})
+		});
 		return { selector: { k: 'target', index }, ref: { k: 'target', index }, plural: c.n > 1 };
 	}
 	const top = t.match(/^the top (.+) card of your graveyard$/);
@@ -437,8 +475,16 @@ function whereX(text: string): { text: string; x?: Amount; bad?: boolean } {
 	const m = text.match(/^(.+?),? where X is (.+)$/);
 	if (!m) return { text };
 	const num = m[2].match(/^the number of (.+)$/);
-	const x = num ? numberOf(num[1]) : null;
-	return x ? { text: m[1], x } : { text, bad: true };
+	if (num) {
+		const x = numberOf(num[1]);
+		return x ? { text: m[1], x } : { text, bad: true };
+	}
+	const dev = m[2].match(/^your devotion to (white|blue|black|red|green)$/);
+	if (dev) {
+		const color = ({ white: 'W', blue: 'U', black: 'B', red: 'R', green: 'G' } as const)[dev[1] as 'blue'];
+		return { text: m[1], x: { k: 'devotion', colors: [color] } };
+	}
+	return { text, bad: true };
 }
 
 function substituteX(a: Amount, x: Amount | undefined): Amount {
@@ -664,11 +710,11 @@ function playerPredicate(p: Parser, subject: Selector, vp: string, span: Span, f
 	const opt = optional ? { optional } : {};
 	p.lastPlayer = subject;
 
-	let m = text.match(/^draws? (\S+) cards?$/);
+	let m = text.match(/^draws? (?:(up to) )?(\S+) cards?$/);
 	if (m) {
-		const amount = count(m[1]);
+		const amount = count(m[2]);
 		if (!amount) return false;
-		p.push({ verb: 'draw', subject, amount, ...opt, span }, false);
+		p.push({ verb: 'draw', subject, amount, ...(m[1] ? { params: { upTo: true } } : opt), span }, false);
 		return true;
 	}
 	m = text.match(/^draws? (that many) cards$/);
@@ -793,7 +839,13 @@ function playerPredicate(p: Parser, subject: Selector, vp: string, span: Span, f
 	if (subject.k === 'player' && subject.filter.relation === 'you' && optional) {
 		const before = p.steps.length;
 		if (!imperative(p, text, span)) return false;
-		for (const s of p.steps.slice(before)) s.optional = optional;
+		for (const s of p.steps.slice(before)) {
+			if (s.verb === 'move' && s.params?.from === 'hand' && s.params?.to === 'battlefield') {
+				s.params = { ...s.params, upTo: true };
+			} else {
+				s.optional = optional;
+			}
+		}
 		return true;
 	}
 	return false;
@@ -840,16 +892,48 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 		p.push({ verb: 'counterSpell', subject: obj.selector, span }, true);
 		return true;
 	}
+	m = t.match(/^(?:you may )?target ((?:one|two|three|four|five|six|\d+) .+)$/);
+	if (m) {
+		const obj = objectPhrase(p, `target ${m[1]}`);
+		if (!obj || !obj.ref) return false;
+		p.setLastTarget(obj.ref);
+		return true;
+	}
 	m = t.match(/^return (.+?) to (?:its|their) owners?'s? hands?$/);
 	if (m) {
 		const obj = objectPhrase(p, m[1]);
 		if (!obj || obj.fromZone) return false;
+		if (obj.selector.k === 'target' && p.targets[obj.selector.index].filter.zone === 'graveyard') {
+			p.push({ verb: 'move', subject: obj.selector, params: { from: 'graveyard', to: 'hand' }, span }, true);
+			return true;
+		}
 		p.push({ verb: 'bounce', subject: obj.selector, span }, true);
+		return true;
+	}
+	m = t.match(/^put (a|an|one|two|three|\d+) (.+?) from your hand (?:(on top|on the bottom) of your library(?: in any order)?|onto the battlefield( tapped)?)$/);
+	if (m) {
+		const amount = count(m[1] === 'a' || m[1] === 'an' ? 'one' : m[1]);
+		const filter = amount && objectFilter(m[2]);
+		if (!amount || !filter || filter.zone || filter.controller) return false;
+		const to = m[3] ? ('library' as const) : ('battlefield' as const);
+		const params: NonNullable<EffectStep['params']> = { from: 'hand', to };
+		if (m[3]) params.position = m[3] === 'on top' ? 'top' : 'bottom';
+		if (m[4]) params.tapped = true;
+		p.push(
+			{
+				verb: 'move',
+				subject: { k: 'all', filter: { ...filter, zone: 'hand', owner: 'you' } },
+				amount,
+				params,
+				span
+			},
+			true
+		);
 		return true;
 	}
 	m = t.match(/^(?:return|put) (.+) (?:to|onto) the battlefield( tapped)?( under your control)?$/);
 	if (m) {
-		const self = m[1] === '~ from your graveyard';
+		const self = m[1] === '~ from your graveyard' || (m[1] === '~' && p.context === 'triggered');
 		const obj = self ? { selector: { k: 'self' } as Selector, fromZone: 'graveyard' as const } : objectPhrase(p, m[1]);
 		if (!obj) return false;
 		const fromGy =
@@ -890,11 +974,20 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 	}
 	m = t.match(/^create (.+)$/);
 	if (m) {
-		const copy = m[1].match(/^a token that's a copy of (.+)$/);
+		const copy = m[1].match(/^a token that's a copy of (.+?)(?:, except the token isn't legendary)?$/);
 		if (copy) {
+			const notLegendary = m[1].endsWith("except the token isn't legendary");
 			const obj = objectPhrase(p, copy[1]);
 			if (!obj) return false;
-			p.push({ verb: 'copyPermanent', subject: obj.selector, span }, true);
+			p.push(
+				{
+					verb: 'copyPermanent',
+					subject: obj.selector,
+					...(notLegendary ? { params: { notLegendary: true } } : {}),
+					span
+				},
+				true
+			);
 			return true;
 		}
 	}
@@ -912,6 +1005,13 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 		const amount = count(m[1]);
 		if (!amount) return false;
 		p.push({ verb: 'lookAndReorder', subject: YOU, amount, span }, false);
+		return true;
+	}
+	m = t.match(/^look at the top (\S+) cards of your library$/);
+	if (m) {
+		const amount = count(m[1]);
+		if (!amount) return false;
+		p.push({ verb: 'dig', subject: YOU, amount, span }, false);
 		return true;
 	}
 	if (/^take an extra turn after this one$/.test(t)) return playerPredicate(p, YOU, t, span, true);
@@ -1035,10 +1135,12 @@ const LOWER_START = new Set([
 
 const NEXT_END_STEP: TriggerDef = { event: 'phaseBegin', filter: { phase: 'end_step' }, scope: 'each_turn' };
 const THAT_TURNS_END_STEP: TriggerDef = { event: 'phaseBegin', filter: { phase: 'end_step' }, scope: 'controller_turn' };
+const NEXT_TURNS_UPKEEP: TriggerDef = { event: 'phaseBegin', filter: { phase: 'upkeep' }, scope: 'each_turn' };
 
-function delayedTrigger(when: string): TriggerDef | null {
-	if (when === 'the next end step') return NEXT_END_STEP;
-	if (when === "that turn's end step") return THAT_TURNS_END_STEP;
+function delayedTrigger(when: string): { trigger: TriggerDef; nextTurn?: boolean } | null {
+	if (when === 'the next end step') return { trigger: NEXT_END_STEP };
+	if (when === "that turn's end step") return { trigger: THAT_TURNS_END_STEP };
+	if (when === "the next turn's upkeep") return { trigger: NEXT_TURNS_UPKEEP, nextTurn: true };
 	return null;
 }
 
@@ -1067,6 +1169,15 @@ function sentence(p: Parser, text: string, span: Span): boolean {
 		prev.params = { ...prev.params, mayShuffle: true };
 		return true;
 	}
+	if (t === 'put up to one of them on top of your library and the rest on the bottom of your library in a random order') {
+		const prev = p.steps[p.steps.length - 1];
+		if (prev?.verb !== 'dig') return fail();
+		prev.params = {
+			...prev.params,
+			dig: { keep: 1, upTo: true, keepTo: 'libraryTop', rest: 'libraryBottom', restRandom: true }
+		};
+		return true;
+	}
 	if (t === "until your next turn, your life total can't change and you gain protection from everything") {
 		p.push(
 			{
@@ -1091,19 +1202,38 @@ function sentence(p: Parser, text: string, span: Span): boolean {
 		p.push({ verb: 'win', subject: YOU, params: { condition }, span }, false);
 		return true;
 	}
+	if (t === 'if X is greater than or equal to the number of cards in your library, you win the game') {
+		if (!p.definedX) return fail();
+		const condition: Condition = {
+			k: 'compare',
+			left: p.definedX,
+			op: '>=',
+			right: { k: 'cardsIn', zone: 'library', of: { k: 'you' } }
+		};
+		p.push({ verb: 'win', subject: YOU, params: { condition }, span }, false);
+		return true;
+	}
 
 	// Delayed effects: "At the beginning of the next end step, exile it." / "Exile it at the beginning of the next end step."
-	const lead = t.match(/^at the beginning of (the next end step|that turn's end step), (.+)$/);
-	const trail = t.match(/^(.+) at the beginning of (the next end step|that turn's end step)$/);
+	const lead = t.match(/^at the beginning of (the next end step|that turn's end step|the next turn's upkeep), (.+)$/);
+	const trail = t.match(/^(.+) at the beginning of (the next end step|that turn's end step|the next turn's upkeep)$/);
 	if (lead || trail) {
-		const trigger = delayedTrigger(lead ? lead[1] : trail![2]);
+		const dt = delayedTrigger(lead ? lead[1] : trail![2]);
 		const inner = lead ? lead[2] : trail![1];
-		if (!trigger) return fail();
+		if (!dt) return fail();
 		const before = p.steps.length;
 		if (!clauses(p, inner, span.start)) return fail();
 		const effect = p.steps.splice(before);
 		effect.forEach((s) => (s.span = span));
-		p.push({ verb: 'delayedTrigger', subject: { k: 'none' }, delayed: { trigger, effect }, span }, false);
+		p.push(
+			{
+				verb: 'delayedTrigger',
+				subject: { k: 'none' },
+				delayed: { trigger: dt.trigger, ...(dt.nextTurn ? { nextTurn: true } : {}), effect },
+				span
+			},
+			false
+		);
 		return true;
 	}
 
@@ -1112,6 +1242,7 @@ function sentence(p: Parser, text: string, span: Span): boolean {
 	if (wx.bad) return fail();
 	if (!clauses(p, wx.text, span.start)) return fail();
 	if (wx.x) {
+		p.definedX = wx.x;
 		for (const s of p.steps.slice(stepsBefore)) {
 			if (s.amount) s.amount = substituteX(s.amount, wx.x);
 			if (s.params?.toughness) s.params.toughness = substituteX(s.params.toughness, wx.x);
@@ -1192,22 +1323,23 @@ function isNonEffectLine(body: string): boolean {
 
 /**
  * The spell ability of an instant or sorcery: every line except keyword lines, additional costs,
- * cost reductions and timing restrictions, parsed as one effect.
+ * cost reductions and timing restrictions, parsed as one effect. `include` limits it to some lines
+ * (the compiler passes the lines that aren't keywords, triggers or activated abilities).
  */
-export function parseSpellText(name: string, rulesText: string): EffectParse {
-	const norm = normalizeFace(name, rulesText);
+export function parseSpellFace(norm: NormalizedFace, include: (line: NormalizedLine) => boolean = () => true): EffectParse {
 	const steps: EffectStep[] = [];
 	const targets: TargetSpec[] = [];
 	const unparsed: Span[] = [];
 	let modal: ModalDef | undefined;
 	const effectSentences: Array<{ text: string; span: Span }> = [];
+	const lines = norm.lines.filter(include);
 
-	for (let i = 0; i < norm.lines.length; i++) {
-		const line = norm.lines[i];
+	for (let i = 0; i < lines.length; i++) {
+		const line = lines[i];
 		if (/^choose\b.*—$/i.test(line.text)) {
 			const bullets: Array<{ text: string; start: number; end: number }> = [];
-			while (norm.lines[i + 1]?.text.startsWith('•')) {
-				const b = norm.lines[++i];
+			while (lines[i + 1]?.text.startsWith('•')) {
+				const b = lines[++i];
 				bullets.push({ text: b.text, start: b.span.start, end: b.span.end });
 			}
 			const m = parseModal(line.text, bullets);
@@ -1241,6 +1373,10 @@ export function parseSpellText(name: string, rulesText: string): EffectParse {
 	return { steps, targets, modal, unparsed };
 }
 
+export function parseSpellText(name: string, rulesText: string): EffectParse {
+	return parseSpellFace(normalizeFace(name, rulesText));
+}
+
 /** Parses the effect part of an activated ability ("Draw a card.", raw text with the card's name). */
 export function parseAbilityEffectText(name: string, effectText: string): EffectParse {
 	const text = replaceSelfReferences(stripReminderText(effectText), name);
@@ -1251,6 +1387,48 @@ export function parseAbilityEffectText(name: string, effectText: string): Effect
 
 const STACK_CACHE = new Map<string, EffectParse>();
 const MANA_STEPS_CACHE = new Map<string, EffectStep[]>();
+
+/**
+ * Extracts best-effort `TargetSpec[]` from an unparsed spell or ability text so humans still get
+ * the target picker before manual resolution (CR 601.2c) when the effect sentence isn't automated.
+ */
+export function extractUnparsedTargets(text: string): TargetSpec[] {
+	const low = text.toLowerCase();
+	if (/\bany target\b/.test(low)) {
+		return [
+			{
+				kind: 'objectOrPlayer',
+				filter: { zone: 'battlefield', types: ['Creature', 'Planeswalker', 'Battle'] },
+				player: { relation: 'any' },
+				min: 1,
+				max: 1
+			}
+		];
+	}
+	const m = low.match(
+		/\b(?:(up to) )?(?:(one|two|three|four|five|six|\d+) )?target (?:(one|two|three|four|five|six|\d+) )?([^.,;\n]+)/
+	);
+	if (!m) return [];
+	const countWord = m[2] ?? m[3];
+	const c = countWord ? count(countWord) : n(1);
+	const countNum = c && c.k === 'const' ? c.n : 1;
+	const words = m[4].trim().split(/\s+/);
+	for (let len = Math.min(words.length, 8); len >= 1; len--) {
+		const spec = targetPhrase(words.slice(0, len).join(' '));
+		if (spec) {
+			const { sameOwner, ...restSpec } = spec;
+			return [
+				{
+					...restSpec,
+					min: m[1] ? 0 : countNum,
+					max: countNum,
+					...(sameOwner && countNum > 1 ? { sameOwner: true } : {})
+				}
+			];
+		}
+	}
+	return [];
+}
 
 /**
  * The compiled effect of a resolving spell or activated ability. Lives in the compiler because it

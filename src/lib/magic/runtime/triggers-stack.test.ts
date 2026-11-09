@@ -372,7 +372,11 @@ describe('Step D: triggered abilities use the stack', () => {
 				targetObjectVersion: target.objectVersion,
 				title: 'Ghastly Recall — Delayed Exile Trigger',
 				description: 'At the beginning of the next end step, exile Borrowed Bear.',
-				effects: [{ kind: 'exile_target', amount: 1 }],
+				delayedEffect: {
+					kind: 'exile',
+					targetInstanceId: target.instanceId,
+					targetObjectVersion: target.objectVersion
+				},
 				createdAtTurn: state.turnNumber
 			}
 		];

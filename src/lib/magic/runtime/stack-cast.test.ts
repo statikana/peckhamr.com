@@ -4,11 +4,12 @@ import assert from 'node:assert/strict';
 import {
 	applyGameAction,
 	checkLandPlayLegality,
+	checkSpellCastLegality,
 	checkStateBasedActions,
 	createCardInstance,
 	createInitialGameState,
 	createTokenOnBoard,
-	evaluateActionNode,
+	getCardActivatedAbilities,
 	getEffectiveActivatedAbilities,
 	movePermanentToZone,
 	resolveTopOfStack
@@ -16,8 +17,6 @@ import {
 import {
 	canPayManaCost,
 	deductManaFromPool,
-	getPermanentManaProduction,
-	parseActivatedAbilities,
 	parseManaCost
 } from '../oracle.ts';
 import { STAPLE_CARDS, PRECON_DECKS } from '../precons.ts';
@@ -454,12 +453,11 @@ describe('Wave 3C — Task 4: excludeSelf Instance Identity (CR 201.5) & Delayed
 		const effCost = effectiveSpellManaCost(state, p1, secondCopyInHand);
 		assert.equal(effCost.generic, 1, 'Second copy in hand gets {1} discount from on-board copy');
 
-		const evalNode = evaluateActionNode(state, p1.playerId, secondCopyInHand, 'cast.normal');
-		assert.ok(evalNode);
+		p1.manaPool = { W: 0, U: 0, B: 0, R: 2, G: 0, C: 0 };
 		assert.equal(
-			evalNode.effectiveCostRequirement.generic,
-			1,
-			'evaluateActionNode also applies {1} discount to second copy with same card name'
+			checkSpellCastLegality(state, p1.playerId, secondCopyInHand, 'hand').ok,
+			true,
+			'checkSpellCastLegality also applies {1} discount to second copy with same card name'
 		);
 	});
 
@@ -747,7 +745,7 @@ describe('Wave 3C — Task 6: Mana, Costs, Taxes & Land Plays', () => {
 		);
 
 		assert.equal(
-			getPermanentManaProduction(maze.card, ['W', 'U', 'B', 'R', 'G']).canTapForMana,
+			getEffectiveActivatedAbilities(state, p2, maze).some((a) => a.isManaAbility),
 			false,
 			'Maze of Ith has no mana ability (CR 305.6)'
 		);
@@ -774,7 +772,7 @@ describe('Wave 3C — Task 6: Mana, Costs, Taxes & Land Plays', () => {
 			oracleText:
 				'{2}, {T}, Tap an untapped artifact you control, Sacrifice another nonland permanent you control: Draw two cards.'
 		});
-		const abilities = parseActivatedAbilities(longCostCard, ['W', 'U', 'B', 'R', 'G']);
+		const abilities = getCardActivatedAbilities(longCostCard, ['W', 'U', 'B', 'R', 'G']);
 		assert.equal(abilities.length, 1, 'Activated ability with >75-char cost before colon is parsed');
 	});
 

@@ -314,6 +314,19 @@ export function getAttackTaxGeneric(
 	return total;
 }
 
+export function getAttackTaxSources(
+	state: GameState,
+	defenderOrId: PlayerGameState | string
+): string[] {
+	const defender = resolvePlayer(state, defenderOrId);
+	if (!defender) return [];
+	const names: string[] = [];
+	for (const mod of activeRuleModifiers(state, 'attackTax', defender.playerId)) {
+		if (!names.includes(mod.sourceName)) names.push(mod.sourceName);
+	}
+	return names;
+}
+
 /**
  * Evaluates global cast permissions (Leyline of Anticipation, Vedalken Orrery, type-filtered flash)
  * and restrictions (Rule of Law, Drannith Magistrate, Grand Abolisher, Teferi, Time Raveler).

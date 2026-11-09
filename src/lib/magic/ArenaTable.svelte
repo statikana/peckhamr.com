@@ -8,26 +8,22 @@
 		checkSuspendLegality,
 		computeCombatDamageForecast,
 		getAttachedCardsOnBoard,
-		getCardRuleTree,
 		getCreaturePower,
 		getCreatureToughness,
 		getEffectiveActivatedAbilities,
 		getHostCardOnBoard,
 		getPlayerCommanderIdentity,
 		getSpellCostRequirement,
+		getSpellTargetRequirement,
+		getSuspendSpec,
 		hasKeyword,
 		inspectCardContinuousBreakdown,
 		validateTargetLegality
 	} from './engine';
 	import ManaSymbol from './ManaSymbol.svelte';
 	import ManaText from './ManaText.svelte';
-	import {
-		detectTargetRequirement,
-		parseActivatedAbilities,
-		parseManaCost,
-		parseSpellOrAbilityEffects,
-		parseSuspendClause
-	} from './oracle';
+	import { parseManaCost } from './oracle';
+	import { keywordCost } from './runtime/costs';
 	import { matchesScryfallQuery } from './search';
 	import { cardSupportReport, displayAbilityText, unsupportedKindLabel } from './compiler/support';
 	import { effectivePromptChoice, effectivePromptPurpose } from './runtime/choices';
@@ -901,7 +897,7 @@
 		}
 		if (
 			inst.card.manaCost.includes('{X}') ||
-			getCardRuleTree(inst.card).actions.some((a) => a.path === 'cast.overload')
+			keywordCost(inst.card, 'overload') !== null
 		) {
 			return (
 				checkSpellCastLegality(gameState, me.playerId, inst, fromZone, 0).ok ||
@@ -1237,14 +1233,14 @@
 	async function handleDropOnTarget(e: DragEvent, tRef: TargetRef) {
 		if (!draggingCard || !me) return;
 		const { inst, fromZone } = draggingCard;
-		const parsed = parseSpellOrAbilityEffects(inst.card);
-		if (!parsed.requiresTarget) return;
+		const targetInfo = getSpellTargetRequirement(inst.card);
+		if (!targetInfo.requiresTarget) return;
 
 		const isValidTarget = validateTargetLegality(
 			gameState,
 			me.playerId,
 			tRef,
-			parsed.targetInfo,
+			targetInfo,
 			inst.card,
 			inst.instanceId
 		).ok;
@@ -1255,7 +1251,7 @@
 		draggingCard = null;
 		dragOverZone = null;
 
-		if (parsed.targetInfo.minTargets <= 1 && parsed.targetInfo.maxTargets <= 1) {
+		if (targetInfo.minTargets <= 1 && targetInfo.maxTargets <= 1) {
 			await onGameAction({
 				type: 'cast_spell',
 				instanceId: inst.instanceId,
@@ -1328,21 +1324,21 @@
 		fromZone: 'hand' | 'command' | 'exile',
 		xVal: number
 	) {
-		const parsed = parseSpellOrAbilityEffects(inst.card);
+		const targetInfo = getSpellTargetRequirement(inst.card);
 		const isOverloadRift =
-			xVal >= 1 && getCardRuleTree(inst.card).actions.some((a) => a.path === 'cast.overload');
-		if (parsed.requiresTarget && !isOverloadRift) {
+			xVal >= 1 && keywordCost(inst.card, 'overload') !== null;
+		if (targetInfo.requiresTarget && !isOverloadRift) {
 			pendingTargetAction = {
 				mode: 'spell',
 				instanceId: inst.instanceId,
 				card: inst.card,
-				targetKind: parsed.targetKind,
-				targetInfo: parsed.targetInfo,
+				targetKind: targetInfo.targetKind,
+				targetInfo,
 				selectedTargets: [],
 				fromZone,
 				xValue: xVal
 			};
-			openGraveyardTargetingModalIfNeeded(parsed.targetInfo);
+			openGraveyardTargetingModalIfNeeded(targetInfo);
 			return;
 		}
 
@@ -2658,7 +2654,7 @@
 							<div class="hand-fan">
 								{#each sortedHand as cardInst, idx (cardInst.instanceId)}
 									{@const playable = isCardPlayableNow(cardInst, 'hand')}
-									{@const suspendClause = parseSuspendClause(cardInst.card)}
+									{@const suspendClause = getSuspendSpec(cardInst.card)}
 									{@const canSuspend = me ? checkSuspendLegality(gameState, me.playerId, cardInst).ok : false}
 									{@const offset = idx - (sortedHand.length - 1) / 2}
 									<div class="hand-card-wrap" style="--fan-rot: {offset * 1.4}deg; --fan-y: {Math.abs(offset) * 1.5}px;">
@@ -2681,7 +2677,7 @@
 												{#if cardInst.card.manaCost}
 													<ManaText text={cardInst.card.manaCost} size={14} />
 												{:else if suspendClause}
-													Susp {suspendClause.cost}
+													Susp {suspendClause.suspendCost}
 												{:else}
 													Land
 												{/if}
@@ -2691,7 +2687,7 @@
 											<button
 												type="button"
 												class="hc-suspend-btn"
-												title="Suspend {suspendClause.timeCounters} — {suspendClause.cost}"
+												title="Suspend {suspendClause.timeCounters} — {suspendClause.suspendCost}"
 												onclick={async (e) => {
 													e.stopPropagation();
 													await onGameAction({ type: 'suspend_card', instanceId: cardInst.instanceId });
@@ -3038,25 +3034,13 @@
 								const perm = selectedPermanentForAbility!;
 								selectedPermanentForAbility = null;
 								if (ab.requiresTarget) {
-									const abTargetInfo: TargetRequirementInfo =
-										ab.targetKind === 'controlled_creature'
-											? {
-													requiresTarget: true,
-													targetKind: 'controlled_creature',
-													minTargets: 1,
-													maxTargets: 1,
-													zone: 'battlefield',
-													sameGraveyard: false,
-													controllerFilter: 'you',
-													cardTypeFilter: 'Creature'
-												}
-											: detectTargetRequirement(ab.effectText);
+									const abTargetInfo: TargetRequirementInfo = ab.targetInfo;
 									pendingTargetAction = {
 										mode: 'ability',
 										instanceId: perm.instanceId,
 										abilityId: ab.id,
 										card: perm.card,
-										targetKind: ab.targetKind,
+										targetKind: ab.targetInfo.targetKind,
 										targetInfo: abTargetInfo,
 										selectedTargets: [],
 										xValue: 0
@@ -3420,21 +3404,6 @@
 							>
 								{myPrompt.yesLabel || 'Apply & Complete Resolution'}
 							</button>
-							{#if myPrompt.noLabel}
-								<button
-									type="button"
-									class="hud-btn"
-									title="Let the engine resolve it with its older text-based approximation"
-									onclick={() =>
-										onGameAction({
-											type: 'choice',
-											promptId: myPrompt.id,
-											answer: { kind: 'yesNo', yes: false }
-										})}
-								>
-									{myPrompt.noLabel}
-								</button>
-							{/if}
 							{#if myPrompt.cancellable}
 								<button
 									type="button"

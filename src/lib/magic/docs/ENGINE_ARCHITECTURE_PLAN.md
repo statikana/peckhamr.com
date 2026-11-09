@@ -1265,7 +1265,7 @@ Results are unchanged: layer snapshots and golden games pass without regeneratin
     - Baseline test `E3` in `magic.test.ts` passes with its `{ todo }` marker removed; added 5 tests
       in `runtime/ai.test.ts`. `layers.snapshot.test.ts` and `runtime/golden.test.ts` pass unchanged.
 
-### Phase 10: Delete the legacy layer ⚠️ NOT done (re-verified 2026-11-09 at 93b78a8)
+### Phase 10: Delete the legacy layer ✅ done 2026-11-09 (branch `engine-rewrite-f`)
 
 **Correction (coordinating session, 2026-11-09).** The "done" claim below was based on the original
 three ratchet rules, which the code satisfied by moving rules-text reads into `oracle.ts`, which is
@@ -1291,15 +1291,15 @@ engine.ts 7, oracle.ts 2. **Phase 10's exit now also requires both to be 0.**
 **Remaining roadmap (agreed with the user, 2026-11-09):**
 - A. Honest ratchet. ✅ (above)
 - B. Cache-validation performance regression (1.2–1.7 s per bot turn at 60–69 permanents, against
-  161–265 ms after Phase 6a). Branch `engine-rewrite-perf2`, recorded as Phase 6c.
-- C. Run triggered-ability effects on the IR interpreter (`runtime/effects.ts`).
+  161–265 ms after Phase 6a). Branch `engine-rewrite-perf2`, recorded as Phase 6c. ✅
+- C. Run triggered-ability effects on the IR interpreter (`runtime/effects.ts`). ✅
 - D. Put all triggers on the stack (today only phase-begin battlefield triggers use it; the rest
   resolve inline, against CR 603.3), with player-chosen ordering via `orderObjects`. The user
-  play-tests this.
+  play-tests this. ✅
 - E. Unsupported abilities per §2.7: allowed by default; resolved through the guided manual prompt;
-  deck-builder warning; lobby rule to block them.
+  deck-builder warning; lobby rule to block them. ✅
 - F. Real Phase 10: migrate the remaining runtime callers to IR, then delete the legacy layer;
-  `legacyTextHelperCall` and `cardNameInCode` reach 0.
+  `legacyTextHelperCall` and `cardNameInCode` reach 0. ✅
 
 Then an ultra code review of the branch, doc clean-up, and push.
 
@@ -1426,6 +1426,64 @@ Then an ultra code review of the branch, doc clean-up, and push.
   and shuffles and random costs use it. `uid()` still uses `Math.random` (ids only; deferred).
 - Removed the unused `StackItem.interveningIfCondition`. The `legacyTextHelperCall` ratchet for
   engine.ts went from 29 to 28.
+
+#### Step F results (branch `engine-rewrite-f`, 2026-11-09)
+- **All five architecture ratchet categories at `0` (`architecture-allowances.json`):**
+  `cardNameComparison`, `oracleTextRead`, `directZoneMutation`, `legacyTextHelperCall` (`28 / 21 / 2 → 0`),
+  and `cardNameInCode` (`7 / 2 → 0`) are `0` across every runtime, compiler, and `oracle.ts` file.
+- **Grammar compiler replaces the adapter (`compiler/card.ts`, `compiler/interpretable.ts`, `COMPILER_VERSION = 4`):**
+  - `compiler/card.ts` compiles every card directly from normalized Oracle text through `parseCost` /
+    `parseAdditionalCostSentence` (`compiler/costs.ts`), `parseTrigger` (`compiler/triggers.ts`),
+    `parseEffects` (`compiler/effects.ts`), and `parseStaticAbility` (`compiler/statics.ts`),
+    attaching `castAdditionalCosts`, `castRestrictions`, and `suspend: { timeCounters, cost }` on
+    `CardFaceDef`.
+  - `compiler/interpretable.ts` defines the single `isAbilityAutomated(ability)` /
+    `stepsStaticallyInterpretable(steps)` predicate shared by `compileCard`, `definitionSupportReport`
+    (`compiler/support.ts`), `staticallyInterpretable` (`runtime/effects.ts`), and the coverage script
+    (`scripts/magic-coverage.ts`).
+  - Unparsed spell faces still attach best-effort `targets: TargetSpec[]` (`extractUnparsedTargets`)
+    to `UnsupportedAbility(id: 'cast')` so human players choose targets before manual resolution.
+- **Precon automation expanded (zero regressions):**
+  - Every one of the **125** precon abilities automated before Step F (82 `interpreter`, 13 `legacy`,
+    30 `engine` in `compiler/automation.baseline.json`) is now automated directly on the IR, verified by
+    both `compiler/automation.test.ts` (static IR check) and `runtime/step-f-automation.test.ts`
+    (runtime execution test for all 125 abilities).
+  - Precon abilities previously on the legacy fallback or uncompiled that now compile and execute on
+    the IR: **Brainstorm** (`rearrangeTop` + `putHandOnTop`), **Ponder** (`rearrangeTop` + `may`
+    `shuffle`), **Arcane Denial** (`createDelayedTrigger` up-to-N draw at next upkeep), **Thassa's
+    Oracle** (`winGame` if `devotion >= cardsIn(library)`), **The Ur-Dragon** (`draw` + `may` put a
+    permanent card from hand onto the battlefield), **Miirym, Sentinel Wyrm** (`copyPermanent`
+    non-legendary token copy of `eventObject`), **Scourge of Valkas** (ETB/other-Dragon damage equal
+    to `permanentsMatching` Dragons you control + `{R}: ~ gets +1/+0 until end of turn`), **Nether
+    Shadow** (upkeep graveyard check with `graveyardCardsAbove >= 3` returning `self` to the
+    battlefield), **Dack Fayden** (`-2: Gain control of target artifact`), **Lathliss, Dragon Queen**,
+    **Risen Reef**, **Syr Konrad, the Grim**, **Bident of Thassa**, **Kess, Dissident Mage**, **Tivit,
+    Seller of Secrets**, **Tymna the Weaver**, and **Windgrace's Judgment**.
+- **Legacy layer deleted (~3,000 net lines removed across `oracle.ts`, `ruleTree.ts`, `engine.ts`, `compiler/adapter.ts`):**
+  - Deleted `compiler/adapter.ts`.
+  - Deleted `executeParsedEffect`, `ParsedEffect`, `ParsedEffectKind`, `ParsedActivatedAbility`,
+    `TargetKind`, `parseSpellOrAbilityEffects`, `parseActivatedAbilities`,
+    `parseStructuredTriggeredAbilities`, `parseTriggeredEffects`, `parseDelayedTriggersFromSpell`,
+    `parseAdditionalCostsAndRestrictions`, `detectTargetRequirement`, `getPermanentManaProduction`,
+    `parseSuspendClause`, `getCardRuleTree`, `clearRuleTreeCache`, `StackItem.legacyEventTarget`,
+    `RuntimeTrigger.legacy`, `EvaluatedActivatedAbility.legacy`, and the `"Use the engine's
+    approximation instead"` button/path (`PendingPrompt.hasLegacyApproximation`, `useApproximation`).
+  - `oracle.ts` is reduced to a 261-line text-free module exporting only mana-symbol/cost utilities,
+    type-line/counter helpers, and `parseLibrarySearchSpec` (used by `compiler/effects.ts`).
+- **Legend Rule SBA (`CR 704.5j`) and deterministic `uid()` (invariant 7.2):**
+  - When a human player controls 2+ legendary permanents with the same name, `runStateBasedActions`
+    enqueues a `legend_rule` (`chooseObjects`) prompt allowing the human to choose which copy to keep;
+    bots continue to keep the highest-scored copy automatically (`runtime/step-f-legend-uid.test.ts`).
+  - `uid(prefix, state)` uses a deterministic per-state counter (`state.nextUid`) instead of
+    `Math.random()` and `Date.now()`.
+- **Regenerated `COVERAGE.md` (compiler v4, 35,062 Scryfall cards):**
+  - All game cards: **6,873 / 35,062 (19.6%) fully supported** (up from 12.6% in v1), **10,267
+    (29.3%) ignoring statics**, **24,363 / 62,490 (39.0%) abilities supported**, **0 compiler errors**,
+    cold start **32 ms for 400 cards (0.08 ms/card)**.
+  - Precon decks: **121 / 140 (86.4%) cards fully supported** (up from 53.2% in v1 and 76.4% in E1),
+    **126 / 140 (90.0%) ignoring statics**, **207 / 226 (91.6%) abilities supported**.
+- **Suite:** **862 tests pass, 0 todo, 0 fail**; **0 `svelte-check` errors** across `src/lib/magic` and
+  `src/routes/magic`.
 
 *Original (superseded) entry:*
 - **Work:** remove `CardRuleTree` (or keep it as a thin view over the IR for the inspector UI),

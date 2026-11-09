@@ -872,7 +872,6 @@ describe('Wave 3A — 4. CR 508.1b / 509.1 / 701.15b / 702.16e / 702.19c Attack 
 			oracleText: '',
 			targets: [],
 			xValue: 0,
-			parsedEffects: [],
 			requiresGuidedResolution: false,
 			createdAt: 0
 		});

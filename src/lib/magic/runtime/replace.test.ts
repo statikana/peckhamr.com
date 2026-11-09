@@ -11,7 +11,6 @@ import {
 	playerHasHexproofFrom as enginePlayerHasHexproofFrom,
 	playerHasShroud as enginePlayerHasShroud
 } from '../engine.ts';
-import { cardEntersTapped as oracleCardEntersTapped } from '../oracle.ts';
 import { PRECON_DECKS, STAPLE_CARDS } from '../precons.ts';
 import {
 	checkGlobalCastPermissionsAndRestrictions as ruleTreeCastRules,
@@ -594,9 +593,7 @@ describe('Phase 7: runtime/replace.ts — Replacements & Scoped Multipliers', ()
 			oracleText: 'Glacial Fortress enters tapped unless you control a Plains or an Island.'
 		});
 		assert.equal(cardEntersTapped(tapLand), true);
-		assert.equal(oracleCardEntersTapped(tapLand), true);
 		assert.equal(cardEntersTapped(checkLand), false);
-		assert.equal(oracleCardEntersTapped(checkLand), false);
 
 		// Self ETB with counters, doubled by Corpsejack Menace!
 		putOnBattlefield(state, p1Id, getCardByName('Corpsejack Menace')!);

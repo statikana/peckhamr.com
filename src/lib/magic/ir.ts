@@ -65,6 +65,8 @@ export type AbilityDef =
 export interface KeywordAbility {
 	kind: 'keyword';
 	keyword: KeywordDef;
+	/** Equip (an activated ability, CR 702.6a): the id the runtime activates it by (`equip_<line>`). */
+	id?: string;
 	span: Span;
 }
 
@@ -74,6 +76,8 @@ export interface SpellAbility {
 	targets: TargetSpec[];
 	effect: EffectStep[];
 	modal?: ModalDef;
+	/** CR 601.3: "Cast ~ only during combat." and similar timing restrictions. */
+	castRestrictions?: Array<'duringCombat' | 'duringYourTurn' | 'beforeAttackers'>;
 	span: Span;
 }
 
@@ -90,11 +94,12 @@ export interface ActivatedAbility {
 	 */
 	intrinsic?: boolean;
 	/**
-	 * Transitional (until Phase 10): the id of the legacy ParsedActivatedAbility this ability was
-	 * adapted from (`act_3`, `loyalty_1`, `mana_tap`), so the runtime can find the IR cost of the
-	 * ability a player activates.
+	 * The id a player activates the ability by: `mana_tap` (the first "{T}: Add ..." ability),
+	 * `loyalty_<line>`, `act_<line>`, where <line> is the index of the line in the printed text.
 	 */
-	legacyId?: string;
+	id: string;
+	/** The ability's normalised text (`~` for the card's name). Display only. */
+	text?: string;
 	span: Span;
 }
 
@@ -105,6 +110,8 @@ export interface TriggeredAbility {
 	condition?: Condition;
 	targets: TargetSpec[];
 	effect: EffectStep[];
+	/** The ability's normalised text (`~` for the card's name). Display only. */
+	text?: string;
 	span: Span;
 }
 
@@ -144,15 +151,27 @@ export interface UnsupportedAbility {
 	span: Span;
 	/** The parts of `text` nothing claimed, if narrower than the whole ability. */
 	unparsed: Span[];
-	/** Transitional: see ActivatedAbility.legacyId. Set for activated-ability lines. */
-	legacyId?: string;
 	/**
-	 * For an activated ability whose effect (or part of whose cost) is unsupported: the cost parts the
-	 * cost grammar did understand. The runtime still pays these when the legacy path resolves the
-	 * effect. `costComplete` is false if part of the cost itself is unparsed.
+	 * Activated-ability lines: the ability's id (see ActivatedAbility.id); `cast` for an additional
+	 * cost of a spell whose effect isn't supported.
+	 */
+	id?: string;
+	/**
+	 * For an activated ability (or spell) whose effect or part of whose cost is unsupported: the cost
+	 * parts the cost grammar did understand. The runtime still pays these, then the ability is
+	 * resolved manually. `costComplete` is false if part of the cost itself is unparsed.
 	 */
 	cost?: CostDef[];
 	costComplete?: boolean;
+	/** Activated-ability lines: when it may be activated, and whether it is a mana ability. */
+	timing?: Timing;
+	isMana?: boolean;
+	/** Mana abilities whose `addMana` step is understood even if a trailing rider ("When that mana is spent...") isn't. */
+	effect?: EffectStep[];
+	/** Target specs recognized in an activated ability or spell whose full effect is unsupported. */
+	targets?: TargetSpec[];
+	/** CR 601.3: timing restrictions recognized on an unsupported spell. */
+	castRestrictions?: Array<'duringCombat' | 'duringYourTurn' | 'beforeAttackers'>;
 	/**
 	 * Phase 5: a triggered ability whose trigger head (and intervening-if) is understood but whose
 	 * effect isn't. The runtime still knows when it triggers (section 2.7).
@@ -180,6 +199,12 @@ export interface KeywordDef {
 	param?: string;
 	/** Suspend N, Annihilator N, ... */
 	n?: number;
+	/** Ward: the cost the opponent pays ("Ward {2}", "Ward—Pay 3 life"), compiled by the cost grammar. */
+	costDefs?: CostDef[];
+	/** Equip [quality] (CR 702.6a): what the creature must be besides "creature you control". */
+	equipFilter?: ObjectFilter;
+	/** Enchant [quality] (CR 303.4a, 702.5): what the Aura can enchant (and so, as a spell, target). */
+	enchantFilter?: ObjectFilter;
 }
 
 // ---- Filters --------------------------------------------------------------------------------
@@ -327,7 +352,12 @@ export type Verb =
 	| 'discard'
 	| 'tap'
 	| 'untap'
-	| 'tapOrUntap';
+	| 'tapOrUntap'
+	/**
+	 * Look at the top N cards of your library, then put up to `dig.keep` of them somewhere and the
+	 * rest elsewhere ("Put up to one of them on top of your library and the rest on the bottom").
+	 */
+	| 'dig';
 
 export type Duration = 'endOfTurn' | 'permanent' | 'untilYourNextTurn';
 
@@ -341,7 +371,8 @@ export interface EffectStep {
 	params?: EffectParams;
 	optional?: { chooser: PlayerRef };
 	bindAs?: BindingName;
-	delayed?: { trigger: TriggerDef; effect: EffectStep[] };
+	/** `nextTurn`: "at the beginning of the next turn's upkeep" (not this turn's). */
+	delayed?: { trigger: TriggerDef; effect: EffectStep[]; nextTurn?: boolean };
 	span: Span;
 }
 
@@ -374,6 +405,14 @@ export interface EffectParams {
 	with?: Selector;
 	/** discard / sacrifice: "at random". */
 	atRandom?: boolean;
+	/** move to a library: top or bottom ("put two cards from your hand on top of your library"). */
+	position?: 'top' | 'bottom';
+	/** The chooser picks up to `amount` ("draw up to two cards", "you may put a permanent card ..."). */
+	upTo?: boolean;
+	/** copyPermanent: "except the token isn't legendary". */
+	notLegendary?: boolean;
+	/** dig: where the kept cards and the rest go. */
+	dig?: { keep: number; upTo: boolean; keepTo: 'libraryTop' | 'hand'; rest: 'libraryBottom' | 'graveyard'; restRandom?: boolean };
 }
 
 export interface TokenSpec {
@@ -533,7 +572,8 @@ export type RuleModKind =
 	| 'spendManaAsAnyColor'
 	/** "During your turn, your opponents can't cast spells". */
 	| 'opponentsCantCastDuringYourTurn'
-	| 'lifeTotalCantChange';
+	| 'lifeTotalCantChange'
+	| 'extraLandPlays';
 
 export type RestrictionKind =
 	| 'cantAttack'
@@ -606,6 +646,8 @@ export interface ReplacementDef {
 				tapped?: boolean;
 				/** "~ enters with N +1/+1 counters on it". */
 				counters?: { counter: CounterType; amount: Amount };
+				/** "You may have ~ enter as a copy of any creature on the battlefield" (CR 707). */
+				copyOf?: ObjectFilter;
 		  };
 	who?: PlayerFilter;
 	/** Only applies while this holds ("while your library has no cards in it"). */

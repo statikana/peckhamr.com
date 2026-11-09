@@ -221,8 +221,10 @@ function parseGrantedManaAbility(quoted: string): AbilityDef | null {
 		params = { mana: syms };
 		amount = syms.length;
 	} else return null;
+	const colors = params.mana ? [...new Set(params.mana)].join('').toLowerCase() : 'any';
 	return {
 		kind: 'activated',
+		id: `granted_mana_${colors}`,
 		cost: cost.defs,
 		targets: [],
 		effect: [{ verb: 'addMana', subject: { k: 'none' }, amount: n(amount), params, span }],
@@ -264,6 +266,9 @@ const replacements: Production = (s, span) => {
 		if (amount && counter) {
 			return [{ kind: 'replacement', replacement: { replaces: entersSelf, with: { k: 'modify', counters: { counter, amount } } } }];
 		}
+	}
+	if (/^(?:you may have )?~ enters? (?:the battlefield )?as a copy of any creature(?: on the battlefield)?$/i.test(s)) {
+		return [{ kind: 'replacement', replacement: { replaces: entersSelf, with: { k: 'modify', copyOf: { types: ['Creature'], zone: 'battlefield' } } } }];
 	}
 	return null;
 };
@@ -398,6 +403,11 @@ const ruleModifiers: Production = (s) => {
 		return [rule('searchControl', 'each_opponent', { grantPlayFromExile: true })];
 	}
 	if (low === 'players may spend mana as though it were mana of any color') return [rule('spendManaAsAnyColor', 'each_player')];
+	const extraLands = low.match(/^you may play (an?|one|two|three|four|\d+) additional lands?(?: on each of your turns)?$/);
+	if (extraLands) {
+		const amt = count(extraLands[1]);
+		if (amt && amt.k === 'const') return [rule('extraLandPlays', 'you', { count: amt.n })];
+	}
 	return null;
 };
 
@@ -435,7 +445,7 @@ function costModifiers(activeZones?: ZoneType[]): Production {
 		}
 		const equip = s.match(/^Equip abilities you activate cost (\{\d+\}) less to activate$/i);
 		if (equip) return build({ k: 'ability', keyword: 'equip' }, equip[1], 'less', 'you');
-		if (/^Equipment you control have equip \{0\}$/i.test(s)) {
+		if (/^(?:Equipment you control have equip \{0\}|Equip abilities you activate cost \{0\})$/i.test(s)) {
 			const def: StaticDef = { k: 'costModifier', affects: { k: 'ability', keyword: 'equip' }, delta: { mode: 'setZero', generic: 0 }, who: { relation: 'you' } };
 			return [{ kind: 'static', static: def }];
 		}

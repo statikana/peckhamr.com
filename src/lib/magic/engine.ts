@@ -2,82 +2,49 @@ import {
 	buildTokenScryfallCard,
 	createEmptyManaPool,
 	canPayManaCost,
-	cardEntersAsCopyOfAnyCreature,
-	cardEntersTapped,
-	cardHasPrintedUnblockable,
 	deductManaFromPool,
 	describeLibrarySearchDestination,
-	detectTargetRequirement,
-	getCardExtraLandPlays,
-	getCardRulesText,
-	getDelayedTriggerText,
-	getPermanentManaProduction,
-	getStackItemRulesText,
-	getStackItemTargetRequirement,
 	matchesLibrarySearchSpec,
-	parseActivatedAbilities,
-	parseAdditionalCostsAndRestrictions,
-	parseDelayedTriggersFromSpell,
 	parseLibrarySearchSpec,
 	parseManaCost,
-	parseSpellOrAbilityEffects,
-	parseSuspendClause,
-	spellExilesSelfOnResolution,
 	withDelayedTriggerSpec,
 	withStackItemText,
-	type ManaCostRequirement,
-	type ParsedActivatedAbility
+	type ManaCostRequirement
 } from './oracle.ts';
 import {
 	checkGlobalCastPermissionsAndRestrictions,
 	checkGraveyardReplacementZone,
-	collectActiveBoardHooks,
-	evaluateActionNode,
 	evaluatePermanent,
-	getCardRuleTree,
+	getCardActivatedAbilities,
 	getEffectiveActivatedAbilities as getEffectiveActivatedAbilitiesRaw,
 	getLibrarySearchInterceptor,
+	getSpellTargetRequirement,
 	inspectCardContinuousBreakdown,
 	permanentHasLostAllAbilities,
 	playerCannotLoseGame,
 	playerCannotWinGame,
-	type ActiveBoardHook,
-	type ActionRuleNode,
+	targetRequirementFromSpecs,
 	type AttributedKeywordOrEffect,
-	type BoardModifierHookNode,
 	type CardContinuousBreakdown,
-	type CardRuleTree,
-	type EvaluatedActionNode,
-	type EvaluatedPermanent,
-	type RulePath,
-	type TriggerRuleNode
+	type EvaluatedPermanent
 } from './ruleTree.ts';
 
 export {
 	checkGlobalCastPermissionsAndRestrictions,
 	checkGraveyardReplacementZone,
-	collectActiveBoardHooks,
-	evaluateActionNode,
 	evaluatePermanent,
-	getCardRuleTree,
+	getCardActivatedAbilities,
 	getLibrarySearchInterceptor,
+	getSpellTargetRequirement,
 	inspectCardContinuousBreakdown,
 	matchesLibrarySearchSpec,
 	parseLibrarySearchSpec,
 	permanentHasLostAllAbilities,
 	playerCannotLoseGame,
 	playerCannotWinGame,
-	parseSuspendClause,
-	type ActiveBoardHook,
-	type ActionRuleNode,
 	type AttributedKeywordOrEffect,
-	type BoardModifierHookNode,
 	type CardContinuousBreakdown,
-	type CardRuleTree,
-	type EvaluatedActionNode,
-	type EvaluatedPermanent,
-	type RulePath,
-	type TriggerRuleNode
+	type EvaluatedPermanent
 };
 
 export function getEffectiveActivatedAbilities(
@@ -85,7 +52,7 @@ export function getEffectiveActivatedAbilities(
 	actor: PlayerGameState,
 	perm: CardInstance,
 	commanderIdentity: ManaColor[] = ['W', 'U', 'B', 'R', 'G']
-): ParsedActivatedAbility[] {
+): EffectiveActivatedAbility[] {
 	// Read-only: one layer-cache validation for all of this permanent's ability lookups (Phase 6c).
 	return withStableLayerInputs(state, () =>
 		getEffectiveActivatedAbilitiesRaw(state, actor, perm, commanderIdentity)
@@ -100,6 +67,7 @@ import {
 	applySelfEtbReplacements,
 	counterMultiplier,
 	getAttackTaxGeneric,
+	getAttackTaxSources,
 	hasRestriction,
 	playerHasHexproofFrom as replacePlayerHasHexproofFrom,
 	playerHasNoMaxHandSize,
@@ -132,17 +100,23 @@ import {
 	activatedAbilityCost,
 	canPayCosts,
 	chooseCostPayment,
+	effectiveAbilityManaCost,
 	effectiveSpellManaCost,
+	getSuspendSpec,
 	keywordCost,
+	keywordsOf,
 	manaAbilityAmount,
 	payPlannedCosts,
 	planCosts,
 	spellAdditionalCost,
+	spellCastRestrictions,
 	type CostContext,
 	type CostQuestion
 } from './runtime/costs.ts';
+export { getSuspendSpec };
 import { evaluateAmount, matchesObjectFilter, type FilterContext } from './runtime/objectFilter.ts';
-import { compileCard, compiledTriggerEffect } from './compiler/index.ts';
+import { compileCard, compiledStackItemEffects, compiledTriggerEffect, compileSpellEffects } from './compiler/index.ts';
+import { runtimeTriggers } from './compiler/triggers.ts';
 import { noteLayerInputsChanged, withStableLayerInputs } from './runtime/layerCache.ts';
 import {
 	flushTriggers,
@@ -161,8 +135,7 @@ import {
 	withoutOptional
 } from './runtime/effects.ts';
 import { botAcceptsOptionalTrigger, chooseBotTriggerTargets } from './ai.ts';
-import type { EffectStep, TargetSpec } from './ir.ts';
-import { compiledStackItemEffects } from './compiler/effects.ts';
+import type { CostDef, EffectStep, TargetSpec, TokenSpec } from './ir.ts';
 import { freshRngSeed, type RngHolder } from './runtime/random.ts';
 import { cardAbilityDisplayText, enteringNotices, stackItemDisplayText } from './compiler/support.ts';
 import {
@@ -172,6 +145,7 @@ import {
 	inferObjectsZone,
 	normalizePromptAction,
 	enqueueChoicePrompt,
+	registerPromptHandler,
 	runPromptHandler,
 	validateChoiceAnswer
 } from './runtime/choices.ts';
@@ -185,6 +159,8 @@ import {
 	type CostPayment,
 	type CounterType,
 	type DelayedTrigger,
+	type DelayedTriggerEffect,
+	type EffectiveActivatedAbility,
 	type GameActionPayload,
 	type GameLogEntry,
 	type GamePhase,
@@ -197,12 +173,10 @@ import {
 	type MagicDeck,
 	type ManaColor,
 	type ManaPool,
-	type ParsedEffect,
 	type PendingPrompt,
 	type PlayerGameState,
 	type ScryfallCard,
 	type StackItem,
-	type TargetKind,
 	type TriggerEventLki,
 	type TargetRef,
 	type TargetRequirementInfo,
@@ -212,8 +186,15 @@ import {
 
 export { ENGINE_VERSION };
 
-function uid(prefix: string): string {
-	return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+let fallbackUidCounter = 0;
+
+function uid(prefix: string, state?: { nextUid?: number }): string {
+	if (state) {
+		state.nextUid = (state.nextUid ?? 0) + 1;
+		return `${prefix}_${state.nextUid}`;
+	}
+	fallbackUidCounter += 1;
+	return `${prefix}_ext_${fallbackUidCounter}`;
 }
 
 let globalInstanceTimestampSeed = 1;
@@ -224,7 +205,8 @@ export function createCardInstance(
 	zone: ZoneType,
 	isCommander = false,
 	isToken = false,
-	enteredTimestamp?: number
+	enteredTimestamp?: number,
+	uidHolder?: { nextUid?: number }
 ): CardInstance {
 	const counters = createEmptyCounters();
 	if (card.loyalty && zone === 'battlefield') {
@@ -232,7 +214,7 @@ export function createCardInstance(
 	}
 	globalInstanceTimestampSeed += 1;
 	return {
-		instanceId: uid(isToken ? 'tok' : isCommander ? 'cmd' : 'crd'),
+		instanceId: uid(isToken ? 'tok' : isCommander ? 'cmd' : 'crd', uidHolder),
 		card,
 		ownerId,
 		controllerId: ownerId,
@@ -267,7 +249,7 @@ export function addLog(
 	actorId?: string
 ): void {
 	state.log.push({
-		id: uid('log'),
+		id: uid('log', state),
 		timestamp: Date.now(),
 		turn: state.turnNumber,
 		phase: state.phase,
@@ -282,7 +264,7 @@ export function addLog(
 
 export function emitVfx(state: GameState, event: Omit<VfxEvent, 'id' | 'timestamp'>): void {
 	state.recentVfxEvents.push({
-		id: uid('vfx'),
+		id: uid('vfx', state),
 		timestamp: Date.now(),
 		...event
 	});
@@ -301,13 +283,14 @@ export function createInitialGameState(
 	const activeSeats = seats.filter((s) => s.userId !== null || s.isBot);
 	// ENGINE_INVARIANTS.md 7.2: one seed per game; every shuffle and random choice draws from it.
 	const rng: RngHolder = { rngState: freshRngSeed() };
+	const uidHolder: { nextUid?: number } = { nextUid: 0 };
 
 	const players: PlayerGameState[] = activeSeats.map((seat, idx) => {
 		const playerId = seat.userId || `bot_${seat.seatIndex}`;
 		const deck = decksBySeat.get(seat.seatIndex)!;
 
 		const command: CardInstance[] = deck.commanders.map((c) =>
-			createCardInstance(c, playerId, 'command', true, false)
+			createCardInstance(c, playerId, 'command', true, false, undefined, uidHolder)
 		);
 		const commanderColorIdentity = Array.from(
 			new Set(deck.commanders.flatMap((c) => c.colorIdentity))
@@ -316,7 +299,9 @@ export function createInitialGameState(
 		const rawLibrary: CardInstance[] = [];
 		for (const entry of deck.cards) {
 			for (let q = 0; q < entry.quantity; q++) {
-				rawLibrary.push(createCardInstance(entry.card, playerId, 'library', false, false));
+				rawLibrary.push(
+					createCardInstance(entry.card, playerId, 'library', false, false, undefined, uidHolder)
+				);
 			}
 		}
 
@@ -372,7 +357,7 @@ export function createInitialGameState(
 
 	const state: GameState = {
 		engineVersion: ENGINE_VERSION,
-		gameId: uid('game'),
+		gameId: uid('game', uidHolder),
 		lobbyCode,
 		status: 'mulligan',
 		winnerPlayerId: null,
@@ -393,6 +378,7 @@ export function createInitialGameState(
 		},
 		pendingPrompts: [],
 		rngState: rng.rngState,
+		nextUid: uidHolder.nextUid,
 		recentVfxEvents: [],
 		log: [],
 		turnStartedAt: now,
@@ -433,7 +419,7 @@ export function createInitialGameState(
 					? 'Friendly Mulligan: You may keep your 7-card hand or take a free 7-card mulligan.'
 					: 'London Mulligan: Your first mulligan in Commander is free (7 cards). Subsequent mulligans put 1 card per extra mulligan on the bottom of your library.';
 			state.pendingPrompts.push({
-				id: uid('prm'),
+				id: uid('prm', state),
 				playerId: p.playerId,
 				kind: 'mulligan',
 				purpose: 'mulligan',
@@ -593,12 +579,12 @@ function getDynamicManaProducedAmount(
 	player: PlayerGameState,
 	perm: CardInstance,
 	baseAmount: number,
-	ab?: ParsedActivatedAbility
+	ab?: EffectiveActivatedAbility
 ): number {
 	const evalPerm = evaluatePermanent(state, perm);
 	if (evalPerm.losesAllAbilities) return baseAmount;
 	const pCard = perm.copiableCard ?? perm.card;
-	const fallback = { id: 'mana_tap' } as ParsedActivatedAbility;
+	const fallback = { id: 'mana_tap' } as EffectiveActivatedAbility;
 	const amount = manaAbilityAmount(pCard, ab ?? fallback);
 	if (!amount) return baseAmount;
 	return Math.max(0, evaluateAmount(amount, { state, controllerId: player.playerId, source: perm }));
@@ -643,7 +629,7 @@ function askCostChoice(
 		question.kind === 'objects' ? inferObjectsZone(actor, question.candidateIds) : 'battlefield';
 	const choice = buildCostChoiceRequest(question, zone);
 	state.pendingPrompts.push({
-		id: uid('prm'),
+		id: uid('prm', state),
 		playerId: actor.playerId,
 		kind: 'cost_choice',
 		purpose: 'cost_choice',
@@ -676,7 +662,7 @@ function tapOnlyManaAbilities(
 	player: PlayerGameState,
 	perm: CardInstance,
 	cmdIdentity: ManaColor[]
-): ParsedActivatedAbility[] {
+): EffectiveActivatedAbility[] {
 	return getEffectiveActivatedAbilities(state, player, perm, cmdIdentity).filter(
 		(a) =>
 			a.isManaAbility &&
@@ -704,7 +690,7 @@ function simulateOrExecuteAutoTap(
 
 	const getProducedAmount = (perm: CardInstance, prodAmount: number): number =>
 		getDynamicManaProducedAmount(state, player, perm, prodAmount);
-	const tapOnly = new Map<string, ParsedActivatedAbility[]>();
+	const tapOnly = new Map<string, EffectiveActivatedAbility[]>();
 	const manaAbilitiesOf = (perm: CardInstance) => {
 		let abs = tapOnly.get(perm.instanceId);
 		if (!abs) {
@@ -731,8 +717,8 @@ function simulateOrExecuteAutoTap(
 				return manaAbilitiesOf(perm).length > 0;
 			})
 			.sort((a, b) => {
-				const ca = manaAbilitiesOf(a)[0]?.producesMana ?? getPermanentManaProduction(a.card, cmdIdentity).colors;
-				const cb = manaAbilitiesOf(b)[0]?.producesMana ?? getPermanentManaProduction(b.card, cmdIdentity).colors;
+				const ca = manaAbilitiesOf(a)[0]?.producesMana ?? [];
+				const cb = manaAbilitiesOf(b)[0]?.producesMana ?? [];
 				if (ca.length !== cb.length) {
 					return ca.length - cb.length;
 				}
@@ -761,8 +747,7 @@ function simulateOrExecuteAutoTap(
 				return false;
 			}
 			const matchedAb = manaAbilitiesOf(perm).find((a) => a.producesMana.includes(col));
-			const prod = getPermanentManaProduction(perm.card, cmdIdentity);
-			const baseAmt = Math.max(1, matchedAb?.producesAmount || prod.amount || 1);
+			const baseAmt = Math.max(1, matchedAb?.producesAmount || 1);
 			const amount = getProducedAmount(perm, baseAmt);
 			tappedSet.add(perm.instanceId);
 			pool[col] += amount;
@@ -809,8 +794,7 @@ function simulateOrExecuteAutoTap(
 		}
 		const ab0 = manaAbilitiesOf(perm)[0];
 		const chosenColor: ManaColor = ab0?.producesMana[0] || 'C';
-		const prod = getPermanentManaProduction(perm.card, cmdIdentity);
-		const baseAmt = Math.max(1, ab0?.producesAmount || prod.amount || 1);
+		const baseAmt = Math.max(1, ab0?.producesAmount || 1);
 		const amount = getProducedAmount(perm, baseAmt);
 		tappedSet.add(perm.instanceId);
 		pool[chosenColor] += amount;
@@ -1217,7 +1201,7 @@ function applyGameActionInner(
 			const card = found.inst.copiableCard ?? found.inst.card;
 			const text = cardAbilityDisplayText(card, action.abilityIndex);
 			enqueueChoicePrompt(state, {
-				id: uid('prm'),
+				id: uid('prm', state),
 				playerId: actor.playerId,
 				kind: 'guided_resolution',
 				purpose: 'guided_resolution',
@@ -1254,9 +1238,7 @@ function applyGameActionInner(
 			if (!plan.ok) return { ok: false, error: plan.error };
 			if (plan.question) return askCostChoice(state, actor, action, plan.question, perm.card.name);
 
-			const prod = getPermanentManaProduction(perm.card, cmdId);
-			const legacyAmount = ab.id === 'mana_tap' ? prod.amount : ab.producesAmount;
-			const baseAmount = evalPerm.losesAllAbilities ? 1 : Math.max(1, legacyAmount);
+			const baseAmount = evalPerm.losesAllAbilities ? 1 : Math.max(1, ab.producesAmount);
 			const amount = getDynamicManaProducedAmount(state, actor, perm, baseAmount, ab);
 
 			const paid = payPlannedCosts(ctx, plan);
@@ -1310,7 +1292,8 @@ function applyGameActionInner(
 
 			const exSourceName = landInst.playableFromExileBy?.sourceName;
 			landInst.playableFromExileBy = undefined;
-			landInst.tapped = cardEntersTapped(landInst.card);
+			landInst.tapped = false;
+			applySelfEtbReplacements(state, landInst);
 			moveObject(state, landInst, 'battlefield', {
 				from: { player: sourcePlayer, zone: sourceZone },
 				toPlayer: actor,
@@ -1344,7 +1327,7 @@ function applyGameActionInner(
 			if (!legality.ok) {
 				return legality;
 			}
-			const suspClause = parseSuspendClause(inst.card)!;
+			const suspClause = getSuspendSpec(inst.card)!;
 			const req = parseManaCost(suspClause.suspendCost);
 			if (!payManaWithAutoTap(actor, req, state)) {
 				return {
@@ -1462,20 +1445,74 @@ function applyGameActionInner(
 				return legality;
 			}
 
-			const parsed = parseSpellOrAbilityEffects(inst.card);
+			const spellTargetInfo = getSpellTargetRequirement(inst.card);
 			const targets = action.targets || [];
-			const targetValidation = validateChosenTargets(
-				state,
-				actorId,
-				targets,
-				parsed.targetInfo,
-				inst.card,
-				inst.instanceId,
-				xVal,
-				castMode
-			);
-			if (!targetValidation.ok) {
-				return targetValidation;
+			const compiledModal = compileSpellEffects(inst.card)?.modal;
+			let chosenModes = action.modes;
+			if (compiledModal && !chosenModes && compiledModal.max === 1) {
+				// "Choose one" cast without naming the mode (older clients): the mode whose targets fit.
+				const fit = compiledModal.modes.findIndex(
+					(m) =>
+						m.targets.length === targets.length &&
+						m.targets.every((spec, i) =>
+							specTargetCandidates(state, actorId, inst.card, inst, spec).some(
+								(c) => c.kind === targets[i].kind && c.id === targets[i].id
+							)
+						)
+				);
+				if (fit >= 0) chosenModes = [fit];
+			}
+			if (compiledModal) {
+				const modes = chosenModes;
+				if (
+					!Array.isArray(modes) ||
+					modes.length < compiledModal.min ||
+					modes.length > compiledModal.max ||
+					new Set(modes).size !== modes.length ||
+					modes.some((m) => !Number.isInteger(m) || m < 0 || m >= compiledModal.modes.length)
+				) {
+					return {
+						ok: false,
+						error: `Choose ${compiledModal.min}–${compiledModal.max} mode(s) for ${inst.card.name}.`
+					};
+				}
+				const modeSpecs = modes.flatMap((m) => compiledModal.modes[m].targets);
+				if (targets.length !== modeSpecs.length) {
+					return {
+						ok: false,
+						error: `${inst.card.name} requires ${modeSpecs.length} target(s) for the chosen mode(s).`
+					};
+				}
+				const uniqueIds = new Set(targets.map((t) => `${t.kind}:${t.id}`));
+				if (uniqueIds.size !== targets.length) {
+					return {
+						ok: false,
+						error: 'Strict Rules Violation: The same object cannot be chosen multiple times for the same target requirement (CR 115.3).'
+					};
+				}
+				for (let i = 0; i < modeSpecs.length; i++) {
+					const legal = specTargetCandidates(state, actorId, inst.card, inst, modeSpecs[i]);
+					if (!legal.some((c) => c.kind === targets[i].kind && c.id === targets[i].id)) {
+						return {
+							ok: false,
+							error: `Strict Rules Violation: ${targets[i].label} is not a legal target for mode ${modes[i] + 1} of ${inst.card.name}.`
+						};
+					}
+				}
+			} else {
+				const targetValidation = validateChosenTargets(
+					state,
+					actorId,
+					targets,
+					spellTargetInfo,
+					inst.card,
+					inst.instanceId,
+					xVal,
+					castMode
+				);
+				if (!targetValidation.ok) {
+					return targetValidation;
+				}
 			}
 
 			// Check & pay mana cost (including Commander Tax if from Command Zone, or any-color mana if exiled with Opposition Agent!)
@@ -1525,7 +1562,7 @@ function applyGameActionInner(
 				: 'normal';
 			const stackItem: StackItem = withStackItemText(
 				{
-					id: uid('stk'),
+					id: uid('stk', state),
 					sourceInstanceId: inst.instanceId,
 					sourceObjectVersion: inst.objectVersion,
 					card: inst.card,
@@ -1534,12 +1571,12 @@ function applyGameActionInner(
 					kind: 'spell',
 					title: inst.card.name,
 					targets,
+					...(chosenModes ? { chosenModes: [...chosenModes] } : {}),
 					targetObjectVersions: captureTargetObjectVersions(state, targets),
 					xValue: xVal,
 					castMode: resolvedCastMode,
 					commanderCastCount: inst.commanderCastCount,
-					parsedEffects: parsed.effects,
-					requiresGuidedResolution: parsed.requiresGuidedResolution,
+					requiresGuidedResolution: false,
 					createdAt: Date.now()
 				},
 				inst.card
@@ -1612,9 +1649,7 @@ function applyGameActionInner(
 				return abLegality;
 			}
 
-			const evaluatedNode = evaluateActionNode(state, actorId, perm, ab.id);
-			const abTargetInfo: TargetRequirementInfo =
-				evaluatedNode?.targetLegality.targetInfo ?? detectTargetRequirement(ab.effectText);
+			const abTargetInfo: TargetRequirementInfo = ab.targetInfo;
 
 			const targets = action.targets || [];
 			if (ab.requiresTarget) {
@@ -1632,12 +1667,10 @@ function applyGameActionInner(
 				}
 			}
 
-			// Phase 4: pay the whole cost from the IR. Mana comes from the evaluated action node (cost
+			// Phase 4: pay the whole cost from the IR. Mana comes from effectiveAbilityManaCost (cost
 			// modifiers applied); everything else from the ability's CostDefs.
 			const abilityCost = activatedAbilityCost(perm.card, ab);
-			const abilityMana = evaluatedNode
-				? evaluatedNode.effectiveCostRequirement
-				: parseManaCost(ab.manaCost === '{0}' ? '' : ab.manaCost);
+			const abilityMana = effectiveAbilityManaCost(state, actorId, ab.id, ab.manaCost).requirement;
 			const abilityCtx = costContext(state, actor, perm, 0, false, abilityMana);
 			const abilityPlan = planCosts(abilityCtx, abilityCost.defs, action.costPayment);
 			if (!abilityPlan.ok) return { ok: false, error: abilityPlan.error };
@@ -1653,10 +1686,9 @@ function applyGameActionInner(
 				addLog(state, 'rule', `Part of the cost of ${perm.card.name}'s ability isn't automated; pay it manually.`, actorId);
 			}
 
-			const parsed = parseSpellOrAbilityEffects(perm.card, ab.effectText);
 			const stackItem: StackItem = withStackItemText(
 				{
-					id: uid('stk'),
+					id: uid('stk', state),
 					sourceInstanceId: perm.instanceId,
 					sourceObjectVersion: perm.objectVersion,
 					sourceLkiPower,
@@ -1664,11 +1696,11 @@ function applyGameActionInner(
 					card: perm.card,
 					controllerId: actorId,
 					kind: 'activated',
+					abilityId: ab.id,
 					title: `${perm.card.name} Ability`,
 					targets,
 					targetObjectVersions: captureTargetObjectVersions(state, targets),
 					xValue: 0,
-					parsedEffects: parsed.effects,
 					requiresGuidedResolution: false,
 					createdAt: Date.now()
 				},
@@ -1783,7 +1815,7 @@ function applyGameActionInner(
 					}
 				}
 
-				// Check Propaganda / Ghostly Prison tax on defending player (CR 508.1d)
+				// Check attack tax on defending player (CR 508.1d)
 				if (!assign.defenderPlaneswalkerId) {
 					totalPropagandaTaxGeneric += getAttackTaxGeneric(state, defender);
 				}
@@ -1810,13 +1842,20 @@ function applyGameActionInner(
 				}
 			}
 
-			// Pay Propaganda / Ghostly Prison tax if applicable
+			// Pay attack tax if applicable
 			if (totalPropagandaTaxGeneric > 0) {
 				const taxReq = parseManaCost(`{${totalPropagandaTaxGeneric}}`);
 				if (!payManaWithAutoTap(actor, taxReq, state)) {
+					const taxSources = Array.from(
+						new Set(
+							action.assignments
+								.filter((a) => !a.defenderPlaneswalkerId)
+								.flatMap((a) => getAttackTaxSources(state, a.defenderPlayerId))
+						)
+					);
 					return {
 						ok: false,
-						error: `Strict Rules Violation: Attacking requires paying {${totalPropagandaTaxGeneric}} for Propaganda / Ghostly Prison, and you have insufficient mana.`
+						error: `Strict Rules Violation: Attacking requires paying {${totalPropagandaTaxGeneric}} for ${taxSources.join(' / ') || 'attack tax'}, and you have insufficient mana.`
 					};
 				}
 			}
@@ -1948,11 +1987,7 @@ function applyGameActionInner(
 							error: `Strict Rules Violation: ${blocker.card.name} cannot block ${atkCard.card.name} (has Flying; blocker needs Flying or Reach).`
 						};
 					}
-					if (
-						hasRestriction(state, atkCard, 'cantBeBlocked') ||
-						(!permanentHasLostAllAbilities(atkCard, state).lost &&
-							cardHasPrintedUnblockable(atkCard.card))
-					) {
+					if (hasRestriction(state, atkCard, 'cantBeBlocked')) {
 						return {
 							ok: false,
 							error: `Strict Rules Violation: ${atkCard.card.name} cannot be blocked.`
@@ -2002,10 +2037,7 @@ function applyGameActionInner(
 					if (hasRestriction(state, perm, 'cantBlock')) continue;
 					if (!hasRestriction(state, perm, 'blocksEachCombat')) continue;
 					const canBlockAny = attackersAgainstActor.some((atk) => {
-						if (
-							hasRestriction(state, atk, 'cantBeBlocked') ||
-							(!permanentHasLostAllAbilities(atk, state).lost && cardHasPrintedUnblockable(atk.card))
-						) {
+						if (hasRestriction(state, atk, 'cantBeBlocked')) {
 							return false;
 						}
 						if (hasProtectionFrom(atk, perm.copiableCard ?? perm.card, state)) {
@@ -2232,7 +2264,7 @@ function handleMulliganAction(
 			const description = `Select ${countReq} card(s) from your hand to place on the bottom of your library.`;
 			const candidates = actor.hand.map((c) => c.instanceId);
 			state.pendingPrompts.push({
-				id: uid('prm'),
+				id: uid('prm', state),
 				playerId: actor.playerId,
 				kind: 'london_bottom',
 				purpose: 'london_bottom',
@@ -2608,8 +2640,8 @@ function handlePromptResolution(
 						actor.playerId
 					);
 				} else if (prompt.destinationZone === 'battlefield') {
-					const selfEntersTapped = cardEntersTapped(found.card);
-					found.tapped = Boolean(prompt.enterTapped) || selfEntersTapped;
+					found.tapped = Boolean(prompt.enterTapped);
+					applySelfEtbReplacements(state, found);
 					moveObject(state, found, 'battlefield', {
 						from: fromLibrary,
 						toPlayer: libraryOwner,
@@ -2676,7 +2708,7 @@ function handlePromptResolution(
 							: `Choose the next matching card from your library to put ${describeLibrarySearchDestination(nextDest)}, then shuffle.`;
 						const canFailNext = prompt.canFailToFind ?? true;
 						state.pendingPrompts.push({
-							id: uid('prm'),
+							id: uid('prm', state),
 							playerId: actor.playerId,
 							targetLibraryOwnerId: libraryOwner.playerId,
 							kind: 'search_library',
@@ -2702,7 +2734,6 @@ function handlePromptResolution(
 								reason: nextDesc
 							},
 							stackItem: prompt.stackItem,
-							continuationEffects: prompt.continuationEffects,
 							continuation: prompt.continuation
 						});
 						return { ok: true };
@@ -2722,11 +2753,6 @@ function handlePromptResolution(
 
 		if (!alreadyShuffledWithTopCard) {
 			shuffleLibrary(state, libraryOwner);
-		}
-		if (prompt.continuationEffects && prompt.continuationEffects.length > 0 && prompt.stackItem) {
-			for (const eff of prompt.continuationEffects) {
-				executeParsedEffect(state, libraryOwner, prompt.stackItem, eff);
-			}
 		}
 		checkStateBasedActions(state);
 		resumeAfterPrompt(state, prompt);
@@ -2810,12 +2836,6 @@ function handlePromptResolution(
 		}
 
 		state.pendingPrompts.splice(promptIdx, 1);
-		if (prompt.continuationEffects && prompt.continuationEffects.length > 0 && prompt.stackItem) {
-			for (const eff of prompt.continuationEffects) {
-				executeParsedEffect(state, actor, prompt.stackItem, eff);
-			}
-			checkStateBasedActions(state);
-		}
 		resumeAfterPrompt(state, prompt);
 		return { ok: true };
 	}
@@ -2826,25 +2846,13 @@ function handlePromptResolution(
 			return { ok: true };
 		}
 		const valid = validateChoiceAnswer(choice, normalized.answer);
-		if (!valid.ok || normalized.answer?.kind !== 'yesNo') {
+		if (!valid.ok || normalized.answer?.kind !== 'yesNo' || !normalized.answer.yes) {
 			return { ok: false, error: valid.ok ? 'Invalid guided resolution answer.' : valid.error };
 		}
-		const ops = normalized.answer.yes ? (normalized.operations ?? []) : [];
+		const ops = normalized.operations ?? [];
 		const opsValid = validateGuidedOperations(state, actor, ops);
 		if (!opsValid.ok) return opsValid;
 		const c = prompt.continuation;
-		if (c?.kind === 'manual_resolution' && !normalized.answer.yes) {
-			// "Use the engine's approximation": the legacy effects, while they exist (step F removes them).
-			const item = state.stack.find((s) => s.id === c.stackItemId);
-			if (item && item.parsedEffects.length === 0) return { ok: false, error: 'There is no automatic approximation for this ability.' };
-			state.pendingPrompts.splice(promptIdx, 1);
-			if (item) {
-				addLog(state, 'cast', `${actor.username} let the engine approximate ${item.title}.`, actor.playerId);
-				item.manualResolution = 'legacy';
-				resumeStackItem(state, item);
-			}
-			return { ok: true };
-		}
 		state.pendingPrompts.splice(promptIdx, 1);
 		applyGuidedOperations(state, actor, ops);
 		if (c?.kind === 'manual_resolution') {
@@ -3186,14 +3194,15 @@ function runSuspendUpkeep(state: GameState, activePlayer: PlayerGameState): void
  * stored in state with their own legacy effects, not compiled from a card's abilities; Phase 3's
  * delayed effects replace them. Pushed after the beginning-of-end-step triggers, as before.
  */
-function runDelayedEndStepTriggers(state: GameState, activePlayer: PlayerGameState): void {
+function runDelayedTriggers(state: GameState, phase: GamePhase, activePlayer: PlayerGameState): void {
 	if (state.delayedTriggers && state.delayedTriggers.length > 0) {
 		const remainingDelayed: DelayedTrigger[] = [];
 		for (const dt of state.delayedTriggers) {
 			const matchesTurn =
 				(!dt.targetPlayerId || dt.targetPlayerId === activePlayer.playerId) &&
-				(!dt.waitUntilAfterTurn || state.turnNumber > dt.waitUntilAfterTurn);
-			if (dt.triggerPhase === 'end_step' && matchesTurn) {
+				(!dt.waitUntilAfterTurn || state.turnNumber > dt.waitUntilAfterTurn) &&
+				dt.notDuringTurn !== `${state.turnNumber}:${state.activePlayerIndex}`;
+			if (dt.triggerPhase === phase && matchesTurn) {
 				const targets: TargetRef[] = [];
 				if (dt.targetInstanceId) {
 					const found = findPermanentOnBoard(state, dt.targetInstanceId);
@@ -3209,22 +3218,31 @@ function runDelayedEndStepTriggers(state: GameState, activePlayer: PlayerGameSta
 						});
 					}
 				}
+				const delayedEffect: DelayedTriggerEffect | undefined =
+					dt.delayedEffect ??
+					(dt.targetInstanceId
+						? {
+								kind: 'exile',
+								targetInstanceId: dt.targetInstanceId,
+								targetObjectVersion: dt.targetObjectVersion
+							}
+						: undefined);
 				const stkItem: StackItem = withStackItemText(
 					{
-						id: uid('stk'),
+						id: uid('stk', state),
 						sourceInstanceId: dt.id,
 						card: dt.sourceCard,
 						controllerId: dt.controllerId,
 						kind: 'triggered',
-						title: `${dt.sourceCard.name} (Delayed End Step Trigger)`,
+						title: `${dt.sourceCard.name} (${phase === 'upkeep' ? 'Delayed Upkeep Trigger' : 'Delayed End Step Trigger'})`,
 						targets,
 						targetObjectVersions: captureTargetObjectVersions(state, targets),
 						xValue: 0,
-						parsedEffects: dt.effects,
+						...(delayedEffect ? { delayedEffect } : {}),
 						requiresGuidedResolution: false,
 						createdAt: Date.now()
 					},
-					getDelayedTriggerText(dt)
+					dt.description || ''
 				);
 				state.stack.push(stkItem);
 				addLog(
@@ -3324,26 +3342,11 @@ registerEventHandler('PhaseBegin', (state, ev) => {
 	const activePlayer = state.players.find((p) => p.playerId === ev.activePlayerId);
 	if (ev.phase === 'upkeep' && activePlayer) runSuspendUpkeep(state, activePlayer);
 	matchTriggers(state, ev);
-	if (ev.phase === 'end_step' && activePlayer) {
+	if ((ev.phase === 'end_step' || ev.phase === 'upkeep') && activePlayer) {
 		flushTriggers(state);
-		runDelayedEndStepTriggers(state, activePlayer);
+		runDelayedTriggers(state, ev.phase, activePlayer);
 	}
 });
-
-/**
- * The target the pre-IR engine passed to a triggered ability's legacy effects: the stack item that
- * targeted the source (Ward), the player dealt damage, or the object the event was about. Only the
- * legacy executeParsedEffect fallback uses it (step F deletes it); it is never a real target.
- */
-function legacyEventTarget(state: GameState, t: PendingTrigger): TargetRef | undefined {
-	if (t.targetStackItemId) return { kind: 'stack', id: t.targetStackItemId, label: t.targetStackItemId };
-	if (t.eventPlayerId) {
-		const pl = state.players.find((p) => p.playerId === t.eventPlayerId);
-		return { kind: 'player', id: t.eventPlayerId, label: pl?.username ?? t.eventPlayerId };
-	}
-	if (t.eventObject) return { kind: 'permanent', id: t.eventObject.instanceId, label: t.eventObject.card.name };
-	return undefined;
-}
 
 /** How the trigger's event object last existed on the battlefield (CR 603.10a, 608.2h). */
 function triggerEventLki(state: GameState, t: PendingTrigger): TriggerEventLki | undefined {
@@ -3381,10 +3384,9 @@ function triggeredStackItem(state: GameState, t: PendingTrigger, idPrefix: strin
 	const sourceLkiPower = sourceEval?.power ?? t.source.lastKnownPower;
 	const sourceLkiToughness = sourceEval?.toughness ?? t.source.lastKnownToughness;
 	const eventObj = t.eventObject ?? t.source;
-	const legacyTarget = legacyEventTarget(state, t);
 	return withStackItemText(
 		{
-			id: uid(idPrefix),
+			id: uid(idPrefix, state),
 			sourceInstanceId: t.source.instanceId,
 			sourceObjectVersion: t.source.objectVersion,
 			sourceLkiPower,
@@ -3395,7 +3397,6 @@ function triggeredStackItem(state: GameState, t: PendingTrigger, idPrefix: strin
 			title: `${t.sourceCard.name} (${t.label})`,
 			targets: [],
 			xValue: 0,
-			parsedEffects: t.ability.legacy.effects,
 			requiresGuidedResolution: false,
 			createdAt: Date.now(),
 			lkiPower: t.amount,
@@ -3405,10 +3406,9 @@ function triggeredStackItem(state: GameState, t: PendingTrigger, idPrefix: strin
 			...(t.eventPlayer ? { eventPlayerId: t.eventPlayer } : {}),
 			...(t.amount !== undefined ? { eventAmount: t.amount } : {}),
 			...(t.targetStackItemId ? { eventStackItemId: t.targetStackItemId } : {}),
-			eventLki: triggerEventLki(state, t),
-			...(legacyTarget ? { legacyEventTarget: legacyTarget } : {})
+			eventLki: triggerEventLki(state, t)
 		},
-		t.ability.legacy.clause
+		t.ability.text
 	);
 }
 
@@ -3416,13 +3416,13 @@ function triggeredStackItem(state: GameState, t: PendingTrigger, idPrefix: strin
  * How many triggered abilities resolved on each path since the last reset (module-level, never in
  * GameState). For tests and diagnostics only.
  */
-const triggerPathCounts = { interpreter: 0, legacy: 0 };
+const triggerPathCounts = { interpreter: 0, manual: 0 };
 
-export function triggerResolutionCounts(reset = false): { interpreter: number; legacy: number } {
+export function triggerResolutionCounts(reset = false): { interpreter: number; manual: number } {
 	const out = { ...triggerPathCounts };
 	if (reset) {
 		triggerPathCounts.interpreter = 0;
-		triggerPathCounts.legacy = 0;
+		triggerPathCounts.manual = 0;
 	}
 	return out;
 }
@@ -3451,7 +3451,7 @@ function triggerEventContext(item: StackItem) {
  * which makes the same choice.
  */
 function executeTriggerEffects(state: GameState, controller: PlayerGameState, item: StackItem): void {
-	const compiled = effectInterpreterEnabled ? triggerItemEffect(item) : null;
+	const compiled = triggerItemEffect(item);
 	if (compiled && staticallyInterpretable(compiled) && interpretableNow(state, item, compiled, controller, false)) {
 		triggerPathCounts.interpreter++;
 		executeEffectSteps(
@@ -3471,18 +3471,9 @@ function executeTriggerEffects(state: GameState, controller: PlayerGameState, it
 		);
 		return;
 	}
-	triggerPathCounts.legacy++;
-	const legacyItem = withLegacyEventTarget(item);
-	for (const eff of legacyItem.parsedEffects) {
-		executeParsedEffect(state, controller, legacyItem, eff);
-	}
-}
-
-/** For the legacy fallback: the item with its legacy event target in `targets` (see legacyEventTarget). */
-function withLegacyEventTarget(item: StackItem): StackItem {
-	if (item.kind !== 'triggered' || !item.legacyEventTarget || item.targets.length > 0) return item;
-	item.targets = [item.legacyEventTarget];
-	return item;
+	// Not automated: an inline trigger (a triggered mana ability) can't be resolved manually.
+	triggerPathCounts.manual++;
+	addLog(state, 'rule', `${item.title} isn't automated and did nothing.`, controller.playerId);
 }
 
 registerTriggerHost({
@@ -3526,7 +3517,7 @@ function triggerSpecsSupported(specs: TargetSpec[]): boolean {
 
 /** The target specs a triggered stack item chooses on the interpreter path (empty: none / legacy). */
 function triggerItemTargetSpecs(item: StackItem): TargetSpec[] {
-	const compiled = effectInterpreterEnabled ? triggerItemEffect(item) : null;
+	const compiled = triggerItemEffect(item);
 	if (!compiled || !staticallyInterpretable(compiled, true) || !triggerSpecsSupported(compiled.targets)) return [];
 	return compiled.targets;
 }
@@ -3549,10 +3540,15 @@ function permanentTargetable(state: GameState, inst: CardInstance, controllerId:
 	return !hasProtectionFrom(inst, sourceCard, state);
 }
 
-/** Every legal target for one target spec of a triggered ability (CR 115, 603.3d). */
-function triggerTargetCandidates(state: GameState, item: StackItem, spec: TargetSpec): TargetRef[] {
+/** Every legal target for one target spec (CR 115, 603.3d). */
+export function specTargetCandidates(
+	state: GameState,
+	controllerId: string,
+	sourceCard: ScryfallCard,
+	source: CardInstance | undefined,
+	spec: TargetSpec
+): TargetRef[] {
 	const out: TargetRef[] = [];
-	const controllerId = item.controllerId;
 	if (spec.kind === 'player' || spec.kind === 'objectOrPlayer') {
 		const rel = spec.player?.relation ?? 'any';
 		for (const p of state.players) {
@@ -3564,14 +3560,25 @@ function triggerTargetCandidates(state: GameState, item: StackItem, spec: Target
 		}
 	}
 	if (spec.kind === 'player') return out;
-	const ctx: FilterContext = { state, controllerId, source: triggerSourceObject(state, item) };
+	const ctx: FilterContext = { state, controllerId, source };
 	const zone = spec.filter.zone ?? 'battlefield';
+	if (zone === 'stack') {
+		for (const stk of state.stack) {
+			if (source && stk.sourceInstanceId === source.instanceId) continue;
+			if (spec.filter.types && spec.filter.types.length > 0 && stk.card) {
+				const stkTypes = compileCard(stk.card).faces[0].characteristics.types;
+				if (!spec.filter.types.some((t) => stkTypes.includes(t))) continue;
+			}
+			out.push({ kind: 'stack', id: stk.id, label: stk.title });
+		}
+		return out;
+	}
 	for (const p of state.players) {
 		if (p.lost) continue;
 		if (zone === 'battlefield') {
 			for (const perm of p.battlefield) {
 				if (perm.phasedOut || !matchesObjectFilter(perm, spec.filter, ctx)) continue;
-				if (!permanentTargetable(state, perm, controllerId, p.playerId, item.card)) continue;
+				if (!permanentTargetable(state, perm, controllerId, p.playerId, sourceCard)) continue;
 				out.push({ kind: 'permanent', id: perm.instanceId, label: perm.card.name });
 			}
 		} else if (zone === 'graveyard') {
@@ -3581,6 +3588,11 @@ function triggerTargetCandidates(state: GameState, item: StackItem, spec: Target
 		}
 	}
 	return out;
+}
+
+/** Every legal target for one target spec of a triggered ability (CR 115, 603.3d). */
+function triggerTargetCandidates(state: GameState, item: StackItem, spec: TargetSpec): TargetRef[] {
+	return specTargetCandidates(state, item.controllerId, item.card, triggerSourceObject(state, item), spec);
 }
 
 /** CR 608.2b for a triggered ability on the interpreter path: is `t` still legal for some spec? */
@@ -3648,7 +3660,7 @@ function putTriggerOnStack(state: GameState, t: PendingTrigger): StackItem | nul
 		} else {
 			const reason = `Choose ${spec.min === max ? max : `${spec.min}–${max}`} target(s) for ${item.title}.`;
 			enqueueChoicePrompt(state, {
-				id: uid('prm'),
+				id: uid('prm', state),
 				playerId: controller.playerId,
 				kind: 'chooseObjects',
 				purpose: 'trigger_targets',
@@ -3683,7 +3695,7 @@ function askTriggerOrder(state: GameState, controllerId: string, itemIds: string
 	const topFirst = [...itemIds].reverse();
 	const reason = 'Order your triggered abilities: the first one resolves first.';
 	enqueueChoicePrompt(state, {
-		id: uid('prm'),
+		id: uid('prm', state),
 		playerId: controllerId,
 		kind: 'orderObjects',
 		purpose: 'trigger_order',
@@ -3754,6 +3766,129 @@ function resolveTriggerPrompt(
 	return { ok: true };
 }
 
+function itemWard(item: StackItem): { cost: string; costDefs?: CostDef[] } | undefined {
+	if (item.kind !== 'triggered' || item.triggeredAbilityIndex === undefined) return undefined;
+	return runtimeTriggers(compileCard(item.card)).find((x) => x.abilityIndex === item.triggeredAbilityIndex)?.ward;
+}
+
+function resolveWardTrigger(
+	state: GameState,
+	item: StackItem,
+	controller: PlayerGameState,
+	ward: { cost: string; costDefs?: CostDef[] }
+): void {
+	const targetItem = state.stack.find((s) => s.id === (item.eventStackItemId ?? item.targets[0]?.id));
+	if (!targetItem) return;
+	const opp = state.players.find((p) => p.playerId === targetItem.controllerId);
+	const wardCost = (ward.cost || '{1}').trim();
+	let paid = false;
+	if (opp && !targetItem.declineWard) {
+		const lifeDef = ward.costDefs?.find((d): d is Extract<CostDef, { k: 'payLife' }> => d.k === 'payLife');
+		const lifeCost = lifeDef && lifeDef.amount.k === 'const' ? lifeDef.amount.n : undefined;
+		if (lifeCost !== undefined) {
+			if (!opp.lifeTotalCannotChangeThisTurn && opp.life >= lifeCost) {
+				opp.life -= lifeCost;
+				paid = true;
+				addLog(
+					state,
+					'rule',
+					`${opp.username} paid ${lifeCost} life for ${item.card.name}'s Ward (CR 702.21a).`,
+					opp.playerId
+				);
+			}
+		} else {
+			const req = parseManaCost(wardCost);
+			if (canPayOrAutoTap(opp, req, state)) {
+				payManaWithAutoTap(opp, req, state);
+				paid = true;
+				addLog(
+					state,
+					'rule',
+					`${opp.username} paid ${wardCost} for ${item.card.name}'s Ward (CR 702.21a).`,
+					opp.playerId
+				);
+			}
+		}
+	}
+	if (!paid) {
+		if (targetItem.kind === 'spell' && spellCannotBeCountered(state, targetItem)) {
+			addLog(
+				state,
+				'rule',
+				`${targetItem.title} could not be countered by ${item.card.name}'s Ward (CR 702.21a)!`,
+				controller.playerId
+			);
+		} else {
+			const stkIdx = state.stack.indexOf(targetItem);
+			if (stkIdx >= 0) {
+				const [countered] = state.stack.splice(stkIdx, 1);
+				moveStackSpellToZone(state, countered, 'graveyard');
+				addLog(
+					state,
+					'cast',
+					`${item.card.name}'s Ward countered ${countered.title} (CR 702.21a)!`,
+					controller.playerId
+				);
+			}
+		}
+	}
+}
+
+function resolveDelayedTriggerEffect(
+	state: GameState,
+	item: StackItem,
+	controller: PlayerGameState,
+	eff: DelayedTriggerEffect
+): void {
+	if (eff.kind === 'exile') {
+		const found = findPermanentOnBoard(state, eff.targetInstanceId);
+		if (
+			found &&
+			!found.inst.phasedOut &&
+			(eff.targetObjectVersion === undefined || found.inst.objectVersion === eff.targetObjectVersion)
+		) {
+			emitVfx(state, { kind: 'exile', targetId: found.inst.instanceId, label: found.inst.card.name });
+			movePermanentToZone(state, found.inst, 'exile');
+			addLog(state, 'cast', `${item.title} exiled ${found.inst.card.name}.`, controller.playerId);
+		}
+		return;
+	}
+	if (eff.kind === 'lose') {
+		loseTheGame(state, controller, `${item.title} ("you lose the game")`);
+		return;
+	}
+	if (eff.kind === 'draw') {
+		const pl = state.players.find((p) => p.playerId === eff.playerId) ?? controller;
+		if (eff.upTo && !pl.isBot && !pl.lost && eff.amount > 0) {
+			// "May draw up to N cards": the drawing player chooses how many (no silent default for a human).
+			const question = `${item.title}: how many cards do you draw (0–${eff.amount})?`;
+			enqueueChoicePrompt(state, {
+				id: uid('prm', state),
+				playerId: pl.playerId,
+				kind: 'yesNo',
+				title: item.title,
+				description: question,
+				continuation: { kind: 'handler', name: 'draw_up_to', data: { playerId: pl.playerId, source: item.title } },
+				choice: { kind: 'chooseNumber', min: 0, max: eff.amount, reason: question }
+			});
+			return;
+		}
+		if (!pl.lost && eff.amount > 0) {
+			drawCards(state, pl, eff.amount, true);
+			addLog(state, 'rule', `${pl.username} drew ${eff.amount} card(s).`, controller.playerId);
+		}
+	}
+}
+
+registerPromptHandler('draw_up_to', (state, prompt, answer) => {
+	const data = prompt.continuation?.kind === 'handler' ? prompt.continuation.data : undefined;
+	const pl = state.players.find((p) => p.playerId === data?.playerId);
+	const n = answer.kind === 'chooseNumber' ? answer.n : 0;
+	if (!pl || pl.lost) return;
+	if (n > 0) drawCards(state, pl, n, true);
+	addLog(state, 'rule', `${pl.username} drew ${n} card(s) (${String(data?.source ?? '')}).`, pl.playerId);
+});
+
 /**
  * Step E2: whether a stack item comes from a card ability the engine would have to automate (an
  * instant or sorcery, an activated ability, a triggered ability of a card), as opposed to an object
@@ -3763,7 +3898,11 @@ function resolveTriggerPrompt(
 function isUnautomatedStackItem(item: StackItem): boolean {
 	if (item.kind === 'activated') return true;
 	if (item.kind === 'spell') return /\b(?:Instant|Sorcery)\b/.test(item.card.typeLine);
-	return item.triggeredAbilityIndex !== undefined && !item.parsedEffects.some((e) => e.kind === 'ward_trigger');
+	return (
+		item.triggeredAbilityIndex !== undefined &&
+		!itemWard(item) &&
+		!item.delayedEffect
+	);
 }
 
 /**
@@ -3774,32 +3913,21 @@ function openManualResolution(state: GameState, item: StackItem, controller: Pla
 	item.manualResolution = 'awaiting';
 	const targets = item.targets.map((t) => t.label).join(', ');
 	const text = `${stackItemDisplayText(item)}${targets ? `\n\nTargets: ${targets}` : ''}`;
-	const hasLegacy = item.parsedEffects.length > 0;
 	const question = `${item.title} isn't automated. Apply its effect with the operations below, then finish resolving it.`;
 	enqueueChoicePrompt(state, {
-		id: uid('prm'),
+		id: uid('prm', state),
 		playerId: controller.playerId,
 		kind: 'guided_resolution',
 		purpose: 'guided_resolution',
 		title: `Resolve Manually: ${item.title}`,
 		description: text,
 		yesLabel: 'Done: finish resolving',
-		...(hasLegacy ? { noLabel: "Use the engine's approximation instead" } : {}),
 		continuation: { kind: 'manual_resolution', stackItemId: item.id },
 		choice: { kind: 'yesNo', question }
 	});
 	addLog(state, 'rule', `${item.title} isn't automated: ${controller.username} resolves it manually.`, controller.playerId);
 }
 
-let effectInterpreterEnabled = true;
-
-/**
- * Kill switch for the Phase 3 effect interpreter: when off, every spell and ability resolves on the
- * legacy executeParsedEffect path. Used by tests that compare the two paths.
- */
-export function setEffectInterpreterEnabled(on: boolean): void {
-	effectInterpreterEnabled = on;
-}
 
 /**
  * Resolves the top object of the stack. Triggered abilities that trigger while it resolves are put
@@ -3921,14 +4049,30 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 		item.resolutionStarted = true;
 	}
 
-	let turnEndedDuringResolution = false;
+	const ward = itemWard(item);
+	if (ward) {
+		resolveWardTrigger(state, item, controller, ward);
+		triggerPathCounts.interpreter++;
+		removeItemFromStack();
+		state.priorityPlayerIndex = state.activePlayerIndex;
+		state.passedPriorityPlayerIds = [];
+		checkStateBasedActions(state);
+		return;
+	}
+	if (item.delayedEffect) {
+		resolveDelayedTriggerEffect(state, item, controller, item.delayedEffect);
+		triggerPathCounts.interpreter++;
+		removeItemFromStack();
+		state.priorityPlayerIndex = state.activePlayerIndex;
+		state.passedPriorityPlayerIds = [];
+		checkStateBasedActions(state);
+		return;
+	}
 
-	// Phase 3: a spell or activated ability whose every step the grammar and the IR interpreter
-	// support resolves on the interpreter (runtime/effects.ts); anything else uses the legacy
-	// executeParsedEffect path below.
-	const compiled = !effectInterpreterEnabled
-		? null
-		: item.kind === 'triggered'
+	// A spell or ability the compiler marked supported resolves on the IR interpreter
+	// (runtime/effects.ts); anything else isn't automated (below).
+	const compiled =
+		item.kind === 'triggered'
 			? triggerItemEffect(item)
 			: compiledStackItemEffects(item);
 	const overload = item.castMode === 'overload';
@@ -3938,19 +4082,15 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 		staticallyInterpretable(compiled, item.kind === 'triggered') &&
 		(item.effectResume !== undefined || interpretableNow(state, item, compiled, controller, overload));
 	// Step E2 (plan section 2.7): a spell or ability the interpreter can't run isn't automated. A human
-	// controller resolves it manually (guided operations; the engine's legacy approximation is offered
-	// while it exists); a bot uses the legacy effects if there are any, and otherwise skips it.
-	let runLegacy = !interpreted;
-	if (!interpreted && effectInterpreterEnabled && isUnautomatedStackItem(item)) {
-		if (!controller.isBot && item.manualResolution !== 'legacy') {
+	// controller resolves it manually (guided operations); a bot skips it.
+	if (!interpreted && isUnautomatedStackItem(item)) {
+		if (!controller.isBot) {
 			if (item.manualResolution !== 'done') {
 				openManualResolution(state, item, controller);
 				return;
 			}
-			runLegacy = false;
-		} else if (item.parsedEffects.length === 0) {
+		} else {
 			addLog(state, 'rule', `${controller.username} (bot) skipped unsupported ability ${item.title}: it isn't automated.`, controller.playerId);
-			runLegacy = false;
 		}
 	}
 	let exiledBySelfReference = false;
@@ -3966,7 +4106,7 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 				} else {
 					const question = `Use the optional effect of ${item.title}? (Its text is shown on the stack.)`;
 					enqueueChoicePrompt(state, {
-						id: uid('prm'),
+						id: uid('prm', state),
 						playerId: controller.playerId,
 						kind: 'yesNo',
 						purpose: 'trigger_may',
@@ -4025,144 +4165,7 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 		exiledBySelfReference = result.exileSelf;
 	}
 
-	if (item.kind === 'triggered' && (interpreted || runLegacy)) triggerPathCounts[interpreted ? 'interpreter' : 'legacy']++;
-	// Legacy fallback for triggered abilities: their legacy effects read the event ref as targets[0].
-	if (runLegacy) withLegacyEventTarget(item);
-	// Execute parsed effects (pausing continuation effects if a human Scry or Library Search prompt is created)
-	for (let i = 0; runLegacy && i < item.parsedEffects.length; i++) {
-		const eff = item.parsedEffects[i];
-		if (eff.kind === 'end_the_turn') {
-			endTheTurnImmediately(state, controller.playerId);
-			turnEndedDuringResolution = true;
-			break;
-		}
-		if ((eff.kind === 'scry' || eff.kind === 'rearrange_top') && !controller.isBot) {
-			const count = Math.min(eff.amount, controller.library.length);
-			if (count > 0) {
-				const topCards = controller.library.slice(0, count);
-				const isRearrangeOnly = eff.kind === 'rearrange_top';
-				const topIds = topCards.map((c) => c.instanceId);
-				const description = isRearrangeOnly
-					? `Look at the top ${count} card(s) of your library and put them back on top in any order.${eff.mayShuffle ? ' Or you may shuffle your library.' : ''}`
-					: `Look at the top ${count} card(s) of your library. Put any number on the bottom in any order and the rest on top in any order.`;
-				state.pendingPrompts.push({
-					id: uid('prm'),
-					playerId: controller.playerId,
-					kind: 'scry_choice',
-					purpose: 'scry_choice',
-					title: isRearrangeOnly
-						? `Rearrange Top ${count} (${item.card.name})`
-						: `Scry ${count} (${item.card.name})`,
-					description,
-					countRequired: count,
-					candidateInstanceIds: topIds,
-					allowBottom: !isRearrangeOnly,
-					allowShuffle: Boolean(eff.mayShuffle),
-					stackItem: item,
-					continuationEffects: item.parsedEffects.slice(i + 1),
-					choice: {
-						kind: 'orderObjects',
-						objectIds: topIds,
-						allowSplitBottom: !isRearrangeOnly,
-						allowShuffle: Boolean(eff.mayShuffle),
-						reason: description
-					}
-				});
-				break;
-			}
-			continue;
-		}
-		const promptsBefore = state.pendingPrompts.length;
-		executeParsedEffect(state, controller, item, eff);
-		if (state.pendingPrompts.length > promptsBefore && i + 1 < item.parsedEffects.length) {
-			const latestPrompt = state.pendingPrompts[state.pendingPrompts.length - 1];
-			if (latestPrompt.kind === 'search_library') {
-				latestPrompt.stackItem = item;
-				latestPrompt.continuationEffects = item.parsedEffects.slice(i + 1);
-				break;
-			}
-		}
-	}
-
-	if (turnEndedDuringResolution) {
-		return;
-	}
-
-	// Register any delayed triggers created by this spell (e.g., Final Fortune's end-step loss trigger)
-	if (item.kind === 'spell' && runLegacy) {
-		const delayedSpecs = parseDelayedTriggersFromSpell(item.card);
-		for (const spec of delayedSpecs) {
-			if (item.parsedEffects.some((e) => e.dynamicFormula === 'top_creature_of_graveyard')) continue;
-			if (!state.delayedTriggers) state.delayedTriggers = [];
-			state.delayedTriggers.push(
-				withDelayedTriggerSpec(
-					{
-						id: uid('dtrig'),
-						sourceInstanceId: item.sourceInstanceId,
-						sourceCard: item.card,
-						controllerId: controller.playerId,
-						triggerPhase: spec.triggerPhase,
-						targetPlayerId: spec.forNextTurnOfController ? controller.playerId : undefined,
-						waitUntilAfterTurn: spec.forNextTurnOfController ? state.turnNumber : undefined,
-						title: spec.title,
-						effects: spec.effects,
-						description: spec.description,
-						createdAtTurn: state.turnNumber
-					},
-					spec
-				)
-			);
-		}
-	}
-
-	// Handle graveyard-targeting return-to-hand or exile effects
-	const graveTargets = runLegacy ? item.targets.filter((t) => t.kind === 'graveyard_card') : [];
-	if (graveTargets.length > 0) {
-		const oLow = getStackItemRulesText(item).toLowerCase();
-		if (oLow.includes('return') && oLow.includes('hand')) {
-			for (const gt of graveTargets) {
-				for (const p of state.players) {
-					const gIdx = p.graveyard.findIndex((c) => c.instanceId === gt.id);
-					if (gIdx >= 0) {
-						const card = p.graveyard[gIdx];
-						moveObject(state, card, 'hand', {
-							from: { player: p, zone: 'graveyard' },
-							toPlayer: p,
-							bumpVersion: true
-						});
-						addLog(
-							state,
-							'cast',
-							`${item.title} returned ${card.card.name} from ${p.username}'s graveyard to hand.`,
-							controller.playerId
-						);
-						break;
-					}
-				}
-			}
-		} else if (oLow.includes('exile')) {
-			for (const gt of graveTargets) {
-				for (const p of state.players) {
-					const gIdx = p.graveyard.findIndex((c) => c.instanceId === gt.id);
-					if (gIdx >= 0) {
-						const card = p.graveyard[gIdx];
-						moveObject(state, card, 'exile', {
-							from: { player: p, zone: 'graveyard' },
-							toPlayer: p,
-							bumpVersion: true
-						});
-						addLog(
-							state,
-							'cast',
-							`${item.title} exiled ${card.card.name} from ${p.username}'s graveyard.`,
-							controller.playerId
-						);
-						break;
-					}
-				}
-			}
-		}
-	}
+	if (item.kind === 'triggered') triggerPathCounts[interpreted ? 'interpreter' : 'manual']++;
 
 	// CR 608.2n: As the final part of resolution, the resolving spell or ability leaves the stack.
 	removeItemFromStack();
@@ -4202,8 +4205,19 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 			// Reset pre-filled loyalty so moveObject initializes loyalty with counterMultiplier (CR 306.5b)
 			perm.counters.loyalty = 0;
 
-			// CR 707: Clone / "enter the battlefield as a copy of any creature on the battlefield"
-			if (cardEntersAsCopyOfAnyCreature(item.card)) {
+			// CR 707: "enter the battlefield as a copy of any creature on the battlefield"
+			const compiledEnter = compileCard(item.card);
+			const entersAsCopyOfAnyCreature = (compiledEnter.faces[0]?.abilities ?? []).some(
+				(ab) =>
+					ab.kind === 'replacement' &&
+					ab.replacement.replaces.event === 'zoneChange' &&
+					ab.replacement.replaces.filter?.object === 'self' &&
+					ab.replacement.replaces.filter?.to === 'battlefield' &&
+					!Array.isArray(ab.replacement.with) &&
+					ab.replacement.with.k === 'modify' &&
+					Boolean(ab.replacement.with.copyOf?.types?.includes('Creature'))
+			);
+			if (entersAsCopyOfAnyCreature) {
 				let targetCreature: CardInstance | undefined;
 				if (item.targets[0]?.kind === 'permanent') {
 					targetCreature = findPermanentOnBoard(state, item.targets[0].id)?.inst;
@@ -4232,7 +4246,7 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 					addLog(
 						state,
 						'cast',
-						`Clone entered the battlefield as a copy of ${baseCardToCopy.name} (CR 707.2).`,
+						`${item.card.name} entered the battlefield as a copy of ${baseCardToCopy.name} (CR 707.2).`,
 						controller.playerId
 					);
 				}
@@ -4282,9 +4296,7 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 			}
 			flushTriggers(state);
 		} else {
-			// Check if spell exiles itself on resolution (e.g. Teferi's Protection, Time Stop)
-			const exilesSelf = spellExilesSelfOnResolution(item.card);
-			moveStackSpellToZone(state, item, exilesSelf || exiledBySelfReference ? 'exile' : 'graveyard');
+			moveStackSpellToZone(state, item, exiledBySelfReference ? 'exile' : 'graveyard');
 		}
 	}
 
@@ -4293,826 +4305,28 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 	checkStateBasedActions(state);
 }
 
-function executeParsedEffect(
+
+// ---- Effect primitives used by the IR interpreter (runtime/effects.ts)
+
+/** "The player whose turn it is may end the turn": ends it now for a bot or the controller. */
+function activePlayerMayEndTurn(
 	state: GameState,
 	controller: PlayerGameState,
-	item: StackItem,
-	eff: ParsedEffect
+	sourceName = 'Ability'
 ): void {
-	const resolveRecipientPlayer = (): PlayerGameState => {
-		if (eff.recipient === 'target_controller') {
-			if (item.lkiControllerId) {
-				const lkiPlayer = state.players.find((p) => p.playerId === item.lkiControllerId);
-				if (lkiPlayer) return lkiPlayer;
-			}
-			const t0 = item.targets[0];
-			if (t0?.kind === 'permanent') {
-				const found = findPermanentOnBoard(state, t0.id);
-				if (found) return found.controller;
-			}
-		}
-		return controller;
-	};
-
-	switch (eff.kind) {
-		case 'end_the_turn': {
-			endTheTurnImmediately(state, controller.playerId);
-			break;
-		}
-
-		case 'may_end_the_turn': {
-			activePlayerMayEndTurn(state, controller);
-			break;
-		}
-
-		case 'extra_turn': {
-			if (!state.extraTurnQueue) state.extraTurnQueue = [];
-			const count = Math.max(1, eff.amount || 1);
-			for (let i = 0; i < count; i++) {
-				// CR 500.7: Extra turns are added in LIFO order
-				state.extraTurnQueue.push(controller.playerId);
-			}
-			addLog(
-				state,
-				'rule',
-				`${controller.username} will take ${count} extra turn(s) after this one (CR 500.7)!`,
-				controller.playerId
-			);
-			break;
-		}
-
-		case 'phase_out_team': {
-			// Teferi's Protection: life total can't change, protection from everything, all permanents you control phase out
-			controller.lifeTotalCannotChangeThisTurn = true;
-			controller.protectionFromEverythingThisTurn = true;
-			for (const perm of controller.battlefield) {
-				if (!perm.phasedOut) {
-					phaseOutPermanent(state, perm);
-				}
-			}
-			addLog(
-				state,
-				'rule',
-				`All permanents controlled by ${controller.username} phased out, and their life total cannot change until their next turn (CR 702.26)!`,
-				controller.playerId
-			);
-			break;
-		}
-
-		case 'phase_out_target': {
-			const target = item.targets[0];
-			if (target) {
-				const found = findPermanentOnBoard(state, target.id);
-				if (found) {
-					phaseOutPermanent(state, found.inst);
-					addLog(
-						state,
-						'cast',
-						`${item.title} caused ${found.inst.card.name} to phase out (CR 702.26)!`,
-						controller.playerId
-					);
-				}
-			}
-			break;
-		}
-
-		case 'switch_pt_target': {
-			const target = item.targets[0];
-			if (target) {
-				const found = findPermanentOnBoard(state, target.id);
-				if (found) {
-					found.inst.switchedPTCount = (found.inst.switchedPTCount || 0) + 1;
-					addLog(
-						state,
-						'cast',
-						`${item.title} switched ${found.inst.card.name}'s power and toughness until end of turn (Layer 7d).`,
-						controller.playerId
-					);
-				}
-			}
-			break;
-		}
-
-		case 'win_the_game': {
-			if (eff.dynamicFormula === 'devotion_blue_gte_library') {
-				let blueDevotion = 0;
-				for (const perm of controller.battlefield) {
-					if (perm.phasedOut) continue;
-					const uMatches = perm.card.manaCost.match(/\{U\}/gi);
-					if (uMatches) blueDevotion += uMatches.length;
-				}
-				if (blueDevotion >= controller.library.length) {
-					winTheGame(
-						state,
-						controller,
-						`${item.card.name} ETB (Devotion to Blue ${blueDevotion} >= Library ${controller.library.length})`
-					);
-				}
-				break;
-			}
-			winTheGame(state, controller, `${item.card.name} win condition`);
-			break;
-		}
-
-		case 'lose_the_game_self': {
-			loseTheGame(state, controller, `${item.title} ("you lose the game")`);
-			break;
-		}
-
-		case 'sacrifice_self': {
-			const found = findPermanentOnBoard(state, item.sourceInstanceId);
-			if (found) {
-				movePermanentToZone(state, found.inst, 'graveyard');
-				addLog(
-					state,
-					'rule',
-					`${controller.username} sacrificed ${found.inst.card.name}.`,
-					controller.playerId
-				);
-			}
-			break;
-		}
-
-		case 'return_self_from_graveyard': {
-			const gIdx = controller.graveyard.findIndex((c) => c.instanceId === item.sourceInstanceId);
-			if (gIdx >= 0) {
-				const card = controller.graveyard[gIdx];
-				moveObject(state, card, 'battlefield', {
-					from: { player: controller, zone: 'graveyard' },
-					toPlayer: controller,
-					controllerId: controller.playerId,
-					newTimestamp: true,
-					bumpVersion: true,
-					// Haste was checked with the card out of the graveyard but not yet on the battlefield.
-					beforeInsert: (c) => {
-						c.summoningSick = !hasKeyword(c, 'Haste', state);
-					}
-				});
-				addLog(
-					state,
-					'trigger',
-					`${card.card.name} returned from ${controller.username}'s graveyard to the battlefield!`,
-					controller.playerId
-				);
-				flushTriggers(state);
-			}
-			break;
-		}
-
-		case 'exile_all_graveyards': {
-			let exiledTotal = 0;
-			for (const p of state.players) {
-				// Top card first, so exile receives the graveyard in reverse order (pinned behaviour).
-				while (p.graveyard.length > 0) {
-					moveObject(state, p.graveyard[p.graveyard.length - 1], 'exile', {
-						from: { player: p, zone: 'graveyard' },
-						toPlayer: p,
-						bumpVersion: true
-					});
-					exiledTotal++;
-				}
-			}
-			addLog(
-				state,
-				'trigger',
-				`${item.title} exiled all ${exiledTotal} card(s) from all graveyards!`,
-				controller.playerId
-			);
-			break;
-		}
-
-		case 'return_from_graveyard_to_hand': {
-			const graveTarget = item.targets.find(
-				(t) => t.kind === 'graveyard_card' || t.kind === 'card_in_graveyard'
-			);
-			let gIdx = -1;
-			if (graveTarget) {
-				gIdx = controller.graveyard.findIndex((c) => c.instanceId === graveTarget.id);
-			}
-			if (gIdx < 0 && controller.graveyard.length > 0) {
-				gIdx = controller.graveyard.length - 1;
-			}
-			if (gIdx >= 0) {
-				const ret = controller.graveyard[gIdx];
-				moveObject(state, ret, 'hand', {
-					from: { player: controller, zone: 'graveyard' },
-					toPlayer: controller,
-					bumpVersion: true
-				});
-				addLog(
-					state,
-					'trigger',
-					`${item.card.name} returned ${ret.card.name} from graveyard to hand.`,
-					controller.playerId
-				);
-			}
-			break;
-		}
-
-		case 'copy_target_permanent': {
-			const target = item.targets[0];
-			const found = target ? findPermanentOnBoard(state, target.id) : null;
-			if (found && !found.inst.phasedOut) {
-				copyPermanentAsToken(state, controller, found.inst, item.card.name);
-			}
-			break;
-		}
-
-		case 'counter_target_spell': {
-			for (const target of item.targets) {
-				const stkIdx = state.stack.findIndex(
-					(s) => s.id === target.id || s.sourceInstanceId === target.id
-				);
-				if (stkIdx >= 0) {
-					counterStackItemByEffect(state, item, state.stack[stkIdx], controller);
-				}
-			}
-			break;
-		}
-
-		case 'draw': {
-			let count = eff.amount;
-			if (eff.dynamicFormula?.startsWith('attacking_subtype_count:')) {
-				const subtype = eff.dynamicFormula.split(':')[1];
-				count = state.combat.attackers.filter((atk) => {
-					if (atk.controllerId !== controller.playerId) return false;
-					const perm = controller.battlefield.find(
-						(b) => !b.phasedOut && b.instanceId === atk.attackerInstanceId
-					);
-					if (!perm) return false;
-					const evalPerm = evaluatePermanent(state, perm);
-					return evalPerm.hasSubType(subtype) || evalPerm.typeLine.includes(subtype);
-				}).length;
-			}
-			if (count > 0) {
-				drawCards(state, controller, count, true);
-				addLog(state, 'rule', `${controller.username} drew ${count} card(s).`, controller.playerId);
-			}
-			break;
-		}
-
-		case 'scry': {
-			scryOrRearrangeTop(state, controller, item, eff.amount, 'scry', false);
-			break;
-		}
-
-		case 'rearrange_top': {
-			scryOrRearrangeTop(state, controller, item, eff.amount, 'rearrange', Boolean(eff.mayShuffle));
-			break;
-		}
-
-		case 'equip_target': {
-			const equipFound = findPermanentOnBoard(state, item.sourceInstanceId);
-			const target = item.targets[0];
-			const targetFound = target ? findPermanentOnBoard(state, target.id) : null;
-			if (
-				equipFound &&
-				targetFound &&
-				targetFound.controller.playerId === controller.playerId &&
-				evaluatePermanent(state, targetFound.inst).typeLine.includes('Creature')
-			) {
-				equipFound.inst.attachedToId = targetFound.inst.instanceId;
-				// CR 613.7e: An Equipment or Aura receives a new timestamp when it becomes attached to an object.
-				equipFound.inst.enteredTimestamp = allocateTimestamp(state);
-				addLog(
-					state,
-					'cast',
-					`${controller.username} attached ${equipFound.inst.card.name} to ${targetFound.inst.card.name}.`,
-					controller.playerId
-				);
-				emitEvent(state, {
-					kind: 'Attached',
-					attachmentId: equipFound.inst.instanceId,
-					attachment: equipFound.inst,
-					hostId: targetFound.inst.instanceId,
-					host: targetFound.inst
-				});
-				flushTriggers(state);
-			}
-			break;
-		}
-
-		case 'gain_life': {
-			const recipientPlayer = resolveRecipientPlayer();
-			const amount =
-				eff.dynamicFormula === 'target_power'
-					? Math.max(0, item.lkiPower ?? 0)
-					: eff.amount;
-			if (!recipientPlayer.lifeTotalCannotChangeThisTurn) {
-				recipientPlayer.life += amount;
-			}
-			emitVfx(state, {
-				kind: amount >= 0 ? 'heal' : 'damage',
-				targetId: recipientPlayer.playerId,
-				amount: Math.abs(amount),
-				label: `${amount >= 0 ? '+' : ''}${amount} Life`
-			});
-			break;
-		}
-
-		case 'ward_trigger': {
-			const targetItem = state.stack.find((s) => s.id === item.targets[0]?.id);
-			if (!targetItem) break;
-			const opp = state.players.find((p) => p.playerId === targetItem.controllerId);
-			const wardCost = (eff.wardCost ?? '{1}').trim();
-			let paid = false;
-			if (opp && !targetItem.declineWard) {
-				const lifeMatch = wardCost.match(/^pay\s+(\d+)\s+life$/i);
-				if (lifeMatch) {
-					const lifeCost = parseInt(lifeMatch[1], 10);
-					if (!opp.lifeTotalCannotChangeThisTurn && opp.life >= lifeCost) {
-						opp.life -= lifeCost;
-						paid = true;
-						addLog(
-							state,
-							'rule',
-							`${opp.username} paid ${lifeCost} life for ${item.card.name}'s Ward (CR 702.21a).`,
-							opp.playerId
-						);
-					}
-				} else {
-					const req = parseManaCost(wardCost);
-					if (canPayOrAutoTap(opp, req, state)) {
-						payManaWithAutoTap(opp, req, state);
-						paid = true;
-						addLog(
-							state,
-							'rule',
-							`${opp.username} paid ${wardCost} for ${item.card.name}'s Ward (CR 702.21a).`,
-							opp.playerId
-						);
-					}
-				}
-			}
-			if (!paid) {
-				if (targetItem.kind === 'spell' && spellCannotBeCountered(state, targetItem)) {
-					addLog(
-						state,
-						'rule',
-						`${targetItem.title} could not be countered by ${item.card.name}'s Ward (CR 702.21a)!`,
-						controller.playerId
-					);
-				} else {
-					const stkIdx = state.stack.indexOf(targetItem);
-					if (stkIdx >= 0) {
-						const [countered] = state.stack.splice(stkIdx, 1);
-						moveStackSpellToZone(state, countered, 'graveyard');
-						addLog(
-							state,
-							'cast',
-							`${item.card.name}'s Ward countered ${countered.title} (CR 702.21a)!`,
-							controller.playerId
-						);
-					}
-				}
-			}
-			break;
-		}
-
-		case 'lose_life_opponents': {
-			let amount = eff.amount;
-			if (eff.dynamicFormula?.startsWith('count_subtype:')) {
-				const subtype = eff.dynamicFormula.split(':')[1];
-				amount = controller.battlefield.filter((b) => {
-					if (b.phasedOut) return false;
-					const evalPerm = evaluatePermanent(state, b);
-					return evalPerm.hasSubType(subtype) || evalPerm.typeLine.includes(subtype);
-				}).length;
-			}
-			for (const opp of state.players) {
-				if (opp.playerId !== controller.playerId && !opp.lost) {
-					if (!opp.lifeTotalCannotChangeThisTurn) {
-						opp.life -= amount;
-					}
-					emitVfx(state, {
-						kind: 'damage',
-						sourceId: controller.playerId,
-						targetId: opp.playerId,
-						amount
-					});
-				}
-			}
-			addLog(
-				state,
-				'life',
-				`Each opponent lost ${amount} life from ${item.title}.`,
-				controller.playerId
-			);
-			break;
-		}
-
-		case 'damage_target': {
-			const target = item.targets[0];
-			if (target) {
-				applyDamageToTarget(state, controller.playerId, target, eff.amount);
-			}
-			break;
-		}
-
-		case 'damage_each_opponent': {
-			let amount = eff.amount;
-			if (eff.dynamicFormula === 'entered_power') {
-				if (item.lkiPower !== undefined) {
-					amount = item.lkiPower;
-				} else if (item.targets[0]?.kind === 'permanent') {
-					const found = findPermanentOnBoard(state, item.targets[0].id);
-					amount = found ? getCreaturePower(found.inst, state) : 0;
-				} else {
-					amount = 0;
-				}
-			}
-			if (amount <= 0) break;
-			for (const opp of state.players) {
-				if (opp.playerId !== controller.playerId && !opp.lost) {
-					if (!opp.lifeTotalCannotChangeThisTurn && !opp.protectionFromEverythingThisTurn) {
-						opp.life -= amount;
-					}
-					if (!opp.protectionFromEverythingThisTurn) {
-						emitEvent(state, {
-							kind: 'DamageDealt',
-							sourceId: item.sourceInstanceId,
-							targetId: opp.playerId,
-							targetKind: 'player',
-							amount,
-							combat: false
-						});
-					}
-					emitVfx(state, {
-						kind: 'damage',
-						sourceId: controller.playerId,
-						targetId: opp.playerId,
-						amount
-					});
-				}
-			}
-			break;
-		}
-
-		case 'damage_all_creatures': {
-			for (const p of state.players) {
-				for (const perm of p.battlefield) {
-					if (perm.phasedOut) continue;
-					if (evaluatePermanent(state, perm).typeLine.includes('Creature')) {
-						perm.damageMarked += eff.amount;
-						emitEvent(state, {
-							kind: 'DamageDealt',
-							sourceId: item.sourceInstanceId,
-							targetId: perm.instanceId,
-							targetKind: 'permanent',
-							amount: eff.amount,
-							combat: false
-						});
-						emitVfx(state, {
-							kind: 'damage',
-							targetId: perm.instanceId,
-							amount: eff.amount
-						});
-					}
-				}
-			}
-			addLog(state, 'combat', `${item.title} dealt ${eff.amount} damage to each creature!`, controller.playerId);
-			break;
-		}
-
-		case 'destroy_target': {
-			const target = item.targets[0];
-			if (!target) break;
-			const found = findPermanentOnBoard(state, target.id);
-			if (found && !found.inst.phasedOut) {
-				destroyPermanentByEffect(state, found.inst, item.title, controller.playerId);
-			}
-			break;
-		}
-
-		case 'destroy_all_creatures': {
-			const toDestroy: { perm: CardInstance; controller: PlayerGameState }[] = [];
-			const isExileAll = getStackItemRulesText(item).toLowerCase().includes('exile all');
-			for (const p of state.players) {
-				for (const perm of p.battlefield) {
-					if (perm.phasedOut) continue;
-					if (evaluatePermanent(state, perm).typeLine.includes('Creature')) {
-						if (isExileAll || !hasKeyword(perm, 'Indestructible', state)) {
-							toDestroy.push({ perm, controller: p });
-						}
-					}
-				}
-			}
-			for (const { perm } of toDestroy) {
-				emitVfx(state, { kind: isExileAll ? 'exile' : 'destroy', targetId: perm.instanceId });
-				movePermanentToZone(state, perm, isExileAll ? 'exile' : 'graveyard');
-			}
-			flushTriggers(state);
-			addLog(
-				state,
-				'cast',
-				`${item.title} wiped ${toDestroy.length} creature(s) from the battlefield!`,
-				controller.playerId
-			);
-			break;
-		}
-
-		case 'exile_target': {
-			const target = item.targets[0];
-			if (!target) break;
-			const found = findPermanentOnBoard(state, target.id);
-			if (found && !found.inst.phasedOut) {
-				emitVfx(state, { kind: 'exile', targetId: found.inst.instanceId, label: found.inst.card.name });
-				movePermanentToZone(state, found.inst, 'exile');
-				addLog(state, 'cast', `${item.title} exiled ${found.inst.card.name}.`, controller.playerId);
-			}
-			break;
-		}
-
-		case 'bounce_target': {
-			const isOverloadBounce = isOverloadCastMode(item.card, item.xValue, item.castMode);
-			if (isOverloadBounce) {
-				for (const p of state.players) {
-					if (p.playerId === controller.playerId) continue;
-					const nonLands = p.battlefield.filter(
-						(b) => !b.phasedOut && !evaluatePermanent(state, b).typeLine.includes('Land')
-					);
-					for (const perm of nonLands) {
-						movePermanentToZone(state, perm, 'hand');
-					}
-				}
-				addLog(
-					state,
-					'cast',
-					`${controller.username} resolved Overloaded ${item.card.name}!`,
-					controller.playerId
-				);
-			} else {
-				const target = item.targets[0];
-				if (target) {
-					const found = findPermanentOnBoard(state, target.id);
-					if (found && !found.inst.phasedOut) {
-						movePermanentToZone(state, found.inst, 'hand');
-						addLog(state, 'cast', `${item.title} returned ${found.inst.card.name} to hand.`, controller.playerId);
-					}
-				}
-			}
-			break;
-		}
-
-		case 'search_land_to_battlefield':
-		case 'search_library_to_hand': {
-			const recipientPlayer = resolveRecipientPlayer();
-			initiateLibrarySearch(state, recipientPlayer, eff, item);
-			break;
-		}
-
-		case 'create_token': {
-			if (eff.tokenSpec) {
-				const recipientPlayer = resolveRecipientPlayer();
-				const baseCount =
-					eff.dynamicFormula === 'combat_damage_dealt'
-						? Math.max(0, item.lkiPower ?? eff.amount)
-						: eff.amount;
-				const count = Math.max(0, baseCount) * tokenMultiplier(state, recipientPlayer.playerId);
-				for (let i = 0; i < count; i++) {
-					createTokenOnBoard(state, recipientPlayer, eff.tokenSpec);
-				}
-				if (count > 0) {
-					addLog(
-						state,
-						'cast',
-						`${recipientPlayer.username} created ${count}x ${eff.tokenSpec.name}.`,
-						recipientPlayer.playerId
-					);
-				}
-			}
-			break;
-		}
-
-		case 'proliferate': {
-			executeProliferate(state, controller);
-			break;
-		}
-
-		case 'add_counters_self': {
-			const found = findPermanentOnBoard(state, item.sourceInstanceId);
-			if (found && !found.inst.phasedOut) {
-				const cType = eff.counterType || '+1/+1';
-				addCountersToPermanent(state, found.inst, cType, eff.amount);
-			}
-			break;
-		}
-
-		case 'add_counters_team': {
-			const cType = eff.counterType || '+1/+1';
-			let placedAmount = eff.amount;
-			for (const perm of controller.battlefield) {
-				if (perm.phasedOut) continue;
-				if (evaluatePermanent(state, perm).typeLine.includes('Creature')) {
-					placedAmount = addCountersToPermanent(state, perm, cType, eff.amount);
-				}
-			}
-			addLog(
-				state,
-				'cast',
-				`${controller.username} put ${placedAmount} ${cType} counter(s) on each creature they control!`,
-				controller.playerId
-			);
-			break;
-		}
-
-		case 'add_counters_target': {
-			const target = item.targets[0];
-			if (target) {
-				const found = findPermanentOnBoard(state, target.id);
-				if (found && !found.inst.phasedOut) {
-					const cType = eff.counterType || '+1/+1';
-					addCountersToPermanent(state, found.inst, cType, eff.amount);
-				}
-			}
-			break;
-		}
-
-		case 'pump_self_eot': {
-			const found = findPermanentOnBoard(state, item.sourceInstanceId);
-			if (found && !found.inst.phasedOut) {
-				found.inst.tempPowerMod += eff.amount;
-				found.inst.tempToughnessMod += eff.toughnessAmount ?? eff.amount;
-			}
-			break;
-		}
-
-		case 'pump_team_eot': {
-			let pAmt = eff.amount;
-			let tAmt = eff.toughnessAmount ?? eff.amount;
-			if (eff.dynamicFormula?.startsWith('count_subtype:')) {
-				const subtype = eff.dynamicFormula.split(':')[1];
-				const count = controller.battlefield.filter((b) => {
-					if (b.phasedOut) return false;
-					const evalPerm = evaluatePermanent(state, b);
-					return evalPerm.hasSubType(subtype) || evalPerm.typeLine.includes(subtype);
-				}).length;
-				pAmt = count;
-				tAmt = count;
-			}
-			for (const perm of controller.battlefield) {
-				if (perm.phasedOut) continue;
-				if (evaluatePermanent(state, perm).typeLine.includes('Creature')) {
-					perm.tempPowerMod += pAmt;
-					perm.tempToughnessMod += tAmt;
-					if (eff.grantedKeyword && !perm.grantedKeywords.includes(eff.grantedKeyword)) {
-						perm.grantedKeywords.push(eff.grantedKeyword);
-					}
-				}
-			}
-			break;
-		}
-
-		case 'grant_keyword_target_eot': {
-			const kw = eff.grantedKeyword;
-			if (!kw) break;
-			for (const t of item.targets) {
-				const found = findPermanentOnBoard(state, t.id);
-				if (found && !found.inst.phasedOut) {
-					if (!found.inst.grantedKeywords.includes(kw)) {
-						found.inst.grantedKeywords.push(kw);
-					}
-				}
-			}
-			break;
-		}
-
-		case 'add_mana': {
-			for (const c of eff.manaColors || ['R']) {
-				controller.manaPool[c] += 1;
-			}
-			break;
-		}
-
-		case 'reanimate_target': {
-			// Check Corpse Dance ("top creature card of your graveyard" — CR 404.2 graveyard order!)
-			if (eff.dynamicFormula === 'top_creature_of_graveyard') {
-				let topIdx = -1;
-				for (let i = controller.graveyard.length - 1; i >= 0; i--) {
-					if (controller.graveyard[i].card.typeLine.includes('Creature')) {
-						topIdx = i;
-						break;
-					}
-				}
-				if (topIdx >= 0) {
-					const reanimated = controller.graveyard[topIdx];
-					reanimated.summoningSick = false;
-					if (!reanimated.grantedKeywords.includes('Haste')) {
-						reanimated.grantedKeywords.push('Haste');
-					}
-					moveObject(state, reanimated, 'battlefield', {
-						from: { player: controller, zone: 'graveyard' },
-						toPlayer: controller,
-						controllerId: controller.playerId,
-						newTimestamp: true,
-						bumpVersion: true
-					});
-					addLog(
-						state,
-						'cast',
-						`Corpse Dance reanimated the top creature card of ${controller.username}'s graveyard (${reanimated.card.name}) with Haste (CR 404.2)!`,
-						controller.playerId
-					);
-					flushTriggers(state);
-					if (!state.delayedTriggers) state.delayedTriggers = [];
-					state.delayedTriggers.push({
-						id: uid('dtrig'),
-						sourceCard: item.card,
-						controllerId: controller.playerId,
-						triggerPhase: 'end_step',
-						targetInstanceId: reanimated.instanceId,
-						targetObjectVersion: reanimated.objectVersion,
-						effects: [
-							{
-								kind: 'exile_target',
-								amount: 1
-							}
-						],
-						description: `At the beginning of the next end step, exile ${reanimated.card.name}.`
-					});
-				}
-				break;
-			}
-
-			const graveTargets = item.targets.filter((t) => t.kind === 'graveyard_card');
-			if (graveTargets.length > 0) {
-				for (const gt of graveTargets) {
-					for (const p of state.players) {
-						const gIdx = p.graveyard.findIndex((c) => c.instanceId === gt.id);
-						if (gIdx >= 0) {
-							const reanimated = p.graveyard[gIdx];
-							reanimated.summoningSick = reanimated.card.typeLine.includes('Creature');
-							moveObject(state, reanimated, 'battlefield', {
-								from: { player: p, zone: 'graveyard' },
-								toPlayer: controller,
-								controllerId: controller.playerId,
-								newTimestamp: true,
-								bumpVersion: true
-							});
-							addLog(
-								state,
-								'cast',
-								`${controller.username} reanimated ${reanimated.card.name} onto the battlefield!`,
-								controller.playerId
-							);
-							flushTriggers(state);
-							break;
-						}
-					}
-				}
-				break;
-			}
-			// Fallback: Reanimate top creature from graveyard (searching from top = end of array)
-			for (const p of state.players) {
-				let gIdx = -1;
-				for (let i = p.graveyard.length - 1; i >= 0; i--) {
-					if (p.graveyard[i].card.typeLine.includes('Creature')) {
-						gIdx = i;
-						break;
-					}
-				}
-				if (gIdx >= 0) {
-					const creature = p.graveyard[gIdx];
-					creature.summoningSick = true;
-					moveObject(state, creature, 'battlefield', {
-						from: { player: p, zone: 'graveyard' },
-						toPlayer: controller,
-						controllerId: controller.playerId,
-						newTimestamp: true,
-						bumpVersion: true
-					});
-					addLog(
-						state,
-						'cast',
-						`${controller.username} reanimated ${creature.card.name} onto the battlefield!`,
-						controller.playerId
-					);
-					flushTriggers(state);
-					break;
-				}
-			}
-			break;
-		}
-	}
-}
-
-// ---- Effect primitives shared by executeParsedEffect and the IR interpreter (runtime/effects.ts)
-
-/** "The player whose turn it is may end the turn" (Obeka): ends it now for a bot or the controller. */
-function activePlayerMayEndTurn(state: GameState, controller: PlayerGameState): void {
 	const activePlayer = state.players[state.activePlayerIndex];
 	if (!activePlayer) return;
 	if (activePlayer.playerId === controller.playerId || activePlayer.isBot) {
 		// Active player is controller (or a bot): end the turn immediately!
 		endTheTurnImmediately(state, activePlayer.playerId);
 	} else {
-		const description = `${controller.username} activated Obeka, Brute Chronologist. As the player whose turn it is, you may end the turn now (exiling all spells and abilities from the stack).`;
+		const description = `${controller.username} activated ${sourceName}. As the player whose turn it is, you may end the turn now (exiling all spells and abilities from the stack).`;
 		state.pendingPrompts.push({
-			id: uid('prm'),
+			id: uid('prm', state),
 			playerId: activePlayer.playerId,
 			kind: 'yesNo',
 			purpose: 'end_turn',
-			title: 'End the Turn? (Obeka, Brute Chronologist)',
+			title: `End the Turn? (${sourceName})`,
 			description,
 			yesLabel: 'End the Turn Now',
 			noLabel: 'Decline (Keep Playing Turn)',
@@ -5129,18 +4343,23 @@ function copyPermanentAsToken(
 	state: GameState,
 	controller: PlayerGameState,
 	original: CardInstance,
-	sourceName: string
+	sourceName: string,
+	notLegendary = false
 ): void {
 	const baseCardToCopy = JSON.parse(
 		JSON.stringify(original.copiableCard ?? original.card)
 	) as ScryfallCard;
+	if (notLegendary) {
+		baseCardToCopy.typeLine = baseCardToCopy.typeLine.replace(/\bLegendary\s+/g, '');
+	}
 	const tokenInst = createCardInstance(
 		baseCardToCopy,
 		controller.playerId,
 		'battlefield',
 		false,
 		true,
-		allocateTimestamp(state)
+		allocateTimestamp(state),
+		state
 	);
 	tokenInst.copiableCard = baseCardToCopy;
 	tokenInst.summoningSick = baseCardToCopy.typeLine.includes('Creature');
@@ -5242,7 +4461,7 @@ function scryOrRearrangeTop(
 			const topIds = topCards.map((c) => c.instanceId);
 			const description = `Look at the top ${count} card(s) of your library. Put any number on the bottom in any order and the rest on top in any order.`;
 			state.pendingPrompts.push({
-				id: uid('prm'),
+				id: uid('prm', state),
 				playerId: controller.playerId,
 				kind: 'scry_choice',
 				purpose: 'scry_choice',
@@ -5284,7 +4503,7 @@ function scryOrRearrangeTop(
 			const topIds = topCards.map((c) => c.instanceId);
 			const description = `Look at the top ${count} card(s) of your library and put them back on top in any order.${mayShuffle ? ' Or you may shuffle your library.' : ''}`;
 			state.pendingPrompts.push({
-				id: uid('prm'),
+				id: uid('prm', state),
 				playerId: controller.playerId,
 				kind: 'scry_choice',
 				purpose: 'scry_choice',
@@ -5340,12 +4559,7 @@ registerEffectPorts({
 	scry: (state, player, item, count, mode, mayShuffle) =>
 		scryOrRearrangeTop(state, player, item, count, mode, mayShuffle),
 	search: (state, player, spec, item) =>
-		initiateLibrarySearch(
-			state,
-			player,
-			{ kind: spec.destinations[0]?.zone === 'battlefield' ? 'search_land_to_battlefield' : 'search_library_to_hand', amount: spec.count, searchSpec: spec },
-			item
-		),
+		initiateLibrarySearch(state, player, spec, item),
 	phaseOut: phaseOutPermanent,
 	endTurn: endTheTurnImmediately,
 	activePlayerMayEndTurn,
@@ -5456,17 +4670,11 @@ export function executeSuspendFreeCastFromExile(
 	}
 
 	// Auto-select a legal target if the spell requires one
-	const parsed = parseSpellOrAbilityEffects(suspCard.card);
+	const spec = compileSpellEffects(suspCard.card)?.targets[0];
 	const chosenTargets: TargetRef[] = [];
-	if (parsed.targetInfo.requiresTarget && parsed.targetInfo.minTargets > 0) {
-		const legalTargets = getAllLegalTargetsForRequirement(
-			state,
-			owner.playerId,
-			parsed.targetInfo,
-			suspCard.card,
-			suspCard.instanceId
-		);
-		if (legalTargets.length < parsed.targetInfo.minTargets) {
+	if (spec && spec.min > 0) {
+		const legalTargets = specTargetCandidates(state, owner.playerId, suspCard.card, suspCard, spec);
+		if (legalTargets.length < spec.min) {
 			suspCard.isSuspended = false;
 			addLog(
 				state,
@@ -5490,7 +4698,7 @@ export function executeSuspendFreeCastFromExile(
 
 	const stackItem: StackItem = withStackItemText(
 		{
-			id: uid('stk'),
+			id: uid('stk', state),
 			sourceInstanceId: suspCard.instanceId,
 			card: suspCard.card,
 			controllerId: owner.playerId,
@@ -5499,7 +4707,6 @@ export function executeSuspendFreeCastFromExile(
 			targets: chosenTargets,
 			targetObjectVersions: captureTargetObjectVersions(state, chosenTargets),
 			xValue: 0,
-			parsedEffects: parsed.effects,
 			requiresGuidedResolution: false,
 			createdAt: Date.now()
 		},
@@ -5541,7 +4748,10 @@ export function checkSuspendLegality(
 	if (!actor || actor.lost) {
 		return { ok: false, error: 'Player is not active.' };
 	}
-	const suspendInfo = parseSuspendClause(inst.card);
+	const suspSpec = getSuspendSpec(inst.card);
+	const suspendInfo = suspSpec
+		? { timeCounters: suspSpec.timeCounters, cost: suspSpec.suspendCost }
+		: null;
 	if (!suspendInfo) {
 		return { ok: false, error: `${inst.card.name} does not have Suspend.` };
 	}
@@ -5578,51 +4788,15 @@ export function checkSuspendLegality(
 	return { ok: true, suspendInfo };
 }
 
-function buildFallbackLibrarySearchSpec(eff: ParsedEffect, item: StackItem): LibrarySearchSpec {
-	const parsedFromOracle = parseLibrarySearchSpec(getStackItemRulesText(item));
-	if (parsedFromOracle) return parsedFromOracle;
-
-	if (eff.kind === 'search_land_to_battlefield') {
-		const count = Math.max(1, eff.amount || 1);
-		const destinations: LibrarySearchDestination[] = Array.from({ length: count }, () => ({
-			zone: 'battlefield' as const,
-			tapped: eff.tapped ?? true
-		}));
-		return {
-			statedQuality: true,
-			upTo: count > 1,
-			count,
-			requireBasic: true,
-			allowedTypes: ['Land'],
-			allowedSubtypes: [],
-			disallowedTypes: [],
-			destinations,
-			rawCriteriaText: count > 1 ? 'up to two basic land cards' : 'a basic land card'
-		};
-	}
-
-	return {
-		statedQuality: false,
-		upTo: false,
-		count: Math.max(1, eff.amount || 1),
-		allowedTypes: [],
-		allowedSubtypes: [],
-		disallowedTypes: [],
-		destinations: [{ zone: 'hand' }],
-		rawCriteriaText: 'a card'
-	};
-}
-
 /**
  * Unified grammar-driven Library Search execution + `Opposition Agent` interception (CR 701.19).
  */
 function initiateLibrarySearch(
 	state: GameState,
 	searchingPlayer: PlayerGameState,
-	eff: ParsedEffect,
+	searchSpec: LibrarySearchSpec,
 	item: StackItem
 ): void {
-	const searchSpec = eff.searchSpec || buildFallbackLibrarySearchSpec(eff, item);
 	const interceptor = getLibrarySearchInterceptor(state, searchingPlayer.playerId);
 	const decisionPlayer = interceptor
 		? state.players.find((p) => p.playerId === interceptor.controllerId) || searchingPlayer
@@ -5665,8 +4839,8 @@ function initiateLibrarySearch(
 					decisionPlayer.playerId
 				);
 			} else if (dest.zone === 'battlefield') {
-				const selfEntersTapped = cardEntersTapped(found.card);
-				found.tapped = Boolean(dest.tapped) || selfEntersTapped;
+				found.tapped = Boolean(dest.tapped);
+				applySelfEtbReplacements(state, found);
 				moveObject(state, found, 'battlefield', {
 					from: fromLibrary,
 					toPlayer: searchingPlayer,
@@ -5735,7 +4909,7 @@ function initiateLibrarySearch(
 		: `Choose ${searchSpec.rawCriteriaText} from your library to put ${describeLibrarySearchDestination(firstDest)}${restDestinations.length > 0 ? ` (then ${restDestinations.length} more: ${restDestinations.map(describeLibrarySearchDestination).join(', ')})` : ''}, then shuffle.`;
 
 	state.pendingPrompts.push({
-		id: uid('prm'),
+		id: uid('prm', state),
 		playerId: decisionPlayer.playerId,
 		targetLibraryOwnerId: searchingPlayer.playerId,
 		kind: 'search_library',
@@ -5767,9 +4941,9 @@ function initiateLibrarySearch(
 export function createTokenOnBoard(
 	state: GameState,
 	controller: PlayerGameState,
-	spec: NonNullable<ParsedEffect['tokenSpec']>
+	spec: TokenSpec
 ): CardInstance {
-	const tokenCard: ScryfallCard = buildTokenScryfallCard(uid('tok_scry'), spec);
+	const tokenCard: ScryfallCard = buildTokenScryfallCard(uid('tok_scry', state), spec);
 
 	const inst = createCardInstance(
 		tokenCard,
@@ -5777,7 +4951,8 @@ export function createTokenOnBoard(
 		'battlefield',
 		false,
 		true,
-		allocateTimestamp(state)
+		allocateTimestamp(state),
+		state
 	);
 	inst.summoningSick = spec.typeLine.includes('Creature');
 	moveObject(state, inst, 'battlefield', { from: 'none', toPlayer: controller });
@@ -6396,7 +5571,7 @@ function runCleanupStep(state: GameState): void {
 			const candidateIds = activePlayer.hand.map((c) => c.instanceId);
 			const description = `Cleanup Step: Select ${excess} card(s) from your hand to discard.`;
 			state.pendingPrompts.push({
-				id: uid('prm'),
+				id: uid('prm', state),
 				playerId: activePlayer.playerId,
 				kind: 'discard_to_hand_size',
 				purpose: 'discard_to_hand_size',
@@ -6694,9 +5869,55 @@ export function checkStateBasedActions(state: GameState): void {
 				}
 				for (const [legName, list] of legendaryByName.entries()) {
 					if (list.length > 1) {
-						// Keep the newest copy and put earlier copies into graveyard (not destruction, so Indestructible doesn't prevent it)
-						for (let i = 0; i < list.length - 1; i++) {
-							queueToGraveyard(list[i], p, 'legend', legName);
+						if (p.isBot) {
+							// Bots keep the best copy and put other copies into graveyard (CR 704.5j)
+							let best = list[list.length - 1];
+							let bestScore = -Infinity;
+							for (let idx = 0; idx < list.length; idx++) {
+								const cand = list[idx];
+								const ev = evaluatePermanent(state, cand);
+								const score =
+									(!cand.isToken ? 100 : 0) +
+									(ev.power + ev.toughness) * 10 +
+									(cand.counters['+1/+1'] ?? 0) * 15 -
+									(cand.counters['-1/-1'] ?? 0) * 15 +
+									(cand.counters.loyalty ?? 0) * 10 +
+									getAttachedCardsOnBoard(state, cand.instanceId).length * 20 +
+									(!cand.tapped ? 2 : 0) +
+									(!cand.summoningSick ? 2 : 0) +
+									idx;
+								if (score >= bestScore) {
+									bestScore = score;
+									best = cand;
+								}
+							}
+							for (const cand of list) {
+								if (cand.instanceId !== best.instanceId) {
+									queueToGraveyard(cand, p, 'legend', legName);
+								}
+							}
+						} else {
+							const cands = list.map((c) => c.instanceId);
+							const alreadyPrompted = state.pendingPrompts.some((pr) => {
+								if (pr.playerId !== p.playerId) return false;
+								if ((pr.purpose ?? pr.kind) !== 'legend_rule') return false;
+								const prCands =
+									pr.candidateInstanceIds ??
+									(pr.choice?.kind === 'chooseObjects' ? pr.choice.candidates : []);
+								return cands.some((id) => prCands.includes(id));
+							});
+							if (!alreadyPrompted) {
+								enqueueChoicePrompt(state, {
+									id: uid('prm', state),
+									playerId: p.playerId,
+									kind: 'legend_rule',
+									purpose: 'legend_rule',
+									title: `Legend Rule — ${legName}`,
+									description: `Choose one ${legName} to keep on the battlefield. The other(s) will be put into your graveyard (CR 704.5j).`,
+									candidateInstanceIds: cands,
+									countRequired: 1
+								});
+							}
 						}
 					}
 				}
@@ -6785,10 +6006,14 @@ export function checkStateBasedActions(state: GameState): void {
 				}
 				const actualDest = movePermanentToZone(state, item.perm, 'graveyard');
 				if (item.kind === 'dying') {
+					const replacerName =
+						actualDest === 'exile'
+							? checkGraveyardReplacementZone(state, 'graveyard').replacedBy
+							: null;
 					addLog(
 						state,
 						'sba',
-						`${item.perm.card.name} ${actualDest === 'exile' ? 'was exiled instead of dying (Rest in Peace)' : 'died'} (State-Based Action).`,
+						`${item.perm.card.name} ${actualDest === 'exile' ? `was exiled instead of dying${replacerName ? ` (${replacerName})` : ''}` : 'died'} (State-Based Action).`,
 						item.controller.playerId
 					);
 				} else if (item.kind === 'legend') {
@@ -6901,7 +6126,7 @@ export function checkStateBasedActions(state: GameState): void {
 				) {
 					const description = `${cmd.card.name} was put into your ${cmd.zone}. Under Commander Rule 903.9a, you may move it to the Command Zone.`;
 					state.pendingPrompts.push({
-						id: uid('prm'),
+						id: uid('prm', state),
 						playerId: p.playerId,
 						kind: 'commander_zone_choice',
 						purpose: 'commander_zone_choice',
@@ -7179,6 +6404,9 @@ export function matchesPermanentTypeFilter(
 	if (typeFilter === 'NonlandPermanent') {
 		return !tLine.includes('Land');
 	}
+	if (/^[A-Z][a-z]+(?:Or[A-Z][a-z]+)+$/.test(typeFilter)) {
+		return typeFilter.split('Or').some((part) => tLine.includes(part));
+	}
 	if (typeFilter.includes(' ')) {
 		const tLow = tLine.toLowerCase();
 		const words = typeFilter.trim().split(/\s+/);
@@ -7203,21 +6431,14 @@ export function hasProtectionFrom(
 		...(evalTarget.losesAllAbilities
 			? []
 			: [
-					getCardRulesText(targetPerm.copiableCard ?? targetPerm.card).toLowerCase(),
+					...keywordsOf(targetPerm.copiableCard ?? targetPerm.card).map(({ name: kwName, param }) =>
+						`${kwName}${param ? ` ${param}` : ''}`.toLowerCase()
+					),
 					...(targetPerm.copiableCard ?? targetPerm.card).keywords.map((k) => k.toLowerCase())
 				]),
 		...targetPerm.grantedKeywords.map((k) => k.toLowerCase()),
 		...evalTarget.activeKeywords.map((k) => k.toLowerCase())
 	];
-
-	for (const p of state.players) {
-		if (p.lost) continue;
-		for (const perm of p.battlefield) {
-			if (!perm.phasedOut && perm.attachedToId === targetPerm.instanceId) {
-				textsToCheck.push(getCardRulesText(perm.copiableCard ?? perm.card).toLowerCase());
-			}
-		}
-	}
 
 	const combined = textsToCheck.join('\n');
 	if (!combined.includes('protection from')) return false;
@@ -7267,12 +6488,12 @@ export function playerHasShroud(state: GameState, targetPlayer: PlayerGameState)
 }
 
 function normalizeTargetRequirement(
-	reqOrKind: TargetRequirementInfo | TargetKind | string
+	reqOrKind: TargetRequirementInfo | string
 ): TargetRequirementInfo {
 	if (typeof reqOrKind === 'object' && reqOrKind !== null && 'targetKind' in reqOrKind) {
 		return reqOrKind;
 	}
-	const kind = (reqOrKind || 'none') as TargetKind;
+	const kind = (reqOrKind || 'none') as TargetRequirementInfo['targetKind'];
 	return {
 		requiresTarget: kind !== 'none',
 		targetKind: kind,
@@ -7303,7 +6524,7 @@ export function validateTargetLegality(
 	state: GameState,
 	actorId: string,
 	target: TargetRef,
-	targetRequirementOrKind: TargetRequirementInfo | TargetKind | string,
+	targetRequirementOrKind: TargetRequirementInfo | string,
 	sourceCard?: ScryfallCard,
 	sourceInstanceId?: string
 ): { ok: boolean; error?: string } {
@@ -7606,6 +6827,28 @@ export function validateTargetLegality(
 		};
 	}
 
+	if (info.targetSpecs && info.targetSpecs.length > 0) {
+		const objectSpecs = info.targetSpecs.filter(
+			(ts) => ts.kind === 'object' || ts.kind === 'objectOrPlayer'
+		);
+		if (objectSpecs.length > 0) {
+			const sourceInst = sourceInstanceId
+				? findPermanentOnBoard(state, sourceInstanceId)?.inst
+				: undefined;
+			const fctx: FilterContext = {
+				state,
+				controllerId: actorId,
+				source: sourceInst
+			};
+			if (!objectSpecs.some((ts) => matchesObjectFilter(found.inst, ts.filter, fctx))) {
+				return {
+					ok: false,
+					error: `Strict Rules Violation: ${found.inst.card.name} is not a legal target.`
+				};
+			}
+		}
+	}
+
 	return { ok: true };
 }
 
@@ -7887,7 +7130,16 @@ export function checkLandPlayLegality(
 	let effectiveMaxLands = actor.maxLandsPerTurn;
 	for (const perm of actor.battlefield) {
 		if (perm.phasedOut || permanentHasLostAllAbilities(perm, state).lost) continue;
-		effectiveMaxLands += getCardExtraLandPlays(perm.copiableCard ?? perm.card);
+		const compiled = compileCard(perm.copiableCard ?? perm.card);
+		for (const ab of compiled.faces[0]?.abilities ?? []) {
+			if (
+				ab.kind === 'static' &&
+				ab.static.k === 'ruleModifier' &&
+				ab.static.rule === 'extraLandPlays'
+			) {
+				effectiveMaxLands += Number(ab.static.params?.count ?? 1);
+			}
+		}
 	}
 	if (actor.landsPlayedThisTurn >= effectiveMaxLands) {
 		return {
@@ -7973,15 +7225,15 @@ export function checkSpellCastLegality(
 		}
 	}
 
-	// Check oracle timing restrictions & additional costs
-	const addCosts = parseAdditionalCostsAndRestrictions(inst.card);
-	if (addCosts.onlyDuringYourTurn && activePlayer?.playerId !== actorId) {
+	// Check timing restrictions from the IR
+	const castRestrictions = spellCastRestrictions(inst.card);
+	if (castRestrictions.includes('duringYourTurn') && activePlayer?.playerId !== actorId) {
 		return {
 			ok: false,
 			error: `Illegal Cast: ${inst.card.name} can only be cast during your turn.`
 		};
 	}
-	if (addCosts.onlyDuringCombat) {
+	if (castRestrictions.includes('duringCombat')) {
 		const combatPhases: GamePhase[] = [
 			'begin_combat',
 			'declare_attackers',
@@ -7997,7 +7249,7 @@ export function checkSpellCastLegality(
 			};
 		}
 	}
-	if (addCosts.onlyBeforeAttackersDeclared) {
+	if (castRestrictions.includes('beforeAttackers')) {
 		const preAttackerPhases: GamePhase[] = ['upkeep', 'draw', 'main1', 'begin_combat'];
 		if (!preAttackerPhases.includes(state.phase)) {
 			return {
@@ -8035,11 +7287,11 @@ export function checkSpellCastLegality(
 	}
 
 	// Check target legality (including multi-target & single-graveyard constraints)
-	const parsed = parseSpellOrAbilityEffects(inst.card);
+	const spellTargetInfo = getSpellTargetRequirement(inst.card);
 	const targetCheck = hasRequiredLegalTargets(
 		state,
 		actorId,
-		parsed.targetInfo,
+		spellTargetInfo,
 		inst.card,
 		inst.instanceId,
 		xValue,
@@ -8056,7 +7308,7 @@ export function checkAbilityActivationLegality(
 	state: GameState,
 	actorId: string,
 	perm: CardInstance,
-	ab: ParsedActivatedAbility
+	ab: EffectiveActivatedAbility
 ): { ok: boolean; error?: string } {
 	if (state.status !== 'active') {
 		return { ok: false, error: 'Game is not currently active.' };
@@ -8082,10 +7334,7 @@ export function checkAbilityActivationLegality(
 
 	// Phase 4: the whole cost from the IR ({T}/{Q} with summoning sickness, sacrifices, discards,
 	// "tap N untapped ...", life, counters and mana), checked by runtime/costs.ts.
-	const evaluatedNode = evaluateActionNode(state, actorId, perm, ab.id);
-	const abilityMana = evaluatedNode
-		? evaluatedNode.effectiveCostRequirement
-		: parseManaCost(ab.manaCost === '{0}' ? '' : ab.manaCost);
+	const abilityMana = effectiveAbilityManaCost(state, actorId, ab.id, ab.manaCost).requirement;
 	const abilityCost = activatedAbilityCost(perm.card, ab);
 	const costCtx = costContext(state, actor, perm, 0, false, abilityMana);
 	const checkCost = (): { ok: boolean; error?: string } => {
@@ -8150,8 +7399,7 @@ export function checkAbilityActivationLegality(
 	if (!costCheck.ok) return costCheck;
 
 	if (ab.requiresTarget) {
-		const abTargetInfo: TargetRequirementInfo =
-			evaluatedNode?.targetLegality.targetInfo ?? detectTargetRequirement(ab.effectText);
+		const abTargetInfo: TargetRequirementInfo = ab.targetInfo;
 
 		const targetCheck = hasRequiredLegalTargets(
 			state,
@@ -8257,7 +7505,18 @@ function isTargetStillValid(
 	}
 	// A triggered ability with compiled target specs is checked against them instead (resolveTopOfStack).
 	if (item && !(item.kind === 'triggered' && triggerItemTargetSpecs(item).length > 0)) {
-		const targetInfo = getStackItemTargetRequirement(item, sourceCard);
+		let targetInfo: TargetRequirementInfo | undefined;
+		if (item.kind === 'spell' && (sourceCard || item.card)) {
+			targetInfo = getSpellTargetRequirement((sourceCard ?? item.card)!);
+		} else if (item.kind === 'activated' && item.abilityId && (sourceCard || item.card)) {
+			const ab = getCardActivatedAbilities((sourceCard ?? item.card)!).find(
+				(a) => a.id === item.abilityId
+			);
+			targetInfo = ab?.targetInfo;
+		} else {
+			const comp = compiledStackItemEffects(item);
+			if (comp) targetInfo = targetRequirementFromSpecs(comp.targets);
+		}
 		if (targetInfo && targetInfo.requiresTarget) {
 			if (targetInfo.isModal && targetInfo.modalBranches && targetInfo.modalBranches.length > 0) {
 				const anyBranchValid = targetInfo.modalBranches.some(

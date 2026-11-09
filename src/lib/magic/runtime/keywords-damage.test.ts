@@ -8,7 +8,6 @@ import {
 	evaluatePermanent,
 	resolveTopOfStack
 } from '../engine.ts';
-import { parseSpellOrAbilityEffects } from '../oracle.ts';
 import { PRECON_DECKS, STAPLE_CARDS } from '../precons.ts';
 import { validateCommanderDeck } from '../scryfall.ts';
 import {
@@ -162,7 +161,6 @@ function makeDummyItem(
 		targets,
 		xValue: 0,
 		castMode: 'normal',
-		parsedEffects: [],
 		requiresGuidedResolution: false,
 		createdAt: Date.now()
 	};
