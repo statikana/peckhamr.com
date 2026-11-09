@@ -119,7 +119,7 @@ export { getSuspendSpec };
 import { evaluateAmount, matchesObjectFilter, type FilterContext } from './runtime/objectFilter.ts';
 import { compileCard, compiledStackItemEffects, compiledTriggerEffect, compileSpellEffects } from './compiler/index.ts';
 import { runtimeTriggers } from './compiler/triggers.ts';
-import { noteLayerInputsChanged, withStableLayerInputs } from './runtime/layerCache.ts';
+import { buildBoardSnapshot, noteLayerInputsChanged, withStableLayerInputs } from './runtime/layerCache.ts';
 import {
 	flushTriggers,
 	matchTriggers,
@@ -1407,6 +1407,7 @@ function applyGameActionInner(
 				continuation: { kind: 'manual_ability', sourceInstanceId: found.inst.instanceId },
 				choice: { kind: 'yesNo', question: `Apply ${card.name}'s ability with the operations below.` }
 			});
+			resetTriggerLoopTracking(state);
 			addLog(state, 'rule', `${actor.username} is resolving an ability of ${card.name} manually.`, actor.playerId);
 			return { ok: true };
 		}
@@ -1443,6 +1444,7 @@ function applyGameActionInner(
 			if (chosenColor && amount > 0) {
 				actor.manaPool[chosenColor] += amount;
 			}
+			resetTriggerLoopTracking(state);
 			// CR 605.1b: triggered mana abilities ("Whenever you tap a land for mana") resolve now.
 			emitEvent(state, { kind: 'TappedForMana', playerId: actorId, objectId: perm.instanceId, object: perm });
 			flushTriggers(state);
@@ -1514,6 +1516,7 @@ function applyGameActionInner(
 				actorId
 			);
 
+			resetTriggerLoopTracking(state);
 			flushTriggers(state);
 
 			checkStateBasedActions(state);
@@ -1562,6 +1565,7 @@ function applyGameActionInner(
 				targetId: inst.instanceId,
 				label: `Suspended (${suspClause.timeCounters} ⏳)`
 			});
+			resetTriggerLoopTracking(state);
 			checkStateBasedActions(state);
 			return { ok: true };
 		}
@@ -1879,6 +1883,7 @@ function applyGameActionInner(
 				}
 			}
 			// "Whenever you cast ..." ran here before Phase 5.
+			resetTriggerLoopTracking(state);
 			flushTriggers(state);
 			checkStateBasedActions(state);
 			return { ok: true };
@@ -2000,6 +2005,7 @@ function applyGameActionInner(
 					});
 				}
 			}
+			resetTriggerLoopTracking(state);
 			flushTriggers(state);
 			checkStateBasedActions(state);
 			return { ok: true };
@@ -2164,6 +2170,7 @@ function applyGameActionInner(
 			state.combat.damageDealtNormal = false;
 			state.combat.dealtFirstStrikeDamageIds = [];
 
+			resetTriggerLoopTracking(state);
 			if (validAttackers.length > 0) {
 				addLog(
 					state,
@@ -2355,6 +2362,7 @@ function applyGameActionInner(
 				state.combat.declaredBlockersPlayerIds.push(actorId);
 			}
 
+			resetTriggerLoopTracking(state);
 			if (action.assignments.length > 0) {
 				addLog(
 					state,
@@ -3915,6 +3923,9 @@ registerTriggerHost({
 	executeInline(state, t) {
 		const controller = state.players.find((p) => p.playerId === t.controllerId);
 		if (!controller) return;
+		if (state.triggersPlacedThisTurn) {
+			state.triggersPlacedThisTurn.resolutionSerial = (state.triggersPlacedThisTurn.resolutionSerial ?? 0) + 1;
+		}
 		executeTriggerEffects(state, controller, triggeredStackItem(state, t, 'trg'));
 		addLog(
 			state,
@@ -3930,16 +3941,153 @@ registerTriggerHost({
 });
 
 /**
- * A runaway safety cap: triggered abilities that keep retriggering each other would otherwise grow
- * the stack (and the bot loop) without end. Past this size new triggers are not put on the stack.
+ * CR 104.4b / CR 731: number of repeated trigger-resolution cycles for the same
+ * `(sourceInstanceId, abilityIndex)` within a turn (since the last voluntary player action)
+ * before the engine detects a mandatory or optional loop.
  */
-const MAX_STACK_FOR_TRIGGERS = 300;
+export const LOOP_TRIGGER_THRESHOLD = 30;
 /**
- * The other runaway shape: each resolution triggers exactly one new ability ("Whenever another
- * creature you control enters, create a 1/1 token"), so the stack stays shallow forever. Past this
- * many triggered abilities in one turn, new ones are not put on the stack.
+ * A runaway safety cap: triggered abilities that keep retriggering each other would otherwise grow
+ * the stack (and the bot loop) without end. Past this size new triggers pause for manual resolution.
  */
-export const MAX_TRIGGERS_PER_TURN = 200;
+export const MAX_STACK_FOR_TRIGGERS = 300;
+/**
+ * Hard backstop ceiling for total triggered abilities put on the stack in a single turn.
+ */
+export const MAX_TRIGGERS_PER_TURN = 2000;
+
+/**
+ * Clears per-ability loop tracking when a player takes a voluntary game action so a player-driven
+ * combo or repeated activations in the same turn start a fresh loop-detection window.
+ */
+function resetTriggerLoopTracking(state: GameState): void {
+	if (state.triggersPlacedThisTurn?.byAbility) {
+		delete state.triggersPlacedThisTurn.byAbility;
+	}
+}
+
+/** Whether a triggered stack item has a leading "you may" choice (CR 731.2b). */
+function triggerItemIsOptional(item: StackItem): boolean {
+	const compiled = triggerItemEffect(item);
+	if (!compiled || !staticallyInterpretable(compiled, true)) return false;
+	return optionalPrefix(compiled.steps) > 0;
+}
+
+/**
+ * Computes both the exact board fingerprint (`buildBoardSnapshot(state).fingerprint`) and a
+ * token-normalized board fingerprint (coalescing identical tokens by name, typeLine, controller,
+ * and tapped state so mandatory token-creation loops also repeat their normalized fingerprint).
+ */
+function computeLoopBoardFingerprints(state: GameState): { exactFp: string; normFp: string } {
+	const snap = buildBoardSnapshot(state);
+	const exactFp = snap.active
+		.map(
+			({ perm, playerId }) =>
+				`${perm.instanceId}@${perm.objectVersion ?? 0}:${perm.controllerId ?? playerId}:${perm.tapped ? 1 : 0}:${perm.attachedToId ?? ''}`
+		)
+		.join(',');
+	const parts: string[] = [];
+	for (const p of state.players) {
+		const tokenKinds = new Set<string>();
+		const nonTokenEntries: string[] = [];
+		for (const c of p.battlefield) {
+			if (c.isToken) {
+				tokenKinds.add(`${c.card.name}|${c.card.typeLine}|${c.controllerId ?? p.playerId}|${c.tapped ? 1 : 0}`);
+			} else {
+				nonTokenEntries.push(
+					`${c.instanceId}@${c.objectVersion ?? 0}:${c.controllerId ?? p.playerId}:${c.tapped ? 1 : 0}:${c.counters['+1/+1']},${c.counters['-1/-1']},${c.counters.loyalty}`
+				);
+			}
+		}
+		parts.push(`${p.playerId}:[${nonTokenEntries.join(',')}]:[${[...tokenKinds].sort().join(',')}]`);
+	}
+	return { exactFp, normFp: parts.join(';') };
+}
+
+/** Enqueues a standalone guided_resolution prompt so a human player can resolve or intervene manually. */
+export function enqueueGuidedResolutionPrompt(
+	state: GameState,
+	playerId: string,
+	title: string,
+	description: string,
+	question: string
+): void {
+	enqueueChoicePrompt(state, {
+		id: uid('prm', state),
+		playerId,
+		kind: 'guided_resolution',
+		purpose: 'guided_resolution',
+		title,
+		description,
+		yesLabel: 'Done',
+		choice: { kind: 'yesNo', question }
+	});
+}
+
+function handleTriggerBackstopReached(state: GameState, t: PendingTrigger, reason: string): null {
+	addLog(state, 'rule', reason, t.controllerId);
+	const activePlayers = state.players.filter((p) => !p.lost);
+	const human =
+		activePlayers.find((p) => !p.isBot && p.playerId === t.controllerId) ??
+		activePlayers.find((p) => !p.isBot && p.playerId === state.players[state.activePlayerIndex]?.playerId) ??
+		activePlayers.find((p) => !p.isBot);
+	if (human) {
+		if (!state.pendingPrompts.some((p) => p.purpose === 'guided_resolution')) {
+			enqueueGuidedResolutionPrompt(
+				state,
+				human.playerId,
+				`Trigger Safety Cap Reached (${t.sourceCard.name})`,
+				reason,
+				'The runaway trigger safety cap was reached. Apply any manual adjustments below, then click Done.'
+			);
+		}
+	} else {
+		state.status = 'finished';
+		state.winnerPlayerId = null;
+		state.winnerId = undefined;
+		state.pendingPrompts = [];
+		state.stack = [];
+	}
+	return null;
+}
+
+const MANDATORY_LOOP_HANDLER = 'mandatory_loop_choice';
+
+registerPromptHandler(MANDATORY_LOOP_HANDLER, (state, prompt, answer) => {
+	const mode = answer.kind === 'chooseMode' ? (answer.indices[0] ?? 0) : 0;
+	const data = (prompt.continuation?.kind === 'handler' ? prompt.continuation.data : undefined) as
+		| { abilityKey?: string; sourceName?: string; label?: string }
+		| undefined;
+	if (mode === 0) {
+		state.status = 'finished';
+		state.winnerPlayerId = null;
+		state.winnerId = undefined;
+		state.pendingPrompts = [];
+		state.stack = [];
+		addLog(
+			state,
+			'rule',
+			`CR 104.4b: The game ended in a draw due to an unbreakable mandatory trigger loop${data?.sourceName ? ` (${data.sourceName})` : ''}.`,
+			prompt.playerId
+		);
+		return;
+	}
+	const byAbility = state.triggersPlacedThisTurn?.byAbility;
+	if (byAbility) {
+		for (const [k, entry] of Object.entries(byAbility)) {
+			const currentLimit = entry.limit ?? LOOP_TRIGGER_THRESHOLD;
+			if (k === data?.abilityKey || entry.cycles >= currentLimit) {
+				entry.limit = currentLimit + LOOP_TRIGGER_THRESHOLD;
+			}
+		}
+	}
+	addLog(
+		state,
+		'rule',
+		`Continuing mandatory trigger loop for ${LOOP_TRIGGER_THRESHOLD} more trigger cycles.`,
+		prompt.playerId
+	);
+});
 
 /** Target specs the trigger target choice supports (zones it can enumerate). */
 function triggerSpecsSupported(specs: TargetSpec[]): boolean {
@@ -4041,14 +4189,13 @@ function triggerTargetStillLegal(state: GameState, item: StackItem, specs: Targe
  * is forced). An ability with a required target and no legal one is removed, with a log line.
  */
 function putTriggerOnStack(state: GameState, t: PendingTrigger): StackItem | null {
+	if (state.status === 'finished') return null;
 	if (state.stack.length >= MAX_STACK_FOR_TRIGGERS) {
-		addLog(
+		return handleTriggerBackstopReached(
 			state,
-			'rule',
-			`${t.sourceCard.name}'s ${t.label} was not put onto the Stack: the stack already holds ${state.stack.length} objects (runaway trigger loop safety cap).`,
-			t.controllerId
+			t,
+			`${t.sourceCard.name}'s ${t.label} was not put onto the Stack: the stack already holds ${state.stack.length} objects (runaway trigger loop safety cap).`
 		);
-		return null;
 	}
 	const currentTurnKey = state.turnSerial ?? state.turnNumber;
 	const placed =
@@ -4058,13 +4205,12 @@ function putTriggerOnStack(state: GameState, t: PendingTrigger): StackItem | nul
 	state.triggersPlacedThisTurn = placed;
 	if (placed.count >= MAX_TRIGGERS_PER_TURN) {
 		if (placed.count === MAX_TRIGGERS_PER_TURN) {
-			addLog(
-				state,
-				'rule',
-				`Triggered abilities are no longer put onto the Stack this turn: ${MAX_TRIGGERS_PER_TURN} already were (runaway trigger loop safety cap).`,
-				t.controllerId
-			);
 			placed.count++;
+			return handleTriggerBackstopReached(
+				state,
+				t,
+				`Triggered abilities are no longer put onto the Stack this turn: ${MAX_TRIGGERS_PER_TURN} already were (runaway trigger loop safety cap).`
+			);
 		}
 		return null;
 	}
@@ -4083,6 +4229,105 @@ function putTriggerOnStack(state: GameState, t: PendingTrigger): StackItem | nul
 		);
 		return null;
 	}
+
+	// Phase 4 (CR 104.4b, CR 731): detect repeated trigger-resolution cycles for the same
+	// `(sourceInstanceId, abilityIndex)` without an intervening voluntary player action.
+	const abilityKey = `${t.source.instanceId}:${t.ability.abilityIndex}`;
+	const currentResSerial = placed.resolutionSerial ?? 0;
+	const byAbility = placed.byAbility ?? (placed.byAbility = {});
+	let loopEntry = byAbility[abilityKey];
+	if (!loopEntry) {
+		const { exactFp, normFp } = computeLoopBoardFingerprints(state);
+		loopEntry = {
+			cycles: 1,
+			lastResolutionSerial: currentResSerial,
+			lastExactFp: exactFp,
+			lastNormFp: normFp,
+			cycled: false
+		};
+		byAbility[abilityKey] = loopEntry;
+	} else if (loopEntry.lastResolutionSerial !== currentResSerial) {
+		const { exactFp, normFp } = computeLoopBoardFingerprints(state);
+		const cycled =
+			loopEntry.cycled ||
+			exactFp === loopEntry.lastExactFp ||
+			normFp === loopEntry.lastNormFp;
+		loopEntry.cycles += 1;
+		loopEntry.lastResolutionSerial = currentResSerial;
+		loopEntry.lastExactFp = exactFp;
+		loopEntry.lastNormFp = normFp;
+		loopEntry.cycled = cycled;
+	}
+	const allowedLimit = loopEntry.limit ?? LOOP_TRIGGER_THRESHOLD;
+	if (loopEntry.cycles > allowedLimit && loopEntry.cycled) {
+		if (triggerItemIsOptional(item)) {
+			if (controller.isBot) {
+				item.optionalAccepted = false;
+				addLog(
+					state,
+					'rule',
+					`CR 731.2b: ${controller.username} (bot) declined the optional trigger ${item.title} after ${allowedLimit} iterations to break a loop (runaway trigger loop safety cap).`,
+					controller.playerId
+				);
+			} else {
+				addLog(
+					state,
+					'rule',
+					`CR 731.2b: Optional trigger loop detected on ${item.title} (${allowedLimit} iterations); choose whether to continue or decline when it resolves.`,
+					controller.playerId
+				);
+			}
+		} else {
+			addLog(
+				state,
+				'rule',
+				`CR 104.4b: Mandatory trigger loop detected on ${item.title} after ${allowedLimit} iterations (runaway trigger loop safety cap).`,
+				controller.playerId
+			);
+			const activePlayers = state.players.filter((p) => !p.lost);
+			const human =
+				activePlayers.find((p) => !p.isBot && p.playerId === controller.playerId) ??
+				activePlayers.find((p) => !p.isBot && p.playerId === state.players[state.activePlayerIndex]?.playerId) ??
+				activePlayers.find((p) => !p.isBot);
+			if (!human) {
+				state.status = 'finished';
+				state.winnerPlayerId = null;
+				state.winnerId = undefined;
+				state.pendingPrompts = [];
+				state.stack = [];
+				return null;
+			}
+			const alreadyPrompted = state.pendingPrompts.some(
+				(p) => p.continuation?.kind === 'handler' && p.continuation.name === MANDATORY_LOOP_HANDLER
+			);
+			if (!alreadyPrompted) {
+				const reason = `Mandatory trigger loop detected on ${item.title} (${allowedLimit} iterations). Choose how to proceed:`;
+				enqueueChoicePrompt(state, {
+					id: uid('prm', state),
+					playerId: human.playerId,
+					kind: 'chooseMode',
+					purpose: 'generic',
+					title: `Mandatory Trigger Loop (${t.sourceCard.name})`,
+					description: reason,
+					continuation: {
+						kind: 'handler',
+						name: MANDATORY_LOOP_HANDLER,
+						data: { abilityKey, sourceName: t.sourceCard.name, label: t.label }
+					},
+					choice: {
+						kind: 'chooseMode',
+						modes: [
+							'End the game in a draw (CR 104.4b)',
+							`Let it run ${LOOP_TRIGGER_THRESHOLD} more triggers`
+						],
+						min: 1,
+						max: 1
+					}
+				});
+			}
+		}
+	}
+
 	state.stack.push(item);
 	placed.count++;
 	addLog(state, 'trigger', `${t.sourceCard.name}'s ${t.label} was put onto the Stack.`, t.controllerId);
@@ -4491,6 +4736,9 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 	}
 
 	if (!resuming) {
+		if (item.kind === 'triggered' && state.triggersPlacedThisTurn) {
+			state.triggersPlacedThisTurn.resolutionSerial = (state.triggersPlacedThisTurn.resolutionSerial ?? 0) + 1;
+		}
 		emitVfx(state, {
 			kind: 'stack_resolve',
 			sourceId: item.controllerId,

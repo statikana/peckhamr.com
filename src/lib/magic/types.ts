@@ -719,6 +719,15 @@ export interface PlayerGameState {
 	commanderColorIdentity?: ManaColor[];
 }
 
+export interface TriggerLoopEntry {
+	cycles: number;
+	lastResolutionSerial: number;
+	lastExactFp: string;
+	lastNormFp: string;
+	cycled: boolean;
+	limit?: number;
+}
+
 export interface GameState {
 	engineVersion: number;
 	gameId: string;
@@ -744,10 +753,16 @@ export interface GameState {
 	nextTimestamp?: number;
 	delayedTriggers?: DelayedTrigger[];
 	/**
-	 * Steps C+D: how many triggered abilities were put on the stack this turn (runaway-loop cap; a
-	 * trigger that retriggers itself keeps the stack shallow but never ends).
+	 * Steps C+D + Phase 4 (CR 104.4b, CR 731): how many triggered abilities were put on the stack
+	 * this turn and per-(sourceInstanceId, abilityIndex) loop-detection state across trigger
+	 * resolution cycles since the last voluntary player action.
 	 */
-	triggersPlacedThisTurn?: { turn: number; count: number };
+	triggersPlacedThisTurn?: {
+		turn: number;
+		count: number;
+		resolutionSerial?: number;
+		byAbility?: Record<string, TriggerLoopEntry>;
+	};
 	extraTurnQueue?: string[];
 	/**
 	 * CR 500.7: Seat index of the player whose normal turn most recently ran before a chain of one or

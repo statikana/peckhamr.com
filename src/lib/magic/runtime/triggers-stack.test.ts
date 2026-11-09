@@ -8,7 +8,7 @@ import {
 	createInitialGameState,
 	createTokenOnBoard,
 	enterEndStep,
-	MAX_TRIGGERS_PER_TURN
+	LOOP_TRIGGER_THRESHOLD
 } from '../engine.ts';
 import { PRECON_DECKS, STAPLE_CARDS } from '../precons.ts';
 import {
@@ -426,7 +426,7 @@ describe('Step D: triggered abilities use the stack', () => {
 		assert.equal(p[1].life, life1);
 	});
 
-	it('a self-retriggering loop stops at the per-turn trigger cap, with a log line, and the bot loop terminates', () => {
+	it('a self-retriggering mandatory loop stops at LOOP_TRIGGER_THRESHOLD, with a log line, and ends the bot game in a draw (CR 104.4b)', () => {
 		const { state, p } = game(2, [true, true]);
 		put(state, p[0], creature('Endless Sporewright', 'Whenever another creature you control enters, create a 1/1 green Saproling creature token.', '1', '1', 'Fungus'), 'battlefield');
 		createTokenOnBoard(state, p[0], { name: 'Saproling', power: 1, toughness: 1, colors: ['G'], typeLine: 'Token Creature — Saproling', keywords: [] });
@@ -436,11 +436,11 @@ describe('Step D: triggered abilities use the stack', () => {
 		for (let i = 0; i < 100 && !capped() && state.turnNumber === turn && state.status === 'active'; i++) {
 			runAutomatedPriorityAndBots(state, { maxSteps: 50 });
 		}
-		assert.ok(capped(), 'the cap was hit (with a log line) in the same turn');
+		assert.ok(capped(), 'the loop threshold was hit (with a log line) in the same turn');
 		const saprolings = tokens(p[0], 'Saproling');
-		assert.ok(saprolings >= MAX_TRIGGERS_PER_TURN && saprolings <= MAX_TRIGGERS_PER_TURN + 1, `${saprolings} tokens: one per allowed trigger`);
-		// The bot loop keeps the game going: the stack empties and play continues.
-		for (let i = 0; i < 20 && state.stack.length > 0; i++) runAutomatedPriorityAndBots(state, { maxSteps: 50 });
+		assert.ok(saprolings >= LOOP_TRIGGER_THRESHOLD && saprolings <= LOOP_TRIGGER_THRESHOLD + 1, `${saprolings} tokens: one per allowed trigger cycle`);
+		assert.equal(state.status, 'finished');
+		assert.equal(state.winnerPlayerId, null);
 		assert.equal(state.stack.length, 0);
 	});
 });
