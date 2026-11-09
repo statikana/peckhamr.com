@@ -31,27 +31,22 @@ Audited against `engine-rewrite` (`917180b` and reconciled post-Step-F at `9ac84
 
 These are bugs where a mechanic the engine actively supports produces the wrong game state according to the Comprehensive Rules:
 
-1. **Combat damage bypasses the unified damage pipeline (`CR 120.3d, 120.4, 122.1c, 122.6, 510.2, 702.16e, 702.80a, 702.90c`)** — **Size: M**
-   - `executeCombatDamageStep` (`engine.ts:6007-6356`) does not call `dealDamageToPermanent` / `dealDamageToPlayer` (`runtime/effects.ts:1121-1220`).
-   - As a result, combat damage completely ignores:
-     - **Protection** (`hasProtectionFrom` / `permanentProtectedFromSource`, `CR 702.16e`)
-     - **Wither** (`hasWither`, `CR 702.80a`)
-     - **Shield counters** (`counters.shield`, `CR 122.1c`) — also ignored in lethal/deathtouch SBAs (`engine.ts:6666-6680`)
-     - **Damage prevention shields** (`damagePreventionShield`, `CR 615.7`)
-     - **Static `lifeTotalCantChange` rule modifiers** (`CR 119.7`, only checking the legacy boolean `player.lifeTotalCannotChangeThisTurn`)
-     - **Counter multipliers & `CounterPlaced` events on Infect** (`engine.ts:6204-6205, 6321-6322` mutates `counters['-1/-1']` directly instead of calling `addCountersToPermanent`)
+1. **[FIXED; SBA shield-counter subclaim DISPUTED] Combat damage bypasses the unified damage pipeline (`CR 120.3d, 120.4, 122.1c, 122.6, 510.2, 702.16e, 702.80a, 702.90c`)** — **Size: M**
+   - Fixed in `executeCombatDamageStep` (`engine.ts`), `runtime/effects.ts`, and `compiler/statics.ts`: exported `sourceDamageInfo`, `permanentProtectedFromSource`, `dealDamageToPermanent`, `dealDamageToPlayer`, and `applyLifelinkGain` with a `combat` flag, and routed all combat damage through them after computing simultaneous combat damage assignments (`CR 510.1–510.2`).
+   - Combat damage now enforces Protection (`CR 702.16e`), Wither (`CR 702.80a`), shield-counter damage prevention (`CR 122.1c`), `damagePreventionShield` (`CR 615.7`), static `lifeTotalCantChange` rule modifiers (`CR 119.7`), and `addCountersToPermanent` on Infect/Wither `-1/-1` counters (`CR 122.6, 702.90c`).
+   - **Disputed audit subclaim (`CR 122.1c` in lethal-damage/deathtouch SBAs):** `CR 122.1c` (`src/lib/rules.txt:1187`) states *"If this permanent would be destroyed as the result of an effect, instead remove a shield counter from it"* and *"If damage would be dealt to this permanent, prevent that damage and remove a shield counter from it."* Destruction by a state-based action under `CR 704.5g/h` is a rule, not *"the result of an effect"*, so shield counters must **not** replace lethal-damage or deathtouch SBAs; only the damage-prevention half of `CR 122.1c` applies to combat damage.
 
-2. **Attacked planeswalker leaving combat redirects attacker's damage to the defending player (`CR 506.4c, 510.1b, 702.19f`)** — **Size: S**
-   - In `executeCombatDamageStep` (`engine.ts:6098-6178, 6230-6293`), if a creature is attacking a planeswalker (`defenderPlaneswalkerId !== null`) and that planeswalker leaves the battlefield or phases out before combat damage, `if (defWalker)` is false and execution falls into the `else` branch, dealing the unblocked or trample damage to `defPlayer` instead of dealing 0 combat damage.
+2. **[FIXED] Attacked planeswalker leaving combat redirects attacker's damage to the defending player (`CR 506.4c, 510.1b, 702.19f`)** — **Size: S**
+   - Fixed in `executeCombatDamageStep`, `simulateCombatForecast`, `checkStateBasedActions`, `phaseOutPermanent` (`engine.ts`), and `removeFromCombat` (`runtime/zones.ts`): when an attacked planeswalker leaves the battlefield, phases out, changes controller, or stops being a planeswalker, unblocked attackers deal 0 combat damage (`CR 506.4c, 510.1b`) and Trample attackers assign all combat damage to their blockers (or 0 if no blockers remain) without redirecting excess damage to the defending player (`CR 702.19f`).
 
-3. **Permanents leaving the battlefield or losing creature type are never removed from `state.combat` (`CR 506.4, 506.4a`)** — **Size: S**
-   - `moveObject` (`runtime/zones.ts:187-309`) only cleans up `state.combat` inside `transferBattlefieldControl`. If an attacker or blocker is destroyed, exiled, bounced, or flickered mid-combat (or stops being a creature), its `instanceId` remains in `state.combat.attackers` / `blockerInstanceIds`.
+3. **[FIXED] Permanents leaving the battlefield or losing creature type are never removed from `state.combat` (`CR 506.4, 506.4a`)** — **Size: S**
+   - Fixed in `moveObject` (`runtime/zones.ts`) via `removeFromCombat` and in `checkStateBasedActions` (`engine.ts`) for permanents that stop being creatures or become battles, while preserving `wasBlocked` on attackers whose blockers leave combat (`CR 510.1c`).
 
 4. **Extra turns overwrite `activePlayerIndex` and skip intermediate players' normal turns (`CR 500.7`)** — **Size: S**
    - In `completeTurnCleanupAndPassTurn` (`engine.ts:6440-6457`), popping an extra turn from `extraTurnQueue` sets `state.activePlayerIndex = extraIdx` without preserving whose normal turn was next in the turn order. When an extra turn is taken by a player out of turn order, intermediate seats have their normal turn skipped after the extra turn ends.
 
-5. **`end_turn` UI action jumps from any phase straight to `end_step`/`cleanup` without passing priority (`CR 500.2, 513.1, 703.4i`)** — **Size: M**
-   - `case 'end_turn':` (`engine.ts:2152-2184`) lets the active player jump directly from `upkeep`, `main1`, or `declare_attackers` (bypassing `attacksEachCombat` / `Goad` requirements) into `enterEndStep`, and if no end-step triggers are queued, immediately calls `runCleanupStep` without giving opponents priority in any intermediate step or in `end_step`.
+5. **[FIXED] `end_turn` UI action jumps from any phase straight to `end_step`/`cleanup` without passing priority (`CR 500.2, 508.1d, 513.1, 703.4i`)** — **Size: M**
+   - Fixed in `case 'end_turn':` and `case 'pass_priority':` (`engine.ts`) via `findMandatoryAttackerViolation`: ending the turn (or passing out of `declare_attackers` without declaring attackers) enforces mandatory attack requirements (`attacksEachCombat` and Goad, exempting opponents with Propaganda/Ghostly Prison attack taxes per `CR 508.1d`) and steps sequentially through remaining phases/steps via `advancePhaseOrStep`, executing step turn-based actions (such as drawing for turn in `draw`), flushing step-begin triggers, and stopping whenever triggers/prompts exist or a player holds `fullControl`, `!autoPassEmptyStack`, or an explicit step stop (such as `'end_step'`).
 
 6. **Colorless commander / no commander `manaChoiceColors` falls back to all 5 colors (`CR 106.5, 903.4f`)** — **Size: S**
    - In `runtime/effects.ts:1772-1775` (and `oracle.ts:343, 524`), when `commanderColors(controller)` is empty (`[]`), `manaChoiceColors` falls back to `['W', 'U', 'B', 'R', 'G']` instead of producing no mana.

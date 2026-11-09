@@ -345,6 +345,7 @@ const ruleModifiers: Production = (s) => {
 	}
 	if (low === "you can't lose the game") return [rule('cantLose', 'you')];
 	if (low === "your opponents can't win the game") return [rule('opponentsCantWin', 'each_opponent')];
+	if (low === "your life total can't change") return [rule('lifeTotalCantChange', 'you')];
 	if (low === 'you have hexproof') return [rule('playerHexproof', 'you')];
 	if (low === 'you have shroud') return [rule('playerShroud', 'you')];
 	const youAndOne = low.match(/^you and (.+?) have (.+)$/);

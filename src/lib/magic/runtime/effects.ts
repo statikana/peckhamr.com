@@ -228,6 +228,235 @@ function playerFromRefStatic(state: GameState, ref: PlayerRef, item: StackItem, 
 	return t?.kind === 'player' ? state.players.find((p) => p.playerId === t.id) ?? null : null;
 }
 
+// ---- Unified Damage Pipeline (CR 120.3–120.4, 122.1c, 702.16e, 702.80a, 702.90b–c) ---------
+
+export interface SourceDamageInfo {
+	hasDeathtouch: boolean;
+	hasLifelink: boolean;
+	hasInfect: boolean;
+	hasWither: boolean;
+	colors: ManaColor[];
+	types: string[];
+}
+
+export function sourceDamageInfo(
+	state: GameState,
+	sourcePerm: CardInstance | null,
+	sourceCard: ScryfallCard
+): SourceDamageInfo {
+	if (sourcePerm && sourcePerm.zone === 'battlefield') {
+		const ev = evaluatePermanent(state, sourcePerm);
+		const kws = ev.activeKeywords.map((k) => k.toLowerCase());
+		return {
+			hasDeathtouch: kws.includes('deathtouch'),
+			hasLifelink: kws.includes('lifelink'),
+			hasInfect: kws.includes('infect'),
+			hasWither: kws.includes('wither'),
+			colors: sourcePerm.isFaceDown ? [] : [...ev.colors],
+			types: ev.typeLine
+				.split(/\s+[—-]\s+/)[0]
+				.split(/\s+/)
+				.filter(Boolean)
+		};
+	}
+	const face = compileCard(sourceCard).faces[0];
+	const kws = new Set<string>((sourceCard.keywords ?? []).map((k) => k.toLowerCase()));
+	for (const ab of face.abilities) {
+		if (ab.kind === 'keyword') kws.add(ab.keyword.name.toLowerCase());
+	}
+	return {
+		hasDeathtouch: kws.has('deathtouch'),
+		hasLifelink: kws.has('lifelink'),
+		hasInfect: kws.has('infect'),
+		hasWither: kws.has('wither'),
+		colors: [...(face.characteristics.colors ?? sourceCard.colors ?? [])],
+		types: [...(face.characteristics.types ?? [])]
+	};
+}
+
+export function permanentProtectedFromSource(
+	state: GameState,
+	target: CardInstance,
+	srcInfo: SourceDamageInfo,
+	evTarget?: ReturnType<typeof evaluatePermanent>
+): boolean {
+	const ev = evTarget ?? evaluatePermanent(state, target);
+	const colorMap: Record<string, ManaColor> = {
+		white: 'W',
+		blue: 'U',
+		black: 'B',
+		red: 'R',
+		green: 'G'
+	};
+	const typeMap: Record<string, string> = {
+		creatures: 'Creature',
+		creature: 'Creature',
+		artifacts: 'Artifact',
+		artifact: 'Artifact',
+		enchantments: 'Enchantment',
+		enchantment: 'Enchantment',
+		lands: 'Land',
+		land: 'Land',
+		planeswalkers: 'Planeswalker',
+		planeswalker: 'Planeswalker',
+		instants: 'Instant',
+		instant: 'Instant',
+		sorceries: 'Sorcery',
+		sorcery: 'Sorcery'
+	};
+	for (const kw of ev.activeKeywords) {
+		const low = kw.toLowerCase();
+		if (!low.startsWith('protection from ')) continue;
+		const qual = low.slice('protection from '.length).trim();
+		if (qual === 'everything') return true;
+		if (qual === 'all colors' && srcInfo.colors.length > 0) return true;
+		if (qual === 'multicolored' && srcInfo.colors.length >= 2) return true;
+		if (qual === 'monocolored' && srcInfo.colors.length === 1) return true;
+		if (qual === 'colorless' && srcInfo.colors.length === 0) return true;
+		if (colorMap[qual] && srcInfo.colors.includes(colorMap[qual])) return true;
+		if (typeMap[qual] && srcInfo.types.some((t) => t.toLowerCase() === typeMap[qual].toLowerCase())) {
+			return true;
+		}
+	}
+	return false;
+}
+
+export function dealDamageToPermanent(
+	state: GameState,
+	target: CardInstance,
+	rawAmount: number,
+	sourceId: string,
+	srcInfo: SourceDamageInfo,
+	opts?: { combat?: boolean; actorId?: string; vfxLabel?: string }
+): number {
+	const p = P();
+	const combat = opts?.combat ?? false;
+	let dmg = rawAmount;
+	if (dmg <= 0 || target.zone !== 'battlefield' || target.phasedOut) return 0;
+
+	const evTarget = evaluatePermanent(state, target);
+
+	// CR 702.16b / 702.16e: Protection prevents all damage from sources with the stated quality.
+	if (permanentProtectedFromSource(state, target, srcInfo, evTarget)) return 0;
+
+	// CR 120.3 / 615.7: Damage prevention shield on permanent.
+	if ((target.damagePreventionShield ?? 0) > 0) {
+		const prevented = Math.min(dmg, target.damagePreventionShield!);
+		target.damagePreventionShield! -= prevented;
+		dmg -= prevented;
+		if (dmg <= 0) return 0;
+	}
+
+	// CR 122.1c: If a permanent with a shield counter on it would be dealt damage,
+	// prevent that damage and remove a shield counter from it.
+	if ((target.counters.shield || 0) > 0) {
+		target.counters.shield = Math.max(0, (target.counters.shield || 0) - 1);
+		p.addLog(
+			state,
+			'rule',
+			`A shield counter prevented ${dmg} damage to ${target.card.name} and was removed (CR 122.1c).`,
+			opts?.actorId ?? target.controllerId
+		);
+		return 0;
+	}
+
+	if (evTarget.isPlaneswalker) {
+		// CR 120.3c / 306.8: Damage dealt to a planeswalker removes that many loyalty counters.
+		target.counters.loyalty = Math.max(0, (target.counters.loyalty || 0) - dmg);
+	}
+	if (evTarget.isCreature) {
+		// CR 702.80 / 702.90b–c: Source with wither or infect deals damage to a creature in the form of -1/-1 counters.
+		if (srcInfo.hasInfect || srcInfo.hasWither) {
+			p.addCounters(state, target, '-1/-1', dmg);
+		} else {
+			target.damageMarked += dmg;
+		}
+		if (srcInfo.hasDeathtouch) {
+			target.deathtouchDamageMarked = true;
+		}
+	} else if (!evTarget.isPlaneswalker) {
+		target.damageMarked += dmg;
+	}
+
+	emitEvent(state, {
+		kind: 'DamageDealt',
+		sourceId,
+		targetId: target.instanceId,
+		targetKind: 'permanent',
+		amount: dmg,
+		combat
+	});
+	p.emitVfx(state, {
+		kind: 'damage',
+		...(combat ? { sourceId } : {}),
+		targetId: target.instanceId,
+		amount: dmg,
+		...(opts?.vfxLabel ? { label: opts.vfxLabel } : {})
+	});
+	return dmg;
+}
+
+export function dealDamageToPlayer(
+	state: GameState,
+	pl: PlayerGameState,
+	rawAmount: number,
+	sourceId: string,
+	srcInfo: SourceDamageInfo,
+	opts?: { combat?: boolean; vfxSourceId?: string; vfxLabel?: string }
+): number {
+	const p = P();
+	const combat = opts?.combat ?? false;
+	let dmg = rawAmount;
+	if (dmg <= 0 || pl.lost) return 0;
+	if (pl.protectionFromEverythingThisTurn) return 0;
+
+	if ((pl.damagePreventionShield ?? 0) > 0) {
+		const prevented = Math.min(dmg, pl.damagePreventionShield!);
+		pl.damagePreventionShield! -= prevented;
+		dmg -= prevented;
+		if (dmg <= 0) return 0;
+	}
+
+	if (srcInfo.hasInfect) {
+		// CR 702.90b: Damage dealt to a player by a source with infect is dealt in the form of poison counters.
+		pl.poison = (pl.poison || 0) + dmg;
+	} else {
+		const cantChange =
+			Boolean(pl.lifeTotalCannotChangeThisTurn) ||
+			activeRuleModifiers(state, 'lifeTotalCantChange', pl.playerId).length > 0;
+		if (!cantChange) pl.life -= dmg;
+	}
+
+	emitEvent(state, {
+		kind: 'DamageDealt',
+		sourceId,
+		targetId: pl.playerId,
+		targetKind: 'player',
+		amount: dmg,
+		combat
+	});
+	p.emitVfx(state, {
+		kind: 'damage',
+		sourceId: opts?.vfxSourceId ?? sourceId,
+		targetId: pl.playerId,
+		amount: dmg,
+		...(opts?.vfxLabel ? { label: opts.vfxLabel } : {})
+	});
+	return dmg;
+}
+
+export function applyLifelinkGain(
+	state: GameState,
+	controller: PlayerGameState,
+	totalDealt: number
+): void {
+	if (totalDealt <= 0 || controller.lost) return;
+	const cantChange =
+		Boolean(controller.lifeTotalCannotChangeThisTurn) ||
+		activeRuleModifiers(state, 'lifeTotalCantChange', controller.playerId).length > 0;
+	if (!cantChange) controller.life += totalDealt;
+}
+
 // ---- Interpreter ----------------------------------------------------------------------------
 
 class Run {
@@ -955,195 +1184,43 @@ class Run {
 	sourceDamageInfo(
 		sourcePerm: CardInstance | null,
 		sourceCard: ScryfallCard
-	): {
-		hasDeathtouch: boolean;
-		hasLifelink: boolean;
-		hasInfect: boolean;
-		hasWither: boolean;
-		colors: ManaColor[];
-		types: string[];
-	} {
-		if (sourcePerm && sourcePerm.zone === 'battlefield') {
-			const ev = evaluatePermanent(this.state, sourcePerm);
-			const kws = ev.activeKeywords.map((k) => k.toLowerCase());
-			return {
-				hasDeathtouch: kws.includes('deathtouch'),
-				hasLifelink: kws.includes('lifelink'),
-				hasInfect: kws.includes('infect'),
-				hasWither: kws.includes('wither'),
-				colors: sourcePerm.isFaceDown ? [] : [...ev.colors],
-				types: ev.typeLine
-					.split(/\s+[—-]\s+/)[0]
-					.split(/\s+/)
-					.filter(Boolean)
-			};
-		}
-		const face = compileCard(sourceCard).faces[0];
-		const kws = new Set<string>((sourceCard.keywords ?? []).map((k) => k.toLowerCase()));
-		for (const ab of face.abilities) {
-			if (ab.kind === 'keyword') kws.add(ab.keyword.name.toLowerCase());
-		}
-		return {
-			hasDeathtouch: kws.has('deathtouch'),
-			hasLifelink: kws.has('lifelink'),
-			hasInfect: kws.has('infect'),
-			hasWither: kws.has('wither'),
-			colors: [...(face.characteristics.colors ?? sourceCard.colors ?? [])],
-			types: [...(face.characteristics.types ?? [])]
-		};
+	): SourceDamageInfo {
+		return sourceDamageInfo(this.state, sourcePerm, sourceCard);
 	}
 
 	permanentProtectedFromSource(
 		target: CardInstance,
-		srcInfo: ReturnType<Run['sourceDamageInfo']>
+		srcInfo: SourceDamageInfo
 	): boolean {
-		const ev = evaluatePermanent(this.state, target);
-		const colorMap: Record<string, ManaColor> = {
-			white: 'W',
-			blue: 'U',
-			black: 'B',
-			red: 'R',
-			green: 'G'
-		};
-		const typeMap: Record<string, string> = {
-			creatures: 'Creature',
-			creature: 'Creature',
-			artifacts: 'Artifact',
-			artifact: 'Artifact',
-			enchantments: 'Enchantment',
-			enchantment: 'Enchantment',
-			lands: 'Land',
-			land: 'Land',
-			planeswalkers: 'Planeswalker',
-			planeswalker: 'Planeswalker'
-		};
-		for (const kw of ev.activeKeywords) {
-			const low = kw.toLowerCase();
-			if (!low.startsWith('protection from ')) continue;
-			const qual = low.slice('protection from '.length).trim();
-			if (qual === 'everything') return true;
-			if (qual === 'all colors' && srcInfo.colors.length > 0) return true;
-			if (colorMap[qual] && srcInfo.colors.includes(colorMap[qual])) return true;
-			if (typeMap[qual] && srcInfo.types.some((t) => t.toLowerCase() === typeMap[qual].toLowerCase())) {
-				return true;
-			}
-		}
-		return false;
+		return permanentProtectedFromSource(this.state, target, srcInfo);
 	}
 
 	dealDamageToPermanent(
 		target: CardInstance,
 		rawAmount: number,
 		sourceId: string,
-		srcInfo: ReturnType<Run['sourceDamageInfo']>
+		srcInfo: SourceDamageInfo
 	): number {
-		const s = this.state;
-		const p = P();
-		let dmg = rawAmount;
-		if (dmg <= 0 || target.zone !== 'battlefield' || target.phasedOut) return 0;
-
-		// CR 702.16b: Protection prevents all damage from sources with the stated quality.
-		if (this.permanentProtectedFromSource(target, srcInfo)) return 0;
-
-		// CR 120.3: Damage prevention shield on permanent.
-		if ((target.damagePreventionShield ?? 0) > 0) {
-			const prevented = Math.min(dmg, target.damagePreventionShield!);
-			target.damagePreventionShield! -= prevented;
-			dmg -= prevented;
-			if (dmg <= 0) return 0;
-		}
-
-		// CR 122.1c: If a permanent with a shield counter on it would be dealt damage,
-		// prevent that damage and remove a shield counter from it.
-		if ((target.counters.shield || 0) > 0) {
-			target.counters.shield = Math.max(0, (target.counters.shield || 0) - 1);
-			p.addLog(
-				s,
-				'rule',
-				`A shield counter prevented ${dmg} damage to ${target.card.name} and was removed (CR 122.1c).`,
-				this.you.playerId
-			);
-			return 0;
-		}
-
-		const evTarget = evaluatePermanent(s, target);
-		if (evTarget.isPlaneswalker) {
-			// CR 120.3c / 306.8: Damage dealt to a planeswalker removes that many loyalty counters.
-			target.counters.loyalty = Math.max(0, (target.counters.loyalty || 0) - dmg);
-		}
-		if (evTarget.isCreature) {
-			// CR 702.80 / 702.90b: Source with wither or infect deals damage to a creature in the form of -1/-1 counters.
-			if (srcInfo.hasInfect || srcInfo.hasWither) {
-				p.addCounters(s, target, '-1/-1', dmg);
-			} else {
-				target.damageMarked += dmg;
-				if (srcInfo.hasDeathtouch) {
-					target.deathtouchDamageMarked = true;
-				}
-			}
-		} else if (!evTarget.isPlaneswalker) {
-			target.damageMarked += dmg;
-		}
-
-		emitEvent(s, {
-			kind: 'DamageDealt',
-			sourceId,
-			targetId: target.instanceId,
-			targetKind: 'permanent',
-			amount: dmg,
-			combat: false
+		return dealDamageToPermanent(this.state, target, rawAmount, sourceId, srcInfo, {
+			combat: false,
+			actorId: this.you.playerId
 		});
-		p.emitVfx(s, { kind: 'damage', targetId: target.instanceId, amount: dmg });
-		return dmg;
 	}
 
 	dealDamageToPlayer(
 		pl: PlayerGameState,
 		rawAmount: number,
 		sourceId: string,
-		srcInfo: ReturnType<Run['sourceDamageInfo']>
+		srcInfo: SourceDamageInfo
 	): number {
-		const s = this.state;
-		const p = P();
-		let dmg = rawAmount;
-		if (dmg <= 0 || pl.lost) return 0;
-		if (pl.protectionFromEverythingThisTurn) return 0;
-
-		if ((pl.damagePreventionShield ?? 0) > 0) {
-			const prevented = Math.min(dmg, pl.damagePreventionShield!);
-			pl.damagePreventionShield! -= prevented;
-			dmg -= prevented;
-			if (dmg <= 0) return 0;
-		}
-
-		if (srcInfo.hasInfect) {
-			// CR 702.90b: Damage dealt to a player by a source with infect is dealt in the form of poison counters.
-			pl.poison = (pl.poison || 0) + dmg;
-		} else {
-			const cantChange =
-				Boolean(pl.lifeTotalCannotChangeThisTurn) ||
-				activeRuleModifiers(s, 'lifeTotalCantChange', pl.playerId).length > 0;
-			if (!cantChange) pl.life -= dmg;
-		}
-
-		emitEvent(s, {
-			kind: 'DamageDealt',
-			sourceId,
-			targetId: pl.playerId,
-			targetKind: 'player',
-			amount: dmg,
-			combat: false
+		return dealDamageToPlayer(this.state, pl, rawAmount, sourceId, srcInfo, {
+			combat: false,
+			vfxSourceId: this.you.playerId
 		});
-		p.emitVfx(s, { kind: 'damage', sourceId: this.you.playerId, targetId: pl.playerId, amount: dmg });
-		return dmg;
 	}
 
 	applyLifelinkGain(controller: PlayerGameState, totalDealt: number): void {
-		if (totalDealt <= 0 || controller.lost) return;
-		const cantChange =
-			Boolean(controller.lifeTotalCannotChangeThisTurn) ||
-			activeRuleModifiers(this.state, 'lifeTotalCantChange', controller.playerId).length > 0;
-		if (!cantChange) controller.life += totalDealt;
+		applyLifelinkGain(this.state, controller, totalDealt);
 	}
 
 	damage(step: EffectStep): void {
