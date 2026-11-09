@@ -17,6 +17,23 @@ export function freshRngSeed(): number {
 	return Math.floor(Math.random() * 0x100000000) | 0;
 }
 
+/** Derives a deterministic 32-bit salt for opaque instance IDs from the initial RNG seed without advancing `rngState`. */
+export function deriveIdSalt(seed: number): number {
+	let h = (seed ^ 0x6d2b79f5) | 0;
+	h = Math.imul(h ^ (h >>> 16), 0x85ebca6b);
+	h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
+	return (h ^ (h >>> 16)) | 0;
+}
+
+/** Deterministic 32-bit bijective hash mixing `(idSalt, counter)` into an unsigned 32-bit integer. */
+export function hash32(salt: number, counter: number): number {
+	let h = (counter + Math.imul(salt | 1, 0x9e3779b9)) | 0;
+	h ^= salt;
+	h = Math.imul(h ^ (h >>> 16), 0x85ebca6b);
+	h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
+	return (h ^ (h >>> 16)) >>> 0;
+}
+
 /** Deterministic PRNG (mulberry32) advancing `holder.rngState` in place; a number in [0, 1). */
 export function nextRandom(holder: RngHolder): number {
 	if (holder.rngState === undefined) holder.rngState = freshRngSeed();

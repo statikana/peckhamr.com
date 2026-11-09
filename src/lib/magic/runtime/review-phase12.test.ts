@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { describe, it, mock } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
@@ -278,3 +278,56 @@ describe('Phase 1 (§2.1 + §2.2): Secret stripping and opponent prompt redactio
 		}
 	});
 });
+
+describe('Phase 1 (§2.3): Opaque instance IDs', () => {
+	it('produces unrelated card instance IDs for two games with the same decklist and different seeds', () => {
+		let seedIdx = 0;
+		const seeds = [0.125, 0.875];
+		mock.method(Math, 'random', () => seeds[seedIdx++ % seeds.length]);
+		try {
+			const g1 = makeTwoPlayerGame();
+			const g2 = makeTwoPlayerGame();
+
+			const g1Ids = new Set([
+				...g1.players[0].command.map((c) => c.instanceId),
+				...g1.players[0].hand.map((c) => c.instanceId),
+				...g1.players[0].library.map((c) => c.instanceId)
+			]);
+			const g2Ids = new Set([
+				...g2.players[0].command.map((c) => c.instanceId),
+				...g2.players[0].hand.map((c) => c.instanceId),
+				...g2.players[0].library.map((c) => c.instanceId)
+			]);
+
+			const overlap = [...g1Ids].filter((id) => g2Ids.has(id));
+			assert.deepEqual(
+				overlap,
+				[],
+				'Games with different seeds must not share card instance IDs'
+			);
+		} finally {
+			mock.restoreAll();
+		}
+	});
+
+	it('does not generate monotonic crd_1, crd_2, ... IDs in deck-list order', () => {
+		const g = makeTwoPlayerGame();
+		const allP1Cards = [
+			...g.players[0].command,
+			...g.players[0].hand,
+			...g.players[0].library
+		];
+		const monotonicMatches = allP1Cards.filter((c) => /^(cmd|crd)_\d+$/.test(c.instanceId));
+		assert.equal(
+			monotonicMatches.length < allP1Cards.length / 2,
+			true,
+			'Instance IDs should be hashed base-36 strings rather than monotonic decimal counters'
+		);
+		assert.equal(
+			allP1Cards.some((c) => c.instanceId === 'crd_1' || c.instanceId === 'crd_2'),
+			false,
+			'First cards must not have predictable crd_1 / crd_2 IDs'
+		);
+	});
+});
+

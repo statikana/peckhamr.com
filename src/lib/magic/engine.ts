@@ -141,7 +141,7 @@ import {
 } from './runtime/effects.ts';
 import { botAcceptsOptionalTrigger, chooseBotTriggerTargets } from './ai.ts';
 import type { CostDef, EffectStep, TargetSpec, TokenSpec } from './ir.ts';
-import { freshRngSeed, type RngHolder } from './runtime/random.ts';
+import { deriveIdSalt, freshRngSeed, hash32, type RngHolder } from './runtime/random.ts';
 import { cardAbilityDisplayText, enteringNotices, stackItemDisplayText } from './compiler/support.ts';
 import {
 	buildCostChoiceRequest,
@@ -195,10 +195,19 @@ export { ENGINE_VERSION };
 
 let fallbackUidCounter = 0;
 
-function uid(prefix: string, state?: { nextUid?: number }): string {
+interface UidHolder {
+	nextUid?: number;
+	idSalt?: number;
+	rngState?: number;
+}
+
+function uid(prefix: string, state?: UidHolder): string {
 	if (state) {
+		if (state.idSalt === undefined) {
+			state.idSalt = deriveIdSalt(state.rngState ?? 0);
+		}
 		state.nextUid = (state.nextUid ?? 0) + 1;
-		return `${prefix}_${state.nextUid}`;
+		return `${prefix}_${hash32(state.idSalt, state.nextUid).toString(36)}`;
 	}
 	fallbackUidCounter += 1;
 	return `${prefix}_ext_${fallbackUidCounter}`;
@@ -213,7 +222,7 @@ export function createCardInstance(
 	isCommander = false,
 	isToken = false,
 	enteredTimestamp?: number,
-	uidHolder?: { nextUid?: number }
+	uidHolder?: UidHolder
 ): CardInstance {
 	const counters = createEmptyCounters();
 	if (card.loyalty && zone === 'battlefield') {
@@ -289,8 +298,10 @@ export function createInitialGameState(
 	const now = Date.now();
 	const activeSeats = seats.filter((s) => s.userId !== null || s.isBot);
 	// ENGINE_INVARIANTS.md 7.2: one seed per game; every shuffle and random choice draws from it.
-	const rng: RngHolder = { rngState: freshRngSeed() };
-	const uidHolder: { nextUid?: number } = { nextUid: 0 };
+	const initialSeed = freshRngSeed();
+	const rng: RngHolder = { rngState: initialSeed };
+	const idSalt = deriveIdSalt(initialSeed);
+	const uidHolder: UidHolder = { nextUid: 0, idSalt };
 
 	const players: PlayerGameState[] = activeSeats.map((seat, idx) => {
 		const playerId = seat.userId || `bot_${seat.seatIndex}`;
@@ -386,6 +397,7 @@ export function createInitialGameState(
 		pendingPrompts: [],
 		rngState: rng.rngState,
 		nextUid: uidHolder.nextUid,
+		idSalt,
 		recentVfxEvents: [],
 		log: [],
 		turnStartedAt: now,
