@@ -194,7 +194,7 @@ export interface LegacyEffectClaim {
 	complete: boolean;
 }
 
-/** What the legacy hook translator decided about one static line, for scripts/magic-statics-diff.ts. */
+/** What the legacy adapter decided about one static line, for comparing against the static grammar. */
 export interface LegacyStaticClaim {
 	rawIndex: number;
 	defs: StaticDef[];
@@ -206,6 +206,7 @@ export interface AdapterLog {
 	triggers: LegacyTriggerClaim[];
 	/** Optional so older callers needn't pass it (scripts/magic-effects-diff.ts does). */
 	effects?: LegacyEffectClaim[];
+	/** Optional so older callers needn't pass it (scripts/magic-statics-diff.ts does). */
 	statics?: LegacyStaticClaim[];
 }
 
@@ -549,9 +550,10 @@ function adaptActivated(ctx: AdapterContext, line: NormalizedLine): AbilityDef[]
 	const quote = line.body.search(/["“]/);
 	const colon = line.body.indexOf(':');
 	const isCostColon = colon > 0 && (quote < 0 || colon < quote);
+	if (!isCostColon) return null;
 	if (!node) {
 		// Looks like an activated ability ("cost: effect") that nothing claimed.
-		if (isCostColon && !/^(when|whenever|at)\b/i.test(line.body) && !/^choose\b/i.test(line.body)) {
+		if (!/^(when|whenever|at)\b/i.test(line.body) && !/^choose\b/i.test(line.body)) {
 			return [unsupported('unparsed', line.text, line.span, [line.bodySpan])];
 		}
 		return null;
@@ -821,21 +823,23 @@ function adaptModes(ctx: AdapterContext, group: NormalizedLine[]): { modal?: Mod
 // ---- Statics --------------------------------------------------------------------------------
 
 /**
- * Statics and replacements (Phases 6/7). Tries compiler/statics.ts first; falls back to the legacy
- * board-hook translator.
+ * Statics and replacement effects are compiled by the Phase 2b grammar (compiler/statics.ts), with
+ * the Phase 2a cost-modifier grammar first (richer ObjectFilter support) and the legacy board-hook
+ * translator as fallback. A single line such as "Creatures you control get +1/+1 and have haste."
+ * produces two StaticDefs, so this returns AbilityDef[].
  */
 function adaptStatic(ctx: AdapterContext, group: NormalizedLine[]): AbilityDef[] {
 	const span = groupSpan(group);
 	const text = groupText(group);
 	if (group.length === 1) {
 		const line = group[0];
-		const costModifier = parseCostModifierSentence(line.body);
+		// Record what the legacy hook translator would have claimed before the grammar runs, so
+		// scripts/magic-statics-diff.ts keeps comparing the grammar against the pre-Phase-6 baseline.
 		const lineTree = getCardRuleTree({ ...ctx.card, oracleText: line.raw }, ALL_COLORS);
 		const hookDefs = lineTree.hooks.map(translateHook).filter((d): d is StaticDef => d !== null);
-		const legacyDef = costModifier ?? (hookDefs.length === 1 ? hookDefs[0] : undefined);
-		if (legacyDef) {
-			ctx.log?.statics?.push({ rawIndex: line.rawIndex, defs: [legacyDef] });
-		}
+		if (hookDefs.length === 1) ctx.log?.statics?.push({ rawIndex: line.rawIndex, defs: hookDefs });
+
+		const costModifier = parseCostModifierSentence(line.body);
 		if (costModifier) return [{ kind: 'static', static: costModifier, span }];
 		const parsed = parseStaticAbility(line.body, line.bodySpan.start);
 		if (parsed.unparsed.length === 0 && parsed.items.length > 0) {

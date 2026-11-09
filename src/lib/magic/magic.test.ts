@@ -2267,7 +2267,8 @@ describe('15. Continuous Layer & Keyword/Effect Attribution Engine (Alt-View Bre
 		addCardToZone(state, p1Id, getCardByName('Urborg, Tomb of Yawgmoth')!, 'battlefield');
 
 		const towerBd = inspectCardContinuousBreakdown(tower, state);
-		assert.equal(towerBd.effectiveTypeLine, 'Land — Mountain Swamp');
+		// CR 613.8 & 305.7: Blood Moon turns Urborg (a nonbasic land) into a Mountain and removes its abilities, so Urborg does not make lands Swamps.
+		assert.equal(towerBd.effectiveTypeLine, 'Land — Mountain');
 		const noMaxHand = towerBd.items.find((i) => i.canonicalKey === 'ability_no_max_hand');
 		assert.ok(noMaxHand);
 		assert.equal(noMaxHand.removed, true);
@@ -4575,7 +4576,7 @@ describe('29. Stage C & D Deep Audit: Timestamp Precedence, Layer-Aware Subtypes
 		});
 	}
 
-	it('D-Audit-5: Song of the Dryads (current Oracle text) removes other card types and rules-text abilities via CR 205.1a and 305.7', { todo: 'Phase 6 (layers from IR): setting a basic land type must remove rules-text abilities (CR 305.7)' }, () => {
+	it('D-Audit-5: Song of the Dryads (current Oracle text) removes other card types and rules-text abilities via CR 205.1a and 305.7', () => {
 		const { state, p1Id, p2Id } = createActiveTwoPlayerGame();
 		const humility = addCardToZone(state, p2Id, getCardByName('Humility')!, 'battlefield');
 		const song = addCardToZone(state, p1Id, getCardByName('Song of the Dryads')!, 'battlefield');

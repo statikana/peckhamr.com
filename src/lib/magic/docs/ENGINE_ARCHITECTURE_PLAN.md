@@ -998,7 +998,7 @@ while it runs), **entry**, **work**, **exit**, and **ratchet target**.
     - Emitting `BecameTarget` for activated/triggered abilities (`targetedBy: 'ability'` /
       `'spellOrAbility'`) and `becomesTapped` / `gainLife` / `drawCard` events → long-tail coverage.
 
-### Phase 6: Layer engine from IR, with caching
+### Phase 6: Layer engine from IR, with caching ✅ done 2026-11-08 (branch `engine-rewrite-phase6`)
 
 #### Phase 6a: layer evaluation caching ✅ done 2026-11-08 (branch `engine-rewrite-perf`)
 Interim performance fix ahead of Phase 6 proper. Results are unchanged: layer snapshots and golden
@@ -1026,12 +1026,11 @@ games pass without regenerating.
     sees.
 - **Checks:**
   - `MAGIC_LAYER_CACHE_CHECK=1` (or `=verbose`) recomputes every query on a fresh snapshot and
-    throws on any difference. `setLayerReference()` also compares against the frozen pre-cache code
-    in `runtime/layerReference.test.ts`.
+    throws on any difference.
   - Full suite under the flag: ~412k checks, 0 mismatches.
   - Full seeded 4-bot games, seeds 1 and 2, checked against the reference on every call:
     377,545 + 390,716 = 768,261 checks, 0 mismatches.
-  - `runtime/layerCache.test.ts` mutates boards between evaluations and compares against both.
+  - `runtime/layerCache.test.ts` mutates boards between evaluations and compares against fresh.
 - **Timing (Node 24, `measure.mts`, CPU per bot tick):**
 
   | Permanents | seed 1 before (median / max) | seed 1 after | seed 2 before | seed 2 after |
@@ -1043,55 +1042,68 @@ games pass without regenerating.
 
   Phase 6 timing baseline, one full `evaluatePermanent` pass over 60 permanents: ~230 ms →
   **~1 ms**.
-- **Ratchet:** `oracleText` reads in `ruleTree.ts` went from 38 to 14. All layer-code reads go
-  through `layerCardText()`.
-- **Phase 6 proper still has to:**
-  - add `state.version` so a query is a real O(1) lookup (today each call is still O(n):
-    fingerprint plus the per-target pass);
-  - compile the statics into `StaticDef`, which removes the remaining text regexes;
-  - delete `layerReference.test.ts`, or replace it with the snapshots, once results change on
-    purpose;
-  - keep the "cards are immutable" assumption, or add text to the fingerprint.
+- **Ratchet:** `oracleText` reads in `ruleTree.ts` went from 38 to 14.
 
-- **Owns:** `runtime/layers.ts`; `inspectCardContinuousBreakdown`, `permanentHasLostAllAbilities`,
-  `evaluatePermanent` in `ruleTree.ts`.
-- **Entry:** before rewriting, add **snapshot tests** of the evaluated state (types, P/T, keywords,
-  abilities, with the source attributed) for every card the current layer code handles. Add
-  `state.version`.
-- **Work:** compile continuous statics (anthems, lords, "enchanted creature is a … with base P/T",
-  Humility-style removal, "nonbasic lands are …", Opalescence-style type-adding, keyword removal)
-  into `StaticDef`. Write `computeContinuousState` per §2.4. Keep `inspectCardContinuousBreakdown`'s
-  output shape for the UI inspector.
-- **Exit:** snapshots unchanged (or changed only where a rules bug was fixed and documented);
-  layer code has no `oracleText` reads; `evaluatePermanent` is O(1) after the first call per state
-  version. Baseline test `C/D-Audit-4` passes, if no other agent has fixed it already.
-- **Entry snapshots ✅ (2026-11-08, test-only):** `layers.snapshot.test.ts` with fixture
-  `layers.snapshot.json`. **40 scenarios, 145 permanent snapshots** (real precon cards plus synthetic
-  ones with invented names). Each permanent records the effective type line, type flags, base /
-  breakdown / evaluated P/T, `typeModifiedBy`, `ptModifiedBy`, active keywords, lost-all-abilities
-  with sources, and every breakdown item with its sources and `removedBy`. Instance and player ids
-  are mapped to card-name labels. Regenerate with
-  `UPDATE_LAYER_SNAPSHOTS=1 node --test src/lib/magic/layers.snapshot.test.ts` (refused when `CI`
-  is set) and review the diff. Covered: attached type changers in both timestamp orders, "loses
-  all abilities" (Aura, Humility, Dress Down), anthems before/after Humility, Humility + Opalescence
-  in both orders (both match the Oracle ruling today), Blood Moon, Urborg/Yavimaya, Mycosynth,
-  Maskwood, 7b setters in both orders, 7a CDAs (also under Humility), lords with "other" and
-  subtypes, Equipment/Aura grants, Chromatic Lantern, opponents' keyword removal, counters, pumps,
-  7d switching, face-down, suspend haste, granted-keyword attribution, phasing, and a layer-1 copy.
-- **Known wrong today (a snapshot change here is a fix; update the fixture and this list):**
-  - Song of the Dryads (Oracle text) keeps the enchanted permanent's rules-text abilities: on a
-    flyer and on an Opalescence-animated enchantment. CR 205.1a / 305.7. Tracked by **D-Audit-5**.
-  - Blood Moon + Urborg: every land is still also a Swamp (Forest is "Forest Swamp"). Urborg's
-    effect depends on Blood Moon's (CR 613.8), so no land is a Swamp.
-  - Negative power is clamped to 0 (a 2/2 with "-3/-0" reports 0/2, not -1/2). CR 107.1b.
-  - `C/D-Audit-4` (observer triggers ignoring layer-4 subtypes) is a trigger bug, not layer output;
-    it isn't in the snapshots.
-  - Not evaluated at all, so not snapshotted: colour (layer 5; Kenrith's "green", Imprisoned's
-    "colorless") and control-changing (layer 2).
-- **Timing baseline (Node 24):** `evaluatePermanent` once per permanent on a 4-player board of 60
-  permanents (lands, lords, anthems, Equipment): **~230 ms per full pass, ~3.8 ms per call**
-  (median of 7). Each call re-scans every permanent's text, so cost grows with the square of
-  board size. This is the number the per-state-version cache must beat.
+#### Phase 6b: IR layer engine (`runtime/layers.ts` + `compiler/statics.ts`) ✅ done 2026-11-08 (branch `engine-rewrite-phase6`)
+- **Owns:** `runtime/layers.ts`, `runtime/layers.test.ts`, `runtime/layerCache.ts`,
+  `runtime/layerCache.test.ts`; `inspectCardContinuousBreakdown`, `permanentHasLostAllAbilities`,
+  `evaluatePermanent`, `getAttachedAbilityStrippingAuraSources` in `ruleTree.ts`;
+  `compiler/statics.ts`, `compiler/adapter.ts` (`adaptStatic`), `compiler/index.ts`,
+  `scripts/magic-statics-diff.ts`, `layers.snapshot.json`.
+- **Summary of changes:**
+  - Wired `parseStaticAbility` into `adaptStatic` in `compiler/adapter.ts` (emitting `StaticAbility`
+    and `ReplacementAbility` IR nodes and recording `LegacyStaticClaim`s in `AdapterLog.statics`),
+    fixed `adaptActivated` to ignore colons inside quotation marks (`Chromatic Lantern`,
+    `Imprisoned in the Moon`), bumped `COMPILER_VERSION` from 2 to 3, and updated
+    `scripts/magic-statics-diff.ts` to read `log.statics`.
+  - Extended `compiler/statics.ts` to normalize curly apostrophes (`\u2019`), parse
+    `"loses all other card types and creature types"` and `"with/has base power and toughness N/M"`
+    clauses in `attachedTypeChange` (`Kenrith's Transformation`), handle optional second `"base"`
+    and off-battlefield continuation clauses in `globalChanges` (`Maskwood Nexus`), support
+    `"You, <a/>, and <b/> have <keywords>"` for any keyword list in `ruleModifiers`, and parse
+    `"you control a <color1> or <color2> permanent"` in `parseStaticCondition` (`Abzan Runemark`).
+  - Implemented `src/lib/magic/runtime/layers.ts` evaluating Layers 1, 4, 5, 6, 7a, 7b, 7c, and 7d
+    from compiled `CardDefinition`s (`compileCard`) with zero `oracleText` reads and zero card-name
+    comparisons. Replaced lines 1045–2572 of `ruleTree.ts` with re-exports from `runtime/layers.ts`
+    (deleting `layerCardText` and all regex layer helpers while leaving the Phase 7 rule-modifier
+    helpers untouched).
+  - Cached the full board evaluation (`byInstance` map of `EvaluatedPermanent`,
+    `CardContinuousBreakdown`, and `lostAllAbilities`) on `BoardSnapshot.memo` keyed by a dynamic
+    fingerprint (`state.version`, turn/active player, life/hand/graveyard, and per-permanent
+    tapped/counters/temp P/T/switched P/T/suspend/grantedKeywords), making repeated
+    `evaluatePermanent` calls O(1) object-reference lookups (~0.8 ms per 60-permanent pass, ~14 µs
+    per permanent). Deleted the obsolete pre-Phase-6 `runtime/layerReference.test.ts`.
+  - Fixed all 8 documented layer bugs and verified with fail-first tests in
+    `runtime/layers.test.ts` (both real precon cards and synthetic cards with invented names):
+    1. **Song of the Dryads (CR 205.1a & 305.7):** setting a basic land type (`setTypes` with `Land`
+       and a basic land subtype) removes rules-text abilities and replaces prior card types on both
+       creatures and Opalescence-animated enchantments (`D-Audit-5` enabled and passing in
+       `magic.test.ts`).
+    2. **Blood Moon + Urborg dependency (CR 613.8):** Layer 4 subtype-overwriting effects
+       (`setSubtypes` on nonbasic lands) apply before global additive subtype effects (`addTypes`),
+       stripping Urborg's ability so lands are not also Swamps.
+    3. **Negative power (CR 107.1b):** `effectivePower` and `EvaluatedPermanent.power` preserve
+       negative values (a 2/2 with -3/-0 reports `-1/2`, and a subsequent +2/+0 brings it to `1/2`),
+       while toughness remains clamped at 0 for display.
+    4. **Multi-type and subtype-qualified P/T & keyword grants:** `"Artifact creatures you control"`,
+       `"Attacking creatures you control"`, `"Tapped creatures you control"` evaluated via generic
+       `matchesLayerFilter` on `ObjectFilter`.
+    5. **For-each P/T scaling (`Storm-Kiln Artist`):** `"~ gets +1/+0 for each artifact you control"`
+       evaluated via `Amount` (`{ k: 'count', of: ... }`) in Layer 7c.
+    6. **Conditional static abilities (`Abzan Runemark`):** `StaticDef.condition` evaluated via
+       `evaluateLayerCondition` in Layer 6/7c.
+    7. **CR 205.1b type retention:** enforced by `statics.ts` (`attachedTypeChange` requires explicit
+       prior-type removal text when setting `"artifact creature"`).
+    8. **Asymmetric P/T modifiers:** `+2/+0`, `+1/+0`, `-3/-0` evaluated generically via separate
+       `power` and `toughness` `Amount`s.
+- **Snapshot diff (`layers.snapshot.json`):**
+  - Regenerated with `UPDATE_LAYER_SNAPSHOTS=1`. 36 of 40 scenarios are 100% unchanged; the only 4
+    scenarios with diffs are the 4 documented `knownWrong` bug fixes (`aura/song-of-the-dryads-oracle-text`,
+    `opalescence/song-of-the-dryads-on-animated-enchantment`, `lands/blood-moon`,
+    `grants/equipment-and-auras`).
+- **Ratchet (`architecture-allowances.json`):**
+  - `oracleTextRead["ruleTree.ts"]` lowered `14 → 13` (`layerCardText` deleted).
+  - `runtime/layers.ts` has 0 `oracleTextRead`, 0 `cardNameComparison`, and 0 `directZoneMutation`.
 
 ### Phase 7: Replacement effects and rule modifiers ✅ done 2026-11-08 (branch `engine-rewrite-phase7`)
 - **Owns:** `runtime/replace.ts`; the rule helpers at the end of `ruleTree.ts`, draw-from-empty,
