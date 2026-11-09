@@ -598,7 +598,7 @@ export interface PendingPrompt {
 	 * merges the choice into its `costPayment` and runs it again from scratch.
 	 */
 	pendingAction?: GameActionPayload;
-	costQuestion?: { kind: 'option' | 'objects'; index: number };
+	costQuestion?: { kind: 'option' | 'objects' | 'phyrexian'; index: number };
 	costOptionLabels?: string[];
 	/** trigger_targets / trigger_may: the triggered ability's stack item (by id; state stays plain data). */
 	triggerStackItemId?: string;
@@ -640,6 +640,7 @@ export type PromptContinuation =
 export interface CostPayment {
 	options?: number[];
 	objects?: string[][];
+	phyrexianLifeCount?: number;
 }
 
 export interface VfxEvent {

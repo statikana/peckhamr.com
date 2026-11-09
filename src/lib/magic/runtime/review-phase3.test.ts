@@ -87,8 +87,7 @@ function setupGame(players = 2, bots: boolean[] = []): { state: GameState; p: Pl
 		'LOBBY_REV3',
 		seats,
 		new Map(seats.map((_, i) => [i, PRECON_DECKS[i % PRECON_DECKS.length]])),
-		{ ...DEFAULT_LOBBY_RULES },
-		42
+		{ ...DEFAULT_LOBBY_RULES }
 	);
 	for (const s of seats) {
 		const pl = state.players.find((x) => x.playerId === s.userId)!;
@@ -378,5 +377,151 @@ describe('Phase 3 (§4.3): Per-turn trigger counter (#9)', () => {
 		);
 	});
 });
+
+describe('Phase 3 (§4.4): Phyrexian mana payment (#7, CR 601.2f–h, CR 119.8)', () => {
+	const mountainCard = card({
+		name: 'Mountain',
+		manaCost: '',
+		cmc: 0,
+		typeLine: 'Basic Land — Mountain',
+		oracleText: '{T}: Add {R}.'
+	});
+	const swampCard = card({
+		name: 'Swamp',
+		manaCost: '',
+		cmc: 0,
+		typeLine: 'Basic Land — Swamp',
+		oracleText: '{T}: Add {B}.'
+	});
+	const dismemberCard = card({
+		name: 'Dismember',
+		manaCost: '{1}{B/P}{B/P}',
+		cmc: 3,
+		typeLine: 'Instant',
+		oracleText: 'Target creature gets -5/-5 until end of turn.'
+	});
+
+	it('prompts a human casting Dismember ({1}{B/P}{B/P}) with 3 Mountains; choosing life for both {B/P} taps only 1 Mountain and pays 4 life', () => {
+		const { state, p } = setupGame(2, [false, false]);
+		const [p1, p2] = p;
+		p1.manaPool = { W: 0, U: 0, B: 0, R: 0, G: 0, C: 0 };
+		p1.battlefield = [];
+		const m1 = put(state, p1, mountainCard, 'battlefield');
+		const m2 = put(state, p1, mountainCard, 'battlefield');
+		const m3 = put(state, p1, mountainCard, 'battlefield');
+		const targetBear = put(state, p2, creature('Hill Giant', '', '3', '3'), 'battlefield');
+		const dismember = put(state, p1, dismemberCard, 'hand');
+		const startLife = p1.life;
+
+		const castRes = applyGameAction(state, p1.playerId, {
+			type: 'cast_spell',
+			instanceId: dismember.instanceId,
+			targets: [{ kind: 'permanent', id: targetBear.instanceId, label: targetBear.card.name }]
+		});
+		assert.equal(castRes.ok, true);
+		assert.equal(state.stack.length, 0, 'Spell should wait for Phyrexian cost_choice before going on stack');
+		const prompt = state.pendingPrompts[0];
+		assert.ok(prompt, 'Expected a cost_choice prompt for Phyrexian mana');
+		assert.equal(prompt.purpose, 'cost_choice');
+
+		// Choose option 2 (pay 4 life for both {B/P} symbols)
+		const choiceRes = applyGameAction(state, p1.playerId, {
+			type: 'choice',
+			promptId: prompt.id,
+			answer: { kind: 'chooseMode', indices: [2] }
+		});
+		assert.equal(choiceRes.ok, true, `Expected cost_choice to succeed, got: ${choiceRes.error}`);
+		assert.equal(state.stack.length, 1, 'Dismember should now be on the stack');
+		assert.equal(p1.life, startLife - 4, 'Human should have paid 4 life for {B/P}{B/P}');
+		const tappedMountains = [m1, m2, m3].filter((m) => m.tapped);
+		assert.equal(
+			tappedMountains.length,
+			1,
+			'Only 1 Mountain should be tapped for {1}, leaving 2 Mountains untapped'
+		);
+	});
+
+	it('a bot at 20 life with 3 Swamps pays 2 life for {B/P} instead of tapping its Swamp', () => {
+		const { state, p } = setupGame(2, [true, false]);
+		const [bot] = p;
+		bot.life = 20;
+		bot.manaPool = { W: 0, U: 0, B: 0, R: 0, G: 0, C: 0 };
+		bot.battlefield = [];
+		const s1 = put(state, bot, swampCard, 'battlefield');
+		const s2 = put(state, bot, swampCard, 'battlefield');
+		const s3 = put(state, bot, swampCard, 'battlefield');
+
+		const phyCantrip = card({
+			name: 'Phyrexian Probe',
+			manaCost: '{B/P}',
+			cmc: 1,
+			typeLine: 'Sorcery',
+			oracleText: 'You draw a card.'
+		});
+		const spellInst = put(state, bot, phyCantrip, 'hand');
+
+		const res = applyGameAction(state, bot.playerId, {
+			type: 'cast_spell',
+			instanceId: spellInst.instanceId
+		});
+		assert.equal(res.ok, true);
+		assert.equal(bot.life, 18, 'Bot at 20 life should pay 2 life for {B/P}');
+		assert.equal(
+			[s1, s2, s3].filter((s) => s.tapped).length,
+			0,
+			'Bot should not tap any Swamps when paying {B/P} with life'
+		);
+	});
+
+	it('disallows paying life for {B/P} when a static "Your life total can\'t change" effect is on the battlefield (CR 119.8)', () => {
+		const { state, p } = setupGame(2, [false, false]);
+		const [p1, p2] = p;
+		p1.manaPool = { W: 0, U: 0, B: 0, R: 0, G: 0, C: 0 };
+		p1.battlefield = [];
+		put(state, p1, mountainCard, 'battlefield');
+		put(state, p1, mountainCard, 'battlefield');
+		put(state, p1, mountainCard, 'battlefield');
+		put(
+			state,
+			p1,
+			card({
+				name: 'Platinum Emperion',
+				manaCost: '{8}',
+				cmc: 8,
+				typeLine: 'Artifact Creature — Golem',
+				oracleText: "Your life total can't change.",
+				power: '8',
+				toughness: '8'
+			}),
+			'battlefield'
+		);
+		const targetBear = put(state, p2, creature('Hill Giant', '', '3', '3'), 'battlefield');
+		const dismember = put(state, p1, dismemberCard, 'hand');
+		const startLife = p1.life;
+
+		// With 3 Mountains and life locked, Dismember cannot be cast at all
+		const failRes = applyGameAction(state, p1.playerId, {
+			type: 'cast_spell',
+			instanceId: dismember.instanceId,
+			targets: [{ kind: 'permanent', id: targetBear.instanceId, label: targetBear.card.name }]
+		});
+		assert.equal(failRes.ok, false, 'Casting Dismember with 3 Mountains and locked life must fail');
+		assert.equal(p1.life, startLife);
+
+		// With 2 Swamps added (so {1}{B}{B} is payable with mana), only mana payment is allowed (no prompt, 0 life paid)
+		const sw1 = put(state, p1, swampCard, 'battlefield');
+		const sw2 = put(state, p1, swampCard, 'battlefield');
+		const okRes = applyGameAction(state, p1.playerId, {
+			type: 'cast_spell',
+			instanceId: dismember.instanceId,
+			targets: [{ kind: 'permanent', id: targetBear.instanceId, label: targetBear.card.name }]
+		});
+		assert.equal(okRes.ok, true, 'Casting Dismember with mana when life is locked should succeed');
+		assert.equal(state.pendingPrompts.length, 0, 'No cost_choice prompt when life cannot be paid');
+		assert.equal(p1.life, startLife, 'Life total must not change');
+		assert.equal(sw1.tapped && sw2.tapped, true, 'Both Swamps must be tapped for {B/P}{B/P}');
+	});
+});
+
 
 

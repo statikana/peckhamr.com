@@ -28,6 +28,7 @@ import type {
 } from '../types.ts';
 import { evaluateAmount, evaluateCondition, matchesObjectFilter, type FilterContext } from './objectFilter.ts';
 import { noteLayerInputsChanged, withStableLayerInputs } from './layerCache.ts';
+import { playerLifeTotalCantChange } from './replace.ts';
 import { moveObject, type PlayerZone } from './zones.ts';
 
 // ---- Where costs come from ------------------------------------------------------------------
@@ -527,7 +528,9 @@ function checkSimple(def: CostDef, ctx: CostContext): string | null {
 			const amount = n(def.amount, ctx);
 			if (amount === 0) return null; // CR 119.4b
 			// CR 119.8: a player who can't lose life can't pay life.
-			if (ctx.player.lifeTotalCannotChangeThisTurn) return `Your life total can't change, so you can't pay ${amount} life.`;
+			if (playerLifeTotalCantChange(ctx.state, ctx.player)) {
+				return `Your life total can't change, so you can't pay ${amount} life.`;
+			}
 			// CR 119.4: life total >= payment.
 			if (ctx.player.life < amount) return `Not enough life to pay ${amount} life.`;
 			return null;

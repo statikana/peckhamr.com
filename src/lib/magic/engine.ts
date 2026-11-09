@@ -4,6 +4,7 @@ import {
 	canPayManaCost,
 	deductManaFromPool,
 	describeLibrarySearchDestination,
+	getTotalManaInPool,
 	matchesLibrarySearchSpec,
 	parseLibrarySearchSpec,
 	parseManaCost,
@@ -72,6 +73,7 @@ import {
 	playerHasHexproofFrom as replacePlayerHasHexproofFrom,
 	playerHasNoMaxHandSize,
 	playerHasShroud as replacePlayerHasShroud,
+	playerLifeTotalCantChange,
 	replaceEmptyLibraryDraw,
 	spellCannotBeCountered,
 	tokenMultiplier
@@ -604,7 +606,8 @@ function costContext(
 	source: CardInstance,
 	xValue: number,
 	isSpell: boolean,
-	baseMana: ManaCostRequirement | null
+	baseMana: ManaCostRequirement | null,
+	phyrexianLifeCount?: number
 ): CostContext {
 	return {
 		state,
@@ -613,8 +616,8 @@ function costContext(
 		xValue,
 		isSpell,
 		baseMana,
-		canPayMana: (req) => canPayOrAutoTap(player, req, state),
-		payMana: (req) => payManaWithAutoTap(player, req, state)
+		canPayMana: (req) => canPayOrAutoTap(player, req, state, phyrexianLifeCount),
+		payMana: (req) => payManaWithAutoTap(player, req, state, phyrexianLifeCount)
 	};
 }
 
@@ -680,15 +683,126 @@ function tapOnlyManaAbilities(
 	);
 }
 
-function simulateOrExecuteAutoTap(
-	player: PlayerGameState,
+function hasUntappedManaSources(state: GameState, player: PlayerGameState): boolean {
+	const cmdIdentity = getPlayerCommanderIdentity(player);
+	return withStableLayerInputs(state, () =>
+		player.battlefield.some((perm) => {
+			if (perm.phasedOut || perm.tapped) return false;
+			const evalPerm = evaluatePermanent(state, perm);
+			if (evalPerm.isCreature && perm.summoningSick && !hasKeyword(perm, 'Haste', state)) {
+				return false;
+			}
+			return tapOnlyManaAbilities(state, player, perm, cmdIdentity).length > 0;
+		})
+	);
+}
+
+/**
+ * CR 107.4f & CR 601.2f-h: Convert `lifeCount` Phyrexian mana symbols (`{W/P}`, `{U/P}`, etc.)
+ * into 2 life each before auto-tapping so Pass 2 only taps lands for the remaining mana cost.
+ */
+function applyPhyrexianLifeChoice(
 	req: ManaCostRequirement,
+	lifeCount: number
+): { manaReq: ManaCostRequirement; lifeToPay: number } {
+	if (lifeCount <= 0 || !req.flexibleSymbols?.some((s) => s.altLife)) {
+		return { manaReq: req, lifeToPay: 0 };
+	}
+	const nextColored = { ...req.colored };
+	const remainingFlex = [...(req.flexibleSymbols ?? [])];
+	let lifeToPay = 0;
+	let remainingToConvert = lifeCount;
+	for (let i = 0; i < remainingFlex.length && remainingToConvert > 0; ) {
+		const sym = remainingFlex[i];
+		if (sym.altLife && nextColored[sym.primaryColor] > 0) {
+			nextColored[sym.primaryColor] -= 1;
+			lifeToPay += sym.altLife;
+			remainingFlex.splice(i, 1);
+			remainingToConvert -= 1;
+		} else {
+			i += 1;
+		}
+	}
+	return {
+		manaReq: {
+			...req,
+			colored: nextColored,
+			flexibleSymbols: remainingFlex.length > 0 ? remainingFlex : undefined
+		},
+		lifeToPay
+	};
+}
+
+function maybeAskPhyrexianCostChoice(
 	state: GameState,
-	mutate: boolean
+	actor: PlayerGameState,
+	action: Extract<GameActionPayload, { type: 'cast_spell' | 'activate_ability' | 'tap_mana' }>,
+	req: ManaCostRequirement,
+	sourceName: string
+): { ok: boolean; error?: string } | null {
+	if (actor.isBot || action.costPayment?.phyrexianLifeCount !== undefined) return null;
+	const phySymbols = req.flexibleSymbols?.filter((s) => s.altLife) ?? [];
+	if (phySymbols.length === 0) return null;
+	const canPayLife = !playerLifeTotalCantChange(state, actor);
+	const maxLifeCount = canPayLife ? Math.min(phySymbols.length, Math.floor(actor.life / 2)) : 0;
+	if (maxLifeCount <= 0) return null;
+	// No mana possible: keep today's behavior of paying life without prompting.
+	if (getTotalManaInPool(actor.manaPool) === 0 && !hasUntappedManaSources(state, actor)) {
+		return null;
+	}
+	if (!canPayOrAutoTap(actor, req, state)) return null;
+	const labels: string[] = [];
+	for (let k = 0; k <= maxLifeCount; k++) {
+		const manaSymbols = phySymbols
+			.slice(k)
+			.map((s) => `{${s.primaryColor}}`)
+			.join('');
+		const lifeAmt = 2 * k;
+		if (k === 0) {
+			labels.push(`Pay ${manaSymbols}`);
+		} else if (manaSymbols.length > 0) {
+			labels.push(`Pay ${manaSymbols} and ${lifeAmt} life`);
+		} else {
+			labels.push(`Pay ${lifeAmt} life`);
+		}
+	}
+	state.pendingPrompts.push({
+		id: uid('prm', state),
+		playerId: actor.playerId,
+		kind: 'cost_choice',
+		purpose: 'cost_choice',
+		title: `Pay the cost of ${sourceName}`,
+		description: `Choose how to pay Phyrexian mana for ${sourceName}.`,
+		choice: {
+			kind: 'chooseMode',
+			modes: labels,
+			min: 1,
+			max: 1
+		},
+		cancellable: true,
+		costQuestion: { kind: 'phyrexian', index: 0 },
+		costOptionLabels: labels,
+		pendingAction: action
+	});
+	return { ok: true };
+}
+
+function simulateOrExecuteManaOnly(
+	player: PlayerGameState,
+	manaReq: ManaCostRequirement,
+	state: GameState,
+	mutate: boolean,
+	lifeToPay: number
 ): boolean {
-	if (canPayManaCost(player.manaPool, req)) {
+	if (lifeToPay > 0 && (playerLifeTotalCantChange(state, player) || player.life < lifeToPay)) {
+		return false;
+	}
+	if (canPayManaCost(player.manaPool, manaReq)) {
 		if (mutate) {
-			player.manaPool = deductManaFromPool(player.manaPool, req);
+			player.manaPool = deductManaFromPool(player.manaPool, manaReq);
+			if (lifeToPay > 0) {
+				player.life -= lifeToPay;
+			}
 		}
 		return true;
 	}
@@ -739,17 +853,18 @@ function simulateOrExecuteAutoTap(
 	const tappedSet = new Set<string>();
 	const manaChoices = new Map<string, { color: ManaColor; amount: number }>();
 
-	// Pass 1: Satisfy missing colored mana pips using the most-constrained sources first
+	// Pass 1: Satisfy missing colored mana pips using the most-constrained sources first.
+	// Any remaining Phyrexian symbol not already converted to life must be paid with its primaryColor.
 	for (const col of ['W', 'U', 'B', 'R', 'G', 'C'] as ManaColor[]) {
 		const flexCountForCol =
-			req.flexibleSymbols?.filter((s) => s.primaryColor === col).length ?? 0;
-		while (pool[col] < req.colored[col]) {
+			manaReq.flexibleSymbols?.filter((s) => s.primaryColor === col && !s.altLife).length ?? 0;
+		while (pool[col] < manaReq.colored[col]) {
 			const perm = candidates.find((c) => {
 				if (tappedSet.has(c.instanceId)) return false;
 				return manaAbilitiesOf(c).some((a) => a.producesMana.includes(col));
 			});
 			if (!perm) {
-				if (req.colored[col] - pool[col] <= flexCountForCol) {
+				if (manaReq.colored[col] - pool[col] <= flexCountForCol) {
 					break;
 				}
 				return false;
@@ -763,41 +878,10 @@ function simulateOrExecuteAutoTap(
 		}
 	}
 
-	let effectiveReq = req;
-	let phyrexianLifeToPay = 0;
-
-	// Pass 2: Satisfy remaining generic / flexible mana cost using remaining untapped sources
-	while (!canPayManaCost(pool, effectiveReq)) {
+	// Pass 2: Satisfy remaining generic / non-Phyrexian flexible mana cost using remaining untapped sources
+	while (!canPayManaCost(pool, manaReq)) {
 		const perm = candidates.find((c) => !tappedSet.has(c.instanceId));
 		if (!perm) {
-			// Check if unpaid Phyrexian mana symbols ({W/P}, {U/P}, etc.) can be paid with 2 life each (CR 107.4f)
-			const phySymbols = effectiveReq.flexibleSymbols?.filter((s) => s.altLife) ?? [];
-			if (phySymbols.length > 0 && !player.lifeTotalCannotChangeThisTurn) {
-				let foundLifePlan = false;
-				const nextColored = { ...effectiveReq.colored };
-				const remainingFlex = [...(effectiveReq.flexibleSymbols ?? [])];
-				let lifeNeeded = 0;
-				for (const sym of phySymbols) {
-					if (nextColored[sym.primaryColor] > 0) {
-						nextColored[sym.primaryColor] -= 1;
-						lifeNeeded += sym.altLife ?? 2;
-						const fIdx = remainingFlex.indexOf(sym);
-						if (fIdx >= 0) remainingFlex.splice(fIdx, 1);
-						const candidateReq: ManaCostRequirement = {
-							...effectiveReq,
-							colored: { ...nextColored },
-							flexibleSymbols: remainingFlex.length > 0 ? [...remainingFlex] : undefined
-						};
-						if (canPayManaCost(pool, candidateReq) && player.life >= lifeNeeded) {
-							effectiveReq = candidateReq;
-							phyrexianLifeToPay = lifeNeeded;
-							foundLifePlan = true;
-							break;
-						}
-					}
-				}
-				if (foundLifePlan) break;
-			}
 			return false;
 		}
 		const ab0 = manaAbilitiesOf(perm)[0];
@@ -817,29 +901,77 @@ function simulateOrExecuteAutoTap(
 				player.manaPool[choice.color] += choice.amount;
 			}
 		}
-		player.manaPool = deductManaFromPool(player.manaPool, effectiveReq);
-		if (phyrexianLifeToPay > 0) {
-			player.life -= phyrexianLifeToPay;
+		player.manaPool = deductManaFromPool(player.manaPool, manaReq);
+		if (lifeToPay > 0) {
+			player.life -= lifeToPay;
 		}
 	}
 
 	return true;
 }
 
+function simulateOrExecuteAutoTap(
+	player: PlayerGameState,
+	req: ManaCostRequirement,
+	state: GameState,
+	mutate: boolean,
+	phyrexianLifeCount?: number
+): boolean {
+	const phySymbols = req.flexibleSymbols?.filter((s) => s.altLife) ?? [];
+	if (phySymbols.length === 0) {
+		return simulateOrExecuteManaOnly(player, req, state, mutate, 0);
+	}
+
+	const canPayLife = !playerLifeTotalCantChange(state, player);
+	const maxLifeCount = canPayLife ? Math.min(phySymbols.length, Math.floor(player.life / 2)) : 0;
+
+	if (phyrexianLifeCount !== undefined) {
+		if (phyrexianLifeCount < 0 || phyrexianLifeCount > phySymbols.length) {
+			return false;
+		}
+		const { manaReq, lifeToPay } = applyPhyrexianLifeChoice(req, phyrexianLifeCount);
+		return simulateOrExecuteManaOnly(player, manaReq, state, mutate, lifeToPay);
+	}
+
+	// Bot heuristic: pay Phyrexian symbols with life while life > 10; otherwise prefer mana and only
+	// fall back to life when mana cannot cover the colored symbols.
+	let preferredK = 0;
+	if (player.isBot) {
+		while (preferredK < maxLifeCount && player.life - 2 * preferredK > 10) {
+			preferredK += 1;
+		}
+	}
+	const kOrder: number[] = [];
+	for (let k = preferredK; k >= 0; k--) kOrder.push(k);
+	for (let k = preferredK + 1; k <= maxLifeCount; k++) kOrder.push(k);
+
+	for (const k of kOrder) {
+		const { manaReq, lifeToPay } = applyPhyrexianLifeChoice(req, k);
+		if (simulateOrExecuteManaOnly(player, manaReq, state, false, lifeToPay)) {
+			return mutate
+				? simulateOrExecuteManaOnly(player, manaReq, state, true, lifeToPay)
+				: true;
+		}
+	}
+	return false;
+}
+
 export function canPayOrAutoTap(
 	player: PlayerGameState,
 	req: ManaCostRequirement,
-	state: GameState
+	state: GameState,
+	phyrexianLifeCount?: number
 ): boolean {
-	return simulateOrExecuteAutoTap(player, req, state, false);
+	return simulateOrExecuteAutoTap(player, req, state, false, phyrexianLifeCount);
 }
 
 export function payManaWithAutoTap(
 	player: PlayerGameState,
 	req: ManaCostRequirement,
-	state: GameState
+	state: GameState,
+	phyrexianLifeCount?: number
 ): boolean {
-	return simulateOrExecuteAutoTap(player, req, state, true);
+	return simulateOrExecuteAutoTap(player, req, state, true, phyrexianLifeCount);
 }
 
 export function winTheGame(state: GameState, player: PlayerGameState, reason: string): boolean {
@@ -1584,12 +1716,28 @@ function applyGameActionInner(
 			// Check & pay mana cost (including Commander Tax if from Command Zone, or any-color mana if exiled with Opposition Agent!)
 			const costReq = getSpellCostRequirement(actor, inst, state, xVal, castMode);
 			const manaError = `Insufficient mana to cast ${inst.card.name} (requires ${inst.card.manaCost || '{0}'}${sourceZone === 'command' && inst.commanderCastCount > 0 ? ` + {${inst.commanderCastCount * state.rules.commanderTaxIncrement}} Commander Tax` : ''}).`;
+			const phySpellChoice = maybeAskPhyrexianCostChoice(
+				state,
+				actor,
+				action,
+				costReq,
+				inst.card.name
+			);
+			if (phySpellChoice) return phySpellChoice;
 
 			// Phase 4: additional costs from the IR, paid together with the mana (nothing is paid unless
 			// everything can be). Choices the player hasn't made become a cost_choice prompt.
 			const additional = spellAdditionalCost(inst.card);
 			if (additional && additional.defs.length > 0) {
-				const ctx = costContext(state, actor, inst, xVal, true, costReq);
+				const ctx = costContext(
+					state,
+					actor,
+					inst,
+					xVal,
+					true,
+					costReq,
+					action.costPayment?.phyrexianLifeCount
+				);
 				const plan = planCosts(ctx, additional.defs, action.costPayment);
 				if (!plan.ok) return { ok: false, error: plan.error.startsWith('Insufficient mana') ? manaError : plan.error };
 				if (plan.question) return askCostChoice(state, actor, action, plan.question, inst.card.name);
@@ -1597,7 +1745,14 @@ function applyGameActionInner(
 				if (paid.descriptions.length > 0) {
 					addLog(state, 'rule', `${actor.username} ${paid.descriptions.join('; ')} as an additional cost.`, actorId);
 				}
-			} else if (!payManaWithAutoTap(actor, costReq, state)) {
+			} else if (
+				!payManaWithAutoTap(
+					actor,
+					costReq,
+					state,
+					action.costPayment?.phyrexianLifeCount
+				)
+			) {
 				return { ok: false, error: manaError };
 			}
 			if (additional && !additional.complete) {
@@ -1737,7 +1892,23 @@ function applyGameActionInner(
 			// modifiers applied); everything else from the ability's CostDefs.
 			const abilityCost = activatedAbilityCost(perm.card, ab);
 			const abilityMana = effectiveAbilityManaCost(state, actorId, ab.id, ab.manaCost).requirement;
-			const abilityCtx = costContext(state, actor, perm, 0, false, abilityMana);
+			const phyAbilityChoice = maybeAskPhyrexianCostChoice(
+				state,
+				actor,
+				action,
+				abilityMana,
+				perm.card.name
+			);
+			if (phyAbilityChoice) return phyAbilityChoice;
+			const abilityCtx = costContext(
+				state,
+				actor,
+				perm,
+				0,
+				false,
+				abilityMana,
+				action.costPayment?.phyrexianLifeCount
+			);
 			const abilityPlan = planCosts(abilityCtx, abilityCost.defs, action.costPayment);
 			if (!abilityPlan.ok) return { ok: false, error: abilityPlan.error };
 			if (abilityPlan.question) return askCostChoice(state, actor, action, abilityPlan.question, perm.card.name);
@@ -2595,10 +2766,13 @@ function handlePromptResolution(
 		}
 		const payment = {
 			options: [...(pending.costPayment?.options ?? [])],
-			objects: [...(pending.costPayment?.objects ?? [])]
+			objects: [...(pending.costPayment?.objects ?? [])],
+			...(pending.costPayment?.phyrexianLifeCount !== undefined
+				? { phyrexianLifeCount: pending.costPayment.phyrexianLifeCount }
+				: {})
 		};
 		const q = prompt.costQuestion;
-		if (q?.kind === 'option') {
+		if (q?.kind === 'option' || q?.kind === 'phyrexian') {
 			const opt =
 				normalized.answer?.kind === 'yesNo'
 					? normalized.answer.yes
@@ -2611,7 +2785,11 @@ function handlePromptResolution(
 				state.pendingPrompts.splice(promptIdx, 0, prompt);
 				return { ok: false, error: 'Choose one of the options.' };
 			}
-			payment.options[q.index] = opt;
+			if (q.kind === 'phyrexian') {
+				payment.phyrexianLifeCount = opt;
+			} else {
+				payment.options[q.index] = opt;
+			}
 		} else if (q?.kind === 'objects' && normalized.answer?.kind === 'chooseObjects') {
 			payment.objects[q.index] = normalized.answer.objectIds;
 		}
@@ -4012,7 +4190,7 @@ function resolveWardTrigger(
 		const lifeDef = ward.costDefs?.find((d): d is Extract<CostDef, { k: 'payLife' }> => d.k === 'payLife');
 		const lifeCost = lifeDef && lifeDef.amount.k === 'const' ? lifeDef.amount.n : undefined;
 		if (lifeCost !== undefined) {
-			if (!opp.lifeTotalCannotChangeThisTurn && opp.life >= lifeCost) {
+			if (!playerLifeTotalCantChange(state, opp) && opp.life >= lifeCost) {
 				opp.life -= lifeCost;
 				paid = true;
 				addLog(

@@ -238,6 +238,20 @@ export function playerHasNoMaxHandSize(
 }
 
 /**
+ * Checks whether a player's life total is prevented from changing (CR 119.7, 119.8), either by a
+ * static rule-modifying effect ("Your life total can't change") or by a turn duration effect.
+ */
+export function playerLifeTotalCantChange(
+	state: GameState,
+	playerOrId: PlayerGameState | string
+): boolean {
+	const targetPlayer = resolvePlayer(state, playerOrId);
+	if (!targetPlayer) return false;
+	if (targetPlayer.lifeTotalCannotChangeThisTurn) return true;
+	return activeRuleModifiers(state, 'lifeTotalCantChange', targetPlayer.playerId).length > 0;
+}
+
+/**
  * Checks if a player is prevented from losing the game by a static rule-modifying effect
  * (e.g., Platinum Angel). Respects Layer 6 ability-removal effects (e.g., Humility).
  */
