@@ -275,7 +275,7 @@ const RESTRICTIONS: Array<[RegExp, Extract<StaticDef, { k: 'restriction' }>['res
 	[/^(.+?) can't be blocked$/, 'cantBeBlocked'],
 	[/^(.+?) (?:attacks|attack) each combat if able$/, 'attacksEachCombat'],
 	[/^(.+?) (?:blocks|block) each combat if able$/, 'blocksEachCombat'],
-	[/^(.+?) can't be countered$/, 'cantBeCountered'],
+	[/^(.+?) (?:can't|cannot) be countered$/i, 'cantBeCountered'],
 	[/^(.+?) (?:doesn't|don't) untap during (?:your|its controller's|their controllers') untap steps?$/, 'doesntUntap']
 ];
 
@@ -284,7 +284,8 @@ const restrictions: Production = (s) => {
 	for (const [re, restriction] of RESTRICTIONS) {
 		const m = s.match(re);
 		if (!m) continue;
-		const affected = parseAffected(m[1]);
+		const subj = restriction === 'cantBeCountered' ? m[1].replace(/\bspells?\b/gi, 'cards') : m[1];
+		const affected = parseAffected(subj);
 		if (!affected) return null;
 		return [{ kind: 'static', static: { k: 'restriction', affected, restriction } }];
 	}
@@ -341,6 +342,17 @@ const ruleModifiers: Production = (s) => {
 	if (low === "your opponents can't win the game") return [rule('opponentsCantWin', 'each_opponent')];
 	if (low === 'you have hexproof') return [rule('playerHexproof', 'you')];
 	if (low === 'you have shroud') return [rule('playerShroud', 'you')];
+	const youAndOne = low.match(/^you and (.+?) have (.+)$/);
+	if (youAndOne) {
+		const kws = parseKeywordList(youAndOne[2]);
+		const a = parseAffected(youAndOne[1]);
+		if (kws && a && kws.length === 1 && (kws[0] === 'hexproof' || kws[0] === 'shroud')) {
+			return [
+				rule(kws[0] === 'hexproof' ? 'playerHexproof' : 'playerShroud', 'you'),
+				keywordGrant(a, kws)
+			];
+		}
+	}
 	const shalai = low.match(/^you, (.+?), and (.+?) have (.+)$/);
 	if (shalai) {
 		const kws = parseKeywordList(shalai[3]);
@@ -361,8 +373,26 @@ const ruleModifiers: Production = (s) => {
 	if (low === "each player can't cast more than one spell each turn") return [rule('oneSpellPerTurn', 'each_player')];
 	if (low === "your opponents can't cast spells from anywhere other than their hands") return [rule('castOnlyFromHand', 'each_opponent')];
 	if (low === 'each opponent can cast spells only any time they could cast a sorcery') return [rule('castOnlySorcerySpeed', 'each_opponent')];
-	if (low === "during your turn, your opponents can't cast spells") return [rule('opponentsCantCastDuringYourTurn', 'each_opponent')];
+	if (
+		low === "during your turn, your opponents can't cast spells" ||
+		low ===
+			"during your turn, your opponents can't cast spells or activate abilities of artifacts, creatures, or enchantments"
+	) {
+		return [rule('opponentsCantCastDuringYourTurn', 'each_opponent')];
+	}
 	if (low === "you control your opponents while they're searching their libraries") return [rule('searchControl', 'each_opponent')];
+	if (low === 'while an opponent is searching their library, they exile each card they find') {
+		return [rule('searchControl', 'each_opponent', { exilesFoundCards: true })];
+	}
+	if (
+		low ===
+		'you may play those cards for as long as they remain exiled, and you may spend mana as though it were mana of any color to cast them'
+	) {
+		return [rule('searchControl', 'each_opponent', { grantPlayFromExile: true, spendManaAsAnyColor: true })];
+	}
+	if (low === 'you may play those cards for as long as they remain exiled') {
+		return [rule('searchControl', 'each_opponent', { grantPlayFromExile: true })];
+	}
 	if (low === 'players may spend mana as though it were mana of any color') return [rule('spendManaAsAnyColor', 'each_player')];
 	return null;
 };
@@ -591,7 +621,7 @@ function grants(condition?: Condition): Production {
 
 const EMINENCE = /^As long as ~ is in the command zone or on the battlefield, /;
 const AS_LONG_AS_PREFIX = /^As long as ([^,]+), /;
-const AS_LONG_AS_SUFFIX = / as long as (.+)$/;
+const AS_LONG_AS_SUFFIX = /(?<!\bfor) as long as (.+)$/;
 
 /** Attaches a condition to items whose StaticDef supports one. Returns false if any can't take it. */
 function withCondition(items: StaticItem[], condition: Condition): boolean {

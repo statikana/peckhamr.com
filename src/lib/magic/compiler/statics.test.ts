@@ -204,6 +204,15 @@ describe('Static grammar: rule modifiers', () => {
 		assert.deepEqual(rule("Your opponents can't cast spells from anywhere other than their hands."), [['castOnlyFromHand', 'each_opponent', undefined]]);
 		assert.deepEqual(rule('Each opponent can cast spells only any time they could cast a sorcery.'), [['castOnlySorcerySpeed', 'each_opponent', undefined]]);
 		assert.deepEqual(rule("You control your opponents while they're searching their libraries."), [['searchControl', 'each_opponent', undefined]]);
+		assert.deepEqual(
+			rule(
+				'While an opponent is searching their library, they exile each card they find. You may play those cards for as long as they remain exiled, and you may spend mana as though it were mana of any color to cast them.'
+			),
+			[
+				['searchControl', 'each_opponent', { exilesFoundCards: true }],
+				['searchControl', 'each_opponent', { grantPlayFromExile: true, spendManaAsAnyColor: true }]
+			]
+		);
 	});
 
 	it('Shalai: player hexproof plus keyword grants', () => {
@@ -223,6 +232,10 @@ describe('Static grammar: restrictions', () => {
 		assert.deepEqual(defs("Enchanted creature can't attack or block."), [{ k: 'restriction', affected: 'attachedTo', restriction: 'cantAttackOrBlock' }]);
 		assert.deepEqual(defs("Enchanted creature doesn't untap during its controller's untap step."), [
 			{ k: 'restriction', affected: 'attachedTo', restriction: 'doesntUntap' }
+		]);
+		assert.deepEqual(defs("~ can't be countered."), [{ k: 'restriction', affected: 'self', restriction: 'cantBeCountered' }]);
+		assert.deepEqual(defs("Creature spells you control can't be countered."), [
+			{ k: 'restriction', affected: { types: ['Creature'], controller: 'you' }, restriction: 'cantBeCountered' }
 		]);
 		unparsed("~ can't be blocked by creatures with power 2 or less.");
 	});

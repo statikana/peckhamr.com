@@ -47,6 +47,7 @@ import type {
 import { compiledCardManaSteps, legacySearchSpec } from '../compiler/effects.ts';
 import { evaluatePermanent, inspectCardContinuousBreakdown } from '../ruleTree.ts';
 import { emitEvent } from './events.ts';
+import { tokenMultiplier } from './replace.ts';
 import { moveObject } from './zones.ts';
 
 // ---- Engine ports ---------------------------------------------------------------------------
@@ -605,7 +606,7 @@ class Run {
 				const actor = step.actor ? this.playerRef(step.actor) : you;
 				const spec = step.params?.token;
 				if (!actor || !spec) return;
-				const n = Math.max(0, this.amount(step.amount, 1));
+				const n = Math.max(0, this.amount(step.amount, 1)) * tokenMultiplier(s, actor.playerId);
 				const made: CardInstance[] = [];
 				for (let i = 0; i < n; i++) made.push(p.createToken(s, actor, spec));
 				if (n > 0) p.addLog(s, 'cast', `${actor.username} created ${n}x ${spec.name}.`, actor.playerId);

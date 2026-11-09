@@ -21,9 +21,10 @@
 import { compileCard } from '../compiler/index.ts';
 import { runtimeTriggers, type RuntimeTrigger } from '../compiler/triggers.ts';
 import type { Amount, Condition, EventFilter, EventKind, ObjectFilter, TriggerDef } from '../ir.ts';
-import { collectActiveBoardHooks, evaluatePermanent, permanentHasLostAllAbilities } from '../ruleTree.ts';
+import { evaluatePermanent, permanentHasLostAllAbilities } from '../ruleTree.ts';
 import type { CardInstance, GameState, ScryfallCard } from '../types.ts';
 import type { GameEvent } from './events.ts';
+import { triggerMultiplier } from './replace.ts';
 
 /**
  * How a pending trigger is executed. 'stack': a StackItem that resolves when all players pass.
@@ -382,29 +383,25 @@ function matchZoneChange(state: GameState, ev: Extract<GameEvent, { kind: 'ZoneC
 			if (!alt) continue;
 			// Only the object that left looks back; other permanents see the event normally.
 			if (source.obj === obj && ev.from === 'battlefield' && alt.filter.from !== 'battlefield') continue;
-			record(state, source, ability, 'zoneChange', { label: label(source, alt), eventObject: obj, amount: enteredPower() });
+			const times =
+				source.zone === 'battlefield'
+					? triggerMultiplier(state, source.obj, source.controllerId, {
+							event: 'zoneChange',
+							object: obj,
+							from: ev.from,
+							to: ev.to,
+							lki: ev.lki
+						})
+					: 1;
+			record(state, source, ability, 'zoneChange', { label: label(source, alt), eventObject: obj, amount: enteredPower(), times });
 		}
 	}
-}
-
-/** CR 702.?/Veyran: hook.trigger_multiplier ("triggers an additional time"). */
-function castTriggerMultiplier(state: GameState, casterId: string, spell: CardInstance, source: Source): number {
-	const tl = spell.card.typeLine;
-	if (source.controllerId !== casterId || !(hasWord(tl, 'Instant') || hasWord(tl, 'Sorcery'))) return 1;
-	let times = 1;
-	for (const entry of collectActiveBoardHooks(state)) {
-		if (entry.hook.path === 'hook.trigger_multiplier' && entry.controllerId === casterId && entry.hook.multiplier) {
-			times *= entry.hook.multiplier;
-		}
-	}
-	return times;
 }
 
 function matchCast(state: GameState, casterId: string, spell: CardInstance, isCopy: boolean): void {
 	const subject = printedSubject(spell, spell.card, casterId);
 	const candidates = sources(state, 'cast');
 	if (!isCopy) candidates.push({ obj: spell, card: spell.card, controllerId: casterId, zone: 'stack' });
-	let multiplier: Map<string, number> | undefined;
 	for (const source of candidates) {
 		for (const { ability, alts } of abilitiesFor(state, source, 'cast')) {
 			const alt = alts.find((a) => {
@@ -417,10 +414,16 @@ function matchCast(state: GameState, casterId: string, spell: CardInstance, isCo
 				return objectMatches(a.filter, subject, source);
 			});
 			if (!alt) continue;
-			multiplier ??= new Map();
-			const key = source.controllerId;
-			if (!multiplier.has(key)) multiplier.set(key, castTriggerMultiplier(state, casterId, spell, source));
-			record(state, source, ability, 'cast', { label: 'On Cast', times: multiplier.get(key) });
+			const times =
+				source.zone === 'battlefield'
+					? triggerMultiplier(state, source.obj, source.controllerId, {
+							event: 'cast',
+							spell,
+							casterId,
+							isCopy
+						})
+					: 1;
+			record(state, source, ability, 'cast', { label: 'On Cast', times });
 		}
 	}
 }
@@ -445,7 +448,14 @@ function matchAttack(state: GameState, attackingPlayerId: string, attackerIds: s
 				if (f.object === undefined) {
 					// "Whenever you attack".
 					if (f.player?.relation === 'you' && attackingPlayerId === source.controllerId && attackers.length > 0) {
-						record(state, source, ability, 'attacks', { label: 'Attack' });
+						const times =
+							source.zone === 'battlefield'
+								? triggerMultiplier(state, source.obj, source.controllerId, {
+										event: 'attacks',
+										attackers: attackers.map((s) => s.obj)
+									})
+								: 1;
+						record(state, source, ability, 'attacks', { label: 'Attack', times });
 						break;
 					}
 					continue;
@@ -453,9 +463,26 @@ function matchAttack(state: GameState, attackingPlayerId: string, attackerIds: s
 				const matching = attackers.filter((s) => objectMatches(f, s, source));
 				if (matching.length === 0) continue;
 				if (f.object === 'self' || f.oneOrMore) {
-					record(state, source, ability, 'attacks', { label: 'Attack' });
+					const times =
+						source.zone === 'battlefield'
+							? triggerMultiplier(state, source.obj, source.controllerId, {
+									event: 'attacks',
+									attackers: matching.map((s) => s.obj)
+								})
+							: 1;
+					record(state, source, ability, 'attacks', { label: 'Attack', times });
 				} else {
-					for (const s of matching) record(state, source, ability, 'attacks', { label: 'Attack Trigger', eventObject: s.obj });
+					for (const s of matching) {
+						const times =
+							source.zone === 'battlefield'
+								? triggerMultiplier(state, source.obj, source.controllerId, {
+										event: 'attacks',
+										object: s.obj,
+										attackers: [s.obj]
+									})
+								: 1;
+						record(state, source, ability, 'attacks', { label: 'Attack Trigger', eventObject: s.obj, times });
+					}
 				}
 				break;
 			}

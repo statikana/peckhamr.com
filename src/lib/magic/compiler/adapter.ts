@@ -22,6 +22,7 @@ import {
 	parseStructuredTriggeredAbilities
 } from '../oracle.ts';
 import { parseAdditionalCostSentence, parseCost, parseCostModifierSentence } from './costs.ts';
+import { parseStaticAbility } from './statics.ts';
 import {
 	getCardRuleTree,
 	type ActionRuleNode,
@@ -193,12 +194,19 @@ export interface LegacyEffectClaim {
 	complete: boolean;
 }
 
+/** What the legacy hook translator decided about one static line, for scripts/magic-statics-diff.ts. */
+export interface LegacyStaticClaim {
+	rawIndex: number;
+	defs: StaticDef[];
+}
+
 /** Decisions the adapter made, collected for the grammar comparison scripts. */
 export interface AdapterLog {
 	costs: LegacyCostClaim[];
 	triggers: LegacyTriggerClaim[];
 	/** Optional so older callers needn't pass it (scripts/magic-effects-diff.ts does). */
 	effects?: LegacyEffectClaim[];
+	statics?: LegacyStaticClaim[];
 }
 
 /** Pass `log` to collect the adapter's decisions (scripts/magic-costs-diff.ts, magic-triggers-diff.ts). */
@@ -242,7 +250,7 @@ export function adaptCard(card: ScryfallCard, log?: AdapterLog): FaceDefinition[
 		} else if (ctx.isInstantOrSorcery) {
 			spellLines.push(...group);
 		} else {
-			abilities.push(adaptStatic(ctx, group));
+			abilities.push(...adaptStatic(ctx, group));
 		}
 	}
 
@@ -700,7 +708,14 @@ function adaptSpell(ctx: AdapterContext, lines: NormalizedLine[]): AbilityDef[] 
 			const low = s.text.toLowerCase();
 			const costModifier = parseCostModifierSentence(s.text);
 			if (costModifier) {
+				ctx.log?.statics?.push({ rawIndex: group[0].rawIndex, defs: [costModifier] });
 				statics.push({ kind: 'static', static: costModifier, span: s.span });
+			} else if (low === "~ can't be countered." || low === '~ cannot be countered.') {
+				statics.push({
+					kind: 'static',
+					static: { k: 'restriction', affected: 'self', restriction: 'cantBeCountered' },
+					span: s.span
+				});
 			} else if (low.startsWith('as an additional cost to cast ~,')) {
 				// Phase 4: the cost grammar replaces the legacy additional-cost translation.
 				const parsed = parseAdditionalCostSentence(s.text, s.span.start) ?? { defs: [], unparsed: [s.span] };
@@ -806,31 +821,46 @@ function adaptModes(ctx: AdapterContext, group: NormalizedLine[]): { modal?: Mod
 // ---- Statics --------------------------------------------------------------------------------
 
 /**
- * Statics are compiled in Phases 6/7. The only ones the legacy compiler models are the board hooks
- * (cost modifiers and multipliers), found by compiling the line on its own.
+ * Statics and replacements (Phases 6/7). Tries compiler/statics.ts first; falls back to the legacy
+ * board-hook translator.
  */
-function adaptStatic(ctx: AdapterContext, group: NormalizedLine[]): AbilityDef {
+function adaptStatic(ctx: AdapterContext, group: NormalizedLine[]): AbilityDef[] {
 	const span = groupSpan(group);
 	const text = groupText(group);
 	if (group.length === 1) {
-		const costModifier = parseCostModifierSentence(group[0].body);
-		if (costModifier) return { kind: 'static', static: costModifier, span };
+		const line = group[0];
+		const costModifier = parseCostModifierSentence(line.body);
+		const lineTree = getCardRuleTree({ ...ctx.card, oracleText: line.raw }, ALL_COLORS);
+		const hookDefs = lineTree.hooks.map(translateHook).filter((d): d is StaticDef => d !== null);
+		const legacyDef = costModifier ?? (hookDefs.length === 1 ? hookDefs[0] : undefined);
+		if (legacyDef) {
+			ctx.log?.statics?.push({ rawIndex: line.rawIndex, defs: [legacyDef] });
+		}
+		if (costModifier) return [{ kind: 'static', static: costModifier, span }];
+		const parsed = parseStaticAbility(line.body, line.bodySpan.start);
+		if (parsed.unparsed.length === 0 && parsed.items.length > 0) {
+			return parsed.items.map((item): AbilityDef =>
+				item.kind === 'static'
+					? { kind: 'static', static: item.static, span }
+					: { kind: 'replacement', replacement: item.replacement, span }
+			);
+		}
 		// A permanent spell's additional cost. The IR has no ability kind for it yet, so it stays
 		// unsupported but carries the parsed cost for the runtime (Phase 4).
-		const additional = parseAdditionalCostSentence(group[0].body, group[0].bodySpan.start);
+		const additional = parseAdditionalCostSentence(line.body, line.bodySpan.start);
 		if (additional) {
-			return {
-				...unsupported('static_not_compiled', text, span, [span]),
-				legacyId: 'cast_normal',
-				cost: additional.defs,
-				costComplete: additional.unparsed.length === 0
-			};
+			return [
+				{
+					...unsupported('static_not_compiled', text, span, [span]),
+					legacyId: 'cast_normal',
+					cost: additional.defs,
+					costComplete: additional.unparsed.length === 0
+				}
+			];
 		}
-		const lineTree = getCardRuleTree({ ...ctx.card, oracleText: group[0].raw }, ALL_COLORS);
-		const defs = lineTree.hooks.map(translateHook).filter((d): d is StaticDef => d !== null);
-		if (defs.length === 1) return { kind: 'static', static: defs[0], span };
+		if (hookDefs.length === 1) return [{ kind: 'static', static: hookDefs[0], span }];
 	}
-	return unsupported('static_not_compiled', text, span, [span]);
+	return [unsupported('static_not_compiled', text, span, [span])];
 }
 
 function translateHook(hook: BoardModifierHookNode): StaticDef | null {
