@@ -35,6 +35,8 @@ export interface AttributedKeywordOrEffect {
 	kind: 'keyword' | 'ability' | 'stat_mod' | 'type_mod';
 	isInnate: boolean;
 	sources: string[];
+	/** Number of non-innate grants of this item (CR 702.108b: multiple instances of prowess each trigger separately, even from same-named sources). */
+	grantCount?: number;
 	removed: boolean;
 	removedBy: string[];
 }
@@ -624,6 +626,7 @@ function grantItem(
 		if (!existingActive.sources.includes(sourceName)) {
 			existingActive.sources.push(sourceName);
 		}
+		existingActive.grantCount = (existingActive.grantCount ?? 0) + 1;
 		const prevTs = work.itemTimestamps.get(existingActive.id) ?? -Infinity;
 		if (grantTimestamp > prevTs) {
 			work.itemTimestamps.set(existingActive.id, grantTimestamp);
@@ -639,6 +642,7 @@ function grantItem(
 		kind,
 		isInnate: false,
 		sources: [sourceName],
+		grantCount: 1,
 		removed: false,
 		removedBy: []
 	});
@@ -1878,8 +1882,8 @@ function evaluatePerPermanent(
 
 		for (const gKw of target.inst.grantedKeywords || []) {
 			const gLow = gKw.toLowerCase();
-			const alreadyActive = target.items.some((it) => it.canonicalKey === gLow && !it.removed);
-			if (!alreadyActive) {
+			const existingActive = target.items.find((it) => it.canonicalKey === gLow && !it.removed);
+			if (!existingActive) {
 				let sourceLabel = 'Temporary Effect';
 				for (const w of workList) {
 					if (
@@ -1891,6 +1895,8 @@ function evaluatePerPermanent(
 					}
 				}
 				grantItem(target, gLow, formatKeywordLabel(gLow), 'keyword', sourceLabel);
+			} else {
+				existingActive.grantCount = (existingActive.grantCount ?? 0) + 1;
 			}
 		}
 

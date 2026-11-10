@@ -681,8 +681,12 @@ function matchCast(state: GameState, casterId: string, spell: CardInstance, isCo
 				let grantedProwessCount = 0;
 				for (const item of breakdown.items) {
 					if (item.canonicalKey === 'prowess' && !item.removed) {
-						for (const src of item.sources) {
-							if (src !== 'innate') grantedProwessCount += 1;
+						if (item.grantCount !== undefined) {
+							grantedProwessCount += item.grantCount;
+						} else {
+							for (const src of item.sources) {
+								if (src !== 'innate') grantedProwessCount += 1;
+							}
 						}
 					}
 				}

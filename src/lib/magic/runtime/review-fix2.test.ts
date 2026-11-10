@@ -514,3 +514,73 @@ describe('Review 2 — Finding 1: off-battlefield cards only apply self-referent
 		);
 	});
 });
+
+describe('Review 2 — Finding 6: multiple granted prowess instances each trigger separately (CR 702.108b)', () => {
+	it('Finding 6: two permanents granting prowess (both distinct names and same-name copies) each produce a separate prowess trigger on noncreature spell cast (CR 702.108a, 702.108b)', () => {
+		for (const sameName of [false, true]) {
+			const { state, p1 } = makeGame();
+
+			putInZone(
+				state,
+				p1,
+				synthCard({
+					name: 'Grizzly Bears',
+					typeLine: 'Creature — Bear',
+					power: '2',
+					toughness: '2',
+					oracleText: ''
+				}),
+				'battlefield'
+			);
+			putInZone(
+				state,
+				p1,
+				synthCard({
+					name: 'Prowess Banner',
+					typeLine: 'Enchantment',
+					oracleText: 'Creatures you control have prowess.'
+				}),
+				'battlefield'
+			);
+			putInZone(
+				state,
+				p1,
+				synthCard({
+					name: sameName ? 'Prowess Banner' : 'Monastery Standard',
+					typeLine: 'Enchantment',
+					oracleText: 'Creatures you control have prowess.'
+				}),
+				'battlefield'
+			);
+
+			const cantrip = putInZone(
+				state,
+				p1,
+				synthCard({
+					name: 'Opt',
+					manaCost: '{U}',
+					cmc: 1,
+					typeLine: 'Instant',
+					oracleText: 'Draw a card.'
+				}),
+				'hand'
+			);
+			p1.manaPool.U = 1;
+
+			const res = applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: cantrip.instanceId
+			});
+			assert.equal(res.ok, true, res.ok ? '' : res.error);
+
+			const prowessTriggers = state.stack.filter(
+				(s) => s.kind === 'triggered' && /Prowess/i.test(s.title)
+			);
+			assert.equal(
+				prowessTriggers.length,
+				2,
+				`Expected 2 Prowess triggers on stack when ${sameName ? 'two same-named' : 'two distinct-named'} permanents grant prowess (CR 702.108b)`
+			);
+		}
+	});
+});
