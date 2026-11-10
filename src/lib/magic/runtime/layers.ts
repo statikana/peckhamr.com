@@ -26,7 +26,7 @@ import {
 	verifyScopeTrust,
 	type BoardSnapshot
 } from './layerCache.ts';
-import { playerCommanderCastCount } from './objectFilter.ts';
+import { evaluateAmount, playerCommanderCastCount } from './objectFilter.ts';
 
 export interface AttributedKeywordOrEffect {
 	id: string;
@@ -2066,7 +2066,8 @@ function cloneBreakdown(b: CardContinuousBreakdown): CardContinuousBreakdown {
 
 function buildOffBattlefieldBreakdown(
 	card: ScryfallCard,
-	inst: CardInstance | null
+	inst: CardInstance | null,
+	state?: GameState
 ): CardContinuousBreakdown {
 	const isFaceDown = Boolean(inst?.isFaceDown);
 	const baseTypeLine = isFaceDown ? 'Creature' : card.typeLine;
@@ -2074,6 +2075,59 @@ function buildOffBattlefieldBreakdown(
 	const rawT = isFaceDown ? 2 : card.toughness !== undefined ? parseInt(card.toughness, 10) : null;
 	const basePower = rawP !== null && !isNaN(rawP) ? rawP : null;
 	const baseToughness = rawT !== null && !isNaN(rawT) ? rawT : null;
+	let effectivePower = basePower;
+	let effectiveToughness = baseToughness;
+	const ptModifiedBy: string[] = [];
+	// CR 604.3, 208.2a: Layer 7a characteristic-defining abilities function in all zones.
+	if (!isFaceDown && baseTypeLine.includes('Creature')) {
+		if (effectivePower === null && card.power !== undefined) effectivePower = 0;
+		if (effectiveToughness === null && card.toughness !== undefined) effectiveToughness = 0;
+		const face = compileCard(card).faces[0];
+		for (const ab of face.abilities) {
+			if (
+				ab.kind === 'static' &&
+				ab.static.k === 'continuous' &&
+				ab.static.layer === '7a' &&
+				ab.static.affected === 'self' &&
+				ab.static.mod.k === 'setBasePT'
+			) {
+				if (state) {
+					const controllerId =
+						inst?.ownerId ||
+						inst?.controllerId ||
+						state.players.find(
+							(pl) =>
+								(inst &&
+									(pl.command.includes(inst) ||
+										pl.hand.includes(inst) ||
+										pl.graveyard.includes(inst) ||
+										pl.exile.includes(inst) ||
+										pl.library.includes(inst))) ||
+								false
+						)?.playerId ||
+						state.players[0]?.playerId ||
+						'';
+					const p = evaluateAmount(ab.static.mod.power, {
+						state,
+						controllerId,
+						source: inst ?? undefined
+					});
+					const t = evaluateAmount(ab.static.mod.toughness, {
+						state,
+						controllerId,
+						source: inst ?? undefined
+					});
+					effectivePower = p;
+					effectiveToughness = Math.max(0, t);
+					ptModifiedBy.push(`${card.name} CDA (${p}/${t})`);
+				} else {
+					effectivePower = 0;
+					effectiveToughness = 0;
+					ptModifiedBy.push(`${card.name} CDA (0/0)`);
+				}
+			}
+		}
+	}
 	const innateList = isFaceDown ? [] : innateKeywordsAndAbilitiesOf(card);
 	const items: AttributedKeywordOrEffect[] = innateList.map((entry, idx) => ({
 		id: `innate_${idx}_${entry.canonicalKey}`,
@@ -2092,9 +2146,9 @@ function buildOffBattlefieldBreakdown(
 		typeModifiedBy: [],
 		basePower,
 		baseToughness,
-		effectivePower: basePower,
-		effectiveToughness: baseToughness,
-		ptModifiedBy: [],
+		effectivePower,
+		effectiveToughness,
+		ptModifiedBy,
 		items
 	};
 }
@@ -2234,9 +2288,9 @@ export function inspectCardContinuousBreakdown(
 	if (inst && state) {
 		const { cache } = getBoardLayerCache(state);
 		const hit = cache.byInstance.get(inst);
-		out = hit ? cloneBreakdown(hit.breakdown) : buildOffBattlefieldBreakdown(card, inst);
+		out = hit ? cloneBreakdown(hit.breakdown) : buildOffBattlefieldBreakdown(card, inst, state);
 	} else {
-		out = buildOffBattlefieldBreakdown(card, inst);
+		out = buildOffBattlefieldBreakdown(card, inst, state);
 	}
 
 	if (state && layerCacheCheckEnabled()) {
@@ -2258,7 +2312,7 @@ export function evaluatePermanent(state: GameState, inst: CardInstance): Evaluat
 		result = hit.evaluated;
 	} else {
 		const baseCard = inst.copiableCard ?? inst.card;
-		const breakdown = buildOffBattlefieldBreakdown(baseCard, inst);
+		const breakdown = buildOffBattlefieldBreakdown(baseCard, inst, state);
 		const tLine = breakdown.effectiveTypeLine;
 		const activeKeywords = breakdown.items
 			.filter((it) => it.kind === 'keyword' && !it.removed)

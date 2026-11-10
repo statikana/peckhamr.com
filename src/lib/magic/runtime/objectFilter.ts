@@ -9,7 +9,7 @@
 import { compileCard } from '../compiler/index.ts';
 import type { Amount, Compare, Condition, ObjectFilter } from '../ir.ts';
 import { evaluatePermanent } from '../ruleTree.ts';
-import type { CardInstance, GameState, PlayerGameState, ZoneType } from '../types.ts';
+import type { CardInstance, GameState, PlayerGameState, StackItem, ZoneType } from '../types.ts';
 import { splitSubtypes } from './layers.ts';
 
 export interface FilterContext {
@@ -147,6 +147,42 @@ export function objectToughness(state: GameState, obj: CardInstance): number | n
 	return base + (obj.counters['+1/+1'] || 0) - (obj.counters['-1/-1'] || 0) + (obj.tempToughnessMod || 0);
 }
 
+/**
+ * Mana value of an object in any zone (CR 202.3a, 202.3e, 708.2a):
+ * - Face-down objects have no mana cost, so their mana value is 0 (CR 708.2a, 202.3a).
+ * - On the stack, each {X} in the mana cost uses the chosen value for X (CR 202.3e).
+ * - In all other zones, {X} is treated as 0 (CR 202.3e).
+ */
+export function objectManaValue(
+	state: GameState | undefined,
+	obj: CardInstance | StackItem,
+	xValue?: number
+): number {
+	if ('isFaceDown' in obj && obj.isFaceDown) return 0;
+	const card = 'copiableCard' in obj && obj.copiableCard ? obj.copiableCard : obj.card;
+	const base = card.cmc ?? 0;
+	let onStack = false;
+	let itemX: number | undefined;
+	if ('kind' in obj) {
+		onStack = true;
+		itemX = obj.xValue;
+	} else {
+		const stk = state?.stack.find(
+			(s) => s.kind === 'spell' && (s.sourceInstanceId === obj.instanceId || s.id === obj.instanceId)
+		);
+		onStack = obj.zone === 'stack' || Boolean(stk);
+		itemX =
+			stk?.xValue ??
+			(obj as { xValue?: number }).xValue ??
+			(obj.zone === 'stack' ? xValue : undefined);
+	}
+	if (onStack && itemX !== undefined && itemX > 0) {
+		const xSymbols = (card.manaCost || '').match(/\{X\}/gi)?.length ?? 0;
+		return base + itemX * (xSymbols > 0 ? xSymbols : 1);
+	}
+	return base;
+}
+
 function compare(actual: number, cmp: Compare, ctx: FilterContext): boolean {
 	const value = evaluateAmount(cmp.value, ctx);
 	switch (cmp.op) {
@@ -223,7 +259,16 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 		const colors = onBattlefield ? (obj.isFaceDown ? [] : evaluated!.colors) : (card.colors ?? []);
 		if (!filter.colors.some((c) => colors.includes(c))) return false;
 	}
-	if (filter.manaValue && !compare(card.cmc, filter.manaValue, ctx)) return false;
+	if (
+		filter.manaValue &&
+		!compare(
+			objectManaValue(state, obj, filter.manaValue.value.k !== 'x' ? ctx.xValue : undefined),
+			filter.manaValue,
+			ctx
+		)
+	) {
+		return false;
+	}
 	if (filter.power) {
 		const p = objectPower(state, obj);
 		if (p === null || !compare(p, filter.power, ctx)) return false;
@@ -306,8 +351,15 @@ export function evaluateAmount(amount: Amount, ctx: FilterContext): number {
 			if (amount.of.k !== 'self' || !ctx.source) return 0;
 			if (amount.stat === 'power') return objectPower(ctx.state, ctx.source) ?? 0;
 			if (amount.stat === 'toughness') return objectToughness(ctx.state, ctx.source) ?? 0;
-			if (amount.stat === 'manaValue') return (ctx.source.copiableCard ?? ctx.source.card).cmc;
+			if (amount.stat === 'manaValue') return objectManaValue(ctx.state, ctx.source, ctx.xValue);
 			return 0;
+		}
+		case 'cardsIn': {
+			if (amount.of.k !== 'you') return 0;
+			const p = ctx.state.players.find((pl) => pl.playerId === ctx.controllerId);
+			if (!p) return 0;
+			if (amount.zone === 'stack') return ctx.state.stack.length;
+			return p[amount.zone as PlayerZoneName]?.length ?? 0;
 		}
 		case 'life': {
 			if (amount.of.k !== 'you') return 0;

@@ -52,7 +52,7 @@ import { evaluatePermanent, inspectCardContinuousBreakdown } from '../ruleTree.t
 import { enqueueChoicePrompt } from './choices.ts';
 import { emitEvent } from './events.ts';
 import { noteLayerInputsChanged } from './layerCache.ts';
-import { playerCommanderCastCount } from './objectFilter.ts';
+import { objectManaValue, playerCommanderCastCount } from './objectFilter.ts';
 import { activeRuleModifiers, tokenMultiplier } from './replace.ts';
 import { flushTriggers, withSimultaneousDestroyLki } from './triggers.ts';
 import { nextRandom } from './random.ts';
@@ -643,7 +643,7 @@ class Run {
 			ownerId: inst.ownerId,
 			power: onBattlefield ? P().power(this.state, inst) : parseInt(inst.card.power ?? '0', 10) || 0,
 			toughness: onBattlefield ? P().toughness(this.state, inst) : parseInt(inst.card.toughness ?? '0', 10) || 0,
-			manaValue: inst.card.cmc
+			manaValue: objectManaValue(this.state, inst)
 		};
 	}
 
@@ -746,7 +746,7 @@ class Run {
 				ownerId: found?.inst.ownerId ?? this.ctx.controller.playerId,
 				power: lkiPower,
 				toughness: lkiToughness,
-				manaValue: this.ctx.sourceCard.cmc
+				manaValue: found ? objectManaValue(this.state, found.inst, this.ctx.xValue) : this.ctx.sourceCard.cmc
 			};
 		}
 		return found ? this.snapshot(found.inst) : null;
@@ -910,7 +910,16 @@ class Run {
 		if (f.other && c.instanceId === this.ctx.sourceId) return false;
 		const cols = ev ? (c.isFaceDown ? [] : ev.colors) : (card.colors ?? []);
 		if (f.colors && !f.colors.some((col) => cols.includes(col))) return false;
-		if (f.manaValue && !compare(card.cmc, f.manaValue.op, this.amount(f.manaValue.value))) return false;
+		if (
+			f.manaValue &&
+			!compare(
+				objectManaValue(this.state, c, f.manaValue.value.k !== 'x' ? this.ctx.xValue : undefined),
+				f.manaValue.op,
+				this.amount(f.manaValue.value)
+			)
+		) {
+			return false;
+		}
 		if (f.attacking !== undefined) {
 			const attacking = this.state.combat.attackers.some((a) => a.attackerInstanceId === c.instanceId);
 			if (attacking !== f.attacking) return false;
@@ -1057,7 +1066,7 @@ class Run {
 							ownerId: target.ownerId ?? target.controllerId,
 							power: 0,
 							toughness: 0,
-							manaValue: target.card.cmc
+							manaValue: objectManaValue(s, target)
 						}
 					});
 					p.counterSpell(s, this.ctx.item, target, you);

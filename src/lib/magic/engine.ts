@@ -120,7 +120,7 @@ import {
 	type CostQuestion
 } from './runtime/costs.ts';
 export { getSuspendSpec };
-import { evaluateAmount, matchesObjectFilter, type FilterContext } from './runtime/objectFilter.ts';
+import { evaluateAmount, matchesObjectFilter, objectManaValue, type FilterContext } from './runtime/objectFilter.ts';
 import { compileCard, compiledStackItemEffects, compiledTriggerEffect, compileSpellEffects } from './compiler/index.ts';
 import { runtimeTriggers } from './compiler/triggers.ts';
 import { buildBoardSnapshot, noteLayerInputsChanged, withStableLayerInputs } from './runtime/layerCache.ts';
@@ -4319,7 +4319,7 @@ function triggerEventLki(state: GameState, t: PendingTrigger): TriggerEventLki |
 			ownerId: obj.ownerId,
 			power: ev.power,
 			toughness: ev.toughness,
-			manaValue: obj.card.cmc
+			manaValue: objectManaValue(state, onBattlefield.inst)
 		};
 	}
 	const lki = t.eventLki;
@@ -4328,7 +4328,7 @@ function triggerEventLki(state: GameState, t: PendingTrigger): TriggerEventLki |
 		ownerId: obj.ownerId,
 		power: lki?.power ?? obj.lastKnownPower ?? (parseInt(obj.card.power ?? '0', 10) || 0),
 		toughness: lki?.toughness ?? obj.lastKnownToughness ?? (parseInt(obj.card.toughness ?? '0', 10) || 0),
-		manaValue: obj.card.cmc
+		manaValue: objectManaValue(state, obj)
 	};
 }
 

@@ -9,9 +9,10 @@ import {
 	getEffectiveActivatedAbilities
 } from '../engine.ts';
 import { compileCard } from '../compiler/index.ts';
-import { evaluatePermanent } from '../ruleTree.ts';
+import { evaluatePermanent, inspectCardContinuousBreakdown } from '../ruleTree.ts';
 import { effectiveSpellManaCost } from './costs.ts';
 import { noteLayerInputsChanged } from './layerCache.ts';
+import { matchesObjectFilter, objectPower, objectToughness } from './objectFilter.ts';
 import { PRECON_DECKS } from '../precons.ts';
 import {
 	DEFAULT_LOBBY_RULES,
@@ -547,5 +548,177 @@ describe('Tier 3 Track B — Item 5: Grand Abolisher activation lock (CR 101.2, 
 		);
 		settle(state);
 		assert.equal(alice.life, aliceLifeBefore - 1);
+	});
+});
+
+describe('Tier 3 Track B — Item 6: Off-battlefield CDAs and mana value (CR 208.2a, 604.3, 202.3a, 202.3e, 708.2a)', () => {
+	it('evaluates layer-7a characteristic-defining abilities in graveyard/hand/library/command zones (CR 208.2a, 604.3)', () => {
+		const state = createTestGame();
+		const [alice, bob] = state.players;
+		alice.battlefield = [];
+		bob.battlefield = [];
+		alice.graveyard = [];
+		bob.graveyard = [];
+
+		const mortivoreCard = card({
+			name: 'Mortivore',
+			manaCost: '{2}{B}{B}',
+			cmc: 4,
+			typeLine: 'Creature — Lhurgoyf',
+			oracleText: "~'s power and toughness are each equal to the number of creature cards in all graveyards.",
+			colors: ['B'],
+			power: '*',
+			toughness: '*'
+		});
+		assert.equal(compileCard(mortivoreCard).fullySupported, true);
+
+		const mortivoreInGy = putInZone(state, alice, mortivoreCard, 'graveyard', false);
+		putInZone(state, alice, card({ name: 'Dead Bear 1', power: '2', toughness: '2' }), 'graveyard', false);
+		putInZone(state, bob, card({ name: 'Dead Bear 2', power: '2', toughness: '2' }), 'graveyard', false);
+		putInZone(state, bob, card({ name: 'Dead Bear 3', power: '2', toughness: '2' }), 'graveyard', false);
+
+		// 4 creature cards in all graveyards (Mortivore + 3 Dead Bears)
+		const breakdown = inspectCardContinuousBreakdown(mortivoreInGy, state);
+		assert.equal(
+			breakdown.effectivePower,
+			4,
+			'buildOffBattlefieldBreakdown evaluates Layer 7a CDA power in graveyard (CR 208.2a, 604.3)'
+		);
+		assert.equal(breakdown.effectiveToughness, 4);
+		assert.equal(objectPower(state, mortivoreInGy), 4);
+		assert.equal(objectToughness(state, mortivoreInGy), 4);
+		assert.equal(
+			matchesObjectFilter(
+				mortivoreInGy,
+				{
+					zone: 'graveyard',
+					types: ['Creature'],
+					power: { op: '>=', value: { k: 'const', n: 4 } }
+				},
+				{ state, controllerId: alice.playerId }
+			),
+			true,
+			'Mortivore in graveyard matches "creature card with power 4 or greater in your graveyard"'
+		);
+
+		// Also test cardsIn CDA ("the number of cards in your hand") in hand/command zone
+		const maroCard = card({
+			name: 'Maro',
+			manaCost: '{2}{G}{G}',
+			cmc: 4,
+			typeLine: 'Creature — Elemental',
+			oracleText: "~'s power and toughness are each equal to the number of cards in your hand.",
+			colors: ['G'],
+			power: '*',
+			toughness: '*'
+		});
+		const maroInHand = putInZone(state, alice, maroCard, 'hand', false);
+		const expectedHandSize = alice.hand.length;
+		assert.equal(inspectCardContinuousBreakdown(maroInHand, state).effectivePower, expectedHandSize);
+		assert.equal(objectPower(state, maroInHand), expectedHandSize);
+	});
+
+	it('treats face-down permanents and spells as having mana value 0 under MV filters (CR 708.2a, 202.3a)', () => {
+		const state = createTestGame();
+		const [alice] = state.players;
+		alice.battlefield = [];
+
+		const bigCreature = putInZone(
+			state,
+			alice,
+			card({
+				name: 'Colossal Dreadmaw',
+				manaCost: '{4}{G}{G}',
+				cmc: 6,
+				typeLine: 'Creature — Dinosaur',
+				power: '6',
+				toughness: '6'
+			}),
+			'battlefield',
+			false
+		);
+		bigCreature.isFaceDown = true;
+		noteLayerInputsChanged(state);
+
+		assert.equal(
+			matchesObjectFilter(
+				bigCreature,
+				{ manaValue: { op: '=', value: { k: 'const', n: 0 } } },
+				{ state, controllerId: alice.playerId }
+			),
+			true,
+			'Face-down permanent has mana value 0 (CR 708.2a, 202.3a)'
+		);
+		assert.equal(
+			matchesObjectFilter(
+				bigCreature,
+				{ manaValue: { op: '>=', value: { k: 'const', n: 4 } } },
+				{ state, controllerId: alice.playerId }
+			),
+			false,
+			'Face-down permanent does not match MV >= 4'
+		);
+	});
+
+	it('includes xValue in mana value when a spell is on the stack and treats X as 0 in all other zones (CR 202.3e)', () => {
+		const state = createTestGame();
+		const [alice] = state.players;
+
+		const fireballCard = card({
+			name: 'Fireball',
+			manaCost: '{X}{R}',
+			cmc: 1,
+			typeLine: 'Sorcery',
+			oracleText: '~ deals X damage to any target.',
+			colors: ['R'],
+			power: undefined,
+			toughness: undefined
+		});
+
+		const inHand = putInZone(state, alice, fireballCard, 'hand', false);
+		assert.equal(
+			matchesObjectFilter(
+				inHand,
+				{ manaValue: { op: '=', value: { k: 'const', n: 1 } } },
+				{ state, controllerId: alice.playerId, xValue: 4 }
+			),
+			true,
+			'In hand, {X} is 0 so mana value is 1 (CR 202.3e)'
+		);
+
+		// Move Fireball onto the stack with xValue = 4 -> mana value on the stack is 1 + 4 = 5
+		alice.hand = alice.hand.filter((c) => c.instanceId !== inHand.instanceId);
+		inHand.zone = 'stack';
+		state.stack.push({
+			id: 'stk_fireball',
+			kind: 'spell',
+			sourceInstanceId: inHand.instanceId,
+			controllerId: alice.playerId,
+			ownerId: alice.playerId,
+			card: fireballCard,
+			title: 'Fireball',
+			description: 'Fireball deals 4 damage to any target.',
+			targets: [],
+			xValue: 4
+		});
+
+		assert.equal(
+			matchesObjectFilter(
+				inHand,
+				{ manaValue: { op: '=', value: { k: 'const', n: 5 } } },
+				{ state, controllerId: alice.playerId }
+			),
+			true,
+			'On the stack with X=4, {X}{R} spell has mana value 5 (CR 202.3e)'
+		);
+		assert.equal(
+			matchesObjectFilter(
+				inHand,
+				{ manaValue: { op: '<=', value: { k: 'const', n: 3 } } },
+				{ state, controllerId: alice.playerId }
+			),
+			false,
+			'On the stack with X=4, {X}{R} spell does not match MV <= 3'
+		);
 	});
 });
