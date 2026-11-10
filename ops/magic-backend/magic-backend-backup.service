@@ -1,0 +1,14 @@
+[Unit]
+Description=Nightly SQLite backup for Peckhamr Magic Backend
+
+[Service]
+Type=oneshot
+User=magic
+Group=magic
+ExecStart=/opt/magic-backend/repo/ops/magic-backend/backup.sh
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/magic-backend
+PrivateTmp=true
