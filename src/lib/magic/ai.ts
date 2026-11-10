@@ -4,6 +4,8 @@ import {
 	applyGameAction,
 	checkAbilityActivationLegality,
 	checkSpellCastLegality,
+	chooseBotAttackAssignments,
+	chooseBotBlockAssignments,
 	chooseBotSpellCostPayment,
 	evaluatePermanent,
 	getCreaturePower,
@@ -262,8 +264,11 @@ export function runAutomatedPriorityAndBots(
 			!(state.combat.declaredBlockersPlayerIds || []).includes(priorityPlayer.playerId);
 
 		if (!priorityPlayer.fullControl && priorityPlayer.autoPassEmptyStack && !isDefendingInBlockers) {
+			const hasStopInPhase = priorityPlayer.stopPhases?.includes(state.phase) ?? false;
 			const shouldAutoPassEmptyOffTurn =
-				priorityPlayer.playerId !== activePlayer.playerId && state.stack.length === 0;
+				priorityPlayer.playerId !== activePlayer.playerId &&
+				state.stack.length === 0 &&
+				!hasStopInPhase;
 			// Steps C+D: the player's own triggered abilities don't stop auto-pass either (MTG Arena
 			// resolves them unless Full Control is on); their own spells still do.
 			const shouldAutoPassUnrespondableOpponentStack =
@@ -302,68 +307,7 @@ function executeBotStep(
 			attacksAgainstBot.length > 0 &&
 			!(state.combat.declaredBlockersPlayerIds || []).includes(bot.playerId)
 		) {
-			// Decide the blocks in one read-only pass (Phase 6d); the action is applied outside it.
-			const assignments = withStableLayerInputs(state, () => {
-				const assignments: Array<{ blockerInstanceId: string; attackerInstanceId: string }> = [];
-				const usedBlockers = new Set<string>();
-
-				for (const atk of attacksAgainstBot) {
-					if (atk.blockerInstanceIds.length > 0) continue;
-					const atkOwner = state.players.find((p) => p.playerId === atk.controllerId);
-					const atkCard = atkOwner?.battlefield.find(
-						(c) => !c.phasedOut && c.instanceId === atk.attackerInstanceId
-					);
-					if (!atkCard) continue;
-					if (hasRestriction(state, atkCard, 'cantBeBlocked')) continue;
-					if (hasKeyword(atkCard, 'Menace', state)) continue; // Keep simple single blocks safe
-
-					const atkFly = hasKeyword(atkCard, 'Flying', state);
-					const atkFear = hasKeyword(atkCard, 'Fear', state);
-					const atkIntimidate = hasKeyword(atkCard, 'Intimidate', state);
-					const atkShadow = hasKeyword(atkCard, 'Shadow', state);
-					const atkHorse = hasKeyword(atkCard, 'Horsemanship', state);
-					const evalAtk = atkIntimidate ? evaluatePermanent(state, atkCard) : undefined;
-					const candidate = bot.battlefield.find((b) => {
-						if (b.phasedOut || usedBlockers.has(b.instanceId) || b.tapped) return false;
-						const evalBlocker = evaluatePermanent(state, b);
-						if (!evalBlocker.isCreature) return false;
-						if (hasRestriction(state, b, ['cantBlock', 'cantAttackOrBlock'])) return false;
-						if (atkFly && !hasKeyword(b, 'Flying', state) && !hasKeyword(b, 'Reach', state)) {
-							return false;
-						}
-						if (atkFear && !evalBlocker.isArtifact && !evalBlocker.colors.includes('B')) {
-							return false;
-						}
-						if (
-							atkIntimidate &&
-							!evalBlocker.isArtifact &&
-							!evalAtk!.colors.some((c) => evalBlocker.colors.includes(c))
-						) {
-							return false;
-						}
-						if (atkShadow !== hasKeyword(b, 'Shadow', state)) {
-							return false;
-						}
-						if (atkHorse && !hasKeyword(b, 'Horsemanship', state)) {
-							return false;
-						}
-						const bTough = getCreatureToughness(b, state);
-						const aPwr = getCreaturePower(atkCard, state);
-						// Block if blocker survives OR attacker is lethal/big (>4 power)
-						return bTough > aPwr || aPwr >= 4 || bot.life <= aPwr;
-					});
-
-					if (candidate) {
-						usedBlockers.add(candidate.instanceId);
-						assignments.push({
-							blockerInstanceId: candidate.instanceId,
-							attackerInstanceId: atk.attackerInstanceId
-						});
-					}
-				}
-				return assignments;
-			});
-
+			const assignments = chooseBotBlockAssignments(state, bot);
 			const bRes = applyGameAction(state, bot.playerId, {
 				type: 'declare_blockers',
 				assignments
@@ -540,41 +484,12 @@ function executeBotStep(
 
 	// 3. If it's the bot's Declare Attackers step and Stack is empty
 	if (isBotsTurn && state.phase === 'declare_attackers' && state.stack.length === 0 && !state.combat.active) {
-		// Read-only (Phase 6d).
-		const eligibleAttackers = withStableLayerInputs(state, () =>
-			bot.battlefield.filter(
-				(c) =>
-					!c.phasedOut &&
-					evaluatePermanent(state, c).isCreature &&
-					!c.tapped &&
-					(!c.summoningSick || hasKeyword(c, 'Haste', state)) &&
-					!hasKeyword(c, 'Defender', state) &&
-					!hasRestriction(state, c, ['cantAttack', 'cantAttackOrBlock']) &&
-					getCreaturePower(c, state) >= 2
-			)
-		);
-
-		const opponents = state.players
-			.filter((p) => p.playerId !== bot.playerId && !p.lost)
-			.sort((a, b) => b.life - a.life);
-
-		if (eligibleAttackers.length > 0 && opponents.length > 0) {
-			const assignments = eligibleAttackers.map((atk, idx) => ({
-				attackerInstanceId: atk.instanceId,
-				defenderPlayerId: opponents[idx % opponents.length].playerId
-			}));
-			const res = applyGameAction(state, bot.playerId, {
-				type: 'declare_attackers',
-				assignments
-			});
-			if (res.ok) return true;
-		} else {
-			const res = applyGameAction(state, bot.playerId, {
-				type: 'declare_attackers',
-				assignments: []
-			});
-			if (res.ok) return true;
-		}
+		const assignments = chooseBotAttackAssignments(state, bot);
+		const res = applyGameAction(state, bot.playerId, {
+			type: 'declare_attackers',
+			assignments
+		});
+		if (res.ok) return true;
 	}
 
 	// 4. Default: Pass priority

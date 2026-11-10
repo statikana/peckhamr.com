@@ -4,10 +4,12 @@ import assert from 'node:assert/strict';
 import {
 	applyGameAction,
 	checkAbilityActivationLegality,
+	checkSpellCastLegality,
 	createCardInstance,
 	createInitialGameState,
 	getEffectiveActivatedAbilities
 } from '../engine.ts';
+import { runAutomatedPriorityAndBots } from '../ai.ts';
 import { compileCard } from '../compiler/index.ts';
 import { evaluatePermanent, inspectCardContinuousBreakdown } from '../ruleTree.ts';
 import { effectiveSpellManaCost } from './costs.ts';
@@ -77,7 +79,9 @@ function createTestGame(bots: [boolean, boolean] = [false, false]): GameState {
 	for (const p of state.players) {
 		const wasBot = p.isBot;
 		p.isBot = false;
-		assert.equal(applyGameAction(state, p.playerId, { type: 'mulligan_keep' }).ok, true);
+		if (state.status === 'mulligan') {
+			assert.equal(applyGameAction(state, p.playerId, { type: 'mulligan_keep' }).ok, true);
+		}
 		p.isBot = wasBot;
 	}
 	assert.equal(state.phase, 'main1');
@@ -697,9 +701,11 @@ describe('Tier 3 Track B — Item 6: Off-battlefield CDAs and mana value (CR 208
 			ownerId: alice.playerId,
 			card: fireballCard,
 			title: 'Fireball',
-			description: 'Fireball deals 4 damage to any target.',
+			oracleText: 'Fireball deals X damage to any target.',
 			targets: [],
-			xValue: 4
+			xValue: 4,
+			requiresGuidedResolution: false,
+			createdAt: 1
 		});
 
 		assert.equal(
@@ -722,3 +728,299 @@ describe('Tier 3 Track B — Item 6: Off-battlefield CDAs and mana value (CR 208
 		);
 	});
 });
+
+describe('Tier 3 Track B — Item 7: Combat step ordering and off-turn priority (CR 508.1, 508.2, 509.1, 509.2, 117.3a, 117.3c, 117.5, 703.3)', () => {
+	it('attackers are declared before the first priority pass in declare_attackers, and blockers before the first priority pass in declare_blockers (CR 508.1, 508.2, 509.1, 509.2, 117.3a, 703.3)', () => {
+		// 1. Human active/defending players: no player has priority to cast spells or activate non-mana abilities
+		//    in declare_attackers before attackers are declared, or in declare_blockers before blockers are declared.
+		const state = createTestGame([false, false]);
+		const [alice, bob] = state.players;
+		alice.battlefield = [];
+		bob.battlefield = [];
+		alice.hand = [];
+		bob.hand = [];
+		alice.manaPool = { W: 5, U: 5, B: 5, R: 5, G: 5, C: 5 };
+		bob.manaPool = { W: 5, U: 5, B: 5, R: 5, G: 5, C: 5 };
+
+		const attacker = putInZone(
+			state,
+			alice,
+			card({ name: 'Charging Bear', power: '3', toughness: '3' }),
+			'battlefield',
+			false
+		);
+		const blocker = putInZone(
+			state,
+			bob,
+			card({ name: 'Shield Bear', power: '2', toughness: '4' }),
+			'battlefield',
+			false
+		);
+		const aliceInstant = putInZone(
+			state,
+			alice,
+			card({
+				name: 'Quick Study',
+				manaCost: '{1}{U}',
+				cmc: 2,
+				typeLine: 'Instant',
+				oracleText: 'Draw a card.',
+				colors: ['U'],
+				power: undefined,
+				toughness: undefined
+			}),
+			'hand',
+			false
+		);
+		const bobInstant = putInZone(
+			state,
+			bob,
+			card({
+				name: 'Bob Instant',
+				manaCost: '{1}{U}',
+				cmc: 2,
+				typeLine: 'Instant',
+				oracleText: 'Draw a card.',
+				colors: ['U'],
+				power: undefined,
+				toughness: undefined
+			}),
+			'hand',
+			false
+		);
+
+		// Advance main1 -> begin_combat -> declare_attackers
+		assert.equal(applyGameAction(state, alice.playerId, { type: 'pass_priority' }).ok, true);
+		assert.equal(applyGameAction(state, bob.playerId, { type: 'pass_priority' }).ok, true);
+		assert.equal(state.phase, 'begin_combat');
+		assert.equal(applyGameAction(state, alice.playerId, { type: 'pass_priority' }).ok, true);
+		assert.equal(applyGameAction(state, bob.playerId, { type: 'pass_priority' }).ok, true);
+		assert.equal(state.phase, 'declare_attackers');
+		assert.equal(state.combat.active, false);
+		alice.manaPool = { W: 5, U: 5, B: 5, R: 5, G: 5, C: 5 };
+		bob.manaPool = { W: 5, U: 5, B: 5, R: 5, G: 5, C: 5 };
+
+		// Before attackers are declared in declare_attackers, neither player may cast spells (CR 508.1, 508.2, 117.3a)
+		assert.equal(
+			checkSpellCastLegality(state, alice.playerId, aliceInstant, 'hand').ok,
+			false,
+			'Active player cannot cast spells in declare_attackers before attackers are declared (CR 508.1, 508.2)'
+		);
+		assert.equal(
+			applyGameAction(state, alice.playerId, {
+				type: 'cast_spell',
+				instanceId: aliceInstant.instanceId
+			}).ok,
+			false
+		);
+
+		// Declare attackers -> now active player receives priority in declare_attackers (CR 508.2)
+		assert.equal(
+			applyGameAction(state, alice.playerId, {
+				type: 'declare_attackers',
+				assignments: [{ attackerInstanceId: attacker.instanceId, defenderPlayerId: bob.playerId }]
+			}).ok,
+			true
+		);
+		assert.equal(state.combat.active, true);
+		assert.equal(state.priorityPlayerIndex, 0);
+		assert.equal(state.passedPriorityPlayerIds.length, 0);
+		assert.equal(
+			checkSpellCastLegality(state, alice.playerId, aliceInstant, 'hand').ok,
+			true,
+			'Active player CAN cast instants in declare_attackers after attackers are declared (CR 508.2)'
+		);
+
+		// Both pass in declare_attackers -> enter declare_blockers
+		assert.equal(applyGameAction(state, alice.playerId, { type: 'pass_priority' }).ok, true);
+		assert.equal(applyGameAction(state, bob.playerId, { type: 'pass_priority' }).ok, true);
+		assert.equal(state.phase, 'declare_blockers');
+		assert.equal(state.combat.blockersDeclared, false);
+		alice.manaPool = { W: 5, U: 5, B: 5, R: 5, G: 5, C: 5 };
+		bob.manaPool = { W: 5, U: 5, B: 5, R: 5, G: 5, C: 5 };
+
+		// Before blockers are declared in declare_blockers, neither player may cast spells (CR 509.1, 509.2, 117.3a)
+		assert.equal(
+			checkSpellCastLegality(state, bob.playerId, bobInstant, 'hand').ok,
+			false,
+			'Defending player cannot cast spells in declare_blockers before blockers are declared (CR 509.1, 509.2)'
+		);
+		assert.equal(
+			checkSpellCastLegality(state, alice.playerId, aliceInstant, 'hand').ok,
+			false,
+			'Active player cannot cast spells in declare_blockers before blockers are declared (CR 509.1, 509.2)'
+		);
+
+		// Declare blockers -> now active player receives priority first in declare_blockers (CR 509.2)
+		assert.equal(
+			applyGameAction(state, bob.playerId, {
+				type: 'declare_blockers',
+				assignments: [
+					{ blockerInstanceId: blocker.instanceId, attackerInstanceId: attacker.instanceId }
+				]
+			}).ok,
+			true
+		);
+		assert.equal(state.combat.blockersDeclared, true);
+		assert.equal(state.priorityPlayerIndex, 0, 'Active player gets priority first after blockers are declared (CR 509.2)');
+		assert.equal(state.passedPriorityPlayerIds.length, 0);
+		assert.equal(
+			checkSpellCastLegality(state, alice.playerId, aliceInstant, 'hand').ok,
+			true,
+			'Active player CAN cast instants in declare_blockers after blockers are declared (CR 509.2)'
+		);
+
+		// 2. Bot active player: entering declare_attackers declares attackers as the turn-based action before priority
+		const botState = createTestGame([true, false]);
+		const [botAlice, humanBob] = botState.players;
+		botAlice.battlefield = [];
+		humanBob.battlefield = [];
+		const botAttacker = putInZone(
+			botState,
+			botAlice,
+			card({ name: 'Bot Vanguard', power: '3', toughness: '3' }),
+			'battlefield',
+			false
+		);
+		botState.phase = 'begin_combat';
+		botState.activePlayerIndex = 0;
+		botState.priorityPlayerIndex = 0;
+		assert.equal(applyGameAction(botState, botAlice.playerId, { type: 'pass_priority' }).ok, true);
+		assert.equal(applyGameAction(botState, humanBob.playerId, { type: 'pass_priority' }).ok, true);
+
+		assert.equal(botState.phase, 'declare_attackers');
+		assert.equal(
+			botState.passedPriorityPlayerIds.length,
+			0,
+			'No player has passed priority yet in declare_attackers'
+		);
+		assert.equal(
+			botState.combat.active,
+			true,
+			'Attackers are already declared before the first priority pass in declare_attackers (CR 508.1, 508.2)'
+		);
+		assert.deepEqual(
+			botState.combat.attackers.map((a) => a.attackerInstanceId),
+			[botAttacker.instanceId]
+		);
+	});
+
+	it('attack triggers are on the stack when priority is first given in declare_attackers (CR 508.1m, 508.2, 117.5)', () => {
+		const state = createTestGame([true, false]);
+		const [botAlice, humanBob] = state.players;
+		botAlice.battlefield = [];
+		humanBob.battlefield = [];
+
+		const raidLeader = putInZone(
+			state,
+			botAlice,
+			card({
+				name: 'Battle Herald',
+				manaCost: '{2}{W}',
+				cmc: 3,
+				typeLine: 'Creature — Human Knight',
+				oracleText: 'Whenever ~ attacks, you gain 2 life.',
+				colors: ['W'],
+				power: '3',
+				toughness: '3'
+			}),
+			'battlefield',
+			false
+		);
+		assert.equal(compileCard(raidLeader.card).fullySupported, true);
+
+		state.phase = 'begin_combat';
+		state.activePlayerIndex = 0;
+		state.priorityPlayerIndex = 0;
+
+		// Both players pass priority in begin_combat -> enters declare_attackers
+		assert.equal(applyGameAction(state, botAlice.playerId, { type: 'pass_priority' }).ok, true);
+		assert.equal(applyGameAction(state, humanBob.playerId, { type: 'pass_priority' }).ok, true);
+
+		assert.equal(state.phase, 'declare_attackers');
+		assert.equal(
+			state.passedPriorityPlayerIds.length,
+			0,
+			'Priority has just been given for the first time in declare_attackers'
+		);
+		assert.equal(state.priorityPlayerIndex, 0, 'Active player holds first priority in declare_attackers (CR 508.2)');
+		assert.equal(
+			state.stack.length,
+			1,
+			'Attack trigger is on the stack when priority is first given in declare_attackers (CR 508.1m, 508.2, 117.5)'
+		);
+		assert.equal(state.stack[0]?.kind, 'triggered');
+		assert.equal(state.stack[0]?.sourceInstanceId, raidLeader.instanceId);
+	});
+
+	it('a human with a stop on the opponent end step gets priority there with an empty stack; without that stop they are auto-passed (CR 117.3c, 513.1)', () => {
+		// 1. With 'end_step' in human's stopPhases: stops on opponent's end_step with empty stack
+		{
+			const state = createTestGame([false, true]);
+			const [humanAlice, botBob] = state.players;
+			humanAlice.battlefield = [];
+			botBob.battlefield = [];
+			humanAlice.hand = [];
+			botBob.hand = [];
+			humanAlice.fullControl = false;
+			humanAlice.autoPassEmptyStack = true;
+
+			assert.equal(
+				applyGameAction(state, humanAlice.playerId, {
+					type: 'toggle_stop_phase',
+					phase: 'end_step'
+				}).ok,
+				true
+			);
+			assert.equal(humanAlice.stopPhases.includes('end_step'), true);
+
+			// Start on Bot Bob's turn in main1 with empty stack and no plays
+			state.activePlayerIndex = 1;
+			state.priorityPlayerIndex = 1;
+			state.phase = 'main1';
+			state.passedPriorityPlayerIds = [];
+
+			runAutomatedPriorityAndBots(state);
+
+			assert.equal(
+				state.phase,
+				'end_step',
+				'Human with stop on end_step stops in opponent end_step'
+			);
+			assert.equal(state.activePlayerIndex, 1, 'Still opponent (Bob) turn');
+			assert.equal(state.stack.length, 0, 'Stack is empty');
+			assert.equal(
+				state.priorityPlayerIndex,
+				0,
+				'Human (Alice) holds priority in opponent end_step with an empty stack'
+			);
+		}
+
+		// 2. Without 'end_step' in human's stopPhases: auto-passed through opponent's turn onto human's turn
+		{
+			const state = createTestGame([false, true]);
+			const [humanAlice, botBob] = state.players;
+			humanAlice.battlefield = [];
+			botBob.battlefield = [];
+			humanAlice.hand = [];
+			botBob.hand = [];
+			humanAlice.fullControl = false;
+			humanAlice.autoPassEmptyStack = true;
+			assert.equal(humanAlice.stopPhases.includes('end_step'), false);
+
+			state.activePlayerIndex = 1;
+			state.priorityPlayerIndex = 1;
+			state.phase = 'main1';
+			state.passedPriorityPlayerIds = [];
+
+			runAutomatedPriorityAndBots(state);
+
+			assert.equal(
+				state.activePlayerIndex,
+				0,
+				'Without a stop on end_step, human is auto-passed through opponent turn to their own turn'
+			);
+		}
+	});
+});
+
