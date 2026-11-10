@@ -2528,13 +2528,73 @@ function applyGameActionInner(
 	}
 }
 
+function chooseBotRequiredAttackAssignments(
+	state: GameState,
+	bot: PlayerGameState
+): Array<{ attackerInstanceId: string; defenderPlayerId: string; defenderPlaneswalkerId?: string | null }> {
+	const opponents = state.players
+		.filter((p) => p.playerId !== bot.playerId && !p.lost)
+		.sort((a, b) => b.life - a.life);
+	if (opponents.length === 0) return [];
+	const taxFreeOpponents = opponents.filter((p) => getAttackTaxGeneric(state, p) === 0);
+	if (taxFreeOpponents.length === 0) return [];
+
+	return withStableLayerInputs(state, () => {
+		const assignments: Array<{
+			attackerInstanceId: string;
+			defenderPlayerId: string;
+			defenderPlaneswalkerId?: string | null;
+		}> = [];
+		for (const c of bot.battlefield) {
+			if (
+				c.phasedOut ||
+				!evaluatePermanent(state, c).isCreature ||
+				c.tapped ||
+				(c.summoningSick && !hasKeyword(c, 'Haste', state)) ||
+				hasKeyword(c, 'Defender', state) ||
+				hasRestriction(state, c, 'cantAttack')
+			) {
+				continue;
+			}
+			const isGoaded = Boolean(c.goadedByPlayerIds && c.goadedByPlayerIds.length > 0);
+			const mustAttack = isGoaded || hasRestriction(state, c, 'attacksEachCombat');
+			if (!mustAttack) continue;
+
+			let candidateDefenders = taxFreeOpponents;
+			if (isGoaded) {
+				const nonGoaders = taxFreeOpponents.filter(
+					(p) => !c.goadedByPlayerIds!.includes(p.playerId)
+				);
+				if (nonGoaders.length > 0) {
+					candidateDefenders = nonGoaders;
+				}
+			}
+			const idx = assignments.length;
+			assignments.push({
+				attackerInstanceId: c.instanceId,
+				defenderPlayerId: candidateDefenders[idx % candidateDefenders.length]!.playerId
+			});
+		}
+		return assignments;
+	});
+}
+
 export function chooseBotAttackAssignments(
 	state: GameState,
 	bot: PlayerGameState
 ): Array<{ attackerInstanceId: string; defenderPlayerId: string; defenderPlaneswalkerId?: string | null }> {
-	const eligibleAttackers = withStableLayerInputs(state, () =>
+	const opponents = state.players
+		.filter((p) => p.playerId !== bot.playerId && !p.lost)
+		.sort((a, b) => b.life - a.life);
+	if (opponents.length === 0) return [];
+
+	const requiredAssignments = chooseBotRequiredAttackAssignments(state, bot);
+	const requiredIds = new Set(requiredAssignments.map((a) => a.attackerInstanceId));
+
+	const optionalAttackers = withStableLayerInputs(state, () =>
 		bot.battlefield.filter(
 			(c) =>
+				!requiredIds.has(c.instanceId) &&
 				!c.phasedOut &&
 				evaluatePermanent(state, c).isCreature &&
 				!c.tapped &&
@@ -2545,17 +2605,15 @@ export function chooseBotAttackAssignments(
 		)
 	);
 
-	const opponents = state.players
-		.filter((p) => p.playerId !== bot.playerId && !p.lost)
-		.sort((a, b) => b.life - a.life);
-
-	if (eligibleAttackers.length > 0 && opponents.length > 0) {
-		return eligibleAttackers.map((atk, idx) => ({
+	const assignments = [...requiredAssignments];
+	for (const atk of optionalAttackers) {
+		const idx = assignments.length;
+		assignments.push({
 			attackerInstanceId: atk.instanceId,
-			defenderPlayerId: opponents[idx % opponents.length].playerId
-		}));
+			defenderPlayerId: opponents[idx % opponents.length]!.playerId
+		});
 	}
-	return [];
+	return assignments;
 }
 
 function executeBotDeclareAttackersTurnBasedAction(
@@ -2563,9 +2621,24 @@ function executeBotDeclareAttackersTurnBasedAction(
 	bot: PlayerGameState
 ): void {
 	const assignments = chooseBotAttackAssignments(state, bot);
-	const res = performDeclareAttackers(state, bot, assignments, true);
+	let res = performDeclareAttackers(state, bot, assignments, true);
 	if (!res.ok) {
-		performDeclareAttackers(state, bot, [], true);
+		const requiredOnly = chooseBotRequiredAttackAssignments(state, bot);
+		res = performDeclareAttackers(state, bot, requiredOnly, true);
+	}
+	if (!res.ok) {
+		addLog(
+			state,
+			'rule',
+			res.error ?? `${bot.username} could not satisfy attack requirements; declaring no attackers.`,
+			bot.playerId
+		);
+		state.combat.active = true;
+		state.combat.awaitingAttackersDeclaration = false;
+		state.combat.attackers = [];
+		state.combat.declaredBlockersPlayerIds = [];
+		state.combat.blockersDeclared = false;
+		addLog(state, 'combat', `${bot.username} declared no attackers.`, bot.playerId);
 	}
 }
 

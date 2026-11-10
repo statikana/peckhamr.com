@@ -475,4 +475,73 @@ describe('Review 3 — Group B: bot combat declarations and R10 shared predicate
 			'Bot creature with "blocks each combat if able" must block (CR 509.1c, R3)'
 		);
 	});
+
+	it('R6: bot attacker declaration at step entry includes goaded 1/1 attacking a non-goading opponent and 1/1 with "attacks each combat if able" (CR 508.1d, 701.15b)', () => {
+		const { state, p1, p2 } = makeGame([false, true, false]);
+		const p3 = state.players[2]!;
+
+		// Give p3 higher or lower life than p1 so even if p1 has higher life, goad still forces attacking p3
+		p1.life = 40;
+		p3.life = 30;
+
+		const goadedGoblin = putInZone(
+			state,
+			p2,
+			synthCard({
+				name: 'Pestering Goblin',
+				colors: ['R'],
+				colorIdentity: ['R'],
+				power: '1',
+				toughness: '1'
+			}),
+			'battlefield'
+		);
+		goadedGoblin.goadedByPlayerIds = [p1.playerId];
+
+		const berserker = putInZone(
+			state,
+			p2,
+			synthCard({
+				name: 'RagingGoblinoid',
+				colors: ['R'],
+				colorIdentity: ['R'],
+				power: '1',
+				toughness: '1',
+				oracleText: 'RagingGoblinoid attacks each combat if able.'
+			}),
+			'battlefield'
+		);
+
+		// Start on Bot p2's begin_combat and pass priority so p2 enters declare_attackers
+		state.activePlayerIndex = 1;
+		state.priorityPlayerIndex = 1;
+		state.phase = 'begin_combat';
+		for (const pl of state.players) {
+			const res = applyGameAction(state, state.players[state.priorityPlayerIndex]!.playerId, {
+				type: 'pass_priority'
+			});
+			assert.equal(res.ok, true);
+		}
+
+		assert.equal(state.phase, 'declare_attackers');
+		assert.equal(state.combat.active, true, 'Combat must be active after bot declares attackers');
+
+		const goadedAtk = state.combat.attackers.find(
+			(a) => a.attackerInstanceId === goadedGoblin.instanceId
+		);
+		assert.ok(goadedAtk, 'Goaded 1/1 bot creature must attack (CR 701.15b, R6)');
+		assert.equal(
+			goadedAtk.defenderPlayerId,
+			p3.playerId,
+			'Goaded bot creature must attack a player other than the goading player if able (CR 701.15b, R6)'
+		);
+
+		const berserkerAtk = state.combat.attackers.find(
+			(a) => a.attackerInstanceId === berserker.instanceId
+		);
+		assert.ok(
+			berserkerAtk,
+			'1/1 bot creature with "attacks each combat if able" must attack (CR 508.1d, R6)'
+		);
+	});
 });
