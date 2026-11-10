@@ -633,7 +633,11 @@ export type PromptContinuation =
 	| { kind: 'effect_resume'; stackItemId: string; stepIndex: number }
 	| { kind: 'manual_resolution'; stackItemId: string }
 	| { kind: 'manual_ability'; sourceInstanceId: string }
-	| { kind: 'handler'; name: string; data?: Record<string, string | number | boolean | null> };
+	| {
+			kind: 'handler';
+			name: string;
+			data?: Record<string, string | number | boolean | null | string[] | Record<string, number>>;
+	  };
 
 /**
  * The player's choices for paying a cost (CR 601.2b/h, 602.2b), validated by the server. Indices

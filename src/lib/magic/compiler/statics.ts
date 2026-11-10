@@ -240,8 +240,31 @@ type Production = (s: string, span: Span) => StaticItem[] | null;
 
 /** "If a card or token would be put into a graveyard from anywhere, exile it instead." etc. */
 const replacements: Production = (s, span) => {
-	if (/^if a card or token would be put into a graveyard from anywhere, exile it instead$/i.test(s)) {
+	if (/^if a card(?: or token)? would be put into a graveyard from anywhere, exile it instead$/i.test(s)) {
 		return [{ kind: 'replacement', replacement: { replaces: { event: 'zoneChange', filter: { to: 'graveyard' } }, with: { k: 'modify', to: 'exile' } } }];
+	}
+	if (/^if a card(?: or token)? would be put into a graveyard from anywhere, shuffle it into its owner's library instead$/i.test(s)) {
+		return [{ kind: 'replacement', replacement: { replaces: { event: 'zoneChange', filter: { to: 'graveyard' } }, with: { k: 'modify', to: 'library', shuffleIntoLibrary: true } } }];
+	}
+	const selfDieOrGy = s.match(
+		/^if ~ would (die|be put into a graveyard from anywhere), (exile it|shuffle it into its owner's library|return it to its owner's hand|put it into its owner's hand) instead$/i
+	);
+	if (selfDieOrGy) {
+		const isDie = selfDieOrGy[1].toLowerCase() === 'die';
+		const action = selfDieOrGy[2].toLowerCase();
+		const to: ZoneType = action.startsWith('exile') ? 'exile' : action.startsWith('shuffle') ? 'library' : 'hand';
+		return [
+			{
+				kind: 'replacement',
+				replacement: {
+					replaces: {
+						event: 'zoneChange',
+						filter: { object: 'self', ...(isDie ? { from: 'battlefield' } : {}), to: 'graveyard' }
+					},
+					with: { k: 'modify', to, ...(action.startsWith('shuffle') ? { shuffleIntoLibrary: true } : {}) }
+				}
+			}
+		];
 	}
 	if (/^if you would draw a card while your library has no cards in it, you win the game instead$/i.test(s)) {
 		return [
@@ -251,6 +274,18 @@ const replacements: Production = (s, span) => {
 					replaces: { event: 'draw', filter: { player: { relation: 'you' } } },
 					condition: { k: 'compare', left: { k: 'cardsIn', zone: 'library', of: { k: 'you' } }, op: '=', right: n(0) },
 					with: [{ verb: 'win', subject: { k: 'player', filter: { relation: 'you' } }, span }]
+				}
+			}
+		];
+	}
+	if (/^if you would draw a card while your library has no cards in it, skip that draw instead$/i.test(s)) {
+		return [
+			{
+				kind: 'replacement',
+				replacement: {
+					replaces: { event: 'draw', filter: { player: { relation: 'you' } } },
+					condition: { k: 'compare', left: { k: 'cardsIn', zone: 'library', of: { k: 'you' } }, op: '=', right: n(0) },
+					with: { k: 'skip' }
 				}
 			}
 		];
@@ -301,6 +336,9 @@ const restrictions: Production = (s) => {
 const multipliers: Production = (s) => {
 	const low = s.toLowerCase();
 	const mult = (def: Extract<StaticDef, { k: 'multiplier' }>): StaticItem[] => [{ kind: 'static', static: def }];
+	if (low === 'if one or more +1/+1 counters would be put on a creature you control, that many plus one +1/+1 counters are put on it instead') {
+		return mult({ k: 'multiplier', what: 'counters', factor: 1, delta: 1, filter: { types: ['Creature'], controller: 'you' }, counter: '+1/+1' });
+	}
 	if (low === 'if one or more +1/+1 counters would be put on a creature you control, twice that many +1/+1 counters are put on it instead') {
 		return mult({ k: 'multiplier', what: 'counters', factor: 2, filter: { types: ['Creature'], controller: 'you' }, counter: '+1/+1' });
 	}

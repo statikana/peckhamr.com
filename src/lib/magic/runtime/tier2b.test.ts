@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+	addCountersToPermanent,
 	applyGameAction,
 	checkStateBasedActions,
 	createCardInstance,
@@ -534,5 +535,198 @@ describe('Tier 2B — 5c: Ward human yesNo prompt and unsupported non-mana/life 
 			'Unsupported Ward cost must open guided_resolution prompt instead of auto-paying {0} for free'
 		);
 		assert.equal(manualPrompt.playerId, p1.playerId);
+	});
+});
+
+// ============================================================================
+// Item 5d — Replacement ordering (CR 616.1, 616.1e–f)
+// ============================================================================
+
+describe('Tier 2B — 5d: Replacement ordering (CR 616.1, 616.1e–f)', () => {
+	it('prompts the affected controller with chooseReplacement when 2+ zone-change replacements compete, re-evaluating after the choice so the other no longer applies (CR 616.1e–f)', () => {
+		const { state, p1 } = makeGame([false, false]);
+
+		// Enchantment: "If a card or token would be put into a graveyard from anywhere, exile it instead."
+		putInZone(
+			state,
+			p1,
+			synthCard({
+				name: 'Void Sanctum',
+				typeLine: 'Enchantment',
+				oracleText: 'If a card or token would be put into a graveyard from anywhere, exile it instead.'
+			}),
+			'battlefield'
+		);
+
+		// Creature 1: "If ~ would die, shuffle it into its owner's library instead."
+		const phoenix1 = putInZone(
+			state,
+			p1,
+			synthCard({
+				name: 'Astral Colossus 1',
+				typeLine: 'Creature — Construct',
+				power: '4',
+				toughness: '4',
+				oracleText: "If ~ would die, shuffle it into its owner's library instead."
+			}),
+			'battlefield'
+		);
+
+		movePermanentToZone(state, phoenix1, 'graveyard');
+
+		const repPrompt1 = state.pendingPrompts.find((pr) => pr.choice?.kind === 'chooseReplacement');
+		assert.ok(
+			repPrompt1,
+			'Expected chooseReplacement prompt when two graveyard replacement effects apply to the same dying creature'
+		);
+		assert.equal(repPrompt1.playerId, p1.playerId);
+		assert.equal(repPrompt1.choice?.kind, 'chooseReplacement');
+		assert.equal(repPrompt1.choice.options.length, 2);
+
+		const libOpt = repPrompt1.choice.options.find((o) => /library/i.test(o.label));
+		assert.ok(libOpt, 'Expected an option for the shuffle-into-library replacement');
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'choice',
+				promptId: repPrompt1.id,
+				answer: { kind: 'chooseReplacement', id: libOpt.id }
+			}).ok,
+			true
+		);
+		assert.equal(
+			state.pendingPrompts.length,
+			0,
+			'After shuffling into library, the graveyard-to-exile replacement no longer applies (CR 616.1f)'
+		);
+		assert.equal(p1.library.some((c) => c.instanceId === phoenix1.instanceId), true);
+		assert.equal(p1.exile.some((c) => c.instanceId === phoenix1.instanceId), false);
+
+		// Creature 2: choose the exile replacement first -> library replacement no longer applies
+		const phoenix2 = putInZone(
+			state,
+			p1,
+			synthCard({
+				name: 'Astral Colossus 2',
+				typeLine: 'Creature — Construct',
+				power: '4',
+				toughness: '4',
+				oracleText: "If ~ would die, shuffle it into its owner's library instead."
+			}),
+			'battlefield'
+		);
+		movePermanentToZone(state, phoenix2, 'graveyard');
+		const repPrompt2 = state.pendingPrompts.find((pr) => pr.choice?.kind === 'chooseReplacement');
+		assert.ok(repPrompt2 && repPrompt2.choice?.kind === 'chooseReplacement');
+		const exileOpt = repPrompt2.choice.options.find((o) => /exile/i.test(o.label));
+		assert.ok(exileOpt, 'Expected an option for the exile replacement');
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'choice',
+				promptId: repPrompt2.id,
+				answer: { kind: 'chooseReplacement', id: exileOpt.id }
+			}).ok,
+			true
+		);
+		assert.equal(state.pendingPrompts.length, 0);
+		assert.equal(p1.exile.some((c) => c.instanceId === phoenix2.instanceId), true);
+		assert.equal(p1.library.some((c) => c.instanceId === phoenix2.instanceId), false);
+	});
+
+	it('applies self-replacement first (CR 616.1a), prompts again when 2+ replacements still remain (CR 616.1f), and auto-applies when only 1 remains', () => {
+		const { state, p1 } = makeGame([false, false]);
+
+		const scales = putInZone(
+			state,
+			p1,
+			synthCard({
+				name: 'Hardened Scales',
+				typeLine: 'Enchantment',
+				oracleText:
+					'If one or more +1/+1 counters would be put on a creature you control, that many plus one +1/+1 counters are put on it instead.'
+			}),
+			'battlefield'
+		);
+		const doubler1 = putInZone(
+			state,
+			p1,
+			synthCard({
+				name: 'Corpsejack Menace',
+				typeLine: 'Creature — Fungus',
+				power: '4',
+				toughness: '4',
+				oracleText:
+					'If one or more +1/+1 counters would be put on a creature you control, twice that many +1/+1 counters are put on it instead.'
+			}),
+			'battlefield'
+		);
+		const doubler2 = putInZone(
+			state,
+			p1,
+			synthCard({
+				name: 'Doubling Season',
+				typeLine: 'Enchantment',
+				oracleText:
+					'If an effect would put one or more counters on a permanent you control, it puts twice that many of each of those kinds of counters on that permanent instead.'
+			}),
+			'battlefield'
+		);
+		assert.ok(scales && doubler1 && doubler2);
+
+		const targetCreature = putInZone(
+			state,
+			p1,
+			synthCard({
+				name: 'Growing Saproling',
+				typeLine: 'Creature — Saproling',
+				power: '1',
+				toughness: '1',
+				oracleText: ''
+			}),
+			'battlefield'
+		);
+
+		// Put 2 +1/+1 counters on Growing Saproling with 3 applicable replacements (+1, x2, x2)
+		addCountersToPermanent(state, targetCreature, '+1/+1', 2);
+
+		// First prompt: 3 options
+		const firstPrompt = state.pendingPrompts[0];
+		assert.ok(firstPrompt, 'Expected first chooseReplacement prompt when 3 counter replacements apply');
+		assert.equal(firstPrompt.choice?.kind, 'chooseReplacement');
+		assert.equal(firstPrompt.choice.options.length, 3);
+
+		// Choose Doubling Season (x2) first: 2 -> 4; 2 replacements remain (+1 and x2), so must prompt again!
+		const d2Opt = firstPrompt.choice.options.find((o) => o.label.includes('Doubling Season'))!;
+		assert.ok(d2Opt);
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'choice',
+				promptId: firstPrompt.id,
+				answer: { kind: 'chooseReplacement', id: d2Opt.id }
+			}).ok,
+			true
+		);
+
+		// Second prompt: 2 remaining options (Hardened Scales +1, Corpsejack Menace x2)
+		const secondPrompt = state.pendingPrompts[0];
+		assert.ok(
+			secondPrompt,
+			'Expected second chooseReplacement prompt because 2 replacements still apply (CR 616.1f)'
+		);
+		assert.equal(secondPrompt.choice?.kind, 'chooseReplacement');
+		assert.equal(secondPrompt.choice.options.length, 2);
+
+		// Choose Corpsejack Menace (x2) second: 4 -> 8; only 1 replacement remains (Hardened Scales +1), so it auto-applies (8 -> 9) without a third prompt!
+		const d1Opt = secondPrompt.choice.options.find((o) => o.label.includes('Corpsejack Menace'))!;
+		assert.ok(d1Opt);
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'choice',
+				promptId: secondPrompt.id,
+				answer: { kind: 'chooseReplacement', id: d1Opt.id }
+			}).ok,
+			true
+		);
+		assert.equal(state.pendingPrompts.length, 0, 'Single remaining replacement must apply without prompting');
+		assert.equal(targetCreature.counters['+1/+1'], 9, '(2 * 2) * 2 + 1 = 9 counters');
 	});
 });

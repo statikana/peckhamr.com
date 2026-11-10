@@ -75,6 +75,7 @@ import {
 	playerHasShroud as replacePlayerHasShroud,
 	playerLifeTotalCantChange,
 	replaceEmptyLibraryDraw,
+	resolveCounterReplacements,
 	spellCannotBeCountered,
 	tokenMultiplier
 } from './runtime/replace.ts';
@@ -3667,7 +3668,34 @@ export function addCountersToPermanent(
 	amount: number
 ): number {
 	if (amount <= 0) return 0;
-	const effectiveAmount = amount * counterMultiplier(state, perm, type);
+	const res = resolveCounterReplacements(state, perm, type, amount);
+	if (res.pendingOptions && res.pendingOptions.length >= 2) {
+		const description = `Multiple replacement effects would modify putting ${res.amount} ${type} counter(s) on ${perm.card.name}. Choose which applies first (CR 616.1):`;
+		enqueueChoicePrompt(state, {
+			id: uid('prm', state),
+			playerId: res.chooserId,
+			kind: 'chooseReplacement',
+			purpose: 'generic',
+			title: 'Choose Replacement Effect (CR 616.1)',
+			description,
+			continuation: {
+				kind: 'handler',
+				name: 'counter_replacement_choice',
+				data: {
+					permId: perm.instanceId,
+					counterType: type,
+					currentAmount: res.amount,
+					appliedIds: res.appliedIds
+				}
+			},
+			choice: {
+				kind: 'chooseReplacement',
+				options: res.pendingOptions.map((r) => ({ id: r.id, label: r.label }))
+			}
+		});
+		return 0;
+	}
+	const effectiveAmount = res.amount;
 	perm.counters[type] = (perm.counters[type] || 0) + effectiveAmount;
 	emitEvent(state, {
 		kind: 'CounterPlaced',
@@ -3680,6 +3708,64 @@ export function addCountersToPermanent(
 	flushTriggers(state);
 	return effectiveAmount;
 }
+
+registerPromptHandler('counter_replacement_choice', (state, prompt, answer) => {
+	if (answer.kind !== 'chooseReplacement') return;
+	const data = prompt.continuation?.kind === 'handler' ? prompt.continuation.data : undefined;
+	if (!data) return;
+	const permId = typeof data.permId === 'string' ? data.permId : '';
+	const counterType = (data.counterType as CounterType | undefined) ?? '+1/+1';
+	const currentAmount = typeof data.currentAmount === 'number' ? data.currentAmount : 0;
+	const appliedIds = Array.isArray(data.appliedIds) ? (data.appliedIds as string[]) : [];
+	const found = findPermanentOnBoard(state, permId);
+	if (!found || currentAmount <= 0) return;
+	const perm = found.inst;
+
+	const nextRes = resolveCounterReplacements(
+		state,
+		perm,
+		counterType,
+		currentAmount,
+		new Set(appliedIds),
+		answer.id
+	);
+	if (nextRes.pendingOptions && nextRes.pendingOptions.length >= 2) {
+		const description = `Multiple replacement effects would modify putting ${nextRes.amount} ${counterType} counter(s) on ${perm.card.name}. Choose which applies next (CR 616.1f):`;
+		enqueueChoicePrompt(state, {
+			id: uid('prm', state),
+			playerId: nextRes.chooserId,
+			kind: 'chooseReplacement',
+			purpose: 'generic',
+			title: 'Choose Replacement Effect (CR 616.1)',
+			description,
+			continuation: {
+				kind: 'handler',
+				name: 'counter_replacement_choice',
+				data: {
+					permId: perm.instanceId,
+					counterType,
+					currentAmount: nextRes.amount,
+					appliedIds: nextRes.appliedIds
+				}
+			},
+			choice: {
+				kind: 'chooseReplacement',
+				options: nextRes.pendingOptions.map((r) => ({ id: r.id, label: r.label }))
+			}
+		});
+		return;
+	}
+	const effectiveAmount = nextRes.amount;
+	perm.counters[counterType] = (perm.counters[counterType] || 0) + effectiveAmount;
+	emitEvent(state, {
+		kind: 'CounterPlaced',
+		objectId: perm.instanceId,
+		object: perm,
+		counterType,
+		amount: effectiveAmount
+	});
+	flushTriggers(state);
+});
 
 /**
  * CR 702.62a suspend: at the beginning of its owner's upkeep, remove a time counter from each

@@ -1,10 +1,10 @@
 import { shuffleWith, uid, type RngHolder } from './random.ts';
-import { enqueueChoicePrompt } from './choices.ts';
-import { checkGraveyardReplacementZone, evaluatePermanent } from '../ruleTree.ts';
+import { enqueueChoicePrompt, registerPromptHandler } from './choices.ts';
+import { evaluatePermanent } from '../ruleTree.ts';
 import type { CardInstance, CounterType, GameState, PlayerGameState, ZoneType } from '../types.ts';
 import { emitEvent, type LeftBattlefieldInfo } from './events.ts';
 import { noteLayerInputsChanged, whileLayerInputsChange } from './layerCache.ts';
-import { counterMultiplier } from './replace.ts';
+import { counterMultiplier, resolveZoneChangeReplacements } from './replace.ts';
 
 /**
  * The single zone-change module (ENGINE_ARCHITECTURE_PLAN.md section 2.3, Phase 2).
@@ -224,12 +224,30 @@ function moveObjectInner(
 	}
 
 	let dest: ZoneType = to;
+	let shuffleDestLibrary = false;
+	let pendingZoneRep: ReturnType<typeof resolveZoneChangeReplacements> | undefined;
 	let promptCommanderRedirect = false;
 	if (opts.graveyardReplacement && to === 'graveyard') {
-		dest = checkGraveyardReplacementZone(state, 'graveyard').dest;
-	} else if (opts.commanderRedirect && obj.isCommander && (to === 'hand' || to === 'library')) {
+		pendingZoneRep = resolveZoneChangeReplacements(
+			state,
+			obj,
+			fromZone,
+			to,
+			new Set(),
+			Boolean(lki?.lostAllAbilities)
+		);
+		dest = pendingZoneRep.dest;
+		shuffleDestLibrary = pendingZoneRep.shuffle;
+	}
+	if (
+		!pendingZoneRep?.pendingOptions &&
+		opts.commanderRedirect &&
+		obj.isCommander &&
+		(dest === 'hand' || dest === 'library')
+	) {
 		if (owner?.isBot) {
 			dest = 'command';
+			shuffleDestLibrary = false;
 		} else if (owner) {
 			promptCommanderRedirect = true;
 		}
@@ -298,6 +316,39 @@ function moveObjectInner(
 	if (dest !== 'stack' && !ceases) {
 		const at = typeof opts.insert === 'function' ? opts.insert(dest) : opts.insert;
 		if (at !== 'deferred') insertInto(effectiveReceiver[dest as PlayerZone], obj, at);
+		if (shuffleDestLibrary && dest === 'library') {
+			shuffleLibrary(state, effectiveReceiver);
+		}
+	}
+	if (pendingZoneRep?.pendingOptions && pendingZoneRep.pendingOptions.length >= 2 && !ceases) {
+		const description = `Multiple replacement effects would modify how ${obj.card.name} moves to ${dest}. Choose which applies first (CR 616.1):`;
+		enqueueChoicePrompt(state, {
+			id: uid('prm', state),
+			playerId: pendingZoneRep.chooserId,
+			kind: 'chooseReplacement',
+			purpose: 'generic',
+			title: 'Choose Replacement Effect (CR 616.1)',
+			description,
+			continuation: {
+				kind: 'handler',
+				name: 'zone_replacement_choice',
+				data: {
+					objectId: obj.instanceId,
+					holderId: effectiveReceiver.playerId,
+					currentZone: dest,
+					fromZone,
+					fromPlayerId,
+					appliedIds: pendingZoneRep.appliedIds,
+					lkiLostAllAbilities: Boolean(lki?.lostAllAbilities),
+					commanderRedirect: Boolean(opts.commanderRedirect)
+				}
+			},
+			choice: {
+				kind: 'chooseReplacement',
+				options: pendingZoneRep.pendingOptions.map((r) => ({ id: r.id, label: r.label }))
+			}
+		});
+		return dest;
 	}
 	if (opts.emit !== false) {
 		emitZoneChange(
@@ -339,6 +390,94 @@ function moveObjectInner(
 	}
 	return dest;
 }
+
+registerPromptHandler('zone_replacement_choice', (state, prompt, answer) => {
+	if (answer.kind !== 'chooseReplacement') return;
+	const data = prompt.continuation?.kind === 'handler' ? prompt.continuation.data : undefined;
+	if (!data) return;
+	const objectId = typeof data.objectId === 'string' ? data.objectId : '';
+	const holderId = typeof data.holderId === 'string' ? data.holderId : '';
+	const currentZone = (data.currentZone as PlayerZone | undefined) ?? 'graveyard';
+	const fromZone = (data.fromZone as ZoneType | null | undefined) ?? null;
+	const fromPlayerId = (data.fromPlayerId as string | null | undefined) ?? null;
+	const appliedIds = Array.isArray(data.appliedIds) ? (data.appliedIds as string[]) : [];
+	const lkiLostAllAbilities = Boolean(data.lkiLostAllAbilities);
+	const commanderRedirect = Boolean(data.commanderRedirect);
+
+	const holder = state.players.find((p) => p.playerId === holderId);
+	if (!holder) return;
+	const idx = holder[currentZone].findIndex((c) => c.instanceId === objectId);
+	if (idx < 0) return;
+	const obj = holder[currentZone][idx];
+
+	const nextRes = resolveZoneChangeReplacements(
+		state,
+		obj,
+		fromZone,
+		currentZone,
+		new Set(appliedIds),
+		lkiLostAllAbilities,
+		answer.id
+	);
+
+	const owner = state.players.find((p) => p.playerId === obj.ownerId) ?? holder;
+	let finalDest = nextRes.dest;
+	let shuffleFinal = nextRes.shuffle;
+
+	if (!nextRes.pendingOptions && commanderRedirect && obj.isCommander && (finalDest === 'hand' || finalDest === 'library')) {
+		if (owner.isBot) {
+			finalDest = 'command';
+			shuffleFinal = false;
+		}
+	}
+
+	const destHolder =
+		finalDest === 'hand' || finalDest === 'graveyard' || finalDest === 'library' || finalDest === 'command'
+			? owner
+			: holder;
+
+	if (finalDest !== currentZone || destHolder !== holder) {
+		holder[currentZone].splice(idx, 1);
+		obj.zone = finalDest;
+		insertInto(destHolder[finalDest as PlayerZone], obj, finalDest === 'library' ? 'start' : 'end');
+	}
+	if (shuffleFinal && finalDest === 'library') {
+		shuffleLibrary(state, destHolder);
+	}
+
+	if (nextRes.pendingOptions && nextRes.pendingOptions.length >= 2) {
+		const description = `Multiple replacement effects would modify how ${obj.card.name} moves to ${finalDest}. Choose which applies next (CR 616.1f):`;
+		enqueueChoicePrompt(state, {
+			id: uid('prm', state),
+			playerId: nextRes.chooserId,
+			kind: 'chooseReplacement',
+			purpose: 'generic',
+			title: 'Choose Replacement Effect (CR 616.1)',
+			description,
+			continuation: {
+				kind: 'handler',
+				name: 'zone_replacement_choice',
+				data: {
+					objectId: obj.instanceId,
+					holderId: destHolder.playerId,
+					currentZone: finalDest,
+					fromZone,
+					fromPlayerId,
+					appliedIds: nextRes.appliedIds,
+					lkiLostAllAbilities,
+					commanderRedirect
+				}
+			},
+			choice: {
+				kind: 'chooseReplacement',
+				options: nextRes.pendingOptions.map((r) => ({ id: r.id, label: r.label }))
+			}
+		});
+		return;
+	}
+
+	emitZoneChange(state, obj, fromZone, finalDest, fromPlayerId, destHolder.playerId, false);
+});
 
 function captureLki(state: GameState, obj: CardInstance): LeftBattlefieldInfo {
 	const evaluated = evaluatePermanent(state, obj);
