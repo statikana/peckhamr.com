@@ -1,5 +1,4 @@
-import { env as cfEnv } from 'cloudflare:workers';
-import { resolveScryfallImageLinks } from './cardImages';
+import { resolveScryfallImageLinks } from './cardImages.ts';
 import type {
 	MagicChatMessage,
 	MagicDeck,
@@ -8,7 +7,15 @@ import type {
 	LobbyRulesConfig,
 	LobbySeat,
 	GameState
-} from './types';
+} from './types.ts';
+
+let cfEnv: Record<string, unknown> | undefined;
+try {
+	const mod = (await import('cloudflare:workers')) as { env?: Record<string, unknown> };
+	cfEnv = mod?.env;
+} catch {
+	cfEnv = undefined;
+}
 
 export const CORS_HEADERS: Record<string, string> = {
 	'Access-Control-Allow-Origin': '*',
@@ -33,19 +40,21 @@ export function jsonResponse(
 }
 
 export function getD1(platform: App.Platform | undefined): D1Database | undefined {
+	if (platform?.env?.cosmo_users) {
+		return platform.env.cosmo_users;
+	}
 	try {
-		return platform?.env?.cosmo_users || (cfEnv as unknown as Env)?.cosmo_users;
+		return (cfEnv as unknown as Env | undefined)?.cosmo_users;
 	} catch {
-		return platform?.env?.cosmo_users;
+		return undefined;
 	}
 }
 
 export function getEnvVar(platform: App.Platform | undefined, key: string): string {
 	try {
-		const pEnv = platform?.env as unknown as Record<string, string> | undefined;
-		if (pEnv && pEnv[key]) return pEnv[key];
-		const cEnv = cfEnv as unknown as Record<string, string> | undefined;
-		if (cEnv && cEnv[key]) return cEnv[key];
+		const pEnv = platform?.env as unknown as Record<string, unknown> | undefined;
+		if (pEnv && typeof pEnv[key] === 'string' && pEnv[key]) return pEnv[key];
+		if (cfEnv && typeof cfEnv[key] === 'string' && cfEnv[key]) return cfEnv[key];
 	} catch {
 		// ignore
 	}
@@ -64,16 +73,17 @@ const memoryStore = {
 	chats: new Map<string, MagicChatMessage[]>()
 };
 
-let schemaInitialized = false;
-let schemaInitPromise: Promise<void> | null = null;
+const initializedDbs = new WeakSet<object>();
+const schemaInitPromises = new WeakMap<object, Promise<void>>();
 
 export async function ensureMagicSchema(db: D1Database | undefined): Promise<void> {
-	if (!db || schemaInitialized) return;
-	if (schemaInitPromise) {
-		await schemaInitPromise;
+	if (!db || initializedDbs.has(db)) return;
+	const existingPromise = schemaInitPromises.get(db);
+	if (existingPromise) {
+		await existingPromise;
 		return;
 	}
-	schemaInitPromise = (async () => {
+	const initPromise = (async () => {
 		try {
 			await db.batch([
 				db.prepare(`
@@ -152,12 +162,13 @@ export async function ensureMagicSchema(db: D1Database | undefined): Promise<voi
 					)
 				`)
 			]);
-			schemaInitialized = true;
+			initializedDbs.add(db);
 		} finally {
-			schemaInitPromise = null;
+			schemaInitPromises.delete(db);
 		}
 	})();
-	await schemaInitPromise;
+	schemaInitPromises.set(db, initPromise);
+	await initPromise;
 }
 
 export function extractSessionToken(request: Request): string | null {
