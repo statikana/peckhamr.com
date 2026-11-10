@@ -25,3 +25,8 @@ vite.config.ts.timestamp-*
 
 # cloudflare runs build already
 dist
+
+# Local SQLite databases
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
