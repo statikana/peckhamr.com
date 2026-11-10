@@ -730,3 +730,276 @@ describe('Tier 2B — 5d: Replacement ordering (CR 616.1, 616.1e–f)', () => {
 		assert.equal(targetCreature.counters['+1/+1'], 9, '(2 * 2) * 2 + 1 = 9 counters');
 	});
 });
+
+// ============================================================================
+// Item 5e — Combat damage assignment among multiple blockers / trample (CR 510.1c–d, 702.19b)
+// ============================================================================
+
+describe('Tier 2B — 5e: Combat damage assignment among multiple blockers / trample (CR 510.1c–d, 702.19b)', () => {
+	it('prompts human attacker with chooseNumber to divide damage freely among multiple blockers and deals all combat damage simultaneously (CR 510.1c, 510.2)', () => {
+		const { state, p1, p2 } = makeGame([false, false]);
+
+		const attacker = putInZone(
+			state,
+			p1,
+			synthCard({
+				name: 'Siege Rhino Veteran',
+				typeLine: 'Creature — Soldier',
+				power: '4',
+				toughness: '4',
+				oracleText: ''
+			}),
+			'battlefield'
+		);
+		const blocker1 = putInZone(
+			state,
+			p2,
+			synthCard({
+				name: 'Shield Bearer',
+				typeLine: 'Creature — Wall',
+				power: '2',
+				toughness: '3',
+				oracleText: ''
+			}),
+			'battlefield'
+		);
+		const blocker2 = putInZone(
+			state,
+			p2,
+			synthCard({
+				name: 'Spear Grunt',
+				typeLine: 'Creature — Goblin',
+				power: '1',
+				toughness: '2',
+				oracleText: ''
+			}),
+			'battlefield'
+		);
+
+		state.phase = 'declare_blockers';
+		state.activePlayerIndex = 0;
+		state.priorityPlayerIndex = 0;
+		state.combat = {
+			active: true,
+			attackers: [
+				{
+					attackerInstanceId: attacker.instanceId,
+					controllerId: p1.playerId,
+					defenderPlayerId: p2.playerId,
+					blockerInstanceIds: [blocker1.instanceId, blocker2.instanceId],
+					wasBlocked: true
+				}
+			],
+			declaredBlockersPlayerIds: [p2.playerId],
+			blockersDeclared: true,
+			damageDealtFirstStrike: false,
+			damageDealtNormal: false,
+			dealtFirstStrikeDamageIds: []
+		};
+
+		// Both players pass priority in declare_blockers -> advances to combat_damage
+		assert.equal(applyGameAction(state, p1.playerId, { type: 'pass_priority' }).ok, true);
+		assert.equal(applyGameAction(state, p2.playerId, { type: 'pass_priority' }).ok, true);
+
+		assert.equal(state.phase, 'combat_damage');
+		const dmgPrompt = state.pendingPrompts.find((pr) => pr.choice?.kind === 'chooseNumber');
+		assert.ok(
+			dmgPrompt,
+			'Human attacker must receive a chooseNumber prompt when blocked by multiple creatures'
+		);
+		assert.equal(dmgPrompt.playerId, p1.playerId);
+		assert.equal(dmgPrompt.choice?.kind, 'chooseNumber');
+		assert.equal(dmgPrompt.choice.min, 0);
+		assert.equal(dmgPrompt.choice.max, 4);
+		assert.equal(dmgPrompt.choice.defaultNumber, 3);
+
+		// CR 510.2: No combat damage is dealt before all assignments are collected
+		assert.equal(blocker1.damageMarked, 0);
+		assert.equal(blocker2.damageMarked, 0);
+		assert.equal(attacker.damageMarked, 0);
+
+		// CR 510.1c (late-2024 rules): Assign 1 (non-lethal) to blocker1; remaining 3 goes to blocker2
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'choice',
+				promptId: dmgPrompt.id,
+				answer: { kind: 'chooseNumber', n: 1 }
+			}).ok,
+			true
+		);
+
+		assert.equal(state.pendingPrompts.length, 0, 'Remaining 3 damage to last blocker should be assigned automatically');
+		assert.equal(
+			p2.battlefield.some((c) => c.instanceId === blocker1.instanceId),
+			true,
+			'Blocker 1 (2/3) took 1 damage and must survive'
+		);
+		assert.equal(blocker1.damageMarked, 1);
+		assert.equal(
+			p2.battlefield.some((c) => c.instanceId === blocker2.instanceId),
+			false,
+			'Blocker 2 (1/2) took 3 damage and must die'
+		);
+		assert.equal(
+			attacker.damageMarked,
+			3,
+			'Attacker must take 2 + 1 = 3 combat damage simultaneously from both blockers (CR 510.2)'
+		);
+	});
+
+	it('enforces CR 702.19b Trample (including Deathtouch + Trample): requires lethal on all blockers before excess tramples over', () => {
+		// Subcase A: 5/5 Trample blocked by two 2/2s; assigning non-lethal (1) to B1 prevents any trample to player
+		{
+			const { state, p1, p2 } = makeGame([false, false]);
+			const trampleAtk = putInZone(
+				state,
+				p1,
+				synthCard({
+					name: 'Charging Rhino',
+					typeLine: 'Creature — Rhino',
+					power: '5',
+					toughness: '5',
+					oracleText: 'Trample',
+					keywords: ['Trample']
+				}),
+				'battlefield'
+			);
+			const b1 = putInZone(
+				state,
+				p2,
+				synthCard({ name: 'Bear A', typeLine: 'Creature — Bear', power: '2', toughness: '2', oracleText: '' }),
+				'battlefield'
+			);
+			const b2 = putInZone(
+				state,
+				p2,
+				synthCard({ name: 'Bear B', typeLine: 'Creature — Bear', power: '2', toughness: '2', oracleText: '' }),
+				'battlefield'
+			);
+
+			state.phase = 'declare_blockers';
+			state.activePlayerIndex = 0;
+			state.priorityPlayerIndex = 0;
+			state.combat = {
+				active: true,
+				attackers: [
+					{
+						attackerInstanceId: trampleAtk.instanceId,
+						controllerId: p1.playerId,
+						defenderPlayerId: p2.playerId,
+						blockerInstanceIds: [b1.instanceId, b2.instanceId],
+						wasBlocked: true
+					}
+				],
+				declaredBlockersPlayerIds: [p2.playerId],
+				blockersDeclared: true,
+				damageDealtFirstStrike: false,
+				damageDealtNormal: false,
+				dealtFirstStrikeDamageIds: []
+			};
+
+			applyGameAction(state, p1.playerId, { type: 'pass_priority' });
+			applyGameAction(state, p2.playerId, { type: 'pass_priority' });
+
+			const pB1 = state.pendingPrompts[0];
+			assert.ok(pB1 && pB1.choice?.kind === 'chooseNumber');
+			// Assign only 1 (non-lethal) to Bear A -> all remaining 4 must go to Bear B, 0 to defending player!
+			assert.equal(
+				applyGameAction(state, p1.playerId, {
+					type: 'choice',
+					promptId: pB1.id,
+					answer: { kind: 'chooseNumber', n: 1 }
+				}).ok,
+				true
+			);
+			assert.equal(state.pendingPrompts.length, 0);
+			assert.equal(p2.life, 40, 'No damage may trample over when a blocker was not assigned lethal damage (CR 702.19b)');
+			assert.equal(p2.battlefield.some((c) => c.instanceId === b1.instanceId), true);
+			assert.equal(p2.battlefield.some((c) => c.instanceId === b2.instanceId), false);
+		}
+
+		// Subcase B: 5/5 Deathtouch + Trample blocked by two 3/3s; 1 is lethal on each, 3 tramples over
+		{
+			const { state, p1, p2 } = makeGame([false, false]);
+			const dtTrampleAtk = putInZone(
+				state,
+				p1,
+				synthCard({
+					name: 'Questing Basilisk',
+					typeLine: 'Creature — Beast',
+					power: '5',
+					toughness: '5',
+					oracleText: 'Deathtouch, trample',
+					keywords: ['Deathtouch', 'Trample']
+				}),
+				'battlefield'
+			);
+			const b1 = putInZone(
+				state,
+				p2,
+				synthCard({ name: 'Centaur A', typeLine: 'Creature — Centaur', power: '3', toughness: '3', oracleText: '' }),
+				'battlefield'
+			);
+			const b2 = putInZone(
+				state,
+				p2,
+				synthCard({ name: 'Centaur B', typeLine: 'Creature — Centaur', power: '3', toughness: '3', oracleText: '' }),
+				'battlefield'
+			);
+
+			state.phase = 'declare_blockers';
+			state.activePlayerIndex = 0;
+			state.priorityPlayerIndex = 0;
+			state.combat = {
+				active: true,
+				attackers: [
+					{
+						attackerInstanceId: dtTrampleAtk.instanceId,
+						controllerId: p1.playerId,
+						defenderPlayerId: p2.playerId,
+						blockerInstanceIds: [b1.instanceId, b2.instanceId],
+						wasBlocked: true
+					}
+				],
+				declaredBlockersPlayerIds: [p2.playerId],
+				blockersDeclared: true,
+				damageDealtFirstStrike: false,
+				damageDealtNormal: false,
+				dealtFirstStrikeDamageIds: []
+			};
+
+			applyGameAction(state, p1.playerId, { type: 'pass_priority' });
+			applyGameAction(state, p2.playerId, { type: 'pass_priority' });
+
+			const pB1 = state.pendingPrompts[0];
+			assert.ok(pB1 && pB1.choice?.kind === 'chooseNumber');
+			assert.equal(pB1.choice.defaultNumber, 1, 'Deathtouch makes 1 damage lethal on a 3/3 blocker');
+			assert.equal(
+				applyGameAction(state, p1.playerId, {
+					type: 'choice',
+					promptId: pB1.id,
+					answer: { kind: 'chooseNumber', n: 1 }
+				}).ok,
+				true
+			);
+
+			const pB2 = state.pendingPrompts[0];
+			assert.ok(pB2 && pB2.choice?.kind === 'chooseNumber');
+			assert.equal(pB2.choice.min, 1, 'Must assign at least lethal (1 with Deathtouch) to last blocker when trampling');
+			assert.equal(pB2.choice.max, 4);
+			assert.equal(pB2.choice.defaultNumber, 1);
+			assert.equal(
+				applyGameAction(state, p1.playerId, {
+					type: 'choice',
+					promptId: pB2.id,
+					answer: { kind: 'chooseNumber', n: 1 }
+				}).ok,
+				true
+			);
+
+			assert.equal(state.pendingPrompts.length, 0);
+			assert.equal(p2.battlefield.length, 0, 'Both 3/3 blockers die to 1 Deathtouch damage');
+			assert.equal(p2.life, 37, 'Remaining 3 damage tramples over to defending player');
+		}
+	});
+});

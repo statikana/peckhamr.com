@@ -3870,23 +3870,24 @@ function beginPhase(state: GameState, phase: GamePhase, activePlayer?: PlayerGam
 	// CR 703.3: Turn-based actions at the beginning of a step happen FIRST, before any
 	// "At the beginning of [step]" triggers go onto the stack. Triggers from the turn-based action
 	// (combat damage) wait until state-based actions have been checked (CR 704.3, 603.3).
+	let combatDamagePaused = false;
 	withTriggersDeferred(state, () => {
 		if (phase === 'untap' && active && !active.lost) {
 			executeUntapTurnBasedActions(state, active);
 		} else if (phase === 'draw' && active && !active.lost) {
 			executeDrawTurnBasedAction(state, active);
 		} else if (phase === 'first_strike_damage') {
-			executeCombatDamageStep(state, true);
+			combatDamagePaused = executeCombatDamageStep(state, true);
 		} else if (phase === 'combat_damage') {
-			executeCombatDamageStep(state, false);
+			combatDamagePaused = executeCombatDamageStep(state, false);
 		} else if (phase === 'cleanup') {
 			clearEndOfTurnAndDamage(state);
 		}
-		if (phase === 'first_strike_damage' || phase === 'combat_damage') {
+		if (!combatDamagePaused && (phase === 'first_strike_damage' || phase === 'combat_damage')) {
 			checkStateBasedActions(state);
 		}
 	});
-	if (state.status === 'finished') return;
+	if (combatDamagePaused || state.status === 'finished') return;
 	emitEvent(state, {
 		kind: 'PhaseBegin',
 		phase,
@@ -6141,7 +6142,13 @@ function checkAnyCombatantHasFirstStrike(state: GameState): boolean {
 	return false;
 }
 
-function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): void {
+const COMBAT_DAMAGE_ASSIGNMENT_HANDLER = 'combat_damage_assignment';
+
+function executeCombatDamageStep(
+	state: GameState,
+	isFirstStrikeStep: boolean,
+	chosenDamage: Record<string, number> = {}
+): boolean {
 	if (!state.combat.dealtFirstStrikeDamageIds) {
 		state.combat.dealtFirstStrikeDamageIds = [];
 	}
@@ -6208,6 +6215,7 @@ function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): 
 		atkPlayer: PlayerGameState;
 		defPlayer: PlayerGameState;
 		atkSnap: CombatantSnapshot;
+		blockers: CardInstance[];
 		attackerAssignments: AttackerDamageAssignment[];
 		blockerAssignments: Array<{
 			blocker: CardInstance;
@@ -6232,12 +6240,6 @@ function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): 
 
 		const atkSnap = snapshots.get(attacker.instanceId)!;
 		const attackerDealsNow = atkSnap.dealsNow;
-		if (isFirstStrikeStep && attackerDealsNow) {
-			if (!state.combat.dealtFirstStrikeDamageIds.includes(attacker.instanceId)) {
-				state.combat.dealtFirstStrikeDamageIds.push(attacker.instanceId);
-			}
-		}
-
 		const atkPower = atkSnap.power;
 		const atkDeathtouch = atkSnap.srcInfo.hasDeathtouch;
 		const atkTrample = atkSnap.hasTrample;
@@ -6288,6 +6290,7 @@ function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): 
 				// CR 702.19f: A creature with Trample attacking a planeswalker that left combat cannot assign excess
 				// damage to the defending player; all damage must be assigned to its blockers (or 0 if none remain).
 				const canTrampleOver = atkTrample && (!attackingPlaneswalker || Boolean(defWalker));
+				let allPriorBlockersLethal = true;
 				for (let i = 0; i < blockers.length; i++) {
 					const b = blockers[i];
 					const bSnap = snapshots.get(b.instanceId)!;
@@ -6298,10 +6301,59 @@ function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): 
 					const lethalNeeded = atkDeathtouch ? 1 : remTough;
 
 					const isLastBlocker = i === blockers.length - 1;
-					const dmgToBlocker =
-						isLastBlocker && !canTrampleOver
+					const autoDmg =
+						isLastBlocker && (!canTrampleOver || !allPriorBlockersLethal)
 							? remainingDamage
 							: Math.min(remainingDamage, lethalNeeded);
+
+					let dmgToBlocker = autoDmg;
+					// CR 510.1c–d, 702.19b: When blocked by multiple creatures, human controller divides combat damage
+					// among the blockers (andwith Trample, must assign lethal to all blockers before excess tramples over).
+					if (!atkPlayer.isBot && blockers.length >= 2 && remainingDamage > 0) {
+						const minDmg = isLastBlocker
+							? canTrampleOver && allPriorBlockersLethal && remainingDamage > lethalNeeded
+								? lethalNeeded
+								: remainingDamage
+							: 0;
+						const maxDmg = remainingDamage;
+						if (minDmg < maxDmg) {
+							const key = `${attacker.instanceId}:${b.instanceId}`;
+							const chosen = chosenDamage[key];
+							if (chosen === undefined) {
+								const reason = `Assign combat damage from ${attacker.card.name} (${remainingDamage} remaining) to blocker ${b.card.name} (${minDmg}–${maxDmg}; lethal is ${lethalNeeded}).`;
+								enqueueChoicePrompt(state, {
+									id: uid('prm', state),
+									playerId: atkPlayer.playerId,
+									kind: 'chooseNumber',
+									purpose: 'generic',
+									title: `Combat Damage — ${attacker.card.name} → ${b.card.name}`,
+									description: reason,
+									continuation: {
+										kind: 'handler',
+										name: COMBAT_DAMAGE_ASSIGNMENT_HANDLER,
+										data: {
+											isFirstStrikeStep,
+											chosenDamage,
+											key
+										}
+									},
+									choice: {
+										kind: 'chooseNumber',
+										min: minDmg,
+										max: maxDmg,
+										defaultNumber: Math.max(minDmg, Math.min(maxDmg, autoDmg)),
+										reason
+									}
+								});
+								return true;
+							}
+							dmgToBlocker = Math.max(minDmg, Math.min(maxDmg, chosen));
+						}
+					}
+
+					if (dmgToBlocker < lethalNeeded) {
+						allPriorBlockersLethal = false;
+					}
 
 					if (dmgToBlocker > 0) {
 						assignedDamageOnPerm.set(b.instanceId, alreadyAssignedOrMarked + dmgToBlocker);
@@ -6314,7 +6366,7 @@ function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): 
 					}
 				}
 
-				if (canTrampleOver && remainingDamage > 0) {
+				if (canTrampleOver && allPriorBlockersLethal && remainingDamage > 0) {
 					if (defWalker) {
 						attackerAssignments.push({
 							kind: 'planeswalker',
@@ -6339,11 +6391,6 @@ function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): 
 			for (const b of blockers) {
 				const bSnap = snapshots.get(b.instanceId)!;
 				const blockerDealsNow = bSnap.dealsNow;
-				if (isFirstStrikeStep && blockerDealsNow) {
-					if (!state.combat.dealtFirstStrikeDamageIds.includes(b.instanceId)) {
-						state.combat.dealtFirstStrikeDamageIds.push(b.instanceId);
-					}
-				}
 				if (blockerDealsNow && bSnap.power > 0) {
 					blockerAssignments.push({ blocker: b, bSnap, amount: bSnap.power });
 				}
@@ -6355,6 +6402,7 @@ function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): 
 			atkPlayer,
 			defPlayer,
 			atkSnap,
+			blockers,
 			attackerAssignments,
 			blockerAssignments
 		});
@@ -6362,8 +6410,19 @@ function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): 
 
 	// CR 510.2: Deal all assigned combat damage simultaneously through the unified damage pipeline.
 	for (const sched of scheduledCombats) {
-		const { attacker, atkPlayer, defPlayer, atkSnap, attackerAssignments, blockerAssignments } =
+		const { attacker, atkPlayer, defPlayer, atkSnap, blockers, attackerAssignments, blockerAssignments } =
 			sched;
+		if (isFirstStrikeStep) {
+			if (atkSnap.dealsNow && !state.combat.dealtFirstStrikeDamageIds.includes(attacker.instanceId)) {
+				state.combat.dealtFirstStrikeDamageIds.push(attacker.instanceId);
+			}
+			for (const b of blockers) {
+				const bSnap = snapshots.get(b.instanceId);
+				if (bSnap?.dealsNow && !state.combat.dealtFirstStrikeDamageIds.includes(b.instanceId)) {
+					state.combat.dealtFirstStrikeDamageIds.push(b.instanceId);
+				}
+			}
+		}
 		const atkInfect = atkSnap.srcInfo.hasInfect;
 		const atkLifelink = atkSnap.srcInfo.hasLifelink;
 		let totalDealtByAttacker = 0;
@@ -6515,7 +6574,39 @@ function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): 
 	} else {
 		state.combat.damageDealtNormal = true;
 	}
+	return false;
 }
+
+registerPromptHandler(COMBAT_DAMAGE_ASSIGNMENT_HANDLER, (state, prompt, answer) => {
+	const data = prompt.continuation?.kind === 'handler' ? prompt.continuation.data : undefined;
+	const isFirstStrikeStep = Boolean(data?.isFirstStrikeStep);
+	const prevChosen =
+		data?.chosenDamage && typeof data.chosenDamage === 'object'
+			? (data.chosenDamage as Record<string, number>)
+			: {};
+	const key = typeof data?.key === 'string' ? data.key : '';
+	const n = answer.kind === 'chooseNumber' ? answer.n : 0;
+	const nextChosen: Record<string, number> = key ? { ...prevChosen, [key]: n } : { ...prevChosen };
+
+	let paused = false;
+	withTriggersDeferred(state, () => {
+		paused = executeCombatDamageStep(state, isFirstStrikeStep, nextChosen);
+		if (!paused) {
+			checkStateBasedActions(state);
+		}
+	});
+	if (paused || state.status === 'finished') return;
+	const active = state.players[state.activePlayerIndex];
+	emitEvent(state, {
+		kind: 'PhaseBegin',
+		phase: state.phase,
+		activePlayerId: active?.playerId ?? null
+	});
+	flushTriggers(state);
+	givePriorityToActiveOrNextPlayer(state);
+	state.passedPriorityPlayerIds = [];
+	checkStateBasedActions(state);
+});
 
 function clearEndOfTurnAndDamage(state: GameState): void {
 	for (const p of state.players) {

@@ -1618,8 +1618,14 @@
 					myChoice?.kind === 'chooseObjects' && myChoice.defaultObjectIds
 						? [...myChoice.defaultObjectIds]
 						: [];
-				selectedPromptModes = [];
-				selectedPromptNumber = myChoice?.kind === 'chooseNumber' ? myChoice.min : 0;
+				selectedPromptModes =
+					myChoice?.kind === 'chooseMode' && myChoice.defaultIndices
+						? [...myChoice.defaultIndices]
+						: [];
+				selectedPromptNumber =
+					myChoice?.kind === 'chooseNumber'
+						? (myChoice.defaultNumber ?? myChoice.min)
+						: 0;
 			}
 		} else {
 			choiceStatePromptId = null;

@@ -494,8 +494,8 @@ export type ChoiceRequest =
 			reason: string;
 			defaultObjectIds?: string[];
 	  }
-	| { kind: 'chooseMode'; modes: string[]; min: number; max: number }
-	| { kind: 'chooseNumber'; min: number; max: number; reason: string }
+	| { kind: 'chooseMode'; modes: string[]; min: number; max: number; defaultIndices?: number[] }
+	| { kind: 'chooseNumber'; min: number; max: number; reason: string; defaultNumber?: number }
 	| {
 			kind: 'orderObjects';
 			objectIds: string[];
