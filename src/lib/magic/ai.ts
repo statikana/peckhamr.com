@@ -20,6 +20,7 @@ import { chooseBotAnswer, effectivePromptChoice, effectivePromptPurpose } from '
 import { withStableLayerInputs } from './runtime/layerCache.ts';
 import { evaluateCondition, matchesObjectFilter } from './runtime/objectFilter.ts';
 import type {
+	BotSpeed,
 	CardInstance,
 	ChoiceAnswer,
 	GamePhase,
@@ -258,6 +259,53 @@ export interface BotLoopOptions {
 export interface BotLoopResult {
 	paused: boolean;
 	pausedFor?: BotPauseKind;
+}
+
+const BOT_SPEED_RANGES: Record<Exclude<BotSpeed, 'instant'>, readonly [number, number]> = {
+	fast: [400, 700],
+	normal: [900, 1600],
+	slow: [1800, 3000]
+};
+
+export function normalizeBotSpeed(speed: BotSpeed | string | undefined | null): BotSpeed {
+	if (speed === 'instant' || speed === 'fast' || speed === 'normal' || speed === 'slow') {
+		return speed;
+	}
+	return 'normal';
+}
+
+function hashLobbyVersion(code: string, version: number): number {
+	let h = 0x811c9dc5;
+	const key = `${code}:${version}`;
+	for (let i = 0; i < key.length; i++) {
+		h ^= key.charCodeAt(i);
+		h = Math.imul(h, 0x01000193);
+	}
+	h ^= h >>> 16;
+	h = Math.imul(h, 0x85ebca6b);
+	h ^= h >>> 13;
+	h = Math.imul(h, 0xc2b2ae35);
+	h ^= h >>> 16;
+	return h >>> 0;
+}
+
+/**
+ * Deterministic delay (in ms) before the next automated bot step, derived purely from
+ * `(speed, kind, code, version)` — never touching `state.rng` or `Math.random`.
+ */
+export function botDelayMs(
+	speed: BotSpeed | undefined,
+	kind: BotPauseKind,
+	code: string,
+	version: number
+): number {
+	const normalized = normalizeBotSpeed(speed);
+	if (normalized === 'instant') return 0;
+	const [min, max] = BOT_SPEED_RANGES[normalized];
+	const effectiveMax = kind === 'turn_start' ? min + Math.floor((max - min) * 0.25) : max;
+	const span = effectiveMax - min + 1;
+	const h = hashLobbyVersion(code, version);
+	return min + (h % span);
 }
 
 function getTurnSerial(state: GameState): number {

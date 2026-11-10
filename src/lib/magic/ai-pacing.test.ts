@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it, mock } from 'node:test';
 
 import {
+	botDelayMs,
 	capturePreActionSnapshot,
 	executeBotStep,
 	runAutomatedPriorityAndBots,
@@ -570,5 +571,43 @@ describe('ai.ts bot pacing mode', () => {
 		assert.equal(botFirstState.activePlayerIndex, 0);
 		assert.equal(botFirstState.players[0].landsPlayedThisTurn, 0);
 		assert.equal(typeof executeBotStep, 'function');
+	});
+
+	it('botDelayMs returns 0 for instant, stays within configured speed ranges, uses low end for turn_start, and is deterministic', () => {
+		assert.equal(botDelayMs('instant', 'action', 'ABC123', 1), 0);
+		assert.equal(botDelayMs('instant', 'turn_start', 'ABC123', 99), 0);
+
+		const expectations = [
+			{ speed: 'fast' as const, min: 400, max: 700, turnStartMax: 475 },
+			{ speed: 'normal' as const, min: 900, max: 1600, turnStartMax: 1075 },
+			{ speed: 'slow' as const, min: 1800, max: 3000, turnStartMax: 2100 }
+		];
+
+		for (const { speed, min, max, turnStartMax } of expectations) {
+			const actionValues = new Set<number>();
+			for (let v = 1; v <= 100; v++) {
+				const dAction = botDelayMs(speed, 'action', 'POD777', v);
+				assert.ok(
+					dAction >= min && dAction <= max,
+					`${speed} action delay ${dAction} outside [${min}, ${max}]`
+				);
+				assert.equal(dAction, botDelayMs(speed, 'action', 'POD777', v));
+				actionValues.add(dAction);
+
+				const dTurn = botDelayMs(speed, 'turn_start', 'POD777', v);
+				assert.ok(
+					dTurn >= min && dTurn <= turnStartMax,
+					`${speed} turn_start delay ${dTurn} outside low end [${min}, ${turnStartMax}]`
+				);
+				assert.equal(dTurn, botDelayMs(speed, 'turn_start', 'POD777', v));
+			}
+			assert.ok(actionValues.size > 20, `Expected deterministic jitter spread for ${speed}`);
+		}
+
+		// Missing / undefined speed defaults to 'normal'
+		assert.equal(
+			botDelayMs(undefined, 'action', 'LEGACY', 5),
+			botDelayMs('normal', 'action', 'LEGACY', 5)
+		);
 	});
 });
