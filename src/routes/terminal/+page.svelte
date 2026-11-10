@@ -1,7 +1,7 @@
 <script lang="ts">
     import { onMount } from "svelte";
     import { page } from "$app/state";
-    import { appUrl } from "$lib/apps";
+    import { appUrl } from "../../lib/apps";
     import Terminal from "../../Terminal.svelte";
 
     let theme = $state<"light" | "dark">("light");

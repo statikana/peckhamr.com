@@ -73,8 +73,16 @@ function normalizeAppPath(path = '/'): string {
 	return path.startsWith('/') ? path : `/${path}`;
 }
 
-function resolveCurrentUrl(currentUrl?: URL | string | null): URL | null {
-	if (currentUrl instanceof URL) return currentUrl;
+export interface UrlLike {
+	readonly host: string;
+	readonly port: string;
+	readonly protocol: string;
+}
+
+function resolveCurrentUrl(currentUrl?: UrlLike | string | null): UrlLike | null {
+	if (currentUrl && typeof currentUrl === 'object' && typeof currentUrl.host === 'string') {
+		return currentUrl;
+	}
 	if (typeof currentUrl === 'string' && currentUrl) {
 		try {
 			return new URL(currentUrl);
@@ -100,7 +108,7 @@ function resolveCurrentUrl(currentUrl?: URL | string | null): URL | null {
 export function appUrl(
 	app: AppTarget,
 	path = '/',
-	currentUrl?: URL | string | null
+	currentUrl?: UrlLike | string | null
 ): string {
 	const normalized = normalizeAppPath(path);
 	const loc = resolveCurrentUrl(currentUrl);

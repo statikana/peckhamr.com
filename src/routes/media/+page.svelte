@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
-	import { appUrl } from '$lib/apps';
+	import { appUrl } from '../../lib/apps';
 
 	type MediaKind = 'photo' | 'video' | 'audio';
 

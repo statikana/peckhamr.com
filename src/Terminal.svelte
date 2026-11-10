@@ -3,7 +3,7 @@
 
 import DOMPurify from "dompurify";
 import { onMount, tick } from "svelte";
-import { appUrl, getAppFromHost } from "$lib/apps";
+import { appUrl, getAppFromHost } from "./lib/apps";
 
 function isFullscreenTerminal(url) {
     if (!url) return false;
