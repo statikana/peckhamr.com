@@ -33,3 +33,8 @@ directory = ".svelte-kit/cloudflare"  # build assets to be served
 binding = "cosmo_users"  # referred to by worker
 database_name = "cosmo_users"  # referred to by JS
 database_id = "ca0da580-dd9a-4885-86f6-8c20bc14db1f"
+
+[vars]
+MAGIC_MODE = "cloudflare"
+# MAGIC_BACKEND_URL = "https://magic-backend.peckhamr.com"
+# Set MAGIC_PROXY_SECRET via `wrangler secret put MAGIC_PROXY_SECRET` (never in git)

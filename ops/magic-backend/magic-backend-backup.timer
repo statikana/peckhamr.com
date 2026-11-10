@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Peckhamr Magic Backend SQLite backup nightly
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+RandomizedDelaySec=5m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

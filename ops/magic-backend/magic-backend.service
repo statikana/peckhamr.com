@@ -1,0 +1,30 @@
+[Unit]
+Description=Peckhamr Magic Commander API Backend
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=magic
+Group=magic
+WorkingDirectory=/opt/magic-backend
+EnvironmentFile=/etc/magic-backend.env
+ExecStart=/usr/bin/node /opt/magic-backend/current/main.mjs
+Restart=always
+RestartSec=2
+MemoryMax=1G
+
+# Systemd sandboxing & hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/magic-backend
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

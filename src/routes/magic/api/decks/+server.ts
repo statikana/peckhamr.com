@@ -9,16 +9,16 @@ import {
 	jsonResponse,
 	listUserDecks,
 	saveUserDeck
-} from '../../../../lib/magic/db';
-import { resolveScryfallImageLinks } from '../../../../lib/magic/cardImages';
-import { PRECON_DECKS } from '../../../../lib/magic/precons';
+} from '../../../../lib/magic/db.ts';
+import { resolveScryfallImageLinks } from '../../../../lib/magic/cardImages.ts';
+import { PRECON_DECKS } from '../../../../lib/magic/precons.ts';
 import {
 	parseDecklistText,
 	resolveCardsFromScryfall,
 	searchScryfallCards,
 	validateCommanderDeck
-} from '../../../../lib/magic/scryfall';
-import type { DeckCardEntry, MagicDeck, ScryfallCard } from '../../../../lib/magic/types';
+} from '../../../../lib/magic/scryfall.ts';
+import type { DeckCardEntry, MagicDeck, ScryfallCard } from '../../../../lib/magic/types.ts';
 
 export const trailingSlash = 'ignore';
 
