@@ -3816,7 +3816,6 @@ function beginPhase(state: GameState, phase: GamePhase, activePlayer?: PlayerGam
 // keyword (before matching, as the old upkeep loop did) and delayed end-step triggers (after the
 // beginning-of-end-step triggers are on the stack).
 for (const kind of [
-	'Cast',
 	'SpellCopied',
 	'AttackDeclared',
 	'BlockersDeclared',
@@ -3828,10 +3827,32 @@ for (const kind of [
 ] as const) {
 	registerEventHandler(kind, (state, ev) => matchTriggers(state, ev));
 }
+registerEventHandler('Cast', (state, ev) => {
+	matchTriggers(state, ev);
+	noteUnautomatedOnCast(state, ev.object, ev.playerId);
+});
 registerEventHandler('ZoneChange', (state, ev) => {
 	matchTriggers(state, ev);
 	if (ev.to === 'battlefield' && !ev.ceasedToExist) noteUnautomatedOnEnter(state, ev.object);
 });
+
+/**
+ * CR 702.85a / 702.88a / Step E2: when an instant or sorcery is cast, log any unsupported keyword
+ * or static notices on it once so players know to resolve them manually.
+ */
+function noteUnautomatedOnCast(state: GameState, obj: CardInstance, playerId: string): void {
+	if (obj.isFaceDown) return;
+	const card = obj.copiableCard ?? obj.card;
+	if (!/\b(?:Instant|Sorcery)\b/.test(card.typeLine)) return;
+	for (const n of enteringNotices(card)) {
+		addLog(
+			state,
+			'rule',
+			`${card.name}: ${n.text} is not automated — resolve manually.`,
+			playerId
+		);
+	}
+}
 
 /**
  * Step E2 (plan section 2.7): when a permanent enters, say once which of its abilities the engine

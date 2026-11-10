@@ -1317,8 +1317,8 @@ function parseModal(header: string, bullets: Array<{ text: string; start: number
 
 /** Lines of an instant or sorcery that aren't part of its effect. */
 function isNonEffectLine(body: string): boolean {
-	// Keyword lines ("Buyback {2}", "Overload {6}{U}", "Suspend 4—{U}", "Flash") have no period.
-	if (!/[.!]$/.test(body)) return true;
+	// Implemented/handled spell keyword lines ("Buyback {2}", "Overload {6}{U}", "Suspend 4—{U}", "Flash") have no period.
+	if (!/[.!]$/.test(body) && /^(?:overload|suspend|flash|buyback)\b/i.test(body.trim())) return true;
 	return false;
 }
 

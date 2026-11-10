@@ -149,8 +149,18 @@ export function compileFaces(card: ScryfallCard): FaceDefinition[] {
 		}
 		const out = keywordLine(line) ?? triggerLine(line) ?? activatedLine(ctx, line);
 		if (out) abilities.push(...out);
-		else if (ctx.isSpell) spellLines.push(...group);
-		else abilities.push(...staticGroup(group));
+		else if (ctx.isSpell) {
+			if (
+				group.length === 1 &&
+				!line.abilityWord &&
+				!/[.!—]$/.test(line.body) &&
+				!line.text.startsWith('•')
+			) {
+				abilities.push(unsupported('keyword_not_implemented', line.text, line.span, [line.span]));
+			} else {
+				spellLines.push(...group);
+			}
+		} else abilities.push(...staticGroup(group));
 	}
 	if (spellLines.length > 0) abilities.push(...spellAbility(norm, spellLines));
 

@@ -574,3 +574,48 @@ describe('Tier 2 Track A — Item 3: CR 509.1b / 702.11d / 702.13 / 702.28 / 702
 		assert.equal(evalMonk.toughness, 3, 'Prowess trigger must give +1/+1 until end of turn');
 	});
 });
+
+describe('Tier 2 Track A — Item 4: CR 702.85a / 702.88a Unsupported Keywords on Instants & Sorceries', () => {
+	it('marks non-period keyword lines on instants/sorceries as unsupported and logs an unautomated notice on cast', () => {
+		const cascadeSorcery = card({
+			name: 'Ardent Plea Scroll',
+			typeLine: 'Sorcery',
+			manaCost: '{2}{U}',
+			colors: ['U'],
+			oracleText: 'Cascade\nYou gain 2 life.',
+			power: undefined,
+			toughness: undefined
+		});
+		const freecastInstant = card({
+			name: 'Arcane Volley',
+			typeLine: 'Instant — Arcane',
+			manaCost: '{1}{R}',
+			colors: ['R'],
+			oracleText: 'Freecast — Pay 2 life\nYou gain 2 life.',
+			power: undefined,
+			toughness: undefined
+		});
+
+		assert.equal(compileCard(cascadeSorcery).fullySupported, false, 'Cascade sorcery must be unsupported (CR 702.85a)');
+		assert.equal(compileCard(freecastInstant).fullySupported, false, 'Unrecognized non-period keyword line on instant must not be silently skipped');
+
+		const state = createTestGame();
+		const alice = state.players[0];
+		const spellInst = putOnBoard(state, alice, cascadeSorcery, 'hand');
+
+		const logLenBefore = state.log.length;
+		assert.equal(
+			applyGameAction(state, alice.playerId, {
+				type: 'cast_spell',
+				instanceId: spellInst.instanceId
+			}).ok,
+			true
+		);
+
+		const newLogs = state.log.slice(logLenBefore).map((l) => l.text);
+		assert.ok(
+			newLogs.some((m) => m.includes('Cascade') && m.includes('not automated — resolve manually')),
+			`Expected cast log to mention 'Cascade is not automated — resolve manually', got: ${JSON.stringify(newLogs)}`
+		);
+	});
+});
