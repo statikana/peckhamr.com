@@ -784,6 +784,7 @@ export interface GameState {
 	 * more extra turns began, so normal turn order resumes from the next seat after extra turns finish.
 	 */
 	lastNormalTurnPlayerIndex?: number;
+	playersDrawnThisTurn?: string[];
 	stackTriggersEnabled?: boolean;
 	rngState?: number;
 	nextUid?: number;

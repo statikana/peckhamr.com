@@ -51,10 +51,11 @@ import { legacySearchSpec } from '../compiler/effects.ts';
 import { evaluatePermanent, inspectCardContinuousBreakdown } from '../ruleTree.ts';
 import { enqueueChoicePrompt } from './choices.ts';
 import { emitEvent } from './events.ts';
+import { noteLayerInputsChanged } from './layerCache.ts';
 import { activeRuleModifiers, tokenMultiplier } from './replace.ts';
-import { withSimultaneousDestroyLki } from './triggers.ts';
+import { flushTriggers, withSimultaneousDestroyLki } from './triggers.ts';
 import { nextRandom } from './random.ts';
-import { allocateTimestamp, moveObject, rearrangeLibrary } from './zones.ts';
+import { allocateTimestamp, createEmptyCounters, moveObject, rearrangeLibrary, tapPermanent } from './zones.ts';
 import { PROMPTING_VERBS } from '../compiler/interpretable.ts';
 
 /** Seeded randomness lives in runtime/random.ts (re-exported here for existing importers). */
@@ -188,10 +189,6 @@ export function interpretableNow(
 		if (item.targets.length > 0) return false;
 	} else if (overload) {
 		if (spec.kind !== 'object') return false;
-	} else if (parse.targets.length === 2 && parse.steps.some((s) => s.verb === 'fight')) {
-		if (item.targets.length !== 2) return false;
-		if (!targetRefMatchesSpec(item.targets[0], parse.targets[0])) return false;
-		if (!targetRefMatchesSpec(item.targets[1], parse.targets[1])) return false;
 	} else if (parse.targets.length > 1) {
 		if (item.targets.length === 0 || item.targets.length > parse.targets.length) return false;
 		if (!item.targets.every((t) => parse.targets.some((sp) => targetRefMatchesSpec(t, sp)))) return false;
@@ -447,16 +444,32 @@ export function dealDamageToPlayer(
 	return dmg;
 }
 
+/**
+ * CR 119.9–119.10: Single funnel for positive life gain. Gaining 0 life (or attempting to gain life
+ * while `lifeTotalCantChange` applies) is not a life-gain event and does not emit `GainLife`.
+ */
+export function gainPlayerLife(
+	state: GameState,
+	player: PlayerGameState,
+	amount: number
+): number {
+	if (amount <= 0 || player.lost) return 0;
+	const cantChange =
+		Boolean(player.lifeTotalCannotChangeThisTurn) ||
+		activeRuleModifiers(state, 'lifeTotalCantChange', player.playerId).length > 0;
+	if (cantChange) return 0;
+	player.life += amount;
+	emitEvent(state, { kind: 'GainLife', playerId: player.playerId, amount });
+	flushTriggers(state);
+	return amount;
+}
+
 export function applyLifelinkGain(
 	state: GameState,
 	controller: PlayerGameState,
 	totalDealt: number
 ): void {
-	if (totalDealt <= 0 || controller.lost) return;
-	const cantChange =
-		Boolean(controller.lifeTotalCannotChangeThisTurn) ||
-		activeRuleModifiers(state, 'lifeTotalCantChange', controller.playerId).length > 0;
-	if (!cantChange) controller.life += totalDealt;
+	gainPlayerLife(state, controller, totalDealt);
 }
 
 // ---- Interpreter ----------------------------------------------------------------------------
@@ -954,10 +967,14 @@ class Run {
 						: this.players(step.subject);
 				for (const pl of targets) {
 					const delta = step.verb === 'gainLife' ? n : -n;
-					const cantChange =
-						Boolean(pl.lifeTotalCannotChangeThisTurn) ||
-						activeRuleModifiers(s, 'lifeTotalCantChange', pl.playerId).length > 0;
-					if (!cantChange) pl.life += delta;
+					if (step.verb === 'gainLife') {
+						gainPlayerLife(s, pl, n);
+					} else {
+						const cantChange =
+							Boolean(pl.lifeTotalCannotChangeThisTurn) ||
+							activeRuleModifiers(s, 'lifeTotalCantChange', pl.playerId).length > 0;
+						if (!cantChange) pl.life += delta;
+					}
 					p.emitVfx(s, {
 						kind: delta >= 0 ? 'heal' : 'damage',
 						sourceId: you.playerId,
@@ -1247,15 +1264,18 @@ class Run {
 			case 'tapOrUntap' as Verb: {
 				const objs = this.objects(step.subject).filter((o) => o.zone === 'battlefield');
 				this.bind(step, objs);
-				const shouldTap =
-					step.verb === 'tap'
-						? true
-						: step.verb === 'untap'
-							? false
-							: Boolean((step.params as { tap?: boolean } | undefined)?.tap);
+				const explicitTap = (step.params as { tap?: boolean } | undefined)?.tap;
 				for (const o of objs) {
+					const shouldTap =
+						step.verb === 'tap'
+							? true
+							: step.verb === 'untap'
+								? false
+								: explicitTap !== undefined
+									? Boolean(explicitTap)
+									: !o.tapped;
 					if (shouldTap) {
-						o.tapped = true;
+						tapPermanent(s, o);
 					} else if (o.tapped) {
 						// CR 122.1d: If a permanent with a stun counter on it would become untapped,
 						// instead remove a stun counter from it.
@@ -1269,9 +1289,65 @@ class Run {
 							);
 						} else {
 							o.tapped = false;
+							noteLayerInputsChanged(s);
 						}
 					}
 				}
+				return;
+			}
+			case 'copySpell': {
+				const sel = step.subject;
+				const t = sel.k === 'target' ? this.ctx.targets[sel.index] : undefined;
+				const orig =
+					t?.kind === 'stack'
+						? s.stack.find((item) => item.id === t.id && item.kind === 'spell')
+						: undefined;
+				if (!orig) return;
+				const copyInstanceId = p.uid('copy', s);
+				const copyItem: StackItem = {
+					...orig,
+					id: p.uid('stk', s),
+					sourceInstanceId: copyInstanceId,
+					controllerId: you.playerId,
+					ownerId: you.playerId,
+					title: `${orig.card.name} (Copy)`,
+					targets: orig.targets.map((trg) => ({ ...trg })),
+					chosenModes: orig.chosenModes ? [...orig.chosenModes] : undefined,
+					isCopy: true,
+					createdAt: Date.now()
+				};
+				s.stack.push(copyItem);
+				const dummyObj: CardInstance = {
+					instanceId: copyInstanceId,
+					objectVersion: 1,
+					card: orig.card,
+					ownerId: you.playerId,
+					controllerId: you.playerId,
+					defaultControllerId: you.playerId,
+					zone: 'stack',
+					tapped: false,
+					summoningSick: false,
+					damageMarked: 0,
+					deathtouchDamageMarked: false,
+					tempPowerMod: 0,
+					tempToughnessMod: 0,
+					grantedKeywords: [],
+					attachedToId: null,
+					counters: createEmptyCounters(),
+					isCommander: false,
+					commanderCastCount: 0,
+					usedLoyaltyThisTurn: false,
+					transformed: false,
+					isToken: false,
+					enteredTimestamp: allocateTimestamp(s)
+				};
+				emitEvent(s, {
+					kind: 'SpellCopied',
+					playerId: you.playerId,
+					objectId: copyInstanceId,
+					object: dummyObj
+				});
+				p.addLog(s, 'cast', `${you.username} copied ${orig.card.name} on the stack (CR 707.10).`, you.playerId);
 				return;
 			}
 			case 'mill':
@@ -1412,10 +1488,27 @@ class Run {
 
 	resolveSingleFighter(sel: Selector): CardInstance | null {
 		if (sel.k === 'target') {
+			if (
+				this.ctx.targetSpecs.length > 1 &&
+				this.ctx.targets.length < this.ctx.targetSpecs.filter((sp) => sp.min > 0).length
+			) {
+				return null;
+			}
 			const t = this.ctx.targets[sel.index];
 			if (!t || t.kind === 'player' || t.kind === 'stack') return null;
 			const inst = this.locate(t.id)?.inst ?? null;
 			return inst && !inst.phasedOut ? inst : null;
+		}
+		if (sel.k === 'self') {
+			const inst = this.locate(this.ctx.sourceId)?.inst ?? null;
+			if (!inst || inst.phasedOut) return null;
+			if (
+				this.ctx.item?.sourceObjectVersion !== undefined &&
+				inst.objectVersion !== this.ctx.item.sourceObjectVersion
+			) {
+				return null;
+			}
+			return inst;
 		}
 		return this.objects(sel)[0] ?? null;
 	}
@@ -1432,7 +1525,7 @@ class Run {
 			fighterA = this.resolveSingleFighter({ k: 'target', index: 0 });
 			fighterB = this.resolveSingleFighter({ k: 'target', index: 1 });
 		}
-		// CR 701.12b: If one or both creatures are no longer on the battlefield or no longer creatures,
+		// CR 701.14b: If one or both creatures are no longer on the battlefield or no longer creatures,
 		// neither of them deals or is dealt damage.
 		if (!fighterA || !fighterB) return;
 		if (fighterA.zone !== 'battlefield' || fighterB.zone !== 'battlefield') return;
@@ -1448,7 +1541,7 @@ class Run {
 		const ctrlA = this.player(fighterA.controllerId) ?? this.you;
 		const ctrlB = this.player(fighterB.controllerId) ?? this.you;
 
-		// CR 701.12c: If a creature fights itself, it deals damage to itself equal to twice its power.
+		// CR 701.14c: If a creature fights itself, it deals damage to itself equal to twice its power.
 		if (fighterA.instanceId === fighterB.instanceId) {
 			const dealt = this.dealDamageToPermanent(fighterA, powerA * 2, fighterA.instanceId, infoA);
 			if (infoA.hasLifelink) this.applyLifelinkGain(ctrlA, dealt);

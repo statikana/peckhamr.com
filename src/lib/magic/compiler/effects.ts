@@ -27,7 +27,8 @@ import type {
 	Span,
 	TargetSpec,
 	TokenSpec,
-	TriggerDef
+	TriggerDef,
+	Verb
 } from '../ir.ts';
 import type { CounterType, LibrarySearchSpec, ManaColor, ScryfallCard, StackItem } from '../types.ts';
 import { buildTokenSpec, parseLibrarySearchSpec } from '../oracle.ts';
@@ -685,6 +686,17 @@ function objectPredicate(p: Parser, subject: ObjectRes, vp: string, span: Span):
 		p.push({ verb: 'damage', subject: target, amount, span }, false);
 		return true;
 	}
+	const fight = text.match(/^fights? (.+)$/);
+	if (fight && !eot) {
+		const isAnotherTarget = /^another target\b/.test(fight[1]);
+		const other = objectPhrase(p, isAnotherTarget ? fight[1].replace(/^another /, '') : fight[1]);
+		if (!other) return false;
+		if (isAnotherTarget && subject.selector.k === 'self' && other.selector.k === 'target') {
+			p.targets[other.selector.index].filter.other = true;
+		}
+		p.push({ verb: 'fight', subject: subject.selector, params: { with: other.selector }, span }, false);
+		return true;
+	}
 	return false;
 }
 
@@ -886,6 +898,18 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 		p.push({ verb, subject: obj.selector, span }, true);
 		return true;
 	}
+	m = t.match(/^(tap or untap|tap|untap) (.+)$/);
+	if (m) {
+		const isAnotherTarget = /^another target\b/.test(m[2]);
+		const obj = objectPhrase(p, isAnotherTarget ? m[2].replace(/^another /, '') : m[2]);
+		if (!obj || obj.fromZone) return false;
+		if (isAnotherTarget && obj.selector.k === 'target') {
+			p.targets[obj.selector.index].filter.other = true;
+		}
+		const verb: Verb = m[1] === 'tap' ? 'tap' : m[1] === 'untap' ? 'untap' : 'tapOrUntap';
+		p.push({ verb, subject: obj.selector, span }, true);
+		return true;
+	}
 	m = t.match(/^counter (.+)$/);
 	if (m) {
 		const obj = objectPhrase(p, m[1]);
@@ -957,9 +981,9 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 		p.push({ verb: 'move', subject: obj.selector, params: { from: 'graveyard', to: 'hand' }, span }, true);
 		return true;
 	}
-	m = t.match(/^put (\S+) (\S+) counters? on (.+)$/);
+	m = t.match(/^put (that many|\S+) (\S+) counters? on (.+)$/);
 	if (m) {
-		const amount = count(m[1]);
+		const amount = m[1] === 'that many' ? p.thatMany() : count(m[1]);
 		const counter = COUNTER_WORDS[m[2]];
 		const obj = objectPhrase(p, m[3]);
 		if (!amount || !counter || !obj) return false;
@@ -1021,7 +1045,7 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 
 /** "Add {R}{R}{R}", "Add one mana of any color", "Add {G} for each Elf you control". */
 function addMana(p: Parser, text: string, span: Span): ClauseResult {
-	const t = text.trim();
+	const t = text.trim().replace(/^an additional\s+/i, '');
 	const symbols = (s: string) => (s.match(/\{([WUBRGC])\}/g) ?? []).map((x) => x[1] as ManaColor);
 	if (/^(?:\{[WUBRGC]\})+$/.test(t)) {
 		const mana = symbols(t);
@@ -1070,7 +1094,7 @@ function addMana(p: Parser, text: string, span: Span): ClauseResult {
 
 // Words that start a new clause after " and " / ", then ".
 const CLAUSE_START =
-	/^(?:you|each opponent|each player|target player|target opponent|its controller|its owner|that player|they|draw|draws|lose|loses|gain|gains|get|gets|put|exile|destroy|return|create|creates|search|scry|mill|mills|sacrifice|deal|deals|add|take|takes|phase|phases|attach|counter|proliferate|switch|look)\b/;
+	/^(?:you|each opponent|each player|target player|target opponent|its controller|its owner|that player|they|draw|draws|lose|loses|gain|gains|get|gets|put|exile|destroy|return|create|creates|search|scry|mill|mills|sacrifice|deal|deals|add|take|takes|phase|phases|attach|counter|proliferate|switch|look|tap|untap|fight|fights)\b/;
 
 /** Splits a sentence into clauses at ", then " and at " and " before a new verb or subject. */
 function splitClauses(text: string, offset: number): Clause[] {
@@ -1114,7 +1138,7 @@ function clause(p: Parser, c: Clause): ClauseResult {
 	for (let i = words.length - 1; i >= 1; i--) {
 		const subjText = words.slice(0, i).join(' ');
 		const vp = words.slice(i).join(' ') + (dur ? ' until end of turn' : '');
-		if (!/^(?:gets?|gains?|phases?|deals)\b/.test(vp)) continue;
+		if (!/^(?:gets?|gains?|phases?|deals|fights?)\b/.test(vp)) continue;
 		const snapshot = p.targets.length;
 		const subject = objectPhrase(p, subjText);
 		if (!subject) continue;
@@ -1126,10 +1150,10 @@ function clause(p: Parser, c: Clause): ClauseResult {
 
 /** Sentence-initial words that are not names or subtypes, so they can be lower-cased. */
 const LOWER_START = new Set([
-	'a', 'add', 'all', 'an', 'any', 'at', 'attach', 'copy', 'counter', 'create', 'creatures', 'deal', 'destroy', 'draw',
-	'each', 'end', 'exile', 'gain', 'if', 'it', 'its', 'look', 'lose', 'mill', 'permanents', 'proliferate', 'put',
-	'return', 'sacrifice', 'scry', 'search', 'switch', 'take', 'target', 'that', 'the', 'then', 'they', 'those',
-	'until', 'up', 'you', 'your'
+	'a', 'add', 'all', 'an', 'another', 'any', 'at', 'attach', 'copy', 'counter', 'create', 'creatures', 'deal', 'destroy', 'draw',
+	'each', 'end', 'exile', 'fight', 'gain', 'if', 'it', 'its', 'look', 'lose', 'mill', 'permanents', 'proliferate', 'put',
+	'return', 'sacrifice', 'scry', 'search', 'switch', 'take', 'tap', 'target', 'that', 'the', 'then', 'they', 'those',
+	'untap', 'until', 'up', 'you', 'your'
 ]);
 
 // ---- Sentences ------------------------------------------------------------------------------
