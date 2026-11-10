@@ -346,7 +346,9 @@ export async function startMagicBackendServer(
 			await finish(webRes);
 		} catch (err) {
 			if (err instanceof PayloadTooLargeError) {
-				await finish(jsonResponse({ ok: false, error: err.message }, 413));
+				await finish(
+					jsonResponse({ ok: false, error: err.message }, 413, { Connection: 'close' })
+				);
 				return;
 			}
 			logError(
