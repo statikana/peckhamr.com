@@ -1064,7 +1064,13 @@ export function applySelfEtbReplacements(state: GameState, perm: CardInstance): 
 			if (baseAmount > 0) {
 				const cType = rep.with.counters.counter;
 				if (placeCounters) {
-					placeCounters(state, perm, cType, baseAmount);
+					const prevZone = perm.zone;
+					perm.zone = 'battlefield';
+					try {
+						placeCounters(state, perm, cType, baseAmount);
+					} finally {
+						perm.zone = prevZone;
+					}
 				} else {
 					const mult = counterMultiplier(state, perm, cType);
 					perm.counters[cType] = (perm.counters[cType] ?? 0) + baseAmount * mult;

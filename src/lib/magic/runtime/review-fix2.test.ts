@@ -1,7 +1,15 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { applyGameAction, checkStateBasedActions, createCardInstance, createInitialGameState, movePermanentToZone } from '../engine.ts';
+import {
+	addCountersToPermanent,
+	applyGameAction,
+	checkStateBasedActions,
+	createCardInstance,
+	createInitialGameState,
+	movePermanentToZone
+} from '../engine.ts';
 import { moveObject } from './zones.ts';
+import { flushTriggers } from './triggers.ts';
 import type { CardInstance, GameState, LobbySeat, PlayerGameState, ScryfallCard, ZoneType } from '../types.ts';
 import { DEFAULT_LOBBY_RULES } from '../types.ts';
 
@@ -60,7 +68,7 @@ function makeGame(botFlags: boolean[] = [false, false]): {
 	const decks = new Map(
 		seats.map((s) => [
 			s.seatIndex,
-			{ commanders: [cmd], cards: Array.from({ length: 99 }, () => filler) }
+			{ commanders: [cmd], cards: [{ card: filler, quantity: 99 }] }
 		])
 	);
 	const state = createInitialGameState('test_rf2', seats, decks, DEFAULT_LOBBY_RULES);
@@ -71,6 +79,8 @@ function makeGame(botFlags: boolean[] = [false, false]): {
 	state.priorityPlayerIndex = 0;
 	state.pendingPrompts = [];
 	for (const p of state.players) {
+		p.lost = false;
+		p.attemptedEmptyLibraryDraw = false;
 		p.hand = [];
 		p.graveyard = [];
 		p.exile = [];
@@ -582,5 +592,70 @@ describe('Review 2 — Finding 6: multiple granted prowess instances each trigge
 				`Expected 2 Prowess triggers on stack when ${sameName ? 'two same-named' : 'two distinct-named'} permanents grant prowess (CR 702.108b)`
 			);
 		}
+	});
+});
+
+describe('Review 2 — Finding 8: matchCounter only triggers on battlefield permanents with abilities (CR 113.6)', () => {
+	it('Finding 8: "Whenever a +1/+1 counter is put on ~, draw a card." does not trigger in graveyard/exile/stack or when ability-stripped, and does trigger on a normal battlefield permanent (CR 113.6, 122.6, 603.2, 613.1f)', () => {
+		const { state, p1 } = makeGame([true, true]);
+
+		const counterTriggerCard = synthCard({
+			name: 'Fathom Mage',
+			typeLine: 'Creature — Human Wizard',
+			power: '1',
+			toughness: '1',
+			oracleText: 'Whenever a +1/+1 counter is put on Fathom Mage, draw a card.'
+		});
+
+		// 1. In graveyard, exile, or stack: placing a +1/+1 counter must NOT trigger
+		for (const offZone of ['graveyard', 'exile', 'hand'] as const) {
+			const offCard = putInZone(state, p1, counterTriggerCard, offZone);
+			addCountersToPermanent(state, offCard, '+1/+1', 1);
+			flushTriggers(state);
+			assert.equal(
+				state.stack.length,
+				0,
+				`Counter placed on card in ${offZone} must not trigger battlefield ability (CR 113.6)`
+			);
+		}
+		const stackCard = createCardInstance(counterTriggerCard, p1.playerId, 'stack');
+		addCountersToPermanent(state, stackCard, '+1/+1', 1);
+		flushTriggers(state);
+		assert.equal(
+			state.stack.length,
+			0,
+			'Counter placed on card on stack must not trigger battlefield ability (CR 113.6)'
+		);
+
+		// 2. On battlefield while stripped of abilities ("loses all abilities"): must NOT trigger
+		const onBoard = putInZone(state, p1, counterTriggerCard, 'battlefield');
+		const frogify = putInZone(
+			state,
+			p1,
+			synthCard({
+				name: 'Frogify',
+				typeLine: 'Enchantment — Aura',
+				oracleText:
+					'Enchant creature\nEnchanted creature loses all abilities and is a blue Frog creature with base power and toughness 1/1.'
+			}),
+			'battlefield'
+		);
+		frogify.attachedToId = onBoard.instanceId;
+
+		addCountersToPermanent(state, onBoard, '+1/+1', 1);
+		assert.equal(
+			state.stack.length,
+			0,
+			'Counter placed on ability-stripped permanent must not trigger (CR 613.1f)'
+		);
+
+		// 3. Remove Frogify -> normal battlefield permanent DOES trigger
+		movePermanentToZone(state, frogify, 'graveyard');
+		addCountersToPermanent(state, onBoard, '+1/+1', 1);
+		assert.equal(
+			state.stack.length,
+			1,
+			'Counter placed on normal battlefield permanent triggers its ability'
+		);
 	});
 });

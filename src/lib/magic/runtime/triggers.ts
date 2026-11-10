@@ -868,7 +868,12 @@ function matchPhase(state: GameState, ev: Extract<GameEvent, { kind: 'PhaseBegin
 function matchCounter(state: GameState, ev: Extract<GameEvent, { kind: 'CounterPlaced' }>): void {
 	if (ev.amount <= 0) return;
 	const candidates = sources(state, 'counterPlaced');
-	if (!ev.object.phasedOut && !candidates.some((c) => c.obj.instanceId === ev.objectId)) {
+	if (
+		ev.object.zone === 'battlefield' &&
+		!ev.object.phasedOut &&
+		!candidates.some((c) => c.obj.instanceId === ev.objectId) &&
+		!permanentHasLostAllAbilities(ev.object, state).lost
+	) {
 		const card = ev.object.copiableCard ?? ev.object.card;
 		if (triggersOf(card).events.has('counterPlaced')) {
 			candidates.push({
