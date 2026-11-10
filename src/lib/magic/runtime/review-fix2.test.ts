@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { applyGameAction, checkStateBasedActions, createCardInstance, createInitialGameState, movePermanentToZone } from '../engine.ts';
+import { moveObject } from './zones.ts';
 import type { CardInstance, GameState, LobbySeat, PlayerGameState, ScryfallCard, ZoneType } from '../types.ts';
 import { DEFAULT_LOBBY_RULES } from '../types.ts';
 
@@ -401,5 +402,115 @@ describe('Review 2 — Finding 4: 0/0 entering with counters and pending counter
 				`Expected ${expectedCounters} +1/+1 counters when choosing ${preferScalesFirst ? 'Hardened Scales' : 'Doubling Season'} first`
 			);
 		}
+	});
+});
+
+describe('Review 2 — Finding 1: off-battlefield cards only apply self-referential replacement abilities (CR 113.6)', () => {
+	it('Finding 1: milling or discarding Rest in Peace puts it into the graveyard, while self-referential "from anywhere" replacements still apply when milled and battlefield replacements apply when dying (CR 113.6, 113.6b, 614.1)', () => {
+		const { state, p1 } = makeGame([true, true]);
+
+		const ripInLibrary = putInZone(
+			state,
+			p1,
+			synthCard({
+				name: 'Rest in Peace',
+				typeLine: 'Enchantment',
+				oracleText:
+					'If a card or token would be put into a graveyard from anywhere, exile it instead.'
+			}),
+			'library'
+		);
+		const ripInHand = putInZone(
+			state,
+			p1,
+			synthCard({
+				name: 'Rest in Peace',
+				typeLine: 'Enchantment',
+				oracleText:
+					'If a card or token would be put into a graveyard from anywhere, exile it instead.'
+			}),
+			'hand'
+		);
+
+		// Mill Rest in Peace from library -> must go to graveyard, NOT exile itself
+		moveObject(state, ripInLibrary, 'graveyard', {
+			from: { player: p1, zone: 'library' },
+			toPlayer: p1,
+			graveyardReplacement: true,
+			bumpVersion: true,
+			newTimestamp: true
+		});
+		assert.equal(
+			p1.graveyard.some((c) => c.instanceId === ripInLibrary.instanceId),
+			true,
+			'Milled Rest in Peace must go to graveyard, not exile itself (CR 113.6)'
+		);
+		assert.equal(
+			p1.exile.some((c) => c.instanceId === ripInLibrary.instanceId),
+			false,
+			'Milled Rest in Peace must not be in exile'
+		);
+
+		// Discard Rest in Peace from hand -> must go to graveyard, NOT exile itself
+		moveObject(state, ripInHand, 'graveyard', {
+			from: { player: p1, zone: 'hand' },
+			toPlayer: p1,
+			graveyardReplacement: true,
+			bumpVersion: true,
+			newTimestamp: true
+		});
+		assert.equal(
+			p1.graveyard.some((c) => c.instanceId === ripInHand.instanceId),
+			true,
+			'Discarded Rest in Peace must go to graveyard, not exile itself (CR 113.6)'
+		);
+
+		// (a) Self-referential "from anywhere -> shuffle into library" card milled from library still shuffles into library
+		const colossusInLib = putInZone(
+			state,
+			p1,
+			synthCard({
+				name: 'Blightsteel Colossus',
+				typeLine: 'Artifact Creature — Phyrexian Golem',
+				oracleText:
+					"If Blightsteel Colossus would be put into a graveyard from anywhere, shuffle it into its owner's library instead."
+			}),
+			'library'
+		);
+		moveObject(state, colossusInLib, 'graveyard', {
+			from: { player: p1, zone: 'library' },
+			toPlayer: p1,
+			graveyardReplacement: true,
+			bumpVersion: true,
+			newTimestamp: true
+		});
+		assert.equal(
+			p1.library.some((c) => c.instanceId === colossusInLib.instanceId),
+			true,
+			'Milled Blightsteel Colossus still shuffles into library (CR 113.6b)'
+		);
+		assert.equal(
+			p1.graveyard.some((c) => c.instanceId === colossusInLib.instanceId),
+			false
+		);
+
+		// (b) Permanent on the battlefield with a graveyard replacement that leaves the battlefield still applies it
+		const ripOnBoard = putInZone(
+			state,
+			p1,
+			synthCard({
+				name: 'Rest in Peace',
+				typeLine: 'Enchantment',
+				oracleText:
+					'If a card or token would be put into a graveyard from anywhere, exile it instead.'
+			}),
+			'battlefield'
+		);
+		movePermanentToZone(state, ripOnBoard, 'graveyard');
+		assert.equal(
+			p1.exile.some((c) => c.instanceId === ripOnBoard.instanceId),
+			true,
+			'Rest in Peace destroyed on the battlefield exiles itself'
+		);
 	});
 });

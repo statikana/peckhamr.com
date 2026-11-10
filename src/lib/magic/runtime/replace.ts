@@ -776,6 +776,7 @@ export function applicableReplacements(
 		card: ScryfallCard;
 		controllerId: string;
 		compiled: ReturnType<typeof compileCard>;
+		fromMovingObject?: boolean;
 	}> = [...active];
 
 	if (
@@ -789,11 +790,12 @@ export function applicableReplacements(
 			perm: ctx.object,
 			card: objCard,
 			controllerId: ctx.object.controllerId || ctx.object.ownerId,
-			compiled: compileCard(objCard)
+			compiled: compileCard(objCard),
+			fromMovingObject: true
 		});
 	}
 
-	for (const { perm, card, controllerId, compiled } of candidates) {
+	for (const { perm, card, controllerId, compiled, fromMovingObject } of candidates) {
 		const face = compiled.faces[0];
 		if (!face) continue;
 		for (let abIdx = 0; abIdx < face.abilities.length; abIdx++) {
@@ -802,6 +804,9 @@ export function applicableReplacements(
 			const def = ability.replacement;
 			if (def.replaces.event !== event) continue;
 			const f = def.replaces.filter;
+			if (fromMovingObject && ctx?.from !== 'battlefield' && f?.object !== 'self') {
+				continue;
+			}
 			if (f) {
 				if (f.from !== undefined && ctx?.from !== undefined && f.from !== ctx.from) continue;
 				if (f.to !== undefined && ctx?.to !== undefined && f.to !== ctx.to) continue;
