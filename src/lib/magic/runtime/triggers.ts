@@ -94,6 +94,8 @@ interface CardTriggers {
 	all: RuntimeTrigger[];
 	/** Event kinds any alternative of any ability listens to. */
 	events: Set<EventKind>;
+	/** Whether any compiled static continuous ability on this card grants prowess. */
+	grantsProwess: boolean;
 }
 
 const CARD_TRIGGERS = new WeakMap<ScryfallCard, CardTriggers>();
@@ -101,10 +103,20 @@ const CARD_TRIGGERS = new WeakMap<ScryfallCard, CardTriggers>();
 function triggersOf(card: ScryfallCard): CardTriggers {
 	let entry = CARD_TRIGGERS.get(card);
 	if (!entry) {
-		const all = runtimeTriggers(compileCard(card)).filter((t) => !host?.canExecute || host.canExecute(t));
+		const def = compileCard(card);
+		const all = runtimeTriggers(def).filter((t) => !host?.canExecute || host.canExecute(t));
 		const events = new Set<EventKind>();
 		for (const t of all) for (const alt of alternatives(t.trigger)) events.add(alt.event);
-		entry = { all, events };
+		const grantsProwess = def.faces.some((f) =>
+			f.abilities.some(
+				(ab) =>
+					ab.kind === 'static' &&
+					ab.static.k === 'continuous' &&
+					ab.static.mod.k === 'addKeywords' &&
+					ab.static.mod.keywords.some((kw) => kw.toLowerCase() === 'prowess')
+			)
+		);
+		entry = { all, events, grantsProwess };
 		CARD_TRIGGERS.set(card, entry);
 	}
 	return entry;
@@ -638,6 +650,21 @@ function matchZoneChange(state: GameState, ev: Extract<GameEvent, { kind: 'ZoneC
 	}
 }
 
+function boardCanGrantProwess(state: GameState, caster: GameState['players'][number]): boolean {
+	for (const perm of caster.battlefield) {
+		if (perm.phasedOut) continue;
+		if (perm.grantedKeywords?.some((kw) => kw.toLowerCase() === 'prowess')) return true;
+	}
+	for (const p of state.players) {
+		if (p.lost) continue;
+		for (const perm of p.battlefield) {
+			if (perm.phasedOut) continue;
+			if (triggersOf(perm.copiableCard ?? perm.card).grantsProwess) return true;
+		}
+	}
+	return false;
+}
+
 function matchCast(state: GameState, casterId: string, spell: CardInstance, isCopy: boolean): void {
 	const subject = printedSubject(spell, spell.card, casterId);
 	const candidates = sources(state, 'cast');
@@ -674,15 +701,19 @@ function matchCast(state: GameState, casterId: string, spell: CardInstance, isCo
 	// caster's permanents triggers on each noncreature spell cast (each instance triggers separately).
 	if (!isCopy && !hasWord(subject.typeLine(), 'Creature')) {
 		const caster = state.players.find((p) => p.playerId === casterId);
-		if (caster && !caster.lost) {
+		if (caster && !caster.lost && boardCanGrantProwess(state, caster)) {
 			for (const perm of caster.battlefield) {
 				if (perm.phasedOut) continue;
 				const breakdown = inspectCardContinuousBreakdown(perm, state);
 				let grantedProwessCount = 0;
 				for (const item of breakdown.items) {
 					if (item.canonicalKey === 'prowess' && !item.removed) {
-						for (const src of item.sources) {
-							if (src !== 'innate') grantedProwessCount += 1;
+						if (item.grantCount !== undefined) {
+							grantedProwessCount += item.grantCount;
+						} else {
+							for (const src of item.sources) {
+								if (src !== 'innate') grantedProwessCount += 1;
+							}
 						}
 					}
 				}
@@ -864,7 +895,12 @@ function matchPhase(state: GameState, ev: Extract<GameEvent, { kind: 'PhaseBegin
 function matchCounter(state: GameState, ev: Extract<GameEvent, { kind: 'CounterPlaced' }>): void {
 	if (ev.amount <= 0) return;
 	const candidates = sources(state, 'counterPlaced');
-	if (!ev.object.phasedOut && !candidates.some((c) => c.obj.instanceId === ev.objectId)) {
+	if (
+		ev.object.zone === 'battlefield' &&
+		!ev.object.phasedOut &&
+		!candidates.some((c) => c.obj.instanceId === ev.objectId) &&
+		!permanentHasLostAllAbilities(ev.object, state).lost
+	) {
 		const card = ev.object.copiableCard ?? ev.object.card;
 		if (triggersOf(card).events.has('counterPlaced')) {
 			candidates.push({

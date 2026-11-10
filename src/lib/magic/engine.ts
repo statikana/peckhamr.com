@@ -14,7 +14,6 @@ import {
 } from './oracle.ts';
 import {
 	checkGlobalCastPermissionsAndRestrictions,
-	checkGraveyardReplacementZone,
 	evaluatePermanent,
 	getCardActivatedAbilities,
 	getEffectiveActivatedAbilities as getEffectiveActivatedAbilitiesRaw,
@@ -32,7 +31,6 @@ import {
 
 export {
 	checkGlobalCastPermissionsAndRestrictions,
-	checkGraveyardReplacementZone,
 	evaluatePermanent,
 	getCardActivatedAbilities,
 	getLibrarySearchInterceptor,
@@ -93,7 +91,9 @@ import {
 	shuffleArray,
 	shuffleLibrary,
 	tapPermanent,
-	transferBattlefieldControl
+	transferBattlefieldControl,
+	type MoveResult,
+	type SbaMoveLog
 } from './runtime/zones.ts';
 import {
 	beginAction,
@@ -3520,17 +3520,18 @@ function handlePromptResolution(
 		if (chosenIds.length !== req) {
 			return { ok: false, error: `You must discard exactly ${req} card(s).` };
 		}
-		const gyDest = checkGraveyardReplacementZone(state, 'graveyard').dest;
+		state.pendingPrompts.splice(promptIdx, 1);
 		for (const id of chosenIds) {
 			const idx = actor.hand.findIndex((c) => c.instanceId === id);
 			if (idx >= 0) {
-				moveObject(state, actor.hand[idx], gyDest, {
+				moveObject(state, actor.hand[idx], 'graveyard', {
 					from: { player: actor, zone: 'hand' },
-					toPlayer: actor
+					toPlayer: actor,
+					graveyardReplacement: true,
+					commanderRedirect: true
 				});
 			}
 		}
-		state.pendingPrompts.splice(promptIdx, 1);
 		addLog(
 			state,
 			'rule',
@@ -3969,19 +3970,35 @@ function handlePromptResolution(
 		addLog(state, 'rule', `${actor.username} answered "${prompt.title}".`, actor.playerId);
 	}
 	checkStateBasedActions(state);
+	resumeAfterPrompt(state, prompt);
 	return { ok: true };
 }
 
 /**
- * Step E2: a scry or search prompt queued by an IR step that wasn't the ability's last. Once every
- * such prompt of the item is answered, its resolution goes on at the next step.
+ * Step E2: a scry, search, or replacement prompt queued by an IR step that wasn't the ability's
+ * last. Once every such prompt of the item is answered, its resolution goes on at the next step.
  */
 function resumeAfterPrompt(state: GameState, prompt: PendingPrompt): void {
 	const c = prompt.continuation;
-	if (c?.kind !== 'effect_resume') return;
-	const item = state.stack.find((s) => s.id === c.stackItemId);
-	if (!item?.effectResume || item.effectResume.stepIndex !== c.stepIndex) return;
-	resumeStackItem(state, item);
+	if (c?.kind === 'effect_resume') {
+		const item = state.stack.find((s) => s.id === c.stackItemId);
+		if (!item?.effectResume || item.effectResume.stepIndex !== c.stepIndex) return;
+		if (stackItemAwaitsPrompt(state, item)) return;
+		resumeStackItem(state, item);
+		return;
+	}
+	if (c?.kind === 'handler') {
+		const resumeStackItemId =
+			typeof c.data?.resumeStackItemId === 'string' ? c.data.resumeStackItemId : null;
+		const resumeStepIndex =
+			typeof c.data?.resumeStepIndex === 'number' ? c.data.resumeStepIndex : null;
+		if (resumeStackItemId && resumeStepIndex !== null) {
+			const item = state.stack.find((s) => s.id === resumeStackItemId);
+			if (!item?.effectResume || item.effectResume.stepIndex !== resumeStepIndex) return;
+			if (stackItemAwaitsPrompt(state, item)) return;
+			resumeStackItem(state, item);
+		}
+	}
 }
 
 // ---- Step E2: guided (manual) operations ------------------------------------------------------
@@ -4225,21 +4242,20 @@ export function moveStackSpellToZone(
 		owner.commanderCastCounts?.[stackItem.sourceInstanceId] ??
 		stackItem.commanderCastCount ??
 		0;
-	const actualDest =
-		dest === 'exile' ? 'exile' : checkGraveyardReplacementZone(state, 'graveyard').dest;
 	const cardInst = createCardInstance(
 		stackItem.card,
 		owner.playerId,
-		actualDest,
+		dest,
 		isCmd,
 		false,
 		allocateTimestamp(state)
 	);
 	cardInst.instanceId = stackItem.sourceInstanceId;
 	cardInst.commanderCastCount = castCount;
-	moveObject(state, cardInst, actualDest, {
+	moveObject(state, cardInst, dest, {
 		from: 'stack',
 		toPlayer: owner,
+		graveyardReplacement: true,
 		commanderRedirect: true
 	});
 }
@@ -4280,6 +4296,7 @@ export function addCountersToPermanent(
 	}
 	const effectiveAmount = res.amount;
 	perm.counters[type] = (perm.counters[type] || 0) + effectiveAmount;
+	noteLayerInputsChanged(state);
 	emitEvent(state, {
 		kind: 'CounterPlaced',
 		objectId: perm.instanceId,
@@ -4304,6 +4321,10 @@ registerPromptHandler('counter_replacement_choice', (state, prompt, answer) => {
 	const counterType = (data.counterType as CounterType | undefined) ?? '+1/+1';
 	const currentAmount = typeof data.currentAmount === 'number' ? data.currentAmount : 0;
 	const appliedIds = Array.isArray(data.appliedIds) ? (data.appliedIds as string[]) : [];
+	const resumeStackItemId =
+		typeof data.resumeStackItemId === 'string' ? data.resumeStackItemId : undefined;
+	const resumeStepIndex =
+		typeof data.resumeStepIndex === 'number' ? data.resumeStepIndex : undefined;
 	const found = findPermanentOnBoard(state, permId);
 	if (!found || currentAmount <= 0) return;
 	const perm = found.inst;
@@ -4332,7 +4353,9 @@ registerPromptHandler('counter_replacement_choice', (state, prompt, answer) => {
 					permId: perm.instanceId,
 					counterType,
 					currentAmount: nextRes.amount,
-					appliedIds: nextRes.appliedIds
+					appliedIds: nextRes.appliedIds,
+					...(resumeStackItemId !== undefined ? { resumeStackItemId } : {}),
+					...(resumeStepIndex !== undefined ? { resumeStepIndex } : {})
 				}
 			},
 			choice: {
@@ -4344,6 +4367,7 @@ registerPromptHandler('counter_replacement_choice', (state, prompt, answer) => {
 	}
 	const effectiveAmount = nextRes.amount;
 	perm.counters[counterType] = (perm.counters[counterType] || 0) + effectiveAmount;
+	noteLayerInputsChanged(state);
 	emitEvent(state, {
 		kind: 'CounterPlaced',
 		objectId: perm.instanceId,
@@ -6095,9 +6119,11 @@ function destroyPermanentByEffect(
 	const found = findPermanentOnBoard(state, inst.instanceId);
 	if (!found) return;
 	emitVfx(state, { kind: 'destroy', targetId: inst.instanceId, label: inst.card.name });
-	movePermanentToZone(state, inst, 'graveyard');
+	const dest = movePermanentToZone(state, inst, 'graveyard');
 	addLog(state, 'cast', `${title} destroyed ${inst.card.name}.`, actorId);
-	flushTriggers(state);
+	if (dest !== 'pending') {
+		flushTriggers(state);
+	}
 }
 
 /** Scry N, or "look at the top N cards, then put them back in any order": bot decision or prompt. */
@@ -7399,11 +7425,12 @@ function runCleanupStep(state: GameState): void {
 	if (!activePlayer.lost && activePlayer.hand.length > maxHand) {
 		const excess = activePlayer.hand.length - maxHand;
 		if (activePlayer.isBot) {
-			const gyDest = checkGraveyardReplacementZone(state, 'graveyard').dest;
 			for (const c of activePlayer.hand.slice(0, excess)) {
-				moveObject(state, c, gyDest, {
+				moveObject(state, c, 'graveyard', {
 					from: { player: activePlayer, zone: 'hand' },
-					toPlayer: activePlayer
+					toPlayer: activePlayer,
+					graveyardReplacement: true,
+					commanderRedirect: true
 				});
 			}
 			beginPhase(state, 'cleanup', activePlayer);
@@ -7693,11 +7720,16 @@ export function legalAuraAttachCandidates(
  */
 export function checkStateBasedActions(state: GameState): void {
 	if (state.status !== 'active') return;
+	// CR 616.1, 704.3: While a replacement-choice prompt (`counter_replacement_choice` or
+	// `zone_replacement_choice`) for an in-progress event is pending, do not check SBAs yet;
+	// `answerPrompt` runs `checkStateBasedActions` as soon as the replacement choice finishes.
+	if (state.pendingPrompts.some((pr) => pr.choice?.kind === 'chooseReplacement')) return;
 
 	let maxIterations = 25;
 	let anyActionTaken = true;
 
 	while (anyActionTaken && maxIterations-- > 0) {
+		if (state.pendingPrompts.some((pr) => pr.choice?.kind === 'chooseReplacement')) break;
 		anyActionTaken = false;
 
 		// 0. Pre-annihilation LKI snapshot (CR 704.8) before any SBAs in this pass modify the board
@@ -8027,28 +8059,14 @@ export function checkStateBasedActions(state: GameState): void {
 						label: item.perm.card.name
 					});
 				}
-				const actualDest = movePermanentToZone(state, item.perm, 'graveyard');
-				if (item.kind === 'dying') {
-					const replacerName =
-						actualDest === 'exile'
-							? checkGraveyardReplacementZone(state, 'graveyard').replacedBy
-							: null;
-					addLog(
-						state,
-						'sba',
-						`${item.perm.card.name} ${actualDest === 'exile' ? `was exiled instead of dying${replacerName ? ` (${replacerName})` : ''}` : 'died'} (State-Based Action).`,
-						item.controller.playerId
-					);
-				} else if (item.kind === 'legend') {
-					addLog(
-						state,
-						'sba',
-						`Legend Rule (CR 704.5j): Duplicate ${item.legName} was put into ${item.controller.username}'s graveyard.`,
-						item.controller.playerId
-					);
-				}
+				const actualDest = movePermanentToZone(state, item.perm, 'graveyard', {
+					kind: item.kind,
+					controllerId: item.controller.playerId,
+					controllerUsername: item.controller.username,
+					...(item.kind === 'legend' ? { legName: item.legName } : {})
+				});
 
-				if (sbaGraveyardBatch.length > 1) {
+				if (sbaGraveyardBatch.length > 1 && actualDest !== 'pending') {
 					const owner = state.players.find((pl) => pl.playerId === item.perm.ownerId);
 					postResults.set(item.perm.instanceId, {
 						perm: item.perm,
@@ -8057,7 +8075,12 @@ export function checkStateBasedActions(state: GameState): void {
 							counters: { ...item.perm.counters },
 							grantedKeywords: [...item.perm.grantedKeywords]
 						},
-						destZone: actualDest === 'exile' ? 'exile' : 'graveyard',
+						destZone:
+							actualDest === 'exile'
+								? 'exile'
+								: actualDest === 'command'
+									? 'command'
+									: 'graveyard',
 						owner
 					});
 				}
@@ -8447,8 +8470,9 @@ export function findPermanentOnBoard(
 export function movePermanentToZone(
 	state: GameState,
 	inst: CardInstance,
-	dest: ZoneType
-): ZoneType {
+	dest: ZoneType,
+	sbaLog?: SbaMoveLog
+): MoveResult {
 	inst.defaultControllerId = undefined;
 	return moveObject(state, inst, dest, {
 		from: 'anyBattlefield',
@@ -8460,7 +8484,8 @@ export function movePermanentToZone(
 		newTimestamp: true,
 		// The old code put cards on top of the library and at the end of every other zone.
 		insert: (actual) => (actual === 'library' ? 'start' : 'end'),
-		ceaseToExist: 'tokens'
+		ceaseToExist: 'tokens',
+		sbaLog
 	});
 }
 

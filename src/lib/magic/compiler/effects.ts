@@ -138,7 +138,8 @@ const RESTRICTION_SENTENCES: RegExp[] = [
 	// Cost reductions of the spell itself are statics, applied when the cost is determined.
 	/^~ costs .+ less to cast\b.*$/i,
 	/^this spell costs .+ less to cast\b.*$/i,
-	/^if you control (?:a|your) commander, you may cast (?:~|this spell) without paying its mana cost\.?$/i
+	/^if you control (?:a|your) commander, you may cast (?:~|this spell) without paying its mana cost\.?$/i,
+	/^if ~ would be put into a graveyard from anywhere, (?:exile it|shuffle it into its owner's library|return it to its owner's hand|put it into its owner's hand) instead\.?$/i
 ];
 
 // ---- Parse context --------------------------------------------------------------------------

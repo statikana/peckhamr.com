@@ -776,6 +776,7 @@ export function applicableReplacements(
 		card: ScryfallCard;
 		controllerId: string;
 		compiled: ReturnType<typeof compileCard>;
+		fromMovingObject?: boolean;
 	}> = [...active];
 
 	if (
@@ -789,11 +790,12 @@ export function applicableReplacements(
 			perm: ctx.object,
 			card: objCard,
 			controllerId: ctx.object.controllerId || ctx.object.ownerId,
-			compiled: compileCard(objCard)
+			compiled: compileCard(objCard),
+			fromMovingObject: true
 		});
 	}
 
-	for (const { perm, card, controllerId, compiled } of candidates) {
+	for (const { perm, card, controllerId, compiled, fromMovingObject } of candidates) {
 		const face = compiled.faces[0];
 		if (!face) continue;
 		for (let abIdx = 0; abIdx < face.abilities.length; abIdx++) {
@@ -802,6 +804,9 @@ export function applicableReplacements(
 			const def = ability.replacement;
 			if (def.replaces.event !== event) continue;
 			const f = def.replaces.filter;
+			if (fromMovingObject && ctx?.from !== 'battlefield' && f?.object !== 'self') {
+				continue;
+			}
 			if (f) {
 				if (f.from !== undefined && ctx?.from !== undefined && f.from !== ctx.from) continue;
 				if (f.to !== undefined && ctx?.to !== undefined && f.to !== ctx.to) continue;
@@ -933,34 +938,6 @@ export function resolveZoneChangeReplacements(
 }
 
 /**
- * Checks if a card or token moving to a graveyard should instead be exiled due to a global
- * replacement effect (e.g., Rest in Peace). Respects Layer 6 ability-removal effects (CR 614).
- */
-export function checkGraveyardReplacementZone(
-	state: GameState,
-	desiredDestOrPlayerId: ZoneType | string = 'graveyard'
-): { dest: ZoneType; replacedBy?: string } {
-	const desiredDest: ZoneType =
-		desiredDestOrPlayerId === 'graveyard' ||
-		desiredDestOrPlayerId === 'exile' ||
-		desiredDestOrPlayerId === 'hand' ||
-		desiredDestOrPlayerId === 'library' ||
-		desiredDestOrPlayerId === 'command' ||
-		desiredDestOrPlayerId === 'battlefield'
-			? desiredDestOrPlayerId
-			: 'graveyard';
-	if (desiredDest !== 'graveyard') return { dest: desiredDest };
-	for (const rep of applicableReplacements(state, 'zoneChange', { to: 'graveyard' })) {
-		if (rep.def.replaces.filter?.object === 'self') continue;
-		const w = rep.def.with;
-		if (!Array.isArray(w) && w.k === 'modify' && w.to) {
-			return { dest: w.to, replacedBy: rep.sourceName };
-		}
-	}
-	return { dest: desiredDest };
-}
-
-/**
  * Checks whether a draw from an empty library is replaced (e.g., Laboratory Maniac's
  * "If you would draw a card while your library has no cards in it, you win the game instead.").
  */
@@ -1059,7 +1036,13 @@ export function applySelfEtbReplacements(state: GameState, perm: CardInstance): 
 			if (baseAmount > 0) {
 				const cType = rep.with.counters.counter;
 				if (placeCounters) {
-					placeCounters(state, perm, cType, baseAmount);
+					const prevZone = perm.zone;
+					perm.zone = 'battlefield';
+					try {
+						placeCounters(state, perm, cType, baseAmount);
+					} finally {
+						perm.zone = prevZone;
+					}
 				} else {
 					const mult = counterMultiplier(state, perm, cType);
 					perm.counters[cType] = (perm.counters[cType] ?? 0) + baseAmount * mult;

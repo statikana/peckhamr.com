@@ -5,6 +5,7 @@ import type { CardInstance, CounterType, GameState, PlayerGameState, ZoneType } 
 import { emitEvent, type LeftBattlefieldInfo } from './events.ts';
 import { noteLayerInputsChanged, whileLayerInputsChange } from './layerCache.ts';
 import { counterMultiplier, resolveZoneChangeReplacements } from './replace.ts';
+import { flushTriggers } from './triggers.ts';
 
 /**
  * The single zone-change module (ENGINE_ARCHITECTURE_PLAN.md section 2.3, Phase 2).
@@ -85,7 +86,18 @@ export interface MoveOptions {
 	beforeInsert?: (obj: CardInstance, dest: ZoneType) => void;
 	/** Suppress ZoneChange event emission when false (e.g. pregame mulligan). */
 	emit?: boolean;
+	/** Optional SBA log metadata so deferred zone-replacement moves log only when the move finishes. */
+	sbaLog?: SbaMoveLog;
 }
+
+export interface SbaMoveLog {
+	kind: 'dying' | 'legend' | 'aura';
+	controllerId: string;
+	controllerUsername: string;
+	legName?: string;
+}
+
+export type MoveResult = ZoneType | 'pending';
 
 export function allocateTimestamp(state: GameState): number {
 	state.nextTimestamp = (state.nextTimestamp || 100) + 1;
@@ -129,118 +141,70 @@ function insertInto(
 
 /**
  * Performs one zone change and emits one ZoneChange event. Returns the zone the object actually
- * went to (after replacement effects), which is also the event's `to`.
+ * went to (after replacement effects), or `'pending'` when the move pauses for a human replacement
+ * choice (CR 616.1).
  */
 export function moveObject(
 	state: GameState,
 	obj: CardInstance,
 	to: ZoneType,
 	opts: MoveOptions
-): ZoneType {
+): MoveResult {
 	// Phase 6c: a zone change ends any layer-cache stable-input scope's trust (no-op outside one).
 	return whileLayerInputsChange(state, () => moveObjectInner(state, obj, to, opts));
 }
 
-function moveObjectInner(
+function pushSbaLog(
 	state: GameState,
 	obj: CardInstance,
-	to: ZoneType,
-	opts: MoveOptions
-): ZoneType {
-	const { from } = opts;
-	// CR 304.4 / 307.4: If an instant or sorcery would enter the battlefield, it remains in its previous zone.
-	if (to === 'battlefield') {
-		const effectiveTypeLine = (obj.copiableCard ?? obj.card).typeLine;
-		const isInstantOrSorcery =
-			effectiveTypeLine.includes('Instant') || effectiveTypeLine.includes('Sorcery');
-		const hasPermanentType =
-			effectiveTypeLine.includes('Creature') ||
-			effectiveTypeLine.includes('Artifact') ||
-			effectiveTypeLine.includes('Enchantment') ||
-			effectiveTypeLine.includes('Land') ||
-			effectiveTypeLine.includes('Planeswalker') ||
-			effectiveTypeLine.includes('Battle');
-		if (isInstantOrSorcery && !hasPermanentType) {
-			if (typeof from === 'object') return from.zone;
-			if (from === 'anyBattlefield') return 'battlefield';
-			if (from === 'stack') return 'stack';
-			return obj.zone;
-		}
-	}
-	let fromZone: ZoneType | null = null;
-	let fromPlayerId: string | null = null;
-	// CR 603.10a: leaves-the-battlefield triggers look back at the object as it was on the battlefield.
-	const lki =
-		from === 'anyBattlefield' || (typeof from === 'object' && from.zone === 'battlefield')
-			? captureLki(state, obj)
-			: undefined;
-	if (lki) {
-		if (lki.power !== undefined) obj.lastKnownPower = lki.power;
-		if (lki.toughness !== undefined) obj.lastKnownToughness = lki.toughness;
-		for (const stk of state.stack) {
-			if (stk.sourceInstanceId === obj.instanceId) {
-				if (lki.power !== undefined) stk.sourceLkiPower = lki.power;
-				if (lki.toughness !== undefined) stk.sourceLkiToughness = lki.toughness;
-			}
-		}
-	}
-
-	if (from === 'anyBattlefield') {
-		fromZone = 'battlefield';
-		for (const p of state.players) {
-			const idx = p.battlefield.findIndex((c) => c.instanceId === obj.instanceId);
-			if (idx >= 0) {
-				p.battlefield.splice(idx, 1);
-				fromPlayerId ??= p.playerId;
-			}
-			if (opts.detachAttachments) detachFrom(p, obj.instanceId);
+	dest: ZoneType,
+	replacedBy: string | null,
+	sbaLog: SbaMoveLog
+): void {
+	let text: string;
+	if (sbaLog.kind === 'dying') {
+		if (dest === 'exile') {
+			text = `${obj.card.name} was exiled instead of dying${replacedBy ? ` (${replacedBy})` : ''} (State-Based Action).`;
+		} else if (dest === 'graveyard') {
+			text = `${obj.card.name} died (State-Based Action).`;
+		} else {
+			text = `${obj.card.name} was put into ${dest} instead of dying${replacedBy ? ` (${replacedBy})` : ''} (State-Based Action).`;
 		}
 	} else {
-		if (from === 'stack') {
-			fromZone = 'stack';
-		} else if (from !== 'none') {
-			fromZone = from.zone;
-			fromPlayerId = from.player.playerId;
-			removeFirst(from.player[from.zone], obj.instanceId);
-		}
-		if (opts.detachAttachments) {
-			for (const p of state.players) detachFrom(p, obj.instanceId);
-		}
+		text = `Legend Rule (CR 704.5j): Duplicate ${sbaLog.legName ?? obj.card.name} was put into ${sbaLog.controllerUsername}'s ${dest}.`;
 	}
-
-	if (fromZone === 'battlefield') {
-		removeFromCombat(state, obj.instanceId);
+	state.log.push({
+		id: uid('log', state),
+		timestamp: Date.now(),
+		turn: state.turnNumber,
+		phase: state.phase,
+		actorId: sbaLog.controllerId,
+		kind: 'sba',
+		text
+	});
+	if (state.log.length > 160) {
+		state.log.shift();
 	}
+}
 
+function finalizeZoneMove(
+	state: GameState,
+	obj: CardInstance,
+	fromZone: ZoneType | null,
+	fromPlayerId: string | null,
+	receiver: PlayerGameState,
+	initialDest: ZoneType,
+	initialShuffle: boolean,
+	replacedBy: string | null,
+	lki: LeftBattlefieldInfo | undefined,
+	opts: MoveOptions
+): ZoneType {
 	const owner = state.players.find((p) => p.playerId === obj.ownerId);
-	const receiver = opts.toPlayer ?? owner;
-	if (!receiver) {
-		// Unreachable in practice (players are never removed from state.players). movePermanentToZone
-		// returned here, after removal and before any bookkeeping.
-		if (opts.emit !== false) {
-			emitZoneChange(state, obj, fromZone, to, fromPlayerId, null, true, lki);
-		}
-		return to;
-	}
-
-	let dest: ZoneType = to;
-	let shuffleDestLibrary = false;
-	let pendingZoneRep: ReturnType<typeof resolveZoneChangeReplacements> | undefined;
+	let dest: ZoneType = initialDest;
+	let shuffleDestLibrary = initialShuffle;
 	let promptCommanderRedirect = false;
-	if (opts.graveyardReplacement && to === 'graveyard') {
-		pendingZoneRep = resolveZoneChangeReplacements(
-			state,
-			obj,
-			fromZone,
-			to,
-			new Set(),
-			Boolean(lki?.lostAllAbilities)
-		);
-		dest = pendingZoneRep.dest;
-		shuffleDestLibrary = pendingZoneRep.shuffle;
-	}
+
 	if (
-		!pendingZoneRep?.pendingOptions &&
 		opts.commanderRedirect &&
 		obj.isCommander &&
 		(dest === 'hand' || dest === 'library')
@@ -320,35 +284,8 @@ function moveObjectInner(
 			shuffleLibrary(state, effectiveReceiver);
 		}
 	}
-	if (pendingZoneRep?.pendingOptions && pendingZoneRep.pendingOptions.length >= 2 && !ceases) {
-		const description = `Multiple replacement effects would modify how ${obj.card.name} moves to ${dest}. Choose which applies first (CR 616.1):`;
-		enqueueChoicePrompt(state, {
-			id: uid('prm', state),
-			playerId: pendingZoneRep.chooserId,
-			kind: 'chooseReplacement',
-			purpose: 'generic',
-			title: 'Choose Replacement Effect (CR 616.1)',
-			description,
-			continuation: {
-				kind: 'handler',
-				name: 'zone_replacement_choice',
-				data: {
-					objectId: obj.instanceId,
-					holderId: effectiveReceiver.playerId,
-					currentZone: dest,
-					fromZone,
-					fromPlayerId,
-					appliedIds: pendingZoneRep.appliedIds,
-					lkiLostAllAbilities: Boolean(lki?.lostAllAbilities),
-					commanderRedirect: Boolean(opts.commanderRedirect)
-				}
-			},
-			choice: {
-				kind: 'chooseReplacement',
-				options: pendingZoneRep.pendingOptions.map((r) => ({ id: r.id, label: r.label }))
-			}
-		});
-		return dest;
+	if (opts.sbaLog) {
+		pushSbaLog(state, obj, dest, replacedBy, opts.sbaLog);
 	}
 	if (opts.emit !== false) {
 		emitZoneChange(
@@ -391,65 +328,120 @@ function moveObjectInner(
 	return dest;
 }
 
-registerPromptHandler('zone_replacement_choice', (state, prompt, answer) => {
-	if (answer.kind !== 'chooseReplacement') return;
-	const data = prompt.continuation?.kind === 'handler' ? prompt.continuation.data : undefined;
-	if (!data) return;
-	const objectId = typeof data.objectId === 'string' ? data.objectId : '';
-	const holderId = typeof data.holderId === 'string' ? data.holderId : '';
-	const currentZone = (data.currentZone as PlayerZone | undefined) ?? 'graveyard';
-	const fromZone = (data.fromZone as ZoneType | null | undefined) ?? null;
-	const fromPlayerId = (data.fromPlayerId as string | null | undefined) ?? null;
-	const appliedIds = Array.isArray(data.appliedIds) ? (data.appliedIds as string[]) : [];
-	const lkiLostAllAbilities = Boolean(data.lkiLostAllAbilities);
-	const commanderRedirect = Boolean(data.commanderRedirect);
-
-	const holder = state.players.find((p) => p.playerId === holderId);
-	if (!holder) return;
-	const idx = holder[currentZone].findIndex((c) => c.instanceId === objectId);
-	if (idx < 0) return;
-	const obj = holder[currentZone][idx];
-
-	const nextRes = resolveZoneChangeReplacements(
-		state,
-		obj,
-		fromZone,
-		currentZone,
-		new Set(appliedIds),
-		lkiLostAllAbilities,
-		answer.id
-	);
-
-	const owner = state.players.find((p) => p.playerId === obj.ownerId) ?? holder;
-	let finalDest = nextRes.dest;
-	let shuffleFinal = nextRes.shuffle;
-
-	if (!nextRes.pendingOptions && commanderRedirect && obj.isCommander && (finalDest === 'hand' || finalDest === 'library')) {
-		if (owner.isBot) {
-			finalDest = 'command';
-			shuffleFinal = false;
+function moveObjectInner(
+	state: GameState,
+	obj: CardInstance,
+	to: ZoneType,
+	opts: MoveOptions
+): MoveResult {
+	const { from } = opts;
+	// CR 304.4 / 307.4: If an instant or sorcery would enter the battlefield, it remains in its previous zone.
+	if (to === 'battlefield') {
+		const effectiveTypeLine = (obj.copiableCard ?? obj.card).typeLine;
+		const isInstantOrSorcery =
+			effectiveTypeLine.includes('Instant') || effectiveTypeLine.includes('Sorcery');
+		const hasPermanentType =
+			effectiveTypeLine.includes('Creature') ||
+			effectiveTypeLine.includes('Artifact') ||
+			effectiveTypeLine.includes('Enchantment') ||
+			effectiveTypeLine.includes('Land') ||
+			effectiveTypeLine.includes('Planeswalker') ||
+			effectiveTypeLine.includes('Battle');
+		if (isInstantOrSorcery && !hasPermanentType) {
+			if (typeof from === 'object') return from.zone;
+			if (from === 'anyBattlefield') return 'battlefield';
+			if (from === 'stack') return 'stack';
+			return obj.zone;
+		}
+	}
+	let fromZone: ZoneType | null = null;
+	let fromPlayerId: string | null = null;
+	// CR 603.10a: leaves-the-battlefield triggers look back at the object as it was on the battlefield.
+	const lki =
+		from === 'anyBattlefield' || (typeof from === 'object' && from.zone === 'battlefield')
+			? captureLki(state, obj)
+			: undefined;
+	if (lki) {
+		if (lki.power !== undefined) obj.lastKnownPower = lki.power;
+		if (lki.toughness !== undefined) obj.lastKnownToughness = lki.toughness;
+		for (const stk of state.stack) {
+			if (stk.sourceInstanceId === obj.instanceId) {
+				if (lki.power !== undefined) stk.sourceLkiPower = lki.power;
+				if (lki.toughness !== undefined) stk.sourceLkiToughness = lki.toughness;
+			}
 		}
 	}
 
-	const destHolder =
-		finalDest === 'hand' || finalDest === 'graveyard' || finalDest === 'library' || finalDest === 'command'
-			? owner
-			: holder;
-
-	if (finalDest !== currentZone || destHolder !== holder) {
-		holder[currentZone].splice(idx, 1);
-		obj.zone = finalDest;
-		insertInto(destHolder[finalDest as PlayerZone], obj, finalDest === 'library' ? 'start' : 'end');
+	if (from === 'anyBattlefield') {
+		fromZone = 'battlefield';
+		for (const p of state.players) {
+			const idx = p.battlefield.findIndex((c) => c.instanceId === obj.instanceId);
+			if (idx >= 0) {
+				p.battlefield.splice(idx, 1);
+				fromPlayerId ??= p.playerId;
+			}
+			if (opts.detachAttachments) detachFrom(p, obj.instanceId);
+		}
+	} else {
+		if (from === 'stack') {
+			fromZone = 'stack';
+		} else if (from !== 'none') {
+			fromZone = from.zone;
+			fromPlayerId = from.player.playerId;
+			removeFirst(from.player[from.zone], obj.instanceId);
+		}
+		if (opts.detachAttachments) {
+			for (const p of state.players) detachFrom(p, obj.instanceId);
+		}
 	}
-	if (shuffleFinal && finalDest === 'library') {
-		shuffleLibrary(state, destHolder);
+
+	if (fromZone === 'battlefield') {
+		removeFromCombat(state, obj.instanceId);
 	}
 
-	if (nextRes.pendingOptions && nextRes.pendingOptions.length >= 2) {
-		const description = `Multiple replacement effects would modify how ${obj.card.name} moves to ${finalDest}. Choose which applies next (CR 616.1f):`;
+	const owner = state.players.find((p) => p.playerId === obj.ownerId);
+	const receiver = opts.toPlayer ?? owner;
+	if (!receiver) {
+		// Unreachable in practice (players are never removed from state.players). movePermanentToZone
+		// returned here, after removal and before any bookkeeping.
+		if (opts.emit !== false) {
+			emitZoneChange(state, obj, fromZone, to, fromPlayerId, null, true, lki);
+		}
+		return to;
+	}
+
+	let dest: ZoneType = to;
+	let shuffleDestLibrary = false;
+	let replacedBy: string | null = null;
+	let pendingZoneRep: ReturnType<typeof resolveZoneChangeReplacements> | undefined;
+	if (opts.graveyardReplacement && to === 'graveyard') {
+		pendingZoneRep = resolveZoneChangeReplacements(
+			state,
+			obj,
+			fromZone,
+			to,
+			new Set(),
+			Boolean(lki?.lostAllAbilities)
+		);
+		dest = pendingZoneRep.dest;
+		shuffleDestLibrary = pendingZoneRep.shuffle;
+		replacedBy = pendingZoneRep.replacedBy ?? null;
+	}
+
+	if (
+		pendingZoneRep?.pendingOptions &&
+		pendingZoneRep.pendingOptions.length >= 2 &&
+		opts.ceaseToExist !== 'always'
+	) {
+		// CR 616.1: Hold the object outside all player zones until the replacement choice is answered
+		// so it never lands in the graveyard first and no premature ZoneChange event or trigger fires.
+		(state.pendingZoneMoves ??= []).push(obj);
+		const insertSpec =
+			typeof opts.insert === 'function' ? 'fn_library_start' : (opts.insert ?? 'end');
+		const description = `Multiple replacement effects would modify how ${obj.card.name} moves to ${dest}. Choose which applies first (CR 616.1):`;
 		enqueueChoicePrompt(state, {
 			id: uid('prm', state),
-			playerId: nextRes.chooserId,
+			playerId: pendingZoneRep.chooserId,
 			kind: 'chooseReplacement',
 			purpose: 'generic',
 			title: 'Choose Replacement Effect (CR 616.1)',
@@ -459,24 +451,192 @@ registerPromptHandler('zone_replacement_choice', (state, prompt, answer) => {
 				name: 'zone_replacement_choice',
 				data: {
 					objectId: obj.instanceId,
-					holderId: destHolder.playerId,
-					currentZone: finalDest,
+					toPlayerId: receiver.playerId,
+					currentDest: dest,
+					shuffle: shuffleDestLibrary,
+					replacedBy,
 					fromZone,
 					fromPlayerId,
-					appliedIds: nextRes.appliedIds,
-					lkiLostAllAbilities,
-					commanderRedirect
+					appliedIds: pendingZoneRep.appliedIds,
+					lkiJson: lki ? JSON.stringify(lki) : null,
+					leaveBattlefieldReset: Boolean(opts.leaveBattlefieldReset),
+					controllerId: opts.controllerId ?? null,
+					bumpVersion: Boolean(opts.bumpVersion),
+					newTimestamp: Boolean(opts.newTimestamp),
+					setZone: opts.setZone !== false,
+					commanderRedirect: Boolean(opts.commanderRedirect),
+					ceaseToExist: opts.ceaseToExist ?? null,
+					emit: opts.emit !== false,
+					insertSpec,
+					sbaLogJson: opts.sbaLog ? JSON.stringify(opts.sbaLog) : null
 				}
 			},
 			choice: {
 				kind: 'chooseReplacement',
-				options: nextRes.pendingOptions.map((r) => ({ id: r.id, label: r.label }))
+				options: pendingZoneRep.pendingOptions.map((r) => ({ id: r.id, label: r.label }))
 			}
 		});
-		return;
+		return 'pending';
 	}
 
-	emitZoneChange(state, obj, fromZone, finalDest, fromPlayerId, destHolder.playerId, false);
+	return finalizeZoneMove(
+		state,
+		obj,
+		fromZone,
+		fromPlayerId,
+		receiver,
+		dest,
+		shuffleDestLibrary,
+		replacedBy,
+		lki,
+		opts
+	);
+}
+
+registerPromptHandler('zone_replacement_choice', (state, prompt, answer) => {
+	if (answer.kind !== 'chooseReplacement') return;
+	const data = prompt.continuation?.kind === 'handler' ? prompt.continuation.data : undefined;
+	if (!data) return;
+	const objectId = typeof data.objectId === 'string' ? data.objectId : '';
+	const toPlayerId = typeof data.toPlayerId === 'string' ? data.toPlayerId : '';
+	const currentDest = (data.currentDest as ZoneType | undefined) ?? 'graveyard';
+	const prevShuffle = Boolean(data.shuffle);
+	const prevReplacedBy = typeof data.replacedBy === 'string' ? data.replacedBy : null;
+	const fromZone = (data.fromZone as ZoneType | null | undefined) ?? null;
+	const fromPlayerId = (data.fromPlayerId as string | null | undefined) ?? null;
+	const appliedIds = Array.isArray(data.appliedIds) ? (data.appliedIds as string[]) : [];
+	const lkiJson = typeof data.lkiJson === 'string' ? data.lkiJson : null;
+	const lki: LeftBattlefieldInfo | undefined = lkiJson ? (JSON.parse(lkiJson) as LeftBattlefieldInfo) : undefined;
+	const leaveBattlefieldReset = Boolean(data.leaveBattlefieldReset);
+	const controllerId = typeof data.controllerId === 'string' ? data.controllerId : undefined;
+	const bumpVersion = Boolean(data.bumpVersion);
+	const newTimestamp = Boolean(data.newTimestamp);
+	const setZone = data.setZone !== false;
+	const commanderRedirect = Boolean(data.commanderRedirect);
+	const ceaseToExist =
+		data.ceaseToExist === 'tokens' || data.ceaseToExist === 'always'
+			? data.ceaseToExist
+			: undefined;
+	const emit = data.emit !== false;
+	const insertSpec = data.insertSpec;
+	const sbaLogJson = typeof data.sbaLogJson === 'string' ? data.sbaLogJson : null;
+	const sbaLog: SbaMoveLog | undefined = sbaLogJson ? (JSON.parse(sbaLogJson) as SbaMoveLog) : undefined;
+	const resumeStackItemId =
+		typeof data.resumeStackItemId === 'string' ? data.resumeStackItemId : undefined;
+	const resumeStepIndex =
+		typeof data.resumeStepIndex === 'number' ? data.resumeStepIndex : undefined;
+
+	const pendingList = state.pendingZoneMoves;
+	if (!pendingList) return;
+	const idx = pendingList.findIndex((c) => c.instanceId === objectId);
+	if (idx < 0) return;
+	const obj = pendingList[idx];
+
+	const owner = state.players.find((p) => p.playerId === obj.ownerId);
+	const receiver = state.players.find((p) => p.playerId === toPlayerId) ?? owner;
+	if (!receiver) return;
+
+	whileLayerInputsChange(state, () => {
+		const nextRes = resolveZoneChangeReplacements(
+			state,
+			obj,
+			fromZone,
+			currentDest,
+			new Set(appliedIds),
+			Boolean(lki?.lostAllAbilities),
+			answer.id
+		);
+
+		const nextDest = nextRes.dest;
+		const nextShuffle = prevShuffle || nextRes.shuffle;
+		const nextReplacedBy = nextRes.replacedBy ?? prevReplacedBy;
+
+		if (nextRes.pendingOptions && nextRes.pendingOptions.length >= 2) {
+			const description = `Multiple replacement effects would modify how ${obj.card.name} moves to ${nextDest}. Choose which applies next (CR 616.1f):`;
+			enqueueChoicePrompt(state, {
+				id: uid('prm', state),
+				playerId: nextRes.chooserId,
+				kind: 'chooseReplacement',
+				purpose: 'generic',
+				title: 'Choose Replacement Effect (CR 616.1)',
+				description,
+				continuation: {
+					kind: 'handler',
+					name: 'zone_replacement_choice',
+					data: {
+						objectId: obj.instanceId,
+						toPlayerId: receiver.playerId,
+						currentDest: nextDest,
+						shuffle: nextShuffle,
+						replacedBy: nextReplacedBy,
+						fromZone,
+						fromPlayerId,
+						appliedIds: nextRes.appliedIds,
+						lkiJson,
+						leaveBattlefieldReset,
+						controllerId: controllerId ?? null,
+						bumpVersion,
+						newTimestamp,
+						setZone,
+						commanderRedirect,
+						ceaseToExist: ceaseToExist ?? null,
+						emit,
+						insertSpec,
+						sbaLogJson,
+						...(resumeStackItemId !== undefined ? { resumeStackItemId } : {}),
+						...(resumeStepIndex !== undefined ? { resumeStepIndex } : {})
+					}
+				},
+				choice: {
+					kind: 'chooseReplacement',
+					options: nextRes.pendingOptions.map((r) => ({ id: r.id, label: r.label }))
+				}
+			});
+			return;
+		}
+
+		pendingList.splice(idx, 1);
+		if (pendingList.length === 0) {
+			delete state.pendingZoneMoves;
+		}
+
+		const insertOpt: MoveOptions['insert'] =
+			insertSpec === 'fn_library_start'
+				? (actual) => (actual === 'library' ? 'start' : 'end')
+				: typeof insertSpec === 'number' ||
+					  insertSpec === 'start' ||
+					  insertSpec === 'end' ||
+					  insertSpec === 'deferred'
+					? insertSpec
+					: 'end';
+
+		finalizeZoneMove(
+			state,
+			obj,
+			fromZone,
+			fromPlayerId,
+			receiver,
+			nextDest,
+			nextShuffle,
+			nextReplacedBy,
+			lki,
+			{
+				from: 'none',
+				toPlayer: receiver,
+				leaveBattlefieldReset,
+				controllerId,
+				bumpVersion,
+				newTimestamp,
+				setZone,
+				commanderRedirect,
+				ceaseToExist,
+				emit,
+				insert: insertOpt,
+				sbaLog
+			}
+		);
+	});
+	flushTriggers(state);
 });
 
 function captureLki(state: GameState, obj: CardInstance): LeftBattlefieldInfo {

@@ -14,10 +14,10 @@ import {
 import { PRECON_DECKS, STAPLE_CARDS } from '../precons.ts';
 import {
 	checkGlobalCastPermissionsAndRestrictions as ruleTreeCastRules,
-	checkGraveyardReplacementZone as ruleTreeGraveyardZone,
 	getLibrarySearchInterceptor as ruleTreeSearchInterceptor,
 	playerCannotLoseGame as ruleTreeCannotLose,
-	playerCannotWinGame as ruleTreeCannotWin
+	playerCannotWinGame as ruleTreeCannotWin,
+	resolveZoneChangeReplacements as ruleTreeGraveyardZone
 } from '../ruleTree.ts';
 import { DEFAULT_LOBBY_RULES, type CardInstance, type GameState, type LobbySeat, type ScryfallCard } from '../types.ts';
 import { allocateTimestamp } from './zones.ts';
@@ -27,7 +27,6 @@ import {
 	applySelfEtbReplacements,
 	cardEntersTapped,
 	checkGlobalCastPermissionsAndRestrictions,
-	checkGraveyardReplacementZone,
 	counterMultiplier,
 	getAttackTaxGeneric,
 	getLibrarySearchInterceptor,
@@ -38,6 +37,7 @@ import {
 	playerHasNoMaxHandSize,
 	playerHasShroud,
 	replaceEmptyLibraryDraw,
+	resolveZoneChangeReplacements,
 	spellCannotBeCountered,
 	tokenMultiplier,
 	triggerMultiplier
@@ -622,14 +622,12 @@ describe('Phase 7: runtime/replace.ts — Replacements & Scoped Multipliers', ()
 				oracleText: 'If a card or token would be put into a graveyard from anywhere, exile it instead.'
 			})
 		);
-		assert.deepEqual(checkGraveyardReplacementZone(state, 'graveyard'), {
-			dest: 'exile',
-			replacedBy: 'Null Void Shrine'
-		});
-		assert.deepEqual(ruleTreeGraveyardZone(state, 'graveyard'), {
-			dest: 'exile',
-			replacedBy: 'Null Void Shrine'
-		});
+		const gyResolved = resolveZoneChangeReplacements(state, hydra, 'battlefield', 'graveyard');
+		assert.equal(gyResolved.dest, 'exile');
+		assert.equal(gyResolved.replacedBy, 'Null Void Shrine');
+		const ruleTreeResolved = ruleTreeGraveyardZone(state, hydra, 'battlefield', 'graveyard');
+		assert.equal(ruleTreeResolved.dest, 'exile');
+		assert.equal(ruleTreeResolved.replacedBy, 'Null Void Shrine');
 	});
 
 	it('scopes Corpsejack Menace to +1/+1 counters on creatures you control, and supports general counter/token/trigger doublers', () => {

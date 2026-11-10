@@ -12,10 +12,10 @@ import {
 } from './runtime/layers.ts';
 import {
 	checkGlobalCastPermissionsAndRestrictions,
-	checkGraveyardReplacementZone,
 	getLibrarySearchInterceptor,
 	playerCannotLoseGame,
-	playerCannotWinGame
+	playerCannotWinGame,
+	resolveZoneChangeReplacements
 } from './runtime/replace.ts';
 import type {
 	CardInstance,
@@ -589,8 +589,8 @@ export {
 	type CardContinuousBreakdown,
 	type EvaluatedPermanent,
 	checkGlobalCastPermissionsAndRestrictions,
-	checkGraveyardReplacementZone,
 	getLibrarySearchInterceptor,
 	playerCannotLoseGame,
-	playerCannotWinGame
+	playerCannotWinGame,
+	resolveZoneChangeReplacements
 };

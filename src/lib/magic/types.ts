@@ -786,6 +786,12 @@ export interface GameState {
 	 */
 	lastNormalTurnPlayerIndex?: number;
 	playersDrawnThisTurn?: string[];
+	/**
+	 * CR 616.1: Holding list for objects whose zone change is currently paused awaiting a human's
+	 * `chooseReplacement` choice, so the object does not exist in any destination zone before the
+	 * replacement order is chosen.
+	 */
+	pendingZoneMoves?: CardInstance[];
 	stackTriggersEnabled?: boolean;
 	rngState?: number;
 	nextUid?: number;

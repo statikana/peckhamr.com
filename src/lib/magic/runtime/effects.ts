@@ -948,11 +948,29 @@ class Run {
 			// A scry or search step queued a human's prompt and more steps follow: pause, and resume at
 			// the next step once every such prompt is answered (the prompt does the step's own work).
 			const queued = this.state.pendingPrompts.slice(promptsBefore);
-			if (this.canPause && PROMPTING_VERBS.has(step.verb) && queued.length > 0 && this.stepIndex < steps.length - 1) {
-				const item = this.saveFrame(this.stepIndex + 1, {});
-				for (const pr of queued) pr.continuation = { kind: 'effect_resume', stackItemId: item.id, stepIndex: this.stepIndex + 1 };
-				this.result.paused = true;
-				return;
+			if (this.canPause && queued.length > 0 && this.stepIndex < steps.length - 1) {
+				const hasHandlerPrompt = queued.some(
+					(pr) =>
+						pr.continuation?.kind === 'handler' && pr.choice?.kind === 'chooseReplacement'
+				);
+				if (PROMPTING_VERBS.has(step.verb) || hasHandlerPrompt) {
+					const item = this.saveFrame(this.stepIndex + 1, {});
+					for (const pr of queued) {
+						if (pr.continuation?.kind === 'handler') {
+							const data = (pr.continuation.data ??= {});
+							data.resumeStackItemId = item.id;
+							data.resumeStepIndex = this.stepIndex + 1;
+						} else if (PROMPTING_VERBS.has(step.verb)) {
+							pr.continuation = {
+								kind: 'effect_resume',
+								stackItemId: item.id,
+								stepIndex: this.stepIndex + 1
+							};
+						}
+					}
+					this.result.paused = true;
+					return;
+				}
 			}
 		}
 	}
