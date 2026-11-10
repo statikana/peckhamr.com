@@ -1582,6 +1582,10 @@ Then an ultra code review of the branch, doc clean-up, and push.
   - Replaced the blunt 200-trigger cap (`#10`) with per-`(sourceInstanceId, abilityIndex)` cycle
     tracking across trigger resolution waves (`LOOP_TRIGGER_THRESHOLD = 30`, reset on voluntary player
     actions) using exact and token-normalized board fingerprints.
+  - `computeLoopBoardFingerprints` includes per-player state (`life`, `poison`, `lost`, `library.length`,
+    `hand.length`, sorted `commanderDamageTaken`) in both fingerprints plus permanent counters in `exactFp`,
+    and `putTriggerOnStack` evaluates `cycled` non-stickily per cycle (`CR 104.4b`: a sequence that changes
+    a game-ending resource such as draining life to 0 is not an unbreakable loop).
   - On detecting an optional (`"you may"`) loop (`CR 731.2b`), bots automatically decline the optional
     effect to break the loop; on detecting a mandatory loop (`CR 104.4b`), bots-only games end in a
     draw (`winnerPlayerId: null`) while human games prompt to either end in a draw or let the loop run
@@ -1589,10 +1593,13 @@ Then an ultra code review of the branch, doc clean-up, and push.
   - Raised `MAX_TRIGGERS_PER_TURN` to `2000` (with `MAX_STACK_FOR_TRIGGERS = 300`); hitting either hard
     backstop logs loudly and pauses with a `guided_resolution` prompt instead of silently dropping
     triggers.
+  - **Known limitation:** after the 2000-trigger backstop prompt, further triggers that turn are dropped
+    (one `guided_resolution` prompt, no per-trigger log). Past stack size 300, triggers are dropped with
+    a log line each. Not fixed here.
 - **Phase 5 — False-positive guards (`ArenaTable.svelte`, `runtime/choices.ts`):**
   - Added `ALL_CHOICE_KINDS`, `ALL_PROMPT_PURPOSES`, `assertExhaustiveChoiceKind`, and a compile-time
     `_exhaustiveChoice: never` fallback in `ArenaTable.svelte` (`#2`).
-- **Suite:** **920 tests pass, 0 fail** (including 24 new fail-first tests in `runtime/review-phase12.test.ts`,
+- **Suite:** **921 tests pass, 0 fail** (including 25 new fail-first tests in `runtime/review-phase12.test.ts`,
   `runtime/review-phase3.test.ts`, and `runtime/review-phase4.test.ts`); all 5 architecture ratchet rules at
   `0`; `0` `svelte-check` errors.
 
