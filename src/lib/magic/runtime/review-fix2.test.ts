@@ -10,6 +10,8 @@ import {
 } from '../engine.ts';
 import { moveObject } from './zones.ts';
 import { flushTriggers } from './triggers.ts';
+import { compileCard } from '../compiler/index.ts';
+import { normalizeFace } from '../compiler/normalize.ts';
 import type { CardInstance, GameState, LobbySeat, PlayerGameState, ScryfallCard, ZoneType } from '../types.ts';
 import { DEFAULT_LOBBY_RULES } from '../types.ts';
 
@@ -657,5 +659,64 @@ describe('Review 2 — Finding 8: matchCounter only triggers on battlefield perm
 			1,
 			'Counter placed on normal battlefield permanent triggers its ability'
 		);
+	});
+});
+
+describe('Review 2 — Finding 7: strip CR 207.2c ability words and CR 207.2d flavor words while blocking rules terms (CR 207.2c, 207.2d, 701, 702)', () => {
+	it('Finding 7: flavor-word triggered ability ("Keen Sight — Whenever ~ attacks, draw a card.") compiles as supported and triggers on attack; rules prefixes stay unsupported; Landfall stays supported', () => {
+		const keenSightCard = synthCard({
+			name: 'Keen-Eyed Owl',
+			typeLine: 'Creature — Bird',
+			power: '2',
+			toughness: '2',
+			oracleText: 'Keen Sight — Whenever Keen-Eyed Owl attacks, draw a card.'
+		});
+		const norm = normalizeFace(keenSightCard.name, keenSightCard.oracleText);
+		assert.equal(norm.lines[0]?.abilityWord, 'Keen Sight', 'Flavor word is recorded on NormalizedLine.abilityWord (CR 207.2d)');
+		assert.equal(norm.lines[0]?.body, 'Whenever ~ attacks, draw a card.');
+		assert.equal(compileCard(keenSightCard).fullySupported, true, 'Flavor-word triggered ability compiles as fullySupported: true');
+
+		// Verify it actually triggers when attacking
+		const { state, p1, p2 } = makeGame();
+		state.phase = 'declare_attackers';
+		const owl = putInZone(state, p1, keenSightCard, 'battlefield');
+		const atkRes = applyGameAction(state, p1.playerId, {
+			type: 'declare_attackers',
+			assignments: [{ attackerInstanceId: owl.instanceId, defenderPlayerId: p2.playerId }]
+		});
+		assert.equal(atkRes.ok, true, atkRes.ok ? '' : atkRes.error);
+		assert.equal(
+			state.stack.some((s) => s.kind === 'triggered' && s.sourceInstanceId === owl.instanceId),
+			true,
+			'Keen Sight attack trigger is placed on the stack when attacking'
+		);
+
+		// Rules prefixes (CR 701 / 702) must still NOT be stripped and must compile as fullySupported: false
+		for (const [label, text] of [
+			['Solved', 'Solved — Creatures you control get +2/+2 and have vigilance.'],
+			['Max speed', 'Max speed — Other creatures you control get +1/+1 and have haste.'],
+			['Boast', 'Boast — Sacrifice a creature: Draw a card.'],
+			['Exhaust', 'Exhaust — Sacrifice a creature: Draw a card.'],
+			['Power-up', 'Power-up — Sacrifice a creature: Put a +1/+1 counter on ~.']
+		] as const) {
+			const c = synthCard({
+				name: `Rules Prefix ${label}`,
+				typeLine: 'Creature — Test',
+				oracleText: text
+			});
+			assert.equal(
+				compileCard(c).fullySupported,
+				false,
+				`${label} — must not be stripped as a flavor/ability word`
+			);
+		}
+
+		// Genuine CR 207.2c ability words (Landfall) still compile as fullySupported: true
+		const landfallCard = synthCard({
+			name: 'Lotus Tracker',
+			typeLine: 'Creature — Elf',
+			oracleText: 'Landfall — Whenever a land you control enters, you gain 1 life.'
+		});
+		assert.equal(compileCard(landfallCard).fullySupported, true, 'Landfall — still compiles as fullySupported: true');
 	});
 });
