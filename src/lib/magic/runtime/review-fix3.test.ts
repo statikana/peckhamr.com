@@ -349,4 +349,130 @@ describe('Review 3 — Group B: bot combat declarations and R10 shared predicate
 		state.combat.awaitingAttackersDeclaration = false;
 		assert.equal(isCombatDeclarationPending(state), false);
 	});
+
+	it('R3: bot blocker declaration blocks an attacker with protection from green using legal non-green blockers and assigns creatures with "blocks each combat if able" (CR 509.1, 509.1b, 509.1c)', () => {
+		const { state, p1, p2 } = makeGame([false, true]);
+
+		// Human (p1) attacks Bot (p2) with a 4/4 that has protection from green and a 2/2 vanilla creature
+		const proGreenAtk = putInZone(
+			state,
+			p1,
+			synthCard({
+				name: 'Mirran Crusader',
+				colors: ['W'],
+				colorIdentity: ['W'],
+				power: '4',
+				toughness: '4',
+				oracleText: 'Protection from green'
+			}),
+			'battlefield'
+		);
+		const vanillaAtk = putInZone(
+			state,
+			p1,
+			synthCard({
+				name: 'Runeclaw Bear',
+				colors: ['U'],
+				colorIdentity: ['U'],
+				power: '2',
+				toughness: '2'
+			}),
+			'battlefield'
+		);
+
+		// Bot (p2) controls a 3/3 green creature, a 2/2 white creature, and a 1/1 white creature with "blocks each combat if able"
+		const greenBlocker = putInZone(
+			state,
+			p2,
+			synthCard({
+				name: 'Centaur Courser',
+				colors: ['G'],
+				colorIdentity: ['G'],
+				power: '3',
+				toughness: '3'
+			}),
+			'battlefield'
+		);
+		const whiteBlocker = putInZone(
+			state,
+			p2,
+			synthCard({
+				name: 'Glory Seeker',
+				colors: ['W'],
+				colorIdentity: ['W'],
+				power: '2',
+				toughness: '2'
+			}),
+			'battlefield'
+		);
+		const mandatoryBlocker = putInZone(
+			state,
+			p2,
+			synthCard({
+				name: 'Eager Cadet',
+				colors: ['W'],
+				colorIdentity: ['W'],
+				power: '1',
+				toughness: '1',
+				oracleText: 'Eager Cadet blocks each combat if able.'
+			}),
+			'battlefield'
+		);
+
+		state.phase = 'declare_attackers';
+		state.combat.awaitingAttackersDeclaration = true;
+		const atkRes = applyGameAction(state, p1.playerId, {
+			type: 'declare_attackers',
+			assignments: [
+				{ attackerInstanceId: proGreenAtk.instanceId, defenderPlayerId: p2.playerId },
+				{ attackerInstanceId: vanillaAtk.instanceId, defenderPlayerId: p2.playerId }
+			]
+		});
+		assert.equal(atkRes.ok, true);
+
+		// Advance into declare_blockers: bot p2 declares blockers at step entry
+		const passRes = applyGameAction(state, p1.playerId, { type: 'pass_priority' });
+		assert.equal(passRes.ok, true);
+		const passRes2 = applyGameAction(state, p2.playerId, { type: 'pass_priority' });
+		assert.equal(passRes2.ok, true);
+		assert.equal(state.phase, 'declare_blockers');
+		assert.equal(state.combat.blockersDeclared, true);
+
+		const proGreenEntry = state.combat.attackers.find(
+			(a) => a.attackerInstanceId === proGreenAtk.instanceId
+		)!;
+		const vanillaEntry = state.combat.attackers.find(
+			(a) => a.attackerInstanceId === vanillaAtk.instanceId
+		)!;
+		const allDeclaredBlockerIds = [
+			...proGreenEntry.blockerInstanceIds,
+			...vanillaEntry.blockerInstanceIds
+		];
+
+		assert.equal(
+			proGreenEntry.blockerInstanceIds.includes(greenBlocker.instanceId),
+			false,
+			'Green creature cannot block attacker with protection from green'
+		);
+		assert.equal(
+			proGreenEntry.blockerInstanceIds.length > 0,
+			true,
+			'Bot must still block the protection-from-green attacker with a legal non-green blocker (R3)'
+		);
+		assert.equal(
+			allDeclaredBlockerIds.includes(whiteBlocker.instanceId),
+			true,
+			'Bot blocks with its legal non-green blocker (R3)'
+		);
+		assert.equal(
+			allDeclaredBlockerIds.includes(greenBlocker.instanceId),
+			true,
+			'Bot also blocks the non-protected attacker with its green blocker (R3)'
+		);
+		assert.equal(
+			allDeclaredBlockerIds.includes(mandatoryBlocker.instanceId),
+			true,
+			'Bot creature with "blocks each combat if able" must block (CR 509.1c, R3)'
+		);
+	});
 });
