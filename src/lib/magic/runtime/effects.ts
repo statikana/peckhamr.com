@@ -1162,7 +1162,9 @@ class Run {
 				this.bind(step, objs);
 				for (const o of objs) {
 					for (const kw of step.params?.keywords ?? []) {
-						if (!o.grantedKeywords.includes(kw)) o.grantedKeywords.push(kw);
+						if (kw.toLowerCase() === 'prowess' || !o.grantedKeywords.includes(kw)) {
+							o.grantedKeywords.push(kw);
+						}
 					}
 				}
 				return;

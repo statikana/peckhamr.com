@@ -8,6 +8,7 @@ import {
 	createInitialGameState,
 	isCombatDeclarationPending
 } from '../engine.ts';
+import { executeEffectSteps } from './effects.ts';
 import type {
 	CardInstance,
 	GameState,
@@ -641,5 +642,109 @@ describe('Review 3 — Group B: bot combat declarations and R10 shared predicate
 		// p3 passes -> all players have passed with the trigger on the stack, so it resolves
 		assert.equal(applyGameAction(state, p3.playerId, { type: 'pass_priority' }).ok, true);
 		assert.equal(state.stack.length, 0, 'Trigger resolves after all 3 players pass priority');
+	});
+});
+
+describe('Review 3 — Group C: prowess dedupe, objectManaValue, and playerCommanderCastCount', () => {
+	it('R7: two separate temporary prowess grants on the same creature trigger prowess twice per noncreature spell cast while keeping other granted keywords deduped (CR 702.108b)', () => {
+		const { state, p1 } = makeGame([false, false]);
+
+		const bear = putInZone(
+			state,
+			p1,
+			synthCard({
+				name: 'Runeclaw Bear',
+				power: '2',
+				toughness: '2'
+			}),
+			'battlefield'
+		);
+
+		for (const boonName of ['Scroll Boon A', 'Scroll Boon B']) {
+			const boonCard = synthCard({
+				name: boonName,
+				typeLine: 'Instant',
+				oracleText: 'Target creature gains prowess and flying until end of turn.'
+			});
+			const targets = [
+				{ kind: 'permanent' as const, id: bear.instanceId, label: bear.card.name }
+			];
+			executeEffectSteps(
+				state,
+				{
+					controller: p1,
+					sourceId: `src_${boonName}`,
+					sourceCard: boonCard,
+					title: boonCard.name,
+					item: {
+						id: `stk_${boonName}`,
+						sourceInstanceId: `src_${boonName}`,
+						card: boonCard,
+						ownerId: p1.playerId,
+						controllerId: p1.playerId,
+						kind: 'spell',
+						title: boonCard.name,
+						oracleText: boonCard.oracleText,
+						targets,
+						xValue: 0,
+						castMode: 'normal',
+						requiresGuidedResolution: false,
+						createdAt: 0
+					},
+					targets,
+					targetSpecs: [],
+					xValue: 0
+				},
+				[
+					{
+						verb: 'grant',
+						subject: { k: 'target', index: 0 },
+						params: { keywords: ['prowess', 'flying'], duration: 'endOfTurn' },
+						span: { start: 0, end: 0 }
+					}
+				]
+			);
+		}
+
+		// Non-prowess keywords remain deduped in grantedKeywords
+		assert.equal(
+			bear.grantedKeywords.filter((kw) => kw.toLowerCase() === 'flying').length,
+			1,
+			'Non-prowess granted keywords must remain deduped'
+		);
+
+		const cantrip = putInZone(
+			state,
+			p1,
+			synthCard({
+				name: 'Steady Aim',
+				manaCost: '{U}',
+				cmc: 1,
+				typeLine: 'Instant',
+				colors: ['U'],
+				colorIdentity: ['U'],
+				oracleText: 'Draw a card.'
+			}),
+			'hand'
+		);
+		p1.manaPool.U = 1;
+
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: cantrip.instanceId,
+				fromZone: 'hand'
+			}).ok,
+			true
+		);
+
+		const prowessTriggers = state.stack.filter(
+			(s) => s.kind === 'triggered' && s.title.toLowerCase().includes('prowess')
+		);
+		assert.equal(
+			prowessTriggers.length,
+			2,
+			'Two separate temporary prowess grants must produce two prowess triggers per noncreature spell (CR 702.108b, R7)'
+		);
 	});
 });
