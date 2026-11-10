@@ -1,13 +1,15 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import {
 	MAGIC_TABLES,
-	migrateD1DumpToSqlite
+	migrateD1DumpToSqlite,
+	splitSqlStatements
 } from './migrate-magic-d1-to-sqlite.mjs';
+import { exportSqliteMagicToD1Sql } from './migrate-magic-sqlite-to-d1.mjs';
 
 const SYNTHETIC_D1_DUMP = `
 PRAGMA defer_foreign_keys=TRUE;
@@ -90,7 +92,31 @@ INSERT INTO MagicChatMessages VALUES('msg_1','POD777','usr_google_1','Urza''s Gh
 DELETE FROM sqlite_sequence;
 `;
 
-describe('D1 -> SQLite migration script (5.1)', () => {
+function snapshotAllMagicRows(sqlitePath: string): Record<string, Array<Record<string, unknown>>> {
+	const db = new DatabaseSync(sqlitePath, { readOnly: true });
+	try {
+		const out: Record<string, Array<Record<string, unknown>>> = {};
+		for (const table of MAGIC_TABLES) {
+			const pkCol =
+				table === 'MagicSessions'
+					? 'token'
+					: table === 'MagicLobbies'
+						? 'code'
+						: table === 'MagicCardImages'
+							? 'key'
+							: 'id';
+			out[table] = db
+				.prepare(`SELECT * FROM "${table}" ORDER BY "${pkCol}" ASC`)
+				.all()
+				.map((r) => ({ ...r }));
+		}
+		return out;
+	} finally {
+		db.close();
+	}
+}
+
+describe('Magic D1 <-> SQLite migration scripts (5.1 & 5.4)', () => {
 	let tempDir: string;
 
 	beforeEach(() => {
@@ -101,7 +127,7 @@ describe('D1 -> SQLite migration script (5.1)', () => {
 		rmSync(tempDir, { recursive: true, force: true });
 	});
 
-	it('extracts only Magic tables, ignores cosmo/notes tables, and preserves multi-line/quoted SQL strings', () => {
+	it('5.1: extracts only Magic tables, ignores cosmo/notes tables, and preserves multi-line/quoted SQL strings', () => {
 		const sqlitePath = join(tempDir, 'migrated.sqlite');
 		const counts = migrateD1DumpToSqlite({
 			dumpSql: SYNTHETIC_D1_DUMP,
@@ -152,5 +178,92 @@ describe('D1 -> SQLite migration script (5.1)', () => {
 				force: false
 			});
 		}, /already exists/);
+	});
+
+	it('5.4: batches large INSERTs below statement size limit, leaves non-Magic D1 tables intact, and preserves every row in a full D1 -> SQLite -> SQL -> fresh SQLite round trip', () => {
+		const sqliteStep1 = join(tempDir, 'step1.sqlite');
+		migrateD1DumpToSqlite({
+			dumpSql: SYNTHETIC_D1_DUMP,
+			sqliteOutputPath: sqliteStep1
+		});
+
+		// Add MagicCardImages rows (20 entries) so all 6 tables are non-empty and test size batching
+		const db1 = new DatabaseSync(sqliteStep1);
+		try {
+			const ins = db1.prepare(
+				'INSERT INTO MagicCardImages (key, image_url, art_crop_url, updated_at) VALUES (?, ?, ?, ?)'
+			);
+			for (let i = 0; i < 20; i++) {
+				ins.run(
+					`exact:card-${i}`,
+					`https://cards.scryfall.io/normal/front/${i}/${'x'.repeat(120)}.jpg`,
+					`https://cards.scryfall.io/art_crop/front/${i}/${'y'.repeat(120)}.jpg`,
+					1700000100 + i
+				);
+			}
+		} finally {
+			db1.close();
+		}
+
+		const expectedRows = snapshotAllMagicRows(sqliteStep1);
+
+		// Export SQLite -> D1 SQL with a tight 2 KB batch limit to verify multi-statement batching
+		const exported = exportSqliteMagicToD1Sql({
+			sqliteInputPath: sqliteStep1,
+			maxStatementBytes: 2048
+		});
+		assert.deepEqual(exported.counts, {
+			MagicUsers: 2,
+			MagicSessions: 1,
+			MagicDecks: 1,
+			MagicLobbies: 1,
+			MagicChatMessages: 1,
+			MagicCardImages: 20
+		});
+		assert.ok(
+			exported.insertStatementCount >= 8,
+			`Expected 20 ~280B rows with 2KB cap to split into multiple INSERT batches, got ${exported.insertStatementCount}`
+		);
+		for (const stmt of splitSqlStatements(exported.sql)) {
+			assert.ok(
+				Buffer.byteLength(stmt, 'utf8') < 100_000,
+				'Every generated SQL statement must stay under D1 100 KB limit'
+			);
+		}
+
+		const exportedSqlFile = join(tempDir, 'to-d1.sql');
+		writeFileSync(exportedSqlFile, exported.sql, 'utf8');
+
+		// 1. Round-trip via migrateD1DumpToSqlite into a brand-new SQLite file (D1 dump -> SQLite -> SQL -> fresh SQLite)
+		const sqliteRoundTrip = join(tempDir, 'roundtrip.sqlite');
+		const rtCounts = migrateD1DumpToSqlite({
+			dumpSql: exported.sql,
+			sqliteOutputPath: sqliteRoundTrip
+		});
+		assert.deepEqual(rtCounts, exported.counts);
+		assert.deepEqual(snapshotAllMagicRows(sqliteRoundTrip), expectedRows);
+
+		// 2. Also verify applying the exported SQL directly onto a shared D1-like database preserves cosmo_files
+		const simulatedD1Path = join(tempDir, 'simulated-d1.sqlite');
+		const simD1 = new DatabaseSync(simulatedD1Path);
+		try {
+			simD1.exec('CREATE TABLE cosmo_files (id TEXT PRIMARY KEY, name TEXT NOT NULL);');
+			simD1.exec("INSERT INTO cosmo_files VALUES ('cf_keep', 'important.pdf');");
+			simD1.exec(
+				"CREATE TABLE MagicUsers (id TEXT PRIMARY KEY, provider TEXT NOT NULL, provider_id TEXT NOT NULL, email TEXT DEFAULT '', username TEXT NOT NULL, avatar_url TEXT DEFAULT '', stats_json TEXT DEFAULT '{}', created_at INTEGER NOT NULL, last_login_at INTEGER NOT NULL);"
+			);
+			simD1.exec(
+				"INSERT INTO MagicUsers VALUES ('stale_user', 'guest', '0', '', 'Old', '', '{}', 1, 1);"
+			);
+
+			simD1.exec(exported.sql);
+
+			const cosmoRows = simD1.prepare('SELECT * FROM cosmo_files').all();
+			assert.equal(cosmoRows.length, 1);
+			assert.equal(cosmoRows[0].id, 'cf_keep');
+		} finally {
+			simD1.close();
+		}
+		assert.deepEqual(snapshotAllMagicRows(simulatedD1Path), expectedRows);
 	});
 });
