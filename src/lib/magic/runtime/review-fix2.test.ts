@@ -9,10 +9,12 @@ import {
 	movePermanentToZone
 } from '../engine.ts';
 import { moveObject } from './zones.ts';
+import { emitEvent } from './events.ts';
+import { noteLayerInputsChanged } from './layerCache.ts';
 import { flushTriggers } from './triggers.ts';
 import { compileCard } from '../compiler/index.ts';
 import { normalizeFace } from '../compiler/normalize.ts';
-import type { CardInstance, GameState, LobbySeat, PlayerGameState, ScryfallCard, ZoneType } from '../types.ts';
+import type { CardInstance, GameState, LobbySeat, MagicDeck, PlayerGameState, ScryfallCard, ZoneType } from '../types.ts';
 import { DEFAULT_LOBBY_RULES } from '../types.ts';
 
 function synthCard(overrides: Partial<ScryfallCard> & { name: string }): ScryfallCard {
@@ -32,6 +34,11 @@ function synthCard(overrides: Partial<ScryfallCard> & { name: string }): Scryfal
 		toughness: overrides.toughness ?? '2',
 		loyalty: overrides.loyalty,
 		keywords: overrides.keywords ?? [],
+		legalCommander: overrides.legalCommander ?? true,
+		canBeCommander: overrides.canBeCommander ?? false,
+		hasPartner: overrides.hasPartner ?? false,
+		hasChooseBackground: overrides.hasChooseBackground ?? false,
+		isBackground: overrides.isBackground ?? false,
 		imageUrl: '',
 		artCropUrl: ''
 	};
@@ -72,7 +79,7 @@ function makeGame(botFlags: boolean[] = [false, false]): {
 			s.seatIndex,
 			{ commanders: [cmd], cards: [{ card: filler, quantity: 99 }] }
 		])
-	);
+	) as unknown as Map<number, MagicDeck>;
 	const state = createInitialGameState('test_rf2', seats, decks, DEFAULT_LOBBY_RULES);
 	state.status = 'active';
 	state.turnNumber = 1;
@@ -378,7 +385,7 @@ describe('Review 2 — Finding 4: 0/0 entering with counters and pending counter
 				instanceId: ballistaInHand.instanceId,
 				xValue: 2
 			});
-			assert.equal(castRes.ok, true, castRes.ok ? '' : castRes.error);
+			assert.equal(castRes.ok, true);
 
 			// Pass priority for both players so Walking Ballista resolves
 			assert.equal(applyGameAction(state, p1.playerId, { type: 'pass_priority' }).ok, true);
@@ -583,7 +590,7 @@ describe('Review 2 — Finding 6: multiple granted prowess instances each trigge
 				type: 'cast_spell',
 				instanceId: cantrip.instanceId
 			});
-			assert.equal(res.ok, true, res.ok ? '' : res.error);
+			assert.equal(res.ok, true);
 
 			const prowessTriggers = state.stack.filter(
 				(s) => s.kind === 'triggered' && /Prowess/i.test(s.title)
@@ -684,7 +691,7 @@ describe('Review 2 — Finding 7: strip CR 207.2c ability words and CR 207.2d fl
 			type: 'declare_attackers',
 			assignments: [{ attackerInstanceId: owl.instanceId, defenderPlayerId: p2.playerId }]
 		});
-		assert.equal(atkRes.ok, true, atkRes.ok ? '' : atkRes.error);
+		assert.equal(atkRes.ok, true);
 		assert.equal(
 			state.stack.some((s) => s.kind === 'triggered' && s.sourceInstanceId === owl.instanceId),
 			true,
@@ -745,14 +752,14 @@ describe('Review 2 — Finding 9: route spell resolution and cleanup discard thr
 			type: 'cast_spell',
 			instanceId: nexusInstant.instanceId
 		});
-		assert.equal(castRes.ok, true, castRes.ok ? '' : castRes.error);
+		assert.equal(castRes.ok, true);
 		assert.equal(state.stack.length, 1);
 
 		// Both players pass priority to resolve the instant
 		const passRes1 = applyGameAction(state, p1.playerId, { type: 'pass_priority' });
-		assert.equal(passRes1.ok, true, passRes1.ok ? '' : passRes1.error);
+		assert.equal(passRes1.ok, true);
 		const passRes2 = applyGameAction(state, p2.playerId, { type: 'pass_priority' });
-		assert.equal(passRes2.ok, true, passRes2.ok ? '' : passRes2.error);
+		assert.equal(passRes2.ok, true);
 		assert.equal(state.stack.length, 0, 'Instant resolved off the stack');
 
 		assert.equal(
@@ -804,7 +811,7 @@ describe('Review 2 — Finding 9: route spell resolution and cleanup discard thr
 			promptId: discardPrompt.id,
 			answer: { kind: 'chooseObjects', objectIds: [discardTarget.instanceId] }
 		});
-		assert.equal(ansRes.ok, true, ansRes.ok ? '' : ansRes.error);
+		assert.equal(ansRes.ok, true);
 
 		assert.equal(
 			p1.graveyard.some((c) => c.instanceId === discardTarget.instanceId),
@@ -815,6 +822,78 @@ describe('Review 2 — Finding 9: route spell resolution and cleanup discard thr
 			p1.exile.some((c) => c.instanceId === discardTarget.instanceId),
 			true,
 			'Card discarded to hand size with Rest in Peace must be exiled'
+		);
+	});
+});
+
+describe('Review 2 — Finding 10: skip granted-prowess continuous breakdown scan when no prowess grant exists on board (CR 702.108a, 702.108b)', () => {
+	it('Finding 10: casting a noncreature spell without any static or temporary prowess grant skips inspectCardContinuousBreakdown, while static and temporary prowess grants still trigger', () => {
+		const { state, p1 } = makeGame();
+
+		const bear = putInZone(
+			state,
+			p1,
+			synthCard({
+				name: 'Grizzly Bears',
+				typeLine: 'Creature — Bear',
+				power: '2',
+				toughness: '2'
+			}),
+			'battlefield'
+		);
+		let breakdownCounterReads = 0;
+		const rawCounters = bear.counters;
+		Object.defineProperty(bear, 'counters', {
+			configurable: true,
+			enumerable: true,
+			get() {
+				breakdownCounterReads += 1;
+				return rawCounters;
+			}
+		});
+		noteLayerInputsChanged(state);
+
+		const spellCard = createCardInstance(
+			synthCard({
+				name: 'Opt',
+				manaCost: '{U}',
+				cmc: 1,
+				typeLine: 'Instant',
+				oracleText: 'Draw a card.'
+			}),
+			p1.playerId,
+			'stack'
+		);
+
+		// 1. No prowess granters on board and no temporary grantedKeywords -> breakdown scan is skipped
+		emitEvent(state, {
+			kind: 'Cast',
+			playerId: p1.playerId,
+			objectId: spellCard.instanceId,
+			object: spellCard
+		});
+		flushTriggers(state);
+		assert.equal(
+			breakdownCounterReads,
+			0,
+			'matchCast must skip inspectCardContinuousBreakdown when nothing on board grants prowess'
+		);
+		assert.equal(state.stack.length, 0);
+
+		// 2. Temporary grantedKeywords: ['Prowess'] on bear -> triggers Prowess once
+		bear.grantedKeywords = ['Prowess'];
+		noteLayerInputsChanged(state);
+		emitEvent(state, {
+			kind: 'Cast',
+			playerId: p1.playerId,
+			objectId: spellCard.instanceId,
+			object: spellCard
+		});
+		flushTriggers(state);
+		assert.equal(
+			state.stack.filter((s) => s.kind === 'triggered' && /Prowess/i.test(s.title)).length,
+			1,
+			'Temporary granted Prowess still triggers on noncreature spell cast (CR 702.108a)'
 		);
 	});
 });
