@@ -7996,6 +7996,11 @@ export function checkStateBasedActions(state: GameState): void {
 			}
 		}
 
+		// Why the batch/replay loop resets battlefields between items:
+		// All SBAs in a single pass happen simultaneously (CR 704.3, 603.10a, 704.8), but movePermanentToZone
+		// moves one permanent at a time (evaluating replacement effects, capturing LKI, and matching triggers).
+		// Rewinding battlefields and previously moved batch items before each movePermanentToZone call ensures
+		// every dying permanent in the batch sees the full pre-batch board, then restores all post-move results.
 		const preBattlefields =
 			sbaGraveyardBatch.length > 1
 				? new Map<PlayerGameState, CardInstance[]>(
@@ -8020,7 +8025,7 @@ export function checkStateBasedActions(state: GameState): void {
 			{
 				perm: CardInstance;
 				postState: CardInstance;
-				destZone: 'graveyard' | 'exile' | 'command';
+				destZone: 'graveyard' | 'exile' | 'command' | 'pending';
 				owner: PlayerGameState | undefined;
 			}
 		>();
@@ -8035,7 +8040,7 @@ export function checkStateBasedActions(state: GameState): void {
 						setZoneOrder(pl, 'battlefield', [...bf]);
 					}
 					for (const prev of postResults.values()) {
-						if (prev.owner) {
+						if (prev.owner && prev.destZone !== 'pending') {
 							setZoneOrder(
 								prev.owner,
 								prev.destZone,
@@ -8066,7 +8071,7 @@ export function checkStateBasedActions(state: GameState): void {
 					...(item.kind === 'legend' ? { legName: item.legName } : {})
 				});
 
-				if (sbaGraveyardBatch.length > 1 && actualDest !== 'pending') {
+				if (sbaGraveyardBatch.length > 1) {
 					const owner = state.players.find((pl) => pl.playerId === item.perm.ownerId);
 					postResults.set(item.perm.instanceId, {
 						perm: item.perm,
@@ -8076,11 +8081,13 @@ export function checkStateBasedActions(state: GameState): void {
 							grantedKeywords: [...item.perm.grantedKeywords]
 						},
 						destZone:
-							actualDest === 'exile'
-								? 'exile'
-								: actualDest === 'command'
-									? 'command'
-									: 'graveyard',
+							actualDest === 'pending'
+								? 'pending'
+								: actualDest === 'exile'
+									? 'exile'
+									: actualDest === 'command'
+										? 'command'
+										: 'graveyard',
 						owner
 					});
 				}
@@ -8100,7 +8107,7 @@ export function checkStateBasedActions(state: GameState): void {
 						counters: { ...res.postState.counters },
 						grantedKeywords: [...res.postState.grantedKeywords]
 					});
-					if (res.owner && !res.perm.isToken) {
+					if (res.owner && res.destZone !== 'pending' && !res.perm.isToken) {
 						const curZone = res.owner[res.destZone];
 						if (!curZone.some((c) => c.instanceId === res.perm.instanceId)) {
 							setZoneOrder(res.owner, res.destZone, [...curZone, res.perm]);
