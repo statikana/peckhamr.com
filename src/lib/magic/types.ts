@@ -480,7 +480,12 @@ export interface CombatState {
 	awaitingAttackersDeclaration?: boolean;
 }
 
-export const ENGINE_VERSION = 1;
+/**
+ * Saved-game compatibility version; games saved with a different value are ended on load
+ * (enforceEngineVersion). 2: default stopPhases became [] (Tier 3 item 7), plus
+ * CombatState.awaitingAttackersDeclaration and GameState.pendingZoneMoves.
+ */
+export const ENGINE_VERSION = 2;
 
 export type ChoiceKind =
 	| 'yesNo'
