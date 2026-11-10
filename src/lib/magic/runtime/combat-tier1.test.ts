@@ -606,6 +606,19 @@ describe('Tier 1 Item 1 — CR 120.3d / 120.4 / 122.1c / 510.2 / 702.16e / 702.8
 		const p2LifeBefore = p2.life;
 		passAll(state); // -> combat_damage
 
+		const dmgPrompt = state.pendingPrompts[0];
+		assert.ok(dmgPrompt, 'Human attacker with Trample blocked by 1 creature and excess power is prompted (CR 510.1c, 702.19b)');
+		assert(dmgPrompt.choice?.kind === 'chooseNumber');
+		assert.equal(dmgPrompt.choice.defaultNumber, 2);
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'choice',
+				promptId: dmgPrompt.id,
+				answer: { kind: 'chooseNumber', n: dmgPrompt.choice.defaultNumber }
+			}).ok,
+			true
+		);
+
 		assert.equal(
 			proRedBlocker.damageMarked,
 			0,

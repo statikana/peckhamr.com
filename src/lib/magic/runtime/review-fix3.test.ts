@@ -1042,4 +1042,82 @@ describe('Review 3 — Group E: leftovers (L1, L2)', () => {
 			'Viewer\'s own hand card in pendingZoneMoves remains visible to its owner'
 		);
 	});
+
+	it('L2: human attacker with trample blocked by one creature and damage beyond lethal is prompted with chooseNumber (default = auto-assignment) (CR 510.1c, 702.19b)', () => {
+		const { state, p1, p2 } = makeGame([false, false]);
+
+		const trampler = putInZone(
+			state,
+			p1,
+			synthCard({
+				name: 'Colossal Dreadmaw',
+				power: '6',
+				toughness: '6',
+				oracleText: 'Trample',
+				keywords: ['Trample']
+			}),
+			'battlefield'
+		);
+		const blocker = putInZone(
+			state,
+			p2,
+			synthCard({
+				name: 'Grizzly Bears',
+				power: '2',
+				toughness: '2'
+			}),
+			'battlefield'
+		);
+
+		state.phase = 'declare_attackers';
+		state.combat.awaitingAttackersDeclaration = true;
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'declare_attackers',
+				assignments: [{ attackerInstanceId: trampler.instanceId, defenderPlayerId: p2.playerId }]
+			}).ok,
+			true
+		);
+		assert.equal(applyGameAction(state, p1.playerId, { type: 'pass_priority' }).ok, true);
+		assert.equal(applyGameAction(state, p2.playerId, { type: 'pass_priority' }).ok, true);
+
+		assert.equal(state.phase, 'declare_blockers');
+		assert.equal(
+			applyGameAction(state, p2.playerId, {
+				type: 'declare_blockers',
+				assignments: [
+					{ blockerInstanceId: blocker.instanceId, attackerInstanceId: trampler.instanceId }
+				]
+			}).ok,
+			true
+		);
+		assert.equal(applyGameAction(state, p1.playerId, { type: 'pass_priority' }).ok, true);
+		assert.equal(applyGameAction(state, p2.playerId, { type: 'pass_priority' }).ok, true);
+
+		assert.equal(state.phase, 'combat_damage');
+		const dmgPrompt = state.pendingPrompts.find((pr) => pr.choice?.kind === 'chooseNumber');
+		assert.ok(
+			dmgPrompt && dmgPrompt.choice?.kind === 'chooseNumber',
+			'Human attacker with trample blocked by 1 creature and excess power must be prompted (CR 702.19b, L2)'
+		);
+		assert.equal(dmgPrompt.choice.min, 2, 'Minimum damage to single 2/2 blocker is lethal (2)');
+		assert.equal(dmgPrompt.choice.max, 6, 'Maximum damage to single blocker is full power (6)');
+		assert.equal(
+			dmgPrompt.choice.defaultNumber,
+			2,
+			'Default damage assignment equals old auto-assignment (lethal on blocker)'
+		);
+
+		// Assign 4 damage to the blocker so 2 tramples over to p2
+		const p2LifeBefore = p2.life;
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'choice',
+				promptId: dmgPrompt.id,
+				answer: { kind: 'chooseNumber', n: 4 }
+			}).ok,
+			true
+		);
+		assert.equal(p2.life, p2LifeBefore - 2, 'Remaining 2 excess trample damage is dealt to defender');
+	});
 });

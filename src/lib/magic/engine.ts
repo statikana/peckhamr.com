@@ -7268,7 +7268,7 @@ function executeCombatDamageStep(
 					let dmgToBlocker = autoDmg;
 					// CR 510.1c–d, 702.19b: When blocked by multiple creatures, human controller divides combat damage
 					// among the blockers (andwith Trample, must assign lethal to all blockers before excess tramples over).
-					if (!atkPlayer.isBot && blockers.length >= 2 && remainingDamage > 0) {
+					if (!atkPlayer.isBot && (blockers.length >= 2 || canTrampleOver) && remainingDamage > 0) {
 						const minDmg = isLastBlocker
 							? canTrampleOver && allPriorBlockersLethal && remainingDamage > lethalNeeded
 								? lethalNeeded
