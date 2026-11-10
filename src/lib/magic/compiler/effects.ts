@@ -137,7 +137,8 @@ const RESTRICTION_SENTENCES: RegExp[] = [
 	/^this spell can't be countered\.?$/i,
 	// Cost reductions of the spell itself are statics, applied when the cost is determined.
 	/^~ costs .+ less to cast\b.*$/i,
-	/^this spell costs .+ less to cast\b.*$/i
+	/^this spell costs .+ less to cast\b.*$/i,
+	/^if you control (?:a|your) commander, you may cast (?:~|this spell) without paying its mana cost\.?$/i
 ];
 
 // ---- Parse context --------------------------------------------------------------------------
@@ -458,6 +459,9 @@ function equalTo(p: Parser, text: string): Amount | null {
 function numberOf(text: string): Amount | null {
 	const hand = text.match(/^cards in (your|target opponent's) hand$/);
 	if (hand && hand[1] === 'your') return { k: 'cardsIn', zone: 'hand', of: { k: 'you' } };
+	if (/^times? you've cast (?:your|a) commander from the command zone this game$/i.test(text.trim())) {
+		return { k: 'commanderCastCount' };
+	}
 	const ctl = splitController(text.trim());
 	const filter = objectFilter(ctl.phrase);
 	if (!filter) return null;
@@ -1144,6 +1148,41 @@ function clause(p: Parser, c: Clause): ClauseResult {
 		if (!subject) continue;
 		if (objectPredicate(p, subject, vp, c.span)) return true;
 		p.targets.length = snapshot;
+	}
+	const perCmdCast = t.match(
+		/^(.+?) for each time you've cast (?:your|a) commander from the command zone this game( until end of turn)?$/i
+	);
+	if (perCmdCast) {
+		const mark = p.mark();
+		const baseClauseText = `${perCmdCast[1]}${perCmdCast[2] ?? ''}`;
+		if (clause(p, { text: baseClauseText, span: c.span }) && p.steps.length > mark.steps) {
+			const scaleAmount = (a: Amount | undefined): Amount | null => {
+				if (!a || a.k !== 'const') return null;
+				if (a.n === 1) return { k: 'commanderCastCount' };
+				if (a.n === 0) return a;
+				if (a.n === -1) return { k: 'negate', of: { k: 'commanderCastCount' } };
+				return null;
+			};
+			let ok = true;
+			for (const step of p.steps.slice(mark.steps)) {
+				const scaled = scaleAmount(step.amount);
+				if (!scaled) {
+					ok = false;
+					break;
+				}
+				step.amount = scaled;
+				if (step.params?.toughness) {
+					const scaledT = scaleAmount(step.params.toughness);
+					if (!scaledT) {
+						ok = false;
+						break;
+					}
+					step.params = { ...step.params, toughness: scaledT };
+				}
+			}
+			if (ok) return true;
+		}
+		p.rollback(mark);
 	}
 	return false;
 }

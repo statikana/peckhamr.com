@@ -177,6 +177,9 @@ export function parseAffected(subject: string): Affected | null {
 function parseCountAmount(text: string): Amount | null {
 	const t = text.trim();
 	if (t === 'the number of cards in your hand') return { k: 'cardsIn', zone: 'hand', of: { k: 'you' } };
+	if (/^the number of times? you've cast (?:your|a) commander from the command zone this game$/i.test(t)) {
+		return { k: 'commanderCastCount' };
+	}
 	const grave = t.match(/^the number of (.+) cards in all graveyards$/);
 	if (grave) {
 		const f = parseObjectPhrase(`${grave[1]} card`);
@@ -469,6 +472,17 @@ function costModifiers(activeZones?: ZoneType[]): Production {
 			if (activeZones) def.activeZones = activeZones;
 			return [{ kind: 'static', static: def }];
 		};
+		if (/^if you control (?:a|your) commander, you may cast (?:this spell|~) without paying its mana cost$/i.test(s)) {
+			const def: StaticDef = {
+				k: 'costModifier',
+				affects: { k: 'self' },
+				delta: { mode: 'setZero', generic: 0 },
+				who: { relation: 'you' },
+				condition: { k: 'controlCommander' }
+			};
+			if (activeZones) def.activeZones = activeZones;
+			return [{ kind: 'static', static: def }];
+		}
 		const self = s.match(/^~ costs (\{\d+\}) (less|more) to cast(?: for each (.+))?$/);
 		if (self) {
 			if (!self[3]) return build({ k: 'self' }, self[1], self[2], 'you');

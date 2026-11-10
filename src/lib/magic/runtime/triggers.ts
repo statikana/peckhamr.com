@@ -25,6 +25,7 @@ import { evaluatePermanent, inspectCardContinuousBreakdown, permanentHasLostAllA
 import type { CardInstance, GameState, ScryfallCard } from '../types.ts';
 import type { GameEvent } from './events.ts';
 import { withStableLayerInputs } from './layerCache.ts';
+import { playerCommanderCastCount } from './objectFilter.ts';
 import { triggerMultiplier } from './replace.ts';
 
 /**
@@ -284,6 +285,9 @@ function filterMatches(f: ObjectFilter, subject: Subject, source: Viewer): boole
 	if (f.subtypes && !f.subtypes.some((s) => subject.hasSubtype(s))) return false;
 	if (f.controller === 'you' && subject.controllerId !== source.controllerId) return false;
 	if (f.controller === 'opponent' && subject.controllerId === source.controllerId) return false;
+	if (f.owner === 'you' && subject.obj.ownerId !== source.controllerId) return false;
+	if (f.owner === 'opponent' && subject.obj.ownerId === source.controllerId) return false;
+	if (f.isCommander !== undefined && Boolean(subject.obj.isCommander) !== f.isCommander) return false;
 	if (f.token !== undefined && subject.isToken !== f.token) return false;
 	if (f.tapped !== undefined && subject.tapped !== f.tapped) return false;
 	if (f.colors && !f.colors.some((c) => subject.colors.includes(c))) return false;
@@ -1052,6 +1056,8 @@ export function evaluateCondition(state: GameState, cond: Condition, controllerI
 		case 'isTurnOf':
 			if (cond.player.k === 'you') return state.players[state.activePlayerIndex]?.playerId === controllerId;
 			return cond.player.k === 'activePlayer';
+		case 'controlCommander':
+			return controller.battlefield.some((perm) => !perm.phasedOut && Boolean(perm.isCommander));
 		case 'graveyardAbove': {
 			// CR 404.2: the graveyard's order matters; the top is the end of the array.
 			const idx = controller.graveyard.findIndex((c) => c.instanceId === sourceInstanceId);
@@ -1090,6 +1096,8 @@ function amount(state: GameState, a: Amount, controllerId: string, sourceInstanc
 	switch (a.k) {
 		case 'const':
 			return a.n;
+		case 'commanderCastCount':
+			return playerCommanderCastCount(state, controllerId);
 		case 'life':
 			return a.of.k === 'you' ? controller.life : null;
 		case 'cardsIn': {

@@ -477,6 +477,7 @@ export interface CombatState {
 	damageDealtNormal: boolean;
 	dealtFirstStrikeDamageIds?: string[];
 	blockersDeclared?: boolean;
+	awaitingAttackersDeclaration?: boolean;
 }
 
 export const ENGINE_VERSION = 1;
