@@ -318,11 +318,33 @@ function executeBotStep(
 					if (hasKeyword(atkCard, 'Menace', state)) continue; // Keep simple single blocks safe
 
 					const atkFly = hasKeyword(atkCard, 'Flying', state);
+					const atkFear = hasKeyword(atkCard, 'Fear', state);
+					const atkIntimidate = hasKeyword(atkCard, 'Intimidate', state);
+					const atkShadow = hasKeyword(atkCard, 'Shadow', state);
+					const atkHorse = hasKeyword(atkCard, 'Horsemanship', state);
+					const evalAtk = atkIntimidate ? evaluatePermanent(state, atkCard) : undefined;
 					const candidate = bot.battlefield.find((b) => {
 						if (b.phasedOut || usedBlockers.has(b.instanceId) || b.tapped) return false;
-						if (!evaluatePermanent(state, b).isCreature) return false;
+						const evalBlocker = evaluatePermanent(state, b);
+						if (!evalBlocker.isCreature) return false;
 						if (hasRestriction(state, b, ['cantBlock', 'cantAttackOrBlock'])) return false;
 						if (atkFly && !hasKeyword(b, 'Flying', state) && !hasKeyword(b, 'Reach', state)) {
+							return false;
+						}
+						if (atkFear && !evalBlocker.isArtifact && !evalBlocker.colors.includes('B')) {
+							return false;
+						}
+						if (
+							atkIntimidate &&
+							!evalBlocker.isArtifact &&
+							!evalAtk!.colors.some((c) => evalBlocker.colors.includes(c))
+						) {
+							return false;
+						}
+						if (atkShadow !== hasKeyword(b, 'Shadow', state)) {
+							return false;
+						}
+						if (atkHorse && !hasKeyword(b, 'Horsemanship', state)) {
 							return false;
 						}
 						const bTough = getCreatureToughness(b, state);

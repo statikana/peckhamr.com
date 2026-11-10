@@ -2295,6 +2295,47 @@ function applyGameActionInner(
 							error: `Strict Rules Violation: ${blocker.card.name} cannot block ${atkCard.card.name} due to Protection (CR 702.16e).`
 						};
 					}
+					// CR 702.36b: A creature with fear can't be blocked except by artifact creatures and/or black creatures.
+					if (hasKeyword(atkCard, 'Fear', state)) {
+						const evalBlocker = evaluatePermanent(state, blocker);
+						if (!evalBlocker.isArtifact && !evalBlocker.colors.includes('B')) {
+							return {
+								ok: false,
+								error: `Strict Rules Violation: ${blocker.card.name} cannot block ${atkCard.card.name} (has Fear; blocker must be an artifact creature and/or black creature, CR 702.36b).`
+							};
+						}
+					}
+					// CR 702.13b: A creature with intimidate can't be blocked except by artifact creatures and/or creatures that share a color with it.
+					if (hasKeyword(atkCard, 'Intimidate', state)) {
+						const evalAtk = evaluatePermanent(state, atkCard);
+						const evalBlocker = evaluatePermanent(state, blocker);
+						if (
+							!evalBlocker.isArtifact &&
+							!evalAtk.colors.some((c) => evalBlocker.colors.includes(c))
+						) {
+							return {
+								ok: false,
+								error: `Strict Rules Violation: ${blocker.card.name} cannot block ${atkCard.card.name} (has Intimidate; blocker must be an artifact creature and/or share a color with it, CR 702.13b).`
+							};
+						}
+					}
+					// CR 702.28b: A creature with shadow can block or be blocked by only creatures with shadow.
+					if (hasKeyword(atkCard, 'Shadow', state) !== hasKeyword(blocker, 'Shadow', state)) {
+						return {
+							ok: false,
+							error: `Strict Rules Violation: ${blocker.card.name} cannot block ${atkCard.card.name} due to Shadow (CR 702.28b).`
+						};
+					}
+					// CR 702.31b: A creature with horsemanship can't be blocked by creatures without horsemanship.
+					if (
+						hasKeyword(atkCard, 'Horsemanship', state) &&
+						!hasKeyword(blocker, 'Horsemanship', state)
+					) {
+						return {
+							ok: false,
+							error: `Strict Rules Violation: ${blocker.card.name} cannot block ${atkCard.card.name} (has Horsemanship, CR 702.31b).`
+						};
+					}
 				}
 
 				const list = blockerCountsByAttacker.get(atkEntry.attackerInstanceId) || [];
@@ -2343,6 +2384,26 @@ function applyGameActionInner(
 							!hasKeyword(perm, 'Flying', state) &&
 							!hasKeyword(perm, 'Reach', state)
 						) {
+							return false;
+						}
+						if (hasKeyword(atk, 'Fear', state)) {
+							const evalBlocker = evaluatePermanent(state, perm);
+							if (!evalBlocker.isArtifact && !evalBlocker.colors.includes('B')) return false;
+						}
+						if (hasKeyword(atk, 'Intimidate', state)) {
+							const evalAtk = evaluatePermanent(state, atk);
+							const evalBlocker = evaluatePermanent(state, perm);
+							if (
+								!evalBlocker.isArtifact &&
+								!evalAtk.colors.some((c) => evalBlocker.colors.includes(c))
+							) {
+								return false;
+							}
+						}
+						if (hasKeyword(atk, 'Shadow', state) !== hasKeyword(perm, 'Shadow', state)) {
+							return false;
+						}
+						if (hasKeyword(atk, 'Horsemanship', state) && !hasKeyword(perm, 'Horsemanship', state)) {
 							return false;
 						}
 						return !hasKeyword(atk, 'Menace', state);
@@ -4146,7 +4207,7 @@ function triggerSourceObject(state: GameState, item: StackItem): CardInstance | 
 /** Whether a permanent can be targeted by an ability of `controllerId` from `sourceCard` (CR 702.11, 702.18, 702.16). */
 function permanentTargetable(state: GameState, inst: CardInstance, controllerId: string, owner: string, sourceCard: ScryfallCard): boolean {
 	if (hasKeyword(inst, 'Shroud', state)) return false;
-	if (owner !== controllerId && hasKeyword(inst, 'Hexproof', state)) return false;
+	if (owner !== controllerId && (hasKeyword(inst, 'Hexproof', state) || hasHexproofFromQuality(inst, sourceCard, state))) return false;
 	return !hasProtectionFrom(inst, sourceCard, state);
 }
 
@@ -7418,6 +7479,62 @@ export function hasProtectionFrom(
 	return false;
 }
 
+/** CR 702.11d: "Hexproof from [quality]" prevents spells/abilities with that quality controlled by an opponent from targeting this permanent. */
+export function hasHexproofFromQuality(
+	targetPerm: CardInstance,
+	sourceCard: ScryfallCard | undefined,
+	state: GameState
+): boolean {
+	if (!sourceCard || targetPerm.phasedOut) return false;
+	const evalTarget = evaluatePermanent(state, targetPerm);
+	const textsToCheck: string[] = [
+		...(evalTarget.losesAllAbilities
+			? []
+			: [
+					...keywordsOf(targetPerm.copiableCard ?? targetPerm.card).map(({ name: kwName, param }) =>
+						`${kwName}${param ? ` from ${param}` : ''}`.toLowerCase()
+					),
+					...(targetPerm.copiableCard ?? targetPerm.card).keywords.map((k) => k.toLowerCase())
+				]),
+		...targetPerm.grantedKeywords.map((k) => k.toLowerCase()),
+		...evalTarget.activeKeywords.map((k) => k.toLowerCase())
+	];
+
+	const combined = textsToCheck.join('\n');
+	if (!combined.includes('hexproof from')) return false;
+
+	if (/hexproof from everything/i.test(combined)) return true;
+	if (/hexproof from all colors/i.test(combined) && sourceCard.colors.length > 0) return true;
+	if (/hexproof from multicolored/i.test(combined) && sourceCard.colors.length >= 2) return true;
+	if (/hexproof from monocolored/i.test(combined) && sourceCard.colors.length === 1) return true;
+	if (/hexproof from colorless/i.test(combined) && sourceCard.colors.length === 0) return true;
+	if (/hexproof from [^.\n]*\bwhite\b/i.test(combined) && sourceCard.colors.includes('W')) return true;
+	if (/hexproof from [^.\n]*\bblue\b/i.test(combined) && sourceCard.colors.includes('U')) return true;
+	if (/hexproof from [^.\n]*\bblack\b/i.test(combined) && sourceCard.colors.includes('B')) return true;
+	if (/hexproof from [^.\n]*\bred\b/i.test(combined) && sourceCard.colors.includes('R')) return true;
+	if (/hexproof from [^.\n]*\bgreen\b/i.test(combined) && sourceCard.colors.includes('G')) return true;
+	if (/hexproof from creatures/i.test(combined) && sourceCard.typeLine.includes('Creature')) {
+		return true;
+	}
+	if (/hexproof from instants/i.test(combined) && sourceCard.typeLine.includes('Instant')) {
+		return true;
+	}
+	if (/hexproof from sorceries/i.test(combined) && sourceCard.typeLine.includes('Sorcery')) {
+		return true;
+	}
+	if (/hexproof from artifacts/i.test(combined) && sourceCard.typeLine.includes('Artifact')) {
+		return true;
+	}
+	if (/hexproof from enchantments/i.test(combined) && sourceCard.typeLine.includes('Enchantment')) {
+		return true;
+	}
+	if (/hexproof from planeswalkers/i.test(combined) && sourceCard.typeLine.includes('Planeswalker')) {
+		return true;
+	}
+
+	return false;
+}
+
 export function playerHasHexproofFrom(
 	state: GameState,
 	targetPlayer: PlayerGameState,
@@ -7716,7 +7833,11 @@ function validateTargetLegalityInner(
 			error: `Strict Rules Violation: ${found.inst.card.name} has Shroud and cannot be the target of spells or abilities.`
 		};
 	}
-	if (found.controller.playerId !== actorId && hasKeyword(found.inst, 'Hexproof', state)) {
+	if (
+		found.controller.playerId !== actorId &&
+		(hasKeyword(found.inst, 'Hexproof', state) ||
+			hasHexproofFromQuality(found.inst, sourceCard, state))
+	) {
 		return {
 			ok: false,
 			error: `Strict Rules Violation: ${found.inst.card.name} has Hexproof and cannot be targeted by opponents.`
@@ -8601,7 +8722,8 @@ function isTargetStillValid(
 	if (
 		controllerId &&
 		found.controller.playerId !== controllerId &&
-		hasKeyword(found.inst, 'Hexproof', state)
+		(hasKeyword(found.inst, 'Hexproof', state) ||
+			hasHexproofFromQuality(found.inst, sourceCard, state))
 	) {
 		return false;
 	}

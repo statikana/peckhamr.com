@@ -295,3 +295,282 @@ describe('Tier 2 Track A — Item 2: CR 602.5b Activation Restrictions', () => {
 		assert.equal(resOnceBob.ok, false, 'Once-each-turn restriction persists across controller changes (CR 602.5b)');
 	});
 });
+
+describe('Tier 2 Track A — Item 3: CR 509.1b / 702.11d / 702.13 / 702.28 / 702.31 / 702.36 / 702.108a Granted Keywords', () => {
+	it('enforces Fear, Intimidate, Shadow (both directions), Horsemanship, Hexproof from [quality], and static-granted Prowess', () => {
+		const state = createTestGame();
+		const alice = state.players[0];
+		const bob = state.players[1];
+
+		const fearAtk = putOnBoard(
+			state,
+			alice,
+			card({ name: 'Nightmare Stalker', colors: ['B'], oracleText: 'Fear' }),
+			'battlefield'
+		);
+		const intimidateAtk = putOnBoard(
+			state,
+			alice,
+			card({ name: 'Red Bruiser', colors: ['R'], oracleText: 'Intimidate' }),
+			'battlefield'
+		);
+		const shadowAtk = putOnBoard(
+			state,
+			alice,
+			card({ name: 'Dauthi Shade', colors: ['B'], oracleText: 'Shadow' }),
+			'battlefield'
+		);
+		const normalAtk = putOnBoard(
+			state,
+			alice,
+			card({ name: 'Vanilla Walker', colors: ['G'], oracleText: '' }),
+			'battlefield'
+		);
+		const horseAtk = putOnBoard(
+			state,
+			alice,
+			card({ name: 'Wei Cavalry', colors: ['B'], oracleText: 'Horsemanship' }),
+			'battlefield'
+		);
+
+		const greenBlocker = putOnBoard(
+			state,
+			bob,
+			card({ name: 'Green Bear', colors: ['G'], oracleText: '' }),
+			'battlefield'
+		);
+		const blackBlocker = putOnBoard(
+			state,
+			bob,
+			card({ name: 'Black Rat', colors: ['B'], oracleText: '' }),
+			'battlefield'
+		);
+		const redBlocker = putOnBoard(
+			state,
+			bob,
+			card({ name: 'Red Goblin', colors: ['R'], oracleText: '' }),
+			'battlefield'
+		);
+		const artifactBlocker = putOnBoard(
+			state,
+			bob,
+			card({
+				name: 'Iron Myr',
+				typeLine: 'Artifact Creature — Myr',
+				colors: [],
+				oracleText: ''
+			}),
+			'battlefield'
+		);
+		const shadowBlocker = putOnBoard(
+			state,
+			bob,
+			card({ name: 'Soltari Trooper', colors: ['W'], oracleText: 'Shadow' }),
+			'battlefield'
+		);
+		const horseBlocker = putOnBoard(
+			state,
+			bob,
+			card({ name: 'Shu Cavalry', colors: ['W'], oracleText: 'Horsemanship' }),
+			'battlefield'
+		);
+
+		state.phase = 'declare_attackers';
+		assert.equal(
+			applyGameAction(state, alice.playerId, {
+				type: 'declare_attackers',
+				assignments: [
+					fearAtk,
+					intimidateAtk,
+					shadowAtk,
+					normalAtk,
+					horseAtk
+				].map((a) => ({ attackerInstanceId: a.instanceId, defenderPlayerId: bob.playerId }))
+			}).ok,
+			true
+		);
+		state.phase = 'declare_blockers';
+		state.priorityPlayerIndex = 1;
+
+		// 1. Fear (CR 702.36b): green creature cannot block Fear
+		assert.equal(
+			applyGameAction(state, bob.playerId, {
+				type: 'declare_blockers',
+				assignments: [{ blockerInstanceId: greenBlocker.instanceId, attackerInstanceId: fearAtk.instanceId }]
+			}).ok,
+			false,
+			'Nonblack nonartifact creature must not block Fear (CR 702.36b)'
+		);
+
+		// 2. Intimidate (CR 702.13b): green creature cannot block Red Intimidate
+		assert.equal(
+			applyGameAction(state, bob.playerId, {
+				type: 'declare_blockers',
+				assignments: [{ blockerInstanceId: greenBlocker.instanceId, attackerInstanceId: intimidateAtk.instanceId }]
+			}).ok,
+			false,
+			'Creature sharing no color and not artifact must not block Intimidate (CR 702.13b)'
+		);
+
+		// 3. Shadow (CR 702.28b): non-Shadow cannot block Shadow, and Shadow cannot block non-Shadow
+		assert.equal(
+			applyGameAction(state, bob.playerId, {
+				type: 'declare_blockers',
+				assignments: [{ blockerInstanceId: greenBlocker.instanceId, attackerInstanceId: shadowAtk.instanceId }]
+			}).ok,
+			false,
+			'Creature without Shadow must not block Shadow (CR 702.28b)'
+		);
+		assert.equal(
+			applyGameAction(state, bob.playerId, {
+				type: 'declare_blockers',
+				assignments: [{ blockerInstanceId: shadowBlocker.instanceId, attackerInstanceId: normalAtk.instanceId }]
+			}).ok,
+			false,
+			'Creature with Shadow must not block creature without Shadow (CR 702.28b)'
+		);
+
+		// 4. Horsemanship (CR 702.31b): non-Horsemanship cannot block Horsemanship
+		assert.equal(
+			applyGameAction(state, bob.playerId, {
+				type: 'declare_blockers',
+				assignments: [{ blockerInstanceId: greenBlocker.instanceId, attackerInstanceId: horseAtk.instanceId }]
+			}).ok,
+			false,
+			'Creature without Horsemanship must not block Horsemanship (CR 702.31b)'
+		);
+
+		// Legal blocks for all of them:
+		// blackBlocker -> fearAtk, artifactBlocker -> fearAtk, redBlocker -> intimidateAtk,
+		// shadowBlocker -> shadowAtk, horseBlocker -> horseAtk, greenBlocker -> normalAtk
+		assert.equal(
+			applyGameAction(state, bob.playerId, {
+				type: 'declare_blockers',
+				assignments: [
+					{ blockerInstanceId: blackBlocker.instanceId, attackerInstanceId: fearAtk.instanceId },
+					{ blockerInstanceId: artifactBlocker.instanceId, attackerInstanceId: fearAtk.instanceId },
+					{ blockerInstanceId: redBlocker.instanceId, attackerInstanceId: intimidateAtk.instanceId },
+					{ blockerInstanceId: shadowBlocker.instanceId, attackerInstanceId: shadowAtk.instanceId },
+					{ blockerInstanceId: horseBlocker.instanceId, attackerInstanceId: horseAtk.instanceId },
+					{ blockerInstanceId: greenBlocker.instanceId, attackerInstanceId: normalAtk.instanceId }
+				]
+			}).ok,
+			true,
+			'Valid blockers for Fear, Intimidate, Shadow, and Horsemanship must succeed'
+		);
+
+		// 5. Hexproof from [quality] (CR 702.11d)
+		const state2 = createTestGame();
+		const p1 = state2.players[0];
+		const p2 = state2.players[1];
+		putOnBoard(
+			state2,
+			p2,
+			card({
+				name: 'Aegis Enchantment',
+				typeLine: 'Enchantment',
+				oracleText: 'Creatures you control have hexproof from black.',
+				power: undefined,
+				toughness: undefined
+			}),
+			'battlefield'
+		);
+		const p2Bear = putOnBoard(state2, p2, card({ name: 'Protected Bear', oracleText: '' }), 'battlefield');
+		const blackKill = putOnBoard(
+			state2,
+			p1,
+			card({
+				name: 'Dark Banishing',
+				typeLine: 'Instant',
+				manaCost: '{1}{B}',
+				colors: ['B'],
+				oracleText: 'Destroy target creature.'
+			}),
+			'hand'
+		);
+		const redBolt = putOnBoard(
+			state2,
+			p1,
+			card({
+				name: 'Flame Lash',
+				typeLine: 'Instant',
+				manaCost: '{R}',
+				colors: ['R'],
+				oracleText: '~ deals 2 damage to target creature.'
+			}),
+			'hand'
+		);
+
+		// Opponent's black spell cannot target creature with hexproof from black
+		assert.equal(
+			applyGameAction(state2, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: blackKill.instanceId,
+				targets: [{ kind: 'permanent', id: p2Bear.instanceId, label: p2Bear.card.name }]
+			}).ok,
+			false,
+			'Opponent black spell must not target permanent with hexproof from black (CR 702.11d)'
+		);
+		// Opponent's red spell CAN target creature with hexproof from black
+		assert.equal(
+			applyGameAction(state2, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: redBolt.instanceId,
+				targets: [{ kind: 'permanent', id: p2Bear.instanceId, label: p2Bear.card.name }]
+			}).ok,
+			true,
+			'Opponent red spell can target permanent with hexproof from black'
+		);
+		state2.stack = [];
+
+		// 6. Prowess granted by a static ability (CR 702.108a)
+		const state3 = createTestGame();
+		const caster = state3.players[0];
+		const opp = state3.players[1];
+		putOnBoard(
+			state3,
+			caster,
+			card({
+				name: 'Monastery Mentor Aura',
+				typeLine: 'Enchantment',
+				oracleText: 'Creatures you control have prowess.',
+				power: undefined,
+				toughness: undefined
+			}),
+			'battlefield'
+		);
+		const monk = putOnBoard(
+			state3,
+			caster,
+			card({ name: 'Student Monk', power: '2', toughness: '2', oracleText: '' }),
+			'battlefield'
+		);
+		const cantrip = putOnBoard(
+			state3,
+			caster,
+			card({
+				name: 'Quick Study Bolt',
+				typeLine: 'Instant',
+				manaCost: '{U}',
+				colors: ['U'],
+				oracleText: 'You gain 1 life.'
+			}),
+			'hand'
+		);
+		assert.equal(
+			applyGameAction(state3, caster.playerId, {
+				type: 'cast_spell',
+				instanceId: cantrip.instanceId
+			}).ok,
+			true
+		);
+		// Stack has the spell + the Prowess trigger on top
+		assert.equal(state3.stack.length, 2, 'Static-granted Prowess must trigger on noncreature spell cast (CR 702.108a)');
+		// Resolve Prowess trigger
+		assert.equal(applyGameAction(state3, caster.playerId, { type: 'pass_priority' }).ok, true);
+		assert.equal(applyGameAction(state3, opp.playerId, { type: 'pass_priority' }).ok, true);
+		const evalMonk = evaluatePermanent(state3, monk);
+		assert.equal(evalMonk.power, 3, 'Prowess trigger must give +1/+1 until end of turn');
+		assert.equal(evalMonk.toughness, 3, 'Prowess trigger must give +1/+1 until end of turn');
+	});
+});

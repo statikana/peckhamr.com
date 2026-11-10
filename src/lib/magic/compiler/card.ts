@@ -60,19 +60,24 @@ const IMPLEMENTED_KEYWORDS = new Set([
 	'double strike',
 	'enchant',
 	'equip',
+	'fear',
 	'first strike',
 	'flash',
 	'flying',
 	'haste',
 	'hexproof',
+	'horsemanship',
 	'indestructible',
 	'infect',
+	'intimidate',
 	'lifelink',
 	'menace',
 	'overload',
 	'partner',
 	'protection',
+	'prowess',
 	'reach',
+	'shadow',
 	'shroud',
 	'suspend',
 	'trample',
@@ -213,7 +218,7 @@ function keywordLine(line: NormalizedLine): AbilityDef[] | null {
 		const span = { start, end: start + part.length };
 		cursor = span.end;
 		const keyword = keywords[i]!;
-		let implemented = IMPLEMENTED_KEYWORDS.has(keyword.name) && !(keyword.name === 'hexproof' && keyword.param);
+		let implemented = IMPLEMENTED_KEYWORDS.has(keyword.name);
 		// Equip is an activated ability (CR 702.6a): "Equip {N}" or "Equip [quality] {N}".
 		if (keyword.name === 'equip' && !keyword.cost) {
 			const q = keyword.param?.match(/^([A-Za-z ]+?)\s+creature\s*((?:\{[^}]+\})+)$/) ?? keyword.param?.match(/^([A-Za-z ]+?)\s*((?:\{[^}]+\})+)$/);

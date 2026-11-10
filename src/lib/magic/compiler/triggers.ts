@@ -471,6 +471,33 @@ export interface RuntimeTrigger {
 	ward?: { cost: string; costDefs?: CostDef[] };
 }
 
+/** CR 702.108a: Prowess — "Whenever you cast a noncreature spell, this creature gets +1/+1 until end of turn." */
+export const PROWESS_RUNTIME_TRIGGER: RuntimeTrigger = {
+	abilityIndex: -1,
+	trigger: {
+		event: 'cast',
+		filter: { object: { notTypes: ['Creature'] }, player: { relation: 'you' } }
+	},
+	effectSupported: true,
+	text: 'Prowess',
+	effect: {
+		steps: [
+			{
+				verb: 'pump',
+				subject: { k: 'self' },
+				amount: { k: 'const', n: 1 },
+				params: {
+					toughness: { k: 'const', n: 1 },
+					duration: 'endOfTurn'
+				},
+				span: { start: 0, end: 0 }
+			}
+		],
+		targets: [],
+		unparsed: []
+	}
+};
+
 const RUNTIME_TRIGGERS = new WeakMap<CardDefinition, RuntimeTrigger[]>();
 
 /**
@@ -479,7 +506,7 @@ const RUNTIME_TRIGGERS = new WeakMap<CardDefinition, RuntimeTrigger[]>();
  * - unsupported abilities whose trigger head is understood but whose effect isn't. Step E2 (plan
  *   section 2.7): they trigger and go on the stack like any other; a human controller resolves them
  *   manually and a bot skips them, and
- * - Ward keywords.
+ * - Ward and Prowess keywords.
  * Abilities whose trigger head isn't understood (or names an event the engine never emits) can't
  * be matched; the engine mentions them when the permanent enters (compiler/support.ts).
  */
@@ -499,6 +526,13 @@ export function runtimeTriggers(def: CardDefinition): RuntimeTrigger[] {
 				effectSupported: true,
 				text: `Ward ${cost}`,
 				ward: { cost, costDefs: ab.keyword.costDefs }
+			});
+			return;
+		}
+		if (ab.kind === 'keyword' && ab.keyword.name === 'prowess') {
+			out.push({
+				...PROWESS_RUNTIME_TRIGGER,
+				abilityIndex
 			});
 			return;
 		}

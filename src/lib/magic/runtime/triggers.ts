@@ -19,9 +19,9 @@
  * `runtimeTriggers`) and evaluated permanents (ruleTree.ts `evaluatePermanent`).
  */
 import { compileCard } from '../compiler/index.ts';
-import { runtimeTriggers, type RuntimeTrigger } from '../compiler/triggers.ts';
+import { PROWESS_RUNTIME_TRIGGER, runtimeTriggers, type RuntimeTrigger } from '../compiler/triggers.ts';
 import type { Amount, Condition, EventFilter, EventKind, ObjectFilter, TriggerDef } from '../ir.ts';
-import { evaluatePermanent, permanentHasLostAllAbilities } from '../ruleTree.ts';
+import { evaluatePermanent, inspectCardContinuousBreakdown, permanentHasLostAllAbilities } from '../ruleTree.ts';
 import type { CardInstance, GameState, ScryfallCard } from '../types.ts';
 import type { GameEvent } from './events.ts';
 import { withStableLayerInputs } from './layerCache.ts';
@@ -593,7 +593,45 @@ function matchCast(state: GameState, casterId: string, spell: CardInstance, isCo
 							isCopy
 						})
 					: 1;
-			record(state, source, ability, 'cast', { label: 'On Cast', times, eventPlayer: casterId });
+			record(state, source, ability, 'cast', {
+				label: ability.text === 'Prowess' ? 'Prowess' : 'On Cast',
+				times,
+				eventPlayer: casterId
+			});
+		}
+	}
+	// CR 702.108a / 702.108b: Prowess granted by continuous effects (or temporary grants) on the
+	// caster's permanents triggers on each noncreature spell cast (each instance triggers separately).
+	if (!isCopy && !hasWord(subject.typeLine(), 'Creature')) {
+		const caster = state.players.find((p) => p.playerId === casterId);
+		if (caster && !caster.lost) {
+			for (const perm of caster.battlefield) {
+				if (perm.phasedOut) continue;
+				const breakdown = inspectCardContinuousBreakdown(perm, state);
+				let grantedProwessCount = 0;
+				for (const item of breakdown.items) {
+					if (item.canonicalKey === 'prowess' && !item.removed) {
+						for (const src of item.sources) {
+							if (src !== 'innate') grantedProwessCount += 1;
+						}
+					}
+				}
+				if (grantedProwessCount > 0) {
+					const card = perm.copiableCard ?? perm.card;
+					const source: Source = { obj: perm, card, controllerId: casterId, zone: 'battlefield' };
+					const mult = triggerMultiplier(state, perm, casterId, {
+						event: 'cast',
+						spell,
+						casterId,
+						isCopy
+					});
+					record(state, source, PROWESS_RUNTIME_TRIGGER, 'cast', {
+						label: 'Prowess',
+						times: grantedProwessCount * mult,
+						eventPlayer: casterId
+					});
+				}
+			}
 		}
 	}
 }
