@@ -4965,12 +4965,14 @@ function triggerItemIsOptional(item: StackItem): boolean {
 }
 
 /**
- * Computes both the exact board fingerprint (`buildBoardSnapshot(state).fingerprint`) and a
- * token-normalized board fingerprint (coalescing identical tokens by name, typeLine, controller,
- * and tapped state so mandatory token-creation loops also repeat their normalized fingerprint).
- * Includes per-player life, poison, lost status, library size, hand size, and commander damage
- * taken because under CR 104.4b a sequence that changes a game-ending resource (life, poison,
- * library, commander damage) will eventually end the game and is not an unbreakable infinite loop.
+ * Computes both an exact board fingerprint (derived from `buildBoardSnapshot(state).active` over each
+ * active permanent's `instanceId@objectVersion`, controller, tapped state, attachment, and `+1/+1`,
+ * `-1/-1`, and `loyalty` counters) and a token-normalized board fingerprint (coalescing identical
+ * tokens by name, typeLine, controller, and tapped state so mandatory token-creation loops also
+ * repeat their normalized fingerprint). Includes per-player life, poison, lost status, library size,
+ * hand size, and commander damage taken because under CR 104.4b a sequence that changes a
+ * game-ending resource (life, poison, library, commander damage) will eventually end the game and is
+ * not an unbreakable infinite loop.
  */
 function computeLoopBoardFingerprints(state: GameState): { exactFp: string; normFp: string } {
 	const snap = buildBoardSnapshot(state);
@@ -7267,7 +7269,7 @@ function executeCombatDamageStep(
 
 					let dmgToBlocker = autoDmg;
 					// CR 510.1c–d, 702.19b: When blocked by multiple creatures, human controller divides combat damage
-					// among the blockers (andwith Trample, must assign lethal to all blockers before excess tramples over).
+					// among the blockers (and with Trample, must assign lethal to all blockers before excess tramples over).
 					if (!atkPlayer.isBot && (blockers.length >= 2 || canTrampleOver) && remainingDamage > 0) {
 						const minDmg = isLastBlocker
 							? canTrampleOver && allPriorBlockersLethal && remainingDamage > lethalNeeded
