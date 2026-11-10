@@ -14,7 +14,6 @@ import {
 } from './oracle.ts';
 import {
 	checkGlobalCastPermissionsAndRestrictions,
-	checkGraveyardReplacementZone,
 	evaluatePermanent,
 	getCardActivatedAbilities,
 	getEffectiveActivatedAbilities as getEffectiveActivatedAbilitiesRaw,
@@ -32,7 +31,6 @@ import {
 
 export {
 	checkGlobalCastPermissionsAndRestrictions,
-	checkGraveyardReplacementZone,
 	evaluatePermanent,
 	getCardActivatedAbilities,
 	getLibrarySearchInterceptor,
@@ -3522,17 +3520,18 @@ function handlePromptResolution(
 		if (chosenIds.length !== req) {
 			return { ok: false, error: `You must discard exactly ${req} card(s).` };
 		}
-		const gyDest = checkGraveyardReplacementZone(state, 'graveyard').dest;
+		state.pendingPrompts.splice(promptIdx, 1);
 		for (const id of chosenIds) {
 			const idx = actor.hand.findIndex((c) => c.instanceId === id);
 			if (idx >= 0) {
-				moveObject(state, actor.hand[idx], gyDest, {
+				moveObject(state, actor.hand[idx], 'graveyard', {
 					from: { player: actor, zone: 'hand' },
-					toPlayer: actor
+					toPlayer: actor,
+					graveyardReplacement: true,
+					commanderRedirect: true
 				});
 			}
 		}
-		state.pendingPrompts.splice(promptIdx, 1);
 		addLog(
 			state,
 			'rule',
@@ -4243,21 +4242,20 @@ export function moveStackSpellToZone(
 		owner.commanderCastCounts?.[stackItem.sourceInstanceId] ??
 		stackItem.commanderCastCount ??
 		0;
-	const actualDest =
-		dest === 'exile' ? 'exile' : checkGraveyardReplacementZone(state, 'graveyard').dest;
 	const cardInst = createCardInstance(
 		stackItem.card,
 		owner.playerId,
-		actualDest,
+		dest,
 		isCmd,
 		false,
 		allocateTimestamp(state)
 	);
 	cardInst.instanceId = stackItem.sourceInstanceId;
 	cardInst.commanderCastCount = castCount;
-	moveObject(state, cardInst, actualDest, {
+	moveObject(state, cardInst, dest, {
 		from: 'stack',
 		toPlayer: owner,
+		graveyardReplacement: true,
 		commanderRedirect: true
 	});
 }
@@ -7427,11 +7425,12 @@ function runCleanupStep(state: GameState): void {
 	if (!activePlayer.lost && activePlayer.hand.length > maxHand) {
 		const excess = activePlayer.hand.length - maxHand;
 		if (activePlayer.isBot) {
-			const gyDest = checkGraveyardReplacementZone(state, 'graveyard').dest;
 			for (const c of activePlayer.hand.slice(0, excess)) {
-				moveObject(state, c, gyDest, {
+				moveObject(state, c, 'graveyard', {
 					from: { player: activePlayer, zone: 'hand' },
-					toPlayer: activePlayer
+					toPlayer: activePlayer,
+					graveyardReplacement: true,
+					commanderRedirect: true
 				});
 			}
 			beginPhase(state, 'cleanup', activePlayer);

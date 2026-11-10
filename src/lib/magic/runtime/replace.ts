@@ -938,34 +938,6 @@ export function resolveZoneChangeReplacements(
 }
 
 /**
- * Checks if a card or token moving to a graveyard should instead be exiled due to a global
- * replacement effect (e.g., Rest in Peace). Respects Layer 6 ability-removal effects (CR 614).
- */
-export function checkGraveyardReplacementZone(
-	state: GameState,
-	desiredDestOrPlayerId: ZoneType | string = 'graveyard'
-): { dest: ZoneType; replacedBy?: string } {
-	const desiredDest: ZoneType =
-		desiredDestOrPlayerId === 'graveyard' ||
-		desiredDestOrPlayerId === 'exile' ||
-		desiredDestOrPlayerId === 'hand' ||
-		desiredDestOrPlayerId === 'library' ||
-		desiredDestOrPlayerId === 'command' ||
-		desiredDestOrPlayerId === 'battlefield'
-			? desiredDestOrPlayerId
-			: 'graveyard';
-	if (desiredDest !== 'graveyard') return { dest: desiredDest };
-	for (const rep of applicableReplacements(state, 'zoneChange', { to: 'graveyard' })) {
-		if (rep.def.replaces.filter?.object === 'self') continue;
-		const w = rep.def.with;
-		if (!Array.isArray(w) && w.k === 'modify' && w.to) {
-			return { dest: w.to, replacedBy: rep.sourceName };
-		}
-	}
-	return { dest: desiredDest };
-}
-
-/**
  * Checks whether a draw from an empty library is replaced (e.g., Laboratory Maniac's
  * "If you would draw a card while your library has no cards in it, you win the game instead.").
  */

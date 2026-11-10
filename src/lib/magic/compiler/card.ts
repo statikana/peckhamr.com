@@ -465,6 +465,19 @@ function spellAbility(norm: NormalizedFace, lines: NormalizedLine[]): AbilityDef
 				statics.push({ kind: 'static', static: st, span: s.span });
 				continue;
 			}
+			if (/^if ~ would be put into a graveyard from anywhere\b/i.test(s.text)) {
+				const parsed = parseStaticAbility(s.text, s.span.start);
+				if (parsed.unparsed.length === 0 && parsed.items.length > 0) {
+					for (const item of parsed.items) {
+						statics.push(
+							item.kind === 'static'
+								? { kind: 'static', static: item.static, span: s.span }
+								: { kind: 'replacement', replacement: item.replacement, span: s.span }
+						);
+					}
+					continue;
+				}
+			}
 			const additional = parseAdditionalCostSentence(s.text, s.span.start);
 			if (additional) {
 				additionalCosts.push(...additional.defs);

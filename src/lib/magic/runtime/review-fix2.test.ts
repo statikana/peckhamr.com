@@ -720,3 +720,101 @@ describe('Review 2 — Finding 7: strip CR 207.2c ability words and CR 207.2d fl
 		assert.equal(compileCard(landfallCard).fullySupported, true, 'Landfall — still compiles as fullySupported: true');
 	});
 });
+
+describe('Review 2 — Finding 9: route spell resolution and cleanup discard through moveObject with graveyardReplacement: true (CR 400.6, 608.2n, 614.1, 616.1)', () => {
+	it('Finding 9: resolving an instant with a "from anywhere -> shuffle into library" self-replacement shuffles it into library, and discarding to hand size with Rest in Peace exiles the card (CR 400.6, 608.2n, 614.1)', () => {
+		const { state, p1, p2 } = makeGame([false, true]);
+
+		// 1. Instant with "from anywhere, shuffle into library" self-replacement resolving from stack
+		const nexusInstant = putInZone(
+			state,
+			p1,
+			synthCard({
+				name: 'Beacon of Eternity',
+				manaCost: '{U}',
+				cmc: 1,
+				typeLine: 'Instant',
+				oracleText:
+					'You gain 2 life.\nIf Beacon of Eternity would be put into a graveyard from anywhere, shuffle it into its owner\'s library instead.'
+			}),
+			'hand'
+		);
+		p1.manaPool.U = 1;
+
+		const castRes = applyGameAction(state, p1.playerId, {
+			type: 'cast_spell',
+			instanceId: nexusInstant.instanceId
+		});
+		assert.equal(castRes.ok, true, castRes.ok ? '' : castRes.error);
+		assert.equal(state.stack.length, 1);
+
+		// Both players pass priority to resolve the instant
+		const passRes1 = applyGameAction(state, p1.playerId, { type: 'pass_priority' });
+		assert.equal(passRes1.ok, true, passRes1.ok ? '' : passRes1.error);
+		const passRes2 = applyGameAction(state, p2.playerId, { type: 'pass_priority' });
+		assert.equal(passRes2.ok, true, passRes2.ok ? '' : passRes2.error);
+		assert.equal(state.stack.length, 0, 'Instant resolved off the stack');
+
+		assert.equal(
+			p1.graveyard.some((c) => c.instanceId === nexusInstant.instanceId),
+			false,
+			'Resolved instant with shuffle replacement must not end up in graveyard (CR 608.2n, 614.1)'
+		);
+		assert.equal(
+			p1.library.some((c) => c.instanceId === nexusInstant.instanceId),
+			true,
+			'Resolved instant with shuffle replacement must be shuffled into owner\'s library (CR 608.2n, 614.1)'
+		);
+
+		// 2. Discarding to hand size with Rest in Peace on the battlefield exiles the discarded card
+		putInZone(
+			state,
+			p2,
+			synthCard({
+				name: 'Rest in Peace',
+				typeLine: 'Enchantment',
+				oracleText: 'If a card or token would be put into a graveyard from anywhere, exile it instead.'
+			}),
+			'battlefield'
+		);
+		while (p1.hand.length < 8) {
+			putInZone(
+				state,
+				p1,
+				synthCard({
+					name: `Extra Card ${p1.hand.length}`,
+					typeLine: 'Creature — Bear',
+					power: '2',
+					toughness: '2'
+				}),
+				'hand'
+			);
+		}
+		const discardTarget = p1.hand[0]!;
+
+		// Advance to cleanup step where human must discard down to 7
+		state.phase = 'end_step';
+		applyGameAction(state, p1.playerId, { type: 'pass_priority' });
+		applyGameAction(state, p2.playerId, { type: 'pass_priority' });
+		const discardPrompt = state.pendingPrompts.find((pr) => pr.purpose === 'discard_to_hand_size');
+		assert.ok(discardPrompt, 'Expected discard_to_hand_size prompt in cleanup step');
+
+		const ansRes = applyGameAction(state, p1.playerId, {
+			type: 'choice',
+			promptId: discardPrompt.id,
+			answer: { kind: 'chooseObjects', objectIds: [discardTarget.instanceId] }
+		});
+		assert.equal(ansRes.ok, true, ansRes.ok ? '' : ansRes.error);
+
+		assert.equal(
+			p1.graveyard.some((c) => c.instanceId === discardTarget.instanceId),
+			false,
+			'Card discarded to hand size with Rest in Peace must not go to graveyard'
+		);
+		assert.equal(
+			p1.exile.some((c) => c.instanceId === discardTarget.instanceId),
+			true,
+			'Card discarded to hand size with Rest in Peace must be exiled'
+		);
+	});
+});
