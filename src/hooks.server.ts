@@ -100,8 +100,13 @@ function buildProxyResponse(upstream: Response): Response {
 	});
 }
 
+export const PROXY_TIMEOUT_MS = 10_000;
+export const OFFLINE_ERROR_MESSAGE = 'The game server is offline. Try again in a minute.';
+
 export interface ProxyOptions {
 	fetchImpl?: typeof globalThis.fetch;
+	timeoutMs?: number;
+	errorLogger?: (msg: string, err: unknown) => void;
 }
 
 export async function proxyMagicApiRequest(
@@ -111,6 +116,9 @@ export async function proxyMagicApiRequest(
 	options: ProxyOptions = {}
 ): Promise<Response> {
 	const fetchFn = options.fetchImpl ?? globalThis.fetch;
+	const timeoutMs = options.timeoutMs ?? PROXY_TIMEOUT_MS;
+	const logError =
+		options.errorLogger ?? ((msg: string, err: unknown) => console.error(msg, err));
 	const routePath = event.route.id || event.url.pathname;
 	const targetUrl = `${backendUrl.replace(/\/+$/, '')}${routePath}${event.url.search}`;
 	const method = event.request.method.toUpperCase();
@@ -122,14 +130,20 @@ export async function proxyMagicApiRequest(
 		method,
 		headers,
 		body,
-		redirect: 'manual'
+		redirect: 'manual',
+		signal: AbortSignal.timeout(timeoutMs)
 	};
 	if (body) {
 		init.duplex = 'half';
 	}
 
-	const upstream = await fetchFn(targetUrl, init);
-	return buildProxyResponse(upstream);
+	try {
+		const upstream = await fetchFn(targetUrl, init);
+		return buildProxyResponse(upstream);
+	} catch (err) {
+		logError(`[magic-proxy] Backend unreachable or timed out (${method} ${routePath}):`, err);
+		return jsonResponse({ ok: false, error: OFFLINE_ERROR_MESSAGE }, 503);
+	}
 }
 
 export const handle: Handle = async ({ event, resolve }) => {
