@@ -35,14 +35,14 @@ export const GET: RequestHandler = async ({ url, request, platform }) => {
 	if (action === 'login') {
 		const provider = url.searchParams.get('provider') === 'github' ? 'github' : 'google';
 		const state = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
-		const redirectUri = `${url.origin}/magic/api/auth?action=callback&provider=${provider}`;
+		const redirectUri = `${url.origin}/api/auth?action=callback&provider=${provider}`;
 
 		if (provider === 'google') {
 			if (!googleClientId) {
 				return new Response(null, {
 					status: 302,
 					headers: {
-						Location: `/magic/?oauth_setup=google`
+						Location: `/?oauth_setup=google`
 					}
 				});
 			}
@@ -65,7 +65,7 @@ export const GET: RequestHandler = async ({ url, request, platform }) => {
 				return new Response(null, {
 					status: 302,
 					headers: {
-						Location: `/magic/?oauth_setup=github`
+						Location: `/?oauth_setup=github`
 					}
 				});
 			}
@@ -89,10 +89,10 @@ export const GET: RequestHandler = async ({ url, request, platform }) => {
 		const provider = url.searchParams.get('provider') === 'github' ? 'github' : 'google';
 		const code = url.searchParams.get('code') || '';
 		if (!code) {
-			return new Response(null, { status: 302, headers: { Location: '/magic/?error=missing_code' } });
+			return new Response(null, { status: 302, headers: { Location: '/?error=missing_code' } });
 		}
 
-		const redirectUri = `${url.origin}/magic/api/auth?action=callback&provider=${provider}`;
+		const redirectUri = `${url.origin}/api/auth?action=callback&provider=${provider}`;
 
 		try {
 			if (provider === 'google') {
@@ -112,7 +112,7 @@ export const GET: RequestHandler = async ({ url, request, platform }) => {
 				if (!tokenData.access_token) {
 					return new Response(null, {
 						status: 302,
-						headers: { Location: '/magic/?error=google_token_failed' }
+						headers: { Location: '/?error=google_token_failed' }
 					});
 				}
 
@@ -137,7 +137,7 @@ export const GET: RequestHandler = async ({ url, request, platform }) => {
 				return new Response(null, {
 					status: 302,
 					headers: {
-						Location: `/magic/?session_token=${encodeURIComponent(token)}`,
+						Location: `/?session_token=${encodeURIComponent(token)}`,
 						'Set-Cookie': `magic_session=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000`
 					}
 				});
@@ -160,7 +160,7 @@ export const GET: RequestHandler = async ({ url, request, platform }) => {
 				if (!tokenData.access_token) {
 					return new Response(null, {
 						status: 302,
-						headers: { Location: '/magic/?error=github_token_failed' }
+						headers: { Location: '/?error=github_token_failed' }
 					});
 				}
 
@@ -189,7 +189,7 @@ export const GET: RequestHandler = async ({ url, request, platform }) => {
 				return new Response(null, {
 					status: 302,
 					headers: {
-						Location: `/magic/?session_token=${encodeURIComponent(token)}`,
+						Location: `/?session_token=${encodeURIComponent(token)}`,
 						'Set-Cookie': `magic_session=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000`
 					}
 				});
@@ -197,7 +197,7 @@ export const GET: RequestHandler = async ({ url, request, platform }) => {
 		} catch {
 			return new Response(null, {
 				status: 302,
-				headers: { Location: '/magic/?error=oauth_exception' }
+				headers: { Location: '/?error=oauth_exception' }
 			});
 		}
 	}

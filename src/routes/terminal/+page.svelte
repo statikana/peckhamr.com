@@ -1,5 +1,7 @@
 <script lang="ts">
     import { onMount } from "svelte";
+    import { page } from "$app/state";
+    import { appUrl } from "$lib/apps";
     import Terminal from "../../Terminal.svelte";
 
     let theme = $state<"light" | "dark">("light");
@@ -23,7 +25,7 @@
 <div class="terminal-fullscreen-shell">
     <header class="terminal-topbar">
         <div class="topbar-left">
-            <a href="/" class="back-link">← peckhamr.com</a>
+            <a href={appUrl("home", "/", page.url)} class="back-link">← peckhamr.com</a>
             <span class="topbar-divider">/</span>
             <span class="topbar-prompt">guest@peckhamr.com</span>
         </div>

@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { APPS, getAppFromHost, rerouteUrl } from './apps.ts';
+import { APPS, appUrl, getAppFromHost, rerouteUrl } from './apps.ts';
 import { reroute } from '../hooks.ts';
 
 const dummyFetch = globalThis.fetch;
@@ -81,3 +81,56 @@ describe('host -> route mapping (0.2)', () => {
 		assert.equal(u3.search, '?action=download&id=abc');
 	});
 });
+
+describe('appUrl helper (0.3)', () => {
+	it('returns relative path when already on the target app subdomain (prod and dev)', () => {
+		assert.equal(
+			appUrl('magic', '/api/lobby', 'https://magic.peckhamr.com/'),
+			'/api/lobby'
+		);
+		assert.equal(
+			appUrl('magic', '/api/auth?action=me', 'http://magic.localhost:5173/'),
+			'/api/auth?action=me'
+		);
+		assert.equal(
+			appUrl('home', '/ryan_peckham_resume.pdf', 'https://peckhamr.com/'),
+			'/ryan_peckham_resume.pdf'
+		);
+		assert.equal(appUrl('home', '/', 'http://localhost:5173/'), '/');
+	});
+
+	it('returns absolute production URLs across apps on peckhamr.com', () => {
+		assert.equal(
+			appUrl('cosmo', '/', 'https://media.peckhamr.com/'),
+			'https://cosmo.peckhamr.com/'
+		);
+		assert.equal(
+			appUrl('cosmo', '/api?action=download&id=42', 'https://media.peckhamr.com/'),
+			'https://cosmo.peckhamr.com/api?action=download&id=42'
+		);
+		assert.equal(
+			appUrl('home', '/', 'https://magic.peckhamr.com/'),
+			'https://peckhamr.com/'
+		);
+		assert.equal(
+			appUrl('magic', '/', 'https://peckhamr.com/'),
+			'https://magic.peckhamr.com/'
+		);
+	});
+
+	it('returns absolute *.localhost:<port> URLs across apps in local dev', () => {
+		assert.equal(
+			appUrl('cosmo', '/', 'http://media.localhost:5173/'),
+			'http://cosmo.localhost:5173/'
+		);
+		assert.equal(
+			appUrl('home', '/', 'http://terminal.localhost:4173/'),
+			'http://localhost:4173/'
+		);
+		assert.equal(
+			appUrl('terminal', '/', 'http://localhost:5173/'),
+			'http://terminal.localhost:5173/'
+		);
+	});
+});
+

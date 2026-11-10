@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { page } from '$app/state';
+	import { appUrl } from '$lib/apps';
 	import ArenaTable from '../../lib/magic/ArenaTable.svelte';
 	import {
 		cardSupportReport,
@@ -337,7 +339,7 @@
 				guestJoinCodeInput = joinParam.toUpperCase();
 			}
 
-			const meData = await apiFetch('/magic/api/auth?action=me');
+			const meData = await apiFetch(appUrl('magic', '/api/auth?action=me'));
 			if (meData.ok) {
 				user = meData.user;
 				oauthConfigured = meData.oauthConfigured || { google: false, github: false };
@@ -357,7 +359,7 @@
 	}
 
 	async function fetchDecks() {
-		const data = await apiFetch('/magic/api/decks');
+		const data = await apiFetch(appUrl('magic', '/api/decks'));
 		if (data.ok) {
 			userDecks = data.decks || [];
 			preconDecks = data.precons || [];
@@ -365,7 +367,7 @@
 	}
 
 	async function fetchMyLobbies() {
-		const data = await apiFetch('/magic/api/lobby');
+		const data = await apiFetch(appUrl('magic', '/api/lobby'));
 		if (data.ok) {
 			myLobbies = data.myLobbies || [];
 		}
@@ -376,7 +378,7 @@
 		const polledCode = activeLobby.code;
 		try {
 			const data = await apiFetch(
-				`/magic/api/lobby?code=${encodeURIComponent(polledCode)}`
+				appUrl('magic', `/api/lobby?code=${encodeURIComponent(polledCode)}`)
 			);
 			if (actionInFlight || !activeLobby || activeLobby.code !== polledCode) return;
 			if (data.ok && data.lobby) {
@@ -472,7 +474,7 @@
 		email?: string;
 	}) {
 		errorMsg = '';
-		const data = await apiFetch('/magic/api/auth', {
+		const data = await apiFetch(appUrl('magic', '/api/auth'), {
 			method: 'POST',
 			body: JSON.stringify({
 				action: 'dev_login',
@@ -509,7 +511,7 @@
 		}
 
 		if (trimmedCode) {
-			const data = await apiFetch('/magic/api/lobby', {
+			const data = await apiFetch(appUrl('magic', '/api/lobby'), {
 				method: 'POST',
 				body: JSON.stringify({
 					action: 'join',
@@ -542,7 +544,7 @@
 			return;
 		}
 
-		const authData = await apiFetch('/magic/api/auth', {
+		const authData = await apiFetch(appUrl('magic', '/api/auth'), {
 			method: 'POST',
 			body: JSON.stringify({
 				action: 'guest_login',
@@ -566,7 +568,7 @@
 	async function leaveLobbyByCode(code: string) {
 		if (!code) return;
 		errorMsg = '';
-		const data = await apiFetch('/magic/api/lobby', {
+		const data = await apiFetch(appUrl('magic', '/api/lobby'), {
 			method: 'POST',
 			body: JSON.stringify({
 				action: 'leave',
@@ -589,7 +591,7 @@
 	async function transferLobbyHost(targetUserId: string) {
 		if (!activeLobby || !targetUserId) return;
 		errorMsg = '';
-		const data = await apiFetch('/magic/api/lobby', {
+		const data = await apiFetch(appUrl('magic', '/api/lobby'), {
 			method: 'POST',
 			body: JSON.stringify({
 				action: 'transfer_host',
@@ -608,7 +610,7 @@
 	async function handleLogout() {
 		if (activeLobby) {
 			try {
-				await apiFetch('/magic/api/lobby', {
+				await apiFetch(appUrl('magic', '/api/lobby'), {
 					method: 'POST',
 					body: JSON.stringify({
 						action: 'leave',
@@ -617,7 +619,7 @@
 				});
 			} catch {}
 		}
-		await apiFetch('/magic/api/auth', {
+		await apiFetch(appUrl('magic', '/api/auth'), {
 			method: 'POST',
 			body: JSON.stringify({ action: 'logout' })
 		});
@@ -699,7 +701,7 @@
 		importingDeck = true;
 		errorMsg = '';
 		try {
-			const data = await apiFetch('/magic/api/decks', {
+			const data = await apiFetch(appUrl('magic', '/api/decks'), {
 				method: 'POST',
 				body: JSON.stringify({
 					action: 'import',
@@ -722,7 +724,7 @@
 	}
 
 	async function clonePrecon(preconId: string, switchInspector = false) {
-		const data = await apiFetch('/magic/api/decks', {
+		const data = await apiFetch(appUrl('magic', '/api/decks'), {
 			method: 'POST',
 			body: JSON.stringify({ action: 'clone_precon', preconId })
 		});
@@ -743,7 +745,7 @@
 	}
 
 	async function deleteDeck(deckId: string) {
-		const data = await apiFetch('/magic/api/decks', {
+		const data = await apiFetch(appUrl('magic', '/api/decks'), {
 			method: 'POST',
 			body: JSON.stringify({ action: 'delete', deckId })
 		});
@@ -783,7 +785,7 @@
 		if (!inspectedDeck) return;
 		inspectErrorMsg = '';
 		inspectStatusMsg = '';
-		const data = await apiFetch('/magic/api/decks', {
+		const data = await apiFetch(appUrl('magic', '/api/decks'), {
 			method: 'POST',
 			body: JSON.stringify({
 				action: 'update_card',
@@ -832,7 +834,7 @@
 		showScryfallDropdown = true;
 		if (explicitTrigger) inspectErrorMsg = '';
 		try {
-			const data = await apiFetch('/magic/api/decks', {
+			const data = await apiFetch(appUrl('magic', '/api/decks'), {
 				method: 'POST',
 				body: JSON.stringify({
 					action: 'search_scryfall',
@@ -913,7 +915,7 @@
 		inspectErrorMsg = '';
 		inspectStatusMsg = '';
 		try {
-			const data = await apiFetch('/magic/api/decks', {
+			const data = await apiFetch(appUrl('magic', '/api/decks'), {
 				method: 'POST',
 				body: JSON.stringify({
 					action: 'add_card',
@@ -942,7 +944,7 @@
 
 	async function createPrivateLobby() {
 		errorMsg = '';
-		const data = await apiFetch('/magic/api/lobby', {
+		const data = await apiFetch(appUrl('magic', '/api/lobby'), {
 			method: 'POST',
 			body: JSON.stringify({
 				action: 'create',
@@ -962,7 +964,7 @@
 	async function joinLobbyByCode(code: string) {
 		if (!code.trim()) return;
 		errorMsg = '';
-		const data = await apiFetch('/magic/api/lobby', {
+		const data = await apiFetch(appUrl('magic', '/api/lobby'), {
 			method: 'POST',
 			body: JSON.stringify({
 				action: 'join',
@@ -984,7 +986,7 @@
 
 	async function updateHostRules(partial: Partial<LobbyRulesConfig>) {
 		if (!activeLobby) return;
-		const data = await apiFetch('/magic/api/lobby', {
+		const data = await apiFetch(appUrl('magic', '/api/lobby'), {
 			method: 'POST',
 			body: JSON.stringify({
 				action: 'update_rules',
@@ -1003,7 +1005,7 @@
 	async function selectSeatDeck(deckId: string) {
 		if (!activeLobby) return;
 		errorMsg = '';
-		const data = await apiFetch('/magic/api/lobby', {
+		const data = await apiFetch(appUrl('magic', '/api/lobby'), {
 			method: 'POST',
 			body: JSON.stringify({
 				action: 'select_deck',
@@ -1020,7 +1022,7 @@
 
 	async function addBotToSeat(seatIndex: number) {
 		if (!activeLobby) return;
-		const data = await apiFetch('/magic/api/lobby', {
+		const data = await apiFetch(appUrl('magic', '/api/lobby'), {
 			method: 'POST',
 			body: JSON.stringify({
 				action: 'add_bot',
@@ -1036,7 +1038,7 @@
 
 	async function removeBotFromSeat(seatIndex: number) {
 		if (!activeLobby) return;
-		const data = await apiFetch('/magic/api/lobby', {
+		const data = await apiFetch(appUrl('magic', '/api/lobby'), {
 			method: 'POST',
 			body: JSON.stringify({
 				action: 'remove_bot',
@@ -1053,7 +1055,7 @@
 	async function startLobbyMatch() {
 		if (!activeLobby) return;
 		errorMsg = '';
-		const data = await apiFetch('/magic/api/lobby', {
+		const data = await apiFetch(appUrl('magic', '/api/lobby'), {
 			method: 'POST',
 			body: JSON.stringify({
 				action: 'start_game',
@@ -1074,7 +1076,7 @@
 		errorMsg = '';
 		actionInFlight = true;
 		try {
-			const data = await apiFetch('/magic/api/lobby', {
+			const data = await apiFetch(appUrl('magic', '/api/lobby'), {
 				method: 'POST',
 				body: JSON.stringify({
 					action: 'game_action',
@@ -1095,7 +1097,7 @@
 
 	async function sendPodChat(message: string, kind: 'chat' | 'emote' = 'chat') {
 		if (!activeLobby || !message.trim()) return;
-		const data = await apiFetch('/magic/api/lobby', {
+		const data = await apiFetch(appUrl('magic', '/api/lobby'), {
 			method: 'POST',
 			body: JSON.stringify({
 				action: 'chat',
@@ -1111,7 +1113,10 @@
 
 	async function copyInviteLink() {
 		if (!activeLobby) return;
-		const link = `${window.location.origin}/magic/?join=${activeLobby.code}`;
+		const link = new URL(
+			appUrl('magic', `/?join=${activeLobby.code}`),
+			window.location.origin
+		).toString();
 		try {
 			await navigator.clipboard.writeText(link);
 			statusMsg = `Copied invite link for ${activeLobby.code}`;
@@ -1122,7 +1127,7 @@
 </script>
 
 <svelte:head>
-	<title>MTG Commander Arena — peckhamr.com/magic</title>
+	<title>MTG Commander Arena — magic.peckhamr.com</title>
 </svelte:head>
 
 {#if !inMatchView && altHeld && hoveredCard}
@@ -1197,13 +1202,9 @@
 		<!-- Top Navigation Bar -->
 		<header class="topbar">
 			<div class="brand-nav">
-				<a href="/" class="brand-link">peckhamr.com</a>
+				<a href={appUrl('home', '/', page.url)} class="brand-link">peckhamr.com</a>
 				<span class="sep">/</span>
 				<span class="brand-current">magic commander</span>
-				<!-- <span class="sep">/</span>
-				<a href="/cosmo/" class="brand-link">cosmo</a>
-				<span class="sep">/</span>
-				<a href="/notes/" class="brand-link">notes</a> -->
 			</div>
 
 			<div class="user-nav">
@@ -1345,11 +1346,17 @@
 					{/if}
 
 					<div class="oauth-buttons">
-						<a class="oauth-btn google" href="/magic/api/auth?action=login&provider=google">
+						<a
+							class="oauth-btn google"
+							href={appUrl('magic', '/api/auth?action=login&provider=google', page.url)}
+						>
 							<span class="oauth-icon">G</span>
 							<span>Continue with Google OAuth</span>
 						</a>
-						<a class="oauth-btn github" href="/magic/api/auth?action=login&provider=github">
+						<a
+							class="oauth-btn github"
+							href={appUrl('magic', '/api/auth?action=login&provider=github', page.url)}
+						>
 							<span class="oauth-icon">GH</span>
 							<span>Continue with GitHub OAuth</span>
 						</a>

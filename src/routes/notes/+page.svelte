@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { page } from '$app/state';
+	import { appUrl } from '$lib/apps';
 
 	interface NoteSummary {
 		path: string;
@@ -238,7 +240,10 @@
 		hubAiLoading = true;
 		try {
 			const res = await fetch(
-				`/notes/api?action=ask_ai&q=${encodeURIComponent(q)}&course=${encodeURIComponent(hubAiCourse)}`
+				appUrl(
+					'notes',
+					`/api?action=ask_ai&q=${encodeURIComponent(q)}&course=${encodeURIComponent(hubAiCourse)}`
+				)
 			);
 			const data = await res.json();
 			if (data.ok) {
@@ -406,7 +411,7 @@
 					return `<span class="obsidian-embed-pill">Obsidian View: ${target}</span>`;
 				}
 				const resolved = resolveRelativePath(basePath, target);
-				const srcUrl = `/notes/api?action=asset&path=${encodeURIComponent(resolved)}`;
+				const srcUrl = appUrl('notes', `/api?action=asset&path=${encodeURIComponent(resolved)}`, page.url);
 				const maxW = widthSpec && /^\d+$/.test(widthSpec.trim()) ? `style="max-width:${widthSpec.trim()}px"` : '';
 				return `<figure class="note-figure"><img src="${srcUrl}" alt="${target}" loading="lazy" ${maxW} /></figure>`;
 			});
@@ -415,7 +420,11 @@
 			s = s.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_m, alt, url) => {
 				const resolved = url.startsWith('http')
 					? url
-					: `/notes/api?action=asset&path=${encodeURIComponent(resolveRelativePath(basePath, url))}`;
+					: appUrl(
+							'notes',
+							`/api?action=asset&path=${encodeURIComponent(resolveRelativePath(basePath, url))}`,
+							page.url
+						);
 				return `<figure class="note-figure"><img src="${resolved}" alt="${alt}" loading="lazy" /></figure>`;
 			});
 
@@ -750,7 +759,10 @@
 				? currentNote.course
 				: 'all';
 			const res = await fetch(
-				`/notes/api?action=ask_ai&q=${encodeURIComponent(q)}&course=${encodeURIComponent(c)}&context_path=${encodeURIComponent(currentNote.path)}`
+				appUrl(
+					'notes',
+					`/api?action=ask_ai&q=${encodeURIComponent(q)}&course=${encodeURIComponent(c)}&context_path=${encodeURIComponent(currentNote.path)}`
+				)
 			);
 			const data = await res.json();
 			if (data.ok && data.answer_markdown) {
@@ -1171,7 +1183,7 @@
 	async function fetchTree() {
 		loadingTree = true;
 		try {
-			const res = await fetch('/notes/api?action=tree');
+			const res = await fetch(appUrl('notes', '/api?action=tree'));
 			const data = await res.json();
 			if (data.ok && Array.isArray(data.notes)) {
 				notesList = data.notes;
@@ -1198,7 +1210,7 @@
 		mobileSidebarOpen = false;
 		loadingNote = true;
 		try {
-			const res = await fetch(`/notes/api?action=note&path=${encodeURIComponent(path)}`);
+			const res = await fetch(appUrl('notes', `/api?action=note&path=${encodeURIComponent(path)}`));
 			const data = await res.json();
 			if (data.ok && data.note) {
 				currentNote = data.note;
@@ -1227,7 +1239,7 @@
 		searching = true;
 		searchTimer = setTimeout(async () => {
 			try {
-				const res = await fetch(`/notes/api?action=search&q=${encodeURIComponent(q)}`);
+				const res = await fetch(appUrl('notes', `/api?action=search&q=${encodeURIComponent(q)}`));
 				const data = await res.json();
 				if (data.ok) {
 					searchHits = data.hits || [];
@@ -1270,7 +1282,10 @@
 
 	function copyShareLink() {
 		if (!selectedPath) return;
-		const url = `${window.location.origin}/notes/?note=${encodeURIComponent(selectedPath)}`;
+		const url = new URL(
+			appUrl('notes', `/?note=${encodeURIComponent(selectedPath)}`),
+			window.location.origin
+		).toString();
 		navigator.clipboard.writeText(url);
 		copyStatus = 'copied url';
 		setTimeout(() => (copyStatus = ''), 2000);
@@ -1330,7 +1345,7 @@
 			>
 				☰
 			</button>
-			<a href="/" class="brand-link">peckhamr.com</a>
+			<a href={appUrl('home', '/', page.url)} class="brand-link">peckhamr.com</a>
 			<span class="sep">/</span>
 			<span class="route-name">notes</span>
 		</div>
