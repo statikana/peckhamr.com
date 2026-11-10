@@ -10306,6 +10306,38 @@ export function sanitizeGameStateForViewer(state: GameState, viewerId: string | 
 		}
 	}
 
+	if (clone.pendingZoneMoves) {
+		clone.pendingZoneMoves = clone.pendingZoneMoves.filter((c) => {
+			if (c.isFaceDown) return false;
+			const promptCont = state.pendingPrompts.find(
+				(pr) =>
+					pr.continuation?.kind === 'handler' &&
+					pr.continuation.data?.objectId === c.instanceId
+			)?.continuation;
+			const promptData = promptCont?.kind === 'handler' ? promptCont.data : undefined;
+			const originZone = (promptData?.fromZone as ZoneType | undefined) ?? c.zone;
+			const originPlayerId =
+				(promptData?.fromPlayerId as string | undefined) ?? c.ownerId ?? c.controllerId;
+			if (originZone === 'hand' && originPlayerId !== viewerId) return false;
+			if (originZone === 'library') {
+				const isSearchingOriginLibrary =
+					viewerId !== null &&
+					state.pendingPrompts.some(
+						(pr) =>
+							pr.playerId === viewerId &&
+							(effectivePromptPurpose(pr) === 'search_library' ||
+								(pr.choice?.kind === 'chooseObjects' && pr.choice.zone === 'library')) &&
+							(pr.targetLibraryOwnerId || pr.playerId) === originPlayerId
+					);
+				if (!isSearchingOriginLibrary) return false;
+			}
+			return true;
+		});
+		if (clone.pendingZoneMoves.length === 0) {
+			delete clone.pendingZoneMoves;
+		}
+	}
+
 	clone.pendingPrompts = clone.pendingPrompts.map((pr) => {
 		if (pr.playerId === viewerId) {
 			if (pr.stackItem) {

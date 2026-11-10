@@ -6,7 +6,8 @@ import {
 	checkStateBasedActions,
 	createCardInstance,
 	createInitialGameState,
-	isCombatDeclarationPending
+	isCombatDeclarationPending,
+	sanitizeGameStateForViewer
 } from '../engine.ts';
 import { executeEffectSteps } from './effects.ts';
 import { matchesObjectFilter, objectManaValue, playerCommanderCastCount } from './objectFilter.ts';
@@ -979,5 +980,66 @@ describe('Review 3 — Group C: prowess dedupe, objectManaValue, and playerComma
 		} finally {
 			p1.library = rawLibrary;
 		}
+	});
+});
+
+describe('Review 3 — Group E: leftovers (L1, L2)', () => {
+	it('L1: sanitizeGameStateForViewer redacts pendingZoneMoves entries whose origin zone is hidden from the viewer (another player\'s hand/library or face-down)', () => {
+		const { state, p1, p2 } = makeGame([false, false]);
+
+		const handCard = createCardInstance(
+			synthCard({ name: 'Secret Hand Card' }),
+			p1.playerId,
+			'hand'
+		);
+		const libraryCard = createCardInstance(
+			synthCard({ name: 'Secret Library Card' }),
+			p1.playerId,
+			'library'
+		);
+		const faceDownCard = createCardInstance(
+			synthCard({ name: 'Secret Morph Creature' }),
+			p1.playerId,
+			'battlefield'
+		);
+		faceDownCard.isFaceDown = true;
+		const publicCard = createCardInstance(
+			synthCard({ name: 'Public Battlefield Bear' }),
+			p1.playerId,
+			'battlefield'
+		);
+
+		state.pendingZoneMoves = [handCard, libraryCard, faceDownCard, publicCard];
+
+		const viewForP2 = sanitizeGameStateForViewer(state, p2.playerId);
+		const p2Json = JSON.stringify(viewForP2.pendingZoneMoves ?? []);
+		assert.equal(
+			p2Json.includes('Secret Hand Card'),
+			false,
+			'Another player\'s hand card in pendingZoneMoves must be redacted from viewer (L1)'
+		);
+		assert.equal(
+			p2Json.includes('Secret Library Card'),
+			false,
+			'Another player\'s library card in pendingZoneMoves must be redacted from viewer (L1)'
+		);
+		assert.equal(
+			p2Json.includes('Secret Morph Creature'),
+			false,
+			'Face-down card in pendingZoneMoves must be redacted from viewer (L1)'
+		);
+		assert.equal(
+			p2Json.includes('Public Battlefield Bear'),
+			true,
+			'Face-up public-zone card in pendingZoneMoves remains visible to viewer (L1)'
+		);
+
+		const viewForP1 = sanitizeGameStateForViewer(state, p1.playerId);
+		const p1Json = JSON.stringify(viewForP1.pendingZoneMoves ?? []);
+		assert.equal(
+			p1Json.includes('Secret Hand Card'),
+			true,
+			'Viewer\'s own hand card in pendingZoneMoves remains visible to its owner'
+		);
 	});
 });
