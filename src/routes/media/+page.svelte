@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { page } from '$app/state';
+	import { appUrl } from '../../lib/apps';
 
 	type MediaKind = 'photo' | 'video' | 'audio';
 
@@ -207,7 +209,7 @@
 
 		// 2. Check Cosmo D1 device state
 		try {
-			const res = await fetch('/cosmo/api?action=state', { cache: 'no-store' });
+			const res = await fetch(appUrl('cosmo', '/api?action=state'), { cache: 'no-store' });
 			if (res.ok) {
 				const data = await res.json();
 				if (data.ok && data.device) {
@@ -1254,7 +1256,7 @@
 				bin += String.fromCharCode(...bytes.subarray(i, i + chunk));
 			}
 			const b64 = btoa(bin);
-			const upRes = await fetch('/cosmo/api', {
+			const upRes = await fetch(appUrl('cosmo', '/api'), {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({
@@ -1275,7 +1277,7 @@
 
 			for (let attempt = 0; attempt < 45; attempt++) {
 				await new Promise((r) => setTimeout(r, 2000));
-				const stRes = await fetch('/cosmo/api?action=state', { cache: 'no-store' });
+				const stRes = await fetch(appUrl('cosmo', '/api?action=state'), { cache: 'no-store' });
 				const stData = await stRes.json();
 				const found = (stData.drops || []).find((d: any) => d.id === dropId);
 				if (found && found.status === 'converted') {
@@ -1296,7 +1298,7 @@
 						origSize: file.size,
 						outSize: meta.output_size_bytes || 0,
 						dimensions: meta.output_dimensions,
-						downloadUrl: `/cosmo/api?action=download&id=${encodeURIComponent(outId)}`,
+						downloadUrl: appUrl('cosmo', `/api?action=download&id=${encodeURIComponent(outId)}`),
 						transcript: meta.transcript,
 						srt: meta.srt,
 						vtt: meta.vtt,
@@ -1429,13 +1431,13 @@
 <div class="wrap">
 	<header class="topbar">
 		<div class="left">
-			<a href="/" class="brand">peckhamr.com</a>
+			<a href={appUrl('home', '/', page.url)} class="brand">peckhamr.com</a>
 			<span class="sep">/</span>
-			<a href="/cosmo/" class="brand">cosmo</a>
+			<a href={appUrl('cosmo', '/', page.url)} class="brand">cosmo</a>
 			<span class="sep">/</span>
 			<span class="current">media</span>
 			<span class="sep">/</span>
-			<a href="/notes/" class="brand">notes</a>
+			<a href={appUrl('notes', '/', page.url)} class="brand">notes</a>
 		</div>
 		<div class="right">
 			{#if statusMsg}

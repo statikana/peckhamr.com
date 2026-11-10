@@ -1,5 +1,7 @@
 <script>
     import { onMount } from "svelte";
+    import { page } from "$app/state";
+    import { appUrl } from "../lib/apps";
     import Terminal from "../Terminal.svelte";
 
     let activeSection = $state("experience");
@@ -365,7 +367,7 @@
                         </p>
                     </div>
                     <div class="project-links">
-                        <a href="/magic/">Launch Arena ↗</a>
+                        <a href={appUrl("magic", "/", page.url)}>Launch Arena ↗</a>
                     </div>
                 </article>
             </div>
@@ -435,7 +437,7 @@
                         <button type="button" class="console-toggle-btn" onclick={() => (terminalOpen = !terminalOpen)}>
                             {terminalOpen ? "Hide terminal" : "Open terminal here"}
                         </button>
-                        <a href="/terminal" class="console-link">Full screen ↗</a>
+                        <a href={appUrl("terminal", "/", page.url)} class="console-link">Full screen ↗</a>
                     </div>
                 </div>
                 {#if terminalOpen}

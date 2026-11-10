@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { page } from '$app/state';
+	import { appUrl } from '../../lib/apps';
 
 	interface DeviceInfo {
 		online: boolean;
@@ -154,7 +156,7 @@
 
 	async function fetchState() {
 		try {
-			const res = await fetch('/cosmo/api?action=state', { cache: 'no-store' });
+			const res = await fetch(appUrl('cosmo', '/api?action=state'), { cache: 'no-store' });
 			if (!res.ok) return;
 			const data = await res.json();
 			if (data.ok) {
@@ -287,7 +289,7 @@
 					? `${noteCaption.trim()}||voice_b64:${voiceAudioB64}`
 					: noteCaption.trim();
 
-				const res = await fetch('/cosmo/api', {
+				const res = await fetch(appUrl('cosmo', '/api'), {
 					method: 'POST',
 					headers: { 'Content-Type': 'application/json' },
 					body: JSON.stringify({
@@ -322,7 +324,7 @@
 
 	async function sendClipboard() {
 		try {
-			const res = await fetch('/cosmo/api', {
+			const res = await fetch(appUrl('cosmo', '/api'), {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({
@@ -352,7 +354,7 @@
 	}
 
 	async function deleteDrop(id: string) {
-		await fetch('/cosmo/api', {
+		await fetch(appUrl('cosmo', '/api'), {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({ action: 'delete', id })
@@ -368,13 +370,13 @@
 <div class="wrap">
 	<header class="topbar">
 		<div class="left">
-			<a href="/" class="brand">peckhamr.com</a>
+			<a href={appUrl('home', '/', page.url)} class="brand">peckhamr.com</a>
 			<span class="sep">/</span>
 			<span class="current">cosmo</span>
 			<span class="sep">/</span>
-			<a href="/media/" class="brand">media</a>
+			<a href={appUrl('media', '/', page.url)} class="brand">media</a>
 			<span class="sep">/</span>
-			<a href="/notes/" class="brand">notes</a>
+			<a href={appUrl('notes', '/', page.url)} class="brand">notes</a>
 		</div>
 		<div class="right">
 			{#if statusMsg}
@@ -519,7 +521,7 @@
 					<div class="trow">
 						<a
 							class="fname"
-							href="/cosmo/api?action=download&id={encodeURIComponent(d.id)}"
+							href={appUrl('cosmo', `/api?action=download&id=${encodeURIComponent(d.id)}`, page.url)}
 							target="_blank"
 						>
 							{d.filename}

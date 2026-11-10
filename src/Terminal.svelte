@@ -3,6 +3,16 @@
 
 import DOMPurify from "dompurify";
 import { onMount, tick } from "svelte";
+import { appUrl, getAppFromHost } from "./lib/apps";
+
+function isFullscreenTerminal(url) {
+    if (!url) return false;
+    return (
+        getAppFromHost(url.host) === "terminal" ||
+        url.pathname === "/terminal" ||
+        url.pathname === "/terminal/"
+    );
+}
 
 export const data = $state({
     terminal_text: "",
@@ -161,7 +171,7 @@ let commands = {
         "resume",
         "Get Ryan's resume",
         "resume",
-        (args) => window.location.href = "/ryan_peckham_resume.pdf"
+        (args) => window.location.href = appUrl("home", "/ryan_peckham_resume.pdf")
     ),
     helloworld: new Command(
         "helloworld",
@@ -188,11 +198,11 @@ let commands = {
         "home",
         (args) => {
             let url = URL.parse(window.location.href);
-            if (url?.pathname === "/terminal/" || url?.pathname === "/terminal") {
-                window.location.href = "/";
+            if (isFullscreenTerminal(url)) {
+                window.location.href = appUrl("home", "/");
                 return "Bye!";
             } else {
-                return "You're not full-screened right now (try " + makeLink("/terminal") + "?)";
+                return "You're not full-screened right now (try " + makeLink(appUrl("terminal", "/")) + "?)";
             }
         }
     ),
@@ -202,11 +212,11 @@ let commands = {
         "fullscreen",
         (args) => {
             let url = URL.parse(window.location.href);
-            if (url?.pathname === "/") {
-                window.location.href = "/terminal";
+            if (!isFullscreenTerminal(url)) {
+                window.location.href = appUrl("terminal", "/");
                 return "Bye!";
             } else {
-                return "You're already full-screened right now (try " + makeLink("/", "back to root") + "?)";
+                return "You're already full-screened right now (try " + makeLink(appUrl("home", "/"), "back to root") + "?)";
             }
         }
     )
@@ -634,7 +644,7 @@ function getCat() {
 function getIntroText() {
     let t = (getCat() + "\n\nhi, im ryan. i like making stuff. try the ").split("").concat(makeCode("help")).concat(" command, or ".split("")).concat(makeCode("whois")).concat(" to learn more about me.\npress ".split("")).concat(makeCode("Tab")).concat(" to autocomplete commands (or ".split("")).concat(makeCode("↑")).concat(" / ".split("")).concat(makeCode("↓")).concat(" to navigate).".split(""));
     let url = URL.parse(window.location.href);
-    if (url?.pathname === "/terminal") {
+    if (isFullscreenTerminal(url)) {
         t = t.concat("\nyou can also use the ".split("")).concat(makeCode("home")).concat(" command to go back to my main site.".split(""));
     }
     return t;
