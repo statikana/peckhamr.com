@@ -217,18 +217,19 @@ describe('sqliteD1 shim + real db.ts & cardImages.ts (Part 1)', () => {
 			rules: { ...DEFAULT_LOBBY_RULES },
 			seats: [
 				{
-					seatIdx: 0,
+					seatIndex: 0,
 					userId: 'usr_host',
 					username: 'Host',
 					avatarUrl: '',
 					isBot: false,
-					botDifficulty: 'medium',
+					botDifficulty: 'focused',
 					deckId: 'precon-0',
 					deckName: 'Precon',
 					commanderNames: ['Sol Ring'],
+					commanderArtUrl: '',
 					colorIdentity: ['W'],
+					isDeckLegal: true,
 					ready: true,
-					connected: true,
 					lastHeartbeat: now
 				}
 			],

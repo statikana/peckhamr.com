@@ -11,7 +11,9 @@ import type {
 
 let cfEnv: Record<string, unknown> | undefined;
 try {
-	const mod = (await import('cloudflare:workers')) as { env?: Record<string, unknown> };
+	const mod = (await import('cloudflare:workers')) as unknown as {
+		env?: Record<string, unknown>;
+	};
 	cfEnv = mod?.env;
 } catch {
 	cfEnv = undefined;
