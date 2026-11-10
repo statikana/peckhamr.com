@@ -1,4 +1,5 @@
-import { shuffleWith, type RngHolder } from './random.ts';
+import { shuffleWith, uid, type RngHolder } from './random.ts';
+import { enqueueChoicePrompt } from './choices.ts';
 import { checkGraveyardReplacementZone, evaluatePermanent } from '../ruleTree.ts';
 import type { CardInstance, CounterType, GameState, PlayerGameState, ZoneType } from '../types.ts';
 import { emitEvent, type LeftBattlefieldInfo } from './events.ts';
@@ -223,15 +224,15 @@ function moveObjectInner(
 	}
 
 	let dest: ZoneType = to;
+	let promptCommanderRedirect = false;
 	if (opts.graveyardReplacement && to === 'graveyard') {
 		dest = checkGraveyardReplacementZone(state, 'graveyard').dest;
-	} else if (
-		opts.commanderRedirect &&
-		obj.isCommander &&
-		(to === 'hand' || to === 'library') &&
-		owner?.isBot
-	) {
-		dest = 'command';
+	} else if (opts.commanderRedirect && obj.isCommander && (to === 'hand' || to === 'library')) {
+		if (owner?.isBot) {
+			dest = 'command';
+		} else if (owner) {
+			promptCommanderRedirect = true;
+		}
 	}
 
 	// CR 400.3: A card moving to hand, graveyard, library, or command zone always goes to its owner's zone.
@@ -309,6 +310,32 @@ function moveObjectInner(
 			ceases,
 			lki
 		);
+	}
+	if (
+		promptCommanderRedirect &&
+		owner &&
+		!ceases &&
+		!state.pendingPrompts.some(
+			(pr) => pr.kind === 'commander_zone_choice' && pr.commanderInstanceId === obj.instanceId
+		)
+	) {
+		const description = `${obj.card.name} was put into your ${dest}. Under Commander Rule 903.9b, you may move it to the Command Zone instead.`;
+		enqueueChoicePrompt(state, {
+			id: uid('prm', state),
+			playerId: owner.playerId,
+			kind: 'commander_zone_choice',
+			purpose: 'commander_zone_choice',
+			title: 'Return Commander to Command Zone?',
+			description,
+			commanderInstanceId: obj.instanceId,
+			destinationZone: dest,
+			yesLabel: 'Yes — Move to Command Zone',
+			noLabel: `No — Leave in ${dest}`,
+			choice: {
+				kind: 'yesNo',
+				question: description
+			}
+		});
 	}
 	return dest;
 }

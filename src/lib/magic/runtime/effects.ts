@@ -1586,6 +1586,7 @@ class Run {
 						from: { player: you, zone: 'hand' },
 						toPlayer: you,
 						insert: top ? 'start' : 'end',
+						commanderRedirect: true,
 						bumpVersion: true,
 						newTimestamp: true
 					});
@@ -1625,7 +1626,7 @@ class Run {
 		for (const o of objs) {
 			const holder = this.locate(o.instanceId)!.holder;
 			if (params.to === 'hand') {
-				moveObject(s, o, 'hand', { from: { player: holder, zone: 'graveyard' }, toPlayer: holder, bumpVersion: true, newTimestamp: true });
+				moveObject(s, o, 'hand', { from: { player: holder, zone: 'graveyard' }, toPlayer: holder, commanderRedirect: true, bumpVersion: true, newTimestamp: true });
 				p.addLog(s, 'cast', `${this.ctx.title} returned ${o.card.name} from ${holder.username}'s graveyard to hand.`, you.playerId);
 				continue;
 			}

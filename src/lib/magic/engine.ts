@@ -143,7 +143,7 @@ import {
 } from './runtime/effects.ts';
 import { botAcceptsOptionalTrigger, chooseBotTriggerTargets } from './ai.ts';
 import type { CostDef, EffectStep, TargetSpec, TokenSpec } from './ir.ts';
-import { deriveIdSalt, freshRngSeed, hash32, type RngHolder } from './runtime/random.ts';
+import { deriveIdSalt, freshRngSeed, hash32, uid, type RngHolder, type UidHolder } from './runtime/random.ts';
 import { cardAbilityDisplayText, enteringNotices, stackItemDisplayText } from './compiler/support.ts';
 import {
 	buildCostChoiceRequest,
@@ -195,26 +195,6 @@ import {
 } from './types.ts';
 
 export { ENGINE_VERSION };
-
-let fallbackUidCounter = 0;
-
-interface UidHolder {
-	nextUid?: number;
-	idSalt?: number;
-	rngState?: number;
-}
-
-function uid(prefix: string, state?: UidHolder): string {
-	if (state) {
-		if (state.idSalt === undefined) {
-			state.idSalt = deriveIdSalt(state.rngState ?? 0);
-		}
-		state.nextUid = (state.nextUid ?? 0) + 1;
-		return `${prefix}_${hash32(state.idSalt, state.nextUid).toString(36)}`;
-	}
-	fallbackUidCounter += 1;
-	return `${prefix}_ext_${fallbackUidCounter}`;
-}
 
 let globalInstanceTimestampSeed = 1;
 
@@ -1068,6 +1048,7 @@ export function drawCards(
 		moveObject(state, player.library[0], 'hand', {
 			from: { player, zone: 'library' },
 			toPlayer: player,
+			commanderRedirect: true,
 			newTimestamp: true,
 			bumpVersion: true
 		});
@@ -2985,12 +2966,20 @@ function handlePromptResolution(
 		if (normalized.answer.yes) {
 			const gIdx = actor.graveyard.findIndex((c) => c.instanceId === prompt.commanderInstanceId);
 			const eIdx = actor.exile.findIndex((c) => c.instanceId === prompt.commanderInstanceId);
+			const hIdx = actor.hand.findIndex((c) => c.instanceId === prompt.commanderInstanceId);
+			const lIdx = actor.library.findIndex((c) => c.instanceId === prompt.commanderInstanceId);
 			let cmd: CardInstance | undefined;
-			let cmdFrom: 'graveyard' | 'exile' = 'graveyard';
+			let cmdFrom: 'graveyard' | 'exile' | 'hand' | 'library' = 'graveyard';
 			if (gIdx >= 0) cmd = actor.graveyard[gIdx];
 			else if (eIdx >= 0) {
 				cmd = actor.exile[eIdx];
 				cmdFrom = 'exile';
+			} else if (hIdx >= 0) {
+				cmd = actor.hand[hIdx];
+				cmdFrom = 'hand';
+			} else if (lIdx >= 0) {
+				cmd = actor.library[lIdx];
+				cmdFrom = 'library';
 			}
 
 			if (cmd) {
@@ -2998,10 +2987,11 @@ function handlePromptResolution(
 				cmd.deathtouchDamageMarked = false;
 				cmd.tapped = false;
 				moveObject(state, cmd, 'command', { from: { player: actor, zone: cmdFrom }, toPlayer: actor });
+				const crRule = cmdFrom === 'hand' || cmdFrom === 'library' ? 'CR 903.9b' : 'CR 903.9a';
 				addLog(
 					state,
 					'rule',
-					`${actor.username} returned Commander ${cmd.card.name} to the Command Zone (CR 903.9a).`,
+					`${actor.username} returned Commander ${cmd.card.name} to the Command Zone (${crRule}).`,
 					actor.playerId
 				);
 			}
@@ -3159,6 +3149,7 @@ function handlePromptResolution(
 						from: fromLibrary,
 						toPlayer: libraryOwner,
 						insert: 'start',
+						commanderRedirect: true,
 						newTimestamp: true,
 						bumpVersion: true
 					});
@@ -3171,7 +3162,11 @@ function handlePromptResolution(
 						libraryOwner.playerId
 					);
 				} else {
-					moveObject(state, found, 'hand', { from: fromLibrary, toPlayer: libraryOwner });
+					moveObject(state, found, 'hand', {
+						from: fromLibrary,
+						toPlayer: libraryOwner,
+						commanderRedirect: true
+					});
 					addLog(
 						state,
 						'rule',
@@ -3658,7 +3653,11 @@ export function moveStackSpellToZone(
 	);
 	cardInst.instanceId = stackItem.sourceInstanceId;
 	cardInst.commanderCastCount = castCount;
-	moveObject(state, cardInst, actualDest, { from: 'stack', toPlayer: owner });
+	moveObject(state, cardInst, actualDest, {
+		from: 'stack',
+		toPlayer: owner,
+		commanderRedirect: true
+	});
 }
 
 export function addCountersToPermanent(
@@ -5684,13 +5683,20 @@ function initiateLibrarySearch(
 				moveObject(state, found, 'library', {
 					from: fromLibrary,
 					toPlayer: searchingPlayer,
-					insert: 'deferred',
+					insert: (actual) => (actual === 'library' ? 'deferred' : 'end'),
+					commanderRedirect: true,
 					newTimestamp: true,
 					bumpVersion: true
 				});
-				topCardsToPlace.push(found);
+				if (found.zone === 'library') {
+					topCardsToPlace.push(found);
+				}
 			} else {
-				moveObject(state, found, 'hand', { from: fromLibrary, toPlayer: searchingPlayer });
+				moveObject(state, found, 'hand', {
+					from: fromLibrary,
+					toPlayer: searchingPlayer,
+					commanderRedirect: true
+				});
 				addLog(
 					state,
 					'rule',

@@ -12,6 +12,26 @@ export interface RngHolder {
 	rngState?: number;
 }
 
+export interface UidHolder {
+	nextUid?: number;
+	idSalt?: number;
+	rngState?: number;
+}
+
+let fallbackUidCounter = 0;
+
+export function uid(prefix: string, state?: UidHolder): string {
+	if (state) {
+		if (state.idSalt === undefined) {
+			state.idSalt = deriveIdSalt(state.rngState ?? 0);
+		}
+		state.nextUid = (state.nextUid ?? 0) + 1;
+		return `${prefix}_${hash32(state.idSalt, state.nextUid).toString(36)}`;
+	}
+	fallbackUidCounter += 1;
+	return `${prefix}_ext_${fallbackUidCounter}`;
+}
+
 /** A fresh 32-bit seed. The only place the engine calls Math.random for game randomness. */
 export function freshRngSeed(): number {
 	return Math.floor(Math.random() * 0x100000000) | 0;
