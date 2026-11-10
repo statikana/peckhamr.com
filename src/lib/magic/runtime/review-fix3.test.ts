@@ -544,4 +544,102 @@ describe('Review 3 — Group B: bot combat declarations and R10 shared predicate
 			'1/1 bot creature with "attacks each combat if able" must attack (CR 508.1d, R6)'
 		);
 	});
+
+	it('R5: when an undecided defender passes in declare_blockers and block triggers go on the stack, active player gets priority with empty passedPriorityPlayerIds and all players must pass to resolve (CR 509.2, 117.3a, 117.4)', () => {
+		const { state, p1, p2 } = makeGame([false, false, true]);
+		const p3 = state.players[2]!;
+
+		const atk1 = putInZone(
+			state,
+			p1,
+			synthCard({
+				name: 'Grizzly Bears',
+				power: '2',
+				toughness: '2'
+			}),
+			'battlefield'
+		);
+		const atk2 = putInZone(
+			state,
+			p1,
+			synthCard({
+				name: 'Hill Giant',
+				power: '3',
+				toughness: '3'
+			}),
+			'battlefield'
+		);
+
+		// Bot p3 has a 4/4 blocker with "Whenever ~ blocks or becomes blocked, draw a card."
+		putInZone(
+			state,
+			p3,
+			synthCard({
+				name: 'Ophidian Guardian',
+				power: '4',
+				toughness: '4',
+				oracleText: 'Whenever Ophidian Guardian blocks or becomes blocked, draw a card.'
+			}),
+			'battlefield'
+		);
+
+		state.phase = 'declare_attackers';
+		state.combat.awaitingAttackersDeclaration = true;
+		const declRes = applyGameAction(state, p1.playerId, {
+			type: 'declare_attackers',
+			assignments: [
+				{ attackerInstanceId: atk1.instanceId, defenderPlayerId: p2.playerId },
+				{ attackerInstanceId: atk2.instanceId, defenderPlayerId: p3.playerId }
+			]
+		});
+		assert.equal(declRes.ok, true);
+
+		// Pass priority around the table in declare_attackers to enter declare_blockers
+		for (let i = 0; i < 3; i++) {
+			const res = applyGameAction(state, state.players[state.priorityPlayerIndex]!.playerId, {
+				type: 'pass_priority'
+			});
+			assert.equal(res.ok, true);
+		}
+
+		// In declare_blockers, human defender p2 is up first to declare blockers
+		assert.equal(state.phase, 'declare_blockers');
+		assert.equal(state.combat.blockersDeclared, false);
+		assert.equal(state.priorityPlayerIndex, 1);
+
+		// p2 passes without declaring blockers -> p3 (bot) declares its blocker, triggering Ophidian Guardian
+		const p2DeclPass = applyGameAction(state, p2.playerId, { type: 'pass_priority' });
+		assert.equal(p2DeclPass.ok, true);
+
+		assert.equal(state.combat.blockersDeclared, true);
+		assert.equal(state.stack.length, 1, 'Block trigger must be on the stack');
+		assert.equal(
+			state.priorityPlayerIndex,
+			0,
+			'Active player (p1) must receive priority first after blockers are declared (CR 509.2, 117.3a, R5)'
+		);
+		assert.deepEqual(
+			state.passedPriorityPlayerIds,
+			[],
+			'Defender pass must not count against the newly placed trigger on the stack (CR 117.4, R5)'
+		);
+
+		// p1 passes priority on the trigger -> p2 gets priority and the trigger is still on the stack
+		assert.equal(applyGameAction(state, p1.playerId, { type: 'pass_priority' }).ok, true);
+		assert.equal(state.priorityPlayerIndex, 1);
+		assert.equal(
+			state.stack.length,
+			1,
+			'Trigger must not resolve until defender p2 also passes with it on the stack'
+		);
+
+		// p2 passes -> p3 gets priority, trigger still on the stack
+		assert.equal(applyGameAction(state, p2.playerId, { type: 'pass_priority' }).ok, true);
+		assert.equal(state.priorityPlayerIndex, 2);
+		assert.equal(state.stack.length, 1);
+
+		// p3 passes -> all players have passed with the trigger on the stack, so it resolves
+		assert.equal(applyGameAction(state, p3.playerId, { type: 'pass_priority' }).ok, true);
+		assert.equal(state.stack.length, 0, 'Trigger resolves after all 3 players pass priority');
+	});
 });

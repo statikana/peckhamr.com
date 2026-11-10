@@ -2352,15 +2352,16 @@ function applyGameActionInner(
 			if (
 				state.phase === 'declare_blockers' &&
 				state.stack.length === 0 &&
+				!state.combat.blockersDeclared &&
 				state.combat.attackers.some((a) => a.defenderPlayerId === actorId)
 			) {
 				if (!state.combat.declaredBlockersPlayerIds) {
 					state.combat.declaredBlockersPlayerIds = [];
 				}
 				if (!state.combat.declaredBlockersPlayerIds.includes(actorId)) {
-					state.combat.declaredBlockersPlayerIds.push(actorId);
 					let allDeclared = false;
 					withTriggersDeferred(state, () => {
+						applyValidatedDefenderBlockers(state, actor, [], new Map());
 						allDeclared = advanceBotBlockerDeclarations(state);
 						if (allDeclared) {
 							checkStateBasedActions(state);
@@ -2387,6 +2388,11 @@ function applyGameActionInner(
 							activePlayerId: activePlayer?.playerId ?? null
 						});
 						flushTriggers(state);
+						givePriorityToActiveOrNextPlayer(state);
+						state.passedPriorityPlayerIds = [];
+						state.priorityUpdatedAt = Date.now();
+						checkStateBasedActions(state);
+						return { ok: true };
 					}
 				}
 			}
