@@ -93,7 +93,9 @@ import {
 	shuffleArray,
 	shuffleLibrary,
 	tapPermanent,
-	transferBattlefieldControl
+	transferBattlefieldControl,
+	type MoveResult,
+	type SbaMoveLog
 } from './runtime/zones.ts';
 import {
 	beginAction,
@@ -3969,19 +3971,35 @@ function handlePromptResolution(
 		addLog(state, 'rule', `${actor.username} answered "${prompt.title}".`, actor.playerId);
 	}
 	checkStateBasedActions(state);
+	resumeAfterPrompt(state, prompt);
 	return { ok: true };
 }
 
 /**
- * Step E2: a scry or search prompt queued by an IR step that wasn't the ability's last. Once every
- * such prompt of the item is answered, its resolution goes on at the next step.
+ * Step E2: a scry, search, or replacement prompt queued by an IR step that wasn't the ability's
+ * last. Once every such prompt of the item is answered, its resolution goes on at the next step.
  */
 function resumeAfterPrompt(state: GameState, prompt: PendingPrompt): void {
 	const c = prompt.continuation;
-	if (c?.kind !== 'effect_resume') return;
-	const item = state.stack.find((s) => s.id === c.stackItemId);
-	if (!item?.effectResume || item.effectResume.stepIndex !== c.stepIndex) return;
-	resumeStackItem(state, item);
+	if (c?.kind === 'effect_resume') {
+		const item = state.stack.find((s) => s.id === c.stackItemId);
+		if (!item?.effectResume || item.effectResume.stepIndex !== c.stepIndex) return;
+		if (stackItemAwaitsPrompt(state, item)) return;
+		resumeStackItem(state, item);
+		return;
+	}
+	if (c?.kind === 'handler') {
+		const resumeStackItemId =
+			typeof c.data?.resumeStackItemId === 'string' ? c.data.resumeStackItemId : null;
+		const resumeStepIndex =
+			typeof c.data?.resumeStepIndex === 'number' ? c.data.resumeStepIndex : null;
+		if (resumeStackItemId && resumeStepIndex !== null) {
+			const item = state.stack.find((s) => s.id === resumeStackItemId);
+			if (!item?.effectResume || item.effectResume.stepIndex !== resumeStepIndex) return;
+			if (stackItemAwaitsPrompt(state, item)) return;
+			resumeStackItem(state, item);
+		}
+	}
 }
 
 // ---- Step E2: guided (manual) operations ------------------------------------------------------
@@ -6095,9 +6113,11 @@ function destroyPermanentByEffect(
 	const found = findPermanentOnBoard(state, inst.instanceId);
 	if (!found) return;
 	emitVfx(state, { kind: 'destroy', targetId: inst.instanceId, label: inst.card.name });
-	movePermanentToZone(state, inst, 'graveyard');
+	const dest = movePermanentToZone(state, inst, 'graveyard');
 	addLog(state, 'cast', `${title} destroyed ${inst.card.name}.`, actorId);
-	flushTriggers(state);
+	if (dest !== 'pending') {
+		flushTriggers(state);
+	}
 }
 
 /** Scry N, or "look at the top N cards, then put them back in any order": bot decision or prompt. */
@@ -8027,28 +8047,14 @@ export function checkStateBasedActions(state: GameState): void {
 						label: item.perm.card.name
 					});
 				}
-				const actualDest = movePermanentToZone(state, item.perm, 'graveyard');
-				if (item.kind === 'dying') {
-					const replacerName =
-						actualDest === 'exile'
-							? checkGraveyardReplacementZone(state, 'graveyard').replacedBy
-							: null;
-					addLog(
-						state,
-						'sba',
-						`${item.perm.card.name} ${actualDest === 'exile' ? `was exiled instead of dying${replacerName ? ` (${replacerName})` : ''}` : 'died'} (State-Based Action).`,
-						item.controller.playerId
-					);
-				} else if (item.kind === 'legend') {
-					addLog(
-						state,
-						'sba',
-						`Legend Rule (CR 704.5j): Duplicate ${item.legName} was put into ${item.controller.username}'s graveyard.`,
-						item.controller.playerId
-					);
-				}
+				const actualDest = movePermanentToZone(state, item.perm, 'graveyard', {
+					kind: item.kind,
+					controllerId: item.controller.playerId,
+					controllerUsername: item.controller.username,
+					...(item.kind === 'legend' ? { legName: item.legName } : {})
+				});
 
-				if (sbaGraveyardBatch.length > 1) {
+				if (sbaGraveyardBatch.length > 1 && actualDest !== 'pending') {
 					const owner = state.players.find((pl) => pl.playerId === item.perm.ownerId);
 					postResults.set(item.perm.instanceId, {
 						perm: item.perm,
@@ -8057,7 +8063,12 @@ export function checkStateBasedActions(state: GameState): void {
 							counters: { ...item.perm.counters },
 							grantedKeywords: [...item.perm.grantedKeywords]
 						},
-						destZone: actualDest === 'exile' ? 'exile' : 'graveyard',
+						destZone:
+							actualDest === 'exile'
+								? 'exile'
+								: actualDest === 'command'
+									? 'command'
+									: 'graveyard',
 						owner
 					});
 				}
@@ -8447,8 +8458,9 @@ export function findPermanentOnBoard(
 export function movePermanentToZone(
 	state: GameState,
 	inst: CardInstance,
-	dest: ZoneType
-): ZoneType {
+	dest: ZoneType,
+	sbaLog?: SbaMoveLog
+): MoveResult {
 	inst.defaultControllerId = undefined;
 	return moveObject(state, inst, dest, {
 		from: 'anyBattlefield',
@@ -8460,7 +8472,8 @@ export function movePermanentToZone(
 		newTimestamp: true,
 		// The old code put cards on top of the library and at the end of every other zone.
 		insert: (actual) => (actual === 'library' ? 'start' : 'end'),
-		ceaseToExist: 'tokens'
+		ceaseToExist: 'tokens',
+		sbaLog
 	});
 }
 
