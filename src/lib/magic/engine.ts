@@ -3977,13 +3977,25 @@ function triggerItemIsOptional(item: StackItem): boolean {
  * Computes both the exact board fingerprint (`buildBoardSnapshot(state).fingerprint`) and a
  * token-normalized board fingerprint (coalescing identical tokens by name, typeLine, controller,
  * and tapped state so mandatory token-creation loops also repeat their normalized fingerprint).
+ * Includes per-player life, poison, lost status, library size, hand size, and commander damage
+ * taken because under CR 104.4b a sequence that changes a game-ending resource (life, poison,
+ * library, commander damage) will eventually end the game and is not an unbreakable infinite loop.
  */
 function computeLoopBoardFingerprints(state: GameState): { exactFp: string; normFp: string } {
 	const snap = buildBoardSnapshot(state);
-	const exactFp = snap.active
+	const playerSegment = state.players
+		.map((p) => {
+			const cmdDmg = Object.keys(p.commanderDamageTaken)
+				.sort()
+				.map((k) => `${k}=${p.commanderDamageTaken[k]}`)
+				.join('|');
+			return `${p.playerId}:${p.life}:${p.poison}:${p.lost ? 1 : 0}:${p.library.length}:${p.hand.length}:${cmdDmg}`;
+		})
+		.join(';');
+	const exactBoard = snap.active
 		.map(
 			({ perm, playerId }) =>
-				`${perm.instanceId}@${perm.objectVersion ?? 0}:${perm.controllerId ?? playerId}:${perm.tapped ? 1 : 0}:${perm.attachedToId ?? ''}`
+				`${perm.instanceId}@${perm.objectVersion ?? 0}:${perm.controllerId ?? playerId}:${perm.tapped ? 1 : 0}:${perm.attachedToId ?? ''}:${perm.counters['+1/+1']},${perm.counters['-1/-1']},${perm.counters.loyalty}`
 		)
 		.join(',');
 	const parts: string[] = [];
@@ -4001,7 +4013,10 @@ function computeLoopBoardFingerprints(state: GameState): { exactFp: string; norm
 		}
 		parts.push(`${p.playerId}:[${nonTokenEntries.join(',')}]:[${[...tokenKinds].sort().join(',')}]`);
 	}
-	return { exactFp, normFp: parts.join(';') };
+	return {
+		exactFp: `${exactBoard}#${playerSegment}`,
+		normFp: `${parts.join(';')}#${playerSegment}`
+	};
 }
 
 /** Enqueues a standalone guided_resolution prompt so a human player can resolve or intervene manually. */
@@ -4249,7 +4264,6 @@ function putTriggerOnStack(state: GameState, t: PendingTrigger): StackItem | nul
 	} else if (loopEntry.lastResolutionSerial !== currentResSerial) {
 		const { exactFp, normFp } = computeLoopBoardFingerprints(state);
 		const cycled =
-			loopEntry.cycled ||
 			exactFp === loopEntry.lastExactFp ||
 			normFp === loopEntry.lastNormFp;
 		loopEntry.cycles += 1;
