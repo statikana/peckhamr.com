@@ -1,4 +1,5 @@
 import { env as cfEnv } from 'cloudflare:workers';
+import { resolveScryfallImageLinks } from './cardImages';
 import type {
 	MagicChatMessage,
 	MagicDeck,
@@ -140,6 +141,14 @@ export async function ensureMagicSchema(db: D1Database | undefined): Promise<voi
 						kind TEXT DEFAULT 'chat',
 						message TEXT NOT NULL,
 						created_at INTEGER NOT NULL
+					)
+				`),
+				db.prepare(`
+					CREATE TABLE IF NOT EXISTS MagicCardImages (
+						key TEXT PRIMARY KEY,
+						image_url TEXT NOT NULL,
+						art_crop_url TEXT NOT NULL,
+						updated_at INTEGER NOT NULL
 					)
 				`)
 			]);
@@ -586,6 +595,8 @@ export async function saveLobby(
 ): Promise<MagicLobby> {
 	const db = getD1(platform);
 	await ensureMagicSchema(db);
+	// Precon and token cards carry Scryfall API image links; store CDN links instead (cardImages.ts).
+	await resolveScryfallImageLinks(db, lobby);
 	if (db) {
 		await db
 			.prepare(

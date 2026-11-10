@@ -2,12 +2,15 @@ import type { RequestHandler } from '@sveltejs/kit';
 import {
 	CORS_HEADERS,
 	deleteUserDeck,
+	ensureMagicSchema,
 	getAuthenticatedUser,
+	getD1,
 	getDeckById,
 	jsonResponse,
 	listUserDecks,
 	saveUserDeck
 } from '../../../../lib/magic/db';
+import { resolveScryfallImageLinks } from '../../../../lib/magic/cardImages';
 import { PRECON_DECKS } from '../../../../lib/magic/precons';
 import {
 	parseDecklistText,
@@ -58,6 +61,10 @@ export const OPTIONS: RequestHandler = async () => {
 export const GET: RequestHandler = async ({ request, platform }) => {
 	const user = await getAuthenticatedUser(request, platform);
 	const userDecks = user ? await listUserDecks(platform, user.id) : [];
+	// Precons (and staple cards in imported decks) carry Scryfall API image links; serve CDN links.
+	const db = getD1(platform);
+	await ensureMagicSchema(db);
+	await resolveScryfallImageLinks(db, { userDecks, PRECON_DECKS });
 
 	return jsonResponse({
 		ok: true,
