@@ -1,4 +1,4 @@
-import type { CostDef, TargetSpec } from './ir.ts';
+import type { ActivationRestriction, CostDef, TargetSpec } from './ir.ts';
 
 export type ManaColor = 'W' | 'U' | 'B' | 'R' | 'G' | 'C';
 
@@ -224,6 +224,7 @@ export interface EffectiveActivatedAbility {
 	loyaltyCost: number | null;
 	isManaAbility: boolean;
 	sorcerySpeedOnly?: boolean;
+	activationRestrictions?: ActivationRestriction[];
 	producesMana: ManaColor[];
 	producesAmount: number;
 	effectText: string;
@@ -299,6 +300,8 @@ export interface CardInstance {
 	isCommander: boolean;
 	commanderCastCount: number;
 	usedLoyaltyThisTurn: boolean;
+	/** CR 602.5b / 602.5c: IDs of activated abilities on this permanent already activated this turn. */
+	activatedAbilityIdsThisTurn?: string[];
 	transformed: boolean;
 	enteredTimestamp?: number;
 	objectVersion?: number;

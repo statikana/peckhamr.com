@@ -11,10 +11,10 @@ import type { AbilityDef, Amount, CardDefinition, EffectStep, KeywordAbility, Mo
 import { compileFaces } from './card.ts';
 import { parseAbilityEffectText } from './effects.ts';
 import { hashText } from './normalize.ts';
-import { runtimeTriggers } from './triggers.ts';
+import { PROWESS_RUNTIME_TRIGGER, runtimeTriggers } from './triggers.ts';
 
 /** Bump whenever the IR produced for the same text could change. */
-export const COMPILER_VERSION = 4;
+export const COMPILER_VERSION = 5;
 
 const CACHE = new Map<string, CardDefinition>();
 
@@ -190,6 +190,7 @@ export function compileSpellEffects(card: ScryfallCard): CompiledEffect | null {
  * isn't automated (its effect is `unsupported`) or isn't a trigger the runtime runs itself (Ward).
  */
 export function compiledTriggerEffect(card: ScryfallCard, abilityIndex: number): CompiledEffect | null {
+	if (abilityIndex === -1) return PROWESS_RUNTIME_TRIGGER.effect!;
 	const t = runtimeTriggers(compileCard(card)).find((x) => x.abilityIndex === abilityIndex);
 	return t?.effect ?? null;
 }

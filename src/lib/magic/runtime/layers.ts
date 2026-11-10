@@ -350,6 +350,9 @@ function extractInnateFromIR(card: ScryfallCard): InnateEntry[] {
 				addResult('ward', `Ward${costStr}`, 'keyword');
 			} else if (kwName === 'protection') {
 				addResult('protection', `Protection from ${ab.keyword.param ?? ''}`.trim(), 'keyword');
+			} else if (kwName === 'hexproof' && ab.keyword.param) {
+				const full = `hexproof from ${ab.keyword.param}`.toLowerCase();
+				addResult(full, formatKeywordLabel(full), 'keyword');
 			} else {
 				addResult(kwName, formatKeywordLabel(kwName), 'keyword');
 				selfGrantedKeywords.add(kwName);
@@ -1889,7 +1892,10 @@ function evaluatePerPermanent(
 				for (const kw of st.mod.keywords) {
 					const kwLow = kw.toLowerCase();
 					for (const item of target.items) {
-						if (item.canonicalKey === kwLow) {
+						if (
+							item.canonicalKey === kwLow ||
+							(kwLow === 'hexproof' && item.canonicalKey.startsWith('hexproof from '))
+						) {
 							item.removed = true;
 							if (!item.removedBy.includes(source.name)) {
 								item.removedBy.push(source.name);

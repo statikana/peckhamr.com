@@ -127,6 +127,7 @@ const RESTRICTION_SENTENCES: RegExp[] = [
 	/^activate only during your turn\.?$/i,
 	/^activate only once each turn\.?$/i,
 	/^activate only during your upkeep\.?$/i,
+	/^activate only during combat\.?$/i,
 	/^equip only as a sorcery\.?$/i,
 	/^cast (?:~|this spell) only during combat\.?$/i,
 	/^cast (?:~|this spell) only during your turn\.?$/i,
@@ -1316,8 +1317,8 @@ function parseModal(header: string, bullets: Array<{ text: string; start: number
 
 /** Lines of an instant or sorcery that aren't part of its effect. */
 function isNonEffectLine(body: string): boolean {
-	// Keyword lines ("Buyback {2}", "Overload {6}{U}", "Suspend 4—{U}", "Flash") have no period.
-	if (!/[.!]$/.test(body)) return true;
+	// Implemented/handled spell keyword lines ("Buyback {2}", "Overload {6}{U}", "Suspend 4—{U}", "Flash") have no period.
+	if (!/[.!]$/.test(body) && /^(?:overload|suspend|flash|buyback)\b/i.test(body.trim())) return true;
 	return false;
 }
 

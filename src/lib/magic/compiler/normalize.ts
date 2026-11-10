@@ -34,9 +34,84 @@ export interface NormalizedFace {
 const SELF_REFERENCE =
 	/\bthis (?:creature|permanent|spell|card|artifact|enchantment|land|equipment|aura|vehicle|planeswalker|battle|saga|class|case|siege)\b/gi;
 
+/**
+ * Genuine ability words (CR 207.2c). Only these italicised prefixes have no rules meaning and may
+ * be stripped; keyword/state prefixes such as "Solved —", "Max speed —", "Boast —", "Exhaust —",
+ * and "Power-up —" carry rules conditions or costs and must remain in `body` so unimplemented
+ * mechanics compile as unsupported.
+ */
+const ABILITY_WORDS: ReadonlySet<string> = new Set([
+	'adamant',
+	'addendum',
+	'alliance',
+	'battalion',
+	'battlefront',
+	'bloodrush',
+	'celebration',
+	'channel',
+	'chroma',
+	'cohort',
+	'constellation',
+	'converge',
+	"council's dilemma",
+	'coven',
+	'delirium',
+	'descend 4',
+	'descend 8',
+	'disappear',
+	'domain',
+	'eerie',
+	'eminence',
+	'enrage',
+	'fateful hour',
+	'fathomless descent',
+	'federation',
+	'ferocious',
+	'flurry',
+	'formidable',
+	'grandeur',
+	'hellbent',
+	'heroic',
+	'imprint',
+	'infusion',
+	'inspired',
+	'join forces',
+	'kinship',
+	'landfall',
+	'lieutenant',
+	'magecraft',
+	'metalcraft',
+	'morbid',
+	'opus',
+	'pack tactics',
+	'paradox',
+	'parley',
+	'radiance',
+	'raid',
+	'rally',
+	'renew',
+	'repartee',
+	'revolt',
+	'rulebreaker',
+	'secret council',
+	'seek out',
+	'spell mastery',
+	'strange new worlds',
+	'strive',
+	'survival',
+	'sweep',
+	'tempting offer',
+	'threshold',
+	'undergrowth',
+	'valiant',
+	'vivid',
+	'void',
+	'will of the council'
+]);
+
 // "Landfall — Whenever ...". Keyword costs use an unspaced dash ("Ward—Pay 3 life"), so a spaced
-// em dash followed by a capital letter marks an ability word.
-const ABILITY_WORD = /^([A-Z][A-Za-z' -]*?) — (?=[A-Z•])/;
+// em dash followed by a capital letter or bullet marks an ability-word candidate (CR 207.2c).
+const ABILITY_WORD = /^([A-Z][A-Za-z0-9'’ -]*?) — (?=[A-Z•])/;
 
 function escapeRegex(s: string): string {
 	return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -105,7 +180,8 @@ export function normalizeFace(name: string, rulesText: string): NormalizedFace {
 		if (parts.length > 0) offset += 1; // the joining newline
 		const span = { start: offset, end: offset + text.length };
 
-		const aw = text.match(ABILITY_WORD);
+		const m = text.match(ABILITY_WORD);
+		const aw = m && ABILITY_WORDS.has(m[1].toLowerCase().replace(/’/g, "'")) ? m : null;
 		const bodyOffset = aw ? aw[0].length : 0;
 		const body = text.slice(bodyOffset);
 		const bodySpan = { start: offset + bodyOffset, end: span.end };

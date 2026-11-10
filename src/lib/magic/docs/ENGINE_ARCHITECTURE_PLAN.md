@@ -1603,6 +1603,19 @@ Then an ultra code review of the branch, doc clean-up, and push.
   `runtime/review-phase3.test.ts`, and `runtime/review-phase4.test.ts`); all 5 architecture ratchet rules at
   `0`; `0` `svelte-check` errors.
 
+#### Tier 2 — Track A: Compiler & Keyword Truthfulness (`CR 207.2c, 509.1b, 602.5b–c, 702.11d–e, 702.13b, 702.28b, 702.31b, 702.36b, 702.85a, 702.108a–b`, 2026-11-09)
+- **Item 1 (`5a4b8f2`) — Canonical `CR 207.2c` ability-word allowlist (`compiler/normalize.ts`, `compiler/index.ts`):**
+  - Restricted `ABILITY_WORD` stripping in `normalizeFace` to the 66 canonical ability words in `CR 207.2c` (`ABILITY_WORDS` set) and bumped `COMPILER_VERSION` `4 → 5`. Non-ability-word prefixes (`Solved —`, `Max speed —`, `Boast —`, `Exhaust —`, `Power-up —`) remain in `line.body` so they compile as `unsupported` (`fullySupported: false`) and never apply unconditionally on turn 1.
+- **Item 2 (`39d3686`) — Activated-ability restrictions (`ir.ts`, `types.ts`, `compiler/effects.ts`, `compiler/card.ts`, `ruleTree.ts`, `runtime/zones.ts`, `engine.ts`):**
+  - Compiled `ActivationRestriction` flags (`onceEachTurn`, `duringYourTurn`, `duringYourUpkeep`, `duringCombat`) onto `ActivatedAbility`, `UnsupportedAbility`, and `EffectiveActivatedAbility`, enforced them in `checkAbilityActivationLegalityInner` and activation handlers (`CR 602.5b, 602.5c`), and tracked once-each-turn activations per ability ID on `CardInstance.activatedAbilityIdsThisTurn` (persisting across control changes within the turn and resetting at turn boundaries and when leaving the battlefield).
+- **Item 3 (`5dae1a1`) — Granted keywords enforcement (`compiler/card.ts`, `compiler/triggers.ts`, `compiler/index.ts`, `runtime/triggers.ts`, `runtime/layers.ts`, `engine.ts`, `ai.ts`):**
+  - Enforced block legality for `Fear` (`CR 702.36b`), `Intimidate` (`CR 702.13b`), `Shadow` in both directions (`CR 702.28b`), and `Horsemanship` (`CR 702.31b`) in `declare_blockers`, `blocksEachCombat` checks, and bot blocker selection (`CR 509.1b`).
+  - Enforced `Hexproof from [quality]` (`hasHexproofFromQuality`, `CR 702.11d`) in `permanentTargetable`, `validateTargetLegalityInner`, and `isTargetStillLegalOnResolution`, and stripped `hexproof from ...` items when `removeKeywords` removes `hexproof` (`CR 702.11e`).
+  - Wired innate and continuous-effect-granted `Prowess` (`PROWESS_RUNTIME_TRIGGER` and `matchCast`, `CR 702.108a, 702.108b`) as a noncreature-cast triggered ability giving `+1/+1` until end of turn.
+- **Item 4 (`583db73`) — Unsupported keywords on instants and sorceries (`compiler/card.ts`, `compiler/effects.ts`, `engine.ts`):**
+  - Emitted `unsupported('keyword_not_implemented', ...)` in `compileFaces` for non-period keyword-style lines on instants/sorceries not matched by `keywordLine`/`triggerLine`/`activatedLine`, restricted `isNonEffectLine` to implemented spell keywords (`Overload`, `Suspend`, `Flash`, `Buyback`), and logged `enteringNotices(card)` on instant/sorcery `Cast` events via `noteUnautomatedOnCast`.
+- **Suite:** **925 tests pass, 0 fail** (including 4 fail-first tests in `runtime/tier2a.test.ts`); all 5 architecture ratchet rules at `0`; `0` `svelte-check` errors.
+
 *Original (superseded) entry:*
 - **Work:** remove `CardRuleTree` (or keep it as a thin view over the IR for the inspector UI),
   `ParsedEffect`, `ParsedActivatedAbility`, `TargetKind`, `parseTriggeredEffects` and the remaining

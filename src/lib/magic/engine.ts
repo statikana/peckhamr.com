@@ -1207,6 +1207,7 @@ function executeUntapTurnBasedActions(state: GameState, activePlayer: PlayerGame
 		}
 		perm.summoningSick = false;
 		perm.usedLoyaltyThisTurn = false;
+		perm.activatedAbilityIdsThisTurn = undefined;
 	}
 }
 
@@ -1430,6 +1431,11 @@ function applyGameActionInner(
 			const chosenColor: ManaColor | undefined =
 				preferred && ab.producesMana.includes(preferred) ? preferred : ab.producesMana[0];
 
+			if (ab.activationRestrictions?.length) {
+				const manaAbLegality = checkAbilityActivationLegality(state, actorId, perm, ab);
+				if (!manaAbLegality.ok) return manaAbLegality;
+			}
+
 			// Phase 4: the ability's whole cost from the IR ({T}, and e.g. "Sacrifice this artifact").
 			const cost = activatedAbilityCost(perm.card, ab);
 			const ctx = costContext(state, actor, perm, 0, false, parseManaCost(ab.manaCost === '{0}' ? '' : ab.manaCost));
@@ -1441,6 +1447,9 @@ function applyGameActionInner(
 			const amount = chosenColor ? getDynamicManaProducedAmount(state, actor, perm, baseAmount, ab) : 0;
 
 			const paid = payPlannedCosts(ctx, plan);
+			if (ab.activationRestrictions?.includes('onceEachTurn')) {
+				perm.activatedAbilityIdsThisTurn = [...(perm.activatedAbilityIdsThisTurn ?? []), ab.id];
+			}
 			if (chosenColor && amount > 0) {
 				actor.manaPool[chosenColor] += amount;
 			}
@@ -1961,6 +1970,9 @@ function applyGameActionInner(
 			const sourceLkiPower = preCostEval.power;
 			const sourceLkiToughness = preCostEval.toughness;
 			const abilityPaid = payPlannedCosts(abilityCtx, abilityPlan);
+			if (ab.activationRestrictions?.includes('onceEachTurn')) {
+				perm.activatedAbilityIdsThisTurn = [...(perm.activatedAbilityIdsThisTurn ?? []), ab.id];
+			}
 			if (abilityPaid.descriptions.length > 0) {
 				addLog(state, 'rule', `${actor.username} ${abilityPaid.descriptions.join('; ')} to activate ${perm.card.name}.`, actorId);
 			}
@@ -2283,6 +2295,47 @@ function applyGameActionInner(
 							error: `Strict Rules Violation: ${blocker.card.name} cannot block ${atkCard.card.name} due to Protection (CR 702.16e).`
 						};
 					}
+					// CR 702.36b: A creature with fear can't be blocked except by artifact creatures and/or black creatures.
+					if (hasKeyword(atkCard, 'Fear', state)) {
+						const evalBlocker = evaluatePermanent(state, blocker);
+						if (!evalBlocker.isArtifact && !evalBlocker.colors.includes('B')) {
+							return {
+								ok: false,
+								error: `Strict Rules Violation: ${blocker.card.name} cannot block ${atkCard.card.name} (has Fear; blocker must be an artifact creature and/or black creature, CR 702.36b).`
+							};
+						}
+					}
+					// CR 702.13b: A creature with intimidate can't be blocked except by artifact creatures and/or creatures that share a color with it.
+					if (hasKeyword(atkCard, 'Intimidate', state)) {
+						const evalAtk = evaluatePermanent(state, atkCard);
+						const evalBlocker = evaluatePermanent(state, blocker);
+						if (
+							!evalBlocker.isArtifact &&
+							!evalAtk.colors.some((c) => evalBlocker.colors.includes(c))
+						) {
+							return {
+								ok: false,
+								error: `Strict Rules Violation: ${blocker.card.name} cannot block ${atkCard.card.name} (has Intimidate; blocker must be an artifact creature and/or share a color with it, CR 702.13b).`
+							};
+						}
+					}
+					// CR 702.28b: A creature with shadow can block or be blocked by only creatures with shadow.
+					if (hasKeyword(atkCard, 'Shadow', state) !== hasKeyword(blocker, 'Shadow', state)) {
+						return {
+							ok: false,
+							error: `Strict Rules Violation: ${blocker.card.name} cannot block ${atkCard.card.name} due to Shadow (CR 702.28b).`
+						};
+					}
+					// CR 702.31b: A creature with horsemanship can't be blocked by creatures without horsemanship.
+					if (
+						hasKeyword(atkCard, 'Horsemanship', state) &&
+						!hasKeyword(blocker, 'Horsemanship', state)
+					) {
+						return {
+							ok: false,
+							error: `Strict Rules Violation: ${blocker.card.name} cannot block ${atkCard.card.name} (has Horsemanship, CR 702.31b).`
+						};
+					}
 				}
 
 				const list = blockerCountsByAttacker.get(atkEntry.attackerInstanceId) || [];
@@ -2331,6 +2384,26 @@ function applyGameActionInner(
 							!hasKeyword(perm, 'Flying', state) &&
 							!hasKeyword(perm, 'Reach', state)
 						) {
+							return false;
+						}
+						if (hasKeyword(atk, 'Fear', state)) {
+							const evalBlocker = evaluatePermanent(state, perm);
+							if (!evalBlocker.isArtifact && !evalBlocker.colors.includes('B')) return false;
+						}
+						if (hasKeyword(atk, 'Intimidate', state)) {
+							const evalAtk = evaluatePermanent(state, atk);
+							const evalBlocker = evaluatePermanent(state, perm);
+							if (
+								!evalBlocker.isArtifact &&
+								!evalAtk.colors.some((c) => evalBlocker.colors.includes(c))
+							) {
+								return false;
+							}
+						}
+						if (hasKeyword(atk, 'Shadow', state) !== hasKeyword(perm, 'Shadow', state)) {
+							return false;
+						}
+						if (hasKeyword(atk, 'Horsemanship', state) && !hasKeyword(perm, 'Horsemanship', state)) {
 							return false;
 						}
 						return !hasKeyword(atk, 'Menace', state);
@@ -3743,7 +3816,6 @@ function beginPhase(state: GameState, phase: GamePhase, activePlayer?: PlayerGam
 // keyword (before matching, as the old upkeep loop did) and delayed end-step triggers (after the
 // beginning-of-end-step triggers are on the stack).
 for (const kind of [
-	'Cast',
 	'SpellCopied',
 	'AttackDeclared',
 	'BlockersDeclared',
@@ -3755,10 +3827,32 @@ for (const kind of [
 ] as const) {
 	registerEventHandler(kind, (state, ev) => matchTriggers(state, ev));
 }
+registerEventHandler('Cast', (state, ev) => {
+	matchTriggers(state, ev);
+	noteUnautomatedOnCast(state, ev.object, ev.playerId);
+});
 registerEventHandler('ZoneChange', (state, ev) => {
 	matchTriggers(state, ev);
 	if (ev.to === 'battlefield' && !ev.ceasedToExist) noteUnautomatedOnEnter(state, ev.object);
 });
+
+/**
+ * CR 702.85a / 702.88a / Step E2: when an instant or sorcery is cast, log any unsupported keyword
+ * or static notices on it once so players know to resolve them manually.
+ */
+function noteUnautomatedOnCast(state: GameState, obj: CardInstance, playerId: string): void {
+	if (obj.isFaceDown) return;
+	const card = obj.copiableCard ?? obj.card;
+	if (!/\b(?:Instant|Sorcery)\b/.test(card.typeLine)) return;
+	for (const n of enteringNotices(card)) {
+		addLog(
+			state,
+			'rule',
+			`${card.name}: ${n.text} is not automated — resolve manually.`,
+			playerId
+		);
+	}
+}
 
 /**
  * Step E2 (plan section 2.7): when a permanent enters, say once which of its abilities the engine
@@ -4134,7 +4228,7 @@ function triggerSourceObject(state: GameState, item: StackItem): CardInstance | 
 /** Whether a permanent can be targeted by an ability of `controllerId` from `sourceCard` (CR 702.11, 702.18, 702.16). */
 function permanentTargetable(state: GameState, inst: CardInstance, controllerId: string, owner: string, sourceCard: ScryfallCard): boolean {
 	if (hasKeyword(inst, 'Shroud', state)) return false;
-	if (owner !== controllerId && hasKeyword(inst, 'Hexproof', state)) return false;
+	if (owner !== controllerId && (hasKeyword(inst, 'Hexproof', state) || hasHexproofFromQuality(inst, sourceCard, state))) return false;
 	return !hasProtectionFrom(inst, sourceCard, state);
 }
 
@@ -6301,6 +6395,7 @@ function clearEndOfTurnAndDamage(state: GameState): void {
 			perm.tempToughnessMod = 0;
 			perm.grantedKeywords = [];
 			perm.switchedPTCount = 0;
+			perm.activatedAbilityIdsThisTurn = undefined;
 		}
 	}
 }
@@ -7405,6 +7500,62 @@ export function hasProtectionFrom(
 	return false;
 }
 
+/** CR 702.11d: "Hexproof from [quality]" prevents spells/abilities with that quality controlled by an opponent from targeting this permanent. */
+export function hasHexproofFromQuality(
+	targetPerm: CardInstance,
+	sourceCard: ScryfallCard | undefined,
+	state: GameState
+): boolean {
+	if (!sourceCard || targetPerm.phasedOut) return false;
+	const evalTarget = evaluatePermanent(state, targetPerm);
+	const textsToCheck: string[] = [
+		...(evalTarget.losesAllAbilities
+			? []
+			: [
+					...keywordsOf(targetPerm.copiableCard ?? targetPerm.card).map(({ name: kwName, param }) =>
+						`${kwName}${param ? ` from ${param}` : ''}`.toLowerCase()
+					),
+					...(targetPerm.copiableCard ?? targetPerm.card).keywords.map((k) => k.toLowerCase())
+				]),
+		...targetPerm.grantedKeywords.map((k) => k.toLowerCase()),
+		...evalTarget.activeKeywords.map((k) => k.toLowerCase())
+	];
+
+	const combined = textsToCheck.join('\n');
+	if (!combined.includes('hexproof from')) return false;
+
+	if (/hexproof from everything/i.test(combined)) return true;
+	if (/hexproof from all colors/i.test(combined) && sourceCard.colors.length > 0) return true;
+	if (/hexproof from multicolored/i.test(combined) && sourceCard.colors.length >= 2) return true;
+	if (/hexproof from monocolored/i.test(combined) && sourceCard.colors.length === 1) return true;
+	if (/hexproof from colorless/i.test(combined) && sourceCard.colors.length === 0) return true;
+	if (/hexproof from [^.\n]*\bwhite\b/i.test(combined) && sourceCard.colors.includes('W')) return true;
+	if (/hexproof from [^.\n]*\bblue\b/i.test(combined) && sourceCard.colors.includes('U')) return true;
+	if (/hexproof from [^.\n]*\bblack\b/i.test(combined) && sourceCard.colors.includes('B')) return true;
+	if (/hexproof from [^.\n]*\bred\b/i.test(combined) && sourceCard.colors.includes('R')) return true;
+	if (/hexproof from [^.\n]*\bgreen\b/i.test(combined) && sourceCard.colors.includes('G')) return true;
+	if (/hexproof from creatures/i.test(combined) && sourceCard.typeLine.includes('Creature')) {
+		return true;
+	}
+	if (/hexproof from instants/i.test(combined) && sourceCard.typeLine.includes('Instant')) {
+		return true;
+	}
+	if (/hexproof from sorceries/i.test(combined) && sourceCard.typeLine.includes('Sorcery')) {
+		return true;
+	}
+	if (/hexproof from artifacts/i.test(combined) && sourceCard.typeLine.includes('Artifact')) {
+		return true;
+	}
+	if (/hexproof from enchantments/i.test(combined) && sourceCard.typeLine.includes('Enchantment')) {
+		return true;
+	}
+	if (/hexproof from planeswalkers/i.test(combined) && sourceCard.typeLine.includes('Planeswalker')) {
+		return true;
+	}
+
+	return false;
+}
+
 export function playerHasHexproofFrom(
 	state: GameState,
 	targetPlayer: PlayerGameState,
@@ -7703,7 +7854,11 @@ function validateTargetLegalityInner(
 			error: `Strict Rules Violation: ${found.inst.card.name} has Shroud and cannot be the target of spells or abilities.`
 		};
 	}
-	if (found.controller.playerId !== actorId && hasKeyword(found.inst, 'Hexproof', state)) {
+	if (
+		found.controller.playerId !== actorId &&
+		(hasKeyword(found.inst, 'Hexproof', state) ||
+			hasHexproofFromQuality(found.inst, sourceCard, state))
+	) {
 		return {
 			ok: false,
 			error: `Strict Rules Violation: ${found.inst.card.name} has Hexproof and cannot be targeted by opponents.`
@@ -8392,11 +8547,54 @@ function checkAbilityActivationLegalityInner(
 		return { ok: false, error: plan.ok ? `You can't pay the cost of ${perm.card.name}'s ability.` : plan.error };
 	};
 
+	const activePlayer = state.players[state.activePlayerIndex];
+
+	// CR 602.5b / 602.5c: Enforce activation restrictions ("Activate only ...").
+	const restrictions = ab.activationRestrictions;
+	if (restrictions?.length) {
+		if (restrictions.includes('onceEachTurn') && perm.activatedAbilityIdsThisTurn?.includes(ab.id)) {
+			return {
+				ok: false,
+				error: `${perm.card.name}: This ability can only be activated once each turn.`
+			};
+		}
+		if (restrictions.includes('duringYourTurn') && activePlayer?.playerId !== actorId) {
+			return {
+				ok: false,
+				error: `${perm.card.name}: This ability can only be activated during your turn.`
+			};
+		}
+		if (
+			restrictions.includes('duringYourUpkeep') &&
+			(activePlayer?.playerId !== actorId || state.phase !== 'upkeep')
+		) {
+			return {
+				ok: false,
+				error: `${perm.card.name}: This ability can only be activated during your upkeep.`
+			};
+		}
+		if (
+			restrictions.includes('duringCombat') &&
+			!(
+				state.phase === 'begin_combat' ||
+				state.phase === 'declare_attackers' ||
+				state.phase === 'declare_blockers' ||
+				state.phase === 'first_strike_damage' ||
+				state.phase === 'combat_damage' ||
+				state.phase === 'end_combat'
+			)
+		) {
+			return {
+				ok: false,
+				error: `${perm.card.name}: This ability can only be activated during combat.`
+			};
+		}
+	}
+
 	if (ab.isManaAbility) {
 		return checkCost();
 	}
 
-	const activePlayer = state.players[state.activePlayerIndex];
 	const priorityPlayer = state.players[state.priorityPlayerIndex];
 	if (priorityPlayer?.playerId !== actorId) {
 		return { ok: false, error: 'You must hold priority to activate this ability.' };
@@ -8545,7 +8743,8 @@ function isTargetStillValid(
 	if (
 		controllerId &&
 		found.controller.playerId !== controllerId &&
-		hasKeyword(found.inst, 'Hexproof', state)
+		(hasKeyword(found.inst, 'Hexproof', state) ||
+			hasHexproofFromQuality(found.inst, sourceCard, state))
 	) {
 		return false;
 	}

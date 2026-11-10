@@ -17,6 +17,7 @@
 import type {
 	AbilityDef,
 	ActivatedAbility,
+	ActivationRestriction,
 	Characteristics,
 	CostDef,
 	EffectStep,
@@ -59,19 +60,24 @@ const IMPLEMENTED_KEYWORDS = new Set([
 	'double strike',
 	'enchant',
 	'equip',
+	'fear',
 	'first strike',
 	'flash',
 	'flying',
 	'haste',
 	'hexproof',
+	'horsemanship',
 	'indestructible',
 	'infect',
+	'intimidate',
 	'lifelink',
 	'menace',
 	'overload',
 	'partner',
 	'protection',
+	'prowess',
 	'reach',
+	'shadow',
 	'shroud',
 	'suspend',
 	'trample',
@@ -143,8 +149,18 @@ export function compileFaces(card: ScryfallCard): FaceDefinition[] {
 		}
 		const out = keywordLine(line) ?? triggerLine(line) ?? activatedLine(ctx, line);
 		if (out) abilities.push(...out);
-		else if (ctx.isSpell) spellLines.push(...group);
-		else abilities.push(...staticGroup(group));
+		else if (ctx.isSpell) {
+			if (
+				group.length === 1 &&
+				!line.abilityWord &&
+				!/[.!—]$/.test(line.body) &&
+				!line.text.startsWith('•')
+			) {
+				abilities.push(unsupported('keyword_not_implemented', line.text, line.span, [line.span]));
+			} else {
+				spellLines.push(...group);
+			}
+		} else abilities.push(...staticGroup(group));
 	}
 	if (spellLines.length > 0) abilities.push(...spellAbility(norm, spellLines));
 
@@ -212,7 +228,7 @@ function keywordLine(line: NormalizedLine): AbilityDef[] | null {
 		const span = { start, end: start + part.length };
 		cursor = span.end;
 		const keyword = keywords[i]!;
-		let implemented = IMPLEMENTED_KEYWORDS.has(keyword.name) && !(keyword.name === 'hexproof' && keyword.param);
+		let implemented = IMPLEMENTED_KEYWORDS.has(keyword.name);
 		// Equip is an activated ability (CR 702.6a): "Equip {N}" or "Equip [quality] {N}".
 		if (keyword.name === 'equip' && !keyword.cost) {
 			const q = keyword.param?.match(/^([A-Za-z ]+?)\s+creature\s*((?:\{[^}]+\})+)$/) ?? keyword.param?.match(/^([A-Za-z ]+?)\s*((?:\{[^}]+\})+)$/);
@@ -323,6 +339,19 @@ function activatedLine(ctx: Ctx, line: NormalizedLine): AbilityDef[] | null {
 		effect.steps.every((s) => s.verb === 'addMana');
 	const sorcery = Boolean(loyalty) || sentences.some((s) => /^(?:activate|equip) only as a sorcery\.?$/.test(s));
 	const timing: Timing = isMana ? 'mana' : sorcery ? 'sorcery' : 'instant';
+	const activationRestrictions: ActivationRestriction[] = [];
+	if (sentences.some((s) => /^activate only once each turn\.?$/.test(s))) {
+		activationRestrictions.push('onceEachTurn');
+	}
+	if (sentences.some((s) => /^activate only during your turn\.?$/.test(s))) {
+		activationRestrictions.push('duringYourTurn');
+	}
+	if (sentences.some((s) => /^activate only during your upkeep\.?$/.test(s))) {
+		activationRestrictions.push('duringYourUpkeep');
+	}
+	if (sentences.some((s) => /^activate only during combat\.?$/.test(s))) {
+		activationRestrictions.push('duringCombat');
+	}
 	const isManaTap = isMana && cost.defs.length === 1 && cost.defs[0].k === 'tapSelf' && !ctx.manaTapTaken;
 	const id = isManaTap ? 'mana_tap' : loyalty ? `loyalty_${line.rawIndex}` : `act_${line.rawIndex}`;
 	if (isManaTap) ctx.manaTapTaken = true;
@@ -340,6 +369,7 @@ function activatedLine(ctx: Ctx, line: NormalizedLine): AbilityDef[] | null {
 				costComplete,
 				timing,
 				isMana,
+				...(activationRestrictions.length > 0 ? { activationRestrictions } : {}),
 				...(manaSteps ? { effect: manaSteps } : {}),
 				...(effect.targets.length > 0 ? { targets: effect.targets } : {})
 			}
@@ -353,6 +383,7 @@ function activatedLine(ctx: Ctx, line: NormalizedLine): AbilityDef[] | null {
 		effect: effect.steps,
 		timing,
 		isMana,
+		...(activationRestrictions.length > 0 ? { activationRestrictions } : {}),
 		text: line.text,
 		span: line.span
 	};
