@@ -146,32 +146,56 @@ export async function proxyMagicApiRequest(
 	}
 }
 
-export const handle: Handle = async ({ event, resolve }) => {
-	const redirectResponse = buildAppSubdomainRedirect(event.url, event.request.method);
-	if (redirectResponse) {
-		return redirectResponse;
-	}
+export function createHandle(proxyOptions: ProxyOptions = {}): Handle {
+	const logError =
+		proxyOptions.errorLogger ?? ((msg: string, err: unknown) => console.error(msg, err));
 
-	if (event.route.id?.startsWith('/magic/api/')) {
-		const mode = getEnvVar(event.platform, 'MAGIC_MODE').trim().toLowerCase();
-		if (mode === 'homelab') {
-			const backendUrl = getEnvVar(event.platform, 'MAGIC_BACKEND_URL').trim();
-			const proxySecret = getEnvVar(event.platform, 'MAGIC_PROXY_SECRET');
-			if (!backendUrl) {
-				console.error(
-					'[magic-proxy] Configuration error: MAGIC_MODE=homelab requires MAGIC_BACKEND_URL.'
-				);
-				return jsonResponse(
-					{
-						ok: false,
-						error: 'Configuration error: missing MAGIC_BACKEND_URL for homelab mode.'
-					},
-					503
-				);
-			}
-			return proxyMagicApiRequest(event, backendUrl, proxySecret);
+	return async ({ event, resolve }) => {
+		const redirectResponse = buildAppSubdomainRedirect(event.url, event.request.method);
+		if (redirectResponse) {
+			return redirectResponse;
 		}
-	}
 
-	return resolve(event);
-};
+		if (event.route.id?.startsWith('/magic/api/')) {
+			const rawMode = getEnvVar(event.platform, 'MAGIC_MODE').trim().toLowerCase();
+			if (rawMode === 'homelab') {
+				const backendUrl = getEnvVar(event.platform, 'MAGIC_BACKEND_URL').trim();
+				if (!backendUrl) {
+					logError(
+						'[magic-proxy] Configuration error: MAGIC_MODE=homelab requires MAGIC_BACKEND_URL.',
+						''
+					);
+					return jsonResponse(
+						{
+							ok: false,
+							error: 'Configuration error: MAGIC_BACKEND_URL is not set for MAGIC_MODE=homelab.'
+						},
+						503
+					);
+				}
+
+				const proxySecret = getEnvVar(event.platform, 'MAGIC_PROXY_SECRET');
+				if (!proxySecret) {
+					logError(
+						'[magic-proxy] Configuration error: MAGIC_MODE=homelab requires MAGIC_PROXY_SECRET.',
+						''
+					);
+					return jsonResponse(
+						{
+							ok: false,
+							error: 'Configuration error: MAGIC_PROXY_SECRET is not set for MAGIC_MODE=homelab.'
+						},
+						503
+					);
+				}
+
+				return proxyMagicApiRequest(event, backendUrl, proxySecret, proxyOptions);
+			}
+			// Unset, 'cloudflare', or unknown MAGIC_MODE resolves to local SvelteKit Worker routes.
+		}
+
+		return resolve(event);
+	};
+}
+
+export const handle: Handle = createHandle();
