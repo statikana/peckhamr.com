@@ -11,6 +11,16 @@ compatibility_flags = [
 workers_dev = true
 preview_urls = true
 
+routes = [
+    { pattern = "peckhamr.com", custom_domain = true },
+    { pattern = "magic.peckhamr.com", custom_domain = true },
+    { pattern = "cosmo.peckhamr.com", custom_domain = true },
+    { pattern = "notes.peckhamr.com", custom_domain = true },
+    { pattern = "media.peckhamr.com", custom_domain = true },
+    { pattern = "convert.peckhamr.com", custom_domain = true },
+    { pattern = "terminal.peckhamr.com", custom_domain = true }
+]
+
 main = ".svelte-kit/cloudflare/_worker.js"
 
 [assets]
