@@ -1003,3 +1003,211 @@ describe('Tier 2B — 5e: Combat damage assignment among multiple blockers / tra
 		}
 	});
 });
+
+// ============================================================================
+// Item 5f — Mana color choice (CR 105.4, 106.x) & Hybrid payment (CR 107.4e, 118.x)
+// ============================================================================
+
+describe('Tier 2B — 5f: Mana color choice (CR 105.4, 106.x) & Hybrid payment (CR 107.4e, 118.x)', () => {
+	it('prompts human with chooseMode when tapping an any-color / commander-identity mana source or resolving an add-mana-of-any-color effect (CR 105.4, 106.1a)', () => {
+		const { state, p1 } = makeGame([false, false]);
+		p1.commanderColorIdentity = ['W', 'U', 'B', 'G'];
+
+		// 1. Tapping Command Tower prompts with the commander color identity subset ['W', 'U', 'B', 'G']
+		const tower = putInZone(
+			state,
+			p1,
+			synthCard({
+				name: 'Command Tower',
+				typeLine: 'Land',
+				oracleText: "{T}: Add one mana of any color in your commander's color identity."
+			}),
+			'battlefield'
+		);
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'tap_mana',
+				instanceId: tower.instanceId
+			}).ok,
+			true
+		);
+		const towerPrompt = state.pendingPrompts.find((pr) => pr.choice?.kind === 'chooseMode');
+		assert.ok(
+			towerPrompt,
+			'Tapping Command Tower without preferredColor must prompt a human player with chooseMode'
+		);
+		assert.equal(towerPrompt.choice?.kind, 'chooseMode');
+		assert.deepEqual(towerPrompt.choice.modes, ['W', 'U', 'B', 'G']);
+		assert.deepEqual(towerPrompt.choice.defaultIndices, [0]);
+
+		// Choose 'B' (index 2)
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'choice',
+				promptId: towerPrompt.id,
+				answer: { kind: 'chooseMode', indices: [2] }
+			}).ok,
+			true
+		);
+		assert.equal(p1.manaPool.B, 1, 'Command Tower should add the human-selected color {B}');
+		assert.equal(p1.manaPool.W, 0);
+
+		// 2. Resolving a spell that adds one mana of any color prompts with all 5 colors ['W', 'U', 'B', 'R', 'G']
+		const ritual = putInZone(
+			state,
+			p1,
+			synthCard({
+				name: 'Prism Lotus',
+				typeLine: 'Instant',
+				manaCost: '{B}',
+				cmc: 1,
+				oracleText: 'Add one mana of any color.'
+			}),
+			'hand'
+		);
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: ritual.instanceId
+			}).ok,
+			true
+		);
+		assert.equal(p1.manaPool.B, 0);
+		resolveTopOfStack(state);
+
+		const effectPrompt = state.pendingPrompts.find((pr) => pr.choice?.kind === 'chooseMode');
+		assert.ok(
+			effectPrompt,
+			'Resolving "Add one mana of any color" for a human must prompt with chooseMode'
+		);
+		assert.equal(effectPrompt.choice?.kind, 'chooseMode');
+		assert.deepEqual(effectPrompt.choice.modes, ['W', 'U', 'B', 'R', 'G']);
+		assert.deepEqual(effectPrompt.choice.defaultIndices, [0]);
+
+		// Choose 'R' (index 3)
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'choice',
+				promptId: effectPrompt.id,
+				answer: { kind: 'chooseMode', indices: [3] }
+			}).ok,
+			true
+		);
+		assert.equal(p1.manaPool.R, 1, 'Resolving effect should add the human-selected color {R}');
+		assert.equal(state.stack.length, 0);
+	});
+
+	it('prompts human with chooseMode per Hybrid mana symbol when both options are payable, and skips the prompt when only one option is payable (CR 107.4e, 118.x)', () => {
+		const { state, p1 } = makeGame([false, false]);
+
+		// 1. Both {W} and {U} are payable for {W/U} -> prompts chooseMode
+		const hybridSpell1 = putInZone(
+			state,
+			p1,
+			synthCard({
+				name: 'Azorius Duet',
+				typeLine: 'Instant',
+				manaCost: '{W/U}',
+				cmc: 1,
+				oracleText: 'Draw a card.'
+			}),
+			'hand'
+		);
+		p1.manaPool = { W: 1, U: 1, B: 0, R: 0, G: 0, C: 0 };
+
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: hybridSpell1.instanceId
+			}).ok,
+			true
+		);
+		const hybPrompt1 = state.pendingPrompts.find((pr) => pr.choice?.kind === 'chooseMode');
+		assert.ok(
+			hybPrompt1,
+			'Human casting {W/U} when both {W} and {U} are payable must receive a chooseMode prompt'
+		);
+		assert.equal(hybPrompt1.choice?.kind, 'chooseMode');
+		assert.equal(hybPrompt1.choice.modes.length, 2);
+
+		// Choose second option ({U}) instead of default ({W})
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'choice',
+				promptId: hybPrompt1.id,
+				answer: { kind: 'chooseMode', indices: [1] }
+			}).ok,
+			true
+		);
+		assert.equal(p1.manaPool.U, 0, 'Choosing {U} for {W/U} must spend {U}');
+		assert.equal(p1.manaPool.W, 1, 'Choosing {U} for {W/U} must leave {W} unspent');
+		assert.equal(state.stack.length, 1);
+		resolveTopOfStack(state);
+
+		// 2. Monocolored hybrid {2/W} when both {W} and {2} are payable -> prompts chooseMode
+		const twobridSpell = putInZone(
+			state,
+			p1,
+			synthCard({
+				name: 'Spectral Processionette',
+				typeLine: 'Sorcery',
+				manaCost: '{2/W}',
+				cmc: 2,
+				oracleText: 'Draw a card.'
+			}),
+			'hand'
+		);
+		p1.manaPool = { W: 1, U: 0, B: 0, R: 0, G: 0, C: 2 };
+
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: twobridSpell.instanceId
+			}).ok,
+			true
+		);
+		const hybPrompt2 = state.pendingPrompts.find((pr) => pr.choice?.kind === 'chooseMode');
+		assert.ok(hybPrompt2, 'Human casting {2/W} when both {W} and {2} are payable must receive a chooseMode prompt');
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'choice',
+				promptId: hybPrompt2.id,
+				answer: { kind: 'chooseMode', indices: [1] }
+			}).ok,
+			true
+		);
+		assert.equal(p1.manaPool.C, 0, 'Choosing {2} for {2/W} must spend 2 colorless mana');
+		assert.equal(p1.manaPool.W, 1, 'Choosing {2} for {2/W} must leave {W} unspent');
+		resolveTopOfStack(state);
+
+		// 3. Only {U} is payable for {W/U} -> pays {U} immediately without prompting
+		const hybridSpell2 = putInZone(
+			state,
+			p1,
+			synthCard({
+				name: 'Azorius Solo',
+				typeLine: 'Instant',
+				manaCost: '{W/U}',
+				cmc: 1,
+				oracleText: 'Draw a card.'
+			}),
+			'hand'
+		);
+		p1.manaPool = { W: 0, U: 1, B: 0, R: 0, G: 0, C: 0 };
+
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: hybridSpell2.instanceId
+			}).ok,
+			true
+		);
+		assert.equal(
+			state.pendingPrompts.length,
+			0,
+			'When only one hybrid option is payable, must pay it without prompting'
+		);
+		assert.equal(p1.manaPool.U, 0);
+		assert.equal(state.stack.length, 1);
+	});
+});

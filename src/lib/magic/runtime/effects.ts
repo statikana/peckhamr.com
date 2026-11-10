@@ -1130,11 +1130,42 @@ class Run {
 				}
 				if (step.params?.manaChoice) {
 					const allowed = manaChoiceColors(s, you, step.params.manaChoice);
-					if (allowed.length === 0) return;
-					const chosen =
+					if (allowed.length === 0 || times <= 0) return;
+					const defaultColor =
 						this.ctx.preferredColor && allowed.includes(this.ctx.preferredColor)
 							? this.ctx.preferredColor
 							: allowed[0];
+					let chosen = defaultColor;
+					if (!you.isBot && !this.ctx.preferredColor && allowed.length > 1 && this.canPause) {
+						const ans = this.answers[you.playerId];
+						if (!ans || ans.length === 0) {
+							const item = this.saveFrame(this.stepIndex, this.answers);
+							const defaultIdx = Math.max(0, allowed.indexOf(defaultColor));
+							enqueueChoicePrompt(s, {
+								id: p.uid('prompt', s),
+								kind: 'chooseMode',
+								playerId: you.playerId,
+								title: `${title} — Choose Mana Color`,
+								description: `Choose a color of mana to add (${allowed.join(', ')}).`,
+								continuation: {
+									kind: 'effect_choice',
+									stackItemId: item.id,
+									stepIndex: this.stepIndex
+								},
+								choice: {
+									kind: 'chooseMode',
+									modes: allowed,
+									min: 1,
+									max: 1,
+									defaultIndices: [defaultIdx]
+								}
+							});
+							this.result.paused = true;
+							return;
+						}
+						const picked = ans[0] as ManaColor;
+						if (allowed.includes(picked)) chosen = picked;
+					}
 					you.manaPool[chosen] += times;
 				}
 				return;

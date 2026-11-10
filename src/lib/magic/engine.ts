@@ -783,6 +783,126 @@ function maybeAskPhyrexianCostChoice(
 	return { ok: true };
 }
 
+function applySingleHybridChoice(
+	req: ManaCostRequirement,
+	choice: number
+): ManaCostRequirement {
+	const flex = req.flexibleSymbols ?? [];
+	const idx = flex.findIndex((s) => !s.altLife);
+	if (idx < 0) return req;
+	const sym = flex[idx];
+	const nextColored = { ...req.colored };
+	let nextGeneric = req.generic;
+	if (choice === 1) {
+		if (sym.altColor !== undefined) {
+			nextColored[sym.primaryColor] = Math.max(0, nextColored[sym.primaryColor] - 1);
+			nextColored[sym.altColor] += 1;
+		} else if (sym.altGeneric !== undefined) {
+			nextColored[sym.primaryColor] = Math.max(0, nextColored[sym.primaryColor] - 1);
+			nextGeneric += sym.altGeneric;
+		}
+	}
+	const remainingFlex = flex.filter((_, i) => i !== idx);
+	return {
+		...req,
+		colored: nextColored,
+		generic: nextGeneric,
+		flexibleSymbols: remainingFlex.length > 0 ? remainingFlex : undefined
+	};
+}
+
+function resolveHybridCostChoice(
+	state: GameState,
+	actor: PlayerGameState,
+	action: Extract<GameActionPayload, { type: 'cast_spell' | 'activate_ability' | 'tap_mana' }>,
+	req: ManaCostRequirement,
+	sourceName: string
+): { promptResult?: { ok: boolean; error?: string }; resolvedReq: ManaCostRequirement } {
+	let currentReq = req;
+	const hybridChoices = action.costPayment?.hybridChoices ?? [];
+	let choiceIdx = 0;
+	while (choiceIdx < hybridChoices.length && currentReq.flexibleSymbols?.some((s) => !s.altLife)) {
+		const c = hybridChoices[choiceIdx];
+		if (c === 0 || c === 1) {
+			currentReq = applySingleHybridChoice(currentReq, c);
+		}
+		choiceIdx += 1;
+	}
+	if (actor.isBot) {
+		return { resolvedReq: currentReq };
+	}
+	while (currentReq.flexibleSymbols?.some((s) => !s.altLife)) {
+		const sym = currentReq.flexibleSymbols.find((s) => !s.altLife)!;
+		const req0 = applySingleHybridChoice(currentReq, 0);
+		const req1 = applySingleHybridChoice(currentReq, 1);
+		const canPay0 = canPayOrAutoTap(actor, req0, state, action.costPayment?.phyrexianLifeCount);
+		const canPay1 = canPayOrAutoTap(actor, req1, state, action.costPayment?.phyrexianLifeCount);
+		if (canPay0 && !canPay1) {
+			currentReq = req0;
+			choiceIdx += 1;
+			continue;
+		}
+		if (!canPay0 && canPay1) {
+			currentReq = req1;
+			choiceIdx += 1;
+			continue;
+		}
+		if (canPay0 && canPay1) {
+			const label0 = `Pay {${sym.primaryColor}}`;
+			const label1 =
+				sym.altColor !== undefined
+					? `Pay {${sym.altColor}}`
+					: `Pay {${sym.altGeneric ?? 2}}`;
+			const labels = [label0, label1];
+			state.pendingPrompts.push({
+				id: uid('prm', state),
+				playerId: actor.playerId,
+				kind: 'cost_choice',
+				purpose: 'cost_choice',
+				title: `Pay the cost of ${sourceName}`,
+				description: `Choose how to pay hybrid mana for ${sourceName} (CR 107.4e).`,
+				choice: {
+					kind: 'chooseMode',
+					modes: labels,
+					min: 1,
+					max: 1,
+					defaultIndices: [0]
+				},
+				cancellable: true,
+				costQuestion: { kind: 'hybrid', index: choiceIdx },
+				costOptionLabels: labels,
+				pendingAction: action
+			});
+			return { promptResult: { ok: true }, resolvedReq: currentReq };
+		}
+		break;
+	}
+	return { resolvedReq: currentReq };
+}
+
+const TAP_MANA_COLOR_CHOICE_HANDLER = 'tap_mana_color_choice';
+
+registerPromptHandler(TAP_MANA_COLOR_CHOICE_HANDLER, (state, prompt, answer) => {
+	const data = prompt.continuation?.kind === 'handler' ? prompt.continuation.data : undefined;
+	const instanceId = typeof data?.instanceId === 'string' ? data.instanceId : '';
+	const colors =
+		typeof data?.colorsCsv === 'string' && data.colorsCsv.length > 0
+			? (data.colorsCsv.split(',') as ManaColor[])
+			: (['W', 'U', 'B', 'R', 'G'] as ManaColor[]);
+	const idx = answer.kind === 'chooseMode' ? (answer.indices[0] ?? 0) : 0;
+	const preferredColor = colors[idx] ?? colors[0];
+	const costPayment =
+		typeof data?.costPaymentJson === 'string'
+			? (JSON.parse(data.costPaymentJson) as CostPayment)
+			: undefined;
+	applyGameActionInner(state, prompt.playerId, {
+		type: 'tap_mana',
+		instanceId,
+		preferredColor,
+		...(costPayment ? { costPayment } : {})
+	});
+});
+
 function simulateOrExecuteManaOnly(
 	player: PlayerGameState,
 	manaReq: ManaCostRequirement,
@@ -1410,8 +1530,9 @@ function applyGameActionInner(
 				(preferred && manaAbs.find((a) => a.producesMana.includes(preferred))) ||
 				manaAbs.find((a) => a.producesMana.length > 0) ||
 				manaAbs[0];
+			const allowedColors = ab.producesMana;
 			const chosenColor: ManaColor | undefined =
-				preferred && ab.producesMana.includes(preferred) ? preferred : ab.producesMana[0];
+				preferred && allowedColors.includes(preferred) ? preferred : allowedColors[0];
 
 			if (ab.activationRestrictions?.length) {
 				const manaAbLegality = checkAbilityActivationLegality(state, actorId, perm, ab);
@@ -1420,10 +1541,44 @@ function applyGameActionInner(
 
 			// Phase 4: the ability's whole cost from the IR ({T}, and e.g. "Sacrifice this artifact").
 			const cost = activatedAbilityCost(perm.card, ab);
-			const ctx = costContext(state, actor, perm, 0, false, parseManaCost(ab.manaCost === '{0}' ? '' : ab.manaCost));
+			const rawTapMana = parseManaCost(ab.manaCost === '{0}' ? '' : ab.manaCost);
+			const hybTapChoice = resolveHybridCostChoice(state, actor, action, rawTapMana, perm.card.name);
+			if (hybTapChoice.promptResult) return hybTapChoice.promptResult;
+			const ctx = costContext(state, actor, perm, 0, false, hybTapChoice.resolvedReq);
 			const plan = planCosts(ctx, cost.defs, action.costPayment);
 			if (!plan.ok) return { ok: false, error: plan.error };
 			if (plan.question) return askCostChoice(state, actor, action, plan.question, perm.card.name);
+
+			if (!actor.isBot && !preferred && allowedColors.length > 1) {
+				const defaultIdx = chosenColor ? Math.max(0, allowedColors.indexOf(chosenColor)) : 0;
+				const reason = `Choose a color of mana to add from ${perm.card.name} (${allowedColors.join(', ')}).`;
+				enqueueChoicePrompt(state, {
+					id: uid('prm', state),
+					playerId: actor.playerId,
+					kind: 'chooseMode',
+					purpose: 'generic',
+					title: `${perm.card.name} — Choose Mana Color`,
+					description: reason,
+					cancellable: true,
+					continuation: {
+						kind: 'handler',
+						name: TAP_MANA_COLOR_CHOICE_HANDLER,
+						data: {
+							instanceId: perm.instanceId,
+							colorsCsv: allowedColors.join(','),
+							costPaymentJson: action.costPayment ? JSON.stringify(action.costPayment) : null
+						}
+					},
+					choice: {
+						kind: 'chooseMode',
+						modes: allowedColors,
+						min: 1,
+						max: 1,
+						defaultIndices: [defaultIdx]
+					}
+				});
+				return { ok: true };
+			}
 
 			const baseAmount = evalPerm.losesAllAbilities ? 1 : Math.max(1, ab.producesAmount);
 			const amount = chosenColor ? getDynamicManaProducedAmount(state, actor, perm, baseAmount, ab) : 0;
@@ -1759,6 +1914,15 @@ function applyGameActionInner(
 				inst.card.name
 			);
 			if (phySpellChoice) return phySpellChoice;
+			const hybSpellChoice = resolveHybridCostChoice(
+				state,
+				actor,
+				action,
+				costReq,
+				inst.card.name
+			);
+			if (hybSpellChoice.promptResult) return hybSpellChoice.promptResult;
+			const effectiveCostReq = hybSpellChoice.resolvedReq;
 
 			// Phase 4: additional costs from the IR, paid together with the mana (nothing is paid unless
 			// everything can be). Choices the player hasn't made become a cost_choice prompt.
@@ -1770,7 +1934,7 @@ function applyGameActionInner(
 					inst,
 					xVal,
 					true,
-					costReq,
+					effectiveCostReq,
 					action.costPayment?.phyrexianLifeCount
 				);
 				const plan = planCosts(ctx, additional.defs, action.costPayment);
@@ -1783,7 +1947,7 @@ function applyGameActionInner(
 			} else if (
 				!payManaWithAutoTap(
 					actor,
-					costReq,
+					effectiveCostReq,
 					state,
 					action.costPayment?.phyrexianLifeCount
 				)
@@ -1896,7 +2060,8 @@ function applyGameActionInner(
 				return applyGameAction(state, actorId, {
 					type: 'tap_mana',
 					instanceId: perm.instanceId,
-					preferredColor: ab.producesMana[0],
+					preferredColor:
+						ab.producesMana.length === 1 || actor.isBot ? ab.producesMana[0] : undefined,
 					costPayment: action.costPayment
 				});
 			}
@@ -1936,13 +2101,21 @@ function applyGameActionInner(
 				perm.card.name
 			);
 			if (phyAbilityChoice) return phyAbilityChoice;
+			const hybAbilityChoice = resolveHybridCostChoice(
+				state,
+				actor,
+				action,
+				abilityMana,
+				perm.card.name
+			);
+			if (hybAbilityChoice.promptResult) return hybAbilityChoice.promptResult;
 			const abilityCtx = costContext(
 				state,
 				actor,
 				perm,
 				0,
 				false,
-				abilityMana,
+				hybAbilityChoice.resolvedReq,
 				action.costPayment?.phyrexianLifeCount
 			);
 			const abilityPlan = planCosts(abilityCtx, abilityCost.defs, action.costPayment);
@@ -2867,15 +3040,18 @@ function handlePromptResolution(
 			state.pendingPrompts.splice(promptIdx, 0, prompt);
 			return { ok: false, error: valid.error };
 		}
-		const payment = {
+		const payment: CostPayment = {
 			options: [...(pending.costPayment?.options ?? [])],
 			objects: [...(pending.costPayment?.objects ?? [])],
 			...(pending.costPayment?.phyrexianLifeCount !== undefined
 				? { phyrexianLifeCount: pending.costPayment.phyrexianLifeCount }
+				: {}),
+			...(pending.costPayment?.hybridChoices
+				? { hybridChoices: [...pending.costPayment.hybridChoices] }
 				: {})
 		};
 		const q = prompt.costQuestion;
-		if (q?.kind === 'option' || q?.kind === 'phyrexian') {
+		if (q?.kind === 'option' || q?.kind === 'phyrexian' || q?.kind === 'hybrid') {
 			const opt =
 				normalized.answer?.kind === 'yesNo'
 					? normalized.answer.yes
@@ -2890,11 +3066,15 @@ function handlePromptResolution(
 			}
 			if (q.kind === 'phyrexian') {
 				payment.phyrexianLifeCount = opt;
+			} else if (q.kind === 'hybrid') {
+				const nextHyb = [...(payment.hybridChoices ?? [])];
+				nextHyb[q.index] = opt;
+				payment.hybridChoices = nextHyb;
 			} else {
-				payment.options[q.index] = opt;
+				payment.options![q.index] = opt;
 			}
 		} else if (q?.kind === 'objects' && normalized.answer?.kind === 'chooseObjects') {
-			payment.objects[q.index] = normalized.answer.objectIds;
+			payment.objects![q.index] = normalized.answer.objectIds;
 		}
 		const result = applyGameAction(state, actor.playerId, { ...pending, costPayment: payment });
 		if (!result.ok) state.pendingPrompts.splice(promptIdx, 0, prompt);
@@ -3366,17 +3546,26 @@ function handlePromptResolution(
 		return { ok: true };
 	}
 
-	// Step E2: a paused IR resolution waiting for this player's choice (sacrifice, discard).
+	// Step E2: a paused IR resolution waiting for this player's choice (sacrifice, discard, or addMana color).
 	if (prompt.continuation?.kind === 'effect_choice') {
 		const valid = validateChoiceAnswer(choice, normalized.answer);
-		if (!valid.ok || normalized.answer?.kind !== 'chooseObjects') {
+		if (
+			!valid.ok ||
+			(normalized.answer?.kind !== 'chooseObjects' && normalized.answer?.kind !== 'chooseMode')
+		) {
 			return { ok: false, error: valid.ok ? 'Choose the required objects.' : valid.error };
 		}
 		const c = prompt.continuation;
 		state.pendingPrompts.splice(promptIdx, 1);
 		const item = state.stack.find((s) => s.id === c.stackItemId);
 		if (!item?.effectResume || item.effectResume.stepIndex !== c.stepIndex) return { ok: true };
-		item.effectResume.answers[actor.playerId] = normalized.answer.objectIds;
+		if (normalized.answer.kind === 'chooseObjects') {
+			item.effectResume.answers[actor.playerId] = normalized.answer.objectIds;
+		} else if (choice.kind === 'chooseMode') {
+			item.effectResume.answers[actor.playerId] = normalized.answer.indices.map(
+				(idx) => choice.modes[idx] ?? ''
+			);
+		}
 		resumeStackItem(state, item);
 		return { ok: true };
 	}

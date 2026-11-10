@@ -2430,6 +2430,16 @@ describe('16. CR 613 Layers, Timestamps (Opalescence + Humility), Layer 7d P/T S
 			targets: [{ kind: 'permanent', id: wall.instanceId, label: wall.card.name }]
 		});
 		assert.equal(castRes.ok, true);
+		if (state.pendingPrompts.length > 0 && state.pendingPrompts[0].purpose === 'cost_choice') {
+			assert.equal(
+				applyGameAction(state, p1Id, {
+					type: 'choice',
+					promptId: state.pendingPrompts[0].id,
+					answer: { kind: 'chooseMode', indices: [0] }
+				}).ok,
+				true
+			);
+		}
 		applyGameAction(state, p1Id, { type: 'pass_priority' });
 		applyGameAction(state, state.players[1].playerId, { type: 'pass_priority' });
 
