@@ -7,7 +7,7 @@ import {
 	getEnvVar,
 	jsonResponse,
 	upsertUserAndCreateSession
-} from '../../../../lib/magic/db';
+} from '../../../../lib/magic/db.ts';
 
 export const trailingSlash = 'ignore';
 

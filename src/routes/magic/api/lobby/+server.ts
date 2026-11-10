@@ -1,5 +1,5 @@
 import type { RequestHandler } from '@sveltejs/kit';
-import { runAutomatedPriorityAndBots, SERVER_MAX_BOT_STEPS } from '../../../../lib/magic/ai';
+import { runAutomatedPriorityAndBots, SERVER_MAX_BOT_STEPS } from '../../../../lib/magic/ai.ts';
 
 /** Bot automation budget per request (every triggered ability uses the stack). */
 const BOT_LOOP_OPTS = { maxSteps: SERVER_MAX_BOT_STEPS, logOnCap: true };
@@ -15,15 +15,15 @@ import {
 	listUserActiveLobbies,
 	saveLobby,
 	upsertUserAndCreateSession
-} from '../../../../lib/magic/db';
+} from '../../../../lib/magic/db.ts';
 import {
 	applyGameAction,
 	createInitialGameState,
 	enforceLobbyEngineVersion,
 	sanitizeGameStateForViewer
-} from '../../../../lib/magic/engine';
-import { unsupportedCardsStartError } from '../../../../lib/magic/compiler/support';
-import { PRECON_DECKS } from '../../../../lib/magic/precons';
+} from '../../../../lib/magic/engine.ts';
+import { unsupportedCardsStartError } from '../../../../lib/magic/compiler/support.ts';
+import { PRECON_DECKS } from '../../../../lib/magic/precons.ts';
 import {
 	DEFAULT_LOBBY_RULES,
 	type GameActionPayload,
@@ -31,7 +31,7 @@ import {
 	type LobbySeat,
 	type MagicDeck,
 	type MagicLobby
-} from '../../../../lib/magic/types';
+} from '../../../../lib/magic/types.ts';
 
 export const trailingSlash = 'ignore';
 
