@@ -25,6 +25,7 @@ export const INTERPRETED_VERBS: ReadonlySet<Verb> = new Set<Verb>([
 	'counterSpell',
 	'createToken',
 	'copyPermanent',
+	'copySpell',
 	'putCounters',
 	'proliferate',
 	'pump',
@@ -86,6 +87,7 @@ function stepSupported(step: EffectStep): boolean {
 	if ((step.verb === 'pump' || step.verb === 'grant' || step.verb === 'switchPT') && step.params?.duration !== 'endOfTurn') return false;
 	if (step.verb === 'createToken' && !step.params?.token) return false;
 	if (step.verb === 'delayedTrigger') return delayedSupported(step);
+	if (step.verb === 'fight') return Boolean(step.params?.with && selectorSupported(step.params.with));
 	if (step.verb === 'exile' && step.subject.k === 'all' && step.subject.filter.zone === 'graveyard') return true;
 	if ((step.verb === 'destroy' || step.verb === 'exile' || step.verb === 'bounce') && step.subject.k === 'all') {
 		return step.subject.filter.zone === 'battlefield';

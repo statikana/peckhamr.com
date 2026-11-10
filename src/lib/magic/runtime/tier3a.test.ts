@@ -479,3 +479,279 @@ describe('Tier 3 Track A — Item 2: GainLife, CardDrawn, BecomesTapped events, 
 		unsub();
 	});
 });
+
+describe('Tier 3 Track A — Item 3: Compiler grammar and runtime for fight, tap, untap, tapOrUntap, and copySpell (CR 701.14, 701.26, 707.10)', () => {
+	it('compiles and resolves fight spells/abilities, enforcing CR 701.14a-d (mutual non-combat damage, missing/non-creature no-op, self-fight 2x power)', () => {
+		const state = createTestGame();
+		const [alice, bob] = state.players;
+		alice.manaPool = { W: 10, U: 10, B: 10, R: 10, G: 10, C: 10 };
+
+		const bearA = putInZone(
+			state,
+			alice,
+			card({
+				name: 'Grizzly Fighter',
+				typeLine: 'Creature — Bear',
+				power: '3',
+				toughness: '4',
+				oracleText: ''
+			}),
+			'battlefield'
+		);
+		const wolfB = putInZone(
+			state,
+			bob,
+			card({
+				name: 'Timber Opponent',
+				typeLine: 'Creature — Wolf',
+				power: '2',
+				toughness: '5',
+				oracleText: ''
+			}),
+			'battlefield'
+		);
+
+		const events: GameEvent[] = [];
+		const unsub = subscribeEvents(state, (_s, ev) => events.push(ev));
+
+		// 1. "Target creature you control fights target creature you don't control." (CR 701.14a, 701.14d)
+		const preySpell = putInZone(
+			state,
+			alice,
+			card({
+				name: 'Savage Duel',
+				manaCost: '{G}',
+				cmc: 1,
+				typeLine: 'Sorcery',
+				oracleText: "Target creature you control fights target creature you don't control."
+			}),
+			'hand'
+		);
+		const cast1 = applyGameAction(state, alice.playerId, {
+			type: 'cast_spell',
+			instanceId: preySpell.instanceId,
+			targets: [
+				{ kind: 'permanent', id: bearA.instanceId, label: bearA.card.name },
+				{ kind: 'permanent', id: wolfB.instanceId, label: wolfB.card.name }
+			]
+		});
+		assert.equal(cast1.ok, true, cast1.error ?? '');
+		settle(state);
+
+		assert.equal(bearA.damageMarked, 2, 'bearA took 2 fight damage from wolfB');
+		assert.equal(wolfB.damageMarked, 3, 'wolfB took 3 fight damage from bearA');
+		const dmgEvents = events.filter((e) => e.kind === 'DamageDealt') as Array<
+			Extract<GameEvent, { kind: 'DamageDealt' }>
+		>;
+		assert.equal(dmgEvents.length, 2, 'two DamageDealt events emitted');
+		assert.ok(dmgEvents.every((e) => e.combat === false), 'fight damage is not combat damage (CR 701.14d)');
+
+		// 2. CR 701.14b: If either creature is no longer on the battlefield (or illegal target), neither deals damage.
+		bearA.damageMarked = 0;
+		wolfB.damageMarked = 0;
+		const preySpell2 = putInZone(
+			state,
+			alice,
+			card({
+				name: 'Interrupted Duel',
+				manaCost: '{G}',
+				cmc: 1,
+				typeLine: 'Instant',
+				oracleText: "Target creature you control fights target creature you don't control."
+			}),
+			'hand'
+		);
+		assert.equal(
+			applyGameAction(state, alice.playerId, {
+				type: 'cast_spell',
+				instanceId: preySpell2.instanceId,
+				targets: [
+					{ kind: 'permanent', id: bearA.instanceId, label: bearA.card.name },
+					{ kind: 'permanent', id: wolfB.instanceId, label: wolfB.card.name }
+				]
+			}).ok,
+			true
+		);
+		// Remove wolfB from the battlefield before resolution.
+		bob.battlefield = bob.battlefield.filter((c) => c.instanceId !== wolfB.instanceId);
+		wolfB.zone = 'exile';
+		bob.exile.push(wolfB);
+		settle(state);
+		assert.equal(bearA.damageMarked, 0, 'neither creature dealt damage when one left the battlefield (CR 701.14b)');
+
+		// 3. CR 701.14c: Fighting itself deals damage to itself equal to twice its power.
+		const brawler = putInZone(
+			state,
+			alice,
+			card({
+				name: 'Mirror Brawler',
+				manaCost: '{2}{G}',
+				cmc: 3,
+				typeLine: 'Creature — Beast',
+				power: '2',
+				toughness: '6',
+				oracleText: '{G}: ~ fights target creature.'
+			}),
+			'battlefield'
+		);
+		const actSelfFight = applyGameAction(state, alice.playerId, {
+			type: 'activate_ability',
+			instanceId: brawler.instanceId,
+			abilityId: 'act_0',
+			targets: [{ kind: 'permanent', id: brawler.instanceId, label: brawler.card.name }]
+		});
+		assert.equal(actSelfFight.ok, true, actSelfFight.error ?? '');
+		settle(state);
+		assert.equal(brawler.damageMarked, 4, 'fighting itself deals 2x power damage to itself (CR 701.14c)');
+		unsub();
+	});
+
+	it('compiles and resolves tap, untap, and tapOrUntap effects (CR 701.26)', () => {
+		const state = createTestGame();
+		const [alice, bob] = state.players;
+		alice.manaPool = { W: 10, U: 10, B: 10, R: 10, G: 10, C: 10 };
+
+		const bobCreature = putInZone(
+			state,
+			bob,
+			card({
+				name: 'Enemy Guard',
+				typeLine: 'Creature — Soldier',
+				power: '2',
+				toughness: '2',
+				oracleText: ''
+			}),
+			'battlefield'
+		);
+
+		const tapSpell = putInZone(
+			state,
+			alice,
+			card({
+				name: 'Icy Blast',
+				manaCost: '{W}',
+				cmc: 1,
+				typeLine: 'Instant',
+				oracleText: 'Tap target creature.'
+			}),
+			'hand'
+		);
+		assert.equal(
+			applyGameAction(state, alice.playerId, {
+				type: 'cast_spell',
+				instanceId: tapSpell.instanceId,
+				targets: [{ kind: 'permanent', id: bobCreature.instanceId, label: bobCreature.card.name }]
+			}).ok,
+			true
+		);
+		settle(state);
+		assert.equal(bobCreature.tapped, true, 'Tap target creature tapped bobCreature');
+
+		const untapSpell = putInZone(
+			state,
+			alice,
+			card({
+				name: 'Renewing Breeze',
+				manaCost: '{U}',
+				cmc: 1,
+				typeLine: 'Instant',
+				oracleText: 'Untap target creature.'
+			}),
+			'hand'
+		);
+		assert.equal(
+			applyGameAction(state, alice.playerId, {
+				type: 'cast_spell',
+				instanceId: untapSpell.instanceId,
+				targets: [{ kind: 'permanent', id: bobCreature.instanceId, label: bobCreature.card.name }]
+			}).ok,
+			true
+		);
+		settle(state);
+		assert.equal(bobCreature.tapped, false, 'Untap target creature untapped bobCreature');
+
+		const twiddle = putInZone(
+			state,
+			alice,
+			card({
+				name: 'Arcane Twiddle',
+				manaCost: '{U}',
+				cmc: 1,
+				typeLine: 'Instant',
+				oracleText: 'Tap or untap target permanent.'
+			}),
+			'hand'
+		);
+		assert.equal(
+			applyGameAction(state, alice.playerId, {
+				type: 'cast_spell',
+				instanceId: twiddle.instanceId,
+				targets: [{ kind: 'permanent', id: bobCreature.instanceId, label: bobCreature.card.name }]
+			}).ok,
+			true
+		);
+		settle(state);
+		assert.equal(bobCreature.tapped, true, 'Tap or untap target permanent tapped an untapped permanent');
+	});
+
+	it('compiles and resolves copySpell on the stack, emitting SpellCopied (CR 707.10)', () => {
+		const state = createTestGame();
+		const [alice] = state.players;
+		alice.manaPool = { W: 10, U: 10, B: 10, R: 10, G: 10, C: 10 };
+
+		const events: GameEvent[] = [];
+		const unsub = subscribeEvents(state, (_s, ev) => events.push(ev));
+
+		const salve = putInZone(
+			state,
+			alice,
+			card({
+				name: 'Sun Nectar',
+				manaCost: '{W}',
+				cmc: 1,
+				typeLine: 'Instant',
+				oracleText: 'You gain 3 life.'
+			}),
+			'hand'
+		);
+		const fork = putInZone(
+			state,
+			alice,
+			card({
+				name: 'Echo Cast',
+				manaCost: '{U}{U}',
+				cmc: 2,
+				typeLine: 'Instant',
+				oracleText: 'Copy target instant or sorcery spell.'
+			}),
+			'hand'
+		);
+
+		const startLife = alice.life;
+		assert.equal(
+			applyGameAction(state, alice.playerId, {
+				type: 'cast_spell',
+				instanceId: salve.instanceId
+			}).ok,
+			true
+		);
+		const origStackId = state.stack[0].id;
+		assert.equal(
+			applyGameAction(state, alice.playerId, {
+				type: 'cast_spell',
+				instanceId: fork.instanceId,
+				targets: [{ kind: 'stack', id: origStackId, label: salve.card.name }]
+			}).ok,
+			true
+		);
+		settle(state);
+
+		assert.equal(
+			events.filter((e) => e.kind === 'SpellCopied').length,
+			1,
+			'SpellCopied emitted when copySpell resolves (CR 707.10)'
+		);
+		assert.equal(alice.life, startLife + 6, 'both the copied spell and the original spell resolved (+6 life total)');
+		unsub();
+	});
+});

@@ -75,7 +75,8 @@ export function targetRequirementFromSpecs(specs: TargetSpec[]): TargetRequireme
 	}
 	const f = spec.filter;
 	if (f.zone === 'stack') {
-		const controllerFilter = f.controller ?? 'any';
+		const allSameController = specs.every((s) => (s.filter.controller ?? 'any') === (f.controller ?? 'any'));
+	const controllerFilter = allSameController ? (f.controller ?? 'any') : 'any';
 		let cardTypeFilter: string | undefined;
 		if (f.notTypes?.includes('Creature')) cardTypeFilter = 'Noncreature';
 		else if (f.types?.includes('Instant') && f.types?.includes('Sorcery')) {
@@ -120,7 +121,8 @@ export function targetRequirementFromSpecs(specs: TargetSpec[]): TargetRequireme
 			targetSpecs: specs
 		};
 	}
-	const controllerFilter = f.controller ?? 'any';
+	const allSameController = specs.every((s) => (s.filter.controller ?? 'any') === (f.controller ?? 'any'));
+	const controllerFilter = allSameController ? (f.controller ?? 'any') : 'any';
 	let targetKind = 'permanent';
 	let cardTypeFilter: string | undefined = 'Permanent';
 	if (f.types?.length === 1 && f.types[0] === 'Creature') {

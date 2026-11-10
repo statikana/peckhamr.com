@@ -8950,6 +8950,27 @@ function hasRequiredLegalTargetsInner(
 		};
 	}
 
+	const activeSpecs = !sourceCard?.typeLine.includes('Aura')
+		? info.targetSpecs?.filter((sp) => sp.max > 0)
+		: undefined;
+	if (activeSpecs && activeSpecs.length > 1) {
+		for (const spec of activeSpecs) {
+			if (spec.min <= 0) continue;
+			const specInfo = targetRequirementFromSpecs([spec]);
+			const res = hasRequiredLegalTargetsInner(
+				state,
+				actorId,
+				specInfo,
+				sourceCard,
+				sourceInstanceId,
+				xValue,
+				castMode
+			);
+			if (!res.ok) return res;
+		}
+		return { ok: true };
+	}
+
 	if (info.zone === 'graveyard' || info.targetKind === 'graveyard_card') {
 		if (info.sameGraveyard) {
 			for (const p of state.players) {
