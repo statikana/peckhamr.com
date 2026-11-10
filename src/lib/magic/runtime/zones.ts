@@ -264,6 +264,7 @@ function moveObjectInner(
 		obj.castViaSuspend = false;
 		obj.switchedPTCount = 0;
 		obj.usedLoyaltyThisTurn = false;
+		obj.activatedAbilityIdsThisTurn = undefined;
 		obj.transformed = false;
 		obj.isFaceDown = false;
 		obj.goadedByPlayerIds = undefined;

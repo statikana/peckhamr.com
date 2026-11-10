@@ -477,6 +477,7 @@ export function getCardActivatedAbilities(
 				loyaltyCost,
 				isManaAbility: isMana && hasManaProduction,
 				sorcerySpeedOnly: timing === 'sorcery',
+				...(ab.activationRestrictions?.length ? { activationRestrictions: ab.activationRestrictions } : {}),
 				producesMana,
 				producesAmount,
 				effectText: effectPart,

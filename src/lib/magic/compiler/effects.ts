@@ -127,6 +127,7 @@ const RESTRICTION_SENTENCES: RegExp[] = [
 	/^activate only during your turn\.?$/i,
 	/^activate only once each turn\.?$/i,
 	/^activate only during your upkeep\.?$/i,
+	/^activate only during combat\.?$/i,
 	/^equip only as a sorcery\.?$/i,
 	/^cast (?:~|this spell) only during combat\.?$/i,
 	/^cast (?:~|this spell) only during your turn\.?$/i,

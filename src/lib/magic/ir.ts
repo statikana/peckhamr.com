@@ -81,6 +81,12 @@ export interface SpellAbility {
 	span: Span;
 }
 
+export type ActivationRestriction =
+	| 'onceEachTurn'
+	| 'duringYourTurn'
+	| 'duringYourUpkeep'
+	| 'duringCombat';
+
 export interface ActivatedAbility {
 	kind: 'activated';
 	cost: CostDef[];
@@ -88,6 +94,8 @@ export interface ActivatedAbility {
 	effect: EffectStep[];
 	timing: Timing;
 	isMana: boolean;
+	/** CR 602.5b: activation restrictions recognized on this ability. */
+	activationRestrictions?: ActivationRestriction[];
 	/**
 	 * CR 305.6: a basic land type grants "{T}: Add [mana]" without any printed text. Intrinsic
 	 * abilities have an empty span.
@@ -170,6 +178,8 @@ export interface UnsupportedAbility {
 	effect?: EffectStep[];
 	/** Target specs recognized in an activated ability or spell whose full effect is unsupported. */
 	targets?: TargetSpec[];
+	/** CR 602.5b: activation restrictions recognized on an unsupported activated ability. */
+	activationRestrictions?: ActivationRestriction[];
 	/** CR 601.3: timing restrictions recognized on an unsupported spell. */
 	castRestrictions?: Array<'duringCombat' | 'duringYourTurn' | 'beforeAttackers'>;
 	/**

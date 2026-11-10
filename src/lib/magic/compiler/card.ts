@@ -17,6 +17,7 @@
 import type {
 	AbilityDef,
 	ActivatedAbility,
+	ActivationRestriction,
 	Characteristics,
 	CostDef,
 	EffectStep,
@@ -323,6 +324,19 @@ function activatedLine(ctx: Ctx, line: NormalizedLine): AbilityDef[] | null {
 		effect.steps.every((s) => s.verb === 'addMana');
 	const sorcery = Boolean(loyalty) || sentences.some((s) => /^(?:activate|equip) only as a sorcery\.?$/.test(s));
 	const timing: Timing = isMana ? 'mana' : sorcery ? 'sorcery' : 'instant';
+	const activationRestrictions: ActivationRestriction[] = [];
+	if (sentences.some((s) => /^activate only once each turn\.?$/.test(s))) {
+		activationRestrictions.push('onceEachTurn');
+	}
+	if (sentences.some((s) => /^activate only during your turn\.?$/.test(s))) {
+		activationRestrictions.push('duringYourTurn');
+	}
+	if (sentences.some((s) => /^activate only during your upkeep\.?$/.test(s))) {
+		activationRestrictions.push('duringYourUpkeep');
+	}
+	if (sentences.some((s) => /^activate only during combat\.?$/.test(s))) {
+		activationRestrictions.push('duringCombat');
+	}
 	const isManaTap = isMana && cost.defs.length === 1 && cost.defs[0].k === 'tapSelf' && !ctx.manaTapTaken;
 	const id = isManaTap ? 'mana_tap' : loyalty ? `loyalty_${line.rawIndex}` : `act_${line.rawIndex}`;
 	if (isManaTap) ctx.manaTapTaken = true;
@@ -340,6 +354,7 @@ function activatedLine(ctx: Ctx, line: NormalizedLine): AbilityDef[] | null {
 				costComplete,
 				timing,
 				isMana,
+				...(activationRestrictions.length > 0 ? { activationRestrictions } : {}),
 				...(manaSteps ? { effect: manaSteps } : {}),
 				...(effect.targets.length > 0 ? { targets: effect.targets } : {})
 			}
@@ -353,6 +368,7 @@ function activatedLine(ctx: Ctx, line: NormalizedLine): AbilityDef[] | null {
 		effect: effect.steps,
 		timing,
 		isMana,
+		...(activationRestrictions.length > 0 ? { activationRestrictions } : {}),
 		text: line.text,
 		span: line.span
 	};

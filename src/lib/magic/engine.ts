@@ -1207,6 +1207,7 @@ function executeUntapTurnBasedActions(state: GameState, activePlayer: PlayerGame
 		}
 		perm.summoningSick = false;
 		perm.usedLoyaltyThisTurn = false;
+		perm.activatedAbilityIdsThisTurn = undefined;
 	}
 }
 
@@ -1430,6 +1431,11 @@ function applyGameActionInner(
 			const chosenColor: ManaColor | undefined =
 				preferred && ab.producesMana.includes(preferred) ? preferred : ab.producesMana[0];
 
+			if (ab.activationRestrictions?.length) {
+				const manaAbLegality = checkAbilityActivationLegality(state, actorId, perm, ab);
+				if (!manaAbLegality.ok) return manaAbLegality;
+			}
+
 			// Phase 4: the ability's whole cost from the IR ({T}, and e.g. "Sacrifice this artifact").
 			const cost = activatedAbilityCost(perm.card, ab);
 			const ctx = costContext(state, actor, perm, 0, false, parseManaCost(ab.manaCost === '{0}' ? '' : ab.manaCost));
@@ -1441,6 +1447,9 @@ function applyGameActionInner(
 			const amount = chosenColor ? getDynamicManaProducedAmount(state, actor, perm, baseAmount, ab) : 0;
 
 			const paid = payPlannedCosts(ctx, plan);
+			if (ab.activationRestrictions?.includes('onceEachTurn')) {
+				perm.activatedAbilityIdsThisTurn = [...(perm.activatedAbilityIdsThisTurn ?? []), ab.id];
+			}
 			if (chosenColor && amount > 0) {
 				actor.manaPool[chosenColor] += amount;
 			}
@@ -1961,6 +1970,9 @@ function applyGameActionInner(
 			const sourceLkiPower = preCostEval.power;
 			const sourceLkiToughness = preCostEval.toughness;
 			const abilityPaid = payPlannedCosts(abilityCtx, abilityPlan);
+			if (ab.activationRestrictions?.includes('onceEachTurn')) {
+				perm.activatedAbilityIdsThisTurn = [...(perm.activatedAbilityIdsThisTurn ?? []), ab.id];
+			}
 			if (abilityPaid.descriptions.length > 0) {
 				addLog(state, 'rule', `${actor.username} ${abilityPaid.descriptions.join('; ')} to activate ${perm.card.name}.`, actorId);
 			}
@@ -6301,6 +6313,7 @@ function clearEndOfTurnAndDamage(state: GameState): void {
 			perm.tempToughnessMod = 0;
 			perm.grantedKeywords = [];
 			perm.switchedPTCount = 0;
+			perm.activatedAbilityIdsThisTurn = undefined;
 		}
 	}
 }
@@ -8392,11 +8405,54 @@ function checkAbilityActivationLegalityInner(
 		return { ok: false, error: plan.ok ? `You can't pay the cost of ${perm.card.name}'s ability.` : plan.error };
 	};
 
+	const activePlayer = state.players[state.activePlayerIndex];
+
+	// CR 602.5b / 602.5c: Enforce activation restrictions ("Activate only ...").
+	const restrictions = ab.activationRestrictions;
+	if (restrictions?.length) {
+		if (restrictions.includes('onceEachTurn') && perm.activatedAbilityIdsThisTurn?.includes(ab.id)) {
+			return {
+				ok: false,
+				error: `${perm.card.name}: This ability can only be activated once each turn.`
+			};
+		}
+		if (restrictions.includes('duringYourTurn') && activePlayer?.playerId !== actorId) {
+			return {
+				ok: false,
+				error: `${perm.card.name}: This ability can only be activated during your turn.`
+			};
+		}
+		if (
+			restrictions.includes('duringYourUpkeep') &&
+			(activePlayer?.playerId !== actorId || state.phase !== 'upkeep')
+		) {
+			return {
+				ok: false,
+				error: `${perm.card.name}: This ability can only be activated during your upkeep.`
+			};
+		}
+		if (
+			restrictions.includes('duringCombat') &&
+			!(
+				state.phase === 'begin_combat' ||
+				state.phase === 'declare_attackers' ||
+				state.phase === 'declare_blockers' ||
+				state.phase === 'first_strike_damage' ||
+				state.phase === 'combat_damage' ||
+				state.phase === 'end_combat'
+			)
+		) {
+			return {
+				ok: false,
+				error: `${perm.card.name}: This ability can only be activated during combat.`
+			};
+		}
+	}
+
 	if (ab.isManaAbility) {
 		return checkCost();
 	}
 
-	const activePlayer = state.players[state.activePlayerIndex];
 	const priorityPlayer = state.players[state.priorityPlayerIndex];
 	if (priorityPlayer?.playerId !== actorId) {
 		return { ok: false, error: 'You must hold priority to activate this ability.' };
