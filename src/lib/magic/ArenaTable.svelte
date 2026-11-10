@@ -78,10 +78,12 @@
 	let arrows = $state.raw<ArrowLine[]>([]);
 
 	// Clicked Card Inspector & Hold-ALT Floating Hover Preview
-	let inspectedCard = $state<ScryfallCard | null>(null);
-	let inspectedInstance = $state<CardInstance | null>(null);
-	let hoveredCard = $state<ScryfallCard | null>(null);
-	let hoveredInstance = $state<CardInstance | null>(null);
+	// Engine objects are held raw, never as deep proxies: legality checks briefly mutate them (e.g.
+	// tapping a permanent to test a cost), which Svelte forbids on proxies while rendering.
+	let inspectedCard = $state.raw<ScryfallCard | null>(null);
+	let inspectedInstance = $state.raw<CardInstance | null>(null);
+	let hoveredCard = $state.raw<ScryfallCard | null>(null);
+	let hoveredInstance = $state.raw<CardInstance | null>(null);
 	let altHeld = $state(false);
 	let mousePos = $state({ x: 0, y: 0 });
 
@@ -203,14 +205,14 @@
 	} | null>(null);
 
 	// Drag-and-drop state for hand and command zone cards
-	let draggingCard = $state<{ inst: CardInstance; fromZone: 'hand' | 'command' | 'exile' } | null>(null);
+	let draggingCard = $state.raw<{ inst: CardInstance; fromZone: 'hand' | 'command' | 'exile' } | null>(null);
 	let dragOverZone = $state<'front_row' | 'lands_area' | 'stack' | null>(null);
 
-	let xCostModalCard = $state<{ inst: CardInstance; fromZone: 'hand' | 'command' | 'exile' } | null>(null);
+	let xCostModalCard = $state.raw<{ inst: CardInstance; fromZone: 'hand' | 'command' | 'exile' } | null>(null);
 	let xCostValue = $state(1);
 
-	// Activated abilities menu on a permanent
-	let selectedPermanentForAbility = $state<CardInstance | null>(null);
+	// Activated abilities menu on a permanent (raw: see inspectedCard above)
+	let selectedPermanentForAbility = $state.raw<CardInstance | null>(null);
 
 	// Combat drafts
 	let draftAttackers = $state<Record<string, string>>({});
