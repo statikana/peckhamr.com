@@ -659,6 +659,9 @@ export function spellCannotBeCountered(state: GameState, item: StackItem): boole
 // ---- Replacement Effects --------------------------------------------------------------------
 
 export interface ActiveReplacement {
+	id: string;
+	label: string;
+	tier: 1 | 2 | 3 | 4 | 5;
 	def: ReplacementDef;
 	source: CardInstance;
 	sourceName: string;
@@ -670,10 +673,68 @@ export interface ReplacementQueryContext {
 	object?: CardInstance;
 	from?: ZoneType;
 	to?: ZoneType;
+	lkiLostAllAbilities?: boolean;
 }
 
 /**
- * Returns active replacement effects on the battlefield whose event pattern and condition match.
+ * CR 616.1a–e priority tier for a replacement effect:
+ * 1 (616.1a): self-replacement effects
+ * 2 (616.1b): control-changing ETB replacements
+ * 3 (616.1c): copy ETB replacements
+ * 4 (616.1d): back-face ETB replacements
+ * 5 (616.1e): all other replacement/prevention effects
+ */
+export function replacementPriorityTier(
+	def: ReplacementDef,
+	source: CardInstance,
+	affectedObj?: CardInstance
+): 1 | 2 | 3 | 4 | 5 {
+	if (!Array.isArray(def.with) && def.with.k === 'modify' && def.with.copyOf) {
+		return 3;
+	}
+	if (
+		def.selfReplacement ||
+		(def.replaces.filter?.object === 'self' &&
+			def.replaces.filter?.to === 'battlefield' &&
+			(!affectedObj || affectedObj.instanceId === source.instanceId))
+	) {
+		return 1;
+	}
+	return 5;
+}
+
+/**
+ * CR 616.1a–e: returns the applicable replacements in the first non-empty priority tier.
+ */
+export function selectNextReplacementTier(reps: ActiveReplacement[]): ActiveReplacement[] {
+	if (reps.length <= 1) return reps;
+	let minTier: 1 | 2 | 3 | 4 | 5 = 5;
+	for (const r of reps) {
+		if (r.tier < minTier) minTier = r.tier;
+	}
+	return reps.filter((r) => r.tier === minTier);
+}
+
+function describeReplacementLabel(def: ReplacementDef, sourceName: string): string {
+	if (!Array.isArray(def.with)) {
+		if (def.with.k === 'skip') return `Skip event instead (${sourceName})`;
+		if (def.with.to === 'exile') return `Exile instead (${sourceName})`;
+		if (def.with.to === 'library') {
+			return def.with.shuffleIntoLibrary
+				? `Shuffle into owner's library instead (${sourceName})`
+				: `Put into owner's library instead (${sourceName})`;
+		}
+		if (def.with.to === 'hand') return `Return to owner's hand instead (${sourceName})`;
+		if (def.with.to) return `Move to ${def.with.to} instead (${sourceName})`;
+	} else if (def.with.some((step) => step.verb === 'win')) {
+		return `Win the game instead (${sourceName})`;
+	}
+	return `Apply replacement effect (${sourceName})`;
+}
+
+/**
+ * Returns active replacement effects on the battlefield (and on `ctx.object` itself if it just
+ * left the battlefield) whose event pattern and condition match.
  */
 export function applicableReplacements(
 	state: GameState,
@@ -681,10 +742,34 @@ export function applicableReplacements(
 	ctx?: ReplacementQueryContext
 ): ActiveReplacement[] {
 	const out: ActiveReplacement[] = [];
-	for (const { perm, card, controllerId, compiled } of activePermanents(state)) {
+	const active = activePermanents(state);
+	const candidates: Array<{
+		perm: CardInstance;
+		card: ScryfallCard;
+		controllerId: string;
+		compiled: ReturnType<typeof compileCard>;
+	}> = [...active];
+
+	if (
+		ctx?.object &&
+		!ctx.object.phasedOut &&
+		!ctx.lkiLostAllAbilities &&
+		!active.some((a) => a.perm.instanceId === ctx.object!.instanceId)
+	) {
+		const objCard = ctx.object.copiableCard ?? ctx.object.card;
+		candidates.unshift({
+			perm: ctx.object,
+			card: objCard,
+			controllerId: ctx.object.controllerId || ctx.object.ownerId,
+			compiled: compileCard(objCard)
+		});
+	}
+
+	for (const { perm, card, controllerId, compiled } of candidates) {
 		const face = compiled.faces[0];
 		if (!face) continue;
-		for (const ability of face.abilities) {
+		for (let abIdx = 0; abIdx < face.abilities.length; abIdx++) {
+			const ability = face.abilities[abIdx];
 			if (ability.kind !== 'replacement') continue;
 			const def = ability.replacement;
 			if (def.replaces.event !== event) continue;
@@ -720,6 +805,9 @@ export function applicableReplacements(
 				continue;
 			}
 			out.push({
+				id: `${perm.instanceId}:rep:${abIdx}`,
+				label: describeReplacementLabel(def, card.name),
+				tier: replacementPriorityTier(def, perm, ctx?.object),
 				def,
 				source: perm,
 				sourceName: card.name,
@@ -728,6 +816,92 @@ export function applicableReplacements(
 		}
 	}
 	return out;
+}
+
+export interface ZoneChangeReplacementResolution {
+	dest: ZoneType;
+	shuffle: boolean;
+	replacedBy?: string;
+	pendingOptions?: ActiveReplacement[];
+	appliedIds: string[];
+	chooserId: string;
+}
+
+/**
+ * CR 616.1, 616.1a–f: Evaluates zone-change replacement effects on `obj` moving from `fromZone`
+ * toward `desiredDest`. Applies single (or bot-chosen) replacements iteratively (`616.1f`),
+ * re-checking which replacements still apply to the modified destination. If 2+ replacements in
+ * the active priority tier (`616.1a–e`) apply for a human controller/owner, returns `pendingOptions`
+ * so the caller can prompt with `chooseReplacement`.
+ */
+export function resolveZoneChangeReplacements(
+	state: GameState,
+	obj: CardInstance,
+	fromZone: ZoneType | null,
+	desiredDest: ZoneType,
+	alreadyApplied: ReadonlySet<string> = new Set(),
+	lkiLostAllAbilities = false,
+	chosenId?: string
+): ZoneChangeReplacementResolution {
+	const appliedIds = new Set(alreadyApplied);
+	const chooserId = obj.controllerId || obj.ownerId;
+	const chooser = state.players.find((p) => p.playerId === chooserId);
+	let currentDest = desiredDest;
+	let shuffle = false;
+	let replacedBy: string | undefined;
+	let nextChoiceId = chosenId;
+
+	for (let iter = 0; iter < 16; iter++) {
+		const raw = applicableReplacements(state, 'zoneChange', {
+			object: obj,
+			from: fromZone ?? undefined,
+			to: currentDest,
+			playerId: chooserId,
+			lkiLostAllAbilities
+		}).filter((r) => {
+			if (appliedIds.has(r.id)) return false;
+			const w = r.def.with;
+			return !Array.isArray(w) && w.k === 'modify' && w.to !== undefined;
+		});
+		const tierReps = selectNextReplacementTier(raw);
+		if (tierReps.length === 0) break;
+
+		let picked: ActiveReplacement | undefined;
+		if (nextChoiceId !== undefined) {
+			picked = tierReps.find((r) => r.id === nextChoiceId);
+			nextChoiceId = undefined;
+		}
+		if (!picked) {
+			if (tierReps.length === 1 || !chooser || chooser.isBot) {
+				picked = tierReps[0];
+			} else {
+				return {
+					dest: currentDest,
+					shuffle,
+					replacedBy,
+					pendingOptions: tierReps,
+					appliedIds: [...appliedIds],
+					chooserId
+				};
+			}
+		}
+
+		appliedIds.add(picked.id);
+		const w = picked.def.with;
+		if (!Array.isArray(w) && w.k === 'modify' && w.to) {
+			currentDest = w.to;
+			shuffle = Boolean(w.shuffleIntoLibrary);
+			replacedBy = picked.sourceName;
+		}
+	}
+
+	return {
+		dest: currentDest,
+		shuffle,
+		replacedBy,
+		appliedIds: [...appliedIds],
+		chooserId
+	};
 }
 
 /**
@@ -847,21 +1021,32 @@ export function applySelfEtbReplacements(state: GameState, perm: CardInstance): 
 
 // ---- Multipliers ----------------------------------------------------------------------------
 
+export interface ActiveCounterReplacement {
+	id: string;
+	label: string;
+	source: CardInstance;
+	sourceName: string;
+	controllerId: string;
+	factor: number;
+	delta: number;
+}
+
 /**
- * Computes the combined counter multiplier for putting `counterType` counters on `perm`
- * (e.g., Corpsejack Menace for `+1/+1` counters on creatures you control, Doubling Season for any
- * counters on permanents you control).
+ * Returns active counter replacement effects (`StaticDef` with `k: 'multiplier'` and `what: 'counters'`)
+ * that apply to putting `counterType` counters on `perm`.
  */
-export function counterMultiplier(
+export function applicableCounterReplacements(
 	state: GameState,
 	perm: CardInstance,
-	counterType: CounterType
-): number {
-	let factor = 1;
+	counterType: CounterType,
+	alreadyApplied: ReadonlySet<string> = new Set()
+): ActiveCounterReplacement[] {
+	const out: ActiveCounterReplacement[] = [];
 	for (const { perm: source, card, controllerId, compiled } of activePermanents(state)) {
 		const face = compiled.faces[0];
 		if (!face) continue;
-		for (const ability of face.abilities) {
+		for (let abIdx = 0; abIdx < face.abilities.length; abIdx++) {
+			const ability = face.abilities[abIdx];
 			if (
 				ability.kind !== 'static' ||
 				ability.static.k !== 'multiplier' ||
@@ -869,6 +1054,8 @@ export function counterMultiplier(
 			) {
 				continue;
 			}
+			const id = `${source.instanceId}:cmult:${abIdx}`;
+			if (alreadyApplied.has(id)) continue;
 			const def = ability.static;
 			if (!isBattlefieldActiveZone(def)) continue;
 			if (def.counter !== undefined && def.counter !== counterType) continue;
@@ -883,8 +1070,102 @@ export function counterMultiplier(
 			) {
 				continue;
 			}
-			factor *= def.factor;
+			const delta = def.delta ?? 0;
+			const factor = def.factor;
+			const desc =
+				delta > 0 && factor === 1
+					? `+${delta} ${counterType} counter(s) (${card.name})`
+					: `×${factor} ${counterType} counters (${card.name})`;
+			out.push({
+				id,
+				label: desc,
+				source,
+				sourceName: card.name,
+				controllerId,
+				factor,
+				delta
+			});
 		}
+	}
+	return out;
+}
+
+export interface CounterReplacementResolution {
+	amount: number;
+	pendingOptions?: ActiveCounterReplacement[];
+	appliedIds: string[];
+	chooserId: string;
+}
+
+/**
+ * CR 616.1, 616.1e–f: Iteratively applies counter replacement effects to `initialAmount` counters
+ * of `counterType` on `perm`. When 2+ replacements apply for a human controller, returns
+ * `pendingOptions` so the engine can prompt with `chooseReplacement`; after one applies, re-checks
+ * which still apply and auto-applies when only 1 remains.
+ */
+export function resolveCounterReplacements(
+	state: GameState,
+	perm: CardInstance,
+	counterType: CounterType,
+	initialAmount: number,
+	alreadyApplied: ReadonlySet<string> = new Set(),
+	chosenId?: string
+): CounterReplacementResolution {
+	const appliedIds = new Set(alreadyApplied);
+	const chooserId = perm.controllerId || perm.ownerId;
+	const chooser = state.players.find((p) => p.playerId === chooserId);
+	let amount = initialAmount;
+	let nextChoiceId = chosenId;
+
+	for (let iter = 0; iter < 16 && amount > 0; iter++) {
+		const reps = applicableCounterReplacements(state, perm, counterType, appliedIds);
+		if (reps.length === 0) break;
+
+		let picked: ActiveCounterReplacement | undefined;
+		if (nextChoiceId !== undefined) {
+			picked = reps.find((r) => r.id === nextChoiceId);
+			nextChoiceId = undefined;
+		}
+		if (!picked) {
+			if (reps.length === 1) {
+				picked = reps[0];
+			} else if (!chooser || chooser.isBot) {
+				// Bots apply additive (+N) replacements before multiplicative (×2) replacements.
+				picked = reps.find((r) => r.delta > 0) ?? reps[0];
+			} else {
+				return {
+					amount,
+					pendingOptions: reps,
+					appliedIds: [...appliedIds],
+					chooserId
+				};
+			}
+		}
+
+		appliedIds.add(picked.id);
+		amount = (amount + picked.delta) * picked.factor;
+	}
+
+	return {
+		amount,
+		appliedIds: [...appliedIds],
+		chooserId
+	};
+}
+
+/**
+ * Computes the combined counter multiplier for putting `counterType` counters on `perm`
+ * (e.g., Corpsejack Menace for `+1/+1` counters on creatures you control, Doubling Season for any
+ * counters on permanents you control).
+ */
+export function counterMultiplier(
+	state: GameState,
+	perm: CardInstance,
+	counterType: CounterType
+): number {
+	let factor = 1;
+	for (const rep of applicableCounterReplacements(state, perm, counterType)) {
+		factor *= rep.factor;
 	}
 	return factor;
 }

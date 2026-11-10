@@ -850,6 +850,7 @@ function moveFromZone(ctx: CostContext, card: CardInstance, zone: PlayerZone, to
 	moveObject(ctx.state, card, to, {
 		from: { player: ctx.player, zone },
 		graveyardReplacement: to === 'graveyard',
+		commanderRedirect: true,
 		newTimestamp: true,
 		bumpVersion: true
 	});

@@ -75,6 +75,7 @@ import {
 	playerHasShroud as replacePlayerHasShroud,
 	playerLifeTotalCantChange,
 	replaceEmptyLibraryDraw,
+	resolveCounterReplacements,
 	spellCannotBeCountered,
 	tokenMultiplier
 } from './runtime/replace.ts';
@@ -143,7 +144,7 @@ import {
 } from './runtime/effects.ts';
 import { botAcceptsOptionalTrigger, chooseBotTriggerTargets } from './ai.ts';
 import type { CostDef, EffectStep, TargetSpec, TokenSpec } from './ir.ts';
-import { deriveIdSalt, freshRngSeed, hash32, type RngHolder } from './runtime/random.ts';
+import { deriveIdSalt, freshRngSeed, hash32, uid, type RngHolder, type UidHolder } from './runtime/random.ts';
 import { cardAbilityDisplayText, enteringNotices, stackItemDisplayText } from './compiler/support.ts';
 import {
 	buildCostChoiceRequest,
@@ -195,26 +196,6 @@ import {
 } from './types.ts';
 
 export { ENGINE_VERSION };
-
-let fallbackUidCounter = 0;
-
-interface UidHolder {
-	nextUid?: number;
-	idSalt?: number;
-	rngState?: number;
-}
-
-function uid(prefix: string, state?: UidHolder): string {
-	if (state) {
-		if (state.idSalt === undefined) {
-			state.idSalt = deriveIdSalt(state.rngState ?? 0);
-		}
-		state.nextUid = (state.nextUid ?? 0) + 1;
-		return `${prefix}_${hash32(state.idSalt, state.nextUid).toString(36)}`;
-	}
-	fallbackUidCounter += 1;
-	return `${prefix}_ext_${fallbackUidCounter}`;
-}
 
 let globalInstanceTimestampSeed = 1;
 
@@ -802,6 +783,126 @@ function maybeAskPhyrexianCostChoice(
 	return { ok: true };
 }
 
+function applySingleHybridChoice(
+	req: ManaCostRequirement,
+	choice: number
+): ManaCostRequirement {
+	const flex = req.flexibleSymbols ?? [];
+	const idx = flex.findIndex((s) => !s.altLife);
+	if (idx < 0) return req;
+	const sym = flex[idx];
+	const nextColored = { ...req.colored };
+	let nextGeneric = req.generic;
+	if (choice === 1) {
+		if (sym.altColor !== undefined) {
+			nextColored[sym.primaryColor] = Math.max(0, nextColored[sym.primaryColor] - 1);
+			nextColored[sym.altColor] += 1;
+		} else if (sym.altGeneric !== undefined) {
+			nextColored[sym.primaryColor] = Math.max(0, nextColored[sym.primaryColor] - 1);
+			nextGeneric += sym.altGeneric;
+		}
+	}
+	const remainingFlex = flex.filter((_, i) => i !== idx);
+	return {
+		...req,
+		colored: nextColored,
+		generic: nextGeneric,
+		flexibleSymbols: remainingFlex.length > 0 ? remainingFlex : undefined
+	};
+}
+
+function resolveHybridCostChoice(
+	state: GameState,
+	actor: PlayerGameState,
+	action: Extract<GameActionPayload, { type: 'cast_spell' | 'activate_ability' | 'tap_mana' }>,
+	req: ManaCostRequirement,
+	sourceName: string
+): { promptResult?: { ok: boolean; error?: string }; resolvedReq: ManaCostRequirement } {
+	let currentReq = req;
+	const hybridChoices = action.costPayment?.hybridChoices ?? [];
+	let choiceIdx = 0;
+	while (choiceIdx < hybridChoices.length && currentReq.flexibleSymbols?.some((s) => !s.altLife)) {
+		const c = hybridChoices[choiceIdx];
+		if (c === 0 || c === 1) {
+			currentReq = applySingleHybridChoice(currentReq, c);
+		}
+		choiceIdx += 1;
+	}
+	if (actor.isBot) {
+		return { resolvedReq: currentReq };
+	}
+	while (currentReq.flexibleSymbols?.some((s) => !s.altLife)) {
+		const sym = currentReq.flexibleSymbols.find((s) => !s.altLife)!;
+		const req0 = applySingleHybridChoice(currentReq, 0);
+		const req1 = applySingleHybridChoice(currentReq, 1);
+		const canPay0 = canPayOrAutoTap(actor, req0, state, action.costPayment?.phyrexianLifeCount);
+		const canPay1 = canPayOrAutoTap(actor, req1, state, action.costPayment?.phyrexianLifeCount);
+		if (canPay0 && !canPay1) {
+			currentReq = req0;
+			choiceIdx += 1;
+			continue;
+		}
+		if (!canPay0 && canPay1) {
+			currentReq = req1;
+			choiceIdx += 1;
+			continue;
+		}
+		if (canPay0 && canPay1) {
+			const label0 = `Pay {${sym.primaryColor}}`;
+			const label1 =
+				sym.altColor !== undefined
+					? `Pay {${sym.altColor}}`
+					: `Pay {${sym.altGeneric ?? 2}}`;
+			const labels = [label0, label1];
+			state.pendingPrompts.push({
+				id: uid('prm', state),
+				playerId: actor.playerId,
+				kind: 'cost_choice',
+				purpose: 'cost_choice',
+				title: `Pay the cost of ${sourceName}`,
+				description: `Choose how to pay hybrid mana for ${sourceName} (CR 107.4e).`,
+				choice: {
+					kind: 'chooseMode',
+					modes: labels,
+					min: 1,
+					max: 1,
+					defaultIndices: [0]
+				},
+				cancellable: true,
+				costQuestion: { kind: 'hybrid', index: choiceIdx },
+				costOptionLabels: labels,
+				pendingAction: action
+			});
+			return { promptResult: { ok: true }, resolvedReq: currentReq };
+		}
+		break;
+	}
+	return { resolvedReq: currentReq };
+}
+
+const TAP_MANA_COLOR_CHOICE_HANDLER = 'tap_mana_color_choice';
+
+registerPromptHandler(TAP_MANA_COLOR_CHOICE_HANDLER, (state, prompt, answer) => {
+	const data = prompt.continuation?.kind === 'handler' ? prompt.continuation.data : undefined;
+	const instanceId = typeof data?.instanceId === 'string' ? data.instanceId : '';
+	const colors =
+		typeof data?.colorsCsv === 'string' && data.colorsCsv.length > 0
+			? (data.colorsCsv.split(',') as ManaColor[])
+			: (['W', 'U', 'B', 'R', 'G'] as ManaColor[]);
+	const idx = answer.kind === 'chooseMode' ? (answer.indices[0] ?? 0) : 0;
+	const preferredColor = colors[idx] ?? colors[0];
+	const costPayment =
+		typeof data?.costPaymentJson === 'string'
+			? (JSON.parse(data.costPaymentJson) as CostPayment)
+			: undefined;
+	applyGameActionInner(state, prompt.playerId, {
+		type: 'tap_mana',
+		instanceId,
+		preferredColor,
+		...(costPayment ? { costPayment } : {})
+	});
+});
+
 function simulateOrExecuteManaOnly(
 	player: PlayerGameState,
 	manaReq: ManaCostRequirement,
@@ -1068,6 +1169,7 @@ export function drawCards(
 		moveObject(state, player.library[0], 'hand', {
 			from: { player, zone: 'library' },
 			toPlayer: player,
+			commanderRedirect: true,
 			newTimestamp: true,
 			bumpVersion: true
 		});
@@ -1428,8 +1530,9 @@ function applyGameActionInner(
 				(preferred && manaAbs.find((a) => a.producesMana.includes(preferred))) ||
 				manaAbs.find((a) => a.producesMana.length > 0) ||
 				manaAbs[0];
+			const allowedColors = ab.producesMana;
 			const chosenColor: ManaColor | undefined =
-				preferred && ab.producesMana.includes(preferred) ? preferred : ab.producesMana[0];
+				preferred && allowedColors.includes(preferred) ? preferred : allowedColors[0];
 
 			if (ab.activationRestrictions?.length) {
 				const manaAbLegality = checkAbilityActivationLegality(state, actorId, perm, ab);
@@ -1438,10 +1541,44 @@ function applyGameActionInner(
 
 			// Phase 4: the ability's whole cost from the IR ({T}, and e.g. "Sacrifice this artifact").
 			const cost = activatedAbilityCost(perm.card, ab);
-			const ctx = costContext(state, actor, perm, 0, false, parseManaCost(ab.manaCost === '{0}' ? '' : ab.manaCost));
+			const rawTapMana = parseManaCost(ab.manaCost === '{0}' ? '' : ab.manaCost);
+			const hybTapChoice = resolveHybridCostChoice(state, actor, action, rawTapMana, perm.card.name);
+			if (hybTapChoice.promptResult) return hybTapChoice.promptResult;
+			const ctx = costContext(state, actor, perm, 0, false, hybTapChoice.resolvedReq);
 			const plan = planCosts(ctx, cost.defs, action.costPayment);
 			if (!plan.ok) return { ok: false, error: plan.error };
 			if (plan.question) return askCostChoice(state, actor, action, plan.question, perm.card.name);
+
+			if (!actor.isBot && !preferred && allowedColors.length > 1) {
+				const defaultIdx = chosenColor ? Math.max(0, allowedColors.indexOf(chosenColor)) : 0;
+				const reason = `Choose a color of mana to add from ${perm.card.name} (${allowedColors.join(', ')}).`;
+				enqueueChoicePrompt(state, {
+					id: uid('prm', state),
+					playerId: actor.playerId,
+					kind: 'chooseMode',
+					purpose: 'generic',
+					title: `${perm.card.name} — Choose Mana Color`,
+					description: reason,
+					cancellable: true,
+					continuation: {
+						kind: 'handler',
+						name: TAP_MANA_COLOR_CHOICE_HANDLER,
+						data: {
+							instanceId: perm.instanceId,
+							colorsCsv: allowedColors.join(','),
+							costPaymentJson: action.costPayment ? JSON.stringify(action.costPayment) : null
+						}
+					},
+					choice: {
+						kind: 'chooseMode',
+						modes: allowedColors,
+						min: 1,
+						max: 1,
+						defaultIndices: [defaultIdx]
+					}
+				});
+				return { ok: true };
+			}
 
 			const baseAmount = evalPerm.losesAllAbilities ? 1 : Math.max(1, ab.producesAmount);
 			const amount = chosenColor ? getDynamicManaProducedAmount(state, actor, perm, baseAmount, ab) : 0;
@@ -1777,6 +1914,15 @@ function applyGameActionInner(
 				inst.card.name
 			);
 			if (phySpellChoice) return phySpellChoice;
+			const hybSpellChoice = resolveHybridCostChoice(
+				state,
+				actor,
+				action,
+				costReq,
+				inst.card.name
+			);
+			if (hybSpellChoice.promptResult) return hybSpellChoice.promptResult;
+			const effectiveCostReq = hybSpellChoice.resolvedReq;
 
 			// Phase 4: additional costs from the IR, paid together with the mana (nothing is paid unless
 			// everything can be). Choices the player hasn't made become a cost_choice prompt.
@@ -1788,7 +1934,7 @@ function applyGameActionInner(
 					inst,
 					xVal,
 					true,
-					costReq,
+					effectiveCostReq,
 					action.costPayment?.phyrexianLifeCount
 				);
 				const plan = planCosts(ctx, additional.defs, action.costPayment);
@@ -1801,7 +1947,7 @@ function applyGameActionInner(
 			} else if (
 				!payManaWithAutoTap(
 					actor,
-					costReq,
+					effectiveCostReq,
 					state,
 					action.costPayment?.phyrexianLifeCount
 				)
@@ -1914,7 +2060,8 @@ function applyGameActionInner(
 				return applyGameAction(state, actorId, {
 					type: 'tap_mana',
 					instanceId: perm.instanceId,
-					preferredColor: ab.producesMana[0],
+					preferredColor:
+						ab.producesMana.length === 1 || actor.isBot ? ab.producesMana[0] : undefined,
 					costPayment: action.costPayment
 				});
 			}
@@ -1954,13 +2101,21 @@ function applyGameActionInner(
 				perm.card.name
 			);
 			if (phyAbilityChoice) return phyAbilityChoice;
+			const hybAbilityChoice = resolveHybridCostChoice(
+				state,
+				actor,
+				action,
+				abilityMana,
+				perm.card.name
+			);
+			if (hybAbilityChoice.promptResult) return hybAbilityChoice.promptResult;
 			const abilityCtx = costContext(
 				state,
 				actor,
 				perm,
 				0,
 				false,
-				abilityMana,
+				hybAbilityChoice.resolvedReq,
 				action.costPayment?.phyrexianLifeCount
 			);
 			const abilityPlan = planCosts(abilityCtx, abilityCost.defs, action.costPayment);
@@ -2885,15 +3040,18 @@ function handlePromptResolution(
 			state.pendingPrompts.splice(promptIdx, 0, prompt);
 			return { ok: false, error: valid.error };
 		}
-		const payment = {
+		const payment: CostPayment = {
 			options: [...(pending.costPayment?.options ?? [])],
 			objects: [...(pending.costPayment?.objects ?? [])],
 			...(pending.costPayment?.phyrexianLifeCount !== undefined
 				? { phyrexianLifeCount: pending.costPayment.phyrexianLifeCount }
+				: {}),
+			...(pending.costPayment?.hybridChoices
+				? { hybridChoices: [...pending.costPayment.hybridChoices] }
 				: {})
 		};
 		const q = prompt.costQuestion;
-		if (q?.kind === 'option' || q?.kind === 'phyrexian') {
+		if (q?.kind === 'option' || q?.kind === 'phyrexian' || q?.kind === 'hybrid') {
 			const opt =
 				normalized.answer?.kind === 'yesNo'
 					? normalized.answer.yes
@@ -2908,11 +3066,15 @@ function handlePromptResolution(
 			}
 			if (q.kind === 'phyrexian') {
 				payment.phyrexianLifeCount = opt;
+			} else if (q.kind === 'hybrid') {
+				const nextHyb = [...(payment.hybridChoices ?? [])];
+				nextHyb[q.index] = opt;
+				payment.hybridChoices = nextHyb;
 			} else {
-				payment.options[q.index] = opt;
+				payment.options![q.index] = opt;
 			}
 		} else if (q?.kind === 'objects' && normalized.answer?.kind === 'chooseObjects') {
-			payment.objects[q.index] = normalized.answer.objectIds;
+			payment.objects![q.index] = normalized.answer.objectIds;
 		}
 		const result = applyGameAction(state, actor.playerId, { ...pending, costPayment: payment });
 		if (!result.ok) state.pendingPrompts.splice(promptIdx, 0, prompt);
@@ -2985,12 +3147,20 @@ function handlePromptResolution(
 		if (normalized.answer.yes) {
 			const gIdx = actor.graveyard.findIndex((c) => c.instanceId === prompt.commanderInstanceId);
 			const eIdx = actor.exile.findIndex((c) => c.instanceId === prompt.commanderInstanceId);
+			const hIdx = actor.hand.findIndex((c) => c.instanceId === prompt.commanderInstanceId);
+			const lIdx = actor.library.findIndex((c) => c.instanceId === prompt.commanderInstanceId);
 			let cmd: CardInstance | undefined;
-			let cmdFrom: 'graveyard' | 'exile' = 'graveyard';
+			let cmdFrom: 'graveyard' | 'exile' | 'hand' | 'library' = 'graveyard';
 			if (gIdx >= 0) cmd = actor.graveyard[gIdx];
 			else if (eIdx >= 0) {
 				cmd = actor.exile[eIdx];
 				cmdFrom = 'exile';
+			} else if (hIdx >= 0) {
+				cmd = actor.hand[hIdx];
+				cmdFrom = 'hand';
+			} else if (lIdx >= 0) {
+				cmd = actor.library[lIdx];
+				cmdFrom = 'library';
 			}
 
 			if (cmd) {
@@ -2998,10 +3168,11 @@ function handlePromptResolution(
 				cmd.deathtouchDamageMarked = false;
 				cmd.tapped = false;
 				moveObject(state, cmd, 'command', { from: { player: actor, zone: cmdFrom }, toPlayer: actor });
+				const crRule = cmdFrom === 'hand' || cmdFrom === 'library' ? 'CR 903.9b' : 'CR 903.9a';
 				addLog(
 					state,
 					'rule',
-					`${actor.username} returned Commander ${cmd.card.name} to the Command Zone (CR 903.9a).`,
+					`${actor.username} returned Commander ${cmd.card.name} to the Command Zone (${crRule}).`,
 					actor.playerId
 				);
 			}
@@ -3136,29 +3307,95 @@ function handlePromptResolution(
 						actor.playerId
 					);
 				} else if (prompt.destinationZone === 'battlefield') {
-					found.tapped = Boolean(prompt.enterTapped);
-					found.defaultControllerId = libraryOwner.playerId;
-					applySelfEtbReplacements(state, found);
-					moveObject(state, found, 'battlefield', {
-						from: fromLibrary,
-						toPlayer: libraryOwner,
-						controllerId: libraryOwner.playerId,
-						newTimestamp: true,
-						bumpVersion: true
-					});
-					addLog(
-						state,
-						'rule',
-						`${libraryOwner.username} searched their library and put ${found.card.name} onto the battlefield${found.tapped ? ' tapped' : ''}.`,
-						libraryOwner.playerId
-					);
-					flushTriggers(state);
+					const isAura = (found.copiableCard ?? found.card).typeLine.includes('Aura');
+					if (isAura) {
+						const attachCands = legalAuraAttachCandidates(state, found, libraryOwner);
+						if (attachCands.length === 0) {
+							addLog(
+								state,
+								'rule',
+								`${found.card.name} remained in ${libraryOwner.username}'s library because there is no legal object or player for it to enchant (CR 303.4g).`,
+								libraryOwner.playerId
+							);
+						} else if (!libraryOwner.isBot) {
+							shuffleLibrary(state, libraryOwner);
+							enqueueChoicePrompt(state, {
+								id: uid('prm', state),
+								playerId: libraryOwner.playerId,
+								kind: 'chooseObjects',
+								purpose: 'generic',
+								title: 'Search Library — Choose what Aura will enchant',
+								description: `Choose a legal object or player for ${found.card.name} to enchant as it enters the battlefield (CR 303.4f).`,
+								continuation: {
+									kind: 'handler',
+									name: 'aura_library_attach_choice',
+									data: {
+										auraId: found.instanceId,
+										libraryOwnerId: libraryOwner.playerId,
+										enterTapped: Boolean(prompt.enterTapped),
+										resumeStackItemId:
+											prompt.continuation?.kind === 'effect_resume'
+												? prompt.continuation.stackItemId
+												: null,
+										resumeStepIndex:
+											prompt.continuation?.kind === 'effect_resume'
+												? prompt.continuation.stepIndex
+												: null
+									}
+								},
+								choice: {
+									kind: 'chooseObjects',
+									min: 1,
+									max: 1,
+									candidates: attachCands,
+									defaultObjectIds: [attachCands[0]],
+									zone: 'battlefield',
+									reason: `Choose a legal object or player for ${found.card.name} to enchant as it enters the battlefield (CR 303.4f).`
+								}
+							});
+							return { ok: true };
+						} else {
+							found.attachedToId = attachCands[0];
+						}
+					}
+					if (!isAura || found.attachedToId) {
+						found.tapped = Boolean(prompt.enterTapped);
+						found.defaultControllerId = libraryOwner.playerId;
+						applySelfEtbReplacements(state, found);
+						moveObject(state, found, 'battlefield', {
+							from: fromLibrary,
+							toPlayer: libraryOwner,
+							controllerId: libraryOwner.playerId,
+							newTimestamp: true,
+							bumpVersion: true
+						});
+						if (isAura && found.attachedToId) {
+							const attachedTarget = findPermanentOnBoard(state, found.attachedToId);
+							if (attachedTarget) {
+								emitEvent(state, {
+									kind: 'Attached',
+									attachmentId: found.instanceId,
+									attachment: found,
+									hostId: attachedTarget.inst.instanceId,
+									host: attachedTarget.inst
+								});
+							}
+						}
+						addLog(
+							state,
+							'rule',
+							`${libraryOwner.username} searched their library and put ${found.card.name} onto the battlefield${found.tapped ? ' tapped' : ''}.`,
+							libraryOwner.playerId
+						);
+						flushTriggers(state);
+					}
 				} else if (prompt.destinationZone === 'library' && prompt.putOnTop) {
 					// Put it on top, then shuffle the rest: the same as the old "remove, shuffle, put on top".
 					moveObject(state, found, 'library', {
 						from: fromLibrary,
 						toPlayer: libraryOwner,
 						insert: 'start',
+						commanderRedirect: true,
 						newTimestamp: true,
 						bumpVersion: true
 					});
@@ -3171,7 +3408,11 @@ function handlePromptResolution(
 						libraryOwner.playerId
 					);
 				} else {
-					moveObject(state, found, 'hand', { from: fromLibrary, toPlayer: libraryOwner });
+					moveObject(state, found, 'hand', {
+						from: fromLibrary,
+						toPlayer: libraryOwner,
+						commanderRedirect: true
+					});
 					addLog(
 						state,
 						'rule',
@@ -3370,17 +3611,27 @@ function handlePromptResolution(
 		return { ok: true };
 	}
 
-	// Step E2: a paused IR resolution waiting for this player's choice (sacrifice, discard).
+	// Step E2: a paused IR resolution waiting for this player's choice (sacrifice, discard, or addMana color).
 	if (prompt.continuation?.kind === 'effect_choice') {
 		const valid = validateChoiceAnswer(choice, normalized.answer);
-		if (!valid.ok || normalized.answer?.kind !== 'chooseObjects') {
+		if (
+			!valid.ok ||
+			(normalized.answer?.kind !== 'chooseObjects' && normalized.answer?.kind !== 'chooseMode')
+		) {
 			return { ok: false, error: valid.ok ? 'Choose the required objects.' : valid.error };
 		}
 		const c = prompt.continuation;
 		state.pendingPrompts.splice(promptIdx, 1);
 		const item = state.stack.find((s) => s.id === c.stackItemId);
 		if (!item?.effectResume || item.effectResume.stepIndex !== c.stepIndex) return { ok: true };
-		item.effectResume.answers[actor.playerId] = normalized.answer.objectIds;
+		const answerKey = c.answerKey ?? actor.playerId;
+		if (normalized.answer.kind === 'chooseObjects') {
+			item.effectResume.answers[answerKey] = normalized.answer.objectIds;
+		} else if (choice.kind === 'chooseMode') {
+			item.effectResume.answers[answerKey] = normalized.answer.indices.map(
+				(idx) => choice.modes[idx] ?? ''
+			);
+		}
 		resumeStackItem(state, item);
 		return { ok: true };
 	}
@@ -3658,7 +3909,11 @@ export function moveStackSpellToZone(
 	);
 	cardInst.instanceId = stackItem.sourceInstanceId;
 	cardInst.commanderCastCount = castCount;
-	moveObject(state, cardInst, actualDest, { from: 'stack', toPlayer: owner });
+	moveObject(state, cardInst, actualDest, {
+		from: 'stack',
+		toPlayer: owner,
+		commanderRedirect: true
+	});
 }
 
 export function addCountersToPermanent(
@@ -3668,7 +3923,34 @@ export function addCountersToPermanent(
 	amount: number
 ): number {
 	if (amount <= 0) return 0;
-	const effectiveAmount = amount * counterMultiplier(state, perm, type);
+	const res = resolveCounterReplacements(state, perm, type, amount);
+	if (res.pendingOptions && res.pendingOptions.length >= 2) {
+		const description = `Multiple replacement effects would modify putting ${res.amount} ${type} counter(s) on ${perm.card.name}. Choose which applies first (CR 616.1):`;
+		enqueueChoicePrompt(state, {
+			id: uid('prm', state),
+			playerId: res.chooserId,
+			kind: 'chooseReplacement',
+			purpose: 'generic',
+			title: 'Choose Replacement Effect (CR 616.1)',
+			description,
+			continuation: {
+				kind: 'handler',
+				name: 'counter_replacement_choice',
+				data: {
+					permId: perm.instanceId,
+					counterType: type,
+					currentAmount: res.amount,
+					appliedIds: res.appliedIds
+				}
+			},
+			choice: {
+				kind: 'chooseReplacement',
+				options: res.pendingOptions.map((r) => ({ id: r.id, label: r.label }))
+			}
+		});
+		return 0;
+	}
+	const effectiveAmount = res.amount;
 	perm.counters[type] = (perm.counters[type] || 0) + effectiveAmount;
 	emitEvent(state, {
 		kind: 'CounterPlaced',
@@ -3681,6 +3963,64 @@ export function addCountersToPermanent(
 	flushTriggers(state);
 	return effectiveAmount;
 }
+
+registerPromptHandler('counter_replacement_choice', (state, prompt, answer) => {
+	if (answer.kind !== 'chooseReplacement') return;
+	const data = prompt.continuation?.kind === 'handler' ? prompt.continuation.data : undefined;
+	if (!data) return;
+	const permId = typeof data.permId === 'string' ? data.permId : '';
+	const counterType = (data.counterType as CounterType | undefined) ?? '+1/+1';
+	const currentAmount = typeof data.currentAmount === 'number' ? data.currentAmount : 0;
+	const appliedIds = Array.isArray(data.appliedIds) ? (data.appliedIds as string[]) : [];
+	const found = findPermanentOnBoard(state, permId);
+	if (!found || currentAmount <= 0) return;
+	const perm = found.inst;
+
+	const nextRes = resolveCounterReplacements(
+		state,
+		perm,
+		counterType,
+		currentAmount,
+		new Set(appliedIds),
+		answer.id
+	);
+	if (nextRes.pendingOptions && nextRes.pendingOptions.length >= 2) {
+		const description = `Multiple replacement effects would modify putting ${nextRes.amount} ${counterType} counter(s) on ${perm.card.name}. Choose which applies next (CR 616.1f):`;
+		enqueueChoicePrompt(state, {
+			id: uid('prm', state),
+			playerId: nextRes.chooserId,
+			kind: 'chooseReplacement',
+			purpose: 'generic',
+			title: 'Choose Replacement Effect (CR 616.1)',
+			description,
+			continuation: {
+				kind: 'handler',
+				name: 'counter_replacement_choice',
+				data: {
+					permId: perm.instanceId,
+					counterType,
+					currentAmount: nextRes.amount,
+					appliedIds: nextRes.appliedIds
+				}
+			},
+			choice: {
+				kind: 'chooseReplacement',
+				options: nextRes.pendingOptions.map((r) => ({ id: r.id, label: r.label }))
+			}
+		});
+		return;
+	}
+	const effectiveAmount = nextRes.amount;
+	perm.counters[counterType] = (perm.counters[counterType] || 0) + effectiveAmount;
+	emitEvent(state, {
+		kind: 'CounterPlaced',
+		objectId: perm.instanceId,
+		object: perm,
+		counterType,
+		amount: effectiveAmount
+	});
+	flushTriggers(state);
+});
 
 /**
  * CR 702.62a suspend: at the beginning of its owner's upkeep, remove a time counter from each
@@ -3785,23 +4125,24 @@ function beginPhase(state: GameState, phase: GamePhase, activePlayer?: PlayerGam
 	// CR 703.3: Turn-based actions at the beginning of a step happen FIRST, before any
 	// "At the beginning of [step]" triggers go onto the stack. Triggers from the turn-based action
 	// (combat damage) wait until state-based actions have been checked (CR 704.3, 603.3).
+	let combatDamagePaused = false;
 	withTriggersDeferred(state, () => {
 		if (phase === 'untap' && active && !active.lost) {
 			executeUntapTurnBasedActions(state, active);
 		} else if (phase === 'draw' && active && !active.lost) {
 			executeDrawTurnBasedAction(state, active);
 		} else if (phase === 'first_strike_damage') {
-			executeCombatDamageStep(state, true);
+			combatDamagePaused = executeCombatDamageStep(state, true);
 		} else if (phase === 'combat_damage') {
-			executeCombatDamageStep(state, false);
+			combatDamagePaused = executeCombatDamageStep(state, false);
 		} else if (phase === 'cleanup') {
 			clearEndOfTurnAndDamage(state);
 		}
-		if (phase === 'first_strike_damage' || phase === 'combat_damage') {
+		if (!combatDamagePaused && (phase === 'first_strike_damage' || phase === 'combat_damage')) {
 			checkStateBasedActions(state);
 		}
 	});
-	if (state.status === 'finished') return;
+	if (combatDamagePaused || state.status === 'finished') return;
 	emitEvent(state, {
 		kind: 'PhaseBegin',
 		phase,
@@ -4576,43 +4917,70 @@ function itemWard(item: StackItem): { cost: string; costDefs?: CostDef[] } | und
 	return runtimeTriggers(compileCard(item.card)).find((x) => x.abilityIndex === item.triggeredAbilityIndex)?.ward;
 }
 
+const WARD_PAYMENT_CHOICE_HANDLER = 'ward_payment_choice';
+
 function resolveWardTrigger(
 	state: GameState,
 	item: StackItem,
 	controller: PlayerGameState,
 	ward: { cost: string; costDefs?: CostDef[] }
-): void {
+): boolean {
 	const targetItem = state.stack.find((s) => s.id === (item.eventStackItemId ?? item.targets[0]?.id));
-	if (!targetItem) return;
+	if (!targetItem) return true;
 	const opp = state.players.find((p) => p.playerId === targetItem.controllerId);
 	const wardCost = (ward.cost || '{1}').trim();
+	const lifeDef = ward.costDefs?.find((d): d is Extract<CostDef, { k: 'payLife' }> => d.k === 'payLife');
+	const lifeCost = lifeDef && lifeDef.amount.k === 'const' ? lifeDef.amount.n : undefined;
+	const req = lifeCost === undefined ? parseManaCost(wardCost) : undefined;
+	const canAfford = Boolean(
+		opp &&
+			!targetItem.declineWard &&
+			(lifeCost !== undefined
+				? !playerLifeTotalCantChange(state, opp) && opp.life >= lifeCost
+				: req
+					? canPayOrAutoTap(opp, req, state)
+					: false)
+	);
+	if (opp && !opp.isBot && canAfford && item.optionalAccepted === undefined) {
+		const question = `Pay ward cost ${wardCost}?`;
+		enqueueChoicePrompt(state, {
+			id: uid('prm', state),
+			playerId: opp.playerId,
+			kind: 'yesNo',
+			purpose: 'generic',
+			title: `Ward (${item.card.name})`,
+			description: question,
+			yesLabel: `Pay ${wardCost}`,
+			noLabel: 'Decline (counter)',
+			continuation: {
+				kind: 'handler',
+				name: WARD_PAYMENT_CHOICE_HANDLER,
+				data: { wardStackItemId: item.id, targetStackItemId: targetItem.id }
+			},
+			choice: { kind: 'yesNo', question }
+		});
+		return false;
+	}
 	let paid = false;
-	if (opp && !targetItem.declineWard) {
-		const lifeDef = ward.costDefs?.find((d): d is Extract<CostDef, { k: 'payLife' }> => d.k === 'payLife');
-		const lifeCost = lifeDef && lifeDef.amount.k === 'const' ? lifeDef.amount.n : undefined;
+	if (opp && canAfford && (opp.isBot || item.optionalAccepted === true)) {
 		if (lifeCost !== undefined) {
-			if (!playerLifeTotalCantChange(state, opp) && opp.life >= lifeCost) {
-				opp.life -= lifeCost;
-				paid = true;
-				addLog(
-					state,
-					'rule',
-					`${opp.username} paid ${lifeCost} life for ${item.card.name}'s Ward (CR 702.21a).`,
-					opp.playerId
-				);
-			}
-		} else {
-			const req = parseManaCost(wardCost);
-			if (canPayOrAutoTap(opp, req, state)) {
-				payManaWithAutoTap(opp, req, state);
-				paid = true;
-				addLog(
-					state,
-					'rule',
-					`${opp.username} paid ${wardCost} for ${item.card.name}'s Ward (CR 702.21a).`,
-					opp.playerId
-				);
-			}
+			opp.life -= lifeCost;
+			paid = true;
+			addLog(
+				state,
+				'rule',
+				`${opp.username} paid ${lifeCost} life for ${item.card.name}'s Ward (CR 702.21a).`,
+				opp.playerId
+			);
+		} else if (req) {
+			payManaWithAutoTap(opp, req, state);
+			paid = true;
+			addLog(
+				state,
+				'rule',
+				`${opp.username} paid ${wardCost} for ${item.card.name}'s Ward (CR 702.21a).`,
+				opp.playerId
+			);
 		}
 	}
 	if (!paid) {
@@ -4637,7 +5005,20 @@ function resolveWardTrigger(
 			}
 		}
 	}
+	return true;
 }
+
+registerPromptHandler(WARD_PAYMENT_CHOICE_HANDLER, (state, prompt, answer) => {
+	const data = prompt.continuation?.kind === 'handler' ? prompt.continuation.data : undefined;
+	const wardItemId = typeof data?.wardStackItemId === 'string' ? data.wardStackItemId : '';
+	const targetItemId = typeof data?.targetStackItemId === 'string' ? data.targetStackItemId : '';
+	const wardItem = state.stack.find((s) => s.id === wardItemId);
+	const targetItem = state.stack.find((s) => s.id === targetItemId);
+	const accepted = answer.kind === 'yesNo' ? answer.yes : false;
+	if (wardItem) wardItem.optionalAccepted = accepted;
+	if (targetItem && !accepted) targetItem.declineWard = true;
+	if (wardItem) resumeStackItem(state, wardItem);
+});
 
 function resolveDelayedTriggerEffect(
 	state: GameState,
@@ -4763,9 +5144,80 @@ function stackItemAwaitsPrompt(state: GameState, item: StackItem): boolean {
 		(p) =>
 			p.triggerStackItemId === item.id ||
 			((p.continuation?.kind === 'effect_choice' || p.continuation?.kind === 'effect_resume') && p.continuation.stackItemId === item.id) ||
-			(p.continuation?.kind === 'manual_resolution' && p.continuation.stackItemId === item.id)
+			(p.continuation?.kind === 'manual_resolution' && p.continuation.stackItemId === item.id) ||
+			(p.continuation?.kind === 'handler' &&
+				(p.continuation.data?.wardStackItemId === item.id ||
+					p.continuation.data?.stackItemId === item.id ||
+					p.continuation.data?.resumeStackItemId === item.id))
 	);
 }
+
+const CLONE_COPY_CHOICE_HANDLER = 'clone_copy_choice';
+
+registerPromptHandler(CLONE_COPY_CHOICE_HANDLER, (state, prompt, answer) => {
+	if (answer.kind !== 'chooseObjects') return;
+	const data = prompt.continuation?.kind === 'handler' ? prompt.continuation.data : undefined;
+	const stackItemId = typeof data?.stackItemId === 'string' ? data.stackItemId : '';
+	const item = state.stack.find((s) => s.id === stackItemId);
+	if (!item) return;
+	item.cloneCopyChoice = answer.objectIds[0] ?? null;
+	resumeStackItem(state, item);
+});
+
+registerPromptHandler('aura_library_attach_choice', (state, prompt, answer) => {
+	if (answer.kind !== 'chooseObjects') return;
+	const data = prompt.continuation?.kind === 'handler' ? prompt.continuation.data : undefined;
+	const auraId = typeof data?.auraId === 'string' ? data.auraId : '';
+	const libraryOwnerId = typeof data?.libraryOwnerId === 'string' ? data.libraryOwnerId : '';
+	const enterTapped = Boolean(data?.enterTapped);
+	const resumeStackItemId =
+		typeof data?.resumeStackItemId === 'string' ? data.resumeStackItemId : null;
+	const resumeStepIndex =
+		typeof data?.resumeStepIndex === 'number' ? data.resumeStepIndex : null;
+
+	const libraryOwner = state.players.find((p) => p.playerId === libraryOwnerId);
+	const found = libraryOwner?.library.find((c) => c.instanceId === auraId);
+	const chosenHostId = answer.objectIds[0] ?? null;
+	if (libraryOwner && found && chosenHostId) {
+		found.attachedToId = chosenHostId;
+		found.tapped = enterTapped;
+		found.defaultControllerId = libraryOwner.playerId;
+		applySelfEtbReplacements(state, found);
+		moveObject(state, found, 'battlefield', {
+			from: { player: libraryOwner, zone: 'library' },
+			toPlayer: libraryOwner,
+			controllerId: libraryOwner.playerId,
+			newTimestamp: true,
+			bumpVersion: true
+		});
+		const attachedTarget = findPermanentOnBoard(state, chosenHostId);
+		if (attachedTarget) {
+			emitEvent(state, {
+				kind: 'Attached',
+				attachmentId: found.instanceId,
+				attachment: found,
+				hostId: attachedTarget.inst.instanceId,
+				host: attachedTarget.inst
+			});
+		}
+		addLog(
+			state,
+			'rule',
+			`${libraryOwner.username} searched their library and put ${found.card.name} onto the battlefield${found.tapped ? ' tapped' : ''}.`,
+			libraryOwner.playerId
+		);
+		flushTriggers(state);
+	}
+	checkStateBasedActions(state);
+	if (resumeStackItemId && resumeStepIndex !== null) {
+		const item = state.stack.find((s) => s.id === resumeStackItemId);
+		if (item?.effectResume) {
+			item.effectResume.stepIndex = resumeStepIndex;
+			item.effectResume.answers = {};
+			resumeStackItem(state, item);
+		}
+	}
+});
 
 function resolveStackItemNow(state: GameState, item: StackItem): void {
 	if (stackItemAwaitsPrompt(state, item)) return;
@@ -4859,7 +5311,7 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 
 	const ward = itemWard(item);
 	if (ward) {
-		resolveWardTrigger(state, item, controller, ward);
+		if (!resolveWardTrigger(state, item, controller, ward)) return;
 		triggerPathCounts.interpreter++;
 		removeItemFromStack();
 		givePriorityToActiveOrNextPlayer(state);
@@ -4975,6 +5427,65 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 
 	if (item.kind === 'triggered') triggerPathCounts[interpreted ? 'interpreter' : 'manual']++;
 
+	// CR 707.5: Before a Clone-style permanent spell leaves the stack to enter the battlefield,
+	// a human controller chooses which creature on the battlefield (if any) it enters as a copy of.
+	if (
+		item.kind === 'spell' &&
+		!controller.isBot &&
+		item.cloneCopyChoice === undefined &&
+		item.targets[0]?.kind !== 'permanent'
+	) {
+		const compiledEnter = compileCard(item.card);
+		const entersAsCopyOfAnyCreature = (compiledEnter.faces[0]?.abilities ?? []).some(
+			(ab) =>
+				ab.kind === 'replacement' &&
+				ab.replacement.replaces.event === 'zoneChange' &&
+				ab.replacement.replaces.filter?.object === 'self' &&
+				ab.replacement.replaces.filter?.to === 'battlefield' &&
+				!Array.isArray(ab.replacement.with) &&
+				ab.replacement.with.k === 'modify' &&
+				Boolean(ab.replacement.with.copyOf?.types?.includes('Creature'))
+		);
+		if (entersAsCopyOfAnyCreature) {
+			const allCreatures: CardInstance[] = [];
+			for (const p of state.players) {
+				for (const b of p.battlefield) {
+					if (!b.phasedOut && evaluatePermanent(state, b).typeLine.includes('Creature')) {
+						allCreatures.push(b);
+					}
+				}
+			}
+			allCreatures.sort((a, b) => b.card.cmc - a.card.cmc);
+			if (allCreatures.length > 0) {
+				enqueueChoicePrompt(state, {
+					id: uid('prm', state),
+					playerId: controller.playerId,
+					kind: 'chooseObjects',
+					purpose: 'generic',
+					title: `${item.card.name} — Choose a Creature to Copy`,
+					description: `You may have ${item.card.name} enter the battlefield as a copy of any creature on the battlefield (CR 707.5).`,
+					continuation: {
+						kind: 'handler',
+						name: CLONE_COPY_CHOICE_HANDLER,
+						data: {
+							stackItemId: item.id
+						}
+					},
+					choice: {
+						kind: 'chooseObjects',
+						min: 0,
+						max: 1,
+						candidates: allCreatures.map((c) => c.instanceId),
+						defaultObjectIds: [allCreatures[0].instanceId],
+						zone: 'battlefield',
+						reason: `You may have ${item.card.name} enter the battlefield as a copy of any creature on the battlefield (CR 707.5).`
+					}
+				});
+				return;
+			}
+		}
+	}
+
 	// CR 608.2n: As the final part of resolution, the resolving spell or ability leaves the stack.
 	removeItemFromStack();
 
@@ -5037,10 +5548,13 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 			);
 			if (entersAsCopyOfAnyCreature) {
 				let targetCreature: CardInstance | undefined;
-				if (item.targets[0]?.kind === 'permanent') {
+				if (item.cloneCopyChoice !== undefined) {
+					targetCreature = item.cloneCopyChoice
+						? findPermanentOnBoard(state, item.cloneCopyChoice)?.inst
+						: undefined;
+				} else if (item.targets[0]?.kind === 'permanent') {
 					targetCreature = findPermanentOnBoard(state, item.targets[0].id)?.inst;
-				}
-				if (!targetCreature) {
+				} else {
 					// Pick the highest-CMC creature on the battlefield
 					const allCreatures: CardInstance[] = [];
 					for (const p of state.players) {
@@ -5385,7 +5899,8 @@ registerEffectPorts({
 	endTurn: endTheTurnImmediately,
 	activePlayerMayEndTurn,
 	win: (state, player, reason) => void winTheGame(state, player, reason),
-	lose: (state, player, reason) => void loseTheGame(state, player, reason)
+	lose: (state, player, reason) => void loseTheGame(state, player, reason),
+	legalAuraAttachCandidates
 });
 
 /**
@@ -5663,6 +6178,20 @@ function initiateLibrarySearch(
 					decisionPlayer.playerId
 				);
 			} else if (dest.zone === 'battlefield') {
+				const isAura = (found.copiableCard ?? found.card).typeLine.includes('Aura');
+				if (isAura) {
+					const attachCands = legalAuraAttachCandidates(state, found, searchingPlayer);
+					if (attachCands.length === 0) {
+						addLog(
+							state,
+							'rule',
+							`${found.card.name} remained in ${searchingPlayer.username}'s library because there is no legal object or player for it to enchant (CR 303.4g).`,
+							searchingPlayer.playerId
+						);
+						continue;
+					}
+					found.attachedToId = attachCands[0];
+				}
 				found.tapped = Boolean(dest.tapped);
 				found.defaultControllerId = searchingPlayer.playerId;
 				applySelfEtbReplacements(state, found);
@@ -5673,6 +6202,18 @@ function initiateLibrarySearch(
 					newTimestamp: true,
 					bumpVersion: true
 				});
+				if (isAura && found.attachedToId) {
+					const attachedTarget = findPermanentOnBoard(state, found.attachedToId);
+					if (attachedTarget) {
+						emitEvent(state, {
+							kind: 'Attached',
+							attachmentId: found.instanceId,
+							attachment: found,
+							hostId: attachedTarget.inst.instanceId,
+							host: attachedTarget.inst
+						});
+					}
+				}
 				addLog(
 					state,
 					'rule',
@@ -5684,13 +6225,20 @@ function initiateLibrarySearch(
 				moveObject(state, found, 'library', {
 					from: fromLibrary,
 					toPlayer: searchingPlayer,
-					insert: 'deferred',
+					insert: (actual) => (actual === 'library' ? 'deferred' : 'end'),
+					commanderRedirect: true,
 					newTimestamp: true,
 					bumpVersion: true
 				});
-				topCardsToPlace.push(found);
+				if (found.zone === 'library') {
+					topCardsToPlace.push(found);
+				}
 			} else {
-				moveObject(state, found, 'hand', { from: fromLibrary, toPlayer: searchingPlayer });
+				moveObject(state, found, 'hand', {
+					from: fromLibrary,
+					toPlayer: searchingPlayer,
+					commanderRedirect: true
+				});
 				addLog(
 					state,
 					'rule',
@@ -6008,7 +6556,13 @@ function checkAnyCombatantHasFirstStrike(state: GameState): boolean {
 	return false;
 }
 
-function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): void {
+const COMBAT_DAMAGE_ASSIGNMENT_HANDLER = 'combat_damage_assignment';
+
+function executeCombatDamageStep(
+	state: GameState,
+	isFirstStrikeStep: boolean,
+	chosenDamage: Record<string, number> = {}
+): boolean {
 	if (!state.combat.dealtFirstStrikeDamageIds) {
 		state.combat.dealtFirstStrikeDamageIds = [];
 	}
@@ -6075,6 +6629,7 @@ function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): 
 		atkPlayer: PlayerGameState;
 		defPlayer: PlayerGameState;
 		atkSnap: CombatantSnapshot;
+		blockers: CardInstance[];
 		attackerAssignments: AttackerDamageAssignment[];
 		blockerAssignments: Array<{
 			blocker: CardInstance;
@@ -6099,12 +6654,6 @@ function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): 
 
 		const atkSnap = snapshots.get(attacker.instanceId)!;
 		const attackerDealsNow = atkSnap.dealsNow;
-		if (isFirstStrikeStep && attackerDealsNow) {
-			if (!state.combat.dealtFirstStrikeDamageIds.includes(attacker.instanceId)) {
-				state.combat.dealtFirstStrikeDamageIds.push(attacker.instanceId);
-			}
-		}
-
 		const atkPower = atkSnap.power;
 		const atkDeathtouch = atkSnap.srcInfo.hasDeathtouch;
 		const atkTrample = atkSnap.hasTrample;
@@ -6155,6 +6704,7 @@ function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): 
 				// CR 702.19f: A creature with Trample attacking a planeswalker that left combat cannot assign excess
 				// damage to the defending player; all damage must be assigned to its blockers (or 0 if none remain).
 				const canTrampleOver = atkTrample && (!attackingPlaneswalker || Boolean(defWalker));
+				let allPriorBlockersLethal = true;
 				for (let i = 0; i < blockers.length; i++) {
 					const b = blockers[i];
 					const bSnap = snapshots.get(b.instanceId)!;
@@ -6165,10 +6715,59 @@ function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): 
 					const lethalNeeded = atkDeathtouch ? 1 : remTough;
 
 					const isLastBlocker = i === blockers.length - 1;
-					const dmgToBlocker =
-						isLastBlocker && !canTrampleOver
+					const autoDmg =
+						isLastBlocker && (!canTrampleOver || !allPriorBlockersLethal)
 							? remainingDamage
 							: Math.min(remainingDamage, lethalNeeded);
+
+					let dmgToBlocker = autoDmg;
+					// CR 510.1c–d, 702.19b: When blocked by multiple creatures, human controller divides combat damage
+					// among the blockers (andwith Trample, must assign lethal to all blockers before excess tramples over).
+					if (!atkPlayer.isBot && blockers.length >= 2 && remainingDamage > 0) {
+						const minDmg = isLastBlocker
+							? canTrampleOver && allPriorBlockersLethal && remainingDamage > lethalNeeded
+								? lethalNeeded
+								: remainingDamage
+							: 0;
+						const maxDmg = remainingDamage;
+						if (minDmg < maxDmg) {
+							const key = `${attacker.instanceId}:${b.instanceId}`;
+							const chosen = chosenDamage[key];
+							if (chosen === undefined) {
+								const reason = `Assign combat damage from ${attacker.card.name} (${remainingDamage} remaining) to blocker ${b.card.name} (${minDmg}–${maxDmg}; lethal is ${lethalNeeded}).`;
+								enqueueChoicePrompt(state, {
+									id: uid('prm', state),
+									playerId: atkPlayer.playerId,
+									kind: 'chooseNumber',
+									purpose: 'generic',
+									title: `Combat Damage — ${attacker.card.name} → ${b.card.name}`,
+									description: reason,
+									continuation: {
+										kind: 'handler',
+										name: COMBAT_DAMAGE_ASSIGNMENT_HANDLER,
+										data: {
+											isFirstStrikeStep,
+											chosenDamage,
+											key
+										}
+									},
+									choice: {
+										kind: 'chooseNumber',
+										min: minDmg,
+										max: maxDmg,
+										defaultNumber: Math.max(minDmg, Math.min(maxDmg, autoDmg)),
+										reason
+									}
+								});
+								return true;
+							}
+							dmgToBlocker = Math.max(minDmg, Math.min(maxDmg, chosen));
+						}
+					}
+
+					if (dmgToBlocker < lethalNeeded) {
+						allPriorBlockersLethal = false;
+					}
 
 					if (dmgToBlocker > 0) {
 						assignedDamageOnPerm.set(b.instanceId, alreadyAssignedOrMarked + dmgToBlocker);
@@ -6181,7 +6780,7 @@ function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): 
 					}
 				}
 
-				if (canTrampleOver && remainingDamage > 0) {
+				if (canTrampleOver && allPriorBlockersLethal && remainingDamage > 0) {
 					if (defWalker) {
 						attackerAssignments.push({
 							kind: 'planeswalker',
@@ -6206,11 +6805,6 @@ function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): 
 			for (const b of blockers) {
 				const bSnap = snapshots.get(b.instanceId)!;
 				const blockerDealsNow = bSnap.dealsNow;
-				if (isFirstStrikeStep && blockerDealsNow) {
-					if (!state.combat.dealtFirstStrikeDamageIds.includes(b.instanceId)) {
-						state.combat.dealtFirstStrikeDamageIds.push(b.instanceId);
-					}
-				}
 				if (blockerDealsNow && bSnap.power > 0) {
 					blockerAssignments.push({ blocker: b, bSnap, amount: bSnap.power });
 				}
@@ -6222,6 +6816,7 @@ function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): 
 			atkPlayer,
 			defPlayer,
 			atkSnap,
+			blockers,
 			attackerAssignments,
 			blockerAssignments
 		});
@@ -6229,8 +6824,19 @@ function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): 
 
 	// CR 510.2: Deal all assigned combat damage simultaneously through the unified damage pipeline.
 	for (const sched of scheduledCombats) {
-		const { attacker, atkPlayer, defPlayer, atkSnap, attackerAssignments, blockerAssignments } =
+		const { attacker, atkPlayer, defPlayer, atkSnap, blockers, attackerAssignments, blockerAssignments } =
 			sched;
+		if (isFirstStrikeStep) {
+			if (atkSnap.dealsNow && !state.combat.dealtFirstStrikeDamageIds.includes(attacker.instanceId)) {
+				state.combat.dealtFirstStrikeDamageIds.push(attacker.instanceId);
+			}
+			for (const b of blockers) {
+				const bSnap = snapshots.get(b.instanceId);
+				if (bSnap?.dealsNow && !state.combat.dealtFirstStrikeDamageIds.includes(b.instanceId)) {
+					state.combat.dealtFirstStrikeDamageIds.push(b.instanceId);
+				}
+			}
+		}
 		const atkInfect = atkSnap.srcInfo.hasInfect;
 		const atkLifelink = atkSnap.srcInfo.hasLifelink;
 		let totalDealtByAttacker = 0;
@@ -6382,7 +6988,39 @@ function executeCombatDamageStep(state: GameState, isFirstStrikeStep: boolean): 
 	} else {
 		state.combat.damageDealtNormal = true;
 	}
+	return false;
 }
+
+registerPromptHandler(COMBAT_DAMAGE_ASSIGNMENT_HANDLER, (state, prompt, answer) => {
+	const data = prompt.continuation?.kind === 'handler' ? prompt.continuation.data : undefined;
+	const isFirstStrikeStep = Boolean(data?.isFirstStrikeStep);
+	const prevChosen =
+		data?.chosenDamage && typeof data.chosenDamage === 'object'
+			? (data.chosenDamage as Record<string, number>)
+			: {};
+	const key = typeof data?.key === 'string' ? data.key : '';
+	const n = answer.kind === 'chooseNumber' ? answer.n : 0;
+	const nextChosen: Record<string, number> = key ? { ...prevChosen, [key]: n } : { ...prevChosen };
+
+	let paused = false;
+	withTriggersDeferred(state, () => {
+		paused = executeCombatDamageStep(state, isFirstStrikeStep, nextChosen);
+		if (!paused) {
+			checkStateBasedActions(state);
+		}
+	});
+	if (paused || state.status === 'finished') return;
+	const active = state.players[state.activePlayerIndex];
+	emitEvent(state, {
+		kind: 'PhaseBegin',
+		phase: state.phase,
+		activePlayerId: active?.playerId ?? null
+	});
+	flushTriggers(state);
+	givePriorityToActiveOrNextPlayer(state);
+	state.passedPriorityPlayerIds = [];
+	checkStateBasedActions(state);
+});
 
 function clearEndOfTurnAndDamage(state: GameState): void {
 	for (const p of state.players) {
@@ -6632,6 +7270,72 @@ function isAuraPlayerAttachmentLegal(
 		}
 		return false;
 	});
+}
+
+function isAuraHarmful(aura: CardInstance): boolean {
+	const def = compileCard(aura.copiableCard ?? aura.card);
+	for (const ab of def.faces[0]?.abilities ?? []) {
+		if (ab.kind !== 'static') continue;
+		if (ab.static.k === 'restriction') return true;
+		if (ab.static.k === 'continuous') {
+			if (ab.static.mod.k === 'removeAllAbilities') return true;
+			if (ab.static.mod.k === 'pt') {
+				const pw = ab.static.mod.power;
+				const tg = ab.static.mod.toughness;
+				if ((pw.k === 'const' && pw.n < 0) || (tg.k === 'const' && tg.n < 0)) return true;
+			}
+		}
+	}
+	return false;
+}
+
+/**
+ * CR 303.4f–g: Returns the legal object/player ids that `aura` may enchant when entering the
+ * battlefield under `controller`'s control without being cast, ranked by the bot heuristic.
+ */
+export function legalAuraAttachCandidates(
+	state: GameState,
+	aura: CardInstance,
+	controller: PlayerGameState
+): string[] {
+	const evalAura = evaluatePermanent(state, aura);
+	const harmful = isAuraHarmful(aura);
+	const permCandidates: Array<{ id: string; preferred: boolean; score: number }> = [];
+	for (const p of state.players) {
+		if (p.lost) continue;
+		for (const host of p.battlefield) {
+			if (isAuraAttachmentLegal(state, aura, controller, evalAura, host, p)) {
+				const isOwn = p.playerId === controller.playerId;
+				const preferred = harmful ? !isOwn : isOwn;
+				const evalHost = evaluatePermanent(state, host);
+				const score =
+					host.card.cmc + (evalHost.isCreature ? getCreaturePower(host, state) : 0);
+				permCandidates.push({ id: host.instanceId, preferred, score });
+			}
+		}
+	}
+	permCandidates.sort((a, b) => {
+		if (a.preferred !== b.preferred) return a.preferred ? -1 : 1;
+		return a.preferred ? b.score - a.score : a.score - b.score;
+	});
+
+	const playerCandidates: Array<{ id: string; preferred: boolean; score: number }> = [];
+	for (const p of state.players) {
+		if (!p.lost && isAuraPlayerAttachmentLegal(aura, controller, evalAura, p)) {
+			const isOwn = p.playerId === controller.playerId;
+			const preferred = harmful ? !isOwn : isOwn;
+			playerCandidates.push({ id: p.playerId, preferred, score: p.life });
+		}
+	}
+	playerCandidates.sort((a, b) => {
+		if (a.preferred !== b.preferred) return a.preferred ? -1 : 1;
+		return b.score - a.score;
+	});
+
+	return [
+		...permCandidates.map((c) => c.id),
+		...playerCandidates.map((c) => c.id)
+	];
 }
 
 /**

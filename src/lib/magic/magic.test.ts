@@ -79,6 +79,18 @@ function resolveTriggers(state: GameState, max = 40): void {
 			applyGameAction(state, prompt.playerId, { type: 'choice', promptId: prompt.id, answer: { kind: 'yesNo', yes: true } });
 			continue;
 		}
+		if (
+			prompt?.continuation?.kind === 'effect_choice' &&
+			prompt.choice?.kind === 'chooseObjects' &&
+			prompt.choice.defaultObjectIds
+		) {
+			applyGameAction(state, prompt.playerId, {
+				type: 'choice',
+				promptId: prompt.id,
+				answer: { kind: 'chooseObjects', objectIds: prompt.choice.defaultObjectIds }
+			});
+			continue;
+		}
 		if (prompt) return;
 		const top = state.stack[state.stack.length - 1];
 		if (!top || top.kind !== 'triggered') return;
@@ -2418,6 +2430,16 @@ describe('16. CR 613 Layers, Timestamps (Opalescence + Humility), Layer 7d P/T S
 			targets: [{ kind: 'permanent', id: wall.instanceId, label: wall.card.name }]
 		});
 		assert.equal(castRes.ok, true);
+		if (state.pendingPrompts.length > 0 && state.pendingPrompts[0].purpose === 'cost_choice') {
+			assert.equal(
+				applyGameAction(state, p1Id, {
+					type: 'choice',
+					promptId: state.pendingPrompts[0].id,
+					answer: { kind: 'chooseMode', indices: [0] }
+				}).ok,
+				true
+			);
+		}
 		applyGameAction(state, p1Id, { type: 'pass_priority' });
 		applyGameAction(state, state.players[1].playerId, { type: 'pass_priority' });
 
@@ -2435,6 +2457,19 @@ describe('16. CR 613 Layers, Timestamps (Opalescence + Humility), Layer 7d P/T S
 		);
 		applyGameAction(state, p1Id, { type: 'pass_priority' });
 		applyGameAction(state, state.players[1].playerId, { type: 'pass_priority' });
+		if (state.pendingPrompts[0]?.choice?.kind === 'chooseObjects') {
+			assert.equal(
+				applyGameAction(state, p1Id, {
+					type: 'choice',
+					promptId: state.pendingPrompts[0].id,
+					answer: {
+						kind: 'chooseObjects',
+						objectIds: state.pendingPrompts[0].choice.defaultObjectIds ?? [wall.instanceId]
+					}
+				}).ok,
+				true
+			);
+		}
 
 		const cloneOnBoard = state.players[0].battlefield.find(
 			(b) => b.instanceId === cloneHand.instanceId
@@ -3419,6 +3454,7 @@ describe('24. Stage A: Live Bug Fixes (A1 Intervening-If, A2 End Step Scope, A3 
 		assert.equal(state.stack.length, 1, 'Exactly one Atraxa trigger on the stack');
 		applyGameAction(state, p1Id, { type: 'pass_priority' });
 		applyGameAction(state, p2Id, { type: 'pass_priority' });
+		resolveTriggers(state);
 		assert.equal(atraxa.counters['+1/+1'], 2, 'Atraxa proliferated exactly once when trigger resolved');
 
 		// 3. Under Humility, Atraxa loses all abilities and does NOT trigger on P1's end step

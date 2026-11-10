@@ -45,6 +45,18 @@ function resolveTriggers(state: GameState, max = 40): void {
 			applyGameAction(state, prompt.playerId, { type: 'choice', promptId: prompt.id, answer: { kind: 'yesNo', yes: false } });
 			continue;
 		}
+		if (
+			prompt?.continuation?.kind === 'effect_choice' &&
+			prompt.choice?.kind === 'chooseObjects' &&
+			prompt.choice.defaultObjectIds
+		) {
+			applyGameAction(state, prompt.playerId, {
+				type: 'choice',
+				promptId: prompt.id,
+				answer: { kind: 'chooseObjects', objectIds: prompt.choice.defaultObjectIds }
+			});
+			continue;
+		}
 		if (prompt) return;
 		const top = state.stack[state.stack.length - 1];
 		if (!top || top.kind !== 'triggered') return;
@@ -180,9 +192,12 @@ function blockAndDealDamage(state: GameState, defender: PlayerGameState, blocks:
 	});
 	assert.equal(res.ok, true, res.error ?? '');
 	for (let i = 0; i < 10 && (state.phase as GameState['phase']) !== 'main2' && (state.phase as GameState['phase']) !== 'end_step'; i++) {
+		resolveTriggers(state);
+		if ((state.phase as GameState['phase']) === 'main2' || (state.phase as GameState['phase']) === 'end_step') break;
 		const prio = state.players[state.priorityPlayerIndex];
 		applyGameAction(state, prio.playerId, { type: 'pass_priority' });
 	}
+	resolveTriggers(state);
 }
 
 /** A resolving permanent spell becomes a new object (engine.ts createCardInstance); find it by name. */

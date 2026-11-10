@@ -401,6 +401,12 @@ export interface StackItem {
 	 * by hand (`'awaiting'`: guided prompt open; `'done'`: finish resolving without effects).
 	 */
 	manualResolution?: 'awaiting' | 'done';
+	/**
+	 * CR 707.5: for a resolving Clone-style permanent spell ("You may have ~ enter as a copy of any
+	 * creature on the battlefield"), the human controller's chosen creature instanceId (or `null` if
+	 * they chose 0 objects to enter as itself).
+	 */
+	cloneCopyChoice?: string | null;
 }
 
 /** One binding of the IR interpreter ("it", "that creature"): the objects and their LKI. */
@@ -492,9 +498,10 @@ export type ChoiceRequest =
 			max: number;
 			zone: ZoneType;
 			reason: string;
+			defaultObjectIds?: string[];
 	  }
-	| { kind: 'chooseMode'; modes: string[]; min: number; max: number }
-	| { kind: 'chooseNumber'; min: number; max: number; reason: string }
+	| { kind: 'chooseMode'; modes: string[]; min: number; max: number; defaultIndices?: number[] }
+	| { kind: 'chooseNumber'; min: number; max: number; reason: string; defaultNumber?: number }
 	| {
 			kind: 'orderObjects';
 			objectIds: string[];
@@ -601,7 +608,7 @@ export interface PendingPrompt {
 	 * merges the choice into its `costPayment` and runs it again from scratch.
 	 */
 	pendingAction?: GameActionPayload;
-	costQuestion?: { kind: 'option' | 'objects' | 'phyrexian'; index: number };
+	costQuestion?: { kind: 'option' | 'objects' | 'phyrexian' | 'hybrid'; index: number };
 	costOptionLabels?: string[];
 	/** trigger_targets / trigger_may: the triggered ability's stack item (by id; state stays plain data). */
 	triggerStackItemId?: string;
@@ -628,11 +635,15 @@ export interface PendingPrompt {
  *   `registerPromptHandler`), for generic prompts that need no engine state.
  */
 export type PromptContinuation =
-	| { kind: 'effect_choice'; stackItemId: string; stepIndex: number }
+	| { kind: 'effect_choice'; stackItemId: string; stepIndex: number; answerKey?: string }
 	| { kind: 'effect_resume'; stackItemId: string; stepIndex: number }
 	| { kind: 'manual_resolution'; stackItemId: string }
 	| { kind: 'manual_ability'; sourceInstanceId: string }
-	| { kind: 'handler'; name: string; data?: Record<string, string | number | boolean | null> };
+	| {
+			kind: 'handler';
+			name: string;
+			data?: Record<string, string | number | boolean | null | string[] | Record<string, number>>;
+	  };
 
 /**
  * The player's choices for paying a cost (CR 601.2b/h, 602.2b), validated by the server. Indices
@@ -644,6 +655,7 @@ export interface CostPayment {
 	options?: number[];
 	objects?: string[][];
 	phyrexianLifeCount?: number;
+	hybridChoices?: number[];
 }
 
 export interface VfxEvent {

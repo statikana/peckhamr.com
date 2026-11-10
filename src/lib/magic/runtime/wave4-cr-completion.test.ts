@@ -571,8 +571,17 @@ describe('Wave 4 CR Completion: CR 702.21a — Ward [cost] Triggered Ability', (
 			true
 		);
 		assert.equal(state.stack.length, 2);
-		// Resolve Ward trigger -> P2 pays {2} (C drops from 2 to 0), Second Bolt stays on stack
+		// Resolve Ward trigger -> human P2 is prompted and chooses to pay {2} (C drops from 2 to 0), Second Bolt stays on stack
 		resolveTopOfStack(state);
+		assert.equal(state.pendingPrompts.length, 1);
+		assert.equal(
+			applyGameAction(state, p2.playerId, {
+				type: 'choice',
+				promptId: state.pendingPrompts[0].id,
+				answer: { kind: 'yesNo', yes: true }
+			}).ok,
+			true
+		);
 		assert.equal(p2.manaPool.C, 0);
 		assert.equal(state.stack.length, 1);
 		// Resolve Second Bolt -> Sanctuary Guardian is destroyed
@@ -643,6 +652,15 @@ describe('Wave 4 CR Completion: CR 702.21a — Ward [cost] Triggered Ability', (
 		);
 		assert.equal(state.stack.length, 2);
 		resolveTopOfStack(state);
+		assert.equal(state.pendingPrompts.length, 1);
+		assert.equal(
+			applyGameAction(state, p2.playerId, {
+				type: 'choice',
+				promptId: state.pendingPrompts[0].id,
+				answer: { kind: 'yesNo', yes: true }
+			}).ok,
+			true
+		);
 		assert.equal(p2.life, 17);
 		assert.equal(state.stack.length, 1);
 		resolveTopOfStack(state);

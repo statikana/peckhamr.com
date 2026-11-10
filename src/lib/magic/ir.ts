@@ -632,6 +632,8 @@ export type StaticDef =
 			k: 'multiplier';
 			what: 'counters' | 'tokens' | 'triggers';
 			factor: number;
+			/** Additive adjustment before factor ("that many plus one +1/+1 counters"). */
+			delta?: number;
 			filter?: ObjectFilter;
 			/** counters: only this kind ("twice that many +1/+1 counters"). */
 			counter?: CounterType;
@@ -653,6 +655,7 @@ export interface ReplacementDef {
 		| {
 				k: 'modify';
 				to?: ZoneType;
+				shuffleIntoLibrary?: boolean;
 				amount?: Amount;
 				/** "~ enters tapped". */
 				tapped?: boolean;
@@ -661,6 +664,8 @@ export interface ReplacementDef {
 				/** "You may have ~ enter as a copy of any creature on the battlefield" (CR 707). */
 				copyOf?: ObjectFilter;
 		  };
+	/** CR 614.15 / 616.1a: true when this is a self-replacement effect applied before other replacements. */
+	selfReplacement?: boolean;
 	who?: PlayerFilter;
 	/** Only applies while this holds ("while your library has no cards in it"). */
 	condition?: Condition;

@@ -200,7 +200,8 @@ function parseKeyword(part: string): KeywordDef | null {
 		if (!low.startsWith(kw)) continue;
 		const rest = part.slice(kw.length);
 		if (!/^[\s—-]/.test(rest)) continue;
-		const arg = rest.replace(/^\s*[—-]?\s*/, '').trim();
+		const rawArg = rest.replace(/^\s*[—-]?\s*/, '').trim();
+		const arg = kw === 'ward' ? rawArg.replace(/\.$/, '').trim() : rawArg;
 		if (/^(\{[^}]+\})+$/.test(arg)) return { name: kw, cost: arg };
 		if (/^\d+$/.test(arg)) return { name: kw, n: parseInt(arg, 10) };
 		const nCost = arg.match(/^(\d+)\s*—\s*((?:\{[^}]+\})+)$/);
@@ -215,7 +216,7 @@ function parseKeyword(part: string): KeywordDef | null {
 
 /** "Flying, vigilance", "Equip {2}", "Protection from black". A trailing period means an effect. */
 function keywordLine(line: NormalizedLine): AbilityDef[] | null {
-	if (line.abilityWord || /\.$/.test(line.body)) return null;
+	if (line.abilityWord || (/\.$/.test(line.body) && !/^ward\s*[—-]/i.test(line.body))) return null;
 	// "Enchant creature, land, or planeswalker" and "Protection from white, from blue" are one keyword.
 	const parts = /^(?:enchant|protection from|hexproof from)\b/i.test(line.body) ? [line.body] : line.body.split(/,\s*/);
 	const keywords = parts.map(parseKeyword);
@@ -246,8 +247,27 @@ function keywordLine(line: NormalizedLine): AbilityDef[] | null {
 		if (keyword.name === 'ward') {
 			const wardCost = keyword.cost ?? keyword.param ?? '';
 			const parsed = parseCost(wardCost);
-			if (parsed.defs.length === 0 || parsed.unparsed.length > 0) implemented = false;
-			else keyword.costDefs = parsed.defs;
+			const singleDef = parsed.defs.length === 1 && parsed.unparsed.length === 0 ? parsed.defs[0] : undefined;
+			const supportedWardCost = Boolean(
+				singleDef &&
+					((singleDef.k === 'mana' && !/\{X\}/i.test(singleDef.cost)) ||
+						(singleDef.k === 'payLife' && singleDef.amount.k === 'const'))
+			);
+			if (!supportedWardCost) {
+				out.push({
+					kind: 'unsupported',
+					reason: 'unparsed',
+					trigger: {
+						event: 'becomesTarget',
+						filter: { object: 'self', targetedBy: 'spellOrAbility', player: { relation: 'opponent' } }
+					},
+					text: part,
+					span,
+					unparsed: [span]
+				});
+				return;
+			}
+			keyword.costDefs = parsed.defs;
 		}
 		if (!implemented) {
 			out.push(unsupported('keyword_not_implemented', part, span, [span]));
