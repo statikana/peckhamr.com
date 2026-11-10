@@ -706,16 +706,16 @@ describe('Wave 3B: State-Based Actions, Simultaneous Deaths, Elimination & Comma
 			instanceId: signet.instanceId
 		});
 		assert.equal(tapRes.ok, true);
-		if (state.pendingPrompts.length > 0 && state.pendingPrompts[0].choice?.kind === 'chooseMode') {
-			assert.equal(
-				applyGameAction(state, p1.playerId, {
-					type: 'choice',
-					promptId: state.pendingPrompts[0].id,
-					answer: { kind: 'chooseMode', indices: [0] }
-				}).ok,
-				true
-			);
-		}
+		const signetPrompt = state.pendingPrompts[0];
+		assert.ok(signetPrompt && signetPrompt.choice?.kind === 'chooseMode');
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'choice',
+				promptId: signetPrompt.id,
+				answer: { kind: 'chooseMode', indices: [0] }
+			}).ok,
+			true
+		);
 		const gainedColors = expectedIdentity.filter((c) => p1.manaPool[c] > poolBefore[c]);
 		assert.equal(gainedColors.length, 1, 'Arcane Signet should produce a color in commander identity');
 	});
