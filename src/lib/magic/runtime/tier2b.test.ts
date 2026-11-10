@@ -9,6 +9,7 @@ import {
 	resolveTopOfStack,
 	sanitizeGameStateForViewer
 } from '../engine.ts';
+import { cardSupportReport } from '../compiler/support.ts';
 import { PRECON_DECKS } from '../precons.ts';
 import {
 	DEFAULT_LOBBY_RULES,
@@ -372,5 +373,166 @@ describe('Tier 2B — 5b: Proliferate human choice (CR 701.34a)', () => {
 		assert.equal(state.pendingPrompts.length, 0, 'Bot should not be prompted for Proliferate');
 		assert.equal(oppPlus.counters['+1/+1'], 2, 'Bot should auto-proliferate its own +1/+1 counter');
 		assert.equal(cMinus.counters['-1/-1'], 3, 'Bot should auto-proliferate opponent -1/-1 counter');
+	});
+});
+
+describe('Tier 2B — 5c: Ward human yesNo prompt and unsupported non-mana/life Ward costs (CR 702.21a)', () => {
+	it('asks a human controller of a targeting spell/ability yesNo "Pay ward cost <cost>?", countering on decline and paying on yes (CR 702.21a)', () => {
+		const { state, p1, p2 } = makeGame([false, false]);
+
+		const wardDrake = putInZone(
+			state,
+			p1,
+			synthCard({
+				name: 'Ward Drake',
+				typeLine: 'Creature — Drake',
+				power: '3',
+				toughness: '3',
+				oracleText: 'Ward {2}',
+				keywords: ['Ward']
+			}),
+			'battlefield'
+		);
+
+		const killSpell1 = putInZone(
+			state,
+			p2,
+			synthCard({
+				name: 'Doom Bolt 1',
+				typeLine: 'Instant',
+				manaCost: '{R}',
+				cmc: 1,
+				oracleText: 'Destroy target creature.'
+			}),
+			'hand'
+		);
+		p2.manaPool = { W: 0, U: 0, B: 0, R: 1, G: 0, C: 2 };
+		state.priorityPlayerIndex = 1;
+
+		assert.equal(
+			applyGameAction(state, p2.playerId, {
+				type: 'cast_spell',
+				instanceId: killSpell1.instanceId,
+				targets: [{ kind: 'permanent', id: wardDrake.instanceId, label: wardDrake.card.name }]
+			}).ok,
+			true
+		);
+		assert.equal(state.stack.length, 2);
+
+		// Resolve Ward trigger -> human p2 can afford {2}, so p2 must be prompted with yesNo
+		resolveTopOfStack(state);
+		const wardPrompt1 = state.pendingPrompts.find((pr) => pr.playerId === p2.playerId);
+		assert.ok(wardPrompt1, 'Human controller of targeting spell must be prompted to pay Ward cost');
+		assert.equal(wardPrompt1.choice?.kind, 'yesNo');
+		if (wardPrompt1.choice?.kind === 'yesNo') {
+			assert.equal(wardPrompt1.choice.question, 'Pay ward cost {2}?');
+		}
+
+		// p2 declines to pay Ward {2} -> mana is unspent and spell is countered
+		assert.equal(
+			applyGameAction(state, p2.playerId, {
+				type: 'choice',
+				promptId: wardPrompt1.id,
+				answer: { kind: 'yesNo', yes: false }
+			}).ok,
+			true
+		);
+		assert.equal(p2.manaPool.C, 2, 'Mana must not be spent when declining Ward');
+		assert.equal(state.stack.length, 0, 'Both Ward trigger and countered spell should leave stack');
+		assert.equal(p2.graveyard.some((c) => c.instanceId === killSpell1.instanceId), true);
+		assert.equal(p1.battlefield.some((c) => c.instanceId === wardDrake.instanceId), true);
+
+		// Cast a second spell and accept the Ward prompt -> pays {2} and spell resolves
+		const killSpell2 = putInZone(
+			state,
+			p2,
+			synthCard({
+				name: 'Doom Bolt 2',
+				typeLine: 'Instant',
+				manaCost: '{R}',
+				cmc: 1,
+				oracleText: 'Destroy target creature.'
+			}),
+			'hand'
+		);
+		p2.manaPool = { W: 0, U: 0, B: 0, R: 1, G: 0, C: 2 };
+		state.priorityPlayerIndex = 1;
+		assert.equal(
+			applyGameAction(state, p2.playerId, {
+				type: 'cast_spell',
+				instanceId: killSpell2.instanceId,
+				targets: [{ kind: 'permanent', id: wardDrake.instanceId, label: wardDrake.card.name }]
+			}).ok,
+			true
+		);
+		resolveTopOfStack(state);
+		const wardPrompt2 = state.pendingPrompts.find((pr) => pr.playerId === p2.playerId);
+		assert.ok(wardPrompt2);
+		assert.equal(
+			applyGameAction(state, p2.playerId, {
+				type: 'choice',
+				promptId: wardPrompt2.id,
+				answer: { kind: 'yesNo', yes: true }
+			}).ok,
+			true
+		);
+		assert.equal(p2.manaPool.C, 0, 'Human should pay {2} when accepting Ward prompt');
+		assert.equal(state.stack.length, 1, 'Targeting spell should remain on stack after paying Ward');
+		resolveTopOfStack(state);
+		assert.equal(p1.battlefield.some((c) => c.instanceId === wardDrake.instanceId), false);
+	});
+
+	it('marks non-mana/non-life Ward costs as unsupported (fullySupported: false) and opens manual resolution instead of treating them as {0} (CR 702.21a)', () => {
+		const { state, p1, p2 } = makeGame([false, false]);
+
+		const discardWardCard = synthCard({
+			name: 'Graveyard Sentinel',
+			typeLine: 'Creature — Horror',
+			power: '4',
+			toughness: '4',
+			oracleText: 'Ward—Discard a card.',
+			keywords: ['Ward']
+		});
+		const report = cardSupportReport(discardWardCard);
+		assert.equal(
+			report.fullySupported,
+			false,
+			'Ward—Discard a card must report fullySupported: false instead of compiling as supported'
+		);
+
+		const sentinel = putInZone(state, p1, discardWardCard, 'battlefield');
+		const bolt = putInZone(
+			state,
+			p2,
+			synthCard({
+				name: 'Bolt Sentinel',
+				typeLine: 'Instant',
+				manaCost: '{R}',
+				cmc: 1,
+				oracleText: 'Destroy target creature.'
+			}),
+			'hand'
+		);
+		p2.manaPool = { W: 0, U: 0, B: 0, R: 1, G: 0, C: 0 };
+		state.priorityPlayerIndex = 1;
+
+		assert.equal(
+			applyGameAction(state, p2.playerId, {
+				type: 'cast_spell',
+				instanceId: bolt.instanceId,
+				targets: [{ kind: 'permanent', id: sentinel.instanceId, label: sentinel.card.name }]
+			}).ok,
+			true
+		);
+		assert.equal(state.stack.length, 2, 'Ward trigger should be placed on the stack');
+
+		// Resolving the unsupported Ward trigger must open manual guided_resolution for p1, never succeed for free as {0}
+		resolveTopOfStack(state);
+		const manualPrompt = state.pendingPrompts.find((pr) => pr.purpose === 'guided_resolution');
+		assert.ok(
+			manualPrompt,
+			'Unsupported Ward cost must open guided_resolution prompt instead of auto-paying {0} for free'
+		);
+		assert.equal(manualPrompt.playerId, p1.playerId);
 	});
 });

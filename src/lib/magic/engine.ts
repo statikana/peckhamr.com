@@ -4575,43 +4575,70 @@ function itemWard(item: StackItem): { cost: string; costDefs?: CostDef[] } | und
 	return runtimeTriggers(compileCard(item.card)).find((x) => x.abilityIndex === item.triggeredAbilityIndex)?.ward;
 }
 
+const WARD_PAYMENT_CHOICE_HANDLER = 'ward_payment_choice';
+
 function resolveWardTrigger(
 	state: GameState,
 	item: StackItem,
 	controller: PlayerGameState,
 	ward: { cost: string; costDefs?: CostDef[] }
-): void {
+): boolean {
 	const targetItem = state.stack.find((s) => s.id === (item.eventStackItemId ?? item.targets[0]?.id));
-	if (!targetItem) return;
+	if (!targetItem) return true;
 	const opp = state.players.find((p) => p.playerId === targetItem.controllerId);
 	const wardCost = (ward.cost || '{1}').trim();
+	const lifeDef = ward.costDefs?.find((d): d is Extract<CostDef, { k: 'payLife' }> => d.k === 'payLife');
+	const lifeCost = lifeDef && lifeDef.amount.k === 'const' ? lifeDef.amount.n : undefined;
+	const req = lifeCost === undefined ? parseManaCost(wardCost) : undefined;
+	const canAfford = Boolean(
+		opp &&
+			!targetItem.declineWard &&
+			(lifeCost !== undefined
+				? !playerLifeTotalCantChange(state, opp) && opp.life >= lifeCost
+				: req
+					? canPayOrAutoTap(opp, req, state)
+					: false)
+	);
+	if (opp && !opp.isBot && canAfford && item.optionalAccepted === undefined) {
+		const question = `Pay ward cost ${wardCost}?`;
+		enqueueChoicePrompt(state, {
+			id: uid('prm', state),
+			playerId: opp.playerId,
+			kind: 'yesNo',
+			purpose: 'generic',
+			title: `Ward (${item.card.name})`,
+			description: question,
+			yesLabel: `Pay ${wardCost}`,
+			noLabel: 'Decline (counter)',
+			continuation: {
+				kind: 'handler',
+				name: WARD_PAYMENT_CHOICE_HANDLER,
+				data: { wardStackItemId: item.id, targetStackItemId: targetItem.id }
+			},
+			choice: { kind: 'yesNo', question }
+		});
+		return false;
+	}
 	let paid = false;
-	if (opp && !targetItem.declineWard) {
-		const lifeDef = ward.costDefs?.find((d): d is Extract<CostDef, { k: 'payLife' }> => d.k === 'payLife');
-		const lifeCost = lifeDef && lifeDef.amount.k === 'const' ? lifeDef.amount.n : undefined;
+	if (opp && canAfford && (opp.isBot || item.optionalAccepted === true)) {
 		if (lifeCost !== undefined) {
-			if (!playerLifeTotalCantChange(state, opp) && opp.life >= lifeCost) {
-				opp.life -= lifeCost;
-				paid = true;
-				addLog(
-					state,
-					'rule',
-					`${opp.username} paid ${lifeCost} life for ${item.card.name}'s Ward (CR 702.21a).`,
-					opp.playerId
-				);
-			}
-		} else {
-			const req = parseManaCost(wardCost);
-			if (canPayOrAutoTap(opp, req, state)) {
-				payManaWithAutoTap(opp, req, state);
-				paid = true;
-				addLog(
-					state,
-					'rule',
-					`${opp.username} paid ${wardCost} for ${item.card.name}'s Ward (CR 702.21a).`,
-					opp.playerId
-				);
-			}
+			opp.life -= lifeCost;
+			paid = true;
+			addLog(
+				state,
+				'rule',
+				`${opp.username} paid ${lifeCost} life for ${item.card.name}'s Ward (CR 702.21a).`,
+				opp.playerId
+			);
+		} else if (req) {
+			payManaWithAutoTap(opp, req, state);
+			paid = true;
+			addLog(
+				state,
+				'rule',
+				`${opp.username} paid ${wardCost} for ${item.card.name}'s Ward (CR 702.21a).`,
+				opp.playerId
+			);
 		}
 	}
 	if (!paid) {
@@ -4636,7 +4663,20 @@ function resolveWardTrigger(
 			}
 		}
 	}
+	return true;
 }
+
+registerPromptHandler(WARD_PAYMENT_CHOICE_HANDLER, (state, prompt, answer) => {
+	const data = prompt.continuation?.kind === 'handler' ? prompt.continuation.data : undefined;
+	const wardItemId = typeof data?.wardStackItemId === 'string' ? data.wardStackItemId : '';
+	const targetItemId = typeof data?.targetStackItemId === 'string' ? data.targetStackItemId : '';
+	const wardItem = state.stack.find((s) => s.id === wardItemId);
+	const targetItem = state.stack.find((s) => s.id === targetItemId);
+	const accepted = answer.kind === 'yesNo' ? answer.yes : false;
+	if (wardItem) wardItem.optionalAccepted = accepted;
+	if (targetItem && !accepted) targetItem.declineWard = true;
+	if (wardItem) resumeStackItem(state, wardItem);
+});
 
 function resolveDelayedTriggerEffect(
 	state: GameState,
@@ -4762,7 +4802,8 @@ function stackItemAwaitsPrompt(state: GameState, item: StackItem): boolean {
 		(p) =>
 			p.triggerStackItemId === item.id ||
 			((p.continuation?.kind === 'effect_choice' || p.continuation?.kind === 'effect_resume') && p.continuation.stackItemId === item.id) ||
-			(p.continuation?.kind === 'manual_resolution' && p.continuation.stackItemId === item.id)
+			(p.continuation?.kind === 'manual_resolution' && p.continuation.stackItemId === item.id) ||
+			(p.continuation?.kind === 'handler' && p.continuation.data?.wardStackItemId === item.id)
 	);
 }
 
@@ -4858,7 +4899,7 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 
 	const ward = itemWard(item);
 	if (ward) {
-		resolveWardTrigger(state, item, controller, ward);
+		if (!resolveWardTrigger(state, item, controller, ward)) return;
 		triggerPathCounts.interpreter++;
 		removeItemFromStack();
 		givePriorityToActiveOrNextPlayer(state);
