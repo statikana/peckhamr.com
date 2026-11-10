@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS MagicLobbies (
 	seats_json TEXT NOT NULL,
 	game_state_json TEXT DEFAULT '',
 	version INTEGER DEFAULT 1,
+	bot_resume_at INTEGER DEFAULT NULL,
 	created_at INTEGER NOT NULL,
 	updated_at INTEGER NOT NULL
 );
@@ -288,6 +289,14 @@ export function migrateD1DumpToSqlite({ dumpSql, sqliteOutputPath, force = false
 
 			for (const stmt of insertStatements) {
 				db.exec(stmt);
+			}
+			// Upgrade pre-pacing D1 dumps whose MagicLobbies lacked `bot_resume_at` after positional INSERTs run
+			const lobbyCols = db
+				.prepare('PRAGMA table_info("MagicLobbies")')
+				.all()
+				.map((c) => String(c.name));
+			if (!lobbyCols.includes('bot_resume_at')) {
+				db.exec('ALTER TABLE "MagicLobbies" ADD COLUMN bot_resume_at INTEGER DEFAULT NULL;');
 			}
 			for (const stmt of indexStatements) {
 				db.exec(stmt);

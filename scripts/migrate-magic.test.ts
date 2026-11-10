@@ -187,9 +187,34 @@ describe('Magic D1 <-> SQLite migration scripts (5.1 & 5.4)', () => {
 			sqliteOutputPath: sqliteStep1
 		});
 
-		// Add MagicCardImages rows (20 entries) so all 6 tables are non-empty and test size batching
+		// Add a paused MagicLobby (non-null bot_resume_at) + MagicCardImages rows (20 entries) so all 6 tables are non-empty and test size batching
 		const db1 = new DatabaseSync(sqliteStep1);
 		try {
+			const pod777 = db1
+				.prepare('SELECT bot_resume_at FROM MagicLobbies WHERE code = ?')
+				.get('POD777') as Record<string, unknown>;
+			assert.strictEqual(pod777.bot_resume_at, null);
+
+			db1
+				.prepare(
+					`INSERT INTO MagicLobbies (code, name, host_user_id, status, is_private, rules_json, seats_json, game_state_json, version, bot_resume_at, created_at, updated_at)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+				)
+				.run(
+					'POD888',
+					'Paused Bot Pod',
+					'usr_google_1',
+					'active',
+					1,
+					'{"startingLife":40,"botSpeed":"normal"}',
+					'[]',
+					'{}',
+					7,
+					1700000099500,
+					1700000050,
+					1700000060
+				);
+
 			const ins = db1.prepare(
 				'INSERT INTO MagicCardImages (key, image_url, art_crop_url, updated_at) VALUES (?, ?, ?, ?)'
 			);
@@ -216,7 +241,7 @@ describe('Magic D1 <-> SQLite migration scripts (5.1 & 5.4)', () => {
 			MagicUsers: 2,
 			MagicSessions: 1,
 			MagicDecks: 1,
-			MagicLobbies: 1,
+			MagicLobbies: 2,
 			MagicChatMessages: 1,
 			MagicCardImages: 20
 		});
@@ -265,5 +290,9 @@ describe('Magic D1 <-> SQLite migration scripts (5.1 & 5.4)', () => {
 			simD1.close();
 		}
 		assert.deepEqual(snapshotAllMagicRows(simulatedD1Path), expectedRows);
+		const rtPod888 = snapshotAllMagicRows(sqliteRoundTrip).MagicLobbies.find(
+			(r) => r.code === 'POD888'
+		);
+		assert.equal(rtPod888?.bot_resume_at, 1700000099500);
 	});
 });

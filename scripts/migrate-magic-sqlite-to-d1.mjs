@@ -63,6 +63,7 @@ const CREATE_SCHEMA_STATEMENTS = [
 	seats_json TEXT NOT NULL,
 	game_state_json TEXT DEFAULT '',
 	version INTEGER DEFAULT 1,
+	bot_resume_at INTEGER DEFAULT NULL,
 	created_at INTEGER NOT NULL,
 	updated_at INTEGER NOT NULL
 );`,
