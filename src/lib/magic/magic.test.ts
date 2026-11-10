@@ -1148,6 +1148,19 @@ describe('6. Combat Engine & Niche Keyword Interactions', () => {
 		assert.equal(applyGameAction(state, p1Id, { type: 'pass_priority' }).ok, true);
 		assert.equal(applyGameAction(state, p2Id, { type: 'pass_priority' }).ok, true);
 
+		const dmgPrompt = state.pendingPrompts[0];
+		assert.ok(dmgPrompt, 'Human attacker with Deathtouch + Trample blocked by 1 creature and excess power is prompted (CR 510.1c, 702.19b)');
+		assert(dmgPrompt.choice?.kind === 'chooseNumber');
+		assert.equal(dmgPrompt.choice.defaultNumber, 1);
+		assert.equal(
+			applyGameAction(state, p1Id, {
+				type: 'choice',
+				promptId: dmgPrompt.id,
+				answer: { kind: 'chooseNumber', n: dmgPrompt.choice.defaultNumber }
+			}).ok,
+			true
+		);
+
 		// Because of Deathtouch + Trample (CR 702.19b & 702.2c), only 1 damage is assigned to the 0/10 blocker,
 		// and the remaining 5 damage tramples over to Player 2!
 		assert.equal(state.players[1].life, p2StartLife - 5);

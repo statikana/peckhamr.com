@@ -2328,37 +2328,23 @@ function applyGameActionInner(
 			// CR 508.1d / 701.15b / 703.4i: Active player cannot pass out of declare_attackers without declaring attackers
 			// if they control a creature that must attack this combat if able.
 			if (
-				state.phase === 'declare_attackers' &&
+				isUnconfirmedAttackersStep(state) &&
 				state.stack.length === 0 &&
-				!state.combat.active &&
 				actorId === activePlayer.playerId &&
 				!actor.isBot
 			) {
-				const violation = findMandatoryAttackerViolation(state, activePlayer);
-				if (violation) {
-					return { ok: false, error: violation };
+				const zeroAtkRes = completeUnconfirmedZeroAttackersDeclaration(
+					state,
+					activePlayer,
+					actor
+				);
+				if (!zeroAtkRes.ok) {
+					return zeroAtkRes;
 				}
-				const wasAwaiting = Boolean(state.combat.awaitingAttackersDeclaration);
-				state.combat.active = true;
-				state.combat.awaitingAttackersDeclaration = false;
-				state.combat.attackers = [];
-				state.combat.declaredBlockersPlayerIds = [];
-				state.combat.blockersDeclared = false;
-				addLog(state, 'combat', `${actor.username} declared no attackers.`, actorId);
-				if (wasAwaiting) {
-					emitEvent(state, {
-						kind: 'PhaseBegin',
-						phase: 'declare_attackers',
-						activePlayerId: activePlayer.playerId
-					});
-					flushTriggers(state);
-					if (state.stack.length > 0 || state.pendingPrompts.length > 0) {
-						givePriorityToActiveOrNextPlayer(state);
-						state.passedPriorityPlayerIds = [];
-						state.priorityUpdatedAt = Date.now();
-						checkStateBasedActions(state);
-						return { ok: true };
-					}
+				if (zeroAtkRes.triggeredOrPrompted) {
+					state.priorityUpdatedAt = Date.now();
+					checkStateBasedActions(state);
+					return { ok: true };
 				}
 			}
 
@@ -2366,15 +2352,16 @@ function applyGameActionInner(
 			if (
 				state.phase === 'declare_blockers' &&
 				state.stack.length === 0 &&
+				!state.combat.blockersDeclared &&
 				state.combat.attackers.some((a) => a.defenderPlayerId === actorId)
 			) {
 				if (!state.combat.declaredBlockersPlayerIds) {
 					state.combat.declaredBlockersPlayerIds = [];
 				}
 				if (!state.combat.declaredBlockersPlayerIds.includes(actorId)) {
-					state.combat.declaredBlockersPlayerIds.push(actorId);
 					let allDeclared = false;
 					withTriggersDeferred(state, () => {
+						applyValidatedDefenderBlockers(state, actor, [], new Map());
 						allDeclared = advanceBotBlockerDeclarations(state);
 						if (allDeclared) {
 							checkStateBasedActions(state);
@@ -2401,6 +2388,11 @@ function applyGameActionInner(
 							activePlayerId: activePlayer?.playerId ?? null
 						});
 						flushTriggers(state);
+						givePriorityToActiveOrNextPlayer(state);
+						state.passedPriorityPlayerIds = [];
+						state.priorityUpdatedAt = Date.now();
+						checkStateBasedActions(state);
+						return { ok: true };
 					}
 				}
 			}
@@ -2448,7 +2440,7 @@ function applyGameActionInner(
 				state.phase === 'draw' ||
 				state.phase === 'main1' ||
 				state.phase === 'begin_combat' ||
-				(state.phase === 'declare_attackers' && !state.combat.active);
+				isUnconfirmedAttackersStep(state);
 			if (preCombatOrUnconfirmedAttackers) {
 				const violation = findMandatoryAttackerViolation(state, activePlayer);
 				if (violation) {
@@ -2476,29 +2468,10 @@ function applyGameActionInner(
 
 				// Re-check mandatory attack requirements before leaving declare_attackers with 0 attackers
 				// (e.g. if an intermediate step's trigger created/untapped/goaded a creature).
-				if (state.phase === 'declare_attackers' && !state.combat.active) {
-					const violation = findMandatoryAttackerViolation(state, activePlayer);
-					if (violation) {
+				if (isUnconfirmedAttackersStep(state)) {
+					const zeroAtkRes = completeUnconfirmedZeroAttackersDeclaration(state, activePlayer);
+					if (!zeroAtkRes.ok || zeroAtkRes.triggeredOrPrompted) {
 						break;
-					}
-					const wasAwaiting = Boolean(state.combat.awaitingAttackersDeclaration);
-					state.combat.active = true;
-					state.combat.awaitingAttackersDeclaration = false;
-					state.combat.attackers = [];
-					state.combat.declaredBlockersPlayerIds = [];
-					state.combat.blockersDeclared = false;
-					if (wasAwaiting) {
-						emitEvent(state, {
-							kind: 'PhaseBegin',
-							phase: 'declare_attackers',
-							activePlayerId: activePlayer.playerId
-						});
-						flushTriggers(state);
-						if (state.stack.length > 0 || state.pendingPrompts.length > 0) {
-							givePriorityToActiveOrNextPlayer(state);
-							state.passedPriorityPlayerIds = [];
-							break;
-						}
 					}
 				}
 
@@ -2561,13 +2534,73 @@ function applyGameActionInner(
 	}
 }
 
+function chooseBotRequiredAttackAssignments(
+	state: GameState,
+	bot: PlayerGameState
+): Array<{ attackerInstanceId: string; defenderPlayerId: string; defenderPlaneswalkerId?: string | null }> {
+	const opponents = state.players
+		.filter((p) => p.playerId !== bot.playerId && !p.lost)
+		.sort((a, b) => b.life - a.life);
+	if (opponents.length === 0) return [];
+	const taxFreeOpponents = opponents.filter((p) => getAttackTaxGeneric(state, p) === 0);
+	if (taxFreeOpponents.length === 0) return [];
+
+	return withStableLayerInputs(state, () => {
+		const assignments: Array<{
+			attackerInstanceId: string;
+			defenderPlayerId: string;
+			defenderPlaneswalkerId?: string | null;
+		}> = [];
+		for (const c of bot.battlefield) {
+			if (
+				c.phasedOut ||
+				!evaluatePermanent(state, c).isCreature ||
+				c.tapped ||
+				(c.summoningSick && !hasKeyword(c, 'Haste', state)) ||
+				hasKeyword(c, 'Defender', state) ||
+				hasRestriction(state, c, 'cantAttack')
+			) {
+				continue;
+			}
+			const isGoaded = Boolean(c.goadedByPlayerIds && c.goadedByPlayerIds.length > 0);
+			const mustAttack = isGoaded || hasRestriction(state, c, 'attacksEachCombat');
+			if (!mustAttack) continue;
+
+			let candidateDefenders = taxFreeOpponents;
+			if (isGoaded) {
+				const nonGoaders = taxFreeOpponents.filter(
+					(p) => !c.goadedByPlayerIds!.includes(p.playerId)
+				);
+				if (nonGoaders.length > 0) {
+					candidateDefenders = nonGoaders;
+				}
+			}
+			const idx = assignments.length;
+			assignments.push({
+				attackerInstanceId: c.instanceId,
+				defenderPlayerId: candidateDefenders[idx % candidateDefenders.length]!.playerId
+			});
+		}
+		return assignments;
+	});
+}
+
 export function chooseBotAttackAssignments(
 	state: GameState,
 	bot: PlayerGameState
 ): Array<{ attackerInstanceId: string; defenderPlayerId: string; defenderPlaneswalkerId?: string | null }> {
-	const eligibleAttackers = withStableLayerInputs(state, () =>
+	const opponents = state.players
+		.filter((p) => p.playerId !== bot.playerId && !p.lost)
+		.sort((a, b) => b.life - a.life);
+	if (opponents.length === 0) return [];
+
+	const requiredAssignments = chooseBotRequiredAttackAssignments(state, bot);
+	const requiredIds = new Set(requiredAssignments.map((a) => a.attackerInstanceId));
+
+	const optionalAttackers = withStableLayerInputs(state, () =>
 		bot.battlefield.filter(
 			(c) =>
+				!requiredIds.has(c.instanceId) &&
 				!c.phasedOut &&
 				evaluatePermanent(state, c).isCreature &&
 				!c.tapped &&
@@ -2578,17 +2611,15 @@ export function chooseBotAttackAssignments(
 		)
 	);
 
-	const opponents = state.players
-		.filter((p) => p.playerId !== bot.playerId && !p.lost)
-		.sort((a, b) => b.life - a.life);
-
-	if (eligibleAttackers.length > 0 && opponents.length > 0) {
-		return eligibleAttackers.map((atk, idx) => ({
+	const assignments = [...requiredAssignments];
+	for (const atk of optionalAttackers) {
+		const idx = assignments.length;
+		assignments.push({
 			attackerInstanceId: atk.instanceId,
-			defenderPlayerId: opponents[idx % opponents.length].playerId
-		}));
+			defenderPlayerId: opponents[idx % opponents.length]!.playerId
+		});
 	}
-	return [];
+	return assignments;
 }
 
 function executeBotDeclareAttackersTurnBasedAction(
@@ -2596,9 +2627,24 @@ function executeBotDeclareAttackersTurnBasedAction(
 	bot: PlayerGameState
 ): void {
 	const assignments = chooseBotAttackAssignments(state, bot);
-	const res = performDeclareAttackers(state, bot, assignments, true);
+	let res = performDeclareAttackers(state, bot, assignments, true);
 	if (!res.ok) {
-		performDeclareAttackers(state, bot, [], true);
+		const requiredOnly = chooseBotRequiredAttackAssignments(state, bot);
+		res = performDeclareAttackers(state, bot, requiredOnly, true);
+	}
+	if (!res.ok) {
+		addLog(
+			state,
+			'rule',
+			res.error ?? `${bot.username} could not satisfy attack requirements; declaring no attackers.`,
+			bot.playerId
+		);
+		state.combat.active = true;
+		state.combat.awaitingAttackersDeclaration = false;
+		state.combat.attackers = [];
+		state.combat.declaredBlockersPlayerIds = [];
+		state.combat.blockersDeclared = false;
+		addLog(state, 'combat', `${bot.username} declared no attackers.`, bot.playerId);
 	}
 }
 
@@ -2801,6 +2847,114 @@ function performDeclareAttackers(
 	return { ok: true };
 }
 
+function getPendingCombatDeclarationError(state: GameState): string | null {
+	if (state.phase === 'declare_attackers' && state.combat.awaitingAttackersDeclaration) {
+		return 'Attackers must be declared before players receive priority in the Declare Attackers step (CR 508.1, 508.2).';
+	}
+	if (
+		state.phase === 'declare_blockers' &&
+		state.combat.active &&
+		state.combat.attackers.length > 0 &&
+		!state.combat.blockersDeclared
+	) {
+		return 'Blockers must be declared before players receive priority in the Declare Blockers step (CR 509.1, 509.2).';
+	}
+	return null;
+}
+
+export function isCombatDeclarationPending(state: GameState): boolean {
+	return getPendingCombatDeclarationError(state) !== null;
+}
+
+function isUnconfirmedAttackersStep(state: GameState): boolean {
+	return state.phase === 'declare_attackers' && !state.combat.active;
+}
+
+function completeUnconfirmedZeroAttackersDeclaration(
+	state: GameState,
+	activePlayer: PlayerGameState,
+	logActor?: PlayerGameState
+): { ok: true; triggeredOrPrompted: boolean } | { ok: false; error: string } {
+	const violation = findMandatoryAttackerViolation(state, activePlayer);
+	if (violation) {
+		return { ok: false, error: violation };
+	}
+	const wasAwaiting = Boolean(state.combat.awaitingAttackersDeclaration);
+	state.combat.active = true;
+	state.combat.awaitingAttackersDeclaration = false;
+	state.combat.attackers = [];
+	state.combat.declaredBlockersPlayerIds = [];
+	state.combat.blockersDeclared = false;
+	if (logActor) {
+		addLog(state, 'combat', `${logActor.username} declared no attackers.`, logActor.playerId);
+	}
+	if (wasAwaiting) {
+		emitEvent(state, {
+			kind: 'PhaseBegin',
+			phase: 'declare_attackers',
+			activePlayerId: activePlayer.playerId
+		});
+		flushTriggers(state);
+		if (state.stack.length > 0 || state.pendingPrompts.length > 0) {
+			givePriorityToActiveOrNextPlayer(state);
+			state.passedPriorityPlayerIds = [];
+			return { ok: true, triggeredOrPrompted: true };
+		}
+	}
+	return { ok: true, triggeredOrPrompted: false };
+}
+
+function getBlockerRestrictionReason(
+	state: GameState,
+	blocker: CardInstance,
+	attacker: CardInstance
+): string | null {
+	if (
+		hasKeyword(attacker, 'Flying', state) &&
+		!hasKeyword(blocker, 'Flying', state) &&
+		!hasKeyword(blocker, 'Reach', state)
+	) {
+		return `Strict Rules Violation: ${blocker.card.name} cannot block ${attacker.card.name} (has Flying; blocker needs Flying or Reach).`;
+	}
+	if (hasRestriction(state, attacker, 'cantBeBlocked')) {
+		return `Strict Rules Violation: ${attacker.card.name} cannot be blocked.`;
+	}
+	if (hasProtectionFrom(attacker, blocker.copiableCard ?? blocker.card, state)) {
+		return `Strict Rules Violation: ${blocker.card.name} cannot block ${attacker.card.name} due to Protection (CR 702.16e).`;
+	}
+	if (hasKeyword(attacker, 'Fear', state)) {
+		const evalBlocker = evaluatePermanent(state, blocker);
+		if (!evalBlocker.isArtifact && !evalBlocker.colors.includes('B')) {
+			return `Strict Rules Violation: ${blocker.card.name} cannot block ${attacker.card.name} (has Fear; blocker must be an artifact creature and/or black creature, CR 702.36b).`;
+		}
+	}
+	if (hasKeyword(attacker, 'Intimidate', state)) {
+		const evalAtk = evaluatePermanent(state, attacker);
+		const evalBlocker = evaluatePermanent(state, blocker);
+		if (
+			!evalBlocker.isArtifact &&
+			!evalAtk.colors.some((c) => evalBlocker.colors.includes(c))
+		) {
+			return `Strict Rules Violation: ${blocker.card.name} cannot block ${attacker.card.name} (has Intimidate; blocker must be an artifact creature and/or share a color with it, CR 702.13b).`;
+		}
+	}
+	if (hasKeyword(attacker, 'Shadow', state) !== hasKeyword(blocker, 'Shadow', state)) {
+		return `Strict Rules Violation: ${blocker.card.name} cannot block ${attacker.card.name} due to Shadow (CR 702.28b).`;
+	}
+	if (hasKeyword(attacker, 'Horsemanship', state) && !hasKeyword(blocker, 'Horsemanship', state)) {
+		return `Strict Rules Violation: ${blocker.card.name} cannot block ${attacker.card.name} (has Horsemanship, CR 702.31b).`;
+	}
+	return null;
+}
+
+export function canBlock(
+	state: GameState,
+	blocker: CardInstance,
+	attacker: CardInstance
+): boolean {
+	return getBlockerRestrictionReason(state, blocker, attacker) === null;
+}
+
 export function chooseBotBlockAssignments(
 	state: GameState,
 	bot: PlayerGameState
@@ -2823,36 +2977,12 @@ export function chooseBotBlockAssignments(
 			if (hasRestriction(state, atkCard, 'cantBeBlocked')) continue;
 			if (hasKeyword(atkCard, 'Menace', state)) continue;
 
-			const atkFly = hasKeyword(atkCard, 'Flying', state);
-			const atkFear = hasKeyword(atkCard, 'Fear', state);
-			const atkIntimidate = hasKeyword(atkCard, 'Intimidate', state);
-			const atkShadow = hasKeyword(atkCard, 'Shadow', state);
-			const atkHorse = hasKeyword(atkCard, 'Horsemanship', state);
-			const evalAtk = atkIntimidate ? evaluatePermanent(state, atkCard) : undefined;
 			const candidate = bot.battlefield.find((b) => {
 				if (b.phasedOut || usedBlockers.has(b.instanceId) || b.tapped) return false;
 				const evalBlocker = evaluatePermanent(state, b);
 				if (!evalBlocker.isCreature) return false;
 				if (hasRestriction(state, b, 'cantBlock')) return false;
-				if (atkFly && !hasKeyword(b, 'Flying', state) && !hasKeyword(b, 'Reach', state)) {
-					return false;
-				}
-				if (atkFear && !evalBlocker.isArtifact && !evalBlocker.colors.includes('B')) {
-					return false;
-				}
-				if (
-					atkIntimidate &&
-					!evalBlocker.isArtifact &&
-					!evalAtk!.colors.some((c) => evalBlocker.colors.includes(c))
-				) {
-					return false;
-				}
-				if (atkShadow !== hasKeyword(b, 'Shadow', state)) {
-					return false;
-				}
-				if (atkHorse && !hasKeyword(b, 'Horsemanship', state)) {
-					return false;
-				}
+				if (!canBlock(state, b, atkCard)) return false;
 				const bTough = getCreatureToughness(b, state);
 				const aPwr = getCreaturePower(atkCard, state);
 				return bTough > aPwr || aPwr >= 4 || bot.life <= aPwr;
@@ -2866,6 +2996,43 @@ export function chooseBotBlockAssignments(
 				});
 			}
 		}
+
+		// CR 509.1c: Include any remaining untapped creatures that must block each combat if able.
+		for (const b of bot.battlefield) {
+			if (b.phasedOut || usedBlockers.has(b.instanceId) || b.tapped) continue;
+			const evalBlocker = evaluatePermanent(state, b);
+			if (!evalBlocker.isCreature) continue;
+			if (hasRestriction(state, b, 'cantBlock')) continue;
+			if (!hasRestriction(state, b, 'blocksEachCombat')) continue;
+
+			const legalAtks = attacksAgainstBot.filter((atk) => {
+				const atkOwner = state.players.find((p) => p.playerId === atk.controllerId);
+				const atkCard = atkOwner?.battlefield.find(
+					(c) => !c.phasedOut && c.instanceId === atk.attackerInstanceId
+				);
+				if (!atkCard) return false;
+				if (!canBlock(state, b, atkCard)) return false;
+				if (hasKeyword(atkCard, 'Menace', state)) {
+					const alreadyAssigned = assignments.some(
+						(a) => a.attackerInstanceId === atk.attackerInstanceId
+					);
+					if (!alreadyAssigned) return false;
+				}
+				return true;
+			});
+			if (legalAtks.length > 0) {
+				const chosenAtk =
+					legalAtks.find(
+						(atk) => !assignments.some((a) => a.attackerInstanceId === atk.attackerInstanceId)
+					) ?? legalAtks[0]!;
+				usedBlockers.add(b.instanceId);
+				assignments.push({
+					blockerInstanceId: b.instanceId,
+					attackerInstanceId: chosenAtk.attackerInstanceId
+				});
+			}
+		}
+
 		return assignments;
 	});
 }
@@ -2919,66 +3086,11 @@ function validateDefenderBlockerAssignments(
 		const atkCard = atkOwner?.battlefield.find(
 			(c) => c.instanceId === atkEntry.attackerInstanceId
 		);
-		if (atkCard) {
-			if (
-				hasKeyword(atkCard, 'Flying', state) &&
-				!hasKeyword(blocker, 'Flying', state) &&
-				!hasKeyword(blocker, 'Reach', state)
-			) {
-				return {
-					ok: false,
-					error: `Strict Rules Violation: ${blocker.card.name} cannot block ${atkCard.card.name} (has Flying; blocker needs Flying or Reach).`
-				};
-			}
-			if (hasRestriction(state, atkCard, 'cantBeBlocked')) {
-				return {
-					ok: false,
-					error: `Strict Rules Violation: ${atkCard.card.name} cannot be blocked.`
-				};
-			}
-			if (hasProtectionFrom(atkCard, blocker.copiableCard ?? blocker.card, state)) {
-				return {
-					ok: false,
-					error: `Strict Rules Violation: ${blocker.card.name} cannot block ${atkCard.card.name} due to Protection (CR 702.16e).`
-				};
-			}
-			if (hasKeyword(atkCard, 'Fear', state)) {
-				const evalBlocker = evaluatePermanent(state, blocker);
-				if (!evalBlocker.isArtifact && !evalBlocker.colors.includes('B')) {
-					return {
-						ok: false,
-						error: `Strict Rules Violation: ${blocker.card.name} cannot block ${atkCard.card.name} (has Fear; blocker must be an artifact creature and/or black creature, CR 702.36b).`
-					};
-				}
-			}
-			if (hasKeyword(atkCard, 'Intimidate', state)) {
-				const evalAtk = evaluatePermanent(state, atkCard);
-				const evalBlocker = evaluatePermanent(state, blocker);
-				if (
-					!evalBlocker.isArtifact &&
-					!evalAtk.colors.some((c) => evalBlocker.colors.includes(c))
-				) {
-					return {
-						ok: false,
-						error: `Strict Rules Violation: ${blocker.card.name} cannot block ${atkCard.card.name} (has Intimidate; blocker must be an artifact creature and/or share a color with it, CR 702.13b).`
-					};
-				}
-			}
-			if (hasKeyword(atkCard, 'Shadow', state) !== hasKeyword(blocker, 'Shadow', state)) {
-				return {
-					ok: false,
-					error: `Strict Rules Violation: ${blocker.card.name} cannot block ${atkCard.card.name} due to Shadow (CR 702.28b).`
-				};
-			}
-			if (
-				hasKeyword(atkCard, 'Horsemanship', state) &&
-				!hasKeyword(blocker, 'Horsemanship', state)
-			) {
-				return {
-					ok: false,
-					error: `Strict Rules Violation: ${blocker.card.name} cannot block ${atkCard.card.name} (has Horsemanship, CR 702.31b).`
-				};
-			}
+		if (atkCard && !canBlock(state, blocker, atkCard)) {
+			return {
+				ok: false,
+				error: getBlockerRestrictionReason(state, blocker, atkCard)!
+			};
 		}
 
 		const list = blockerCountsByAttacker.get(atkEntry.attackerInstanceId) || [];
@@ -3015,42 +3127,9 @@ function validateDefenderBlockerAssignments(
 			if (perm.phasedOut || perm.tapped || !evaluatePermanent(state, perm).isCreature) continue;
 			if (hasRestriction(state, perm, 'cantBlock')) continue;
 			if (!hasRestriction(state, perm, 'blocksEachCombat')) continue;
-			const canBlockAny = attackersAgainstActor.some((atk) => {
-				if (hasRestriction(state, atk, 'cantBeBlocked')) {
-					return false;
-				}
-				if (hasProtectionFrom(atk, perm.copiableCard ?? perm.card, state)) {
-					return false;
-				}
-				if (
-					hasKeyword(atk, 'Flying', state) &&
-					!hasKeyword(perm, 'Flying', state) &&
-					!hasKeyword(perm, 'Reach', state)
-				) {
-					return false;
-				}
-				if (hasKeyword(atk, 'Fear', state)) {
-					const evalBlocker = evaluatePermanent(state, perm);
-					if (!evalBlocker.isArtifact && !evalBlocker.colors.includes('B')) return false;
-				}
-				if (hasKeyword(atk, 'Intimidate', state)) {
-					const evalAtk = evaluatePermanent(state, atk);
-					const evalBlocker = evaluatePermanent(state, perm);
-					if (
-						!evalBlocker.isArtifact &&
-						!evalAtk.colors.some((c) => evalBlocker.colors.includes(c))
-					) {
-						return false;
-					}
-				}
-				if (hasKeyword(atk, 'Shadow', state) !== hasKeyword(perm, 'Shadow', state)) {
-					return false;
-				}
-				if (hasKeyword(atk, 'Horsemanship', state) && !hasKeyword(perm, 'Horsemanship', state)) {
-					return false;
-				}
-				return !hasKeyword(atk, 'Menace', state);
-			});
+			const canBlockAny = attackersAgainstActor.some(
+				(atk) => canBlock(state, perm, atk) && !hasKeyword(atk, 'Menace', state)
+			);
 			if (canBlockAny && !assignedBlockerIds.has(perm.instanceId)) {
 				return {
 					ok: false,
@@ -3134,17 +3213,108 @@ function advanceBotBlockerDeclarations(state: GameState): boolean {
 			state.combat.blockersDeclared = false;
 			return false;
 		}
-		const assignments = chooseBotBlockAssignments(state, defPlayer);
-		const validated = validateDefenderBlockerAssignments(state, defPlayer, assignments);
-		if (validated.ok) {
+		let assignments = chooseBotBlockAssignments(state, defPlayer);
+		let validated = validateDefenderBlockerAssignments(state, defPlayer, assignments);
+		while (!validated.ok && assignments.length > 0) {
+			let removedIndex = -1;
+			for (let i = assignments.length - 1; i >= 0; i--) {
+				const candidate = assignments.filter((_, idx) => idx !== i);
+				const check = validateDefenderBlockerAssignments(state, defPlayer, candidate);
+				if (check.ok) {
+					assignments = candidate;
+					validated = check;
+					removedIndex = i;
+					break;
+				}
+			}
+			if (validated.ok) break;
+			for (let i = assignments.length - 1; i >= 0; i--) {
+				const single = [assignments[i]!];
+				const blocker = defPlayer.battlefield.find(
+					(c) => c.instanceId === single[0]!.blockerInstanceId
+				);
+				const atkEntry = state.combat.attackers.find(
+					(a) => a.attackerInstanceId === single[0]!.attackerInstanceId
+				);
+				const atkOwner = state.players.find((p) => p.playerId === atkEntry?.controllerId);
+				const atkCard = atkOwner?.battlefield.find(
+					(c) => c.instanceId === atkEntry?.attackerInstanceId
+				);
+				if (
+					!blocker ||
+					blocker.phasedOut ||
+					blocker.tapped ||
+					!evaluatePermanent(state, blocker).isCreature ||
+					hasRestriction(state, blocker, 'cantBlock') ||
+					!atkEntry ||
+					atkEntry.defenderPlayerId !== defPlayer.playerId ||
+					(atkCard && !canBlock(state, blocker, atkCard))
+				) {
+					removedIndex = i;
+					break;
+				}
+			}
+			if (removedIndex < 0) {
+				removedIndex = assignments.length - 1;
+			}
+			assignments = assignments.filter((_, idx) => idx !== removedIndex);
+			validated = validateDefenderBlockerAssignments(state, defPlayer, assignments);
+		}
+		if (!validated.ok) {
+			// Even [] failed validation (e.g. an unsatisfied blocksEachCombat requirement):
+			// log a rule line and build the legal declaration satisfying the most requirements (CR 509.1c).
+			addLog(state, 'rule', validated.error, defPlayer.playerId);
+			const requiredAssignments: Array<{ blockerInstanceId: string; attackerInstanceId: string }> =
+				[];
+			const attacksAgainstBot = state.combat.attackers.filter(
+				(a) => a.defenderPlayerId === defPlayer.playerId
+			);
+			for (const perm of defPlayer.battlefield) {
+				if (perm.phasedOut || perm.tapped || !evaluatePermanent(state, perm).isCreature) continue;
+				if (hasRestriction(state, perm, 'cantBlock')) continue;
+				if (!hasRestriction(state, perm, 'blocksEachCombat')) continue;
+				for (const atk of attacksAgainstBot) {
+					const atkOwner = state.players.find((p) => p.playerId === atk.controllerId);
+					const atkCard = atkOwner?.battlefield.find(
+						(c) => !c.phasedOut && c.instanceId === atk.attackerInstanceId
+					);
+					if (atkCard && canBlock(state, perm, atkCard) && !hasKeyword(atkCard, 'Menace', state)) {
+						requiredAssignments.push({
+							blockerInstanceId: perm.instanceId,
+							attackerInstanceId: atk.attackerInstanceId
+						});
+						break;
+					}
+				}
+			}
+			const reqValidated = validateDefenderBlockerAssignments(
+				state,
+				defPlayer,
+				requiredAssignments
+			);
+			if (reqValidated.ok) {
+				applyValidatedDefenderBlockers(
+					state,
+					defPlayer,
+					requiredAssignments,
+					reqValidated.blockerCountsByAttacker
+				);
+			} else {
+				const fallbackMap = new Map<string, string[]>();
+				for (const a of requiredAssignments) {
+					const list = fallbackMap.get(a.attackerInstanceId) || [];
+					list.push(a.blockerInstanceId);
+					fallbackMap.set(a.attackerInstanceId, list);
+				}
+				applyValidatedDefenderBlockers(state, defPlayer, requiredAssignments, fallbackMap);
+			}
+		} else {
 			applyValidatedDefenderBlockers(
 				state,
 				defPlayer,
 				assignments,
 				validated.blockerCountsByAttacker
 			);
-		} else {
-			applyValidatedDefenderBlockers(state, defPlayer, [], new Map());
 		}
 	}
 	state.combat.blockersDeclared = true;
@@ -4795,12 +4965,14 @@ function triggerItemIsOptional(item: StackItem): boolean {
 }
 
 /**
- * Computes both the exact board fingerprint (`buildBoardSnapshot(state).fingerprint`) and a
- * token-normalized board fingerprint (coalescing identical tokens by name, typeLine, controller,
- * and tapped state so mandatory token-creation loops also repeat their normalized fingerprint).
- * Includes per-player life, poison, lost status, library size, hand size, and commander damage
- * taken because under CR 104.4b a sequence that changes a game-ending resource (life, poison,
- * library, commander damage) will eventually end the game and is not an unbreakable infinite loop.
+ * Computes both an exact board fingerprint (derived from `buildBoardSnapshot(state).active` over each
+ * active permanent's `instanceId@objectVersion`, controller, tapped state, attachment, and `+1/+1`,
+ * `-1/-1`, and `loyalty` counters) and a token-normalized board fingerprint (coalescing identical
+ * tokens by name, typeLine, controller, and tapped state so mandatory token-creation loops also
+ * repeat their normalized fingerprint). Includes per-player life, poison, lost status, library size,
+ * hand size, and commander damage taken because under CR 104.4b a sequence that changes a
+ * game-ending resource (life, poison, library, commander damage) will eventually end the game and is
+ * not an unbreakable infinite loop.
  */
 function computeLoopBoardFingerprints(state: GameState): { exactFp: string; normFp: string } {
 	const snap = buildBoardSnapshot(state);
@@ -7097,8 +7269,8 @@ function executeCombatDamageStep(
 
 					let dmgToBlocker = autoDmg;
 					// CR 510.1c–d, 702.19b: When blocked by multiple creatures, human controller divides combat damage
-					// among the blockers (andwith Trample, must assign lethal to all blockers before excess tramples over).
-					if (!atkPlayer.isBot && blockers.length >= 2 && remainingDamage > 0) {
+					// among the blockers (and with Trample, must assign lethal to all blockers before excess tramples over).
+					if (!atkPlayer.isBot && (blockers.length >= 2 || canTrampleOver) && remainingDamage > 0) {
 						const minDmg = isLastBlocker
 							? canTrampleOver && allPriorBlockersLethal && remainingDamage > lethalNeeded
 								? lethalNeeded
@@ -7996,6 +8168,11 @@ export function checkStateBasedActions(state: GameState): void {
 			}
 		}
 
+		// Why the batch/replay loop resets battlefields between items:
+		// All SBAs in a single pass happen simultaneously (CR 704.3, 603.10a, 704.8), but movePermanentToZone
+		// moves one permanent at a time (evaluating replacement effects, capturing LKI, and matching triggers).
+		// Rewinding battlefields and previously moved batch items before each movePermanentToZone call ensures
+		// every dying permanent in the batch sees the full pre-batch board, then restores all post-move results.
 		const preBattlefields =
 			sbaGraveyardBatch.length > 1
 				? new Map<PlayerGameState, CardInstance[]>(
@@ -8020,7 +8197,8 @@ export function checkStateBasedActions(state: GameState): void {
 			{
 				perm: CardInstance;
 				postState: CardInstance;
-				destZone: 'graveyard' | 'exile' | 'command';
+				destZone: 'graveyard' | 'exile' | 'command' | 'library' | 'hand' | 'battlefield' | 'pending';
+				insertIndex: number;
 				owner: PlayerGameState | undefined;
 			}
 		>();
@@ -8035,7 +8213,7 @@ export function checkStateBasedActions(state: GameState): void {
 						setZoneOrder(pl, 'battlefield', [...bf]);
 					}
 					for (const prev of postResults.values()) {
-						if (prev.owner) {
+						if (prev.owner && prev.destZone !== 'pending') {
 							setZoneOrder(
 								prev.owner,
 								prev.destZone,
@@ -8066,8 +8244,14 @@ export function checkStateBasedActions(state: GameState): void {
 					...(item.kind === 'legend' ? { legName: item.legName } : {})
 				});
 
-				if (sbaGraveyardBatch.length > 1 && actualDest !== 'pending') {
+				if (sbaGraveyardBatch.length > 1) {
 					const owner = state.players.find((pl) => pl.playerId === item.perm.ownerId);
+					const destZone: 'graveyard' | 'exile' | 'command' | 'library' | 'hand' | 'battlefield' | 'pending' =
+						actualDest === 'pending' || actualDest === 'stack' ? 'pending' : actualDest;
+					const insertIndex =
+						owner && destZone !== 'pending'
+							? owner[destZone].findIndex((c) => c.instanceId === item.perm.instanceId)
+							: -1;
 					postResults.set(item.perm.instanceId, {
 						perm: item.perm,
 						postState: {
@@ -8075,12 +8259,8 @@ export function checkStateBasedActions(state: GameState): void {
 							counters: { ...item.perm.counters },
 							grantedKeywords: [...item.perm.grantedKeywords]
 						},
-						destZone:
-							actualDest === 'exile'
-								? 'exile'
-								: actualDest === 'command'
-									? 'command'
-									: 'graveyard',
+						destZone,
+						insertIndex,
 						owner
 					});
 				}
@@ -8100,10 +8280,16 @@ export function checkStateBasedActions(state: GameState): void {
 						counters: { ...res.postState.counters },
 						grantedKeywords: [...res.postState.grantedKeywords]
 					});
-					if (res.owner && !res.perm.isToken) {
+					if (res.owner && res.destZone !== 'pending' && !res.perm.isToken) {
 						const curZone = res.owner[res.destZone];
 						if (!curZone.some((c) => c.instanceId === res.perm.instanceId)) {
-							setZoneOrder(res.owner, res.destZone, [...curZone, res.perm]);
+							const nextZone = [...curZone];
+							const at =
+								res.insertIndex >= 0 && res.insertIndex <= nextZone.length
+									? res.insertIndex
+									: nextZone.length;
+							nextZone.splice(at, 0, res.perm);
+							setZoneOrder(res.owner, res.destZone, nextZone);
 						}
 					}
 				}
@@ -9477,22 +9663,9 @@ function checkSpellCastLegalityInner(
 
 	const activePlayer = state.players[state.activePlayerIndex];
 	const priorityPlayer = state.players[state.priorityPlayerIndex];
-	if (state.phase === 'declare_attackers' && state.combat.awaitingAttackersDeclaration) {
-		return {
-			ok: false,
-			error: 'Attackers must be declared before players receive priority in the Declare Attackers step (CR 508.1, 508.2).'
-		};
-	}
-	if (
-		state.phase === 'declare_blockers' &&
-		state.combat.active &&
-		state.combat.attackers.length > 0 &&
-		!state.combat.blockersDeclared
-	) {
-		return {
-			ok: false,
-			error: 'Blockers must be declared before players receive priority in the Declare Blockers step (CR 509.1, 509.2).'
-		};
+	const pendingCombatErr = getPendingCombatDeclarationError(state);
+	if (pendingCombatErr) {
+		return { ok: false, error: pendingCombatErr };
 	}
 	if (priorityPlayer?.playerId !== actorId) {
 		return { ok: false, error: 'You do not currently hold priority.' };
@@ -9717,22 +9890,9 @@ function checkAbilityActivationLegalityInner(
 		return checkCost();
 	}
 
-	if (state.phase === 'declare_attackers' && state.combat.awaitingAttackersDeclaration) {
-		return {
-			ok: false,
-			error: 'Attackers must be declared before players receive priority in the Declare Attackers step (CR 508.1, 508.2).'
-		};
-	}
-	if (
-		state.phase === 'declare_blockers' &&
-		state.combat.active &&
-		state.combat.attackers.length > 0 &&
-		!state.combat.blockersDeclared
-	) {
-		return {
-			ok: false,
-			error: 'Blockers must be declared before players receive priority in the Declare Blockers step (CR 509.1, 509.2).'
-		};
+	const pendingCombatErr = getPendingCombatDeclarationError(state);
+	if (pendingCombatErr) {
+		return { ok: false, error: pendingCombatErr };
 	}
 
 	const priorityPlayer = state.players[state.priorityPlayerIndex];
@@ -10145,6 +10305,38 @@ export function sanitizeGameStateForViewer(state: GameState, viewerId: string | 
 			p.library = p.library.filter((c) => scryIds.includes(c.instanceId));
 		} else if (!isSearchingThisLibrary) {
 			p.library = [];
+		}
+	}
+
+	if (clone.pendingZoneMoves) {
+		clone.pendingZoneMoves = clone.pendingZoneMoves.filter((c) => {
+			if (c.isFaceDown) return false;
+			const promptCont = state.pendingPrompts.find(
+				(pr) =>
+					pr.continuation?.kind === 'handler' &&
+					pr.continuation.data?.objectId === c.instanceId
+			)?.continuation;
+			const promptData = promptCont?.kind === 'handler' ? promptCont.data : undefined;
+			const originZone = (promptData?.fromZone as ZoneType | undefined) ?? c.zone;
+			const originPlayerId =
+				(promptData?.fromPlayerId as string | undefined) ?? c.ownerId ?? c.controllerId;
+			if (originZone === 'hand' && originPlayerId !== viewerId) return false;
+			if (originZone === 'library') {
+				const isSearchingOriginLibrary =
+					viewerId !== null &&
+					state.pendingPrompts.some(
+						(pr) =>
+							pr.playerId === viewerId &&
+							(effectivePromptPurpose(pr) === 'search_library' ||
+								(pr.choice?.kind === 'chooseObjects' && pr.choice.zone === 'library')) &&
+							(pr.targetLibraryOwnerId || pr.playerId) === originPlayerId
+					);
+				if (!isSearchingOriginLibrary) return false;
+			}
+			return true;
+		});
+		if (clone.pendingZoneMoves.length === 0) {
+			delete clone.pendingZoneMoves;
 		}
 	}
 

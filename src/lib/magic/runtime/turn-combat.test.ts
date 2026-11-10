@@ -737,6 +737,16 @@ describe('Wave 3A — 4. CR 508.1b / 509.1 / 701.15b / 702.16e / 702.19c Attack 
 
 		const p2LifeBefore = p2.life;
 		passAll(state); // advance to combat_damage
+		const tramplePrompt = state.pendingPrompts.find((pr) => pr.choice?.kind === 'chooseNumber');
+		assert.ok(tramplePrompt && tramplePrompt.choice?.kind === 'chooseNumber');
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'choice',
+				promptId: tramplePrompt.id,
+				answer: { kind: 'chooseNumber', n: tramplePrompt.choice.defaultNumber ?? 2 }
+			}).ok,
+			true
+		);
 
 		assert.equal(
 			planeswalker.counters.loyalty,

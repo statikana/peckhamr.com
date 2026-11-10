@@ -746,7 +746,11 @@ class Run {
 				ownerId: found?.inst.ownerId ?? this.ctx.controller.playerId,
 				power: lkiPower,
 				toughness: lkiToughness,
-				manaValue: found ? objectManaValue(this.state, found.inst, this.ctx.xValue) : this.ctx.sourceCard.cmc
+				manaValue: found
+					? objectManaValue(this.state, found.inst)
+					: this.ctx.item
+						? objectManaValue(this.state, this.ctx.item)
+						: this.ctx.sourceCard.cmc
 			};
 		}
 		return found ? this.snapshot(found.inst) : null;
@@ -913,7 +917,7 @@ class Run {
 		if (
 			f.manaValue &&
 			!compare(
-				objectManaValue(this.state, c, f.manaValue.value.k !== 'x' ? this.ctx.xValue : undefined),
+				objectManaValue(this.state, c),
 				f.manaValue.op,
 				this.amount(f.manaValue.value)
 			)
@@ -1162,7 +1166,9 @@ class Run {
 				this.bind(step, objs);
 				for (const o of objs) {
 					for (const kw of step.params?.keywords ?? []) {
-						if (!o.grantedKeywords.includes(kw)) o.grantedKeywords.push(kw);
+						if (kw.toLowerCase() === 'prowess' || !o.grantedKeywords.includes(kw)) {
+							o.grantedKeywords.push(kw);
+						}
 					}
 				}
 				return;

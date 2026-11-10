@@ -155,8 +155,7 @@ export function objectToughness(state: GameState, obj: CardInstance): number | n
  */
 export function objectManaValue(
 	state: GameState | undefined,
-	obj: CardInstance | StackItem,
-	xValue?: number
+	obj: CardInstance | StackItem
 ): number {
 	if ('isFaceDown' in obj && obj.isFaceDown) return 0;
 	const card = 'copiableCard' in obj && obj.copiableCard ? obj.copiableCard : obj.card;
@@ -171,14 +170,11 @@ export function objectManaValue(
 			(s) => s.kind === 'spell' && (s.sourceInstanceId === obj.instanceId || s.id === obj.instanceId)
 		);
 		onStack = obj.zone === 'stack' || Boolean(stk);
-		itemX =
-			stk?.xValue ??
-			(obj as { xValue?: number }).xValue ??
-			(obj.zone === 'stack' ? xValue : undefined);
+		itemX = stk?.xValue ?? (obj as { xValue?: number }).xValue;
 	}
 	if (onStack && itemX !== undefined && itemX > 0) {
 		const xSymbols = (card.manaCost || '').match(/\{X\}/gi)?.length ?? 0;
-		return base + itemX * (xSymbols > 0 ? xSymbols : 1);
+		return base + itemX * xSymbols;
 	}
 	return base;
 }
@@ -262,7 +258,7 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 	if (
 		filter.manaValue &&
 		!compare(
-			objectManaValue(state, obj, filter.manaValue.value.k !== 'x' ? ctx.xValue : undefined),
+			objectManaValue(state, obj),
 			filter.manaValue,
 			ctx
 		)
@@ -306,33 +302,15 @@ export function findObjects(filter: ObjectFilter, ctx: FilterContext, players?: 
 
 /**
  * CR 903.8: Total number of times `playerId` has cast their commander(s) from the command zone this
- * game, reading the existing `player.commanderCastCounts` / `CardInstance.commanderCastCount` state.
+ * game, reading `player.commanderCastCounts`.
  */
 export function playerCommanderCastCount(state: GameState, playerId: string): number {
 	const player = state.players.find((p) => p.playerId === playerId);
-	if (!player) return 0;
-	const byId = new Map<string, number>();
-	if (player.commanderCastCounts) {
-		for (const [id, count] of Object.entries(player.commanderCastCounts)) {
-			if (count > 0) byId.set(id, count);
-		}
-	}
-	for (const p of state.players) {
-		for (const z of ZONES) {
-			for (const c of p[z]) {
-				if (c.ownerId === playerId && c.isCommander && (c.commanderCastCount ?? 0) > (byId.get(c.instanceId) ?? 0)) {
-					byId.set(c.instanceId, c.commanderCastCount);
-				}
-			}
-		}
-	}
-	for (const item of state.stack) {
-		if ((item.ownerId ?? item.controllerId) === playerId && (item.commanderCastCount ?? 0) > (byId.get(item.sourceInstanceId) ?? 0)) {
-			byId.set(item.sourceInstanceId, item.commanderCastCount!);
-		}
-	}
+	if (!player || !player.commanderCastCounts) return 0;
 	let total = 0;
-	for (const v of byId.values()) total += v;
+	for (const count of Object.values(player.commanderCastCounts)) {
+		if (count > 0) total += count;
+	}
 	return total;
 }
 
@@ -351,7 +329,7 @@ export function evaluateAmount(amount: Amount, ctx: FilterContext): number {
 			if (amount.of.k !== 'self' || !ctx.source) return 0;
 			if (amount.stat === 'power') return objectPower(ctx.state, ctx.source) ?? 0;
 			if (amount.stat === 'toughness') return objectToughness(ctx.state, ctx.source) ?? 0;
-			if (amount.stat === 'manaValue') return objectManaValue(ctx.state, ctx.source, ctx.xValue);
+			if (amount.stat === 'manaValue') return objectManaValue(ctx.state, ctx.source);
 			return 0;
 		}
 		case 'cardsIn': {

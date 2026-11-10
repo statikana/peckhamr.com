@@ -648,19 +648,19 @@ describe('Wave 3C — Task 5: Zone-Change Integrity, Clone, Equip Timestamp & X 
 			true
 		);
 		resolveTopOfStack(state);
-		if (state.pendingPrompts[0]?.choice?.kind === 'chooseObjects') {
-			assert.equal(
-				applyGameAction(state, p1.playerId, {
-					type: 'choice',
-					promptId: state.pendingPrompts[0].id,
-					answer: {
-						kind: 'chooseObjects',
-						objectIds: state.pendingPrompts[0].choice.defaultObjectIds ?? [titan.instanceId]
-					}
-				}).ok,
-				true
-			);
-		}
+		const clonePrompt = state.pendingPrompts[0];
+		assert.ok(clonePrompt && clonePrompt.choice?.kind === 'chooseObjects');
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'choice',
+				promptId: clonePrompt.id,
+				answer: {
+					kind: 'chooseObjects',
+					objectIds: clonePrompt.choice.defaultObjectIds ?? [titan.instanceId]
+				}
+			}).ok,
+			true
+		);
 
 		const onBoard = p1.battlefield.find((c) => c.instanceId === clone.instanceId);
 		assert.ok(onBoard);

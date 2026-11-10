@@ -295,16 +295,16 @@ describe('Zone-change behaviour pins: draw, land, cast, suspend', () => {
 			applyGameAction(state, p1.playerId, { type: 'activate_ability', instanceId: treasure.instanceId, abilityId: ab.id }).ok,
 			true
 		);
-		if (state.pendingPrompts.length > 0 && state.pendingPrompts[0].choice?.kind === 'chooseMode') {
-			assert.equal(
-				applyGameAction(state, p1.playerId, {
-					type: 'choice',
-					promptId: state.pendingPrompts[0].id,
-					answer: { kind: 'chooseMode', indices: [0] }
-				}).ok,
-				true
-			);
-		}
+		const treasurePrompt = state.pendingPrompts[0];
+		assert.ok(treasurePrompt && treasurePrompt.choice?.kind === 'chooseMode');
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'choice',
+				promptId: treasurePrompt.id,
+				answer: { kind: 'chooseMode', indices: [0] }
+			}).ok,
+			true
+		);
 		assert.ok(!p1.battlefield.includes(treasure));
 		assert.equal(p1.graveyard.length, gyBefore);
 		assert.equal(Object.values(p1.manaPool).reduce((a, b) => a + b, 0), manaBefore + 1);
