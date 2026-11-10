@@ -75,7 +75,7 @@
 	let vfxCanvas: HTMLCanvasElement | undefined = $state();
 	const vfxCtrl = new ArenaVfxController();
 	let shaking = $state(false);
-	let arrows = $state<ArrowLine[]>([]);
+	let arrows = $state.raw<ArrowLine[]>([]);
 
 	// Clicked Card Inspector & Hold-ALT Floating Hover Preview
 	let inspectedCard = $state<ScryfallCard | null>(null);
@@ -668,7 +668,24 @@
 			});
 		}
 
-		arrows = next;
+		// Runs every animation frame: only replace the array when an arrow actually changed.
+		if (
+			next.length !== arrows.length ||
+			next.some((ar, i) => {
+				const old = arrows[i];
+				return (
+					ar.id !== old.id ||
+					ar.x1 !== old.x1 ||
+					ar.y1 !== old.y1 ||
+					ar.x2 !== old.x2 ||
+					ar.y2 !== old.y2 ||
+					ar.kind !== old.kind ||
+					ar.label !== old.label
+				);
+			})
+		) {
+			arrows = next;
+		}
 	}
 
 	function cancelTargeting() {

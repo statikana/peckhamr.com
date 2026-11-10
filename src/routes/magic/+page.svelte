@@ -261,7 +261,9 @@
 			updatedAt: number;
 		}>
 	>([]);
-	let activeLobby = $state<MagicLobby | null>(null);
+	// Raw, not deep: the lobby is always replaced whole (never mutated in place), and the table runs
+	// engine code over gameState, which is far slower through deep reactive proxies.
+	let activeLobby = $state.raw<MagicLobby | null>(null);
 	const pageHoverBreakdown = $derived(
 		hoveredCard
 			? inspectCardContinuousBreakdown(hoveredCard, activeLobby?.gameState || undefined)
@@ -379,7 +381,8 @@
 			if (actionInFlight || !activeLobby || activeLobby.code !== polledCode) return;
 			if (data.ok && data.lobby) {
 				const nextLobby: MagicLobby = data.lobby;
-				if (nextLobby.version >= (activeLobby.version || 0)) {
+				// Same version means same content: replacing it would re-render the whole table every poll.
+				if (nextLobby.version > (activeLobby.version || 0)) {
 					activeLobby = nextLobby;
 					if (nextLobby.status === 'active' && nextLobby.gameState) {
 						inMatchView = true;
