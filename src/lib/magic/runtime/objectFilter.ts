@@ -217,6 +217,7 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 
 	if (filter.tapped !== undefined && obj.tapped !== filter.tapped) return false;
 	if (filter.token !== undefined && obj.isToken !== filter.token) return false;
+	if (filter.isCommander !== undefined && Boolean(obj.isCommander) !== filter.isCommander) return false;
 	if (filter.other && ctx.source && obj.instanceId === ctx.source.instanceId) return false;
 	if (filter.colors) {
 		const colors = onBattlefield ? (obj.isFaceDown ? [] : evaluated!.colors) : (card.colors ?? []);
@@ -258,6 +259,38 @@ export function findObjects(filter: ObjectFilter, ctx: FilterContext, players?: 
 	return out;
 }
 
+/**
+ * CR 903.8: Total number of times `playerId` has cast their commander(s) from the command zone this
+ * game, reading the existing `player.commanderCastCounts` / `CardInstance.commanderCastCount` state.
+ */
+export function playerCommanderCastCount(state: GameState, playerId: string): number {
+	const player = state.players.find((p) => p.playerId === playerId);
+	if (!player) return 0;
+	const byId = new Map<string, number>();
+	if (player.commanderCastCounts) {
+		for (const [id, count] of Object.entries(player.commanderCastCounts)) {
+			if (count > 0) byId.set(id, count);
+		}
+	}
+	for (const p of state.players) {
+		for (const z of ZONES) {
+			for (const c of p[z]) {
+				if (c.ownerId === playerId && c.isCommander && (c.commanderCastCount ?? 0) > (byId.get(c.instanceId) ?? 0)) {
+					byId.set(c.instanceId, c.commanderCastCount);
+				}
+			}
+		}
+	}
+	for (const item of state.stack) {
+		if ((item.ownerId ?? item.controllerId) === playerId && (item.commanderCastCount ?? 0) > (byId.get(item.sourceInstanceId) ?? 0)) {
+			byId.set(item.sourceInstanceId, item.commanderCastCount!);
+		}
+	}
+	let total = 0;
+	for (const v of byId.values()) total += v;
+	return total;
+}
+
 /** Evaluates an Amount. Kinds that need effect bindings or a trigger event evaluate to 0 here. */
 export function evaluateAmount(amount: Amount, ctx: FilterContext): number {
 	switch (amount.k) {
@@ -267,6 +300,8 @@ export function evaluateAmount(amount: Amount, ctx: FilterContext): number {
 			return Math.max(0, ctx.xValue ?? 0);
 		case 'count':
 			return findObjects(amount.of, ctx).length;
+		case 'commanderCastCount':
+			return playerCommanderCastCount(ctx.state, ctx.controllerId);
 		case 'stat': {
 			if (amount.of.k !== 'self' || !ctx.source) return 0;
 			if (amount.stat === 'power') return objectPower(ctx.state, ctx.source) ?? 0;
@@ -304,6 +339,10 @@ export function evaluateCondition(cond: Condition, ctx: FilterContext): boolean 
 			return !evaluateCondition(cond.of, ctx);
 		case 'isTurnOf':
 			return cond.player.k === 'you' && ctx.state.players[ctx.state.activePlayerIndex]?.playerId === ctx.controllerId;
+		case 'controlCommander': {
+			const p = ctx.state.players.find((pl) => pl.playerId === ctx.controllerId);
+			return Boolean(p?.battlefield.some((perm) => !perm.phasedOut && perm.isCommander));
+		}
 		default:
 			return false;
 	}

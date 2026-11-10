@@ -248,6 +248,8 @@ export interface ObjectFilter {
 	toughness?: Compare;
 	attacking?: boolean;
 	blocking?: boolean;
+	/** CR 903.3: true iff the object is a commander (retains designation across all zones). */
+	isCommander?: boolean;
 }
 
 export interface Compare {
@@ -301,6 +303,8 @@ export type Amount =
 	| { k: 'eventAmount' }
 	| { k: 'cardsIn'; zone: ZoneType; of: PlayerRef }
 	| { k: 'life'; of: PlayerRef }
+	/** CR 903.8: number of times you've cast your commander from the command zone this game. */
+	| { k: 'commanderCastCount' }
 	| { k: 'negate'; of: Amount }
 	| { k: 'sum' | 'min' | 'max'; args: Amount[] };
 
@@ -523,7 +527,9 @@ export type Condition =
 	| { k: 'not'; of: Condition }
 	/** CR 404.2: the graveyard's order matters. */
 	| { k: 'graveyardAbove'; filter: ObjectFilter; count: number }
-	| { k: 'isTurnOf'; player: PlayerRef };
+	| { k: 'isTurnOf'; player: PlayerRef }
+	/** CR 903.3d: "if you control a commander" (a permanent on the battlefield that is a commander). */
+	| { k: 'controlCommander' };
 
 // ---- Statics and replacements ---------------------------------------------------------------
 

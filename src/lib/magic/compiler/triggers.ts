@@ -285,6 +285,9 @@ function triggerHead(head: string): TriggerDef | null {
 
 export function parseCondition(text: string): Condition | null {
 	const t = text.trim();
+	if (/^if you control (?:a|your) commander$/i.test(t)) {
+		return { k: 'controlCommander' };
+	}
 	let m = t.match(/^if you have (\S+) or more life$/);
 	if (m && number(m[1]) !== null) {
 		return { k: 'compare', left: { k: 'life', of: { k: 'you' } }, op: '>=', right: n(number(m[1])!) };
@@ -380,10 +383,12 @@ const RUNTIME_OBJECT_FIELDS: ReadonlySet<string> = new Set([
 	'supertypes',
 	'notTypes',
 	'controller',
+	'owner',
 	'token',
 	'other',
 	'colors',
-	'tapped'
+	'tapped',
+	'isCommander'
 ]);
 
 /** EventFilter fields each event kind's matcher checks (runtime/triggers.ts). */

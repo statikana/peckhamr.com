@@ -52,6 +52,7 @@ import { evaluatePermanent, inspectCardContinuousBreakdown } from '../ruleTree.t
 import { enqueueChoicePrompt } from './choices.ts';
 import { emitEvent } from './events.ts';
 import { noteLayerInputsChanged } from './layerCache.ts';
+import { playerCommanderCastCount } from './objectFilter.ts';
 import { activeRuleModifiers, tokenMultiplier } from './replace.ts';
 import { flushTriggers, withSimultaneousDestroyLki } from './triggers.ts';
 import { nextRandom } from './random.ts';
@@ -690,6 +691,8 @@ class Run {
 			}
 			case 'devotion':
 				return devotion(this.you, a.colors);
+			case 'commanderCastCount':
+				return playerCommanderCastCount(this.state, this.you.playerId);
 			case 'stat': {
 				const snap = this.refSnapshot(a.of, Boolean(a.lki));
 				if (!snap) return 0;
@@ -903,6 +906,7 @@ class Run {
 		if (f.owner === 'opponent' && c.ownerId === you) return false;
 		if (f.tapped !== undefined && c.tapped !== f.tapped) return false;
 		if (f.token !== undefined && c.isToken !== f.token) return false;
+		if (f.isCommander !== undefined && Boolean(c.isCommander) !== f.isCommander) return false;
 		if (f.other && c.instanceId === this.ctx.sourceId) return false;
 		const cols = ev ? (c.isFaceDown ? [] : ev.colors) : (card.colors ?? []);
 		if (f.colors && !f.colors.some((col) => cols.includes(col))) return false;
@@ -2074,6 +2078,8 @@ class Run {
 			}
 			case 'graveyardAbove':
 				return false;
+			case 'controlCommander':
+				return this.you.battlefield.some((perm) => !perm.phasedOut && Boolean(perm.isCommander));
 		}
 	}
 }

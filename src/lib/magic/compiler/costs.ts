@@ -102,7 +102,7 @@ function singular(word: string): string {
 // ---- Object phrases -------------------------------------------------------------------------
 
 /** One noun of a type group: a card type ("creature"), a subtype ("Elf") or a placeholder. */
-type Noun = { types?: string[]; subtypes?: string[]; token?: true; any?: true };
+type Noun = { types?: string[]; subtypes?: string[]; token?: true; isCommander?: true; any?: true };
 
 function noun(word: string): Noun | null {
 	const s = singular(word);
@@ -110,6 +110,7 @@ function noun(word: string): Noun | null {
 	if (CARD_TYPES[low]) return { types: [CARD_TYPES[low]] };
 	if (low === 'permanent' || low === 'card') return { any: true };
 	if (low === 'token') return { token: true };
+	if (low === 'commander') return { isCommander: true };
 	if (/^[A-Z][a-z'-]+$/.test(s)) return { subtypes: [s] };
 	return null;
 }
@@ -129,6 +130,12 @@ export function parseObjectPhrase(phrase: string): ObjectFilter | null {
 		if (youControl && !filter.controller) {
 			filter.controller = 'you';
 			rest = youControl[1];
+			continue;
+		}
+		const youOwn = rest.match(/^(.+?)\s+you own$/i);
+		if (youOwn && !filter.owner) {
+			filter.owner = 'you';
+			rest = youOwn[1];
 			continue;
 		}
 		const withStat = rest.match(/^(.+?)\s+with (power|mana value) (\S+)(?: or (greater|more|less|fewer))?$/i);
@@ -154,6 +161,7 @@ export function parseObjectPhrase(phrase: string): ObjectFilter | null {
 		else if (low === 'untapped') filter.tapped = false;
 		else if (low === 'tapped') filter.tapped = true;
 		else if (low === 'nontoken') filter.token = false;
+		else if (low === 'commander' || low === 'commanders') filter.isCommander = true;
 		else if (SUPERTYPES[low]) (filter.supertypes ??= []).push(SUPERTYPES[low]);
 		else if (COLORS[low]) (filter.colors ??= []).push(COLORS[low]);
 		else if (/^non[a-z]+$/.test(low) && CARD_TYPES[low.slice(3)]) {
@@ -165,7 +173,7 @@ export function parseObjectPhrase(phrase: string): ObjectFilter | null {
 		} else break;
 		words.shift();
 	}
-	if (words.length === 0) return null;
+	if (words.length === 0) return filter.isCommander ? filter : null;
 
 	// "card(s)" after a type ("creature card") adds nothing.
 	if (words.length > 1 && /^cards?$/i.test(words[words.length - 1])) words.pop();
@@ -203,6 +211,7 @@ export function parseObjectPhrase(phrase: string): ObjectFilter | null {
 			filter.subtypes = n.subtypes;
 		}
 		if (n.token) filter.token = true;
+		if (n.isCommander) filter.isCommander = true;
 	}
 	return filter;
 }
@@ -415,6 +424,30 @@ export function parseAdditionalCostSentence(sentence: string, offset = 0): CostP
  */
 export function parseCostModifierSentence(sentence: string): StaticDef | null {
 	const text = sentence.trim().replace(/\.$/, '');
+	if (/^if you control (?:a|your) commander, you may cast (?:this spell|~) without paying its mana cost$/i.test(text)) {
+		return {
+			k: 'costModifier',
+			affects: { k: 'self' },
+			delta: { mode: 'setZero', generic: 0 },
+			who: { relation: 'you' },
+			condition: { k: 'controlCommander' }
+		};
+	}
+	const selfCmd = text.match(
+		/^(?:this spell|~) costs \{(\d+)\} (less|more) to cast for each time you've cast (?:your|a) commander from the command zone this game$/i
+	);
+	if (selfCmd) {
+		return {
+			k: 'costModifier',
+			affects: { k: 'self' },
+			delta: {
+				mode: selfCmd[2].toLowerCase() === 'less' ? 'reduce' : 'increase',
+				generic: parseInt(selfCmd[1], 10),
+				per: { k: 'commanderCastCount' }
+			},
+			who: { relation: 'you' }
+		};
+	}
 	const self = text.match(/^(?:this spell|~) costs \{(\d+)\} (less|more) to cast for each (.+?) on the battlefield$/i);
 	if (self) {
 		const per = parseObjectPhrase(self[3]);

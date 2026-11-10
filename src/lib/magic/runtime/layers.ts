@@ -26,6 +26,7 @@ import {
 	verifyScopeTrust,
 	type BoardSnapshot
 } from './layerCache.ts';
+import { playerCommanderCastCount } from './objectFilter.ts';
 
 export interface AttributedKeywordOrEffect {
 	id: string;
@@ -684,6 +685,15 @@ function matchesLayerFilter(
 	if (filter.controller === 'opponent' && target.inst.controllerId === source.inst.controllerId) {
 		return false;
 	}
+	if (filter.owner === 'you' && target.inst.ownerId !== source.inst.controllerId) {
+		return false;
+	}
+	if (filter.owner === 'opponent' && target.inst.ownerId === source.inst.controllerId) {
+		return false;
+	}
+	if (filter.isCommander !== undefined && Boolean(target.inst.isCommander) !== filter.isCommander) {
+		return false;
+	}
 	if (filter.supertypes?.length) {
 		if (
 			!filter.supertypes.some((st) =>
@@ -775,6 +785,10 @@ function evaluateLayerAmount(
 			if (amount.zone === 'exile') return p.exile.length;
 			if (amount.zone === 'command') return p.command.length;
 			return 0;
+		}
+		case 'commanderCastCount': {
+			layerReads |= READ_COMMANDER_CAST_COUNT;
+			return playerCommanderCastCount(state, source.inst.controllerId);
 		}
 		case 'negate':
 			return -evaluateLayerAmount(amount.of, state, workList, source, affected);
@@ -873,6 +887,10 @@ function evaluateLayerCondition(
 		}
 		case 'graveyardAbove':
 			return false;
+		case 'controlCommander':
+			return workList.some(
+				(w) => w.inst.controllerId === source.inst.controllerId && Boolean(w.inst.isCommander)
+			);
 	}
 }
 
@@ -956,6 +974,7 @@ const READ_LIFE = 2;
 const READ_ZONE_SIZES = 4;
 const READ_GRAVEYARDS = 8;
 const READ_ACTIVE_PLAYER = 16;
+const READ_COMMANDER_CAST_COUNT = 32;
 
 /** Inputs read by the evaluation in progress (bits above). */
 let layerReads = 0;
@@ -965,6 +984,7 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 	if (reads & READ_ACTIVE_PLAYER) fp.push(state.activePlayerIndex);
 	for (const p of state.players) {
 		if (reads & READ_LIFE) fp.push(p.life);
+		if (reads & READ_COMMANDER_CAST_COUNT) fp.push(playerCommanderCastCount(state, p.playerId));
 		if (reads & READ_ZONE_SIZES) {
 			fp.push(p.hand.length, p.graveyard.length, p.library.length, p.exile.length, p.command.length);
 		}
@@ -1005,6 +1025,9 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 	if (reads & READ_ACTIVE_PLAYER && fp[i++] !== state.activePlayerIndex) return false;
 	for (const p of state.players) {
 		if (reads & READ_LIFE && fp[i++] !== p.life) return false;
+		if (reads & READ_COMMANDER_CAST_COUNT && fp[i++] !== playerCommanderCastCount(state, p.playerId)) {
+			return false;
+		}
 		if (
 			reads & READ_ZONE_SIZES &&
 			(fp[i++] !== p.hand.length ||
