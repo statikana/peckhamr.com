@@ -122,6 +122,7 @@ import { compileCard, compiledStackItemEffects, compiledTriggerEffect, compileSp
 import { runtimeTriggers } from './compiler/triggers.ts';
 import { buildBoardSnapshot, noteLayerInputsChanged, withStableLayerInputs } from './runtime/layerCache.ts';
 import {
+	flushInlineTriggers,
 	flushTriggers,
 	matchTriggers,
 	registerTriggerHost,
@@ -903,6 +904,36 @@ registerPromptHandler(TAP_MANA_COLOR_CHOICE_HANDLER, (state, prompt, answer) => 
 	});
 });
 
+/**
+ * CR 106.12, 605.1b, 605.3b, 605.4a: Single funnel for resolving an activated mana ability of `perm`
+ * after its activation costs (such as `{T}`) have been paid. Records `onceEachTurn`, adds the
+ * produced mana to `player.manaPool`, emits `TappedForMana`, and resolves triggered mana abilities
+ * immediately without using the stack (`flushInlineTriggers`).
+ */
+function resolveActivatedManaAbility(
+	state: GameState,
+	player: PlayerGameState,
+	perm: CardInstance,
+	ab: EffectiveActivatedAbility | undefined,
+	chosenColor: ManaColor | undefined,
+	amount: number
+): void {
+	if (ab?.activationRestrictions?.includes('onceEachTurn')) {
+		perm.activatedAbilityIdsThisTurn = [...(perm.activatedAbilityIdsThisTurn ?? []), ab.id];
+	}
+	if (chosenColor && amount > 0) {
+		player.manaPool[chosenColor] += amount;
+	}
+	// CR 605.1b, 605.4a: triggered mana abilities ("Whenever you tap a land for mana") resolve immediately.
+	emitEvent(state, {
+		kind: 'TappedForMana',
+		playerId: player.playerId,
+		objectId: perm.instanceId,
+		object: perm
+	});
+	flushInlineTriggers(state);
+}
+
 function simulateOrExecuteManaOnly(
 	player: PlayerGameState,
 	manaReq: ManaCostRequirement,
@@ -926,8 +957,11 @@ function simulateOrExecuteManaOnly(
 	const pool: ManaPool = { ...player.manaPool };
 	const cmdIdentity = getPlayerCommanderIdentity(player);
 
-	const getProducedAmount = (perm: CardInstance, prodAmount: number): number =>
-		getDynamicManaProducedAmount(state, player, perm, prodAmount);
+	const getProducedAmount = (
+		perm: CardInstance,
+		prodAmount: number,
+		ab?: EffectiveActivatedAbility
+	): number => getDynamicManaProducedAmount(state, player, perm, prodAmount, ab);
 	const tapOnly = new Map<string, EffectiveActivatedAbility[]>();
 	const manaAbilitiesOf = (perm: CardInstance) => {
 		let abs = tapOnly.get(perm.instanceId);
@@ -967,7 +1001,10 @@ function simulateOrExecuteManaOnly(
 	);
 
 	const tappedSet = new Set<string>();
-	const manaChoices = new Map<string, { color: ManaColor; amount: number }>();
+	const manaChoices = new Map<
+		string,
+		{ color: ManaColor; amount: number; ab: EffectiveActivatedAbility | undefined }
+	>();
 
 	// Pass 1: Satisfy missing colored mana pips using the most-constrained sources first.
 	// Any remaining Phyrexian symbol not already converted to life must be paid with its primaryColor.
@@ -987,10 +1024,10 @@ function simulateOrExecuteManaOnly(
 			}
 			const matchedAb = manaAbilitiesOf(perm).find((a) => a.producesMana.includes(col));
 			const baseAmt = Math.max(1, matchedAb?.producesAmount || 1);
-			const amount = getProducedAmount(perm, baseAmt);
+			const amount = getProducedAmount(perm, baseAmt, matchedAb);
 			tappedSet.add(perm.instanceId);
 			pool[col] += amount;
-			manaChoices.set(perm.instanceId, { color: col, amount });
+			manaChoices.set(perm.instanceId, { color: col, amount, ab: matchedAb });
 		}
 	}
 
@@ -1003,10 +1040,10 @@ function simulateOrExecuteManaOnly(
 		const ab0 = manaAbilitiesOf(perm)[0];
 		const chosenColor: ManaColor = ab0?.producesMana[0] || 'C';
 		const baseAmt = Math.max(1, ab0?.producesAmount || 1);
-		const amount = getProducedAmount(perm, baseAmt);
+		const amount = getProducedAmount(perm, baseAmt, ab0);
 		tappedSet.add(perm.instanceId);
 		pool[chosenColor] += amount;
-		manaChoices.set(perm.instanceId, { color: chosenColor, amount });
+		manaChoices.set(perm.instanceId, { color: chosenColor, amount, ab: ab0 });
 	}
 
 	if (mutate) {
@@ -1014,7 +1051,14 @@ function simulateOrExecuteManaOnly(
 			const choice = manaChoices.get(perm.instanceId);
 			if (choice) {
 				perm.tapped = true;
-				player.manaPool[choice.color] += choice.amount;
+				resolveActivatedManaAbility(
+					state,
+					player,
+					perm,
+					choice.ab,
+					choice.color,
+					choice.amount
+				);
 			}
 		}
 		player.manaPool = deductManaFromPool(player.manaPool, manaReq);
@@ -1584,15 +1628,8 @@ function applyGameActionInner(
 			const amount = chosenColor ? getDynamicManaProducedAmount(state, actor, perm, baseAmount, ab) : 0;
 
 			const paid = payPlannedCosts(ctx, plan);
-			if (ab.activationRestrictions?.includes('onceEachTurn')) {
-				perm.activatedAbilityIdsThisTurn = [...(perm.activatedAbilityIdsThisTurn ?? []), ab.id];
-			}
-			if (chosenColor && amount > 0) {
-				actor.manaPool[chosenColor] += amount;
-			}
 			resetTriggerLoopTracking(state);
-			// CR 605.1b: triggered mana abilities ("Whenever you tap a land for mana") resolve now.
-			emitEvent(state, { kind: 'TappedForMana', playerId: actorId, objectId: perm.instanceId, object: perm });
+			resolveActivatedManaAbility(state, actor, perm, ab, chosenColor, amount);
 			flushTriggers(state);
 			if (paid.descriptions.length > 0 || cost.defs.some((d) => d.k === 'sacrifice' && d.filter === 'self')) {
 				addLog(

@@ -906,6 +906,42 @@ export function flushTriggers(state: GameState): void {
 	}
 }
 
+/**
+ * Resolves only pending triggered mana abilities (`mode === 'inline'`, CR 605.4a) immediately,
+ * leaving normal stack triggers (`mode === 'stack'`) pending until the next `flushTriggers`
+ * (when a player would receive priority, CR 603.3).
+ */
+export function flushInlineTriggers(state: GameState): void {
+	if (!host) return;
+	const ch = channel(state);
+	if (ch.deferFlush > 0) return;
+	ch.flushing += 1;
+	try {
+		for (let guard = 0; guard < 1000; guard++) {
+			if (!ch.pending.some((t) => t.mode === 'inline')) break;
+			const inlineBatch: PendingTrigger[] = [];
+			const remaining: PendingTrigger[] = [];
+			for (const t of ch.pending) {
+				if (t.mode === 'inline') inlineBatch.push(t);
+				else remaining.push(t);
+			}
+			ch.pending = remaining;
+			if (state.status === 'finished') return;
+			const order = apnap(state);
+			const byPlayer = (pid: string) =>
+				inlineBatch.filter((t) => t.controllerId === pid).sort((a, b) => a.order - b.order);
+			const inline = [...order].reverse().flatMap((pid) => byPlayer(pid));
+			for (const t of inline) {
+				if ((state.status as GameState['status']) === 'finished') return;
+				if (t.ability.condition && !evaluateCondition(state, t.ability.condition, t.controllerId, t.source.instanceId)) continue;
+				host.executeInline(state, t);
+			}
+		}
+	} finally {
+		ch.flushing -= 1;
+	}
+}
+
 // ---- Intervening-if conditions (CR 603.4) ---------------------------------------------------
 
 /**

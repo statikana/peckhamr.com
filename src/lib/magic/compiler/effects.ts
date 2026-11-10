@@ -1021,7 +1021,7 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 
 /** "Add {R}{R}{R}", "Add one mana of any color", "Add {G} for each Elf you control". */
 function addMana(p: Parser, text: string, span: Span): ClauseResult {
-	const t = text.trim();
+	const t = text.trim().replace(/^an additional\s+/i, '');
 	const symbols = (s: string) => (s.match(/\{([WUBRGC])\}/g) ?? []).map((x) => x[1] as ManaColor);
 	if (/^(?:\{[WUBRGC]\})+$/.test(t)) {
 		const mana = symbols(t);
