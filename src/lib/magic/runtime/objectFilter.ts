@@ -302,33 +302,15 @@ export function findObjects(filter: ObjectFilter, ctx: FilterContext, players?: 
 
 /**
  * CR 903.8: Total number of times `playerId` has cast their commander(s) from the command zone this
- * game, reading the existing `player.commanderCastCounts` / `CardInstance.commanderCastCount` state.
+ * game, reading `player.commanderCastCounts`.
  */
 export function playerCommanderCastCount(state: GameState, playerId: string): number {
 	const player = state.players.find((p) => p.playerId === playerId);
-	if (!player) return 0;
-	const byId = new Map<string, number>();
-	if (player.commanderCastCounts) {
-		for (const [id, count] of Object.entries(player.commanderCastCounts)) {
-			if (count > 0) byId.set(id, count);
-		}
-	}
-	for (const p of state.players) {
-		for (const z of ZONES) {
-			for (const c of p[z]) {
-				if (c.ownerId === playerId && c.isCommander && (c.commanderCastCount ?? 0) > (byId.get(c.instanceId) ?? 0)) {
-					byId.set(c.instanceId, c.commanderCastCount);
-				}
-			}
-		}
-	}
-	for (const item of state.stack) {
-		if ((item.ownerId ?? item.controllerId) === playerId && (item.commanderCastCount ?? 0) > (byId.get(item.sourceInstanceId) ?? 0)) {
-			byId.set(item.sourceInstanceId, item.commanderCastCount!);
-		}
-	}
+	if (!player || !player.commanderCastCounts) return 0;
 	let total = 0;
-	for (const v of byId.values()) total += v;
+	for (const count of Object.values(player.commanderCastCounts)) {
+		if (count > 0) total += count;
+	}
 	return total;
 }
 

@@ -9,7 +9,7 @@ import {
 	isCombatDeclarationPending
 } from '../engine.ts';
 import { executeEffectSteps } from './effects.ts';
-import { matchesObjectFilter, objectManaValue } from './objectFilter.ts';
+import { matchesObjectFilter, objectManaValue, playerCommanderCastCount } from './objectFilter.ts';
 import type {
 	CardInstance,
 	GameState,
@@ -836,5 +836,148 @@ describe('Review 3 — Group C: prowess dedupe, objectManaValue, and playerComma
 			2,
 			'Non-{X} stack CardInstance whose StackItem has xValue set must still have its printed MV (CR 202.3e, R8)'
 		);
+	});
+
+	it('R9: playerCommanderCastCount reads player.commanderCastCounts without scanning zones and matches the zone-scan count across casting a commander twice (CR 903.8)', () => {
+		const { state, p1, p2 } = makeGame([false, false]);
+
+		function legacyZoneScanCommanderCastCount(st: GameState, playerId: string): number {
+			const player = st.players.find((p) => p.playerId === playerId);
+			if (!player) return 0;
+			const byId = new Map<string, number>();
+			if (player.commanderCastCounts) {
+				for (const [id, count] of Object.entries(player.commanderCastCounts)) {
+					if (count > 0) byId.set(id, count);
+				}
+			}
+			const zones = ['battlefield', 'graveyard', 'exile', 'hand', 'library', 'command'] as const;
+			for (const p of st.players) {
+				for (const z of zones) {
+					for (const c of p[z]) {
+						if (
+							c.ownerId === playerId &&
+							c.isCommander &&
+							(c.commanderCastCount ?? 0) > (byId.get(c.instanceId) ?? 0)
+						) {
+							byId.set(c.instanceId, c.commanderCastCount);
+						}
+					}
+				}
+			}
+			for (const item of st.stack) {
+				if (
+					(item.ownerId ?? item.controllerId) === playerId &&
+					(item.commanderCastCount ?? 0) > (byId.get(item.sourceInstanceId) ?? 0)
+				) {
+					byId.set(item.sourceInstanceId, item.commanderCastCount!);
+				}
+			}
+			let total = 0;
+			for (const v of byId.values()) total += v;
+			return total;
+		}
+
+		const cmd = p1.command[0]!;
+		assert.ok(cmd && cmd.isCommander, 'p1 starts with commander in command zone');
+
+		// Step 0: before casting
+		assert.equal(playerCommanderCastCount(state, p1.playerId), 0);
+		assert.equal(
+			playerCommanderCastCount(state, p1.playerId),
+			legacyZoneScanCommanderCastCount(state, p1.playerId)
+		);
+
+		// Cast commander #1 from command zone ({1}{G})
+		p1.manaPool = { W: 0, U: 0, B: 0, R: 0, G: 10, C: 0 };
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: cmd.instanceId,
+				fromZone: 'command'
+			}).ok,
+			true
+		);
+		// Step 1: on stack after 1st cast
+		assert.equal(playerCommanderCastCount(state, p1.playerId), 1);
+		assert.equal(
+			playerCommanderCastCount(state, p1.playerId),
+			legacyZoneScanCommanderCastCount(state, p1.playerId)
+		);
+
+		// Resolve 1st cast -> enters battlefield
+		assert.equal(applyGameAction(state, p1.playerId, { type: 'pass_priority' }).ok, true);
+		assert.equal(applyGameAction(state, p2.playerId, { type: 'pass_priority' }).ok, true);
+		assert.equal(playerCommanderCastCount(state, p1.playerId), 1);
+		assert.equal(
+			playerCommanderCastCount(state, p1.playerId),
+			legacyZoneScanCommanderCastCount(state, p1.playerId)
+		);
+
+		// Kill commander via SBA and return to command zone
+		const cmdOnBf = p1.battlefield.find((c) => c.instanceId === cmd.instanceId)!;
+		cmdOnBf.damageMarked = 2;
+		checkStateBasedActions(state);
+		const cmdPrompt = state.pendingPrompts.find((pr) => pr.kind === 'commander_zone_choice');
+		assert.ok(cmdPrompt, 'Expected commander_zone_choice SBA prompt for human commander owner (CR 903.9a)');
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'choice',
+				promptId: cmdPrompt.id,
+				answer: { kind: 'yesNo', yes: true }
+			}).ok,
+			true
+		);
+		assert.equal(p1.command.some((c) => c.instanceId === cmd.instanceId), true);
+		assert.equal(playerCommanderCastCount(state, p1.playerId), 1);
+		assert.equal(
+			playerCommanderCastCount(state, p1.playerId),
+			legacyZoneScanCommanderCastCount(state, p1.playerId)
+		);
+
+		// Cast commander #2 from command zone ({1}{G} + {2} commander tax)
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: cmd.instanceId,
+				fromZone: 'command'
+			}).ok,
+			true
+		);
+		assert.equal(playerCommanderCastCount(state, p1.playerId), 2);
+		assert.equal(
+			playerCommanderCastCount(state, p1.playerId),
+			legacyZoneScanCommanderCastCount(state, p1.playerId)
+		);
+
+		// Resolve 2nd cast -> enters battlefield
+		assert.equal(applyGameAction(state, p1.playerId, { type: 'pass_priority' }).ok, true);
+		assert.equal(applyGameAction(state, p2.playerId, { type: 'pass_priority' }).ok, true);
+		assert.equal(playerCommanderCastCount(state, p1.playerId), 2);
+		assert.equal(
+			playerCommanderCastCount(state, p1.playerId),
+			legacyZoneScanCommanderCastCount(state, p1.playerId)
+		);
+
+		// Verify playerCommanderCastCount does not scan player zones (e.g. library)
+		let libraryIndexReads = 0;
+		const rawLibrary = p1.library;
+		p1.library = new Proxy(rawLibrary, {
+			get(target, prop, receiver) {
+				if (typeof prop === 'string' && /^\d+$/.test(prop)) {
+					libraryIndexReads += 1;
+				}
+				return Reflect.get(target, prop, receiver);
+			}
+		});
+		try {
+			assert.equal(playerCommanderCastCount(state, p1.playerId), 2);
+			assert.equal(
+				libraryIndexReads,
+				0,
+				'playerCommanderCastCount must read player.commanderCastCounts in O(1) without scanning player zones (R9)'
+			);
+		} finally {
+			p1.library = rawLibrary;
+		}
 	});
 });
