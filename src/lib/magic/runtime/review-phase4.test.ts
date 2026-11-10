@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { runAutomatedPriorityAndBots } from '../ai.ts';
+import { cardSupportReport } from '../compiler/support.ts';
 import * as engine from '../engine.ts';
 import {
 	applyGameAction,
@@ -301,5 +302,37 @@ describe('Phase 4 — Trigger Cap Redesign & Loop Detection (#10)', () => {
 		);
 		const guided = state.pendingPrompts.find((pr) => pr.purpose === 'guided_resolution');
 		assert.ok(guided, 'pauses the game for manual resolution (guided_resolution prompt) when the backstop is reached');
+	});
+
+	it('6. a mandatory loop that drains life to 0 is NOT a draw (CR 104.4b): the game ends with a winner', () => {
+		const { state, p } = game(2, [true, true]);
+		const drainer = creature(
+			'Drain Sporewright',
+			'Whenever another creature you control enters, create a 1/1 green Saproling creature token and each opponent loses 1 life.',
+			'1',
+			'1',
+			'Fungus'
+		);
+		assert.equal(cardSupportReport(drainer).fullySupported, true);
+		put(state, p[0], drainer, 'battlefield');
+		p[1].life = 40;
+		createTokenOnBoard(state, p[0], {
+			name: 'Saproling',
+			power: 1,
+			toughness: 1,
+			colors: ['G'],
+			typeLine: 'Token Creature — Saproling',
+			keywords: []
+		});
+		for (let i = 0; i < 60 && state.status === 'active'; i++) {
+			runAutomatedPriorityAndBots(state, { maxSteps: 50 });
+		}
+		assert.equal(state.status, 'finished');
+		assert.equal(state.winnerPlayerId, p[0].playerId);
+		assert.equal(p[1].lost, true);
+		assert.equal(
+			state.log.some((l) => /104\.4b/.test(l.text)),
+			false
+		);
 	});
 });
