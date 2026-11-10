@@ -44,6 +44,48 @@ export interface RunningMagicBackend {
 	close(): Promise<void>;
 }
 
+export class KeyedMutex {
+	private readonly tails = new Map<string, Promise<void>>();
+
+	async runExclusive<T>(key: string, fn: () => Promise<T>): Promise<T> {
+		const prev = this.tails.get(key) ?? Promise.resolve();
+		let release!: () => void;
+		const gate = new Promise<void>((resolveGate) => {
+			release = resolveGate;
+		});
+		const nextTail = prev.then(() => gate);
+		this.tails.set(key, nextTail);
+
+		await prev;
+		try {
+			return await fn();
+		} finally {
+			release();
+			if (this.tails.get(key) === nextTail) {
+				this.tails.delete(key);
+			}
+		}
+	}
+
+	get activeKeys(): number {
+		return this.tails.size;
+	}
+}
+
+function extractLobbyMutexKey(bodyBuffer: Buffer | undefined): string | null {
+	if (!bodyBuffer || bodyBuffer.byteLength === 0) return null;
+	try {
+		const parsed = JSON.parse(bodyBuffer.toString('utf8')) as Record<string, unknown>;
+		if (parsed && typeof parsed === 'object') {
+			const code = typeof parsed.code === 'string' ? parsed.code.trim().toUpperCase() : '';
+			if (code) return code;
+		}
+	} catch {
+		// Invalid JSON is handled by the route handler.
+	}
+	return null;
+}
+
 class PayloadTooLargeError extends Error {
 	constructor() {
 		super('Request body exceeds 1 MB limit.');
@@ -168,6 +210,7 @@ export async function startMagicBackendServer(
 		}
 	}
 	const platform = { env: platformEnv as unknown as Env } as App.Platform;
+	const lobbyMutex = new KeyedMutex();
 	const startedAt = Date.now();
 
 	const server = createServer(async (req, res) => {
@@ -293,7 +336,13 @@ export async function startMagicBackendServer(
 				fetch: globalThis.fetch
 			} as unknown as Parameters<RequestHandler>[0];
 
-			const webRes = await handler(event);
+			const lobbyKey =
+				normalizedPath === '/magic/api/lobby' && method === 'POST'
+					? extractLobbyMutexKey(bodyBuffer)
+					: null;
+			const webRes = lobbyKey
+				? await lobbyMutex.runExclusive(lobbyKey, () => Promise.resolve(handler(event)))
+				: await handler(event);
 			await finish(webRes);
 		} catch (err) {
 			if (err instanceof PayloadTooLargeError) {
