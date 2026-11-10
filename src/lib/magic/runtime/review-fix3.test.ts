@@ -218,4 +218,63 @@ describe('Review 3 — Group A: SBA graveyard batch with pending moves and libra
 			'Phoenix is in exile after choosing exile replacement'
 		);
 	});
+
+	it('R2: simultaneous SBA deaths where one creature has a "shuffle into its owner\'s library instead" replacement puts it in the library only, exactly once, and the other in the graveyard (CR 614.1, 704.3, 704.8)', () => {
+		const { state, p1 } = makeGame([false, false]);
+
+		const colossus = putInZone(
+			state,
+			p1,
+			synthCard({
+				name: 'Adamantine Colossus',
+				typeLine: 'Artifact Creature — Golem',
+				power: '11',
+				toughness: '11',
+				oracleText:
+					'If Adamantine Colossus would be put into a graveyard from anywhere, shuffle it into its owner\'s library instead.'
+			}),
+			'battlefield'
+		);
+		const bear = putInZone(
+			state,
+			p1,
+			synthCard({
+				name: 'Grizzly Bears',
+				typeLine: 'Creature — Bear',
+				power: '2',
+				toughness: '2'
+			}),
+			'battlefield'
+		);
+
+		colossus.damageMarked = 11;
+		bear.damageMarked = 2;
+		checkStateBasedActions(state);
+
+		assert.equal(
+			p1.graveyard.some((c) => c.instanceId === colossus.instanceId),
+			false,
+			'Colossus with library replacement must not also be pushed into graveyard during SBA restore (R2)'
+		);
+		assert.equal(
+			p1.library.some((c) => c.instanceId === colossus.instanceId),
+			true,
+			'Colossus must be in owner\'s library'
+		);
+		assert.equal(
+			countOccurrencesInPlayerZones(state, colossus.instanceId),
+			1,
+			'Colossus must exist in player zones exactly once'
+		);
+		assert.equal(
+			p1.graveyard.some((c) => c.instanceId === bear.instanceId),
+			true,
+			'Other dying creature is in graveyard'
+		);
+		assert.equal(
+			countOccurrencesInPlayerZones(state, bear.instanceId),
+			1,
+			'Other dying creature exists in player zones exactly once'
+		);
+	});
 });

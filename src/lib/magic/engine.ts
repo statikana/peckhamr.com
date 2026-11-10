@@ -8025,7 +8025,8 @@ export function checkStateBasedActions(state: GameState): void {
 			{
 				perm: CardInstance;
 				postState: CardInstance;
-				destZone: 'graveyard' | 'exile' | 'command' | 'pending';
+				destZone: 'graveyard' | 'exile' | 'command' | 'library' | 'hand' | 'battlefield' | 'pending';
+				insertIndex: number;
 				owner: PlayerGameState | undefined;
 			}
 		>();
@@ -8073,6 +8074,12 @@ export function checkStateBasedActions(state: GameState): void {
 
 				if (sbaGraveyardBatch.length > 1) {
 					const owner = state.players.find((pl) => pl.playerId === item.perm.ownerId);
+					const destZone: 'graveyard' | 'exile' | 'command' | 'library' | 'hand' | 'battlefield' | 'pending' =
+						actualDest === 'pending' || actualDest === 'stack' ? 'pending' : actualDest;
+					const insertIndex =
+						owner && destZone !== 'pending'
+							? owner[destZone].findIndex((c) => c.instanceId === item.perm.instanceId)
+							: -1;
 					postResults.set(item.perm.instanceId, {
 						perm: item.perm,
 						postState: {
@@ -8080,14 +8087,8 @@ export function checkStateBasedActions(state: GameState): void {
 							counters: { ...item.perm.counters },
 							grantedKeywords: [...item.perm.grantedKeywords]
 						},
-						destZone:
-							actualDest === 'pending'
-								? 'pending'
-								: actualDest === 'exile'
-									? 'exile'
-									: actualDest === 'command'
-										? 'command'
-										: 'graveyard',
+						destZone,
+						insertIndex,
 						owner
 					});
 				}
@@ -8110,7 +8111,13 @@ export function checkStateBasedActions(state: GameState): void {
 					if (res.owner && res.destZone !== 'pending' && !res.perm.isToken) {
 						const curZone = res.owner[res.destZone];
 						if (!curZone.some((c) => c.instanceId === res.perm.instanceId)) {
-							setZoneOrder(res.owner, res.destZone, [...curZone, res.perm]);
+							const nextZone = [...curZone];
+							const at =
+								res.insertIndex >= 0 && res.insertIndex <= nextZone.length
+									? res.insertIndex
+									: nextZone.length;
+							nextZone.splice(at, 0, res.perm);
+							setZoneOrder(res.owner, res.destZone, nextZone);
 						}
 					}
 				}
