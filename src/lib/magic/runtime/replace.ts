@@ -983,17 +983,35 @@ export function cardEntersTapped(
 	return false;
 }
 
+type CounterPlacementFn = (
+	state: GameState,
+	perm: CardInstance,
+	type: CounterType,
+	amount: number
+) => number;
+
+let placeCounters: CounterPlacementFn | null = null;
+
+export function registerCounterPlacement(fn: CounterPlacementFn): void {
+	placeCounters = fn;
+}
+
 /**
  * Applies self-replacement effects (`~ enters tapped`, `~ enters with N <counter> counters on it`)
- * to `perm` as it enters the battlefield. Counter amounts are multiplied by active counter
- * multipliers on the battlefield.
+ * to `perm` as it enters the battlefield. Counter amounts are routed through `addCountersToPermanent`
+ * so `CounterPlaced` is emitted and active counter multipliers on the battlefield apply (CR 122.6).
  */
 export function applySelfEtbReplacements(state: GameState, perm: CardInstance): void {
 	const card = perm.copiableCard ?? perm.card;
 	const compiled = compileCard(card);
 	const face = compiled.faces[0];
 	if (!face) return;
-	const ctx: FilterContext = { state, controllerId: perm.controllerId, source: perm };
+	const ctx: FilterContext = {
+		state,
+		controllerId: perm.controllerId,
+		source: perm,
+		xValue: perm.enteredWithX
+	};
 
 	for (const ability of face.abilities) {
 		if (ability.kind !== 'replacement') continue;
@@ -1012,8 +1030,12 @@ export function applySelfEtbReplacements(state: GameState, perm: CardInstance): 
 			const baseAmount = Math.max(0, evalReplaceAmount(rep.with.counters.amount, ctx));
 			if (baseAmount > 0) {
 				const cType = rep.with.counters.counter;
-				const mult = counterMultiplier(state, perm, cType);
-				perm.counters[cType] = (perm.counters[cType] ?? 0) + baseAmount * mult;
+				if (placeCounters) {
+					placeCounters(state, perm, cType, baseAmount);
+				} else {
+					const mult = counterMultiplier(state, perm, cType);
+					perm.counters[cType] = (perm.counters[cType] ?? 0) + baseAmount * mult;
+				}
 			}
 		}
 	}

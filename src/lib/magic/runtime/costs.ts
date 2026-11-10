@@ -29,7 +29,7 @@ import type {
 import { evaluateAmount, evaluateCondition, matchesObjectFilter, type FilterContext } from './objectFilter.ts';
 import { noteLayerInputsChanged, withStableLayerInputs } from './layerCache.ts';
 import { playerLifeTotalCantChange } from './replace.ts';
-import { moveObject, type PlayerZone } from './zones.ts';
+import { moveObject, tapPermanent, type PlayerZone } from './zones.ts';
 
 // ---- Where costs come from ------------------------------------------------------------------
 
@@ -863,10 +863,10 @@ export function payPlannedCosts(ctx: CostContext, plan: Extract<CostPlan, { part
 
 	// 1. Tap and untap costs.
 	for (const part of plan.parts) {
-		if (part.def.k === 'tapSelf') source.tapped = true;
+		if (part.def.k === 'tapSelf') tapPermanent(ctx.state, source);
 		if (part.def.k === 'untapSelf') source.tapped = false;
 		if (part.def.k === 'tapOthers') {
-			for (const c of part.objects ?? []) c.tapped = true;
+			for (const c of part.objects ?? []) tapPermanent(ctx.state, c);
 			descriptions.push(`tapped ${(part.objects ?? []).map((c) => c.card.name).join(', ')}`);
 		}
 	}

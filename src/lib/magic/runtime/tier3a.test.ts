@@ -5,10 +5,13 @@ import {
 	applyGameAction,
 	canPayOrAutoTap,
 	createCardInstance,
-	createInitialGameState
+	createInitialGameState,
+	drawCards,
+	runBeginningOfTurn
 } from '../engine.ts';
-import { parseManaCost } from '../oracle.ts';
+import { subscribeEvents, type GameEvent } from './events.ts';
 import { noteLayerInputsChanged } from './layerCache.ts';
+import { parseManaCost } from '../oracle.ts';
 import { PRECON_DECKS } from '../precons.ts';
 import {
 	DEFAULT_LOBBY_RULES,
@@ -199,5 +202,280 @@ describe('Tier 3 Track A — Item 1: Auto-tap emits TappedForMana and resolves t
 		assert.equal(forest2.tapped, true, 'forest2 was auto-tapped');
 		assert.equal(state.stack.length, 1, 'only the spell is on the stack');
 		assert.equal(alice.manaPool.G, 1, 'extra {G} from triggered mana ability remains in mana pool after auto-paying {G}');
+	});
+});
+
+function settle(state: GameState, max = 40): void {
+	for (let i = 0; i < max && (state.stack.length > 0 || state.pendingPrompts.length > 0); i++) {
+		const pr = state.pendingPrompts[0];
+		if (pr) {
+			if (pr.purpose === 'trigger_order' && pr.choice?.kind === 'orderObjects') {
+				const res = applyGameAction(state, pr.playerId, {
+					type: 'choice',
+					promptId: pr.id,
+					answer: { kind: 'orderObjects', topIds: pr.choice.objectIds }
+				});
+				assert.equal(res.ok, true, res.error ?? '');
+				continue;
+			}
+			break;
+		}
+		const prio = state.players[state.priorityPlayerIndex];
+		const res = applyGameAction(state, prio.playerId, { type: 'pass_priority' });
+		assert.equal(res.ok, true, res.error ?? '');
+	}
+}
+
+describe('Tier 3 Track A — Item 2: GainLife, CardDrawn, BecomesTapped events, playersDrawnThisTurn reset, and ETB CounterPlaced (CR 119.9-119.10, 121.2, 122.6, 603.2)', () => {
+	it('GainLife event fires once per positive life-gain occurrence with correct amount and player, and gaining 0 life does not trigger (CR 119.9-119.10)', () => {
+		const state = createTestGame();
+		const [alice, bob] = state.players;
+		alice.manaPool = { W: 10, U: 10, B: 10, R: 10, G: 10, C: 10 };
+
+		const pridemate = putInZone(
+			state,
+			alice,
+			card({
+				name: 'Sunlit Acolyte',
+				typeLine: 'Creature — Cat Soldier',
+				oracleText: 'Whenever you gain life, put that many +1/+1 counters on ~.'
+			}),
+			'battlefield'
+		);
+
+		const events: GameEvent[] = [];
+		const unsub = subscribeEvents(state, (_s, ev) => events.push(ev));
+
+		// 1. Gaining 0 life (X = 0) is not a life-gain event (CR 119.9, 119.10).
+		const zeroHeal = putInZone(
+			state,
+			alice,
+			card({
+				name: 'Empty Draught',
+				manaCost: '{X}{W}',
+				cmc: 1,
+				typeLine: 'Sorcery',
+				oracleText: 'You gain X life.'
+			}),
+			'hand'
+		);
+		assert.equal(
+			applyGameAction(state, alice.playerId, {
+				type: 'cast_spell',
+				instanceId: zeroHeal.instanceId,
+				xValue: 0
+			}).ok,
+			true
+		);
+		settle(state);
+		assert.equal(
+			events.filter((e) => (e as { kind: string }).kind === 'GainLife').length,
+			0,
+			'gaining 0 life must not emit GainLife (CR 119.10)'
+		);
+		assert.equal(pridemate.counters['+1/+1'], 0);
+
+		// 2. Positive life gain emits GainLife with playerId and amount, triggering Sunlit Acolyte with eventAmount = 3.
+		const heal3 = putInZone(
+			state,
+			alice,
+			card({
+				name: 'vitality Balm',
+				manaCost: '{W}',
+				cmc: 1,
+				typeLine: 'Sorcery',
+				oracleText: 'You gain 3 life.'
+			}),
+			'hand'
+		);
+		assert.equal(
+			applyGameAction(state, alice.playerId, {
+				type: 'cast_spell',
+				instanceId: heal3.instanceId
+			}).ok,
+			true
+		);
+		settle(state);
+		const gainEvents = events.filter((e) => (e as { kind: string }).kind === 'GainLife') as Array<{
+			kind: 'GainLife';
+			playerId: string;
+			amount: number;
+		}>;
+		assert.equal(gainEvents.length, 1);
+		assert.equal(gainEvents[0].playerId, alice.playerId);
+		assert.equal(gainEvents[0].amount, 3);
+		assert.equal(pridemate.counters['+1/+1'], 3, 'trigger placed 3 +1/+1 counters from eventAmount');
+
+		// 3. Opponent gaining life does not trigger "Whenever you gain life".
+		const bobHeal = putInZone(
+			state,
+			alice,
+			card({
+				name: 'Alms for the Rival',
+				manaCost: '{W}',
+				cmc: 1,
+				typeLine: 'Sorcery',
+				oracleText: 'Target player gains 2 life.'
+			}),
+			'hand'
+		);
+		assert.equal(
+			applyGameAction(state, alice.playerId, {
+				type: 'cast_spell',
+				instanceId: bobHeal.instanceId,
+				targets: [{ kind: 'player', id: bob.playerId, label: bob.username }]
+			}).ok,
+			true
+		);
+		settle(state);
+		assert.equal(pridemate.counters['+1/+1'], 3, 'opponent life gain did not trigger Alice ability');
+		unsub();
+	});
+
+	it('CardDrawn event fires once per individual card drawn (CR 121.2) and playersDrawnThisTurn resets on turn transition', () => {
+		const state = createTestGame();
+		const [alice] = state.players;
+
+		putInZone(
+			state,
+			alice,
+			card({
+				name: 'Scroll Sage',
+				typeLine: 'Creature — Wizard',
+				oracleText: 'Whenever you draw a card, you gain 1 life.'
+			}),
+			'battlefield'
+		);
+
+		const events: GameEvent[] = [];
+		const unsub = subscribeEvents(state, (_s, ev) => events.push(ev));
+
+		const startLife = alice.life;
+		drawCards(state, alice, 3);
+		const drawEvs = events.filter((e) => (e as { kind: string }).kind === 'CardDrawn') as Array<{
+			kind: 'CardDrawn';
+			playerId: string;
+		}>;
+		assert.equal(drawEvs.length, 3, 'each card drawn is its own CardDrawn event (CR 121.2)');
+		assert.ok(drawEvs.every((e) => e.playerId === alice.playerId));
+		assert.ok(state.playersDrawnThisTurn?.includes(alice.playerId), 'playersDrawnThisTurn tracks Alice');
+
+		settle(state);
+		assert.equal(alice.life, startLife + 3, 'three draw triggers each gained 1 life');
+
+		// Turn transition clears state.playersDrawnThisTurn.
+		runBeginningOfTurn(state);
+		assert.deepEqual(state.playersDrawnThisTurn, [], 'playersDrawnThisTurn cleared at beginning of turn');
+		unsub();
+	});
+
+	it('BecomesTapped event fires only when an untapped permanent becomes tapped (CR 603.2e)', () => {
+		const state = createTestGame();
+		const [alice] = state.players;
+
+		const tapwatcher = putInZone(
+			state,
+			alice,
+			card({
+				name: 'Drowsing Druid',
+				typeLine: 'Creature — Elf Druid',
+				oracleText: 'Whenever ~ becomes tapped, you gain 2 life.\n{T}: Add {G}.'
+			}),
+			'battlefield'
+		);
+
+		const events: GameEvent[] = [];
+		const unsub = subscribeEvents(state, (_s, ev) => events.push(ev));
+		const startLife = alice.life;
+
+		// 1. Tapping an untapped permanent emits BecomesTapped and triggers Drowsing Druid.
+		const tapRes = applyGameAction(state, alice.playerId, {
+			type: 'tap_mana',
+			instanceId: tapwatcher.instanceId
+		});
+		assert.equal(tapRes.ok, true, tapRes.error ?? '');
+		const tapEvs = events.filter((e) => (e as { kind: string }).kind === 'BecomesTapped');
+		assert.equal(tapEvs.length, 1, 'BecomesTapped emitted once');
+		assert.equal(state.stack.length, 1, 'BecomesTapped trigger is on the stack');
+		settle(state);
+		assert.equal(alice.life, startLife + 2);
+
+		// 2. Entering the battlefield tapped does NOT emit BecomesTapped (CR 603.2e).
+		const tapland = putInZone(
+			state,
+			alice,
+			card({
+				name: 'Tranquil Grove',
+				manaCost: '',
+				cmc: 0,
+				typeLine: 'Land',
+				oracleText: '~ enters tapped.\n{T}: Add {G}.',
+				power: undefined,
+				toughness: undefined
+			}),
+			'hand'
+		);
+		assert.equal(
+			applyGameAction(state, alice.playerId, {
+				type: 'play_land',
+				instanceId: tapland.instanceId
+			}).ok,
+			true
+		);
+		assert.equal(tapland.tapped, true);
+		assert.equal(
+			events.filter((e) => (e as { kind: string }).kind === 'BecomesTapped').length,
+			1,
+			'entering tapped must not emit BecomesTapped (CR 603.2e)'
+		);
+		unsub();
+	});
+
+	it('ETB-with-counters routes through addCountersToPermanent and emits CounterPlaced (CR 122.6)', () => {
+		const state = createTestGame();
+		const [alice] = state.players;
+		alice.manaPool = { W: 10, U: 10, B: 10, R: 10, G: 10, C: 10 };
+
+		const hydra = putInZone(
+			state,
+			alice,
+			card({
+				name: 'Runebound Hydra',
+				manaCost: '{2}{G}',
+				cmc: 3,
+				typeLine: 'Creature — Hydra',
+				oracleText: '~ enters with two +1/+1 counters on it.\nWhenever a +1/+1 counter is put on ~, draw a card.',
+				power: '0',
+				toughness: '0'
+			}),
+			'hand'
+		);
+
+		const events: GameEvent[] = [];
+		const unsub = subscribeEvents(state, (_s, ev) => events.push(ev));
+		const handBefore = alice.hand.length - 1; // minus hydra being cast
+
+		assert.equal(
+			applyGameAction(state, alice.playerId, {
+				type: 'cast_spell',
+				instanceId: hydra.instanceId
+			}).ok,
+			true
+		);
+		// Resolve Runebound Hydra onto the battlefield.
+		assert.equal(applyGameAction(state, alice.playerId, { type: 'pass_priority' }).ok, true);
+		assert.equal(applyGameAction(state, state.players[1].playerId, { type: 'pass_priority' }).ok, true);
+
+		const counterEvs = events.filter((e) => e.kind === 'CounterPlaced');
+		assert.equal(counterEvs.length, 1, 'ETB counters emitted CounterPlaced (CR 122.6)');
+		assert.equal(counterEvs[0].amount, 2);
+		assert.equal(
+			state.stack.some((s) => s.kind === 'triggered' && s.title.includes('Runebound Hydra')),
+			true,
+			'CounterPlaced trigger went on the stack on ETB'
+		);
+		settle(state);
+		assert.equal(alice.hand.length, handBefore + 1, 'trigger resolved and drew a card');
+		unsub();
 	});
 });

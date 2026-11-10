@@ -52,9 +52,9 @@ import { evaluatePermanent, inspectCardContinuousBreakdown } from '../ruleTree.t
 import { enqueueChoicePrompt } from './choices.ts';
 import { emitEvent } from './events.ts';
 import { activeRuleModifiers, tokenMultiplier } from './replace.ts';
-import { withSimultaneousDestroyLki } from './triggers.ts';
+import { flushTriggers, withSimultaneousDestroyLki } from './triggers.ts';
 import { nextRandom } from './random.ts';
-import { allocateTimestamp, moveObject, rearrangeLibrary } from './zones.ts';
+import { allocateTimestamp, moveObject, rearrangeLibrary, tapPermanent } from './zones.ts';
 import { PROMPTING_VERBS } from '../compiler/interpretable.ts';
 
 /** Seeded randomness lives in runtime/random.ts (re-exported here for existing importers). */
@@ -447,16 +447,32 @@ export function dealDamageToPlayer(
 	return dmg;
 }
 
+/**
+ * CR 119.9–119.10: Single funnel for positive life gain. Gaining 0 life (or attempting to gain life
+ * while `lifeTotalCantChange` applies) is not a life-gain event and does not emit `GainLife`.
+ */
+export function gainPlayerLife(
+	state: GameState,
+	player: PlayerGameState,
+	amount: number
+): number {
+	if (amount <= 0 || player.lost) return 0;
+	const cantChange =
+		Boolean(player.lifeTotalCannotChangeThisTurn) ||
+		activeRuleModifiers(state, 'lifeTotalCantChange', player.playerId).length > 0;
+	if (cantChange) return 0;
+	player.life += amount;
+	emitEvent(state, { kind: 'GainLife', playerId: player.playerId, amount });
+	flushTriggers(state);
+	return amount;
+}
+
 export function applyLifelinkGain(
 	state: GameState,
 	controller: PlayerGameState,
 	totalDealt: number
 ): void {
-	if (totalDealt <= 0 || controller.lost) return;
-	const cantChange =
-		Boolean(controller.lifeTotalCannotChangeThisTurn) ||
-		activeRuleModifiers(state, 'lifeTotalCantChange', controller.playerId).length > 0;
-	if (!cantChange) controller.life += totalDealt;
+	gainPlayerLife(state, controller, totalDealt);
 }
 
 // ---- Interpreter ----------------------------------------------------------------------------
@@ -954,10 +970,14 @@ class Run {
 						: this.players(step.subject);
 				for (const pl of targets) {
 					const delta = step.verb === 'gainLife' ? n : -n;
-					const cantChange =
-						Boolean(pl.lifeTotalCannotChangeThisTurn) ||
-						activeRuleModifiers(s, 'lifeTotalCantChange', pl.playerId).length > 0;
-					if (!cantChange) pl.life += delta;
+					if (step.verb === 'gainLife') {
+						gainPlayerLife(s, pl, n);
+					} else {
+						const cantChange =
+							Boolean(pl.lifeTotalCannotChangeThisTurn) ||
+							activeRuleModifiers(s, 'lifeTotalCantChange', pl.playerId).length > 0;
+						if (!cantChange) pl.life += delta;
+					}
 					p.emitVfx(s, {
 						kind: delta >= 0 ? 'heal' : 'damage',
 						sourceId: you.playerId,
@@ -1255,7 +1275,7 @@ class Run {
 							: Boolean((step.params as { tap?: boolean } | undefined)?.tap);
 				for (const o of objs) {
 					if (shouldTap) {
-						o.tapped = true;
+						tapPermanent(s, o);
 					} else if (o.tapped) {
 						// CR 122.1d: If a permanent with a stun counter on it would become untapped,
 						// instead remove a stun counter from it.

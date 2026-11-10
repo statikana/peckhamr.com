@@ -660,3 +660,22 @@ export function mulliganRedraw(
 		});
 	}
 }
+
+/**
+ * CR 701.26a, CR 603.2e: Single funnel for tapping a permanent on the battlefield.
+ * Only an untapped permanent can become tapped. If `perm` was untapped, sets `perm.tapped = true`,
+ * notifies the layer cache, and (if on the battlefield and not phased out) emits `BecomesTapped`.
+ */
+export function tapPermanent(state: GameState, perm: CardInstance): boolean {
+	if (perm.tapped) return false;
+	perm.tapped = true;
+	noteLayerInputsChanged(state);
+	if (perm.zone === 'battlefield' && !perm.phasedOut) {
+		emitEvent(state, {
+			kind: 'BecomesTapped',
+			objectId: perm.instanceId,
+			object: perm
+		});
+	}
+	return true;
+}

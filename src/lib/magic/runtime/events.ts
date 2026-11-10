@@ -151,8 +151,33 @@ export interface TappedForManaEvent extends EventBase {
 	object: CardInstance;
 }
 
+/** A player gained a positive amount of life (CR 119.9, 119.10: 0 life is not a life-gain event). */
+export interface GainLifeEvent extends EventBase {
+	kind: 'GainLife';
+	playerId: string;
+	amount: number;
+}
+
+/** A player drew a single card (CR 121.2: each card drawn is its own event). */
+export interface CardDrawnEvent extends EventBase {
+	kind: 'CardDrawn';
+	playerId: string;
+	objectId: string;
+	object: CardInstance;
+}
+
+/** An untapped permanent became tapped (CR 603.2e: does not fire if already tapped or entering tapped). */
+export interface BecomesTappedEvent extends EventBase {
+	kind: 'BecomesTapped';
+	objectId: string;
+	object: CardInstance;
+}
+
 export type GameEvent =
 	| TappedForManaEvent
+	| GainLifeEvent
+	| CardDrawnEvent
+	| BecomesTappedEvent
 	| ZoneChangeEvent
 	| CastEvent
 	| AttackDeclaredEvent

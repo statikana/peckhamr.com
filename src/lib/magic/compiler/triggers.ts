@@ -399,7 +399,10 @@ const RUNTIME_EVENT_FIELDS: Partial<Record<TriggerDef['event'], ReadonlySet<stri
 	counterPlaced: new Set(['object', 'counter']),
 	becomesTarget: new Set(['object', 'targetedBy']),
 	attached: new Set(['object', 'host']),
-	tappedForMana: new Set(['object', 'player'])
+	tappedForMana: new Set(['object', 'player']),
+	gainLife: new Set(['player']),
+	drawCard: new Set(['player']),
+	becomesTapped: new Set(['object', 'orSelf'])
 };
 
 function objectFilterProblem(f: ObjectFilter | undefined): string | null {
@@ -429,7 +432,7 @@ export function runtimeTriggerProblem(def: TriggerDef): string | null {
 	const p = objectFilterProblem(f.host);
 	if (p) return p;
 	// The object an Aura/Equipment is attached to has already been detached when it leaves.
-	if (f.object === 'attachedTo' && !['attacks', 'dealsDamage', 'tappedForMana'].includes(def.event)) {
+	if (f.object === 'attachedTo' && !['attacks', 'dealsDamage', 'tappedForMana', 'becomesTapped'].includes(def.event)) {
 		return `"${def.event}" of the attached-to object`;
 	}
 	if (def.event === 'phaseBegin' && (!f.phase || !RUNTIME_PHASES.has(f.phase))) return `phase "${f.phase}"`;

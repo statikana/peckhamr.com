@@ -957,9 +957,9 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 		p.push({ verb: 'move', subject: obj.selector, params: { from: 'graveyard', to: 'hand' }, span }, true);
 		return true;
 	}
-	m = t.match(/^put (\S+) (\S+) counters? on (.+)$/);
+	m = t.match(/^put (that many|\S+) (\S+) counters? on (.+)$/);
 	if (m) {
-		const amount = count(m[1]);
+		const amount = m[1] === 'that many' ? p.thatMany() : count(m[1]);
 		const counter = COUNTER_WORDS[m[2]];
 		const obj = objectPhrase(p, m[3]);
 		if (!amount || !counter || !obj) return false;

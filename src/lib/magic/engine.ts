@@ -74,6 +74,7 @@ import {
 	playerHasNoMaxHandSize,
 	playerHasShroud as replacePlayerHasShroud,
 	playerLifeTotalCantChange,
+	registerCounterPlacement,
 	replaceEmptyLibraryDraw,
 	resolveCounterReplacements,
 	spellCannotBeCountered,
@@ -90,6 +91,7 @@ import {
 	setZoneOrder,
 	shuffleArray,
 	shuffleLibrary,
+	tapPermanent,
 	transferBattlefieldControl
 } from './runtime/zones.ts';
 import {
@@ -135,6 +137,7 @@ import {
 	dealDamageToPermanent,
 	dealDamageToPlayer,
 	executeEffectSteps,
+	gainPlayerLife,
 	interpretableNow,
 	optionalPrefix,
 	registerEffectPorts,
@@ -1050,7 +1053,7 @@ function simulateOrExecuteManaOnly(
 		for (const perm of candidates) {
 			const choice = manaChoices.get(perm.instanceId);
 			if (choice) {
-				perm.tapped = true;
+				tapPermanent(state, perm);
 				resolveActivatedManaAbility(
 					state,
 					player,
@@ -1201,22 +1204,38 @@ export function drawCards(
 						`${replaced.sourceName ?? 'Replacement Effect'} (drew from an empty library)`
 					);
 				}
-				return;
+				break;
 			}
 			// CR 104.3c / 704.5b: Attempting to draw from an empty library sets a flag checked by SBAs.
 			player.attemptedEmptyLibraryDraw = true;
 			if (!deferSba) {
 				checkStateBasedActions(state);
 			}
-			return;
+			break;
 		}
-		moveObject(state, player.library[0], 'hand', {
+		const drawnCard = player.library[0];
+		moveObject(state, drawnCard, 'hand', {
 			from: { player, zone: 'library' },
 			toPlayer: player,
 			commanderRedirect: true,
 			newTimestamp: true,
 			bumpVersion: true
 		});
+		if (state.status !== 'mulligan' && drawnCard.zone === 'hand') {
+			const drawnPlayers = state.playersDrawnThisTurn ?? (state.playersDrawnThisTurn = []);
+			if (!drawnPlayers.includes(player.playerId)) {
+				drawnPlayers.push(player.playerId);
+			}
+			emitEvent(state, {
+				kind: 'CardDrawn',
+				playerId: player.playerId,
+				objectId: drawnCard.instanceId,
+				object: drawnCard
+			});
+		}
+	}
+	if (state.status !== 'mulligan' && !deferSba) {
+		flushTriggers(state);
 	}
 }
 
@@ -1392,6 +1411,7 @@ export function runBeginningOfTurn(state: GameState): void {
 	activePlayer.protectionFromEverythingThisTurn = false;
 	activePlayer.preventAllCombatDamageThisTurn = false;
 	activePlayer.spellsCastThisTurn = 0;
+	state.playersDrawnThisTurn = [];
 
 	// 1. Untap step (CR 502): turn-based actions execute before PhaseBegin('untap') triggers (CR 703.3)
 	beginPhase(state, 'untap', activePlayer);
@@ -2354,7 +2374,7 @@ function applyGameActionInner(
 					(p) => p.playerId === assign.defenderPlayerId && !p.lost
 				)!;
 				if (!vigilantIds.has(creature.instanceId)) {
-					creature.tapped = true;
+					tapPermanent(state, creature);
 				}
 				validAttackers.push({
 					attackerInstanceId: creature.instanceId,
@@ -3801,9 +3821,15 @@ function applyGuidedOperations(state: GameState, actor: PlayerGameState, ops: Gu
 				break;
 			}
 			case 'modify_life':
-				if (player && amount !== 0 && !player.lifeTotalCannotChangeThisTurn) {
-					player.life += amount;
-					addLog(state, 'life', `${player.username} ${amount > 0 ? 'gained' : 'lost'} ${Math.abs(amount)} life (manual).`, actor.playerId);
+				if (player && amount !== 0) {
+					if (amount > 0) {
+						if (gainPlayerLife(state, player, amount)) {
+							addLog(state, 'life', `${player.username} gained ${amount} life (manual).`, actor.playerId);
+						}
+					} else if (!playerLifeTotalCantChange(state, player)) {
+						player.life += amount;
+						addLog(state, 'life', `${player.username} lost ${Math.abs(amount)} life (manual).`, actor.playerId);
+					}
 				}
 				break;
 			case 'deal_damage':
@@ -3857,7 +3883,12 @@ function applyGuidedOperations(state: GameState, actor: PlayerGameState, ops: Gu
 			case 'tap':
 			case 'untap':
 				if (found) {
-					found.inst.tapped = op.op === 'tap';
+					if (op.op === 'tap') {
+						tapPermanent(state, found.inst);
+					} else if (found.inst.tapped) {
+						found.inst.tapped = false;
+						noteLayerInputsChanged(state);
+					}
 					addLog(state, 'rule', `${found.inst.card.name} was ${op.op === 'tap' ? 'tapped' : 'untapped'} (manual).`, actor.playerId);
 				}
 				break;
@@ -3996,10 +4027,14 @@ export function addCountersToPermanent(
 		counterType: type,
 		amount: effectiveAmount
 	});
-	// "Whenever a +1/+1 counter is put on ~" ran here before Phase 5; keep that timing.
-	flushTriggers(state);
+	// "Whenever a +1/+1 counter is put on ~" ran here before Phase 5; keep that timing when already on board.
+	if (findPermanentOnBoard(state, perm.instanceId)) {
+		flushTriggers(state);
+	}
 	return effectiveAmount;
 }
+
+registerCounterPlacement(addCountersToPermanent);
 
 registerPromptHandler('counter_replacement_choice', (state, prompt, answer) => {
 	if (answer.kind !== 'chooseReplacement') return;
@@ -4201,7 +4236,10 @@ for (const kind of [
 	'CounterPlaced',
 	'BecameTarget',
 	'Attached',
-	'TappedForMana'
+	'TappedForMana',
+	'GainLife',
+	'CardDrawn',
+	'BecomesTapped'
 ] as const) {
 	registerEventHandler(kind, (state, ev) => matchTriggers(state, ev));
 }
@@ -5628,25 +5666,6 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 				perm.attachedToId = item.targets[0].id;
 			}
 			applySelfEtbReplacements(state, perm);
-			if (item.xValue > 0) {
-				const effCard = perm.copiableCard ?? perm.card;
-				const compiledPerm = compileCard(effCard);
-				for (const ab of compiledPerm.faces[0]?.abilities ?? []) {
-					if (
-						ab.kind === 'replacement' &&
-						ab.replacement.replaces.event === 'zoneChange' &&
-						ab.replacement.replaces.filter?.object === 'self' &&
-						ab.replacement.replaces.filter?.to === 'battlefield' &&
-						!Array.isArray(ab.replacement.with) &&
-						ab.replacement.with.k === 'modify' &&
-						ab.replacement.with.counters?.amount.k === 'x'
-					) {
-						const cType = ab.replacement.with.counters.counter;
-						const mult = counterMultiplier(state, perm, cType);
-						perm.counters[cType] = (perm.counters[cType] ?? 0) + item.xValue * mult;
-					}
-				}
-			}
 			moveObject(state, perm, 'battlefield', { from: 'stack', toPlayer: controller });
 			addLog(
 				state,

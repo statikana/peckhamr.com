@@ -451,6 +451,72 @@ function matchTriggersInner(state: GameState, ev: GameEvent): void {
 			return matchAttached(state, ev);
 		case 'TappedForMana':
 			return matchTappedForMana(state, ev);
+		case 'GainLife':
+			return matchGainLife(state, ev);
+		case 'CardDrawn':
+			return matchCardDrawn(state, ev);
+		case 'BecomesTapped':
+			return matchBecomesTapped(state, ev);
+	}
+}
+
+function matchGainLife(state: GameState, ev: Extract<GameEvent, { kind: 'GainLife' }>): void {
+	if (ev.amount <= 0) return;
+	for (const source of sources(state, 'gainLife')) {
+		for (const { ability, alts } of abilitiesFor(state, source, 'gainLife')) {
+			const alt = alts.find((a) => {
+				const rel = a.filter.player?.relation ?? 'any';
+				if (rel === 'you' && ev.playerId !== source.controllerId) return false;
+				if (rel === 'opponent' && ev.playerId === source.controllerId) return false;
+				return true;
+			});
+			if (alt) {
+				record(state, source, ability, 'gainLife', {
+					label: 'Life Gain Trigger',
+					amount: ev.amount,
+					eventPlayer: ev.playerId
+				});
+			}
+		}
+	}
+}
+
+function matchCardDrawn(state: GameState, ev: Extract<GameEvent, { kind: 'CardDrawn' }>): void {
+	for (const source of sources(state, 'drawCard')) {
+		for (const { ability, alts } of abilitiesFor(state, source, 'drawCard')) {
+			const alt = alts.find((a) => {
+				const rel = a.filter.player?.relation ?? 'any';
+				if (rel === 'you' && ev.playerId !== source.controllerId) return false;
+				if (rel === 'opponent' && ev.playerId === source.controllerId) return false;
+				return true;
+			});
+			if (alt) {
+				record(state, source, ability, 'drawCard', {
+					label: 'Draw Trigger',
+					eventObject: ev.object,
+					eventPlayer: ev.playerId,
+					amount: 1
+				});
+			}
+		}
+	}
+}
+
+function matchBecomesTapped(state: GameState, ev: Extract<GameEvent, { kind: 'BecomesTapped' }>): void {
+	const found = permanentById(state, ev.objectId);
+	if (!found) return;
+	const subject = battlefieldSubject(state, found.obj, found.controllerId);
+	for (const source of sources(state, 'becomesTapped')) {
+		for (const { ability, alts } of abilitiesFor(state, source, 'becomesTapped')) {
+			const alt = alts.find((a) => objectMatches(a.filter, subject, source));
+			if (alt) {
+				record(state, source, ability, 'becomesTapped', {
+					label: 'Tap Trigger',
+					eventObject: found.obj,
+					eventPlayer: found.controllerId
+				});
+			}
+		}
 	}
 }
 
@@ -793,7 +859,19 @@ function matchPhase(state: GameState, ev: Extract<GameEvent, { kind: 'PhaseBegin
 
 function matchCounter(state: GameState, ev: Extract<GameEvent, { kind: 'CounterPlaced' }>): void {
 	if (ev.amount <= 0) return;
-	for (const source of sources(state, 'counterPlaced')) {
+	const candidates = sources(state, 'counterPlaced');
+	if (!ev.object.phasedOut && !candidates.some((c) => c.obj.instanceId === ev.objectId)) {
+		const card = ev.object.copiableCard ?? ev.object.card;
+		if (triggersOf(card).events.has('counterPlaced')) {
+			candidates.push({
+				obj: ev.object,
+				card,
+				controllerId: ev.object.controllerId,
+				zone: 'battlefield'
+			});
+		}
+	}
+	for (const source of candidates) {
 		if (source.obj.instanceId !== ev.objectId) continue;
 		for (const { ability, alts } of abilitiesFor(state, source, 'counterPlaced')) {
 			if (!alts.some((a) => a.filter.object === 'self' && (!a.filter.counter || a.filter.counter === ev.counterType))) continue;
