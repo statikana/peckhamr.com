@@ -4298,6 +4298,7 @@ export function addCountersToPermanent(
 	}
 	const effectiveAmount = res.amount;
 	perm.counters[type] = (perm.counters[type] || 0) + effectiveAmount;
+	noteLayerInputsChanged(state);
 	emitEvent(state, {
 		kind: 'CounterPlaced',
 		objectId: perm.instanceId,
@@ -4322,6 +4323,10 @@ registerPromptHandler('counter_replacement_choice', (state, prompt, answer) => {
 	const counterType = (data.counterType as CounterType | undefined) ?? '+1/+1';
 	const currentAmount = typeof data.currentAmount === 'number' ? data.currentAmount : 0;
 	const appliedIds = Array.isArray(data.appliedIds) ? (data.appliedIds as string[]) : [];
+	const resumeStackItemId =
+		typeof data.resumeStackItemId === 'string' ? data.resumeStackItemId : undefined;
+	const resumeStepIndex =
+		typeof data.resumeStepIndex === 'number' ? data.resumeStepIndex : undefined;
 	const found = findPermanentOnBoard(state, permId);
 	if (!found || currentAmount <= 0) return;
 	const perm = found.inst;
@@ -4350,7 +4355,9 @@ registerPromptHandler('counter_replacement_choice', (state, prompt, answer) => {
 					permId: perm.instanceId,
 					counterType,
 					currentAmount: nextRes.amount,
-					appliedIds: nextRes.appliedIds
+					appliedIds: nextRes.appliedIds,
+					...(resumeStackItemId !== undefined ? { resumeStackItemId } : {}),
+					...(resumeStepIndex !== undefined ? { resumeStepIndex } : {})
 				}
 			},
 			choice: {
@@ -4362,6 +4369,7 @@ registerPromptHandler('counter_replacement_choice', (state, prompt, answer) => {
 	}
 	const effectiveAmount = nextRes.amount;
 	perm.counters[counterType] = (perm.counters[counterType] || 0) + effectiveAmount;
+	noteLayerInputsChanged(state);
 	emitEvent(state, {
 		kind: 'CounterPlaced',
 		objectId: perm.instanceId,
@@ -7713,11 +7721,16 @@ export function legalAuraAttachCandidates(
  */
 export function checkStateBasedActions(state: GameState): void {
 	if (state.status !== 'active') return;
+	// CR 616.1, 704.3: While a replacement-choice prompt (`counter_replacement_choice` or
+	// `zone_replacement_choice`) for an in-progress event is pending, do not check SBAs yet;
+	// `answerPrompt` runs `checkStateBasedActions` as soon as the replacement choice finishes.
+	if (state.pendingPrompts.some((pr) => pr.choice?.kind === 'chooseReplacement')) return;
 
 	let maxIterations = 25;
 	let anyActionTaken = true;
 
 	while (anyActionTaken && maxIterations-- > 0) {
+		if (state.pendingPrompts.some((pr) => pr.choice?.kind === 'chooseReplacement')) break;
 		anyActionTaken = false;
 
 		// 0. Pre-annihilation LKI snapshot (CR 704.8) before any SBAs in this pass modify the board

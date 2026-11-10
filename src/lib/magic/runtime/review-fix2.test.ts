@@ -68,6 +68,7 @@ function makeGame(botFlags: boolean[] = [false, false]): {
 	state.phase = 'main1';
 	state.activePlayerIndex = 0;
 	state.priorityPlayerIndex = 0;
+	state.pendingPrompts = [];
 	for (const p of state.players) {
 		p.hand = [];
 		p.graveyard = [];
@@ -312,5 +313,93 @@ describe('Review 2 — Group A (Findings 2, 3, 5): pending zone-change replaceme
 			false,
 			'No "died" log entry after choosing exile replacement'
 		);
+	});
+});
+
+describe('Review 2 — Finding 4: 0/0 entering with counters and pending counter_replacement_choice', () => {
+	it('Finding 4: human casts Walking Ballista (X=2) with Hardened Scales + Doubling Season; it survives on the battlefield while chooseReplacement is pending and gets (2+1)*2=6 or 2*2+1=5 counters', () => {
+		for (const preferScalesFirst of [true, false]) {
+			const { state, p1, p2 } = makeGame();
+
+			putInZone(
+				state,
+				p1,
+				synthCard({
+					name: 'Hardened Scales',
+					typeLine: 'Enchantment',
+					oracleText:
+						'If one or more +1/+1 counters would be put on a creature you control, that many plus one +1/+1 counters are put on it instead.'
+				}),
+				'battlefield'
+			);
+			putInZone(
+				state,
+				p1,
+				synthCard({
+					name: 'Doubling Season',
+					typeLine: 'Enchantment',
+					oracleText:
+						'If an effect would put one or more counters on a permanent you control, it puts twice that many of each of those kinds of counters on that permanent instead.'
+				}),
+				'battlefield'
+			);
+
+			const ballistaInHand = putInZone(
+				state,
+				p1,
+				synthCard({
+					name: 'Walking Ballista',
+					manaCost: '{X}{X}',
+					cmc: 0,
+					typeLine: 'Artifact Creature — Construct',
+					oracleText: 'Walking Ballista enters with X +1/+1 counters on it.',
+					power: '0',
+					toughness: '0'
+				}),
+				'hand'
+			);
+			p1.manaPool.C = 4;
+
+			const castRes = applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: ballistaInHand.instanceId,
+				xValue: 2
+			});
+			assert.equal(castRes.ok, true, castRes.ok ? '' : castRes.error);
+
+			// Pass priority for both players so Walking Ballista resolves
+			assert.equal(applyGameAction(state, p1.playerId, { type: 'pass_priority' }).ok, true);
+			assert.equal(applyGameAction(state, p2.playerId, { type: 'pass_priority' }).ok, true);
+
+			const onBoard = p1.battlefield.find((c) => c.card.name === 'Walking Ballista');
+			assert.ok(onBoard, 'Walking Ballista must survive on the battlefield while counter_replacement_choice is pending');
+			assert.equal(p1.graveyard.some((c) => c.card.name === 'Walking Ballista'), false, 'Walking Ballista must not die to 0-toughness SBA before counter replacement choice');
+
+			const repPrompt = state.pendingPrompts.find((pr) => pr.choice?.kind === 'chooseReplacement');
+			assert.ok(repPrompt && repPrompt.choice?.kind === 'chooseReplacement', 'Expected chooseReplacement prompt for Hardened Scales vs Doubling Season');
+
+			const chosenOpt = repPrompt.choice.options.find((o) =>
+				preferScalesFirst ? o.label.includes('Hardened Scales') : o.label.includes('Doubling Season')
+			);
+			assert.ok(chosenOpt, 'Expected option in chooseReplacement prompt');
+
+			assert.equal(
+				applyGameAction(state, p1.playerId, {
+					type: 'choice',
+					promptId: repPrompt.id,
+					answer: { kind: 'chooseReplacement', id: chosenOpt.id }
+				}).ok,
+				true
+			);
+
+			const stillOnBoard = p1.battlefield.find((c) => c.card.name === 'Walking Ballista');
+			assert.ok(stillOnBoard, 'Walking Ballista remains on the battlefield after answering');
+			const expectedCounters = preferScalesFirst ? 6 : 5;
+			assert.equal(
+				stillOnBoard.counters['+1/+1'],
+				expectedCounters,
+				`Expected ${expectedCounters} +1/+1 counters when choosing ${preferScalesFirst ? 'Hardened Scales' : 'Doubling Season'} first`
+			);
+		}
 	});
 });
