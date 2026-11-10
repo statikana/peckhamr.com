@@ -202,6 +202,11 @@ import {
 
 export { ENGINE_VERSION };
 
+/**
+ * Timestamp for instances created without an explicit one. The engine always passes one
+ * (createInitialGameState numbers its cards per game; everything else uses allocateTimestamp), so
+ * this process-wide counter only serves external callers such as tests, like uid's fallback counter.
+ */
 let globalInstanceTimestampSeed = 1;
 
 export function createCardInstance(
@@ -217,7 +222,7 @@ export function createCardInstance(
 	if (card.loyalty && zone === 'battlefield') {
 		counters.loyalty = parseInt(card.loyalty, 10) || 3;
 	}
-	globalInstanceTimestampSeed += 1;
+	if (enteredTimestamp === undefined) globalInstanceTimestampSeed += 1;
 	return {
 		instanceId: uid(isToken ? 'tok' : isCommander ? 'cmd' : 'crd', uidHolder),
 		card,
@@ -291,13 +296,17 @@ export function createInitialGameState(
 	const rng: RngHolder = { rngState: initialSeed };
 	const idSalt = deriveIdSalt(initialSeed);
 	const uidHolder: UidHolder = { nextUid: 0, idSalt };
+	// Starting cards are numbered per game so a new game never depends on what the process created
+	// before it. They are all off the battlefield, and every battlefield entry takes a fresh
+	// allocateTimestamp, so these values never order layer effects.
+	let initialTimestamp = 1;
 
 	const players: PlayerGameState[] = activeSeats.map((seat, idx) => {
 		const playerId = seat.userId || `bot_${seat.seatIndex}`;
 		const deck = decksBySeat.get(seat.seatIndex)!;
 
 		const command: CardInstance[] = deck.commanders.map((c) =>
-			createCardInstance(c, playerId, 'command', true, false, undefined, uidHolder)
+			createCardInstance(c, playerId, 'command', true, false, ++initialTimestamp, uidHolder)
 		);
 		const commanderColorIdentity = Array.from(
 			new Set(deck.commanders.flatMap((c) => c.colorIdentity))
@@ -307,7 +316,7 @@ export function createInitialGameState(
 		for (const entry of deck.cards) {
 			for (let q = 0; q < entry.quantity; q++) {
 				rawLibrary.push(
-					createCardInstance(entry.card, playerId, 'library', false, false, undefined, uidHolder)
+					createCardInstance(entry.card, playerId, 'library', false, false, ++initialTimestamp, uidHolder)
 				);
 			}
 		}
