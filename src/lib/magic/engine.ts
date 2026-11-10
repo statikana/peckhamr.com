@@ -5079,9 +5079,22 @@ function stackItemAwaitsPrompt(state: GameState, item: StackItem): boolean {
 			p.triggerStackItemId === item.id ||
 			((p.continuation?.kind === 'effect_choice' || p.continuation?.kind === 'effect_resume') && p.continuation.stackItemId === item.id) ||
 			(p.continuation?.kind === 'manual_resolution' && p.continuation.stackItemId === item.id) ||
-			(p.continuation?.kind === 'handler' && p.continuation.data?.wardStackItemId === item.id)
+			(p.continuation?.kind === 'handler' &&
+				(p.continuation.data?.wardStackItemId === item.id || p.continuation.data?.stackItemId === item.id))
 	);
 }
+
+const CLONE_COPY_CHOICE_HANDLER = 'clone_copy_choice';
+
+registerPromptHandler(CLONE_COPY_CHOICE_HANDLER, (state, prompt, answer) => {
+	if (answer.kind !== 'chooseObjects') return;
+	const data = prompt.continuation?.kind === 'handler' ? prompt.continuation.data : undefined;
+	const stackItemId = typeof data?.stackItemId === 'string' ? data.stackItemId : '';
+	const item = state.stack.find((s) => s.id === stackItemId);
+	if (!item) return;
+	item.cloneCopyChoice = answer.objectIds[0] ?? null;
+	resumeStackItem(state, item);
+});
 
 function resolveStackItemNow(state: GameState, item: StackItem): void {
 	if (stackItemAwaitsPrompt(state, item)) return;
@@ -5291,6 +5304,65 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 
 	if (item.kind === 'triggered') triggerPathCounts[interpreted ? 'interpreter' : 'manual']++;
 
+	// CR 707.5: Before a Clone-style permanent spell leaves the stack to enter the battlefield,
+	// a human controller chooses which creature on the battlefield (if any) it enters as a copy of.
+	if (
+		item.kind === 'spell' &&
+		!controller.isBot &&
+		item.cloneCopyChoice === undefined &&
+		item.targets[0]?.kind !== 'permanent'
+	) {
+		const compiledEnter = compileCard(item.card);
+		const entersAsCopyOfAnyCreature = (compiledEnter.faces[0]?.abilities ?? []).some(
+			(ab) =>
+				ab.kind === 'replacement' &&
+				ab.replacement.replaces.event === 'zoneChange' &&
+				ab.replacement.replaces.filter?.object === 'self' &&
+				ab.replacement.replaces.filter?.to === 'battlefield' &&
+				!Array.isArray(ab.replacement.with) &&
+				ab.replacement.with.k === 'modify' &&
+				Boolean(ab.replacement.with.copyOf?.types?.includes('Creature'))
+		);
+		if (entersAsCopyOfAnyCreature) {
+			const allCreatures: CardInstance[] = [];
+			for (const p of state.players) {
+				for (const b of p.battlefield) {
+					if (!b.phasedOut && evaluatePermanent(state, b).typeLine.includes('Creature')) {
+						allCreatures.push(b);
+					}
+				}
+			}
+			allCreatures.sort((a, b) => b.card.cmc - a.card.cmc);
+			if (allCreatures.length > 0) {
+				enqueueChoicePrompt(state, {
+					id: uid('prm', state),
+					playerId: controller.playerId,
+					kind: 'chooseObjects',
+					purpose: 'generic',
+					title: `${item.card.name} — Choose a Creature to Copy`,
+					description: `You may have ${item.card.name} enter the battlefield as a copy of any creature on the battlefield (CR 707.5).`,
+					sourceInstanceId: item.sourceInstanceId,
+					continuation: {
+						kind: 'handler',
+						name: CLONE_COPY_CHOICE_HANDLER,
+						data: {
+							stackItemId: item.id
+						}
+					},
+					choice: {
+						kind: 'chooseObjects',
+						min: 0,
+						max: 1,
+						candidates: allCreatures.map((c) => c.instanceId),
+						defaultObjectIds: [allCreatures[0].instanceId],
+						zone: 'battlefield'
+					}
+				});
+				return;
+			}
+		}
+	}
+
 	// CR 608.2n: As the final part of resolution, the resolving spell or ability leaves the stack.
 	removeItemFromStack();
 
@@ -5353,10 +5425,13 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 			);
 			if (entersAsCopyOfAnyCreature) {
 				let targetCreature: CardInstance | undefined;
-				if (item.targets[0]?.kind === 'permanent') {
+				if (item.cloneCopyChoice !== undefined) {
+					targetCreature = item.cloneCopyChoice
+						? findPermanentOnBoard(state, item.cloneCopyChoice)?.inst
+						: undefined;
+				} else if (item.targets[0]?.kind === 'permanent') {
 					targetCreature = findPermanentOnBoard(state, item.targets[0].id)?.inst;
-				}
-				if (!targetCreature) {
+				} else {
 					// Pick the highest-CMC creature on the battlefield
 					const allCreatures: CardInstance[] = [];
 					for (const p of state.players) {

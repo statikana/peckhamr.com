@@ -401,6 +401,12 @@ export interface StackItem {
 	 * by hand (`'awaiting'`: guided prompt open; `'done'`: finish resolving without effects).
 	 */
 	manualResolution?: 'awaiting' | 'done';
+	/**
+	 * CR 707.5: for a resolving Clone-style permanent spell ("You may have ~ enter as a copy of any
+	 * creature on the battlefield"), the human controller's chosen creature instanceId (or `null` if
+	 * they chose 0 objects to enter as itself).
+	 */
+	cloneCopyChoice?: string | null;
 }
 
 /** One binding of the IR interpreter ("it", "that creature"): the objects and their LKI. */

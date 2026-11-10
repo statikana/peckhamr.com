@@ -1211,3 +1211,146 @@ describe('Tier 2B — 5f: Mana color choice (CR 105.4, 106.x) & Hybrid payment (
 		assert.equal(state.stack.length, 1);
 	});
 });
+
+// ============================================================================
+// Item 5g — Clone ETB (CR 707.5)
+// ============================================================================
+
+describe('Tier 2B — 5g: Clone ETB (CR 707.5)', () => {
+	it('prompts human controller with chooseObjects (min 0, max 1, ignoring shroud/hexproof, default = highest-MV) and enters as itself when choosing none (CR 707.5)', () => {
+		const { state, p1, p2 } = makeGame([false, false]);
+		p1.manaPool = { W: 10, U: 10, B: 10, R: 10, G: 10, C: 10 };
+
+		const highMvCreature = putInZone(
+			state,
+			p1,
+			synthCard({
+				name: 'Goliath Construct',
+				typeLine: 'Creature — Construct',
+				manaCost: '{4}',
+				cmc: 4,
+				power: '4',
+				toughness: '4',
+				oracleText: ''
+			}),
+			'battlefield'
+		);
+		const shroudSage = putInZone(
+			state,
+			p2,
+			synthCard({
+				name: 'Shrouded Oracle',
+				typeLine: 'Creature — Wizard',
+				manaCost: '{1}{U}',
+				cmc: 2,
+				power: '2',
+				toughness: '2',
+				oracleText: 'Shroud\nWhen ~ enters, draw a card.',
+				keywords: ['Shroud']
+			}),
+			'battlefield'
+		);
+
+		// Subcase A: Human casts Clone untargeted -> prompted with chooseObjects (min 0, max 1)
+		const clone1 = putInZone(
+			state,
+			p1,
+			synthCard({
+				name: 'Clone',
+				typeLine: 'Creature — Shapeshifter',
+				manaCost: '{3}{U}',
+				cmc: 4,
+				power: '0',
+				toughness: '0',
+				oracleText: 'You may have ~ enter the battlefield as a copy of any creature on the battlefield.'
+			}),
+			'hand'
+		);
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: clone1.instanceId
+			}).ok,
+			true
+		);
+		resolveTopOfStack(state);
+
+		const clonePrompt1 = state.pendingPrompts.find((pr) => pr.choice?.kind === 'chooseObjects');
+		assert.ok(
+			clonePrompt1,
+			'Human resolving untargeted Clone must receive a chooseObjects prompt (CR 707.5)'
+		);
+		assert.equal(clonePrompt1.playerId, p1.playerId);
+		assert.equal(clonePrompt1.choice?.kind, 'chooseObjects');
+		assert.equal(clonePrompt1.choice.min, 0);
+		assert.equal(clonePrompt1.choice.max, 1);
+		assert.equal(
+			clonePrompt1.choice.candidates.includes(shroudSage.instanceId),
+			true,
+			'Clone choice is not targeted and must include creatures with Shroud (CR 707.5)'
+		);
+		assert.deepEqual(
+			clonePrompt1.choice.defaultObjectIds,
+			[highMvCreature.instanceId],
+			'Default choice must match the highest-MV creature on the battlefield'
+		);
+
+		// Choose the lower-MV Shroud creature -> enters as a copy of Shrouded Oracle and triggers its ETB ability
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'choice',
+				promptId: clonePrompt1.id,
+				answer: { kind: 'chooseObjects', objectIds: [shroudSage.instanceId] }
+			}).ok,
+			true
+		);
+		const clone1OnBoard = p1.battlefield.find((c) => c.instanceId === clone1.instanceId);
+		assert.ok(clone1OnBoard, 'Clone should be on the battlefield');
+		assert.equal(clone1OnBoard.copiableCard?.name, 'Shrouded Oracle');
+		assert.equal(
+			state.stack.some((s) => s.kind === 'triggered' && s.sourceInstanceId === clone1.instanceId),
+			true,
+			'Copied ETB triggered ability must trigger when Clone enters (CR 707.5)'
+		);
+		resolveTopOfStack(state);
+
+		// Subcase B: Human chooses none (objectIds: []) -> enters as itself (no copy)
+		const clone2 = putInZone(
+			state,
+			p1,
+			synthCard({
+				name: 'Sturdy Shapeshifter',
+				typeLine: 'Creature — Shapeshifter',
+				manaCost: '{3}{U}',
+				cmc: 4,
+				power: '1',
+				toughness: '1',
+				oracleText: 'You may have ~ enter the battlefield as a copy of any creature on the battlefield.'
+			}),
+			'hand'
+		);
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: clone2.instanceId
+			}).ok,
+			true
+		);
+		resolveTopOfStack(state);
+
+		const clonePrompt2 = state.pendingPrompts.find((pr) => pr.choice?.kind === 'chooseObjects');
+		assert.ok(clonePrompt2 && clonePrompt2.choice?.kind === 'chooseObjects');
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'choice',
+				promptId: clonePrompt2.id,
+				answer: { kind: 'chooseObjects', objectIds: [] }
+			}).ok,
+			true
+		);
+		const clone2OnBoard = p1.battlefield.find((c) => c.instanceId === clone2.instanceId);
+		assert.ok(clone2OnBoard, '1/1 Shapeshifter choosing none must enter the battlefield as itself');
+		assert.equal(clone2OnBoard.copiableCard, undefined);
+		assert.equal(clone2OnBoard.card.name, 'Sturdy Shapeshifter');
+	});
+});

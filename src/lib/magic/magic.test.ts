@@ -2457,6 +2457,19 @@ describe('16. CR 613 Layers, Timestamps (Opalescence + Humility), Layer 7d P/T S
 		);
 		applyGameAction(state, p1Id, { type: 'pass_priority' });
 		applyGameAction(state, state.players[1].playerId, { type: 'pass_priority' });
+		if (state.pendingPrompts[0]?.choice?.kind === 'chooseObjects') {
+			assert.equal(
+				applyGameAction(state, p1Id, {
+					type: 'choice',
+					promptId: state.pendingPrompts[0].id,
+					answer: {
+						kind: 'chooseObjects',
+						objectIds: state.pendingPrompts[0].choice.defaultObjectIds ?? [wall.instanceId]
+					}
+				}).ok,
+				true
+			);
+		}
 
 		const cloneOnBoard = state.players[0].battlefield.find(
 			(b) => b.instanceId === cloneHand.instanceId
