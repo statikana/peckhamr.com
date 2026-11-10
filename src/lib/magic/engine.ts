@@ -2639,12 +2639,8 @@ function executeBotDeclareAttackersTurnBasedAction(
 			res.error ?? `${bot.username} could not satisfy attack requirements; declaring no attackers.`,
 			bot.playerId
 		);
-		state.combat.active = true;
-		state.combat.awaitingAttackersDeclaration = false;
-		state.combat.attackers = [];
-		state.combat.declaredBlockersPlayerIds = [];
-		state.combat.blockersDeclared = false;
-		addLog(state, 'combat', `${bot.username} declared no attackers.`, bot.playerId);
+		// Last resort: declare no attackers through the normal path so combat state is reset the same way.
+		performDeclareAttackers(state, bot, [], true, true);
 	}
 }
 
@@ -2656,7 +2652,9 @@ function performDeclareAttackers(
 		defenderPlayerId: string;
 		defenderPlaneswalkerId?: string | null;
 	}>,
-	fromPhaseEntry: boolean
+	fromPhaseEntry: boolean,
+	/** Only for the bot's last-resort empty declaration, after a 'rule' line has been logged. */
+	ignoreAttackRequirements = false
 ): { ok: boolean; error?: string } {
 	const actorId = actor.playerId;
 	const validAttackers = [];
@@ -2740,7 +2738,9 @@ function performDeclareAttackers(
 
 	// Enforce Goad / Attack requirements (CR 508.1d: must satisfy as many requirements as possible without violating restrictions)
 	const assignedIds = new Set(assignments.map((a) => a.attackerInstanceId));
-	const mandatoryViolation = findMandatoryAttackerViolation(state, actor, assignedIds);
+	const mandatoryViolation = ignoreAttackRequirements
+		? null
+		: findMandatoryAttackerViolation(state, actor, assignedIds);
 	if (mandatoryViolation) {
 		return { ok: false, error: mandatoryViolation };
 	}
@@ -3300,13 +3300,10 @@ function advanceBotBlockerDeclarations(state: GameState): boolean {
 					reqValidated.blockerCountsByAttacker
 				);
 			} else {
-				const fallbackMap = new Map<string, string[]>();
-				for (const a of requiredAssignments) {
-					const list = fallbackMap.get(a.attackerInstanceId) || [];
-					list.push(a.blockerInstanceId);
-					fallbackMap.set(a.attackerInstanceId, list);
-				}
-				applyValidatedDefenderBlockers(state, defPlayer, requiredAssignments, fallbackMap);
+				// No validated declaration exists. Declaring no blocks breaks only requirements, never a
+				// restriction, which CR 509.1c ranks above requirements; log it and block with nothing.
+				addLog(state, 'rule', reqValidated.error, defPlayer.playerId);
+				applyValidatedDefenderBlockers(state, defPlayer, [], new Map());
 			}
 		} else {
 			applyValidatedDefenderBlockers(
