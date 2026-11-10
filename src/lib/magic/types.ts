@@ -635,7 +635,7 @@ export interface PendingPrompt {
  *   `registerPromptHandler`), for generic prompts that need no engine state.
  */
 export type PromptContinuation =
-	| { kind: 'effect_choice'; stackItemId: string; stepIndex: number }
+	| { kind: 'effect_choice'; stackItemId: string; stepIndex: number; answerKey?: string }
 	| { kind: 'effect_resume'; stackItemId: string; stepIndex: number }
 	| { kind: 'manual_resolution'; stackItemId: string }
 	| { kind: 'manual_ability'; sourceInstanceId: string }

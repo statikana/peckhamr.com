@@ -1354,3 +1354,316 @@ describe('Tier 2B — 5g: Clone ETB (CR 707.5)', () => {
 		assert.equal(clone2OnBoard.card.name, 'Sturdy Shapeshifter');
 	});
 });
+
+// ============================================================================
+// Item 5h — Auras put onto the battlefield without being cast (CR 303.4f–g)
+// ============================================================================
+
+describe('Tier 2B — 5h: Auras put onto the battlefield without being cast (CR 303.4f–g)', () => {
+	it('prompts human controller with chooseObjects over legal enchantables (ignoring shroud/hexproof, respecting protection and filter) and redacts hidden-zone Aura names for opponents (CR 303.4f)', () => {
+		const { state, p1, p2 } = makeGame([false, false]);
+		p1.manaPool = { W: 10, U: 10, B: 10, R: 10, G: 10, C: 10 };
+
+		const bear = putInZone(
+			state,
+			p1,
+			synthCard({
+				name: 'Grizzly Bears',
+				typeLine: 'Creature — Bear',
+				power: '2',
+				toughness: '2',
+				oracleText: ''
+			}),
+			'battlefield'
+		);
+		const protectedKnight = putInZone(
+			state,
+			p2,
+			synthCard({
+				name: 'Silver Knight',
+				typeLine: 'Creature — Human Knight',
+				power: '2',
+				toughness: '2',
+				oracleText: 'Protection from white',
+				keywords: ['Protection']
+			}),
+			'battlefield'
+		);
+		const solRing = putInZone(
+			state,
+			p1,
+			synthCard({
+				name: 'Sol Ring',
+				typeLine: 'Artifact',
+				oracleText: '{T}: Add {C}{C}.'
+			}),
+			'battlefield'
+		);
+		const shroudDrake = putInZone(
+			state,
+			p2,
+			synthCard({
+				name: 'Shrouded Drake',
+				typeLine: 'Creature — Drake',
+				manaCost: '{2}{U}',
+				cmc: 3,
+				power: '3',
+				toughness: '3',
+				oracleText: 'Shroud',
+				keywords: ['Shroud']
+			}),
+			'battlefield'
+		);
+
+		// Subcase A: Reanimate a white "Enchant creature" Aura from graveyard
+		const pacifism = putInZone(
+			state,
+			p1,
+			synthCard({
+				name: 'Pacifism',
+				typeLine: 'Enchantment — Aura',
+				manaCost: '{1}{W}',
+				cmc: 2,
+				colors: ['W'],
+				oracleText: "Enchant creature\nEnchanted creature can't attack or block."
+			}),
+			'graveyard'
+		);
+		const reanimateEnchant = putInZone(
+			state,
+			p1,
+			synthCard({
+				name: 'Restore Aura',
+				typeLine: 'Sorcery',
+				manaCost: '{1}{W}',
+				cmc: 2,
+				oracleText: 'Return target enchantment card from your graveyard to the battlefield.'
+			}),
+			'hand'
+		);
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: reanimateEnchant.instanceId,
+				targets: [{ kind: 'graveyard_card', id: pacifism.instanceId, label: pacifism.card.name }]
+			}).ok,
+			true
+		);
+		resolveTopOfStack(state);
+
+		const attachPrompt1 = state.pendingPrompts.find((pr) => pr.choice?.kind === 'chooseObjects');
+		assert.ok(
+			attachPrompt1,
+			'Human controller must receive a chooseObjects prompt when an Aura enters the battlefield without being cast (CR 303.4f)'
+		);
+		assert.equal(attachPrompt1.playerId, p1.playerId);
+		assert.equal(attachPrompt1.choice?.kind, 'chooseObjects');
+		assert.equal(attachPrompt1.choice.min, 1);
+		assert.equal(attachPrompt1.choice.max, 1);
+		assert.equal(
+			attachPrompt1.choice.candidates.includes(shroudDrake.instanceId),
+			true,
+			'CR 303.4f attachment choice is not targeted and must include creatures with Shroud'
+		);
+		assert.equal(
+			attachPrompt1.choice.candidates.includes(bear.instanceId),
+			true
+		);
+		assert.equal(
+			attachPrompt1.choice.candidates.includes(protectedKnight.instanceId),
+			false,
+			'CR 303.4f attachment choice must exclude permanents with Protection from the Aura'
+		);
+		assert.equal(
+			attachPrompt1.choice.candidates.includes(solRing.instanceId),
+			false,
+			'CR 303.4f attachment choice must exclude non-matching permanent types'
+		);
+
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'choice',
+				promptId: attachPrompt1.id,
+				answer: { kind: 'chooseObjects', objectIds: [shroudDrake.instanceId] }
+			}).ok,
+			true
+		);
+		assert.equal(
+			p1.battlefield.some((c) => c.instanceId === pacifism.instanceId),
+			true,
+			'Pacifism must be on the battlefield'
+		);
+		assert.equal(pacifism.attachedToId, shroudDrake.instanceId);
+
+		// Subcase B: Put an Aura from a hidden zone (hand) onto the battlefield -> verify opponent view does not leak card name
+		const secretAura = putInZone(
+			state,
+			p1,
+			synthCard({
+				name: 'Secret Canopy',
+				typeLine: 'Enchantment — Aura',
+				manaCost: '{1}{G}',
+				cmc: 2,
+				colors: ['G'],
+				oracleText: 'Enchant creature\nEnchanted creature gets +2/+2.'
+			}),
+			'hand'
+		);
+		const putFromHand = putInZone(
+			state,
+			p1,
+			synthCard({
+				name: 'Deploy Enchantment',
+				typeLine: 'Sorcery',
+				manaCost: '{1}{G}',
+				cmc: 2,
+				oracleText: 'Put an enchantment card from your hand onto the battlefield.'
+			}),
+			'hand'
+		);
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: putFromHand.instanceId
+			}).ok,
+			true
+		);
+		resolveTopOfStack(state);
+
+		const attachPrompt2 = state.pendingPrompts.find((pr) => pr.choice?.kind === 'chooseObjects');
+		assert.ok(attachPrompt2, 'Human must be prompted to attach the Aura entering from hand');
+		const sanitizedP2 = sanitizeGameStateForViewer(state, p2.playerId);
+		assert.equal(
+			JSON.stringify(sanitizedP2.pendingPrompts).includes('Secret Canopy'),
+			false,
+			'Sanitized opponent view must not leak the name of an Aura entering from a hidden zone'
+		);
+
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'choice',
+				promptId: attachPrompt2.id,
+				answer: { kind: 'chooseObjects', objectIds: [bear.instanceId] }
+			}).ok,
+			true
+		);
+		assert.equal(secretAura.zone, 'battlefield');
+		assert.equal(secretAura.attachedToId, bear.instanceId);
+	});
+
+	it('keeps the Aura in its current zone when no legal object can be enchanted (CR 303.4g) and attaches automatically via heuristic for bots', () => {
+		// Subcase A: No legal object on battlefield -> Aura stays in hand (does NOT enter and die to graveyard)
+		{
+			const { state, p1 } = makeGame([false, false]);
+			p1.manaPool = { W: 10, U: 10, B: 10, R: 10, G: 10, C: 10 };
+
+			const handAura = putInZone(
+				state,
+				p1,
+				synthCard({
+					name: 'Unattachable Mantle',
+					typeLine: 'Enchantment — Aura',
+					manaCost: '{1}{G}',
+					cmc: 2,
+					colors: ['G'],
+					oracleText: 'Enchant creature\nEnchanted creature gets +2/+2.'
+				}),
+				'hand'
+			);
+			const putFromHand = putInZone(
+				state,
+				p1,
+				synthCard({
+					name: 'Deploy Enchantment',
+					typeLine: 'Sorcery',
+					manaCost: '{1}{G}',
+					cmc: 2,
+					oracleText: 'Put an enchantment card from your hand onto the battlefield.'
+				}),
+				'hand'
+			);
+			assert.equal(
+				applyGameAction(state, p1.playerId, {
+					type: 'cast_spell',
+					instanceId: putFromHand.instanceId
+				}).ok,
+				true
+			);
+			resolveTopOfStack(state);
+
+			assert.equal(state.pendingPrompts.length, 0);
+			assert.equal(
+				p1.hand.some((c) => c.instanceId === handAura.instanceId),
+				true,
+				'Aura must remain in hand when no legal object can be enchanted (CR 303.4g)'
+			);
+			assert.equal(
+				p1.graveyard.some((c) => c.instanceId === handAura.instanceId),
+				false,
+				'Aura must not enter the battlefield and die to SBAs (CR 303.4g)'
+			);
+		}
+
+		// Subcase B: Bot controller attaches non-cast Aura via heuristic (ignoring Shroud)
+		{
+			const { state, p1 } = makeGame([true, false]);
+			p1.manaPool = { W: 10, U: 10, B: 10, R: 10, G: 10, C: 10 };
+
+			const botCreature = putInZone(
+				state,
+				p1,
+				synthCard({
+					name: 'Shrouded Stalker',
+					typeLine: 'Creature — Beast',
+					power: '3',
+					toughness: '3',
+					oracleText: 'Shroud',
+					keywords: ['Shroud']
+				}),
+				'battlefield'
+			);
+			const gyAura = putInZone(
+				state,
+				p1,
+				synthCard({
+					name: 'Oakenform',
+					typeLine: 'Enchantment — Aura',
+					manaCost: '{2}{G}',
+					cmc: 3,
+					colors: ['G'],
+					oracleText: 'Enchant creature\nEnchanted creature gets +3/+3.'
+				}),
+				'graveyard'
+			);
+			const reanimateEnchant = putInZone(
+				state,
+				p1,
+				synthCard({
+					name: 'Restore Aura',
+					typeLine: 'Sorcery',
+					manaCost: '{1}{W}',
+					cmc: 2,
+					oracleText: 'Return target enchantment card from your graveyard to the battlefield.'
+				}),
+				'hand'
+			);
+			assert.equal(
+				applyGameAction(state, p1.playerId, {
+					type: 'cast_spell',
+					instanceId: reanimateEnchant.instanceId,
+					targets: [{ kind: 'graveyard_card', id: gyAura.instanceId, label: gyAura.card.name }]
+				}).ok,
+				true
+			);
+			resolveTopOfStack(state);
+
+			assert.equal(state.pendingPrompts.length, 0);
+			assert.equal(
+				p1.battlefield.some((c) => c.instanceId === gyAura.instanceId),
+				true,
+				'Bot non-cast Aura must enter the battlefield attached to a legal creature and survive SBAs'
+			);
+			assert.equal(gyAura.attachedToId, botCreature.instanceId);
+		}
+	});
+});

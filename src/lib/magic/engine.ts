@@ -3307,23 +3307,88 @@ function handlePromptResolution(
 						actor.playerId
 					);
 				} else if (prompt.destinationZone === 'battlefield') {
-					found.tapped = Boolean(prompt.enterTapped);
-					found.defaultControllerId = libraryOwner.playerId;
-					applySelfEtbReplacements(state, found);
-					moveObject(state, found, 'battlefield', {
-						from: fromLibrary,
-						toPlayer: libraryOwner,
-						controllerId: libraryOwner.playerId,
-						newTimestamp: true,
-						bumpVersion: true
-					});
-					addLog(
-						state,
-						'rule',
-						`${libraryOwner.username} searched their library and put ${found.card.name} onto the battlefield${found.tapped ? ' tapped' : ''}.`,
-						libraryOwner.playerId
-					);
-					flushTriggers(state);
+					const isAura = (found.copiableCard ?? found.card).typeLine.includes('Aura');
+					if (isAura) {
+						const attachCands = legalAuraAttachCandidates(state, found, libraryOwner);
+						if (attachCands.length === 0) {
+							addLog(
+								state,
+								'rule',
+								`${found.card.name} remained in ${libraryOwner.username}'s library because there is no legal object or player for it to enchant (CR 303.4g).`,
+								libraryOwner.playerId
+							);
+						} else if (!libraryOwner.isBot) {
+							shuffleLibrary(state, libraryOwner);
+							enqueueChoicePrompt(state, {
+								id: uid('prm', state),
+								playerId: libraryOwner.playerId,
+								kind: 'chooseObjects',
+								purpose: 'generic',
+								title: 'Search Library — Choose what Aura will enchant',
+								description: `Choose a legal object or player for ${found.card.name} to enchant as it enters the battlefield (CR 303.4f).`,
+								continuation: {
+									kind: 'handler',
+									name: 'aura_library_attach_choice',
+									data: {
+										auraId: found.instanceId,
+										libraryOwnerId: libraryOwner.playerId,
+										enterTapped: Boolean(prompt.enterTapped),
+										resumeStackItemId:
+											prompt.continuation?.kind === 'effect_resume'
+												? prompt.continuation.stackItemId
+												: null,
+										resumeStepIndex:
+											prompt.continuation?.kind === 'effect_resume'
+												? prompt.continuation.stepIndex
+												: null
+									}
+								},
+								choice: {
+									kind: 'chooseObjects',
+									min: 1,
+									max: 1,
+									candidates: attachCands,
+									defaultObjectIds: [attachCands[0]],
+									zone: 'battlefield',
+									reason: `Choose a legal object or player for ${found.card.name} to enchant as it enters the battlefield (CR 303.4f).`
+								}
+							});
+							return { ok: true };
+						} else {
+							found.attachedToId = attachCands[0];
+						}
+					}
+					if (!isAura || found.attachedToId) {
+						found.tapped = Boolean(prompt.enterTapped);
+						found.defaultControllerId = libraryOwner.playerId;
+						applySelfEtbReplacements(state, found);
+						moveObject(state, found, 'battlefield', {
+							from: fromLibrary,
+							toPlayer: libraryOwner,
+							controllerId: libraryOwner.playerId,
+							newTimestamp: true,
+							bumpVersion: true
+						});
+						if (isAura && found.attachedToId) {
+							const attachedTarget = findPermanentOnBoard(state, found.attachedToId);
+							if (attachedTarget) {
+								emitEvent(state, {
+									kind: 'Attached',
+									attachmentId: found.instanceId,
+									attachment: found,
+									hostId: attachedTarget.inst.instanceId,
+									host: attachedTarget.inst
+								});
+							}
+						}
+						addLog(
+							state,
+							'rule',
+							`${libraryOwner.username} searched their library and put ${found.card.name} onto the battlefield${found.tapped ? ' tapped' : ''}.`,
+							libraryOwner.playerId
+						);
+						flushTriggers(state);
+					}
 				} else if (prompt.destinationZone === 'library' && prompt.putOnTop) {
 					// Put it on top, then shuffle the rest: the same as the old "remove, shuffle, put on top".
 					moveObject(state, found, 'library', {
@@ -3559,10 +3624,11 @@ function handlePromptResolution(
 		state.pendingPrompts.splice(promptIdx, 1);
 		const item = state.stack.find((s) => s.id === c.stackItemId);
 		if (!item?.effectResume || item.effectResume.stepIndex !== c.stepIndex) return { ok: true };
+		const answerKey = c.answerKey ?? actor.playerId;
 		if (normalized.answer.kind === 'chooseObjects') {
-			item.effectResume.answers[actor.playerId] = normalized.answer.objectIds;
+			item.effectResume.answers[answerKey] = normalized.answer.objectIds;
 		} else if (choice.kind === 'chooseMode') {
-			item.effectResume.answers[actor.playerId] = normalized.answer.indices.map(
+			item.effectResume.answers[answerKey] = normalized.answer.indices.map(
 				(idx) => choice.modes[idx] ?? ''
 			);
 		}
@@ -5080,7 +5146,9 @@ function stackItemAwaitsPrompt(state: GameState, item: StackItem): boolean {
 			((p.continuation?.kind === 'effect_choice' || p.continuation?.kind === 'effect_resume') && p.continuation.stackItemId === item.id) ||
 			(p.continuation?.kind === 'manual_resolution' && p.continuation.stackItemId === item.id) ||
 			(p.continuation?.kind === 'handler' &&
-				(p.continuation.data?.wardStackItemId === item.id || p.continuation.data?.stackItemId === item.id))
+				(p.continuation.data?.wardStackItemId === item.id ||
+					p.continuation.data?.stackItemId === item.id ||
+					p.continuation.data?.resumeStackItemId === item.id))
 	);
 }
 
@@ -5094,6 +5162,61 @@ registerPromptHandler(CLONE_COPY_CHOICE_HANDLER, (state, prompt, answer) => {
 	if (!item) return;
 	item.cloneCopyChoice = answer.objectIds[0] ?? null;
 	resumeStackItem(state, item);
+});
+
+registerPromptHandler('aura_library_attach_choice', (state, prompt, answer) => {
+	if (answer.kind !== 'chooseObjects') return;
+	const data = prompt.continuation?.kind === 'handler' ? prompt.continuation.data : undefined;
+	const auraId = typeof data?.auraId === 'string' ? data.auraId : '';
+	const libraryOwnerId = typeof data?.libraryOwnerId === 'string' ? data.libraryOwnerId : '';
+	const enterTapped = Boolean(data?.enterTapped);
+	const resumeStackItemId =
+		typeof data?.resumeStackItemId === 'string' ? data.resumeStackItemId : null;
+	const resumeStepIndex =
+		typeof data?.resumeStepIndex === 'number' ? data.resumeStepIndex : null;
+
+	const libraryOwner = state.players.find((p) => p.playerId === libraryOwnerId);
+	const found = libraryOwner?.library.find((c) => c.instanceId === auraId);
+	const chosenHostId = answer.objectIds[0] ?? null;
+	if (libraryOwner && found && chosenHostId) {
+		found.attachedToId = chosenHostId;
+		found.tapped = enterTapped;
+		found.defaultControllerId = libraryOwner.playerId;
+		applySelfEtbReplacements(state, found);
+		moveObject(state, found, 'battlefield', {
+			from: { player: libraryOwner, zone: 'library' },
+			toPlayer: libraryOwner,
+			controllerId: libraryOwner.playerId,
+			newTimestamp: true,
+			bumpVersion: true
+		});
+		const attachedTarget = findPermanentOnBoard(state, chosenHostId);
+		if (attachedTarget) {
+			emitEvent(state, {
+				kind: 'Attached',
+				attachmentId: found.instanceId,
+				attachment: found,
+				hostId: attachedTarget.inst.instanceId,
+				host: attachedTarget.inst
+			});
+		}
+		addLog(
+			state,
+			'rule',
+			`${libraryOwner.username} searched their library and put ${found.card.name} onto the battlefield${found.tapped ? ' tapped' : ''}.`,
+			libraryOwner.playerId
+		);
+		flushTriggers(state);
+	}
+	checkStateBasedActions(state);
+	if (resumeStackItemId && resumeStepIndex !== null) {
+		const item = state.stack.find((s) => s.id === resumeStackItemId);
+		if (item?.effectResume) {
+			item.effectResume.stepIndex = resumeStepIndex;
+			item.effectResume.answers = {};
+			resumeStackItem(state, item);
+		}
+	}
 });
 
 function resolveStackItemNow(state: GameState, item: StackItem): void {
@@ -5341,7 +5464,6 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 					purpose: 'generic',
 					title: `${item.card.name} — Choose a Creature to Copy`,
 					description: `You may have ${item.card.name} enter the battlefield as a copy of any creature on the battlefield (CR 707.5).`,
-					sourceInstanceId: item.sourceInstanceId,
 					continuation: {
 						kind: 'handler',
 						name: CLONE_COPY_CHOICE_HANDLER,
@@ -5355,7 +5477,8 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 						max: 1,
 						candidates: allCreatures.map((c) => c.instanceId),
 						defaultObjectIds: [allCreatures[0].instanceId],
-						zone: 'battlefield'
+						zone: 'battlefield',
+						reason: `You may have ${item.card.name} enter the battlefield as a copy of any creature on the battlefield (CR 707.5).`
 					}
 				});
 				return;
@@ -5776,7 +5899,8 @@ registerEffectPorts({
 	endTurn: endTheTurnImmediately,
 	activePlayerMayEndTurn,
 	win: (state, player, reason) => void winTheGame(state, player, reason),
-	lose: (state, player, reason) => void loseTheGame(state, player, reason)
+	lose: (state, player, reason) => void loseTheGame(state, player, reason),
+	legalAuraAttachCandidates
 });
 
 /**
@@ -6054,6 +6178,20 @@ function initiateLibrarySearch(
 					decisionPlayer.playerId
 				);
 			} else if (dest.zone === 'battlefield') {
+				const isAura = (found.copiableCard ?? found.card).typeLine.includes('Aura');
+				if (isAura) {
+					const attachCands = legalAuraAttachCandidates(state, found, searchingPlayer);
+					if (attachCands.length === 0) {
+						addLog(
+							state,
+							'rule',
+							`${found.card.name} remained in ${searchingPlayer.username}'s library because there is no legal object or player for it to enchant (CR 303.4g).`,
+							searchingPlayer.playerId
+						);
+						continue;
+					}
+					found.attachedToId = attachCands[0];
+				}
 				found.tapped = Boolean(dest.tapped);
 				found.defaultControllerId = searchingPlayer.playerId;
 				applySelfEtbReplacements(state, found);
@@ -6064,6 +6202,18 @@ function initiateLibrarySearch(
 					newTimestamp: true,
 					bumpVersion: true
 				});
+				if (isAura && found.attachedToId) {
+					const attachedTarget = findPermanentOnBoard(state, found.attachedToId);
+					if (attachedTarget) {
+						emitEvent(state, {
+							kind: 'Attached',
+							attachmentId: found.instanceId,
+							attachment: found,
+							hostId: attachedTarget.inst.instanceId,
+							host: attachedTarget.inst
+						});
+					}
+				}
 				addLog(
 					state,
 					'rule',
@@ -7120,6 +7270,72 @@ function isAuraPlayerAttachmentLegal(
 		}
 		return false;
 	});
+}
+
+function isAuraHarmful(aura: CardInstance): boolean {
+	const def = compileCard(aura.copiableCard ?? aura.card);
+	for (const ab of def.faces[0]?.abilities ?? []) {
+		if (ab.kind !== 'static') continue;
+		if (ab.static.k === 'restriction') return true;
+		if (ab.static.k === 'continuous') {
+			if (ab.static.mod.k === 'removeAllAbilities') return true;
+			if (ab.static.mod.k === 'pt') {
+				const pw = ab.static.mod.power;
+				const tg = ab.static.mod.toughness;
+				if ((pw.k === 'const' && pw.n < 0) || (tg.k === 'const' && tg.n < 0)) return true;
+			}
+		}
+	}
+	return false;
+}
+
+/**
+ * CR 303.4f–g: Returns the legal object/player ids that `aura` may enchant when entering the
+ * battlefield under `controller`'s control without being cast, ranked by the bot heuristic.
+ */
+export function legalAuraAttachCandidates(
+	state: GameState,
+	aura: CardInstance,
+	controller: PlayerGameState
+): string[] {
+	const evalAura = evaluatePermanent(state, aura);
+	const harmful = isAuraHarmful(aura);
+	const permCandidates: Array<{ id: string; preferred: boolean; score: number }> = [];
+	for (const p of state.players) {
+		if (p.lost) continue;
+		for (const host of p.battlefield) {
+			if (isAuraAttachmentLegal(state, aura, controller, evalAura, host, p)) {
+				const isOwn = p.playerId === controller.playerId;
+				const preferred = harmful ? !isOwn : isOwn;
+				const evalHost = evaluatePermanent(state, host);
+				const score =
+					host.card.cmc + (evalHost.isCreature ? getCreaturePower(host, state) : 0);
+				permCandidates.push({ id: host.instanceId, preferred, score });
+			}
+		}
+	}
+	permCandidates.sort((a, b) => {
+		if (a.preferred !== b.preferred) return a.preferred ? -1 : 1;
+		return a.preferred ? b.score - a.score : a.score - b.score;
+	});
+
+	const playerCandidates: Array<{ id: string; preferred: boolean; score: number }> = [];
+	for (const p of state.players) {
+		if (!p.lost && isAuraPlayerAttachmentLegal(aura, controller, evalAura, p)) {
+			const isOwn = p.playerId === controller.playerId;
+			const preferred = harmful ? !isOwn : isOwn;
+			playerCandidates.push({ id: p.playerId, preferred, score: p.life });
+		}
+	}
+	playerCandidates.sort((a, b) => {
+		if (a.preferred !== b.preferred) return a.preferred ? -1 : 1;
+		return b.score - a.score;
+	});
+
+	return [
+		...permCandidates.map((c) => c.id),
+		...playerCandidates.map((c) => c.id)
+	];
 }
 
 /**

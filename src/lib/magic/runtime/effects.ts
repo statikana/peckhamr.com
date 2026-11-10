@@ -95,6 +95,8 @@ export interface EffectPorts {
 	activePlayerMayEndTurn(state: GameState, controller: PlayerGameState, sourceName: string): void;
 	win(state: GameState, player: PlayerGameState, reason: string): void;
 	lose(state: GameState, player: PlayerGameState, reason: string): void;
+	/** CR 303.4f–g: Legal object/player ids an Aura entering without being cast may enchant, ranked by bot heuristic. */
+	legalAuraAttachCandidates(state: GameState, aura: CardInstance, controller: PlayerGameState): string[];
 }
 
 let ports: EffectPorts | null = null;
@@ -556,7 +558,8 @@ class Run {
 		min: number,
 		max: number,
 		zone: 'battlefield' | 'hand' | 'library',
-		defaultObjectIds?: string[]
+		defaultObjectIds?: string[],
+		answerKey?: string
 	): void {
 		const item = this.saveFrame(this.stepIndex, this.answers);
 		enqueueChoicePrompt(this.state, {
@@ -567,7 +570,12 @@ class Run {
 			description,
 			candidateInstanceIds: candidates,
 			countRequired: min,
-			continuation: { kind: 'effect_choice', stackItemId: item.id, stepIndex: this.stepIndex },
+			continuation: {
+				kind: 'effect_choice',
+				stackItemId: item.id,
+				stepIndex: this.stepIndex,
+				...(answerKey ? { answerKey } : {})
+			},
 			choice: {
 				kind: 'chooseObjects',
 				candidates,
@@ -1721,7 +1729,43 @@ class Run {
 				}
 				return;
 			}
+			if (this.canPause && !you.isBot) {
+				for (const o of chosen) {
+					if (!(o.copiableCard ?? o.card).typeLine.includes('Aura')) continue;
+					const attachCands = p.legalAuraAttachCandidates(s, o, you);
+					const auraKey = `aura:${o.instanceId}`;
+					if (attachCands.length > 0 && !this.answers[auraKey]) {
+						this.pauseForChoice(
+							you,
+							`${this.ctx.title} — Choose what Aura will enchant`,
+							`Choose a legal object or player for ${o.card.name} to enchant as it enters the battlefield (CR 303.4f).`,
+							attachCands,
+							1,
+							1,
+							'battlefield',
+							[attachCands[0]],
+							auraKey
+						);
+						return;
+					}
+				}
+			}
 			for (const o of chosen) {
+				const isAura = (o.copiableCard ?? o.card).typeLine.includes('Aura');
+				if (isAura) {
+					const attachCands = p.legalAuraAttachCandidates(s, o, you);
+					if (attachCands.length === 0) {
+						p.addLog(
+							s,
+							'rule',
+							`${o.card.name} remained in ${you.username}'s hand because there is no legal object or player for it to enchant (CR 303.4g).`,
+							you.playerId
+						);
+						continue;
+					}
+					const pickedId = (this.answers[`aura:${o.instanceId}`] ?? [])[0];
+					o.attachedToId = pickedId && attachCands.includes(pickedId) ? pickedId : attachCands[0];
+				}
 				o.summoningSick = o.card.typeLine.includes('Creature');
 				o.tapped = Boolean(params.tapped);
 				o.defaultControllerId = you.playerId;
@@ -1733,6 +1777,10 @@ class Run {
 					bumpVersion: true
 				});
 				p.addLog(s, 'cast', `${you.username} put ${o.card.name} from their hand onto the battlefield (${this.ctx.title}).`, you.playerId);
+				if (isAura && o.attachedToId) {
+					const host = p.findPermanent(s, o.attachedToId);
+					if (host) p.triggerOnAttach(s, you, o, host.inst);
+				}
 				p.triggerOnEtb(s, you, o);
 			}
 			return;
@@ -1741,6 +1789,30 @@ class Run {
 		if (params.topmostOnly) {
 			// CR 404.2: the graveyard's order matters; the top card is the last one in the array.
 			objs = objs.length > 0 ? [objs[objs.length - 1]] : [];
+		}
+		if (params.to !== 'hand' && this.canPause) {
+			for (const o of objs) {
+				const holder = this.locate(o.instanceId)?.holder;
+				if (!holder) continue;
+				const controller = params.underYourControl ? you : (this.player(o.ownerId) ?? holder);
+				if (!(o.copiableCard ?? o.card).typeLine.includes('Aura')) continue;
+				const attachCands = p.legalAuraAttachCandidates(s, o, controller);
+				const auraKey = `aura:${o.instanceId}`;
+				if (attachCands.length > 0 && !controller.isBot && !this.answers[auraKey]) {
+					this.pauseForChoice(
+						controller,
+						`${this.ctx.title} — Choose what ${o.card.name} will enchant`,
+						`Choose a legal object or player for ${o.card.name} to enchant as it enters the battlefield (CR 303.4f).`,
+						attachCands,
+						1,
+						1,
+						'battlefield',
+						[attachCands[0]],
+						auraKey
+					);
+					return;
+				}
+			}
 		}
 		this.bind(step, objs);
 		for (const o of objs) {
@@ -1751,6 +1823,21 @@ class Run {
 				continue;
 			}
 			const controller = params.underYourControl ? you : (this.player(o.ownerId) ?? holder);
+			const isAura = (o.copiableCard ?? o.card).typeLine.includes('Aura');
+			if (isAura) {
+				const attachCands = p.legalAuraAttachCandidates(s, o, controller);
+				if (attachCands.length === 0) {
+					p.addLog(
+						s,
+						'rule',
+						`${o.card.name} remained in ${holder.username}'s graveyard because there is no legal object or player for it to enchant (CR 303.4g).`,
+						controller.playerId
+					);
+					continue;
+				}
+				const pickedId = (this.answers[`aura:${o.instanceId}`] ?? [])[0];
+				o.attachedToId = pickedId && attachCands.includes(pickedId) ? pickedId : attachCands[0];
+			}
 			o.summoningSick = o.card.typeLine.includes('Creature') && !o.card.keywords.includes('Haste');
 			o.tapped = Boolean(params.tapped);
 			o.defaultControllerId = controller.playerId;
@@ -1762,6 +1849,10 @@ class Run {
 				bumpVersion: true
 			});
 			p.addLog(s, 'cast', `${controller.username} put ${o.card.name} onto the battlefield from ${holder.username}'s graveyard (${this.ctx.title}).`, you.playerId);
+			if (isAura && o.attachedToId) {
+				const host = p.findPermanent(s, o.attachedToId);
+				if (host) p.triggerOnAttach(s, controller, o, host.inst);
+			}
 			p.triggerOnEtb(s, controller, o);
 		}
 	}
