@@ -2,9 +2,11 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
 	applyGameAction,
+	canBlock,
 	checkStateBasedActions,
 	createCardInstance,
-	createInitialGameState
+	createInitialGameState,
+	isCombatDeclarationPending
 } from '../engine.ts';
 import type {
 	CardInstance,
@@ -276,5 +278,75 @@ describe('Review 3 — Group A: SBA graveyard batch with pending moves and libra
 			1,
 			'Other dying creature exists in player zones exactly once'
 		);
+	});
+});
+
+describe('Review 3 — Group B: bot combat declarations and R10 shared predicates', () => {
+	it('R10: shared canBlock and isCombatDeclarationPending helpers enforce evasion/protection and pending combat declarations (CR 508.1, 509.1, 702.9b, 702.16e)', () => {
+		const { state, p1, p2 } = makeGame([false, true]);
+		const flyer = putInZone(
+			state,
+			p1,
+			synthCard({
+				name: 'Sky Raptor',
+				oracleText: 'Flying',
+				keywords: ['Flying']
+			}),
+			'battlefield'
+		);
+		const proGreen = putInZone(
+			state,
+			p1,
+			synthCard({
+				name: 'White Knight',
+				colors: ['W'],
+				colorIdentity: ['W'],
+				oracleText: 'Protection from green'
+			}),
+			'battlefield'
+		);
+		const greenBear = putInZone(
+			state,
+			p2,
+			synthCard({
+				name: 'Green Bear',
+				colors: ['G'],
+				colorIdentity: ['G']
+			}),
+			'battlefield'
+		);
+		const reachSpider = putInZone(
+			state,
+			p2,
+			synthCard({
+				name: 'Artifact Spider',
+				typeLine: 'Artifact Creature — Spider',
+				colors: [],
+				colorIdentity: [],
+				oracleText: 'Reach',
+				keywords: ['Reach']
+			}),
+			'battlefield'
+		);
+
+		assert.equal(canBlock(state, greenBear, flyer), false, 'Ground creature cannot block flyer');
+		assert.equal(canBlock(state, reachSpider, flyer), true, 'Reach creature can block flyer');
+		assert.equal(
+			canBlock(state, greenBear, proGreen),
+			false,
+			'Green creature cannot block attacker with protection from green'
+		);
+		assert.equal(
+			canBlock(state, reachSpider, proGreen),
+			true,
+			'Colorless creature can block attacker with protection from green'
+		);
+
+		assert.equal(isCombatDeclarationPending(state), false);
+		state.phase = 'declare_attackers';
+		state.combat.awaitingAttackersDeclaration = true;
+		assert.equal(isCombatDeclarationPending(state), true);
+		state.combat.awaitingAttackersDeclaration = false;
+		assert.equal(isCombatDeclarationPending(state), false);
 	});
 });
