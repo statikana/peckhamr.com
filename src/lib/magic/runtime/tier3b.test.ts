@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 
 import {
 	applyGameAction,
+	checkAbilityActivationLegality,
 	createCardInstance,
-	createInitialGameState
+	createInitialGameState,
+	getEffectiveActivatedAbilities
 } from '../engine.ts';
 import { compileCard } from '../compiler/index.ts';
 import { evaluatePermanent } from '../ruleTree.ts';
@@ -351,5 +353,199 @@ describe('Tier 3 Track B — Item 4: Commander-specific IR queries (CR 903.3, 90
 		assert.equal(compileCard(discountSpellCard).fullySupported, true);
 		const discountSpell = putInZone(state, alice, discountSpellCard, 'hand', false);
 		assert.equal(effectiveSpellManaCost(state, alice, discountSpell).totalCmc, 2);
+	});
+});
+
+describe('Tier 3 Track B — Item 5: Grand Abolisher activation lock (CR 101.2, 602.5b, 604.1)', () => {
+	it("during the Abolisher controller's turn, opponents cannot tap a mana rock or activate a creature/enchantment ability, can tap a land, and can activate both on their own turn (CR 101.2, 602.5b, 604.1)", () => {
+		const state = createTestGame();
+		const [alice, bob] = state.players;
+		alice.battlefield = [];
+		bob.battlefield = [];
+
+		const abolisherCard = card({
+			name: 'Grand Abolisher',
+			manaCost: '{W}{W}',
+			cmc: 2,
+			typeLine: 'Creature — Human Cleric',
+			oracleText:
+				"During your turn, your opponents can't cast spells or activate abilities of artifacts, creatures, or enchantments.",
+			colors: ['W']
+		});
+		assert.equal(compileCard(abolisherCard).fullySupported, true);
+		putInZone(state, alice, abolisherCard, 'battlefield', false);
+
+		const manaRock = putInZone(
+			state,
+			bob,
+			card({
+				name: 'Arcane Signet',
+				manaCost: '{2}',
+				cmc: 2,
+				typeLine: 'Artifact',
+				oracleText: '{T}: Add {G}.',
+				colors: [],
+				power: undefined,
+				toughness: undefined
+			}),
+			'battlefield',
+			false
+		);
+		const pinger = putInZone(
+			state,
+			bob,
+			card({
+				name: 'Prodigal Pyromancer',
+				manaCost: '{2}{R}',
+				cmc: 3,
+				typeLine: 'Creature — Human Wizard',
+				oracleText: '{T}: ~ deals 1 damage to any target.',
+				colors: ['R'],
+				power: '1',
+				toughness: '1'
+			}),
+			'battlefield',
+			false
+		);
+		const enchAct = putInZone(
+			state,
+			bob,
+			card({
+				name: 'Sacred Mesa',
+				manaCost: '{2}{W}',
+				cmc: 3,
+				typeLine: 'Enchantment',
+				oracleText: '{1}{W}: Gain 1 life.',
+				colors: ['W'],
+				power: undefined,
+				toughness: undefined
+			}),
+			'battlefield',
+			false
+		);
+		const forest = putInZone(
+			state,
+			bob,
+			card({
+				name: 'Forest',
+				manaCost: '',
+				cmc: 0,
+				typeLine: 'Basic Land — Forest',
+				oracleText: '({T}: Add {G}.)',
+				colors: [],
+				power: undefined,
+				toughness: undefined
+			}),
+			'battlefield',
+			false
+		);
+		bob.manaPool.W = 2;
+
+		// It is Alice's turn; give Bob priority to test his activation permissions during Alice's turn.
+		state.activePlayerIndex = 0;
+		state.priorityPlayerIndex = 1;
+
+		const rockAb = getEffectiveActivatedAbilities(state, bob, manaRock)[0]!;
+		const pingerAb = getEffectiveActivatedAbilities(state, bob, pinger)[0]!;
+		const enchAb = getEffectiveActivatedAbilities(state, bob, enchAct)[0]!;
+		const forestAb = getEffectiveActivatedAbilities(state, bob, forest)[0]!;
+
+		assert.equal(
+			checkAbilityActivationLegality(state, bob.playerId, manaRock, rockAb).ok,
+			false,
+			"Opponent cannot activate artifact mana ability during Grand Abolisher controller's turn"
+		);
+		assert.equal(
+			applyGameAction(state, bob.playerId, { type: 'tap_mana', instanceId: manaRock.instanceId }).ok,
+			false
+		);
+		assert.equal(
+			checkAbilityActivationLegality(state, bob.playerId, pinger, pingerAb).ok,
+			false,
+			"Opponent cannot activate creature ability during Grand Abolisher controller's turn"
+		);
+		assert.equal(
+			applyGameAction(state, bob.playerId, {
+				type: 'activate_ability',
+				instanceId: pinger.instanceId,
+				abilityId: pingerAb.id,
+				targets: [{ kind: 'player', id: alice.playerId, label: alice.username }]
+			}).ok,
+			false
+		);
+		assert.equal(
+			checkAbilityActivationLegality(state, bob.playerId, enchAct, enchAb).ok,
+			false,
+			"Opponent cannot activate enchantment ability during Grand Abolisher controller's turn"
+		);
+
+		// Land mana abilities are unaffected by Grand Abolisher
+		assert.equal(
+			checkAbilityActivationLegality(state, bob.playerId, forest, forestAb).ok,
+			true,
+			"Opponent CAN activate land mana ability during Grand Abolisher controller's turn"
+		);
+		assert.equal(
+			applyGameAction(state, bob.playerId, { type: 'tap_mana', instanceId: forest.instanceId }).ok,
+			true
+		);
+		assert.equal(bob.manaPool.G, 1);
+
+		// Alice herself can still activate her own creature/artifact abilities on her turn
+		const aliceRock = putInZone(
+			state,
+			alice,
+			card({
+				name: 'Alice Signet',
+				manaCost: '{2}',
+				cmc: 2,
+				typeLine: 'Artifact',
+				oracleText: '{T}: Add {W}.',
+				colors: [],
+				power: undefined,
+				toughness: undefined
+			}),
+			'battlefield',
+			false
+		);
+		const aliceRockAb = getEffectiveActivatedAbilities(state, alice, aliceRock)[0]!;
+		assert.equal(
+			checkAbilityActivationLegality(state, alice.playerId, aliceRock, aliceRockAb).ok,
+			true
+		);
+
+		// On Bob's own turn, Bob can tap his mana rock and activate his creature ability
+		state.activePlayerIndex = 1;
+		state.priorityPlayerIndex = 1;
+		noteLayerInputsChanged(state);
+
+		assert.equal(
+			checkAbilityActivationLegality(state, bob.playerId, manaRock, rockAb).ok,
+			true,
+			'Opponent CAN activate artifact mana ability on their own turn'
+		);
+		assert.equal(
+			applyGameAction(state, bob.playerId, { type: 'tap_mana', instanceId: manaRock.instanceId }).ok,
+			true
+		);
+		assert.equal(bob.manaPool.G, 2);
+
+		assert.equal(
+			checkAbilityActivationLegality(state, bob.playerId, pinger, pingerAb).ok,
+			true,
+			'Opponent CAN activate creature ability on their own turn'
+		);
+		const aliceLifeBefore = alice.life;
+		assert.equal(
+			applyGameAction(state, bob.playerId, {
+				type: 'activate_ability',
+				instanceId: pinger.instanceId,
+				abilityId: pingerAb.id,
+				targets: [{ kind: 'player', id: alice.playerId, label: alice.username }]
+			}).ok,
+			true
+		);
+		settle(state);
+		assert.equal(alice.life, aliceLifeBefore - 1);
 	});
 });

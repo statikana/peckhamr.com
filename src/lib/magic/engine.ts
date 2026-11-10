@@ -66,6 +66,7 @@ export function getEffectiveActivatedAbilities(
 import { STAPLE_CARDS } from './precons.ts';
 import {
 	applySelfEtbReplacements,
+	checkGlobalAbilityActivationRestrictions,
 	counterMultiplier,
 	getAttackTaxGeneric,
 	getAttackTaxSources,
@@ -673,6 +674,9 @@ function tapOnlyManaAbilities(
 	perm: CardInstance,
 	cmdIdentity: ManaColor[]
 ): EffectiveActivatedAbility[] {
+	if (!checkGlobalAbilityActivationRestrictions(state, player.playerId, perm).ok) {
+		return [];
+	}
 	return getEffectiveActivatedAbilities(state, player, perm, cmdIdentity).filter(
 		(a) =>
 			a.isManaAbility &&
@@ -1597,6 +1601,9 @@ function applyGameActionInner(
 			const allowedColors = ab.producesMana;
 			const chosenColor: ManaColor | undefined =
 				preferred && allowedColors.includes(preferred) ? preferred : allowedColors[0];
+
+			const globalAbCheck = checkGlobalAbilityActivationRestrictions(state, actorId, perm);
+			if (!globalAbCheck.ok) return globalAbCheck;
 
 			if (ab.activationRestrictions?.length) {
 				const manaAbLegality = checkAbilityActivationLegality(state, actorId, perm, ab);
@@ -9315,6 +9322,12 @@ function checkAbilityActivationLegalityInner(
 			ok: false,
 			error: `${perm.card.name} has lost all abilities (${abilityLoss.sources[0] || 'continuous effect'}).`
 		};
+	}
+
+	// CR 101.2, 602.5b, 604.1: Global rule-modifying ability-activation restrictions (e.g. Grand Abolisher).
+	const globalAbCheck = checkGlobalAbilityActivationRestrictions(state, actorId, perm);
+	if (!globalAbCheck.ok) {
+		return globalAbCheck;
 	}
 
 	// Phase 4: the whole cost from the IR ({T}/{Q} with summoning sickness, sacrifices, discards,

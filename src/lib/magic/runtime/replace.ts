@@ -32,7 +32,7 @@ import type {
 } from '../types.ts';
 import type { LeftBattlefieldInfo } from './events.ts';
 import { withStableLayerInputs } from './layerCache.ts';
-import { abilityActivePermanents, type AbilityActivePermanent } from './layers.ts';
+import { abilityActivePermanents, evaluatePermanent, type AbilityActivePermanent } from './layers.ts';
 import {
 	evaluateAmount,
 	evaluateCondition,
@@ -464,6 +464,34 @@ export function checkGlobalCastPermissionsAndRestrictions(
 		blocked: false,
 		ok: true
 	};
+}
+
+/**
+ * CR 101.2, 602.5b, 604.1: Checks global rule-modifying ability-activation restrictions
+ * (such as Grand Abolisher's "During your turn, your opponents can't cast spells or activate
+ * abilities of artifacts, creatures, or enchantments", which applies to both mana abilities and
+ * non-mana abilities of those permanent types while leaving lands and planeswalker abilities unaffected).
+ */
+export function checkGlobalAbilityActivationRestrictions(
+	state: GameState,
+	actorId: string,
+	perm: CardInstance
+): { ok: boolean; error?: string } {
+	const evalPerm = evaluatePermanent(state, perm);
+	if (!evalPerm.isArtifact && !evalPerm.isCreature && !evalPerm.isEnchantment) {
+		return { ok: true };
+	}
+	const activePlayer = state.players[state.activePlayerIndex];
+	for (const mod of activeRuleModifiers(state, 'opponentsCantCastDuringYourTurn', actorId)) {
+		if (activePlayer?.playerId === mod.controllerId) {
+			const p = state.players.find((pl) => pl.playerId === mod.controllerId);
+			return {
+				ok: false,
+				error: `Illegal Activation: ${mod.sourceName} prevents opponents from activating abilities of artifacts, creatures, or enchantments during ${p?.username ?? mod.controllerId}'s turn.`
+			};
+		}
+	}
+	return { ok: true };
 }
 
 /**
