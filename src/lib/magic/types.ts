@@ -492,6 +492,7 @@ export type ChoiceRequest =
 			max: number;
 			zone: ZoneType;
 			reason: string;
+			defaultObjectIds?: string[];
 	  }
 	| { kind: 'chooseMode'; modes: string[]; min: number; max: number }
 	| { kind: 'chooseNumber'; min: number; max: number; reason: string }

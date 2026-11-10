@@ -85,7 +85,7 @@ export interface EffectPorts {
 	triggerOnEtb(state: GameState, controller: PlayerGameState, inst: CardInstance): void;
 	triggerOnAttach(state: GameState, controller: PlayerGameState, attached: CardInstance, to: CardInstance): void;
 	addCounters(state: GameState, inst: CardInstance, counter: CounterType, amount: number): number;
-	proliferate(state: GameState, controller: PlayerGameState): void;
+	proliferate(state: GameState, controller: PlayerGameState, chosenIds?: string[]): void;
 	/** Scry or "look at the top N, put them back in any order": bot decision or human prompt. */
 	scry(state: GameState, player: PlayerGameState, item: StackItem, count: number, mode: 'scry' | 'rearrange', mayShuffle: boolean): void;
 	search(state: GameState, player: PlayerGameState, spec: LibrarySearchSpec, item: StackItem): void;
@@ -459,6 +459,65 @@ export function applyLifelinkGain(
 
 // ---- Interpreter ----------------------------------------------------------------------------
 
+export function proliferateCandidates(
+	state: GameState,
+	controller: PlayerGameState
+): { candidates: string[]; defaultIds: string[] } {
+	const allCounterTypes: CounterType[] = [
+		'+1/+1',
+		'-1/-1',
+		'loyalty',
+		'charge',
+		'shield',
+		'stun',
+		'lore',
+		'time'
+	];
+	const controllerPositiveTypes: CounterType[] = [
+		'+1/+1',
+		'loyalty',
+		'charge',
+		'shield',
+		'lore',
+		'time'
+	];
+	const opponentNegativeTypes: CounterType[] = ['-1/-1', 'stun'];
+	const candidates: string[] = [];
+	const defaultIds: string[] = [];
+	for (const pl of state.players) {
+		if (pl.lost) continue;
+		const isSelf = pl.playerId === controller.playerId;
+		for (const perm of pl.battlefield) {
+			if (perm.phasedOut) continue;
+			if (allCounterTypes.some((cType) => (perm.counters[cType] || 0) > 0)) {
+				candidates.push(perm.instanceId);
+				const wantTypes = isSelf ? controllerPositiveTypes : opponentNegativeTypes;
+				if (wantTypes.some((cType) => (perm.counters[cType] || 0) > 0)) {
+					defaultIds.push(perm.instanceId);
+				}
+			}
+		}
+		if (
+			pl.poison > 0 ||
+			(pl.experienceCounters || 0) > 0 ||
+			(pl.energyCounters || 0) > 0
+		) {
+			candidates.push(pl.playerId);
+			if (isSelf) {
+				if (
+					((pl.experienceCounters || 0) > 0 || (pl.energyCounters || 0) > 0) &&
+					pl.poison === 0
+				) {
+					defaultIds.push(pl.playerId);
+				}
+			} else if (pl.poison > 0) {
+				defaultIds.push(pl.playerId);
+			}
+		}
+	}
+	return { candidates, defaultIds };
+}
+
 class Run {
 	readonly state: GameState;
 	readonly ctx: EffectContext;
@@ -496,7 +555,8 @@ class Run {
 		candidates: string[],
 		min: number,
 		max: number,
-		zone: 'battlefield' | 'hand' | 'library'
+		zone: 'battlefield' | 'hand' | 'library',
+		defaultObjectIds?: string[]
 	): void {
 		const item = this.saveFrame(this.stepIndex, this.answers);
 		enqueueChoicePrompt(this.state, {
@@ -508,7 +568,15 @@ class Run {
 			candidateInstanceIds: candidates,
 			countRequired: min,
 			continuation: { kind: 'effect_choice', stackItemId: item.id, stepIndex: this.stepIndex },
-			choice: { kind: 'chooseObjects', candidates, min, max, zone, reason: title }
+			choice: {
+				kind: 'chooseObjects',
+				candidates,
+				min,
+				max,
+				zone,
+				reason: title,
+				...(defaultObjectIds ? { defaultObjectIds } : {})
+			}
 		});
 		this.result.paused = true;
 	}
@@ -998,9 +1066,30 @@ class Run {
 				}
 				return;
 			}
-			case 'proliferate':
-				p.proliferate(s, you);
+			case 'proliferate': {
+				const { candidates, defaultIds } = proliferateCandidates(s, you);
+				if (
+					!you.isBot &&
+					this.canPause &&
+					candidates.length > 0 &&
+					!this.answers[you.playerId]
+				) {
+					this.pauseForChoice(
+						you,
+						`${title} — Proliferate`,
+						'Choose any number of permanents and/or players with counters to proliferate (CR 701.34a).',
+						candidates,
+						0,
+						candidates.length,
+						'battlefield',
+						defaultIds
+					);
+					return;
+				}
+				const chosenIds = this.answers[you.playerId];
+				p.proliferate(s, you, chosenIds);
 				return;
+			}
 			case 'pump': {
 				const objs = this.objects(step.subject).filter((o) => o.zone === 'battlefield');
 				this.bind(step, objs);

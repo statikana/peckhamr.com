@@ -264,3 +264,113 @@ describe('Tier 2B — 5a: Commander to hand/library choice (CR 903.9b)', () => {
 		assert.equal(p1.command.some((c) => c.instanceId === humanCmd.instanceId), true);
 	});
 });
+
+describe('Tier 2B — 5b: Proliferate human choice (CR 701.34a)', () => {
+	it('prompts a human controller with chooseObjects (min 0, max all) over permanents and players with counters, with heuristic defaultObjectIds, while keeping bots automatic (CR 701.34a)', () => {
+		const { state, p1, p2 } = makeGame([false, true]);
+
+		const cPlus = putInZone(state, p1, synthCard({ name: 'Plus Bear' }), 'battlefield');
+		cPlus.counters['+1/+1'] = 1;
+		const cMinus = putInZone(state, p1, synthCard({ name: 'Persist Bear', toughness: '4' }), 'battlefield');
+		cMinus.counters['-1/-1'] = 1;
+		const noCounter = putInZone(state, p1, synthCard({ name: 'Plain Bear' }), 'battlefield');
+		p1.energyCounters = 2;
+
+		const oppMinus = putInZone(state, p2, synthCard({ name: 'Weakened Guard', toughness: '4' }), 'battlefield');
+		oppMinus.counters['-1/-1'] = 1;
+		oppMinus.counters.stun = 1;
+		const oppPlus = putInZone(state, p2, synthCard({ name: 'Buffed Guard' }), 'battlefield');
+		oppPlus.counters['+1/+1'] = 1;
+		p2.poison = 3;
+
+		const prolifSpell = synthCard({
+			name: 'Contentious Plan',
+			manaCost: '{1}{U}',
+			cmc: 2,
+			typeLine: 'Sorcery',
+			oracleText: 'Proliferate.\nDraw a card.'
+		});
+		putInZone(state, p1, synthCard({ name: 'Top Card' }), 'library');
+		state.stack.push({
+			id: 'stk_prolif_human',
+			sourceInstanceId: 'src_prolif_human',
+			card: prolifSpell,
+			controllerId: p1.playerId,
+			kind: 'spell',
+			title: 'Contentious Plan',
+			oracleText: prolifSpell.oracleText,
+			targets: [],
+			xValue: 0,
+			requiresGuidedResolution: false,
+			createdAt: 0
+		});
+
+		resolveTopOfStack(state);
+
+		const prompt = state.pendingPrompts.find((pr) => pr.playerId === p1.playerId);
+		assert.ok(prompt, 'Human controller must receive a chooseObjects prompt for Proliferate');
+		assert.equal(prompt.choice?.kind, 'chooseObjects');
+		if (prompt.choice?.kind === 'chooseObjects') {
+			assert.equal(prompt.choice.min, 0);
+			assert.equal(prompt.choice.max, 6);
+			assert.equal(prompt.choice.candidates.includes(noCounter.instanceId), false);
+			assert.deepEqual(
+				new Set(prompt.choice.candidates),
+				new Set([
+					cPlus.instanceId,
+					cMinus.instanceId,
+					p1.playerId,
+					oppMinus.instanceId,
+					oppPlus.instanceId,
+					p2.playerId
+				])
+			);
+			assert.deepEqual(
+				new Set(prompt.choice.defaultObjectIds ?? []),
+				new Set([cPlus.instanceId, p1.playerId, oppMinus.instanceId, p2.playerId])
+			);
+		}
+		// Draw step after proliferate has not happened yet while paused
+		assert.equal(p1.hand.length, 0);
+
+		// Human deliberately chooses cMinus (own -1/-1 counter) and p2 (poison), skipping cPlus and oppMinus
+		const res = applyGameAction(state, p1.playerId, {
+			type: 'choice',
+			promptId: prompt.id,
+			answer: {
+				kind: 'chooseObjects',
+				objectIds: [cMinus.instanceId, p2.playerId]
+			}
+		});
+		assert.equal(res.ok, true);
+		assert.equal(cPlus.counters['+1/+1'], 1, 'Unchosen cPlus should stay at 1');
+		assert.equal(cMinus.counters['-1/-1'], 2, 'Chosen cMinus should proliferate to 2');
+		assert.equal(p1.energyCounters, 2, 'Unchosen p1 energy should stay at 2');
+		assert.equal(oppMinus.counters['-1/-1'], 1, 'Unchosen oppMinus should stay at 1');
+		assert.equal(p2.poison, 4, 'Chosen p2 poison should proliferate to 4');
+		assert.equal(p1.hand.length, 1, 'Subsequent Draw a card step should complete after choice');
+
+		// Bot controller proliferates automatically without a prompt
+		state.stack.push({
+			id: 'stk_prolif_bot',
+			sourceInstanceId: 'src_prolif_bot',
+			card: synthCard({
+				name: 'Bot Proliferate',
+				typeLine: 'Sorcery',
+				oracleText: 'Proliferate.'
+			}),
+			controllerId: p2.playerId,
+			kind: 'spell',
+			title: 'Bot Proliferate',
+			oracleText: 'Proliferate.',
+			targets: [],
+			xValue: 0,
+			requiresGuidedResolution: false,
+			createdAt: 0
+		});
+		resolveTopOfStack(state);
+		assert.equal(state.pendingPrompts.length, 0, 'Bot should not be prompted for Proliferate');
+		assert.equal(oppPlus.counters['+1/+1'], 2, 'Bot should auto-proliferate its own +1/+1 counter');
+		assert.equal(cMinus.counters['-1/-1'], 3, 'Bot should auto-proliferate opponent -1/-1 counter');
+	});
+});

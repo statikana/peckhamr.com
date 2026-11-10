@@ -1614,7 +1614,10 @@
 		if (myPrompt) {
 			if (choiceStatePromptId !== myPrompt.id) {
 				choiceStatePromptId = myPrompt.id;
-				selectedPromptCardIds = [];
+				selectedPromptCardIds =
+					myChoice?.kind === 'chooseObjects' && myChoice.defaultObjectIds
+						? [...myChoice.defaultObjectIds]
+						: [];
 				selectedPromptModes = [];
 				selectedPromptNumber = myChoice?.kind === 'chooseNumber' ? myChoice.min : 0;
 			}
