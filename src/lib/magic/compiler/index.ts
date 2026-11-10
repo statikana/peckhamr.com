@@ -14,7 +14,7 @@ import { hashText } from './normalize.ts';
 import { runtimeTriggers } from './triggers.ts';
 
 /** Bump whenever the IR produced for the same text could change. */
-export const COMPILER_VERSION = 4;
+export const COMPILER_VERSION = 5;
 
 const CACHE = new Map<string, CardDefinition>();
 
