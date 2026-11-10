@@ -155,8 +155,7 @@ export function objectToughness(state: GameState, obj: CardInstance): number | n
  */
 export function objectManaValue(
 	state: GameState | undefined,
-	obj: CardInstance | StackItem,
-	xValue?: number
+	obj: CardInstance | StackItem
 ): number {
 	if ('isFaceDown' in obj && obj.isFaceDown) return 0;
 	const card = 'copiableCard' in obj && obj.copiableCard ? obj.copiableCard : obj.card;
@@ -171,14 +170,11 @@ export function objectManaValue(
 			(s) => s.kind === 'spell' && (s.sourceInstanceId === obj.instanceId || s.id === obj.instanceId)
 		);
 		onStack = obj.zone === 'stack' || Boolean(stk);
-		itemX =
-			stk?.xValue ??
-			(obj as { xValue?: number }).xValue ??
-			(obj.zone === 'stack' ? xValue : undefined);
+		itemX = stk?.xValue ?? (obj as { xValue?: number }).xValue;
 	}
 	if (onStack && itemX !== undefined && itemX > 0) {
 		const xSymbols = (card.manaCost || '').match(/\{X\}/gi)?.length ?? 0;
-		return base + itemX * (xSymbols > 0 ? xSymbols : 1);
+		return base + itemX * xSymbols;
 	}
 	return base;
 }
@@ -262,7 +258,7 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 	if (
 		filter.manaValue &&
 		!compare(
-			objectManaValue(state, obj, filter.manaValue.value.k !== 'x' ? ctx.xValue : undefined),
+			objectManaValue(state, obj),
 			filter.manaValue,
 			ctx
 		)
@@ -351,7 +347,7 @@ export function evaluateAmount(amount: Amount, ctx: FilterContext): number {
 			if (amount.of.k !== 'self' || !ctx.source) return 0;
 			if (amount.stat === 'power') return objectPower(ctx.state, ctx.source) ?? 0;
 			if (amount.stat === 'toughness') return objectToughness(ctx.state, ctx.source) ?? 0;
-			if (amount.stat === 'manaValue') return objectManaValue(ctx.state, ctx.source, ctx.xValue);
+			if (amount.stat === 'manaValue') return objectManaValue(ctx.state, ctx.source);
 			return 0;
 		}
 		case 'cardsIn': {

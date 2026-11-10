@@ -9,6 +9,7 @@ import {
 	isCombatDeclarationPending
 } from '../engine.ts';
 import { executeEffectSteps } from './effects.ts';
+import { matchesObjectFilter, objectManaValue } from './objectFilter.ts';
 import type {
 	CardInstance,
 	GameState,
@@ -745,6 +746,95 @@ describe('Review 3 — Group C: prowess dedupe, objectManaValue, and playerComma
 			prowessTriggers.length,
 			2,
 			'Two separate temporary prowess grants must produce two prowess triggers per noncreature spell (CR 702.108b, R7)'
+		);
+	});
+
+	it('R8: objectManaValue uses only the object\'s own X and only when its manaCost contains {X}; caller ctx.xValue never leaks into target MV checks (CR 202.3e)', () => {
+		const { state, p1, p2 } = makeGame([false, false]);
+
+		// A 2-MV non-X spell on the stack
+		const nonXCard = synthCard({
+			name: 'Arcane Denial',
+			manaCost: '{1}{U}',
+			cmc: 2,
+			typeLine: 'Instant',
+			colors: ['U'],
+			colorIdentity: ['U']
+		});
+		const nonXInst = createCardInstance(nonXCard, p2.playerId, 'stack');
+
+		// 1. An X=3 spell/ability checks "mana value 2 or less" against the 2-MV non-X spell on the stack
+		const matchesMv2OrLess = matchesObjectFilter(
+			nonXInst,
+			{
+				zone: 'stack',
+				manaValue: { op: '<=', value: { k: 'const', n: 2 } }
+			},
+			{
+				state,
+				controllerId: p1.playerId,
+				xValue: 3
+			}
+		);
+		assert.equal(
+			matchesMv2OrLess,
+			true,
+			'X=3 caller checking "mana value 2 or less" on a 2-MV stack spell must use the target\'s own MV (CR 202.3e, R8)'
+		);
+
+		// Also check a {X}{U} spell on the stack with no recorded xValue (i.e. X=0) checked by an X=3 caller
+		const xZeroCard = synthCard({
+			name: 'Condescend',
+			manaCost: '{X}{U}',
+			cmc: 1,
+			typeLine: 'Instant',
+			colors: ['U'],
+			colorIdentity: ['U']
+		});
+		const xZeroInst = createCardInstance(xZeroCard, p2.playerId, 'stack');
+		assert.equal(
+			matchesObjectFilter(
+				xZeroInst,
+				{
+					zone: 'stack',
+					manaValue: { op: '<=', value: { k: 'const', n: 2 } }
+				},
+				{
+					state,
+					controllerId: p1.playerId,
+					xValue: 3
+				}
+			),
+			true,
+			'X=3 caller must not leak its xValue into another {X} stack spell whose own X is not 3 (CR 202.3e, R8)'
+		);
+
+		// 2. A non-X stack spell with xValue set on its StackItem still has its printed MV
+		const nonXStackItem = {
+			id: `stk_${nonXInst.instanceId}`,
+			sourceInstanceId: nonXInst.instanceId,
+			card: nonXCard,
+			ownerId: p2.playerId,
+			controllerId: p2.playerId,
+			kind: 'spell' as const,
+			title: nonXCard.name,
+			oracleText: nonXCard.oracleText,
+			targets: [],
+			xValue: 3,
+			castMode: 'normal' as const,
+			requiresGuidedResolution: false,
+			createdAt: 0
+		};
+		state.stack.push(nonXStackItem);
+		assert.equal(
+			objectManaValue(state, nonXStackItem),
+			2,
+			'Non-{X} stack spell with xValue set must still have its printed MV (CR 202.3e, R8)'
+		);
+		assert.equal(
+			objectManaValue(state, nonXInst),
+			2,
+			'Non-{X} stack CardInstance whose StackItem has xValue set must still have its printed MV (CR 202.3e, R8)'
 		);
 	});
 });
