@@ -341,6 +341,13 @@
 				authNotice = `${oauthSetup.toUpperCase()}_CLIENT_ID is not yet set in environment variables. Use the Quick OAuth Test Switcher below or configure GOOGLE_CLIENT_ID / GITHUB_CLIENT_ID in .env.`;
 			}
 
+			const oauthError = params.get('error');
+			if (oauthError) {
+				const provider = oauthError.startsWith('github') ? 'GitHub' : oauthError.startsWith('google') ? 'Google' : 'OAuth';
+				const reason = params.get('reason');
+				authNotice = `${provider} sign-in failed${reason ? `: ${reason.replace(/_/g, ' ')}` : ''}. Try again, or play as a guest.`;
+			}
+
 			const joinParam = params.get('join');
 			if (joinParam) {
 				joinCodeInput = joinParam.toUpperCase();

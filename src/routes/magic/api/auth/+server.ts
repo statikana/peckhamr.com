@@ -15,6 +15,17 @@ export const OPTIONS: RequestHandler = async () => {
 	return new Response(null, { status: 204, headers: CORS_HEADERS });
 };
 
+/**
+ * Sends the browser back to the lobby page with the failure and the provider's reason (e.g.
+ * `incorrect_client_credentials`), and logs both for `wrangler tail`. Never includes secrets.
+ */
+function oauthFailed(error: string, reason?: string, description?: string): Response {
+	console.error(`[magic-auth] ${error}: ${reason || 'no reason given'}${description ? ` (${description})` : ''}`);
+	const params = new URLSearchParams({ error });
+	if (reason) params.set('reason', reason.slice(0, 80));
+	return new Response(null, { status: 302, headers: { Location: `/?${params}` } });
+}
+
 export const GET: RequestHandler = async ({ url, request, platform }) => {
 	const action = url.searchParams.get('action') || 'me';
 	const googleClientId = getEnvVar(platform, 'GOOGLE_CLIENT_ID');
@@ -108,12 +119,13 @@ export const GET: RequestHandler = async ({ url, request, platform }) => {
 						grant_type: 'authorization_code'
 					})
 				});
-				const tokenData = (await tokenRes.json()) as { access_token?: string };
+				const tokenData = (await tokenRes.json()) as {
+					access_token?: string;
+					error?: string;
+					error_description?: string;
+				};
 				if (!tokenData.access_token) {
-					return new Response(null, {
-						status: 302,
-						headers: { Location: '/?error=google_token_failed' }
-					});
+					return oauthFailed('google_token_failed', tokenData.error, tokenData.error_description);
 				}
 
 				const profileRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
@@ -147,7 +159,8 @@ export const GET: RequestHandler = async ({ url, request, platform }) => {
 					method: 'POST',
 					headers: {
 						'Content-Type': 'application/json',
-						Accept: 'application/json'
+						Accept: 'application/json',
+						'User-Agent': 'PeckhamrMagicCommander/1.0'
 					},
 					body: JSON.stringify({
 						client_id: githubClientId,
@@ -156,12 +169,13 @@ export const GET: RequestHandler = async ({ url, request, platform }) => {
 						redirect_uri: redirectUri
 					})
 				});
-				const tokenData = (await tokenRes.json()) as { access_token?: string };
+				const tokenData = (await tokenRes.json()) as {
+					access_token?: string;
+					error?: string;
+					error_description?: string;
+				};
 				if (!tokenData.access_token) {
-					return new Response(null, {
-						status: 302,
-						headers: { Location: '/?error=github_token_failed' }
-					});
+					return oauthFailed('github_token_failed', tokenData.error, tokenData.error_description);
 				}
 
 				const userRes = await fetch('https://api.github.com/user', {
@@ -194,11 +208,8 @@ export const GET: RequestHandler = async ({ url, request, platform }) => {
 					}
 				});
 			}
-		} catch {
-			return new Response(null, {
-				status: 302,
-				headers: { Location: '/?error=oauth_exception' }
-			});
+		} catch (err) {
+			return oauthFailed('oauth_exception', err instanceof Error ? err.message : String(err));
 		}
 	}
 
