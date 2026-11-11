@@ -1,7 +1,11 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
 	applyGameAction,
+	checkEndTurnLegality,
+	checkMandatoryAttackersSatisfied,
 	createCardInstance,
 	createInitialGameState,
 	enterEndStep,
@@ -1115,6 +1119,94 @@ describe('Wave 3A — 6. CR 302.6 / 506.4b Control Change Combat Removal & Summo
 			state.combat.attackers.length,
 			0,
 			'Creature changing control is removed from combat (CR 506.4b)'
+		);
+	});
+});
+
+describe('Turn Controls UI & Legality Helpers (checkEndTurnLegality / checkMandatoryAttackersSatisfied)', () => {
+	it('evaluates checkEndTurnLegality and checkMandatoryAttackersSatisfied accurately across phases, priority, stack, and Goad', () => {
+		const { state, p1, p2 } = makeGame();
+
+		// Active player with priority and empty stack in main1 -> legal
+		assert.equal(checkEndTurnLegality(state, p1.playerId).ok, true);
+		// Non-active player -> illegal
+		assert.equal(checkEndTurnLegality(state, p2.playerId).ok, false);
+
+		// Also legal in upkeep, begin_combat, main2, end_step when active player holds priority & stack is empty
+		for (const ph of ['upkeep', 'draw', 'begin_combat', 'main2', 'end_step'] as GamePhase[]) {
+			state.phase = ph;
+			assert.equal(checkEndTurnLegality(state, p1.playerId).ok, true, `Expected legal in ${ph}`);
+		}
+
+		// Illegal when opponent holds priority
+		state.phase = 'main1';
+		state.priorityPlayerIndex = 1;
+		assert.equal(checkEndTurnLegality(state, p1.playerId).ok, false);
+		state.priorityPlayerIndex = 0;
+
+		// Illegal when stack is non-empty
+		const dummy = putInZone(state, p1, synthCard({ name: 'Test Relic', typeLine: 'Artifact' }), 'battlefield');
+		state.stack.push({
+			id: 'stk_1',
+			sourceInstanceId: dummy.instanceId,
+			card: dummy.card,
+			controllerId: p1.playerId,
+			kind: 'triggered',
+			title: 'Trigger',
+			oracleText: '',
+			targets: [],
+			xValue: 0,
+			requiresGuidedResolution: false,
+			createdAt: 0
+		});
+		assert.equal(checkEndTurnLegality(state, p1.playerId).ok, false);
+		state.stack = [];
+
+		// Mandatory attacker (Goad) blocks both end_turn in main1 and empty attacker selection in declare_attackers
+		const goaded = putInZone(
+			state,
+			p1,
+			synthCard({ name: 'Frenzied Raider', power: '3', toughness: '3' }),
+			'battlefield'
+		);
+		goaded.summoningSick = false;
+		goaded.goadedByPlayerIds = [p2.playerId];
+
+		assert.equal(checkEndTurnLegality(state, p1.playerId).ok, false);
+		state.phase = 'declare_attackers';
+		assert.equal(checkMandatoryAttackersSatisfied(state, p1.playerId, []).ok, false);
+		assert.equal(
+			checkMandatoryAttackersSatisfied(state, p1.playerId, [goaded.instanceId]).ok,
+			true
+		);
+
+		// Post-combat (main2), mandatory attack requirement no longer blocks passing to end of turn
+		state.phase = 'main2';
+		assert.equal(checkEndTurnLegality(state, p1.playerId).ok, true);
+	});
+
+	it('renders turn-phase-box, primary-step-btn, and end-turn-btn unconditionally in ArenaTable.svelte', () => {
+		const dir = new URL('.', import.meta.url).pathname;
+		const src = readFileSync(join(dir, '..', 'ArenaTable.svelte'), 'utf8');
+		const start = src.indexOf('<div class="arena-controls">');
+		assert.ok(start >= 0, 'Expected .arena-controls container in ArenaTable.svelte');
+		const block = src.slice(start, start + 2400);
+
+		assert.ok(block.includes('class="turn-phase-box"'), 'Expected turn phase/step info panel');
+		assert.ok(
+			block.includes('class="turn-ctrl-btn primary-step-btn"'),
+			'Expected fixed-slot next phase / pass priority button'
+		);
+		assert.ok(
+			block.includes('class="turn-ctrl-btn end-turn-btn"'),
+			'Expected fixed-slot pass to end of turn button'
+		);
+		const endControls = block.indexOf('</div>\n\t\t\t\t\t</div>');
+		const controlsInner = endControls >= 0 ? block.slice(0, endControls) : block;
+		assert.equal(
+			controlsInner.includes('{#if'),
+			false,
+			'.arena-controls must not conditionally mount/unmount buttons with {#if}'
 		);
 	});
 });

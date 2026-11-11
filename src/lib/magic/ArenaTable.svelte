@@ -3,7 +3,9 @@
 	import {
 		canPayOrAutoTap,
 		checkAbilityActivationLegality,
+		checkEndTurnLegality,
 		checkLandPlayLegality,
+		checkMandatoryAttackersSatisfied,
 		checkSpellCastLegality,
 		checkSuspendLegality,
 		computeCombatDamageForecast,
@@ -33,6 +35,7 @@
 		type CardInstance,
 		type CounterType,
 		type GameActionPayload,
+		type GamePhase,
 		type GuidedOperation,
 		type GameState,
 		type MagicChatMessage,
@@ -740,7 +743,7 @@
 				if (typeof parsed.stackHeight === 'number') stackHeight = Math.min(380, Math.max(75, parsed.stackHeight));
 				if (typeof parsed.oppHeightPct === 'number') oppHeightPct = Math.min(62, Math.max(18, parsed.oppHeightPct));
 				if (typeof parsed.frontRowPct === 'number') frontRowPct = Math.min(75, Math.max(25, parsed.frontRowPct));
-				if (typeof parsed.consoleHeight === 'number') consoleHeight = Math.min(340, Math.max(115, parsed.consoleHeight));
+				if (typeof parsed.consoleHeight === 'number') consoleHeight = Math.min(340, Math.max(122, parsed.consoleHeight));
 				if (typeof parsed.vitalsWidth === 'number') {
 					const savedVitals = parsed.vitalsWidth === 265 ? 160 : parsed.vitalsWidth;
 					vitalsWidth = Math.min(420, Math.max(118, savedVitals));
@@ -898,7 +901,7 @@
 		} else if (activeDrag === 'hand_height' && myBoardEl) {
 			const rect = myBoardEl.getBoundingClientRect();
 			const nextH = rect.bottom - e.clientY;
-			consoleHeight = Math.min(340, Math.max(115, Math.round(nextH)));
+			consoleHeight = Math.min(340, Math.max(122, Math.round(nextH)));
 		} else if (activeDrag === 'hand_left' && myConsoleEl) {
 			const rect = myConsoleEl.getBoundingClientRect();
 			const nextW = e.clientX - rect.left;
@@ -1537,10 +1540,257 @@
 		}
 	}
 
-	async function handlePrimaryArenaButton() {
-		if (!me || !hasPriority) return;
+	const TURN_PHASE_GROUPS = [
+		{ id: 'beginning', label: 'Beginning' },
+		{ id: 'main1', label: 'Main 1' },
+		{ id: 'combat', label: 'Combat' },
+		{ id: 'main2', label: 'Main 2' },
+		{ id: 'ending', label: 'Ending' }
+	] as const;
 
-		if (gameState.phase === 'declare_attackers' && isMyTurn && !gameState.combat.active) {
+	type TurnPhaseGroupId = (typeof TURN_PHASE_GROUPS)[number]['id'];
+
+	const PHASE_STEP_DETAILS: Record<
+		GamePhase,
+		{
+			group: TurnPhaseGroupId;
+			groupIndex: number;
+			phaseTitle: string;
+			stepTitle: string;
+			nextLabel: string;
+		}
+	> = {
+		untap: {
+			group: 'beginning',
+			groupIndex: 0,
+			phaseTitle: 'Beginning',
+			stepTitle: 'Untap',
+			nextLabel: 'Next: Upkeep'
+		},
+		upkeep: {
+			group: 'beginning',
+			groupIndex: 0,
+			phaseTitle: 'Beginning',
+			stepTitle: 'Upkeep',
+			nextLabel: 'Next: Draw'
+		},
+		draw: {
+			group: 'beginning',
+			groupIndex: 0,
+			phaseTitle: 'Beginning',
+			stepTitle: 'Draw',
+			nextLabel: 'Next: Main 1'
+		},
+		main1: {
+			group: 'main1',
+			groupIndex: 1,
+			phaseTitle: 'Main 1',
+			stepTitle: 'Precombat',
+			nextLabel: 'Next: Combat'
+		},
+		begin_combat: {
+			group: 'combat',
+			groupIndex: 2,
+			phaseTitle: 'Combat',
+			stepTitle: 'Begin Combat',
+			nextLabel: 'Next: Attackers'
+		},
+		declare_attackers: {
+			group: 'combat',
+			groupIndex: 2,
+			phaseTitle: 'Combat',
+			stepTitle: 'Attackers',
+			nextLabel: 'Next: Blockers'
+		},
+		declare_blockers: {
+			group: 'combat',
+			groupIndex: 2,
+			phaseTitle: 'Combat',
+			stepTitle: 'Blockers',
+			nextLabel: 'Next: Damage'
+		},
+		first_strike_damage: {
+			group: 'combat',
+			groupIndex: 2,
+			phaseTitle: 'Combat',
+			stepTitle: 'First Strike',
+			nextLabel: 'Next: Damage'
+		},
+		combat_damage: {
+			group: 'combat',
+			groupIndex: 2,
+			phaseTitle: 'Combat',
+			stepTitle: 'Damage',
+			nextLabel: 'Next: End Combat'
+		},
+		end_combat: {
+			group: 'combat',
+			groupIndex: 2,
+			phaseTitle: 'Combat',
+			stepTitle: 'End Combat',
+			nextLabel: 'Next: Main 2'
+		},
+		main2: {
+			group: 'main2',
+			groupIndex: 3,
+			phaseTitle: 'Main 2',
+			stepTitle: 'Postcombat',
+			nextLabel: 'Next: End Step'
+		},
+		end_step: {
+			group: 'ending',
+			groupIndex: 4,
+			phaseTitle: 'Ending',
+			stepTitle: 'End Step',
+			nextLabel: 'Next: Cleanup'
+		},
+		cleanup: {
+			group: 'ending',
+			groupIndex: 4,
+			phaseTitle: 'Ending',
+			stepTitle: 'Cleanup',
+			nextLabel: 'Pass Priority'
+		}
+	};
+
+	const currentPhaseDetail = $derived(PHASE_STEP_DETAILS[gameState.phase]);
+
+	const isConfirmingAttackers = $derived(
+		Boolean(
+			me &&
+				gameState.stack.length === 0 &&
+				gameState.phase === 'declare_attackers' &&
+				isMyTurn &&
+				!gameState.combat.active
+		)
+	);
+
+	const isConfirmingBlockers = $derived(
+		Boolean(
+			me &&
+				gameState.stack.length === 0 &&
+				gameState.phase === 'declare_blockers' &&
+				!isMyTurn &&
+				gameState.combat.attackers.some((a) => a.defenderPlayerId === me.playerId) &&
+				!(gameState.combat.declaredBlockersPlayerIds || []).includes(me.playerId)
+		)
+	);
+
+	const mandatoryAttackersCheck = $derived.by(() => {
+		if (!me || !isConfirmingAttackers) return { ok: true as boolean, error: undefined as string | undefined };
+		return checkMandatoryAttackersSatisfied(gameState, me.playerId, Object.keys(draftAttackers));
+	});
+
+	const canAdvanceOrPass = $derived(
+		Boolean(
+			me &&
+				!me.lost &&
+				gameState.status === 'active' &&
+				hasPriority &&
+				gameState.pendingPrompts.length === 0 &&
+				!pendingTargetAction &&
+				mandatoryAttackersCheck.ok
+		)
+	);
+
+	const primaryStepLabel = $derived.by(() => {
+		if (gameState.stack.length > 0) {
+			return `Resolve Stack (${gameState.stack.length})`;
+		}
+		if (isConfirmingAttackers) {
+			const count = Object.keys(draftAttackers).length;
+			if (count > 0) return `Attack with ${count}`;
+			if (!mandatoryAttackersCheck.ok) return 'Must Attack';
+			return 'No Attacks';
+		}
+		if (isConfirmingBlockers) {
+			const count = Object.keys(draftBlockers).length;
+			return count > 0 ? `Confirm ${count} Block${count > 1 ? 's' : ''}` : 'No Blocks';
+		}
+		if (isMyTurn) {
+			if (
+				gameState.phase === 'declare_attackers' &&
+				gameState.combat.active &&
+				gameState.combat.attackers.length === 0
+			) {
+				return 'Next: Main 2';
+			}
+			return currentPhaseDetail.nextLabel;
+		}
+		return 'Pass Priority';
+	});
+
+	const primaryStepTitle = $derived.by(() => {
+		if (!me || me.lost || gameState.status !== 'active') {
+			return 'Game is not currently active.';
+		}
+		if (pendingTargetAction) {
+			return 'Finish or cancel target selection first.';
+		}
+		if (gameState.pendingPrompts.length > 0) {
+			return 'Resolve the active prompt first.';
+		}
+		if (!hasPriority) {
+			return `Waiting for priority (${priorityPlayer?.username ?? 'opponent'}).`;
+		}
+		if (!mandatoryAttackersCheck.ok) {
+			return mandatoryAttackersCheck.error ?? 'A creature you control must attack this combat if able.';
+		}
+		if (gameState.stack.length > 0) {
+			return 'Pass priority to resolve the top item on the Stack.';
+		}
+		if (isConfirmingAttackers) {
+			return Object.keys(draftAttackers).length > 0
+				? 'Confirm declared attackers.'
+				: 'Declare no attackers and advance to Main Phase 2.';
+		}
+		if (isConfirmingBlockers) {
+			return Object.keys(draftBlockers).length > 0
+				? 'Confirm declared blockers.'
+				: 'Declare no blockers.';
+		}
+		return isMyTurn
+			? `Pass priority to advance from ${currentPhaseDetail.phaseTitle} (${currentPhaseDetail.stepTitle}).`
+			: 'Pass priority.';
+	});
+
+	const endTurnLegality = $derived.by(() => {
+		if (!me) return { ok: false, error: 'Player is not active in this game.' };
+		if (pendingTargetAction) return { ok: false, error: 'Finish or cancel target selection first.' };
+		return checkEndTurnLegality(gameState, me.playerId);
+	});
+
+	const canPassToEndOfTurn = $derived(endTurnLegality.ok);
+
+	const endTurnTitle = $derived(
+		endTurnLegality.ok
+			? 'Pass priority through remaining phases and steps to end your turn.'
+			: (endTurnLegality.error ?? 'Cannot pass to end of turn right now.')
+	);
+
+	function isEligibleDraftAttacker(c: CardInstance): boolean {
+		if (c.phasedOut || c.tapped) return false;
+		const isCreature =
+			c.card.typeLine.includes('Creature') ||
+			inspectCardContinuousBreakdown(c, gameState).effectiveTypeLine.includes('Creature');
+		if (!isCreature) return false;
+		if (c.summoningSick && !hasKeyword(c, 'Haste', gameState)) return false;
+		if (hasKeyword(c, 'Defender', gameState)) return false;
+		return true;
+	}
+
+	const canSelectAllAttackers = $derived.by(() => {
+		if (!me || !isConfirmingAttackers || !hasPriority || pendingTargetAction || gameState.pendingPrompts.length > 0) {
+			return false;
+		}
+		if (!opponents.some((o) => !o.lost)) return false;
+		return me.battlefield.some((c) => isEligibleDraftAttacker(c));
+	});
+
+	async function handlePrimaryArenaButton() {
+		if (!me || !canAdvanceOrPass) return;
+
+		if (isConfirmingAttackers) {
 			const assignments = Object.entries(draftAttackers).map(
 				([attackerInstanceId, defenderPlayerId]) => ({
 					attackerInstanceId,
@@ -1554,12 +1804,7 @@
 			return;
 		}
 
-		if (
-			gameState.phase === 'declare_blockers' &&
-			!isMyTurn &&
-			gameState.combat.attackers.some((a) => a.defenderPlayerId === me.playerId) &&
-			!(gameState.combat.declaredBlockersPlayerIds || []).includes(me.playerId)
-		) {
+		if (isConfirmingBlockers) {
 			const assignments = Object.entries(draftBlockers).map(
 				([blockerInstanceId, attackerInstanceId]) => ({
 					blockerInstanceId,
@@ -1572,30 +1817,23 @@
 			return;
 		}
 
-		if (
-			isMyTurn &&
-			gameState.stack.length === 0 &&
-			(gameState.phase === 'main2' || gameState.phase === 'end_step')
-		) {
-			await onGameAction({ type: 'end_turn' });
-			return;
-		}
-
 		await onGameAction({ type: 'pass_priority' });
 	}
 
+	async function handlePassToEndOfTurn() {
+		if (!me || !canPassToEndOfTurn) return;
+		draftAttackers = {};
+		draftAttackerWalkers = {};
+		await onGameAction({ type: 'end_turn' });
+	}
+
 	function selectAllAttackers() {
-		if (!me || !isMyTurn || gameState.phase !== 'declare_attackers') return;
+		if (!me || !canSelectAllAttackers) return;
 		const firstOpp = opponents.find((o) => !o.lost);
 		if (!firstOpp) return;
 		const next: Record<string, string> = {};
 		for (const c of me.battlefield) {
-			if (
-				c.card.typeLine.includes('Creature') &&
-				!c.tapped &&
-				(!c.summoningSick || hasKeyword(c, 'Haste', gameState)) &&
-				!hasKeyword(c, 'Defender', gameState)
-			) {
+			if (isEligibleDraftAttacker(c)) {
 				next[c.instanceId] = firstOpp.playerId;
 			}
 		}
@@ -2292,10 +2530,24 @@
 							ondrop={(e) => handleZoneDrop(e, 'front_row')}
 						>
 							<div class="row-watermark">
-								CREATURES &amp; PLANESWALKERS ({myCreaturesAndWalkers.length})
+								<span>CREATURES &amp; PLANESWALKERS ({myCreaturesAndWalkers.length})</span>
 								{#if validDragZones.has('front_row')}
 									<span class="drop-zone-pill">DROP TO CAST</span>
 								{/if}
+								<button
+									type="button"
+									class="row-atk-all-btn"
+									disabled={!canSelectAllAttackers}
+									title={canSelectAllAttackers
+										? 'Assign all eligible creatures to attack'
+										: 'Available during your Declare Attackers step when you control an eligible attacker'}
+									onclick={(e) => {
+										e.stopPropagation();
+										selectAllAttackers();
+									}}
+								>
+									All Attack
+								</button>
 							</div>
 							{#each myCreaturesAndWalkers as perm (perm.instanceId)}
 								{@const actable = isPermanentActableNow(perm, me)}
@@ -2763,56 +3015,60 @@
 							<span class="grip-dots-v"></span>
 						</div>
 
-						<!-- Right Side Section: MTG Arena Glowing Action Button -->
+						<!-- Right Side Section: Turn Phase/Step Info + Fixed-Slot Turn Action Buttons -->
 						<div class="arena-controls">
-							{#if gameState.phase === 'declare_attackers' && isMyTurn && !gameState.combat.active}
-								<button type="button" class="sub-action-btn" onclick={selectAllAttackers}>
-									All Attack
-								</button>
-							{/if}
+							<div
+								class="turn-phase-box"
+								class:my-turn={isMyTurn}
+								class:has-prio={hasPriority}
+								title="Turn {gameState.turnNumber} ({activePlayer?.username ?? '—'}) — {currentPhaseDetail.phaseTitle}: {currentPhaseDetail.stepTitle} | Priority: {priorityPlayer?.username ?? '—'}"
+							>
+								<div class="tpb-top">
+									<span class="tpb-turn">
+										T{gameState.turnNumber} · {isMyTurn ? 'YOUR TURN' : (activePlayer?.username ?? '—')}
+									</span>
+									<span class="tpb-prio" class:mine={hasPriority}>
+										{hasPriority ? 'PRIO' : (priorityPlayer?.username ?? '—')}
+									</span>
+								</div>
+								<div class="tpb-step-row">
+									<span class="tpb-phase">{currentPhaseDetail.phaseTitle}</span>
+									<span class="tpb-sep" aria-hidden="true">›</span>
+									<span class="tpb-step">{currentPhaseDetail.stepTitle}</span>
+								</div>
+								<div class="tpb-pips" aria-hidden="true">
+									{#each TURN_PHASE_GROUPS as grp, idx (grp.id)}
+										<span
+											class="tpb-pip"
+											class:done={idx < currentPhaseDetail.groupIndex}
+											class:active={idx === currentPhaseDetail.groupIndex}
+										></span>
+									{/each}
+								</div>
+							</div>
 
 							<button
 								type="button"
-								class="arena-main-btn"
-								class:can-act={hasPriority}
-								class:stack-active={gameState.stack.length > 0 && hasPriority}
-								disabled={!hasPriority}
+								class="turn-ctrl-btn primary-step-btn"
+								class:can-act={canAdvanceOrPass}
+								class:stack-active={gameState.stack.length > 0 && canAdvanceOrPass}
+								disabled={!canAdvanceOrPass}
+								title={primaryStepTitle}
 								onclick={handlePrimaryArenaButton}
 							>
-								{#if !hasPriority}
-									Waiting: {priorityPlayer?.username}
-								{:else if gameState.stack.length > 0}
-									Resolve Stack ({gameState.stack.length})
-								{:else if gameState.phase === 'declare_attackers' && isMyTurn && !gameState.combat.active}
-									{Object.keys(draftAttackers).length > 0
-										? `Attack with ${Object.keys(draftAttackers).length}`
-										: 'No Attacks -> Main 2'}
-								{:else if gameState.phase === 'declare_blockers' && !isMyTurn && !(gameState.combat.declaredBlockersPlayerIds || []).includes(me.playerId)}
-									{Object.keys(draftBlockers).length > 0
-										? `Confirm ${Object.keys(draftBlockers).length} Blocker(s)`
-										: 'No Blocks'}
-								{:else if gameState.phase === 'main1'}
-									Next: Combat
-								{:else if gameState.phase === 'main2' || gameState.phase === 'end_step'}
-									End Turn
-								{:else}
-									Pass Priority
-								{/if}
+								<span class="turn-ctrl-label">{primaryStepLabel}</span>
 							</button>
 
-							{#if isMyTurn && hasPriority && gameState.stack.length === 0 && (gameState.phase === 'main1' || (gameState.phase === 'declare_attackers' && !gameState.combat.active))}
-								<button
-									type="button"
-									class="sub-action-btn"
-									title="Skip remaining phases and end your turn immediately"
-									onclick={async () => {
-										draftAttackers = {};
-										await onGameAction({ type: 'end_turn' });
-									}}
-								>
-									End Turn
-								</button>
-							{/if}
+							<button
+								type="button"
+								class="turn-ctrl-btn end-turn-btn"
+								class:can-act={canPassToEndOfTurn}
+								disabled={!canPassToEndOfTurn}
+								title={endTurnTitle}
+								onclick={handlePassToEndOfTurn}
+							>
+								<span class="turn-ctrl-label">Pass to End of Turn</span>
+							</button>
 						</div>
 					</div>
 				</section>
@@ -4755,9 +5011,38 @@
 		position: absolute;
 		right: 0.5rem;
 		top: 0.2rem;
+		display: inline-flex;
+		align-items: center;
+		gap: 0.35rem;
 		font-size: 0.6rem;
 		color: var(--mp-text-faint);
 		pointer-events: none;
+		z-index: 14;
+	}
+	.row-atk-all-btn {
+		pointer-events: auto;
+		background: var(--mp-bg);
+		color: var(--mp-red);
+		border: 1px solid var(--mp-red);
+		border-radius: 4px;
+		padding: 0.08rem 0.38rem;
+		font-family: inherit;
+		font-size: 0.6rem;
+		font-weight: 700;
+		line-height: 1.2;
+		cursor: pointer;
+		transition: background 0.14s ease, color 0.14s ease, border-color 0.14s ease, opacity 0.14s ease;
+	}
+	.row-atk-all-btn:hover:not(:disabled) {
+		background: var(--mp-red);
+		color: #19181a;
+	}
+	.row-atk-all-btn:disabled {
+		background: var(--mp-bg-subtle);
+		color: var(--mp-text-muted);
+		border-color: var(--mp-border);
+		opacity: 0.42;
+		cursor: not-allowed;
 	}
 
 	.board-card {
@@ -4968,7 +5253,7 @@
 		gap: 0.35rem;
 		padding-top: 0.2rem;
 		flex-shrink: 0;
-		min-height: 115px;
+		min-height: 122px;
 	}
 
 	.my-vitals {
@@ -5167,26 +5452,172 @@
 		align-items: center;
 	}
 
-	/* Arena Action Button (Right Hand Side Section) */
+	/* Arena Action Controls (Right Hand Side Section): Fixed-Slot Phase Info + Turn Buttons */
 	.arena-controls {
-		display: flex;
-		flex-direction: column;
-		justify-content: center;
-		gap: 0.35rem;
-		align-items: stretch;
+		display: grid;
+		grid-template-rows: 42px 34px 34px;
+		gap: 4px;
+		align-content: center;
 		min-width: 0;
 	}
-	.sub-action-btn {
+
+	.turn-phase-box {
+		height: 42px;
+		box-sizing: border-box;
 		background: var(--mp-bg);
-		color: var(--mp-red);
-		border: 1px solid var(--mp-red);
-		border-radius: 6px;
-		padding: 0.32rem;
+		border: 1px solid var(--mp-border-strong);
+		border-radius: 7px;
+		padding: 3px 7px 4px;
+		display: flex;
+		flex-direction: column;
+		justify-content: space-between;
+		min-width: 0;
+		overflow: hidden;
+	}
+	.turn-phase-box.my-turn {
+		border-color: var(--mp-border-strong);
+	}
+	.turn-phase-box.has-prio {
+		border-color: var(--mp-accent);
+	}
+	.tpb-top {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.25rem;
+		font-size: 0.56rem;
+		font-weight: 700;
+		letter-spacing: 0.03em;
+		line-height: 1.1;
+		color: var(--mp-text-muted);
+		min-width: 0;
+	}
+	.tpb-turn {
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		min-width: 0;
+	}
+	.turn-phase-box.my-turn .tpb-turn {
+		color: var(--mp-text);
+	}
+	.tpb-prio {
+		flex-shrink: 0;
+		max-width: 58px;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		color: var(--mp-text-faint);
+	}
+	.tpb-prio.mine {
+		color: var(--mp-accent);
+	}
+	.tpb-step-row {
+		display: flex;
+		align-items: baseline;
+		gap: 0.22rem;
+		font-size: 0.67rem;
+		line-height: 1.15;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		min-width: 0;
+	}
+	.tpb-phase {
+		font-weight: 700;
+		color: var(--mp-cyan);
+		flex-shrink: 0;
+	}
+	.tpb-sep {
+		color: var(--mp-text-faint);
+		font-size: 0.62rem;
+		flex-shrink: 0;
+	}
+	.tpb-step {
+		font-weight: 700;
+		color: var(--mp-text);
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+	.tpb-pips {
+		display: grid;
+		grid-template-columns: repeat(5, 1fr);
+		gap: 3px;
+		height: 3px;
+		flex-shrink: 0;
+	}
+	.tpb-pip {
+		background: var(--mp-border);
+		border-radius: 2px;
+	}
+	.tpb-pip.done {
+		background: var(--mp-cyan);
+		opacity: 0.5;
+	}
+	.tpb-pip.active {
+		background: var(--mp-accent);
+	}
+
+	.turn-ctrl-btn {
+		width: 100%;
+		height: 34px;
+		box-sizing: border-box;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		padding: 0 0.55rem;
+		border-radius: 7px;
+		border: 1.5px solid var(--mp-border-strong);
+		background: var(--mp-bg-subtle);
+		color: var(--mp-text-muted);
 		font-family: inherit;
 		font-size: 0.74rem;
-		font-weight: 600;
+		font-weight: 700;
+		line-height: 1;
 		cursor: pointer;
+		min-width: 0;
+		overflow: hidden;
+		transition: background 0.14s ease, color 0.14s ease, border-color 0.14s ease, opacity 0.14s ease;
 	}
+	.turn-ctrl-label {
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		min-width: 0;
+	}
+	.turn-ctrl-btn.primary-step-btn.can-act {
+		background: var(--mp-btn-bg);
+		color: var(--mp-btn-fg);
+		border-color: var(--mp-btn-bg);
+	}
+	.turn-ctrl-btn.primary-step-btn.can-act:hover:not(:disabled) {
+		background: var(--mp-btn-hover);
+		color: var(--mp-btn-hover-fg);
+		border-color: var(--mp-btn-hover);
+	}
+	.turn-ctrl-btn.primary-step-btn.stack-active {
+		background: var(--mp-cyan);
+		color: #19181a;
+		border-color: var(--mp-cyan);
+	}
+	.turn-ctrl-btn.end-turn-btn.can-act {
+		background: var(--mp-bg);
+		color: var(--mp-orange);
+		border-color: var(--mp-orange);
+	}
+	.turn-ctrl-btn.end-turn-btn.can-act:hover:not(:disabled) {
+		background: var(--mp-orange);
+		color: #19181a;
+	}
+	.turn-ctrl-btn:disabled {
+		background: var(--mp-bg-subtle);
+		color: var(--mp-text-faint, var(--mp-text-muted));
+		border-color: var(--mp-border);
+		opacity: 0.42;
+		cursor: not-allowed;
+		box-shadow: none;
+	}
+
 	.arena-main-btn {
 		background: var(--mp-bg-subtle);
 		color: var(--mp-text-muted);

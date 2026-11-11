@@ -9542,6 +9542,67 @@ function hasRequiredLegalTargetsInner(
 	return { ok: true };
 }
 
+/** Whether `actorId` may pass to end of turn (`end_turn`) right now. Read-only. */
+export function checkEndTurnLegality(
+	state: GameState,
+	actorId: string
+): { ok: boolean; error?: string } {
+	if (state.status !== 'active') {
+		return { ok: false, error: 'Game is not currently active.' };
+	}
+	if (state.pendingPrompts.length > 0) {
+		return { ok: false, error: 'Resolve the active prompt first.' };
+	}
+	const actor = state.players.find((p) => p.playerId === actorId);
+	if (!actor || actor.lost) {
+		return { ok: false, error: 'Player is not active in this game.' };
+	}
+	const activePlayer = state.players[state.activePlayerIndex];
+	if (!activePlayer || activePlayer.playerId !== actorId) {
+		return { ok: false, error: 'You can only pass to end of turn during your own turn.' };
+	}
+	const priorityPlayer = state.players[state.priorityPlayerIndex];
+	if (!priorityPlayer || priorityPlayer.playerId !== actorId) {
+		return { ok: false, error: 'You must hold priority to pass to end of turn.' };
+	}
+	if (state.stack.length > 0) {
+		return { ok: false, error: 'Resolve all spells and abilities on the Stack before ending your turn.' };
+	}
+	if (state.phase === 'cleanup') {
+		return { ok: false, error: 'Already in the Cleanup Step.' };
+	}
+	const preCombatOrUnconfirmedAttackers =
+		state.phase === 'upkeep' ||
+		state.phase === 'draw' ||
+		state.phase === 'main1' ||
+		state.phase === 'begin_combat' ||
+		isUnconfirmedAttackersStep(state);
+	if (preCombatOrUnconfirmedAttackers) {
+		const violation = findMandatoryAttackerViolation(state, activePlayer);
+		if (violation) {
+			return { ok: false, error: violation };
+		}
+	}
+	return { ok: true };
+}
+
+/** Whether `actorId`'s draft attacker selection satisfies mandatory attack requirements right now. Read-only. */
+export function checkMandatoryAttackersSatisfied(
+	state: GameState,
+	actorId: string,
+	assignedAttackerIds: Iterable<string>
+): { ok: boolean; error?: string } {
+	const actor = state.players.find((p) => p.playerId === actorId);
+	if (!actor || actor.lost) {
+		return { ok: false, error: 'Player is not active in this game.' };
+	}
+	const violation = findMandatoryAttackerViolation(state, actor, new Set(assignedAttackerIds));
+	if (violation) {
+		return { ok: false, error: violation };
+	}
+	return { ok: true };
+}
+
 /** Whether `actorId` may play the land `inst` now. Read-only, one validation (Phase 6d). */
 export function checkLandPlayLegality(
 	state: GameState,
