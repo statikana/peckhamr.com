@@ -137,6 +137,8 @@ export interface MagicUser {
 	lastLoginAt: number;
 }
 
+export type BotSpeed = 'instant' | 'fast' | 'normal' | 'slow';
+
 export interface LobbyRulesConfig {
 	startingLife: number; // default: 40
 	commanderDamageLethal: number; // default: 21 (0 = disabled)
@@ -153,6 +155,8 @@ export interface LobbyRulesConfig {
 	 * Default true. Absent (lobbies saved before this rule) means true.
 	 */
 	allowUnsupportedCards?: boolean;
+	/** AI bot pacing speed between visible bot actions. Absent (older lobbies) means 'normal'. */
+	botSpeed?: BotSpeed;
 }
 
 export const DEFAULT_LOBBY_RULES: LobbyRulesConfig = {
@@ -166,7 +170,8 @@ export const DEFAULT_LOBBY_RULES: LobbyRulesConfig = {
 	firstTurnDraw: true,
 	maxHandSize: 7,
 	maxPlayers: 4,
-	allowUnsupportedCards: true
+	allowUnsupportedCards: true,
+	botSpeed: 'normal'
 };
 
 export interface LobbySeat {
@@ -813,6 +818,7 @@ export interface MagicLobby {
 	seats: LobbySeat[];
 	gameState: GameState | null;
 	version: number;
+	botResumeAt?: number | null;
 	createdAt: number;
 	updatedAt: number;
 }

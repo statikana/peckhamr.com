@@ -1,5 +1,12 @@
 import type { RequestHandler } from '@sveltejs/kit';
-import { runAutomatedPriorityAndBots, SERVER_MAX_BOT_STEPS } from '../../../../lib/magic/ai.ts';
+import {
+	botDelayMs,
+	capturePreActionSnapshot,
+	normalizeBotSpeed,
+	runAutomatedPriorityAndBots,
+	SERVER_MAX_BOT_STEPS,
+	type PreActionSnapshot
+} from '../../../../lib/magic/ai.ts';
 
 /** Bot automation budget per request (every triggered ability uses the stack). */
 const BOT_LOOP_OPTS = { maxSteps: SERVER_MAX_BOT_STEPS, logOnCap: true };
@@ -96,8 +103,53 @@ async function resolveDeckForSeat(
 function sanitizeLobbyForUser(lobby: MagicLobby, userId: string | null): MagicLobby {
 	return {
 		...lobby,
+		botResumeAt: lobby.botResumeAt ?? null,
 		gameState: lobby.gameState ? sanitizeGameStateForViewer(lobby.gameState, userId) : null
 	};
+}
+
+function runLobbyBotsWithPacing(
+	lobby: MagicLobby,
+	now: number,
+	preAction?: PreActionSnapshot
+): void {
+	if (!lobby.gameState) {
+		lobby.botResumeAt = null;
+		return;
+	}
+	if ((lobby.gameState.status as string) === 'finished') {
+		lobby.status = 'finished';
+		lobby.botResumeAt = null;
+		return;
+	}
+	if (lobby.gameState.status !== 'active') {
+		lobby.botResumeAt = null;
+		return;
+	}
+	const speed = normalizeBotSpeed(lobby.rules.botSpeed);
+	if (speed === 'instant') {
+		runAutomatedPriorityAndBots(lobby.gameState, BOT_LOOP_OPTS);
+		if ((lobby.gameState.status as string) === 'finished') {
+			lobby.status = 'finished';
+		}
+		lobby.botResumeAt = null;
+		return;
+	}
+	const res = runAutomatedPriorityAndBots(lobby.gameState, {
+		...BOT_LOOP_OPTS,
+		pace: true,
+		preAction
+	});
+	if ((lobby.gameState.status as string) === 'finished') {
+		lobby.status = 'finished';
+		lobby.botResumeAt = null;
+		return;
+	}
+	if (res.paused && res.pausedFor) {
+		lobby.botResumeAt = now + botDelayMs(speed, res.pausedFor, lobby.code, lobby.version);
+	} else {
+		lobby.botResumeAt = null;
+	}
 }
 
 export const OPTIONS: RequestHandler = async () => {
@@ -109,9 +161,11 @@ export const GET: RequestHandler = async ({ url, request, platform }) => {
 	const code = (url.searchParams.get('code') || '').trim().toUpperCase();
 
 	if (!code) {
+		const now = Date.now();
 		const myLobbies = user ? await listUserActiveLobbies(platform, user.id) : [];
 		return jsonResponse({
 			ok: true,
+			serverNow: now,
 			myLobbies: myLobbies.map((l) => ({
 				code: l.code,
 				name: l.name,
@@ -131,9 +185,14 @@ export const GET: RequestHandler = async ({ url, request, platform }) => {
 
 	const now = Date.now();
 	let shouldSave = enforceLobbyEngineVersion(lobby, now);
+	if (shouldSave) {
+		lobby.botResumeAt = null;
+	}
 
-	// Enforce server-side Rope Timer (turnTimerSeconds) if active and expired
+	// Enforce server-side Rope Timer (turnTimerSeconds) if active and expired.
+	// Guard explicitly so bot pauses never burn or trigger a human's rope.
 	if (
+		lobby.botResumeAt == null &&
 		lobby.gameState &&
 		lobby.gameState.status === 'active' &&
 		lobby.gameState.rules.turnTimerSeconds > 0 &&
@@ -142,16 +201,14 @@ export const GET: RequestHandler = async ({ url, request, platform }) => {
 	) {
 		const prioPlayer = lobby.gameState.players[lobby.gameState.priorityPlayerIndex];
 		if (prioPlayer && !prioPlayer.lost) {
+			const pre = capturePreActionSnapshot(lobby.gameState);
 			const res = applyGameAction(lobby.gameState, prioPlayer.playerId, {
 				type: 'pass_priority'
 			});
 			if (res.ok) {
-				runAutomatedPriorityAndBots(lobby.gameState, BOT_LOOP_OPTS);
-				if ((lobby.gameState.status as string) === 'finished') {
-					lobby.status = 'finished';
-				}
 				lobby.version += 1;
 				lobby.updatedAt = now;
+				runLobbyBotsWithPacing(lobby, now, pre);
 				shouldSave = true;
 			}
 		}
@@ -164,6 +221,7 @@ export const GET: RequestHandler = async ({ url, request, platform }) => {
 	const chat = await getLobbyChatMessages(platform, code, 80);
 	return jsonResponse({
 		ok: true,
+		serverNow: now,
 		lobby: sanitizeLobbyForUser(lobby, user?.id || null),
 		chat
 	});
@@ -219,6 +277,7 @@ export const POST: RequestHandler = async ({ request, platform }) => {
 			...DEFAULT_LOBBY_RULES,
 			...(body.rules || {})
 		};
+		rules.botSpeed = normalizeBotSpeed(rules.botSpeed);
 
 		const seats: LobbySeat[] = [
 			makeEmptySeat(0),
@@ -245,6 +304,7 @@ export const POST: RequestHandler = async ({ request, platform }) => {
 			rules,
 			seats,
 			gameState: null,
+			botResumeAt: null,
 			version: 1,
 			createdAt: now,
 			updatedAt: now
@@ -266,6 +326,7 @@ export const POST: RequestHandler = async ({ request, platform }) => {
 		const chat = await getLobbyChatMessages(platform, code, 80);
 		return jsonResponse({
 			ok: true,
+			serverNow: now,
 			lobby: sanitizeLobbyForUser(lobby, user.id),
 			chat
 		});
@@ -295,11 +356,13 @@ export const POST: RequestHandler = async ({ request, platform }) => {
 	}
 
 	if (enforceLobbyEngineVersion(lobby, now)) {
+		lobby.botResumeAt = null;
 		await saveLobby(platform, lobby);
-		if (action === 'game_action') {
+		if (action === 'game_action' || action === 'advance_bots') {
 			const chat = await getLobbyChatMessages(platform, code, 80);
 			return jsonResponse({
 				ok: true,
+				serverNow: now,
 				lobby: sanitizeLobbyForUser(lobby, user.id),
 				chat
 			});
@@ -364,6 +427,7 @@ export const POST: RequestHandler = async ({ request, platform }) => {
 		return jsonResponse(
 			{
 				ok: true,
+				serverNow: now,
 				user,
 				token: newSessionToken,
 				lobby: sanitizeLobbyForUser(lobby, user.id),
@@ -380,15 +444,15 @@ export const POST: RequestHandler = async ({ request, platform }) => {
 
 	if (action === 'leave') {
 		const seatIdx = lobby.seats.findIndex((s) => s.userId === user.id);
+		let concededPre: PreActionSnapshot | undefined;
+		let didConcede = false;
 		if (seatIdx >= 0) {
 			if (lobby.gameState) {
 				const gp = lobby.gameState.players.find((p) => p.playerId === user.id);
 				if (gp && !gp.lost) {
+					concededPre = capturePreActionSnapshot(lobby.gameState);
 					applyGameAction(lobby.gameState, user.id, { type: 'concede' });
-					runAutomatedPriorityAndBots(lobby.gameState, BOT_LOOP_OPTS);
-					if (lobby.gameState.status === 'finished') {
-						lobby.status = 'finished';
-					}
+					didConcede = true;
 				}
 			}
 			lobby.seats[seatIdx] = makeEmptySeat(seatIdx);
@@ -399,6 +463,7 @@ export const POST: RequestHandler = async ({ request, platform }) => {
 			await deleteLobby(platform, code);
 			return jsonResponse({
 				ok: true,
+				serverNow: now,
 				deleted: true,
 				lobby: null
 			});
@@ -414,6 +479,9 @@ export const POST: RequestHandler = async ({ request, platform }) => {
 
 		lobby.version += 1;
 		lobby.updatedAt = now;
+		if (didConcede) {
+			runLobbyBotsWithPacing(lobby, now, concededPre);
+		}
 		await saveLobby(platform, lobby);
 
 		await addChatMessage(platform, {
@@ -431,6 +499,7 @@ export const POST: RequestHandler = async ({ request, platform }) => {
 		const chat = await getLobbyChatMessages(platform, code, 80);
 		return jsonResponse({
 			ok: true,
+			serverNow: now,
 			deleted: false,
 			lobby: sanitizeLobbyForUser(lobby, user.id),
 			chat
@@ -447,6 +516,7 @@ export const POST: RequestHandler = async ({ request, platform }) => {
 		await deleteLobby(platform, code);
 		return jsonResponse({
 			ok: true,
+			serverNow: now,
 			deleted: true,
 			lobby: null
 		});
@@ -489,6 +559,7 @@ export const POST: RequestHandler = async ({ request, platform }) => {
 		const chat = await getLobbyChatMessages(platform, code, 80);
 		return jsonResponse({
 			ok: true,
+			serverNow: now,
 			lobby: sanitizeLobbyForUser(lobby, user.id),
 			chat
 		});
@@ -521,6 +592,7 @@ export const POST: RequestHandler = async ({ request, platform }) => {
 		const chat = await getLobbyChatMessages(platform, code, 80);
 		return jsonResponse({
 			ok: true,
+			serverNow: now,
 			lobby: sanitizeLobbyForUser(lobby, user.id),
 			chat
 		});
@@ -567,6 +639,7 @@ export const POST: RequestHandler = async ({ request, platform }) => {
 		const chat = await getLobbyChatMessages(platform, code, 80);
 		return jsonResponse({
 			ok: true,
+			serverNow: now,
 			lobby: sanitizeLobbyForUser(lobby, user.id),
 			chat
 		});
@@ -586,6 +659,7 @@ export const POST: RequestHandler = async ({ request, platform }) => {
 		const chat = await getLobbyChatMessages(platform, code, 80);
 		return jsonResponse({
 			ok: true,
+			serverNow: now,
 			lobby: sanitizeLobbyForUser(lobby, user.id),
 			chat
 		});
@@ -596,10 +670,15 @@ export const POST: RequestHandler = async ({ request, platform }) => {
 			return jsonResponse({ ok: false, error: 'Only the lobby host can change lobby rules.' }, 403);
 		}
 		const nextRules: LobbyRulesConfig = {
+			...DEFAULT_LOBBY_RULES,
 			...lobby.rules,
 			...(body.rules || {})
 		};
+		nextRules.botSpeed = normalizeBotSpeed(nextRules.botSpeed);
 		lobby.rules = nextRules;
+		if (lobby.gameState) {
+			lobby.gameState.rules.botSpeed = nextRules.botSpeed;
+		}
 
 		// Adjust seat count if maxPlayers changed while waiting
 		if (lobby.status === 'waiting') {
@@ -630,6 +709,7 @@ export const POST: RequestHandler = async ({ request, platform }) => {
 		const chat = await getLobbyChatMessages(platform, code, 80);
 		return jsonResponse({
 			ok: true,
+			serverNow: now,
 			lobby: sanitizeLobbyForUser(lobby, user.id),
 			chat
 		});
@@ -675,13 +755,18 @@ export const POST: RequestHandler = async ({ request, platform }) => {
 			return jsonResponse({ ok: false, error: unsupportedError }, 400);
 		}
 
+		const preMulligan: PreActionSnapshot = {
+			status: 'mulligan',
+			turnSerial: 0,
+			combat: { phase: 'untap', turnSerial: 0, attackerCount: 0, botBlockerCount: 0 }
+		};
 		const gameState = createInitialGameState(lobby.code, occupiedSeats, decksBySeat, lobby.rules);
-		runAutomatedPriorityAndBots(gameState, BOT_LOOP_OPTS);
 
 		lobby.gameState = gameState;
 		lobby.status = 'active';
 		lobby.version += 1;
 		lobby.updatedAt = now;
+		runLobbyBotsWithPacing(lobby, now, preMulligan);
 		await saveLobby(platform, lobby);
 
 		await addChatMessage(platform, {
@@ -699,6 +784,7 @@ export const POST: RequestHandler = async ({ request, platform }) => {
 		const chat = await getLobbyChatMessages(platform, code, 80);
 		return jsonResponse({
 			ok: true,
+			serverNow: now,
 			lobby: sanitizeLobbyForUser(lobby, user.id),
 			chat
 		});
@@ -713,25 +799,84 @@ export const POST: RequestHandler = async ({ request, platform }) => {
 			return jsonResponse({ ok: false, error: 'Missing gameAction payload.' }, 400);
 		}
 
+		const pre = capturePreActionSnapshot(lobby.gameState);
 		const result = applyGameAction(lobby.gameState, user.id, payload);
 		if (!result.ok) {
 			return jsonResponse({ ok: false, error: result.error || 'Illegal game action.' }, 400);
 		}
 
-		// Run any automated priority passes or AI Bot turns
-		runAutomatedPriorityAndBots(lobby.gameState, BOT_LOOP_OPTS);
-
-		if (lobby.gameState.status === 'finished') {
-			lobby.status = 'finished';
-		}
-
 		lobby.version += 1;
 		lobby.updatedAt = now;
+		runLobbyBotsWithPacing(lobby, now, pre);
 		await saveLobby(platform, lobby);
 
 		const chat = await getLobbyChatMessages(platform, code, 80);
 		return jsonResponse({
 			ok: true,
+			serverNow: now,
+			lobby: sanitizeLobbyForUser(lobby, user.id),
+			chat
+		});
+	}
+
+	if (action === 'advance_bots') {
+		const isSeated = lobby.seats.some((s) => s.userId === user.id);
+		if (!isSeated) {
+			return jsonResponse({ ok: false, error: 'You are not seated in this lobby.' }, 403);
+		}
+
+		if (lobby.botResumeAt == null || !lobby.gameState) {
+			const chat = await getLobbyChatMessages(platform, code, 80);
+			return jsonResponse({
+				ok: true,
+				serverNow: now,
+				lobby: sanitizeLobbyForUser(lobby, user.id),
+				chat
+			});
+		}
+
+		if (Number(body.version) !== lobby.version) {
+			const chat = await getLobbyChatMessages(platform, code, 80);
+			return jsonResponse({
+				ok: true,
+				serverNow: now,
+				lobby: sanitizeLobbyForUser(lobby, user.id),
+				chat
+			});
+		}
+
+		if (now < lobby.botResumeAt) {
+			const chat = await getLobbyChatMessages(platform, code, 80);
+			return jsonResponse({
+				ok: true,
+				serverNow: now,
+				retryAt: lobby.botResumeAt,
+				lobby: sanitizeLobbyForUser(lobby, user.id),
+				chat
+			});
+		}
+
+		const expectedVersion = lobby.version;
+		lobby.version = expectedVersion + 1;
+		lobby.updatedAt = now;
+		runLobbyBotsWithPacing(lobby, now);
+
+		const saved = await saveLobby(platform, lobby, { expectedVersion });
+		if (!saved.saved) {
+			const fresh = await getLobbyByCode(platform, code);
+			const chat = await getLobbyChatMessages(platform, code, 80);
+			return jsonResponse({
+				ok: true,
+				serverNow: Date.now(),
+				lobby: fresh ? sanitizeLobbyForUser(fresh, user.id) : null,
+				chat
+			});
+		}
+
+		const chat = await getLobbyChatMessages(platform, code, 80);
+		return jsonResponse({
+			ok: true,
+			serverNow: now,
 			lobby: sanitizeLobbyForUser(lobby, user.id),
 			chat
 		});
@@ -758,7 +903,7 @@ export const POST: RequestHandler = async ({ request, platform }) => {
 		});
 
 		const chat = await getLobbyChatMessages(platform, code, 80);
-		return jsonResponse({ ok: true, chat });
+		return jsonResponse({ ok: true, serverNow: now, chat });
 	}
 
 	return jsonResponse({ ok: false, error: `Unknown lobby action: ${action}` }, 400);

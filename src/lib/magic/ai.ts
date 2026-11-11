@@ -16,10 +16,21 @@ import {
 	specTargetCandidates
 } from './engine.ts';
 import type { EffectStep, RestrictionKind, TargetSpec } from './ir.ts';
-import { chooseBotAnswer } from './runtime/choices.ts';
+import { chooseBotAnswer, effectivePromptChoice, effectivePromptPurpose } from './runtime/choices.ts';
 import { withStableLayerInputs } from './runtime/layerCache.ts';
 import { evaluateCondition, matchesObjectFilter } from './runtime/objectFilter.ts';
-import type { CardInstance, GameState, PlayerGameState, ScryfallCard, StackItem, TargetRef } from './types.ts';
+import type {
+	BotSpeed,
+	CardInstance,
+	ChoiceAnswer,
+	GamePhase,
+	GameState,
+	PendingPrompt,
+	PlayerGameState,
+	ScryfallCard,
+	StackItem,
+	TargetRef
+} from './types.ts';
 
 /**
  * Whether `perm` currently has any of `restriction` active on the battlefield, from its own
@@ -215,14 +226,241 @@ function hasAnyLegalInstantResponseInner(state: GameState, player: PlayerGameSta
 const DEFAULT_MAX_BOT_STEPS = 240;
 export const SERVER_MAX_BOT_STEPS = 1500;
 
+export type BotStepResult = 'none' | 'quiet' | 'visible';
+
+export type BotPauseKind = 'turn_start' | 'action';
+
+export interface CombatSnapshot {
+	phase: GamePhase;
+	turnSerial: number;
+	attackerCount: number;
+	botBlockerCount: number;
+}
+
+export interface PreActionSnapshot {
+	status: GameState['status'];
+	turnSerial: number;
+	combat: CombatSnapshot;
+}
+
+export interface BotLoopOptions {
+	maxSteps?: number;
+	logOnCap?: boolean;
+	/** Stop after each visible bot action or bot turn start and return `{ paused: true }`. */
+	pace?: boolean;
+	/**
+	 * Optional snapshot captured immediately before an external action (e.g. `applyGameAction` or
+	 * `createInitialGameState`) so turn-based bot actions or a bot's Turn 1 initiated inside that
+	 * external call also register a pacing pause.
+	 */
+	preAction?: PreActionSnapshot;
+}
+
+export interface BotLoopResult {
+	paused: boolean;
+	pausedFor?: BotPauseKind;
+}
+
+const BOT_SPEED_RANGES: Record<Exclude<BotSpeed, 'instant'>, readonly [number, number]> = {
+	fast: [400, 700],
+	normal: [900, 1600],
+	slow: [1800, 3000]
+};
+
+export function normalizeBotSpeed(speed: BotSpeed | string | undefined | null): BotSpeed {
+	if (speed === 'instant' || speed === 'fast' || speed === 'normal' || speed === 'slow') {
+		return speed;
+	}
+	return 'normal';
+}
+
+function hashLobbyVersion(code: string, version: number): number {
+	let h = 0x811c9dc5;
+	const key = `${code}:${version}`;
+	for (let i = 0; i < key.length; i++) {
+		h ^= key.charCodeAt(i);
+		h = Math.imul(h, 0x01000193);
+	}
+	h ^= h >>> 16;
+	h = Math.imul(h, 0x85ebca6b);
+	h ^= h >>> 13;
+	h = Math.imul(h, 0xc2b2ae35);
+	h ^= h >>> 16;
+	return h >>> 0;
+}
+
+/**
+ * Deterministic delay (in ms) before the next automated bot step, derived purely from
+ * `(speed, kind, code, version)` — never touching `state.rng` or `Math.random`.
+ */
+export function botDelayMs(
+	speed: BotSpeed | undefined,
+	kind: BotPauseKind,
+	code: string,
+	version: number
+): number {
+	const normalized = normalizeBotSpeed(speed);
+	if (normalized === 'instant') return 0;
+	const [min, max] = BOT_SPEED_RANGES[normalized];
+	const effectiveMax = kind === 'turn_start' ? min + Math.floor((max - min) * 0.25) : max;
+	const span = effectiveMax - min + 1;
+	const h = hashLobbyVersion(code, version);
+	return min + (h % span);
+}
+
+function getTurnSerial(state: GameState): number {
+	return state.turnSerial ?? state.turnNumber;
+}
+
+function countBotBlockers(state: GameState): number {
+	let total = 0;
+	for (const atk of state.combat.attackers) {
+		const def = state.players.find((p) => p.playerId === atk.defenderPlayerId);
+		if (def?.isBot) {
+			total += atk.blockerInstanceIds.length;
+		}
+	}
+	return total;
+}
+
+export function captureCombatSnapshot(state: GameState): CombatSnapshot {
+	return {
+		phase: state.phase,
+		turnSerial: getTurnSerial(state),
+		attackerCount: state.combat.attackers.length,
+		botBlockerCount: countBotBlockers(state)
+	};
+}
+
+export function capturePreActionSnapshot(state: GameState): PreActionSnapshot {
+	return {
+		status: state.status,
+		turnSerial: getTurnSerial(state),
+		combat: captureCombatSnapshot(state)
+	};
+}
+
+export function didBotDeclareVisibleCombat(before: CombatSnapshot, after: GameState): boolean {
+	const afterTurnSerial = getTurnSerial(after);
+	const activeAfter = after.players[after.activePlayerIndex];
+	if (
+		after.phase === 'declare_attackers' &&
+		activeAfter?.isBot &&
+		!activeAfter.lost &&
+		after.combat.attackers.length > 0 &&
+		(before.phase !== 'declare_attackers' ||
+			before.turnSerial !== afterTurnSerial ||
+			after.combat.attackers.length > before.attackerCount)
+	) {
+		return true;
+	}
+	if (after.phase === 'declare_blockers') {
+		const afterBotBlockers = countBotBlockers(after);
+		const prevBotBlockers =
+			before.phase === 'declare_blockers' && before.turnSerial === afterTurnSerial
+				? before.botBlockerCount
+				: 0;
+		if (afterBotBlockers > prevBotBlockers) {
+			return true;
+		}
+	}
+	return false;
+}
+
+function countBotCostChoicePrompts(state: GameState, botId: string): number {
+	let n = 0;
+	for (const p of state.pendingPrompts) {
+		if (p.playerId === botId && effectivePromptPurpose(p) === 'cost_choice') {
+			n++;
+		}
+	}
+	return n;
+}
+
+function classifyBotPromptStep(
+	stateBeforeChoiceDescriptor: ReturnType<typeof effectivePromptChoice>,
+	pr: PendingPrompt,
+	answer: ChoiceAnswer | undefined,
+	hadNewCostChoiceAfter: boolean
+): 'quiet' | 'visible' {
+	const purpose = effectivePromptPurpose(pr);
+	if (
+		purpose === 'mulligan' ||
+		purpose === 'london_bottom' ||
+		purpose === 'scry_choice' ||
+		purpose === 'trigger_order'
+	) {
+		return 'quiet';
+	}
+	if (purpose === 'cost_choice') {
+		if (hadNewCostChoiceAfter) return 'quiet';
+		if (pr.pendingAction?.type === 'tap_mana') return 'quiet';
+		return 'visible';
+	}
+	if (purpose === 'trigger_may') {
+		return answer?.kind === 'yesNo' && answer.yes ? 'visible' : 'quiet';
+	}
+	const choice = stateBeforeChoiceDescriptor;
+	switch (choice.kind) {
+		case 'orderObjects':
+			if (choice.objectIds.length <= 1 && !choice.allowSplitBottom && !choice.allowShuffle) {
+				return 'quiet';
+			}
+			return 'visible';
+		case 'chooseObjects':
+			if (choice.candidates.length === 0 || choice.max === 0) return 'quiet';
+			if (
+				purpose === 'trigger_targets' &&
+				answer?.kind === 'chooseObjects' &&
+				answer.objectIds.length === 0
+			) {
+				return 'quiet';
+			}
+			return 'visible';
+		case 'chooseMode':
+			return choice.modes.length <= 1 ? 'quiet' : 'visible';
+		case 'chooseReplacement':
+			return choice.options.length <= 1 ? 'quiet' : 'visible';
+		case 'chooseNumber':
+			return choice.min === choice.max ? 'quiet' : 'visible';
+		case 'yesNo':
+			return 'visible';
+	}
+}
+
 export function runAutomatedPriorityAndBots(
 	state: GameState,
-	opts: { maxSteps?: number; logOnCap?: boolean } = {}
-): void {
+	opts: BotLoopOptions = {}
+): BotLoopResult {
+	const pace = Boolean(opts.pace);
+	if (state.status !== 'active') {
+		return { paused: false };
+	}
+
+	if (pace && opts.preAction) {
+		const activeNow = state.players[state.activePlayerIndex];
+		const enteredNewTurn =
+			opts.preAction.status !== 'active' || opts.preAction.turnSerial !== getTurnSerial(state);
+		if (enteredNewTurn && activeNow?.isBot && !activeNow.lost) {
+			return { paused: true, pausedFor: 'turn_start' };
+		}
+		if (didBotDeclareVisibleCombat(opts.preAction.combat, state)) {
+			return { paused: true, pausedFor: 'action' };
+		}
+	}
+
 	let safetyCounter = 0;
 	const MAX_STEPS = opts.maxSteps ?? DEFAULT_MAX_BOT_STEPS;
+	const initialTurnSerial = getTurnSerial(state);
 
 	while (state.status === 'active') {
+		if (pace && getTurnSerial(state) !== initialTurnSerial) {
+			const activeOnNewTurn = state.players[state.activePlayerIndex];
+			if (activeOnNewTurn?.isBot && !activeOnNewTurn.lost) {
+				return { paused: true, pausedFor: 'turn_start' };
+			}
+		}
+
 		if (safetyCounter >= MAX_STEPS) {
 			if (opts.logOnCap) {
 				addLog(state, 'system', `Automated play paused after ${MAX_STEPS} steps (safety cap); it continues with the next action.`);
@@ -234,6 +472,8 @@ export function runAutomatedPriorityAndBots(
 			const pr = state.pendingPrompts[0];
 			const promptPlayer = state.players.find((p) => p.playerId === pr.playerId);
 			if (!promptPlayer || !promptPlayer.isBot) break;
+			const choiceDesc = pace ? effectivePromptChoice(pr, state) : undefined;
+			const costChoicesBefore = pace ? countBotCostChoicePrompts(state, promptPlayer.playerId) : 0;
 			const answer = chooseBotAnswer(state, promptPlayer, pr);
 			const res = applyGameAction(state, promptPlayer.playerId, {
 				type: 'choice',
@@ -241,6 +481,21 @@ export function runAutomatedPriorityAndBots(
 				answer
 			});
 			if (!res.ok) break;
+			if (pace && state.status === 'active') {
+				if (getTurnSerial(state) !== initialTurnSerial) {
+					const activeAfterPrompt = state.players[state.activePlayerIndex];
+					if (activeAfterPrompt?.isBot && !activeAfterPrompt.lost) {
+						return { paused: true, pausedFor: 'turn_start' };
+					}
+				}
+				const costChoicesAfter = countBotCostChoicePrompts(state, promptPlayer.playerId);
+				const hadNewCostChoice =
+					effectivePromptPurpose(pr) === 'cost_choice' && costChoicesAfter >= costChoicesBefore;
+				const kind = classifyBotPromptStep(choiceDesc!, pr, answer, hadNewCostChoice);
+				if (kind === 'visible') {
+					return { paused: true, pausedFor: 'action' };
+				}
+			}
 			continue;
 		}
 		const priorityPlayer = state.players[state.priorityPlayerIndex];
@@ -248,8 +503,19 @@ export function runAutomatedPriorityAndBots(
 		if (!priorityPlayer || priorityPlayer.lost) break;
 
 		if (priorityPlayer.isBot) {
-			const didAct = executeBotStep(state, priorityPlayer, activePlayer);
-			if (!didAct) break;
+			const stepResult = executeBotStep(state, priorityPlayer, activePlayer);
+			if (stepResult === 'none') break;
+			if (pace && state.status === 'active') {
+				if (getTurnSerial(state) !== initialTurnSerial) {
+					const activeAfterStep = state.players[state.activePlayerIndex];
+					if (activeAfterStep?.isBot && !activeAfterStep.lost) {
+						return { paused: true, pausedFor: 'turn_start' };
+					}
+				}
+				if (stepResult === 'visible') {
+					return { paused: true, pausedFor: 'action' };
+				}
+			}
 			continue;
 		}
 
@@ -277,21 +543,35 @@ export function runAutomatedPriorityAndBots(
 				!hasAnyLegalInstantResponse(state, priorityPlayer);
 
 			if (shouldAutoPassEmptyOffTurn || shouldAutoPassUnrespondableOpponentStack) {
+				const combatBefore = pace ? captureCombatSnapshot(state) : undefined;
 				const res = applyGameAction(state, priorityPlayer.playerId, { type: 'pass_priority' });
 				if (!res.ok) break;
+				if (pace && state.status === 'active') {
+					if (getTurnSerial(state) !== initialTurnSerial) {
+						const activeAfterPass = state.players[state.activePlayerIndex];
+						if (activeAfterPass?.isBot && !activeAfterPass.lost) {
+							return { paused: true, pausedFor: 'turn_start' };
+						}
+					}
+					if (combatBefore && didBotDeclareVisibleCombat(combatBefore, state)) {
+						return { paused: true, pausedFor: 'action' };
+					}
+				}
 				continue;
 			}
 		}
 
 		break;
 	}
+
+	return { paused: false };
 }
 
-function executeBotStep(
+export function executeBotStep(
 	state: GameState,
 	bot: PlayerGameState,
 	activePlayer: PlayerGameState
-): boolean {
+): BotStepResult {
 	const isBotsTurn = activePlayer.playerId === bot.playerId;
 
 	// 1. If it's Declare Blockers and the bot is being attacked, assign smart legal blockers
@@ -312,7 +592,7 @@ function executeBotStep(
 				type: 'declare_blockers',
 				assignments
 			});
-			if (bRes.ok) return true;
+			if (bRes.ok) return assignments.length > 0 ? 'visible' : 'quiet';
 		}
 	}
 
@@ -328,7 +608,7 @@ function executeBotStep(
 					type: 'play_land',
 					instanceId: land.instanceId
 				});
-				if (res.ok) return true;
+				if (res.ok) return 'visible';
 			}
 		}
 
@@ -345,6 +625,7 @@ function executeBotStep(
 			);
 			if (plan) {
 				const { targets, costPayment } = plan;
+				const costBefore = countBotCostChoicePrompts(state, bot.playerId);
 				const res = applyGameAction(state, bot.playerId, {
 					type: 'cast_spell',
 					instanceId: cmd.instanceId,
@@ -352,7 +633,9 @@ function executeBotStep(
 					targets,
 					...(costPayment ? { costPayment } : {})
 				});
-				if (res.ok) return true;
+				if (res.ok) {
+					return countBotCostChoicePrompts(state, bot.playerId) > costBefore ? 'quiet' : 'visible';
+				}
 			}
 		}
 
@@ -402,6 +685,7 @@ function executeBotStep(
 				});
 				if (!planned) continue;
 				const { chosen, costPayment } = planned;
+				const costBefore = countBotCostChoicePrompts(state, bot.playerId);
 				const res = applyGameAction(state, bot.playerId, {
 					type: 'cast_spell',
 					instanceId: cardInst.instanceId,
@@ -409,7 +693,9 @@ function executeBotStep(
 					modes: chosen.modes,
 					...(costPayment ? { costPayment } : {})
 				});
-				if (res.ok) return true;
+				if (res.ok) {
+					return countBotCostChoicePrompts(state, bot.playerId) > costBefore ? 'quiet' : 'visible';
+				}
 				continue;
 			}
 			// Read-only decision (Phase 6d).
@@ -422,13 +708,16 @@ function executeBotStep(
 			});
 			if (!planned) continue;
 			const { targets, costPayment } = planned;
+			const costBefore = countBotCostChoicePrompts(state, bot.playerId);
 			const res = applyGameAction(state, bot.playerId, {
 				type: 'cast_spell',
 				instanceId: cardInst.instanceId,
 				targets,
 				...(costPayment ? { costPayment } : {})
 			});
-			if (res.ok) return true;
+			if (res.ok) {
+				return countBotCostChoicePrompts(state, bot.playerId) > costBefore ? 'quiet' : 'visible';
+			}
 		}
 
 		// 2d. Try activating unattached Equipment (activated.attach) onto a controlled creature
@@ -465,6 +754,7 @@ function executeBotStep(
 				if (!found) break;
 				const { perm, equipAb } = found;
 				const targetCreature = ownCreatures[0];
+				const costBefore = countBotCostChoicePrompts(state, bot.playerId);
 				const res = applyGameAction(state, bot.playerId, {
 					type: 'activate_ability',
 					instanceId: perm.instanceId,
@@ -477,7 +767,10 @@ function executeBotStep(
 						}
 					]
 				});
-				if (res.ok) return true;
+				if (res.ok) {
+					if (equipAb.isManaAbility) return 'quiet';
+					return countBotCostChoicePrompts(state, bot.playerId) > costBefore ? 'quiet' : 'visible';
+				}
 			}
 		}
 	}
@@ -489,12 +782,17 @@ function executeBotStep(
 			type: 'declare_attackers',
 			assignments
 		});
-		if (res.ok) return true;
+		if (res.ok) return assignments.length > 0 ? 'visible' : 'quiet';
 	}
 
 	// 4. Default: Pass priority
+	const combatBefore = captureCombatSnapshot(state);
 	const passRes = applyGameAction(state, bot.playerId, { type: 'pass_priority' });
-	return passRes.ok;
+	if (!passRes.ok) return 'none';
+	if (didBotDeclareVisibleCombat(combatBefore, state)) {
+		return 'visible';
+	}
+	return 'quiet';
 }
 
 function chooseBotTargetsForCard(

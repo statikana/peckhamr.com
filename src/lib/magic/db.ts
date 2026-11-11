@@ -1,12 +1,13 @@
 import { resolveScryfallImageLinks } from './cardImages.ts';
-import type {
-	MagicChatMessage,
-	MagicDeck,
-	MagicLobby,
-	MagicUser,
-	LobbyRulesConfig,
-	LobbySeat,
-	GameState
+import {
+	DEFAULT_LOBBY_RULES,
+	type MagicChatMessage,
+	type MagicDeck,
+	type MagicLobby,
+	type MagicUser,
+	type LobbyRulesConfig,
+	type LobbySeat,
+	type GameState
 } from './types.ts';
 
 let cfEnv: Record<string, unknown> | undefined;
@@ -138,6 +139,7 @@ export async function ensureMagicSchema(db: D1Database | undefined): Promise<voi
 						seats_json TEXT NOT NULL,
 						game_state_json TEXT DEFAULT '',
 						version INTEGER DEFAULT 1,
+						bot_resume_at INTEGER DEFAULT NULL,
 						created_at INTEGER NOT NULL,
 						updated_at INTEGER NOT NULL
 					)
@@ -164,6 +166,17 @@ export async function ensureMagicSchema(db: D1Database | undefined): Promise<voi
 					)
 				`)
 			]);
+			// Migrate pre-pacing MagicLobbies tables that lack `bot_resume_at` (both D1 and node:sqlite).
+			try {
+				await db
+					.prepare('ALTER TABLE MagicLobbies ADD COLUMN bot_resume_at INTEGER DEFAULT NULL')
+					.run();
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				if (!/duplicate column/i.test(msg)) {
+					throw err;
+				}
+			}
 			initializedDbs.add(db);
 		} finally {
 			schemaInitPromises.delete(db);
@@ -480,25 +493,16 @@ export async function deleteUserDeck(
 }
 
 function mapRowToLobby(row: Record<string, any>): MagicLobby {
-	let rules: LobbyRulesConfig = {
-		startingLife: 40,
-		commanderDamageLethal: 21,
-		commanderTaxIncrement: 2,
-		poisonLethal: 10,
-		mulliganRule: 'london_1free',
-		deckValidationMode: 'strict_commander',
-		turnTimerSeconds: 90,
-		firstTurnDraw: true,
-		maxHandSize: 7,
-		maxPlayers: 4,
-		allowUnsupportedCards: true
-	};
+	let rules: LobbyRulesConfig = { ...DEFAULT_LOBBY_RULES };
 	let seats: LobbySeat[] = [];
 	let gameState: GameState | null = null;
 
 	try {
 		rules = { ...rules, ...JSON.parse(String(row.rules_json || '{}')) };
 	} catch {}
+	if (!rules.botSpeed) {
+		rules.botSpeed = 'normal';
+	}
 	try {
 		seats = JSON.parse(String(row.seats_json || '[]'));
 	} catch {}
@@ -507,6 +511,12 @@ function mapRowToLobby(row: Record<string, any>): MagicLobby {
 			gameState = JSON.parse(String(row.game_state_json));
 		}
 	} catch {}
+
+	const rawResume = row.bot_resume_at;
+	const parsedResume =
+		rawResume === null || rawResume === undefined || rawResume === ''
+			? null
+			: Number(rawResume);
 
 	return {
 		code: String(row.code),
@@ -518,6 +528,7 @@ function mapRowToLobby(row: Record<string, any>): MagicLobby {
 		seats,
 		gameState,
 		version: Number(row.version || 1),
+		botResumeAt: parsedResume !== null && Number.isFinite(parsedResume) ? parsedResume : null,
 		createdAt: Number(row.created_at || Date.now()),
 		updatedAt: Number(row.updated_at || Date.now())
 	};
@@ -602,49 +613,75 @@ export async function listUserActiveLobbies(
 	return valid.sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
+export interface SaveLobbyOptions {
+	expectedVersion?: number;
+}
+
+export interface SaveLobbyResult {
+	lobby: MagicLobby;
+	saved: boolean;
+	changes: number;
+}
+
 export async function saveLobby(
 	platform: App.Platform | undefined,
-	lobby: MagicLobby
-): Promise<MagicLobby> {
+	lobby: MagicLobby,
+	opts: SaveLobbyOptions = {}
+): Promise<SaveLobbyResult> {
 	const db = getD1(platform);
 	await ensureMagicSchema(db);
 	// Precon and token cards carry Scryfall API image links; store CDN links instead (cardImages.ts).
 	await resolveScryfallImageLinks(db, lobby);
+	const resumeAt = lobby.botResumeAt ?? null;
 	if (db) {
-		await db
-			.prepare(
-				`INSERT INTO MagicLobbies
-				 (code, name, host_user_id, status, is_private, rules_json, seats_json, game_state_json, version, created_at, updated_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-				 ON CONFLICT(code) DO UPDATE SET
-				   name = excluded.name,
-				   host_user_id = excluded.host_user_id,
-				   status = excluded.status,
-				   is_private = excluded.is_private,
-				   rules_json = excluded.rules_json,
-				   seats_json = excluded.seats_json,
-				   game_state_json = excluded.game_state_json,
-				   version = excluded.version,
-				   updated_at = excluded.updated_at`
-			)
-			.bind(
-				lobby.code,
-				lobby.name,
-				lobby.hostUserId,
-				lobby.status,
-				lobby.isPrivate ? 1 : 0,
-				JSON.stringify(lobby.rules),
-				JSON.stringify(lobby.seats),
-				lobby.gameState ? JSON.stringify(lobby.gameState) : '',
-				lobby.version,
-				lobby.createdAt,
-				lobby.updatedAt
-			)
+		const hasCas = opts.expectedVersion !== undefined;
+		const sql = `INSERT INTO MagicLobbies
+			 (code, name, host_user_id, status, is_private, rules_json, seats_json, game_state_json, version, bot_resume_at, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			 ON CONFLICT(code) DO UPDATE SET
+			   name = excluded.name,
+			   host_user_id = excluded.host_user_id,
+			   status = excluded.status,
+			   is_private = excluded.is_private,
+			   rules_json = excluded.rules_json,
+			   seats_json = excluded.seats_json,
+			   game_state_json = excluded.game_state_json,
+			   version = excluded.version,
+			   bot_resume_at = excluded.bot_resume_at,
+			   updated_at = excluded.updated_at${hasCas ? ' WHERE MagicLobbies.version = ?' : ''}`;
+		const baseArgs: unknown[] = [
+			lobby.code,
+			lobby.name,
+			lobby.hostUserId,
+			lobby.status,
+			lobby.isPrivate ? 1 : 0,
+			JSON.stringify(lobby.rules),
+			JSON.stringify(lobby.seats),
+			lobby.gameState ? JSON.stringify(lobby.gameState) : '',
+			lobby.version,
+			resumeAt,
+			lobby.createdAt,
+			lobby.updatedAt
+		];
+		if (hasCas) {
+			baseArgs.push(opts.expectedVersion);
+		}
+		const res = await db
+			.prepare(sql)
+			.bind(...baseArgs)
 			.run();
-	} else {
-		memoryStore.lobbies.set(lobby.code, lobby);
+		const changes = Number(res.meta?.changes ?? 0);
+		return { lobby, saved: changes > 0, changes };
 	}
-	return lobby;
+
+	if (opts.expectedVersion !== undefined) {
+		const existing = memoryStore.lobbies.get(lobby.code);
+		if (existing && existing.version !== opts.expectedVersion) {
+			return { lobby: existing, saved: false, changes: 0 };
+		}
+	}
+	memoryStore.lobbies.set(lobby.code, { ...lobby, botResumeAt: resumeAt });
+	return { lobby, saved: true, changes: 1 };
 }
 
 export async function addChatMessage(

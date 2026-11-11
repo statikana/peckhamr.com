@@ -56,6 +56,7 @@
 		lobbyCode,
 		chatMessages,
 		theme,
+		botPaused = false,
 		onToggleTheme,
 		onGameAction,
 		onSendChat,
@@ -66,6 +67,7 @@
 		lobbyCode: string;
 		chatMessages: MagicChatMessage[];
 		theme: 'light' | 'dark';
+		botPaused?: boolean;
 		onToggleTheme: () => void;
 		onGameAction: (action: GameActionPayload) => Promise<void>;
 		onSendChat: (text: string, kind?: 'chat' | 'emote') => Promise<void>;
@@ -276,6 +278,25 @@
 	const priorityPlayer = $derived(gameState.players[gameState.priorityPlayerIndex]);
 	const hasPriority = $derived(priorityPlayer?.playerId === me?.playerId);
 	const isMyTurn = $derived(activePlayer?.playerId === me?.playerId);
+
+	const thinkingBotId = $derived.by(() => {
+		if (!botPaused || gameState.status !== 'active') return null;
+		for (const pr of gameState.pendingPrompts) {
+			const p = gameState.players.find((pl) => pl.playerId === pr.playerId);
+			if (p?.isBot && !p.lost) return p.playerId;
+		}
+		if (priorityPlayer?.isBot && !priorityPlayer.lost) return priorityPlayer.playerId;
+		if (activePlayer?.isBot && !activePlayer.lost) return activePlayer.playerId;
+		if (gameState.phase === 'declare_blockers') {
+			for (const atk of gameState.combat.attackers) {
+				if (atk.blockerInstanceIds.length > 0) {
+					const def = gameState.players.find((pl) => pl.playerId === atk.defenderPlayerId);
+					if (def?.isBot && !def.lost) return def.playerId;
+				}
+			}
+		}
+		return null;
+	});
 
 	const myPrompt = $derived(
 		gameState.pendingPrompts.find((pr) => pr.playerId === me?.playerId) || null
@@ -2100,6 +2121,9 @@
 									{/if}
 								{/if}
 							</button>
+							{#if thinkingBotId === opp.playerId}
+								<span class="bot-thinking-pill" aria-live="polite">{opp.username} is thinking…</span>
+							{/if}
 
 							<div class="opp-zones">
 								<span class="z-chip" title="Cards in Hand">Hand: {opp.handCount ?? opp.hand.length}</span>
@@ -4509,6 +4533,18 @@
 		color: #fcfcfa;
 		padding: 0.06rem 0.28rem;
 		border-radius: 3px;
+	}
+	.bot-thinking-pill {
+		display: inline-flex;
+		align-items: center;
+		font-size: 0.68rem;
+		font-style: italic;
+		color: var(--mp-muted);
+		background: var(--mp-bg-soft);
+		border: 1px dashed var(--mp-border);
+		padding: 0.14rem 0.42rem;
+		border-radius: 999px;
+		white-space: nowrap;
 	}
 	.life-orb {
 		font-weight: 700;

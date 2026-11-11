@@ -354,4 +354,76 @@ describe('sqliteD1 shim + real db.ts & cardImages.ts (Part 1)', () => {
 		assert.equal(scryfallCalls, 1);
 		assert.equal(payload2.imageUrl, 'https://cards.scryfall.io/normal/front/s/o/sol-ring.jpg');
 	});
+
+	it('migrates an old-shape MagicLobbies table (adds bot_resume_at, defaults botSpeed to normal) and supports CAS saveLobby({ expectedVersion })', async () => {
+		// Create a pre-pacing MagicLobbies table WITHOUT `bot_resume_at` and seed an old lobby lacking `botSpeed`
+		const legacyDb = createSqliteD1(':memory:');
+		try {
+			legacyDb.sqlite.exec(`
+				CREATE TABLE MagicLobbies (
+					code TEXT PRIMARY KEY,
+					name TEXT NOT NULL,
+					host_user_id TEXT NOT NULL,
+					status TEXT NOT NULL DEFAULT 'waiting',
+					is_private INTEGER DEFAULT 1,
+					rules_json TEXT NOT NULL,
+					seats_json TEXT NOT NULL,
+					game_state_json TEXT DEFAULT '',
+					version INTEGER DEFAULT 1,
+					created_at INTEGER NOT NULL,
+					updated_at INTEGER NOT NULL
+				);
+			`);
+			legacyDb.sqlite
+				.prepare(
+					`INSERT INTO MagicLobbies (code, name, host_user_id, status, is_private, rules_json, seats_json, game_state_json, version, created_at, updated_at)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+				)
+				.run('LEGACY', 'Old Pod', 'usr_h', 'active', 1, '{"startingLife":40}', '[]', '', 3, 1000, 1000);
+
+			const legacyPlatform = makePlatform(legacyDb);
+			const loadedOld = await getLobbyByCode(legacyPlatform, 'LEGACY');
+			assert.ok(loadedOld);
+			assert.strictEqual(loadedOld.botResumeAt, null);
+			assert.equal(loadedOld.rules.botSpeed, 'normal');
+			assert.equal(loadedOld.version, 3);
+
+			// CAS write against version 3: first writer wins, second writer with stale expectedVersion 3 loses
+			const winSave = await saveLobby(
+				legacyPlatform,
+				{
+					...loadedOld,
+					name: 'Winner Update',
+					version: 4,
+					botResumeAt: 1_700_000_005_500,
+					updatedAt: 2000
+				},
+				{ expectedVersion: 3 }
+			);
+			assert.equal(winSave.saved, true);
+			assert.equal(winSave.changes, 1);
+
+			const loseSave = await saveLobby(
+				legacyPlatform,
+				{
+					...loadedOld,
+					name: 'Stale Loser Update',
+					version: 4,
+					botResumeAt: null,
+					updatedAt: 2001
+				},
+				{ expectedVersion: 3 }
+			);
+			assert.equal(loseSave.saved, false);
+			assert.equal(loseSave.changes, 0);
+
+			const afterRace = await getLobbyByCode(legacyPlatform, 'LEGACY');
+			assert.ok(afterRace);
+			assert.equal(afterRace.name, 'Winner Update');
+			assert.equal(afterRace.version, 4);
+			assert.equal(afterRace.botResumeAt, 1_700_000_005_500);
+		} finally {
+			legacyDb.close();
+		}
+	});
 });
