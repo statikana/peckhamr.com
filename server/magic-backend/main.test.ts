@@ -4,6 +4,7 @@ import { clearCardImageMemory } from '../../src/lib/magic/cardImages.ts';
 import { chooseBotAnswer } from '../../src/lib/magic/runtime/choices.ts';
 import type { GameActionPayload, GameState, MagicLobby } from '../../src/lib/magic/types.ts';
 import { createSqliteD1 } from '../../src/lib/server/sqliteD1.ts';
+import { POST as lobbyPostHandler } from '../../src/routes/magic/api/lobby/+server.ts';
 import { KeyedMutex, startMagicBackendServer, type RunningMagicBackend } from './main.ts';
 
 const TEST_SECRET = 'test-proxy-secret-0123456789abcdef';
@@ -279,7 +280,7 @@ describe('magic-backend HTTP server (Part 2)', () => {
 		const { lobby: createdLobby } = await postLobby({
 			action: 'create',
 			name: '4P Precon Bot Pod',
-			rules: { mulliganRule: 'friendly_unlimited' }
+			rules: { mulliganRule: 'friendly_unlimited', botSpeed: 'instant' }
 		});
 		const code = createdLobby.code;
 
@@ -566,5 +567,486 @@ describe('per-lobby async mutex (2.2)', () => {
 		assert.deepEqual(seatedNames.sort(), ['GuestAlpha', 'GuestBeta', 'HostPlayer']);
 
 		rawDb.close();
+	});
+});
+
+describe('bot pacing on /magic/api/lobby (Step 4)', () => {
+	let backend: RunningMagicBackend | null = null;
+
+	beforeEach(() => {
+		clearCardImageMemory();
+		installOfflineFetchMock();
+	});
+
+	afterEach(async () => {
+		if (backend) {
+			await backend.close();
+			backend = null;
+		}
+		mock.restoreAll();
+	});
+
+	it('paces a 3-bot round across multiple advance_bots calls, treats early/stale calls as no-ops, deduplicates concurrent calls, and guards the rope timer', async () => {
+		let fakeNow = 1_760_000_000_000;
+		let autoTickFakeNow = true;
+		mock.method(Date, 'now', () => {
+			if (autoTickFakeNow) fakeNow += 1;
+			return fakeNow;
+		});
+
+		const rawDb = createSqliteD1(':memory:');
+		const origPrepare = rawDb.prepare.bind(rawDb);
+		let delayLobbySelectMs = 0;
+
+		rawDb.prepare = ((query: string) => {
+			const stmt = origPrepare(query);
+			if (delayLobbySelectMs > 0 && query.includes('FROM MagicLobbies WHERE code = ?')) {
+				const origBind = stmt.bind.bind(stmt);
+				stmt.bind = (...args: unknown[]) => {
+					const bound = origBind(...args);
+					const boundFirst = bound.first.bind(bound);
+					bound.first = (async (...firstArgs: [string?]) => {
+						const ms = delayLobbySelectMs;
+						if (ms > 0) {
+							await new Promise((r) => setTimeout(r, ms));
+						}
+						return boundFirst(...(firstArgs as [string]));
+					}) as typeof bound.first;
+					return bound;
+				};
+			}
+			return stmt;
+		}) as typeof rawDb.prepare;
+
+		backend = await startMagicBackendServer({
+			port: 0,
+			db: rawDb,
+			proxySecret: TEST_SECRET,
+			logger: () => {}
+		});
+		const base = `http://127.0.0.1:${backend.port}`;
+		const headers = {
+			'Content-Type': 'application/json',
+			'X-Magic-Proxy-Secret': TEST_SECRET,
+			'X-Forwarded-Host': 'magic.peckhamr.com',
+			'X-Forwarded-Proto': 'https'
+		};
+
+		const hostLogin = await fetch(`${base}/magic/api/auth`, {
+			method: 'POST',
+			headers,
+			body: JSON.stringify({ action: 'dev_login', username: 'PacedHost' })
+		});
+		const hostCookie = hostLogin.headers.getSetCookie()[0].split(';')[0];
+		const hostUser = ((await hostLogin.json()) as { user: { id: string } }).user;
+		const authedHeaders = { ...headers, Cookie: hostCookie };
+
+		type LobbyApiResult = {
+			ok: boolean;
+			serverNow: number;
+			retryAt?: number;
+			lobby: MagicLobby;
+			error?: string;
+		};
+
+		const postLobby = async (payload: Record<string, unknown>): Promise<LobbyApiResult> => {
+			const res = await fetch(`${base}/magic/api/lobby`, {
+				method: 'POST',
+				headers: authedHeaders,
+				body: JSON.stringify(payload)
+			});
+			const data = (await res.json()) as LobbyApiResult;
+			assert.equal(res.status, 200, `POST failed: ${data.error || res.status}`);
+			assert.equal(data.ok, true);
+			assert.equal(typeof data.serverNow, 'number');
+			return data;
+		};
+
+		// Default botSpeed is 'normal'; enable turnTimerSeconds: 15 to also test the GET rope guard.
+		const created = await postLobby({
+			action: 'create',
+			name: 'Paced 4P Pod',
+			rules: { mulliganRule: 'friendly_unlimited', turnTimerSeconds: 15 }
+		});
+		assert.equal(created.lobby.rules.botSpeed, 'normal');
+		assert.equal(created.lobby.botResumeAt, null);
+		const code = created.lobby.code;
+
+		await postLobby({ action: 'add_bot', code, seatIndex: 1 });
+		await postLobby({ action: 'add_bot', code, seatIndex: 2 });
+		await postLobby({ action: 'add_bot', code, seatIndex: 3 });
+
+		let { lobby } = await postLobby({ action: 'start_game', code });
+		for (let tries = 0; tries < 10; tries++) {
+			const gs = lobby.gameState!;
+			const me = gs.players.find((p) => p.playerId === hostUser.id)!;
+			if (me.hand.some((c) => c.card.typeLine.includes('Land')) || gs.status !== 'mulligan') break;
+			({ lobby } = await postLobby({
+				action: 'game_action',
+				code,
+				gameAction: { type: 'mulligan_take' } satisfies GameActionPayload
+			}));
+		}
+		if (lobby.gameState!.status === 'mulligan') {
+			({ lobby } = await postLobby({
+				action: 'game_action',
+				code,
+				gameAction: { type: 'mulligan_keep' } satisfies GameActionPayload
+			}));
+		}
+		assert.equal(lobby.gameState!.status, 'active');
+
+		const stepHumanOrBotUntilHumanMain1 = async (targetMinTurnNumber = 1): Promise<number> => {
+			let advanceCount = 0;
+			for (let safety = 0; safety < 200; safety++) {
+				const gs = lobby.gameState!;
+				const active = gs.players[gs.activePlayerIndex];
+				const prompt = gs.pendingPrompts.find((p) => p.playerId === hostUser.id);
+				if (
+					lobby.botResumeAt == null &&
+					active?.playerId === hostUser.id &&
+					gs.turnNumber >= targetMinTurnNumber &&
+					gs.phase === 'main1' &&
+					gs.stack.length === 0 &&
+					!prompt
+				) {
+					return advanceCount;
+				}
+				if (lobby.botResumeAt != null) {
+					fakeNow = Math.max(fakeNow + 1, lobby.botResumeAt);
+					const res = await postLobby({
+						action: 'advance_bots',
+						code,
+						version: lobby.version
+					});
+					lobby = res.lobby;
+					advanceCount++;
+					continue;
+				}
+				const me = gs.players.find((p) => p.playerId === hostUser.id)!;
+				let gameAction: GameActionPayload;
+				if (prompt) {
+					gameAction = {
+						type: 'choice',
+						promptId: prompt.id,
+						answer: chooseBotAnswer(gs, me, prompt)
+					};
+				} else if (
+					gs.phase === 'declare_attackers' &&
+					gs.players[gs.activePlayerIndex]?.playerId === hostUser.id
+				) {
+					gameAction = { type: 'declare_attackers', assignments: [] };
+				} else if (gs.phase === 'declare_blockers') {
+					gameAction = { type: 'declare_blockers', assignments: [] };
+				} else {
+					gameAction = { type: 'pass_priority' };
+				}
+				fakeNow += 100;
+				({ lobby } = await postLobby({ action: 'game_action', code, gameAction }));
+			}
+			assert.fail('Exceeded safety bound waiting for PacedHost main1');
+		};
+
+		// Reach PacedHost's first main1 and play a land so hand size <= 7 (no cleanup discard prompt)
+		await stepHumanOrBotUntilHumanMain1(1);
+		assert.equal(lobby.botResumeAt, null);
+		const turnBeforePass = lobby.gameState!.turnNumber;
+		const serialBeforePass = lobby.gameState!.turnSerial ?? 1;
+		const pacedHostAtMain1 = lobby.gameState!.players.find((p) => p.playerId === hostUser.id)!;
+		const pacedLand = pacedHostAtMain1.hand.find((c) => c.card.typeLine.includes('Land'));
+		assert.ok(pacedLand, 'Expected land in hand');
+		({ lobby } = await postLobby({
+			action: 'game_action',
+			code,
+			gameAction: { type: 'play_land', instanceId: pacedLand.instanceId } satisfies GameActionPayload
+		}));
+		while (lobby.gameState!.pendingPrompts.some((p) => p.playerId === hostUser.id)) {
+			const gs = lobby.gameState!;
+			const me = gs.players.find((p) => p.playerId === hostUser.id)!;
+			const prompt = gs.pendingPrompts.find((p) => p.playerId === hostUser.id)!;
+			({ lobby } = await postLobby({
+				action: 'game_action',
+				code,
+				gameAction: {
+					type: 'choice',
+					promptId: prompt.id,
+					answer: chooseBotAnswer(gs, me, prompt)
+				} satisfies GameActionPayload
+			}));
+		}
+
+		// End PacedHost's turn -> next seat is Bot 1, so loop must pause on Bot 1's turn_start!
+		fakeNow += 250;
+		const afterEndTurn = await postLobby({
+			action: 'game_action',
+			code,
+			gameAction: { type: 'end_turn' } satisfies GameActionPayload
+		});
+		lobby = afterEndTurn.lobby;
+		assert.notEqual(lobby.botResumeAt, null, 'Expected botResumeAt to be set at Bot 1 turn_start');
+		const firstDelay = lobby.botResumeAt! - afterEndTurn.serverNow;
+		assert.ok(
+			firstDelay >= 900 && firstDelay <= 1075,
+			`Expected normal turn_start delay in [900, 1075], got ${firstDelay}`
+		);
+
+		// 1) Early advance_bots call (now < botResumeAt) is a no-op that returns retryAt
+		const pausedVersion = lobby.version;
+		const expectedResumeAt = lobby.botResumeAt!;
+		autoTickFakeNow = false;
+		fakeNow = expectedResumeAt - 100;
+		const earlyRes = await postLobby({
+			action: 'advance_bots',
+			code,
+			version: pausedVersion
+		});
+		autoTickFakeNow = true;
+		assert.equal(earlyRes.retryAt, expectedResumeAt);
+		assert.equal(earlyRes.lobby.version, pausedVersion, 'Early advance_bots must not bump version');
+		assert.equal(earlyRes.lobby.botResumeAt, expectedResumeAt);
+
+		// 2) Rope timer guard: even if turnTimerSeconds (15s) has elapsed on priorityUpdatedAt while
+		// botResumeAt is non-null, GET must NOT fire the rope auto-pass or mutate the lobby.
+		fakeNow = (lobby.gameState!.priorityUpdatedAt || fakeNow) + 30_000;
+		// Keep botResumeAt in the future relative to fakeNow isn't even required because botResumeAt != null
+		// guards the rope regardless of whether botResumeAt is past due!
+		const pollDuringPauseRes = await fetch(`${base}/magic/api/lobby?code=${code}`, {
+			headers: authedHeaders
+		});
+		const pollDuringPause = (await pollDuringPauseRes.json()) as LobbyApiResult;
+		assert.equal(pollDuringPause.ok, true);
+		assert.equal(typeof pollDuringPause.serverNow, 'number');
+		assert.equal(
+			pollDuringPause.lobby.version,
+			pausedVersion,
+			'GET rope branch must skip while botResumeAt is non-null'
+		);
+
+		// 3) Stale version advance_bots call is a no-op
+		const staleRes = await postLobby({
+			action: 'advance_bots',
+			code,
+			version: pausedVersion - 1
+		});
+		assert.equal(staleRes.lobby.version, pausedVersion);
+
+		// 4) Two concurrent HTTP advance_bots calls with the same version advance ONCE (homelab KeyedMutex)
+		fakeNow = Math.max(fakeNow, expectedResumeAt + 50);
+		const [httpRaceA, httpRaceB] = await Promise.all([
+			postLobby({ action: 'advance_bots', code, version: pausedVersion }),
+			postLobby({ action: 'advance_bots', code, version: pausedVersion })
+		]);
+		assert.equal(httpRaceA.lobby.version, pausedVersion + 1);
+		assert.equal(httpRaceB.lobby.version, pausedVersion + 1);
+		lobby = httpRaceA.lobby;
+
+		// 5) Two concurrent direct handler calls WITHOUT KeyedMutex (Cloudflare D1 CAS path) also advance ONCE
+		assert.notEqual(lobby.botResumeAt, null, 'Expected bot sequence to still have remaining steps');
+		const casBaseVersion = lobby.version;
+		fakeNow = Math.max(fakeNow, lobby.botResumeAt! + 50);
+		delayLobbySelectMs = 25;
+		const makeDirectAdvanceEvent = () => {
+			const req = new Request('https://magic.peckhamr.com/magic/api/lobby', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					Cookie: hostCookie
+				},
+				body: JSON.stringify({
+					action: 'advance_bots',
+					code,
+					version: casBaseVersion
+				})
+			});
+			return {
+				request: req,
+				url: new URL(req.url),
+				platform: { env: { cosmo_users: rawDb } }
+			} as unknown as Parameters<typeof lobbyPostHandler>[0];
+		};
+
+		const [casResA, casResB] = await Promise.all([
+			lobbyPostHandler(makeDirectAdvanceEvent()),
+			lobbyPostHandler(makeDirectAdvanceEvent())
+		]);
+		delayLobbySelectMs = 0;
+		const casDataA = (await casResA.json()) as LobbyApiResult;
+		const casDataB = (await casResB.json()) as LobbyApiResult;
+		assert.equal(casDataA.ok, true);
+		assert.equal(casDataB.ok, true);
+		assert.equal(
+			casDataA.lobby.version,
+			casBaseVersion + 1,
+			'CAS winner/loser must both report version + 1, never version + 2'
+		);
+		assert.equal(casDataB.lobby.version, casBaseVersion + 1);
+		lobby = casDataA.lobby;
+
+		// 6) Finish stepping the rest of the 3-bot round and verify multiple advance_bots calls occurred
+		const remainingAdvances = await stepHumanOrBotUntilHumanMain1(turnBeforePass + 1);
+		const totalAdvancesInRound = 2 + remainingAdvances;
+		assert.ok(
+			totalAdvancesInRound >= 6,
+			`Expected 3-bot round at normal speed to require >= 6 advance_bots calls, got ${totalAdvancesInRound}`
+		);
+		assert.equal(lobby.botResumeAt, null, 'botResumeAt must be null once priority returns to human');
+		assert.ok((lobby.gameState!.turnSerial ?? 0) >= serialBeforePass + 4);
+
+		rawDb.close();
+	});
+
+	it("finishes a 3-bot round in one request when botSpeed is 'instant'", async () => {
+		backend = await startMagicBackendServer({
+			port: 0,
+			sqlitePath: ':memory:',
+			proxySecret: TEST_SECRET,
+			logger: () => {}
+		});
+		const base = `http://127.0.0.1:${backend.port}`;
+		const headers = {
+			'Content-Type': 'application/json',
+			'X-Magic-Proxy-Secret': TEST_SECRET,
+			'X-Forwarded-Host': 'magic.peckhamr.com',
+			'X-Forwarded-Proto': 'https'
+		};
+
+		const hostLogin = await fetch(`${base}/magic/api/auth`, {
+			method: 'POST',
+			headers,
+			body: JSON.stringify({ action: 'dev_login', username: 'InstantHost' })
+		});
+		const hostCookie = hostLogin.headers.getSetCookie()[0].split(';')[0];
+		const hostUser = ((await hostLogin.json()) as { user: { id: string } }).user;
+		const authedHeaders = { ...headers, Cookie: hostCookie };
+
+		const postLobby = async (payload: Record<string, unknown>) => {
+			const res = await fetch(`${base}/magic/api/lobby`, {
+				method: 'POST',
+				headers: authedHeaders,
+				body: JSON.stringify(payload)
+			});
+			const data = (await res.json()) as { ok: boolean; lobby: MagicLobby; serverNow: number };
+			assert.equal(res.status, 200);
+			assert.equal(data.ok, true);
+			return data.lobby;
+		};
+
+		let lobby = await postLobby({
+			action: 'create',
+			name: 'Instant Pod',
+			rules: { mulliganRule: 'friendly_unlimited', botSpeed: 'instant' }
+		});
+		const code = lobby.code;
+		await postLobby({ action: 'add_bot', code, seatIndex: 1 });
+		await postLobby({ action: 'add_bot', code, seatIndex: 2 });
+		await postLobby({ action: 'add_bot', code, seatIndex: 3 });
+
+		lobby = await postLobby({ action: 'start_game', code });
+		assert.equal(lobby.botResumeAt, null);
+		for (let tries = 0; tries < 10; tries++) {
+			const gs = lobby.gameState!;
+			const me = gs.players.find((p) => p.playerId === hostUser.id)!;
+			if (me.hand.some((c) => c.card.typeLine.includes('Land')) || gs.status !== 'mulligan') break;
+			lobby = await postLobby({
+				action: 'game_action',
+				code,
+				gameAction: { type: 'mulligan_take' } satisfies GameActionPayload
+			});
+		}
+		if (lobby.gameState!.status === 'mulligan') {
+			lobby = await postLobby({
+				action: 'game_action',
+				code,
+				gameAction: { type: 'mulligan_keep' } satisfies GameActionPayload
+			});
+		}
+		assert.equal(lobby.botResumeAt, null);
+
+		// Reach InstantHost's main1
+		for (let safety = 0; safety < 30; safety++) {
+			const gs = lobby.gameState!;
+			if (
+				gs.players[gs.activePlayerIndex]?.playerId === hostUser.id &&
+				gs.phase === 'main1' &&
+				gs.stack.length === 0 &&
+				gs.pendingPrompts.length === 0
+			) {
+				break;
+			}
+			const me = gs.players.find((p) => p.playerId === hostUser.id)!;
+			const prompt = gs.pendingPrompts.find((p) => p.playerId === hostUser.id);
+			const gameAction: GameActionPayload = prompt
+				? { type: 'choice', promptId: prompt.id, answer: chooseBotAnswer(gs, me, prompt) }
+				: gs.phase === 'declare_blockers'
+					? { type: 'declare_blockers', assignments: [] }
+					: { type: 'pass_priority' };
+			lobby = await postLobby({ action: 'game_action', code, gameAction });
+			assert.equal(lobby.botResumeAt, null);
+		}
+
+		// Play a land (bringing hand size from 8 -> 7 so cleanup doesn't prompt discard) and tap it
+		// so 0 mana is open during opponents' turns; end_turn then runs all 3 bot turns in 1 request.
+		const meMain1 = lobby.gameState!.players.find((p) => p.playerId === hostUser.id)!;
+		const land = meMain1.hand.find((c) => c.card.typeLine.includes('Land'))!;
+		assert.ok(land, 'Expected land in hand');
+		lobby = await postLobby({
+			action: 'game_action',
+			code,
+			gameAction: { type: 'play_land', instanceId: land.instanceId } satisfies GameActionPayload
+		});
+		while (lobby.gameState!.pendingPrompts.some((p) => p.playerId === hostUser.id)) {
+			const gs = lobby.gameState!;
+			const me = gs.players.find((p) => p.playerId === hostUser.id)!;
+			const prompt = gs.pendingPrompts.find((p) => p.playerId === hostUser.id)!;
+			lobby = await postLobby({
+				action: 'game_action',
+				code,
+				gameAction: {
+					type: 'choice',
+					promptId: prompt.id,
+					answer: chooseBotAnswer(gs, me, prompt)
+				} satisfies GameActionPayload
+			});
+		}
+		const playedPerm = lobby.gameState!.players
+			.find((p) => p.playerId === hostUser.id)!
+			.battlefield.find((p) => p.instanceId === land.instanceId);
+		if (playedPerm && !playedPerm.tapped) {
+			lobby = await postLobby({
+				action: 'game_action',
+				code,
+				gameAction: { type: 'tap_mana', instanceId: playedPerm.instanceId } satisfies GameActionPayload
+			});
+			while (lobby.gameState!.pendingPrompts.some((p) => p.playerId === hostUser.id)) {
+				const gs = lobby.gameState!;
+				const me = gs.players.find((p) => p.playerId === hostUser.id)!;
+				const prompt = gs.pendingPrompts.find((p) => p.playerId === hostUser.id)!;
+				lobby = await postLobby({
+					action: 'game_action',
+					code,
+					gameAction: {
+						type: 'choice',
+						promptId: prompt.id,
+						answer: chooseBotAnswer(gs, me, prompt)
+					} satisfies GameActionPayload
+				});
+			}
+		}
+
+		const turnBefore = lobby.gameState!.turnNumber;
+		const serialBefore = lobby.gameState!.turnSerial ?? 1;
+		lobby = await postLobby({
+			action: 'game_action',
+			code,
+			gameAction: { type: 'end_turn' } satisfies GameActionPayload
+		});
+		assert.equal(lobby.botResumeAt, null, 'instant mode must never set botResumeAt');
+		assert.equal(
+			lobby.gameState!.players[lobby.gameState!.activePlayerIndex]?.playerId,
+			hostUser.id,
+			'Expected single end_turn request with 0 mana up to advance through all 3 bot turns back to host'
+		);
+		assert.equal(lobby.gameState!.turnNumber, turnBefore + 1);
+		assert.equal(lobby.gameState!.turnSerial, serialBefore + 4);
 	});
 });
