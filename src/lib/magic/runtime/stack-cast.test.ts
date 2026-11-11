@@ -24,6 +24,7 @@ import {
 	effectiveSpellManaCost,
 	payPlannedCosts,
 	planCosts,
+	spellChoosesX,
 	type CostContext
 } from './costs.ts';
 import { allocateTimestamp, moveObject } from './zones.ts';
@@ -940,5 +941,35 @@ describe('Wave 3C — Task 6: Mana, Costs, Taxes & Land Plays', () => {
 			[],
 			'suspend_card clears passedPriorityPlayerIds (CR 117.3c)'
 		);
+	});
+});
+
+describe('X in an additional cost (Toxic Deluge)', () => {
+	const toxicDeluge = () => Object.values(STAPLE_CARDS).find((c) => c.name === 'Toxic Deluge')!;
+
+	it('asks for X when X is only in the additional cost, not the mana cost (CR 601.2b)', () => {
+		assert.equal(spellChoosesX(toxicDeluge()), true);
+		assert.equal(spellChoosesX(makeCard({ name: 'Fireball Variant', manaCost: '{X}{R}', oracleText: 'Fireball Variant deals X damage to any target.' })), true);
+		assert.equal(spellChoosesX(makeCard({ name: 'Shock Variant', manaCost: '{R}', oracleText: 'Shock Variant deals 2 damage to any target.' })), false);
+	});
+
+	it('pays X life and gives all creatures -X/-X', () => {
+		const { state, p1, p2 } = createTwoPlayerGame();
+		const deluge = putInZone(state, p1, toxicDeluge(), 'hand');
+		const bear = putInZone(
+			state,
+			p2,
+			makeCard({ name: 'Bear Variant', manaCost: '{1}{G}', typeLine: 'Creature — Bear', power: '2', toughness: '2' }),
+			'battlefield'
+		);
+		p1.manaPool = { W: 0, U: 0, B: 3, R: 0, G: 0, C: 0 };
+		const life = p1.life;
+
+		const res = applyGameAction(state, p1.playerId, { type: 'cast_spell', instanceId: deluge.instanceId, xValue: 3 });
+		assert.equal(res.ok, true, res.error ?? '');
+		assert.equal(p1.life, life - 3);
+		resolveTopOfStack(state);
+		checkStateBasedActions(state);
+		assert.equal(p2.battlefield.some((c) => c.instanceId === bear.instanceId), false);
 	});
 });

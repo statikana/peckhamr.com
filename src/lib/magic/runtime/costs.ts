@@ -117,6 +117,20 @@ export function keywordCost(card: ScryfallCard, name: string): string | null {
 	return null;
 }
 
+/**
+ * Whether casting the card means choosing X (CR 601.2b): {X} in its mana cost, or X in an
+ * additional cost such as Toxic Deluge's "pay X life".
+ */
+export function spellChoosesX(card: ScryfallCard): boolean {
+	if (/\{X\}/i.test(card.manaCost)) return true;
+	const mentionsX = (defs: CostDef[] | undefined) => JSON.stringify(defs ?? []).includes('"k":"x"');
+	return abilitiesOf(card).some(
+		(a) =>
+			(a.kind === 'spell' && mentionsX(a.additionalCosts)) ||
+			(a.kind === 'unsupported' && a.id === 'cast' && mentionsX(a.cost))
+	);
+}
+
 /** Keyword abilities that are alternative costs for casting a spell (CR 118.9). */
 export const ALTERNATIVE_COST_KEYWORDS: Record<string, { targetsBecomeEach: boolean }> = {
 	// CR 702.96a: "You may choose to pay [cost] rather than pay this spell's mana cost" and

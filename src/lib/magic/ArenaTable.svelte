@@ -23,7 +23,7 @@
 	import ManaSymbol from './ManaSymbol.svelte';
 	import ManaText from './ManaText.svelte';
 	import { parseManaCost } from './oracle';
-	import { keywordCost } from './runtime/costs';
+	import { keywordCost, spellChoosesX } from './runtime/costs';
 	import { matchesScryfallQuery } from './search';
 	import { cardSupportReport, displayAbilityText, unsupportedKindLabel } from './compiler/support';
 	import { effectivePromptChoice, effectivePromptPurpose } from './runtime/choices';
@@ -936,7 +936,7 @@
 			return checkLandPlayLegality(gameState, me.playerId, inst, fromZone).ok;
 		}
 		if (
-			inst.card.manaCost.includes('{X}') ||
+			spellChoosesX(inst.card) ||
 			keywordCost(inst.card, 'overload') !== null
 		) {
 			return (
@@ -1326,7 +1326,7 @@
 			return;
 		}
 
-		if (inst.card.manaCost.includes('{X}') && !xCostModalCard) {
+		if (spellChoosesX(inst.card) && !xCostModalCard) {
 			xCostModalCard = { inst, fromZone };
 			xCostValue = 2;
 			return;
