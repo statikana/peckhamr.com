@@ -15,6 +15,7 @@
 	import { matchesScryfallQuery } from '../../lib/magic/search';
 	import {
 		DEFAULT_LOBBY_RULES,
+		type BotSpeed,
 		type GameActionPayload,
 		type LobbyRulesConfig,
 		type MagicChatMessage,
@@ -274,6 +275,9 @@
 	let lobbyChat = $state<MagicChatMessage[]>([]);
 	let inMatchView = $state(false);
 	let actionInFlight = $state(false);
+	let advanceInFlight = $state(false);
+	let serverClockOffsetMs = 0;
+	let advanceMinDelayMs = 0;
 
 	let newLobbyName = $state('');
 	let joinCodeInput = $state('');
@@ -306,7 +310,11 @@
 		const res = await fetch(path, { ...init, headers, cache: 'no-store' });
 		const text = await res.text();
 		try {
-			return JSON.parse(text);
+			const parsed = JSON.parse(text);
+			if (parsed && typeof parsed.serverNow === 'number') {
+				serverClockOffsetMs = parsed.serverNow - Date.now();
+			}
+			return parsed;
 		} catch {
 			return { ok: false, error: `Request failed (${res.status}).` };
 		}
@@ -396,6 +404,83 @@
 			// ignore transient poll error
 		}
 	}
+
+	async function advancePausedBots(code: string, version: number) {
+		if (advanceInFlight || actionInFlight) return;
+		if (
+			!activeLobby ||
+			!user ||
+			activeLobby.code !== code ||
+			activeLobby.version !== version ||
+			activeLobby.status !== 'active' ||
+			activeLobby.gameState?.status !== 'active' ||
+			activeLobby.botResumeAt == null
+		) {
+			return;
+		}
+		advanceInFlight = true;
+		try {
+			const data = await apiFetch(appUrl('magic', '/api/lobby'), {
+				method: 'POST',
+				body: JSON.stringify({
+					action: 'advance_bots',
+					code,
+					version
+				})
+			});
+			if (!activeLobby || activeLobby.code !== code) return;
+			if (data.ok && data.lobby) {
+				const nextLobby: MagicLobby = data.lobby;
+				if (nextLobby.version > (activeLobby.version || 0)) {
+					activeLobby = nextLobby;
+					lobbyChat = data.chat || lobbyChat;
+				} else if (typeof data.retryAt === 'number' && nextLobby.version === version) {
+					const estNow = Date.now() + serverClockOffsetMs;
+					advanceMinDelayMs = Math.max(50, data.retryAt - estNow + 50);
+				} else if (nextLobby.botResumeAt == null && activeLobby.botResumeAt != null) {
+					activeLobby = nextLobby;
+				} else if (nextLobby.version === version && nextLobby.botResumeAt != null) {
+					advanceMinDelayMs = 250;
+				}
+			} else {
+				advanceMinDelayMs = 600;
+			}
+		} catch {
+			advanceMinDelayMs = 600;
+		} finally {
+			advanceInFlight = false;
+		}
+	}
+
+	$effect(() => {
+		const lobby = activeLobby;
+		const currentUser = user;
+		const busy = advanceInFlight || actionInFlight;
+		if (
+			!lobby ||
+			!currentUser ||
+			busy ||
+			lobby.status !== 'active' ||
+			lobby.gameState?.status !== 'active' ||
+			lobby.botResumeAt == null
+		) {
+			return;
+		}
+		const code = lobby.code;
+		const version = lobby.version;
+		const estServerNow = Date.now() + serverClockOffsetMs;
+		const rawWaitMs = Math.max(0, lobby.botResumeAt - estServerNow) + 50;
+		const waitMs = Math.max(rawWaitMs, advanceMinDelayMs);
+		advanceMinDelayMs = 0;
+
+		const timerId = setTimeout(() => {
+			void advancePausedBots(code, version);
+		}, waitMs);
+
+		return () => {
+			clearTimeout(timerId);
+		};
+	});
 
 	onMount(() => {
 		try {
@@ -1192,6 +1277,7 @@
 		lobbyCode={activeLobby.code}
 		chatMessages={lobbyChat}
 		{theme}
+		botPaused={activeLobby.botResumeAt != null}
 		onToggleTheme={toggleTheme}
 		onGameAction={dispatchGameAction}
 		onSendChat={sendPodChat}
@@ -1822,6 +1908,23 @@
 										<option value={60}>60 Seconds (Blitz)</option>
 										<option value={120}>120 Seconds</option>
 										<option value={0}>Untimed (Casual Pod)</option>
+									</select>
+								</label>
+
+								<label>
+									<span>AI Bot Action Pacing</span>
+									<select
+										disabled={!isHost}
+										value={activeLobby.rules.botSpeed ?? 'normal'}
+										onchange={(e) =>
+											updateHostRules({
+												botSpeed: (e.currentTarget as HTMLSelectElement).value as BotSpeed
+											})}
+									>
+										<option value="normal">Normal (0.9–1.6s per Action, Default)</option>
+										<option value="fast">Fast (0.4–0.7s per Action)</option>
+										<option value="slow">Slow (1.8–3.0s per Action)</option>
+										<option value="instant">Instant (No Delay)</option>
 									</select>
 								</label>
 
