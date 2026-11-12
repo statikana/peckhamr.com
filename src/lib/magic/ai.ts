@@ -17,6 +17,7 @@ import {
 } from './engine.ts';
 import type { EffectStep, RestrictionKind, TargetSpec } from './ir.ts';
 import { chooseBotAnswer, effectivePromptChoice, effectivePromptPurpose } from './runtime/choices.ts';
+import { keywordCost } from './runtime/costs.ts';
 import { withStableLayerInputs } from './runtime/layerCache.ts';
 import { evaluateCondition, matchesObjectFilter } from './runtime/objectFilter.ts';
 import type {
@@ -195,12 +196,36 @@ function hasAnyLegalInstantResponseInner(state: GameState, player: PlayerGameSta
 		if (types.includes('Land') && !types.includes('Creature')) {
 			continue;
 		}
-		if (checkSpellCastLegality(state, player.playerId, cardInst, 'hand', 0).ok) {
+		const hasOverload = keywordCost(cardInst.card, 'overload') !== null;
+		if (
+			checkSpellCastLegality(
+				state,
+				player.playerId,
+				cardInst,
+				'hand',
+				0,
+				hasOverload ? 'normal' : undefined
+			).ok ||
+			(hasOverload &&
+				checkSpellCastLegality(state, player.playerId, cardInst, 'hand', 0, 'overload').ok)
+		) {
 			return true;
 		}
 	}
 	for (const cmdInst of player.command) {
-		if (checkSpellCastLegality(state, player.playerId, cmdInst, 'command', 0).ok) {
+		const hasOverload = keywordCost(cmdInst.card, 'overload') !== null;
+		if (
+			checkSpellCastLegality(
+				state,
+				player.playerId,
+				cmdInst,
+				'command',
+				0,
+				hasOverload ? 'normal' : undefined
+			).ok ||
+			(hasOverload &&
+				checkSpellCastLegality(state, player.playerId, cmdInst, 'command', 0, 'overload').ok)
+		) {
 			return true;
 		}
 	}
@@ -668,7 +693,11 @@ export function executeBotStep(
 					if (isCreatureBoardWipeCard(c.card) && opponentCreatureCount < 2) {
 						return false;
 					}
-					return checkSpellCastLegality(state, bot.playerId, c, 'hand', 0).ok;
+					const hasOverload = keywordCost(c.card, 'overload') !== null;
+					return (
+						checkSpellCastLegality(state, bot.playerId, c, 'hand', 0, hasOverload ? 'normal' : undefined).ok ||
+						(hasOverload && checkSpellCastLegality(state, bot.playerId, c, 'hand', 0, 'overload').ok)
+					);
 				})
 				.sort((a, b) => a.card.cmc - b.card.cmc);
 		});
@@ -700,19 +729,67 @@ export function executeBotStep(
 			}
 			// Read-only decision (Phase 6d).
 			const planned = withStableLayerInputs(state, () => {
-				const targets = chooseBotTargetsForCard(state, bot, cardInst);
+				const hasOverload = keywordCost(cardInst.card, 'overload') !== null;
 				const spec = cardSpellTargetSpec(cardInst.card);
+				if (hasOverload && checkSpellCastLegality(state, bot.playerId, cardInst, 'hand', 0, 'overload').ok) {
+					const harmful = targetIsHarmed(cardSpellSteps(cardInst.card), 0);
+					let oppMatches = 0;
+					let ownMatches = 0;
+					if (spec?.kind === 'object') {
+						const fctx = { state, controllerId: bot.playerId, source: cardInst };
+						for (const p of state.players) {
+							if (p.lost) continue;
+							for (const perm of p.battlefield) {
+								if (perm.phasedOut) continue;
+								if (!matchesObjectFilter(perm, spec.filter, fctx)) continue;
+								if (p.playerId === bot.playerId) ownMatches += 1;
+								else oppMatches += 1;
+							}
+						}
+					}
+					const normalLegal = checkSpellCastLegality(
+						state,
+						bot.playerId,
+						cardInst,
+						'hand',
+						0,
+						'normal'
+					).ok;
+					const shouldOverload = harmful
+						? oppMatches > ownMatches && (oppMatches >= 2 || (!normalLegal && oppMatches >= 1))
+						: ownMatches >= 2 || (!normalLegal && ownMatches >= 1);
+					if (shouldOverload) {
+						return {
+							targets: [] as TargetRef[],
+							castMode: 'overload' as const,
+							costPayment: chooseBotSpellCostPayment(state, bot, cardInst, 0, 'overload')
+						};
+					}
+				}
+				if (
+					hasOverload &&
+					!checkSpellCastLegality(state, bot.playerId, cardInst, 'hand', 0, 'normal').ok
+				) {
+					return null;
+				}
+				const targets = chooseBotTargetsForCard(state, bot, cardInst);
 				const minTargets = spec ? spec.min : 0;
 				if (minTargets > 0 && targets.length < minTargets) return null;
-				return { targets, costPayment: chooseBotSpellCostPayment(state, bot, cardInst, 0) };
+				const castMode = hasOverload ? ('normal' as const) : undefined;
+				return {
+					targets,
+					castMode,
+					costPayment: chooseBotSpellCostPayment(state, bot, cardInst, 0, castMode)
+				};
 			});
 			if (!planned) continue;
-			const { targets, costPayment } = planned;
+			const { targets, castMode, costPayment } = planned;
 			const costBefore = countBotCostChoicePrompts(state, bot.playerId);
 			const res = applyGameAction(state, bot.playerId, {
 				type: 'cast_spell',
 				instanceId: cardInst.instanceId,
 				targets,
+				...(castMode ? { castMode } : {}),
 				...(costPayment ? { costPayment } : {})
 			});
 			if (res.ok) {

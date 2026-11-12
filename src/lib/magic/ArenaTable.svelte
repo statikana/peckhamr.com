@@ -207,14 +207,23 @@
 		selectedTargets: TargetRef[];
 		fromZone?: 'hand' | 'command' | 'exile';
 		xValue: number;
+		castMode?: 'normal' | 'overload';
 	} | null>(null);
 
 	// Drag-and-drop state for hand and command zone cards
 	let draggingCard = $state.raw<{ inst: CardInstance; fromZone: 'hand' | 'command' | 'exile' } | null>(null);
 	let dragOverZone = $state<'front_row' | 'lands_area' | 'stack' | null>(null);
 
-	let xCostModalCard = $state.raw<{ inst: CardInstance; fromZone: 'hand' | 'command' | 'exile' } | null>(null);
+	let xCostModalCard = $state.raw<{
+		inst: CardInstance;
+		fromZone: 'hand' | 'command' | 'exile';
+		castMode?: 'normal' | 'overload';
+	} | null>(null);
 	let xCostValue = $state(1);
+	let overloadModalCard = $state.raw<{
+		inst: CardInstance;
+		fromZone: 'hand' | 'command' | 'exile';
+	} | null>(null);
 
 	// Activated abilities menu on a permanent (raw: see inspectedCard above)
 	let selectedPermanentForAbility = $state.raw<CardInstance | null>(null);
@@ -773,6 +782,7 @@
 					draggingCard ||
 					selectedPermanentForAbility ||
 					xCostModalCard ||
+					overloadModalCard ||
 					zoneModal
 				) {
 					e.preventDefault();
@@ -780,6 +790,7 @@
 					cancelTargeting();
 					selectedPermanentForAbility = null;
 					xCostModalCard = null;
+					overloadModalCard = null;
 					zoneModal = null;
 					zoneSearchQuery = '';
 					return;
@@ -938,16 +949,23 @@
 		if (inst.card.typeLine.includes('Land') && !inst.card.typeLine.includes('Creature')) {
 			return checkLandPlayLegality(gameState, me.playerId, inst, fromZone).ok;
 		}
-		if (
-			spellChoosesX(inst.card) ||
-			keywordCost(inst.card, 'overload') !== null
+		if (keywordCost(inst.card, 'overload') !== null) {
+			const normalOk =
+				checkSpellCastLegality(gameState, me.playerId, inst, fromZone, 0, 'normal').ok ||
+				(spellChoosesX(inst.card, 'normal') &&
+					checkSpellCastLegality(gameState, me.playerId, inst, fromZone, 1, 'normal').ok);
+			const overloadOk =
+				checkSpellCastLegality(gameState, me.playerId, inst, fromZone, 0, 'overload').ok ||
+				(spellChoosesX(inst.card, 'overload') &&
+					checkSpellCastLegality(gameState, me.playerId, inst, fromZone, 1, 'overload').ok);
+			if (normalOk || overloadOk) {
+				return true;
+			}
+		} else if (
+			checkSpellCastLegality(gameState, me.playerId, inst, fromZone, 0).ok ||
+			(spellChoosesX(inst.card) &&
+				checkSpellCastLegality(gameState, me.playerId, inst, fromZone, 1).ok)
 		) {
-			return (
-				checkSpellCastLegality(gameState, me.playerId, inst, fromZone, 0).ok ||
-				checkSpellCastLegality(gameState, me.playerId, inst, fromZone, 1).ok
-			);
-		}
-		if (checkSpellCastLegality(gameState, me.playerId, inst, fromZone, 0).ok) {
 			return true;
 		}
 		if (fromZone === 'hand' && checkSuspendLegality(gameState, me.playerId, inst).ok) {
@@ -1166,6 +1184,7 @@
 				instanceId: pending.instanceId,
 				fromZone: pending.fromZone,
 				xValue: pending.xValue,
+				...(pending.castMode ? { castMode: pending.castMode } : {}),
 				targets: pending.selectedTargets
 			});
 		} else if (pending.mode === 'ability' && pending.abilityId) {
@@ -1276,6 +1295,11 @@
 	async function handleDropOnTarget(e: DragEvent, tRef: TargetRef) {
 		if (!draggingCard || !me) return;
 		const { inst, fromZone } = draggingCard;
+		const hasOverload = keywordCost(inst.card, 'overload') !== null;
+		const normalCastMode = hasOverload ? ('normal' as const) : undefined;
+		if (!checkSpellCastLegality(gameState, me.playerId, inst, fromZone, 0, normalCastMode).ok) {
+			return;
+		}
 		const targetInfo = getSpellTargetRequirement(inst.card);
 		if (!targetInfo.requiresTarget) return;
 
@@ -1300,12 +1324,26 @@
 				instanceId: inst.instanceId,
 				fromZone,
 				xValue: 0,
+				...(normalCastMode ? { castMode: normalCastMode } : {}),
 				targets: [tRef]
 			});
 		} else {
-			await initiateCastSpell(inst, fromZone, 0);
+			await initiateCastSpell(inst, fromZone, 0, normalCastMode);
 			await addOrSubmitTarget(tRef);
 		}
+	}
+
+	async function proceedCastWithMode(
+		inst: CardInstance,
+		fromZone: 'hand' | 'command' | 'exile',
+		castMode?: 'normal' | 'overload'
+	) {
+		if (spellChoosesX(inst.card, castMode) && !xCostModalCard) {
+			xCostModalCard = { inst, fromZone, castMode };
+			xCostValue = 2;
+			return;
+		}
+		await initiateCastSpell(inst, fromZone, 0, castMode);
 	}
 
 	async function handleCardClickInHandOrCommand(
@@ -1320,22 +1358,44 @@
 			return;
 		}
 
+		if (keywordCost(inst.card, 'overload') !== null) {
+			const normalLegal =
+				checkSpellCastLegality(gameState, me!.playerId, inst, fromZone, 0, 'normal').ok ||
+				(spellChoosesX(inst.card, 'normal') &&
+					checkSpellCastLegality(gameState, me!.playerId, inst, fromZone, 1, 'normal').ok);
+			const overloadLegal =
+				checkSpellCastLegality(gameState, me!.playerId, inst, fromZone, 0, 'overload').ok ||
+				(spellChoosesX(inst.card, 'overload') &&
+					checkSpellCastLegality(gameState, me!.playerId, inst, fromZone, 1, 'overload').ok);
+
+			if (!normalLegal && !overloadLegal) {
+				if (fromZone === 'hand' && checkSuspendLegality(gameState, me!.playerId, inst).ok) {
+					await onGameAction({ type: 'suspend_card', instanceId: inst.instanceId });
+				}
+				return;
+			}
+			if (normalLegal && overloadLegal) {
+				overloadModalCard = { inst, fromZone };
+				return;
+			}
+			await proceedCastWithMode(inst, fromZone, overloadLegal ? 'overload' : 'normal');
+			return;
+		}
+
 		if (
 			fromZone === 'hand' &&
 			!checkSpellCastLegality(gameState, me!.playerId, inst, 'hand', 0).ok &&
+			!(
+				spellChoosesX(inst.card) &&
+				checkSpellCastLegality(gameState, me!.playerId, inst, 'hand', 1).ok
+			) &&
 			checkSuspendLegality(gameState, me!.playerId, inst).ok
 		) {
 			await onGameAction({ type: 'suspend_card', instanceId: inst.instanceId });
 			return;
 		}
 
-		if (spellChoosesX(inst.card) && !xCostModalCard) {
-			xCostModalCard = { inst, fromZone };
-			xCostValue = 2;
-			return;
-		}
-
-		await initiateCastSpell(inst, fromZone, 0);
+		await proceedCastWithMode(inst, fromZone);
 	}
 
 	function openGraveyardTargetingModalIfNeeded(targetInfo: TargetRequirementInfo) {
@@ -1365,12 +1425,12 @@
 	async function initiateCastSpell(
 		inst: CardInstance,
 		fromZone: 'hand' | 'command' | 'exile',
-		xVal: number
+		xVal: number,
+		castMode?: 'normal' | 'overload'
 	) {
 		const targetInfo = getSpellTargetRequirement(inst.card);
-		const isOverloadRift =
-			xVal >= 1 && keywordCost(inst.card, 'overload') !== null;
-		if (targetInfo.requiresTarget && !isOverloadRift) {
+		const isOverload = castMode === 'overload';
+		if (targetInfo.requiresTarget && !isOverload) {
 			pendingTargetAction = {
 				mode: 'spell',
 				instanceId: inst.instanceId,
@@ -1379,7 +1439,8 @@
 				targetInfo,
 				selectedTargets: [],
 				fromZone,
-				xValue: xVal
+				xValue: xVal,
+				...(castMode ? { castMode } : {})
 			};
 			openGraveyardTargetingModalIfNeeded(targetInfo);
 			return;
@@ -1389,7 +1450,9 @@
 			type: 'cast_spell',
 			instanceId: inst.instanceId,
 			fromZone,
-			xValue: xVal
+			xValue: xVal,
+			...(castMode ? { castMode } : {}),
+			...(isOverload ? { targets: [] } : {})
 		});
 	}
 
@@ -3138,7 +3201,7 @@
 									{#each inspectUnsupported as u, i (i)}
 										<div class="zoom-unsupported-row">
 											<span class="zoom-unsupported-kind">{unsupportedKindLabel(u.kind)}:</span>
-											<ManaText text={displayAbilityText(u.text, u.face) || '(whole card)'} size={13} />
+											<ManaText text={displayAbilityText(u.text, u.face, inspectedCard) || '(whole card)'} size={13} />
 											{#if canResolveInspectedManually && inspectedInstance && u.kind !== 'mana' && u.kind !== 'multiface'}
 												<button
 													type="button"
@@ -3228,7 +3291,9 @@
 								<img src={item.card.artCropUrl} alt={item.title} />
 								<div class="stk-info">
 									<span class="stk-title">#{gameState.stack.length - idx}: {item.title}</span>
-									{#if item.targets.length > 0}
+									{#if item.castMode === 'overload'}
+										<span class="stk-target">Overloaded (each matching object)</span>
+									{:else if item.targets.length > 0}
 										<span class="stk-target">Target -> {item.targets.map((t) => t.label).join(', ')}</span>
 									{/if}
 								</div>
@@ -3378,6 +3443,47 @@
 		</div>
 	{/if}
 
+	<!-- Overload Cast Mode Modal -->
+	{#if overloadModalCard}
+		{@const ovCost = keywordCost(overloadModalCard.inst.card, 'overload') ?? ''}
+		{@const baseCost = overloadModalCard.inst.card.manaCost || '{0}'}
+		<div class="modal-backdrop">
+			<div class="arena-modal">
+				<h3>Choose Cast Mode — {overloadModalCard.inst.card.name}</h3>
+				<div class="modal-desc">
+					<ManaText text={overloadModalCard.inst.card.oracleText} size={15} />
+				</div>
+				<div class="modal-actions">
+					<button
+						type="button"
+						class="arena-main-btn can-act"
+						onclick={async () => {
+							const item = overloadModalCard!;
+							overloadModalCard = null;
+							await proceedCastWithMode(item.inst, item.fromZone, 'normal');
+						}}
+					>
+						Cast Normally (<ManaText text={baseCost} size={14} />)
+					</button>
+					<button
+						type="button"
+						class="arena-main-btn can-act"
+						onclick={async () => {
+							const item = overloadModalCard!;
+							overloadModalCard = null;
+							await proceedCastWithMode(item.inst, item.fromZone, 'overload');
+						}}
+					>
+						Overload (<ManaText text={ovCost} size={14} />)
+					</button>
+					<button type="button" class="hud-btn" onclick={() => (overloadModalCard = null)}>
+						Cancel
+					</button>
+				</div>
+			</div>
+		</div>
+	{/if}
+
 	<!-- X-Cost Selector Modal -->
 	{#if xCostModalCard}
 		<div class="modal-backdrop">
@@ -3393,7 +3499,7 @@
 						onclick={async () => {
 							const item = xCostModalCard!;
 							xCostModalCard = null;
-							await initiateCastSpell(item.inst, item.fromZone, xCostValue);
+							await initiateCastSpell(item.inst, item.fromZone, xCostValue, item.castMode);
 						}}
 					>
 						Cast with X = {xCostValue}

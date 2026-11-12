@@ -53,7 +53,7 @@ const BASIC_LAND_MANA: Record<string, ManaColor> = {
  * Keywords the runtime implements. Anything else that parses as a keyword compiles to `unsupported`
  * with reason `keyword_not_implemented`. Partner is enforced at deck construction.
  */
-const IMPLEMENTED_KEYWORDS = new Set([
+export const IMPLEMENTED_KEYWORDS = new Set([
 	'changeling',
 	'deathtouch',
 	'defender',
@@ -82,7 +82,8 @@ const IMPLEMENTED_KEYWORDS = new Set([
 	'suspend',
 	'trample',
 	'vigilance',
-	'ward'
+	'ward',
+	'wither'
 ]);
 
 /** Keyword abilities (CR 702) recognised on a keyword line, whether or not they're implemented. */
@@ -108,7 +109,7 @@ const KNOWN_KEYWORDS = [
 	'soulshift', 'space sculptor', 'spectacle', 'splice', 'split second', 'squad', 'storm',
 	'sunburst', 'surge', 'totem armor', 'training', 'transfigure', 'transmute', 'tribute',
 	'umbra armor', 'undaunted', 'undying', 'unearth', 'unleash', 'vanishing', 'visit', 'ward',
-	'wither', 'plainswalker', 'islandwalk', 'swampwalk', 'mountainwalk', 'forestwalk',
+	'plainswalk', 'islandwalk', 'swampwalk', 'mountainwalk', 'forestwalk',
 	'basic landcycling', 'landcycling', 'typecycling', 'toxic', 'station', 'exhaust', 'harmonize',
 	'mobilize', 'web-slinging', 'sneak', 'firebending', 'waterbend', 'job select', 'warp'
 ].sort((a, b) => b.length - a.length);
@@ -218,7 +219,7 @@ function parseKeyword(part: string): KeywordDef | null {
 function keywordLine(line: NormalizedLine): AbilityDef[] | null {
 	if (line.abilityWord || (/\.$/.test(line.body) && !/^ward\s*[—-]/i.test(line.body))) return null;
 	// "Enchant creature, land, or planeswalker" and "Protection from white, from blue" are one keyword.
-	const parts = /^(?:enchant|protection from|hexproof from)\b/i.test(line.body) ? [line.body] : line.body.split(/,\s*/);
+	const parts = /^(?:enchant|protection from|hexproof from|partner with)\b/i.test(line.body) ? [line.body] : line.body.split(/,\s*/);
 	const keywords = parts.map(parseKeyword);
 	if (keywords.some((k) => !k)) return null;
 
@@ -292,6 +293,20 @@ function keywordLine(line: NormalizedLine): AbilityDef[] | null {
 			}
 		}
 		out.push({ kind: 'keyword', keyword, span, ...(keyword.name === 'equip' ? { id: `equip_${line.rawIndex}` } : {}) });
+		// CR 702.124j: "Partner with [name]" is two abilities. The pairing half is the keyword above
+		// (deck construction); the other is "When this permanent enters, target player may search their
+		// library for a card named [name] ...", which the interpreter can't run (another player chooses).
+		// It triggers and is resolved manually, like an unsupported ward cost.
+		if (keyword.name === 'partner' && /^with\b/i.test(keyword.param ?? '')) {
+			out.push({
+				kind: 'unsupported',
+				reason: 'unparsed',
+				trigger: { event: 'zoneChange', filter: { object: 'self', to: 'battlefield' } },
+				text: part,
+				span,
+				unparsed: [span]
+			});
+		}
 	});
 	return out;
 }

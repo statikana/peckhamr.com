@@ -1,3 +1,4 @@
+import { compileCard } from './compiler/index.ts';
 import { STAPLE_CARDS } from './precons.ts';
 import { splitSubtypes } from './runtime/layers.ts';
 import { isScryfallSyntaxQuery, matchesScryfallQuery } from './search.ts';
@@ -425,16 +426,36 @@ function isTimeLordDoctor(card: ScryfallCard): boolean {
 	const dashIdx = card.typeLine.indexOf('—');
 	if (dashIdx === -1) return false;
 	const subs = splitSubtypes(card.typeLine.slice(dashIdx + 1).trim()).map((s) => s.toLowerCase());
-	return subs.length === 2 && subs.includes('time lord') && subs.includes('doctor');
+	if (subs.length !== 2 || !subs.includes('time lord') || !subs.includes('doctor')) return false;
+	// CR 702.124m: "if the other is the Doctor" means Time Lord Doctor with no other creature types (including Changeling).
+	const hasChangeling = (compileCard(card).faces[0]?.abilities ?? []).some(
+		(ab) => ab.kind === 'keyword' && ab.keyword.name === 'changeling'
+	);
+	return !hasChangeling;
 }
 
 function hasGenericPartner(card: ScryfallCard): boolean {
 	if (partnerWithTarget(card) !== null) return false;
 	if (hasFriendsForever(card) || hasDoctorsCompanion(card)) return false;
-	return (
-		card.keywords.some((k) => k.toLowerCase() === 'partner') ||
-		/\bpartner\b/i.test(card.oracleText)
-	);
+	const abilities = compileCard(card).faces[0]?.abilities ?? [];
+	if (abilities.some((ab) => ab.kind === 'keyword' && ab.keyword.name === 'partner' && !ab.keyword.param)) {
+		return true;
+	}
+	if (abilities.some((ab) => ab.kind === 'keyword' && ab.keyword.name === 'partner' && Boolean(ab.keyword.param))) {
+		return false;
+	}
+	return card.keywords.some((k) => k.toLowerCase() === 'partner') && !/\bpartner\s*[—-]/i.test(card.oracleText);
+}
+
+/** "Partner—Survivors" and the other partner—[text] abilities (CR 702.124i): the text, lower-cased. */
+function partnerTextVariant(card: ScryfallCard): string | null {
+	const abilities = compileCard(card).faces[0]?.abilities ?? [];
+	for (const ab of abilities) {
+		if (ab.kind === 'keyword' && ab.keyword.name === 'partner' && ab.keyword.param && !/^with\b/i.test(ab.keyword.param)) {
+			return ab.keyword.param.trim().toLowerCase();
+		}
+	}
+	return null;
 }
 
 function hasChooseABackground(card: ScryfallCard): boolean {
@@ -450,11 +471,11 @@ function isLegendaryBackground(card: ScryfallCard): boolean {
 }
 
 function areValidCommanderPartners(c1: ScryfallCard, c2: ScryfallCard): boolean {
-	// CR 702.124a: Generic Partner + Generic Partner
+	// CR 702.124h: Partner + Partner
 	if (c1.canBeCommander && c2.canBeCommander && hasGenericPartner(c1) && hasGenericPartner(c2)) {
 		return true;
 	}
-	// CR 702.124f: Partner with [Name] + [Name]
+	// CR 702.124j: Partner with [name] + [name]
 	const pw1 = partnerWithTarget(c1);
 	const pw2 = partnerWithTarget(c2);
 	if (
@@ -467,8 +488,14 @@ function areValidCommanderPartners(c1: ScryfallCard, c2: ScryfallCard): boolean 
 	) {
 		return true;
 	}
-	// CR 702.124j: Friends forever + Friends forever
+	// CR 702.124i: Friends forever + Friends forever
 	if (c1.canBeCommander && c2.canBeCommander && hasFriendsForever(c1) && hasFriendsForever(c2)) {
+		return true;
+	}
+	// CR 702.124i: the same partner—[text] ability on both ("Partner—Survivors"). Different partner
+	// abilities can't be combined (CR 702.124f), so the texts must match.
+	const pt1 = partnerTextVariant(c1);
+	if (c1.canBeCommander && c2.canBeCommander && pt1 !== null && pt1 === partnerTextVariant(c2)) {
 		return true;
 	}
 	// CR 702.124k: Choose a Background + Legendary Background enchantment
@@ -532,7 +559,12 @@ export function validateCommanderDeck(
 	const nameCounts = new Map<string, number>();
 
 	for (const cmd of commanders) {
-		nameCounts.set(cmd.name.toLowerCase(), (nameCounts.get(cmd.name.toLowerCase()) || 0) + 1);
+		const cmdNameLow = cmd.name.toLowerCase();
+		const nextCount = (nameCounts.get(cmdNameLow) || 0) + 1;
+		nameCounts.set(cmdNameLow, nextCount);
+		if (nextCount > 1) {
+			errors.push(`Singleton violation: ${cmd.name} appears ${nextCount} times.`);
+		}
 	}
 
 	for (const entry of cards) {

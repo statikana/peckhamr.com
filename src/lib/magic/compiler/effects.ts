@@ -91,16 +91,24 @@ const GRANTABLE_KEYWORDS = [
 	'first strike',
 	'deathtouch',
 	'defender',
+	'fear',
+	'flash',
 	'flying',
 	'haste',
 	'hexproof',
+	'horsemanship',
 	'indestructible',
+	'infect',
+	'intimidate',
 	'lifelink',
 	'menace',
+	'prowess',
 	'reach',
+	'shadow',
 	'shroud',
 	'trample',
-	'vigilance'
+	'vigilance',
+	'wither'
 ];
 
 const COUNTER_WORDS: Record<string, CounterType> = {
@@ -628,9 +636,19 @@ function ptChange(text: string): { power: Amount; toughness: Amount } | null {
 	return { power: part(m[1], m[2]), toughness: part(m[3], m[4]) };
 }
 
+function isParameterizedGrantKeyword(k: string): boolean {
+	return (
+		/^protection from (?:[a-z]+|everything)$/.test(k) ||
+		/^hexproof from [a-z]+$/.test(k) ||
+		/^ward \{[^}]+\}$/.test(k)
+	);
+}
+
 function keywordList(text: string): string[] | null {
 	const parts = text.split(/,? and |, /).map((s) => s.trim().toLowerCase());
-	if (!parts.every((k) => GRANTABLE_KEYWORDS.includes(k))) return null;
+	if (!parts.every((k) => GRANTABLE_KEYWORDS.includes(k) || k === 'changeling' || isParameterizedGrantKeyword(k))) {
+		return null;
+	}
 	return parts.map((k) => k.charAt(0).toUpperCase() + k.slice(1));
 }
 

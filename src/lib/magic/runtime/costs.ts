@@ -118,11 +118,14 @@ export function keywordCost(card: ScryfallCard, name: string): string | null {
 }
 
 /**
- * Whether casting the card means choosing X (CR 601.2b): {X} in its mana cost, or X in an
- * additional cost such as Toxic Deluge's "pay X life".
+ * Whether casting the card means choosing X (CR 601.2b): {X} in the paid mana cost (printed mana
+ * cost normally, or the overload cost when cast with overload), or X in an additional cost such as
+ * Toxic Deluge's "pay X life".
  */
-export function spellChoosesX(card: ScryfallCard): boolean {
-	if (/\{X\}/i.test(card.manaCost)) return true;
+export function spellChoosesX(card: ScryfallCard, castMode?: 'normal' | 'overload'): boolean {
+	const costStr =
+		castMode === 'overload' ? (keywordCost(card, 'overload') ?? card.manaCost) : card.manaCost;
+	if (/\{X\}/i.test(costStr)) return true;
 	const mentionsX = (defs: CostDef[] | undefined) => JSON.stringify(defs ?? []).includes('"k":"x"');
 	return abilitiesOf(card).some(
 		(a) =>
@@ -179,7 +182,7 @@ function effectiveSpellManaCostInner(
 ): ManaCostRequirement {
 	const card = inst.copiableCard ?? inst.card;
 	const baseCostStr = isOverload ? (keywordCost(card, 'overload') ?? card.manaCost) : card.manaCost;
-	const effectiveX = isOverload ? 0 : xValue;
+	const effectiveX = isOverload && !spellChoosesX(card, 'overload') ? 0 : xValue;
 
 	let forceZeroCost = false;
 	let genericReduction = 0;

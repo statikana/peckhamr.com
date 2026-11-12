@@ -1,0 +1,1629 @@
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+
+import { executeBotStep, hasAnyLegalInstantResponse } from '../ai.ts';
+import { compileCard } from '../compiler/index.ts';
+import {
+	applyGameAction,
+	createCardInstance,
+	createInitialGameState,
+	evaluatePermanent,
+	getPlayerCommanderIdentity
+} from '../engine.ts';
+import { PRECON_DECKS, STAPLE_CARDS } from '../precons.ts';
+import { validateCommanderDeck } from '../scryfall.ts';
+import {
+	DEFAULT_LOBBY_RULES,
+	type CardInstance,
+	type DeckCardEntry,
+	type GameState,
+	type LobbySeat,
+	type MagicDeck,
+	type PlayerGameState,
+	type ScryfallCard,
+	type ZoneType
+} from '../types.ts';
+import { matchesObjectFilter, objectManaValue } from './objectFilter.ts';
+import { transferBattlefieldControl } from './zones.ts';
+
+function staple(name: string): ScryfallCard {
+	const c = STAPLE_CARDS[name.toLowerCase()];
+	assert.ok(c, `missing staple ${name}`);
+	return c;
+}
+
+function syntheticCard(overrides: Partial<ScryfallCard> & { name: string }): ScryfallCard {
+	return {
+		id: `syn_${overrides.name.toLowerCase().replace(/[^a-z0-9]+/g, '_')}`,
+		name: overrides.name,
+		manaCost: overrides.manaCost ?? '{1}',
+		cmc: overrides.cmc ?? 1,
+		typeLine: overrides.typeLine ?? 'Instant',
+		oracleText: overrides.oracleText ?? '',
+		colors: overrides.colors ?? [],
+		colorIdentity: overrides.colorIdentity ?? [],
+		keywords: overrides.keywords ?? [],
+		power: overrides.power,
+		toughness: overrides.toughness,
+		loyalty: overrides.loyalty,
+		imageUrl: '',
+		artCropUrl: '',
+		legalCommander: overrides.legalCommander ?? true,
+		canBeCommander: overrides.canBeCommander ?? false,
+		hasPartner: overrides.hasPartner ?? false,
+		hasChooseBackground: overrides.hasChooseBackground ?? false,
+		isBackground: overrides.isBackground ?? false
+	};
+}
+
+function makeGame(opts?: {
+	p1Bot?: boolean;
+	p2Bot?: boolean;
+	p1Commanders?: ScryfallCard[];
+	p2Commanders?: ScryfallCard[];
+}): {
+	state: GameState;
+	p1: PlayerGameState;
+	p2: PlayerGameState;
+} {
+	const seats: LobbySeat[] = [];
+	const decks = new Map<number, MagicDeck>();
+	for (let i = 0; i < 2; i++) {
+		const base = PRECON_DECKS[i % PRECON_DECKS.length];
+		const customCmds = i === 0 ? opts?.p1Commanders : opts?.p2Commanders;
+		const d: MagicDeck = customCmds
+			? {
+					...base,
+					id: `custom_deck_${i}`,
+					commanders: customCmds,
+					colorIdentity: [...new Set(customCmds.flatMap((c) => c.colorIdentity))]
+				}
+			: base;
+		seats.push({
+			seatIndex: i,
+			userId: `p${i + 1}`,
+			username: `P${i + 1}`,
+			avatarUrl: '',
+			isBot: i === 0 ? Boolean(opts?.p1Bot) : Boolean(opts?.p2Bot),
+			deckId: d.id,
+			deckName: d.name,
+			commanderNames: d.commanders.map((c) => c.name),
+			commanderArtUrl: '',
+			colorIdentity: d.colorIdentity,
+			isDeckLegal: true,
+			ready: true,
+			lastHeartbeat: Date.now()
+		});
+		decks.set(i, d);
+	}
+	const state = createInitialGameState('KEYWORDS_CASTING_TEST', seats, decks, {
+		...DEFAULT_LOBBY_RULES
+	});
+	for (let i = 0; i < 2; i++) {
+		applyGameAction(state, `p${i + 1}`, { type: 'mulligan_keep' });
+	}
+	for (let i = 0; i < 2; i++) {
+		state.players[i].hand = [];
+		state.players[i].battlefield = [];
+		state.players[i].graveyard = [];
+		state.players[i].exile = [];
+		if (!(i === 0 ? opts?.p1Commanders : opts?.p2Commanders)) {
+			state.players[i].command = [];
+		}
+	}
+	state.phase = 'main1';
+	state.activePlayerIndex = 0;
+	state.priorityPlayerIndex = 0;
+	return { state, p1: state.players[0], p2: state.players[1] };
+}
+
+function putInZone(
+	state: GameState,
+	player: PlayerGameState,
+	card: ScryfallCard,
+	zone: Exclude<ZoneType, 'stack'>,
+	overrides?: Partial<CardInstance>
+): CardInstance {
+	state.nextTimestamp = (state.nextTimestamp || 100) + 1;
+	const inst = createCardInstance(card, player.playerId, zone, false, false, state.nextTimestamp);
+	if (zone === 'battlefield') inst.summoningSick = false;
+	if (overrides) Object.assign(inst, overrides);
+	player[zone].push(inst);
+	return inst;
+}
+
+function resolveAllStack(state: GameState, maxSteps = 50): void {
+	for (let i = 0; i < maxSteps && state.stack.length > 0; i++) {
+		const prompt = state.pendingPrompts[0];
+		if (prompt?.purpose === 'trigger_order' && prompt.choice?.kind === 'orderObjects') {
+			applyGameAction(state, prompt.playerId, {
+				type: 'choice',
+				promptId: prompt.id,
+				answer: { kind: 'orderObjects', topIds: prompt.choice.objectIds, bottomIds: [], shuffle: false }
+			});
+			continue;
+		}
+		if (prompt?.purpose === 'trigger_may') {
+			applyGameAction(state, prompt.playerId, {
+				type: 'choice',
+				promptId: prompt.id,
+				answer: { kind: 'yesNo', yes: true }
+			});
+			continue;
+		}
+		if (prompt) return;
+		const prio = state.players[state.priorityPlayerIndex];
+		const res = applyGameAction(state, prio.playerId, { type: 'pass_priority' });
+		if (!res.ok) return;
+	}
+}
+
+// ============================================================================
+// 1. OVERLOAD (CR 702.96)
+// ============================================================================
+
+describe('Keyword: Overload (CR 702.96)', () => {
+	it('Overload compile (CR 702.96a): compiles Cyclonic Rift and {X} overload costs into keyword abilities', () => {
+		const riftIr = compileCard(staple('Cyclonic Rift')).faces[0];
+		const riftKw = riftIr.abilities.find((a) => a.kind === 'keyword' && a.keyword.name === 'overload');
+		assert.ok(riftKw && riftKw.kind === 'keyword');
+		assert.equal(riftKw.keyword.cost, '{6}{U}');
+		assert.equal(
+			riftIr.abilities.some((a) => a.kind === 'unsupported'),
+			false
+		);
+
+		const xOverload = syntheticCard({
+			name: 'Street Spasm Variant',
+			manaCost: '{X}{R}',
+			cmc: 1,
+			typeLine: 'Instant',
+			oracleText:
+				'Street Spasm Variant deals X damage to target creature without flying you don\'t control.\nOverload {X}{X}{R}{R}',
+			colors: ['R'],
+			colorIdentity: ['R'],
+			keywords: ['Overload']
+		});
+		const xIr = compileCard(xOverload).faces[0];
+		const xKw = xIr.abilities.find((a) => a.kind === 'keyword' && a.keyword.name === 'overload');
+		assert.ok(xKw && xKw.kind === 'keyword');
+		assert.equal(xKw.keyword.cost, '{X}{X}{R}{R}');
+	});
+
+	it('Overload normal vs overload cast (CR 702.96a–b): enforces printed vs overload cost, target requirement, "you don\'t control", and rejects legacy xValue fallback', () => {
+		const { state, p1, p2 } = makeGame();
+		const ownRing = putInZone(state, p1, staple('Sol Ring'), 'battlefield');
+		const oppRing = putInZone(state, p2, staple('Sol Ring'), 'battlefield');
+		const oppSignet = putInZone(state, p2, staple('Arcane Signet'), 'battlefield');
+		const oppIsland = putInZone(state, p2, staple('Island'), 'battlefield');
+
+		// 1. Normal cast requires a legal target, pays {1}{U}, and bounces only that target.
+		const rift1 = putInZone(state, p1, staple('Cyclonic Rift'), 'hand');
+		p1.manaPool.U = 1;
+		p1.manaPool.C = 1;
+
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: rift1.instanceId,
+				castMode: 'normal',
+				targets: []
+			}).ok,
+			false,
+			'normal cast without target must be rejected'
+		);
+
+		// Legacy xValue >= 1 without castMode: "overload" must NOT overload (must still require target and pay {1}{U}).
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: rift1.instanceId,
+				xValue: 1,
+				targets: []
+			}).ok,
+			false,
+			'xValue >= 1 fallback must be gone'
+		);
+
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: rift1.instanceId,
+				castMode: 'normal',
+				targets: [{ kind: 'permanent', id: oppRing.instanceId, label: 'Sol Ring' }]
+			}).ok,
+			true
+		);
+		assert.equal(p1.manaPool.U, 0);
+		assert.equal(p1.manaPool.C, 0);
+		resolveAllStack(state);
+
+		assert.equal(p2.battlefield.some((c) => c.instanceId === oppRing.instanceId), false);
+		assert.equal(p2.battlefield.some((c) => c.instanceId === oppSignet.instanceId), true);
+
+		// 2. Overload cast rejects non-empty targets, requires {6}{U}, bounces every opponent nonland permanent, and leaves own nonlands & opponent lands untouched.
+		const oppRingAgain = putInZone(state, p2, staple('Sol Ring'), 'battlefield');
+		const rift2 = putInZone(state, p1, staple('Cyclonic Rift'), 'hand');
+		p1.manaPool.U = 1;
+		p1.manaPool.C = 6;
+
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: rift2.instanceId,
+				castMode: 'overload',
+				targets: [{ kind: 'permanent', id: oppRingAgain.instanceId, label: 'Sol Ring' }]
+			}).ok,
+			false,
+			'CR 702.96b: overloaded spell has no target instruction and must reject chosen targets'
+		);
+
+		const nonOverloadSpell = putInZone(state, p1, staple('Counterspell'), 'hand');
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: nonOverloadSpell.instanceId,
+				castMode: 'overload',
+				targets: []
+			}).ok,
+			false,
+			'non-overload card cannot be cast with castMode: overload'
+		);
+
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: rift2.instanceId,
+				castMode: 'overload',
+				targets: []
+			}).ok,
+			true
+		);
+		assert.equal(p1.manaPool.U, 0);
+		assert.equal(p1.manaPool.C, 0);
+		resolveAllStack(state);
+
+		assert.equal(p2.battlefield.some((c) => c.instanceId === oppRingAgain.instanceId), false);
+		assert.equal(p2.battlefield.some((c) => c.instanceId === oppSignet.instanceId), false);
+		assert.equal(
+			p2.battlefield.some((c) => c.instanceId === oppIsland.instanceId),
+			true,
+			'opponent land must remain'
+		);
+		assert.equal(
+			p1.battlefield.some((c) => c.instanceId === ownRing.instanceId),
+			true,
+			'controller own Sol Ring ("you don\'t control") must remain'
+		);
+	});
+
+	it('Overload zero targets, Hexproof, Shroud, Protection, and Ward (CR 702.96b, 702.11b, 702.16b, 702.18a, 702.21a): casts with 0 legal targets, affects untargetable permanents, and does not trigger Ward', () => {
+		const { state, p1, p2 } = makeGame();
+
+		// Legal with 0 nonland permanents on the board at all:
+		const emptyBoardRift = putInZone(state, p1, staple('Cyclonic Rift'), 'hand');
+		p1.manaPool.U = 1;
+		p1.manaPool.C = 6;
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: emptyBoardRift.instanceId,
+				castMode: 'normal',
+				targets: []
+			}).ok,
+			false
+		);
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: emptyBoardRift.instanceId,
+				castMode: 'overload',
+				targets: []
+			}).ok,
+			true,
+			'Overload cast is legal with 0 legal targets'
+		);
+		resolveAllStack(state);
+
+		// Opponent controls Hexproof, Shroud, Protection from blue, and Ward {2} (Miirym, Sentinel Wyrm):
+		const hexCreature = putInZone(
+			state,
+			p2,
+			syntheticCard({
+				name: 'Gladecover Scout',
+				manaCost: '{G}',
+				cmc: 1,
+				typeLine: 'Creature — Elf Scout',
+				oracleText: 'Hexproof',
+				colors: ['G'],
+				colorIdentity: ['G'],
+				keywords: ['Hexproof'],
+				power: '1',
+				toughness: '1'
+			}),
+			'battlefield'
+		);
+		const shroudCreature = putInZone(
+			state,
+			p2,
+			syntheticCard({
+				name: 'Calcite Snapper',
+				manaCost: '{1}{U}{U}',
+				cmc: 3,
+				typeLine: 'Creature — Turtle',
+				oracleText: 'Shroud',
+				colors: ['U'],
+				colorIdentity: ['U'],
+				keywords: ['Shroud'],
+				power: '1',
+				toughness: '4'
+			}),
+			'battlefield'
+		);
+		const proBlueCreature = putInZone(
+			state,
+			p2,
+			syntheticCard({
+				name: 'Skylasher',
+				manaCost: '{1}{G}',
+				cmc: 2,
+				typeLine: 'Creature — Insect',
+				oracleText: 'Protection from blue',
+				colors: ['G'],
+				colorIdentity: ['G'],
+				keywords: ['Protection'],
+				power: '2',
+				toughness: '2'
+			}),
+			'battlefield'
+		);
+		const wardDragon = putInZone(state, p2, staple('Miirym, Sentinel Wyrm'), 'battlefield');
+
+		const rift = putInZone(state, p1, staple('Cyclonic Rift'), 'hand');
+		p1.manaPool.U = 1;
+		p1.manaPool.C = 6; // Exactly {6}{U} -> 0 mana left to pay Ward {2} if Ward mistakenly triggered!
+
+		// Normal cast cannot target Hexproof, Shroud, or Protection from blue:
+		for (const protectedPerm of [hexCreature, shroudCreature, proBlueCreature]) {
+			assert.equal(
+				applyGameAction(state, p1.playerId, {
+					type: 'cast_spell',
+					instanceId: rift.instanceId,
+					castMode: 'normal',
+					targets: [{ kind: 'permanent', id: protectedPerm.instanceId, label: protectedPerm.card.name }]
+				}).ok,
+				false
+			);
+		}
+
+		// Overload cast succeeds, triggers NO Ward trigger on the stack, and bounces all 4 creatures!
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: rift.instanceId,
+				castMode: 'overload',
+				targets: []
+			}).ok,
+			true
+		);
+		assert.equal(state.stack.length, 1, 'Ward {2} must NOT trigger on an overloaded spell');
+		assert.equal(state.stack[0].card.name, 'Cyclonic Rift');
+
+		resolveAllStack(state);
+		assert.equal(p2.battlefield.length, 0, 'Hexproof, Shroud, Protection-from-blue, and Ward creatures all bounced');
+		assert.equal(p2.hand.length, 4);
+	});
+
+	it('Overload cost modifiers, commander tax, and printed mana value (CR 702.96a, 118.9c–d, 202.3): applies reductions/taxes + commander tax on overload cost while keeping printed MV', () => {
+		const overloadCommander = syntheticCard({
+			name: 'Mizzix Surge',
+			manaCost: '{1}{U}',
+			cmc: 2,
+			typeLine: 'Legendary Instant',
+			oracleText: 'Return target nonland permanent you don\'t control to its owner\'s hand.\nOverload {4}{U}',
+			colors: ['U'],
+			colorIdentity: ['U'],
+			keywords: ['Overload'],
+			canBeCommander: true
+		});
+		const { state, p1, p2 } = makeGame({ p1Commanders: [overloadCommander] });
+		const cmdInst = p1.command[0];
+		assert.ok(cmdInst);
+		putInZone(state, p2, staple('Sol Ring'), 'battlefield');
+
+		// Prior cast count = 1 (+{2} commander tax), cost reducer (-{1}), cost increaser (+{1}) => net +{2} on {4}{U} = {6}{U}.
+		p1.commanderCastCounts[cmdInst.instanceId] = 1;
+		cmdInst.commanderCastCount = 1;
+
+		putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Goblin Electromancer',
+				manaCost: '{U}{R}',
+				cmc: 2,
+				typeLine: 'Creature — Goblin Wizard',
+				oracleText: 'Instant and sorcery spells you cast cost {1} less to cast.',
+				colors: ['U', 'R'],
+				colorIdentity: ['U', 'R'],
+				power: '2',
+				toughness: '2'
+			}),
+			'battlefield'
+		);
+		putInZone(
+			state,
+			p2,
+			syntheticCard({
+				name: 'Sphere of Resistance',
+				manaCost: '{2}',
+				cmc: 2,
+				typeLine: 'Artifact',
+				oracleText: 'Spells cost {1} more to cast.'
+			}),
+			'battlefield'
+		);
+
+		// With only {4}{U} (5 mana), commander tax +{2} makes it unaffordable:
+		p1.manaPool.U = 1;
+		p1.manaPool.C = 4;
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: cmdInst.instanceId,
+				fromZone: 'command',
+				castMode: 'overload',
+				targets: []
+			}).ok,
+			false
+		);
+
+		// With {6}{U} (7 mana), Overload + Commander Tax (+{2}) - {1} + {1} = {6}{U} succeeds!
+		p1.manaPool.C = 6;
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: cmdInst.instanceId,
+				fromZone: 'command',
+				castMode: 'overload',
+				targets: []
+			}).ok,
+			true
+		);
+		assert.equal(p1.manaPool.C, 0);
+		assert.equal(p1.manaPool.U, 0);
+
+		// CR 118.9c / 202.3: An overloaded spell's mana value on the stack is still its printed mana cost ({1}{U} -> 2), NOT 5 or 7!
+		const spellCardOnStack = createCardInstance(state.stack[0].card, p1.playerId, 'stack');
+		assert.equal(objectManaValue(state, spellCardOnStack), 2);
+	});
+
+	it('Overload timing restrictions (CR 702.96a, 601.3): sorcery overload obeys sorcery/Flash timing and combat-only cast restrictions', () => {
+		const { state, p1, p2 } = makeGame();
+		const sorceryOverload = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Vandalblast',
+				manaCost: '{R}',
+				cmc: 1,
+				typeLine: 'Sorcery',
+				oracleText: 'Destroy target artifact you don\'t control.\nOverload {4}{R}',
+				colors: ['R'],
+				colorIdentity: ['R'],
+				keywords: ['Overload']
+			}),
+			'hand'
+		);
+		const combatOnlyOverload = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Battle Flare',
+				manaCost: '{R}',
+				cmc: 1,
+				typeLine: 'Instant',
+				oracleText:
+					'Cast this spell only during combat.\nBattle Flare deals 2 damage to target creature you don\'t control.\nOverload {2}{R}',
+				colors: ['R'],
+				colorIdentity: ['R'],
+				keywords: ['Overload']
+			}),
+			'hand'
+		);
+		p1.manaPool.R = 10;
+		p1.manaPool.C = 20;
+
+		// Combat-only instant overload rejected in main1 even with Flash/Instant speed:
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: combatOnlyOverload.instanceId,
+				castMode: 'overload',
+				targets: []
+			}).ok,
+			false,
+			'CR 601.3: "Cast this spell only during combat" still applies when overloaded'
+		);
+
+		// Sorcery overload rejected on opponent's turn unless granted Flash:
+		state.activePlayerIndex = 1;
+		state.priorityPlayerIndex = 0;
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: sorceryOverload.instanceId,
+				castMode: 'overload',
+				targets: []
+			}).ok,
+			false
+		);
+
+		putInZone(state, p1, staple('Leyline of Anticipation'), 'battlefield');
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: sorceryOverload.instanceId,
+				castMode: 'overload',
+				targets: []
+			}).ok,
+			true,
+			'Granted Flash allows overloading sorcery on opponent turn'
+		);
+		resolveAllStack(state);
+
+		// Advance to combat (declare_attackers) -> combat-only overload is now legal!
+		state.phase = 'declare_attackers';
+		state.priorityPlayerIndex = 0;
+		putInZone(
+			state,
+			p2,
+			syntheticCard({
+				name: 'Goblin Piker',
+				manaCost: '{1}{R}',
+				cmc: 2,
+				typeLine: 'Creature — Goblin Warrior',
+				power: '2',
+				toughness: '1'
+			}),
+			'battlefield'
+		);
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: combatOnlyOverload.instanceId,
+				castMode: 'overload',
+				targets: []
+			}).ok,
+			true
+		);
+		resolveAllStack(state);
+		assert.equal(p2.battlefield.length, 0);
+	});
+
+	it('Overload damage & destroy effects + AI bot support (CR 702.96b): covers damage (Protection prevents) and destroy (Indestructible survives, Protection destroyed) plus bot overload choice', () => {
+		const { state, p1, p2 } = makeGame({ p1Bot: true });
+		const ownArtifact = putInZone(state, p1, staple('Sol Ring'), 'battlefield');
+		const oppNormalArt = putInZone(state, p2, staple('Arcane Signet'), 'battlefield');
+		const oppProRedArt = putInZone(
+			state,
+			p2,
+			syntheticCard({
+				name: 'Ruby Ward Idol',
+				manaCost: '{2}',
+				cmc: 2,
+				typeLine: 'Artifact Creature — Golem',
+				oracleText: 'Protection from red',
+				keywords: ['Protection'],
+				power: '2',
+				toughness: '2'
+			}),
+			'battlefield'
+		);
+		const oppIndestArt = putInZone(
+			state,
+			p2,
+			syntheticCard({
+				name: 'Darksteel Ingot',
+				manaCost: '{3}',
+				cmc: 3,
+				typeLine: 'Artifact',
+				oracleText: 'Indestructible',
+				keywords: ['Indestructible']
+			}),
+			'battlefield'
+		);
+
+		// 1. Overloaded Damage (Mizzium Mortars): deals 4 to each creature you don't control; Protection from red PREVENTS damage (CR 702.16e)!
+		const mortars = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Mizzium Mortars',
+				manaCost: '{1}{R}',
+				cmc: 2,
+				typeLine: 'Sorcery',
+				oracleText: 'Mizzium Mortars deals 4 damage to target creature you don\'t control.\nOverload {3}{R}{R}{R}',
+				colors: ['R'],
+				colorIdentity: ['R'],
+				keywords: ['Overload']
+			}),
+			'hand'
+		);
+		const oppBear = putInZone(
+			state,
+			p2,
+			syntheticCard({
+				name: 'Grizzly Bears',
+				manaCost: '{1}{G}',
+				cmc: 2,
+				typeLine: 'Creature — Bear',
+				colors: ['G'],
+				colorIdentity: ['G'],
+				power: '2',
+				toughness: '2'
+			}),
+			'battlefield'
+		);
+		p1.manaPool.R = 3;
+		p1.manaPool.C = 3;
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: mortars.instanceId,
+				castMode: 'overload',
+				targets: []
+			}).ok,
+			true
+		);
+		resolveAllStack(state);
+		assert.equal(p2.battlefield.some((c) => c.instanceId === oppBear.instanceId), false, 'Grizzly Bears killed by 4 damage');
+		assert.equal(
+			p2.battlefield.some((c) => c.instanceId === oppProRedArt.instanceId),
+			true,
+			'Protection from red prevented overloaded red damage (CR 702.16e)'
+		);
+
+		// 2. Overloaded Destroy (Vandalblast): destroys Pro-Red artifact (no target, no damage), spares Indestructible & own Sol Ring!
+		const vandalblast = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Vandalblast',
+				manaCost: '{R}',
+				cmc: 1,
+				typeLine: 'Sorcery',
+				oracleText: 'Destroy target artifact you don\'t control.\nOverload {4}{R}',
+				colors: ['R'],
+				colorIdentity: ['R'],
+				keywords: ['Overload']
+			}),
+			'hand'
+		);
+		p1.manaPool.R = 1;
+		p1.manaPool.C = 4;
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: vandalblast.instanceId,
+				castMode: 'overload',
+				targets: []
+			}).ok,
+			true
+		);
+		resolveAllStack(state);
+		assert.equal(p2.battlefield.some((c) => c.instanceId === oppNormalArt.instanceId), false);
+		assert.equal(
+			p2.battlefield.some((c) => c.instanceId === oppProRedArt.instanceId),
+			false,
+			'Protection from red does NOT stop untargeted overloaded destroy'
+		);
+		assert.equal(
+			p2.battlefield.some((c) => c.instanceId === oppIndestArt.instanceId),
+			true,
+			'Indestructible artifact survives overloaded destroy'
+		);
+		assert.equal(p1.battlefield.some((c) => c.instanceId === ownArtifact.instanceId), true);
+
+		// 3. Bot Overload decision + hasAnyLegalInstantResponse with 0 targets:
+		p2.battlefield = [];
+		const botRift = putInZone(state, p1, staple('Cyclonic Rift'), 'hand');
+		p1.manaPool.U = 1;
+		p1.manaPool.C = 6;
+		assert.equal(
+			hasAnyLegalInstantResponse(state, p1),
+			true,
+			'Player holding Cyclonic Rift + {6}{U} has legal overload response even with 0 targets'
+		);
+
+		putInZone(state, p2, staple('Sol Ring'), 'battlefield');
+		putInZone(state, p2, staple('Arcane Signet'), 'battlefield');
+		executeBotStep(state, p1, p1);
+		assert.equal(state.stack.length, 1);
+		assert.equal(state.stack[0].sourceInstanceId, botRift.instanceId);
+		assert.equal(state.stack[0].castMode, 'overload', 'Bot chose Overload against >= 2 opponent nonland permanents');
+	});
+});
+
+// ============================================================================
+// 2. FLASH (CR 702.8)
+// ============================================================================
+
+describe('Keyword: Flash (CR 702.8)', () => {
+	it('Flash compile, instant-speed casting, non-flash rejection, gain/loss, and Can\'t-Beats-Can restriction (CR 702.8a, 101.2)', () => {
+		const oppAgentIr = compileCard(staple('Opposition Agent')).faces[0];
+		assert.ok(oppAgentIr.abilities.some((a) => a.kind === 'keyword' && a.keyword.name === 'flash'));
+
+		const comboCard = syntheticCard({
+			name: 'Sky Hussar',
+			manaCost: '{1}{U}',
+			cmc: 2,
+			typeLine: 'Creature — Merfolk Rogue',
+			oracleText: 'Flash, flying',
+			colors: ['U'],
+			colorIdentity: ['U'],
+			keywords: ['Flash', 'Flying'],
+			power: '2',
+			toughness: '1'
+		});
+		const comboIr = compileCard(comboCard).faces[0];
+		assert.equal(
+			comboIr.abilities.filter((a) => a.kind === 'keyword').length,
+			2,
+			'comma-separated Flash, flying compiles to two keyword abilities'
+		);
+
+		const { state, p1, p2 } = makeGame();
+		const flashCreature = putInZone(state, p1, staple('Opposition Agent'), 'hand');
+		const nonFlashCreature = putInZone(state, p1, staple('Elvish Archdruid'), 'hand');
+		p1.manaPool = { W: 5, U: 5, B: 5, R: 5, G: 5, C: 10 };
+
+		// Opponent's turn during combat with a spell on the stack:
+		state.activePlayerIndex = 1;
+		state.phase = 'declare_attackers';
+		state.priorityPlayerIndex = 0;
+
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: nonFlashCreature.instanceId
+			}).ok,
+			false,
+			'Creature without Flash cannot be cast on opponent turn / combat'
+		);
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: flashCreature.instanceId
+			}).ok,
+			true,
+			'Creature with Flash CAN be cast on opponent turn during combat'
+		);
+
+		// Granting Flash via Vedalken Orrery lets non-Flash creature be cast in response to stack; losing abilities removes it!
+		const orrery = putInZone(state, p1, staple('Vedalken Orrery'), 'battlefield');
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: nonFlashCreature.instanceId
+			}).ok,
+			true,
+			'Vedalken Orrery grants Flash in response to non-empty stack'
+		);
+		resolveAllStack(state);
+
+		// Strip Orrery's abilities with Song of the Dryads -> another non-Flash sorcery is rejected again!
+		const song = putInZone(state, p2, staple('Song of the Dryads'), 'battlefield');
+		song.attachedToId = orrery.instanceId;
+		const cultivate = putInZone(state, p1, staple('Cultivate'), 'hand');
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: cultivate.instanceId
+			}).ok,
+			false,
+			'Orrery that lost abilities no longer grants Flash'
+		);
+
+		// CR 101.2: "Opponents can't cast spells during your turn" overrides innate Flash!
+		putInZone(
+			state,
+			p2,
+			syntheticCard({
+				name: 'Grand Abolisher',
+				manaCost: '{W}{W}',
+				cmc: 2,
+				typeLine: 'Creature — Human Cleric',
+				oracleText: 'During your turn, your opponents can\'t cast spells or activate abilities of artifacts, creatures, or enchantments.',
+				colors: ['W'],
+				colorIdentity: ['W'],
+				power: '2',
+				toughness: '2'
+			}),
+			'battlefield'
+		);
+		const dressDown = putInZone(state, p1, staple('Dress Down'), 'hand');
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: dressDown.instanceId
+			}).ok,
+			false,
+			'CR 101.2: restriction beats Flash permission'
+		);
+	});
+});
+
+// ============================================================================
+// 3. SUSPEND (CR 702.62)
+// ============================================================================
+
+describe('Keyword: Suspend (CR 702.62)', () => {
+	it('Suspend compile, timing/stax legality, upkeep counter tick-down, free cast, creature haste, and control-change haste loss (CR 702.62a, 118.6)', () => {
+		const visionIr = compileCard(staple('Ancestral Vision')).faces[0];
+		const suspKw = visionIr.abilities.find((a) => a.kind === 'keyword' && a.keyword.name === 'suspend');
+		assert.ok(suspKw && suspKw.kind === 'keyword');
+		assert.equal(suspKw.keyword.n, 4);
+		assert.equal(suspKw.keyword.cost, '{U}');
+
+		const { state, p1, p2 } = makeGame();
+		const vision = putInZone(state, p1, staple('Ancestral Vision'), 'hand');
+		const suspBeast = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Durkwood Baloth',
+				manaCost: '{4}{G}{G}',
+				cmc: 6,
+				typeLine: 'Creature — Beast',
+				oracleText: 'Suspend 1—{G}',
+				colors: ['G'],
+				colorIdentity: ['G'],
+				keywords: ['Suspend'],
+				power: '5',
+				toughness: '5'
+			}),
+			'hand'
+		);
+		for (let i = 0; i < 5; i++) {
+			putInZone(state, p1, staple('Island'), 'library');
+			putInZone(state, p2, staple('Island'), 'library');
+		}
+		p1.manaPool.U = 2;
+		p1.manaPool.G = 2;
+
+		// CR 118.6: Card with no mana cost (Ancestral Vision, manaCost: '') cannot be cast normally from hand:
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: vision.instanceId
+			}).ok,
+			false
+		);
+
+		// Sorcery-speed card cannot be suspended on opponent's turn unless it has Flash:
+		state.activePlayerIndex = 1;
+		state.priorityPlayerIndex = 0;
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'suspend_card',
+				instanceId: suspBeast.instanceId
+			}).ok,
+			false
+		);
+
+		// Back on P1's main1: Rule of Law after 1 spell cast this turn blocks suspend_card ("any time you could begin to cast"):
+		state.activePlayerIndex = 0;
+		state.phase = 'main1';
+		state.priorityPlayerIndex = 0;
+		const ruleOfLaw = putInZone(
+			state,
+			p2,
+			syntheticCard({
+				name: 'Rule of Law',
+				manaCost: '{2}{W}',
+				cmc: 3,
+				typeLine: 'Enchantment',
+				oracleText: 'Each player can\'t cast more than one spell each turn.',
+				colors: ['W'],
+				colorIdentity: ['W']
+			}),
+			'battlefield'
+		);
+		p1.spellsCastThisTurn = 1;
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'suspend_card',
+				instanceId: suspBeast.instanceId
+			}).ok,
+			false,
+			'CR 702.62a: cannot suspend if Rule of Law prevents beginning to cast a spell'
+		);
+
+		// Clear Rule of Law and suspend Durkwood Baloth (Suspend 1—{G}):
+		p2.battlefield = p2.battlefield.filter((c) => c.instanceId !== ruleOfLaw.instanceId);
+		p1.spellsCastThisTurn = 0;
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'suspend_card',
+				instanceId: suspBeast.instanceId
+			}).ok,
+			true
+		);
+		assert.equal(p1.manaPool.G, 1);
+		assert.equal(p1.exile.some((c) => c.instanceId === suspBeast.instanceId), true);
+		assert.equal(suspBeast.counters.time, 1);
+
+		// Advance through P1's turn -> P2's upkeep (must NOT remove P1's time counter!) -> P1's next upkeep!
+		for (let guard = 0; guard < 20; guard++) {
+			const active = state.players[state.activePlayerIndex];
+			if (active.playerId === p2.playerId && state.phase === 'main1') break;
+			const prio = state.players[state.priorityPlayerIndex];
+			applyGameAction(state, prio.playerId, { type: 'pass_priority' });
+		}
+		assert.equal(suspBeast.counters.time, 1, 'Opponent upkeep must NOT remove time counter');
+
+		for (let guard = 0; guard < 20; guard++) {
+			const active = state.players[state.activePlayerIndex];
+			if (active.playerId === p1.playerId && state.phase === 'main1') break;
+			const prio = state.players[state.priorityPlayerIndex];
+			applyGameAction(state, prio.playerId, { type: 'pass_priority' });
+		}
+
+		// Durkwood Baloth entered on P1's upkeep without paying mana and has Haste via Suspend!
+		const balothOnBoard = p1.battlefield.find((c) => c.instanceId === suspBeast.instanceId);
+		assert.ok(balothOnBoard, 'Suspended creature entered battlefield when last time counter was removed');
+		assert.equal(evaluatePermanent(state, balothOnBoard).activeKeywords.includes('Haste'), true);
+
+		// Verify Baloth can legally attack this turn!
+		applyGameAction(state, p1.playerId, { type: 'pass_priority' });
+		applyGameAction(state, p2.playerId, { type: 'pass_priority' }); // begin_combat
+		applyGameAction(state, p1.playerId, { type: 'pass_priority' });
+		applyGameAction(state, p2.playerId, { type: 'pass_priority' }); // declare_attackers
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'declare_attackers',
+				assignments: [{ attackerInstanceId: balothOnBoard.instanceId, defenderPlayerId: p2.playerId }]
+			}).ok,
+			true,
+			'Creature cast via Suspend has Haste and attacks immediately'
+		);
+
+		// Finish combat to main2; if P2 gains control of Baloth, CR 702.62a says Haste only lasts "until you lose control of it"!
+		for (let guard = 0; guard < 20 && (state.phase as string) !== 'main2'; guard++) {
+			const prio = state.players[state.priorityPlayerIndex];
+			if ((state.phase as string) === 'declare_blockers' && prio.playerId === p2.playerId && state.combat.blockersDeclared === false) {
+				applyGameAction(state, p2.playerId, { type: 'declare_blockers', assignments: [] });
+				continue;
+			}
+			applyGameAction(state, prio.playerId, { type: 'pass_priority' });
+		}
+		transferBattlefieldControl(balothOnBoard, p1, p2, state);
+		assert.equal(balothOnBoard.controllerId, p2.playerId);
+		assert.equal(
+			evaluatePermanent(state, balothOnBoard).activeKeywords.includes('Haste'),
+			false,
+			'CR 702.62a: Suspend-granted Haste ends when control of the creature is lost'
+		);
+	});
+
+	it.todo(
+		'Suspend stack triggers & optional play choice (CR 702.62a): upkeep counter removal and last-counter play trigger use the stack with priority responses and optional "you may play it" prompt (currently resolved inline during upkeep)'
+	);
+});
+
+// ============================================================================
+// 4. PROWESS (CR 702.108)
+// ============================================================================
+
+describe('Keyword: Prowess (CR 702.108)', () => {
+	it('Prowess compile, noncreature-only trigger, multi-instance stacking, cleanup wear-off, and ability loss (CR 702.108a–b)', () => {
+		const monkCard = syntheticCard({
+			name: 'Monastery Swiftspear',
+			manaCost: '{R}',
+			cmc: 1,
+			typeLine: 'Creature — Human Monk',
+			oracleText: 'Haste\nProwess',
+			colors: ['R'],
+			colorIdentity: ['R'],
+			keywords: ['Haste', 'Prowess'],
+			power: '1',
+			toughness: '2'
+		});
+		const doubleProwessCard = syntheticCard({
+			name: 'Gitaxian Spellblade',
+			manaCost: '{1}{U}',
+			cmc: 2,
+			typeLine: 'Creature — Vedalken Monk',
+			oracleText: 'Prowess\nProwess',
+			colors: ['U'],
+			colorIdentity: ['U'],
+			keywords: ['Prowess'],
+			power: '2',
+			toughness: '2'
+		});
+		assert.equal(
+			compileCard(doubleProwessCard).faces[0].abilities.filter(
+				(a) => a.kind === 'keyword' && a.keyword.name === 'prowess'
+			).length,
+			2
+		);
+
+		const { state, p1, p2 } = makeGame();
+		for (let i = 0; i < 5; i++) {
+			putInZone(state, p1, staple('Island'), 'library');
+			putInZone(state, p2, staple('Island'), 'library');
+		}
+		const monk = putInZone(state, p1, monkCard, 'battlefield');
+		const doubleMonk = putInZone(state, p1, doubleProwessCard, 'battlefield');
+		p1.manaPool = { W: 5, U: 5, B: 5, R: 5, G: 5, C: 10 };
+		p2.manaPool = { W: 5, U: 5, B: 5, R: 5, G: 5, C: 10 };
+
+		// 1. Land play does NOT trigger Prowess:
+		const island = putInZone(state, p1, staple('Island'), 'hand');
+		assert.equal(applyGameAction(state, p1.playerId, { type: 'play_land', instanceId: island.instanceId }).ok, true);
+		assert.equal(state.stack.length, 0);
+		assert.equal(evaluatePermanent(state, monk).power, 1);
+
+		// 2. Creature spell (including Artifact Creature) does NOT trigger Prowess:
+		const artCreature = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Memnite',
+				manaCost: '{0}',
+				cmc: 0,
+				typeLine: 'Artifact Creature — Construct',
+				power: '1',
+				toughness: '1'
+			}),
+			'hand'
+		);
+		assert.equal(applyGameAction(state, p1.playerId, { type: 'cast_spell', instanceId: artCreature.instanceId }).ok, true);
+		assert.equal(state.stack.length, 1, 'Artifact Creature spell must NOT trigger Prowess');
+		resolveAllStack(state);
+		assert.equal(evaluatePermanent(state, monk).power, 1);
+
+		// 3. Noncreature spell (Sol Ring) triggers Prowess ONCE on monk (+1/+1) and TWICE on doubleMonk (+2/+2):
+		const solRing = putInZone(state, p1, staple('Sol Ring'), 'hand');
+		assert.equal(applyGameAction(state, p1.playerId, { type: 'cast_spell', instanceId: solRing.instanceId }).ok, true);
+		assert.equal(state.stack.filter((s) => s.kind === 'triggered').length, 3);
+		resolveAllStack(state);
+		assert.equal(evaluatePermanent(state, monk).power, 2);
+		assert.equal(evaluatePermanent(state, monk).toughness, 3);
+		assert.equal(evaluatePermanent(state, doubleMonk).power, 4);
+		assert.equal(evaluatePermanent(state, doubleMonk).toughness, 4);
+
+		// 4. Opponent's noncreature spell does NOT trigger P1's Prowess:
+		const oppInstant = putInZone(
+			state,
+			p2,
+			syntheticCard({
+				name: 'Opt Lite',
+				manaCost: '{U}',
+				cmc: 1,
+				typeLine: 'Instant',
+				oracleText: 'Draw a card.',
+				colors: ['U'],
+				colorIdentity: ['U']
+			}),
+			'hand'
+		);
+		applyGameAction(state, p1.playerId, { type: 'pass_priority' });
+		assert.equal(applyGameAction(state, p2.playerId, { type: 'cast_spell', instanceId: oppInstant.instanceId }).ok, true);
+		assert.equal(state.stack.filter((s) => s.kind === 'triggered').length, 0);
+		resolveAllStack(state);
+
+		// 5. Losing abilities (Dress Down) stops Prowess from triggering:
+		// Advance back to P1 priority in main2 or cast instant after P2 passes
+		for (let guard = 0; guard < 10 && state.players[state.priorityPlayerIndex].playerId !== p1.playerId; guard++) {
+			applyGameAction(state, state.players[state.priorityPlayerIndex].playerId, { type: 'pass_priority' });
+		}
+		const dressDown = putInZone(state, p2, staple('Dress Down'), 'battlefield');
+		assert.ok(dressDown);
+		const arcaneSignet = putInZone(state, p1, staple('Arcane Signet'), 'hand');
+		if (state.phase !== 'main1' && state.phase !== 'main2') {
+			state.phase = 'main2';
+			state.activePlayerIndex = 0;
+			state.priorityPlayerIndex = 0;
+		}
+		assert.equal(applyGameAction(state, p1.playerId, { type: 'cast_spell', instanceId: arcaneSignet.instanceId }).ok, true);
+		assert.equal(state.stack.filter((s) => s.kind === 'triggered').length, 0, 'Creatures under Dress Down lost Prowess');
+		resolveAllStack(state);
+
+		// 6. Wears off at end of turn (cleanup step):
+		p2.battlefield = [];
+		for (let guard = 0; guard < 25; guard++) {
+			if (state.players[state.activePlayerIndex].playerId === p2.playerId && state.phase === 'main1') break;
+			applyGameAction(state, state.players[state.priorityPlayerIndex].playerId, { type: 'pass_priority' });
+		}
+		assert.equal(evaluatePermanent(state, monk).power, 1, 'Prowess +1/+1 wore off in cleanup');
+		assert.equal(evaluatePermanent(state, monk).toughness, 2);
+		assert.equal(evaluatePermanent(state, doubleMonk).power, 2);
+	});
+});
+
+// ============================================================================
+// 5. CHANGELING (CR 702.73)
+// ============================================================================
+
+describe('Keyword: Changeling (CR 702.73)', () => {
+	it('Changeling compile, all-zone creature subtypes, tribal lord & graveyard effects, non-creature subtype exclusion, and Layer 4 vs Layer 6 ability loss (CR 702.73a, 613.1d, 613.5)', () => {
+		const outcast = syntheticCard({
+			name: 'Changeling Outcast',
+			manaCost: '{B}',
+			cmc: 1,
+			typeLine: 'Creature — Shapeshifter',
+			oracleText: 'Changeling',
+			colors: ['B'],
+			colorIdentity: ['B'],
+			keywords: ['Changeling'],
+			power: '1',
+			toughness: '1'
+		});
+		const cribSwap = syntheticCard({
+			name: 'Crib Swap',
+			manaCost: '{2}{W}',
+			cmc: 3,
+			typeLine: 'Kindred Instant — Shapeshifter',
+			oracleText: 'Changeling\nExile target creature.',
+			colors: ['W'],
+			colorIdentity: ['W'],
+			keywords: ['Changeling']
+		});
+		assert.ok(compileCard(outcast).faces[0].abilities.some((a) => a.kind === 'keyword' && a.keyword.name === 'changeling'));
+		assert.ok(compileCard(cribSwap).faces[0].abilities.some((a) => a.kind === 'keyword' && a.keyword.name === 'changeling'));
+
+		const { state, p1, p2 } = makeGame();
+
+		// 1. Every zone check (battlefield, hand, library, graveyard, exile, command) + Kindred card:
+		for (const zone of ['battlefield', 'hand', 'library', 'graveyard', 'exile', 'command'] as const) {
+			const inst = putInZone(state, p1, outcast, zone);
+			assert.equal(
+				matchesObjectFilter(inst, { subtypes: ['Elf'] }, { state, controllerId: p1.playerId }),
+				true,
+				`Changeling has Elf subtype in ${zone}`
+			);
+			assert.equal(
+				matchesObjectFilter(inst, { subtypes: ['Dragon'] }, { state, controllerId: p1.playerId }),
+				true,
+				`Changeling has Dragon subtype in ${zone}`
+			);
+			assert.equal(
+				matchesObjectFilter(inst, { subtypes: ['Shrine'] }, { state, controllerId: p1.playerId }),
+				false,
+				`Changeling must NOT have non-creature subtype Shrine in ${zone}`
+			);
+			assert.equal(
+				matchesObjectFilter(inst, { subtypes: ['Equipment'] }, { state, controllerId: p1.playerId }),
+				false
+			);
+		}
+		const kindredInHand = putInZone(state, p1, cribSwap, 'hand');
+		assert.equal(
+			matchesObjectFilter(kindredInHand, { subtypes: ['Goblin'] }, { state, controllerId: p1.playerId }),
+			true,
+			'Kindred Changeling spell has Goblin subtype in hand'
+		);
+
+		// Reset zones for engine gameplay checks:
+		p1.battlefield = [];
+		p1.hand = [];
+		p1.graveyard = [];
+		p1.exile = [];
+		p1.command = [];
+
+		// 2. Tribal lord on battlefield (Elvish Archdruid buffs "Other Elf creatures you control get +1/+1"):
+		const changelingPerm = putInZone(state, p1, outcast, 'battlefield');
+		putInZone(state, p1, staple('Elvish Archdruid'), 'battlefield');
+		assert.equal(evaluatePermanent(state, changelingPerm).power, 2, 'Changeling buffed by Elvish Archdruid');
+		assert.equal(evaluatePermanent(state, changelingPerm).toughness, 2);
+
+		// 3. Tribal graveyard target & hand put-onto-battlefield via applyGameAction:
+		const gyChangeling = putInZone(state, p1, outcast, 'graveyard');
+		const handChangeling = putInZone(state, p1, outcast, 'hand');
+		const elfReanimate = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Elvish Resurrection',
+				manaCost: '{1}{B}',
+				cmc: 2,
+				typeLine: 'Sorcery',
+				oracleText: 'Return target Elf creature card from your graveyard to the battlefield.',
+				colors: ['B'],
+				colorIdentity: ['B']
+			}),
+			'hand'
+		);
+		const elfPiper = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Elvish Ambush',
+				manaCost: '{1}{G}',
+				cmc: 2,
+				typeLine: 'Sorcery',
+				oracleText: 'Put an Elf creature card from your hand onto the battlefield.',
+				colors: ['G'],
+				colorIdentity: ['G']
+			}),
+			'hand'
+		);
+		p1.manaPool.B = 1;
+		p1.manaPool.G = 1;
+		p1.manaPool.C = 2;
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: elfReanimate.instanceId,
+				targets: [{ kind: 'graveyard_card', id: gyChangeling.instanceId, label: gyChangeling.card.name }]
+			}).ok,
+			true,
+			'Changeling in graveyard is a legal target Elf creature card'
+		);
+		resolveAllStack(state);
+		assert.equal(p1.battlefield.some((c) => c.instanceId === gyChangeling.instanceId), true);
+
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: elfPiper.instanceId
+			}).ok,
+			true
+		);
+		resolveAllStack(state);
+		assert.equal(
+			p1.battlefield.some((c) => c.instanceId === handChangeling.instanceId),
+			true,
+			'Run.matches put Changeling from hand onto the battlefield as an Elf creature card'
+		);
+
+		// 4. CR 613.1d / 613.5: Layer 6 "loses all abilities" (Dress Down) does NOT strip Changeling's creature types (still gets +1/+1 if Archdruid entered? Wait: Archdruid also loses abilities under Dress Down, so test single-target ability removal or evaluatePermanent.hasSubType!):
+		const dressDown = putInZone(state, p2, staple('Dress Down'), 'battlefield');
+		assert.equal(evaluatePermanent(state, changelingPerm).losesAllAbilities, true);
+		assert.equal(
+			evaluatePermanent(state, changelingPerm).hasSubType('Elf'),
+			true,
+			'CR 613.1d / 613.5: Changeling applied in Layer 4 before Dress Down removed abilities in Layer 6'
+		);
+		p2.battlefield = p2.battlefield.filter((c) => c.instanceId !== dressDown.instanceId);
+
+		// Whereas Darksteel Mutation sets types/subtypes in Layer 4 ("Artifact Creature — Insect"), overwriting Changeling subtypes!
+		const mutation = putInZone(state, p2, staple('Darksteel Mutation'), 'battlefield');
+		mutation.attachedToId = changelingPerm.instanceId;
+		assert.equal(evaluatePermanent(state, changelingPerm).hasSubType('Insect'), true);
+		assert.equal(
+			evaluatePermanent(state, changelingPerm).hasSubType('Elf'),
+			false,
+			'CR 205.1a: non-CDA Layer 4 type-setting Aura overwrites Changeling subtypes to Insect'
+		);
+
+		// And Maskwood Nexus (Layer 4 additive allCreatureTypes) grants all creature types back!
+		putInZone(state, p1, staple('Maskwood Nexus'), 'battlefield');
+		assert.equal(evaluatePermanent(state, changelingPerm).hasSubType('Elf'), true);
+	});
+});
+
+// ============================================================================
+// 6. PARTNER (CR 702.124)
+// ============================================================================
+
+describe('Keyword: Partner (CR 702.124)', () => {
+	it('Partner compile & deck validation (CR 702.124a–m): validates generic Partner, Partner with [Name], combined color identity, 100-card total, duplicate commander rejection, and regex false-positive guards', () => {
+		const tymna = syntheticCard({
+			name: 'Tymna the Weaver',
+			manaCost: '{1}{W}{B}',
+			cmc: 3,
+			typeLine: 'Legendary Creature — Human Cleric',
+			oracleText: 'Lifelink\nPartner',
+			colors: ['W', 'B'],
+			colorIdentity: ['W', 'B'],
+			keywords: ['Lifelink', 'Partner'],
+			canBeCommander: true,
+			hasPartner: true,
+			power: '2',
+			toughness: '2'
+		});
+		const thrasios = syntheticCard({
+			name: 'Thrasios, Triton Hero',
+			manaCost: '{G}{U}',
+			cmc: 2,
+			typeLine: 'Legendary Creature — Merfolk Wizard',
+			oracleText: 'Partner',
+			colors: ['G', 'U'],
+			colorIdentity: ['G', 'U'],
+			keywords: ['Partner'],
+			canBeCommander: true,
+			hasPartner: true,
+			power: '1',
+			toughness: '3'
+		});
+		const pir = syntheticCard({
+			name: 'Pir, Imaginative Rascal',
+			manaCost: '{2}{G}',
+			cmc: 3,
+			typeLine: 'Legendary Creature — Human',
+			oracleText: 'Partner with Toothy, Imaginary Friend',
+			colors: ['G'],
+			colorIdentity: ['G'],
+			keywords: ['Partner with', 'Partner'],
+			canBeCommander: true,
+			hasPartner: true,
+			power: '1',
+			toughness: '1'
+		});
+		const toothy = syntheticCard({
+			name: 'Toothy, Imaginary Friend',
+			manaCost: '{3}{U}',
+			cmc: 4,
+			typeLine: 'Legendary Creature — Illusion',
+			oracleText: 'Partner with Pir, Imaginative Rascal',
+			colors: ['U'],
+			colorIdentity: ['U'],
+			keywords: ['Partner with', 'Partner'],
+			canBeCommander: true,
+			hasPartner: true,
+			power: '1',
+			toughness: '1'
+		});
+		const fakePartnerProse = syntheticCard({
+			name: 'Lone Wolf Tactician',
+			manaCost: '{2}{R}',
+			cmc: 3,
+			typeLine: 'Legendary Creature — Human Warrior',
+			oracleText: 'Whenever ~ attacks, target creature becomes its partner in battle until end of turn.',
+			colors: ['R'],
+			colorIdentity: ['R'],
+			canBeCommander: true,
+			power: '3',
+			toughness: '3'
+		});
+		const changelingDoctor = syntheticCard({
+			name: 'Impostor Doctor',
+			manaCost: '{2}{U}',
+			cmc: 3,
+			typeLine: 'Legendary Creature — Time Lord Doctor',
+			oracleText: 'Changeling',
+			colors: ['U'],
+			colorIdentity: ['U'],
+			keywords: ['Changeling'],
+			canBeCommander: true,
+			power: '2',
+			toughness: '2'
+		});
+		const companion = syntheticCard({
+			name: 'Sarah Jane Smith',
+			manaCost: '{1}{W}',
+			cmc: 2,
+			typeLine: 'Legendary Creature — Human Detective',
+			oracleText: "Doctor's companion",
+			colors: ['W'],
+			colorIdentity: ['W'],
+			keywords: ["Doctor's companion"],
+			canBeCommander: true,
+			power: '2',
+			toughness: '2'
+		});
+
+		// Compile checks:
+		const tymnaIr = compileCard(tymna).faces[0];
+		assert.ok(tymnaIr.abilities.some((a) => a.kind === 'keyword' && a.keyword.name === 'partner' && !a.keyword.param));
+		const pirIr = compileCard(pir).faces[0];
+		assert.ok(
+			pirIr.abilities.some(
+				(a) =>
+					a.kind === 'keyword' &&
+					a.keyword.name === 'partner' &&
+					a.keyword.param === 'with Toothy, Imaginary Friend'
+			)
+		);
+
+		const lands98: DeckCardEntry[] = [{ card: staple('Command Tower'), quantity: 1 }, { card: staple('Island'), quantity: 97 }];
+		const lands99: DeckCardEntry[] = [{ card: staple('Island'), quantity: 99 }];
+
+		const validRes = validateCommanderDeck([tymna, thrasios], lands98);
+		assert.equal(validRes.isLegal, true);
+		assert.deepEqual(validRes.colorIdentity, ['W', 'U', 'B', 'G']);
+		assert.equal(validRes.totalCards, 100);
+
+		// Red card fails WUBG combined color identity:
+		const redMain: DeckCardEntry[] = [{ card: staple('Rift Bolt'), quantity: 1 }, { card: staple('Island'), quantity: 97 }];
+		assert.equal(validateCommanderDeck([tymna, thrasios], redMain).isLegal, false);
+
+		// 99 mainboard + 2 partners = 101 cards rejected:
+		assert.equal(validateCommanderDeck([tymna, thrasios], lands99).isLegal, false);
+
+		// Duplicate identical Partner commander rejected:
+		assert.equal(validateCommanderDeck([thrasios, thrasios], lands98).isLegal, false);
+
+		// Partner with [Name] exact pair valid; mismatched with generic Partner rejected:
+		assert.equal(validateCommanderDeck([pir, toothy], lands98).isLegal, true);
+		assert.equal(validateCommanderDeck([pir, thrasios], lands98).isLegal, false);
+
+		// Prose mentioning the word "partner" must NOT validate as Partner:
+		assert.equal(validateCommanderDeck([tymna, fakePartnerProse], lands98).isLegal, false);
+
+		// Changeling Time Lord Doctor has extra creature types -> cannot pair with Doctor's companion (CR 702.124m):
+		assert.equal(validateCommanderDeck([changelingDoctor, companion], lands98).isLegal, false);
+	});
+
+	it('Partner runtime gameplay (CR 702.124d–e, 903.8, 903.10a): combines color identity for Arcane Signet, tracks Commander Tax separately per Partner, and tracks 21 Commander combat damage separately per Partner', () => {
+		const partnerA = syntheticCard({
+			name: 'Akiri, Line-Slinger',
+			manaCost: '{R}{W}',
+			cmc: 2,
+			typeLine: 'Legendary Creature — Kor Soldier',
+			oracleText: 'First strike, vigilance\nPartner',
+			colors: ['R', 'W'],
+			colorIdentity: ['R', 'W'],
+			keywords: ['First strike', 'Vigilance', 'Partner'],
+			canBeCommander: true,
+			hasPartner: true,
+			power: '15',
+			toughness: '3'
+		});
+		const partnerB = syntheticCard({
+			name: 'Silas Renn, Seeker Adept',
+			manaCost: '{1}{U}{B}',
+			cmc: 3,
+			typeLine: 'Legendary Artifact Creature — Human',
+			oracleText: 'Deathtouch\nPartner',
+			colors: ['U', 'B'],
+			colorIdentity: ['U', 'B'],
+			keywords: ['Deathtouch', 'Partner'],
+			canBeCommander: true,
+			hasPartner: true,
+			power: '10',
+			toughness: '2'
+		});
+
+		const { state, p1, p2 } = makeGame({ p1Commanders: [partnerA, partnerB] });
+		assert.equal(p1.command.length, 2, 'Both Partner commanders start in the command zone');
+		const cmdA = p1.command.find((c) => c.card.name === 'Akiri, Line-Slinger')!;
+		const cmdB = p1.command.find((c) => c.card.name === 'Silas Renn, Seeker Adept')!;
+
+		// 1. Combined color identity across both Partners = W, U, B, R (not G):
+		assert.deepEqual(new Set(getPlayerCommanderIdentity(p1)), new Set(['W', 'U', 'B', 'R']));
+		const signet = putInZone(state, p1, staple('Arcane Signet'), 'battlefield');
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'activate_ability',
+				instanceId: signet.instanceId,
+				abilityId: 'mana_tap'
+			}).ok,
+			true
+		);
+		const colorPrompt = state.pendingPrompts[0];
+		assert.ok(colorPrompt && colorPrompt.choice?.kind === 'chooseMode');
+		const colorChoice = colorPrompt.choice;
+		assert.deepEqual(
+			new Set(colorChoice.modes),
+			new Set(['W', 'U', 'B', 'R']),
+			'Arcane Signet offers all 4 colors from both Partner commanders'
+		);
+		applyGameAction(state, p1.playerId, {
+			type: 'choice',
+			promptId: colorPrompt.id,
+			answer: { kind: 'chooseMode', indices: [colorChoice.modes.indexOf('R')] }
+		});
+		assert.equal(p1.manaPool.R, 1);
+
+		// 2. Casting Partner A increments ONLY Partner A's tax (+{2}), leaving Partner B at {0} tax!
+		p1.manaPool.W = 1;
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: cmdA.instanceId,
+				fromZone: 'command'
+			}).ok,
+			true
+		);
+		resolveAllStack(state);
+		assert.equal(p1.commanderCastCounts[cmdA.instanceId], 1);
+		assert.equal(p1.commanderCastCounts[cmdB.instanceId], 0);
+
+		// Cast Partner B for its exact printed cost {1}{U}{B} (0 tax!):
+		p1.manaPool = { W: 0, U: 1, B: 1, R: 0, G: 0, C: 1 };
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: cmdB.instanceId,
+				fromZone: 'command'
+			}).ok,
+			true,
+			'Partner B has 0 commander tax even though Partner A was already cast once'
+		);
+		resolveAllStack(state);
+
+		// 3. Separate 21 Commander combat damage tracking (CR 903.10a):
+		// Partner A (15 power) + Partner B (10 power) = 25 total combat damage, neither >= 21 -> P2 survives at 15 life!
+		const akiriOnBoard = p1.battlefield.find((c) => c.instanceId === cmdA.instanceId)!;
+		const silasOnBoard = p1.battlefield.find((c) => c.instanceId === cmdB.instanceId)!;
+		akiriOnBoard.summoningSick = false;
+		silasOnBoard.summoningSick = false;
+
+		applyGameAction(state, p1.playerId, { type: 'pass_priority' });
+		applyGameAction(state, p2.playerId, { type: 'pass_priority' }); // begin_combat
+		applyGameAction(state, p1.playerId, { type: 'pass_priority' });
+		applyGameAction(state, p2.playerId, { type: 'pass_priority' }); // declare_attackers
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'declare_attackers',
+				assignments: [
+					{ attackerInstanceId: akiriOnBoard.instanceId, defenderPlayerId: p2.playerId },
+					{ attackerInstanceId: silasOnBoard.instanceId, defenderPlayerId: p2.playerId }
+				]
+			}).ok,
+			true
+		);
+		applyGameAction(state, p1.playerId, { type: 'pass_priority' });
+		applyGameAction(state, p2.playerId, { type: 'pass_priority' }); // declare_blockers
+		applyGameAction(state, p2.playerId, { type: 'declare_blockers', assignments: [] });
+		// Pass through first_strike_damage (Akiri has First strike = 15) and combat_damage (Silas = 10):
+		for (let guard = 0; guard < 12 && state.phase !== 'main2'; guard++) {
+			applyGameAction(state, state.players[state.priorityPlayerIndex].playerId, { type: 'pass_priority' });
+		}
+		assert.equal(p2.commanderDamageTaken[akiriOnBoard.instanceId], 15);
+		assert.equal(p2.commanderDamageTaken[silasOnBoard.instanceId], 10);
+		assert.equal(p2.life, 15);
+		assert.equal(p2.lost, false, 'CR 903.10a: 15 + 10 across two different Partner commanders does NOT trigger 21-damage loss');
+	});
+
+	it('Partner with [Name] reports its ETB search as not automated instead of claiming full support (CR 702.124j)', () => {
+		const card = syntheticCard({
+			name: 'Velk Ardent',
+			typeLine: 'Legendary Creature — Elf Druid',
+			oracleText: 'Partner with Mira Coilbright',
+			canBeCommander: true,
+			hasPartner: true,
+			power: '2',
+			toughness: '2'
+		});
+		const def = compileCard(card);
+		const abilities = def.faces[0].abilities;
+		assert.ok(
+			abilities.some((a) => a.kind === 'keyword' && a.keyword.name === 'partner' && a.keyword.param === 'with Mira Coilbright'),
+			'the pairing half stays a partner keyword for deck construction'
+		);
+		const search = abilities.find((a) => a.kind === 'unsupported');
+		assert.ok(search && search.kind === 'unsupported', 'the search half is an unsupported ability');
+		assert.deepEqual(search.trigger, { event: 'zoneChange', filter: { object: 'self', to: 'battlefield' } });
+		assert.equal(def.fullySupported, false);
+		// Generic Partner is a single ability and stays fully supported.
+		assert.equal(compileCard(syntheticCard({ name: 'Orla Vantry', typeLine: 'Legendary Creature — Human', oracleText: 'Partner', canBeCommander: true, hasPartner: true, power: '1', toughness: '1' })).fullySupported, true);
+
+		// At runtime the search triggers on entering: a human resolves it manually; a bot skips it.
+		for (const bot of [false, true]) {
+			const { state, p1 } = makeGame({ p1Bot: bot });
+			const inst = putInZone(state, p1, { ...card, manaCost: '{0}', cmc: 0 }, 'hand');
+			assert.equal(applyGameAction(state, p1.playerId, { type: 'cast_spell', instanceId: inst.instanceId }).ok, true);
+			resolveAllStack(state);
+			assert.ok(p1.battlefield.some((c) => c.instanceId === inst.instanceId));
+			if (bot) {
+				assert.equal(state.stack.length, 0, 'the bot skips the unautomated trigger');
+			} else {
+				assert.equal(state.stack.at(-1)?.kind, 'triggered', 'the search trigger is on the stack');
+				assert.equal(state.pendingPrompts[0]?.purpose, 'guided_resolution', 'a human resolves it manually');
+			}
+		}
+	});
+
+	it('Partner—[text] pairs only with the same partner—[text] ability (CR 702.124f, 702.124i)', () => {
+		const partnerCard = (name: string, oracleText: string) =>
+			syntheticCard({ name, typeLine: 'Legendary Creature — Human', oracleText, canBeCommander: true, hasPartner: true, keywords: ['Partner'], power: '1', toughness: '1' });
+		const survivorA = partnerCard('Ilsa Grent', 'Partner—Survivors (You can have two commanders if both have this ability.)');
+		const survivorB = partnerCard('Doran Vesk', 'Partner—Survivors (You can have two commanders if both have this ability.)');
+		const fatherSon = partnerCard('Kael Ostrow', 'Partner—Father & son (You can have two commanders if both have this ability.)');
+		const generic = partnerCard('Tamsin Rook', 'Partner');
+		const pairingError = (a: ScryfallCard, b: ScryfallCard) =>
+			validateCommanderDeck([a, b], []).errors.some((e) => /pairing/i.test(e));
+		assert.equal(pairingError(survivorA, survivorB), false, 'the same partner—[text] ability pairs');
+		assert.equal(pairingError(survivorA, generic), true, 'partner—[text] does not combine with generic partner');
+		assert.equal(pairingError(survivorA, fatherSon), true, 'different partner—[text] abilities do not combine');
+	});
+
+	it.todo(
+		'Partner with [Name] ETB trigger (CR 702.124j): when a "Partner with [Name]" permanent enters, target player may search their library for [Name], reveal it, put it into their hand, then shuffle'
+	);
+});

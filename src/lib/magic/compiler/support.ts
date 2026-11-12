@@ -11,6 +11,7 @@
 import type { CardDefinition, Span, UnsupportedReason } from '../ir.ts';
 import type { DeckCardEntry, LobbyRulesConfig, MagicDeck, ScryfallCard, StackItem } from '../types.ts';
 import { compileCard } from './index.ts';
+import { printedText } from './normalize.ts';
 
 /**
  * Step E2: what kind of ability isn't automated, which decides what the runtime does with it
@@ -127,14 +128,14 @@ export function unsupportedKindLabel(kind: UnsupportedAbilityKind): string {
 /**
  * Step E2: the abilities to mention when a permanent enters the battlefield (the engine can't act on
  * them itself): statics, replacements and keywords that aren't enforced, and triggered abilities whose
- * trigger isn't understood. Display text only (`~` shown as the face name).
+ * trigger isn't understood. Display text only (`~` shown as the card prints it).
  */
 export function enteringNotices(card: ScryfallCard): Array<{ kind: UnsupportedAbilityKind; text: string }> {
 	const report = cardSupportReport(card);
 	const first = report.unsupported[0]?.face;
 	return report.unsupported
 		.filter((u) => u.face === first && u.text.trim().length > 0 && (u.kind === 'static' || u.kind === 'keyword' || u.kind === 'triggerUnrecognised'))
-		.map((u) => ({ kind: u.kind, text: displayAbilityText(u.text, u.face) }));
+		.map((u) => ({ kind: u.kind, text: displayAbilityText(u.text, u.face, card) }));
 }
 
 /** The rules text a stack item shows (display only: prompts, logs). */
@@ -149,7 +150,7 @@ export function stackItemDisplayText(item: Pick<StackItem, 'card' | 'oracleText'
 export function cardAbilityDisplayText(card: ScryfallCard, unsupportedIndex?: number): string {
 	if (unsupportedIndex !== undefined) {
 		const u = cardSupportReport(card).unsupported[unsupportedIndex];
-		if (u) return displayAbilityText(u.text, u.face);
+		if (u) return displayAbilityText(u.text, u.face, card);
 	}
 	return card.oracleText || '';
 }
@@ -167,9 +168,14 @@ export function cardSupportReport(card: ScryfallCard): CardSupportReport {
 	}
 }
 
-/** Ability text for display: `~` (CARDNAME) shown as the face's name. */
-export function displayAbilityText(text: string, faceName: string): string {
-	return text.replace(/~/g, faceName);
+/**
+ * Ability text for display. With the card, `~` is shown as the card prints it ("this artifact" inside
+ * a granted ability, not the granting card's name); without it, as the face's name.
+ */
+export function displayAbilityText(text: string, faceName: string, card?: ScryfallCard): string {
+	if (!card) return text.replace(/~/g, faceName);
+	const rulesText = card.backFace ? `${card.oracleText}\n${card.backFace.oracleText}` : card.oracleText;
+	return printedText(text, faceName, rulesText || '');
 }
 
 export interface DeckUnsupportedCard {

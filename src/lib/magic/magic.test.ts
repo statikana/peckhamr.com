@@ -1472,21 +1472,21 @@ describe('9. Niche Mechanics: Modal Spells, Cyclonic Rift Overload, Infect, Doub
 		addCardToZone(state, p2Id, getCardByName('Island')!, 'battlefield');
 		addCardToZone(state, p1Id, getCardByName('Sol Ring')!, 'battlefield');
 
-		// Normal mode (xValue = 0): requires "target nonland permanent you don't control" -> ILLEGAL!
-		assert.equal(checkSpellCastLegality(state, p1Id, rift, 'hand', 0).ok, false);
+		// Normal mode: requires "target nonland permanent you don't control" -> ILLEGAL!
+		assert.equal(checkSpellCastLegality(state, p1Id, rift, 'hand', 0, 'normal').ok, false);
 
-		// Overload mode (xValue = 1): does not target -> LEGAL!
-		assert.equal(checkSpellCastLegality(state, p1Id, rift, 'hand', 1).ok, true);
+		// Overload mode: does not target -> LEGAL!
+		assert.equal(checkSpellCastLegality(state, p1Id, rift, 'hand', 0, 'overload').ok, true);
 
 		// Now give opponent a Sol Ring -> Normal mode becomes legal too!
 		const oppRing = addCardToZone(state, p2Id, getCardByName('Sol Ring')!, 'battlefield');
-		assert.equal(checkSpellCastLegality(state, p1Id, rift, 'hand', 0).ok, true);
+		assert.equal(checkSpellCastLegality(state, p1Id, rift, 'hand', 0, 'normal').ok, true);
 		assert.equal(
 			applyGameAction(state, p1Id, {
 				type: 'cast_spell',
 				instanceId: rift.instanceId,
 				targets: [{ kind: 'permanent', id: oppRing.instanceId, label: 'Sol Ring' }],
-				xValue: 0
+				castMode: 'normal'
 			}).ok,
 			true
 		);
@@ -3508,11 +3508,11 @@ describe('24. Stage A: Live Bug Fixes (A1 Intervening-If, A2 End Step Scope, A3 
 		assert.equal(overloadKw.keyword.cost, '{6}{U}');
 
 		const riftInst = addCardToZone(state, p1Id, riftCard, 'hand');
-		const normalReq = getSpellCostRequirement(p1, riftInst, state, 0);
+		const normalReq = getSpellCostRequirement(p1, riftInst, state, 0, 'normal');
 		assert.equal(normalReq.generic, 1);
 		assert.equal(normalReq.colored.U, 1);
 
-		const overloadReq = getSpellCostRequirement(p1, riftInst, state, 1);
+		const overloadReq = getSpellCostRequirement(p1, riftInst, state, 0, 'overload');
 		assert.equal(overloadReq.generic, 6, 'Overloaded Cyclonic Rift requires {6} generic');
 		assert.equal(overloadReq.colored.U, 1, 'Overloaded Cyclonic Rift requires {U}');
 
@@ -3524,11 +3524,11 @@ describe('24. Stage A: Live Bug Fixes (A1 Intervening-If, A2 End Step Scope, A3 
 			oracleText: 'Aether Wave deals 2 damage to target creature you don\'t control.\nOverload {4}{R}'
 		});
 		const synthInst = addCardToZone(state, p1Id, synthOverload, 'hand');
-		const synthNormal = getSpellCostRequirement(p1, synthInst, state, 0);
+		const synthNormal = getSpellCostRequirement(p1, synthInst, state, 0, 'normal');
 		assert.equal(synthNormal.generic, 1);
 		assert.equal(synthNormal.colored.R, 1);
 
-		const synthOverloaded = getSpellCostRequirement(p1, synthInst, state, 1);
+		const synthOverloaded = getSpellCostRequirement(p1, synthInst, state, 0, 'overload');
 		assert.equal(synthOverloaded.generic, 4, 'Synthetic Overload card requires {4} generic when overloaded');
 		assert.equal(synthOverloaded.colored.R, 1, 'Synthetic Overload card requires {R} when overloaded');
 	});
@@ -4127,7 +4127,7 @@ describe('26. Stage C: Grammar-Driven Triggers, Target-Controller Effects, Cost 
 			applyGameAction(state, p1Id, {
 				type: 'cast_spell',
 				instanceId: purgeInst.instanceId,
-				xValue: 1,
+				castMode: 'overload',
 				targets: []
 			}).ok,
 			true

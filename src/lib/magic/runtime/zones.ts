@@ -772,6 +772,7 @@ export function transferBattlefieldControl(
 	removeFirst(fromPlayer.battlefield, perm.instanceId);
 	perm.controllerId = toPlayer.playerId;
 	perm.summoningSick = true;
+	perm.castViaSuspend = false;
 	toPlayer.battlefield.push(perm);
 	noteLayerInputsChanged(state);
 	removeFromCombat(state, perm.instanceId);

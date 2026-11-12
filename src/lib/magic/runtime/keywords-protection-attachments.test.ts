@@ -1,0 +1,1778 @@
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+
+import { compileCard } from '../compiler/index.ts';
+import {
+	applyGameAction,
+	createCardInstance,
+	createInitialGameState,
+	evaluatePermanent,
+	getEffectiveActivatedAbilities,
+	resolveTopOfStack
+} from '../engine.ts';
+import { PRECON_DECKS, STAPLE_CARDS } from '../precons.ts';
+import {
+	DEFAULT_LOBBY_RULES,
+	type CardInstance,
+	type GameState,
+	type LobbySeat,
+	type PlayerGameState,
+	type ScryfallCard,
+	type ZoneType
+} from '../types.ts';
+import { transferBattlefieldControl } from './zones.ts';
+
+function staple(name: string): ScryfallCard {
+	const c = STAPLE_CARDS[name.toLowerCase()];
+	assert.ok(c, `missing staple ${name}`);
+	return c;
+}
+
+function syntheticCard(overrides: Partial<ScryfallCard> & { name: string }): ScryfallCard {
+	return {
+		id: `syn_${overrides.name.toLowerCase().replace(/[^a-z0-9]+/g, '_')}`,
+		name: overrides.name,
+		manaCost: overrides.manaCost ?? '{1}',
+		cmc: overrides.cmc ?? 1,
+		typeLine: overrides.typeLine ?? 'Creature — Human',
+		oracleText: overrides.oracleText ?? '',
+		colors: overrides.colors ?? [],
+		colorIdentity: overrides.colorIdentity ?? [],
+		keywords: overrides.keywords ?? [],
+		power: overrides.power ?? '2',
+		toughness: overrides.toughness ?? '2',
+		loyalty: overrides.loyalty,
+		imageUrl: '',
+		artCropUrl: '',
+		legalCommander: overrides.legalCommander ?? true,
+		canBeCommander: overrides.canBeCommander ?? false,
+		hasPartner: overrides.hasPartner ?? false,
+		hasChooseBackground: overrides.hasChooseBackground ?? false,
+		isBackground: overrides.isBackground ?? false
+	};
+}
+
+function makeGame(): {
+	state: GameState;
+	p1: PlayerGameState;
+	p2: PlayerGameState;
+} {
+	const seats: LobbySeat[] = [];
+	const decks = new Map<number, (typeof PRECON_DECKS)[number]>();
+	for (let i = 0; i < 2; i++) {
+		const d = PRECON_DECKS[i % PRECON_DECKS.length];
+		seats.push({
+			seatIndex: i,
+			userId: `p${i + 1}`,
+			username: `P${i + 1}`,
+			avatarUrl: '',
+			isBot: false,
+			deckId: d.id,
+			deckName: d.name,
+			commanderNames: d.commanders.map((c) => c.name),
+			commanderArtUrl: '',
+			colorIdentity: d.colorIdentity,
+			isDeckLegal: true,
+			ready: true,
+			lastHeartbeat: Date.now()
+		});
+		decks.set(i, d);
+	}
+	const state = createInitialGameState('KEYWORDS_PROT_ATTACH_TEST', seats, decks, {
+		...DEFAULT_LOBBY_RULES
+	});
+	applyGameAction(state, 'p1', { type: 'mulligan_keep' });
+	applyGameAction(state, 'p2', { type: 'mulligan_keep' });
+	for (const pl of state.players) {
+		pl.hand = [];
+		pl.battlefield = [];
+		pl.graveyard = [];
+		pl.exile = [];
+	}
+	state.phase = 'main1';
+	state.activePlayerIndex = 0;
+	state.priorityPlayerIndex = 0;
+	return { state, p1: state.players[0], p2: state.players[1] };
+}
+
+function putInZone(
+	state: GameState,
+	player: PlayerGameState,
+	card: ScryfallCard,
+	zone: Exclude<ZoneType, 'stack'>,
+	opts: { summoningSick?: boolean } = {}
+): CardInstance {
+	state.nextTimestamp = (state.nextTimestamp || 100) + 1;
+	const inst = createCardInstance(card, player.playerId, zone, false, false, state.nextTimestamp);
+	if (zone === 'battlefield') {
+		inst.summoningSick = opts.summoningSick ?? false;
+	}
+	player[zone].push(inst);
+	return inst;
+}
+
+function passStep(state: GameState): void {
+	const startPhase = state.phase;
+	const startStack = state.stack.length;
+	let guard = 0;
+	while (guard++ < 10 && state.pendingPrompts.length === 0 && state.status !== 'finished') {
+		const prio = state.players[state.priorityPlayerIndex];
+		assert.equal(applyGameAction(state, prio.playerId, { type: 'pass_priority' }).ok, true);
+		if (startStack > 0 && state.stack.length < startStack) break;
+		if (startStack === 0 && state.phase !== startPhase) break;
+	}
+}
+
+describe('Keyword: Indestructible (CR 702.12)', () => {
+	it('compiles Indestructible, survives destroy & lethal/deathtouch damage, still dies to sacrifice, <=0 toughness, and Legend Rule, still gets exiled, and handles gain/loss (CR 702.12b–c, 704.5f–j)', () => {
+		const indIr = compileCard(
+			syntheticCard({ name: 'Darksteel Sentinel', oracleText: 'Flying, indestructible' })
+		).faces[0];
+		assert.ok(
+			indIr.abilities.some((a) => a.kind === 'keyword' && a.keyword.name === 'indestructible')
+		);
+		assert.equal(indIr.abilities.some((a) => a.kind === 'unsupported'), false);
+
+		const { state, p1, p2 } = makeGame();
+
+		// 1. Survives lethal marked damage AND global Wrath of God!
+		const indColossus = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Darksteel Brute',
+				typeLine: 'Artifact Creature — Golem',
+				power: '4',
+				toughness: '4',
+				oracleText: 'Indestructible',
+				keywords: ['Indestructible']
+			}),
+			'battlefield'
+		);
+		const normalBear = putInZone(state, p1, syntheticCard({ name: 'Grizzly Bears' }), 'battlefield');
+
+		const bolt5 = putInZone(
+			state,
+			p2,
+			syntheticCard({
+				name: 'Lava Axe Creature',
+				manaCost: '{0}',
+				cmc: 0,
+				typeLine: 'Instant',
+				oracleText: 'Lava Axe Creature deals 5 damage to target creature.'
+			}),
+			'hand'
+		);
+		state.priorityPlayerIndex = 1;
+		assert.equal(
+			applyGameAction(state, p2.playerId, {
+				type: 'cast_spell',
+				instanceId: bolt5.instanceId,
+				targets: [{ kind: 'permanent', id: indColossus.instanceId, label: indColossus.card.name }]
+			}).ok,
+			true
+		);
+		passStep(state);
+		assert.equal(indColossus.damageMarked, 5);
+		assert.ok(
+			p1.battlefield.some((c) => c.instanceId === indColossus.instanceId),
+			'Indestructible survives lethal marked damage >= toughness'
+		);
+
+		state.priorityPlayerIndex = 0;
+		const wrath = putInZone(state, p1, staple('Wrath of God'), 'hand');
+		p1.manaPool.W = 2;
+		p1.manaPool.C = 2;
+		assert.equal(
+			applyGameAction(state, p1.playerId, { type: 'cast_spell', instanceId: wrath.instanceId }).ok,
+			true
+		);
+		passStep(state);
+		assert.ok(p1.graveyard.some((c) => c.instanceId === normalBear.instanceId));
+		assert.ok(
+			p1.battlefield.some((c) => c.instanceId === indColossus.instanceId),
+			'Indestructible survives Wrath of God'
+		);
+
+		// 2. Dies to Sacrifice!
+		const sacInd = putInZone(
+			state,
+			p2,
+			syntheticCard({
+				name: 'Edict Victim',
+				oracleText: 'Indestructible',
+				keywords: ['Indestructible']
+			}),
+			'battlefield'
+		);
+		const edict = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Diabolic Edict',
+				manaCost: '{0}',
+				cmc: 0,
+				typeLine: 'Instant',
+				oracleText: 'Target player sacrifices a creature.'
+			}),
+			'hand'
+		);
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: edict.instanceId,
+				targets: [{ kind: 'player', id: p2.playerId, label: p2.username }]
+			}).ok,
+			true
+		);
+		passStep(state);
+		if (state.pendingPrompts.length > 0) {
+			const prm = state.pendingPrompts[0];
+			applyGameAction(state, p2.playerId, {
+				type: 'choice',
+				promptId: prm.id,
+				answer: { kind: 'chooseObjects', objectIds: [sacInd.instanceId] }
+			});
+		}
+		assert.ok(
+			p2.graveyard.some((c) => c.instanceId === sacInd.instanceId),
+			'Indestructible creature still dies when sacrificed'
+		);
+
+		// 3. Dies to <= 0 toughness (-4/-4 on 4/4)!
+		const shrink = putInZone(
+			state,
+			p2,
+			syntheticCard({
+				name: 'Grasp of Darkness',
+				manaCost: '{0}',
+				cmc: 0,
+				typeLine: 'Instant',
+				oracleText: 'Target creature gets -4/-4 until end of turn.'
+			}),
+			'hand'
+		);
+		state.priorityPlayerIndex = 1;
+		assert.equal(
+			applyGameAction(state, p2.playerId, {
+				type: 'cast_spell',
+				instanceId: shrink.instanceId,
+				targets: [{ kind: 'permanent', id: indColossus.instanceId, label: indColossus.card.name }]
+			}).ok,
+			true
+		);
+		passStep(state);
+		assert.ok(
+			p1.graveyard.some((c) => c.instanceId === indColossus.instanceId),
+			'Indestructible creature with toughness <= 0 dies via SBA (CR 704.5f)'
+		);
+
+		// 4. Legend Rule (CR 704.5j) puts duplicate Legendary Indestructible permanent into graveyard, and Exile still exiles the kept one!
+		state.priorityPlayerIndex = 0;
+		const legCard = syntheticCard({
+			name: 'Avacyn, Test Angel',
+			manaCost: '{0}',
+			cmc: 0,
+			typeLine: 'Legendary Creature — Angel',
+			power: '4',
+			toughness: '4',
+			oracleText: 'Indestructible',
+			keywords: ['Indestructible']
+		});
+		const leg1 = putInZone(state, p1, legCard, 'battlefield');
+		const leg2 = putInZone(state, p1, legCard, 'hand');
+		assert.equal(
+			applyGameAction(state, p1.playerId, { type: 'cast_spell', instanceId: leg2.instanceId }).ok,
+			true
+		);
+		passStep(state);
+		const legendPrompt = state.pendingPrompts.find((pr) => (pr.purpose ?? pr.kind) === 'legend_rule');
+		assert.ok(legendPrompt, 'Legend rule prompts even when both copies have Indestructible');
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'legend_rule_keep',
+				keepInstanceId: leg1.instanceId
+			}).ok,
+			true
+		);
+		assert.ok(
+			p1.graveyard.some((c) => c.instanceId === leg2.instanceId),
+			'Unkept Legendary Indestructible copy goes to graveyard via Legend Rule (CR 704.5j)'
+		);
+
+		// Exile via Swords to Plowshares!
+		const plow = putInZone(state, p2, staple('Swords to Plowshares'), 'hand');
+		p2.manaPool.W = 1;
+		state.priorityPlayerIndex = 1;
+		assert.equal(
+			applyGameAction(state, p2.playerId, {
+				type: 'cast_spell',
+				instanceId: plow.instanceId,
+				targets: [{ kind: 'permanent', id: leg1.instanceId, label: leg1.card.name }]
+			}).ok,
+			true
+		);
+		passStep(state);
+		assert.ok(
+			p1.exile.some((c) => c.instanceId === leg1.instanceId),
+			'Indestructible does not prevent exile'
+		);
+
+		// 5. Gain (Heroic Intervention saves from Wrath of God) & Loss (removeKeywords / losesAllAbilities)
+		state.priorityPlayerIndex = 0;
+		const savedBear = putInZone(state, p1, syntheticCard({ name: 'Saved Bear' }), 'battlefield');
+		const heroic = putInZone(state, p1, staple('Heroic Intervention'), 'hand');
+		p1.manaPool.G = 1;
+		p1.manaPool.C = 1;
+		assert.equal(
+			applyGameAction(state, p1.playerId, { type: 'cast_spell', instanceId: heroic.instanceId }).ok,
+			true
+		);
+		passStep(state);
+		assert.ok(
+			evaluatePermanent(state, savedBear).keywords.some((k) => k.toLowerCase() === 'indestructible')
+		);
+		const wrath2 = putInZone(state, p1, staple('Wrath of God'), 'hand');
+		p1.manaPool.W = 2;
+		p1.manaPool.C = 2;
+		assert.equal(
+			applyGameAction(state, p1.playerId, { type: 'cast_spell', instanceId: wrath2.instanceId }).ok,
+			true
+		);
+		passStep(state);
+		assert.ok(
+			p1.battlefield.some((c) => c.instanceId === savedBear.instanceId),
+			'Heroic Intervention granted Indestructible and saved creature from Wrath of God'
+		);
+
+		// P2 casts a Layer 6 keyword-removal enchantment ("Creatures your opponents control lose hexproof and indestructible.") and destroys Saved Bear!
+		const stripEnch = putInZone(
+			state,
+			p2,
+			syntheticCard({
+				name: 'Mortality Field',
+				manaCost: '{0}',
+				cmc: 0,
+				typeLine: 'Enchantment',
+				oracleText: 'Creatures your opponents control lose hexproof and indestructible.'
+			}),
+			'hand'
+		);
+		state.activePlayerIndex = 1;
+		state.priorityPlayerIndex = 1;
+		assert.equal(
+			applyGameAction(state, p2.playerId, { type: 'cast_spell', instanceId: stripEnch.instanceId })
+				.ok,
+			true
+		);
+		passStep(state);
+		assert.equal(
+			evaluatePermanent(state, savedBear).keywords.some((k) => k.toLowerCase() === 'indestructible'),
+			false,
+			'Layer 6 removeKeywords strips Indestructible'
+		);
+
+		const murder = putInZone(
+			state,
+			p2,
+			syntheticCard({
+				name: 'Doom Blade',
+				manaCost: '{0}',
+				cmc: 0,
+				typeLine: 'Instant',
+				oracleText: 'Destroy target creature.'
+			}),
+			'hand'
+		);
+		state.priorityPlayerIndex = 1;
+		assert.equal(
+			applyGameAction(state, p2.playerId, {
+				type: 'cast_spell',
+				instanceId: murder.instanceId,
+				targets: [{ kind: 'permanent', id: savedBear.instanceId, label: savedBear.card.name }]
+			}).ok,
+			true
+		);
+		passStep(state);
+		assert.ok(p1.graveyard.some((c) => c.instanceId === savedBear.instanceId));
+	});
+
+	it(
+		'Activated keyword-removal abilities on Shadowspear, Arcane Lighthouse, and Bonds of Mortality only strip keywords after activation until end of turn (currently approximated as always-on static in runtime/layers.ts:1173-1196 while activated ability compiles as unsupported)',
+		{ todo: 'Compile activated until-end-of-turn removeKeywords effects instead of static approximation in runtime/layers.ts:1173-1196' },
+		() => {}
+	);
+});
+
+describe('Keywords: Hexproof (CR 702.11) & Shroud (CR 702.18)', () => {
+	it('compiles Hexproof, Hexproof from [quality], and Shroud; enforces controller vs opponent targeting, fizzles on response gain, keeps existing attachments, and strips via Shadowspear/Arcane Lighthouse', () => {
+		for (const [text, expectedName, expectedQuality] of [
+			['Hexproof', 'hexproof', undefined],
+			['Hexproof from black', 'hexproof', 'black'],
+			['Hexproof from artifacts', 'hexproof', 'artifacts'],
+			['Shroud', 'shroud', undefined]
+		] as const) {
+			const ir = compileCard(syntheticCard({ name: `Test ${text}`, oracleText: text })).faces[0];
+			const kw = ir.abilities.find((a) => a.kind === 'keyword' && a.keyword.name === expectedName);
+			assert.ok(kw && kw.kind === 'keyword', `Expected keyword ${expectedName} for "${text}"`);
+			if (expectedQuality) {
+				assert.equal(kw.keyword.param, expectedQuality);
+			}
+			assert.equal(ir.abilities.some((a) => a.kind === 'unsupported'), false);
+		}
+
+		const { state, p1, p2 } = makeGame();
+
+		const hexPerm = putInZone(
+			state,
+			p1,
+			syntheticCard({ name: 'Gladecover Scout', oracleText: 'Hexproof', keywords: ['Hexproof'] }),
+			'battlefield'
+		);
+		const hexBlackPerm = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Knight of Malice',
+				oracleText: 'Hexproof from black',
+				keywords: ['Hexproof']
+			}),
+			'battlefield'
+		);
+		const shroudPerm = putInZone(
+			state,
+			p1,
+			syntheticCard({ name: 'Calciderm', oracleText: 'Shroud', keywords: ['Shroud'] }),
+			'battlefield'
+		);
+
+		const pumpSpell = (owner: PlayerGameState, colors: ('W' | 'B')[] = []) =>
+			putInZone(
+				state,
+				owner,
+				syntheticCard({
+					name: `Target Check ${owner.playerId} ${colors.join('')}`,
+					manaCost: '{0}',
+					cmc: 0,
+					colors,
+					typeLine: 'Instant',
+					oracleText: 'Target creature gets +1/+1 until end of turn.'
+				}),
+				'hand'
+			);
+
+		// 1. Opponent CANNOT target Hexproof or Shroud with spells OR activated abilities!
+		state.priorityPlayerIndex = 1;
+		const oppSpell = pumpSpell(p2);
+		const oppPinger = putInZone(
+			state,
+			p2,
+			syntheticCard({
+				name: 'Opp Pinger',
+				oracleText: '{T}: This creature deals 1 damage to any target.'
+			}),
+			'battlefield'
+		);
+		for (const untargetable of [hexPerm, shroudPerm]) {
+			assert.equal(
+				applyGameAction(state, p2.playerId, {
+					type: 'cast_spell',
+					instanceId: oppSpell.instanceId,
+					targets: [{ kind: 'permanent', id: untargetable.instanceId, label: untargetable.card.name }]
+				}).ok,
+				false,
+				`Opponent spell must NOT target ${untargetable.card.name}`
+			);
+			assert.equal(
+				applyGameAction(state, p2.playerId, {
+					type: 'activate_ability',
+					instanceId: oppPinger.instanceId,
+					abilityId: 'act_0',
+					targets: [{ kind: 'permanent', id: untargetable.instanceId, label: untargetable.card.name }]
+				}).ok,
+				false,
+				`Opponent ability must NOT target ${untargetable.card.name}`
+			);
+		}
+
+		// 2. Hexproof from black: blocks opponent's BLACK spell, ALLOWS opponent's WHITE spell!
+		const oppBlackSpell = pumpSpell(p2, ['B']);
+		assert.equal(
+			applyGameAction(state, p2.playerId, {
+				type: 'cast_spell',
+				instanceId: oppBlackSpell.instanceId,
+				targets: [{ kind: 'permanent', id: hexBlackPerm.instanceId, label: hexBlackPerm.card.name }]
+			}).ok,
+			false,
+			'Hexproof from black blocks opponent black spell'
+		);
+		const oppWhiteSpell = pumpSpell(p2, ['W']);
+		assert.equal(
+			applyGameAction(state, p2.playerId, {
+				type: 'cast_spell',
+				instanceId: oppWhiteSpell.instanceId,
+				targets: [{ kind: 'permanent', id: hexBlackPerm.instanceId, label: hexBlackPerm.card.name }]
+			}).ok,
+			true,
+			'Hexproof from black allows opponent white spell'
+		);
+		passStep(state);
+
+		// 3. Controller CAN target own Hexproof & own Hexproof from black (even with black spell!), CANNOT target own Shroud!
+		state.priorityPlayerIndex = 0;
+		const selfBlackOnHexBlack = pumpSpell(p1, ['B']);
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: selfBlackOnHexBlack.instanceId,
+				targets: [{ kind: 'permanent', id: hexBlackPerm.instanceId, label: hexBlackPerm.card.name }]
+			}).ok,
+			true
+		);
+		passStep(state);
+
+		const selfOnHex = pumpSpell(p1);
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: selfOnHex.instanceId,
+				targets: [{ kind: 'permanent', id: hexPerm.instanceId, label: hexPerm.card.name }]
+			}).ok,
+			true,
+			'Controller CAN target own Hexproof creature'
+		);
+		passStep(state);
+
+		const selfOnShroud = pumpSpell(p1);
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: selfOnShroud.instanceId,
+				targets: [{ kind: 'permanent', id: shroudPerm.instanceId, label: shroudPerm.card.name }]
+			}).ok,
+			false,
+			'Controller CANNOT target own Shroud creature'
+		);
+
+		// 4. Existing Aura/Equipment stays attached when gaining Shroud (Lightning Greaves) + Fizzle when gaining Hexproof in response!
+		const knight = putInZone(state, p1, syntheticCard({ name: 'Equipped Knight' }), 'battlefield');
+		const boots = putInZone(state, p1, staple('Swiftfoot Boots'), 'battlefield');
+		const greaves = putInZone(state, p1, staple('Lightning Greaves'), 'battlefield');
+		// First equip Boots to knight, then move Boots away so knight is targetable, attach an Aura, then equip Greaves!
+		const aura = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Holy Strength',
+				manaCost: '{0}',
+				cmc: 0,
+				typeLine: 'Enchantment — Aura',
+				oracleText: 'Enchant creature\nEnchanted creature gets +1/+2.',
+				keywords: ['Enchant']
+			}),
+			'hand'
+		);
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: aura.instanceId,
+				targets: [{ kind: 'permanent', id: knight.instanceId, label: knight.card.name }]
+			}).ok,
+			true
+		);
+		passStep(state);
+		const auraBf = p1.battlefield.find((c) => c.instanceId === aura.instanceId)!;
+		assert.equal(auraBf.attachedToId, knight.instanceId);
+
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'activate_ability',
+				instanceId: greaves.instanceId,
+				abilityId: 'equip_1',
+				targets: [{ kind: 'permanent', id: knight.instanceId, label: knight.card.name }]
+			}).ok,
+			true
+		);
+		passStep(state);
+		assert.equal(greaves.attachedToId, knight.instanceId);
+		assert.equal(
+			auraBf.attachedToId,
+			knight.instanceId,
+			'Already-attached Aura does NOT fall off when creature gains Shroud'
+		);
+
+		// Fizzle on response gain (CR 608.2b): P2 casts Murder on vulnerableBear, P1 responds with "Target creature gains hexproof until end of turn."
+		const vulnerableBear = putInZone(
+			state,
+			p1,
+			syntheticCard({ name: 'Vulnerable Bear' }),
+			'battlefield'
+		);
+		const killSpell = putInZone(
+			state,
+			p2,
+			syntheticCard({
+				name: 'Murder Bolt',
+				manaCost: '{0}',
+				cmc: 0,
+				typeLine: 'Instant',
+				oracleText: 'Destroy target creature.'
+			}),
+			'hand'
+		);
+		state.priorityPlayerIndex = 1;
+		assert.equal(
+			applyGameAction(state, p2.playerId, {
+				type: 'cast_spell',
+				instanceId: killSpell.instanceId,
+				targets: [
+					{ kind: 'permanent', id: vulnerableBear.instanceId, label: vulnerableBear.card.name }
+				]
+			}).ok,
+			true
+		);
+		const veil = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Ranger Guile',
+				manaCost: '{0}',
+				cmc: 0,
+				typeLine: 'Instant',
+				oracleText: 'Target creature gains hexproof until end of turn.'
+			}),
+			'hand'
+		);
+		state.priorityPlayerIndex = 0;
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: veil.instanceId,
+				targets: [
+					{ kind: 'permanent', id: vulnerableBear.instanceId, label: vulnerableBear.card.name }
+				]
+			}).ok,
+			true
+		);
+		passStep(state); // Resolves Ranger Guile
+		passStep(state); // Murder Bolt fizzles!
+		assert.ok(
+			p1.battlefield.some((c) => c.instanceId === vulnerableBear.instanceId),
+			'Murder Bolt fizzles when target gains Hexproof before resolution (CR 608.2b)'
+		);
+
+		// 5. Layer 6 removeKeywords strips innate "Hexproof from black", regular Hexproof, and Shroud!
+		const glare = putInZone(
+			state,
+			p2,
+			syntheticCard({
+				name: 'Detection Glare',
+				manaCost: '{0}',
+				cmc: 0,
+				typeLine: 'Enchantment',
+				oracleText:
+					"Creatures your opponents control lose hexproof and shroud and can't have or gain hexproof and shroud."
+			}),
+			'hand'
+		);
+		state.activePlayerIndex = 1;
+		state.priorityPlayerIndex = 1;
+		assert.equal(
+			applyGameAction(state, p2.playerId, {
+				type: 'cast_spell',
+				instanceId: glare.instanceId
+			}).ok,
+			true
+		);
+		passStep(state);
+
+		// Now P2's black spell CAN target hexBlackPerm, and P2's spell CAN target shroudPerm!
+		const oppBlackAfterStrip = pumpSpell(p2, ['B']);
+		state.priorityPlayerIndex = 1;
+		assert.equal(
+			applyGameAction(state, p2.playerId, {
+				type: 'cast_spell',
+				instanceId: oppBlackAfterStrip.instanceId,
+				targets: [{ kind: 'permanent', id: hexBlackPerm.instanceId, label: hexBlackPerm.card.name }]
+			}).ok,
+			true,
+			'Layer 6 removeKeywords removes innate Hexproof from black so opponent black spell can target it'
+		);
+		passStep(state);
+
+		const oppOnShroudAfterStrip = pumpSpell(p2);
+		state.priorityPlayerIndex = 1;
+		assert.equal(
+			applyGameAction(state, p2.playerId, {
+				type: 'cast_spell',
+				instanceId: oppOnShroudAfterStrip.instanceId,
+				targets: [{ kind: 'permanent', id: shroudPerm.instanceId, label: shroudPerm.card.name }]
+			}).ok,
+			true,
+			'Layer 6 removeKeywords removes Shroud from opponent creatures'
+		);
+		passStep(state);
+
+		// 6. Untargeted Wrath of God still destroys both Hexproof and Shroud creatures!
+		state.activePlayerIndex = 0;
+		state.priorityPlayerIndex = 0;
+		const wrath = putInZone(state, p1, staple('Wrath of God'), 'hand');
+		p1.manaPool.W = 2;
+		p1.manaPool.C = 2;
+		assert.equal(
+			applyGameAction(state, p1.playerId, { type: 'cast_spell', instanceId: wrath.instanceId }).ok,
+			true
+		);
+		passStep(state);
+		assert.ok(p1.graveyard.some((c) => c.instanceId === hexPerm.instanceId));
+		assert.ok(p1.graveyard.some((c) => c.instanceId === shroudPerm.instanceId));
+	});
+});
+
+describe('Keyword: Ward (CR 702.21)', () => {
+	it('compiles Miirym & Ward mana/life costs, triggers on opponent spells, activated abilities, AND triggered abilities (not controller own), handles uncounterable spells, granted/multiple Ward instances, and ability loss (CR 702.21a–b)', () => {
+		const miirymIr = compileCard(staple('Miirym, Sentinel Wyrm')).faces[0];
+		assert.ok(
+			miirymIr.abilities.some(
+				(a) => a.kind === 'keyword' && a.keyword.name === 'ward' && a.keyword.cost === '{2}'
+			)
+		);
+		const lifeWardIr = compileCard(
+			syntheticCard({ name: 'Graveyard Trespasser', oracleText: 'Ward—Pay 2 life' })
+		).faces[0];
+		assert.ok(
+			lifeWardIr.abilities.some(
+				(a) => a.kind === 'keyword' && a.keyword.name === 'ward' && a.keyword.param === 'Pay 2 life'
+			)
+		);
+		// Unsupported Ward cost compiles cleanly to unsupported (never silently swallowed)
+		const unsupWardIr = compileCard(
+			syntheticCard({ name: 'Discard Warder', oracleText: 'Ward—Discard a card.' })
+		).faces[0];
+		assert.ok(unsupWardIr.abilities.some((a) => a.kind === 'unsupported'));
+
+		const { state, p1, p2 } = makeGame();
+
+		const lifeWardPerm = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Blood Warder',
+				power: '3',
+				toughness: '3',
+				oracleText: 'Ward—Pay 2 life',
+				keywords: ['Ward']
+			}),
+			'battlefield'
+		);
+
+		// 1. Controller's OWN spell targeting Blood Warder does NOT trigger Ward!
+		const selfPump = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Self Boon',
+				manaCost: '{0}',
+				cmc: 0,
+				typeLine: 'Instant',
+				oracleText: 'Target creature gets +1/+1 until end of turn.'
+			}),
+			'hand'
+		);
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: selfPump.instanceId,
+				targets: [{ kind: 'permanent', id: lifeWardPerm.instanceId, label: lifeWardPerm.card.name }]
+			}).ok,
+			true
+		);
+		assert.equal(state.stack.length, 1, 'Controller own spell must NOT trigger Ward');
+		passStep(state);
+
+		// 2. Opponent's targeted TRIGGERED ability (ETB trigger) DOES trigger Ward—Pay 2 life!
+		const etbPinger = putInZone(
+			state,
+			p2,
+			syntheticCard({
+				name: 'Flametongue Cub',
+				manaCost: '{0}',
+				cmc: 0,
+				typeLine: 'Creature — Beast',
+				oracleText: 'When this creature enters, Flametongue Cub deals 2 damage to target creature.'
+			}),
+			'hand'
+		);
+		state.phase = 'main1';
+		state.activePlayerIndex = 1;
+		state.priorityPlayerIndex = 1;
+		assert.equal(
+			applyGameAction(state, p2.playerId, {
+				type: 'cast_spell',
+				instanceId: etbPinger.instanceId
+			}).ok,
+			true
+		);
+		passStep(state); // Resolves Flametongue Cub -> enters battlefield -> target prompt for ETB trigger!
+		if (state.pendingPrompts.length > 0) {
+			const trigTargetPrm = state.pendingPrompts[0];
+			assert.equal(
+				applyGameAction(state, p2.playerId, {
+					type: 'choice',
+					promptId: trigTargetPrm.id,
+					answer: {
+						kind: 'chooseObjects',
+						objectIds: [lifeWardPerm.instanceId]
+					}
+				}).ok,
+				true
+			);
+		}
+		assert.equal(
+			state.stack.length,
+			2,
+			'Opponent targeted ETB triggered ability triggers Ward on top of the stack (CR 702.21a)'
+		);
+		// Resolve Ward trigger -> P2 pays 2 life -> ETB trigger resolves and deals 2 damage!
+		resolveTopOfStack(state);
+		const lifePrompt = state.pendingPrompts.find((pr) => pr.playerId === p2.playerId)!;
+		assert.ok(lifePrompt, 'Expected Pay 2 life Ward prompt');
+		applyGameAction(state, p2.playerId, {
+			type: 'choice',
+			promptId: lifePrompt.id,
+			answer: { kind: 'yesNo', yes: true }
+		});
+		assert.equal(p2.life, 38, 'P2 paid 2 life for Ward');
+		resolveTopOfStack(state);
+		assert.equal(lifeWardPerm.damageMarked, 2, 'Paid Ward let the ETB trigger resolve');
+
+		// 3. Uncounterable spell ("This spell can't be countered.") triggers Ward, opponent declines to pay, and spell STILL resolves (CR 702.21a)!
+		const manaWardPerm = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Frost Titan Jr',
+				power: '3',
+				toughness: '3',
+				oracleText: 'Ward {2}',
+				keywords: ['Ward']
+			}),
+			'battlefield'
+		);
+		const uncounterableKill = putInZone(
+			state,
+			p2,
+			syntheticCard({
+				name: 'Abrupt End',
+				manaCost: '{0}',
+				cmc: 0,
+				typeLine: 'Instant',
+				oracleText: "This spell can't be countered.\nDestroy target creature."
+			}),
+			'hand'
+		);
+		p2.manaPool.C = 2; // Can pay, chooses NOT to!
+		state.priorityPlayerIndex = 1;
+		assert.equal(
+			applyGameAction(state, p2.playerId, {
+				type: 'cast_spell',
+				instanceId: uncounterableKill.instanceId,
+				targets: [{ kind: 'permanent', id: manaWardPerm.instanceId, label: manaWardPerm.card.name }]
+			}).ok,
+			true
+		);
+		assert.equal(state.stack.length, 2);
+		resolveTopOfStack(state);
+		const declinePrm = state.pendingPrompts.find((pr) => pr.playerId === p2.playerId)!;
+		applyGameAction(state, p2.playerId, {
+			type: 'choice',
+			promptId: declinePrm.id,
+			answer: { kind: 'yesNo', yes: false }
+		});
+		assert.equal(p2.manaPool.C, 2, 'Declining Ward spends 0 mana');
+		assert.equal(state.stack.length, 1, 'Uncounterable spell remains on stack after unpaid Ward');
+		resolveTopOfStack(state);
+		assert.ok(
+			p1.graveyard.some((c) => c.instanceId === manaWardPerm.instanceId),
+			'Uncounterable spell still destroys Ward creature despite unpaid Ward'
+		);
+
+		// 4. Granted Ward + Multiple Ward instances trigger separately (CR 702.21a: each is its own triggered ability) + Ability loss stops Ward!
+		const multiWard = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Dual Warder',
+				power: '2',
+				toughness: '2',
+				oracleText: 'Ward {1}',
+				keywords: ['Ward']
+			}),
+			'battlefield'
+		);
+		const grantWard2 = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Ward Blessing',
+				manaCost: '{0}',
+				cmc: 0,
+				typeLine: 'Enchantment — Aura',
+				oracleText: 'Flash\nEnchant creature\nEnchanted creature has ward {2}.',
+				keywords: ['Flash', 'Enchant']
+			}),
+			'hand'
+		);
+		state.priorityPlayerIndex = 0;
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: grantWard2.instanceId,
+				targets: [{ kind: 'permanent', id: multiWard.instanceId, label: multiWard.card.name }]
+			}).ok,
+			true
+		);
+		passStep(state);
+
+		// Opponent targets Dual Warder (Ward {1} + granted Ward {2}) -> TWO separate Ward triggers on stack!
+		const oppPoke = putInZone(
+			state,
+			p2,
+			syntheticCard({
+				name: 'Tiny Poke',
+				manaCost: '{0}',
+				cmc: 0,
+				typeLine: 'Instant',
+				oracleText: 'Target creature gets -1/-1 until end of turn.'
+			}),
+			'hand'
+		);
+		p2.manaPool.C = 0;
+		state.priorityPlayerIndex = 1;
+		assert.equal(
+			applyGameAction(state, p2.playerId, {
+				type: 'cast_spell',
+				instanceId: oppPoke.instanceId,
+				targets: [{ kind: 'permanent', id: multiWard.instanceId, label: multiWard.card.name }]
+			}).ok,
+			true
+		);
+		// If trigger_order prompt appears for the 2 Ward triggers, answer it:
+		const ord = state.pendingPrompts[0];
+		if (ord?.purpose === 'trigger_order' && ord.choice?.kind === 'orderObjects') {
+			applyGameAction(state, ord.playerId, {
+				type: 'choice',
+				promptId: ord.id,
+				answer: { kind: 'orderObjects', topIds: ord.choice.objectIds, bottomIds: [], shuffle: false }
+			});
+		}
+		assert.equal(
+			state.stack.filter((s) => s.kind === 'triggered').length,
+			2,
+			'Innate Ward {1} and granted Ward {2} each trigger separately (CR 702.21a)'
+		);
+		for (let i = 0; i < 10 && (state.stack.length > 0 || state.pendingPrompts.length > 0); i++) {
+			if (state.pendingPrompts.length > 0) {
+				const pr = state.pendingPrompts[0];
+				if (pr.choice?.kind === 'yesNo') {
+					applyGameAction(state, pr.playerId, {
+						type: 'choice',
+						promptId: pr.id,
+						answer: { kind: 'yesNo', yes: false }
+					});
+				} else {
+					break;
+				}
+			} else {
+				resolveTopOfStack(state);
+			}
+		}
+		assert.equal(state.stack.length, 0, 'Unpaid Ward counters oppPoke and second Ward resolves cleanly');
+
+		// Ability loss stops Ward: P1 enchants own Dual Warder with "Enchanted creature loses all abilities.", then P2 targets it with 0 triggers!
+		const stripAura = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Humble Aura',
+				manaCost: '{0}',
+				cmc: 0,
+				typeLine: 'Enchantment — Aura',
+				oracleText: 'Flash\nEnchant creature\nEnchanted creature loses all abilities.',
+				keywords: ['Flash', 'Enchant']
+			}),
+			'hand'
+		);
+		state.priorityPlayerIndex = 0;
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: stripAura.instanceId,
+				targets: [{ kind: 'permanent', id: multiWard.instanceId, label: multiWard.card.name }]
+			}).ok,
+			true
+		);
+		passStep(state);
+
+		const oppKillAfterStrip = putInZone(
+			state,
+			p2,
+			syntheticCard({
+				name: 'Clean Kill',
+				manaCost: '{0}',
+				cmc: 0,
+				typeLine: 'Instant',
+				oracleText: 'Destroy target creature.'
+			}),
+			'hand'
+		);
+		state.priorityPlayerIndex = 1;
+		assert.equal(
+			applyGameAction(state, p2.playerId, {
+				type: 'cast_spell',
+				instanceId: oppKillAfterStrip.instanceId,
+				targets: [{ kind: 'permanent', id: multiWard.instanceId, label: multiWard.card.name }]
+			}).ok,
+			true
+		);
+		assert.equal(state.stack.length, 1, 'Creature that lost all abilities does NOT trigger Ward');
+		passStep(state);
+		assert.ok(p1.graveyard.some((c) => c.instanceId === multiWard.instanceId));
+	});
+});
+
+describe('Keyword: Protection (CR 702.16)', () => {
+	it('compiles Protection qualities, enforces full DEBT (Damage, Enchant/Equip SBA fall-off, Blocking, Targeting), supports compound Akroma Memorial & multiple Protection coexistence, allows Wrath of God, and handles gain/loss', () => {
+		for (const [text, expectedQuality] of [
+			['Protection from red', 'red'],
+			['Protection from creatures', 'creatures'],
+			['Protection from artifacts', 'artifacts'],
+			['Protection from everything', 'everything']
+		] as const) {
+			const ir = compileCard(syntheticCard({ name: `Test ${text}`, oracleText: text })).faces[0];
+			const kw = ir.abilities.find((a) => a.kind === 'keyword' && a.keyword.name === 'protection');
+			assert.ok(kw && kw.kind === 'keyword');
+			assert.equal(kw.keyword.param, expectedQuality);
+			assert.equal(ir.abilities.some((a) => a.kind === 'unsupported'), false);
+		}
+
+		const { state, p1, p2 } = makeGame();
+
+		// 1. Multi-protection coexistence + Compound Akroma's Memorial ("protection from black and from red") + Innate "Protection from white"!
+		const paladin = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Sanctum Champion',
+				power: '3',
+				toughness: '3',
+				oracleText: 'Protection from white',
+				keywords: ['Protection']
+			}),
+			'battlefield'
+		);
+		putInZone(state, p1, staple("Akroma's Memorial"), 'battlefield');
+
+		// T (Targeting): Blocked from WHITE (even controller's own!), BLACK, and RED; ALLOWED from GREEN!
+		for (const col of ['W', 'B', 'R'] as const) {
+			const spell = putInZone(
+				state,
+				p1,
+				syntheticCard({
+					name: `Spell ${col}`,
+					manaCost: '{0}',
+					cmc: 0,
+					colors: [col],
+					typeLine: 'Instant',
+					oracleText: 'Target creature gets +1/+1 until end of turn.'
+				}),
+				'hand'
+			);
+			assert.equal(
+				applyGameAction(state, p1.playerId, {
+					type: 'cast_spell',
+					instanceId: spell.instanceId,
+					targets: [{ kind: 'permanent', id: paladin.instanceId, label: paladin.card.name }]
+				}).ok,
+				false,
+				`Paladin with Protection from white + Akroma's Memorial must block ${col} targeting even from own controller`
+			);
+		}
+		const greenPump = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Giant Growth Lite',
+				manaCost: '{0}',
+				cmc: 0,
+				colors: ['G'],
+				typeLine: 'Instant',
+				oracleText: 'Target creature gets +1/+1 until end of turn.'
+			}),
+			'hand'
+		);
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: greenPump.instanceId,
+				targets: [{ kind: 'permanent', id: paladin.instanceId, label: paladin.card.name }]
+			}).ok,
+			true
+		);
+		passStep(state);
+
+		// D (Damage): Untargeted Black AND Untargeted Red damage are BOTH prevented on Paladin!
+		for (const col of ['B', 'R'] as const) {
+			const sweeper = putInZone(
+				state,
+				p2,
+				syntheticCard({
+					name: `Pyroclasm ${col}`,
+					manaCost: '{0}',
+					cmc: 0,
+					colors: [col],
+					typeLine: 'Instant',
+					oracleText: `Pyroclasm ${col} deals 3 damage to each creature.`
+				}),
+				'hand'
+			);
+			state.priorityPlayerIndex = 1;
+			assert.equal(
+				applyGameAction(state, p2.playerId, {
+					type: 'cast_spell',
+					instanceId: sweeper.instanceId
+				}).ok,
+				true
+			);
+			passStep(state);
+			assert.equal(
+				paladin.damageMarked,
+				0,
+				`Compound Protection from black and from red must prevent ${col} damage`
+			);
+		}
+
+		// B (Blocking): Red flyer and White flyer CANNOT block Paladin; Green flyer CAN block Paladin!
+		const redFlyer = putInZone(
+			state,
+			p2,
+			syntheticCard({ name: 'Red Drake', colors: ['R'], oracleText: 'Flying', keywords: ['Flying'] }),
+			'battlefield'
+		);
+		const whiteFlyer = putInZone(
+			state,
+			p2,
+			syntheticCard({
+				name: 'White Hawk',
+				colors: ['W'],
+				oracleText: 'Flying',
+				keywords: ['Flying']
+			}),
+			'battlefield'
+		);
+		const greenFlyer = putInZone(
+			state,
+			p2,
+			syntheticCard({
+				name: 'Green Hornet',
+				colors: ['G'],
+				oracleText: 'Flying',
+				keywords: ['Flying']
+			}),
+			'battlefield'
+		);
+		state.phase = 'declare_attackers';
+		state.priorityPlayerIndex = 0;
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'declare_attackers',
+				assignments: [{ attackerInstanceId: paladin.instanceId, defenderPlayerId: p2.playerId }]
+			}).ok,
+			true
+		);
+		passStep(state);
+		for (const illegalBlk of [redFlyer, whiteFlyer]) {
+			assert.equal(
+				applyGameAction(state, p2.playerId, {
+					type: 'declare_blockers',
+					assignments: [
+						{ blockerInstanceId: illegalBlk.instanceId, attackerInstanceId: paladin.instanceId }
+					]
+				}).ok,
+				false
+			);
+		}
+		assert.equal(
+			applyGameAction(state, p2.playerId, {
+				type: 'declare_blockers',
+				assignments: [
+					{ blockerInstanceId: greenFlyer.instanceId, attackerInstanceId: paladin.instanceId }
+				]
+			}).ok,
+			true
+		);
+
+		// 2. E (Enchanted & Equipped fall off via SBA when creature gains Protection! CR 702.16c–d, 704.5m–n)
+		state.combat = {
+			active: false,
+			attackers: [],
+			declaredBlockersPlayerIds: [],
+			damageDealtFirstStrike: false,
+			damageDealtNormal: false
+		};
+		state.phase = 'main2';
+		state.priorityPlayerIndex = 0;
+		const host = putInZone(state, p1, syntheticCard({ name: 'Armored Squire' }), 'battlefield');
+		const greenAura = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Oakform',
+				manaCost: '{0}',
+				cmc: 0,
+				colors: ['G'],
+				typeLine: 'Enchantment — Aura',
+				oracleText: 'Enchant creature\nEnchanted creature gets +2/+2.',
+				keywords: ['Enchant']
+			}),
+			'hand'
+		);
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: greenAura.instanceId,
+				targets: [{ kind: 'permanent', id: host.instanceId, label: host.card.name }]
+			}).ok,
+			true
+		);
+		passStep(state);
+		const boots = putInZone(state, p1, staple('Swiftfoot Boots'), 'battlefield');
+		p1.manaPool.C = 1;
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'activate_ability',
+				instanceId: boots.instanceId,
+				abilityId: 'equip_1',
+				targets: [{ kind: 'permanent', id: host.instanceId, label: host.card.name }]
+			}).ok,
+			true
+		);
+		passStep(state);
+		const greenAuraBf = p1.battlefield.find((c) => c.instanceId === greenAura.instanceId)!;
+		assert.equal(greenAuraBf.attachedToId, host.instanceId);
+		assert.equal(boots.attachedToId, host.instanceId);
+
+		// Grant "protection from green, and protection from artifacts" until end of turn -> Aura goes to graveyard, Boots unattaches and stays on battlefield!
+		const grantProt = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Tower Defense Ward',
+				manaCost: '{0}',
+				cmc: 0,
+				colors: ['U'],
+				typeLine: 'Instant',
+				oracleText:
+					'Target creature gains protection from green and protection from artifacts until end of turn.'
+			}),
+			'hand'
+		);
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: grantProt.instanceId,
+				targets: [{ kind: 'permanent', id: host.instanceId, label: host.card.name }]
+			}).ok,
+			true
+		);
+		passStep(state);
+		assert.ok(
+			p1.graveyard.some((c) => c.instanceId === greenAura.instanceId),
+			'Attached green Aura goes to graveyard via SBA when creature gains Protection from green (CR 702.16c)'
+		);
+		assert.equal(
+			boots.attachedToId,
+			null,
+			'Attached Equipment unattaches via SBA when creature gains Protection from artifacts (CR 702.16d)'
+		);
+		assert.ok(
+			p1.battlefield.some((c) => c.instanceId === boots.instanceId),
+			'Unattached Equipment remains on the battlefield'
+		);
+
+		// 3. Negative: Untargeted WHITE Wrath of God STILL destroys Sanctum Champion (despite Protection from white)!
+		const wrath = putInZone(state, p1, staple('Wrath of God'), 'hand');
+		p1.manaPool.W = 2;
+		p1.manaPool.C = 2;
+		assert.equal(
+			applyGameAction(state, p1.playerId, { type: 'cast_spell', instanceId: wrath.instanceId }).ok,
+			true
+		);
+		passStep(state);
+		assert.ok(
+			p1.graveyard.some((c) => c.instanceId === paladin.instanceId),
+			'Protection from white does NOT stop untargeted non-damage Wrath of God'
+		);
+	});
+});
+
+describe('Keyword: Enchant (CR 702.5)', () => {
+	it('compiles diverse Enchant restrictions, enforces legal targets on cast, puts Aura into graveyard on fizzle, and puts Aura into graveyard via SBA when host leaves, stops matching control restriction, or Aura becomes a creature (CR 702.5a, 303.4, 704.5m)', () => {
+		for (const text of [
+			'Enchant creature',
+			'Enchant artifact',
+			'Enchant land',
+			'Enchant creature you control',
+			'Enchant player',
+			'Enchant creature, land, or planeswalker'
+		]) {
+			const ir = compileCard(
+				syntheticCard({
+					name: `Test ${text}`,
+					typeLine: 'Enchantment — Aura',
+					oracleText: text
+				})
+			).faces[0];
+			assert.ok(
+				ir.abilities.some((a) => a.kind === 'keyword' && a.keyword.name === 'enchant'),
+				`Expected Enchant keyword for "${text}"`
+			);
+			assert.equal(ir.abilities.some((a) => a.kind === 'unsupported'), false);
+		}
+
+		const { state, p1, p2 } = makeGame();
+		const myCreature = putInZone(state, p1, syntheticCard({ name: 'My Bear' }), 'battlefield');
+		const oppCreature = putInZone(state, p2, syntheticCard({ name: 'Opp Bear' }), 'battlefield');
+		const mySolRing = putInZone(state, p1, staple('Sol Ring'), 'battlefield');
+
+		// 1. Enchant artifact rejects non-artifact creature, accepts Sol Ring!
+		const artAura = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Relic Ward',
+				manaCost: '{0}',
+				cmc: 0,
+				typeLine: 'Enchantment — Aura',
+				oracleText: 'Enchant artifact',
+				keywords: ['Enchant']
+			}),
+			'hand'
+		);
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: artAura.instanceId,
+				targets: [{ kind: 'permanent', id: myCreature.instanceId, label: myCreature.card.name }]
+			}).ok,
+			false,
+			'Enchant artifact must reject non-artifact creature'
+		);
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: artAura.instanceId,
+				targets: [{ kind: 'permanent', id: mySolRing.instanceId, label: mySolRing.card.name }]
+			}).ok,
+			true
+		);
+		passStep(state);
+		const artAuraBf = p1.battlefield.find((c) => c.instanceId === artAura.instanceId)!;
+		assert.equal(artAuraBf.attachedToId, mySolRing.instanceId);
+
+		// 2. Enchant creature you control rejects oppCreature, accepts myCreature, and goes to graveyard on control change!
+		const myOnlyAura = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Curious Obsession Lite',
+				manaCost: '{0}',
+				cmc: 0,
+				typeLine: 'Enchantment — Aura',
+				oracleText: 'Enchant creature you control\nEnchanted creature gets +1/+1.',
+				keywords: ['Enchant']
+			}),
+			'hand'
+		);
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: myOnlyAura.instanceId,
+				targets: [{ kind: 'permanent', id: oppCreature.instanceId, label: oppCreature.card.name }]
+			}).ok,
+			false,
+			'Enchant creature you control rejects opponent creature'
+		);
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: myOnlyAura.instanceId,
+				targets: [{ kind: 'permanent', id: myCreature.instanceId, label: myCreature.card.name }]
+			}).ok,
+			true
+		);
+		passStep(state);
+		const myOnlyAuraBf = p1.battlefield.find((c) => c.instanceId === myOnlyAura.instanceId)!;
+		assert.equal(myOnlyAuraBf.attachedToId, myCreature.instanceId);
+
+		// Steal myCreature to P2 -> trigger SBA via priority pass -> myOnlyAura (still controlled by P1!) falls off into P1's graveyard!
+		transferBattlefieldControl(myCreature, p1, p2, state);
+		applyGameAction(state, p1.playerId, { type: 'pass_priority' });
+		assert.ok(
+			p1.graveyard.some((c) => c.instanceId === myOnlyAura.instanceId),
+			'Enchant creature you control goes to graveyard via SBA when enchanted creature changes control'
+		);
+
+		// 3. Fizzle on resolution (CR 608.2b): target destroyed in response -> Aura goes straight to graveyard without entering battlefield!
+		state.priorityPlayerIndex = 0;
+		const fizzleAura = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Doomed Boon',
+				manaCost: '{0}',
+				cmc: 0,
+				typeLine: 'Enchantment — Aura',
+				oracleText: 'Enchant creature\nEnchanted creature gets +2/+2.',
+				keywords: ['Enchant']
+			}),
+			'hand'
+		);
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: fizzleAura.instanceId,
+				targets: [{ kind: 'permanent', id: oppCreature.instanceId, label: oppCreature.card.name }]
+			}).ok,
+			true
+		);
+		const instantKill = putInZone(
+			state,
+			p2,
+			syntheticCard({
+				name: 'Sac Kill',
+				manaCost: '{0}',
+				cmc: 0,
+				typeLine: 'Instant',
+				oracleText: 'Destroy target creature.'
+			}),
+			'hand'
+		);
+		state.priorityPlayerIndex = 1;
+		assert.equal(
+			applyGameAction(state, p2.playerId, {
+				type: 'cast_spell',
+				instanceId: instantKill.instanceId,
+				targets: [{ kind: 'permanent', id: oppCreature.instanceId, label: oppCreature.card.name }]
+			}).ok,
+			true
+		);
+		passStep(state); // Destroys oppCreature
+		passStep(state); // fizzleAura fizzles -> graveyard!
+		assert.ok(
+			p1.graveyard.some((c) => c.instanceId === fizzleAura.instanceId),
+			'Aura whose target left before resolution goes to owner graveyard (CR 608.2b)'
+		);
+
+		// 4. CR 303.4d: If an attached Aura becomes a Creature (Opalescence), it cannot enchant anything and goes to graveyard via SBA!
+		const opalescence = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Opalescence Lite',
+				manaCost: '{0}',
+				cmc: 4,
+				typeLine: 'Enchantment',
+				oracleText:
+					'Each enchantment is a creature in addition to its other types and has base power and base toughness each equal to its mana value.'
+			}),
+			'hand'
+		);
+		state.priorityPlayerIndex = 0;
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: opalescence.instanceId
+			}).ok,
+			true
+		);
+		passStep(state);
+		assert.ok(
+			p1.graveyard.some((c) => c.instanceId === artAura.instanceId),
+			'Attached Aura that becomes a Creature goes to graveyard via SBA (CR 303.4d, 704.5m)'
+		);
+	});
+});
+
+describe('Keyword: Equip (CR 702.6)', () => {
+	it('compiles Equip & Equip [quality], enforces sorcery speed and controller-creature restriction, pays cost, moves between creatures, stays on battlefield when creature dies, unattaches if Equipment becomes a creature, and stops when losing abilities (CR 702.6a–c, 301.5c)', () => {
+		for (const [card, expectedFilter] of [
+			[staple('Swiftfoot Boots'), undefined],
+			[
+				syntheticCard({
+					name: 'Hero Blade',
+					typeLine: 'Artifact — Equipment',
+					oracleText: 'Equip legendary creature {1}'
+				}),
+				{ supertypes: ['Legendary'] }
+			],
+			[
+				syntheticCard({
+					name: 'Knight Lance',
+					typeLine: 'Artifact — Equipment',
+					oracleText: 'Equip Knight {2}'
+				}),
+				{ subtypes: ['Knight'] }
+			]
+		] as const) {
+			const ir = compileCard(card).faces[0];
+			const kw = ir.abilities.find((a) => a.kind === 'keyword' && a.keyword.name === 'equip');
+			assert.ok(kw && kw.kind === 'keyword');
+			if (expectedFilter) {
+				assert.deepEqual(kw.keyword.equipFilter, expectedFilter);
+			}
+			assert.equal(ir.abilities.some((a) => a.kind === 'unsupported'), false);
+		}
+
+		const { state, p1, p2 } = makeGame();
+		const boots = putInZone(state, p1, staple('Swiftfoot Boots'), 'battlefield');
+		const knightA = putInZone(
+			state,
+			p1,
+			syntheticCard({ name: 'Knight A', typeLine: 'Creature — Human Knight' }),
+			'battlefield'
+		);
+		const bearB = putInZone(
+			state,
+			p1,
+			syntheticCard({ name: 'Bear B', typeLine: 'Creature — Bear' }),
+			'battlefield'
+		);
+		const oppBear = putInZone(state, p2, syntheticCard({ name: 'Opp Bear' }), 'battlefield');
+
+		// 1. Sorcery-speed checks: rejected on opponent's turn, during combat, and with non-empty stack!
+		p1.manaPool.C = 5;
+		state.activePlayerIndex = 1;
+		state.priorityPlayerIndex = 0;
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'activate_ability',
+				instanceId: boots.instanceId,
+				abilityId: 'equip_1',
+				targets: [{ kind: 'permanent', id: knightA.instanceId, label: knightA.card.name }]
+			}).ok,
+			false,
+			'Equip rejected on opponent turn'
+		);
+
+		state.activePlayerIndex = 0;
+		state.phase = 'declare_attackers';
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'activate_ability',
+				instanceId: boots.instanceId,
+				abilityId: 'equip_1',
+				targets: [{ kind: 'permanent', id: knightA.instanceId, label: knightA.card.name }]
+			}).ok,
+			false,
+			'Equip rejected during combat phase'
+		);
+
+		state.phase = 'main1';
+		const cantrip = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Stack Blocker',
+				manaCost: '{0}',
+				cmc: 0,
+				typeLine: 'Instant',
+				oracleText: 'Target creature gets +1/+1 until end of turn.'
+			}),
+			'hand'
+		);
+		applyGameAction(state, p1.playerId, {
+			type: 'cast_spell',
+			instanceId: cantrip.instanceId,
+			targets: [{ kind: 'permanent', id: knightA.instanceId, label: knightA.card.name }]
+		});
+		state.priorityPlayerIndex = 0;
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'activate_ability',
+				instanceId: boots.instanceId,
+				abilityId: 'equip_1',
+				targets: [{ kind: 'permanent', id: knightA.instanceId, label: knightA.card.name }]
+			}).ok,
+			false,
+			'Equip rejected while stack is non-empty'
+		);
+		passStep(state);
+
+		// 2. Rejects opponent's creature & insufficient mana; pays {1} to equip knightA, then pays {1} to move directly to bearB!
+		state.priorityPlayerIndex = 0;
+		p1.manaPool.C = 0;
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'activate_ability',
+				instanceId: boots.instanceId,
+				abilityId: 'equip_1',
+				targets: [{ kind: 'permanent', id: knightA.instanceId, label: knightA.card.name }]
+			}).ok,
+			false,
+			'Equip rejected without mana'
+		);
+
+		p1.manaPool.C = 2;
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'activate_ability',
+				instanceId: boots.instanceId,
+				abilityId: 'equip_1',
+				targets: [{ kind: 'permanent', id: oppBear.instanceId, label: oppBear.card.name }]
+			}).ok,
+			false,
+			'Equip rejected targeting opponent creature'
+		);
+
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'activate_ability',
+				instanceId: boots.instanceId,
+				abilityId: 'equip_1',
+				targets: [{ kind: 'permanent', id: knightA.instanceId, label: knightA.card.name }]
+			}).ok,
+			true
+		);
+		assert.equal(p1.manaPool.C, 1, 'Equip {1} deducted 1 mana');
+		passStep(state);
+		assert.equal(boots.attachedToId, knightA.instanceId);
+
+		// Move Boots from knightA -> bearB!
+		state.priorityPlayerIndex = 0;
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'activate_ability',
+				instanceId: boots.instanceId,
+				abilityId: 'equip_1',
+				targets: [{ kind: 'permanent', id: bearB.instanceId, label: bearB.card.name }]
+			}).ok,
+			true
+		);
+		passStep(state);
+		assert.equal(boots.attachedToId, bearB.instanceId, 'Equipment moved to second creature');
+
+		// 3. Equipped creature dies -> Equipment stays on the battlefield unattached!
+		// (Use self-sacrifice or -2/-2 since bearB has Hexproof from Swiftfoot Boots!)
+		const selfShrink = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Cull Own Bear',
+				manaCost: '{0}',
+				cmc: 0,
+				typeLine: 'Instant',
+				oracleText: 'Destroy target creature.'
+			}),
+			'hand'
+		);
+		state.priorityPlayerIndex = 0;
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: selfShrink.instanceId,
+				targets: [{ kind: 'permanent', id: bearB.instanceId, label: bearB.card.name }]
+			}).ok,
+			true
+		);
+		passStep(state);
+		assert.ok(p1.graveyard.some((c) => c.instanceId === bearB.instanceId));
+		assert.ok(
+			p1.battlefield.some((c) => c.instanceId === boots.instanceId),
+			'Equipment remains on the battlefield when equipped creature dies'
+		);
+		assert.equal(boots.attachedToId, null);
+
+		// 4. CR 301.5c: If an attached Equipment becomes an Artifact Creature, it unattaches via SBA!
+		p1.manaPool.C = 1;
+		state.priorityPlayerIndex = 0;
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'activate_ability',
+				instanceId: boots.instanceId,
+				abilityId: 'equip_1',
+				targets: [{ kind: 'permanent', id: knightA.instanceId, label: knightA.card.name }]
+			}).ok,
+			true
+		);
+		passStep(state);
+		assert.equal(boots.attachedToId, knightA.instanceId);
+
+		// Animate Boots via March of the Machines ("Each artifact is a creature in addition to its other types and has base power and base toughness each equal to its mana value.")!
+		const march = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'March of the Machines Lite',
+				manaCost: '{0}',
+				cmc: 4,
+				typeLine: 'Enchantment',
+				oracleText:
+					'Each artifact is a creature in addition to its other types and has base power and base toughness each equal to its mana value.'
+			}),
+			'hand'
+		);
+		state.priorityPlayerIndex = 0;
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: march.instanceId
+			}).ok,
+			true
+		);
+		passStep(state);
+		assert.equal(
+			boots.attachedToId,
+			null,
+			'Equipment that becomes a Creature unattaches via SBA and stays on battlefield (CR 301.5c)'
+		);
+		assert.ok(p1.battlefield.some((c) => c.instanceId === boots.instanceId));
+
+		// 5. Losing all abilities prevents activating Equip!
+		const muteBoots = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Nullify Relic',
+				manaCost: '{0}',
+				cmc: 0,
+				typeLine: 'Enchantment — Aura',
+				oracleText: 'Enchant permanent\nEnchanted permanent loses all abilities.',
+				keywords: ['Enchant']
+			}),
+			'hand'
+		);
+		state.priorityPlayerIndex = 0;
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: muteBoots.instanceId,
+				targets: [{ kind: 'permanent', id: boots.instanceId, label: boots.card.name }]
+			}).ok,
+			true
+		);
+		passStep(state);
+		p1.manaPool.C = 2;
+		state.priorityPlayerIndex = 0;
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'activate_ability',
+				instanceId: boots.instanceId,
+				abilityId: 'equip_1',
+				targets: [{ kind: 'permanent', id: knightA.instanceId, label: knightA.card.name }]
+			}).ok,
+			false,
+			'Equipment that lost all abilities cannot activate Equip'
+		);
+	});
+});

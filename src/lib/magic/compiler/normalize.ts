@@ -31,8 +31,9 @@ export interface NormalizedFace {
 	lines: NormalizedLine[];
 }
 
-const SELF_REFERENCE =
-	/\bthis (?:creature|permanent|spell|card|artifact|enchantment|land|equipment|aura|vehicle|planeswalker|battle|saga|class|case|siege)\b/gi;
+const SELF_REFERENCE_TYPES =
+	'creature|permanent|spell|card|artifact|enchantment|land|equipment|aura|vehicle|planeswalker|battle|saga|class|case|siege';
+const SELF_REFERENCE = new RegExp(`\\bthis (?:${SELF_REFERENCE_TYPES})\\b`, 'gi');
 
 /**
  * Genuine ability words (CR 207.2c). Explicit always-allow set in case an ability word collides
@@ -569,6 +570,21 @@ export function normalizeFace(name: string, rulesText: string): NormalizedFace {
 /** Undoes the `~` replacement so legacy parsers, which match on the card's name, can read a piece. */
 export function denormalize(text: string, name: string): string {
 	return text.replace(/~/g, name);
+}
+
+/**
+ * A piece of normalized text as the card prints it, for display. `~` stands for both the card's name
+ * and "this artifact"-style references, and the two aren't interchangeable: in a granted ability
+ * ('Treasures you control have "{T}, Sacrifice this artifact: ..."') the reference is to the object
+ * that has the ability, not to the card granting it (CR 201.5). So the wording is looked up in
+ * `rulesText`; a piece that isn't found there falls back to the card's name.
+ */
+export function printedText(text: string, name: string, rulesText: string): string {
+	if (!text.includes('~')) return text;
+	const self = `(?:${selfNames(name).map(escapeRegex).join('|')}|[Tt]his (?:${SELF_REFERENCE_TYPES})\\b)`;
+	const pattern = new RegExp(text.split('~').map(escapeRegex).join(self));
+	const printed = rulesText.split('\n').map(stripReminderText).join('\n');
+	return printed.match(pattern)?.[0] ?? denormalize(text, name);
 }
 
 /** FNV-1a, 32-bit. Only used to key the compile cache; not security-sensitive. */

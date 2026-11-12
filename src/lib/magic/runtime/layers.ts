@@ -321,8 +321,9 @@ function extractInnateFromIR(card: ScryfallCard): InnateEntry[] {
 	const seenKeys = new Set<string>();
 	const addResult = (canonicalKey: string, name: string, kind: 'keyword' | 'ability') => {
 		const k = canonicalKey.toLowerCase();
-		if (seenKeys.has(k)) return;
-		seenKeys.add(k);
+		const dedupKey = k === 'protection' || k === 'ward' ? `${k}::${name.toLowerCase()}` : k;
+		if (seenKeys.has(dedupKey)) return;
+		seenKeys.add(dedupKey);
 		results.push({ canonicalKey: k, name, kind });
 	};
 
@@ -347,9 +348,11 @@ function extractInnateFromIR(card: ScryfallCard): InnateEntry[] {
 			} else if (kwName === 'ward') {
 				const costStr = ab.keyword.cost
 					? ` ${ab.keyword.cost}`
-					: ab.keyword.n !== undefined
-						? ` ${ab.keyword.n}`
-						: '';
+					: ab.keyword.param
+						? `—${ab.keyword.param}`
+						: ab.keyword.n !== undefined
+							? ` ${ab.keyword.n}`
+							: '';
 				addResult('ward', `Ward${costStr}`, 'keyword');
 			} else if (kwName === 'protection') {
 				addResult('protection', `Protection from ${ab.keyword.param ?? ''}`.trim(), 'keyword');
@@ -426,7 +429,16 @@ function extractInnateFromIR(card: ScryfallCard): InnateEntry[] {
 	// Check card.keywords for innate keywords not exclusively granted to others
 	for (const rawKw of card.keywords || []) {
 		const kwLow = rawKw.toLowerCase();
-		if (seenKeys.has(kwLow) || kwLow === 'equip' || kwLow === 'enchant') continue;
+		if (
+			seenKeys.has(kwLow) ||
+			kwLow === 'equip' ||
+			kwLow === 'enchant' ||
+			kwLow === 'protection' ||
+			kwLow === 'ward' ||
+			(kwLow === 'hexproof' && [...seenKeys].some((k) => k.startsWith('hexproof from ')))
+		) {
+			continue;
+		}
 		if (
 			(isEquipment || isAura) &&
 			!chars.types.includes('Creature') &&
@@ -620,7 +632,11 @@ function grantItem(
 ): void {
 	const keyLow = canonicalKey.toLowerCase();
 	const existingActive = work.items.find(
-		(it) => it.canonicalKey === keyLow && !it.removed && it.kind === kind
+		(it) =>
+			it.canonicalKey === keyLow &&
+			!it.removed &&
+			it.kind === kind &&
+			(keyLow !== 'protection' && keyLow !== 'ward' ? true : it.name.toLowerCase() === name.toLowerCase())
 	);
 	if (existingActive) {
 		if (!existingActive.sources.includes(sourceName)) {
@@ -1272,6 +1288,7 @@ function evaluateAttachedTypes(
 					// CR 205.4b: Changing card types or subtypes does not change supertypes.
 					target.types = [...st.mod.types];
 					target.subtypes = [...(st.mod.subtypes ?? [])];
+					target.hasAllCreatureTypes = false;
 					const superPrefix =
 						target.supertypes.length > 0 ? `${target.supertypes.join(' ')} ` : '';
 					const typeStr = target.types.join(' ');
@@ -1882,7 +1899,20 @@ function evaluatePerPermanent(
 
 		for (const gKw of target.inst.grantedKeywords || []) {
 			const gLow = gKw.toLowerCase();
-			const existingActive = target.items.find((it) => it.canonicalKey === gLow && !it.removed);
+			const gKey = gLow.startsWith('protection from ')
+				? 'protection'
+				: gLow.startsWith('ward ') || gLow.startsWith('ward—')
+					? 'ward'
+					: gLow;
+			const formattedLabel = formatKeywordLabel(gLow);
+			const existingActive = target.items.find(
+				(it) =>
+					it.canonicalKey === gKey &&
+					!it.removed &&
+					(gKey !== 'protection' && gKey !== 'ward'
+						? true
+						: it.name.toLowerCase() === formattedLabel.toLowerCase())
+			);
 			if (!existingActive) {
 				let sourceLabel = 'Temporary Effect';
 				for (const w of workList) {
@@ -1894,7 +1924,7 @@ function evaluatePerPermanent(
 						break;
 					}
 				}
-				grantItem(target, gLow, formatKeywordLabel(gLow), 'keyword', sourceLabel);
+				grantItem(target, gKey, formattedLabel, 'keyword', sourceLabel);
 			} else {
 				existingActive.grantCount = (existingActive.grantCount ?? 0) + 1;
 			}
@@ -1923,7 +1953,9 @@ function evaluatePerPermanent(
 					for (const item of target.items) {
 						if (
 							item.canonicalKey === kwLow ||
-							(kwLow === 'hexproof' && item.canonicalKey.startsWith('hexproof from '))
+							(kwLow === 'hexproof' && item.canonicalKey.startsWith('hexproof from ')) ||
+							(kwLow === 'protection' && item.canonicalKey.startsWith('protection')) ||
+							(kwLow === 'ward' && item.canonicalKey.startsWith('ward'))
 						) {
 							item.removed = true;
 							if (!item.removedBy.includes(source.name)) {
@@ -1974,9 +2006,8 @@ function buildBoardResults(workList: PermWorkState[]): BoardLayerCache['byInstan
 		const activeKeywords = breakdown.items
 			.filter((it) => it.kind === 'keyword' && !it.removed)
 			.map((it) => it.name);
-		const hasAllCreatureTypes =
-			tLine.includes('All-Types') ||
-			breakdown.items.some((it) => it.canonicalKey === 'changeling' && !it.removed);
+		// CR 613.1d, 613.5, 702.73a: Changeling applies in Layer 4 before Layer 6 ability removal.
+		const hasAllCreatureTypes = work.hasAllCreatureTypes || tLine.includes('All-Types');
 
 		const evaluated: EvaluatedPermanent = {
 			instanceId: work.inst.instanceId,
@@ -2001,7 +2032,11 @@ function buildBoardResults(workList: PermWorkState[]): BoardLayerCache['byInstan
 			keywords: activeKeywords,
 			breakdown,
 			hasSubType: (subType: string) => {
-				if (tLine.includes('Creature') && hasAllCreatureTypes && !NON_CREATURE_SUBTYPES.has(subType)) {
+				if (
+					(tLine.includes('Creature') || tLine.includes('Kindred') || tLine.includes('Tribal')) &&
+					hasAllCreatureTypes &&
+					!NON_CREATURE_SUBTYPES.has(subType)
+				) {
 					return true;
 				}
 				const subs = lowerSubtypesOf(tLine);
@@ -2349,7 +2384,11 @@ export function evaluatePermanent(state: GameState, inst: CardInstance): Evaluat
 			keywords: activeKeywords,
 			breakdown,
 			hasSubType: (subType: string) => {
-				if (tLine.includes('Creature') && hasAllCreatureTypes && !NON_CREATURE_SUBTYPES.has(subType)) {
+				if (
+					(tLine.includes('Creature') || tLine.includes('Kindred') || tLine.includes('Tribal')) &&
+					hasAllCreatureTypes &&
+					!NON_CREATURE_SUBTYPES.has(subType)
+				) {
 					return true;
 				}
 				const subs = lowerSubtypesOf(tLine);

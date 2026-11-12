@@ -52,7 +52,7 @@ import { evaluatePermanent, inspectCardContinuousBreakdown } from '../ruleTree.t
 import { enqueueChoicePrompt } from './choices.ts';
 import { emitEvent } from './events.ts';
 import { noteLayerInputsChanged } from './layerCache.ts';
-import { objectManaValue, playerCommanderCastCount } from './objectFilter.ts';
+import { matchesObjectFilter, objectManaValue, playerCommanderCastCount } from './objectFilter.ts';
 import { activeRuleModifiers, tokenMultiplier } from './replace.ts';
 import { flushTriggers, withSimultaneousDestroyLki } from './triggers.ts';
 import { nextRandom } from './random.ts';
@@ -307,15 +307,18 @@ export function permanentProtectedFromSource(
 	for (const kw of ev.activeKeywords) {
 		const low = kw.toLowerCase();
 		if (!low.startsWith('protection from ')) continue;
-		const qual = low.slice('protection from '.length).trim();
-		if (qual === 'everything') return true;
-		if (qual === 'all colors' && srcInfo.colors.length > 0) return true;
-		if (qual === 'multicolored' && srcInfo.colors.length >= 2) return true;
-		if (qual === 'monocolored' && srcInfo.colors.length === 1) return true;
-		if (qual === 'colorless' && srcInfo.colors.length === 0) return true;
-		if (colorMap[qual] && srcInfo.colors.includes(colorMap[qual])) return true;
-		if (typeMap[qual] && srcInfo.types.some((t) => t.toLowerCase() === typeMap[qual].toLowerCase())) {
-			return true;
+		const rawQual = low.slice('protection from '.length).trim();
+		const quals = rawQual.split(/\s*(?:,\s*from\s+|\s+and\s+from\s+|\s+and\s+)\s*/i);
+		for (const qual of quals) {
+			if (qual === 'everything') return true;
+			if (qual === 'all colors' && srcInfo.colors.length > 0) return true;
+			if (qual === 'multicolored' && srcInfo.colors.length >= 2) return true;
+			if (qual === 'monocolored' && srcInfo.colors.length === 1) return true;
+			if (qual === 'colorless' && srcInfo.colors.length === 0) return true;
+			if (colorMap[qual] && srcInfo.colors.includes(colorMap[qual])) return true;
+			if (typeMap[qual] && srcInfo.types.some((t) => t.toLowerCase() === typeMap[qual].toLowerCase())) {
+				return true;
+			}
 		}
 	}
 	return false;
@@ -896,7 +899,8 @@ class Run {
 		const ev = zone === 'battlefield' ? evaluatePermanent(this.state, c) : null;
 		const card = c.copiableCard ?? c.card;
 		const typeLine = ev ? ev.typeLine : card.typeLine;
-		const hasSub = (s: string) => (ev ? ev.hasSubType(s) : typeLine.includes(s));
+		const hasSub = (s: string) =>
+			ev ? ev.hasSubType(s) : matchesObjectFilter(c, { subtypes: [s] }, { state: this.state, controllerId: this.you.playerId });
 		if (f.types && !f.types.some((t) => typeLine.includes(t))) return false;
 		if (f.subtypes && !f.subtypes.some(hasSub)) return false;
 		if (f.notTypes && f.notTypes.some((t) => typeLine.includes(t))) return false;

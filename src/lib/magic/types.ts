@@ -360,6 +360,7 @@ export interface StackItem {
 	sourceLkiPower?: number;
 	sourceLkiToughness?: number;
 	declineWard?: boolean;
+	wardCost?: string;
 	/**
 	 * Phase 5: for a triggered ability put on the stack by runtime/triggers.ts, the index of the
 	 * ability in its source card's compiled abilities (compileCard(card).faces[0].abilities). Used to

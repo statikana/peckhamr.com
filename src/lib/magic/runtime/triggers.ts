@@ -19,6 +19,7 @@
  * `runtimeTriggers`) and evaluated permanents (ruleTree.ts `evaluatePermanent`).
  */
 import { compileCard } from '../compiler/index.ts';
+import { parseCost } from '../compiler/costs.ts';
 import { PROWESS_RUNTIME_TRIGGER, runtimeTriggers, type RuntimeTrigger } from '../compiler/triggers.ts';
 import type { Amount, Condition, EventFilter, EventKind, ObjectFilter, TriggerDef } from '../ir.ts';
 import { evaluatePermanent, inspectCardContinuousBreakdown, permanentHasLostAllAbilities } from '../ruleTree.ts';
@@ -924,8 +925,19 @@ function matchTargeted(state: GameState, ev: Extract<GameEvent, { kind: 'BecameT
 	const found = permanentById(state, ev.objectId);
 	if (!found) return;
 	const subject = battlefieldSubject(state, found.obj, found.controllerId);
+	const targetBreakdown = inspectCardContinuousBreakdown(found.obj, state);
 	for (const source of sources(state, 'becomesTarget')) {
 		for (const { ability, alts } of abilitiesFor(state, source, 'becomesTarget')) {
+			if (ability.ward) {
+				const wardRemoved = targetBreakdown.items.some(
+					(it) =>
+						it.canonicalKey.startsWith('ward') &&
+						it.isInnate &&
+						it.removed &&
+						it.name.toLowerCase() === ability.text.toLowerCase()
+				);
+				if (wardRemoved) continue;
+			}
 			const alt = alts.find((a) => {
 				if (a.filter.targetedBy !== 'spellOrAbility' && a.filter.targetedBy !== ev.by) return false;
 				const rel = a.filter.player?.relation ?? 'any';
@@ -941,6 +953,53 @@ function matchTargeted(state: GameState, ev: Extract<GameEvent, { kind: 'BecameT
 					targetStackItemId: ev.stackItemId
 				});
 			}
+		}
+	}
+	// CR 702.21a / 702.21b: Granted Ward instances (via continuous effects or temporary grants)
+	// also trigger separately when targeted by a spell or ability an opponent controls.
+	if (ev.controllerId !== found.controllerId) {
+		for (const item of targetBreakdown.items) {
+			if (!item.canonicalKey.startsWith('ward') || item.removed) continue;
+			let grantedCount = 0;
+			if (item.grantCount !== undefined) {
+				grantedCount = item.grantCount;
+			} else {
+				for (const src of item.sources) {
+					if (src !== 'innate') grantedCount += 1;
+				}
+			}
+			if (grantedCount <= 0) continue;
+			const rawCost = item.name.replace(/^ward\s*[—-]?\s*/i, '').trim() || '{1}';
+			const parsed = parseCost(rawCost);
+			const singleDef = parsed.defs.length === 1 && parsed.unparsed.length === 0 ? parsed.defs[0] : undefined;
+			const supported = Boolean(
+				singleDef &&
+					((singleDef.k === 'mana' && !/\{X\}/i.test(singleDef.cost)) ||
+						(singleDef.k === 'payLife' && singleDef.amount.k === 'const'))
+			);
+			if (!supported) continue;
+			const syntheticWard: RuntimeTrigger = {
+				abilityIndex: -2,
+				trigger: {
+					event: 'becomesTarget',
+					filter: { object: 'self', targetedBy: 'spellOrAbility', player: { relation: 'opponent' } }
+				},
+				effectSupported: true,
+				text: item.name,
+				ward: { cost: rawCost, costDefs: parsed.defs }
+			};
+			const source: Source = {
+				obj: found.obj,
+				card: found.obj.copiableCard ?? found.obj.card,
+				controllerId: found.controllerId,
+				zone: 'battlefield'
+			};
+			record(state, source, syntheticWard, 'becomesTarget', {
+				label: 'Ward',
+				times: grantedCount,
+				eventObject: found.obj,
+				targetStackItemId: ev.stackItemId
+			});
 		}
 	}
 }

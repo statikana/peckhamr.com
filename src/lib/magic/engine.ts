@@ -116,12 +116,14 @@ import {
 	planCosts,
 	spellAdditionalCost,
 	spellCastRestrictions,
+	spellChoosesX,
 	type CostContext,
 	type CostQuestion
 } from './runtime/costs.ts';
 export { getSuspendSpec };
 import { evaluateAmount, matchesObjectFilter, objectManaValue, type FilterContext } from './runtime/objectFilter.ts';
 import { compileCard, compiledStackItemEffects, compiledTriggerEffect, compileSpellEffects } from './compiler/index.ts';
+import { parseCost } from './compiler/costs.ts';
 import { runtimeTriggers } from './compiler/triggers.ts';
 import { buildBoardSnapshot, noteLayerInputsChanged, withStableLayerInputs } from './runtime/layerCache.ts';
 import {
@@ -534,16 +536,10 @@ export function getPlayerCommanderIdentity(player: PlayerGameState): ManaColor[]
 
 function isOverloadCastMode(
 	card: ScryfallCard | undefined,
-	xValue = 0,
 	castMode?: 'normal' | 'overload'
 ): boolean {
-	if (!card) return false;
-	const hasOverload =
-		Boolean(ALTERNATIVE_COST_KEYWORDS.overload) && keywordCost(card, 'overload') !== null;
-	if (!hasOverload) return false;
-	if (castMode === 'overload') return true;
-	if (castMode === 'normal') return false;
-	return xValue >= 1 && !/\{X\}/i.test(card.manaCost);
+	if (!card || castMode !== 'overload') return false;
+	return Boolean(ALTERNATIVE_COST_KEYWORDS.overload) && keywordCost(card, 'overload') !== null;
 }
 
 export function getSpellCostRequirement(
@@ -572,7 +568,7 @@ export function getSpellCostRequirement(
 		return req;
 	};
 
-	const isOverload = isOverloadCastMode(inst.card, xValue, castMode);
+	const isOverload = isOverloadCastMode(inst.card, castMode);
 	return applyAnyColorPermission(effectiveSpellManaCost(state, player, inst, xValue, isOverload));
 }
 
@@ -1864,8 +1860,10 @@ function applyGameActionInner(
 				return { ok: false, error: 'Card not found in your Hand, Command Zone, or playable Exile.' };
 			}
 
-			const xVal = action.xValue || 0;
+			const rawXVal = action.xValue || 0;
 			const castMode = action.castMode;
+			const isOverload = isOverloadCastMode(inst.card, castMode);
+			const xVal = isOverload && !spellChoosesX(inst.card, 'overload') ? 0 : rawXVal;
 			const legality = checkSpellCastLegality(state, actorId, inst, sourceZone, xVal, castMode);
 			if (!legality.ok) {
 				return legality;
@@ -1978,7 +1976,10 @@ function applyGameActionInner(
 
 			// Check & pay mana cost (including Commander Tax if from Command Zone, or any-color mana if exiled with Opposition Agent!)
 			const costReq = getSpellCostRequirement(actor, inst, state, xVal, castMode);
-			const manaError = `Insufficient mana to cast ${inst.card.name} (requires ${inst.card.manaCost || '{0}'}${sourceZone === 'command' && inst.commanderCastCount > 0 ? ` + {${inst.commanderCastCount * state.rules.commanderTaxIncrement}} Commander Tax` : ''}).`;
+			const displayedManaCost = isOverload
+				? (keywordCost(inst.card, 'overload') ?? inst.card.manaCost)
+				: inst.card.manaCost;
+			const manaError = `Insufficient mana to cast ${inst.card.name} (requires ${displayedManaCost || '{0}'}${sourceZone === 'command' && inst.commanderCastCount > 0 ? ` + {${inst.commanderCastCount * state.rules.commanderTaxIncrement}} Commander Tax` : ''}).`;
 			const phySpellChoice = maybeAskPhyrexianCostChoice(
 				state,
 				actor,
@@ -2050,9 +2051,7 @@ function applyGameActionInner(
 			}
 			actor.spellsCastThisTurn = (actor.spellsCastThisTurn || 0) + 1;
 
-			const resolvedCastMode: 'normal' | 'overload' = isOverloadCastMode(inst.card, xVal, castMode)
-				? 'overload'
-				: 'normal';
+			const resolvedCastMode: 'normal' | 'overload' = isOverload ? 'overload' : 'normal';
 			const stackItem: StackItem = withStackItemText(
 				{
 					id: uid('stk', state),
@@ -2084,7 +2083,7 @@ function applyGameActionInner(
 			addLog(
 				state,
 				'cast',
-				`${actor.username} cast ${inst.card.name}${sourceZone === 'command' ? ` from Command Zone (Cast #${inst.commanderCastCount})` : sourceZone === 'exile' ? ` from Exile (${exSourceName || 'Exile Permission'})` : ''}${targetDesc}.`,
+				`${actor.username} cast ${inst.card.name}${resolvedCastMode === 'overload' ? ' (Overloaded)' : ''}${sourceZone === 'command' ? ` from Command Zone (Cast #${inst.commanderCastCount})` : sourceZone === 'exile' ? ` from Exile (${exSourceName || 'Exile Permission'})` : ''}${targetDesc}.`,
 				actorId
 			);
 
@@ -2928,7 +2927,7 @@ function getBlockerRestrictionReason(
 	if (hasRestriction(state, attacker, 'cantBeBlocked')) {
 		return `Strict Rules Violation: ${attacker.card.name} cannot be blocked.`;
 	}
-	if (hasProtectionFrom(attacker, blocker.copiableCard ?? blocker.card, state)) {
+	if (hasProtectionFrom(attacker, blocker.copiableCard ?? blocker.card, state, blocker)) {
 		return `Strict Rules Violation: ${blocker.card.name} cannot block ${attacker.card.name} due to Protection (CR 702.16e).`;
 	}
 	if (hasKeyword(attacker, 'Fear', state)) {
@@ -4846,6 +4845,7 @@ function triggeredStackItem(state: GameState, t: PendingTrigger, idPrefix: strin
 			...(t.eventPlayer ? { eventPlayerId: t.eventPlayer } : {}),
 			...(t.amount !== undefined ? { eventAmount: t.amount } : {}),
 			...(t.targetStackItemId ? { eventStackItemId: t.targetStackItemId } : {}),
+			...(t.ability.ward ? { wardCost: t.ability.ward.cost } : {}),
 			eventLki: triggerEventLki(state, t)
 		},
 		t.ability.text
@@ -5384,6 +5384,20 @@ function putTriggerOnStack(state: GameState, t: PendingTrigger): StackItem | nul
 		item.targets = targetsBySpec.flat();
 	}
 	item.targetObjectVersions = captureTargetObjectVersions(state, item.targets);
+	// CR 115.1, 603.3d, 702.21a: permanents targeted as a triggered ability goes on the stack trigger Ward / becomes-target abilities.
+	for (const t of item.targets) {
+		const targeted = t.kind === 'permanent' ? findPermanentOnBoard(state, t.id) : null;
+		if (targeted) {
+			emitEvent(state, {
+				kind: 'BecameTarget',
+				objectId: t.id,
+				object: targeted.inst,
+				by: 'ability',
+				controllerId: item.controllerId,
+				stackItemId: item.id
+			});
+		}
+	}
 	return item;
 }
 
@@ -5466,6 +5480,20 @@ function resolveTriggerPrompt(
 			`${item.title} targets ${chosen.length > 0 ? chosen.map((c) => c.label).join(', ') : 'nothing'}.`,
 			item.controllerId
 		);
+		for (const t of chosen) {
+			const targeted = t.kind === 'permanent' ? findPermanentOnBoard(state, t.id) : null;
+			if (targeted) {
+				emitEvent(state, {
+					kind: 'BecameTarget',
+					objectId: t.id,
+					object: targeted.inst,
+					by: 'ability',
+					controllerId: item.controllerId,
+					stackItemId: item.id
+				});
+			}
+		}
+		flushTriggers(state);
 		return { ok: true };
 	}
 	// trigger_may: record the answer and finish resolving the ability (it stayed on the stack).
@@ -5477,8 +5505,18 @@ function resolveTriggerPrompt(
 }
 
 function itemWard(item: StackItem): { cost: string; costDefs?: CostDef[] } | undefined {
-	if (item.kind !== 'triggered' || item.triggeredAbilityIndex === undefined) return undefined;
-	return runtimeTriggers(compileCard(item.card)).find((x) => x.abilityIndex === item.triggeredAbilityIndex)?.ward;
+	if (item.kind !== 'triggered') return undefined;
+	if (item.triggeredAbilityIndex !== undefined) {
+		const compiled = runtimeTriggers(compileCard(item.card)).find(
+			(x) => x.abilityIndex === item.triggeredAbilityIndex
+		)?.ward;
+		if (compiled) return compiled;
+	}
+	if (item.wardCost !== undefined) {
+		const parsed = parseCost(item.wardCost);
+		return { cost: item.wardCost, costDefs: parsed.defs };
+	}
+	return undefined;
 }
 
 const WARD_PAYMENT_CHOICE_HANDLER = 'ward_payment_choice';
@@ -6648,6 +6686,9 @@ export function checkSuspendLegality(
 	// CR 702.62a: You can exile a card from your hand with Suspend any time you could begin to cast it
 	const activePlayer = state.players[state.activePlayerIndex];
 	const globalCheck = checkGlobalCastPermissionsAndRestrictions(state, actorId, inst, 'hand');
+	if (!globalCheck.ok) {
+		return { ok: false, error: globalCheck.error };
+	}
 	const isInstantTiming =
 		inst.card.typeLine.includes('Instant') ||
 		hasKeyword(inst, 'Flash', state) ||
@@ -7193,7 +7234,8 @@ function executeCombatDamageStep(
 
 	// CR 510.1: First compute all combat damage assignments before dealing any damage (CR 510.2).
 	const assignedDamageOnPerm = new Map<string, number>();
-	const scheduledCombats: ScheduledCombatEntry[] = [];
+	const assignedDeathtouchOnPerm = new Set<string>();
+	const scheduledCombats: ScheduledCombatEntry[] = []; [];
 
 	for (const atkEntry of state.combat.attackers) {
 		const atkPlayer = state.players.find((p) => p.playerId === atkEntry.controllerId);
@@ -7264,8 +7306,13 @@ function executeCombatDamageStep(
 					const bTough = bSnap.toughness;
 					const alreadyAssignedOrMarked =
 						assignedDamageOnPerm.get(b.instanceId) ?? bSnap.damageMarkedBefore;
-					const remTough = Math.max(1, bTough - alreadyAssignedOrMarked);
-					const lethalNeeded = atkDeathtouch ? 1 : remTough;
+					const remTough = Math.max(0, bTough - alreadyAssignedOrMarked);
+					const lethalNeeded =
+						remTough === 0 || assignedDeathtouchOnPerm.has(b.instanceId)
+							? 0
+							: atkDeathtouch
+								? 1
+								: remTough;
 
 					const isLastBlocker = i === blockers.length - 1;
 					const autoDmg =
@@ -7324,6 +7371,7 @@ function executeCombatDamageStep(
 
 					if (dmgToBlocker > 0) {
 						assignedDamageOnPerm.set(b.instanceId, alreadyAssignedOrMarked + dmgToBlocker);
+						if (atkDeathtouch) assignedDeathtouchOnPerm.add(b.instanceId);
 						attackerAssignments.push({
 							kind: 'blocker',
 							target: b,
@@ -7781,7 +7829,7 @@ function isAuraAttachmentLegal(
 	if (aura.instanceId === host.instanceId) return false;
 	if (evalAura.isCreature) return false;
 	if (host.phasedOut) return false;
-	if (hasProtectionFrom(host, aura.copiableCard ?? aura.card, state)) return false;
+	if (hasProtectionFrom(host, aura.copiableCard ?? aura.card, state, aura)) return false;
 
 	const enchantParams = getAuraEnchantParams(aura, evalAura);
 	// CR 704.5m / 303.4c: If an Aura has lost all its enchant abilities, it can't legally enchant anything.
@@ -8044,9 +8092,11 @@ export function checkStateBasedActions(state: GameState): void {
 					} else if (isEquipment && perm.attachedToId) {
 						const targetFound = findPermanentOnBoard(state, perm.attachedToId);
 						if (
+							evalPerm.isCreature ||
+							perm.instanceId === perm.attachedToId ||
 							!targetFound ||
 							!evaluatePermanent(state, targetFound.inst).typeLine.includes('Creature') ||
-							hasProtectionFrom(targetFound.inst, perm.copiableCard ?? perm.card, state)
+							hasProtectionFrom(targetFound.inst, perm.copiableCard ?? perm.card, state, perm)
 						) {
 							perm.attachedToId = null;
 							noteLayerInputsChanged(state);
@@ -8721,49 +8771,50 @@ export function matchesPermanentTypeFilter(
 export function hasProtectionFrom(
 	targetPerm: CardInstance,
 	sourceCard: ScryfallCard | undefined,
-	state: GameState
+	state: GameState,
+	sourcePerm?: CardInstance
 ): boolean {
 	if (!sourceCard || targetPerm.phasedOut) return false;
 	const evalTarget = evaluatePermanent(state, targetPerm);
-	const textsToCheck: string[] = [
-		...(evalTarget.losesAllAbilities
-			? []
-			: [
-					...keywordsOf(targetPerm.copiableCard ?? targetPerm.card).map(({ name: kwName, param }) =>
-						`${kwName}${param ? ` ${param}` : ''}`.toLowerCase()
-					),
-					...(targetPerm.copiableCard ?? targetPerm.card).keywords.map((k) => k.toLowerCase())
-				]),
-		...targetPerm.grantedKeywords.map((k) => k.toLowerCase()),
-		...evalTarget.activeKeywords.map((k) => k.toLowerCase())
-	];
-
-	const combined = textsToCheck.join('\n');
+	const combined = evalTarget.activeKeywords.map((k) => k.toLowerCase()).join('\n');
 	if (!combined.includes('protection from')) return false;
 
+	const evalSource =
+		sourcePerm && sourcePerm.zone === 'battlefield' && !sourcePerm.phasedOut
+			? evaluatePermanent(state, sourcePerm)
+			: null;
+	const srcColors = evalSource ? (sourcePerm!.isFaceDown ? [] : evalSource.colors) : sourceCard.colors;
+	const srcTypeLine = evalSource ? evalSource.typeLine : sourceCard.typeLine;
+
 	if (/protection from everything/i.test(combined)) return true;
-	if (/protection from all colors/i.test(combined) && sourceCard.colors.length > 0) return true;
-	if (/protection from multicolored/i.test(combined) && sourceCard.colors.length >= 2) return true;
-	if (/protection from monocolored/i.test(combined) && sourceCard.colors.length === 1) return true;
-	if (/protection from colorless/i.test(combined) && sourceCard.colors.length === 0) return true;
-	if (/protection from [^.\n]*\bwhite\b/i.test(combined) && sourceCard.colors.includes('W')) return true;
-	if (/protection from [^.\n]*\bblue\b/i.test(combined) && sourceCard.colors.includes('U')) return true;
-	if (/protection from [^.\n]*\bblack\b/i.test(combined) && sourceCard.colors.includes('B')) return true;
-	if (/protection from [^.\n]*\bred\b/i.test(combined) && sourceCard.colors.includes('R')) return true;
-	if (/protection from [^.\n]*\bgreen\b/i.test(combined) && sourceCard.colors.includes('G')) return true;
-	if (/protection from creatures/i.test(combined) && sourceCard.typeLine.includes('Creature')) {
+	if (/protection from all colors/i.test(combined) && srcColors.length > 0) return true;
+	if (/protection from multicolored/i.test(combined) && srcColors.length >= 2) return true;
+	if (/protection from monocolored/i.test(combined) && srcColors.length === 1) return true;
+	if (/protection from colorless/i.test(combined) && srcColors.length === 0) return true;
+	if (/protection from [^.\n]*\bwhite\b/i.test(combined) && srcColors.includes('W')) return true;
+	if (/protection from [^.\n]*\bblue\b/i.test(combined) && srcColors.includes('U')) return true;
+	if (/protection from [^.\n]*\bblack\b/i.test(combined) && srcColors.includes('B')) return true;
+	if (/protection from [^.\n]*\bred\b/i.test(combined) && srcColors.includes('R')) return true;
+	if (/protection from [^.\n]*\bgreen\b/i.test(combined) && srcColors.includes('G')) return true;
+	if (/protection from creatures/i.test(combined) && srcTypeLine.includes('Creature')) {
 		return true;
 	}
-	if (/protection from instants/i.test(combined) && sourceCard.typeLine.includes('Instant')) {
+	if (/protection from instants/i.test(combined) && srcTypeLine.includes('Instant')) {
 		return true;
 	}
-	if (/protection from sorceries/i.test(combined) && sourceCard.typeLine.includes('Sorcery')) {
+	if (/protection from sorceries/i.test(combined) && srcTypeLine.includes('Sorcery')) {
 		return true;
 	}
-	if (/protection from artifacts/i.test(combined) && sourceCard.typeLine.includes('Artifact')) {
+	if (/protection from artifacts/i.test(combined) && srcTypeLine.includes('Artifact')) {
 		return true;
 	}
-	if (/protection from enchantments/i.test(combined) && sourceCard.typeLine.includes('Enchantment')) {
+	if (/protection from enchantments/i.test(combined) && srcTypeLine.includes('Enchantment')) {
+		return true;
+	}
+	if (/protection from lands/i.test(combined) && srcTypeLine.includes('Land')) {
+		return true;
+	}
+	if (/protection from planeswalkers/i.test(combined) && srcTypeLine.includes('Planeswalker')) {
 		return true;
 	}
 
@@ -8774,52 +8825,50 @@ export function hasProtectionFrom(
 export function hasHexproofFromQuality(
 	targetPerm: CardInstance,
 	sourceCard: ScryfallCard | undefined,
-	state: GameState
+	state: GameState,
+	sourcePerm?: CardInstance
 ): boolean {
 	if (!sourceCard || targetPerm.phasedOut) return false;
 	const evalTarget = evaluatePermanent(state, targetPerm);
-	const textsToCheck: string[] = [
-		...(evalTarget.losesAllAbilities
-			? []
-			: [
-					...keywordsOf(targetPerm.copiableCard ?? targetPerm.card).map(({ name: kwName, param }) =>
-						`${kwName}${param ? ` from ${param}` : ''}`.toLowerCase()
-					),
-					...(targetPerm.copiableCard ?? targetPerm.card).keywords.map((k) => k.toLowerCase())
-				]),
-		...targetPerm.grantedKeywords.map((k) => k.toLowerCase()),
-		...evalTarget.activeKeywords.map((k) => k.toLowerCase())
-	];
-
-	const combined = textsToCheck.join('\n');
+	const combined = evalTarget.activeKeywords.map((k) => k.toLowerCase()).join('\n');
 	if (!combined.includes('hexproof from')) return false;
 
+	const evalSource =
+		sourcePerm && sourcePerm.zone === 'battlefield' && !sourcePerm.phasedOut
+			? evaluatePermanent(state, sourcePerm)
+			: null;
+	const srcColors = evalSource ? (sourcePerm!.isFaceDown ? [] : evalSource.colors) : sourceCard.colors;
+	const srcTypeLine = evalSource ? evalSource.typeLine : sourceCard.typeLine;
+
 	if (/hexproof from everything/i.test(combined)) return true;
-	if (/hexproof from all colors/i.test(combined) && sourceCard.colors.length > 0) return true;
-	if (/hexproof from multicolored/i.test(combined) && sourceCard.colors.length >= 2) return true;
-	if (/hexproof from monocolored/i.test(combined) && sourceCard.colors.length === 1) return true;
-	if (/hexproof from colorless/i.test(combined) && sourceCard.colors.length === 0) return true;
-	if (/hexproof from [^.\n]*\bwhite\b/i.test(combined) && sourceCard.colors.includes('W')) return true;
-	if (/hexproof from [^.\n]*\bblue\b/i.test(combined) && sourceCard.colors.includes('U')) return true;
-	if (/hexproof from [^.\n]*\bblack\b/i.test(combined) && sourceCard.colors.includes('B')) return true;
-	if (/hexproof from [^.\n]*\bred\b/i.test(combined) && sourceCard.colors.includes('R')) return true;
-	if (/hexproof from [^.\n]*\bgreen\b/i.test(combined) && sourceCard.colors.includes('G')) return true;
-	if (/hexproof from creatures/i.test(combined) && sourceCard.typeLine.includes('Creature')) {
+	if (/hexproof from all colors/i.test(combined) && srcColors.length > 0) return true;
+	if (/hexproof from multicolored/i.test(combined) && srcColors.length >= 2) return true;
+	if (/hexproof from monocolored/i.test(combined) && srcColors.length === 1) return true;
+	if (/hexproof from colorless/i.test(combined) && srcColors.length === 0) return true;
+	if (/hexproof from [^.\n]*\bwhite\b/i.test(combined) && srcColors.includes('W')) return true;
+	if (/hexproof from [^.\n]*\bblue\b/i.test(combined) && srcColors.includes('U')) return true;
+	if (/hexproof from [^.\n]*\bblack\b/i.test(combined) && srcColors.includes('B')) return true;
+	if (/hexproof from [^.\n]*\bred\b/i.test(combined) && srcColors.includes('R')) return true;
+	if (/hexproof from [^.\n]*\bgreen\b/i.test(combined) && srcColors.includes('G')) return true;
+	if (/hexproof from creatures/i.test(combined) && srcTypeLine.includes('Creature')) {
 		return true;
 	}
-	if (/hexproof from instants/i.test(combined) && sourceCard.typeLine.includes('Instant')) {
+	if (/hexproof from instants/i.test(combined) && srcTypeLine.includes('Instant')) {
 		return true;
 	}
-	if (/hexproof from sorceries/i.test(combined) && sourceCard.typeLine.includes('Sorcery')) {
+	if (/hexproof from sorceries/i.test(combined) && srcTypeLine.includes('Sorcery')) {
 		return true;
 	}
-	if (/hexproof from artifacts/i.test(combined) && sourceCard.typeLine.includes('Artifact')) {
+	if (/hexproof from artifacts/i.test(combined) && srcTypeLine.includes('Artifact')) {
 		return true;
 	}
-	if (/hexproof from enchantments/i.test(combined) && sourceCard.typeLine.includes('Enchantment')) {
+	if (/hexproof from enchantments/i.test(combined) && srcTypeLine.includes('Enchantment')) {
 		return true;
 	}
-	if (/hexproof from planeswalkers/i.test(combined) && sourceCard.typeLine.includes('Planeswalker')) {
+	if (/hexproof from lands/i.test(combined) && srcTypeLine.includes('Land')) {
+		return true;
+	}
+	if (/hexproof from planeswalkers/i.test(combined) && srcTypeLine.includes('Planeswalker')) {
 		return true;
 	}
 
@@ -9238,7 +9287,13 @@ export function validateChosenTargets(
 	xValue = 0,
 	castMode?: 'normal' | 'overload'
 ): { ok: boolean; error?: string } {
-	if (isOverloadCastMode(sourceCard, xValue, castMode)) {
+	if (isOverloadCastMode(sourceCard, castMode)) {
+		if (targets.length > 0) {
+			return {
+				ok: false,
+				error: `Strict Rules Violation: Overloaded ${sourceCard?.name || 'spell'} changes 'target' to 'each' and cannot have targets (CR 702.96b).`
+			};
+		}
 		return { ok: true };
 	}
 
@@ -9442,7 +9497,7 @@ function hasRequiredLegalTargetsInner(
 		return { ok: true };
 	}
 
-	if (isOverloadCastMode(sourceCard, xValue, castMode)) {
+	if (isOverloadCastMode(sourceCard, castMode)) {
 		return { ok: true };
 	}
 
@@ -9727,6 +9782,17 @@ function checkSpellCastLegalityInner(
 	if (inst.card.typeLine.includes('Land') && !inst.card.typeLine.includes('Creature')) {
 		return { ok: false, error: 'Lands are played using Play Land, not cast as spells.' };
 	}
+	if (castMode === 'overload') {
+		if (!ALTERNATIVE_COST_KEYWORDS.overload || keywordCost(inst.card, 'overload') === null) {
+			return { ok: false, error: `${inst.card.name} does not have Overload.` };
+		}
+		if (inst.castViaSuspend) {
+			return {
+				ok: false,
+				error: 'Only one alternative cost can be applied to a spell (CR 118.9a).'
+			};
+		}
+	}
 
 	const activePlayer = state.players[state.activePlayerIndex];
 	const priorityPlayer = state.players[state.priorityPlayerIndex];
@@ -9810,7 +9876,12 @@ function checkSpellCastLegalityInner(
 	}
 
 	// Check mana payment (cards with no mana cost like Ancestral Vision / Sol Talisman cannot be cast normally from hand)
-	if (inst.card.manaCost === '' && !inst.card.typeLine.includes('Land') && fromZone === 'hand') {
+	if (
+		inst.card.manaCost === '' &&
+		!inst.card.typeLine.includes('Land') &&
+		fromZone === 'hand' &&
+		!isOverloadCastMode(inst.card, castMode)
+	) {
 		return {
 			ok: false,
 			error: `${inst.card.name} has no mana cost and cannot be cast normally from hand (use Suspend instead).`

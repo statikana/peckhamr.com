@@ -1,4 +1,5 @@
 import { cardManaSteps as compiledCardManaSteps, compileCard } from './compiler/index.ts';
+import { displayAbilityText } from './compiler/support.ts';
 import type { CostDef, EffectStep, TargetSpec } from './ir.ts';
 import { effectiveAbilityManaCost } from './runtime/costs.ts';
 import {
@@ -420,7 +421,7 @@ export function getCardActivatedAbilities(
 					: Boolean(ab.isMana && ab.effect && ab.effect.length > 0);
 			const effect = ab.kind === 'activated' ? ab.effect : (ab.effect ?? []);
 			const targets = ab.kind === 'activated' ? ab.targets : (ab.targets ?? []);
-			const fullText = (ab.text ?? '').replace(/~/g, card.name);
+			const fullText = displayAbilityText(ab.text ?? '', card.name, card);
 			const colonIdx = fullText.indexOf(':');
 			const costPart = colonIdx >= 0 ? fullText.slice(0, colonIdx).trim() : '';
 			const effectPart = colonIdx >= 0 ? fullText.slice(colonIdx + 1).trim() : fullText;

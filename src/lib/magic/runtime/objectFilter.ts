@@ -221,7 +221,10 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 		if (subtypes.some((sub) => sub.toLowerCase() === s.toLowerCase())) return true;
 		// CR 702.73a: Changeling is a characteristic-defining ability that functions in all zones.
 		if (
-			types.some((t) => t.toLowerCase() === 'creature') &&
+			types.some((t) => {
+				const tl = t.toLowerCase();
+				return tl === 'creature' || tl === 'kindred' || tl === 'tribal';
+			}) &&
 			!NON_CREATURE_SUBTYPES.has(s) &&
 			!obj.isFaceDown
 		) {
