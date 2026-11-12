@@ -4,6 +4,9 @@ Audited against `engine-rewrite` (`917180b` and reconciled post-Step-F at `9ac84
 
 ---
 
+> [!WARNING]
+> **Known miscounts (checked 2026-11-12).** The table below mixes table-row counts (sections 02 and 05) with subrule counts, and the totals for 02, 03, 06 and 10 don't match their own reports. `src/lib/rules.txt` has about 2,988 numbered rules, not 2,565. Use these figures for rough proportions only. See [`../audits/02-rules-audit-arithmetic-and-cr-citations.md`](../audits/02-rules-audit-arithmetic-and-cr-citations.md).
+
 ## 1. Section-by-Section Summary
 
 | Section | Report | Rules Range | Implemented | Partial | Missing | N/A | Total Rows/Subrules |

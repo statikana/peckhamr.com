@@ -1,4 +1,8 @@
 # Rules audit: 8. Multiplayer Rules (800–811) and 9. Casual Variants (900–905) (rules.txt lines 6456–7151)
+
+> [!WARNING]
+> **Stale (checked 2026-11-12).** This report was written at `917180b` and hasn't been reconciled with the ~136 commits since. Many rows it lists as missing or partial have since been fixed, it still cites the deleted `compiler/adapter.ts` and old line numbers, and its counts don't add up. Rows marked **Updated 2026-11-12** were re-checked; treat every other row as a lead to verify against the code, not as current status. Details: [`../audits/`](../audits/README.md).
+
 Audited at engine-rewrite 917180b on 2026-11-09.
 
 ## Summary
@@ -133,7 +137,7 @@ Audited at engine-rewrite 917180b on 2026-11-09.
 | 903.4f | If a player has no commander (or colorless identity), commander color identity is undefined/empty; abilities referring to it do nothing | missing | Both IR `manaChoiceColors` (`runtime/effects.ts:1772-1775`: `return cols.length > 0 ? cols : [...FIVE_COLORS]`) and legacy mana parsers (`oracle.ts:343, 524`, `ruleTree.ts:232, 985`) fall back to all five colors `['W', 'U', 'B', 'R', 'G']` when `commanderColors(controller)` is empty! A colorless commander deck or a player without a commander can tap *Command Tower* or *Arcane Signet* for any color of mana. |
 | 903.5 | Commander deck construction rules | implemented | `validateCommanderDeck` in `scryfall.ts:491-586`. |
 | 903.5a | Deck must contain_exactly 100 cards including commander(s) | implemented | `scryfall.ts:575-578` checks `totalCards = commanders.length + mainCount !== 100`. |
-| 903.5b | Singleton rule except basic lands; interchangeable English names | partial | `scryfall.ts:532-559` enforces singleton except `BASIC_LAND_NAMES` / `Basic Land`, `MULTI_COPY_CARDS` / `"a deck can have any number of cards named"`, and `CAPPED_COPY_CARDS` (*Seven Dwarves*, *Nazgûl*). Does not deduplicate cards with interchangeable names (`oracle_id` / Universes Beyond equivalents, CR 201.3). |
+| 903.5b | Singleton rule except basic lands; interchangeable English names | partial | **Updated 2026-11-12:** `validateCommanderDeck` rejects two copies of the same Partner commander. The interchangeable-names gap below remains. *Earlier audit (may be stale):* `scryfall.ts:532-559` enforces singleton except `BASIC_LAND_NAMES` / `Basic Land`, `MULTI_COPY_CARDS` / `"a deck can have any number of cards named"`, and `CAPPED_COPY_CARDS` (*Seven Dwarves*, *Nazgûl*). Does not deduplicate cards with interchangeable names (`oracle_id` / Universes Beyond equivalents, CR 201.3). |
 | 903.5c | Card color identity must be subset of commander's color identity | implemented | `scryfall.ts:518-526, 561-568`. |
 | 903.5d | Basic land types restricted by commander's color identity | implemented | Covered by `scryfall.ts:561-568` via Scryfall's `color_identity`. |
 | 903.5e | Commander abilities that modify deck construction | partial | `areValidCommanderPartners` (`scryfall.ts:452-489`) implements Partner, Partner with [Name], Friends forever, Choose a Background, and Doctor's companion (CR 702.124). Other deck-construction modifiers (e.g. Companion, CR 702.139) are not supported. |

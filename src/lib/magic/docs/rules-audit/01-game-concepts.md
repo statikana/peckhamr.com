@@ -1,5 +1,8 @@
 # Rules audit: 1. Game Concepts (rules.txt lines 183–1278)
 
+> [!WARNING]
+> **Stale (checked 2026-11-12).** This report was written at `917180b` and hasn't been reconciled with the ~136 commits since. Many rows it lists as missing or partial have since been fixed, it still cites the deleted `compiler/adapter.ts` and old line numbers, and its counts don't add up. Rows marked **Updated 2026-11-12** were re-checked; treat every other row as a lead to verify against the code, not as current status. Details: [`../audits/`](../audits/README.md).
+
 Audited at engine-rewrite 917180b on 2026-11-09.
 
 ## Summary
