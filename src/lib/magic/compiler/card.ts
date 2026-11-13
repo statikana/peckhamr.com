@@ -165,6 +165,18 @@ export function compileFaces(card: ScryfallCard): FaceDefinition[] {
 	}
 	if (spellLines.length > 0) abilities.push(...spellAbility(norm, spellLines));
 
+	let grantIdx = 0;
+	for (const ab of abilities) {
+		if (
+			ab.kind === 'static' &&
+			ab.static.k === 'continuous' &&
+			ab.static.mod.k === 'grantAbility' &&
+			ab.static.mod.ability.kind === 'activated'
+		) {
+			ab.static.mod.ability.id = `granted_${grantIdx++}`;
+		}
+	}
+
 	return [{ name: card.name, characteristics, abilities }];
 }
 
@@ -341,7 +353,8 @@ function interpretableTrigger(effect: EffectParse): boolean {
 
 /** A colon before any quotation mark: "{2}, {T}: Draw a card." (not 'have "{T}: Add {C}."'). */
 function costColon(body: string): number {
-	const quote = body.search(/["“]/);
+	const quoteMatch = body.match(/(?:^|\s)['"“‘]/);
+	const quote = quoteMatch ? (quoteMatch.index ?? 0) + (quoteMatch[0].startsWith(' ') ? 1 : 0) : -1;
 	const colon = body.indexOf(':');
 	return colon > 0 && (quote < 0 || colon < quote) ? colon : -1;
 }

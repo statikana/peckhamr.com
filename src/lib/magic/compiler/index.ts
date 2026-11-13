@@ -14,7 +14,7 @@ import { hashText } from './normalize.ts';
 import { PROWESS_RUNTIME_TRIGGER, runtimeTriggers } from './triggers.ts';
 
 /** Bump whenever the IR produced for the same text could change. */
-export const COMPILER_VERSION = 8;
+export const COMPILER_VERSION = 9;
 
 const CACHE = new Map<string, CardDefinition>();
 
@@ -178,6 +178,22 @@ export function abilityById(card: ScryfallCard, id: string): AbilityDef | undefi
 	);
 }
 
+/** A granted activated ability inside a `grantAbility` static on `card`, by its compile-time id (`granted_0`, ...). */
+export function grantedAbilityById(card: ScryfallCard, localId: string): AbilityDef | undefined {
+	for (const a of cardAbilities(card)) {
+		if (
+			a.kind === 'static' &&
+			a.static.k === 'continuous' &&
+			a.static.mod.k === 'grantAbility' &&
+			a.static.mod.ability.kind === 'activated' &&
+			a.static.mod.ability.id === localId
+		) {
+			return a.static.mod.ability;
+		}
+	}
+	return undefined;
+}
+
 /** The compiled spell ability of an instant or sorcery, or null when it isn't automated. */
 export function compileSpellEffects(card: ScryfallCard): CompiledEffect | null {
 	if (card.backFace || card.oracleText.includes('\n//\n')) return null;
@@ -254,7 +270,13 @@ export function compiledStackItemEffects(item: StackItem): CompiledEffect | null
 		return spell;
 	}
 	if (item.kind !== 'activated') return null;
-	if (item.abilityId) return effectOf(abilityById(item.card, item.abilityId));
+	if (item.abilityId) {
+		if (item.grantSourceCard && item.abilityId.startsWith('granted:')) {
+			const localId = item.abilityId.slice(item.abilityId.lastIndexOf(':') + 1);
+			return effectOf(grantedAbilityById(item.grantSourceCard, localId));
+		}
+		return effectOf(abilityById(item.card, item.abilityId));
+	}
 	const parse = parseAbilityEffectText(item.card.name, item.oracleText ?? '');
 	return parse.unparsed.length > 0 ? null : { steps: parse.steps, targets: parse.targets, unparsed: [] };
 }

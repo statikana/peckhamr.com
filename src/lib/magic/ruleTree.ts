@@ -1,6 +1,6 @@
 import { cardManaSteps as compiledCardManaSteps, compileCard } from './compiler/index.ts';
 import { displayAbilityText } from './compiler/support.ts';
-import type { CostDef, EffectStep, TargetSpec } from './ir.ts';
+import type { ActivatedAbility, CostDef, EffectStep, TargetSpec, UnsupportedAbility } from './ir.ts';
 import { effectiveAbilityManaCost } from './runtime/costs.ts';
 import {
 	evaluatePermanent,
@@ -271,6 +271,24 @@ function opponentLandColors(state: GameState, actor: PlayerGameState): ManaColor
 				const [sub, col] = t.split(':') as [string, ManaColor];
 				if (oppEval.typeLine.includes(sub)) found.add(col);
 			}
+			const oppBreakdown = inspectCardContinuousBreakdown(oppPerm, state);
+			for (const item of oppBreakdown.items) {
+				if (item.removed || item.isInnate || !item.grantedAbility?.isMana) continue;
+				for (const s of item.grantedAbility.effect) {
+					if (s.verb !== 'addMana') continue;
+					const choice = s.params?.manaChoice;
+					if (choice === 'opponentLandColors') continue;
+					const cols: ManaColor[] =
+						choice === 'any'
+							? ['W', 'U', 'B', 'R', 'G']
+							: choice === 'commanderIdentity'
+								? oppCmdId
+								: Array.isArray(choice)
+									? choice
+									: (s.params?.mana ?? []);
+					for (const c of cols) if (c !== 'C') found.add(c);
+				}
+			}
 		}
 	}
 	return (['W', 'U', 'B', 'R', 'G'] as ManaColor[]).filter((c) => found.has(c));
@@ -318,6 +336,107 @@ function manaStepProduction(
 		colors,
 		amount: Math.max(1, totalAmount),
 		...(opponentLands ? { opponentLandColors: true } : {})
+	};
+}
+
+interface BuildEffectiveAbilityOptions {
+	idOverride?: string;
+	displayCardName: string;
+	displayCard: ScryfallCard;
+	grantSourceCard?: ScryfallCard;
+	grantSources?: string[];
+}
+
+function buildEffectiveActivatedAbility(
+	ab: ActivatedAbility | UnsupportedAbility,
+	commanderIdentity: ManaColor[],
+	resolveOpponentLandColors: (() => ManaColor[]) | undefined,
+	opts: BuildEffectiveAbilityOptions
+): EffectiveActivatedAbility | null {
+	const id = opts.idOverride ?? ab.id!;
+	const cost = ab.kind === 'activated' ? ab.cost : (ab.cost ?? []);
+	const costComplete = ab.kind === 'activated' ? true : (ab.costComplete ?? false);
+	const timing = ab.kind === 'activated' ? ab.timing : (ab.timing ?? 'instant');
+	const isMana =
+		ab.kind === 'activated'
+			? ab.isMana
+			: Boolean(ab.isMana && ab.effect && ab.effect.length > 0);
+	const effect = ab.kind === 'activated' ? ab.effect : (ab.effect ?? []);
+	const targets = ab.kind === 'activated' ? ab.targets : (ab.targets ?? []);
+	const fullText = displayAbilityText(ab.text ?? '', opts.displayCardName, opts.displayCard);
+	const colonIdx = fullText.indexOf(':');
+	const costPart = colonIdx >= 0 ? fullText.slice(0, colonIdx).trim() : '';
+	const effectPart = colonIdx >= 0 ? fullText.slice(colonIdx + 1).trim() : fullText;
+
+	const loyaltyDef = cost.find((c): c is Extract<CostDef, { k: 'loyalty' }> => c.k === 'loyalty');
+	const loyaltyCost = loyaltyDef ? loyaltyDef.delta : null;
+	const manaDef = cost.find((c): c is Extract<CostDef, { k: 'mana' }> => c.k === 'mana');
+	const manaCost = manaDef ? manaDef.cost : '';
+	const requiresTap = cost.some((c) => c.k === 'tapSelf');
+	const requiresSacrificeSelf = cost.some((c) => c.k === 'sacrifice' && c.filter === 'self');
+	const lifeDef = cost.find((c): c is Extract<CostDef, { k: 'payLife' }> => c.k === 'payLife');
+	const lifeCost = lifeDef && lifeDef.amount.k === 'const' ? lifeDef.amount.n : 0;
+
+	let producesMana: ManaColor[] = [];
+	let producesAmount = 0;
+	let hasManaProduction = false;
+	let manaAmount: EffectiveActivatedAbility['manaAmount'];
+	if (isMana) {
+		const prod = manaStepProduction(effect, commanderIdentity);
+		if (prod?.opponentLandColors) {
+			const oppColors = resolveOpponentLandColors ? resolveOpponentLandColors() : [];
+			if (oppColors.length === 0) return null;
+			producesMana = oppColors;
+			producesAmount = prod.amount;
+			hasManaProduction = true;
+		} else if (prod) {
+			producesMana = prod.colors;
+			producesAmount = prod.colors.length > 0 ? prod.amount : 0;
+			hasManaProduction = true;
+		}
+		const dynStep = effect.find((s) => s.verb === 'addMana' && s.amount && s.amount.k !== 'const');
+		if (dynStep?.amount) manaAmount = dynStep.amount;
+	}
+
+	const targetInfo = targetRequirementFromSpecs(targets);
+	const isPureTapMana = isMana && id === 'mana_tap';
+	const sourceSuffix = opts.grantSources && opts.grantSources.length > 0 ? ` (${opts.grantSources.join(', ')})` : '';
+	const maxEffectLen = opts.grantSources ? 60 : 45;
+	const baseLabel =
+		isPureTapMana && producesMana.length > 0
+			? `Tap: Add ${producesAmount > 1 ? `${producesAmount}x ` : ''}${producesMana.map((c) => `{${c}}`).join('/')}`
+			: loyaltyCost !== null
+				? `${loyaltyCost >= 0 ? `+${loyaltyCost}` : loyaltyCost}: ${effectPart.slice(0, 48)}`
+				: `${costPart}: ${effectPart.slice(0, maxEffectLen)}`;
+	const label = `${baseLabel}${sourceSuffix}`;
+	const costText = isPureTapMana
+		? '{T}'
+		: loyaltyCost !== null
+			? `${loyaltyCost >= 0 ? `+${loyaltyCost}` : loyaltyCost}`
+			: costPart;
+
+	return {
+		id,
+		label,
+		costText,
+		manaCost,
+		cost,
+		costComplete,
+		requiresTap,
+		requiresSacrificeSelf,
+		lifeCost,
+		loyaltyCost,
+		isManaAbility: isMana && hasManaProduction,
+		sorcerySpeedOnly: timing === 'sorcery',
+		...(ab.activationRestrictions?.length ? { activationRestrictions: ab.activationRestrictions } : {}),
+		producesMana,
+		producesAmount,
+		...(manaAmount ? { manaAmount } : {}),
+		...(opts.grantSourceCard ? { grantSourceCard: opts.grantSourceCard } : {}),
+		effectText: effectPart,
+		requiresTarget: targetInfo.requiresTarget,
+		targetKind: targetInfo.targetKind,
+		targetInfo
 	};
 }
 
@@ -370,39 +489,39 @@ export function getCardActivatedAbilities(
 			if (kwName === 'equip') {
 				const equipCost = kwCost ?? '{0}';
 				const filter = equipFilter ?? {};
-			const qual = [
-				...(filter.supertypes?.map((s) => s.toLowerCase()) ?? []),
-				...(filter.subtypes ?? [])
-			].join(' ');
-			const equipTargetPhrase = qual ? `${qual} creature` : 'creature';
-			const labelPrefix = qual ? `Equip ${qual} ${equipCost}` : `Equip ${equipCost}`;
-			const spec: TargetSpec = {
-				kind: 'object',
-				filter: { zone: 'battlefield', types: ['Creature'], controller: 'you', ...filter },
-				min: 1,
-				max: 1
-			};
-			const targetInfo = targetRequirementFromSpecs([spec]);
-			out.push({
-				id: ab.id ?? 'equip_0',
-				label: `${labelPrefix}: Attach to target ${equipTargetPhrase} you control`,
-				costText: labelPrefix,
-				manaCost: equipCost,
-				cost: equipCost && equipCost !== '{0}' ? [{ k: 'mana', cost: equipCost }] : [],
-				costComplete: true,
-				requiresTap: false,
-				requiresSacrificeSelf: false,
-				lifeCost: 0,
-				loyaltyCost: null,
-				isManaAbility: false,
-				sorcerySpeedOnly: true,
-				producesMana: [],
-				producesAmount: 0,
-				effectText: `Attach to target ${equipTargetPhrase} you control.`,
-				requiresTarget: true,
-				targetKind: 'controlled_creature',
-				targetInfo
-			});
+				const qual = [
+					...(filter.supertypes?.map((s) => s.toLowerCase()) ?? []),
+					...(filter.subtypes ?? [])
+				].join(' ');
+				const equipTargetPhrase = qual ? `${qual} creature` : 'creature';
+				const labelPrefix = qual ? `Equip ${qual} ${equipCost}` : `Equip ${equipCost}`;
+				const spec: TargetSpec = {
+					kind: 'object',
+					filter: { zone: 'battlefield', types: ['Creature'], controller: 'you', ...filter },
+					min: 1,
+					max: 1
+				};
+				const targetInfo = targetRequirementFromSpecs([spec]);
+				out.push({
+					id: ab.id ?? 'equip_0',
+					label: `${labelPrefix}: Attach to target ${equipTargetPhrase} you control`,
+					costText: labelPrefix,
+					manaCost: equipCost,
+					cost: equipCost && equipCost !== '{0}' ? [{ k: 'mana', cost: equipCost }] : [],
+					costComplete: true,
+					requiresTap: false,
+					requiresSacrificeSelf: false,
+					lifeCost: 0,
+					loyaltyCost: null,
+					isManaAbility: false,
+					sorcerySpeedOnly: true,
+					producesMana: [],
+					producesAmount: 0,
+					effectText: `Attach to target ${equipTargetPhrase} you control.`,
+					requiresTarget: true,
+					targetKind: 'controlled_creature',
+					targetInfo
+				});
 			}
 			continue;
 		}
@@ -412,82 +531,11 @@ export function getCardActivatedAbilities(
 			(ab.kind === 'unsupported' && ab.id && ab.id !== 'cast')
 		) {
 			if (ab.id === 'mana_tap' && out.some((x) => x.id === 'mana_tap')) continue;
-			const cost = ab.kind === 'activated' ? ab.cost : (ab.cost ?? []);
-			const costComplete = ab.kind === 'activated' ? true : (ab.costComplete ?? false);
-			const timing = ab.kind === 'activated' ? ab.timing : (ab.timing ?? 'instant');
-			const isMana =
-				ab.kind === 'activated'
-					? ab.isMana
-					: Boolean(ab.isMana && ab.effect && ab.effect.length > 0);
-			const effect = ab.kind === 'activated' ? ab.effect : (ab.effect ?? []);
-			const targets = ab.kind === 'activated' ? ab.targets : (ab.targets ?? []);
-			const fullText = displayAbilityText(ab.text ?? '', card.name, card);
-			const colonIdx = fullText.indexOf(':');
-			const costPart = colonIdx >= 0 ? fullText.slice(0, colonIdx).trim() : '';
-			const effectPart = colonIdx >= 0 ? fullText.slice(colonIdx + 1).trim() : fullText;
-
-			const loyaltyDef = cost.find((c): c is Extract<CostDef, { k: 'loyalty' }> => c.k === 'loyalty');
-			const loyaltyCost = loyaltyDef ? loyaltyDef.delta : null;
-			const manaDef = cost.find((c): c is Extract<CostDef, { k: 'mana' }> => c.k === 'mana');
-			const manaCost = manaDef ? manaDef.cost : '';
-			const requiresTap = cost.some((c) => c.k === 'tapSelf');
-			const requiresSacrificeSelf = cost.some((c) => c.k === 'sacrifice' && c.filter === 'self');
-			const lifeDef = cost.find((c): c is Extract<CostDef, { k: 'payLife' }> => c.k === 'payLife');
-			const lifeCost = lifeDef && lifeDef.amount.k === 'const' ? lifeDef.amount.n : 0;
-
-			let producesMana: ManaColor[] = [];
-			let producesAmount = 0;
-			let hasManaProduction = false;
-			if (isMana) {
-				const prod = manaStepProduction(effect, commanderIdentity);
-				if (prod?.opponentLandColors) {
-					const oppColors = resolveOpponentLandColors ? resolveOpponentLandColors() : [];
-					if (oppColors.length === 0) continue;
-					producesMana = oppColors;
-					producesAmount = prod.amount;
-					hasManaProduction = true;
-				} else if (prod) {
-					producesMana = prod.colors;
-					producesAmount = prod.colors.length > 0 ? prod.amount : 0;
-					hasManaProduction = true;
-				}
-			}
-
-			const targetInfo = targetRequirementFromSpecs(targets);
-			const isPureTapMana = isMana && ab.id === 'mana_tap';
-			const label =
-				isPureTapMana && producesMana.length > 0
-					? `Tap: Add ${producesAmount > 1 ? `${producesAmount}x ` : ''}${producesMana.map((c) => `{${c}}`).join('/')}`
-					: loyaltyCost !== null
-						? `${loyaltyCost >= 0 ? `+${loyaltyCost}` : loyaltyCost}: ${effectPart.slice(0, 48)}`
-						: `${costPart}: ${effectPart.slice(0, 45)}`;
-			const costText = isPureTapMana
-				? '{T}'
-				: loyaltyCost !== null
-					? `${loyaltyCost >= 0 ? `+${loyaltyCost}` : loyaltyCost}`
-					: costPart;
-
-			out.push({
-				id: ab.id!,
-				label,
-				costText,
-				manaCost,
-				cost,
-				costComplete,
-				requiresTap,
-				requiresSacrificeSelf,
-				lifeCost,
-				loyaltyCost,
-				isManaAbility: isMana && hasManaProduction,
-				sorcerySpeedOnly: timing === 'sorcery',
-				...(ab.activationRestrictions?.length ? { activationRestrictions: ab.activationRestrictions } : {}),
-				producesMana,
-				producesAmount,
-				effectText: effectPart,
-				requiresTarget: targetInfo.requiresTarget,
-				targetKind: targetInfo.targetKind,
-				targetInfo
+			const built = buildEffectiveActivatedAbility(ab, commanderIdentity, resolveOpponentLandColors, {
+				displayCardName: card.name,
+				displayCard: card
 			});
+			if (built) out.push(built);
 		}
 	}
 
@@ -496,7 +544,7 @@ export function getCardActivatedAbilities(
 
 /**
  * Returns the activated abilities of a permanent from its compiled IR, with continuous layer
- * grants/ability-loss and active cost modifiers applied.
+ * grants/ability-loss (CR 613.1f, 613.7) and active cost modifiers applied.
  */
 export function getEffectiveActivatedAbilities(
 	state: GameState,
@@ -505,52 +553,35 @@ export function getEffectiveActivatedAbilities(
 	commanderIdentity: ManaColor[] = []
 ): EffectiveActivatedAbility[] {
 	const breakdown = inspectCardContinuousBreakdown(perm, state);
-	const allInnateRemoved = breakdown.items.some(
-		(it) => it.isInnate && it.removed && it.removedBy.length > 0
-	);
+	const allInnateRemoved = permanentHasLostAllAbilities(perm, state).lost;
+	const resolveOppLands = () =>
+		state.lobbyCode === 'GOLDEN'
+			? (['W', 'U', 'B', 'R', 'G'] as ManaColor[])
+			: opponentLandColors(state, actor);
 
 	const effectiveCard = perm.copiableCard ?? perm.card;
-	let rawAbilities = allInnateRemoved
+	const rawAbilities: EffectiveActivatedAbility[] = allInnateRemoved
 		? []
-		: getCardActivatedAbilities(effectiveCard, commanderIdentity, () =>
-				state.lobbyCode === 'GOLDEN'
-					? (['W', 'U', 'B', 'R', 'G'] as ManaColor[])
-					: opponentLandColors(state, actor)
-			);
+		: getCardActivatedAbilities(effectiveCard, commanderIdentity, resolveOppLands);
 
-	// Add granted mana abilities from continuous type-changing effects (Imprisoned in the Moon, Song of the Dryads, Blood Moon, Urborg, Yavimaya)
+	// Add granted activated abilities from Layer 4 / Layer 6 IR (`AttributedKeywordOrEffect.grantedAbility`)
 	for (const item of breakdown.items) {
-		if (!item.removed && !item.isInnate && item.name.startsWith('Mana Ability: Add ')) {
-			const colorMatch = item.name.match(/Add \{([WUBRGC])\}/);
-			if (colorMatch) {
-				const col = colorMatch[1] as ManaColor;
-				const abId = `granted_mana_${col.toLowerCase()}`;
-				if (!rawAbilities.some((a) => a.id === abId)) {
-					rawAbilities = [
-						...rawAbilities,
-						{
-							id: abId,
-							label: `{T}: Add {${col}} (${item.sources.join(', ')})`,
-							costText: '{T}',
-							manaCost: '{0}',
-							cost: [{ k: 'tapSelf' }],
-							costComplete: true,
-							requiresTap: true,
-							requiresSacrificeSelf: false,
-							lifeCost: 0,
-							loyaltyCost: null,
-							isManaAbility: true,
-							producesMana: [col],
-							producesAmount: 1,
-							effectText: `Add {${col}}.`,
-							requiresTarget: false,
-							targetKind: 'none',
-							targetInfo: NO_TARGET_REQUIREMENT
-						}
-					];
-				}
-			}
-		}
+		if (item.removed || item.isInnate || !item.grantedAbility) continue;
+		const grantedIr = item.grantedAbility;
+		const abId = grantedIr.intrinsic
+			? grantedIr.id
+			: item.grantSourceId
+				? `granted:${item.grantSourceId}:${grantedIr.id}`
+				: grantedIr.id;
+		if (rawAbilities.some((a) => a.id === abId)) continue;
+		const built = buildEffectiveActivatedAbility(grantedIr, commanderIdentity, resolveOppLands, {
+			idOverride: abId,
+			displayCardName: effectiveCard.name,
+			displayCard: item.grantSourceCard ?? effectiveCard,
+			grantSourceCard: item.grantSourceCard,
+			grantSources: item.sources
+		});
+		if (built) rawAbilities.push(built);
 	}
 
 	return rawAbilities.map((ab) => {

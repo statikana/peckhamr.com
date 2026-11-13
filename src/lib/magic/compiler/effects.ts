@@ -1084,8 +1084,9 @@ function addMana(p: Parser, text: string, span: Span): ClauseResult {
 		p.push({ verb: 'addMana', subject: { k: 'none' }, amount: count(m[1])!, params: { manaChoice: 'any' }, span }, false);
 		return true;
 	}
-	if (/^one mana of any color in your commander's color identity$/.test(t)) {
-		p.push({ verb: 'addMana', subject: { k: 'none' }, amount: n(1), params: { manaChoice: 'commanderIdentity' }, span }, false);
+	m = t.match(/^(\S+) mana of any (?:one )?color in your commander's color identity$/);
+	if (m && count(m[1])) {
+		p.push({ verb: 'addMana', subject: { k: 'none' }, amount: count(m[1])!, params: { manaChoice: 'commanderIdentity' }, span }, false);
 		return true;
 	}
 	if (/^one mana of any color that a land an opponent controls could produce$/.test(t)) {

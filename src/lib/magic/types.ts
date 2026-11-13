@@ -1,4 +1,4 @@
-import type { ActivationRestriction, CostDef, TargetSpec } from './ir.ts';
+import type { ActivationRestriction, Amount, CostDef, TargetSpec } from './ir.ts';
 
 export type ManaColor = 'W' | 'U' | 'B' | 'R' | 'G' | 'C';
 
@@ -232,6 +232,10 @@ export interface EffectiveActivatedAbility {
 	activationRestrictions?: ActivationRestriction[];
 	producesMana: ManaColor[];
 	producesAmount: number;
+	/** Dynamic non-constant mana amount from IR, if any (transient, never serialized in GameState). */
+	manaAmount?: Amount;
+	/** Card that granted this ability via Layer 6 `grantAbility`, if granted (transient / plain card data). */
+	grantSourceCard?: ScryfallCard;
 	effectText: string;
 	requiresTarget: boolean;
 	targetKind: string;
@@ -367,8 +371,14 @@ export interface StackItem {
 	 * re-check the intervening-if condition on resolution (CR 603.4) without storing IR in state.
 	 */
 	triggeredAbilityIndex?: number;
-	/** Step F: id of an activated ability on its source card (`act_0`, `loyalty_1`, `equip_2`). */
+	/** Step F: id of an activated ability on its source card (`act_0`, `loyalty_1`, `equip_2`, or `granted:...`). */
 	abilityId?: string;
+	/**
+	 * Track A1: for a granted activated ability, the granting permanent's `ScryfallCard` so
+	 * `compiledStackItemEffects` can recompile its `grantAbility` static on resolution without
+	 * storing IR in `GameState` (even if the granter leaves the battlefield, CR 113.7a).
+	 */
+	grantSourceCard?: ScryfallCard;
 	/** Step F: chosen mode indices of a modal spell (CR 700.2, 601.2b). */
 	chosenModes?: number[];
 	/** Step F: plain-data payload for a delayed trigger created by a resolving effect. */
@@ -850,7 +860,13 @@ export type GameActionPayload =
 	| { type: 'pass_priority' }
 	| { type: 'end_turn' }
 	| { type: 'play_land'; instanceId: string; fromZone?: 'hand' | 'exile' }
-	| { type: 'tap_mana'; instanceId: string; preferredColor?: ManaColor; costPayment?: CostPayment }
+	| {
+			type: 'tap_mana';
+			instanceId: string;
+			abilityId?: string;
+			preferredColor?: ManaColor;
+			costPayment?: CostPayment;
+	  }
 	| {
 			type: 'cast_spell';
 			instanceId: string;

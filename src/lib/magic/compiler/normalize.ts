@@ -505,11 +505,20 @@ export function replaceSelfReferences(line: string, name: string): string {
 export function splitSentences(text: string, offset: number): NormalizedSentence[] {
 	const out: NormalizedSentence[] = [];
 	let inQuote = false;
+	let inSingleQuote = false;
 	let start = 0;
 	for (let i = 0; i < text.length; i++) {
 		const ch = text[i];
-		if (ch === '"' || ch === '“' || ch === '”') inQuote = ch === '“' ? true : ch === '”' ? false : !inQuote;
-		if (inQuote) continue;
+		if (!inSingleQuote && (ch === '"' || ch === '“' || ch === '”')) {
+			inQuote = ch === '“' ? true : ch === '”' ? false : !inQuote;
+		} else if (!inQuote && (ch === "'" || ch === '‘' || ch === '’')) {
+			if (!inSingleQuote && (i === 0 || text[i - 1] === ' ')) {
+				inSingleQuote = true;
+			} else if (inSingleQuote && (i === text.length - 1 || !/[a-zA-Z]/.test(text[i + 1]))) {
+				inSingleQuote = false;
+			}
+		}
+		if (inQuote || inSingleQuote) continue;
 		const atEnd = i === text.length - 1;
 		if ((ch === '.' || ch === '!') && (atEnd || text[i + 1] === ' ')) {
 			pushSentence(out, text, start, i + 1, offset);

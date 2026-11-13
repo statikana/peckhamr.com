@@ -13,7 +13,7 @@
  * Zone changes go through runtime/zones.ts `moveObject`.
  */
 import { nextRandom } from './random.ts';
-import { compileCard } from '../compiler/index.ts';
+import { compileCard, grantedAbilityById } from '../compiler/index.ts';
 import type { AbilityDef, Amount, CostDef, KeywordDef, ObjectFilter, StaticDef } from '../ir.ts';
 import { parseManaCost, type ManaCostRequirement } from '../oracle.ts';
 import { evaluatePermanent } from '../ruleTree.ts';
@@ -369,7 +369,19 @@ function effectiveAbilityManaCostInner(
  * The amount of mana a mana ability adds, if the IR says it's dynamic ("for each Elf you control",
  * "equal to ~'s power"). Null if the IR has no amount for it.
  */
-export function manaAbilityAmount(card: ScryfallCard, ab: Pick<EffectiveActivatedAbility, 'id'>): Amount | null {
+export function manaAbilityAmount(
+	card: ScryfallCard,
+	ab: Pick<EffectiveActivatedAbility, 'id'> &
+		Partial<Pick<EffectiveActivatedAbility, 'manaAmount' | 'grantSourceCard'>>
+): Amount | null {
+	if (ab.manaAmount) return ab.manaAmount;
+	if (ab.grantSourceCard && ab.id.startsWith('granted:')) {
+		const localId = ab.id.slice(ab.id.lastIndexOf(':') + 1);
+		const granted = grantedAbilityById(ab.grantSourceCard, localId);
+		if (granted?.kind !== 'activated') return null;
+		const step = granted.effect.find((e) => e.verb === 'addMana');
+		return step?.amount && step.amount.k !== 'const' ? step.amount : null;
+	}
 	const abilities = abilitiesOf(card);
 	const ir =
 		abilities.find((a) => a.kind === 'activated' && a.id === ab.id) ??

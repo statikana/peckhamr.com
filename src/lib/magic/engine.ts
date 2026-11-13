@@ -598,7 +598,9 @@ function getDynamicManaProducedAmount(
 	ab?: EffectiveActivatedAbility
 ): number {
 	const evalPerm = evaluatePermanent(state, perm);
-	if (evalPerm.losesAllAbilities) return baseAmount;
+	if (evalPerm.losesAllAbilities && (!ab || (!ab.manaAmount && !ab.grantSourceCard))) {
+		return baseAmount;
+	}
 	const pCard = perm.copiableCard ?? perm.card;
 	const fallback = { id: 'mana_tap' } as EffectiveActivatedAbility;
 	const amount = manaAbilityAmount(pCard, ab ?? fallback);
@@ -673,8 +675,82 @@ function askCostChoice(
 	return { ok: true };
 }
 
-/** Mana abilities whose whole cost is {T}: the ones auto-tapping may use (never a sacrifice). */
-function tapOnlyManaAbilities(
+function isTapOnlyManaCost(defs: CostDef[]): boolean {
+	return defs.every((d) => d.k === 'tapSelf' || (d.k === 'mana' && /^(\{0\})*$/.test(d.cost)));
+}
+
+function isSacrificeSelfNonCreatureManaCost(defs: CostDef[], isCreature: boolean): boolean {
+	if (isCreature) return false;
+	const hasSacSelf = defs.some(
+		(d) => d.k === 'sacrifice' && d.filter === 'self' && d.count.k === 'const' && d.count.n === 1
+	);
+	if (!hasSacSelf) return false;
+	return defs.every(
+		(d) =>
+			d.k === 'tapSelf' ||
+			(d.k === 'mana' && /^(\{0\})*$/.test(d.cost)) ||
+			(d.k === 'sacrifice' && d.filter === 'self' && d.count.k === 'const' && d.count.n === 1)
+	);
+}
+
+function checkActivationRestrictionsOnly(
+	state: GameState,
+	actorId: string,
+	perm: CardInstance,
+	ab: EffectiveActivatedAbility
+): { ok: boolean; error?: string } {
+	const restrictions = ab.activationRestrictions;
+	if (!restrictions?.length) return { ok: true };
+	const activePlayer = state.players[state.activePlayerIndex];
+	if (restrictions.includes('onceEachTurn') && perm.activatedAbilityIdsThisTurn?.includes(ab.id)) {
+		return {
+			ok: false,
+			error: `${perm.card.name}: This ability can only be activated once each turn.`
+		};
+	}
+	if (restrictions.includes('duringYourTurn') && activePlayer?.playerId !== actorId) {
+		return {
+			ok: false,
+			error: `${perm.card.name}: This ability can only be activated during your turn.`
+		};
+	}
+	if (
+		restrictions.includes('duringYourUpkeep') &&
+		(activePlayer?.playerId !== actorId || state.phase !== 'upkeep')
+	) {
+		return {
+			ok: false,
+			error: `${perm.card.name}: This ability can only be activated during your upkeep.`
+		};
+	}
+	if (
+		restrictions.includes('duringCombat') &&
+		!(
+			state.phase === 'begin_combat' ||
+			state.phase === 'declare_attackers' ||
+			state.phase === 'declare_blockers' ||
+			state.phase === 'first_strike_damage' ||
+			state.phase === 'combat_damage' ||
+			state.phase === 'end_combat'
+		)
+	) {
+		return {
+			ok: false,
+			error: `${perm.card.name}: This ability can only be activated during combat.`
+		};
+	}
+	return { ok: true };
+}
+
+/**
+ * Mana abilities that auto-tapping may use:
+ * - Tier 0 (preferred): `{T}`-only mana abilities (lands, mana rocks, mana dorks).
+ * - Tier 1 (fallback after `{T}`-only sources): `{T}, Sacrifice ~` mana abilities on non-creature
+ *   permanents (such as Treasure tokens).
+ * Within each cost tier, higher-output mana abilities (e.g. Goldspan's 2-mana Treasure ability)
+ * sort ahead of lower-output ones.
+ */
+function autoTapManaAbilities(
 	state: GameState,
 	player: PlayerGameState,
 	perm: CardInstance,
@@ -683,14 +759,33 @@ function tapOnlyManaAbilities(
 	if (!checkGlobalAbilityActivationRestrictions(state, player.playerId, perm).ok) {
 		return [];
 	}
-	return getEffectiveActivatedAbilities(state, player, perm, cmdIdentity).filter(
-		(a) =>
-			a.isManaAbility &&
-			a.producesMana.length > 0 &&
-			activatedAbilityCost(perm.card, a).defs.every(
-				(d) => d.k === 'tapSelf' || (d.k === 'mana' && /^(\{0\})*$/.test(d.cost))
-			)
-	);
+	const evalPerm = evaluatePermanent(state, perm);
+	const noManaCtx = costContext(state, player, perm, 0, false, null);
+	const scored: Array<{ ab: EffectiveActivatedAbility; tier: number; amount: number }> = [];
+	for (const a of getEffectiveActivatedAbilities(state, player, perm, cmdIdentity)) {
+		if (!a.isManaAbility || a.producesMana.length === 0) continue;
+		if (!checkActivationRestrictionsOnly(state, player.playerId, perm, a).ok) continue;
+		const defs = activatedAbilityCost(perm.card, a).defs;
+		let tier = -1;
+		if (isTapOnlyManaCost(defs)) {
+			tier = 0;
+		} else if (isSacrificeSelfNonCreatureManaCost(defs, evalPerm.isCreature)) {
+			if (!canPayCosts(noManaCtx, defs)) continue;
+			tier = 1;
+		}
+		if (tier < 0) continue;
+		const amount = getDynamicManaProducedAmount(
+			state,
+			player,
+			perm,
+			Math.max(1, a.producesAmount || 1),
+			a
+		);
+		if (amount <= 0) continue;
+		scored.push({ ab: a, tier, amount });
+	}
+	scored.sort((x, y) => x.tier - y.tier || y.amount - x.amount);
+	return scored.map((s) => s.ab);
 }
 
 function hasUntappedManaSources(state: GameState, player: PlayerGameState): boolean {
@@ -702,7 +797,7 @@ function hasUntappedManaSources(state: GameState, player: PlayerGameState): bool
 			if (evalPerm.isCreature && perm.summoningSick && !hasKeyword(perm, 'Haste', state)) {
 				return false;
 			}
-			return tapOnlyManaAbilities(state, player, perm, cmdIdentity).length > 0;
+			return autoTapManaAbilities(state, player, perm, cmdIdentity).length > 0;
 		})
 	);
 }
@@ -894,11 +989,40 @@ function resolveHybridCostChoice(
 	return { resolvedReq: currentReq };
 }
 
+const TAP_MANA_ABILITY_CHOICE_HANDLER = 'tap_mana_ability_choice';
 const TAP_MANA_COLOR_CHOICE_HANDLER = 'tap_mana_color_choice';
+
+registerPromptHandler(TAP_MANA_ABILITY_CHOICE_HANDLER, (state, prompt, answer) => {
+	const data = prompt.continuation?.kind === 'handler' ? prompt.continuation.data : undefined;
+	const instanceId = typeof data?.instanceId === 'string' ? data.instanceId : '';
+	const abilityIds =
+		typeof data?.abilityIdsCsv === 'string' && data.abilityIdsCsv.length > 0
+			? data.abilityIdsCsv.split('\u001f')
+			: [];
+	const idx = answer.kind === 'chooseMode' ? (answer.indices[0] ?? 0) : 0;
+	const abilityId = abilityIds[idx] ?? abilityIds[0];
+	const preferredColor =
+		typeof data?.preferredColor === 'string' && data.preferredColor.length > 0
+			? (data.preferredColor as ManaColor)
+			: undefined;
+	const costPayment =
+		typeof data?.costPaymentJson === 'string'
+			? (JSON.parse(data.costPaymentJson) as CostPayment)
+			: undefined;
+	applyGameActionInner(state, prompt.playerId, {
+		type: 'tap_mana',
+		instanceId,
+		...(abilityId ? { abilityId } : {}),
+		...(preferredColor ? { preferredColor } : {}),
+		...(costPayment ? { costPayment } : {})
+	});
+});
 
 registerPromptHandler(TAP_MANA_COLOR_CHOICE_HANDLER, (state, prompt, answer) => {
 	const data = prompt.continuation?.kind === 'handler' ? prompt.continuation.data : undefined;
 	const instanceId = typeof data?.instanceId === 'string' ? data.instanceId : '';
+	const abilityId =
+		typeof data?.abilityId === 'string' && data.abilityId.length > 0 ? data.abilityId : undefined;
 	const colors =
 		typeof data?.colorsCsv === 'string' && data.colorsCsv.length > 0
 			? (data.colorsCsv.split(',') as ManaColor[])
@@ -912,6 +1036,7 @@ registerPromptHandler(TAP_MANA_COLOR_CHOICE_HANDLER, (state, prompt, answer) => 
 	applyGameActionInner(state, prompt.playerId, {
 		type: 'tap_mana',
 		instanceId,
+		...(abilityId ? { abilityId } : {}),
 		preferredColor,
 		...(costPayment ? { costPayment } : {})
 	});
@@ -975,17 +1100,22 @@ function simulateOrExecuteManaOnly(
 		prodAmount: number,
 		ab?: EffectiveActivatedAbility
 	): number => getDynamicManaProducedAmount(state, player, perm, prodAmount, ab);
-	const tapOnly = new Map<string, EffectiveActivatedAbility[]>();
+	const autoMana = new Map<string, EffectiveActivatedAbility[]>();
 	const manaAbilitiesOf = (perm: CardInstance) => {
-		let abs = tapOnly.get(perm.instanceId);
+		let abs = autoMana.get(perm.instanceId);
 		if (!abs) {
-			abs = tapOnlyManaAbilities(state, player, perm, cmdIdentity);
-			tapOnly.set(perm.instanceId, abs);
+			abs = autoTapManaAbilities(state, player, perm, cmdIdentity);
+			autoMana.set(perm.instanceId, abs);
 		}
 		return abs;
 	};
+	const permCostTier = (perm: CardInstance): number => {
+		const abs = manaAbilitiesOf(perm);
+		return abs.some((a) => isTapOnlyManaCost(activatedAbilityCost(perm.card, a).defs)) ? 0 : 1;
+	};
 
-	// Sort untapped mana sources: most-constrained (fewest colors) first, and non-creatures before creatures
+	// Sort untapped mana sources: {T}-only before sacrifice-self (and tokens before nontokens when sacrificing),
+	// then most-constrained (fewest colors) first, then non-creatures before creatures.
 	// Read-only scan: validate the layer cache once (Phase 6c).
 	const candidates = withStableLayerInputs(state, () =>
 		player.battlefield
@@ -1002,6 +1132,14 @@ function simulateOrExecuteManaOnly(
 				return manaAbilitiesOf(perm).length > 0;
 			})
 			.sort((a, b) => {
+				const ta = permCostTier(a);
+				const tb = permCostTier(b);
+				if (ta !== tb) return ta - tb;
+				if (ta === 1) {
+					const aNonToken = a.isToken ? 0 : 1;
+					const bNonToken = b.isToken ? 0 : 1;
+					if (aNonToken !== bNonToken) return aNonToken - bNonToken;
+				}
 				const ca = manaAbilitiesOf(a)[0]?.producesMana ?? [];
 				const cb = manaAbilitiesOf(b)[0]?.producesMana ?? [];
 				if (ca.length !== cb.length) {
@@ -1063,7 +1201,15 @@ function simulateOrExecuteManaOnly(
 		for (const perm of candidates) {
 			const choice = manaChoices.get(perm.instanceId);
 			if (choice) {
-				tapPermanent(state, perm);
+				const defs = choice.ab ? activatedAbilityCost(perm.card, choice.ab).defs : [{ k: 'tapSelf' as const }];
+				if (defs.some((d) => d.k === 'sacrifice')) {
+					const ctx = costContext(state, player, perm, 0, false, null);
+					const plan = planCosts(ctx, defs);
+					if (!plan.ok || plan.question) return false;
+					payPlannedCosts(ctx, plan);
+				} else {
+					tapPermanent(state, perm);
+				}
 				resolveActivatedManaAbility(
 					state,
 					player,
@@ -1593,23 +1739,110 @@ function applyGameActionInner(
 			if (!perm || perm.phasedOut) {
 				return { ok: false, error: 'Permanent not found on your battlefield.' };
 			}
-			const evalPerm = evaluatePermanent(state, perm);
 			const cmdId = getPlayerCommanderIdentity(actor);
 			const manaAbs = getEffectiveActivatedAbilities(state, actor, perm, cmdId).filter((a) => a.isManaAbility);
 			if (manaAbs.length === 0) {
 				return { ok: false, error: `${perm.card.name} does not have an active mana ability.` };
 			}
+			const globalAbCheck = checkGlobalAbilityActivationRestrictions(state, actorId, perm);
+			if (!globalAbCheck.ok) return globalAbCheck;
+
 			const preferred = action.preferredColor;
-			const ab =
-				(preferred && manaAbs.find((a) => a.producesMana.includes(preferred))) ||
-				manaAbs.find((a) => a.producesMana.length > 0) ||
-				manaAbs[0];
+			let ab: EffectiveActivatedAbility | undefined;
+			if (action.abilityId) {
+				ab = manaAbs.find((a) => a.id === action.abilityId);
+				if (!ab) return { ok: false, error: 'Mana ability not found on this permanent.' };
+			} else {
+				const matchingAbs = preferred
+					? manaAbs.filter((a) => a.producesMana.includes(preferred))
+					: manaAbs.filter((a) => a.producesMana.length > 0);
+				const payableAbs = matchingAbs.filter((candidate) => {
+					if (!checkActivationRestrictionsOnly(state, actorId, perm, candidate).ok) return false;
+					const cDefs = activatedAbilityCost(perm.card, candidate).defs;
+					const cReq = parseManaCost(candidate.manaCost === '{0}' ? '' : candidate.manaCost);
+					const cCtx = costContext(state, actor, perm, 0, false, cReq);
+					return canPayCosts(cCtx, cDefs);
+				});
+				// Deduplicate functionally identical mana abilities (e.g. two copies of the same granter, or
+				// two {T}-only 1-mana abilities when preferredColor already fixes the output color).
+				const distinctPayableAbs: EffectiveActivatedAbility[] = [];
+				const seenSignatures = new Set<string>();
+				for (const candidate of payableAbs) {
+					const cDefs = activatedAbilityCost(perm.card, candidate).defs;
+					const amt = getDynamicManaProducedAmount(
+						state,
+						actor,
+						perm,
+						Math.max(1, candidate.producesAmount),
+						candidate
+					);
+					const colorSig = preferred ? preferred : candidate.producesMana.join(',');
+					const sig = `${JSON.stringify(cDefs)}|${JSON.stringify(candidate.activationRestrictions ?? [])}|${amt}|${colorSig}`;
+					if (!seenSignatures.has(sig)) {
+						seenSignatures.add(sig);
+						distinctPayableAbs.push(candidate);
+					}
+				}
+				if (!actor.isBot && distinctPayableAbs.length > 1) {
+					let bestIdx = 0;
+					let bestAmt = -1;
+					for (let i = 0; i < distinctPayableAbs.length; i++) {
+						const amt = getDynamicManaProducedAmount(
+							state,
+							actor,
+							perm,
+							Math.max(1, distinctPayableAbs[i].producesAmount),
+							distinctPayableAbs[i]
+						);
+						if (amt > bestAmt) {
+							bestAmt = amt;
+							bestIdx = i;
+						}
+					}
+					enqueueChoicePrompt(state, {
+						id: uid('prm', state),
+						playerId: actor.playerId,
+						kind: 'chooseMode',
+						purpose: 'generic',
+						title: `${perm.card.name} — Choose Mana Ability`,
+						description: `Choose which mana ability of ${perm.card.name} to activate.`,
+						cancellable: true,
+						continuation: {
+							kind: 'handler',
+							name: TAP_MANA_ABILITY_CHOICE_HANDLER,
+							data: {
+								instanceId: perm.instanceId,
+								abilityIdsCsv: distinctPayableAbs.map((a) => a.id).join('\u001f'),
+								preferredColor: preferred ?? null,
+								costPaymentJson: action.costPayment ? JSON.stringify(action.costPayment) : null
+							}
+						},
+						choice: {
+							kind: 'chooseMode',
+							modes: distinctPayableAbs.map((a) => a.label),
+							min: 1,
+							max: 1,
+							defaultIndices: [bestIdx]
+						}
+					});
+					return { ok: true };
+				}
+				if (payableAbs.length > 0) {
+					ab = [...payableAbs].sort(
+						(x, y) =>
+							getDynamicManaProducedAmount(state, actor, perm, Math.max(1, y.producesAmount), y) -
+							getDynamicManaProducedAmount(state, actor, perm, Math.max(1, x.producesAmount), x)
+					)[0];
+				} else {
+					ab =
+						(preferred && manaAbs.find((a) => a.producesMana.includes(preferred))) ||
+						manaAbs.find((a) => a.producesMana.length > 0) ||
+						manaAbs[0];
+				}
+			}
 			const allowedColors = ab.producesMana;
 			const chosenColor: ManaColor | undefined =
 				preferred && allowedColors.includes(preferred) ? preferred : allowedColors[0];
-
-			const globalAbCheck = checkGlobalAbilityActivationRestrictions(state, actorId, perm);
-			if (!globalAbCheck.ok) return globalAbCheck;
 
 			if (ab.activationRestrictions?.length) {
 				const manaAbLegality = checkAbilityActivationLegality(state, actorId, perm, ab);
@@ -1642,6 +1875,7 @@ function applyGameActionInner(
 						name: TAP_MANA_COLOR_CHOICE_HANDLER,
 						data: {
 							instanceId: perm.instanceId,
+							abilityId: ab.id,
 							colorsCsv: allowedColors.join(','),
 							costPaymentJson: action.costPayment ? JSON.stringify(action.costPayment) : null
 						}
@@ -1657,7 +1891,7 @@ function applyGameActionInner(
 				return { ok: true };
 			}
 
-			const baseAmount = evalPerm.losesAllAbilities ? 1 : Math.max(1, ab.producesAmount);
+			const baseAmount = Math.max(1, ab.producesAmount);
 			const amount = chosenColor ? getDynamicManaProducedAmount(state, actor, perm, baseAmount, ab) : 0;
 
 			const paid = payPlannedCosts(ctx, plan);
@@ -2133,6 +2367,7 @@ function applyGameActionInner(
 				return applyGameAction(state, actorId, {
 					type: 'tap_mana',
 					instanceId: perm.instanceId,
+					abilityId: ab.id,
 					preferredColor:
 						ab.producesMana.length === 1 || actor.isBot ? ab.producesMana[0] : undefined,
 					costPayment: action.costPayment
@@ -2216,6 +2451,7 @@ function applyGameActionInner(
 					sourceLkiPower,
 					sourceLkiToughness,
 					card: perm.card,
+					...(ab.grantSourceCard ? { grantSourceCard: ab.grantSourceCard } : {}),
 					controllerId: actorId,
 					kind: 'activated',
 					abilityId: ab.id,
@@ -9954,12 +10190,21 @@ function checkAbilityActivationLegalityInner(
 		return { ok: false, error: 'Player is not active in this game.' };
 	}
 
-	const abilityLoss = permanentHasLostAllAbilities(perm, state);
-	if (abilityLoss.lost) {
-		return {
-			ok: false,
-			error: `${perm.card.name} has lost all abilities (${abilityLoss.sources[0] || 'continuous effect'}).`
-		};
+	const effectiveAbs = getEffectiveActivatedAbilities(
+		state,
+		actor,
+		perm,
+		getPlayerCommanderIdentity(actor)
+	);
+	if (!effectiveAbs.some((a) => a.id === ab.id)) {
+		const abilityLoss = permanentHasLostAllAbilities(perm, state);
+		if (abilityLoss.lost) {
+			return {
+				ok: false,
+				error: `${perm.card.name} has lost all abilities (${abilityLoss.sources[0] || 'continuous effect'}).`
+			};
+		}
+		return { ok: false, error: `Ability not found on ${perm.card.name}.` };
 	}
 
 	// CR 101.2, 602.5b, 604.1: Global rule-modifying ability-activation restrictions (e.g. Grand Abolisher).
@@ -10198,6 +10443,10 @@ function isTargetStillValid(
 				(a) => a.id === item.abilityId
 			);
 			targetInfo = ab?.targetInfo;
+			if (!targetInfo) {
+				const comp = compiledStackItemEffects(item);
+				if (comp) targetInfo = targetRequirementFromSpecs(comp.targets);
+			}
 		} else {
 			const comp = compiledStackItemEffects(item);
 			if (comp) targetInfo = targetRequirementFromSpecs(comp.targets);

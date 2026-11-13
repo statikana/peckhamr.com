@@ -9830,13 +9830,13 @@
 		"digests": [
 			"9e2ee8095ba2dec382c00db5642ac988226f6ab66a0d085cc8de3735a7a01e67",
 			"7e9c36b0c02129ad9a644dc8cb58d27605c530800f4ae567fdeafbc0c8ae443a",
-			"2c1119f5c33cf7c76b346699550e903fb5d820ef4a23d2610b41b2a25d381ae6"
+			"08436818d132d6c755778a06f74f58816dbad99f2d6045a0d595791dbe20206f"
 		],
 		"final": {
 			"status": "active",
 			"winner": null,
 			"turn": 6,
-			"phase": "declare_attackers",
+			"phase": "main1",
 			"nextTimestamp": 277,
 			"stack": [],
 			"players": [
@@ -11329,6 +11329,23 @@
 								false
 							],
 							[
+								"crd_sjbxfw",
+								"Wrath of God",
+								"hand",
+								"bot_0",
+								"bot_0",
+								2,
+								209,
+								false,
+								false,
+								0,
+								"",
+								null,
+								"",
+								0,
+								false
+							],
+							[
 								"crd_vsn3g2",
 								"Forest",
 								"hand",
@@ -11482,6 +11499,23 @@
 								"",
 								0,
 								false
+							],
+							[
+								"cmd_ks6103",
+								"Atraxa, Praetors' Voice",
+								"battlefield",
+								"bot_0",
+								"bot_0",
+								1,
+								270,
+								false,
+								true,
+								0,
+								"",
+								null,
+								"",
+								1,
+								false
 							]
 						],
 						"graveyard": [
@@ -11518,50 +11552,15 @@
 								"",
 								0,
 								false
-							],
-							[
-								"crd_sjbxfw",
-								"Wrath of God",
-								"graveyard",
-								"bot_0",
-								"bot_0",
-								1,
-								273,
-								false,
-								false,
-								0,
-								"",
-								null,
-								"",
-								0,
-								false
 							]
 						],
 						"exile": [],
-						"command": [
-							[
-								"cmd_ks6103",
-								"Atraxa, Praetors' Voice",
-								"command",
-								"bot_0",
-								"bot_0",
-								1,
-								2,
-								false,
-								false,
-								0,
-								"",
-								null,
-								"",
-								0,
-								false
-							]
-						]
+						"command": []
 					}
 				},
 				{
 					"id": "bot_1",
-					"life": 40,
+					"life": 34,
 					"poison": 0,
 					"lost": false,
 					"zones": {
@@ -13014,40 +13013,6 @@
 								false
 							],
 							[
-								"crd_1lr88mp",
-								"Elvish Archdruid",
-								"hand",
-								"bot_1",
-								"bot_1",
-								1,
-								114,
-								false,
-								false,
-								0,
-								"",
-								null,
-								"",
-								0,
-								false
-							],
-							[
-								"crd_1mw7b30",
-								"Feed the Swarm",
-								"hand",
-								"bot_1",
-								"bot_1",
-								2,
-								203,
-								false,
-								false,
-								0,
-								"",
-								null,
-								"",
-								0,
-								false
-							],
-							[
 								"crd_fhwpfk",
 								"Swamp",
 								"hand",
@@ -13071,7 +13036,7 @@
 								"bot_1",
 								"bot_1",
 								2,
-								274,
+								271,
 								false,
 								false,
 								0,
@@ -13108,7 +13073,7 @@
 								"bot_1",
 								2,
 								212,
-								true,
+								false,
 								false,
 								0,
 								"",
@@ -13193,24 +13158,7 @@
 								"bot_1",
 								3,
 								257,
-								true,
 								false,
-								0,
-								"",
-								null,
-								"",
-								0,
-								false
-							],
-							[
-								"crd_1ouxxdx",
-								"Swamp",
-								"battlefield",
-								"bot_1",
-								"bot_1",
-								2,
-								275,
-								true,
 								false,
 								0,
 								"",
@@ -13226,6 +13174,40 @@
 								"bot_1",
 								"bot_1",
 								1,
+								259,
+								false,
+								false,
+								0,
+								"",
+								null,
+								"",
+								2,
+								false
+							],
+							[
+								"crd_1ouxxdx",
+								"Swamp",
+								"battlefield",
+								"bot_1",
+								"bot_1",
+								2,
+								272,
+								false,
+								false,
+								0,
+								"",
+								null,
+								"",
+								0,
+								false
+							],
+							[
+								"crd_1lr88mp",
+								"Elvish Archdruid",
+								"battlefield",
+								"bot_1",
+								"bot_1",
+								1,
 								277,
 								false,
 								true,
@@ -13233,7 +13215,7 @@
 								"",
 								null,
 								"",
-								3,
+								0,
 								false
 							]
 						],
@@ -13263,6 +13245,23 @@
 								"bot_1",
 								1,
 								244,
+								false,
+								false,
+								0,
+								"",
+								null,
+								"",
+								0,
+								false
+							],
+							[
+								"crd_1mw7b30",
+								"Feed the Swarm",
+								"graveyard",
+								"bot_1",
+								"bot_1",
+								1,
+								275,
 								false,
 								false,
 								0,
@@ -14921,6 +14920,23 @@
 								false
 							],
 							[
+								"cmd_aolu3f",
+								"Veyran, Voice of Duality",
+								"battlefield",
+								"bot_2",
+								"bot_2",
+								1,
+								230,
+								true,
+								false,
+								0,
+								"",
+								null,
+								"",
+								1,
+								false
+							],
+							[
 								"crd_115me3u",
 								"Mountain",
 								"battlefield",
@@ -14975,25 +14991,7 @@
 							]
 						],
 						"exile": [],
-						"command": [
-							[
-								"cmd_aolu3f",
-								"Veyran, Voice of Duality",
-								"command",
-								"bot_2",
-								"bot_2",
-								2,
-								271,
-								false,
-								false,
-								0,
-								"",
-								null,
-								"",
-								1,
-								false
-							]
-						]
+						"command": []
 					}
 				},
 				{
@@ -16682,7 +16680,7 @@
 								"bot_3",
 								"bot_3",
 								2,
-								272,
+								274,
 								false,
 								true,
 								0,
@@ -16816,19 +16814,17 @@
 				"5/declare_attackers/combat: Bot 3 declared no attackers.",
 				"6/draw/rule: Bot 0 untaps and draws a card for Turn 6.",
 				"6/main1/rule: Bot 0 played Path of Ancestry.",
-				"6/main1/cast: Bot 0 cast Wrath of God.",
-				"6/main1/cast: Wrath of God destroyed Lathril, Blade of the Elves.",
-				"6/main1/cast: Wrath of God destroyed Veyran, Voice of Duality.",
-				"6/main1/cast: Wrath of God destroyed Lathliss, Dragon Queen.",
-				"6/main1/cast: Wrath of God destroyed 3 permanent(s).",
-				"6/main1/sba: Bot 1 returned Commander Lathril, Blade of the Elves to the Command Zone.",
-				"6/main1/sba: Bot 2 returned Commander Veyran, Voice of Duality to the Command Zone.",
+				"6/main1/cast: Bot 0 cast Atraxa, Praetors' Voice from Command Zone (Cast #1).",
+				"6/main1/cast: Atraxa, Praetors' Voice entered the battlefield under Bot 0's control.",
 				"6/declare_attackers/combat: Bot 0 declared no attackers.",
+				"6/end_step/trigger: Atraxa, Praetors' Voice's End Step Trigger was put onto the Stack.",
 				"6/draw/rule: Bot 1 untaps and draws a card for Turn 6.",
 				"6/main1/rule: Bot 1 played Swamp.",
-				"6/main1/cast: Bot 1 cast Lathril, Blade of the Elves from Command Zone (Cast #3).",
-				"6/main1/cast: Lathril, Blade of the Elves entered the battlefield under Bot 1's control.",
-				"6/declare_attackers/combat: Bot 1 declared no attackers."
+				"6/main1/cast: Bot 1 cast Feed the Swarm targeting Lathliss, Dragon Queen.",
+				"6/main1/cast: Feed the Swarm destroyed Lathliss, Dragon Queen.",
+				"6/main1/life: Bot 1 lost 6 life from Feed the Swarm.",
+				"6/main1/cast: Bot 1 cast Elvish Archdruid.",
+				"6/main1/cast: Elvish Archdruid entered the battlefield under Bot 1's control."
 			]
 		}
 	}

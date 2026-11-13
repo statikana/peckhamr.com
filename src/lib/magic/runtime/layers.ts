@@ -37,6 +37,10 @@ export interface AttributedKeywordOrEffect {
 	sources: string[];
 	/** Number of non-innate grants of this item (CR 702.108b: multiple instances of prowess each trigger separately, even from same-named sources). */
 	grantCount?: number;
+	/** Granted activated ability IR and granting source metadata (derived/cached only, never stored in GameState). */
+	grantedAbility?: ActivatedAbility;
+	grantSourceCard?: ScryfallCard;
+	grantSourceId?: string;
 	removed: boolean;
 	removedBy: string[];
 }
@@ -622,13 +626,73 @@ function recordAbilityRemoval(work: PermWorkState, sourceName: string, timestamp
 	}
 }
 
+interface GrantedAbilityMeta {
+	grantedAbility: ActivatedAbility;
+	grantSourceCard?: ScryfallCard;
+	grantSourceId?: string;
+}
+
+const ZERO_SPAN: Span = { start: 0, end: 0 };
+
+function makeIntrinsicBasicManaAbility(sym: ManaColor): ActivatedAbility {
+	return {
+		kind: 'activated',
+		id: `granted_mana_${sym.toLowerCase()}`,
+		cost: [{ k: 'tapSelf' }],
+		targets: [],
+		effect: [
+			{
+				verb: 'addMana',
+				subject: { k: 'none' },
+				amount: { k: 'const', n: 1 },
+				params: { mana: [sym] },
+				span: ZERO_SPAN
+			}
+		],
+		timing: 'mana',
+		isMana: true,
+		intrinsic: true,
+		text: `{T}: Add {${sym}}.`,
+		span: ZERO_SPAN
+	};
+}
+
+function describeGrantedActivatedAbility(
+	ab: ActivatedAbility,
+	sourceInstanceId: string
+): { key: string; name: string } {
+	if (
+		ab.isMana &&
+		ab.cost.length === 1 &&
+		ab.cost[0].k === 'tapSelf' &&
+		ab.effect.length === 1 &&
+		ab.effect[0].verb === 'addMana' &&
+		ab.effect[0].amount?.k === 'const' &&
+		ab.effect[0].amount.n === 1
+	) {
+		const manaArr = ab.effect[0].params?.mana;
+		if (Array.isArray(manaArr) && manaArr.length === 1) {
+			const sym = manaArr[0] as ManaColor;
+			return { key: `mana_${sym.toLowerCase()}`, name: `Mana Ability: Add {${sym}}` };
+		}
+		if (ab.effect[0].params?.manaChoice === 'any') {
+			return { key: 'mana_any', name: 'Mana Ability: Add Any Color' };
+		}
+	}
+	const key = `granted_ab_${sourceInstanceId}_${ab.id}`;
+	const text = ab.text ?? 'Granted';
+	const name = ab.isMana ? `Mana Ability: ${text}` : `Activated Ability: ${text}`;
+	return { key, name };
+}
+
 function grantItem(
 	work: PermWorkState,
 	canonicalKey: string,
 	name: string,
 	kind: 'keyword' | 'ability' | 'stat_mod' | 'type_mod',
 	sourceName: string,
-	grantTimestamp = 0
+	grantTimestamp = 0,
+	grantMeta?: GrantedAbilityMeta
 ): void {
 	const keyLow = canonicalKey.toLowerCase();
 	const existingActive = work.items.find(
@@ -644,8 +708,15 @@ function grantItem(
 		}
 		existingActive.grantCount = (existingActive.grantCount ?? 0) + 1;
 		const prevTs = work.itemTimestamps.get(existingActive.id) ?? -Infinity;
-		if (grantTimestamp > prevTs) {
-			work.itemTimestamps.set(existingActive.id, grantTimestamp);
+		if (grantTimestamp >= prevTs) {
+			if (grantTimestamp > prevTs) {
+				work.itemTimestamps.set(existingActive.id, grantTimestamp);
+			}
+			if (grantMeta) {
+				existingActive.grantedAbility = grantMeta.grantedAbility;
+				if (grantMeta.grantSourceCard) existingActive.grantSourceCard = grantMeta.grantSourceCard;
+				if (grantMeta.grantSourceId) existingActive.grantSourceId = grantMeta.grantSourceId;
+			}
 		}
 		return;
 	}
@@ -659,6 +730,13 @@ function grantItem(
 		isInnate: false,
 		sources: [sourceName],
 		grantCount: 1,
+		...(grantMeta
+			? {
+					grantedAbility: grantMeta.grantedAbility,
+					...(grantMeta.grantSourceCard ? { grantSourceCard: grantMeta.grantSourceCard } : {}),
+					...(grantMeta.grantSourceId ? { grantSourceId: grantMeta.grantSourceId } : {})
+				}
+			: {}),
 		removed: false,
 		removedBy: []
 	});
@@ -1633,7 +1711,8 @@ function evaluatePerPermanent(
 									`Mana Ability: Add {${info.sym}}`,
 									'ability',
 									source.name,
-									source.timestamp
+									source.timestamp,
+									{ grantedAbility: makeIntrinsicBasicManaAbility(info.sym as ManaColor) }
 								);
 								grantItem(
 									target,
@@ -1644,26 +1723,30 @@ function evaluatePerPermanent(
 									source.timestamp
 								);
 							} else {
-								// Check if source also grants a mana ability (e.g. Imprisoned in the Moon)
+								// Check if source also grants an activated ability (e.g. Imprisoned in the Moon)
 								for (const st2 of source.statics) {
 									if (
 										st2.k === 'continuous' &&
 										st2.affected === 'attachedTo' &&
 										st2.mod.k === 'grantAbility' &&
-										st2.mod.ability.kind === 'activated' &&
-										st2.mod.ability.isMana
+										st2.mod.ability.kind === 'activated'
 									) {
-										const step = st2.mod.ability.effect.find((e) => e.verb === 'addMana');
-										const sym = Array.isArray(step?.params?.mana)
-											? (step.params.mana[0] as string)
-											: 'C';
+										const desc = describeGrantedActivatedAbility(
+											st2.mod.ability,
+											source.inst.instanceId
+										);
 										grantItem(
 											target,
-											`mana_${sym.toLowerCase()}`,
-											`Mana Ability: Add {${sym}}`,
+											desc.key,
+											desc.name,
 											'ability',
 											source.name,
-											source.timestamp
+											source.timestamp,
+											{
+												grantedAbility: st2.mod.ability,
+												grantSourceCard: source.baseCard,
+												grantSourceId: source.inst.instanceId
+											}
 										);
 									}
 								}
@@ -1676,6 +1759,23 @@ function evaluatePerPermanent(
 									source.timestamp
 								);
 							}
+						}
+					} else if (st.mod.k === 'grantAbility' && st.mod.ability.kind === 'activated') {
+						const alreadyGrantedInLandSet = source.statics.some(
+							(s2) =>
+								s2.k === 'continuous' &&
+								s2.affected === 'attachedTo' &&
+								s2.mod.k === 'setTypes' &&
+								s2.mod.types.includes('Land') &&
+								!(s2.mod.subtypes?.[0] && BASIC_LAND_MANA_BY_SUBTYPE[s2.mod.subtypes[0].toLowerCase()])
+						);
+						if (!alreadyGrantedInLandSet) {
+							const desc = describeGrantedActivatedAbility(st.mod.ability, source.inst.instanceId);
+							grantItem(target, desc.key, desc.name, 'ability', source.name, source.timestamp, {
+								grantedAbility: st.mod.ability,
+								grantSourceCard: source.baseCard,
+								grantSourceId: source.inst.instanceId
+							});
 						}
 					} else if (st.mod.k === 'addKeywords') {
 						for (const kw of sortGrantedKeywords(st.mod.keywords)) {
@@ -1739,7 +1839,8 @@ function evaluatePerPermanent(
 								`Mana Ability: Add {${info.sym}}`,
 								'ability',
 								source.name,
-								source.timestamp
+								source.timestamp,
+								{ grantedAbility: makeIntrinsicBasicManaAbility(info.sym as ManaColor) }
 							);
 							grantItem(
 								target,
@@ -1760,7 +1861,8 @@ function evaluatePerPermanent(
 									`Mana Ability: Add {${info.sym}}`,
 									'ability',
 									source.name,
-									source.timestamp
+									source.timestamp,
+									{ grantedAbility: makeIntrinsicBasicManaAbility(info.sym as ManaColor) }
 								);
 								grantItem(
 									target,
@@ -1786,20 +1888,14 @@ function evaluatePerPermanent(
 					} else if (
 						st.layer === '6' &&
 						st.mod.k === 'grantAbility' &&
-						st.mod.ability.kind === 'activated' &&
-						st.mod.ability.isMana
+						st.mod.ability.kind === 'activated'
 					) {
-						const step = st.mod.ability.effect.find((e) => e.verb === 'addMana');
-						if (step?.params?.manaChoice === 'any') {
-							grantItem(
-								target,
-								'mana_any',
-								'Mana Ability: Add Any Color',
-								'ability',
-								source.name,
-								source.timestamp
-							);
-						}
+						const desc = describeGrantedActivatedAbility(st.mod.ability, source.inst.instanceId);
+						grantItem(target, desc.key, desc.name, 'ability', source.name, source.timestamp, {
+							grantedAbility: st.mod.ability,
+							grantSourceCard: source.baseCard,
+							grantSourceId: source.inst.instanceId
+						});
 					} else if (st.layer === '6' && st.mod.k === 'addKeywords') {
 						if (st.affected === 'self' && !st.condition) continue; // already in innate items
 						for (const kw of sortGrantedKeywords(st.mod.keywords)) {

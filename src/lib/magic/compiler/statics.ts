@@ -13,18 +13,23 @@
 import type {
 	AbilityDef,
 	ActivatedAbility,
+	ActivationRestriction,
 	Amount,
 	Condition,
+	EffectStep,
 	EventPattern,
 	Layer,
 	LayerMod,
 	ObjectFilter,
 	ReplacementDef,
 	Span,
-	StaticDef
+	StaticDef,
+	Timing
 } from '../ir.ts';
 import type { CounterType, ManaColor, ZoneType } from '../types.ts';
 import { parseCost, parseObjectPhrase } from './costs.ts';
+import { parseEffects } from './effects.ts';
+import { staticallyInterpretable } from './interpretable.ts';
 import { splitSentences } from './normalize.ts';
 import { parseCondition } from './triggers.ts';
 
@@ -209,30 +214,66 @@ function keywordGrant(affected: Affected, keywords: string[], condition?: Condit
 	return continuous('6', affected, { k: 'addKeywords', keywords }, condition);
 }
 
-/** A quoted mana ability: "{T}: Add {C}.", "{T}: Add one mana of any color." Null otherwise. */
-function parseGrantedManaAbility(quoted: string): AbilityDef | null {
-	const m = quoted.trim().replace(/\.$/, '').match(/^(.+?): Add (.+)$/);
-	if (!m) return null;
-	const cost = parseCost(m[1]);
+function manaStepComplete(step: EffectStep): boolean {
+	return Boolean(step.params?.mana || step.params?.manaChoice);
+}
+
+/**
+ * A quoted activated ability granted by a continuous effect (CR 613.1f, 201.5):
+ * e.g. "{T}: Add {C}.", "{T}, Sacrifice ~: Add two mana of any one color.", "{1}, {T}: Draw a card."
+ * Returns null if not an activated ability or if its cost or effect cannot be fully automated.
+ */
+function parseGrantedActivatedAbility(quoted: string): ActivatedAbility | null {
+	const trimmed = quoted.trim();
+	const colon = trimmed.indexOf(':');
+	if (colon <= 0 || /^(?:when|whenever|at|choose)\b/i.test(trimmed)) return null;
+
+	const costText = trimmed.slice(0, colon).trim();
+	const effectText = trimmed.slice(colon + 1);
+	if (!costText || !effectText.trim()) return null;
+
+	const cost = parseCost(costText, 0);
 	if (cost.unparsed.length > 0) return null;
-	const span = { start: 0, end: 0 };
-	let params: NonNullable<ActivatedAbility['effect'][number]['params']>;
-	let amount = 1;
-	if (m[2] === 'one mana of any color') params = { manaChoice: 'any' };
-	else if (/^(\{[WUBRGC]\})+$/.test(m[2])) {
-		const syms = (m[2].match(/\{([WUBRGC])\}/g) || []).map((s) => s[1] as ManaColor);
-		params = { mana: syms };
-		amount = syms.length;
-	} else return null;
-	const colors = params.mana ? [...new Set(params.mana)].join('').toLowerCase() : 'any';
+
+	const effect = parseEffects(effectText, colon + 1, 'activated');
+	const sentences = splitSentences(effectText, colon + 1).map((s) => s.text.toLowerCase());
+	const isMana =
+		effect.steps.length > 0 &&
+		effect.targets.length === 0 &&
+		effect.steps.every((s) => s.verb === 'addMana');
+	const sorcery = sentences.some((s) => /^(?:activate|equip) only as a sorcery\.?$/.test(s));
+	const timing: Timing = isMana ? 'mana' : sorcery ? 'sorcery' : 'instant';
+
+	const activationRestrictions: ActivationRestriction[] = [];
+	if (sentences.some((s) => /^activate only once each turn\.?$/.test(s))) {
+		activationRestrictions.push('onceEachTurn');
+	}
+	if (sentences.some((s) => /^activate only during your turn\.?$/.test(s))) {
+		activationRestrictions.push('duringYourTurn');
+	}
+	if (sentences.some((s) => /^activate only during your upkeep\.?$/.test(s))) {
+		activationRestrictions.push('duringYourUpkeep');
+	}
+	if (sentences.some((s) => /^activate only during combat\.?$/.test(s))) {
+		activationRestrictions.push('duringCombat');
+	}
+
+	const effectOk = isMana
+		? effect.unparsed.length === 0 && effect.steps.every(manaStepComplete)
+		: staticallyInterpretable(effect);
+	if (!effectOk) return null;
+
+	const span = { start: 0, end: trimmed.length };
 	return {
 		kind: 'activated',
-		id: `granted_mana_${colors}`,
+		id: 'granted_0',
 		cost: cost.defs,
-		targets: [],
-		effect: [{ verb: 'addMana', subject: { k: 'none' }, amount: n(amount), params, span }],
-		timing: 'mana',
-		isMana: true,
+		targets: effect.targets,
+		effect: effect.steps,
+		timing,
+		isMana,
+		...(activationRestrictions.length > 0 ? { activationRestrictions } : {}),
+		text: trimmed,
 		span
 	};
 }
@@ -564,7 +605,7 @@ const attachedTypeChange: Production = (s) => {
 		[/^loses all (?:other )?abilities/, () => ((losesAll = true), true)],
 		[/^is an? (.+?)(?= with |,? and |$)/, (mm) => ((typeDesc = parseTypeDescription(mm[1])), (sawIs = true), typeDesc !== null)],
 		[/^(?:with|has) base power and toughness (\d+)\/(\d+)/, (mm) => ((basePT = [parseInt(mm[1], 10), parseInt(mm[2], 10)]), true)],
-		[/^with "([^"]+)"/, (mm) => ((granted = parseGrantedManaAbility(mm[1]) ?? undefined), granted !== undefined)],
+		[/^with (?:"([^"]+)"|'([^']+)')/, (mm) => ((granted = parseGrantedActivatedAbility(mm[1] ?? mm[2]) ?? undefined), granted !== undefined)],
 		[/^has (.+?)(?=,? and it |$)/, (mm) => ((keywords = parseKeywordList(mm[1]) ?? undefined), keywords !== undefined)]
 	];
 	while ((rest = rest.trimStart()).length > 0) {
@@ -655,10 +696,10 @@ const keywordRemoval: Production = (s) => {
  */
 function grants(condition?: Condition): Production {
 	return (s) => {
-		const quoted = s.match(/^(.+?) (?:has|have) "(.+)"$/);
+		const quoted = s.match(/^(.+?) (?:has|have) (?:"([^"]+)"|'([^']+)')$/);
 		if (quoted) {
 			const affected = parseAffected(quoted[1]);
-			const ability = parseGrantedManaAbility(quoted[2]);
+			const ability = parseGrantedActivatedAbility(quoted[2] ?? quoted[3]);
 			return affected && ability ? [continuous('6', affected, { k: 'grantAbility', ability }, condition)] : null;
 		}
 		const pt = s.match(/^(.+?) gets? ([+−-]\d+\/[+−-]\d+)(?: for each (.+?))?(?: and (?:has|have) (.+))?$/);
@@ -763,6 +804,17 @@ export function parseStaticAbility(text: string, offset = 0): StaticParse {
 		const parsed = parseSentence(sentence.text, sentence.span);
 		if (parsed && (parsed.length > 0 || items.length > 0)) items.push(...parsed);
 		else unparsed.push(sentence.span);
+	}
+	let grantIdx = 0;
+	for (const item of items) {
+		if (
+			item.kind === 'static' &&
+			item.static.k === 'continuous' &&
+			item.static.mod.k === 'grantAbility' &&
+			item.static.mod.ability.kind === 'activated'
+		) {
+			item.static.mod.ability.id = `granted_${grantIdx++}`;
+		}
 	}
 	return { items, unparsed };
 }

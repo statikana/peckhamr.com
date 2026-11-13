@@ -132,6 +132,46 @@ describe('Static grammar: continuous effects', () => {
 		assert.deepEqual(def.mod.ability.effect[0].params, { manaChoice: 'any' });
 	});
 
+	it('quoted general activated abilities (Goldspan-style mana and non-mana)', () => {
+		const [goldspan] = defs('Treasures you control have "{T}, Sacrifice ~: Add two mana of any one color."') as Array<{
+			affected: unknown;
+			mod: { k: string; ability: { kind: string; isMana: boolean; timing: string; cost: unknown[]; effect: Array<{ verb: string; amount: unknown; params: unknown }> } };
+		}>;
+		assert.deepEqual(goldspan.affected, { subtypes: ['Treasure'], controller: 'you' });
+		assert.equal(goldspan.mod.k, 'grantAbility');
+		assert.equal(goldspan.mod.ability.kind, 'activated');
+		assert.equal(goldspan.mod.ability.isMana, true);
+		assert.equal(goldspan.mod.ability.timing, 'mana');
+		assert.deepEqual(goldspan.mod.ability.cost, [
+			{ k: 'tapSelf' },
+			{ k: 'sacrifice', count: n(1), filter: 'self' }
+		]);
+		assert.equal(goldspan.mod.ability.effect[0].verb, 'addMana');
+		assert.deepEqual(goldspan.mod.ability.effect[0].amount, n(2));
+		assert.deepEqual(goldspan.mod.ability.effect[0].params, { manaChoice: 'any' });
+
+		const [drawSingleQuoted] = defs("Creatures you control have '{1}, {T}: Draw a card.'") as Array<{
+			mod: { k: string; ability: { kind: string; isMana: boolean; timing: string; cost: unknown[]; effect: Array<{ verb: string }> } };
+		}>;
+		assert.equal(drawSingleQuoted.mod.k, 'grantAbility');
+		assert.equal(drawSingleQuoted.mod.ability.isMana, false);
+		assert.equal(drawSingleQuoted.mod.ability.timing, 'instant');
+		assert.deepEqual(drawSingleQuoted.mod.ability.cost, [{ k: 'mana', cost: '{1}' }, { k: 'tapSelf' }]);
+		assert.equal(drawSingleQuoted.mod.ability.effect[0].verb, 'draw');
+
+		const [sorceryGrant] = defs('Equipped creature has "{2}, {T}: Draw a card. Activate only as a sorcery."') as Array<{
+			affected: unknown;
+			mod: { ability: { timing: string } };
+		}>;
+		assert.equal(sorceryGrant.affected, 'attachedTo');
+		assert.equal(sorceryGrant.mod.ability.timing, 'sorcery');
+
+		// Uninterpretable quoted text stays honestly unparsed rather than half-compiling.
+		unparsed('Creatures you control have "{T}: Flip a coin and do a dance."');
+		// Quoted triggered/static text is out of scope for A1 and stays unparsed.
+		unparsed('Creatures you control have "Whenever ~ attacks, draw a card."');
+	});
+
 	it('conditions: "as long as" prefixes and suffixes', () => {
 		assert.deepEqual(defs('Other creatures you control get +1/+1 as long as you control three or more artifacts.'), [
 			{
