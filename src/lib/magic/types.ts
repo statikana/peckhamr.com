@@ -321,6 +321,10 @@ export interface CardInstance {
 	copiableCard?: ScryfallCard;
 	printedCard?: ScryfallCard;
 	enteredWithX?: number;
+	/** CR 702.33d / 400.7d: total optional kicker/multikicker count paid when cast. */
+	kickedCount?: number;
+	/** CR 702.33f / 400.7d: optional kicker tags paid when cast. */
+	kickedTags?: string[];
 	phasedOut?: boolean;
 	phasedOutIndirectly?: boolean;
 	isSuspended?: boolean;
@@ -360,6 +364,9 @@ export interface CastOptionOptionalCost {
 	costDefs: CostDef[];
 	maxCount: number;
 	kickedTag?: string;
+	kickedTags?: string[];
+	/** CR 702.33g: true when paying this optional cost activates a conditional target requirement. */
+	enablesTarget?: boolean;
 }
 
 export interface CastOption {
@@ -413,6 +420,8 @@ export interface StackItem {
 	 * re-check the intervening-if condition on resolution (CR 603.4) without storing IR in state.
 	 */
 	triggeredAbilityIndex?: number;
+	/** Canonical granted keyword name when this stack trigger came from a Layer 6 keyword grant. */
+	grantedKeyword?: string;
 	/** Step F: id of an activated ability on its source card (`act_0`, `loyalty_1`, `equip_2`, or `granted:...`). */
 	abilityId?: string;
 	/**
@@ -435,6 +444,8 @@ export interface StackItem {
 	eventObjectId?: string;
 	eventObjectVersion?: number;
 	eventPlayerId?: string;
+	/** The defending player for an attack trigger (CR 702.86a). */
+	defendingPlayerId?: string;
 	eventAmount?: number;
 	/** The spell or ability that targeted the source (Ward). */
 	eventStackItemId?: string;
@@ -443,6 +454,9 @@ export interface StackItem {
 	optionalAccepted?: boolean;
 	/** Triggered abilities: targets grouped by TargetSpec index so prompted and forced specs flatten in spec order. */
 	targetsBySpec?: TargetRef[][];
+	/** LKI kicked tracking on triggered abilities whose source left the battlefield before resolution (CR 603.4). */
+	sourceKickedCount?: number;
+	sourceKickedTags?: string[];
 	/**
 	 * Step E2: resolution has started (targets re-checked, LKI captured, resolve VFX shown). Set
 	 * when a resolution pauses for a prompt, so resuming it doesn't repeat those one-time steps.
@@ -506,6 +520,7 @@ export interface SerializedPendingTrigger {
 	eventObject?: CardInstance;
 	eventPlayerId?: string;
 	eventPlayer?: string;
+	defendingPlayerId?: string;
 	targetStackItemId?: string;
 	amount?: number;
 	eventLki?: { controllerId: string; power?: number; toughness?: number };

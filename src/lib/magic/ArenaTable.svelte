@@ -208,6 +208,7 @@
 		fromZone?: 'hand' | 'command' | 'exile' | 'graveyard';
 		xValue: number;
 		optionId?: string;
+		optionalCostCounts?: Record<string, number>;
 	} | null>(null);
 
 	// Drag-and-drop state for hand and command zone cards
@@ -221,12 +222,14 @@
 		inst: CardInstance;
 		fromZone: 'hand' | 'command' | 'exile' | 'graveyard';
 		castOption?: CastOption;
+		optionalCostCounts?: Record<string, number>;
 	} | null>(null);
 	let xCostValue = $state(1);
 	let castOptionsModal = $state.raw<{
 		inst: CardInstance;
 		fromZone: 'hand' | 'command' | 'exile' | 'graveyard';
 		options: CastOption[];
+		optionalCounts: Record<string, number>;
 	} | null>(null);
 
 	// Activated abilities menu on a permanent (raw: see inspectedCard above)
@@ -1183,6 +1186,9 @@
 				fromZone: pending.fromZone,
 				xValue: pending.xValue,
 				...(pending.optionId ? { optionId: pending.optionId } : {}),
+				...(pending.optionalCostCounts && Object.keys(pending.optionalCostCounts).length > 0
+					? { optionalCostCounts: pending.optionalCostCounts }
+					: {}),
 				targets: pending.selectedTargets
 			});
 		} else if (pending.mode === 'ability' && pending.abilityId) {
@@ -1336,17 +1342,38 @@
 		}
 	}
 
+	function optionChoosesX(option: CastOption, optionalCostCounts?: Record<string, number>): boolean {
+		if (option.choosesX) return true;
+		if (!optionalCostCounts) return false;
+		return (option.optionalAdditionalCosts ?? []).some(
+			(oc) =>
+				(optionalCostCounts[oc.id] ?? 0) > 0 &&
+				(/\{X\}/i.test(oc.costDisplay) || JSON.stringify(oc.costDefs).includes('"k":"x"'))
+		);
+	}
+
 	async function proceedCastWithOption(
 		inst: CardInstance,
 		fromZone: 'hand' | 'command' | 'exile' | 'graveyard',
-		option: CastOption
+		option: CastOption,
+		optionalCostCounts?: Record<string, number>
 	) {
-		if (option.choosesX && !xCostModalCard) {
-			xCostModalCard = { inst, fromZone, castOption: option };
+		const nonZeroCounts = optionalCostCounts
+			? Object.fromEntries(Object.entries(optionalCostCounts).filter(([, v]) => v > 0))
+			: undefined;
+		const normalizedCounts =
+			nonZeroCounts && Object.keys(nonZeroCounts).length > 0 ? nonZeroCounts : undefined;
+		if (optionChoosesX(option, normalizedCounts) && !xCostModalCard) {
+			xCostModalCard = {
+				inst,
+				fromZone,
+				castOption: option,
+				...(normalizedCounts ? { optionalCostCounts: normalizedCounts } : {})
+			};
 			xCostValue = 2;
 			return;
 		}
-		await initiateCastSpell(inst, fromZone, 0, option);
+		await initiateCastSpell(inst, fromZone, 0, option, normalizedCounts);
 	}
 
 	async function handleCardClickInHandOrCommand(
@@ -1368,11 +1395,12 @@
 			}
 			return;
 		}
-		if (options.length === 1) {
+		const hasOptionalCosts = options.some((o) => (o.optionalAdditionalCosts?.length ?? 0) > 0);
+		if (options.length === 1 && !hasOptionalCosts) {
 			await proceedCastWithOption(inst, fromZone, options[0]);
 			return;
 		}
-		castOptionsModal = { inst, fromZone, options };
+		castOptionsModal = { inst, fromZone, options, optionalCounts: {} };
 	}
 
 	function openGraveyardTargetingModalIfNeeded(targetInfo: TargetRequirementInfo) {
@@ -1403,11 +1431,12 @@
 		inst: CardInstance,
 		fromZone: 'hand' | 'command' | 'exile' | 'graveyard',
 		xVal: number,
-		option?: CastOption
+		option?: CastOption,
+		optionalCostCounts?: Record<string, number>
 	) {
-		const targetInfo = getSpellTargetRequirement(inst.card);
-		const requiresTarget = option ? option.requiresTarget : targetInfo.requiresTarget;
-		if (requiresTarget && targetInfo.requiresTarget) {
+		const targetInfo = getSpellTargetRequirement(inst.card, option, optionalCostCounts);
+		const requiresTarget = targetInfo.requiresTarget && !option?.spellMods?.targetsBecomeEach;
+		if (requiresTarget) {
 			pendingTargetAction = {
 				mode: 'spell',
 				instanceId: inst.instanceId,
@@ -1417,7 +1446,10 @@
 				selectedTargets: [],
 				fromZone,
 				xValue: xVal,
-				...(option ? { optionId: option.id } : {})
+				...(option ? { optionId: option.id } : {}),
+				...(optionalCostCounts && Object.keys(optionalCostCounts).length > 0
+					? { optionalCostCounts }
+					: {})
 			};
 			openGraveyardTargetingModalIfNeeded(targetInfo);
 			return;
@@ -1429,7 +1461,10 @@
 			fromZone,
 			xValue: xVal,
 			...(option ? { optionId: option.id } : {}),
-			...(option && !option.requiresTarget ? { targets: [] } : {})
+			...(optionalCostCounts && Object.keys(optionalCostCounts).length > 0
+				? { optionalCostCounts }
+				: {}),
+			...(!requiresTarget ? { targets: [] } : {})
 		});
 	}
 
@@ -3275,6 +3310,12 @@
 									{#if item.spellMods?.castSummarySuffix}
 										<span class="stk-target">{item.spellMods.label || item.spellMods.castSummarySuffix.trim()}</span>
 									{/if}
+									{#if item.optionalCostCounts}
+										{@const paidOptionalTotal = Object.values(item.optionalCostCounts).reduce((s, n) => s + n, 0)}
+										{#if paidOptionalTotal > 0}
+											<span class="stk-target">Additional Cost{paidOptionalTotal > 1 ? ` ×${paidOptionalTotal}` : ''}</span>
+										{/if}
+									{/if}
 									{#if item.targets.length > 0}
 										<span class="stk-target">Target -> {item.targets.map((t) => t.label).join(', ')}</span>
 									{/if}
@@ -3427,24 +3468,149 @@
 
 	<!-- Cast Options Modal -->
 	{#if castOptionsModal}
+		{@const modalOptionalCosts = Array.from(
+			new Map(
+				castOptionsModal.options
+					.flatMap((o) => o.optionalAdditionalCosts ?? [])
+					.map((oc) => [oc.id, oc])
+			).values()
+		)}
 		<div class="modal-backdrop">
 			<div class="arena-modal">
 				<h3>Choose How to Cast — {castOptionsModal.inst.card.name}</h3>
 				<div class="modal-desc">
 					<ManaText text={castOptionsModal.inst.card.oracleText} size={15} />
 				</div>
+				{#if modalOptionalCosts.length > 0}
+					<div style="display:flex;flex-direction:column;gap:0.5rem;margin-bottom:0.85rem;">
+						{#each modalOptionalCosts as oc (oc.id)}
+							{@const count = castOptionsModal.optionalCounts[oc.id] ?? 0}
+							{#if oc.maxCount === 1}
+								<label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;">
+									<input
+										type="checkbox"
+										checked={count > 0}
+										onchange={(e) => {
+											if (!castOptionsModal) return;
+											const nextCount = e.currentTarget.checked ? 1 : 0;
+											castOptionsModal = {
+												...castOptionsModal,
+												optionalCounts: { ...castOptionsModal.optionalCounts, [oc.id]: nextCount }
+											};
+										}}
+									/>
+									<span>
+										Pay optional cost: <ManaText text={oc.costDisplay} size={14} />
+										{#if oc.enablesTarget}<small> (enables additional target)</small>{/if}
+									</span>
+								</label>
+							{:else}
+								<div style="display:flex;align-items:center;justify-content:space-between;gap:0.75rem;">
+									<span>
+										Optional cost (<ManaText text={oc.costDisplay} size={14} /> each)
+										{#if oc.enablesTarget}<small> (enables additional target)</small>{/if}
+									</span>
+									<div style="display:flex;align-items:center;gap:0.4rem;">
+										<button
+											type="button"
+											class="hud-btn"
+											disabled={count <= 0}
+											onclick={() => {
+												if (!castOptionsModal) return;
+												castOptionsModal = {
+													...castOptionsModal,
+													optionalCounts: {
+														...castOptionsModal.optionalCounts,
+														[oc.id]: Math.max(0, count - 1)
+													}
+												};
+											}}
+										>
+											−
+										</button>
+										<span>{count}</span>
+										<button
+											type="button"
+											class="hud-btn"
+											disabled={count >= oc.maxCount}
+											onclick={() => {
+												if (!castOptionsModal) return;
+												castOptionsModal = {
+													...castOptionsModal,
+													optionalCounts: {
+														...castOptionsModal.optionalCounts,
+														[oc.id]: Math.min(oc.maxCount, count + 1)
+													}
+												};
+											}}
+										>
+											+
+										</button>
+									</div>
+								</div>
+							{/if}
+						{/each}
+					</div>
+				{/if}
 				<div class="modal-actions">
 					{#each castOptionsModal.options as opt (opt.id)}
+						{@const optCounts = Object.fromEntries(
+							Object.entries(castOptionsModal?.optionalCounts ?? {}).filter(
+								([id, v]) => v > 0 && opt.optionalAdditionalCosts?.some((c) => c.id === id)
+							)
+						)}
+						{@const extraParts = (opt.optionalAdditionalCosts ?? [])
+							.filter((oc) => (optCounts[oc.id] ?? 0) > 0)
+							.map((oc) =>
+								optCounts[oc.id] > 1 ? `${optCounts[oc.id]}× ${oc.costDisplay}` : oc.costDisplay
+							)}
+						{@const combinedDisplay = [opt.costDisplay, ...extraParts].join(' + ')}
+						{@const isOptLegal = me
+							? optionChoosesX(opt, optCounts)
+								? checkSpellCastLegality(
+										gameState,
+										me.playerId,
+										castOptionsModal.inst,
+										castOptionsModal.fromZone,
+										0,
+										opt.id,
+										optCounts
+									).ok ||
+									checkSpellCastLegality(
+										gameState,
+										me.playerId,
+										castOptionsModal.inst,
+										castOptionsModal.fromZone,
+										1,
+										opt.id,
+										optCounts
+									).ok
+								: checkSpellCastLegality(
+										gameState,
+										me.playerId,
+										castOptionsModal.inst,
+										castOptionsModal.fromZone,
+										0,
+										opt.id,
+										optCounts
+									).ok
+							: false}
 						<button
 							type="button"
 							class="arena-main-btn can-act"
+							disabled={!isOptLegal}
 							onclick={async () => {
 								const item = castOptionsModal!;
+								const chosenOptCounts = Object.fromEntries(
+									Object.entries(item.optionalCounts).filter(
+										([id, v]) => v > 0 && opt.optionalAdditionalCosts?.some((c) => c.id === id)
+									)
+								);
 								castOptionsModal = null;
-								await proceedCastWithOption(item.inst, item.fromZone, opt);
+								await proceedCastWithOption(item.inst, item.fromZone, opt, chosenOptCounts);
 							}}
 						>
-							{opt.label} (<ManaText text={opt.costDisplay} size={14} />)
+							{opt.label} (<ManaText text={combinedDisplay} size={14} />)
 						</button>
 					{/each}
 					<button type="button" class="hud-btn" onclick={() => (castOptionsModal = null)}>
@@ -3470,7 +3636,13 @@
 						onclick={async () => {
 							const item = xCostModalCard!;
 							xCostModalCard = null;
-							await initiateCastSpell(item.inst, item.fromZone, xCostValue, item.castOption);
+							await initiateCastSpell(
+								item.inst,
+								item.fromZone,
+								xCostValue,
+								item.castOption,
+								item.optionalCostCounts
+							);
 						}}
 					>
 						Cast with X = {xCostValue}

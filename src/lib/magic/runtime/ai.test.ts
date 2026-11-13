@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { hasRestriction, runAutomatedPriorityAndBots } from '../ai.ts';
+import { executeBotStep, hasRestriction, runAutomatedPriorityAndBots } from '../ai.ts';
 import {
 	applyGameAction,
 	createCardInstance,
@@ -484,5 +484,71 @@ describe('Phase 9: Bot AI on compiled IR and evaluated permanents', () => {
 			[raider.instanceId],
 			'Bot attacked only with the unrestricted creature and skipped the cantAttack creature'
 		);
+	});
+
+	it('Bot selects affordable optional additional costs with conditional targets and falls back cleanly when unaffordable', () => {
+		const { state, p1Id, p2Id } = makeTwoPlayerState();
+		const bot = state.players[0];
+		bot.isBot = true;
+		bot.manaPool = { W: 0, U: 1, B: 0, R: 1, G: 0, C: 2 };
+
+		const oppRelic = putInZone(
+			state,
+			p2Id,
+			syntheticCard({
+				name: 'Enemy Totem',
+				manaCost: '{2}',
+				cmc: 2,
+				typeLine: 'Artifact'
+			})
+		);
+
+		const kickerSpell = syntheticCard({
+			name: 'Adaptive Burst',
+			manaCost: '{1}{U}',
+			cmc: 2,
+			typeLine: 'Sorcery',
+			oracleText: 'Kicker {1}{R}\nDraw a card.\nIf Adaptive Burst was kicked, destroy target artifact.'
+		});
+		putInZone(state, p1Id, kickerSpell, 'hand');
+
+		state.phase = 'main1';
+		state.activePlayerIndex = 0;
+		state.priorityPlayerIndex = 0;
+		assert.notEqual(executeBotStep(state, bot, state.players[state.activePlayerIndex]), 'none');
+
+		assert.equal(state.stack.length, 1);
+		assert.deepEqual(state.stack[0].optionalCostCounts, { 'kicker:0': 1 });
+
+		runAutomatedPriorityAndBots(state);
+		while (state.stack.length > 0) {
+			applyGameAction(state, p2Id, { type: 'pass_priority' });
+			runAutomatedPriorityAndBots(state);
+		}
+		assert.equal(
+			state.players[1].graveyard.some((c) => c.instanceId === oppRelic.instanceId),
+			true,
+			'Bot paid optional cost, chose conditional target, and destroyed artifact'
+		);
+
+		// Now with only base mana {1}{U}, bot still casts unkicked
+		const { state: s2, p1Id: b2Id, p2Id: o2Id } = makeTwoPlayerState();
+		const bot2 = s2.players[0];
+		bot2.isBot = true;
+		bot2.manaPool = { W: 0, U: 1, B: 0, R: 0, G: 0, C: 1 };
+		const c2 = putInZone(s2, b2Id, kickerSpell, 'hand');
+		s2.phase = 'main1';
+		s2.activePlayerIndex = 0;
+		s2.priorityPlayerIndex = 0;
+		assert.notEqual(executeBotStep(s2, bot2, s2.players[s2.activePlayerIndex]), 'none');
+		assert.equal(s2.stack.length, 1);
+		assert.equal(s2.stack[0].card.id, c2.card.id);
+		assert.equal(s2.stack[0].optionalCostCounts, undefined);
+		runAutomatedPriorityAndBots(s2);
+		while (s2.stack.length > 0) {
+			applyGameAction(s2, o2Id, { type: 'pass_priority' });
+			runAutomatedPriorityAndBots(s2);
+		}
+		assert.equal(s2.players[0].graveyard.some((c) => c.instanceId === c2.instanceId), true);
 	});
 });

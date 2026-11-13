@@ -26,6 +26,7 @@ import type {
 	StaticDef,
 	Timing
 } from '../ir.ts';
+import { STATIC_CONTINUOUS_KEYWORDS as KEYWORDS } from '../keywords.ts';
 import type { CounterType, ManaColor, ZoneType } from '../types.ts';
 import { parseCost, parseObjectPhrase } from './costs.ts';
 import { parseEffects } from './effects.ts';
@@ -90,33 +91,6 @@ const COUNTERS: Record<string, CounterType> = {
 	time: 'time'
 };
 
-const KEYWORDS = new Set([
-	'changeling',
-	'deathtouch',
-	'defender',
-	'double strike',
-	'fear',
-	'first strike',
-	'flash',
-	'flying',
-	'haste',
-	'hexproof',
-	'horsemanship',
-	'indestructible',
-	'infect',
-	'intimidate',
-	'lifelink',
-	'menace',
-	'phasing',
-	'prowess',
-	'reach',
-	'shadow',
-	'shroud',
-	'trample',
-	'vigilance',
-	'wither'
-]);
-
 /**
  * "flying, first strike, vigilance, trample, haste, and protection from black and from red" ->
  * keywords in lower case. Null unless every item is a keyword.
@@ -161,7 +135,7 @@ function singularType(word: string): string {
  */
 export function parseAffected(subject: string): Affected | null {
 	const s = subject.trim();
-	if (s === '~') return 'self';
+	if (s === '~' || /^it$/i.test(s)) return 'self';
 	if (/^(?:equipped|enchanted) (?:creature|permanent|land|artifact|planeswalker)$/i.test(s)) return 'attachedTo';
 	let phrase = s.replace(/^(?:all|each) /i, '');
 	let controller: ObjectFilter['controller'];
@@ -336,19 +310,68 @@ const replacements: Production = (s, span) => {
 		];
 	}
 	const entersSelf: EventPattern = { event: 'zoneChange', filter: { object: 'self', to: 'battlefield' } };
-	if (/^~ enters (?:the battlefield )?tapped$/i.test(s)) {
-		return [{ kind: 'replacement', replacement: { replaces: entersSelf, with: { k: 'modify', tapped: true } } }];
-	}
-	const counters = s.match(/^~ enters (?:the battlefield )?with (\S+) (\S+) counters? on it$/i);
-	if (counters) {
-		const amount = count(counters[1]);
-		const counter = COUNTERS[counters[2].toLowerCase()];
-		if (amount && counter) {
-			return [{ kind: 'replacement', replacement: { replaces: entersSelf, with: { k: 'modify', counters: { counter, amount } } } }];
+	const parseSelfEtbModify = (body: string): ReplacementDef['with'] | null => {
+		if (/^~ enters (?:the battlefield )?tapped$/i.test(body)) {
+			return { k: 'modify', tapped: true };
+		}
+		const counters = body.match(
+			/^~ enters (?:the battlefield )?with (\S+) (\S+) counters? on it( for each time (?:it|~) was kicked)?$/i
+		);
+		if (counters) {
+			const baseAmount = count(counters[1]);
+			const counter = COUNTERS[counters[2].toLowerCase()];
+			if (baseAmount && counter) {
+				let amount: Amount | null = baseAmount;
+				if (counters[3]) {
+					if (baseAmount.k === 'const' && baseAmount.n === 1) amount = { k: 'kickedCount' };
+					else if (baseAmount.k === 'const' && baseAmount.n > 1) amount = { k: 'kickedCount', multiplier: baseAmount.n };
+					else amount = null;
+				}
+				if (amount) return { k: 'modify', counters: { counter, amount } };
+			}
+		}
+		if (/^(?:you may have )?~ enters? (?:the battlefield )?as a copy of any creature(?: on the battlefield)?$/i.test(body)) {
+			return { k: 'modify', copyOf: { types: ['Creature'], zone: 'battlefield' } };
+		}
+		return null;
+	};
+	const direct = parseSelfEtbModify(s);
+	if (direct) return [{ kind: 'replacement', replacement: { replaces: entersSelf, with: direct } }];
+
+	const suffixKicked = s.match(
+		/^(.+?) (if (?:it|~) was(?:n't| not)? kicked(?: with its .+? kicker| twice| \S+ times?)?)$/i
+	);
+	if (suffixKicked) {
+		const cond = parseCondition(suffixKicked[2]);
+		const mod = parseSelfEtbModify(suffixKicked[1]);
+		if (cond && mod) {
+			return [{ kind: 'replacement', replacement: { replaces: entersSelf, with: mod, condition: cond } }];
 		}
 	}
-	if (/^(?:you may have )?~ enters? (?:the battlefield )?as a copy of any creature(?: on the battlefield)?$/i.test(s)) {
-		return [{ kind: 'replacement', replacement: { replaces: entersSelf, with: { k: 'modify', copyOf: { types: ['Creature'], zone: 'battlefield' } } } }];
+
+	const prefixKicked = s.match(
+		/^(if (?:it|~) was(?:n't| not)? kicked(?: with its .+? kicker| twice| \S+ times?)?), (?:it )?(enters .+)$/i
+	);
+	if (prefixKicked) {
+		const cond = parseCondition(prefixKicked[1]);
+		if (cond) {
+			const etbBody = `~ ${prefixKicked[2]}`;
+			const withKeywords = etbBody.match(/^(.+?) and with (.+)$/i);
+			if (withKeywords) {
+				const mod = parseSelfEtbModify(withKeywords[1]);
+				const kws = parseKeywordList(withKeywords[2]);
+				if (mod && kws) {
+					return [
+						{ kind: 'replacement', replacement: { replaces: entersSelf, with: mod, condition: cond } },
+						keywordGrant('self', kws, cond)
+					];
+				}
+			}
+			const mod = parseSelfEtbModify(etbBody);
+			if (mod) {
+				return [{ kind: 'replacement', replacement: { replaces: entersSelf, with: mod, condition: cond } }];
+			}
+		}
 	}
 	return null;
 };

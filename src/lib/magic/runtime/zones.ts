@@ -256,6 +256,12 @@ function finalizeZoneMove(
 		obj.goadedByPlayerIds = undefined;
 		obj.playableFromExileBy = undefined;
 		obj.enteredWithX = undefined;
+		obj.kickedCount = undefined;
+		obj.kickedTags = undefined;
+	}
+	if (dest !== 'battlefield') {
+		obj.kickedCount = undefined;
+		obj.kickedTags = undefined;
 	}
 	if (opts.controllerId !== undefined) obj.controllerId = opts.controllerId;
 	if (opts.bumpVersion) obj.objectVersion = (obj.objectVersion || 1) + 1;

@@ -2,6 +2,7 @@ import { cardManaSteps as compiledCardManaSteps, compileCard } from './compiler/
 import { displayAbilityText } from './compiler/support.ts';
 import type { ActivatedAbility, CostDef, EffectStep, TargetSpec, UnsupportedAbility } from './ir.ts';
 import { effectiveAbilityManaCost } from './runtime/costs.ts';
+import { isCastConditionMet } from './runtime/kicker.ts';
 import {
 	evaluatePermanent,
 	getAttachedAbilityStrippingAuraSources,
@@ -20,6 +21,7 @@ import {
 } from './runtime/replace.ts';
 import type {
 	CardInstance,
+	CastOption,
 	EffectiveActivatedAbility,
 	GameState,
 	ManaColor,
@@ -166,11 +168,17 @@ export function targetRequirementFromSpecs(specs: TargetSpec[]): TargetRequireme
  * Returns the spell target requirement for casting `card` (Instant, Sorcery, or Aura) from the
  * compiled IR. Non-Aura permanent spells do not target on the stack (CR 115.1b).
  */
-export function getSpellTargetRequirement(card: ScryfallCard): TargetRequirementInfo {
+export function getSpellTargetRequirement(
+	card: ScryfallCard,
+	option?: CastOption,
+	optionalCostCounts?: Record<string, number>
+): TargetRequirementInfo {
 	const def = compileCard(card);
 	const abilities = def.faces[0]?.abilities ?? [];
 	const types = def.faces[0]?.characteristics.types ?? [];
 	const subtypes = def.faces[0]?.characteristics.subtypes ?? [];
+	const activeSpecs = (specs: TargetSpec[]) =>
+		specs.filter((sp) => !sp.condition || isCastConditionMet(sp.condition, card, optionalCostCounts, option));
 	if (subtypes.includes('Aura')) {
 		const enchantSpecs: TargetSpec[] = [];
 		for (const ab of abilities) {
@@ -210,7 +218,7 @@ export function getSpellTargetRequirement(card: ScryfallCard): TargetRequirement
 	for (const ab of abilities) {
 		if (ab.kind === 'spell') {
 			if (ab.modal) {
-				const branches = ab.modal.modes.map((m) => targetRequirementFromSpecs(m.targets));
+				const branches = ab.modal.modes.map((m) => targetRequirementFromSpecs(activeSpecs(m.targets)));
 				const firstReq = branches.find((b) => b.requiresTarget) ?? branches[0] ?? NO_TARGET_REQUIREMENT;
 				const anyReq = branches.some((b) => b.requiresTarget);
 				return {
@@ -228,10 +236,10 @@ export function getSpellTargetRequirement(card: ScryfallCard): TargetRequirement
 					modalBranches: branches
 				};
 			}
-			return targetRequirementFromSpecs(ab.targets);
+			return targetRequirementFromSpecs(activeSpecs(ab.targets));
 		}
 		if (ab.kind === 'unsupported' && ab.id === 'cast' && ab.targets) {
-			return targetRequirementFromSpecs(ab.targets);
+			return targetRequirementFromSpecs(activeSpecs(ab.targets));
 		}
 	}
 	return NO_TARGET_REQUIREMENT;

@@ -2746,3 +2746,126 @@ describe('CR 613.7e & CR 701.3b: Attachment timestamp funnel (attachObject)', ()
 		}
 	});
 });
+
+// ============================================================================
+// LIVING WEAPON (CR 702.92) & FOR MIRRODIN! (CR 702.163)
+// ============================================================================
+
+describe('Keyword: Living weapon (CR 702.92)', () => {
+	it('creates a 0/0 black Phyrexian Germ on ETB and attaches, surviving with toughness buff and dying at 0/0 without it (CR 702.92a)', () => {
+		const { state, p1 } = makeGame();
+
+		// 1. Equipment giving +2/+1 keeps the 0/0 Phyrexian Germ alive as a 2/1
+		const batterSkullProbe = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Batterskull Probe',
+				manaCost: '{1}',
+				cmc: 1,
+				typeLine: 'Artifact — Equipment',
+				oracleText: 'Living weapon\nEquipped creature gets +2/+1.\nEquip {2}'
+			}),
+			'hand'
+		);
+		p1.manaPool.C = 1;
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: batterSkullProbe.instanceId,
+				optionId: 'normal'
+			}).ok,
+			true
+		);
+		passStep(state); // resolve Equipment onto battlefield and Living weapon ETB trigger
+		const bsOnBoard = p1.battlefield.find((c) => c.instanceId === batterSkullProbe.instanceId);
+		assert.ok(bsOnBoard, 'Batterskull Probe enters the battlefield');
+
+		const germ = p1.battlefield.find((c) => c.card.typeLine.includes('Germ'));
+		assert.ok(germ, 'Living weapon creates a Phyrexian Germ token');
+		assert.deepEqual(germ.card.colors, ['B']);
+		assert.equal(germ.card.typeLine, 'Token Creature — Phyrexian Germ');
+		assert.equal(bsOnBoard.attachedToId, germ.instanceId);
+		assert.equal(evaluatePermanent(state, germ).power, 2);
+		assert.equal(evaluatePermanent(state, germ).toughness, 1);
+
+		// 2. Equipment giving +2/+0 leaves Germ at 0 toughness -> SBA puts Germ in graveyard, leaving Equipment unattached
+		const renamedZeroTough = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Renamed Lash Probe',
+				manaCost: '{1}',
+				cmc: 1,
+				typeLine: 'Artifact — Equipment',
+				oracleText: 'Living weapon\nEquipped creature gets +2/+0.\nEquip {2}'
+			}),
+			'hand'
+		);
+		p1.manaPool.C = 1;
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: renamedZeroTough.instanceId,
+				optionId: 'normal'
+			}).ok,
+			true
+		);
+		passStep(state); // resolve Equipment and Living weapon trigger + SBAs run
+		const lashOnBoard = p1.battlefield.find((c) => c.instanceId === renamedZeroTough.instanceId);
+		assert.ok(lashOnBoard);
+		assert.equal(lashOnBoard.attachedToId ?? null, null);
+		assert.equal(p1.battlefield.filter((c) => c.card.typeLine.includes('Germ')).length, 1, 'only the 2/1 Germ survives');
+	});
+});
+
+describe('Keyword: For Mirrodin! (CR 702.163)', () => {
+	it('creates a 2/2 red Rebel token on ETB and attaches the Equipment to it (CR 702.163a)', () => {
+		const { state, p1 } = makeGame();
+		const hexplate = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Hexplate Visitant Probe',
+				manaCost: '{2}',
+				cmc: 2,
+				typeLine: 'Artifact — Equipment',
+				oracleText: 'For Mirrodin!\nEquipped creature gets +1/+1.\nEquip {2}'
+			}),
+			'hand'
+		);
+		const renamedHexplate = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Mirrored Rebellion Blade',
+				manaCost: '{2}',
+				cmc: 2,
+				typeLine: 'Artifact — Equipment',
+				oracleText: 'For Mirrodin!\nEquipped creature gets +1/+1.\nEquip {2}'
+			}),
+			'hand'
+		);
+
+		p1.manaPool.C = 4;
+		for (const eq of [hexplate, renamedHexplate]) {
+			assert.equal(
+				applyGameAction(state, p1.playerId, {
+					type: 'cast_spell',
+					instanceId: eq.instanceId,
+					optionId: 'normal'
+				}).ok,
+				true
+			);
+			passStep(state); // resolve Equipment and For Mirrodin! ETB trigger
+			const eqOnBoard = p1.battlefield.find((c) => c.instanceId === eq.instanceId);
+			assert.ok(eqOnBoard, 'Equipment enters the battlefield');
+			const rebel = p1.battlefield.find((c) => c.instanceId === eqOnBoard.attachedToId);
+			assert.ok(rebel, 'Equipment attaches to newly created Rebel token');
+			assert.deepEqual(rebel.card.colors, ['R']);
+			assert.equal(rebel.card.typeLine, 'Token Creature — Rebel');
+			assert.equal(evaluatePermanent(state, rebel).power, 3);
+			assert.equal(evaluatePermanent(state, rebel).toughness, 3);
+		}
+	});
+});

@@ -23,6 +23,7 @@ import type {
 	EffectStep,
 	FaceDefinition,
 	KeywordDef,
+	ObjectFilter,
 	SpellAbility,
 	Span,
 	StaticDef,
@@ -31,11 +32,13 @@ import type {
 	UnsupportedAbility,
 	UnsupportedReason
 } from '../ir.ts';
+import { getKeywordSpec, IMPLEMENTED_KEYWORDS, KNOWN_KEYWORDS } from '../keywords.ts';
 import type { ManaColor, ScryfallCard } from '../types.ts';
 import { parseAdditionalCostSentence, parseCost, parseCostModifierSentence, parseObjectPhrase } from './costs.ts';
 import { extractUnparsedTargets, parseEffects, parseSpellFace, type EffectParse } from './effects.ts';
 import { staticallyInterpretable, triggerTargetsSupported } from './interpretable.ts';
 import { normalizeFace, splitSentences, type NormalizedFace, type NormalizedLine } from './normalize.ts';
+import { canonicalKickerTag } from './triggers.ts';
 import { parseStaticAbility } from './statics.ts';
 import { parseTriggerHeader, runtimeTriggerProblem } from './triggers.ts';
 
@@ -49,72 +52,7 @@ const BASIC_LAND_MANA: Record<string, ManaColor> = {
 	Forest: 'G'
 };
 
-/**
- * Keywords the runtime implements. Anything else that parses as a keyword compiles to `unsupported`
- * with reason `keyword_not_implemented`. Partner is enforced at deck construction.
- */
-export const IMPLEMENTED_KEYWORDS = new Set([
-	'changeling',
-	'deathtouch',
-	'defender',
-	'double strike',
-	'enchant',
-	'equip',
-	'fear',
-	'first strike',
-	'flash',
-	'flashback',
-	'flying',
-	'haste',
-	'hexproof',
-	'horsemanship',
-	'indestructible',
-	'infect',
-	'intimidate',
-	'lifelink',
-	'menace',
-	'overload',
-	'partner',
-	'phasing',
-	'protection',
-	'prowess',
-	'reach',
-	'shadow',
-	'shroud',
-	'suspend',
-	'trample',
-	'vigilance',
-	'ward',
-	'wither'
-]);
-
-/** Keyword abilities (CR 702) recognised on a keyword line, whether or not they're implemented. */
-const KNOWN_KEYWORDS = [
-	...IMPLEMENTED_KEYWORDS,
-	'absorb', 'affinity', 'afflict', 'afterlife', 'amplify', 'annihilator', 'ascend', 'aura swap',
-	'awaken', 'backup', 'banding', 'bargain', 'battle cry', 'bestow', 'blitz', 'bloodthirst',
-	'boast', 'bushido', 'buyback', 'cascade', 'casualty', 'champion', 'cipher', 'cleave',
-	'companion', 'compleated', 'conspire', 'convoke', 'craft', 'crew', 'cumulative upkeep',
-	'cycling', 'dash', 'daybound', 'decayed', 'delve', 'demonstrate', 'dethrone', 'devoid',
-	'devour', 'disguise', 'disturb', 'double team', 'dredge', 'echo', 'embalm', 'emerge',
-	'encore', 'enlist', 'entwine', 'epic', 'escalate', 'escape', 'eternalize', 'evoke', 'evolve',
-	'exalted', 'exploit', 'extort', 'fabricate', 'fading', 'fear', 'flanking', 'flashback',
-	'for mirrodin!', 'forecast', 'foretell', 'fortify', 'frenzy', 'friends forever', 'fuse',
-	'gift', 'graft', 'gravestorm', 'haunt', 'hidden agenda', 'hideaway', 'horsemanship',
-	'improvise', 'impending', 'ingest', 'intimidate', 'jump-start', 'kicker', 'landwalk',
-	'level up', 'living metal', 'living weapon', 'madness', 'megamorph', 'melee', 'mentor',
-	'miracle', 'modular', 'morph', 'more than meets the eye', 'multikicker', 'mutate', 'myriad',
-	'nightbound', 'ninjutsu', 'offering', 'offspring', 'outlast', 'persist',
-	'plot', 'poisonous', 'prototype', 'provoke', 'prowess', 'prowl', 'rampage', 'ravenous',
-	'read ahead', 'rebound', 'reconfigure', 'recover', 'reinforce', 'renown', 'replicate',
-	'retrace', 'riot', 'ripple', 'saddle', 'scavenge', 'shadow', 'skulk', 'soulbond',
-	'soulshift', 'space sculptor', 'spectacle', 'splice', 'split second', 'squad', 'storm',
-	'sunburst', 'surge', 'totem armor', 'training', 'transfigure', 'transmute', 'tribute',
-	'umbra armor', 'undaunted', 'undying', 'unearth', 'unleash', 'vanishing', 'visit', 'ward',
-	'plainswalk', 'islandwalk', 'swampwalk', 'mountainwalk', 'forestwalk',
-	'basic landcycling', 'landcycling', 'typecycling', 'toxic', 'station', 'exhaust', 'harmonize',
-	'mobilize', 'web-slinging', 'sneak', 'firebending', 'waterbend', 'job select', 'warp'
-].sort((a, b) => b.length - a.length);
+export { IMPLEMENTED_KEYWORDS };
 
 // ---- Entry point ----------------------------------------------------------------------------
 
@@ -208,6 +146,34 @@ function groupSpan(group: NormalizedLine[]): Span {
 
 // ---- Keywords -------------------------------------------------------------------------------
 
+const MANA_COLOR_NAMES: Record<string, string> = {
+	W: 'white',
+	U: 'blue',
+	B: 'black',
+	R: 'red',
+	G: 'green'
+};
+
+function kickerTagsForEntry(rawEntry: string, defs: CostDef[]): string[] {
+	const tags: string[] = [canonicalKickerTag(rawEntry)];
+	const colors = new Set<string>();
+	for (const def of defs) {
+		if (def.k !== 'mana') continue;
+		for (const sym of def.cost.matchAll(/\{([^}]+)\}/g)) {
+			const inner = sym[1].toUpperCase();
+			for (const ch of inner) {
+				if (ch in MANA_COLOR_NAMES) colors.add(ch);
+			}
+		}
+	}
+	if (colors.size === 1) {
+		const only = colors.values().next().value!;
+		const colorName = MANA_COLOR_NAMES[only];
+		if (colorName && !tags.includes(colorName)) tags.push(colorName);
+	}
+	return tags;
+}
+
 function parseKeyword(part: string): KeywordDef | null {
 	const low = part.toLowerCase();
 	for (const kw of KNOWN_KEYWORDS) {
@@ -216,7 +182,10 @@ function parseKeyword(part: string): KeywordDef | null {
 		const rest = part.slice(kw.length);
 		if (!/^[\s—-]/.test(rest)) continue;
 		const rawArg = rest.replace(/^\s*[—-]?\s*/, '').trim();
-		const arg = kw === 'ward' || kw === 'flashback' ? rawArg.replace(/\.$/, '').trim() : rawArg;
+		const arg =
+			kw === 'ward' || kw === 'flashback' || kw === 'kicker' || kw === 'multikicker'
+				? rawArg.replace(/\.$/, '').trim()
+				: rawArg;
 		if (/^(\{[^}]+\})+$/.test(arg)) return { name: kw, cost: arg };
 		if (/^\d+$/.test(arg)) return { name: kw, n: parseInt(arg, 10) };
 		const nCost = arg.match(/^(\d+)\s*—\s*((?:\{[^}]+\})+)$/);
@@ -229,12 +198,22 @@ function parseKeyword(part: string): KeywordDef | null {
 	return null;
 }
 
+function parseAffinityQuality(phrase: string): ObjectFilter | null {
+	if (/^outlaws?$/i.test(phrase)) {
+		// CR 700.12a: Assassins, Mercenaries, Pirates, Rogues, and Warlocks are outlaws.
+		return { subtypes: ['Assassin', 'Mercenary', 'Pirate', 'Rogue', 'Warlock'] };
+	}
+	return parseObjectPhrase(phrase);
+}
+
 /** "Flying, vigilance", "Equip {2}", "Protection from black". A trailing period means an effect. */
 function keywordLine(line: NormalizedLine): AbilityDef[] | null {
-	if (line.abilityWord || (/\.$/.test(line.body) && !/^(?:ward|flashback)\s*[—-]/i.test(line.body))) return null;
+	if (line.abilityWord || (/\.$/.test(line.body) && !/^(?:ward|flashback|kicker|multikicker)\s*[—-]/i.test(line.body))) {
+		return null;
+	}
 	// "Enchant creature, land, or planeswalker", "Protection from white, from blue", and composite
-	// dash costs ("Ward—...", "Flashback—...") are one keyword.
-	const parts = /^(?:enchant|protection from|hexproof from|partner with|(?:ward|flashback)\s*[—-])/i.test(line.body)
+	// dash costs ("Ward—...", "Flashback—...", "Kicker—...") are one keyword.
+	const parts = /^(?:enchant|protection from|hexproof from|partner with|(?:ward|flashback|kicker|multikicker)\s*[—-])/i.test(line.body)
 		? [line.body]
 		: line.body.split(/,\s*/);
 	const keywords = parts.map(parseKeyword);
@@ -295,6 +274,54 @@ function keywordLine(line: NormalizedLine): AbilityDef[] | null {
 				return;
 			}
 			keyword.costDefs = parsed.defs;
+		}
+		if (keyword.name === 'kicker' || keyword.name === 'multikicker') {
+			const rawKicker = (keyword.cost ?? keyword.param ?? '').trim();
+			const rawEntries =
+				keyword.name === 'kicker' ? rawKicker.split(/\s+and\/or\s+/i).map((e) => e.trim()) : [rawKicker];
+			if (!rawKicker || rawEntries.some((e) => !e)) {
+				out.push(unsupported('unparsed', part, span, [span]));
+				return;
+			}
+			const parsedEntries: NonNullable<KeywordDef['kickerCosts']> = [];
+			for (const entry of rawEntries) {
+				const parsed = parseCost(entry);
+				if (parsed.unparsed.length > 0 || parsed.defs.length === 0) {
+					out.push(unsupported('unparsed', part, span, [span]));
+					return;
+				}
+				parsedEntries.push({
+					cost: entry,
+					costDefs: parsed.defs,
+					tags: kickerTagsForEntry(entry, parsed.defs)
+				});
+			}
+			keyword.kickerCosts = parsedEntries;
+			if (parsedEntries.length === 1) {
+				keyword.costDefs = parsedEntries[0].costDefs;
+			}
+		}
+		const kwSpec = getKeywordSpec(keyword.name);
+		if (
+			kwSpec?.parameterKind === 'none' &&
+			(keyword.cost !== undefined || keyword.n !== undefined || keyword.param !== undefined)
+		) {
+			implemented = false;
+		}
+		if (
+			kwSpec?.parameterKind === 'number' &&
+			(keyword.n === undefined || keyword.cost !== undefined || keyword.param !== undefined)
+		) {
+			implemented = false;
+		}
+		if (keyword.name === 'affinity') {
+			const m = (keyword.param ?? '').trim().match(/^for\s+(.+)$/i);
+			const filter = m ? parseAffinityQuality(m[1].trim()) : null;
+			if (filter) {
+				keyword.affinityFilter = filter;
+			} else {
+				implemented = false;
+			}
 		}
 		if (!implemented) {
 			out.push(unsupported('keyword_not_implemented', part, span, [span]));

@@ -132,7 +132,7 @@ Audited at engine-rewrite 917180b on 2026-11-09.
 ### 702.14 Landwalk
 | CR | Rule (short) | Status | Evidence / notes |
 |---|---|---|---|
-| 702.14a–e | Landwalk (`[type]walk`) evasion ability | missing | Recognised in `KNOWN_KEYWORDS` (`compiler/adapter.ts:140,150`: `landwalk`, `plainswalker` [typo for `plainswalk`], `islandwalk`, `swampwalk`, `mountainwalk`, `forestwalk`) as `keyword_not_implemented`; not enforced in `engine.ts`. |
+| 702.14a–e | Landwalk (`[type]walk`) evasion ability | implemented (standard & nonbasic) | **Updated 2026-11-13:** `landwalk`, `plainswalk`, `islandwalk`, `swampwalk`, `mountainwalk`, `forestwalk`, and `nonbasic landwalk` are implemented in `KEYWORD_REGISTRY` (`keywords.ts`) with declarative `landwalkFilter`s, enforced in `getBlockerRestrictionReason` (`engine.ts`) using `evaluatePermanent` + `matchesObjectFilter` on the defending player's battlefield (obeying Layer 4 land types and `CR 702.14d` non-cancellation). Exotic compound prefixes (`snow swampwalk`, `artifact landwalk`) remain outside the core registry list. |
 
 ### 702.15 Lifelink
 | CR | Rule (short) | Status | Evidence / notes |
@@ -267,7 +267,7 @@ Audited at engine-rewrite 917180b on 2026-11-09.
 ### 702.33 Kicker
 | CR | Rule (short) | Status | Evidence / notes |
 |---|---|---|---|
-| 702.33a–g | Kicker and Multikicker optional additional costs and "if it was kicked" linked abilities | missing | Listed in `KNOWN_KEYWORDS` (`compiler/adapter.ts:140,142`) as `keyword_not_implemented`; `StackItem` and `cast_spell` have no `kicked` / `kickerCount` support. |
+| 702.33a–g | Kicker and Multikicker optional additional costs and "if it was kicked" linked abilities | partial | **Updated 2026-11-13:** `kicker` (including `and/or` dual costs `CR 702.33b`) and `multikicker` (`CR 702.33c`) compile into `KEYWORD_REGISTRY` / `CastOption.optionalAdditionalCosts`, validate & merge mana/non-mana total costs (`CR 601.2f–h`), evaluate `{ k: 'kicked' }` / `{ k: 'kickedCount' }` across ETB replacements, triggers, and conditional spell effects, validate conditional kicker targets (`CR 702.33g`), and reset kicked state on zone changes (`CR 400.7`, `runtime/zones.ts`). Kicked spells with replacement `"instead"` clauses remain `unsupported` (`unparsed`). |
 | 702.33h | Sticker kicker | N/A (Un-set / stickers) | Sticker mechanic is outside standard Commander scope. |
 
 ### 702.34 Flashback
@@ -308,7 +308,7 @@ Audited at engine-rewrite 917180b on 2026-11-09.
 ### 702.41 Affinity
 | CR | Rule (short) | Status | Evidence / notes |
 |---|---|---|---|
-| 702.41a–b | Affinity for [text] cost reduction | missing | Listed in `KNOWN_KEYWORDS` (`compiler/adapter.ts:130`) as `keyword_not_implemented`. |
+| 702.41a–b | Affinity for [text] cost reduction | implemented | **Updated 2026-11-13:** Implemented in `KEYWORD_REGISTRY` (`keywords.ts`) via `affinityFilter` (`parseAffinityQuality` in `compiler/card.ts`) expanding to `StaticDef` `costModifier` (`affects: { k: 'self' }`) in `runtime/costs.ts`, with multiple instances stacking per `CR 702.41b`. |
 
 ### 702.42 Entwine
 | CR | Rule (short) | Status | Evidence / notes |
@@ -328,7 +328,7 @@ Audited at engine-rewrite 917180b on 2026-11-09.
 ### 702.45 Bushido
 | CR | Rule (short) | Status | Evidence / notes |
 |---|---|---|---|
-| 702.45a–b | Bushido N combat trigger | missing | Listed in `KNOWN_KEYWORDS` (`compiler/adapter.ts:132`) as `keyword_not_implemented`. |
+| 702.45a–b | Bushido N combat trigger | implemented | **Updated 2026-11-13:** Implemented in `KEYWORD_REGISTRY` (`keywords.ts`) expanding to a `blocks` / `becomesBlocked` self-pump `+N/+N` until EOT trigger; multiple instances trigger separately (`CR 702.45b`). |
 
 ### 702.46 Soulshift
 | CR | Rule (short) | Status | Evidence / notes |
@@ -525,7 +525,7 @@ Audited at engine-rewrite 917180b on 2026-11-09.
 ### 702.83 Exalted
 | CR | Rule (short) | Status | Evidence / notes |
 |---|---|---|---|
-| 702.83a–b | Exalted ("Whenever a creature you control attacks alone, that creature gets +1/+1 until end of turn") | missing | Listed in `KNOWN_KEYWORDS` (`compiler/adapter.ts:137`) as `keyword_not_implemented`. |
+| 702.83a–b | Exalted ("Whenever a creature you control attacks alone, that creature gets +1/+1 until end of turn") | implemented | **Updated 2026-11-13:** Implemented in `KEYWORD_REGISTRY` (`keywords.ts`, `grantable: true`) expanding to an `attacks` trigger with `EventFilter.alone` (`matchAttack` in `runtime/triggers.ts` checks `attackers.length === 1` and binds `eventObject`), including Layer 6 grants on non-attacking permanents and separate stacking per instance. |
 
 ### 702.84 Unearth
 | CR | Rule (short) | Status | Evidence / notes |

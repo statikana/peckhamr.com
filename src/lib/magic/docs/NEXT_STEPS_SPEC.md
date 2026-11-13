@@ -1,12 +1,12 @@
 # MTG Engine: Next Steps Spec
 
-**Status:** spec, written 2026-11-12 against `engine-rewrite` at `ad82d00`, updated after Track A (`972a90c`), Track B1 (`961b8e5`), and Track B2 (`COMPILER_VERSION = 13`). Track A (`A1`–`A4`), **B1**, and **B2** are **done**; **B3** (including Kicker via `CastOption.optionalAdditionalCosts`) is next.
+**Status:** spec, written 2026-11-12 against `engine-rewrite` at `ad82d00`, updated after Track A (`972a90c`), Track B1 (`961b8e5`), Track B2 (`bd98235`), and Track B3 (`COMPILER_VERSION = 16`). Track A (`A1`–`A4`), **B1**, **B2**, and **B3** are **done**; **B4** (design doc only) and **Cycling** (`CR 702.29` hand-zone activation, deferred after B3) are next.
 
 **Purpose:** the recommended next work for the engine, written so that each work package can be handed to one agent. Track A is near-term fixes (complete). Track B is the structural work that full keyword and rules coverage needs (the reasoning is in [`FULL_COVERAGE_STRUCTURE.md`](./FULL_COVERAGE_STRUCTURE.md)). Track C keeps the docs honest as the code changes.
 
 **Order:**
 1. ~~A1, A2, A3 and A4~~ — **done** (`b68ef55`, `dfbc69e`, `94b04de`, `972a90c`).
-2. ~~B1~~ — **done** (`961b8e5`, [`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.10); ~~B2~~ — **done** (`ENGINE_ARCHITECTURE_PLAN.md` §2.11); **B3** is next (including Kicker on `CastOption`), then **B4** (design doc only).
+2. ~~B1~~ — **done** (`961b8e5`, [`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.10); ~~B2~~ — **done** (`bd98235`, [`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.11); ~~B3~~ — **done** ([`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.12); **B4** (design doc only) and deferred **Cycling** (`CR 702.29`) are next.
 3. Track C rides along with every package.
 
 ---
@@ -193,24 +193,12 @@ Each further alternative or additional cost would repeat all of that. See `FULL_
 
 **Size:** L.
 
-### B3. Keyword registry (CR 702)
+### B3. Keyword registry (CR 702) — ✅ Done
 
-**Problem.** A keyword's behaviour is spread across the compiler, `layers.ts`, `effects.ts`, `costs.ts`, `triggers.ts` and `engine.ts`, and keyword lists are duplicated: `IMPLEMENTED_KEYWORDS`, `KNOWN_KEYWORDS`, `GRANTABLE_KEYWORDS`, `KEYWORD_LABELS` and the coverage guard map.
-
-**Goal.** One registry entry per keyword holds:
-- its name and parameters;
-- its CR rule;
-- display label;
-- whether it can be granted;
-- what it expands to.
-
-A keyword expands to ordinary IR (a static, triggered or activated ability, or a cast option from B2), or is marked as one of a small set of runtime primitives: evasion, the combat-damage keywords, protection.
-
-**Acceptance.**
-- The keyword lists above are derived from the registry.
-- The coverage guard reads test files from the registry entry.
-- At least five currently unimplemented keywords are added purely as registry entries that expand to existing IR, with no runtime changes (and wire **Kicker** `CR 702.33` onto `CastOption.optionalAdditionalCosts`, deferred from B2). Annihilator, exalted, cycling, prowess-like triggers, and landwalk variants are candidates.
-- Report the `keyword_not_implemented` count before and after.
+See [`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.12 (`COMPILER_VERSION = 16`). Completed across three slices:
+- Unified `KEYWORD_REGISTRY` (`src/lib/magic/keywords.ts`) deriving `IMPLEMENTED_KEYWORDS`, `KNOWN_KEYWORDS`, `STATIC_CONTINUOUS_KEYWORDS`, `GRANTABLE_KEYWORDS`, `KEYWORD_LABELS`, `ALTERNATIVE_COST_KEYWORDS`, and `GRANTED_TRIGGER_KEYWORD_EVENTS`, with generic Layer 6 granted-trigger emission (`runtime/triggers.ts`) and 1:1 coverage-guard enforcement (`runtime/keywords-coverage-guard.test.ts`).
+- 7 pure-IR keywords (`battle cry`, `afterlife`, `bushido`, `living weapon`, `for mirrodin!`, `affinity`, and `exploit` `CR 702.110a`) + 3 thin-primitive combat keywords (`exalted`, `annihilator`, and 7 `landwalk` variants). (`Cycling` `CR 702.29` hand-zone activation was deferred past B3 by design decision.)
+- **Kicker & Multikicker** (`CR 702.33a–g`) wired via `CastOption.optionalAdditionalCosts`, `runtime/kicker.ts`, keyword-blind UI (`ArenaTable.svelte`) and AI (`ai.ts`), `CR 400.7` zone reset, conditional kicker targets (`CR 702.33g`), live `vite dev` Chromium verification, IR snapshots, and regenerated [`COVERAGE.md`](./COVERAGE.md) (`keyword_not_implemented`: `4,190 → 3,584`, `-606`).
 
 **Size:** M–L.
 

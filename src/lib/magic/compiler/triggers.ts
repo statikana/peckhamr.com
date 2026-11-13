@@ -9,6 +9,7 @@
  * compiler/card.ts uses it for every "When/Whenever/At" line.
  */
 import type { Amount, CardDefinition, Condition, CostDef, EffectStep, EventFilter, ObjectFilter, Span, TargetSpec, TriggerDef } from '../ir.ts';
+import { getKeywordSpec } from '../keywords.ts';
 import type { GamePhase, TriggerScope } from '../types.ts';
 import { parseObjectPhrase } from './costs.ts';
 
@@ -283,8 +284,37 @@ function triggerHead(head: string): TriggerDef | null {
 
 // ---- Intervening-if conditions --------------------------------------------------------------
 
+export function canonicalKickerTag(raw: string): string {
+	const t = raw.trim();
+	if (/^(?:\{[^}]+\})+$/i.test(t)) {
+		return t.replace(/\{([^}]+)\}/g, (_, inner: string) => `{${inner.trim().toUpperCase()}}`);
+	}
+	return t.toLowerCase();
+}
+
 export function parseCondition(text: string): Condition | null {
 	const t = text.trim();
+	if (/^if (?:it|~) was kicked$/i.test(t)) {
+		return { k: 'kicked' };
+	}
+	if (/^if (?:it|~) was(?:n't| not) kicked$/i.test(t)) {
+		return { k: 'not', of: { k: 'kicked' } };
+	}
+	if (/^if (?:it|~) was kicked twice$/i.test(t)) {
+		return { k: 'kicked', minCount: 2 };
+	}
+	const kickedTimes = t.match(/^if (?:it|~) was kicked (\S+) times?$/i);
+	if (kickedTimes) {
+		const rawWord = kickedTimes[1].toLowerCase();
+		const minCount = rawWord === 'once' ? 1 : number(rawWord);
+		if (minCount !== null && minCount >= 1) {
+			return { k: 'kicked', minCount };
+		}
+	}
+	const kickedWithTag = t.match(/^if (?:it|~) was kicked with its (.+?) kicker$/i);
+	if (kickedWithTag) {
+		return { k: 'kicked', tag: canonicalKickerTag(kickedWithTag[1]) };
+	}
 	if (/^if you control (?:a|your) commander$/i.test(t)) {
 		return { k: 'controlCommander' };
 	}
@@ -477,34 +507,9 @@ export interface RuntimeTrigger {
 	 * target of a spell or ability an opponent controls, counter it unless that player pays [cost]."
 	 */
 	ward?: { cost: string; costDefs?: CostDef[] };
+	/** Set for triggers emitted from a Layer 6 granted trigger keyword (e.g. prowess, battle cry). */
+	grantedKeyword?: string;
 }
-
-/** CR 702.108a: Prowess — "Whenever you cast a noncreature spell, this creature gets +1/+1 until end of turn." */
-export const PROWESS_RUNTIME_TRIGGER: RuntimeTrigger = {
-	abilityIndex: -1,
-	trigger: {
-		event: 'cast',
-		filter: { object: { notTypes: ['Creature'] }, player: { relation: 'you' } }
-	},
-	effectSupported: true,
-	text: 'Prowess',
-	effect: {
-		steps: [
-			{
-				verb: 'pump',
-				subject: { k: 'self' },
-				amount: { k: 'const', n: 1 },
-				params: {
-					toughness: { k: 'const', n: 1 },
-					duration: 'endOfTurn'
-				},
-				span: { start: 0, end: 0 }
-			}
-		],
-		targets: [],
-		unparsed: []
-	}
-};
 
 const RUNTIME_TRIGGERS = new WeakMap<CardDefinition, RuntimeTrigger[]>();
 
@@ -514,7 +519,8 @@ const RUNTIME_TRIGGERS = new WeakMap<CardDefinition, RuntimeTrigger[]>();
  * - unsupported abilities whose trigger head is understood but whose effect isn't. Step E2 (plan
  *   section 2.7): they trigger and go on the stack like any other; a human controller resolves them
  *   manually and a bot skips them, and
- * - Ward and Prowess keywords.
+ * - triggered keyword abilities declared in KEYWORD_REGISTRY (Ward, Prowess, Battle cry, Afterlife,
+ *   Bushido, Living weapon, For Mirrodin!, Exploit, etc.).
  * Abilities whose trigger head isn't understood (or names an event the engine never emits) can't
  * be matched; the engine mentions them when the permanent enters (compiler/support.ts).
  */
@@ -523,25 +529,11 @@ export function runtimeTriggers(def: CardDefinition): RuntimeTrigger[] {
 	if (cached) return cached;
 	const out: RuntimeTrigger[] = [];
 	(def.faces[0]?.abilities ?? []).forEach((ab, abilityIndex) => {
-		if (ab.kind === 'keyword' && ab.keyword.name === 'ward') {
-			const cost = ab.keyword.cost ?? ab.keyword.param ?? '{1}';
-			out.push({
-				abilityIndex,
-				trigger: {
-					event: 'becomesTarget',
-					filter: { object: 'self', targetedBy: 'spellOrAbility', player: { relation: 'opponent' } }
-				},
-				effectSupported: true,
-				text: `Ward ${cost}`,
-				ward: { cost, costDefs: ab.keyword.costDefs }
-			});
-			return;
-		}
-		if (ab.kind === 'keyword' && ab.keyword.name === 'prowess') {
-			out.push({
-				...PROWESS_RUNTIME_TRIGGER,
-				abilityIndex
-			});
+		if (ab.kind === 'keyword') {
+			const spec = getKeywordSpec(ab.keyword.name);
+			if (spec?.status === 'implemented' && spec.implementation?.kind === 'trigger') {
+				out.push(...spec.implementation.buildTriggers(ab.keyword, abilityIndex, ab.span));
+			}
 			return;
 		}
 		if (ab.kind === 'triggered') {

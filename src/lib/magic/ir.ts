@@ -211,12 +211,16 @@ export interface KeywordDef {
 	n?: number;
 	/** Ward: the cost the opponent pays ("Ward {2}", "Ward—Pay 3 life"), compiled by the cost grammar. */
 	costDefs?: CostDef[];
+	/** Kicker / Multikicker (CR 702.33): one entry per distinct kicker option (single, dual "and/or", multi). */
+	kickerCosts?: Array<{ cost: string; costDefs: CostDef[]; tags: string[] }>;
 	/** Equip [quality] (CR 702.6a): what the creature must be besides "creature you control". */
 	equipFilter?: ObjectFilter;
 	/** Enchant [quality] (CR 303.4a, 702.5): what the Aura can enchant (and so, as a spell, target). */
 	enchantFilter?: ObjectFilter;
 	/** Enchant player / opponent / you (CR 303.4a, 702.5a): player filter for player-enchanting Auras. */
 	enchantPlayer?: PlayerFilter;
+	/** Affinity for [quality] (CR 702.41): the permanents you control that reduce this spell's cost. */
+	affinityFilter?: ObjectFilter;
 }
 
 // ---- Filters --------------------------------------------------------------------------------
@@ -271,6 +275,8 @@ export interface TargetSpec {
 	max: number;
 	/** "two target cards from a single graveyard". */
 	sameOwner?: boolean;
+	/** CR 702.33g: target exists/is required only when this condition holds on cast. */
+	condition?: Condition;
 }
 
 // ---- Amounts (replaces dynamicFormula strings) ----------------------------------------------
@@ -292,7 +298,9 @@ export type PlayerRef =
 	| { k: 'target'; index: number }
 	| { k: 'activePlayer' }
 	/** The player the trigger event was about ("that player": the player dealt damage, the caster). */
-	| { k: 'eventPlayer' };
+	| { k: 'eventPlayer' }
+	/** The defending player an attacking creature is attacking (CR 508.5, 702.86a). */
+	| { k: 'defendingPlayer' };
 
 export type Amount =
 	| { k: 'const'; n: number }
@@ -307,6 +315,8 @@ export type Amount =
 	| { k: 'life'; of: PlayerRef }
 	/** CR 903.8: number of times you've cast your commander from the command zone this game. */
 	| { k: 'commanderCastCount' }
+	/** CR 702.33d,f: number of times the spell/permanent was kicked (optionally filtered by kicker tag and scaled by multiplier). */
+	| { k: 'kickedCount'; tag?: string; multiplier?: number }
 	| { k: 'negate'; of: Amount }
 	| { k: 'sum' | 'min' | 'max'; args: Amount[] };
 
@@ -390,6 +400,8 @@ export interface EffectStep {
 	optional?: { chooser: PlayerRef };
 	/** Execute only if the preceding optional step at this step index was accepted ("If you do, ..."). */
 	ifPrecedingAccepted?: number;
+	/** Execute only if this condition holds at resolution time (e.g. "If this spell was kicked, ..."). */
+	condition?: Condition;
 	bindAs?: BindingName;
 	/** `nextTurn`: "at the beginning of the next turn's upkeep" (not this turn's). */
 	delayed?: { trigger: TriggerDef; effect: EffectStep[]; nextTurn?: boolean };
@@ -517,6 +529,8 @@ export interface EventFilter {
 	targetedBy?: 'spell' | 'ability' | 'spellOrAbility';
 	/** attached: what the object became attached to ("becomes attached to a creature you control"). */
 	host?: ObjectFilter;
+	/** "Whenever a creature you control attacks alone": matches only when 1 attacker is declared (CR 702.83b). */
+	alone?: boolean;
 }
 
 export interface TriggerDef {
@@ -537,7 +551,9 @@ export type Condition =
 	| { k: 'graveyardAbove'; filter: ObjectFilter; count: number }
 	| { k: 'isTurnOf'; player: PlayerRef }
 	/** CR 903.3d: "if you control a commander" (a permanent on the battlefield that is a commander). */
-	| { k: 'controlCommander' };
+	| { k: 'controlCommander' }
+	/** CR 702.33d–f: true when kicked at least `minCount` (default 1) times, optionally with `tag`. */
+	| { k: 'kicked'; tag?: string; minCount?: number };
 
 // ---- Statics and replacements ---------------------------------------------------------------
 

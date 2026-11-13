@@ -20,11 +20,13 @@
  */
 import { compileCard } from '../compiler/index.ts';
 import { parseCost } from '../compiler/costs.ts';
-import { PROWESS_RUNTIME_TRIGGER, runtimeTriggers, type RuntimeTrigger } from '../compiler/triggers.ts';
+import { runtimeTriggers, type RuntimeTrigger } from '../compiler/triggers.ts';
 import type { Amount, Condition, EventFilter, EventKind, ObjectFilter, TriggerDef } from '../ir.ts';
+import { getKeywordSpec, GRANTED_TRIGGER_KEYWORD_EVENTS } from '../keywords.ts';
 import { evaluatePermanent, inspectCardContinuousBreakdown, permanentHasLostAllAbilities } from '../ruleTree.ts';
-import type { CardInstance, GameState, ScryfallCard, SerializedPendingTrigger } from '../types.ts';
+import type { CardInstance, GameState, ScryfallCard, SerializedPendingTrigger, StackItem } from '../types.ts';
 import type { GameEvent } from './events.ts';
+import { evaluateKickedCountAmount, evaluateKickerCondition, getObjectKickerInfo } from './kicker.ts';
 import { withStableLayerInputs } from './layerCache.ts';
 import { playerCommanderCastCount } from './objectFilter.ts';
 import { triggerMultiplier } from './replace.ts';
@@ -52,6 +54,8 @@ export interface PendingTrigger {
 	eventPlayerId?: string;
 	/** "That player": the player the event was about (dealt damage, the caster, the active player). */
 	eventPlayer?: string;
+	/** The defending player for an attack trigger (CR 508.5, 702.86a). */
+	defendingPlayerId?: string;
 	/** The stack item that targeted this permanent (for Ward). */
 	targetStackItemId?: string;
 	/** The amount the event carried: damage dealt, or the entering creature's power. */
@@ -95,11 +99,24 @@ interface CardTriggers {
 	all: RuntimeTrigger[];
 	/** Event kinds any alternative of any ability listens to. */
 	events: Set<EventKind>;
-	/** Whether any compiled static continuous ability on this card grants prowess. */
-	grantsProwess: boolean;
+	/** Event kinds of parameterless grantable trigger keywords granted by continuous statics on this card. */
+	grantedTriggerEvents: Set<EventKind>;
 }
 
 const CARD_TRIGGERS = new WeakMap<ScryfallCard, CardTriggers>();
+
+function grantedTriggerEventsForKeyword(kw: string): readonly EventKind[] | null {
+	const spec = getKeywordSpec(kw);
+	if (
+		spec?.status === 'implemented' &&
+		spec.grantable &&
+		spec.parameterKind === 'none' &&
+		spec.implementation?.kind === 'trigger'
+	) {
+		return spec.implementation.events;
+	}
+	return null;
+}
 
 function triggersOf(card: ScryfallCard): CardTriggers {
 	let entry = CARD_TRIGGERS.get(card);
@@ -108,16 +125,22 @@ function triggersOf(card: ScryfallCard): CardTriggers {
 		const all = runtimeTriggers(def).filter((t) => !host?.canExecute || host.canExecute(t));
 		const events = new Set<EventKind>();
 		for (const t of all) for (const alt of alternatives(t.trigger)) events.add(alt.event);
-		const grantsProwess = def.faces.some((f) =>
-			f.abilities.some(
-				(ab) =>
+		const grantedTriggerEvents = new Set<EventKind>();
+		for (const f of def.faces) {
+			for (const ab of f.abilities) {
+				if (
 					ab.kind === 'static' &&
 					ab.static.k === 'continuous' &&
-					ab.static.mod.k === 'addKeywords' &&
-					ab.static.mod.keywords.some((kw) => kw.toLowerCase() === 'prowess')
-			)
-		);
-		entry = { all, events, grantsProwess };
+					ab.static.mod.k === 'addKeywords'
+				) {
+					for (const kw of ab.static.mod.keywords) {
+						const evs = grantedTriggerEventsForKeyword(kw);
+						if (evs) for (const ev of evs) grantedTriggerEvents.add(ev);
+					}
+				}
+			}
+		}
+		entry = { all, events, grantedTriggerEvents };
 		CARD_TRIGGERS.set(card, entry);
 	}
 	return entry;
@@ -187,6 +210,7 @@ function persistPendingTriggers(state: GameState, triggers: PendingTrigger[]): v
 			...(t.eventObject ? { eventObject: t.eventObject } : {}),
 			...(t.eventPlayerId !== undefined ? { eventPlayerId: t.eventPlayerId } : {}),
 			...(t.eventPlayer !== undefined ? { eventPlayer: t.eventPlayer } : {}),
+			...(t.defendingPlayerId !== undefined ? { defendingPlayerId: t.defendingPlayerId } : {}),
 			...(t.targetStackItemId !== undefined ? { targetStackItemId: t.targetStackItemId } : {}),
 			...(t.amount !== undefined ? { amount: t.amount } : {}),
 			...(t.eventLki ? { eventLki: t.eventLki } : {}),
@@ -209,6 +233,7 @@ function hydratePendingTriggers(state: GameState, ch: TriggerChannel): void {
 		...(t.eventObject ? { eventObject: t.eventObject } : {}),
 		...(t.eventPlayerId !== undefined ? { eventPlayerId: t.eventPlayerId } : {}),
 		...(t.eventPlayer !== undefined ? { eventPlayer: t.eventPlayer } : {}),
+		...(t.defendingPlayerId !== undefined ? { defendingPlayerId: t.defendingPlayerId } : {}),
 		...(t.targetStackItemId !== undefined ? { targetStackItemId: t.targetStackItemId } : {}),
 		...(t.amount !== undefined ? { amount: t.amount } : {}),
 		...(t.eventLki ? { eventLki: t.eventLki } : {}),
@@ -452,6 +477,7 @@ interface MatchExtras {
 	times?: number;
 	eventLki?: PendingTrigger['eventLki'];
 	eventPlayer?: string;
+	defendingPlayerId?: string;
 }
 
 function record(state: GameState, source: Source, ability: RuntimeTrigger, kind: EventKind, extras: MatchExtras): void {
@@ -474,6 +500,7 @@ function record(state: GameState, source: Source, ability: RuntimeTrigger, kind:
 			amount: extras.amount,
 			eventLki: extras.eventLki,
 			eventPlayer: extras.eventPlayer ?? extras.eventPlayerId,
+			defendingPlayerId: extras.defendingPlayerId,
 			order: ch.nextOrder++
 		});
 	}
@@ -710,19 +737,80 @@ function matchZoneChange(state: GameState, ev: Extract<GameEvent, { kind: 'ZoneC
 	}
 }
 
-function boardCanGrantProwess(state: GameState, caster: GameState['players'][number]): boolean {
-	for (const perm of caster.battlefield) {
+function boardCanGrantTriggerKeyword(
+	state: GameState,
+	kind: EventKind,
+	focusPerms: readonly CardInstance[]
+): boolean {
+	if (!GRANTED_TRIGGER_KEYWORD_EVENTS.has(kind)) return false;
+	for (const eff of state.timedKeywordEffects ?? []) {
+		if (eff.addKeywords?.some((kw) => grantedTriggerEventsForKeyword(kw)?.includes(kind))) {
+			return true;
+		}
+	}
+	for (const perm of focusPerms) {
 		if (perm.phasedOut) continue;
-		if (perm.grantedKeywords?.some((kw) => kw.toLowerCase() === 'prowess')) return true;
+		if (perm.grantedKeywords?.some((kw) => grantedTriggerEventsForKeyword(kw)?.includes(kind))) {
+			return true;
+		}
 	}
 	for (const p of state.players) {
 		if (p.lost) continue;
 		for (const perm of p.battlefield) {
 			if (perm.phasedOut) continue;
-			if (triggersOf(perm.copiableCard ?? perm.card).grantsProwess) return true;
+			if (triggersOf(perm.copiableCard ?? perm.card).grantedTriggerEvents.has(kind)) return true;
 		}
 	}
 	return false;
+}
+
+function emitGrantedTriggerKeywords(
+	state: GameState,
+	perm: CardInstance,
+	controllerId: string,
+	kind: EventKind,
+	matches: (rt: RuntimeTrigger, source: Source) => boolean,
+	buildExtras: (rt: RuntimeTrigger, times: number) => MatchExtras,
+	multiplierFor: (perm: CardInstance) => number
+): void {
+	const breakdown = inspectCardContinuousBreakdown(perm, state);
+	const card = perm.copiableCard ?? perm.card;
+	const source: Source = { obj: perm, card, controllerId, zone: 'battlefield' };
+	for (const item of breakdown.items) {
+		if (item.removed) continue;
+		const spec = getKeywordSpec(item.canonicalKey);
+		if (
+			!spec ||
+			spec.status !== 'implemented' ||
+			!spec.grantable ||
+			spec.parameterKind !== 'none' ||
+			spec.implementation?.kind !== 'trigger' ||
+			!spec.implementation.events.includes(kind)
+		) {
+			continue;
+		}
+		let grantedCount = 0;
+		if (item.grantCount !== undefined) {
+			grantedCount = item.grantCount;
+		} else {
+			for (const src of item.sources) {
+				if (src !== 'innate') grantedCount += 1;
+			}
+		}
+		if (grantedCount <= 0) continue;
+		const built = spec.implementation.buildTriggers(
+			{ name: item.canonicalKey },
+			-1,
+			{ start: 0, end: 0 }
+		);
+		for (const rt of built) {
+			if (!matches(rt, source)) continue;
+			const times = grantedCount * multiplierFor(perm);
+			if (times > 0) {
+				record(state, source, { ...rt, grantedKeyword: item.canonicalKey }, kind, buildExtras(rt, times));
+			}
+		}
+	}
 }
 
 function matchCast(state: GameState, casterId: string, spell: CardInstance, isCopy: boolean): void {
@@ -757,41 +845,39 @@ function matchCast(state: GameState, casterId: string, spell: CardInstance, isCo
 			});
 		}
 	}
-	// CR 702.108a / 702.108b: Prowess granted by continuous effects (or temporary grants) on the
-	// caster's permanents triggers on each noncreature spell cast (each instance triggers separately).
-	if (!isCopy && !hasWord(subject.typeLine(), 'Creature')) {
+	// Layer 6 continuous/temporary grants of parameterless trigger keywords (e.g. Prowess, CR 702.108).
+	if (!isCopy) {
 		const caster = state.players.find((p) => p.playerId === casterId);
-		if (caster && !caster.lost && boardCanGrantProwess(state, caster)) {
+		if (caster && !caster.lost && boardCanGrantTriggerKeyword(state, 'cast', caster.battlefield)) {
 			for (const perm of caster.battlefield) {
 				if (perm.phasedOut) continue;
-				const breakdown = inspectCardContinuousBreakdown(perm, state);
-				let grantedProwessCount = 0;
-				for (const item of breakdown.items) {
-					if (item.canonicalKey === 'prowess' && !item.removed) {
-						if (item.grantCount !== undefined) {
-							grantedProwessCount += item.grantCount;
-						} else {
-							for (const src of item.sources) {
-								if (src !== 'innate') grantedProwessCount += 1;
-							}
-						}
-					}
-				}
-				if (grantedProwessCount > 0) {
-					const card = perm.copiableCard ?? perm.card;
-					const source: Source = { obj: perm, card, controllerId: casterId, zone: 'battlefield' };
-					const mult = triggerMultiplier(state, perm, casterId, {
-						event: 'cast',
-						spell,
-						casterId,
-						isCopy
-					});
-					record(state, source, PROWESS_RUNTIME_TRIGGER, 'cast', {
-						label: 'Prowess',
-						times: grantedProwessCount * mult,
+				emitGrantedTriggerKeywords(
+					state,
+					perm,
+					casterId,
+					'cast',
+					(rt, source) =>
+						alternatives(rt.trigger).some((a) => {
+							if (a.event !== 'cast') return false;
+							const rel = a.filter.player?.relation ?? 'any';
+							if (rel === 'you' && casterId !== source.controllerId) return false;
+							if (rel === 'opponent' && casterId === source.controllerId) return false;
+							if (a.filter.object === 'self') return false;
+							return objectMatches(a.filter, subject, source);
+						}),
+					(rt, times) => ({
+						label: rt.text || 'On Cast',
+						times,
 						eventPlayer: casterId
-					});
-				}
+					}),
+					(p) =>
+						triggerMultiplier(state, p, casterId, {
+							event: 'cast',
+							spell,
+							casterId,
+							isCopy
+						})
+				);
 			}
 		}
 	}
@@ -810,10 +896,14 @@ function matchAttack(state: GameState, attackingPlayerId: string, attackerIds: s
 		.map((id) => permanentById(state, id))
 		.filter((a): a is NonNullable<typeof a> => Boolean(a))
 		.map((a) => battlefieldSubject(state, a.obj, a.controllerId));
+	const attackerDefenderId = (id: string): string | undefined =>
+		state.combat.attackers.find((a) => a.attackerInstanceId === id)?.defenderPlayerId;
+
 	for (const source of sources(state, 'attacks')) {
 		for (const { ability, alts } of abilitiesFor(state, source, 'attacks')) {
 			for (const alt of alts) {
 				const f = alt.filter;
+				if (f.alone && attackers.length !== 1) continue;
 				if (f.object === undefined) {
 					// "Whenever you attack".
 					if (f.player?.relation === 'you' && attackingPlayerId === source.controllerId && attackers.length > 0) {
@@ -832,6 +922,12 @@ function matchAttack(state: GameState, attackingPlayerId: string, attackerIds: s
 				const matching = attackers.filter((s) => objectMatches(f, s, source));
 				if (matching.length === 0) continue;
 				if (f.object === 'self' || f.oneOrMore) {
+					const defendingPlayerId =
+						f.object === 'self'
+							? attackerDefenderId(source.obj.instanceId)
+							: f.alone && matching.length === 1
+								? attackerDefenderId(matching[0].obj.instanceId)
+								: undefined;
 					const times =
 						source.zone === 'battlefield'
 							? triggerMultiplier(state, source.obj, source.controllerId, {
@@ -840,12 +936,15 @@ function matchAttack(state: GameState, attackingPlayerId: string, attackerIds: s
 								})
 							: 1;
 					record(state, source, ability, 'attacks', {
-						label: 'Attack',
+						label: ability.text || 'Attack',
 						times,
+						...(f.alone && matching.length === 1 ? { eventObject: matching[0].obj } : {}),
+						...(defendingPlayerId ? { defendingPlayerId } : {}),
 						...(f.oneOrMore ? { amount: matching.length } : {})
 					});
 				} else {
 					for (const s of matching) {
+						const defendingPlayerId = attackerDefenderId(s.obj.instanceId);
 						const times =
 							source.zone === 'battlefield'
 								? triggerMultiplier(state, source.obj, source.controllerId, {
@@ -854,10 +953,72 @@ function matchAttack(state: GameState, attackingPlayerId: string, attackerIds: s
 										attackers: [s.obj]
 									})
 								: 1;
-						record(state, source, ability, 'attacks', { label: 'Attack Trigger', eventObject: s.obj, times });
+						record(state, source, ability, 'attacks', {
+							label: f.alone && ability.text ? ability.text : 'Attack Trigger',
+							eventObject: s.obj,
+							...(defendingPlayerId ? { defendingPlayerId } : {}),
+							times
+						});
 					}
 				}
 				break;
+			}
+		}
+	}
+	const allBattlefieldPerms = state.players
+		.filter((p) => !p.lost)
+		.flatMap((p) => p.battlefield.filter((perm) => !perm.phasedOut));
+	if (boardCanGrantTriggerKeyword(state, 'attacks', allBattlefieldPerms)) {
+		const attackerById = new Map(attackers.map((s) => [s.obj.instanceId, s]));
+		for (const p of state.players) {
+			if (p.lost) continue;
+			for (const perm of p.battlefield) {
+				if (perm.phasedOut) continue;
+				let matchedAttacker: Subject | undefined;
+				emitGrantedTriggerKeywords(
+					state,
+					perm,
+					p.playerId,
+					'attacks',
+					(rt, source) => {
+						matchedAttacker = undefined;
+						for (const a of alternatives(rt.trigger)) {
+							if (a.event !== 'attacks') continue;
+							if (a.filter.alone && attackers.length !== 1) continue;
+							if (a.filter.object === 'self') {
+								const s = attackerById.get(perm.instanceId);
+								if (s) {
+									matchedAttacker = s;
+									return true;
+								}
+							} else if (a.filter.object !== undefined) {
+								const s = attackers.find((atk) => objectMatches(a.filter, atk, source));
+								if (s) {
+									matchedAttacker = s;
+									return true;
+								}
+							}
+						}
+						return false;
+					},
+					(rt, times) => {
+						const atkObj = matchedAttacker?.obj;
+						const defendingPlayerId = atkObj ? attackerDefenderId(atkObj.instanceId) : undefined;
+						return {
+							label: rt.text || 'Attack',
+							times,
+							...(atkObj ? { eventObject: atkObj } : {}),
+							...(defendingPlayerId ? { defendingPlayerId } : {})
+						};
+					},
+					(prm) =>
+						triggerMultiplier(state, prm, p.playerId, {
+							event: 'attacks',
+							...(matchedAttacker
+								? { object: matchedAttacker.obj, attackers: [matchedAttacker.obj] }
+								: { attackers: [] })
+						})
+				);
 			}
 		}
 	}
@@ -883,6 +1044,19 @@ function matchBlocks(state: GameState, defenderId: string, blocks: Array<{ block
 				} else {
 					for (const s of matching) record(state, source, ability, kind, { label: kind === 'blocks' ? 'Block' : 'Blocked', eventObject: s.obj });
 				}
+			}
+		}
+		if (boardCanGrantTriggerKeyword(state, kind, subjects.map((s) => s.obj))) {
+			for (const s of subjects) {
+				emitGrantedTriggerKeywords(
+					state,
+					s.obj,
+					s.controllerId,
+					kind,
+					(rt) => alternatives(rt.trigger).some((a) => a.event === kind && a.filter.object === 'self'),
+					(rt, times) => ({ label: rt.text || (kind === 'blocks' ? 'Block' : 'Blocked'), times }),
+					() => 1
+				);
 			}
 		}
 	}
@@ -1196,24 +1370,36 @@ export function stackTriggerConditionHolds(
 	card: ScryfallCard,
 	abilityIndex: number,
 	controllerId: string,
-	sourceInstanceId: string
+	sourceInstanceId: string,
+	stackItem?: StackItem
 ): boolean {
 	const ability = triggersOf(card).all.find((t) => t.abilityIndex === abilityIndex);
 	if (!ability?.condition) return true;
-	return evaluateCondition(state, ability.condition, controllerId, sourceInstanceId);
+	return evaluateCondition(state, ability.condition, controllerId, sourceInstanceId, stackItem);
 }
 
 /** Evaluates an IR Condition for the controller of a triggered ability. Unknown forms are false. */
-export function evaluateCondition(state: GameState, cond: Condition, controllerId: string, sourceInstanceId: string): boolean {
+export function evaluateCondition(
+	state: GameState,
+	cond: Condition,
+	controllerId: string,
+	sourceInstanceId: string,
+	stackItem?: StackItem
+): boolean {
 	const controller = state.players.find((p) => p.playerId === controllerId);
 	if (!controller) return false;
 	switch (cond.k) {
 		case 'and':
-			return cond.of.every((c) => evaluateCondition(state, c, controllerId, sourceInstanceId));
+			return cond.of.every((c) => evaluateCondition(state, c, controllerId, sourceInstanceId, stackItem));
 		case 'or':
-			return cond.of.some((c) => evaluateCondition(state, c, controllerId, sourceInstanceId));
+			return cond.of.some((c) => evaluateCondition(state, c, controllerId, sourceInstanceId, stackItem));
 		case 'not':
-			return !evaluateCondition(state, cond.of, controllerId, sourceInstanceId);
+			return !evaluateCondition(state, cond.of, controllerId, sourceInstanceId, stackItem);
+		case 'kicked':
+			return evaluateKickerCondition(
+				cond,
+				getObjectKickerInfo(state, stackItem?.card ?? ({} as ScryfallCard), sourceInstanceId, stackItem)
+			);
 		case 'isTurnOf':
 			if (cond.player.k === 'you') return state.players[state.activePlayerIndex]?.playerId === controllerId;
 			return cond.player.k === 'activePlayer';
@@ -1229,8 +1415,8 @@ export function evaluateCondition(state: GameState, cond: Condition, controllerI
 			return n >= cond.count;
 		}
 		case 'compare': {
-			const l = amount(state, cond.left, controllerId, sourceInstanceId);
-			const r = amount(state, cond.right, controllerId, sourceInstanceId);
+			const l = amount(state, cond.left, controllerId, sourceInstanceId, stackItem);
+			const r = amount(state, cond.right, controllerId, sourceInstanceId, stackItem);
 			if (l === null || r === null) return false;
 			switch (cond.op) {
 				case '>=':
@@ -1251,7 +1437,13 @@ export function evaluateCondition(state: GameState, cond: Condition, controllerI
 }
 
 /** The Amount kinds conditions use. Anything else is null (the condition is then false). */
-function amount(state: GameState, a: Amount, controllerId: string, sourceInstanceId: string): number | null {
+function amount(
+	state: GameState,
+	a: Amount,
+	controllerId: string,
+	sourceInstanceId: string,
+	stackItem?: StackItem
+): number | null {
 	const controller = state.players.find((p) => p.playerId === controllerId);
 	if (!controller) return null;
 	switch (a.k) {
@@ -1259,6 +1451,11 @@ function amount(state: GameState, a: Amount, controllerId: string, sourceInstanc
 			return a.n;
 		case 'commanderCastCount':
 			return playerCommanderCastCount(state, controllerId);
+		case 'kickedCount':
+			return evaluateKickedCountAmount(
+				a,
+				getObjectKickerInfo(state, stackItem?.card ?? ({} as ScryfallCard), sourceInstanceId, stackItem)
+			);
 		case 'life':
 			return a.of.k === 'you' ? controller.life : null;
 		case 'cardsIn': {

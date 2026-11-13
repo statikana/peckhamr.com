@@ -10,6 +10,7 @@ import { compileCard } from '../compiler/index.ts';
 import type { Amount, Compare, Condition, ObjectFilter } from '../ir.ts';
 import { evaluatePermanent } from '../ruleTree.ts';
 import type { CardInstance, GameState, PlayerGameState, StackItem, ZoneType } from '../types.ts';
+import { evaluateKickedCountAmount, evaluateKickerCondition, getObjectKickerInfo } from './kicker.ts';
 import { splitSubtypes } from './layers.ts';
 
 export interface FilterContext {
@@ -332,6 +333,12 @@ export function evaluateAmount(amount: Amount, ctx: FilterContext): number {
 			return findObjects(amount.of, ctx).length;
 		case 'commanderCastCount':
 			return playerCommanderCastCount(ctx.state, ctx.controllerId);
+		case 'kickedCount': {
+			const info = ctx.source
+				? getObjectKickerInfo(ctx.state, ctx.source.card, ctx.source.instanceId, undefined, ctx.source)
+				: { count: 0, tags: [] };
+			return evaluateKickedCountAmount(amount, info);
+		}
 		case 'stat': {
 			if (amount.of.k !== 'self' || !ctx.source) return 0;
 			if (amount.stat === 'power') return objectPower(ctx.state, ctx.source) ?? 0;
@@ -379,6 +386,12 @@ export function evaluateCondition(cond: Condition, ctx: FilterContext): boolean 
 		case 'controlCommander': {
 			const p = ctx.state.players.find((pl) => pl.playerId === ctx.controllerId);
 			return Boolean(p?.battlefield.some((perm) => !perm.phasedOut && perm.isCommander));
+		}
+		case 'kicked': {
+			const info = ctx.source
+				? getObjectKickerInfo(ctx.state, ctx.source.card, ctx.source.instanceId, undefined, ctx.source)
+				: { count: 0, tags: [] };
+			return evaluateKickerCondition(cond, info);
 		}
 		default:
 			return false;

@@ -11,7 +11,8 @@ import {
 	createInitialGameState,
 	evaluatePermanent,
 	getCastOptions,
-	getPlayerCommanderIdentity
+	getPlayerCommanderIdentity,
+	getSpellCostRequirement
 } from '../engine.ts';
 import { PRECON_DECKS, STAPLE_CARDS } from '../precons.ts';
 import { validateCommanderDeck } from '../scryfall.ts';
@@ -2502,5 +2503,709 @@ describe('Keyword: Flashback (CR 702.34)', () => {
 				`${file} must contain zero overload/flashback literals`
 			);
 		}
+	});
+});
+
+// ============================================================================
+// 4. AFFINITY (CR 702.41)
+// ============================================================================
+
+describe('Keyword: Affinity (CR 702.41)', () => {
+	it('reduces generic cost by matching permanents you control for artifacts, Plains, and outlaws (CR 702.41a)', () => {
+		const { state, p1, p2 } = makeGame();
+
+		// 1. Affinity for artifacts: {4}{U} with 3 artifacts controlled by p1 (and 1 opponent artifact ignored) -> costs {1}{U}
+		const affSpell = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Thoughtcast Probe',
+				manaCost: '{4}{U}',
+				cmc: 5,
+				typeLine: 'Sorcery',
+				oracleText: 'Affinity for artifacts\nDraw two cards.'
+			}),
+			'hand'
+		);
+		// Make 3 distinct artifacts under p1's control and 1 under p2's control
+		p1.battlefield = [];
+		for (let i = 0; i < 3; i++) {
+			putInZone(
+				state,
+				p1,
+				syntheticCard({ name: `Artifact ${i}`, typeLine: 'Artifact', manaCost: '{0}', cmc: 0 }),
+				'battlefield'
+			);
+		}
+		putInZone(
+			state,
+			p2,
+			syntheticCard({ name: 'Opponent Artifact', typeLine: 'Artifact', manaCost: '{0}', cmc: 0 }),
+			'battlefield'
+		);
+		putInZone(state, p1, staple('Island'), 'library');
+		putInZone(state, p1, staple('Island'), 'library');
+
+		const req1 = getSpellCostRequirement(p1, affSpell, state, 0, 'normal');
+		assert.equal(req1.generic, 1);
+		assert.equal(req1.colored.U, 1);
+
+		// Cannot pay if only {U} available
+		p1.manaPool.U = 1;
+		p1.manaPool.C = 0;
+		assert.equal(
+			applyGameAction(state, p1.playerId, { type: 'cast_spell', instanceId: affSpell.instanceId, optionId: 'normal' }).ok,
+			false
+		);
+
+		// Can pay {1}{U}
+		p1.manaPool.C = 1;
+		assert.equal(
+			applyGameAction(state, p1.playerId, { type: 'cast_spell', instanceId: affSpell.instanceId, optionId: 'normal' }).ok,
+			true
+		);
+		assert.equal(p1.manaPool.U, 0);
+		assert.equal(p1.manaPool.C, 0);
+		resolveAllStack(state);
+
+		// 2. Affinity for Plains & outlaws: check cost reduction and non-matching exclusion
+		const affPlains = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Sunlit Golem',
+				manaCost: '{5}{W}',
+				cmc: 6,
+				typeLine: 'Creature — Golem',
+				power: '3',
+				toughness: '3',
+				oracleText: 'Affinity for Plains'
+			}),
+			'hand'
+		);
+		putInZone(state, p1, staple('Plains'), 'battlefield');
+		putInZone(state, p1, staple('Plains'), 'battlefield');
+		putInZone(state, p1, staple('Island'), 'battlefield');
+		const reqPlains = getSpellCostRequirement(p1, affPlains, state, 0, 'normal');
+		assert.equal(reqPlains.generic, 3);
+		assert.equal(reqPlains.colored.W, 1);
+
+		const affOutlaws = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Outlaw Ambush',
+				manaCost: '{4}{B}',
+				cmc: 5,
+				typeLine: 'Creature — Rogue',
+				power: '2',
+				toughness: '2',
+				oracleText: 'Affinity for outlaws'
+			}),
+			'hand'
+		);
+		putInZone(
+			state,
+			p1,
+			syntheticCard({ name: 'Dockside Pirate', typeLine: 'Creature — Goblin Pirate', power: '1', toughness: '2' }),
+			'battlefield'
+		);
+		putInZone(
+			state,
+			p1,
+			syntheticCard({ name: 'City Assassin', typeLine: 'Creature — Human Assassin', power: '2', toughness: '1' }),
+			'battlefield'
+		);
+		putInZone(
+			state,
+			p1,
+			syntheticCard({ name: 'Non-Outlaw Soldier', typeLine: 'Creature — Human Soldier', power: '2', toughness: '2' }),
+			'battlefield'
+		);
+		const reqOutlaws = getSpellCostRequirement(p1, affOutlaws, state, 0, 'normal');
+		assert.equal(reqOutlaws.generic, 2);
+		assert.equal(reqOutlaws.colored.B, 1);
+	});
+
+	it('stacks multiple affinity instances and preserves synthetic rename invariance (CR 702.41b)', () => {
+		const { state, p1 } = makeGame();
+		putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Artifact Creature Counted Twice',
+				typeLine: 'Artifact Creature — Construct',
+				power: '1',
+				toughness: '1'
+			}),
+			'battlefield'
+		);
+		putInZone(
+			state,
+			p1,
+			syntheticCard({ name: 'Spare Artifact', typeLine: 'Artifact', manaCost: '{0}', cmc: 0 }),
+			'battlefield'
+		);
+
+		const text = 'Affinity for artifacts\nAffinity for creatures';
+		const cardA = putInZone(
+			state,
+			p1,
+			syntheticCard({ name: 'Double Affinity Alpha', manaCost: '{6}', cmc: 6, typeLine: 'Artifact', oracleText: text }),
+			'hand'
+		);
+		const cardB = putInZone(
+			state,
+			p1,
+			syntheticCard({ name: 'Double Affinity Beta', manaCost: '{6}', cmc: 6, typeLine: 'Artifact', oracleText: text }),
+			'hand'
+		);
+
+		// 2 artifacts + 1 creature = 3 generic reduction -> {3}
+		assert.equal(getSpellCostRequirement(p1, cardA, state, 0, 'normal').generic, 3);
+		assert.equal(getSpellCostRequirement(p1, cardB, state, 0, 'normal').generic, 3);
+		p1.manaPool.C = 3;
+		assert.equal(
+			applyGameAction(state, p1.playerId, { type: 'cast_spell', instanceId: cardA.instanceId, optionId: 'normal' }).ok,
+			true
+		);
+		assert.equal(p1.manaPool.C, 0);
+	});
+});
+
+// ============================================================================
+// 5. AFTERLIFE (CR 702.135)
+// ============================================================================
+
+describe('Keyword: Afterlife (CR 702.135)', () => {
+	it('creates N 1/1 white and black Spirit tokens with flying when dying, stacks multiple instances, and skips exile (CR 702.135a–b)', () => {
+		const { state, p1, p2 } = makeGame();
+
+		// 1. Single Afterlife 2 creature dies to a destroy spell
+		const cleric = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Syndicate Cleric',
+				manaCost: '{2}{W}{B}',
+				cmc: 4,
+				typeLine: 'Creature — Human Cleric',
+				power: '2',
+				toughness: '2',
+				oracleText: 'Afterlife 2'
+			}),
+			'battlefield'
+		);
+		const murder = putInZone(
+			state,
+			p2,
+			syntheticCard({
+				name: 'Murder Probe',
+				manaCost: '{1}{B}{B}',
+				cmc: 3,
+				typeLine: 'Instant',
+				oracleText: 'Destroy target creature.'
+			}),
+			'hand'
+		);
+		state.priorityPlayerIndex = 1;
+		p2.manaPool.B = 2;
+		p2.manaPool.C = 1;
+		assert.equal(
+			applyGameAction(state, p2.playerId, {
+				type: 'cast_spell',
+				instanceId: murder.instanceId,
+				optionId: 'normal',
+				targets: [{ kind: 'permanent', id: cleric.instanceId, label: cleric.card.name }]
+			}).ok,
+			true
+		);
+		resolveAllStack(state);
+
+		assert.equal(p1.graveyard.some((c) => c.instanceId === cleric.instanceId), true);
+		const spirits = p1.battlefield.filter((c) => c.card.typeLine.includes('Spirit'));
+		assert.equal(spirits.length, 2);
+		for (const sp of spirits) {
+			assert.deepEqual(sp.card.colors, ['W', 'B']);
+			const ev = evaluatePermanent(state, sp);
+			assert.equal(ev.power, 1);
+			assert.equal(ev.toughness, 1);
+			assert.equal(ev.activeKeywords.includes('Flying'), true);
+		}
+
+		// 2. Multiple instances stack (Afterlife 1 + Afterlife 2 = 3 tokens) and synthetic rename invariance
+		p1.battlefield = [];
+		const stacked = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Twice-Blessed Thrull',
+				typeLine: 'Creature — Thrull',
+				power: '1',
+				toughness: '1',
+				oracleText: 'Afterlife 1\nAfterlife 2'
+			}),
+			'battlefield'
+		);
+		const bolt = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Bolt Probe',
+				manaCost: '{R}',
+				cmc: 1,
+				typeLine: 'Instant',
+				oracleText: 'Bolt Probe deals 3 damage to target creature.'
+			}),
+			'hand'
+		);
+		state.priorityPlayerIndex = 0;
+		p1.manaPool.R = 1;
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: bolt.instanceId,
+				optionId: 'normal',
+				targets: [{ kind: 'permanent', id: stacked.instanceId, label: stacked.card.name }]
+			}).ok,
+			true
+		);
+		resolveAllStack(state);
+		assert.equal(p1.battlefield.filter((c) => c.card.typeLine.includes('Spirit')).length, 3);
+
+		// 3. Exiling instead of dying does NOT trigger Afterlife
+		p1.battlefield = [];
+		const exiledTarget = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Renamed Spirit Bearer',
+				typeLine: 'Creature — Human Cleric',
+				power: '2',
+				toughness: '2',
+				oracleText: 'Afterlife 2'
+			}),
+			'battlefield'
+		);
+		const exileSpell = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Exile Probe',
+				manaCost: '{W}',
+				cmc: 1,
+				typeLine: 'Sorcery',
+				oracleText: 'Exile target creature.'
+			}),
+			'hand'
+		);
+		p1.manaPool.W = 1;
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: exileSpell.instanceId,
+				optionId: 'normal',
+				targets: [{ kind: 'permanent', id: exiledTarget.instanceId, label: exiledTarget.card.name }]
+			}).ok,
+			true
+		);
+		resolveAllStack(state);
+		assert.equal(p1.exile.some((c) => c.instanceId === exiledTarget.instanceId), true);
+		assert.equal(p1.battlefield.length, 0);
+	});
+});
+
+// ============================================================================
+// 6. EXPLOIT (CR 702.110)
+// ============================================================================
+
+describe('Keyword: Exploit (CR 702.110)', () => {
+	function passUntilPrompt(st: GameState, maxSteps = 20): void {
+		for (let i = 0; i < maxSteps && st.stack.length > 0 && st.pendingPrompts.length === 0; i++) {
+			const prio = st.players[st.priorityPlayerIndex];
+			assert.equal(applyGameAction(st, prio.playerId, { type: 'pass_priority' }).ok, true);
+		}
+	}
+
+	it('prompts on ETB to optionally sacrifice a creature: accept with 1, choose among 2+, decline, and bot decline (CR 702.110a)', () => {
+		// 1. Human accepts with 2 creatures -> chooses other creature to sacrifice
+		const { state, p1 } = makeGame();
+		const fodder = putInZone(
+			state,
+			p1,
+			syntheticCard({ name: 'Dutiful Attendant', typeLine: 'Creature — Human', power: '1', toughness: '2' }),
+			'battlefield'
+		);
+		const exploiterCard = syntheticCard({
+			name: 'Sidisi Probe',
+			manaCost: '{1}',
+			cmc: 1,
+			typeLine: 'Creature — Zombie Wizard',
+			power: '3',
+			toughness: '3',
+			oracleText: 'Exploit'
+		});
+		const exploiterHand = putInZone(state, p1, exploiterCard, 'hand');
+		p1.manaPool.C = 1;
+		assert.equal(
+			applyGameAction(state, p1.playerId, { type: 'cast_spell', instanceId: exploiterHand.instanceId, optionId: 'normal' }).ok,
+			true
+		);
+		// Resolve spell -> ETB Exploit trigger on stack -> resolve trigger up to trigger_may prompt
+		passUntilPrompt(state);
+		assert.equal(state.pendingPrompts[0]?.purpose, 'trigger_may');
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'choice',
+				promptId: state.pendingPrompts[0].id,
+				answer: { kind: 'yesNo', yes: true }
+			}).ok,
+			true
+		);
+		assert.equal(state.pendingPrompts[0]?.choice?.kind, 'chooseObjects');
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'choice',
+				promptId: state.pendingPrompts[0].id,
+				answer: { kind: 'chooseObjects', objectIds: [fodder.instanceId] }
+			}).ok,
+			true
+		);
+		assert.equal(p1.graveyard.some((c) => c.instanceId === fodder.instanceId), true);
+		assert.equal(p1.battlefield.some((c) => c.instanceId === exploiterHand.instanceId), true);
+
+		// 2. Human declines optional sacrifice (also using a synthetic renamed Exploit card)
+		const { state: s2, p1: p1b } = makeGame();
+		const renamedExploit = putInZone(
+			s2,
+			p1b,
+			syntheticCard({ ...exploiterCard, name: 'Mirrored Exploiter' }),
+			'hand'
+		);
+		p1b.manaPool.C = 1;
+		assert.equal(
+			applyGameAction(s2, p1b.playerId, { type: 'cast_spell', instanceId: renamedExploit.instanceId, optionId: 'normal' }).ok,
+			true
+		);
+		passUntilPrompt(s2);
+		assert.equal(s2.pendingPrompts[0]?.purpose, 'trigger_may');
+		assert.equal(
+			applyGameAction(s2, p1b.playerId, {
+				type: 'choice',
+				promptId: s2.pendingPrompts[0].id,
+				answer: { kind: 'yesNo', yes: false }
+			}).ok,
+			true
+		);
+		assert.equal(p1b.battlefield.some((c) => c.instanceId === renamedExploit.instanceId), true);
+		assert.equal(p1b.graveyard.length, 0);
+
+		// 3. Human accepts with only the exploiter itself -> auto-sacrifices itself
+		const { state: s3, p1: p1c } = makeGame();
+		const solo = putInZone(s3, p1c, exploiterCard, 'hand');
+		p1c.manaPool.C = 1;
+		assert.equal(
+			applyGameAction(s3, p1c.playerId, { type: 'cast_spell', instanceId: solo.instanceId, optionId: 'normal' }).ok,
+			true
+		);
+		passUntilPrompt(s3);
+		assert.equal(s3.pendingPrompts[0]?.purpose, 'trigger_may');
+		assert.equal(
+			applyGameAction(s3, p1c.playerId, {
+				type: 'choice',
+				promptId: s3.pendingPrompts[0].id,
+				answer: { kind: 'yesNo', yes: true }
+			}).ok,
+			true
+		);
+		assert.equal(p1c.graveyard.some((c) => c.instanceId === solo.instanceId), true);
+		assert.equal(p1c.battlefield.length, 0);
+
+		// 4. Bot controller auto-declines optional sacrifice
+		const { state: s4, p1: p1Bot } = makeGame({ p1Bot: true });
+		const botSolo = putInZone(s4, p1Bot, exploiterCard, 'hand');
+		p1Bot.manaPool.C = 1;
+		assert.equal(
+			applyGameAction(s4, p1Bot.playerId, { type: 'cast_spell', instanceId: botSolo.instanceId, optionId: 'normal' }).ok,
+			true
+		);
+		passUntilPrompt(s4);
+		assert.equal(s4.pendingPrompts.length, 0);
+		assert.equal(p1Bot.battlefield.some((c) => c.instanceId === botSolo.instanceId), true);
+	});
+
+	it('Kicker and Multikicker: validates optionalCostCounts, unifies mana reductions, enforces CR 702.33g targets, triggers intervening-if, and resets on CR 400.7 zone leave', () => {
+		const { state, p1, p2 } = makeGame();
+
+		// 1. Spell with conditional target + mana reduction applied once to combined cost (CR 601.2f, 702.33g)
+		const reducer = syntheticCard({
+			name: 'Prism Discounter',
+			typeLine: 'Creature — Wizard',
+			power: '1',
+			toughness: '1',
+			oracleText: 'Instant and sorcery spells you cast cost {1} less to cast.'
+		});
+		putInZone(state, p1, reducer, 'battlefield');
+
+		const kickedShatter = syntheticCard({
+			name: 'Arcane Surge',
+			manaCost: '{1}{U}',
+			cmc: 2,
+			typeLine: 'Instant',
+			oracleText: 'Kicker {2}{R}\nDraw a card.\nIf Arcane Surge was kicked, destroy target artifact.'
+		});
+		const oppSolRing = putInZone(
+			state,
+			p2,
+			syntheticCard({ name: 'Opp Relic', manaCost: '{1}', typeLine: 'Artifact' }),
+			'battlefield'
+		);
+		const surge = putInZone(state, p1, kickedShatter, 'hand');
+
+		// Options list optionalAdditionalCosts with enablesTarget (with base cost mana {U} after Prism Discounter)
+		p1.manaPool.U = 1;
+		const opts = getCastOptions(state, p1.playerId, surge, 'hand');
+		assert.equal(opts.length, 1);
+		assert.equal(opts[0].optionalAdditionalCosts?.length, 1);
+		assert.equal(opts[0].optionalAdditionalCosts?.[0]?.maxCount, 1);
+		assert.equal(opts[0].optionalAdditionalCosts?.[0]?.enablesTarget, true);
+
+		// Validation rejects bad counts
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: surge.instanceId,
+				optionalCostCounts: { unknown: 1 }
+			}).ok,
+			false
+		);
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: surge.instanceId,
+				optionalCostCounts: { 'kicker:0': -1 }
+			}).ok,
+			false
+		);
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: surge.instanceId,
+				optionalCostCounts: { 'kicker:0': 1.5 }
+			}).ok,
+			false
+		);
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: surge.instanceId,
+				optionalCostCounts: { 'kicker:0': 2 }
+			}).ok,
+			false
+		);
+
+		// Rejects passing a target when unkicked (CR 702.33g)
+		p1.manaPool.U = 1;
+		p1.manaPool.R = 1;
+		p1.manaPool.C = 2; // {1}{U} + {2}{R} = {3}{U}{R} minus {1} = {2}{U}{R} (exact!)
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: surge.instanceId,
+				targets: [{ kind: 'permanent', id: oppSolRing.instanceId, label: oppSolRing.card.name }]
+			}).ok,
+			false
+		);
+
+		// Requires target when kicked
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: surge.instanceId,
+				optionalCostCounts: { 'kicker:0': 1 },
+				targets: []
+			}).ok,
+			false
+		);
+
+		// Kicked with legal target succeeds and pays exact combined reduced mana {2}{U}{R}
+		const handBefore = p1.hand.length;
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: surge.instanceId,
+				optionalCostCounts: { 'kicker:0': 1 },
+				targets: [{ kind: 'permanent', id: oppSolRing.instanceId, label: oppSolRing.card.name }]
+			}).ok,
+			true
+		);
+		assert.equal(p1.manaPool.U + p1.manaPool.R + p1.manaPool.C, 0);
+		passUntilPrompt(state);
+		// Drew 1 card and destroyed opponent's artifact
+		assert.equal(p1.hand.length, handBefore); // -1 cast + 1 draw
+		assert.equal(p2.graveyard.some((c) => c.instanceId === oppSolRing.instanceId), true);
+
+		// 2. Permanent ETB replacement + intervening-if surviving permanent destruction + CR 400.7 reset + synthetic rename
+		const kickerCreatureBase = {
+			manaCost: '{1}{W}',
+			cmc: 2,
+			typeLine: 'Creature — Knight',
+			power: '2',
+			toughness: '2',
+			oracleText:
+				'Kicker—Pay 3 life.\nIf ~ was kicked, it enters with two +1/+1 counters on it.\nWhen ~ enters, if it was kicked, draw a card.\nAs long as ~ was kicked, it has flying.'
+		};
+		const { state: s2, p1: p1b, p2: p2b } = makeGame();
+		const knightA = putInZone(
+			s2,
+			p1b,
+			syntheticCard({
+				name: 'Skyward Aspirant',
+				...kickerCreatureBase,
+				oracleText: kickerCreatureBase.oracleText.replace(/~/g, 'Skyward Aspirant')
+			}),
+			'hand'
+		);
+		const knightRenamed = putInZone(
+			s2,
+			p1b,
+			syntheticCard({
+				name: 'Astral Crusader',
+				...kickerCreatureBase,
+				oracleText: kickerCreatureBase.oracleText.replace(/~/g, 'Astral Crusader')
+			}),
+			'hand'
+		);
+		p1b.manaPool.W = 1;
+		p1b.manaPool.C = 1;
+		const lifeBefore = p1b.life;
+		assert.equal(
+			applyGameAction(s2, p1b.playerId, {
+				type: 'cast_spell',
+				instanceId: knightA.instanceId,
+				optionalCostCounts: { 'kicker:0': 1 }
+			}).ok,
+			true
+		);
+		assert.equal(p1b.life, lifeBefore - 3);
+		// Resolve creature spell -> enters with 2 +1/+1 counters & flying, ETB trigger on stack
+		applyGameAction(s2, p1b.playerId, { type: 'pass_priority' });
+		applyGameAction(s2, p2b.playerId, { type: 'pass_priority' });
+		const knightAPerm = p1b.battlefield.find((c) => c.instanceId === knightA.instanceId);
+		assert.ok(knightAPerm, 'Skyward Aspirant entered battlefield');
+		assert.equal(knightAPerm.counters['+1/+1'], 2);
+		assert.equal(knightAPerm.kickedCount, 1);
+		assert.ok(evaluatePermanent(s2, knightAPerm).keywords.some((k) => k.toLowerCase() === 'flying'));
+		assert.equal(s2.stack.length, 1); // ETB trigger on stack
+
+		// Destroy knightA BEFORE its ETB trigger resolves: CR 603.4 intervening-if still holds via LKI!
+		const destroySpell = putInZone(
+			s2,
+			p2b,
+			syntheticCard({ name: 'Doom Blade', manaCost: '{1}', typeLine: 'Instant', oracleText: 'Destroy target creature.' }),
+			'hand'
+		);
+		p2b.manaPool.C = 1;
+		// P2 casts instant on knightA
+		applyGameAction(s2, p1b.playerId, { type: 'pass_priority' });
+		assert.equal(
+			applyGameAction(s2, p2b.playerId, {
+				type: 'cast_spell',
+				instanceId: destroySpell.instanceId,
+				targets: [{ kind: 'permanent', id: knightAPerm.instanceId, label: knightAPerm.card.name }]
+			}).ok,
+			true
+		);
+		const handBeforeTrigger = p1b.hand.length;
+		passUntilPrompt(s2);
+		const knightAGy = p1b.graveyard.find((c) => c.instanceId === knightA.instanceId);
+		assert.ok(knightAGy, 'Skyward Aspirant died to graveyard');
+		assert.equal(knightAGy.kickedCount, undefined); // CR 400.7 cleared on leave battlefield
+		assert.equal(knightAGy.kickedTags, undefined);
+		assert.equal(p1b.hand.length, handBeforeTrigger + 1); // ETB draw still resolved!
+
+		// Unkicked renamed copy gets no counters, no flying, and intervening-if trigger doesn't draw
+		p1b.manaPool.W = 1;
+		p1b.manaPool.C = 1;
+		const handBeforeUnkicked = p1b.hand.length - 1;
+		assert.equal(
+			applyGameAction(s2, p1b.playerId, {
+				type: 'cast_spell',
+				instanceId: knightRenamed.instanceId
+			}).ok,
+			true
+		);
+		passUntilPrompt(s2);
+		const knightRenamedPerm = p1b.battlefield.find((c) => c.instanceId === knightRenamed.instanceId);
+		assert.ok(knightRenamedPerm);
+		assert.equal(knightRenamedPerm.counters['+1/+1'], 0);
+		assert.equal(knightRenamedPerm.kickedCount, undefined);
+		assert.equal(evaluatePermanent(s2, knightRenamedPerm).keywords.some((k) => k.toLowerCase() === 'flying'), false);
+		assert.equal(p1b.hand.length, handBeforeUnkicked);
+
+		// 3. Multikicker 3 times
+		const { state: s3, p1: p1c } = makeGame();
+		const multiWolf = putInZone(
+			s3,
+			p1c,
+			syntheticCard({
+				name: 'Multi Wolf',
+				manaCost: '{G}',
+				cmc: 1,
+				typeLine: 'Creature — Wolf',
+				power: '1',
+				toughness: '1',
+				oracleText: 'Multikicker {1}\nMulti Wolf enters with a +1/+1 counter on it for each time it was kicked.'
+			}),
+			'hand'
+		);
+		p1c.manaPool.G = 1;
+		p1c.manaPool.C = 3;
+		assert.equal(
+			applyGameAction(s3, p1c.playerId, {
+				type: 'cast_spell',
+				instanceId: multiWolf.instanceId,
+				optionalCostCounts: { 'kicker:0': 3 }
+			}).ok,
+			true
+		);
+		passUntilPrompt(s3);
+		const multiWolfPerm = p1c.battlefield.find((c) => c.instanceId === multiWolf.instanceId);
+		assert.ok(multiWolfPerm);
+		assert.equal(multiWolfPerm.counters['+1/+1'], 3);
+		assert.equal(multiWolfPerm.kickedCount, 3);
+
+		// 4. Dual "and/or" kicker tags
+		const { state: s4, p1: p1d, p2: p2d } = makeGame();
+		const battlemage = putInZone(
+			s4,
+			p1d,
+			syntheticCard({
+				name: 'Sun-Moon Battlemage',
+				manaCost: '{2}',
+				cmc: 2,
+				typeLine: 'Creature — Wizard',
+				power: '2',
+				toughness: '2',
+				oracleText:
+					'Kicker {W} and/or {B}\nWhen Sun-Moon Battlemage enters, if it was kicked with its {W} kicker, you gain 3 life.\nWhen Sun-Moon Battlemage enters, if it was kicked with its {B} kicker, target opponent loses 2 life.'
+			}),
+			'hand'
+		);
+		p1d.manaPool.C = 2;
+		p1d.manaPool.W = 1; // Only pay white kicker, not black
+		const lifeStartP1 = p1d.life;
+		const lifeStartP2 = p2d.life;
+		assert.equal(
+			applyGameAction(s4, p1d.playerId, {
+				type: 'cast_spell',
+				instanceId: battlemage.instanceId,
+				optionalCostCounts: { 'kicker:0': 1 }
+			}).ok,
+			true
+		);
+		passUntilPrompt(s4);
+		assert.equal(p1d.life, lifeStartP1 + 3);
+		assert.equal(p2d.life, lifeStartP2);
 	});
 });

@@ -50,9 +50,17 @@ import type {
 } from '../types.ts';
 import { cardManaSteps, compileCard } from '../compiler/index.ts';
 import { legacySearchSpec } from '../compiler/effects.ts';
+import { getKeywordSpec } from '../keywords.ts';
 import { evaluatePermanent, inspectCardContinuousBreakdown } from '../ruleTree.ts';
 import { enqueueChoicePrompt } from './choices.ts';
 import { emitEvent } from './events.ts';
+import {
+	evaluateKickedCountAmount,
+	evaluateKickerCondition,
+	getObjectKickerInfo,
+	isConditionMetWithKicker,
+	type KickerTrackingInfo
+} from './kicker.ts';
 import { noteLayerInputsChanged } from './layerCache.ts';
 import { matchesObjectFilter, objectManaValue, playerCommanderCastCount } from './objectFilter.ts';
 import { activeRuleModifiers, tokenMultiplier } from './replace.ts';
@@ -149,6 +157,8 @@ export interface EffectContext {
 	eventLki?: TriggerEventLki;
 	/** "That player": the player the trigger event was about. */
 	eventPlayerId?: string;
+	/** The defending player for an attack trigger (CR 508.5, 702.86a). */
+	defendingPlayerId?: string;
 }
 
 export interface EffectResult {
@@ -195,14 +205,18 @@ export function interpretableNow(
 	controller: PlayerGameState,
 	targetsBecomeEach = Boolean(item.spellMods?.targetsBecomeEach)
 ): boolean {
-	const spec = parse.targets[0];
+	const kickerInfo = getObjectKickerInfo(state, item.card, item.sourceInstanceId, item);
+	const activeTargets = parse.targets.filter(
+		(sp) => !sp.condition || isConditionMetWithKicker(sp.condition, kickerInfo)
+	);
+	const spec = activeTargets[0];
 	if (!spec) {
 		if (item.targets.length > 0) return false;
 	} else if (targetsBecomeEach) {
 		if (spec.kind !== 'object') return false;
-	} else if (parse.targets.length > 1) {
-		if (item.targets.length === 0 || item.targets.length > parse.targets.length) return false;
-		if (!item.targets.every((t) => parse.targets.some((sp) => targetRefMatchesSpec(t, sp)))) return false;
+	} else if (activeTargets.length > 1) {
+		if (item.targets.length === 0 || item.targets.length > activeTargets.length) return false;
+		if (!item.targets.every((t) => activeTargets.some((sp) => targetRefMatchesSpec(t, sp)))) return false;
 	} else {
 		// CR 608.2b: targets that became illegal were dropped; the spell resolves with the rest.
 		if (item.targets.length === 0 && spec.min > 0) return false;
@@ -227,6 +241,11 @@ function playerFromRefStatic(state: GameState, ref: PlayerRef, item: StackItem, 
 	if (ref.k === 'you') return controller;
 	if (ref.k === 'activePlayer') return state.players[state.activePlayerIndex] ?? null;
 	if (ref.k === 'eventPlayer') return state.players.find((p) => p.playerId === item.eventPlayerId) ?? null;
+	if (ref.k === 'defendingPlayer') {
+		return item.defendingPlayerId
+			? (state.players.find((p) => p.playerId === item.defendingPlayerId && !p.lost) ?? null)
+			: null;
+	}
 	if (ref.k === 'controllerOf' || ref.k === 'ownerOf') {
 		const t = item.targets[0];
 		if (!t) return null;
@@ -893,6 +912,8 @@ class Run {
 				return devotion(this.you, a.colors);
 			case 'commanderCastCount':
 				return playerCommanderCastCount(this.state, this.you.playerId);
+			case 'kickedCount':
+				return evaluateKickedCountAmount(a, this.kickerInfo());
 			case 'stat': {
 				const snap = this.refSnapshot(a.of, Boolean(a.lki));
 				if (!snap) return 0;
@@ -956,12 +977,43 @@ class Run {
 		return found ? this.snapshot(found.inst) : null;
 	}
 
+	kickerInfo(): KickerTrackingInfo {
+		return getObjectKickerInfo(this.state, this.ctx.item.card, this.ctx.sourceId, this.ctx.item);
+	}
+
+	activeTargetSpecs(): Array<{ spec: TargetSpec; specIndex: number }> {
+		const out: Array<{ spec: TargetSpec; specIndex: number }> = [];
+		for (let i = 0; i < this.ctx.targetSpecs.length; i++) {
+			const spec = this.ctx.targetSpecs[i];
+			if (!spec.condition || this.condition(spec.condition)) {
+				out.push({ spec, specIndex: i });
+			}
+		}
+		return out;
+	}
+
+	targetsForSpecIndex(specIndex: number): TargetRef[] {
+		if (this.ctx.targetSpecs.length === 0) {
+			return specIndex === 0 ? this.ctx.targets : [];
+		}
+		const active = this.activeTargetSpecs();
+		const pos = active.findIndex((entry) => entry.specIndex === specIndex);
+		if (pos < 0) return [];
+		if (active.length <= 1) return this.ctx.targets;
+		if (this.ctx.targets.length === active.length) {
+			const ref = this.ctx.targets[pos];
+			return ref ? [ref] : [];
+		}
+		const spec = active[pos].spec;
+		return this.ctx.targets.filter((t) => targetRefMatchesSpec(t, spec));
+	}
+
 	refId(ref: Ref): string | null {
 		switch (ref.k) {
 			case 'self':
 				return this.ctx.sourceId;
 			case 'target':
-				return this.ctx.targets[ref.index]?.id ?? null;
+				return this.targetsForSpecIndex(ref.index)[0]?.id ?? null;
 			case 'binding':
 				return this.bindings.get(ref.name)?.[0]?.id ?? null;
 			case 'eventObject':
@@ -979,8 +1031,12 @@ class Run {
 				return this.state.players[this.state.activePlayerIndex] ?? null;
 			case 'eventPlayer':
 				return this.ctx.eventPlayerId ? (this.player(this.ctx.eventPlayerId) ?? null) : null;
+			case 'defendingPlayer': {
+				const pl = this.ctx.defendingPlayerId ? (this.player(this.ctx.defendingPlayerId) ?? null) : null;
+				return pl && !pl.lost ? pl : null;
+			}
 			case 'target': {
-				const t = this.ctx.targets[ref.index];
+				const t = this.targetsForSpecIndex(ref.index)[0];
 				return t?.kind === 'player' ? (this.player(t.id) ?? null) : null;
 			}
 			case 'controllerOf':
@@ -1013,12 +1069,7 @@ class Run {
 			return p && !p.lost ? [p] : [];
 		}
 		if (sel.k === 'target') {
-			const refs =
-				this.ctx.targetSpecs.length > 1
-					? this.ctx.targets.length === this.ctx.targetSpecs.length
-						? [this.ctx.targets[sel.index]]
-						: this.ctx.targets.filter((t) => targetRefMatchesSpec(t, this.ctx.targetSpecs[sel.index]))
-					: this.ctx.targets;
+			const refs = this.targetsForSpecIndex(sel.index);
 			return refs
 				.filter((t): t is TargetRef => Boolean(t && t.kind === 'player'))
 				.map((t) => this.player(t.id))
@@ -1053,14 +1104,10 @@ class Run {
 			case 'target': {
 				if (this.ctx.targetsBecomeEach ?? this.ctx.item.spellMods?.targetsBecomeEach) {
 					const spec = this.ctx.targetSpecs[sel.index];
+					if (spec?.condition && !this.condition(spec.condition)) return [];
 					return spec ? this.objects({ k: 'all', filter: spec.filter }) : [];
 				}
-				const refs =
-					this.ctx.targetSpecs.length > 1
-						? this.ctx.targets.length === this.ctx.targetSpecs.length
-							? [this.ctx.targets[sel.index]]
-							: this.ctx.targets.filter((t) => targetRefMatchesSpec(t, this.ctx.targetSpecs[sel.index]))
-						: this.ctx.targets;
+				const refs = this.targetsForSpecIndex(sel.index);
 				return refs
 					.filter((t) => t.kind !== 'player' && t.kind !== 'stack')
 					.map((t) => this.locate(t.id)?.inst)
@@ -1154,6 +1201,12 @@ class Run {
 				step.ifPrecedingAccepted !== undefined &&
 				!this.stepDecisions[step.ifPrecedingAccepted]
 			) {
+				this.subStepIndex = 0;
+				this.phase = 'optional';
+				this.answers = {};
+				continue;
+			}
+			if (step.condition && this.phase !== 'afterStep' && !this.condition(step.condition)) {
 				this.subStepIndex = 0;
 				this.phase = 'optional';
 				this.answers = {};
@@ -1438,7 +1491,8 @@ class Run {
 				const removeKws = step.params?.removeKeywords;
 				for (const o of objs) {
 					for (const kw of addKws ?? []) {
-						if (kw.toLowerCase() === 'prowess' || !o.grantedKeywords.includes(kw)) {
+						const isStackingTriggerKw = getKeywordSpec(kw)?.implementation?.kind === 'trigger';
+						if (isStackingTriggerKw || !o.grantedKeywords.includes(kw)) {
 							o.grantedKeywords.push(kw);
 						}
 					}
@@ -1641,7 +1695,7 @@ class Run {
 			}
 			case 'copySpell': {
 				const sel = step.subject;
-				const t = sel.k === 'target' ? this.ctx.targets[sel.index] : undefined;
+				const t = sel.k === 'target' ? this.targetsForSpecIndex(sel.index)[0] : undefined;
 				const orig =
 					t?.kind === 'stack'
 						? s.stack.find((item) => item.id === t.id && item.kind === 'spell')
@@ -1806,12 +1860,7 @@ class Run {
 		let totalDealt = 0;
 
 		if (sel.k === 'target' && !(this.ctx.targetsBecomeEach ?? this.ctx.item.spellMods?.targetsBecomeEach)) {
-			const targetRefs =
-				this.ctx.targetSpecs.length > 1
-					? this.ctx.targets.length === this.ctx.targetSpecs.length
-						? [this.ctx.targets[sel.index]].filter(Boolean)
-						: this.ctx.targets.filter((t) => targetRefMatchesSpec(t, this.ctx.targetSpecs[sel.index]))
-					: this.ctx.targets;
+			const targetRefs = this.targetsForSpecIndex(sel.index);
 			for (const t of targetRefs) {
 				if (t.kind === 'player') {
 					const pl = this.player(t.id);
@@ -1845,13 +1894,14 @@ class Run {
 
 	resolveSingleFighter(sel: Selector): CardInstance | null {
 		if (sel.k === 'target') {
+			const active = this.activeTargetSpecs();
 			if (
-				this.ctx.targetSpecs.length > 1 &&
-				this.ctx.targets.length < this.ctx.targetSpecs.filter((sp) => sp.min > 0).length
+				active.length > 1 &&
+				this.ctx.targets.length < active.filter((entry) => entry.spec.min > 0).length
 			) {
 				return null;
 			}
-			const t = this.ctx.targets[sel.index];
+			const t = this.targetsForSpecIndex(sel.index)[0];
 			if (!t || t.kind === 'player' || t.kind === 'stack') return null;
 			const inst = this.locate(t.id)?.inst ?? null;
 			return inst && !inst.phasedOut ? inst : null;
@@ -2541,6 +2591,8 @@ class Run {
 				return false;
 			case 'controlCommander':
 				return this.you.battlefield.some((perm) => !perm.phasedOut && Boolean(perm.isCommander));
+			case 'kicked':
+				return evaluateKickerCondition(c, this.kickerInfo());
 		}
 	}
 }

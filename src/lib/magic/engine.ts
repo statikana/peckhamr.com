@@ -108,10 +108,14 @@ import {
 	alternativeCostMetaById,
 	canPayCosts,
 	chooseCostPayment,
+	computeKickerTracking,
 	effectiveAbilityManaCost,
 	effectiveSpellManaCost,
 	executeCostPaymentParts,
+	expandOptionalAdditionalCosts,
+	getObjectKickerInfo,
 	getSuspendSpec,
+	isCastConditionMet,
 	keywordAltCost,
 	keywordCost,
 	keywordsOf,
@@ -123,10 +127,14 @@ import {
 	spellAdditionalCost,
 	spellCastRestrictions,
 	spellChoosesX,
+	spellOptionalAdditionalCosts,
+	validateOptionalCostCounts,
 	type CostContext,
 	type CostQuestion
 } from './runtime/costs.ts';
+import { isConditionMetWithKicker } from './runtime/kicker.ts';
 export { getSuspendSpec };
+import { getKeywordSpec } from './keywords.ts';
 import { evaluateAmount, matchesObjectFilter, objectManaValue, type FilterContext } from './runtime/objectFilter.ts';
 import { compileCard, compiledStackItemEffects, compiledTriggerEffect, compileSpellEffects } from './compiler/index.ts';
 import { parseCost } from './compiler/costs.ts';
@@ -575,6 +583,9 @@ function enumerateCandidateCastOptions(
 	const additional = spellAdditionalCost(card);
 	const mandatoryAdditionalCosts =
 		additional && additional.defs.length > 0 ? additional.defs : undefined;
+	const optionalAdditionalCosts = spellOptionalAdditionalCosts(card);
+	const optionalProp =
+		optionalAdditionalCosts.length > 0 ? { optionalAdditionalCosts } : {};
 	const targetInfo = getSpellTargetRequirement(card);
 	const castCount =
 		inst.isCommander && fromZone === 'command' && actor
@@ -596,6 +607,7 @@ function enumerateCandidateCastOptions(
 			permission: 'zone_default',
 			baseCost,
 			...(mandatoryAdditionalCosts ? { mandatoryAdditionalCosts } : {}),
+			...optionalProp,
 			timing: 'default',
 			spellMods: {},
 			choosesX: spellChoosesX(card, baseCost),
@@ -612,6 +624,7 @@ function enumerateCandidateCastOptions(
 				permission: 'exile_permission',
 				baseCost,
 				...(mandatoryAdditionalCosts ? { mandatoryAdditionalCosts } : {}),
+				...optionalProp,
 				timing: 'default',
 				spellMods: {},
 				choosesX: spellChoosesX(card, baseCost),
@@ -630,6 +643,7 @@ function enumerateCandidateCastOptions(
 				permission: 'exile_permission',
 				baseCost,
 				...(mandatoryAdditionalCosts ? { mandatoryAdditionalCosts } : {}),
+				...optionalProp,
 				timing: 'default',
 				spellMods: {},
 				choosesX: spellChoosesX(card, baseCost),
@@ -667,6 +681,7 @@ function enumerateCandidateCastOptions(
 				permission: 'keyword_alt',
 				baseCost,
 				...(mandatoryAdditionalCosts ? { mandatoryAdditionalCosts } : {}),
+				...optionalProp,
 				timing: meta.timing ?? 'default',
 				spellMods,
 				choosesX: spellChoosesX(card, baseCost),
@@ -788,7 +803,8 @@ function getSpellCostRequirementForOption(
 	inst: CardInstance,
 	state: GameState,
 	xValue: number,
-	option: CastOption
+	option: CastOption,
+	optionalCostCounts?: Record<string, number>
 ): ManaCostRequirement {
 	const applyAnyColorPermission = (req: ManaCostRequirement): ManaCostRequirement => {
 		if (
@@ -809,8 +825,9 @@ function getSpellCostRequirementForOption(
 		return req;
 	};
 
+	const { manaCosts: extraManaCosts } = expandOptionalAdditionalCosts(option, optionalCostCounts);
 	return applyAnyColorPermission(
-		effectiveSpellManaCost(state, player, inst, xValue, option.baseCost)
+		effectiveSpellManaCost(state, player, inst, xValue, option.baseCost, extraManaCosts)
 	);
 }
 
@@ -819,7 +836,8 @@ export function getSpellCostRequirement(
 	inst: CardInstance,
 	state: GameState,
 	xValue = 0,
-	optionId?: string
+	optionId?: string,
+	optionalCostCounts?: Record<string, number>
 ): ManaCostRequirement {
 	const fromZone: CastableSourceZone =
 		inst.zone === 'command' || inst.zone === 'exile' || inst.zone === 'graveyard'
@@ -827,7 +845,14 @@ export function getSpellCostRequirement(
 			: 'hand';
 	const resolved = resolveCastOptionForAction(state, player.playerId, inst, fromZone, optionId);
 	if (resolved.ok) {
-		return getSpellCostRequirementForOption(player, inst, state, xValue, resolved.option);
+		return getSpellCostRequirementForOption(
+			player,
+			inst,
+			state,
+			xValue,
+			resolved.option,
+			optionalCostCounts
+		);
 	}
 	const altMeta = optionId ? alternativeCostMetaById(optionId) : null;
 	const altCost = altMeta ? keywordAltCost(inst.copiableCard ?? inst.card, altMeta.keyword) : null;
@@ -847,7 +872,8 @@ export function chooseBotSpellCostPayment(
 	player: PlayerGameState,
 	inst: CardInstance,
 	xValue = 0,
-	optionId?: string
+	optionId?: string,
+	optionalCostCounts?: Record<string, number>
 ): CostPayment | undefined {
 	const fromZone: CastableSourceZone =
 		inst.zone === 'command' || inst.zone === 'exile' || inst.zone === 'graveyard'
@@ -858,10 +884,20 @@ export function chooseBotSpellCostPayment(
 		resolved.ok && resolved.option.baseCost.kind === 'alternative'
 			? (resolved.option.baseCost.costDefs ?? [])
 			: [];
+	const { nonManaDefs: extraNonManaDefs } = resolved.ok
+		? expandOptionalAdditionalCosts(resolved.option, optionalCostCounts)
+		: { nonManaDefs: [] };
 	const additional = spellAdditionalCost(inst.card);
-	const defs = [...altDefs, ...(additional?.defs ?? [])];
+	const defs = [...altDefs, ...(additional?.defs ?? []), ...extraNonManaDefs];
 	if (defs.length === 0) return undefined;
-	const costReq = getSpellCostRequirement(player, inst, state, xValue, optionId);
+	const costReq = getSpellCostRequirement(
+		player,
+		inst,
+		state,
+		xValue,
+		optionId,
+		optionalCostCounts
+	);
 	return chooseCostPayment(costContext(state, player, inst, xValue, true, costReq), defs) ?? undefined;
 }
 
@@ -1022,7 +1058,11 @@ function finalizeCastSpell(
 
 	const targetDesc =
 		targets.length > 0 ? ` targeting ${targets.map((t) => t.label).join(', ')}` : '';
-	const summarySuffix = spellMods?.castSummarySuffix ?? '';
+	const kickerInfo = optionalCostCounts
+		? computeKickerTracking(inst.card, optionalCostCounts)
+		: { count: 0, tags: [] };
+	const kickedSuffix = kickerInfo.count > 0 ? ' (kicked)' : '';
+	const summarySuffix = `${spellMods?.castSummarySuffix ?? ''}${kickedSuffix}`;
 	addLog(
 		state,
 		'cast',
@@ -2719,25 +2759,54 @@ function applyGameActionInner(
 				return resolvedOpt;
 			}
 			const castOption = resolvedOpt.option;
+			const optCountsValidation = validateOptionalCostCounts(castOption, action.optionalCostCounts);
+			if (!optCountsValidation.ok) {
+				return { ok: false, error: optCountsValidation.error };
+			}
+			const normalizedOptCounts = optCountsValidation.normalized;
+			const hasOptCounts = Object.keys(normalizedOptCounts).length > 0;
+			const { manaCosts: extraManaCosts, nonManaDefs: extraNonManaDefs } = expandOptionalAdditionalCosts(
+				castOption,
+				normalizedOptCounts
+			);
+			const castChoosesX =
+				castOption.choosesX ||
+				extraManaCosts.some((c) => /\{X\}/i.test(c)) ||
+				JSON.stringify(extraNonManaDefs).includes('"k":"x"');
 			const rawXVal = action.xValue || 0;
-			const xVal = castOption.choosesX ? rawXVal : 0;
-			const legality = checkSpellCastLegality(state, actorId, inst, sourceZone, xVal, castOption.id);
+			const xVal = castChoosesX ? rawXVal : 0;
+			const legality = checkSpellCastLegality(
+				state,
+				actorId,
+				inst,
+				sourceZone,
+				xVal,
+				castOption.id,
+				hasOptCounts ? normalizedOptCounts : undefined
+			);
 			if (!legality.ok) {
 				return legality;
 			}
 
-			const spellTargetInfo = getSpellTargetRequirement(inst.card);
+			const spellTargetInfo = getSpellTargetRequirement(
+				inst.card,
+				castOption,
+				hasOptCounts ? normalizedOptCounts : undefined
+			);
 			const targets = action.targets || [];
 			const compiledModal = compileSpellEffects(inst.card)?.modal;
+			const activeSpec = (sp: TargetSpec) =>
+				!sp.condition || isCastConditionMet(sp.condition, inst.card, normalizedOptCounts, castOption);
 			let chosenModes = action.modes;
 			if (compiledModal && !chosenModes && compiledModal.max === 1) {
 				// "Choose one" cast without naming the mode (older clients): the mode whose targets fit.
 				const fit = compiledModal.modes.findIndex((m) => {
-					const minT = m.targets.reduce((s, sp) => s + sp.min, 0);
-					const maxT = m.targets.reduce((s, sp) => s + sp.max, 0);
+					const mTargets = m.targets.filter(activeSpec);
+					const minT = mTargets.reduce((s, sp) => s + sp.min, 0);
+					const maxT = mTargets.reduce((s, sp) => s + sp.max, 0);
 					if (targets.length < minT || targets.length > maxT) return false;
 					let cur = 0;
-					return m.targets.every((spec) => {
+					return mTargets.every((spec) => {
 						const count =
 							spec.min === spec.max ? spec.min : Math.min(spec.max, targets.length - cur);
 						const slice = targets.slice(cur, cur + count);
@@ -2766,7 +2835,7 @@ function applyGameActionInner(
 				const rawSpecs: { modeIndex: number; specIndex: number; spec: TargetSpec }[] = [];
 				for (let modeIndex = 0; modeIndex < modes.length; modeIndex++) {
 					const m = modes[modeIndex];
-					compiledModal.modes[m].targets.forEach((spec, specIndex) => {
+					compiledModal.modes[m].targets.filter(activeSpec).forEach((spec, specIndex) => {
 						rawSpecs.push({ modeIndex, specIndex, spec });
 					});
 				}
@@ -2832,13 +2901,22 @@ function applyGameActionInner(
 			}
 
 			// Check & pay mana cost (including Commander Tax if from Command Zone, or any-color mana if exiled with Opposition Agent!)
-			const costReq = getSpellCostRequirementForOption(actor, inst, state, xVal, castOption);
-			const displayedManaCost =
+			const costReq = getSpellCostRequirementForOption(
+				actor,
+				inst,
+				state,
+				xVal,
+				castOption,
+				hasOptCounts ? normalizedOptCounts : undefined
+			);
+			const baseManaDisplay =
 				castOption.baseCost.kind === 'alternative'
 					? (castOption.baseCost.manaCost ?? '')
 					: castOption.baseCost.kind === 'free'
-						? '{0}'
+						? ''
 						: inst.card.manaCost;
+			const displayedManaCost =
+				`${baseManaDisplay}${extraManaCosts.join('')}` || (castOption.baseCost.kind === 'free' ? '{0}' : '');
 			const manaError = `Insufficient mana to cast ${inst.card.name} (requires ${displayedManaCost || '{0}'}${sourceZone === 'command' && inst.commanderCastCount > 0 ? ` + {${inst.commanderCastCount * state.rules.commanderTaxIncrement}} Commander Tax` : ''}).`;
 			const phySpellChoice = maybeAskPhyrexianCostChoice(
 				state,
@@ -2858,12 +2936,16 @@ function applyGameActionInner(
 			if (hybSpellChoice.promptResult) return hybSpellChoice.promptResult;
 			const effectiveCostReq = hybSpellChoice.resolvedReq;
 
-			// Phase 4: additional costs (plus any non-mana alternative costDefs) from the IR, paid together
-			// with the mana (nothing is paid unless everything can be). Choices become a cost_choice prompt.
+			// Phase 4: additional costs (plus any non-mana alternative costDefs and optional additional costs)
+			// from the IR, paid together with the mana (nothing is paid unless everything can be).
 			const additional = spellAdditionalCost(inst.card);
 			const altCostDefs =
 				castOption.baseCost.kind === 'alternative' ? (castOption.baseCost.costDefs ?? []) : [];
-			const combinedCostDefs = [...altCostDefs, ...(castOption.mandatoryAdditionalCosts ?? [])];
+			const combinedCostDefs = [
+				...altCostDefs,
+				...(castOption.mandatoryAdditionalCosts ?? []),
+				...extraNonManaDefs
+			];
 			if (combinedCostDefs.length > 0) {
 				const ctx = costContext(
 					state,
@@ -2889,7 +2971,7 @@ function applyGameActionInner(
 					xValue: xVal,
 					castOptionId: castOption.id,
 					spellMods: castOption.spellMods,
-					...(action.optionalCostCounts ? { optionalCostCounts: action.optionalCostCounts } : {}),
+					...(hasOptCounts ? { optionalCostCounts: normalizedOptCounts } : {}),
 					...(inst.playableFromExileBy?.sourceName
 						? { exSourceName: inst.playableFromExileBy.sourceName }
 						: {}),
@@ -2920,7 +3002,7 @@ function applyGameActionInner(
 				xValue: xVal,
 				castOptionId: castOption.id,
 				spellMods: castOption.spellMods,
-				optionalCostCounts: action.optionalCostCounts,
+				...(hasOptCounts ? { optionalCostCounts: normalizedOptCounts } : {}),
 				additionalIncomplete: Boolean(additional && !additional.complete)
 			});
 			return { ok: true };
@@ -3733,6 +3815,28 @@ function getBlockerRestrictionReason(
 	}
 	if (hasKeyword(attacker, 'Horsemanship', state) && !hasKeyword(blocker, 'Horsemanship', state)) {
 		return `Strict Rules Violation: ${blocker.card.name} cannot block ${attacker.card.name} (has Horsemanship, CR 702.31b).`;
+	}
+	const evalAttackerLandwalk = evaluatePermanent(state, attacker);
+	const defendingPlayer = state.players.find((p) => p.playerId === blocker.controllerId);
+	if (defendingPlayer) {
+		const defPermanents = defendingPlayer.battlefield.filter((perm) => !perm.phasedOut);
+		for (const kw of evalAttackerLandwalk.activeKeywords) {
+			const spec = getKeywordSpec(kw);
+			if (
+				spec?.status === 'implemented' &&
+				spec.implementation?.kind === 'primitive' &&
+				spec.implementation.landwalkFilter
+			) {
+				const landFilter = spec.implementation.landwalkFilter;
+				if (
+					defPermanents.some((perm) =>
+						matchesObjectFilter(perm, landFilter, { state, controllerId: defendingPlayer.playerId })
+					)
+				) {
+					return `Strict Rules Violation: ${blocker.card.name} cannot block ${attacker.card.name} (has ${spec.displayLabel ?? kw}, CR 702.14c).`;
+				}
+			}
+		}
 	}
 	return null;
 }
@@ -5922,6 +6026,7 @@ function triggeredStackItem(state: GameState, t: PendingTrigger, idPrefix: strin
 	const sourceLkiPower = sourceEval?.power ?? t.source.lastKnownPower;
 	const sourceLkiToughness = sourceEval?.toughness ?? t.source.lastKnownToughness;
 	const eventObj = t.eventObject ?? t.source;
+	const kickerLki = getObjectKickerInfo(state, t.sourceCard, t.source.instanceId);
 	return withStackItemText(
 		{
 			id: uid(idPrefix, state),
@@ -5929,6 +6034,12 @@ function triggeredStackItem(state: GameState, t: PendingTrigger, idPrefix: strin
 			sourceObjectVersion: t.source.objectVersion,
 			sourceLkiPower,
 			sourceLkiToughness,
+			...(kickerLki.count > 0
+				? {
+						sourceKickedCount: kickerLki.count,
+						sourceKickedTags: [...kickerLki.tags]
+					}
+				: {}),
 			card: t.sourceCard,
 			controllerId: t.controllerId,
 			kind: 'triggered',
@@ -5939,9 +6050,11 @@ function triggeredStackItem(state: GameState, t: PendingTrigger, idPrefix: strin
 			createdAt: Date.now(),
 			lkiPower: t.amount,
 			triggeredAbilityIndex: t.ability.abilityIndex,
+			...(t.ability.grantedKeyword ? { grantedKeyword: t.ability.grantedKeyword } : {}),
 			eventObjectId: eventObj.instanceId,
 			eventObjectVersion: eventObj.objectVersion,
 			...(t.eventPlayer ? { eventPlayerId: t.eventPlayer } : {}),
+			...(t.defendingPlayerId ? { defendingPlayerId: t.defendingPlayerId } : {}),
 			...(t.amount !== undefined ? { eventAmount: t.amount } : {}),
 			...(t.targetStackItemId ? { eventStackItemId: t.targetStackItemId } : {}),
 			...(t.ability.ward ? { wardCost: t.ability.ward.cost } : {}),
@@ -5969,7 +6082,7 @@ export function triggerResolutionCounts(reset = false): { interpreter: number; m
 /** The compiled IR effect of a triggered stack item, or null (no compiled effect: legacy only). */
 function triggerItemEffect(item: StackItem) {
 	if (item.kind !== 'triggered' || item.triggeredAbilityIndex === undefined) return null;
-	return compiledTriggerEffect(item.card, item.triggeredAbilityIndex);
+	return compiledTriggerEffect(item.card, item.triggeredAbilityIndex, item.grantedKeyword);
 }
 
 /** The interpreter's EffectContext fields for a triggered ability's event (CR 603.7c). */
@@ -5978,6 +6091,7 @@ function triggerEventContext(item: StackItem) {
 		eventObjectId: item.eventObjectId,
 		eventObjectVersion: item.eventObjectVersion,
 		eventPlayerId: item.eventPlayerId,
+		defendingPlayerId: item.defendingPlayerId,
 		eventAmount: item.eventAmount,
 		eventLki: item.eventLki
 	};
@@ -6886,7 +7000,8 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 			item.card,
 			item.triggeredAbilityIndex,
 			item.controllerId,
-			item.sourceInstanceId
+			item.sourceInstanceId,
+			item
 		)
 	) {
 		removeItemFromStack();
@@ -7147,6 +7262,9 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 			perm.commanderCastCount = castCount;
 			perm.summoningSick = tLine.includes('Creature');
 			perm.enteredWithX = item.xValue;
+			const resolvedKicker = computeKickerTracking(item.card, item.optionalCostCounts);
+			perm.kickedCount = resolvedKicker.count > 0 ? resolvedKicker.count : undefined;
+			perm.kickedTags = resolvedKicker.tags.length > 0 ? resolvedKicker.tags : undefined;
 			// Reset pre-filled loyalty so moveObject initializes loyalty with counterMultiplier (CR 306.5b)
 			perm.counters.loyalty = 0;
 
@@ -10384,6 +10502,23 @@ export function validateChosenTargets(
 	if (!info.requiresTarget && targets.length === 0) {
 		return { ok: true };
 	}
+	if (!info.requiresTarget && info.maxTargets === 0 && targets.length > 0) {
+		const allowsCopyHint =
+			sourceCard &&
+			(compileCard(sourceCard).faces[0]?.abilities ?? []).some(
+				(ab) =>
+					ab.kind === 'replacement' &&
+					!Array.isArray(ab.replacement.with) &&
+					ab.replacement.with.k === 'modify' &&
+					Boolean(ab.replacement.with.copyOf)
+			);
+		if (!allowsCopyHint) {
+			return {
+				ok: false,
+				error: `${sourceCard?.name || 'Spell or ability'} does not take any targets.`
+			};
+		}
+	}
 
 	if (targets.length < info.minTargets) {
 		return {
@@ -10825,10 +10960,11 @@ export function checkSpellCastLegality(
 	inst: CardInstance,
 	fromZone: ZoneType = 'hand',
 	xValue = 0,
-	optionId?: string
+	optionId?: string,
+	optionalCostCounts?: Record<string, number>
 ): { ok: boolean; error?: string } {
 	return withStableLayerInputs(state, () =>
-		checkSpellCastLegalityInner(state, actorId, inst, fromZone, xValue, optionId)
+		checkSpellCastLegalityInner(state, actorId, inst, fromZone, xValue, optionId, optionalCostCounts)
 	);
 }
 
@@ -10838,7 +10974,8 @@ function checkSpellCastLegalityInner(
 	inst: CardInstance,
 	fromZone: ZoneType = 'hand',
 	xValue = 0,
-	optionId?: string
+	optionId?: string,
+	optionalCostCounts?: Record<string, number>
 ): { ok: boolean; error?: string } {
 	if (state.status !== 'active') {
 		return { ok: false, error: 'Game is not currently active.' };
@@ -10860,7 +10997,8 @@ function checkSpellCastLegalityInner(
 		inst,
 		resolved.option.fromZone,
 		xValue,
-		resolved.option
+		resolved.option,
+		optionalCostCounts
 	);
 }
 
@@ -10870,7 +11008,8 @@ function checkSpellCastOptionLegalityInner(
 	inst: CardInstance,
 	fromZone: CastableSourceZone,
 	xValue: number,
-	option: CastOption
+	option: CastOption,
+	optionalCostCounts?: Record<string, number>
 ): { ok: boolean; error?: string } {
 	if (state.status !== 'active') {
 		return { ok: false, error: 'Game is not currently active.' };
@@ -10979,17 +11118,36 @@ function checkSpellCastOptionLegalityInner(
 					: `${inst.card.name} has no mana cost and cannot be cast for its printed cost (CR 118.6).`
 		};
 	}
-	const costReq = getSpellCostRequirementForOption(actor, inst, state, xValue, option);
+	const optCountsValidation = validateOptionalCostCounts(option, optionalCostCounts);
+	if (!optCountsValidation.ok) {
+		return { ok: false, error: optCountsValidation.error };
+	}
+	const normalizedOptCounts = optCountsValidation.normalized;
+	const hasOptCounts = Object.keys(normalizedOptCounts).length > 0;
+	const { nonManaDefs: extraNonManaDefs } = expandOptionalAdditionalCosts(option, normalizedOptCounts);
+	const costReq = getSpellCostRequirementForOption(
+		actor,
+		inst,
+		state,
+		xValue,
+		option,
+		hasOptCounts ? normalizedOptCounts : undefined
+	);
 	if (!canPayOrAutoTap(actor, costReq, state)) {
 		return {
 			ok: false,
 			error: `Insufficient mana to cast ${inst.card.name}.`
 		};
 	}
-	// Phase 4: additional costs (plus any non-mana alternative costDefs) from the IR, together with the mana.
+	// Phase 4: additional costs (plus any non-mana alternative costDefs and optional additional costs)
+	// from the IR, together with the mana.
 	const altCostDefs =
 		option.baseCost.kind === 'alternative' ? (option.baseCost.costDefs ?? []) : [];
-	const combinedCostDefs = [...altCostDefs, ...(option.mandatoryAdditionalCosts ?? [])];
+	const combinedCostDefs = [
+		...altCostDefs,
+		...(option.mandatoryAdditionalCosts ?? []),
+		...extraNonManaDefs
+	];
 	if (
 		combinedCostDefs.length > 0 &&
 		!canPayCosts(costContext(state, actor, inst, xValue, true, costReq), combinedCostDefs)
@@ -11001,7 +11159,11 @@ function checkSpellCastOptionLegalityInner(
 	}
 
 	// Check target legality (including multi-target & single-graveyard constraints)
-	const spellTargetInfo = getSpellTargetRequirement(inst.card);
+	const spellTargetInfo = getSpellTargetRequirement(
+		inst.card,
+		option,
+		hasOptCounts ? normalizedOptCounts : undefined
+	);
 	const targetCheck = hasRequiredLegalTargets(
 		state,
 		actorId,
@@ -11295,7 +11457,11 @@ function isTargetStillValid(
 	if (item && !(item.kind === 'triggered' && triggerItemTargetSpecs(item).length > 0)) {
 		let targetInfo: TargetRequirementInfo | undefined;
 		if (item.kind === 'spell' && (sourceCard || item.card)) {
-			targetInfo = getSpellTargetRequirement((sourceCard ?? item.card)!);
+			targetInfo = getSpellTargetRequirement(
+				(sourceCard ?? item.card)!,
+				undefined,
+				item.optionalCostCounts
+			);
 		} else if (item.kind === 'activated' && item.abilityId && (sourceCard || item.card)) {
 			const ab = getCardActivatedAbilities((sourceCard ?? item.card)!).find(
 				(a) => a.id === item.abilityId
@@ -11338,7 +11504,11 @@ function isTargetStillValid(
 		}
 		const compiled = compiledStackItemEffects(item);
 		if (compiled && compiled.targets.length > 0) {
-			const objectSpecs = compiled.targets.filter(
+			const itemKicker = getObjectKickerInfo(state, item.card, item.sourceInstanceId, item);
+			const activeCompiledTargets = compiled.targets.filter(
+				(ts) => !ts.condition || isConditionMetWithKicker(ts.condition, itemKicker)
+			);
+			const objectSpecs = activeCompiledTargets.filter(
 				(ts) => ts.kind === 'object' || ts.kind === 'objectOrPlayer'
 			);
 			if (objectSpecs.length > 0) {

@@ -491,6 +491,65 @@ Previously, casting options were hardcoded around a binary union:
 
 ---
 
+### 2.12 Keyword registry & Kicker (Track B3)
+
+*Status: implemented in Track B3 across Slices 1–3 (`keywords.ts`, `runtime/kicker.ts`, `ir.ts`, `types.ts`, `ruleTree.ts`, `engine.ts`, `ai.ts`, `ArenaTable.svelte`, `compiler/`, `runtime/`, `COMPILER_VERSION = 16`), with `Exploit` (`CR 702.110a`) included and `Cycling` (`CR 702.29`) deferred past B3.*
+
+#### Architecture (as built)
+
+1. **Unified declarative `KEYWORD_REGISTRY` (`src/lib/magic/keywords.ts`).**
+   - Exports one typed record keyed by canonical lower-case keyword name (`name: string`, `cr: string`, `parameterKind: 'none' | 'cost' | 'number' | 'quality' | 'cardName' | 'text'`, `displayLabel?: string`, `grantable: boolean`, `status: 'implemented' | 'unimplemented'`).
+   - Declares each implemented keyword's compilation/runtime binding in one place via a discriminated `implementation` union:
+     - `'primitive'`: enforced directly by existing runtime hooks (evasion, combat damage, cast timing, targeting restrictions), optionally carrying declarative metadata (e.g. evasion predicate).
+     - `'castOption'`: metadata consumed by `runtime/costs.ts` / `getCastOptions` (e.g. `overload`, `flashback`, `kicker`, `multikicker`).
+     - `'trigger'`: pure builder `(kw: KeywordDef) => TriggeredAbility[]` (or parameterized factory), unifying existing `ward` (`CR 702.21`) and `prowess` (`CR 702.108`) plus newly added triggered keywords.
+     - `'static'`: pure builder `(kw: KeywordDef) => StaticDef[]` (e.g. `affinity`).
+     - `'activated'`: pure builder `(kw: KeywordDef) => ActivatedAbility[]` (for parameterized activated keywords such as `equip`, future `cycling`).
+   - **Eliminating duplicate lists:** `compiler/card.ts` derives `IMPLEMENTED_KEYWORDS` and `KNOWN_KEYWORDS` from `KEYWORD_REGISTRY`; `compiler/statics.ts` derives grantable static keywords from it; `compiler/effects.ts` derives `GRANTABLE_KEYWORDS` from `grantable: true`; `runtime/layers.ts` derives `KEYWORD_LABELS`; `runtime/costs.ts` derives `ALTERNATIVE_COST_KEYWORDS`; and `runtime/keywords-coverage-guard.test.ts` asserts 1:1 coverage against every implemented entry in `KEYWORD_REGISTRY`.
+   - **Architecture ratchet compliance:** `src/lib/magic/keywords.ts` holds only structured IR builders and CR metadata — zero `oracleText` reads and zero card-name comparisons (`architecture.test.ts`). Test-only sample oracle lines stay in `runtime/keywords-coverage-guard.test.ts`.
+
+2. **Uniform expansion of granted keyword abilities (`runtime/triggers.ts`).**
+   - Today `runtime/triggers.ts` special-cases `PROWESS_RUNTIME_TRIGGER` when continuous Layer 6 effects grant `'prowess'`.
+   - Replacing that special case with a generic `KEYWORD_REGISTRY` trigger lookup lets *any* `'trigger'` keyword granted by Layer 6 (`prowess`, `battle cry`, `bushido N`, `afflict N`, etc.) trigger identically to printed keywords without per-keyword branches in `runtime/triggers.ts`.
+
+3. **Pure-IR keywords vs. thin runtime primitives (honest scoping).**
+   Checking the candidate keywords named in `NEXT_STEPS_SPEC.md` §B3 against the actual IR (`ir.ts`), compiler, and `engine.ts` reveals which keywords expand purely to *existing* IR and which genuinely need small primitives:
+   - **Pure-IR keywords (zero runtime changes — expand directly from `KEYWORD_REGISTRY` to existing IR):**
+     1. **`Battle cry` (`CR 702.91a–b`):** `{ event: 'attacks', filter: { object: 'self' } }` → `pump` `{ k: 'all', filter: { types: ['Creature'], attacking: true, other: true } }` `+1/+0` `endOfTurn`.
+     2. **`Afterlife N` (`CR 702.135a–b`):** `{ event: 'zoneChange', filter: { object: 'self', from: 'battlefield', to: 'graveyard' } }` → `createToken` `N` 1/1 `W/B` Spirit creature tokens with `flying`.
+     3. **`Bushido N` (`CR 702.45a–b`):** `{ event: 'blocks', filter: { object: 'self' }, or: [{ event: 'becomesBlocked', filter: { object: 'self' } }] }` → `pump` `{ k: 'self' }` `+N/+N` `endOfTurn`.
+     4. **`Living weapon` (`CR 702.92a`):** `{ event: 'zoneChange', filter: { object: 'self', to: 'battlefield' } }` → `createToken` 0/0 `B` Phyrexian Germ (`bindAs: 'germ'`) → `attach` `{ k: 'binding', name: 'germ' }`. (`CR 704.3` SBAs wait until the trigger finishes resolving, so an Equipment granting +toughness keeps the 0/0 Germ alive.)
+     5. **`For Mirrodin!` (`CR 702.163a`):** `{ event: 'zoneChange', filter: { object: 'self', to: 'battlefield' } }` → `createToken` 2/2 `R` Rebel (`bindAs: 'rebel'`) → `attach` `{ k: 'binding', name: 'rebel' }`.
+     6. **`Affinity for [quality]` (`CR 702.41a–b`):** `StaticDef` `{ k: 'costModifier', affects: { k: 'self' }, delta: { mode: 'reduce', generic: 1, times: { k: 'count', of: { ...qualityFilter, controller: 'you', zone: 'battlefield' } } }, who: { relation: 'you' } }` (uses the already-implemented `affects.k === 'self'` path in `runtime/costs.ts`).
+     7. *(Optional 7th)* **`Exploit` (`CR 702.110a`):** ETB trigger → optional `sacrifice` a creature (`CR 702.110b` companion triggers `"When ~ exploits a creature"` remain a separate future trigger rule).
+   - **Candidates requiring small, explicit IR/runtime additions (should NOT be claimed as "no runtime changes"):**
+     - **`Exalted` (`CR 702.83a–b`):** `matchAttack` (`runtime/triggers.ts`) does not yet filter on `attackers.length === 1`. Needs `alone?: boolean` on `EventFilter` (`ir.ts`) so `matchAttack` sets `eventObject` to that sole attacker when `attackers.length === 1`.
+     - **`Annihilator N` (`CR 702.86a–b`):** `PlayerRef` (`ir.ts`) has no `'defendingPlayer'` variant (the audit in `rules-audit/03` notes this). Using `'opponent'` would break 4-player Commander. Needs `{ k: 'defendingPlayer' }` on `PlayerRef` plus propagating each attacker's `defendingPlayerId` through `matchAttack` → `RuntimeTrigger` → `StackItem`.
+     - **`Landwalk` (`CR 702.14a–e`):** `getBlockerRestrictionReason` (`engine.ts`) only checks Flying, Fear, Intimidate, Shadow, and Horsemanship. Needs a Landwalk check inspecting whether the defending player controls a matching land (`[subtype]walk`, `landwalk`, `nonbasic landwalk`).
+     - **`Cycling [cost]` / Typecycling (`CR 702.29a–f`):** `engine.ts` (`case 'activate_ability'`) only searches `actor.battlefield`. Cycling requires activating an ability from `'hand'`, a discard-this-card cost from `'hand'`, and hand-zone ability activation in `ArenaTable.svelte` / `ai.ts`. *(Better suited to its own focused follow-up or dedicated slice rather than piggybacking on pure-IR entries.)*
+
+4. **Kicker & Multikicker (`CR 702.33a–h`).**
+   - **Compiler & IR (`compiler/card.ts`, `compiler/effects.ts`, `ir.ts`):**
+     - Parse `"Kicker [cost]"`, `"Kicker [cost 1] and/or [cost 2]"` (`CR 702.33b`), and `"Multikicker [cost]"` (`CR 702.33c`) via `parseCost` into `KeywordDef` (`costDefs`, optional kicker tag key).
+     - Add `Condition` `{ k: 'kicked', tag?: string, minCount?: number }` (`CR 702.33d–f`) and `Amount` `{ k: 'kickedCount', tag?: string }`, updating all `evaluateCondition` / `evaluateAmount` evaluators (`runtime/objectFilter.ts`, `runtime/layers.ts`, `runtime/triggers.ts`, `runtime/effects.ts`) cleanly.
+     - Compile `"if it was kicked"`, `"if ~ was kicked"`, `"if it was kicked with its [X] kicker"`, `"with N +1/+1 counters on it if it was kicked"`, and multikicker count clauses (`"with a +1/+1 counter on it for each time it was kicked"`) into `Condition` / `ReplacementDef` / `EffectStep`.
+   - **Runtime & `CastOption.optionalAdditionalCosts` (`runtime/costs.ts`, `runtime/zones.ts`, `engine.ts`):**
+     - `getCastOptions` populates `option.optionalAdditionalCosts` from `kicker` / `multikicker` keywords (`id: 'kicker:0'`, `'kicker:1'`, etc.; `maxCount: 1` for Kicker, `maxCount: 99` for Multikicker; `kickedTag`). Per `CR 118.9d` & `CR 702.33a`, kicker optional costs combine normally with alternative costs (e.g. Flashback) unless forbidden, and follow `CR 601.2b / 601.2f–h`.
+     - `cast_spell` validates `optionalCostCounts` against the chosen `CastOption.optionalAdditionalCosts` (`0 <= count <= maxCount`), appends selected `costDefs` × count to the total cost planned through `planCosts` and `PendingCostPayment`, and stores `optionalCostCounts` on `StackItem`.
+     - Conditional kicker targets (`CR 702.33g`): target clauses gated by a kicker condition are required/validated if and only if the corresponding kicker cost was declared as paid.
+     - When a permanent spell resolves onto the battlefield (`engine.ts` + `runtime/zones.ts`), `StackItem.optionalCostCounts` seeds plain-JSON `kickedCount` / `kickedTags` on the resolving `CardInstance` before ETB replacements and ETB triggers fire; `runtime/zones.ts` clears kicker tracking whenever a permanent leaves the battlefield or stack (`CR 400.7`).
+   - **Keyword-agnostic UI (`ArenaTable.svelte`) & Bot AI (`ai.ts`):**
+     - UI renders generic optional additional cost checkboxes (`maxCount === 1`) / `− / +` steppers (`maxCount > 1`) from `CastOption.optionalAdditionalCosts` (`label`, `costDisplay`) before confirming targets / payment — zero `'kicker'` literals in `ArenaTable.svelte` or `ai.ts`.
+     - Bot AI evaluates affordable `optionalAdditionalCosts` entries conservatively (paying when affordable and mana remains for higher-priority plays or when spell value improves).
+
+#### Implementation slices
+
+- **Slice 1 (Registry consolidation + 7 pure-IR keywords + generic granted triggers):** Created `src/lib/magic/keywords.ts`, derived all duplicated keyword lists (`IMPLEMENTED_KEYWORDS`, `KNOWN_KEYWORDS`, `STATIC_CONTINUOUS_KEYWORDS`, `GRANTABLE_KEYWORDS`, `KEYWORD_LABELS`, `ALTERNATIVE_COST_KEYWORDS`, `GRANTED_TRIGGER_KEYWORD_EVENTS`), generalized `runtimeTriggers` and Layer 6 granted-trigger emission (`runtime/triggers.ts`), and added 7 pure-IR keywords (`battle cry`, `afterlife`, `bushido`, `living weapon`, `for mirrodin!`, `affinity`, and `exploit` `CR 702.110a`).
+- **Slice 2 (Small combat primitives — `Exalted`, `Annihilator`, `Landwalk`):** Added `EventFilter.alone`, `PlayerRef` `'defendingPlayer'`, and data-driven `Landwalk` evasion (`getBlockerRestrictionReason` + `landwalkFilter` for `landwalk`, `plainswalk`, `islandwalk`, `swampwalk`, `mountainwalk`, `forestwalk`, `nonbasic landwalk`).
+- **Slice 3 (Kicker & Multikicker `CR 702.33`):** Added `runtime/kicker.ts`, `{ k: 'kicked' }` / `{ k: 'kickedCount' }` IR + all 4 runtime evaluators, `EffectStep.condition`, `TargetSpec.condition` (`CR 702.33g`), ETB replacements, `CR 400.7` zone reset (`runtime/zones.ts`), keyword-agnostic `CastOption.optionalAdditionalCosts` UI (`ArenaTable.svelte`) & bot AI (`ai.ts`), `COMPILER_VERSION = 16`, IR snapshots, live `vite dev` Chromium verification (*Quag Vampires*), and `COVERAGE.md` regeneration. Kicked spells with replacement `"instead"` clauses remain intentionally `unsupported` (`unparsed`).
+
+---
+
 ## 3. Phases
 
 Each phase lists: **owns** (files only this phase's agent edits; others treat them as read-only

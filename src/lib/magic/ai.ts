@@ -3,6 +3,7 @@ import {
 	addLog,
 	applyGameAction,
 	checkAbilityActivationLegality,
+	checkSpellCastLegality,
 	chooseBotAttackAssignments,
 	chooseBotBlockAssignments,
 	chooseBotSpellCostPayment,
@@ -12,6 +13,7 @@ import {
 	getCreatureToughness,
 	getEffectiveActivatedAbilities,
 	getPlayerCommanderIdentity,
+	getSpellTargetRequirement,
 	hasKeyword,
 	specTargetCandidates
 } from './engine.ts';
@@ -22,6 +24,7 @@ import { evaluateCondition, matchesObjectFilter } from './runtime/objectFilter.t
 import type {
 	BotSpeed,
 	CardInstance,
+	CastOption,
 	ChoiceAnswer,
 	GamePhase,
 	GameState,
@@ -624,20 +627,35 @@ export function executeBotStep(
 				const options = getCastOptions(state, bot.playerId, cmd, 'command');
 				const opt = options.find((o) => !o.spellMods.targetsBecomeEach) ?? options[0];
 				if (!opt) return null;
+				const optionalCostCounts = chooseBotOptionalCostCounts(state, bot, cmd, 'command', opt);
+				const targetReq = getSpellTargetRequirement(cmd.card, opt, optionalCostCounts);
+				const targets = targetReq.requiresTarget
+					? chooseBotTargetsForCard(state, bot, cmd, opt, optionalCostCounts)
+					: [];
+				if (targetReq.minTargets > 0 && targets.length < targetReq.minTargets) return null;
 				return {
 					optionId: opt.id,
-					targets: opt.requiresTarget ? chooseBotTargetsForCard(state, bot, cmd) : [],
-					costPayment: chooseBotSpellCostPayment(state, bot, cmd, 0, opt.id)
+					optionalCostCounts,
+					targets,
+					costPayment: chooseBotSpellCostPayment(
+						state,
+						bot,
+						cmd,
+						0,
+						opt.id,
+						optionalCostCounts
+					)
 				};
 			});
 			if (plan) {
-				const { optionId, targets, costPayment } = plan;
+				const { optionId, optionalCostCounts, targets, costPayment } = plan;
 				const costBefore = countBotCostChoicePrompts(state, bot.playerId);
 				const res = applyGameAction(state, bot.playerId, {
 					type: 'cast_spell',
 					instanceId: cmd.instanceId,
 					fromZone: 'command',
 					optionId,
+					...(optionalCostCounts ? { optionalCostCounts } : {}),
 					targets,
 					...(costPayment ? { costPayment } : {})
 				});
@@ -698,22 +716,34 @@ export function executeBotStep(
 					const options = getCastOptions(state, bot.playerId, cardInst, fromZone);
 					const opt = options.find((o) => !o.spellMods.targetsBecomeEach) ?? options[0];
 					const chosen = opt ? chooseBotModalSpell(state, bot, cardInst) : null;
+					const optionalCostCounts = opt
+						? chooseBotOptionalCostCounts(state, bot, cardInst, fromZone, opt)
+						: undefined;
 					return chosen && opt
 						? {
 								chosen,
 								optionId: opt.id,
-								costPayment: chooseBotSpellCostPayment(state, bot, cardInst, 0, opt.id)
+								optionalCostCounts,
+								costPayment: chooseBotSpellCostPayment(
+									state,
+									bot,
+									cardInst,
+									0,
+									opt.id,
+									optionalCostCounts
+								)
 							}
 						: null;
 				});
 				if (!planned) continue;
-				const { chosen, optionId, costPayment } = planned;
+				const { chosen, optionId, optionalCostCounts, costPayment } = planned;
 				const costBefore = countBotCostChoicePrompts(state, bot.playerId);
 				const res = applyGameAction(state, bot.playerId, {
 					type: 'cast_spell',
 					instanceId: cardInst.instanceId,
 					fromZone,
 					optionId,
+					...(optionalCostCounts ? { optionalCostCounts } : {}),
 					targets: chosen.targets,
 					modes: chosen.modes,
 					...(costPayment ? { costPayment } : {})
@@ -751,29 +781,59 @@ export function executeBotStep(
 						? oppMatches > ownMatches && (oppMatches >= 2 || (!normalLegal && oppMatches >= 1))
 						: ownMatches >= 2 || (!normalLegal && ownMatches >= 1);
 					if (shouldUseEach) {
+						const optionalCostCounts = chooseBotOptionalCostCounts(
+							state,
+							bot,
+							cardInst,
+							fromZone,
+							eachOpt
+						);
 						return {
 							targets: [] as TargetRef[],
 							optionId: eachOpt.id,
-							costPayment: chooseBotSpellCostPayment(state, bot, cardInst, 0, eachOpt.id)
+							optionalCostCounts,
+							costPayment: chooseBotSpellCostPayment(
+								state,
+								bot,
+								cardInst,
+								0,
+								eachOpt.id,
+								optionalCostCounts
+							)
 						};
 					}
 				}
 				if (!nonEachOpt) {
 					return null;
 				}
-				const targets = nonEachOpt.requiresTarget
-					? chooseBotTargetsForCard(state, bot, cardInst)
+				const optionalCostCounts = chooseBotOptionalCostCounts(
+					state,
+					bot,
+					cardInst,
+					fromZone,
+					nonEachOpt
+				);
+				const targetReq = getSpellTargetRequirement(cardInst.card, nonEachOpt, optionalCostCounts);
+				const targets = targetReq.requiresTarget
+					? chooseBotTargetsForCard(state, bot, cardInst, nonEachOpt, optionalCostCounts)
 					: [];
-				const minTargets = nonEachOpt.requiresTarget && spec ? spec.min : 0;
-				if (minTargets > 0 && targets.length < minTargets) return null;
+				if (targetReq.minTargets > 0 && targets.length < targetReq.minTargets) return null;
 				return {
 					targets,
 					optionId: nonEachOpt.id,
-					costPayment: chooseBotSpellCostPayment(state, bot, cardInst, 0, nonEachOpt.id)
+					optionalCostCounts,
+					costPayment: chooseBotSpellCostPayment(
+						state,
+						bot,
+						cardInst,
+						0,
+						nonEachOpt.id,
+						optionalCostCounts
+					)
 				};
 			});
 			if (!planned) continue;
-			const { targets, optionId, costPayment } = planned;
+			const { targets, optionId, optionalCostCounts, costPayment } = planned;
 			const costBefore = countBotCostChoicePrompts(state, bot.playerId);
 			const res = applyGameAction(state, bot.playerId, {
 				type: 'cast_spell',
@@ -781,6 +841,7 @@ export function executeBotStep(
 				fromZone,
 				targets,
 				optionId,
+				...(optionalCostCounts ? { optionalCostCounts } : {}),
 				...(costPayment ? { costPayment } : {})
 			});
 			if (res.ok) {
@@ -863,14 +924,53 @@ export function executeBotStep(
 	return 'quiet';
 }
 
-function chooseBotTargetsForCard(
+function chooseBotOptionalCostCounts(
 	state: GameState,
 	bot: PlayerGameState,
-	cardInst: CardInstance
-): TargetRef[] {
-	const spec = cardSpellTargetSpec(cardInst.card);
-	if (!spec) return [];
+	cardInst: CardInstance,
+	fromZone: 'hand' | 'command' | 'exile' | 'graveyard',
+	option: CastOption
+): Record<string, number> | undefined {
+	const optionals = option.optionalAdditionalCosts;
+	if (!optionals || optionals.length === 0) return undefined;
+	const altCount =
+		option.baseCost.kind === 'alternative' ? (option.baseCost.costDefs?.length ?? 0) : 0;
+	const mandatoryCount = option.mandatoryAdditionalCosts?.length ?? 0;
+	const counts: Record<string, number> = {};
+	for (const oc of optionals) {
+		if (/\{X\}/i.test(oc.costDisplay) || JSON.stringify(oc.costDefs).includes('"k":"x"')) {
+			continue;
+		}
+		const maxTry = Math.min(oc.maxCount, 5);
+		const hasNonManaDef = oc.costDefs.some((d) => d.k !== 'mana');
+		for (let step = 1; step <= maxTry; step++) {
+			const candidate: Record<string, number> = { ...counts, [oc.id]: step };
+			if (!checkSpellCastLegality(state, bot.playerId, cardInst, fromZone, 0, option.id, candidate).ok) {
+				break;
+			}
+			const hasAnyNonMana = altCount > 0 || mandatoryCount > 0 || hasNonManaDef;
+			if (hasAnyNonMana && !chooseBotSpellCostPayment(state, bot, cardInst, 0, option.id, candidate)) {
+				break;
+			}
+			if (!option.spellMods.targetsBecomeEach) {
+				const targetReq = getSpellTargetRequirement(cardInst.card, option, candidate);
+				if (targetReq.requiresTarget && targetReq.minTargets > 0) {
+					const picked = chooseBotTargetsForCard(state, bot, cardInst, option, candidate);
+					if (picked.length < targetReq.minTargets) break;
+				}
+			}
+			counts[oc.id] = step;
+		}
+	}
+	return Object.keys(counts).length > 0 ? counts : undefined;
+}
 
+function chooseBotTargetsForSpec(
+	state: GameState,
+	bot: PlayerGameState,
+	cardInst: CardInstance,
+	spec: TargetSpec
+): TargetRef[] {
 	const isControlledCreature =
 		spec.kind === 'object' &&
 		spec.filter.controller === 'you' &&
@@ -933,16 +1033,16 @@ function chooseBotTargetsForCard(
 
 	enemyPermanents.sort((a, b) => b.inst.card.cmc - a.inst.card.cmc);
 	if (enemyPermanents.length > 0) {
-		return [
-			{
-				kind: 'permanent',
-				id: enemyPermanents[0].inst.instanceId,
-				label: enemyPermanents[0].inst.card.name
-			}
-		];
+		const count = Math.max(1, spec.min);
+		const picked = enemyPermanents.slice(0, count).map((e) => ({
+			kind: 'permanent' as const,
+			id: e.inst.instanceId,
+			label: e.inst.card.name
+		}));
+		if (picked.length >= spec.min) return picked;
 	}
 
-	if (spec.kind === 'objectOrPlayer') {
+	if (spec.kind === 'objectOrPlayer' && spec.min <= 1) {
 		const topOpp = opponents.sort((a, b) => b.life - a.life)[0];
 		return [{ kind: 'player', id: topOpp.playerId, label: topOpp.username }];
 	}
@@ -956,10 +1056,33 @@ function chooseBotTargetsForCard(
 		return true;
 	});
 	if (allLegal.length > 0 && allLegal.length >= spec.min) {
-		return allLegal.slice(0, spec.min);
+		return allLegal.slice(0, Math.max(1, spec.min));
 	}
 
 	return [];
+}
+
+function chooseBotTargetsForCard(
+	state: GameState,
+	bot: PlayerGameState,
+	cardInst: CardInstance,
+	option?: CastOption,
+	optionalCostCounts?: Record<string, number>
+): TargetRef[] {
+	const req = getSpellTargetRequirement(cardInst.card, option, optionalCostCounts);
+	const activeSpecs = req.targetSpecs?.filter((sp) => sp.max > 0);
+	if (activeSpecs && activeSpecs.length > 0) {
+		const out: TargetRef[] = [];
+		for (const sp of activeSpecs) {
+			const picked = chooseBotTargetsForSpec(state, bot, cardInst, sp);
+			if (sp.min > 0 && picked.length < sp.min) return [];
+			out.push(...picked.slice(0, Math.max(sp.min, Math.min(sp.max, picked.length))));
+		}
+		return out;
+	}
+	const spec = cardSpellTargetSpec(cardInst.card);
+	if (!spec) return [];
+	return chooseBotTargetsForSpec(state, bot, cardInst, spec);
 }
 
 // ---- Triggered abilities (steps C+D) -----------------------------------------------------------

@@ -6,6 +6,7 @@
  * layer order (1, 4, 5, 6, 7a, 7b, 7c, 7d) and memoised on the `BoardSnapshot` from `layerCache.ts`.
  */
 import { compileCard } from '../compiler/index.ts';
+import { KEYWORD_LABELS } from '../keywords.ts';
 import type {
 	ActivatedAbility,
 	Amount,
@@ -33,6 +34,7 @@ import {
 	verifyScopeTrust,
 	type BoardSnapshot
 } from './layerCache.ts';
+import { evaluateKickedCountAmount, evaluateKickerCondition } from './kicker.ts';
 import { evaluateAmount, playerCommanderCastCount } from './objectFilter.ts';
 
 export interface AttributedKeywordOrEffect {
@@ -215,32 +217,7 @@ const NON_CREATURE_SUBTYPES = new Set([
 	'Chorus'
 ]);
 
-export const KEYWORD_LABELS: Readonly<Record<string, string>> = {
-	flying: 'Flying',
-	'first strike': 'First strike',
-	'double strike': 'Double strike',
-	deathtouch: 'Deathtouch',
-	defender: 'Defender',
-	flash: 'Flash',
-	haste: 'Haste',
-	hexproof: 'Hexproof',
-	indestructible: 'Indestructible',
-	infect: 'Infect',
-	lifelink: 'Lifelink',
-	menace: 'Menace',
-	phasing: 'Phasing',
-	reach: 'Reach',
-	shroud: 'Shroud',
-	trample: 'Trample',
-	vigilance: 'Vigilance',
-	changeling: 'Changeling',
-	fear: 'Fear',
-	intimidate: 'Intimidate',
-	wither: 'Wither',
-	horsemanship: 'Horsemanship',
-	shadow: 'Shadow',
-	prowess: 'Prowess'
-};
+export { KEYWORD_LABELS };
 
 const KEYWORD_ORDER = new Map<string, number>(
 	Object.keys(KEYWORD_LABELS).map((k, idx) => [k, idx])
@@ -331,7 +308,15 @@ function extractInnateFromIR(card: ScryfallCard): InnateEntry[] {
 	const seenKeys = new Set<string>();
 	const addResult = (canonicalKey: string, name: string, kind: 'keyword' | 'ability') => {
 		const k = canonicalKey.toLowerCase();
-		const dedupKey = k === 'protection' || k === 'ward' ? `${k}::${name.toLowerCase()}` : k;
+		const dedupKey =
+			k === 'protection' ||
+			k === 'ward' ||
+			k === 'afterlife' ||
+			k === 'bushido' ||
+			k === 'annihilator' ||
+			k === 'affinity'
+				? `${k}::${name.toLowerCase()}`
+				: k;
 		if (seenKeys.has(dedupKey)) return;
 		seenKeys.add(dedupKey);
 		results.push({ canonicalKey: k, name, kind });
@@ -369,6 +354,14 @@ function extractInnateFromIR(card: ScryfallCard): InnateEntry[] {
 			} else if (kwName === 'hexproof' && ab.keyword.param) {
 				const full = `hexproof from ${ab.keyword.param}`.toLowerCase();
 				addResult(full, formatKeywordLabel(full), 'keyword');
+			} else if (kwName === 'afterlife') {
+				addResult('afterlife', `Afterlife ${ab.keyword.n ?? 0}`, 'keyword');
+			} else if (kwName === 'bushido') {
+				addResult('bushido', `Bushido ${ab.keyword.n ?? 0}`, 'keyword');
+			} else if (kwName === 'annihilator') {
+				addResult('annihilator', `Annihilator ${ab.keyword.n ?? 0}`, 'keyword');
+			} else if (kwName === 'affinity') {
+				addResult('affinity', `Affinity ${ab.keyword.param ?? ''}`.trim(), 'keyword');
 			} else {
 				addResult(kwName, formatKeywordLabel(kwName), 'keyword');
 				selfGrantedKeywords.add(kwName);
@@ -940,6 +933,11 @@ function evaluateLayerAmount(
 			layerReads |= READ_COMMANDER_CAST_COUNT;
 			return playerCommanderCastCount(state, source.inst.controllerId);
 		}
+		case 'kickedCount':
+			return evaluateKickedCountAmount(amount, {
+				count: source.inst.kickedCount ?? 0,
+				tags: source.inst.kickedTags ?? []
+			});
 		case 'negate':
 			return -evaluateLayerAmount(amount.of, state, workList, source, affected);
 		case 'sum':
@@ -1041,6 +1039,11 @@ function evaluateLayerCondition(
 			return workList.some(
 				(w) => w.inst.controllerId === source.inst.controllerId && Boolean(w.inst.isCommander)
 			);
+		case 'kicked':
+			return evaluateKickerCondition(cond, {
+				count: source.inst.kickedCount ?? 0,
+				tags: source.inst.kickedTags ?? []
+			});
 	}
 }
 
@@ -1155,8 +1158,13 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 			perm.tempToughnessMod || 0,
 			perm.switchedPTCount || 0,
 			Boolean(perm.castViaSuspend),
+			perm.kickedCount || 0,
+			perm.kickedTags?.length || 0,
 			perm.grantedKeywords?.length || 0
 		);
+		if (perm.kickedTags?.length) {
+			for (const tag of perm.kickedTags) fp.push(tag);
+		}
 		if (perm.grantedKeywords?.length) {
 			for (const kw of perm.grantedKeywords) fp.push(kw);
 		}
@@ -1216,6 +1224,8 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 	const readsTapped = (reads & READ_TAPPED) !== 0;
 	for (const entry of snap.active) {
 		const perm = entry.perm;
+		const kickedTags = perm.kickedTags;
+		const kickedTagsLen = kickedTags?.length || 0;
 		const granted = perm.grantedKeywords;
 		const grantedLen = granted?.length || 0;
 		if (readsTapped && fp[i++] !== perm.tapped) return false;
@@ -1226,9 +1236,14 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 			fp[i++] !== (perm.tempToughnessMod || 0) ||
 			fp[i++] !== (perm.switchedPTCount || 0) ||
 			fp[i++] !== Boolean(perm.castViaSuspend) ||
+			fp[i++] !== (perm.kickedCount || 0) ||
+			fp[i++] !== kickedTagsLen ||
 			fp[i++] !== grantedLen
 		) {
 			return false;
+		}
+		if (kickedTagsLen) {
+			for (const tag of kickedTags!) if (fp[i++] !== tag) return false;
 		}
 		if (grantedLen) {
 			for (const kw of granted) if (fp[i++] !== kw) return false;

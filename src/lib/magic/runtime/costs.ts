@@ -15,6 +15,11 @@
 import { nextRandom } from './random.ts';
 import { compileCard, grantedAbilityById } from '../compiler/index.ts';
 import type { AbilityDef, Amount, CostDef, KeywordDef, ObjectFilter, StaticDef } from '../ir.ts';
+import {
+	ALTERNATIVE_COST_KEYWORDS,
+	getKeywordSpec,
+	type AlternativeCostKeywordMeta
+} from '../keywords.ts';
 import { parseManaCost, type ManaCostRequirement } from '../oracle.ts';
 import { evaluatePermanent } from '../ruleTree.ts';
 import type {
@@ -30,10 +35,30 @@ import type {
 } from '../types.ts';
 import { evaluateAmount, evaluateCondition, matchesObjectFilter, type FilterContext } from './objectFilter.ts';
 import { noteLayerInputsChanged, withStableLayerInputs } from './layerCache.ts';
+import {
+	computeKickerTracking,
+	evaluateKickedCountAmount,
+	evaluateKickerCondition,
+	expandOptionalAdditionalCosts,
+	getObjectKickerInfo,
+	isCastConditionMet,
+	spellOptionalAdditionalCosts,
+	validateOptionalCostCounts
+} from './kicker.ts';
 import { playerLifeTotalCantChange } from './replace.ts';
 import { moveObject, tapPermanent, type MoveResult, type PlayerZone } from './zones.ts';
 
 export type { SerializedPlannedCost };
+export {
+	computeKickerTracking,
+	evaluateKickedCountAmount,
+	evaluateKickerCondition,
+	expandOptionalAdditionalCosts,
+	getObjectKickerInfo,
+	isCastConditionMet,
+	spellOptionalAdditionalCosts,
+	validateOptionalCostCounts
+};
 
 // ---- Where costs come from ------------------------------------------------------------------
 
@@ -166,7 +191,8 @@ export function keywordAltCost(
  */
 export function spellChoosesX(
 	card: ScryfallCard,
-	baseCost?: CastOption['baseCost'] | string
+	baseCost?: CastOption['baseCost'] | string,
+	extraManaCosts?: string[]
 ): boolean {
 	let costStr = card.manaCost;
 	let altCostDefs: CostDef[] | undefined;
@@ -179,6 +205,7 @@ export function spellChoosesX(
 		costStr = '';
 	}
 	if (/\{X\}/i.test(costStr)) return true;
+	if (extraManaCosts?.some((c) => /\{X\}/i.test(c))) return true;
 	const mentionsX = (defs: CostDef[] | undefined) => JSON.stringify(defs ?? []).includes('"k":"x"');
 	if (mentionsX(altCostDefs)) return true;
 	return abilitiesOf(card).some(
@@ -188,50 +215,7 @@ export function spellChoosesX(
 	);
 }
 
-/** Metadata describing an alternative-cost keyword ability (CR 118.9). */
-export interface AlternativeCostKeywordMeta {
-	id: string;
-	label: string;
-	castSummarySuffix: string;
-	zones: Array<'hand' | 'command' | 'exile' | 'graveyard'>;
-	/** True when casting from non-hand zones requires an existing zone permission (not granted by the keyword itself). */
-	requiresZonePermission?: boolean;
-	spellTypes?: Array<'Instant' | 'Sorcery'>;
-	targetsBecomeEach?: boolean;
-	exileOnLeaveStack?: boolean;
-	timing?: 'default' | 'instant_only';
-	stackBadgeLabel?: string;
-}
-
-/** Keyword abilities that are alternative costs for casting a spell (CR 118.9). */
-export const ALTERNATIVE_COST_KEYWORDS: Record<string, AlternativeCostKeywordMeta> = {
-	// CR 702.96a: "You may choose to pay [cost] rather than pay this spell's mana cost" and
-	// "target" becomes "each".
-	overload: {
-		id: 'alt:overload',
-		label: 'Cast with Overload',
-		castSummarySuffix: ' (Overloaded)',
-		zones: ['hand', 'command', 'exile'],
-		requiresZonePermission: true,
-		targetsBecomeEach: true,
-		timing: 'default',
-		stackBadgeLabel: 'Overloaded (each matching object)'
-	},
-	// CR 702.34a: "You may cast this card from your graveyard if the resulting spell is an instant
-	// or sorcery spell by paying [cost] rather than paying its mana cost" and "exile this card
-	// instead of putting it anywhere else any time it would leave the stack."
-	flashback: {
-		id: 'alt:flashback',
-		label: 'Cast with Flashback',
-		castSummarySuffix: ' (Flashback)',
-		stackBadgeLabel: 'Flashback',
-		zones: ['graveyard'],
-		requiresZonePermission: false,
-		spellTypes: ['Instant', 'Sorcery'],
-		exileOnLeaveStack: true,
-		timing: 'default'
-	}
-};
+export { ALTERNATIVE_COST_KEYWORDS, type AlternativeCostKeywordMeta };
 
 /** Look up an alternative-cost keyword entry by CastOption `id` (e.g. `'alt:overload'`). */
 export function alternativeCostMetaById(
@@ -247,11 +231,20 @@ export function keywordsOf(card: ScryfallCard): KeywordDef[] {
 	return abilitiesOf(card).flatMap((a) => (a.kind === 'keyword' ? [a.keyword] : []));
 }
 
-/** The cost-modifying statics of a card (CR 601.2f). */
+/** The cost-modifying statics of a card (CR 601.2f), including registry `'static'` keywords (e.g. Affinity). */
 export function costModifiersOf(card: ScryfallCard): Array<Extract<StaticDef, { k: 'costModifier' }>> {
 	const out: Array<Extract<StaticDef, { k: 'costModifier' }>> = [];
 	for (const a of abilitiesOf(card)) {
-		if (a.kind === 'static' && a.static.k === 'costModifier') out.push(a.static);
+		if (a.kind === 'static' && a.static.k === 'costModifier') {
+			out.push(a.static);
+		} else if (a.kind === 'keyword') {
+			const spec = getKeywordSpec(a.keyword.name);
+			if (spec?.status === 'implemented' && spec.implementation?.kind === 'static') {
+				for (const st of spec.implementation.buildStatics(a.keyword)) {
+					if (st.k === 'costModifier') out.push(st);
+				}
+			}
+		}
 	}
 	return out;
 }
@@ -267,11 +260,12 @@ export function effectiveSpellManaCost(
 	player: PlayerGameState,
 	inst: CardInstance,
 	xValue = 0,
-	baseCost?: CastOption['baseCost'] | string
+	baseCost?: CastOption['baseCost'] | string,
+	extraManaCosts?: string[]
 ): ManaCostRequirement {
 	// Read-only: one layer-cache validation for the battlefield scan (Phase 6d).
 	return withStableLayerInputs(state, () =>
-		effectiveSpellManaCostInner(state, player, inst, xValue, baseCost)
+		effectiveSpellManaCostInner(state, player, inst, xValue, baseCost, extraManaCosts)
 	);
 }
 
@@ -280,7 +274,8 @@ function effectiveSpellManaCostInner(
 	player: PlayerGameState,
 	inst: CardInstance,
 	xValue: number,
-	baseCost?: CastOption['baseCost'] | string
+	baseCost?: CastOption['baseCost'] | string,
+	extraManaCosts?: string[]
 ): ManaCostRequirement {
 	const card = inst.copiableCard ?? inst.card;
 	let baseCostStr = card.manaCost;
@@ -291,7 +286,7 @@ function effectiveSpellManaCostInner(
 	} else if (baseCost?.kind === 'free') {
 		baseCostStr = '';
 	}
-	const effectiveX = spellChoosesX(card, baseCost) ? xValue : 0;
+	const effectiveX = spellChoosesX(card, baseCost, extraManaCosts) ? xValue : 0;
 
 	let forceZeroCost = false;
 	let genericReduction = 0;
@@ -386,8 +381,11 @@ function effectiveSpellManaCostInner(
 		}
 	}
 
-	if (forceZeroCost) return parseManaCost('', 0, genericIncrease, genericReduction);
-	return parseManaCost(baseCostStr, effectiveX, genericIncrease, genericReduction);
+	const extraManaStr = extraManaCosts?.join('') ?? '';
+	if (forceZeroCost) {
+		return parseManaCost(extraManaStr, extraManaStr.includes('{X}') ? effectiveX : 0, genericIncrease, genericReduction);
+	}
+	return parseManaCost(`${baseCostStr}${extraManaStr}`, effectiveX, genericIncrease, genericReduction);
 }
 
 /**

@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { compileCard } from '../compiler/index.ts';
 import {
 	applyGameAction,
+	chooseBotBlockAssignments,
 	createCardInstance,
 	createInitialGameState,
 	evaluatePermanent
@@ -1024,5 +1025,214 @@ describe('Keywords: Defender (CR 702.3), Haste (CR 702.10) & Vigilance (CR 702.2
 			assignments: [{ attackerInstanceId: normalKnight.instanceId, defenderPlayerId: p2.playerId }]
 		});
 		assert.equal(normalKnight.tapped, false, "Akroma's Memorial granted Vigilance prevents tapping");
+	});
+});
+
+// ============================================================================
+// 8. LANDWALK (CR 702.14a–e)
+// ============================================================================
+
+describe('Keywords: Landwalk (CR 702.14a–e)', () => {
+	it('enforces landwalk, plainswalk, islandwalk, swampwalk, mountainwalk, forestwalk, and nonbasic landwalk through applyGameAction and bot blocking (CR 702.14a–e)', () => {
+		const variants: Array<{
+			kw: string;
+			matchingLand: ScryfallCard;
+			nonMatchingLand: ScryfallCard;
+		}> = [
+			{
+				kw: 'Landwalk',
+				matchingLand: syntheticCard({ name: 'Test Wastes', typeLine: 'Land', manaCost: '', cmc: 0 }),
+				nonMatchingLand: syntheticCard({ name: 'Test Sol Ring', typeLine: 'Artifact', manaCost: '{1}', cmc: 1 })
+			},
+			{
+				kw: 'Plainswalk',
+				matchingLand: syntheticCard({ name: 'Test Plains', typeLine: 'Basic Land — Plains', manaCost: '', cmc: 0 }),
+				nonMatchingLand: syntheticCard({ name: 'Test Island', typeLine: 'Basic Land — Island', manaCost: '', cmc: 0 })
+			},
+			{
+				kw: 'Islandwalk',
+				matchingLand: syntheticCard({ name: 'Test Island', typeLine: 'Basic Land — Island', manaCost: '', cmc: 0 }),
+				nonMatchingLand: syntheticCard({ name: 'Test Forest', typeLine: 'Basic Land — Forest', manaCost: '', cmc: 0 })
+			},
+			{
+				kw: 'Swampwalk',
+				matchingLand: syntheticCard({ name: 'Test Swamp', typeLine: 'Basic Land — Swamp', manaCost: '', cmc: 0 }),
+				nonMatchingLand: syntheticCard({ name: 'Test Plains', typeLine: 'Basic Land — Plains', manaCost: '', cmc: 0 })
+			},
+			{
+				kw: 'Mountainwalk',
+				matchingLand: syntheticCard({ name: 'Test Mountain', typeLine: 'Basic Land — Mountain', manaCost: '', cmc: 0 }),
+				nonMatchingLand: syntheticCard({ name: 'Test Swamp', typeLine: 'Basic Land — Swamp', manaCost: '', cmc: 0 })
+			},
+			{
+				kw: 'Forestwalk',
+				matchingLand: syntheticCard({ name: 'Test Forest', typeLine: 'Basic Land — Forest', manaCost: '', cmc: 0 }),
+				nonMatchingLand: syntheticCard({ name: 'Test Mountain', typeLine: 'Basic Land — Mountain', manaCost: '', cmc: 0 })
+			},
+			{
+				kw: 'Nonbasic landwalk',
+				matchingLand: syntheticCard({ name: 'Test Command Tower', typeLine: 'Land', manaCost: '', cmc: 0 }),
+				nonMatchingLand: syntheticCard({ name: 'Test Basic Forest', typeLine: 'Basic Land — Forest', manaCost: '', cmc: 0 })
+			}
+		];
+
+		for (const v of variants) {
+			const { state, p1, p2 } = makeGame();
+			const walker = putInZone(
+				state,
+				p1,
+				syntheticCard({ name: `Syn ${v.kw} Attacker`, oracleText: v.kw }),
+				'battlefield'
+			);
+			// CR 702.14d: blocker having the same landwalk does NOT cancel attacker's landwalk.
+			const blocker = putInZone(
+				state,
+				p2,
+				syntheticCard({ name: `Syn ${v.kw} Blocker`, oracleText: v.kw, power: '2', toughness: '4' }),
+				'battlefield'
+			);
+
+			// Without a matching land (only non-matching permanent), blocking succeeds:
+			putInZone(state, p2, v.nonMatchingLand, 'battlefield');
+			setupDeclareBlockers(state, p1, p2, walker.instanceId);
+			assert.equal(chooseBotBlockAssignments(state, p2).length, 1, `${v.kw}: bot should block without matching land`);
+			assert.equal(
+				applyGameAction(state, p2.playerId, {
+					type: 'declare_blockers',
+					assignments: [{ blockerInstanceId: blocker.instanceId, attackerInstanceId: walker.instanceId }]
+				}).ok,
+				true,
+				`${v.kw}: blocker should block when defending player lacks matching land`
+			);
+
+			// With a matching land, blocking is illegal (even though blocker also has the same landwalk, CR 702.14d):
+			walker.tapped = false;
+			putInZone(state, p2, v.matchingLand, 'battlefield');
+			setupDeclareBlockers(state, p1, p2, walker.instanceId);
+			assert.equal(chooseBotBlockAssignments(state, p2).length, 0, `${v.kw}: bot must not block with matching land`);
+			const failRes = applyGameAction(state, p2.playerId, {
+				type: 'declare_blockers',
+				assignments: [{ blockerInstanceId: blocker.instanceId, attackerInstanceId: walker.instanceId }]
+			});
+			assert.equal(failRes.ok, false, `${v.kw}: blocker cannot block when defending player controls matching land`);
+		}
+	});
+
+	it('respects Layer 4 land-type changes (Blood Moon / Urborg), Layer 6 ability loss/grants, and synthetic rename invariance (CR 702.14c, 613.1d, 613.1f)', () => {
+		const { state, p1, p2 } = makeGame();
+		const seaWalker = putInZone(
+			state,
+			p1,
+			syntheticCard({ name: 'Glimmerfen Tidewalker', oracleText: 'Islandwalk, islandwalk' }),
+			'battlefield'
+		);
+		const twinWalker = putInZone(
+			state,
+			p1,
+			syntheticCard({ name: 'Coralspire Drifter', oracleText: 'Islandwalk, islandwalk' }),
+			'battlefield'
+		);
+		const plainBear = putInZone(
+			state,
+			p1,
+			syntheticCard({ name: 'Plain Bear', oracleText: '' }),
+			'battlefield'
+		);
+		const defender = putInZone(
+			state,
+			p2,
+			syntheticCard({ name: 'Defender Sentinel', oracleText: '' }),
+			'battlefield'
+		);
+		// Nonbasic dual Island:
+		putInZone(
+			state,
+			p2,
+			syntheticCard({ name: 'Dual Pool', typeLine: 'Land — Forest Island', manaCost: '', cmc: 0 }),
+			'battlefield'
+		);
+
+		// 1. Blood Moon turns nonbasic Dual Pool into Mountain -> loses Island subtype -> Islandwalk CAN be blocked!
+		const bloodMoon = putInZone(state, p1, staple('Blood Moon'), 'battlefield');
+		setupDeclareBlockers(state, p1, p2, seaWalker.instanceId);
+		assert.equal(
+			applyGameAction(state, p2.playerId, {
+				type: 'declare_blockers',
+				assignments: [{ blockerInstanceId: defender.instanceId, attackerInstanceId: seaWalker.instanceId }]
+			}).ok,
+			true,
+			'Blood Moon removes Island subtype from nonbasic land so Islandwalk can be blocked'
+		);
+		p1.battlefield = p1.battlefield.filter((c) => c.instanceId !== bloodMoon.instanceId);
+
+		// 2. Without Blood Moon, synthetic twin Islandwalk creature is unblockable; Dress Down removes Islandwalk in Layer 6!
+		setupDeclareBlockers(state, p1, p2, twinWalker.instanceId);
+		assert.equal(
+			applyGameAction(state, p2.playerId, {
+				type: 'declare_blockers',
+				assignments: [{ blockerInstanceId: defender.instanceId, attackerInstanceId: twinWalker.instanceId }]
+			}).ok,
+			false
+		);
+		const dressDown = putInZone(state, p2, staple('Dress Down'), 'battlefield');
+		assert.equal(evaluatePermanent(state, twinWalker).activeKeywords.includes('Islandwalk'), false);
+		assert.equal(
+			applyGameAction(state, p2.playerId, {
+				type: 'declare_blockers',
+				assignments: [{ blockerInstanceId: defender.instanceId, attackerInstanceId: twinWalker.instanceId }]
+			}).ok,
+			true,
+			'Dress Down strips Islandwalk so blocker can block'
+		);
+		p2.battlefield = p2.battlefield.filter((c) => c.instanceId !== dressDown.instanceId);
+
+		// 3. Urborg makes any land a Swamp + timed grant "gains swampwalk until end of turn" makes Plain Bear unblockable:
+		putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Urborg Proxy',
+				typeLine: 'Legendary Land',
+				manaCost: '',
+				cmc: 0,
+				oracleText: 'Each land is a Swamp in addition to its other land types.'
+			}),
+			'battlefield'
+		);
+		state.phase = 'main1';
+		state.activePlayerIndex = 0;
+		state.priorityPlayerIndex = 0;
+		const grantSwampwalk = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Marsh Stride',
+				manaCost: '{0}',
+				cmc: 0,
+				typeLine: 'Instant',
+				oracleText: 'Target creature gains swampwalk until end of turn.'
+			}),
+			'hand'
+		);
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: grantSwampwalk.instanceId,
+				targets: [{ kind: 'permanent', id: plainBear.instanceId, label: plainBear.card.name }]
+			}).ok,
+			true
+		);
+		applyGameAction(state, p1.playerId, { type: 'pass_priority' });
+		applyGameAction(state, p2.playerId, { type: 'pass_priority' });
+		assert.equal(evaluatePermanent(state, plainBear).activeKeywords.includes('Swampwalk'), true);
+		setupDeclareBlockers(state, p1, p2, plainBear.instanceId);
+		assert.equal(
+			applyGameAction(state, p2.playerId, {
+				type: 'declare_blockers',
+				assignments: [{ blockerInstanceId: defender.instanceId, attackerInstanceId: plainBear.instanceId }]
+			}).ok,
+			false,
+			'Granted Swampwalk + Urborg Swamp subtype prevents blocking'
+		);
 	});
 });

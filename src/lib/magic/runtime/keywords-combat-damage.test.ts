@@ -1445,3 +1445,612 @@ describe('Keyword: Wither (CR 702.80)', () => {
 		assert.equal(evaluatePermanent(state, bear2).toughness, 2);
 	});
 });
+
+// ============================================================================
+// BATTLE CRY (CR 702.91) & BUSHIDO (CR 702.45)
+// ============================================================================
+
+function resolveTriggeredStack(st: GameState): void {
+	for (let i = 0; i < 40 && (st.stack.length > 0 || st.pendingPrompts[0]?.purpose === 'trigger_order'); i++) {
+		const pr = st.pendingPrompts[0];
+		if (pr?.purpose === 'trigger_order' && pr.choice?.kind === 'orderObjects') {
+			assert.equal(
+				applyGameAction(st, pr.playerId, {
+					type: 'choice',
+					promptId: pr.id,
+					answer: { kind: 'orderObjects', topIds: pr.choice.objectIds, bottomIds: [], shuffle: false }
+				}).ok,
+				true
+			);
+			continue;
+		}
+		if (st.stack.length === 0) break;
+		const prio = st.players[st.priorityPlayerIndex];
+		assert.equal(applyGameAction(st, prio.playerId, { type: 'pass_priority' }).ok, true);
+	}
+	assert.equal(st.stack.length, 0);
+}
+
+describe('Keyword: Battle cry (CR 702.91)', () => {
+	it('gives each other attacking creature +1/+0 per instance, excludes self and non-attackers, and supports Layer 6 grants (CR 702.91a–b)', () => {
+		const { state, p1, p2 } = makeGame();
+
+		// 1. Innate Battle cry + stacking Battle cry + non-attacker exclusion + synthetic rename
+		const paladin = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Accorder Paladin Probe',
+				typeLine: 'Creature — Human Knight',
+				power: '3',
+				toughness: '1',
+				oracleText: 'Battle cry'
+			}),
+			'battlefield'
+		);
+		const doubleCry = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Renamed Double Cryer',
+				typeLine: 'Creature — Human Soldier',
+				power: '2',
+				toughness: '2',
+				oracleText: 'Battle cry\nBattle cry'
+			}),
+			'battlefield'
+		);
+		const mate = putInZone(
+			state,
+			p1,
+			syntheticCard({ name: 'Silvercoat Lion', typeLine: 'Creature — Cat', power: '2', toughness: '2' }),
+			'battlefield'
+		);
+		const stayHome = putInZone(
+			state,
+			p1,
+			syntheticCard({ name: 'Home Guard', typeLine: 'Creature — Human', power: '1', toughness: '4' }),
+			'battlefield'
+		);
+
+		state.phase = 'declare_attackers';
+		state.activePlayerIndex = 0;
+		state.priorityPlayerIndex = 0;
+		state.passedPriorityPlayerIds = [];
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'declare_attackers',
+				assignments: [
+					{ attackerInstanceId: paladin.instanceId, defenderPlayerId: p2.playerId },
+					{ attackerInstanceId: doubleCry.instanceId, defenderPlayerId: p2.playerId },
+					{ attackerInstanceId: mate.instanceId, defenderPlayerId: p2.playerId }
+				]
+			}).ok,
+			true
+		);
+		resolveTriggeredStack(state);
+
+		// paladin got +2/+0 from doubleCry's two triggers (3+2 = 5/1); doubleCry got +1/+0 from paladin (2+1 = 3/2); mate got +3/+0 (5/2)
+		assert.equal(evaluatePermanent(state, paladin).power, 5);
+		assert.equal(evaluatePermanent(state, paladin).toughness, 1);
+		assert.equal(evaluatePermanent(state, doubleCry).power, 3);
+		assert.equal(evaluatePermanent(state, mate).power, 5);
+		assert.equal(evaluatePermanent(state, stayHome).power, 1, 'non-attacking creature gets no Battle cry bonus');
+
+		// 2. Layer 6 continuous + temporary granted battle cry (each granted instance triggers!)
+		const { state: s2, p1: p1b, p2: p2b } = makeGame();
+		const anthemA = putInZone(
+			s2,
+			p1b,
+			syntheticCard({
+				name: 'War Banner Alpha',
+				typeLine: 'Enchantment',
+				oracleText: 'Creatures you control have battle cry.'
+			}),
+			'battlefield'
+		);
+		const anthemB = putInZone(
+			s2,
+			p1b,
+			syntheticCard({
+				name: 'War Banner Beta',
+				typeLine: 'Enchantment',
+				oracleText: 'Creatures you control have battle cry.'
+			}),
+			'battlefield'
+		);
+		assert.ok(anthemA && anthemB);
+		const bearA = putInZone(
+			s2,
+			p1b,
+			syntheticCard({ name: 'Bear One', power: '2', toughness: '2' }),
+			'battlefield'
+		);
+		const bearB = putInZone(
+			s2,
+			p1b,
+			syntheticCard({ name: 'Bear Two', power: '2', toughness: '2' }),
+			'battlefield'
+		);
+		assert.equal(evaluatePermanent(s2, bearA).activeKeywords.includes('Battle cry'), true);
+
+		s2.phase = 'declare_attackers';
+		s2.activePlayerIndex = 0;
+		s2.priorityPlayerIndex = 0;
+		assert.equal(
+			applyGameAction(s2, p1b.playerId, {
+				type: 'declare_attackers',
+				assignments: [
+					{ attackerInstanceId: bearA.instanceId, defenderPlayerId: p2b.playerId },
+					{ attackerInstanceId: bearB.instanceId, defenderPlayerId: p2b.playerId }
+				]
+			}).ok,
+			true
+		);
+		resolveTriggeredStack(s2);
+		// Each bear has 2 granted Battle cry instances, so each boosts the OTHER bear by +2/+0 -> 4/2
+		assert.equal(evaluatePermanent(s2, bearA).power, 4);
+		assert.equal(evaluatePermanent(s2, bearB).power, 4);
+	});
+});
+
+describe('Keyword: Bushido (CR 702.45)', () => {
+	it('triggers once when becoming blocked by multiple blockers, once when blocking, stacks multiple instances, and stops on ability loss (CR 702.45a–b)', () => {
+		const { state, p1, p2 } = makeGame();
+
+		// 1. Attacker with Bushido 2 blocked by TWO blockers still triggers ONLY ONCE (+2/+2, not +4/+4)
+		const samurai = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Devoted Retainer Probe',
+				typeLine: 'Creature — Human Samurai',
+				power: '2',
+				toughness: '2',
+				oracleText: 'Bushido 2'
+			}),
+			'battlefield'
+		);
+		const blockerA = putInZone(
+			state,
+			p2,
+			syntheticCard({
+				name: 'Blocker Samurai',
+				typeLine: 'Creature — Human Samurai',
+				power: '1',
+				toughness: '1',
+				oracleText: 'Bushido 1\nBushido 2'
+			}),
+			'battlefield'
+		);
+		const blockerB = putInZone(
+			state,
+			p2,
+			syntheticCard({ name: 'Chump Squire', typeLine: 'Creature — Human', power: '0', toughness: '2' }),
+			'battlefield'
+		);
+
+		state.phase = 'declare_attackers';
+		state.activePlayerIndex = 0;
+		state.priorityPlayerIndex = 0;
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'declare_attackers',
+				assignments: [{ attackerInstanceId: samurai.instanceId, defenderPlayerId: p2.playerId }]
+			}).ok,
+			true
+		);
+		passBothPlayers(state);
+		assert.equal(state.phase, 'declare_blockers');
+		assert.equal(
+			applyGameAction(state, p2.playerId, {
+				type: 'declare_blockers',
+				assignments: [
+					{ blockerInstanceId: blockerA.instanceId, attackerInstanceId: samurai.instanceId },
+					{ blockerInstanceId: blockerB.instanceId, attackerInstanceId: samurai.instanceId }
+				]
+			}).ok,
+			true
+		);
+		resolveTriggeredStack(state);
+
+		// Attacker triggered once (+2/+2 -> 4/4); Blocker A stacked Bushido 1 + Bushido 2 (+3/+3 -> 4/4)
+		assert.equal(evaluatePermanent(state, samurai).power, 4);
+		assert.equal(evaluatePermanent(state, samurai).toughness, 4);
+		assert.equal(evaluatePermanent(state, blockerA).power, 4);
+		assert.equal(evaluatePermanent(state, blockerA).toughness, 4);
+
+		// 2. Loss of all abilities prevents Bushido from triggering + synthetic rename invariance
+		const { state: s2, p1: p1b, p2: p2b } = makeGame();
+		const strippedSamurai = putInZone(
+			s2,
+			p1b,
+			syntheticCard({
+				name: 'Renamed Silenced Samurai',
+				typeLine: 'Creature — Human Samurai',
+				power: '2',
+				toughness: '2',
+				oracleText: 'Bushido 3'
+			}),
+			'battlefield'
+		);
+		const chump = putInZone(
+			s2,
+			p2b,
+			syntheticCard({ name: 'Guard Bear', typeLine: 'Creature — Bear', power: '2', toughness: '2' }),
+			'battlefield'
+		);
+		castInstantOnCreature(s2, p2b, strippedSamurai, 'Target creature loses all abilities until end of turn.');
+		declareCombat(
+			s2,
+			p1b,
+			p2b,
+			[{ attackerInstanceId: strippedSamurai.instanceId, defenderPlayerId: p2b.playerId }],
+			[{ blockerInstanceId: chump.instanceId, attackerInstanceId: strippedSamurai.instanceId }]
+		);
+		assert.equal(s2.stack.length, 0);
+		assert.equal(evaluatePermanent(s2, strippedSamurai).power, 2);
+		assert.equal(evaluatePermanent(s2, strippedSamurai).toughness, 2);
+	});
+});
+
+describe('Keyword: Exalted (CR 702.83)', () => {
+	it('triggers on lone attacker from self, non-attackers, multiple instances, and Layer 6 grants on non-attackers (CR 702.83a–b)', () => {
+		const { state, p1, p2 } = makeGame();
+		const loneRunner = putInZone(
+			state,
+			p1,
+			syntheticCard({ name: 'Plain Vanguard', power: '2', toughness: '2' }),
+			'battlefield'
+		);
+		const doubleExaltedSquire = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Glimmerfen Squire',
+				power: '1',
+				toughness: '1',
+				oracleText: 'Exalted, exalted'
+			}),
+			'battlefield'
+		);
+		const exaltedLand = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Sanctum Citadel Probe',
+				typeLine: 'Land',
+				manaCost: '',
+				cmc: 0,
+				power: undefined,
+				toughness: undefined,
+				oracleText: 'Exalted'
+			}),
+			'battlefield'
+		);
+		// Opponent Exalted permanent must NOT trigger when P1 attacks alone:
+		const oppExalted = putInZone(
+			state,
+			p2,
+			syntheticCard({ name: 'Rival Knight', power: '2', toughness: '2', oracleText: 'Exalted' }),
+			'battlefield'
+		);
+		void exaltedLand;
+		void oppExalted;
+
+		// 1. Two attackers -> Exalted does NOT trigger (CR 702.83b)
+		state.phase = 'declare_attackers';
+		state.activePlayerIndex = 0;
+		state.priorityPlayerIndex = 0;
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'declare_attackers',
+				assignments: [
+					{ attackerInstanceId: loneRunner.instanceId, defenderPlayerId: p2.playerId },
+					{ attackerInstanceId: doubleExaltedSquire.instanceId, defenderPlayerId: p2.playerId }
+				]
+			}).ok,
+			true
+		);
+		assert.equal(state.stack.length, 0);
+		assert.equal(evaluatePermanent(state, loneRunner).power, 2);
+
+		// 2. Single attacker (loneRunner attacks alone) -> 3 triggers (2 from squire + 1 from land) = +3/+3 -> 5/5!
+		state.combat = {
+			active: false,
+			attackers: [],
+			declaredBlockersPlayerIds: [],
+			damageDealtFirstStrike: false,
+			damageDealtNormal: false
+		};
+		state.phase = 'declare_attackers';
+		loneRunner.tapped = false;
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'declare_attackers',
+				assignments: [{ attackerInstanceId: loneRunner.instanceId, defenderPlayerId: p2.playerId }]
+			}).ok,
+			true
+		);
+		resolveTriggeredStack(state);
+		assert.equal(evaluatePermanent(state, loneRunner).power, 5);
+		assert.equal(evaluatePermanent(state, loneRunner).toughness, 5);
+		assert.equal(evaluatePermanent(state, doubleExaltedSquire).power, 1, 'non-attacker does not get pumped');
+
+		// 3. Layer 6 static + timed grant of Exalted on a NON-ATTACKING creature triggers when another creature attacks alone!
+		const { state: s2, p1: p1b, p2: p2b } = makeGame();
+		const attackerBear = putInZone(
+			s2,
+			p1b,
+			syntheticCard({ name: 'Solo Bear', power: '2', toughness: '2' }),
+			'battlefield'
+		);
+		const stayHomeBench = putInZone(
+			s2,
+			p1b,
+			syntheticCard({ name: 'Bench Ally', power: '1', toughness: '3' }),
+			'battlefield'
+		);
+		// Static granter grants Exalted to creatures you control (attackerBear + stayHomeBench = 2 creatures)
+		putInZone(
+			s2,
+			p1b,
+			syntheticCard({
+				name: 'Sublime Exemplar Probe',
+				typeLine: 'Enchantment',
+				manaCost: '{3}{W}',
+				cmc: 4,
+				power: undefined,
+				toughness: undefined,
+				oracleText: 'Creatures you control have exalted.'
+			}),
+			'battlefield'
+		);
+		// Also timed grant of Exalted on non-attacking stayHomeBench!
+		castInstantOnCreature(s2, p1b, stayHomeBench, 'Target creature gains exalted until end of turn.');
+		s2.phase = 'declare_attackers';
+		s2.activePlayerIndex = 0;
+		s2.priorityPlayerIndex = 0;
+		assert.equal(
+			applyGameAction(s2, p1b.playerId, {
+				type: 'declare_attackers',
+				assignments: [{ attackerInstanceId: attackerBear.instanceId, defenderPlayerId: p2b.playerId }]
+			}).ok,
+			true
+		);
+		resolveTriggeredStack(s2);
+		// attackerBear (1 static exalted) + stayHomeBench (1 static + 1 timed = 2 exalted) = +3/+3 -> 5/5!
+		assert.equal(evaluatePermanent(s2, attackerBear).power, 5);
+		assert.equal(evaluatePermanent(s2, attackerBear).toughness, 5);
+
+		// 4. Losing all abilities stops Exalted + synthetic rename invariance
+		const { state: s3, p1: p1c, p2: p2c } = makeGame();
+		const silencedExalted = putInZone(
+			s3,
+			p1c,
+			syntheticCard({ name: 'Sunspire Warden Probe', power: '2', toughness: '2', oracleText: 'Exalted' }),
+			'battlefield'
+		);
+		castInstantOnCreature(s3, p2c, silencedExalted, 'Target creature loses all abilities until end of turn.');
+		s3.phase = 'declare_attackers';
+		s3.activePlayerIndex = 0;
+		s3.priorityPlayerIndex = 0;
+		assert.equal(
+			applyGameAction(s3, p1c.playerId, {
+				type: 'declare_attackers',
+				assignments: [{ attackerInstanceId: silencedExalted.instanceId, defenderPlayerId: p2c.playerId }]
+			}).ok,
+			true
+		);
+		assert.equal(s3.stack.length, 0);
+		assert.equal(evaluatePermanent(s3, silencedExalted).power, 2);
+	});
+});
+
+describe('Keyword: Annihilator N (CR 702.86)', () => {
+	it('prompts human defending player to sacrifice N permanents, handles < N permanents, stacks multiple instances, and pauses on commander replacement (CR 702.86a–b)', () => {
+		const { state, p1, p2 } = makeGame();
+		const titan = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Void Titan Probe',
+				manaCost: '{8}',
+				cmc: 8,
+				typeLine: 'Creature — Eldrazi',
+				power: '6',
+				toughness: '6',
+				oracleText: 'Annihilator 1\nAnnihilator 2'
+			}),
+			'battlefield'
+		);
+		const permA = putInZone(state, p2, syntheticCard({ name: 'Defender Land A', typeLine: 'Land', manaCost: '', cmc: 0 }), 'battlefield');
+		const permB = putInZone(state, p2, syntheticCard({ name: 'Defender Bear B', power: '2', toughness: '2' }), 'battlefield');
+		const permC = putInZone(state, p2, syntheticCard({ name: 'Defender Relic C', typeLine: 'Artifact' }), 'battlefield');
+		const permCmd = putInZone(
+			state,
+			p2,
+			syntheticCard({
+				name: 'Defender Commander D',
+				typeLine: 'Legendary Creature — Elf',
+				power: '3',
+				toughness: '3',
+				canBeCommander: true
+			}),
+			'battlefield'
+		);
+		permCmd.isCommander = true;
+
+		state.phase = 'declare_attackers';
+		state.activePlayerIndex = 0;
+		state.priorityPlayerIndex = 0;
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'declare_attackers',
+				assignments: [{ attackerInstanceId: titan.instanceId, defenderPlayerId: p2.playerId }]
+			}).ok,
+			true
+		);
+		// Two triggers: Annihilator 1 and Annihilator 2 -> order them for P1
+		assert.equal(state.pendingPrompts[0]?.purpose, 'trigger_order');
+		assert.equal(state.pendingPrompts[0]?.choice?.kind, 'orderObjects');
+		if (state.pendingPrompts[0]?.choice?.kind === 'orderObjects') {
+			assert.equal(
+				applyGameAction(state, p1.playerId, {
+					type: 'choice',
+					promptId: state.pendingPrompts[0].id,
+					answer: { kind: 'orderObjects', topIds: state.pendingPrompts[0].choice.objectIds, bottomIds: [], shuffle: false }
+				}).ok,
+				true
+			);
+		}
+		assert.equal(state.stack.length, 2);
+
+		// Pass priority to resolve top Annihilator trigger -> human P2 gets sacrifice choice prompt
+		passBothPlayers(state);
+		const sacPrompt1 = state.pendingPrompts[0];
+		assert.ok(sacPrompt1, 'Human defending player should receive sacrifice prompt');
+		assert.equal(sacPrompt1.playerId, p2.playerId);
+		assert.equal(sacPrompt1.choice?.kind, 'chooseObjects');
+		const count1 = sacPrompt1.choice?.kind === 'chooseObjects' ? sacPrompt1.choice.min : 0;
+		const pick1 = count1 === 1 ? [permA.instanceId] : [permA.instanceId, permB.instanceId];
+		assert.equal(
+			applyGameAction(state, p2.playerId, {
+				type: 'choice',
+				promptId: sacPrompt1.id,
+				answer: { kind: 'chooseObjects', objectIds: pick1 }
+			}).ok,
+			true
+		);
+
+		// Resolve second Annihilator trigger -> P2 sacrifices remaining needed including Commander -> pauses for commander_zone_choice!
+		passBothPlayers(state);
+		const sacPrompt2 = state.pendingPrompts[0];
+		assert.ok(sacPrompt2);
+		assert.equal(sacPrompt2.playerId, p2.playerId);
+		const count2 = sacPrompt2.choice?.kind === 'chooseObjects' ? sacPrompt2.choice.min : 0;
+		const remaining = p2.battlefield.map((c) => c.instanceId);
+		const pick2 = [permCmd.instanceId, ...remaining.filter((id) => id !== permCmd.instanceId)].slice(0, count2);
+		assert.equal(
+			applyGameAction(state, p2.playerId, {
+				type: 'choice',
+				promptId: sacPrompt2.id,
+				answer: { kind: 'chooseObjects', objectIds: pick2 }
+			}).ok,
+			true
+		);
+		// permCmd was sacrificed, so commander_zone_choice prompt must appear for P2:
+		const cmdPr = state.pendingPrompts[0];
+		assert.equal(cmdPr?.kind, 'commander_zone_choice');
+		assert.equal(cmdPr.playerId, p2.playerId);
+		assert.equal(
+			applyGameAction(state, p2.playerId, {
+				type: 'choice',
+				promptId: cmdPr.id,
+				answer: { kind: 'yesNo', yes: true }
+			}).ok,
+			true
+		);
+		assert.equal(p2.battlefield.length, 1, '3 of 4 permanents sacrificed across Annihilator 1 + Annihilator 2');
+		assert.equal(p2.command.some((c) => c.instanceId === permCmd.instanceId), true);
+		void permC;
+
+		// Edge case: defending player has fewer than N permanents -> sacrifices all without hanging
+		const { state: sSmall, p1: p1s, p2: p2s } = makeGame();
+		const crusher = putInZone(
+			sSmall,
+			p1s,
+			syntheticCard({ name: 'Renamed Crusher', power: '5', toughness: '5', oracleText: 'Annihilator 4' }),
+			'battlefield'
+		);
+		putInZone(sSmall, p2s, syntheticCard({ name: 'Lone Bear', power: '2', toughness: '2' }), 'battlefield');
+		sSmall.phase = 'declare_attackers';
+		sSmall.activePlayerIndex = 0;
+		sSmall.priorityPlayerIndex = 0;
+		assert.equal(
+			applyGameAction(sSmall, p1s.playerId, {
+				type: 'declare_attackers',
+				assignments: [{ attackerInstanceId: crusher.instanceId, defenderPlayerId: p2s.playerId }]
+			}).ok,
+			true
+		);
+		passBothPlayers(sSmall);
+		assert.equal(sSmall.pendingPrompts.length, 0, 'No choice needed when <= N permanents');
+		assert.equal(p2s.battlefield.length, 0);
+		assert.equal(p2s.graveyard.length, 1);
+	});
+
+	it('targets the specific attacked player in 4-player Commander and works against bot defending players', () => {
+		const seats: LobbySeat[] = [];
+		const decks = new Map<number, (typeof PRECON_DECKS)[number]>();
+		for (let i = 0; i < 4; i++) {
+			const d = PRECON_DECKS[i % PRECON_DECKS.length];
+			seats.push({
+				seatIndex: i,
+				userId: `p${i + 1}`,
+				username: `P${i + 1}`,
+				avatarUrl: '',
+				isBot: i === 2, // Player 3 is a bot!
+				deckId: d.id,
+				deckName: d.name,
+				commanderNames: d.commanders.map((c) => c.name),
+				commanderArtUrl: '',
+				colorIdentity: d.colorIdentity,
+				isDeckLegal: true,
+				ready: true,
+				lastHeartbeat: Date.now()
+			});
+			decks.set(i, d);
+		}
+		const state = createInitialGameState('ANNIHILATOR_4P_TEST', seats, decks, {
+			...DEFAULT_LOBBY_RULES
+		});
+		for (let i = 0; i < 4; i++) {
+			applyGameAction(state, `p${i + 1}`, { type: 'mulligan_keep' });
+		}
+		for (const pl of state.players) {
+			pl.hand = [];
+			pl.battlefield = [];
+			pl.graveyard = [];
+			pl.exile = [];
+		}
+		const [p1, p2, p3, p4] = state.players;
+		const annihilator = putInZone(
+			state,
+			p1,
+			syntheticCard({ name: 'Ulamog Probe', power: '7', toughness: '7', oracleText: 'Annihilator 2' }),
+			'battlefield'
+		);
+		// Give Players 2, 3, and 4 three permanents each; attack Player 3 specifically:
+		for (const defender of [p2, p3, p4]) {
+			for (let k = 0; k < 3; k++) {
+				putInZone(
+					state,
+					defender,
+					syntheticCard({ name: `${defender.username} Perm ${k}`, typeLine: 'Artifact' }),
+					'battlefield'
+				);
+			}
+		}
+
+		state.phase = 'declare_attackers';
+		state.activePlayerIndex = 0;
+		state.priorityPlayerIndex = 0;
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'declare_attackers',
+				assignments: [{ attackerInstanceId: annihilator.instanceId, defenderPlayerId: p3.playerId }]
+			}).ok,
+			true
+		);
+		for (let i = 0; i < 4; i++) {
+			const prio = state.players[state.priorityPlayerIndex];
+			assert.equal(applyGameAction(state, prio.playerId, { type: 'pass_priority' }).ok, true);
+		}
+		assert.equal(state.stack.length, 0);
+		assert.equal(p2.battlefield.length, 3, 'Player 2 was not attacked and sacrifices nothing');
+		assert.equal(p3.battlefield.length, 1, 'Bot Player 3 was attacked and sacrifices 2 permanents');
+		assert.equal(p3.graveyard.length, 2);
+		assert.equal(p4.battlefield.length, 3, 'Player 4 was not attacked and sacrifices nothing');
+	});
+});

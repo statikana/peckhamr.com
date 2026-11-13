@@ -30,9 +30,11 @@ import type {
 	TriggerDef,
 	Verb
 } from '../ir.ts';
+import { GRANTABLE_KEYWORDS } from '../keywords.ts';
 import type { CounterType, LibrarySearchSpec, ManaColor, ScryfallCard, StackItem } from '../types.ts';
 import { buildTokenSpec, parseLibrarySearchSpec } from '../oracle.ts';
 import { parseAdditionalCostSentence, parseObjectPhrase } from './costs.ts';
+import { parseCondition } from './triggers.ts';
 import {
 	hashText,
 	normalizeFace,
@@ -84,33 +86,6 @@ function count(word: string): Amount | null {
 	const v = NUMBER_WORDS[low];
 	return v === undefined ? null : n(v);
 }
-
-/** Keywords a "gains <keyword>" clause can grant until end of turn. */
-const GRANTABLE_KEYWORDS = [
-	'double strike',
-	'first strike',
-	'deathtouch',
-	'defender',
-	'fear',
-	'flash',
-	'flying',
-	'haste',
-	'hexproof',
-	'horsemanship',
-	'indestructible',
-	'infect',
-	'intimidate',
-	'lifelink',
-	'menace',
-	'phasing',
-	'prowess',
-	'reach',
-	'shadow',
-	'shroud',
-	'trample',
-	'vigilance',
-	'wither'
-];
 
 const COUNTER_WORDS: Record<string, CounterType> = {
 	'+1/+1': '+1/+1',
@@ -1218,20 +1193,12 @@ function clause(p: Parser, c: Clause): ClauseResult {
 		if (objectPredicate(p, subject, vp, c.span)) return true;
 		p.targets.length = snapshot;
 	}
-	const perCmdCast = t.match(
-		/^(.+?) for each time you've cast (?:your|a) commander from the command zone this game( until end of turn)?$/i
-	);
-	if (perCmdCast) {
+	const scalePerClause = (
+		baseClauseText: string,
+		scaleAmount: (a: Amount | undefined) => Amount | null
+	): boolean => {
 		const mark = p.mark();
-		const baseClauseText = `${perCmdCast[1]}${perCmdCast[2] ?? ''}`;
 		if (clause(p, { text: baseClauseText, span: c.span }) && p.steps.length > mark.steps) {
-			const scaleAmount = (a: Amount | undefined): Amount | null => {
-				if (!a || a.k !== 'const') return null;
-				if (a.n === 1) return { k: 'commanderCastCount' };
-				if (a.n === 0) return a;
-				if (a.n === -1) return { k: 'negate', of: { k: 'commanderCastCount' } };
-				return null;
-			};
 			let ok = true;
 			for (const step of p.steps.slice(mark.steps)) {
 				const scaled = scaleAmount(step.amount);
@@ -1252,6 +1219,34 @@ function clause(p: Parser, c: Clause): ClauseResult {
 			if (ok) return true;
 		}
 		p.rollback(mark);
+		return false;
+	};
+	const perCmdCast = t.match(
+		/^(.+?) for each time you've cast (?:your|a) commander from the command zone this game( until end of turn)?$/i
+	);
+	if (perCmdCast) {
+		const ok = scalePerClause(`${perCmdCast[1]}${perCmdCast[2] ?? ''}`, (a) => {
+			if (!a || a.k !== 'const') return null;
+			if (a.n === 1) return { k: 'commanderCastCount' };
+			if (a.n === 0) return a;
+			if (a.n === -1) return { k: 'negate', of: { k: 'commanderCastCount' } };
+			return null;
+		});
+		if (ok) return true;
+	}
+	const perKicked = t.match(
+		/^(.+?) for each time (?:it|~|this spell|this creature|this permanent) was kicked( until end of turn)?$/i
+	);
+	if (perKicked) {
+		const ok = scalePerClause(`${perKicked[1]}${perKicked[2] ?? ''}`, (a) => {
+			if (!a || a.k !== 'const') return null;
+			if (a.n === 1) return { k: 'kickedCount' };
+			if (a.n === 0) return a;
+			if (a.n === -1) return { k: 'negate', of: { k: 'kickedCount' } };
+			if (a.n > 1) return { k: 'kickedCount', multiplier: a.n };
+			return null;
+		});
+		if (ok) return true;
 	}
 	return false;
 }
@@ -1306,6 +1301,27 @@ function sentence(p: Parser, text: string, span: Span): boolean {
 		const prev = p.steps[p.steps.length - 1];
 		if (prev?.verb !== 'lookAndReorder') return fail();
 		prev.params = { ...prev.params, mayShuffle: true };
+		return true;
+	}
+
+	const ifKicked = t.match(
+		/^(if (?:it|~) was(?:n't| not)? kicked(?: with its .+? kicker| twice| \S+ times?)?), (.+)$/i
+	);
+	if (ifKicked) {
+		const cond = parseCondition(ifKicked[1]);
+		if (!cond) return fail();
+		let innerText = ifKicked[2].trim();
+		// Replacement-style kicker clauses ("instead") override an earlier step and are not additive.
+		if (/\binstead\b/i.test(innerText)) return fail();
+		innerText = innerText.replace(/^it (?:also )?deals\b/i, '~ deals').replace(/^also\s+/i, '');
+		const innerStart = Math.max(span.start, span.end - ifKicked[2].length);
+		if (!sentence(p, innerText, { start: innerStart, end: span.end })) return fail();
+		for (const step of p.steps.slice(stepsBefore)) {
+			step.condition = step.condition ? { k: 'and', of: [cond, step.condition] } : cond;
+		}
+		for (const target of p.targets.slice(targetsBefore)) {
+			target.condition = target.condition ? { k: 'and', of: [cond, target.condition] } : cond;
+		}
 		return true;
 	}
 

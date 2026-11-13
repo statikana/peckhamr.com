@@ -36,7 +36,7 @@ Identifiers are from `ir.ts`, `types.ts` and `runtime/`; CR numbers are from [`s
 5. **Honest Support Surface (No Silent Drops)**
    - The compiler never silently ignores a clause. Anything it can't compile, or the runtime can't run, becomes an `UnsupportedAbility` (`{ kind: 'unsupported', reason: UnsupportedReason, text, span, unparsed }`) in `FaceDefinition.abilities`. `CardDefinition.fullySupported` is false and `cardSupportReport` (`compiler/support.ts`) lists it, so deck validation and the UI surface it.
    - A keyword that stands for several abilities is only fully supported if all of them are. For example, "Partner with [name]" (`CR 702.124j`) remained partial/unsupported until both its deck-pairing rule and its ETB library-search triggered ability compiled cleanly.
-   - Every keyword in `IMPLEMENTED_KEYWORDS` (`compiler/card.ts`) must have tests registered in `runtime/keywords-coverage-guard.test.ts`.
+   - Every keyword in `IMPLEMENTED_KEYWORDS` (`src/lib/magic/keywords.ts`, re-exported by `compiler/card.ts`) must have tests registered in `runtime/keywords-coverage-guard.test.ts`.
 
 ---
 

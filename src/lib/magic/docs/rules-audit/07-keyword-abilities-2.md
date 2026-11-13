@@ -34,7 +34,7 @@ Audited at engine-rewrite 917180b on 2026-11-09.
 ### 702.86 Annihilator
 | CR | Rule (short) | Status | Evidence / notes |
 |---|---|---|---|
-| 702.86a–b | Annihilator N attack trigger (defending player sacrifices N permanents); multiple instances trigger separately | missing | Listed in `KNOWN_KEYWORDS` (`compiler/adapter.ts:130`) → `keyword_not_implemented`. Static grants like `"Creatures you control have annihilator 1"` also fail `parseKeywordList` (`compiler/statics.ts:101-125`) → `static_not_compiled`. |
+| 702.86a–b | Annihilator N attack trigger (defending player sacrifices N permanents); multiple instances trigger separately | partial | **Updated 2026-11-13:** Innate `Annihilator N` is implemented in `KEYWORD_REGISTRY` (`keywords.ts`) using `PlayerRef` `{ k: 'defendingPlayer' }` (`ir.ts`, `defendingPlayerId` propagated from `state.combat.attackers` through `runtime/triggers.ts` → `StackItem` → `runtime/effects.ts`), with multiple instances triggering separately (`CR 702.86b`). Parameterized static grants like `"Creatures you control have annihilator 1"` still do not compile (`static_not_compiled`). |
 
 ### 702.87 Level Up
 | CR | Rule (short) | Status | Evidence / notes |
@@ -65,12 +65,12 @@ Audited at engine-rewrite 917180b on 2026-11-09.
 ### 702.91 Battle Cry
 | CR | Rule (short) | Status | Evidence / notes |
 |---|---|---|---|
-| 702.91a–b | Battle cry attack trigger (`+1/+0` to each other attacking creature); multiple instances trigger separately | missing | Listed in `KNOWN_KEYWORDS` (`compiler/adapter.ts:131`) → `keyword_not_implemented`. |
+| 702.91a–b | Battle cry attack trigger (`+1/+0` to each other attacking creature); multiple instances trigger separately | implemented | **Updated 2026-11-13:** Implemented in `KEYWORD_REGISTRY` (`keywords.ts`, `grantable: true`) expanding to an `attacks` trigger pumping `{ types: ['Creature'], attacking: true, other: true }` by `+1/+0` until EOT, including Layer 6 grants and separate stacking (`CR 702.91b`). |
 
 ### 702.92 Living Weapon
 | CR | Rule (short) | Status | Evidence / notes |
 |---|---|---|---|
-| 702.92a | Living weapon ETB trigger (create 0/0 black Phyrexian Germ token and attach) | missing | Listed in `KNOWN_KEYWORDS` (`compiler/adapter.ts:141`) → `keyword_not_implemented`. |
+| 702.92a | Living weapon ETB trigger (create 0/0 black Phyrexian Germ token and attach) | implemented | **Updated 2026-11-13:** Implemented in `KEYWORD_REGISTRY` (`keywords.ts`) expanding to an ETB `createToken` (0/0 black `Phyrexian Germ`) + `attach` trigger (`CR 704.3` SBAs wait until trigger resolution). |
 
 ### 702.93 Undying
 | CR | Rule (short) | Status | Evidence / notes |
@@ -162,7 +162,7 @@ Audited at engine-rewrite 917180b on 2026-11-09.
 ### 702.110 Exploit
 | CR | Rule (short) | Status | Evidence / notes |
 |---|---|---|---|
-| 702.110a–b | Exploit ETB optional creature-sacrifice trigger; "exploits a creature" event | missing | Listed in `KNOWN_KEYWORDS` (`compiler/adapter.ts:137`) → `keyword_not_implemented`. |
+| 702.110a–b | Exploit ETB optional creature-sacrifice trigger; "exploits a creature" event | partial | **Updated 2026-11-13:** `702.110a` ETB optional creature-sacrifice trigger is implemented in `KEYWORD_REGISTRY` (`keywords.ts`); `702.110b` companion `"When ~ exploits a creature"` triggers remain uncompiled. |
 
 ### 702.111 Menace
 | CR | Rule (short) | Status | Evidence / notes |
@@ -301,7 +301,7 @@ Audited at engine-rewrite 917180b on 2026-11-09.
 ### 702.135 Afterlife
 | CR | Rule (short) | Status | Evidence / notes |
 |---|---|---|---|
-| 702.135a–b | Afterlife N dies trigger (create N 1/1 white and black Spirit tokens with flying); multiple instances trigger separately | missing | Listed in `KNOWN_KEYWORDS` (`compiler/adapter.ts:130`) → `keyword_not_implemented`. |
+| 702.135a–b | Afterlife N dies trigger (create N 1/1 white and black Spirit tokens with flying); multiple instances trigger separately | implemented | **Updated 2026-11-13:** Implemented in `KEYWORD_REGISTRY` (`keywords.ts`) expanding to a `zoneChange` (`battlefield` → `graveyard`) `createToken` trigger creating `N` 1/1 `W/B` Spirit tokens with `Flying`; multiple instances trigger separately (`CR 702.135b`). |
 
 ### 702.136 Riot
 | CR | Rule (short) | Status | Evidence / notes |
@@ -442,7 +442,7 @@ Audited at engine-rewrite 917180b on 2026-11-09.
 ### 702.163 For Mirrodin!
 | CR | Rule (short) | Status | Evidence / notes |
 |---|---|---|---|
-| 702.163a | For Mirrodin! Equipment ETB trigger (create 2/2 red Rebel token and attach) | missing | Listed in `KNOWN_KEYWORDS` (`compiler/adapter.ts:138`) via `'for mirrodin!'`, **but** `adaptKeywordLine` (`compiler/adapter.ts:220`) only rejects lines ending in `.`, while `isNonEffectLine` (`compiler/effects.ts:1189`) treats `!` like `.` — on an Equipment, `'For Mirrodin!'` compiles to `keyword_not_implemented`. |
+| 702.163a | For Mirrodin! Equipment ETB trigger (create 2/2 red Rebel token and attach) | implemented | **Updated 2026-11-13:** Implemented in `KEYWORD_REGISTRY` (`keywords.ts`) compiling `'for mirrodin!'` to an ETB `createToken` (2/2 red `Rebel`) + `attach` trigger. |
 
 ### 702.164 Toxic
 | CR | Rule (short) | Status | Evidence / notes |

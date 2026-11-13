@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { IMPLEMENTED_KEYWORDS } from '../compiler/card.ts';
 import { compileCard } from '../compiler/index.ts';
 import { createCardInstance, createInitialGameState, evaluatePermanent } from '../engine.ts';
+import { KEYWORD_REGISTRY, KNOWN_KEYWORDS } from '../keywords.ts';
 import { PRECON_DECKS } from '../precons.ts';
 import { DEFAULT_LOBBY_RULES, type LobbySeat, type MagicDeck, type ScryfallCard } from '../types.ts';
 import { KEYWORD_LABELS } from './layers.ts';
@@ -20,34 +21,52 @@ const MAGIC_DIR = path.resolve(RUNTIME_DIR, '..');
  * Adding a keyword to `IMPLEMENTED_KEYWORDS` without registering its test suite here fails this test.
  */
 export const KEYWORD_COVERAGE_FILES: Record<string, readonly string[]> = {
+	affinity: ['runtime/keywords-casting.test.ts'],
+	afterlife: ['runtime/keywords-casting.test.ts'],
+	annihilator: ['runtime/keywords-combat-damage.test.ts'],
+	'battle cry': ['runtime/keywords-combat-damage.test.ts'],
+	bushido: ['runtime/keywords-combat-damage.test.ts'],
 	changeling: ['runtime/keywords-casting.test.ts', 'runtime/keywords-damage.test.ts'],
 	deathtouch: ['runtime/keywords-combat-damage.test.ts', 'runtime/keywords-damage.test.ts'],
 	defender: ['runtime/keywords-evasion.test.ts'],
 	'double strike': ['runtime/keywords-combat-damage.test.ts', 'magic.test.ts'],
 	enchant: ['runtime/keywords-protection-attachments.test.ts', 'runtime/tier1b.test.ts'],
 	equip: ['runtime/keywords-protection-attachments.test.ts', 'runtime/wave4-cr-completion.test.ts'],
+	exalted: ['runtime/keywords-combat-damage.test.ts'],
+	exploit: ['runtime/keywords-casting.test.ts'],
 	fear: ['runtime/keywords-evasion.test.ts', 'runtime/tier2a.test.ts'],
 	'first strike': ['runtime/keywords-combat-damage.test.ts', 'runtime/turn-combat.test.ts'],
 	flash: ['runtime/keywords-casting.test.ts', 'runtime/replace.test.ts'],
 	flashback: ['runtime/keywords-casting.test.ts'],
 	flying: ['runtime/keywords-evasion.test.ts', 'magic.test.ts'],
+	'for mirrodin!': ['runtime/keywords-protection-attachments.test.ts'],
+	forestwalk: ['runtime/keywords-evasion.test.ts'],
 	haste: ['runtime/keywords-evasion.test.ts', 'magic.test.ts'],
 	hexproof: ['runtime/keywords-protection-attachments.test.ts', 'magic.test.ts'],
 	horsemanship: ['runtime/keywords-evasion.test.ts', 'runtime/tier2a.test.ts'],
 	indestructible: ['runtime/keywords-protection-attachments.test.ts', 'runtime/sba.test.ts'],
 	infect: ['runtime/keywords-combat-damage.test.ts', 'runtime/keywords-damage.test.ts'],
 	intimidate: ['runtime/keywords-evasion.test.ts', 'runtime/tier2a.test.ts'],
+	islandwalk: ['runtime/keywords-evasion.test.ts'],
+	kicker: ['runtime/keywords-casting.test.ts'],
+	landwalk: ['runtime/keywords-evasion.test.ts'],
 	lifelink: ['runtime/keywords-combat-damage.test.ts', 'runtime/combat-tier1.test.ts'],
+	'living weapon': ['runtime/keywords-protection-attachments.test.ts'],
 	menace: ['runtime/keywords-evasion.test.ts', 'magic.test.ts'],
+	mountainwalk: ['runtime/keywords-evasion.test.ts'],
+	multikicker: ['runtime/keywords-casting.test.ts'],
+	'nonbasic landwalk': ['runtime/keywords-evasion.test.ts'],
 	overload: ['runtime/keywords-casting.test.ts', 'magic.test.ts'],
 	partner: ['runtime/keywords-casting.test.ts', 'runtime/keywords-damage.test.ts'],
 	phasing: ['runtime/keywords-phasing.test.ts', 'runtime/turn-combat.test.ts'],
+	plainswalk: ['runtime/keywords-evasion.test.ts'],
 	protection: ['runtime/keywords-protection-attachments.test.ts', 'runtime/combat-tier1.test.ts'],
 	prowess: ['runtime/keywords-casting.test.ts', 'runtime/review-fix2.test.ts'],
 	reach: ['runtime/keywords-evasion.test.ts', 'magic.test.ts'],
 	shadow: ['runtime/keywords-evasion.test.ts', 'runtime/tier2a.test.ts'],
 	shroud: ['runtime/keywords-protection-attachments.test.ts', 'magic.test.ts'],
 	suspend: ['runtime/keywords-casting.test.ts', 'magic.test.ts'],
+	swampwalk: ['runtime/keywords-evasion.test.ts'],
 	trample: ['runtime/keywords-combat-damage.test.ts', 'runtime/combat-tier1.test.ts'],
 	vigilance: ['runtime/keywords-evasion.test.ts', 'runtime/tier3b.test.ts'],
 	ward: ['runtime/keywords-protection-attachments.test.ts', 'runtime/wave4-cr-completion.test.ts'],
@@ -55,9 +74,17 @@ export const KEYWORD_COVERAGE_FILES: Record<string, readonly string[]> = {
 };
 
 const SAMPLE_ORACLE_FOR_KEYWORD: Record<string, { typeLine: string; oracleText: string }> = {
+	affinity: { typeLine: 'Artifact Creature — Myr', oracleText: 'Affinity for artifacts' },
+	afterlife: { typeLine: 'Creature — Human Cleric', oracleText: 'Afterlife 2' },
+	annihilator: { typeLine: 'Creature — Eldrazi', oracleText: 'Annihilator 2' },
+	bushido: { typeLine: 'Creature — Human Samurai', oracleText: 'Bushido 1' },
 	enchant: { typeLine: 'Enchantment — Aura', oracleText: 'Enchant creature' },
 	equip: { typeLine: 'Artifact — Equipment', oracleText: 'Equip {1}' },
 	flashback: { typeLine: 'Sorcery', oracleText: 'Draw a card.\nFlashback {2}{U}' },
+	'for mirrodin!': { typeLine: 'Artifact — Equipment', oracleText: 'For Mirrodin!\nEquip {2}' },
+	kicker: { typeLine: 'Instant', oracleText: 'Kicker {1}{U}\nDraw a card.' },
+	'living weapon': { typeLine: 'Artifact — Equipment', oracleText: 'Living weapon\nEquip {2}' },
+	multikicker: { typeLine: 'Creature — Elf', oracleText: 'Multikicker {1}{G}' },
 	overload: {
 		typeLine: 'Instant',
 		oracleText: "Return target nonland permanent you don't control to its owner's hand.\nOverload {6}{U}"
@@ -134,15 +161,27 @@ describe('Implemented Keywords Coverage Guard', () => {
 	it('keeps KEYWORD_LABELS in sync with IMPLEMENTED_KEYWORDS and never renders badges for unimplemented keywords', () => {
 		// Parameterized or non-battlefield-badge keywords formatted explicitly outside KEYWORD_LABELS
 		const PARAMETERIZED_OR_CAST_KEYWORDS = new Set([
+			'affinity',
+			'afterlife',
+			'annihilator',
+			'bushido',
 			'enchant',
 			'equip',
 			'flashback',
+			'kicker',
+			'multikicker',
 			'overload',
 			'partner',
 			'protection',
 			'suspend',
 			'ward'
 		]);
+
+		assert.deepEqual(
+			Object.keys(KEYWORD_REGISTRY).sort(),
+			[...KNOWN_KEYWORDS].sort(),
+			'KEYWORD_REGISTRY must define every keyword in KNOWN_KEYWORDS'
+		);
 
 		const labelKeys = Object.keys(KEYWORD_LABELS).sort();
 		for (const key of labelKeys) {
