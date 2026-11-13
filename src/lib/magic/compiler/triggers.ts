@@ -520,7 +520,7 @@ export function runtimeTriggerProblem(def: TriggerDef): string | null {
 
 /** One triggered ability as the runtime matches it. */
 export interface RuntimeTrigger {
-	/** Index in compileCard(card).faces[0].abilities (stored on stack items, CR 603.4 re-check). */
+	/** Index in compileCard(card).faces[faceIndex].abilities (stored on stack items, CR 603.4 re-check). */
 	abilityIndex: number;
 	trigger: TriggerDef;
 	condition?: Condition;
@@ -543,7 +543,7 @@ export interface RuntimeTrigger {
 	grantedKeyword?: string;
 }
 
-const RUNTIME_TRIGGERS = new WeakMap<CardDefinition, RuntimeTrigger[]>();
+const RUNTIME_TRIGGERS = new WeakMap<CardDefinition, Map<number, RuntimeTrigger[]>>();
 
 /**
  * The triggered abilities the runtime matches for a compiled card:
@@ -556,11 +556,12 @@ const RUNTIME_TRIGGERS = new WeakMap<CardDefinition, RuntimeTrigger[]>();
  * Abilities whose trigger head isn't understood (or names an event the engine never emits) can't
  * be matched; the engine mentions them when the permanent enters (compiler/support.ts).
  */
-export function runtimeTriggers(def: CardDefinition): RuntimeTrigger[] {
-	const cached = RUNTIME_TRIGGERS.get(def);
+export function runtimeTriggers(def: CardDefinition, faceIndex = 0): RuntimeTrigger[] {
+	let byFace = RUNTIME_TRIGGERS.get(def);
+	const cached = byFace?.get(faceIndex);
 	if (cached) return cached;
 	const out: RuntimeTrigger[] = [];
-	(def.faces[0]?.abilities ?? []).forEach((ab, abilityIndex) => {
+	(def.faces[faceIndex]?.abilities ?? []).forEach((ab, abilityIndex) => {
 		if (ab.kind === 'keyword') {
 			const spec = getKeywordSpec(ab.keyword.name);
 			if (spec?.status === 'implemented' && spec.implementation?.kind === 'trigger') {
@@ -583,6 +584,10 @@ export function runtimeTriggers(def: CardDefinition): RuntimeTrigger[] {
 			out.push({ abilityIndex, trigger: ab.trigger, condition: ab.condition, effectSupported: false, text: ab.text });
 		}
 	});
-	RUNTIME_TRIGGERS.set(def, out);
+	if (!byFace) {
+		byFace = new Map();
+		RUNTIME_TRIGGERS.set(def, byFace);
+	}
+	byFace.set(faceIndex, out);
 	return out;
 }

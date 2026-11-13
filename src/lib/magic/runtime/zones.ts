@@ -1,8 +1,10 @@
 import { shuffleWith, uid, type RngHolder } from './random.ts';
 import { enqueueChoicePrompt, registerPromptHandler } from './choices.ts';
 import { evaluatePermanent } from '../ruleTree.ts';
+import { effectiveCardForObject } from '../scryfall.ts';
 import type { CardInstance, CounterType, GameState, PlayerGameState, ZoneType } from '../types.ts';
 import { emitEvent, type LeftBattlefieldInfo } from './events.ts';
+import { instanceFaceOptions, resolveObjectFaces } from './faces.ts';
 import { noteLayerInputsChanged, whileLayerInputsChange } from './layerCache.ts';
 import { counterMultiplier, resolveZoneChangeReplacements } from './replace.ts';
 import { flushTriggers } from './triggers.ts';
@@ -239,6 +241,7 @@ function finalizeZoneMove(
 			obj.printedCard = undefined;
 		}
 		if (obj.copiableCard) obj.copiableCard = undefined;
+		obj.copiableState = undefined;
 	}
 	if (opts.setZone !== false) obj.zone = dest;
 	if (opts.leaveBattlefieldReset) {
@@ -259,7 +262,11 @@ function finalizeZoneMove(
 		obj.usedLoyaltyThisTurn = false;
 		obj.activatedAbilityIdsThisTurn = undefined;
 		obj.transformed = false;
+		obj.activeFaceIndex = undefined;
+		obj.unlockedFaces = undefined;
 		obj.isFaceDown = false;
+		obj.faceDownSpec = undefined;
+		obj.faceDownLabel = undefined;
 		obj.goadedByPlayerIds = undefined;
 		obj.playableFromExileBy = undefined;
 		obj.enteredWithX = undefined;
@@ -275,13 +282,17 @@ function finalizeZoneMove(
 	if (opts.newTimestamp) obj.enteredTimestamp = allocateTimestamp(state);
 	// CR 306.5b: A planeswalker entering the battlefield receives starting loyalty counters (with counter multipliers).
 	if (dest === 'battlefield') {
-		const effectiveCard = obj.copiableCard ?? obj.card;
+		const bfView = resolveObjectFaces(
+			effectiveCardForObject(obj),
+			instanceFaceOptions(obj, 'battlefield')
+		);
 		if (
-			effectiveCard.typeLine.includes('Planeswalker') &&
-			effectiveCard.loyalty !== undefined &&
+			!bfView.isFaceDown &&
+			bfView.types.includes('Planeswalker') &&
+			bfView.loyalty !== undefined &&
 			(obj.counters.loyalty || 0) === 0
 		) {
-			const baseLoyalty = parseInt(String(effectiveCard.loyalty), 10) || 0;
+			const baseLoyalty = bfView.loyalty;
 			if (baseLoyalty > 0) {
 				const mult = counterMultiplier(state, obj, 'loyalty');
 				obj.counters.loyalty = baseLoyalty * mult;
@@ -373,7 +384,10 @@ function moveObjectInner(
 	const { from } = opts;
 	// CR 304.4 / 307.4: If an instant or sorcery would enter the battlefield, it remains in its previous zone.
 	if (to === 'battlefield') {
-		const effectiveTypeLine = (obj.copiableCard ?? obj.card).typeLine;
+		const effectiveTypeLine = resolveObjectFaces(
+			effectiveCardForObject(obj),
+			instanceFaceOptions(obj, 'battlefield')
+		).typeLine;
 		const isInstantOrSorcery =
 			effectiveTypeLine.includes('Instant') || effectiveTypeLine.includes('Sorcery');
 		const hasPermanentType =
@@ -698,7 +712,7 @@ function captureLki(state: GameState, obj: CardInstance): LeftBattlefieldInfo {
 		? (obj.lastKnownToughness ?? evaluated.breakdown.effectiveToughness ?? evaluated.toughness)
 		: undefined;
 	return {
-		card: obj.copiableCard ?? obj.card,
+		card: effectiveCardForObject(obj),
 		controllerId: obj.controllerId,
 		typeLine: evaluated.typeLine,
 		hasAllCreatureTypes: evaluated.hasAllCreatureTypes,

@@ -62,15 +62,74 @@ export const PHASE_LABELS: Record<GamePhase, string> = {
 	cleanup: 'Cleanup'
 };
 
+export type CardLayout =
+	| 'normal'
+	| 'split'
+	| 'flip'
+	| 'transform'
+	| 'modal_dfc'
+	| 'adventure'
+	| 'meld'
+	| 'reversible_card';
+
+export interface ScryfallCardFace {
+	name: string;
+	manaCost: string;
+	cmc?: number;
+	typeLine: string;
+	oracleText: string;
+	colors: ManaColor[];
+	colorIndicator?: ManaColor[];
+	keywords?: string[];
+	power?: string;
+	toughness?: string;
+	loyalty?: string;
+	defense?: string;
+	imageUrl: string;
+	artCropUrl?: string;
+}
+
+export interface FaceDownSpec {
+	kind: 'morph' | 'megamorph' | 'disguise' | 'manifest' | 'cloak' | 'cyberman' | 'other';
+	turnUpCost?: string;
+	wardCost?: string;
+	supertypes?: string[];
+	types?: string[];
+	subtypes?: string[];
+	power?: number;
+	toughness?: number;
+	colors?: ManaColor[];
+	knownToPlayerIds?: string[];
+}
+
+export interface CopiableState {
+	card: ScryfallCard;
+	faceIndex?: number;
+	fused?: boolean;
+	isSingleFaceCopy?: boolean;
+	except?: {
+		power?: number;
+		toughness?: number;
+		types?: string[];
+		subtypes?: string[];
+		supertypes?: string[];
+		colors?: ManaColor[];
+		names?: string[];
+		removeSupertypes?: string[];
+	};
+}
+
 export interface ScryfallCard {
 	id: string;
 	oracleId?: string;
+	layout?: CardLayout;
 	name: string;
 	manaCost: string;
 	cmc: number;
 	typeLine: string;
 	oracleText: string;
 	colors: ManaColor[];
+	colorIndicator?: ManaColor[];
 	colorIdentity: ManaColor[];
 	keywords: string[];
 	power?: string;
@@ -86,6 +145,7 @@ export interface ScryfallCard {
 	hasPartner: boolean;
 	hasChooseBackground: boolean;
 	isBackground: boolean;
+	faces?: ScryfallCardFace[];
 	backFace?: {
 		name: string;
 		manaCost: string;
@@ -321,9 +381,12 @@ export interface CardInstance {
 	/** CR 602.5b / 602.5c: IDs of activated abilities on this permanent already activated this turn. */
 	activatedAbilityIdsThisTurn?: string[];
 	transformed: boolean;
+	activeFaceIndex?: number;
+	unlockedFaces?: number[];
 	enteredTimestamp?: number;
 	objectVersion?: number;
 	copiableCard?: ScryfallCard;
+	copiableState?: CopiableState;
 	printedCard?: ScryfallCard;
 	enteredWithX?: number;
 	/** CR 702.33d / 400.7d: total optional kicker/multikicker count paid when cast. */
@@ -336,6 +399,8 @@ export interface CardInstance {
 	castViaSuspend?: boolean;
 	switchedPTCount?: number;
 	isFaceDown?: boolean;
+	faceDownSpec?: FaceDownSpec;
+	faceDownLabel?: string;
 	goadedByPlayerIds?: string[];
 	playableFromExileBy?: PlayableFromExilePermission;
 	commanderSbaDeclinedVersion?: number;
@@ -484,6 +549,11 @@ export interface StackItem {
 	 * they chose 0 objects to enter as itself).
 	 */
 	cloneCopyChoice?: string | null;
+	faceIndex?: number;
+	fused?: boolean;
+	isFaceDown?: boolean;
+	faceDownSpec?: FaceDownSpec;
+	faceDownLabel?: string;
 }
 
 /** One binding of the IR interpreter ("it", "that creature"): the objects and their LKI. */

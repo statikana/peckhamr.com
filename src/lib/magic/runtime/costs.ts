@@ -13,7 +13,8 @@
  * Zone changes go through runtime/zones.ts `moveObject`.
  */
 import { nextRandom } from './random.ts';
-import { compileCard, grantedAbilityById } from '../compiler/index.ts';
+import { grantedAbilityById } from '../compiler/index.ts';
+import { activeAbilityDefs } from './faces.ts';
 import type { AbilityDef, Amount, CostDef, KeywordDef, ObjectFilter, StaticDef } from '../ir.ts';
 import {
 	ALTERNATIVE_COST_KEYWORDS,
@@ -69,7 +70,7 @@ export interface CostSource {
 }
 
 function abilitiesOf(card: ScryfallCard): AbilityDef[] {
-	return compileCard(card).faces[0]?.abilities ?? [];
+	return activeAbilityDefs(card);
 }
 
 /**

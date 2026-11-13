@@ -6,10 +6,16 @@
  * rules text or card names: an object's characteristics come from its type line (evaluated through
  * the layer system on the battlefield) and its counters/flags.
  */
-import { compileCard } from '../compiler/index.ts';
+import { effectiveCardForObject } from '../scryfall.ts';
 import type { Amount, Compare, Condition, ObjectFilter } from '../ir.ts';
 import { evaluatePermanent } from '../ruleTree.ts';
 import type { CardInstance, GameState, PlayerGameState, StackItem, ZoneType } from '../types.ts';
+import {
+	activeAbilityDefs,
+	effectiveManaValue,
+	instanceFaceOptions,
+	resolveObjectFaces
+} from './faces.ts';
 import { evaluateKickedCountAmount, evaluateKickerCondition, getObjectKickerInfo } from './kicker.ts';
 import { splitSubtypes } from './layers.ts';
 
@@ -91,15 +97,16 @@ export function objectPower(state: GameState, obj: CardInstance): number | null 
 		if (!ev.isCreature) return null;
 		return ev.breakdown.effectivePower;
 	}
-	const card = obj.copiableCard ?? obj.card;
-	const { types } = splitTypeLine(card.typeLine || '');
-	if (!types.some((t) => t.toLowerCase() === 'creature') && card.power === undefined) {
+	const card = effectiveCardForObject(obj);
+	const faceOpts = instanceFaceOptions(obj);
+	const view = resolveObjectFaces(card, faceOpts);
+	const { types } = splitTypeLine(view.typeLine || '');
+	if (!types.some((t) => t.toLowerCase() === 'creature') && view.power === undefined) {
 		return null;
 	}
-	const raw = parseInt(card.power || '0', 10);
-	let base = isNaN(raw) ? 0 : raw;
-	const face = compileCard(card).faces[0];
-	for (const ab of face.abilities) {
+	const raw = view.power;
+	let base = raw ?? 0;
+	for (const ab of activeAbilityDefs(card, faceOpts)) {
 		if (
 			ab.kind === 'static' &&
 			ab.static.k === 'continuous' &&
@@ -123,15 +130,16 @@ export function objectToughness(state: GameState, obj: CardInstance): number | n
 		if (!ev.isCreature) return null;
 		return ev.unclampedToughness ?? ev.breakdown.effectiveToughness;
 	}
-	const card = obj.copiableCard ?? obj.card;
-	const { types } = splitTypeLine(card.typeLine || '');
-	if (!types.some((t) => t.toLowerCase() === 'creature') && card.toughness === undefined) {
+	const card = effectiveCardForObject(obj);
+	const faceOpts = instanceFaceOptions(obj);
+	const view = resolveObjectFaces(card, faceOpts);
+	const { types } = splitTypeLine(view.typeLine || '');
+	if (!types.some((t) => t.toLowerCase() === 'creature') && view.toughness === undefined) {
 		return null;
 	}
-	const raw = parseInt(card.toughness || '0', 10);
-	let base = isNaN(raw) ? 0 : raw;
-	const face = compileCard(card).faces[0];
-	for (const ab of face.abilities) {
+	const raw = view.toughness;
+	let base = raw ?? 0;
+	for (const ab of activeAbilityDefs(card, faceOpts)) {
 		if (
 			ab.kind === 'static' &&
 			ab.static.k === 'continuous' &&
@@ -159,22 +167,24 @@ export function objectManaValue(
 	obj: CardInstance | StackItem
 ): number {
 	if ('isFaceDown' in obj && obj.isFaceDown) return 0;
-	const card = 'copiableCard' in obj && obj.copiableCard ? obj.copiableCard : obj.card;
-	const base = card.cmc ?? 0;
-	let onStack = false;
-	let itemX: number | undefined;
-	if ('kind' in obj) {
-		onStack = true;
-		itemX = obj.xValue;
-	} else {
-		const stk = state?.stack.find(
-			(s) => s.kind === 'spell' && (s.sourceInstanceId === obj.instanceId || s.id === obj.instanceId)
-		);
-		onStack = obj.zone === 'stack' || Boolean(stk);
-		itemX = stk?.xValue ?? (obj as { xValue?: number }).xValue;
-	}
+	const isStackItem = 'kind' in obj;
+	const card = !isStackItem ? effectiveCardForObject(obj) : obj.card;
+	const stk = isStackItem
+		? obj
+		: state?.stack.find(
+				(s) => s.kind === 'spell' && (s.sourceInstanceId === obj.instanceId || s.id === obj.instanceId)
+			);
+	const onStack = isStackItem || obj.zone === 'stack' || Boolean(stk);
+	const faceOpts = isStackItem
+		? { zone: 'stack' as const, faceIndex: obj.faceIndex, fused: obj.fused, isFaceDown: obj.isFaceDown }
+		: stk
+			? { zone: 'stack' as const, faceIndex: stk.faceIndex, fused: stk.fused, isFaceDown: stk.isFaceDown }
+			: instanceFaceOptions(obj);
+	const view = resolveObjectFaces(card, faceOpts);
+	const base = effectiveManaValue(card, faceOpts);
+	const itemX = isStackItem ? obj.xValue : (stk?.xValue ?? (obj as { xValue?: number }).xValue);
 	if (onStack && itemX !== undefined && itemX > 0) {
-		const xSymbols = (card.manaCost || '').match(/\{X\}/gi)?.length ?? 0;
+		const xSymbols = (view.manaCost || '').match(/\{X\}/gi)?.length ?? 0;
 		return base + itemX * xSymbols;
 	}
 	return base;
@@ -207,8 +217,9 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 
 	const onBattlefield = obj.zone === 'battlefield';
 	const evaluated = onBattlefield ? evaluatePermanent(state, obj) : null;
-	const card = obj.copiableCard ?? obj.card;
-	const typeLine = evaluated ? evaluated.typeLine : card.typeLine;
+	const card = effectiveCardForObject(obj);
+	const faceOpts = instanceFaceOptions(obj);
+	const typeLine = evaluated ? evaluated.typeLine : resolveObjectFaces(card, faceOpts).typeLine;
 	const { types, subtypes } = splitTypeLine(typeLine);
 	const isPermanentType = (t: string) => types.some((pt) => pt.toLowerCase() === t.toLowerCase());
 
@@ -229,8 +240,7 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 			!NON_CREATURE_SUBTYPES.has(s) &&
 			!obj.isFaceDown
 		) {
-			const face = compileCard(card).faces[0];
-			const hasChangeling = face.abilities.some(
+			const hasChangeling = activeAbilityDefs(card, faceOpts).some(
 				(ab) =>
 					(ab.kind === 'keyword' && ab.keyword.name.toLowerCase() === 'changeling') ||
 					(ab.kind === 'static' &&

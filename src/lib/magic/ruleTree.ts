@@ -1,4 +1,5 @@
-import { cardManaSteps as compiledCardManaSteps, compileCard } from './compiler/index.ts';
+import { cardManaSteps as compiledCardManaSteps } from './compiler/index.ts';
+import { activeAbilityDefs, activeCharacteristics } from './runtime/faces.ts';
 import { displayAbilityText } from './compiler/support.ts';
 import type { ActivatedAbility, CostDef, EffectStep, TargetSpec, UnsupportedAbility } from './ir.ts';
 import { getKeywordSpec } from './keywords.ts';
@@ -174,10 +175,11 @@ export function getSpellTargetRequirement(
 	option?: CastOption,
 	optionalCostCounts?: Record<string, number>
 ): TargetRequirementInfo {
-	const def = compileCard(card);
-	const abilities = def.faces[0]?.abilities ?? [];
-	const types = def.faces[0]?.characteristics.types ?? [];
-	const subtypes = def.faces[0]?.characteristics.subtypes ?? [];
+	const faceOpts = { zone: 'stack' as const, faceIndex: 0 };
+	const abilities = activeAbilityDefs(card, faceOpts);
+	const chars = activeCharacteristics(card, faceOpts);
+	const types = chars.types;
+	const subtypes = chars.subtypes;
 	const activeSpecs = (specs: TargetSpec[]) =>
 		specs.filter((sp) => !sp.condition || isCastConditionMet(sp.condition, card, optionalCostCounts, option));
 	if (subtypes.includes('Aura')) {
@@ -466,7 +468,7 @@ export function getCardActivatedAbilities(
 	commanderIdentity: ManaColor[] = [],
 	resolveOpponentLandColors?: () => ManaColor[]
 ): EffectiveActivatedAbility[] {
-	const abilities = compileCard(card).faces[0]?.abilities ?? [];
+	const abilities = activeAbilityDefs(card);
 	const out: EffectiveActivatedAbility[] = [];
 
 	const intrinsicColors: ManaColor[] = [];

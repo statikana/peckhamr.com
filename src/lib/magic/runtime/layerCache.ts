@@ -25,6 +25,7 @@
  * on any difference (see `layerCacheCheckEnabled`). Inside scopes it also re-validates every
  * trusted hit.
  */
+import { effectiveCardForObject } from '../scryfall.ts';
 import type { CardInstance, GameState, PlayerGameState, ScryfallCard } from '../types.ts';
 
 export interface BoardEntry {
@@ -74,7 +75,25 @@ function pushFingerprint(state: GameState, fp: unknown[]): void {
 				perm.enteredTimestamp,
 				perm.card,
 				perm.copiableCard,
+				perm.copiableState,
+				perm.copiableState?.card,
+				perm.copiableState?.faceIndex,
+				perm.copiableState?.isSingleFaceCopy,
+				perm.copiableState?.fused,
+				perm.copiableState?.except,
+				perm.transformed,
+				perm.activeFaceIndex,
+				perm.unlockedFaces,
+				perm.unlockedFaces?.length,
+				perm.unlockedFaces?.[0],
+				perm.unlockedFaces?.[1],
 				perm.isFaceDown,
+				perm.faceDownSpec,
+				perm.faceDownSpec?.kind,
+				perm.faceDownSpec?.wardCost,
+				perm.faceDownSpec?.power,
+				perm.faceDownSpec?.toughness,
+				perm.faceDownLabel,
 				perm.controllerId
 			);
 		}
@@ -104,7 +123,25 @@ function fingerprintMatches(state: GameState, fp: unknown[]): boolean {
 				fp[i++] !== perm.enteredTimestamp ||
 				fp[i++] !== perm.card ||
 				fp[i++] !== perm.copiableCard ||
+				fp[i++] !== perm.copiableState ||
+				fp[i++] !== perm.copiableState?.card ||
+				fp[i++] !== perm.copiableState?.faceIndex ||
+				fp[i++] !== perm.copiableState?.isSingleFaceCopy ||
+				fp[i++] !== perm.copiableState?.fused ||
+				fp[i++] !== perm.copiableState?.except ||
+				fp[i++] !== perm.transformed ||
+				fp[i++] !== perm.activeFaceIndex ||
+				fp[i++] !== perm.unlockedFaces ||
+				fp[i++] !== perm.unlockedFaces?.length ||
+				fp[i++] !== perm.unlockedFaces?.[0] ||
+				fp[i++] !== perm.unlockedFaces?.[1] ||
 				fp[i++] !== perm.isFaceDown ||
+				fp[i++] !== perm.faceDownSpec ||
+				fp[i++] !== perm.faceDownSpec?.kind ||
+				fp[i++] !== perm.faceDownSpec?.wardCost ||
+				fp[i++] !== perm.faceDownSpec?.power ||
+				fp[i++] !== perm.faceDownSpec?.toughness ||
+				fp[i++] !== perm.faceDownLabel ||
 				fp[i++] !== perm.controllerId
 			) {
 				return false;
@@ -138,7 +175,7 @@ export function buildBoardSnapshot(state: GameState): BoardSnapshot {
 				player: p,
 				order,
 				timestamp: perm.enteredTimestamp ?? order,
-				card: perm.copiableCard ?? perm.card
+				card: effectiveCardForObject(perm)
 			};
 			active.push(entry);
 			if (perm.attachedToId) {

@@ -33,7 +33,7 @@ import type {
 	UnsupportedReason
 } from '../ir.ts';
 import { getKeywordSpec, IMPLEMENTED_KEYWORDS, KNOWN_KEYWORDS } from '../keywords.ts';
-import type { ManaColor, ScryfallCard } from '../types.ts';
+import type { ManaColor, ScryfallCard, ScryfallCardFace } from '../types.ts';
 import { parseAdditionalCostSentence, parseCost, parseCostModifierSentence, parseObjectPhrase } from './costs.ts';
 import { extractUnparsedTargets, parseEffects, parseSpellFace, type EffectParse } from './effects.ts';
 import { staticallyInterpretable, triggerTargetsSupported } from './interpretable.ts';
@@ -60,7 +60,7 @@ export function compileFaces(card: ScryfallCard): FaceDefinition[] {
 	const characteristics = buildCharacteristics(card);
 	const norm = normalizeFace(card.name, card.oracleText);
 
-	if (card.backFace || card.oracleText.includes('\n//\n')) {
+	if (card.backFace || card.oracleText.includes('\n//\n') || (card.faces && card.faces.length > 1)) {
 		const span = { start: 0, end: norm.text.length };
 		return [{ name: card.name, characteristics, abilities: [unsupported('multiface', norm.text, span, [])] }];
 	}
@@ -748,7 +748,7 @@ function parseStat(v: string | undefined): number | undefined {
 	return v !== undefined && /^-?\d+$/.test(v) ? parseInt(v, 10) : undefined;
 }
 
-export function buildCharacteristics(card: ScryfallCard): Characteristics {
+export function buildCharacteristics(card: ScryfallCard | ScryfallCardFace): Characteristics {
 	const [left, right = ''] = card.typeLine.split(/\s+—\s+/);
 	const words = left.split(/\s+/).filter(Boolean);
 	const chars: Characteristics = {
@@ -758,6 +758,9 @@ export function buildCharacteristics(card: ScryfallCard): Characteristics {
 		supertypes: words.filter((w) => SUPERTYPES.has(w)),
 		colors: [...card.colors]
 	};
+	if (card.colorIndicator && card.colorIndicator.length > 0) {
+		chars.colorIndicator = [...card.colorIndicator];
+	}
 	const power = parseStat(card.power);
 	const toughness = parseStat(card.toughness);
 	const loyalty = parseStat(card.loyalty);

@@ -4,7 +4,7 @@
  * Shared cleanly between ruleTree, runtime/costs, runtime/objectFilter, runtime/layers,
  * runtime/triggers, runtime/effects, and engine without introducing module cycles.
  */
-import { compileCard } from '../compiler/index.ts';
+import { activeAbilityDefs } from './faces.ts';
 import type { Amount, Condition, CostDef, TargetSpec } from '../ir.ts';
 import type {
 	CardInstance,
@@ -21,7 +21,7 @@ const KICKER_KEYWORDS: Record<string, boolean> = {
 };
 
 function rawOptionalEntriesForCard(card: ScryfallCard): CastOptionOptionalCost[] {
-	const abilities = compileCard(card).faces[0]?.abilities ?? [];
+	const abilities = activeAbilityDefs(card);
 	const out: CastOptionOptionalCost[] = [];
 	let idx = 0;
 	for (const ab of abilities) {
@@ -119,7 +119,7 @@ export function isCastConditionMet(
 export function spellOptionalAdditionalCosts(card: ScryfallCard): CastOptionOptionalCost[] {
 	const entries = rawOptionalEntriesForCard(card);
 	if (entries.length === 0) return [];
-	const abilities = compileCard(card).faces[0]?.abilities ?? [];
+	const abilities = activeAbilityDefs(card);
 	const conditionalSpecs: TargetSpec[] = [];
 	for (const ab of abilities) {
 		if (ab.kind === 'spell') {

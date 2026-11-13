@@ -459,4 +459,51 @@ describe('Phase 6 layer engine (from IR): rules & bug regressions', () => {
 		assert.deepEqual(ev2.activeKeywords, ['Hexproof from monocolored']);
 		assert.ok(!ev2.activeKeywords.includes('Hexproof'));
 	});
+
+	it('applies Layer 1a copiableState.except and Layer 1b faceDownSpec (Disguise Ward {2}) cleanly (CR 613.2a-b)', () => {
+		const b = new TestBoard();
+		const legend = synthetic({
+			name: 'Legendary Flyer',
+			manaCost: '{3}{U}',
+			cmc: 4,
+			typeLine: 'Legendary Creature — Sphinx',
+			colors: ['U'],
+			power: '4',
+			toughness: '4',
+			oracleText: 'Flying',
+			keywords: ['Flying']
+		});
+		const copyPerm = b.add(BEAR);
+		copyPerm.copiableState = {
+			card: legend,
+			except: {
+				removeSupertypes: ['Legendary'],
+				power: 5,
+				toughness: 5
+			}
+		};
+		const evCopy = evaluatePermanent(b.state, copyPerm);
+		assert.equal(evCopy.effectiveName, 'Legendary Flyer');
+		assert.equal(evCopy.typeLine, 'Creature — Sphinx');
+		assert.equal(evCopy.power, 5);
+		assert.equal(evCopy.toughness, 5);
+		assert.deepEqual(evCopy.activeKeywords, ['Flying']);
+
+		const disguisePerm = b.add(legend);
+		disguisePerm.isFaceDown = true;
+		disguisePerm.faceDownLabel = 'Face-Down Creature';
+		disguisePerm.faceDownSpec = {
+			kind: 'disguise',
+			wardCost: '{2}',
+			turnUpCost: '{3}{U}'
+		};
+		const evDisguise = evaluatePermanent(b.state, disguisePerm);
+		assert.equal(evDisguise.effectiveName, 'Face-Down Creature');
+		assert.equal(evDisguise.typeLine, 'Creature');
+		assert.deepEqual(evDisguise.colors, []);
+		assert.equal(evDisguise.power, 2);
+		assert.equal(evDisguise.toughness, 2);
+		assert.deepEqual(evDisguise.activeKeywords, ['Ward {2}']);
+		assert.ok(!evDisguise.activeKeywords.includes('Flying'));
+	});
 });

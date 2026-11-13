@@ -7,7 +7,12 @@
  * restrictions), respecting ability loss (CR 613 layer 6), phasing (CR 702.26b), and static
  * conditions ("As long as ...").
  */
-import { compileCard } from '../compiler/index.ts';
+import { effectiveCardForObject } from '../scryfall.ts';
+import {
+	activeAbilityDefs,
+	activeCharacteristics,
+	instanceFaceOptions
+} from './faces.ts';
 import type {
 	Amount,
 	Condition,
@@ -197,10 +202,9 @@ function activeRuleModifiersInner(
 	affectedPlayerId?: string
 ): ActiveRuleModifier[] {
 	const out: ActiveRuleModifier[] = [];
-	for (const { perm, card, controllerId, compiled } of activePermanents(state)) {
-		const face = compiled.faces[0];
-		if (!face) continue;
-		for (const ability of face.abilities) {
+	for (const { perm, card, controllerId } of activePermanents(state)) {
+		const abilities = activeAbilityDefs(card, instanceFaceOptions(perm, 'battlefield'));
+		for (const ability of abilities) {
 			if (ability.kind !== 'static' || ability.static.k !== 'ruleModifier') continue;
 			const def = ability.static;
 			if (!isBattlefieldActiveZone(def)) continue;
@@ -478,7 +482,9 @@ export function checkGlobalAbilityActivationRestrictions(
 	perm: CardInstance
 ): { ok: boolean; error?: string } {
 	const evalPerm = perm.zone === 'battlefield' ? evaluatePermanent(state, perm) : null;
-	const innateTypes = evalPerm ? null : compileCard(perm.card).faces[0].characteristics.types;
+	const innateTypes = evalPerm
+		? null
+		: activeCharacteristics(effectiveCardForObject(perm), instanceFaceOptions(perm)).types;
 	const isArtifact = evalPerm ? evalPerm.isArtifact : Boolean(innateTypes?.includes('Artifact'));
 	const isCreature = evalPerm ? evalPerm.isCreature : Boolean(innateTypes?.includes('Creature'));
 	const isEnchantment = evalPerm ? evalPerm.isEnchantment : Boolean(innateTypes?.includes('Enchantment'));
@@ -513,16 +519,14 @@ export function getLibrarySearchInterceptor(
 
 	for (const { perm, card, controllerId } of activePermanents(state)) {
 		if (controllerId === searchingPlayerId) continue;
-		const compiled = compileCard(card);
-		const face = compiled.faces[0];
-		if (!face) continue;
+		const abilities = activeAbilityDefs(card, instanceFaceOptions(perm, 'battlefield'));
 
 		let controlsSearch = false;
 		let exilesFoundCards = false;
 		let grantPlayFromExile = false;
 		let spendManaAsAnyColor = false;
 
-		for (const ability of face.abilities) {
+		for (const ability of abilities) {
 			if (
 				ability.kind !== 'static' ||
 				ability.static.k !== 'ruleModifier' ||
@@ -606,32 +610,27 @@ function hasRestrictionInner(
 		!onBf || (!obj.phasedOut && !permanentHasLostAllAbilities(obj, state).lost);
 
 	if (canCheckSelf) {
-		const selfCard = obj.copiableCard ?? obj.card;
-		const selfDef = compileCard(selfCard);
-		const face = selfDef.faces[0];
-		if (face) {
-			for (const ability of face.abilities) {
-				if (ability.kind !== 'static' || ability.static.k !== 'restriction') continue;
-				const def = ability.static;
-				if (def.affected !== 'self') continue;
-				if (!matchesRestrictionKind(def.restriction, restriction)) continue;
-				if (
-					evalReplaceCondition(def.condition, {
-						state,
-						controllerId: obj.controllerId,
-						source: obj
-					})
-				) {
-					return true;
-				}
+		const selfCard = effectiveCardForObject(obj);
+		for (const ability of activeAbilityDefs(selfCard, instanceFaceOptions(obj))) {
+			if (ability.kind !== 'static' || ability.static.k !== 'restriction') continue;
+			const def = ability.static;
+			if (def.affected !== 'self') continue;
+			if (!matchesRestrictionKind(def.restriction, restriction)) continue;
+			if (
+				evalReplaceCondition(def.condition, {
+					state,
+					controllerId: obj.controllerId,
+					source: obj
+				})
+			) {
+				return true;
 			}
 		}
 	}
 
-	for (const { perm, card, controllerId, compiled } of activePermanents(state)) {
-		const face = compiled.faces[0];
-		if (!face) continue;
-		for (const ability of face.abilities) {
+	for (const { perm, card, controllerId } of activePermanents(state)) {
+		const abilities = activeAbilityDefs(card, instanceFaceOptions(perm, 'battlefield'));
+		for (const ability of abilities) {
 			if (ability.kind !== 'static' || ability.static.k !== 'restriction') continue;
 			const def = ability.static;
 			if (!isBattlefieldActiveZone(def)) continue;
@@ -779,9 +778,8 @@ export function applicableReplacements(
 		perm: CardInstance;
 		card: ScryfallCard;
 		controllerId: string;
-		compiled: ReturnType<typeof compileCard>;
 		fromMovingObject?: boolean;
-	}> = [...active];
+	}> = active.map(({ perm, card, controllerId }) => ({ perm, card, controllerId }));
 
 	if (
 		ctx?.object &&
@@ -789,21 +787,19 @@ export function applicableReplacements(
 		!ctx.lkiLostAllAbilities &&
 		!active.some((a) => a.perm.instanceId === ctx.object!.instanceId)
 	) {
-		const objCard = ctx.object.copiableCard ?? ctx.object.card;
+		const objCard = effectiveCardForObject(ctx.object);
 		candidates.unshift({
 			perm: ctx.object,
 			card: objCard,
 			controllerId: ctx.object.controllerId || ctx.object.ownerId,
-			compiled: compileCard(objCard),
 			fromMovingObject: true
 		});
 	}
 
-	for (const { perm, card, controllerId, compiled, fromMovingObject } of candidates) {
-		const face = compiled.faces[0];
-		if (!face) continue;
-		for (let abIdx = 0; abIdx < face.abilities.length; abIdx++) {
-			const ability = face.abilities[abIdx];
+	for (const { perm, card, controllerId, fromMovingObject } of candidates) {
+		const abilities = activeAbilityDefs(card, instanceFaceOptions(perm, perm.zone));
+		for (let abIdx = 0; abIdx < abilities.length; abIdx++) {
+			const ability = abilities[abIdx];
 			if (ability.kind !== 'replacement') continue;
 			const def = ability.replacement;
 			if (def.replaces.event !== event) continue;
@@ -972,10 +968,7 @@ export function cardEntersTapped(
 	controllerId?: string,
 	source?: CardInstance
 ): boolean {
-	const compiled = compileCard(card);
-	const face = compiled.faces[0];
-	if (!face) return false;
-	for (const ability of face.abilities) {
+	for (const ability of activeAbilityDefs(card)) {
 		if (ability.kind !== 'replacement') continue;
 		const rep = ability.replacement;
 		if (rep.replaces.event !== 'zoneChange') continue;
@@ -1011,10 +1004,8 @@ export function registerCounterPlacement(fn: CounterPlacementFn): void {
  * so `CounterPlaced` is emitted and active counter multipliers on the battlefield apply (CR 122.6).
  */
 export function applySelfEtbReplacements(state: GameState, perm: CardInstance): void {
-	const card = perm.copiableCard ?? perm.card;
-	const compiled = compileCard(card);
-	const face = compiled.faces[0];
-	if (!face) return;
+	const card = effectiveCardForObject(perm);
+	const abilities = activeAbilityDefs(card, instanceFaceOptions(perm, 'battlefield'));
 	const ctx: FilterContext = {
 		state,
 		controllerId: perm.controllerId,
@@ -1022,7 +1013,7 @@ export function applySelfEtbReplacements(state: GameState, perm: CardInstance): 
 		xValue: perm.enteredWithX
 	};
 
-	for (const ability of face.abilities) {
+	for (const ability of abilities) {
 		if (ability.kind !== 'replacement') continue;
 		const rep = ability.replacement;
 		if (rep.replaces.event !== 'zoneChange') continue;
@@ -1079,11 +1070,10 @@ export function applicableCounterReplacements(
 	alreadyApplied: ReadonlySet<string> = new Set()
 ): ActiveCounterReplacement[] {
 	const out: ActiveCounterReplacement[] = [];
-	for (const { perm: source, card, controllerId, compiled } of activePermanents(state)) {
-		const face = compiled.faces[0];
-		if (!face) continue;
-		for (let abIdx = 0; abIdx < face.abilities.length; abIdx++) {
-			const ability = face.abilities[abIdx];
+	for (const { perm: source, card, controllerId } of activePermanents(state)) {
+		const abilities = activeAbilityDefs(card, instanceFaceOptions(source, 'battlefield'));
+		for (let abIdx = 0; abIdx < abilities.length; abIdx++) {
+			const ability = abilities[abIdx];
 			if (
 				ability.kind !== 'static' ||
 				ability.static.k !== 'multiplier' ||
@@ -1213,10 +1203,8 @@ export function counterMultiplier(
  */
 export function tokenMultiplier(state: GameState, recipientPlayerId: string): number {
 	let factor = 1;
-	for (const { perm: source, card, controllerId, compiled } of activePermanents(state)) {
-		const face = compiled.faces[0];
-		if (!face) continue;
-		for (const ability of face.abilities) {
+	for (const { perm: source, card, controllerId } of activePermanents(state)) {
+		for (const ability of activeAbilityDefs(card, instanceFaceOptions(source, 'battlefield'))) {
 			if (
 				ability.kind !== 'static' ||
 				ability.static.k !== 'multiplier' ||
@@ -1263,10 +1251,8 @@ export function triggerMultiplier(
 			? triggeredPerm
 			: { ...triggeredPerm, controllerId: triggeredControllerId };
 
-	for (const { perm: source, card, controllerId, compiled } of activePermanents(state)) {
-		const face = compiled.faces[0];
-		if (!face) continue;
-		for (const ability of face.abilities) {
+	for (const { perm: source, card, controllerId } of activePermanents(state)) {
+		for (const ability of activeAbilityDefs(card, instanceFaceOptions(source, 'battlefield'))) {
 			if (
 				ability.kind !== 'static' ||
 				ability.static.k !== 'multiplier' ||

@@ -1,4 +1,10 @@
-import { compileCard, compileSpellEffects } from './compiler/index.ts';
+import { compileSpellEffects } from './compiler/index.ts';
+import { effectiveCardForObject } from './scryfall.ts';
+import {
+	activeAbilityDefs,
+	activeCharacteristics,
+	instanceFaceOptions
+} from './runtime/faces.ts';
 import {
 	addLog,
 	applyGameAction,
@@ -60,13 +66,13 @@ function hasRestrictionInner(
 		for (const source of player.battlefield) {
 			if (source.phasedOut || source.isFaceDown) continue;
 			if (evaluatePermanent(state, source).losesAllAbilities) continue;
-			const card = source.copiableCard ?? source.card;
+			const card = effectiveCardForObject(source);
 			const ctx = {
 				state,
 				controllerId: source.controllerId || player.playerId,
 				source
 			};
-			for (const ab of compileCard(card).faces[0].abilities) {
+			for (const ab of activeAbilityDefs(card, instanceFaceOptions(source, 'battlefield'))) {
 				if (ab.kind !== 'static' || ab.static.k !== 'restriction') continue;
 				const def = ab.static;
 				if (!kinds.includes(def.restriction)) continue;
@@ -86,10 +92,10 @@ function hasRestrictionInner(
 }
 
 function cardSpellSteps(card: ScryfallCard): EffectStep[] {
-	const face = compileCard(card).faces[0];
+	const abilities = activeAbilityDefs(card, { zone: 'stack' });
 	const parsed = compileSpellEffects(card);
 	return [
-		...face.abilities.flatMap((a) =>
+		...abilities.flatMap((a) =>
 			a.kind === 'spell' ? [...a.effect, ...(a.modal?.modes.flatMap((m) => m.effect) ?? [])] : []
 		),
 		...(parsed?.steps ?? []),
@@ -102,7 +108,7 @@ function isCounterSpellCard(card: ScryfallCard): boolean {
 }
 
 function isProtectionTrickCard(card: ScryfallCard): boolean {
-	const types = compileCard(card).faces[0].characteristics.types;
+	const types = activeCharacteristics(card).types;
 	if (!types.includes('Instant')) return false;
 	return cardSpellSteps(card).some((s) => {
 		if (s.verb !== 'grant') return false;
@@ -122,8 +128,7 @@ function isCreatureBoardWipeCard(card: ScryfallCard): boolean {
 }
 
 function cardSpellTargetSpec(card: ScryfallCard): TargetSpec | undefined {
-	const face = compileCard(card).faces[0];
-	for (const ab of face.abilities) {
+	for (const ab of activeAbilityDefs(card, { zone: 'stack' })) {
 		if (ab.kind === 'spell' && ab.targets.length > 0) return ab.targets[0];
 		if (ab.kind === 'keyword') {
 			const { name: kwName, enchantFilter } = ab.keyword;
@@ -203,7 +208,7 @@ function hasAnyLegalInstantResponseInner(state: GameState, player: PlayerGameSta
 				return true;
 			}
 		}
-		const types = compileCard(cardInst.card).faces[0].characteristics.types;
+		const types = activeCharacteristics(cardInst.card, instanceFaceOptions(cardInst)).types;
 		if (types.includes('Land') && !types.includes('Creature')) {
 			continue;
 		}
@@ -617,7 +622,7 @@ export function executeBotStep(
 		// 2a. Play a land if available
 		if (bot.landsPlayedThisTurn < bot.maxLandsPerTurn) {
 			const land = bot.hand.find((c) =>
-				compileCard(c.card).faces[0].characteristics.types.includes('Land')
+				activeCharacteristics(c.card, instanceFaceOptions(c, 'hand')).types.includes('Land')
 			);
 			if (land) {
 				const res = applyGameAction(state, bot.playerId, {
@@ -690,7 +695,7 @@ export function executeBotStep(
 			).length;
 
 			const isCandidateSpell = (c: CardInstance, zone: 'hand' | 'graveyard'): boolean => {
-				const types = compileCard(c.card).faces[0].characteristics.types;
+				const types = activeCharacteristics(c.card, instanceFaceOptions(c, zone)).types;
 				if (types.includes('Land')) return false;
 				if (isCounterSpellCard(c.card)) return false;
 				// Do not waste pure protection tricks on an empty board / proactive main phase
@@ -955,7 +960,7 @@ function tryBotHandActivatedAbility(
 
 	for (let i = 0; i < bot.hand.length; i++) {
 		const cardInst = bot.hand[i];
-		const types = compileCard(cardInst.card).faces[0].characteristics.types;
+		const types = activeCharacteristics(cardInst.card, instanceFaceOptions(cardInst)).types;
 		const isLand = types.includes('Land') && !types.includes('Creature');
 		if (isMainPhase) {
 			const excessLand = isLand && (bot.landsPlayedThisTurn >= bot.maxLandsPerTurn || ownLandsCount >= 5);

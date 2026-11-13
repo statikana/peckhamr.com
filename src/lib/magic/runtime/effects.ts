@@ -48,7 +48,12 @@ import type {
 	TriggerEventLki,
 	VfxEvent
 } from '../types.ts';
-import { cardManaSteps, compileCard } from '../compiler/index.ts';
+import { cardManaSteps } from '../compiler/index.ts';
+import {
+	activeAbilityDefs,
+	instanceFaceOptions,
+	resolveObjectFaces
+} from './faces.ts';
 import { legacySearchSpec } from '../compiler/effects.ts';
 import { getKeywordSpec } from '../keywords.ts';
 import { evaluatePermanent, inspectCardContinuousBreakdown } from '../ruleTree.ts';
@@ -288,9 +293,10 @@ export function sourceDamageInfo(
 				.filter(Boolean)
 		};
 	}
-	const face = compileCard(sourceCard).faces[0];
-	const kws = new Set<string>((sourceCard.keywords ?? []).map((k) => k.toLowerCase()));
-	for (const ab of face.abilities) {
+	const faceOpts = sourcePerm ? instanceFaceOptions(sourcePerm) : undefined;
+	const view = resolveObjectFaces(sourceCard, faceOpts);
+	const kws = new Set<string>((view.keywords ?? sourceCard.keywords ?? []).map((k) => k.toLowerCase()));
+	for (const ab of activeAbilityDefs(sourceCard, faceOpts)) {
 		if (ab.kind === 'keyword') kws.add(ab.keyword.name.toLowerCase());
 	}
 	return {
@@ -298,8 +304,8 @@ export function sourceDamageInfo(
 		hasLifelink: kws.has('lifelink'),
 		hasInfect: kws.has('infect'),
 		hasWither: kws.has('wither'),
-		colors: [...(face.characteristics.colors ?? sourceCard.colors ?? [])],
-		types: [...(face.characteristics.types ?? [])]
+		colors: [...view.colors],
+		types: [...view.types]
 	};
 }
 

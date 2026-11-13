@@ -1,8 +1,45 @@
-import { compileCard } from './compiler/index.ts';
+import { cardAbilities } from './compiler/index.ts';
 import { STAPLE_CARDS } from './precons.ts';
 import { splitSubtypes } from './runtime/layers.ts';
 import { isScryfallSyntaxQuery, matchesScryfallQuery } from './search.ts';
-import type { DeckCardEntry, ManaColor, ScryfallCard } from './types.ts';
+import type {
+	CardInstance,
+	CardLayout,
+	CopiableState,
+	DeckCardEntry,
+	FaceDownSpec,
+	ManaColor,
+	ScryfallCard,
+	ScryfallCardFace,
+	StackItem,
+	ZoneType
+} from './types.ts';
+
+const VALID_CARD_LAYOUTS = new Set<CardLayout>([
+	'normal',
+	'split',
+	'flip',
+	'transform',
+	'modal_dfc',
+	'adventure',
+	'meld',
+	'reversible_card'
+]);
+
+const COLOR_SYMBOLS: ReadonlyArray<ManaColor> = ['W', 'U', 'B', 'R', 'G'];
+
+function deriveColorsFromManaCost(manaCost: string): ManaColor[] {
+	if (!manaCost) return [];
+	const upper = manaCost.toUpperCase();
+	const out: ManaColor[] = [];
+	for (const sym of upper.match(/\{([^}]+)\}/g) ?? []) {
+		const inner = sym.slice(1, -1);
+		for (const c of COLOR_SYMBOLS) {
+			if (inner.includes(c) && !out.includes(c)) out.push(c);
+		}
+	}
+	return out;
+}
 
 export interface ParsedDeckLine {
 	quantity: number;
@@ -193,16 +230,58 @@ export function normalizeScryfallCard(raw: Record<string, any>): ScryfallCard {
 		oracleText.includes('Partner');
 	const hasChooseBackground = oracleText.includes('Choose a Background');
 	const isBackground = typeLine.includes('Background');
+	const layout: CardLayout | undefined =
+		typeof raw.layout === 'string' && VALID_CARD_LAYOUTS.has(raw.layout as CardLayout)
+			? (raw.layout as CardLayout)
+			: undefined;
+	const colorIndicator = Array.isArray(raw.color_indicator)
+		? ([...raw.color_indicator] as ManaColor[])
+		: undefined;
+	const normalizedFaces: ScryfallCardFace[] | undefined =
+		faces.length > 0
+			? faces.map((f: any): ScryfallCardFace => {
+					const fName = String(f.name || raw.name || 'Unknown Card');
+					const fImageUris = f.image_uris || raw.image_uris || {};
+					const fManaCost = String(f.mana_cost ?? '');
+					const fColors: ManaColor[] = Array.isArray(f.colors)
+						? ([...f.colors] as ManaColor[])
+						: Array.isArray(f.color_indicator)
+							? ([...f.color_indicator] as ManaColor[])
+							: deriveColorsFromManaCost(fManaCost);
+					const fColorIndicator = Array.isArray(f.color_indicator)
+						? ([...f.color_indicator] as ManaColor[])
+						: undefined;
+					const fKeywords = Array.isArray(f.keywords) ? ([...f.keywords] as string[]) : undefined;
+					return {
+						name: fName,
+						manaCost: fManaCost,
+						...(f.cmc !== undefined ? { cmc: Number(f.cmc) } : {}),
+						typeLine: String(f.type_line ?? ''),
+						oracleText: String(f.oracle_text ?? ''),
+						colors: fColors,
+						...(fColorIndicator ? { colorIndicator: fColorIndicator } : {}),
+						...(fKeywords ? { keywords: fKeywords } : {}),
+						...(f.power !== undefined ? { power: String(f.power) } : {}),
+						...(f.toughness !== undefined ? { toughness: String(f.toughness) } : {}),
+						...(f.loyalty !== undefined ? { loyalty: String(f.loyalty) } : {}),
+						...(f.defense !== undefined ? { defense: String(f.defense) } : {}),
+						imageUrl: fImageUris.normal || fImageUris.large || imageUrl,
+						artCropUrl: fImageUris.art_crop || fImageUris.normal || artCropUrl
+					};
+				})
+			: undefined;
 
 	return {
 		id: String(raw.id || `scry_${name.toLowerCase().replace(/[^a-z0-9]/g, '_')}`),
 		oracleId: raw.oracle_id ? String(raw.oracle_id) : undefined,
+		...(layout ? { layout } : {}),
 		name,
 		manaCost,
 		cmc: Number(raw.cmc ?? 0),
 		typeLine,
 		oracleText,
 		colors,
+		...(colorIndicator ? { colorIndicator } : {}),
 		colorIdentity,
 		keywords,
 		power: front.power !== undefined ? String(front.power) : raw.power !== undefined ? String(raw.power) : undefined,
@@ -228,6 +307,7 @@ export function normalizeScryfallCard(raw: Record<string, any>): ScryfallCard {
 		hasPartner,
 		hasChooseBackground,
 		isBackground,
+		...(normalizedFaces ? { faces: normalizedFaces } : {}),
 		backFace: back
 			? {
 					name: String(back.name || ''),
@@ -241,6 +321,161 @@ export function normalizeScryfallCard(raw: Record<string, any>): ScryfallCard {
 			  }
 			: undefined
 	};
+}
+
+/**
+ * Returns the normalized face list for a card in memory, handling multi-face `faces[]`,
+ * legacy `backFace`, and single-face cards uniformly.
+ */
+export function getCardFaces(card: ScryfallCard): ScryfallCardFace[] {
+	if (card.faces && card.faces.length > 0) {
+		return card.faces;
+	}
+	if (card.backFace) {
+		const back = card.backFace;
+		const frontOracle = card.oracleText.includes('\n//\n')
+			? card.oracleText.split('\n//\n')[0]
+			: card.oracleText;
+		const frontType = card.typeLine.includes(' // ')
+			? card.typeLine.split(' // ')[0]
+			: card.typeLine;
+		return [
+			{
+				name: card.name,
+				manaCost: card.manaCost,
+				cmc: card.cmc,
+				typeLine: frontType,
+				oracleText: frontOracle,
+				colors: card.colors,
+				...(card.colorIndicator ? { colorIndicator: card.colorIndicator } : {}),
+				keywords: card.keywords,
+				...(card.power !== undefined ? { power: card.power } : {}),
+				...(card.toughness !== undefined ? { toughness: card.toughness } : {}),
+				...(card.loyalty !== undefined ? { loyalty: card.loyalty } : {}),
+				imageUrl: card.imageUrl,
+				artCropUrl: card.artCropUrl
+			},
+			{
+				name: back.name,
+				manaCost: back.manaCost,
+				typeLine: back.typeLine,
+				oracleText: back.oracleText,
+				colors: deriveColorsFromManaCost(back.manaCost),
+				...(back.power !== undefined ? { power: back.power } : {}),
+				...(back.toughness !== undefined ? { toughness: back.toughness } : {}),
+				...(back.loyalty !== undefined ? { loyalty: back.loyalty } : {}),
+				imageUrl: back.imageUrl
+			}
+		];
+	}
+	return [
+		{
+			name: card.name,
+			manaCost: card.manaCost,
+			cmc: card.cmc,
+			typeLine: card.typeLine,
+			oracleText: card.oracleText,
+			colors: card.colors,
+			...(card.colorIndicator ? { colorIndicator: card.colorIndicator } : {}),
+			keywords: card.keywords,
+			...(card.power !== undefined ? { power: card.power } : {}),
+			...(card.toughness !== undefined ? { toughness: card.toughness } : {}),
+			...(card.loyalty !== undefined ? { loyalty: card.loyalty } : {}),
+			imageUrl: card.imageUrl,
+			artCropUrl: card.artCropUrl
+		}
+	];
+}
+
+export function effectiveCardForObject(
+	obj: Pick<CardInstance, 'card' | 'copiableCard' | 'copiableState'>
+): ScryfallCard {
+	return obj.copiableState?.card ?? obj.copiableCard ?? obj.card;
+}
+
+export function activeFaceIndexForObject(obj: {
+	copiableState?: CopiableState;
+	activeFaceIndex?: number;
+	transformed?: boolean;
+	faceIndex?: number;
+}): number {
+	if (obj.copiableState?.faceIndex !== undefined) return obj.copiableState.faceIndex;
+	if (obj.activeFaceIndex !== undefined) return obj.activeFaceIndex;
+	if (obj.faceIndex !== undefined) return obj.faceIndex;
+	return obj.transformed ? 1 : 0;
+}
+
+/**
+ * Returns a clean scrubbed ScryfallCard proxy for a face-down object (CR 708.2, 708.5, 406.3),
+ * exposing zero hidden card identity, oracleText, mana cost, or artwork.
+ */
+export function scrubFaceDownCard(
+	label: string,
+	zone: ZoneType,
+	spec?: FaceDownSpec
+): ScryfallCard {
+	const visibleCharacteristics = zone === 'battlefield' || zone === 'stack';
+	let typeLine = '';
+	let colors: ManaColor[] = [];
+	let keywords: string[] = [];
+	let power: string | undefined;
+	let toughness: string | undefined;
+
+	if (visibleCharacteristics) {
+		const supertypes = spec?.supertypes ?? [];
+		const types = spec?.types && spec.types.length > 0 ? spec.types : ['Creature'];
+		const subtypes = spec?.subtypes ?? [];
+		const left = [...supertypes, ...types].join(' ');
+		typeLine = subtypes.length > 0 ? `${left} — ${subtypes.join(' ')}` : left;
+		colors = spec?.colors ? [...spec.colors] : [];
+		if (spec?.wardCost) {
+			keywords = [`Ward ${spec.wardCost}`];
+		}
+		const isCreature = types.includes('Creature');
+		if (spec?.power !== undefined || isCreature) {
+			power = String(spec?.power ?? 2);
+		}
+		if (spec?.toughness !== undefined || isCreature) {
+			toughness = String(spec?.toughness ?? 2);
+		}
+	}
+
+	return {
+		id: 'face_down',
+		name: label,
+		manaCost: '',
+		cmc: 0,
+		typeLine,
+		oracleText: '',
+		colors,
+		colorIdentity: [],
+		keywords,
+		...(power !== undefined ? { power } : {}),
+		...(toughness !== undefined ? { toughness } : {}),
+		imageUrl: '',
+		artCropUrl: '',
+		legalCommander: false,
+		canBeCommander: false,
+		hasPartner: false,
+		hasChooseBackground: false,
+		isBackground: false
+	};
+}
+
+export function scrubFaceDownStackItem(item: StackItem, viewerId: string | null): void {
+	if (!item.isFaceDown) return;
+	const canSee =
+		viewerId !== null &&
+		(viewerId === item.controllerId ||
+			Boolean(item.faceDownSpec?.knownToPlayerIds?.includes(viewerId)));
+	if (canSee) return;
+	const label = item.faceDownLabel || 'Face-Down Spell';
+	if (item.faceDownSpec) {
+		delete item.faceDownSpec.turnUpCost;
+	}
+	item.card = scrubFaceDownCard(label, 'stack', item.faceDownSpec);
+	item.title = label;
+	item.oracleText = '';
 }
 
 export async function resolveCardsFromScryfall(names: string[]): Promise<{
@@ -428,7 +663,7 @@ function isTimeLordDoctor(card: ScryfallCard): boolean {
 	const subs = splitSubtypes(card.typeLine.slice(dashIdx + 1).trim()).map((s) => s.toLowerCase());
 	if (subs.length !== 2 || !subs.includes('time lord') || !subs.includes('doctor')) return false;
 	// CR 702.124m: "if the other is the Doctor" means Time Lord Doctor with no other creature types (including Changeling).
-	const hasChangeling = (compileCard(card).faces[0]?.abilities ?? []).some(
+	const hasChangeling = cardAbilities(card).some(
 		(ab) => ab.kind === 'keyword' && ab.keyword.name === 'changeling'
 	);
 	return !hasChangeling;
@@ -437,7 +672,7 @@ function isTimeLordDoctor(card: ScryfallCard): boolean {
 function hasGenericPartner(card: ScryfallCard): boolean {
 	if (partnerWithTarget(card) !== null) return false;
 	if (hasFriendsForever(card) || hasDoctorsCompanion(card)) return false;
-	const abilities = compileCard(card).faces[0]?.abilities ?? [];
+	const abilities = cardAbilities(card);
 	if (abilities.some((ab) => ab.kind === 'keyword' && ab.keyword.name === 'partner' && !ab.keyword.param)) {
 		return true;
 	}
@@ -449,7 +684,7 @@ function hasGenericPartner(card: ScryfallCard): boolean {
 
 /** "Partner—Survivors" and the other partner—[text] abilities (CR 702.124i): the text, lower-cased. */
 function partnerTextVariant(card: ScryfallCard): string | null {
-	const abilities = compileCard(card).faces[0]?.abilities ?? [];
+	const abilities = cardAbilities(card);
 	for (const ab of abilities) {
 		if (ab.kind === 'keyword' && ab.keyword.name === 'partner' && ab.keyword.param && !/^with\b/i.test(ab.keyword.param)) {
 			return ab.keyword.param.trim().toLowerCase();

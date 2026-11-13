@@ -137,6 +137,20 @@ export { getSuspendSpec };
 import { getKeywordSpec } from './keywords.ts';
 import { evaluateAmount, matchesObjectFilter, objectManaValue, type FilterContext } from './runtime/objectFilter.ts';
 import { compileCard, compiledStackItemEffects, compiledTriggerEffect, compileSpellEffects } from './compiler/index.ts';
+import {
+	activeFaceIndexForObject,
+	effectiveCardForObject,
+	scrubFaceDownCard,
+	scrubFaceDownStackItem
+} from './scryfall.ts';
+import {
+	activeAbilityDefs,
+	activeCharacteristics,
+	effectiveManaValue,
+	instanceFaceOptions,
+	resolveObjectFaces,
+	stackItemFaceOptions
+} from './runtime/faces.ts';
 import { parseCost } from './compiler/costs.ts';
 import { runtimeTriggers } from './compiler/triggers.ts';
 import { buildBoardSnapshot, noteLayerInputsChanged, withStableLayerInputs } from './runtime/layerCache.ts';
@@ -186,6 +200,7 @@ import {
 	type CastOption,
 	type ChoiceAnswer,
 	type ChoiceRequest,
+	type CopiableState,
 	type CostPayment,
 	type CounterType,
 	type DelayedTrigger,
@@ -653,7 +668,7 @@ function enumerateCandidateCastOptions(
 	}
 
 	if (!inst.castViaSuspend) {
-		const cardTypes = compileCard(card).faces[0]?.characteristics.types ?? [];
+		const cardTypes = activeCharacteristics(card, instanceFaceOptions(inst, fromZone)).types;
 		for (const [kwName, meta] of Object.entries(ALTERNATIVE_COST_KEYWORDS)) {
 			const altCost = keywordAltCost(card, kwName);
 			if (!altCost) continue;
@@ -6396,7 +6411,7 @@ export function specTargetCandidates(
 		for (const stk of state.stack) {
 			if (source && stk.sourceInstanceId === source.instanceId) continue;
 			if (spec.filter.types && spec.filter.types.length > 0 && stk.card) {
-				const stkTypes = compileCard(stk.card).faces[0].characteristics.types;
+				const stkTypes = activeCharacteristics(stk.card, stackItemFaceOptions(stk)).types;
 				if (!spec.filter.types.some((t) => stkTypes.includes(t))) continue;
 			}
 			out.push({ kind: 'stack', id: stk.id, label: stk.title });
@@ -6749,7 +6764,7 @@ function resolveTriggerPrompt(
 function itemWard(item: StackItem): { cost: string; costDefs?: CostDef[] } | undefined {
 	if (item.kind !== 'triggered') return undefined;
 	if (item.triggeredAbilityIndex !== undefined) {
-		const compiled = runtimeTriggers(compileCard(item.card)).find(
+		const compiled = runtimeTriggers(compileCard(item.card), item.faceIndex ?? 0).find(
 			(x) => x.abilityIndex === item.triggeredAbilityIndex
 		)?.ward;
 		if (compiled) return compiled;
@@ -7181,8 +7196,7 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 		item.cloneCopyChoice === undefined &&
 		item.targets[0]?.kind !== 'permanent'
 	) {
-		const compiledEnter = compileCard(item.card);
-		const entersAsCopyOfAnyCreature = (compiledEnter.faces[0]?.abilities ?? []).some(
+		const entersAsCopyOfAnyCreature = activeAbilityDefs(item.card, stackItemFaceOptions(item)).some(
 			(ab) =>
 				ab.kind === 'replacement' &&
 				ab.replacement.replaces.event === 'zoneChange' &&
@@ -7201,7 +7215,11 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 					}
 				}
 			}
-			allCreatures.sort((a, b) => b.card.cmc - a.card.cmc);
+			allCreatures.sort(
+				(a, b) =>
+					effectiveManaValue(effectiveCardForObject(b), instanceFaceOptions(b, 'battlefield')) -
+					effectiveManaValue(effectiveCardForObject(a), instanceFaceOptions(a, 'battlefield'))
+			);
 			if (allCreatures.length > 0) {
 				enqueueChoicePrompt(state, {
 					id: uid('prm', state),
@@ -7289,8 +7307,7 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 			perm.counters.loyalty = 0;
 
 			// CR 707: "enter the battlefield as a copy of any creature on the battlefield"
-			const compiledEnter = compileCard(item.card);
-			const entersAsCopyOfAnyCreature = (compiledEnter.faces[0]?.abilities ?? []).some(
+			const entersAsCopyOfAnyCreature = activeAbilityDefs(item.card, stackItemFaceOptions(item)).some(
 				(ab) =>
 					ab.kind === 'replacement' &&
 					ab.replacement.replaces.event === 'zoneChange' &&
@@ -7318,21 +7335,28 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 							}
 						}
 					}
-					allCreatures.sort((a, b) => b.card.cmc - a.card.cmc);
+					allCreatures.sort(
+						(a, b) =>
+							effectiveManaValue(effectiveCardForObject(b), instanceFaceOptions(b, 'battlefield')) -
+							effectiveManaValue(effectiveCardForObject(a), instanceFaceOptions(a, 'battlefield'))
+					);
 					targetCreature = allCreatures[0];
 				}
 				if (targetCreature) {
-					// CR 707.2: Copy Layer 1 copiable values, not counters or Layer 7c buffs
-					const baseCardToCopy = JSON.parse(
-						JSON.stringify(targetCreature.copiableCard ?? targetCreature.card)
-					);
+					// CR 707.2, 708.2, 712.6d: Copy Layer 1 copiable values (including face-down / active face state)
+					const { baseCardToCopy, copiableState, displayName } =
+						buildCopiedPermanentFields(targetCreature);
 					perm.printedCard = item.card;
+					perm.copiableState = copiableState;
 					perm.copiableCard = baseCardToCopy;
 					perm.card = baseCardToCopy;
+					perm.isFaceDown = false;
+					perm.transformed = false;
+					perm.activeFaceIndex = undefined;
 					addLog(
 						state,
 						'cast',
-						`${item.card.name} entered the battlefield as a copy of ${baseCardToCopy.name} (CR 707.2).`,
+						`${item.card.name} entered the battlefield as a copy of ${displayName} (CR 707.2).`,
 						controller.playerId
 					);
 				}
@@ -7413,6 +7437,74 @@ function activePlayerMayEndTurn(
 	}
 }
 
+/** Builds Layer 1a copiable card and CopiableState from a target permanent (CR 707.2, 708.2, 712.6d). */
+function buildCopiedPermanentFields(
+	target: CardInstance,
+	notLegendary = false
+): {
+	baseCardToCopy: ScryfallCard;
+	copiableState: CopiableState;
+	displayName: string;
+} {
+	if (target.isFaceDown) {
+		const strippedSpec = target.faceDownSpec ? { ...target.faceDownSpec } : undefined;
+		if (strippedSpec) {
+			delete strippedSpec.turnUpCost;
+			delete strippedSpec.knownToPlayerIds;
+			if (notLegendary && strippedSpec.supertypes) {
+				strippedSpec.supertypes = strippedSpec.supertypes.filter(
+					(s) => s.toLowerCase() !== 'legendary'
+				);
+			}
+		}
+		const label = target.faceDownLabel || 'Face-Down Creature';
+		const baseCardToCopy = scrubFaceDownCard(label, 'battlefield', strippedSpec);
+		return {
+			baseCardToCopy,
+			copiableState: { card: baseCardToCopy },
+			displayName: label
+		};
+	}
+
+	const sourceCard = effectiveCardForObject(target);
+	const baseCardToCopy = JSON.parse(JSON.stringify(sourceCard)) as ScryfallCard;
+	if (notLegendary) {
+		baseCardToCopy.typeLine = baseCardToCopy.typeLine.replace(/\bLegendary\s+/g, '');
+		for (const f of baseCardToCopy.faces ?? []) {
+			if (f.typeLine) f.typeLine = f.typeLine.replace(/\bLegendary\s+/g, '');
+		}
+	}
+	const faceIdx = activeFaceIndexForObject(target);
+	const isSingleFaceCopy =
+		faceIdx > 0 ||
+		Boolean(target.transformed) ||
+		Boolean(target.copiableState?.isSingleFaceCopy) ||
+		((baseCardToCopy.layout === 'transform' || baseCardToCopy.layout === 'modal_dfc') &&
+			(baseCardToCopy.faces?.length ?? 0) > 1);
+	const copiableState: CopiableState = {
+		card: baseCardToCopy,
+		...(faceIdx > 0 || isSingleFaceCopy ? { faceIndex: faceIdx, isSingleFaceCopy: true } : {}),
+		...(target.copiableState?.except || notLegendary
+			? {
+					except: {
+						...target.copiableState?.except,
+						...(notLegendary ? { removeSupertypes: ['Legendary'] } : {})
+					}
+				}
+			: {})
+	};
+	const view = resolveObjectFaces(baseCardToCopy, {
+		zone: 'battlefield',
+		faceIndex: faceIdx,
+		isSingleFaceCopy
+	});
+	return {
+		baseCardToCopy,
+		copiableState,
+		displayName: view.name || baseCardToCopy.name
+	};
+}
+
 /** "Create a token that's a copy of ..." (CR 707.2: copiable values only). */
 function copyPermanentAsToken(
 	state: GameState,
@@ -7421,12 +7513,10 @@ function copyPermanentAsToken(
 	sourceName: string,
 	notLegendary = false
 ): void {
-	const baseCardToCopy = JSON.parse(
-		JSON.stringify(original.copiableCard ?? original.card)
-	) as ScryfallCard;
-	if (notLegendary) {
-		baseCardToCopy.typeLine = baseCardToCopy.typeLine.replace(/\bLegendary\s+/g, '');
-	}
+	const { baseCardToCopy, copiableState, displayName } = buildCopiedPermanentFields(
+		original,
+		notLegendary
+	);
 	const tokenInst = createCardInstance(
 		baseCardToCopy,
 		controller.playerId,
@@ -7436,13 +7526,18 @@ function copyPermanentAsToken(
 		allocateTimestamp(state),
 		state
 	);
+	tokenInst.copiableState = copiableState;
 	tokenInst.copiableCard = baseCardToCopy;
-	tokenInst.summoningSick = baseCardToCopy.typeLine.includes('Creature');
+	const tokenTypes = resolveObjectFaces(baseCardToCopy, {
+		zone: 'battlefield',
+		copiableState
+	}).types;
+	tokenInst.summoningSick = tokenTypes.includes('Creature');
 	moveObject(state, tokenInst, 'battlefield', { from: 'none', toPlayer: controller });
 	addLog(
 		state,
 		'trigger',
-		`${sourceName} created a token copy of ${baseCardToCopy.name}!`,
+		`${sourceName} created a token copy of ${displayName}!`,
 		controller.playerId
 	);
 	flushTriggers(state);
@@ -8934,8 +9029,10 @@ function completeTurnCleanupAndPassTurn(state: GameState): void {
 function getAuraEnchantParams(aura: CardInstance, evalAura: EvaluatedPermanent): string[] {
 	const params: string[] = [];
 	if (!evalAura.losesAllAbilities) {
-		const def = compileCard(aura.copiableCard ?? aura.card);
-		for (const ab of def.faces[0]?.abilities ?? []) {
+		for (const ab of activeAbilityDefs(
+			effectiveCardForObject(aura),
+			instanceFaceOptions(aura, 'battlefield')
+		)) {
 			if (ab.kind === 'keyword' && ab.keyword.name.toLowerCase() === 'enchant') {
 				params.push((ab.keyword.param ?? 'permanent').trim());
 			}
@@ -9057,8 +9154,10 @@ function isAuraPlayerAttachmentLegal(
 }
 
 function isAuraHarmful(aura: CardInstance): boolean {
-	const def = compileCard(aura.copiableCard ?? aura.card);
-	for (const ab of def.faces[0]?.abilities ?? []) {
+	for (const ab of activeAbilityDefs(
+		effectiveCardForObject(aura),
+		instanceFaceOptions(aura, 'battlefield')
+	)) {
 		if (ab.kind !== 'static') continue;
 		if (ab.static.k === 'restriction') return true;
 		if (ab.static.k === 'continuous') {
@@ -10527,7 +10626,7 @@ export function validateChosenTargets(
 	if (!info.requiresTarget && info.maxTargets === 0 && targets.length > 0) {
 		const allowsCopyHint =
 			sourceCard &&
-			(compileCard(sourceCard).faces[0]?.abilities ?? []).some(
+			activeAbilityDefs(sourceCard).some(
 				(ab) =>
 					ab.kind === 'replacement' &&
 					!Array.isArray(ab.replacement.with) &&
@@ -10952,8 +11051,10 @@ function checkLandPlayLegalityInner(
 	let effectiveMaxLands = actor.maxLandsPerTurn;
 	for (const perm of actor.battlefield) {
 		if (perm.phasedOut || permanentHasLostAllAbilities(perm, state).lost) continue;
-		const compiled = compileCard(perm.copiableCard ?? perm.card);
-		for (const ab of compiled.faces[0]?.abilities ?? []) {
+		for (const ab of activeAbilityDefs(
+			effectiveCardForObject(perm),
+			instanceFaceOptions(perm, 'battlefield')
+		)) {
 			if (
 				ab.kind === 'static' &&
 				ab.static.k === 'ruleModifier' &&
@@ -11772,6 +11873,35 @@ function redactPromptForOpponent(pr: PendingPrompt): PendingPrompt {
 	};
 }
 
+function scrubFaceDownInstance(
+	inst: CardInstance,
+	zone: 'battlefield' | 'exile',
+	viewerId: string | null
+): void {
+	if (!inst.isFaceDown) return;
+	// CR 708.5: controller and knownToPlayerIds may look at face-down permanents on the battlefield.
+	// CR 406.3: face-down exiled cards may only be looked at by players explicitly listed in knownToPlayerIds.
+	const known = Boolean(
+		viewerId !== null && inst.faceDownSpec?.knownToPlayerIds?.includes(viewerId)
+	);
+	const canSee =
+		zone === 'battlefield' ? (viewerId !== null && viewerId === inst.controllerId) || known : known;
+	if (canSee) return;
+
+	delete inst.printedCard;
+	delete inst.copiableCard;
+	delete inst.copiableState;
+	inst.transformed = false;
+	delete inst.activeFaceIndex;
+	delete inst.unlockedFaces;
+	if (inst.faceDownSpec) {
+		delete inst.faceDownSpec.turnUpCost;
+	}
+	const label =
+		inst.faceDownLabel || (zone === 'battlefield' ? 'Face-Down Creature' : 'Face-Down Card');
+	inst.card = scrubFaceDownCard(label, zone, inst.faceDownSpec);
+}
+
 export function sanitizeGameStateForViewer(state: GameState, viewerId: string | null): GameState {
 	const clone: GameState = JSON.parse(JSON.stringify(state));
 	delete clone.rngState;
@@ -11783,6 +11913,7 @@ export function sanitizeGameStateForViewer(state: GameState, viewerId: string | 
 
 	for (const item of clone.stack) {
 		delete item.effectResume;
+		scrubFaceDownStackItem(item, viewerId);
 	}
 
 	for (const p of clone.players) {
@@ -11791,6 +11922,12 @@ export function sanitizeGameStateForViewer(state: GameState, viewerId: string | 
 		if (p.playerId !== viewerId) {
 			// Hide opponent hand contents
 			p.hand = [];
+		}
+		for (const perm of p.battlefield) {
+			scrubFaceDownInstance(perm, 'battlefield', viewerId);
+		}
+		for (const ex of p.exile) {
+			scrubFaceDownInstance(ex, 'exile', viewerId);
 		}
 		// Expose full library list if viewer is currently searching this player's library (either their own or an opponent's via Opposition Agent)
 		const isSearchingThisLibrary =
@@ -11857,6 +11994,7 @@ export function sanitizeGameStateForViewer(state: GameState, viewerId: string | 
 		if (pr.playerId === viewerId) {
 			if (pr.stackItem) {
 				delete pr.stackItem.effectResume;
+				scrubFaceDownStackItem(pr.stackItem, viewerId);
 			}
 			return pr;
 		}

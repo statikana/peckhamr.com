@@ -16,6 +16,7 @@ import type {
 	Span,
 	StaticDef
 } from '../ir.ts';
+import { effectiveCardForObject } from '../scryfall.ts';
 import type {
 	CardInstance,
 	GameState,
@@ -24,6 +25,13 @@ import type {
 	ScryfallCard,
 	TimedKeywordEffect
 } from '../types.ts';
+import {
+	activeAbilityDefs,
+	activeCharacteristics,
+	instanceFaceOptions,
+	resolveObjectFaces,
+	type ResolveObjectFacesOptions
+} from './faces.ts';
 import {
 	boardSnapshotMatches,
 	buildBoardSnapshot,
@@ -303,7 +311,10 @@ function formatManaProductionFromIR(ab: ActivatedAbility): string {
 	return syms;
 }
 
-function extractInnateFromIR(card: ScryfallCard): InnateEntry[] {
+function extractInnateFromIR(
+	card: ScryfallCard,
+	faceOpts?: ResolveObjectFacesOptions
+): InnateEntry[] {
 	const results: InnateEntry[] = [];
 	const seenKeys = new Set<string>();
 	const addResult = (canonicalKey: string, name: string, kind: 'keyword' | 'ability') => {
@@ -322,16 +333,22 @@ function extractInnateFromIR(card: ScryfallCard): InnateEntry[] {
 		results.push({ canonicalKey: k, name, kind });
 	};
 
-	const def = compileCard(card);
-	const face = def.faces[0];
-	const chars = face.characteristics;
+	const view = resolveObjectFaces(card, faceOpts);
+	if (view.isFaceDown) {
+		if (view.wardCost) {
+			addResult('ward', `Ward ${view.wardCost}`, 'keyword');
+		}
+		return results;
+	}
+	const chars = activeCharacteristics(card, faceOpts);
+	const abilities = activeAbilityDefs(card, faceOpts);
 	const isEquipment = chars.subtypes.includes('Equipment');
 	const isAura = chars.subtypes.includes('Aura');
 
 	const grantedToOthersKeywords = new Set<string>();
 	const selfGrantedKeywords = new Set<string>();
 
-	for (const ab of face.abilities) {
+	for (const ab of abilities) {
 		if (ab.kind === 'keyword') {
 			const kwName = ab.keyword.name.toLowerCase();
 			if (kwName === 'enchant') {
@@ -419,8 +436,8 @@ function extractInnateFromIR(card: ScryfallCard): InnateEntry[] {
 		}
 	}
 
-	// Check card.keywords for innate keywords not exclusively granted to others
-	for (const rawKw of card.keywords || []) {
+	// Check card/face keywords for innate keywords not exclusively granted to others
+	for (const rawKw of view.keywords.length > 0 ? view.keywords : card.keywords || []) {
 		const kwLow = rawKw.toLowerCase();
 		const isSupportedKeywordBadge =
 			Boolean(KEYWORD_LABELS[kwLow]) ||
@@ -454,7 +471,7 @@ function extractInnateFromIR(card: ScryfallCard): InnateEntry[] {
 	}
 
 	// 2. Summarize innate abilities from compiled abilities in order
-	for (const ab of face.abilities) {
+	for (const ab of abilities) {
 		if (ab.kind === 'triggered') {
 			const trig = ab.trigger;
 			if (trig.event === 'zoneChange' && trig.filter?.to === 'battlefield') {
@@ -556,7 +573,21 @@ function extractInnateFromIR(card: ScryfallCard): InnateEntry[] {
 	return results;
 }
 
-function innateKeywordsAndAbilitiesOf(card: ScryfallCard): ReadonlyArray<InnateEntry> {
+function innateKeywordsAndAbilitiesOf(
+	card: ScryfallCard,
+	faceOpts?: ResolveObjectFacesOptions
+): ReadonlyArray<InnateEntry> {
+	const canUseDefaultMemo =
+		!faceOpts ||
+		(!faceOpts.isFaceDown &&
+			(faceOpts.faceIndex ?? 0) === 0 &&
+			!faceOpts.unlockedFaces?.length &&
+			!faceOpts.copiableState &&
+			!faceOpts.fused &&
+			(card.layout === undefined || card.layout === 'normal'));
+	if (!canUseDefaultMemo) {
+		return extractInnateFromIR(card, faceOpts);
+	}
 	const keywordsKey = (card.keywords || []).join('\u0000');
 	const hit = INNATE_MEMO.get(card);
 	if (
@@ -567,7 +598,7 @@ function innateKeywordsAndAbilitiesOf(card: ScryfallCard): ReadonlyArray<InnateE
 	) {
 		return hit.result;
 	}
-	const result = extractInnateFromIR(card);
+	const result = extractInnateFromIR(card, faceOpts);
 	INNATE_MEMO.set(card, {
 		typeLine: card.typeLine,
 		keywords: card.keywords,
@@ -584,6 +615,7 @@ interface PermWorkState {
 	baseCard: ScryfallCard;
 	timestamp: number;
 	name: string;
+	manaValue: number;
 	isFaceDown: boolean;
 	baseTypeLine: string;
 	effectiveTypeLine: string;
@@ -908,7 +940,7 @@ function evaluateLayerAmount(
 			return 0;
 		case 'stat': {
 			const refPerm = amount.of.k === 'affected' ? affected : source;
-			if (amount.stat === 'manaValue') return refPerm.isFaceDown ? 0 : (refPerm.baseCard.cmc ?? 0);
+			if (amount.stat === 'manaValue') return refPerm.manaValue;
 			if (amount.stat === 'power') return refPerm.workingPower ?? 0;
 			if (amount.stat === 'toughness') return refPerm.workingToughness ?? 0;
 			return 0;
@@ -970,7 +1002,10 @@ function evaluateLayerAmount(
 					if (f.controller === 'you' && pl.playerId !== source.inst.controllerId) continue;
 					if (f.controller === 'opponent' && pl.playerId === source.inst.controllerId) continue;
 					for (const g of pl.graveyard) {
-						const gChars = compileCard(g.copiableCard ?? g.card).faces[0].characteristics;
+						const gChars = activeCharacteristics(
+							effectiveCardForObject(g),
+							instanceFaceOptions(g, 'graveyard')
+						);
 						if (
 							f.types?.length &&
 							!f.types.some((t) => gChars.types.some((gt) => gt.toLowerCase() === t.toLowerCase()))
@@ -1076,8 +1111,8 @@ export function getAttachedAbilityStrippingAuraSources(
 	const sources: string[] = [];
 	for (const entry of attached) {
 		if (entry.perm.isFaceDown) continue;
-		const def = compileCard(entry.card).faces[0];
-		const statics = def.abilities
+		const abilities = activeAbilityDefs(entry.card, instanceFaceOptions(entry.perm, 'battlefield'));
+		const statics = abilities
 			.filter((a): a is { kind: 'static'; static: StaticDef; span: Span } => a.kind === 'static')
 			.map((a) => a.static);
 		if (!hasAttachmentAbilityStrippingStatic(statics)) continue;
@@ -1144,7 +1179,7 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 		if (reads & READ_GRAVEYARDS) {
 			fp.push(p.graveyard.length);
 			for (const g of p.graveyard) {
-				fp.push(g.card, g.copiableCard);
+				fp.push(g.card, g.copiableCard, g.copiableState);
 			}
 		}
 	}
@@ -1217,7 +1252,9 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 		if (reads & READ_GRAVEYARDS) {
 			if (fp[i++] !== p.graveyard.length) return false;
 			for (const g of p.graveyard) {
-				if (fp[i++] !== g.card || fp[i++] !== g.copiableCard) return false;
+				if (fp[i++] !== g.card || fp[i++] !== g.copiableCard || fp[i++] !== g.copiableState) {
+					return false;
+				}
 			}
 		}
 	}
@@ -1317,25 +1354,49 @@ function evaluateLayer1(
 	workList: PermWorkState[],
 	workMap: Map<string, PermWorkState>
 ): void {
-	// 1. Layer 1 (Copy effects & face-down characteristics) + Innate items
 	for (const entry of snap.sorted) {
 		const inst = entry.perm;
 		const baseCard = entry.card;
+
+		// Layer 1a (CR 613.2a): printed characteristics, active face, and copy effects/exceptions.
+		const layer1aOpts: ResolveObjectFacesOptions = {
+			...instanceFaceOptions(inst, 'battlefield'),
+			isFaceDown: false,
+			faceDownSpec: undefined,
+			faceDownLabel: undefined
+		};
+		const layer1aView = resolveObjectFaces(baseCard, layer1aOpts);
+
+		// Layer 1b (CR 613.2b, CR 708.2): face-down status overrides Layer 1a copiable values.
 		const isFaceDown = Boolean(inst.isFaceDown);
-		const face = compileCard(baseCard).faces[0];
-		const chars = face.characteristics;
-		const baseTypeLine = isFaceDown ? 'Creature' : baseCard.typeLine;
-		const supertypes = isFaceDown ? [] : [...chars.supertypes];
-		const types = isFaceDown ? ['Creature'] : [...chars.types];
-		const subtypes = isFaceDown ? [] : normalizeSubtypes(chars.subtypes);
-		const colors = isFaceDown ? [] : [...chars.colors];
-		const isLegendary = baseTypeLine.includes('Legendary');
+		const view = isFaceDown
+			? resolveObjectFaces(baseCard, {
+					zone: 'battlefield',
+					isFaceDown: true,
+					faceDownSpec: inst.faceDownSpec,
+					faceDownLabel: inst.faceDownLabel ?? 'Face-Down Creature'
+				})
+			: layer1aView;
+
+		const baseTypeLine = view.typeLine;
+		const supertypes = [...view.supertypes];
+		const types = [...view.types];
+		const subtypes = normalizeSubtypes(view.subtypes);
+		const colors = [...view.colors];
+		const isLegendary = supertypes.includes('Legendary');
 		const prefixLegendary = isLegendary ? 'Legendary ' : '';
 
-		const basePower = isFaceDown ? 2 : (chars.power ?? null);
-		const baseToughness = isFaceDown ? 2 : (chars.toughness ?? null);
+		const basePower = view.power ?? null;
+		const baseToughness = view.toughness ?? null;
 
-		const innateList = isFaceDown ? [] : innateKeywordsAndAbilitiesOf(baseCard);
+		const innateList = isFaceDown
+			? innateKeywordsAndAbilitiesOf(baseCard, {
+					zone: 'battlefield',
+					isFaceDown: true,
+					faceDownSpec: inst.faceDownSpec,
+					faceDownLabel: inst.faceDownLabel ?? 'Face-Down Creature'
+				})
+			: innateKeywordsAndAbilitiesOf(baseCard, layer1aOpts);
 		const itemTimestamps = new Map<string, number>();
 		const items: AttributedKeywordOrEffect[] = innateList.map((entryItem, idx) => {
 			const id = `innate_${idx}_${entryItem.canonicalKey}`;
@@ -1355,7 +1416,7 @@ function evaluateLayer1(
 		const statics: StaticDef[] = [];
 		const grantsKeywordViaAbility = new Set<string>();
 		if (!isFaceDown) {
-			for (const ab of face.abilities) {
+			for (const ab of activeAbilityDefs(baseCard, layer1aOpts)) {
 				if (ab.kind === 'static') {
 					statics.push(ab.static);
 				} else if (ab.kind === 'activated' || ab.kind === 'triggered') {
@@ -1396,7 +1457,8 @@ function evaluateLayer1(
 			inst,
 			baseCard,
 			timestamp: entry.timestamp,
-			name: isFaceDown ? 'Face-Down Creature' : baseCard.name,
+			name: view.name,
+			manaValue: view.manaValue,
 			isFaceDown,
 			baseTypeLine,
 			effectiveTypeLine: baseTypeLine,
@@ -2311,21 +2373,20 @@ function buildOffBattlefieldBreakdown(
 	inst: CardInstance | null,
 	state?: GameState
 ): CardContinuousBreakdown {
-	const isFaceDown = Boolean(inst?.isFaceDown);
-	const baseTypeLine = isFaceDown ? 'Creature' : card.typeLine;
-	const rawP = isFaceDown ? 2 : card.power !== undefined ? parseInt(card.power, 10) : null;
-	const rawT = isFaceDown ? 2 : card.toughness !== undefined ? parseInt(card.toughness, 10) : null;
-	const basePower = rawP !== null && !isNaN(rawP) ? rawP : null;
-	const baseToughness = rawT !== null && !isNaN(rawT) ? rawT : null;
+	const faceOpts = inst ? instanceFaceOptions(inst) : undefined;
+	const view = resolveObjectFaces(card, faceOpts);
+	const isFaceDown = view.isFaceDown;
+	const baseTypeLine = view.typeLine;
+	const basePower = view.power ?? null;
+	const baseToughness = view.toughness ?? null;
 	let effectivePower = basePower;
 	let effectiveToughness = baseToughness;
 	const ptModifiedBy: string[] = [];
 	// CR 604.3, 208.2a: Layer 7a characteristic-defining abilities function in all zones.
-	if (!isFaceDown && baseTypeLine.includes('Creature')) {
-		if (effectivePower === null && card.power !== undefined) effectivePower = 0;
-		if (effectiveToughness === null && card.toughness !== undefined) effectiveToughness = 0;
-		const face = compileCard(card).faces[0];
-		for (const ab of face.abilities) {
+	if (!isFaceDown && view.types.includes('Creature')) {
+		if (effectivePower === null && view.ptDefinedByAbility) effectivePower = 0;
+		if (effectiveToughness === null && view.ptDefinedByAbility) effectiveToughness = 0;
+		for (const ab of activeAbilityDefs(card, faceOpts)) {
 			if (
 				ab.kind === 'static' &&
 				ab.static.k === 'continuous' &&
@@ -2361,16 +2422,16 @@ function buildOffBattlefieldBreakdown(
 					});
 					effectivePower = p;
 					effectiveToughness = Math.max(0, t);
-					ptModifiedBy.push(`${card.name} CDA (${p}/${t})`);
+					ptModifiedBy.push(`${view.name} CDA (${p}/${t})`);
 				} else {
 					effectivePower = 0;
 					effectiveToughness = 0;
-					ptModifiedBy.push(`${card.name} CDA (0/0)`);
+					ptModifiedBy.push(`${view.name} CDA (0/0)`);
 				}
 			}
 		}
 	}
-	const innateList = isFaceDown ? [] : innateKeywordsAndAbilitiesOf(card);
+	const innateList = innateKeywordsAndAbilitiesOf(card, faceOpts);
 	const items: AttributedKeywordOrEffect[] = innateList.map((entry, idx) => ({
 		id: `innate_${idx}_${entry.canonicalKey}`,
 		canonicalKey: entry.canonicalKey,
@@ -2451,7 +2512,7 @@ export function abilityActivePermanents(state: GameState): readonly AbilityActiv
 				for (const perm of player.battlefield) {
 					if (perm.phasedOut) continue;
 					if (fresh.byInstance.get(perm)?.lost.lost) continue;
-					const card = perm.copiableCard ?? perm.card;
+					const card = effectiveCardForObject(perm);
 					out.push({
 						perm,
 						card,
@@ -2496,7 +2557,7 @@ export function inspectCardContinuousBreakdown(
 
 	if ('instanceId' in cardOrInst) {
 		inst = cardOrInst;
-		card = cardOrInst.copiableCard ?? cardOrInst.card;
+		card = effectiveCardForObject(cardOrInst);
 	} else {
 		card = cardOrInst;
 		if (state) {
@@ -2506,7 +2567,7 @@ export function inspectCardContinuousBreakdown(
 				);
 				if (foundBf) {
 					inst = foundBf;
-					card = foundBf.copiableCard ?? foundBf.card;
+					card = effectiveCardForObject(foundBf);
 					break;
 				}
 			}
@@ -2553,7 +2614,7 @@ export function evaluatePermanent(state: GameState, inst: CardInstance): Evaluat
 	if (hit) {
 		result = hit.evaluated;
 	} else {
-		const baseCard = inst.copiableCard ?? inst.card;
+		const baseCard = effectiveCardForObject(inst);
 		const breakdown = buildOffBattlefieldBreakdown(baseCard, inst, state);
 		const tLine = breakdown.effectiveTypeLine;
 		const activeKeywords = breakdown.items
@@ -2562,9 +2623,12 @@ export function evaluatePermanent(state: GameState, inst: CardInstance): Evaluat
 		const hasAllCreatureTypes =
 			tLine.includes('All-Types') ||
 			breakdown.items.some((it) => it.canonicalKey === 'changeling' && !it.removed);
+		const faceView = resolveObjectFaces(baseCard, instanceFaceOptions(inst));
 		result = {
 			instanceId: inst.instanceId,
-			effectiveName: inst.isFaceDown ? 'Face-Down Creature' : baseCard.name,
+			effectiveName: inst.isFaceDown
+				? (inst.faceDownLabel ?? 'Face-Down Creature')
+				: faceView.name,
 			effectiveTypeLine: tLine,
 			typeLine: tLine,
 			isCreature: tLine.includes('Creature'),

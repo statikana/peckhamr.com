@@ -7,7 +7,7 @@
  *
  * Changes to this file must be additive while parallel phases are running (plan section 4).
  */
-import type { CounterType, GamePhase, ManaColor, TriggerScope, ZoneType } from './types.ts';
+import type { CardLayout, CounterType, GamePhase, ManaColor, TriggerScope, ZoneType } from './types.ts';
 
 /** Offsets into the face's normalised text (reminder text stripped, self-references as `~`). */
 export interface Span {
@@ -22,6 +22,7 @@ export interface CardDefinition {
 	textHash: string;
 	/** For display and diagnostics only. The runtime never branches on it. */
 	name: string;
+	layout?: CardLayout;
 	faces: FaceDefinition[];
 	/** True iff no face has an `unsupported` ability. */
 	fullySupported: boolean;
@@ -39,6 +40,7 @@ export interface Characteristics {
 	subtypes: string[];
 	supertypes: string[];
 	colors: ManaColor[];
+	colorIndicator?: ManaColor[];
 	/** Absent when the card has none or its value is defined by an ability (`*`). */
 	power?: number;
 	toughness?: number;

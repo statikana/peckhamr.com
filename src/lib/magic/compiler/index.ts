@@ -6,7 +6,7 @@
  * be stored in GameState: stack items refer to abilities by id or index and the runtime looks the IR
  * up here.
  */
-import type { ScryfallCard, StackItem } from '../types.ts';
+import type { CardLayout, ManaColor, ScryfallCard, StackItem } from '../types.ts';
 import type { AbilityDef, Amount, CardDefinition, EffectStep, KeywordAbility, ModalDef, PlayerRef, Ref, Selector, TargetSpec } from '../ir.ts';
 import { getKeywordSpec } from '../keywords.ts';
 import { compileFaces } from './card.ts';
@@ -15,7 +15,7 @@ import { hashText } from './normalize.ts';
 import { runtimeTriggers } from './triggers.ts';
 
 /** Bump whenever the IR produced for the same text could change. */
-export const COMPILER_VERSION = 17;
+export const COMPILER_VERSION = 18;
 
 const CACHE = new Map<string, CardDefinition>();
 
@@ -28,6 +28,7 @@ interface CardMemo {
 	def: CardDefinition;
 	oracleId: string | undefined;
 	id: string;
+	layout: CardLayout | undefined;
 	name: string;
 	manaCost: string;
 	typeLine: string;
@@ -36,6 +37,9 @@ interface CardMemo {
 	toughness: string | undefined;
 	loyalty: string | undefined;
 	colors: string[];
+	colorIndicator: ManaColor[] | undefined;
+	faces: ScryfallCard['faces'];
+	facesDigest: string;
 	backFace: ScryfallCard['backFace'];
 	backName: string | undefined;
 	backManaCost: string | undefined;
@@ -50,11 +54,41 @@ export function clearCompileCache(): void {
 	BY_CARD = new WeakMap();
 }
 
+function facesSourceText(faces: ScryfallCard['faces']): string {
+	if (!faces || faces.length === 0) return '';
+	return faces
+		.map((f) =>
+			[
+				f.name,
+				f.manaCost,
+				f.cmc ?? '',
+				f.typeLine,
+				f.oracleText,
+				f.colors.join(''),
+				f.colorIndicator?.join('') ?? '',
+				f.keywords?.join(',') ?? '',
+				f.power ?? '',
+				f.toughness ?? '',
+				f.loyalty ?? '',
+				f.defense ?? ''
+			].join('\u0001')
+		)
+		.join('\u0002');
+}
+
+function sameOptionalArray<T>(a: readonly T[] | undefined, b: readonly T[] | undefined): boolean {
+	if (a === b) return true;
+	if (!a || !b || a.length !== b.length) return false;
+	for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+	return true;
+}
+
 function memoMatches(m: CardMemo, card: ScryfallCard): boolean {
 	const back = card.backFace;
 	if (
 		m.oracleId !== card.oracleId ||
 		m.id !== card.id ||
+		m.layout !== card.layout ||
 		m.name !== card.name ||
 		m.manaCost !== card.manaCost ||
 		m.typeLine !== card.typeLine ||
@@ -70,15 +104,18 @@ function memoMatches(m: CardMemo, card: ScryfallCard): boolean {
 	) {
 		return false;
 	}
-	const colors = card.colors;
-	if (m.colors.length !== colors.length) return false;
-	for (let i = 0; i < colors.length; i++) if (m.colors[i] !== colors[i]) return false;
+	if (!sameOptionalArray(m.colors, card.colors)) return false;
+	if (!sameOptionalArray(m.colorIndicator, card.colorIndicator)) return false;
+	if (m.faces !== card.faces || (card.faces && m.facesDigest !== facesSourceText(card.faces))) {
+		return false;
+	}
 	return true;
 }
 
 function sourceText(card: ScryfallCard): string {
 	const back = card.backFace;
 	return [
+		card.layout ?? '',
 		card.name,
 		card.manaCost,
 		card.typeLine,
@@ -87,6 +124,8 @@ function sourceText(card: ScryfallCard): string {
 		card.toughness ?? '',
 		card.loyalty ?? '',
 		card.colors.join(''),
+		card.colorIndicator?.join('') ?? '',
+		facesSourceText(card.faces),
 		back ? [back.name, back.manaCost, back.typeLine, back.oracleText].join('\u0001') : ''
 	].join('\u0000');
 }
@@ -100,6 +139,7 @@ export function compileCard(card: ScryfallCard): CardDefinition {
 		def,
 		oracleId: card.oracleId,
 		id: card.id,
+		layout: card.layout,
 		name: card.name,
 		manaCost: card.manaCost,
 		typeLine: card.typeLine,
@@ -108,6 +148,9 @@ export function compileCard(card: ScryfallCard): CardDefinition {
 		toughness: card.toughness,
 		loyalty: card.loyalty,
 		colors: [...card.colors],
+		colorIndicator: card.colorIndicator ? [...card.colorIndicator] : undefined,
+		faces: card.faces,
+		facesDigest: facesSourceText(card.faces),
 		backFace: back,
 		backName: back?.name,
 		backManaCost: back?.manaCost,
@@ -130,6 +173,7 @@ function compileCardByText(card: ScryfallCard): CardDefinition {
 		compilerVersion: COMPILER_VERSION,
 		textHash,
 		name: card.name,
+		...(card.layout && card.layout !== 'normal' ? { layout: card.layout } : {}),
 		faces,
 		fullySupported: faces.every((f) => f.abilities.every((a) => a.kind !== 'unsupported'))
 	};
@@ -174,21 +218,25 @@ function equipEffect(ab: KeywordAbility): CompiledEffect {
 	};
 }
 
-/** The abilities of the card's (first) face. */
-export function cardAbilities(card: ScryfallCard): AbilityDef[] {
-	return compileCard(card).faces[0]?.abilities ?? [];
+/** The abilities of the card's face (`faceIndex`, defaulting to 0). */
+export function cardAbilities(card: ScryfallCard, faceIndex = 0): AbilityDef[] {
+	return compileCard(card).faces[faceIndex]?.abilities ?? [];
 }
 
 /** An ability of the card by its id (`act_3`, `loyalty_1`, `equip_2`, `mana_tap`; see ActivatedAbility.id). */
-export function abilityById(card: ScryfallCard, id: string): AbilityDef | undefined {
-	return cardAbilities(card).find(
+export function abilityById(card: ScryfallCard, id: string, faceIndex = 0): AbilityDef | undefined {
+	return cardAbilities(card, faceIndex).find(
 		(a) => (a.kind === 'activated' || a.kind === 'unsupported' || a.kind === 'keyword') && a.id === id
 	);
 }
 
 /** A granted activated ability inside a `grantAbility` static on `card`, by its compile-time id (`granted_0`, ...). */
-export function grantedAbilityById(card: ScryfallCard, localId: string): AbilityDef | undefined {
-	for (const a of cardAbilities(card)) {
+export function grantedAbilityById(
+	card: ScryfallCard,
+	localId: string,
+	faceIndex = 0
+): AbilityDef | undefined {
+	for (const a of cardAbilities(card, faceIndex)) {
 		if (
 			a.kind === 'static' &&
 			a.static.k === 'continuous' &&
@@ -203,20 +251,24 @@ export function grantedAbilityById(card: ScryfallCard, localId: string): Ability
 }
 
 /** The compiled spell ability of an instant or sorcery, or null when it isn't automated. */
-export function compileSpellEffects(card: ScryfallCard): CompiledEffect | null {
-	if (card.backFace || card.oracleText.includes('\n//\n')) return null;
-	return effectOf(cardAbilities(card).find((a) => a.kind === 'spell'));
+export function compileSpellEffects(card: ScryfallCard, faceIndex = 0): CompiledEffect | null {
+	if (card.backFace || card.oracleText.includes('\n//\n') || (card.faces && card.faces.length > 1)) {
+		return null;
+	}
+	return effectOf(cardAbilities(card, faceIndex).find((a) => a.kind === 'spell'));
 }
 
 /**
  * The compiled effect of a card's triggered ability, by the ability's index in
- * compileCard(card).faces[0].abilities (StackItem.triggeredAbilityIndex). Null when the ability
- * isn't automated (its effect is `unsupported`) or isn't a trigger the runtime runs itself (Ward).
+ * compileCard(card).faces[faceIndex].abilities (StackItem.triggeredAbilityIndex). Null when the
+ * ability isn't automated (its effect is `unsupported`) or isn't a trigger the runtime runs itself
+ * (Ward).
  */
 export function compiledTriggerEffect(
 	card: ScryfallCard,
 	abilityIndex: number,
-	grantedKeyword?: string
+	grantedKeyword?: string,
+	faceIndex = 0
 ): CompiledEffect | null {
 	if (grantedKeyword || abilityIndex === -1) {
 		const spec = getKeywordSpec(grantedKeyword ?? 'prowess');
@@ -225,7 +277,7 @@ export function compiledTriggerEffect(
 		}
 		return null;
 	}
-	const t = runtimeTriggers(compileCard(card)).find((x) => x.abilityIndex === abilityIndex);
+	const t = runtimeTriggers(compileCard(card), faceIndex).find((x) => x.abilityIndex === abilityIndex);
 	return t?.effect ?? null;
 }
 
