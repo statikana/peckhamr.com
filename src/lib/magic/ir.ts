@@ -395,6 +395,10 @@ export interface EffectStep {
 export interface EffectParams {
 	toughness?: Amount;
 	keywords?: string[];
+	/** grant: keywords removed until `duration` ("lose hexproof and indestructible until end of turn"). */
+	removeKeywords?: string[];
+	/** grant (with removeKeywords): "and can't have or gain ..." (CR 113.11). */
+	cantHaveOrGain?: boolean;
 	duration?: Duration;
 	counter?: CounterType;
 	token?: TokenSpec;

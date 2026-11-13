@@ -199,6 +199,20 @@ function mutations(f: Fixture): Array<[string, () => void]> {
 		['kite +1/+1 counters', () => (f.kite.counters['+1/+1'] = 2)],
 		['kite temp pump', () => (f.kite.tempPowerMod = 3)],
 		['kite granted keyword', () => f.kite.grantedKeywords.push('haste')],
+		[
+			'kite timed keyword removal',
+			() => {
+				(s.timedKeywordEffects ??= []).push({
+					timestamp: 999,
+					sourceName: 'Nullveil Obelisk',
+					controllerId: s.players[1].playerId,
+					affected: [{ instanceId: f.kite.instanceId, objectVersion: f.kite.objectVersion ?? 1 }],
+					removeKeywords: ['Flying'],
+					cantHaveOrGain: true
+				});
+			}
+		],
+		['timed keyword effects cleared', () => (s.timedKeywordEffects = undefined)],
 		['life change', () => (s.players[0].life -= 7)],
 		['warden controller loses', () => (s.players[1].lost = true)],
 		['warden controller back', () => (s.players[1].lost = false)],

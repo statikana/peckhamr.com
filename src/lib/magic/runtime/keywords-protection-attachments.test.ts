@@ -400,11 +400,471 @@ describe('Keyword: Indestructible (CR 702.12)', () => {
 		assert.ok(p1.graveyard.some((c) => c.instanceId === savedBear.instanceId));
 	});
 
-	it(
-		'Activated keyword-removal abilities on Shadowspear, Arcane Lighthouse, and Bonds of Mortality only strip keywords after activation until end of turn (currently approximated as always-on static in runtime/layers.ts:1173-1196 while activated ability compiles as unsupported)',
-		{ todo: 'Compile activated until-end-of-turn removeKeywords effects instead of static approximation in runtime/layers.ts:1173-1196' },
-		() => {}
-	);
+	it('Activated keyword-removal abilities on Shadowspear, Arcane Lighthouse, Bonds of Mortality, and a synthetic card only strip keywords after activation until end of turn, respect CR 613.7 timestamps and CR 113.11 cantHaveOrGain, and expire at cleanup (CR 514.2)', () => {
+		const nullveilObelisk = syntheticCard({
+			name: 'Nullveil Obelisk',
+			typeLine: 'Artifact',
+			oracleText: '{2}: Permanents your opponents control lose hexproof and indestructible until end of turn.'
+		});
+		const beaconSynthetic = syntheticCard({
+			name: 'Glimmerfen Beacon',
+			typeLine: 'Artifact',
+			oracleText:
+				"{1}, {T}: Until end of turn, creatures your opponents control lose hexproof and shroud and can't have hexproof or shroud."
+		});
+
+		// 1. All three printed cards and both synthetic cards compile with fullySupported: true
+		for (const card of [
+			staple('Shadowspear'),
+			staple('Arcane Lighthouse'),
+			staple('Bonds of Mortality'),
+			nullveilObelisk,
+			beaconSynthetic
+		]) {
+			const def = compileCard(card);
+			assert.equal(
+				def.fullySupported,
+				true,
+				`${card.name} should compile as fullySupported (got: ${JSON.stringify(def.faces[0].abilities)})`
+			);
+		}
+
+		const { state, p1, p2 } = makeGame();
+
+		const hasKw = (perm: CardInstance, kw: string) =>
+			evaluatePermanent(state, perm).keywords.some((k) => k.toLowerCase() === kw.toLowerCase());
+
+		const advanceToNextTurnMain = () => {
+			const startTurn = state.turnNumber;
+			let guard = 0;
+			while (state.turnNumber === startTurn && guard++ < 40) {
+				passStep(state);
+			}
+			assert.equal(state.turnNumber, startTurn + 1);
+			while (state.phase !== 'main1' && guard++ < 40) {
+				passStep(state);
+			}
+			assert.equal(state.phase, 'main1');
+		};
+
+		// P1 controls:
+		// - stalker: Creature with innate Hexproof + Indestructible
+		// - knightBlack: Creature with innate Hexproof from black
+		// - shroudCalc: Creature with innate Shroud
+		// - aegisRelic: Non-creature Artifact with innate Hexproof + Indestructible
+		// - squire: Vanilla creature for testing Equipment grants after removal
+		const stalker = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Sacred Stalker',
+				oracleText: 'Hexproof, indestructible',
+				keywords: ['Hexproof', 'Indestructible']
+			}),
+			'battlefield'
+		);
+		const knightBlack = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Duskwarden Knight',
+				oracleText: 'Hexproof from black',
+				keywords: ['Hexproof']
+			}),
+			'battlefield'
+		);
+		const shroudCalc = putInZone(
+			state,
+			p1,
+			syntheticCard({ name: 'Veiled Gargoyle', oracleText: 'Shroud', keywords: ['Shroud'] }),
+			'battlefield'
+		);
+		const aegisRelic = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Aegis Relic',
+				typeLine: 'Artifact',
+				power: undefined,
+				toughness: undefined,
+				oracleText: 'Hexproof, indestructible',
+				keywords: ['Hexproof', 'Indestructible']
+			}),
+			'battlefield'
+		);
+		const squire = putInZone(state, p1, syntheticCard({ name: 'Plain Squire' }), 'battlefield');
+		const boots = putInZone(state, p1, staple('Swiftfoot Boots'), 'battlefield');
+		const greaves = putInZone(state, p1, staple('Lightning Greaves'), 'battlefield');
+
+		// P2 controls Shadowspear, Arcane Lighthouse, Bonds of Mortality, and synthetic Nullveil Obelisk
+		const spear = putInZone(state, p2, staple('Shadowspear'), 'battlefield');
+		const lighthouse = putInZone(state, p2, staple('Arcane Lighthouse'), 'battlefield');
+		const bonds = putInZone(state, p2, staple('Bonds of Mortality'), 'battlefield');
+		const obelisk = putInZone(state, p2, nullveilObelisk, 'battlefield');
+
+		const makeBlackDestroy = (name: string) =>
+			putInZone(
+				state,
+				p2,
+				syntheticCard({
+					name,
+					manaCost: '{0}',
+					cmc: 0,
+					colors: ['B'],
+					typeLine: 'Instant',
+					oracleText: 'Destroy target permanent.'
+				}),
+				'hand'
+			);
+
+		// 2. BEFORE activating any ability: all P1 permanents KEEP their keywords!
+		assert.equal(hasKw(stalker, 'hexproof'), true);
+		assert.equal(hasKw(stalker, 'indestructible'), true);
+		assert.equal(hasKw(knightBlack, 'hexproof from black'), true);
+		assert.equal(hasKw(shroudCalc, 'shroud'), true);
+		assert.equal(hasKw(aegisRelic, 'hexproof'), true);
+		assert.equal(hasKw(aegisRelic, 'indestructible'), true);
+
+		const earlyKill = makeBlackDestroy('Early Dreadbore');
+		state.priorityPlayerIndex = 1;
+		for (const protectedPerm of [stalker, knightBlack, shroudCalc, aegisRelic]) {
+			assert.equal(
+				applyGameAction(state, p2.playerId, {
+					type: 'cast_spell',
+					instanceId: earlyKill.instanceId,
+					targets: [{ kind: 'permanent', id: protectedPerm.instanceId, label: protectedPerm.card.name }]
+				}).ok,
+				false,
+				`${protectedPerm.card.name} must NOT be targetable by opponent while hate cards are unactivated`
+			);
+		}
+
+		// 3. Activate Bonds of Mortality ({G}): strips Hexproof + Indestructible from opponent CREATURES only!
+		const bondsAb = getEffectiveActivatedAbilities(state, p2, bonds).find((a) => !a.isManaAbility)!;
+		p2.manaPool.G = 1;
+		state.priorityPlayerIndex = 1;
+		assert.equal(
+			applyGameAction(state, p2.playerId, {
+				type: 'activate_ability',
+				instanceId: bonds.instanceId,
+				abilityId: bondsAb.id
+			}).ok,
+			true
+		);
+		// Still on the stack before resolution -> keywords still present!
+		assert.equal(hasKw(stalker, 'hexproof'), true);
+		passStep(state); // Resolve Bonds of Mortality ability
+
+		assert.equal(hasKw(stalker, 'hexproof'), false);
+		assert.equal(hasKw(stalker, 'indestructible'), false);
+		assert.equal(hasKw(knightBlack, 'hexproof from black'), false);
+		assert.equal(hasKw(shroudCalc, 'shroud'), true, 'Bonds of Mortality does not strip Shroud');
+		assert.equal(
+			hasKw(aegisRelic, 'hexproof'),
+			true,
+			'Bonds of Mortality only affects creatures, not non-creature artifacts'
+		);
+		assert.equal(hasKw(aegisRelic, 'indestructible'), true);
+
+		// 4. Activate Shadowspear ({1}): strips Hexproof + Indestructible from ALL opponent permanents (including Aegis Relic)!
+		const spearAb = getEffectiveActivatedAbilities(state, p2, spear).find(
+			(a) => !a.isManaAbility && a.id.startsWith('act_')
+		)!;
+		p2.manaPool.C = 1;
+		state.priorityPlayerIndex = 1;
+		assert.equal(
+			applyGameAction(state, p2.playerId, {
+				type: 'activate_ability',
+				instanceId: spear.instanceId,
+				abilityId: spearAb.id
+			}).ok,
+			true
+		);
+		passStep(state);
+
+		assert.equal(hasKw(aegisRelic, 'hexproof'), false);
+		assert.equal(hasKw(aegisRelic, 'indestructible'), false);
+
+		// CR 613.7 timestamp order: Shadowspear lacks "can't have or gain", so a LATER temporary grant
+		// ("Target creature gains hexproof until end of turn.") AND a LATER Equipment attach (Swiftfoot Boots, CR 613.7e) WIN!
+		const guile1 = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Sheltering Veil',
+				manaCost: '{0}',
+				cmc: 0,
+				typeLine: 'Instant',
+				oracleText: 'Target creature gains hexproof until end of turn.'
+			}),
+			'hand'
+		);
+		state.priorityPlayerIndex = 0;
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: guile1.instanceId,
+				targets: [{ kind: 'permanent', id: stalker.instanceId, label: stalker.card.name }]
+			}).ok,
+			true
+		);
+		passStep(state);
+		assert.equal(
+			hasKw(stalker, 'hexproof'),
+			true,
+			'Later temporary grant beats earlier Shadowspear resolution in Layer 6 timestamp order (CR 613.7b)'
+		);
+
+		// Equip Swiftfoot Boots ({1}) onto knightBlack (which was in Shadowspear's affected set) AFTER Shadowspear resolved -> newer timestamp wins!
+		const bootsEquip = getEffectiveActivatedAbilities(state, p1, boots).find((a) =>
+			a.id.startsWith('equip_')
+		)!;
+		p1.manaPool.C = 1;
+		state.priorityPlayerIndex = 0;
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'activate_ability',
+				instanceId: boots.instanceId,
+				abilityId: bootsEquip.id,
+				targets: [{ kind: 'permanent', id: knightBlack.instanceId, label: knightBlack.card.name }]
+			}).ok,
+			true
+		);
+		passStep(state);
+		assert.equal(boots.attachedToId, knightBlack.instanceId);
+		assert.equal(
+			hasKw(knightBlack, 'hexproof'),
+			true,
+			'Later Swiftfoot Boots attachment (CR 613.7e) beats earlier Shadowspear resolution on affected creature'
+		);
+
+		// 5. Activate Arcane Lighthouse ({1}, {T}): strips Hexproof + Shroud AND blocks later gains ("can't have hexproof or shroud", CR 113.11)!
+		const lighthouseAb = getEffectiveActivatedAbilities(state, p2, lighthouse).find(
+			(a) => !a.isManaAbility && a.id.startsWith('act_')
+		)!;
+		p2.manaPool.C = 1;
+		state.priorityPlayerIndex = 1;
+		assert.equal(
+			applyGameAction(state, p2.playerId, {
+				type: 'activate_ability',
+				instanceId: lighthouse.instanceId,
+				abilityId: lighthouseAb.id
+			}).ok,
+			true
+		);
+		assert.equal(lighthouse.tapped, true);
+		passStep(state);
+
+		assert.equal(hasKw(stalker, 'hexproof'), false);
+		assert.equal(hasKw(knightBlack, 'hexproof'), false);
+		assert.equal(hasKw(shroudCalc, 'shroud'), false);
+
+		// Attempt to re-grant Hexproof via spell AND Shroud via Lightning Greaves AFTER Arcane Lighthouse resolved -> BOTH BLOCKED!
+		const guile2 = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Second Sheltering Veil',
+				manaCost: '{0}',
+				cmc: 0,
+				typeLine: 'Instant',
+				oracleText: 'Target creature gains hexproof until end of turn.'
+			}),
+			'hand'
+		);
+		state.priorityPlayerIndex = 0;
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: guile2.instanceId,
+				targets: [{ kind: 'permanent', id: stalker.instanceId, label: stalker.card.name }]
+			}).ok,
+			true
+		);
+		passStep(state);
+		assert.equal(
+			hasKw(stalker, 'hexproof'),
+			false,
+			'Arcane Lighthouse cantHaveOrGain prevents affected creature from gaining Hexproof later in the turn (CR 113.11)'
+		);
+
+		const greavesEquip = getEffectiveActivatedAbilities(state, p1, greaves).find((a) =>
+			a.id.startsWith('equip_')
+		)!;
+		state.priorityPlayerIndex = 0;
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'activate_ability',
+				instanceId: greaves.instanceId,
+				abilityId: greavesEquip.id,
+				targets: [{ kind: 'permanent', id: squire.instanceId, label: squire.card.name }]
+			}).ok,
+			true
+		);
+		passStep(state);
+		assert.equal(greaves.attachedToId, squire.instanceId);
+		assert.equal(
+			hasKw(squire, 'shroud'),
+			false,
+			'Arcane Lighthouse cantHaveOrGain prevents Lightning Greaves from granting Shroud to affected creature'
+		);
+		assert.equal(
+			hasKw(squire, 'haste'),
+			true,
+			'Lightning Greaves still grants Haste while Shroud is prevented'
+		);
+
+		// CR 611.2c: A creature entering AFTER Arcane Lighthouse resolved was not in the locked-in set, so it keeps innate Hexproof!
+		const lateScout = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Late Gladecover Scout',
+				manaCost: '{0}',
+				cmc: 0,
+				oracleText: 'Hexproof',
+				keywords: ['Hexproof']
+			}),
+			'hand'
+		);
+		state.priorityPlayerIndex = 0;
+		assert.equal(
+			applyGameAction(state, p1.playerId, { type: 'cast_spell', instanceId: lateScout.instanceId }).ok,
+			true
+		);
+		passStep(state);
+		const lateScoutBf = p1.battlefield.find((c) => c.instanceId === lateScout.instanceId)!;
+		assert.equal(
+			hasKw(lateScoutBf, 'hexproof'),
+			true,
+			'Creature entering after Arcane Lighthouse resolved keeps Hexproof (CR 611.2c)'
+		);
+
+		// 6. Advance to next turn (cleanup CR 514.2): all until-end-of-turn effects expire and keywords return!
+		advanceToNextTurnMain();
+		assert.equal(hasKw(stalker, 'hexproof'), true);
+		assert.equal(hasKw(stalker, 'indestructible'), true);
+		assert.equal(hasKw(knightBlack, 'hexproof from black'), true);
+		assert.equal(hasKw(knightBlack, 'hexproof'), true); // from attached Swiftfoot Boots
+		assert.equal(hasKw(shroudCalc, 'shroud'), true);
+		assert.equal(hasKw(squire, 'shroud'), true); // from attached Lightning Greaves
+		assert.equal(hasKw(aegisRelic, 'hexproof'), true);
+		assert.equal(hasKw(aegisRelic, 'indestructible'), true);
+
+		// 7. Synthetic card ("Nullveil Obelisk", {2}) works identically by IR without any card-name check,
+		// allowing P2 to target & destroy Indestructible+Hexproof Aegis Relic!
+		const obeliskAb = getEffectiveActivatedAbilities(state, p2, obelisk).find(
+			(a) => !a.isManaAbility
+		)!;
+		p2.manaPool.C = 2;
+		state.priorityPlayerIndex = 1;
+		assert.equal(
+			applyGameAction(state, p2.playerId, {
+				type: 'activate_ability',
+				instanceId: obelisk.instanceId,
+				abilityId: obeliskAb.id
+			}).ok,
+			true
+		);
+		passStep(state);
+		assert.equal(hasKw(aegisRelic, 'hexproof'), false);
+		assert.equal(hasKw(aegisRelic, 'indestructible'), false);
+
+		state.priorityPlayerIndex = 1;
+		assert.equal(
+			applyGameAction(state, p2.playerId, {
+				type: 'cast_spell',
+				instanceId: earlyKill.instanceId,
+				targets: [{ kind: 'permanent', id: aegisRelic.instanceId, label: aegisRelic.card.name }]
+			}).ok,
+			true
+		);
+		passStep(state);
+		assert.ok(
+			p1.graveyard.some((c) => c.instanceId === aegisRelic.instanceId),
+			'Aegis Relic is targetable and destroyed once synthetic Nullveil Obelisk strips Hexproof and Indestructible'
+		);
+
+		// 8. Temporary keyword grant vs "All creatures lose all abilities" (Humility) obeys CR 613.7 timestamp order!
+		const jump1 = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Sky Leap',
+				manaCost: '{0}',
+				cmc: 0,
+				typeLine: 'Instant',
+				oracleText: 'Target creature gains flying until end of turn.'
+			}),
+			'hand'
+		);
+		state.priorityPlayerIndex = 0;
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: jump1.instanceId,
+				targets: [{ kind: 'permanent', id: stalker.instanceId, label: stalker.card.name }]
+			}).ok,
+			true
+		);
+		passStep(state);
+		assert.equal(hasKw(stalker, 'flying'), true);
+
+		// Humility enters AFTER Sky Leap resolved -> strips earlier temporary Flying grant!
+		const humility = putInZone(
+			state,
+			p2,
+			syntheticCard({
+				name: 'Nullifying Haze',
+				manaCost: '{0}',
+				cmc: 0,
+				typeLine: 'Enchantment',
+				oracleText: 'All creatures lose all abilities.'
+			}),
+			'hand'
+		);
+		state.activePlayerIndex = 1;
+		state.priorityPlayerIndex = 1;
+		assert.equal(
+			applyGameAction(state, p2.playerId, { type: 'cast_spell', instanceId: humility.instanceId }).ok,
+			true
+		);
+		passStep(state);
+		assert.equal(
+			hasKw(stalker, 'flying'),
+			false,
+			'Later removeAllAbilities enchantment strips earlier temporary keyword grant (CR 613.7)'
+		);
+
+		// A second temporary Flying grant resolving AFTER Humility entered wins in timestamp order!
+		const jump2 = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Second Sky Leap',
+				manaCost: '{0}',
+				cmc: 0,
+				typeLine: 'Instant',
+				oracleText: 'Target creature gains flying until end of turn.'
+			}),
+			'hand'
+		);
+		state.priorityPlayerIndex = 0;
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: jump2.instanceId,
+				targets: [{ kind: 'permanent', id: stalker.instanceId, label: stalker.card.name }]
+			}).ok,
+			true
+		);
+		passStep(state);
+		assert.equal(
+			hasKw(stalker, 'flying'),
+			true,
+			'Later temporary keyword grant beats earlier removeAllAbilities enchantment (CR 613.7)'
+		);
+	});
 });
 
 describe('Keywords: Hexproof (CR 702.11) & Shroud (CR 702.18)', () => {

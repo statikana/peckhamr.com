@@ -15,9 +15,8 @@ Identifiers are from `ir.ts`, `types.ts` and `runtime/`; CR numbers are from [`s
 1. **Zero Runtime `oracleText` Reads (`oracleTextRead = 0`)**
    - Only `src/lib/magic/compiler/` may read `card.oracleText` or parse rules text.
    - Once a card is compiled via `compileCard(card): CardDefinition`, all runtime systems (layers, replacements, triggers, costs, effects, legality checks, AI, and UI) operate on the typed IR in `ir.ts`.
-   - The ratchet (`architecture.test.ts`) enforces this for `oracleText` in runtime files. It exempts `compiler/`, `oracle.ts`, `precons.ts`, `scryfall.ts`, `search.ts`, `types.ts` and tests, and doesn't scan `.svelte` files.
+   - The ratchet (`architecture.test.ts`) enforces this for `oracleText` and regex/substring scans over `.text` (`abilityTextScan`) in runtime files. It exempts `compiler/`, `oracle.ts`, `precons.ts`, `scryfall.ts`, `search.ts`, `types.ts` and tests, and doesn't scan `.svelte` files.
    - **Not yet enforced:**
-     - `runtime/layers.ts` regex-scans the text of unsupported activated abilities (`ab.text`) for "gains [keyword]" and "your opponents control lose [keyword]". It turns the latter into an always-on static: Shadowspear, Arcane Lighthouse and Bonds of Mortality strip keywords continuously instead of on activation. The ratchet misses this because it only looks for `oracleText`.
      - Runtime and UI code still read `card.typeLine` strings in many places (`engine.ts`, `runtime/zones.ts`, `runtime/choices.ts`, `runtime/effects.ts`, `ArenaTable.svelte`) instead of evaluated types.
      - `oracle.ts` reads `oracleText` and `typeLine` outside `compiler/`.
 2. **Zero Card-Name Dispatch (`cardNameComparison = 0`)**
@@ -54,7 +53,6 @@ Identifiers are from `ir.ts`, `types.ts` and `runtime/`; CR numbers are from [`s
      - There is no general `CR 613.8` dependency system: layer 4 runs three fixed sub-passes (attached types, type overwrites, additive types and colors) and then timestamps.
 3. **Ability-Loss & Cross-Layer Persistence (`CR 613.1f, 613.6, 708.2a`)**
    - If `evaluatePermanent(state, perm).losesAllAbilities` is true (e.g. *Humility*, *Darksteel Mutation*, *Song of the Dryads* per `CR 305.7`) or `perm.isFaceDown` is true (`CR 708.2a`), the permanent's printed triggered, activated, static, and replacement abilities do not function, unless the continuous effect began applying in an earlier layer (`CR 613.6`). Example: Changeling's creature types are added in layer 4 and survive layer-6 ability loss.
-   - **Not yet enforced:** temporary keyword grants in `CardInstance.grantedKeywords` carry no timestamp, so a later "loses all abilities" effect doesn't strip them in timestamp order (`CR 613.7`).
 4. **Layer 1 Copiable Values vs Layers 2–7d (`CR 707.2`)**
    - Copy effects (*Clone*) set `perm.copiableCard` (layer 1) and **never** overwrite the physical card's printed `perm.card`.
    - Copying an object copies only layer-1 characteristics (printed values + copy effects + face-down status + "as ~ enters" copiable choices), never counters, damage, tapped status, attached objects, or layer 2–7d effects.
@@ -182,5 +180,5 @@ Identifiers are from `ir.ts`, `types.ts` and `runtime/`; CR numbers are from [`s
      - the `MAGIC_LAYER_CACHE_CHECK=1` debug mode.
    - See [`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.4 for how the cache is keyed.
 4. **Monotonic Architecture Ratchet (`architecture.test.ts` & `architecture-allowances.json`)**
-   - The five ratchet categories (`cardNameComparison`, `oracleTextRead`, `directZoneMutation`, `legacyTextHelperCall`, `cardNameInCode`) are at **`0`** in every scanned file and may only go down.
-   - The ratchet doesn't scan `compiler/`, `oracle.ts`, `precons.ts`, `scryfall.ts`, `search.ts`, `types.ts`, tests or `.svelte` files for the first four. `cardNameInCode` checks precon card names only. A `0` is therefore not proof that §1 holds everywhere; see the gaps listed there.
+   - The six ratchet categories (`cardNameComparison`, `oracleTextRead`, `directZoneMutation`, `legacyTextHelperCall`, `cardNameInCode`, `abilityTextScan`) are at **`0`** in every scanned file and may only go down.
+   - The ratchet doesn't scan `compiler/`, `oracle.ts`, `precons.ts`, `scryfall.ts`, `search.ts`, `types.ts`, tests or `.svelte` files for the text/zone/helper rules. `cardNameInCode` checks precon card names only. A `0` is therefore not proof that §1 holds everywhere; see the gaps listed there.

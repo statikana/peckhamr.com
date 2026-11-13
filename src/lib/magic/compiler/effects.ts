@@ -644,8 +644,10 @@ function isParameterizedGrantKeyword(k: string): boolean {
 	);
 }
 
-function keywordList(text: string): string[] | null {
-	const parts = text.split(/,? and |, /).map((s) => s.trim().toLowerCase());
+function keywordList(text: string, allowOr = false): string[] | null {
+	const parts = text
+		.split(allowOr ? /,? (?:and|or) |, / : /,? and |, /)
+		.map((s) => s.trim().toLowerCase());
 	if (!parts.every((k) => GRANTABLE_KEYWORDS.includes(k) || k === 'changeling' || isParameterizedGrantKeyword(k))) {
 		return null;
 	}
@@ -679,6 +681,31 @@ function objectPredicate(p: Parser, subject: ObjectRes, vp: string, span: Span):
 		const kws = keywordList(gain[1]);
 		if (!kws) return false;
 		p.push({ verb: 'grant', subject: subject.selector, params: { keywords: kws, ...params }, span }, true);
+		return true;
+	}
+	const lose = text.match(/^loses? (.+?)(?: and can't (?:have or gain|have|gain) (.+))?$/);
+	if (lose && eot) {
+		const kws = keywordList(lose[1]);
+		if (!kws) return false;
+		let cantHaveOrGain = false;
+		if (lose[2]) {
+			const again = keywordList(lose[2], true);
+			if (!again || again.join() !== kws.join()) return false;
+			cantHaveOrGain = true;
+		}
+		p.push(
+			{
+				verb: 'grant',
+				subject: subject.selector,
+				params: {
+					removeKeywords: kws,
+					...(cantHaveOrGain ? { cantHaveOrGain: true } : {}),
+					...params
+				},
+				span
+			},
+			true
+		);
 		return true;
 	}
 	if (/^phases? out$/.test(text) && !eot) {
@@ -1162,7 +1189,7 @@ function clause(p: Parser, c: Clause): ClauseResult {
 	for (let i = words.length - 1; i >= 1; i--) {
 		const subjText = words.slice(0, i).join(' ');
 		const vp = words.slice(i).join(' ') + (dur ? ' until end of turn' : '');
-		if (!/^(?:gets?|gains?|phases?|deals|fights?)\b/.test(vp)) continue;
+		if (!/^(?:gets?|gains?|loses?|phases?|deals|fights?)\b/.test(vp)) continue;
 		const snapshot = p.targets.length;
 		const subject = objectPhrase(p, subjText);
 		if (!subject) continue;

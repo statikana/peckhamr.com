@@ -7859,6 +7859,7 @@ registerPromptHandler(COMBAT_DAMAGE_ASSIGNMENT_HANDLER, (state, prompt, answer) 
 });
 
 function clearEndOfTurnAndDamage(state: GameState): void {
+	state.timedKeywordEffects = undefined;
 	for (const p of state.players) {
 		p.manaPool = createEmptyManaPool();
 		p.preventAllCombatDamageThisTurn = false;
@@ -7872,6 +7873,7 @@ function clearEndOfTurnAndDamage(state: GameState): void {
 			perm.activatedAbilityIdsThisTurn = undefined;
 		}
 	}
+	noteLayerInputsChanged(state);
 }
 
 function runCleanupStep(state: GameState): void {

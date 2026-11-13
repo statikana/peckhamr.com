@@ -253,4 +253,70 @@ describe('Effect grammar: amounts, delayed effects and special sentences', () =>
 		const b = parseSpellText('Qwerty Zap', 'Qwerty Zap deals 3 damage to any target.');
 		assert.deepEqual(steps(a), steps(b));
 	});
+
+	it('compiles until-end-of-turn keyword removal and cantHaveOrGain riders without card-name dependence', () => {
+		const spear = ok(
+			parseAbilityEffectText(
+				'Shadowspear',
+				'Permanents your opponents control lose hexproof and indestructible until end of turn.'
+			)
+		);
+		assert.deepEqual(spear.steps[0], {
+			verb: 'grant',
+			subject: { k: 'all', filter: { zone: 'battlefield', controller: 'opponent' } },
+			params: { removeKeywords: ['Hexproof', 'Indestructible'], duration: 'endOfTurn' },
+			span: spear.steps[0].span
+		});
+
+		const lighthouse = ok(
+			parseAbilityEffectText(
+				'Arcane Lighthouse',
+				"Until end of turn, creatures your opponents control lose hexproof and shroud and can't have hexproof or shroud."
+			)
+		);
+		assert.deepEqual(lighthouse.steps[0], {
+			verb: 'grant',
+			subject: { k: 'all', filter: { types: ['Creature'], zone: 'battlefield', controller: 'opponent' } },
+			params: {
+				removeKeywords: ['Hexproof', 'Shroud'],
+				cantHaveOrGain: true,
+				duration: 'endOfTurn'
+			},
+			span: lighthouse.steps[0].span
+		});
+
+		const renamed = ok(
+			parseAbilityEffectText(
+				'Glimmerfen Beacon',
+				"Until end of turn, creatures your opponents control lose hexproof and shroud and can't have hexproof or shroud."
+			)
+		);
+		assert.deepEqual(steps(lighthouse), steps(renamed));
+
+		const bonds = ok(
+			parseAbilityEffectText(
+				'Bonds of Mortality',
+				'Creatures your opponents control lose hexproof and indestructible until end of turn.'
+			)
+		);
+		assert.deepEqual(bonds.steps[0].params, {
+			removeKeywords: ['Hexproof', 'Indestructible'],
+			duration: 'endOfTurn'
+		});
+
+		const targeted = ok(parseSpellText('Clip Wings', 'Target creature loses flying until end of turn.'));
+		assert.equal(targeted.targets.length, 1);
+		assert.deepEqual(targeted.steps[0].subject, { k: 'target', index: 0 });
+		assert.deepEqual(targeted.steps[0].params, {
+			removeKeywords: ['Flying'],
+			duration: 'endOfTurn'
+		});
+
+		const selfLose = ok(parseAbilityEffectText('Stone Sentry', 'Stone Sentry loses defender until end of turn.'));
+		assert.deepEqual(selfLose.steps[0].subject, { k: 'self' });
+		assert.deepEqual(selfLose.steps[0].params, {
+			removeKeywords: ['Defender'],
+			duration: 'endOfTurn'
+		});
+	});
 });

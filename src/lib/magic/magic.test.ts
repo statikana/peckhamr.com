@@ -2269,8 +2269,66 @@ describe('15. Continuous Layer & Keyword/Effect Attribution Engine (Alt-View Bre
 		assert.equal(hasKeyword(llanowar, 'Shroud', state), true);
 
 		// Player 2 has Shadowspear and Arcane Lighthouse on the battlefield
-		addCardToZone(state, p2Id, getCardByName('Shadowspear')!, 'battlefield');
-		addCardToZone(state, p2Id, getCardByName('Arcane Lighthouse')!, 'battlefield');
+		const spear = addCardToZone(state, p2Id, getCardByName('Shadowspear')!, 'battlefield');
+		const lighthouse = addCardToZone(state, p2Id, getCardByName('Arcane Lighthouse')!, 'battlefield');
+
+		const murderCard = getCardByName('Infernal Grasp')!;
+
+		// Without activating either ability, P1's permanents keep Hexproof, Indestructible, and Shroud
+		assert.equal(hasKeyword(stalker, 'Hexproof', state), true);
+		assert.equal(hasKeyword(stalker, 'Indestructible', state), true);
+		assert.equal(hasKeyword(llanowar, 'Shroud', state), true);
+		assert.equal(
+			validateTargetLegality(
+				state,
+				p2Id,
+				{ kind: 'permanent', id: stalker.instanceId, label: stalker.card.name },
+				getSpellTargetRequirement(murderCard),
+				murderCard
+			).ok,
+			false,
+			'Unactivated Shadowspear / Arcane Lighthouse must NOT strip Hexproof'
+		);
+
+		// Activate Shadowspear ({1}) and Arcane Lighthouse ({1}, {T}) via applyGameAction and resolve both
+		const p2 = state.players.find((p) => p.playerId === p2Id)!;
+		p2.manaPool.C = 2;
+		state.priorityPlayerIndex = state.players.indexOf(p2);
+
+		const spearAct = getEffectiveActivatedAbilities(state, p2, spear).find(
+			(a) => !a.isManaAbility && a.id.startsWith('act_')
+		);
+		assert.ok(spearAct, 'Shadowspear activated ability should be compiled');
+		assert.equal(
+			applyGameAction(state, p2Id, {
+				type: 'activate_ability',
+				instanceId: spear.instanceId,
+				abilityId: spearAct.id
+			}).ok,
+			true
+		);
+		while (state.stack.length > 0) {
+			const prio = state.players[state.priorityPlayerIndex];
+			assert.equal(applyGameAction(state, prio.playerId, { type: 'pass_priority' }).ok, true);
+		}
+
+		state.priorityPlayerIndex = state.players.indexOf(p2);
+		const lighthouseAct = getEffectiveActivatedAbilities(state, p2, lighthouse).find(
+			(a) => !a.isManaAbility && a.id.startsWith('act_')
+		);
+		assert.ok(lighthouseAct, 'Arcane Lighthouse activated ability should be compiled');
+		assert.equal(
+			applyGameAction(state, p2Id, {
+				type: 'activate_ability',
+				instanceId: lighthouse.instanceId,
+				abilityId: lighthouseAct.id
+			}).ok,
+			true
+		);
+		while (state.stack.length > 0) {
+			const prio = state.players[state.priorityPlayerIndex];
+			assert.equal(applyGameAction(state, prio.playerId, { type: 'pass_priority' }).ok, true);
+		}
 
 		const stalkerBreakdown = inspectCardContinuousBreakdown(stalker, state);
 		const hexItem = stalkerBreakdown.items.find((i) => i.canonicalKey === 'hexproof');
@@ -2301,7 +2359,6 @@ describe('15. Continuous Layer & Keyword/Effect Attribution Engine (Alt-View Bre
 		assert.equal(hasKeyword(stalker, 'Indestructible', state), false);
 		assert.equal(hasKeyword(llanowar, 'Shroud', state), false);
 
-		const murderCard = getCardByName('Infernal Grasp')!;
 		const targetLegality = validateTargetLegality(
 			state,
 			p2Id,

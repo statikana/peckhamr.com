@@ -1168,12 +1168,30 @@ class Run {
 			case 'grant': {
 				const objs = this.objects(step.subject).filter((o) => o.zone === 'battlefield');
 				this.bind(step, objs);
+				const addKws = step.params?.keywords;
+				const removeKws = step.params?.removeKeywords;
 				for (const o of objs) {
-					for (const kw of step.params?.keywords ?? []) {
+					for (const kw of addKws ?? []) {
 						if (kw.toLowerCase() === 'prowess' || !o.grantedKeywords.includes(kw)) {
 							o.grantedKeywords.push(kw);
 						}
 					}
+				}
+				if (objs.length > 0 && (addKws?.length || removeKws?.length)) {
+					const ts = allocateTimestamp(s);
+					(s.timedKeywordEffects ??= []).push({
+						timestamp: ts,
+						sourceName: this.ctx.sourceCard.name,
+						controllerId: you.playerId,
+						affected: objs.map((o) => ({
+							instanceId: o.instanceId,
+							objectVersion: o.objectVersion ?? 1
+						})),
+						...(addKws?.length ? { addKeywords: [...addKws] } : {}),
+						...(removeKws?.length ? { removeKeywords: [...removeKws] } : {}),
+						...(step.params?.cantHaveOrGain ? { cantHaveOrGain: true } : {})
+					});
+					noteLayerInputsChanged(s);
 				}
 				return;
 			}

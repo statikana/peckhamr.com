@@ -85,6 +85,7 @@ function stepSupported(step: EffectStep): boolean {
 	if (step.verb === 'addMana' && !step.params?.mana && !step.params?.manaChoice) return false;
 	if (step.verb === 'dig' && !step.params?.dig) return false;
 	if ((step.verb === 'pump' || step.verb === 'grant' || step.verb === 'switchPT') && step.params?.duration !== 'endOfTurn') return false;
+	if (step.verb === 'grant' && !step.params?.keywords?.length && !step.params?.removeKeywords?.length) return false;
 	if (step.verb === 'createToken' && !step.params?.token) return false;
 	if (step.verb === 'delayedTrigger') return delayedSupported(step);
 	if (step.verb === 'fight') return Boolean(step.params?.with && selectorSupported(step.params.with));

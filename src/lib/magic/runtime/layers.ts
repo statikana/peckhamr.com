@@ -15,7 +15,14 @@ import type {
 	Span,
 	StaticDef
 } from '../ir.ts';
-import type { CardInstance, GameState, ManaColor, PlayerGameState, ScryfallCard } from '../types.ts';
+import type {
+	CardInstance,
+	GameState,
+	ManaColor,
+	PlayerGameState,
+	ScryfallCard,
+	TimedKeywordEffect
+} from '../types.ts';
 import {
 	boardSnapshotMatches,
 	buildBoardSnapshot,
@@ -367,19 +374,6 @@ function extractInnateFromIR(card: ScryfallCard): InnateEntry[] {
 				addResult(kwName, formatKeywordLabel(kwName), 'keyword');
 				selfGrantedKeywords.add(kwName);
 			}
-		} else if (ab.kind === 'unsupported' && ab.reason === 'keyword_not_implemented') {
-			const low = ab.text.trim().toLowerCase();
-			if (low.startsWith('ward')) {
-				const rest = ab.text.trim().slice(4).trim();
-				addResult('ward', rest ? `Ward ${rest}` : 'Ward', 'keyword');
-			} else if (low.startsWith('protection from ')) {
-				addResult('protection', formatKeywordLabel(low), 'keyword');
-			} else if (low.startsWith('hexproof from ')) {
-				addResult(low, formatKeywordLabel(low), 'keyword');
-			} else if (KEYWORD_LABELS[low]) {
-				addResult(low, KEYWORD_LABELS[low], 'keyword');
-				selfGrantedKeywords.add(low);
-			}
 		} else if (ab.kind === 'static') {
 			const st = ab.static;
 			if (st.k === 'restriction' && st.affected === 'self') {
@@ -421,8 +415,11 @@ function extractInnateFromIR(card: ScryfallCard): InnateEntry[] {
 			}
 		} else if (ab.kind === 'activated' || ab.kind === 'triggered') {
 			for (const step of ab.effect) {
-				if (step.verb === 'grant' && Array.isArray(step.params?.keywords)) {
-					for (const kw of step.params.keywords as string[]) {
+				if (step.verb === 'grant') {
+					for (const kw of step.params?.keywords ?? []) {
+						grantedToOthersKeywords.add(kw.toLowerCase());
+					}
+					for (const kw of step.params?.removeKeywords ?? []) {
 						grantedToOthersKeywords.add(kw.toLowerCase());
 					}
 				}
@@ -488,6 +485,16 @@ function extractInnateFromIR(card: ScryfallCard): InnateEntry[] {
 				addResult('ability_activated', 'Activated Ability', 'ability');
 			} else if (ab.isMana && ab.cost.length === 1 && ab.cost[0].k === 'tapSelf') {
 				addResult('ability_mana', `Mana Ability: Add ${formatManaProductionFromIR(ab)}`, 'ability');
+			} else if (
+				ab.effect.some(
+					(s) =>
+						s.verb === 'grant' &&
+						Boolean(s.params?.removeKeywords?.length) &&
+						s.subject.k === 'all' &&
+						s.subject.filter.controller === 'opponent'
+				)
+			) {
+				addResult('ability_strip_kw', 'Removes Opponent Keywords', 'ability');
 			} else {
 				addResult('ability_activated', 'Activated Ability', 'ability');
 			}
@@ -543,11 +550,7 @@ function extractInnateFromIR(card: ScryfallCard): InnateEntry[] {
 				}
 			}
 		} else if (ab.kind === 'unsupported' && ab.id?.startsWith('act_')) {
-			if (ab.text.toLowerCase().includes('opponents control lose')) {
-				addResult('ability_strip_kw', 'Removes Opponent Keywords', 'ability');
-			} else {
-				addResult('ability_activated', 'Activated Ability', 'ability');
-			}
+			addResult('ability_activated', 'Activated Ability', 'ability');
 		}
 	}
 
@@ -752,6 +755,49 @@ function applyRemovalsUpTo(work: PermWorkState, cutoffTimestamp: number): void {
 				item.removed = true;
 				if (!item.removedBy.includes(ev.sourceName)) {
 					item.removedBy.push(ev.sourceName);
+				}
+			}
+		}
+	}
+}
+
+function grantKeywordString(
+	work: PermWorkState,
+	rawKw: string,
+	sourceLabel: string,
+	grantTimestamp: number
+): void {
+	const gLow = rawKw.toLowerCase();
+	const gKey = gLow.startsWith('protection from ')
+		? 'protection'
+		: gLow.startsWith('ward ') || gLow.startsWith('ward—')
+			? 'ward'
+			: gLow;
+	const formattedLabel = formatKeywordLabel(gLow);
+	grantItem(work, gKey, formattedLabel, 'keyword', sourceLabel, grantTimestamp);
+}
+
+function removeMatchingKeywordsUpTo(
+	work: PermWorkState,
+	keywords: readonly string[],
+	sourceName: string,
+	cutoffTimestamp: number
+): void {
+	for (const kw of keywords) {
+		const kwLow = kw.toLowerCase();
+		for (const item of work.items) {
+			if (item.kind !== 'keyword') continue;
+			const itemTs = work.itemTimestamps.get(item.id) ?? -Infinity;
+			if (itemTs > cutoffTimestamp) continue;
+			if (
+				item.canonicalKey === kwLow ||
+				(kwLow === 'hexproof' && item.canonicalKey.startsWith('hexproof from ')) ||
+				(kwLow === 'protection' && item.canonicalKey.startsWith('protection')) ||
+				(kwLow === 'ward' && item.canonicalKey.startsWith('ward'))
+			) {
+				item.removed = true;
+				if (!item.removedBy.includes(sourceName)) {
+					item.removedBy.push(sourceName);
 				}
 			}
 		}
@@ -1109,6 +1155,24 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 			for (const kw of perm.grantedKeywords) fp.push(kw);
 		}
 	}
+	const timedKw = state.timedKeywordEffects;
+	fp.push(timedKw?.length || 0);
+	if (timedKw?.length) {
+		for (const eff of timedKw) {
+			fp.push(
+				eff.timestamp,
+				eff.sourceName,
+				eff.controllerId,
+				Boolean(eff.cantHaveOrGain),
+				eff.affected.length,
+				eff.addKeywords?.length || 0,
+				eff.removeKeywords?.length || 0
+			);
+			for (const a of eff.affected) fp.push(a.instanceId, a.objectVersion ?? 1);
+			if (eff.addKeywords?.length) for (const kw of eff.addKeywords) fp.push(kw);
+			if (eff.removeKeywords?.length) for (const kw of eff.removeKeywords) fp.push(kw);
+		}
+	}
 	return fp;
 }
 
@@ -1162,6 +1226,36 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 		}
 		if (grantedLen) {
 			for (const kw of granted) if (fp[i++] !== kw) return false;
+		}
+	}
+	const timedKw = state.timedKeywordEffects;
+	const timedLen = timedKw?.length || 0;
+	if (fp[i++] !== timedLen) return false;
+	if (timedLen) {
+		for (const eff of timedKw!) {
+			const affLen = eff.affected.length;
+			const addLen = eff.addKeywords?.length || 0;
+			const remLen = eff.removeKeywords?.length || 0;
+			if (
+				fp[i++] !== eff.timestamp ||
+				fp[i++] !== eff.sourceName ||
+				fp[i++] !== eff.controllerId ||
+				fp[i++] !== Boolean(eff.cantHaveOrGain) ||
+				fp[i++] !== affLen ||
+				fp[i++] !== addLen ||
+				fp[i++] !== remLen
+			) {
+				return false;
+			}
+			for (const a of eff.affected) {
+				if (fp[i++] !== a.instanceId || fp[i++] !== (a.objectVersion ?? 1)) return false;
+			}
+			if (addLen) {
+				for (const kw of eff.addKeywords!) if (fp[i++] !== kw) return false;
+			}
+			if (remLen) {
+				for (const kw of eff.removeKeywords!) if (fp[i++] !== kw) return false;
+			}
 		}
 	}
 	return i === fp.length;
@@ -1249,36 +1343,6 @@ function evaluateLayer1(
 							for (const kw of step.params.keywords as string[]) {
 								grantsKeywordViaAbility.add(kw.toLowerCase());
 							}
-						}
-					}
-				} else if (ab.kind === 'unsupported' && ab.id?.startsWith('act_')) {
-					for (const kw of Object.keys(KEYWORD_LABELS)) {
-						if (new RegExp(`\\bgains?\\b[^.\\n]*\\b${kw}\\b`, 'i').test(ab.text)) {
-							grantsKeywordViaAbility.add(kw);
-						}
-					}
-					const loseMatch = ab.text.match(
-						/(creatures|permanents) your opponents control lose ([^.\n]+)/i
-					);
-					if (loseMatch) {
-						const scope = loseMatch[1].toLowerCase();
-						const loseClause = loseMatch[2];
-						const removedKws: string[] = [];
-						for (const kw of Object.keys(KEYWORD_LABELS)) {
-							if (new RegExp(`\\b${kw}\\b`, 'i').test(loseClause)) {
-								removedKws.push(kw);
-							}
-						}
-						if (removedKws.length > 0) {
-							statics.push({
-								k: 'continuous',
-								layer: '6',
-								affected:
-									scope === 'creatures'
-										? { types: ['Creature'], controller: 'opponent' }
-										: { controller: 'opponent' },
-								mod: { k: 'removeKeywords', keywords: removedKws }
-							});
 						}
 					}
 				}
@@ -1655,8 +1719,79 @@ function evaluatePerPermanent(
 			}
 		}
 
-		// Grant items and apply Layer 7c continuous P/T modifications in timestamp order
+		const targetVersion = target.inst.objectVersion ?? 1;
+		const targetTimedEffects: TimedKeywordEffect[] = [];
+		const timedGrantedCounts = new Map<string, number>();
+		if (state.timedKeywordEffects?.length) {
+			for (const eff of state.timedKeywordEffects) {
+				if (
+					eff.affected.some(
+						(a) => a.instanceId === target.inst.instanceId && (a.objectVersion ?? 1) === targetVersion
+					)
+				) {
+					targetTimedEffects.push(eff);
+					for (const kw of eff.addKeywords ?? []) {
+						const gLow = kw.toLowerCase();
+						timedGrantedCounts.set(gLow, (timedGrantedCounts.get(gLow) ?? 0) + 1);
+					}
+				}
+			}
+			if (targetTimedEffects.length > 1) {
+				targetTimedEffects.sort((a, b) => a.timestamp - b.timestamp);
+			}
+		}
+
+		// Direct array mutations on `grantedKeywords` (e.g. unit tests bypassing `executeEffectSteps`)
+		// carry no timestamp; apply those not already backed by `timedKeywordEffects` at timestamp 0.
+		for (const gKw of target.inst.grantedKeywords || []) {
+			const gLow = gKw.toLowerCase();
+			const tracked = timedGrantedCounts.get(gLow) ?? 0;
+			if (tracked > 0) {
+				timedGrantedCounts.set(gLow, tracked - 1);
+				continue;
+			}
+			let sourceLabel = 'Temporary Effect';
+			for (const w of workList) {
+				if (
+					w.inst.controllerId === target.inst.controllerId &&
+					w.grantsKeywordViaAbility.has(gLow)
+				) {
+					sourceLabel = w.baseCard.name;
+					break;
+				}
+			}
+			grantKeywordString(target, gKw, sourceLabel, 0);
+		}
+
+		const cantHaveLocks: Array<{ keywords: readonly string[]; sourceName: string }> = [];
+		const applyTimedEffect = (eff: TimedKeywordEffect): void => {
+			if (target.abilityRemovalEvents.length > 0) {
+				applyRemovalsUpTo(target, eff.timestamp);
+			}
+			if (eff.addKeywords?.length) {
+				const sourceLabel = eff.sourceName || 'Temporary Effect';
+				for (const kw of eff.addKeywords) {
+					grantKeywordString(target, kw, sourceLabel, eff.timestamp);
+				}
+			}
+			if (eff.removeKeywords?.length) {
+				removeMatchingKeywordsUpTo(target, eff.removeKeywords, eff.sourceName, eff.timestamp);
+				if (eff.cantHaveOrGain) {
+					cantHaveLocks.push({ keywords: eff.removeKeywords, sourceName: eff.sourceName });
+				}
+			}
+		};
+
+		let timedIdx = 0;
+
+		// Grant items, remove keywords, and apply Layer 7c continuous P/T modifications in timestamp order (CR 613.7)
 		for (const source of workList) {
+			while (
+				timedIdx < targetTimedEffects.length &&
+				targetTimedEffects[timedIdx].timestamp <= source.timestamp
+			) {
+				applyTimedEffect(targetTimedEffects[timedIdx++]);
+			}
 			if (target.abilityRemovalEvents.length > 0) {
 				applyRemovalsUpTo(target, source.timestamp);
 			}
@@ -1790,6 +1925,11 @@ function evaluatePerPermanent(
 								source.timestamp
 							);
 						}
+					} else if (st.layer === '6' && st.mod.k === 'removeKeywords') {
+						removeMatchingKeywordsUpTo(target, st.mod.keywords, source.name, source.timestamp);
+						if (st.mod.cantHaveOrGain) {
+							cantHaveLocks.push({ keywords: st.mod.keywords, sourceName: source.name });
+						}
 					} else if (
 						st.mod.k === 'pt' &&
 						target.workingPower !== null &&
@@ -1910,6 +2050,11 @@ function evaluatePerPermanent(
 								source.timestamp
 							);
 						}
+					} else if (st.layer === '6' && st.mod.k === 'removeKeywords') {
+						removeMatchingKeywordsUpTo(target, st.mod.keywords, source.name, source.timestamp);
+						if (st.mod.cantHaveOrGain) {
+							cantHaveLocks.push({ keywords: st.mod.keywords, sourceName: source.name });
+						}
 					} else if (
 						st.layer === '7c' &&
 						st.mod.k === 'pt' &&
@@ -1935,9 +2080,13 @@ function evaluatePerPermanent(
 			}
 		}
 
+		while (timedIdx < targetTimedEffects.length) {
+			applyTimedEffect(targetTimedEffects[timedIdx++]);
+		}
+
 		applyRemovalsUpTo(target, Infinity);
 
-		// Instance-level modifiers: Suspend haste, +1/+1 and -1/-1 counters, temp P/T, Layer 7d switch, temporary grantedKeywords
+		// Instance-level modifiers: Suspend haste, +1/+1 and -1/-1 counters, temp P/T, Layer 7d switch
 		if (target.inst.castViaSuspend && target.types.includes('Creature')) {
 			grantItem(target, 'haste', 'Haste', 'keyword', 'Suspend');
 		}
@@ -1993,74 +2142,9 @@ function evaluatePerPermanent(
 			target.ptModifiedBy.push(`Switched P/T (${target.workingPower}/${target.workingToughness})`);
 		}
 
-		for (const gKw of target.inst.grantedKeywords || []) {
-			const gLow = gKw.toLowerCase();
-			const gKey = gLow.startsWith('protection from ')
-				? 'protection'
-				: gLow.startsWith('ward ') || gLow.startsWith('ward—')
-					? 'ward'
-					: gLow;
-			const formattedLabel = formatKeywordLabel(gLow);
-			const existingActive = target.items.find(
-				(it) =>
-					it.canonicalKey === gKey &&
-					!it.removed &&
-					(gKey !== 'protection' && gKey !== 'ward'
-						? true
-						: it.name.toLowerCase() === formattedLabel.toLowerCase())
-			);
-			if (!existingActive) {
-				let sourceLabel = 'Temporary Effect';
-				for (const w of workList) {
-					if (
-						w.inst.controllerId === target.inst.controllerId &&
-						w.grantsKeywordViaAbility.has(gLow)
-					) {
-						sourceLabel = w.baseCard.name;
-						break;
-					}
-				}
-				grantItem(target, gKey, formattedLabel, 'keyword', sourceLabel);
-			} else {
-				existingActive.grantCount = (existingActive.grantCount ?? 0) + 1;
-			}
-		}
-
-		// Layer 6 Keyword-Removal Effects (e.g., Archetype of Imagination, Grounding Sigil)
-		for (const source of workList) {
-			if (source.strippedByAttachment || source.allAbilityRemovalSources.length > 0) continue;
-			for (const st of source.statics) {
-				if (st.k !== 'continuous' || st.layer !== '6' || st.mod.k !== 'removeKeywords') continue;
-				const matches =
-					st.affected === 'attachedTo'
-						? source.inst.attachedToId === target.inst.instanceId
-						: st.affected === 'self'
-							? source.inst.instanceId === target.inst.instanceId
-							: matchesLayerFilter(st.affected, target, source);
-				if (!matches) continue;
-				if (
-					st.condition &&
-					!evaluateLayerCondition(st.condition, state, workList, source, target)
-				) {
-					continue;
-				}
-				for (const kw of st.mod.keywords) {
-					const kwLow = kw.toLowerCase();
-					for (const item of target.items) {
-						if (
-							item.canonicalKey === kwLow ||
-							(kwLow === 'hexproof' && item.canonicalKey.startsWith('hexproof from ')) ||
-							(kwLow === 'protection' && item.canonicalKey.startsWith('protection')) ||
-							(kwLow === 'ward' && item.canonicalKey.startsWith('ward'))
-						) {
-							item.removed = true;
-							if (!item.removedBy.includes(source.name)) {
-								item.removedBy.push(source.name);
-							}
-						}
-					}
-				}
-			}
+		// CR 113.11: "can't have or gain [keyword]" prevents any grant regardless of timestamp.
+		for (const lock of cantHaveLocks) {
+			removeMatchingKeywordsUpTo(target, lock.keywords, lock.sourceName, Infinity);
 		}
 	}
 }

@@ -765,6 +765,21 @@ export interface TriggerLoopEntry {
 	limit?: number;
 }
 
+/**
+ * CR 611.2c / 613.1f / 613.7b / 113.11: Until-end-of-turn Layer 6 keyword grant or removal created
+ * by a resolving spell or ability, locking in the affected `(instanceId, objectVersion)` set on
+ * resolution with a monotonic timestamp.
+ */
+export interface TimedKeywordEffect {
+	timestamp: number;
+	sourceName: string;
+	controllerId: string;
+	affected: Array<{ instanceId: string; objectVersion?: number }>;
+	addKeywords?: string[];
+	removeKeywords?: string[];
+	cantHaveOrGain?: boolean;
+}
+
 export interface GameState {
 	engineVersion: number;
 	gameId: string;
@@ -788,6 +803,7 @@ export interface GameState {
 	turnStartedAt: number;
 	priorityUpdatedAt: number;
 	nextTimestamp?: number;
+	timedKeywordEffects?: TimedKeywordEffect[];
 	delayedTriggers?: DelayedTrigger[];
 	/**
 	 * Steps C+D + Phase 4 (CR 104.4b, CR 731): how many triggered abilities were put on the stack

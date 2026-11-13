@@ -68,6 +68,7 @@ function pushFingerprint(state: GameState, fp: unknown[]): void {
 			fp.push(
 				perm,
 				perm.instanceId,
+				perm.objectVersion,
 				perm.phasedOut,
 				perm.attachedToId,
 				perm.enteredTimestamp,
@@ -97,6 +98,7 @@ function fingerprintMatches(state: GameState, fp: unknown[]): boolean {
 			if (
 				fp[i++] !== perm ||
 				fp[i++] !== perm.instanceId ||
+				fp[i++] !== perm.objectVersion ||
 				fp[i++] !== perm.phasedOut ||
 				fp[i++] !== perm.attachedToId ||
 				fp[i++] !== perm.enteredTimestamp ||
