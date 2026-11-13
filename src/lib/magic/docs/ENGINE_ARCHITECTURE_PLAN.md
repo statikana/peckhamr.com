@@ -444,6 +444,53 @@ Previously, the engine paused in several disconnected ways:
 
 ---
 
+### 2.11 Cast options in place of `castMode` (Track B2)
+
+*Status: implemented in Track B2 (`types.ts`, `compiler/card.ts`, `runtime/costs.ts`, `runtime/effects.ts`, `engine.ts`, `ai.ts`, `ArenaTable.svelte`); optional Slice 3 (Kicker) deferred to Track B3 per user decision.*
+
+#### Why `castMode` blocked further casting mechanics
+
+Previously, casting options were hardcoded around a binary union:
+- `castMode?: 'normal' | 'overload'` (`types.ts`) was threaded through `StackItem`, `PendingCostPayment`, the `cast_spell` action, `engine.ts`, `runtime/costs.ts`, `ai.ts`, and `ArenaTable.svelte` (`overloadModalCard`).
+- `checkSpellCastLegalityInner` rejected `'graveyard'`, and `ArenaTable.svelte` inspected `keywordCost(inst.card, 'overload')` directly to open an Overload-specific modal.
+- Adding **Flashback** (`CR 702.34`), **Kicker** (`CR 702.33`), and future casting mechanics under this pattern would multiply flags, modals, and bot special cases instead of driving them from data.
+
+#### Architecture (as built)
+
+1. **Data-driven `CastOption` enumeration (`types.ts`, `runtime/costs.ts`, `engine.ts`).**
+   - `CastOption` (plain JSON) describes a legal way to cast a `CardInstance` from `fromZone`:
+     - `id: string` (`'normal'`, `'alt:overload'`, `'alt:flashback'`, `'exile:permission'`, `'exile:suspend'`). UI and AI choose by `optionId` without naming keywords.
+     - `label: string`, `costDisplay: string` rendered directly by UI modals (`castOptionsModal`, graveyard badges).
+     - `fromZone: 'hand' | 'command' | 'exile' | 'graveyard'` and `permission: 'zone_default' | 'keyword_alt' | 'exile_permission'`.
+     - `baseCost`: `{ kind: 'printed' } | { kind: 'alternative'; manaCost?: string; costDefs?: CostDef[] } | { kind: 'free' }` (handling both mana-only and non-mana/composite costs via `planCosts` and `PendingCostPayment`).
+     - `mandatoryAdditionalCosts?: CostDef[]`, `optionalAdditionalCosts?: CastOptionOptionalCost[]` (extension slot ready for Track B3 Kicker), `timing: 'default' | 'instant_only'`.
+     - `spellMods: SpellModifications` (`targetsBecomeEach`, `exileOnLeaveStack`, `entersWithCounters`, `sacrificeAtEndStep`, `castSummarySuffix`, `label`).
+     - `choosesX: boolean` and `requiresTarget: boolean` derived engine-side for that option.
+   - `getCastOptions(state, actorId, inst, fromZone): CastOption[]` returns the currently legal `CastOption`s under `withStableLayerInputs`. Special actions (`play_land`, `suspend_card`) remain separate (`CR 116`).
+   - `castMode` was deleted completely from `types.ts`, `engine.ts`, `runtime/costs.ts`, `runtime/effects.ts`, `ai.ts`, and `ArenaTable.svelte`. `StackItem` and `PendingCostPayment` store `castOptionId`, `spellMods`, and `optionalCostCounts`.
+
+2. **Generalized alternative-cost registry & Flashback compilation (`runtime/costs.ts`, `compiler/card.ts`).**
+   - `ALTERNATIVE_COST_KEYWORDS` carries declarative metadata (`id`, `label`, `castSummarySuffix`, `stackBadgeLabel`, `zones`, `requiresZonePermission`, `spellTypes`, `targetsBecomeEach`, `exileOnLeaveStack`, `timing`) shared by `overload` (`CR 702.96`) and `flashback` (`CR 702.34a`: `'graveyard'` only, `ownerId === actorId`, `Instant` or `Sorcery` only, `exileOnLeaveStack: true`). `keywordAltCost(card, kwName)` splits mana vs non-mana `CostDef`s and formats `display`.
+   - `compiler/card.ts` parses both `Flashback {mana}` and composite `Flashback—[cost].` via `parseCost` (populating `keyword.costDefs` or emitting `unsupported('unparsed', ...)`), adds `'flashback'` to `IMPLEMENTED_KEYWORDS`, and `compiler/index.ts` bumped `COMPILER_VERSION` (`12` → `13`).
+
+3. **Pausable `CR 601.2b–h` casting pipeline & universal stack-exit replacement (`engine.ts`).**
+   - `cast_spell` accepts `optionId?` alongside `targets`, `modes`, `xValue`, `optionalCostCounts`, and `costPayment`, resolving through `resolveCastOptionForAction`, pre-payment cancellable prompts (`CR 601.2` / `CR 734`), and `PendingCostPayment` (`CR 601.2h`), preserving `CR 118.9c` printed mana value and `CR 118.9d` cost modification rules.
+   - `moveStackSpellToZone` (`engine.ts`) enforces `CR 702.34a` (`if (stackItem.spellMods?.exileOnLeaveStack) dest = 'exile'`) across normal resolution, `CR 608.2b` target fizzle, Counterspell, Ward, End the Turn, and player elimination.
+   - `runtime/effects.ts` reads `item.spellMods?.targetsBecomeEach`.
+
+4. **Keyword-agnostic UI (`ArenaTable.svelte`) and Bot AI (`ai.ts`).**
+   - Both files contain zero `'overload'` or `'flashback'` string literals and zero `castMode` references.
+   - `ArenaTable.svelte` uses `getCastOptions` for hand, command, exile, and graveyard (`playableGraveyardCount`, graveyard modal cast badges/buttons), opens `castOptionsModal` (**Choose How to Cast — ...**) when multiple options are available, and displays both `spellMods.castSummarySuffix` and `targets` on stack items.
+   - `ai.ts` evaluates `getCastOptions` across `hand`, `command`, `exile`, and `graveyard`, choosing options from `spellMods` and submitting `optionId`.
+
+#### Implementation slices
+
+- **Slice 1 (CastOption model, Overload migration, delete `castMode`):** Implemented `CastOption` / `getCastOptions`, removed `castMode`, migrated `engine.ts`, `runtime/costs.ts`, `runtime/effects.ts`, `ai.ts`, `ArenaTable.svelte`, and existing Overload tests.
+- **Slice 2 (Flashback & live app verification):** Compiled `'flashback'` (`COMPILER_VERSION = 13`), generalized `keywordAltCost` and `moveStackSpellToZone` `exileOnLeaveStack`, wired graveyard casting UI/AI, added full Flashback tests, and verified Overload + Flashback in the live app (`vite dev` headless Chrome check).
+- **Deferred to Track B3:** Kicker (`CR 702.33`, using `CastOption.optionalAdditionalCosts`) will be implemented alongside the keyword registry in Track B3.
+
+---
+
 ## 3. Phases
 
 Each phase lists: **owns** (files only this phase's agent edits; others treat them as read-only

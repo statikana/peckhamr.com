@@ -138,7 +138,7 @@ export interface EffectContext {
 	targets: TargetRef[];
 	targetSpecs: TargetSpec[];
 	xValue: number;
-	overload?: boolean;
+	targetsBecomeEach?: boolean;
 	/** Preferred colour when resolving an `addMana` step with `manaChoice`. */
 	preferredColor?: ManaColor;
 	/** Triggered abilities (Phase 5): the object and amount the trigger event was about. */
@@ -193,12 +193,12 @@ export function interpretableNow(
 	item: StackItem,
 	parse: { steps: EffectStep[]; targets: TargetSpec[] },
 	controller: PlayerGameState,
-	overload: boolean
+	targetsBecomeEach = Boolean(item.spellMods?.targetsBecomeEach)
 ): boolean {
 	const spec = parse.targets[0];
 	if (!spec) {
 		if (item.targets.length > 0) return false;
-	} else if (overload) {
+	} else if (targetsBecomeEach) {
 		if (spec.kind !== 'object') return false;
 	} else if (parse.targets.length > 1) {
 		if (item.targets.length === 0 || item.targets.length > parse.targets.length) return false;
@@ -1051,7 +1051,7 @@ class Run {
 					.map((b) => this.locate(b.id)?.inst)
 					.filter((c): c is CardInstance => Boolean(c));
 			case 'target': {
-				if (this.ctx.overload) {
+				if (this.ctx.targetsBecomeEach ?? this.ctx.item.spellMods?.targetsBecomeEach) {
 					const spec = this.ctx.targetSpecs[sel.index];
 					return spec ? this.objects({ k: 'all', filter: spec.filter }) : [];
 				}
@@ -1805,7 +1805,7 @@ class Run {
 				: you;
 		let totalDealt = 0;
 
-		if (sel.k === 'target' && !this.ctx.overload) {
+		if (sel.k === 'target' && !(this.ctx.targetsBecomeEach ?? this.ctx.item.spellMods?.targetsBecomeEach)) {
 			const targetRefs =
 				this.ctx.targetSpecs.length > 1
 					? this.ctx.targets.length === this.ctx.targetSpecs.length

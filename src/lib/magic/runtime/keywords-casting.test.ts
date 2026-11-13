@@ -1,5 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 
 import { executeBotStep, hasAnyLegalInstantResponse } from '../ai.ts';
 import { compileCard } from '../compiler/index.ts';
@@ -8,6 +10,7 @@ import {
 	createCardInstance,
 	createInitialGameState,
 	evaluatePermanent,
+	getCastOptions,
 	getPlayerCommanderIdentity
 } from '../engine.ts';
 import { PRECON_DECKS, STAPLE_CARDS } from '../precons.ts';
@@ -206,14 +209,14 @@ describe('Keyword: Overload (CR 702.96)', () => {
 			applyGameAction(state, p1.playerId, {
 				type: 'cast_spell',
 				instanceId: rift1.instanceId,
-				castMode: 'normal',
+				optionId: 'normal',
 				targets: []
 			}).ok,
 			false,
 			'normal cast without target must be rejected'
 		);
 
-		// Legacy xValue >= 1 without castMode: "overload" must NOT overload (must still require target and pay {1}{U}).
+		// Legacy xValue >= 1 without optionId: "alt:overload" must NOT overload (must still require target and pay {1}{U}).
 		assert.equal(
 			applyGameAction(state, p1.playerId, {
 				type: 'cast_spell',
@@ -229,7 +232,7 @@ describe('Keyword: Overload (CR 702.96)', () => {
 			applyGameAction(state, p1.playerId, {
 				type: 'cast_spell',
 				instanceId: rift1.instanceId,
-				castMode: 'normal',
+				optionId: 'normal',
 				targets: [{ kind: 'permanent', id: oppRing.instanceId, label: 'Sol Ring' }]
 			}).ok,
 			true
@@ -251,7 +254,7 @@ describe('Keyword: Overload (CR 702.96)', () => {
 			applyGameAction(state, p1.playerId, {
 				type: 'cast_spell',
 				instanceId: rift2.instanceId,
-				castMode: 'overload',
+				optionId: 'alt:overload',
 				targets: [{ kind: 'permanent', id: oppRingAgain.instanceId, label: 'Sol Ring' }]
 			}).ok,
 			false,
@@ -263,18 +266,18 @@ describe('Keyword: Overload (CR 702.96)', () => {
 			applyGameAction(state, p1.playerId, {
 				type: 'cast_spell',
 				instanceId: nonOverloadSpell.instanceId,
-				castMode: 'overload',
+				optionId: 'alt:overload',
 				targets: []
 			}).ok,
 			false,
-			'non-overload card cannot be cast with castMode: overload'
+			'non-overload card cannot be cast with optionId: alt:overload'
 		);
 
 		assert.equal(
 			applyGameAction(state, p1.playerId, {
 				type: 'cast_spell',
 				instanceId: rift2.instanceId,
-				castMode: 'overload',
+				optionId: 'alt:overload',
 				targets: []
 			}).ok,
 			true
@@ -308,7 +311,7 @@ describe('Keyword: Overload (CR 702.96)', () => {
 			applyGameAction(state, p1.playerId, {
 				type: 'cast_spell',
 				instanceId: emptyBoardRift.instanceId,
-				castMode: 'normal',
+				optionId: 'normal',
 				targets: []
 			}).ok,
 			false
@@ -317,7 +320,7 @@ describe('Keyword: Overload (CR 702.96)', () => {
 			applyGameAction(state, p1.playerId, {
 				type: 'cast_spell',
 				instanceId: emptyBoardRift.instanceId,
-				castMode: 'overload',
+				optionId: 'alt:overload',
 				targets: []
 			}).ok,
 			true,
@@ -389,7 +392,7 @@ describe('Keyword: Overload (CR 702.96)', () => {
 				applyGameAction(state, p1.playerId, {
 					type: 'cast_spell',
 					instanceId: rift.instanceId,
-					castMode: 'normal',
+					optionId: 'normal',
 					targets: [{ kind: 'permanent', id: protectedPerm.instanceId, label: protectedPerm.card.name }]
 				}).ok,
 				false
@@ -401,7 +404,7 @@ describe('Keyword: Overload (CR 702.96)', () => {
 			applyGameAction(state, p1.playerId, {
 				type: 'cast_spell',
 				instanceId: rift.instanceId,
-				castMode: 'overload',
+				optionId: 'alt:overload',
 				targets: []
 			}).ok,
 			true
@@ -472,7 +475,7 @@ describe('Keyword: Overload (CR 702.96)', () => {
 				type: 'cast_spell',
 				instanceId: cmdInst.instanceId,
 				fromZone: 'command',
-				castMode: 'overload',
+				optionId: 'alt:overload',
 				targets: []
 			}).ok,
 			false
@@ -485,7 +488,7 @@ describe('Keyword: Overload (CR 702.96)', () => {
 				type: 'cast_spell',
 				instanceId: cmdInst.instanceId,
 				fromZone: 'command',
-				castMode: 'overload',
+				optionId: 'alt:overload',
 				targets: []
 			}).ok,
 			true
@@ -539,7 +542,7 @@ describe('Keyword: Overload (CR 702.96)', () => {
 			applyGameAction(state, p1.playerId, {
 				type: 'cast_spell',
 				instanceId: combatOnlyOverload.instanceId,
-				castMode: 'overload',
+				optionId: 'alt:overload',
 				targets: []
 			}).ok,
 			false,
@@ -553,7 +556,7 @@ describe('Keyword: Overload (CR 702.96)', () => {
 			applyGameAction(state, p1.playerId, {
 				type: 'cast_spell',
 				instanceId: sorceryOverload.instanceId,
-				castMode: 'overload',
+				optionId: 'alt:overload',
 				targets: []
 			}).ok,
 			false
@@ -564,7 +567,7 @@ describe('Keyword: Overload (CR 702.96)', () => {
 			applyGameAction(state, p1.playerId, {
 				type: 'cast_spell',
 				instanceId: sorceryOverload.instanceId,
-				castMode: 'overload',
+				optionId: 'alt:overload',
 				targets: []
 			}).ok,
 			true,
@@ -592,7 +595,7 @@ describe('Keyword: Overload (CR 702.96)', () => {
 			applyGameAction(state, p1.playerId, {
 				type: 'cast_spell',
 				instanceId: combatOnlyOverload.instanceId,
-				castMode: 'overload',
+				optionId: 'alt:overload',
 				targets: []
 			}).ok,
 			true
@@ -671,7 +674,7 @@ describe('Keyword: Overload (CR 702.96)', () => {
 			applyGameAction(state, p1.playerId, {
 				type: 'cast_spell',
 				instanceId: mortars.instanceId,
-				castMode: 'overload',
+				optionId: 'alt:overload',
 				targets: []
 			}).ok,
 			true
@@ -706,7 +709,7 @@ describe('Keyword: Overload (CR 702.96)', () => {
 			applyGameAction(state, p1.playerId, {
 				type: 'cast_spell',
 				instanceId: vandalblast.instanceId,
-				castMode: 'overload',
+				optionId: 'alt:overload',
 				targets: []
 			}).ok,
 			true
@@ -741,7 +744,205 @@ describe('Keyword: Overload (CR 702.96)', () => {
 		executeBotStep(state, p1, p1);
 		assert.equal(state.stack.length, 1);
 		assert.equal(state.stack[0].sourceInstanceId, botRift.instanceId);
-		assert.equal(state.stack[0].castMode, 'overload', 'Bot chose Overload against >= 2 opponent nonland permanents');
+		assert.equal(state.stack[0].castOptionId, 'alt:overload', 'Bot chose alt:overload against >= 2 opponent nonland permanents');
+		assert.equal(state.stack[0].spellMods?.targetsBecomeEach, true);
+	});
+
+	it('getCastOptions enumerates legal options across normal, dual-option, X, exile-permission, and CR 118.9a Suspend cards', () => {
+		const { state, p1, p2 } = makeGame();
+
+		// 1. Normal-only card (Counterspell): 0 options when stack empty, 1 option ('normal') when opponent spell on stack.
+		const cs = putInZone(state, p1, staple('Counterspell'), 'hand');
+		p1.manaPool.U = 2;
+		assert.deepEqual(
+			getCastOptions(state, p1.playerId, cs, 'hand').map((o) => o.id),
+			[],
+			'Counterspell has no legal cast options when stack is empty'
+		);
+		state.stack.push({
+			id: 'stk_dummy',
+			sourceInstanceId: 'src_dummy',
+			card: staple('Sol Ring'),
+			ownerId: p2.playerId,
+			controllerId: p2.playerId,
+			kind: 'spell',
+			title: 'Sol Ring',
+			oracleText: '',
+			targets: [],
+			xValue: 0,
+			requiresGuidedResolution: false,
+			createdAt: 0
+		});
+		const csOpts = getCastOptions(state, p1.playerId, cs, 'hand');
+		assert.deepEqual(csOpts.map((o) => o.id), ['normal']);
+		assert.equal(csOpts[0].requiresTarget, true);
+		assert.equal(csOpts[0].choosesX, false);
+		state.stack = [];
+
+		// 2. Dual normal + overload cards (Cyclonic Rift + synthetic Storm Surge + synthetic X+overload card).
+		const oppRing = putInZone(state, p2, staple('Sol Ring'), 'battlefield');
+		const rift = putInZone(state, p1, staple('Cyclonic Rift'), 'hand');
+		p1.manaPool = { W: 0, U: 1, B: 0, R: 0, G: 0, C: 1 };
+		assert.deepEqual(
+			getCastOptions(state, p1.playerId, rift, 'hand').map((o) => o.id),
+			['normal'],
+			'With only {1}{U}, only normal option is legal'
+		);
+
+		p1.manaPool = { W: 0, U: 1, B: 0, R: 0, G: 0, C: 6 };
+		const dualRiftOpts = getCastOptions(state, p1.playerId, rift, 'hand');
+		assert.deepEqual(dualRiftOpts.map((o) => o.id), ['normal', 'alt:overload']);
+		assert.equal(dualRiftOpts[0].requiresTarget, true);
+		assert.equal(dualRiftOpts[1].requiresTarget, false);
+		assert.equal(dualRiftOpts[1].spellMods.targetsBecomeEach, true);
+		assert.equal(dualRiftOpts[1].costDisplay, '{6}{U}');
+
+		const synthDual = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Gale Wash',
+				manaCost: '{1}{U}',
+				cmc: 2,
+				typeLine: 'Instant',
+				oracleText: "Return target nonland permanent you don't control to its owner's hand.\nOverload {5}{U}",
+				colors: ['U'],
+				colorIdentity: ['U'],
+				keywords: ['Overload']
+			}),
+			'hand'
+		);
+		assert.deepEqual(
+			getCastOptions(state, p1.playerId, synthDual, 'hand').map((o) => o.id),
+			['normal', 'alt:overload']
+		);
+
+		const xOverload = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Arcane Flare',
+				manaCost: '{X}{R}',
+				cmc: 1,
+				typeLine: 'Instant',
+				oracleText: "Arcane Flare deals X damage to target creature you don't control.\nOverload {X}{X}{R}{R}",
+				colors: ['R'],
+				colorIdentity: ['R'],
+				keywords: ['Overload']
+			}),
+			'hand'
+		);
+		const oppBear = putInZone(
+			state,
+			p2,
+			syntheticCard({
+				name: 'Grizzly Bears',
+				manaCost: '{1}{G}',
+				cmc: 2,
+				typeLine: 'Creature — Bear',
+				power: '2',
+				toughness: '2'
+			}),
+			'battlefield'
+		);
+		p1.manaPool = { W: 0, U: 0, B: 0, R: 1, G: 0, C: 0 };
+		const xOnlyNormal = getCastOptions(state, p1.playerId, xOverload, 'hand');
+		assert.deepEqual(xOnlyNormal.map((o) => o.id), ['normal']);
+		assert.equal(xOnlyNormal[0].choosesX, true);
+
+		p1.manaPool = { W: 0, U: 0, B: 0, R: 2, G: 0, C: 2 };
+		const xBoth = getCastOptions(state, p1.playerId, xOverload, 'hand');
+		assert.deepEqual(xBoth.map((o) => o.id), ['normal', 'alt:overload']);
+		assert.equal(xBoth[1].choosesX, true);
+
+		// 3. Exile-permission card vs castViaSuspend (CR 118.9a).
+		const exiledRift = putInZone(state, p2, staple('Cyclonic Rift'), 'exile');
+		assert.deepEqual(
+			getCastOptions(state, p1.playerId, exiledRift, 'exile'),
+			[],
+			'Exiled card without permission offers 0 options'
+		);
+		exiledRift.playableFromExileBy = {
+			playerId: p1.playerId,
+			sourceName: 'Opposition Agent',
+			spendManaAsAnyColor: true
+		};
+		p1.manaPool = { W: 0, U: 0, B: 0, R: 0, G: 0, C: 7 };
+		const exOpts = getCastOptions(state, p1.playerId, exiledRift, 'exile');
+		assert.deepEqual(exOpts.map((o) => o.id), ['exile:permission', 'alt:overload']);
+		assert.equal(exOpts[0].permission, 'exile_permission');
+
+		// When castViaSuspend is set, CR 118.9a forbids combining another alt cost.
+		exiledRift.castViaSuspend = true;
+		const suspOpts = getCastOptions(state, p1.playerId, exiledRift, 'exile');
+		assert.deepEqual(suspOpts.map((o) => o.id), ['exile:suspend']);
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: exiledRift.instanceId,
+				fromZone: 'exile',
+				optionId: 'alt:overload',
+				targets: []
+			}).ok,
+			false,
+			'CR 118.9a: cannot apply alt:overload to a card being cast via Suspend'
+		);
+
+		// Clean up unused local warnings
+		assert.ok(oppRing && oppBear);
+	});
+
+	it('UI-equivalence via getCastOptions order + invalid optionId rejection + keyword-blind UI/AI check', () => {
+		const { state, p1, p2 } = makeGame();
+		const opp1 = putInZone(state, p2, staple('Sol Ring'), 'battlefield');
+		const opp2 = putInZone(state, p2, staple('Arcane Signet'), 'battlefield');
+		const card = putInZone(state, p1, staple('Cyclonic Rift'), 'hand');
+		p1.manaPool = { W: 0, U: 1, B: 0, R: 0, G: 0, C: 6 };
+
+		// UI-equivalence: client picks solely by getCastOptions index without referencing keyword names
+		const options = getCastOptions(state, p1.playerId, card, 'hand');
+		assert.equal(options.length, 2);
+		const secondOption = options[1];
+		assert.equal(secondOption.choosesX, false);
+		assert.equal(secondOption.requiresTarget, false);
+
+		const castRes = applyGameAction(state, p1.playerId, {
+			type: 'cast_spell',
+			instanceId: card.instanceId,
+			fromZone: secondOption.fromZone as 'hand',
+			xValue: 0,
+			optionId: secondOption.id,
+			targets: []
+		});
+		assert.equal(castRes.ok, true, castRes.error ?? 'expected ok');
+		assert.equal(state.stack[0].castOptionId, secondOption.id);
+		assert.equal(state.stack[0].spellMods?.castSummarySuffix, ' (Overloaded)');
+		resolveAllStack(state);
+		assert.equal(p2.battlefield.length, 0);
+		assert.ok(opp1 && opp2);
+
+		// Unknown optionId rejection
+		const optSpell = putInZone(state, p1, staple('Opt'), 'hand');
+		p1.manaPool = { W: 0, U: 1, B: 0, R: 0, G: 0, C: 0 };
+		const bogusRes = applyGameAction(state, p1.playerId, {
+			type: 'cast_spell',
+			instanceId: optSpell.instanceId,
+			optionId: 'alt:bogus',
+			targets: []
+		});
+		assert.equal(bogusRes.ok, false, 'Unknown optionId must be rejected');
+
+		// Verify ArenaTable.svelte and ai.ts contain zero overload or legacy cast-mode literals
+		const arenaSrc = fs.readFileSync(
+			path.resolve('src/lib/magic/ArenaTable.svelte'),
+			'utf8'
+		);
+		const aiSrc = fs.readFileSync(path.resolve('src/lib/magic/ai.ts'), 'utf8');
+		const legacyCastModeRe = new RegExp('cast' + 'Mode');
+		assert.equal(/overload/i.test(arenaSrc), false, 'ArenaTable.svelte must not mention overload');
+		assert.equal(/overload/i.test(aiSrc), false, 'ai.ts must not mention overload');
+		assert.equal(legacyCastModeRe.test(arenaSrc), false, 'ArenaTable.svelte must not use legacy cast mode');
+		assert.equal(legacyCastModeRe.test(aiSrc), false, 'ai.ts must not use legacy cast mode');
 	});
 });
 
@@ -1718,6 +1919,588 @@ describe('Keyword: Partner (CR 702.124)', () => {
 			assert.equal(state.stack.length, 0);
 			assert.deepEqual(state.players[1].library.map((c) => c.instanceId), libOrderBefore, 'declining does NOT shuffle library');
 			assert.equal(state.rngState, rngBefore, 'rngState untouched when library not shuffled');
+		}
+	});
+});
+
+// ============================================================================
+// 5. FLASHBACK (CR 702.34)
+// ============================================================================
+
+describe('Keyword: Flashback (CR 702.34)', () => {
+	const thinkTwiceCard = syntheticCard({
+		name: 'Think Twice',
+		manaCost: '{1}{U}',
+		cmc: 2,
+		typeLine: 'Instant',
+		oracleText:
+			'Draw a card.\nFlashback {2}{U} (You may cast this card from your graveyard for its flashback cost. Then exile it.)',
+		colors: ['U'],
+		colorIdentity: ['U'],
+		keywords: ['Flashback']
+	});
+
+	const faithlessLootingCard = syntheticCard({
+		name: 'Faithless Looting',
+		manaCost: '{R}',
+		cmc: 1,
+		typeLine: 'Sorcery',
+		oracleText:
+			'Draw two cards, then discard two cards.\nFlashback {2}{R} (You may cast this card from your graveyard for its flashback cost. Then exile it.)',
+		colors: ['R'],
+		colorIdentity: ['R'],
+		keywords: ['Flashback']
+	});
+
+	const deepAnalysisCard = syntheticCard({
+		name: 'Deep Analysis',
+		manaCost: '{3}{U}',
+		cmc: 4,
+		typeLine: 'Sorcery',
+		oracleText:
+			'Target player draws two cards.\nFlashback—{1}{U}, Pay 3 life. (You may cast this card from your graveyard for its flashback cost. Then exile it.)',
+		colors: ['U'],
+		colorIdentity: ['U'],
+		keywords: ['Flashback']
+	});
+
+	const dreadReturnVariant = syntheticCard({
+		name: 'Glimmerfen Reckoning',
+		manaCost: '{2}{B}',
+		cmc: 3,
+		typeLine: 'Sorcery',
+		oracleText:
+			'Draw a card.\nFlashback—Pay 3 life.\n',
+		colors: ['B'],
+		colorIdentity: ['B'],
+		keywords: ['Flashback']
+	});
+
+	const compositeSacCard = syntheticCard({
+		name: 'Glimmerfen Offering',
+		manaCost: '{3}{B}',
+		cmc: 4,
+		typeLine: 'Sorcery',
+		oracleText:
+			'Draw two cards.\nFlashback—{1}{B}, Sacrifice a creature.',
+		colors: ['B'],
+		colorIdentity: ['B'],
+		keywords: ['Flashback']
+	});
+
+	it('Flashback compile: parses mana, non-mana, composite dash costs, emits unsupported for unparsed costs, and satisfies rename invariance', () => {
+		const ttIr = compileCard(thinkTwiceCard).faces[0];
+		const ttKw = ttIr.abilities.find((a) => a.kind === 'keyword' && a.keyword.name === 'flashback');
+		assert.ok(ttKw && ttKw.kind === 'keyword');
+		assert.equal(ttKw.keyword.cost, '{2}{U}');
+		assert.deepEqual(ttKw.keyword.costDefs, [{ k: 'mana', cost: '{2}{U}' }]);
+		assert.equal(ttIr.abilities.some((a) => a.kind === 'unsupported'), false);
+
+		const daIr = compileCard(deepAnalysisCard).faces[0];
+		const daKw = daIr.abilities.find((a) => a.kind === 'keyword' && a.keyword.name === 'flashback');
+		assert.ok(daKw && daKw.kind === 'keyword');
+		assert.deepEqual(daKw.keyword.costDefs, [
+			{ k: 'mana', cost: '{1}{U}' },
+			{ k: 'payLife', amount: { k: 'const', n: 3 } }
+		]);
+		assert.equal(daIr.abilities.some((a) => a.kind === 'unsupported'), false);
+
+		const lifeIr = compileCard(dreadReturnVariant).faces[0];
+		const lifeKw = lifeIr.abilities.find((a) => a.kind === 'keyword' && a.keyword.name === 'flashback');
+		assert.ok(lifeKw && lifeKw.kind === 'keyword');
+		assert.equal(lifeKw.keyword.cost, undefined);
+		assert.deepEqual(lifeKw.keyword.costDefs, [{ k: 'payLife', amount: { k: 'const', n: 3 } }]);
+		assert.equal(lifeIr.abilities.some((a) => a.kind === 'unsupported'), false);
+
+		const sacIr = compileCard(compositeSacCard).faces[0];
+		const sacKw = sacIr.abilities.find((a) => a.kind === 'keyword' && a.keyword.name === 'flashback');
+		assert.ok(sacKw && sacKw.kind === 'keyword');
+		assert.deepEqual(sacKw.keyword.costDefs, [
+			{ k: 'mana', cost: '{1}{B}' },
+			{ k: 'sacrifice', count: { k: 'const', n: 1 }, filter: { controller: 'you', types: ['Creature'] } }
+		]);
+		assert.equal(sacIr.abilities.some((a) => a.kind === 'unsupported'), false);
+
+		// Unparseable Flashback cost must emit unsupported('unparsed'), not silently drop.
+		const unparseable = syntheticCard({
+			name: 'Kindle Variant',
+			manaCost: '{2}{R}',
+			cmc: 3,
+			typeLine: 'Sorcery',
+			oracleText: 'Draw a card.\nFlashback—{1}{R}, Behold three Elementals.',
+			colors: ['R'],
+			colorIdentity: ['R'],
+			keywords: ['Flashback']
+		});
+		const unpIr = compileCard(unparseable).faces[0];
+		assert.ok(
+			unpIr.abilities.some((a) => a.kind === 'unsupported' && a.reason === 'unparsed'),
+			'unparseable Flashback cost must compile to unsupported(unparsed)'
+		);
+
+		// Rename invariance: synthetic name compiles to identical abilities.
+		const renamed = syntheticCard({
+			...thinkTwiceCard,
+			name: 'Glimmerfen Study',
+			id: 'syn_glimmerfen_study'
+		});
+		assert.deepEqual(compileCard(renamed).faces[0].abilities, ttIr.abilities);
+	});
+
+	it('getCastOptions (CR 702.34a): returns alt:flashback in own graveyard for Instant/Sorcery only, never in hand or opponent graveyard', () => {
+		const { state, p1, p2 } = makeGame();
+		p1.manaPool.U = 5;
+		p1.manaPool.C = 5;
+
+		const gyInstant = putInZone(state, p1, thinkTwiceCard, 'graveyard');
+		const handInstant = putInZone(state, p1, thinkTwiceCard, 'hand');
+		const oppGyInstant = putInZone(state, p2, thinkTwiceCard, 'graveyard');
+		const gyCreature = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Glimmerfen Shade',
+				manaCost: '{1}{B}',
+				cmc: 2,
+				typeLine: 'Creature — Shade',
+				oracleText: 'Flashback {2}{B}',
+				power: '2',
+				toughness: '2'
+			}),
+			'graveyard'
+		);
+
+		const gyOpts = getCastOptions(state, p1.playerId, gyInstant, 'graveyard');
+		assert.equal(gyOpts.length, 1);
+		assert.equal(gyOpts[0].id, 'alt:flashback');
+		assert.equal(gyOpts[0].fromZone, 'graveyard');
+		assert.equal(gyOpts[0].spellMods.exileOnLeaveStack, true);
+		assert.equal(gyOpts[0].costDisplay, '{2}{U}');
+
+		const handOpts = getCastOptions(state, p1.playerId, handInstant, 'hand');
+		assert.deepEqual(
+			handOpts.map((o) => o.id),
+			['normal']
+		);
+
+		assert.deepEqual(getCastOptions(state, p1.playerId, oppGyInstant, 'graveyard'), []);
+		assert.deepEqual(getCastOptions(state, p1.playerId, gyCreature, 'graveyard'), []);
+	});
+
+	it('Flashback runtime (CR 702.34a): casts from graveyard, resolves to exile, and works identically with synthetic renamed card', () => {
+		for (const cardDef of [
+			thinkTwiceCard,
+			syntheticCard({ ...thinkTwiceCard, name: 'Glimmerfen Recall', id: 'syn_glimmerfen_recall' })
+		]) {
+			const { state, p1 } = makeGame();
+			p1.library = [];
+			const libCard = putInZone(state, p1, staple('Island'), 'library');
+			const fbSpell = putInZone(state, p1, cardDef, 'graveyard');
+			p1.manaPool.U = 1;
+			p1.manaPool.C = 2;
+
+			const res = applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: fbSpell.instanceId,
+				fromZone: 'graveyard',
+				optionId: 'alt:flashback'
+			});
+			assert.equal(res.ok, true);
+			assert.equal(p1.manaPool.U, 0);
+			assert.equal(p1.manaPool.C, 0);
+			assert.equal(p1.graveyard.length, 0);
+			assert.equal(state.stack.length, 1);
+			assert.equal(state.stack[0].castOptionId, 'alt:flashback');
+			assert.equal(state.stack[0].spellMods?.exileOnLeaveStack, true);
+
+			resolveAllStack(state);
+			assert.equal(state.stack.length, 0);
+			assert.ok(p1.hand.some((c) => c.instanceId === libCard.instanceId), 'spell effect drew a card');
+			assert.equal(p1.graveyard.length, 0, 'Flashback spell must NOT return to graveyard');
+			assert.ok(
+				p1.exile.some((c) => c.instanceId === fbSpell.instanceId),
+				'Flashback spell must be exiled on resolution (CR 702.34a)'
+			);
+		}
+	});
+
+	it('Flashback stack-exit exile (CR 702.34a): exiles instead of graveyard when countered, fizzled (CR 608.2b), or Ward-countered', () => {
+		// 1. Countered by Counterspell
+		{
+			const { state, p1, p2 } = makeGame();
+			const fb = putInZone(state, p1, thinkTwiceCard, 'graveyard');
+			const cs = putInZone(state, p2, staple('Counterspell'), 'hand');
+			p1.manaPool.U = 1;
+			p1.manaPool.C = 2;
+			p2.manaPool.U = 2;
+
+			assert.equal(
+				applyGameAction(state, p1.playerId, {
+					type: 'cast_spell',
+					instanceId: fb.instanceId,
+					optionId: 'alt:flashback'
+				}).ok,
+				true
+			);
+			assert.equal(applyGameAction(state, p1.playerId, { type: 'pass_priority' }).ok, true);
+			assert.equal(
+				applyGameAction(state, p2.playerId, {
+					type: 'cast_spell',
+					instanceId: cs.instanceId,
+					targets: [{ kind: 'stack', id: state.stack[0].id, label: fb.card.name }]
+				}).ok,
+				true
+			);
+			resolveAllStack(state);
+			assert.equal(state.stack.length, 0);
+			assert.equal(p1.graveyard.some((c) => c.instanceId === fb.instanceId), false);
+			assert.equal(p1.exile.some((c) => c.instanceId === fb.instanceId), true);
+		}
+
+		// 2. Fizzled on resolution (CR 608.2b: all targets illegal)
+		{
+			const { state, p1, p2 } = makeGame();
+			const boltFb = syntheticCard({
+				name: 'Glimmerfen Spark',
+				manaCost: '{R}',
+				cmc: 1,
+				typeLine: 'Instant',
+				oracleText: 'Glimmerfen Spark deals 3 damage to target creature.\nFlashback {1}{R}',
+				colors: ['R'],
+				colorIdentity: ['R'],
+				keywords: ['Flashback']
+			});
+			const targetBear = putInZone(
+				state,
+				p2,
+				syntheticCard({
+					name: 'Grizzly Bears',
+					manaCost: '{1}{G}',
+					cmc: 2,
+					typeLine: 'Creature — Bear',
+					power: '2',
+					toughness: '2'
+				}),
+				'battlefield'
+			);
+			const fb = putInZone(state, p1, boltFb, 'graveyard');
+			p1.manaPool.R = 1;
+			p1.manaPool.C = 1;
+			assert.equal(
+				applyGameAction(state, p1.playerId, {
+					type: 'cast_spell',
+					instanceId: fb.instanceId,
+					optionId: 'alt:flashback',
+					targets: [{ kind: 'permanent', id: targetBear.instanceId, label: 'Grizzly Bears' }]
+				}).ok,
+				true
+			);
+			// Remove target before resolution so CR 608.2b counters it on resolution.
+			p2.battlefield = p2.battlefield.filter((c) => c.instanceId !== targetBear.instanceId);
+			resolveAllStack(state);
+			assert.equal(state.stack.length, 0);
+			assert.equal(p1.graveyard.some((c) => c.instanceId === fb.instanceId), false);
+			assert.equal(p1.exile.some((c) => c.instanceId === fb.instanceId), true);
+		}
+
+		// 3. Countered by Ward (CR 702.21a)
+		{
+			const { state, p1, p2 } = makeGame();
+			const targetedFb = syntheticCard({
+				name: 'Glimmerfen Bolt',
+				manaCost: '{R}',
+				cmc: 1,
+				typeLine: 'Instant',
+				oracleText: 'Glimmerfen Bolt deals 2 damage to target creature.\nFlashback {1}{R}',
+				colors: ['R'],
+				colorIdentity: ['R'],
+				keywords: ['Flashback']
+			});
+			const wardDrake = putInZone(
+				state,
+				p2,
+				syntheticCard({
+					name: 'Ward Drake',
+					manaCost: '{2}{U}',
+					cmc: 3,
+					typeLine: 'Creature — Drake',
+					oracleText: 'Ward {3}',
+					power: '2',
+					toughness: '2',
+					keywords: ['Ward']
+				}),
+				'battlefield'
+			);
+			const fb = putInZone(state, p1, targetedFb, 'graveyard');
+			p1.manaPool.R = 1;
+			p1.manaPool.C = 1;
+			assert.equal(
+				applyGameAction(state, p1.playerId, {
+					type: 'cast_spell',
+					instanceId: fb.instanceId,
+					optionId: 'alt:flashback',
+					targets: [{ kind: 'permanent', id: wardDrake.instanceId, label: 'Ward Drake' }]
+				}).ok,
+				true
+			);
+			// Ward trigger goes on stack; p1 cannot pay {3}, so resolve Ward trigger and decline/fail payment.
+			resolveAllStack(state);
+			assert.equal(state.stack.length, 0);
+			assert.equal(p1.graveyard.some((c) => c.instanceId === fb.instanceId), false);
+			assert.equal(p1.exile.some((c) => c.instanceId === fb.instanceId), true);
+		}
+	});
+
+	it('Flashback non-mana and composite costs (CR 118.9): pays life / sacrifices creature (including mid-payment replacement pause) and exiles on resolution', () => {
+		// 1. Pure non-mana Flashback—Pay 3 life.
+		{
+			const { state, p1 } = makeGame();
+			p1.library = [];
+			const drawn = putInZone(state, p1, staple('Swamp'), 'library');
+			const fb = putInZone(state, p1, dreadReturnVariant, 'graveyard');
+			const startLife = p1.life;
+
+			assert.equal(
+				applyGameAction(state, p1.playerId, {
+					type: 'cast_spell',
+					instanceId: fb.instanceId,
+					optionId: 'alt:flashback'
+				}).ok,
+				true
+			);
+			assert.equal(p1.life, startLife - 3);
+			resolveAllStack(state);
+			assert.ok(p1.hand.some((c) => c.instanceId === drawn.instanceId));
+			assert.ok(p1.exile.some((c) => c.instanceId === fb.instanceId));
+		}
+
+		// 2. Composite Flashback—{1}{B}, Sacrifice a creature. with competing CR 616.1 replacement pause mid-payment
+		{
+			let { state, p1 } = makeGame();
+			p1.library = [];
+			putInZone(state, p1, staple('Swamp'), 'library');
+			putInZone(state, p1, staple('Island'), 'library');
+			const bear = putInZone(
+				state,
+				p1,
+				syntheticCard({
+					name: 'Wandering Bear',
+					manaCost: '{1}{G}',
+					cmc: 2,
+					typeLine: 'Creature — Bear',
+					oracleText:
+						"If ~ would be put into a graveyard from anywhere, exile it instead.\nIf ~ would be put into a graveyard from anywhere, shuffle it into its owner's library instead.",
+					power: '2',
+					toughness: '2'
+				}),
+				'battlefield'
+			);
+			const fb = putInZone(state, p1, compositeSacCard, 'graveyard');
+			p1.manaPool.B = 1;
+			p1.manaPool.C = 1;
+
+			assert.equal(
+				applyGameAction(state, p1.playerId, {
+					type: 'cast_spell',
+					instanceId: fb.instanceId,
+					optionId: 'alt:flashback'
+				}).ok,
+				true
+			);
+			assert.ok(state.pendingCostPayment, 'pauses mid-payment on replacement choice');
+			assert.equal(p1.manaPool.B, 0);
+			assert.equal(p1.manaPool.C, 0);
+			const replPrompt = state.pendingPrompts.find((pr) => pr.kind === 'chooseReplacement');
+			assert.ok(replPrompt && replPrompt.choice?.kind === 'chooseReplacement');
+			const exileOpt = replPrompt!.choice.options.find((o) => /exile/i.test(o.label));
+			assert.ok(exileOpt);
+			state = JSON.parse(JSON.stringify(state)) as GameState;
+			assert.equal(
+				applyGameAction(state, p1.playerId, {
+					type: 'choice',
+					promptId: state.pendingPrompts[0].id,
+					answer: { kind: 'chooseReplacement', id: exileOpt!.id }
+				}).ok,
+				true
+			);
+			p1 = state.players[0];
+			assert.equal(state.pendingCostPayment, undefined);
+			assert.equal(p1.battlefield.some((c) => c.instanceId === bear.instanceId), false);
+			assert.equal(p1.exile.some((c) => c.instanceId === bear.instanceId), true);
+			assert.equal(state.stack.length, 1);
+
+			resolveAllStack(state);
+			assert.equal(p1.hand.length, 2);
+			assert.ok(p1.exile.some((c) => c.instanceId === fb.instanceId));
+		}
+	});
+
+	it('Flashback cost modifiers & printed MV (CR 118.9c–d): reductions/increases apply to Flashback cost while stack MV stays printed', () => {
+		const { state, p1, p2 } = makeGame();
+		putInZone(state, p1, staple('Island'), 'library');
+		putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Goblin Electromancer',
+				manaCost: '{U}{R}',
+				cmc: 2,
+				typeLine: 'Creature — Goblin Wizard',
+				oracleText: 'Instant and sorcery spells you cast cost {1} less to cast.',
+				power: '2',
+				toughness: '2'
+			}),
+			'battlefield'
+		);
+		putInZone(
+			state,
+			p2,
+			syntheticCard({
+				name: 'Thalia, Guardian of Thraben',
+				manaCost: '{1}{W}',
+				cmc: 2,
+				typeLine: 'Legendary Creature — Human Soldier',
+				oracleText: 'First strike\nNoncreature spells cost {1} more to cast.',
+				power: '2',
+				toughness: '1',
+				keywords: ['First strike']
+			}),
+			'battlefield'
+		);
+
+		// 1. Mana Flashback {2}{U} - {1} + {1} = {2}{U}, stack MV remains printed (2).
+		const fb1 = putInZone(state, p1, thinkTwiceCard, 'graveyard');
+		p1.manaPool.U = 1;
+		p1.manaPool.C = 2;
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: fb1.instanceId,
+				optionId: 'alt:flashback'
+			}).ok,
+			true
+		);
+		assert.equal(p1.manaPool.U, 0);
+		assert.equal(p1.manaPool.C, 0);
+		assert.equal(state.stack[0].card.cmc, 2, 'CR 118.9c: printed MV unchanged');
+		assert.equal(objectManaValue(state, fb1), 2, 'CR 118.9c: objectManaValue unchanged');
+		resolveAllStack(state);
+
+		// 2. Non-mana Flashback—Pay 3 life. with Electromancer (-1) + Thalia (+1) -> net {0} mana,
+		//    and with only Thalia (+1) -> requires {1} mana + 3 life!
+		p1.battlefield = []; // remove Electromancer; Thalia stays on p2's board
+		const fb2 = putInZone(state, p1, dreadReturnVariant, 'graveyard');
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: fb2.instanceId,
+				optionId: 'alt:flashback'
+			}).ok,
+			false,
+			'Thalia {1} tax applies to non-mana Flashback cost (CR 118.9d)'
+		);
+		p1.manaPool.C = 1;
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: fb2.instanceId,
+				optionId: 'alt:flashback'
+			}).ok,
+			true
+		);
+		assert.equal(p1.manaPool.C, 0);
+		assert.equal(state.stack[0].card.cmc, 3, 'CR 118.9c: printed MV remains 3');
+		assert.equal(objectManaValue(state, fb2), 3, 'CR 118.9c: objectManaValue remains 3');
+	});
+
+	it('Flashback timing (CR 601.3): Sorcery Flashback requires main phase + empty stack unless granted Flash; Instant Flashback works at instant speed', () => {
+		const { state, p1, p2 } = makeGame();
+		const sorcFb = putInZone(state, p1, faithlessLootingCard, 'graveyard');
+		const instFb = putInZone(state, p1, thinkTwiceCard, 'graveyard');
+		p1.manaPool.R = 1;
+		p1.manaPool.U = 1;
+		p1.manaPool.C = 4;
+
+		// Opponent's turn: Sorcery Flashback illegal, Instant Flashback legal!
+		state.activePlayerIndex = 1;
+		state.priorityPlayerIndex = 0;
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: sorcFb.instanceId,
+				optionId: 'alt:flashback'
+			}).ok,
+			false
+		);
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: instFb.instanceId,
+				optionId: 'alt:flashback'
+			}).ok,
+			true
+		);
+
+		// With another spell on the stack, Sorcery Flashback is still illegal without Flash,
+		// but becomes legal once Vedalken Orrery grants Flash!
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: sorcFb.instanceId,
+				optionId: 'alt:flashback'
+			}).ok,
+			false
+		);
+		putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Vedalken Orrery',
+				manaCost: '{4}',
+				cmc: 4,
+				typeLine: 'Artifact',
+				oracleText: 'You may cast spells as though they had flash.'
+			}),
+			'battlefield'
+		);
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: sorcFb.instanceId,
+				optionId: 'alt:flashback'
+			}).ok,
+			true
+		);
+	});
+
+	it('Bot AI (ai.ts): casts playable Flashback card from graveyard and detects instant-speed graveyard responses', () => {
+		const { state, p1, p2 } = makeGame({ p1Bot: true });
+		putInZone(state, p1, staple('Island'), 'library');
+		const instFb = putInZone(state, p1, thinkTwiceCard, 'graveyard');
+		p1.manaPool.U = 1;
+		p1.manaPool.C = 2;
+
+		assert.equal(hasAnyLegalInstantResponse(state, p1), true);
+		const step = executeBotStep(state, p1, p1);
+		assert.equal(step, 'visible');
+		assert.equal(state.stack.length, 1);
+		assert.equal(state.stack[0].sourceInstanceId, instFb.instanceId);
+		assert.equal(state.stack[0].castOptionId, 'alt:flashback');
+
+		resolveAllStack(state);
+		assert.equal(p1.exile.some((c) => c.instanceId === instFb.instanceId), true);
+		assert.equal(hasAnyLegalInstantResponse(state, p1), false);
+	});
+
+	it('Keyword-blind UI and AI: zero overload/flashback string literals in ArenaTable.svelte and ai.ts', () => {
+		const magicDir = path.resolve(process.cwd(), 'src/lib/magic');
+		for (const file of ['ArenaTable.svelte', 'ai.ts']) {
+			const src = fs.readFileSync(path.join(magicDir, file), 'utf8');
+			assert.equal(
+				/\b(overload|flashback)\b/i.test(src),
+				false,
+				`${file} must contain zero overload/flashback literals`
+			);
 		}
 	});
 });

@@ -689,7 +689,7 @@ describe('Review 3 — Group C: prowess dedupe, objectManaValue, and playerComma
 						oracleText: boonCard.oracleText,
 						targets,
 						xValue: 0,
-						castMode: 'normal',
+						castOptionId: 'normal',
 						requiresGuidedResolution: false,
 						createdAt: 0
 					},
@@ -822,7 +822,7 @@ describe('Review 3 — Group C: prowess dedupe, objectManaValue, and playerComma
 			oracleText: nonXCard.oracleText,
 			targets: [],
 			xValue: 3,
-			castMode: 'normal' as const,
+			castOptionId: 'normal',
 			requiresGuidedResolution: false,
 			createdAt: 0
 		};

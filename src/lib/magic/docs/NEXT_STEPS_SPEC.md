@@ -1,12 +1,12 @@
 # MTG Engine: Next Steps Spec
 
-**Status:** spec, written 2026-11-12 against `engine-rewrite` at `ad82d00`, updated after Track A (`972a90c`) and Track B1 (`COMPILER_VERSION = 12`). Track A (`A1`–`A4`) and **B1** are **done**; **B2** is next.
+**Status:** spec, written 2026-11-12 against `engine-rewrite` at `ad82d00`, updated after Track A (`972a90c`), Track B1 (`961b8e5`), and Track B2 (`COMPILER_VERSION = 13`). Track A (`A1`–`A4`), **B1**, and **B2** are **done**; **B3** (including Kicker via `CastOption.optionalAdditionalCosts`) is next.
 
 **Purpose:** the recommended next work for the engine, written so that each work package can be handed to one agent. Track A is near-term fixes (complete). Track B is the structural work that full keyword and rules coverage needs (the reasoning is in [`FULL_COVERAGE_STRUCTURE.md`](./FULL_COVERAGE_STRUCTURE.md)). Track C keeps the docs honest as the code changes.
 
 **Order:**
 1. ~~A1, A2, A3 and A4~~ — **done** (`b68ef55`, `dfbc69e`, `94b04de`, `972a90c`).
-2. ~~B1~~ — **done** (`ENGINE_ARCHITECTURE_PLAN.md` §2.10); **B2** is next, then **B3**. **B4** starts with a design doc only.
+2. ~~B1~~ — **done** (`961b8e5`, [`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.10); ~~B2~~ — **done** (`ENGINE_ARCHITECTURE_PLAN.md` §2.11); **B3** is next (including Kicker on `CastOption`), then **B4** (design doc only).
 3. Track C rides along with every package.
 
 ---
@@ -164,7 +164,7 @@ Each B package starts with a short design note (a section added to `ENGINE_ARCHI
 
 **Size:** L. Split it into slices: effects first, then costs, then rules procedures.
 
-### B2. Cast options in place of `castMode` (CR 601.2, 118.9)
+### B2. Cast options in place of `castMode` (CR 601.2, 118.9) — ✅ Done (Kicker deferred to B3)
 
 **Problem.**
 - `castMode: 'normal' | 'overload'` is threaded through about ten functions, the action payload and `StackItem`.
@@ -209,7 +209,7 @@ A keyword expands to ordinary IR (a static, triggered or activated ability, or a
 **Acceptance.**
 - The keyword lists above are derived from the registry.
 - The coverage guard reads test files from the registry entry.
-- At least five currently unimplemented keywords are added purely as registry entries that expand to existing IR, with no runtime changes. Annihilator, exalted, cycling, prowess-like triggers, and landwalk variants are candidates.
+- At least five currently unimplemented keywords are added purely as registry entries that expand to existing IR, with no runtime changes (and wire **Kicker** `CR 702.33` onto `CastOption.optionalAdditionalCosts`, deferred from B2). Annihilator, exalted, cycling, prowess-like triggers, and landwalk variants are candidates.
 - Report the `keyword_not_implemented` count before and after.
 
 **Size:** M–L.

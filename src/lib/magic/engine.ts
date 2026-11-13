@@ -105,12 +105,14 @@ import {
 import {
 	ALTERNATIVE_COST_KEYWORDS,
 	activatedAbilityCost,
+	alternativeCostMetaById,
 	canPayCosts,
 	chooseCostPayment,
 	effectiveAbilityManaCost,
 	effectiveSpellManaCost,
 	executeCostPaymentParts,
 	getSuspendSpec,
+	keywordAltCost,
 	keywordCost,
 	keywordsOf,
 	manaAbilityAmount,
@@ -173,6 +175,7 @@ import {
 	ENGINE_VERSION,
 	PHASE_LABELS,
 	type CardInstance,
+	type CastOption,
 	type ChoiceAnswer,
 	type ChoiceRequest,
 	type CostPayment,
@@ -199,6 +202,7 @@ import {
 	type ProcedureContinuation,
 	type PromptPurpose,
 	type ScryfallCard,
+	type SpellModifications,
 	type StackItem,
 	type TriggerEventLki,
 	type TargetRef,
@@ -539,20 +543,252 @@ export function getPlayerCommanderIdentity(player: PlayerGameState): ManaColor[]
 	return Array.from(set);
 }
 
-function isOverloadCastMode(
-	card: ScryfallCard | undefined,
-	castMode?: 'normal' | 'overload'
+type CastableSourceZone = 'hand' | 'command' | 'exile' | 'graveyard';
+
+function optionTargetsBecomeEach(
+	sourceCard: ScryfallCard | undefined,
+	optionOrId?: CastOption | string
 ): boolean {
-	if (!card || castMode !== 'overload') return false;
-	return Boolean(ALTERNATIVE_COST_KEYWORDS.overload) && keywordCost(card, 'overload') !== null;
+	if (!optionOrId) return false;
+	if (typeof optionOrId !== 'string') return Boolean(optionOrId.spellMods.targetsBecomeEach);
+	if (!sourceCard) return false;
+	const found = alternativeCostMetaById(optionOrId);
+	if (!found || !found.meta.targetsBecomeEach) return false;
+	return keywordAltCost(sourceCard, found.keyword) !== null;
 }
 
-export function getSpellCostRequirement(
+function enumerateCandidateCastOptions(
+	state: GameState,
+	actorId: string,
+	inst: CardInstance,
+	fromZone: CastableSourceZone
+): CastOption[] {
+	const card = inst.copiableCard ?? inst.card;
+	if (card.typeLine.includes('Land') && !card.typeLine.includes('Creature')) {
+		return [];
+	}
+	if (fromZone === 'graveyard' && inst.ownerId !== actorId) {
+		return [];
+	}
+
+	const actor = state.players.find((p) => p.playerId === actorId);
+	const additional = spellAdditionalCost(card);
+	const mandatoryAdditionalCosts =
+		additional && additional.defs.length > 0 ? additional.defs : undefined;
+	const targetInfo = getSpellTargetRequirement(card);
+	const castCount =
+		inst.isCommander && fromZone === 'command' && actor
+			? (actor.commanderCastCounts?.[inst.instanceId] ?? inst.commanderCastCount ?? 0)
+			: 0;
+	const taxSuffix = castCount > 0 ? ` + {${castCount * state.rules.commanderTaxIncrement}}` : '';
+
+	const options: CastOption[] = [];
+	let hasZonePermission = false;
+
+	if (fromZone === 'hand' || fromZone === 'command') {
+		hasZonePermission = true;
+		const baseCost: CastOption['baseCost'] = { kind: 'printed' };
+		options.push({
+			id: 'normal',
+			label: 'Cast Normally',
+			costDisplay: `${card.manaCost || '{0}'}${taxSuffix}`,
+			fromZone,
+			permission: 'zone_default',
+			baseCost,
+			...(mandatoryAdditionalCosts ? { mandatoryAdditionalCosts } : {}),
+			timing: 'default',
+			spellMods: {},
+			choosesX: spellChoosesX(card, baseCost),
+			requiresTarget: targetInfo.requiresTarget
+		});
+	} else if (fromZone === 'exile') {
+		if (inst.castViaSuspend) {
+			const baseCost: CastOption['baseCost'] = { kind: 'free' };
+			options.push({
+				id: 'exile:suspend',
+				label: 'Cast via Suspend',
+				costDisplay: '{0}',
+				fromZone: 'exile',
+				permission: 'exile_permission',
+				baseCost,
+				...(mandatoryAdditionalCosts ? { mandatoryAdditionalCosts } : {}),
+				timing: 'default',
+				spellMods: {},
+				choosesX: spellChoosesX(card, baseCost),
+				requiresTarget: targetInfo.requiresTarget
+			});
+		} else if (inst.playableFromExileBy?.playerId === actorId) {
+			hasZonePermission = true;
+			const baseCost: CastOption['baseCost'] = { kind: 'printed' };
+			options.push({
+				id: 'exile:permission',
+				label: inst.playableFromExileBy.sourceName
+					? `Cast from Exile (${inst.playableFromExileBy.sourceName})`
+					: 'Cast from Exile',
+				costDisplay: card.manaCost || '{0}',
+				fromZone: 'exile',
+				permission: 'exile_permission',
+				baseCost,
+				...(mandatoryAdditionalCosts ? { mandatoryAdditionalCosts } : {}),
+				timing: 'default',
+				spellMods: {},
+				choosesX: spellChoosesX(card, baseCost),
+				requiresTarget: targetInfo.requiresTarget
+			});
+		}
+	}
+
+	if (!inst.castViaSuspend) {
+		const cardTypes = compileCard(card).faces[0]?.characteristics.types ?? [];
+		for (const [kwName, meta] of Object.entries(ALTERNATIVE_COST_KEYWORDS)) {
+			const altCost = keywordAltCost(card, kwName);
+			if (!altCost) continue;
+			if (!meta.zones.includes(fromZone)) continue;
+			if (meta.requiresZonePermission && !hasZonePermission) continue;
+			if (meta.spellTypes && meta.spellTypes.length > 0) {
+				if (!meta.spellTypes.some((t) => cardTypes.includes(t))) continue;
+			}
+			const baseCost: CastOption['baseCost'] = {
+				kind: 'alternative',
+				...(altCost.manaCost !== undefined ? { manaCost: altCost.manaCost } : {}),
+				...(altCost.costDefs.length > 0 ? { costDefs: altCost.costDefs } : {})
+			};
+			const spellMods: SpellModifications = {
+				...(meta.targetsBecomeEach ? { targetsBecomeEach: true } : {}),
+				...(meta.exileOnLeaveStack ? { exileOnLeaveStack: true } : {}),
+				...(meta.castSummarySuffix ? { castSummarySuffix: meta.castSummarySuffix } : {}),
+				...(meta.stackBadgeLabel ? { label: meta.stackBadgeLabel } : {})
+			};
+			options.push({
+				id: meta.id,
+				label: meta.label,
+				costDisplay: `${altCost.display}${taxSuffix}`,
+				fromZone,
+				permission: 'keyword_alt',
+				baseCost,
+				...(mandatoryAdditionalCosts ? { mandatoryAdditionalCosts } : {}),
+				timing: meta.timing ?? 'default',
+				spellMods,
+				choosesX: spellChoosesX(card, baseCost),
+				requiresTarget: meta.targetsBecomeEach ? false : targetInfo.requiresTarget
+			});
+		}
+	}
+
+	return options;
+}
+
+function resolveCastOptionForAction(
+	state: GameState,
+	actorId: string,
+	inst: CardInstance,
+	fromZone: ZoneType,
+	optionId?: string
+): { ok: true; option: CastOption } | { ok: false; error: string } {
+	if (inst.card.typeLine.includes('Land') && !inst.card.typeLine.includes('Creature')) {
+		return { ok: false, error: 'Lands are played using Play Land, not cast as spells.' };
+	}
+	if (
+		fromZone !== 'hand' &&
+		fromZone !== 'command' &&
+		fromZone !== 'exile' &&
+		fromZone !== 'graveyard'
+	) {
+		return { ok: false, error: 'Spells can only be cast from your Hand, Command Zone, or Exile.' };
+	}
+	if (fromZone === 'exile' && inst.playableFromExileBy?.playerId !== actorId && !inst.castViaSuspend) {
+		return {
+			ok: false,
+			error: `You do not have permission to cast ${inst.card.name} from Exile.`
+		};
+	}
+
+	const candidates = enumerateCandidateCastOptions(state, actorId, inst, fromZone);
+
+	if (optionId !== undefined) {
+		const match = candidates.find((o) => o.id === optionId);
+		if (match) return { ok: true, option: match };
+
+		const altMeta = alternativeCostMetaById(optionId);
+		if (altMeta) {
+			if (inst.castViaSuspend) {
+				return {
+					ok: false,
+					error: 'Only one alternative cost can be applied to a spell (CR 118.9a).'
+				};
+			}
+			if (keywordAltCost(inst.copiableCard ?? inst.card, altMeta.keyword) === null) {
+				const kwLabel = `${altMeta.keyword[0].toUpperCase()}${altMeta.keyword.slice(1)}`;
+				return { ok: false, error: `${inst.card.name} does not have ${kwLabel}.` };
+			}
+		}
+		if (fromZone === 'graveyard') {
+			return { ok: false, error: 'Spells can only be cast from your Hand, Command Zone, or Exile.' };
+		}
+		return {
+			ok: false,
+			error: `Cast option '${optionId}' is not valid for ${inst.card.name} from ${fromZone}.`
+		};
+	}
+
+	if (candidates.length === 0) {
+		return {
+			ok: false,
+			error:
+				fromZone === 'graveyard'
+					? 'Spells can only be cast from your Hand, Command Zone, or Exile.'
+					: `No cast option is available for ${inst.card.name} from ${fromZone}.`
+		};
+	}
+
+	const defaultOpt =
+		candidates.find((o) => o.id === 'normal') ??
+		candidates.find((o) => o.id === 'exile:suspend') ??
+		candidates.find((o) => o.id === 'exile:permission') ??
+		(candidates.length === 1 ? candidates[0] : undefined);
+	if (!defaultOpt) {
+		return { ok: false, error: 'Choose how to cast this spell (optionId is required).' };
+	}
+	return { ok: true, option: defaultOpt };
+}
+
+/**
+ * Enumerates all currently legal ways `actorId` can cast `inst` from `fromZone` (CR 601.2, 118.9).
+ * Read-only: shares one layer-cache validation across all option checks.
+ */
+export function getCastOptions(
+	state: GameState,
+	actorId: string,
+	inst: CardInstance,
+	fromZone: CastableSourceZone
+): CastOption[] {
+	return withStableLayerInputs(state, () => getCastOptionsInner(state, actorId, inst, fromZone));
+}
+
+function getCastOptionsInner(
+	state: GameState,
+	actorId: string,
+	inst: CardInstance,
+	fromZone: CastableSourceZone
+): CastOption[] {
+	const candidates = enumerateCandidateCastOptions(state, actorId, inst, fromZone);
+	return candidates.filter((opt) => {
+		if (checkSpellCastOptionLegalityInner(state, actorId, inst, fromZone, 0, opt).ok) {
+			return true;
+		}
+		if (opt.choosesX && checkSpellCastOptionLegalityInner(state, actorId, inst, fromZone, 1, opt).ok) {
+			return true;
+		}
+		return false;
+	});
+}
+
+function getSpellCostRequirementForOption(
 	player: PlayerGameState,
 	inst: CardInstance,
 	state: GameState,
-	xValue = 0,
-	castMode?: 'normal' | 'overload'
+	xValue: number,
+	option: CastOption
 ): ManaCostRequirement {
 	const applyAnyColorPermission = (req: ManaCostRequirement): ManaCostRequirement => {
 		if (
@@ -573,8 +809,37 @@ export function getSpellCostRequirement(
 		return req;
 	};
 
-	const isOverload = isOverloadCastMode(inst.card, castMode);
-	return applyAnyColorPermission(effectiveSpellManaCost(state, player, inst, xValue, isOverload));
+	return applyAnyColorPermission(
+		effectiveSpellManaCost(state, player, inst, xValue, option.baseCost)
+	);
+}
+
+export function getSpellCostRequirement(
+	player: PlayerGameState,
+	inst: CardInstance,
+	state: GameState,
+	xValue = 0,
+	optionId?: string
+): ManaCostRequirement {
+	const fromZone: CastableSourceZone =
+		inst.zone === 'command' || inst.zone === 'exile' || inst.zone === 'graveyard'
+			? inst.zone
+			: 'hand';
+	const resolved = resolveCastOptionForAction(state, player.playerId, inst, fromZone, optionId);
+	if (resolved.ok) {
+		return getSpellCostRequirementForOption(player, inst, state, xValue, resolved.option);
+	}
+	const altMeta = optionId ? alternativeCostMetaById(optionId) : null;
+	const altCost = altMeta ? keywordAltCost(inst.copiableCard ?? inst.card, altMeta.keyword) : null;
+	const fallbackBase: CastOption['baseCost'] =
+		altCost !== null
+			? {
+					kind: 'alternative',
+					...(altCost.manaCost !== undefined ? { manaCost: altCost.manaCost } : {}),
+					...(altCost.costDefs.length > 0 ? { costDefs: altCost.costDefs } : {})
+				}
+			: { kind: 'printed' };
+	return effectiveSpellManaCost(state, player, inst, xValue, fallbackBase);
 }
 
 export function chooseBotSpellCostPayment(
@@ -582,12 +847,22 @@ export function chooseBotSpellCostPayment(
 	player: PlayerGameState,
 	inst: CardInstance,
 	xValue = 0,
-	castMode?: 'normal' | 'overload'
+	optionId?: string
 ): CostPayment | undefined {
+	const fromZone: CastableSourceZone =
+		inst.zone === 'command' || inst.zone === 'exile' || inst.zone === 'graveyard'
+			? inst.zone
+			: 'hand';
+	const resolved = resolveCastOptionForAction(state, player.playerId, inst, fromZone, optionId);
+	const altDefs =
+		resolved.ok && resolved.option.baseCost.kind === 'alternative'
+			? (resolved.option.baseCost.costDefs ?? [])
+			: [];
 	const additional = spellAdditionalCost(inst.card);
-	if (!additional || additional.defs.length === 0) return undefined;
-	const costReq = getSpellCostRequirement(player, inst, state, xValue, castMode);
-	return chooseCostPayment(costContext(state, player, inst, xValue, true, costReq), additional.defs) ?? undefined;
+	const defs = [...altDefs, ...(additional?.defs ?? [])];
+	if (defs.length === 0) return undefined;
+	const costReq = getSpellCostRequirement(player, inst, state, xValue, optionId);
+	return chooseCostPayment(costContext(state, player, inst, xValue, true, costReq), defs) ?? undefined;
 }
 
 /**
@@ -676,12 +951,14 @@ function finalizeCastSpell(
 	actor: PlayerGameState,
 	inst: CardInstance,
 	sourcePlayer: PlayerGameState,
-	sourceZone: 'hand' | 'command' | 'exile',
+	sourceZone: 'hand' | 'command' | 'exile' | 'graveyard',
 	opts: {
 		targets: TargetRef[];
 		chosenModes?: number[];
 		xValue: number;
-		castMode: 'normal' | 'overload';
+		castOptionId?: string;
+		spellMods?: SpellModifications;
+		optionalCostCounts?: Record<string, number>;
 		exSourceName?: string;
 		descriptions?: string[];
 		additionalIncomplete?: boolean;
@@ -713,7 +990,8 @@ function finalizeCastSpell(
 	}
 	actor.spellsCastThisTurn = (actor.spellsCastThisTurn || 0) + 1;
 
-	const { targets, chosenModes, xValue: xVal, castMode: resolvedCastMode } = opts;
+	const { targets, chosenModes, xValue: xVal, castOptionId, spellMods, optionalCostCounts } = opts;
+	const hasSpellMods = Boolean(spellMods && Object.keys(spellMods).length > 0);
 	const stackItem: StackItem = withStackItemText(
 		{
 			id: uid('stk', state),
@@ -728,7 +1006,9 @@ function finalizeCastSpell(
 			...(chosenModes ? { chosenModes: [...chosenModes] } : {}),
 			targetObjectVersions: captureTargetObjectVersions(state, targets),
 			xValue: xVal,
-			castMode: resolvedCastMode,
+			...(castOptionId ? { castOptionId } : {}),
+			...(hasSpellMods ? { spellMods } : {}),
+			...(optionalCostCounts ? { optionalCostCounts } : {}),
 			commanderCastCount: inst.commanderCastCount,
 			requiresGuidedResolution: false,
 			createdAt: Date.now()
@@ -742,10 +1022,11 @@ function finalizeCastSpell(
 
 	const targetDesc =
 		targets.length > 0 ? ` targeting ${targets.map((t) => t.label).join(', ')}` : '';
+	const summarySuffix = spellMods?.castSummarySuffix ?? '';
 	addLog(
 		state,
 		'cast',
-		`${actor.username} cast ${inst.card.name}${resolvedCastMode === 'overload' ? ' (Overloaded)' : ''}${sourceZone === 'command' ? ` from Command Zone (Cast #${inst.commanderCastCount})` : sourceZone === 'exile' ? ` from Exile (${exSourceName || 'Exile Permission'})` : ''}${targetDesc}.`,
+		`${actor.username} cast ${inst.card.name}${summarySuffix}${sourceZone === 'command' ? ` from Command Zone (Cast #${inst.commanderCastCount})` : sourceZone === 'graveyard' ? ' from Graveyard' : sourceZone === 'exile' ? ` from Exile (${exSourceName || 'Exile Permission'})` : ''}${targetDesc}.`,
 		actorId
 	);
 
@@ -914,7 +1195,9 @@ function executeOrResumePendingCostPayment(
 				targets: pcp.targets ?? [],
 				chosenModes: pcp.chosenModes,
 				xValue: pcp.xValue ?? 0,
-				castMode: pcp.castMode ?? 'normal',
+				castOptionId: pcp.castOptionId,
+				spellMods: pcp.spellMods,
+				optionalCostCounts: pcp.optionalCostCounts,
 				exSourceName: pcp.exSourceName,
 				descriptions: pcp.descriptions,
 				additionalIncomplete: pcp.additionalIncomplete
@@ -2387,10 +2670,10 @@ function applyGameActionInner(
 				return { ok: false, error: 'You do not currently hold priority.' };
 			}
 
-			// Locate card in hand, command zone, or playable exile
+			// Locate card in hand, command zone, graveyard, or playable exile
 			let inst: CardInstance | undefined;
 			let sourcePlayer: PlayerGameState = actor;
-			let sourceZone: 'hand' | 'command' | 'exile' = 'hand';
+			let sourceZone: 'hand' | 'command' | 'exile' | 'graveyard' = 'hand';
 
 			const handIdx = actor.hand.findIndex((c) => c.instanceId === action.instanceId);
 			if (handIdx >= 0) {
@@ -2402,31 +2685,43 @@ function applyGameActionInner(
 					inst = actor.command[cmdIdx];
 					sourceZone = 'command';
 				} else {
-					for (const p of state.players) {
-						const exIdx = p.exile.findIndex(
-							(c) =>
-								c.instanceId === action.instanceId &&
-								c.playableFromExileBy?.playerId === actorId
-						);
-						if (exIdx >= 0) {
-							inst = p.exile[exIdx];
-							sourcePlayer = p;
-							sourceZone = 'exile';
-							break;
+					const gyIdx = actor.graveyard.findIndex((c) => c.instanceId === action.instanceId);
+					if (gyIdx >= 0) {
+						inst = actor.graveyard[gyIdx];
+						sourceZone = 'graveyard';
+					} else {
+						for (const p of state.players) {
+							const exIdx = p.exile.findIndex(
+								(c) =>
+									c.instanceId === action.instanceId &&
+									c.playableFromExileBy?.playerId === actorId
+							);
+							if (exIdx >= 0) {
+								inst = p.exile[exIdx];
+								sourcePlayer = p;
+								sourceZone = 'exile';
+								break;
+							}
 						}
 					}
 				}
 			}
 
 			if (!inst) {
-				return { ok: false, error: 'Card not found in your Hand, Command Zone, or playable Exile.' };
+				return {
+					ok: false,
+					error: 'Card not found in your Hand, Command Zone, Graveyard, or playable Exile.'
+				};
 			}
 
+			const resolvedOpt = resolveCastOptionForAction(state, actorId, inst, sourceZone, action.optionId);
+			if (!resolvedOpt.ok) {
+				return resolvedOpt;
+			}
+			const castOption = resolvedOpt.option;
 			const rawXVal = action.xValue || 0;
-			const castMode = action.castMode;
-			const isOverload = isOverloadCastMode(inst.card, castMode);
-			const xVal = isOverload && !spellChoosesX(inst.card, 'overload') ? 0 : rawXVal;
-			const legality = checkSpellCastLegality(state, actorId, inst, sourceZone, xVal, castMode);
+			const xVal = castOption.choosesX ? rawXVal : 0;
+			const legality = checkSpellCastLegality(state, actorId, inst, sourceZone, xVal, castOption.id);
 			if (!legality.ok) {
 				return legality;
 			}
@@ -2529,7 +2824,7 @@ function applyGameActionInner(
 					inst.card,
 					inst.instanceId,
 					xVal,
-					castMode
+					castOption
 				);
 				if (!targetValidation.ok) {
 					return targetValidation;
@@ -2537,10 +2832,13 @@ function applyGameActionInner(
 			}
 
 			// Check & pay mana cost (including Commander Tax if from Command Zone, or any-color mana if exiled with Opposition Agent!)
-			const costReq = getSpellCostRequirement(actor, inst, state, xVal, castMode);
-			const displayedManaCost = isOverload
-				? (keywordCost(inst.card, 'overload') ?? inst.card.manaCost)
-				: inst.card.manaCost;
+			const costReq = getSpellCostRequirementForOption(actor, inst, state, xVal, castOption);
+			const displayedManaCost =
+				castOption.baseCost.kind === 'alternative'
+					? (castOption.baseCost.manaCost ?? '')
+					: castOption.baseCost.kind === 'free'
+						? '{0}'
+						: inst.card.manaCost;
 			const manaError = `Insufficient mana to cast ${inst.card.name} (requires ${displayedManaCost || '{0}'}${sourceZone === 'command' && inst.commanderCastCount > 0 ? ` + {${inst.commanderCastCount * state.rules.commanderTaxIncrement}} Commander Tax` : ''}).`;
 			const phySpellChoice = maybeAskPhyrexianCostChoice(
 				state,
@@ -2560,11 +2858,13 @@ function applyGameActionInner(
 			if (hybSpellChoice.promptResult) return hybSpellChoice.promptResult;
 			const effectiveCostReq = hybSpellChoice.resolvedReq;
 
-			// Phase 4: additional costs from the IR, paid together with the mana (nothing is paid unless
-			// everything can be). Choices the player hasn't made become a cost_choice prompt.
+			// Phase 4: additional costs (plus any non-mana alternative costDefs) from the IR, paid together
+			// with the mana (nothing is paid unless everything can be). Choices become a cost_choice prompt.
 			const additional = spellAdditionalCost(inst.card);
-			const resolvedCastMode: 'normal' | 'overload' = isOverload ? 'overload' : 'normal';
-			if (additional && additional.defs.length > 0) {
+			const altCostDefs =
+				castOption.baseCost.kind === 'alternative' ? (castOption.baseCost.costDefs ?? []) : [];
+			const combinedCostDefs = [...altCostDefs, ...(castOption.mandatoryAdditionalCosts ?? [])];
+			if (combinedCostDefs.length > 0) {
 				const ctx = costContext(
 					state,
 					actor,
@@ -2574,7 +2874,7 @@ function applyGameActionInner(
 					effectiveCostReq,
 					action.costPayment?.phyrexianLifeCount
 				);
-				const plan = planCosts(ctx, additional.defs, action.costPayment);
+				const plan = planCosts(ctx, combinedCostDefs, action.costPayment);
 				if (!plan.ok) return { ok: false, error: plan.error.startsWith('Insufficient mana') ? manaError : plan.error };
 				if (plan.question) return askCostChoice(state, actor, action, plan.question, inst.card.name);
 				const parts = serializeCostPlanParts(ctx, plan);
@@ -2587,12 +2887,14 @@ function applyGameActionInner(
 					targets,
 					...(chosenModes ? { chosenModes: [...chosenModes] } : {}),
 					xValue: xVal,
-					castMode: resolvedCastMode,
+					castOptionId: castOption.id,
+					spellMods: castOption.spellMods,
+					...(action.optionalCostCounts ? { optionalCostCounts: action.optionalCostCounts } : {}),
 					...(inst.playableFromExileBy?.sourceName
 						? { exSourceName: inst.playableFromExileBy.sourceName }
 						: {}),
 					sourceCard: inst.card,
-					additionalIncomplete: !additional.complete,
+					additionalIncomplete: Boolean(additional && !additional.complete),
 					parts,
 					manaPaid: plan.mana,
 					tapsAndManaDone: false,
@@ -2616,7 +2918,9 @@ function applyGameActionInner(
 				targets,
 				chosenModes,
 				xValue: xVal,
-				castMode: resolvedCastMode,
+				castOptionId: castOption.id,
+				spellMods: castOption.spellMods,
+				optionalCostCounts: action.optionalCostCounts,
 				additionalIncomplete: Boolean(additional && !additional.complete)
 			});
 			return { ok: true };
@@ -5181,9 +5485,13 @@ function givePriorityToActiveOrNextPlayer(state: GameState): void {
 export function moveStackSpellToZone(
 	state: GameState,
 	stackItem: StackItem,
-	dest: 'graveyard' | 'exile'
+	dest: 'graveyard' | 'exile' | 'hand' | 'library' = 'graveyard'
 ): void {
 	if (stackItem.kind !== 'spell' || stackItem.isCopy) return;
+	// CR 702.34a (and similar stack-exit replacements): exile instead of putting it anywhere else.
+	if (stackItem.spellMods?.exileOnLeaveStack) {
+		dest = 'exile';
+	}
 	const ownerId = stackItem.ownerId || stackItem.controllerId;
 	const owner =
 		state.players.find((p) => p.playerId === ownerId) ||
@@ -5208,8 +5516,9 @@ export function moveStackSpellToZone(
 	moveObject(state, cardInst, dest, {
 		from: 'stack',
 		toPlayer: owner,
-		graveyardReplacement: true,
-		commanderRedirect: true
+		graveyardReplacement: dest === 'graveyard',
+		commanderRedirect: true,
+		insert: dest === 'library' ? 'start' : 'end'
 	});
 }
 
@@ -6670,12 +6979,13 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 		item.kind === 'triggered'
 			? triggerItemEffect(item)
 			: compiledStackItemEffects(item);
-	const overload = item.castMode === 'overload';
+	const targetsBecomeEach = Boolean(item.spellMods?.targetsBecomeEach);
 	const interpreted =
 		!item.manualResolution &&
 		compiled !== null &&
 		staticallyInterpretable(compiled, item.kind === 'triggered') &&
-		(item.effectResume !== undefined || interpretableNow(state, item, compiled, controller, overload));
+		(item.effectResume !== undefined ||
+			interpretableNow(state, item, compiled, controller, targetsBecomeEach));
 	// Step E2 (plan section 2.7): a spell or ability the interpreter can't run isn't automated. A human
 	// controller resolves it manually (guided operations); a bot skips it.
 	if (!interpreted && isUnautomatedStackItem(item)) {
@@ -6702,7 +7012,7 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 				targets: item.targets,
 				targetSpecs: compiled.targets,
 				xValue: item.xValue,
-				overload,
+				targetsBecomeEach,
 				...triggerEventContext(item)
 			},
 			steps,
@@ -10040,13 +10350,13 @@ export function validateChosenTargets(
 	sourceCard?: ScryfallCard,
 	sourceInstanceId?: string,
 	xValue = 0,
-	castMode?: 'normal' | 'overload'
+	optionOrId?: CastOption | string
 ): { ok: boolean; error?: string } {
-	if (isOverloadCastMode(sourceCard, castMode)) {
+	if (optionTargetsBecomeEach(sourceCard, optionOrId)) {
 		if (targets.length > 0) {
 			return {
 				ok: false,
-				error: `Strict Rules Violation: Overloaded ${sourceCard?.name || 'spell'} changes 'target' to 'each' and cannot have targets (CR 702.96b).`
+				error: `Strict Rules Violation: ${sourceCard?.name || 'This spell'} changes 'target' to 'each' and cannot have targets (CR 702.96b).`
 			};
 		}
 		return { ok: true };
@@ -10063,7 +10373,7 @@ export function validateChosenTargets(
 				sourceCard,
 				sourceInstanceId,
 				xValue,
-				castMode
+				optionOrId
 			);
 			if (res.ok) return { ok: true };
 			if (res.error) lastErr = res.error;
@@ -10232,10 +10542,18 @@ export function hasRequiredLegalTargets(
 	sourceCard?: ScryfallCard,
 	sourceInstanceId?: string,
 	xValue = 0,
-	castMode?: 'normal' | 'overload'
+	optionOrId?: CastOption | string
 ): { ok: boolean; error?: string } {
 	return withStableLayerInputs(state, () =>
-		hasRequiredLegalTargetsInner(state, actorId, info, sourceCard, sourceInstanceId, xValue, castMode)
+		hasRequiredLegalTargetsInner(
+			state,
+			actorId,
+			info,
+			sourceCard,
+			sourceInstanceId,
+			xValue,
+			optionOrId
+		)
 	);
 }
 
@@ -10246,20 +10564,28 @@ function hasRequiredLegalTargetsInner(
 	sourceCard?: ScryfallCard,
 	sourceInstanceId?: string,
 	xValue = 0,
-	castMode?: 'normal' | 'overload'
+	optionOrId?: CastOption | string
 ): { ok: boolean; error?: string } {
 	if (!info.requiresTarget || info.minTargets <= 0) {
 		return { ok: true };
 	}
 
-	if (isOverloadCastMode(sourceCard, castMode)) {
+	if (optionTargetsBecomeEach(sourceCard, optionOrId)) {
 		return { ok: true };
 	}
 
 	if (info.isModal && info.modalBranches && info.modalBranches.length > 0) {
 		for (const branch of info.modalBranches) {
 			if (
-				hasRequiredLegalTargets(state, actorId, branch, sourceCard, sourceInstanceId, xValue, castMode).ok
+				hasRequiredLegalTargets(
+					state,
+					actorId,
+					branch,
+					sourceCard,
+					sourceInstanceId,
+					xValue,
+					optionOrId
+				).ok
 			) {
 				return { ok: true };
 			}
@@ -10284,7 +10610,7 @@ function hasRequiredLegalTargetsInner(
 				sourceCard,
 				sourceInstanceId,
 				xValue,
-				castMode
+				optionOrId
 			);
 			if (!res.ok) return res;
 		}
@@ -10499,10 +10825,10 @@ export function checkSpellCastLegality(
 	inst: CardInstance,
 	fromZone: ZoneType = 'hand',
 	xValue = 0,
-	castMode?: 'normal' | 'overload'
+	optionId?: string
 ): { ok: boolean; error?: string } {
 	return withStableLayerInputs(state, () =>
-		checkSpellCastLegalityInner(state, actorId, inst, fromZone, xValue, castMode)
+		checkSpellCastLegalityInner(state, actorId, inst, fromZone, xValue, optionId)
 	);
 }
 
@@ -10512,7 +10838,7 @@ function checkSpellCastLegalityInner(
 	inst: CardInstance,
 	fromZone: ZoneType = 'hand',
 	xValue = 0,
-	castMode?: 'normal' | 'overload'
+	optionId?: string
 ): { ok: boolean; error?: string } {
 	if (state.status !== 'active') {
 		return { ok: false, error: 'Game is not currently active.' };
@@ -10524,29 +10850,37 @@ function checkSpellCastLegalityInner(
 	if (!actor || actor.lost) {
 		return { ok: false, error: 'Player is not active in this game.' };
 	}
-	if (fromZone === 'exile') {
-		if (inst.playableFromExileBy?.playerId !== actorId && !inst.castViaSuspend) {
-			return {
-				ok: false,
-				error: `You do not have permission to cast ${inst.card.name} from Exile.`
-			};
-		}
-	} else if (fromZone !== 'hand' && fromZone !== 'command') {
-		return { ok: false, error: 'Spells can only be cast from your Hand, Command Zone, or Exile.' };
+	const resolved = resolveCastOptionForAction(state, actorId, inst, fromZone, optionId);
+	if (!resolved.ok) {
+		return { ok: false, error: resolved.error };
 	}
-	if (inst.card.typeLine.includes('Land') && !inst.card.typeLine.includes('Creature')) {
-		return { ok: false, error: 'Lands are played using Play Land, not cast as spells.' };
+	return checkSpellCastOptionLegalityInner(
+		state,
+		actorId,
+		inst,
+		resolved.option.fromZone,
+		xValue,
+		resolved.option
+	);
+}
+
+function checkSpellCastOptionLegalityInner(
+	state: GameState,
+	actorId: string,
+	inst: CardInstance,
+	fromZone: CastableSourceZone,
+	xValue: number,
+	option: CastOption
+): { ok: boolean; error?: string } {
+	if (state.status !== 'active') {
+		return { ok: false, error: 'Game is not currently active.' };
 	}
-	if (castMode === 'overload') {
-		if (!ALTERNATIVE_COST_KEYWORDS.overload || keywordCost(inst.card, 'overload') === null) {
-			return { ok: false, error: `${inst.card.name} does not have Overload.` };
-		}
-		if (inst.castViaSuspend) {
-			return {
-				ok: false,
-				error: 'Only one alternative cost can be applied to a spell (CR 118.9a).'
-			};
-		}
+	if (state.pendingPrompts.length > 0) {
+		return { ok: false, error: 'Resolve the active prompt first.' };
+	}
+	const actor = state.players.find((p) => p.playerId === actorId);
+	if (!actor || actor.lost) {
+		return { ok: false, error: 'Player is not active in this game.' };
 	}
 
 	const activePlayer = state.players[state.activePlayerIndex];
@@ -10572,6 +10906,7 @@ function checkSpellCastLegalityInner(
 	}
 
 	const isInstantSpeed =
+		option.timing === 'instant_only' ||
 		inst.card.typeLine.includes('Instant') ||
 		hasKeyword(inst, 'Flash', state) ||
 		globalCastCheck.grantsFlash;
@@ -10632,29 +10967,32 @@ function checkSpellCastLegalityInner(
 
 	// Check mana payment (cards with no mana cost like Ancestral Vision / Sol Talisman cannot be cast normally from hand)
 	if (
+		option.baseCost.kind === 'printed' &&
 		inst.card.manaCost === '' &&
-		!inst.card.typeLine.includes('Land') &&
-		fromZone === 'hand' &&
-		!isOverloadCastMode(inst.card, castMode)
+		!inst.card.typeLine.includes('Land')
 	) {
 		return {
 			ok: false,
-			error: `${inst.card.name} has no mana cost and cannot be cast normally from hand (use Suspend instead).`
+			error:
+				fromZone === 'hand'
+					? `${inst.card.name} has no mana cost and cannot be cast normally from hand (use Suspend instead).`
+					: `${inst.card.name} has no mana cost and cannot be cast for its printed cost (CR 118.6).`
 		};
 	}
-	const costReq = getSpellCostRequirement(actor, inst, state, xValue, castMode);
+	const costReq = getSpellCostRequirementForOption(actor, inst, state, xValue, option);
 	if (!canPayOrAutoTap(actor, costReq, state)) {
 		return {
 			ok: false,
 			error: `Insufficient mana to cast ${inst.card.name}.`
 		};
 	}
-	// Phase 4: additional costs from the IR, together with the mana.
-	const additional = spellAdditionalCost(inst.card);
+	// Phase 4: additional costs (plus any non-mana alternative costDefs) from the IR, together with the mana.
+	const altCostDefs =
+		option.baseCost.kind === 'alternative' ? (option.baseCost.costDefs ?? []) : [];
+	const combinedCostDefs = [...altCostDefs, ...(option.mandatoryAdditionalCosts ?? [])];
 	if (
-		additional &&
-		additional.defs.length > 0 &&
-		!canPayCosts(costContext(state, actor, inst, xValue, true, costReq), additional.defs)
+		combinedCostDefs.length > 0 &&
+		!canPayCosts(costContext(state, actor, inst, xValue, true, costReq), combinedCostDefs)
 	) {
 		return {
 			ok: false,
@@ -10671,7 +11009,7 @@ function checkSpellCastLegalityInner(
 		inst.card,
 		inst.instanceId,
 		xValue,
-		castMode
+		option
 	);
 	if (!targetCheck.ok) {
 		return targetCheck;

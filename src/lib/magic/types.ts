@@ -344,6 +344,42 @@ export interface TargetRef {
 
 export type TriggerScope = 'controller_turn' | 'each_turn' | 'opponent_turn';
 
+export interface SpellModifications {
+	targetsBecomeEach?: boolean;
+	exileOnLeaveStack?: boolean;
+	entersWithCounters?: Record<string, number>;
+	sacrificeAtEndStep?: boolean;
+	castSummarySuffix?: string;
+	label?: string;
+}
+
+export interface CastOptionOptionalCost {
+	id: string;
+	label: string;
+	costDisplay: string;
+	costDefs: CostDef[];
+	maxCount: number;
+	kickedTag?: string;
+}
+
+export interface CastOption {
+	id: string;
+	label: string;
+	costDisplay: string;
+	fromZone: 'hand' | 'command' | 'exile' | 'graveyard';
+	permission: 'zone_default' | 'keyword_alt' | 'exile_permission';
+	baseCost:
+		| { kind: 'printed' }
+		| { kind: 'alternative'; manaCost?: string; costDefs?: CostDef[] }
+		| { kind: 'free' };
+	mandatoryAdditionalCosts?: CostDef[];
+	optionalAdditionalCosts?: CastOptionOptionalCost[];
+	timing: 'default' | 'instant_only';
+	spellMods: SpellModifications;
+	choosesX: boolean;
+	requiresTarget: boolean;
+}
+
 export interface StackItem {
 	id: string;
 	sourceInstanceId: string;
@@ -355,7 +391,9 @@ export interface StackItem {
 	oracleText: string;
 	targets: TargetRef[];
 	xValue: number;
-	castMode?: 'normal' | 'overload';
+	castOptionId?: string;
+	spellMods?: SpellModifications;
+	optionalCostCounts?: Record<string, number>;
 	commanderCastCount?: number;
 	requiresGuidedResolution: boolean;
 	createdAt: number;
@@ -901,11 +939,13 @@ export interface PendingCostPayment {
 	actorId: string;
 	sourceInstanceId: string;
 	sourcePlayerId?: string;
-	sourceZone?: 'hand' | 'command' | 'exile';
+	sourceZone?: 'hand' | 'command' | 'exile' | 'graveyard';
 	targets?: TargetRef[];
 	chosenModes?: number[];
 	xValue?: number;
-	castMode?: 'normal' | 'overload';
+	castOptionId?: string;
+	spellMods?: SpellModifications;
+	optionalCostCounts?: Record<string, number>;
 	exSourceName?: string;
 	sourceCard?: ScryfallCard;
 	additionalIncomplete?: boolean;
@@ -1051,7 +1091,8 @@ export type GameActionPayload =
 			targets?: TargetRef[];
 			modes?: number[];
 			xValue?: number;
-			castMode?: 'normal' | 'overload';
+			optionId?: string;
+			optionalCostCounts?: Record<string, number>;
 			fromZone?: 'hand' | 'command' | 'graveyard' | 'exile';
 			costPayment?: CostPayment;
 	  }

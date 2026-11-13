@@ -63,6 +63,7 @@ export const IMPLEMENTED_KEYWORDS = new Set([
 	'fear',
 	'first strike',
 	'flash',
+	'flashback',
 	'flying',
 	'haste',
 	'hexproof',
@@ -215,7 +216,7 @@ function parseKeyword(part: string): KeywordDef | null {
 		const rest = part.slice(kw.length);
 		if (!/^[\s—-]/.test(rest)) continue;
 		const rawArg = rest.replace(/^\s*[—-]?\s*/, '').trim();
-		const arg = kw === 'ward' ? rawArg.replace(/\.$/, '').trim() : rawArg;
+		const arg = kw === 'ward' || kw === 'flashback' ? rawArg.replace(/\.$/, '').trim() : rawArg;
 		if (/^(\{[^}]+\})+$/.test(arg)) return { name: kw, cost: arg };
 		if (/^\d+$/.test(arg)) return { name: kw, n: parseInt(arg, 10) };
 		const nCost = arg.match(/^(\d+)\s*—\s*((?:\{[^}]+\})+)$/);
@@ -230,9 +231,12 @@ function parseKeyword(part: string): KeywordDef | null {
 
 /** "Flying, vigilance", "Equip {2}", "Protection from black". A trailing period means an effect. */
 function keywordLine(line: NormalizedLine): AbilityDef[] | null {
-	if (line.abilityWord || (/\.$/.test(line.body) && !/^ward\s*[—-]/i.test(line.body))) return null;
-	// "Enchant creature, land, or planeswalker" and "Protection from white, from blue" are one keyword.
-	const parts = /^(?:enchant|protection from|hexproof from|partner with)\b/i.test(line.body) ? [line.body] : line.body.split(/,\s*/);
+	if (line.abilityWord || (/\.$/.test(line.body) && !/^(?:ward|flashback)\s*[—-]/i.test(line.body))) return null;
+	// "Enchant creature, land, or planeswalker", "Protection from white, from blue", and composite
+	// dash costs ("Ward—...", "Flashback—...") are one keyword.
+	const parts = /^(?:enchant|protection from|hexproof from|partner with|(?:ward|flashback)\s*[—-])/i.test(line.body)
+		? [line.body]
+		: line.body.split(/,\s*/);
 	const keywords = parts.map(parseKeyword);
 	if (keywords.some((k) => !k)) return null;
 
@@ -279,6 +283,15 @@ function keywordLine(line: NormalizedLine): AbilityDef[] | null {
 					span,
 					unparsed: [span]
 				});
+				return;
+			}
+			keyword.costDefs = parsed.defs;
+		}
+		if (keyword.name === 'flashback') {
+			const fbCost = keyword.cost ?? keyword.param ?? '';
+			const parsed = parseCost(fbCost);
+			if (parsed.unparsed.length > 0 || parsed.defs.length === 0) {
+				out.push(unsupported('unparsed', part, span, [span]));
 				return;
 			}
 			keyword.costDefs = parsed.defs;

@@ -137,7 +137,7 @@ Identifiers are from `ir.ts`, `types.ts` and `runtime/`; CR numbers are from [`s
    - A resolving `StackItem` remains on `state.stack` until all of its `EffectStep` instructions and any interactive prompts have finished (`CR 608.2n`), ensuring "End the turn" (`CR 725.1b`) exiles the resolving spell itself.
    - On resolution, targets are re-checked against their recorded `targetObjectVersions`, zone, controller, type/subtype filter, and current Hexproof/Shroud/Protection (`CR 608.2b`). If all targets are now illegal, the spell/ability doesn't resolve; if at least one target remains legal, it resolves and illegal targets are ignored.
 6. **Casting Choices Are Explicit (`CR 601.2b`)**
-   - How a spell is cast (normal or an alternative cost such as Overload, `castMode` on the `cast_spell` action and `StackItem`) is an explicit choice sent by the client or bot. It is never inferred from another field such as `xValue`.
+   - How a spell is cast (`CastOption` enumerated by `getCastOptions`, sent as `optionId` on `cast_spell` and stored as `castOptionId` and `spellMods` on `StackItem`) is an explicit choice sent by the client or bot. It is never inferred from another field such as `xValue`.
 
 ---
 

@@ -1476,7 +1476,7 @@ describe('9. Niche Mechanics: Modal Spells, Cyclonic Rift Overload, Infect, Doub
 		assert.equal(checkSpellCastLegality(state, p1Id, rift, 'hand', 0, 'normal').ok, false);
 
 		// Overload mode: does not target -> LEGAL!
-		assert.equal(checkSpellCastLegality(state, p1Id, rift, 'hand', 0, 'overload').ok, true);
+		assert.equal(checkSpellCastLegality(state, p1Id, rift, 'hand', 0, 'alt:overload').ok, true);
 
 		// Now give opponent a Sol Ring -> Normal mode becomes legal too!
 		const oppRing = addCardToZone(state, p2Id, getCardByName('Sol Ring')!, 'battlefield');
@@ -1486,7 +1486,7 @@ describe('9. Niche Mechanics: Modal Spells, Cyclonic Rift Overload, Infect, Doub
 				type: 'cast_spell',
 				instanceId: rift.instanceId,
 				targets: [{ kind: 'permanent', id: oppRing.instanceId, label: 'Sol Ring' }],
-				castMode: 'normal'
+				optionId: 'normal'
 			}).ok,
 			true
 		);
@@ -3569,7 +3569,7 @@ describe('24. Stage A: Live Bug Fixes (A1 Intervening-If, A2 End Step Scope, A3 
 		assert.equal(normalReq.generic, 1);
 		assert.equal(normalReq.colored.U, 1);
 
-		const overloadReq = getSpellCostRequirement(p1, riftInst, state, 0, 'overload');
+		const overloadReq = getSpellCostRequirement(p1, riftInst, state, 0, 'alt:overload');
 		assert.equal(overloadReq.generic, 6, 'Overloaded Cyclonic Rift requires {6} generic');
 		assert.equal(overloadReq.colored.U, 1, 'Overloaded Cyclonic Rift requires {U}');
 
@@ -3585,7 +3585,7 @@ describe('24. Stage A: Live Bug Fixes (A1 Intervening-If, A2 End Step Scope, A3 
 		assert.equal(synthNormal.generic, 1);
 		assert.equal(synthNormal.colored.R, 1);
 
-		const synthOverloaded = getSpellCostRequirement(p1, synthInst, state, 0, 'overload');
+		const synthOverloaded = getSpellCostRequirement(p1, synthInst, state, 0, 'alt:overload');
 		assert.equal(synthOverloaded.generic, 4, 'Synthetic Overload card requires {4} generic when overloaded');
 		assert.equal(synthOverloaded.colored.R, 1, 'Synthetic Overload card requires {R} when overloaded');
 	});
@@ -4195,7 +4195,7 @@ describe('26. Stage C: Grammar-Driven Triggers, Target-Controller Effects, Cost 
 			applyGameAction(state, p1Id, {
 				type: 'cast_spell',
 				instanceId: purgeInst.instanceId,
-				castMode: 'overload',
+				optionId: 'alt:overload',
 				targets: []
 			}).ok,
 			true
@@ -4800,7 +4800,7 @@ describe('28. Stage E: AI Evaluator — Effective Layer Types & Phased-Out Perma
 
 // ============================================================================
 // 29. Stage C & D Deep Audit: Timestamp Precedence, Layer-Aware Subtypes/Types,
-//     Generic Non-Green Power Mana Dorks, Overload castMode & Player Hexproof
+//     Generic Non-Green Power Mana Dorks, Overload optionId & Player Hexproof
 // ============================================================================
 describe('29. Stage C & D Deep Audit: Timestamp Precedence, Layer-Aware Subtypes/Types & Generic Oracle Dispatch', () => {
 	// Song of the Dryads' Oracle text is now "Enchanted permanent is a colorless Forest land.", which
@@ -5227,7 +5227,7 @@ describe('29. Stage C & D Deep Audit: Timestamp Precedence, Layer-Aware Subtypes
 		);
 	});
 
-	it('C-Audit-5: disambiguates castMode: "overload" vs normal "{X}" spell casts, and enforces synthetic player hexproof ("You have hexproof")', () => {
+	it('C-Audit-5: disambiguates optionId: "alt:overload" vs normal "{X}" spell casts, and enforces synthetic player hexproof ("You have hexproof")', () => {
 		const { state, p1Id, p2Id } = createActiveTwoPlayerGame();
 		const p1 = state.players[0];
 		const p2 = state.players[1];
@@ -5252,7 +5252,7 @@ describe('29. Stage C & D Deep Audit: Timestamp Precedence, Layer-Aware Subtypes
 				type: 'cast_spell',
 				instanceId: spell1.instanceId,
 				xValue: 2,
-				castMode: 'normal',
+				optionId: 'normal',
 				targets: [{ kind: 'permanent', id: oppPerm1.instanceId, label: oppPerm1.card.name }]
 			}).ok,
 			true
@@ -5307,7 +5307,7 @@ describe('29. Stage C & D Deep Audit: Timestamp Precedence, Layer-Aware Subtypes
 
 
 describe('30. Phase 0 baseline repairs', () => {
-	it('honors an explicit castMode: "overload" with no X value and no targets', () => {
+	it('honors an explicit optionId: "alt:overload" with no X value and no targets', () => {
 		const { state, p1Id, p2Id } = createActiveTwoPlayerGame();
 		const p1 = state.players[0];
 		const opp1 = addCardToZone(state, p2Id, getCardByName('Sol Ring')!, 'battlefield');
@@ -5318,7 +5318,7 @@ describe('30. Phase 0 baseline repairs', () => {
 		const res = applyGameAction(state, p1Id, {
 			type: 'cast_spell',
 			instanceId: rift.instanceId,
-			castMode: 'overload',
+			optionId: 'alt:overload',
 			targets: []
 		});
 		assert.equal(res.ok, true, res.error ?? 'overload cast rejected');
@@ -5330,14 +5330,14 @@ describe('30. Phase 0 baseline repairs', () => {
 		assert.equal(p2Bf.includes(opp2.instanceId), false, 'Arcane Signet bounced');
 	});
 
-	it('requires targets for an explicit castMode: "normal" cast even when xValue >= 1', () => {
+	it('requires targets for an explicit optionId: "normal" cast even when xValue >= 1', () => {
 		const { state, p1Id } = createActiveTwoPlayerGame();
 		const rift = addCardToZone(state, p1Id, getCardByName('Cyclonic Rift')!, 'hand');
 		const res = applyGameAction(state, p1Id, {
 			type: 'cast_spell',
 			instanceId: rift.instanceId,
 			xValue: 1,
-			castMode: 'normal',
+			optionId: 'normal',
 			targets: []
 		});
 		assert.equal(res.ok, false, 'A normal-mode Cyclonic Rift needs a target');

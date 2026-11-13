@@ -3,11 +3,11 @@ import {
 	addLog,
 	applyGameAction,
 	checkAbilityActivationLegality,
-	checkSpellCastLegality,
 	chooseBotAttackAssignments,
 	chooseBotBlockAssignments,
 	chooseBotSpellCostPayment,
 	evaluatePermanent,
+	getCastOptions,
 	getCreaturePower,
 	getCreatureToughness,
 	getEffectiveActivatedAbilities,
@@ -17,7 +17,6 @@ import {
 } from './engine.ts';
 import type { EffectStep, RestrictionKind, TargetSpec } from './ir.ts';
 import { chooseBotAnswer, effectivePromptChoice, effectivePromptPurpose } from './runtime/choices.ts';
-import { keywordCost } from './runtime/costs.ts';
 import { withStableLayerInputs } from './runtime/layerCache.ts';
 import { evaluateCondition, matchesObjectFilter } from './runtime/objectFilter.ts';
 import type {
@@ -196,36 +195,17 @@ function hasAnyLegalInstantResponseInner(state: GameState, player: PlayerGameSta
 		if (types.includes('Land') && !types.includes('Creature')) {
 			continue;
 		}
-		const hasOverload = keywordCost(cardInst.card, 'overload') !== null;
-		if (
-			checkSpellCastLegality(
-				state,
-				player.playerId,
-				cardInst,
-				'hand',
-				0,
-				hasOverload ? 'normal' : undefined
-			).ok ||
-			(hasOverload &&
-				checkSpellCastLegality(state, player.playerId, cardInst, 'hand', 0, 'overload').ok)
-		) {
+		if (getCastOptions(state, player.playerId, cardInst, 'hand').length > 0) {
 			return true;
 		}
 	}
 	for (const cmdInst of player.command) {
-		const hasOverload = keywordCost(cmdInst.card, 'overload') !== null;
-		if (
-			checkSpellCastLegality(
-				state,
-				player.playerId,
-				cmdInst,
-				'command',
-				0,
-				hasOverload ? 'normal' : undefined
-			).ok ||
-			(hasOverload &&
-				checkSpellCastLegality(state, player.playerId, cmdInst, 'command', 0, 'overload').ok)
-		) {
+		if (getCastOptions(state, player.playerId, cmdInst, 'command').length > 0) {
+			return true;
+		}
+	}
+	for (const gyInst of player.graveyard) {
+		if (getCastOptions(state, player.playerId, gyInst, 'graveyard').length > 0) {
 			return true;
 		}
 	}
@@ -640,21 +620,24 @@ export function executeBotStep(
 		// 2b. Try casting Commander from Command Zone if affordable and legal
 		for (const cmd of bot.command) {
 			// Read-only decision (Phase 6d); the cast is applied outside the scope.
-			const plan = withStableLayerInputs(state, () =>
-				checkSpellCastLegality(state, bot.playerId, cmd, 'command', 0).ok
-					? {
-							targets: chooseBotTargetsForCard(state, bot, cmd),
-							costPayment: chooseBotSpellCostPayment(state, bot, cmd, 0)
-						}
-					: null
-			);
+			const plan = withStableLayerInputs(state, () => {
+				const options = getCastOptions(state, bot.playerId, cmd, 'command');
+				const opt = options.find((o) => !o.spellMods.targetsBecomeEach) ?? options[0];
+				if (!opt) return null;
+				return {
+					optionId: opt.id,
+					targets: opt.requiresTarget ? chooseBotTargetsForCard(state, bot, cmd) : [],
+					costPayment: chooseBotSpellCostPayment(state, bot, cmd, 0, opt.id)
+				};
+			});
 			if (plan) {
-				const { targets, costPayment } = plan;
+				const { optionId, targets, costPayment } = plan;
 				const costBefore = countBotCostChoicePrompts(state, bot.playerId);
 				const res = applyGameAction(state, bot.playerId, {
 					type: 'cast_spell',
 					instanceId: cmd.instanceId,
 					fromZone: 'command',
+					optionId,
 					targets,
 					...(costPayment ? { costPayment } : {})
 				});
@@ -680,44 +663,57 @@ export function executeBotStep(
 				(b) => !b.phasedOut && !evaluatePermanent(state, b).isLand
 			).length;
 
-			return bot.hand
-				.filter((c) => {
-					const types = compileCard(c.card).faces[0].characteristics.types;
-					if (types.includes('Land')) return false;
-					if (isCounterSpellCard(c.card)) return false;
-					// Do not waste pure protection tricks on an empty board / proactive main phase
-					if (isProtectionTrickCard(c.card)) {
-						return false;
-					}
-					// Do not cast board wipes if opponents control fewer than 2 creatures
-					if (isCreatureBoardWipeCard(c.card) && opponentCreatureCount < 2) {
-						return false;
-					}
-					const hasOverload = keywordCost(c.card, 'overload') !== null;
-					return (
-						checkSpellCastLegality(state, bot.playerId, c, 'hand', 0, hasOverload ? 'normal' : undefined).ok ||
-						(hasOverload && checkSpellCastLegality(state, bot.playerId, c, 'hand', 0, 'overload').ok)
-					);
-				})
-				.sort((a, b) => a.card.cmc - b.card.cmc);
+			const isCandidateSpell = (c: CardInstance, zone: 'hand' | 'graveyard'): boolean => {
+				const types = compileCard(c.card).faces[0].characteristics.types;
+				if (types.includes('Land')) return false;
+				if (isCounterSpellCard(c.card)) return false;
+				// Do not waste pure protection tricks on an empty board / proactive main phase
+				if (isProtectionTrickCard(c.card)) {
+					return false;
+				}
+				// Do not cast board wipes if opponents control fewer than 2 creatures
+				if (isCreatureBoardWipeCard(c.card) && opponentCreatureCount < 2) {
+					return false;
+				}
+				return getCastOptions(state, bot.playerId, c, zone).length > 0;
+			};
+
+			return [
+				...bot.hand
+					.filter((c) => isCandidateSpell(c, 'hand'))
+					.sort((a, b) => a.card.cmc - b.card.cmc)
+					.map((cardInst) => ({ cardInst, fromZone: 'hand' as const })),
+				...bot.graveyard
+					.filter((c) => isCandidateSpell(c, 'graveyard'))
+					.sort((a, b) => a.card.cmc - b.card.cmc)
+					.map((cardInst) => ({ cardInst, fromZone: 'graveyard' as const }))
+			];
 		});
 
-		for (const cardInst of castable) {
+		for (const { cardInst, fromZone } of castable) {
 			const modal = compileSpellEffects(cardInst.card)?.modal;
 			if (modal) {
 				// Read-only decision (Phase 6d).
 				const planned = withStableLayerInputs(state, () => {
-					const chosen = chooseBotModalSpell(state, bot, cardInst);
-					return chosen
-						? { chosen, costPayment: chooseBotSpellCostPayment(state, bot, cardInst, 0) }
+					const options = getCastOptions(state, bot.playerId, cardInst, fromZone);
+					const opt = options.find((o) => !o.spellMods.targetsBecomeEach) ?? options[0];
+					const chosen = opt ? chooseBotModalSpell(state, bot, cardInst) : null;
+					return chosen && opt
+						? {
+								chosen,
+								optionId: opt.id,
+								costPayment: chooseBotSpellCostPayment(state, bot, cardInst, 0, opt.id)
+							}
 						: null;
 				});
 				if (!planned) continue;
-				const { chosen, costPayment } = planned;
+				const { chosen, optionId, costPayment } = planned;
 				const costBefore = countBotCostChoicePrompts(state, bot.playerId);
 				const res = applyGameAction(state, bot.playerId, {
 					type: 'cast_spell',
 					instanceId: cardInst.instanceId,
+					fromZone,
+					optionId,
 					targets: chosen.targets,
 					modes: chosen.modes,
 					...(costPayment ? { costPayment } : {})
@@ -729,9 +725,12 @@ export function executeBotStep(
 			}
 			// Read-only decision (Phase 6d).
 			const planned = withStableLayerInputs(state, () => {
-				const hasOverload = keywordCost(cardInst.card, 'overload') !== null;
+				const options = getCastOptions(state, bot.playerId, cardInst, fromZone);
+				if (options.length === 0) return null;
 				const spec = cardSpellTargetSpec(cardInst.card);
-				if (hasOverload && checkSpellCastLegality(state, bot.playerId, cardInst, 'hand', 0, 'overload').ok) {
+				const eachOpt = options.find((o) => o.spellMods.targetsBecomeEach);
+				const nonEachOpt = options.find((o) => !o.spellMods.targetsBecomeEach);
+				if (eachOpt) {
 					const harmful = targetIsHarmed(cardSpellSteps(cardInst.card), 0);
 					let oppMatches = 0;
 					let ownMatches = 0;
@@ -747,49 +746,41 @@ export function executeBotStep(
 							}
 						}
 					}
-					const normalLegal = checkSpellCastLegality(
-						state,
-						bot.playerId,
-						cardInst,
-						'hand',
-						0,
-						'normal'
-					).ok;
-					const shouldOverload = harmful
+					const normalLegal = Boolean(nonEachOpt);
+					const shouldUseEach = harmful
 						? oppMatches > ownMatches && (oppMatches >= 2 || (!normalLegal && oppMatches >= 1))
 						: ownMatches >= 2 || (!normalLegal && ownMatches >= 1);
-					if (shouldOverload) {
+					if (shouldUseEach) {
 						return {
 							targets: [] as TargetRef[],
-							castMode: 'overload' as const,
-							costPayment: chooseBotSpellCostPayment(state, bot, cardInst, 0, 'overload')
+							optionId: eachOpt.id,
+							costPayment: chooseBotSpellCostPayment(state, bot, cardInst, 0, eachOpt.id)
 						};
 					}
 				}
-				if (
-					hasOverload &&
-					!checkSpellCastLegality(state, bot.playerId, cardInst, 'hand', 0, 'normal').ok
-				) {
+				if (!nonEachOpt) {
 					return null;
 				}
-				const targets = chooseBotTargetsForCard(state, bot, cardInst);
-				const minTargets = spec ? spec.min : 0;
+				const targets = nonEachOpt.requiresTarget
+					? chooseBotTargetsForCard(state, bot, cardInst)
+					: [];
+				const minTargets = nonEachOpt.requiresTarget && spec ? spec.min : 0;
 				if (minTargets > 0 && targets.length < minTargets) return null;
-				const castMode = hasOverload ? ('normal' as const) : undefined;
 				return {
 					targets,
-					castMode,
-					costPayment: chooseBotSpellCostPayment(state, bot, cardInst, 0, castMode)
+					optionId: nonEachOpt.id,
+					costPayment: chooseBotSpellCostPayment(state, bot, cardInst, 0, nonEachOpt.id)
 				};
 			});
 			if (!planned) continue;
-			const { targets, castMode, costPayment } = planned;
+			const { targets, optionId, costPayment } = planned;
 			const costBefore = countBotCostChoicePrompts(state, bot.playerId);
 			const res = applyGameAction(state, bot.playerId, {
 				type: 'cast_spell',
 				instanceId: cardInst.instanceId,
+				fromZone,
 				targets,
-				...(castMode ? { castMode } : {}),
+				optionId,
 				...(costPayment ? { costPayment } : {})
 			});
 			if (res.ok) {

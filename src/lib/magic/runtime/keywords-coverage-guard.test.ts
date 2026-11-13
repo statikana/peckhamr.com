@@ -29,6 +29,7 @@ export const KEYWORD_COVERAGE_FILES: Record<string, readonly string[]> = {
 	fear: ['runtime/keywords-evasion.test.ts', 'runtime/tier2a.test.ts'],
 	'first strike': ['runtime/keywords-combat-damage.test.ts', 'runtime/turn-combat.test.ts'],
 	flash: ['runtime/keywords-casting.test.ts', 'runtime/replace.test.ts'],
+	flashback: ['runtime/keywords-casting.test.ts'],
 	flying: ['runtime/keywords-evasion.test.ts', 'magic.test.ts'],
 	haste: ['runtime/keywords-evasion.test.ts', 'magic.test.ts'],
 	hexproof: ['runtime/keywords-protection-attachments.test.ts', 'magic.test.ts'],
@@ -56,6 +57,7 @@ export const KEYWORD_COVERAGE_FILES: Record<string, readonly string[]> = {
 const SAMPLE_ORACLE_FOR_KEYWORD: Record<string, { typeLine: string; oracleText: string }> = {
 	enchant: { typeLine: 'Enchantment — Aura', oracleText: 'Enchant creature' },
 	equip: { typeLine: 'Artifact — Equipment', oracleText: 'Equip {1}' },
+	flashback: { typeLine: 'Sorcery', oracleText: 'Draw a card.\nFlashback {2}{U}' },
 	overload: {
 		typeLine: 'Instant',
 		oracleText: "Return target nonland permanent you don't control to its owner's hand.\nOverload {6}{U}"
@@ -134,6 +136,7 @@ describe('Implemented Keywords Coverage Guard', () => {
 		const PARAMETERIZED_OR_CAST_KEYWORDS = new Set([
 			'enchant',
 			'equip',
+			'flashback',
 			'overload',
 			'partner',
 			'protection',

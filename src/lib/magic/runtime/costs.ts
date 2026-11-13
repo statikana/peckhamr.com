@@ -19,6 +19,7 @@ import { parseManaCost, type ManaCostRequirement } from '../oracle.ts';
 import { evaluatePermanent } from '../ruleTree.ts';
 import type {
 	CardInstance,
+	CastOption,
 	CostPayment,
 	CounterType,
 	EffectiveActivatedAbility,
@@ -121,15 +122,65 @@ export function keywordCost(card: ScryfallCard, name: string): string | null {
 }
 
 /**
- * Whether casting the card means choosing X (CR 601.2b): {X} in the paid mana cost (printed mana
- * cost normally, or the overload cost when cast with overload), or X in an additional cost such as
- * Toxic Deluge's "pay X life".
+ * Extracts a keyword alternative cost (mana cost, non-mana `CostDef[]`, and display summary) from
+ * a compiled card's `KeywordDef`. Supports mana-only, pure non-mana, and composite costs.
  */
-export function spellChoosesX(card: ScryfallCard, castMode?: 'normal' | 'overload'): boolean {
-	const costStr =
-		castMode === 'overload' ? (keywordCost(card, 'overload') ?? card.manaCost) : card.manaCost;
+export function keywordAltCost(
+	card: ScryfallCard,
+	kwName: string
+): { manaCost?: string; costDefs: CostDef[]; display: string } | null {
+	for (const a of abilitiesOf(card)) {
+		if (a.kind !== 'keyword' || a.keyword.name !== kwName) continue;
+		const kw = a.keyword;
+		const defs = kw.costDefs;
+		if (defs && defs.length > 0) {
+			const manaParts = defs.filter((d): d is Extract<CostDef, { k: 'mana' }> => d.k === 'mana');
+			const nonManaDefs = defs.filter((d) => d.k !== 'mana');
+			const manaCost =
+				kw.cost ??
+				(manaParts.length > 0 ? manaParts.map((m) => m.cost).join('') : undefined);
+			const displayParts: string[] = [];
+			if (manaCost) displayParts.push(manaCost);
+			if (nonManaDefs.length > 0) displayParts.push(describeCost(nonManaDefs));
+			return {
+				...(manaCost !== undefined ? { manaCost } : {}),
+				costDefs: nonManaDefs,
+				display: displayParts.join(', ') || '{0}'
+			};
+		}
+		if (kw.cost) {
+			return {
+				manaCost: kw.cost,
+				costDefs: [],
+				display: kw.cost
+			};
+		}
+	}
+	return null;
+}
+
+/**
+ * Whether casting the card means choosing X (CR 601.2b): {X} in the paid mana cost (printed mana
+ * cost normally, or the selected alternative mana cost), or X in an additional cost / alternative
+ * cost definition such as Toxic Deluge's "pay X life".
+ */
+export function spellChoosesX(
+	card: ScryfallCard,
+	baseCost?: CastOption['baseCost'] | string
+): boolean {
+	let costStr = card.manaCost;
+	let altCostDefs: CostDef[] | undefined;
+	if (typeof baseCost === 'string') {
+		costStr = baseCost;
+	} else if (baseCost?.kind === 'alternative') {
+		costStr = baseCost.manaCost ?? '';
+		altCostDefs = baseCost.costDefs;
+	} else if (baseCost?.kind === 'free') {
+		costStr = '';
+	}
 	if (/\{X\}/i.test(costStr)) return true;
 	const mentionsX = (defs: CostDef[] | undefined) => JSON.stringify(defs ?? []).includes('"k":"x"');
+	if (mentionsX(altCostDefs)) return true;
 	return abilitiesOf(card).some(
 		(a) =>
 			(a.kind === 'spell' && mentionsX(a.additionalCosts)) ||
@@ -137,12 +188,60 @@ export function spellChoosesX(card: ScryfallCard, castMode?: 'normal' | 'overloa
 	);
 }
 
+/** Metadata describing an alternative-cost keyword ability (CR 118.9). */
+export interface AlternativeCostKeywordMeta {
+	id: string;
+	label: string;
+	castSummarySuffix: string;
+	zones: Array<'hand' | 'command' | 'exile' | 'graveyard'>;
+	/** True when casting from non-hand zones requires an existing zone permission (not granted by the keyword itself). */
+	requiresZonePermission?: boolean;
+	spellTypes?: Array<'Instant' | 'Sorcery'>;
+	targetsBecomeEach?: boolean;
+	exileOnLeaveStack?: boolean;
+	timing?: 'default' | 'instant_only';
+	stackBadgeLabel?: string;
+}
+
 /** Keyword abilities that are alternative costs for casting a spell (CR 118.9). */
-export const ALTERNATIVE_COST_KEYWORDS: Record<string, { targetsBecomeEach: boolean }> = {
+export const ALTERNATIVE_COST_KEYWORDS: Record<string, AlternativeCostKeywordMeta> = {
 	// CR 702.96a: "You may choose to pay [cost] rather than pay this spell's mana cost" and
 	// "target" becomes "each".
-	overload: { targetsBecomeEach: true }
+	overload: {
+		id: 'alt:overload',
+		label: 'Cast with Overload',
+		castSummarySuffix: ' (Overloaded)',
+		zones: ['hand', 'command', 'exile'],
+		requiresZonePermission: true,
+		targetsBecomeEach: true,
+		timing: 'default',
+		stackBadgeLabel: 'Overloaded (each matching object)'
+	},
+	// CR 702.34a: "You may cast this card from your graveyard if the resulting spell is an instant
+	// or sorcery spell by paying [cost] rather than paying its mana cost" and "exile this card
+	// instead of putting it anywhere else any time it would leave the stack."
+	flashback: {
+		id: 'alt:flashback',
+		label: 'Cast with Flashback',
+		castSummarySuffix: ' (Flashback)',
+		stackBadgeLabel: 'Flashback',
+		zones: ['graveyard'],
+		requiresZonePermission: false,
+		spellTypes: ['Instant', 'Sorcery'],
+		exileOnLeaveStack: true,
+		timing: 'default'
+	}
 };
+
+/** Look up an alternative-cost keyword entry by CastOption `id` (e.g. `'alt:overload'`). */
+export function alternativeCostMetaById(
+	optionId: string
+): { keyword: string; meta: AlternativeCostKeywordMeta } | null {
+	for (const [keyword, meta] of Object.entries(ALTERNATIVE_COST_KEYWORDS)) {
+		if (meta.id === optionId) return { keyword, meta };
+	}
+	return null;
+}
 
 export function keywordsOf(card: ScryfallCard): KeywordDef[] {
 	return abilitiesOf(card).flatMap((a) => (a.kind === 'keyword' ? [a.keyword] : []));
@@ -159,20 +258,20 @@ export function costModifiersOf(card: ScryfallCard): Array<Extract<StaticDef, { 
 
 /**
  * Computes the effective mana cost requirement for casting `inst` (CR 601.2f): base mana cost (or
- * alternative keyword cost such as Overload from `ALTERNATIVE_COST_KEYWORDS`), plus Commander Tax
- * from the command zone, plus active `StaticDef{k:'costModifier'}` reductions/increases from the
- * spell itself, the battlefield, and the command zone (Eminence).
+ * alternative/free base cost from `CastOption`), plus Commander Tax from the command zone, plus
+ * active `StaticDef{k:'costModifier'}` reductions/increases from the spell itself, the battlefield,
+ * and the command zone (Eminence).
  */
 export function effectiveSpellManaCost(
 	state: GameState,
 	player: PlayerGameState,
 	inst: CardInstance,
 	xValue = 0,
-	isOverload = false
+	baseCost?: CastOption['baseCost'] | string
 ): ManaCostRequirement {
 	// Read-only: one layer-cache validation for the battlefield scan (Phase 6d).
 	return withStableLayerInputs(state, () =>
-		effectiveSpellManaCostInner(state, player, inst, xValue, isOverload)
+		effectiveSpellManaCostInner(state, player, inst, xValue, baseCost)
 	);
 }
 
@@ -181,11 +280,18 @@ function effectiveSpellManaCostInner(
 	player: PlayerGameState,
 	inst: CardInstance,
 	xValue: number,
-	isOverload: boolean
+	baseCost?: CastOption['baseCost'] | string
 ): ManaCostRequirement {
 	const card = inst.copiableCard ?? inst.card;
-	const baseCostStr = isOverload ? (keywordCost(card, 'overload') ?? card.manaCost) : card.manaCost;
-	const effectiveX = isOverload && !spellChoosesX(card, 'overload') ? 0 : xValue;
+	let baseCostStr = card.manaCost;
+	if (typeof baseCost === 'string') {
+		baseCostStr = baseCost;
+	} else if (baseCost?.kind === 'alternative') {
+		baseCostStr = baseCost.manaCost ?? '';
+	} else if (baseCost?.kind === 'free') {
+		baseCostStr = '';
+	}
+	const effectiveX = spellChoosesX(card, baseCost) ? xValue : 0;
 
 	let forceZeroCost = false;
 	let genericReduction = 0;
