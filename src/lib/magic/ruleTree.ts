@@ -1,6 +1,7 @@
 import { cardManaSteps as compiledCardManaSteps, compileCard } from './compiler/index.ts';
 import { displayAbilityText } from './compiler/support.ts';
 import type { ActivatedAbility, CostDef, EffectStep, TargetSpec, UnsupportedAbility } from './ir.ts';
+import { getKeywordSpec } from './keywords.ts';
 import { effectiveAbilityManaCost } from './runtime/costs.ts';
 import { isCastConditionMet } from './runtime/kicker.ts';
 import {
@@ -353,6 +354,9 @@ interface BuildEffectiveAbilityOptions {
 	displayCard: ScryfallCard;
 	grantSourceCard?: ScryfallCard;
 	grantSources?: string[];
+	labelOverride?: string;
+	costTextOverride?: string;
+	effectTextOverride?: string;
 }
 
 function buildEffectiveActivatedAbility(
@@ -416,12 +420,16 @@ function buildEffectiveActivatedAbility(
 			: loyaltyCost !== null
 				? `${loyaltyCost >= 0 ? `+${loyaltyCost}` : loyaltyCost}: ${effectPart.slice(0, 48)}`
 				: `${costPart}: ${effectPart.slice(0, maxEffectLen)}`;
-	const label = `${baseLabel}${sourceSuffix}`;
-	const costText = isPureTapMana
-		? '{T}'
-		: loyaltyCost !== null
-			? `${loyaltyCost >= 0 ? `+${loyaltyCost}` : loyaltyCost}`
-			: costPart;
+	const label = opts.labelOverride ?? `${baseLabel}${sourceSuffix}`;
+	const costText =
+		opts.costTextOverride ??
+		(isPureTapMana
+			? '{T}'
+			: loyaltyCost !== null
+				? `${loyaltyCost >= 0 ? `+${loyaltyCost}` : loyaltyCost}`
+				: costPart);
+	const activationZones = ab.kind === 'activated' ? ab.activationZones : undefined;
+	const costKeyword = ab.kind === 'activated' ? ab.costKeyword : undefined;
 
 	return {
 		id,
@@ -437,11 +445,13 @@ function buildEffectiveActivatedAbility(
 		isManaAbility: isMana && hasManaProduction,
 		sorcerySpeedOnly: timing === 'sorcery',
 		...(ab.activationRestrictions?.length ? { activationRestrictions: ab.activationRestrictions } : {}),
+		...(activationZones?.length ? { activationZones } : {}),
+		...(costKeyword ? { costKeyword } : {}),
 		producesMana,
 		producesAmount,
 		...(manaAmount ? { manaAmount } : {}),
 		...(opts.grantSourceCard ? { grantSourceCard: opts.grantSourceCard } : {}),
-		effectText: effectPart,
+		effectText: opts.effectTextOverride ?? effectPart,
 		requiresTarget: targetInfo.requiresTarget,
 		targetKind: targetInfo.targetKind,
 		targetInfo
@@ -523,6 +533,7 @@ export function getCardActivatedAbilities(
 					loyaltyCost: null,
 					isManaAbility: false,
 					sorcerySpeedOnly: true,
+					costKeyword: 'equip',
 					producesMana: [],
 					producesAmount: 0,
 					effectText: `Attach to target ${equipTargetPhrase} you control.`,
@@ -530,6 +541,34 @@ export function getCardActivatedAbilities(
 					targetKind: 'controlled_creature',
 					targetInfo
 				});
+			} else {
+				const spec = getKeywordSpec(kwName);
+				if (
+					spec?.status === 'implemented' &&
+					spec.implementation?.kind === 'activated' &&
+					spec.implementation.buildActivated
+				) {
+					const built = spec.implementation.buildActivated(
+						ab.keyword,
+						ab.id ?? `${kwName}_0`,
+						ab.span
+					);
+					if (built) {
+						const effective = buildEffectiveActivatedAbility(
+							built.ability,
+							commanderIdentity,
+							resolveOpponentLandColors,
+							{
+								displayCardName: card.name,
+								displayCard: card,
+								labelOverride: built.label,
+								costTextOverride: built.costText,
+								effectTextOverride: built.effectText
+							}
+						);
+						if (effective) out.push(effective);
+					}
+				}
 			}
 			continue;
 		}
@@ -560,36 +599,44 @@ export function getEffectiveActivatedAbilities(
 	perm: CardInstance,
 	commanderIdentity: ManaColor[] = []
 ): EffectiveActivatedAbility[] {
-	const breakdown = inspectCardContinuousBreakdown(perm, state);
-	const allInnateRemoved = permanentHasLostAllAbilities(perm, state).lost;
 	const resolveOppLands = () =>
 		state.lobbyCode === 'GOLDEN'
 			? (['W', 'U', 'B', 'R', 'G'] as ManaColor[])
 			: opponentLandColors(state, actor);
 
-	const effectiveCard = perm.copiableCard ?? perm.card;
-	const rawAbilities: EffectiveActivatedAbility[] = allInnateRemoved
-		? []
-		: getCardActivatedAbilities(effectiveCard, commanderIdentity, resolveOppLands);
+	let rawAbilities: EffectiveActivatedAbility[];
+	if (perm.zone !== 'battlefield') {
+		// CR 611.3b: Battlefield Layer 4/6 static effects (ability loss, grants, copy) apply only
+		// to permanents on the battlefield; off-battlefield objects keep their innate abilities,
+		// with cost modifiers still applied below.
+		rawAbilities = getCardActivatedAbilities(perm.card, commanderIdentity, resolveOppLands);
+	} else {
+		const breakdown = inspectCardContinuousBreakdown(perm, state);
+		const allInnateRemoved = permanentHasLostAllAbilities(perm, state).lost;
+		const effectiveCard = perm.copiableCard ?? perm.card;
+		rawAbilities = allInnateRemoved
+			? []
+			: getCardActivatedAbilities(effectiveCard, commanderIdentity, resolveOppLands);
 
-	// Add granted activated abilities from Layer 4 / Layer 6 IR (`AttributedKeywordOrEffect.grantedAbility`)
-	for (const item of breakdown.items) {
-		if (item.removed || item.isInnate || !item.grantedAbility) continue;
-		const grantedIr = item.grantedAbility;
-		const abId = grantedIr.intrinsic
-			? grantedIr.id
-			: item.grantSourceId
-				? `granted:${item.grantSourceId}:${grantedIr.id}`
-				: grantedIr.id;
-		if (rawAbilities.some((a) => a.id === abId)) continue;
-		const built = buildEffectiveActivatedAbility(grantedIr, commanderIdentity, resolveOppLands, {
-			idOverride: abId,
-			displayCardName: effectiveCard.name,
-			displayCard: item.grantSourceCard ?? effectiveCard,
-			grantSourceCard: item.grantSourceCard,
-			grantSources: item.sources
-		});
-		if (built) rawAbilities.push(built);
+		// Add granted activated abilities from Layer 4 / Layer 6 IR (`AttributedKeywordOrEffect.grantedAbility`)
+		for (const item of breakdown.items) {
+			if (item.removed || item.isInnate || !item.grantedAbility) continue;
+			const grantedIr = item.grantedAbility;
+			const abId = grantedIr.intrinsic
+				? grantedIr.id
+				: item.grantSourceId
+					? `granted:${item.grantSourceId}:${grantedIr.id}`
+					: grantedIr.id;
+			if (rawAbilities.some((a) => a.id === abId)) continue;
+			const built = buildEffectiveActivatedAbility(grantedIr, commanderIdentity, resolveOppLands, {
+				idOverride: abId,
+				displayCardName: effectiveCard.name,
+				displayCard: item.grantSourceCard ?? effectiveCard,
+				grantSourceCard: item.grantSourceCard,
+				grantSources: item.sources
+			});
+			if (built) rawAbilities.push(built);
+		}
 	}
 
 	return rawAbilities.map((ab) => {
@@ -597,7 +644,8 @@ export function getEffectiveActivatedAbilities(
 			state,
 			actor.playerId,
 			ab.id,
-			ab.manaCost
+			ab.manaCost,
+			ab.costKeyword
 		);
 		if (effMana !== ab.manaCost) {
 			const nextCost = ab.cost.map((c) =>
@@ -605,15 +653,24 @@ export function getEffectiveActivatedAbilities(
 			);
 			const filteredCost =
 				effMana === '{0}' || effMana === '' ? nextCost.filter((c) => c.k !== 'mana') : nextCost;
+			const nextCostText =
+				ab.id.startsWith('equip_') && effMana === '{0}'
+					? 'Equip {0}'
+					: ab.manaCost && ab.costText.includes(ab.manaCost)
+						? ab.costText.replace(ab.manaCost, effMana || '{0}')
+						: ab.costText;
+			const nextLabel =
+				ab.id.startsWith('equip_') && effMana === '{0}'
+					? `Equip {0} (was ${ab.manaCost})`
+					: ab.manaCost && ab.label.includes(ab.manaCost)
+						? ab.label.replace(ab.manaCost, effMana || '{0}')
+						: ab.label;
 			return {
 				...ab,
 				manaCost: effMana,
 				cost: filteredCost,
-				costText: ab.id.startsWith('equip_') && effMana === '{0}' ? 'Equip {0}' : ab.costText,
-				label:
-					ab.id.startsWith('equip_') && effMana === '{0}'
-						? `Equip {0} (was ${ab.manaCost})`
-						: ab.label
+				costText: nextCostText,
+				label: nextLabel
 			};
 		}
 		return ab;

@@ -15,7 +15,7 @@ import { hashText } from './normalize.ts';
 import { runtimeTriggers } from './triggers.ts';
 
 /** Bump whenever the IR produced for the same text could change. */
-export const COMPILER_VERSION = 16;
+export const COMPILER_VERSION = 17;
 
 const CACHE = new Map<string, CardDefinition>();
 
@@ -153,7 +153,14 @@ function effectOf(ab: AbilityDef | undefined): CompiledEffect | null {
 	if (!ab) return null;
 	if (ab.kind === 'spell') return { steps: ab.effect, targets: ab.targets, modal: ab.modal, unparsed: [] };
 	if (ab.kind === 'activated' || ab.kind === 'triggered') return { steps: ab.effect, targets: ab.targets, unparsed: [] };
-	if (ab.kind === 'keyword' && ab.keyword.name === 'equip') return equipEffect(ab);
+	if (ab.kind === 'keyword') {
+		if (ab.keyword.name === 'equip') return equipEffect(ab);
+		const spec = getKeywordSpec(ab.keyword.name);
+		if (spec?.status === 'implemented' && spec.implementation?.kind === 'activated' && spec.implementation.buildActivated) {
+			const built = spec.implementation.buildActivated(ab.keyword, ab.id ?? '', ab.span);
+			if (built) return { steps: built.ability.effect, targets: built.ability.targets, unparsed: [] };
+		}
+	}
 	return null;
 }
 

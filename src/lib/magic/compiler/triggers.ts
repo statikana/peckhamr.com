@@ -222,7 +222,35 @@ function spellFilter(text: string): EventFilter['object'] | null {
 	return spell ? parseObjectPhrase(`${spell[1]} card`) : null;
 }
 
+function discardedCardFilter(text: string): ObjectFilter | null {
+	if (text === '~') return null;
+	const m = text.match(/^(?:a|an) (.+)$/i);
+	if (!m) return null;
+	const inner = m[1].trim();
+	if (/^card$/i.test(inner)) return {};
+	if (!/\bcard$/i.test(inner)) return null;
+	return parseObjectPhrase(inner);
+}
+
 function playerEvent(player: EventFilter['player'], rest: string): TriggerDef | null {
+	if (player?.relation === 'you' && rest === 'cycle ~') {
+		return { event: 'cycle', filter: { object: 'self', player }, fromZone: 'any' };
+	}
+	const cycleOrDiscard = rest.match(/^(?:cycle or discard|cycles or discards) (.+)$/);
+	if (cycleOrDiscard) {
+		const object = discardedCardFilter(cycleOrDiscard[1]);
+		if (object) return { event: 'discard', filter: { player, object } };
+	}
+	const cycle = rest.match(/^cycles? (.+)$/);
+	if (cycle) {
+		const object = discardedCardFilter(cycle[1]);
+		if (object) return { event: 'cycle', filter: { player, object } };
+	}
+	const discard = rest.match(/^discards? (.+)$/);
+	if (discard) {
+		const object = discardedCardFilter(discard[1]);
+		if (object) return { event: 'discard', filter: { player, object } };
+	}
 	const cast = rest.match(/^(cast or copy|casts or copies|casts?) (.+)$/);
 	if (cast) {
 		const object = spellFilter(cast[2]);
@@ -437,7 +465,9 @@ const RUNTIME_EVENT_FIELDS: Partial<Record<TriggerDef['event'], ReadonlySet<stri
 	tappedForMana: new Set(['object', 'player']),
 	gainLife: new Set(['player']),
 	drawCard: new Set(['player']),
-	becomesTapped: new Set(['object', 'orSelf'])
+	becomesTapped: new Set(['object', 'orSelf']),
+	cycle: new Set(['object', 'player']),
+	discard: new Set(['object', 'player'])
 };
 
 function objectFilterProblem(f: ObjectFilter | undefined): string | null {
@@ -476,7 +506,9 @@ export function runtimeTriggerProblem(def: TriggerDef): string | null {
 		return `caster "${f.player.relation}"`;
 	}
 	if (def.event === 'attacks' && f.player && f.player.relation !== 'you') return 'attacking player';
-	if (def.fromZone && def.fromZone !== 'graveyard') return `functions from ${def.fromZone}`;
+	if (def.fromZone && def.fromZone !== 'graveyard' && !(def.fromZone === 'any' && def.event === 'cycle')) {
+		return `functions from ${def.fromZone}`;
+	}
 	for (const alt of def.or ?? []) {
 		const q = runtimeTriggerProblem(alt);
 		if (q) return q;

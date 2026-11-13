@@ -550,6 +550,52 @@ Previously, casting options were hardcoded around a binary union:
 
 ---
 
+### 2.13 Hand-zone activated abilities & Cycling (CR 702.29)
+
+*Status: implemented across Slices 1–2 (`keywords.ts`, `ir.ts`, `types.ts`, `ruleTree.ts`, `engine.ts`, `ai.ts`, `ArenaTable.svelte`, `compiler/`, `runtime/`, `COMPILER_VERSION = 17`), with live `vite dev` Chromium verification and regenerated [`COVERAGE.md`](./COVERAGE.md).*
+
+`CR 702.29a–f` introduces the first general non-battlefield activated ability in the engine. Rather than special-casing `'cycling'` in `engine.ts`, `ArenaTable.svelte`, or `ai.ts`, the design extends the `ActivatedAbility` / `EffectiveActivatedAbility` / `CostDef` model so any hand-activated ability works uniformly and future hand/graveyard activated abilities (Channel, Unearth, Forecast, Bloodrush) reuse the same machinery.
+
+#### Architecture
+
+1. **Zone-scoped activated abilities (`ir.ts`, `types.ts`, `ruleTree.ts`, `engine.ts`).**
+   - Add `activationZones?: ZoneType[]` on `ActivatedAbility` (`ir.ts`) and `EffectiveActivatedAbility` (`types.ts`), defaulting to `['battlefield']`.
+   - `getCardActivatedAbilities` (`ruleTree.ts`) keeps emitting every activated ability regardless of zone (`CR 702.29b`: cycling continues to exist on the battlefield and in all other zones).
+   - Add `getHandActivatedAbilities(card)` or preserve the zone list through `buildEffectiveActivatedAbility` so `activate_ability` (`engine.ts`) and `checkAbilityActivationLegalityInner` (`engine.ts`) locate `action.instanceId` across `actor.battlefield` (existing default) **or** `actor.hand` when `ab.activationZones?.includes('hand')` matches, checking `zone === 'battlefield'` only for battlefield abilities and checking `!perm.phasedOut` on battlefield.
+   - `case 'activate_ability'` must enforce zone match (a battlefield-only ability cannot be activated from hand; a hand-only ability such as Cycling cannot be activated from the battlefield).
+   - Global ability-activation restrictions (`checkGlobalAbilityActivationRestrictions`, `CR 602.5b`) and `costContext` (`isSpell: false`) work from hand with `resolveCostSourceCard` (`engine.ts`) and `sourceCard` preserved on `PendingCostPayment` and the resulting `StackItem` (`CR 113.7a`, `CR 602.2b`). Because paying Cycling moves the card out of `actor.hand` (into `graveyard`, or `exile` under Rest in Peace if replacement triggers a `PendingCostPayment` pause), `finalizeActivateAbility` resolves `sourceCard` / LKI cleanly even after the card leaves hand.
+
+2. **Discard-self cost & cost modifiers (`ir.ts`, `runtime/costs.ts`).**
+   - Widen `CostDef` `{ k: 'discard', count: Amount; filter?: ObjectFilter | 'self'; random?: boolean }`.
+   - When `filter === 'self'` in `planCosts` / `executeCostPaymentParts` (`runtime/costs.ts`): requires `ctx.source.zone === 'hand'` (and `!ctx.isSpell`), consumes zero user object choices (self is implicit, matching `sacrifice` / `exileFrom` `'self'`), moves `ctx.source` via `moveFromZone(ctx, ctx.source, 'hand', 'graveyard')` (`CR 701.9a`), and cleanly suspends inside `PendingCostPayment` if a graveyard replacement (`zone_replacement_choice`) pauses payment (Track B1 Slice 2). Under `CR 701.9c` / hidden-zone rule checks, discarding to pay a cost puts the card into a public zone unless replaced; replacement prompts preserve the state until resolved.
+   - Generalize `effectiveAbilityManaCostInner` (`runtime/costs.ts`) from equip-only (`abilityId.startsWith('equip_')`) to check `mod.affects.k === 'ability'` by matching the ability's canonical keyword tag (`'equip'`, `'cycling'`, etc.), so `CR 702.29f` (*Fluctuator*-style `"Cycling abilities you activate cost {2} less"`, `"Activated abilities ... cost less"`) reduces both mana Cycling and Typecycling costs (`CR 702.29f`: typecycling costs are cycling costs).
+
+3. **`KEYWORD_REGISTRY`, Cycling & Typecycling (`keywords.ts`, `compiler/card.ts`, `ruleTree.ts`, `ir.ts`).**
+   - Implement `'cycling'` (`CR 702.29a`), `'basic landcycling'`, `'landcycling'`, `'typecycling'`, and subtype/quality cycling (`Plainscycling`, `Islandcycling`, `Swampcycling`, `Mountaincycling`, `Forestcycling`, `Slivercycling`, `Wizardcycling`, `Artifactcycling`, etc. per `CR 702.29e`).
+   - Instead of hardcoding dozens of individual keyword names, extend `parseKeyword` / `keywordLine` (`compiler/card.ts`) so `[quality]cycling [cost]` (matching known cycling variants in `KEYWORD_REGISTRY` or any valid `ObjectFilter` parsed cleanly via existing `parseObjectPhrase` before `-cycling`) compiles into a structured `KeywordDef` with `costDefs` (via `parseCost`, supporting both mana costs like `{2}` and composite dash costs like `Cycling—Pay 2 life.` or `Cycling—Discard a card.`), optional `cyclingFilter?: ObjectFilter`, and `cyclingDesc?: string`. Anything unparseable before `cycling` or invalid cost falls back honestly to `unsupported('keyword_not_implemented', ...)`.
+   - In `getCardActivatedAbilities` (`ruleTree.ts`), build the `EffectiveActivatedAbility` from `KEYWORD_REGISTRY` (`activationZones: ['hand']`, `timing: 'instant'`, `cost: [...costDefs, { k: 'discard', count: { k: 'const', n: 1 }, filter: 'self' }]`, effect: `[draw 1]` for Cycling or `[search(cyclingFilter, count: 1, destinations: [{ zone: 'hand' }], upTo: true, statedQuality: true)]` (`CR 702.29e`) for Typecycling). `Run.search` already handles `statedQuality` + `upTo` + reveal/shuffle cleanly; ensure `typecycling` search reveals the found card (`CR 702.29e`) cleanly in the log/notification and shuffles even on fail-to-find.
+
+4. **Cycling events & triggers (`CR 702.29c–d`, `compiler/triggers.ts`, `runtime/triggers.ts`, `runtime/events.ts`, `ir.ts`).**
+   - *Decision point for user:* include cycling triggers in the same work or limit Slice 1 to Cycling/Typecycling abilities and do triggers in Slice 2 (`CR 702.29c–d`: `"When you cycle ~"` on 50+ cards like *Deem Worthy*, *Astral Slide*, *Shark Typhoon*, *Decree of Silence*, plus `"Whenever a player cycles or discards a card"` -> triggers once `CR 702.29d`).
+   - Recommended design for clean single-pass triggers:
+     - Emit a `CardDiscardedEvent` (`kind: 'CardDiscarded'`, carrying `playerId`, `objectId`, `object`, `reason: 'discard' | 'cycle'`, `destZone`) when discarding via `executeCostPaymentParts` (`'discard'`) or `Run.discard` (and mark `reason: 'cycle'` specifically when discarding to pay a cycling/typecycling ability's discard-self cost, which satisfies `CR 702.29f` automatically).
+     - Compile `"When you cycle ~"` into `{ event: 'cycle', filter: { object: 'self', player: { relation: 'you' } }, fromAnyZone: true }` (`CR 702.29c`: triggers from whatever zone the card winds up in after it's cycled — graveyard, or exile if replaced) and `"Whenever [player] cycles a card"` / `"Whenever [player] cycles or discards a card"` cleanly on `'cycle'` / `'discard'` events (`CR 702.29d`: `"cycles or discards"` compiles to one `{ event: 'discard', includeCycle: true }` trigger matching both `reason: 'discard'` and `reason: 'cycle'` once per event!).
+
+5. **Keyword-agnostic UI (`ArenaTable.svelte`) & Bot AI (`ai.ts`).**
+   - Zero `'cycling'` / `'typecycling'` literals in `ArenaTable.svelte` or `ai.ts`.
+   - `ArenaTable.svelte`:
+     - In `isCardPlayableNow(inst, 'hand')` (and `playableHandCount` / hand card highlight), treat a hand card as playable/actable whenever `getCardActivatedAbilities(inst.card)` (or a helper `getZoneActivatedAbilities(state, actor, inst, 'hand')` from `engine.ts` / `ruleTree.ts`) has any legal hand-zone ability (`ab.activationZones?.includes('hand') && checkAbilityActivationLegality(gameState, me.playerId, inst, ab).ok`).
+     - In `handleCardClickInHandOrCommand(inst, 'hand')`, gather both `CastOption[]` (`getCastOptions`) and legal `EffectiveActivatedAbility[]` for `'hand'`. If only one hand ability and no cast/suspend options exist (or when multiple options exist, e.g. both normal cast and Cycling!), render them in `castOptionsModal` alongside cast options (e.g. a generic `"Activated Abilities"` button list showing `ab.label` / `ab.costText` that dispatches `activate_ability` or enters target selection), so players can always choose either to cast *Cast Out* / *Savai Triome* or activate its hand ability without bespoke card/keyword branching!
+   - `ai.ts`:
+     - Extend `hasAnyLegalInstantResponseInner` and `executeBotStep` to consider legal `'hand'` activated abilities conservatively: e.g. bots activate instant-speed hand card-draw / search abilities during an opponent's end step when holding unused mana (or when mana-flooded / mana-screwed before missing a land drop), without spending mana needed for castable spells on their own main phase — preserving existing `golden.json` bot games.
+
+#### Implementation slices
+
+- **Slice 1 (Hand-zone `ActivatedAbility`, discard-self cost, Cycling & Typecycling abilities, UI/AI):** Added `activationZones` & `costKeyword`, `discard { filter: 'self' }`, generalized `effectiveAbilityManaCost`, `KEYWORD_REGISTRY` + `[quality]cycling` parsing (`compiler/card.ts`, `buildCyclingAbility` in `keywords.ts`, `ruleTree.ts`), `engine.ts` hand-zone activation + LKI, and generic hand-ability support in `ArenaTable.svelte` & `ai.ts`.
+- **Slice 2 (Cycling triggers `CR 702.29c–d`, `COMPILER_VERSION = 17`, `COVERAGE.md`, live browser check):** Added `CardDiscardedEvent` (`reason: 'cycle' | 'discard'`, preserved across `PendingZoneMove`), compiled `"When you cycle ~"` (`fromZone: 'any'`, `CR 702.29c`), `"cycles a [quality] card"` (`CR 702.29f`), and `"cycles or discards"` (`CR 702.29d`, single event match), verified in live `vite dev` Chromium UI (*Astral Blessing*), updated `ir.json`, and regenerated `COVERAGE.md`. *(Cleanup-step `discard_to_hand_size` in `engine.ts` does not yet emit `CardDiscarded`.)*
+
+---
+
 ## 3. Phases
 
 Each phase lists: **owns** (files only this phase's agent edits; others treat them as read-only

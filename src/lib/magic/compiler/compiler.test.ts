@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { clearCompileCache, compileCard } from './index.ts';
+import { clearCompileCache, compileCard, compiledStackItemEffects } from './index.ts';
+import { getCardActivatedAbilities } from '../ruleTree.ts';
 import { normalizeFace } from './normalize.ts';
 import { runtimeTriggers } from './triggers.ts';
 import {
@@ -595,3 +596,380 @@ describe('Track B3 Slice 2 keyword compilation (Exalted, Annihilator, Landwalk)'
 		assert.deepEqual(inv1.faces[0].abilities, inv2.faces[0].abilities);
 	});
 });
+
+describe('Cycling & Typecycling compilation', () => {
+	it('compiles Cycling mana, life, and composite costs without unsupported abilities', () => {
+		const manaCycler = compileFresh(
+			synthetic({
+				name: 'Sand Scout',
+				typeLine: 'Creature — Human Scout',
+				oracleText: 'Cycling {2} ({2}, Discard this card: Draw a card.)'
+			})
+		);
+		assert.equal(manaCycler.faces[0].abilities.some((a) => a.kind === 'unsupported'), false);
+		const manaKw = manaCycler.faces[0].abilities.find((a) => a.kind === 'keyword');
+		assert.equal(manaKw?.kind, 'keyword');
+		if (manaKw?.kind === 'keyword') {
+			assert.equal(manaKw.keyword.name, 'cycling');
+			assert.equal(manaKw.keyword.cost, '{2}');
+			assert.deepEqual(manaKw.keyword.costDefs, [{ k: 'mana', cost: '{2}' }]);
+			assert.equal(manaKw.keyword.cyclingFilter, undefined);
+		}
+
+		const lifeCycler = compileFresh(
+			synthetic({
+				name: 'Street Pulse',
+				typeLine: 'Creature — Elemental',
+				oracleText: 'Cycling—Pay 2 life.'
+			})
+		);
+		assert.equal(lifeCycler.faces[0].abilities.some((a) => a.kind === 'unsupported'), false);
+		const lifeKw = lifeCycler.faces[0].abilities.find((a) => a.kind === 'keyword');
+		assert.equal(lifeKw?.kind, 'keyword');
+		if (lifeKw?.kind === 'keyword') {
+			assert.equal(lifeKw.keyword.name, 'cycling');
+			assert.deepEqual(lifeKw.keyword.costDefs, [{ k: 'payLife', amount: { k: 'const', n: 2 } }]);
+		}
+
+		const compositeCycler = compileFresh(
+			synthetic({
+				name: 'Ash Ritualist',
+				typeLine: 'Creature — Warlock',
+				oracleText: 'Cycling—{1}, Sacrifice a creature.'
+			})
+		);
+		assert.equal(compositeCycler.faces[0].abilities.some((a) => a.kind === 'unsupported'), false);
+		const compKw = compositeCycler.faces[0].abilities.find((a) => a.kind === 'keyword');
+		assert.equal(compKw?.kind, 'keyword');
+		if (compKw?.kind === 'keyword') {
+			assert.equal(compKw.keyword.name, 'cycling');
+			assert.equal(compKw.keyword.costDefs?.[0]?.k, 'mana');
+			assert.equal(compKw.keyword.costDefs?.[1]?.k, 'sacrifice');
+		}
+	});
+
+	it('compiles Basic landcycling, Landcycling, and [quality]cycling variants cleanly', () => {
+		const variants: Array<{
+			oracleText: string;
+			expectedName: string;
+			expectedMana: string;
+			expectedSupertypes?: string[];
+			expectedTypes?: string[];
+			expectedSubtypes?: string[];
+		}> = [
+			{
+				oracleText: 'Basic landcycling {2}',
+				expectedName: 'basic landcycling',
+				expectedMana: '{2}',
+				expectedSupertypes: ['Basic'],
+				expectedTypes: ['Land']
+			},
+			{
+				oracleText: 'Landcycling {2}',
+				expectedName: 'landcycling',
+				expectedMana: '{2}',
+				expectedTypes: ['Land']
+			},
+			{
+				oracleText: 'Plainscycling {2}',
+				expectedName: 'typecycling',
+				expectedMana: '{2}',
+				expectedSubtypes: ['Plains']
+			},
+			{
+				oracleText: 'Islandcycling {1}',
+				expectedName: 'typecycling',
+				expectedMana: '{1}',
+				expectedSubtypes: ['Island']
+			},
+			{
+				oracleText: 'Swampcycling {2}',
+				expectedName: 'typecycling',
+				expectedMana: '{2}',
+				expectedSubtypes: ['Swamp']
+			},
+			{
+				oracleText: 'Mountaincycling {2}',
+				expectedName: 'typecycling',
+				expectedMana: '{2}',
+				expectedSubtypes: ['Mountain']
+			},
+			{
+				oracleText: 'Forestcycling {2}',
+				expectedName: 'typecycling',
+				expectedMana: '{2}',
+				expectedSubtypes: ['Forest']
+			},
+			{
+				oracleText: 'Wizardcycling {3}',
+				expectedName: 'typecycling',
+				expectedMana: '{3}',
+				expectedSubtypes: ['Wizard']
+			},
+			{
+				oracleText: 'Slivercycling {3}',
+				expectedName: 'typecycling',
+				expectedMana: '{3}',
+				expectedSubtypes: ['Sliver']
+			},
+			{
+				oracleText: 'Artifactcycling {2}',
+				expectedName: 'typecycling',
+				expectedMana: '{2}',
+				expectedTypes: ['Artifact']
+			},
+			{
+				oracleText: 'Basic Swampcycling {2}',
+				expectedName: 'typecycling',
+				expectedMana: '{2}',
+				expectedSupertypes: ['Basic'],
+				expectedSubtypes: ['Swamp']
+			}
+		];
+
+		for (const v of variants) {
+			const def = compileFresh(
+				synthetic({
+					name: `Synthetic ${v.oracleText}`,
+					typeLine: 'Creature — Spirit',
+					oracleText: v.oracleText
+				})
+			);
+			assert.equal(
+				def.faces[0].abilities.some((a) => a.kind === 'unsupported'),
+				false,
+				`${v.oracleText} produced unsupported`
+			);
+			const kw = def.faces[0].abilities.find((a) => a.kind === 'keyword');
+			assert.equal(kw?.kind, 'keyword', `${v.oracleText} missing keyword ability`);
+			if (kw?.kind === 'keyword') {
+				assert.equal(kw.keyword.name, v.expectedName);
+				assert.equal(kw.keyword.cost, v.expectedMana);
+				assert.ok(kw.keyword.cyclingFilter, `${v.oracleText} missing cyclingFilter`);
+				if (v.expectedSupertypes) {
+					assert.deepEqual(kw.keyword.cyclingFilter.supertypes, v.expectedSupertypes);
+				}
+				if (v.expectedTypes) {
+					assert.deepEqual(kw.keyword.cyclingFilter.types, v.expectedTypes);
+				}
+				if (v.expectedSubtypes) {
+					assert.deepEqual(kw.keyword.cyclingFilter.subtypes, v.expectedSubtypes);
+				}
+			}
+		}
+	});
+
+	it('compiles cycling cost modifier statics and rejects invalid cycling syntax cleanly', () => {
+		const reducer = compileFresh(
+			synthetic({
+				name: 'Fluctuation Stone',
+				typeLine: 'Artifact',
+				oracleText: 'Cycling abilities you activate cost {2} less to activate.'
+			})
+		);
+		assert.equal(reducer.faces[0].abilities.some((a) => a.kind === 'unsupported'), false);
+		const staticAb = reducer.faces[0].abilities.find((a) => a.kind === 'static');
+		assert.equal(staticAb?.kind, 'static');
+		if (staticAb?.kind === 'static') {
+			assert.equal(staticAb.static.k, 'costModifier');
+			if (staticAb.static.k === 'costModifier') {
+				assert.deepEqual(staticAb.static.affects, { k: 'ability', keyword: 'cycling' });
+				assert.equal(staticAb.static.delta.mode, 'reduce');
+				assert.equal(staticAb.static.delta.generic, 2);
+			}
+		}
+
+		for (const bad of ['Cycling', 'Cycling—Florb a glorb.', 'Typecycling {2}', 'thecycling {2}']) {
+			const def = compileFresh(
+				synthetic({
+					name: `Bad ${bad}`,
+					typeLine: 'Creature — Human',
+					oracleText: bad
+				})
+			);
+			assert.equal(
+				def.faces[0].abilities.some((a) => a.kind === 'unsupported'),
+				true,
+				`Expected unsupported for "${bad}"`
+			);
+		}
+	});
+
+	it('preserves rename invariance and builds hand-zone abilities + stack effects cleanly', () => {
+		const cardA = synthetic({
+			name: 'Dune Runner',
+			typeLine: 'Creature — Jackal',
+			oracleText: 'Cycling {2}\nPlainscycling {2}'
+		});
+		const cardB = synthetic({
+			name: 'Veld Scout',
+			typeLine: 'Creature — Jackal',
+			oracleText: 'Cycling {2}\nPlainscycling {2}'
+		});
+		const defA = compileFresh(cardA);
+		const defB = compileFresh(cardB);
+		assert.deepEqual(defA.faces[0].abilities, defB.faces[0].abilities);
+
+		const abs = getCardActivatedAbilities(cardA);
+		assert.equal(abs.length, 2);
+		for (const ab of abs) {
+			assert.deepEqual(ab.activationZones, ['hand']);
+			assert.equal(ab.costKeyword, 'cycling');
+			assert.equal(ab.manaCost, '{2}');
+			assert.deepEqual(ab.cost, [
+				{ k: 'mana', cost: '{2}' },
+				{ k: 'discard', count: { k: 'const', n: 1 }, filter: 'self' }
+			]);
+		}
+
+		const cyclingCompiled = compiledStackItemEffects({
+			id: 'stack_1',
+			controllerId: 'p1',
+			kind: 'activated',
+			sourceInstanceId: 'src_1',
+			title: `${cardA.name} Ability`,
+			targets: [],
+			xValue: 0,
+			requiresGuidedResolution: false,
+			createdAt: 0,
+			abilityId: abs[0].id,
+			card: cardA,
+			oracleText: abs[0].effectText
+		});
+		assert.ok(cyclingCompiled);
+		assert.equal(cyclingCompiled.steps[0]?.verb, 'draw');
+		assert.deepEqual(cyclingCompiled.steps[0]?.amount, { k: 'const', n: 1 });
+
+		const searchCompiled = compiledStackItemEffects({
+			id: 'stack_2',
+			controllerId: 'p1',
+			kind: 'activated',
+			sourceInstanceId: 'src_1',
+			title: `${cardA.name} Ability`,
+			targets: [],
+			xValue: 0,
+			requiresGuidedResolution: false,
+			createdAt: 0,
+			abilityId: abs[1].id,
+			card: cardA,
+			oracleText: abs[1].effectText
+		});
+		assert.ok(searchCompiled);
+		const searchStep = searchCompiled.steps[0];
+		assert.equal(searchStep?.verb, 'search');
+		const searchParam = searchStep?.params?.search;
+		assert.ok(searchParam);
+		assert.equal(searchParam.reveal, true);
+		assert.deepEqual(searchParam.destinations, [{ zone: 'hand' }]);
+		assert.deepEqual(searchParam.filter.subtypes, ['Plains']);
+	});
+
+	it('compiles cycling and discard triggers (CR 702.29c–d)', () => {
+		// 1. "When you cycle ~, ..." -> event: 'cycle', object: 'self', fromZone: 'any'
+		const selfTrigger = compileFresh(
+			synthetic({
+				name: 'Deem Worthy',
+				typeLine: 'Instant',
+				manaCost: '{4}{R}',
+				oracleText: 'Cycling {3}{R}\nWhen you cycle Deem Worthy, ~ deals 7 damage to target creature.'
+			})
+		);
+		const cycleTrig = selfTrigger.faces[0].abilities.find((a) => a.kind === 'triggered');
+		assert.ok(cycleTrig && cycleTrig.kind === 'triggered');
+		assert.deepEqual(cycleTrig.trigger, {
+			event: 'cycle',
+			filter: { object: 'self', player: { relation: 'you' } },
+			fromZone: 'any'
+		});
+
+		// 2. "Whenever you cycle a card, ..." and "Whenever a player cycles a [quality] card, ..."
+		const youCycleCard = compileFresh(
+			synthetic({
+				name: 'Cycle Watcher',
+				typeLine: 'Enchantment',
+				oracleText: 'Whenever you cycle a card, you gain 2 life.'
+			})
+		);
+		const t2 = youCycleCard.faces[0].abilities[0];
+		assert.ok(t2 && t2.kind === 'triggered');
+		assert.deepEqual(t2.trigger, {
+			event: 'cycle',
+			filter: { player: { relation: 'you' }, object: {} }
+		});
+
+		const playerCycleCreature = compileFresh(
+			synthetic({
+				name: 'Beast Cycler Watcher',
+				typeLine: 'Enchantment',
+				oracleText: 'Whenever a player cycles a creature card, draw a card.'
+			})
+		);
+		const t3 = playerCycleCreature.faces[0].abilities[0];
+		assert.ok(t3 && t3.kind === 'triggered');
+		assert.deepEqual(t3.trigger, {
+			event: 'cycle',
+			filter: { player: { relation: 'any' }, object: { types: ['Creature'] } }
+		});
+
+		// 3. "Whenever you cycle or discard a card, ..." -> single 'discard' TriggerDef (CR 702.29d)
+		const cycleOrDiscard = compileFresh(
+			synthetic({
+				name: 'Drake Nest',
+				typeLine: 'Enchantment',
+				oracleText: 'Whenever you cycle or discard a card, you gain 1 life.'
+			})
+		);
+		const t4 = cycleOrDiscard.faces[0].abilities[0];
+		assert.ok(t4 && t4.kind === 'triggered');
+		assert.deepEqual(t4.trigger, {
+			event: 'discard',
+			filter: { player: { relation: 'you' }, object: {} }
+		});
+
+		const filteredCycleOrDiscard = compileFresh(
+			synthetic({
+				name: 'Creature Discard Watcher',
+				typeLine: 'Enchantment',
+				oracleText: 'Whenever a player cycles or discards a creature card, you gain 1 life.'
+			})
+		);
+		const t5 = filteredCycleOrDiscard.faces[0].abilities[0];
+		assert.ok(t5 && t5.kind === 'triggered');
+		assert.deepEqual(t5.trigger, {
+			event: 'discard',
+			filter: { player: { relation: 'any' }, object: { types: ['Creature'] } }
+		});
+
+		// 4. "Whenever an opponent discards a card, ..." -> event: 'discard'
+		const oppDiscard = compileFresh(
+			synthetic({
+				name: 'Liliana Watcher',
+				typeLine: 'Enchantment',
+				oracleText: 'Whenever an opponent discards a card, you gain 2 life.'
+			})
+		);
+		const t6 = oppDiscard.faces[0].abilities[0];
+		assert.ok(t6 && t6.kind === 'triggered');
+		assert.deepEqual(t6.trigger, {
+			event: 'discard',
+			filter: { player: { relation: 'opponent' }, object: {} }
+		});
+
+		// 5. Unsupported effect on "When you cycle ~" still preserves trigger metadata for manual resolution
+		const manualCycle = compileFresh(
+			synthetic({
+				name: 'Silence Decree',
+				typeLine: 'Enchantment',
+				oracleText: 'Cycling {4}{U}{U}\nWhen you cycle Silence Decree, counter target spell.'
+			})
+		);
+		const t7 = manualCycle.faces[0].abilities.find((a) => a.kind === 'unsupported');
+		assert.ok(t7 && t7.kind === 'unsupported');
+		assert.deepEqual(t7.trigger, {
+			event: 'cycle',
+			filter: { object: 'self', player: { relation: 'you' } },
+			fromZone: 'any'
+		});
+	});
+});
+

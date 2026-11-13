@@ -2080,7 +2080,9 @@ class Run {
 				toPlayer: pl,
 				graveyardReplacement: true,
 				bumpVersion: true,
-				newTimestamp: true
+				newTimestamp: true,
+				discardReason: 'discard',
+				discardPlayerId: pl.playerId
 			});
 		};
 

@@ -1108,7 +1108,12 @@ function finalizeActivateAbility(
 	const card = pcp.sourceCard ?? perm.card;
 	const targets = pcp.targets ?? [];
 	const effectText = pcp.effectText ?? '';
-	if (pcp.onceEachTurn && perm.zone === 'battlefield' && pcp.abilityId) {
+	if (
+		pcp.onceEachTurn &&
+		(perm.zone === 'battlefield' || perm.zone === 'hand') &&
+		perm.objectVersion === pcp.sourceObjectVersion &&
+		pcp.abilityId
+	) {
 		perm.activatedAbilityIdsThisTurn = [
 			...(perm.activatedAbilityIdsThisTurn ?? []),
 			pcp.abilityId
@@ -1212,7 +1217,8 @@ function executeOrResumePendingCostPayment(
 		pcp.parts,
 		pcp.nextPartIndex,
 		pcp.nextObjectIndex,
-		pcp.descriptions
+		pcp.descriptions,
+		pcp.costKeyword
 	);
 	if (paid.paused) {
 		pcp.nextPartIndex = paid.nextPartIndex ?? pcp.nextPartIndex;
@@ -3009,18 +3015,22 @@ function applyGameActionInner(
 		}
 
 		case 'activate_ability': {
-			// Locate permanent on actor's battlefield
-			const perm = actor.battlefield.find((c) => c.instanceId === action.instanceId);
-			if (!perm || perm.phasedOut) {
-				return { ok: false, error: 'Permanent not found on your battlefield.' };
+			// Locate source card across actor's battlefield or hand and verify zone legality
+			const foundTarget = findActivatedAbilityTarget(
+				state,
+				actor,
+				action.instanceId,
+				action.abilityId
+			);
+			if (!foundTarget.ok) {
+				return foundTarget;
 			}
-
-			const cmdId = getPlayerCommanderIdentity(actor);
-			const abilities = getEffectiveActivatedAbilities(state, actor, perm, cmdId);
-			const ab = abilities.find((a) => a.id === action.abilityId);
-			if (!ab) return { ok: false, error: 'Ability not found on this permanent.' };
+			const { source: perm, ability: ab } = foundTarget;
 
 			if (ab.isManaAbility) {
+				if (perm.zone !== 'battlefield') {
+					return { ok: false, error: 'Mana abilities can only be tapped on the battlefield.' };
+				}
 				return applyGameAction(state, actorId, {
 					type: 'tap_mana',
 					instanceId: perm.instanceId,
@@ -3057,7 +3067,13 @@ function applyGameActionInner(
 			// Phase 4: pay the whole cost from the IR. Mana comes from effectiveAbilityManaCost (cost
 			// modifiers applied); everything else from the ability's CostDefs.
 			const abilityCost = activatedAbilityCost(perm.card, ab);
-			const abilityMana = effectiveAbilityManaCost(state, actorId, ab.id, ab.manaCost).requirement;
+			const abilityMana = effectiveAbilityManaCost(
+				state,
+				actorId,
+				ab.id,
+				ab.manaCost,
+				ab.costKeyword
+			).requirement;
 			const phyAbilityChoice = maybeAskPhyrexianCostChoice(
 				state,
 				actor,
@@ -3086,9 +3102,9 @@ function applyGameActionInner(
 			const abilityPlan = planCosts(abilityCtx, abilityCost.defs, action.costPayment);
 			if (!abilityPlan.ok) return { ok: false, error: abilityPlan.error };
 			if (abilityPlan.question) return askCostChoice(state, actor, action, abilityPlan.question, perm.card.name);
-			const preCostEval = evaluatePermanent(state, perm);
-			const sourceLkiPower = preCostEval.power;
-			const sourceLkiToughness = preCostEval.toughness;
+			const preCostEval = perm.zone === 'battlefield' ? evaluatePermanent(state, perm) : null;
+			const sourceLkiPower = preCostEval ? preCostEval.power : 0;
+			const sourceLkiToughness = preCostEval ? preCostEval.toughness : 0;
 			const parts = serializeCostPlanParts(abilityCtx, abilityPlan);
 			const pcp: PendingCostPayment = {
 				kind: 'activate_ability',
@@ -3096,6 +3112,7 @@ function applyGameActionInner(
 				sourceInstanceId: perm.instanceId,
 				sourceCard: perm.card,
 				abilityId: ab.id,
+				...(ab.costKeyword ? { costKeyword: ab.costKeyword } : {}),
 				targets,
 				sourceObjectVersion: perm.objectVersion,
 				sourceLkiPower,
@@ -4764,7 +4781,9 @@ function handlePromptResolution(
 					addLog(
 						state,
 						'rule',
-						`${libraryOwner.username} searched their library for a card, put it into hand, and shuffled.`,
+						prompt.searchSpec?.reveal
+							? `${libraryOwner.username} searched their library, revealed ${found.card.name}, put it into hand, and shuffled.`
+							: `${libraryOwner.username} searched their library for a card, put it into hand, and shuffled.`,
 						libraryOwner.playerId
 					);
 				}
@@ -5928,7 +5947,8 @@ for (const kind of [
 	'TappedForMana',
 	'GainLife',
 	'CardDrawn',
-	'BecomesTapped'
+	'BecomesTapped',
+	'CardDiscarded'
 ] as const) {
 	registerEventHandler(kind, (state, ev) => matchTriggers(state, ev));
 }
@@ -7979,7 +7999,9 @@ function initiateLibrarySearch(
 				addLog(
 					state,
 					'rule',
-					`${searchingPlayer.username} searched their library for a card and put it into hand.`,
+					searchSpec.reveal
+						? `${searchingPlayer.username} searched their library, revealed ${found.card.name}, and put it into hand.`
+						: `${searchingPlayer.username} searched their library for a card and put it into hand.`,
 					searchingPlayer.playerId
 				);
 			}
@@ -11180,6 +11202,45 @@ function checkSpellCastOptionLegalityInner(
 	return { ok: true };
 }
 
+function findActivatedAbilityTarget(
+	state: GameState,
+	actor: PlayerGameState,
+	instanceId: string,
+	abilityId: string
+):
+	| { ok: true; source: CardInstance; ability: EffectiveActivatedAbility }
+	| { ok: false; error: string } {
+	const bfPerm = actor.battlefield.find((c) => c.instanceId === instanceId);
+	const handCard = bfPerm ? undefined : actor.hand.find((c) => c.instanceId === instanceId);
+	const source = bfPerm ?? handCard;
+	if (!source) {
+		return { ok: false, error: 'Card not found on your battlefield or in your hand.' };
+	}
+	if (source.zone === 'battlefield' && source.phasedOut) {
+		return { ok: false, error: 'Permanent not found on your battlefield.' };
+	}
+	const cmdId = getPlayerCommanderIdentity(actor);
+	const abilities = getEffectiveActivatedAbilities(state, actor, source, cmdId);
+	const ab = abilities.find((a) => a.id === abilityId);
+	if (!ab) {
+		return {
+			ok: false,
+			error:
+				source.zone === 'hand'
+					? 'Ability not found on this card in hand.'
+					: 'Ability not found on this permanent.'
+		};
+	}
+	const allowedZones = ab.activationZones ?? ['battlefield'];
+	if (!allowedZones.includes(source.zone)) {
+		return {
+			ok: false,
+			error: `${source.card.name}: This ability cannot be activated from ${source.zone}.`
+		};
+	}
+	return { ok: true, source, ability: ab };
+}
+
 /** Whether `actorId` may activate `ab` of `perm` now. Read-only, one validation (Phase 6d). */
 export function checkAbilityActivationLegality(
 	state: GameState,
@@ -11202,12 +11263,39 @@ function checkAbilityActivationLegalityInner(
 	if (state.pendingPrompts.length > 0) {
 		return { ok: false, error: 'Resolve the active prompt first.' };
 	}
-	if (perm.phasedOut) {
-		return { ok: false, error: `${perm.card.name} is phased out.` };
-	}
 	const actor = state.players.find((p) => p.playerId === actorId);
 	if (!actor || actor.lost) {
 		return { ok: false, error: 'Player is not active in this game.' };
+	}
+	const allowedZones = ab.activationZones ?? ['battlefield'];
+	if (perm.zone === 'battlefield') {
+		if (perm.phasedOut) {
+			return { ok: false, error: `${perm.card.name} is phased out.` };
+		}
+		if (!actor.battlefield.some((c) => c.instanceId === perm.instanceId)) {
+			return { ok: false, error: 'Permanent not found on your battlefield.' };
+		}
+		if (!allowedZones.includes('battlefield')) {
+			return {
+				ok: false,
+				error: `${perm.card.name}: This ability cannot be activated from the battlefield.`
+			};
+		}
+	} else if (perm.zone === 'hand') {
+		if (!actor.hand.some((c) => c.instanceId === perm.instanceId)) {
+			return { ok: false, error: 'Card not found in your hand.' };
+		}
+		if (!allowedZones.includes('hand')) {
+			return {
+				ok: false,
+				error: `${perm.card.name}: This ability cannot be activated from your hand.`
+			};
+		}
+	} else {
+		return {
+			ok: false,
+			error: `${perm.card.name}: This ability cannot be activated from ${perm.zone}.`
+		};
 	}
 
 	const effectiveAbs = getEffectiveActivatedAbilities(
@@ -11217,12 +11305,14 @@ function checkAbilityActivationLegalityInner(
 		getPlayerCommanderIdentity(actor)
 	);
 	if (!effectiveAbs.some((a) => a.id === ab.id)) {
-		const abilityLoss = permanentHasLostAllAbilities(perm, state);
-		if (abilityLoss.lost) {
-			return {
-				ok: false,
-				error: `${perm.card.name} has lost all abilities (${abilityLoss.sources[0] || 'continuous effect'}).`
-			};
+		if (perm.zone === 'battlefield') {
+			const abilityLoss = permanentHasLostAllAbilities(perm, state);
+			if (abilityLoss.lost) {
+				return {
+					ok: false,
+					error: `${perm.card.name} has lost all abilities (${abilityLoss.sources[0] || 'continuous effect'}).`
+				};
+			}
 		}
 		return { ok: false, error: `Ability not found on ${perm.card.name}.` };
 	}
@@ -11235,7 +11325,13 @@ function checkAbilityActivationLegalityInner(
 
 	// Phase 4: the whole cost from the IR ({T}/{Q} with summoning sickness, sacrifices, discards,
 	// "tap N untapped ...", life, counters and mana), checked by runtime/costs.ts.
-	const abilityMana = effectiveAbilityManaCost(state, actorId, ab.id, ab.manaCost).requirement;
+	const abilityMana = effectiveAbilityManaCost(
+		state,
+		actorId,
+		ab.id,
+		ab.manaCost,
+		ab.costKeyword
+	).requirement;
 	const abilityCost = activatedAbilityCost(perm.card, ab);
 	const costCtx = costContext(state, actor, perm, 0, false, abilityMana);
 	const checkCost = (): { ok: boolean; error?: string } => {

@@ -24,9 +24,11 @@ export const KEYWORD_COVERAGE_FILES: Record<string, readonly string[]> = {
 	affinity: ['runtime/keywords-casting.test.ts'],
 	afterlife: ['runtime/keywords-casting.test.ts'],
 	annihilator: ['runtime/keywords-combat-damage.test.ts'],
+	'basic landcycling': ['runtime/keywords-casting.test.ts'],
 	'battle cry': ['runtime/keywords-combat-damage.test.ts'],
 	bushido: ['runtime/keywords-combat-damage.test.ts'],
 	changeling: ['runtime/keywords-casting.test.ts', 'runtime/keywords-damage.test.ts'],
+	cycling: ['runtime/keywords-casting.test.ts'],
 	deathtouch: ['runtime/keywords-combat-damage.test.ts', 'runtime/keywords-damage.test.ts'],
 	defender: ['runtime/keywords-evasion.test.ts'],
 	'double strike': ['runtime/keywords-combat-damage.test.ts', 'magic.test.ts'],
@@ -49,6 +51,7 @@ export const KEYWORD_COVERAGE_FILES: Record<string, readonly string[]> = {
 	intimidate: ['runtime/keywords-evasion.test.ts', 'runtime/tier2a.test.ts'],
 	islandwalk: ['runtime/keywords-evasion.test.ts'],
 	kicker: ['runtime/keywords-casting.test.ts'],
+	landcycling: ['runtime/keywords-casting.test.ts'],
 	landwalk: ['runtime/keywords-evasion.test.ts'],
 	lifelink: ['runtime/keywords-combat-damage.test.ts', 'runtime/combat-tier1.test.ts'],
 	'living weapon': ['runtime/keywords-protection-attachments.test.ts'],
@@ -68,6 +71,7 @@ export const KEYWORD_COVERAGE_FILES: Record<string, readonly string[]> = {
 	suspend: ['runtime/keywords-casting.test.ts', 'magic.test.ts'],
 	swampwalk: ['runtime/keywords-evasion.test.ts'],
 	trample: ['runtime/keywords-combat-damage.test.ts', 'runtime/combat-tier1.test.ts'],
+	typecycling: ['runtime/keywords-casting.test.ts'],
 	vigilance: ['runtime/keywords-evasion.test.ts', 'runtime/tier3b.test.ts'],
 	ward: ['runtime/keywords-protection-attachments.test.ts', 'runtime/wave4-cr-completion.test.ts'],
 	wither: ['runtime/keywords-combat-damage.test.ts', 'runtime/keywords-damage.test.ts']
@@ -77,12 +81,15 @@ const SAMPLE_ORACLE_FOR_KEYWORD: Record<string, { typeLine: string; oracleText: 
 	affinity: { typeLine: 'Artifact Creature — Myr', oracleText: 'Affinity for artifacts' },
 	afterlife: { typeLine: 'Creature — Human Cleric', oracleText: 'Afterlife 2' },
 	annihilator: { typeLine: 'Creature — Eldrazi', oracleText: 'Annihilator 2' },
+	'basic landcycling': { typeLine: 'Creature — Elephant', oracleText: 'Basic landcycling {2}' },
 	bushido: { typeLine: 'Creature — Human Samurai', oracleText: 'Bushido 1' },
+	cycling: { typeLine: 'Instant', oracleText: 'Draw a card.\nCycling {2}' },
 	enchant: { typeLine: 'Enchantment — Aura', oracleText: 'Enchant creature' },
 	equip: { typeLine: 'Artifact — Equipment', oracleText: 'Equip {1}' },
 	flashback: { typeLine: 'Sorcery', oracleText: 'Draw a card.\nFlashback {2}{U}' },
 	'for mirrodin!': { typeLine: 'Artifact — Equipment', oracleText: 'For Mirrodin!\nEquip {2}' },
 	kicker: { typeLine: 'Instant', oracleText: 'Kicker {1}{U}\nDraw a card.' },
+	landcycling: { typeLine: 'Creature — Wurm', oracleText: 'Landcycling {2}' },
 	'living weapon': { typeLine: 'Artifact — Equipment', oracleText: 'Living weapon\nEquip {2}' },
 	multikicker: { typeLine: 'Creature — Elf', oracleText: 'Multikicker {1}{G}' },
 	overload: {
@@ -92,6 +99,7 @@ const SAMPLE_ORACLE_FOR_KEYWORD: Record<string, { typeLine: string; oracleText: 
 	partner: { typeLine: 'Legendary Creature — Human', oracleText: 'Partner' },
 	protection: { typeLine: 'Creature — Human Knight', oracleText: 'Protection from red' },
 	suspend: { typeLine: 'Sorcery', oracleText: 'Draw a card.\nSuspend 4—{U}' },
+	typecycling: { typeLine: 'Creature — Human Wizard', oracleText: 'Wizardcycling {3}' },
 	ward: { typeLine: 'Creature — Drake', oracleText: 'Ward {2}' }
 };
 
@@ -164,16 +172,20 @@ describe('Implemented Keywords Coverage Guard', () => {
 			'affinity',
 			'afterlife',
 			'annihilator',
+			'basic landcycling',
 			'bushido',
+			'cycling',
 			'enchant',
 			'equip',
 			'flashback',
 			'kicker',
+			'landcycling',
 			'multikicker',
 			'overload',
 			'partner',
 			'protection',
 			'suspend',
+			'typecycling',
 			'ward'
 		]);
 

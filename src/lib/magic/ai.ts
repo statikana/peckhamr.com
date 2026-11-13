@@ -193,7 +193,16 @@ export function hasAnyLegalInstantResponse(state: GameState, player: PlayerGameS
 }
 
 function hasAnyLegalInstantResponseInner(state: GameState, player: PlayerGameState): boolean {
+	const cmdId = getPlayerCommanderIdentity(player);
 	for (const cardInst of player.hand) {
+		const handAbs = getEffectiveActivatedAbilities(state, player, cardInst, cmdId).filter(
+			(ab) => !ab.isManaAbility && Boolean(ab.activationZones?.includes('hand'))
+		);
+		for (const ab of handAbs) {
+			if (checkAbilityActivationLegality(state, player.playerId, cardInst, ab).ok) {
+				return true;
+			}
+		}
 		const types = compileCard(cardInst.card).faces[0].characteristics.types;
 		if (types.includes('Land') && !types.includes('Creature')) {
 			continue;
@@ -212,7 +221,6 @@ function hasAnyLegalInstantResponseInner(state: GameState, player: PlayerGameSta
 			return true;
 		}
 	}
-	const cmdId = getPlayerCommanderIdentity(player);
 	for (const perm of player.battlefield) {
 		if (perm.phasedOut) continue;
 		const abilities = getEffectiveActivatedAbilities(state, player, perm, cmdId);
@@ -902,6 +910,17 @@ export function executeBotStep(
 				}
 			}
 		}
+
+		// 2e. Conservative fallback on bot's own main phase: activate hand-zone abilities
+		// on excess lands or uncastable high-CMC cards after land drops / spells / equips.
+		const mainHandRes = tryBotHandActivatedAbility(state, bot, true);
+		if (mainHandRes) return mainHandRes;
+	}
+
+	// 2f. Opponent's end step: spend leftover mana on instant-speed hand-zone abilities.
+	if (!isBotsTurn && state.phase === 'end_step' && state.stack.length === 0) {
+		const endStepHandRes = tryBotHandActivatedAbility(state, bot, false);
+		if (endStepHandRes) return endStepHandRes;
 	}
 
 	// 3. If it's the bot's Declare Attackers step and Stack is empty
@@ -922,6 +941,67 @@ export function executeBotStep(
 		return 'visible';
 	}
 	return 'quiet';
+}
+
+function tryBotHandActivatedAbility(
+	state: GameState,
+	bot: PlayerGameState,
+	isMainPhase: boolean
+): BotStepResult | null {
+	const ownLandsCount = withStableLayerInputs(state, () =>
+		bot.battlefield.filter((b) => !b.phasedOut && evaluatePermanent(state, b).isLand).length
+	);
+	const cmdId = getPlayerCommanderIdentity(bot);
+
+	for (let i = 0; i < bot.hand.length; i++) {
+		const cardInst = bot.hand[i];
+		const types = compileCard(cardInst.card).faces[0].characteristics.types;
+		const isLand = types.includes('Land') && !types.includes('Creature');
+		if (isMainPhase) {
+			const excessLand = isLand && (bot.landsPlayedThisTurn >= bot.maxLandsPerTurn || ownLandsCount >= 5);
+			const uncastableHighCmc = !isLand && cardInst.card.cmc >= 5 && ownLandsCount <= 3;
+			const floodedNonTrick =
+				ownLandsCount >= 6 &&
+				bot.hand.length >= 2 &&
+				!isCounterSpellCard(cardInst.card) &&
+				!isProtectionTrickCard(cardInst.card);
+			if (!excessLand && !uncastableHighCmc && !floodedNonTrick) {
+				continue;
+			}
+		}
+
+		const candidate = withStableLayerInputs(state, () => {
+			const abilities = getEffectiveActivatedAbilities(state, bot, cardInst, cmdId);
+			for (const ab of abilities) {
+				if (ab.isManaAbility || !ab.activationZones?.includes('hand')) continue;
+				if (!checkAbilityActivationLegality(state, bot.playerId, cardInst, ab).ok) continue;
+				let targets: TargetRef[] = [];
+				if (ab.requiresTarget) {
+					const spec = ab.targetInfo.targetSpecs?.[0];
+					if (!spec) continue;
+					targets = chooseBotTargetsForSpec(state, bot, cardInst, spec);
+					if (ab.targetInfo.minTargets > 0 && targets.length < ab.targetInfo.minTargets) {
+						continue;
+					}
+				}
+				return { ab, targets };
+			}
+			return null;
+		});
+		if (!candidate) continue;
+
+		const costBefore = countBotCostChoicePrompts(state, bot.playerId);
+		const res = applyGameAction(state, bot.playerId, {
+			type: 'activate_ability',
+			instanceId: cardInst.instanceId,
+			abilityId: candidate.ab.id,
+			targets: candidate.targets
+		});
+		if (res.ok) {
+			return countBotCostChoicePrompts(state, bot.playerId) > costBefore ? 'quiet' : 'visible';
+		}
+	}
+	return null;
 }
 
 function chooseBotOptionalCostCounts(

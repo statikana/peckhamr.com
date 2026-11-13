@@ -34,6 +34,7 @@
 		type CardInstance,
 		type CastOption,
 		type CounterType,
+		type EffectiveActivatedAbility,
 		type GameActionPayload,
 		type GamePhase,
 		type GuidedOperation,
@@ -230,6 +231,8 @@
 		fromZone: 'hand' | 'command' | 'exile' | 'graveyard';
 		options: CastOption[];
 		optionalCounts: Record<string, number>;
+		canPlayLand?: boolean;
+		handAbilities?: EffectiveActivatedAbility[];
 	} | null>(null);
 
 	// Activated abilities menu on a permanent (raw: see inspectedCard above)
@@ -949,6 +952,40 @@
 		}
 	}
 
+	function getHandActivatedAbilities(inst: CardInstance): EffectiveActivatedAbility[] {
+		if (!me || inst.zone !== 'hand') return [];
+		const cmdId = getPlayerCommanderIdentity(me);
+		return getEffectiveActivatedAbilities(gameState, me, inst, cmdId).filter(
+			(ab) =>
+				!ab.isManaAbility &&
+				Boolean(ab.activationZones?.includes('hand')) &&
+				checkAbilityActivationLegality(gameState, me.playerId, inst, ab).ok
+		);
+	}
+
+	async function triggerActivatedAbility(inst: CardInstance, ab: EffectiveActivatedAbility) {
+		if (ab.requiresTarget) {
+			const abTargetInfo: TargetRequirementInfo = ab.targetInfo;
+			pendingTargetAction = {
+				mode: 'ability',
+				instanceId: inst.instanceId,
+				abilityId: ab.id,
+				card: inst.card,
+				targetKind: ab.targetInfo.targetKind,
+				targetInfo: abTargetInfo,
+				selectedTargets: [],
+				xValue: 0
+			};
+			openGraveyardTargetingModalIfNeeded(abTargetInfo);
+		} else {
+			await onGameAction({
+				type: 'activate_ability',
+				instanceId: inst.instanceId,
+				abilityId: ab.id
+			});
+		}
+	}
+
 	function isCardPlayableNow(
 		inst: CardInstance,
 		fromZone: 'hand' | 'command' | 'exile' | 'graveyard'
@@ -957,15 +994,21 @@
 			return false;
 		}
 		if (inst.card.typeLine.includes('Land') && !inst.card.typeLine.includes('Creature')) {
-			return (
+			if (
 				(fromZone === 'hand' || fromZone === 'exile') &&
 				checkLandPlayLegality(gameState, me.playerId, inst, fromZone).ok
-			);
+			) {
+				return true;
+			}
+			return fromZone === 'hand' && getHandActivatedAbilities(inst).length > 0;
 		}
 		if (getCastOptions(gameState, me.playerId, inst, fromZone).length > 0) {
 			return true;
 		}
 		if (fromZone === 'hand' && checkSuspendLegality(gameState, me.playerId, inst).ok) {
+			return true;
+		}
+		if (fromZone === 'hand' && getHandActivatedAbilities(inst).length > 0) {
 			return true;
 		}
 		return false;
@@ -1210,7 +1253,16 @@
 
 		const t = inst.card.typeLine;
 		if (t.includes('Land') && !t.includes('Creature')) {
-			zones.add('lands_area');
+			if (
+				me &&
+				(fromZone === 'hand' || fromZone === 'exile') &&
+				checkLandPlayLegality(gameState, me.playerId, inst, fromZone).ok
+			) {
+				zones.add('lands_area');
+			}
+			if (fromZone === 'hand' && getHandActivatedAbilities(inst).length > 0) {
+				zones.add('stack');
+			}
 			return zones;
 		}
 		if (t.includes('Instant') || t.includes('Sorcery')) {
@@ -1383,24 +1435,56 @@
 		inspectedCard = inst.card;
 		if (!isCardPlayableNow(inst, fromZone)) return;
 
-		if (inst.card.typeLine.includes('Land') && (fromZone === 'hand' || fromZone === 'exile')) {
-			await onGameAction({ type: 'play_land', instanceId: inst.instanceId, fromZone });
+		const handAbs = fromZone === 'hand' ? getHandActivatedAbilities(inst) : [];
+
+		if (
+			inst.card.typeLine.includes('Land') &&
+			!inst.card.typeLine.includes('Creature') &&
+			(fromZone === 'hand' || fromZone === 'exile')
+		) {
+			const canPlayLand = checkLandPlayLegality(gameState, me!.playerId, inst, fromZone).ok;
+			if (canPlayLand && handAbs.length === 0) {
+				await onGameAction({ type: 'play_land', instanceId: inst.instanceId, fromZone });
+				return;
+			}
+			if (!canPlayLand && handAbs.length === 1) {
+				await triggerActivatedAbility(inst, handAbs[0]);
+				return;
+			}
+			castOptionsModal = {
+				inst,
+				fromZone,
+				options: [],
+				optionalCounts: {},
+				canPlayLand,
+				handAbilities: handAbs
+			};
 			return;
 		}
 
 		const options = getCastOptions(gameState, me!.playerId, inst, fromZone);
-		if (options.length === 0) {
+		if (options.length === 0 && handAbs.length === 0) {
 			if (fromZone === 'hand' && checkSuspendLegality(gameState, me!.playerId, inst).ok) {
 				await onGameAction({ type: 'suspend_card', instanceId: inst.instanceId });
 			}
 			return;
 		}
+		if (options.length === 0 && handAbs.length === 1) {
+			await triggerActivatedAbility(inst, handAbs[0]);
+			return;
+		}
 		const hasOptionalCosts = options.some((o) => (o.optionalAdditionalCosts?.length ?? 0) > 0);
-		if (options.length === 1 && !hasOptionalCosts) {
+		if (options.length === 1 && !hasOptionalCosts && handAbs.length === 0) {
 			await proceedCastWithOption(inst, fromZone, options[0]);
 			return;
 		}
-		castOptionsModal = { inst, fromZone, options, optionalCounts: {} };
+		castOptionsModal = {
+			inst,
+			fromZone,
+			options,
+			optionalCounts: {},
+			...(handAbs.length > 0 ? { handAbilities: handAbs } : {})
+		};
 	}
 
 	function openGraveyardTargetingModalIfNeeded(targetInfo: TargetRequirementInfo) {
@@ -3429,26 +3513,7 @@
 							onclick={async () => {
 								const perm = selectedPermanentForAbility!;
 								selectedPermanentForAbility = null;
-								if (ab.requiresTarget) {
-									const abTargetInfo: TargetRequirementInfo = ab.targetInfo;
-									pendingTargetAction = {
-										mode: 'ability',
-										instanceId: perm.instanceId,
-										abilityId: ab.id,
-										card: perm.card,
-										targetKind: ab.targetInfo.targetKind,
-										targetInfo: abTargetInfo,
-										selectedTargets: [],
-										xValue: 0
-									};
-									openGraveyardTargetingModalIfNeeded(abTargetInfo);
-								} else {
-									await onGameAction({
-										type: 'activate_ability',
-										instanceId: perm.instanceId,
-										abilityId: ab.id
-									});
-								}
+								await triggerActivatedAbility(perm, ab);
 							}}
 						>
 							<ManaText text={ab.label} size={15} />
@@ -3477,7 +3542,11 @@
 		)}
 		<div class="modal-backdrop">
 			<div class="arena-modal">
-				<h3>Choose How to Cast — {castOptionsModal.inst.card.name}</h3>
+				<h3>
+					{castOptionsModal.handAbilities?.length || castOptionsModal.canPlayLand
+						? 'Choose Action'
+						: 'Choose How to Cast'} — {castOptionsModal.inst.card.name}
+				</h3>
 				<div class="modal-desc">
 					<ManaText text={castOptionsModal.inst.card.oracleText} size={15} />
 				</div>
@@ -3553,6 +3622,25 @@
 					</div>
 				{/if}
 				<div class="modal-actions">
+					{#if castOptionsModal.canPlayLand}
+						<button
+							type="button"
+							class="arena-main-btn can-act"
+							onclick={async () => {
+								const item = castOptionsModal!;
+								castOptionsModal = null;
+								if (item.fromZone === 'hand' || item.fromZone === 'exile') {
+									await onGameAction({
+										type: 'play_land',
+										instanceId: item.inst.instanceId,
+										fromZone: item.fromZone
+									});
+								}
+							}}
+						>
+							Play Land
+						</button>
+					{/if}
 					{#each castOptionsModal.options as opt (opt.id)}
 						{@const optCounts = Object.fromEntries(
 							Object.entries(castOptionsModal?.optionalCounts ?? {}).filter(
@@ -3613,6 +3701,24 @@
 							{opt.label} (<ManaText text={combinedDisplay} size={14} />)
 						</button>
 					{/each}
+					{#if castOptionsModal.handAbilities && castOptionsModal.handAbilities.length > 0}
+						<div style="width:100%;margin-top:0.35rem;font-size:0.8rem;opacity:0.8;">
+							Activated Abilities
+						</div>
+						{#each castOptionsModal.handAbilities as ab (ab.id)}
+							<button
+								type="button"
+								class="arena-main-btn can-act"
+								onclick={async () => {
+									const item = castOptionsModal!;
+									castOptionsModal = null;
+									await triggerActivatedAbility(item.inst, ab);
+								}}
+							>
+								<ManaText text={ab.label} size={14} />
+							</button>
+						{/each}
+					{/if}
 					<button type="button" class="hud-btn" onclick={() => (castOptionsModal = null)}>
 						Cancel
 					</button>

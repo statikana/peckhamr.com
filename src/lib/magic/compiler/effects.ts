@@ -569,6 +569,7 @@ export function legacySearchSpec(search: NonNullable<NonNullable<EffectStep['par
 	};
 	if (f.supertypes?.includes('Basic')) spec.requireBasic = true;
 	if (f.supertypes?.includes('Legendary')) spec.requireLegendary = true;
+	if (search.reveal) spec.reveal = true;
 	if (f.colors?.length) spec.allowedColors = [...f.colors];
 	if (f.named) spec.named = f.named;
 	if (f.manaValue?.value.k === 'const') {

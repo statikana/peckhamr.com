@@ -232,6 +232,10 @@ export interface EffectiveActivatedAbility {
 	isManaAbility: boolean;
 	sorcerySpeedOnly?: boolean;
 	activationRestrictions?: ActivationRestriction[];
+	/** Zones from which this ability can be activated; omitted defaults to `['battlefield']`. */
+	activationZones?: ZoneType[];
+	/** Canonical keyword tag for ability cost modifiers (`'equip'`, `'cycling'`, etc.). */
+	costKeyword?: string;
 	producesMana: ManaColor[];
 	producesAmount: number;
 	/** Dynamic non-constant mana amount from IR, if any (transient, never serialized in GameState). */
@@ -265,6 +269,7 @@ export interface LibrarySearchSpec {
 	/** Exact card name match ("for a card named <name>", e.g. Partner with). */
 	named?: string;
 	destinations: LibrarySearchDestination[];
+	reveal?: boolean;
 	rawCriteriaText: string;
 }
 
@@ -965,6 +970,7 @@ export interface PendingCostPayment {
 	sourceCard?: ScryfallCard;
 	additionalIncomplete?: boolean;
 	abilityId?: string;
+	costKeyword?: string;
 	sourceObjectVersion?: number;
 	sourceLkiPower?: number;
 	sourceLkiToughness?: number;

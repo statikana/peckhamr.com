@@ -174,6 +174,15 @@ function kickerTagsForEntry(rawEntry: string, defs: CostDef[]): string[] {
 	return tags;
 }
 
+function formatCyclingDesc(rawQuality: string, filter: ObjectFilter): string {
+	const subtypeSet = new Set((filter.subtypes ?? []).map((s) => s.toLowerCase()));
+	return rawQuality
+		.trim()
+		.split(/\s+/)
+		.map((w) => (subtypeSet.has(w.toLowerCase()) ? w[0].toUpperCase() + w.slice(1) : w.toLowerCase()))
+		.join(' ');
+}
+
 function parseKeyword(part: string): KeywordDef | null {
 	const low = part.toLowerCase();
 	for (const kw of KNOWN_KEYWORDS) {
@@ -183,7 +192,13 @@ function parseKeyword(part: string): KeywordDef | null {
 		if (!/^[\s—-]/.test(rest)) continue;
 		const rawArg = rest.replace(/^\s*[—-]?\s*/, '').trim();
 		const arg =
-			kw === 'ward' || kw === 'flashback' || kw === 'kicker' || kw === 'multikicker'
+			kw === 'ward' ||
+			kw === 'flashback' ||
+			kw === 'kicker' ||
+			kw === 'multikicker' ||
+			kw === 'cycling' ||
+			kw === 'basic landcycling' ||
+			kw === 'landcycling'
 				? rawArg.replace(/\.$/, '').trim()
 				: rawArg;
 		if (/^(\{[^}]+\})+$/.test(arg)) return { name: kw, cost: arg };
@@ -194,6 +209,27 @@ function parseKeyword(part: string): KeywordDef | null {
 			return { name: kw, param: arg.replace(/^from\s+/i, '') };
 		}
 		if (arg && !arg.endsWith('.')) return { name: kw, param: arg };
+	}
+	// Typecycling (CR 702.29e): "[Quality]cycling [cost]" or "[Quality]cycling—[cost]."
+	const typecycling = part.match(/^(.+?cycling)(?=[\s—-])([\s\S]+)$/i);
+	if (typecycling) {
+		const head = typecycling[1].trim();
+		const rest = typecycling[2];
+		const quality = head.slice(0, -'cycling'.length).trim();
+		if (!quality || !/^[a-z][a-z -]*$/i.test(quality)) return null;
+		const arg = rest.replace(/^\s*[—-]?\s*/, '').replace(/\.$/, '').trim();
+		if (!arg) return null;
+		const filter = quality.toLowerCase() === 'type' ? null : parseObjectPhrase(quality);
+		if (!filter) {
+			return { name: 'typecycling', param: arg };
+		}
+		const isManaOnly = /^(\{[^}]+\})+$/.test(arg);
+		return {
+			name: 'typecycling',
+			...(isManaOnly ? { cost: arg } : { param: arg }),
+			cyclingFilter: filter,
+			cyclingDesc: formatCyclingDesc(quality, filter)
+		};
 	}
 	return null;
 }
@@ -208,14 +244,23 @@ function parseAffinityQuality(phrase: string): ObjectFilter | null {
 
 /** "Flying, vigilance", "Equip {2}", "Protection from black". A trailing period means an effect. */
 function keywordLine(line: NormalizedLine): AbilityDef[] | null {
-	if (line.abilityWord || (/\.$/.test(line.body) && !/^(?:ward|flashback|kicker|multikicker)\s*[—-]/i.test(line.body))) {
+	if (
+		line.abilityWord ||
+		(/\.$/.test(line.body) &&
+			!/^(?:ward|flashback|kicker|multikicker|cycling|(?:[a-z][a-z -]*\s+)?[a-z]*cycling)\s*[—-]/i.test(
+				line.body
+			))
+	) {
 		return null;
 	}
 	// "Enchant creature, land, or planeswalker", "Protection from white, from blue", and composite
-	// dash costs ("Ward—...", "Flashback—...", "Kicker—...") are one keyword.
-	const parts = /^(?:enchant|protection from|hexproof from|partner with|(?:ward|flashback|kicker|multikicker)\s*[—-])/i.test(line.body)
-		? [line.body]
-		: line.body.split(/,\s*/);
+	// dash costs ("Ward—...", "Flashback—...", "Kicker—...", "Cycling—...") are one keyword.
+	const parts =
+		/^(?:enchant|protection from|hexproof from|partner with|(?:ward|flashback|kicker|multikicker|cycling|(?:[a-z][a-z -]*\s+)?[a-z]*cycling)\s*[—-])/i.test(
+			line.body
+		)
+			? [line.body]
+			: line.body.split(/,\s*/);
 	const keywords = parts.map(parseKeyword);
 	if (keywords.some((k) => !k)) return null;
 
@@ -345,7 +390,46 @@ function keywordLine(line: NormalizedLine): AbilityDef[] | null {
 				}
 			}
 		}
-		out.push({ kind: 'keyword', keyword, span, ...(keyword.name === 'equip' ? { id: `equip_${line.rawIndex}` } : {}) });
+		if (
+			keyword.name === 'cycling' ||
+			keyword.name === 'basic landcycling' ||
+			keyword.name === 'landcycling' ||
+			keyword.name === 'typecycling'
+		) {
+			if (keyword.name === 'basic landcycling') {
+				keyword.cyclingFilter = { supertypes: ['Basic'], types: ['Land'] };
+				keyword.cyclingDesc = 'basic land';
+			} else if (keyword.name === 'landcycling') {
+				keyword.cyclingFilter = { types: ['Land'] };
+				keyword.cyclingDesc = 'land';
+			} else if (keyword.name === 'typecycling' && !keyword.cyclingFilter) {
+				out.push(unsupported('keyword_not_implemented', part, span, [span]));
+				return;
+			}
+			const rawCost = (keyword.cost ?? keyword.param ?? '').trim();
+			const parsed = parseCost(rawCost);
+			if (parsed.unparsed.length > 0 || parsed.defs.length === 0) {
+				out.push(unsupported('unparsed', part, span, [span]));
+				return;
+			}
+			keyword.costDefs = parsed.defs;
+		}
+		const isCyclingKw =
+			keyword.name === 'cycling' ||
+			keyword.name === 'basic landcycling' ||
+			keyword.name === 'landcycling' ||
+			keyword.name === 'typecycling';
+		const cyclingId = i === 0 ? `cycling_${line.rawIndex}` : `cycling_${line.rawIndex}_${i}`;
+		out.push({
+			kind: 'keyword',
+			keyword,
+			span,
+			...(keyword.name === 'equip'
+				? { id: `equip_${line.rawIndex}` }
+				: isCyclingKw
+					? { id: cyclingId }
+					: {})
+		});
 		// CR 702.124j: "Partner with [name]" is two abilities. The pairing half is the keyword above
 		// (deck construction); the other is "When this permanent enters, target player may search their
 		// library for a card named [name], reveal it, put it into their hand, then shuffle."

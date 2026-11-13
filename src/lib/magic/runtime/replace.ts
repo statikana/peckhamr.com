@@ -477,8 +477,12 @@ export function checkGlobalAbilityActivationRestrictions(
 	actorId: string,
 	perm: CardInstance
 ): { ok: boolean; error?: string } {
-	const evalPerm = evaluatePermanent(state, perm);
-	if (!evalPerm.isArtifact && !evalPerm.isCreature && !evalPerm.isEnchantment) {
+	const evalPerm = perm.zone === 'battlefield' ? evaluatePermanent(state, perm) : null;
+	const innateTypes = evalPerm ? null : compileCard(perm.card).faces[0].characteristics.types;
+	const isArtifact = evalPerm ? evalPerm.isArtifact : Boolean(innateTypes?.includes('Artifact'));
+	const isCreature = evalPerm ? evalPerm.isCreature : Boolean(innateTypes?.includes('Creature'));
+	const isEnchantment = evalPerm ? evalPerm.isEnchantment : Boolean(innateTypes?.includes('Enchantment'));
+	if (!isArtifact && !isCreature && !isEnchantment) {
 		return { ok: true };
 	}
 	const activePlayer = state.players[state.activePlayerIndex];
@@ -1232,7 +1236,7 @@ export function tokenMultiplier(state: GameState, recipientPlayerId: string): nu
 }
 
 export interface TriggerMultiplierCause {
-	event: 'cast' | 'zoneChange' | 'attacks';
+	event: 'cast' | 'zoneChange' | 'attacks' | 'cycle' | 'discard';
 	spell?: CardInstance;
 	casterId?: string;
 	isCopy?: boolean;

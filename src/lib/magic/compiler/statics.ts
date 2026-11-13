@@ -566,8 +566,15 @@ function costModifiers(activeZones?: ZoneType[]): Production {
 			}
 			return build({ k: 'spell', filter }, spells[3], spells[4], who);
 		}
-		const equip = s.match(/^Equip abilities you activate cost (\{\d+\}) less to activate$/i);
-		if (equip) return build({ k: 'ability', keyword: 'equip' }, equip[1], 'less', 'you');
+		const abilityMod = s.match(/^(Equip|Cycling) abilities you activate cost (\{\d+\}) (less|more)(?: to activate)?$/i);
+		if (abilityMod) {
+			return build(
+				{ k: 'ability', keyword: abilityMod[1].toLowerCase() },
+				abilityMod[2],
+				abilityMod[3].toLowerCase(),
+				'you'
+			);
+		}
 		if (/^(?:Equipment you control have equip \{0\}|Equip abilities you activate cost \{0\})$/i.test(s)) {
 			const def: StaticDef = { k: 'costModifier', affects: { k: 'ability', keyword: 'equip' }, delta: { mode: 'setZero', generic: 0 }, who: { relation: 'you' } };
 			return [{ kind: 'static', static: def }];

@@ -96,6 +96,10 @@ export interface ActivatedAbility {
 	isMana: boolean;
 	/** CR 602.5b: activation restrictions recognized on this ability. */
 	activationRestrictions?: ActivationRestriction[];
+	/** Zones from which this ability can be activated; omitted defaults to `['battlefield']`. */
+	activationZones?: ZoneType[];
+	/** Canonical keyword tag for ability cost modifiers (`'equip'`, `'cycling'`), CR 702.6 / 702.29f. */
+	costKeyword?: string;
 	/**
 	 * CR 305.6: a basic land type grants "{T}: Add [mana]" without any printed text. Intrinsic
 	 * abilities have an empty span.
@@ -221,6 +225,10 @@ export interface KeywordDef {
 	enchantPlayer?: PlayerFilter;
 	/** Affinity for [quality] (CR 702.41): the permanents you control that reduce this spell's cost. */
 	affinityFilter?: ObjectFilter;
+	/** Typecycling (CR 702.29e): the card quality filter to search the library for. */
+	cyclingFilter?: ObjectFilter;
+	/** Typecycling (CR 702.29e): human-readable quality phrase (e.g. 'basic land', 'Plains', 'Wizard'). */
+	cyclingDesc?: string;
 }
 
 // ---- Filters --------------------------------------------------------------------------------
@@ -328,7 +336,7 @@ export type CostDef =
 	| { k: 'untapSelf' }
 	| { k: 'tapOthers'; count: Amount; filter: ObjectFilter }
 	| { k: 'sacrifice'; count: Amount; filter: ObjectFilter | 'self' }
-	| { k: 'discard'; count: Amount; filter?: ObjectFilter; random?: boolean }
+	| { k: 'discard'; count: Amount; filter?: ObjectFilter | 'self'; random?: boolean }
 	| { k: 'payLife'; amount: Amount }
 	| { k: 'loyalty'; delta: number }
 	| { k: 'removeCounters'; counter: CounterType; count: Amount; from: 'self' | ObjectFilter }
@@ -467,6 +475,8 @@ export interface SearchSpec {
 	/** False only for unrestricted "a card" tutors (CR 701.19b: must find one if possible). */
 	statedQuality: boolean;
 	destinations: Array<{ zone: 'battlefield' | 'hand' | 'library'; tapped?: boolean; onTop?: boolean }>;
+	/** True when the searched card must be revealed (CR 702.29e / CR 701.19a). */
+	reveal?: boolean;
 	/** The searched-for phrase as printed ("a basic land card"), for prompts. */
 	description?: string;
 }
@@ -503,7 +513,11 @@ export type EventKind =
 	| 'drawCard'
 	| 'gainLife'
 	/** A permanent was tapped for mana ("Whenever you tap a land for mana"); CR 605.1b. */
-	| 'tappedForMana';
+	| 'tappedForMana'
+	/** A card was discarded to pay a cycling or typecycling activation cost (CR 702.29c, 702.29f). */
+	| 'cycle'
+	/** A card was discarded from a player's hand, including via cycling (CR 701.9, 702.29d). */
+	| 'discard';
 
 export interface EventFilter {
 	/**
@@ -537,8 +551,8 @@ export interface TriggerDef {
 	event: EventKind;
 	filter: EventFilter;
 	scope?: TriggerScope;
-	/** The trigger functions while its source is in this zone (Nether Shadow: graveyard). */
-	fromZone?: ZoneType;
+	/** The trigger functions while its source is in this zone (Nether Shadow: graveyard; Cycling: any). */
+	fromZone?: ZoneType | 'any';
 	/** "Whenever ~ enters or attacks": the ability also triggers on each of these events. */
 	or?: TriggerDef[];
 }

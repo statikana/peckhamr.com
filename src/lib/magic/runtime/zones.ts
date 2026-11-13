@@ -91,6 +91,13 @@ export interface MoveOptions {
 	/** Stack item/step context propagated into downstream commander_zone_choice prompts. */
 	resumeStackItemId?: string;
 	resumeStepIndex?: number;
+	/**
+	 * When set, emits a `CardDiscarded` event once the discard move finishes (including after any
+	 * graveyard replacement choice; CR 702.29c–d).
+	 */
+	discardReason?: 'discard' | 'cycle';
+	/** Player who discarded the card (defaults to `fromPlayerId ?? obj.ownerId`). */
+	discardPlayerId?: string;
 }
 
 export interface SbaMoveLog {
@@ -307,6 +314,16 @@ function finalizeZoneMove(
 			ceases,
 			lki
 		);
+		if (opts.discardReason) {
+			emitEvent(state, {
+				kind: 'CardDiscarded',
+				playerId: opts.discardPlayerId ?? fromPlayerId ?? obj.ownerId,
+				objectId: obj.instanceId,
+				object: obj,
+				reason: opts.discardReason,
+				destZone: dest
+			});
+		}
 	}
 	if (
 		promptCommanderRedirect &&
@@ -487,7 +504,9 @@ function moveObjectInner(
 					ceaseToExist: opts.ceaseToExist ?? null,
 					emit: opts.emit !== false,
 					insertSpec,
-					sbaLogJson: opts.sbaLog ? JSON.stringify(opts.sbaLog) : null
+					sbaLogJson: opts.sbaLog ? JSON.stringify(opts.sbaLog) : null,
+					discardReason: opts.discardReason ?? null,
+					discardPlayerId: opts.discardPlayerId ?? null
 				}
 			},
 			choice: {
@@ -544,6 +563,12 @@ registerPromptHandler('zone_replacement_choice', (state, prompt, answer) => {
 		typeof data.resumeStackItemId === 'string' ? data.resumeStackItemId : undefined;
 	const resumeStepIndex =
 		typeof data.resumeStepIndex === 'number' ? data.resumeStepIndex : undefined;
+	const discardReason =
+		data.discardReason === 'discard' || data.discardReason === 'cycle'
+			? data.discardReason
+			: undefined;
+	const discardPlayerId =
+		typeof data.discardPlayerId === 'string' ? data.discardPlayerId : undefined;
 
 	const pendingList = state.pendingZoneMoves;
 	if (!pendingList) return;
@@ -602,6 +627,8 @@ registerPromptHandler('zone_replacement_choice', (state, prompt, answer) => {
 						emit,
 						insertSpec,
 						sbaLogJson,
+						discardReason: discardReason ?? null,
+						discardPlayerId: discardPlayerId ?? null,
 						...(resumeStackItemId !== undefined ? { resumeStackItemId } : {}),
 						...(resumeStepIndex !== undefined ? { resumeStepIndex } : {})
 					}
@@ -652,6 +679,8 @@ registerPromptHandler('zone_replacement_choice', (state, prompt, answer) => {
 				emit,
 				insert: insertOpt,
 				sbaLog,
+				...(discardReason ? { discardReason } : {}),
+				...(discardPlayerId ? { discardPlayerId } : {}),
 				...(resumeStackItemId ? { resumeStackItemId } : {}),
 				...(resumeStepIndex !== undefined ? { resumeStepIndex } : {})
 			}

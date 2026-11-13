@@ -173,11 +173,22 @@ export interface BecomesTappedEvent extends EventBase {
 	object: CardInstance;
 }
 
+/** A card was discarded from a player's hand (CR 701.9, CR 702.29c–d). */
+export interface CardDiscardedEvent extends EventBase {
+	kind: 'CardDiscarded';
+	playerId: string;
+	objectId: string;
+	object: CardInstance;
+	reason: 'discard' | 'cycle';
+	destZone: ZoneType;
+}
+
 export type GameEvent =
 	| TappedForManaEvent
 	| GainLifeEvent
 	| CardDrawnEvent
 	| BecomesTappedEvent
+	| CardDiscardedEvent
 	| ZoneChangeEvent
 	| CastEvent
 	| AttackDeclaredEvent

@@ -396,11 +396,12 @@ export function effectiveAbilityManaCost(
 	state: GameState,
 	actorId: string,
 	abilityId: string,
-	baseManaCost: string
+	baseManaCost: string,
+	abilityKeyword?: string
 ): { manaCost: string; requirement: ManaCostRequirement } {
 	// Read-only: one layer-cache validation for the battlefield scan (Phase 6d).
 	return withStableLayerInputs(state, () =>
-		effectiveAbilityManaCostInner(state, actorId, abilityId, baseManaCost)
+		effectiveAbilityManaCostInner(state, actorId, abilityId, baseManaCost, abilityKeyword)
 	);
 }
 
@@ -408,14 +409,21 @@ function effectiveAbilityManaCostInner(
 	state: GameState,
 	actorId: string,
 	abilityId: string,
-	baseManaCost: string
+	baseManaCost: string,
+	abilityKeyword?: string
 ): { manaCost: string; requirement: ManaCostRequirement } {
-	const isEquip = abilityId.startsWith('equip_');
+	const kw =
+		abilityKeyword ??
+		(abilityId.startsWith('equip_')
+			? 'equip'
+			: abilityId.startsWith('cycling_')
+				? 'cycling'
+				: undefined);
 	let forceZeroCost = false;
 	let genericReduction = 0;
 	let genericIncrease = 0;
 
-	if (isEquip) {
+	if (kw) {
 		for (const p of state.players) {
 			if (p.lost) continue;
 			for (const b of p.battlefield) {
@@ -423,7 +431,7 @@ function effectiveAbilityManaCostInner(
 				const bCard = b.copiableCard ?? b.card;
 				const ctx: FilterContext = { state, controllerId: p.playerId, source: b };
 				for (const mod of costModifiersOf(bCard)) {
-					if (mod.affects.k !== 'ability' || mod.affects.keyword !== 'equip') continue;
+					if (mod.affects.k !== 'ability' || mod.affects.keyword !== kw) continue;
 					if (mod.who.relation === 'you' && p.playerId !== actorId) continue;
 					if (
 						(mod.who.relation === 'opponent' || mod.who.relation === 'each_opponent') &&
@@ -537,7 +545,9 @@ export function describeCost(defs: CostDef[]): string {
 				case 'sacrifice':
 					return d.filter === 'self' ? 'Sacrifice this' : `Sacrifice ${filterText(d.filter, d.count)}`;
 				case 'discard':
-					return `Discard ${amountText(d.count)} card(s)${d.filter ? ` (${filterText(d.filter, d.count)})` : ''}${d.random ? ' at random' : ''}`;
+					return d.filter === 'self'
+						? 'Discard this card'
+						: `Discard ${amountText(d.count)} card(s)${d.filter ? ` (${filterText(d.filter, d.count)})` : ''}${d.random ? ' at random' : ''}`;
 				case 'payLife':
 					return `Pay ${amountText(d.amount)} life`;
 				case 'loyalty':
@@ -632,8 +642,11 @@ function objectCandidates(def: ObjectCostDef, ctx: CostContext, used: Set<string
 			return ctx.player.battlefield.filter(
 				(c) => free(c) && matchesObjectFilter(c, { ...(def.filter as ObjectFilter), controller: 'you' }, fctx)
 			);
-		case 'discard':
-			return ctx.player.hand.filter((c) => free(c) && (!def.filter || matchesObjectFilter(c, def.filter, fctx)));
+		case 'discard': {
+			if (def.filter === 'self') return null;
+			const filter = def.filter as ObjectFilter | undefined;
+			return ctx.player.hand.filter((c) => free(c) && (!filter || matchesObjectFilter(c, filter, fctx)));
+		}
 		case 'exileFrom': {
 			if (def.filter === 'self') return null;
 			if (def.zone !== 'graveyard' && def.zone !== 'hand' && def.zone !== 'battlefield') return [];
@@ -684,6 +697,17 @@ function checkSimple(def: CostDef, ctx: CostContext): string | null {
 		}
 		case 'sacrifice':
 			if (def.filter === 'self' && !sourceOnBattlefield(ctx)) return `${name} must be on the battlefield to be sacrificed.`;
+			return null;
+		case 'discard':
+			if (def.filter === 'self') {
+				if (
+					ctx.isSpell ||
+					src.zone !== 'hand' ||
+					!ctx.player.hand.some((c) => c.instanceId === src.instanceId)
+				) {
+					return `${name} must be in your hand to be discarded.`;
+				}
+			}
 			return null;
 		case 'exileFrom':
 			if (def.filter === 'self') {
@@ -798,7 +822,9 @@ function planFlat(ctx: CostContext, flat: Flat[], objects: string[][] | undefine
 	let mana: ManaCostRequirement | null = ctx.baseMana;
 	let objectIndex = 0;
 	// CR 118.3: with {T} in the cost, the source can't also be tapped for "Tap an untapped ...".
+	// Similarly, a discard-self cost can't use the source card to pay another discard/exile-from-hand cost.
 	const tapsSelf = flat.some((f) => f.def.k === 'tapSelf');
+	const discardsSelf = flat.some((f) => f.def.k === 'discard' && f.def.filter === 'self');
 
 	for (const { def, topLevel } of flat) {
 		const err = checkSimple(def, ctx);
@@ -812,7 +838,10 @@ function planFlat(ctx: CostContext, flat: Flat[], objects: string[][] | undefine
 			parts.push({ def });
 			continue;
 		}
-		const exclude = def.k === 'tapOthers' && tapsSelf ? new Set([...used, ctx.source.instanceId]) : used;
+		const reserveSelf =
+			(def.k === 'tapOthers' && tapsSelf) ||
+			(discardsSelf && def.filter !== 'self' && (def.k === 'discard' || (def.k === 'exileFrom' && def.zone === 'hand')));
+		const exclude = reserveSelf ? new Set([...used, ctx.source.instanceId]) : used;
 		const candidates = objectCandidates(def, ctx, exclude);
 		if (!candidates) {
 			parts.push({ def });
@@ -977,7 +1006,8 @@ function moveFromZone(
 	ctx: CostContext,
 	card: CardInstance,
 	zone: PlayerZone,
-	to: 'graveyard' | 'exile'
+	to: 'graveyard' | 'exile',
+	discardReason?: 'discard' | 'cycle'
 ): MoveResult {
 	if (zone === 'battlefield') {
 		return moveObject(ctx.state, card, to, {
@@ -996,7 +1026,8 @@ function moveFromZone(
 		graveyardReplacement: to === 'graveyard',
 		commanderRedirect: true,
 		newTimestamp: true,
-		bumpVersion: true
+		bumpVersion: true,
+		...(discardReason ? { discardReason, discardPlayerId: ctx.player.playerId } : {})
 	});
 }
 
@@ -1080,7 +1111,8 @@ export function executeCostPaymentParts(
 	parts: SerializedPlannedCost[],
 	startPartIndex = 0,
 	startObjectIndex = 0,
-	descriptions: string[] = []
+	descriptions: string[] = [],
+	costKeyword?: string
 ): PaidCosts {
 	const { player, source } = ctx;
 	for (let partIdx = startPartIndex; partIdx < parts.length; partIdx++) {
@@ -1130,16 +1162,24 @@ export function executeCostPaymentParts(
 				break;
 			}
 			case 'discard': {
-				const ids = part.objectIds ?? [];
+				const ids = part.objectIds ?? (def.filter === 'self' ? [source.instanceId] : []);
 				const names = part.objectNames ?? [];
+				const discardReason: 'discard' | 'cycle' =
+					def.filter === 'self' && costKeyword === 'cycling' ? 'cycle' : 'discard';
 				for (let j = objStart; j < ids.length; j++) {
-					const card = player.hand.find((c) => c.instanceId === ids[j]);
+					const card =
+						player.hand.find((c) => c.instanceId === ids[j]) ??
+						(def.filter === 'self' && source.zone === 'hand' ? source : undefined);
 					if (!card) continue;
-					if (moveFromZone(ctx, card, 'hand', 'graveyard') === 'pending') {
+					if (moveFromZone(ctx, card, 'hand', 'graveyard', discardReason) === 'pending') {
 						return { descriptions, paused: true, nextPartIndex: partIdx, nextObjectIndex: j + 1 };
 					}
 				}
-				descriptions.push(`discarded ${names.join(', ')}${part.isRandom ? ' at random' : ''}`);
+				descriptions.push(
+					def.filter === 'self'
+						? `discarded ${names[0] ?? source.card.name}`
+						: `discarded ${names.join(', ')}${part.isRandom ? ' at random' : ''}`
+				);
 				break;
 			}
 			case 'exileFrom': {

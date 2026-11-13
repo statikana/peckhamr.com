@@ -9,7 +9,7 @@
  * Contains only structured IR builders and CR metadata — zero rules-text reads and zero
  * card-name comparisons.
  */
-import type { EventKind, KeywordDef, ObjectFilter, Span, StaticDef } from './ir.ts';
+import type { ActivatedAbility, CostDef, EffectStep, EventKind, KeywordDef, ObjectFilter, Span, StaticDef } from './ir.ts';
 import type { RuntimeTrigger } from './compiler/triggers.ts';
 
 export type KeywordParameterKind = 'none' | 'cost' | 'number' | 'quality' | 'cardName' | 'text';
@@ -40,7 +40,118 @@ export type KeywordImplementation =
 			buildTriggers: (kw: KeywordDef, abilityIndex: number, span: Span) => RuntimeTrigger[];
 	  }
 	| { kind: 'static'; buildStatics: (kw: KeywordDef) => StaticDef[] }
-	| { kind: 'activated' };
+	| {
+			kind: 'activated';
+			buildActivated?: (
+				kw: KeywordDef,
+				id: string,
+				span: Span
+			) => {
+				ability: ActivatedAbility;
+				costText: string;
+				effectText: string;
+				label: string;
+			} | null;
+	  };
+
+const CYCLING_PREFIX_BY_KW: Record<string, string> = {
+	cycling: 'Cycling',
+	'basic landcycling': 'Basic landcycling',
+	landcycling: 'Landcycling'
+};
+
+function cyclingHeadLabel(kw: KeywordDef): string {
+	const rawCost = (kw.cost ?? kw.param ?? '').trim();
+	const isManaOnly = /^(\{[^}]+\})+$/.test(rawCost);
+	const kwName = kw.name;
+	const prefix =
+		CYCLING_PREFIX_BY_KW[kwName] ??
+		(kw.cyclingDesc
+			? `${kw.cyclingDesc.charAt(0).toUpperCase()}${kw.cyclingDesc.slice(1)}cycling`
+			: 'Typecycling');
+	if (!rawCost) return prefix;
+	return isManaOnly ? `${prefix} ${rawCost}` : `${prefix}—${rawCost}`;
+}
+
+/**
+ * Shared IR builder for Cycling (CR 702.29a) and Typecycling (CR 702.29e).
+ * Used by both `ruleTree.ts` (`getCardActivatedAbilities`) and `compiler/index.ts` (`effectOf`).
+ */
+export function buildCyclingAbility(
+	kw: KeywordDef,
+	id: string,
+	span: Span
+): { ability: ActivatedAbility; costText: string; effectText: string; label: string } | null {
+	const costDefs = kw.costDefs;
+	if (!costDefs || costDefs.length === 0) return null;
+	const discardSelf: CostDef = { k: 'discard', count: { k: 'const', n: 1 }, filter: 'self' };
+	const cost: CostDef[] = [...costDefs, discardSelf];
+	const costText = cyclingHeadLabel(kw);
+	const kwName = kw.name;
+	const isPlainCycling = kwName === 'cycling';
+
+	let effect: EffectStep[];
+	let effectText: string;
+	if (isPlainCycling) {
+		effect = [
+			{
+				verb: 'draw',
+				subject: { k: 'playerRef', ref: { k: 'you' } },
+				amount: { k: 'const', n: 1 },
+				span
+			}
+		];
+		effectText = 'Draw a card.';
+	} else {
+		const filter = kw.cyclingFilter;
+		if (!filter) return null;
+		const desc = kw.cyclingDesc ?? 'matching';
+		effect = [
+			{
+				verb: 'search',
+				subject: { k: 'none' },
+				actor: { k: 'you' },
+				amount: { k: 'const', n: 1 },
+				params: {
+					search: {
+						filter,
+						count: 1,
+						upTo: true,
+						statedQuality: true,
+						reveal: true,
+						destinations: [{ zone: 'hand' }],
+						description: `a ${desc} card`
+					}
+				},
+				span
+			}
+		];
+		effectText = `Search your library for a ${desc} card, reveal it, put it into your hand, then shuffle.`;
+	}
+
+	const label = isPlainCycling
+		? `${costText}: Draw a card`
+		: `${costText}: Search for a ${kw.cyclingDesc ?? 'matching'} card`;
+
+	return {
+		ability: {
+			kind: 'activated',
+			cost,
+			targets: [],
+			effect,
+			timing: 'instant',
+			isMana: false,
+			activationZones: ['hand'],
+			costKeyword: 'cycling',
+			id,
+			text: `${costText}: ${effectText}`,
+			span
+		},
+		costText,
+		effectText,
+		label
+	};
+}
 
 export interface KeywordSpec {
 	/** Canonical lower-case keyword name. */
@@ -752,7 +863,17 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 	unimplemented('craft', '702.167', 'text'),
 	unimplemented('crew', '702.122', 'number'),
 	unimplemented('cumulative upkeep', '702.24', 'cost'),
-	unimplemented('cycling', '702.29', 'cost'),
+	[
+		'cycling',
+		{
+			name: 'cycling',
+			cr: '702.29',
+			parameterKind: 'cost',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'activated', buildActivated: buildCyclingAbility }
+		}
+	],
 	unimplemented('dash', '702.109', 'cost'),
 	unimplemented('daybound', '702.145'),
 	unimplemented('decayed', '702.147'),
@@ -797,9 +918,39 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 	unimplemented('impending', '702.176', 'text'),
 	unimplemented('ingest', '702.115'),
 	unimplemented('jump-start', '702.133'),
-	unimplemented('basic landcycling', '702.29e', 'cost'),
-	unimplemented('landcycling', '702.29e', 'cost'),
-	unimplemented('typecycling', '702.29e', 'cost'),
+	[
+		'basic landcycling',
+		{
+			name: 'basic landcycling',
+			cr: '702.29e',
+			parameterKind: 'cost',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'activated', buildActivated: buildCyclingAbility }
+		}
+	],
+	[
+		'landcycling',
+		{
+			name: 'landcycling',
+			cr: '702.29e',
+			parameterKind: 'cost',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'activated', buildActivated: buildCyclingAbility }
+		}
+	],
+	[
+		'typecycling',
+		{
+			name: 'typecycling',
+			cr: '702.29e',
+			parameterKind: 'cost',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'activated', buildActivated: buildCyclingAbility }
+		}
+	],
 	unimplemented('level up', '702.87', 'cost'),
 	unimplemented('living metal', '702.161'),
 	unimplemented('madness', '702.35', 'cost'),

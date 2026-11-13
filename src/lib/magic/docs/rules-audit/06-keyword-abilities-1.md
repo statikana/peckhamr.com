@@ -246,7 +246,7 @@ Audited at engine-rewrite 917180b on 2026-11-09.
 ### 702.29 Cycling
 | CR | Rule (short) | Status | Evidence / notes |
 |---|---|---|---|
-| 702.29a–f | Cycling and Typecycling (`[Cost], Discard this card: Draw a card` / search for `[type]`) | missing | Listed in `KNOWN_KEYWORDS` (`compiler/adapter.ts:134,151`) as `keyword_not_implemented` and stripped in `oracle.ts:1062`; no hand-activated ability support in `engine.ts`. |
+| 702.29a–f | Cycling and Typecycling (`[Cost], Discard this card: Draw a card` / search for `[type]`) | implemented | **Updated 2026-11-13:** Hand-zone `ActivatedAbility` (`activationZones: ['hand']`), `{ k: 'discard', filter: 'self' }`, generic `[quality]cycling` compilation in `keywords.ts` / `compiler/card.ts` / `ruleTree.ts`, `CR 702.29f` cycling cost modifiers (`compiler/statics.ts`, `runtime/costs.ts`), and `CardDiscarded` cycling/discard triggers (`CR 702.29c–d`: `"When you cycle ~"` with `fromZone: 'any'`, `"cycles or discards"` single-trigger match, `CR 702.29f` typecycling trigger integration). Keyword-blind UI (`ArenaTable.svelte`) and bot AI (`ai.ts`). *(Note: cleanup-step `discard_to_hand_size` does not yet emit `CardDiscarded`.)* |
 
 ### 702.30 Echo
 | CR | Rule (short) | Status | Evidence / notes |

@@ -1,12 +1,12 @@
 # MTG Engine: Next Steps Spec
 
-**Status:** spec, written 2026-11-12 against `engine-rewrite` at `ad82d00`, updated after Track A (`972a90c`), Track B1 (`961b8e5`), Track B2 (`bd98235`), and Track B3 (`COMPILER_VERSION = 16`). Track A (`A1`–`A4`), **B1**, **B2**, and **B3** are **done**; **B4** (design doc only) and **Cycling** (`CR 702.29` hand-zone activation, deferred after B3) are next.
+**Status:** spec, written 2026-11-12 against `engine-rewrite` at `ad82d00`, updated after Track A (`972a90c`), Track B1 (`961b8e5`), Track B2 (`bd98235`), Track B3 (`9bd2f3f`), and **Cycling** (`COMPILER_VERSION = 17`). Track A (`A1`–`A4`), **B1**, **B2**, **B3**, and **Cycling** (`CR 702.29`) are **done**; **B4** (design doc only) is next.
 
 **Purpose:** the recommended next work for the engine, written so that each work package can be handed to one agent. Track A is near-term fixes (complete). Track B is the structural work that full keyword and rules coverage needs (the reasoning is in [`FULL_COVERAGE_STRUCTURE.md`](./FULL_COVERAGE_STRUCTURE.md)). Track C keeps the docs honest as the code changes.
 
 **Order:**
 1. ~~A1, A2, A3 and A4~~ — **done** (`b68ef55`, `dfbc69e`, `94b04de`, `972a90c`).
-2. ~~B1~~ — **done** (`961b8e5`, [`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.10); ~~B2~~ — **done** (`bd98235`, [`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.11); ~~B3~~ — **done** ([`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.12); **B4** (design doc only) and deferred **Cycling** (`CR 702.29`) are next.
+2. ~~B1~~ — **done** (`961b8e5`, [`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.10); ~~B2~~ — **done** (`bd98235`, [`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.11); ~~B3~~ — **done** (`9bd2f3f`, [`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.12); ~~Cycling (`CR 702.29`)~~ — **done** ([`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.13); **B4** (design doc only) is next.
 3. Track C rides along with every package.
 
 ---
@@ -197,10 +197,16 @@ Each further alternative or additional cost would repeat all of that. See `FULL_
 
 See [`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.12 (`COMPILER_VERSION = 16`). Completed across three slices:
 - Unified `KEYWORD_REGISTRY` (`src/lib/magic/keywords.ts`) deriving `IMPLEMENTED_KEYWORDS`, `KNOWN_KEYWORDS`, `STATIC_CONTINUOUS_KEYWORDS`, `GRANTABLE_KEYWORDS`, `KEYWORD_LABELS`, `ALTERNATIVE_COST_KEYWORDS`, and `GRANTED_TRIGGER_KEYWORD_EVENTS`, with generic Layer 6 granted-trigger emission (`runtime/triggers.ts`) and 1:1 coverage-guard enforcement (`runtime/keywords-coverage-guard.test.ts`).
-- 7 pure-IR keywords (`battle cry`, `afterlife`, `bushido`, `living weapon`, `for mirrodin!`, `affinity`, and `exploit` `CR 702.110a`) + 3 thin-primitive combat keywords (`exalted`, `annihilator`, and 7 `landwalk` variants). (`Cycling` `CR 702.29` hand-zone activation was deferred past B3 by design decision.)
+- 7 pure-IR keywords (`battle cry`, `afterlife`, `bushido`, `living weapon`, `for mirrodin!`, `affinity`, and `exploit` `CR 702.110a`) + 3 thin-primitive combat keywords (`exalted`, `annihilator`, and 7 `landwalk` variants). (`Cycling` `CR 702.29` was implemented immediately after B3; see [`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.13.)
 - **Kicker & Multikicker** (`CR 702.33a–g`) wired via `CastOption.optionalAdditionalCosts`, `runtime/kicker.ts`, keyword-blind UI (`ArenaTable.svelte`) and AI (`ai.ts`), `CR 400.7` zone reset, conditional kicker targets (`CR 702.33g`), live `vite dev` Chromium verification, IR snapshots, and regenerated [`COVERAGE.md`](./COVERAGE.md) (`keyword_not_implemented`: `4,190 → 3,584`, `-606`).
 
 **Size:** M–L.
+
+### Cycling & Hand-Zone Activated Abilities (`CR 702.29`) — ✅ Done
+
+See [`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.13 (`COMPILER_VERSION = 17`). Completed across two slices:
+- Generalized `activationZones?: ZoneType[]`, `{ k: 'discard', filter: 'self' }`, `effectiveAbilityManaCost` keyword matching, generic `[quality]cycling` parsing (`cycling`, `basic landcycling`, `landcycling`, `typecycling` via `parseObjectPhrase`), keyword-blind UI (`ArenaTable.svelte`) & bot AI (`ai.ts`).
+- Added `CardDiscardedEvent` (`reason: 'cycle' | 'discard'`), `"When you cycle ~"` (`fromZone: 'any'`, `CR 702.29c`), `"cycles or discards"` (`CR 702.29d`), IR snapshots, live `vite dev` Chromium verification, and regenerated [`COVERAGE.md`](./COVERAGE.md) (`keyword_not_implemented`: `3,584 → 3,240`, `-344`).
 
 ### B4. Object model for multi-faced and face-down cards (CR 707–712, 708)
 

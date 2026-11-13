@@ -24,7 +24,7 @@ import { runtimeTriggers, type RuntimeTrigger } from '../compiler/triggers.ts';
 import type { Amount, Condition, EventFilter, EventKind, ObjectFilter, TriggerDef } from '../ir.ts';
 import { getKeywordSpec, GRANTED_TRIGGER_KEYWORD_EVENTS } from '../keywords.ts';
 import { evaluatePermanent, inspectCardContinuousBreakdown, permanentHasLostAllAbilities } from '../ruleTree.ts';
-import type { CardInstance, GameState, ScryfallCard, SerializedPendingTrigger, StackItem } from '../types.ts';
+import type { CardInstance, GameState, ScryfallCard, SerializedPendingTrigger, StackItem, ZoneType } from '../types.ts';
 import type { GameEvent } from './events.ts';
 import { evaluateKickedCountAmount, evaluateKickerCondition, getObjectKickerInfo } from './kicker.ts';
 import { withStableLayerInputs } from './layerCache.ts';
@@ -408,7 +408,7 @@ interface Source {
 	obj: CardInstance;
 	card: ScryfallCard;
 	controllerId: string;
-	zone: 'battlefield' | 'graveyard' | 'stack';
+	zone: ZoneType;
 	/** Look-back for an object that left the battlefield (CR 603.10a). */
 	lostAllAbilities?: boolean;
 	isLookBack?: boolean;
@@ -454,7 +454,13 @@ function abilitiesFor(
 	for (const ability of triggersOf(source.card).all) {
 		const zone = ability.trigger.fromZone ?? 'battlefield';
 		// "When you cast ~" functions while the spell is on the stack (CR 603.2, 113.6).
-		if (source.zone === 'stack' ? kind !== 'cast' : zone !== source.zone) continue;
+		// "When you cycle ~" (`fromZone: 'any'`) triggers from whatever zone the card winds up in (CR 702.29c).
+		if (
+			ability.trigger.fromZone !== 'any' &&
+			(source.zone === 'stack' ? kind !== 'cast' : zone !== source.zone)
+		) {
+			continue;
+		}
 		const alts = alternatives(ability.trigger).filter((a) => a.event === kind && pre(a));
 		if (alts.length > 0) out.push({ ability, alts });
 	}
@@ -560,6 +566,8 @@ function matchTriggersInner(state: GameState, ev: GameEvent): void {
 			return matchCardDrawn(state, ev);
 		case 'BecomesTapped':
 			return matchBecomesTapped(state, ev);
+		case 'CardDiscarded':
+			return matchCardDiscarded(state, ev);
 	}
 }
 
@@ -603,6 +611,63 @@ function matchCardDrawn(state: GameState, ev: Extract<GameEvent, { kind: 'CardDr
 			}
 		}
 	}
+}
+
+function matchCardDiscarded(state: GameState, ev: Extract<GameEvent, { kind: 'CardDiscarded' }>): void {
+	const subject = printedSubject(ev.object, ev.object.card, ev.playerId);
+	const label = ev.reason === 'cycle' ? 'Cycle Trigger' : 'Discard Trigger';
+	const matchEventKind = (kind: 'cycle' | 'discard', candidates: Source[]) => {
+		for (const source of candidates) {
+			for (const { ability, alts } of abilitiesFor(state, source, kind)) {
+				const alt = alts.find((a) => {
+					const rel = a.filter.player?.relation ?? 'any';
+					if (rel === 'you' && ev.playerId !== source.controllerId) return false;
+					if (rel === 'opponent' && ev.playerId === source.controllerId) return false;
+					return objectMatches(a.filter, subject, source);
+				});
+				if (!alt) continue;
+				const times =
+					source.zone === 'battlefield'
+						? triggerMultiplier(state, source.obj, source.controllerId, {
+								event: kind,
+								object: ev.object
+							})
+						: 1;
+				record(state, source, ability, kind, {
+					label,
+					eventObject: ev.object,
+					eventPlayer: ev.playerId,
+					eventPlayerId: ev.playerId,
+					times
+				});
+			}
+		}
+	};
+
+	if (ev.reason === 'cycle') {
+		const cycleCandidates = sources(state, 'cycle');
+		// CR 702.29c: "When you cycle ~" triggers from whatever zone the card winds up in after cycling.
+		const objTriggers = triggersOf(ev.object.card);
+		if (
+			!cycleCandidates.some((c) => c.obj.instanceId === ev.object.instanceId) &&
+			objTriggers.events.has('cycle') &&
+			objTriggers.all.some(
+				(a) =>
+					a.trigger.fromZone === 'any' &&
+					alternatives(a.trigger).some((alt) => alt.event === 'cycle')
+			)
+		) {
+			cycleCandidates.push({
+				obj: ev.object,
+				card: ev.object.card,
+				controllerId: ev.playerId,
+				zone: ev.destZone
+			});
+		}
+		matchEventKind('cycle', cycleCandidates);
+	}
+
+	matchEventKind('discard', sources(state, 'discard'));
 }
 
 function matchBecomesTapped(state: GameState, ev: Extract<GameEvent, { kind: 'BecomesTapped' }>): void {

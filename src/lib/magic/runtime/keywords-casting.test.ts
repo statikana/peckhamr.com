@@ -7,13 +7,17 @@ import { executeBotStep, hasAnyLegalInstantResponse } from '../ai.ts';
 import { compileCard } from '../compiler/index.ts';
 import {
 	applyGameAction,
+	checkAbilityActivationLegality,
 	createCardInstance,
 	createInitialGameState,
 	evaluatePermanent,
 	getCastOptions,
+	getEffectiveActivatedAbilities,
 	getPlayerCommanderIdentity,
 	getSpellCostRequirement
 } from '../engine.ts';
+import { getCardActivatedAbilities } from '../ruleTree.ts';
+import { effectivePromptChoice, effectivePromptPurpose } from './choices.ts';
 import { PRECON_DECKS, STAPLE_CARDS } from '../precons.ts';
 import { validateCommanderDeck } from '../scryfall.ts';
 import {
@@ -3209,3 +3213,1099 @@ describe('Keyword: Exploit (CR 702.110)', () => {
 		assert.equal(p2d.life, lifeStartP2);
 	});
 });
+
+// ============================================================================
+// CYCLING & TYPECYCLING (CR 702.29a-f)
+// ============================================================================
+
+describe('Keywords: Cycling & Typecycling (CR 702.29)', () => {
+	function passUntilChoiceOrEmpty(state: GameState, maxSteps = 20): void {
+		for (let i = 0; i < maxSteps && state.stack.length > 0 && state.pendingPrompts.length === 0; i++) {
+			const prio = state.players[state.priorityPlayerIndex];
+			const res = applyGameAction(state, prio.playerId, { type: 'pass_priority' });
+			if (!res.ok) break;
+		}
+	}
+
+	it('cycling (CR 702.29a): activates from hand, pays mana + discards self, preserves stack item card, and draws 1', () => {
+		const { state, p1 } = makeGame();
+		p1.library = [];
+		const cyclerCard = syntheticCard({
+			name: 'Dune Strider',
+			manaCost: '{3}{W}',
+			cmc: 4,
+			typeLine: 'Creature — Human Nomad',
+			power: '3',
+			toughness: '3',
+			oracleText: 'Cycling {2}',
+			colors: ['W'],
+			colorIdentity: ['W']
+		});
+		const cycler = putInZone(state, p1, cyclerCard, 'hand');
+		const topDraw = putInZone(state, p1, staple('Plains'), 'library');
+		p1.manaPool.C = 2;
+
+		const abs = getEffectiveActivatedAbilities(state, p1, cycler);
+		assert.equal(abs.length, 1);
+		assert.deepEqual(abs[0].activationZones, ['hand']);
+		assert.equal(abs[0].costKeyword, 'cycling');
+
+		const res = applyGameAction(state, p1.playerId, {
+			type: 'activate_ability',
+			instanceId: cycler.instanceId,
+			abilityId: abs[0].id
+		});
+		assert.equal(res.ok, true, res.error ?? 'expected activation to succeed');
+		assert.equal(p1.manaPool.C, 0);
+		assert.equal(p1.hand.some((c) => c.instanceId === cycler.instanceId), false);
+		assert.equal(p1.graveyard.some((c) => c.instanceId === cycler.instanceId), true);
+		assert.equal(state.stack.length, 1);
+		assert.equal(state.stack[0].card.name, 'Dune Strider');
+		assert.equal(state.stack[0].sourceInstanceId, cycler.instanceId);
+
+		resolveAllStack(state);
+		assert.equal(state.stack.length, 0);
+		assert.equal(p1.hand.some((c) => c.instanceId === topDraw.instanceId), true);
+	});
+
+	it('cycling non-mana & composite costs (CR 702.29a, CR 118.3): pays life and prevents double-discarding self', () => {
+		// 1. Cycling—Pay 2 life.
+		const { state: s1, p1: p1a } = makeGame();
+		p1a.library = [];
+		const lifeCycler = putInZone(
+			s1,
+			p1a,
+			syntheticCard({
+				name: 'Bloodrunner',
+				manaCost: '{3}{B}',
+				cmc: 4,
+				typeLine: 'Creature — Zombie',
+				power: '3',
+				toughness: '3',
+				oracleText: 'Cycling—Pay 2 life.'
+			}),
+			'hand'
+		);
+		const draw1 = putInZone(s1, p1a, staple('Swamp'), 'library');
+		const lifeAb = getEffectiveActivatedAbilities(s1, p1a, lifeCycler)[0];
+		assert.ok(lifeAb);
+		const lifeStart = p1a.life;
+		const payRes = applyGameAction(s1, p1a.playerId, {
+			type: 'activate_ability',
+			instanceId: lifeCycler.instanceId,
+			abilityId: lifeAb.id
+		});
+		assert.equal(payRes.ok, true, payRes.error ?? 'expected activation to succeed');
+		assert.equal(p1a.life, lifeStart - 2);
+		resolveAllStack(s1);
+		assert.equal(p1a.hand.some((c) => c.instanceId === draw1.instanceId), true);
+
+		// 2. Cycling—Discard a card. Cannot discard itself twice (CR 118.3).
+		const { state: s2, p1: p1b } = makeGame();
+		p1b.library = [];
+		const discardCycler = putInZone(
+			s2,
+			p1b,
+			syntheticCard({
+				name: 'Thought Cycler',
+				manaCost: '{4}',
+				cmc: 4,
+				typeLine: 'Artifact',
+				oracleText: 'Cycling—Discard a card.'
+			}),
+			'hand'
+		);
+		const discAb = getEffectiveActivatedAbilities(s2, p1b, discardCycler)[0];
+		assert.ok(discAb);
+		assert.equal(checkAbilityActivationLegality(s2, p1b.playerId, discardCycler, discAb).ok, false);
+		assert.equal(
+			applyGameAction(s2, p1b.playerId, {
+				type: 'activate_ability',
+				instanceId: discardCycler.instanceId,
+				abilityId: discAb.id
+			}).ok,
+			false
+		);
+
+		const fodder = putInZone(s2, p1b, staple('Island'), 'hand');
+		const draw2 = putInZone(s2, p1b, staple('Mountain'), 'library');
+		assert.equal(checkAbilityActivationLegality(s2, p1b.playerId, discardCycler, discAb).ok, true);
+		const res2 = applyGameAction(s2, p1b.playerId, {
+			type: 'activate_ability',
+			instanceId: discardCycler.instanceId,
+			abilityId: discAb.id
+		});
+		assert.equal(res2.ok, true, res2.error ?? 'expected activation to succeed');
+		// Fodder and cycler both discarded; cycler not double-discarded
+		assert.equal(p1b.hand.length, 0);
+		assert.equal(p1b.graveyard.some((c) => c.instanceId === fodder.instanceId), true);
+		assert.equal(p1b.graveyard.some((c) => c.instanceId === discardCycler.instanceId), true);
+		resolveAllStack(s2);
+		assert.equal(p1b.hand.some((c) => c.instanceId === draw2.instanceId), true);
+	});
+
+	it('cycling graveyard replacement + PendingCostPayment pause (CR 616.1): resumes cleanly after replacement choice', () => {
+		const { state, p1 } = makeGame();
+		p1.library = [];
+		putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Void Rest',
+				manaCost: '{1}{W}',
+				cmc: 2,
+				typeLine: 'Enchantment',
+				oracleText: 'If a card or token would be put into a graveyard from anywhere, exile it instead.'
+			}),
+			'battlefield'
+		);
+		putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Wheel Guardian',
+				manaCost: '{2}{U}',
+				cmc: 3,
+				typeLine: 'Enchantment',
+				oracleText:
+					"If a card would be put into a graveyard from anywhere, shuffle it into its owner's library instead."
+			}),
+			'battlefield'
+		);
+		const cycler = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Mirage Drake',
+				manaCost: '{2}{U}',
+				cmc: 3,
+				typeLine: 'Creature — Drake',
+				power: '2',
+				toughness: '2',
+				oracleText: 'Cycling {1}'
+			}),
+			'hand'
+		);
+		const libCard = putInZone(state, p1, staple('Forest'), 'library');
+		p1.manaPool.C = 1;
+
+		const ab = getEffectiveActivatedAbilities(state, p1, cycler)[0];
+		const res = applyGameAction(state, p1.playerId, {
+			type: 'activate_ability',
+			instanceId: cycler.instanceId,
+			abilityId: ab.id
+		});
+		assert.equal(res.ok, true, res.error ?? 'expected activation to succeed');
+		// Should pause with PendingCostPayment waiting on zone replacement choice prompt
+		assert.ok(state.pendingCostPayment);
+		assert.equal(state.stack.length, 0);
+		assert.equal(state.pendingPrompts.length, 1);
+		const prompt = state.pendingPrompts[0];
+		const choice = effectivePromptChoice(prompt, state);
+		assert.equal(choice.kind, 'chooseReplacement');
+		if (choice.kind === 'chooseReplacement') {
+			const exileOpt = choice.options.find((o) => o.label.toLowerCase().includes('exile')) ?? choice.options[0];
+			assert.ok(exileOpt);
+			const ansRes = applyGameAction(state, prompt.playerId, {
+				type: 'choice',
+				promptId: prompt.id,
+				answer: { kind: 'chooseReplacement', id: exileOpt.id }
+			});
+			assert.equal(ansRes.ok, true, ansRes.error ?? 'replacement choice failed');
+		}
+		assert.equal(state.pendingCostPayment, undefined);
+		assert.equal(p1.exile.some((c) => c.instanceId === cycler.instanceId), true);
+		assert.equal(state.stack.length, 1);
+		assert.equal(state.stack[0].card.name, 'Mirage Drake');
+
+		resolveAllStack(state);
+		assert.equal(p1.hand.some((c) => c.instanceId === libCard.instanceId), true);
+	});
+
+	it('basic landcycling, landcycling, and typecycling (CR 702.29e): filters candidates, reveals found card, and handles fail-to-find', () => {
+		const { state, p1 } = makeGame();
+		p1.library = [];
+		const eagle = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Valley Bird',
+				manaCost: '{5}{W}',
+				cmc: 6,
+				typeLine: 'Creature — Bird',
+				power: '3',
+				toughness: '4',
+				oracleText: 'Plainscycling {2}'
+			}),
+			'hand'
+		);
+		const tutor = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Arcane Researcher',
+				manaCost: '{4}{U}',
+				cmc: 5,
+				typeLine: 'Creature — Human Wizard',
+				power: '2',
+				toughness: '3',
+				oracleText: 'Wizardcycling {3}'
+			}),
+			'hand'
+		);
+		const elk = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Basic Scout',
+				manaCost: '{4}{G}',
+				cmc: 5,
+				typeLine: 'Creature — Elk',
+				oracleText: 'Basic landcycling {2}'
+			}),
+			'hand'
+		);
+		const surveyor = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Terrain Explorer',
+				manaCost: '{5}',
+				cmc: 5,
+				typeLine: 'Artifact Creature — Construct',
+				oracleText: 'Landcycling {2}'
+			}),
+			'hand'
+		);
+
+		const plains = putInZone(state, p1, staple('Plains'), 'library');
+		const hallowed = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Hallowed Sanctuary',
+				typeLine: 'Land — Plains Island',
+				oracleText: ''
+			}),
+			'library'
+		);
+		const wizard = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Apprentice Mage',
+				manaCost: '{1}{U}',
+				cmc: 2,
+				typeLine: 'Creature — Merfolk Wizard',
+				oracleText: ''
+			}),
+			'library'
+		);
+		const soldier = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Town Guard',
+				manaCost: '{W}',
+				cmc: 1,
+				typeLine: 'Creature — Human Soldier',
+				oracleText: ''
+			}),
+			'library'
+		);
+		assert.ok(soldier);
+
+		// 1. Plainscycling finds Plains (including nonbasic Plains Island), not Soldier/Wizard
+		p1.manaPool.C = 2;
+		const plainsAb = getEffectiveActivatedAbilities(state, p1, eagle)[0];
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'activate_ability',
+				instanceId: eagle.instanceId,
+				abilityId: plainsAb.id
+			}).ok,
+			true
+		);
+		passUntilChoiceOrEmpty(state);
+		const pPrompt = state.pendingPrompts[0];
+		assert.ok(pPrompt);
+		assert.equal(effectivePromptPurpose(pPrompt), 'search_library');
+		const pChoice = effectivePromptChoice(pPrompt, state);
+		assert.equal(pChoice.kind, 'chooseObjects');
+		if (pChoice.kind === 'chooseObjects') {
+			assert.deepEqual(
+				new Set(pChoice.candidates),
+				new Set([plains.instanceId, hallowed.instanceId])
+			);
+			assert.equal(pChoice.min, 0); // Fail-to-find allowed (CR 701.19b)
+			assert.equal(
+				applyGameAction(state, p1.playerId, {
+					type: 'choice',
+					promptId: pPrompt.id,
+					answer: { kind: 'chooseObjects', objectIds: [hallowed.instanceId] }
+				}).ok,
+				true
+			);
+		}
+		assert.equal(p1.hand.some((c) => c.instanceId === hallowed.instanceId), true);
+		assert.equal(
+			state.log.some((entry) => entry.text.includes('revealed Hallowed Sanctuary')),
+			true
+		);
+
+		// 2. Basic landcycling finds Basic Plains, NOT Hallowed Sanctuary (moved) or Wizard
+		p1.manaPool.C = 2;
+		const basicAb = getEffectiveActivatedAbilities(state, p1, elk)[0];
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'activate_ability',
+				instanceId: elk.instanceId,
+				abilityId: basicAb.id
+			}).ok,
+			true
+		);
+		passUntilChoiceOrEmpty(state);
+		const bPrompt = state.pendingPrompts[0];
+		assert.ok(bPrompt);
+		const bChoice = effectivePromptChoice(bPrompt, state);
+		if (bChoice.kind === 'chooseObjects') {
+			assert.deepEqual(bChoice.candidates, [plains.instanceId]);
+			// Fail to find cleanly (select [])
+			assert.equal(
+				applyGameAction(state, p1.playerId, {
+					type: 'choice',
+					promptId: bPrompt.id,
+					answer: { kind: 'chooseObjects', objectIds: [] }
+				}).ok,
+				true
+			);
+		}
+		assert.equal(p1.library.some((c) => c.instanceId === plains.instanceId), true);
+
+		// 3. Landcycling finds Plains
+		p1.manaPool.C = 2;
+		const landAb = getEffectiveActivatedAbilities(state, p1, surveyor)[0];
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'activate_ability',
+				instanceId: surveyor.instanceId,
+				abilityId: landAb.id
+			}).ok,
+			true
+		);
+		passUntilChoiceOrEmpty(state);
+		const lPrompt = state.pendingPrompts[0];
+		assert.ok(lPrompt);
+		const lChoice = effectivePromptChoice(lPrompt, state);
+		if (lChoice.kind === 'chooseObjects') {
+			assert.deepEqual(lChoice.candidates, [plains.instanceId]);
+			applyGameAction(state, p1.playerId, {
+				type: 'choice',
+				promptId: lPrompt.id,
+				answer: { kind: 'chooseObjects', objectIds: [plains.instanceId] }
+			});
+		}
+		assert.equal(p1.hand.some((c) => c.instanceId === plains.instanceId), true);
+
+		// 4. Wizardcycling finds Wizard
+		p1.manaPool.C = 3;
+		const wizAb = getEffectiveActivatedAbilities(state, p1, tutor)[0];
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'activate_ability',
+				instanceId: tutor.instanceId,
+				abilityId: wizAb.id
+			}).ok,
+			true
+		);
+		passUntilChoiceOrEmpty(state);
+		const wPrompt = state.pendingPrompts[0];
+		assert.ok(wPrompt);
+		const wChoice = effectivePromptChoice(wPrompt, state);
+		if (wChoice.kind === 'chooseObjects') {
+			assert.deepEqual(wChoice.candidates, [wizard.instanceId]);
+			applyGameAction(state, p1.playerId, {
+				type: 'choice',
+				promptId: wPrompt.id,
+				answer: { kind: 'chooseObjects', objectIds: [wizard.instanceId] }
+			});
+		}
+		assert.equal(p1.hand.some((c) => c.instanceId === wizard.instanceId), true);
+
+		// 5. Empty/no-match typecycling after Wizard removed still shuffles without prompting
+		const anotherWizCycler = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Second Step',
+				manaCost: '{2}{U}',
+				cmc: 3,
+				typeLine: 'Creature — Bird Wizard',
+				oracleText: 'Wizardcycling {1}'
+			}),
+			'hand'
+		);
+		p1.manaPool.C = 1;
+		const w2Ab = getEffectiveActivatedAbilities(state, p1, anotherWizCycler)[0];
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'activate_ability',
+				instanceId: anotherWizCycler.instanceId,
+				abilityId: w2Ab.id
+			}).ok,
+			true
+		);
+		resolveAllStack(state);
+		assert.equal(state.pendingPrompts.length, 0);
+		assert.equal(
+			state.log.some((entry) => entry.text.includes('no matching cards found')),
+			true
+		);
+	});
+
+	it('zone legality (CR 702.29b): rejects cycling outside hand and rejects battlefield abilities from hand', () => {
+		const { state, p1 } = makeGame();
+		const hybrid = syntheticCard({
+			name: 'Flexible Bear',
+			manaCost: '{1}{G}',
+			cmc: 2,
+			typeLine: 'Creature — Bear',
+			power: '2',
+			toughness: '2',
+			oracleText: '{1}: Flexible Bear gains trample until end of turn.\nCycling {2}'
+		});
+		const inHand = putInZone(state, p1, hybrid, 'hand');
+		const onBf = putInZone(state, p1, hybrid, 'battlefield');
+		const inGy = putInZone(state, p1, hybrid, 'graveyard');
+
+		// getCardActivatedAbilities knows the card's printed abilities in any zone (CR 702.29b)
+		assert.equal(getCardActivatedAbilities(hybrid).length, 2);
+
+		const handAbs = getEffectiveActivatedAbilities(state, p1, inHand);
+		const cyclingHandAb = handAbs.find((a) => a.activationZones?.includes('hand'));
+		const bfOnlyOnHand = getCardActivatedAbilities(hybrid).find((a) => !a.activationZones);
+		assert.ok(cyclingHandAb);
+		assert.ok(bfOnlyOnHand);
+
+		p1.manaPool.C = 5;
+		// Hand card cannot activate battlefield ability
+		assert.equal(checkAbilityActivationLegality(state, p1.playerId, inHand, bfOnlyOnHand).ok, false);
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'activate_ability',
+				instanceId: inHand.instanceId,
+				abilityId: bfOnlyOnHand.id
+			}).ok,
+			false
+		);
+
+		// Battlefield / graveyard permanent cannot activate hand-only cycling ability
+		assert.equal(checkAbilityActivationLegality(state, p1.playerId, onBf, cyclingHandAb).ok, false);
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'activate_ability',
+				instanceId: onBf.instanceId,
+				abilityId: cyclingHandAb.id
+			}).ok,
+			false
+		);
+		assert.equal(checkAbilityActivationLegality(state, p1.playerId, inGy, cyclingHandAb).ok, false);
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'activate_ability',
+				instanceId: inGy.instanceId,
+				abilityId: cyclingHandAb.id
+			}).ok,
+			false
+		);
+	});
+
+	it('CR 611.3b & Grand Abolisher: hand abilities ignore battlefield ability-loss and obey opponent activation bans', () => {
+		// 1. CR 611.3b: Humility on battlefield does not strip cycling from creatures in hand
+		const { state: s1, p1: p1a } = makeGame();
+		putInZone(
+			s1,
+			p1a,
+			syntheticCard({
+				name: 'Humility Ward',
+				manaCost: '{2}{W}{W}',
+				cmc: 4,
+				typeLine: 'Enchantment',
+				oracleText: 'All creatures lose all abilities and have base power and toughness 1/1.'
+			}),
+			'battlefield'
+		);
+		const p1Cycler = putInZone(
+			s1,
+			p1a,
+			syntheticCard({
+				name: 'Serene Lion',
+				manaCost: '{2}{W}',
+				cmc: 3,
+				typeLine: 'Creature — Cat',
+				power: '2',
+				toughness: '2',
+				oracleText: 'Cycling {2}'
+			}),
+			'hand'
+		);
+		assert.equal(getEffectiveActivatedAbilities(s1, p1a, p1Cycler).length, 1);
+
+		// 2. Grand Abolisher blocks opponent activating artifact/creature/enchantment hand abilities on your turn
+		const { state: s2, p1: p1b, p2: p2b } = makeGame();
+		putInZone(
+			s2,
+			p1b,
+			syntheticCard({
+				name: 'Silence Marshal',
+				manaCost: '{W}{W}',
+				cmc: 2,
+				typeLine: 'Creature — Human Cleric',
+				power: '2',
+				toughness: '2',
+				oracleText:
+					"During your turn, your opponents can't cast spells or activate abilities of artifacts, creatures, or enchantments."
+			}),
+			'battlefield'
+		);
+		const p2CreatureCycler = putInZone(
+			s2,
+			p2b,
+			syntheticCard({
+				name: 'Blocked Elk',
+				manaCost: '{3}{G}',
+				cmc: 4,
+				typeLine: 'Creature — Elk',
+				oracleText: 'Cycling {1}'
+			}),
+			'hand'
+		);
+		const p2LandCycler = putInZone(
+			s2,
+			p2b,
+			syntheticCard({
+				name: 'Allowed Oasis',
+				typeLine: 'Land — Desert',
+				oracleText: 'Cycling {1}'
+			}),
+			'hand'
+		);
+
+		applyGameAction(s2, p1b.playerId, { type: 'pass_priority' });
+		p2b.manaPool.C = 2;
+		const p2CreatureAb = getEffectiveActivatedAbilities(s2, p2b, p2CreatureCycler)[0];
+		const p2LandAb = getEffectiveActivatedAbilities(s2, p2b, p2LandCycler)[0];
+		assert.equal(
+			checkAbilityActivationLegality(s2, p2b.playerId, p2CreatureCycler, p2CreatureAb).ok,
+			false
+		);
+		assert.equal(
+			applyGameAction(s2, p2b.playerId, {
+				type: 'activate_ability',
+				instanceId: p2CreatureCycler.instanceId,
+				abilityId: p2CreatureAb.id
+			}).ok,
+			false
+		);
+		// Lands are not artifacts, creatures, or enchantments, so land cycling stays legal
+		assert.equal(checkAbilityActivationLegality(s2, p2b.playerId, p2LandCycler, p2LandAb).ok, true);
+	});
+
+	it('cycling cost modifier (CR 702.29f): reduces both Cycling {2} and Plainscycling {2} to {0}', () => {
+		const { state, p1 } = makeGame();
+		p1.library = [];
+		putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Fluctuating Core',
+				manaCost: '{2}',
+				cmc: 2,
+				typeLine: 'Artifact',
+				oracleText: 'Cycling abilities you activate cost {2} less to activate.'
+			}),
+			'battlefield'
+		);
+		const c1 = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Zero Cycler',
+				manaCost: '{4}',
+				cmc: 4,
+				typeLine: 'Artifact',
+				oracleText: 'Cycling {2}'
+			}),
+			'hand'
+		);
+		const c2 = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Zero PlainsCycler',
+				manaCost: '{5}{W}',
+				cmc: 6,
+				typeLine: 'Creature — Angel',
+				oracleText: 'Plainscycling {2}'
+			}),
+			'hand'
+		);
+		const plains = putInZone(state, p1, staple('Plains'), 'library');
+		const extraDraw = putInZone(state, p1, staple('Island'), 'library');
+		assert.ok(extraDraw);
+
+		const ab1 = getEffectiveActivatedAbilities(state, p1, c1)[0];
+		const ab2 = getEffectiveActivatedAbilities(state, p1, c2)[0];
+		assert.equal(ab1.manaCost, '{0}');
+		assert.equal(ab2.manaCost, '{0}');
+
+		// Pay with 0 mana in pool
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'activate_ability',
+				instanceId: c2.instanceId,
+				abilityId: ab2.id
+			}).ok,
+			true
+		);
+		passUntilChoiceOrEmpty(state);
+		const pr = state.pendingPrompts[0];
+		assert.ok(pr);
+		applyGameAction(state, p1.playerId, {
+			type: 'choice',
+			promptId: pr.id,
+			answer: { kind: 'chooseObjects', objectIds: [plains.instanceId] }
+		});
+		assert.equal(p1.hand.some((c) => c.instanceId === plains.instanceId), true);
+
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'activate_ability',
+				instanceId: c1.instanceId,
+				abilityId: ab1.id
+			}).ok,
+			true
+		);
+		resolveAllStack(state);
+		assert.equal(p1.hand.some((c) => c.instanceId === extraDraw.instanceId), true);
+	});
+
+	it('UI equivalence, bot AI response, rename invariance, and zero cycling string literals in UI/AI', () => {
+		// 1. UI-equivalent dual option: Land with cycling after land drop still has legal hand ability
+		const { state, p1, p2 } = makeGame({ p2Bot: true });
+		p2.library = [];
+		const cyclingLand = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Tranquil Cove Variant',
+				typeLine: 'Land',
+				oracleText: 'Tranquil Cove Variant enters tapped.\n{T}: Add {W}.\nCycling {2}'
+			}),
+			'hand'
+		);
+		p1.landsPlayedThisTurn = 1;
+		p1.manaPool.C = 2;
+		const castOpts = getCastOptions(state, p1.playerId, cyclingLand, 'hand');
+		assert.equal(castOpts.length, 0);
+		const legalHandAbs = getEffectiveActivatedAbilities(state, p1, cyclingLand).filter(
+			(ab) =>
+				ab.activationZones?.includes('hand') &&
+				checkAbilityActivationLegality(state, p1.playerId, cyclingLand, ab).ok
+		);
+		assert.equal(legalHandAbs.length, 1);
+
+		// 2. Rename invariance runtime check
+		const cA = putInZone(
+			state,
+			p1,
+			syntheticCard({ name: 'Alpha Cycler', manaCost: '{3}', cmc: 3, typeLine: 'Artifact', oracleText: 'Cycling {2}' }),
+			'hand'
+		);
+		const cB = putInZone(
+			state,
+			p1,
+			syntheticCard({ name: 'Beta Cycler', manaCost: '{3}', cmc: 3, typeLine: 'Artifact', oracleText: 'Cycling {2}' }),
+			'hand'
+		);
+		assert.deepEqual(
+			getEffectiveActivatedAbilities(state, p1, cA),
+			getEffectiveActivatedAbilities(state, p1, cB)
+		);
+
+		// 3. Bot AI: sees legal instant response and cycles on opponent's end step
+		const botCycler = putInZone(
+			state,
+			p2,
+			syntheticCard({
+				name: 'Bot Cycler',
+				manaCost: '{4}{U}',
+				cmc: 5,
+				typeLine: 'Creature — Sphinx',
+				oracleText: 'Cycling {2}'
+			}),
+			'hand'
+		);
+		putInZone(state, p2, staple('Island'), 'library');
+		putInZone(state, p2, staple('Island'), 'battlefield');
+		putInZone(state, p2, staple('Island'), 'battlefield');
+
+		state.activePlayerIndex = 0;
+		state.priorityPlayerIndex = 1;
+		state.phase = 'end_step';
+		assert.equal(hasAnyLegalInstantResponse(state, p2), true);
+		const stepRes = executeBotStep(state, p2, p1);
+		assert.equal(stepRes, 'visible');
+		assert.equal(p2.graveyard.some((c) => c.instanceId === botCycler.instanceId), true);
+		assert.equal(state.stack.length, 1);
+
+		// 4. Hard gate: ArenaTable.svelte and ai.ts contain zero cycling/typecycling string literals
+		const arenaSrc = fs.readFileSync(path.resolve('src/lib/magic/ArenaTable.svelte'), 'utf8');
+		const aiSrc = fs.readFileSync(path.resolve('src/lib/magic/ai.ts'), 'utf8');
+		assert.equal(/\bcycling\b|\btypecycling\b/i.test(arenaSrc), false);
+		assert.equal(/\bcycling\b|\btypecycling\b/i.test(aiSrc), false);
+	});
+
+	it('cycling triggers (CR 702.29c): "When you cycle ~" triggers from graveyard, stacks ABOVE cycling draw, and resolves BEFORE draw', () => {
+		const { state, p1, p2 } = makeGame();
+		p1.library = [];
+		const targetCreature = putInZone(
+			state,
+			p2,
+			syntheticCard({
+				name: 'Target Ogre',
+				typeLine: 'Creature — Ogre',
+				power: '4',
+				toughness: '4',
+				oracleText: ''
+			}),
+			'battlefield'
+		);
+		const deemWorthy = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Deem Worthy',
+				manaCost: '{4}{R}',
+				cmc: 5,
+				typeLine: 'Instant',
+				oracleText: 'Cycling {3}{R}\nWhen you cycle Deem Worthy, ~ deals 7 damage to target creature.'
+			}),
+			'hand'
+		);
+		const topDraw = putInZone(state, p1, staple('Mountain'), 'library');
+		p1.manaPool.C = 3;
+		p1.manaPool.R = 1;
+
+		const ab = getEffectiveActivatedAbilities(state, p1, deemWorthy)[0];
+		assert.ok(ab);
+		const actRes = applyGameAction(state, p1.playerId, {
+			type: 'activate_ability',
+			instanceId: deemWorthy.instanceId,
+			abilityId: ab.id
+		});
+		assert.equal(actRes.ok, true, actRes.error ?? 'expected cycling activation');
+
+		// Deem Worthy is in graveyard; Stack has [0] Cycling draw, [1] Cycle trigger on TOP (forced target: Target Ogre)
+		assert.equal(p1.graveyard.some((c) => c.instanceId === deemWorthy.instanceId), true);
+		assert.equal(state.stack.length, 2);
+		assert.equal(state.stack[0].kind, 'activated');
+		assert.equal(state.stack[1].kind, 'triggered');
+		assert.equal(state.stack[1].targets[0]?.id, targetCreature.instanceId);
+
+		// Resolve ONLY the top item (Cycle Trigger): Target Ogre dies BEFORE Cycling draws Mountain!
+		applyGameAction(state, state.players[state.priorityPlayerIndex].playerId, { type: 'pass_priority' });
+		applyGameAction(state, state.players[state.priorityPlayerIndex].playerId, { type: 'pass_priority' });
+		assert.equal(state.stack.length, 1);
+		assert.equal(state.stack[0].kind, 'activated');
+		assert.equal(p2.graveyard.some((c) => c.instanceId === targetCreature.instanceId), true);
+		assert.equal(p1.hand.some((c) => c.instanceId === topDraw.instanceId), false);
+
+		// Now resolve Cycling draw
+		resolveAllStack(state);
+		assert.equal(state.stack.length, 0);
+		assert.equal(p1.hand.some((c) => c.instanceId === topDraw.instanceId), true);
+	});
+
+	it('cycling trigger under Rest in Peace (CR 702.29c): triggers from exile across PendingCostPayment + zone_replacement_choice JSON round-trip', () => {
+		const { state: initialState, p1 } = makeGame();
+		p1.library = [];
+		putInZone(
+			initialState,
+			p1,
+			syntheticCard({
+				name: 'Rest Sanctuary',
+				manaCost: '{1}{W}',
+				cmc: 2,
+				typeLine: 'Enchantment',
+				oracleText: 'If a card or token would be put into a graveyard from anywhere, exile it instead.'
+			}),
+			'battlefield'
+		);
+		putInZone(
+			initialState,
+			p1,
+			syntheticCard({
+				name: 'Wheel Sanctuary',
+				manaCost: '{2}{U}',
+				cmc: 3,
+				typeLine: 'Enchantment',
+				oracleText:
+					"If a card would be put into a graveyard from anywhere, shuffle it into its owner's library instead."
+			}),
+			'battlefield'
+		);
+		const cycler = putInZone(
+			initialState,
+			p1,
+			syntheticCard({
+				name: 'Exile Cycle Blessing',
+				manaCost: '{3}{W}',
+				cmc: 4,
+				typeLine: 'Instant',
+				oracleText: 'Cycling {1}\nWhen you cycle ~, you gain 3 life.'
+			}),
+			'hand'
+		);
+		const libDraw = putInZone(initialState, p1, staple('Plains'), 'library');
+		p1.manaPool.C = 1;
+		const lifeStart = p1.life;
+
+		const ab = getEffectiveActivatedAbilities(initialState, p1, cycler)[0];
+		const res = applyGameAction(initialState, p1.playerId, {
+			type: 'activate_ability',
+			instanceId: cycler.instanceId,
+			abilityId: ab.id
+		});
+		assert.equal(res.ok, true, res.error ?? 'activation failed');
+		assert.ok(initialState.pendingCostPayment);
+		assert.equal(initialState.pendingCostPayment?.costKeyword, 'cycling');
+		assert.equal(initialState.stack.length, 0);
+		assert.equal(initialState.pendingPrompts.length, 1);
+
+		// JSON round-trip mid-payment
+		const state = JSON.parse(JSON.stringify(initialState)) as GameState;
+		const prompt = state.pendingPrompts[0];
+		const choice = effectivePromptChoice(prompt, state);
+		assert.equal(choice.kind, 'chooseReplacement');
+		if (choice.kind === 'chooseReplacement') {
+			const exileOpt = choice.options.find((o) => o.label.toLowerCase().includes('exile')) ?? choice.options[0];
+			const ans = applyGameAction(state, prompt.playerId, {
+				type: 'choice',
+				promptId: prompt.id,
+				answer: { kind: 'chooseReplacement', id: exileOpt.id }
+			});
+			assert.equal(ans.ok, true, ans.error ?? 'replacement answer failed');
+		}
+
+		const p1After = state.players[0];
+		assert.equal(state.pendingCostPayment, undefined);
+		assert.equal(p1After.exile.some((c) => c.instanceId === cycler.instanceId), true);
+		assert.equal(state.stack.length, 2);
+		assert.equal(state.stack[0].kind, 'activated');
+		assert.equal(state.stack[1].kind, 'triggered');
+
+		resolveAllStack(state);
+		assert.equal(p1After.life, lifeStart + 3);
+		assert.equal(p1After.hand.some((c) => c.instanceId === libDraw.instanceId), true);
+	});
+
+	it('CR 702.29d & 702.29f: typecycling triggers cycle triggers, "cycles or discards" triggers once per cycle and on normal/cost discards, and filters apply', () => {
+		const { state, p1, p2 } = makeGame();
+		p1.library = [];
+
+		// Watchers on p1's battlefield:
+		// 1. "Whenever you cycle a card, you gain 1 life."
+		// 2. "Whenever a player cycles or discards a card, you gain 2 life."
+		// 3. "Whenever you cycle or discard a creature card, you gain 5 life."
+		// 4. "Whenever an opponent discards a card, you gain 7 life."
+		putInZone(
+			state,
+			p1,
+			syntheticCard({ name: 'Cycle Lifegain', typeLine: 'Enchantment', oracleText: 'Whenever you cycle a card, you gain 1 life.' }),
+			'battlefield'
+		);
+		putInZone(
+			state,
+			p1,
+			syntheticCard({ name: 'Both Lifegain', typeLine: 'Enchantment', oracleText: 'Whenever a player cycles or discards a card, you gain 2 life.' }),
+			'battlefield'
+		);
+		putInZone(
+			state,
+			p1,
+			syntheticCard({ name: 'Creature Lifegain', typeLine: 'Enchantment', oracleText: 'Whenever you cycle or discard a creature card, you gain 5 life.' }),
+			'battlefield'
+		);
+		putInZone(
+			state,
+			p1,
+			syntheticCard({ name: 'Opp Discard Watcher', typeLine: 'Enchantment', oracleText: 'Whenever an opponent discards a card, you gain 7 life.' }),
+			'battlefield'
+		);
+
+		const plainsCycler = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Savanna Eagle',
+				manaCost: '{4}{W}',
+				typeLine: 'Creature — Bird',
+				oracleText: 'Plainscycling {2}\nWhen you cycle ~, you gain 3 life.'
+			}),
+			'hand'
+		);
+		const plains = putInZone(state, p1, staple('Plains'), 'library');
+		p1.manaPool.C = 2;
+		const life0 = p1.life;
+
+		// A. Typecycling a creature card triggers:
+		//    - "When you cycle ~" (+3 life, CR 702.29f)
+		//    - "Whenever you cycle a card" (+1 life, CR 702.29f)
+		//    - "Whenever a player cycles or discards a card" ONCE (+2 life, CR 702.29d)
+		//    - "Whenever you cycle or discard a creature card" (+5 life)
+		//    - NOT "Whenever an opponent discards a card"
+		const pcAb = getEffectiveActivatedAbilities(state, p1, plainsCycler)[0];
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'activate_ability',
+				instanceId: plainsCycler.instanceId,
+				abilityId: pcAb.id
+			}).ok,
+			true
+		);
+		// Resolve trigger_order if human has multiple simultaneous triggers
+		if (state.pendingPrompts[0]?.purpose === 'trigger_order') {
+			const pr = state.pendingPrompts[0];
+			const ch = effectivePromptChoice(pr, state);
+			if (ch.kind === 'orderObjects') {
+				const orderRes = applyGameAction(state, pr.playerId, {
+					type: 'choice',
+					promptId: pr.id,
+					answer: { kind: 'orderObjects', topIds: ch.objectIds, bottomIds: [] }
+				});
+				assert.equal(orderRes.ok, true, orderRes.error ?? 'trigger_order failed');
+			}
+		}
+		passUntilChoiceOrEmpty(state);
+		// Search library prompt from Plainscycling
+		const searchPr = state.pendingPrompts[0];
+		assert.ok(searchPr && effectivePromptPurpose(searchPr) === 'search_library');
+		applyGameAction(state, searchPr.playerId, {
+			type: 'choice',
+			promptId: searchPr.id,
+			answer: { kind: 'chooseObjects', objectIds: [plains.instanceId] }
+		});
+		assert.equal(state.stack.length, 0);
+		assert.equal(p1.life, life0 + 3 + 1 + 2 + 5);
+
+		// B. Normal effect discard (Run.discard) on opponent's non-creature card:
+		//    Triggers "Whenever a player cycles or discards a card" (+2) and "Whenever an opponent discards a card" (+7)
+		//    Does NOT trigger "Whenever you cycle a card" or "Whenever you cycle or discard a creature card"
+		const oppCard = putInZone(state, p2, staple('Island'), 'hand');
+		const mindRot = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Thought Poke',
+				manaCost: '{B}',
+				cmc: 1,
+				typeLine: 'Sorcery',
+				oracleText: 'Target opponent discards a card.'
+			}),
+			'hand'
+		);
+		p1.manaPool.B = 1;
+		const lifeBeforeEffectDiscard = p1.life;
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: mindRot.instanceId,
+				targets: [{ kind: 'player', id: p2.playerId, label: p2.username }]
+			}).ok,
+			true
+		);
+		resolveAllStack(state);
+		assert.equal(p2.graveyard.some((c) => c.instanceId === oppCard.instanceId), true);
+		assert.equal(p1.life, lifeBeforeEffectDiscard + 2 + 7);
+
+		// C. Discard cost payment ({ k: 'discard' } without cycling) on non-creature card:
+		//    Triggers "Whenever a player cycles or discards a card" (+2), NOT "Whenever you cycle a card" or creature filter
+		const fodder = putInZone(state, p1, staple('Swamp'), 'hand');
+		const sink = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Discard Outlet',
+				typeLine: 'Artifact',
+				oracleText: 'Discard a card: You gain 1 life.'
+			}),
+			'battlefield'
+		);
+		const lifeBeforeCostDiscard = p1.life;
+		const sinkAb = getEffectiveActivatedAbilities(state, p1, sink)[0];
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'activate_ability',
+				instanceId: sink.instanceId,
+				abilityId: sinkAb.id,
+				costPayment: { options: [], objects: [[fodder.instanceId]] }
+			}).ok,
+			true
+		);
+		resolveAllStack(state);
+		assert.equal(p1.life, lifeBeforeCostDiscard + 1 + 2);
+	});
+
+	it('CR 702.29c unsupported cycling trigger effect & rename invariance: queues manual resolution cleanly', () => {
+		const { state, p1 } = makeGame();
+		p1.library = [];
+		const makeManualCycler = (name: string) =>
+			syntheticCard({
+				name,
+				manaCost: '{4}{U}',
+				cmc: 5,
+				typeLine: 'Enchantment',
+				oracleText: `Cycling {2}\nWhen you cycle ${name}, counter target spell.`
+			});
+
+		const cardA = makeManualCycler('Decree of Mist');
+		const cardB = makeManualCycler('Glimmerfen Mandate');
+		assert.deepEqual(compileCard(cardA).faces[0].abilities, compileCard(cardB).faces[0].abilities);
+
+		const inst = putInZone(state, p1, cardB, 'hand');
+		const drawCard = putInZone(state, p1, staple('Island'), 'library');
+		p1.manaPool.C = 2;
+
+		const ab = getEffectiveActivatedAbilities(state, p1, inst)[0];
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'activate_ability',
+				instanceId: inst.instanceId,
+				abilityId: ab.id
+			}).ok,
+			true
+		);
+		assert.equal(state.stack.length, 2);
+		assert.equal(state.stack[1].kind, 'triggered');
+
+		// Pass priority to resolve the unautomated cycle trigger -> opens manual_resolution prompt
+		passUntilChoiceOrEmpty(state);
+		const manPrompt = state.pendingPrompts[0];
+		assert.ok(manPrompt);
+		assert.equal(effectivePromptPurpose(manPrompt), 'guided_resolution');
+		assert.equal(
+			applyGameAction(state, manPrompt.playerId, {
+				type: 'choice',
+				promptId: manPrompt.id,
+				answer: { kind: 'yesNo', yes: true }
+			}).ok,
+			true
+		);
+
+		resolveAllStack(state);
+		assert.equal(state.stack.length, 0);
+		assert.equal(p1.hand.some((c) => c.instanceId === drawCard.instanceId), true);
+	});
+});
+
