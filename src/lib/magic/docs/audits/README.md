@@ -24,6 +24,7 @@
   - wither is grantable, with a full keyword test suite;
   - the `plainswalker` typo is fixed;
   - two cards with the same partner—[text] ability can now pair (CR 702.124i). Found while checking 702.124f.
+  - `attachObject` (`runtime/zones.ts`) now assigns a fresh `enteredTimestamp` on every attachment (`CR 613.7e`) and no-ops when already attached to the same host (`CR 701.3b`), closing the `ENGINE_INVARIANTS.md` §2.2 gap from [`01`](./01-top-level-docs-audit.md) §3.2 item 3.
 
 **Disputed:** [`04`](./04-in-flight-keyword-and-test-impact.md) §3 item 5 (infect or wither plus deathtouch). The code is correct.
 

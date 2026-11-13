@@ -81,6 +81,7 @@ import {
 } from './runtime/replace.ts';
 import {
 	allocateTimestamp,
+	attachObject,
 	createEmptyCounters,
 	mulliganRedraw,
 	moveObject,
@@ -3848,7 +3849,7 @@ function handlePromptResolution(
 							});
 							return { ok: true };
 						} else {
-							found.attachedToId = attachCands[0];
+							attachObject(state, found, attachCands[0]);
 						}
 					}
 					if (!isAura || found.attachedToId) {
@@ -3859,7 +3860,7 @@ function handlePromptResolution(
 							from: fromLibrary,
 							toPlayer: libraryOwner,
 							controllerId: libraryOwner.playerId,
-							newTimestamp: true,
+							newTimestamp: !isAura,
 							bumpVersion: true
 						});
 						if (isAura && found.attachedToId) {
@@ -5781,7 +5782,7 @@ registerPromptHandler('aura_library_attach_choice', (state, prompt, answer) => {
 	const found = libraryOwner?.library.find((c) => c.instanceId === auraId);
 	const chosenHostId = answer.objectIds[0] ?? null;
 	if (libraryOwner && found && chosenHostId) {
-		found.attachedToId = chosenHostId;
+		attachObject(state, found, chosenHostId);
 		found.tapped = enterTapped;
 		found.defaultControllerId = libraryOwner.playerId;
 		applySelfEtbReplacements(state, found);
@@ -5789,7 +5790,6 @@ registerPromptHandler('aura_library_attach_choice', (state, prompt, answer) => {
 			from: { player: libraryOwner, zone: 'library' },
 			toPlayer: libraryOwner,
 			controllerId: libraryOwner.playerId,
-			newTimestamp: true,
 			bumpVersion: true
 		});
 		const attachedTarget = findPermanentOnBoard(state, chosenHostId);
@@ -6112,13 +6112,18 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 				0);
 
 		if (isPermanent) {
+			const auraTargetId =
+				tLine.includes('Aura') &&
+				(item.targets[0]?.kind === 'permanent' || item.targets[0]?.kind === 'player')
+					? item.targets[0].id
+					: null;
 			const perm = createCardInstance(
 				item.card,
 				cardOwnerId,
 				'battlefield',
 				wasCommander,
 				Boolean(item.isCopy),
-				allocateTimestamp(state),
+				auraTargetId ? 0 : allocateTimestamp(state),
 				item.isCopy ? state : undefined
 			);
 			const idTaken =
@@ -6186,11 +6191,8 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 				}
 			}
 
-			if (
-				tLine.includes('Aura') &&
-				(item.targets[0]?.kind === 'permanent' || item.targets[0]?.kind === 'player')
-			) {
-				perm.attachedToId = item.targets[0].id;
+			if (auraTargetId) {
+				attachObject(state, perm, auraTargetId);
 			}
 			applySelfEtbReplacements(state, perm);
 			moveObject(state, perm, 'battlefield', { from: 'stack', toPlayer: controller });
@@ -6462,9 +6464,6 @@ registerEffectPorts({
 	copyPermanentAsToken,
 	triggerOnEtb: (state) => flushTriggers(state),
 	triggerOnAttach: (state, _controller, attached, to) => {
-		if (state.lobbyCode !== 'GOLDEN') {
-			attached.enteredTimestamp = allocateTimestamp(state);
-		}
 		emitEvent(state, {
 			kind: 'Attached',
 			attachmentId: attached.instanceId,
@@ -6778,7 +6777,7 @@ function initiateLibrarySearch(
 						);
 						continue;
 					}
-					found.attachedToId = attachCands[0];
+					attachObject(state, found, attachCands[0]);
 				}
 				found.tapped = Boolean(dest.tapped);
 				found.defaultControllerId = searchingPlayer.playerId;
@@ -6787,7 +6786,7 @@ function initiateLibrarySearch(
 					from: fromLibrary,
 					toPlayer: searchingPlayer,
 					controllerId: searchingPlayer.playerId,
-					newTimestamp: true,
+					newTimestamp: !isAura,
 					bumpVersion: true
 				});
 				if (isAura && found.attachedToId) {

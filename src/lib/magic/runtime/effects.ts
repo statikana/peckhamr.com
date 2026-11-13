@@ -56,7 +56,7 @@ import { matchesObjectFilter, objectManaValue, playerCommanderCastCount } from '
 import { activeRuleModifiers, tokenMultiplier } from './replace.ts';
 import { flushTriggers, withSimultaneousDestroyLki } from './triggers.ts';
 import { nextRandom } from './random.ts';
-import { allocateTimestamp, createEmptyCounters, moveObject, rearrangeLibrary, tapPermanent } from './zones.ts';
+import { allocateTimestamp, attachObject, createEmptyCounters, moveObject, rearrangeLibrary, tapPermanent } from './zones.ts';
 import { PROMPTING_VERBS } from '../compiler/interpretable.ts';
 
 /** Seeded randomness lives in runtime/random.ts (re-exported here for existing importers). */
@@ -1242,16 +1242,8 @@ class Run {
 				const found = target ? p.findPermanent(s, target.instanceId) : null;
 				if (!equipment || !found) return;
 				if (found.controller.playerId !== you.playerId || !evaluatePermanent(s, found.inst).typeLine.includes('Creature')) return;
-				// CR 701.3b: Attaching an Aura, Equipment, or Fortification to an object it's already attached to does nothing.
-				if (equipment.inst.attachedToId === found.inst.instanceId) return;
-				const wasAttached = Boolean(equipment.inst.attachedToId);
-				equipment.inst.attachedToId = found.inst.instanceId;
-				// CR 613.7e: Receives a new timestamp when it becomes attached to a different object.
-				if (wasAttached) {
-					const ts = allocateTimestamp(s);
-					equipment.inst.enteredTimestamp = ts;
-					(equipment.inst as CardInstance & { timestamp?: number }).timestamp = ts;
-				}
+				// CR 701.3b / 613.7e: No-op when already attached to this host; otherwise attach and allocate a fresh timestamp.
+				if (!attachObject(s, equipment.inst, found.inst.instanceId)) return;
 				p.addLog(s, 'cast', `${you.username} attached ${equipment.inst.card.name} to ${found.inst.card.name}.`, you.playerId);
 				p.triggerOnAttach(s, you, equipment.inst, found.inst);
 				return;
@@ -1898,7 +1890,7 @@ class Run {
 						continue;
 					}
 					const pickedId = (this.answers[`aura:${o.instanceId}`] ?? [])[0];
-					o.attachedToId = pickedId && attachCands.includes(pickedId) ? pickedId : attachCands[0];
+					attachObject(s, o, pickedId && attachCands.includes(pickedId) ? pickedId : attachCands[0]);
 				}
 				o.summoningSick = o.card.typeLine.includes('Creature');
 				o.tapped = Boolean(params.tapped);
@@ -1907,7 +1899,7 @@ class Run {
 					from: { player: you, zone: 'hand' },
 					toPlayer: you,
 					controllerId: you.playerId,
-					newTimestamp: true,
+					newTimestamp: !isAura,
 					bumpVersion: true
 				});
 				p.addLog(s, 'cast', `${you.username} put ${o.card.name} from their hand onto the battlefield (${this.ctx.title}).`, you.playerId);
@@ -1970,7 +1962,7 @@ class Run {
 					continue;
 				}
 				const pickedId = (this.answers[`aura:${o.instanceId}`] ?? [])[0];
-				o.attachedToId = pickedId && attachCands.includes(pickedId) ? pickedId : attachCands[0];
+				attachObject(s, o, pickedId && attachCands.includes(pickedId) ? pickedId : attachCands[0]);
 			}
 			o.summoningSick = o.card.typeLine.includes('Creature') && !o.card.keywords.includes('Haste');
 			o.tapped = Boolean(params.tapped);
@@ -1979,7 +1971,7 @@ class Run {
 				from: { player: holder, zone: 'graveyard' },
 				toPlayer: controller,
 				controllerId: controller.playerId,
-				newTimestamp: true,
+				newTimestamp: !isAura,
 				bumpVersion: true
 			});
 			p.addLog(s, 'cast', `${controller.username} put ${o.card.name} onto the battlefield from ${holder.username}'s graveyard (${this.ctx.title}).`, you.playerId);

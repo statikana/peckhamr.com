@@ -52,7 +52,6 @@ Identifiers are from `ir.ts`, `types.ts` and `runtime/`; CR numbers are from [`s
    - **Not yet enforced:**
      - `runtime/layers.ts` evaluates layers 1, 4, 5, 6 and 7a–7d. Control changes (layer 2) move the permanent between battlefields (`transferBattlefieldControl`), and text-changing effects (layer 3, `CR 612`) are unimplemented.
      - There is no general `CR 613.8` dependency system: layer 4 runs three fixed sub-passes (attached types, type overwrites, additive types and colors) and then timestamps.
-     - The `attach` verb (`runtime/effects.ts`) only allocates a new timestamp when the Equipment was already attached elsewhere, so a first attachment keeps its old timestamp.
 3. **Ability-Loss & Cross-Layer Persistence (`CR 613.1f, 613.6, 708.2a`)**
    - If `evaluatePermanent(state, perm).losesAllAbilities` is true (e.g. *Humility*, *Darksteel Mutation*, *Song of the Dryads* per `CR 305.7`) or `perm.isFaceDown` is true (`CR 708.2a`), the permanent's printed triggered, activated, static, and replacement abilities do not function, unless the continuous effect began applying in an earlier layer (`CR 613.6`). Example: Changeling's creature types are added in layer 4 and survive layer-6 ability loss.
    - **Not yet enforced:** temporary keyword grants in `CardInstance.grantedKeywords` carry no timestamp, so a later "loses all abilities" effect doesn't strip them in timestamp order (`CR 613.7`).

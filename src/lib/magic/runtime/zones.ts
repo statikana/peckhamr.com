@@ -840,3 +840,18 @@ export function tapPermanent(state: GameState, perm: CardInstance): boolean {
 	}
 	return true;
 }
+
+/**
+ * CR 701.3a–c, CR 613.7e: Single funnel for attaching an Aura, Equipment, or Fortification to an
+ * object or player (`hostId`).
+ * - CR 701.3b: If `obj` is already attached to `hostId`, does nothing and returns `false`.
+ * - CR 613.7e: Otherwise sets `obj.attachedToId = hostId`, allocates a fresh `enteredTimestamp`,
+ *   notifies the layer cache, and returns `true`.
+ */
+export function attachObject(state: GameState, obj: CardInstance, hostId: string): boolean {
+	if (obj.attachedToId === hostId) return false;
+	obj.attachedToId = hostId;
+	obj.enteredTimestamp = allocateTimestamp(state);
+	noteLayerInputsChanged(state);
+	return true;
+}

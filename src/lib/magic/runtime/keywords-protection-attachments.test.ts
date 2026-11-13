@@ -20,7 +20,10 @@ import {
 	type ScryfallCard,
 	type ZoneType
 } from '../types.ts';
-import { transferBattlefieldControl } from './zones.ts';
+import { subscribeEvents } from './events.ts';
+import { setLayerCacheCheck, withStableLayerInputs } from './layerCache.ts';
+import * as zonesModule from './zones.ts';
+const { transferBattlefieldControl } = zonesModule;
 
 function staple(name: string): ScryfallCard {
 	const c = STAPLE_CARDS[name.toLowerCase()];
@@ -1774,5 +1777,512 @@ describe('Keyword: Equip (CR 702.6)', () => {
 			false,
 			'Equipment that lost all abilities cannot activate Equip'
 		);
+	});
+});
+
+describe('CR 613.7e & CR 701.3b: Attachment timestamp funnel (attachObject)', () => {
+	const TINSCALE_HARNESS = syntheticCard({
+		name: 'Tinscale Harness',
+		manaCost: '{0}',
+		cmc: 1,
+		typeLine: 'Artifact — Equipment',
+		oracleText: 'Equipped creature has base power and toughness 1/1.\nEquip {1}',
+		keywords: ['Equip']
+	});
+
+	const TITANPLATE_HARNESS = syntheticCard({
+		name: 'Titanplate Harness',
+		manaCost: '{0}',
+		cmc: 1,
+		typeLine: 'Artifact — Equipment',
+		oracleText: 'Equipped creature has base power and toughness 4/4.\nEquip {1}',
+		keywords: ['Equip']
+	});
+
+	function castFromHand(
+		state: GameState,
+		player: PlayerGameState,
+		card: ScryfallCard,
+		targets?: Array<{ kind: 'permanent' | 'player'; id: string; label: string }>
+	): CardInstance {
+		const inHand = putInZone(state, player, card, 'hand');
+		state.priorityPlayerIndex = state.players.indexOf(player);
+		assert.equal(
+			applyGameAction(state, player.playerId, {
+				type: 'cast_spell',
+				instanceId: inHand.instanceId,
+				...(targets ? { targets } : {})
+			}).ok,
+			true,
+			`expected casting ${card.name} to succeed`
+		);
+		passStep(state);
+		const onBoard = player.battlefield.find((c) => c.instanceId === inHand.instanceId);
+		assert.ok(onBoard, `expected ${card.name} to enter the battlefield`);
+		return onBoard;
+	}
+
+	function activateEquip(
+		state: GameState,
+		player: PlayerGameState,
+		equipment: CardInstance,
+		target: CardInstance
+	): void {
+		const equipAb = getEffectiveActivatedAbilities(state, player, equipment).find((a) =>
+			a.id.startsWith('equip_')
+		);
+		assert.ok(equipAb, `expected Equip ability on ${equipment.card.name}`);
+		player.manaPool.C = (player.manaPool.C ?? 0) + 2;
+		state.priorityPlayerIndex = state.players.indexOf(player);
+		assert.equal(
+			applyGameAction(state, player.playerId, {
+				type: 'activate_ability',
+				instanceId: equipment.instanceId,
+				abilityId: equipAb.id,
+				targets: [{ kind: 'permanent', id: target.instanceId, label: target.card.name }]
+			}).ok,
+			true,
+			`expected activating Equip on ${equipment.card.name} to succeed`
+		);
+		passStep(state);
+	}
+
+	it('CR 613.7e: two base-P/T Equipment cast A then B apply in Equip order (including A\'s first attachment)', () => {
+		assert.equal(compileCard(TINSCALE_HARNESS).fullySupported, true);
+		assert.equal(compileCard(TITANPLATE_HARNESS).fullySupported, true);
+
+		for (const lobbyCode of ['KEYWORDS_PROT_ATTACH_TEST', 'GOLDEN']) {
+			// Order 1: Cast A (1/1) then Cast B (4/4), Equip A then Equip B -> creature is 4/4
+			{
+				const { state, p1 } = makeGame();
+				state.lobbyCode = lobbyCode;
+				const lynx = putInZone(
+					state,
+					p1,
+					syntheticCard({ name: 'Meadow Lynx', typeLine: 'Creature — Cat', power: '2', toughness: '2' }),
+					'battlefield'
+				);
+				const equipA = castFromHand(state, p1, TINSCALE_HARNESS);
+				const equipB = castFromHand(state, p1, TITANPLATE_HARNESS);
+				assert.ok(
+					(equipA.enteredTimestamp ?? 0) < (equipB.enteredTimestamp ?? 0),
+					'A has an earlier cast timestamp than B'
+				);
+
+				const tsBeforeA = state.nextTimestamp ?? 0;
+				activateEquip(state, p1, equipA, lynx);
+				assert.equal(equipA.enteredTimestamp, tsBeforeA + 1, 'first attach allocates exactly 1 timestamp');
+				assert.equal(evaluatePermanent(state, lynx).power, 1);
+				assert.equal(evaluatePermanent(state, lynx).toughness, 1);
+
+				const tsBeforeB = state.nextTimestamp ?? 0;
+				activateEquip(state, p1, equipB, lynx);
+				assert.equal(equipB.enteredTimestamp, tsBeforeB + 1, 'first attach of B allocates exactly 1 timestamp');
+				assert.equal(evaluatePermanent(state, lynx).power, 4);
+				assert.equal(evaluatePermanent(state, lynx).toughness, 4);
+			}
+
+			// Order 2: Cast A (1/1) then Cast B (4/4), Equip B FIRST then Equip A -> creature is 1/1!
+			{
+				const { state, p1 } = makeGame();
+				state.lobbyCode = lobbyCode;
+				const lynx = putInZone(
+					state,
+					p1,
+					syntheticCard({ name: 'Meadow Lynx', typeLine: 'Creature — Cat', power: '2', toughness: '2' }),
+					'battlefield'
+				);
+				const equipA = castFromHand(state, p1, TINSCALE_HARNESS);
+				const equipB = castFromHand(state, p1, TITANPLATE_HARNESS);
+				assert.ok((equipA.enteredTimestamp ?? 0) < (equipB.enteredTimestamp ?? 0));
+
+				activateEquip(state, p1, equipB, lynx);
+				assert.equal(evaluatePermanent(state, lynx).power, 4);
+				assert.equal(evaluatePermanent(state, lynx).toughness, 4);
+
+				const tsBeforeA = state.nextTimestamp ?? 0;
+				activateEquip(state, p1, equipA, lynx);
+				assert.equal(equipA.enteredTimestamp, tsBeforeA + 1);
+				assert.ok(
+					(equipA.enteredTimestamp ?? 0) > (equipB.enteredTimestamp ?? 0),
+					`[${lobbyCode}] A receives a newer timestamp than B on its very first attachment (CR 613.7e)`
+				);
+				assert.equal(
+					evaluatePermanent(state, lynx).power,
+					1,
+					`[${lobbyCode}] Equip B then Equip A leaves creature at 1/1`
+				);
+				assert.equal(evaluatePermanent(state, lynx).toughness, 1);
+			}
+		}
+	});
+
+	it('CR 613.7e (real cards): Cobbled Wings and Swiftfoot Boots cast before ability-removing enchantments win Layer 6 when equipped afterwards', () => {
+		const cobbledWings = syntheticCard({
+			name: 'Cobbled Wings',
+			manaCost: '{2}',
+			cmc: 2,
+			typeLine: 'Artifact — Equipment',
+			oracleText: 'Equipped creature has flying.\nEquip {1}',
+			keywords: ['Equip']
+		});
+		const humility = syntheticCard({
+			name: 'Humility',
+			manaCost: '{2}{W}{W}',
+			cmc: 4,
+			typeLine: 'Enchantment',
+			oracleText: 'All creatures lose all abilities and have base power and toughness 1/1.',
+			colors: ['W'],
+			colorIdentity: ['W']
+		});
+
+		// 1. Swiftfoot Boots cast before Humility, then equipped -> 1/1 with Hexproof and Haste
+		for (const lobbyCode of ['KEYWORDS_PROT_ATTACH_TEST', 'GOLDEN']) {
+			const { state, p1 } = makeGame();
+			state.lobbyCode = lobbyCode;
+			const bear = putInZone(
+				state,
+				p1,
+				syntheticCard({ name: 'Grizzly Bears', typeLine: 'Creature — Bear', power: '2', toughness: '2' }),
+				'battlefield'
+			);
+			p1.manaPool.C = 4;
+			p1.manaPool.W = 2;
+			const boots = castFromHand(state, p1, staple('Swiftfoot Boots'));
+			const hum = castFromHand(state, p1, humility);
+			assert.ok((boots.enteredTimestamp ?? 0) < (hum.enteredTimestamp ?? 0));
+
+			activateEquip(state, p1, boots, bear);
+			const evalAfterEquip = evaluatePermanent(state, bear);
+			assert.equal(evalAfterEquip.power, 1);
+			assert.equal(evalAfterEquip.toughness, 1);
+			assert.ok(
+				evalAfterEquip.activeKeywords.includes('Hexproof') &&
+					evalAfterEquip.activeKeywords.includes('Haste'),
+				`[${lobbyCode}] Swiftfoot Boots equipped after Humility grants Hexproof and Haste (CR 613.7e)`
+			);
+		}
+
+		// 2. Cobbled Wings vs Kenrith's Transformation in both attachment orders
+		const { state, p1 } = makeGame();
+		p1.library.push(
+			createCardInstance(
+				syntheticCard({ name: 'Forest', typeLine: 'Basic Land — Forest', manaCost: '', cmc: 0 }),
+				p1.playerId,
+				'library'
+			),
+			createCardInstance(
+				syntheticCard({ name: 'Forest', typeLine: 'Basic Land — Forest', manaCost: '', cmc: 0 }),
+				p1.playerId,
+				'library'
+			)
+		);
+		const bear1 = putInZone(
+			state,
+			p1,
+			syntheticCard({ name: 'Runeclaw Bear', typeLine: 'Creature — Bear', power: '2', toughness: '2' }),
+			'battlefield'
+		);
+		const bear2 = putInZone(
+			state,
+			p1,
+			syntheticCard({ name: 'Ashcoat Bear', typeLine: 'Creature — Bear', power: '2', toughness: '2' }),
+			'battlefield'
+		);
+		p1.manaPool.C = 10;
+		p1.manaPool.G = 4;
+		const wings = castFromHand(state, p1, cobbledWings);
+		// Cast Kenrith's Transformation on bear1 AFTER Cobbled Wings entered, THEN equip Cobbled Wings to bear1 -> bear1 HAS Flying!
+		const kenrith1 = castFromHand(state, p1, staple("Kenrith's Transformation"), [
+			{ kind: 'permanent', id: bear1.instanceId, label: bear1.card.name }
+		]);
+		assert.ok((wings.enteredTimestamp ?? 0) < (kenrith1.enteredTimestamp ?? 0));
+		activateEquip(state, p1, wings, bear1);
+		assert.equal(evaluatePermanent(state, bear1).power, 3);
+		assert.ok(
+			evaluatePermanent(state, bear1).activeKeywords.includes('Flying'),
+			'Equipping Cobbled Wings after Kenrith\'s Transformation grants Flying via newer attachment timestamp'
+		);
+
+		// Move Cobbled Wings to bear2 FIRST, THEN cast a second Kenrith's Transformation on bear2 -> bear2 LOSES Flying!
+		activateEquip(state, p1, wings, bear2);
+		assert.ok(evaluatePermanent(state, bear2).activeKeywords.includes('Flying'));
+		castFromHand(state, p1, staple("Kenrith's Transformation"), [
+			{ kind: 'permanent', id: bear2.instanceId, label: bear2.card.name }
+		]);
+		assert.equal(evaluatePermanent(state, bear2).power, 3);
+		assert.ok(
+			!evaluatePermanent(state, bear2).activeKeywords.includes('Flying'),
+			'Kenrith\'s Transformation entering after Cobbled Wings was equipped strips Flying'
+		);
+	});
+
+	it('CR 701.3b: re-equipping an already-attached Equipment to the same creature does nothing and preserves timestamp', () => {
+		const { state, p1 } = makeGame();
+		const lynx = putInZone(
+			state,
+			p1,
+			syntheticCard({ name: 'Meadow Lynx', typeLine: 'Creature — Cat', power: '2', toughness: '2' }),
+			'battlefield'
+		);
+		const equipA = castFromHand(state, p1, TINSCALE_HARNESS);
+		const equipB = castFromHand(state, p1, TITANPLATE_HARNESS);
+
+		// Equip A (1/1), then Equip B (4/4) -> creature is 4/4
+		activateEquip(state, p1, equipA, lynx);
+		activateEquip(state, p1, equipB, lynx);
+		assert.equal(evaluatePermanent(state, lynx).power, 4);
+		assert.equal(evaluatePermanent(state, lynx).toughness, 4);
+
+		const aTimestampBefore = equipA.enteredTimestamp;
+		const nextTimestampBefore = state.nextTimestamp;
+		let attachedEvents = 0;
+		const unsub = subscribeEvents(state, (_s, ev) => {
+			if (ev.kind === 'Attached') attachedEvents++;
+		});
+		try {
+			// Activate Equip on A targeting the SAME creature it is already attached to -> CR 701.3b no-op!
+			activateEquip(state, p1, equipA, lynx);
+			assert.equal(
+				equipA.enteredTimestamp,
+				aTimestampBefore,
+				'Re-attaching to the same creature must not update enteredTimestamp (CR 701.3b)'
+			);
+			assert.equal(
+				state.nextTimestamp,
+				nextTimestampBefore,
+				'Re-attaching to the same creature must not allocate a timestamp'
+			);
+			assert.equal(attachedEvents, 0, 'Re-attaching to the same creature must not emit Attached');
+			assert.equal(
+				evaluatePermanent(state, lynx).power,
+				4,
+				'Creature remains 4/4 because re-equipping A to the same host did nothing'
+			);
+			assert.equal(evaluatePermanent(state, lynx).toughness, 4);
+		} finally {
+			unsub();
+		}
+	});
+
+	it('CR 613.7e: moving an Equipment or Aura from Creature 1 to Creature 2 updates its timestamp by +1', () => {
+		const { state, p1 } = makeGame();
+		const creature1 = putInZone(
+			state,
+			p1,
+			syntheticCard({ name: 'Copperhorn Stag', typeLine: 'Creature — Elk', power: '2', toughness: '2' }),
+			'battlefield'
+		);
+		const creature2 = putInZone(
+			state,
+			p1,
+			syntheticCard({ name: 'Silverfur Wolf', typeLine: 'Creature — Wolf', power: '2', toughness: '2' }),
+			'battlefield'
+		);
+		const equipA = castFromHand(state, p1, TINSCALE_HARNESS);
+		const equipB = castFromHand(state, p1, TITANPLATE_HARNESS);
+
+		// Equip A (1/1) to Creature 1, then Equip B (4/4) to Creature 2
+		activateEquip(state, p1, equipA, creature1);
+		activateEquip(state, p1, equipB, creature2);
+		assert.equal(evaluatePermanent(state, creature1).power, 1);
+		assert.equal(evaluatePermanent(state, creature2).power, 4);
+		assert.ok((equipA.enteredTimestamp ?? 0) < (equipB.enteredTimestamp ?? 0));
+
+		// Move Equipment A from Creature 1 to Creature 2 -> allocates exactly 1 new timestamp (> B)
+		const tsBeforeMoveEquip = state.nextTimestamp ?? 0;
+		activateEquip(state, p1, equipA, creature2);
+		assert.equal(equipA.attachedToId, creature2.instanceId);
+		assert.equal(
+			equipA.enteredTimestamp,
+			tsBeforeMoveEquip + 1,
+			'Moving Equipment to a new host allocates exactly 1 timestamp (no double-increment)'
+		);
+		assert.equal(evaluatePermanent(state, creature1).power, 2);
+		assert.equal(
+			evaluatePermanent(state, creature2).power,
+			1,
+			'Equipment A moved onto Creature 2 overrides earlier Equipment B (4/4 -> 1/1)'
+		);
+
+		// Now test moving an Aura from Creature 1 to Creature 2 via applyGameAction!
+		const shiftingAuraCard = syntheticCard({
+			name: 'Glimmerweave Shackle',
+			manaCost: '{0}',
+			cmc: 1,
+			typeLine: 'Enchantment — Aura',
+			oracleText:
+				'Enchant creature\nEnchanted creature has base power and toughness 1/1.\n{1}: Attach ~ to target creature you control.',
+			keywords: ['Enchant']
+		});
+		assert.equal(compileCard(shiftingAuraCard).fullySupported, true);
+
+		const auraInHand = putInZone(state, p1, shiftingAuraCard, 'hand');
+		state.priorityPlayerIndex = 0;
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: auraInHand.instanceId,
+				targets: [{ kind: 'permanent', id: creature1.instanceId, label: creature1.card.name }]
+			}).ok,
+			true
+		);
+		const tsBeforeAuraResolve = state.nextTimestamp ?? 0;
+		passStep(state);
+		const aura = p1.battlefield.find((c) => c.instanceId === auraInHand.instanceId)!;
+		assert.ok(aura);
+		assert.equal(
+			aura.enteredTimestamp,
+			tsBeforeAuraResolve + 1,
+			'Aura spell resolution allocates exactly 1 timestamp'
+		);
+		assert.equal(aura.attachedToId, creature1.instanceId);
+		assert.equal(evaluatePermanent(state, creature1).power, 1);
+
+		// Re-equip B (4/4) onto Creature 1 ( wait: move B to Creature 1 first then back to Creature 2 so B has newer ts than Aura!)
+		activateEquip(state, p1, equipB, creature1);
+		activateEquip(state, p1, equipB, creature2);
+		assert.ok((equipB.enteredTimestamp ?? 0) > (aura.enteredTimestamp ?? 0));
+		assert.equal(evaluatePermanent(state, creature2).power, 4, 'B (4/4) currently beats A on Creature 2');
+
+		// Activate Aura's "{1}: Attach ~ to target creature you control." targeting Creature 2!
+		const moveAuraAb = getEffectiveActivatedAbilities(state, p1, aura)[0];
+		assert.ok(moveAuraAb, 'expected activated attach ability on Glimmerweave Shackle');
+		p1.manaPool.C = 2;
+		state.priorityPlayerIndex = 0;
+		const tsBeforeMoveAura = state.nextTimestamp ?? 0;
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'activate_ability',
+				instanceId: aura.instanceId,
+				abilityId: moveAuraAb.id,
+				targets: [{ kind: 'permanent', id: creature2.instanceId, label: creature2.card.name }]
+			}).ok,
+			true
+		);
+		passStep(state);
+		assert.equal(aura.attachedToId, creature2.instanceId);
+		assert.equal(
+			aura.enteredTimestamp,
+			tsBeforeMoveAura + 1,
+			'Moving Aura to Creature 2 allocates exactly 1 new timestamp (CR 613.7e)'
+		);
+		assert.equal(evaluatePermanent(state, creature1).power, 2);
+		assert.equal(
+			evaluatePermanent(state, creature2).power,
+			1,
+			'Moved Aura has newer timestamp than Equipment B on Creature 2 (4/4 -> 1/1)'
+		);
+	});
+
+	it('CR 613.7d–e: Aura entering battlefield from graveyard without being cast gets 1 fresh timestamp via attachObject', () => {
+		const { state, p1 } = makeGame();
+		p1.isBot = true; // auto-picks single legal enchant candidate without interactive prompt
+		const host = putInZone(
+			state,
+			p1,
+			syntheticCard({ name: 'Stalwart Ox', typeLine: 'Creature — Ox', power: '2', toughness: '2' }),
+			'battlefield'
+		);
+		const equipB = putInZone(state, p1, TITANPLATE_HARNESS, 'battlefield');
+		p1.isBot = false;
+		activateEquip(state, p1, equipB, host);
+		assert.equal(evaluatePermanent(state, host).power, 4);
+
+		const gyAura = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Mirebind Halo',
+				manaCost: '{1}{W}',
+				cmc: 2,
+				typeLine: 'Enchantment — Aura',
+				oracleText: 'Enchant creature\nEnchanted creature has base power and toughness 1/1.',
+				keywords: ['Enchant']
+			}),
+			'graveyard'
+		);
+		const returnSpell = putInZone(
+			state,
+			p1,
+			syntheticCard({
+				name: 'Restore Relic-Ward',
+				manaCost: '{0}',
+				cmc: 1,
+				typeLine: 'Sorcery',
+				oracleText: 'Return target enchantment card from your graveyard to the battlefield.'
+			}),
+			'hand'
+		);
+		assert.equal(compileCard(returnSpell.card).fullySupported, true);
+
+		state.priorityPlayerIndex = 0;
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: returnSpell.instanceId,
+				targets: [{ kind: 'graveyard_card', id: gyAura.instanceId, label: gyAura.card.name }]
+			}).ok,
+			true
+		);
+		const tsBeforeResolve = state.nextTimestamp ?? 0;
+		// Pass priority to resolve spell; human receives CR 303.4f Aura host choice prompt
+		passStep(state);
+		if (state.pendingPrompts.length > 0) {
+			const prm = state.pendingPrompts[0];
+			assert.equal(
+				applyGameAction(state, p1.playerId, {
+					type: 'choice',
+					promptId: prm.id,
+					answer: { kind: 'chooseObjects', objectIds: [host.instanceId] }
+				}).ok,
+				true
+			);
+		}
+		assert.equal(gyAura.zone, 'battlefield');
+		assert.equal(gyAura.attachedToId, host.instanceId);
+		// Restore Relic-Ward moved to graveyard (+1 timestamp) and gyAura entered attached (+1 timestamp = +2 total, NOT +3!)
+		assert.equal(
+			state.nextTimestamp,
+			tsBeforeResolve + 2,
+			'Reanimating an Aura allocates 1 timestamp for the Aura and 1 for the resolving sorcery (no double-increment)'
+		);
+		assert.equal(evaluatePermanent(state, host).power, 1);
+	});
+
+	it('attachObject helper updates layer cache inside withStableLayerInputs and returns false on same host', () => {
+		const attachFn = (
+			zonesModule as unknown as {
+				attachObject?: (s: GameState, obj: CardInstance, hostId: string) => boolean;
+			}
+		).attachObject;
+		assert.equal(typeof attachFn, 'function', 'attachObject must be exported from runtime/zones.ts');
+
+		const { state, p1 } = makeGame();
+		const host = putInZone(
+			state,
+			p1,
+			syntheticCard({ name: 'Test Hound', typeLine: 'Creature — Dog', power: '2', toughness: '2' }),
+			'battlefield'
+		);
+		const harness = putInZone(state, p1, TINSCALE_HARNESS, 'battlefield');
+		assert.ok((harness.enteredTimestamp ?? 0) > (host.enteredTimestamp ?? 0));
+
+		setLayerCacheCheck(true);
+		try {
+			withStableLayerInputs(state, () => {
+				assert.equal(evaluatePermanent(state, host).power, 2);
+				const tsBefore = state.nextTimestamp ?? 0;
+				assert.equal(attachFn!(state, harness, host.instanceId), true);
+				assert.equal(harness.enteredTimestamp, tsBefore + 1);
+				// Must not throw a stable-scope violation and must reflect new attachment immediately!
+				assert.equal(evaluatePermanent(state, host).power, 1);
+				// Attaching again to same host is a CR 701.3b no-op
+				assert.equal(attachFn!(state, harness, host.instanceId), false);
+				assert.equal(state.nextTimestamp, tsBefore + 1);
+			});
+		} finally {
+			setLayerCacheCheck(null);
+		}
 	});
 });
