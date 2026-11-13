@@ -726,3 +726,483 @@ describe('Phase 8: Bot generic choice answering (ai.ts / runtime/choices.ts)', (
 		assert.equal(resolvedReplacement, 'opt_1');
 	});
 });
+
+describe('Track B1 Slice 2: Strict prompt & answer validation', () => {
+	it('rejects wrong/stale promptId and foreign player promptId on { type: "choice" } without mutating pendingPrompts', () => {
+		const { state, p1, p2 } = newGame();
+		const p1Prompt = enqueueChoicePrompt(state, {
+			id: 'prm_p1_only',
+			playerId: p1.playerId,
+			kind: 'yesNo',
+			title: 'Confirm Action',
+			description: 'Confirm?',
+			choice: { kind: 'yesNo', question: 'Confirm?' }
+		});
+		const p2Prompt = enqueueChoicePrompt(state, {
+			id: 'prm_p2_only',
+			playerId: p2.playerId,
+			kind: 'yesNo',
+			title: 'Opponent Action',
+			description: 'Confirm?',
+			choice: { kind: 'yesNo', question: 'Confirm?' }
+		});
+
+		const wrongIdRes = applyGameAction(state, p1.playerId, {
+			type: 'choice',
+			promptId: 'prm_nonexistent',
+			answer: { kind: 'yesNo', yes: true }
+		});
+		assert.equal(wrongIdRes.ok, false);
+		assert.ok(wrongIdRes.error);
+
+		const foreignIdRes = applyGameAction(state, p1.playerId, {
+			type: 'choice',
+			promptId: p2Prompt.id,
+			answer: { kind: 'yesNo', yes: true }
+		});
+		assert.equal(foreignIdRes.ok, false);
+		assert.ok(foreignIdRes.error);
+
+		assert.deepEqual(
+			state.pendingPrompts.map((p) => p.id),
+			[p1Prompt.id, p2Prompt.id],
+			'pendingPrompts must remain untouched on rejected promptId'
+		);
+	});
+
+	it('enforces orderObjects completeness on scry_choice and trigger_order', () => {
+		// Direct validateChoiceAnswer checks (including empty objectIds + forged ID)
+		assert.equal(
+			validateChoiceAnswer(
+				{ kind: 'orderObjects', objectIds: ['a', 'b'], allowSplitBottom: true, allowShuffle: false, reason: 'Scry 2' },
+				{ kind: 'orderObjects', topIds: ['a'], bottomIds: [] }
+			).ok,
+			false
+		);
+		assert.equal(
+			validateChoiceAnswer(
+				{ kind: 'orderObjects', objectIds: [], allowSplitBottom: false, allowShuffle: false, reason: 'Empty' },
+				{ kind: 'orderObjects', topIds: ['forged'], bottomIds: [] }
+			).ok,
+			false
+		);
+
+		// scry_choice via applyGameAction
+		const { state, p1, p2 } = newGame();
+		const [a, b, c] = p1.library.slice(0, 3);
+		const scrySpell = put(
+			state,
+			p1,
+			card({ name: 'Scry Probe', typeLine: 'Instant', manaCost: '{U}', cmc: 1, oracleText: 'Scry 3.' }),
+			'hand'
+		);
+		assert.equal(applyGameAction(state, p1.playerId, { type: 'cast_spell', instanceId: scrySpell.instanceId }).ok, true);
+		assert.equal(applyGameAction(state, p1.playerId, { type: 'pass_priority' }).ok, true);
+		assert.equal(applyGameAction(state, p2.playerId, { type: 'pass_priority' }).ok, true);
+
+		const scryPrompt = state.pendingPrompts[0]!;
+		assert.equal(scryPrompt.purpose, 'scry_choice');
+		const incompleteScry = applyGameAction(state, p1.playerId, {
+			type: 'choice',
+			promptId: scryPrompt.id,
+			answer: { kind: 'orderObjects', topIds: [a.instanceId], bottomIds: [b.instanceId] }
+		});
+		assert.equal(incompleteScry.ok, false);
+		assert.equal(state.pendingPrompts.length, 1, 'scry prompt stays pending on incomplete orderObjects');
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'choice',
+				promptId: scryPrompt.id,
+				answer: { kind: 'orderObjects', topIds: [a.instanceId, c.instanceId], bottomIds: [b.instanceId] }
+			}).ok,
+			true
+		);
+
+		// trigger_order via applyGameAction
+		const { state: tState, p1: tp1, p2: tp2 } = newGame();
+		const herald = put(
+			tState,
+			tp1,
+			card({
+				name: 'Dual Bell Herald',
+				typeLine: 'Creature — Human',
+				manaCost: '{1}{W}',
+				cmc: 2,
+				power: '2',
+				toughness: '2',
+				oracleText: 'When ~ enters, you gain 1 life.\nWhen ~ enters, draw a card.'
+			}),
+			'hand'
+		);
+		put(tState, tp1, card({ name: 'Plains', typeLine: 'Basic Land — Plains', manaCost: '', cmc: 0 }), 'library');
+		assert.equal(applyGameAction(tState, tp1.playerId, { type: 'cast_spell', instanceId: herald.instanceId }).ok, true);
+		assert.equal(applyGameAction(tState, tp1.playerId, { type: 'pass_priority' }).ok, true);
+		assert.equal(applyGameAction(tState, tp2.playerId, { type: 'pass_priority' }).ok, true);
+
+		const ordPrompt = tState.pendingPrompts[0]!;
+		assert.equal(ordPrompt.purpose, 'trigger_order');
+		assert.equal(ordPrompt.choice?.kind, 'orderObjects');
+		const triggerIds = ordPrompt.choice?.kind === 'orderObjects' ? ordPrompt.choice.objectIds : [];
+		assert.equal(triggerIds.length, 2);
+
+		const incompleteOrder = applyGameAction(tState, tp1.playerId, {
+			type: 'choice',
+			promptId: ordPrompt.id,
+			answer: { kind: 'orderObjects', topIds: [triggerIds[0]], bottomIds: [] }
+		});
+		assert.equal(incompleteOrder.ok, false);
+		assert.equal(tState.pendingPrompts.length, 1, 'trigger_order prompt stays pending on incomplete list');
+	});
+
+	it('rejects stale/mismatched effect_choice continuations before splicing pendingPrompts', () => {
+		const { state, p1 } = newGame();
+		const b1 = put(state, p1, creature('Bog Hound'), 'battlefield');
+		const spellCard = card({
+			name: 'Sacrifice Rite',
+			typeLine: 'Sorcery',
+			oracleText: 'Sacrifice a creature.'
+		});
+		state.stack.push({
+			id: 'stk_live',
+			sourceInstanceId: 'src_live',
+			card: spellCard,
+			oracleText: spellCard.oracleText,
+			ownerId: p1.playerId,
+			controllerId: p1.playerId,
+			kind: 'spell',
+			title: spellCard.name,
+			targets: [],
+			xValue: 0,
+			requiresGuidedResolution: false,
+			createdAt: 0,
+			effectResume: {
+				stepIndex: 2,
+				bindings: [],
+				answers: {}
+			}
+		});
+
+		const mismatchedStepPrompt = enqueueChoicePrompt(state, {
+			id: 'prm_eff_step',
+			playerId: p1.playerId,
+			kind: 'chooseObjects',
+			title: 'Choose Creature',
+			description: 'Sacrifice a creature.',
+			continuation: { kind: 'effect_choice', stackItemId: 'stk_live', stepIndex: 0 },
+			choice: { kind: 'chooseObjects', candidates: [b1.instanceId], min: 1, max: 1, zone: 'battlefield', reason: 'Sacrifice a creature.' }
+		});
+
+		const resMismatch = applyGameAction(state, p1.playerId, {
+			type: 'choice',
+			promptId: mismatchedStepPrompt.id,
+			answer: { kind: 'chooseObjects', objectIds: [b1.instanceId] }
+		});
+		assert.equal(resMismatch.ok, false);
+		assert.equal(state.pendingPrompts.length, 1, 'mismatched stepIndex prompt not spliced');
+
+		state.pendingPrompts = [];
+		const missingItemPrompt = enqueueChoicePrompt(state, {
+			id: 'prm_eff_missing',
+			playerId: p1.playerId,
+			kind: 'chooseObjects',
+			title: 'Choose Creature',
+			description: 'Sacrifice a creature.',
+			continuation: { kind: 'effect_choice', stackItemId: 'stk_gone', stepIndex: 0 },
+			choice: { kind: 'chooseObjects', candidates: [b1.instanceId], min: 1, max: 1, zone: 'battlefield', reason: 'Sacrifice a creature.' }
+		});
+
+		const resMissing = applyGameAction(state, p1.playerId, {
+			type: 'choice',
+			promptId: missingItemPrompt.id,
+			answer: { kind: 'chooseObjects', objectIds: [b1.instanceId] }
+		});
+		assert.equal(resMissing.ok, false);
+		assert.equal(state.pendingPrompts.length, 1, 'missing stackItem effect_choice prompt not spliced');
+	});
+
+	it('rejects stale trigger_targets, trigger_may, manual_resolution, and invalid cost_choice without silent ok', () => {
+		// 1. Stale trigger_targets (missing stack item)
+		const { state: s1, p1: a1 } = newGame();
+		const targetChoice = enqueueChoicePrompt(s1, {
+			id: 'prm_trg_missing',
+			playerId: a1.playerId,
+			kind: 'chooseObjects',
+			purpose: 'trigger_targets',
+			title: 'Choose Trigger Target',
+			description: 'Choose target',
+			triggerStackItemId: 'stk_missing',
+			triggerTargetSpecIndex: 0,
+			choice: { kind: 'chooseObjects', candidates: [a1.playerId], min: 1, max: 1, zone: 'battlefield', reason: 'Choose target' }
+		});
+		assert.equal(
+			applyGameAction(s1, a1.playerId, {
+				type: 'choice',
+				promptId: targetChoice.id,
+				answer: { kind: 'chooseObjects', objectIds: [a1.playerId] }
+			}).ok,
+			false
+		);
+		assert.equal(s1.pendingPrompts.length, 1);
+
+		// 2. Stale trigger_targets (out-of-bounds specIndex on live item) and trigger_may (missing item)
+		const { state: s2, p1: a2 } = newGame();
+		const trigCard = card({
+			name: 'Spark Watcher',
+			typeLine: 'Creature — Wizard',
+			oracleText: 'When ~ enters, ~ deals 1 damage to any target.'
+		});
+		s2.stack.push({
+			id: 'stk_trig',
+			sourceInstanceId: 'src_trig',
+			card: trigCard,
+			oracleText: trigCard.oracleText,
+			ownerId: a2.playerId,
+			controllerId: a2.playerId,
+			kind: 'triggered',
+			title: trigCard.name,
+			triggeredAbilityIndex: 0,
+			targets: [],
+			xValue: 0,
+			requiresGuidedResolution: false,
+			createdAt: 0
+		});
+		const badSpecPrompt = enqueueChoicePrompt(s2, {
+			id: 'prm_trg_badspec',
+			playerId: a2.playerId,
+			kind: 'chooseObjects',
+			purpose: 'trigger_targets',
+			title: 'Choose Target',
+			description: 'Choose target',
+			triggerStackItemId: 'stk_trig',
+			triggerTargetSpecIndex: 9,
+			choice: { kind: 'chooseObjects', candidates: [a2.playerId], min: 1, max: 1, zone: 'battlefield', reason: 'Choose target' }
+		});
+		assert.equal(
+			applyGameAction(s2, a2.playerId, {
+				type: 'choice',
+				promptId: badSpecPrompt.id,
+				answer: { kind: 'chooseObjects', objectIds: [a2.playerId] }
+			}).ok,
+			false
+		);
+		assert.equal(s2.pendingPrompts.length, 1);
+
+		s2.pendingPrompts = [];
+		const staleMayPrompt = enqueueChoicePrompt(s2, {
+			id: 'prm_trg_may_missing',
+			playerId: a2.playerId,
+			kind: 'yesNo',
+			purpose: 'trigger_may',
+			title: 'Optional Trigger',
+			description: 'Use?',
+			triggerStackItemId: 'stk_gone',
+			choice: { kind: 'yesNo', question: 'Use?' }
+		});
+		assert.equal(
+			applyGameAction(s2, a2.playerId, {
+				type: 'choice',
+				promptId: staleMayPrompt.id,
+				answer: { kind: 'yesNo', yes: true }
+			}).ok,
+			false
+		);
+		assert.equal(s2.pendingPrompts.length, 1);
+
+		// 3. Stale manual_resolution (missing stack item) does not apply operations or splice prompt
+		const { state: s3, p1: a3 } = newGame();
+		const lifeBefore = a3.life;
+		const staleManual = enqueueChoicePrompt(s3, {
+			id: 'prm_manual_stale',
+			playerId: a3.playerId,
+			kind: 'guided_resolution',
+			purpose: 'guided_resolution',
+			title: 'Resolve Manually',
+			description: 'Resolve',
+			continuation: { kind: 'manual_resolution', stackItemId: 'stk_gone' },
+			choice: { kind: 'yesNo', question: 'Done?' }
+		});
+		assert.equal(
+			applyGameAction(s3, a3.playerId, {
+				type: 'choice',
+				promptId: staleManual.id,
+				answer: { kind: 'yesNo', yes: true },
+				operations: [{ op: 'modify_life', targetId: a3.playerId, amount: 10 }]
+			}).ok,
+			false
+		);
+		assert.equal(s3.pendingPrompts.length, 1);
+		assert.equal(a3.life, lifeBefore, 'operations must not run when manual_resolution stack item is missing');
+
+		// 4. Invalid cost_choice when !cancel and !pendingAction
+		const { state: s4, p1: a4 } = newGame();
+		const invalidCost = enqueueChoicePrompt(s4, {
+			id: 'prm_cost_invalid',
+			playerId: a4.playerId,
+			kind: 'cost_choice',
+			purpose: 'cost_choice',
+			title: 'Choose Cost',
+			description: 'Pay?',
+			choice: { kind: 'yesNo', question: 'Pay?' }
+		});
+		assert.equal(
+			applyGameAction(s4, a4.playerId, {
+				type: 'choice',
+				promptId: invalidCost.id,
+				answer: { kind: 'yesNo', yes: true }
+			}).ok,
+			false
+		);
+		assert.equal(s4.pendingPrompts.length, 1);
+		// Cancelling an invalid/orphaned cost_choice is still permitted
+		assert.equal(
+			applyGameAction(s4, a4.playerId, {
+				type: 'choice',
+				promptId: invalidCost.id,
+				cancel: true
+			}).ok,
+			true
+		);
+		assert.equal(s4.pendingPrompts.length, 0);
+	});
+
+	it('rejects duplicate, foreign, or forged IDs in london_bottom (both choice and legacy actions)', () => {
+		const { state, p1, p2 } = newGame(false);
+		state.rules.mulliganRule = 'london_standard';
+
+		// Mulligan twice so P1 must bottom 2 cards
+		assert.equal(applyGameAction(state, p1.playerId, { type: 'mulligan_take' }).ok, true);
+		assert.equal(applyGameAction(state, p1.playerId, { type: 'mulligan_take' }).ok, true);
+		assert.equal(applyGameAction(state, p1.playerId, { type: 'mulligan_keep' }).ok, true);
+
+		const bottomPrompt = state.pendingPrompts.find(
+			(pr) => pr.playerId === p1.playerId && pr.kind === 'london_bottom'
+		)!;
+		assert.ok(bottomPrompt);
+		assert.equal(bottomPrompt.countRequired, 2);
+
+		const handBefore = p1.hand.map((c) => c.instanceId);
+		const libBefore = p1.library.length;
+		const foreignId = p2.hand[0].instanceId;
+
+		// 1. Duplicate IDs via legacy london_bottom
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'london_bottom',
+				instanceIds: [handBefore[0], handBefore[0]]
+			}).ok,
+			false
+		);
+		// 2. Foreign ID via legacy london_bottom
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'london_bottom',
+				instanceIds: [handBefore[0], foreignId]
+			}).ok,
+			false
+		);
+		// 3. Forged ID via { type: 'choice' }
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'choice',
+				promptId: bottomPrompt.id,
+				answer: { kind: 'chooseObjects', objectIds: [handBefore[0], 'forged_card_id'] }
+			}).ok,
+			false
+		);
+		// 4. Wrong/foreign promptId during mulligan via { type: 'choice' }
+		const p2MullPrompt = state.pendingPrompts.find((pr) => pr.playerId === p2.playerId)!;
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'choice',
+				promptId: p2MullPrompt.id,
+				answer: { kind: 'chooseObjects', objectIds: [handBefore[0], handBefore[1]] }
+			}).ok,
+			false
+		);
+
+		assert.equal(p1.hand.length, handBefore.length);
+		assert.equal(p1.library.length, libBefore);
+		assert.ok(state.pendingPrompts.some((pr) => pr.id === bottomPrompt.id));
+
+		// Valid choice succeeds
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'choice',
+				promptId: bottomPrompt.id,
+				answer: { kind: 'chooseObjects', objectIds: [handBefore[0], handBefore[1]] }
+			}).ok,
+			true
+		);
+		assert.equal(p1.hand.length, handBefore.length - 2);
+		assert.equal(p1.library.length, libBefore + 2);
+	});
+
+	it('rejects stale procedure continuations (clone_copy_choice & ward_payment_choice) before splicing pendingPrompts', () => {
+		const { state, p1, p2 } = newGame();
+		const targetPerm = put(state, p2, creature('Target Bear'), 'battlefield');
+
+		const staleCloneId = 'prm_stale_clone';
+		const staleWardId = 'prm_stale_ward';
+		state.pendingPrompts.push(
+			{
+				id: staleCloneId,
+				playerId: p1.playerId,
+				kind: 'chooseObjects',
+				purpose: 'generic',
+				title: 'Clone — Choose a Creature to Copy',
+				description: 'Choose a creature to copy.',
+				continuation: {
+					kind: 'procedure',
+					procedure: { kind: 'clone_copy_choice', stackItemId: 'stk_missing_clone' }
+				},
+				choice: {
+					kind: 'chooseObjects',
+					candidates: [targetPerm.instanceId],
+					min: 0,
+					max: 1,
+					zone: 'battlefield',
+					reason: 'Choose creature to copy'
+				}
+			},
+			{
+				id: staleWardId,
+				playerId: p1.playerId,
+				kind: 'yesNo',
+				purpose: 'generic',
+				title: 'Ward',
+				description: 'Pay ward cost {2}?',
+				continuation: {
+					kind: 'procedure',
+					procedure: {
+						kind: 'ward_payment_choice',
+						wardStackItemId: 'stk_missing_ward',
+						targetStackItemId: 'stk_missing_target'
+					}
+				},
+				choice: { kind: 'yesNo', question: 'Pay ward cost {2}?' }
+			}
+		);
+
+		const cloneRes = applyGameAction(state, p1.playerId, {
+			type: 'choice',
+			promptId: staleCloneId,
+			answer: { kind: 'chooseObjects', objectIds: [targetPerm.instanceId] }
+		});
+		assert.equal(cloneRes.ok, false);
+		assert.ok(
+			state.pendingPrompts.some((pr) => pr.id === staleCloneId),
+			'stale clone_copy_choice rejection must not splice prompt'
+		);
+
+		const wardRes = applyGameAction(state, p1.playerId, {
+			type: 'choice',
+			promptId: staleWardId,
+			answer: { kind: 'yesNo', yes: true }
+		});
+		assert.equal(wardRes.ok, false);
+		assert.ok(
+			state.pendingPrompts.some((pr) => pr.id === staleWardId),
+			'stale ward_payment_choice rejection must not splice prompt'
+		);
+	});
+});

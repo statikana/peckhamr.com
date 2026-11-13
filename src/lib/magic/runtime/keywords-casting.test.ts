@@ -1570,7 +1570,7 @@ describe('Keyword: Partner (CR 702.124)', () => {
 		assert.equal(p2.lost, false, 'CR 903.10a: 15 + 10 across two different Partner commanders does NOT trigger 21-damage loss');
 	});
 
-	it('Partner with [Name] reports its ETB search as not automated instead of claiming full support (CR 702.124j)', () => {
+	it('Partner with [Name] compiles its ETB search trigger directly to IR and claims full support (CR 702.124j)', () => {
 		const card = syntheticCard({
 			name: 'Velk Ardent',
 			typeLine: 'Legendary Creature — Elf Druid',
@@ -1586,27 +1586,17 @@ describe('Keyword: Partner (CR 702.124)', () => {
 			abilities.some((a) => a.kind === 'keyword' && a.keyword.name === 'partner' && a.keyword.param === 'with Mira Coilbright'),
 			'the pairing half stays a partner keyword for deck construction'
 		);
-		const search = abilities.find((a) => a.kind === 'unsupported');
-		assert.ok(search && search.kind === 'unsupported', 'the search half is an unsupported ability');
-		assert.deepEqual(search.trigger, { event: 'zoneChange', filter: { object: 'self', to: 'battlefield' } });
-		assert.equal(def.fullySupported, false);
+		const triggered = abilities.find((a) => a.kind === 'triggered');
+		assert.ok(triggered && triggered.kind === 'triggered', 'the search half compiles to a triggered ability');
+		assert.deepEqual(triggered.trigger, { event: 'zoneChange', filter: { object: 'self', to: 'battlefield' } });
+		assert.equal(triggered.targets?.[0]?.kind, 'player');
+		assert.equal(triggered.effect[0]?.verb, 'search');
+		assert.equal(triggered.effect[0]?.params?.search?.filter.named, 'Mira Coilbright');
+		assert.deepEqual(triggered.effect[0]?.optional, { chooser: { k: 'target', index: 0 } });
+		assert.equal(def.fullySupported, true);
+		assert.equal(abilities.some((a) => a.kind === 'unsupported'), false);
 		// Generic Partner is a single ability and stays fully supported.
 		assert.equal(compileCard(syntheticCard({ name: 'Orla Vantry', typeLine: 'Legendary Creature — Human', oracleText: 'Partner', canBeCommander: true, hasPartner: true, power: '1', toughness: '1' })).fullySupported, true);
-
-		// At runtime the search triggers on entering: a human resolves it manually; a bot skips it.
-		for (const bot of [false, true]) {
-			const { state, p1 } = makeGame({ p1Bot: bot });
-			const inst = putInZone(state, p1, { ...card, manaCost: '{0}', cmc: 0 }, 'hand');
-			assert.equal(applyGameAction(state, p1.playerId, { type: 'cast_spell', instanceId: inst.instanceId }).ok, true);
-			resolveAllStack(state);
-			assert.ok(p1.battlefield.some((c) => c.instanceId === inst.instanceId));
-			if (bot) {
-				assert.equal(state.stack.length, 0, 'the bot skips the unautomated trigger');
-			} else {
-				assert.equal(state.stack.at(-1)?.kind, 'triggered', 'the search trigger is on the stack');
-				assert.equal(state.pendingPrompts[0]?.purpose, 'guided_resolution', 'a human resolves it manually');
-			}
-		}
 	});
 
 	it('Partner—[text] pairs only with the same partner—[text] ability (CR 702.124f, 702.124i)', () => {
@@ -1623,7 +1613,111 @@ describe('Keyword: Partner (CR 702.124)', () => {
 		assert.equal(pairingError(survivorA, fatherSon), true, 'different partner—[text] abilities do not combine');
 	});
 
-	it.todo(
-		'Partner with [Name] ETB trigger (CR 702.124j): when a "Partner with [Name]" permanent enters, target player may search their library for [Name], reveal it, put it into their hand, then shuffle'
-	);
+	it('Partner with [Name] ETB trigger (CR 702.124j): when a "Partner with [Name]" permanent enters, target player may search their library for [Name], reveal it, put it into their hand, then shuffle', () => {
+		const velkCard = syntheticCard({
+			name: 'Velk Ardent',
+			typeLine: 'Legendary Creature — Elf Druid',
+			oracleText: 'Partner with Mira Coilbright',
+			canBeCommander: true,
+			hasPartner: true,
+			manaCost: '{0}',
+			cmc: 0,
+			power: '2',
+			toughness: '2'
+		});
+		const miraCard = syntheticCard({
+			name: 'Mira Coilbright',
+			typeLine: 'Legendary Creature — Human Artificer',
+			oracleText: 'Partner with Velk Ardent',
+			canBeCommander: true,
+			hasPartner: true,
+			manaCost: '{0}',
+			cmc: 0,
+			power: '2',
+			toughness: '2'
+		});
+
+		const resolveSpellAndTarget = (state: GameState, p1Id: string, p2Id: string, targetId: string) => {
+			assert.equal(applyGameAction(state, p1Id, { type: 'pass_priority' }).ok, true);
+			assert.equal(applyGameAction(state, p2Id, { type: 'pass_priority' }).ok, true);
+			const tgtPrompt = state.pendingPrompts.find((pr) => pr.purpose === 'trigger_targets');
+			assert.ok(tgtPrompt, 'controller is prompted to choose target player for Partner with');
+			assert.equal(
+				applyGameAction(state, p1Id, {
+					type: 'choice',
+					promptId: tgtPrompt!.id,
+					answer: { kind: 'chooseObjects', objectIds: [targetId] }
+				}).ok,
+				true
+			);
+			assert.equal(applyGameAction(state, p1Id, { type: 'pass_priority' }).ok, true);
+			assert.equal(applyGameAction(state, p2Id, { type: 'pass_priority' }).ok, true);
+		};
+
+		// 1. Accept targeting self, survive JSON round-trip, find named partner into hand.
+		{
+			let { state, p1, p2 } = makeGame();
+			const velk = putInZone(state, p1, velkCard, 'hand');
+			const miraInLib = putInZone(state, p1, miraCard, 'library');
+			const handBefore = p1.hand.length - 1;
+			assert.equal(applyGameAction(state, p1.playerId, { type: 'cast_spell', instanceId: velk.instanceId }).ok, true);
+			resolveSpellAndTarget(state, p1.playerId, p2.playerId, p1.playerId);
+
+			const mayPrompt = state.pendingPrompts[0];
+			assert.ok(mayPrompt && mayPrompt.choice?.kind === 'yesNo', 'asks target player yes/no before searching');
+			assert.equal(mayPrompt.playerId, p1.playerId);
+			state = JSON.parse(JSON.stringify(state)) as GameState;
+			assert.equal(
+				applyGameAction(state, p1.playerId, {
+					type: 'choice',
+					promptId: state.pendingPrompts[0].id,
+					answer: { kind: 'yesNo', yes: true }
+				}).ok,
+				true
+			);
+			const searchPrompt = state.pendingPrompts.find((pr) => pr.kind === 'search_library');
+			assert.ok(searchPrompt, 'opens search_library prompt after accepting');
+			assert.deepEqual(searchPrompt!.candidateInstanceIds, [miraInLib.instanceId]);
+			state = JSON.parse(JSON.stringify(state)) as GameState;
+			assert.equal(
+				applyGameAction(state, p1.playerId, {
+					type: 'choice',
+					promptId: state.pendingPrompts[0].id,
+					answer: { kind: 'chooseObjects', objectIds: [miraInLib.instanceId] }
+				}).ok,
+				true
+			);
+			assert.equal(state.stack.length, 0);
+			assert.equal(state.players[0].hand.length, handBefore + 1);
+			assert.ok(state.players[0].hand.some((c) => c.instanceId === miraInLib.instanceId));
+		}
+
+		// 2. Target opponent: prompt goes to opponent; declining skips search AND does NOT shuffle!
+		{
+			let { state, p1, p2 } = makeGame();
+			const velk = putInZone(state, p1, velkCard, 'hand');
+			putInZone(state, p2, miraCard, 'library');
+			const libOrderBefore = p2.library.map((c) => c.instanceId);
+			const rngBefore = state.rngState;
+			assert.equal(applyGameAction(state, p1.playerId, { type: 'cast_spell', instanceId: velk.instanceId }).ok, true);
+			resolveSpellAndTarget(state, p1.playerId, p2.playerId, p2.playerId);
+
+			const mayPrompt = state.pendingPrompts[0];
+			assert.ok(mayPrompt && mayPrompt.choice?.kind === 'yesNo');
+			assert.equal(mayPrompt.playerId, p2.playerId, 'target opponent decides whether to search');
+			state = JSON.parse(JSON.stringify(state)) as GameState;
+			assert.equal(
+				applyGameAction(state, p2.playerId, {
+					type: 'choice',
+					promptId: state.pendingPrompts[0].id,
+					answer: { kind: 'yesNo', yes: false }
+				}).ok,
+				true
+			);
+			assert.equal(state.pendingPrompts.length, 0, 'declining ends immediately without opening search_library');
+			assert.equal(state.stack.length, 0);
+			assert.deepEqual(state.players[1].library.map((c) => c.instanceId), libOrderBefore, 'declining does NOT shuffle library');
+			assert.equal(state.rngState, rngBefore, 'rngState untouched when library not shuffled');
+		}
+	});
 });

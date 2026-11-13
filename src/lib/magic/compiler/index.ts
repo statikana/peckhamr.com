@@ -14,7 +14,7 @@ import { hashText } from './normalize.ts';
 import { PROWESS_RUNTIME_TRIGGER, runtimeTriggers } from './triggers.ts';
 
 /** Bump whenever the IR produced for the same text could change. */
-export const COMPILER_VERSION = 11;
+export const COMPILER_VERSION = 12;
 
 const CACHE = new Map<string, CardDefinition>();
 
@@ -235,14 +235,17 @@ function shiftAmount(a: Amount, offset: number): Amount {
 	return a;
 }
 
-function shiftStepTargets(step: EffectStep, offset: number): EffectStep {
-	if (offset === 0) return step;
+function shiftStepTargets(step: EffectStep, offset: number, stepOffset = 0): EffectStep {
+	if (offset === 0 && stepOffset === 0) return step;
 	return {
 		...step,
 		subject: shiftSelector(step.subject, offset),
 		...(step.actor ? { actor: shiftPlayerRef(step.actor, offset) } : {}),
 		...(step.optional ? { optional: { chooser: shiftPlayerRef(step.optional.chooser, offset) } } : {}),
-		...(step.amount ? { amount: shiftAmount(step.amount, offset) } : {})
+		...(step.amount ? { amount: shiftAmount(step.amount, offset) } : {}),
+		...(step.ifPrecedingAccepted !== undefined
+			? { ifPrecedingAccepted: step.ifPrecedingAccepted + stepOffset }
+			: {})
 	};
 }
 
@@ -262,8 +265,9 @@ export function compiledStackItemEffects(item: StackItem): CompiledEffect | null
 				const mode = spell.modal.modes[idx];
 				if (!mode) return null;
 				const offset = targets.length;
+				const stepOffset = steps.length;
 				targets.push(...mode.targets);
-				steps.push(...mode.effect.map((s) => shiftStepTargets(s, offset)));
+				steps.push(...mode.effect.map((s) => shiftStepTargets(s, offset, stepOffset)));
 			}
 			return { steps, targets, modal: spell.modal, unparsed: [] };
 		}

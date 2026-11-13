@@ -1,4 +1,6 @@
 import type { ActivationRestriction, Amount, CostDef, TargetSpec } from './ir.ts';
+import type { RuntimeTrigger } from './compiler/triggers.ts';
+import type { ManaCostRequirement } from './oracle.ts';
 
 export type ManaColor = 'W' | 'U' | 'B' | 'R' | 'G' | 'C';
 
@@ -260,6 +262,8 @@ export interface LibrarySearchSpec {
 	allowedColors?: ManaColor[];
 	maxCmc?: number;
 	exactCmc?: number;
+	/** Exact card name match ("for a card named <name>", e.g. Partner with). */
+	named?: string;
 	destinations: LibrarySearchDestination[];
 	rawCriteriaText: string;
 }
@@ -437,9 +441,12 @@ export interface EffectBindingSnapshot {
  */
 export interface EffectResumeFrame {
 	stepIndex: number;
+	subStepIndex?: number;
+	phase?: 'optional' | 'step' | 'afterStep';
 	bindings: Array<[string, EffectBindingSnapshot[]]>;
 	exileSelf?: boolean;
-	answers: Record<string, string[]>;
+	answers: Record<string, ChoiceAnswer>;
+	stepDecisions?: Record<number, boolean>;
 }
 
 /** Last known information of a trigger's event object (plain data, JSON-serialisable). */
@@ -449,6 +456,22 @@ export interface TriggerEventLki {
 	power: number;
 	toughness: number;
 	manaValue: number;
+}
+
+export interface SerializedPendingTrigger {
+	ability: RuntimeTrigger;
+	source: CardInstance;
+	sourceCard: ScryfallCard;
+	controllerId: string;
+	mode: 'stack' | 'inline';
+	label: string;
+	eventObject?: CardInstance;
+	eventPlayerId?: string;
+	eventPlayer?: string;
+	targetStackItemId?: string;
+	amount?: number;
+	eventLki?: { controllerId: string; power?: number; toughness?: number };
+	order: number;
 }
 
 export type DelayedTriggerEffect =
@@ -656,11 +679,86 @@ export interface PendingPrompt {
  * - `handler`: a named handler registered at module load (runtime/choices.ts
  *   `registerPromptHandler`), for generic prompts that need no engine state.
  */
+/**
+ * Track B1 Slice 3: plain-JSON continuation for an in-progress rules procedure paused on a
+ * player choice or nested replacement/commander prompt.
+ */
+export type ProcedureContinuation =
+	| {
+			kind: 'legend_rule';
+			actorId: string;
+			keepInstanceId: string;
+			remainingInstanceIds: string[];
+			nextIndex: number;
+	  }
+	| {
+			kind: 'discard_to_hand_size';
+			actorId: string;
+			chosenIds: string[];
+			nextIndex: number;
+			discardCount: number;
+	  }
+	| {
+			kind: 'combat_damage_step';
+			phase: 'after_damage';
+			isFirstStrikeStep: boolean;
+	  }
+	| {
+			kind: 'combat_damage_assignment';
+			isFirstStrikeStep: boolean;
+			chosenDamage: Record<string, number>;
+			key: string;
+	  }
+	| {
+			kind: 'zone_replacement_choice';
+			objectId: string;
+			resumeStackItemId?: string;
+			resumeStepIndex?: number;
+	  }
+	| {
+			kind: 'counter_replacement_choice';
+			permId: string;
+			resumeStackItemId?: string;
+			resumeStepIndex?: number;
+	  }
+	| {
+			kind: 'clone_copy_choice';
+			stackItemId: string;
+	  }
+	| {
+			kind: 'aura_library_attach_choice';
+			auraId: string;
+			libraryOwnerId: string;
+			enterTapped: boolean;
+			resumeStackItemId?: string;
+			resumeStepIndex?: number;
+	  }
+	| {
+			kind: 'ward_payment_choice';
+			wardStackItemId: string;
+			targetStackItemId: string;
+	  }
+	| {
+			kind: 'commander_zone_choice';
+			commanderInstanceId: string;
+			destinationZone: ZoneType;
+			resumeStackItemId?: string;
+			resumeStepIndex?: number;
+	  }
+	| {
+			kind: 'end_turn';
+			actorId: string;
+			sourceName: string;
+			resumeStackItemId?: string;
+			resumeStepIndex?: number;
+	  };
+
 export type PromptContinuation =
 	| { kind: 'effect_choice'; stackItemId: string; stepIndex: number; answerKey?: string }
 	| { kind: 'effect_resume'; stackItemId: string; stepIndex: number }
 	| { kind: 'manual_resolution'; stackItemId: string }
 	| { kind: 'manual_ability'; sourceInstanceId: string }
+	| { kind: 'procedure'; procedure: ProcedureContinuation }
 	| {
 			kind: 'handler';
 			name: string;
@@ -780,6 +878,56 @@ export interface TimedKeywordEffect {
 	cantHaveOrGain?: boolean;
 }
 
+/**
+ * Serialized step in an in-progress `PendingCostPayment` (Track B1 Slice 2).
+ * Random discards are resolved up front into concrete `objectIds` before execution starts so
+ * pausing mid-cost never re-rolls randomness.
+ */
+export interface SerializedPlannedCost {
+	def: CostDef;
+	objectIds?: string[];
+	objectNames?: string[];
+	isRandom?: boolean;
+	millTotal?: number;
+}
+
+/**
+ * CR 601.2 / 602.2 (Track B1 Slice 2): Plain-JSON frame holding an interrupted cost payment
+ * (for example when sacrificing, discarding, exiling, or milling a cost triggers a
+ * `zone_replacement_choice` prompt mid-payment).
+ */
+export interface PendingCostPayment {
+	kind: 'cast_spell' | 'activate_ability' | 'tap_mana';
+	actorId: string;
+	sourceInstanceId: string;
+	sourcePlayerId?: string;
+	sourceZone?: 'hand' | 'command' | 'exile';
+	targets?: TargetRef[];
+	chosenModes?: number[];
+	xValue?: number;
+	castMode?: 'normal' | 'overload';
+	exSourceName?: string;
+	sourceCard?: ScryfallCard;
+	additionalIncomplete?: boolean;
+	abilityId?: string;
+	sourceObjectVersion?: number;
+	sourceLkiPower?: number;
+	sourceLkiToughness?: number;
+	onceEachTurn?: boolean;
+	effectText?: string;
+	abilityCostIncomplete?: boolean;
+	grantSourceCard?: ScryfallCard;
+	chosenColor?: ManaColor;
+	amount?: number;
+	sacrificeSelfInCost?: boolean;
+	parts: SerializedPlannedCost[];
+	manaPaid?: ManaCostRequirement | null;
+	tapsAndManaDone: boolean;
+	nextPartIndex: number;
+	nextObjectIndex: number;
+	descriptions: string[];
+}
+
 export interface GameState {
 	engineVersion: number;
 	gameId: string;
@@ -829,6 +977,20 @@ export interface GameState {
 	 * replacement order is chosen.
 	 */
 	pendingZoneMoves?: CardInstance[];
+	/**
+	 * CR 603.3: Pending triggers deferred while a stack item is mid-resolution (paused for a prompt)
+	 * so they are never placed onto the stack above the still-resolving item; flushed once it leaves.
+	 */
+	pendingTriggers?: SerializedPendingTrigger[];
+	/**
+	 * CR 601.2 / 602.2: Interrupted cost payment paused mid-execution awaiting a replacement choice.
+	 */
+	pendingCostPayment?: PendingCostPayment;
+	/**
+	 * Track B1 Slice 3: Interrupted rules procedure (`legend_rule`, `discard_to_hand_size`,
+	 * `combat_damage_step`) paused mid-execution awaiting a nested replacement or commander choice.
+	 */
+	pendingProcedure?: ProcedureContinuation;
 	stackTriggersEnabled?: boolean;
 	rngState?: number;
 	nextUid?: number;

@@ -88,6 +88,9 @@ export interface MoveOptions {
 	emit?: boolean;
 	/** Optional SBA log metadata so deferred zone-replacement moves log only when the move finishes. */
 	sbaLog?: SbaMoveLog;
+	/** Stack item/step context propagated into downstream commander_zone_choice prompts. */
+	resumeStackItemId?: string;
+	resumeStepIndex?: number;
 }
 
 export interface SbaMoveLog {
@@ -319,6 +322,16 @@ function finalizeZoneMove(
 			destinationZone: dest,
 			yesLabel: 'Yes — Move to Command Zone',
 			noLabel: `No — Leave in ${dest}`,
+			continuation: {
+				kind: 'procedure',
+				procedure: {
+					kind: 'commander_zone_choice',
+					commanderInstanceId: obj.instanceId,
+					destinationZone: dest,
+					...(opts.resumeStackItemId ? { resumeStackItemId: opts.resumeStackItemId } : {}),
+					...(opts.resumeStepIndex !== undefined ? { resumeStepIndex: opts.resumeStepIndex } : {})
+				}
+			},
 			choice: {
 				kind: 'yesNo',
 				question: description
@@ -632,7 +645,9 @@ registerPromptHandler('zone_replacement_choice', (state, prompt, answer) => {
 				ceaseToExist,
 				emit,
 				insert: insertOpt,
-				sbaLog
+				sbaLog,
+				...(resumeStackItemId ? { resumeStackItemId } : {}),
+				...(resumeStepIndex !== undefined ? { resumeStepIndex } : {})
 			}
 		);
 	});

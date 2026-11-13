@@ -75,12 +75,11 @@ function selectorSupported(sel: Selector): boolean {
 function stepSupported(step: EffectStep): boolean {
 	if (!INTERPRETED_VERBS.has(step.verb)) return false;
 	if (!selectorSupported(step.subject)) return false;
-	if (step.optional && step.verb !== 'search') return false;
 	if (step.verb === 'search') {
 		const s = step.params?.search;
 		if (!s) return false;
-		// "may search" is a search whose chooser can always fail to find (CR 701.19b).
-		if (step.optional && !s.statedQuality) return false;
+		// "may search" requires a stated quality (CR 701.19b) so the chooser can fail to find.
+		if (step.optional && !s.statedQuality && !s.filter.named) return false;
 	}
 	if (step.verb === 'addMana' && !step.params?.mana && !step.params?.manaChoice) return false;
 	if (step.verb === 'dig' && !step.params?.dig) return false;
@@ -107,7 +106,7 @@ function delayedSupported(step: EffectStep): boolean {
 		if (e.verb === 'lose' && e.subject.k === 'player' && e.subject.filter.relation === 'you') return true;
 	}
 	if (phase === 'upkeep' && e.verb === 'draw') {
-		return selectorSupported(e.subject) && !e.optional;
+		return selectorSupported(e.subject) && (!e.optional || Boolean(e.params?.upTo));
 	}
 	return false;
 }
@@ -119,7 +118,7 @@ function delayedSupported(step: EffectStep): boolean {
  */
 export function staticallyInterpretable(
 	parse: { steps: EffectStep[]; targets: TargetSpec[]; modal?: ModalDef; unparsed: unknown[] },
-	allowOptionalPrefix = false
+	_allowOptionalPrefix = false
 ): boolean {
 	if (parse.unparsed.length > 0) return false;
 	if (parse.modal) {
@@ -134,24 +133,29 @@ export function staticallyInterpretable(
 	}
 	if (parse.steps.length === 0) return false;
 	if (parse.targets.length > 1 && !parse.targets.every((t) => t.min === 1 && t.max === 1)) return false;
-	if (allowOptionalPrefix) {
-		const k = optionalPrefix(parse.steps);
-		if (k < 0) return false;
-		return withoutOptional(parse.steps, k).every(stepSupported);
+	for (let i = 0; i < parse.steps.length; i++) {
+		const s = parse.steps[i];
+		if (!stepSupported(s)) return false;
+		if (
+			s.ifPrecedingAccepted !== undefined &&
+			(s.ifPrecedingAccepted < 0 ||
+				s.ifPrecedingAccepted >= i ||
+				!parse.steps[s.ifPrecedingAccepted]?.optional)
+		) {
+			return false;
+		}
 	}
-	return parse.steps.every(stepSupported);
+	return true;
 }
 
 /**
- * "You may ..." leading a triggered ability: the number of leading steps that are optional with the
- * controller as chooser (one "you may" clause), 0 if none is optional, or -1 if an optional step
- * appears later or with another chooser (not supported: the interpreter can't pause mid-ability).
- * The caller asks the controller once, on resolution, before any step runs.
+ * Leading optional steps with the controller as chooser (`0` if none). Kept for loop-breaking
+ * detection on triggered abilities alongside `steps.some(s => Boolean(s.optional))`.
  */
 export function optionalPrefix(steps: EffectStep[]): number {
 	let k = 0;
 	while (k < steps.length && steps[k].optional && steps[k].optional!.chooser.k === 'you') k++;
-	return steps.slice(k).some((s) => s.optional && s.verb !== 'search') ? -1 : k;
+	return k;
 }
 
 /** The steps with the first `k` steps' `optional` removed (they were accepted). */

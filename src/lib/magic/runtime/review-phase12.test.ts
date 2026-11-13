@@ -210,7 +210,7 @@ describe('Phase 1 (§2.1 + §2.2): Secret stripping and opponent prompt redactio
 					effectResume: {
 						stepIndex: 0,
 						bindings: [],
-						answers: { p1: [libIds[1], libIds[2]] }
+						answers: { p1: { kind: 'chooseObjects', objectIds: [libIds[1], libIds[2]] } }
 					}
 				},
 				dummyCard

@@ -319,4 +319,34 @@ describe('Effect grammar: amounts, delayed effects and special sentences', () =>
 			duration: 'endOfTurn'
 		});
 	});
+
+	it('parses mid-sequence "may", "If you do / If that player does", non-controller choosers, and named searches', () => {
+		const lootIf = ok(parseSpellText('Study Gamble', 'Draw a card. You may discard a card. If you do, draw two cards.'));
+		assert.deepEqual(verbs(lootIf), ['draw', 'discard', 'draw']);
+		assert.deepEqual(lootIf.steps[1].optional, { chooser: { k: 'you' } });
+		assert.equal(lootIf.steps[2].ifPrecedingAccepted, 1);
+
+		const oneSentence = ok(parseSpellText('Bargain Draw', 'You may discard a card, and if you do, draw two cards.'));
+		assert.deepEqual(verbs(oneSentence), ['discard', 'draw']);
+		assert.deepEqual(oneSentence.steps[0].optional, { chooser: { k: 'you' } });
+		assert.equal(oneSentence.steps[1].ifPrecedingAccepted, 0);
+
+		const oppMay = ok(parseSpellText('Tribute Deal', 'Target opponent may sacrifice a creature. If that player does, they draw a card.'));
+		assert.deepEqual(verbs(oppMay), ['sacrifice', 'draw']);
+		assert.equal(oppMay.targets[0]?.player?.relation, 'opponent');
+		assert.deepEqual(oppMay.steps[0].optional, { chooser: { k: 'target', index: 0 } });
+		assert.equal(oppMay.steps[1].ifPrecedingAccepted, 0);
+
+		const namedSearch = ok(
+			parseSpellText(
+				'Bear Call',
+				'Search your library for a card named Forest Bear, reveal it, put it into your hand, then shuffle.'
+			)
+		);
+		assert.deepEqual(namedSearch.steps[0].params?.search?.filter, { named: 'Forest Bear' });
+		assert.equal(namedSearch.steps[0].params?.search?.statedQuality, true);
+
+		const danglingIf = parseSpellText('Bad If', 'Draw a card. If you do, gain 2 life.');
+		assert.equal(danglingIf.unparsed.length, 1);
+	});
 });

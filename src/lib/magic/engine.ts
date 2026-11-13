@@ -109,12 +109,15 @@ import {
 	chooseCostPayment,
 	effectiveAbilityManaCost,
 	effectiveSpellManaCost,
+	executeCostPaymentParts,
 	getSuspendSpec,
 	keywordCost,
 	keywordsOf,
 	manaAbilityAmount,
 	payPlannedCosts,
+	payTapAndManaCostParts,
 	planCosts,
+	serializeCostPlanParts,
 	spellAdditionalCost,
 	spellCastRestrictions,
 	spellChoosesX,
@@ -147,10 +150,9 @@ import {
 	registerEffectPorts,
 	sourceDamageInfo,
 	staticallyInterpretable,
-	withoutOptional,
 	type SourceDamageInfo
 } from './runtime/effects.ts';
-import { botAcceptsOptionalTrigger, chooseBotTriggerTargets } from './ai.ts';
+import { chooseBotTriggerTargets } from './ai.ts';
 import type { CostDef, EffectStep, TargetSpec, TokenSpec } from './ir.ts';
 import { deriveIdSalt, freshRngSeed, hash32, uid, type RngHolder, type UidHolder } from './runtime/random.ts';
 import { cardAbilityDisplayText, enteringNotices, stackItemDisplayText } from './compiler/support.ts';
@@ -191,8 +193,10 @@ import {
 	type MagicLobby,
 	type ManaColor,
 	type ManaPool,
+	type PendingCostPayment,
 	type PendingPrompt,
 	type PlayerGameState,
+	type ProcedureContinuation,
 	type PromptPurpose,
 	type ScryfallCard,
 	type StackItem,
@@ -628,6 +632,320 @@ function costContext(
 		canPayMana: (req) => canPayOrAutoTap(player, req, state, phyrexianLifeCount),
 		payMana: (req) => payManaWithAutoTap(player, req, state, phyrexianLifeCount)
 	};
+}
+
+function resolveCostSourceCard(state: GameState, pcp: PendingCostPayment): CardInstance {
+	if (pcp.kind === 'cast_spell') {
+		const sp = state.players.find((p) => p.playerId === pcp.sourcePlayerId);
+		const zone = pcp.sourceZone ?? 'hand';
+		const inst = sp?.[zone].find((c) => c.instanceId === pcp.sourceInstanceId);
+		if (inst) return inst;
+	}
+	const found =
+		findCardAnywhere(state, pcp.sourceInstanceId)?.inst ??
+		state.pendingZoneMoves?.find((c) => c.instanceId === pcp.sourceInstanceId);
+	if (found) return found;
+	const fallbackCard =
+		pcp.sourceCard ??
+		({
+			id: pcp.sourceInstanceId,
+			name: 'Unknown Card',
+			manaCost: '',
+			cmc: 0,
+			typeLine: '',
+			colors: [],
+			colorIdentity: [],
+			imageUrl: ''
+		} as unknown as ScryfallCard);
+	const inst = createCardInstance(
+		fallbackCard,
+		pcp.actorId,
+		'graveyard',
+		false,
+		false,
+		undefined,
+		state
+	);
+	inst.instanceId = pcp.sourceInstanceId;
+	if (pcp.sourceObjectVersion !== undefined) inst.objectVersion = pcp.sourceObjectVersion;
+	return inst;
+}
+
+function finalizeCastSpell(
+	state: GameState,
+	actor: PlayerGameState,
+	inst: CardInstance,
+	sourcePlayer: PlayerGameState,
+	sourceZone: 'hand' | 'command' | 'exile',
+	opts: {
+		targets: TargetRef[];
+		chosenModes?: number[];
+		xValue: number;
+		castMode: 'normal' | 'overload';
+		exSourceName?: string;
+		descriptions?: string[];
+		additionalIncomplete?: boolean;
+	}
+): void {
+	const actorId = actor.playerId;
+	if (opts.descriptions && opts.descriptions.length > 0) {
+		addLog(state, 'rule', `${actor.username} ${opts.descriptions.join('; ')} as an additional cost.`, actorId);
+	}
+	if (opts.additionalIncomplete) {
+		addLog(state, 'rule', `The additional cost of ${inst.card.name} isn't automated; pay it manually.`, actorId);
+	}
+
+	const exSourceName = opts.exSourceName ?? inst.playableFromExileBy?.sourceName;
+	moveObject(state, inst, 'stack', {
+		from: { player: sourcePlayer, zone: sourceZone },
+		newTimestamp: true,
+		bumpVersion: true
+	});
+	inst.playableFromExileBy = undefined;
+
+	if (!actor.commanderCastCounts) {
+		actor.commanderCastCounts = {};
+	}
+	if (sourceZone === 'command' && inst.isCommander) {
+		const prevCastCount = actor.commanderCastCounts[inst.instanceId] ?? inst.commanderCastCount ?? 0;
+		inst.commanderCastCount = prevCastCount + 1;
+		actor.commanderCastCounts[inst.instanceId] = inst.commanderCastCount;
+	}
+	actor.spellsCastThisTurn = (actor.spellsCastThisTurn || 0) + 1;
+
+	const { targets, chosenModes, xValue: xVal, castMode: resolvedCastMode } = opts;
+	const stackItem: StackItem = withStackItemText(
+		{
+			id: uid('stk', state),
+			sourceInstanceId: inst.instanceId,
+			sourceObjectVersion: inst.objectVersion,
+			card: inst.card,
+			ownerId: inst.ownerId,
+			controllerId: actorId,
+			kind: 'spell',
+			title: inst.card.name,
+			targets,
+			...(chosenModes ? { chosenModes: [...chosenModes] } : {}),
+			targetObjectVersions: captureTargetObjectVersions(state, targets),
+			xValue: xVal,
+			castMode: resolvedCastMode,
+			commanderCastCount: inst.commanderCastCount,
+			requiresGuidedResolution: false,
+			createdAt: Date.now()
+		},
+		inst.card
+	);
+
+	state.stack.push(stackItem);
+	state.passedPriorityPlayerIds = [];
+	state.priorityUpdatedAt = Date.now();
+
+	const targetDesc =
+		targets.length > 0 ? ` targeting ${targets.map((t) => t.label).join(', ')}` : '';
+	addLog(
+		state,
+		'cast',
+		`${actor.username} cast ${inst.card.name}${resolvedCastMode === 'overload' ? ' (Overloaded)' : ''}${sourceZone === 'command' ? ` from Command Zone (Cast #${inst.commanderCastCount})` : sourceZone === 'exile' ? ` from Exile (${exSourceName || 'Exile Permission'})` : ''}${targetDesc}.`,
+		actorId
+	);
+
+	emitVfx(state, {
+		kind: sourceZone === 'command' ? 'commander_cast' : 'spell_cast',
+		sourceId: actorId,
+		targetId: targets[0]?.id,
+		label: inst.card.name
+	});
+
+	emitEvent(state, { kind: 'Cast', playerId: actor.playerId, objectId: inst.instanceId, object: inst });
+	for (const t of targets) {
+		const targeted = t.kind === 'permanent' ? findPermanentOnBoard(state, t.id) : null;
+		if (targeted) {
+			emitEvent(state, {
+				kind: 'BecameTarget',
+				objectId: t.id,
+				object: targeted.inst,
+				by: 'spell',
+				controllerId: actor.playerId,
+				stackItemId: stackItem.id
+			});
+		}
+	}
+	resetTriggerLoopTracking(state);
+	flushTriggers(state);
+	checkStateBasedActions(state);
+}
+
+function finalizeActivateAbility(
+	state: GameState,
+	actor: PlayerGameState,
+	pcp: PendingCostPayment
+): void {
+	const actorId = actor.playerId;
+	const perm =
+		findPermanentOnBoard(state, pcp.sourceInstanceId)?.inst ??
+		resolveCostSourceCard(state, pcp);
+	const card = pcp.sourceCard ?? perm.card;
+	const targets = pcp.targets ?? [];
+	const effectText = pcp.effectText ?? '';
+	if (pcp.onceEachTurn && perm.zone === 'battlefield' && pcp.abilityId) {
+		perm.activatedAbilityIdsThisTurn = [
+			...(perm.activatedAbilityIdsThisTurn ?? []),
+			pcp.abilityId
+		];
+	}
+	if (pcp.descriptions.length > 0) {
+		addLog(state, 'rule', `${actor.username} ${pcp.descriptions.join('; ')} to activate ${card.name}.`, actorId);
+	}
+	if (pcp.abilityCostIncomplete) {
+		addLog(state, 'rule', `Part of the cost of ${card.name}'s ability isn't automated; pay it manually.`, actorId);
+	}
+
+	const stackItem: StackItem = withStackItemText(
+		{
+			id: uid('stk', state),
+			sourceInstanceId: pcp.sourceInstanceId,
+			sourceObjectVersion: pcp.sourceObjectVersion ?? perm.objectVersion,
+			sourceLkiPower: pcp.sourceLkiPower ?? 0,
+			sourceLkiToughness: pcp.sourceLkiToughness ?? 0,
+			card,
+			...(pcp.grantSourceCard ? { grantSourceCard: pcp.grantSourceCard } : {}),
+			controllerId: actorId,
+			kind: 'activated',
+			abilityId: pcp.abilityId,
+			title: `${card.name} Ability`,
+			targets,
+			targetObjectVersions: captureTargetObjectVersions(state, targets),
+			xValue: 0,
+			requiresGuidedResolution: false,
+			createdAt: Date.now()
+		},
+		effectText
+	);
+
+	state.stack.push(stackItem);
+	state.passedPriorityPlayerIds = [];
+	addLog(state, 'cast', `${actor.username} activated ${card.name}: "${effectText}".`, actorId);
+	for (const t of targets) {
+		const targeted = t.kind === 'permanent' ? findPermanentOnBoard(state, t.id) : null;
+		if (targeted) {
+			emitEvent(state, {
+				kind: 'BecameTarget',
+				objectId: t.id,
+				object: targeted.inst,
+				by: 'ability',
+				controllerId: actor.playerId,
+				stackItemId: stackItem.id
+			});
+		}
+	}
+	resetTriggerLoopTracking(state);
+	flushTriggers(state);
+	checkStateBasedActions(state);
+}
+
+function finalizeTapMana(
+	state: GameState,
+	actor: PlayerGameState,
+	pcp: PendingCostPayment
+): void {
+	const actorId = actor.playerId;
+	const perm =
+		findPermanentOnBoard(state, pcp.sourceInstanceId)?.inst ??
+		resolveCostSourceCard(state, pcp);
+	const card = pcp.sourceCard ?? perm.card;
+	const abStub =
+		pcp.abilityId && pcp.onceEachTurn
+			? ({ id: pcp.abilityId, activationRestrictions: ['onceEachTurn'] } as EffectiveActivatedAbility)
+			: pcp.abilityId
+				? ({ id: pcp.abilityId } as EffectiveActivatedAbility)
+				: undefined;
+	const chosenColor = pcp.chosenColor;
+	const amount = pcp.amount ?? 0;
+	resetTriggerLoopTracking(state);
+	resolveActivatedManaAbility(state, actor, perm, abStub, chosenColor, amount);
+	flushTriggers(state);
+	if (pcp.descriptions.length > 0 || pcp.sacrificeSelfInCost) {
+		addLog(
+			state,
+			'rule',
+			chosenColor && amount > 0
+				? `${actor.username} activated ${card.name} for ${amount > 1 ? `${amount}x ` : ''}{${chosenColor}}${pcp.descriptions.length > 0 ? ` (${pcp.descriptions.join('; ')})` : ''}.`
+				: `${actor.username} activated ${card.name} for no mana (CR 106.5)${pcp.descriptions.length > 0 ? ` (${pcp.descriptions.join('; ')})` : ''}.`,
+			actorId
+		);
+	}
+	checkStateBasedActions(state);
+}
+
+function executeOrResumePendingCostPayment(
+	state: GameState,
+	pcp: PendingCostPayment,
+	ctx: CostContext
+): { ok: true } {
+	if (!pcp.tapsAndManaDone) {
+		payTapAndManaCostParts(ctx, pcp.parts, pcp.manaPaid ?? null, pcp.descriptions);
+		pcp.tapsAndManaDone = true;
+	}
+	const paid = executeCostPaymentParts(
+		ctx,
+		pcp.parts,
+		pcp.nextPartIndex,
+		pcp.nextObjectIndex,
+		pcp.descriptions
+	);
+	if (paid.paused) {
+		pcp.nextPartIndex = paid.nextPartIndex ?? pcp.nextPartIndex;
+		pcp.nextObjectIndex = paid.nextObjectIndex ?? pcp.nextObjectIndex;
+		state.pendingCostPayment = pcp;
+		flushTriggers(state);
+		return { ok: true };
+	}
+	delete state.pendingCostPayment;
+	const actor = ctx.player;
+	if (pcp.kind === 'cast_spell') {
+		const sourcePlayer =
+			state.players.find((p) => p.playerId === pcp.sourcePlayerId) ?? actor;
+		const sourceZone = pcp.sourceZone ?? 'hand';
+		const inst = sourcePlayer[sourceZone].find(
+			(c) => c.instanceId === pcp.sourceInstanceId
+		);
+		if (inst) {
+			finalizeCastSpell(state, actor, inst, sourcePlayer, sourceZone, {
+				targets: pcp.targets ?? [],
+				chosenModes: pcp.chosenModes,
+				xValue: pcp.xValue ?? 0,
+				castMode: pcp.castMode ?? 'normal',
+				exSourceName: pcp.exSourceName,
+				descriptions: pcp.descriptions,
+				additionalIncomplete: pcp.additionalIncomplete
+			});
+		}
+	} else if (pcp.kind === 'activate_ability') {
+		finalizeActivateAbility(state, actor, pcp);
+	} else {
+		finalizeTapMana(state, actor, pcp);
+	}
+	return { ok: true };
+}
+
+function resumePendingCostPayment(state: GameState): void {
+	const pcp = state.pendingCostPayment;
+	if (!pcp) return;
+	const actor = state.players.find((p) => p.playerId === pcp.actorId);
+	if (!actor) {
+		delete state.pendingCostPayment;
+		return;
+	}
+	const source = resolveCostSourceCard(state, pcp);
+	const ctx = costContext(
+		state,
+		actor,
+		source,
+		pcp.xValue ?? 0,
+		pcp.kind === 'cast_spell',
+		pcp.manaPaid ?? null
+	);
+	executeOrResumePendingCostPayment(state, pcp, ctx);
 }
 
 /**
@@ -1899,21 +2217,25 @@ function applyGameActionInner(
 			const baseAmount = Math.max(1, ab.producesAmount);
 			const amount = chosenColor ? getDynamicManaProducedAmount(state, actor, perm, baseAmount, ab) : 0;
 
-			const paid = payPlannedCosts(ctx, plan);
-			resetTriggerLoopTracking(state);
-			resolveActivatedManaAbility(state, actor, perm, ab, chosenColor, amount);
-			flushTriggers(state);
-			if (paid.descriptions.length > 0 || cost.defs.some((d) => d.k === 'sacrifice' && d.filter === 'self')) {
-				addLog(
-					state,
-					'rule',
-					chosenColor && amount > 0
-						? `${actor.username} activated ${perm.card.name} for ${amount > 1 ? `${amount}x ` : ''}{${chosenColor}}${paid.descriptions.length > 0 ? ` (${paid.descriptions.join('; ')})` : ''}.`
-						: `${actor.username} activated ${perm.card.name} for no mana (CR 106.5)${paid.descriptions.length > 0 ? ` (${paid.descriptions.join('; ')})` : ''}.`,
-					actorId
-				);
-			}
-			return { ok: true };
+			const parts = serializeCostPlanParts(ctx, plan);
+			const pcp: PendingCostPayment = {
+				kind: 'tap_mana',
+				actorId,
+				sourceInstanceId: perm.instanceId,
+				sourceCard: perm.card,
+				abilityId: ab.id,
+				chosenColor,
+				amount,
+				onceEachTurn: Boolean(ab.activationRestrictions?.includes('onceEachTurn')),
+				sacrificeSelfInCost: cost.defs.some((d) => d.k === 'sacrifice' && d.filter === 'self'),
+				parts,
+				manaPaid: plan.mana,
+				tapsAndManaDone: false,
+				nextPartIndex: 0,
+				nextObjectIndex: 0,
+				descriptions: []
+			};
+			return executeOrResumePendingCostPayment(state, pcp, ctx);
 		}
 
 		case 'play_land': {
@@ -2241,6 +2563,7 @@ function applyGameActionInner(
 			// Phase 4: additional costs from the IR, paid together with the mana (nothing is paid unless
 			// everything can be). Choices the player hasn't made become a cost_choice prompt.
 			const additional = spellAdditionalCost(inst.card);
+			const resolvedCastMode: 'normal' | 'overload' = isOverload ? 'overload' : 'normal';
 			if (additional && additional.defs.length > 0) {
 				const ctx = costContext(
 					state,
@@ -2254,11 +2577,32 @@ function applyGameActionInner(
 				const plan = planCosts(ctx, additional.defs, action.costPayment);
 				if (!plan.ok) return { ok: false, error: plan.error.startsWith('Insufficient mana') ? manaError : plan.error };
 				if (plan.question) return askCostChoice(state, actor, action, plan.question, inst.card.name);
-				const paid = payPlannedCosts(ctx, plan);
-				if (paid.descriptions.length > 0) {
-					addLog(state, 'rule', `${actor.username} ${paid.descriptions.join('; ')} as an additional cost.`, actorId);
-				}
-			} else if (
+				const parts = serializeCostPlanParts(ctx, plan);
+				const pcp: PendingCostPayment = {
+					kind: 'cast_spell',
+					actorId,
+					sourceInstanceId: inst.instanceId,
+					sourcePlayerId: sourcePlayer.playerId,
+					sourceZone,
+					targets,
+					...(chosenModes ? { chosenModes: [...chosenModes] } : {}),
+					xValue: xVal,
+					castMode: resolvedCastMode,
+					...(inst.playableFromExileBy?.sourceName
+						? { exSourceName: inst.playableFromExileBy.sourceName }
+						: {}),
+					sourceCard: inst.card,
+					additionalIncomplete: !additional.complete,
+					parts,
+					manaPaid: plan.mana,
+					tapsAndManaDone: false,
+					nextPartIndex: 0,
+					nextObjectIndex: 0,
+					descriptions: []
+				};
+				return executeOrResumePendingCostPayment(state, pcp, ctx);
+			}
+			if (
 				!payManaWithAutoTap(
 					actor,
 					effectiveCostReq,
@@ -2268,91 +2612,13 @@ function applyGameActionInner(
 			) {
 				return { ok: false, error: manaError };
 			}
-			if (additional && !additional.complete) {
-				addLog(state, 'rule', `The additional cost of ${inst.card.name} isn't automated; pay it manually.`, actorId);
-			}
-
-			// Remove from hand/command/exile zone and push onto the Stack
-			moveObject(state, inst, 'stack', {
-				from: { player: sourcePlayer, zone: sourceZone },
-				newTimestamp: true,
-				bumpVersion: true
+			finalizeCastSpell(state, actor, inst, sourcePlayer, sourceZone, {
+				targets,
+				chosenModes,
+				xValue: xVal,
+				castMode: resolvedCastMode,
+				additionalIncomplete: Boolean(additional && !additional.complete)
 			});
-			const exSourceName = inst.playableFromExileBy?.sourceName;
-			inst.playableFromExileBy = undefined;
-
-			if (!actor.commanderCastCounts) {
-				actor.commanderCastCounts = {};
-			}
-			if (sourceZone === 'command' && inst.isCommander) {
-				const prevCastCount = actor.commanderCastCounts[inst.instanceId] ?? inst.commanderCastCount ?? 0;
-				inst.commanderCastCount = prevCastCount + 1;
-				actor.commanderCastCounts[inst.instanceId] = inst.commanderCastCount;
-			}
-			actor.spellsCastThisTurn = (actor.spellsCastThisTurn || 0) + 1;
-
-			const resolvedCastMode: 'normal' | 'overload' = isOverload ? 'overload' : 'normal';
-			const stackItem: StackItem = withStackItemText(
-				{
-					id: uid('stk', state),
-					sourceInstanceId: inst.instanceId,
-					sourceObjectVersion: inst.objectVersion,
-					card: inst.card,
-					ownerId: inst.ownerId,
-					controllerId: actorId,
-					kind: 'spell',
-					title: inst.card.name,
-					targets,
-					...(chosenModes ? { chosenModes: [...chosenModes] } : {}),
-					targetObjectVersions: captureTargetObjectVersions(state, targets),
-					xValue: xVal,
-					castMode: resolvedCastMode,
-					commanderCastCount: inst.commanderCastCount,
-					requiresGuidedResolution: false,
-					createdAt: Date.now()
-				},
-				inst.card
-			);
-
-			state.stack.push(stackItem);
-			state.passedPriorityPlayerIds = [];
-			state.priorityUpdatedAt = Date.now();
-
-			const targetDesc =
-				targets.length > 0 ? ` targeting ${targets.map((t) => t.label).join(', ')}` : '';
-			addLog(
-				state,
-				'cast',
-				`${actor.username} cast ${inst.card.name}${resolvedCastMode === 'overload' ? ' (Overloaded)' : ''}${sourceZone === 'command' ? ` from Command Zone (Cast #${inst.commanderCastCount})` : sourceZone === 'exile' ? ` from Exile (${exSourceName || 'Exile Permission'})` : ''}${targetDesc}.`,
-				actorId
-			);
-
-			emitVfx(state, {
-				kind: sourceZone === 'command' ? 'commander_cast' : 'spell_cast',
-				sourceId: actorId,
-				targetId: targets[0]?.id,
-				label: inst.card.name
-			});
-
-			emitEvent(state, { kind: 'Cast', playerId: actor.playerId, objectId: inst.instanceId, object: inst });
-			// CR 115.1: each permanent the spell targets "becomes the target of a spell".
-			for (const t of targets) {
-				const targeted = t.kind === 'permanent' ? findPermanentOnBoard(state, t.id) : null;
-				if (targeted) {
-					emitEvent(state, {
-						kind: 'BecameTarget',
-						objectId: t.id,
-						object: targeted.inst,
-						by: 'spell',
-						controllerId: actor.playerId,
-						stackItemId: stackItem.id
-					});
-				}
-			}
-			// "Whenever you cast ..." ran here before Phase 5.
-			resetTriggerLoopTracking(state);
-			flushTriggers(state);
-			checkStateBasedActions(state);
 			return { ok: true };
 		}
 
@@ -2437,59 +2703,29 @@ function applyGameActionInner(
 			const preCostEval = evaluatePermanent(state, perm);
 			const sourceLkiPower = preCostEval.power;
 			const sourceLkiToughness = preCostEval.toughness;
-			const abilityPaid = payPlannedCosts(abilityCtx, abilityPlan);
-			if (ab.activationRestrictions?.includes('onceEachTurn')) {
-				perm.activatedAbilityIdsThisTurn = [...(perm.activatedAbilityIdsThisTurn ?? []), ab.id];
-			}
-			if (abilityPaid.descriptions.length > 0) {
-				addLog(state, 'rule', `${actor.username} ${abilityPaid.descriptions.join('; ')} to activate ${perm.card.name}.`, actorId);
-			}
-			if (!abilityCost.complete) {
-				addLog(state, 'rule', `Part of the cost of ${perm.card.name}'s ability isn't automated; pay it manually.`, actorId);
-			}
-
-			const stackItem: StackItem = withStackItemText(
-				{
-					id: uid('stk', state),
-					sourceInstanceId: perm.instanceId,
-					sourceObjectVersion: perm.objectVersion,
-					sourceLkiPower,
-					sourceLkiToughness,
-					card: perm.card,
-					...(ab.grantSourceCard ? { grantSourceCard: ab.grantSourceCard } : {}),
-					controllerId: actorId,
-					kind: 'activated',
-					abilityId: ab.id,
-					title: `${perm.card.name} Ability`,
-					targets,
-					targetObjectVersions: captureTargetObjectVersions(state, targets),
-					xValue: 0,
-					requiresGuidedResolution: false,
-					createdAt: Date.now()
-				},
-				ab.effectText
-			);
-
-			state.stack.push(stackItem);
-			state.passedPriorityPlayerIds = [];
-			addLog(state, 'cast', `${actor.username} activated ${perm.card.name}: "${ab.effectText}".`, actorId);
-			for (const t of targets) {
-				const targeted = t.kind === 'permanent' ? findPermanentOnBoard(state, t.id) : null;
-				if (targeted) {
-					emitEvent(state, {
-						kind: 'BecameTarget',
-						objectId: t.id,
-						object: targeted.inst,
-						by: 'ability',
-						controllerId: actor.playerId,
-						stackItemId: stackItem.id
-					});
-				}
-			}
-			resetTriggerLoopTracking(state);
-			flushTriggers(state);
-			checkStateBasedActions(state);
-			return { ok: true };
+			const parts = serializeCostPlanParts(abilityCtx, abilityPlan);
+			const pcp: PendingCostPayment = {
+				kind: 'activate_ability',
+				actorId,
+				sourceInstanceId: perm.instanceId,
+				sourceCard: perm.card,
+				abilityId: ab.id,
+				targets,
+				sourceObjectVersion: perm.objectVersion,
+				sourceLkiPower,
+				sourceLkiToughness,
+				onceEachTurn: Boolean(ab.activationRestrictions?.includes('onceEachTurn')),
+				effectText: ab.effectText,
+				abilityCostIncomplete: !abilityCost.complete,
+				...(ab.grantSourceCard ? { grantSourceCard: ab.grantSourceCard } : {}),
+				parts,
+				manaPaid: abilityPlan.mana,
+				tapsAndManaDone: false,
+				nextPartIndex: 0,
+				nextObjectIndex: 0,
+				descriptions: []
+			};
+			return executeOrResumePendingCostPayment(state, pcp, abilityCtx);
 		}
 
 		case 'declare_attackers': {
@@ -3604,9 +3840,11 @@ function handleMulliganAction(
 	action: GameActionPayload
 ): { ok: boolean; error?: string } {
 	const prIdx = state.pendingPrompts.findIndex((p) => p.playerId === actor.playerId);
-	if (action.type === 'choice' && prIdx >= 0) {
-		const pr = state.pendingPrompts[prIdx];
-		if (action.promptId !== pr.id) {
+	if (action.type === 'choice') {
+		const pr = state.pendingPrompts.find(
+			(p) => p.playerId === actor.playerId && p.id === action.promptId
+		);
+		if (!pr) {
 			return { ok: false, error: 'That choice is no longer pending.' };
 		}
 		const choice = effectivePromptChoice(pr, state);
@@ -3625,6 +3863,7 @@ function handleMulliganAction(
 				instanceIds: action.answer.objectIds
 			});
 		}
+		return { ok: false, error: 'Invalid choice for mulligan prompt.' };
 	}
 
 	if (action.type === 'mulligan_keep') {
@@ -3686,14 +3925,37 @@ function handleMulliganAction(
 	}
 
 	if (action.type === 'london_bottom') {
-		const pr = state.pendingPrompts[prIdx];
-		if (!pr || pr.kind !== 'london_bottom') {
+		const bottomIdx = state.pendingPrompts.findIndex(
+			(p) => p.playerId === actor.playerId && p.kind === 'london_bottom'
+		);
+		const pr = bottomIdx >= 0 ? state.pendingPrompts[bottomIdx] : undefined;
+		if (!pr) {
 			return { ok: false, error: 'No London Mulligan bottom prompt active.' };
 		}
-		const required = pr.countRequired || 1;
+		const required = pr.countRequired ?? 1;
 		const ids = Array.isArray(action.instanceIds) ? action.instanceIds : [];
 		if (ids.length !== required) {
 			return { ok: false, error: `Please select exactly ${required} card(s).` };
+		}
+		const seen = new Set<string>();
+		const allowedCandidates =
+			pr.candidateInstanceIds && pr.candidateInstanceIds.length > 0
+				? new Set(pr.candidateInstanceIds)
+				: pr.choice?.kind === 'chooseObjects'
+					? new Set(pr.choice.candidates)
+					: null;
+		const handIds = new Set(actor.hand.map((c) => c.instanceId));
+		for (const id of ids) {
+			if (seen.has(id)) {
+				return { ok: false, error: 'Duplicate object IDs are not allowed.' };
+			}
+			seen.add(id);
+			if ((allowedCandidates && !allowedCandidates.has(id)) || !handIds.has(id)) {
+				return {
+					ok: false,
+					error: 'Strict Rules Violation: Chosen card is not eligible for London bottom.'
+				};
+			}
 		}
 		for (const id of ids) {
 			const hIdx = actor.hand.findIndex((c) => c.instanceId === id);
@@ -3704,7 +3966,7 @@ function handleMulliganAction(
 				});
 			}
 		}
-		state.pendingPrompts.splice(prIdx, 1);
+		state.pendingPrompts.splice(bottomIdx, 1);
 		actor.hasKeptHand = true;
 		addLog(
 			state,
@@ -3750,30 +4012,36 @@ function handlePromptResolution(
 	const choice = effectivePromptChoice(prompt, state);
 	const purpose = effectivePromptPurpose(prompt);
 
-	// Steps C+D: triggered-ability target, order and "you may" prompts.
-	if (purpose === 'trigger_targets' || purpose === 'trigger_order' || purpose === 'trigger_may') {
+	// Steps C+D: triggered-ability target, order and legacy leading-"you may" prompts.
+	// Prompts with a `continuation` (such as IR `effect_choice` optional steps) flow below.
+	if (
+		!prompt.continuation &&
+		(purpose === 'trigger_targets' || purpose === 'trigger_order' || purpose === 'trigger_may')
+	) {
 		return resolveTriggerPrompt(state, prompt, promptIdx, normalized.answer);
 	}
 
 	// Phase 4/8: a cost choice. The answer is merged into the waiting action's costPayment and the
 	// action runs again from scratch (re-checking legality); on failure the prompt is restored.
 	if (purpose === 'cost_choice') {
-		state.pendingPrompts.splice(promptIdx, 1);
 		const pending = prompt.pendingAction;
+		if (normalized.cancel) {
+			state.pendingPrompts.splice(promptIdx, 1);
+			return { ok: true };
+		}
 		if (
-			normalized.cancel ||
 			!pending ||
 			(pending.type !== 'cast_spell' &&
 				pending.type !== 'activate_ability' &&
 				pending.type !== 'tap_mana')
 		) {
-			return { ok: true };
+			return { ok: false, error: 'Invalid or stale cost choice prompt.' };
 		}
 		const valid = validateChoiceAnswer(choice, normalized.answer);
 		if (!valid.ok) {
-			state.pendingPrompts.splice(promptIdx, 0, prompt);
 			return { ok: false, error: valid.error };
 		}
+		state.pendingPrompts.splice(promptIdx, 1);
 		const payment: CostPayment = {
 			options: [...(pending.costPayment?.options ?? [])],
 			objects: [...(pending.costPayment?.objects ?? [])],
@@ -3821,17 +4089,9 @@ function handlePromptResolution(
 			return { ok: false, error: valid.ok ? 'Invalid end-turn choice.' : valid.error };
 		}
 		state.pendingPrompts.splice(promptIdx, 1);
-		if (normalized.answer.yes) {
-			endTheTurnImmediately(state, actor.playerId);
-		} else {
-			addLog(
-				state,
-				'rule',
-				`${actor.username} chose not to end the turn.`,
-				actor.playerId
-			);
-		}
+		resolveEndTurnChoice(state, actor, normalized.answer.yes);
 		checkStateBasedActions(state);
+		resumeAfterPrompt(state, prompt);
 		return { ok: true };
 	}
 
@@ -3854,21 +4114,14 @@ function handlePromptResolution(
 			};
 		}
 		state.pendingPrompts.splice(promptIdx, 1);
-		for (const cid of cands) {
-			if (cid !== keepInstanceId) {
-				const found = findPermanentOnBoard(state, cid);
-				if (found) {
-					movePermanentToZone(state, found.inst, 'graveyard');
-				}
-			}
-		}
-		addLog(
-			state,
-			'sba',
-			`${actor.username} resolved the Legend Rule (CR 704.5j).`,
-			actor.playerId
-		);
-		checkStateBasedActions(state);
+		state.pendingProcedure = {
+			kind: 'legend_rule',
+			actorId: actor.playerId,
+			keepInstanceId,
+			remainingInstanceIds: cands.filter((id) => id !== keepInstanceId),
+			nextIndex: 0
+		};
+		advanceLegendRuleProcedure(state);
 		return { ok: true };
 	}
 
@@ -3878,52 +4131,16 @@ function handlePromptResolution(
 			return { ok: false, error: valid.ok ? 'Invalid commander zone choice.' : valid.error };
 		}
 		state.pendingPrompts.splice(promptIdx, 1);
-		if (normalized.answer.yes) {
-			const gIdx = actor.graveyard.findIndex((c) => c.instanceId === prompt.commanderInstanceId);
-			const eIdx = actor.exile.findIndex((c) => c.instanceId === prompt.commanderInstanceId);
-			const hIdx = actor.hand.findIndex((c) => c.instanceId === prompt.commanderInstanceId);
-			const lIdx = actor.library.findIndex((c) => c.instanceId === prompt.commanderInstanceId);
-			let cmd: CardInstance | undefined;
-			let cmdFrom: 'graveyard' | 'exile' | 'hand' | 'library' = 'graveyard';
-			if (gIdx >= 0) cmd = actor.graveyard[gIdx];
-			else if (eIdx >= 0) {
-				cmd = actor.exile[eIdx];
-				cmdFrom = 'exile';
-			} else if (hIdx >= 0) {
-				cmd = actor.hand[hIdx];
-				cmdFrom = 'hand';
-			} else if (lIdx >= 0) {
-				cmd = actor.library[lIdx];
-				cmdFrom = 'library';
-			}
-
-			if (cmd) {
-				cmd.damageMarked = 0;
-				cmd.deathtouchDamageMarked = false;
-				cmd.tapped = false;
-				moveObject(state, cmd, 'command', { from: { player: actor, zone: cmdFrom }, toPlayer: actor });
-				const crRule = cmdFrom === 'hand' || cmdFrom === 'library' ? 'CR 903.9b' : 'CR 903.9a';
-				addLog(
-					state,
-					'rule',
-					`${actor.username} returned Commander ${cmd.card.name} to the Command Zone (${crRule}).`,
-					actor.playerId
-				);
-			}
-		} else {
-			const cmd =
-				actor.graveyard.find((c) => c.instanceId === prompt.commanderInstanceId) ??
-				actor.exile.find((c) => c.instanceId === prompt.commanderInstanceId);
-			if (cmd) {
-				cmd.commanderSbaDeclinedVersion = cmd.objectVersion ?? 1;
-			}
-			addLog(
-				state,
-				'rule',
-				`${actor.username} chose to leave Commander in ${prompt.destinationZone}.`,
-				actor.playerId
-			);
-		}
+		const proc =
+			prompt.continuation?.kind === 'procedure' &&
+			prompt.continuation.procedure.kind === 'commander_zone_choice'
+				? prompt.continuation.procedure
+				: undefined;
+		const commanderId = proc?.commanderInstanceId ?? prompt.commanderInstanceId;
+		const destZone = proc?.destinationZone ?? prompt.destinationZone;
+		resolveCommanderZoneChoice(state, actor, normalized.answer.yes, commanderId, destZone);
+		checkStateBasedActions(state);
+		resumeAfterPrompt(state, prompt);
 		return { ok: true };
 	}
 
@@ -3938,24 +4155,14 @@ function handlePromptResolution(
 			return { ok: false, error: `You must discard exactly ${req} card(s).` };
 		}
 		state.pendingPrompts.splice(promptIdx, 1);
-		for (const id of chosenIds) {
-			const idx = actor.hand.findIndex((c) => c.instanceId === id);
-			if (idx >= 0) {
-				moveObject(state, actor.hand[idx], 'graveyard', {
-					from: { player: actor, zone: 'hand' },
-					toPlayer: actor,
-					graveyardReplacement: true,
-					commanderRedirect: true
-				});
-			}
-		}
-		addLog(
-			state,
-			'rule',
-			`${actor.username} discarded ${req} card(s) down to maximum hand size.`,
-			actor.playerId
-		);
-		completeTurnCleanupAndPassTurn(state);
+		state.pendingProcedure = {
+			kind: 'discard_to_hand_size',
+			actorId: actor.playerId,
+			chosenIds: [...chosenIds],
+			nextIndex: 0,
+			discardCount: req
+		};
+		advanceDiscardToHandSizeProcedure(state);
 		return { ok: true };
 	}
 
@@ -4062,20 +4269,18 @@ function handlePromptResolution(
 								title: 'Search Library — Choose what Aura will enchant',
 								description: `Choose a legal object or player for ${found.card.name} to enchant as it enters the battlefield (CR 303.4f).`,
 								continuation: {
-									kind: 'handler',
-									name: 'aura_library_attach_choice',
-									data: {
+									kind: 'procedure',
+									procedure: {
+										kind: 'aura_library_attach_choice',
 										auraId: found.instanceId,
 										libraryOwnerId: libraryOwner.playerId,
 										enterTapped: Boolean(prompt.enterTapped),
-										resumeStackItemId:
-											prompt.continuation?.kind === 'effect_resume'
-												? prompt.continuation.stackItemId
-												: null,
-										resumeStepIndex:
-											prompt.continuation?.kind === 'effect_resume'
-												? prompt.continuation.stepIndex
-												: null
+										...(prompt.continuation?.kind === 'effect_resume'
+											? {
+													resumeStackItemId: prompt.continuation.stackItemId,
+													resumeStepIndex: prompt.continuation.stepIndex
+												}
+											: {})
 									}
 								},
 								choice: {
@@ -4326,15 +4531,19 @@ function handlePromptResolution(
 		const opsValid = validateGuidedOperations(state, actor, ops);
 		if (!opsValid.ok) return opsValid;
 		const c = prompt.continuation;
+		const manualItem =
+			c?.kind === 'manual_resolution'
+				? state.stack.find((s) => s.id === c.stackItemId)
+				: undefined;
+		if (c?.kind === 'manual_resolution' && !manualItem) {
+			return { ok: false, error: 'That spell or ability is no longer on the stack.' };
+		}
 		state.pendingPrompts.splice(promptIdx, 1);
 		applyGuidedOperations(state, actor, ops);
-		if (c?.kind === 'manual_resolution') {
-			const item = state.stack.find((s) => s.id === c.stackItemId);
-			addLog(state, 'cast', `${actor.username} resolved ${item?.title ?? prompt.title} manually${ops.length > 0 ? ` (${ops.length} operation${ops.length === 1 ? '' : 's'})` : ''}.`, actor.playerId);
-			if (item) {
-				item.manualResolution = 'done';
-				resumeStackItem(state, item);
-			}
+		if (c?.kind === 'manual_resolution' && manualItem) {
+			addLog(state, 'cast', `${actor.username} resolved ${manualItem.title} manually${ops.length > 0 ? ` (${ops.length} operation${ops.length === 1 ? '' : 's'})` : ''}.`, actor.playerId);
+			manualItem.manualResolution = 'done';
+			resumeStackItem(state, manualItem);
 			return { ok: true };
 		}
 		if (c?.kind === 'manual_ability') {
@@ -4346,32 +4555,25 @@ function handlePromptResolution(
 		return { ok: true };
 	}
 
-	// Step E2: a paused IR resolution waiting for this player's choice (sacrifice, discard, or addMana color).
+	// Step E2 / Track B1: a paused IR resolution waiting for this player's choice (any ChoiceAnswer).
 	if (prompt.continuation?.kind === 'effect_choice') {
 		const valid = validateChoiceAnswer(choice, normalized.answer);
-		if (
-			!valid.ok ||
-			(normalized.answer?.kind !== 'chooseObjects' && normalized.answer?.kind !== 'chooseMode')
-		) {
-			return { ok: false, error: valid.ok ? 'Choose the required objects.' : valid.error };
+		if (!valid.ok || !normalized.answer) {
+			return { ok: false, error: valid.ok ? 'Missing choice answer.' : valid.error };
 		}
 		const c = prompt.continuation;
-		state.pendingPrompts.splice(promptIdx, 1);
 		const item = state.stack.find((s) => s.id === c.stackItemId);
-		if (!item?.effectResume || item.effectResume.stepIndex !== c.stepIndex) return { ok: true };
-		const answerKey = c.answerKey ?? actor.playerId;
-		if (normalized.answer.kind === 'chooseObjects') {
-			item.effectResume.answers[answerKey] = normalized.answer.objectIds;
-		} else if (choice.kind === 'chooseMode') {
-			item.effectResume.answers[answerKey] = normalized.answer.indices.map(
-				(idx) => choice.modes[idx] ?? ''
-			);
+		if (!item?.effectResume || item.effectResume.stepIndex !== c.stepIndex) {
+			return { ok: false, error: 'That effect choice is no longer pending.' };
 		}
+		state.pendingPrompts.splice(promptIdx, 1);
+		const answerKey = c.answerKey ?? actor.playerId;
+		item.effectResume.answers[answerKey] = normalized.answer;
 		resumeStackItem(state, item);
 		return { ok: true };
 	}
 
-	// Standalone generic choice prompt (yesNo, chooseObjects, chooseMode, chooseNumber, chooseReplacement)
+	// Standalone generic / procedure choice prompt (yesNo, chooseObjects, chooseMode, chooseNumber, chooseReplacement)
 	if (normalized.cancel && prompt.cancellable) {
 		state.pendingPrompts.splice(promptIdx, 1);
 		return { ok: true };
@@ -4380,10 +4582,24 @@ function handlePromptResolution(
 	if (!valid.ok || !normalized.answer) {
 		return { ok: false, error: valid.ok ? 'Missing choice answer.' : valid.error };
 	}
+	if (prompt.continuation?.kind === 'procedure') {
+		const procCheck = validateProcedurePrompt(state, prompt.continuation.procedure);
+		if (!procCheck.ok) {
+			return procCheck;
+		}
+	}
 	state.pendingPrompts.splice(promptIdx, 1);
-	// A generic prompt continues only through a named handler (plain data). Without one, answering
-	// just records the answer in the log.
-	if (!runPromptHandler(state, prompt, normalized.answer)) {
+	if (prompt.continuation?.kind === 'procedure') {
+		executeProcedureContinuation(
+			state,
+			actor,
+			prompt,
+			prompt.continuation.procedure,
+			normalized.answer
+		);
+	} else if (!runPromptHandler(state, prompt, normalized.answer)) {
+		// A generic prompt continues only through a named handler or procedure (plain data).
+		// Without one, answering just records the answer in the log.
 		addLog(state, 'rule', `${actor.username} answered "${prompt.title}".`, actor.playerId);
 	}
 	checkStateBasedActions(state);
@@ -4391,11 +4607,300 @@ function handlePromptResolution(
 	return { ok: true };
 }
 
+function hasBlockingReplacementOrCommanderPrompt(state: GameState): boolean {
+	return (
+		Boolean(state.pendingZoneMoves && state.pendingZoneMoves.length > 0) ||
+		state.pendingPrompts.some(
+			(p) =>
+				p.choice?.kind === 'chooseReplacement' ||
+				p.kind === 'chooseReplacement' ||
+				p.kind === 'commander_zone_choice'
+		)
+	);
+}
+
+function linkNewlyQueuedReplacements(
+	state: GameState,
+	promptsBefore: number,
+	resumeStackItemId?: string,
+	resumeStepIndex?: number
+): void {
+	if (!resumeStackItemId || resumeStepIndex === undefined) return;
+	for (const pr of state.pendingPrompts.slice(promptsBefore)) {
+		if (pr.continuation?.kind === 'handler') {
+			const data = (pr.continuation.data ??= {});
+			data.resumeStackItemId = resumeStackItemId;
+			data.resumeStepIndex = resumeStepIndex;
+		}
+	}
+}
+
+function resolveEndTurnChoice(state: GameState, actor: PlayerGameState, yes: boolean): void {
+	if (yes) {
+		endTheTurnImmediately(state, actor.playerId);
+	} else {
+		addLog(state, 'rule', `${actor.username} chose not to end the turn.`, actor.playerId);
+	}
+}
+
+function resolveCommanderZoneChoice(
+	state: GameState,
+	actor: PlayerGameState,
+	yes: boolean,
+	commanderInstanceId: string | undefined,
+	destinationZone: ZoneType | undefined
+): void {
+	if (yes) {
+		const gIdx = actor.graveyard.findIndex((c) => c.instanceId === commanderInstanceId);
+		const eIdx = actor.exile.findIndex((c) => c.instanceId === commanderInstanceId);
+		const hIdx = actor.hand.findIndex((c) => c.instanceId === commanderInstanceId);
+		const lIdx = actor.library.findIndex((c) => c.instanceId === commanderInstanceId);
+		let cmd: CardInstance | undefined;
+		let cmdFrom: 'graveyard' | 'exile' | 'hand' | 'library' = 'graveyard';
+		if (gIdx >= 0) cmd = actor.graveyard[gIdx];
+		else if (eIdx >= 0) {
+			cmd = actor.exile[eIdx];
+			cmdFrom = 'exile';
+		} else if (hIdx >= 0) {
+			cmd = actor.hand[hIdx];
+			cmdFrom = 'hand';
+		} else if (lIdx >= 0) {
+			cmd = actor.library[lIdx];
+			cmdFrom = 'library';
+		}
+
+		if (cmd) {
+			cmd.damageMarked = 0;
+			cmd.deathtouchDamageMarked = false;
+			cmd.tapped = false;
+			moveObject(state, cmd, 'command', { from: { player: actor, zone: cmdFrom }, toPlayer: actor });
+			const crRule = cmdFrom === 'hand' || cmdFrom === 'library' ? 'CR 903.9b' : 'CR 903.9a';
+			addLog(
+				state,
+				'rule',
+				`${actor.username} returned Commander ${cmd.card.name} to the Command Zone (${crRule}).`,
+				actor.playerId
+			);
+		}
+		return;
+	}
+	const cmd =
+		actor.graveyard.find((c) => c.instanceId === commanderInstanceId) ??
+		actor.exile.find((c) => c.instanceId === commanderInstanceId);
+	if (cmd) {
+		cmd.commanderSbaDeclinedVersion = cmd.objectVersion ?? 1;
+	}
+	addLog(
+		state,
+		'rule',
+		`${actor.username} chose to leave Commander in ${destinationZone}.`,
+		actor.playerId
+	);
+}
+
+function advanceLegendRuleProcedure(state: GameState): void {
+	const proc = state.pendingProcedure;
+	if (!proc || proc.kind !== 'legend_rule') return;
+	const actor = state.players.find((p) => p.playerId === proc.actorId);
+	while (proc.nextIndex < proc.remainingInstanceIds.length) {
+		const cid = proc.remainingInstanceIds[proc.nextIndex];
+		proc.nextIndex += 1;
+		const found = findPermanentOnBoard(state, cid);
+		if (!found) continue;
+		const moveRes = movePermanentToZone(state, found.inst, 'graveyard');
+		if (moveRes === 'pending' || hasBlockingReplacementOrCommanderPrompt(state)) {
+			return;
+		}
+	}
+	state.pendingProcedure = undefined;
+	if (actor) {
+		addLog(
+			state,
+			'sba',
+			`${actor.username} resolved the Legend Rule (CR 704.5j).`,
+			actor.playerId
+		);
+	}
+	checkStateBasedActions(state);
+	flushTriggers(state);
+}
+
+function advanceDiscardToHandSizeProcedure(state: GameState): void {
+	const proc = state.pendingProcedure;
+	if (!proc || proc.kind !== 'discard_to_hand_size') return;
+	const actor = state.players.find((p) => p.playerId === proc.actorId);
+	if (!actor) {
+		state.pendingProcedure = undefined;
+		return;
+	}
+	while (proc.nextIndex < proc.chosenIds.length) {
+		const id = proc.chosenIds[proc.nextIndex];
+		proc.nextIndex += 1;
+		const idx = actor.hand.findIndex((c) => c.instanceId === id);
+		if (idx < 0) continue;
+		const moveRes = moveObject(state, actor.hand[idx], 'graveyard', {
+			from: { player: actor, zone: 'hand' },
+			toPlayer: actor,
+			graveyardReplacement: true,
+			commanderRedirect: true
+		});
+		if (moveRes === 'pending' || hasBlockingReplacementOrCommanderPrompt(state)) {
+			return;
+		}
+	}
+	state.pendingProcedure = undefined;
+	addLog(
+		state,
+		'rule',
+		`${actor.username} discarded ${proc.discardCount} card(s) down to maximum hand size.`,
+		actor.playerId
+	);
+	completeTurnCleanupAndPassTurn(state);
+}
+
+function finishCombatDamagePhase(state: GameState): void {
+	if (state.status === 'finished') return;
+	const active = state.players[state.activePlayerIndex];
+	emitEvent(state, {
+		kind: 'PhaseBegin',
+		phase: state.phase,
+		activePlayerId: active?.playerId ?? null
+	});
+	flushTriggers(state);
+	givePriorityToActiveOrNextPlayer(state);
+	state.passedPriorityPlayerIds = [];
+	checkStateBasedActions(state);
+}
+
+function validateProcedurePrompt(
+	state: GameState,
+	proc: ProcedureContinuation
+): { ok: true } | { ok: false; error: string } {
+	if (proc.kind === 'clone_copy_choice') {
+		if (!state.stack.some((s) => s.id === proc.stackItemId)) {
+			return { ok: false, error: 'That copy choice is no longer pending on the stack.' };
+		}
+	} else if (proc.kind === 'ward_payment_choice') {
+		if (!state.stack.some((s) => s.id === proc.wardStackItemId)) {
+			return { ok: false, error: 'That Ward payment choice is no longer pending on the stack.' };
+		}
+	}
+	return { ok: true };
+}
+
+function executeProcedureContinuation(
+	state: GameState,
+	actor: PlayerGameState,
+	prompt: PendingPrompt,
+	proc: ProcedureContinuation,
+	answer: ChoiceAnswer
+): void {
+	switch (proc.kind) {
+		case 'ward_payment_choice': {
+			const wardItem = state.stack.find((s) => s.id === proc.wardStackItemId);
+			const targetItem = state.stack.find((s) => s.id === proc.targetStackItemId);
+			const accepted = answer.kind === 'yesNo' ? answer.yes : false;
+			if (wardItem) wardItem.optionalAccepted = accepted;
+			if (targetItem && !accepted) targetItem.declineWard = true;
+			return;
+		}
+		case 'clone_copy_choice': {
+			if (answer.kind !== 'chooseObjects') return;
+			const item = state.stack.find((s) => s.id === proc.stackItemId);
+			if (!item) return;
+			item.cloneCopyChoice = answer.objectIds[0] ?? null;
+			return;
+		}
+		case 'aura_library_attach_choice': {
+			if (answer.kind !== 'chooseObjects') return;
+			const libraryOwner = state.players.find((p) => p.playerId === proc.libraryOwnerId);
+			const found = libraryOwner?.library.find((c) => c.instanceId === proc.auraId);
+			const chosenHostId = answer.objectIds[0] ?? null;
+			if (!libraryOwner || !found || !chosenHostId) return;
+			attachObject(state, found, chosenHostId);
+			found.tapped = proc.enterTapped;
+			found.defaultControllerId = libraryOwner.playerId;
+			applySelfEtbReplacements(state, found);
+			const promptsBefore = state.pendingPrompts.length;
+			const moveRes = moveObject(state, found, 'battlefield', {
+				from: { player: libraryOwner, zone: 'library' },
+				toPlayer: libraryOwner,
+				controllerId: libraryOwner.playerId,
+				bumpVersion: true
+			});
+			if (moveRes === 'pending') {
+				linkNewlyQueuedReplacements(state, promptsBefore, proc.resumeStackItemId, proc.resumeStepIndex);
+				return;
+			}
+			const attachedTarget = findPermanentOnBoard(state, chosenHostId);
+			if (attachedTarget) {
+				emitEvent(state, {
+					kind: 'Attached',
+					attachmentId: found.instanceId,
+					attachment: found,
+					hostId: attachedTarget.inst.instanceId,
+					host: attachedTarget.inst
+				});
+			}
+			addLog(
+				state,
+				'rule',
+				`${libraryOwner.username} searched their library and put ${found.card.name} onto the battlefield${found.tapped ? ' tapped' : ''}.`,
+				libraryOwner.playerId
+			);
+			flushTriggers(state);
+			return;
+		}
+		case 'commander_zone_choice': {
+			const yes = answer.kind === 'yesNo' ? answer.yes : false;
+			resolveCommanderZoneChoice(state, actor, yes, proc.commanderInstanceId, proc.destinationZone);
+			return;
+		}
+		case 'end_turn': {
+			const yes = answer.kind === 'yesNo' ? answer.yes : false;
+			resolveEndTurnChoice(state, actor, yes);
+			return;
+		}
+		default: {
+			runPromptHandler(state, prompt, answer);
+		}
+	}
+}
+
+function resumePendingProcedure(state: GameState): void {
+	const proc = state.pendingProcedure;
+	if (!proc) return;
+	if (proc.kind === 'legend_rule') {
+		advanceLegendRuleProcedure(state);
+		return;
+	}
+	if (proc.kind === 'discard_to_hand_size') {
+		advanceDiscardToHandSizeProcedure(state);
+		return;
+	}
+	if (proc.kind === 'combat_damage_step') {
+		state.pendingProcedure = undefined;
+		checkStateBasedActions(state);
+		finishCombatDamagePhase(state);
+	}
+}
+
 /**
- * Step E2: a scry, search, or replacement prompt queued by an IR step that wasn't the ability's
- * last. Once every such prompt of the item is answered, its resolution goes on at the next step.
+ * Step E2 / Track B1: resumes any enclosing cost payment, rules procedure, or paused stack item
+ * once blocking replacement/commander prompts finish.
  */
 function resumeAfterPrompt(state: GameState, prompt: PendingPrompt): void {
+	if (hasBlockingReplacementOrCommanderPrompt(state)) {
+		return;
+	}
+	if (state.pendingCostPayment) {
+		resumePendingCostPayment(state);
+		return;
+	}
+	if (state.pendingProcedure) {
+		resumePendingProcedure(state);
+		return;
+	}
 	const c = prompt.continuation;
 	if (c?.kind === 'effect_resume') {
 		const item = state.stack.find((s) => s.id === c.stackItemId);
@@ -4403,6 +4908,32 @@ function resumeAfterPrompt(state: GameState, prompt: PendingPrompt): void {
 		if (stackItemAwaitsPrompt(state, item)) return;
 		resumeStackItem(state, item);
 		return;
+	}
+	if (c?.kind === 'procedure') {
+		const proc = c.procedure;
+		if (proc.kind === 'clone_copy_choice') {
+			const item = state.stack.find((s) => s.id === proc.stackItemId);
+			if (!item || stackItemAwaitsPrompt(state, item)) return;
+			resumeStackItem(state, item);
+			return;
+		}
+		if (proc.kind === 'ward_payment_choice') {
+			const item = state.stack.find((s) => s.id === proc.wardStackItemId);
+			if (!item || stackItemAwaitsPrompt(state, item)) return;
+			resumeStackItem(state, item);
+			return;
+		}
+		const resumeStackItemId =
+			'resumeStackItemId' in proc ? proc.resumeStackItemId : undefined;
+		const resumeStepIndex =
+			'resumeStepIndex' in proc ? proc.resumeStepIndex : undefined;
+		if (resumeStackItemId && resumeStepIndex !== undefined) {
+			const item = state.stack.find((s) => s.id === resumeStackItemId);
+			if (!item?.effectResume || item.effectResume.stepIndex !== resumeStepIndex) return;
+			if (stackItemAwaitsPrompt(state, item)) return;
+			resumeStackItem(state, item);
+			return;
+		}
 	}
 	if (c?.kind === 'handler') {
 		const resumeStackItemId =
@@ -4414,7 +4945,12 @@ function resumeAfterPrompt(state: GameState, prompt: PendingPrompt): void {
 			if (!item?.effectResume || item.effectResume.stepIndex !== resumeStepIndex) return;
 			if (stackItemAwaitsPrompt(state, item)) return;
 			resumeStackItem(state, item);
+			return;
 		}
+	}
+	const activeItem = state.stack.find((s) => Boolean(s.resolutionStarted) && Boolean(s.effectResume));
+	if (activeItem && !stackItemAwaitsPrompt(state, activeItem)) {
+		resumeStackItem(state, activeItem);
 	}
 }
 
@@ -4934,6 +5470,18 @@ function beginPhase(state: GameState, phase: GamePhase, activePlayer?: PlayerGam
 		}
 		if (
 			!stepTurnBasedPaused &&
+			(phase === 'first_strike_damage' || phase === 'combat_damage') &&
+			hasBlockingReplacementOrCommanderPrompt(state)
+		) {
+			state.pendingProcedure = {
+				kind: 'combat_damage_step',
+				phase: 'after_damage',
+				isFirstStrikeStep: phase === 'first_strike_damage'
+			};
+			stepTurnBasedPaused = true;
+		}
+		if (
+			!stepTurnBasedPaused &&
 			(phase === 'declare_attackers' ||
 				phase === 'declare_blockers' ||
 				phase === 'first_strike_damage' ||
@@ -5205,11 +5753,11 @@ function resetTriggerLoopTracking(state: GameState): void {
 	}
 }
 
-/** Whether a triggered stack item has a leading "you may" choice (CR 731.2b). */
+/** Whether a triggered stack item has an optional ("may") choice (CR 731.2b). */
 function triggerItemIsOptional(item: StackItem): boolean {
 	const compiled = triggerItemEffect(item);
 	if (!compiled || !staticallyInterpretable(compiled, true)) return false;
-	return optionalPrefix(compiled.steps) > 0;
+	return optionalPrefix(compiled.steps) > 0 || compiled.steps.some((s) => Boolean(s.optional));
 }
 
 /**
@@ -5696,14 +6244,20 @@ function resolveTriggerPrompt(
 		return { ok: true };
 	}
 	const item = state.stack.find((s) => s.id === prompt.triggerStackItemId);
-	state.pendingPrompts.splice(promptIdx, 1);
-	if (!item) return { ok: true };
+	if (!item) {
+		return { ok: false, error: 'That triggered ability is no longer on the stack.' };
+	}
 	if (purpose === 'trigger_targets') {
-		if (answer?.kind !== 'chooseObjects') return { ok: true };
+		if (answer?.kind !== 'chooseObjects') {
+			return { ok: false, error: 'Choose the required targets.' };
+		}
 		const specIdx = prompt.triggerTargetSpecIndex ?? 0;
 		const specs = triggerItemTargetSpecs(item);
 		const spec = specs[specIdx];
-		if (!spec) return { ok: true };
+		if (!spec) {
+			return { ok: false, error: 'That target requirement is no longer valid.' };
+		}
+		state.pendingPrompts.splice(promptIdx, 1);
 		const legal = triggerTargetCandidates(state, item, spec);
 		const chosen = answer.objectIds
 			.map((id) => legal.find((c) => c.id === id))
@@ -5739,7 +6293,10 @@ function resolveTriggerPrompt(
 		return { ok: true };
 	}
 	// trigger_may: record the answer and finish resolving the ability (it stayed on the stack).
-	if (answer?.kind !== 'yesNo') return { ok: true };
+	if (answer?.kind !== 'yesNo') {
+		return { ok: false, error: 'Expected a yes/no choice.' };
+	}
+	state.pendingPrompts.splice(promptIdx, 1);
 	item.optionalAccepted = answer.yes;
 	// Resume by id: triggers that fired meanwhile may sit above it on the stack.
 	resumeStackItem(state, item);
@@ -5760,8 +6317,6 @@ function itemWard(item: StackItem): { cost: string; costDefs?: CostDef[] } | und
 	}
 	return undefined;
 }
-
-const WARD_PAYMENT_CHOICE_HANDLER = 'ward_payment_choice';
 
 function resolveWardTrigger(
 	state: GameState,
@@ -5797,9 +6352,12 @@ function resolveWardTrigger(
 			yesLabel: `Pay ${wardCost}`,
 			noLabel: 'Decline (counter)',
 			continuation: {
-				kind: 'handler',
-				name: WARD_PAYMENT_CHOICE_HANDLER,
-				data: { wardStackItemId: item.id, targetStackItemId: targetItem.id }
+				kind: 'procedure',
+				procedure: {
+					kind: 'ward_payment_choice',
+					wardStackItemId: item.id,
+					targetStackItemId: targetItem.id
+				}
 			},
 			choice: { kind: 'yesNo', question }
 		});
@@ -5851,18 +6409,6 @@ function resolveWardTrigger(
 	}
 	return true;
 }
-
-registerPromptHandler(WARD_PAYMENT_CHOICE_HANDLER, (state, prompt, answer) => {
-	const data = prompt.continuation?.kind === 'handler' ? prompt.continuation.data : undefined;
-	const wardItemId = typeof data?.wardStackItemId === 'string' ? data.wardStackItemId : '';
-	const targetItemId = typeof data?.targetStackItemId === 'string' ? data.targetStackItemId : '';
-	const wardItem = state.stack.find((s) => s.id === wardItemId);
-	const targetItem = state.stack.find((s) => s.id === targetItemId);
-	const accepted = answer.kind === 'yesNo' ? answer.yes : false;
-	if (wardItem) wardItem.optionalAccepted = accepted;
-	if (targetItem && !accepted) targetItem.declineWard = true;
-	if (wardItem) resumeStackItem(state, wardItem);
-});
 
 function resolveDelayedTriggerEffect(
 	state: GameState,
@@ -5971,10 +6517,9 @@ export function resolveTopOfStack(state: GameState): void {
 
 /**
  * Resolves (or continues resolving) a specific stack item. A resolution that paused for a prompt
- * resumes here by id once the prompt is answered: triggers that fired before the pause were put on
- * the stack above it, so it isn't necessarily on top (a minor deviation: under CR 603.3 they would
- * wait until the resolution finished; the pending-trigger queue isn't kept across the pause because
- * it isn't part of the saved state). Those triggers still resolve first.
+ * stays on the stack (`resolutionStarted: true`) and resumes here by id once answered; any
+ * triggers that fired while it was paused stay in `state.pendingTriggers` and flush after it
+ * finishes resolving and leaves the stack (CR 603.3, 608.2n).
  */
 function resumeStackItem(state: GameState, item: StackItem): void {
 	if (!state.stack.includes(item)) return;
@@ -5984,83 +6529,30 @@ function resumeStackItem(state: GameState, item: StackItem): void {
 
 /** Whether a resolving item still waits for one of its prompts (it must not resolve again meanwhile). */
 function stackItemAwaitsPrompt(state: GameState, item: StackItem): boolean {
-	return state.pendingPrompts.some(
-		(p) =>
-			p.triggerStackItemId === item.id ||
-			((p.continuation?.kind === 'effect_choice' || p.continuation?.kind === 'effect_resume') && p.continuation.stackItemId === item.id) ||
-			(p.continuation?.kind === 'manual_resolution' && p.continuation.stackItemId === item.id) ||
-			(p.continuation?.kind === 'handler' &&
-				(p.continuation.data?.wardStackItemId === item.id ||
-					p.continuation.data?.stackItemId === item.id ||
-					p.continuation.data?.resumeStackItemId === item.id))
-	);
+	return state.pendingPrompts.some((p) => {
+		if (p.triggerStackItemId === item.id) return true;
+		const c = p.continuation;
+		if (!c) return false;
+		if (c.kind === 'effect_choice' || c.kind === 'effect_resume' || c.kind === 'manual_resolution') {
+			return c.stackItemId === item.id;
+		}
+		if (c.kind === 'procedure') {
+			const proc = c.procedure;
+			if ('stackItemId' in proc && proc.stackItemId === item.id) return true;
+			if ('wardStackItemId' in proc && proc.wardStackItemId === item.id) return true;
+			if ('resumeStackItemId' in proc && proc.resumeStackItemId === item.id) return true;
+			return false;
+		}
+		if (c.kind === 'handler') {
+			return (
+				c.data?.wardStackItemId === item.id ||
+				c.data?.stackItemId === item.id ||
+				c.data?.resumeStackItemId === item.id
+			);
+		}
+		return false;
+	});
 }
-
-const CLONE_COPY_CHOICE_HANDLER = 'clone_copy_choice';
-
-registerPromptHandler(CLONE_COPY_CHOICE_HANDLER, (state, prompt, answer) => {
-	if (answer.kind !== 'chooseObjects') return;
-	const data = prompt.continuation?.kind === 'handler' ? prompt.continuation.data : undefined;
-	const stackItemId = typeof data?.stackItemId === 'string' ? data.stackItemId : '';
-	const item = state.stack.find((s) => s.id === stackItemId);
-	if (!item) return;
-	item.cloneCopyChoice = answer.objectIds[0] ?? null;
-	resumeStackItem(state, item);
-});
-
-registerPromptHandler('aura_library_attach_choice', (state, prompt, answer) => {
-	if (answer.kind !== 'chooseObjects') return;
-	const data = prompt.continuation?.kind === 'handler' ? prompt.continuation.data : undefined;
-	const auraId = typeof data?.auraId === 'string' ? data.auraId : '';
-	const libraryOwnerId = typeof data?.libraryOwnerId === 'string' ? data.libraryOwnerId : '';
-	const enterTapped = Boolean(data?.enterTapped);
-	const resumeStackItemId =
-		typeof data?.resumeStackItemId === 'string' ? data.resumeStackItemId : null;
-	const resumeStepIndex =
-		typeof data?.resumeStepIndex === 'number' ? data.resumeStepIndex : null;
-
-	const libraryOwner = state.players.find((p) => p.playerId === libraryOwnerId);
-	const found = libraryOwner?.library.find((c) => c.instanceId === auraId);
-	const chosenHostId = answer.objectIds[0] ?? null;
-	if (libraryOwner && found && chosenHostId) {
-		attachObject(state, found, chosenHostId);
-		found.tapped = enterTapped;
-		found.defaultControllerId = libraryOwner.playerId;
-		applySelfEtbReplacements(state, found);
-		moveObject(state, found, 'battlefield', {
-			from: { player: libraryOwner, zone: 'library' },
-			toPlayer: libraryOwner,
-			controllerId: libraryOwner.playerId,
-			bumpVersion: true
-		});
-		const attachedTarget = findPermanentOnBoard(state, chosenHostId);
-		if (attachedTarget) {
-			emitEvent(state, {
-				kind: 'Attached',
-				attachmentId: found.instanceId,
-				attachment: found,
-				hostId: attachedTarget.inst.instanceId,
-				host: attachedTarget.inst
-			});
-		}
-		addLog(
-			state,
-			'rule',
-			`${libraryOwner.username} searched their library and put ${found.card.name} onto the battlefield${found.tapped ? ' tapped' : ''}.`,
-			libraryOwner.playerId
-		);
-		flushTriggers(state);
-	}
-	checkStateBasedActions(state);
-	if (resumeStackItemId && resumeStepIndex !== null) {
-		const item = state.stack.find((s) => s.id === resumeStackItemId);
-		if (item?.effectResume) {
-			item.effectResume.stepIndex = resumeStepIndex;
-			item.effectResume.answers = {};
-			resumeStackItem(state, item);
-		}
-	}
-});
 
 function resolveStackItemNow(state: GameState, item: StackItem): void {
 	if (stackItemAwaitsPrompt(state, item)) return;
@@ -6197,41 +6689,7 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 		}
 	}
 	let exiledBySelfReference = false;
-	let steps: EffectStep[] = compiled?.steps ?? [];
-	if (interpreted && item.kind === 'triggered') {
-		// "You may ...": the controller decides as the ability resolves; the ability stays on the
-		// stack while a human answers (CR 608.2n).
-		const k = optionalPrefix(steps);
-		if (k > 0) {
-			if (item.optionalAccepted === undefined) {
-				if (controller.isBot) {
-					item.optionalAccepted = botAcceptsOptionalTrigger(state, controller, steps.slice(0, k), item);
-				} else {
-					const question = `Use the optional effect of ${item.title}? (Its text is shown on the stack.)`;
-					enqueueChoicePrompt(state, {
-						id: uid('prm', state),
-						playerId: controller.playerId,
-						kind: 'yesNo',
-						purpose: 'trigger_may',
-						title: `Optional Ability (${item.card.name})`,
-						description: question,
-						triggerStackItemId: item.id,
-						yesLabel: 'Yes',
-						noLabel: 'No',
-						choice: { kind: 'yesNo', question }
-					});
-					return;
-				}
-			}
-			addLog(
-				state,
-				'trigger',
-				`${controller.username} ${item.optionalAccepted ? 'chose to' : 'declined to'} use ${item.title}'s optional effect.`,
-				controller.playerId
-			);
-			steps = item.optionalAccepted ? withoutOptional(steps, k) : steps.slice(k);
-		}
-	}
+	const steps: EffectStep[] = compiled?.steps ?? [];
 	if (interpreted) {
 		const result = executeEffectSteps(
 			state,
@@ -6308,9 +6766,9 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 					title: `${item.card.name} — Choose a Creature to Copy`,
 					description: `You may have ${item.card.name} enter the battlefield as a copy of any creature on the battlefield (CR 707.5).`,
 					continuation: {
-						kind: 'handler',
-						name: CLONE_COPY_CHOICE_HANDLER,
-						data: {
+						kind: 'procedure',
+						procedure: {
+							kind: 'clone_copy_choice',
 							stackItemId: item.id
 						}
 					},
@@ -6482,7 +6940,7 @@ function activePlayerMayEndTurn(
 		endTheTurnImmediately(state, activePlayer.playerId);
 	} else {
 		const description = `${controller.username} activated ${sourceName}. As the player whose turn it is, you may end the turn now (exiling all spells and abilities from the stack).`;
-		state.pendingPrompts.push({
+		enqueueChoicePrompt(state, {
 			id: uid('prm', state),
 			playerId: activePlayer.playerId,
 			kind: 'yesNo',
@@ -6491,6 +6949,14 @@ function activePlayerMayEndTurn(
 			description,
 			yesLabel: 'End the Turn Now',
 			noLabel: 'Decline (Keep Playing Turn)',
+			continuation: {
+				kind: 'procedure',
+				procedure: {
+					kind: 'end_turn',
+					actorId: activePlayer.playerId,
+					sourceName
+				}
+			},
 			choice: {
 				kind: 'yesNo',
 				question: description
@@ -6570,19 +7036,20 @@ function destroyPermanentByEffect(
 	inst: CardInstance,
 	title: string,
 	actorId: string
-): void {
+): MoveResult | 'skipped' {
 	if (hasKeyword(inst, 'Indestructible', state)) {
 		addLog(state, 'rule', `${inst.card.name} is Indestructible and was not destroyed.`);
-		return;
+		return 'skipped';
 	}
 	const found = findPermanentOnBoard(state, inst.instanceId);
-	if (!found) return;
+	if (!found) return 'skipped';
 	emitVfx(state, { kind: 'destroy', targetId: inst.instanceId, label: inst.card.name });
 	const dest = movePermanentToZone(state, inst, 'graveyard');
 	addLog(state, 'cast', `${title} destroyed ${inst.card.name}.`, actorId);
 	if (dest !== 'pending') {
 		flushTriggers(state);
 	}
+	return dest;
 }
 
 /** Scry N, or "look at the top N cards, then put them back in any order": bot decision or prompt. */
@@ -7860,21 +8327,20 @@ registerPromptHandler(COMBAT_DAMAGE_ASSIGNMENT_HANDLER, (state, prompt, answer) 
 	let paused = false;
 	withTriggersDeferred(state, () => {
 		paused = executeCombatDamageStep(state, isFirstStrikeStep, nextChosen);
-		if (!paused) {
+		if (!paused && !hasBlockingReplacementOrCommanderPrompt(state)) {
 			checkStateBasedActions(state);
 		}
 	});
 	if (paused || state.status === 'finished') return;
-	const active = state.players[state.activePlayerIndex];
-	emitEvent(state, {
-		kind: 'PhaseBegin',
-		phase: state.phase,
-		activePlayerId: active?.playerId ?? null
-	});
-	flushTriggers(state);
-	givePriorityToActiveOrNextPlayer(state);
-	state.passedPriorityPlayerIds = [];
-	checkStateBasedActions(state);
+	if (hasBlockingReplacementOrCommanderPrompt(state)) {
+		state.pendingProcedure = {
+			kind: 'combat_damage_step',
+			phase: 'after_damage',
+			isFirstStrikeStep
+		};
+		return;
+	}
+	finishCombatDamagePhase(state);
 });
 
 function clearEndOfTurnAndDamage(state: GameState): void {
@@ -7921,7 +8387,7 @@ function runCleanupStep(state: GameState): void {
 			beginPhase(state, 'cleanup', activePlayer);
 			const candidateIds = activePlayer.hand.map((c) => c.instanceId);
 			const description = `Cleanup Step: Select ${excess} card(s) from your hand to discard.`;
-			state.pendingPrompts.push({
+			enqueueChoicePrompt(state, {
 				id: uid('prm', state),
 				playerId: activePlayer.playerId,
 				kind: 'discard_to_hand_size',
@@ -7930,6 +8396,16 @@ function runCleanupStep(state: GameState): void {
 				description,
 				countRequired: excess,
 				candidateInstanceIds: candidateIds,
+				continuation: {
+					kind: 'procedure',
+					procedure: {
+						kind: 'discard_to_hand_size',
+						actorId: activePlayer.playerId,
+						chosenIds: [],
+						nextIndex: 0,
+						discardCount: excess
+					}
+				},
 				choice: {
 					kind: 'chooseObjects',
 					candidates: candidateIds,
@@ -8202,10 +8678,15 @@ export function legalAuraAttachCandidates(
  */
 export function checkStateBasedActions(state: GameState): void {
 	if (state.status !== 'active') return;
-	// CR 616.1, 704.3: While a replacement-choice prompt (`counter_replacement_choice` or
-	// `zone_replacement_choice`) for an in-progress event is pending, do not check SBAs yet;
-	// `answerPrompt` runs `checkStateBasedActions` as soon as the replacement choice finishes.
+	// CR 616.1, 704.3, 704.4: While a replacement-choice prompt (`counter_replacement_choice` or
+	// `zone_replacement_choice`), pending zone move, pending cost payment, pending procedure, or
+	// mid-resolution stack item is active, do not check SBAs yet;
+	// `resumeStackItem` / `resumeAfterPrompt` runs `checkStateBasedActions` once it finishes.
 	if (state.pendingPrompts.some((pr) => pr.choice?.kind === 'chooseReplacement')) return;
+	if (state.pendingZoneMoves && state.pendingZoneMoves.length > 0) return;
+	if (state.pendingCostPayment) return;
+	if (state.pendingProcedure) return;
+	if (state.stack.some((s) => Boolean(s.resolutionStarted))) return;
 
 	let maxIterations = 25;
 	let anyActionTaken = true;
@@ -8454,7 +8935,17 @@ export function checkStateBasedActions(state: GameState): void {
 									title: `Legend Rule — ${legName}`,
 									description: `Choose one ${legName} to keep on the battlefield. The other(s) will be put into your graveyard (CR 704.5j).`,
 									candidateInstanceIds: cands,
-									countRequired: 1
+									countRequired: 1,
+									continuation: {
+										kind: 'procedure',
+										procedure: {
+											kind: 'legend_rule',
+											actorId: p.playerId,
+											keepInstanceId: '',
+											remainingInstanceIds: cands,
+											nextIndex: 0
+										}
+									}
 								});
 							}
 						}
@@ -8669,7 +9160,7 @@ export function checkStateBasedActions(state: GameState): void {
 					)
 				) {
 					const description = `${cmd.card.name} was put into your ${cmd.zone}. Under Commander Rule 903.9a, you may move it to the Command Zone.`;
-					state.pendingPrompts.push({
+					enqueueChoicePrompt(state, {
 						id: uid('prm', state),
 						playerId: p.playerId,
 						kind: 'commander_zone_choice',
@@ -8680,6 +9171,14 @@ export function checkStateBasedActions(state: GameState): void {
 						destinationZone: cmd.zone,
 						yesLabel: 'Yes — Move to Command Zone',
 						noLabel: `No — Leave in ${cmd.zone}`,
+						continuation: {
+							kind: 'procedure',
+							procedure: {
+								kind: 'commander_zone_choice',
+								commanderInstanceId: cmd.instanceId,
+								destinationZone: cmd.zone
+							}
+						},
 						choice: {
 							kind: 'yesNo',
 							question: description
@@ -10674,6 +11173,9 @@ export function sanitizeGameStateForViewer(state: GameState, viewerId: string | 
 	delete clone.rngState;
 	delete clone.nextUid;
 	delete clone.idSalt;
+	delete clone.pendingTriggers;
+	delete clone.pendingCostPayment;
+	delete clone.pendingProcedure;
 
 	for (const item of clone.stack) {
 		delete item.effectResume;

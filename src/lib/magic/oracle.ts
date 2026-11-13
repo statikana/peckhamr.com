@@ -413,25 +413,32 @@ export function parseLibrarySearchSpec(oracleText: string): LibrarySearchSpec | 
 	const restOfParagraph = (match[2] || '').trim();
 	const fullClause = `${rawCriteria}, ${restOfParagraph}`;
 
+	const namedMatch = rawCriteria.match(/\bnamed\s+(.+)$/i);
+	const named = namedMatch ? namedMatch[1].trim() : undefined;
+	const criteriaForQualities = namedMatch
+		? rawCriteria.slice(0, namedMatch.index).trim()
+		: rawCriteria;
+
 	const upTo = /\bup to\b/i.test(rawCriteria);
 	const qtyMatch = rawCriteria.match(/^(?:up to\s+)?(a|an|one|two|three|four|\d+)\b/i);
 	const count = qtyMatch ? parseWordOrNumber(qtyMatch[1], 1) : 1;
 
-	const requireBasic = /\bbasic\b/i.test(rawCriteria) && !/\bnonbasic\b/i.test(rawCriteria);
+	const requireBasic =
+		/\bbasic\b/i.test(criteriaForQualities) && !/\bnonbasic\b/i.test(criteriaForQualities);
 	const requireLegendary =
-		/\blegendary\b/i.test(rawCriteria) && !/\bnonlegendary\b/i.test(rawCriteria);
+		/\blegendary\b/i.test(criteriaForQualities) && !/\bnonlegendary\b/i.test(criteriaForQualities);
 
 	const disallowedTypes: string[] = [];
-	if (/\bnonbasic\b/i.test(rawCriteria)) disallowedTypes.push('Basic');
-	if (/\bnonland\b/i.test(rawCriteria)) disallowedTypes.push('Land');
-	if (/\bnoncreature\b/i.test(rawCriteria)) disallowedTypes.push('Creature');
-	if (/\bnonartifact\b/i.test(rawCriteria)) disallowedTypes.push('Artifact');
-	if (/\bnonenchantment\b/i.test(rawCriteria)) disallowedTypes.push('Enchantment');
+	if (/\bnonbasic\b/i.test(criteriaForQualities)) disallowedTypes.push('Basic');
+	if (/\bnonland\b/i.test(criteriaForQualities)) disallowedTypes.push('Land');
+	if (/\bnoncreature\b/i.test(criteriaForQualities)) disallowedTypes.push('Creature');
+	if (/\bnonartifact\b/i.test(criteriaForQualities)) disallowedTypes.push('Artifact');
+	if (/\bnonenchantment\b/i.test(criteriaForQualities)) disallowedTypes.push('Enchantment');
 
 	const allowedTypes: string[] = [];
 	for (const cType of KNOWN_CARD_TYPES) {
 		const re = new RegExp(`\\b${cType}\\b`, 'i');
-		if (re.test(rawCriteria)) {
+		if (re.test(criteriaForQualities)) {
 			allowedTypes.push(cType);
 		}
 	}
@@ -439,13 +446,13 @@ export function parseLibrarySearchSpec(oracleText: string): LibrarySearchSpec | 
 	const allowedSubtypes: string[] = [];
 	for (const sub of KNOWN_SEARCH_SUBTYPES) {
 		const re = new RegExp(`\\b${sub}\\b`, 'i');
-		if (re.test(rawCriteria)) {
+		if (re.test(criteriaForQualities)) {
 			allowedSubtypes.push(sub);
 		}
 	}
 
 	// Also detect any other capitalized subtype words before "card/cards" (e.g. "Rebel", "Mercenary")
-	const beforeCard = rawCriteria.split(/\bcards?\b/i)[0] || rawCriteria;
+	const beforeCard = criteriaForQualities.split(/\bcards?\b/i)[0] || criteriaForQualities;
 	const capWords = beforeCard.match(/\b[A-Z][a-z]+\b/g) || [];
 	for (const word of capWords) {
 		if (!NON_SUBTYPE_CAPITALIZED_WORDS.has(word) && !allowedSubtypes.includes(word)) {
@@ -454,12 +461,12 @@ export function parseLibrarySearchSpec(oracleText: string): LibrarySearchSpec | 
 	}
 
 	const allowedColors: ManaColor[] = [];
-	if (/\bwhite\b/i.test(rawCriteria)) allowedColors.push('W');
-	if (/\bblue\b/i.test(rawCriteria)) allowedColors.push('U');
-	if (/\bblack\b/i.test(rawCriteria)) allowedColors.push('B');
-	if (/\bred\b/i.test(rawCriteria)) allowedColors.push('R');
-	if (/\bgreen\b/i.test(rawCriteria)) allowedColors.push('G');
-	if (/\bcolorless\b/i.test(rawCriteria)) allowedColors.push('C');
+	if (/\bwhite\b/i.test(criteriaForQualities)) allowedColors.push('W');
+	if (/\bblue\b/i.test(criteriaForQualities)) allowedColors.push('U');
+	if (/\bblack\b/i.test(criteriaForQualities)) allowedColors.push('B');
+	if (/\bred\b/i.test(criteriaForQualities)) allowedColors.push('R');
+	if (/\bgreen\b/i.test(criteriaForQualities)) allowedColors.push('G');
+	if (/\bcolorless\b/i.test(criteriaForQualities)) allowedColors.push('C');
 
 	let maxCmc: number | undefined;
 	let exactCmc: number | undefined;
@@ -474,7 +481,8 @@ export function parseLibrarySearchSpec(oracleText: string): LibrarySearchSpec | 
 	}
 
 	const statedQuality = Boolean(
-		requireBasic ||
+		named ||
+			requireBasic ||
 			requireLegendary ||
 			allowedTypes.length > 0 ||
 			allowedSubtypes.length > 0 ||
@@ -518,6 +526,7 @@ export function parseLibrarySearchSpec(oracleText: string): LibrarySearchSpec | 
 		allowedColors: allowedColors.length > 0 ? allowedColors : undefined,
 		maxCmc,
 		exactCmc,
+		...(named ? { named } : {}),
 		destinations,
 		rawCriteriaText: rawCriteria
 	};
@@ -527,6 +536,9 @@ export function parseLibrarySearchSpec(oracleText: string): LibrarySearchSpec | 
  * Evaluates whether a `ScryfallCard` in a library satisfies `LibrarySearchSpec`.
  */
 export function matchesLibrarySearchSpec(card: ScryfallCard, spec: LibrarySearchSpec): boolean {
+	if (spec.named && card.name.toLowerCase() !== spec.named.toLowerCase()) {
+		return false;
+	}
 	const tl = card.typeLine;
 
 	if (spec.requireBasic && !/\bBasic\b/i.test(tl)) {

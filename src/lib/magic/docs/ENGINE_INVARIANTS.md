@@ -35,7 +35,7 @@ Identifiers are from `ir.ts`, `types.ts` and `runtime/`; CR numbers are from [`s
    - Bump `COMPILER_VERSION` (`compiler/index.ts`) whenever the IR produced for the same text could change.
 5. **Honest Support Surface (No Silent Drops)**
    - The compiler never silently ignores a clause. Anything it can't compile, or the runtime can't run, becomes an `UnsupportedAbility` (`{ kind: 'unsupported', reason: UnsupportedReason, text, span, unparsed }`) in `FaceDefinition.abilities`. `CardDefinition.fullySupported` is false and `cardSupportReport` (`compiler/support.ts`) lists it, so deck validation and the UI surface it.
-   - A keyword that stands for several abilities is only fully supported if all of them are. Example: "Partner with [name]" compiles to the `partner` keyword plus an unsupported triggered ability for its search (`CR 702.124j`).
+   - A keyword that stands for several abilities is only fully supported if all of them are. For example, "Partner with [name]" (`CR 702.124j`) remained partial/unsupported until both its deck-pairing rule and its ETB library-search triggered ability compiled cleanly.
    - Every keyword in `IMPLEMENTED_KEYWORDS` (`compiler/card.ts`) must have tests registered in `runtime/keywords-coverage-guard.test.ts`.
 
 ---
@@ -155,11 +155,7 @@ Identifiers are from `ir.ts`, `types.ts` and `runtime/`; CR numbers are from [`s
      - replacement ordering (`CR 616.1`);
      - the Commander zone choice (`CR 903.9a/b`).
 3. **True Pause-and-Resume Execution**
-   - When an effect or cost needs a human decision, execution pauses and stores a continuation on `GameState`, so later steps run only **after** the player submits `{ type: 'choice' }`.
-   - **Not yet enforced:**
-     - Effects pause (`StackItem.effectResume`) only for the prompting verbs: sacrifice, discard, proliferate, mana color choice, and some move/dig/scry/search steps.
-     - An optional "you may" step that isn't a leading choice for the controller is compiled as unsupported (`compiler/interpretable.ts`: "the interpreter can't pause mid-ability").
-     - Costs don't pause mid-payment: `planCosts` (`runtime/costs.ts`) asks its question before anything is paid, and the action is resubmitted with the answer.
+   - When an effect step, multi-object/multi-actor batch, committed cost payment (`PendingCostPayment`), or rules procedure (`ProcedureContinuation`) needs a choice by any player, execution pauses and stores a plain-JSON continuation (`EffectResumeFrame`, `GameState.pendingCostPayment`, `GameState.pendingProcedure`, `GameState.pendingTriggers`) on `GameState`, so later steps, SBAs (`CR 704.3–704.4`), and waiting triggers (`CR 603.3`) run only **after** the player submits `{ type: 'choice' }` and resolution completes.
 
 ---
 

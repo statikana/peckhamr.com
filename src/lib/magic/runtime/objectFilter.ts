@@ -254,6 +254,10 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 	if (filter.token !== undefined && obj.isToken !== filter.token) return false;
 	if (filter.isCommander !== undefined && Boolean(obj.isCommander) !== filter.isCommander) return false;
 	if (filter.other && ctx.source && obj.instanceId === ctx.source.instanceId) return false;
+	if (filter.named !== undefined) {
+		const name = obj.isFaceDown ? '' : evaluated ? evaluated.effectiveName : card.name;
+		if (name.toLowerCase() !== filter.named.toLowerCase()) return false;
+	}
 	if (filter.colors) {
 		const colors = onBattlefield ? (obj.isFaceDown ? [] : evaluated!.colors) : (card.colors ?? []);
 		if (!filter.colors.some((c) => colors.includes(c))) return false;

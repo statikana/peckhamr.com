@@ -24,12 +24,15 @@ import type {
 	EffectiveActivatedAbility,
 	GameState,
 	PlayerGameState,
-	ScryfallCard
+	ScryfallCard,
+	SerializedPlannedCost
 } from '../types.ts';
 import { evaluateAmount, evaluateCondition, matchesObjectFilter, type FilterContext } from './objectFilter.ts';
 import { noteLayerInputsChanged, withStableLayerInputs } from './layerCache.ts';
 import { playerLifeTotalCantChange } from './replace.ts';
-import { moveObject, tapPermanent, type PlayerZone } from './zones.ts';
+import { moveObject, tapPermanent, type MoveResult, type PlayerZone } from './zones.ts';
+
+export type { SerializedPlannedCost };
 
 // ---- Where costs come from ------------------------------------------------------------------
 
@@ -845,11 +848,15 @@ function findById(ctx: CostContext, id: string): CardInstance | undefined {
 export interface PaidCosts {
 	/** What was paid, for the caller's log ("sacrificed Llanowar Elves", "paid 3 life"). */
 	descriptions: string[];
+	/** Set when a zone change mid-payment paused on a replacement choice (`CR 616.1`). */
+	paused?: boolean;
+	nextPartIndex?: number;
+	nextObjectIndex?: number;
 }
 
-function sacrifice(ctx: CostContext, perm: CardInstance): void {
+function sacrifice(ctx: CostContext, perm: CardInstance): MoveResult {
 	// CR 701.21a: to its owner's graveyard. Same bookkeeping as movePermanentToZone.
-	moveObject(ctx.state, perm, 'graveyard', {
+	return moveObject(ctx.state, perm, 'graveyard', {
 		from: 'anyBattlefield',
 		detachAttachments: true,
 		graveyardReplacement: true,
@@ -862,9 +869,14 @@ function sacrifice(ctx: CostContext, perm: CardInstance): void {
 	});
 }
 
-function moveFromZone(ctx: CostContext, card: CardInstance, zone: PlayerZone, to: 'graveyard' | 'exile'): void {
+function moveFromZone(
+	ctx: CostContext,
+	card: CardInstance,
+	zone: PlayerZone,
+	to: 'graveyard' | 'exile'
+): MoveResult {
 	if (zone === 'battlefield') {
-		moveObject(ctx.state, card, to, {
+		return moveObject(ctx.state, card, to, {
 			from: 'anyBattlefield',
 			detachAttachments: true,
 			graveyardReplacement: true,
@@ -874,9 +886,8 @@ function moveFromZone(ctx: CostContext, card: CardInstance, zone: PlayerZone, to
 			newTimestamp: true,
 			ceaseToExist: 'tokens'
 		});
-		return;
 	}
-	moveObject(ctx.state, card, to, {
+	return moveObject(ctx.state, card, to, {
 		from: { player: ctx.player, zone },
 		graveyardReplacement: to === 'graveyard',
 		commanderRedirect: true,
@@ -885,90 +896,191 @@ function moveFromZone(ctx: CostContext, card: CardInstance, zone: PlayerZone, to
 	});
 }
 
-/** Pays a complete plan from `planCosts`. */
-export function payPlannedCosts(ctx: CostContext, plan: Extract<CostPlan, { parts: PlannedCost[] }>): PaidCosts {
-	const descriptions: string[] = [];
-	const { player, source } = ctx;
+/**
+ * Converts a complete `CostPlan` into plain-JSON `SerializedPlannedCost` steps in `CR 601.2h`
+ * execution order (non-random first, random last), resolving any `random` discards once up front
+ * so pausing mid-payment never re-rolls randomness.
+ */
+export function serializeCostPlanParts(
+	ctx: CostContext,
+	plan: Extract<CostPlan, { parts: PlannedCost[] }>
+): SerializedPlannedCost[] {
+	const ordered = [...plan.parts.filter((p) => !p.random), ...plan.parts.filter((p) => p.random)];
+	return ordered.map((part): SerializedPlannedCost => {
+		const def = part.def;
+		if (part.random) {
+			const pool = [...part.random.candidates];
+			const picked: CardInstance[] = [];
+			for (let i = 0; i < part.random.count && pool.length > 0; i++) {
+				picked.push(pool.splice(Math.floor(nextRandom(ctx.state) * pool.length), 1)[0]);
+			}
+			return {
+				def,
+				objectIds: picked.map((c) => c.instanceId),
+				objectNames: picked.map((c) => c.card.name),
+				isRandom: true
+			};
+		}
+		if (def.k === 'tapOthers' || def.k === 'sacrifice' || def.k === 'discard' || def.k === 'exileFrom') {
+			const objs = def.filter === 'self' ? [ctx.source] : (part.objects ?? []);
+			return {
+				def,
+				objectIds: objs.map((c) => c.instanceId),
+				objectNames: objs.map((c) => c.card.name)
+			};
+		}
+		if ((def as { k: string }).k === 'mill') {
+			const extra = def as { k: string; count?: Amount };
+			const millTotal = extra.count ? n(extra.count, ctx) : 0;
+			return { def, millTotal, objectNames: [] };
+		}
+		return { def };
+	});
+}
 
-	// 1. Tap and untap costs.
-	for (const part of plan.parts) {
+/** Executes step 1 (tap/untap costs) and step 2 (mana payment) once before ordered cost parts run. */
+export function payTapAndManaCostParts(
+	ctx: CostContext,
+	parts: SerializedPlannedCost[],
+	mana: ManaCostRequirement | null,
+	descriptions: string[]
+): void {
+	const { player, source } = ctx;
+	for (const part of parts) {
 		if (part.def.k === 'tapSelf') tapPermanent(ctx.state, source);
 		if (part.def.k === 'untapSelf') source.tapped = false;
 		if (part.def.k === 'tapOthers') {
-			for (const c of part.objects ?? []) tapPermanent(ctx.state, c);
-			descriptions.push(`tapped ${(part.objects ?? []).map((c) => c.card.name).join(', ')}`);
+			const ids = part.objectIds ?? [];
+			const names: string[] = [];
+			for (const id of ids) {
+				const perm = player.battlefield.find((c) => c.instanceId === id);
+				if (perm) {
+					tapPermanent(ctx.state, perm);
+					names.push(perm.card.name);
+				}
+			}
+			const labelNames = part.objectNames && part.objectNames.length > 0 ? part.objectNames : names;
+			descriptions.push(`tapped ${labelNames.join(', ')}`);
 		}
 	}
-	// 2. Mana (planCosts checked it can be paid with these permanents already tapped).
-	if (plan.mana) ctx.payMana(plan.mana);
+	if (mana) ctx.payMana(mana);
+}
 
-	// 3. Everything else; random costs last (CR 601.2h).
-	const ordered = [...plan.parts.filter((p) => !p.random), ...plan.parts.filter((p) => p.random)];
-	for (const part of ordered) {
+/**
+ * Executes ordered non-tap/non-mana cost parts starting at `(startPartIndex, startObjectIndex)`.
+ * Stops immediately if any zone change returns `'pending'` (e.g. `zone_replacement_choice`) so
+ * later objects and parts are not paid until the replacement finishes.
+ */
+export function executeCostPaymentParts(
+	ctx: CostContext,
+	parts: SerializedPlannedCost[],
+	startPartIndex = 0,
+	startObjectIndex = 0,
+	descriptions: string[] = []
+): PaidCosts {
+	const { player, source } = ctx;
+	for (let partIdx = startPartIndex; partIdx < parts.length; partIdx++) {
+		const part = parts[partIdx];
 		const def = part.def;
+		const objStart = partIdx === startPartIndex ? startObjectIndex : 0;
 		switch (def.k) {
 			case 'payLife': {
-				const amount = n(def.amount, ctx);
-				if (amount > 0) {
-					player.life -= amount;
-					descriptions.push(`paid ${amount} life`);
+				if (objStart === 0) {
+					const amount = n(def.amount, ctx);
+					if (amount > 0) {
+						player.life -= amount;
+						descriptions.push(`paid ${amount} life`);
+					}
 				}
 				break;
 			}
 			case 'loyalty':
-				source.counters.loyalty += def.delta;
-				source.usedLoyaltyThisTurn = true;
+				if (objStart === 0) {
+					source.counters.loyalty += def.delta;
+					source.usedLoyaltyThisTurn = true;
+				}
 				break;
 			case 'removeCounters': {
-				const amount = n(def.count, ctx);
-				const key = def.counter as CounterType;
-				source.counters[key] = Math.max(0, (source.counters[key] || 0) - amount);
-				descriptions.push(`removed ${amount} ${def.counter} counter(s)`);
+				if (objStart === 0) {
+					const amount = n(def.count, ctx);
+					const key = def.counter as CounterType;
+					source.counters[key] = Math.max(0, (source.counters[key] || 0) - amount);
+					descriptions.push(`removed ${amount} ${def.counter} counter(s)`);
+				}
 				break;
 			}
 			case 'sacrifice': {
-				const perms = def.filter === 'self' ? [source] : part.objects ?? [];
-				for (const p of perms) sacrifice(ctx, p);
-				if (def.filter !== 'self') descriptions.push(`sacrificed ${perms.map((c) => c.card.name).join(', ')}`);
+				const ids = part.objectIds ?? (def.filter === 'self' ? [source.instanceId] : []);
+				const names = part.objectNames ?? [];
+				for (let j = objStart; j < ids.length; j++) {
+					const perm =
+						player.battlefield.find((c) => c.instanceId === ids[j]) ??
+						ctx.state.players.flatMap((pl) => pl.battlefield).find((c) => c.instanceId === ids[j]) ??
+						(def.filter === 'self' && source.zone === 'battlefield' ? source : undefined);
+					if (!perm) continue;
+					if (sacrifice(ctx, perm) === 'pending') {
+						return { descriptions, paused: true, nextPartIndex: partIdx, nextObjectIndex: j + 1 };
+					}
+				}
+				if (def.filter !== 'self') descriptions.push(`sacrificed ${names.join(', ')}`);
 				break;
 			}
 			case 'discard': {
-				let cards = part.objects ?? [];
-				if (part.random) {
-					const pool = [...part.random.candidates];
-					cards = [];
-					for (let i = 0; i < part.random.count && pool.length > 0; i++) {
-						cards.push(pool.splice(Math.floor(nextRandom(ctx.state) * pool.length), 1)[0]);
+				const ids = part.objectIds ?? [];
+				const names = part.objectNames ?? [];
+				for (let j = objStart; j < ids.length; j++) {
+					const card = player.hand.find((c) => c.instanceId === ids[j]);
+					if (!card) continue;
+					if (moveFromZone(ctx, card, 'hand', 'graveyard') === 'pending') {
+						return { descriptions, paused: true, nextPartIndex: partIdx, nextObjectIndex: j + 1 };
 					}
 				}
-				for (const c of cards) moveFromZone(ctx, c, 'hand', 'graveyard');
-				descriptions.push(`discarded ${cards.map((c) => c.card.name).join(', ')}${part.random ? ' at random' : ''}`);
+				descriptions.push(`discarded ${names.join(', ')}${part.isRandom ? ' at random' : ''}`);
 				break;
 			}
 			case 'exileFrom': {
 				const zone = def.zone as PlayerZone;
-				const cards = def.filter === 'self' ? [source] : part.objects ?? [];
-				for (const c of cards) moveFromZone(ctx, c, zone, 'exile');
-				descriptions.push(`exiled ${cards.map((c) => c.card.name).join(', ')} from ${def.zone}`);
+				const ids = part.objectIds ?? (def.filter === 'self' ? [source.instanceId] : []);
+				const names = part.objectNames ?? [];
+				for (let j = objStart; j < ids.length; j++) {
+					const card =
+						zoneOf(player, zone).find((c) => c.instanceId === ids[j]) ??
+						(def.filter === 'self' && source.zone === zone ? source : undefined);
+					if (!card) continue;
+					if (moveFromZone(ctx, card, zone, 'exile') === 'pending') {
+						return { descriptions, paused: true, nextPartIndex: partIdx, nextObjectIndex: j + 1 };
+					}
+				}
+				descriptions.push(`exiled ${names.join(', ')} from ${def.zone}`);
 				break;
 			}
 			default: {
 				const extra = def as { k: string; count?: Amount };
 				if (extra.k === 'mill' && extra.count) {
-					const amount = n(extra.count, ctx);
-					const milled: CardInstance[] = [];
-					for (let i = 0; i < amount && player.library.length > 0; i++) {
+					const total = part.millTotal ?? n(extra.count, ctx);
+					const milledNames = part.objectNames ?? (part.objectNames = []);
+					for (let j = objStart; j < total && player.library.length > 0; j++) {
 						const top = player.library[0];
-						moveFromZone(ctx, top, 'library', 'graveyard');
-						milled.push(top);
+						milledNames.push(top.card.name);
+						if (moveFromZone(ctx, top, 'library', 'graveyard') === 'pending') {
+							return { descriptions, paused: true, nextPartIndex: partIdx, nextObjectIndex: j + 1 };
+						}
 					}
-					if (milled.length > 0) {
-						descriptions.push(`milled ${milled.map((c) => c.card.name).join(', ')}`);
+					if (milledNames.length > 0) {
+						descriptions.push(`milled ${milledNames.join(', ')}`);
 					}
 				}
 				break;
 			}
 		}
 	}
-	return { descriptions };
+	return { descriptions, paused: false };
+}
+
+/** Pays a complete plan from `planCosts`. */
+export function payPlannedCosts(ctx: CostContext, plan: Extract<CostPlan, { parts: PlannedCost[] }>): PaidCosts {
+	const parts = serializeCostPlanParts(ctx, plan);
+	const descriptions: string[] = [];
+	payTapAndManaCostParts(ctx, parts, plan.mana, descriptions);
+	return executeCostPaymentParts(ctx, parts, 0, 0, descriptions);
 }

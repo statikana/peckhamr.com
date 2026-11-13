@@ -23,7 +23,7 @@ import { parseCost } from '../compiler/costs.ts';
 import { PROWESS_RUNTIME_TRIGGER, runtimeTriggers, type RuntimeTrigger } from '../compiler/triggers.ts';
 import type { Amount, Condition, EventFilter, EventKind, ObjectFilter, TriggerDef } from '../ir.ts';
 import { evaluatePermanent, inspectCardContinuousBreakdown, permanentHasLostAllAbilities } from '../ruleTree.ts';
-import type { CardInstance, GameState, ScryfallCard } from '../types.ts';
+import type { CardInstance, GameState, ScryfallCard, SerializedPendingTrigger } from '../types.ts';
 import type { GameEvent } from './events.ts';
 import { withStableLayerInputs } from './layerCache.ts';
 import { playerCommanderCastCount } from './objectFilter.ts';
@@ -154,10 +154,69 @@ const channels = new WeakMap<GameState, TriggerChannel>();
 function channel(state: GameState): TriggerChannel {
 	let ch = channels.get(state);
 	if (!ch) {
-		ch = { pending: [], nextOrder: 1, flushing: 0, deferFlush: 0 };
+		const maxDeferredOrder = (state.pendingTriggers ?? []).reduce((m, t) => Math.max(m, t.order), 0);
+		ch = { pending: [], nextOrder: maxDeferredOrder + 1, flushing: 0, deferFlush: 0 };
 		channels.set(state, ch);
 	}
 	return ch;
+}
+
+function isResolutionPaused(state: GameState): boolean {
+	return (
+		Boolean(state.pendingCostPayment) ||
+		Boolean(state.pendingProcedure) ||
+		Boolean(state.pendingZoneMoves && state.pendingZoneMoves.length > 0) ||
+		state.pendingPrompts.some(
+			(pr) => pr.choice?.kind === 'chooseReplacement' || pr.kind === 'chooseReplacement'
+		) ||
+		state.stack.some((s) => Boolean(s.resolutionStarted))
+	);
+}
+
+function persistPendingTriggers(state: GameState, triggers: PendingTrigger[]): void {
+	if (triggers.length === 0) return;
+	const existing = state.pendingTriggers ?? (state.pendingTriggers = []);
+	for (const t of triggers) {
+		existing.push({
+			ability: t.ability,
+			source: t.source,
+			sourceCard: t.sourceCard,
+			controllerId: t.controllerId,
+			mode: t.mode,
+			label: t.label,
+			...(t.eventObject ? { eventObject: t.eventObject } : {}),
+			...(t.eventPlayerId !== undefined ? { eventPlayerId: t.eventPlayerId } : {}),
+			...(t.eventPlayer !== undefined ? { eventPlayer: t.eventPlayer } : {}),
+			...(t.targetStackItemId !== undefined ? { targetStackItemId: t.targetStackItemId } : {}),
+			...(t.amount !== undefined ? { amount: t.amount } : {}),
+			...(t.eventLki ? { eventLki: t.eventLki } : {}),
+			order: t.order
+		});
+	}
+}
+
+function hydratePendingTriggers(state: GameState, ch: TriggerChannel): void {
+	const deferred = state.pendingTriggers;
+	if (!deferred || deferred.length === 0) return;
+	delete state.pendingTriggers;
+	const hydrated: PendingTrigger[] = deferred.map((t: SerializedPendingTrigger) => ({
+		ability: t.ability,
+		source: t.source,
+		sourceCard: t.sourceCard,
+		controllerId: t.controllerId,
+		mode: t.mode,
+		label: t.label,
+		...(t.eventObject ? { eventObject: t.eventObject } : {}),
+		...(t.eventPlayerId !== undefined ? { eventPlayerId: t.eventPlayerId } : {}),
+		...(t.eventPlayer !== undefined ? { eventPlayer: t.eventPlayer } : {}),
+		...(t.targetStackItemId !== undefined ? { targetStackItemId: t.targetStackItemId } : {}),
+		...(t.amount !== undefined ? { amount: t.amount } : {}),
+		...(t.eventLki ? { eventLki: t.eventLki } : {}),
+		order: t.order
+	}));
+	ch.pending = [...hydrated, ...ch.pending];
+	const maxOrder = hydrated.reduce((m, t) => Math.max(m, t.order), 0);
+	if (ch.nextOrder <= maxOrder) ch.nextOrder = maxOrder + 1;
 }
 
 /**
@@ -222,12 +281,12 @@ export function withTriggersDeferred<T>(state: GameState, fn: () => T): T {
 }
 
 export function hasPendingTriggers(state: GameState): boolean {
-	return (channels.get(state)?.pending.length ?? 0) > 0;
+	return (channels.get(state)?.pending.length ?? 0) > 0 || (state.pendingTriggers?.length ?? 0) > 0;
 }
 
 /** For tests: the triggers waiting for the next flush. */
 export function peekPendingTriggers(state: GameState): readonly PendingTrigger[] {
-	return channels.get(state)?.pending ?? [];
+	return [...(state.pendingTriggers ?? []), ...(channels.get(state)?.pending ?? [])];
 }
 
 // ---- Objects as triggers see them -----------------------------------------------------------
@@ -1052,6 +1111,13 @@ export function flushTriggers(state: GameState): void {
 	if (!host) return;
 	const ch = channel(state);
 	if (ch.deferFlush > 0) return;
+	if (isResolutionPaused(state)) {
+		if (ch.pending.length > 0) {
+			persistPendingTriggers(state, ch.pending.splice(0));
+		}
+		return;
+	}
+	hydratePendingTriggers(state, ch);
 	ch.flushing += 1;
 	try {
 		for (let guard = 0; ch.pending.length > 0 && guard < 1000; guard++) {

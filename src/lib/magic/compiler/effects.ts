@@ -172,6 +172,8 @@ class Parser {
 	private lastObject?: { ref: Ref; stepIndex: number };
 	/** Implicit subject of a continued predicate ("Target player draws two cards and loses 2 life"). */
 	lastPlayer?: Selector;
+	/** Most recent optional step index for "If you do / If that player does / If they do". */
+	lastOptionalStep?: number;
 	/** "where X is ..." defined in an earlier sentence of the same ability (Thassa's Oracle). */
 	definedX?: Amount;
 
@@ -219,6 +221,7 @@ class Parser {
 		targets: number;
 		lastPlayer?: Selector;
 		lastObject?: { ref: Ref; stepIndex: number };
+		lastOptionalStep?: number;
 		definedX?: Amount;
 		binds: Array<string | undefined>;
 	} {
@@ -227,6 +230,7 @@ class Parser {
 			targets: this.targets.length,
 			lastPlayer: this.lastPlayer,
 			lastObject: this.lastObject,
+			lastOptionalStep: this.lastOptionalStep,
 			definedX: this.definedX,
 			binds: this.steps.map((s) => s.bindAs)
 		};
@@ -237,6 +241,7 @@ class Parser {
 		this.targets.length = m.targets;
 		this.lastPlayer = m.lastPlayer;
 		this.lastObject = m.lastObject;
+		this.lastOptionalStep = m.lastOptionalStep;
 		this.definedX = m.definedX;
 		this.steps.forEach((s, i) => {
 			if (m.binds[i] === undefined) delete s.bindAs;
@@ -255,6 +260,7 @@ class Parser {
 		// A step acting on an existing binding keeps that binding as "it" (Corpse Dance: the
 		// creature that gained haste is still the returned creature).
 		if (actsOnObjects && step.subject.k !== 'binding') this.setLastObject(idx);
+		if (step.optional) this.lastOptionalStep = idx;
 		return idx;
 	}
 }
@@ -562,6 +568,7 @@ function searchFromLegacy(spec: LibrarySearchSpec): NonNullable<EffectStep['para
 	if (spec.allowedColors?.length) filter.colors = [...spec.allowedColors];
 	if (spec.maxCmc !== undefined) filter.manaValue = { op: '<=', value: n(spec.maxCmc) };
 	if (spec.exactCmc !== undefined) filter.manaValue = { op: '=', value: n(spec.exactCmc) };
+	if (spec.named) filter.named = spec.named;
 	return {
 		filter,
 		count: spec.count,
@@ -588,6 +595,7 @@ export function legacySearchSpec(search: NonNullable<NonNullable<EffectStep['par
 	if (f.supertypes?.includes('Basic')) spec.requireBasic = true;
 	if (f.supertypes?.includes('Legendary')) spec.requireLegendary = true;
 	if (f.colors?.length) spec.allowedColors = [...f.colors];
+	if (f.named) spec.named = f.named;
 	if (f.manaValue?.value.k === 'const') {
 		if (f.manaValue.op === '<=') spec.maxCmc = f.manaValue.value.n;
 		if (f.manaValue.op === '=') spec.exactCmc = f.manaValue.value.n;
@@ -616,7 +624,7 @@ function searchClause(rest: string): NonNullable<EffectStep['params']>['search']
 	if (!spec || spec.destinations.length === 0) return null;
 	// "put that card into your hand", "onto the battlefield", "on top" must all have been understood.
 	const puts = parts.filter((s) => /^put\b/.test(s.trim())).join(' ');
-	if (!/(?:into your hand|onto the battlefield|on top|into their hand)/.test(puts)) return null;
+	if (!/(?:into your hand|onto the battlefield|on top|into their hand|into that player's hand)/.test(puts)) return null;
 	return searchFromLegacy(spec);
 }
 
@@ -790,7 +798,7 @@ function playerPredicate(p: Parser, subject: Selector, vp: string, span: Span, f
 	if (m) {
 		const amount = count(m[2]);
 		if (!amount) return false;
-		p.push({ verb: 'draw', subject, amount, ...(m[1] ? { params: { upTo: true } } : opt), span }, false);
+		p.push({ verb: 'draw', subject, amount, ...(m[1] ? { params: { upTo: true } } : {}), ...opt, span }, false);
 		return true;
 	}
 	m = text.match(/^draws? (that many) cards$/);
@@ -880,16 +888,17 @@ function playerPredicate(p: Parser, subject: Selector, vp: string, span: Span, f
 	}
 	// Step E2: "sacrifices a creature", "sacrifice two artifacts": the player chooses (CR 701.21a).
 	m = text.match(/^sacrifices? (a|an|one|two|three|\d+) (.+)$/);
-	if (m && !optional) {
+	if (m) {
 		const amount = count(m[1] === 'a' || m[1] === 'an' ? 'one' : m[1]);
 		const filter = amount && objectFilter(m[2]);
 		if (!amount || !filter || filter.zone || filter.controller) return false;
-		const step: EffectStep = { verb: 'sacrifice', subject: { k: 'all', filter: { ...filter, zone: 'battlefield' } }, amount, span };
+		const step: EffectStep = { verb: 'sacrifice', subject: { k: 'all', filter: { ...filter, zone: 'battlefield' } }, amount, ...opt, span };
+		const actor = singlePlayer(subject);
 		if (subject.k === 'player' && subject.filter.relation === 'each_opponent') {
 			(step.subject as { filter: ObjectFilter }).filter.controller = 'opponent';
-		} else if (subject.k === 'playerRef' && subject.ref.k === 'target') {
-			step.actor = subject.ref;
-		} else if (!(subject.k === 'player' && subject.filter.relation === 'you')) {
+		} else if (actor && actor.k !== 'you') {
+			step.actor = actor;
+		} else if (!actor) {
 			return false;
 		}
 		p.push(step, true);
@@ -897,10 +906,10 @@ function playerPredicate(p: Parser, subject: Selector, vp: string, span: Span, f
 	}
 	// Step E2: "discards two cards" (the player chooses, CR 701.8b).
 	m = text.match(/^discards? (a|one|two|three|\d+) cards?$/);
-	if (m && !optional && (subject.k === 'player' || (subject.k === 'playerRef' && subject.ref.k === 'target'))) {
+	if (m && (subject.k === 'player' || singlePlayer(subject) !== null)) {
 		const amount = count(m[1] === 'a' ? 'one' : m[1]);
 		if (!amount) return false;
-		p.push({ verb: 'discard', subject, amount, span }, true);
+		p.push({ verb: 'discard', subject, amount, ...opt, span }, true);
 		return true;
 	}
 	if (/^may end the turn$/.test(`may ${text}`) && optional && subject.k === 'playerRef' && subject.ref.k === 'activePlayer') {
@@ -1276,8 +1285,14 @@ function sentence(p: Parser, text: string, span: Span): boolean {
 	if (/^[A-Z][a-z]*\b/.test(t) && LOWER_START.has(t.split(/[\s,']/)[0].toLowerCase())) {
 		t = t.charAt(0).toLowerCase() + t.slice(1);
 	}
-	if (NEUTRAL_SENTENCES.some((re) => re.test(t0))) return true;
-	if (RESTRICTION_SENTENCES.some((re) => re.test(t0))) return true;
+	if (NEUTRAL_SENTENCES.some((re) => re.test(t0))) {
+		p.lastOptionalStep = undefined;
+		return true;
+	}
+	if (RESTRICTION_SENTENCES.some((re) => re.test(t0))) {
+		p.lastOptionalStep = undefined;
+		return true;
+	}
 
 	const stepsBefore = p.steps.length;
 	const targetsBefore = p.targets.length;
@@ -1291,6 +1306,25 @@ function sentence(p: Parser, text: string, span: Span): boolean {
 		const prev = p.steps[p.steps.length - 1];
 		if (prev?.verb !== 'lookAndReorder') return fail();
 		prev.params = { ...prev.params, mayShuffle: true };
+		return true;
+	}
+
+	const ifDo = t.match(/^if (you do|that player does|they do), (.+)$/);
+	if (ifDo) {
+		const optIdx = p.lastOptionalStep;
+		const chooser = optIdx !== undefined ? p.steps[optIdx]?.optional?.chooser : undefined;
+		if (optIdx === undefined || !chooser) return fail();
+		if (ifDo[1] === 'you do' && chooser.k !== 'you') return fail();
+		if (ifDo[1] === 'that player does' && chooser.k === 'you') return fail();
+		const innerText = ifDo[2];
+		const innerStart = Math.max(span.start, span.end - innerText.length);
+		if (!sentence(p, innerText, { start: innerStart, end: span.end })) return fail();
+		for (const s of p.steps.slice(stepsBefore)) {
+			if (s.ifPrecedingAccepted === undefined) s.ifPrecedingAccepted = optIdx;
+		}
+		if (!p.steps.slice(stepsBefore).some((s) => s.optional !== undefined)) {
+			p.lastOptionalStep = undefined;
+		}
 		return true;
 	}
 	if (t === 'put up to one of them on top of your library and the rest on the bottom of your library in a random order') {
@@ -1348,7 +1382,12 @@ function sentence(p: Parser, text: string, span: Span): boolean {
 		const before = p.steps.length;
 		if (!clauses(p, inner, span.start)) return fail();
 		const effect = p.steps.splice(before);
-		effect.forEach((s) => (s.span = span));
+		effect.forEach((s) => {
+			s.span = span;
+			if (s.ifPrecedingAccepted !== undefined && s.ifPrecedingAccepted >= before) {
+				s.ifPrecedingAccepted -= before;
+			}
+		});
 		p.push(
 			{
 				verb: 'delayedTrigger',
@@ -1358,6 +1397,9 @@ function sentence(p: Parser, text: string, span: Span): boolean {
 			},
 			false
 		);
+		if (!p.steps.slice(stepsBefore).some((s) => s.optional !== undefined)) {
+			p.lastOptionalStep = undefined;
+		}
 		return true;
 	}
 
@@ -1372,12 +1414,44 @@ function sentence(p: Parser, text: string, span: Span): boolean {
 			if (s.params?.toughness) s.params.toughness = substituteX(s.params.toughness, wx.x);
 		}
 	}
+	if (!p.steps.slice(stepsBefore).some((s) => s.optional !== undefined)) {
+		p.lastOptionalStep = undefined;
+	}
 	return true;
 }
 
 function clauses(p: Parser, text: string, offset: number): boolean {
+	const ifDoLead = text.match(/^if (you do|that player does|they do), (.+)$/);
+	if (ifDoLead) {
+		const optIdx = p.lastOptionalStep;
+		const chooser = optIdx !== undefined ? p.steps[optIdx]?.optional?.chooser : undefined;
+		if (optIdx === undefined || !chooser) return false;
+		if (ifDoLead[1] === 'you do' && chooser.k !== 'you') return false;
+		if (ifDoLead[1] === 'that player does' && chooser.k === 'you') return false;
+		const body = ifDoLead[2].trim();
+		const bodyStart = offset + text.indexOf(body);
+		const mark = p.mark();
+		if (!clauses(p, body, bodyStart)) {
+			p.rollback(mark);
+			return false;
+		}
+		for (const s of p.steps.slice(mark.steps)) {
+			if (s.ifPrecedingAccepted === undefined) s.ifPrecedingAccepted = optIdx;
+		}
+		return true;
+	}
+	const ifDoSplit = text.match(/^(.+?)(?:,\s*(?:and|then)|,?\s+(?:and|then))\s+(if (?:you do|that player does|they do), .+)$/);
+	if (ifDoSplit) {
+		const mark = p.mark();
+		const head = ifDoSplit[1].trim();
+		const tail = ifDoSplit[2].trim();
+		const tailOffset = offset + text.indexOf(tail);
+		if (clauses(p, head, offset) && clauses(p, tail, tailOffset)) return true;
+		p.rollback(mark);
+		return false;
+	}
 	// A search clause consumes the rest of the sentence ("..., put it into your hand, then shuffle").
-	const search = text.match(/^(.*?)\b((?:its controller may |you may |they may )?search(?:es)? (?:your|their) library .+)$/);
+	const search = text.match(/^(.*?)\b((?:its controller may |its owner may |target player may |target opponent may |that player may |you may |they may )?search(?:es)? (?:your|their) library .+)$/);
 	if (search) {
 		const head = search[1].replace(/,?\s*(?:then|and)?\s*$/, '');
 		if (head && !clauses(p, head, offset)) return false;
@@ -1410,7 +1484,10 @@ function clauses(p: Parser, text: string, offset: number): boolean {
 export function parseEffects(text: string, offset = 0, context: EffectContext = 'spell'): EffectParse {
 	const p = new Parser(context);
 	for (const s of splitSentences(text, offset)) {
-		if (!sentence(p, s.text, s.span)) p.unparsed.push(s.span);
+		if (!sentence(p, s.text, s.span)) {
+			p.unparsed.push(s.span);
+			p.lastOptionalStep = undefined;
+		}
 	}
 	return { steps: p.steps, targets: p.targets, unparsed: p.unparsed };
 }
@@ -1486,7 +1563,10 @@ export function parseSpellFace(norm: NormalizedFace, include: (line: NormalizedL
 	// Parse all effect sentences with one parser so "it" can refer across lines.
 	const p = new Parser('spell');
 	for (const s of effectSentences) {
-		if (!sentence(p, s.text, s.span)) p.unparsed.push(s.span);
+		if (!sentence(p, s.text, s.span)) {
+			p.unparsed.push(s.span);
+			p.lastOptionalStep = undefined;
+		}
 	}
 	steps.push(...p.steps);
 	targets.push(...p.targets);

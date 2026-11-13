@@ -4138,7 +4138,18 @@ describe('26. Stage C: Grammar-Driven Triggers, Target-Controller Effects, Cost 
 		applyGameAction(state, p1Id, { type: 'pass_priority' });
 		applyGameAction(state, p2Id, { type: 'pass_priority' });
 
-		// Because Path to Exile's search goes through initiateLibrarySearch for Bob, Alice's Opposition Agent intercepts it!
+		// Bob decides whether to search ("Its controller may search..."); accepting opens initiateLibrarySearch,
+		// which Alice's Opposition Agent intercepts!
+		const maySearchPrompt = state.pendingPrompts.find((pr) => pr.choice?.kind === 'yesNo' && pr.playerId === p2Id);
+		assert.ok(maySearchPrompt, 'Path to Exile asks Bob whether to search');
+		assert.equal(
+			applyGameAction(state, p2Id, {
+				type: 'choice',
+				promptId: maySearchPrompt!.id,
+				answer: { kind: 'yesNo', yes: true }
+			}).ok,
+			true
+		);
 		const ptePrompt = state.pendingPrompts.find((pr) => pr.kind === 'search_library');
 		assert.ok(ptePrompt, 'Path to Exile created a search_library prompt');
 		assert.equal(

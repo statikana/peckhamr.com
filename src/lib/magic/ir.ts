@@ -250,6 +250,8 @@ export interface ObjectFilter {
 	blocking?: boolean;
 	/** CR 903.3: true iff the object is a commander (retains designation across all zones). */
 	isCommander?: boolean;
+	/** Exact card name match ("named <Name>", e.g. Partner with). */
+	named?: string;
 }
 
 export interface Compare {
@@ -386,6 +388,8 @@ export interface EffectStep {
 	amount?: Amount;
 	params?: EffectParams;
 	optional?: { chooser: PlayerRef };
+	/** Execute only if the preceding optional step at this step index was accepted ("If you do, ..."). */
+	ifPrecedingAccepted?: number;
 	bindAs?: BindingName;
 	/** `nextTurn`: "at the beginning of the next turn's upkeep" (not this turn's). */
 	delayed?: { trigger: TriggerDef; effect: EffectStep[]; nextTurn?: boolean };

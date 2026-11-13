@@ -308,16 +308,35 @@ function keywordLine(line: NormalizedLine): AbilityDef[] | null {
 		out.push({ kind: 'keyword', keyword, span, ...(keyword.name === 'equip' ? { id: `equip_${line.rawIndex}` } : {}) });
 		// CR 702.124j: "Partner with [name]" is two abilities. The pairing half is the keyword above
 		// (deck construction); the other is "When this permanent enters, target player may search their
-		// library for a card named [name] ...", which the interpreter can't run (another player chooses).
-		// It triggers and is resolved manually, like an unsupported ward cost.
+		// library for a card named [name], reveal it, put it into their hand, then shuffle."
 		if (keyword.name === 'partner' && /^with\b/i.test(keyword.param ?? '')) {
+			const partnerName = (keyword.param ?? '').replace(/^with\s+/i, '').trim();
 			out.push({
-				kind: 'unsupported',
-				reason: 'unparsed',
+				kind: 'triggered',
 				trigger: { event: 'zoneChange', filter: { object: 'self', to: 'battlefield' } },
+				targets: [{ kind: 'player', filter: {}, player: { relation: 'any' }, min: 1, max: 1 }],
+				effect: [
+					{
+						verb: 'search',
+						subject: { k: 'none' },
+						actor: { k: 'target', index: 0 },
+						amount: { k: 'const', n: 1 },
+						optional: { chooser: { k: 'target', index: 0 } },
+						params: {
+							search: {
+								filter: { named: partnerName },
+								count: 1,
+								upTo: true,
+								statedQuality: true,
+								destinations: [{ zone: 'hand' }],
+								description: `a card named ${partnerName}`
+							}
+						},
+						span
+					}
+				],
 				text: part,
-				span,
-				unparsed: [span]
+				span
 			});
 		}
 	});

@@ -2032,9 +2032,9 @@
 	},
 	"2 bots, seed 99": {
 		"digests": [
-			"7ddfa16f9efdbb38c1f44e40a6a8369ca7aa88e2095a7dc36f07b7644b695a41",
-			"575f19a8216128c3868da541c52c331877c9756655aa38302c7130dc864046de",
-			"d17c301aa7b34eeab541e385b006b0d2379ed1c0cfee064d81bd39910e17cf8a"
+			"3cad48b77f1157fcda7c09caf1eaafc41adc59149eedd12bcda66ff83eabf4c4",
+			"ef2b005e1f27e3e8430a59e39cc2a0b18abe62783349f7674b44afa646939388",
+			"6430a161ec59581f9ac39d2dcb9bdac5adfbe3f71efb87125a2d0eda48848da5"
 		],
 		"final": {
 			"status": "finished",
@@ -3702,7 +3702,7 @@
 								false
 							],
 							[
-								"tok_1soah2l",
+								"tok_di33kz",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -3719,7 +3719,7 @@
 								false
 							],
 							[
-								"tok_3zir2v",
+								"tok_1pntk6n",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -3753,7 +3753,7 @@
 								false
 							],
 							[
-								"tok_n4bza1",
+								"tok_ysboet",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -3770,7 +3770,7 @@
 								false
 							],
 							[
-								"tok_13mh7qf",
+								"tok_1286lxb",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -3804,7 +3804,7 @@
 								false
 							],
 							[
-								"tok_17eknt5",
+								"tok_e6fka2",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -3821,7 +3821,7 @@
 								false
 							],
 							[
-								"tok_twzu0g",
+								"tok_1c3rat4",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -3855,7 +3855,7 @@
 								false
 							],
 							[
-								"tok_1s4yinq",
+								"tok_wa90mf",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -3872,7 +3872,7 @@
 								false
 							],
 							[
-								"tok_1ui42b2",
+								"tok_csttw3",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -4250,9 +4250,9 @@
 	},
 	"3 bots, seed 7": {
 		"digests": [
-			"eb614420fd839c1af27351b2b26961fcb75537208177b29d8c6cc17daa5539d2",
-			"c57be02352babfeb52f5b6779f131daf5e23defecfa1addd77b4bcfedf8d6e5b",
-			"b2b7e8dd2f2ea721023f76bae609e323a3f454e789011cc5557d9ce332939041"
+			"de286be7d03e333a044ed2c9db9d8058aa7cdfa8de1c1abbdcf0cbb88bb188c1",
+			"503ba5809eb411332e015237b6e93bf9327bdf9d3c055c6b128153b4f31ca256",
+			"a80d57ac71bb9b6bf69a370f12342b0bab159d553975d58f2b404b3c5dd75bd1"
 		],
 		"final": {
 			"status": "active",
@@ -7545,7 +7545,7 @@
 								false
 							],
 							[
-								"tok_sgujkq",
+								"tok_1gj4wb0",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -7613,7 +7613,7 @@
 								false
 							],
 							[
-								"tok_1105uqd",
+								"tok_16g1axs",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -7630,7 +7630,7 @@
 								false
 							],
 							[
-								"tok_v49fop",
+								"tok_qgvc2t",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -7681,7 +7681,7 @@
 								false
 							],
 							[
-								"tok_19h0vvd",
+								"tok_1ny9n65",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -7732,7 +7732,7 @@
 								false
 							],
 							[
-								"tok_3cf07s",
+								"tok_itrtoz",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -7749,7 +7749,7 @@
 								false
 							],
 							[
-								"tok_1wnuyhn",
+								"tok_16ldwni",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -7766,7 +7766,7 @@
 								false
 							],
 							[
-								"tok_1ie3fme",
+								"tok_sgq0et",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -7783,7 +7783,7 @@
 								false
 							],
 							[
-								"tok_ru7nq5",
+								"tok_yxus0c",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -7800,7 +7800,7 @@
 								false
 							],
 							[
-								"tok_1eotrme",
+								"tok_pbtr9u",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -7817,7 +7817,7 @@
 								false
 							],
 							[
-								"tok_1i0e9t9",
+								"tok_1a7dyzl",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -7834,7 +7834,7 @@
 								false
 							],
 							[
-								"tok_1qntk4a",
+								"tok_1h7mnlw",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -7851,7 +7851,7 @@
 								false
 							],
 							[
-								"tok_1p3afee",
+								"tok_1tf1drf",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -7868,7 +7868,7 @@
 								false
 							],
 							[
-								"tok_1uslmqk",
+								"tok_1kf88kx",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -7885,7 +7885,7 @@
 								false
 							],
 							[
-								"tok_1annx6d",
+								"tok_njxcsc",
 								"Elf Warrior Token",
 								"battlefield",
 								"bot_1",
@@ -9663,7 +9663,7 @@
 				}
 			],
 			"log": [
-				"3/main1/cast: Path to Exile exiled Young Pyromancer.",
+				"3/main1/rule: Bot 2 chose to use Path to Exile's optional effect.",
 				"3/main1/rule: Bot 2 searched their library for Mountain and put it onto the battlefield tapped.",
 				"3/main1/cast: Bot 0 cast Brainstorm.",
 				"3/main1/rule: Bot 0 drew 3 card(s).",

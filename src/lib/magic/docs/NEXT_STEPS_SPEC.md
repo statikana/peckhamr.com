@@ -1,12 +1,12 @@
 # MTG Engine: Next Steps Spec
 
-**Status:** spec, written 2026-11-12 against `engine-rewrite` at `ad82d00`, updated at `972a90c`. Track A (`A1`–`A4`) is **done** (`COMPILER_VERSION = 11`); Track B (`B1` first) is next.
+**Status:** spec, written 2026-11-12 against `engine-rewrite` at `ad82d00`, updated after Track A (`972a90c`) and Track B1 (`COMPILER_VERSION = 12`). Track A (`A1`–`A4`) and **B1** are **done**; **B2** is next.
 
 **Purpose:** the recommended next work for the engine, written so that each work package can be handed to one agent. Track A is near-term fixes (complete). Track B is the structural work that full keyword and rules coverage needs (the reasoning is in [`FULL_COVERAGE_STRUCTURE.md`](./FULL_COVERAGE_STRUCTURE.md)). Track C keeps the docs honest as the code changes.
 
 **Order:**
 1. ~~A1, A2, A3 and A4~~ — **done** (`b68ef55`, `dfbc69e`, `94b04de`, `972a90c`).
-2. **B1** is next (starting with a design note in `ENGINE_ARCHITECTURE_PLAN.md` §2), then **B2**, then **B3**. **B4** starts with a design doc only.
+2. ~~B1~~ — **done** (`ENGINE_ARCHITECTURE_PLAN.md` §2.10); **B2** is next, then **B3**. **B4** starts with a design doc only.
 3. Track C rides along with every package.
 
 ---
@@ -138,7 +138,7 @@ These four packages implement [`FULL_COVERAGE_STRUCTURE.md`](./FULL_COVERAGE_STR
 
 Each B package starts with a short design note (a section added to `ENGINE_ARCHITECTURE_PLAN.md` §2) that a human reviews before any code is written.
 
-### B1. Pausable resolution everywhere (CR 608.2, 601.2, 616.1)
+### B1. Pausable resolution everywhere (CR 608.2, 601.2, 616.1) — ✅ Done
 
 **Problem.**
 - `StackItem.effectResume` pauses an ability only at the prompting verbs: sacrifice, discard, proliferate, mana color, and some move, dig, scry and search steps.

@@ -32,6 +32,7 @@ import type {
 } from '../ir.ts';
 import type {
 	CardInstance,
+	ChoiceAnswer,
 	CounterType,
 	DelayedTrigger,
 	EffectBindingSnapshot,
@@ -39,6 +40,7 @@ import type {
 	GameState,
 	LibrarySearchSpec,
 	ManaColor,
+	PendingPrompt,
 	PlayerGameState,
 	ScryfallCard,
 	StackItem,
@@ -56,7 +58,15 @@ import { matchesObjectFilter, objectManaValue, playerCommanderCastCount } from '
 import { activeRuleModifiers, tokenMultiplier } from './replace.ts';
 import { flushTriggers, withSimultaneousDestroyLki } from './triggers.ts';
 import { nextRandom } from './random.ts';
-import { allocateTimestamp, attachObject, createEmptyCounters, moveObject, rearrangeLibrary, tapPermanent } from './zones.ts';
+import {
+	allocateTimestamp,
+	attachObject,
+	createEmptyCounters,
+	moveObject,
+	rearrangeLibrary,
+	tapPermanent,
+	type MoveResult
+} from './zones.ts';
 import { PROMPTING_VERBS } from '../compiler/interpretable.ts';
 
 /** Seeded randomness lives in runtime/random.ts (re-exported here for existing importers). */
@@ -77,7 +87,7 @@ export interface EffectPorts {
 	/** Non-combat damage to a target permanent or player (protection, lifelink, events). */
 	damageTarget(state: GameState, sourcePlayerId: string, target: TargetRef, amount: number): void;
 	/** Destroy (CR 701.7): indestructible, dies triggers. */
-	destroy(state: GameState, inst: CardInstance, title: string, controllerId: string): void;
+	destroy(state: GameState, inst: CardInstance, title: string, controllerId: string): MoveResult | 'skipped' | void;
 	/** Moves a permanent off the battlefield (replacement effects, attachments, tokens cease to exist). */
 	moveFromBattlefield(state: GameState, inst: CardInstance, to: 'graveyard' | 'exile' | 'hand' | 'library'): string;
 	/** Counters a spell unless it can't be countered. Returns true if it was countered. */
@@ -544,8 +554,14 @@ class Run {
 	readonly result: EffectResult = { turnEnded: false, exileSelf: false };
 	/** Index of the step being executed. */
 	stepIndex = 0;
-	/** Choices made by humans for the current step while it was paused (playerId -> object ids). */
-	answers: Record<string, string[]> = {};
+	/** Sub-step cursor within a step when pausing across multiple actors/items. */
+	subStepIndex = 0;
+	/** Current phase within `stepIndex` when resuming. */
+	phase: 'optional' | 'step' | 'afterStep' = 'optional';
+	/** Choices made by humans for the current step while it was paused (slot key -> ChoiceAnswer). */
+	answers: Record<string, ChoiceAnswer> = {};
+	/** Decisions recorded for optional steps (`stepIndex -> accepted`) for "If you do, ...". */
+	stepDecisions: Record<number, boolean> = {};
 	/** Can this run pause for a human (the item is on the stack, so it can be resumed by id)? */
 	readonly canPause: boolean;
 
@@ -555,9 +571,12 @@ class Run {
 		this.canPause = state.stack.some((s) => s.id === ctx.item.id);
 		if (resume) {
 			this.stepIndex = resume.stepIndex;
+			this.subStepIndex = resume.subStepIndex ?? 0;
+			this.phase = resume.phase ?? 'step';
 			for (const [name, bound] of resume.bindings) this.bindings.set(name, bound.map((b) => ({ id: b.id, lki: { ...b.lki } })));
 			this.result.exileSelf = Boolean(resume.exileSelf);
 			this.answers = { ...resume.answers };
+			this.stepDecisions = { ...(resume.stepDecisions ?? {}) };
 		}
 	}
 
@@ -578,7 +597,7 @@ class Run {
 		defaultObjectIds?: string[],
 		answerKey?: string
 	): void {
-		const item = this.saveFrame(this.stepIndex, this.answers);
+		const item = this.saveFrame(this.stepIndex, this.answers, 'step', this.subStepIndex);
 		enqueueChoicePrompt(this.state, {
 			id: P().uid('prompt', this.state),
 			kind: 'chooseObjects',
@@ -606,26 +625,204 @@ class Run {
 		this.result.paused = true;
 	}
 
+	/** Queues a `yesNo` prompt for an optional step (`step.optional`) and pauses execution. */
+	pauseForOptional(chooser: PlayerGameState, question: string, answerKey: string): void {
+		const item = this.saveFrame(this.stepIndex, this.answers, 'optional', this.subStepIndex);
+		const isTriggered = this.ctx.item.kind === 'triggered';
+		enqueueChoicePrompt(this.state, {
+			id: P().uid('prompt', this.state),
+			kind: 'yesNo',
+			purpose: isTriggered ? 'trigger_may' : 'generic',
+			playerId: chooser.playerId,
+			title: isTriggered ? `Optional Ability (${this.ctx.sourceCard.name})` : `${this.ctx.title} — Optional Effect`,
+			description: question,
+			...(isTriggered ? { triggerStackItemId: item.id } : {}),
+			yesLabel: 'Yes',
+			noLabel: 'No',
+			continuation: {
+				kind: 'effect_choice',
+				stackItemId: item.id,
+				stepIndex: this.stepIndex,
+				answerKey
+			},
+			choice: { kind: 'yesNo', question }
+		});
+		this.result.paused = true;
+	}
+
+	botAcceptsOptional(step: EffectStep, chooser: PlayerGameState): boolean {
+		if (step.verb === 'draw' && chooser.library.length <= 3) return false;
+		if (step.verb === 'sacrifice' || step.verb === 'loseLife' || step.verb === 'discard') return false;
+		if (step.verb === 'search' && chooser.library.length === 0) return false;
+		return true;
+	}
+
+	resolveOptional(step: EffectStep): boolean {
+		const prior = this.stepDecisions[this.stepIndex];
+		if (prior !== undefined) return prior;
+		if (this.ctx.item.optionalAccepted !== undefined && step.optional?.chooser.k === 'you') {
+			const yes = this.ctx.item.optionalAccepted;
+			this.stepDecisions[this.stepIndex] = yes;
+			return yes;
+		}
+		const chooser = this.playerRef(step.optional!.chooser) ?? this.you;
+		if (!chooser || chooser.lost) {
+			this.stepDecisions[this.stepIndex] = false;
+			return false;
+		}
+		const optKey = `opt:${this.stepIndex}`;
+		const ans = this.answers[optKey];
+		if (ans?.kind === 'yesNo') {
+			this.stepDecisions[this.stepIndex] = ans.yes;
+			P().addLog(
+				this.state,
+				this.ctx.item.kind === 'triggered' ? 'trigger' : 'rule',
+				`${chooser.username} ${ans.yes ? 'chose to' : 'declined to'} use ${this.ctx.title}'s optional effect.`,
+				chooser.playerId
+			);
+			return ans.yes;
+		}
+		if (chooser.isBot) {
+			const yes = this.botAcceptsOptional(step, chooser);
+			this.stepDecisions[this.stepIndex] = yes;
+			P().addLog(
+				this.state,
+				this.ctx.item.kind === 'triggered' ? 'trigger' : 'rule',
+				`${chooser.username} ${yes ? 'chose to' : 'declined to'} use ${this.ctx.title}'s optional effect.`,
+				chooser.playerId
+			);
+			return yes;
+		}
+		if (!this.canPause) {
+			this.stepDecisions[this.stepIndex] = true;
+			return true;
+		}
+		const question =
+			step.verb === 'search'
+				? `${this.ctx.title}: May ${chooser.username} search their library${step.params?.search?.description ? ` for ${step.params.search.description}` : ''}?`
+				: `Use the optional effect of ${this.ctx.title}?`;
+		this.pauseForOptional(chooser, question, optKey);
+		return false;
+	}
+
 	/** Stores the resume frame (plain data) on the stack item and returns the item. */
-	saveFrame(stepIndex: number, answers: Record<string, string[]>): StackItem {
+	saveFrame(
+		stepIndex: number,
+		answers: Record<string, ChoiceAnswer>,
+		phase: 'optional' | 'step' | 'afterStep' = this.phase,
+		subStepIndex = this.subStepIndex
+	): StackItem {
 		const item = this.state.stack.find((s) => s.id === this.ctx.item.id)!;
 		item.effectResume = {
 			stepIndex,
+			...(subStepIndex > 0 ? { subStepIndex } : {}),
+			phase,
 			bindings: [...this.bindings.entries()].map(([name, bound]) => [name, bound.map((b) => ({ id: b.id, lki: { ...b.lki } }))]),
 			exileSelf: this.result.exileSelf || undefined,
-			answers: { ...answers }
+			answers: { ...answers },
+			...(Object.keys(this.stepDecisions).length > 0
+				? { stepDecisions: { ...this.stepDecisions } }
+				: {})
 		};
 		return item;
 	}
 
+	private isNestedBlockingPrompt(pr: PendingPrompt): boolean {
+		return (
+			pr.choice?.kind === 'chooseReplacement' ||
+			pr.kind === 'chooseReplacement' ||
+			pr.kind === 'commander_zone_choice' ||
+			pr.purpose === 'end_turn' ||
+			(pr.continuation?.kind === 'procedure' &&
+				(pr.continuation.procedure.kind === 'commander_zone_choice' ||
+					pr.continuation.procedure.kind === 'end_turn' ||
+					pr.continuation.procedure.kind === 'zone_replacement_choice' ||
+					pr.continuation.procedure.kind === 'counter_replacement_choice'))
+		);
+	}
+
+	private linkPromptsToStackStep(queued: PendingPrompt[], resumeStepIndex: number): void {
+		const item = this.state.stack.find((s) => s.id === this.ctx.item.id);
+		if (!item) return;
+		for (const pr of queued) {
+			if (pr.continuation?.kind === 'handler') {
+				const data = (pr.continuation.data ??= {});
+				data.resumeStackItemId = item.id;
+				data.resumeStepIndex = resumeStepIndex;
+			} else if (pr.continuation?.kind === 'procedure') {
+				const proc = pr.continuation.procedure;
+				if (
+					proc.kind === 'zone_replacement_choice' ||
+					proc.kind === 'counter_replacement_choice' ||
+					proc.kind === 'aura_library_attach_choice' ||
+					proc.kind === 'commander_zone_choice' ||
+					proc.kind === 'end_turn'
+				) {
+					proc.resumeStackItemId = item.id;
+					proc.resumeStepIndex = resumeStepIndex;
+				}
+			} else if (pr.kind === 'commander_zone_choice') {
+				pr.continuation = {
+					kind: 'procedure',
+					procedure: {
+						kind: 'commander_zone_choice',
+						commanderInstanceId: pr.commanderInstanceId ?? '',
+						destinationZone: pr.destinationZone ?? 'graveyard',
+						resumeStackItemId: item.id,
+						resumeStepIndex
+					}
+				};
+			}
+		}
+	}
+
+	private pauseForNestedPrompts(queued: PendingPrompt[], nextSubStepIndex: number): void {
+		this.saveFrame(this.stepIndex, this.answers, 'step', nextSubStepIndex);
+		this.linkPromptsToStackStep(queued, this.stepIndex);
+		this.result.paused = true;
+	}
+
 	/**
-	 * The objects `chooser` picks for the current step: a human's stored answer, or null when the
-	 * human hasn't answered yet (the caller pauses). Answers naming objects that are no longer
-	 * candidates are dropped, and missing picks are filled from the remaining candidates.
+	 * Captures a batch of ids once (`batchKey`) and executes `applyAt` from `this.subStepIndex`.
+	 * Stops immediately if any entry queues a replacement/procedure prompt so later entries wait
+	 * until resume.
 	 */
-	answered(chooser: PlayerGameState, candidates: CardInstance[], min: number, max = min): CardInstance[] | null {
-		const ids = this.answers[chooser.playerId];
-		if (!ids) return null;
+	private runIndexedBatch(
+		batchKey: string,
+		captureIds: () => string[],
+		applyAt: (id: string, index: number) => MoveResult | string | void
+	): { total: number; paused: boolean } {
+		let ids: string[];
+		if (this.answers[batchKey]?.kind === 'chooseObjects') {
+			ids = this.answers[batchKey].objectIds;
+		} else {
+			ids = captureIds();
+			if (ids.length > 0 && this.canPause) {
+				this.answers[batchKey] = { kind: 'chooseObjects', objectIds: ids };
+			}
+		}
+		for (let i = this.subStepIndex; i < ids.length; i++) {
+			const promptsBefore = this.state.pendingPrompts.length;
+			const res = applyAt(ids[i], i);
+			const queued = this.state.pendingPrompts.slice(promptsBefore);
+			if (this.canPause && (res === 'pending' || queued.some((pr) => this.isNestedBlockingPrompt(pr)))) {
+				this.pauseForNestedPrompts(queued, i + 1);
+				return { total: ids.length, paused: true };
+			}
+		}
+		return { total: ids.length, paused: false };
+	}
+
+	/**
+	 * The objects `chooser` (or slot key) picks for the current step: a human's stored answer, or
+	 * null when the human hasn't answered yet (the caller pauses). Answers naming objects that are
+	 * no longer candidates are dropped, and missing picks are filled from the remaining candidates.
+	 */
+	answered(chooserOrKey: PlayerGameState | string, candidates: CardInstance[], min: number, max = min): CardInstance[] | null {
+		const key = typeof chooserOrKey === 'string' ? chooserOrKey : chooserOrKey.playerId;
+		const ans = this.answers[key];
+		if (!ans || ans.kind !== 'chooseObjects') return null;
+		const ids = ans.objectIds;
 		const picked = ids.map((id) => candidates.find((c) => c.instanceId === id)).filter((c): c is CardInstance => Boolean(c));
 		for (const c of candidates) if (picked.length < min && !picked.includes(c)) picked.push(c);
 		return picked.slice(0, max);
@@ -916,6 +1113,10 @@ class Run {
 		if (f.token !== undefined && c.isToken !== f.token) return false;
 		if (f.isCommander !== undefined && Boolean(c.isCommander) !== f.isCommander) return false;
 		if (f.other && c.instanceId === this.ctx.sourceId) return false;
+		if (f.named !== undefined) {
+			const name = c.isFaceDown ? '' : ev ? ev.effectiveName : card.name;
+			if (name.toLowerCase() !== f.named.toLowerCase()) return false;
+		}
 		const cols = ev ? (c.isFaceDown ? [] : ev.colors) : (card.colors ?? []);
 		if (f.colors && !f.colors.some((col) => cols.includes(col))) return false;
 		if (
@@ -949,37 +1150,60 @@ class Run {
 		for (; this.stepIndex < steps.length; this.stepIndex++) {
 			if (this.result.turnEnded) return;
 			const step = steps[this.stepIndex];
-			const promptsBefore = this.state.pendingPrompts.length;
-			this.step(step);
-			if (this.result.paused) return;
-			this.answers = {};
-			// A scry or search step queued a human's prompt and more steps follow: pause, and resume at
-			// the next step once every such prompt is answered (the prompt does the step's own work).
-			const queued = this.state.pendingPrompts.slice(promptsBefore);
-			if (this.canPause && queued.length > 0 && this.stepIndex < steps.length - 1) {
-				const hasHandlerPrompt = queued.some(
-					(pr) =>
-						pr.continuation?.kind === 'handler' && pr.choice?.kind === 'chooseReplacement'
-				);
-				if (PROMPTING_VERBS.has(step.verb) || hasHandlerPrompt) {
-					const item = this.saveFrame(this.stepIndex + 1, {});
-					for (const pr of queued) {
-						if (pr.continuation?.kind === 'handler') {
-							const data = (pr.continuation.data ??= {});
-							data.resumeStackItemId = item.id;
-							data.resumeStepIndex = this.stepIndex + 1;
-						} else if (PROMPTING_VERBS.has(step.verb)) {
-							pr.continuation = {
-								kind: 'effect_resume',
-								stackItemId: item.id,
-								stepIndex: this.stepIndex + 1
-							};
-						}
-					}
-					this.result.paused = true;
-					return;
+			if (
+				step.ifPrecedingAccepted !== undefined &&
+				!this.stepDecisions[step.ifPrecedingAccepted]
+			) {
+				this.subStepIndex = 0;
+				this.phase = 'optional';
+				this.answers = {};
+				continue;
+			}
+			if (step.optional && this.phase !== 'afterStep') {
+				const accepted = this.resolveOptional(step);
+				if (this.result.paused) return;
+				if (!accepted) {
+					this.subStepIndex = 0;
+					this.phase = 'optional';
+					this.answers = {};
+					continue;
 				}
 			}
+			if (this.phase !== 'afterStep') {
+				this.phase = 'step';
+				const promptsBefore = this.state.pendingPrompts.length;
+				this.step(step);
+				if (this.result.turnEnded || this.result.paused) return;
+				if (this.canPause && !this.state.stack.some((s) => s.id === this.ctx.item.id)) return;
+				// A scry, search, or replacement/procedure prompt queued by this step: pause until answered,
+				// even on the final step so the resolving item stays on the stack (CR 608.2n).
+				const queued = this.state.pendingPrompts.slice(promptsBefore);
+				if (this.canPause && queued.length > 0) {
+					const hasNestedPrompt = queued.some((pr) => this.isNestedBlockingPrompt(pr));
+					if (PROMPTING_VERBS.has(step.verb) || hasNestedPrompt) {
+						const item = this.saveFrame(this.stepIndex + 1, {}, 'optional', 0);
+						this.linkPromptsToStackStep(queued, this.stepIndex + 1);
+						for (const pr of queued) {
+							if (
+								PROMPTING_VERBS.has(step.verb) &&
+								pr.continuation?.kind !== 'handler' &&
+								pr.continuation?.kind !== 'procedure'
+							) {
+								pr.continuation = {
+									kind: 'effect_resume',
+									stackItemId: item.id,
+									stepIndex: this.stepIndex + 1
+								};
+							}
+						}
+						this.result.paused = true;
+						return;
+					}
+				}
+			}
+			this.subStepIndex = 0;
+			this.phase = 'optional';
+			this.answers = {};
 		}
 	}
 
@@ -1033,48 +1257,80 @@ class Run {
 			case 'fight':
 				return this.fight(step);
 			case 'destroy': {
-				const objs = this.objects(step.subject).filter((o) => o.zone === 'battlefield');
-				this.bind(step, objs);
-				const toDestroy: CardInstance[] = [];
-				for (const o of objs) {
-					const ev = evaluatePermanent(s, o);
-					if (ev.activeKeywords.some((k) => k.toLowerCase() === 'indestructible')) {
-						p.addLog(s, 'rule', `${o.card.name} is Indestructible and was not destroyed.`);
-						continue;
+				const batchKey = `batch:${this.stepIndex}`;
+				let ids: string[];
+				if (this.answers[batchKey]?.kind === 'chooseObjects') {
+					ids = this.answers[batchKey].objectIds;
+				} else {
+					const objs = this.objects(step.subject).filter((o) => o.zone === 'battlefield');
+					this.bind(step, objs);
+					const toDestroy: CardInstance[] = [];
+					for (const o of objs) {
+						const ev = evaluatePermanent(s, o);
+						if (ev.activeKeywords.some((k) => k.toLowerCase() === 'indestructible')) {
+							p.addLog(s, 'rule', `${o.card.name} is Indestructible and was not destroyed.`);
+							continue;
+						}
+						// CR 122.1c: If a permanent with a shield counter on it would be destroyed,
+						// instead remove a shield counter from it.
+						if ((o.counters.shield || 0) > 0) {
+							o.counters.shield = Math.max(0, (o.counters.shield || 0) - 1);
+							p.addLog(
+								s,
+								'rule',
+								`A shield counter was removed from ${o.card.name} instead of destroying it (CR 122.1c).`,
+								you.playerId
+							);
+							continue;
+						}
+						toDestroy.push(o);
 					}
-					// CR 122.1c: If a permanent with a shield counter on it would be destroyed,
-					// instead remove a shield counter from it.
-					if ((o.counters.shield || 0) > 0) {
-						o.counters.shield = Math.max(0, (o.counters.shield || 0) - 1);
-						p.addLog(
-							s,
-							'rule',
-							`A shield counter was removed from ${o.card.name} instead of destroying it (CR 122.1c).`,
-							you.playerId
-						);
-						continue;
+					ids = toDestroy.map((o) => o.instanceId);
+					if (ids.length > 0 && this.canPause) {
+						this.answers[batchKey] = { kind: 'chooseObjects', objectIds: ids };
 					}
-					toDestroy.push(o);
 				}
-				if (toDestroy.length > 0) {
-					withSimultaneousDestroyLki(s, toDestroy, () => {
-						for (const o of toDestroy) p.destroy(s, o, title, you.playerId);
+				let paused = false;
+				if (ids.length > 0) {
+					const remaining = ids
+						.slice(this.subStepIndex)
+						.map((id) => this.locate(id))
+						.filter((f): f is NonNullable<typeof f> => Boolean(f && f.zone === 'battlefield'))
+						.map((f) => f.inst);
+					withSimultaneousDestroyLki(s, remaining, () => {
+						paused = this.runIndexedBatch(
+							batchKey,
+							() => ids,
+							(id) => {
+								const f = this.locate(id);
+								if (f && f.zone === 'battlefield') return p.destroy(s, f.inst, title, you.playerId);
+							}
+						).paused;
 					});
 				}
-				if (step.subject.k === 'all') {
-					p.addLog(s, 'cast', `${title} destroyed ${toDestroy.length} permanent(s).`, you.playerId);
+				if (!paused && step.subject.k === 'all') {
+					p.addLog(s, 'cast', `${title} destroyed ${ids.length} permanent(s).`, you.playerId);
 				}
 				return;
 			}
 			case 'exile':
 				return this.exile(step);
 			case 'bounce': {
-				const objs = this.objects(step.subject).filter((o) => o.zone === 'battlefield');
-				this.bind(step, objs);
-				for (const o of objs) {
-					p.moveFromBattlefield(s, o, 'hand');
-					p.addLog(s, 'cast', `${title} returned ${o.card.name} to its owner's hand.`, you.playerId);
-				}
+				this.runIndexedBatch(
+					`batch:${this.stepIndex}`,
+					() => {
+						const objs = this.objects(step.subject).filter((o) => o.zone === 'battlefield');
+						this.bind(step, objs);
+						return objs.map((o) => o.instanceId);
+					},
+					(id) => {
+						const f = this.locate(id);
+						if (!f || f.zone !== 'battlefield') return;
+						const res = p.moveFromBattlefield(s, f.inst, 'hand');
+						p.addLog(s, 'cast', `${title} returned ${f.inst.card.name} to its owner's hand.`, you.playerId);
+						return res as MoveResult;
+					}
+				);
 				return;
 			}
 			case 'move':
@@ -1120,23 +1376,33 @@ class Run {
 				return;
 			}
 			case 'putCounters': {
-				const objs = this.objects(step.subject).filter((o) => o.zone === 'battlefield');
-				this.bind(step, objs);
 				const counter = step.params?.counter ?? '+1/+1';
 				const n = this.amount(step.amount, 1);
-				for (const o of objs) p.addCounters(s, o, counter, n);
-				if (step.subject.k === 'all') {
-					p.addLog(s, 'cast', `${you.username} put ${n} ${counter} counter(s) on ${objs.length} permanent(s).`, you.playerId);
+				const { total, paused } = this.runIndexedBatch(
+					`batch:${this.stepIndex}`,
+					() => {
+						const objs = this.objects(step.subject).filter((o) => o.zone === 'battlefield');
+						this.bind(step, objs);
+						return objs.map((o) => o.instanceId);
+					},
+					(id) => {
+						const f = this.locate(id);
+						if (f && f.zone === 'battlefield') p.addCounters(s, f.inst, counter, n);
+					}
+				);
+				if (!paused && step.subject.k === 'all') {
+					p.addLog(s, 'cast', `${you.username} put ${n} ${counter} counter(s) on ${total} permanent(s).`, you.playerId);
 				}
 				return;
 			}
 			case 'proliferate': {
 				const { candidates, defaultIds } = proliferateCandidates(s, you);
+				const ans = this.answers[you.playerId];
 				if (
 					!you.isBot &&
 					this.canPause &&
 					candidates.length > 0 &&
-					!this.answers[you.playerId]
+					!ans
 				) {
 					this.pauseForChoice(
 						you,
@@ -1150,7 +1416,7 @@ class Run {
 					);
 					return;
 				}
-				const chosenIds = this.answers[you.playerId];
+				const chosenIds = ans?.kind === 'chooseObjects' ? ans.objectIds : undefined;
 				p.proliferate(s, you, chosenIds);
 				return;
 			}
@@ -1221,9 +1487,10 @@ class Run {
 							: allowed[0];
 					let chosen = defaultColor;
 					if (!you.isBot && !this.ctx.preferredColor && allowed.length > 1 && this.canPause) {
-						const ans = this.answers[you.playerId];
-						if (!ans || ans.length === 0) {
-							const item = this.saveFrame(this.stepIndex, this.answers);
+						const manaKey = `mana:${this.stepIndex}`;
+						const ans = this.answers[manaKey] ?? this.answers[you.playerId];
+						if (!ans) {
+							const item = this.saveFrame(this.stepIndex, this.answers, 'step', this.subStepIndex);
 							const defaultIdx = Math.max(0, allowed.indexOf(defaultColor));
 							enqueueChoicePrompt(s, {
 								id: p.uid('prompt', s),
@@ -1234,7 +1501,8 @@ class Run {
 								continuation: {
 									kind: 'effect_choice',
 									stackItemId: item.id,
-									stepIndex: this.stepIndex
+									stepIndex: this.stepIndex,
+									answerKey: manaKey
 								},
 								choice: {
 									kind: 'chooseMode',
@@ -1247,8 +1515,13 @@ class Run {
 							this.result.paused = true;
 							return;
 						}
-						const picked = ans[0] as ManaColor;
-						if (allowed.includes(picked)) chosen = picked;
+						const picked =
+							ans.kind === 'chooseMode'
+								? allowed[ans.indices[0] ?? -1]
+								: ans.kind === 'chooseObjects'
+									? (ans.objectIds[0] as ManaColor)
+									: undefined;
+						if (picked && allowed.includes(picked)) chosen = picked;
 					}
 					you.manaPool[chosen] += times;
 				}
@@ -1309,6 +1582,9 @@ class Run {
 			case 'endTurn':
 				if (step.params?.activePlayerMay) {
 					p.activePlayerMayEndTurn(s, you, this.ctx.sourceCard.name);
+					if (!s.stack.some((st) => st.id === this.ctx.item.id)) {
+						this.result.turnEnded = true;
+					}
 					return;
 				}
 				p.endTurn(s, you.playerId);
@@ -1418,11 +1694,23 @@ class Run {
 				p.addLog(s, 'cast', `${you.username} copied ${orig.card.name} on the stack (CR 707.10).`, you.playerId);
 				return;
 			}
-			case 'mill':
-				for (const pl of this.players(step.subject)) {
-					const n = Math.min(this.amount(step.amount), pl.library.length);
-					for (let i = 0; i < n; i++) {
-						moveObject(s, pl.library[0], 'graveyard', {
+			case 'mill': {
+				const batchKey = `batch:${this.stepIndex}:mill`;
+				const { paused } = this.runIndexedBatch(
+					batchKey,
+					() => {
+						const slots: string[] = [];
+						for (const pl of this.players(step.subject)) {
+							const n = Math.min(this.amount(step.amount), pl.library.length);
+							for (let i = 0; i < n; i++) slots.push(pl.playerId);
+							if (n > 0) p.addLog(s, 'rule', `${pl.username} milled ${n} card(s).`, you.playerId);
+						}
+						return slots;
+					},
+					(playerId) => {
+						const pl = this.player(playerId);
+						if (!pl || pl.library.length === 0) return;
+						return moveObject(s, pl.library[0], 'graveyard', {
 							from: { player: pl, zone: 'library' },
 							toPlayer: pl,
 							graveyardReplacement: true,
@@ -1430,9 +1718,10 @@ class Run {
 							newTimestamp: true
 						});
 					}
-					if (n > 0) p.addLog(s, 'rule', `${pl.username} milled ${n} card(s).`, you.playerId);
-				}
+				);
+				if (paused) return;
 				return;
+			}
 			case 'scry':
 			case 'lookAndReorder': {
 				const n = this.amount(step.amount);
@@ -1628,79 +1917,103 @@ class Run {
 		const p = P();
 		const you = this.you;
 		const sel = step.subject;
+		const batchKey = `batch:${this.stepIndex}`;
 
 		// Specific object(s) (e.g. "sacrifice ~" or "sacrifice it")
 		if (sel.k === 'self' || sel.k === 'binding' || sel.k === 'target') {
 			const actor = step.actor ? (this.playerRef(step.actor) ?? you) : you;
-			const objs = this.objects(sel).filter(
-				(o) => o.zone === 'battlefield' && o.controllerId === actor.playerId
+			this.runIndexedBatch(
+				batchKey,
+				() => {
+					const objs = this.objects(sel).filter(
+						(o) => o.zone === 'battlefield' && o.controllerId === actor.playerId
+					);
+					this.bind(step, objs);
+					return objs.map((o) => o.instanceId);
+				},
+				(id) => {
+					const f = this.locate(id);
+					if (!f || f.zone !== 'battlefield') return;
+					const res = p.moveFromBattlefield(s, f.inst, 'graveyard');
+					p.addLog(s, 'rule', `${actor.username} sacrificed ${f.inst.card.name}.`, actor.playerId);
+					return res as MoveResult;
+				}
 			);
-			this.bind(step, objs);
-			for (const o of objs) {
-				p.moveFromBattlefield(s, o, 'graveyard');
-				p.addLog(s, 'rule', `${actor.username} sacrificed ${o.card.name}.`, actor.playerId);
-			}
 			return;
 		}
 
-		// Player-driven or filter-driven sacrifice ("Sacrifice a creature", "Each opponent sacrifices a creature")
-		const actors = step.actor
-			? this.players({ k: 'playerRef', ref: step.actor })
-			: sel.k === 'player' || sel.k === 'playerRef'
-				? this.players(sel)
-				: sel.k === 'all' && sel.filter.controller === 'opponent'
-					? this.players({ k: 'player', filter: { relation: 'each_opponent' } })
-					: [you];
+		// CR 701.21a / 101.4: each player chooses (in turn order), then all are sacrificed at once.
+		// Once choices are gathered and captured in `batchKey`, process them via `runIndexedBatch`.
+		if (!this.answers[batchKey]) {
+			const actors = step.actor
+				? this.players({ k: 'playerRef', ref: step.actor })
+				: sel.k === 'player' || sel.k === 'playerRef'
+					? this.players(sel)
+					: sel.k === 'all' && sel.filter.controller === 'opponent'
+						? this.players({ k: 'player', filter: { relation: 'each_opponent' } })
+						: [you];
 
-		const filter: ObjectFilter =
-			sel.k === 'all' ? { ...sel.filter, controller: undefined } : {};
+			const filter: ObjectFilter =
+				sel.k === 'all' ? { ...sel.filter, controller: undefined } : {};
 
-		// CR 701.21a / 101.4: each player chooses (in turn order), then all are sacrificed at once. A
-		// human with a real choice gets a prompt; resolution pauses until every such human answered.
-		const choices: Array<{ actor: PlayerGameState; candidates: CardInstance[]; count: number }> = [];
-		for (const actor of actors) {
-			const candidates = actor.battlefield.filter(
-				(c) => !c.phasedOut && c.controllerId === actor.playerId && this.matches(c, filter, 'battlefield')
-			);
-			if (candidates.length === 0) continue;
-			const count =
-				sel.k === 'all' && !step.amount
-					? candidates.length
-					: Math.min(candidates.length, Math.max(0, this.amount(step.amount, 1)));
-			if (count <= 0) continue;
-			choices.push({ actor, candidates, count });
-		}
-		const atRandom = Boolean((step.params as { atRandom?: boolean } | undefined)?.atRandom);
-		if (!atRandom && this.canPause) {
-			for (const { actor, candidates, count } of choices) {
-				if (actor.isBot || candidates.length <= count || this.answers[actor.playerId]) continue;
-				const title = `${this.ctx.title} — Sacrifice ${count} permanent(s)`;
-				this.pauseForChoice(actor, title, `Choose ${count} permanent(s) to sacrifice.`, candidates.map((c) => c.instanceId), count, count, 'battlefield');
-				return;
+			const choices: Array<{ actor: PlayerGameState; candidates: CardInstance[]; count: number }> = [];
+			for (const actor of actors) {
+				const candidates = actor.battlefield.filter(
+					(c) => !c.phasedOut && c.controllerId === actor.playerId && this.matches(c, filter, 'battlefield')
+				);
+				if (candidates.length === 0) continue;
+				const count =
+					sel.k === 'all' && !step.amount
+						? candidates.length
+						: Math.min(candidates.length, Math.max(0, this.amount(step.amount, 1)));
+				if (count <= 0) continue;
+				choices.push({ actor, candidates, count });
 			}
-		}
-		const sacrificed: Array<{ actor: PlayerGameState; objs: CardInstance[] }> = [];
-		for (const { actor, candidates, count } of choices) {
-			let chosen: CardInstance[];
-			if (atRandom) {
-				const pool = [...candidates];
-				chosen = [];
-				for (let i = 0; i < count && pool.length > 0; i++) {
-					const idx = Math.floor(nextRandom(s) * pool.length);
-					chosen.push(pool.splice(idx, 1)[0]);
+			const atRandom = Boolean((step.params as { atRandom?: boolean } | undefined)?.atRandom);
+			if (!atRandom && this.canPause) {
+				for (const { actor, candidates, count } of choices) {
+					const actorKey = `actor:${this.stepIndex}:${actor.playerId}`;
+					if (actor.isBot || candidates.length <= count || this.answers[actorKey] || this.answers[actor.playerId]) continue;
+					const title = `${this.ctx.title} — Sacrifice ${count} permanent(s)`;
+					this.pauseForChoice(actor, title, `Choose ${count} permanent(s) to sacrifice.`, candidates.map((c) => c.instanceId), count, count, 'battlefield', undefined, actorKey);
+					return;
 				}
-			} else {
-				chosen = this.answered(actor, candidates, count) ?? candidates.slice(0, count);
 			}
-			sacrificed.push({ actor, objs: chosen });
-		}
-		this.bind(step, sacrificed.flatMap((x) => x.objs));
-		for (const { actor, objs } of sacrificed) {
-			for (const o of objs) {
-				p.moveFromBattlefield(s, o, 'graveyard');
-				p.addLog(s, 'rule', `${actor.username} sacrificed ${o.card.name}.`, actor.playerId);
+			const sacrificed: CardInstance[] = [];
+			for (const { actor, candidates, count } of choices) {
+				let chosen: CardInstance[];
+				if (atRandom) {
+					const pool = [...candidates];
+					chosen = [];
+					for (let i = 0; i < count && pool.length > 0; i++) {
+						const idx = Math.floor(nextRandom(s) * pool.length);
+						chosen.push(pool.splice(idx, 1)[0]);
+					}
+				} else {
+					const actorKey = `actor:${this.stepIndex}:${actor.playerId}`;
+					chosen = this.answered(actorKey, candidates, count) ?? this.answered(actor, candidates, count) ?? candidates.slice(0, count);
+				}
+				sacrificed.push(...chosen);
 			}
+			this.bind(step, sacrificed);
+			this.answers[batchKey] = {
+				kind: 'chooseObjects',
+				objectIds: sacrificed.map((o) => o.instanceId)
+			};
 		}
+
+		this.runIndexedBatch(
+			batchKey,
+			() => [],
+			(id) => {
+				const f = this.locate(id);
+				if (!f || f.zone !== 'battlefield') return;
+				const actor = f.holder;
+				const res = p.moveFromBattlefield(s, f.inst, 'graveyard');
+				p.addLog(s, 'rule', `${actor.username} sacrificed ${f.inst.card.name}.`, actor.playerId);
+				return res as MoveResult;
+			}
+		);
 	}
 
 	discard(step: EffectStep): void {
@@ -1708,10 +2021,11 @@ class Run {
 		const p = P();
 		const you = this.you;
 		const sel = step.subject;
+		const batchKey = `batch:${this.stepIndex}`;
 
-		const discardCard = (pl: PlayerGameState, cardInst: CardInstance) => {
+		const discardCard = (pl: PlayerGameState, cardInst: CardInstance): MoveResult | void => {
 			if (!pl.hand.includes(cardInst)) return;
-			moveObject(s, cardInst, 'graveyard', {
+			return moveObject(s, cardInst, 'graveyard', {
 				from: { player: pl, zone: 'hand' },
 				toPlayer: pl,
 				graveyardReplacement: true,
@@ -1721,73 +2035,97 @@ class Run {
 		};
 
 		if (sel.k === 'self' || sel.k === 'binding') {
-			const objs = this.objects(sel).filter((o) => o.zone === 'hand');
-			this.bind(step, objs);
-			for (const o of objs) {
-				const holder = this.locate(o.instanceId)?.holder;
-				if (holder) {
-					discardCard(holder, o);
-					p.addLog(s, 'rule', `${holder.username} discarded ${o.card.name}.`, holder.playerId);
+			this.runIndexedBatch(
+				batchKey,
+				() => {
+					const objs = this.objects(sel).filter((o) => o.zone === 'hand');
+					this.bind(step, objs);
+					return objs.map((o) => o.instanceId);
+				},
+				(id) => {
+					const f = this.locate(id);
+					if (!f || f.zone !== 'hand') return;
+					const res = discardCard(f.holder, f.inst);
+					p.addLog(s, 'rule', `${f.holder.username} discarded ${f.inst.card.name}.`, f.holder.playerId);
+					return res;
 				}
-			}
+			);
 			return;
 		}
 
-		const actors = step.actor
-			? this.players({ k: 'playerRef', ref: step.actor })
-			: sel.k === 'player' || sel.k === 'playerRef' || sel.k === 'target'
-				? this.players(sel)
-				: sel.k === 'all' && sel.filter.controller === 'opponent'
-					? this.players({ k: 'player', filter: { relation: 'each_opponent' } })
-					: [you];
+		if (!this.answers[batchKey]) {
+			const actors = step.actor
+				? this.players({ k: 'playerRef', ref: step.actor })
+				: sel.k === 'player' || sel.k === 'playerRef' || sel.k === 'target'
+					? this.players(sel)
+					: sel.k === 'all' && sel.filter.controller === 'opponent'
+						? this.players({ k: 'player', filter: { relation: 'each_opponent' } })
+						: [you];
 
-		const filter: ObjectFilter | null =
-			sel.k === 'all' ? { ...sel.filter, controller: undefined, owner: undefined } : null;
+			const filter: ObjectFilter | null =
+				sel.k === 'all' ? { ...sel.filter, controller: undefined, owner: undefined } : null;
 
-		// CR 701.8: each player chooses (in turn order), then all discard at once. A human with a real
-		// choice gets a prompt; resolution pauses until every such human answered.
-		const choices: Array<{ pl: PlayerGameState; candidates: CardInstance[]; count: number }> = [];
-		for (const pl of actors) {
-			const candidates = filter
-				? pl.hand.filter((c) => this.matches(c, filter, 'hand'))
-				: [...pl.hand];
-			if (candidates.length === 0) continue;
-			const count =
-				sel.k === 'all' && !step.amount
-					? candidates.length
-					: Math.min(candidates.length, Math.max(0, this.amount(step.amount, 1)));
-			if (count <= 0) continue;
-			choices.push({ pl, candidates, count });
-		}
-		const atRandom = Boolean(step.params?.atRandom);
-		if (!atRandom && this.canPause) {
-			for (const { pl, candidates, count } of choices) {
-				if (pl.isBot || candidates.length <= count || this.answers[pl.playerId]) continue;
-				const title = `${this.ctx.title} — Discard ${count} card(s)`;
-				this.pauseForChoice(pl, title, `Choose ${count} card(s) to discard.`, candidates.map((c) => c.instanceId), count, count, 'hand');
-				return;
+			// CR 701.8: each player chooses (in turn order), then all discard at once. A human with a real
+			// choice gets a prompt; resolution pauses until every such human answered.
+			const choices: Array<{ pl: PlayerGameState; candidates: CardInstance[]; count: number }> = [];
+			for (const pl of actors) {
+				const candidates = filter
+					? pl.hand.filter((c) => this.matches(c, filter, 'hand'))
+					: [...pl.hand];
+				if (candidates.length === 0) continue;
+				const count =
+					sel.k === 'all' && !step.amount
+						? candidates.length
+						: Math.min(candidates.length, Math.max(0, this.amount(step.amount, 1)));
+				if (count <= 0) continue;
+				choices.push({ pl, candidates, count });
 			}
-		}
-		const discarded: Array<{ pl: PlayerGameState; cards: CardInstance[] }> = [];
-		for (const { pl, candidates, count } of choices) {
-			let chosen: CardInstance[];
-			if (atRandom) {
-				const pool = [...candidates];
-				chosen = [];
-				for (let i = 0; i < count && pool.length > 0; i++) {
-					const idx = Math.floor(nextRandom(s) * pool.length);
-					chosen.push(pool.splice(idx, 1)[0]);
+			const atRandom = Boolean(step.params?.atRandom);
+			if (!atRandom && this.canPause) {
+				for (const { pl, candidates, count } of choices) {
+					const actorKey = `actor:${this.stepIndex}:${pl.playerId}`;
+					if (pl.isBot || candidates.length <= count || this.answers[actorKey] || this.answers[pl.playerId]) continue;
+					const title = `${this.ctx.title} — Discard ${count} card(s)`;
+					this.pauseForChoice(pl, title, `Choose ${count} card(s) to discard.`, candidates.map((c) => c.instanceId), count, count, 'hand', undefined, actorKey);
+					return;
 				}
-			} else {
-				chosen = this.answered(pl, candidates, count) ?? candidates.slice(0, count);
 			}
-			discarded.push({ pl, cards: chosen });
+			const discarded: Array<{ pl: PlayerGameState; cards: CardInstance[] }> = [];
+			for (const { pl, candidates, count } of choices) {
+				let chosen: CardInstance[];
+				if (atRandom) {
+					const pool = [...candidates];
+					chosen = [];
+					for (let i = 0; i < count && pool.length > 0; i++) {
+						const idx = Math.floor(nextRandom(s) * pool.length);
+						chosen.push(pool.splice(idx, 1)[0]);
+					}
+				} else {
+					const actorKey = `actor:${this.stepIndex}:${pl.playerId}`;
+					chosen = this.answered(actorKey, candidates, count) ?? this.answered(pl, candidates, count) ?? candidates.slice(0, count);
+				}
+				discarded.push({ pl, cards: chosen });
+			}
+			const flatCards = discarded.flatMap((x) => x.cards);
+			this.bind(step, flatCards);
+			for (const { pl, cards } of discarded) {
+				p.addLog(s, 'rule', `${pl.username} discarded ${cards.length} card(s)${atRandom ? ' at random' : ''}.`, pl.playerId);
+			}
+			this.answers[batchKey] = {
+				kind: 'chooseObjects',
+				objectIds: flatCards.map((c) => c.instanceId)
+			};
 		}
-		this.bind(step, discarded.flatMap((x) => x.cards));
-		for (const { pl, cards } of discarded) {
-			for (const c of cards) discardCard(pl, c);
-			p.addLog(s, 'rule', `${pl.username} discarded ${cards.length} card(s)${atRandom ? ' at random' : ''}.`, pl.playerId);
-		}
+
+		this.runIndexedBatch(
+			batchKey,
+			() => [],
+			(id) => {
+				const f = this.locate(id);
+				if (!f || f.zone !== 'hand') return;
+				return discardCard(f.holder, f.inst);
+			}
+		);
 	}
 
 	exile(step: EffectStep): void {
@@ -1801,31 +2139,48 @@ class Run {
 			return;
 		}
 		if (sel.k === 'all' && sel.filter.zone === 'graveyard') {
-			let total = 0;
-			for (const pl of s.players) {
-				// Top card first, so exile receives the graveyard in reverse order (legacy behaviour).
-				while (pl.graveyard.length > 0) {
-					moveObject(s, pl.graveyard[pl.graveyard.length - 1], 'exile', { from: { player: pl, zone: 'graveyard' }, toPlayer: pl, bumpVersion: true });
-					total++;
+			const { total, paused } = this.runIndexedBatch(
+				`batch:${this.stepIndex}`,
+				() => s.players.flatMap((pl) => [...pl.graveyard].reverse().map((c) => c.instanceId)),
+				(id) => {
+					const f = this.locate(id);
+					if (!f || f.zone !== 'graveyard') return;
+					return moveObject(s, f.inst, 'exile', {
+						from: { player: f.holder, zone: 'graveyard' },
+						toPlayer: f.holder,
+						bumpVersion: true
+					});
 				}
+			);
+			if (!paused) {
+				p.addLog(s, 'trigger', `${this.ctx.title} exiled all ${total} card(s) from all graveyards!`, you.playerId);
 			}
-			p.addLog(s, 'trigger', `${this.ctx.title} exiled all ${total} card(s) from all graveyards!`, you.playerId);
 			return;
 		}
-		const objs = this.objects(sel);
-		this.bind(step, objs);
-		for (const o of objs) {
-			if (o.zone === 'battlefield') {
-				p.emitVfx(s, { kind: 'exile', targetId: o.instanceId, label: o.card.name });
-				p.moveFromBattlefield(s, o, 'exile');
-			} else if (o.zone === 'graveyard') {
-				const holder = this.locate(o.instanceId)!.holder;
-				moveObject(s, o, 'exile', { from: { player: holder, zone: 'graveyard' }, toPlayer: holder, bumpVersion: true, newTimestamp: true });
-			} else {
-				continue;
+		this.runIndexedBatch(
+			`batch:${this.stepIndex}`,
+			() => {
+				const objs = this.objects(sel);
+				this.bind(step, objs);
+				return objs.map((o) => o.instanceId);
+			},
+			(id) => {
+				const f = this.locate(id);
+				if (!f) return;
+				const o = f.inst;
+				let res: MoveResult | string | void;
+				if (o.zone === 'battlefield') {
+					p.emitVfx(s, { kind: 'exile', targetId: o.instanceId, label: o.card.name });
+					res = p.moveFromBattlefield(s, o, 'exile');
+				} else if (o.zone === 'graveyard') {
+					res = moveObject(s, o, 'exile', { from: { player: f.holder, zone: 'graveyard' }, toPlayer: f.holder, bumpVersion: true, newTimestamp: true });
+				} else {
+					return;
+				}
+				p.addLog(s, 'cast', `${this.ctx.title} exiled ${o.card.name}.`, you.playerId);
+				return res;
 			}
-			p.addLog(s, 'cast', `${this.ctx.title} exiled ${o.card.name}.`, you.playerId);
-		}
+		);
 	}
 
 	move(step: EffectStep): void {
@@ -1833,72 +2188,132 @@ class Run {
 		const p = P();
 		const you = this.you;
 		const params = step.params ?? {};
+		const batchKey = `batch:${this.stepIndex}`;
 		if (params.from === 'hand') {
-			const filter: ObjectFilter = step.subject.k === 'all' ? step.subject.filter : {};
-			const candidates = you.hand.filter((c) => this.matches(c, filter, 'hand'));
-			const max = Math.min(candidates.length, Math.max(0, this.amount(step.amount, 1)));
-			const min = params.upTo ? 0 : max;
-			if (max <= 0) return;
-			if (
-				!you.isBot &&
-				this.canPause &&
-				!this.answers[you.playerId] &&
-				(min < max || candidates.length > max || (params.to === 'library' && max > 1))
-			) {
-				const title = `${this.ctx.title} — Choose card(s) from hand`;
-				this.pauseForChoice(
-					you,
-					title,
-					`Choose ${min === max ? max : `up to ${max}`} card(s) from your hand.`,
-					candidates.map((c) => c.instanceId),
-					min,
-					max,
-					'hand'
+			if (params.to === 'library') {
+				const top = params.position !== 'bottom';
+				if (!this.answers[batchKey]) {
+					const chosen = this.resolveHandMoveChosen(step);
+					if (!chosen) return;
+					this.bind(step, chosen);
+					const ordered = top ? [...chosen].reverse() : chosen;
+					if (chosen.length > 0) {
+						p.addLog(
+							s,
+							'rule',
+							`${you.username} put ${chosen.length} card(s) from hand on ${top ? 'top' : 'the bottom'} of their library (${this.ctx.title}).`,
+							you.playerId
+						);
+					}
+					this.answers[batchKey] = { kind: 'chooseObjects', objectIds: ordered.map((c) => c.instanceId) };
+				}
+				this.runIndexedBatch(
+					batchKey,
+					() => [],
+					(id) => {
+						const f = this.locate(id);
+						if (!f || f.zone !== 'hand') return;
+						return moveObject(s, f.inst, 'library', {
+							from: { player: f.holder, zone: 'hand' },
+							toPlayer: f.holder,
+							insert: top ? 'start' : 'end',
+							commanderRedirect: true,
+							bumpVersion: true,
+							newTimestamp: true
+						});
+					}
 				);
 				return;
 			}
-			let chosen: CardInstance[];
-			if (this.answers[you.playerId]) {
-				chosen = this.answered(you, candidates, min, max) ?? [];
-			} else if (params.to === 'battlefield') {
-				chosen = [...candidates].sort((a, b) => b.card.cmc - a.card.cmc).slice(0, max);
-			} else {
-				chosen = candidates.slice(0, max);
+			if (!this.answers[batchKey]) {
+				const chosen = this.resolveHandMoveChosen(step);
+				if (!chosen) return;
+				this.bind(step, chosen);
+				if (this.canPause && !you.isBot) {
+					for (const o of chosen) {
+						if (!(o.copiableCard ?? o.card).typeLine.includes('Aura')) continue;
+						const attachCands = p.legalAuraAttachCandidates(s, o, you);
+						const auraKey = `aura:${o.instanceId}`;
+						if (attachCands.length > 0 && !this.answers[auraKey]) {
+							this.pauseForChoice(
+								you,
+								`${this.ctx.title} — Choose what Aura will enchant`,
+								`Choose a legal object or player for ${o.card.name} to enchant as it enters the battlefield (CR 303.4f).`,
+								attachCands,
+								1,
+								1,
+								'battlefield',
+								[attachCands[0]],
+								auraKey
+							);
+							return;
+						}
+					}
+				}
+				this.answers[batchKey] = { kind: 'chooseObjects', objectIds: chosen.map((c) => c.instanceId) };
 			}
-			this.bind(step, chosen);
-			if (params.to === 'library') {
-				const top = params.position !== 'bottom';
-				// Put onto top in reverse so chosen[0] ends up at library[0].
-				const ordered = top ? [...chosen].reverse() : chosen;
-				for (const c of ordered) {
-					moveObject(s, c, 'library', {
+			this.runIndexedBatch(
+				batchKey,
+				() => [],
+				(id) => {
+					const f = this.locate(id);
+					if (!f || f.zone !== 'hand') return;
+					const o = f.inst;
+					const isAura = (o.copiableCard ?? o.card).typeLine.includes('Aura');
+					if (isAura) {
+						const attachCands = p.legalAuraAttachCandidates(s, o, you);
+						if (attachCands.length === 0) {
+							p.addLog(
+								s,
+								'rule',
+								`${o.card.name} remained in ${you.username}'s hand because there is no legal object or player for it to enchant (CR 303.4g).`,
+								you.playerId
+							);
+							return;
+						}
+						const auraAns = this.answers[`aura:${o.instanceId}`];
+						const pickedId = auraAns?.kind === 'chooseObjects' ? auraAns.objectIds[0] : undefined;
+						attachObject(s, o, pickedId && attachCands.includes(pickedId) ? pickedId : attachCands[0]);
+					}
+					o.summoningSick = o.card.typeLine.includes('Creature');
+					o.tapped = Boolean(params.tapped);
+					o.defaultControllerId = you.playerId;
+					const res = moveObject(s, o, 'battlefield', {
 						from: { player: you, zone: 'hand' },
 						toPlayer: you,
-						insert: top ? 'start' : 'end',
-						commanderRedirect: true,
-						bumpVersion: true,
-						newTimestamp: true
+						controllerId: you.playerId,
+						newTimestamp: !isAura,
+						bumpVersion: true
 					});
+					p.addLog(s, 'cast', `${you.username} put ${o.card.name} from their hand onto the battlefield (${this.ctx.title}).`, you.playerId);
+					if (isAura && o.attachedToId) {
+						const host = p.findPermanent(s, o.attachedToId);
+						if (host) p.triggerOnAttach(s, you, o, host.inst);
+					}
+					p.triggerOnEtb(s, you, o);
+					return res;
 				}
-				if (chosen.length > 0) {
-					p.addLog(
-						s,
-						'rule',
-						`${you.username} put ${chosen.length} card(s) from hand on ${top ? 'top' : 'the bottom'} of their library (${this.ctx.title}).`,
-						you.playerId
-					);
-				}
-				return;
+			);
+			return;
+		}
+		if (!this.answers[batchKey]) {
+			let objs = this.objects(step.subject).filter((o) => o.zone === 'graveyard');
+			if (params.topmostOnly) {
+				// CR 404.2: the graveyard's order matters; the top card is the last one in the array.
+				objs = objs.length > 0 ? [objs[objs.length - 1]] : [];
 			}
-			if (this.canPause && !you.isBot) {
-				for (const o of chosen) {
+			if (params.to !== 'hand' && this.canPause) {
+				for (const o of objs) {
+					const holder = this.locate(o.instanceId)?.holder;
+					if (!holder) continue;
+					const controller = params.underYourControl ? you : (this.player(o.ownerId) ?? holder);
 					if (!(o.copiableCard ?? o.card).typeLine.includes('Aura')) continue;
-					const attachCands = p.legalAuraAttachCandidates(s, o, you);
+					const attachCands = p.legalAuraAttachCandidates(s, o, controller);
 					const auraKey = `aura:${o.instanceId}`;
-					if (attachCands.length > 0 && !this.answers[auraKey]) {
+					if (attachCands.length > 0 && !controller.isBot && !this.answers[auraKey]) {
 						this.pauseForChoice(
-							you,
-							`${this.ctx.title} — Choose what Aura will enchant`,
+							controller,
+							`${this.ctx.title} — Choose what ${o.card.name} will enchant`,
 							`Choose a legal object or player for ${o.card.name} to enchant as it enters the battlefield (CR 303.4f).`,
 							attachCands,
 							1,
@@ -1911,111 +2326,93 @@ class Run {
 					}
 				}
 			}
-			for (const o of chosen) {
+			this.bind(step, objs);
+			this.answers[batchKey] = { kind: 'chooseObjects', objectIds: objs.map((o) => o.instanceId) };
+		}
+		this.runIndexedBatch(
+			batchKey,
+			() => [],
+			(id) => {
+				const f = this.locate(id);
+				if (!f || f.zone !== 'graveyard') return;
+				const o = f.inst;
+				const holder = f.holder;
+				if (params.to === 'hand') {
+					const res = moveObject(s, o, 'hand', { from: { player: holder, zone: 'graveyard' }, toPlayer: holder, commanderRedirect: true, bumpVersion: true, newTimestamp: true });
+					p.addLog(s, 'cast', `${this.ctx.title} returned ${o.card.name} from ${holder.username}'s graveyard to hand.`, you.playerId);
+					return res;
+				}
+				const controller = params.underYourControl ? you : (this.player(o.ownerId) ?? holder);
 				const isAura = (o.copiableCard ?? o.card).typeLine.includes('Aura');
 				if (isAura) {
-					const attachCands = p.legalAuraAttachCandidates(s, o, you);
+					const attachCands = p.legalAuraAttachCandidates(s, o, controller);
 					if (attachCands.length === 0) {
 						p.addLog(
 							s,
 							'rule',
-							`${o.card.name} remained in ${you.username}'s hand because there is no legal object or player for it to enchant (CR 303.4g).`,
-							you.playerId
+							`${o.card.name} remained in ${holder.username}'s graveyard because there is no legal object or player for it to enchant (CR 303.4g).`,
+							controller.playerId
 						);
-						continue;
+						return;
 					}
-					const pickedId = (this.answers[`aura:${o.instanceId}`] ?? [])[0];
+					const auraAns = this.answers[`aura:${o.instanceId}`];
+					const pickedId = auraAns?.kind === 'chooseObjects' ? auraAns.objectIds[0] : undefined;
 					attachObject(s, o, pickedId && attachCands.includes(pickedId) ? pickedId : attachCands[0]);
 				}
-				o.summoningSick = o.card.typeLine.includes('Creature');
+				o.summoningSick = o.card.typeLine.includes('Creature') && !o.card.keywords.includes('Haste');
 				o.tapped = Boolean(params.tapped);
-				o.defaultControllerId = you.playerId;
-				moveObject(s, o, 'battlefield', {
-					from: { player: you, zone: 'hand' },
-					toPlayer: you,
-					controllerId: you.playerId,
+				o.defaultControllerId = controller.playerId;
+				const res = moveObject(s, o, 'battlefield', {
+					from: { player: holder, zone: 'graveyard' },
+					toPlayer: controller,
+					controllerId: controller.playerId,
 					newTimestamp: !isAura,
 					bumpVersion: true
 				});
-				p.addLog(s, 'cast', `${you.username} put ${o.card.name} from their hand onto the battlefield (${this.ctx.title}).`, you.playerId);
+				p.addLog(s, 'cast', `${controller.username} put ${o.card.name} onto the battlefield from ${holder.username}'s graveyard (${this.ctx.title}).`, you.playerId);
 				if (isAura && o.attachedToId) {
 					const host = p.findPermanent(s, o.attachedToId);
-					if (host) p.triggerOnAttach(s, you, o, host.inst);
+					if (host) p.triggerOnAttach(s, controller, o, host.inst);
 				}
-				p.triggerOnEtb(s, you, o);
+				p.triggerOnEtb(s, controller, o);
+				return res;
 			}
-			return;
+		);
+	}
+
+	private resolveHandMoveChosen(step: EffectStep): CardInstance[] | null {
+		const you = this.you;
+		const params = step.params ?? {};
+		const filter: ObjectFilter = step.subject.k === 'all' ? step.subject.filter : {};
+		const candidates = you.hand.filter((c) => this.matches(c, filter, 'hand'));
+		const max = Math.min(candidates.length, Math.max(0, this.amount(step.amount, 1)));
+		const min = params.upTo ? 0 : max;
+		if (max <= 0) return null;
+		if (
+			!you.isBot &&
+			this.canPause &&
+			!this.answers[you.playerId] &&
+			(min < max || candidates.length > max || (params.to === 'library' && max > 1))
+		) {
+			const title = `${this.ctx.title} — Choose card(s) from hand`;
+			this.pauseForChoice(
+				you,
+				title,
+				`Choose ${min === max ? max : `up to ${max}`} card(s) from your hand.`,
+				candidates.map((c) => c.instanceId),
+				min,
+				max,
+				'hand'
+			);
+			return null;
 		}
-		let objs = this.objects(step.subject).filter((o) => o.zone === 'graveyard');
-		if (params.topmostOnly) {
-			// CR 404.2: the graveyard's order matters; the top card is the last one in the array.
-			objs = objs.length > 0 ? [objs[objs.length - 1]] : [];
+		if (this.answers[you.playerId]) {
+			return this.answered(you, candidates, min, max) ?? [];
 		}
-		if (params.to !== 'hand' && this.canPause) {
-			for (const o of objs) {
-				const holder = this.locate(o.instanceId)?.holder;
-				if (!holder) continue;
-				const controller = params.underYourControl ? you : (this.player(o.ownerId) ?? holder);
-				if (!(o.copiableCard ?? o.card).typeLine.includes('Aura')) continue;
-				const attachCands = p.legalAuraAttachCandidates(s, o, controller);
-				const auraKey = `aura:${o.instanceId}`;
-				if (attachCands.length > 0 && !controller.isBot && !this.answers[auraKey]) {
-					this.pauseForChoice(
-						controller,
-						`${this.ctx.title} — Choose what ${o.card.name} will enchant`,
-						`Choose a legal object or player for ${o.card.name} to enchant as it enters the battlefield (CR 303.4f).`,
-						attachCands,
-						1,
-						1,
-						'battlefield',
-						[attachCands[0]],
-						auraKey
-					);
-					return;
-				}
-			}
+		if (params.to === 'battlefield') {
+			return [...candidates].sort((a, b) => b.card.cmc - a.card.cmc).slice(0, max);
 		}
-		this.bind(step, objs);
-		for (const o of objs) {
-			const holder = this.locate(o.instanceId)!.holder;
-			if (params.to === 'hand') {
-				moveObject(s, o, 'hand', { from: { player: holder, zone: 'graveyard' }, toPlayer: holder, commanderRedirect: true, bumpVersion: true, newTimestamp: true });
-				p.addLog(s, 'cast', `${this.ctx.title} returned ${o.card.name} from ${holder.username}'s graveyard to hand.`, you.playerId);
-				continue;
-			}
-			const controller = params.underYourControl ? you : (this.player(o.ownerId) ?? holder);
-			const isAura = (o.copiableCard ?? o.card).typeLine.includes('Aura');
-			if (isAura) {
-				const attachCands = p.legalAuraAttachCandidates(s, o, controller);
-				if (attachCands.length === 0) {
-					p.addLog(
-						s,
-						'rule',
-						`${o.card.name} remained in ${holder.username}'s graveyard because there is no legal object or player for it to enchant (CR 303.4g).`,
-						controller.playerId
-					);
-					continue;
-				}
-				const pickedId = (this.answers[`aura:${o.instanceId}`] ?? [])[0];
-				attachObject(s, o, pickedId && attachCands.includes(pickedId) ? pickedId : attachCands[0]);
-			}
-			o.summoningSick = o.card.typeLine.includes('Creature') && !o.card.keywords.includes('Haste');
-			o.tapped = Boolean(params.tapped);
-			o.defaultControllerId = controller.playerId;
-			moveObject(s, o, 'battlefield', {
-				from: { player: holder, zone: 'graveyard' },
-				toPlayer: controller,
-				controllerId: controller.playerId,
-				newTimestamp: !isAura,
-				bumpVersion: true
-			});
-			p.addLog(s, 'cast', `${controller.username} put ${o.card.name} onto the battlefield from ${holder.username}'s graveyard (${this.ctx.title}).`, you.playerId);
-			if (isAura && o.attachedToId) {
-				const host = p.findPermanent(s, o.attachedToId);
-				if (host) p.triggerOnAttach(s, controller, o, host.inst);
-			}
-			p.triggerOnEtb(s, controller, o);
-		}
+		return candidates.slice(0, max);
 	}
 
 	dig(step: EffectStep): void {

@@ -149,7 +149,7 @@ describe('Event bus: ZoneChange accounting', () => {
 		assert.equal(
 			applyGameAction(state, p1.playerId, {
 				type: 'scry_resolve',
-				topInstanceIds: [],
+				topInstanceIds: [p1.library[1].instanceId],
 				bottomInstanceIds: [p1.library[0].instanceId]
 			}).ok,
 			true

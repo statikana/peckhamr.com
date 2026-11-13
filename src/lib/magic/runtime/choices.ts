@@ -442,9 +442,12 @@ export function validateChoiceAnswer(
 					return { ok: false, error: 'Duplicate object ID in ordered list.' };
 				}
 				seen.add(id);
-				if (allowed.size > 0 && !allowed.has(id)) {
+				if (!allowed.has(id)) {
 					return { ok: false, error: `Object ${id} is not part of this ordering choice.` };
 				}
+			}
+			if (seen.size !== choice.objectIds.length) {
+				return { ok: false, error: 'Order choice must include every object.' };
 			}
 			return { ok: true };
 		}
@@ -666,6 +669,14 @@ export function chooseBotAnswer(
 			const cards = choice.objectIds
 				.map((id) => libMap.get(id))
 				.filter((c): c is CardInstance => Boolean(c));
+			if (cards.length !== choice.objectIds.length) {
+				return {
+					kind: 'orderObjects',
+					topIds: [...choice.objectIds],
+					bottomIds: [],
+					shuffle: false
+				};
+			}
 			const landCount =
 				player.battlefield.filter((b) => b.card.typeLine.includes('Land')).length +
 				player.hand.filter((h) => h.card.typeLine.includes('Land')).length;

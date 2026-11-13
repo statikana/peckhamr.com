@@ -528,7 +528,7 @@ describe('Zone-change behaviour pins: library reordering', () => {
 			allowBottom: true
 		});
 		assert.equal(
-			applyGameAction(state, p1.playerId, { type: 'scry_resolve', topInstanceIds: [c.instanceId], bottomInstanceIds: [a.instanceId] }).ok,
+			applyGameAction(state, p1.playerId, { type: 'scry_resolve', topInstanceIds: [c.instanceId, b.instanceId], bottomInstanceIds: [a.instanceId] }).ok,
 			true
 		);
 		assert.deepEqual(ids(p1.library), ids([c, b, ...rest, a]));

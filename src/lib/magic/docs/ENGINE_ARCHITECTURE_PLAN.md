@@ -398,6 +398,50 @@ current design.
   stripped as an ability or flavor word unless it is a rules term (`RULES_TERM_BLOCKLIST`, checked
   by `isAbilityOrFlavorWord`), so "Ward—Pay 3 life" and keyword actions aren't mistaken for one.
 
+### 2.10 Pausable resolution everywhere (Track B1)
+
+*Status: implemented in Track B1 (`types.ts`, `ir.ts`, `runtime/effects.ts`, `runtime/costs.ts`, `runtime/triggers.ts`, `runtime/zones.ts`, `runtime/choices.ts`, `engine.ts`).*
+
+#### Why the prior pause model blocked Track B
+
+Previously, the engine paused in several disconnected ways:
+- `StackItem.effectResume` (`types.ts`) stored only `stepIndex`, `bindings`, and `answers: Record<string, string[]>`, re-running `steps[stepIndex]` from the top on resume (`runtime/effects.ts`). That broke if a step mutated state before pausing on a later object or player, keyed answers only by `playerId`, only accepted `chooseObjects`/`chooseMode` in `handlePromptResolution` (`engine.ts`), and left `PROMPTING_VERBS` unable to preserve remaining objects in a step if a replacement prompt fired mid-step.
+- `compiler/interpretable.ts` rejected any `step.optional` after index 0 or with a non-`you` chooser, and had no representation for `"If you do, ..."`, forcing mid-ability `"you may"` and `"Partner with [name]"` (`CR 702.124j`) to compile as `unsupported`.
+- `resumeStackItem` (`engine.ts`) flushed deferred triggers (`runtime/triggers.ts`) immediately when resolution paused because the trigger queue was in-memory only, placing triggers onto `state.stack` above a still-resolving item (`CR 603.3`, `CR 608.2`), and `handlePromptResolution` ran `checkStateBasedActions` before `resumeAfterPrompt` finished resolving (`CR 704.4`).
+- Paying a cost had no mid-payment continuation if paying triggered a `zone_replacement_choice` / `commander_zone_choice`.
+- Rules procedures managed ad-hoc continuations without a shared pause guard or resume loop.
+
+#### Architecture (as built)
+
+1. **Resumable `EffectResumeFrame` with sub-step cursor and typed answers (`CR 608.2`).**
+   - `EffectResumeFrame` on `StackItem` is plain JSON:
+     - `stepIndex: number`, `subStepIndex?: number` (tracks progress inside multi-actor or multi-object loops such as `runIndexedBatch` for multi-target/multi-object `destroy`/`exile`/`bounce`/`putCounters`/`sacrifice`/`discard`/`move`/`mill`, so earlier mutations never replay), and `phase?: 'optional' | 'step' | 'afterStep'`.
+     - `bindings: Array<[string, EffectBindingSnapshot[]]>`, `exileSelf?: boolean`.
+     - `answers: Record<string, ChoiceAnswer>` keyed by deterministic slot keys (supporting all 6 `ChoiceAnswer` kinds).
+     - `stepDecisions?: Record<number, boolean>` recording whether optional step `i` was accepted, so conditional follow-up steps (`EffectStep.ifPrecedingAccepted?: number`, shifted cleanly by `shiftStepTargets` for modal spells) evaluate across pauses.
+   - `handlePromptResolution` validates answers with `validateChoiceAnswer` against `prompt.choice` and stores typed `ChoiceAnswer` slots on `item.effectResume.answers`.
+
+2. **Deferred triggers & SBAs across resolution pauses (`CR 603.3`, `CR 608.2n`, `CR 704.3–704.4`).**
+   - `GameState.pendingTriggers?: SerializedPendingTrigger[]` persists deferred triggers in plain JSON across round-trips and restarts.
+   - `isResolutionPaused(state)` (`runtime/triggers.ts`) checks active `StackItem.resolutionStarted`, `pendingCostPayment`, `pendingProcedure`, `pendingZoneMoves`, and blocking `chooseReplacement` prompts. While paused, `flushTriggers` persists waiting `'stack'` triggers into `state.pendingTriggers` and `checkStateBasedActions` defers (`CR 704.4`).
+   - Once a resolving `StackItem` completes and leaves the stack (`CR 608.2n`), `checkStateBasedActions` stabilizes and `flushTriggers` places triggers in normal `CR 603.3b` APNAP order.
+   - *Nested replacement pauses:* `pauseForNestedPrompts` and `linkPromptsToStackStep` (`runtime/effects.ts`, `runtime/zones.ts`) pause the step cleanly when a `zone_replacement_choice`, `commander_zone_choice`, or `counter_replacement_choice` fires mid-effect, returning control to the paused `StackItem` without running premature SBAs.
+
+3. **IR & compiler support for mid-ability `"may"`, `"If you do"`, and `"Partner with [name]"` (`CR 702.124j`).**
+   - `EffectStep.ifPrecedingAccepted?: number` (`ir.ts`) encodes `"If you do, ..."` / `"If that player does, ..."` / `"If they do, ..."`.
+   - `compiler/interpretable.ts` permits `step.optional` at any `stepIndex` for any single `PlayerRef` chooser and on `search` (`CR 701.19`: declining skips searching and shuffling; searching and failing to find still shuffles).
+   - `compiler/card.ts` compiles `"Partner with [name]"` directly to `partner` plus its `CR 702.124j` ETB library-search triggered ability (`ObjectFilter.named`, `LibrarySearchSpec.named`).
+
+4. **Pausable `PendingCostPayment` (`CR 601.2`, `CR 602.2`).**
+   - Pre-payment `askCostChoice` / `planCosts` (`runtime/costs.ts`, `engine.ts`) stays cancellable before anything is paid.
+   - Committed execution runs through `GameState.pendingCostPayment` (`PendingCostPayment`: `parts: SerializedPlannedCost[]`, `tapsAndManaDone`, `nextPartIndex`, `nextObjectIndex`). If a `sacrifice`, `discard`, `exileFrom`, or `mill` part triggers `zone_replacement_choice` / `commander_zone_choice`, payment pauses at `(nextPartIndex, nextObjectIndex)` and resumes without re-paying tap/mana or completed parts before finalizing the cast/activation/`tap_mana`.
+
+5. **Unified `ProcedureContinuation`, strict validation, bots, and redaction.**
+   - `ProcedureContinuation` (`types.ts`) on `GameState.pendingProcedure` and `PendingPrompt.continuation` unifies non-stack pauses (`legend_rule`, `discard_to_hand_size`, `combat_damage_step`, `combat_damage_assignment`, `zone_replacement_choice`, `counter_replacement_choice`, `commander_zone_choice`, `clone_copy_choice`, `aura_library_attach_choice`, `ward_payment_choice`, and `end_turn`) through `resumeAfterPrompt` (`engine.ts`).
+   - Strict validation (`runtime/choices.ts`, `engine.ts`): `validateChoiceAnswer` enforces `orderObjects` completeness; `handlePromptResolution` rejects wrong/foreign/stale `promptId`s, mismatched `effect_choice` continuations, stale `manual_resolution` / `trigger_targets` / `trigger_may`, invalid `cost_choice`, and forged/duplicate `london_bottom` IDs without mutating `pendingPrompts`.
+   - Bots decide optional steps synchronously when prompted inline and answer queued `PendingPrompt`s via `{ type: 'choice' }` (`ai.ts`).
+   - `sanitizeGameStateForViewer` (`engine.ts`) strips `pendingTriggers`, `pendingCostPayment`, `pendingProcedure`, and `stack[i].effectResume` from viewer copies.
+
 ---
 
 ## 3. Phases
