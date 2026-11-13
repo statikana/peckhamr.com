@@ -17,13 +17,15 @@
   - the post-Phase-10 mechanisms that the move to `deprecated/` orphaned (loop detection, deferred zone moves, hidden information, ability words) are restored as §2.9;
   - the overrides escape hatch and the CI coverage ratchet are marked not built.
 - `FULL_COVERAGE_STRUCTURE.md`: §0 points at `COVERAGE.md` instead of copying numbers, and the Overload paragraph is in the past tense.
-- `rules-audit/`: every section has a staleness banner, `00-SUMMARY` has a miscount banner, and the rows the 2026-11-12 keyword fixes touched are updated (702.21a–b, 702.62a, 702.62c, 702.96a, 702.124f, 702.124h–j, 704.5p, 903.5b, plus 611.2c, 613.1f, and 613.7b in `04`).
+- `rules-audit/`: every section has a staleness banner, `00-SUMMARY` has a miscount banner, and the rows the 2026-11-12 keyword fixes touched are updated (702.21a–b, 702.26a, 702.26h, 702.62a, 702.62c, 702.96a, 702.124f, 702.124h–j, 704.5p, 903.5b, plus 611.2c, 613.1f, and 613.7b in `04`).
 - Granted activated abilities (*Goldspan Dragon*, *Chromatic Lantern*, basic-land subtype grants) now compile and flow through `runtime/layers.ts` and `ruleTree.ts` as full `ActivatedAbility` IR (`COMPILER_VERSION = 9`), deleting the `/Add \{([WUBRGC])\}/` display-label regex.
 - Activated keyword-removal abilities (*Shadowspear*, *Arcane Lighthouse*, *Bonds of Mortality*) now compile to IR `grant` steps (`COMPILER_VERSION = 10`) and resolve as timestamped `TimedKeywordEffect` entries; all `ab.text` regex/substring scans in `runtime/layers.ts` are gone and enforced at `0` by `abilityTextScan` in `architecture.test.ts`.
 - Code, from [`04`](./04-in-flight-keyword-and-test-impact.md) §3:
   - "Partner with [name]" now compiles its search trigger as an unsupported ability (item 1);
   - `wither` is in `IMPLEMENTED_KEYWORDS` (item 2);
   - wither is grantable, with a full keyword test suite;
+  - `phasing` is in `IMPLEMENTED_KEYWORDS`, `GRANTABLE_KEYWORDS`, `compiler/statics.ts` `KEYWORDS`, and `KEYWORD_LABELS` (`COMPILER_VERSION = 11`), with `CR 702.26h` direct+indirect phase-out fixed and a full `runtime/keywords-phasing.test.ts` suite (item 3);
+  - unimplemented `evolve` and `cascade` are removed from `KEYWORD_LABELS` (`runtime/layers.ts`), `card.keywords` badge extraction is gated on implemented keywords, and `runtime/keywords-coverage-guard.test.ts` enforces sync with `IMPLEMENTED_KEYWORDS` (item 4);
   - the `plainswalker` typo is fixed;
   - two cards with the same partner—[text] ability can now pair (CR 702.124i). Found while checking 702.124f.
   - `attachObject` (`runtime/zones.ts`) now assigns a fresh `enteredTimestamp` on every attachment (`CR 613.7e`) and no-ops when already attached to the same host (`CR 701.3b`), closing the `ENGINE_INVARIANTS.md` §2.2 gap from [`01`](./01-top-level-docs-audit.md) §3.2 item 3.
@@ -31,7 +33,6 @@
 **Disputed:** [`04`](./04-in-flight-keyword-and-test-impact.md) §3 item 5 (infect or wither plus deathtouch). The code is correct.
 
 **Open:**
-- `phasing` and `KEYWORD_LABELS` (evolve, cascade), from `04` §3 items 3–4;
 - reconciling `rules-audit/01`–`10` row by row (`03`);
 - the scrambled CR 122 table in `01-game-concepts.md` and the summary arithmetic (`02`);
 - the code-level gaps now listed as "Not yet enforced" in `ENGINE_INVARIANTS.md`.

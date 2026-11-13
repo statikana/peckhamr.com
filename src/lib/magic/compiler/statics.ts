@@ -107,6 +107,7 @@ const KEYWORDS = new Set([
 	'intimidate',
 	'lifelink',
 	'menace',
+	'phasing',
 	'prowess',
 	'reach',
 	'shadow',

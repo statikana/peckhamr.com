@@ -102,6 +102,7 @@ const GRANTABLE_KEYWORDS = [
 	'intimidate',
 	'lifelink',
 	'menace',
+	'phasing',
 	'prowess',
 	'reach',
 	'shadow',
@@ -527,12 +528,24 @@ function tokenPhrase(p: Parser, text: string): { amount: Amount; token: TokenSpe
 	const amount = amountWord(p, m[1]);
 	if (!amount) return null;
 	const kw = m[6] ?? '';
-	if (kw && !kw.split(/,? and |, /).every((k) => GRANTABLE_KEYWORDS.includes(k.trim()) || k.trim() === 'changeling')) {
+	const parsedKws = kw
+		? kw
+				.split(/,? and |, /)
+				.map((k) => k.trim().toLowerCase())
+				.filter(Boolean)
+		: [];
+	if (parsedKws.some((k) => !GRANTABLE_KEYWORDS.includes(k) && k !== 'changeling')) {
 		return null;
 	}
 	const spec = buildTokenSpec(parseInt(m[2], 10), parseInt(m[3], 10), `${m[4]}${m[5]}`.trim(), kw);
-	if (/\bchangeling\b/.test(kw)) spec.keywords.push('Changeling');
-	return { amount, token: { ...spec, colors: [...spec.colors], keywords: [...spec.keywords] } };
+	const tokenKeywords = [...spec.keywords];
+	for (const k of parsedKws) {
+		const cap = k.charAt(0).toUpperCase() + k.slice(1);
+		if (!tokenKeywords.some((existing) => existing.toLowerCase() === k)) {
+			tokenKeywords.push(cap);
+		}
+	}
+	return { amount, token: { ...spec, colors: [...spec.colors], keywords: tokenKeywords } };
 }
 
 // ---- Searches -------------------------------------------------------------------------------

@@ -1268,7 +1268,24 @@ class Run {
 			}
 			case 'phaseOut': {
 				const objs = this.objects(step.subject).filter((o) => o.zone === 'battlefield' && !o.phasedOut);
-				for (const o of objs) p.phaseOut(s, o);
+				// CR 702.26h: If an attachment and its host are both instructed to phase out simultaneously
+				// (e.g. "All permanents you control phase out"), the attachment phases out indirectly via its host.
+				const batchIds = new Set(objs.map((o) => o.instanceId));
+				const hasHostPhasingOut = (obj: CardInstance): boolean => {
+					const seen = new Set<string>();
+					let cur = obj.attachedToId;
+					while (cur && !seen.has(cur)) {
+						if (batchIds.has(cur)) return true;
+						seen.add(cur);
+						const host = p.findPermanent(s, cur);
+						if (!host || host.inst.phasedOut) return false;
+						cur = host.inst.attachedToId;
+					}
+					return false;
+				};
+				for (const o of objs) {
+					if (!hasHostPhasingOut(o)) p.phaseOut(s, o);
+				}
 				if (objs.length > 0) p.addLog(s, 'rule', `${title} phased out ${objs.length} permanent(s) (CR 702.26).`, you.playerId);
 				return;
 			}

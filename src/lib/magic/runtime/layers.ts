@@ -215,7 +215,7 @@ const NON_CREATURE_SUBTYPES = new Set([
 	'Chorus'
 ]);
 
-const KEYWORD_LABELS: Record<string, string> = {
+export const KEYWORD_LABELS: Readonly<Record<string, string>> = {
 	flying: 'Flying',
 	'first strike': 'First strike',
 	'double strike': 'Double strike',
@@ -228,13 +228,12 @@ const KEYWORD_LABELS: Record<string, string> = {
 	infect: 'Infect',
 	lifelink: 'Lifelink',
 	menace: 'Menace',
+	phasing: 'Phasing',
 	reach: 'Reach',
 	shroud: 'Shroud',
 	trample: 'Trample',
 	vigilance: 'Vigilance',
 	changeling: 'Changeling',
-	evolve: 'Evolve',
-	cascade: 'Cascade',
 	fear: 'Fear',
 	intimidate: 'Intimidate',
 	wither: 'Wither',
@@ -430,7 +429,13 @@ function extractInnateFromIR(card: ScryfallCard): InnateEntry[] {
 	// Check card.keywords for innate keywords not exclusively granted to others
 	for (const rawKw of card.keywords || []) {
 		const kwLow = rawKw.toLowerCase();
+		const isSupportedKeywordBadge =
+			Boolean(KEYWORD_LABELS[kwLow]) ||
+			kwLow.startsWith('protection from ') ||
+			kwLow.startsWith('hexproof from ') ||
+			kwLow.startsWith('ward ');
 		if (
+			!isSupportedKeywordBadge ||
 			seenKeys.has(kwLow) ||
 			kwLow === 'equip' ||
 			kwLow === 'enchant' ||
@@ -444,7 +449,8 @@ function extractInnateFromIR(card: ScryfallCard): InnateEntry[] {
 			(isEquipment || isAura) &&
 			!chars.types.includes('Creature') &&
 			kwLow !== 'flash' &&
-			kwLow !== 'indestructible'
+			kwLow !== 'indestructible' &&
+			kwLow !== 'phasing'
 		) {
 			continue;
 		}

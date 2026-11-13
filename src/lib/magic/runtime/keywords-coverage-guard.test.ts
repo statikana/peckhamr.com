@@ -6,7 +6,10 @@ import { fileURLToPath } from 'node:url';
 
 import { IMPLEMENTED_KEYWORDS } from '../compiler/card.ts';
 import { compileCard } from '../compiler/index.ts';
-import type { ScryfallCard } from '../types.ts';
+import { createCardInstance, createInitialGameState, evaluatePermanent } from '../engine.ts';
+import { PRECON_DECKS } from '../precons.ts';
+import { DEFAULT_LOBBY_RULES, type LobbySeat, type MagicDeck, type ScryfallCard } from '../types.ts';
+import { KEYWORD_LABELS } from './layers.ts';
 
 const RUNTIME_DIR = path.dirname(fileURLToPath(import.meta.url));
 const MAGIC_DIR = path.resolve(RUNTIME_DIR, '..');
@@ -37,6 +40,7 @@ export const KEYWORD_COVERAGE_FILES: Record<string, readonly string[]> = {
 	menace: ['runtime/keywords-evasion.test.ts', 'magic.test.ts'],
 	overload: ['runtime/keywords-casting.test.ts', 'magic.test.ts'],
 	partner: ['runtime/keywords-casting.test.ts', 'runtime/keywords-damage.test.ts'],
+	phasing: ['runtime/keywords-phasing.test.ts', 'runtime/turn-combat.test.ts'],
 	protection: ['runtime/keywords-protection-attachments.test.ts', 'runtime/combat-tier1.test.ts'],
 	prowess: ['runtime/keywords-casting.test.ts', 'runtime/review-fix2.test.ts'],
 	reach: ['runtime/keywords-evasion.test.ts', 'magic.test.ts'],
@@ -123,5 +127,82 @@ describe('Implemented Keywords Coverage Guard', () => {
 				`Expected "${kw}" sample card to have zero unsupported abilities`
 			);
 		}
+	});
+
+	it('keeps KEYWORD_LABELS in sync with IMPLEMENTED_KEYWORDS and never renders badges for unimplemented keywords', () => {
+		// Parameterized or non-battlefield-badge keywords formatted explicitly outside KEYWORD_LABELS
+		const PARAMETERIZED_OR_CAST_KEYWORDS = new Set([
+			'enchant',
+			'equip',
+			'overload',
+			'partner',
+			'protection',
+			'suspend',
+			'ward'
+		]);
+
+		const labelKeys = Object.keys(KEYWORD_LABELS).sort();
+		for (const key of labelKeys) {
+			assert.equal(
+				IMPLEMENTED_KEYWORDS.has(key),
+				true,
+				`KEYWORD_LABELS entry "${key}" is not in IMPLEMENTED_KEYWORDS`
+			);
+		}
+
+		const expectedSimpleLabels = [...IMPLEMENTED_KEYWORDS]
+			.filter((kw) => !PARAMETERIZED_OR_CAST_KEYWORDS.has(kw))
+			.sort();
+		assert.deepEqual(
+			labelKeys,
+			expectedSimpleLabels,
+			'Every non-parameterized keyword in IMPLEMENTED_KEYWORDS must have a display label in KEYWORD_LABELS'
+		);
+
+		// Verify unimplemented keywords (Evolve, Cascade) do not render activeKeywords badges even if present in card.keywords
+		const d = PRECON_DECKS[0];
+		const seats: LobbySeat[] = [
+			{
+				seatIndex: 0,
+				userId: 'p1',
+				username: 'P1',
+				avatarUrl: '',
+				isBot: false,
+				deckId: d.id,
+				deckName: d.name,
+				commanderNames: d.commanders.map((c) => c.name),
+				commanderArtUrl: '',
+				colorIdentity: d.colorIdentity,
+				isDeckLegal: true,
+				ready: true,
+				lastHeartbeat: 0
+			}
+		];
+		const decks = new Map<number, MagicDeck>([[0, d]]);
+		const state = createInitialGameState('LABEL_GUARD', seats, decks, DEFAULT_LOBBY_RULES);
+		const unimplementedCard: ScryfallCard = {
+			id: 'unimpl_badge_check',
+			name: 'Unimplemented Keyword Probe',
+			manaCost: '{2}{G}{U}',
+			cmc: 4,
+			typeLine: 'Creature — Mutant',
+			oracleText: 'Cascade\nEvolve',
+			colors: ['G', 'U'],
+			colorIdentity: ['G', 'U'],
+			keywords: ['Cascade', 'Evolve'],
+			power: '2',
+			toughness: '2',
+			imageUrl: '',
+			artCropUrl: '',
+			legalCommander: true,
+			canBeCommander: false,
+			hasPartner: false,
+			hasChooseBackground: false,
+			isBackground: false
+		};
+		const inst = createCardInstance(unimplementedCard, 'p1', 'battlefield', false, false, 1);
+		state.players[0].battlefield.push(inst);
+		const evaluated = evaluatePermanent(state, inst);
+		assert.deepEqual(evaluated.activeKeywords, []);
 	});
 });

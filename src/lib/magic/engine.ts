@@ -1457,9 +1457,11 @@ function executeUntapTurnBasedActions(state: GameState, activePlayer: PlayerGame
 					perm.attachedToId &&
 					(phasingOutDirectIds.has(perm.attachedToId) ||
 						phasingOutIndirectIds.has(perm.attachedToId)) &&
-					!phasingOutDirectIds.has(perm.instanceId) &&
 					!phasingOutIndirectIds.has(perm.instanceId)
 				) {
+					// CR 702.26h: If an object would simultaneously phase out directly and indirectly,
+					// it just phases out indirectly.
+					phasingOutDirectIds.delete(perm.instanceId);
 					phasingOutIndirectIds.add(perm.instanceId);
 					addedPhaseOut = true;
 				}
@@ -1486,6 +1488,9 @@ function executeUntapTurnBasedActions(state: GameState, activePlayer: PlayerGame
 				phasedOutNames.push(perm.card.name);
 			}
 		}
+	}
+	if (phasedInNames.length > 0 || phasedOutNames.length > 0) {
+		noteLayerInputsChanged(state);
 	}
 	if (phasedInNames.length > 0) {
 		addLog(
@@ -6728,24 +6733,38 @@ registerEffectPorts({
  * Phased-out permanents do not change zones (no LTB/ETB triggers fire!).
  */
 export function phaseOutPermanent(state: GameState, perm: CardInstance): void {
+	if (perm.phasedOut) return;
+	const phasedIds = new Set<string>([perm.instanceId]);
 	perm.phasedOut = true;
 	perm.phasedOutIndirectly = false;
-	// Indirectly phase out any Auras/Equipment attached to this permanent (CR 702.26g)
-	for (const p of state.players) {
-		for (const other of p.battlefield) {
-			if (other.attachedToId === perm.instanceId && !other.phasedOut) {
-				other.phasedOut = true;
-				other.phasedOutIndirectly = true;
+	// Indirectly phase out any Auras/Equipment/Fortifications attached to this permanent (CR 702.26g)
+	let added = true;
+	while (added) {
+		added = false;
+		for (const p of state.players) {
+			for (const other of p.battlefield) {
+				if (
+					!other.phasedOut &&
+					other.attachedToId &&
+					phasedIds.has(other.attachedToId) &&
+					!phasedIds.has(other.instanceId)
+				) {
+					other.phasedOut = true;
+					other.phasedOutIndirectly = true;
+					phasedIds.add(other.instanceId);
+					added = true;
+				}
 			}
 		}
 	}
+	noteLayerInputsChanged(state);
 	// Remove from combat if attacking, blocking, or being attacked as a planeswalker (CR 506.4, 506.4c)
 	state.combat.attackers = state.combat.attackers.filter(
-		(a) => a.attackerInstanceId !== perm.instanceId
+		(a) => !phasedIds.has(a.attackerInstanceId)
 	);
 	for (const atk of state.combat.attackers) {
-		atk.blockerInstanceIds = atk.blockerInstanceIds.filter((id) => id !== perm.instanceId);
-		if (atk.defenderPlaneswalkerId === perm.instanceId) {
+		atk.blockerInstanceIds = atk.blockerInstanceIds.filter((id) => !phasedIds.has(id));
+		if (atk.defenderPlaneswalkerId && phasedIds.has(atk.defenderPlaneswalkerId)) {
 			atk.defenderPlaneswalkerId = 'removed';
 		}
 	}
