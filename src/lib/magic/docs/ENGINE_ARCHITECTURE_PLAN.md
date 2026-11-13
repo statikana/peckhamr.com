@@ -596,6 +596,96 @@ Previously, casting options were hardcoded around a binary union:
 
 ---
 
+### 2.14 Object model for multi-faced and face-down cards (`CR 707–712, 708, 716`)
+
+*Status: design doc only (Track B4, written before implementation; no code changes in this package).*
+
+Today the engine assumes one active face (`compileCard(card).faces[0]`) almost everywhere: [`normalizeScryfallCard`](file:///home/ryan/Documents/github/statikana/peckhamr.com/src/lib/magic/scryfall.ts) drops Scryfall `layout` and concatenates multi-face oracle texts with `"\n//\n"`, [`compileFaces`](file:///home/ryan/Documents/github/statikana/peckhamr.com/src/lib/magic/compiler/card.ts) flags any card with `backFace` or `"\n//\n"` as `unsupported('multiface')` (`895` cards in [`COVERAGE.md`](./COVERAGE.md)), ~40 runtime/compiler sites index `.faces[0]` directly, [`CardInstance`](file:///home/ryan/Documents/github/statikana/peckhamr.com/src/lib/magic/types.ts) only carries `transformed: boolean` (unused at runtime) and `isFaceDown?: boolean`, and [`sanitizeGameStateForViewer`](file:///home/ryan/Documents/github/statikana/peckhamr.com/src/lib/magic/engine.ts) leaks hidden face-down card identities on the battlefield, stack, and exile.
+
+The sections below answer the five design questions required before implementation.
+
+#### 1. Representation in `ScryfallCard`, `CardInstance` / `StackItem`, and the IR
+
+- **`ScryfallCard` (`types.ts`, `scryfall.ts`):**
+  - Add `layout?: CardLayout` (`'normal' | 'split' | 'flip' | 'transform' | 'modal_dfc' | 'adventure' | 'meld' | 'reversible_card'`; omit defaults to `'normal'`) and `faces?: ScryfallCardFace[]` (each entry holding `{ name, manaCost, cmc?, typeLine, oracleText, colors, colorIndicator?, keywords?, power?, toughness?, loyalty?, defense?, imageUrl, artCropUrl? }`).
+  - Preserve `backFace` only as a normalized backward-compatibility projection from `faces[1]` when `faces.length === 2` (and stop flattening `oracleText` into `"\n//\n"` once `faces[]` is populated; legacy stored decks without `faces` can be lazily upgraded in memory from `backFace` + `oracleText.split('\n//\n')` with inferred `layout`).
+  - Keep `colorIdentity` and top-level combined `cmc` at card level (`CR 903.4d` checks all faces for Commander color identity; top-level `cmc` on split cards keeps printed combined MV `CR 709.4b`).
+
+- **IR (`ir.ts`, `compiler/card.ts`, `compiler/index.ts`):**
+  - [`CardDefinition`](file:///home/ryan/Documents/github/statikana/peckhamr.com/src/lib/magic/ir.ts) already has `faces: FaceDefinition[]`. Add `layout?: CardLayout` and optional `colorIndicator?: ManaColor[]` / `frontManaValue?: number` metadata on [`FaceDefinition`](file:///home/ryan/Documents/github/statikana/peckhamr.com/src/lib/magic/ir.ts) / `Characteristics`.
+  - Remove the top-of-function `multiface` bailout in `compileFaces` and compile **each** entry of `card.faces` independently into `FaceDefinition` (using `face.colors` / `colorIndicator` so back faces with no mana cost retain their color indicator!). Note: `compiledTriggerEffect`, `compiledStackItemEffects`, `abilityById`, and `RuleTree` read from a specified `faceIndex` (default `0`, or combined halves for split cards outside the stack) instead of assuming `.faces[0]`.
+  - Add optional `meldPartnerName?: string` / `meldResult?: ScryfallCardFace` only when Meld (`CR 713`) is later scheduled; Meld (`CR 713.1a`, two physical cards becoming one battlefield object) should be deferred behind TDFCs, MDFCs, Split cards, Adventures, and Face-down cards.
+
+- **Plain-JSON runtime state (`types.ts` — `CardInstance` & `StackItem`):**
+  - Replace the boolean-only view on `CardInstance` with plain JSON state:
+    - `activeFaceIndex?: number` (`0` = front/left/creature face, `1` = back/right/adventure face; `0 | 1` synced with legacy `transformed = (activeFaceIndex === 1)` for DFCs so existing saves stay readable, and `flip` state represented cleanly as `activeFaceIndex: 1`!).
+    - `unlockedFaces?: number[]` (only for Room split cards `CR 709.5`, tracking `'left half unlocked'` / `'right half unlocked'` designations).
+    - `copiableState?: { card: ScryfallCard; faceIndex?: number; fused?: boolean; isSingleFaceCopy?: boolean; faceDownOverride?: FaceDownSpec }` (replacing ad-hoc `copiableCard` / `printedCard` overrides cleanly so copying a back face creates a single-faced object `CR 707.8` / `712.6d`).
+    - `faceDownSpec?: FaceDownSpec` (`{ kind: 'morph' | 'megamorph' | 'disguise' | 'manifest' | 'cloak' | 'cyberman' | 'other'; turnUpCost?: string; wardCost?: string; supertypes?: string[]; types?: string[]; subtypes?: string[]; power?: number; toughness?: number; colors?: ManaColor[]; knownToPlayerIds?: string[] }`) alongside `isFaceDown?: boolean` and a stable opaque `faceDownLabel?: string` (e.g. `'Face-Down #3'`) for `CR 708.6` differentiation without exposing hidden identity.
+    - `adventureExile?: { ownerId: string }` (or extending `PlayableFromExilePermission` with `castFaceIndex: 0` per `CR 716.3d`: "on an adventure").
+  - On `StackItem`, add `faceIndex?: number` (the chosen half/face on the stack `CR 709.3b`, `712.8c`, `716.2`), `fused?: boolean` (`CR 709.4d`), and `isFaceDown?: boolean` + `faceDownSpec?: FaceDownSpec` (`CR 708.4`).
+
+#### 2. Which Face's Characteristics Apply in Each Zone
+
+Introduce one pure resolver helper `resolveObjectFaces(card, objState, zone): ActiveFaceView` (used across `layers.ts`, `ruleTree.ts`, `costs.ts`, `triggers.ts`, `objectFilter.ts`, and `engine.ts` to replace all direct `.faces[0]` indexing):
+
+| Card Layout | Hand / Library / Graveyard / Exile / Command | Stack (`StackItem`) | Battlefield (`CardInstance`) |
+|---|---|---|---|
+| **`transform` (`CR 712.6a–d`)** | Front face (`0`) only (`712.6a`). | `faceIndex` (`0` default `712.8`, `1` if cast transformed/converted `712.8a`). If `faceIndex === 1`, mana value comes from **front** face `manaCost` (`712.6b`, `202.3b`), or `0` if copy of back face. | `activeFaceIndex` (`0` or `1`). When `1` and not a copy, MV = front face MV (`712.6d`). |
+| **`modal_dfc` (`CR 712.6a,e`)** | Front face (`0`) only (`712.6a`) for characteristic queries (cast/play legality checks chosen face `712.8b`, `712.9`). | Chosen `faceIndex` (`0` or `1`), using that face's own MV/colors/characteristics (`712.6e`). | Chosen `activeFaceIndex` (`0` or `1`); cannot transform (`712.7`). |
+| **`split` (`CR 709.3–5`)** | Combined characteristics (`709.4`): union of types/subtypes/colors/abilities, sum of MVs (`709.4b`), matches **either** name (`709.4a`). | Chosen half `faceIndex` (`0` or `1`) only (`709.3b`), OR both combined if `fused: true` (`709.4d`, `702.102`). | N/A for normal instants/sorceries; for Rooms (`709.5`), shared type line + unlocked door designations filter each half's static/triggered/activated abilities & name/MC. |
+| **`adventure` (`CR 716.1–4`)** | Main creature/permanent face (`0`) only (`716.4`); Adventure characteristics (`1`) do not exist in non-stack zones. | `0` (normal) or `1` (Adventure `716.2`); when `1` resolves cleanly, goes to **exile** with `CR 716.3d` cast-`faceIndex: 0` permission for its controller (`spellMods.exileAdventureOnResolve`). | Main face (`0`). |
+| **`flip` (`CR 710`)** | Normal face (`0`) only (`710.2`). | Normal face (`0`) only. | `activeFaceIndex` (`0` or `1` once flipped; flips are one-way `710.3`). |
+| **Any face-down spell/perm (`CR 708.2–4`)** | Normal face characteristics (only spells on stack and permanents on battlefield have face-down copiable characteristics `708.2`; exiled face-down cards have no characteristics unless explicitly looked at). | Copiable values come solely from `faceDownSpec` (default 2/2 colorless nameless creature, MV `0`, no types other than Creature `708.4`). | Copiable values come solely from `faceDownSpec` until turned face up (`708.8`). |
+
+#### 3. Preserving Object Identity on Transform / Flip / Turn Face Up (`CR 712.15`, `708.8`)
+
+- **Transform / Convert (`CR 712.15`, `CR 701.27c`):**
+  - Transforming mutates `inst.activeFaceIndex` (`0 ↔ 1`) and `inst.transformed` in place on the existing `CardInstance`.
+  - It MUST **not** bump `objectVersion`, MUST **not** call `leaveBattlefieldReset`, MUST **not** clear `counters`, `damageMarked`, `summoningSick`, `attachedToId` / attached Auras & Equipment (unless type-changing unattaches in next SBA check), continuous effects, or targeting references (`StackItem.targetObjectVersions` stays valid!).
+  - It **does** allocate a fresh ability/layer change (call `noteLayerInputsChanged(state)` and `enteredTimestamp` stays the same per `CR 613.7` — transforming does NOT give a permanent a new timestamp!). Emit a `TransformedEvent` if `"When this permanent transforms"` triggers are added, and guard `CR 712.12a` (face-down DFCs can't transform) and `CR 712.13` (DFCs on battlefield can't be turned face down).
+  - For **Daybound/Nightbound (`CR 702.145`)** or `"Exile ~, then return it to the battlefield transformed"`: blinking to exile and returning *does* create a new object (`bumpVersion: true`, `newTimestamp: true`) entering with `activeFaceIndex: 1` per `CR 712.11a`.
+- **Turning face up (`CR 708.7–8, 708.11`):**
+  - Turning a face-down permanent face up sets `isFaceDown = false`, clears `faceDownSpec`, restores normal copiable values (`CR 708.8` — preserving `copiableState` if it entered as a face-up/down Clone `CR 708.10`!), keeps `objectVersion`, counters, damage, and continuous effects, applies `"As [this] is turned face up"` before checking SBAs/triggers (`CR 708.11`), and calls `noteLayerInputsChanged(state)` + emits `TurnedFaceUpEvent` (`"When ~ is turned face up"`). Notice turning a permanent face up is a **special action** (`CR 116.2b`, doesn't use the stack!) paid via `PendingCostPayment`.
+
+#### 4. Casting & Land Plays via Track B2 `CastOption` (`CR 708.4, 709.3, 712.8–9, 716.3`)
+
+- Extend [`CastOption`](file:///home/ryan/Documents/github/statikana/peckhamr.com/src/lib/magic/types.ts) (plus a symmetrical `LandPlayOption` / `play_land { faceIndex }` or `fromZone` selection) instead of adding mechanic-specific cast modes:
+  - **Add `faceIndex?: number` (`0 | 1`) and `fused?: boolean` onto `CastOption` and `cast_spell` `GameActionPayload`** (default `0`).
+  - **Candidate generation (`enumerateCandidateCastOptions`):**
+    - `modal_dfc` (`CR 712.8b`): emit options for face `0` (if spell) and face `1` (if spell), checking **only** the chosen face's castability, mana cost, timing, and targets (`CR 712.8c`); for `play_land` (`CR 712.9`), let land plays choose any face with type `'Land'` (`faceIndex: 0 | 1`).
+    - `split` (`CR 709.3`): emit `face:0` (`option.id = 'face:0'`) and `face:1` (`option.id = 'face:1'`), plus `'fused'` (`CR 702.102`) from `'hand'` (`CR 709.4d`).
+    - `adventure` (`CR 716.3`): emit `'face:0'` (creature/permanent) normally; from zones other than `adventureExile`, emit `'face:1'` (`spellMods.exileAdventureOnResolve = true` -> puts card into exile on resolution with owner-only permission restricted to `faceIndex: 0`!). When resolving the `face:1` Adventure spell cleanly (`CR 716.3d`), route `moveStackSpellToZone` to `'exile'` instead of `'graveyard'`; if countered/fizzled, it goes to graveyard as usual!
+    - `transform` (`CR 712.8a,d`): normally only `face:0` (`CR 712.8`); Disturb/cast-transformed front-face abilities (`CR 712.8d`) emit an alternative cast option with `faceIndex: 1` (plus `exileOnLeaveStack` when Disturb applies).
+    - **Face-down casts (`CR 708.4`, Morph/Disguise `{3}`):** emit `option.id = 'alt:morph'` / `'alt:disguise'` (`baseCost: { kind: 'alternative', manaCost: '{3}' }`, `spellMods: { castFaceDown: faceDownSpec }`) so cost reductions (e.g. Animar/Ugin) apply against `{3}` for a colorless creature spell (`CR 708.4`)!
+  - **`validateChosenTargets`, `effectiveSpellManaCost`, and `finalizeCastSpell`** evaluate characteristics strictly from the chosen `CastOption.faceIndex` (or `faceDownSpec` when `castFaceDown` is set). No code in `ArenaTable.svelte` or `ai.ts` needs `'split'`, `'adventure'`, `'morph'`, or `'mdfc'` string branches: `castOptionsModal` already renders all `CastOption`s returned by `getCastOptions`!
+
+#### 5. Layer Engine (`CR 613.1a, 707.2–3, 708.2`) & Client / Viewer Redaction (`CR 708.5, 712.4`)
+
+- **Layers (`runtime/layers.ts`):**
+  - Split current Layer 1 step ([`runtime/layers.ts`](file:///home/ryan/Documents/github/statikana/peckhamr.com/src/lib/magic/runtime/layers.ts#L1320-L1427)) cleanly into:
+    - **Layer 1a (`CR 613.2a`):** Start from printed card `activeFaceIndex`, then apply copy effects (`perm.copiableState`, setting copiable card/face and `"except ..."` modifications). Copy effects copy the **face that's currently up** on a TDFC/MDFC/Room (`CR 707.2`, `712.6d`), whereas a Clone of a face-down permanent copies `{ 2/2 Creature }` (not the hidden front card!) and a permanent turned face-down after copying keeps the copy values underneath (`CR 708.10`).
+    - **Layer 1b (`CR 613.2b`, `CR 708.2`):** If `inst.isFaceDown`, replace Layer 1a's copiable values with `inst.faceDownSpec` (default `2/2`, Creature, colorless, nameless, MV `0`, Ward `{2}` if Disguise, Artifact Creature if Cyberman, etc.), suppressing innate abilities/statics/CDAs of the hidden face.
+  - **Layer cache (`runtime/layerCache.ts`):** Fingerprint `inst.activeFaceIndex` / `inst.unlockedFaces` / `inst.faceDownSpec` / `inst.copiableState` alongside `inst.isFaceDown` and `inst.copiableCard` so transforming, flipping, unlocking a Room, or turning face up deterministically invalidates the board snapshot.
+  - **Other `.faces[0]` consumers:** Replace direct `.faces[0]` access across [`ruleTree.ts`](file:///home/ryan/Documents/github/statikana/peckhamr.com/src/lib/magic/ruleTree.ts), [`runtime/triggers.ts`](file:///home/ryan/Documents/github/statikana/peckhamr.com/src/lib/magic/runtime/triggers.ts), [`runtime/effects.ts`](file:///home/ryan/Documents/github/statikana/peckhamr.com/src/lib/magic/runtime/effects.ts), [`runtime/replace.ts`](file:///home/ryan/Documents/github/statikana/peckhamr.com/src/lib/magic/runtime/replace.ts), [`runtime/kicker.ts`](file:///home/ryan/Documents/github/statikana/peckhamr.com/src/lib/magic/runtime/kicker.ts), and [`engine.ts`](file:///home/ryan/Documents/github/statikana/peckhamr.com/src/lib/magic/engine.ts) with zone-aware helpers `activeFaceDefs(card, instOrItem, zone)`.
+
+- **Viewer Redaction (`engine.ts` `sanitizeGameStateForViewer`) & Client UI (`ArenaTable.svelte`):**
+  - **Fix `CR 708.5` hidden-information leak:** Today [`sanitizeGameStateForViewer`](file:///home/ryan/Documents/github/statikana/peckhamr.com/src/lib/magic/engine.ts#L11775-L11867) only filters `pendingZoneMoves` for `c.isFaceDown` and sends full battlefield/stack/exile `CardInstance.card` objects to opponents. Under `CR 708.5`:
+    - When `viewerId !== perm.controllerId` (or `!faceDownSpec.knownToPlayerIds?.includes(viewerId)`), replace `c.card`, `c.printedCard`, `c.copiableCard`, and `c.copiableState` on any face-down battlefield permanent or face-down stack item with a scrubbed face-down `ScryfallCard` proxy (showing only `faceDownLabel` + `faceDownSpec` stats/Ward/types — **zero** real name, oracle text, mana cost, or art URL!).
+    - For face-down exiled cards (Foretell, Hideaway, Bomat Courier, etc.), scrub `card` unless `viewerId` has explicit peek permission (`CR 406.3`).
+    - When revealed on leaving battlefield/stack or game end (`CR 708.9`), clear `isFaceDown` before serialization or emit a reveal log entry so opponents see the revealed card cleanly.
+  - **UI (`ArenaTable.svelte`):**
+    - `CR 712.4`: when `viewer` may look at a double-faced/split/adventure card (in hand, command, graveyard, revealed exile, stack, or face-up battlefield), render a flip/face-inspect toggle in `inspectedCard` / card preview using `card.faces` / `card.backFace`, and display the active face art (`card.faces?.[inst.activeFaceIndex ?? 0]?.imageUrl ?? card.imageUrl`) on battlefield and stack permanents.
+    - Face-down permanents render the `faceDownLabel` differentiation badge (`CR 708.6`) plus a controller-only "Peek / Turn Face Up" affordance when special-action `turn_face_up` costs are legal (`CR 708.5`, `708.7`).
+
+#### Recommended Phasing (Deferred Implementation Spec)
+
+1. **B4 Phase 1 (Representation & Viewer Redaction):** Populate `ScryfallCard.faces` + `layout` cleanly, replace raw `.faces[0]` calls with `resolveObjectFaces` / `activeFaceDefs`, separate Layer 1a/1b cleanly, and close the `CR 708.5` leak in `sanitizeGameStateForViewer`.
+2. **B4 Phase 2 (`split`, `modal_dfc`, `adventure` casting & resolution):** Wire `CastOption.faceIndex` + Adventure exile loop (`CR 716.3d`) + Room designations (`CR 709.5`) + UI flip/preview toggle.
+3. **B4 Phase 3 (`transform` + face-down Morph/Disguise/Manifest/Cloak):** Implement `TransformedEvent`, non-identity-changing transform (`CR 712.15`), special-action `turn_face_up` (`CR 708.7–11`), and `CR 708.9` reveal rules. *(Meld `CR 713` remains an optional Phase 4 follow-up.)*
+
+---
+
 ## 3. Phases
 
 Each phase lists: **owns** (files only this phase's agent edits; others treat them as read-only

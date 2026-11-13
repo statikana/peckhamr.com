@@ -1,12 +1,12 @@
 # MTG Engine: Next Steps Spec
 
-**Status:** spec, written 2026-11-12 against `engine-rewrite` at `ad82d00`, updated after Track A (`972a90c`), Track B1 (`961b8e5`), Track B2 (`bd98235`), Track B3 (`9bd2f3f`), and **Cycling** (`COMPILER_VERSION = 17`). Track A (`A1`–`A4`), **B1**, **B2**, **B3**, and **Cycling** (`CR 702.29`) are **done**; **B4** (design doc only) is next.
+**Status:** spec, written 2026-11-12 against `engine-rewrite` at `ad82d00`, updated after Track A (`972a90c`), Track B1 (`961b8e5`), Track B2 (`bd98235`), Track B3 (`9bd2f3f`), **Cycling** (`e4a2dec`, `COMPILER_VERSION = 17`), and **B4 design doc** ([`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.14, approved). Track A (`A1`–`A4`), **B1**, **B2**, **B3**, **Cycling** (`CR 702.29`), and **B4 (design doc)** are **done**.
 
 **Purpose:** the recommended next work for the engine, written so that each work package can be handed to one agent. Track A is near-term fixes (complete). Track B is the structural work that full keyword and rules coverage needs (the reasoning is in [`FULL_COVERAGE_STRUCTURE.md`](./FULL_COVERAGE_STRUCTURE.md)). Track C keeps the docs honest as the code changes.
 
 **Order:**
 1. ~~A1, A2, A3 and A4~~ — **done** (`b68ef55`, `dfbc69e`, `94b04de`, `972a90c`).
-2. ~~B1~~ — **done** (`961b8e5`, [`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.10); ~~B2~~ — **done** (`bd98235`, [`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.11); ~~B3~~ — **done** (`9bd2f3f`, [`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.12); ~~Cycling (`CR 702.29`)~~ — **done** ([`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.13); **B4** (design doc only) is next.
+2. ~~B1~~ — **done** (`961b8e5`, [`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.10); ~~B2~~ — **done** (`bd98235`, [`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.11); ~~B3~~ — **done** (`9bd2f3f`, [`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.12); ~~Cycling (`CR 702.29`)~~ — **done** (`e4a2dec`, [`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.13); ~~B4 (design doc)~~ — **done** ([`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.14; implementation deferred).
 3. Track C rides along with every package.
 
 ---
@@ -210,6 +210,8 @@ See [`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.13 (`COMP
 
 ### B4. Object model for multi-faced and face-down cards (CR 707–712, 708)
 
+**Status:** Design doc written and approved in [`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.14. No code changes in this package.
+
 **Problem.**
 - The engine assumes one face per card.
 - `multiface` is its own unsupported reason, covering 895 abilities.
@@ -218,7 +220,7 @@ See [`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.13 (`COMP
 **Goal of this package: a design doc only.** It goes in `ENGINE_ARCHITECTURE_PLAN.md` §2 and answers these questions:
 - how faces are represented in `ScryfallCard`, `CardInstance` and the IR;
 - which face's characteristics apply in each zone;
-- how transforming keeps object identity (CR 712.18);
+- how transforming keeps object identity (CR 712.15);
 - how split, adventure and modal double-faced cards are cast (through B2's cast options);
 - what changes in layers (layer 1 copiable values, layer 1b face-down) and in the client.
 
