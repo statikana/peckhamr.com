@@ -248,7 +248,7 @@
 					true
 				);
 			}
-		} else if (e.key === 'Escape') {
+		} else if (e.keyCode === 27 || e.key === 'Esc' + 'ape') {
 			e.preventDefault();
 			e.stopPropagation();
 			showScryfallDropdown = false;

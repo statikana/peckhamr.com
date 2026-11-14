@@ -411,7 +411,7 @@
 							})}
 					>
 						<option value={90}>90 Seconds per Priority Window</option>
-						<option value={60}>60 Seconds (Blitz)</option>
+						<option value={60}>60 Seconds (Rapid)</option>
 						<option value={120}>120 Seconds</option>
 						<option value={0}>Untimed (Casual Pod)</option>
 					</select>

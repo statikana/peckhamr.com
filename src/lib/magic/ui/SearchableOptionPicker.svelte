@@ -56,7 +56,7 @@
 				selectedOption = pick;
 				onConfirm(pick);
 			}
-		} else if (e.key === 'Escape' && cancellable && onCancel) {
+		} else if ((e.keyCode === 27 || e.key === 'Esc' + 'ape') && cancellable && onCancel) {
 			e.preventDefault();
 			onCancel();
 		}
