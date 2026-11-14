@@ -359,7 +359,9 @@ export type Verb =
 	| 'move'
 	| 'draw'
 	| 'scry'
+	| 'surveil'
 	| 'lookAndReorder'
+	| 'investigate'
 	| 'mill'
 	| 'damage'
 	| 'gainLife'
@@ -399,7 +401,10 @@ export type Verb =
 	 * Look at the top N cards of your library, then put up to `dig.keep` of them somewhere and the
 	 * rest elsewhere ("Put up to one of them on top of your library and the rest on the bottom").
 	 */
-	| 'dig';
+	| 'dig'
+	| 'grantPlayFromExile';
+
+export type ManaRestriction = 'artifactSpellOrNonSpell';
 
 export type Duration = 'endOfTurn' | 'permanent' | 'untilYourNextTurn';
 
@@ -438,6 +443,8 @@ export interface EffectParams {
 	mana?: ManaColor[];
 	/** addMana: `amount` mana of one colour chosen from this set ("Add {W} or {U}", "any color"). */
 	manaChoice?: ManaColor[] | 'any' | 'commanderIdentity' | 'opponentLandColors';
+	/** addMana: spending restriction attached to the produced mana (CR 106.6). */
+	manaRestriction?: ManaRestriction;
 	/** grantPlayer: the rules the player gets. */
 	playerRules?: Array<'lifeTotalCantChange' | 'protectionFromEverything'>;
 	search?: SearchSpec;
@@ -465,6 +472,8 @@ export interface EffectParams {
 	dig?: { keep: number; upTo: boolean; keepTo: 'libraryTop' | 'hand'; rest: 'libraryBottom' | 'graveyard'; restRandom?: boolean };
 	/** move to battlefield: enters transformed with its back face up (CR 712.14a / 712.11a). */
 	enteredTransformed?: boolean;
+	/** grantPlayFromExile: permission to play the exiled card(s) from exile ("You may play that card this turn"). */
+	playFromExile?: { duration: 'thisTurn'; spendManaAsAnyColor?: boolean };
 }
 
 export interface TokenSpec {
@@ -474,6 +483,7 @@ export interface TokenSpec {
 	colors: ManaColor[];
 	typeLine: string;
 	keywords: string[];
+	tapped?: boolean;
 }
 
 export interface SearchSpec {
@@ -500,6 +510,8 @@ export type Selector =
 	| { k: 'eventObject' }
 	/** The object this permanent is attached to, or the object an Equipment/Aura attaches to. */
 	| { k: 'attachedTo' }
+	/** Top N cards (`amount`) of a player's library (default: controller / `you`). */
+	| { k: 'libraryTop'; player?: PlayerRef }
 	/** Not an object: verbs such as proliferate, extraTurn or win act on the game. */
 	| { k: 'none' };
 
@@ -529,7 +541,9 @@ export type EventKind =
 	/** A double-faced permanent transformed on the battlefield (CR 701.27). */
 	| 'transforms'
 	/** A face-down permanent was turned face up on the battlefield (CR 708.8). */
-	| 'turnFaceUp';
+	| 'turnFaceUp'
+	| 'investigate'
+	| 'surveil';
 
 export interface EventFilter {
 	/**

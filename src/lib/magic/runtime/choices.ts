@@ -256,6 +256,7 @@ export function effectivePromptChoice(prompt: PendingPrompt, state?: GameState):
 				kind: 'orderObjects',
 				objectIds,
 				allowSplitBottom: prompt.allowBottom !== false,
+				...(prompt.splitMode ? { splitLabel: prompt.splitMode } : {}),
 				allowShuffle: Boolean(prompt.allowShuffle),
 				reason: prompt.description || prompt.title
 			};
@@ -614,6 +615,27 @@ export function normalizePromptAction(
 	}
 }
 
+/** Picks which top-of-library cards to keep vs move (bottom for scry, graveyard for surveil). */
+export function pickScryOrSurveilSplit(
+	player: PlayerGameState,
+	cards: CardInstance[]
+): { topIds: string[]; bottomIds: string[] } {
+	const landCount =
+		player.battlefield.filter((b) => b.card.typeLine.includes('Land')).length +
+		player.hand.filter((h) => h.card.typeLine.includes('Land')).length;
+	const topIds: string[] = [];
+	const bottomIds: string[] = [];
+	for (const c of cards) {
+		const isLand = c.card.typeLine.includes('Land');
+		if ((landCount >= 4 && isLand) || (landCount < 3 && !isLand && c.card.cmc > 4)) {
+			bottomIds.push(c.instanceId);
+		} else {
+			topIds.push(c.instanceId);
+		}
+	}
+	return { topIds, bottomIds };
+}
+
 /**
  * Computes a deterministic bot answer for any of the 6 generic choice shapes.
  */
@@ -677,24 +699,14 @@ export function chooseBotAnswer(
 					shuffle: false
 				};
 			}
-			const landCount =
-				player.battlefield.filter((b) => b.card.typeLine.includes('Land')).length +
-				player.hand.filter((h) => h.card.typeLine.includes('Land')).length;
-
 			if (choice.allowSplitBottom !== false) {
-				const topIds: string[] = [];
-				const bottomIds: string[] = [];
-				for (const c of cards) {
-					const isLand = c.card.typeLine.includes('Land');
-					if ((landCount >= 4 && isLand) || (landCount < 3 && !isLand && c.card.cmc > 4)) {
-						bottomIds.push(c.instanceId);
-					} else {
-						topIds.push(c.instanceId);
-					}
-				}
+				const { topIds, bottomIds } = pickScryOrSurveilSplit(player, cards);
 				return { kind: 'orderObjects', topIds, bottomIds, shuffle: false };
 			}
 
+			const landCount =
+				player.battlefield.filter((b) => b.card.typeLine.includes('Land')).length +
+				player.hand.filter((h) => h.card.typeLine.includes('Land')).length;
 			const ordered = [...cards].sort((a, b) => {
 				const aLand = a.card.typeLine.includes('Land') ? 1 : 0;
 				const bLand = b.card.typeLine.includes('Land') ? 1 : 0;

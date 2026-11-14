@@ -28,7 +28,7 @@
 	import { compileCard } from './compiler/index';
 	import ManaSymbol from './ManaSymbol.svelte';
 	import ManaText from './ManaText.svelte';
-	import { parseManaCost } from './oracle';
+	import { getTotalManaInPool, parseManaCost } from './oracle';
 	import { matchesScryfallQuery } from './search';
 	import { cardSupportReport, displayAbilityText, unsupportedKindLabel } from './compiler/support';
 	import { effectiveCardForObject } from './scryfall';
@@ -3132,6 +3132,17 @@
 										<span>{me.manaPool[col]}</span>
 									</span>
 								{/each}
+								{#if me.restrictedMana?.artifactSpellOrNonSpell}
+									{@const restrictedArtifactMana = getTotalManaInPool(me.restrictedMana.artifactSpellOrNonSpell)}
+									{#if restrictedArtifactMana > 0}
+										<span
+											class="mana-orb filled restricted-mana"
+											title="Artifact spells & abilities only — can't spend on nonartifact spells"
+										>
+											⚙ <span>{restrictedArtifactMana}</span>
+										</span>
+									{/if}
+								{/if}
 							</div>
 
 							<div class="my-zones">
@@ -3174,7 +3185,7 @@
 									<button
 										type="button"
 										class="z-chip clickable"
-										title="Cards exiled by Opposition Agent or other effects that you may play from Exile"
+										title="Cards in Exile that you may play (e.g. Junk, impulse exile, or stolen cards)"
 										onclick={() =>
 											(zoneModal = {
 												title: 'Playable from Exile',
@@ -3182,7 +3193,7 @@
 												ownerName: me.username
 											})}
 									>
-										✨ Stolen ({myPlayableExileCards.length})
+										✨ Playable ({myPlayableExileCards.length})
 									</button>
 								{/if}
 							</div>
@@ -4046,6 +4057,8 @@
 									<span class="badge purple">⏳ {c.counters.time} Time (Suspended)</span>
 								{/if}
 								{#if me && c.playableFromExileBy?.playerId === me.playerId}
+									{@const exileIsLand = getLandPlayOptions(gameState, me.playerId, c, 'exile').length > 0}
+									{@const exileIsSpell = getCastOptions(gameState, me.playerId, c, 'exile').length > 0}
 									<span class="badge gold">✨ Playable ({c.playableFromExileBy.sourceName})</span>
 									<button
 										type="button"
@@ -4057,7 +4070,11 @@
 											await handleCardClickInHandOrCommand(c, 'exile');
 										}}
 									>
-										{c.card.typeLine.includes('Land') ? '▶ Play Land from Exile' : '▶ Cast from Exile'}
+										{exileIsLand && exileIsSpell
+											? '▶ Play / Cast from Exile'
+											: exileIsLand
+												? '▶ Play Land from Exile'
+												: '▶ Cast from Exile'}
 									</button>
 								{/if}
 								{#if gyCastOptions.length > 0}
@@ -4751,6 +4768,7 @@
 					</div>
 				{:else if myChoice.kind === 'orderObjects'}
 					{@const canBottom = myChoice.allowSplitBottom !== false}
+					{@const isGraveyardSplit = myChoice.splitLabel === 'graveyard'}
 					{@const canShuffle = Boolean(myChoice.allowShuffle)}
 					{@const libMap = new Map((me?.library || []).map((c) => [c.instanceId, c]))}
 					{@const topCards = scryTopOrder.map((id) => libMap.get(id)).filter((c): c is CardInstance => Boolean(c))}
@@ -4762,7 +4780,11 @@
 							<span class="scry-hint">#1 is the very top card (drawn next) — use ◀ / ▶ to rearrange order</span>
 						</div>
 						{#if topCards.length === 0}
-							<div class="scry-empty">No cards remaining on top (all sent to bottom).</div>
+							<div class="scry-empty">
+								{isGraveyardSplit
+									? 'No cards remaining on top (all sent to graveyard).'
+									: 'No cards remaining on top (all sent to bottom).'}
+							</div>
 						{:else}
 							<div class="modal-card-grid">
 								{#each topCards as c, idx (c.instanceId)}
@@ -4804,7 +4826,7 @@
 												class="scry-zone-toggle to-bottom"
 												onclick={() => moveScryCardZone(c.instanceId, true)}
 											>
-												⬇ Put on Bottom
+												{isGraveyardSplit ? '⬇ Put into Graveyard' : '⬇ Put on Bottom'}
 											</button>
 										{/if}
 									</div>
@@ -4816,19 +4838,29 @@
 					{#if canBottom && bottomCards.length > 0}
 						<div class="scry-section bottom-sec">
 							<div class="scry-section-head">
-								<strong>BOTTOM OF LIBRARY ({bottomCards.length})</strong>
-								<span class="scry-hint">Put on the bottom of your library in this order</span>
+								<strong>
+									{isGraveyardSplit
+										? `GRAVEYARD (${bottomCards.length})`
+										: `BOTTOM OF LIBRARY (${bottomCards.length})`}
+								</strong>
+								<span class="scry-hint">
+									{isGraveyardSplit
+										? 'Put into your graveyard in this order'
+										: 'Put on the bottom of your library in this order'}
+								</span>
 							</div>
 							<div class="modal-card-grid">
 								{#each bottomCards as c, idx (c.instanceId)}
 									<div
 										class="modal-card-item scry-card-item selected"
 										role="group"
-										aria-label="Bottom card #{idx + 1}: {c.card.name}"
+										aria-label="{isGraveyardSplit ? 'Graveyard' : 'Bottom'} card #{idx + 1}: {c.card.name}"
 										onmouseenter={() => hoverCard(c.card, c)}
 										onmouseleave={() => leaveCard(c.card)}
 									>
-										<div class="scry-rank-pill bot-rank">BOTTOM #{idx + 1}</div>
+										<div class="scry-rank-pill bot-rank">
+											{isGraveyardSplit ? 'GRAVEYARD' : 'BOTTOM'} #{idx + 1}
+										</div>
 										<img src={c.card.imageUrl} alt={c.card.name} />
 										<span class="scry-card-name">{c.card.name}</span>
 										<div class="scry-controls-row">
@@ -4908,7 +4940,9 @@
 							}}
 						>
 							{#if canBottom}
-								Confirm Scry ({topCards.length} Top / {bottomCards.length} Bottom)
+								{isGraveyardSplit
+									? `Confirm Surveil (${topCards.length} Top / ${bottomCards.length} Graveyard)`
+									: `Confirm Scry (${topCards.length} Top / ${bottomCards.length} Bottom)`}
 							{:else}
 								Keep This Top Order
 							{/if}
@@ -5930,6 +5964,11 @@
 		border-color: var(--mp-accent);
 		color: var(--mp-text);
 		font-weight: 700;
+	}
+	.mana-orb.restricted-mana {
+		grid-column: 1 / -1;
+		border-color: #d97706;
+		font-size: 0.6rem;
 	}
 
 	/* Center Hand Tray + Auto-Sort Toolbar + Curved Hand Fan */

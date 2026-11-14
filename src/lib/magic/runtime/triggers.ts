@@ -606,7 +606,47 @@ function matchTriggersInner(state: GameState, ev: GameEvent): void {
 			return matchTransformed(state, ev);
 		case 'TurnedFaceUp':
 			return matchTurnedFaceUp(state, ev);
+		case 'Investigated':
+			return matchInvestigated(state, ev);
+		case 'Surveilled':
+			return matchSurveilled(state, ev);
 	}
+}
+
+function matchPlayerRelationEvent(
+	state: GameState,
+	event: 'investigate' | 'surveil',
+	playerId: string,
+	label: string,
+	amount: number
+): void {
+	for (const source of sources(state, event)) {
+		for (const { ability, alts } of abilitiesFor(state, source, event)) {
+			const alt = alts.find((a) => {
+				const rel = a.filter.player?.relation ?? 'any';
+				if (rel === 'you' && playerId !== source.controllerId) return false;
+				if (rel === 'opponent' && playerId === source.controllerId) return false;
+				return true;
+			});
+			if (alt) {
+				record(state, source, ability, event, {
+					label,
+					amount,
+					eventPlayer: playerId
+				});
+			}
+		}
+	}
+}
+
+function matchInvestigated(state: GameState, ev: Extract<GameEvent, { kind: 'Investigated' }>): void {
+	if (ev.count <= 0) return;
+	matchPlayerRelationEvent(state, 'investigate', ev.playerId, 'Investigate Trigger', ev.count);
+}
+
+function matchSurveilled(state: GameState, ev: Extract<GameEvent, { kind: 'Surveilled' }>): void {
+	if (ev.count <= 0) return;
+	matchPlayerRelationEvent(state, 'surveil', ev.playerId, 'Surveil Trigger', ev.count);
 }
 
 function matchGainLife(state: GameState, ev: Extract<GameEvent, { kind: 'GainLife' }>): void {

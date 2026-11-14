@@ -349,4 +349,111 @@ describe('Effect grammar: amounts, delayed effects and special sentences', () =>
 		const danglingIf = parseSpellText('Bad If', 'Draw a card. If you do, gain 2 life.');
 		assert.equal(danglingIf.unparsed.length, 1);
 	});
+
+	it('parses restricted mana, predefined Powerstone/Vibranium/Junk tokens, and top-of-library impulse exile', () => {
+		const powerstoneAb = ok(
+			parseAbilityEffectText('Powerstone', "Add {C}. This mana can't be spent to cast a nonartifact spell.")
+		);
+		assert.deepEqual(steps(powerstoneAb), [
+			{
+				verb: 'addMana',
+				subject: { k: 'none' },
+				amount: { k: 'const', n: 1 },
+				params: { mana: ['C'], manaRestriction: 'artifactSpellOrNonSpell' }
+			}
+		]);
+
+		const junkAb = ok(
+			parseAbilityEffectText(
+				'Junk',
+				'Exile the top card of your library. You may play that card this turn. Activate only as a sorcery.'
+			)
+		);
+		assert.deepEqual(steps(junkAb), [
+			{
+				verb: 'exile',
+				subject: { k: 'libraryTop' },
+				amount: { k: 'const', n: 1 },
+				bindAs: 'b0'
+			},
+			{
+				verb: 'grantPlayFromExile',
+				subject: { k: 'binding', name: 'b0' },
+				params: { playFromExile: { duration: 'thisTurn' } }
+			}
+		]);
+
+		const impulseTwo = ok(
+			parseSpellText(
+				'Reckless Probe',
+				'Exile the top two cards of your library. You may play those cards this turn.'
+			)
+		);
+		assert.deepEqual(steps(impulseTwo), [
+			{
+				verb: 'exile',
+				subject: { k: 'libraryTop' },
+				amount: { k: 'const', n: 2 },
+				bindAs: 'b0'
+			},
+			{
+				verb: 'grantPlayFromExile',
+				subject: { k: 'binding', name: 'b0' },
+				params: { playFromExile: { duration: 'thisTurn' } }
+			}
+		]);
+
+		const tappedPowerstone = ok(parseSpellText('Powerstone Forge', 'Create a tapped Powerstone token.'));
+		assert.equal(tappedPowerstone.steps[0].verb, 'createToken');
+		assert.equal(tappedPowerstone.steps[0].params?.token?.name, 'Powerstone');
+		assert.equal(tappedPowerstone.steps[0].params?.token?.tapped, true);
+
+		const vibranium = ok(parseSpellText('Vibranium Gift', 'Create a Vibranium token.'));
+		assert.equal(vibranium.steps[0].params?.token?.name, 'Vibranium');
+		assert.deepEqual(vibranium.steps[0].params?.token?.keywords, ['Indestructible']);
+
+		const junkCreate = ok(parseSpellText('Junkyard Gift', 'Create two Junk tokens.'));
+		assert.equal(junkCreate.steps[0].params?.token?.name, 'Junk');
+		assert.deepEqual(junkCreate.steps[0].amount, { k: 'const', n: 2 });
+
+		const powerstonePlural = ok(
+			parseAbilityEffectText('Mightstone', "Add {C}{C}. This mana can't be spent to cast nonartifact spells.")
+		);
+		assert.deepEqual(steps(powerstonePlural), [
+			{
+				verb: 'addMana',
+				subject: { k: 'none' },
+				amount: { k: 'const', n: 2 },
+				params: { mana: ['C', 'C'], manaRestriction: 'artifactSpellOrNonSpell' }
+			}
+		]);
+
+		const untilEotImpulse = ok(
+			parseSpellText(
+				'Act on Impulse Probe',
+				'Exile the top three cards of your library. Until end of turn, you may play those cards.'
+			)
+		);
+		assert.deepEqual(steps(untilEotImpulse), [
+			{
+				verb: 'exile',
+				subject: { k: 'libraryTop' },
+				amount: { k: 'const', n: 3 },
+				bindAs: 'b0'
+			},
+			{
+				verb: 'grantPlayFromExile',
+				subject: { k: 'binding', name: 'b0' },
+				params: { playFromExile: { duration: 'thisTurn' } }
+			}
+		]);
+
+		const renamedA = ok(
+			parseSpellText('Alpha Impulse', 'Exile the top card of your library. You may play that card this turn.')
+		);
+		const renamedB = ok(
+			parseSpellText('Beta Impulse', 'Exile the top card of your library. You may play that card this turn.')
+		);
+		assert.deepEqual(steps(renamedA), steps(renamedB));
+	});
 });

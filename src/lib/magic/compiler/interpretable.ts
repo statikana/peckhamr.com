@@ -42,7 +42,9 @@ export const INTERPRETED_VERBS: ReadonlySet<Verb> = new Set<Verb>([
 	'sacrifice',
 	'mill',
 	'scry',
+	'surveil',
 	'lookAndReorder',
+	'investigate',
 	'search',
 	'delayedTrigger',
 	'fight',
@@ -52,7 +54,8 @@ export const INTERPRETED_VERBS: ReadonlySet<Verb> = new Set<Verb>([
 	'tapOrUntap' as Verb,
 	'transform',
 	'flip',
-	'dig'
+	'dig',
+	'grantPlayFromExile'
 ]);
 
 /**
@@ -67,11 +70,11 @@ export function triggerTargetsSupported(specs: TargetSpec[]): boolean {
 	});
 }
 
-/** Verbs whose chooser may get an engine prompt (scry, search); resolution pauses after the step. */
-export const PROMPTING_VERBS: ReadonlySet<Verb> = new Set<Verb>(['scry', 'lookAndReorder', 'search']);
+/** Verbs whose chooser may get an engine prompt (scry, surveil, search); resolution pauses after the step. */
+export const PROMPTING_VERBS: ReadonlySet<Verb> = new Set<Verb>(['scry', 'surveil', 'lookAndReorder', 'search']);
 
 function selectorSupported(sel: Selector): boolean {
-	return ['self', 'binding', 'target', 'all', 'player', 'playerRef', 'none', 'eventObject'].includes(sel.k);
+	return ['self', 'binding', 'target', 'all', 'player', 'playerRef', 'libraryTop', 'none', 'eventObject'].includes(sel.k);
 }
 
 function stepSupported(step: EffectStep): boolean {
@@ -85,6 +88,8 @@ function stepSupported(step: EffectStep): boolean {
 	}
 	if (step.verb === 'addMana' && !step.params?.mana && !step.params?.manaChoice) return false;
 	if (step.verb === 'dig' && !step.params?.dig) return false;
+	if (step.subject.k === 'libraryTop' && step.verb !== 'exile') return false;
+	if (step.verb === 'grantPlayFromExile' && !step.params?.playFromExile) return false;
 	if ((step.verb === 'pump' || step.verb === 'grant' || step.verb === 'switchPT') && step.params?.duration !== 'endOfTurn') return false;
 	if (step.verb === 'grant' && !step.params?.keywords?.length && !step.params?.removeKeywords?.length) return false;
 	if (step.verb === 'createToken' && !step.params?.token) return false;

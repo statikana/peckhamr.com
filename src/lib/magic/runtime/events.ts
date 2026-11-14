@@ -202,6 +202,21 @@ export interface TurnedFaceUpEvent extends EventBase {
 	xValue?: number;
 }
 
+/** A player investigated once (CR 701.16a). */
+export interface InvestigatedEvent extends EventBase {
+	kind: 'Investigated';
+	playerId: string;
+	count: number;
+}
+
+/** A player surveilled N cards (CR 701.25). */
+export interface SurveilledEvent extends EventBase {
+	kind: 'Surveilled';
+	playerId: string;
+	count: number;
+	graveyardCount: number;
+}
+
 export type GameEvent =
 	| TappedForManaEvent
 	| GainLifeEvent
@@ -210,6 +225,8 @@ export type GameEvent =
 	| CardDiscardedEvent
 	| TransformedEvent
 	| TurnedFaceUpEvent
+	| InvestigatedEvent
+	| SurveilledEvent
 	| ZoneChangeEvent
 	| CastEvent
 	| AttackDeclaredEvent

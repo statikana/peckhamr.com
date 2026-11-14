@@ -12,7 +12,7 @@ Audited at engine-rewrite 917180b on 2026-11-09.
   - **CR 701.14 / 701.26** — `fight`, `tap`, `untap`, and `tapOrUntap` are fully implemented in the IR interpreter (`runtime/effects.ts:971-1002, 1297-1337`), but `compiler/effects.ts` has **no grammar productions** that emit those verbs, so cards with "fights", "tap target ...", or "untap ..." never compile to IR — **S**.
   - **CR 701.34a** — `proliferate` is always invoked without `chosenIds` (`runtime/effects.ts:855`, `engine.ts:4888`), silently auto-choosing positive counters on the controller's permanents/self and negative counters (`-1/-1`, `stun`, `poison`) on opponents instead of prompting a human player — **S**.
   - **CR 701.15a–d** — Goad combat enforcement exists in `engine.ts:1765-1812` via `creature.goadedByPlayerIds`, but no compiler production or runtime effect ever sets `goadedByPlayerIds`, nothing expires goad at the goader's next turn (`701.15a`), and `engine.ts:1777` illegally blocks goaded creatures from attacking planeswalkers even when no non-goader player can be attacked (`701.15b`) — **S**.
-  - **CR 701.25 / 701.16 / 701.44 / 701.50 / 701.57** — Common evergreen/deciduous Commander keyword actions **Surveil**, **Investigate** (Clue tokens), **Explore**, **Connive**, and **Discover** have no compiler productions or runtime handlers — **M**.
+  - **CR 701.44 / 701.50 / 701.57** — Common evergreen/deciduous Commander keyword actions **Explore**, **Connive**, and **Discover** have no compiler productions or runtime handlers — **M**. *(**Surveil** `CR 701.25` and **Investigate** `CR 701.16` updated to implemented on 2026-11-13.)*
   - **CR 701.19 / 701.8c** — **Regenerate** is completely unimplemented (`compiler/adapter.ts:159-160` treats `"can't be regenerated"` as a no-op), so regeneration shields do not replace destruction, tap the creature, remove damage, or remove it from combat — **M**.
   - **CR 700.5 / 700.5a** — `devotion` calculation exists in `runtime/effects.ts:1659-1672`, but `compiler/effects.ts:1082` only compiles it for Thassa's Oracle's exact win condition; general devotion amounts ("equal to your devotion to ...") and Theros God type-changing statics (`700.5a`) are missing — **M**.
   - **CR 701.10 / 701.11** — **Double** and **Triple** (doubling/tripling a creature's power/toughness, doubling life totals, counters, mana pool, or damage dealt) have no effect grammar productions, IR verbs, or damage-doubling replacement hooks — **M**.
@@ -154,7 +154,7 @@ Audited at engine-rewrite 917180b on 2026-11-09.
 ### 701.16 Investigate
 | CR | Rule (short) | Status | Evidence / notes |
 |---|---|---|---|
-| 701.16, 701.16a | Investigate ("Create a Clue token") | missing | Not parsed in `compiler/effects.ts` or `oracle.ts`; no Clue token creation helper. |
+| 701.16, 701.16a | Investigate ("Create a Clue token") | implemented | **Updated 2026-11-13:** Compiled via `investigate` IR verb (`compiler/effects.ts`, `compiler/triggers.ts`), creates `Clue` token(s) via `PREDEFINED_TOKEN_DEFS.clue` with `tokenMultiplier` (`runtime/effects.ts`), binds created tokens, and emits `Investigated` trigger events (`runtime/events.ts`, `runtime/triggers.ts`). |
 
 ### 701.17 Mill
 | CR | Rule (short) | Status | Evidence / notes |
@@ -203,7 +203,8 @@ Audited at engine-rewrite 917180b on 2026-11-09.
 ### 701.25 Surveil
 | CR | Rule (short) | Status | Evidence / notes |
 |---|---|---|---|
-| 701.25, 701.25a–d | Surveil N (look at top N, put any number into graveyard and rest on top in any order) | missing | Not parsed in `compiler/` or `oracle.ts`; no prompt or runtime handler. |
+| 701.25, 701.25a, 701.25c, 701.25d | Surveil N (look at top N, put any number into graveyard and rest on top in any order; surveil 0 no-op; triggers after completion even on empty library) | implemented | **Updated 2026-11-13:** Compiled via `surveil` IR verb (`compiler/effects.ts`, `compiler/triggers.ts`, `PROMPTING_VERBS`), uses unified `orderObjects` modal (`splitLabel: 'graveyard'`, `ArenaTable.svelte`) + `surveil_graveyard` `PendingProcedure` handling replacement effects (`Rest in Peace`) cleanly (`engine.ts`), returns without event on `amount <= 0` (`701.25c`), and emits `Surveilled` on completion even if library is empty (`701.25d`). |
+| 701.25b | Additional-look modifiers while surveiling | missing | Replacement/continuous effects that increase how many cards a player looks at while surveiling are not implemented. |
 
 ### 701.26 Tap and Untap
 | CR | Rule (short) | Status | Evidence / notes |

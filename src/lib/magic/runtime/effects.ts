@@ -49,13 +49,15 @@ import type {
 	VfxEvent
 } from '../types.ts';
 import { cardManaSteps } from '../compiler/index.ts';
+import { addManaToPlayerPool } from './mana.ts';
 import { getCardFaces } from '../scryfall.ts';
 import {
 	activeAbilityDefs,
 	instanceFaceOptions,
 	resolveObjectFaces
 } from './faces.ts';
-import { legacySearchSpec } from '../compiler/effects.ts';
+import { legacySearchSpec, predefinedTokenToSpec } from '../compiler/effects.ts';
+import { PREDEFINED_TOKEN_DEFS } from '../oracle.ts';
 import { getKeywordSpec } from '../keywords.ts';
 import { evaluatePermanent, inspectCardContinuousBreakdown } from '../ruleTree.ts';
 import { enqueueChoicePrompt } from './choices.ts';
@@ -113,7 +115,7 @@ export interface EffectPorts {
 	addCounters(state: GameState, inst: CardInstance, counter: CounterType, amount: number): number;
 	proliferate(state: GameState, controller: PlayerGameState, chosenIds?: string[]): void;
 	/** Scry or "look at the top N, put them back in any order": bot decision or human prompt. */
-	scry(state: GameState, player: PlayerGameState, item: StackItem, count: number, mode: 'scry' | 'rearrange', mayShuffle: boolean): void;
+	scry(state: GameState, player: PlayerGameState, item: StackItem, count: number, mode: 'scry' | 'rearrange' | 'surveil', mayShuffle: boolean): void;
 	search(state: GameState, player: PlayerGameState, spec: LibrarySearchSpec, item: StackItem): void;
 	phaseOut(state: GameState, inst: CardInstance): void;
 	/** CR 701.27 / 712: Transform a double-faced permanent on the battlefield. */
@@ -802,7 +804,20 @@ class Run {
 						resumeStepIndex
 					}
 				};
+			} else if (!pr.continuation && pr.kind === 'scry_choice') {
+				pr.continuation = {
+					kind: 'effect_resume',
+					stackItemId: item.id,
+					stepIndex: resumeStepIndex
+				};
 			}
+		}
+		if (
+			this.state.pendingProcedure?.kind === 'surveil_graveyard' &&
+			!this.state.pendingProcedure.resumeStackItemId
+		) {
+			this.state.pendingProcedure.resumeStackItemId = item.id;
+			this.state.pendingProcedure.resumeStepIndex = resumeStepIndex;
 		}
 	}
 
@@ -1379,6 +1394,27 @@ class Run {
 			}
 			case 'exile':
 				return this.exile(step);
+			case 'grantPlayFromExile': {
+				const actor = (step.actor ? this.playerRef(step.actor) : null) ?? you;
+				const playSpec = step.params?.playFromExile;
+				const expiresAtEndOfTurn = !playSpec || playSpec.duration === 'thisTurn';
+				const objs = this.objects(step.subject).filter((o) => o.zone === 'exile');
+				for (const o of objs) {
+					o.playableFromExileBy = {
+						playerId: actor.playerId,
+						spendManaAsAnyColor: Boolean(playSpec?.spendManaAsAnyColor),
+						sourceName: this.ctx.sourceCard.name || title,
+						...(expiresAtEndOfTurn ? { expiresAtEndOfTurn: true } : {})
+					};
+					p.addLog(
+						s,
+						'cast',
+						`${actor.username} may play ${o.card.name} from exile this turn (${title}).`,
+						actor.playerId
+					);
+				}
+				return;
+			}
 			case 'bounce': {
 				this.runIndexedBatch(
 					`batch:${this.stepIndex}`,
@@ -1423,8 +1459,9 @@ class Run {
 			}
 			case 'createToken': {
 				const actor = step.actor ? this.playerRef(step.actor) : you;
-				const spec = step.params?.token;
-				if (!actor || !spec) return;
+				const baseSpec = step.params?.token;
+				if (!actor || !baseSpec) return;
+				const spec = step.params?.tapped && !baseSpec.tapped ? { ...baseSpec, tapped: true } : baseSpec;
 				const n = Math.max(0, this.amount(step.amount, 1)) * tokenMultiplier(s, actor.playerId);
 				const made: CardInstance[] = [];
 				for (let i = 0; i < n; i++) made.push(p.createToken(s, actor, spec));
@@ -1538,10 +1575,13 @@ class Run {
 			}
 			case 'addMana': {
 				const times = Math.max(0, this.amount(step.amount, 1));
+				const restriction = step.params?.manaRestriction;
 				if (step.params?.mana) {
 					const mana = step.params.mana;
 					const loops = mana.length > 1 ? 1 : times;
-					for (let i = 0; i < loops; i++) for (const c of mana) you.manaPool[c] += 1;
+					for (let i = 0; i < loops; i++) {
+						for (const c of mana) addManaToPlayerPool(you, c, 1, restriction);
+					}
 					return;
 				}
 				if (step.params?.manaChoice) {
@@ -1589,7 +1629,7 @@ class Run {
 									: undefined;
 						if (picked && allowed.includes(picked)) chosen = picked;
 					}
-					you.manaPool[chosen] += times;
+					addManaToPlayerPool(you, chosen, times, restriction);
 				}
 				return;
 			}
@@ -1806,6 +1846,47 @@ class Run {
 				for (const pl of this.players(step.subject)) {
 					p.scry(s, pl, this.ctx.item, n, step.verb === 'scry' ? 'scry' : 'rearrange', Boolean(step.params?.mayShuffle));
 				}
+				return;
+			}
+			case 'surveil': {
+				const n = this.amount(step.amount);
+				const { paused } = this.runIndexedBatch(
+					`surveil:${this.stepIndex}`,
+					() => this.players(step.subject).map((pl) => pl.playerId),
+					(pid) => {
+						const pl = this.player(pid);
+						if (!pl || pl.lost) return;
+						const promptsBefore = s.pendingPrompts.length;
+						p.scry(s, pl, this.ctx.item, n, 'surveil', false);
+						if (
+							s.pendingPrompts.length > promptsBefore ||
+							s.pendingProcedure?.kind === 'surveil_graveyard'
+						) {
+							return 'pending';
+						}
+					}
+				);
+				if (paused) return;
+				return;
+			}
+			case 'investigate': {
+				const actor = step.actor ? this.playerRef(step.actor) : you;
+				if (!actor || actor.lost) return;
+				const n = Math.max(0, this.amount(step.amount, 1));
+				const clueSpec = predefinedTokenToSpec(PREDEFINED_TOKEN_DEFS.clue);
+				const made: CardInstance[] = [];
+				for (let i = 0; i < n; i++) {
+					const mult = tokenMultiplier(s, actor.playerId);
+					for (let j = 0; j < mult; j++) made.push(p.createToken(s, actor, clueSpec));
+					p.addLog(s, 'rule', `${actor.username} investigated.`, actor.playerId);
+					emitEvent(s, {
+						kind: 'Investigated',
+						playerId: actor.playerId,
+						count: 1
+					});
+					flushTriggers(s);
+				}
+				this.bind(step, made);
 				return;
 			}
 			case 'search': {
@@ -2209,6 +2290,39 @@ class Run {
 		const p = P();
 		const you = this.you;
 		const sel = step.subject;
+		if (sel.k === 'libraryTop') {
+			const targetPlayer = (sel.player ? this.playerRef(sel.player) : null) ?? you;
+			const count = Math.max(0, this.amount(step.amount, 1));
+			const moved: CardInstance[] = [];
+			for (let i = 0; i < count && targetPlayer.library.length > 0; i++) {
+				const top = targetPlayer.library[0];
+				const res = moveObject(s, top, 'exile', {
+					from: { player: targetPlayer, zone: 'library' },
+					toPlayer: targetPlayer,
+					bumpVersion: true,
+					newTimestamp: true
+				});
+				if (res === 'exile') moved.push(top);
+			}
+			this.bind(step, moved);
+			if (moved.length > 0) {
+				const names = moved.map((c) => c.card.name).join(', ');
+				p.addLog(
+					s,
+					'rule',
+					`${this.ctx.title} exiled ${names} from the top of ${targetPlayer.username}'s library.`,
+					you.playerId
+				);
+			} else {
+				p.addLog(
+					s,
+					'rule',
+					`${targetPlayer.username}'s library is empty; nothing was exiled.`,
+					you.playerId
+				);
+			}
+			return;
+		}
 		if (sel.k === 'self' && this.ctx.item.kind === 'spell') {
 			// The spell itself, as it finishes resolving (CR 608.2n).
 			this.result.exileSelf = true;

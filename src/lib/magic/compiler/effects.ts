@@ -32,7 +32,7 @@ import type {
 } from '../ir.ts';
 import { GRANTABLE_KEYWORDS } from '../keywords.ts';
 import type { CounterType, LibrarySearchSpec, ManaColor, ScryfallCard, StackItem } from '../types.ts';
-import { buildTokenSpec, parseLibrarySearchSpec } from '../oracle.ts';
+import { buildTokenSpec, parseLibrarySearchSpec, PREDEFINED_TOKEN_DEFS } from '../oracle.ts';
 import { parseAdditionalCostSentence, parseObjectPhrase } from './costs.ts';
 import { parseCondition } from './triggers.ts';
 import {
@@ -493,22 +493,41 @@ function substituteX(a: Amount, x: Amount | undefined): Amount {
 
 // ---- Tokens ---------------------------------------------------------------------------------
 
+/** Converts a predefined token entry into a compiler/runtime TokenSpec. */
+export function predefinedTokenToSpec(
+	def: (typeof PREDEFINED_TOKEN_DEFS)[keyof typeof PREDEFINED_TOKEN_DEFS],
+	tapped = false
+): TokenSpec {
+	return {
+		name: def.name,
+		power: def.power,
+		toughness: def.toughness,
+		colors: [...def.colors],
+		typeLine: def.typeLine,
+		keywords: [...def.keywords],
+		...(tapped ? { tapped: true } : {})
+	};
+}
+
 /** "a 3/3 green Beast creature token", "two 1/1 white Soldier creature tokens with lifelink", "a Treasure token". */
 function tokenPhrase(p: Parser, text: string): { amount: Amount; token: TokenSpec } | null {
 	const t = text.trim();
-	if (/^a treasure token$/i.test(t)) {
-		return {
-			amount: n(1),
-			token: { name: 'Treasure', power: 0, toughness: 0, colors: [], typeLine: 'Token Artifact — Treasure', keywords: [] }
-		};
+	const pre = t.match(/^(that many|\S+) (tapped )?([a-z]+) tokens?( tapped)?$/i);
+	if (pre && !(pre[2] && pre[4])) {
+		const def = PREDEFINED_TOKEN_DEFS[pre[3].toLowerCase() as keyof typeof PREDEFINED_TOKEN_DEFS];
+		if (def) {
+			const amount = amountWord(p, pre[1]);
+			if (!amount) return null;
+			return { amount, token: predefinedTokenToSpec(def, Boolean(pre[2] || pre[4])) };
+		}
 	}
 	const m = t.match(
-		/^(that many|\S+) (\d+)\/(\d+) ((?:(?:white|blue|black|red|green|colorless)(?:,? and |, | ))*)([A-Z][A-Za-z' ]*?) (?:artifact )?creature tokens?(?: with ([a-z, ]+?))?$/
+		/^(that many|\S+) (tapped )?(\d+)\/(\d+) ((?:(?:white|blue|black|red|green|colorless)(?:,? and |, | ))*)([A-Z][A-Za-z' ]*?) (?:artifact )?creature tokens?(?: with ([a-z, ]+?))?( tapped)?$/
 	);
-	if (!m) return null;
+	if (!m || (m[2] && m[8])) return null;
 	const amount = amountWord(p, m[1]);
 	if (!amount) return null;
-	const kw = m[6] ?? '';
+	const kw = m[7] ?? '';
 	const parsedKws = kw
 		? kw
 				.split(/,? and |, /)
@@ -518,7 +537,7 @@ function tokenPhrase(p: Parser, text: string): { amount: Amount; token: TokenSpe
 	if (parsedKws.some((k) => !GRANTABLE_KEYWORDS.includes(k) && k !== 'changeling')) {
 		return null;
 	}
-	const spec = buildTokenSpec(parseInt(m[2], 10), parseInt(m[3], 10), `${m[4]}${m[5]}`.trim(), kw);
+	const spec = buildTokenSpec(parseInt(m[3], 10), parseInt(m[4], 10), `${m[5]}${m[6]}`.trim(), kw);
 	const tokenKeywords = [...spec.keywords];
 	for (const k of parsedKws) {
 		const cap = k.charAt(0).toUpperCase() + k.slice(1);
@@ -526,7 +545,15 @@ function tokenPhrase(p: Parser, text: string): { amount: Amount; token: TokenSpe
 			tokenKeywords.push(cap);
 		}
 	}
-	return { amount, token: { ...spec, colors: [...spec.colors], keywords: tokenKeywords } };
+	return {
+		amount,
+		token: {
+			...spec,
+			colors: [...spec.colors],
+			keywords: tokenKeywords,
+			...(m[2] || m[8] ? { tapped: true } : {})
+		}
+	};
 }
 
 // ---- Searches -------------------------------------------------------------------------------
@@ -759,6 +786,25 @@ function damageRecipient(p: Parser, text: string): Selector | null {
 /** Verb phrases whose subject is a player ("draws two cards", "loses 2 life", "creates a token"). */
 function playerPredicate(p: Parser, subject: Selector, vp: string, span: Span, fromImperative = false): ClauseResult {
 	let text = vp.trim();
+	const playExile = text.match(/^may play (that card|those cards|it|them|cards exiled this way) this turn$/i);
+	if (playExile) {
+		const actor = singlePlayer(subject);
+		if (!actor) return false;
+		const ref = p.itRef();
+		if (!ref) return false;
+		p.lastPlayer = subject;
+		p.push(
+			{
+				verb: 'grantPlayFromExile',
+				subject: refSelector(ref),
+				...(actor.k !== 'you' ? { actor } : {}),
+				params: { playFromExile: { duration: 'thisTurn' } },
+				span
+			},
+			false
+		);
+		return true;
+	}
 	let optional: EffectStep['optional'];
 	const may = text.match(/^may (.+)$/);
 	if (may) {
@@ -858,6 +904,23 @@ function playerPredicate(p: Parser, subject: Selector, vp: string, span: Span, f
 		p.push({ verb: 'scry', subject, amount, ...opt, span }, false);
 		return true;
 	}
+	m = text.match(/^surveils? (\S+)$/);
+	if (m && (subject.k === 'player' || singlePlayer(subject) !== null)) {
+		const amount = count(m[1]);
+		if (!amount) return false;
+		p.push({ verb: 'surveil', subject, amount, ...opt, span }, false);
+		return true;
+	}
+	m = text.match(/^investigates?(?: (twice|once|(that many|\S+) times?))?$/);
+	if (m && (subject.k === 'player' || singlePlayer(subject) !== null)) {
+		let amount: Amount | null;
+		if (!m[1] || m[1] === 'once') amount = n(1);
+		else if (m[1] === 'twice') amount = n(2);
+		else amount = amountWord(p, m[2]);
+		if (!amount) return false;
+		p.push({ verb: 'investigate', subject, amount, ...opt, span }, false);
+		return true;
+	}
 	if (/^sacrifices? ~$/.test(text) && subject.k === 'player' && subject.filter.relation === 'you') {
 		p.push({ verb: 'sacrifice', subject: { k: 'self' }, ...opt, span }, false);
 		return true;
@@ -914,12 +977,51 @@ function playerPredicate(p: Parser, subject: Selector, vp: string, span: Span, f
 
 const YOU: Selector = { k: 'player', filter: { relation: 'you' } };
 
+/**
+ * Parses `"the top [N] card(s) of <player>'s library"` after `exile`.
+ * Returns `undefined` when `phrase` isn't a top-of-library phrase so callers fall back to `objectPhrase`.
+ */
+function parseExileTopOfLibrary(p: Parser, phrase: string, span: Span): boolean | undefined {
+	const topLib = phrase.match(
+		/^the top (?:(\S+) )?cards? of (your|target player's|target opponent's|that player's|their) library$/i
+	);
+	if (!topLib) return undefined;
+	const amount = topLib[1] ? amountWord(p, topLib[1]) : n(1);
+	if (!amount) return false;
+	const ownerKey = topLib[2].toLowerCase();
+	let player: PlayerRef | undefined;
+	if (ownerKey === 'your') {
+		player = undefined;
+	} else if (ownerKey === "target player's" || ownerKey === "target opponent's") {
+		const sel = playerPhrase(p, ownerKey === "target player's" ? 'target player' : 'target opponent');
+		const pr = sel ? singlePlayer(sel) : null;
+		if (!pr) return false;
+		p.lastPlayer = sel!;
+		player = pr;
+	} else {
+		const sel = playerPhrase(p, ownerKey === "that player's" ? 'that player' : 'they');
+		const pr = sel ? singlePlayer(sel) : null;
+		if (!pr) return false;
+		player = pr;
+	}
+	p.push(
+		{
+			verb: 'exile',
+			subject: { k: 'libraryTop', ...(player && player.k !== 'you' ? { player } : {}) },
+			amount,
+			span
+		},
+		true
+	);
+	return true;
+}
+
 /** Clauses without a subject: "Destroy target creature", "Draw a card", "Create a Treasure token". */
 function imperative(p: Parser, text: string, span: Span): ClauseResult {
 	const t = text.trim();
 	let m: RegExpMatchArray | null;
 
-	if (/^(?:draw|gain|lose|mill|create|search|take|scry|sacrifice|discard)\b/.test(t) && !/^lose hexproof/.test(t) && !/^create a token that's a copy\b/.test(t)) {
+	if (/^(?:draw|gain|lose|mill|create|search|take|scry|surveil|sacrifice|discard|investigate)\b/.test(t) && !/^lose hexproof/.test(t) && !/^create a token that's a copy\b/.test(t)) {
 		return playerPredicate(p, YOU, t, span, true);
 	}
 	if (t === 'proliferate') {
@@ -939,6 +1041,10 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 	}
 	m = t.match(/^(destroy|exile) (.+)$/);
 	if (m) {
+		if (m[1] === 'exile') {
+			const top = parseExileTopOfLibrary(p, m[2], span);
+			if (top !== undefined) return top;
+		}
 		const obj = objectPhrase(p, m[2]);
 		if (!obj) return false;
 		const verb = m[1] as 'destroy' | 'exile';
@@ -1166,7 +1272,7 @@ function addMana(p: Parser, text: string, span: Span): ClauseResult {
 
 // Words that start a new clause after " and " / ", then ".
 const CLAUSE_START =
-	/^(?:you|each opponent|each player|target player|target opponent|its controller|its owner|that player|they|draw|draws|lose|loses|gain|gains|get|gets|put|exile|destroy|return|create|creates|search|scry|mill|mills|sacrifice|deal|deals|add|take|takes|phase|phases|attach|counter|proliferate|switch|look|tap|untap|fight|fights|transform|transforms|flip|flips)\b/;
+	/^(?:you|each opponent|each player|target player|target opponent|its controller|its owner|that player|they|draw|draws|lose|loses|gain|gains|get|gets|put|exile|destroy|return|create|creates|search|scry|surveil|surveils|investigate|investigates|mill|mills|sacrifice|deal|deals|add|take|takes|phase|phases|attach|counter|proliferate|switch|look|tap|untap|fight|fights|transform|transforms|flip|flips)\b/;
 
 /** Splits a sentence into clauses at ", then " and at " and " before a new verb or subject. */
 function splitClauses(text: string, offset: number): Clause[] {
@@ -1200,11 +1306,20 @@ function clause(p: Parser, c: Clause): ClauseResult {
 		if (subject && playerPredicate(p, subject, ps[2], c.span)) return true;
 	}
 	// A continued predicate with the previous player as subject ("... and loses 2 life").
-	if (p.lastPlayer && /^(?:draws?|loses?|gains?|mills?|creates?)\b/.test(t)) {
+	if (p.lastPlayer && /^(?:draws?|loses?|gains?|mills?|creates?|investigates?|surveils?)\b/.test(t)) {
 		if (playerPredicate(p, p.lastPlayer, t, c.span)) return true;
 	}
-	// Object subjects: try each split point, longest subject first.
+	// Object subjects & "until end of turn, <player> may play ..." impulse exile clauses.
 	const dur = t.match(/^until end of turn, (.+)$/);
+	if (dur) {
+		const exileDur = dur[1].match(
+			/^(you|that player|they) (may play (?:that card|those cards|it|them|cards exiled this way))$/i
+		);
+		if (exileDur) {
+			const subj = playerPhrase(p, exileDur[1]);
+			if (subj && playerPredicate(p, subj, `${exileDur[2]} this turn`, c.span)) return true;
+		}
+	}
 	const body = dur ? dur[1] : t;
 	const words = body.split(' ');
 	for (let i = words.length - 1; i >= 1; i--) {
@@ -1278,8 +1393,8 @@ function clause(p: Parser, c: Clause): ClauseResult {
 /** Sentence-initial words that are not names or subtypes, so they can be lower-cased. */
 const LOWER_START = new Set([
 	'a', 'add', 'all', 'an', 'another', 'any', 'at', 'attach', 'copy', 'counter', 'create', 'creatures', 'deal', 'destroy', 'draw',
-	'each', 'end', 'exile', 'fight', 'flip', 'gain', 'if', 'it', 'its', 'look', 'lose', 'mill', 'permanents', 'proliferate', 'put',
-	'return', 'sacrifice', 'scry', 'search', 'switch', 'take', 'tap', 'target', 'that', 'the', 'then', 'they', 'those',
+	'each', 'end', 'exile', 'fight', 'flip', 'gain', 'if', 'investigate', 'it', 'its', 'look', 'lose', 'mill', 'permanents', 'proliferate', 'put',
+	'return', 'sacrifice', 'scry', 'search', 'surveil', 'switch', 'take', 'tap', 'target', 'that', 'the', 'then', 'they', 'those',
 	'transform', 'untap', 'until', 'up', 'you', 'your'
 ]);
 
@@ -1325,6 +1440,13 @@ function sentence(p: Parser, text: string, span: Span): boolean {
 		const prev = p.steps[p.steps.length - 1];
 		if (prev?.verb !== 'lookAndReorder') return fail();
 		prev.params = { ...prev.params, mayShuffle: true };
+		return true;
+	}
+
+	if (/^this mana can't be spent to cast (?:a )?nonartifact spells?$/i.test(t)) {
+		const prev = p.steps[p.steps.length - 1];
+		if (prev?.verb !== 'addMana') return fail();
+		prev.params = { ...prev.params, manaRestriction: 'artifactSpellOrNonSpell' };
 		return true;
 	}
 

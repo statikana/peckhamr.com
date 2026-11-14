@@ -630,7 +630,22 @@ export function executeBotStep(
 	// 2. If it's the bot's Main Phase and Stack is empty: play land, cast Commander or spells
 	if (isBotsTurn && (state.phase === 'main1' || state.phase === 'main2') && state.stack.length === 0) {
 		// 2a. Play a land if available (using engine getLandPlayOptions for single- and multi-face cards)
+		// Prefer impulse-exiled lands expiring at end of turn so the permission isn't wasted at cleanup.
 		if (bot.landsPlayedThisTurn < bot.maxLandsPerTurn) {
+			for (const card of bot.exile) {
+				if (card.playableFromExileBy?.playerId !== bot.playerId || !card.playableFromExileBy.expiresAtEndOfTurn) {
+					continue;
+				}
+				const landOpts = getLandPlayOptions(state, bot.playerId, card, 'exile');
+				if (landOpts.length === 0) continue;
+				const res = applyGameAction(state, bot.playerId, {
+					type: 'play_land',
+					instanceId: card.instanceId,
+					fromZone: 'exile',
+					faceIndex: landOpts[0].faceIndex
+				});
+				if (res.ok) return 'visible';
+			}
 			for (const card of bot.hand) {
 				const landOpts = getLandPlayOptions(state, bot.playerId, card, 'hand');
 				if (landOpts.length === 0) continue;

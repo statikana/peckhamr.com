@@ -32,7 +32,7 @@ export interface NormalizedFace {
 }
 
 const SELF_REFERENCE_TYPES =
-	'creature|permanent|spell|card|artifact|enchantment|land|equipment|aura|vehicle|planeswalker|battle|saga|class|case|siege';
+	'creature|permanent|spell|card|artifact|enchantment|land|equipment|aura|vehicle|planeswalker|battle|saga|class|case|siege|token';
 const SELF_REFERENCE = new RegExp(`\\bthis (?:${SELF_REFERENCE_TYPES})\\b`, 'gi');
 
 /**

@@ -45,25 +45,175 @@ export function withDelayedTriggerSpec(
 	};
 }
 
+export interface PredefinedTokenDef extends TokenCreationSpec {
+	oracleText: string;
+}
+
+/**
+ * CR 111.10a–g, u, v, x: single authoritative table for predefined tokens.
+ * Both `buildTokenScryfallCard` and the compiler's `tokenPhrase` read from this table.
+ */
+export const PREDEFINED_TOKEN_DEFS = {
+	treasure: {
+		name: 'Treasure',
+		typeLine: 'Token Artifact — Treasure',
+		colors: [],
+		power: 0,
+		toughness: 0,
+		keywords: [],
+		oracleText: '{T}, Sacrifice this artifact: Add one mana of any color.'
+	},
+	food: {
+		name: 'Food',
+		typeLine: 'Token Artifact — Food',
+		colors: [],
+		power: 0,
+		toughness: 0,
+		keywords: [],
+		oracleText: '{2}, {T}, Sacrifice this token: You gain 3 life.'
+	},
+	gold: {
+		name: 'Gold',
+		typeLine: 'Token Artifact — Gold',
+		colors: [],
+		power: 0,
+		toughness: 0,
+		keywords: [],
+		oracleText: 'Sacrifice this token: Add one mana of any color.'
+	},
+	walker: {
+		name: 'Walker',
+		typeLine: 'Token Creature — Zombie',
+		colors: ['B'],
+		power: 2,
+		toughness: 2,
+		keywords: [],
+		oracleText: ''
+	},
+	shard: {
+		name: 'Shard',
+		typeLine: 'Token Enchantment — Shard',
+		colors: [],
+		power: 0,
+		toughness: 0,
+		keywords: [],
+		oracleText: '{2}, Sacrifice this token: Scry 1, then draw a card.'
+	},
+	clue: {
+		name: 'Clue',
+		typeLine: 'Token Artifact — Clue',
+		colors: [],
+		power: 0,
+		toughness: 0,
+		keywords: [],
+		oracleText: '{2}, Sacrifice this token: Draw a card.'
+	},
+	blood: {
+		name: 'Blood',
+		typeLine: 'Token Artifact — Blood',
+		colors: [],
+		power: 0,
+		toughness: 0,
+		keywords: [],
+		oracleText: '{1}, {T}, Discard a card, Sacrifice this token: Draw a card.'
+	},
+	lander: {
+		name: 'Lander',
+		typeLine: 'Token Artifact — Lander',
+		colors: [],
+		power: 0,
+		toughness: 0,
+		keywords: [],
+		oracleText:
+			'{2}, {T}, Sacrifice this token: Search your library for a basic land card, put it onto the battlefield tapped, then shuffle.'
+	},
+	mutagen: {
+		name: 'Mutagen',
+		typeLine: 'Token Artifact — Mutagen',
+		colors: [],
+		power: 0,
+		toughness: 0,
+		keywords: [],
+		oracleText:
+			'{1}, {T}, Sacrifice this token: Put a +1/+1 counter on target creature. Activate only as a sorcery.'
+	},
+	heartwood: {
+		name: 'Heartwood',
+		typeLine: 'Token Artifact — Heartwood',
+		colors: ['R', 'G'],
+		power: 0,
+		toughness: 0,
+		keywords: [],
+		oracleText: '{T}: Add {R} or {G}.'
+	},
+	powerstone: {
+		name: 'Powerstone',
+		typeLine: 'Token Artifact — Powerstone',
+		colors: [],
+		power: 0,
+		toughness: 0,
+		keywords: [],
+		oracleText: "{T}: Add {C}. This mana can't be spent to cast a nonartifact spell."
+	},
+	vibranium: {
+		name: 'Vibranium',
+		typeLine: 'Token Artifact — Vibranium',
+		colors: [],
+		power: 0,
+		toughness: 0,
+		keywords: ['Indestructible'],
+		oracleText: "{T}: Add {C}. This mana can't be spent to cast a nonartifact spell."
+	},
+	junk: {
+		name: 'Junk',
+		typeLine: 'Token Artifact — Junk',
+		colors: [],
+		power: 0,
+		toughness: 0,
+		keywords: [],
+		oracleText:
+			'{T}, Sacrifice this token: Exile the top card of your library. You may play that card this turn. Activate only as a sorcery.'
+	}
+} satisfies Record<string, PredefinedTokenDef>;
+
+function matchPredefinedTokenDef(spec: TokenCreationSpec): PredefinedTokenDef | undefined {
+	const nameKey = spec.name.toLowerCase();
+	if (nameKey in PREDEFINED_TOKEN_DEFS) {
+		return PREDEFINED_TOKEN_DEFS[nameKey as keyof typeof PREDEFINED_TOKEN_DEFS];
+	}
+	const dashIdx = spec.typeLine.indexOf('—');
+	const altDashIdx = dashIdx >= 0 ? dashIdx : spec.typeLine.indexOf(' - ');
+	const subtypePart = altDashIdx >= 0 ? spec.typeLine.slice(altDashIdx + 1) : '';
+	for (const sub of subtypePart.split(/\s+/).filter(Boolean)) {
+		const key = sub.toLowerCase();
+		if (key !== 'walker' && key in PREDEFINED_TOKEN_DEFS) {
+			return PREDEFINED_TOKEN_DEFS[key as keyof typeof PREDEFINED_TOKEN_DEFS];
+		}
+	}
+	return undefined;
+}
+
 export function buildTokenScryfallCard(
 	id: string,
 	spec: TokenCreationSpec
 ): ScryfallCard {
-	const isTreasure = /\bTreasure\b/.test(spec.typeLine);
+	const predefined = matchPredefinedTokenDef(spec);
+	const isCreature = /\bCreature\b/.test(spec.typeLine);
+	const kwText = spec.keywords.join(', ');
+	const abilityText = predefined?.oracleText ?? '';
+	const oracleText = [kwText, abilityText].filter(Boolean).join('\n');
 	return {
 		id,
 		name: spec.name,
 		manaCost: '',
 		cmc: 0,
 		typeLine: spec.typeLine,
-		oracleText: isTreasure
-			? '{T}, Sacrifice this artifact: Add one mana of any color.'
-			: spec.keywords.join(', '),
+		oracleText,
 		colors: spec.colors,
 		colorIdentity: spec.colors,
 		keywords: spec.keywords,
-		power: isTreasure ? undefined : String(spec.power),
-		toughness: isTreasure ? undefined : String(spec.toughness),
+		power: isCreature ? String(spec.power) : undefined,
+		toughness: isCreature ? String(spec.toughness) : undefined,
 		imageUrl: `https://api.scryfall.com/cards/named?fuzzy=${encodeURIComponent(spec.name.replace(' Token', ''))}&format=image&version=normal`,
 		artCropUrl: `https://api.scryfall.com/cards/named?fuzzy=${encodeURIComponent(spec.name.replace(' Token', ''))}&format=image&version=art_crop`,
 		legalCommander: true,
@@ -340,6 +490,16 @@ const KNOWN_SEARCH_SUBTYPES = [
 	'Clue',
 	'Food',
 	'Treasure',
+	'Gold',
+	'Shard',
+	'Blood',
+	'Lander',
+	'Mutagen',
+	'Heartwood',
+	'Powerstone',
+	'Junk',
+	'Map',
+	'Vibranium',
 	'Dragon',
 	'Elf',
 	'Goblin',

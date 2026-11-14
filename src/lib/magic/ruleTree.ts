@@ -317,14 +317,16 @@ function opponentLandColors(state: GameState, actor: PlayerGameState): ManaColor
 function manaStepProduction(
 	steps: EffectStep[],
 	commanderIdentity: ManaColor[]
-): { colors: ManaColor[]; amount: number; opponentLandColors?: boolean } | null {
+): { colors: ManaColor[]; amount: number; opponentLandColors?: boolean; manaRestriction?: EffectiveActivatedAbility['manaRestriction'] } | null {
 	const addSteps = steps.filter((s) => s.verb === 'addMana');
 	if (addSteps.length === 0) return null;
 	const cmdColors: ManaColor[] = commanderIdentity.filter((c) => c !== 'C');
 	const colors: ManaColor[] = [];
 	let totalAmount = 0;
 	let opponentLands = false;
+	let manaRestriction: EffectiveActivatedAbility['manaRestriction'];
 	for (const s of addSteps) {
+		if (s.params?.manaRestriction) manaRestriction = s.params.manaRestriction;
 		const amt = s.amount?.k === 'const' ? s.amount.n : 1;
 		const choice = s.params?.manaChoice;
 		if (choice === 'opponentLandColors') {
@@ -355,7 +357,8 @@ function manaStepProduction(
 	return {
 		colors,
 		amount: Math.max(1, totalAmount),
-		...(opponentLands ? { opponentLandColors: true } : {})
+		...(opponentLands ? { opponentLandColors: true } : {}),
+		...(manaRestriction ? { manaRestriction } : {})
 	};
 }
 
@@ -404,6 +407,7 @@ function buildEffectiveActivatedAbility(
 	let producesAmount = 0;
 	let hasManaProduction = false;
 	let manaAmount: EffectiveActivatedAbility['manaAmount'];
+	let manaRestriction: EffectiveActivatedAbility['manaRestriction'];
 	if (isMana) {
 		const prod = manaStepProduction(effect, commanderIdentity);
 		if (prod?.opponentLandColors) {
@@ -412,10 +416,12 @@ function buildEffectiveActivatedAbility(
 			producesMana = oppColors;
 			producesAmount = prod.amount;
 			hasManaProduction = true;
+			manaRestriction = prod.manaRestriction;
 		} else if (prod) {
 			producesMana = prod.colors;
 			producesAmount = prod.colors.length > 0 ? prod.amount : 0;
 			hasManaProduction = true;
+			manaRestriction = prod.manaRestriction;
 		}
 		const dynStep = effect.find((s) => s.verb === 'addMana' && s.amount && s.amount.k !== 'const');
 		if (dynStep?.amount) manaAmount = dynStep.amount;
@@ -461,6 +467,7 @@ function buildEffectiveActivatedAbility(
 		producesMana,
 		producesAmount,
 		...(manaAmount ? { manaAmount } : {}),
+		...(manaRestriction ? { manaRestriction } : {}),
 		...(opts.grantSourceCard ? { grantSourceCard: opts.grantSourceCard } : {}),
 		effectText: opts.effectTextOverride ?? effectPart,
 		requiresTarget: targetInfo.requiresTarget,

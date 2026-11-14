@@ -1,4 +1,4 @@
-import type { ActivationRestriction, Amount, CostDef, TargetSpec } from './ir.ts';
+import type { ActivationRestriction, Amount, CostDef, ManaRestriction, TargetSpec } from './ir.ts';
 import type { RuntimeTrigger } from './compiler/triggers.ts';
 import type { ManaCostRequirement } from './oracle.ts';
 
@@ -281,6 +281,11 @@ export interface TargetRequirementInfo {
 	targetSpecs?: TargetSpec[];
 }
 
+export interface ManaSpendContext {
+	isSpell: boolean;
+	isArtifactSpell?: boolean;
+}
+
 export interface EffectiveActivatedAbility {
 	id: string;
 	faceIndex?: number;
@@ -304,6 +309,8 @@ export interface EffectiveActivatedAbility {
 	producesAmount: number;
 	/** Dynamic non-constant mana amount from IR, if any (transient, never serialized in GameState). */
 	manaAmount?: Amount;
+	/** Spending restriction on produced mana (CR 106.6). */
+	manaRestriction?: ManaRestriction;
 	/** Card that granted this ability via Layer 6 `grantAbility`, if granted (transient / plain card data). */
 	grantSourceCard?: ScryfallCard;
 	effectText: string;
@@ -343,6 +350,7 @@ export interface PlayableFromExilePermission {
 	sourceName: string;
 	allowedFaceIndices?: number[];
 	onAdventure?: boolean;
+	expiresAtEndOfTurn?: boolean;
 }
 
 export interface LibrarySearchInterceptorInfo {
@@ -361,6 +369,7 @@ export interface TokenCreationSpec {
 	colors: ManaColor[];
 	typeLine: string;
 	keywords: string[];
+	tapped?: boolean;
 }
 
 export interface CardInstance {
@@ -698,6 +707,7 @@ export type ChoiceRequest =
 			objectIds: string[];
 			allowSplitBottom?: boolean;
 			allowShuffle?: boolean;
+			splitLabel?: 'bottom' | 'graveyard';
 			reason: string;
 	  }
 	| { kind: 'chooseReplacement'; options: Array<{ id: string; label: string }> };
@@ -782,6 +792,7 @@ export interface PendingPrompt {
 	candidateInstanceIds?: string[];
 	allowBottom?: boolean;
 	allowShuffle?: boolean;
+	splitMode?: 'bottom' | 'graveyard';
 	stackItem?: StackItem;
 	commanderInstanceId?: string;
 	destinationZone?: ZoneType;
@@ -897,6 +908,17 @@ export type ProcedureContinuation =
 			sourceName: string;
 			resumeStackItemId?: string;
 			resumeStepIndex?: number;
+	  }
+	| {
+			kind: 'surveil_graveyard';
+			actorId: string;
+			remainingIds: string[];
+			nextIndex: number;
+			surveilCount: number;
+			topCount: number;
+			graveyardCount: number;
+			resumeStackItemId?: string;
+			resumeStepIndex?: number;
 	  };
 
 export type PromptContinuation =
@@ -970,6 +992,8 @@ export interface PlayerGameState {
 	experienceCounters: number;
 	energyCounters: number;
 	manaPool: ManaPool;
+	/** Pooled mana with spending restrictions (CR 106.6), keyed by restriction tag. */
+	restrictedMana?: Partial<Record<ManaRestriction, ManaPool>>;
 	landsPlayedThisTurn: number;
 	maxLandsPerTurn: number;
 	mulliganCount: number;
@@ -1070,6 +1094,7 @@ export interface PendingCostPayment {
 	grantSourceCard?: ScryfallCard;
 	chosenColor?: ManaColor;
 	amount?: number;
+	manaRestriction?: ManaRestriction;
 	sacrificeSelfInCost?: boolean;
 	parts: SerializedPlannedCost[];
 	manaPaid?: ManaCostRequirement | null;

@@ -1,10 +1,8 @@
 import {
 	buildTokenScryfallCard,
-	createEmptyManaPool,
 	canPayManaCost,
-	deductManaFromPool,
+	createEmptyManaPool,
 	describeLibrarySearchDestination,
-	getTotalManaInPool,
 	matchesLibrarySearchSpec,
 	parseLibrarySearchSpec,
 	parseManaCost,
@@ -12,6 +10,13 @@ import {
 	withStackItemText,
 	type ManaCostRequirement
 } from './oracle.ts';
+import {
+	addManaToPlayerPool,
+	canSpendRestrictedMana,
+	combinedManaPoolForSpend,
+	deductManaForSpendContext,
+	getTotalPooledManaForContext
+} from './runtime/mana.ts';
 import {
 	checkGlobalCastPermissionsAndRestrictions,
 	evaluatePermanent,
@@ -189,6 +194,7 @@ import {
 	inferObjectsZone,
 	normalizePromptAction,
 	enqueueChoicePrompt,
+	pickScryOrSurveilSplit,
 	registerPromptHandler,
 	runPromptHandler,
 	validateChoiceAnswer
@@ -222,6 +228,7 @@ import {
 	type MagicLobby,
 	type ManaColor,
 	type ManaPool,
+	type ManaSpendContext,
 	type PendingCostPayment,
 	type PendingPrompt,
 	type PlayerGameState,
@@ -373,6 +380,7 @@ export function createInitialGameState(
 			experienceCounters: 0,
 			energyCounters: 0,
 			manaPool: createEmptyManaPool(),
+			restrictedMana: {},
 			landsPlayedThisTurn: 0,
 			maxLandsPerTurn: 1,
 			mulliganCount: 0,
@@ -1138,7 +1146,29 @@ export function chooseBotSpellCostPayment(
 		optionId,
 		optionalCostCounts
 	);
-	return chooseCostPayment(costContext(state, player, inst, xValue, true, costReq), defs) ?? undefined;
+	const spendCtx = spellSpendContext(inst, {
+		faceIndex: optFace,
+		fused: optFused,
+		isFaceDown: Boolean(resolved.ok && resolved.option.spellMods?.castFaceDown)
+	});
+	return chooseCostPayment(costContext(state, player, inst, xValue, true, costReq, undefined, spendCtx), defs) ?? undefined;
+}
+
+/** Builds a ManaSpendContext for casting `inst` with the selected face/fuse/face-down mode. */
+function spellSpendContext(
+	inst: CardInstance,
+	opts?: { faceIndex?: number; fused?: boolean; isFaceDown?: boolean }
+): ManaSpendContext {
+	if (opts?.isFaceDown) return { isSpell: true, isArtifactSpell: false };
+	const resolved = resolveObjectFaces(effectiveCardForObject(inst), {
+		zone: 'stack',
+		faceIndex: opts?.faceIndex,
+		fused: opts?.fused
+	});
+	return {
+		isSpell: true,
+		isArtifactSpell: /\bArtifact\b/i.test(resolved.typeLine)
+	};
 }
 
 /**
@@ -1171,7 +1201,8 @@ function costContext(
 	xValue: number,
 	isSpell: boolean,
 	baseMana: ManaCostRequirement | null,
-	phyrexianLifeCount?: number
+	phyrexianLifeCount?: number,
+	spendCtx: ManaSpendContext = { isSpell: false }
 ): CostContext {
 	return {
 		state,
@@ -1180,8 +1211,8 @@ function costContext(
 		xValue,
 		isSpell,
 		baseMana,
-		canPayMana: (req) => canPayOrAutoTap(player, req, state, phyrexianLifeCount),
-		payMana: (req) => payManaWithAutoTap(player, req, state, phyrexianLifeCount)
+		canPayMana: (req) => canPayOrAutoTap(player, req, state, phyrexianLifeCount, spendCtx),
+		payMana: (req) => payManaWithAutoTap(player, req, state, phyrexianLifeCount, spendCtx)
 	};
 }
 
@@ -1448,18 +1479,23 @@ function finalizeTapMana(
 			? ({
 					id: pcp.abilityId,
 					...(pcp.faceIndex !== undefined ? { faceIndex: pcp.faceIndex } : {}),
+					...(pcp.manaRestriction ? { manaRestriction: pcp.manaRestriction } : {}),
 					activationRestrictions: ['onceEachTurn']
 				} as EffectiveActivatedAbility)
 			: pcp.abilityId
 				? ({
 						id: pcp.abilityId,
-						...(pcp.faceIndex !== undefined ? { faceIndex: pcp.faceIndex } : {})
+						...(pcp.faceIndex !== undefined ? { faceIndex: pcp.faceIndex } : {}),
+						...(pcp.manaRestriction ? { manaRestriction: pcp.manaRestriction } : {})
 					} as EffectiveActivatedAbility)
-				: undefined;
+				: pcp.manaRestriction
+					? ({ manaRestriction: pcp.manaRestriction } as EffectiveActivatedAbility)
+					: undefined;
 	const chosenColor = pcp.chosenColor;
 	const amount = pcp.amount ?? 0;
+	const tappedSource = pcp.parts.some((part) => part.def.k === 'tapSelf');
 	resetTriggerLoopTracking(state);
-	resolveActivatedManaAbility(state, actor, perm, abStub, chosenColor, amount);
+	resolveActivatedManaAbility(state, actor, perm, abStub, chosenColor, amount, tappedSource);
 	flushTriggers(state);
 	if (pcp.descriptions.length > 0 || pcp.sacrificeSelfInCost) {
 		addLog(
@@ -1541,13 +1577,23 @@ function resumePendingCostPayment(state: GameState): void {
 		return;
 	}
 	const source = resolveCostSourceCard(state, pcp);
+	const spendCtx: ManaSpendContext =
+		pcp.kind === 'cast_spell'
+			? spellSpendContext(source, {
+					faceIndex: pcp.faceIndex,
+					fused: pcp.fused,
+					isFaceDown: Boolean(pcp.spellMods?.castFaceDown)
+				})
+			: { isSpell: false };
 	const ctx = costContext(
 		state,
 		actor,
 		source,
 		pcp.xValue ?? 0,
 		pcp.kind === 'cast_spell',
-		pcp.manaPaid ?? null
+		pcp.manaPaid ?? null,
+		undefined,
+		spendCtx
 	);
 	executeOrResumePendingCostPayment(state, pcp, ctx);
 }
@@ -1676,20 +1722,23 @@ function autoTapManaAbilities(
 	state: GameState,
 	player: PlayerGameState,
 	perm: CardInstance,
-	cmdIdentity: ManaColor[]
+	cmdIdentity: ManaColor[],
+	spendCtx: ManaSpendContext = { isSpell: false }
 ): EffectiveActivatedAbility[] {
 	if (!checkGlobalAbilityActivationRestrictions(state, player.playerId, perm).ok) {
 		return [];
 	}
 	const evalPerm = evaluatePermanent(state, perm);
 	const noManaCtx = costContext(state, player, perm, 0, false, null);
-	const scored: Array<{ ab: EffectiveActivatedAbility; tier: number; amount: number }> = [];
+	const scored: Array<{ ab: EffectiveActivatedAbility; tier: number; restricted: number; amount: number }> = [];
 	for (const a of getEffectiveActivatedAbilities(state, player, perm, cmdIdentity)) {
 		if (!a.isManaAbility || a.producesMana.length === 0) continue;
+		if (a.manaRestriction && !canSpendRestrictedMana(a.manaRestriction, spendCtx)) continue;
 		if (!checkActivationRestrictionsOnly(state, player.playerId, perm, a).ok) continue;
 		const defs = activatedAbilityCost(perm.card, a).defs;
 		let tier = -1;
 		if (isTapOnlyManaCost(defs)) {
+			if (!canPayCosts(noManaCtx, defs)) continue;
 			tier = 0;
 		} else if (isSacrificeSelfNonCreatureManaCost(defs, evalPerm.isCreature)) {
 			if (!canPayCosts(noManaCtx, defs)) continue;
@@ -1704,22 +1753,22 @@ function autoTapManaAbilities(
 			a
 		);
 		if (amount <= 0) continue;
-		scored.push({ ab: a, tier, amount });
+		scored.push({ ab: a, tier, restricted: a.manaRestriction ? 0 : 1, amount });
 	}
-	scored.sort((x, y) => x.tier - y.tier || y.amount - x.amount);
+	scored.sort((x, y) => x.tier - y.tier || x.restricted - y.restricted || y.amount - x.amount);
 	return scored.map((s) => s.ab);
 }
 
-function hasUntappedManaSources(state: GameState, player: PlayerGameState): boolean {
+function hasUntappedManaSources(
+	state: GameState,
+	player: PlayerGameState,
+	spendCtx: ManaSpendContext = { isSpell: false }
+): boolean {
 	const cmdIdentity = getPlayerCommanderIdentity(player);
 	return withStableLayerInputs(state, () =>
 		player.battlefield.some((perm) => {
-			if (perm.phasedOut || perm.tapped) return false;
-			const evalPerm = evaluatePermanent(state, perm);
-			if (evalPerm.isCreature && perm.summoningSick && !hasKeyword(perm, 'Haste', state)) {
-				return false;
-			}
-			return autoTapManaAbilities(state, player, perm, cmdIdentity).length > 0;
+			if (perm.phasedOut) return false;
+			return autoTapManaAbilities(state, player, perm, cmdIdentity, spendCtx).length > 0;
 		})
 	);
 }
@@ -1768,7 +1817,8 @@ function maybeAskPhyrexianCostChoice(
 		{ type: 'cast_spell' | 'activate_ability' | 'tap_mana' | 'unlock_room_door' | 'turn_face_up' }
 	>,
 	req: ManaCostRequirement,
-	sourceName: string
+	sourceName: string,
+	spendCtx: ManaSpendContext = { isSpell: false }
 ): { ok: boolean; error?: string } | null {
 	if (actor.isBot || action.costPayment?.phyrexianLifeCount !== undefined) return null;
 	const phySymbols = req.flexibleSymbols?.filter((s) => s.altLife) ?? [];
@@ -1777,10 +1827,13 @@ function maybeAskPhyrexianCostChoice(
 	const maxLifeCount = canPayLife ? Math.min(phySymbols.length, Math.floor(actor.life / 2)) : 0;
 	if (maxLifeCount <= 0) return null;
 	// No mana possible: keep today's behavior of paying life without prompting.
-	if (getTotalManaInPool(actor.manaPool) === 0 && !hasUntappedManaSources(state, actor)) {
+	if (
+		getTotalPooledManaForContext(actor, spendCtx) === 0 &&
+		!hasUntappedManaSources(state, actor, spendCtx)
+	) {
 		return null;
 	}
-	if (!canPayOrAutoTap(actor, req, state)) return null;
+	if (!canPayOrAutoTap(actor, req, state, undefined, spendCtx)) return null;
 	const labels: string[] = [];
 	for (let k = 0; k <= maxLifeCount; k++) {
 		const manaSymbols = phySymbols
@@ -1853,7 +1906,8 @@ function resolveHybridCostChoice(
 		{ type: 'cast_spell' | 'activate_ability' | 'tap_mana' | 'unlock_room_door' | 'turn_face_up' }
 	>,
 	req: ManaCostRequirement,
-	sourceName: string
+	sourceName: string,
+	spendCtx: ManaSpendContext = { isSpell: false }
 ): { promptResult?: { ok: boolean; error?: string }; resolvedReq: ManaCostRequirement } {
 	let currentReq = req;
 	const hybridChoices = action.costPayment?.hybridChoices ?? [];
@@ -1872,8 +1926,8 @@ function resolveHybridCostChoice(
 		const sym = currentReq.flexibleSymbols.find((s) => !s.altLife)!;
 		const req0 = applySingleHybridChoice(currentReq, 0);
 		const req1 = applySingleHybridChoice(currentReq, 1);
-		const canPay0 = canPayOrAutoTap(actor, req0, state, action.costPayment?.phyrexianLifeCount);
-		const canPay1 = canPayOrAutoTap(actor, req1, state, action.costPayment?.phyrexianLifeCount);
+		const canPay0 = canPayOrAutoTap(actor, req0, state, action.costPayment?.phyrexianLifeCount, spendCtx);
+		const canPay1 = canPayOrAutoTap(actor, req1, state, action.costPayment?.phyrexianLifeCount, spendCtx);
 		if (canPay0 && !canPay1) {
 			currentReq = req0;
 			choiceIdx += 1;
@@ -1982,22 +2036,25 @@ function resolveActivatedManaAbility(
 	perm: CardInstance,
 	ab: EffectiveActivatedAbility | undefined,
 	chosenColor: ManaColor | undefined,
-	amount: number
+	amount: number,
+	tappedForMana = true
 ): void {
 	if (ab?.activationRestrictions?.includes('onceEachTurn')) {
 		perm.activatedAbilityIdsThisTurn = [...(perm.activatedAbilityIdsThisTurn ?? []), ab.id];
 	}
 	if (chosenColor && amount > 0) {
-		player.manaPool[chosenColor] += amount;
+		addManaToPlayerPool(player, chosenColor, amount, ab?.manaRestriction);
 	}
-	// CR 605.1b, 605.4a: triggered mana abilities ("Whenever you tap a land for mana") resolve immediately.
-	emitEvent(state, {
-		kind: 'TappedForMana',
-		playerId: player.playerId,
-		objectId: perm.instanceId,
-		object: perm
-	});
-	flushInlineTriggers(state);
+	if (tappedForMana) {
+		// CR 605.1b, 605.4a: triggered mana abilities ("Whenever you tap a land for mana") resolve immediately.
+		emitEvent(state, {
+			kind: 'TappedForMana',
+			playerId: player.playerId,
+			objectId: perm.instanceId,
+			object: perm
+		});
+		flushInlineTriggers(state);
+	}
 }
 
 function simulateOrExecuteManaOnly(
@@ -2005,14 +2062,16 @@ function simulateOrExecuteManaOnly(
 	manaReq: ManaCostRequirement,
 	state: GameState,
 	mutate: boolean,
-	lifeToPay: number
+	lifeToPay: number,
+	spendCtx: ManaSpendContext = { isSpell: false }
 ): boolean {
 	if (lifeToPay > 0 && (playerLifeTotalCantChange(state, player) || player.life < lifeToPay)) {
 		return false;
 	}
-	if (canPayManaCost(player.manaPool, manaReq)) {
+	const initialPool = combinedManaPoolForSpend(player, spendCtx);
+	if (canPayManaCost(initialPool, manaReq)) {
 		if (mutate) {
-			player.manaPool = deductManaFromPool(player.manaPool, manaReq);
+			deductManaForSpendContext(player, manaReq, spendCtx);
 			if (lifeToPay > 0) {
 				player.life -= lifeToPay;
 			}
@@ -2020,7 +2079,7 @@ function simulateOrExecuteManaOnly(
 		return true;
 	}
 
-	const pool: ManaPool = { ...player.manaPool };
+	const pool: ManaPool = { ...initialPool };
 	const cmdIdentity = getPlayerCommanderIdentity(player);
 
 	const getProducedAmount = (
@@ -2032,7 +2091,7 @@ function simulateOrExecuteManaOnly(
 	const manaAbilitiesOf = (perm: CardInstance) => {
 		let abs = autoMana.get(perm.instanceId);
 		if (!abs) {
-			abs = autoTapManaAbilities(state, player, perm, cmdIdentity);
+			abs = autoTapManaAbilities(state, player, perm, cmdIdentity, spendCtx);
 			autoMana.set(perm.instanceId, abs);
 		}
 		return abs;
@@ -2043,20 +2102,13 @@ function simulateOrExecuteManaOnly(
 	};
 
 	// Sort untapped mana sources: {T}-only before sacrifice-self (and tokens before nontokens when sacrificing),
+	// restricted sources before unrestricted sources (preserving unrestricted mana for nonartifact spells),
 	// then most-constrained (fewest colors) first, then non-creatures before creatures.
 	// Read-only scan: validate the layer cache once (Phase 6c).
 	const candidates = withStableLayerInputs(state, () =>
 		player.battlefield
 			.filter((perm) => {
-				if (perm.phasedOut || perm.tapped) return false;
-				const evalPerm = evaluatePermanent(state, perm);
-				if (
-					evalPerm.isCreature &&
-					perm.summoningSick &&
-					!hasKeyword(perm, 'Haste', state)
-				) {
-					return false;
-				}
+				if (perm.phasedOut) return false;
 				return manaAbilitiesOf(perm).length > 0;
 			})
 			.sort((a, b) => {
@@ -2068,6 +2120,9 @@ function simulateOrExecuteManaOnly(
 					const bNonToken = b.isToken ? 0 : 1;
 					if (aNonToken !== bNonToken) return aNonToken - bNonToken;
 				}
+				const aRestr = manaAbilitiesOf(a)[0]?.manaRestriction ? 0 : 1;
+				const bRestr = manaAbilitiesOf(b)[0]?.manaRestriction ? 0 : 1;
+				if (aRestr !== bRestr) return aRestr - bRestr;
 				const ca = manaAbilitiesOf(a)[0]?.producesMana ?? [];
 				const cb = manaAbilitiesOf(b)[0]?.producesMana ?? [];
 				if (ca.length !== cb.length) {
@@ -2130,6 +2185,7 @@ function simulateOrExecuteManaOnly(
 			const choice = manaChoices.get(perm.instanceId);
 			if (choice) {
 				const defs = choice.ab ? activatedAbilityCost(perm.card, choice.ab).defs : [{ k: 'tapSelf' as const }];
+				const tappedSource = defs.some((d) => d.k === 'tapSelf');
 				if (defs.some((d) => d.k === 'sacrifice')) {
 					const ctx = costContext(state, player, perm, 0, false, null);
 					const plan = planCosts(ctx, defs);
@@ -2144,11 +2200,12 @@ function simulateOrExecuteManaOnly(
 					perm,
 					choice.ab,
 					choice.color,
-					choice.amount
+					choice.amount,
+					tappedSource
 				);
 			}
 		}
-		player.manaPool = deductManaFromPool(player.manaPool, manaReq);
+		deductManaForSpendContext(player, manaReq, spendCtx);
 		if (lifeToPay > 0) {
 			player.life -= lifeToPay;
 		}
@@ -2162,11 +2219,12 @@ function simulateOrExecuteAutoTap(
 	req: ManaCostRequirement,
 	state: GameState,
 	mutate: boolean,
-	phyrexianLifeCount?: number
+	phyrexianLifeCount?: number,
+	spendCtx: ManaSpendContext = { isSpell: false }
 ): boolean {
 	const phySymbols = req.flexibleSymbols?.filter((s) => s.altLife) ?? [];
 	if (phySymbols.length === 0) {
-		return simulateOrExecuteManaOnly(player, req, state, mutate, 0);
+		return simulateOrExecuteManaOnly(player, req, state, mutate, 0, spendCtx);
 	}
 
 	const canPayLife = !playerLifeTotalCantChange(state, player);
@@ -2177,7 +2235,7 @@ function simulateOrExecuteAutoTap(
 			return false;
 		}
 		const { manaReq, lifeToPay } = applyPhyrexianLifeChoice(req, phyrexianLifeCount);
-		return simulateOrExecuteManaOnly(player, manaReq, state, mutate, lifeToPay);
+		return simulateOrExecuteManaOnly(player, manaReq, state, mutate, lifeToPay, spendCtx);
 	}
 
 	// Bot heuristic: pay Phyrexian symbols with life while life > 10; otherwise prefer mana and only
@@ -2194,9 +2252,9 @@ function simulateOrExecuteAutoTap(
 
 	for (const k of kOrder) {
 		const { manaReq, lifeToPay } = applyPhyrexianLifeChoice(req, k);
-		if (simulateOrExecuteManaOnly(player, manaReq, state, false, lifeToPay)) {
+		if (simulateOrExecuteManaOnly(player, manaReq, state, false, lifeToPay, spendCtx)) {
 			return mutate
-				? simulateOrExecuteManaOnly(player, manaReq, state, true, lifeToPay)
+				? simulateOrExecuteManaOnly(player, manaReq, state, true, lifeToPay, spendCtx)
 				: true;
 		}
 	}
@@ -2207,18 +2265,20 @@ export function canPayOrAutoTap(
 	player: PlayerGameState,
 	req: ManaCostRequirement,
 	state: GameState,
-	phyrexianLifeCount?: number
+	phyrexianLifeCount?: number,
+	spendCtx: ManaSpendContext = { isSpell: false }
 ): boolean {
-	return simulateOrExecuteAutoTap(player, req, state, false, phyrexianLifeCount);
+	return simulateOrExecuteAutoTap(player, req, state, false, phyrexianLifeCount, spendCtx);
 }
 
 export function payManaWithAutoTap(
 	player: PlayerGameState,
 	req: ManaCostRequirement,
 	state: GameState,
-	phyrexianLifeCount?: number
+	phyrexianLifeCount?: number,
+	spendCtx: ManaSpendContext = { isSpell: false }
 ): boolean {
-	return simulateOrExecuteAutoTap(player, req, state, true, phyrexianLifeCount);
+	return simulateOrExecuteAutoTap(player, req, state, true, phyrexianLifeCount, spendCtx);
 }
 
 export function winTheGame(state: GameState, player: PlayerGameState, reason: string): boolean {
@@ -2327,6 +2387,7 @@ export function drawCards(
 export function emptyAllPlayersManaPools(state: GameState): void {
 	for (const p of state.players) {
 		p.manaPool = createEmptyManaPool();
+		p.restrictedMana = {};
 	}
 }
 
@@ -2838,6 +2899,7 @@ function applyGameActionInner(
 				...(ab.faceIndex !== undefined ? { faceIndex: ab.faceIndex } : {}),
 				chosenColor,
 				amount,
+				...(ab.manaRestriction ? { manaRestriction: ab.manaRestriction } : {}),
 				onceEachTurn: Boolean(ab.activationRestrictions?.includes('onceEachTurn')),
 				sacrificeSelfInCost: cost.defs.some((d) => d.k === 'sacrifice' && d.filter === 'self'),
 				parts,
@@ -3382,6 +3444,11 @@ function applyGameActionInner(
 				hasOptCounts ? normalizedOptCounts : undefined
 			);
 			const isFaceDownCast = Boolean(castOption.spellMods?.castFaceDown);
+			const spendCtx = spellSpendContext(inst, {
+				faceIndex: optFaceIdx,
+				fused: optFused,
+				isFaceDown: isFaceDownCast
+			});
 			const spellPromptName = isFaceDownCast ? 'Face-Down Spell' : inst.card.name;
 			const baseManaDisplay =
 				castOption.baseCost.kind === 'alternative'
@@ -3401,7 +3468,8 @@ function applyGameActionInner(
 				actor,
 				action,
 				costReq,
-				spellPromptName
+				spellPromptName,
+				spendCtx
 			);
 			if (phySpellChoice) return phySpellChoice;
 			const hybSpellChoice = resolveHybridCostChoice(
@@ -3409,7 +3477,8 @@ function applyGameActionInner(
 				actor,
 				action,
 				costReq,
-				spellPromptName
+				spellPromptName,
+				spendCtx
 			);
 			if (hybSpellChoice.promptResult) return hybSpellChoice.promptResult;
 			const effectiveCostReq = hybSpellChoice.resolvedReq;
@@ -3432,7 +3501,8 @@ function applyGameActionInner(
 					xVal,
 					true,
 					effectiveCostReq,
-					action.costPayment?.phyrexianLifeCount
+					action.costPayment?.phyrexianLifeCount,
+					spendCtx
 				);
 				const plan = planCosts(ctx, combinedCostDefs, action.costPayment);
 				if (!plan.ok) return { ok: false, error: plan.error.startsWith('Insufficient mana') ? manaError : plan.error };
@@ -3471,7 +3541,8 @@ function applyGameActionInner(
 					actor,
 					effectiveCostReq,
 					state,
-					action.costPayment?.phyrexianLifeCount
+					action.costPayment?.phyrexianLifeCount,
+					spendCtx
 				)
 			) {
 				return { ok: false, error: manaError };
@@ -5391,6 +5462,42 @@ function handlePromptResolution(
 			}
 		}
 
+		const isGraveyardSplit =
+			prompt.splitMode === 'graveyard' ||
+			(choice.kind === 'orderObjects' && choice.splitLabel === 'graveyard');
+
+		if (isGraveyardSplit) {
+			rearrangeLibrary(actor, topList, topList, []);
+			const c = prompt.continuation;
+			const resumeStackItemId =
+				c?.kind === 'effect_resume'
+					? c.stackItemId
+					: c?.kind === 'procedure' && 'resumeStackItemId' in c.procedure
+						? c.procedure.resumeStackItemId
+						: undefined;
+			const resumeStepIndex =
+				c?.kind === 'effect_resume'
+					? c.stepIndex
+					: c?.kind === 'procedure' && 'resumeStepIndex' in c.procedure
+						? c.procedure.resumeStepIndex
+						: undefined;
+			state.pendingPrompts.splice(promptIdx, 1);
+			state.pendingProcedure = {
+				kind: 'surveil_graveyard',
+				actorId: actor.playerId,
+				remainingIds: bottomList.map((card) => card.instanceId),
+				nextIndex: 0,
+				surveilCount: extracted.length,
+				topCount: topList.length,
+				graveyardCount: bottomList.length,
+				...(resumeStackItemId ? { resumeStackItemId } : {}),
+				...(resumeStepIndex !== undefined ? { resumeStepIndex } : {})
+			};
+			advanceSurveilGraveyardProcedure(state);
+			resumeAfterPrompt(state, prompt);
+			return { ok: true };
+		}
+
 		rearrangeLibrary(actor, extracted, topList, bottomList);
 
 		if (allowShuffle && normalized.answer.shuffle) {
@@ -5771,6 +5878,48 @@ function executeProcedureContinuation(
 	}
 }
 
+function advanceSurveilGraveyardProcedure(state: GameState): void {
+	const proc = state.pendingProcedure;
+	if (!proc || proc.kind !== 'surveil_graveyard') return;
+	const actor = state.players.find((p) => p.playerId === proc.actorId);
+	if (!actor) {
+		state.pendingProcedure = undefined;
+		return;
+	}
+	while (proc.nextIndex < proc.remainingIds.length) {
+		const id = proc.remainingIds[proc.nextIndex];
+		proc.nextIndex += 1;
+		const idx = actor.library.findIndex((c) => c.instanceId === id);
+		if (idx < 0) continue;
+		const moveRes = moveObject(state, actor.library[idx], 'graveyard', {
+			from: { player: actor, zone: 'library' },
+			toPlayer: actor,
+			graveyardReplacement: true,
+			bumpVersion: true,
+			newTimestamp: true,
+			...(proc.resumeStackItemId ? { resumeStackItemId: proc.resumeStackItemId } : {}),
+			...(proc.resumeStepIndex !== undefined ? { resumeStepIndex: proc.resumeStepIndex } : {})
+		});
+		if (moveRes === 'pending' || hasBlockingReplacementOrCommanderPrompt(state)) {
+			return;
+		}
+	}
+	state.pendingProcedure = undefined;
+	addLog(
+		state,
+		'rule',
+		`${actor.username} surveilled ${proc.surveilCount} (${proc.topCount} on top, ${proc.graveyardCount} into graveyard).`,
+		actor.playerId
+	);
+	emitEvent(state, {
+		kind: 'Surveilled',
+		playerId: actor.playerId,
+		count: proc.surveilCount,
+		graveyardCount: proc.graveyardCount
+	});
+	flushTriggers(state);
+}
+
 function resumePendingProcedure(state: GameState): void {
 	const proc = state.pendingProcedure;
 	if (!proc) return;
@@ -5780,6 +5929,18 @@ function resumePendingProcedure(state: GameState): void {
 	}
 	if (proc.kind === 'discard_to_hand_size') {
 		advanceDiscardToHandSizeProcedure(state);
+		return;
+	}
+	if (proc.kind === 'surveil_graveyard') {
+		const stackItemId = proc.resumeStackItemId;
+		const stepIndex = proc.resumeStepIndex;
+		advanceSurveilGraveyardProcedure(state);
+		if (!state.pendingProcedure && stackItemId && stepIndex !== undefined) {
+			const item = state.stack.find((s) => s.id === stackItemId);
+			if (item?.effectResume?.stepIndex === stepIndex && !stackItemAwaitsPrompt(state, item)) {
+				resumeStackItem(state, item);
+			}
+		}
 		return;
 	}
 	if (proc.kind === 'combat_damage_step') {
@@ -6456,7 +6617,9 @@ for (const kind of [
 	'BecomesTapped',
 	'CardDiscarded',
 	'Transformed',
-	'TurnedFaceUp'
+	'TurnedFaceUp',
+	'Investigated',
+	'Surveilled'
 ] as const) {
 	registerEventHandler(kind, (state, ev) => matchTriggers(state, ev));
 }
@@ -8153,59 +8316,87 @@ function destroyPermanentByEffect(
 	return dest;
 }
 
-/** Scry N, or "look at the top N cards, then put them back in any order": bot decision or prompt. */
-function scryOrRearrangeTop(
+/** Scry N, surveil N, or "look at the top N cards, then put them back in any order": bot decision or prompt. */
+function initiateLibraryScryOrSurveil(
 	state: GameState,
 	controller: PlayerGameState,
 	item: StackItem,
 	amount: number,
-	mode: 'scry' | 'rearrange',
+	mode: 'scry' | 'rearrange' | 'surveil',
 	mayShuffle: boolean
 ): void {
+	if (amount <= 0) return;
 	const count = Math.min(amount, controller.library.length);
-	if (count <= 0) return;
-	if (mode === 'scry') {
-		if (controller.isBot) {
-			const topCards = controller.library.slice(0, count);
-			const landCount =
-				controller.battlefield.filter((b) => b.card.typeLine.includes('Land')).length +
-				controller.hand.filter((h) => h.card.typeLine.includes('Land')).length;
-			const keepTop: CardInstance[] = [];
-			const putBottom: CardInstance[] = [];
-			for (const c of topCards) {
-				const isLand = c.card.typeLine.includes('Land');
-				if ((landCount >= 4 && isLand) || (landCount < 3 && !isLand && c.card.cmc > 4)) {
-					putBottom.push(c);
-				} else {
-					keepTop.push(c);
-				}
-			}
-			rearrangeLibrary(controller, topCards, keepTop, putBottom);
+	if (count <= 0) {
+		if (mode === 'surveil') {
 			addLog(
 				state,
 				'rule',
-				`${controller.username} scried ${count} (${keepTop.length} on top, ${putBottom.length} on bottom).`,
+				`${controller.username} surveilled ${amount} (library is empty).`,
 				controller.playerId
 			);
+			emitEvent(state, {
+				kind: 'Surveilled',
+				playerId: controller.playerId,
+				count: amount,
+				graveyardCount: 0
+			});
+			flushTriggers(state);
+		}
+		return;
+	}
+	if (mode === 'scry' || mode === 'surveil') {
+		const isSurveil = mode === 'surveil';
+		if (controller.isBot) {
+			const topCards = controller.library.slice(0, count);
+			const { topIds, bottomIds } = pickScryOrSurveilSplit(controller, topCards);
+			const byId = new Map(topCards.map((c) => [c.instanceId, c]));
+			const keepTop = topIds.map((id) => byId.get(id)!).filter(Boolean);
+			const moveOther = bottomIds.map((id) => byId.get(id)!).filter(Boolean);
+			if (isSurveil) {
+				rearrangeLibrary(controller, keepTop, keepTop, []);
+				state.pendingProcedure = {
+					kind: 'surveil_graveyard',
+					actorId: controller.playerId,
+					remainingIds: moveOther.map((c) => c.instanceId),
+					nextIndex: 0,
+					surveilCount: count,
+					topCount: keepTop.length,
+					graveyardCount: moveOther.length
+				};
+				advanceSurveilGraveyardProcedure(state);
+			} else {
+				rearrangeLibrary(controller, topCards, keepTop, moveOther);
+				addLog(
+					state,
+					'rule',
+					`${controller.username} scried ${count} (${keepTop.length} on top, ${moveOther.length} on bottom).`,
+					controller.playerId
+				);
+			}
 		} else {
 			const topCards = controller.library.slice(0, count);
 			const topIds = topCards.map((c) => c.instanceId);
-			const description = `Look at the top ${count} card(s) of your library. Put any number on the bottom in any order and the rest on top in any order.`;
+			const description = isSurveil
+				? `Look at the top ${count} card(s) of your library. Put any number into your graveyard and the rest back on top in any order.`
+				: `Look at the top ${count} card(s) of your library. Put any number on the bottom in any order and the rest on top in any order.`;
 			state.pendingPrompts.push({
 				id: uid('prm', state),
 				playerId: controller.playerId,
 				kind: 'scry_choice',
 				purpose: 'scry_choice',
-				title: `Scry ${count} (${item.card.name})`,
+				title: isSurveil ? `Surveil ${count} (${item.card.name})` : `Scry ${count} (${item.card.name})`,
 				description,
 				countRequired: count,
 				candidateInstanceIds: topIds,
 				allowBottom: true,
+				...(isSurveil ? { splitMode: 'graveyard' as const } : {}),
 				allowShuffle: false,
 				choice: {
 					kind: 'orderObjects',
 					objectIds: topIds,
 					allowSplitBottom: true,
+					...(isSurveil ? { splitLabel: 'graveyard' as const } : {}),
 					allowShuffle: false,
 					reason: description
 				}
@@ -8285,7 +8476,7 @@ registerEffectPorts({
 	addCounters: addCountersToPermanent,
 	proliferate: executeProliferate,
 	scry: (state, player, item, count, mode, mayShuffle) =>
-		scryOrRearrangeTop(state, player, item, count, mode, mayShuffle),
+		initiateLibraryScryOrSurveil(state, player, item, count, mode, mayShuffle),
 	search: (state, player, spec, item) =>
 		initiateLibrarySearch(state, player, spec, item),
 	phaseOut: phaseOutPermanent,
@@ -8742,6 +8933,7 @@ export function createTokenOnBoard(
 		state
 	);
 	inst.summoningSick = spec.typeLine.includes('Creature');
+	if (spec.tapped) inst.tapped = true;
 	moveObject(state, inst, 'battlefield', { from: 'none', toPlayer: controller });
 	emitVfx(state, {
 		kind: 'token_create',
@@ -9452,6 +9644,7 @@ function clearEndOfTurnAndDamage(state: GameState): void {
 	state.timedKeywordEffects = undefined;
 	for (const p of state.players) {
 		p.manaPool = createEmptyManaPool();
+		p.restrictedMana = {};
 		p.preventAllCombatDamageThisTurn = false;
 		for (const perm of p.battlefield) {
 			perm.damageMarked = 0;
@@ -9461,6 +9654,11 @@ function clearEndOfTurnAndDamage(state: GameState): void {
 			perm.grantedKeywords = [];
 			perm.switchedPTCount = 0;
 			perm.activatedAbilityIdsThisTurn = undefined;
+		}
+		for (const ex of p.exile) {
+			if (ex.playableFromExileBy?.expiresAtEndOfTurn) {
+				ex.playableFromExileBy = undefined;
+			}
 		}
 	}
 	noteLayerInputsChanged(state);
@@ -12286,7 +12484,12 @@ function checkSpellCastOptionLegalityInner(
 		option,
 		hasOptCounts ? normalizedOptCounts : undefined
 	);
-	if (!canPayOrAutoTap(actor, costReq, state)) {
+	const spendCtx = spellSpendContext(inst, {
+		faceIndex: option.faceIndex,
+		fused: option.fused,
+		isFaceDown: Boolean(option.spellMods?.castFaceDown)
+	});
+	if (!canPayOrAutoTap(actor, costReq, state, undefined, spendCtx)) {
 		return {
 			ok: false,
 			error: `Insufficient mana to cast ${castName}.`
@@ -12303,7 +12506,7 @@ function checkSpellCastOptionLegalityInner(
 	];
 	if (
 		combinedCostDefs.length > 0 &&
-		!canPayCosts(costContext(state, actor, inst, xValue, true, costReq), combinedCostDefs)
+		!canPayCosts(costContext(state, actor, inst, xValue, true, costReq, undefined, spendCtx), combinedCostDefs)
 	) {
 		return {
 			ok: false,

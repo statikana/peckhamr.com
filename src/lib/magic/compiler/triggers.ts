@@ -283,6 +283,8 @@ function playerEvent(player: EventFilter['player'], rest: string): TriggerDef | 
 		if (object) return { event: 'tappedForMana', filter: { object, player } };
 	}
 	if (rest === 'draw a card' || rest === 'draws a card') return { event: 'drawCard', filter: { player } };
+	if (rest === 'investigate' || rest === 'investigates') return { event: 'investigate', filter: { player } };
+	if (rest === 'surveil' || rest === 'surveils') return { event: 'surveil', filter: { player } };
 	const turnUp = rest.match(/^turns? (?:a|an) (.+) face up$/);
 	if (turnUp) {
 		const object = parseObjectPhrase(turnUp[1]);
@@ -487,7 +489,9 @@ const RUNTIME_EVENT_FIELDS: Partial<Record<TriggerDef['event'], ReadonlySet<stri
 	cycle: new Set(['object', 'player']),
 	discard: new Set(['object', 'player']),
 	transforms: new Set(['object', 'toFaceFilter']),
-	turnFaceUp: new Set(['object', 'player'])
+	turnFaceUp: new Set(['object', 'player']),
+	investigate: new Set(['player']),
+	surveil: new Set(['player'])
 };
 
 function objectFilterProblem(f: ObjectFilter | undefined): string | null {
