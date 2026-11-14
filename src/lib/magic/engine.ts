@@ -184,6 +184,7 @@ import {
 	flushInlineTriggers,
 	flushTriggers,
 	matchTriggers,
+	peekPendingTriggers,
 	registerTriggerHost,
 	stackTriggerConditionHolds,
 	withTriggersDeferred,
@@ -2017,6 +2018,23 @@ function isTapOnlyManaCost(defs: CostDef[]): boolean {
 	return defs.every((d) => d.k === 'tapSelf' || (d.k === 'mana' && /^(\{0\})*$/.test(d.cost)));
 }
 
+function manaCostPayEnergyAmount(defs: CostDef[]): number | null {
+	let energy = 0;
+	let hasTap = false;
+	for (const d of defs) {
+		if (d.k === 'tapSelf') {
+			hasTap = true;
+		} else if (d.k === 'mana' && /^(\{0\})*$/.test(d.cost)) {
+			// zero-mana component
+		} else if (d.k === 'payEnergy' && d.count.k === 'const' && d.count.n > 0) {
+			energy += d.count.n;
+		} else {
+			return null;
+		}
+	}
+	return hasTap && energy > 0 ? energy : null;
+}
+
 function isSacrificeSelfNonCreatureManaCost(defs: CostDef[], isCreature: boolean): boolean {
 	if (isCreature) return false;
 	const hasSacSelf = defs.some(
@@ -2110,9 +2128,12 @@ function autoTapManaAbilities(
 		if (isTapOnlyManaCost(defs)) {
 			if (!canPayCosts(noManaCtx, defs)) continue;
 			tier = 0;
-		} else if (isSacrificeSelfNonCreatureManaCost(defs, evalPerm.isCreature)) {
+		} else if (manaCostPayEnergyAmount(defs) !== null) {
 			if (!canPayCosts(noManaCtx, defs)) continue;
 			tier = 1;
+		} else if (isSacrificeSelfNonCreatureManaCost(defs, evalPerm.isCreature)) {
+			if (!canPayCosts(noManaCtx, defs)) continue;
+			tier = 2;
 		}
 		if (tier < 0) continue;
 		const amount = getDynamicManaProducedAmount(
@@ -2516,6 +2537,9 @@ function simulateOrExecuteManaOnly(
 	);
 
 	const tappedSet = new Set<string>();
+	let availableEnergy = player.energyCounters || 0;
+	const abilityEnergyCost = (perm: CardInstance, ab: EffectiveActivatedAbility | undefined): number =>
+		ab ? (manaCostPayEnergyAmount(activatedAbilityCost(perm.card, ab).defs) ?? 0) : 0;
 	const manaChoices = new Map<
 		string,
 		{ color: ManaColor; amount: number; ab: EffectiveActivatedAbility | undefined }
@@ -2529,7 +2553,9 @@ function simulateOrExecuteManaOnly(
 		while (pool[col] < manaReq.colored[col]) {
 			const perm = candidates.find((c) => {
 				if (tappedSet.has(c.instanceId)) return false;
-				return manaAbilitiesOf(c).some((a) => a.producesMana.includes(col));
+				return manaAbilitiesOf(c).some(
+					(a) => a.producesMana.includes(col) && abilityEnergyCost(c, a) <= availableEnergy
+				);
 			});
 			if (!perm) {
 				if (manaReq.colored[col] - pool[col] <= flexCountForCol) {
@@ -2537,9 +2563,12 @@ function simulateOrExecuteManaOnly(
 				}
 				return false;
 			}
-			const matchedAb = manaAbilitiesOf(perm).find((a) => a.producesMana.includes(col));
+			const matchedAb = manaAbilitiesOf(perm).find(
+				(a) => a.producesMana.includes(col) && abilityEnergyCost(perm, a) <= availableEnergy
+			);
 			const baseAmt = Math.max(1, matchedAb?.producesAmount || 1);
 			const amount = getProducedAmount(perm, baseAmt, matchedAb);
+			availableEnergy -= abilityEnergyCost(perm, matchedAb);
 			tappedSet.add(perm.instanceId);
 			pool[col] += amount;
 			manaChoices.set(perm.instanceId, { color: col, amount, ab: matchedAb });
@@ -2548,14 +2577,19 @@ function simulateOrExecuteManaOnly(
 
 	// Pass 2: Satisfy remaining generic / non-Phyrexian flexible mana cost using remaining untapped sources
 	while (!canPayManaCost(pool, manaReq)) {
-		const perm = candidates.find((c) => !tappedSet.has(c.instanceId));
+		const perm = candidates.find(
+			(c) =>
+				!tappedSet.has(c.instanceId) &&
+				manaAbilitiesOf(c).some((a) => abilityEnergyCost(c, a) <= availableEnergy)
+		);
 		if (!perm) {
 			return false;
 		}
-		const ab0 = manaAbilitiesOf(perm)[0];
+		const ab0 = manaAbilitiesOf(perm).find((a) => abilityEnergyCost(perm, a) <= availableEnergy);
 		const chosenColor: ManaColor = ab0?.producesMana[0] || 'C';
 		const baseAmt = Math.max(1, ab0?.producesAmount || 1);
 		const amount = getProducedAmount(perm, baseAmt, ab0);
+		availableEnergy -= abilityEnergyCost(perm, ab0);
 		tappedSet.add(perm.instanceId);
 		pool[chosenColor] += amount;
 		manaChoices.set(perm.instanceId, { color: chosenColor, amount, ab: ab0 });
@@ -2567,7 +2601,7 @@ function simulateOrExecuteManaOnly(
 			if (choice) {
 				const defs = choice.ab ? activatedAbilityCost(perm.card, choice.ab).defs : [{ k: 'tapSelf' as const }];
 				const tappedSource = defs.some((d) => d.k === 'tapSelf');
-				if (defs.some((d) => d.k === 'sacrifice')) {
+				if (defs.some((d) => d.k === 'sacrifice' || d.k === 'payEnergy')) {
 					const ctx = costContext(state, player, perm, 0, false, null);
 					const plan = planCosts(ctx, defs);
 					if (!plan.ok || plan.question) return false;
@@ -6842,14 +6876,18 @@ export function addCountersToPermanent(
 		return 0;
 	}
 	const effectiveAmount = res.amount;
-	perm.counters[type] = (perm.counters[type] || 0) + effectiveAmount;
+	const previousCount = perm.counters[type] || 0;
+	const newCount = previousCount + effectiveAmount;
+	perm.counters[type] = newCount;
 	noteLayerInputsChanged(state);
 	emitEvent(state, {
 		kind: 'CounterPlaced',
 		objectId: perm.instanceId,
 		object: perm,
 		counterType: type,
-		amount: effectiveAmount
+		amount: effectiveAmount,
+		previousCount,
+		newCount
 	});
 	// "Whenever a +1/+1 counter is put on ~" ran here before Phase 5; keep that timing when already on board.
 	if (findPermanentOnBoard(state, perm.instanceId)) {
@@ -6913,14 +6951,18 @@ registerPromptHandler('counter_replacement_choice', (state, prompt, answer) => {
 		return;
 	}
 	const effectiveAmount = nextRes.amount;
-	perm.counters[counterType] = (perm.counters[counterType] || 0) + effectiveAmount;
+	const previousCount = perm.counters[counterType] || 0;
+	const newCount = previousCount + effectiveAmount;
+	perm.counters[counterType] = newCount;
 	noteLayerInputsChanged(state);
 	emitEvent(state, {
 		kind: 'CounterPlaced',
 		objectId: perm.instanceId,
 		object: perm,
 		counterType,
-		amount: effectiveAmount
+		amount: effectiveAmount,
+		previousCount,
+		newCount
 	});
 	flushTriggers(state);
 });
@@ -7030,6 +7072,113 @@ function runDelayedTriggers(state: GameState, phase: GamePhase, activePlayer: Pl
 }
 
 /**
+ * CR 715.2d: A Saga's final chapter number is the greatest value among chapter abilities it has.
+ * If a Saga somehow has no chapter abilities (e.g. it lost all abilities), its final chapter
+ * number is 0.
+ */
+export function getSagaFinalChapterNumber(state: GameState, perm: CardInstance): number {
+	if (perm.phasedOut || perm.isFaceDown) return 0;
+	const ev = evaluatePermanent(state, perm);
+	if (!ev.hasSubType('Saga') || ev.hasLostAllAbilities) return 0;
+	const abilities = activeAbilityDefs(
+		effectiveCardForObject(perm),
+		instanceFaceOptions(perm, 'battlefield')
+	);
+	let maxChapter = 0;
+	for (const ab of abilities) {
+		const trig =
+			ab.kind === 'triggered'
+				? ab.trigger
+				: ab.kind === 'unsupported'
+					? ab.trigger
+					: undefined;
+		if (trig?.isChapterAbility && trig.chapterNumbers) {
+			for (const ch of trig.chapterNumbers) {
+				if (ch > maxChapter) maxChapter = ch;
+			}
+		}
+	}
+	return maxChapter;
+}
+
+/**
+ * CR 715.3b: As a player's precombat main phase begins, that player puts a lore counter on each
+ * Saga they control with one or more chapter abilities. This turn-based action doesn't use the stack.
+ */
+function executePrecombatMainSagaLoreTurnBasedAction(
+	state: GameState,
+	activePlayer: PlayerGameState
+): void {
+	for (const perm of [...activePlayer.battlefield]) {
+		if (perm.zone !== 'battlefield' || perm.phasedOut) continue;
+		if (getSagaFinalChapterNumber(state, perm) <= 0) continue;
+		addCountersToPermanent(state, perm, 'lore', 1);
+	}
+}
+
+const MONARCH_DESIGNATION_CARD: ScryfallCard = buildTokenScryfallCard('monarch-designation', {
+	name: 'The Monarch',
+	typeLine: 'Designation',
+	power: 0,
+	toughness: 0,
+	colors: [],
+	keywords: []
+});
+
+function pushMonarchInherentTrigger(
+	state: GameState,
+	monarchPlayer: PlayerGameState,
+	inherentTrigger: NonNullable<StackItem['inherentTrigger']>,
+	title: string,
+	description: string
+): void {
+	const stkItem: StackItem = withStackItemText(
+		{
+			id: uid('mtrig', state),
+			sourceInstanceId: `designation_monarch_${monarchPlayer.playerId}`,
+			card: MONARCH_DESIGNATION_CARD,
+			ownerId: monarchPlayer.playerId,
+			controllerId: monarchPlayer.playerId,
+			kind: 'triggered',
+			title,
+			targets: [],
+			xValue: 0,
+			inherentTrigger,
+			requiresGuidedResolution: false,
+			createdAt: Date.now()
+		},
+		description
+	);
+	state.stack.push(stkItem);
+	addLog(
+		state,
+		'trigger',
+		`${title} triggered (${monarchPlayer.username}): "${description}"`,
+		monarchPlayer.playerId
+	);
+}
+
+/**
+ * CR 726.1–3: Makes `playerId` the monarch. If that player is already the monarch, nothing
+ * changes and no `BecameMonarch` event is emitted (CR 726.3).
+ */
+export function setMonarch(state: GameState, playerId: string): void {
+	const target = state.players.find((p) => p.playerId === playerId && !p.lost);
+	if (!target) return;
+	const previousMonarchId = state.monarchPlayerId ?? null;
+	if (previousMonarchId === playerId) return;
+	state.monarchPlayerId = playerId;
+	noteLayerInputsChanged(state);
+	addLog(state, 'rule', `${target.username} became the monarch (CR 726).`, playerId);
+	emitEvent(state, {
+		kind: 'BecameMonarch',
+		playerId,
+		previousMonarchId
+	});
+	flushTriggers(state);
+}
+
+/**
  * Sets the current phase/step and emits PhaseBegin. `activePlayer` defaults to the player at
  * `activePlayerIndex`; enterEndStep passes the player it was given.
  */
@@ -7045,6 +7194,8 @@ function beginPhase(state: GameState, phase: GamePhase, activePlayer?: PlayerGam
 			executeUntapTurnBasedActions(state, active);
 		} else if (phase === 'draw' && active && !active.lost) {
 			executeDrawTurnBasedAction(state, active);
+		} else if (phase === 'main1' && active && !active.lost) {
+			executePrecombatMainSagaLoreTurnBasedAction(state, active);
 		} else if (phase === 'declare_attackers') {
 			state.combat.active = false;
 			state.combat.attackers = [];
@@ -7129,7 +7280,8 @@ for (const kind of [
 	'Explored',
 	'Connived',
 	'BecomesCrewed',
-	'CombatDamageBatchPlayer'
+	'CombatDamageBatchPlayer',
+	'BecameMonarch'
 ] as const) {
 	registerEventHandler(kind, (state, ev) => matchTriggers(state, ev));
 }
@@ -7187,6 +7339,15 @@ registerEventHandler('PhaseBegin', (state, ev) => {
 	matchTriggers(state, ev);
 	if ((ev.phase === 'end_step' || ev.phase === 'upkeep' || ev.phase === 'end_combat') && activePlayer) {
 		flushTriggers(state);
+		if (ev.phase === 'end_step' && !activePlayer.lost && state.monarchPlayerId === activePlayer.playerId) {
+			pushMonarchInherentTrigger(
+				state,
+				activePlayer,
+				{ kind: 'monarchEndStepDraw', drawPlayerId: activePlayer.playerId },
+				'The Monarch (End Step)',
+				"At the beginning of the monarch's end step, that player draws a card."
+			);
+		}
 		runDelayedTriggers(state, ev.phase, activePlayer);
 	}
 });
@@ -7288,6 +7449,7 @@ function triggeredStackItem(state: GameState, t: PendingTrigger, idPrefix: strin
 			...(t.targetStackItemId ? { eventStackItemId: t.targetStackItemId } : {}),
 			...(t.triggerEventStackItem ? { triggerEventStackItem: t.triggerEventStackItem } : {}),
 			...(t.stormCount !== undefined ? { stormCount: t.stormCount } : {}),
+			...(t.isChapterAbility || t.ability.trigger.isChapterAbility ? { isChapterAbility: true } : {}),
 			...(t.ability.ward ? { wardCost: t.ability.ward.cost } : {}),
 			eventLki: triggerEventLki(state, t)
 		},
@@ -7629,13 +7791,13 @@ function computeLoopBoardFingerprints(state: GameState): { exactFp: string; norm
 				.sort()
 				.map((k) => `${k}=${p.commanderDamageTaken[k]}`)
 				.join('|');
-			return `${p.playerId}:${p.life}:${p.poison}:${p.lost ? 1 : 0}:${p.library.length}:${p.hand.length}:${cmdDmg}`;
+			return `${p.playerId}:${p.life}:${p.poison}:${p.energyCounters || 0}:${p.lost ? 1 : 0}:${p.library.length}:${p.hand.length}:${cmdDmg}`;
 		})
-		.join(';');
+		.join(';') + `@monarch:${state.monarchPlayerId ?? ''}`;
 	const exactBoard = snap.active
 		.map(
 			({ perm, playerId }) =>
-				`${perm.instanceId}@${perm.objectVersion ?? 0}:${perm.controllerId ?? playerId}:${perm.tapped ? 1 : 0}:${perm.attachedToId ?? ''}:${perm.counters['+1/+1']},${perm.counters['-1/-1']},${perm.counters.loyalty}`
+				`${perm.instanceId}@${perm.objectVersion ?? 0}:${perm.controllerId ?? playerId}:${perm.tapped ? 1 : 0}:${perm.attachedToId ?? ''}:${perm.counters['+1/+1']},${perm.counters['-1/-1']},${perm.counters.loyalty},${perm.counters.lore || 0}`
 		)
 		.join(',');
 	const parts: string[] = [];
@@ -8511,7 +8673,8 @@ function isUnautomatedStackItem(item: StackItem): boolean {
 	return (
 		item.triggeredAbilityIndex !== undefined &&
 		!itemWard(item) &&
-		!item.delayedEffect
+		!item.delayedEffect &&
+		!item.inherentTrigger
 	);
 }
 
@@ -8764,6 +8927,29 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 			return;
 		}
 		resolveDelayedTriggerEffect(state, item, controller, item.delayedEffect);
+		triggerPathCounts.interpreter++;
+		removeItemFromStack();
+		givePriorityToActiveOrNextPlayer(state);
+		state.passedPriorityPlayerIds = [];
+		checkStateBasedActions(state);
+		return;
+	}
+	if (item.inherentTrigger) {
+		const inh = item.inherentTrigger;
+		if (inh.kind === 'monarchEndStepDraw') {
+			const drawPlayer = state.players.find((p) => p.playerId === inh.drawPlayerId && !p.lost);
+			if (drawPlayer) {
+				drawCards(state, drawPlayer, 1, true);
+				addLog(
+					state,
+					'rule',
+					`${drawPlayer.username} drew a card from The Monarch (CR 726.2).`,
+					drawPlayer.playerId
+				);
+			}
+		} else if (inh.kind === 'monarchCombatDamage') {
+			setMonarch(state, inh.newMonarchPlayerId);
+		}
 		triggerPathCounts.interpreter++;
 		removeItemFromStack();
 		givePriorityToActiveOrNextPlayer(state);
@@ -9598,7 +9784,7 @@ function stackItemTargetSpecsAndSteps(
 	orig: StackItem
 ): { specs: TargetSpec[]; steps: EffectStep[] } {
 	if (orig.kind === 'triggered') {
-		if (itemWard(orig) || orig.delayedEffect) return { specs: [], steps: [] };
+		if (itemWard(orig) || orig.delayedEffect || orig.inherentTrigger) return { specs: [], steps: [] };
 		const eff = triggerItemEffect(orig);
 		return { specs: eff?.targets ?? [], steps: eff?.steps ?? [] };
 	}
@@ -9922,6 +10108,7 @@ function pushCopiedStackItem(
 				: {}),
 			...(orig.grantedKeyword ? { grantedKeyword: orig.grantedKeyword } : {}),
 			...(orig.delayedEffect ? { delayedEffect: orig.delayedEffect } : {}),
+			...(orig.inherentTrigger ? { inherentTrigger: { ...orig.inherentTrigger } } : {}),
 			...(orig.wardCost !== undefined ? { wardCost: orig.wardCost } : {}),
 			...(orig.chosenModes ? { chosenModes: [...orig.chosenModes] } : {}),
 			...(orig.eventObjectId ? { eventObjectId: orig.eventObjectId } : {}),
@@ -10013,7 +10200,8 @@ registerEffectPorts({
 	getStackItemRetargetSlots,
 	validateStackItemRetarget,
 	chooseBotStackItemRetarget,
-	pushCopiedStackItem
+	pushCopiedStackItem,
+	setMonarch
 });
 
 /**
@@ -10535,11 +10723,13 @@ export function executeProliferate(
 				}
 			}
 		}
-		if ((controller.experienceCounters || 0) > 0) {
-			controller.experienceCounters = (controller.experienceCounters || 0) + 1;
-		}
-		if ((controller.energyCounters || 0) > 0) {
-			controller.energyCounters = (controller.energyCounters || 0) + 1;
+		if (controller.poison === 0) {
+			if ((controller.experienceCounters || 0) > 0) {
+				controller.experienceCounters = (controller.experienceCounters || 0) + 1;
+			}
+			if ((controller.energyCounters || 0) > 0) {
+				controller.energyCounters = (controller.energyCounters || 0) + 1;
+			}
 		}
 		for (const opp of state.players) {
 			if (opp.playerId === controller.playerId) continue;
@@ -10553,9 +10743,16 @@ export function executeProliferate(
 			}
 			if (opp.poison > 0) {
 				opp.poison += 1;
+				if ((opp.experienceCounters || 0) > 0) {
+					opp.experienceCounters = (opp.experienceCounters || 0) + 1;
+				}
+				if ((opp.energyCounters || 0) > 0) {
+					opp.energyCounters = (opp.energyCounters || 0) + 1;
+				}
 			}
 		}
 	}
+	noteLayerInputsChanged(state);
 	emitVfx(state, {
 		kind: 'proliferate',
 		sourceId: controller.playerId,
@@ -11152,6 +11349,23 @@ function executeCombatDamageStep(
 			damagedPlayerId,
 			attackers
 		});
+		// CR 726.2: Inherent triggered ability controlled by the monarch at trigger time:
+		// "Whenever a creature deals combat damage to the monarch, its controller becomes the monarch."
+		if (state.monarchPlayerId === damagedPlayerId) {
+			const monarchPlayer = state.players.find((p) => p.playerId === damagedPlayerId && !p.lost);
+			if (monarchPlayer) {
+				for (const atk of attackers) {
+					const newMonarchPlayerId = atk.controllerId || atk.ownerId;
+					pushMonarchInherentTrigger(
+						state,
+						monarchPlayer,
+						{ kind: 'monarchCombatDamage', newMonarchPlayerId },
+						'The Monarch (Combat Damage)',
+						'Whenever a creature deals combat damage to the monarch, its controller becomes the monarch.'
+					);
+				}
+			}
+		}
 	}
 
 	if (isFirstStrikeStep) {
@@ -11654,14 +11868,14 @@ export function checkStateBasedActions(state: GameState): void {
 		const sbaGraveyardBatch: Array<{
 			perm: CardInstance;
 			controller: PlayerGameState;
-			kind: 'aura' | 'dying' | 'legend';
+			kind: 'aura' | 'dying' | 'legend' | 'saga';
 			legName?: string;
 		}> = [];
 		const queuedIds = new Set<string>();
 		const queueToGraveyard = (
 			perm: CardInstance,
 			controller: PlayerGameState,
-			kind: 'aura' | 'dying' | 'legend',
+			kind: 'aura' | 'dying' | 'legend' | 'saga',
 			legName?: string
 		) => {
 			if (queuedIds.has(perm.instanceId)) return;
@@ -11843,6 +12057,28 @@ export function checkStateBasedActions(state: GameState): void {
 							}
 						}
 					}
+				}
+
+				// 5. Saga final-chapter SBA (CR 715.4, CR 704.5s):
+				// Sacrifice any Saga with finalChapterNumber > 0 and lore >= finalChapterNumber that isn't
+				// the source of a chapter ability currently on the stack or waiting to be placed there.
+				const pendingNow = peekPendingTriggers(state);
+				for (const perm of p.battlefield) {
+					if (perm.phasedOut || perm.isFaceDown || queuedIds.has(perm.instanceId)) continue;
+					const finalCh = getSagaFinalChapterNumber(state, perm);
+					if (finalCh <= 0) continue;
+					if ((perm.counters.lore || 0) < finalCh) continue;
+					const hasChapterOnStack = state.stack.some(
+						(s) => Boolean(s.isChapterAbility) && s.sourceInstanceId === perm.instanceId
+					);
+					if (hasChapterOnStack) continue;
+					const hasChapterPending = pendingNow.some(
+						(t) =>
+							(Boolean(t.isChapterAbility) || Boolean(t.ability.trigger.isChapterAbility)) &&
+							t.source.instanceId === perm.instanceId
+					);
+					if (hasChapterPending) continue;
+					queueToGraveyard(perm, p, 'saga');
 				}
 			}
 		});
@@ -12347,11 +12583,43 @@ export function cleanupEliminatedPlayer(state: GameState, eliminated: PlayerGame
 
 	state.passedPriorityPlayerIds = state.passedPriorityPlayerIds.filter((id) => id !== elimId);
 
+	// CR 726.4 / CR 800.4k: If the monarch leaves the game, the active player becomes the monarch
+	// at the same time as that player leaves the game. If the active player is leaving the game (or
+	// has already lost), the next living player in turn order becomes the monarch.
+	const alive = state.players.filter((p) => !p.lost);
+	if (state.monarchPlayerId === elimId) {
+		const active = state.players[state.activePlayerIndex];
+		let successor: PlayerGameState | undefined;
+		if (active && !active.lost && active.playerId !== elimId) {
+			successor = active;
+		} else {
+			const nPlayers = state.players.length;
+			for (let step = 1; step <= nPlayers; step++) {
+				const cand = state.players[(state.activePlayerIndex + step) % nPlayers];
+				if (cand && !cand.lost && cand.playerId !== elimId) {
+					successor = cand;
+					break;
+				}
+			}
+		}
+		if (successor) {
+			if (alive.length > 1 && state.status === 'active') {
+				setMonarch(state, successor.playerId);
+				state.passedPriorityPlayerIds = [];
+			} else {
+				state.monarchPlayerId = successor.playerId;
+				noteLayerInputsChanged(state);
+			}
+		} else {
+			state.monarchPlayerId = null;
+			noteLayerInputsChanged(state);
+		}
+	}
+
 	// 5. CR 800.4a / 800.4j: If the game continues (2+ alive players remain) and the eliminated
 	// player held priority, pass priority to the next alive player in turn order (or resolve top
 	// of stack / end phase if all remaining players had already passed priority). The turn
 	// continues to completion without an active player if the active player left the game.
-	const alive = state.players.filter((p) => !p.lost);
 	if (alive.length > 1 && state.status === 'active') {
 		const priorityPlayer = state.players[state.priorityPlayerIndex];
 		if (priorityPlayer?.playerId === elimId) {

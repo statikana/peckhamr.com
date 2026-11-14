@@ -407,6 +407,7 @@ function shiftAmount(a: Amount, offset: number): Amount {
 	if (a.k === 'count') return { k: 'count', of: shiftObjectFilter(a.of, offset) };
 	if (a.k === 'stat') return { ...a, of: shiftRef(a.of, offset) };
 	if (a.k === 'life' || a.k === 'cardsIn') return { ...a, of: shiftPlayerRef(a.of, offset) };
+	if (a.k === 'energyCount') return { k: 'energyCount', player: shiftPlayerRef(a.player, offset) };
 	if (a.k === 'negate') return { k: 'negate', of: shiftAmount(a.of, offset) };
 	if (a.k === 'sum' || a.k === 'min' || a.k === 'max') return { k: a.k, args: a.args.map((x) => shiftAmount(x, offset)) };
 	return a;
@@ -416,6 +417,7 @@ function shiftCondition(cond: Condition, offset: number): Condition {
 	if (cond.k === 'compare') return { ...cond, left: shiftAmount(cond.left, offset), right: shiftAmount(cond.right, offset) };
 	if (cond.k === 'graveyardAbove') return { ...cond, filter: shiftObjectFilter(cond.filter, offset) };
 	if (cond.k === 'isTurnOf') return { ...cond, player: shiftPlayerRef(cond.player, offset) };
+	if (cond.k === 'isMonarch') return cond.player ? { ...cond, player: shiftPlayerRef(cond.player, offset) } : cond;
 	if (cond.k === 'not') return { k: 'not', of: shiftCondition(cond.of, offset) };
 	if (cond.k === 'and' || cond.k === 'or') return { k: cond.k, of: cond.of.map((c) => shiftCondition(c, offset)) };
 	return cond;
@@ -423,6 +425,7 @@ function shiftCondition(cond: Condition, offset: number): Condition {
 
 function shiftCostDef(cost: CostDef, offset: number): CostDef {
 	if (cost.k === 'payLife') return { ...cost, amount: shiftAmount(cost.amount, offset) };
+	if (cost.k === 'payEnergy') return { ...cost, count: shiftAmount(cost.count, offset) };
 	if (cost.k === 'tapOthers') {
 		return { ...cost, count: shiftAmount(cost.count, offset), filter: shiftObjectFilter(cost.filter, offset) };
 	}

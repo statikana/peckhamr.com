@@ -652,6 +652,11 @@ export interface StackItem {
 	faceDownLabel?: string;
 	/** InstanceIds of creatures tapped to pay a subset-sum cost (e.g. Crew) for this ability. */
 	crewedByIds?: string[];
+	// --- Track P1 ---
+	isChapterAbility?: boolean;
+	inherentTrigger?:
+		| { kind: 'monarchEndStepDraw'; drawPlayerId: string }
+		| { kind: 'monarchCombatDamage'; newMonarchPlayerId: string };
 }
 
 /** One binding of the IR interpreter ("it", "that creature"): the objects and their LKI. */
@@ -709,6 +714,8 @@ export interface SerializedPendingTrigger {
 	triggerEventStackItem?: StackItem;
 	stormCount?: number;
 	order: number;
+	// --- Track P1 ---
+	isChapterAbility?: boolean;
 }
 
 /** Snapshot of an IR effect binding carried into a delayed trigger (CR 603.7c). */
@@ -1357,6 +1364,8 @@ export interface GameState {
 	nextUid?: number;
 	idSalt?: number;
 	faceDownLabelAllocCounter?: number;
+	// --- Track P1 ---
+	monarchPlayerId?: string | null;
 }
 
 export interface MagicLobby {

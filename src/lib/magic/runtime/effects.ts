@@ -198,6 +198,8 @@ export interface EffectPorts {
 		targetsBySpec: TargetRef[][] | undefined,
 		opts?: { exceptColors?: ManaColor[]; nonLegendary?: boolean }
 	): StackItem;
+	/** CR 726.1–3: Makes `playerId` the monarch (no-op if already the monarch). */
+	setMonarch(state: GameState, playerId: string): void;
 }
 
 export interface StackItemRetargetSlot {
@@ -1248,6 +1250,10 @@ class Run {
 			case 'life': {
 				const p = this.playerRef(a.of);
 				return p ? p.life : 0;
+			}
+			case 'energyCount': {
+				const p = this.playerRef(a.player);
+				return p ? (p.energyCounters ?? 0) : 0;
 			}
 			case 'cardsIn': {
 				const p = this.playerRef(a.of);
@@ -2575,6 +2581,37 @@ class Run {
 				}
 				noteLayerInputsChanged(s);
 				syncBattlefieldControllers(s);
+				return;
+			}
+			case 'gainEnergy': {
+				const n = Math.max(0, this.amount(step.amount, 0));
+				if (n <= 0) return;
+				const targets =
+					step.subject.k === 'none' && step.actor
+						? this.players({ k: 'playerRef', ref: step.actor })
+						: this.players(step.subject);
+				for (const pl of targets) {
+					if (pl.lost) continue;
+					pl.energyCounters = (pl.energyCounters || 0) + n;
+					noteLayerInputsChanged(s);
+					p.addLog(
+						s,
+						'rule',
+						`${title}: ${pl.username} gets ${n} {E} (now ${pl.energyCounters} {E}).`,
+						you.playerId
+					);
+				}
+				return;
+			}
+			case 'becomeMonarch': {
+				const targets =
+					step.subject.k === 'none' && step.actor
+						? this.players({ k: 'playerRef', ref: step.actor })
+						: this.players(step.subject);
+				const chosen = targets.find((pl) => !pl.lost);
+				if (chosen) {
+					p.setMonarch(s, chosen.playerId);
+				}
 				return;
 			}
 			default:
@@ -4029,6 +4066,18 @@ class Run {
 				return isObjectEvoked(this.state, this.ctx.sourceId, this.ctx.item);
 			case 'escaped':
 				return isObjectEscaped(this.state, this.ctx.sourceId, this.ctx.item);
+			case 'isMonarch': {
+				const monarchId = this.state.monarchPlayerId ?? null;
+				if (!monarchId) return false;
+				if (c.player) {
+					const pl = this.playerRef(c.player);
+					return Boolean(pl && monarchId === pl.playerId);
+				}
+				const rel = c.relation ?? 'you';
+				if (rel === 'you') return monarchId === this.you.playerId;
+				if (rel === 'opponent') return monarchId !== this.you.playerId;
+				return true;
+			}
 		}
 	}
 

@@ -64,12 +64,15 @@ export const INTERPRETED_VERBS: ReadonlySet<Verb> = new Set<Verb>([
 	'payCost',
 	'animate',
 	'gainControl',
-	'revealAndDiscard'
+	'revealAndDiscard',
+	'gainEnergy',
+	'becomeMonarch'
 ]);
 
 const SUPPORTED_OPTIONAL_COST_KINDS: ReadonlySet<CostDef['k']> = new Set<CostDef['k']>([
 	'mana',
 	'payLife',
+	'payEnergy',
 	'sacrifice',
 	'discard',
 	'removeCounters',

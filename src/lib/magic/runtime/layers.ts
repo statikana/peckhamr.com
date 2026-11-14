@@ -962,6 +962,18 @@ function evaluateLayerAmount(
 			const p = state.players.find((pl) => pl.playerId === source.controllerId);
 			return p?.life ?? 0;
 		}
+		case 'energyCount': {
+			layerReads |= READ_ENERGY;
+			if (amount.player.k === 'you') {
+				const p = state.players.find((pl) => pl.playerId === source.controllerId);
+				return p?.energyCounters ?? 0;
+			}
+			if (amount.player.k === 'activePlayer') {
+				layerReads |= READ_ACTIVE_PLAYER;
+				return state.players[state.activePlayerIndex]?.energyCounters ?? 0;
+			}
+			return 0;
+		}
 		case 'cardsIn': {
 			layerReads |= READ_ZONE_SIZES;
 			const p = state.players.find((pl) => pl.playerId === source.controllerId);
@@ -1147,6 +1159,23 @@ function evaluateLayerCondition(
 			return Boolean(source.inst.evoked);
 		case 'escaped':
 			return Boolean(source.inst.escaped);
+		case 'isMonarch': {
+			layerReads |= READ_MONARCH;
+			const monarchId = state.monarchPlayerId ?? null;
+			if (!monarchId) return false;
+			if (cond.player) {
+				if (cond.player.k === 'you') return monarchId === source.controllerId;
+				if (cond.player.k === 'activePlayer') {
+					layerReads |= READ_ACTIVE_PLAYER;
+					return monarchId === state.players[state.activePlayerIndex]?.playerId;
+				}
+				return false;
+			}
+			const rel = cond.relation ?? 'you';
+			if (rel === 'you') return monarchId === source.controllerId;
+			if (rel === 'opponent') return monarchId !== source.controllerId;
+			return true;
+		}
 	}
 }
 
@@ -1232,6 +1261,8 @@ const READ_GRAVEYARDS = 8;
 const READ_ACTIVE_PLAYER = 16;
 const READ_COMMANDER_CAST_COUNT = 32;
 const READ_EXILE = 64;
+const READ_ENERGY = 128;
+const READ_MONARCH = 256;
 
 /** Inputs read by the evaluation in progress (bits above). */
 let layerReads = 0;
@@ -1239,8 +1270,10 @@ let layerReads = 0;
 function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: number): unknown[] {
 	const fp: unknown[] = [(state as { version?: number }).version, reads];
 	if (reads & READ_ACTIVE_PLAYER) fp.push(state.activePlayerIndex);
+	if (reads & READ_MONARCH) fp.push(state.monarchPlayerId ?? null);
 	for (const p of state.players) {
 		if (reads & READ_LIFE) fp.push(p.life);
+		if (reads & READ_ENERGY) fp.push(p.energyCounters || 0);
 		if (reads & READ_COMMANDER_CAST_COUNT) fp.push(playerCommanderCastCount(state, p.playerId));
 		if (reads & READ_ZONE_SIZES) {
 			fp.push(p.hand.length, p.graveyard.length, p.library.length, p.exile.length, p.command.length);
@@ -1355,8 +1388,10 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 	if (fp[i++] !== (state as { version?: number }).version) return false;
 	const reads = fp[i++] as number;
 	if (reads & READ_ACTIVE_PLAYER && fp[i++] !== state.activePlayerIndex) return false;
+	if (reads & READ_MONARCH && fp[i++] !== (state.monarchPlayerId ?? null)) return false;
 	for (const p of state.players) {
 		if (reads & READ_LIFE && fp[i++] !== p.life) return false;
+		if (reads & READ_ENERGY && fp[i++] !== (p.energyCounters || 0)) return false;
 		if (reads & READ_COMMANDER_CAST_COUNT && fp[i++] !== playerCommanderCastCount(state, p.playerId)) {
 			return false;
 		}

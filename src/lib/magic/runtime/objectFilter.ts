@@ -392,6 +392,15 @@ export function evaluateAmount(amount: Amount, ctx: FilterContext): number {
 			if (amount.of.k !== 'you') return 0;
 			return ctx.state.players.find((p) => p.playerId === ctx.controllerId)?.life ?? 0;
 		}
+		case 'energyCount': {
+			if (amount.player.k === 'you') {
+				return ctx.state.players.find((p) => p.playerId === ctx.controllerId)?.energyCounters ?? 0;
+			}
+			if (amount.player.k === 'activePlayer') {
+				return ctx.state.players[ctx.state.activePlayerIndex]?.energyCounters ?? 0;
+			}
+			return 0;
+		}
 		case 'negate':
 			return -evaluateAmount(amount.of, ctx);
 		case 'sum':
@@ -436,6 +445,21 @@ export function evaluateCondition(cond: Condition, ctx: FilterContext): boolean 
 			return ctx.source
 				? isObjectEscaped(ctx.state, ctx.source.instanceId, undefined, ctx.source)
 				: false;
+		case 'isMonarch': {
+			const monarchId = ctx.state.monarchPlayerId ?? null;
+			if (!monarchId) return false;
+			if (cond.player) {
+				if (cond.player.k === 'you') return monarchId === ctx.controllerId;
+				if (cond.player.k === 'activePlayer') {
+					return monarchId === ctx.state.players[ctx.state.activePlayerIndex]?.playerId;
+				}
+				return false;
+			}
+			const rel = cond.relation ?? 'you';
+			if (rel === 'you') return monarchId === ctx.controllerId;
+			if (rel === 'opponent') return monarchId !== ctx.controllerId;
+			return true;
+		}
 		default:
 			return false;
 	}

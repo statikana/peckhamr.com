@@ -255,6 +255,18 @@ const payLife: Production = (part) => {
 	return amount ? [{ k: 'payLife', amount }] : null;
 };
 
+/** "Pay {E}", "Pay {E}{E}{E}", "Pay six {E}", "Pay 6 {E}", "Pay X {E}". */
+const payEnergy: Production = (part) => {
+	const sym = part.match(/^pay\s+((?:\{E\}\s*)+)$/i);
+	if (sym) {
+		const eCount = (sym[1].match(/\{E\}/gi) ?? []).length;
+		return eCount > 0 ? [{ k: 'payEnergy', count: { k: 'const', n: eCount } }] : null;
+	}
+	const m = part.match(/^pay\s+(\S+)\s*\{E\}$/i);
+	const amount = m && count(m[1]);
+	return amount ? [{ k: 'payEnergy', count: amount }] : null;
+};
+
 /** "Pay {3}{B}" (an option of a choice between costs). */
 const payMana: Production = (part) => {
 	const m = part.match(/^pay ((?:\{[^}]+\})+)$/i);
@@ -355,6 +367,7 @@ const revealFromHand: Production = (part) => {
 const PRODUCTIONS: Production[] = [
 	manaSymbols,
 	payLife,
+	payEnergy,
 	payMana,
 	sacrifice,
 	tapOthers,

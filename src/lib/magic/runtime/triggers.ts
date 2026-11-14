@@ -74,6 +74,8 @@ export interface PendingTrigger {
 	triggerEventStackItem?: StackItem;
 	/** Snapshot of spells cast before this spell in the current turn (CR 702.40a). */
 	stormCount?: number;
+	/** CR 715.2 / 704.5s: True when this pending trigger is a Saga chapter ability. */
+	isChapterAbility?: boolean;
 	/** Match order (deterministic tie-break for a player's own simultaneous triggers). */
 	order: number;
 }
@@ -251,6 +253,7 @@ function persistPendingTriggers(state: GameState, triggers: PendingTrigger[]): v
 			...(t.eventLki ? { eventLki: t.eventLki } : {}),
 			...(t.triggerEventStackItem ? { triggerEventStackItem: t.triggerEventStackItem } : {}),
 			...(t.stormCount !== undefined ? { stormCount: t.stormCount } : {}),
+			...(t.isChapterAbility ? { isChapterAbility: true } : {}),
 			order: t.order
 		});
 	}
@@ -277,6 +280,7 @@ function hydratePendingTriggers(state: GameState, ch: TriggerChannel): void {
 		...(t.eventLki ? { eventLki: t.eventLki } : {}),
 		...(t.triggerEventStackItem ? { triggerEventStackItem: t.triggerEventStackItem } : {}),
 		...(t.stormCount !== undefined ? { stormCount: t.stormCount } : {}),
+		...(t.isChapterAbility ? { isChapterAbility: true } : {}),
 		order: t.order
 	}));
 	ch.pending = [...hydrated, ...ch.pending];
@@ -535,6 +539,7 @@ interface MatchExtras {
 	stormCount?: number;
 	eventPlayer?: string;
 	defendingPlayerId?: string;
+	isChapterAbility?: boolean;
 }
 
 function record(state: GameState, source: Source, ability: RuntimeTrigger, kind: EventKind, extras: MatchExtras): void {
@@ -572,6 +577,7 @@ function record(state: GameState, source: Source, ability: RuntimeTrigger, kind:
 			eventLki: extras.eventLki,
 			...(extras.triggerEventStackItem ? { triggerEventStackItem: extras.triggerEventStackItem } : {}),
 			...(extras.stormCount !== undefined ? { stormCount: extras.stormCount } : {}),
+			...(extras.isChapterAbility ? { isChapterAbility: true } : {}),
 			eventPlayer: extras.eventPlayer ?? extras.eventPlayerId,
 			defendingPlayerId: extras.defendingPlayerId,
 			order: ch.nextOrder++
@@ -651,6 +657,28 @@ function matchTriggersInner(state: GameState, ev: GameEvent): void {
 			return matchObjectActionEvent(state, ev, 'becomesCrewed', 'Crew Trigger');
 		case 'CombatDamageBatchPlayer':
 			return matchCombatDamageBatchPlayer(state, ev);
+		case 'BecameMonarch':
+			return matchBecameMonarch(state, ev);
+	}
+}
+
+function matchBecameMonarch(state: GameState, ev: Extract<GameEvent, { kind: 'BecameMonarch' }>): void {
+	for (const source of sources(state, 'becameMonarch')) {
+		for (const { ability, alts } of abilitiesFor(state, source, 'becameMonarch')) {
+			const alt = alts.find((a) => {
+				const rel = a.filter.player?.relation ?? 'any';
+				if (rel === 'you' && ev.playerId !== source.controllerId) return false;
+				if (rel === 'opponent' && ev.playerId === source.controllerId) return false;
+				return true;
+			});
+			if (alt) {
+				record(state, source, ability, 'becameMonarch', {
+					label: 'Monarch Trigger',
+					eventPlayer: ev.playerId,
+					eventPlayerId: ev.playerId
+				});
+			}
+		}
 	}
 }
 
@@ -1469,6 +1497,8 @@ function matchPhase(state: GameState, ev: Extract<GameEvent, { kind: 'PhaseBegin
 	}
 }
 
+const CHAPTER_ROMAN = ['', 'I', 'II', 'III', 'IV', 'V', 'VI'] as const;
+
 function matchCounter(state: GameState, ev: Extract<GameEvent, { kind: 'CounterPlaced' }>): void {
 	if (ev.amount <= 0) return;
 	const candidates = sources(state, 'counterPlaced');
@@ -1494,7 +1524,24 @@ function matchCounter(state: GameState, ev: Extract<GameEvent, { kind: 'CounterP
 	for (const source of candidates) {
 		if (source.obj.instanceId !== ev.objectId) continue;
 		for (const { ability, alts } of abilitiesFor(state, source, 'counterPlaced')) {
-			if (!alts.some((a) => a.filter.object === 'self' && (!a.filter.counter || a.filter.counter === ev.counterType))) continue;
+			const chapterAlt = alts.find((a) => a.isChapterAbility && a.chapterNumbers?.length);
+			if (chapterAlt) {
+				// CR 715.2b–c: Chapter N triggers iff lore counters on this Saga went from < N to >= N.
+				if (ev.counterType !== 'lore') continue;
+				const next = ev.newCount ?? (ev.object.counters.lore || 0);
+				const prev = ev.previousCount ?? next - ev.amount;
+				for (const ch of chapterAlt.chapterNumbers!) {
+					if (prev < ch && next >= ch) {
+						record(state, source, ability, 'counterPlaced', {
+							label: `Chapter ${CHAPTER_ROMAN[ch] ?? String(ch)}`,
+							amount: ev.amount,
+							isChapterAbility: true
+						});
+					}
+				}
+				continue;
+			}
+			if (!alts.some((a) => !a.isChapterAbility && a.filter.object === 'self' && (!a.filter.counter || a.filter.counter === ev.counterType))) continue;
 			record(state, source, ability, 'counterPlaced', { label: 'Counter Placed', amount: ev.amount });
 		}
 	}
@@ -1755,6 +1802,25 @@ export function evaluateCondition(
 			return cond.player.k === 'activePlayer';
 		case 'controlCommander':
 			return controller.battlefield.some((perm) => !perm.phasedOut && Boolean(perm.isCommander));
+		case 'isMonarch': {
+			const monarchId = state.monarchPlayerId ?? null;
+			if (!monarchId) return false;
+			if (cond.player) {
+				if (cond.player.k === 'you') return monarchId === controllerId;
+				if (cond.player.k === 'activePlayer') {
+					return monarchId === state.players[state.activePlayerIndex]?.playerId;
+				}
+				if (cond.player.k === 'eventPlayer') {
+					const thatId = stackItem?.eventPlayerId;
+					return Boolean(thatId && monarchId === thatId);
+				}
+				return false;
+			}
+			const rel = cond.relation ?? 'you';
+			if (rel === 'you') return monarchId === controllerId;
+			if (rel === 'opponent') return monarchId !== controllerId;
+			return true;
+		}
 		case 'graveyardAbove': {
 			// CR 404.2: the graveyard's order matters; the top is the end of the array.
 			const idx = controller.graveyard.findIndex((c) => c.instanceId === sourceInstanceId);
@@ -1810,6 +1876,17 @@ function amount(
 			);
 		case 'life':
 			return a.of.k === 'you' ? controller.life : null;
+		case 'energyCount': {
+			if (a.player.k === 'you') return controller.energyCounters ?? 0;
+			if (a.player.k === 'activePlayer') {
+				return state.players[state.activePlayerIndex]?.energyCounters ?? 0;
+			}
+			if (a.player.k === 'eventPlayer') {
+				const thatId = stackItem?.eventPlayerId;
+				return thatId ? (state.players.find((pl) => pl.playerId === thatId)?.energyCounters ?? 0) : null;
+			}
+			return null;
+		}
 		case 'cardsIn': {
 			if (a.of.k !== 'you') return null;
 			const zone = a.zone;

@@ -316,6 +316,7 @@ function playerEvent(player: EventFilter['player'], rest: string): TriggerDef | 
 	if (rest === 'draw a card' || rest === 'draws a card') return { event: 'drawCard', filter: { player } };
 	if (rest === 'investigate' || rest === 'investigates') return { event: 'investigate', filter: { player } };
 	if (rest === 'surveil' || rest === 'surveils') return { event: 'surveil', filter: { player } };
+	if (/^becomes? the monarch$/i.test(rest)) return { event: 'becameMonarch', filter: { player } };
 	const turnUp = rest.match(/^turns? (?:a|an) (.+) face up$/);
 	if (turnUp) {
 		const object = parseObjectPhrase(turnUp[1]);
@@ -443,6 +444,13 @@ export function parseCondition(text: string): Condition | null {
 	}
 	if (t === "if it's your turn") return { k: 'isTurnOf', player: { k: 'you' } };
 	if (t === "if it's not your turn") return { k: 'not', of: { k: 'isTurnOf', player: { k: 'you' } } };
+	if (/^if you(?:'re| are) the monarch$/i.test(t)) return { k: 'isMonarch', player: { k: 'you' } };
+	if (/^if you(?:'re not| aren't| are not) the monarch$/i.test(t)) {
+		return { k: 'not', of: { k: 'isMonarch', player: { k: 'you' } } };
+	}
+	if (/^if an opponent is the monarch$/i.test(t)) return { k: 'isMonarch', relation: 'opponent' };
+	if (/^if a player is the monarch$/i.test(t)) return { k: 'isMonarch', relation: 'any' };
+	if (/^if there is no monarch$/i.test(t)) return { k: 'not', of: { k: 'isMonarch', relation: 'any' } };
 	return null;
 }
 
@@ -540,7 +548,8 @@ const RUNTIME_EVENT_FIELDS: Partial<Record<TriggerDef['event'], ReadonlySet<stri
 	surveil: new Set(['player']),
 	explore: new Set(['object', 'orSelf']),
 	connive: new Set(['object', 'orSelf']),
-	becomesCrewed: new Set(['object', 'orSelf'])
+	becomesCrewed: new Set(['object', 'orSelf']),
+	becameMonarch: new Set(['player'])
 };
 
 function objectFilterProblem(f: ObjectFilter | undefined): string | null {

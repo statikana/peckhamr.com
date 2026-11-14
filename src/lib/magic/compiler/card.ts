@@ -29,6 +29,7 @@ import type {
 	StaticDef,
 	TargetSpec,
 	Timing,
+	TriggerDef,
 	UnsupportedAbility,
 	UnsupportedReason
 } from '../ir.ts';
@@ -70,7 +71,8 @@ export function compileSingleFace(
 	const ctx: Ctx = {
 		isSpell: characteristics.types.includes('Instant') || characteristics.types.includes('Sorcery'),
 		isPlaneswalker: characteristics.types.includes('Planeswalker'),
-		manaTapTaken: false
+		manaTapTaken: false,
+		hasReadAhead: false
 	};
 	const abilities: AbilityDef[] = [];
 	const spellLines: NormalizedLine[] = [];
@@ -85,16 +87,16 @@ export function compileSingleFace(
 
 	for (const group of groupLines(norm.lines)) {
 		const line = group[0];
-		// Saga chapter abilities ("I, II — ...") aren't modelled.
-		if (line.abilityWord && /^[IVX]+(, [IVX]+)*$/.test(line.abilityWord)) {
-			abilities.push(unsupported('unparsed', line.text, line.span, [line.bodySpan]));
+		const sagaOut = sagaChapterLine(group);
+		if (sagaOut) {
+			abilities.push(...sagaOut);
 			continue;
 		}
 		const skipSpellDelayedTrigger =
 			ctx.isSpell &&
 			/^at (?:the beginning of (?:the next|that turn's)|(?:the )?end of combat)\b/i.test(line.body);
 		const out =
-			(group.length === 1 ? keywordLine(line) : null) ??
+			(group.length === 1 ? keywordLine(ctx, line) : null) ??
 			(skipSpellDelayedTrigger ? null : triggerLine(group)) ??
 			activatedLine(ctx, group);
 		if (out) abilities.push(...out);
@@ -125,7 +127,12 @@ export function compileSingleFace(
 		}
 	}
 
-	return { name: face.name, characteristics, abilities };
+	return {
+		name: face.name,
+		characteristics,
+		abilities,
+		...(ctx.hasReadAhead ? { hasReadAhead: true } : {})
+	};
 }
 
 export function compileFaces(card: ScryfallCard): FaceDefinition[] {
@@ -153,6 +160,7 @@ interface Ctx {
 	isPlaneswalker: boolean;
 	/** The first "{T}: Add ..." ability gets the id `mana_tap`. */
 	manaTapTaken: boolean;
+	hasReadAhead: boolean;
 }
 
 // ---- Grouping -------------------------------------------------------------------------------
@@ -278,7 +286,7 @@ function parseAffinityQuality(phrase: string): ObjectFilter | null {
 }
 
 /** "Flying, vigilance", "Equip {2}", "Protection from black". A trailing period means an effect. */
-function keywordLine(line: NormalizedLine): AbilityDef[] | null {
+function keywordLine(ctx: Ctx, line: NormalizedLine): AbilityDef[] | null {
 	if (
 		line.abilityWord ||
 		(/\.$/.test(line.body) &&
@@ -412,6 +420,9 @@ function keywordLine(line: NormalizedLine): AbilityDef[] | null {
 				implemented = false;
 			}
 		}
+		if (keyword.name === 'read ahead') {
+			ctx.hasReadAhead = true;
+		}
 		if (!implemented) {
 			out.push(unsupported('keyword_not_implemented', part, span, [span]));
 			return;
@@ -518,6 +529,88 @@ function keywordLine(line: NormalizedLine): AbilityDef[] | null {
 }
 
 // ---- Triggered abilities --------------------------------------------------------------------
+
+const SAGA_ROMAN_TO_INT: Readonly<Record<string, number>> = {
+	I: 1,
+	II: 2,
+	III: 3,
+	IV: 4,
+	V: 5,
+	VI: 6
+};
+
+/**
+ * CR 715.2: Saga chapter abilities ("I — ...", "I, II — ...", "I — Gungnir — ...").
+ * Compiles into a `counterPlaced` TriggeredAbility with `chapterNumbers` and `isChapterAbility: true`.
+ */
+function sagaChapterLine(group: NormalizedLine[]): AbilityDef[] | null {
+	const line = group[0];
+	const chapMatch = line.text.match(/^((?:I|II|III|IV|V|VI)(?:,\s*(?:I|II|III|IV|V|VI))*)\s*—\s*/);
+	if (!chapMatch) return null;
+
+	const chapterNumbers = chapMatch[1].split(/,\s*/).map((r) => SAGA_ROMAN_TO_INT[r]);
+	if (chapterNumbers.some((n) => !n)) return null;
+
+	const span = groupSpan(group);
+	const fullText = group.map((l) => l.text).join('\n');
+	let effectStart = line.span.start + chapMatch[0].length;
+	let headerEffectText = line.text.slice(chapMatch[0].length);
+
+	// Optional post-chapter flavor word (e.g. "I — Gungnir — Destroy target creature...").
+	const flavorMatch = headerEffectText.match(/^([A-Z][A-Za-z0-9'’ !?-]*?) — (?=[A-Z•{~])/);
+	if (flavorMatch && !/^choose\b/i.test(flavorMatch[1])) {
+		effectStart += flavorMatch[0].length;
+		headerEffectText = headerEffectText.slice(flavorMatch[0].length);
+	}
+
+	const trigger: TriggerDef = {
+		event: 'counterPlaced',
+		filter: { object: 'self', counter: 'lore' },
+		chapterNumbers,
+		isChapterAbility: true
+	};
+
+	const headerSentences = splitSentences(headerEffectText, effectStart);
+	if (
+		headerSentences.length >= 2 &&
+		/^this ability triggers only once each turn\.?$/i.test(
+			headerSentences[headerSentences.length - 1].text.trim()
+		)
+	) {
+		trigger.onlyOncePerTurn = true;
+		const lastSentence = headerSentences[headerSentences.length - 1];
+		headerEffectText = headerEffectText.slice(0, lastSentence.span.start - effectStart).trimEnd();
+	}
+
+	if (group.length > 1) {
+		const bullets = group.slice(1).map((b) => ({ text: b.text, start: b.span.start, end: b.span.end }));
+		const modalParse = /^choose\b/i.test(headerEffectText.trim())
+			? parseModal(headerEffectText, bullets, 'triggered', effectStart)
+			: null;
+		const modal = modalParse?.modal;
+		const modesOk =
+			Boolean(modalParse && modal) &&
+			modalParse!.unparsed.length === 0 &&
+			modal!.modes.length > 0 &&
+			modal!.min >= 0 &&
+			modal!.max >= modal!.min &&
+			modal!.modes.every((m) => interpretableTrigger({ steps: m.effect, targets: m.targets, unparsed: [] }));
+		if (!modesOk) {
+			const gaps = modalParse?.unparsed.length
+				? modalParse.unparsed
+				: [{ start: effectStart, end: span.end }];
+			return [{ ...unsupported('unparsed', fullText, span, gaps), trigger }];
+		}
+		return [{ kind: 'triggered', trigger, targets: [], effect: [], modal, text: fullText, span }];
+	}
+
+	const effect = parseEffects(headerEffectText, effectStart, 'triggered');
+	if (!interpretableTrigger(effect)) {
+		const gaps = effect.unparsed.length > 0 ? effect.unparsed : [{ start: effectStart, end: span.end }];
+		return [{ ...unsupported('unparsed', fullText, span, gaps), trigger }];
+	}
+	return [{ kind: 'triggered', trigger, targets: effect.targets, effect: effect.steps, text: fullText, span }];
+}
 
 function triggerLine(group: NormalizedLine[]): AbilityDef[] | null {
 	const line = group[0];

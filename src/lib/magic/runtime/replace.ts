@@ -1001,6 +1001,23 @@ export function registerCounterPlacement(fn: CounterPlacementFn): void {
 	placeCounters = fn;
 }
 
+export function placeRegisteredCounters(
+	state: GameState,
+	perm: CardInstance,
+	type: CounterType,
+	amount: number
+): number {
+	if (placeCounters) {
+		return placeCounters(state, perm, type, amount);
+	}
+	const mult = counterMultiplier(state, perm, type);
+	const added = amount * mult;
+	if (added > 0) {
+		perm.counters[type] = (perm.counters[type] ?? 0) + added;
+	}
+	return added;
+}
+
 /**
  * Applies self-replacement effects (`~ enters tapped`, `~ enters with N <counter> counters on it`)
  * to `perm` as it enters the battlefield. Counter amounts are routed through `addCountersToPermanent`
