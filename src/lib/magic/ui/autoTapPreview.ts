@@ -136,7 +136,7 @@ function computePoolDiff(
 }
 
 /**
- * Simulates auto-tapping mana sources (plus any Convoke-like `tapPermanent` payment aids) to cast
+ * Simulates auto-tapping mana sources (plus any `tapPermanent` payment aids) to cast
  * `cardInstanceId` on an isolated state snapshot, with zero mutation of `gameState`.
  */
 export function previewSpellAutoTap(

@@ -25,6 +25,7 @@
 		gameState,
 		viewer = null,
 		isGraveTargeting = false,
+		isZoneTargeting = false,
 		selectedTargets = [],
 		minTargets = 1,
 		isCardTargetable,
@@ -45,6 +46,7 @@
 		gameState: GameState;
 		viewer?: PlayerGameState | null;
 		isGraveTargeting?: boolean;
+		isZoneTargeting?: boolean;
 		selectedTargets?: TargetRef[];
 		minTargets?: number;
 		isCardTargetable?: (inst: CardInstance) => boolean;
@@ -65,6 +67,8 @@
 		onHoverCard?: (card: ScryfallCard, inst?: CardInstance) => void;
 		onLeaveCard?: (card: ScryfallCard) => void;
 	} = $props();
+
+	const activeZoneTargeting = $derived(isZoneTargeting || isGraveTargeting);
 
 	let zoneSearchQuery = $state('');
 
@@ -118,7 +122,7 @@
 		<div class="modal-card-grid">
 			{#each filteredZoneCards as c (c.instanceId)}
 				{@const disp = resolveCardInstanceDisplay(c, c.zone, viewer?.playerId ?? null)}
-				{#if isGraveTargeting}
+				{#if activeZoneTargeting}
 					{@const canTarget = isCardTargetable ? isCardTargetable(c) : true}
 					{@const isSelected = selectedTargets.some((t) => t.id === c.instanceId)}
 					<button
@@ -126,11 +130,12 @@
 						class="modal-card-item selectable"
 						class:selected={isSelected}
 						disabled={!canTarget}
+						data-game-id={c.instanceId}
 						onmouseenter={() => onHoverCard?.(disp.displayCard, c)}
 						onmouseleave={() => onLeaveCard?.(disp.displayCard)}
 						onclick={() =>
 							onSelectTarget?.({
-								kind: 'graveyard_card',
+								kind: c.zone === 'exile' ? 'exile_card' : 'graveyard_card',
 								id: c.instanceId,
 								label: disp.displayCard.name
 							})}
@@ -169,6 +174,7 @@
 					<div
 						class="modal-card-item"
 						class:playable-zone-card={canPlayFromGraveyard || canPlayFromExile}
+						data-game-id={c.instanceId}
 						onmouseenter={() => onHoverCard?.(disp.displayCard, c)}
 						onmouseleave={() => onLeaveCard?.(disp.displayCard)}
 					>
@@ -268,9 +274,21 @@
 		</div>
 
 		<div class="modal-actions">
-			{#if isGraveTargeting && selectedTargets.length >= minTargets && onConfirmTargets}
+			{#if activeZoneTargeting && selectedTargets.length >= minTargets && onConfirmTargets}
 				<button type="button" class="arena-main-btn can-act" onclick={() => onConfirmTargets()}>
 					Confirm {selectedTargets.length} Target(s)
+				</button>
+			{/if}
+			{#if activeZoneTargeting && onCancelTargeting}
+				<button
+					type="button"
+					class="hud-btn"
+					onclick={() => {
+						zoneSearchQuery = '';
+						onClose();
+					}}
+				>
+					Close Drawer
 				</button>
 			{/if}
 			<button
@@ -278,14 +296,14 @@
 				class="hud-btn"
 				onclick={() => {
 					zoneSearchQuery = '';
-					if (isGraveTargeting && onCancelTargeting) {
+					if (activeZoneTargeting && onCancelTargeting) {
 						onCancelTargeting();
 					} else {
 						onClose();
 					}
 				}}
 			>
-				{isGraveTargeting ? 'Cancel Targeting' : 'Close'}
+				{activeZoneTargeting ? 'Cancel Targeting' : 'Close'}
 			</button>
 		</div>
 	</div>

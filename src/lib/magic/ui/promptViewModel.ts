@@ -582,7 +582,7 @@ export interface WeightProgress {
 }
 
 /**
- * Computes count and subset-sum weight progress for `chooseObjects` prompts (such as Crew,
+ * Computes count and subset-sum weight progress for `chooseObjects` prompts (such as total-power,
  * Station, Improvise, or mana-value-capped multi-picks), matching `validateChoiceAnswer`.
  */
 export function computeWeightProgress(

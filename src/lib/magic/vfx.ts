@@ -1,4 +1,177 @@
-import type { VfxEvent } from './types.ts';
+import type { GameState, TargetRef, VfxEvent } from './types.ts';
+
+export interface ArenaArrowBuildParams {
+	gameState: GameState;
+	isMyTurn: boolean;
+	draftAttackers: Record<string, string>;
+	draftAttackerWalkers: Record<string, string | null>;
+	draftBlockers: Record<string, string>;
+	selectedBlockerId: string | null;
+	focusedInstanceId: string | null;
+	targetingSession: {
+		instanceId: string;
+		selectedTargets: TargetRef[];
+		cursorLabel: string;
+	} | null;
+	mousePos: { x: number; y: number };
+	viewportWidth: number;
+	viewportHeight: number;
+}
+
+function pushArrowIfVisible(
+	list: ArrowLine[],
+	id: string,
+	fromId: string,
+	toId: string,
+	kind: ArrowLine['kind']
+): void {
+	const p1 = getElementCenterByGameId(fromId);
+	const p2 = getElementCenterByGameId(toId);
+	if (p1 && p2) list.push({ id, x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y, kind });
+}
+
+export function buildArenaArrowLines(params: ArenaArrowBuildParams): ArrowLine[] {
+	const {
+		gameState,
+		isMyTurn,
+		draftAttackers,
+		draftAttackerWalkers,
+		draftBlockers,
+		selectedBlockerId,
+		focusedInstanceId,
+		targetingSession,
+		mousePos,
+		viewportWidth,
+		viewportHeight
+	} = params;
+	const next: ArrowLine[] = [];
+
+	if (gameState.combat.active) {
+		for (const atk of gameState.combat.attackers) {
+			pushArrowIfVisible(
+				next,
+				`atk_${atk.attackerInstanceId}`,
+				atk.attackerInstanceId,
+				atk.defenderPlaneswalkerId || atk.defenderPlayerId,
+				'attack'
+			);
+			for (const bId of atk.blockerInstanceIds) {
+				pushArrowIfVisible(
+					next,
+					`blk_${bId}_${atk.attackerInstanceId}`,
+					bId,
+					atk.attackerInstanceId,
+					'block'
+				);
+			}
+		}
+	}
+
+	if (gameState.phase === 'declare_attackers' && isMyTurn) {
+		for (const [atkId, defId] of Object.entries(draftAttackers)) {
+			pushArrowIfVisible(
+				next,
+				`draft_atk_${atkId}`,
+				atkId,
+				draftAttackerWalkers[atkId] || defId,
+				'attack'
+			);
+		}
+	}
+
+	if (gameState.phase === 'declare_blockers') {
+		for (const [blkId, atkId] of Object.entries(draftBlockers)) {
+			pushArrowIfVisible(next, `draft_blk_${blkId}`, blkId, atkId, 'block');
+		}
+		if (selectedBlockerId) {
+			const blkSrc = getElementCenterByGameId(selectedBlockerId);
+			if (blkSrc) {
+				next.push({
+					id: 'cursor_blocker',
+					x1: blkSrc.x,
+					y1: blkSrc.y,
+					x2: mousePos.x,
+					y2: mousePos.y,
+					kind: 'block'
+				});
+			}
+		}
+	}
+
+	if (focusedInstanceId) {
+		for (const p of gameState.players) {
+			for (const c of p.battlefield) {
+				if (!c.attachedToId || c.phasedOut) continue;
+				if (focusedInstanceId === c.instanceId || focusedInstanceId === c.attachedToId) {
+					pushArrowIfVisible(
+						next,
+						`att_${c.instanceId}_${c.attachedToId}`,
+						c.instanceId,
+						c.attachedToId,
+						'attachment'
+					);
+				}
+			}
+		}
+	}
+
+	for (const item of gameState.stack) {
+		for (const t of item.targets) {
+			pushArrowIfVisible(next, `stk_t_${item.id}_${t.id}`, item.id, t.id, 'target');
+		}
+	}
+
+	if (targetingSession) {
+		const src = getElementCenterByGameId(targetingSession.instanceId) || {
+			x: viewportWidth * 0.5,
+			y: viewportHeight * 0.85
+		};
+		for (const selT of targetingSession.selectedTargets) {
+			const tPos = getElementCenterByGameId(selT.id);
+			if (tPos) {
+				next.push({
+					id: `sel_t_${selT.id}`,
+					x1: src.x,
+					y1: src.y,
+					x2: tPos.x,
+					y2: tPos.y,
+					kind: 'target'
+				});
+			}
+		}
+		next.push({
+			id: 'cursor_target',
+			x1: src.x,
+			y1: src.y,
+			x2: mousePos.x,
+			y2: mousePos.y,
+			kind: 'active_cursor',
+			label: targetingSession.cursorLabel
+		});
+	}
+
+	return next;
+}
+
+export function areArrowListsEqual(a: ArrowLine[], b: ArrowLine[]): boolean {
+	if (a.length !== b.length) return false;
+	for (let i = 0; i < a.length; i++) {
+		const x = a[i];
+		const y = b[i];
+		if (
+			x.id !== y.id ||
+			x.x1 !== y.x1 ||
+			x.y1 !== y.y1 ||
+			x.x2 !== y.x2 ||
+			x.y2 !== y.y2 ||
+			x.kind !== y.kind ||
+			x.label !== y.label
+		) {
+			return false;
+		}
+	}
+	return true;
+}
 
 export interface VfxParticle {
 	x: number;
