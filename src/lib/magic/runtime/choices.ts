@@ -686,15 +686,30 @@ export function chooseBotAnswer(
 		case 'chooseObjects': {
 			const count = choice.min > 0 ? choice.min : Math.min(1, choice.candidates.length);
 			const byId = new Map<string, CardInstance>();
+			const handHolderById = new Map<string, string>();
 			for (const p of state.players) {
+				for (const c of p.hand) handHolderById.set(c.instanceId, p.playerId);
 				for (const z of [p.battlefield, p.hand, p.graveyard, p.exile, p.library, p.command]) {
 					for (const c of z) byId.set(c.instanceId, c);
 				}
 			}
+			const isOpponentHandChoice =
+				choice.zone === 'hand' &&
+				choice.candidates.length > 0 &&
+				choice.candidates.every((id) => {
+					const holderId = handHolderById.get(id);
+					return holderId !== undefined && holderId !== player.playerId;
+				});
 			const sorted = [...choice.candidates].sort((idA, idB) => {
 				const a = byId.get(idA);
 				const b = byId.get(idB);
 				if (!a || !b) return 0;
+				if (isOpponentHandChoice) {
+					const aLand = /\bLand\b/.test((a.copiableCard ?? a.card).typeLine.split('//')[0]);
+					const bLand = /\bLand\b/.test((b.copiableCard ?? b.card).typeLine.split('//')[0]);
+					if (aLand !== bLand) return aLand ? 1 : -1;
+					return b.card.cmc - a.card.cmc;
+				}
 				if (choice.minWeightSum !== undefined && a.summoningSick !== b.summoningSick) {
 					return a.summoningSick ? -1 : 1;
 				}

@@ -288,8 +288,9 @@ const tapOthers: Production = (part) => {
 	return [{ k: 'tapOthers', count: n, filter: { ...filter, controller: 'you', tapped: false } }];
 };
 
-/** "Discard a card", "Discard two cards", "Discard a creature card", "Discard a card at random". */
+/** "Discard ~", "Discard a card", "Discard two cards", "Discard a creature card", "Discard a card at random". */
 const discard: Production = (part) => {
+	if (/^discard ~$/i.test(part)) return [{ k: 'discard', count: ONE, filter: 'self' }];
 	const m = part.match(/^discard (\S+) (.+?)( at random)?$/i);
 	if (!m) return null;
 	const n = count(m[1]);
@@ -301,22 +302,26 @@ const discard: Production = (part) => {
 	return filter ? [{ k: 'discard', count: n, filter, random }] : null;
 };
 
-/** "Exile ~", "Exile ~ from your graveyard", "Exile two creature cards from your graveyard". */
+/** "Exile ~", "Exile ~ from your graveyard", "Exile two creature cards from your graveyard", "Exile five other cards from your graveyard". */
 const exileFrom: Production = (part) => {
 	if (/^exile ~$/i.test(part)) return [{ k: 'exileFrom', zone: 'battlefield', count: ONE, filter: 'self' }];
 	if (/^exile ~ from your graveyard$/i.test(part)) {
 		return [{ k: 'exileFrom', zone: 'graveyard', count: ONE, filter: 'self' }];
 	}
-	const m = part.match(/^exile (\S+) (.+?) from your (graveyard|hand)$/i);
+	const m = part.match(/^exile (.+?) from your (graveyard|hand)$/i);
 	if (!m) return null;
-	const n = count(m[1]);
-	const filter = /^cards?$/i.test(m[2]) ? {} : parseObjectPhrase(m[2]);
-	if (!n || !filter) return null;
+	const [first, ...rest] = m[1].trim().split(/\s+/);
+	const n = count(first);
+	const phrase = n ? rest.join(' ') : m[1].trim();
+	if (!n && !/^another\b/i.test(phrase)) return null;
+	if (!phrase) return null;
+	const filter = /^cards?$/i.test(phrase) ? {} : parseObjectPhrase(phrase);
+	if (!filter) return null;
 	return [
 		{
 			k: 'exileFrom',
-			zone: m[3].toLowerCase() as 'graveyard' | 'hand',
-			count: n,
+			zone: m[2].toLowerCase() as 'graveyard' | 'hand',
+			count: n ?? ONE,
 			filter: Object.keys(filter).length > 0 ? filter : undefined
 		}
 	];

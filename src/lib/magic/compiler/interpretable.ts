@@ -63,7 +63,8 @@ export const INTERPRETED_VERBS: ReadonlySet<Verb> = new Set<Verb>([
 	'cantRegenerate',
 	'payCost',
 	'animate',
-	'gainControl'
+	'gainControl',
+	'revealAndDiscard'
 ]);
 
 const SUPPORTED_OPTIONAL_COST_KINDS: ReadonlySet<CostDef['k']> = new Set<CostDef['k']>([
@@ -85,7 +86,7 @@ export function triggerTargetsSupported(specs: TargetSpec[]): boolean {
 	return specs.every((sp) => {
 		if (sp.kind === 'player') return true;
 		const z = sp.filter.zone ?? 'battlefield';
-		return z === 'battlefield' || z === 'graveyard';
+		return z === 'battlefield' || z === 'graveyard' || z === 'stack';
 	});
 }
 
@@ -122,10 +123,29 @@ function stepSupported(step: EffectStep): boolean {
 	}
 	if (step.subject.k === 'libraryTop' && step.verb !== 'exile') return false;
 	if (step.verb === 'grantPlayFromExile' && !step.params?.playFromExile) return false;
+	if (step.verb === 'revealAndDiscard') {
+		const cd = step.params?.coerciveDiscard;
+		if (!cd || (cd.destination !== 'graveyard' && cd.destination !== 'exile')) return false;
+	}
 	if (step.verb === 'gainControl') {
 		if (step.subject.k === 'none') return false;
 		const d = step.params?.duration;
 		if (d !== undefined && d !== 'endOfTurn' && d !== 'permanent' && d !== 'untilSourceLeaves') {
+			return false;
+		}
+	}
+	if (step.verb === 'animate') {
+		if (step.subject.k === 'none') return false;
+		const d = step.params?.duration;
+		if (d !== undefined && d !== 'endOfTurn' && d !== 'permanent') return false;
+	}
+	if (step.verb === 'copySpell') {
+		if (
+			step.subject.k !== 'target' &&
+			step.subject.k !== 'eventObject' &&
+			step.subject.k !== 'self' &&
+			step.subject.k !== 'binding'
+		) {
 			return false;
 		}
 	}
@@ -143,6 +163,13 @@ function stepSupported(step: EffectStep): boolean {
 
 const DELAYED_PHASES = new Set<string | undefined>(['end_step', 'upkeep', 'end_combat']);
 
+function stepProducesDecision(step: EffectStep | undefined): boolean {
+	if (!step) return false;
+	if (step.optional) return true;
+	if (step.verb === 'revealAndDiscard' && step.params?.coerciveDiscard) return true;
+	return false;
+}
+
 function stepsSupported(steps: EffectStep[]): boolean {
 	if (steps.length === 0) return false;
 	for (let i = 0; i < steps.length; i++) {
@@ -150,13 +177,13 @@ function stepsSupported(steps: EffectStep[]): boolean {
 		if (!stepSupported(s)) return false;
 		if (
 			s.ifPrecedingAccepted !== undefined &&
-			(s.ifPrecedingAccepted < 0 || s.ifPrecedingAccepted >= i || !steps[s.ifPrecedingAccepted]?.optional)
+			(s.ifPrecedingAccepted < 0 || s.ifPrecedingAccepted >= i || !stepProducesDecision(steps[s.ifPrecedingAccepted]))
 		) {
 			return false;
 		}
 		if (
 			s.ifPrecedingDeclined !== undefined &&
-			(s.ifPrecedingDeclined < 0 || s.ifPrecedingDeclined >= i || !steps[s.ifPrecedingDeclined]?.optional)
+			(s.ifPrecedingDeclined < 0 || s.ifPrecedingDeclined >= i || !stepProducesDecision(steps[s.ifPrecedingDeclined]))
 		) {
 			return false;
 		}

@@ -58,6 +58,18 @@ describe('Trigger grammar: trigger heads', () => {
 		['When you cast ~, draw a card.', { event: 'cast', filter: { object: 'self', player: { relation: 'you' } } }],
 		['Whenever you gain life, draw a card.', { event: 'gainLife', filter: { player: { relation: 'you' } } }],
 		['Whenever an opponent draws a card, draw a card.', { event: 'drawCard', filter: { player: { relation: 'opponent' } } }],
+		[
+			'Whenever you draw your second card each turn, draw a card.',
+			{ event: 'drawCard', filter: { player: { relation: 'you' }, nthThisTurn: 2 } }
+		],
+		[
+			'Whenever you cast your second spell each turn, draw a card.',
+			{ event: 'cast', filter: { object: {}, player: { relation: 'you' }, nthThisTurn: 2 } }
+		],
+		[
+			'Whenever one or more creatures you control deal combat damage to a player, draw a card.',
+			{ event: 'combatDamageBatchPlayer', filter: { object: { types: ['Creature'], controller: 'you' }, oneOrMore: true, player: { relation: 'any' } } }
+		],
 		['Whenever you attack, draw a card.', { event: 'attacks', filter: { player: { relation: 'you' }, oneOrMore: true } }],
 		['Whenever a +1/+1 counter is put on ~, draw a card.', { event: 'counterPlaced', filter: { object: 'self', counter: '+1/+1' } }],
 		['At the beginning of your upkeep, draw a card.', { event: 'phaseBegin', filter: { phase: 'upkeep' }, scope: 'controller_turn' }],
@@ -86,7 +98,7 @@ describe('Trigger grammar: trigger heads', () => {
 			'Whenever ~ attacks and isn\'t blocked, draw a card.',
 			'When ~ enters untapped, draw a card.',
 			'Whenever ~ deals combat damage to a player or battle, draw a card.',
-			'Whenever you draw your second card each turn, draw a card.'
+			'Whenever you draw two or more cards, draw a card.'
 		]) {
 			const parsed = parseTriggerHeader(text)!;
 			assert.equal(parsed.trigger, undefined, text);

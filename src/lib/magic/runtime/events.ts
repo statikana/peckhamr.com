@@ -244,6 +244,16 @@ export interface BecomesCrewedEvent extends EventBase {
 	crewedByIds: string[];
 }
 
+/**
+ * One or more creatures dealt combat damage to a single player simultaneously in a combat damage step
+ * (CR 510.2, 510.4, 603.2c). Emitted once per damaged player after atomic combat damage dealing.
+ */
+export interface CombatDamageBatchPlayerEvent extends EventBase {
+	kind: 'CombatDamageBatchPlayer';
+	damagedPlayerId: string;
+	attackers: CardInstance[];
+}
+
 export type GameEvent =
 	| TappedForManaEvent
 	| GainLifeEvent
@@ -257,6 +267,7 @@ export type GameEvent =
 	| ExploredEvent
 	| ConnivedEvent
 	| BecomesCrewedEvent
+	| CombatDamageBatchPlayerEvent
 	| ZoneChangeEvent
 	| CastEvent
 	| AttackDeclaredEvent

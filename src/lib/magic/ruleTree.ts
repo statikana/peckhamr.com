@@ -87,17 +87,21 @@ export function targetRequirementFromSpecs(specs: TargetSpec[]): TargetRequireme
 	const f = spec.filter;
 	if (f.zone === 'stack') {
 		const allSameController = specs.every((s) => (s.filter.controller ?? 'any') === (f.controller ?? 'any'));
-	const controllerFilter = allSameController ? (f.controller ?? 'any') : 'any';
+		const controllerFilter = allSameController ? (f.controller ?? 'any') : 'any';
+		const stackKind = f.stackKind;
 		let cardTypeFilter: string | undefined;
 		if (f.notTypes?.includes('Creature')) cardTypeFilter = 'Noncreature';
-		else if (f.types?.includes('Instant') && f.types?.includes('Sorcery')) {
+		else if (f.notTypes?.includes('Instant') && f.notTypes?.includes('Sorcery')) {
+			cardTypeFilter = 'Permanent';
+		} else if (f.types?.includes('Instant') && f.types?.includes('Sorcery')) {
 			cardTypeFilter = 'InstantOrSorcery';
 		} else if (f.types?.length === 1) {
 			cardTypeFilter = f.types[0];
 		}
 		return {
 			requiresTarget: minTargets > 0,
-			targetKind: 'spell',
+			targetKind: stackKind && stackKind !== 'spell' ? 'stack' : 'spell',
+			...(stackKind ? { stackKind } : {}),
 			minTargets,
 			maxTargets,
 			zone: 'stack',
@@ -201,7 +205,7 @@ export function modalTargetRequirement(
 
 export function getSpellTargetRequirement(
 	card: ScryfallCard,
-	option?: CastOption,
+	option?: Partial<Pick<CastOption, 'faceIndex' | 'fused' | 'optionalAdditionalCosts' | 'spellMods'>>,
 	optionalCostCounts?: Record<string, number>
 ): TargetRequirementInfo {
 	if (option?.spellMods?.castFaceDown) {

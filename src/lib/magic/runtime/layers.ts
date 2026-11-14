@@ -977,6 +977,8 @@ function evaluateLayerAmount(
 			layerReads |= READ_COMMANDER_CAST_COUNT;
 			return playerCommanderCastCount(state, source.controllerId);
 		}
+		case 'stormCount':
+			return 0;
 		case 'kickedCount':
 			return evaluateKickedCountAmount(amount, {
 				count: source.inst.kickedCount ?? 0,
@@ -1141,6 +1143,10 @@ function evaluateLayerCondition(
 				count: source.inst.kickedCount ?? 0,
 				tags: source.inst.kickedTags ?? []
 			});
+		case 'evoked':
+			return Boolean(source.inst.evoked);
+		case 'escaped':
+			return Boolean(source.inst.escaped);
 	}
 }
 
@@ -1268,6 +1274,8 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 			perm.tempToughnessMod || 0,
 			perm.switchedPTCount || 0,
 			Boolean(perm.castViaSuspend),
+			Boolean(perm.evoked),
+			Boolean(perm.escaped),
 			perm.kickedCount || 0,
 			perm.kickedTags?.length || 0,
 			perm.grantedKeywords?.length || 0
@@ -1400,6 +1408,8 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 			fp[i++] !== (perm.tempToughnessMod || 0) ||
 			fp[i++] !== (perm.switchedPTCount || 0) ||
 			fp[i++] !== Boolean(perm.castViaSuspend) ||
+			fp[i++] !== Boolean(perm.evoked) ||
+			fp[i++] !== Boolean(perm.escaped) ||
 			fp[i++] !== (perm.kickedCount || 0) ||
 			fp[i++] !== kickedTagsLen ||
 			fp[i++] !== grantedLen
@@ -1916,22 +1926,59 @@ function evaluateTypeOverwrites(
 			.filter(
 				(e) =>
 					isTimedContinuousEffectActive(e, workMap) &&
-					(e.layer4?.setTypes?.length || e.layer4?.setSubtypes?.length)
+					(e.layer4?.setTypes?.length || e.layer4?.setSubtypes !== undefined)
 			)
 			.sort((a, b) => a.timestamp - b.timestamp);
 		for (const eff of sorted) {
 			for (const aff of eff.affected) {
 				const target = workMap.get(aff.instanceId);
 				if (!target || (target.inst.objectVersion ?? 1) !== (aff.objectVersion ?? 1)) continue;
+				const overwrittenByLaterAttached = workList.some(
+					(att) =>
+						att.inst.attachedToId === target.inst.instanceId &&
+						!att.strippedByAttachment &&
+						att.abilityRemovalEvents.length === 0 &&
+						att.timestamp > eff.timestamp &&
+						att.statics.some(
+							(st) =>
+								st.k === 'continuous' &&
+								st.layer === '4' &&
+								st.affected === 'attachedTo' &&
+								st.mod.k === 'setTypes' &&
+								(!st.condition || evaluateLayerCondition(st.condition, state, workList, att, target))
+						)
+				);
+				if (overwrittenByLaterAttached) continue;
 				if (eff.layer4?.setTypes?.length) {
 					target.types = [...eff.layer4.setTypes];
+					target.hasAllCreatureTypes = false;
 				}
-				if (eff.layer4?.setSubtypes?.length) {
+				if (eff.layer4?.setSubtypes !== undefined) {
 					const settingLandSubtypes = eff.layer4.setSubtypes.some((sub) => LAND_SUBTYPES.has(sub));
-					const retainedSubtypes = settingLandSubtypes
-						? target.subtypes.filter((sub) => !LAND_SUBTYPES.has(sub))
-						: [];
+					let retainedSubtypes: string[] = [];
+					if (settingLandSubtypes) {
+						retainedSubtypes = target.subtypes.filter((sub) => !LAND_SUBTYPES.has(sub));
+					} else if (!eff.layer4.setTypes?.length) {
+						// CR 205.1b: Additive card types (e.g. "[subtype] artifact creature") retain subtypes
+						// correlated with retained non-creature card types (such as land subtypes).
+						retainedSubtypes = target.subtypes.filter((sub) =>
+							(target.types.includes('Land') && LAND_SUBTYPES.has(sub)) ||
+							((target.types.includes('Artifact') || eff.layer4?.addTypes?.includes('Artifact')) &&
+								(sub === 'Equipment' ||
+									sub === 'Vehicle' ||
+									sub === 'Fortification' ||
+									sub === 'Treasure' ||
+									sub === 'Clue' ||
+									sub === 'Food' ||
+									sub === 'Blood' ||
+									sub === 'Map' ||
+									sub === 'Powerstone' ||
+									sub === 'Gold' ||
+									sub === 'Junk'))
+						);
+					}
 					target.subtypes = [...eff.layer4.setSubtypes, ...retainedSubtypes];
+					target.hasAllCreatureTypes = false;
 				}
 				const superPrefix = target.supertypes.length > 0 ? `${target.supertypes.join(' ')} ` : '';
 				const typeStr = target.types.join(' ');
@@ -1949,18 +1996,69 @@ function evaluateAdditiveTypesAndColors(
 	workList: PermWorkState[],
 	workMap: Map<string, PermWorkState>
 ): void {
-	// 4. Layer 4 Pass C: Global additive type effects (Opalescence, Urborg, Yavimaya, Mycosynth Lattice, Maskwood Nexus)
+	const latestSetTypesTimestampOn = (target: PermWorkState): number => {
+		let maxTs = -Infinity;
+		for (const att of workList) {
+			if (
+				att.inst.attachedToId !== target.inst.instanceId ||
+				att.strippedByAttachment ||
+				att.abilityRemovalEvents.length > 0
+			) {
+				continue;
+			}
+			for (const st of att.statics) {
+				if (
+					st.k === 'continuous' &&
+					st.layer === '4' &&
+					st.affected === 'attachedTo' &&
+					st.mod.k === 'setTypes' &&
+					(!st.condition || evaluateLayerCondition(st.condition, state, workList, att, target))
+				) {
+					if (att.timestamp > maxTs) maxTs = att.timestamp;
+				}
+			}
+		}
+		if (state.timedContinuousEffects?.length) {
+			for (const eff of state.timedContinuousEffects) {
+				if (!isTimedContinuousEffectActive(eff, workMap) || !eff.layer4?.setTypes?.length) continue;
+				if (
+					eff.affected.some(
+						(a) =>
+							a.instanceId === target.inst.instanceId &&
+							(a.objectVersion ?? 1) === (target.inst.objectVersion ?? 1)
+					)
+				) {
+					if (eff.timestamp > maxTs) maxTs = eff.timestamp;
+				}
+			}
+		}
+		return maxTs;
+	};
+
+	// 4. Layer 4 Pass C: Attached & global additive type effects (Awaken the Ancient, Opalescence, Urborg, Yavimaya, Mycosynth Lattice, Maskwood Nexus)
 	for (const source of workList) {
 		if (source.strippedByAttachment || source.abilityRemovalEvents.length > 0) continue;
 		for (const st of source.statics) {
-			if (st.k !== 'continuous' || st.layer !== '4' || typeof st.affected !== 'object') continue;
+			if (st.k !== 'continuous' || st.layer !== '4') continue;
+			if (st.affected !== 'attachedTo' && typeof st.affected !== 'object') continue;
+			const candidateTargets: PermWorkState[] =
+				st.affected === 'attachedTo'
+					? source.inst.attachedToId && workMap.has(source.inst.attachedToId)
+						? [workMap.get(source.inst.attachedToId)!]
+						: []
+					: workList;
 			if (st.mod.k === 'addTypes') {
-				for (const target of workList) {
-					if (!matchesLayerFilter(st.affected, target, source)) continue;
+				for (const target of candidateTargets) {
+					if (typeof st.affected === 'object' && !matchesLayerFilter(st.affected, target, source)) {
+						continue;
+					}
 					if (
 						st.condition &&
 						!evaluateLayerCondition(st.condition, state, workList, source, target)
 					) {
+						continue;
+					}
+					if (st.affected === 'attachedTo' && latestSetTypesTimestampOn(target) > source.timestamp) {
 						continue;
 					}
 					for (const ct of st.mod.types) {
@@ -1984,7 +2082,7 @@ function evaluateAdditiveTypesAndColors(
 						}
 					}
 				}
-			} else if (st.mod.k === 'allCreatureTypes') {
+			} else if (st.mod.k === 'allCreatureTypes' && typeof st.affected === 'object') {
 				for (const target of workList) {
 					if (!matchesLayerFilter(st.affected, target, source)) continue;
 					if (
@@ -2014,6 +2112,7 @@ function evaluateAdditiveTypesAndColors(
 			for (const aff of eff.affected) {
 				const target = workMap.get(aff.instanceId);
 				if (!target || (target.inst.objectVersion ?? 1) !== (aff.objectVersion ?? 1)) continue;
+				if (latestSetTypesTimestampOn(target) > eff.timestamp) continue;
 				for (const ct of eff.layer4?.addTypes ?? []) {
 					if (!target.types.includes(ct)) target.types.push(ct);
 					const nextType = addCardTypeToTypeLine(target.effectiveTypeLine, ct);
@@ -2447,6 +2546,18 @@ function evaluatePerPermanent(
 								);
 							}
 						}
+					} else if (st.mod.k === 'addTypes' && st.mod.types.includes('Creature')) {
+						const sub = st.mod.subtypes?.[0] ?? 'creature';
+						const subSuffix = st.mod.subtypes?.length ? ` — ${st.mod.subtypes.join(' ')}` : '';
+						const typeLabel = `${st.mod.types.join(' ')}${subSuffix}${basePtSuffix}`;
+						grantItem(
+							target,
+							`type_${sub.toLowerCase()}`,
+							`Type: ${typeLabel}`,
+							'type_mod',
+							source.name,
+							source.timestamp
+						);
 					} else if (st.mod.k === 'grantAbility' && st.mod.ability.kind === 'activated') {
 						const alreadyGrantedInLandSet = source.statics.some(
 							(s2) =>
@@ -2467,6 +2578,10 @@ function evaluatePerPermanent(
 					} else if (st.mod.k === 'addKeywords') {
 						for (const kw of sortGrantedKeywords(st.mod.keywords)) {
 							const kwLow = kw.toLowerCase();
+							if (kwLow.startsWith('ward')) {
+								grantKeywordString(target, kw, source.name, source.timestamp);
+								continue;
+							}
 							const key = kwLow.startsWith('protection from ') ? 'protection' : kwLow;
 							grantItem(
 								target,

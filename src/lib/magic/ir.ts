@@ -243,6 +243,13 @@ export interface KeywordDef {
 
 // ---- Filters --------------------------------------------------------------------------------
 
+export type StackTargetKind =
+	| 'spell'
+	| 'ability'
+	| 'activatedAbility'
+	| 'triggeredAbility'
+	| 'spellOrAbility';
+
 /**
  * One selector language for targets, costs, counts, triggers and statics. List fields match if any
  * entry matches ("artifact or enchantment" is `types: ['Artifact', 'Enchantment']`); different
@@ -250,6 +257,8 @@ export interface KeywordDef {
  */
 export interface ObjectFilter {
 	zone?: ZoneType | ZoneType[] | 'stack';
+	/** CR 115.1: which kind of stack object a `zone: 'stack'` filter targets (default `'spell'`). */
+	stackKind?: StackTargetKind;
 	types?: string[];
 	subtypes?: string[];
 	supertypes?: string[];
@@ -339,6 +348,8 @@ export type Amount =
 	| { k: 'commanderCastCount' }
 	/** CR 702.33d,f: number of times the spell/permanent was kicked (optionally filtered by kicker tag and scaled by multiplier). */
 	| { k: 'kickedCount'; tag?: string; multiplier?: number }
+	/** CR 702.40a: number of other spells cast before the Storm spell this turn (snapshotted on cast). */
+	| { k: 'stormCount' }
 	| { k: 'negate'; of: Amount }
 	| { k: 'sum' | 'min' | 'max'; args: Amount[] };
 
@@ -431,7 +442,8 @@ export type Verb =
 	| 'cantRegenerate'
 	| 'payCost'
 	| 'animate'
-	| 'gainControl';
+	| 'gainControl'
+	| 'revealAndDiscard';
 
 export type ManaRestriction = 'artifactSpellOrNonSpell';
 
@@ -532,8 +544,34 @@ export interface EffectParams {
 	playFromExile?: { duration: 'thisTurn'; spendManaAsAnyColor?: boolean };
 	/** destroy: prevents regeneration shields (and "can't be regenerated" clauses) from replacing destruction. */
 	cantBeRegenerated?: boolean;
-	/** animate: Layer 4 card types to add until end of turn (e.g. ['Creature']). */
+	/** animate: Layer 4 card types to add (e.g. ['Creature']). */
 	addTypes?: string[];
+	/** animate: Layer 4 card types to set (overwriting existing card types per CR 205.1a). */
+	setTypes?: string[];
+	/** animate: Layer 4 subtypes to add ("in addition to its other types" / "It's still a land"). */
+	addSubtypes?: string[];
+	/** animate: Layer 4 subtypes to set. */
+	setSubtypes?: string[];
+	/** animate: Layer 5 colors to set. */
+	setColors?: ManaColor[];
+	/** animate: Layer 5 colors to add. */
+	addColors?: ManaColor[];
+	/** animate: Layer 6 keywords to grant. */
+	addKeywords?: string[];
+	/** animate: Layer 7b base power to set. */
+	setPower?: Amount;
+	/** animate: Layer 7b base toughness to set. */
+	setToughness?: Amount;
+	/** animate: true when existing card types/subtypes are retained ("It's still a land", "in addition to its other types"). */
+	keepExistingTypes?: boolean;
+	/** copySpell: number of copies to create (default 1). */
+	count?: Amount;
+	/** copySpell: CR 707.10c "You may choose new targets for the copy / copies." */
+	mayChooseNewTargets?: boolean;
+	/** copySpell: Layer 1a color exception on the copy. */
+	exceptColors?: ManaColor[];
+	/** copySpell: Layer 1a "except the copy isn't legendary" exception. */
+	nonLegendary?: boolean;
 	/**
 	 * exile: "until ~ leaves the battlefield" (CR 610.3).
 	 * Checks CR 610.3a–b before exiling and records `untilSourceLeavesReturn` on the exiled card.
@@ -541,6 +579,23 @@ export interface EffectParams {
 	untilSourceLeaves?: boolean;
 	/** gainControl: also untap the stolen permanent when the control change applies. */
 	untap?: boolean;
+	/**
+	 * move (CR 702.84a): Unearth return from graveyard to battlefield — grants permanent haste,
+	 * registers a next-end-step exile delayed trigger, and sets `unearthLeaveExile` replacement.
+	 */
+	unearth?: boolean;
+	/**
+	 * revealAndDiscard (CR 701.9, 701.20): Target player reveals their hand; `chooser` chooses
+	 * a matching card from it (`optionalChoice` when "You may choose ..."), moving it to `destination`.
+	 */
+	coerciveDiscard?: CoerciveDiscardSpec;
+}
+
+export interface CoerciveDiscardSpec {
+	chooser: PlayerRef;
+	filter?: ObjectFilter;
+	optionalChoice?: boolean;
+	destination: 'graveyard' | 'exile';
 }
 
 export interface TokenSpec {
@@ -613,7 +668,9 @@ export type EventKind =
 	| 'surveil'
 	| 'explore'
 	| 'connive'
-	| 'becomesCrewed';
+	| 'becomesCrewed'
+	/** CR 603.2c / 510.2: One or more creatures dealt combat damage to a player simultaneously. */
+	| 'combatDamageBatchPlayer';
 
 export interface EventFilter {
 	/**
@@ -643,6 +700,8 @@ export interface EventFilter {
 	alone?: boolean;
 	/** transforms: optional filter on the new face after transforming ("transforms into an Eldrazi"). */
 	toFaceFilter?: ObjectFilter;
+	/** "Whenever you draw your second card each turn" / "cast your second spell each turn": 1-based ordinal. */
+	nthThisTurn?: number;
 }
 
 export interface TriggerDef {
@@ -651,6 +710,8 @@ export interface TriggerDef {
 	scope?: TriggerScope;
 	/** The trigger functions while its source is in this zone (Nether Shadow: graveyard; Cycling: any). */
 	fromZone?: ZoneType | 'any';
+	/** CR 603.2i: "This ability triggers only once each turn." */
+	onlyOncePerTurn?: boolean;
 	/** "Whenever ~ enters or attacks": the ability also triggers on each of these events. */
 	or?: TriggerDef[];
 }
@@ -665,7 +726,11 @@ export type Condition =
 	/** CR 903.3d: "if you control a commander" (a permanent on the battlefield that is a commander). */
 	| { k: 'controlCommander' }
 	/** CR 702.33d–f: true when kicked at least `minCount` (default 1) times, optionally with `tag`. */
-	| { k: 'kicked'; tag?: string; minCount?: number };
+	| { k: 'kicked'; tag?: string; minCount?: number }
+	/** CR 702.74a / 400.7d: true when cast by paying its evoke alternative cost. */
+	| { k: 'evoked' }
+	/** CR 702.138b / 400.7d: true when cast by paying its escape alternative cost. */
+	| { k: 'escaped' };
 
 // ---- Statics and replacements ---------------------------------------------------------------
 

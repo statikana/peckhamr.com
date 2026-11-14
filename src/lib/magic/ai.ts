@@ -285,6 +285,14 @@ function hasAnyLegalInstantResponseInner(state: GameState, player: PlayerGameSta
 		}
 	}
 	for (const gyInst of player.graveyard) {
+		const gyAbs = getEffectiveActivatedAbilities(state, player, gyInst, cmdId).filter(
+			(ab) => !ab.isManaAbility && Boolean(ab.activationZones?.includes('graveyard'))
+		);
+		for (const ab of gyAbs) {
+			if (checkAbilityActivationLegality(state, player.playerId, gyInst, ab).ok) {
+				return true;
+			}
+		}
 		if (getCastOptions(state, player.playerId, gyInst, 'graveyard').length > 0) {
 			return true;
 		}
@@ -1161,16 +1169,20 @@ export function executeBotStep(
 			}
 		}
 
-		// 2e. Conservative fallback on bot's own main phase: activate hand-zone abilities
-		// on excess lands or uncastable high-CMC cards after land drops / spells / equips.
+		// 2e. Conservative fallback on bot's own main phase: activate hand-zone or graveyard-zone abilities
+		// after land drops / spells / equips.
 		const mainHandRes = tryBotHandActivatedAbility(state, bot, true);
 		if (mainHandRes) return mainHandRes;
+		const mainGyRes = tryBotGraveyardActivatedAbility(state, bot, true);
+		if (mainGyRes) return mainGyRes;
 	}
 
-	// 2f. Opponent's end step: spend leftover mana on instant-speed hand-zone abilities.
+	// 2f. Opponent's end step: spend leftover mana on instant-speed hand-zone or graveyard-zone abilities.
 	if (!isBotsTurn && state.phase === 'end_step' && state.stack.length === 0) {
 		const endStepHandRes = tryBotHandActivatedAbility(state, bot, false);
 		if (endStepHandRes) return endStepHandRes;
+		const endStepGyRes = tryBotGraveyardActivatedAbility(state, bot, false);
+		if (endStepGyRes) return endStepGyRes;
 	}
 
 	// 3. If it's the bot's Declare Attackers step and Stack is empty
@@ -1267,6 +1279,82 @@ function tryBotHandActivatedAbility(
 	return null;
 }
 
+function tryBotGraveyardActivatedAbility(
+	state: GameState,
+	bot: PlayerGameState,
+	isMainPhase: boolean
+): BotStepResult | null {
+	const cmdId = getPlayerCommanderIdentity(bot);
+
+	for (let i = 0; i < bot.graveyard.length; i++) {
+		const cardInst = bot.graveyard[i];
+		const candidate = withStableLayerInputs(state, () => {
+			const abilities = getEffectiveActivatedAbilities(state, bot, cardInst, cmdId);
+			for (const ab of abilities) {
+				if (ab.isManaAbility || !ab.activationZones?.includes('graveyard')) continue;
+				if (!isMainPhase && ab.sorcerySpeedOnly) continue;
+				if (!checkAbilityActivationLegality(state, bot.playerId, cardInst, ab).ok) continue;
+
+				const eff = effectOf(abilityById(cardInst.card, ab.id, ab.faceIndex ?? 0));
+				const returnsSelfToHand = Boolean(
+					eff?.steps.some(
+						(s) => s.verb === 'move' && s.subject?.k === 'self' && s.params?.to === 'hand'
+					)
+				);
+				if (returnsSelfToHand && bot.hand.length > 4) continue;
+
+				const payment = chooseBotAbilityCostPayment(state, bot, cardInst, ab);
+				if (!payment) continue;
+				const hasRealCostOrCap =
+					ab.manaCost !== '' ||
+					Boolean(ab.activationRestrictions?.includes('onceEachTurn')) ||
+					Boolean(payment.objects && payment.objects.length > 0) ||
+					Boolean(payment.options && payment.options.length > 0);
+				if (!hasRealCostOrCap) continue;
+
+				if (ab.modal) {
+					const picked = chooseBotModesForModal(
+						state,
+						bot,
+						cardInst.card,
+						cardInst,
+						ab.modal,
+						cardInst.usedModalModesThisTurn
+					);
+					if (!picked) continue;
+					return { ab, targets: picked.targets, chosenModes: picked.modes, payment };
+				}
+				let targets: TargetRef[] = [];
+				if (ab.requiresTarget) {
+					const spec = ab.targetInfo.targetSpecs?.[0];
+					if (!spec) continue;
+					targets = chooseBotTargetsForSpec(state, bot, cardInst, spec);
+					if (ab.targetInfo.minTargets > 0 && targets.length < ab.targetInfo.minTargets) {
+						continue;
+					}
+				}
+				return { ab, targets, chosenModes: undefined as number[] | undefined, payment };
+			}
+			return null;
+		});
+		if (!candidate) continue;
+
+		const costBefore = countBotCostChoicePrompts(state, bot.playerId);
+		const res = applyGameAction(state, bot.playerId, {
+			type: 'activate_ability',
+			instanceId: cardInst.instanceId,
+			abilityId: candidate.ab.id,
+			...(candidate.chosenModes ? { chosenModes: candidate.chosenModes } : {}),
+			targets: candidate.targets,
+			costPayment: candidate.payment
+		});
+		if (res.ok) {
+			return countBotCostChoicePrompts(state, bot.playerId) > costBefore ? 'quiet' : 'visible';
+		}
+	}
+	return null;
+}
+
 function chooseBotCostPaymentAids(
 	state: GameState,
 	bot: PlayerGameState,
@@ -1319,6 +1407,12 @@ function chooseBotOptionalCostCounts(
 	for (const oc of optionals) {
 		if (/\{X\}/i.test(oc.costDisplay) || JSON.stringify(oc.costDefs).includes('"k":"x"')) {
 			continue;
+		}
+		if (oc.returnToHandOnResolve) {
+			if (option.spellMods.exileOnLeaveStack) continue;
+			if (oc.costDefs.every((d) => d.k !== 'mana') && (bot.spellsCastThisTurn ?? 0) >= 2) {
+				continue;
+			}
 		}
 		const maxTry = Math.min(oc.maxCount, 5);
 		const hasNonManaDef = oc.costDefs.some((d) => d.k !== 'mana');
@@ -1532,11 +1626,13 @@ function chooseBotTriggerTargetsInner(
 	const harmful = targetIsHarmed(steps, index);
 	const ownerOf = (t: TargetRef): string | undefined => {
 		if (t.kind === 'player') return t.id;
+		if (t.kind === 'stack') return state.stack.find((s) => s.id === t.id)?.controllerId;
 		for (const p of state.players) {
 			if (p.battlefield.some((c) => c.instanceId === t.id)) {
 				return p.battlefield.find((c) => c.instanceId === t.id)!.controllerId;
 			}
 			if (p.graveyard.some((c) => c.instanceId === t.id)) return p.playerId;
+			if (p.exile.some((c) => c.instanceId === t.id)) return p.playerId;
 		}
 		return undefined;
 	};

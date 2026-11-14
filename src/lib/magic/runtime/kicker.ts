@@ -20,6 +20,8 @@ const KICKER_KEYWORDS: Record<string, boolean> = {
 	multikicker: true
 };
 
+const RETURN_TO_HAND_OPTIONAL_KEYWORDS: ReadonlySet<string> = new Set(['buyback']);
+
 function rawOptionalEntriesForCard(
 	card: ScryfallCard,
 	faceIndex = 0,
@@ -28,8 +30,25 @@ function rawOptionalEntriesForCard(
 	const abilities = activeAbilityDefs(card, { zone: 'stack', faceIndex, fused });
 	const out: CastOptionOptionalCost[] = [];
 	let idx = 0;
+	let buybackIdx = 0;
 	for (const ab of abilities) {
 		if (ab.kind !== 'keyword') continue;
+		if (
+			RETURN_TO_HAND_OPTIONAL_KEYWORDS.has(ab.keyword.name) &&
+			ab.keyword.costDefs &&
+			ab.keyword.costDefs.length > 0
+		) {
+			const rawCost = (ab.keyword.cost ?? ab.keyword.param ?? '').trim();
+			out.push({
+				id: `buyback:${buybackIdx++}`,
+				label: `Buyback (${rawCost})`,
+				costDisplay: rawCost,
+				costDefs: ab.keyword.costDefs,
+				maxCount: 1,
+				returnToHandOnResolve: true
+			});
+			continue;
+		}
 		const isMulti = KICKER_KEYWORDS[ab.keyword.name];
 		if (isMulti === undefined) continue;
 		for (const entry of ab.keyword.kickerCosts ?? []) {
@@ -53,10 +72,14 @@ export interface KickerTrackingInfo {
 	tagCounts?: Record<string, number>;
 }
 
+export type CastOptionLike = Partial<
+	Pick<CastOption, 'faceIndex' | 'fused' | 'optionalAdditionalCosts' | 'spellMods'>
+>;
+
 export function computeKickerTracking(
 	card: ScryfallCard,
 	optionalCostCounts?: Record<string, number>,
-	option?: CastOption,
+	option?: CastOptionLike,
 	faceIndex = 0,
 	fused = false
 ): KickerTrackingInfo {
@@ -67,6 +90,7 @@ export function computeKickerTracking(
 	const tags: string[] = [];
 	const tagCounts: Record<string, number> = {};
 	for (const entry of entries) {
+		if (!entry.id.startsWith('kicker:')) continue;
 		const n = optionalCostCounts?.[entry.id] ?? 0;
 		if (n <= 0) continue;
 		count += n;
@@ -119,7 +143,7 @@ export function isCastConditionMet(
 	cond: Condition,
 	card: ScryfallCard,
 	optionalCostCounts?: Record<string, number>,
-	option?: CastOption,
+	option?: CastOptionLike,
 	faceIndex = 0,
 	fused = false
 ): boolean {
@@ -262,4 +286,64 @@ export function getObjectKickerInfo(
 	// Fallback: unused card-level helper when source instance is unavailable
 	void card;
 	return { count: 0, tags: [] };
+}
+
+export function hasReturnToHandOptionalCost(
+	option: CastOption | undefined,
+	optionalCostCounts?: Record<string, number>
+): boolean {
+	if (!option?.optionalAdditionalCosts || !optionalCostCounts) return false;
+	return option.optionalAdditionalCosts.some(
+		(opt) => Boolean(opt.returnToHandOnResolve) && (optionalCostCounts[opt.id] ?? 0) > 0
+	);
+}
+
+export function isObjectEvoked(
+	state: GameState,
+	instanceId?: string,
+	stackItem?: StackItem,
+	source?: CardInstance
+): boolean {
+	if (stackItem) {
+		if (stackItem.kind === 'spell') return Boolean(stackItem.spellMods?.evoked);
+		if (stackItem.sourceEvoked !== undefined) return stackItem.sourceEvoked;
+	}
+	if (source?.evoked !== undefined) return Boolean(source.evoked);
+	if (instanceId) {
+		for (const p of state.players) {
+			const perm = p.battlefield.find((c) => c.instanceId === instanceId);
+			if (perm) return Boolean(perm.evoked);
+		}
+		const stackSpell = state.stack.find((s) => s.sourceInstanceId === instanceId);
+		if (stackSpell) {
+			if (stackSpell.kind === 'spell') return Boolean(stackSpell.spellMods?.evoked);
+			if (stackSpell.sourceEvoked !== undefined) return stackSpell.sourceEvoked;
+		}
+	}
+	return false;
+}
+
+export function isObjectEscaped(
+	state: GameState,
+	instanceId?: string,
+	stackItem?: StackItem,
+	source?: CardInstance
+): boolean {
+	if (stackItem) {
+		if (stackItem.kind === 'spell') return Boolean(stackItem.spellMods?.escaped);
+		if (stackItem.sourceEscaped !== undefined) return stackItem.sourceEscaped;
+	}
+	if (source?.escaped !== undefined) return Boolean(source.escaped);
+	if (instanceId) {
+		for (const p of state.players) {
+			const perm = p.battlefield.find((c) => c.instanceId === instanceId);
+			if (perm) return Boolean(perm.escaped);
+		}
+		const stackSpell = state.stack.find((s) => s.sourceInstanceId === instanceId);
+		if (stackSpell) {
+			if (stackSpell.kind === 'spell') return Boolean(stackSpell.spellMods?.escaped);
+			if (stackSpell.sourceEscaped !== undefined) return stackSpell.sourceEscaped;
+		}
+	}
+	return false;
 }

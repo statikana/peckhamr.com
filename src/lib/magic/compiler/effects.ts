@@ -119,6 +119,8 @@ const RESTRICTION_SENTENCES: RegExp[] = [
 	/^activate only once each turn\.?$/i,
 	/^activate only during your upkeep\.?$/i,
 	/^activate only during combat\.?$/i,
+	/^activate only if ~ is in your (?:hand|graveyard)(?: and only (?:as a sorcery|once each turn|during your turn|during your upkeep|during combat))?\.?$/i,
+	/^activate only (?:as a sorcery|once each turn|during your turn|during your upkeep|during combat) and only if ~ is in your (?:hand|graveyard)\.?$/i,
 	/^equip only as a sorcery\.?$/i,
 	/^cast (?:~|this spell) only during combat\.?$/i,
 	/^cast (?:~|this spell) only during your turn\.?$/i,
@@ -151,6 +153,14 @@ interface PendingDigState {
 	draft: NonNullable<EffectParams['dig']>;
 }
 
+interface PendingCoerciveState {
+	stepIndex: number;
+	phase: 'awaitChoose' | 'awaitAction';
+	optionalChoice?: boolean;
+	filter?: ObjectFilter;
+	spans: Span[];
+}
+
 class Parser {
 	readonly steps: EffectStep[] = [];
 	readonly targets: TargetSpec[] = [];
@@ -166,6 +176,8 @@ class Parser {
 	definedX?: Amount;
 	/** Multi-clause / multi-sentence dig builder; committed to step.params.dig only once both keep and rest are parsed. */
 	pendingDig?: PendingDigState;
+	/** Multi-sentence coercive hand reveal + choose + discard/exile builder (CR 701.9, 701.20). */
+	pendingCoercive?: PendingCoerciveState;
 
 	constructor(context: EffectContext) {
 		this.context = context;
@@ -214,6 +226,7 @@ class Parser {
 		lastOptionalStep?: number;
 		definedX?: Amount;
 		pendingDig?: PendingDigState;
+		pendingCoercive?: PendingCoerciveState;
 		binds: Array<string | undefined>;
 	} {
 		return {
@@ -225,6 +238,9 @@ class Parser {
 			definedX: this.definedX,
 			pendingDig: this.pendingDig
 				? { ...this.pendingDig, draft: { ...this.pendingDig.draft } }
+				: undefined,
+			pendingCoercive: this.pendingCoercive
+				? { ...this.pendingCoercive, spans: [...this.pendingCoercive.spans] }
 				: undefined,
 			binds: this.steps.map((s) => s.bindAs)
 		};
@@ -238,10 +254,19 @@ class Parser {
 		this.lastOptionalStep = m.lastOptionalStep;
 		this.definedX = m.definedX;
 		this.pendingDig = m.pendingDig;
+		this.pendingCoercive = m.pendingCoercive;
 		this.steps.forEach((s, i) => {
 			if (m.binds[i] === undefined) delete s.bindAs;
 			else s.bindAs = m.binds[i];
 		});
+	}
+
+	flushIncompleteCoercive(): void {
+		if (!this.pendingCoercive) return;
+		for (const sp of this.pendingCoercive.spans) {
+			this.unparsed.push(sp);
+		}
+		this.pendingCoercive = undefined;
 	}
 
 	addTarget(spec: TargetSpec): number {
@@ -316,7 +341,7 @@ function refSelector(ref: Ref): Selector {
 
 // ---- Object phrases -------------------------------------------------------------------------
 
-const IT_WORDS = /^(?:it|them|that creature|that permanent|that card|that token|those tokens|the token|the creature|the card|those cards|those creatures|those permanents)$/i;
+const IT_WORDS = /^(?:it|them|that creature|that permanent|that land|that card|that spell|that ability|that token|those tokens|the token|the creature|the land|the card|the spell|the ability|those cards|those creatures|those permanents)$/i;
 
 /** Controller qualifiers at the end of an object phrase. */
 function splitController(phrase: string): { phrase: string; controller?: ObjectFilter['controller'] } {
@@ -335,7 +360,8 @@ function objectFilter(phrase: string): ObjectFilter | null {
 
 /**
  * The phrase after "target": "creature", "nonland permanent you don't control", "creature card from a
- * graveyard", "noncreature spell", "player", "opponent". Returns a TargetSpec without counts.
+ * graveyard", "noncreature spell", "activated or triggered ability", "player", "opponent".
+ * Returns a TargetSpec without counts.
  */
 function targetPhrase(text: string): Omit<TargetSpec, 'min' | 'max'> | null {
 	let phrase = text.trim();
@@ -354,15 +380,35 @@ function targetPhrase(text: string): Omit<TargetSpec, 'min' | 'max'> | null {
 		owner = qual === 'your' ? 'you' : qual === "an opponent's" || qual === "opponents'" ? 'opponent' : undefined;
 		if (!plural) sameOwner = true;
 	}
-	const spell = phrase.match(/^(?:(.+) )?spells?$/);
-	if (spell && zone === 'battlefield') {
-		const filter = spell[1] ? objectFilter(`${spell[1]} card`) : {};
-		if (!filter) return null;
-		return { kind: 'object', filter: { ...filter, zone: 'stack' } };
-	}
 	const ctl = splitController(phrase);
 	phrase = ctl.phrase;
-	if (/^creature or player$/.test(phrase)) {
+	if (zone === 'battlefield') {
+		const withCtl = (base: ObjectFilter): ObjectFilter =>
+			ctl.controller ? { ...base, controller: ctl.controller } : base;
+		if (/^(?:activated or triggered abilit(?:y|ies)|abilit(?:y|ies))$/.test(phrase)) {
+			return { kind: 'object', filter: withCtl({ zone: 'stack', stackKind: 'ability' }) };
+		}
+		if (/^activated abilit(?:y|ies)$/.test(phrase)) {
+			return { kind: 'object', filter: withCtl({ zone: 'stack', stackKind: 'activatedAbility' }) };
+		}
+		if (/^triggered abilit(?:y|ies)$/.test(phrase)) {
+			return { kind: 'object', filter: withCtl({ zone: 'stack', stackKind: 'triggeredAbility' }) };
+		}
+		if (
+			/^(?:spells? or abilit(?:y|ies)|spells?, activated abilit(?:y|ies), or triggered abilit(?:y|ies))$/.test(
+				phrase
+			)
+		) {
+			return { kind: 'object', filter: withCtl({ zone: 'stack', stackKind: 'spellOrAbility' }) };
+		}
+		const spell = phrase.match(/^(?:(.+) )?spells?$/);
+		if (spell) {
+			const filter = spell[1] ? objectFilter(`${spell[1]} card`) : {};
+			if (!filter) return null;
+			return { kind: 'object', filter: withCtl({ ...filter, zone: 'stack' }) };
+		}
+	}
+	if (/^creature or player$/.test(phrase) && !ctl.controller) {
 		return { kind: 'objectOrPlayer', filter: { zone: 'battlefield', types: ['Creature'] }, player: { relation: 'any' } };
 	}
 	const filter = objectFilter(phrase);
@@ -384,6 +430,7 @@ function targetPhrase(text: string): Omit<TargetSpec, 'min' | 'max'> | null {
 function objectPhrase(p: Parser, text: string): ObjectRes | null {
 	const t = text.trim();
 	if (t === '~') return { selector: { k: 'self' }, ref: { k: 'self' } };
+	if (t === '~ from your graveyard') return { selector: { k: 'self' }, ref: { k: 'self' }, fromZone: 'graveyard' };
 	if (IT_WORDS.test(t)) {
 		const ref = p.itRef();
 		return ref ? { selector: refSelector(ref), ref } : null;
@@ -732,11 +779,20 @@ function ptChange(text: string): { power: Amount; toughness: Amount } | null {
 	return { power: part(m[1], m[2]), toughness: part(m[3], m[4]) };
 }
 
+const COLOR_WORDS: Record<string, ManaColor> = {
+	white: 'W',
+	blue: 'U',
+	black: 'B',
+	red: 'R',
+	green: 'G'
+};
+
 function isParameterizedGrantKeyword(k: string): boolean {
 	return (
 		/^protection from (?:[a-z]+|everything)$/.test(k) ||
 		/^hexproof from [a-z]+$/.test(k) ||
-		/^ward \{[^}]+\}$/.test(k)
+		/^ward (?:\{[^}]+\})+$/.test(k) ||
+		/^ward—pay \d+ life$/.test(k)
 	);
 }
 
@@ -747,13 +803,189 @@ function keywordList(text: string, allowOr = false): string[] | null {
 	if (!parts.every((k) => GRANTABLE_KEYWORDS.includes(k) || k === 'changeling' || isParameterizedGrantKeyword(k))) {
 		return null;
 	}
-	return parts.map((k) => k.charAt(0).toUpperCase() + k.slice(1));
+	return parts.map((k) =>
+		(k.charAt(0).toUpperCase() + k.slice(1)).replace(/\{([^}]+)\}/g, (_, sym: string) => `{${sym.toUpperCase()}}`)
+	);
+}
+
+function parseBasePT(raw: string): { power: Amount; toughness: Amount } | null {
+	const m = raw.match(/^(\d+|X)\/(\d+|X)$/i);
+	if (!m) return null;
+	const parseSide = (v: string): Amount => (v.toUpperCase() === 'X' ? { k: 'x' } : n(parseInt(v, 10)));
+	return { power: parseSide(m[1]), toughness: parseSide(m[2]) };
+}
+
+/**
+ * Parses `"becomes a/an [P/T] [color(s)] [subtype(s)] [artifact ]creature [with ...] [that's still a land | in addition to its other types]"`.
+ */
+function parseAnimatePredicate(
+	subject: ObjectRes,
+	bodyAfterDuration: string,
+	eotFromPrefix: boolean,
+	span: Span
+): EffectStep | null {
+	if (subject.fromZone) return null;
+	const m = bodyAfterDuration.match(/^becomes? (?:a|an) (.+)$/);
+	if (!m) return null;
+	let rest = m[1].trim();
+	let eot = eotFromPrefix;
+	let keepExistingTypes = false;
+	let additiveColors = false;
+	let basePT: { power: Amount; toughness: Amount } | null = null;
+	let addKeywords: string[] | undefined;
+
+	// Strip trailing qualifiers from right to left so order variations ("... with haste until end of turn"
+	// vs "... that's still a land" vs "... in addition to its other types until end of turn") all parse.
+	for (;;) {
+		const durMatch = rest.match(/^(.+?) until end of turn$/);
+		if (durMatch) {
+			eot = true;
+			rest = durMatch[1].trim();
+			continue;
+		}
+		const stillMatch = rest.match(
+			/^(.+?)(?:,)? (?:that's |and it's )?still (?:a |an )?(?:lands?|artifacts?|enchantments?|planeswalkers?)$/i
+		);
+		if (stillMatch) {
+			keepExistingTypes = true;
+			rest = stillMatch[1].trim();
+			continue;
+		}
+		const inAddColorsMatch = rest.match(/^(.+?) in addition to (?:its|their) other colors and types$/i);
+		if (inAddColorsMatch) {
+			keepExistingTypes = true;
+			additiveColors = true;
+			rest = inAddColorsMatch[1].trim();
+			continue;
+		}
+		const inAddMatch = rest.match(/^(.+?) in addition to (?:its|their) other types$/i);
+		if (inAddMatch) {
+			keepExistingTypes = true;
+			rest = inAddMatch[1].trim();
+			continue;
+		}
+		const basePtMatch = rest.match(/^(.+?) with base power and toughness (\d+|X)\/(\d+|X)$/i);
+		if (basePtMatch) {
+			const pt = parseBasePT(`${basePtMatch[2]}/${basePtMatch[3]}`);
+			if (!pt || basePT) return null;
+			basePT = pt;
+			rest = basePtMatch[1].trim();
+			continue;
+		}
+		const withIdx = rest.indexOf(' with ');
+		if (withIdx > 0) {
+			const kwRaw = rest.slice(withIdx + ' with '.length).trim();
+			// Reject quoted granted abilities (e.g. with "Whenever ~ attacks...") so unmodeled text stays unparsed.
+			if (/["“”']/.test(kwRaw)) return null;
+			const kws = keywordList(kwRaw);
+			if (!kws) return null;
+			addKeywords = addKeywords ? [...kws, ...addKeywords] : kws;
+			rest = rest.slice(0, withIdx).trim();
+			continue;
+		}
+		break;
+	}
+
+	// Core noun phrase: "[P/T] [colorless | <colors>] [Subtypes...] [artifact ]creatures?"
+	let isArtifactCreature = false;
+	if (/\bartifact creatures?$/.test(rest)) {
+		isArtifactCreature = true;
+		rest = rest.replace(/\s*artifact creatures?$/, '').trim();
+	} else if (/(?:^|\s)creatures?$/.test(rest)) {
+		rest = rest.replace(/\s*creatures?$/, '').trim();
+	} else {
+		return null;
+	}
+
+	const tokens = rest
+		.replace(/,/g, ' , ')
+		.split(/\s+/)
+		.filter(Boolean);
+
+	if (tokens[0] && /^(?:\d+|X)\/(?:\d+|X)$/i.test(tokens[0])) {
+		if (basePT) return null;
+		basePT = parseBasePT(tokens.shift()!);
+		if (!basePT) return null;
+	}
+	// Non-Vehicle animations must specify P/T; "becomes an artifact creature" can rely on printed Vehicle P/T (CR 205.1b).
+	if (!basePT && !isArtifactCreature) return null;
+
+	let colors: ManaColor[] | undefined;
+	if (tokens[0] === 'colorless') {
+		colors = [];
+		tokens.shift();
+	} else if (tokens[0] && COLOR_WORDS[tokens[0]]) {
+		colors = [COLOR_WORDS[tokens.shift()!]];
+		while (tokens.length >= 2) {
+			if (tokens[0] === ',' && tokens[1] === 'and' && tokens[2] && COLOR_WORDS[tokens[2]]) {
+				tokens.shift();
+				tokens.shift();
+				colors.push(COLOR_WORDS[tokens.shift()!]);
+			} else if (tokens[0] === ',' && tokens[1] && COLOR_WORDS[tokens[1]]) {
+				tokens.shift();
+				colors.push(COLOR_WORDS[tokens.shift()!]);
+			} else if (tokens[0] === 'and' && tokens[1] && COLOR_WORDS[tokens[1]]) {
+				tokens.shift();
+				colors.push(COLOR_WORDS[tokens.shift()!]);
+			} else {
+				break;
+			}
+		}
+	}
+
+	const subtypes: string[] = [];
+	for (const tok of tokens) {
+		if (/^[A-Z][A-Za-z'-]*$/.test(tok)) subtypes.push(tok);
+		else return null;
+	}
+
+	const params: NonNullable<EffectStep['params']> = {
+		duration: eot ? 'endOfTurn' : 'permanent'
+	};
+	const targetTypes = isArtifactCreature ? ['Artifact', 'Creature'] : ['Creature'];
+	if (keepExistingTypes) {
+		params.addTypes = targetTypes;
+		if (subtypes.length > 0) params.addSubtypes = subtypes;
+		params.keepExistingTypes = true;
+	} else if (isArtifactCreature) {
+		// CR 205.1b: "becomes an artifact creature" retains prior card types and subtypes;
+		// "becomes a [subtype] artifact creature" retains prior card types while setting creature subtypes.
+		params.addTypes = targetTypes;
+		if (subtypes.length === 0) {
+			params.keepExistingTypes = true;
+		} else {
+			params.setSubtypes = subtypes;
+		}
+	} else {
+		// CR 205.1a: without "still a ..." or "in addition...", new card types and subtypes replace old ones.
+		params.setTypes = targetTypes;
+		params.setSubtypes = subtypes;
+	}
+
+	if (colors !== undefined) {
+		if (additiveColors) params.addColors = colors;
+		else params.setColors = colors;
+	}
+	if (addKeywords && addKeywords.length > 0) params.addKeywords = addKeywords;
+	if (basePT) {
+		params.setPower = basePT.power;
+		params.setToughness = basePT.toughness;
+	}
+
+	return { verb: 'animate', subject: subject.selector, params, span };
 }
 
 /** Verb phrases whose subject is an object ("~ gets +1/+0 until end of turn", "it phases out"). */
 function objectPredicate(p: Parser, subject: ObjectRes, vp: string, span: Span): ClauseResult {
 	const { text, eot } = stripDuration(vp);
 	const params = eot ? { duration: 'endOfTurn' as const } : {};
+
+	if (/^becomes? (?:a|an) /.test(text)) {
+		const anim = parseAnimatePredicate(subject, text, eot, span);
+		if (!anim) return false;
+		p.push(anim, true);
+		return true;
+	}
 
 	// "gain trample and get +X/+X" (Overrun templating): two steps on the same subject.
 	const both = text.match(/^gains? (.+?) and gets? (\S+)$/);
@@ -1140,6 +1372,15 @@ function playerPredicate(p: Parser, subject: Selector, vp: string, span: Span, f
 		return imperative(p, text, span);
 	}
 	if (subject.k === 'player' && subject.filter.relation === 'you' && optional) {
+		const haveBecome = text.match(/^have (.+?) become ((?:a|an) .+)$/);
+		if (haveBecome) {
+			const obj = objectPhrase(p, haveBecome[1]);
+			if (!obj || obj.fromZone) return false;
+			const before = p.steps.length;
+			if (!objectPredicate(p, obj, `becomes ${haveBecome[2]}`, span)) return false;
+			for (const s of p.steps.slice(before)) s.optional = optional;
+			return true;
+		}
 		const before = p.steps.length;
 		if (!imperative(p, text, span)) return false;
 		for (const s of p.steps.slice(before)) {
@@ -1400,9 +1641,94 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 	}
 	m = t.match(/^copy (.+)$/);
 	if (m) {
-		const obj = objectPhrase(p, m[1]);
-		if (!obj || obj.selector.k !== 'target' || p.targets[obj.selector.index].filter.zone !== 'stack') return false;
-		p.push({ verb: 'copySpell', subject: obj.selector, span }, true);
+		let copyRest = m[1].trim();
+		let mayChooseNewTargets = false;
+		let nonLegendary = false;
+		let exceptColors: ManaColor[] | undefined;
+		let copyCount: Amount | undefined;
+
+		const inlineRetarget = copyRest.match(
+			/^(.+?)(?:,?\s+and)?\s+you may choose new targets for (?:the|each|any|any of the) cop(?:y|ies)$/i
+		);
+		if (inlineRetarget) {
+			mayChooseNewTargets = true;
+			copyRest = inlineRetarget[1].trim();
+		}
+
+		for (;;) {
+			const nonLegMatch = copyRest.match(/^(.+?), except (?:it|the copy) isn't legendary$/i);
+			if (nonLegMatch && !nonLegendary) {
+				nonLegendary = true;
+				copyRest = nonLegMatch[1].trim();
+				continue;
+			}
+			const colMatch = copyRest.match(
+				/^(.+?), except (?:it's|the copy is) (colorless|white|blue|black|red|green)$/i
+			);
+			if (colMatch && exceptColors === undefined) {
+				const cw = colMatch[2].toLowerCase();
+				exceptColors = cw === 'colorless' ? [] : [COLOR_WORDS[cw]];
+				copyRest = colMatch[1].trim();
+				continue;
+			}
+			break;
+		}
+
+		const forEachMatch = copyRest.match(/^(.+?) for each (.+)$/i);
+		if (forEachMatch) {
+			const what = forEachMatch[2].trim();
+			if (/^other spell (?:that was )?cast before it this turn$/i.test(what)) {
+				copyCount = { k: 'stormCount' };
+			} else if (/^time (?:it|~|this spell) was kicked$/i.test(what)) {
+				copyCount = { k: 'kickedCount' };
+			} else {
+				copyCount = numberOf(what) ?? undefined;
+			}
+			if (!copyCount) return false;
+			copyRest = forEachMatch[1].trim();
+		} else if (/\s+twice$/i.test(copyRest)) {
+			copyCount = n(2);
+			copyRest = copyRest.replace(/\s+twice$/i, '').trim();
+		} else {
+			const timesMatch = copyRest.match(/^(.+?)\s+(that many|\S+) times$/i);
+			if (timesMatch) {
+				const parsedAmt = amountWord(p, timesMatch[2]);
+				if (!parsedAmt) return false;
+				copyCount = parsedAmt;
+				copyRest = timesMatch[1].trim();
+			}
+		}
+
+		const obj = objectPhrase(p, copyRest);
+		if (!obj) return false;
+		const sel = obj.selector;
+		const validStackSubject =
+			(sel.k === 'target' && p.targets[sel.index]?.filter.zone === 'stack') ||
+			(sel.k === 'eventObject' && p.context === 'triggered') ||
+			sel.k === 'self' ||
+			(sel.k === 'binding' &&
+				p.steps.some(
+					(st) =>
+						st.bindAs === sel.name &&
+						st.subject.k === 'target' &&
+						p.targets[st.subject.index]?.filter.zone === 'stack'
+				));
+		if (!validStackSubject) return false;
+		const params: NonNullable<EffectStep['params']> = {
+			...(copyCount ? { count: copyCount } : {}),
+			...(mayChooseNewTargets ? { mayChooseNewTargets: true } : {}),
+			...(nonLegendary ? { nonLegendary: true } : {}),
+			...(exceptColors !== undefined ? { exceptColors } : {})
+		};
+		p.push(
+			{
+				verb: 'copySpell',
+				subject: sel,
+				...(Object.keys(params).length > 0 ? { params } : {}),
+				span
+			},
+			true
+		);
 		return true;
 	}
 	m = t.match(/^add (.+)$/);
@@ -1542,6 +1868,24 @@ function tryUnlessClause(p: Parser, text: string, span: Span): boolean {
 	const baseText = unlessMatch[1].trim();
 	const tail = unlessMatch[2].trim();
 	if (/\bunless\b/i.test(baseText)) return false;
+	if (/^(?:it|~) escaped$/i.test(tail)) {
+		const normalizedBase = /^sacrifice it$/i.test(baseText) ? 'sacrifice ~' : baseText;
+		const mark = p.mark();
+		if (!clause(p, { text: normalizedBase, span }, false)) {
+			p.rollback(mark);
+			return false;
+		}
+		const added = p.steps.slice(mark.steps);
+		if (added.length === 0) {
+			p.rollback(mark);
+			return false;
+		}
+		const notEscaped: Condition = { k: 'not', of: { k: 'escaped' } };
+		for (const step of added) {
+			step.condition = step.condition ? { k: 'and', of: [notEscaped, step.condition] } : notEscaped;
+		}
+		return true;
+	}
 	const pm = tail.match(
 		/^(you|that player|the player whose turn it is|the player|that opponent|they|target player|target opponent|each opponent|each player|(?:its|that creature's|that permanent's|that spell's|their) (?:controller|owner))\s+(.+)$/i
 	);
@@ -1637,7 +1981,7 @@ function clause(p: Parser, c: Clause, allowUnless = true): ClauseResult {
 	for (let i = words.length - 1; i >= 1; i--) {
 		const subjText = words.slice(0, i).join(' ');
 		const vp = words.slice(i).join(' ') + (dur ? ' until end of turn' : '');
-		if (!/^(?:gets?|gains?|loses?|phases?|deals|fights?|explores?|connives?)\b/.test(vp)) continue;
+		if (!/^(?:gets?|gains?|loses?|phases?|deals|fights?|explores?|connives?|becomes?)\b/.test(vp)) continue;
 		const snapshot = p.targets.length;
 		const subject = objectPhrase(p, subjText);
 		if (!subject) continue;
@@ -1764,8 +2108,36 @@ function sentence(p: Parser, text: string, span: Span): boolean {
 		return true;
 	}
 
+	if (
+		/^(?:it's|they're|it is|they are) still (?:a |an )?(?:lands?|artifacts?|enchantments?|planeswalkers?)$/i.test(
+			t
+		)
+	) {
+		const prev = p.steps[p.steps.length - 1];
+		if (prev?.verb !== 'animate') return fail();
+		const prevParams = { ...prev.params };
+		const typesToAdd = prevParams.setTypes ?? prevParams.addTypes ?? ['Creature'];
+		const subtypesToAdd = prevParams.setSubtypes ?? prevParams.addSubtypes;
+		delete prevParams.setTypes;
+		delete prevParams.setSubtypes;
+		prevParams.addTypes = typesToAdd;
+		if (subtypesToAdd && subtypesToAdd.length > 0) {
+			prevParams.addSubtypes = subtypesToAdd;
+		}
+		prevParams.keepExistingTypes = true;
+		prev.params = prevParams;
+		return true;
+	}
+
+	if (/^you may choose new targets for (?:the|each|any|any of the) cop(?:y|ies)$/i.test(t)) {
+		const prev = p.steps[p.steps.length - 1];
+		if (prev?.verb !== 'copySpell') return fail();
+		prev.params = { ...prev.params, mayChooseNewTargets: true };
+		return true;
+	}
+
 	const ifKicked = t.match(
-		/^(if (?:it|~) was(?:n't| not)? kicked(?: with its .+? kicker| twice| \S+ times?)?), (.+)$/i
+		/^(if (?:it|~) (?:was(?:n't| not)? kicked(?: with its .+? kicker| twice| \S+ times?)?|escaped|(?:didn't|did not) escape)), (.+)$/i
 	);
 	if (ifKicked) {
 		const cond = parseCondition(ifKicked[1]);
@@ -1790,6 +2162,13 @@ function sentence(p: Parser, text: string, span: Span): boolean {
 		return true;
 	}
 
+	if (p.pendingCoercive) {
+		if (tryCoerciveFollowUp(p, t, span)) {
+			return true;
+		}
+		p.flushIncompleteCoercive();
+	}
+
 	const followUp = parseOptionalFollowUp(p, t, span, (innerText, innerStart) =>
 		sentence(p, innerText, { start: innerStart, end: span.end })
 	);
@@ -1800,6 +2179,9 @@ function sentence(p: Parser, text: string, span: Span): boolean {
 	}
 	if (p.pendingDig) {
 		p.pendingDig = undefined;
+	}
+	if (tryCoerciveStart(p, t, span)) {
+		return true;
 	}
 	if (t === "until your next turn, your life total can't change and you gain protection from everything") {
 		p.push(
@@ -1870,7 +2252,7 @@ function sentence(p: Parser, text: string, span: Span): boolean {
 			},
 			false
 		);
-		if (!p.steps.slice(stepsBefore).some((s) => s.optional !== undefined)) {
+		if (!p.steps.slice(stepsBefore).some((s) => stepOptionalChooser(s) !== undefined)) {
 			p.lastOptionalStep = undefined;
 		}
 		return true;
@@ -1885,12 +2267,22 @@ function sentence(p: Parser, text: string, span: Span): boolean {
 		for (const s of p.steps.slice(stepsBefore)) {
 			if (s.amount) s.amount = substituteX(s.amount, wx.x);
 			if (s.params?.toughness) s.params.toughness = substituteX(s.params.toughness, wx.x);
+			if (s.params?.setPower) s.params.setPower = substituteX(s.params.setPower, wx.x);
+			if (s.params?.setToughness) s.params.setToughness = substituteX(s.params.setToughness, wx.x);
+			if (s.params?.count) s.params.count = substituteX(s.params.count, wx.x);
 		}
 	}
-	if (!p.steps.slice(stepsBefore).some((s) => s.optional !== undefined)) {
+	if (!p.steps.slice(stepsBefore).some((s) => stepOptionalChooser(s) !== undefined)) {
 		p.lastOptionalStep = undefined;
 	}
 	return true;
+}
+
+function stepOptionalChooser(step: EffectStep | undefined): PlayerRef | undefined {
+	if (!step) return undefined;
+	if (step.optional?.chooser) return step.optional.chooser;
+	if (step.verb === 'revealAndDiscard') return step.params?.coerciveDiscard?.chooser;
+	return undefined;
 }
 
 function parseOptionalFollowUp(
@@ -1906,7 +2298,7 @@ function parseOptionalFollowUp(
 	if (!ifDo && !ifDont) return null;
 
 	const optIdx = p.lastOptionalStep;
-	const chooser = optIdx !== undefined ? p.steps[optIdx]?.optional?.chooser : undefined;
+	const chooser = optIdx !== undefined ? stepOptionalChooser(p.steps[optIdx]) : undefined;
 	if (optIdx === undefined || !chooser) return false;
 
 	const isAccept = Boolean(ifDo);
@@ -1947,7 +2339,7 @@ function parseOptionalFollowUp(
 	// even after recursive `sentence()` clears `lastOptionalStep` on inner non-optional steps.
 	if (isAccept) {
 		if (p.lastOptionalStep === undefined) p.lastOptionalStep = optIdx;
-	} else if (!p.steps.slice(mark.steps).some((s) => s.optional !== undefined)) {
+	} else if (!p.steps.slice(mark.steps).some((s) => stepOptionalChooser(s) !== undefined)) {
 		p.lastOptionalStep = undefined;
 	}
 	return true;
@@ -2161,6 +2553,137 @@ function tryDigFollowUp(p: Parser, text: string): boolean {
 	return false;
 }
 
+function parseCoerciveCardPhrase(phrase: string): { ok: boolean; filter?: ObjectFilter } {
+	const trimmed = phrase.trim();
+	if (/^card$/i.test(trimmed)) return { ok: true };
+	if (!/\bcards?\b/i.test(trimmed)) return { ok: false };
+	const parsed = parseObjectPhrase(trimmed);
+	if (!parsed) return { ok: false };
+	return { ok: true, filter: Object.keys(parsed).length > 0 ? parsed : undefined };
+}
+
+function parseCoerciveActionClause(clauseText: string): 'graveyard' | 'exile' | null {
+	const m = clauseText
+		.trim()
+		.match(
+			/^(?:if you do,\s*)?(?:(?:that player|the player|that opponent|they) discards? (?:that card|it)|(?:you )?exile (?:that card|it))$/i
+		);
+	if (!m) return null;
+	return /\bexile\b/i.test(clauseText) ? 'exile' : 'graveyard';
+}
+
+function commitPendingCoercive(
+	p: Parser,
+	pc: PendingCoerciveState,
+	destination: 'graveyard' | 'exile',
+	endSpan: Span
+): void {
+	const step = p.steps[pc.stepIndex];
+	if (step?.verb === 'revealAndDiscard') {
+		step.params = {
+			...step.params,
+			coerciveDiscard: {
+				chooser: { k: 'you' },
+				...(pc.filter ? { filter: pc.filter } : {}),
+				...(pc.optionalChoice ? { optionalChoice: true } : {}),
+				destination
+			}
+		};
+		step.span = { start: pc.spans[0]?.start ?? step.span.start, end: endSpan.end };
+		p.setLastObject(pc.stepIndex);
+		p.lastOptionalStep = pc.stepIndex;
+	}
+	p.pendingCoercive = undefined;
+}
+
+function tryCoerciveFollowUp(p: Parser, text: string, span: Span): boolean {
+	const pc = p.pendingCoercive;
+	if (!pc) return false;
+	const t = text.trim();
+
+	if (pc.phase === 'awaitChoose') {
+		const combined = t.match(
+			/^you (may )?choose (?:a|an) (.+?) from it(?:,?\s+and\s+((?:if you do,\s*)?(?:(?:that player|the player|that opponent|they) discards? (?:that card|it)|(?:you )?exile (?:that card|it))))?$/i
+		);
+		if (!combined) return false;
+		const parsed = parseCoerciveCardPhrase(combined[2]);
+		if (!parsed.ok) return false;
+		pc.optionalChoice = Boolean(combined[1]);
+		pc.filter = parsed.filter;
+		pc.spans.push(span);
+		if (combined[3]) {
+			const dest = parseCoerciveActionClause(combined[3]);
+			if (!dest) return false;
+			commitPendingCoercive(p, pc, dest, span);
+			return true;
+		}
+		pc.phase = 'awaitAction';
+		return true;
+	}
+
+	if (pc.phase === 'awaitAction') {
+		const dest = parseCoerciveActionClause(t);
+		if (!dest) return false;
+		pc.spans.push(span);
+		commitPendingCoercive(p, pc, dest, span);
+		return true;
+	}
+
+	return false;
+}
+
+function tryCoerciveStart(p: Parser, text: string, span: Span): boolean {
+	const m = text
+		.trim()
+		.match(
+			/^(.+?) reveals? their hand(?:,?\s+(?:and\s+)?you (may )?choose (?:a|an) (.+?) from it(?:,?\s+and\s+((?:if you do,\s*)?(?:(?:that player|the player|that opponent|they) discards? (?:that card|it)|(?:you )?exile (?:that card|it))))?)?$/i
+		);
+	if (!m) return false;
+	const mark = p.mark();
+	const sel = playerPhrase(p, m[1].trim());
+	const ref = sel ? singlePlayer(sel) : null;
+	if (!sel || !ref || ref.k === 'you') {
+		p.rollback(mark);
+		return false;
+	}
+
+	let optionalChoice: boolean | undefined;
+	let filter: ObjectFilter | undefined;
+	let phase: PendingCoerciveState['phase'] = 'awaitChoose';
+	if (m[3] !== undefined) {
+		const parsed = parseCoerciveCardPhrase(m[3]);
+		if (!parsed.ok) {
+			p.rollback(mark);
+			return false;
+		}
+		optionalChoice = Boolean(m[2]);
+		filter = parsed.filter;
+		phase = 'awaitAction';
+	}
+
+	const stepIndex = p.push({ verb: 'revealAndDiscard', subject: sel, span }, false);
+	p.lastPlayer = sel;
+	p.lastOptionalStep = undefined;
+	const pc: PendingCoerciveState = {
+		stepIndex,
+		phase,
+		...(optionalChoice ? { optionalChoice: true } : {}),
+		...(filter ? { filter } : {}),
+		spans: [span]
+	};
+	if (m[4] !== undefined) {
+		const dest = parseCoerciveActionClause(m[4]);
+		if (!dest) {
+			p.rollback(mark);
+			return false;
+		}
+		commitPendingCoercive(p, pc, dest, span);
+		return true;
+	}
+	p.pendingCoercive = pc;
+	return true;
+}
+
 // ---- Entry points ---------------------------------------------------------------------------
 
 /**
@@ -2175,6 +2698,7 @@ export function parseEffects(text: string, offset = 0, context: EffectContext = 
 			p.lastOptionalStep = undefined;
 		}
 	}
+	p.flushIncompleteCoercive();
 	return { steps: p.steps, targets: p.targets, unparsed: p.unparsed };
 }
 
@@ -2286,8 +2810,8 @@ export function parseModal(
 
 /** Lines of an instant or sorcery that aren't part of its effect. */
 function isNonEffectLine(body: string): boolean {
-	// Implemented/handled spell keyword lines ("Buyback {2}", "Overload {6}{U}", "Suspend 4—{U}", "Flash", "Convoke", "Delve") have no period.
-	if (!/[.!]$/.test(body) && /^(?:overload|suspend|flash|buyback|convoke|delve)\b/i.test(body.trim())) return true;
+	// Implemented/handled spell keyword lines ("Buyback {2}", "Overload {6}{U}", "Suspend 4—{U}", "Flash", "Convoke", "Delve", "Storm") have no period.
+	if (!/[.!]$/.test(body) && /^(?:overload|suspend|flash|buyback|convoke|delve|storm)\b/i.test(body.trim())) return true;
 	return false;
 }
 
@@ -2343,6 +2867,7 @@ export function parseSpellFace(norm: NormalizedFace, include: (line: NormalizedL
 			p.lastOptionalStep = undefined;
 		}
 	}
+	p.flushIncompleteCoercive();
 	steps.push(...p.steps);
 	targets.push(...p.targets);
 	unparsed.push(...p.unparsed);

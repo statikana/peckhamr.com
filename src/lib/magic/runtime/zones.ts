@@ -219,7 +219,16 @@ function finalizeZoneMove(
 	const owner = state.players.find((p) => p.playerId === obj.ownerId);
 	let dest: ZoneType = initialDest;
 	let shuffleDestLibrary = initialShuffle;
+	let effectiveReplacedBy = replacedBy;
 	let promptCommanderRedirect = false;
+
+	// CR 702.84a: "If it would leave the battlefield, exile it instead of putting it anywhere else."
+	// Note: an effect already moving it directly to 'exile' is NOT replaced (CR 702.84a ruling).
+	if (fromZone === 'battlefield' && obj.unearthLeaveExile && dest !== 'exile' && dest !== 'battlefield') {
+		dest = 'exile';
+		shuffleDestLibrary = false;
+		effectiveReplacedBy = effectiveReplacedBy ?? 'Unearth';
+	}
 
 	if (
 		opts.commanderRedirect &&
@@ -284,6 +293,9 @@ function finalizeZoneMove(
 		obj.enteredWithX = undefined;
 		obj.kickedCount = undefined;
 		obj.kickedTags = undefined;
+		obj.evoked = undefined;
+		obj.escaped = undefined;
+		obj.unearthLeaveExile = undefined;
 		obj.regenerationShields = undefined;
 		obj.cantBeRegeneratedThisTurn = undefined;
 		obj.crewedThisTurnByIds = undefined;
@@ -310,6 +322,9 @@ function finalizeZoneMove(
 	if (dest !== 'battlefield') {
 		obj.kickedCount = undefined;
 		obj.kickedTags = undefined;
+		obj.evoked = undefined;
+		obj.escaped = undefined;
+		obj.unearthLeaveExile = undefined;
 		obj.defaultControllerId = undefined;
 	}
 	if (opts.controllerId !== undefined) obj.controllerId = opts.controllerId;
@@ -318,6 +333,16 @@ function finalizeZoneMove(
 		// CR 400.7: Leaving exile clears linked-exile and until-source-leaves tracking.
 		obj.exiledBy = undefined;
 		obj.untilSourceLeavesReturn = undefined;
+	}
+	if (fromZone !== dest) {
+		// CR 400.7 / CR 701.20d: Zone change creates a new object and clears revealed-hand visibility
+		// as well as any once-per-turn trigger tracking in the destination zone (CR 603.2i).
+		obj.knownToPlayerIds = undefined;
+		if (state.triggeredOnceThisTurn?.length) {
+			const prefix = `${obj.instanceId}:${dest}:`;
+			const remaining = state.triggeredOnceThisTurn.filter((k) => !k.startsWith(prefix));
+			state.triggeredOnceThisTurn = remaining.length > 0 ? remaining : undefined;
+		}
 	}
 	if (opts.bumpVersion) obj.objectVersion = (obj.objectVersion || 1) + 1;
 	if (opts.newTimestamp) obj.enteredTimestamp = allocateTimestamp(state);
@@ -356,7 +381,7 @@ function finalizeZoneMove(
 		}
 	}
 	if (opts.sbaLog) {
-		pushSbaLog(state, obj, dest, replacedBy, opts.sbaLog);
+		pushSbaLog(state, obj, dest, effectiveReplacedBy, opts.sbaLog);
 	}
 	if (leavingFaceDownLabel) {
 		state.log.push({
@@ -644,7 +669,12 @@ function moveObjectInner(
 	let shuffleDestLibrary = false;
 	let replacedBy: string | null = null;
 	let pendingZoneRep: ReturnType<typeof resolveZoneChangeReplacements> | undefined;
-	if (opts.graveyardReplacement && (to === 'graveyard' || to === 'exile')) {
+	if (fromZone === 'battlefield' && obj.unearthLeaveExile && to !== 'exile' && to !== 'battlefield') {
+		// CR 702.84a: "If it would leave the battlefield, exile it instead of putting it anywhere else."
+		dest = 'exile';
+		shuffleDestLibrary = false;
+		replacedBy = 'Unearth';
+	} else if (opts.graveyardReplacement && (to === 'graveyard' || to === 'exile')) {
 		pendingZoneRep = resolveZoneChangeReplacements(
 			state,
 			obj,
@@ -957,6 +987,11 @@ export function placeDeferred(
 
 /** Shuffles a library. With `keepTop`, the top `keepTop` cards stay where they are. */
 export function shuffleLibrary(state: RngHolder, player: PlayerGameState, keepTop = 0): void {
+	// CR 701.20d: Shuffling clears known-card identity on the shuffled portion of the library.
+	const toClear = keepTop <= 0 ? player.library : player.library.slice(keepTop);
+	for (const c of toClear) {
+		c.knownToPlayerIds = undefined;
+	}
 	if (keepTop <= 0) {
 		player.library = shuffleArray(state, player.library);
 	} else {

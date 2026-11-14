@@ -136,7 +136,9 @@ function singularType(word: string): string {
 export function parseAffected(subject: string): Affected | null {
 	const s = subject.trim();
 	if (s === '~' || /^it$/i.test(s)) return 'self';
-	if (/^(?:equipped|enchanted) (?:creature|permanent|land|artifact|planeswalker)$/i.test(s)) return 'attachedTo';
+	if (/^(?:equipped|enchanted) (?:creature|permanent|land|artifact|enchantment|planeswalker|plains|island|swamp|mountain|forest)$/i.test(s)) {
+		return 'attachedTo';
+	}
 	let phrase = s.replace(/^(?:all|each) /i, '');
 	let controller: ObjectFilter['controller'];
 	const opp = phrase.match(/^(.+) your opponents control$/i);
@@ -338,8 +340,45 @@ const replacements: Production = (s, span) => {
 	const direct = parseSelfEtbModify(s);
 	if (direct) return [{ kind: 'replacement', replacement: { replaces: entersSelf, with: direct } }];
 
+	// CR 702.138c / 702.138d: "~ escapes with N [kind] counter(s) on it" and/or "~ escapes with [keyword(s)]"
+	// Rejects "instead" overrides (e.g. Polukranos, Unchained) so they aren't miscompiled as additive.
+	const escapesWith = s.match(/^(?:~|it) escapes with (.+)$/i);
+	if (escapesWith && !/\binstead\b/i.test(escapesWith[1])) {
+		const escapeCond: Condition = { k: 'escaped' };
+		const body = escapesWith[1].trim();
+		const counterAndKw = body.match(
+			/^(\S+) (?:additional )?(\S+) counters? on (?:it|her|him)(?: and (?:with )?(.+))?$/i
+		);
+		if (counterAndKw) {
+			const amount = count(counterAndKw[1]);
+			const counter = COUNTERS[counterAndKw[2].toLowerCase()];
+			if (amount && counter) {
+				const out: StaticItem[] = [
+					{
+						kind: 'replacement',
+						replacement: {
+							replaces: entersSelf,
+							with: { k: 'modify', counters: { counter, amount } },
+							condition: escapeCond
+						}
+					}
+				];
+				if (counterAndKw[3]) {
+					const kws = parseKeywordList(counterAndKw[3]);
+					if (!kws) return null;
+					out.push(keywordGrant('self', kws, escapeCond));
+				}
+				return out;
+			}
+		}
+		const kwsOnly = parseKeywordList(body);
+		if (kwsOnly) {
+			return [keywordGrant('self', kwsOnly, escapeCond)];
+		}
+	}
+
 	const suffixKicked = s.match(
-		/^(.+?) (if (?:it|~) was(?:n't| not)? kicked(?: with its .+? kicker| twice| \S+ times?)?)$/i
+		/^(.+?) (if (?:(?:it|~) (?:was(?:n't| not)? kicked(?: with its .+? kicker| twice| \S+ times?)?|escaped|(?:didn't|did not) escape|was(?:n't| not)? evoked)|its evoke cost was(?:n't| not)? paid))$/i
 	);
 	if (suffixKicked) {
 		const cond = parseCondition(suffixKicked[2]);
@@ -350,7 +389,7 @@ const replacements: Production = (s, span) => {
 	}
 
 	const prefixKicked = s.match(
-		/^(if (?:it|~) was(?:n't| not)? kicked(?: with its .+? kicker| twice| \S+ times?)?), (?:it )?(enters .+)$/i
+		/^(if (?:(?:it|~) (?:was(?:n't| not)? kicked(?: with its .+? kicker| twice| \S+ times?)?|escaped|(?:didn't|did not) escape|was(?:n't| not)? evoked)|its evoke cost was(?:n't| not)? paid)), (?:it )?(enters .+)$/i
 	);
 	if (prefixKicked) {
 		const cond = parseCondition(prefixKicked[1]);
@@ -592,34 +631,63 @@ const cda: Production = (s) => {
 	return amount ? [continuous('7a', 'self', { k: 'setBasePT', power: amount, toughness: amount })] : null;
 };
 
-/** "<a/an> <color>? <subtypes> <types>": "Insect artifact creature", "green Elk creature", "colorless Forest land". */
-function parseTypeDescription(desc: string): { colors?: ManaColor[]; types: string[]; subtypes: string[] } | null {
-	const words = desc.trim().split(/\s+/);
+/** "<a/an> [N/N] <color(s)>? <subtypes> <types>": "7/7 red Giant creature", "Insect artifact creature", "green Elk creature", "colorless Forest land". */
+function parseTypeDescription(
+	desc: string
+): { basePT?: [number, number]; colors?: ManaColor[]; types: string[]; subtypes: string[] } | null {
+	const words = desc
+		.trim()
+		.replace(/,/g, ' , ')
+		.split(/\s+/)
+		.filter(Boolean);
+	let basePT: [number, number] | undefined;
+	if (words[0] && /^\d+\/\d+$/.test(words[0])) {
+		const [p, t] = words.shift()!.split('/');
+		basePT = [parseInt(p, 10), parseInt(t, 10)];
+	}
 	let colors: ManaColor[] | undefined;
 	if (words[0] === 'colorless') {
 		colors = [];
 		words.shift();
-	} else if (COLORS[words[0]]) {
+	} else if (words[0] && COLORS[words[0]]) {
 		colors = [COLORS[words.shift()!]];
+		while (words.length >= 2) {
+			if (words[0] === ',' && words[1] === 'and' && words[2] && COLORS[words[2]]) {
+				words.shift();
+				words.shift();
+				colors.push(COLORS[words.shift()!]);
+			} else if (words[0] === ',' && words[1] && COLORS[words[1]]) {
+				words.shift();
+				colors.push(COLORS[words.shift()!]);
+			} else if (words[0] === 'and' && words[1] && COLORS[words[1]]) {
+				words.shift();
+				colors.push(COLORS[words.shift()!]);
+			} else {
+				break;
+			}
+		}
 	}
 	const types: string[] = [];
 	const subtypes: string[] = [];
 	for (const w of words) {
 		if (CARD_TYPES[w]) types.push(CARD_TYPES[w]);
-		else if (/^[A-Z][a-z]+$/.test(w) && types.length === 0) subtypes.push(w);
+		else if (/^[A-Z][A-Za-z'-]*$/.test(w) && types.length === 0) subtypes.push(w);
 		else return null;
 	}
-	return types.length > 0 ? { colors, types, subtypes } : null;
+	return types.length > 0 ? { ...(basePT ? { basePT } : {}), colors, types, subtypes } : null;
 }
 
 /**
  * Attached type changers and ability loss: "Enchanted creature is an Insect artifact creature with
  * base power and toughness 0/1 and has indestructible, and it loses all other abilities, card types,
  * and creature types.", "Enchanted creature loses all abilities and is a green Elk creature with base
- * power and toughness 3/3.", "Enchanted permanent is a colorless Forest land."
+ * power and toughness 3/3.", "Enchanted permanent is a colorless Forest land.",
+ * "Enchanted Mountain is a 7/7 red Giant creature with haste. It's still a land."
  */
 const attachedTypeChange: Production = (s) => {
-	const m = s.match(/^(?:Enchanted|Equipped) (?:creature|permanent|land|artifact) (.+)$/);
+	const m = s.match(
+		/^(?:Enchanted|Equipped) (?:creature|permanent|land|artifact|enchantment|planeswalker|Plains|Island|Swamp|Mountain|Forest) (.+)$/
+	);
 	if (!m) return null;
 	let rest = m[1];
 	let typeDesc: ReturnType<typeof parseTypeDescription> = null;
@@ -628,17 +696,38 @@ const attachedTypeChange: Production = (s) => {
 	let keywords: string[] | undefined;
 	let losesAll = false;
 	let losesTypes = false;
+	let keepTypes = false;
 	let sawIs = false;
+	const addParsedKeywords = (raw: string): boolean => {
+		const parsed = parseKeywordList(raw);
+		if (!parsed) return false;
+		keywords = keywords ? [...keywords, ...parsed] : parsed;
+		return true;
+	};
 	const steps: Array<[RegExp, (mm: RegExpMatchArray) => boolean]> = [
 		[/^(?:, and it|, and|and it|and|,)(?=\s)/, () => true],
 		[/^loses all other abilities, card types, and creature types/, () => ((losesAll = true), (losesTypes = true), true)],
 		[/^loses all other card types and creature types/, () => ((losesTypes = true), true)],
 		[/^loses all other card types and abilities/, () => ((losesAll = true), (losesTypes = true), true)],
 		[/^loses all (?:other )?abilities/, () => ((losesAll = true), true)],
-		[/^is an? (.+?)(?= with |,? and |$)/, (mm) => ((typeDesc = parseTypeDescription(mm[1])), (sawIs = true), typeDesc !== null)],
+		[
+			/^is an? (.+?)(?= with | that's still | in addition to |,? and |$)/,
+			(mm) => {
+				typeDesc = parseTypeDescription(mm[1]);
+				sawIs = true;
+				if (typeDesc?.basePT) basePT = typeDesc.basePT;
+				return typeDesc !== null;
+			}
+		],
 		[/^(?:with|has) base power and toughness (\d+)\/(\d+)/, (mm) => ((basePT = [parseInt(mm[1], 10), parseInt(mm[2], 10)]), true)],
 		[/^with (?:"([^"]+)"|'([^']+)')/, (mm) => ((granted = parseGrantedActivatedAbility(mm[1] ?? mm[2]) ?? undefined), granted !== undefined)],
-		[/^has (.+?)(?=,? and it |$)/, (mm) => ((keywords = parseKeywordList(mm[1]) ?? undefined), keywords !== undefined)]
+		[
+			/^with ([^"']+?)(?= that's still | in addition to |,? and |$)/,
+			(mm) => addParsedKeywords(mm[1])
+		],
+		[/^(?:that's |it's )?still an? (?:land|artifact|enchantment|planeswalker)/, () => ((keepTypes = true), true)],
+		[/^in addition to its other types/, () => ((keepTypes = true), true)],
+		[/^has (.+?)(?= that's still | in addition to |,? and it |,? and |$)/, (mm) => addParsedKeywords(mm[1])]
 	];
 	while ((rest = rest.trimStart()).length > 0) {
 		let matched = false;
@@ -657,9 +746,22 @@ const attachedTypeChange: Production = (s) => {
 	const items: StaticItem[] = [];
 	const desc = typeDesc as ReturnType<typeof parseTypeDescription>;
 	if (desc) {
-		// CR 205.1b: "[creature type] artifact creature" keeps prior types unless the text says it loses them.
-		if (desc.types.includes('Artifact') && desc.types.includes('Creature') && !losesTypes) return null;
-		items.push(continuous('4', 'attachedTo', { k: 'setTypes', types: desc.types, subtypes: desc.subtypes }));
+		const isArtifactCreature = desc.types.includes('Artifact') && desc.types.includes('Creature');
+		// CR 205.1b: "artifact creature" without subtypes keeps all prior card types and subtypes;
+		// "[subtype] artifact creature" keeps prior card types unless losesTypes is stated.
+		if (isArtifactCreature && !losesTypes && !keepTypes && desc.subtypes.length > 0) return null;
+		const additive = keepTypes || (isArtifactCreature && !losesTypes && desc.subtypes.length === 0);
+		if (additive) {
+			items.push(
+				continuous('4', 'attachedTo', {
+					k: 'addTypes',
+					types: desc.types,
+					...(desc.subtypes.length > 0 ? { subtypes: desc.subtypes } : {})
+				})
+			);
+		} else {
+			items.push(continuous('4', 'attachedTo', { k: 'setTypes', types: desc.types, subtypes: desc.subtypes }));
+		}
 		if (desc.colors) items.push(continuous('5', 'attachedTo', { k: 'setColors', colors: desc.colors }));
 	}
 	// Ability loss applies before grants from the same effect ("has indestructible, and it loses all other abilities").
@@ -844,6 +946,30 @@ export function parseStaticAbility(text: string, offset = 0): StaticParse {
 	const items: StaticItem[] = [];
 	const unparsed: Span[] = [];
 	for (const sentence of splitSentences(text, offset)) {
+		const trimmed = sentence.text.replace(/’/g, "'").replace(/\.$/, '').trim();
+		if (/^(?:it's|they're|it is) still (?:a |an )?(?:lands?|artifacts?|enchantments?|planeswalkers?)$/i.test(trimmed)) {
+			let converted = false;
+			for (let i = items.length - 1; i >= 0; i--) {
+				const it = items[i];
+				if (
+					it.kind === 'static' &&
+					it.static.k === 'continuous' &&
+					it.static.layer === '4' &&
+					it.static.affected === 'attachedTo' &&
+					it.static.mod.k === 'setTypes'
+				) {
+					const prev = it.static.mod;
+					it.static.mod = {
+						k: 'addTypes',
+						types: prev.types,
+						...(prev.subtypes && prev.subtypes.length > 0 ? { subtypes: prev.subtypes } : {})
+					};
+					converted = true;
+					break;
+				}
+			}
+			if (converted) continue;
+		}
 		const parsed = parseSentence(sentence.text, sentence.span);
 		if (parsed && (parsed.length > 0 || items.length > 0)) items.push(...parsed);
 		else unparsed.push(sentence.span);

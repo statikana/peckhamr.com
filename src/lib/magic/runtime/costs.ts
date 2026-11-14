@@ -44,7 +44,10 @@ import {
 	evaluateKickerCondition,
 	expandOptionalAdditionalCosts,
 	getObjectKickerInfo,
+	hasReturnToHandOptionalCost,
 	isCastConditionMet,
+	isObjectEscaped,
+	isObjectEvoked,
 	spellOptionalAdditionalCosts,
 	validateOptionalCostCounts
 } from './kicker.ts';
@@ -58,7 +61,10 @@ export {
 	evaluateKickerCondition,
 	expandOptionalAdditionalCosts,
 	getObjectKickerInfo,
+	hasReturnToHandOptionalCost,
 	isCastConditionMet,
+	isObjectEscaped,
+	isObjectEvoked,
 	spellOptionalAdditionalCosts,
 	validateOptionalCostCounts
 };
@@ -461,7 +467,9 @@ function effectiveAbilityManaCostInner(
 			? 'equip'
 			: abilityId.startsWith('cycling_')
 				? 'cycling'
-				: undefined);
+				: abilityId.startsWith('unearth_')
+					? 'unearth'
+					: undefined);
 	let forceZeroCost = false;
 	let genericReduction = 0;
 	let genericIncrease = 0;
@@ -724,7 +732,14 @@ function objectCandidates(def: ObjectCostDef, ctx: CostContext, used: Set<string
 			if (def.filter === 'self') return null;
 			if (def.zone !== 'graveyard' && def.zone !== 'hand' && def.zone !== 'battlefield') return [];
 			const filter = def.filter as ObjectFilter | undefined;
-			return zoneOf(ctx.player, def.zone).filter((c) => free(c) && (!filter || matchesObjectFilter(c, filter, fctx)));
+			const excludeSelf =
+				Boolean(filter?.other) || (def.zone === 'graveyard' && ctx.source.zone === 'graveyard');
+			return zoneOf(ctx.player, def.zone).filter(
+				(c) =>
+					free(c) &&
+					(!excludeSelf || c.instanceId !== ctx.source.instanceId) &&
+					(!filter || matchesObjectFilter(c, filter, fctx))
+			);
 		}
 		case 'revealFromHand': {
 			const filter = def.filter as ObjectFilter | undefined;
@@ -902,6 +917,9 @@ function planFlat(ctx: CostContext, flat: Flat[], objects: string[][] | undefine
 	// Similarly, a discard-self cost can't use the source card to pay another discard/exile-from-hand cost.
 	const tapsSelf = flat.some((f) => f.def.k === 'tapSelf');
 	const discardsSelf = flat.some((f) => f.def.k === 'discard' && f.def.filter === 'self');
+	const exilesSelfFromGraveyard = flat.some(
+		(f) => f.def.k === 'exileFrom' && f.def.zone === 'graveyard' && f.def.filter === 'self'
+	);
 
 	for (const { def, topLevel } of flat) {
 		const err = checkSimple(def, ctx);
@@ -926,7 +944,11 @@ function planFlat(ctx: CostContext, flat: Flat[], objects: string[][] | undefine
 			((def.k === 'tapOthers' || def.k === 'tapSubsetSum') && tapsSelf) ||
 			(discardsSelf &&
 				(def.k === 'revealFromHand' ||
-					(def.filter !== 'self' && (def.k === 'discard' || (def.k === 'exileFrom' && def.zone === 'hand')))));
+					(def.filter !== 'self' && (def.k === 'discard' || (def.k === 'exileFrom' && def.zone === 'hand'))))) ||
+			(exilesSelfFromGraveyard &&
+				def.k === 'exileFrom' &&
+				def.zone === 'graveyard' &&
+				def.filter !== 'self');
 		const exclude = reserveSelf ? new Set([...used, ctx.source.instanceId]) : used;
 		const candidates = objectCandidates(def, ctx, exclude);
 		if (!candidates) {

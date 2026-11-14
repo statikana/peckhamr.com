@@ -72,6 +72,8 @@ import {
 	evaluateKickerCondition,
 	getObjectKickerInfo,
 	isConditionMetWithKicker,
+	isObjectEscaped,
+	isObjectEvoked,
 	type KickerTrackingInfo
 } from './kicker.ts';
 import { noteLayerInputsChanged } from './layerCache.ts';
@@ -166,6 +168,43 @@ export interface EffectPorts {
 	lose(state: GameState, player: PlayerGameState, reason: string): void;
 	/** CR 303.4f–g: Legal object/player ids an Aura entering without being cast may enchant, ranked by bot heuristic. */
 	legalAuraAttachCandidates(state: GameState, aura: CardInstance, controller: PlayerGameState): string[];
+	/** CR 707.10c / 115.7d: Computes target slots and currently legal candidates for retargeting a copied stack item. */
+	getStackItemRetargetSlots(
+		state: GameState,
+		orig: StackItem,
+		copyControllerId: string
+	): StackItemRetargetSlot[];
+	/** CR 707.10c / 115.7d: Validates a proposed per-spec retarget assignment for a copied stack item. */
+	validateStackItemRetarget(
+		state: GameState,
+		orig: StackItem,
+		copyControllerId: string,
+		targetsBySpec: TargetRef[][]
+	): boolean;
+	/** Heuristic target assignment when a bot chooses new targets for a copied spell or ability. */
+	chooseBotStackItemRetarget(
+		state: GameState,
+		bot: PlayerGameState,
+		orig: StackItem,
+		slots: StackItemRetargetSlot[],
+		copyIndex: number
+	): { targets: TargetRef[]; targetsBySpec: TargetRef[][] };
+	/** CR 707.10 / 707.10b / 707.10f: Creates a copy of a spell or ability on the stack and emits copy/target events. */
+	pushCopiedStackItem(
+		state: GameState,
+		controller: PlayerGameState,
+		orig: StackItem,
+		targets: TargetRef[],
+		targetsBySpec: TargetRef[][] | undefined,
+		opts?: { exceptColors?: ManaColor[]; nonLegendary?: boolean }
+	): StackItem;
+}
+
+export interface StackItemRetargetSlot {
+	spec: TargetSpec;
+	originalTargets: TargetRef[];
+	legalCandidates: TargetRef[];
+	zone: ZoneType | 'player';
 }
 
 let ports: EffectPorts | null = null;
@@ -751,6 +790,35 @@ class Run {
 		this.result.paused = true;
 	}
 
+	/** Queues a `yesNo` prompt within the current step (`phase = 'step'`) and pauses execution. */
+	pauseForYesNo(
+		chooser: PlayerGameState,
+		title: string,
+		question: string,
+		answerKey: string,
+		labels?: { yesLabel: string; noLabel: string }
+	): void {
+		const item = this.saveFrame(this.stepIndex, this.answers, 'step', this.subStepIndex);
+		enqueueChoicePrompt(this.state, {
+			id: P().uid('prompt', this.state),
+			kind: 'yesNo',
+			purpose: 'generic',
+			playerId: chooser.playerId,
+			title,
+			description: question,
+			yesLabel: labels?.yesLabel ?? 'Yes',
+			noLabel: labels?.noLabel ?? 'No',
+			continuation: {
+				kind: 'effect_choice',
+				stackItemId: item.id,
+				stepIndex: this.stepIndex,
+				answerKey
+			},
+			choice: { kind: 'yesNo', question }
+		});
+		this.result.paused = true;
+	}
+
 	/** Queues a `yesNo` prompt for an optional step (`step.optional`) and pauses execution. */
 	pauseForOptional(
 		chooser: PlayerGameState,
@@ -1093,14 +1161,19 @@ class Run {
 			}
 		}
 		for (let i = this.subStepIndex; i < ids.length; i++) {
+			this.subStepIndex = i;
 			const promptsBefore = this.state.pendingPrompts.length;
 			const res = applyAt(ids[i], i);
+			if (this.result.paused) {
+				return { total: ids.length, paused: true };
+			}
 			const queued = this.state.pendingPrompts.slice(promptsBefore);
 			if (this.canPause && (res === 'pending' || queued.some((pr) => this.isNestedBlockingPrompt(pr)))) {
 				this.pauseForNestedPrompts(queued, i + 1);
 				return { total: ids.length, paused: true };
 			}
 		}
+		this.subStepIndex = 0;
 		return { total: ids.length, paused: false };
 	}
 
@@ -1184,6 +1257,8 @@ class Run {
 				return devotion(this.you, a.colors);
 			case 'commanderCastCount':
 				return playerCommanderCastCount(this.state, this.you.playerId);
+			case 'stormCount':
+				return this.ctx.item.stormCount ?? 0;
 			case 'kickedCount':
 				return evaluateKickedCountAmount(a, this.kickerInfo());
 			case 'stat': {
@@ -2006,6 +2081,8 @@ class Run {
 				return this.sacrifice(step);
 			case 'discard':
 				return this.discard(step);
+			case 'revealAndDiscard':
+				return this.revealAndDiscard(step);
 			case 'tap':
 			case 'untap':
 			case 'tapOrUntap' as Verb: {
@@ -2056,60 +2133,172 @@ class Run {
 			}
 			case 'copySpell': {
 				const sel = step.subject;
-				const t = sel.k === 'target' ? this.targetsForSpecIndex(sel.index)[0] : undefined;
-				const orig =
-					t?.kind === 'stack'
-						? s.stack.find((item) => item.id === t.id && item.kind === 'spell')
+				let orig: StackItem | undefined;
+				if (sel.k === 'target') {
+					const t = this.targetsForSpecIndex(sel.index)[0];
+					orig =
+						t?.kind === 'stack'
+							? s.stack.find((item) => item.id === t.id || item.sourceInstanceId === t.id)
+							: undefined;
+				} else if (sel.k === 'eventObject') {
+					orig =
+						(this.ctx.eventObjectId
+							? s.stack.find(
+									(item) =>
+										item.id !== this.ctx.item.id &&
+										(item.sourceInstanceId === this.ctx.eventObjectId ||
+											item.id === this.ctx.eventObjectId)
+								)
+							: undefined) ?? this.ctx.item.triggerEventStackItem;
+				} else if (sel.k === 'self') {
+					orig =
+						s.stack.find(
+							(item) =>
+								item.id !== this.ctx.item.id &&
+								item.kind === 'spell' &&
+								(item.sourceInstanceId === this.ctx.sourceId || item.id === this.ctx.sourceId)
+						) ?? this.ctx.item.triggerEventStackItem;
+				} else if (sel.k === 'binding') {
+					const bId = this.bindings.get(sel.name)?.[0]?.id;
+					orig = bId
+						? s.stack.find(
+								(item) =>
+									item.id !== this.ctx.item.id &&
+									(item.id === bId || item.sourceInstanceId === bId)
+							)
 						: undefined;
+				}
 				if (!orig) return;
-				const copyInstanceId = p.uid('copy', s);
-				const copyItem: StackItem = {
-					...orig,
-					id: p.uid('stk', s),
-					sourceInstanceId: copyInstanceId,
-					controllerId: you.playerId,
-					ownerId: you.playerId,
-					title: `${orig.card.name} (Copy)`,
-					targets: orig.targets.map((trg) => ({ ...trg })),
-					targetsBySpec: orig.targetsBySpec
-						? orig.targetsBySpec.map((bucket) => bucket.map((trg) => ({ ...trg })))
-						: undefined,
-					chosenModes: orig.chosenModes ? [...orig.chosenModes] : undefined,
-					isCopy: true,
-					createdAt: Date.now()
-				};
-				s.stack.push(copyItem);
-				const dummyObj: CardInstance = {
-					instanceId: copyInstanceId,
-					objectVersion: 1,
-					card: orig.card,
-					ownerId: you.playerId,
-					controllerId: you.playerId,
-					defaultControllerId: you.playerId,
-					zone: 'stack',
-					tapped: false,
-					summoningSick: false,
-					damageMarked: 0,
-					deathtouchDamageMarked: false,
-					tempPowerMod: 0,
-					tempToughnessMod: 0,
-					grantedKeywords: [],
-					attachedToId: null,
-					counters: createEmptyCounters(),
-					isCommander: false,
-					commanderCastCount: 0,
-					usedLoyaltyThisTurn: false,
-					transformed: false,
-					isToken: false,
-					enteredTimestamp: allocateTimestamp(s)
-				};
-				emitEvent(s, {
-					kind: 'SpellCopied',
-					playerId: you.playerId,
-					objectId: copyInstanceId,
-					object: dummyObj
-				});
-				p.addLog(s, 'cast', `${you.username} copied ${orig.card.name} on the stack (CR 707.10).`, you.playerId);
+
+				const count = step.params?.count ? Math.max(0, this.amount(step.params.count)) : 1;
+				if (count <= 0) return;
+
+				const sameRefList = (a: TargetRef[], b: TargetRef[]) =>
+					a.length === b.length &&
+					a.every((x, idx) => x.kind === b[idx]?.kind && x.id === b[idx]?.id);
+
+				const { paused } = this.runIndexedBatch(
+					`copy_batch:${this.stepIndex}`,
+					() => Array.from({ length: count }, (_, idx) => String(idx)),
+					(_batchEntry, k) => {
+						let chosenTargets: TargetRef[] = orig.targets.map((trg) => ({ ...trg }));
+						let chosenTargetsBySpec: TargetRef[][] | undefined = orig.targetsBySpec
+							? orig.targetsBySpec.map((bucket) => bucket.map((trg) => ({ ...trg })))
+							: undefined;
+
+						if (step.params?.mayChooseNewTargets && orig.targets.length > 0) {
+							const slots = p.getStackItemRetargetSlots(s, orig, you.playerId);
+							const hasLegalAlternative =
+								slots.length > 0 &&
+								slots.some((sl) => {
+									if (sl.spec.min === 0 && sl.originalTargets.length > 0) return true;
+									if (sl.legalCandidates.length < sl.spec.min) return false;
+									if (sl.legalCandidates.length > sl.originalTargets.length) return true;
+									return !sameRefList(sl.legalCandidates, sl.originalTargets);
+								});
+
+							if (hasLegalAlternative) {
+								if (you.isBot || !this.canPause) {
+									const botChoice = p.chooseBotStackItemRetarget(s, you, orig, slots, k);
+									chosenTargets = botChoice.targets;
+									chosenTargetsBySpec = botChoice.targetsBySpec;
+								} else {
+									const ynKey = `retarget_yn:${this.stepIndex}:${k}`;
+									const ynAns = this.answers[ynKey];
+									if (!ynAns || ynAns.kind !== 'yesNo') {
+										const copyLabel =
+											count > 1
+												? `copy #${k + 1} of ${orig.card.name}`
+												: `the copy of ${orig.card.name}`;
+										const curDesc = orig.targets.map((trg) => trg.label).join(', ');
+										this.pauseForYesNo(
+											you,
+											`${this.ctx.title} — Retarget Copy`,
+											`Choose new targets for ${copyLabel}? (Current target${orig.targets.length === 1 ? '' : 's'}: ${curDesc})`,
+											ynKey,
+											{ yesLabel: 'Choose new targets', noLabel: 'Keep current targets' }
+										);
+										return;
+									}
+
+									if (ynAns.yes) {
+										const nextBySpec: TargetRef[][] = [];
+										for (let sIdx = 0; sIdx < slots.length; sIdx++) {
+											const sl = slots[sIdx];
+											if (sl.spec.min > 0 && sl.legalCandidates.length < sl.spec.min) {
+												nextBySpec.push(sl.originalTargets.map((trg) => ({ ...trg })));
+												continue;
+											}
+											const pool: TargetRef[] = [...sl.legalCandidates];
+											if (slots.length > 1) {
+												for (const origT of sl.originalTargets) {
+													if (!pool.some((c) => c.kind === origT.kind && c.id === origT.id)) {
+														pool.push({ ...origT });
+													}
+												}
+											}
+											if (pool.length === 0) {
+												nextBySpec.push([]);
+												continue;
+											}
+											const maxPick = Math.min(sl.spec.max, pool.length);
+											const slotKey = `retarget_slot:${this.stepIndex}:${k}:${sIdx}`;
+											const slotAns = this.answers[slotKey];
+											if (!slotAns || slotAns.kind !== 'chooseObjects') {
+												const altCands = sl.legalCandidates.filter(
+													(c) => !sl.originalTargets.some((o) => o.kind === c.kind && o.id === c.id)
+												);
+												const defaultRefs =
+													altCands.length >= sl.spec.min
+														? altCands.slice(0, Math.max(1, sl.spec.min))
+														: sl.legalCandidates.slice(0, sl.spec.min);
+												const copyTitle =
+													count > 1
+														? `Copy #${k + 1} of ${orig.card.name}`
+														: `Copy of ${orig.card.name}`;
+												const countDesc =
+													sl.spec.min === maxPick ? `${maxPick}` : `${sl.spec.min}–${maxPick}`;
+												this.pauseForChoice(
+													you,
+													`${copyTitle} — Choose New Target`,
+													`Choose ${countDesc} target(s) for ${copyTitle}.`,
+													pool.map((c) => c.id),
+													sl.spec.min,
+													maxPick,
+													sl.zone === 'player' ? 'battlefield' : sl.zone,
+													defaultRefs.map((r) => r.id),
+													slotKey,
+													'step'
+												);
+												return;
+											}
+											const picked = slotAns.objectIds
+												.map((id) => pool.find((c) => c.id === id))
+												.filter((c): c is TargetRef => Boolean(c));
+											for (const c of sl.legalCandidates) {
+												if (picked.length >= sl.spec.min) break;
+												if (!picked.some((x) => x.kind === c.kind && x.id === c.id)) {
+													picked.push(c);
+												}
+											}
+											nextBySpec.push(picked.slice(0, maxPick));
+										}
+										if (p.validateStackItemRetarget(s, orig, you.playerId, nextBySpec)) {
+											chosenTargetsBySpec = nextBySpec;
+											chosenTargets = nextBySpec.flat();
+										}
+									}
+								}
+							}
+						}
+
+						p.pushCopiedStackItem(s, you, orig, chosenTargets, chosenTargetsBySpec, {
+							exceptColors: step.params?.exceptColors,
+							nonLegendary: step.params?.nonLegendary
+						});
+					}
+				);
+				if (paused) return;
 				return;
 			}
 			case 'mill': {
@@ -2251,7 +2440,41 @@ class Run {
 				});
 				this.bind(step, objs);
 				if (objs.length === 0) return;
-				const addTypes = step.params?.addTypes?.length ? [...step.params.addTypes] : ['Creature'];
+				const pParams = step.params ?? {};
+				const setTypes = pParams.setTypes?.length ? [...pParams.setTypes] : undefined;
+				const addTypes = !setTypes
+					? pParams.addTypes?.length
+						? [...pParams.addTypes]
+						: ['Creature']
+					: undefined;
+				const setSubtypes =
+					pParams.setSubtypes !== undefined ? [...pParams.setSubtypes] : undefined;
+				const addSubtypes = pParams.addSubtypes?.length ? [...pParams.addSubtypes] : undefined;
+				const layer4 = {
+					...(addTypes ? { addTypes } : {}),
+					...(setTypes ? { setTypes } : {}),
+					...(addSubtypes ? { addSubtypes } : {}),
+					...(setSubtypes !== undefined ? { setSubtypes } : {})
+				};
+				const layer5 =
+					pParams.setColors !== undefined || pParams.addColors?.length
+						? {
+								...(pParams.setColors !== undefined ? { setColors: [...pParams.setColors] } : {}),
+								...(pParams.addColors?.length ? { addColors: [...pParams.addColors] } : {})
+							}
+						: undefined;
+				const layer6 = pParams.addKeywords?.length
+					? { addKeywords: [...pParams.addKeywords] }
+					: undefined;
+				const layer7b =
+					pParams.setPower !== undefined && pParams.setToughness !== undefined
+						? {
+								setPower: this.amount(pParams.setPower),
+								setToughness: this.amount(pParams.setToughness)
+							}
+						: undefined;
+				const expires: 'endOfTurn' | 'never' =
+					pParams.duration === 'permanent' ? 'never' : 'endOfTurn';
 				for (const o of objs) {
 					const ts = allocateTimestamp(s);
 					(s.timedContinuousEffects ??= []).push({
@@ -2259,7 +2482,11 @@ class Run {
 						sourceName: this.ctx.sourceCard.name,
 						controllerId: you.playerId,
 						affected: [{ instanceId: o.instanceId, objectVersion: o.objectVersion ?? 1 }],
-						layer4: { addTypes }
+						expires,
+						layer4,
+						...(layer5 ? { layer5 } : {}),
+						...(layer6 ? { layer6 } : {}),
+						...(layer7b ? { layer7b } : {})
 					});
 					noteLayerInputsChanged(s);
 					if (this.ctx.item.crewedByIds !== undefined) {
@@ -2530,7 +2757,12 @@ class Run {
 				batchKey,
 				() => {
 					const objs = this.objects(sel).filter(
-						(o) => o.zone === 'battlefield' && o.controllerId === actor.playerId
+						(o) =>
+							o.zone === 'battlefield' &&
+							o.controllerId === actor.playerId &&
+							(sel.k !== 'self' ||
+								this.ctx.item.sourceObjectVersion === undefined ||
+								(o.objectVersion ?? 1) === this.ctx.item.sourceObjectVersion)
 					);
 					this.bind(step, objs);
 					return objs.map((o) => o.instanceId);
@@ -2730,6 +2962,163 @@ class Run {
 				const f = this.locate(id);
 				if (!f || f.zone !== 'hand') return;
 				return discardCard(f.holder, f.inst);
+			}
+		);
+	}
+
+	revealAndDiscard(step: EffectStep): void {
+		const s = this.state;
+		const p = P();
+		const spec = step.params?.coerciveDiscard;
+		if (!spec) return;
+		const targetPlayer = this.players(step.subject)[0];
+		if (!targetPlayer || targetPlayer.lost) return;
+		const chooser = this.playerRef(spec.chooser) ?? this.you;
+		if (!chooser || chooser.lost) return;
+
+		const batchKey = `batch:${this.stepIndex}`;
+		const choiceKey = `coercive:${this.stepIndex}`;
+		const revealKey = `revealed:${this.stepIndex}`;
+
+		if (!this.answers[batchKey]) {
+			if (!this.answers[revealKey]) {
+				const activeViewerIds = s.players.filter((pl) => !pl.lost).map((pl) => pl.playerId);
+				for (const cardInst of targetPlayer.hand) {
+					const known = new Set(cardInst.knownToPlayerIds ?? []);
+					for (const vid of activeViewerIds) known.add(vid);
+					cardInst.knownToPlayerIds = [...known];
+				}
+				const revealedNames =
+					targetPlayer.hand.length > 0
+						? targetPlayer.hand.map((c) => c.card.name).join(', ')
+						: 'an empty hand';
+				p.addLog(
+					s,
+					'rule',
+					`${targetPlayer.username} revealed their hand (${revealedNames}).`,
+					targetPlayer.playerId
+				);
+				this.answers[revealKey] = { kind: 'yesNo', yes: true };
+			}
+
+			const filterCtx = {
+				state: s,
+				controllerId: this.you.playerId,
+				source: this.locate(this.ctx.sourceId)?.inst,
+				xValue: this.ctx.xValue
+			};
+			const matching = spec.filter
+				? targetPlayer.hand.filter((c) => matchesObjectFilter(c, spec.filter!, filterCtx))
+				: [...targetPlayer.hand];
+
+			if (matching.length === 0) {
+				this.stepDecisions[this.stepIndex] = false;
+				this.bind(step, []);
+				this.answers[batchKey] = { kind: 'chooseObjects', objectIds: [] };
+				return;
+			}
+
+			const minPick = spec.optionalChoice ? 0 : 1;
+			const maxPick = 1;
+			if (!chooser.isBot && this.canPause && !this.answers[choiceKey]) {
+				const destVerb = spec.destination === 'exile' ? 'exile' : 'have them discard';
+				const desc = spec.optionalChoice
+					? `You may choose a card from ${targetPlayer.username}'s revealed hand to ${destVerb}.`
+					: `Choose a card from ${targetPlayer.username}'s revealed hand to ${destVerb}.`;
+				this.pauseForChoice(
+					chooser,
+					`${this.ctx.title} — Choose Card from ${targetPlayer.username}'s Hand`,
+					desc,
+					matching.map((c) => c.instanceId),
+					minPick,
+					maxPick,
+					'hand',
+					undefined,
+					choiceKey
+				);
+				return;
+			}
+
+			let chosen: CardInstance[];
+			if (this.answers[choiceKey]) {
+				chosen = this.answered(choiceKey, matching, minPick, maxPick) ?? [];
+			} else if (targetPlayer.playerId !== chooser.playerId) {
+				const isLandCard = (c: CardInstance): boolean => {
+					const card = c.copiableCard ?? c.card;
+					const view = resolveObjectFaces(card, instanceFaceOptions(c, 'hand'));
+					return view.types.includes('Land');
+				};
+				const sorted = [...matching].sort((a, b) => {
+					const aLand = isLandCard(a);
+					const bLand = isLandCard(b);
+					if (aLand !== bLand) return aLand ? 1 : -1;
+					return objectManaValue(s, b) - objectManaValue(s, a);
+				});
+				chosen = sorted.slice(0, 1);
+			} else if (spec.optionalChoice) {
+				chosen = [];
+			} else {
+				const sorted = [...matching].sort((a, b) => objectManaValue(s, a) - objectManaValue(s, b));
+				chosen = sorted.slice(0, 1);
+			}
+
+			this.stepDecisions[this.stepIndex] = chosen.length > 0;
+			this.bind(step, chosen);
+			this.answers[batchKey] = {
+				kind: 'chooseObjects',
+				objectIds: chosen.map((c) => c.instanceId)
+			};
+		}
+
+		const sourceVer =
+			this.ctx.item.sourceObjectVersion ??
+			this.locate(this.ctx.sourceId)?.inst.objectVersion ??
+			1;
+
+		this.runIndexedBatch(
+			batchKey,
+			() => [],
+			(id) => {
+				const f = this.locate(id);
+				if (!f || f.zone !== 'hand') return;
+				if (spec.destination === 'exile') {
+					const res = moveObject(s, f.inst, 'exile', {
+						from: { player: f.holder, zone: 'hand' },
+						toPlayer: f.holder,
+						graveyardReplacement: true,
+						bumpVersion: true,
+						newTimestamp: true
+					});
+					if (res === 'exile') {
+						f.inst.exiledBy = {
+							sourceInstanceId: this.ctx.sourceId,
+							sourceObjectVersion: sourceVer
+						};
+					}
+					p.addLog(
+						s,
+						'rule',
+						`${chooser.username} chose ${f.inst.card.name} from ${f.holder.username}'s hand and exiled it.`,
+						chooser.playerId
+					);
+					return res;
+				}
+				const res = moveObject(s, f.inst, 'graveyard', {
+					from: { player: f.holder, zone: 'hand' },
+					toPlayer: f.holder,
+					graveyardReplacement: true,
+					bumpVersion: true,
+					newTimestamp: true,
+					discardReason: 'discard',
+					discardPlayerId: f.holder.playerId
+				});
+				p.addLog(
+					s,
+					'rule',
+					`${chooser.username} chose ${f.inst.card.name}; ${f.holder.username} discarded it.`,
+					f.holder.playerId
+				);
+				return res;
 			}
 		);
 	}
@@ -2982,8 +3371,17 @@ class Run {
 			const backTypes = faces[1]?.typeLine ?? '';
 			return isTransformingDfc && faces.length >= 2 && !/\b(?:Instant|Sorcery)\b/.test(backTypes);
 		};
+		const checkSelfGyVersion =
+			this.stepIndex === 0 &&
+			expectedFrom === 'graveyard' &&
+			step.subject.k === 'self' &&
+			this.ctx.item.sourceObjectVersion !== undefined;
+		const matchesSelfVersion = (inst: CardInstance): boolean =>
+			!checkSelfGyVersion || (inst.objectVersion ?? 1) === this.ctx.item.sourceObjectVersion;
 		if (!this.answers[batchKey]) {
-			let objs = this.objects(step.subject).filter((o) => o.zone === expectedFrom);
+			let objs = this.objects(step.subject).filter(
+				(o) => o.zone === expectedFrom && matchesSelfVersion(o)
+			);
 			if (params.topmostOnly) {
 				// CR 404.2: the graveyard's order matters; the top card is the last one in the array.
 				objs = objs.length > 0 ? [objs[objs.length - 1]] : [];
@@ -3025,7 +3423,7 @@ class Run {
 			() => [],
 			(id) => {
 				const f = this.locate(id);
-				if (!f || f.zone !== expectedFrom) return;
+				if (!f || f.zone !== expectedFrom || !matchesSelfVersion(f.inst)) return;
 				const o = f.inst;
 				const holder = f.holder;
 				if (params.to === 'hand') {
@@ -3070,7 +3468,7 @@ class Run {
 					const pickedId = auraAns?.kind === 'chooseObjects' ? auraAns.objectIds[0] : undefined;
 					attachObject(s, o, pickedId && attachCands.includes(pickedId) ? pickedId : attachCands[0]);
 				}
-				o.summoningSick = !enteringView.keywords.includes('Haste');
+				o.summoningSick = params.unearth ? false : !enteringView.keywords.includes('Haste');
 				o.tapped = Boolean(params.tapped);
 				o.defaultControllerId = controller.playerId;
 				const res = moveObject(s, o, 'battlefield', {
@@ -3080,6 +3478,37 @@ class Run {
 					newTimestamp: !isAura,
 					bumpVersion: true
 				});
+				if (params.unearth && o.zone === 'battlefield') {
+					// CR 702.84a: permanent Haste, leave-battlefield exile replacement, and next-end-step exile delayed trigger.
+					o.unearthLeaveExile = true;
+					const ts = allocateTimestamp(s);
+					(s.timedContinuousEffects ??= []).push({
+						timestamp: ts,
+						sourceName: this.ctx.sourceCard.name,
+						controllerId: controller.playerId,
+						affected: [{ instanceId: o.instanceId, objectVersion: o.objectVersion ?? 1 }],
+						expires: 'never',
+						layer6: { addKeywords: ['haste'] }
+					});
+					noteLayerInputsChanged(s);
+					(s.delayedTriggers ??= []).push({
+						id: p.uid('dtrig', s),
+						controllerId: controller.playerId,
+						sourceInstanceId: o.instanceId,
+						sourceCard: this.ctx.sourceCard,
+						triggerPhase: 'end_step',
+						createdAtTurn: s.turnNumber,
+						targetInstanceId: o.instanceId,
+						targetObjectVersion: o.objectVersion,
+						title: `${this.ctx.title} — Unearth Delayed Exile Trigger`,
+						description: `At the beginning of the next end step, exile ${enteringView.name}.`,
+						delayedEffect: {
+							kind: 'exile',
+							targetInstanceId: o.instanceId,
+							targetObjectVersion: o.objectVersion
+						}
+					});
+				}
 				p.addLog(
 					s,
 					'cast',
@@ -3596,6 +4025,10 @@ class Run {
 				return this.you.battlefield.some((perm) => !perm.phasedOut && Boolean(perm.isCommander));
 			case 'kicked':
 				return evaluateKickerCondition(c, this.kickerInfo());
+			case 'evoked':
+				return isObjectEvoked(this.state, this.ctx.sourceId, this.ctx.item);
+			case 'escaped':
+				return isObjectEscaped(this.state, this.ctx.sourceId, this.ctx.item);
 		}
 	}
 

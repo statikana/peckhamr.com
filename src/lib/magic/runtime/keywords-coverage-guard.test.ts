@@ -27,6 +27,7 @@ export const KEYWORD_COVERAGE_FILES: Record<string, readonly string[]> = {
 	'basic landcycling': ['runtime/keywords-casting.test.ts'],
 	'battle cry': ['runtime/keywords-combat-damage.test.ts'],
 	bushido: ['runtime/keywords-combat-damage.test.ts'],
+	buyback: ['runtime/graveyard-hand-cast-keywords.test.ts'],
 	changeling: ['runtime/keywords-casting.test.ts', 'runtime/keywords-damage.test.ts'],
 	convoke: ['runtime/convoke-delve.test.ts'],
 	crew: ['runtime/crew-and-vehicles.test.ts'],
@@ -39,6 +40,8 @@ export const KEYWORD_COVERAGE_FILES: Record<string, readonly string[]> = {
 	'double strike': ['runtime/keywords-combat-damage.test.ts', 'magic.test.ts'],
 	enchant: ['runtime/keywords-protection-attachments.test.ts', 'runtime/tier1b.test.ts'],
 	equip: ['runtime/keywords-protection-attachments.test.ts', 'runtime/wave4-cr-completion.test.ts'],
+	escape: ['runtime/graveyard-hand-cast-keywords.test.ts'],
+	evoke: ['runtime/graveyard-hand-cast-keywords.test.ts'],
 	exalted: ['runtime/keywords-combat-damage.test.ts'],
 	exploit: ['runtime/keywords-casting.test.ts'],
 	fear: ['runtime/keywords-evasion.test.ts', 'runtime/tier2a.test.ts'],
@@ -76,10 +79,12 @@ export const KEYWORD_COVERAGE_FILES: Record<string, readonly string[]> = {
 	reach: ['runtime/keywords-evasion.test.ts', 'magic.test.ts'],
 	shadow: ['runtime/keywords-evasion.test.ts', 'runtime/tier2a.test.ts'],
 	shroud: ['runtime/keywords-protection-attachments.test.ts', 'magic.test.ts'],
+	storm: ['runtime/land-animate-copy-storm.test.ts'],
 	suspend: ['runtime/keywords-casting.test.ts', 'magic.test.ts'],
 	swampwalk: ['runtime/keywords-evasion.test.ts'],
 	trample: ['runtime/keywords-combat-damage.test.ts', 'runtime/combat-tier1.test.ts'],
 	typecycling: ['runtime/keywords-casting.test.ts'],
+	unearth: ['runtime/graveyard-hand-cast-keywords.test.ts'],
 	vigilance: ['runtime/keywords-evasion.test.ts', 'runtime/tier3b.test.ts'],
 	ward: ['runtime/keywords-protection-attachments.test.ts', 'runtime/wave4-cr-completion.test.ts'],
 	wither: ['runtime/keywords-combat-damage.test.ts', 'runtime/keywords-damage.test.ts']
@@ -91,11 +96,20 @@ const SAMPLE_ORACLE_FOR_KEYWORD: Record<string, { typeLine: string; oracleText: 
 	annihilator: { typeLine: 'Creature — Eldrazi', oracleText: 'Annihilator 2' },
 	'basic landcycling': { typeLine: 'Creature — Elephant', oracleText: 'Basic landcycling {2}' },
 	bushido: { typeLine: 'Creature — Human Samurai', oracleText: 'Bushido 1' },
+	buyback: { typeLine: 'Instant', oracleText: 'Buyback {3}\nDraw a card.' },
 	crew: { typeLine: 'Artifact — Vehicle', oracleText: 'Crew 2' },
 	cycling: { typeLine: 'Instant', oracleText: 'Draw a card.\nCycling {2}' },
 	disguise: { typeLine: 'Creature — Human Detective', oracleText: 'Disguise {2}{U}' },
 	enchant: { typeLine: 'Enchantment — Aura', oracleText: 'Enchant creature' },
 	equip: { typeLine: 'Artifact — Equipment', oracleText: 'Equip {1}' },
+	escape: {
+		typeLine: 'Creature — Ox',
+		oracleText: 'Escape—{3}{W}, Exile three other cards from your graveyard.'
+	},
+	evoke: {
+		typeLine: 'Creature — Elemental',
+		oracleText: 'When ~ enters, draw two cards.\nEvoke {2}{U}'
+	},
 	flashback: { typeLine: 'Sorcery', oracleText: 'Draw a card.\nFlashback {2}{U}' },
 	'for mirrodin!': { typeLine: 'Artifact — Equipment', oracleText: 'For Mirrodin!\nEquip {2}' },
 	fuse: { typeLine: 'Instant', oracleText: 'Draw a card.\nFuse' },
@@ -111,8 +125,10 @@ const SAMPLE_ORACLE_FOR_KEYWORD: Record<string, { typeLine: string; oracleText: 
 	},
 	partner: { typeLine: 'Legendary Creature — Human', oracleText: 'Partner' },
 	protection: { typeLine: 'Creature — Human Knight', oracleText: 'Protection from red' },
+	storm: { typeLine: 'Instant', oracleText: 'Draw a card.\nStorm' },
 	suspend: { typeLine: 'Sorcery', oracleText: 'Draw a card.\nSuspend 4—{U}' },
 	typecycling: { typeLine: 'Creature — Human Wizard', oracleText: 'Wizardcycling {3}' },
+	unearth: { typeLine: 'Creature — Zombie', oracleText: 'Unearth {1}{B}' },
 	ward: { typeLine: 'Creature — Drake', oracleText: 'Ward {2}' }
 };
 
@@ -187,11 +203,14 @@ describe('Implemented Keywords Coverage Guard', () => {
 			'annihilator',
 			'basic landcycling',
 			'bushido',
+			'buyback',
 			'crew',
 			'cycling',
 			'disguise',
 			'enchant',
 			'equip',
+			'escape',
+			'evoke',
 			'flashback',
 			'fuse',
 			'kicker',
@@ -204,6 +223,7 @@ describe('Implemented Keywords Coverage Guard', () => {
 			'protection',
 			'suspend',
 			'typecycling',
+			'unearth',
 			'ward'
 		]);
 

@@ -26,7 +26,13 @@ import { getKeywordSpec, GRANTED_TRIGGER_KEYWORD_EVENTS } from '../keywords.ts';
 import { evaluatePermanent, inspectCardContinuousBreakdown, permanentHasLostAllAbilities } from '../ruleTree.ts';
 import type { CardInstance, GameState, ScryfallCard, SerializedPendingTrigger, StackItem, ZoneType } from '../types.ts';
 import type { GameEvent } from './events.ts';
-import { evaluateKickedCountAmount, evaluateKickerCondition, getObjectKickerInfo } from './kicker.ts';
+import {
+	evaluateKickedCountAmount,
+	evaluateKickerCondition,
+	getObjectKickerInfo,
+	isObjectEscaped,
+	isObjectEvoked
+} from './kicker.ts';
 import { withStableLayerInputs } from './layerCache.ts';
 import { instanceFaceOptions, matchesColorFilter, resolveObjectFaces, stackItemFaceOptions } from './faces.ts';
 import { playerCommanderCastCount } from './objectFilter.ts';
@@ -64,6 +70,10 @@ export interface PendingTrigger {
 	amount?: number;
 	/** How the event object last existed on the battlefield (dies / leaves triggers, CR 603.10a). */
 	eventLki?: { controllerId: string; power?: number; toughness?: number };
+	/** LKI snapshot of the stack item that triggered a `'cast'` trigger (CR 707.10, 702.40a). */
+	triggerEventStackItem?: StackItem;
+	/** Snapshot of spells cast before this spell in the current turn (CR 702.40a). */
+	stormCount?: number;
 	/** Match order (deterministic tie-break for a player's own simultaneous triggers). */
 	order: number;
 }
@@ -239,6 +249,8 @@ function persistPendingTriggers(state: GameState, triggers: PendingTrigger[]): v
 			...(t.targetStackItemId !== undefined ? { targetStackItemId: t.targetStackItemId } : {}),
 			...(t.amount !== undefined ? { amount: t.amount } : {}),
 			...(t.eventLki ? { eventLki: t.eventLki } : {}),
+			...(t.triggerEventStackItem ? { triggerEventStackItem: t.triggerEventStackItem } : {}),
+			...(t.stormCount !== undefined ? { stormCount: t.stormCount } : {}),
 			order: t.order
 		});
 	}
@@ -263,6 +275,8 @@ function hydratePendingTriggers(state: GameState, ch: TriggerChannel): void {
 		...(t.targetStackItemId !== undefined ? { targetStackItemId: t.targetStackItemId } : {}),
 		...(t.amount !== undefined ? { amount: t.amount } : {}),
 		...(t.eventLki ? { eventLki: t.eventLki } : {}),
+		...(t.triggerEventStackItem ? { triggerEventStackItem: t.triggerEventStackItem } : {}),
+		...(t.stormCount !== undefined ? { stormCount: t.stormCount } : {}),
 		order: t.order
 	}));
 	ch.pending = [...hydrated, ...ch.pending];
@@ -403,11 +417,13 @@ const viewerOf = (source: Source): Viewer => ({ id: source.obj.instanceId, contr
 /** Does `subject` match an ObjectFilter, from the point of view of the trigger's source? */
 function filterMatches(f: ObjectFilter, subject: Subject, source: Viewer): boolean {
 	if (f.other && subject.obj.instanceId === source.id) return false;
-	const typeLine = f.types || f.supertypes || f.notTypes ? subject.typeLine() : '';
+	const typeLine = f.types || f.supertypes || f.notTypes || f.notSupertypes ? subject.typeLine() : '';
 	if (f.types && !f.types.some((t) => hasWord(typeLine, t))) return false;
 	if (f.notTypes && f.notTypes.some((t) => hasWord(typeLine, t))) return false;
 	if (f.supertypes && !f.supertypes.some((t) => hasWord(typeLine, t))) return false;
+	if (f.notSupertypes && f.notSupertypes.some((t) => hasWord(typeLine, t))) return false;
 	if (f.subtypes && !f.subtypes.some((s) => subject.hasSubtype(s))) return false;
+	if (f.notSubtypes && f.notSubtypes.some((s) => subject.hasSubtype(s))) return false;
 	if (f.controller === 'you' && subject.controllerId !== source.controllerId) return false;
 	if (f.controller === 'opponent' && subject.controllerId === source.controllerId) return false;
 	if (f.owner === 'you' && subject.obj.ownerId !== source.controllerId) return false;
@@ -515,6 +531,8 @@ interface MatchExtras {
 	amount?: number;
 	times?: number;
 	eventLki?: PendingTrigger['eventLki'];
+	triggerEventStackItem?: StackItem;
+	stormCount?: number;
 	eventPlayer?: string;
 	defendingPlayerId?: string;
 }
@@ -524,8 +542,21 @@ function record(state: GameState, source: Source, ability: RuntimeTrigger, kind:
 	if (ability.condition && !evaluateCondition(state, ability.condition, source.controllerId, source.obj.instanceId)) {
 		return;
 	}
+	let count = extras.times ?? 1;
+	if (count <= 0) return;
+	// CR 603.2i: "This ability triggers only once each turn" cannot trigger more than once per turn
+	// per object identity in that zone (CR 400.7), even under trigger multipliers.
+	if (ability.trigger.onlyOncePerTurn) {
+		const abilityTag = ability.grantedKeyword ?? `${source.faceIndex ?? 0}:${ability.abilityIndex}`;
+		const onceKey = `${source.obj.instanceId}:${source.zone}:${abilityTag}`;
+		if (state.triggeredOnceThisTurn?.includes(onceKey)) {
+			return;
+		}
+		(state.triggeredOnceThisTurn ??= []).push(onceKey);
+		count = 1;
+	}
 	const ch = channel(state);
-	for (let i = 0; i < (extras.times ?? 1); i++) {
+	for (let i = 0; i < count; i++) {
 		ch.pending.push({
 			ability,
 			source: source.obj,
@@ -539,6 +570,8 @@ function record(state: GameState, source: Source, ability: RuntimeTrigger, kind:
 			targetStackItemId: extras.targetStackItemId,
 			amount: extras.amount,
 			eventLki: extras.eventLki,
+			...(extras.triggerEventStackItem ? { triggerEventStackItem: extras.triggerEventStackItem } : {}),
+			...(extras.stormCount !== undefined ? { stormCount: extras.stormCount } : {}),
 			eventPlayer: extras.eventPlayer ?? extras.eventPlayerId,
 			defendingPlayerId: extras.defendingPlayerId,
 			order: ch.nextOrder++
@@ -616,6 +649,8 @@ function matchTriggersInner(state: GameState, ev: GameEvent): void {
 			return matchObjectActionEvent(state, ev, 'connive', 'Connive Trigger', ev.nonlandDiscardedCount);
 		case 'BecomesCrewed':
 			return matchObjectActionEvent(state, ev, 'becomesCrewed', 'Crew Trigger');
+		case 'CombatDamageBatchPlayer':
+			return matchCombatDamageBatchPlayer(state, ev);
 	}
 }
 
@@ -677,12 +712,15 @@ function matchGainLife(state: GameState, ev: Extract<GameEvent, { kind: 'GainLif
 }
 
 function matchCardDrawn(state: GameState, ev: Extract<GameEvent, { kind: 'CardDrawn' }>): void {
+	const drawer = state.players.find((p) => p.playerId === ev.playerId);
+	const drawnCount = drawer?.cardsDrawnThisTurn ?? 0;
 	for (const source of sources(state, 'drawCard')) {
 		for (const { ability, alts } of abilitiesFor(state, source, 'drawCard')) {
 			const alt = alts.find((a) => {
 				const rel = a.filter.player?.relation ?? 'any';
 				if (rel === 'you' && ev.playerId !== source.controllerId) return false;
 				if (rel === 'opponent' && ev.playerId === source.controllerId) return false;
+				if (a.filter.nthThisTurn !== undefined && drawnCount !== a.filter.nthThisTurn) return false;
 				return true;
 			});
 			if (alt) {
@@ -1061,16 +1099,32 @@ function emitGrantedTriggerKeywords(
 
 function matchCast(state: GameState, casterId: string, spell: CardInstance, isCopy: boolean): void {
 	const subject = printedSubject(spell, spell.card, casterId);
+	const stackSpell = state.stack.findLast(
+		(s) => s.kind === 'spell' && s.sourceInstanceId === spell.instanceId
+	);
+	let triggerEventStackItem: StackItem | undefined;
+	if (stackSpell) {
+		triggerEventStackItem = JSON.parse(JSON.stringify(stackSpell)) as StackItem;
+		delete triggerEventStackItem.effectResume;
+		delete triggerEventStackItem.triggerEventStackItem;
+	}
+	const totalCast = state.players.reduce((sum, pl) => sum + (pl.spellsCastThisTurn ?? 0), 0);
+	const stormCount = isCopy ? 0 : Math.max(0, totalCast - 1);
 	const candidates = sources(state, 'cast');
 	if (!isCopy) {
 		for (const faceIndex of activeFacesForObject(spell, spell.card, 'stack', state)) {
 			candidates.push({ obj: spell, card: spell.card, faceIndex, controllerId: casterId, zone: 'stack' });
 		}
 	}
+	const casterForCount = state.players.find((p) => p.playerId === casterId);
+	const castCountThisTurn = casterForCount?.spellsCastThisTurn ?? 0;
 	for (const source of candidates) {
 		for (const { ability, alts } of abilitiesFor(state, source, 'cast')) {
 			const alt = alts.find((a) => {
 				if (isCopy && !a.filter.orCopy) return false;
+				if (a.filter.nthThisTurn !== undefined && (isCopy || castCountThisTurn !== a.filter.nthThisTurn)) {
+					return false;
+				}
 				const rel = a.filter.player?.relation ?? 'any';
 				if (rel === 'you' && casterId !== source.controllerId) return false;
 				if (rel === 'opponent' && casterId === source.controllerId) return false;
@@ -1088,10 +1142,16 @@ function matchCast(state: GameState, casterId: string, spell: CardInstance, isCo
 							isCopy
 						})
 					: 1;
+			const isStorm = Boolean(
+				ability.effect?.steps.some((st) => st.params?.count?.k === 'stormCount')
+			);
 			record(state, source, ability, 'cast', {
-				label: ability.text === 'Prowess' ? 'Prowess' : 'On Cast',
+				label: isStorm ? 'Storm' : ability.text === 'Prowess' ? 'Prowess' : 'On Cast',
 				times,
-				eventPlayer: casterId
+				eventObject: spell,
+				eventPlayer: casterId,
+				...(triggerEventStackItem ? { triggerEventStackItem } : {}),
+				...(isStorm ? { stormCount } : {})
 			});
 		}
 	}
@@ -1354,6 +1414,39 @@ function matchDamage(state: GameState, ev: Extract<GameEvent, { kind: 'DamageDea
 				if (!alts.some((a) => objectMatches(a.filter, damagedSubject, source))) continue;
 				record(state, source, ability, 'dealtDamage', { label: 'Dealt Damage', eventObject: damagedSubject.obj, amount: ev.amount });
 			}
+		}
+	}
+}
+
+function matchCombatDamageBatchPlayer(
+	state: GameState,
+	ev: Extract<GameEvent, { kind: 'CombatDamageBatchPlayer' }>
+): void {
+	if (ev.attackers.length === 0) return;
+	const attackerSubjects = ev.attackers.map((atk) => {
+		const onBf = permanentById(state, atk.instanceId);
+		if (onBf) return battlefieldSubject(state, onBf.obj, onBf.controllerId);
+		return printedSubject(atk, atk.copiableCard ?? atk.card, atk.controllerId);
+	});
+	for (const source of sources(state, 'combatDamageBatchPlayer')) {
+		for (const { ability, alts } of abilitiesFor(state, source, 'combatDamageBatchPlayer')) {
+			let matchedCount = 0;
+			const alt = alts.find((a) => {
+				const rel = a.filter.player?.relation ?? 'any';
+				if (rel === 'you' && ev.damagedPlayerId !== source.controllerId) return false;
+				if (rel === 'opponent' && ev.damagedPlayerId === source.controllerId) return false;
+				const matching = attackerSubjects.filter((s) => objectMatches(a.filter, s, source));
+				if (matching.length === 0) return false;
+				matchedCount = matching.length;
+				return true;
+			});
+			if (!alt) continue;
+			record(state, source, ability, 'combatDamageBatchPlayer', {
+				label: 'Combat Damage Trigger',
+				eventPlayerId: ev.damagedPlayerId,
+				eventPlayer: ev.damagedPlayerId,
+				amount: matchedCount
+			});
 		}
 	}
 }
@@ -1653,6 +1746,10 @@ export function evaluateCondition(
 				cond,
 				getObjectKickerInfo(state, stackItem?.card ?? ({} as ScryfallCard), sourceInstanceId, stackItem)
 			);
+		case 'evoked':
+			return isObjectEvoked(state, sourceInstanceId, stackItem);
+		case 'escaped':
+			return isObjectEscaped(state, sourceInstanceId, stackItem);
 		case 'isTurnOf':
 			if (cond.player.k === 'you') return state.players[state.activePlayerIndex]?.playerId === controllerId;
 			return cond.player.k === 'activePlayer';
@@ -1704,6 +1801,8 @@ function amount(
 			return a.n;
 		case 'commanderCastCount':
 			return playerCommanderCastCount(state, controllerId);
+		case 'stormCount':
+			return stackItem?.stormCount ?? 0;
 		case 'kickedCount':
 			return evaluateKickedCountAmount(
 				a,

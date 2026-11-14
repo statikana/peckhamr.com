@@ -32,7 +32,7 @@ import { hashText, normalizeFace, printedText } from './normalize.ts';
 import { runtimeTriggers } from './triggers.ts';
 
 /** Bump whenever the IR produced for the same text could change. */
-export const COMPILER_VERSION = 30;
+export const COMPILER_VERSION = 33;
 
 const CACHE = new Map<string, CardDefinition>();
 
@@ -480,9 +480,23 @@ function shiftStepTargets(step: EffectStep, offset: number, stepOffset = 0): Eff
 						...step.params,
 						...(step.params.with ? { with: shiftSelector(step.params.with, offset) } : {}),
 						...(step.params.toughness ? { toughness: shiftAmount(step.params.toughness, offset) } : {}),
+						...(step.params.setPower ? { setPower: shiftAmount(step.params.setPower, offset) } : {}),
+						...(step.params.setToughness ? { setToughness: shiftAmount(step.params.setToughness, offset) } : {}),
+						...(step.params.count ? { count: shiftAmount(step.params.count, offset) } : {}),
 						...(step.params.condition ? { condition: shiftCondition(step.params.condition, offset) } : {}),
 						...(step.params.search
 							? { search: { ...step.params.search, filter: shiftObjectFilter(step.params.search.filter, offset) } }
+							: {}),
+						...(step.params.coerciveDiscard
+							? {
+									coerciveDiscard: {
+										...step.params.coerciveDiscard,
+										chooser: shiftPlayerRef(step.params.coerciveDiscard.chooser, offset),
+										...(step.params.coerciveDiscard.filter
+											? { filter: shiftObjectFilter(step.params.coerciveDiscard.filter, offset) }
+											: {})
+									}
+								}
 							: {})
 					}
 				}

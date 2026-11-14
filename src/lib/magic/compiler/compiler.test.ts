@@ -963,12 +963,21 @@ describe('Cycling & Typecycling compilation', () => {
 			filter: { player: { relation: 'opponent' }, object: {} }
 		});
 
-		// 5. Unsupported effect on "When you cycle ~" still preserves trigger metadata for manual resolution
-		const manualCycle = compileFresh(
+		// 5. "When you cycle ~, counter target spell" is now fully compiled; genuinely unparsed effects still preserve trigger metadata
+		const silenceDecree = compileFresh(
 			synthetic({
 				name: 'Silence Decree',
 				typeLine: 'Enchantment',
 				oracleText: 'Cycling {4}{U}{U}\nWhen you cycle Silence Decree, counter target spell.'
+			})
+		);
+		assert.equal(silenceDecree.fullySupported, true);
+
+		const manualCycle = compileFresh(
+			synthetic({
+				name: 'Restart Decree',
+				typeLine: 'Enchantment',
+				oracleText: 'Cycling {4}{U}{U}\nWhen you cycle Restart Decree, restart the game.'
 			})
 		);
 		const t7 = manualCycle.faces[0].abilities.find((a) => a.kind === 'unsupported');

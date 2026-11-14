@@ -1,4 +1,12 @@
-import type { ActivationRestriction, Amount, CostDef, ManaRestriction, ModalDef, TargetSpec } from './ir.ts';
+import type {
+	ActivationRestriction,
+	Amount,
+	CostDef,
+	ManaRestriction,
+	ModalDef,
+	StackTargetKind,
+	TargetSpec
+} from './ir.ts';
 import type { RuntimeTrigger } from './compiler/triggers.ts';
 import type { ManaCostRequirement } from './oracle.ts';
 
@@ -276,6 +284,7 @@ export interface TargetRequirementInfo {
 	sameGraveyard: boolean;
 	controllerFilter: 'any' | 'you' | 'opponent';
 	cardTypeFilter?: string;
+	stackKind?: StackTargetKind;
 	isModal?: boolean;
 	modalBranches?: TargetRequirementInfo[];
 	targetSpecs?: TargetSpec[];
@@ -411,6 +420,12 @@ export interface CardInstance {
 	kickedCount?: number;
 	/** CR 702.33f / 400.7d: optional kicker tags paid when cast. */
 	kickedTags?: string[];
+	/** CR 702.74a / 400.7d: true when this permanent entered from a spell whose evoke cost was paid. */
+	evoked?: boolean;
+	/** CR 702.138b / 400.7d: true when this permanent entered from a spell whose escape cost was paid. */
+	escaped?: boolean;
+	/** CR 702.84a: true while on the battlefield via Unearth ("If it would leave the battlefield, exile it instead of putting it anywhere else"). */
+	unearthLeaveExile?: boolean;
 	phasedOut?: boolean;
 	phasedOutIndirectly?: boolean;
 	isSuspended?: boolean;
@@ -432,6 +447,8 @@ export interface CardInstance {
 	cantBeRegeneratedThisTurn?: boolean;
 	/** CR 702.122c: instanceIds of creatures that crewed this Vehicle this turn. */
 	crewedThisTurnByIds?: string[];
+	/** CR 701.20 / 400.7: Player IDs to whom this hidden-zone card has been revealed; cleared on zone change. */
+	knownToPlayerIds?: string[];
 	/**
 	 * CR 607.2a: source permanent instanceId + objectVersion that exiled this card
 	 * (valid only while this card remains in exile; cleared on zone exit per CR 400.7).
@@ -465,6 +482,12 @@ export interface SpellModifications {
 	castSummarySuffix?: string;
 	label?: string;
 	castFaceDown?: FaceDownSpec;
+	/** CR 702.27a: Buyback — put this resolving spell into its owner's hand instead of graveyard as it resolves. */
+	returnToHandOnResolve?: boolean;
+	/** CR 702.74a: cast by paying its evoke cost. */
+	evoked?: boolean;
+	/** CR 702.138a–b: cast by paying its escape cost. */
+	escaped?: boolean;
 }
 
 export interface CastOptionOptionalCost {
@@ -477,6 +500,8 @@ export interface CastOptionOptionalCost {
 	kickedTags?: string[];
 	/** CR 702.33g: true when paying this optional cost activates a conditional target requirement. */
 	enablesTarget?: boolean;
+	/** CR 702.27a: true when paying this optional additional cost puts the resolving spell into its owner's hand. */
+	returnToHandOnResolve?: boolean;
 }
 
 export interface LandPlayOption {
@@ -537,6 +562,12 @@ export interface StackItem {
 	requiresGuidedResolution: boolean;
 	createdAt: number;
 	isCopy?: boolean;
+	/** Layer 1a copy state/exceptions on copied spells (e.g. "except the copy isn't legendary"). */
+	copiableState?: CopiableState;
+	/** CR 707.10, 702.40a: plain-JSON snapshot of the triggering spell StackItem on 'cast' triggers so copies still work if the original left the stack. */
+	triggerEventStackItem?: StackItem;
+	/** CR 702.40a: number of other spells cast before this spell this turn, snapshotted when the cast trigger fired. */
+	stormCount?: number;
 	sourceObjectVersion?: number;
 	lkiPower?: number;
 	lkiToughness?: number;
@@ -589,6 +620,9 @@ export interface StackItem {
 	/** LKI kicked tracking on triggered abilities whose source left the battlefield before resolution (CR 603.4). */
 	sourceKickedCount?: number;
 	sourceKickedTags?: string[];
+	/** LKI evoked/escaped tracking on triggered abilities whose source left the battlefield before resolution (CR 603.4). */
+	sourceEvoked?: boolean;
+	sourceEscaped?: boolean;
 	/**
 	 * Step E2: resolution has started (targets re-checked, LKI captured, resolve VFX shown). Set
 	 * when a resolution pauses for a prompt, so resuming it doesn't repeat those one-time steps.
@@ -672,6 +706,8 @@ export interface SerializedPendingTrigger {
 	targetStackItemId?: string;
 	amount?: number;
 	eventLki?: { controllerId: string; power?: number; toughness?: number };
+	triggerEventStackItem?: StackItem;
+	stormCount?: number;
 	order: number;
 }
 
@@ -1118,6 +1154,7 @@ export interface PlayerGameState {
 	handCount?: number;
 	libraryCount?: number;
 	spellsCastThisTurn?: number;
+	cardsDrawnThisTurn?: number;
 	cannotLoseGameThisTurn?: boolean;
 	lifeTotalCannotChangeThisTurn?: boolean;
 	protectionFromEverythingThisTurn?: boolean;
@@ -1230,6 +1267,8 @@ export interface PendingCostPayment {
 	sourceObjectVersion?: number;
 	sourceLkiPower?: number;
 	sourceLkiToughness?: number;
+	sourceEvoked?: boolean;
+	sourceEscaped?: boolean;
 	onceEachTurn?: boolean;
 	effectText?: string;
 	abilityCostIncomplete?: boolean;
@@ -1291,6 +1330,8 @@ export interface GameState {
 	 */
 	lastNormalTurnPlayerIndex?: number;
 	playersDrawnThisTurn?: string[];
+	/** CR 603.2i: Keys (`${instanceId}:${objectVersion}:${abilityTag}`) of once-per-turn triggers that have triggered this turn. */
+	triggeredOnceThisTurn?: string[];
 	/**
 	 * CR 616.1: Holding list for objects whose zone change is currently paused awaiting a human's
 	 * `chooseReplacement` choice, so the object does not exist in any destination zone before the

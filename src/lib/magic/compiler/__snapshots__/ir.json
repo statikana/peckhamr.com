@@ -1,7 +1,7 @@
 {
 	"Forest": {
 		"oracleId": "card_forest",
-		"compilerVersion": 30,
+		"compilerVersion": 33,
 		"textHash": "15dd7c47",
 		"name": "Forest",
 		"faces": [
@@ -66,7 +66,7 @@
 	},
 	"Sol Ring": {
 		"oracleId": "card_sol_ring",
-		"compilerVersion": 30,
+		"compilerVersion": 33,
 		"textHash": "9a66771f",
 		"name": "Sol Ring",
 		"faces": [
@@ -128,7 +128,7 @@
 	},
 	"Command Tower": {
 		"oracleId": "card_command_tower",
-		"compilerVersion": 30,
+		"compilerVersion": 33,
 		"textHash": "78e32af5",
 		"name": "Command Tower",
 		"faces": [
@@ -187,7 +187,7 @@
 	},
 	"Arcane Signet": {
 		"oracleId": "card_arcane_signet",
-		"compilerVersion": 30,
+		"compilerVersion": 33,
 		"textHash": "a2aed3ce",
 		"name": "Arcane Signet",
 		"faces": [
@@ -246,7 +246,7 @@
 	},
 	"Mind Stone": {
 		"oracleId": "card_mind_stone",
-		"compilerVersion": 30,
+		"compilerVersion": 33,
 		"textHash": "a1f55679",
 		"name": "Mind Stone",
 		"faces": [
@@ -355,7 +355,7 @@
 	},
 	"Elvish Archdruid": {
 		"oracleId": "card_elvish_archdruid",
-		"compilerVersion": 30,
+		"compilerVersion": 33,
 		"textHash": "6e743ff7",
 		"name": "Elvish Archdruid",
 		"faces": [
@@ -461,7 +461,7 @@
 	},
 	"Marwyn, the Nurturer": {
 		"oracleId": "card_marwyn",
-		"compilerVersion": 30,
+		"compilerVersion": 33,
 		"textHash": "a5a2689f",
 		"name": "Marwyn, the Nurturer",
 		"faces": [
@@ -575,7 +575,7 @@
 	},
 	"Swords to Plowshares": {
 		"oracleId": "card_swords_to_plowshares",
-		"compilerVersion": 30,
+		"compilerVersion": 33,
 		"textHash": "6beb79e6",
 		"name": "Swords to Plowshares",
 		"faces": [
@@ -661,7 +661,7 @@
 	},
 	"Counterspell": {
 		"oracleId": "card_counterspell",
-		"compilerVersion": 30,
+		"compilerVersion": 33,
 		"textHash": "226abcbe",
 		"name": "Counterspell",
 		"faces": [
@@ -717,7 +717,7 @@
 	},
 	"Cyclonic Rift": {
 		"oracleId": "card_cyclonic_rift",
-		"compilerVersion": 30,
+		"compilerVersion": 33,
 		"textHash": "2468ee4d",
 		"name": "Cyclonic Rift",
 		"faces": [
@@ -788,7 +788,7 @@
 	},
 	"Wrath of God": {
 		"oracleId": "card_wrath_of_god",
-		"compilerVersion": 30,
+		"compilerVersion": 33,
 		"textHash": "837bf0e9",
 		"name": "Wrath of God",
 		"faces": [
@@ -843,7 +843,7 @@
 	},
 	"Toxic Deluge": {
 		"oracleId": "card_toxic_deluge",
-		"compilerVersion": 30,
+		"compilerVersion": 33,
 		"textHash": "bd33a739",
 		"name": "Toxic Deluge",
 		"faces": [
@@ -917,7 +917,7 @@
 	},
 	"Farewell": {
 		"oracleId": "card_farewell",
-		"compilerVersion": 30,
+		"compilerVersion": 33,
 		"textHash": "1dffa987",
 		"name": "Farewell",
 		"faces": [
@@ -1055,7 +1055,7 @@
 	},
 	"Cultivate": {
 		"oracleId": "card_cultivate",
-		"compilerVersion": 30,
+		"compilerVersion": 33,
 		"textHash": "398e4ff3",
 		"name": "Cultivate",
 		"faces": [
@@ -1131,7 +1131,7 @@
 	},
 	"Ponder": {
 		"oracleId": "card_ponder",
-		"compilerVersion": 30,
+		"compilerVersion": 33,
 		"textHash": "c71e5be8",
 		"name": "Ponder",
 		"faces": [
@@ -1204,7 +1204,7 @@
 	},
 	"Final Fortune": {
 		"oracleId": "card_final_fortune",
-		"compilerVersion": 30,
+		"compilerVersion": 33,
 		"textHash": "efad4720",
 		"name": "Final Fortune",
 		"faces": [
@@ -1287,7 +1287,7 @@
 	},
 	"Rift Bolt": {
 		"oracleId": "card_rift_bolt",
-		"compilerVersion": 30,
+		"compilerVersion": 33,
 		"textHash": "6d9f0408",
 		"name": "Rift Bolt",
 		"faces": [
@@ -1367,7 +1367,7 @@
 	},
 	"Lightning Greaves": {
 		"oracleId": "card_lightning_greaves",
-		"compilerVersion": 30,
+		"compilerVersion": 33,
 		"textHash": "a92edff6",
 		"name": "Lightning Greaves",
 		"faces": [
@@ -1423,7 +1423,7 @@
 	},
 	"Craterhoof Behemoth": {
 		"oracleId": "card_craterhoof_behemoth",
-		"compilerVersion": 30,
+		"compilerVersion": 33,
 		"textHash": "28bd9419",
 		"name": "Craterhoof Behemoth",
 		"faces": [
@@ -1543,7 +1543,7 @@
 	},
 	"Lathril, Blade of the Elves": {
 		"oracleId": "cmd_lathril",
-		"compilerVersion": 30,
+		"compilerVersion": 33,
 		"textHash": "5431216d",
 		"name": "Lathril, Blade of the Elves",
 		"faces": [
@@ -1697,7 +1697,7 @@
 	},
 	"Atraxa, Praetors' Voice": {
 		"oracleId": "cmd_atraxa",
-		"compilerVersion": 30,
+		"compilerVersion": 33,
 		"textHash": "17c9a3d1",
 		"name": "Atraxa, Praetors' Voice",
 		"faces": [
@@ -1801,7 +1801,7 @@
 	},
 	"Nether Shadow": {
 		"oracleId": "card_nether_shadow",
-		"compilerVersion": 30,
+		"compilerVersion": 33,
 		"textHash": "66ed5173",
 		"name": "Nether Shadow",
 		"faces": [
@@ -1887,7 +1887,7 @@
 	},
 	"Felidar Sovereign": {
 		"oracleId": "card_felidar_sovereign",
-		"compilerVersion": 30,
+		"compilerVersion": 33,
 		"textHash": "1a772431",
 		"name": "Felidar Sovereign",
 		"faces": [
@@ -1982,7 +1982,7 @@
 	},
 	"Guttersnipe": {
 		"oracleId": "card_guttersnipe",
-		"compilerVersion": 30,
+		"compilerVersion": 33,
 		"textHash": "f48f2363",
 		"name": "Guttersnipe",
 		"faces": [
@@ -2054,7 +2054,7 @@
 	},
 	"Veyran, Voice of Duality": {
 		"oracleId": "cmd_veyran",
-		"compilerVersion": 30,
+		"compilerVersion": 33,
 		"textHash": "cb3b8a55",
 		"name": "Veyran, Voice of Duality",
 		"faces": [
@@ -2164,7 +2164,7 @@
 	},
 	"Bramblecrest, Warden of Ash": {
 		"oracleId": "synthetic_bramblecrest_warden_of_ash",
-		"compilerVersion": 30,
+		"compilerVersion": 33,
 		"textHash": "152cd88a",
 		"name": "Bramblecrest, Warden of Ash",
 		"faces": [
@@ -2343,7 +2343,7 @@
 	},
 	"Glimmerfen Overseer": {
 		"oracleId": "synthetic_glimmerfen_overseer",
-		"compilerVersion": 30,
+		"compilerVersion": 33,
 		"textHash": "a3a54a0f",
 		"name": "Glimmerfen Overseer",
 		"faces": [
@@ -2470,7 +2470,7 @@
 	},
 	"Twinned Lantern Wardens": {
 		"oracleId": "synthetic_twinned_lantern_wardens",
-		"compilerVersion": 30,
+		"compilerVersion": 33,
 		"textHash": "7369e68a",
 		"name": "Twinned Lantern Wardens",
 		"faces": [

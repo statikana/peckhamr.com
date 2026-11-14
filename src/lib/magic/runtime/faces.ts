@@ -477,7 +477,9 @@ export function stackItemFaceOptions(item: StackItem): ResolveObjectFacesOptions
 		fused: item.fused,
 		isFaceDown: item.isFaceDown,
 		faceDownSpec: item.faceDownSpec,
-		faceDownLabel: item.faceDownLabel
+		faceDownLabel: item.faceDownLabel,
+		copiableState: item.copiableState,
+		isSingleFaceCopy: item.copiableState?.isSingleFaceCopy
 	};
 }
 

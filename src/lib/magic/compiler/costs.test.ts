@@ -27,6 +27,7 @@ describe('Cost grammar: activated ability costs', () => {
 			'Tap an untapped Elf, Goblin, or Wizard you control',
 			[{ k: 'tapOthers', count: ONE, filter: { subtypes: ['Elf', 'Goblin', 'Wizard'], controller: 'you', tapped: false } }]
 		],
+		['Discard ~', [{ k: 'discard', count: ONE, filter: 'self' }]],
 		['Discard a card', [{ k: 'discard', count: ONE }]],
 		['Discard two cards', [{ k: 'discard', count: n(2) }]],
 		['Discard a card at random', [{ k: 'discard', count: ONE, random: true }]],
@@ -36,6 +37,14 @@ describe('Cost grammar: activated ability costs', () => {
 		[
 			'Exile two creature cards from your graveyard',
 			[{ k: 'exileFrom', zone: 'graveyard', count: n(2), filter: { types: ['Creature'] } }]
+		],
+		[
+			'Exile three other cards from your graveyard',
+			[{ k: 'exileFrom', zone: 'graveyard', count: n(3), filter: { other: true } }]
+		],
+		[
+			'Exile another creature card from your graveyard',
+			[{ k: 'exileFrom', zone: 'graveyard', count: ONE, filter: { other: true, types: ['Creature'] } }]
 		],
 		['Remove a +1/+1 counter from ~', [{ k: 'removeCounters', counter: '+1/+1', count: ONE, from: 'self' }]],
 		['Remove X charge counters from ~', [{ k: 'removeCounters', counter: 'charge', count: { k: 'x' }, from: 'self' }]]
@@ -60,8 +69,8 @@ describe('Cost grammar: activated ability costs', () => {
 
 	it('does not claim costs it cannot represent', () => {
 		for (const text of [
-			'Discard ~',
 			'Discard your hand',
+			'Exile any number of other cards from your graveyard with four or more card types among them',
 			'Remove a counter from ~',
 			'Remove an oil counter from ~',
 			'Return ~ to its owner\'s hand',

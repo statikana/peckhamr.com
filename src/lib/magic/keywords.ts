@@ -23,8 +23,14 @@ export interface AlternativeCostKeywordMeta {
 	/** True when casting from non-hand zones requires an existing zone permission (not granted by the keyword itself). */
 	requiresZonePermission?: boolean;
 	spellTypes?: Array<'Instant' | 'Sorcery'>;
+	/** True when Land cards cannot be cast via this alternative cost (CR 702.138a: "cast this card from your graveyard" — lands can't be cast). */
+	disallowLand?: boolean;
 	targetsBecomeEach?: boolean;
 	exileOnLeaveStack?: boolean;
+	/** CR 702.74a: marks the cast spell / entering permanent as evoked. */
+	evoked?: boolean;
+	/** CR 702.138a–b: marks the cast spell / entering permanent as escaped. */
+	escaped?: boolean;
 	timing?: 'default' | 'instant_only';
 	stackBadgeLabel?: string;
 	/** CR 708: casting this card face down as a 2/2 colorless creature (Morph / Megamorph / Disguise). */
@@ -37,7 +43,12 @@ export interface AlternativeCostKeywordMeta {
 
 export type KeywordImplementation =
 	| { kind: 'primitive'; landwalkFilter?: ObjectFilter }
-	| { kind: 'castOption'; altCost?: AlternativeCostKeywordMeta }
+	| {
+			kind: 'castOption';
+			altCost?: AlternativeCostKeywordMeta;
+			events?: readonly EventKind[];
+			buildTriggers?: (kw: KeywordDef, abilityIndex: number, span: Span) => RuntimeTrigger[];
+	  }
 	| {
 			kind: 'trigger';
 			/** Event kinds this trigger listens to (used for Layer 6 granted-trigger fast paths). */
@@ -209,6 +220,52 @@ export function buildCrewAbility(
 			costKeyword: 'crew',
 			id,
 			text: `${label} (${costText}: ${effectText})`,
+			span
+		},
+		costText,
+		effectText,
+		label
+	};
+}
+
+/**
+ * CR 702.84a: "Unearth [cost]" means "[Cost]: Return this card from your graveyard to the
+ * battlefield. It gains haste. Exile it at the beginning of the next end step. If it would leave
+ * the battlefield, exile it instead of putting it anywhere else. Activate only as a sorcery."
+ */
+export function buildUnearthAbility(
+	kw: KeywordDef,
+	id: string,
+	span: Span
+): { ability: ActivatedAbility; costText: string; effectText: string; label: string } | null {
+	const costDefs = kw.costDefs;
+	if (!costDefs || costDefs.length === 0) return null;
+	const rawCost = (kw.cost ?? kw.param ?? '').trim();
+	const isManaOnly = /^(\{[^}]+\})+$/.test(rawCost);
+	const label = rawCost ? (isManaOnly ? `Unearth ${rawCost}` : `Unearth—${rawCost}`) : 'Unearth';
+	const costText = label;
+	const effectText =
+		'Return this card from your graveyard to the battlefield. It gains haste. Exile it at the beginning of the next end step or if it would leave the battlefield. Unearth only as a sorcery.';
+	const effect: EffectStep[] = [
+		{
+			verb: 'move',
+			subject: { k: 'self' },
+			params: { from: 'graveyard', to: 'battlefield', underYourControl: true, unearth: true },
+			span
+		}
+	];
+	return {
+		ability: {
+			kind: 'activated',
+			cost: costDefs,
+			targets: [],
+			effect,
+			timing: 'sorcery',
+			isMana: false,
+			activationZones: ['graveyard'],
+			costKeyword: 'unearth',
+			id,
+			text: `${costText}: ${effectText}`,
 			span
 		},
 		costText,
@@ -961,7 +1018,17 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 	unimplemented('blitz', '702.152', 'cost'),
 	unimplemented('bloodthirst', '702.54', 'number'),
 	unimplemented('boast', '702.142', 'text'),
-	unimplemented('buyback', '702.27', 'cost'),
+	[
+		'buyback',
+		{
+			name: 'buyback',
+			cr: '702.27',
+			parameterKind: 'cost',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'castOption' }
+		}
+	],
 	unimplemented('cascade', '702.85'),
 	unimplemented('casualty', '702.153', 'number'),
 	unimplemented('champion', '702.72', 'quality'),
@@ -1058,9 +1125,67 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 	unimplemented('entwine', '702.42', 'cost'),
 	unimplemented('epic', '702.50'),
 	unimplemented('escalate', '702.120', 'cost'),
-	unimplemented('escape', '702.138', 'cost'),
+	[
+		'escape',
+		{
+			name: 'escape',
+			cr: '702.138',
+			parameterKind: 'cost',
+			grantable: false,
+			status: 'implemented',
+			implementation: {
+				kind: 'castOption',
+				altCost: {
+					id: 'alt:escape',
+					label: 'Escape from Graveyard',
+					castSummarySuffix: ' (Escaped)',
+					zones: ['graveyard'],
+					requiresZonePermission: false,
+					disallowLand: true,
+					escaped: true,
+					stackBadgeLabel: 'Escaped'
+				}
+			}
+		}
+	],
 	unimplemented('eternalize', '702.129', 'cost'),
-	unimplemented('evoke', '702.74', 'cost'),
+	[
+		'evoke',
+		{
+			name: 'evoke',
+			cr: '702.74',
+			parameterKind: 'cost',
+			grantable: false,
+			status: 'implemented',
+			implementation: {
+				kind: 'castOption',
+				altCost: {
+					id: 'alt:evoke',
+					label: 'Cast with Evoke',
+					castSummarySuffix: ' (Evoke)',
+					zones: ['hand', 'command', 'exile'],
+					requiresZonePermission: true,
+					evoked: true,
+					stackBadgeLabel: 'Evoke'
+				},
+				events: ['zoneChange'],
+				buildTriggers: (_kw, abilityIndex, span) => [
+					{
+						abilityIndex,
+						trigger: { event: 'zoneChange', filter: { object: 'self', to: 'battlefield' } },
+						condition: { k: 'evoked' },
+						effectSupported: true,
+						text: 'Evoke',
+						effect: {
+							steps: [{ verb: 'sacrifice', subject: { k: 'self' }, span }],
+							targets: [],
+							unparsed: []
+						}
+					}
+				]
+			}
+		}
+	],
 	unimplemented('evolve', '702.100'),
 	unimplemented('extort', '702.101'),
 	unimplemented('fabricate', '702.123', 'number'),
@@ -1159,7 +1284,41 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 	unimplemented('splice', '702.47', 'text'),
 	unimplemented('split second', '702.61'),
 	unimplemented('squad', '702.157', 'cost'),
-	unimplemented('storm', '702.40'),
+	[
+		'storm',
+		{
+			name: 'storm',
+			cr: '702.40',
+			parameterKind: 'none',
+			displayLabel: 'Storm',
+			grantable: false,
+			status: 'implemented',
+			implementation: {
+				kind: 'trigger',
+				events: ['cast'],
+				buildTriggers: (_kw, abilityIndex, span) => [
+					{
+						abilityIndex,
+						trigger: { event: 'cast', filter: { object: 'self', player: { relation: 'you' } } },
+						effectSupported: true,
+						text: 'Storm',
+						effect: {
+							steps: [
+								{
+									verb: 'copySpell',
+									subject: { k: 'self' },
+									params: { count: { k: 'stormCount' }, mayChooseNewTargets: true },
+									span
+								}
+							],
+							targets: [],
+							unparsed: []
+						}
+					}
+				]
+			}
+		}
+	],
 	unimplemented('sunburst', '702.44'),
 	unimplemented('surge', '702.117', 'cost'),
 	unimplemented('totem armor', '702.89'),
@@ -1170,7 +1329,17 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 	unimplemented('umbra armor', '702.89'),
 	unimplemented('undaunted', '702.125'),
 	unimplemented('undying', '702.93'),
-	unimplemented('unearth', '702.84', 'cost'),
+	[
+		'unearth',
+		{
+			name: 'unearth',
+			cr: '702.84',
+			parameterKind: 'cost',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'activated', buildActivated: buildUnearthAbility }
+		}
+	],
 	unimplemented('unleash', '702.98'),
 	unimplemented('vanishing', '702.63', 'number'),
 	unimplemented('visit', '702.159'),

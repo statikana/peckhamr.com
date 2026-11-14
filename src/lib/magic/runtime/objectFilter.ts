@@ -17,7 +17,13 @@ import {
 	matchesColorFilter,
 	resolveObjectFaces
 } from './faces.ts';
-import { evaluateKickedCountAmount, evaluateKickerCondition, getObjectKickerInfo } from './kicker.ts';
+import {
+	evaluateKickedCountAmount,
+	evaluateKickerCondition,
+	getObjectKickerInfo,
+	isObjectEscaped,
+	isObjectEvoked
+} from './kicker.ts';
 import { splitSubtypes } from './layers.ts';
 
 export interface FilterContext {
@@ -360,6 +366,8 @@ export function evaluateAmount(amount: Amount, ctx: FilterContext): number {
 			return findObjects(amount.of, ctx).length;
 		case 'commanderCastCount':
 			return playerCommanderCastCount(ctx.state, ctx.controllerId);
+		case 'stormCount':
+			return 0;
 		case 'kickedCount': {
 			const info = ctx.source
 				? getObjectKickerInfo(ctx.state, ctx.source.card, ctx.source.instanceId, undefined, ctx.source)
@@ -420,6 +428,14 @@ export function evaluateCondition(cond: Condition, ctx: FilterContext): boolean 
 				: { count: 0, tags: [] };
 			return evaluateKickerCondition(cond, info);
 		}
+		case 'evoked':
+			return ctx.source
+				? isObjectEvoked(ctx.state, ctx.source.instanceId, undefined, ctx.source)
+				: false;
+		case 'escaped':
+			return ctx.source
+				? isObjectEscaped(ctx.state, ctx.source.instanceId, undefined, ctx.source)
+				: false;
 		default:
 			return false;
 	}

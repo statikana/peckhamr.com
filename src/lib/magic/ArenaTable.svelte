@@ -286,7 +286,7 @@
 		selectedAidIds: Record<string, string[]>;
 		aidColorChoices: Record<string, ManaColor | 'generic'>;
 		landOptions?: LandPlayOption[];
-		handAbilities?: EffectiveActivatedAbility[];
+		zoneAbilities?: EffectiveActivatedAbility[];
 	} | null>(null);
 
 	// Activated abilities menu on a permanent (raw: see inspectedCard above)
@@ -1096,13 +1096,16 @@
 		}
 	}
 
-	function getHandActivatedAbilities(inst: CardInstance): EffectiveActivatedAbility[] {
-		if (!me || inst.zone !== 'hand') return [];
+	function getZoneActivatedAbilities(
+		inst: CardInstance,
+		zone: 'hand' | 'graveyard'
+	): EffectiveActivatedAbility[] {
+		if (!me || inst.zone !== zone) return [];
 		const cmdId = getPlayerCommanderIdentity(me);
 		return getEffectiveActivatedAbilities(gameState, me, inst, cmdId).filter(
 			(ab) =>
 				!ab.isManaAbility &&
-				Boolean(ab.activationZones?.includes('hand')) &&
+				Boolean(ab.activationZones?.includes(zone)) &&
 				checkAbilityActivationLegality(gameState, me.playerId, inst, ab).ok
 		);
 	}
@@ -1290,7 +1293,10 @@
 		if (fromZone === 'hand' && checkSuspendLegality(gameState, me.playerId, inst).ok) {
 			return true;
 		}
-		if (fromZone === 'hand' && getHandActivatedAbilities(inst).length > 0) {
+		if (
+			(fromZone === 'hand' || fromZone === 'graveyard') &&
+			getZoneActivatedAbilities(inst, fromZone).length > 0
+		) {
 			return true;
 		}
 		return false;
@@ -1579,7 +1585,10 @@
 		}
 		const t = inst.card.typeLine;
 		if (t.includes('Land') && !t.includes('Creature') && (!inst.card.faces || inst.card.faces.length <= 1)) {
-			if (fromZone === 'hand' && getHandActivatedAbilities(inst).length > 0) {
+			if (
+				(fromZone === 'hand' || fromZone === 'graveyard') &&
+				getZoneActivatedAbilities(inst, fromZone).length > 0
+			) {
 				zones.add('stack');
 			}
 			return zones;
@@ -1815,21 +1824,24 @@
 		setInspectedCard(inst.card, inst);
 		if (!isCardPlayableNow(inst, fromZone)) return;
 
-		const handAbs = fromZone === 'hand' ? getHandActivatedAbilities(inst) : [];
+		const zoneAbs =
+			fromZone === 'hand' || fromZone === 'graveyard'
+				? getZoneActivatedAbilities(inst, fromZone)
+				: [];
 		const landOptions =
 			fromZone === 'hand' || fromZone === 'exile'
 				? getLandPlayOptions(gameState, me!.playerId, inst, fromZone)
 				: [];
 		const options = getCastOptions(gameState, me!.playerId, inst, fromZone);
 
-		if (landOptions.length === 0 && options.length === 0 && handAbs.length === 0) {
+		if (landOptions.length === 0 && options.length === 0 && zoneAbs.length === 0) {
 			if (fromZone === 'hand' && checkSuspendLegality(gameState, me!.playerId, inst).ok) {
 				await onGameAction({ type: 'suspend_card', instanceId: inst.instanceId });
 			}
 			return;
 		}
 
-		const totalChoices = landOptions.length + options.length + handAbs.length;
+		const totalChoices = landOptions.length + options.length + zoneAbs.length;
 		const hasOptionalCosts = options.some((o) => (o.optionalAdditionalCosts?.length ?? 0) > 0);
 		const hasPaymentAids = options.some((o) => (o.paymentAids?.length ?? 0) > 0);
 		if (totalChoices === 1) {
@@ -1842,8 +1854,8 @@
 				});
 				return;
 			}
-			if (handAbs.length === 1) {
-				await triggerActivatedAbility(inst, handAbs[0]);
+			if (zoneAbs.length === 1) {
+				await triggerActivatedAbility(inst, zoneAbs[0]);
 				return;
 			}
 			if (options.length === 1 && !hasOptionalCosts && !hasPaymentAids) {
@@ -1860,7 +1872,7 @@
 			selectedAidIds: {},
 			aidColorChoices: {},
 			...(landOptions.length > 0 ? { landOptions } : {}),
-			...(handAbs.length > 0 ? { handAbilities: handAbs } : {})
+			...(zoneAbs.length > 0 ? { zoneAbilities: zoneAbs } : {})
 		};
 	}
 
@@ -3481,7 +3493,7 @@
 									class="z-chip clickable"
 									class:has-playable={playableGraveyardCount > 0}
 									title={playableGraveyardCount > 0
-										? `${playableGraveyardCount} castable card(s) in your graveyard`
+										? `${playableGraveyardCount} playable card(s) in your graveyard`
 										: 'Open your graveyard'}
 									onclick={() =>
 										(zoneModal = {
@@ -4080,7 +4092,7 @@
 		<div class="modal-backdrop">
 			<div class="arena-modal">
 				<h3>
-					{castOptionsModal.handAbilities?.length || castOptionsModal.landOptions?.length
+					{castOptionsModal.zoneAbilities?.length || castOptionsModal.landOptions?.length
 						? 'Choose Action'
 						: 'Choose How to Cast'} — {castOptionsModal.inst.card.name}
 				</h3>
@@ -4381,11 +4393,11 @@
 							{opt.label} (<ManaText text={combinedDisplay} size={14} />)
 						</button>
 					{/each}
-					{#if castOptionsModal.handAbilities && castOptionsModal.handAbilities.length > 0}
+					{#if castOptionsModal.zoneAbilities && castOptionsModal.zoneAbilities.length > 0}
 						<div style="width:100%;margin-top:0.35rem;font-size:0.8rem;opacity:0.8;">
 							Activated Abilities
 						</div>
-						{#each castOptionsModal.handAbilities as ab (ab.id)}
+						{#each castOptionsModal.zoneAbilities as ab (ab.id)}
 							<button
 								type="button"
 								class="arena-main-btn can-act"
@@ -4615,6 +4627,7 @@
 							{@const gyIndex = zoneModal.cards.findIndex((item) => item.instanceId === c.instanceId)}
 							{@const canPlayFromExile = Boolean(me && c.zone === 'exile' && c.playableFromExileBy?.playerId === me.playerId && isCardPlayableNow(c, 'exile'))}
 							{@const gyCastOptions = me && isMyGraveyard && c.zone === 'graveyard' ? getCastOptions(gameState, me.playerId, c, 'graveyard') : []}
+							{@const gyZoneAbilities = me && isMyGraveyard && c.zone === 'graveyard' ? getZoneActivatedAbilities(c, 'graveyard') : []}
 							{@const canPlayFromGraveyard = Boolean(isMyGraveyard && c.zone === 'graveyard' && isCardPlayableNow(c, 'graveyard'))}
 							<!-- svelte-ignore a11y_no_static_element_interactions -->
 							<div
@@ -4649,8 +4662,12 @@
 												: '▶ Cast from Exile'}
 									</button>
 								{/if}
-								{#if gyCastOptions.length > 0}
-									<span class="badge gold">✨ Castable ({gyCastOptions.map((o) => o.costDisplay).join(' / ')})</span>
+								{#if gyCastOptions.length > 0 || gyZoneAbilities.length > 0}
+									<span class="badge gold">
+										✨ {gyCastOptions.length > 0
+											? `Castable (${gyCastOptions.map((o) => o.costDisplay).join(' / ')})`
+											: gyZoneAbilities.map((a) => a.label).join(' / ')}
+									</span>
 									<button
 										type="button"
 										class="scry-zone-toggle to-top"
@@ -4661,7 +4678,11 @@
 											await handleCardClickInHandOrCommand(c, 'graveyard');
 										}}
 									>
-										▶ Cast from Graveyard
+										{gyCastOptions.length > 0 && gyZoneAbilities.length > 0
+											? '▶ Cast / Activate'
+											: gyCastOptions.length > 0
+												? '▶ Cast from Graveyard'
+												: '▶ Activate Ability'}
 									</button>
 								{/if}
 								{#if zoneModal.title.includes('Graveyard') && gyIndex >= 0}
@@ -5080,11 +5101,14 @@
 							(minWeightSum === undefined || selectedWeightSum >= minWeightSum)}
 						{@const candidateCards =
 							myChoice.zone === 'hand'
-								? sortedHand.filter(
-										(c) =>
-											myChoice.candidates.length === 0 ||
-											myChoice.candidates.includes(c.instanceId)
-									)
+								? myChoice.candidates.length > 0 &&
+									myChoice.candidates.some((id) => !sortedHand.some((c) => c.instanceId === id))
+									? resolveCandidateObjects(myChoice.candidates)
+									: sortedHand.filter(
+											(c) =>
+												myChoice.candidates.length === 0 ||
+												myChoice.candidates.includes(c.instanceId)
+										)
 								: resolveCandidateObjects(myChoice.candidates)}
 						{#if minWeightSum !== undefined}
 							<div class="hand-toolbar modal-sort-bar">

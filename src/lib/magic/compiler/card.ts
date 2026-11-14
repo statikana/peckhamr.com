@@ -34,7 +34,7 @@ import type {
 } from '../ir.ts';
 import { getKeywordSpec, IMPLEMENTED_KEYWORDS, KNOWN_KEYWORDS } from '../keywords.ts';
 import { getCardFaces } from '../scryfall.ts';
-import type { CardLayout, ManaColor, ScryfallCard, ScryfallCardFace } from '../types.ts';
+import type { CardLayout, ManaColor, ScryfallCard, ScryfallCardFace, ZoneType } from '../types.ts';
 import { parseAdditionalCostSentence, parseCost, parseCostModifierSentence, parseObjectPhrase } from './costs.ts';
 import { extractUnparsedTargets, parseEffects, parseModal, parseSpellFace, type EffectParse } from './effects.ts';
 import { staticallyInterpretable, triggerTargetsSupported } from './interpretable.ts';
@@ -227,6 +227,10 @@ function parseKeyword(part: string): KeywordDef | null {
 			kw === 'morph' ||
 			kw === 'megamorph' ||
 			kw === 'disguise' ||
+			kw === 'unearth' ||
+			kw === 'buyback' ||
+			kw === 'evoke' ||
+			kw === 'escape' ||
 			kw === 'cycling' ||
 			kw === 'basic landcycling' ||
 			kw === 'landcycling'
@@ -278,16 +282,16 @@ function keywordLine(line: NormalizedLine): AbilityDef[] | null {
 	if (
 		line.abilityWord ||
 		(/\.$/.test(line.body) &&
-			!/^(?:ward|flashback|kicker|multikicker|morph|megamorph|disguise|cycling|(?:[a-z][a-z -]*\s+)?[a-z]*cycling)\s*[—-]/i.test(
+			!/^(?:ward|flashback|kicker|multikicker|morph|megamorph|disguise|unearth|buyback|evoke|escape|cycling|(?:[a-z][a-z -]*\s+)?[a-z]*cycling)\s*[—-]/i.test(
 				line.body
 			))
 	) {
 		return null;
 	}
 	// "Enchant creature, land, or planeswalker", "Protection from white, from blue", and composite
-	// dash costs ("Ward—...", "Flashback—...", "Kicker—...", "Morph—...", "Cycling—...") are one keyword.
+	// dash costs ("Ward—...", "Flashback—...", "Kicker—...", "Morph—...", "Cycling—...", "Escape—...") are one keyword.
 	const parts =
-		/^(?:enchant|protection from|hexproof from|partner with|(?:ward|flashback|kicker|multikicker|morph|megamorph|disguise|cycling|(?:[a-z][a-z -]*\s+)?[a-z]*cycling)\s*[—-])/i.test(
+		/^(?:enchant|protection from|hexproof from|partner with|(?:ward|flashback|kicker|multikicker|morph|megamorph|disguise|unearth|buyback|evoke|escape|cycling|(?:[a-z][a-z -]*\s+)?[a-z]*cycling)\s*[—-])/i.test(
 			line.body
 		)
 			? [line.body]
@@ -346,7 +350,11 @@ function keywordLine(line: NormalizedLine): AbilityDef[] | null {
 			keyword.name === 'flashback' ||
 			keyword.name === 'morph' ||
 			keyword.name === 'megamorph' ||
-			keyword.name === 'disguise'
+			keyword.name === 'disguise' ||
+			keyword.name === 'unearth' ||
+			keyword.name === 'buyback' ||
+			keyword.name === 'evoke' ||
+			keyword.name === 'escape'
 		) {
 			const kwCost = keyword.cost ?? keyword.param ?? '';
 			const parsed = parseCost(kwCost);
@@ -457,6 +465,7 @@ function keywordLine(line: NormalizedLine): AbilityDef[] | null {
 			keyword.name === 'typecycling';
 		const cyclingId = i === 0 ? `cycling_${line.rawIndex}` : `cycling_${line.rawIndex}_${i}`;
 		const crewId = i === 0 ? `crew_${line.rawIndex}` : `crew_${line.rawIndex}_${i}`;
+		const unearthId = i === 0 ? `unearth_${line.rawIndex}` : `unearth_${line.rawIndex}_${i}`;
 		out.push({
 			kind: 'keyword',
 			keyword,
@@ -467,7 +476,9 @@ function keywordLine(line: NormalizedLine): AbilityDef[] | null {
 					? { id: cyclingId }
 					: keyword.name === 'crew'
 						? { id: crewId }
-						: {})
+						: keyword.name === 'unearth'
+							? { id: unearthId }
+							: {})
 		});
 		// CR 702.124j: "Partner with [name]" is two abilities. The pairing half is the keyword above
 		// (deck construction); the other is "When this permanent enters, target player may search their
@@ -523,7 +534,18 @@ function triggerLine(group: NormalizedLine[]): AbilityDef[] | null {
 		return [unsupported('event_not_implemented', fullText, span, [headSpan])];
 	}
 
-	const headerEffectText = line.text.slice(head.effectStart - line.span.start);
+	let headerEffectText = line.text.slice(head.effectStart - line.span.start);
+	const headerSentences = splitSentences(headerEffectText, head.effectStart);
+	if (
+		headerSentences.length >= 2 &&
+		/^this ability triggers only once each turn\.?$/i.test(
+			headerSentences[headerSentences.length - 1].text.trim()
+		)
+	) {
+		trigger.onlyOncePerTurn = true;
+		const lastSentence = headerSentences[headerSentences.length - 1];
+		headerEffectText = headerEffectText.slice(0, lastSentence.span.start - head.effectStart).trimEnd();
+	}
 	if (group.length > 1) {
 		const bullets = group.slice(1).map((b) => ({ text: b.text, start: b.span.start, end: b.span.end }));
 		const modalParse = /^choose\b/i.test(headerEffectText.trim())
@@ -575,25 +597,71 @@ const ACTIVATED_RESTRICTION_SENTENCES: ReadonlyArray<[RegExp, ActivationRestrict
 	[/^activate only during combat\.?$/, 'duringCombat']
 ];
 
+const ACTIVATED_ZONE_RESTRICTION_SENTENCE =
+	/^(?:activate only if ~ is in your (hand|graveyard)(?: and only (as a sorcery|once each turn|during your turn|during your upkeep|during combat))?|activate only (as a sorcery|once each turn|during your turn|during your upkeep|during combat) and only if ~ is in your (hand|graveyard))\.?$/;
+
 function extractActivatedTimingAndRestrictions(
 	effectText: string,
 	effectStart: number,
 	isLoyalty: boolean,
 	isMana: boolean
-): { timing: Timing; activationRestrictions: ActivationRestriction[]; cleanedModalHeader: string } {
+): {
+	timing: Timing;
+	activationRestrictions: ActivationRestriction[];
+	explicitActivationZones?: ZoneType[];
+	cleanedModalHeader: string;
+} {
 	const sentences = splitSentences(effectText, effectStart);
 	const lowerTexts = sentences.map((s) => s.text.toLowerCase());
-	const sorcery = isLoyalty || lowerTexts.some((s) => /^(?:activate|equip) only as a sorcery\.?$/.test(s));
-	const timing: Timing = isMana ? 'mana' : sorcery ? 'sorcery' : 'instant';
+	let sorcery = isLoyalty || lowerTexts.some((s) => /^(?:activate|equip) only as a sorcery\.?$/.test(s));
 	const activationRestrictions: ActivationRestriction[] = [];
+	const addRestriction = (tag: ActivationRestriction) => {
+		if (!activationRestrictions.includes(tag)) activationRestrictions.push(tag);
+	};
 	for (const [re, tag] of ACTIVATED_RESTRICTION_SENTENCES) {
-		if (lowerTexts.some((s) => re.test(s))) activationRestrictions.push(tag);
+		if (lowerTexts.some((s) => re.test(s))) addRestriction(tag);
 	}
+	let explicitActivationZones: ZoneType[] | undefined;
+	for (const s of lowerTexts) {
+		const zm = s.match(ACTIVATED_ZONE_RESTRICTION_SENTENCE);
+		if (!zm) continue;
+		const zone = (zm[1] ?? zm[4]) as 'hand' | 'graveyard';
+		explicitActivationZones = [zone];
+		const extra = zm[2] ?? zm[3];
+		if (extra === 'as a sorcery') sorcery = true;
+		else if (extra === 'once each turn') addRestriction('onceEachTurn');
+		else if (extra === 'during your turn') addRestriction('duringYourTurn');
+		else if (extra === 'during your upkeep') addRestriction('duringYourUpkeep');
+		else if (extra === 'during combat') addRestriction('duringCombat');
+	}
+	const timing: Timing = isMana ? 'mana' : sorcery ? 'sorcery' : 'instant';
 	const cleanedModalHeader = effectText
+		.replace(
+			/\bactivate only (?:if ~ is in your (?:hand|graveyard)(?: and only (?:as a sorcery|once each turn|during your turn|during your upkeep|during combat))?|(?:as a sorcery|once each turn|during your turn|during your upkeep|during combat) and only if ~ is in your (?:hand|graveyard))\.?\s*/gi,
+			' '
+		)
 		.replace(/\b(?:activate|equip) only as a sorcery\.?\s*/gi, ' ')
 		.replace(/\bactivate only (?:once each turn|during your turn|during your upkeep|during combat)\.?\s*/gi, ' ')
 		.trim();
-	return { timing, activationRestrictions, cleanedModalHeader };
+	return { timing, activationRestrictions, explicitActivationZones, cleanedModalHeader };
+}
+
+function inferActivatedZones(
+	costDefs: CostDef[],
+	effectSteps: EffectStep[],
+	explicitActivationZones?: ZoneType[]
+): ZoneType[] | undefined {
+	if (explicitActivationZones) return explicitActivationZones;
+	if (costDefs.some((d) => d.k === 'discard' && d.filter === 'self')) {
+		return ['hand'];
+	}
+	if (
+		costDefs.some((d) => d.k === 'exileFrom' && d.zone === 'graveyard' && d.filter === 'self') ||
+		effectSteps.some((s) => s.verb === 'move' && s.subject.k === 'self' && s.params?.from === 'graveyard')
+	) {
+		return ['graveyard'];
+	}
+	return undefined;
 }
 
 function activatedLine(ctx: Ctx, group: NormalizedLine[]): AbilityDef[] | null {
@@ -621,17 +689,15 @@ function activatedLine(ctx: Ctx, group: NormalizedLine[]): AbilityDef[] | null {
 	const costComplete = cost.unparsed.length === 0;
 	if (group.length > 1) {
 		const id = loyalty ? `loyalty_${line.rawIndex}` : `act_${line.rawIndex}`;
-		const { timing, activationRestrictions, cleanedModalHeader } = extractActivatedTimingAndRestrictions(
-			effectText,
-			effectStart,
-			Boolean(loyalty),
-			false
-		);
+		const { timing, activationRestrictions, explicitActivationZones, cleanedModalHeader } =
+			extractActivatedTimingAndRestrictions(effectText, effectStart, Boolean(loyalty), false);
 		const bullets = group.slice(1).map((b) => ({ text: b.text, start: b.span.start, end: b.span.end }));
 		const modalParse = /^choose\b/i.test(cleanedModalHeader)
 			? parseModal(cleanedModalHeader, bullets, 'activated', effectStart)
 			: null;
 		const modal = modalParse?.modal;
+		const modalSteps = modal ? modal.modes.flatMap((m) => m.effect) : [];
+		const activationZones = inferActivatedZones(cost.defs, modalSteps, explicitActivationZones);
 		const effectOk =
 			Boolean(modalParse && modal) &&
 			modalParse!.unparsed.length === 0 &&
@@ -667,6 +733,7 @@ function activatedLine(ctx: Ctx, group: NormalizedLine[]): AbilityDef[] | null {
 				timing,
 				isMana: false,
 				...(activationRestrictions.length > 0 ? { activationRestrictions } : {}),
+				...(activationZones ? { activationZones } : {}),
 				text: fullText,
 				span
 			}
@@ -679,12 +746,13 @@ function activatedLine(ctx: Ctx, group: NormalizedLine[]): AbilityDef[] | null {
 		effect.steps.length > 0 &&
 		effect.targets.length === 0 &&
 		effect.steps.every((s) => s.verb === 'addMana');
-	const { timing, activationRestrictions } = extractActivatedTimingAndRestrictions(
+	const { timing, activationRestrictions, explicitActivationZones } = extractActivatedTimingAndRestrictions(
 		effectText,
 		effectStart,
 		Boolean(loyalty),
 		isMana
 	);
+	const activationZones = inferActivatedZones(cost.defs, effect.steps, explicitActivationZones);
 	const isManaTap = isMana && cost.defs.length === 1 && cost.defs[0].k === 'tapSelf' && !ctx.manaTapTaken;
 	const id = isManaTap ? 'mana_tap' : loyalty ? `loyalty_${line.rawIndex}` : `act_${line.rawIndex}`;
 	if (isManaTap) ctx.manaTapTaken = true;
@@ -716,6 +784,7 @@ function activatedLine(ctx: Ctx, group: NormalizedLine[]): AbilityDef[] | null {
 		timing,
 		isMana,
 		...(activationRestrictions.length > 0 ? { activationRestrictions } : {}),
+		...(activationZones ? { activationZones } : {}),
 		text: fullText,
 		span
 	};

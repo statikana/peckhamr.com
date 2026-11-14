@@ -1,13 +1,14 @@
 # MTG Engine: Next Steps Spec
 
-**Status:** spec, written 2026-11-12 against `engine-rewrite` at `ad82d00`, updated through **Track E** (`COMPILER_VERSION = 30`). Track A (`A1`–`A4`), **B1**, **B2**, **B3**, **Cycling** (`CR 702.29`), **B4** (Phases 1–3: `0fc1211`, `8b772d5`, `91335a5`), **Track B Tokens/Investigate/Surveil** (`eab9015`), **Track D** (`f988d0c`), and **Track E** are **done**.
+**Status:** spec, written 2026-11-12 against `engine-rewrite` at `ad82d00`, updated for **Track F** (`COMPILER_VERSION = 30` baseline). Track A (`A1`–`A4`), **B1**, **B2**, **B3**, **Cycling** (`CR 702.29`), **B4** (Phases 1–3: `0fc1211`, `8b772d5`, `91335a5`), **Track B Tokens/Investigate/Surveil** (`eab9015`), **Track D** (`f988d0c`), and **Track E** (`8cbb247`) are **done**.
 
-**Purpose:** the recommended next work for the engine, written so that each work package can be handed to one agent. Track A is near-term fixes (complete). Track B is the structural work that full keyword and rules coverage needs (the reasoning is in [`FULL_COVERAGE_STRUCTURE.md`](./FULL_COVERAGE_STRUCTURE.md)). Track C keeps the docs honest as the code changes. Track E knocked out top unparsed `COVERAGE.md` templates and core Commander interactions.
+**Purpose:** the recommended next work for the engine, written so that each work package can be handed to one agent. Track A is near-term fixes (complete). Track B is the structural work that full keyword and rules coverage needs (the reasoning is in [`FULL_COVERAGE_STRUCTURE.md`](./FULL_COVERAGE_STRUCTURE.md)). Track C keeps the docs honest as the code changes. Track E (`8cbb247`) knocked out top `dig`/`Devoid`/`delayed`/`linked exile`/`Layer 2`/`Convoke`/`Delve` templates; **Track F** targets the next largest `COVERAGE.md` (`v30`) template clusters and 8 of the 13 remaining unsupported precon cards.
 
 **Order:**
 1. ~~A1, A2, A3 and A4~~ — **done** (`b68ef55`, `dfbc69e`, `94b04de`, `972a90c`).
 2. ~~B1, B2, B3, Cycling, B4, Track B Tokens, Track D, Track E~~ — **done**.
-3. Track C rides along with every package.
+3. **Track F** (Slices 1–4) — **in progress**.
+4. Track C rides along with every package.
 
 ---
 
@@ -275,3 +276,24 @@ See [`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.16 for th
    - Register `'convoke'` (`CR 702.51`) and `'delve'` (`CR 702.66`) in `KEYWORD_REGISTRY`.
    - Expose generic `CastCostAid` (`paymentAids` on `CastOption`, `costAidIds` / `costAidColorChoices` on `cast_spell`), enforcing post-determination `CR 601.2f–h` reduction, `CR 118.10` no double-tap, `CR 702.51c` `BecomesTapped` triggers, `PendingCostPayment` pause safety, and keyword-blind UI (`ArenaTable.svelte`) + AI (`ai.ts`) with zero `'convoke'`/`'delve'` literals.
    - Bump `COMPILER_VERSION`, regenerate `compiler/__snapshots__/ir.json` & `COVERAGE.md`, update `rules-audit/` docs, and run live Chromium `/magic` verification.
+
+---
+
+## Track F: Land Animation, Copy Retargeting & Storm, Graveyard/Hand Abilities & Cast Keywords, Coercive Discard & Count Triggers, and Precon Closers
+
+See [`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.17 for the full architecture spec. Dispatch sequentially in four slices (`oracleTextRead === 0`, `cardNameComparison === 0`, zero IR serialized in `GameState`, UI/AI keyword-blind):
+
+1. **Slice 1 (Land Animation `"It's still a land."` `CR 205.1b`, Spell/Ability Copy Retargeting `CR 707.10b–c,f`, & `Storm` `CR 702.40a–b`):**
+   - Extend `animate` (`ir.ts`, `compiler/effects.ts`, `compiler/statics.ts`, `runtime/effects.ts`) to emit full `TimedContinuousEffect` (`layer4`, `layer5`, `layer6`, `layer7b`) for `"becomes a [P/T] [colors] [subtypes] creature [with <keywords>] [until end of turn][, where X is ...]. It's still a land."` and `"Enchanted <land> is a ... creature ... It's still a land."`, preserving `'Land'` type and land mana abilities (`CR 205.1b`) while honoring `summoningSick` (`CR 302.6`).
+   - Support stack ability targeting (`TargetSpec.stackKind`), `CR 707.10b` ability copying (retaining original `sourceInstanceId` / `sourceObjectVersion`), `triggerEventStackItem` LKI snapshots for cast/activate-triggered self-copies (`CR 707.10`, `608.2h`), and pausable per-copy `mayChooseNewTargets` (`CR 707.10c`, `CR 115.7d–e`, emitting `BecomesTargeted` on copy stack entry).
+   - Register `'storm'` (`CR 702.40a–b`) in `KEYWORD_REGISTRY` (cast trigger creating `stormCount` LKI-safe copies with `mayChooseNewTargets: true`, multiple instances triggering separately).
+2. **Slice 2 (Hand/Graveyard Activated Abilities `Discard ~` / `Channel` / `Return ~ from graveyard`, `Unearth` `CR 702.84a`, `Buyback` `CR 702.27a`, `Evoke` `CR 702.74a`, & `Escape` `CR 702.138a–d`):**
+   - Parse `"Discard ~"` (`{ k: 'discard', filter: 'self' }`) and `"Exile N other [filter] cards from your graveyard"` (`compiler/costs.ts`, `runtime/costs.ts`), strip `Channel —`, auto-infer `activationZones: ['hand']` / `['graveyard']` (`compiler/card.ts`), and wire `'graveyard'` activated abilities in `engine.ts`, `ArenaTable.svelte` (`zoneModal` / `castOptionsModal`), and `ai.ts` with zero keyword literals.
+   - Implement `'unearth'` (`CR 702.84a`: sorcery-speed graveyard activation returning `self` to battlefield with permanent Haste, next-end-step exile `DelayedTrigger`, and `unearthLeaveExile` replacement redirecting non-exile battlefield exits to `'exile'`).
+   - Implement `'buyback'` (`CR 702.27a`: `CastOption.optionalAdditionalCosts` setting `returnToHandOnResolve`, resolution-only return to hand overridden by `exileOnLeaveStack`, unlocking precon *Corpse Dance*), `'evoke'` (`CR 702.74a`: `'alt:evoke'` + ETB sacrifice trigger), and `'escape'` (`CR 702.138a–d`: `'alt:escape'` from graveyard + `{ k: 'escaped' }` condition + `"~ escapes with ..."` counters/abilities).
+3. **Slice 3 (Coercive Hand Reveal/Discard `CR 701.9, 701.20` & Per-Turn Count / Once-Per-Turn / Batch Combat Damage Triggers `CR 603.2c, 603.2i`):**
+   - Compile & execute `"<target player/opponent> reveals their hand. You [may] choose a [filter] card from it. [If you do, ]that player discards that card."` (public reveal logging + viewer `knownToPlayerIds`, `chooseObjects` over matching hand cards, bot threat selection, pausable `discardReason: 'discard'`, `stepDecisions`).
+   - Track `cardsDrawnThisTurn` per player (`"Whenever [player] draw(s) their second card each turn"`), wire `spellsCastThisTurn === 2` (`"Whenever [player] cast(s) their second spell each turn"`), enforce `"This ability triggers only once each turn."` (`CR 603.2i` per `(instanceId, objectVersion, abilityKey)`), and add batch `"Whenever one or more [filter] you control deal combat damage to a player/opponent"` triggers (`CR 603.2c`).
+4. **Slice 4 (Precon & Commander Closers: `Evolve` `CR 702.100`, Trigger `, where X is ...`, Targeting Cost Taxes, Off-Battlefield Colorless, Conditional Modal Both + Opponent Hand Count, Partitioned `Dig`, Extra Combat Phases `CR 500.8`, Snapshots, `COVERAGE.md`, & Live Verification):**
+   - Implement `'evolve'` (`CR 702.100a–d`, *Fathom Mage*), general trailing `, where X is <amount>` in trigger/activated/spell effects (*Scourge of Valkas*), targeting non-mana/mana `costModifier` taxes (*Terror of the Peaks*), `allOffBattlefieldAndSpellsColorless` rule modifier (*Mycosynth Lattice*), `ModalDef.conditionalChooseAll` + target-player `zoneCount` (*Jeska's Will*), multi-destination `dig.partitions` (*Expressive Iteration*), and LIFO `state.extraPhases` (`CR 500.8`, *Hellkite Charger*).
+   - Bump `COMPILER_VERSION`, regenerate `compiler/__snapshots__/ir.json` & `COVERAGE.md`, update `ENGINE_INVARIANTS.md` & `rules-audit/` docs, and run live `vite dev` Chromium `/magic` verification.

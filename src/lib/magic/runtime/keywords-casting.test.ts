@@ -4266,7 +4266,7 @@ describe('Keywords: Cycling & Typecycling (CR 702.29)', () => {
 				manaCost: '{4}{U}',
 				cmc: 5,
 				typeLine: 'Enchantment',
-				oracleText: `Cycling {2}\nWhen you cycle ${name}, counter target spell.`
+				oracleText: `Cycling {2}\nWhen you cycle ${name}, restart the game.`
 			});
 
 		const cardA = makeManualCycler('Decree of Mist');

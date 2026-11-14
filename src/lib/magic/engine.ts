@@ -127,7 +127,10 @@ import {
 	formatManaRequirement,
 	getObjectKickerInfo,
 	getSuspendSpec,
+	hasReturnToHandOptionalCost,
 	isCastConditionMet,
+	isObjectEscaped,
+	isObjectEvoked,
 	keywordAltCost,
 	keywordCost,
 	keywordsOf,
@@ -198,7 +201,8 @@ import {
 	sourceDamageInfo,
 	staticallyInterpretable,
 	type PayOptionalCostResult,
-	type SourceDamageInfo
+	type SourceDamageInfo,
+	type StackItemRetargetSlot
 } from './runtime/effects.ts';
 import { chooseBotModalTriggerModes, chooseBotTriggerTargets } from './ai.ts';
 import type { CostDef, EffectStep, ModalDef, TargetSpec, TokenSpec } from './ir.ts';
@@ -880,6 +884,7 @@ function enumerateCandidateCastOptions(
 					continue;
 				}
 				if (isLandOnlyFace) continue;
+				if (meta.disallowLand && faceTypes.includes('Land')) continue;
 				if (meta.spellTypes && meta.spellTypes.length > 0) {
 					if (!meta.spellTypes.some((t) => faceTypes.includes(t))) continue;
 				}
@@ -892,6 +897,8 @@ function enumerateCandidateCastOptions(
 					...adventureMods,
 					...(meta.targetsBecomeEach ? { targetsBecomeEach: true } : {}),
 					...(meta.exileOnLeaveStack ? { exileOnLeaveStack: true } : {}),
+					...(meta.evoked ? { evoked: true } : {}),
+					...(meta.escaped ? { escaped: true } : {}),
 					...(meta.castSummarySuffix ? { castSummarySuffix: meta.castSummarySuffix } : {}),
 					...(meta.stackBadgeLabel ? { label: meta.stackBadgeLabel } : {})
 				};
@@ -1741,7 +1748,7 @@ function finalizeActivateAbility(
 	const effectText = pcp.effectText ?? '';
 	if (
 		pcp.onceEachTurn &&
-		(perm.zone === 'battlefield' || perm.zone === 'hand') &&
+		(perm.zone === 'battlefield' || perm.zone === 'hand' || perm.zone === 'graveyard') &&
 		perm.objectVersion === pcp.sourceObjectVersion &&
 		pcp.abilityId
 	) {
@@ -1779,6 +1786,8 @@ function finalizeActivateAbility(
 			sourceObjectVersion: pcp.sourceObjectVersion ?? perm.objectVersion,
 			sourceLkiPower: pcp.sourceLkiPower ?? 0,
 			sourceLkiToughness: pcp.sourceLkiToughness ?? 0,
+			...(pcp.sourceEvoked ? { sourceEvoked: true } : {}),
+			...(pcp.sourceEscaped ? { sourceEscaped: true } : {}),
 			card,
 			...(pcp.grantSourceCard ? { grantSourceCard: pcp.grantSourceCard } : {}),
 			...(pcp.faceIndex !== undefined ? { faceIndex: pcp.faceIndex } : {}),
@@ -2746,6 +2755,7 @@ export function drawCards(
 			if (!drawnPlayers.includes(player.playerId)) {
 				drawnPlayers.push(player.playerId);
 			}
+			player.cardsDrawnThisTurn = (player.cardsDrawnThisTurn ?? 0) + 1;
 			emitEvent(state, {
 				kind: 'CardDrawn',
 				playerId: player.playerId,
@@ -2966,8 +2976,12 @@ export function runBeginningOfTurn(state: GameState): void {
 
 	// Clear "until your next turn" effects (e.g., Teferi's Protection, goad per CR 701.15a)
 	expirePlayerUntilNextTurnEffects(state, activePlayer.playerId);
-	activePlayer.spellsCastThisTurn = 0;
+	for (const p of state.players) {
+		p.spellsCastThisTurn = 0;
+		p.cardsDrawnThisTurn = 0;
+	}
 	state.playersDrawnThisTurn = [];
+	state.triggeredOnceThisTurn = undefined;
 
 	// 1. Untap step (CR 502): turn-based actions execute before PhaseBegin('untap') triggers (CR 703.3)
 	beginPhase(state, 'untap', activePlayer);
@@ -3911,6 +3925,14 @@ function applyGameActionInner(
 				...(castOption.mandatoryAdditionalCosts ?? []),
 				...extraNonManaDefs
 			];
+			const paidReturnToHand = hasReturnToHandOptionalCost(castOption, normalizedOptCounts);
+			const effectiveSpellMods: SpellModifications | undefined = paidReturnToHand
+				? {
+						...castOption.spellMods,
+						returnToHandOnResolve: true,
+						castSummarySuffix: `${castOption.spellMods?.castSummarySuffix ?? ''} (Buyback)`
+					}
+				: castOption.spellMods;
 			if (combinedCostDefs.length > 0 || tapAidParts.length > 0 || exileAidParts.length > 0) {
 				const ctx = costContext(
 					state,
@@ -3958,7 +3980,7 @@ function applyGameActionInner(
 					castOptionId: castOption.id,
 					...(castOption.faceIndex !== undefined ? { faceIndex: castOption.faceIndex } : {}),
 					...(castOption.fused ? { fused: true } : {}),
-					spellMods: castOption.spellMods,
+					spellMods: effectiveSpellMods,
 					...(hasOptCounts ? { optionalCostCounts: normalizedOptCounts } : {}),
 					...(inst.playableFromExileBy?.sourceName
 						? { exSourceName: inst.playableFromExileBy.sourceName }
@@ -3995,7 +4017,7 @@ function applyGameActionInner(
 				castOptionId: castOption.id,
 				faceIndex: castOption.faceIndex,
 				fused: castOption.fused,
-				spellMods: castOption.spellMods,
+				spellMods: effectiveSpellMods,
 				...(hasOptCounts ? { optionalCostCounts: normalizedOptCounts } : {}),
 				additionalIncomplete: Boolean(additional && !additional.complete)
 			});
@@ -4127,6 +4149,8 @@ function applyGameActionInner(
 				sourceObjectVersion: perm.objectVersion,
 				sourceLkiPower,
 				sourceLkiToughness,
+				...(perm.evoked ? { sourceEvoked: true } : {}),
+				...(perm.escaped ? { sourceEscaped: true } : {}),
 				onceEachTurn: Boolean(ab.activationRestrictions?.includes('onceEachTurn')),
 				effectText: ab.effectText,
 				abilityCostIncomplete: !abilityCost.complete,
@@ -7104,7 +7128,8 @@ for (const kind of [
 	'Surveilled',
 	'Explored',
 	'Connived',
-	'BecomesCrewed'
+	'BecomesCrewed',
+	'CombatDamageBatchPlayer'
 ] as const) {
 	registerEventHandler(kind, (state, ev) => matchTriggers(state, ev));
 }
@@ -7212,6 +7237,8 @@ function triggeredStackItem(state: GameState, t: PendingTrigger, idPrefix: strin
 	const sourceLkiToughness = sourceEval?.toughness ?? t.source.lastKnownToughness;
 	const eventObj = t.eventObject ?? t.source;
 	const kickerLki = getObjectKickerInfo(state, t.sourceCard, t.source.instanceId);
+	const sourceEvoked = isObjectEvoked(state, t.source.instanceId, undefined, t.source);
+	const sourceEscaped = isObjectEscaped(state, t.source.instanceId, undefined, t.source);
 	const sourceIsFaceDown = Boolean(foundSource?.inst.isFaceDown);
 	const sourceFaceDownLabel = foundSource?.inst.faceDownLabel;
 	const sourceFaceDownSpec = foundSource?.inst.faceDownSpec;
@@ -7232,6 +7259,8 @@ function triggeredStackItem(state: GameState, t: PendingTrigger, idPrefix: strin
 						sourceKickedTags: [...kickerLki.tags]
 					}
 				: {}),
+			...(sourceEvoked ? { sourceEvoked: true } : {}),
+			...(sourceEscaped ? { sourceEscaped: true } : {}),
 			card: t.sourceCard,
 			...(t.faceIndex !== undefined ? { faceIndex: t.faceIndex } : {}),
 			...(sourceIsFaceDown
@@ -7257,6 +7286,8 @@ function triggeredStackItem(state: GameState, t: PendingTrigger, idPrefix: strin
 			...(t.defendingPlayerId ? { defendingPlayerId: t.defendingPlayerId } : {}),
 			...(t.amount !== undefined ? { eventAmount: t.amount } : {}),
 			...(t.targetStackItemId ? { eventStackItemId: t.targetStackItemId } : {}),
+			...(t.triggerEventStackItem ? { triggerEventStackItem: t.triggerEventStackItem } : {}),
+			...(t.stormCount !== undefined ? { stormCount: t.stormCount } : {}),
 			...(t.ability.ward ? { wardCost: t.ability.ward.cost } : {}),
 			eventLki: triggerEventLki(state, t)
 		},
@@ -7720,7 +7751,7 @@ function triggerSpecsSupported(specs: TargetSpec[]): boolean {
 	return specs.every((sp) => {
 		if (sp.kind === 'player') return true;
 		const z = sp.filter.zone ?? 'battlefield';
-		return z === 'battlefield' || z === 'graveyard';
+		return z === 'battlefield' || z === 'graveyard' || z === 'stack' || z === 'exile';
 	});
 }
 
@@ -7755,7 +7786,8 @@ export function specTargetCandidates(
 	controllerId: string,
 	sourceCard: ScryfallCard,
 	source: CardInstance | undefined,
-	spec: TargetSpec
+	spec: TargetSpec,
+	excludeStackItemId?: string
 ): TargetRef[] {
 	const out: TargetRef[] = [];
 	if (spec.kind === 'player' || spec.kind === 'objectOrPlayer') {
@@ -7772,11 +7804,23 @@ export function specTargetCandidates(
 	const ctx: FilterContext = { state, controllerId, source };
 	const zone = spec.filter.zone ?? 'battlefield';
 	if (zone === 'stack') {
+		const stackKind = spec.filter.stackKind ?? 'spell';
 		for (const stk of state.stack) {
-			if (source && stk.sourceInstanceId === source.instanceId) continue;
+			if (excludeStackItemId && stk.id === excludeStackItemId) continue;
+			if (stackKind === 'spell' && stk.kind !== 'spell') continue;
+			if (stackKind === 'ability' && stk.kind !== 'activated' && stk.kind !== 'triggered') continue;
+			if (stackKind === 'activatedAbility' && stk.kind !== 'activated') continue;
+			if (stackKind === 'triggeredAbility' && stk.kind !== 'triggered') continue;
+			if (
+				source &&
+				(stk.id === source.instanceId ||
+					(stk.kind === 'spell' && stk.sourceInstanceId === source.instanceId))
+			) {
+				continue;
+			}
 			if (spec.filter.controller === 'opponent' && stk.controllerId === controllerId) continue;
 			if (spec.filter.controller === 'you' && stk.controllerId !== controllerId) continue;
-			if (stk.card) {
+			if (stk.kind === 'spell' && stk.card) {
 				const stkFace = resolveObjectFaces(stk.card, stackItemFaceOptions(stk));
 				if (spec.filter.types?.length && !spec.filter.types.some((t) => stkFace.types.includes(t))) {
 					continue;
@@ -7815,7 +7859,14 @@ export function specTargetCandidates(
 
 /** Every legal target for one target spec of a triggered ability (CR 115, 603.3d). */
 function triggerTargetCandidates(state: GameState, item: StackItem, spec: TargetSpec): TargetRef[] {
-	return specTargetCandidates(state, item.controllerId, item.card, triggerSourceObject(state, item), spec);
+	return specTargetCandidates(
+		state,
+		item.controllerId,
+		item.card,
+		triggerSourceObject(state, item),
+		spec,
+		item.id
+	);
 }
 
 /** CR 608.2b for a triggered ability on the interpreter path: is `t` still legal for some spec? */
@@ -8912,6 +8963,8 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 			);
 			perm.kickedCount = resolvedKicker.count > 0 ? resolvedKicker.count : undefined;
 			perm.kickedTags = resolvedKicker.tags.length > 0 ? resolvedKicker.tags : undefined;
+			perm.evoked = item.spellMods?.evoked ? true : undefined;
+			perm.escaped = item.spellMods?.escaped ? true : undefined;
 			// Reset pre-filled loyalty so moveObject initializes loyalty with counterMultiplier (CR 306.5b)
 			perm.counters.loyalty = 0;
 
@@ -8923,6 +8976,10 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 				perm.faceDownLabel = item.faceDownLabel ?? allocateFaceDownLabel(state);
 			} else if (item.faceIndex !== undefined) {
 				perm.activeFaceIndex = item.faceIndex;
+			}
+			if (item.copiableState) {
+				perm.copiableState = JSON.parse(JSON.stringify(item.copiableState)) as CopiableState;
+				perm.copiableCard = item.copiableState.card;
 			}
 			// CR 709.5d: A Room permanent cast as a spell enters with the chosen half's door unlocked.
 			if (stackSubtypes.includes('Room')) {
@@ -9018,8 +9075,15 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 			}
 			flushTriggers(state);
 		} else if (!item.isCopy) {
+			// CR 702.27a: If the buyback cost was paid, put the resolving spell into its owner's hand
+			// instead of into that player's graveyard (moveStackSpellToZone still overrides with
+			// exileOnLeaveStack per CR 702.34a when cast via Flashback).
 			const dest =
-				exiledBySelfReference || item.spellMods?.exileAdventureOnResolve ? 'exile' : 'graveyard';
+				exiledBySelfReference || item.spellMods?.exileAdventureOnResolve
+					? 'exile'
+					: item.spellMods?.returnToHandOnResolve
+						? 'hand'
+						: 'graveyard';
 			moveStackSpellToZone(state, item, dest);
 		}
 	}
@@ -9529,6 +9593,380 @@ function payOptionalCost(
 	return { status: 'paid' };
 }
 
+function stackItemTargetSpecsAndSteps(
+	state: GameState,
+	orig: StackItem
+): { specs: TargetSpec[]; steps: EffectStep[] } {
+	if (orig.kind === 'triggered') {
+		if (itemWard(orig) || orig.delayedEffect) return { specs: [], steps: [] };
+		const eff = triggerItemEffect(orig);
+		return { specs: eff?.targets ?? [], steps: eff?.steps ?? [] };
+	}
+	if (orig.kind === 'activated') {
+		const eff = compiledStackItemEffects(orig);
+		return { specs: eff?.targets ?? [], steps: eff?.steps ?? [] };
+	}
+	if (orig.spellMods?.targetsBecomeEach) return { specs: [], steps: [] };
+	const eff = compiledStackItemEffects(orig);
+	if (eff) {
+		const kickerInfo = getObjectKickerInfo(state, orig.card, orig.sourceInstanceId, orig);
+		const specs = eff.targets.filter(
+			(ts) => !ts.condition || isConditionMetWithKicker(ts.condition, kickerInfo)
+		);
+		return { specs, steps: eff.steps };
+	}
+	const req = getSpellTargetRequirement(
+		orig.card,
+		{
+			...(orig.faceIndex !== undefined ? { faceIndex: orig.faceIndex } : {}),
+			...(orig.fused !== undefined ? { fused: orig.fused } : {}),
+			...(orig.spellMods ? { spellMods: orig.spellMods } : {})
+		},
+		orig.optionalCostCounts
+	);
+	return { specs: req.targetSpecs ?? [], steps: [] };
+}
+
+function distributeStackItemTargetsBySpec(orig: StackItem, specs: TargetSpec[]): TargetRef[][] {
+	if (specs.length === 0) return [];
+	if (orig.targetsBySpec && orig.targetsBySpec.length === specs.length) {
+		return orig.targetsBySpec.map((b) => b.map((t) => ({ ...t })));
+	}
+	const counts = specs.map((s) => s.min);
+	const minRequired = counts.reduce((sum, n) => sum + n, 0);
+	let extra = Math.max(0, orig.targets.length - minRequired);
+	for (let i = 0; i < specs.length && extra > 0; i++) {
+		const add = Math.min(extra, Math.max(0, specs[i].max - counts[i]));
+		if (add > 0) {
+			counts[i] += add;
+			extra -= add;
+		}
+	}
+	const out: TargetRef[][] = [];
+	let cur = 0;
+	for (let i = 0; i < specs.length; i++) {
+		const take = Math.min(counts[i], Math.max(0, orig.targets.length - cur));
+		out.push(orig.targets.slice(cur, cur + take).map((t) => ({ ...t })));
+		cur += take;
+	}
+	return out;
+}
+
+function getStackItemRetargetSlots(
+	state: GameState,
+	orig: StackItem,
+	copyControllerId: string
+): StackItemRetargetSlot[] {
+	const { specs } = stackItemTargetSpecsAndSteps(state, orig);
+	if (specs.length === 0) return [];
+	const bySpec = distributeStackItemTargetsBySpec(orig, specs);
+	const sourceObj = orig.kind === 'spell' ? undefined : triggerSourceObject(state, orig);
+	const sourceCard = orig.copiableState?.card ?? orig.card;
+	return specs.map((spec, idx) => {
+		const cands = specTargetCandidates(state, copyControllerId, sourceCard, sourceObj, spec).filter(
+			(c) => !(c.kind === 'stack' && c.id === orig.id)
+		);
+		const zone: ZoneType | 'player' =
+			spec.kind === 'player' ? 'player' : ((spec.filter.zone as ZoneType | undefined) ?? 'battlefield');
+		return {
+			spec,
+			originalTargets: bySpec[idx] ?? [],
+			legalCandidates: cands,
+			zone
+		};
+	});
+}
+
+function validateStackItemRetarget(
+	state: GameState,
+	orig: StackItem,
+	copyControllerId: string,
+	targetsBySpec: TargetRef[][]
+): boolean {
+	const slots = getStackItemRetargetSlots(state, orig, copyControllerId);
+	if (targetsBySpec.length !== slots.length) return false;
+	for (let i = 0; i < slots.length; i++) {
+		const sl = slots[i];
+		const chosen = targetsBySpec[i] ?? [];
+		const uniq = new Set(chosen.map((t) => `${t.kind}:${t.id}`));
+		if (uniq.size !== chosen.length) return false;
+		const unchangedSlot =
+			chosen.length === sl.originalTargets.length &&
+			chosen.every((x, idx) => x.kind === sl.originalTargets[idx]?.kind && x.id === sl.originalTargets[idx]?.id);
+		if (unchangedSlot) continue;
+		if (chosen.length < sl.spec.min || chosen.length > sl.spec.max) return false;
+		for (const t of chosen) {
+			const keptOriginal = sl.originalTargets.some((o) => o.kind === t.kind && o.id === t.id);
+			const isLegalNew = sl.legalCandidates.some((c) => c.kind === t.kind && c.id === t.id);
+			if (!keptOriginal && !isLegalNew) return false;
+		}
+	}
+	return true;
+}
+
+function chooseBotStackItemRetarget(
+	state: GameState,
+	bot: PlayerGameState,
+	orig: StackItem,
+	slots: StackItemRetargetSlot[],
+	copyIndex: number
+): { targets: TargetRef[]; targetsBySpec: TargetRef[][] } {
+	const { steps } = stackItemTargetSpecsAndSteps(state, orig);
+	const targetsBySpec: TargetRef[][] = slots.map((sl, sIdx) => {
+		if (sl.spec.min > 0 && sl.legalCandidates.length < sl.spec.min) {
+			return sl.originalTargets.map((t) => ({ ...t }));
+		}
+		const ranked = chooseBotTriggerTargets(state, bot, steps, sIdx, sl.spec, sl.legalCandidates);
+		if (ranked.length < sl.spec.min) {
+			return sl.originalTargets.map((t) => ({ ...t }));
+		}
+		if (copyIndex > 0 && sl.spec.min === 1 && sl.spec.max === 1 && ranked[0]?.kind === 'permanent') {
+			const firstFound = findPermanentOnBoard(state, ranked[0].id);
+			if (firstFound && firstFound.controller.playerId !== bot.playerId) {
+				const oppPerms = sl.legalCandidates.filter((c) => {
+					if (c.kind !== 'permanent') return false;
+					const f = findPermanentOnBoard(state, c.id);
+					return Boolean(f && f.controller.playerId !== bot.playerId);
+				});
+				if (oppPerms.length > 1) {
+					return [{ ...oppPerms[copyIndex % oppPerms.length] }];
+				}
+			}
+		}
+		return ranked.map((t) => ({ ...t }));
+	});
+	if (validateStackItemRetarget(state, orig, bot.playerId, targetsBySpec)) {
+		return { targets: targetsBySpec.flat(), targetsBySpec };
+	}
+	const fallbackBySpec = slots.map((sl) => sl.originalTargets.map((t) => ({ ...t })));
+	return { targets: orig.targets.map((t) => ({ ...t })), targetsBySpec: fallbackBySpec };
+}
+
+function pushCopiedStackItem(
+	state: GameState,
+	controller: PlayerGameState,
+	orig: StackItem,
+	targets: TargetRef[],
+	targetsBySpec: TargetRef[][] | undefined,
+	opts?: { exceptColors?: ManaColor[]; nonLegendary?: boolean }
+): StackItem {
+	let copiableState: CopiableState | undefined = orig.copiableState
+		? (JSON.parse(JSON.stringify(orig.copiableState)) as CopiableState)
+		: undefined;
+	if (opts?.exceptColors !== undefined || opts?.nonLegendary) {
+		const base: CopiableState = copiableState ?? {
+			card: orig.card,
+			...(orig.faceIndex !== undefined ? { faceIndex: orig.faceIndex } : {}),
+			...(orig.fused !== undefined ? { fused: orig.fused } : {})
+		};
+		base.except = { ...(base.except ?? {}) };
+		if (opts.exceptColors !== undefined) {
+			base.except.colors = [...opts.exceptColors];
+		}
+		if (opts.nonLegendary) {
+			const cardCopy = JSON.parse(JSON.stringify(base.card)) as ScryfallCard;
+			cardCopy.typeLine = cardCopy.typeLine.replace(/\bLegendary\s+/g, '');
+			for (const f of cardCopy.faces ?? []) {
+				if (f.typeLine) f.typeLine = f.typeLine.replace(/\bLegendary\s+/g, '');
+			}
+			base.card = cardCopy;
+			const rem = new Set(base.except.removeSupertypes ?? []);
+			rem.add('Legendary');
+			base.except.removeSupertypes = [...rem];
+		}
+		copiableState = base;
+	}
+
+	const copyCard = copiableState?.card ?? orig.card;
+	const targetObjectVersions = captureTargetObjectVersions(state, targets);
+
+	if (orig.kind === 'spell') {
+		const copyInstanceId = uid('copy', state);
+		const copyItem: StackItem = withStackItemText(
+			{
+				id: uid('stk', state),
+				sourceInstanceId: copyInstanceId,
+				sourceObjectVersion: 1,
+				card: copyCard,
+				...(orig.faceIndex !== undefined ? { faceIndex: orig.faceIndex } : {}),
+				...(orig.fused ? { fused: true } : {}),
+				...(orig.isFaceDown
+					? {
+							isFaceDown: true,
+							...(orig.faceDownSpec ? { faceDownSpec: { ...orig.faceDownSpec } } : {}),
+							...(orig.faceDownLabel ? { faceDownLabel: orig.faceDownLabel } : {})
+						}
+					: {}),
+				...(copiableState ? { copiableState } : {}),
+				ownerId: controller.playerId,
+				controllerId: controller.playerId,
+				kind: 'spell',
+				title: `${orig.card.name} (Copy)`,
+				targets: targets.map((t) => ({ ...t })),
+				...(targetsBySpec
+					? { targetsBySpec: targetsBySpec.map((b) => b.map((t) => ({ ...t }))) }
+					: {}),
+				...(targetObjectVersions && Object.keys(targetObjectVersions).length > 0
+					? { targetObjectVersions }
+					: {}),
+				xValue: orig.xValue,
+				...(orig.chosenModes ? { chosenModes: [...orig.chosenModes] } : {}),
+				...(orig.optionalCostCounts
+					? { optionalCostCounts: { ...orig.optionalCostCounts } }
+					: {}),
+				...(orig.spellMods ? { spellMods: { ...orig.spellMods } } : {}),
+				requiresGuidedResolution: orig.requiresGuidedResolution,
+				isCopy: true,
+				createdAt: Date.now()
+			},
+			stackItemDisplayText(orig)
+		);
+		state.stack.push(copyItem);
+		const dummyObj: CardInstance = {
+			instanceId: copyInstanceId,
+			objectVersion: 1,
+			card: orig.card,
+			...(copiableState ? { copiableState, copiableCard: copiableState.card } : {}),
+			ownerId: controller.playerId,
+			controllerId: controller.playerId,
+			defaultControllerId: controller.playerId,
+			zone: 'stack',
+			tapped: false,
+			summoningSick: false,
+			damageMarked: 0,
+			deathtouchDamageMarked: false,
+			tempPowerMod: 0,
+			tempToughnessMod: 0,
+			grantedKeywords: [],
+			attachedToId: null,
+			counters: createEmptyCounters(),
+			isCommander: false,
+			commanderCastCount: 0,
+			usedLoyaltyThisTurn: false,
+			transformed: false,
+			isToken: false,
+			enteredTimestamp: allocateTimestamp(state)
+		};
+		emitEvent(state, {
+			kind: 'SpellCopied',
+			playerId: controller.playerId,
+			objectId: copyInstanceId,
+			object: dummyObj
+		});
+		for (const t of copyItem.targets) {
+			const targeted = t.kind === 'permanent' ? findPermanentOnBoard(state, t.id) : null;
+			if (targeted && !targeted.inst.phasedOut) {
+				emitEvent(state, {
+					kind: 'BecameTarget',
+					objectId: t.id,
+					object: targeted.inst,
+					by: 'spell',
+					controllerId: controller.playerId,
+					stackItemId: copyItem.id
+				});
+			}
+		}
+		flushTriggers(state);
+		addLog(
+			state,
+			'cast',
+			`${controller.username} copied ${orig.card.name} on the stack${copyItem.targets.length > 0 ? ` targeting ${copyItem.targets.map((t) => t.label).join(', ')}` : ''} (CR 707.10).`,
+			controller.playerId
+		);
+		return copyItem;
+	}
+
+	// CR 707.10b: A copy of an activated or triggered ability has the same source as the original ability.
+	const copyItem: StackItem = withStackItemText(
+		{
+			id: uid('stk', state),
+			sourceInstanceId: orig.sourceInstanceId,
+			...(orig.sourceObjectVersion !== undefined
+				? { sourceObjectVersion: orig.sourceObjectVersion }
+				: {}),
+			...(orig.sourceLkiPower !== undefined ? { sourceLkiPower: orig.sourceLkiPower } : {}),
+			...(orig.sourceLkiToughness !== undefined
+				? { sourceLkiToughness: orig.sourceLkiToughness }
+				: {}),
+			...(orig.sourceKickedCount !== undefined
+				? { sourceKickedCount: orig.sourceKickedCount }
+				: {}),
+			...(orig.sourceKickedTags ? { sourceKickedTags: [...orig.sourceKickedTags] } : {}),
+			...(orig.sourceEvoked ? { sourceEvoked: true } : {}),
+			...(orig.sourceEscaped ? { sourceEscaped: true } : {}),
+			card: orig.card,
+			...(orig.faceIndex !== undefined ? { faceIndex: orig.faceIndex } : {}),
+			...(orig.isFaceDown
+				? {
+						isFaceDown: true,
+						...(orig.faceDownSpec ? { faceDownSpec: { ...orig.faceDownSpec } } : {}),
+						...(orig.faceDownLabel ? { faceDownLabel: orig.faceDownLabel } : {})
+					}
+				: {}),
+			controllerId: controller.playerId,
+			kind: orig.kind,
+			title: `${orig.title} (Copy)`,
+			targets: targets.map((t) => ({ ...t })),
+			...(targetsBySpec
+				? { targetsBySpec: targetsBySpec.map((b) => b.map((t) => ({ ...t }))) }
+				: {}),
+			...(targetObjectVersions && Object.keys(targetObjectVersions).length > 0
+				? { targetObjectVersions }
+				: {}),
+			xValue: orig.xValue,
+			...(orig.abilityId ? { abilityId: orig.abilityId } : {}),
+			...(orig.grantSourceCard ? { grantSourceCard: orig.grantSourceCard } : {}),
+			...(orig.crewedByIds ? { crewedByIds: [...orig.crewedByIds] } : {}),
+			...(orig.triggeredAbilityIndex !== undefined
+				? { triggeredAbilityIndex: orig.triggeredAbilityIndex }
+				: {}),
+			...(orig.grantedKeyword ? { grantedKeyword: orig.grantedKeyword } : {}),
+			...(orig.delayedEffect ? { delayedEffect: orig.delayedEffect } : {}),
+			...(orig.wardCost !== undefined ? { wardCost: orig.wardCost } : {}),
+			...(orig.chosenModes ? { chosenModes: [...orig.chosenModes] } : {}),
+			...(orig.eventObjectId ? { eventObjectId: orig.eventObjectId } : {}),
+			...(orig.eventObjectVersion !== undefined
+				? { eventObjectVersion: orig.eventObjectVersion }
+				: {}),
+			...(orig.eventPlayerId ? { eventPlayerId: orig.eventPlayerId } : {}),
+			...(orig.defendingPlayerId ? { defendingPlayerId: orig.defendingPlayerId } : {}),
+			...(orig.eventAmount !== undefined ? { eventAmount: orig.eventAmount } : {}),
+			...(orig.eventStackItemId ? { eventStackItemId: orig.eventStackItemId } : {}),
+			...(orig.eventLki ? { eventLki: { ...orig.eventLki } } : {}),
+			...(orig.triggerEventStackItem
+				? { triggerEventStackItem: JSON.parse(JSON.stringify(orig.triggerEventStackItem)) as StackItem }
+				: {}),
+			...(orig.stormCount !== undefined ? { stormCount: orig.stormCount } : {}),
+			requiresGuidedResolution: orig.requiresGuidedResolution,
+			isCopy: true,
+			createdAt: Date.now()
+		},
+		stackItemDisplayText(orig)
+	);
+	state.stack.push(copyItem);
+	for (const t of copyItem.targets) {
+		const targeted = t.kind === 'permanent' ? findPermanentOnBoard(state, t.id) : null;
+		if (targeted && !targeted.inst.phasedOut) {
+			emitEvent(state, {
+				kind: 'BecameTarget',
+				objectId: t.id,
+				object: targeted.inst,
+				by: 'ability',
+				controllerId: controller.playerId,
+				stackItemId: copyItem.id
+			});
+		}
+	}
+	flushTriggers(state);
+	addLog(
+		state,
+		'cast',
+		`${controller.username} copied ability ${orig.title} on the stack${copyItem.targets.length > 0 ? ` targeting ${copyItem.targets.map((t) => t.label).join(', ')}` : ''} (CR 707.10b).`,
+		controller.playerId
+	);
+	return copyItem;
+}
+
 registerEffectPorts({
 	uid,
 	addLog,
@@ -9571,7 +10009,11 @@ registerEffectPorts({
 	activePlayerMayEndTurn,
 	win: (state, player, reason) => void winTheGame(state, player, reason),
 	lose: (state, player, reason) => void loseTheGame(state, player, reason),
-	legalAuraAttachCandidates
+	legalAuraAttachCandidates,
+	getStackItemRetargetSlots,
+	validateStackItemRetarget,
+	chooseBotStackItemRetarget,
+	pushCopiedStackItem
 });
 
 /**
@@ -10536,6 +10978,7 @@ function executeCombatDamageStep(
 	}
 
 	// CR 510.2: Deal all assigned combat damage simultaneously through the unified damage pipeline.
+	const combatDamagedPlayers = new Map<string, CardInstance[]>();
 	for (const sched of scheduledCombats) {
 		const { attacker, atkPlayer, defPlayer, atkSnap, blockers, attackerAssignments, blockerAssignments } =
 			sched;
@@ -10634,6 +11077,12 @@ function executeCombatDamageStep(
 				);
 				totalDealtByAttacker += dealt;
 				if (dealt > 0) {
+					const damagedAttackers = combatDamagedPlayers.get(asgn.target.playerId);
+					if (!damagedAttackers) {
+						combatDamagedPlayers.set(asgn.target.playerId, [attacker]);
+					} else if (!damagedAttackers.some((c) => c.instanceId === attacker.instanceId)) {
+						damagedAttackers.push(attacker);
+					}
 					// Track Commander Combat Damage (CR 903.10a)
 					if (attacker.isCommander) {
 						defPlayer.commanderDamageTaken[attacker.instanceId] =
@@ -10694,6 +11143,15 @@ function executeCombatDamageStep(
 				applyLifelinkGain(state, defPlayer, dealtByBlocker);
 			}
 		}
+	}
+
+	// CR 603.2c: Emit one batch event per player dealt combat damage in this step, before SBAs run.
+	for (const [damagedPlayerId, attackers] of combatDamagedPlayers) {
+		emitEvent(state, {
+			kind: 'CombatDamageBatchPlayer',
+			damagedPlayerId,
+			attackers
+		});
 	}
 
 	if (isFirstStrikeStep) {
@@ -12198,52 +12656,104 @@ function validateTargetLegalityInner(
 	const info = normalizeTargetRequirement(targetRequirementOrKind);
 	const targetKind = info.targetKind;
 
-	// 1. Stack spell target validation
-	if (target.kind === 'stack' || info.zone === 'stack' || targetKind === 'spell') {
-		if (target.kind !== 'stack' && (info.zone === 'stack' || targetKind === 'spell')) {
+	// 1. Stack spell or ability target validation
+	if (
+		target.kind === 'stack' ||
+		info.zone === 'stack' ||
+		targetKind === 'spell' ||
+		targetKind === 'stack'
+	) {
+		if (
+			target.kind !== 'stack' &&
+			(info.zone === 'stack' || targetKind === 'spell' || targetKind === 'stack')
+		) {
 			return {
 				ok: false,
-				error: 'Strict Rules Violation: This spell or ability must target a spell on the Stack.'
+				error: 'Strict Rules Violation: This spell or ability must target an object on the Stack.'
 			};
 		}
-		const inStack = state.stack.find((s) => s.id === target.id || s.sourceInstanceId === target.id);
-		if (!inStack) return { ok: false, error: 'Target spell is not on the Stack.' };
-		if (inStack.kind !== 'spell') {
+		const inStack = state.stack.find(
+			(s) => s.id === target.id || (s.kind === 'spell' && s.sourceInstanceId === target.id)
+		);
+		if (!inStack) return { ok: false, error: 'Target spell or ability is not on the Stack.' };
+		const stackSpec = info.targetSpecs?.find(
+			(s) =>
+				s.kind === 'object' &&
+				(s.filter.zone === 'stack' || targetKind === 'spell' || targetKind === 'stack')
+		);
+		const stackKind = info.stackKind ?? stackSpec?.filter.stackKind ?? 'spell';
+		if (stackKind === 'spell' && inStack.kind !== 'spell') {
 			return {
 				ok: false,
 				error: 'Strict Rules Violation: Target on the Stack is an ability, not a spell.'
 			};
 		}
+		if (stackKind === 'ability' && inStack.kind !== 'activated' && inStack.kind !== 'triggered') {
+			return {
+				ok: false,
+				error: 'Strict Rules Violation: Target on the Stack must be an activated or triggered ability.'
+			};
+		}
+		if (stackKind === 'activatedAbility' && inStack.kind !== 'activated') {
+			return {
+				ok: false,
+				error: 'Strict Rules Violation: Target on the Stack must be an activated ability.'
+			};
+		}
+		if (stackKind === 'triggeredAbility' && inStack.kind !== 'triggered') {
+			return {
+				ok: false,
+				error: 'Strict Rules Violation: Target on the Stack must be a triggered ability.'
+			};
+		}
 		if (
 			sourceInstanceId &&
-			(inStack.id === sourceInstanceId || inStack.sourceInstanceId === sourceInstanceId)
+			(inStack.id === sourceInstanceId ||
+				(inStack.kind === 'spell' && inStack.sourceInstanceId === sourceInstanceId))
 		) {
 			return {
 				ok: false,
-				error: 'Strict Rules Violation: A spell cannot target itself on the Stack.'
+				error: 'Strict Rules Violation: A spell or ability cannot target itself on the Stack.'
 			};
 		}
 		if (info.controllerFilter === 'opponent' && inStack.controllerId === actorId) {
 			return {
 				ok: false,
-				error: 'Strict Rules Violation: Must target a spell controlled by an opponent.'
+				error: 'Strict Rules Violation: Must target a spell or ability controlled by an opponent.'
 			};
 		}
 		if (info.controllerFilter === 'you' && inStack.controllerId !== actorId) {
 			return {
 				ok: false,
-				error: 'Strict Rules Violation: Must target a spell you control.'
+				error: 'Strict Rules Violation: Must target a spell or ability you control.'
 			};
 		}
-		if (info.cardTypeFilter) {
-			const sType = inStack.card.typeLine;
-			if (info.cardTypeFilter === 'Noncreature' && sType.includes('Creature')) {
+		if (info.cardTypeFilter && inStack.kind === 'spell') {
+			const stkTypes = resolveObjectFaces(inStack.card, stackItemFaceOptions(inStack)).types;
+			const sType = stkTypes.join(' ');
+			if (info.cardTypeFilter === 'Noncreature' && stkTypes.includes('Creature')) {
 				return {
 					ok: false,
 					error: `Strict Rules Violation: ${inStack.card.name} is a Creature spell (requires a noncreature spell).`
 				};
 			}
-			if (info.cardTypeFilter === 'Creature' && !sType.includes('Creature')) {
+			if (
+				info.cardTypeFilter === 'Permanent' &&
+				!stkTypes.some(
+					(t) =>
+						t === 'Creature' ||
+						t === 'Artifact' ||
+						t === 'Enchantment' ||
+						t === 'Planeswalker' ||
+						t === 'Battle'
+				)
+			) {
+				return {
+					ok: false,
+					error: `Strict Rules Violation: ${inStack.card.name} is not a permanent spell.`
+				};
+			}
+			if (info.cardTypeFilter === 'Creature' && !stkTypes.includes('Creature')) {
 				return {
 					ok: false,
 					error: `Strict Rules Violation: ${inStack.card.name} is not a Creature spell.`
@@ -12251,43 +12761,45 @@ function validateTargetLegalityInner(
 			}
 			if (
 				info.cardTypeFilter === 'InstantOrSorcery' &&
-				!sType.includes('Instant') &&
-				!sType.includes('Sorcery')
+				!stkTypes.includes('Instant') &&
+				!stkTypes.includes('Sorcery')
 			) {
 				return {
 					ok: false,
 					error: `Strict Rules Violation: ${inStack.card.name} is not an Instant or Sorcery spell.`
 				};
 			}
-			if (info.cardTypeFilter === 'Instant' && !sType.includes('Instant')) {
+			if (info.cardTypeFilter === 'Instant' && !stkTypes.includes('Instant')) {
 				return {
 					ok: false,
 					error: `Strict Rules Violation: ${inStack.card.name} is not an Instant spell.`
 				};
 			}
-			if (info.cardTypeFilter === 'Sorcery' && !sType.includes('Sorcery')) {
+			if (info.cardTypeFilter === 'Sorcery' && !stkTypes.includes('Sorcery')) {
 				return {
 					ok: false,
 					error: `Strict Rules Violation: ${inStack.card.name} is not a Sorcery spell.`
 				};
 			}
-			if (info.cardTypeFilter === 'Artifact' && !sType.includes('Artifact')) {
+			if (info.cardTypeFilter === 'Artifact' && !stkTypes.includes('Artifact')) {
 				return {
 					ok: false,
 					error: `Strict Rules Violation: ${inStack.card.name} is not an Artifact spell.`
 				};
 			}
-			if (info.cardTypeFilter === 'Enchantment' && !sType.includes('Enchantment')) {
+			if (info.cardTypeFilter === 'Enchantment' && !stkTypes.includes('Enchantment')) {
 				return {
 					ok: false,
 					error: `Strict Rules Violation: ${inStack.card.name} is not an Enchantment spell.`
 				};
 			}
+			void sType;
 		}
-		const stackSpec = info.targetSpecs?.find(
-			(s) => s.kind === 'object' && (s.filter.zone === 'stack' || targetKind === 'spell')
-		);
-		if (stackSpec?.kind === 'object' && stackSpec.filter.colors?.length) {
+		if (
+			inStack.kind === 'spell' &&
+			stackSpec?.kind === 'object' &&
+			stackSpec.filter.colors?.length
+		) {
 			const sColors = resolveObjectFaces(inStack.card, stackItemFaceOptions(inStack)).colors;
 			if (!matchesColorFilter(sColors, stackSpec.filter.colors)) {
 				return {
@@ -13891,9 +14403,14 @@ function findActivatedAbilityTarget(
 	| { ok: false; error: string } {
 	const bfPerm = actor.battlefield.find((c) => c.instanceId === instanceId);
 	const handCard = bfPerm ? undefined : actor.hand.find((c) => c.instanceId === instanceId);
-	const source = bfPerm ?? handCard;
+	const graveCard =
+		bfPerm || handCard ? undefined : actor.graveyard.find((c) => c.instanceId === instanceId);
+	const source = bfPerm ?? handCard ?? graveCard;
 	if (!source) {
-		return { ok: false, error: 'Card not found on your battlefield or in your hand.' };
+		return {
+			ok: false,
+			error: 'Card not found on your battlefield, in your hand, or in your graveyard.'
+		};
 	}
 	if (source.zone === 'battlefield' && source.phasedOut) {
 		return { ok: false, error: 'Permanent not found on your battlefield.' };
@@ -13907,7 +14424,9 @@ function findActivatedAbilityTarget(
 			error:
 				source.zone === 'hand'
 					? 'Ability not found on this card in hand.'
-					: 'Ability not found on this permanent.'
+					: source.zone === 'graveyard'
+						? 'Ability not found on this card in your graveyard.'
+						: 'Ability not found on this permanent.'
 		};
 	}
 	const allowedZones = ab.activationZones ?? ['battlefield'];
@@ -13968,6 +14487,16 @@ function checkAbilityActivationLegalityInner(
 			return {
 				ok: false,
 				error: `${perm.card.name}: This ability cannot be activated from your hand.`
+			};
+		}
+	} else if (perm.zone === 'graveyard') {
+		if (!actor.graveyard.some((c) => c.instanceId === perm.instanceId)) {
+			return { ok: false, error: 'Card not found in your graveyard.' };
+		}
+		if (!allowedZones.includes('graveyard')) {
+			return {
+				ok: false,
+				error: `${perm.card.name}: This ability cannot be activated from your graveyard.`
 			};
 		}
 	} else {
@@ -14210,10 +14739,13 @@ function isTargetStillValid(
 		return true;
 	}
 	if (target.kind === 'stack') {
-		const stk = state.stack.find((s) => s.id === target.id || s.sourceInstanceId === target.id);
+		const stk = state.stack.find(
+			(s) => s.id === target.id || (s.kind === 'spell' && s.sourceInstanceId === target.id)
+		);
 		if (!stk) return false;
 		if (
 			expectedVersion !== undefined &&
+			stk.kind === 'spell' &&
 			stk.sourceObjectVersion !== undefined &&
 			stk.sourceObjectVersion !== expectedVersion
 		) {
@@ -14540,14 +15072,37 @@ export function sanitizeGameStateForViewer(state: GameState, viewerId: string | 
 	for (const item of clone.stack) {
 		delete item.effectResume;
 		scrubFaceDownStackItem(item, viewerId);
+		if (item.triggerEventStackItem) {
+			scrubFaceDownStackItem(item.triggerEventStackItem, viewerId);
+		}
+	}
+
+	const activeHandCandidateIds = new Set<string>();
+	if (viewerId !== null) {
+		for (const pr of clone.pendingPrompts) {
+			if (
+				pr.playerId === viewerId &&
+				pr.choice?.kind === 'chooseObjects' &&
+				pr.choice.zone === 'hand'
+			) {
+				for (const cid of pr.choice.candidates) activeHandCandidateIds.add(cid);
+			}
+		}
 	}
 
 	for (const p of clone.players) {
 		p.handCount = p.hand.length;
 		p.libraryCount = p.library.length;
 		if (p.playerId !== viewerId) {
-			// Hide opponent hand contents
-			p.hand = [];
+			// Hide opponent hand contents unless revealed to viewerId (CR 701.20a) or referenced by an active hand choice prompt
+			p.hand =
+				viewerId === null
+					? []
+					: p.hand.filter(
+							(c) =>
+								Boolean(c.knownToPlayerIds?.includes(viewerId)) ||
+								activeHandCandidateIds.has(c.instanceId)
+						);
 		}
 		for (const perm of p.battlefield) {
 			scrubFaceDownInstance(perm, 'battlefield', viewerId);
@@ -14596,7 +15151,13 @@ export function sanitizeGameStateForViewer(state: GameState, viewerId: string | 
 			const originZone = (promptData?.fromZone as ZoneType | undefined) ?? c.zone;
 			const originPlayerId =
 				(promptData?.fromPlayerId as string | undefined) ?? c.ownerId ?? c.controllerId;
-			if (originZone === 'hand' && originPlayerId !== viewerId) return false;
+			if (
+				originZone === 'hand' &&
+				originPlayerId !== viewerId &&
+				!(viewerId !== null && c.knownToPlayerIds?.includes(viewerId))
+			) {
+				return false;
+			}
 			if (originZone === 'library') {
 				const isSearchingOriginLibrary =
 					viewerId !== null &&

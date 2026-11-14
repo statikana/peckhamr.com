@@ -174,7 +174,14 @@ function objectEvent(verb: string, subject: Subject): TriggerDef | null {
 			return def('dealtDamage');
 		case 'deals combat damage to a player':
 		case 'deal combat damage to a player':
-			return def('dealsDamage', { combat: true, damageTo: 'player' });
+			return subject.oneOrMore
+				? def('combatDamageBatchPlayer', { player: { relation: 'any' } })
+				: def('dealsDamage', { combat: true, damageTo: 'player' });
+		case 'deal combat damage to an opponent':
+		case 'deal combat damage to one of your opponents':
+			return subject.oneOrMore ? def('combatDamageBatchPlayer', { player: { relation: 'opponent' } }) : null;
+		case 'deal combat damage to you':
+			return subject.oneOrMore ? def('combatDamageBatchPlayer', { player: { relation: 'you' } }) : null;
 		case 'deals combat damage to a creature':
 			return def('dealsDamage', { combat: true, damageTo: 'creature' });
 		case 'deals combat damage to a player or planeswalker':
@@ -253,6 +260,12 @@ function discardedCardFilter(text: string): ObjectFilter | null {
 	return parseObjectPhrase(inner);
 }
 
+const ORDINAL_WORDS: Record<string, number> = {
+	first: 1,
+	second: 2,
+	third: 3
+};
+
 function playerEvent(player: EventFilter['player'], rest: string): TriggerDef | null {
 	if (player?.relation === 'you' && rest === 'cycle ~') {
 		return { event: 'cycle', filter: { object: 'self', player }, fromZone: 'any' };
@@ -272,6 +285,11 @@ function playerEvent(player: EventFilter['player'], rest: string): TriggerDef | 
 		const object = discardedCardFilter(discard[1]);
 		if (object) return { event: 'discard', filter: { player, object } };
 	}
+	const nthCast = rest.match(/^casts? (your|their) (first|second|third) spell each turn$/);
+	if (nthCast) {
+		if ((nthCast[1] === 'your') !== (player?.relation === 'you')) return null;
+		return { event: 'cast', filter: { object: {}, player, nthThisTurn: ORDINAL_WORDS[nthCast[2]] } };
+	}
 	const cast = rest.match(/^(cast or copy|casts or copies|casts?) (.+)$/);
 	if (cast) {
 		const object = spellFilter(cast[2]);
@@ -289,6 +307,11 @@ function playerEvent(player: EventFilter['player'], rest: string): TriggerDef | 
 	if (tap) {
 		const object = parseObjectPhrase(tap[1]);
 		if (object) return { event: 'tappedForMana', filter: { object, player } };
+	}
+	const nthDraw = rest.match(/^draws? (your|their) (first|second|third) card each turn$/);
+	if (nthDraw) {
+		if ((nthDraw[1] === 'your') !== (player?.relation === 'you')) return null;
+		return { event: 'drawCard', filter: { player, nthThisTurn: ORDINAL_WORDS[nthDraw[2]] } };
 	}
 	if (rest === 'draw a card' || rest === 'draws a card') return { event: 'drawCard', filter: { player } };
 	if (rest === 'investigate' || rest === 'investigates') return { event: 'investigate', filter: { player } };
@@ -370,6 +393,18 @@ export function parseCondition(text: string): Condition | null {
 	const kickedWithTag = t.match(/^if (?:it|~) was kicked with its (.+?) kicker$/i);
 	if (kickedWithTag) {
 		return { k: 'kicked', tag: canonicalKickerTag(kickedWithTag[1]) };
+	}
+	if (/^if (?:it|~) escaped$/i.test(t)) {
+		return { k: 'escaped' };
+	}
+	if (/^if (?:it|~) (?:didn't|did not) escape$/i.test(t)) {
+		return { k: 'not', of: { k: 'escaped' } };
+	}
+	if (/^if (?:its evoke cost was paid|(?:it|~) was evoked)$/i.test(t)) {
+		return { k: 'evoked' };
+	}
+	if (/^if (?:its evoke cost was(?:n't| not) paid|(?:it|~) was(?:n't| not) evoked)$/i.test(t)) {
+		return { k: 'not', of: { k: 'evoked' } };
 	}
 	if (/^if you control (?:a|your) commander$/i.test(t)) {
 		return { k: 'controlCommander' };
@@ -468,6 +503,8 @@ const RUNTIME_OBJECT_FIELDS: ReadonlySet<string> = new Set([
 	'subtypes',
 	'supertypes',
 	'notTypes',
+	'notSupertypes',
+	'notSubtypes',
 	'controller',
 	'owner',
 	'token',
@@ -480,8 +517,9 @@ const RUNTIME_OBJECT_FIELDS: ReadonlySet<string> = new Set([
 /** EventFilter fields each event kind's matcher checks (runtime/triggers.ts). */
 const RUNTIME_EVENT_FIELDS: Partial<Record<TriggerDef['event'], ReadonlySet<string>>> = {
 	zoneChange: new Set(['object', 'orSelf', 'from', 'to']),
-	cast: new Set(['object', 'player', 'orCopy']),
+	cast: new Set(['object', 'player', 'orCopy', 'nthThisTurn']),
 	attacks: new Set(['object', 'oneOrMore', 'player']),
+	combatDamageBatchPlayer: new Set(['object', 'oneOrMore', 'player']),
 	blocks: new Set(['object']),
 	becomesBlocked: new Set(['object']),
 	dealsDamage: new Set(['object', 'orSelf', 'combat', 'damageTo']),
@@ -492,7 +530,7 @@ const RUNTIME_EVENT_FIELDS: Partial<Record<TriggerDef['event'], ReadonlySet<stri
 	attached: new Set(['object', 'host']),
 	tappedForMana: new Set(['object', 'player']),
 	gainLife: new Set(['player']),
-	drawCard: new Set(['player']),
+	drawCard: new Set(['player', 'nthThisTurn']),
 	becomesTapped: new Set(['object', 'orSelf']),
 	cycle: new Set(['object', 'player']),
 	discard: new Set(['object', 'player']),
@@ -541,6 +579,12 @@ export function runtimeTriggerProblem(def: TriggerDef): string | null {
 		return `caster "${f.player.relation}"`;
 	}
 	if (def.event === 'attacks' && f.player && f.player.relation !== 'you') return 'attacking player';
+	if (
+		def.event === 'combatDamageBatchPlayer' &&
+		(!f.oneOrMore || !f.player || !['you', 'opponent', 'any'].includes(f.player.relation))
+	) {
+		return 'combatDamageBatchPlayer filter';
+	}
 	if (def.fromZone && def.fromZone !== 'graveyard' && !(def.fromZone === 'any' && def.event === 'cycle')) {
 		return `functions from ${def.fromZone}`;
 	}
@@ -599,8 +643,12 @@ export function runtimeTriggers(def: CardDefinition, faceIndex = 0): RuntimeTrig
 	(def.faces[faceIndex]?.abilities ?? []).forEach((ab, abilityIndex) => {
 		if (ab.kind === 'keyword') {
 			const spec = getKeywordSpec(ab.keyword.name);
-			if (spec?.status === 'implemented' && spec.implementation?.kind === 'trigger') {
-				out.push(...spec.implementation.buildTriggers(ab.keyword, abilityIndex, ab.span));
+			if (
+				spec?.status === 'implemented' &&
+				(spec.implementation?.kind === 'trigger' ||
+					(spec.implementation?.kind === 'castOption' && spec.implementation.buildTriggers))
+			) {
+				out.push(...spec.implementation.buildTriggers!(ab.keyword, abilityIndex, ab.span));
 			}
 			return;
 		}
