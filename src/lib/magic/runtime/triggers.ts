@@ -28,6 +28,7 @@ import type { CardInstance, GameState, ScryfallCard, SerializedPendingTrigger, S
 import type { GameEvent } from './events.ts';
 import { evaluateKickedCountAmount, evaluateKickerCondition, getObjectKickerInfo } from './kicker.ts';
 import { withStableLayerInputs } from './layerCache.ts';
+import { instanceFaceOptions, resolveObjectFaces, stackItemFaceOptions } from './faces.ts';
 import { playerCommanderCastCount } from './objectFilter.ts';
 import { triggerMultiplier } from './replace.ts';
 
@@ -44,6 +45,7 @@ export interface PendingTrigger {
 	source: CardInstance;
 	/** The card whose ability it is: copiable values (CR 707.2), or the look-back card (CR 603.10a). */
 	sourceCard: ScryfallCard;
+	faceIndex?: number;
 	controllerId: string;
 	mode: TriggerMode;
 	/** Short description for titles and the log ("ETB", "Landfall", "Attack", ...). */
@@ -103,7 +105,7 @@ interface CardTriggers {
 	grantedTriggerEvents: Set<EventKind>;
 }
 
-const CARD_TRIGGERS = new WeakMap<ScryfallCard, CardTriggers>();
+const CARD_TRIGGERS = new WeakMap<ScryfallCard, Map<number, CardTriggers>>();
 
 function grantedTriggerEventsForKeyword(kw: string): readonly EventKind[] | null {
 	const spec = getKeywordSpec(kw);
@@ -118,32 +120,52 @@ function grantedTriggerEventsForKeyword(kw: string): readonly EventKind[] | null
 	return null;
 }
 
-function triggersOf(card: ScryfallCard): CardTriggers {
-	let entry = CARD_TRIGGERS.get(card);
+function triggersOf(card: ScryfallCard, faceIndex = 0): CardTriggers {
+	let byFace = CARD_TRIGGERS.get(card);
+	if (!byFace) {
+		byFace = new Map();
+		CARD_TRIGGERS.set(card, byFace);
+	}
+	let entry = byFace.get(faceIndex);
 	if (!entry) {
 		const def = compileCard(card);
-		const all = runtimeTriggers(def).filter((t) => !host?.canExecute || host.canExecute(t));
+		const all = runtimeTriggers(def, faceIndex).filter((t) => !host?.canExecute || host.canExecute(t));
 		const events = new Set<EventKind>();
 		for (const t of all) for (const alt of alternatives(t.trigger)) events.add(alt.event);
 		const grantedTriggerEvents = new Set<EventKind>();
-		for (const f of def.faces) {
-			for (const ab of f.abilities) {
-				if (
-					ab.kind === 'static' &&
-					ab.static.k === 'continuous' &&
-					ab.static.mod.k === 'addKeywords'
-				) {
-					for (const kw of ab.static.mod.keywords) {
-						const evs = grantedTriggerEventsForKeyword(kw);
-						if (evs) for (const ev of evs) grantedTriggerEvents.add(ev);
-					}
+		for (const ab of def.faces[faceIndex]?.abilities ?? []) {
+			if (
+				ab.kind === 'static' &&
+				ab.static.k === 'continuous' &&
+				ab.static.mod.k === 'addKeywords'
+			) {
+				for (const kw of ab.static.mod.keywords) {
+					const evs = grantedTriggerEventsForKeyword(kw);
+					if (evs) for (const ev of evs) grantedTriggerEvents.add(ev);
 				}
 			}
 		}
 		entry = { all, events, grantedTriggerEvents };
-		CARD_TRIGGERS.set(card, entry);
+		byFace.set(faceIndex, entry);
 	}
 	return entry;
+}
+
+function activeFacesForObject(
+	obj: CardInstance,
+	card: ScryfallCard,
+	zone: ZoneType,
+	state?: GameState,
+	overrideFace?: { activeFaceIndex?: number; unlockedFaces?: number[] }
+): number[] {
+	if (zone === 'stack' && state) {
+		const stk = state.stack.find((s) => s.sourceInstanceId === obj.instanceId);
+		if (stk) return resolveObjectFaces(card, stackItemFaceOptions(stk)).activeFaceIndices;
+	}
+	const opts = instanceFaceOptions(obj, zone);
+	if (overrideFace?.activeFaceIndex !== undefined) opts.faceIndex = overrideFace.activeFaceIndex;
+	if (overrideFace?.unlockedFaces !== undefined) opts.unlockedFaces = overrideFace.unlockedFaces;
+	return resolveObjectFaces(card, opts).activeFaceIndices;
 }
 
 /** "Whenever ~ enters or attacks": the main TriggerDef and each `or` alternative. */
@@ -162,6 +184,8 @@ interface SimultaneousLkiEntry {
 	hasAllCreatureTypes: boolean;
 	tapped: boolean;
 	colors: string[];
+	activeFaceIndex?: number;
+	unlockedFaces?: number[];
 }
 
 interface TriggerChannel {
@@ -204,6 +228,7 @@ function persistPendingTriggers(state: GameState, triggers: PendingTrigger[]): v
 			ability: t.ability,
 			source: t.source,
 			sourceCard: t.sourceCard,
+			...(t.faceIndex !== undefined ? { faceIndex: t.faceIndex } : {}),
 			controllerId: t.controllerId,
 			mode: t.mode,
 			label: t.label,
@@ -227,6 +252,7 @@ function hydratePendingTriggers(state: GameState, ch: TriggerChannel): void {
 		ability: t.ability,
 		source: t.source,
 		sourceCard: t.sourceCard,
+		...(t.faceIndex !== undefined ? { faceIndex: t.faceIndex } : {}),
 		controllerId: t.controllerId,
 		mode: t.mode,
 		label: t.label,
@@ -274,7 +300,9 @@ export function withSimultaneousDestroyLki(
 			typeLine: ev.typeLine,
 			hasAllCreatureTypes: ev.hasAllCreatureTypes,
 			tapped: perm.tapped,
-			colors: perm.isFaceDown ? [] : [...ev.colors]
+			colors: perm.isFaceDown ? [] : [...ev.colors],
+			...(perm.activeFaceIndex !== undefined ? { activeFaceIndex: perm.activeFaceIndex } : {}),
+			...(perm.unlockedFaces ? { unlockedFaces: [...perm.unlockedFaces] } : {})
 		});
 	}
 	const prevMap = ch.simultaneousLki;
@@ -407,6 +435,7 @@ function objectMatches(filter: EventFilter, subject: Subject, source: Source): b
 interface Source {
 	obj: CardInstance;
 	card: ScryfallCard;
+	faceIndex?: number;
 	controllerId: string;
 	zone: ZoneType;
 	/** Look-back for an object that left the battlefield (CR 603.10a). */
@@ -426,14 +455,18 @@ function sources(state: GameState, kind: EventKind): Source[] {
 		for (const perm of p.battlefield) {
 			if (perm.phasedOut) continue;
 			const card = perm.copiableCard ?? perm.card;
-			if (triggersOf(card).events.has(kind)) {
-				out.push({ obj: perm, card, controllerId: p.playerId, zone: 'battlefield' });
+			for (const faceIndex of activeFacesForObject(perm, card, 'battlefield', state)) {
+				if (triggersOf(card, faceIndex).events.has(kind)) {
+					out.push({ obj: perm, card, faceIndex, controllerId: p.playerId, zone: 'battlefield' });
+				}
 			}
 		}
 		for (const c of p.graveyard) {
-			const t = triggersOf(c.card);
-			if (t.events.has(kind) && t.all.some((a) => a.trigger.fromZone === 'graveyard')) {
-				out.push({ obj: c, card: c.card, controllerId: p.playerId, zone: 'graveyard' });
+			for (const faceIndex of activeFacesForObject(c, c.card, 'graveyard', state)) {
+				const t = triggersOf(c.card, faceIndex);
+				if (t.events.has(kind) && t.all.some((a) => a.trigger.fromZone === 'graveyard')) {
+					out.push({ obj: c, card: c.card, faceIndex, controllerId: p.playerId, zone: 'graveyard' });
+				}
 			}
 		}
 	}
@@ -451,7 +484,7 @@ function abilitiesFor(
 	pre: (alt: TriggerDef) => boolean = () => true
 ): Array<{ ability: RuntimeTrigger; alts: TriggerDef[] }> {
 	const out: Array<{ ability: RuntimeTrigger; alts: TriggerDef[] }> = [];
-	for (const ability of triggersOf(source.card).all) {
+	for (const ability of triggersOf(source.card, source.faceIndex ?? 0).all) {
 		const zone = ability.trigger.fromZone ?? 'battlefield';
 		// "When you cast ~" functions while the spell is on the stack (CR 603.2, 113.6).
 		// "When you cycle ~" (`fromZone: 'any'`) triggers from whatever zone the card winds up in (CR 702.29c).
@@ -497,6 +530,7 @@ function record(state: GameState, source: Source, ability: RuntimeTrigger, kind:
 			ability,
 			source: source.obj,
 			sourceCard: source.card,
+			...(source.faceIndex !== undefined ? { faceIndex: source.faceIndex } : {}),
 			controllerId: source.controllerId,
 			mode: modeFor(kind, source, ability),
 			label: extras.label,
@@ -647,22 +681,27 @@ function matchCardDiscarded(state: GameState, ev: Extract<GameEvent, { kind: 'Ca
 	if (ev.reason === 'cycle') {
 		const cycleCandidates = sources(state, 'cycle');
 		// CR 702.29c: "When you cycle ~" triggers from whatever zone the card winds up in after cycling.
-		const objTriggers = triggersOf(ev.object.card);
-		if (
-			!cycleCandidates.some((c) => c.obj.instanceId === ev.object.instanceId) &&
-			objTriggers.events.has('cycle') &&
-			objTriggers.all.some(
-				(a) =>
-					a.trigger.fromZone === 'any' &&
-					alternatives(a.trigger).some((alt) => alt.event === 'cycle')
-			)
-		) {
-			cycleCandidates.push({
-				obj: ev.object,
-				card: ev.object.card,
-				controllerId: ev.playerId,
-				zone: ev.destZone
-			});
+		for (const faceIndex of activeFacesForObject(ev.object, ev.object.card, ev.destZone, state)) {
+			const objTriggers = triggersOf(ev.object.card, faceIndex);
+			if (
+				!cycleCandidates.some(
+					(c) => c.obj.instanceId === ev.object.instanceId && (c.faceIndex ?? 0) === faceIndex
+				) &&
+				objTriggers.events.has('cycle') &&
+				objTriggers.all.some(
+					(a) =>
+						a.trigger.fromZone === 'any' &&
+						alternatives(a.trigger).some((alt) => alt.event === 'cycle')
+				)
+			) {
+				cycleCandidates.push({
+					obj: ev.object,
+					card: ev.object.card,
+					faceIndex,
+					controllerId: ev.playerId,
+					zone: ev.destZone
+				});
+			}
 		}
 		matchEventKind('cycle', cycleCandidates);
 	}
@@ -753,25 +792,38 @@ function matchZoneChange(state: GameState, ev: Extract<GameEvent, { kind: 'ZoneC
 		if (batchLki) {
 			for (const [peerPerm, info] of batchLki) {
 				if (candidates.some((c) => c.obj === peerPerm)) continue;
-				if (!triggersOf(info.card).events.has('zoneChange')) continue;
+				for (const faceIndex of activeFacesForObject(peerPerm, info.card, 'battlefield', state, {
+					activeFaceIndex: info.activeFaceIndex,
+					unlockedFaces: info.unlockedFaces
+				})) {
+					if (!triggersOf(info.card, faceIndex).events.has('zoneChange')) continue;
+					candidates.push({
+						obj: peerPerm,
+						card: info.card,
+						faceIndex,
+						controllerId: info.controllerId,
+						zone: 'battlefield',
+						lostAllAbilities: info.lostAllAbilities,
+						isLookBack: true
+					});
+				}
+			}
+		} else if (ev.lki) {
+			for (const faceIndex of activeFacesForObject(obj, ev.lki.card, 'battlefield', state, {
+				activeFaceIndex: ev.lki.activeFaceIndex,
+				unlockedFaces: ev.lki.unlockedFaces
+			})) {
+				if (!triggersOf(ev.lki.card, faceIndex).events.has('zoneChange')) continue;
 				candidates.push({
-					obj: peerPerm,
-					card: info.card,
-					controllerId: info.controllerId,
+					obj,
+					card: ev.lki.card,
+					faceIndex,
+					controllerId: ev.lki.controllerId,
 					zone: 'battlefield',
-					lostAllAbilities: info.lostAllAbilities,
+					lostAllAbilities: ev.lki.lostAllAbilities,
 					isLookBack: true
 				});
 			}
-		} else if (ev.lki) {
-			candidates.push({
-				obj,
-				card: ev.lki.card,
-				controllerId: ev.lki.controllerId,
-				zone: 'battlefield',
-				lostAllAbilities: ev.lki.lostAllAbilities,
-				isLookBack: true
-			});
 		}
 	}
 	for (const source of candidates) {
@@ -823,7 +875,10 @@ function boardCanGrantTriggerKeyword(
 		if (p.lost) continue;
 		for (const perm of p.battlefield) {
 			if (perm.phasedOut) continue;
-			if (triggersOf(perm.copiableCard ?? perm.card).grantedTriggerEvents.has(kind)) return true;
+			const pCard = perm.copiableCard ?? perm.card;
+			if (activeFacesForObject(perm, pCard, 'battlefield', state).some((fi) => triggersOf(pCard, fi).grantedTriggerEvents.has(kind))) {
+				return true;
+			}
 		}
 	}
 	return false;
@@ -881,7 +936,11 @@ function emitGrantedTriggerKeywords(
 function matchCast(state: GameState, casterId: string, spell: CardInstance, isCopy: boolean): void {
 	const subject = printedSubject(spell, spell.card, casterId);
 	const candidates = sources(state, 'cast');
-	if (!isCopy) candidates.push({ obj: spell, card: spell.card, controllerId: casterId, zone: 'stack' });
+	if (!isCopy) {
+		for (const faceIndex of activeFacesForObject(spell, spell.card, 'stack', state)) {
+			candidates.push({ obj: spell, card: spell.card, faceIndex, controllerId: casterId, zone: 'stack' });
+		}
+	}
 	for (const source of candidates) {
 		for (const { ability, alts } of abilitiesFor(state, source, 'cast')) {
 			const alt = alts.find((a) => {
@@ -1201,13 +1260,16 @@ function matchCounter(state: GameState, ev: Extract<GameEvent, { kind: 'CounterP
 		!permanentHasLostAllAbilities(ev.object, state).lost
 	) {
 		const card = ev.object.copiableCard ?? ev.object.card;
-		if (triggersOf(card).events.has('counterPlaced')) {
-			candidates.push({
-				obj: ev.object,
-				card,
-				controllerId: ev.object.controllerId,
-				zone: 'battlefield'
-			});
+		for (const faceIndex of activeFacesForObject(ev.object, card, 'battlefield', state)) {
+			if (triggersOf(card, faceIndex).events.has('counterPlaced')) {
+				candidates.push({
+					obj: ev.object,
+					card,
+					faceIndex,
+					controllerId: ev.object.controllerId,
+					zone: 'battlefield'
+				});
+			}
 		}
 	}
 	for (const source of candidates) {
@@ -1438,7 +1500,7 @@ export function stackTriggerConditionHolds(
 	sourceInstanceId: string,
 	stackItem?: StackItem
 ): boolean {
-	const ability = triggersOf(card).all.find((t) => t.abilityIndex === abilityIndex);
+	const ability = triggersOf(card, stackItem?.faceIndex ?? 0).all.find((t) => t.abilityIndex === abilityIndex);
 	if (!ability?.condition) return true;
 	return evaluateCondition(state, ability.condition, controllerId, sourceInstanceId, stackItem);
 }

@@ -14,7 +14,7 @@
  */
 import { nextRandom } from './random.ts';
 import { grantedAbilityById } from '../compiler/index.ts';
-import { activeAbilityDefs } from './faces.ts';
+import { activeAbilityDefs, instanceFaceOptions, resolveObjectFaces } from './faces.ts';
 import type { AbilityDef, Amount, CostDef, KeywordDef, ObjectFilter, StaticDef } from '../ir.ts';
 import {
 	ALTERNATIVE_COST_KEYWORDS,
@@ -69,8 +69,8 @@ export interface CostSource {
 	complete: boolean;
 }
 
-function abilitiesOf(card: ScryfallCard): AbilityDef[] {
-	return activeAbilityDefs(card);
+function abilitiesOf(card: ScryfallCard, faceIndex = 0, fused = false): AbilityDef[] {
+	return activeAbilityDefs(card, { zone: 'stack', faceIndex, fused });
 }
 
 /**
@@ -80,11 +80,14 @@ function abilitiesOf(card: ScryfallCard): AbilityDef[] {
 export function activatedAbilityCost(
 	card: ScryfallCard,
 	ab: Pick<EffectiveActivatedAbility, 'id' | 'loyaltyCost' | 'manaCost' | 'requiresTap' | 'lifeCost' | 'requiresSacrificeSelf'> &
-		Partial<Pick<EffectiveActivatedAbility, 'cost' | 'costComplete'>>
+		Partial<Pick<EffectiveActivatedAbility, 'cost' | 'costComplete' | 'faceIndex'>>
 ): CostSource {
 	if (ab.cost) return { defs: ab.cost, complete: ab.costComplete ?? true };
-	const ir = abilitiesOf(card).find(
-		(a) => (a.kind === 'activated' || a.kind === 'unsupported') && a.id === ab.id
+	const rawMatch = ab.id.match(/^f(\d+):(.+)$/);
+	const faceIndex = rawMatch ? Number(rawMatch[1]) : (ab.faceIndex ?? 0);
+	const baseId = rawMatch ? rawMatch[2] : ab.id;
+	const ir = abilitiesOf(card, faceIndex).find(
+		(a) => (a.kind === 'activated' || a.kind === 'unsupported') && a.id === baseId
 	);
 	if (ir?.kind === 'activated') return { defs: ir.cost, complete: true };
 	if (ir?.kind === 'unsupported' && ir.cost) return { defs: ir.cost, complete: ir.costComplete ?? false };
@@ -105,26 +108,38 @@ export function legacyCostDefs(
 }
 
 /** The additional cost of casting a spell ("As an additional cost to cast ~, ..."), if it has one. */
-export function spellAdditionalCost(card: ScryfallCard): CostSource | null {
-	for (const a of abilitiesOf(card)) {
-		if (a.kind === 'spell' && a.additionalCosts.length > 0) return { defs: a.additionalCosts, complete: true };
-		if (a.kind === 'unsupported' && a.id === 'cast') {
-			return { defs: a.cost ?? [], complete: a.costComplete ?? false };
+export function spellAdditionalCost(card: ScryfallCard, faceIndex = 0, fused = false): CostSource | null {
+	const defs: CostDef[] = [];
+	let complete = true;
+	let matched = false;
+	for (const a of abilitiesOf(card, faceIndex, fused)) {
+		if (a.kind === 'spell' && a.additionalCosts.length > 0) {
+			defs.push(...a.additionalCosts);
+			matched = true;
+		} else if (a.kind === 'unsupported' && a.id === 'cast') {
+			defs.push(...(a.cost ?? []));
+			if (!a.costComplete) complete = false;
+			matched = true;
 		}
 	}
-	return null;
+	return matched ? { defs, complete } : null;
 }
 
 /** Cast timing restrictions on a spell from the compiled IR (CR 601.3). */
 export function spellCastRestrictions(
-	card: ScryfallCard
+	card: ScryfallCard,
+	faceIndex = 0,
+	fused = false
 ): Array<'duringCombat' | 'duringYourTurn' | 'beforeAttackers'> {
-	for (const a of abilitiesOf(card)) {
+	const out: Array<'duringCombat' | 'duringYourTurn' | 'beforeAttackers'> = [];
+	for (const a of abilitiesOf(card, faceIndex, fused)) {
 		if ((a.kind === 'spell' || (a.kind === 'unsupported' && a.id === 'cast')) && a.castRestrictions) {
-			return a.castRestrictions;
+			for (const r of a.castRestrictions) {
+				if (!out.includes(r)) out.push(r);
+			}
 		}
 	}
-	return [];
+	return out;
 }
 
 /** Suspend keyword parameters from the compiled card (CR 702.62). */
@@ -153,9 +168,10 @@ export function keywordCost(card: ScryfallCard, name: string): string | null {
  */
 export function keywordAltCost(
 	card: ScryfallCard,
-	kwName: string
+	kwName: string,
+	faceIndex = 0
 ): { manaCost?: string; costDefs: CostDef[]; display: string } | null {
-	for (const a of abilitiesOf(card)) {
+	for (const a of abilitiesOf(card, faceIndex)) {
 		if (a.kind !== 'keyword' || a.keyword.name !== kwName) continue;
 		const kw = a.keyword;
 		const defs = kw.costDefs;
@@ -193,9 +209,11 @@ export function keywordAltCost(
 export function spellChoosesX(
 	card: ScryfallCard,
 	baseCost?: CastOption['baseCost'] | string,
-	extraManaCosts?: string[]
+	extraManaCosts?: string[],
+	faceIndex = 0,
+	fused = false
 ): boolean {
-	let costStr = card.manaCost;
+	let costStr = resolveObjectFaces(card, { zone: 'stack', faceIndex, fused }).manaCost;
 	let altCostDefs: CostDef[] | undefined;
 	if (typeof baseCost === 'string') {
 		costStr = baseCost;
@@ -233,9 +251,12 @@ export function keywordsOf(card: ScryfallCard): KeywordDef[] {
 }
 
 /** The cost-modifying statics of a card (CR 601.2f), including registry `'static'` keywords (e.g. Affinity). */
-export function costModifiersOf(card: ScryfallCard): Array<Extract<StaticDef, { k: 'costModifier' }>> {
+export function costModifiersOf(
+	card: ScryfallCard,
+	faceOpts?: Parameters<typeof activeAbilityDefs>[1]
+): Array<Extract<StaticDef, { k: 'costModifier' }>> {
 	const out: Array<Extract<StaticDef, { k: 'costModifier' }>> = [];
-	for (const a of abilitiesOf(card)) {
+	for (const a of activeAbilityDefs(card, faceOpts)) {
 		if (a.kind === 'static' && a.static.k === 'costModifier') {
 			out.push(a.static);
 		} else if (a.kind === 'keyword') {
@@ -262,11 +283,13 @@ export function effectiveSpellManaCost(
 	inst: CardInstance,
 	xValue = 0,
 	baseCost?: CastOption['baseCost'] | string,
-	extraManaCosts?: string[]
+	extraManaCosts?: string[],
+	faceIndex = 0,
+	fused = false
 ): ManaCostRequirement {
 	// Read-only: one layer-cache validation for the battlefield scan (Phase 6d).
 	return withStableLayerInputs(state, () =>
-		effectiveSpellManaCostInner(state, player, inst, xValue, baseCost, extraManaCosts)
+		effectiveSpellManaCostInner(state, player, inst, xValue, baseCost, extraManaCosts, faceIndex, fused)
 	);
 }
 
@@ -276,10 +299,13 @@ function effectiveSpellManaCostInner(
 	inst: CardInstance,
 	xValue: number,
 	baseCost?: CastOption['baseCost'] | string,
-	extraManaCosts?: string[]
+	extraManaCosts?: string[],
+	faceIndex = 0,
+	fused = false
 ): ManaCostRequirement {
 	const card = inst.copiableCard ?? inst.card;
-	let baseCostStr = card.manaCost;
+	const stackFaceOpts = { zone: 'stack' as const, faceIndex, fused };
+	let baseCostStr = resolveObjectFaces(card, stackFaceOpts).manaCost;
 	if (typeof baseCost === 'string') {
 		baseCostStr = baseCost;
 	} else if (baseCost?.kind === 'alternative') {
@@ -314,6 +340,12 @@ function effectiveSpellManaCostInner(
 		return true;
 	};
 
+	const stackProxy: CardInstance = {
+		...inst,
+		zone: 'stack',
+		activeFaceIndex: faceIndex,
+		...(fused ? { copiableState: { ...(inst.copiableState ?? { card }), faceIndex, fused: true } } : {})
+	};
 	const matchesSpell = (
 		mod: Extract<StaticDef, { k: 'costModifier' }>,
 		sourceControllerId: string,
@@ -329,17 +361,17 @@ function effectiveSpellManaCostInner(
 			source: sourceInst,
 			xValue: effectiveX
 		};
-		return matchesObjectFilter(inst, mod.affects.filter, fctx);
+		return matchesObjectFilter(stackProxy, mod.affects.filter, fctx);
 	};
 
 	// 1. Self cost modifiers on the spell itself ("This spell costs {1} less to cast for each ...").
 	const selfCtx: FilterContext = {
 		state,
 		controllerId: player.playerId,
-		source: inst,
+		source: stackProxy,
 		xValue: effectiveX
 	};
-	for (const mod of costModifiersOf(card)) {
+	for (const mod of costModifiersOf(card, stackFaceOpts)) {
 		if (mod.affects.k !== 'self') continue;
 		if (mod.condition && !evaluateCondition(mod.condition, selfCtx)) continue;
 		applyDelta(mod, selfCtx);
@@ -352,7 +384,7 @@ function effectiveSpellManaCostInner(
 			if (perm.phasedOut || evaluatePermanent(state, perm).losesAllAbilities) continue;
 			const pCard = perm.copiableCard ?? perm.card;
 			const ctx: FilterContext = { state, controllerId: p.playerId, source: perm, xValue: effectiveX };
-			for (const mod of costModifiersOf(pCard)) {
+			for (const mod of costModifiersOf(pCard, instanceFaceOptions(perm, 'battlefield'))) {
 				const zones = mod.activeZones ?? ['battlefield'];
 				if (!zones.includes('battlefield')) continue;
 				if (!matchesWho(mod, p.playerId)) continue;
@@ -364,7 +396,7 @@ function effectiveSpellManaCostInner(
 		for (const cmd of p.command) {
 			const cCard = cmd.copiableCard ?? cmd.card;
 			const ctx: FilterContext = { state, controllerId: p.playerId, source: cmd, xValue: effectiveX };
-			for (const mod of costModifiersOf(cCard)) {
+			for (const mod of costModifiersOf(cCard, instanceFaceOptions(cmd, cmd.zone))) {
 				if (!mod.activeZones?.includes('command')) continue;
 				if (!matchesWho(mod, p.playerId)) continue;
 				if (mod.condition && !evaluateCondition(mod.condition, ctx)) continue;
@@ -488,7 +520,7 @@ function effectiveAbilityManaCostInner(
 export function manaAbilityAmount(
 	card: ScryfallCard,
 	ab: Pick<EffectiveActivatedAbility, 'id'> &
-		Partial<Pick<EffectiveActivatedAbility, 'manaAmount' | 'grantSourceCard'>>
+		Partial<Pick<EffectiveActivatedAbility, 'manaAmount' | 'grantSourceCard' | 'faceIndex'>>
 ): Amount | null {
 	if (ab.manaAmount) return ab.manaAmount;
 	if (ab.grantSourceCard && ab.id.startsWith('granted:')) {
@@ -498,10 +530,13 @@ export function manaAbilityAmount(
 		const step = granted.effect.find((e) => e.verb === 'addMana');
 		return step?.amount && step.amount.k !== 'const' ? step.amount : null;
 	}
-	const abilities = abilitiesOf(card);
+	const prefixed = /^f(\d+):(.+)$/.exec(ab.id);
+	const faceIndex = prefixed ? Number(prefixed[1]) : (ab.faceIndex ?? 0);
+	const rawId = prefixed ? prefixed[2] : ab.id;
+	const abilities = activeAbilityDefs(card, { zone: 'battlefield', faceIndex });
 	const ir =
-		abilities.find((a) => a.kind === 'activated' && a.id === ab.id) ??
-		(ab.id === 'mana_tap' ? abilities.find((a) => a.kind === 'activated' && a.isMana && !a.intrinsic) : undefined);
+		abilities.find((a) => a.kind === 'activated' && a.id === rawId) ??
+		(rawId === 'mana_tap' ? abilities.find((a) => a.kind === 'activated' && a.isMana && !a.intrinsic) : undefined);
 	if (ir?.kind !== 'activated') return null;
 	const step = ir.effect.find((e) => e.verb === 'addMana');
 	return step?.amount && step.amount.k !== 'const' ? step.amount : null;

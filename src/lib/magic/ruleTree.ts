@@ -1,5 +1,11 @@
-import { cardManaSteps as compiledCardManaSteps } from './compiler/index.ts';
-import { activeAbilityDefs, activeCharacteristics } from './runtime/faces.ts';
+import { cardManaSteps as compiledCardManaSteps, compileCard } from './compiler/index.ts';
+import {
+	activeAbilityDefs,
+	activeCharacteristics,
+	instanceFaceOptions,
+	resolveObjectFaces,
+	type ResolveObjectFacesOptions
+} from './runtime/faces.ts';
 import { displayAbilityText } from './compiler/support.ts';
 import type { ActivatedAbility, CostDef, EffectStep, TargetSpec, UnsupportedAbility } from './ir.ts';
 import { getKeywordSpec } from './keywords.ts';
@@ -175,7 +181,7 @@ export function getSpellTargetRequirement(
 	option?: CastOption,
 	optionalCostCounts?: Record<string, number>
 ): TargetRequirementInfo {
-	const faceOpts = { zone: 'stack' as const, faceIndex: 0 };
+	const faceOpts = { zone: 'stack' as const, faceIndex: option?.faceIndex ?? 0, fused: option?.fused };
 	const abilities = activeAbilityDefs(card, faceOpts);
 	const chars = activeCharacteristics(card, faceOpts);
 	const types = chars.types;
@@ -218,9 +224,10 @@ export function getSpellTargetRequirement(
 	if (!types.includes('Instant') && !types.includes('Sorcery')) {
 		return NO_TARGET_REQUIREMENT;
 	}
+	const nonModalSpecs: TargetSpec[] = [];
 	for (const ab of abilities) {
 		if (ab.kind === 'spell') {
-			if (ab.modal) {
+			if (ab.modal && !option?.fused) {
 				const branches = ab.modal.modes.map((m) => targetRequirementFromSpecs(activeSpecs(m.targets)));
 				const firstReq = branches.find((b) => b.requiresTarget) ?? branches[0] ?? NO_TARGET_REQUIREMENT;
 				const anyReq = branches.some((b) => b.requiresTarget);
@@ -239,13 +246,12 @@ export function getSpellTargetRequirement(
 					modalBranches: branches
 				};
 			}
-			return targetRequirementFromSpecs(activeSpecs(ab.targets));
-		}
-		if (ab.kind === 'unsupported' && ab.id === 'cast' && ab.targets) {
-			return targetRequirementFromSpecs(activeSpecs(ab.targets));
+			nonModalSpecs.push(...activeSpecs(ab.targets));
+		} else if (ab.kind === 'unsupported' && ab.id === 'cast' && ab.targets) {
+			nonModalSpecs.push(...activeSpecs(ab.targets));
 		}
 	}
-	return NO_TARGET_REQUIREMENT;
+	return nonModalSpecs.length > 0 ? targetRequirementFromSpecs(nonModalSpecs) : NO_TARGET_REQUIREMENT;
 }
 
 /**
@@ -460,15 +466,14 @@ function buildEffectiveActivatedAbility(
 	};
 }
 
-/**
- * Builds the innate activated abilities of `card` from its compiled IR.
- */
-export function getCardActivatedAbilities(
+function buildFaceActivatedAbilities(
+	faceName: string,
+	faceIndex: number,
+	abilities: ReturnType<typeof activeAbilityDefs>,
 	card: ScryfallCard,
-	commanderIdentity: ManaColor[] = [],
+	commanderIdentity: ManaColor[],
 	resolveOpponentLandColors?: () => ManaColor[]
 ): EffectiveActivatedAbility[] {
-	const abilities = activeAbilityDefs(card);
 	const out: EffectiveActivatedAbility[] = [];
 
 	const intrinsicColors: ManaColor[] = [];
@@ -484,6 +489,7 @@ export function getCardActivatedAbilities(
 	if (intrinsicColors.length > 0) {
 		out.push({
 			id: 'mana_tap',
+			faceIndex,
 			label: `Tap: Add ${intrinsicColors.map((c) => `{${c}}`).join('/')}`,
 			costText: '{T}',
 			manaCost: '',
@@ -524,6 +530,7 @@ export function getCardActivatedAbilities(
 				const targetInfo = targetRequirementFromSpecs([spec]);
 				out.push({
 					id: ab.id ?? 'equip_0',
+					faceIndex,
 					label: `${labelPrefix}: Attach to target ${equipTargetPhrase} you control`,
 					costText: labelPrefix,
 					manaCost: equipCost,
@@ -561,14 +568,14 @@ export function getCardActivatedAbilities(
 							commanderIdentity,
 							resolveOpponentLandColors,
 							{
-								displayCardName: card.name,
+								displayCardName: faceName,
 								displayCard: card,
 								labelOverride: built.label,
 								costTextOverride: built.costText,
 								effectTextOverride: built.effectText
 							}
 						);
-						if (effective) out.push(effective);
+						if (effective) out.push({ ...effective, faceIndex });
 					}
 				}
 			}
@@ -581,14 +588,49 @@ export function getCardActivatedAbilities(
 		) {
 			if (ab.id === 'mana_tap' && out.some((x) => x.id === 'mana_tap')) continue;
 			const built = buildEffectiveActivatedAbility(ab, commanderIdentity, resolveOpponentLandColors, {
-				displayCardName: card.name,
+				displayCardName: faceName,
 				displayCard: card
 			});
-			if (built) out.push(built);
+			if (built) out.push({ ...built, faceIndex });
 		}
 	}
 
 	return out;
+}
+
+/**
+ * Builds the innate activated abilities of `card` from its compiled IR, scoped to `faceOpts`
+ * (and disambiguating colliding ability IDs across multiple active faces such as unlocked Room doors).
+ */
+export function getCardActivatedAbilities(
+	card: ScryfallCard,
+	commanderIdentity: ManaColor[] = [],
+	resolveOpponentLandColors?: () => ManaColor[],
+	faceOpts?: ResolveObjectFacesOptions
+): EffectiveActivatedAbility[] {
+	const resolved = resolveObjectFaces(card, faceOpts);
+	const def = compileCard(card);
+	const collected: EffectiveActivatedAbility[] = [];
+	for (const fi of resolved.activeFaceIndices) {
+		const face = def.faces[fi];
+		if (!face) continue;
+		collected.push(
+			...buildFaceActivatedAbilities(
+				face.name,
+				fi,
+				face.abilities,
+				card,
+				commanderIdentity,
+				resolveOpponentLandColors
+			)
+		);
+	}
+	if (resolved.activeFaceIndices.length <= 1) return collected;
+	const idCounts = new Map<string, number>();
+	for (const ab of collected) idCounts.set(ab.id, (idCounts.get(ab.id) ?? 0) + 1);
+	return collected.map((ab) =>
+		(idCounts.get(ab.id) ?? 0) > 1 ? { ...ab, id: `f${ab.faceIndex ?? 0}:${ab.id}` } : ab
+	);
 }
 
 /**
@@ -611,14 +653,24 @@ export function getEffectiveActivatedAbilities(
 		// CR 611.3b: Battlefield Layer 4/6 static effects (ability loss, grants, copy) apply only
 		// to permanents on the battlefield; off-battlefield objects keep their innate abilities,
 		// with cost modifiers still applied below.
-		rawAbilities = getCardActivatedAbilities(perm.card, commanderIdentity, resolveOppLands);
+		rawAbilities = getCardActivatedAbilities(
+			perm.card,
+			commanderIdentity,
+			resolveOppLands,
+			instanceFaceOptions(perm, perm.zone)
+		);
 	} else {
 		const breakdown = inspectCardContinuousBreakdown(perm, state);
 		const allInnateRemoved = permanentHasLostAllAbilities(perm, state).lost;
 		const effectiveCard = perm.copiableCard ?? perm.card;
 		rawAbilities = allInnateRemoved
 			? []
-			: getCardActivatedAbilities(effectiveCard, commanderIdentity, resolveOppLands);
+			: getCardActivatedAbilities(
+					effectiveCard,
+					commanderIdentity,
+					resolveOppLands,
+					instanceFaceOptions(perm, 'battlefield')
+				);
 
 		// Add granted activated abilities from Layer 4 / Layer 6 IR (`AttributedKeywordOrEffect.grantedAbility`)
 		for (const item of breakdown.items) {

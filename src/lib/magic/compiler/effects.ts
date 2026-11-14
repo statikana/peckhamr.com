@@ -1651,6 +1651,8 @@ export function extractUnparsedTargets(text: string): TargetSpec[] {
 	return [];
 }
 
+const SUPPORTED_MULTIFACE_LAYOUTS = new Set(['split', 'modal_dfc', 'adventure']);
+
 /**
  * The compiled effect of a resolving spell or activated ability. Lives in the compiler because it
  * reads the stack item's rules text; the runtime only sees the result. Cached per text.
@@ -1658,13 +1660,21 @@ export function extractUnparsedTargets(text: string): TargetSpec[] {
 export function compiledStackItemEffects(item: StackItem): EffectParse | null {
 	if (item.kind !== 'spell' && item.kind !== 'activated') return null;
 	const card: ScryfallCard = item.card;
-	const text = item.kind === 'spell' ? card.oracleText : item.oracleText;
-	if (item.kind === 'spell' && !/\b(?:Instant|Sorcery)\b/.test(card.typeLine)) return null;
-	if (card.backFace || card.oracleText.includes('\n//\n')) return null;
-	const key = `${item.kind}:${hashText(card.name)}:${hashText(text)}`;
+	const faceIndex = item.faceIndex ?? 0;
+	const layout = card.layout ?? (card.backFace ? 'transform' : card.faces && card.faces.length >= 2 ? 'split' : 'normal');
+	const useFaces = Boolean(card.faces && card.faces.length >= 2 && SUPPORTED_MULTIFACE_LAYOUTS.has(layout));
+	if (!useFaces && (card.backFace || card.oracleText.includes('\n//\n'))) return null;
+	const face = useFaces ? card.faces![faceIndex] : undefined;
+	if (useFaces && !face) return null;
+	const name = face ? face.name : card.name;
+	const typeLine = face ? face.typeLine : card.typeLine;
+	if (item.kind === 'spell' && item.fused) return null;
+	const text = item.kind === 'spell' ? (face ? face.oracleText : card.oracleText) : item.oracleText;
+	if (item.kind === 'spell' && !/\b(?:Instant|Sorcery)\b/.test(typeLine)) return null;
+	const key = `${item.kind}:${faceIndex}:${hashText(name)}:${hashText(text)}`;
 	const cached = STACK_CACHE.get(key);
 	if (cached) return cached;
-	const out = item.kind === 'spell' ? parseSpellText(card.name, text) : parseAbilityEffectText(card.name, text);
+	const out = item.kind === 'spell' ? parseSpellText(name, text) : parseAbilityEffectText(name, text);
 	STACK_CACHE.set(key, out);
 	return out;
 }
@@ -1674,18 +1684,23 @@ export function compiledStackItemEffects(item: StackItem): EffectParse | null {
  * an opponent controls could produce"). Lives in the compiler so the runtime never reads rules text.
  */
 export function compiledCardManaSteps(card: ScryfallCard): EffectStep[] {
-	if (card.backFace || card.oracleText.includes('\n//\n')) return [];
-	const key = `${hashText(card.name)}:${hashText(card.oracleText)}`;
+	const layout = card.layout ?? (card.backFace ? 'transform' : card.faces && card.faces.length >= 2 ? 'split' : 'normal');
+	const useFaces = Boolean(card.faces && card.faces.length >= 2 && SUPPORTED_MULTIFACE_LAYOUTS.has(layout));
+	if (!useFaces && (card.backFace || card.oracleText.includes('\n//\n'))) return [];
+	const key = `${hashText(card.name)}:${useFaces ? card.faces!.map((f) => hashText(f.oracleText)).join(':') : hashText(card.oracleText)}`;
 	const cached = MANA_STEPS_CACHE.get(key);
 	if (cached) return cached;
-	const norm = normalizeFace(card.name, card.oracleText);
+	const facesToScan = useFaces ? card.faces! : [{ name: card.name, oracleText: card.oracleText }];
 	const out: EffectStep[] = [];
-	for (const line of norm.lines) {
-		const quote = line.body.search(/["“]/);
-		const colon = line.body.indexOf(':');
-		if (colon <= 0 || (quote >= 0 && quote < colon) || /^(?:when|whenever|at|choose)\b/i.test(line.body)) continue;
-		const parse = parseEffects(line.body.slice(colon + 1).trim(), 0, 'activated');
-		for (const s of parse.steps) if (s.verb === 'addMana') out.push(s);
+	for (const face of facesToScan) {
+		const norm = normalizeFace(face.name, face.oracleText);
+		for (const line of norm.lines) {
+			const quote = line.body.search(/["“]/);
+			const colon = line.body.indexOf(':');
+			if (colon <= 0 || (quote >= 0 && quote < colon) || /^(?:when|whenever|at|choose)\b/i.test(line.body)) continue;
+			const parse = parseEffects(line.body.slice(colon + 1).trim(), 0, 'activated');
+			for (const s of parse.steps) if (s.verb === 'addMana') out.push(s);
+		}
 	}
 	MANA_STEPS_CACHE.set(key, out);
 	return out;

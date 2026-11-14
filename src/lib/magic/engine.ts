@@ -211,6 +211,7 @@ import {
 	type GamePhase,
 	type GameState,
 	type GuidedOperation,
+	type LandPlayOption,
 	type LibrarySearchDestination,
 	type LibrarySearchSpec,
 	type LobbyRulesConfig,
@@ -580,6 +581,14 @@ function optionTargetsBecomeEach(
 	return keywordAltCost(sourceCard, found.keyword) !== null;
 }
 
+const SUPPORTED_MULTIFACE_LAYOUTS = new Set(['split', 'modal_dfc', 'adventure']);
+
+function cardHasSupportedMultiFace(card: ScryfallCard): boolean {
+	const layout =
+		card.layout ?? (card.backFace ? 'transform' : card.faces && card.faces.length >= 2 ? 'split' : 'normal');
+	return Boolean(card.faces && card.faces.length >= 2 && SUPPORTED_MULTIFACE_LAYOUTS.has(layout));
+}
+
 function enumerateCandidateCastOptions(
 	state: GameState,
 	actorId: string,
@@ -587,21 +596,37 @@ function enumerateCandidateCastOptions(
 	fromZone: CastableSourceZone
 ): CastOption[] {
 	const card = inst.copiableCard ?? inst.card;
-	if (card.typeLine.includes('Land') && !card.typeLine.includes('Creature')) {
-		return [];
-	}
 	if (fromZone === 'graveyard' && inst.ownerId !== actorId) {
 		return [];
 	}
 
+	const def = compileCard(card);
+	const layout =
+		card.layout ?? (card.backFace ? 'transform' : card.faces && card.faces.length >= 2 ? 'split' : 'normal');
+	const isMultiFace = cardHasSupportedMultiFace(card);
+	const exileAllowed = fromZone === 'exile' ? inst.playableFromExileBy?.allowedFaceIndices : undefined;
+
+	const candidateFaceIndices: number[] = isMultiFace
+		? def.faces
+				.map((_, fi) => fi)
+				.filter((fi) => {
+					const types = def.faces[fi]?.characteristics.types ?? [];
+					if (types.includes('Land') && !types.includes('Creature')) return false;
+					if (exileAllowed && !exileAllowed.includes(fi)) return false;
+					return true;
+				})
+		: (() => {
+				const types = def.faces[0]?.characteristics.types ?? [];
+				if (types.includes('Land') && !types.includes('Creature')) return [];
+				if (exileAllowed && !exileAllowed.includes(0)) return [];
+				return [0];
+			})();
+
+	if (candidateFaceIndices.length === 0) {
+		return [];
+	}
+
 	const actor = state.players.find((p) => p.playerId === actorId);
-	const additional = spellAdditionalCost(card);
-	const mandatoryAdditionalCosts =
-		additional && additional.defs.length > 0 ? additional.defs : undefined;
-	const optionalAdditionalCosts = spellOptionalAdditionalCosts(card);
-	const optionalProp =
-		optionalAdditionalCosts.length > 0 ? { optionalAdditionalCosts } : {};
-	const targetInfo = getSpellTargetRequirement(card);
 	const castCount =
 		inst.isCommander && fromZone === 'command' && actor
 			? (actor.commanderCastCounts?.[inst.instanceId] ?? inst.commanderCastCount ?? 0)
@@ -609,98 +634,188 @@ function enumerateCandidateCastOptions(
 	const taxSuffix = castCount > 0 ? ` + {${castCount * state.rules.commanderTaxIncrement}}` : '';
 
 	const options: CastOption[] = [];
-	let hasZonePermission = false;
 
-	if (fromZone === 'hand' || fromZone === 'command') {
-		hasZonePermission = true;
-		const baseCost: CastOption['baseCost'] = { kind: 'printed' };
-		options.push({
-			id: 'normal',
-			label: 'Cast Normally',
-			costDisplay: `${card.manaCost || '{0}'}${taxSuffix}`,
-			fromZone,
-			permission: 'zone_default',
-			baseCost,
-			...(mandatoryAdditionalCosts ? { mandatoryAdditionalCosts } : {}),
-			...optionalProp,
-			timing: 'default',
-			spellMods: {},
-			choosesX: spellChoosesX(card, baseCost),
-			requiresTarget: targetInfo.requiresTarget
-		});
-	} else if (fromZone === 'exile') {
-		if (inst.castViaSuspend) {
-			const baseCost: CastOption['baseCost'] = { kind: 'free' };
-			options.push({
-				id: 'exile:suspend',
-				label: 'Cast via Suspend',
-				costDisplay: '{0}',
-				fromZone: 'exile',
-				permission: 'exile_permission',
-				baseCost,
-				...(mandatoryAdditionalCosts ? { mandatoryAdditionalCosts } : {}),
-				...optionalProp,
-				timing: 'default',
-				spellMods: {},
-				choosesX: spellChoosesX(card, baseCost),
-				requiresTarget: targetInfo.requiresTarget
-			});
-		} else if (inst.playableFromExileBy?.playerId === actorId) {
+	for (const fi of candidateFaceIndices) {
+		const faceDef = def.faces[fi];
+		if (!faceDef) continue;
+		const faceChars = faceDef.characteristics;
+		const faceTypes = faceChars.types;
+		const faceManaCost = faceChars.manaCost;
+		const faceName = faceDef.name;
+		const isAdventureFace = isMultiFace && layout === 'adventure' && fi === 1;
+		const faceIndexProp = isMultiFace ? { faceIndex: fi } : {};
+		const idFor = (baseId: string) => (fi === 0 ? baseId : `face:${fi}:${baseId}`);
+
+		const additional = spellAdditionalCost(card, fi, false);
+		const mandatoryAdditionalCosts =
+			additional && additional.defs.length > 0 ? additional.defs : undefined;
+		const optionalAdditionalCosts = spellOptionalAdditionalCosts(card, fi, false);
+		const optionalProp =
+			optionalAdditionalCosts.length > 0 ? { optionalAdditionalCosts } : {};
+		const targetInfo = getSpellTargetRequirement(card, { faceIndex: fi } as CastOption);
+		const adventureMods: Partial<SpellModifications> = isAdventureFace
+			? { exileAdventureOnResolve: true }
+			: {};
+
+		let hasZonePermission = false;
+
+		if (fromZone === 'hand' || fromZone === 'command') {
 			hasZonePermission = true;
 			const baseCost: CastOption['baseCost'] = { kind: 'printed' };
+			const label = isAdventureFace
+				? `Cast Adventure: ${faceName}`
+				: isMultiFace
+					? `Cast ${faceName}`
+					: 'Cast Normally';
 			options.push({
-				id: 'exile:permission',
-				label: inst.playableFromExileBy.sourceName
-					? `Cast from Exile (${inst.playableFromExileBy.sourceName})`
-					: 'Cast from Exile',
-				costDisplay: card.manaCost || '{0}',
-				fromZone: 'exile',
-				permission: 'exile_permission',
+				id: idFor('normal'),
+				label,
+				costDisplay: `${faceManaCost || '{0}'}${taxSuffix}`,
+				fromZone,
+				permission: 'zone_default',
+				...faceIndexProp,
 				baseCost,
 				...(mandatoryAdditionalCosts ? { mandatoryAdditionalCosts } : {}),
 				...optionalProp,
 				timing: 'default',
-				spellMods: {},
-				choosesX: spellChoosesX(card, baseCost),
+				spellMods: { ...adventureMods },
+				choosesX: spellChoosesX(card, baseCost, undefined, fi, false),
 				requiresTarget: targetInfo.requiresTarget
 			});
+		} else if (fromZone === 'exile') {
+			if (inst.castViaSuspend && fi === 0) {
+				const baseCost: CastOption['baseCost'] = { kind: 'free' };
+				options.push({
+					id: 'exile:suspend',
+					label: 'Cast via Suspend',
+					costDisplay: '{0}',
+					fromZone: 'exile',
+					permission: 'exile_permission',
+					...faceIndexProp,
+					baseCost,
+					...(mandatoryAdditionalCosts ? { mandatoryAdditionalCosts } : {}),
+					...optionalProp,
+					timing: 'default',
+					spellMods: {},
+					choosesX: spellChoosesX(card, baseCost, undefined, fi, false),
+					requiresTarget: targetInfo.requiresTarget
+				});
+			} else if (inst.playableFromExileBy?.playerId === actorId) {
+				hasZonePermission = true;
+				const baseCost: CastOption['baseCost'] = { kind: 'printed' };
+				const src = inst.playableFromExileBy.sourceName;
+				const label = isAdventureFace
+					? src
+						? `Cast Adventure: ${faceName} from Exile (${src})`
+						: `Cast Adventure: ${faceName} from Exile`
+					: isMultiFace
+						? src
+							? `Cast ${faceName} from Exile (${src})`
+							: `Cast ${faceName} from Exile`
+						: src
+							? `Cast from Exile (${src})`
+							: 'Cast from Exile';
+				options.push({
+					id: idFor('exile:permission'),
+					label,
+					costDisplay: faceManaCost || '{0}',
+					fromZone: 'exile',
+					permission: 'exile_permission',
+					...faceIndexProp,
+					baseCost,
+					...(mandatoryAdditionalCosts ? { mandatoryAdditionalCosts } : {}),
+					...optionalProp,
+					timing: 'default',
+					spellMods: { ...adventureMods },
+					choosesX: spellChoosesX(card, baseCost, undefined, fi, false),
+					requiresTarget: targetInfo.requiresTarget
+				});
+			}
+		}
+
+		if (!inst.castViaSuspend) {
+			for (const [kwName, meta] of Object.entries(ALTERNATIVE_COST_KEYWORDS)) {
+				const altCost = keywordAltCost(card, kwName, fi);
+				if (!altCost) continue;
+				if (!meta.zones.includes(fromZone)) continue;
+				if (meta.requiresZonePermission && !hasZonePermission) continue;
+				if (meta.spellTypes && meta.spellTypes.length > 0) {
+					if (!meta.spellTypes.some((t) => faceTypes.includes(t))) continue;
+				}
+				const baseCost: CastOption['baseCost'] = {
+					kind: 'alternative',
+					...(altCost.manaCost !== undefined ? { manaCost: altCost.manaCost } : {}),
+					...(altCost.costDefs.length > 0 ? { costDefs: altCost.costDefs } : {})
+				};
+				const spellMods: SpellModifications = {
+					...adventureMods,
+					...(meta.targetsBecomeEach ? { targetsBecomeEach: true } : {}),
+					...(meta.exileOnLeaveStack ? { exileOnLeaveStack: true } : {}),
+					...(meta.castSummarySuffix ? { castSummarySuffix: meta.castSummarySuffix } : {}),
+					...(meta.stackBadgeLabel ? { label: meta.stackBadgeLabel } : {})
+				};
+				options.push({
+					id: idFor(meta.id),
+					label: isMultiFace ? `${meta.label} (${faceName})` : meta.label,
+					costDisplay: `${altCost.display}${taxSuffix}`,
+					fromZone,
+					permission: 'keyword_alt',
+					...faceIndexProp,
+					baseCost,
+					...(mandatoryAdditionalCosts ? { mandatoryAdditionalCosts } : {}),
+					...optionalProp,
+					timing: meta.timing ?? 'default',
+					spellMods,
+					choosesX: spellChoosesX(card, baseCost, undefined, fi, false),
+					requiresTarget: meta.targetsBecomeEach ? false : targetInfo.requiresTarget
+				});
+			}
 		}
 	}
 
-	if (!inst.castViaSuspend) {
-		const cardTypes = activeCharacteristics(card, instanceFaceOptions(inst, fromZone)).types;
-		for (const [kwName, meta] of Object.entries(ALTERNATIVE_COST_KEYWORDS)) {
-			const altCost = keywordAltCost(card, kwName);
-			if (!altCost) continue;
-			if (!meta.zones.includes(fromZone)) continue;
-			if (meta.requiresZonePermission && !hasZonePermission) continue;
-			if (meta.spellTypes && meta.spellTypes.length > 0) {
-				if (!meta.spellTypes.some((t) => cardTypes.includes(t))) continue;
-			}
-			const baseCost: CastOption['baseCost'] = {
-				kind: 'alternative',
-				...(altCost.manaCost !== undefined ? { manaCost: altCost.manaCost } : {}),
-				...(altCost.costDefs.length > 0 ? { costDefs: altCost.costDefs } : {})
-			};
-			const spellMods: SpellModifications = {
-				...(meta.targetsBecomeEach ? { targetsBecomeEach: true } : {}),
-				...(meta.exileOnLeaveStack ? { exileOnLeaveStack: true } : {}),
-				...(meta.castSummarySuffix ? { castSummarySuffix: meta.castSummarySuffix } : {}),
-				...(meta.stackBadgeLabel ? { label: meta.stackBadgeLabel } : {})
-			};
+	// CR 702.102: Split card with Fuse cast from hand as both halves (left then right).
+	if (
+		isMultiFace &&
+		layout === 'split' &&
+		fromZone === 'hand' &&
+		!inst.castViaSuspend &&
+		def.faces.length >= 2 &&
+		!def.faces[0].characteristics.types.includes('Land') &&
+		!def.faces[1].characteristics.types.includes('Land')
+	) {
+		const hasFuse = def.faces.some((f) =>
+			f.abilities.some((a) => {
+				if (a.kind !== 'keyword') return false;
+				const { name: kwName } = a.keyword;
+				return kwName === 'fuse';
+			})
+		);
+		if (hasFuse) {
+			const baseCost: CastOption['baseCost'] = { kind: 'printed' };
+			const combinedMana = `${def.faces[0].characteristics.manaCost || ''}${def.faces[1].characteristics.manaCost || ''}`;
+			const fusedAdditional = spellAdditionalCost(card, 0, true);
+			const fusedOptional = spellOptionalAdditionalCosts(card, 0, true);
+			const fusedTargetInfo = getSpellTargetRequirement(card, {
+				faceIndex: 0,
+				fused: true
+			} as CastOption);
 			options.push({
-				id: meta.id,
-				label: meta.label,
-				costDisplay: `${altCost.display}${taxSuffix}`,
-				fromZone,
-				permission: 'keyword_alt',
+				id: 'fuse',
+				label: `Fuse: ${def.faces[0].name} // ${def.faces[1].name}`,
+				costDisplay: `${combinedMana || '{0}'}${taxSuffix}`,
+				fromZone: 'hand',
+				permission: 'zone_default',
+				faceIndex: 0,
+				fused: true,
 				baseCost,
-				...(mandatoryAdditionalCosts ? { mandatoryAdditionalCosts } : {}),
-				...optionalProp,
-				timing: meta.timing ?? 'default',
-				spellMods,
-				choosesX: spellChoosesX(card, baseCost),
-				requiresTarget: meta.targetsBecomeEach ? false : targetInfo.requiresTarget
+				...(fusedAdditional && fusedAdditional.defs.length > 0
+					? { mandatoryAdditionalCosts: fusedAdditional.defs }
+					: {}),
+				...(fusedOptional.length > 0 ? { optionalAdditionalCosts: fusedOptional } : {}),
+				timing: 'default',
+				spellMods: { castSummarySuffix: ' (Fused)', label: 'Fused' },
+				choosesX: spellChoosesX(card, baseCost, undefined, 0, true),
+				requiresTarget: fusedTargetInfo.requiresTarget
 			});
 		}
 	}
@@ -713,9 +828,18 @@ function resolveCastOptionForAction(
 	actorId: string,
 	inst: CardInstance,
 	fromZone: ZoneType,
-	optionId?: string
+	optionId?: string,
+	faceIndex?: number,
+	fused?: boolean
 ): { ok: true; option: CastOption } | { ok: false; error: string } {
-	if (inst.card.typeLine.includes('Land') && !inst.card.typeLine.includes('Creature')) {
+	const card = inst.copiableCard ?? inst.card;
+	const def = compileCard(card);
+	const allLandFaces =
+		def.faces.length > 0 &&
+		def.faces.every(
+			(f) => f.characteristics.types.includes('Land') && !f.characteristics.types.includes('Creature')
+		);
+	if (allLandFaces) {
 		return { ok: false, error: 'Lands are played using Play Land, not cast as spells.' };
 	}
 	if (
@@ -747,7 +871,8 @@ function resolveCastOptionForAction(
 					error: 'Only one alternative cost can be applied to a spell (CR 118.9a).'
 				};
 			}
-			if (keywordAltCost(inst.copiableCard ?? inst.card, altMeta.keyword) === null) {
+			const hasAltOnAnyFace = def.faces.some((_, fi) => keywordAltCost(card, altMeta.keyword, fi) !== null);
+			if (!hasAltOnAnyFace) {
 				const kwLabel = `${altMeta.keyword[0].toUpperCase()}${altMeta.keyword.slice(1)}`;
 				return { ok: false, error: `${inst.card.name} does not have ${kwLabel}.` };
 			}
@@ -758,6 +883,32 @@ function resolveCastOptionForAction(
 		return {
 			ok: false,
 			error: `Cast option '${optionId}' is not valid for ${inst.card.name} from ${fromZone}.`
+		};
+	}
+
+	if (fused) {
+		const fusedOpt = candidates.find((o) => o.fused);
+		if (fusedOpt) return { ok: true, option: fusedOpt };
+		return {
+			ok: false,
+			error: `${inst.card.name} cannot be cast fused from ${fromZone}.`
+		};
+	}
+
+	if (faceIndex !== undefined) {
+		const requestedFace = def.faces[faceIndex];
+		if (
+			requestedFace &&
+			requestedFace.characteristics.types.includes('Land') &&
+			!requestedFace.characteristics.types.includes('Creature')
+		) {
+			return { ok: false, error: 'Lands are played using Play Land, not cast as spells.' };
+		}
+		const faceOpt = candidates.find((o) => (o.faceIndex ?? 0) === faceIndex && !o.fused);
+		if (faceOpt) return { ok: true, option: faceOpt };
+		return {
+			ok: false,
+			error: `Face ${faceIndex} of ${inst.card.name} cannot be cast from ${fromZone}.`
 		};
 	}
 
@@ -842,7 +993,16 @@ function getSpellCostRequirementForOption(
 
 	const { manaCosts: extraManaCosts } = expandOptionalAdditionalCosts(option, optionalCostCounts);
 	return applyAnyColorPermission(
-		effectiveSpellManaCost(state, player, inst, xValue, option.baseCost, extraManaCosts)
+		effectiveSpellManaCost(
+			state,
+			player,
+			inst,
+			xValue,
+			option.baseCost,
+			extraManaCosts,
+			option.faceIndex ?? 0,
+			option.fused ?? false
+		)
 	);
 }
 
@@ -902,7 +1062,9 @@ export function chooseBotSpellCostPayment(
 	const { nonManaDefs: extraNonManaDefs } = resolved.ok
 		? expandOptionalAdditionalCosts(resolved.option, optionalCostCounts)
 		: { nonManaDefs: [] };
-	const additional = spellAdditionalCost(inst.card);
+	const optFace = resolved.ok ? (resolved.option.faceIndex ?? 0) : 0;
+	const optFused = resolved.ok ? Boolean(resolved.option.fused) : false;
+	const additional = spellAdditionalCost(inst.card, optFace, optFused);
 	const defs = [...altDefs, ...(additional?.defs ?? []), ...extraNonManaDefs];
 	if (defs.length === 0) return undefined;
 	const costReq = getSpellCostRequirement(
@@ -1008,6 +1170,8 @@ function finalizeCastSpell(
 		chosenModes?: number[];
 		xValue: number;
 		castOptionId?: string;
+		faceIndex?: number;
+		fused?: boolean;
 		spellMods?: SpellModifications;
 		optionalCostCounts?: Record<string, number>;
 		exSourceName?: string;
@@ -1016,11 +1180,19 @@ function finalizeCastSpell(
 	}
 ): void {
 	const actorId = actor.playerId;
+	const stackFaceIdx = opts.faceIndex ?? 0;
+	const stackFused = Boolean(opts.fused);
+	const stackView = resolveObjectFaces(effectiveCardForObject(inst), {
+		zone: 'stack',
+		faceIndex: stackFaceIdx,
+		fused: stackFused
+	});
+	const spellDisplayName = stackView.name;
 	if (opts.descriptions && opts.descriptions.length > 0) {
 		addLog(state, 'rule', `${actor.username} ${opts.descriptions.join('; ')} as an additional cost.`, actorId);
 	}
 	if (opts.additionalIncomplete) {
-		addLog(state, 'rule', `The additional cost of ${inst.card.name} isn't automated; pay it manually.`, actorId);
+		addLog(state, 'rule', `The additional cost of ${spellDisplayName} isn't automated; pay it manually.`, actorId);
 	}
 
 	const exSourceName = opts.exSourceName ?? inst.playableFromExileBy?.sourceName;
@@ -1052,7 +1224,9 @@ function finalizeCastSpell(
 			ownerId: inst.ownerId,
 			controllerId: actorId,
 			kind: 'spell',
-			title: inst.card.name,
+			title: spellDisplayName,
+			...(opts.faceIndex !== undefined ? { faceIndex: opts.faceIndex } : {}),
+			...(opts.fused ? { fused: true } : {}),
 			targets,
 			...(chosenModes ? { chosenModes: [...chosenModes] } : {}),
 			targetObjectVersions: captureTargetObjectVersions(state, targets),
@@ -1074,14 +1248,14 @@ function finalizeCastSpell(
 	const targetDesc =
 		targets.length > 0 ? ` targeting ${targets.map((t) => t.label).join(', ')}` : '';
 	const kickerInfo = optionalCostCounts
-		? computeKickerTracking(inst.card, optionalCostCounts)
+		? computeKickerTracking(inst.card, optionalCostCounts, undefined, stackFaceIdx, stackFused)
 		: { count: 0, tags: [] };
 	const kickedSuffix = kickerInfo.count > 0 ? ' (kicked)' : '';
 	const summarySuffix = `${spellMods?.castSummarySuffix ?? ''}${kickedSuffix}`;
 	addLog(
 		state,
 		'cast',
-		`${actor.username} cast ${inst.card.name}${summarySuffix}${sourceZone === 'command' ? ` from Command Zone (Cast #${inst.commanderCastCount})` : sourceZone === 'graveyard' ? ' from Graveyard' : sourceZone === 'exile' ? ` from Exile (${exSourceName || 'Exile Permission'})` : ''}${targetDesc}.`,
+		`${actor.username} cast ${spellDisplayName}${summarySuffix}${sourceZone === 'command' ? ` from Command Zone (Cast #${inst.commanderCastCount})` : sourceZone === 'graveyard' ? ' from Graveyard' : sourceZone === 'exile' ? ` from Exile (${exSourceName || 'Exile Permission'})` : ''}${targetDesc}.`,
 		actorId
 	);
 
@@ -1089,7 +1263,7 @@ function finalizeCastSpell(
 		kind: sourceZone === 'command' ? 'commander_cast' : 'spell_cast',
 		sourceId: actorId,
 		targetId: targets[0]?.id,
-		label: inst.card.name
+		label: spellDisplayName
 	});
 
 	emitEvent(state, { kind: 'Cast', playerId: actor.playerId, objectId: inst.instanceId, object: inst });
@@ -1150,10 +1324,11 @@ function finalizeActivateAbility(
 			sourceLkiToughness: pcp.sourceLkiToughness ?? 0,
 			card,
 			...(pcp.grantSourceCard ? { grantSourceCard: pcp.grantSourceCard } : {}),
+			...(pcp.faceIndex !== undefined ? { faceIndex: pcp.faceIndex } : {}),
 			controllerId: actorId,
 			kind: 'activated',
 			abilityId: pcp.abilityId,
-			title: `${card.name} Ability`,
+			title: `${resolveObjectFaces(card, { zone: perm.zone, faceIndex: pcp.faceIndex ?? 0 }).name} Ability`,
 			targets,
 			targetObjectVersions: captureTargetObjectVersions(state, targets),
 			xValue: 0,
@@ -1196,9 +1371,16 @@ function finalizeTapMana(
 	const card = pcp.sourceCard ?? perm.card;
 	const abStub =
 		pcp.abilityId && pcp.onceEachTurn
-			? ({ id: pcp.abilityId, activationRestrictions: ['onceEachTurn'] } as EffectiveActivatedAbility)
+			? ({
+					id: pcp.abilityId,
+					...(pcp.faceIndex !== undefined ? { faceIndex: pcp.faceIndex } : {}),
+					activationRestrictions: ['onceEachTurn']
+				} as EffectiveActivatedAbility)
 			: pcp.abilityId
-				? ({ id: pcp.abilityId } as EffectiveActivatedAbility)
+				? ({
+						id: pcp.abilityId,
+						...(pcp.faceIndex !== undefined ? { faceIndex: pcp.faceIndex } : {})
+					} as EffectiveActivatedAbility)
 				: undefined;
 	const chosenColor = pcp.chosenColor;
 	const amount = pcp.amount ?? 0;
@@ -1257,6 +1439,8 @@ function executeOrResumePendingCostPayment(
 				chosenModes: pcp.chosenModes,
 				xValue: pcp.xValue ?? 0,
 				castOptionId: pcp.castOptionId,
+				faceIndex: pcp.faceIndex,
+				fused: pcp.fused,
 				spellMods: pcp.spellMods,
 				optionalCostCounts: pcp.optionalCostCounts,
 				exSourceName: pcp.exSourceName,
@@ -1503,7 +1687,7 @@ function applyPhyrexianLifeChoice(
 function maybeAskPhyrexianCostChoice(
 	state: GameState,
 	actor: PlayerGameState,
-	action: Extract<GameActionPayload, { type: 'cast_spell' | 'activate_ability' | 'tap_mana' }>,
+	action: Extract<GameActionPayload, { type: 'cast_spell' | 'activate_ability' | 'tap_mana' | 'unlock_room_door' }>,
 	req: ManaCostRequirement,
 	sourceName: string
 ): { ok: boolean; error?: string } | null {
@@ -1585,7 +1769,7 @@ function applySingleHybridChoice(
 function resolveHybridCostChoice(
 	state: GameState,
 	actor: PlayerGameState,
-	action: Extract<GameActionPayload, { type: 'cast_spell' | 'activate_ability' | 'tap_mana' }>,
+	action: Extract<GameActionPayload, { type: 'cast_spell' | 'activate_ability' | 'tap_mana' | 'unlock_room_door' }>,
 	req: ManaCostRequirement,
 	sourceName: string
 ): { promptResult?: { ok: boolean; error?: string }; resolvedReq: ManaCostRequirement } {
@@ -2568,6 +2752,7 @@ function applyGameActionInner(
 				sourceInstanceId: perm.instanceId,
 				sourceCard: perm.card,
 				abilityId: ab.id,
+				...(ab.faceIndex !== undefined ? { faceIndex: ab.faceIndex } : {}),
 				chosenColor,
 				amount,
 				onceEachTurn: Boolean(ab.activationRestrictions?.includes('onceEachTurn')),
@@ -2610,15 +2795,35 @@ function applyGameActionInner(
 				return { ok: false, error: 'Land card not found in your hand or playable Exile.' };
 			}
 
-			const landLegality = checkLandPlayLegality(state, actorId, landInst, sourceZone);
+			const landLegality = checkLandPlayLegality(
+				state,
+				actorId,
+				landInst,
+				sourceZone,
+				action.faceIndex
+			);
 			if (!landLegality.ok) {
 				return landLegality;
 			}
+			const resolvedFace = resolveLandPlayFaceIndex(
+				effectiveCardForObject(landInst),
+				landInst,
+				sourceZone,
+				action.faceIndex
+			);
+			if (!resolvedFace.ok) return resolvedFace;
 
 			const exSourceName = landInst.playableFromExileBy?.sourceName;
 			landInst.playableFromExileBy = undefined;
 			landInst.tapped = false;
 			landInst.defaultControllerId = actorId;
+			if (cardHasSupportedMultiFace(effectiveCardForObject(landInst)) || resolvedFace.faceIndex !== 0) {
+				landInst.activeFaceIndex = resolvedFace.faceIndex;
+			}
+			const playedFaceName = resolveObjectFaces(
+				effectiveCardForObject(landInst),
+				instanceFaceOptions(landInst, 'battlefield')
+			).name;
 			applySelfEtbReplacements(state, landInst);
 			moveObject(state, landInst, 'battlefield', {
 				from: { player: sourcePlayer, zone: sourceZone },
@@ -2633,13 +2838,74 @@ function applyGameActionInner(
 			addLog(
 				state,
 				'rule',
-				`${actor.username} played ${landInst.card.name}${sourceZone === 'exile' ? ` from Exile (${exSourceName || 'Exile Permission'})` : ''}.`,
+				`${actor.username} played ${playedFaceName}${sourceZone === 'exile' ? ` from Exile (${exSourceName || 'Exile Permission'})` : ''}.`,
 				actorId
 			);
 
 			resetTriggerLoopTracking(state);
 			flushTriggers(state);
 
+			checkStateBasedActions(state);
+			return { ok: true };
+		}
+
+		case 'unlock_room_door': {
+			const perm = actor.battlefield.find((c) => c.instanceId === action.instanceId);
+			if (!perm) {
+				return { ok: false, error: 'Room permanent not found on your battlefield.' };
+			}
+			const legality = checkUnlockRoomDoorLegality(state, actorId, perm, action.faceIndex);
+			if (!legality.ok) {
+				return legality;
+			}
+			const effectiveCard = effectiveCardForObject(perm);
+			const faceDef = compileCard(effectiveCard).faces[action.faceIndex];
+			if (!faceDef) {
+				return { ok: false, error: 'Invalid Room door face index.' };
+			}
+			const unlockReq = parseManaCost(faceDef.characteristics.manaCost);
+			const phyUnlockChoice = maybeAskPhyrexianCostChoice(
+				state,
+				actor,
+				action,
+				unlockReq,
+				faceDef.name
+			);
+			if (phyUnlockChoice) return phyUnlockChoice;
+			const hybUnlockChoice = resolveHybridCostChoice(
+				state,
+				actor,
+				action,
+				unlockReq,
+				faceDef.name
+			);
+			if (hybUnlockChoice.promptResult) return hybUnlockChoice.promptResult;
+			if (
+				!payManaWithAutoTap(
+					actor,
+					hybUnlockChoice.resolvedReq,
+					state,
+					action.costPayment?.phyrexianLifeCount
+				)
+			) {
+				return {
+					ok: false,
+					error: `Insufficient mana to unlock ${faceDef.name} (requires ${faceDef.characteristics.manaCost}).`
+				};
+			}
+			perm.unlockedFaces = Array.from(new Set([...(perm.unlockedFaces ?? []), action.faceIndex])).sort(
+				(a, b) => a - b
+			);
+			noteLayerInputsChanged(state);
+			state.passedPriorityPlayerIds = [];
+			addLog(
+				state,
+				'rule',
+				`${actor.username} unlocked ${faceDef.name} on ${perm.card.name} (CR 709.5e).`,
+				actorId
+			);
+			resetTriggerLoopTracking(state);
+			flushTriggers(state);
 			checkStateBasedActions(state);
 			return { ok: true };
 		}
@@ -2775,7 +3041,15 @@ function applyGameActionInner(
 				};
 			}
 
-			const resolvedOpt = resolveCastOptionForAction(state, actorId, inst, sourceZone, action.optionId);
+			const resolvedOpt = resolveCastOptionForAction(
+				state,
+				actorId,
+				inst,
+				sourceZone,
+				action.optionId,
+				action.faceIndex,
+				action.fused
+			);
 			if (!resolvedOpt.ok) {
 				return resolvedOpt;
 			}
@@ -2815,7 +3089,9 @@ function applyGameActionInner(
 				hasOptCounts ? normalizedOptCounts : undefined
 			);
 			const targets = action.targets || [];
-			const compiledModal = compileSpellEffects(inst.card)?.modal;
+			const optFaceIdx = castOption.faceIndex ?? 0;
+			const optFused = Boolean(castOption.fused);
+			const compiledModal = compileSpellEffects(inst.card, optFaceIdx, optFused)?.modal;
 			const activeSpec = (sp: TargetSpec) =>
 				!sp.condition || isCastConditionMet(sp.condition, inst.card, normalizedOptCounts, castOption);
 			let chosenModes = action.modes;
@@ -2935,7 +3211,11 @@ function applyGameActionInner(
 					? (castOption.baseCost.manaCost ?? '')
 					: castOption.baseCost.kind === 'free'
 						? ''
-						: inst.card.manaCost;
+						: resolveObjectFaces(effectiveCardForObject(inst), {
+								zone: 'stack',
+								faceIndex: optFaceIdx,
+								fused: optFused
+							}).manaCost;
 			const displayedManaCost =
 				`${baseManaDisplay}${extraManaCosts.join('')}` || (castOption.baseCost.kind === 'free' ? '{0}' : '');
 			const manaError = `Insufficient mana to cast ${inst.card.name} (requires ${displayedManaCost || '{0}'}${sourceZone === 'command' && inst.commanderCastCount > 0 ? ` + {${inst.commanderCastCount * state.rules.commanderTaxIncrement}} Commander Tax` : ''}).`;
@@ -2959,7 +3239,7 @@ function applyGameActionInner(
 
 			// Phase 4: additional costs (plus any non-mana alternative costDefs and optional additional costs)
 			// from the IR, paid together with the mana (nothing is paid unless everything can be).
-			const additional = spellAdditionalCost(inst.card);
+			const additional = spellAdditionalCost(inst.card, optFaceIdx, optFused);
 			const altCostDefs =
 				castOption.baseCost.kind === 'alternative' ? (castOption.baseCost.costDefs ?? []) : [];
 			const combinedCostDefs = [
@@ -2991,6 +3271,8 @@ function applyGameActionInner(
 					...(chosenModes ? { chosenModes: [...chosenModes] } : {}),
 					xValue: xVal,
 					castOptionId: castOption.id,
+					...(castOption.faceIndex !== undefined ? { faceIndex: castOption.faceIndex } : {}),
+					...(castOption.fused ? { fused: true } : {}),
 					spellMods: castOption.spellMods,
 					...(hasOptCounts ? { optionalCostCounts: normalizedOptCounts } : {}),
 					...(inst.playableFromExileBy?.sourceName
@@ -3022,6 +3304,8 @@ function applyGameActionInner(
 				chosenModes,
 				xValue: xVal,
 				castOptionId: castOption.id,
+				faceIndex: castOption.faceIndex,
+				fused: castOption.fused,
 				spellMods: castOption.spellMods,
 				...(hasOptCounts ? { optionalCostCounts: normalizedOptCounts } : {}),
 				additionalIncomplete: Boolean(additional && !additional.complete)
@@ -3127,6 +3411,7 @@ function applyGameActionInner(
 				sourceInstanceId: perm.instanceId,
 				sourceCard: perm.card,
 				abilityId: ab.id,
+				...(ab.faceIndex !== undefined ? { faceIndex: ab.faceIndex } : {}),
 				...(ab.costKeyword ? { costKeyword: ab.costKeyword } : {}),
 				targets,
 				sourceObjectVersion: perm.objectVersion,
@@ -5658,6 +5943,27 @@ export function moveStackSpellToZone(
 		commanderRedirect: true,
 		insert: dest === 'library' ? 'start' : 'end'
 	});
+	// CR 716.3d: Resolving Adventure spell exiles itself with permission for its controller to cast its main face.
+	if (
+		dest === 'exile' &&
+		cardInst.zone === 'exile' &&
+		stackItem.spellMods?.exileAdventureOnResolve &&
+		!stackItem.spellMods?.exileOnLeaveStack
+	) {
+		cardInst.playableFromExileBy = {
+			playerId: stackItem.controllerId,
+			spendManaAsAnyColor: false,
+			sourceName: `${stackItem.title} (Adventure)`,
+			allowedFaceIndices: [0],
+			onAdventure: true
+		};
+		addLog(
+			state,
+			'rule',
+			`${cardInst.card.name} is exiled on an Adventure and may be cast from Exile (CR 716.3d).`,
+			stackItem.controllerId
+		);
+	}
 }
 
 export function addCountersToPermanent(
@@ -6076,9 +6382,10 @@ function triggeredStackItem(state: GameState, t: PendingTrigger, idPrefix: strin
 					}
 				: {}),
 			card: t.sourceCard,
+			...(t.faceIndex !== undefined ? { faceIndex: t.faceIndex } : {}),
 			controllerId: t.controllerId,
 			kind: 'triggered',
-			title: `${t.sourceCard.name} (${t.label})`,
+			title: `${(t.faceIndex !== undefined ? t.sourceCard.faces?.[t.faceIndex]?.name : undefined) ?? t.sourceCard.name} (${t.label})`,
 			targets: [],
 			xValue: 0,
 			requiresGuidedResolution: false,
@@ -6117,7 +6424,7 @@ export function triggerResolutionCounts(reset = false): { interpreter: number; m
 /** The compiled IR effect of a triggered stack item, or null (no compiled effect: legacy only). */
 function triggerItemEffect(item: StackItem) {
 	if (item.kind !== 'triggered' || item.triggeredAbilityIndex === undefined) return null;
-	return compiledTriggerEffect(item.card, item.triggeredAbilityIndex, item.grantedKeyword);
+	return compiledTriggerEffect(item.card, item.triggeredAbilityIndex, item.grantedKeyword, item.faceIndex ?? 0);
 }
 
 /** The interpreter's EffectContext fields for a triggered ability's event (CR 603.7c). */
@@ -6931,7 +7238,10 @@ registerPromptHandler('draw_up_to', (state, prompt, answer) => {
  */
 function isUnautomatedStackItem(item: StackItem): boolean {
 	if (item.kind === 'activated') return true;
-	if (item.kind === 'spell') return /\b(?:Instant|Sorcery)\b/.test(item.card.typeLine);
+	if (item.kind === 'spell') {
+		const types = resolveObjectFaces(item.card, stackItemFaceOptions(item)).types;
+		return types.includes('Instant') || types.includes('Sorcery');
+	}
 	return (
 		item.triggeredAbilityIndex !== undefined &&
 		!itemWard(item) &&
@@ -7256,13 +7566,18 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 	// If this was a spell, move it to Battlefield (for permanents; copies become tokens per CR 111.13 / 608.3f / 707.10f)
 	// or Graveyard/Exile (for nontoken Instants/Sorceries).
 	if (item.kind === 'spell') {
-		const tLine = item.card.typeLine;
-		const isPermanent =
-			tLine.includes('Creature') ||
-			tLine.includes('Artifact') ||
-			tLine.includes('Enchantment') ||
-			tLine.includes('Planeswalker') ||
-			tLine.includes('Battle');
+		const stackFaceOpts = stackItemFaceOptions(item);
+		const stackView = resolveObjectFaces(item.card, stackFaceOpts);
+		const stackTypes = stackView.types;
+		const stackSubtypes = stackView.subtypes;
+		const isPermanent = stackTypes.some(
+			(t) =>
+				t === 'Creature' ||
+				t === 'Artifact' ||
+				t === 'Enchantment' ||
+				t === 'Planeswalker' ||
+				t === 'Battle'
+		);
 
 		const cardOwnerId = item.isCopy ? controller.playerId : item.ownerId || controller.playerId;
 		const cardOwner = state.players.find((p) => p.playerId === cardOwnerId) || controller;
@@ -7275,7 +7590,7 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 
 		if (isPermanent) {
 			const auraTargetId =
-				tLine.includes('Aura') &&
+				stackSubtypes.includes('Aura') &&
 				(item.targets[0]?.kind === 'permanent' || item.targets[0]?.kind === 'player')
 					? item.targets[0].id
 					: null;
@@ -7298,16 +7613,30 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 			perm.controllerId = controller.playerId;
 			perm.defaultControllerId = controller.playerId;
 			perm.commanderCastCount = castCount;
-			perm.summoningSick = tLine.includes('Creature');
+			perm.summoningSick = stackTypes.includes('Creature');
 			perm.enteredWithX = item.xValue;
-			const resolvedKicker = computeKickerTracking(item.card, item.optionalCostCounts);
+			const resolvedKicker = computeKickerTracking(
+				item.card,
+				item.optionalCostCounts,
+				undefined,
+				item.faceIndex ?? 0,
+				item.fused ?? false
+			);
 			perm.kickedCount = resolvedKicker.count > 0 ? resolvedKicker.count : undefined;
 			perm.kickedTags = resolvedKicker.tags.length > 0 ? resolvedKicker.tags : undefined;
 			// Reset pre-filled loyalty so moveObject initializes loyalty with counterMultiplier (CR 306.5b)
 			perm.counters.loyalty = 0;
 
+			if (item.faceIndex !== undefined) {
+				perm.activeFaceIndex = item.faceIndex;
+			}
+			// CR 709.5d: A Room permanent cast as a spell enters with the chosen half's door unlocked.
+			if (stackSubtypes.includes('Room')) {
+				perm.unlockedFaces = [item.faceIndex ?? 0];
+			}
+
 			// CR 707: "enter the battlefield as a copy of any creature on the battlefield"
-			const entersAsCopyOfAnyCreature = activeAbilityDefs(item.card, stackItemFaceOptions(item)).some(
+			const entersAsCopyOfAnyCreature = activeAbilityDefs(item.card, stackFaceOpts).some(
 				(ab) =>
 					ab.kind === 'replacement' &&
 					ab.replacement.replaces.event === 'zoneChange' &&
@@ -7353,6 +7682,7 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 					perm.isFaceDown = false;
 					perm.transformed = false;
 					perm.activeFaceIndex = undefined;
+					perm.unlockedFaces = undefined;
 					addLog(
 						state,
 						'cast',
@@ -7365,15 +7695,19 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 			if (auraTargetId) {
 				attachObject(state, perm, auraTargetId);
 			}
+			const enteredName = resolveObjectFaces(
+				effectiveCardForObject(perm),
+				instanceFaceOptions(perm, 'battlefield')
+			).name;
 			applySelfEtbReplacements(state, perm);
 			moveObject(state, perm, 'battlefield', { from: 'stack', toPlayer: controller });
 			addLog(
 				state,
 				'cast',
-				`${perm.card.name} entered the battlefield under ${controller.username}'s control.`,
+				`${enteredName} entered the battlefield under ${controller.username}'s control.`,
 				controller.playerId
 			);
-			if (tLine.includes('Aura') && perm.attachedToId) {
+			if (stackSubtypes.includes('Aura') && perm.attachedToId) {
 				const attachedTarget = findPermanentOnBoard(state, perm.attachedToId);
 				if (attachedTarget) {
 					emitEvent(state, {
@@ -7387,7 +7721,9 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 			}
 			flushTriggers(state);
 		} else if (!item.isCopy) {
-			moveStackSpellToZone(state, item, exiledBySelfReference ? 'exile' : 'graveyard');
+			const dest =
+				exiledBySelfReference || item.spellMods?.exileAdventureOnResolve ? 'exile' : 'graveyard';
+			moveStackSpellToZone(state, item, dest);
 		}
 	}
 
@@ -10624,9 +10960,13 @@ export function validateChosenTargets(
 		return { ok: true };
 	}
 	if (!info.requiresTarget && info.maxTargets === 0 && targets.length > 0) {
+		const copyFaceOpts =
+			optionOrId && typeof optionOrId === 'object'
+				? { zone: 'stack' as const, faceIndex: optionOrId.faceIndex ?? 0, fused: optionOrId.fused }
+				: undefined;
 		const allowsCopyHint =
 			sourceCard &&
-			activeAbilityDefs(sourceCard).some(
+			activeAbilityDefs(sourceCard, copyFaceOpts).some(
 				(ab) =>
 					ab.kind === 'replacement' &&
 					!Array.isArray(ab.replacement.with) &&
@@ -10996,20 +11336,80 @@ export function checkMandatoryAttackersSatisfied(
 }
 
 /** Whether `actorId` may play the land `inst` now. Read-only, one validation (Phase 6d). */
+function resolveLandPlayFaceIndex(
+	card: ScryfallCard,
+	inst: CardInstance,
+	fromZone: ZoneType,
+	requestedFaceIndex?: number
+): { ok: true; faceIndex: number } | { ok: false; error: string } {
+	const def = compileCard(card);
+	const exileAllowed = fromZone === 'exile' ? inst.playableFromExileBy?.allowedFaceIndices : undefined;
+	if (requestedFaceIndex !== undefined) {
+		const face = def.faces[requestedFaceIndex];
+		if (!face || !face.characteristics.types.includes('Land')) {
+			return { ok: false, error: `${card.name} does not have a Land face at index ${requestedFaceIndex}.` };
+		}
+		if (exileAllowed && !exileAllowed.includes(requestedFaceIndex)) {
+			return {
+				ok: false,
+				error: `You do not have permission to play that face of ${card.name} from Exile.`
+			};
+		}
+		return { ok: true, faceIndex: requestedFaceIndex };
+	}
+	const fi = def.faces.findIndex(
+		(f, i) => f.characteristics.types.includes('Land') && (!exileAllowed || exileAllowed.includes(i))
+	);
+	if (fi < 0) {
+		return { ok: false, error: `${card.name} is not a Land card.` };
+	}
+	return { ok: true, faceIndex: fi };
+}
+
+export function getLandPlayOptions(
+	state: GameState,
+	actorId: string,
+	inst: CardInstance,
+	fromZone: 'hand' | 'exile' = 'hand'
+): LandPlayOption[] {
+	return withStableLayerInputs(state, () => {
+		const card = effectiveCardForObject(inst);
+		const def = compileCard(card);
+		const out: LandPlayOption[] = [];
+		for (let fi = 0; fi < def.faces.length; fi++) {
+			const face = def.faces[fi];
+			if (!face.characteristics.types.includes('Land')) continue;
+			if (!checkLandPlayLegalityInner(state, actorId, inst, fromZone, fi).ok) continue;
+			const view = resolveObjectFaces(card, { zone: fromZone, faceIndex: fi });
+			out.push({
+				faceIndex: fi,
+				label: face.name,
+				typeLine: view.typeLine,
+				fromZone
+			});
+		}
+		return out;
+	});
+}
+
 export function checkLandPlayLegality(
 	state: GameState,
 	actorId: string,
 	inst: CardInstance,
-	fromZone: ZoneType = 'hand'
+	fromZone: ZoneType = 'hand',
+	faceIndex?: number
 ): { ok: boolean; error?: string } {
-	return withStableLayerInputs(state, () => checkLandPlayLegalityInner(state, actorId, inst, fromZone));
+	return withStableLayerInputs(state, () =>
+		checkLandPlayLegalityInner(state, actorId, inst, fromZone, faceIndex)
+	);
 }
 
 function checkLandPlayLegalityInner(
 	state: GameState,
 	actorId: string,
 	inst: CardInstance,
-	fromZone: ZoneType = 'hand'
+	fromZone: ZoneType = 'hand',
+	faceIndex?: number
 ): { ok: boolean; error?: string } {
 	if (state.status !== 'active') {
 		return { ok: false, error: 'Game is not currently active.' };
@@ -11031,8 +11431,9 @@ function checkLandPlayLegalityInner(
 	} else if (fromZone !== 'hand') {
 		return { ok: false, error: 'Lands can only be played from your hand (or from Exile with an active play permission).' };
 	}
-	if (!inst.card.typeLine.includes('Land')) {
-		return { ok: false, error: `${inst.card.name} is not a Land card.` };
+	const resolvedFace = resolveLandPlayFaceIndex(effectiveCardForObject(inst), inst, fromZone, faceIndex);
+	if (!resolvedFace.ok) {
+		return resolvedFace;
 	}
 	const activePlayer = state.players[state.activePlayerIndex];
 	const priorityPlayer = state.players[state.priorityPlayerIndex];
@@ -11074,6 +11475,67 @@ function checkLandPlayLegalityInner(
 }
 
 /**
+ * Whether `actorId` may unlock the Room door at `faceIndex` on `inst` (CR 709.5e).
+ */
+export function checkUnlockRoomDoorLegality(
+	state: GameState,
+	actorId: string,
+	inst: CardInstance,
+	faceIndex: number
+): { ok: boolean; error?: string } {
+	return withStableLayerInputs(state, () => {
+		if (state.status !== 'active') {
+			return { ok: false, error: 'Game is not currently active.' };
+		}
+		if (state.pendingPrompts.length > 0) {
+			return { ok: false, error: 'Resolve the active prompt first.' };
+		}
+		const actor = state.players.find((p) => p.playerId === actorId);
+		if (!actor || actor.lost) {
+			return { ok: false, error: 'Player is not active in this game.' };
+		}
+		if (inst.zone !== 'battlefield' || inst.controllerId !== actorId || inst.phasedOut) {
+			return { ok: false, error: 'Room must be an active permanent you control on the battlefield.' };
+		}
+		const activePlayer = state.players[state.activePlayerIndex];
+		const priorityPlayer = state.players[state.priorityPlayerIndex];
+		if (activePlayer?.playerId !== actorId) {
+			return { ok: false, error: 'Room doors can only be unlocked on your turn at Sorcery speed.' };
+		}
+		if (priorityPlayer?.playerId !== actorId) {
+			return { ok: false, error: 'You must hold priority to unlock a Room door.' };
+		}
+		if (state.phase !== 'main1' && state.phase !== 'main2') {
+			return { ok: false, error: 'Room doors can only be unlocked during your Main Phase.' };
+		}
+		if (state.stack.length > 0) {
+			return { ok: false, error: 'Room doors cannot be unlocked while the Stack is not empty.' };
+		}
+		const card = effectiveCardForObject(inst);
+		const def = compileCard(card);
+		const face = def.faces[faceIndex];
+		if (def.layout !== 'split' || !face || !face.characteristics.subtypes.includes('Room')) {
+			return { ok: false, error: `${card.name} does not have a Room door at face ${faceIndex}.` };
+		}
+		if ((inst.unlockedFaces ?? []).includes(faceIndex)) {
+			return { ok: false, error: `${face.name} is already unlocked.` };
+		}
+		const costStr = face.characteristics.manaCost;
+		if (!costStr) {
+			return { ok: false, error: `${face.name} has no mana cost to unlock.` };
+		}
+		const req = parseManaCost(costStr);
+		if (!canPayOrAutoTap(actor, req, state)) {
+			return {
+				ok: false,
+				error: `Insufficient mana to unlock ${face.name} (requires ${costStr}).`
+			};
+		}
+		return { ok: true };
+	});
+}
+
+/**
  * Whether `actorId` may cast `inst` now. Read-only: the whole check (cost, auto-tap simulation,
  * targets) shares one layer-cache validation (Phase 6d).
  */
@@ -11084,10 +11546,22 @@ export function checkSpellCastLegality(
 	fromZone: ZoneType = 'hand',
 	xValue = 0,
 	optionId?: string,
-	optionalCostCounts?: Record<string, number>
+	optionalCostCounts?: Record<string, number>,
+	faceIndex?: number,
+	fused?: boolean
 ): { ok: boolean; error?: string } {
 	return withStableLayerInputs(state, () =>
-		checkSpellCastLegalityInner(state, actorId, inst, fromZone, xValue, optionId, optionalCostCounts)
+		checkSpellCastLegalityInner(
+			state,
+			actorId,
+			inst,
+			fromZone,
+			xValue,
+			optionId,
+			optionalCostCounts,
+			faceIndex,
+			fused
+		)
 	);
 }
 
@@ -11098,7 +11572,9 @@ function checkSpellCastLegalityInner(
 	fromZone: ZoneType = 'hand',
 	xValue = 0,
 	optionId?: string,
-	optionalCostCounts?: Record<string, number>
+	optionalCostCounts?: Record<string, number>,
+	faceIndex?: number,
+	fused?: boolean
 ): { ok: boolean; error?: string } {
 	if (state.status !== 'active') {
 		return { ok: false, error: 'Game is not currently active.' };
@@ -11110,7 +11586,15 @@ function checkSpellCastLegalityInner(
 	if (!actor || actor.lost) {
 		return { ok: false, error: 'Player is not active in this game.' };
 	}
-	const resolved = resolveCastOptionForAction(state, actorId, inst, fromZone, optionId);
+	const resolved = resolveCastOptionForAction(
+		state,
+		actorId,
+		inst,
+		fromZone,
+		optionId,
+		faceIndex,
+		fused
+	);
 	if (!resolved.ok) {
 		return { ok: false, error: resolved.error };
 	}
@@ -11167,10 +11651,24 @@ function checkSpellCastOptionLegalityInner(
 		return { ok: false, error: globalCastCheck.error };
 	}
 
+	const castFaceOpts = {
+		zone: 'stack' as const,
+		faceIndex: option.faceIndex ?? 0,
+		fused: option.fused
+	};
+	const effectiveCard = effectiveCardForObject(inst);
+	const castChars = activeCharacteristics(effectiveCard, castFaceOpts);
+	const castAbilities = activeAbilityDefs(effectiveCard, castFaceOpts);
+	const hasFaceFlash =
+		castAbilities.some((a) => {
+			if (a.kind !== 'keyword') return false;
+			const { name: kwName } = a.keyword;
+			return kwName === 'flash';
+		}) || Boolean(inst.grantedKeywords?.some((k) => k.toLowerCase() === 'flash'));
 	const isInstantSpeed =
 		option.timing === 'instant_only' ||
-		inst.card.typeLine.includes('Instant') ||
-		hasKeyword(inst, 'Flash', state) ||
+		(castChars.types.includes('Instant') && !castChars.types.includes('Sorcery')) ||
+		hasFaceFlash ||
 		globalCastCheck.grantsFlash;
 	if (!isInstantSpeed) {
 		if (activePlayer?.playerId !== actorId) {
@@ -11194,7 +11692,7 @@ function checkSpellCastOptionLegalityInner(
 	}
 
 	// Check timing restrictions from the IR
-	const castRestrictions = spellCastRestrictions(inst.card);
+	const castRestrictions = spellCastRestrictions(inst.card, option.faceIndex ?? 0, option.fused ?? false);
 	if (castRestrictions.includes('duringYourTurn') && activePlayer?.playerId !== actorId) {
 		return {
 			ok: false,
@@ -11228,10 +11726,11 @@ function checkSpellCastOptionLegalityInner(
 	}
 
 	// Check mana payment (cards with no mana cost like Ancestral Vision / Sol Talisman cannot be cast normally from hand)
+	const castManaCost = resolveObjectFaces(effectiveCard, castFaceOpts).manaCost;
 	if (
 		option.baseCost.kind === 'printed' &&
-		inst.card.manaCost === '' &&
-		!inst.card.typeLine.includes('Land')
+		castManaCost === '' &&
+		!castChars.types.includes('Land')
 	) {
 		return {
 			ok: false,
@@ -11656,11 +12155,15 @@ function isTargetStillValid(
 		if (item.kind === 'spell' && (sourceCard || item.card)) {
 			targetInfo = getSpellTargetRequirement(
 				(sourceCard ?? item.card)!,
-				undefined,
+				{ faceIndex: item.faceIndex, fused: item.fused } as CastOption,
 				item.optionalCostCounts
 			);
 		} else if (item.kind === 'activated' && item.abilityId && (sourceCard || item.card)) {
-			const ab = getCardActivatedAbilities((sourceCard ?? item.card)!).find(
+			const faceOpts =
+				item.faceIndex !== undefined
+					? { zone: 'battlefield' as const, faceIndex: item.faceIndex }
+					: undefined;
+			const ab = getCardActivatedAbilities((sourceCard ?? item.card)!, [], undefined, faceOpts).find(
 				(a) => a.id === item.abilityId
 			);
 			targetInfo = ab?.targetInfo;

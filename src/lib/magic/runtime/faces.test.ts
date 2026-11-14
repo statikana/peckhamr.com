@@ -144,8 +144,8 @@ describe('Scryfall multi-face normalization & compiler support (B4 Phase 1)', ()
 		assert.equal(legacyFaces[1].name, 'Legacy Back');
 	});
 
-	it('bumps COMPILER_VERSION to 18 and tracks layout, colorIndicator, and faces in memo caching', () => {
-		assert.equal(COMPILER_VERSION, 18);
+	it('bumps COMPILER_VERSION to 19 and tracks layout, colorIndicator, and faces in memo caching', () => {
+		assert.equal(COMPILER_VERSION, 19);
 		clearCompileCache();
 		const card = synthCard({
 			id: 'memo_test',
@@ -188,11 +188,17 @@ describe('Scryfall multi-face normalization & compiler support (B4 Phase 1)', ()
 			true
 		);
 
-		// Mutate layout & faces on same object id to ensure memoMatches invalidates
+		// Mutate layout & faces on same object id to ensure memoMatches invalidates;
+		// modal_dfc compiles both faces natively without unsupported('multiface')
 		card.layout = 'modal_dfc';
 		const def2 = compileCard(card);
 		assert.notEqual(def2, def1);
 		assert.equal(def2.layout, 'modal_dfc');
+		assert.equal(def2.faces.length, 2);
+		assert.equal(
+			def2.faces.some((f) => f.abilities.some((a) => a.kind === 'unsupported' && a.reason === 'multiface')),
+			false
+		);
 	});
 });
 

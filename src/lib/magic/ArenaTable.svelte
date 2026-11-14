@@ -8,6 +8,7 @@
 		checkMandatoryAttackersSatisfied,
 		checkSpellCastLegality,
 		checkSuspendLegality,
+		checkUnlockRoomDoorLegality,
 		computeCombatDamageForecast,
 		getAttachedCardsOnBoard,
 		getCastOptions,
@@ -15,6 +16,7 @@
 		getCreatureToughness,
 		getEffectiveActivatedAbilities,
 		getHostCardOnBoard,
+		getLandPlayOptions,
 		getPlayerCommanderIdentity,
 		getSpellTargetRequirement,
 		getSuspendSpec,
@@ -22,12 +24,15 @@
 		inspectCardContinuousBreakdown,
 		validateTargetLegality
 	} from './engine';
+	import { compileCard } from './compiler/index';
 	import ManaSymbol from './ManaSymbol.svelte';
 	import ManaText from './ManaText.svelte';
 	import { parseManaCost } from './oracle';
 	import { matchesScryfallQuery } from './search';
 	import { cardSupportReport, displayAbilityText, unsupportedKindLabel } from './compiler/support';
+	import { effectiveCardForObject } from './scryfall';
 	import { effectivePromptChoice, effectivePromptPurpose } from './runtime/choices';
+	import { instanceFaceOptions, resolveObjectFaces, stackItemFaceOptions } from './runtime/faces';
 	import {
 		PHASE_LABELS,
 		PHASE_ORDER,
@@ -39,6 +44,7 @@
 		type GamePhase,
 		type GuidedOperation,
 		type GameState,
+		type LandPlayOption,
 		type MagicChatMessage,
 		type MagicUser,
 		type ManaColor,
@@ -88,6 +94,7 @@
 	// tapping a permanent to test a cost), which Svelte forbids on proxies while rendering.
 	let inspectedCard = $state.raw<ScryfallCard | null>(null);
 	let inspectedInstance = $state.raw<CardInstance | null>(null);
+	let inspectedFaceIndex = $state(0);
 	let hoveredCard = $state.raw<ScryfallCard | null>(null);
 	let hoveredInstance = $state.raw<CardInstance | null>(null);
 	let altHeld = $state(false);
@@ -99,6 +106,12 @@
 	const inspectBreakdown = $derived(
 		inspectedCard
 			? inspectCardContinuousBreakdown(inspectedInstance ?? inspectedCard, gameState)
+			: null
+	);
+	const inspectedFaceCount = $derived(inspectedCard?.faces?.length ?? 0);
+	const inspectedActiveFace = $derived(
+		inspectedCard?.faces && inspectedFaceCount > 1
+			? (inspectedCard.faces[inspectedFaceIndex] ?? inspectedCard.faces[0])
 			: null
 	);
 	// Plan section 2.7: abilities the engine doesn't automate (E2 resolves them manually).
@@ -209,6 +222,8 @@
 		fromZone?: 'hand' | 'command' | 'exile' | 'graveyard';
 		xValue: number;
 		optionId?: string;
+		faceIndex?: number;
+		fused?: boolean;
 		optionalCostCounts?: Record<string, number>;
 	} | null>(null);
 
@@ -231,7 +246,7 @@
 		fromZone: 'hand' | 'command' | 'exile' | 'graveyard';
 		options: CastOption[];
 		optionalCounts: Record<string, number>;
-		canPlayLand?: boolean;
+		landOptions?: LandPlayOption[];
 		handAbilities?: EffectiveActivatedAbility[];
 	} | null>(null);
 
@@ -938,11 +953,77 @@
 		}
 	}
 
+	function setInspectedCard(card: ScryfallCard, inst?: CardInstance | null, stackFaceIdx?: number) {
+		const nextInstId = inst?.instanceId ?? null;
+		const prevInstId = inspectedInstance?.instanceId ?? null;
+		const changed = card.id !== inspectedCard?.id || nextInstId !== prevInstId || stackFaceIdx !== undefined;
+		inspectedCard = card;
+		inspectedInstance = inst ?? null;
+		if (changed) {
+			if (stackFaceIdx !== undefined) {
+				inspectedFaceIndex = stackFaceIdx;
+			} else if (inst) {
+				const active = resolveObjectFaces(
+					effectiveCardForObject(inst),
+					instanceFaceOptions(inst)
+				).activeFaceIndices;
+				inspectedFaceIndex = active[0] ?? 0;
+			} else {
+				inspectedFaceIndex = 0;
+			}
+		}
+	}
+
+	function effectivePermanentDisplay(perm: CardInstance) {
+		const card = effectiveCardForObject(perm);
+		const view = resolveObjectFaces(card, instanceFaceOptions(perm, 'battlefield'));
+		return {
+			name: view.name || card.name,
+			imageUrl: view.imageUrl || card.imageUrl,
+			artCropUrl: view.artCropUrl || card.artCropUrl || view.imageUrl || card.imageUrl,
+			isCreature: view.types.includes('Creature')
+		};
+	}
+
+	function stackItemDisplay(item: (typeof gameState.stack)[0]) {
+		const view = resolveObjectFaces(item.card, stackItemFaceOptions(item));
+		return {
+			name: view.name || item.title,
+			imageUrl: view.imageUrl || item.card.imageUrl,
+			artCropUrl: view.artCropUrl || item.card.artCropUrl || view.imageUrl || item.card.imageUrl
+		};
+	}
+
+	function getPermanentUnlockableFaces(perm: CardInstance) {
+		if (!me) return [];
+		const effCard = effectiveCardForObject(perm);
+		const compiled = compileCard(effCard);
+		if (compiled.faces.length < 2) return [];
+		const out: Array<{
+			faceIndex: number;
+			name: string;
+			manaCost: string;
+			check: { ok: boolean; error?: string };
+		}> = [];
+		for (let fi = 0; fi < compiled.faces.length; fi++) {
+			const f = compiled.faces[fi];
+			const isLockedRoom =
+				f.characteristics.subtypes.includes('Room') && !(perm.unlockedFaces ?? []).includes(fi);
+			if (!isLockedRoom) continue;
+			out.push({
+				faceIndex: fi,
+				name: f.name,
+				manaCost: f.characteristics.manaCost || '',
+				check: checkUnlockRoomDoorLegality(gameState, me.playerId, perm, fi)
+			});
+		}
+		return out;
+	}
+
 	function hoverCard(card: ScryfallCard, inst?: CardInstance) {
 		hoveredCard = card;
 		hoveredInstance = inst ?? null;
-		inspectedCard = card;
-		inspectedInstance = inst ?? null;
+		setInspectedCard(card, inst);
 	}
 
 	function leaveCard(card: ScryfallCard) {
@@ -993,14 +1074,11 @@
 		if (!me || !hasPriority || gameState.status !== 'active' || myPrompt || pendingTargetAction) {
 			return false;
 		}
-		if (inst.card.typeLine.includes('Land') && !inst.card.typeLine.includes('Creature')) {
-			if (
-				(fromZone === 'hand' || fromZone === 'exile') &&
-				checkLandPlayLegality(gameState, me.playerId, inst, fromZone).ok
-			) {
-				return true;
-			}
-			return fromZone === 'hand' && getHandActivatedAbilities(inst).length > 0;
+		if (
+			(fromZone === 'hand' || fromZone === 'exile') &&
+			getLandPlayOptions(gameState, me.playerId, inst, fromZone).length > 0
+		) {
+			return true;
 		}
 		if (getCastOptions(gameState, me.playerId, inst, fromZone).length > 0) {
 			return true;
@@ -1085,6 +1163,9 @@
 			if (checkAbilityActivationLegality(gameState, me.playerId, perm, ab).ok) {
 				return true;
 			}
+		}
+		if (getPermanentUnlockableFaces(perm).some((d) => d.check.ok)) {
+			return true;
 		}
 
 		return false;
@@ -1229,6 +1310,8 @@
 				fromZone: pending.fromZone,
 				xValue: pending.xValue,
 				...(pending.optionId ? { optionId: pending.optionId } : {}),
+				...(pending.faceIndex !== undefined ? { faceIndex: pending.faceIndex } : {}),
+				...(pending.fused ? { fused: true } : {}),
 				...(pending.optionalCostCounts && Object.keys(pending.optionalCostCounts).length > 0
 					? { optionalCostCounts: pending.optionalCostCounts }
 					: {}),
@@ -1251,15 +1334,15 @@
 		const zones = new Set<'front_row' | 'lands_area' | 'stack'>();
 		if (!isCardPlayableNow(inst, fromZone)) return zones;
 
+		const canPlayLandHere =
+			me &&
+			(fromZone === 'hand' || fromZone === 'exile') &&
+			getLandPlayOptions(gameState, me.playerId, inst, fromZone).length > 0;
+		if (canPlayLandHere) {
+			zones.add('lands_area');
+		}
 		const t = inst.card.typeLine;
-		if (t.includes('Land') && !t.includes('Creature')) {
-			if (
-				me &&
-				(fromZone === 'hand' || fromZone === 'exile') &&
-				checkLandPlayLegality(gameState, me.playerId, inst, fromZone).ok
-			) {
-				zones.add('lands_area');
-			}
+		if (t.includes('Land') && !t.includes('Creature') && (!inst.card.faces || inst.card.faces.length <= 1)) {
 			if (fromZone === 'hand' && getHandActivatedAbilities(inst).length > 0) {
 				zones.add('stack');
 			}
@@ -1357,11 +1440,21 @@
 		);
 		if (
 			!targetOpt ||
-			!checkSpellCastLegality(gameState, me.playerId, inst, fromZone, 0, targetOpt.id).ok
+			!checkSpellCastLegality(
+				gameState,
+				me.playerId,
+				inst,
+				fromZone,
+				0,
+				targetOpt.id,
+				undefined,
+				targetOpt.faceIndex,
+				targetOpt.fused
+			).ok
 		) {
 			return;
 		}
-		const targetInfo = getSpellTargetRequirement(inst.card);
+		const targetInfo = getSpellTargetRequirement(inst.card, targetOpt);
 		if (!targetInfo.requiresTarget) return;
 
 		const isValidTarget = validateTargetLegality(
@@ -1386,6 +1479,8 @@
 				fromZone,
 				xValue: 0,
 				optionId: targetOpt.id,
+				...(targetOpt.faceIndex !== undefined ? { faceIndex: targetOpt.faceIndex } : {}),
+				...(targetOpt.fused ? { fused: true } : {}),
 				targets: [tRef]
 			});
 		} else {
@@ -1432,57 +1527,51 @@
 		inst: CardInstance,
 		fromZone: 'hand' | 'command' | 'exile' | 'graveyard'
 	) {
-		inspectedCard = inst.card;
+		setInspectedCard(inst.card, inst);
 		if (!isCardPlayableNow(inst, fromZone)) return;
 
 		const handAbs = fromZone === 'hand' ? getHandActivatedAbilities(inst) : [];
-
-		if (
-			inst.card.typeLine.includes('Land') &&
-			!inst.card.typeLine.includes('Creature') &&
-			(fromZone === 'hand' || fromZone === 'exile')
-		) {
-			const canPlayLand = checkLandPlayLegality(gameState, me!.playerId, inst, fromZone).ok;
-			if (canPlayLand && handAbs.length === 0) {
-				await onGameAction({ type: 'play_land', instanceId: inst.instanceId, fromZone });
-				return;
-			}
-			if (!canPlayLand && handAbs.length === 1) {
-				await triggerActivatedAbility(inst, handAbs[0]);
-				return;
-			}
-			castOptionsModal = {
-				inst,
-				fromZone,
-				options: [],
-				optionalCounts: {},
-				canPlayLand,
-				handAbilities: handAbs
-			};
-			return;
-		}
-
+		const landOptions =
+			fromZone === 'hand' || fromZone === 'exile'
+				? getLandPlayOptions(gameState, me!.playerId, inst, fromZone)
+				: [];
 		const options = getCastOptions(gameState, me!.playerId, inst, fromZone);
-		if (options.length === 0 && handAbs.length === 0) {
+
+		if (landOptions.length === 0 && options.length === 0 && handAbs.length === 0) {
 			if (fromZone === 'hand' && checkSuspendLegality(gameState, me!.playerId, inst).ok) {
 				await onGameAction({ type: 'suspend_card', instanceId: inst.instanceId });
 			}
 			return;
 		}
-		if (options.length === 0 && handAbs.length === 1) {
-			await triggerActivatedAbility(inst, handAbs[0]);
-			return;
-		}
+
+		const totalChoices = landOptions.length + options.length + handAbs.length;
 		const hasOptionalCosts = options.some((o) => (o.optionalAdditionalCosts?.length ?? 0) > 0);
-		if (options.length === 1 && !hasOptionalCosts && handAbs.length === 0) {
-			await proceedCastWithOption(inst, fromZone, options[0]);
-			return;
+		if (totalChoices === 1) {
+			if (landOptions.length === 1 && (fromZone === 'hand' || fromZone === 'exile')) {
+				await onGameAction({
+					type: 'play_land',
+					instanceId: inst.instanceId,
+					fromZone,
+					faceIndex: landOptions[0].faceIndex
+				});
+				return;
+			}
+			if (handAbs.length === 1) {
+				await triggerActivatedAbility(inst, handAbs[0]);
+				return;
+			}
+			if (options.length === 1 && !hasOptionalCosts) {
+				await proceedCastWithOption(inst, fromZone, options[0]);
+				return;
+			}
 		}
+
 		castOptionsModal = {
 			inst,
 			fromZone,
 			options,
 			optionalCounts: {},
+			...(landOptions.length > 0 ? { landOptions } : {}),
 			...(handAbs.length > 0 ? { handAbilities: handAbs } : {})
 		};
 	}
@@ -1531,6 +1620,8 @@
 				fromZone,
 				xValue: xVal,
 				...(option ? { optionId: option.id } : {}),
+				...(option?.faceIndex !== undefined ? { faceIndex: option.faceIndex } : {}),
+				...(option?.fused ? { fused: true } : {}),
 				...(optionalCostCounts && Object.keys(optionalCostCounts).length > 0
 					? { optionalCostCounts }
 					: {})
@@ -1545,6 +1636,8 @@
 			fromZone,
 			xValue: xVal,
 			...(option ? { optionId: option.id } : {}),
+			...(option?.faceIndex !== undefined ? { faceIndex: option.faceIndex } : {}),
+			...(option?.fused ? { fused: true } : {}),
 			...(optionalCostCounts && Object.keys(optionalCostCounts).length > 0
 				? { optionalCostCounts }
 				: {}),
@@ -1553,8 +1646,7 @@
 	}
 
 	async function handlePermanentClick(perm: CardInstance, owner: PlayerGameState) {
-		inspectedCard = perm.card;
-		inspectedInstance = perm;
+		setInspectedCard(perm.card, perm);
 
 		if (pendingTargetAction) {
 			if (!isPermanentActableNow(perm, owner)) {
@@ -1649,9 +1741,10 @@
 		if (owner.playerId === me.playerId) {
 			const cmdId = getPlayerCommanderIdentity(me);
 			const abilities = getEffectiveActivatedAbilities(gameState, me, perm, cmdId);
-			if (abilities.length === 1 && abilities[0].isManaAbility) {
+			const unlockables = getPermanentUnlockableFaces(perm);
+			if (abilities.length === 1 && abilities[0].isManaAbility && unlockables.length === 0) {
 				await onGameAction({ type: 'tap_mana', instanceId: perm.instanceId });
-			} else if (abilities.length > 0) {
+			} else if (abilities.length > 0 || unlockables.length > 0) {
 				selectedPermanentForAbility = perm;
 			}
 		}
@@ -1687,7 +1780,7 @@
 	}
 
 	async function handleStackItemClick(item: (typeof gameState.stack)[0]) {
-		inspectedCard = item.card;
+		setInspectedCard(item.card, null, item.faceIndex ?? 0);
 		if (pendingTargetAction) {
 			if (!isStackItemTargetableNow(item)) return;
 			const tRef: TargetRef = {
@@ -2585,6 +2678,7 @@
 
 							{#each opp.battlefield as perm (perm.instanceId)}
 								{@const actable = isPermanentActableNow(perm, opp)}
+								{@const permDisp = effectivePermanentDisplay(perm)}
 								{@const atkInfo = combatForecast.attackerSummaries[perm.instanceId]}
 								{@const blkInfo = combatForecast.blockerSummaries[perm.instanceId]}
 								{@const pwInfo = combatForecast.planeswalkerIncoming[perm.instanceId]}
@@ -2615,7 +2709,7 @@
 											label: perm.card.name
 										})}
 								>
-									<img src={perm.card.artCropUrl} alt={perm.card.name} loading="lazy" />
+									<img src={permDisp.artCropUrl} alt={permDisp.name} loading="lazy" />
 									{#if atkInfo}
 										<span class="combat-mini-banner atk" class:blocked={atkInfo.isBlocked}>
 											⚔️ ATK{#if atkInfo.isBlocked} (BLK){/if}{#if atkInfo.attackerDies} 💀{/if}
@@ -2642,11 +2736,11 @@
 											🗡️×{attachedHere.length}
 										</span>
 									{/if}
-									<span class="mc-name">{perm.card.name}</span>
+									<span class="mc-name">{permDisp.name}</span>
 									{#if perm.counters['+1/+1'] > 0}
 										<span class="counter-badge">+{perm.counters['+1/+1']}</span>
 									{/if}
-									{#if perm.card.typeLine.includes('Creature')}
+									{#if permDisp.isCreature}
 										<span class="pt-badge" class:damaged={perm.damageMarked > 0}>
 											{getCreaturePower(perm, gameState)}/{getCreatureToughness(perm, gameState) - perm.damageMarked}
 										</span>
@@ -2710,6 +2804,7 @@
 							</div>
 							{#each myCreaturesAndWalkers as perm (perm.instanceId)}
 								{@const actable = isPermanentActableNow(perm, me)}
+								{@const permDisp = effectivePermanentDisplay(perm)}
 								{@const atkInfo = combatForecast.attackerSummaries[perm.instanceId]}
 								{@const blkInfo = combatForecast.blockerSummaries[perm.instanceId]}
 								{@const pwInfo = combatForecast.planeswalkerIncoming[perm.instanceId]}
@@ -2744,7 +2839,7 @@
 											label: perm.card.name
 										})}
 								>
-									<img src={perm.card.artCropUrl} alt={perm.card.name} loading="lazy" />
+									<img src={permDisp.artCropUrl} alt={permDisp.name} loading="lazy" />
 									{#if atkInfo}
 										<div class="combat-card-banner atk-banner" class:blocked={atkInfo.isBlocked}>
 											<span>⚔️ ATK → {(atkInfo.defenderPlaneswalkerName || atkInfo.defenderName).split(',')[0]}</span>
@@ -2781,7 +2876,7 @@
 										</div>
 									{/if}
 									<div class="bc-overlay">
-										<span class="bc-name">{perm.card.name}</span>
+										<span class="bc-name">{permDisp.name}</span>
 										<div class="bc-badges">
 											{#if perm.phasedOut}<span class="badge purple">PHASED</span>{/if}
 											{#if perm.isCommander}<span class="badge gold">CMD</span>{/if}
@@ -2884,6 +2979,7 @@
 								</div>
 								{#each myBackRow as perm (perm.instanceId)}
 									{@const actable = isPermanentActableNow(perm, me)}
+									{@const permDisp = effectivePermanentDisplay(perm)}
 									{@const hostCard = getHostCardOnBoard(gameState, perm.attachedToId)}
 									{@const attachedHere = getAttachedCardsOnBoard(gameState, perm.instanceId)}
 									<button
@@ -2910,7 +3006,7 @@
 												label: perm.card.name
 											})}
 									>
-										<img src={perm.card.artCropUrl} alt={perm.card.name} loading="lazy" />
+										<img src={permDisp.artCropUrl} alt={permDisp.name} loading="lazy" />
 										{#if hostCard}
 											<div class="attached-items-strip on-attachment" title="Attached to {hostCard.card.name}">
 												<span class="attached-pill host-ref">
@@ -2927,7 +3023,7 @@
 											</div>
 										{/if}
 										<div class="bc-overlay">
-											<span class="bc-name">{perm.card.name}</span>
+											<span class="bc-name">{permDisp.name}</span>
 											{#if perm.tapped}
 												<span class="tapped-icon"><ManaSymbol symbol="T" size={14} /></span>
 											{/if}
@@ -3253,16 +3349,33 @@
 			<!-- Clicked Card Info Panel -->
 			<div class="card-zoom-box" style="height: {inspectorHeight}px;">
 				{#if inspectedCard}
+					{@const zoomName = inspectedActiveFace?.name || inspectedCard.name}
+					{@const zoomImg = inspectedActiveFace?.imageUrl || inspectedCard.imageUrl}
+					{@const zoomMana = inspectedActiveFace ? inspectedActiveFace.manaCost : inspectedCard.manaCost}
+					{@const zoomType = inspectedActiveFace ? inspectedActiveFace.typeLine : inspectedCard.typeLine}
+					{@const zoomOracle = inspectedActiveFace ? inspectedActiveFace.oracleText : inspectedCard.oracleText}
+					{@const zoomPower = inspectedActiveFace ? inspectedActiveFace.power : inspectedCard.power}
+					{@const zoomTough = inspectedActiveFace ? inspectedActiveFace.toughness : inspectedCard.toughness}
 					<div class="zoom-inner">
-						<img src={inspectedCard.imageUrl} alt={inspectedCard.name} class="zoom-img" />
+						<img src={zoomImg} alt={zoomName} class="zoom-img" />
 						<div class="zoom-meta">
 							<div class="zoom-title">
-								<strong>{inspectedCard.name}</strong>
-								<ManaText text={inspectedCard.manaCost} size={16} />
+								<strong>{zoomName}</strong>
+								<ManaText text={zoomMana} size={16} />
 							</div>
+							{#if inspectedFaceCount > 1}
+								<button
+									type="button"
+									class="zoom-flip-btn"
+									data-testid="flip-face-btn"
+									onclick={() => (inspectedFaceIndex = (inspectedFaceIndex + 1) % inspectedFaceCount)}
+								>
+									Flip / View Other Face ({inspectedFaceIndex + 1}/{inspectedFaceCount})
+								</button>
+							{/if}
 							<div class="zoom-type">
-								{inspectBreakdown ? inspectBreakdown.effectiveTypeLine : inspectedCard.typeLine}
-								{#if inspectBreakdown?.typeModified}
+								{inspectBreakdown && (!inspectedActiveFace || inspectedFaceIndex === 0) ? inspectBreakdown.effectiveTypeLine : zoomType}
+								{#if inspectBreakdown?.typeModified && (!inspectedActiveFace || inspectedFaceIndex === 0)}
 									<span class="type-mod-note">
 										(was {inspectBreakdown.baseTypeLine} — {inspectBreakdown.typeModifiedBy.join(', ')})
 									</span>
@@ -3293,7 +3406,7 @@
 								</div>
 							{/if}
 							<div class="zoom-oracle">
-								<ManaText text={inspectedCard.oracleText} size={15} />
+								<ManaText text={zoomOracle} size={15} />
 							</div>
 							{#if inspectUnsupported.length > 0}
 								<div class="zoom-unsupported">
@@ -3318,12 +3431,12 @@
 									{/each}
 								</div>
 							{/if}
-							{#if inspectBreakdown && inspectBreakdown.effectivePower !== null && inspectBreakdown.effectiveToughness !== null}
+							{#if inspectBreakdown && inspectBreakdown.effectivePower !== null && inspectBreakdown.effectiveToughness !== null && (!inspectedActiveFace || zoomPower !== undefined)}
 								<div class="zoom-pt">
 									{inspectBreakdown.effectivePower}/{inspectBreakdown.effectiveToughness}
 								</div>
-							{:else if inspectedCard.power !== undefined}
-								<div class="zoom-pt">{inspectedCard.power}/{inspectedCard.toughness}</div>
+							{:else if zoomPower !== undefined}
+								<div class="zoom-pt">{zoomPower}/{zoomTough}</div>
 							{/if}
 						</div>
 					</div>
@@ -3369,6 +3482,7 @@
 					<div class="stack-list">
 						{#each [...gameState.stack].reverse() as item, idx (item.id)}
 							{@const targetable = isStackItemTargetableNow(item)}
+							{@const stkDisp = stackItemDisplay(item)}
 							<button
 								type="button"
 								class="stack-card"
@@ -3388,7 +3502,7 @@
 										label: item.title
 									})}
 							>
-								<img src={item.card.artCropUrl} alt={item.title} />
+								<img src={stkDisp.artCropUrl} alt={item.title} />
 								<div class="stk-info">
 									<span class="stk-title">#{gameState.stack.length - idx}: {item.title}</span>
 									{#if item.spellMods?.castSummarySuffix}
@@ -3491,13 +3605,34 @@
 			selectedPermanentForAbility,
 			getPlayerCommanderIdentity(me)
 		)}
+		{@const unlockables = getPermanentUnlockableFaces(selectedPermanentForAbility)}
+		{@const permDisp = effectivePermanentDisplay(selectedPermanentForAbility)}
 		<div class="modal-backdrop">
 			<div class="arena-modal">
-				<h3>{selectedPermanentForAbility.card.name} — Abilities</h3>
+				<h3>{permDisp.name} — Abilities</h3>
 				<div class="modal-desc">
 					<ManaText text={selectedPermanentForAbility.card.oracleText} size={15} />
 				</div>
 				<div class="ability-list">
+					{#each unlockables as door (door.faceIndex)}
+						<button
+							type="button"
+							class="ability-choice-btn"
+							disabled={!door.check.ok}
+							title={door.check.error || `Unlock ${door.name}`}
+							onclick={async () => {
+								const perm = selectedPermanentForAbility!;
+								selectedPermanentForAbility = null;
+								await onGameAction({
+									type: 'unlock_room_door',
+									instanceId: perm.instanceId,
+									faceIndex: door.faceIndex
+								});
+							}}
+						>
+							Unlock Door: {door.name} {#if door.manaCost}(<ManaText text={door.manaCost} size={14} />){/if}
+						</button>
+					{/each}
 					{#each abilities as ab (ab.id)}
 						{@const abCheck = checkAbilityActivationLegality(
 							gameState,
@@ -3543,12 +3678,27 @@
 		<div class="modal-backdrop">
 			<div class="arena-modal">
 				<h3>
-					{castOptionsModal.handAbilities?.length || castOptionsModal.canPlayLand
+					{castOptionsModal.handAbilities?.length || castOptionsModal.landOptions?.length
 						? 'Choose Action'
 						: 'Choose How to Cast'} — {castOptionsModal.inst.card.name}
 				</h3>
 				<div class="modal-desc">
-					<ManaText text={castOptionsModal.inst.card.oracleText} size={15} />
+					{#if castOptionsModal.inst.card.faces && castOptionsModal.inst.card.faces.length >= 2}
+						<div style="display:flex;flex-direction:column;gap:0.45rem;">
+							{#each castOptionsModal.inst.card.faces as face, fi (fi)}
+								<div style="border-left:2px solid rgba(255,255,255,0.2);padding-left:0.5rem;">
+									<div>
+										<strong>{face.name}</strong>
+										{#if face.manaCost}<ManaText text={face.manaCost} size={14} />{/if}
+									</div>
+									<div style="font-size:0.8rem;opacity:0.8;">{face.typeLine}</div>
+									<ManaText text={face.oracleText} size={14} />
+								</div>
+							{/each}
+						</div>
+					{:else}
+						<ManaText text={castOptionsModal.inst.card.oracleText} size={15} />
+					{/if}
 				</div>
 				{#if modalOptionalCosts.length > 0}
 					<div style="display:flex;flex-direction:column;gap:0.5rem;margin-bottom:0.85rem;">
@@ -3622,24 +3772,27 @@
 					</div>
 				{/if}
 				<div class="modal-actions">
-					{#if castOptionsModal.canPlayLand}
-						<button
-							type="button"
-							class="arena-main-btn can-act"
-							onclick={async () => {
-								const item = castOptionsModal!;
-								castOptionsModal = null;
-								if (item.fromZone === 'hand' || item.fromZone === 'exile') {
-									await onGameAction({
-										type: 'play_land',
-										instanceId: item.inst.instanceId,
-										fromZone: item.fromZone
-									});
-								}
-							}}
-						>
-							Play Land
-						</button>
+					{#if castOptionsModal.landOptions && castOptionsModal.landOptions.length > 0}
+						{#each castOptionsModal.landOptions as landOpt (landOpt.faceIndex)}
+							<button
+								type="button"
+								class="arena-main-btn can-act"
+								onclick={async () => {
+									const item = castOptionsModal!;
+									castOptionsModal = null;
+									if (item.fromZone === 'hand' || item.fromZone === 'exile') {
+										await onGameAction({
+											type: 'play_land',
+											instanceId: item.inst.instanceId,
+											fromZone: item.fromZone,
+											faceIndex: landOpt.faceIndex
+										});
+									}
+								}}
+							>
+								Play Land: {landOpt.label}
+							</button>
+						{/each}
 					{/if}
 					{#each castOptionsModal.options as opt (opt.id)}
 						{@const optCounts = Object.fromEntries(
@@ -3662,7 +3815,9 @@
 										castOptionsModal.fromZone,
 										0,
 										opt.id,
-										optCounts
+										optCounts,
+										opt.faceIndex,
+										opt.fused
 									).ok ||
 									checkSpellCastLegality(
 										gameState,
@@ -3671,7 +3826,9 @@
 										castOptionsModal.fromZone,
 										1,
 										opt.id,
-										optCounts
+										optCounts,
+										opt.faceIndex,
+										opt.fused
 									).ok
 								: checkSpellCastLegality(
 										gameState,
@@ -3680,7 +3837,9 @@
 										castOptionsModal.fromZone,
 										0,
 										opt.id,
-										optCounts
+										optCounts,
+										opt.faceIndex,
+										opt.fused
 									).ok
 							: false}
 						<button
@@ -6456,6 +6615,17 @@
 		color: #ffd866;
 		font-weight: 600;
 		margin-right: 0.25rem;
+	}
+	.zoom-flip-btn {
+		align-self: flex-start;
+		margin: 0.1rem 0 0.25rem;
+		font-size: 0.65rem;
+		padding: 0.15rem 0.45rem;
+		border-radius: 4px;
+		border: 1px solid rgba(56, 189, 248, 0.55);
+		background: rgba(56, 189, 248, 0.12);
+		color: #bae6fd;
+		cursor: pointer;
 	}
 	.zoom-resolve-btn {
 		display: block;

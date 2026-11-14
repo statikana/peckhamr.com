@@ -4309,3 +4309,174 @@ describe('Keywords: Cycling & Typecycling (CR 702.29)', () => {
 	});
 });
 
+describe('Fuse split casting (CR 702.102)', () => {
+	function makeFuseSplitCard(name = 'Spark // Surge', leftName = 'Spark', rightName = 'Surge'): ScryfallCard {
+		return {
+			...syntheticCard({
+				name,
+				manaCost: '{1}{R} // {2}{U}',
+				cmc: 5,
+				typeLine: 'Instant // Sorcery',
+				colors: ['R', 'U'],
+				keywords: ['Fuse'],
+				oracleText: `${leftName} deals 2 damage to target creature.\n---\nDraw two cards.\nFuse (You may cast one or both halves of this card from your hand.)`
+			}),
+			layout: 'split',
+			faces: [
+				{
+					name: leftName,
+					manaCost: '{1}{R}',
+					cmc: 2,
+					typeLine: 'Instant',
+					oracleText: `${leftName} deals 2 damage to target creature.`,
+					colors: ['R'],
+					keywords: ['Fuse'],
+					imageUrl: ''
+				},
+				{
+					name: rightName,
+					manaCost: '{2}{U}',
+					cmc: 3,
+					typeLine: 'Sorcery',
+					oracleText: 'Draw two cards.\nFuse (You may cast one or both halves of this card from your hand.)',
+					colors: ['U'],
+					keywords: ['Fuse'],
+					imageUrl: ''
+				}
+			]
+		};
+	}
+
+	it('casts fused split spell from hand, shifts targets across halves, resolves left then right, and passes rename invariance', () => {
+		for (const [full, left, right] of [
+			['Spark // Surge', 'Spark', 'Surge'],
+			['Alpha // Omega', 'Alpha', 'Omega']
+		]) {
+			const { state, p1, p2 } = makeGame();
+			const fuseCard: ScryfallCard = {
+				...syntheticCard({
+					name: full,
+					manaCost: '{1}{R} // {U}',
+					cmc: 4,
+					typeLine: 'Sorcery // Instant',
+					colors: ['R', 'U'],
+					keywords: ['Fuse'],
+					oracleText: 'Destroy target creature.\n---\nTarget player draws a card.\nFuse'
+				}),
+				layout: 'split',
+				faces: [
+					{
+						name: left,
+						manaCost: '{1}{R}',
+						cmc: 2,
+						typeLine: 'Sorcery',
+						oracleText: 'Destroy target creature.',
+						colors: ['R'],
+						keywords: ['Fuse'],
+						imageUrl: ''
+					},
+					{
+						name: right,
+						manaCost: '{U}',
+						cmc: 1,
+						typeLine: 'Instant',
+						oracleText: 'Target player draws a card.\nFuse',
+						colors: ['U'],
+						keywords: ['Fuse'],
+						imageUrl: ''
+					}
+				]
+			};
+			const inst = putInZone(state, p1, fuseCard, 'hand');
+			const targetBear = putInZone(
+				state,
+				p2,
+				syntheticCard({
+					name: 'Target Bear',
+					typeLine: 'Creature — Bear',
+					manaCost: '{1}{G}',
+					cmc: 2,
+					power: '2',
+					toughness: '2'
+				}),
+				'battlefield'
+			);
+			p1.library = [];
+			const libCard = putInZone(state, p1, staple('Island'), 'library');
+
+			p1.manaPool = { W: 0, U: 1, B: 0, R: 1, G: 0, C: 1 };
+			const opts = getCastOptions(state, p1.playerId, inst, 'hand');
+			const fuseOpt = opts.find((o) => o.fused === true);
+			assert.ok(fuseOpt, `expected fused cast option for ${full}`);
+			assert.equal(fuseOpt.id, 'fuse');
+			assert.equal(fuseOpt.costDisplay, '{1}{R}{U}');
+
+			const res = applyGameAction(state, p1.playerId, {
+				type: 'cast_spell',
+				instanceId: inst.instanceId,
+				fromZone: 'hand',
+				optionId: fuseOpt.id,
+				fused: true,
+				faceIndex: 0,
+				targets: [
+					{ kind: 'permanent', id: targetBear.instanceId, label: 'Target Bear' },
+					{ kind: 'player', id: p1.playerId, label: p1.username }
+				]
+			});
+			assert.equal(res.ok, true, res.error ?? 'expected ok');
+			assert.equal(state.stack.length, 1);
+			assert.equal(state.stack[0].fused, true);
+
+			resolveAllStack(state);
+			assert.equal(state.stack.length, 0);
+			assert.equal(p2.battlefield.some((c) => c.instanceId === targetBear.instanceId), false);
+			assert.equal(p2.graveyard.some((c) => c.instanceId === targetBear.instanceId), true);
+			assert.equal(p1.hand.some((c) => c.instanceId === libCard.instanceId), true);
+		}
+	});
+
+	it('rejects fused cast from exile or graveyard (CR 702.102a hand-only) and enforces sorcery timing on fused Sorcery // Instant', () => {
+		const { state, p1, p2 } = makeGame();
+		const fuseCard = makeFuseSplitCard();
+		const targetBear = putInZone(
+			state,
+			p2,
+			syntheticCard({
+				name: 'Dummy Creature',
+				typeLine: 'Creature — Elf',
+				manaCost: '{G}',
+				cmc: 1,
+				power: '1',
+				toughness: '1'
+			}),
+			'battlefield'
+		);
+
+		// In exile with cast permission: may cast a single half, must NOT allow fuse
+		const exiledInst = putInZone(state, p1, fuseCard, 'exile', {
+			playableFromExileBy: { playerId: p1.playerId, sourceName: 'Test Exile', spendManaAsAnyColor: false }
+		});
+		const exileOpts = getCastOptions(state, p1.playerId, exiledInst, 'exile');
+		assert.equal(exileOpts.some((o) => o.fused === true), false);
+
+		p1.manaPool = { W: 0, U: 2, B: 0, R: 2, G: 0, C: 4 };
+		const fusedFromExile = applyGameAction(state, p1.playerId, {
+			type: 'cast_spell',
+			instanceId: exiledInst.instanceId,
+			fromZone: 'exile',
+			fused: true,
+			targets: [{ kind: 'permanent', id: targetBear.instanceId, label: 'Dummy Creature' }]
+		});
+		assert.equal(fusedFromExile.ok, false);
+
+		// From hand on opponent's turn: Instant half legal, fused Sorcery // Instant rejected
+		const handInst = putInZone(state, p1, fuseCard, 'hand');
+		p1.manaPool = { W: 0, U: 2, B: 0, R: 2, G: 0, C: 4 };
+		state.activePlayerIndex = 1;
+		state.priorityPlayerIndex = 0;
+		const offTurnOpts = getCastOptions(state, p1.playerId, handInst, 'hand');
+		assert.equal(offTurnOpts.some((o) => !o.fused && o.faceIndex === 0), true);
+		assert.equal(offTurnOpts.some((o) => o.fused === true), false);
+	});
+});
+

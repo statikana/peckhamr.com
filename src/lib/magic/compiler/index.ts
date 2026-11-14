@@ -7,7 +7,20 @@
  * up here.
  */
 import type { CardLayout, ManaColor, ScryfallCard, StackItem } from '../types.ts';
-import type { AbilityDef, Amount, CardDefinition, EffectStep, KeywordAbility, ModalDef, PlayerRef, Ref, Selector, TargetSpec } from '../ir.ts';
+import type {
+	AbilityDef,
+	Amount,
+	CardDefinition,
+	Condition,
+	EffectStep,
+	FaceDefinition,
+	KeywordAbility,
+	ModalDef,
+	PlayerRef,
+	Ref,
+	Selector,
+	TargetSpec
+} from '../ir.ts';
 import { getKeywordSpec } from '../keywords.ts';
 import { compileFaces } from './card.ts';
 import { parseAbilityEffectText } from './effects.ts';
@@ -15,7 +28,7 @@ import { hashText } from './normalize.ts';
 import { runtimeTriggers } from './triggers.ts';
 
 /** Bump whenever the IR produced for the same text could change. */
-export const COMPILER_VERSION = 18;
+export const COMPILER_VERSION = 19;
 
 const CACHE = new Map<string, CardDefinition>();
 
@@ -223,10 +236,13 @@ export function cardAbilities(card: ScryfallCard, faceIndex = 0): AbilityDef[] {
 	return compileCard(card).faces[faceIndex]?.abilities ?? [];
 }
 
-/** An ability of the card by its id (`act_3`, `loyalty_1`, `equip_2`, `mana_tap`; see ActivatedAbility.id). */
+/** An ability of the card by its id (`act_3`, `loyalty_1`, `equip_2`, `mana_tap`, or `f<idx>:<id>`). */
 export function abilityById(card: ScryfallCard, id: string, faceIndex = 0): AbilityDef | undefined {
-	return cardAbilities(card, faceIndex).find(
-		(a) => (a.kind === 'activated' || a.kind === 'unsupported' || a.kind === 'keyword') && a.id === id
+	const prefixed = /^f(\d+):(.+)$/.exec(id);
+	const resolvedFace = prefixed ? Number(prefixed[1]) : faceIndex;
+	const rawId = prefixed ? prefixed[2] : id;
+	return cardAbilities(card, resolvedFace).find(
+		(a) => (a.kind === 'activated' || a.kind === 'unsupported' || a.kind === 'keyword') && a.id === rawId
 	);
 }
 
@@ -234,28 +250,41 @@ export function abilityById(card: ScryfallCard, id: string, faceIndex = 0): Abil
 export function grantedAbilityById(
 	card: ScryfallCard,
 	localId: string,
-	faceIndex = 0
+	faceIndex?: number
 ): AbilityDef | undefined {
-	for (const a of cardAbilities(card, faceIndex)) {
-		if (
-			a.kind === 'static' &&
-			a.static.k === 'continuous' &&
-			a.static.mod.k === 'grantAbility' &&
-			a.static.mod.ability.kind === 'activated' &&
-			a.static.mod.ability.id === localId
-		) {
-			return a.static.mod.ability;
+	const faces = faceIndex !== undefined ? [compileCard(card).faces[faceIndex]].filter(Boolean) : compileCard(card).faces;
+	for (const face of faces) {
+		for (const a of face.abilities) {
+			if (
+				a.kind === 'static' &&
+				a.static.k === 'continuous' &&
+				a.static.mod.k === 'grantAbility' &&
+				a.static.mod.ability.kind === 'activated' &&
+				a.static.mod.ability.id === localId
+			) {
+				return a.static.mod.ability;
+			}
 		}
 	}
 	return undefined;
 }
 
-/** The compiled spell ability of an instant or sorcery, or null when it isn't automated. */
-export function compileSpellEffects(card: ScryfallCard, faceIndex = 0): CompiledEffect | null {
-	if (card.backFace || card.oracleText.includes('\n//\n') || (card.faces && card.faces.length > 1)) {
-		return null;
+/** The compiled spell ability of an instant or sorcery face (or fused split halves), or null when not automated. */
+export function compileSpellEffects(card: ScryfallCard, faceIndex = 0, fused = false): CompiledEffect | null {
+	const def = compileCard(card);
+	if (fused) {
+		const left = effectOf(def.faces[0]?.abilities.find((a) => a.kind === 'spell'));
+		const right = effectOf(def.faces[1]?.abilities.find((a) => a.kind === 'spell'));
+		if (!left || !right || left.modal || right.modal) return null;
+		const targetOffset = left.targets.length;
+		const stepOffset = left.steps.length;
+		return {
+			steps: [...left.steps, ...right.steps.map((s) => shiftStepTargets(s, targetOffset, stepOffset))],
+			targets: [...left.targets, ...right.targets],
+			unparsed: []
+		};
 	}
-	return effectOf(cardAbilities(card, faceIndex).find((a) => a.kind === 'spell'));
+	return effectOf(def.faces[faceIndex]?.abilities.find((a) => a.kind === 'spell'));
 }
 
 /**
@@ -305,6 +334,14 @@ function shiftAmount(a: Amount, offset: number): Amount {
 	return a;
 }
 
+function shiftCondition(cond: Condition, offset: number): Condition {
+	if (cond.k === 'compare') return { ...cond, left: shiftAmount(cond.left, offset), right: shiftAmount(cond.right, offset) };
+	if (cond.k === 'isTurnOf') return { ...cond, player: shiftPlayerRef(cond.player, offset) };
+	if (cond.k === 'not') return { k: 'not', of: shiftCondition(cond.of, offset) };
+	if (cond.k === 'and' || cond.k === 'or') return { k: cond.k, of: cond.of.map((c) => shiftCondition(c, offset)) };
+	return cond;
+}
+
 function shiftStepTargets(step: EffectStep, offset: number, stepOffset = 0): EffectStep {
 	if (offset === 0 && stepOffset === 0) return step;
 	return {
@@ -313,10 +350,33 @@ function shiftStepTargets(step: EffectStep, offset: number, stepOffset = 0): Eff
 		...(step.actor ? { actor: shiftPlayerRef(step.actor, offset) } : {}),
 		...(step.optional ? { optional: { chooser: shiftPlayerRef(step.optional.chooser, offset) } } : {}),
 		...(step.amount ? { amount: shiftAmount(step.amount, offset) } : {}),
+		...(step.condition ? { condition: shiftCondition(step.condition, offset) } : {}),
+		...(step.params
+			? {
+					params: {
+						...step.params,
+						...(step.params.with ? { with: shiftSelector(step.params.with, offset) } : {}),
+						...(step.params.toughness ? { toughness: shiftAmount(step.params.toughness, offset) } : {}),
+						...(step.params.condition ? { condition: shiftCondition(step.params.condition, offset) } : {})
+					}
+				}
+			: {}),
+		...(step.delayed
+			? {
+					delayed: {
+						...step.delayed,
+						effect: step.delayed.effect.map((s) => shiftStepTargets(s, offset, stepOffset))
+					}
+				}
+			: {}),
 		...(step.ifPrecedingAccepted !== undefined
 			? { ifPrecedingAccepted: step.ifPrecedingAccepted + stepOffset }
 			: {})
 	};
+}
+
+function isSpellFaceDef(face: FaceDefinition | undefined): boolean {
+	return !!face && (face.characteristics.types.includes('Instant') || face.characteristics.types.includes('Sorcery'));
 }
 
 /**
@@ -326,8 +386,14 @@ function shiftStepTargets(step: EffectStep, offset: number, stepOffset = 0): Eff
  */
 export function compiledStackItemEffects(item: StackItem): CompiledEffect | null {
 	if (item.kind === 'spell') {
-		if (!/\b(?:Instant|Sorcery)\b/.test(item.card.typeLine)) return null;
-		const spell = compileSpellEffects(item.card);
+		const def = compileCard(item.card);
+		const faceIdx = item.faceIndex ?? 0;
+		if (item.fused) {
+			if (!isSpellFaceDef(def.faces[0]) || !isSpellFaceDef(def.faces[1])) return null;
+		} else if (!isSpellFaceDef(def.faces[faceIdx])) {
+			return null;
+		}
+		const spell = compileSpellEffects(item.card, faceIdx, item.fused ?? false);
 		if (spell?.modal && item.chosenModes) {
 			const steps: EffectStep[] = [];
 			const targets: TargetSpec[] = [];
@@ -344,23 +410,27 @@ export function compiledStackItemEffects(item: StackItem): CompiledEffect | null
 		return spell;
 	}
 	if (item.kind !== 'activated') return null;
+	const faceIdx = item.faceIndex ?? 0;
 	if (item.abilityId) {
 		if (item.grantSourceCard && item.abilityId.startsWith('granted:')) {
 			const localId = item.abilityId.slice(item.abilityId.lastIndexOf(':') + 1);
 			return effectOf(grantedAbilityById(item.grantSourceCard, localId));
 		}
-		return effectOf(abilityById(item.card, item.abilityId));
+		return effectOf(abilityById(item.card, item.abilityId, faceIdx));
 	}
-	const parse = parseAbilityEffectText(item.card.name, item.oracleText ?? '');
+	const faceName = item.card.faces?.[faceIdx]?.name ?? item.card.name;
+	const parse = parseAbilityEffectText(faceName, item.oracleText ?? '');
 	return parse.unparsed.length > 0 ? null : { steps: parse.steps, targets: parse.targets, unparsed: [] };
 }
 
-/** The `addMana` steps of a card's mana abilities (CR 106.7 "a land an opponent controls could produce"). */
+/** The `addMana` steps of a card's mana abilities across all faces (CR 106.7 "a land an opponent controls could produce"). */
 export function cardManaSteps(card: ScryfallCard): EffectStep[] {
-	return cardAbilities(card).flatMap((a) =>
-		(a.kind === 'activated' || a.kind === 'unsupported') && a.isMana && a.effect
-			? a.effect.filter((s) => s.verb === 'addMana')
-			: []
+	return compileCard(card).faces.flatMap((face) =>
+		face.abilities.flatMap((a) =>
+			(a.kind === 'activated' || a.kind === 'unsupported') && a.isMana && a.effect
+				? a.effect.filter((s) => s.verb === 'addMana')
+				: []
+		)
 	);
 }
 

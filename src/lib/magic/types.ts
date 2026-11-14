@@ -280,6 +280,7 @@ export interface TargetRequirementInfo {
 
 export interface EffectiveActivatedAbility {
 	id: string;
+	faceIndex?: number;
 	label: string;
 	costText: string;
 	manaCost: string;
@@ -337,6 +338,8 @@ export interface PlayableFromExilePermission {
 	playerId: string;
 	spendManaAsAnyColor: boolean;
 	sourceName: string;
+	allowedFaceIndices?: number[];
+	onAdventure?: boolean;
 }
 
 export interface LibrarySearchInterceptorInfo {
@@ -421,6 +424,7 @@ export type TriggerScope = 'controller_turn' | 'each_turn' | 'opponent_turn';
 export interface SpellModifications {
 	targetsBecomeEach?: boolean;
 	exileOnLeaveStack?: boolean;
+	exileAdventureOnResolve?: boolean;
 	entersWithCounters?: Record<string, number>;
 	sacrificeAtEndStep?: boolean;
 	castSummarySuffix?: string;
@@ -439,12 +443,21 @@ export interface CastOptionOptionalCost {
 	enablesTarget?: boolean;
 }
 
+export interface LandPlayOption {
+	faceIndex: number;
+	label: string;
+	typeLine: string;
+	fromZone: 'hand' | 'exile';
+}
+
 export interface CastOption {
 	id: string;
 	label: string;
 	costDisplay: string;
 	fromZone: 'hand' | 'command' | 'exile' | 'graveyard';
 	permission: 'zone_default' | 'keyword_alt' | 'exile_permission';
+	faceIndex?: number;
+	fused?: boolean;
 	baseCost:
 		| { kind: 'printed' }
 		| { kind: 'alternative'; manaCost?: string; costDefs?: CostDef[] }
@@ -589,6 +602,7 @@ export interface SerializedPendingTrigger {
 	ability: RuntimeTrigger;
 	source: CardInstance;
 	sourceCard: ScryfallCard;
+	faceIndex?: number;
 	controllerId: string;
 	mode: 'stack' | 'inline';
 	label: string;
@@ -1034,6 +1048,8 @@ export interface PendingCostPayment {
 	chosenModes?: number[];
 	xValue?: number;
 	castOptionId?: string;
+	faceIndex?: number;
+	fused?: boolean;
 	spellMods?: SpellModifications;
 	optionalCostCounts?: Record<string, number>;
 	exSourceName?: string;
@@ -1168,7 +1184,7 @@ export type GameActionPayload =
 	| { type: 'london_bottom'; instanceIds: string[] }
 	| { type: 'pass_priority' }
 	| { type: 'end_turn' }
-	| { type: 'play_land'; instanceId: string; fromZone?: 'hand' | 'exile' }
+	| { type: 'play_land'; instanceId: string; fromZone?: 'hand' | 'exile'; faceIndex?: number }
 	| {
 			type: 'tap_mana';
 			instanceId: string;
@@ -1183,8 +1199,16 @@ export type GameActionPayload =
 			modes?: number[];
 			xValue?: number;
 			optionId?: string;
+			faceIndex?: number;
+			fused?: boolean;
 			optionalCostCounts?: Record<string, number>;
 			fromZone?: 'hand' | 'command' | 'graveyard' | 'exile';
+			costPayment?: CostPayment;
+	  }
+	| {
+			type: 'unlock_room_door';
+			instanceId: string;
+			faceIndex: number;
 			costPayment?: CostPayment;
 	  }
 	| {

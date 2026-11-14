@@ -57,6 +57,8 @@ export interface LeftBattlefieldInfo {
 	tapped: boolean;
 	power?: number;
 	toughness?: number;
+	activeFaceIndex?: number;
+	unlockedFaces?: number[];
 }
 
 /** A spell was cast (it is already on the stack). */

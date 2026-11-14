@@ -387,6 +387,17 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 		}
 	],
 	[
+		'fuse',
+		{
+			name: 'fuse',
+			cr: '702.102',
+			parameterKind: 'none',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'castOption' }
+		}
+	],
+	[
 		'kicker',
 		{
 			name: 'kicker',
@@ -907,7 +918,6 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 	unimplemented('fortify', '702.67', 'cost'),
 	unimplemented('frenzy', '702.68', 'number'),
 	unimplemented('friends forever', '702.124i'),
-	unimplemented('fuse', '702.102'),
 	unimplemented('gift', '702.174', 'quality'),
 	unimplemented('graft', '702.58', 'number'),
 	unimplemented('gravestorm', '702.69'),

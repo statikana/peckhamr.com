@@ -20,8 +20,12 @@ const KICKER_KEYWORDS: Record<string, boolean> = {
 	multikicker: true
 };
 
-function rawOptionalEntriesForCard(card: ScryfallCard): CastOptionOptionalCost[] {
-	const abilities = activeAbilityDefs(card);
+function rawOptionalEntriesForCard(
+	card: ScryfallCard,
+	faceIndex = 0,
+	fused = false
+): CastOptionOptionalCost[] {
+	const abilities = activeAbilityDefs(card, { zone: 'stack', faceIndex, fused });
 	const out: CastOptionOptionalCost[] = [];
 	let idx = 0;
 	for (const ab of abilities) {
@@ -52,9 +56,13 @@ export interface KickerTrackingInfo {
 export function computeKickerTracking(
 	card: ScryfallCard,
 	optionalCostCounts?: Record<string, number>,
-	option?: CastOption
+	option?: CastOption,
+	faceIndex = 0,
+	fused = false
 ): KickerTrackingInfo {
-	const entries = option?.optionalAdditionalCosts ?? rawOptionalEntriesForCard(card);
+	const resolvedFace = option?.faceIndex ?? faceIndex;
+	const resolvedFused = option?.fused ?? fused;
+	const entries = option?.optionalAdditionalCosts ?? rawOptionalEntriesForCard(card, resolvedFace, resolvedFused);
 	let count = 0;
 	const tags: string[] = [];
 	const tagCounts: Record<string, number> = {};
@@ -111,15 +119,24 @@ export function isCastConditionMet(
 	cond: Condition,
 	card: ScryfallCard,
 	optionalCostCounts?: Record<string, number>,
-	option?: CastOption
+	option?: CastOption,
+	faceIndex = 0,
+	fused = false
 ): boolean {
-	return isConditionMetWithKicker(cond, computeKickerTracking(card, optionalCostCounts, option));
+	return isConditionMetWithKicker(
+		cond,
+		computeKickerTracking(card, optionalCostCounts, option, faceIndex, fused)
+	);
 }
 
-export function spellOptionalAdditionalCosts(card: ScryfallCard): CastOptionOptionalCost[] {
-	const entries = rawOptionalEntriesForCard(card);
+export function spellOptionalAdditionalCosts(
+	card: ScryfallCard,
+	faceIndex = 0,
+	fused = false
+): CastOptionOptionalCost[] {
+	const entries = rawOptionalEntriesForCard(card, faceIndex, fused);
 	if (entries.length === 0) return [];
-	const abilities = activeAbilityDefs(card);
+	const abilities = activeAbilityDefs(card, { zone: 'stack', faceIndex, fused });
 	const conditionalSpecs: TargetSpec[] = [];
 	for (const ab of abilities) {
 		if (ab.kind === 'spell') {
@@ -135,8 +152,8 @@ export function spellOptionalAdditionalCosts(card: ScryfallCard): CastOptionOpti
 		const enables = conditionalSpecs.some(
 			(sp) =>
 				sp.condition &&
-				!isCastConditionMet(sp.condition, card, undefined) &&
-				isCastConditionMet(sp.condition, card, { [entry.id]: 1 })
+				!isCastConditionMet(sp.condition, card, undefined, undefined, faceIndex, fused) &&
+				isCastConditionMet(sp.condition, card, { [entry.id]: 1 }, undefined, faceIndex, fused)
 		);
 		if (enables) entry.enablesTarget = true;
 	}
@@ -201,7 +218,13 @@ export function getObjectKickerInfo(
 ): KickerTrackingInfo {
 	if (stackItem) {
 		if (stackItem.kind === 'spell') {
-			return computeKickerTracking(stackItem.card, stackItem.optionalCostCounts);
+			return computeKickerTracking(
+				stackItem.card,
+				stackItem.optionalCostCounts,
+				undefined,
+				stackItem.faceIndex ?? 0,
+				stackItem.fused ?? false
+			);
 		}
 		if (stackItem.sourceKickedCount !== undefined) {
 			return { count: stackItem.sourceKickedCount, tags: stackItem.sourceKickedTags ?? [] };
@@ -217,7 +240,13 @@ export function getObjectKickerInfo(
 		const stackSpell = state.stack.find((s) => s.sourceInstanceId === instanceId);
 		if (stackSpell) {
 			if (stackSpell.kind === 'spell') {
-				return computeKickerTracking(stackSpell.card, stackSpell.optionalCostCounts);
+				return computeKickerTracking(
+					stackSpell.card,
+					stackSpell.optionalCostCounts,
+					undefined,
+					stackSpell.faceIndex ?? 0,
+					stackSpell.fused ?? false
+				);
 			}
 			if (stackSpell.sourceKickedCount !== undefined) {
 				return {

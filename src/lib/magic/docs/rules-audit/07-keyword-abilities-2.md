@@ -122,7 +122,7 @@ Audited at engine-rewrite 917180b on 2026-11-09.
 ### 702.102 Fuse
 | CR | Rule (short) | Status | Evidence / notes |
 |---|---|---|---|
-| 702.102a–d | Fuse static ability on split cards (cast both halves from hand, combined characteristics/cost, left-then-right resolution) | missing | Listed in `KNOWN_KEYWORDS` (`compiler/adapter.ts:138`), and split cards (`card.oracleText.includes('\n//\n')`) are rejected early as `unsupported('multiface')` in `compiler/adapter.ts:99-109`. |
+| 702.102a–d | Fuse static ability on split cards (cast both halves from hand, combined characteristics/cost, left-then-right resolution) | exact | Updated 2026-11-13: Promoted `'fuse'` (`castOption`) in `keywords.ts`; `compiler/card.ts` compiles split halves per face; `engine.ts` (`enumerateCandidateCastOptions`) offers `'fused'` from `hand` only, `compileSpellEffects(..., fused = true)` merges left-then-right steps/targets with offset shifting, and `resolveObjectFaces` evaluates combined characteristics on the stack (`CR 709.4d`). Covered in `runtime/keywords-casting.test.ts`. |
 
 ### 702.103 Bestow
 | CR | Rule (short) | Status | Evidence / notes |

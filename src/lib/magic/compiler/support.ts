@@ -174,7 +174,9 @@ export function cardSupportReport(card: ScryfallCard): CardSupportReport {
  */
 export function displayAbilityText(text: string, faceName: string, card?: ScryfallCard): string {
 	if (!card) return text.replace(/~/g, faceName);
-	const rulesText = card.backFace ? `${card.oracleText}\n${card.backFace.oracleText}` : card.oracleText;
+	const faceOracle = card.faces?.find((f) => f.name === faceName)?.oracleText;
+	const rulesText =
+		faceOracle ?? (card.backFace ? `${card.oracleText}\n${card.backFace.oracleText}` : card.oracleText);
 	return printedText(text, faceName, rulesText || '');
 }
 

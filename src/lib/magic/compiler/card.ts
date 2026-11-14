@@ -33,7 +33,8 @@ import type {
 	UnsupportedReason
 } from '../ir.ts';
 import { getKeywordSpec, IMPLEMENTED_KEYWORDS, KNOWN_KEYWORDS } from '../keywords.ts';
-import type { ManaColor, ScryfallCard, ScryfallCardFace } from '../types.ts';
+import { getCardFaces } from '../scryfall.ts';
+import type { CardLayout, ManaColor, ScryfallCard, ScryfallCardFace } from '../types.ts';
 import { parseAdditionalCostSentence, parseCost, parseCostModifierSentence, parseObjectPhrase } from './costs.ts';
 import { extractUnparsedTargets, parseEffects, parseSpellFace, type EffectParse } from './effects.ts';
 import { staticallyInterpretable, triggerTargetsSupported } from './interpretable.ts';
@@ -56,14 +57,15 @@ export { IMPLEMENTED_KEYWORDS };
 
 // ---- Entry point ----------------------------------------------------------------------------
 
-export function compileFaces(card: ScryfallCard): FaceDefinition[] {
-	const characteristics = buildCharacteristics(card);
-	const norm = normalizeFace(card.name, card.oracleText);
+const SUPPORTED_MULTIFACE_LAYOUTS = new Set<CardLayout>(['split', 'modal_dfc', 'adventure']);
 
-	if (card.backFace || card.oracleText.includes('\n//\n') || (card.faces && card.faces.length > 1)) {
-		const span = { start: 0, end: norm.text.length };
-		return [{ name: card.name, characteristics, abilities: [unsupported('multiface', norm.text, span, [])] }];
-	}
+export function compileSingleFace(
+	face: ScryfallCard | ScryfallCardFace,
+	topCard?: ScryfallCard,
+	layout?: CardLayout
+): FaceDefinition {
+	const characteristics = buildCharacteristicsForFace(face, topCard, layout);
+	const norm = normalizeFace(face.name, face.oracleText);
 
 	const ctx: Ctx = {
 		isSpell: characteristics.types.includes('Instant') || characteristics.types.includes('Sorcery'),
@@ -117,7 +119,26 @@ export function compileFaces(card: ScryfallCard): FaceDefinition[] {
 		}
 	}
 
-	return [{ name: card.name, characteristics, abilities }];
+	return { name: face.name, characteristics, abilities };
+}
+
+export function compileFaces(card: ScryfallCard): FaceDefinition[] {
+	const layout: CardLayout =
+		card.layout ?? (card.backFace ? 'transform' : card.faces && card.faces.length >= 2 ? 'split' : 'normal');
+	const faces = card.faces && card.faces.length >= 2 ? getCardFaces(card) : null;
+
+	if (faces && SUPPORTED_MULTIFACE_LAYOUTS.has(layout)) {
+		return faces.map((f) => compileSingleFace(f, card, layout));
+	}
+
+	if (card.backFace || card.oracleText.includes('\n//\n') || (card.faces && card.faces.length > 1)) {
+		const characteristics = buildCharacteristicsForFace(card, card, layout);
+		const norm = normalizeFace(card.name, card.oracleText);
+		const span = { start: 0, end: norm.text.length };
+		return [{ name: card.name, characteristics, abilities: [unsupported('multiface', norm.text, span, [])] }];
+	}
+
+	return [compileSingleFace(card, card, layout)];
 }
 
 interface Ctx {
@@ -746,6 +767,14 @@ function staticGroup(group: NormalizedLine[]): AbilityDef[] {
 
 function parseStat(v: string | undefined): number | undefined {
 	return v !== undefined && /^-?\d+$/.test(v) ? parseInt(v, 10) : undefined;
+}
+
+export function buildCharacteristicsForFace(
+	face: ScryfallCard | ScryfallCardFace,
+	_topCard?: ScryfallCard,
+	_layout?: CardLayout
+): Characteristics {
+	return buildCharacteristics(face);
 }
 
 export function buildCharacteristics(card: ScryfallCard | ScryfallCardFace): Characteristics {

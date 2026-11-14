@@ -720,7 +720,9 @@ function captureLki(state: GameState, obj: CardInstance): LeftBattlefieldInfo {
 		isToken: obj.isToken,
 		tapped: obj.tapped,
 		power,
-		toughness
+		toughness,
+		...(obj.activeFaceIndex !== undefined ? { activeFaceIndex: obj.activeFaceIndex } : {}),
+		...(obj.unlockedFaces ? { unlockedFaces: [...obj.unlockedFaces] } : {})
 	};
 }
 

@@ -968,7 +968,10 @@ export function cardEntersTapped(
 	controllerId?: string,
 	source?: CardInstance
 ): boolean {
-	for (const ability of activeAbilityDefs(card)) {
+	const abilities = source
+		? activeAbilityDefs(card, instanceFaceOptions(source, 'battlefield'))
+		: activeAbilityDefs(card);
+	for (const ability of abilities) {
 		if (ability.kind !== 'replacement') continue;
 		const rep = ability.replacement;
 		if (rep.replaces.event !== 'zoneChange') continue;
