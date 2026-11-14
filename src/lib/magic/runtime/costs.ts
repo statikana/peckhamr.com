@@ -446,11 +446,12 @@ export function effectiveAbilityManaCost(
 	actorId: string,
 	abilityId: string,
 	baseManaCost: string,
-	abilityKeyword?: string
+	abilityKeyword?: string,
+	xValue = 0
 ): { manaCost: string; requirement: ManaCostRequirement } {
 	// Read-only: one layer-cache validation for the battlefield scan (Phase 6d).
 	return withStableLayerInputs(state, () =>
-		effectiveAbilityManaCostInner(state, actorId, abilityId, baseManaCost, abilityKeyword)
+		effectiveAbilityManaCostInner(state, actorId, abilityId, baseManaCost, abilityKeyword, xValue)
 	);
 }
 
@@ -459,7 +460,8 @@ function effectiveAbilityManaCostInner(
 	actorId: string,
 	abilityId: string,
 	baseManaCost: string,
-	abilityKeyword?: string
+	abilityKeyword?: string,
+	xValue = 0
 ): { manaCost: string; requirement: ManaCostRequirement } {
 	const kw =
 		abilityKeyword ??
@@ -514,7 +516,7 @@ function effectiveAbilityManaCostInner(
 	}
 	const req = parseManaCost(
 		baseManaCost === '{0}' ? '' : baseManaCost,
-		0,
+		xValue,
 		genericIncrease,
 		genericReduction
 	);

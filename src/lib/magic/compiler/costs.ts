@@ -60,12 +60,17 @@ const IRREGULAR_PLURALS: Record<string, string> = {
 	Elves: 'Elf',
 	Dwarves: 'Dwarf',
 	Wolves: 'Wolf',
+	Zombies: 'Zombie',
+	Faeries: 'Faerie',
+	Valkyries: 'Valkyrie',
+	Mice: 'Mouse',
+	Fungi: 'Fungus',
 	Sorceries: 'Sorcery',
 	sorceries: 'sorcery'
 };
 
 // Subtypes whose singular ends in "s".
-const SINGULAR_S = new Set(['Plains', 'Fungus', 'Octopus', 'Homunculus', 'Atog', 'Nephilim']);
+const SINGULAR_S = new Set(['Plains', 'Fungus', 'Octopus', 'Homunculus', 'Atog', 'Nephilim', 'Astartes']);
 
 const COUNTERS: Record<string, CounterType> = {
 	'+1/+1': '+1/+1',
@@ -99,6 +104,15 @@ function singular(word: string): string {
 	if (/ies$/.test(word)) return `${word.slice(0, -3)}y`;
 	if (/(?:ss|sh|ch|x)es$/.test(word)) return word.slice(0, -2);
 	return word.endsWith('s') ? word.slice(0, -1) : word;
+}
+
+/** Singularizes a capitalized creature subtype token (e.g. "Zombies" -> "Zombie", "Orcs" -> "Orc", "Elves" -> "Elf"). */
+export function singularSubtype(word: string): string | null {
+	const trimmed = word.trim();
+	if (!/^[A-Z][A-Za-z'-]*$/.test(trimmed)) return null;
+	const s = singular(trimmed);
+	if (CARD_TYPES[s.toLowerCase()] || SUPERTYPES[s.toLowerCase()]) return null;
+	return s;
 }
 
 // ---- Object phrases -------------------------------------------------------------------------
@@ -171,6 +185,7 @@ export function parseObjectPhrase(phrase: string): ObjectFilter | null {
 		else if (low === 'untapped') filter.tapped = false;
 		else if (low === 'tapped') filter.tapped = true;
 		else if (low === 'saddled') filter.saddled = true;
+		else if (low === 'monstrous') filter.monstrous = true;
 		else if (low === 'nontoken') filter.token = false;
 		else if (low === 'commander' || low === 'commanders') filter.isCommander = true;
 		else if (SUPERTYPES[low]) (filter.supertypes ??= []).push(SUPERTYPES[low]);

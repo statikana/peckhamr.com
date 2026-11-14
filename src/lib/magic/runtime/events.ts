@@ -67,6 +67,8 @@ export interface LeftBattlefieldInfo {
 	foretold?: boolean;
 	blitzed?: boolean;
 	saddled?: boolean;
+	// --- Track P5 ---
+	monstrous?: boolean;
 }
 
 /** A spell was cast (it is already on the stack). */
@@ -299,6 +301,34 @@ export interface BecameMonarchEvent extends EventBase {
 	previousMonarchId: string | null;
 }
 
+// --- Track P5 ---
+/** A player took the amass keyword action (CR 701.47a–c: emitted even if 0 counters were placed or token creation was prevented). */
+export interface AmassedEvent extends EventBase {
+	kind: 'Amassed';
+	playerId: string;
+	objectId?: string;
+	object?: CardInstance;
+	subtype: string;
+	amount: number;
+}
+
+/** A player manifested dread (CR 701.62a–b: emitted even if library had fewer than two cards). */
+export interface ManifestDreadEvent extends EventBase {
+	kind: 'ManifestDread';
+	playerId: string;
+	manifestedObject?: CardInstance;
+	graveyardObjectIds: string[];
+}
+
+/** A permanent became monstrous via Monstrosity N (CR 701.37a–c). */
+export interface BecameMonstrousEvent extends EventBase {
+	kind: 'BecameMonstrous';
+	objectId: string;
+	object: CardInstance;
+	playerId: string;
+	amount: number;
+}
+
 export type GameEvent =
 	| TappedForManaEvent
 	| GainLifeEvent
@@ -327,7 +357,11 @@ export type GameEvent =
 	| SpellCopiedEvent
 	| AttachedEvent
 	// --- Track P1 ---
-	| BecameMonarchEvent;
+	| BecameMonarchEvent
+	// --- Track P5 ---
+	| AmassedEvent
+	| ManifestDreadEvent
+	| BecameMonstrousEvent;
 
 export type GameEventKind = GameEvent['kind'];
 type EventOf<K extends GameEventKind> = Extract<GameEvent, { kind: K }>;

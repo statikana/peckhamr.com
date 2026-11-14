@@ -80,6 +80,9 @@ export interface PendingTrigger {
 	isChapterAbility?: boolean;
 	sourceForetold?: boolean;
 	sourceBlitzed?: boolean;
+	// --- Track P5 ---
+	sourceMonstrous?: boolean;
+	isBecameMonstrous?: boolean;
 	/** Match order (deterministic tie-break for a player's own simultaneous triggers). */
 	order: number;
 }
@@ -208,6 +211,7 @@ interface SimultaneousLkiEntry {
 	foretold?: boolean;
 	blitzed?: boolean;
 	saddled?: boolean;
+	monstrous?: boolean;
 }
 
 interface TriggerChannel {
@@ -266,6 +270,8 @@ function persistPendingTriggers(state: GameState, triggers: PendingTrigger[]): v
 			...(t.isChapterAbility ? { isChapterAbility: true } : {}),
 			...(t.sourceForetold ? { sourceForetold: true } : {}),
 			...(t.sourceBlitzed ? { sourceBlitzed: true } : {}),
+			...(t.sourceMonstrous ? { sourceMonstrous: true } : {}),
+			...(t.isBecameMonstrous ? { isBecameMonstrous: true } : {}),
 			order: t.order
 		});
 	}
@@ -295,6 +301,8 @@ function hydratePendingTriggers(state: GameState, ch: TriggerChannel): void {
 		...(t.isChapterAbility ? { isChapterAbility: true } : {}),
 		...(t.sourceForetold ? { sourceForetold: true } : {}),
 		...(t.sourceBlitzed ? { sourceBlitzed: true } : {}),
+		...(t.sourceMonstrous ? { sourceMonstrous: true } : {}),
+		...(t.isBecameMonstrous ? { isBecameMonstrous: true } : {}),
 		order: t.order
 	}));
 	ch.pending = [...hydrated, ...ch.pending];
@@ -354,7 +362,8 @@ export function withSimultaneousDestroyLki(
 			...(perm.unlockedFaces ? { unlockedFaces: [...perm.unlockedFaces] } : {}),
 			...(perm.foretold ? { foretold: true } : {}),
 			...(perm.blitzed ? { blitzed: true } : {}),
-			...(perm.saddledThisTurn ? { saddled: true } : {})
+			...(perm.saddledThisTurn ? { saddled: true } : {}),
+			...(perm.isMonstrous ? { monstrous: true } : {})
 		});
 	}
 	const prevMap = ch.simultaneousLki;
@@ -403,6 +412,7 @@ interface Subject {
 	isToken: boolean;
 	tapped: boolean;
 	saddled?: boolean;
+	monstrous?: boolean;
 	colors: string[];
 	typeLine: () => string;
 	hasSubtype: (subtype: string) => boolean;
@@ -417,6 +427,7 @@ function battlefieldSubject(state: GameState, obj: CardInstance, controllerId: s
 		isToken: obj.isToken,
 		tapped: obj.tapped,
 		saddled: Boolean(obj.saddledThisTurn),
+		monstrous: Boolean(obj.isMonstrous),
 		get colors() {
 			return obj.isFaceDown ? [] : ev().colors;
 		},
@@ -433,7 +444,8 @@ function printedSubject(
 	typeLine = card.typeLine,
 	tapped = obj.tapped,
 	colors: string[] = resolveObjectFaces(card, instanceFaceOptions(obj)).colors,
-	saddled = Boolean(obj.saddledThisTurn)
+	saddled = Boolean(obj.saddledThisTurn),
+	monstrous = Boolean(obj.isMonstrous)
 ): Subject {
 	return {
 		obj,
@@ -441,6 +453,7 @@ function printedSubject(
 		isToken: obj.isToken,
 		tapped,
 		saddled,
+		monstrous,
 		colors,
 		typeLine: () => typeLine,
 		hasSubtype: (s) => hasWord(subtypePart(typeLine), s) || (allCreatureTypes && hasWord(typeLine, 'Creature'))
@@ -482,6 +495,7 @@ function filterMatches(f: ObjectFilter, subject: Subject, source: Viewer): boole
 	if (f.token !== undefined && subject.isToken !== f.token) return false;
 	if (f.tapped !== undefined && subject.tapped !== f.tapped) return false;
 	if (f.saddled !== undefined && Boolean(subject.saddled) !== f.saddled) return false;
+	if (f.monstrous !== undefined && Boolean(subject.monstrous) !== f.monstrous) return false;
 	if (f.colors && !matchesColorFilter(subject.colors, f.colors)) return false;
 	return true;
 }
@@ -525,6 +539,7 @@ interface Source {
 	foretold?: boolean;
 	blitzed?: boolean;
 	saddled?: boolean;
+	monstrous?: boolean;
 }
 
 /**
@@ -604,6 +619,7 @@ interface MatchExtras {
 	eventPlayer?: string;
 	defendingPlayerId?: string;
 	isChapterAbility?: boolean;
+	isBecameMonstrous?: boolean;
 }
 
 function record(state: GameState, source: Source, ability: RuntimeTrigger, kind: EventKind, extras: MatchExtras): void {
@@ -629,6 +645,7 @@ function record(state: GameState, source: Source, ability: RuntimeTrigger, kind:
 	}
 	const sourceForetold = Boolean(source.foretold ?? source.obj.foretold);
 	const sourceBlitzed = Boolean(source.blitzed ?? source.obj.blitzed);
+	const sourceMonstrous = Boolean(source.monstrous ?? source.obj.isMonstrous);
 	const ch = channel(state);
 	for (let i = 0; i < count; i++) {
 		ch.pending.push({
@@ -647,8 +664,10 @@ function record(state: GameState, source: Source, ability: RuntimeTrigger, kind:
 			...(extras.triggerEventStackItem ? { triggerEventStackItem: extras.triggerEventStackItem } : {}),
 			...(extras.stormCount !== undefined ? { stormCount: extras.stormCount } : {}),
 			...(extras.isChapterAbility ? { isChapterAbility: true } : {}),
+			...(extras.isBecameMonstrous ? { isBecameMonstrous: true } : {}),
 			...(sourceForetold ? { sourceForetold: true } : {}),
 			...(sourceBlitzed ? { sourceBlitzed: true } : {}),
+			...(sourceMonstrous ? { sourceMonstrous: true } : {}),
 			eventPlayer: extras.eventPlayer ?? extras.eventPlayerId,
 			defendingPlayerId: extras.defendingPlayerId,
 			order: ch.nextOrder++
@@ -736,6 +755,66 @@ function matchTriggersInner(state: GameState, ev: GameEvent): void {
 			return matchCombatDamageBatchPlayer(state, ev);
 		case 'BecameMonarch':
 			return matchBecameMonarch(state, ev);
+		// --- Track P5 ---
+		case 'Amassed':
+			return matchAmassed(state, ev);
+		case 'ManifestDread':
+			return matchManifestDread(state, ev);
+		case 'BecameMonstrous':
+			return matchObjectActionEvent(state, ev, 'becameMonstrous', 'Monstrosity Trigger', ev.amount);
+	}
+}
+
+// --- Track P5 ---
+function matchAmassed(state: GameState, ev: Extract<GameEvent, { kind: 'Amassed' }>): void {
+	for (const source of sources(state, 'amass')) {
+		for (const { ability, alts } of abilitiesFor(state, source, 'amass')) {
+			const alt = alts.find((a) => {
+				const rel = a.filter.player?.relation ?? 'any';
+				if (rel === 'you' && ev.playerId !== source.controllerId) return false;
+				if (rel === 'opponent' && ev.playerId === source.controllerId) return false;
+				if (
+					a.filter.amassSubtype &&
+					a.filter.amassSubtype.toLowerCase() !== ev.subtype.toLowerCase()
+				) {
+					return false;
+				}
+				return true;
+			});
+			if (alt) {
+				record(state, source, ability, 'amass', {
+					label: 'Amass Trigger',
+					eventObject: ev.object,
+					eventPlayer: ev.playerId,
+					eventPlayerId: ev.playerId,
+					amount: ev.amount
+				});
+			}
+		}
+	}
+}
+
+function matchManifestDread(
+	state: GameState,
+	ev: Extract<GameEvent, { kind: 'ManifestDread' }>
+): void {
+	for (const source of sources(state, 'manifestDread')) {
+		for (const { ability, alts } of abilitiesFor(state, source, 'manifestDread')) {
+			const alt = alts.find((a) => {
+				const rel = a.filter.player?.relation ?? 'any';
+				if (rel === 'you' && ev.playerId !== source.controllerId) return false;
+				if (rel === 'opponent' && ev.playerId === source.controllerId) return false;
+				return true;
+			});
+			if (alt) {
+				record(state, source, ability, 'manifestDread', {
+					label: 'Manifest Dread Trigger',
+					eventObject: ev.manifestedObject,
+					eventPlayer: ev.playerId,
+					eventPlayerId: ev.playerId
+				});
+			}
+		}
 	}
 }
 
@@ -928,7 +1007,7 @@ function matchTransformed(state: GameState, ev: Extract<GameEvent, { kind: 'Tran
 function matchObjectActionEvent(
 	state: GameState,
 	ev: { objectId: string; object: CardInstance; playerId: string },
-	event: 'explore' | 'connive' | 'becomesCrewed' | 'becomesSaddled',
+	event: 'explore' | 'connive' | 'becomesCrewed' | 'becomesSaddled' | 'becameMonstrous',
 	label: string,
 	amount?: number
 ): void {
@@ -945,7 +1024,8 @@ function matchObjectActionEvent(
 					label,
 					eventObject: found?.obj ?? ev.object,
 					eventPlayer: ev.playerId,
-					...(amount !== undefined ? { amount } : {})
+					...(amount !== undefined ? { amount } : {}),
+					...(event === 'becameMonstrous' ? { isBecameMonstrous: true } : {})
 				});
 			}
 		}
@@ -1066,7 +1146,8 @@ function matchZoneChange(state: GameState, ev: Extract<GameEvent, { kind: 'ZoneC
 						objBatchInfo.typeLine,
 						objBatchInfo.tapped,
 						objBatchInfo.colors,
-						Boolean(objBatchInfo.saddled)
+						Boolean(objBatchInfo.saddled),
+						Boolean(objBatchInfo.monstrous)
 					)
 				: ev.lki
 					? printedSubject(
@@ -1077,7 +1158,8 @@ function matchZoneChange(state: GameState, ev: Extract<GameEvent, { kind: 'ZoneC
 							ev.lki.typeLine,
 							ev.lki.tapped,
 							undefined,
-							Boolean(ev.lki.saddled)
+							Boolean(ev.lki.saddled),
+							Boolean(ev.lki.monstrous)
 						)
 					: printedSubject(obj, obj.card, obj.ownerId);
 	const enters = ev.to === 'battlefield';
@@ -1122,7 +1204,8 @@ function matchZoneChange(state: GameState, ev: Extract<GameEvent, { kind: 'ZoneC
 						isLookBack: true,
 						...(info.foretold ? { foretold: true } : {}),
 						...(info.blitzed ? { blitzed: true } : {}),
-						...(info.saddled ? { saddled: true } : {})
+						...(info.saddled ? { saddled: true } : {}),
+						...(info.monstrous ? { monstrous: true } : {})
 					});
 				}
 			}
@@ -1142,7 +1225,8 @@ function matchZoneChange(state: GameState, ev: Extract<GameEvent, { kind: 'ZoneC
 					isLookBack: true,
 					...(ev.lki.foretold ? { foretold: true } : {}),
 					...(ev.lki.blitzed ? { blitzed: true } : {}),
-					...(ev.lki.saddled ? { saddled: true } : {})
+					...(ev.lki.saddled ? { saddled: true } : {}),
+					...(ev.lki.monstrous ? { monstrous: true } : {})
 				});
 			}
 		}
@@ -1955,6 +2039,13 @@ export function evaluateCondition(
 			if (source) return Boolean(source.saddled ?? source.obj.saddledThisTurn);
 			const found = permanentById(state, sourceInstanceId);
 			return Boolean(found?.obj.saddledThisTurn);
+		}
+		// --- Track P5 ---
+		case 'monstrous': {
+			if (source) return Boolean(source.monstrous ?? source.obj.isMonstrous);
+			const found = permanentById(state, sourceInstanceId);
+			if (found) return Boolean(found.obj.isMonstrous);
+			return Boolean(stackItem?.sourceMonstrous);
 		}
 		case 'isTurnOf':
 			if (cond.player.k === 'you') return state.players[state.activePlayerIndex]?.playerId === controllerId;

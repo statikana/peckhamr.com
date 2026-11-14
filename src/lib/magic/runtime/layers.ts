@@ -937,6 +937,10 @@ function matchesLayerFilter(
 	if (filter.saddled !== undefined && Boolean(target.inst.saddledThisTurn) !== filter.saddled) {
 		return false;
 	}
+	// --- Track P5 ---
+	if (filter.monstrous !== undefined && Boolean(target.inst.isMonstrous) !== filter.monstrous) {
+		return false;
+	}
 	if (filter.token !== undefined && Boolean(target.inst.isToken) !== filter.token) return false;
 	return true;
 }
@@ -1185,6 +1189,9 @@ function evaluateLayerCondition(
 			return Boolean(source.inst.blitzed);
 		case 'saddled':
 			return Boolean(source.inst.saddledThisTurn);
+		// --- Track P5 ---
+		case 'monstrous':
+			return Boolean(source.inst.isMonstrous);
 	}
 }
 
@@ -1321,6 +1328,7 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 			Boolean(perm.foretold),
 			Boolean(perm.blitzed),
 			Boolean(perm.saddledThisTurn),
+			Boolean(perm.isMonstrous),
 			perm.kickedCount || 0,
 			perm.kickedTags?.length || 0,
 			perm.grantedKeywords?.length || 0
@@ -1460,6 +1468,7 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 			fp[i++] !== Boolean(perm.foretold) ||
 			fp[i++] !== Boolean(perm.blitzed) ||
 			fp[i++] !== Boolean(perm.saddledThisTurn) ||
+			fp[i++] !== Boolean(perm.isMonstrous) ||
 			fp[i++] !== (perm.kickedCount || 0) ||
 			fp[i++] !== kickedTagsLen ||
 			fp[i++] !== grantedLen

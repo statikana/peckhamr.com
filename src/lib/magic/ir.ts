@@ -292,6 +292,9 @@ export interface ObjectFilter {
 	// --- Track P3 ---
 	/** CR 702.171b: true iff the permanent became saddled this turn. */
 	saddled?: boolean;
+	// --- Track P5 ---
+	/** CR 701.37b: true iff the permanent is monstrous. */
+	monstrous?: boolean;
 }
 
 export interface Compare {
@@ -466,7 +469,17 @@ export type Verb =
 	| 'becomeMonarch'
 	// --- Track P3 ---
 	| 'saddle'
-	| 'cumulativeUpkeep';
+	| 'cumulativeUpkeep'
+	// --- Track P5 ---
+	| 'amass'
+	| 'incubate'
+	| 'populate'
+	| 'manifest'
+	| 'cloak'
+	| 'manifestDread'
+	| 'monstrosity'
+	| 'bolster'
+	| 'adapt';
 
 export type ManaRestriction = 'artifactSpellOrNonSpell';
 
@@ -634,6 +647,9 @@ export interface EffectParams {
 	cumulativeUpkeepCost?: CostDef[];
 	/** cumulativeUpkeep (CR 702.24a): human-readable per-age-counter cost string for prompt titles. */
 	cumulativeUpkeepText?: string;
+	// --- Track P5 ---
+	/** amass (CR 701.47a,d): singular creature subtype amassed (e.g. 'Zombie', 'Orc', 'Army' companion). */
+	amassSubtype?: string;
 }
 
 export interface CoerciveDiscardSpec {
@@ -721,7 +737,11 @@ export type EventKind =
 	// --- Track P3 ---
 	| 'foretell'
 	| 'plot'
-	| 'becomesSaddled';
+	| 'becomesSaddled'
+	// --- Track P5 ---
+	| 'amass'
+	| 'manifestDread'
+	| 'becameMonstrous';
 
 export interface EventFilter {
 	/**
@@ -762,6 +782,9 @@ export interface EventFilter {
 	// --- Track P3 ---
 	/** "Whenever ~ attacks while saddled" (CR 702.171b). */
 	saddled?: boolean;
+	// --- Track P5 ---
+	/** "Whenever you amass Orcs" (CR 701.47b–c): optional singular subtype constraint on amass triggers. */
+	amassSubtype?: string;
 }
 
 export interface TriggerDef {
@@ -802,7 +825,10 @@ export type Condition =
 	/** CR 702.171b: true when this permanent became saddled this turn. */
 	| { k: 'saddled' }
 	/** CR 702.152a / 400.7d: true when cast by paying its blitz alternative cost. */
-	| { k: 'blitzed' };
+	| { k: 'blitzed' }
+	// --- Track P5 ---
+	/** CR 701.37b: true when this permanent is monstrous. */
+	| { k: 'monstrous' };
 
 // ---- Statics and replacements ---------------------------------------------------------------
 
