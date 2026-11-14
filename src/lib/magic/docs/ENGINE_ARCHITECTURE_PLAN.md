@@ -930,6 +930,46 @@ Strictly disjoint from `teamwork-mtg-engine` M1–M4 (`PROJECT.md`) and UI Track
    - **`kicker.ts` Optional-Additional-Cost Copy/Token Family:** **`Offspring`** (`CR 702.175`), **`Squad`** (`CR 702.157`), **`Replicate`** (`CR 702.56`), **`Conspire`** (`CR 702.78`), and **`Casualty N`** (`CR 702.153`).
    - **Pure `KEYWORD_REGISTRY` Hand/Counter/Exile Keywords:** **`Warp`** (`CR 702.185`), **`Vanishing`** (`CR 702.63`), **`Fading`** (`CR 702.32`), **`Transmute`** (`CR 702.53`), and **`Reinforce`** (`CR 702.77`).
 
+### 2.20 Wave 3 Zero-Overlap Parallel Engine Worktrees (`Track P7`, `Track P8`, `Track P9`)
+
+**Empirical Design (`~+1,795` deduplicated full-card unlocks on `oracle-cards.jsonl.gz`):** Each Wave 3 track owns a **strictly disjoint set of `compiler/` files** plus its own dedicated runtime module (`src/lib/magic/runtime/<trackModule>.ts` + `.test.ts`), touching shared files (`ir.ts`, `types.ts`, `engine.ts`, `runtime/effects.ts`) only via fenced `// --- Track P7|P8|P9 ---` union/delegation blocks:
+
+1. **Track P7 (`mtg_p7_copy_prevention_effects` — `compiler/effects.ts`, `compiler/triggers.ts`, `compiler/interpretable.ts`, `runtime/copyPreventionAndEffects.ts`; `+561` solo full cards):**
+   - **P7.1 Damage Prevention Shields & Burn/Combat Riders (`CR 615.1–12`, `CR 701.19`, `CR 614.1a`, `CR 509.1b`, `230` cards):**
+     - `DamagePreventionShieldEntry` (`remaining: number | 'infinite'`, `combatOnly`, `targetKind`, `(targetId, targetObjectVersion)` `CR 400.7`, `fromSourceInstanceId`): `"Prevent all [combat] damage that would be dealt [to/by ...] this turn"` and `"Prevent the next N/X damage that would be dealt to [target/you/~] this turn"`. Enforces `CR 615.6` (prevented damage never happens) and `CR 615.12` (`damageCantBePrevented` neither prevents nor depletes `remaining`).
+     - Burn/removal riders: `"It/They can't be regenerated"` (`CR 701.19`) and `"If [that creature/permanent/it] would die this turn, exile it instead"` (`CR 614.1a`, `(instanceId, objectVersion)` scoped).
+     - Timed combat evasion/restriction steps: `"[Subject] can't be blocked [except by ...] this turn"` and `"[Subject] can't block this turn"` (`CR 509.1b`).
+   - **P7.2 Token Copy & Temporary Layer 1a Copy (`CR 707.2`, `CR 707.4`, `CR 707.8a`, `CR 707.9a–d`, `30` solo / `67+` w/ P8):**
+     - `"Create [a/N/X] token(s) that's [tapped and attacking and] a copy of [target/~/equipped/enchanted/it][, except ...]"` and `"[~/Target ...] becomes a copy of [target ...][, except ...] until end of turn"`.
+     - Populates `CopiableState` (`TimedContinuousEffect.layer1a` for temporary copy; never mutates `perm.card`), strips Layer 7a P/T CDAs when `except` sets P/T (`CR 707.9d`), and preserves both faces on transforming DFC token copies (`CR 707.8a`).
+   - **P7.3 Edict Sacrifice, Wheel / Random Discard, & `CR 601.2d` Divided Damage/Counters (`155` cards):**
+     - `"[Target/Each player/opponent] sacrifices [a/N] [creature/artifact/enchantment/planeswalker/nonland permanent] [of their choice]"` (`CR 701.17`).
+     - `"[Each/Target player / You] discards [their/your] hand, then draws [N / that many] cards"` + `"[Target/Each player/opponent] discards [N/X] cards at random"` (deterministic PRNG).
+     - `CR 601.2d` announcement-time division (`TargetSpec.divideTotal`, `StackItem.targetDivisions`, `>= 1` per target, `CR 608.2b` partial-legality share preservation, pairing directly with UI Track U3 `AllocationStepperWidget.svelte`) + `"[Up to N] target creatures each get +X/+Y until end of turn"`.
+   - **P7.4 Trigger Object-Filter Stats, Attached Combat/Damage Triggers, & Turn-History Intervening-If (`CR 603.2`, `CR 603.4`, `142` cards):**
+     - Wire `power`, `toughness`, and `manaValue` in `RUNTIME_OBJECT_FIELDS` (`compiler/triggers.ts` + `runtime/triggers.ts`).
+     - Wire `attachedTo` on `blocks`, `becomesBlocked`, `dealtDamage`, and `becomesTarget` (`'ability' | 'spellOrAbility'`).
+     - Turn-history intervening-if conditions: `creatureDiedThisTurn` (*Morbid*), `attackedThisTurn` (*Raid*), `permanentLeftBattlefieldThisTurn` (*Revolt*), `lifeGainedThisTurn`, and `wasCast`.
+
+2. **Track P8 (`mtg_p8_statics_layers_restrictions` — `compiler/statics.ts`, `compiler/costs.ts`, `runtime/staticsLayersAndRestrictions.ts`; `+884` solo full cards):**
+   - **P8.1 `ObjectFilter` Completeness (`320` cards):** `notColors` (`nonwhite`/`nonblue`/`nonred`/`nongreen`), `multicolored` / `monocolored` (`CR 105.2`), `hasKeywords` / `lacksKeywords`, `hasCounters`, `toughness: Compare`, and `allTypes` (`artifact creature`, `enchantment creature`, `land creature` AND-semantics `CR 205.2b`).
+   - **P8.2 Static Combat Evasion/Block Locks & Activated-Ability Locks (`CR 508.1c`, `CR 509.1a–c`, `CR 602.5a`, `207` cards):**
+     - `cantBlockExcept`, `additionalBlockCount` (`1..N` / `'unlimited'`), `cantBeBlockedBy`, `cantBeBlockedExceptBy` (incl. `maxBlockers`), `mustBeBlockedIfAble` (`CR 509.1c` maximum-requirement assignment check), and `cantAttackUnlessDefenderControls`.
+     - `cantActivateAbilities` (`allowManaAbilities: boolean`) on filtered permanents (*Collector Ouphe*, *Null Rod*) and `attachedTo` (*Arrest*, *Planar Disruption*).
+   - **P8.3 Conditional Statics & All-Zone `*/*` Layer 7a CDAs (`CR 604.3`, `CR 208.2a`, `CR 613.4a`, `203` cards):**
+     - Strip conditional static prefixes (`During your turn`, `Threshold`, `Metalcraft`, `Delirium` via `distinctCardTypesInZone`, `Ferocious`, `As long as you control ...`, `As long as ~ is tapped/untapped/equipped/enchanted/attacking`) into `StaticDef.condition`, evaluated against layer-consistent state up to `L - 1` (`CR 613.1`).
+     - All-zone `*/*`, `*/N`, `N/*`, and `1+*` (`Tarmogoyf`) Layer 7a CDAs (`setBasePT`, `setBasePower`, `setBaseToughness`) evaluated both in `runtime/layers.ts` Layer 7a and off-battlefield in `runtime/objectFilter.ts` (`objectPower` / `objectToughness`, closing `ENGINE_INVARIANTS.md` §2.5).
+   - **P8.4 Conditional ETB Dual Lands, Generalized *Clone*, & Top-of-Library / Graveyard Play (`CR 614.1c`, `CR 614.12`, `CR 707.5`, `CR 401.5`, `CR 601.3e`, `CR 305.1`, `173` cards):**
+     - Fastlands, Slowlands, Checklands, Tango lands, Crowdlands, Shocklands (`entersTappedUnlessPayCost: pay 2 life`, auto-tapped when `life < 2` or life total can't change `CR 119.4`/`119.8`), and Reveal lands.
+     - Generalized `enterAsCopy` (`optional`, `filter: ObjectFilter`, `tapped`, `except: CopyModificationSpec`).
+     - `lookAtTopOfLibrary` (with `CR 401.5` mid-cast/activation lock while `pendingCostPayment` is active!), `revealTopOfLibrary`, `playFromTopOfLibrary` (`allowLands`, `spellFilter`), and `playLandsFromGraveyard`.
+
+3. **Track P9 (`mtg_p9_keywords_wave3` — `keywords.ts`, `compiler/card.ts`, `runtime/keywordsWave3.ts`; 18 `CR 702` Keywords, `+328` solo full cards):**
+   - **P9.1 Stack/Exile/Upkeep Cast & Triggered (`123` cards):** `Echo` (`CR 702.30a–b`, `cameUnderControlSinceLastUpkeep` re-armed on control change), `Madness` (`CR 702.35a–c`, `400.7k` discard-to-exile replacement + timing-ignoring cast trigger -> graveyard on decline), `Cascade` (`CR 702.85a–c`, dual MV check blocking expensive MDFC back faces), and `Rebound` (`CR 702.88a–c`, `castFromZone === 'hand'` check).
+   - **P9.2 LKI Death-Return & Spirit Recovery (`64` cards):** `Soulshift N` (`CR 702.46a–b`), `Undying` (`CR 702.93a`), `Modular N` (`CR 702.43a–b`), and `Persist` (`CR 702.79a`) — snapshotting `preSbaCounters` before simultaneous `CR 704.5f` + `CR 704.5q` annihilation per **`CR 704.8`**!
+   - **P9.3 Payment Aid, Alt-Cast, Combat Swap & GY Exile (`56` cards):** `Improvise` (`CR 702.126a–c` via generic `CastCostAid`), `Dash` (`CR 702.109a`), `Ninjutsu` + `Commander ninjutsu` (`CR 702.49a–d`, `CR 508.4` tapped-and-attacking swap without Commander tax `CR 903.8`), and `Scavenge` (`CR 702.97a` graveyard LKI power).
+   - **P9.4 Combat Poison, ETB Choice/Counters & Cast Drain (`84` cards):** `Toxic N` (`CR 702.164a–c` static sum on >0 combat damage), `Bloodthirst N` (`CR 702.54a–c`), `Flanking` (`CR 702.25a–b`), `Fabricate N` (`CR 702.123a–b`), `Unleash` (`CR 702.98a`), `Extort` (`CR 702.101a–b` actual life lost), and `Riot` (`CR 702.136a–b` per-instance static ETB choice).
+
 ---
 
 ## 3. Phases
