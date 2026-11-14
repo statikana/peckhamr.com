@@ -32,7 +32,7 @@ import { parseCost, parseObjectPhrase } from './costs.ts';
 import { parseEffects } from './effects.ts';
 import { staticallyInterpretable } from './interpretable.ts';
 import { splitSentences } from './normalize.ts';
-import { parseCondition } from './triggers.ts';
+import { parseActivatedIfConditionSentence, parseCondition } from './triggers.ts';
 
 export type StaticItem =
 	| { kind: 'static'; static: StaticDef }
@@ -195,7 +195,16 @@ function keywordGrant(affected: Affected, keywords: string[], condition?: Condit
 }
 
 function manaStepComplete(step: EffectStep): boolean {
-	return Boolean(step.params?.mana || step.params?.manaChoice);
+	if (step.verb === 'freezeUntap') {
+		return step.subject.k === 'self' && !step.condition && !step.optional;
+	}
+	return Boolean(
+		step.params?.mana ||
+			step.params?.manaChoice ||
+			step.params?.manaWithChosenColor ||
+			step.params?.manaBundles ||
+			step.params?.manaCombinationColors
+	);
 }
 
 /**
@@ -216,27 +225,53 @@ function parseGrantedActivatedAbility(quoted: string): ActivatedAbility | null {
 	if (cost.unparsed.length > 0) return null;
 
 	const effect = parseEffects(effectText, colon + 1, 'activated');
-	const sentences = splitSentences(effectText, colon + 1).map((s) => s.text.toLowerCase());
+	const rawSentences = splitSentences(effectText, colon + 1);
+	const sentences = rawSentences.map((s) => s.text.toLowerCase());
 	const isMana =
 		effect.steps.length > 0 &&
 		effect.targets.length === 0 &&
-		effect.steps.every((s) => s.verb === 'addMana');
-	const sorcery = sentences.some((s) => /^(?:activate|equip) only as a sorcery\.?$/.test(s));
-	const timing: Timing = isMana ? 'mana' : sorcery ? 'sorcery' : 'instant';
+		effect.steps.some((s) => s.verb === 'addMana') &&
+		effect.steps.every(
+			(s) =>
+				s.verb === 'addMana' ||
+				(s.verb === 'freezeUntap' && s.subject.k === 'self' && !s.condition && !s.optional)
+		);
+	let sorcery = sentences.some((s) => /^(?:activate|equip) only as a sorcery\.?$/.test(s));
 
 	const activationRestrictions: ActivationRestriction[] = [];
+	const addRestriction = (tag: ActivationRestriction) => {
+		if (!activationRestrictions.includes(tag)) activationRestrictions.push(tag);
+	};
 	if (sentences.some((s) => /^activate only once each turn\.?$/.test(s))) {
-		activationRestrictions.push('onceEachTurn');
+		addRestriction('onceEachTurn');
 	}
 	if (sentences.some((s) => /^activate only during your turn\.?$/.test(s))) {
-		activationRestrictions.push('duringYourTurn');
+		addRestriction('duringYourTurn');
 	}
 	if (sentences.some((s) => /^activate only during your upkeep\.?$/.test(s))) {
-		activationRestrictions.push('duringYourUpkeep');
+		addRestriction('duringYourUpkeep');
 	}
 	if (sentences.some((s) => /^activate only during combat\.?$/.test(s))) {
-		activationRestrictions.push('duringCombat');
+		addRestriction('duringCombat');
 	}
+	const activationConditions: Condition[] = [];
+	for (const rs of rawSentences) {
+		const condSpec = parseActivatedIfConditionSentence(rs.text);
+		if (!condSpec) continue;
+		activationConditions.push(condSpec.condition);
+		if (condSpec.extra === 'as a sorcery') sorcery = true;
+		else if (condSpec.extra === 'once each turn') addRestriction('onceEachTurn');
+		else if (condSpec.extra === 'during your turn') addRestriction('duringYourTurn');
+		else if (condSpec.extra === 'during your upkeep') addRestriction('duringYourUpkeep');
+		else if (condSpec.extra === 'during combat') addRestriction('duringCombat');
+	}
+	const activationCondition: Condition | undefined =
+		activationConditions.length === 1
+			? activationConditions[0]
+			: activationConditions.length > 1
+				? { k: 'and', of: activationConditions }
+				: undefined;
+	const timing: Timing = isMana ? 'mana' : sorcery ? 'sorcery' : 'instant';
 
 	const effectOk = isMana
 		? effect.unparsed.length === 0 && effect.steps.every(manaStepComplete)
@@ -253,6 +288,7 @@ function parseGrantedActivatedAbility(quoted: string): ActivatedAbility | null {
 		timing,
 		isMana,
 		...(activationRestrictions.length > 0 ? { activationRestrictions } : {}),
+		...(activationCondition ? { activationCondition } : {}),
 		text: trimmed,
 		span
 	};
@@ -338,10 +374,34 @@ const replacements: Production = (s, span) => {
 		if (/^(?:you may have )?~ enters? (?:the battlefield )?as a copy of any creature(?: on the battlefield)?$/i.test(body)) {
 			return { k: 'modify', copyOf: { types: ['Creature'], zone: 'battlefield' } };
 		}
+		if (/^as (?:~|it) enters(?: the battlefield)?, choose a creature type$/i.test(body)) {
+			return { k: 'modify', chooseSubType: 'creature' };
+		}
+		const chooseCol = body.match(
+			/^as (?:~|it) enters(?: the battlefield)?, choose a color(?: other than (white|blue|black|red|green))?$/i
+		);
+		if (chooseCol) {
+			const ex = chooseCol[1] ? COLORS[chooseCol[1].toLowerCase()] : undefined;
+			return { k: 'modify', chooseColor: ex ? { exclude: ex } : {} };
+		}
 		return null;
 	};
 	const direct = parseSelfEtbModify(s);
-	if (direct) return [{ kind: 'replacement', replacement: { replaces: entersSelf, with: direct } }];
+	if (direct) {
+		const isSelfChoice = Boolean(
+			typeof direct === 'object' && !Array.isArray(direct) && direct.k === 'modify' && (direct.chooseSubType || direct.chooseColor)
+		);
+		return [
+			{
+				kind: 'replacement',
+				replacement: {
+					replaces: entersSelf,
+					with: direct,
+					...(isSelfChoice ? { selfReplacement: true } : {})
+				}
+			}
+		];
+	}
 
 	// CR 702.138c / 702.138d: "~ escapes with N [kind] counter(s) on it" and/or "~ escapes with [keyword(s)]"
 	// Rejects "instead" overrides (e.g. Polukranos, Unchained) so they aren't miscompiled as additive.
@@ -599,9 +659,14 @@ function costModifiers(activeZones?: ZoneType[]): Production {
 			const times = parseCountAmount(`the number of ${self[3]}`);
 			return times ? build({ k: 'self' }, self[1], self[2], 'you', times) : null;
 		}
-		const spells = s.match(/^(.*?)\s*[Ss]pells(?: (you|your opponents) cast)? cost (\{\d+\}) (less|more) to cast$/);
+		const spells = s.match(
+			/^(?:(.+?) )?[Ss]pells(?: of the chosen (type|color))?(?: (you|your opponents) cast)?(?: of the chosen (type|color))? cost (\{\d+\}) (less|more) to cast$/
+		);
 		if (spells) {
-			const who = spells[2] === 'you' ? 'you' : spells[2] === 'your opponents' ? 'each_opponent' : 'each_player';
+			const chosenA = spells[2]?.toLowerCase();
+			const who = spells[3] === 'you' ? 'you' : spells[3] === 'your opponents' ? 'each_opponent' : 'each_player';
+			const chosenB = spells[4]?.toLowerCase();
+			if (chosenA && chosenB && chosenA === chosenB) return null;
 			let filter: ObjectFilter = {};
 			if (spells[1]) {
 				// "Instant and sorcery spells" means spells that are either.
@@ -609,7 +674,9 @@ function costModifiers(activeZones?: ZoneType[]): Production {
 				if (!f) return null;
 				filter = f;
 			}
-			return build({ k: 'spell', filter }, spells[3], spells[4], who);
+			if (chosenA === 'type' || chosenB === 'type') filter = { ...filter, ofChosenType: true };
+			if (chosenA === 'color' || chosenB === 'color') filter = { ...filter, ofChosenColor: true };
+			return build({ k: 'spell', filter }, spells[5], spells[6], who);
 		}
 		const abilityMod = s.match(/^(Equip|Cycling) abilities you activate cost (\{\d+\}) (less|more)(?: to activate)?$/i);
 		if (abilityMod) {
@@ -808,6 +875,16 @@ const globalChanges: Production = (s) => {
 		const affected = parseAffected(every[1]);
 		return affected ? [continuous('4', affected, { k: 'allCreatureTypes' })] : null;
 	}
+	const chosenType = s.match(/^(.+?) (?:is|are) the chosen type in addition to (?:its|their) other types$/i);
+	if (chosenType) {
+		const affected = parseAffected(chosenType[1]);
+		return affected ? [continuous('4', affected, { k: 'addChosenSubtype' })] : null;
+	}
+	const chosenCol = s.match(/^(.+?) (?:is|are) the chosen color$/i);
+	if (chosenCol) {
+		const affected = parseAffected(chosenCol[1]);
+		return affected ? [continuous('5', affected, { k: 'setChosenColor' })] : null;
+	}
 	if (/^The same is true for creature spells you control and creature cards you own that aren't on the battlefield$/i.test(s)) {
 		return [];
 	}
@@ -868,11 +945,22 @@ function grants(condition?: Condition): Production {
 			}
 			const items = [continuous('7c', affected, { k: 'pt', power, toughness }, condition)];
 			if (pt[4]) {
-				const kws = parseKeywordList(pt[4]);
-				if (!kws) return null;
-				items.push(keywordGrant(affected, kws, condition));
+				if (/^protection from the chosen color$/i.test(pt[4].trim())) {
+					items.push(continuous('6', affected, { k: 'protectionFromChosenColor' }, condition));
+				} else {
+					const kws = parseKeywordList(pt[4]);
+					if (!kws) return null;
+					items.push(keywordGrant(affected, kws, condition));
+				}
 			}
 			return items;
+		}
+		const protChosen = s.match(/^(.+?) (?:has|have) protection from the chosen color$/i);
+		if (protChosen) {
+			const affected = parseAffected(protChosen[1]);
+			return affected
+				? [continuous('6', affected, { k: 'protectionFromChosenColor' }, condition)]
+				: null;
 		}
 		const kw = s.match(/^(.+?) (?:has|have) (.+)$/);
 		if (kw) {

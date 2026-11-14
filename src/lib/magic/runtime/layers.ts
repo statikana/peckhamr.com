@@ -47,6 +47,7 @@ import {
 } from './layerCache.ts';
 import { evaluateKickedCountAmount, evaluateKickerCondition } from './kicker.ts';
 import { evaluateAmount, playerCommanderCastCount } from './objectFilter.ts';
+import { PROTECTION_KEYWORD_BY_COLOR } from './tuckFreezeChosen.ts';
 
 export interface AttributedKeywordOrEffect {
 	id: string;
@@ -927,6 +928,14 @@ function matchesLayerFilter(
 			return false;
 		}
 	}
+	if (filter.ofChosenType) {
+		const chosenSub = source.inst.chosenSubType;
+		if (!chosenSub || !hasSubtypeInWork(target, chosenSub)) return false;
+	}
+	if (filter.ofChosenColor) {
+		const chosenCol = source.inst.chosenColor;
+		if (!chosenCol || !target.colors.includes(chosenCol)) return false;
+	}
 	if (filter.colors?.length) {
 		if (!matchesColorFilter(target.colors, filter.colors)) return false;
 	}
@@ -1059,6 +1068,19 @@ function evaluateLayerAmount(
 							)
 						) {
 							continue;
+						}
+						if (f.ofChosenType) {
+							const chosenSub = source.inst.chosenSubType;
+							if (
+								!chosenSub ||
+								!gChars.subtypes.some((gs) => gs.toLowerCase() === chosenSub.toLowerCase())
+							) {
+								continue;
+							}
+						}
+						if (f.ofChosenColor) {
+							const chosenCol = source.inst.chosenColor;
+							if (!chosenCol || !gChars.colors.includes(chosenCol)) continue;
 						}
 						total += 1;
 					}
@@ -1197,6 +1219,9 @@ function evaluateLayerCondition(
 			return Boolean(source.inst.blitzed);
 		case 'saddled':
 			return Boolean(source.inst.saddledThisTurn);
+		// --- Track P4 ---
+		case 'exertedThisTurn':
+			return Boolean(source.inst.exertedThisTurn);
 		// --- Track P5 ---
 		case 'monstrous':
 			return Boolean(source.inst.isMonstrous);
@@ -2111,7 +2136,13 @@ function evaluateAdditiveTypesAndColors(
 		if (source.strippedByAttachment || source.abilityRemovalEvents.length > 0) continue;
 		for (const st of source.statics) {
 			if (st.k !== 'continuous' || st.layer !== '4') continue;
-			if (st.affected !== 'self' && st.affected !== 'attachedTo' && typeof st.affected !== 'object') continue;
+			if (
+				st.affected !== 'self' &&
+				st.affected !== 'attachedTo' &&
+				typeof st.affected !== 'object'
+			) {
+				continue;
+			}
 			const candidateTargets: PermWorkState[] =
 				st.affected === 'self'
 					? [source]
@@ -2120,7 +2151,37 @@ function evaluateAdditiveTypesAndColors(
 							? [workMap.get(source.inst.attachedToId)!]
 							: []
 						: workList;
-			if (st.mod.k === 'addTypes') {
+			if (st.mod.k === 'addChosenSubtype') {
+				const chosenSub = source.inst.chosenSubType;
+				if (!chosenSub) continue;
+				for (const target of candidateTargets) {
+					if (typeof st.affected === 'object' && !matchesLayerFilter(st.affected, target, source)) {
+						continue;
+					}
+					if (
+						st.condition &&
+						!evaluateLayerCondition(st.condition, state, workList, source, target)
+					) {
+						continue;
+					}
+					if (
+						(st.affected === 'attachedTo' || st.affected === 'self') &&
+						latestSetTypesTimestampOn(target) > source.timestamp
+					) {
+						continue;
+					}
+					if (!target.subtypes.some((s) => s.toLowerCase() === chosenSub.toLowerCase())) {
+						target.subtypes.push(chosenSub);
+					}
+					const nextType = addSubtypeToTypeLine(target.effectiveTypeLine, chosenSub);
+					if (nextType !== target.effectiveTypeLine) {
+						target.effectiveTypeLine = nextType;
+					}
+					if (!target.typeModifiedBy.includes(source.name)) {
+						target.typeModifiedBy.push(source.name);
+					}
+				}
+			} else if (st.mod.k === 'addTypes') {
 				for (const target of candidateTargets) {
 					if (typeof st.affected === 'object' && !matchesLayerFilter(st.affected, target, source)) {
 						continue;
@@ -2255,10 +2316,28 @@ function evaluateLayer5Colors(
 	for (const source of workList) {
 		if (source.strippedByAttachment || source.abilityRemovalEvents.length > 0) continue;
 		for (const st of source.statics) {
-			if (st.k !== 'continuous' || st.layer !== '5' || st.affected === 'self') continue;
-			if (st.mod.k !== 'setColors' && st.mod.k !== 'addColors') continue;
+			if (st.k !== 'continuous' || st.layer !== '5') continue;
+			if (st.affected === 'self' && st.mod.k !== 'setChosenColor') continue;
+			if (
+				st.mod.k !== 'setColors' &&
+				st.mod.k !== 'addColors' &&
+				st.mod.k !== 'setChosenColor'
+			) {
+				continue;
+			}
+			const chosenColors =
+				st.mod.k === 'setChosenColor'
+					? source.inst.chosenColor
+						? source.inst.chosenColor === 'C'
+							? []
+							: [source.inst.chosenColor]
+						: undefined
+					: undefined;
+			if (st.mod.k === 'setChosenColor' && chosenColors === undefined) continue;
 			let targets: PermWorkState[] = [];
-			if (st.affected === 'attachedTo') {
+			if (st.affected === 'self') {
+				targets = [source];
+			} else if (st.affected === 'attachedTo') {
 				const hostId = source.inst.attachedToId;
 				const host = hostId ? workMap.get(hostId) : undefined;
 				if (host) targets = [host];
@@ -2272,7 +2351,12 @@ function evaluateLayer5Colors(
 				ops.push({
 					timestamp: source.timestamp,
 					target,
-					setColors: st.mod.k === 'setColors' ? st.mod.colors : undefined,
+					setColors:
+						st.mod.k === 'setColors'
+							? st.mod.colors
+							: st.mod.k === 'setChosenColor'
+								? chosenColors
+								: undefined,
 					addColors: st.mod.k === 'addColors' ? st.mod.colors : undefined
 				});
 			}
@@ -2704,6 +2788,19 @@ function evaluatePerPermanent(
 								source.timestamp
 							);
 						}
+					} else if (st.layer === '6' && st.mod.k === 'protectionFromChosenColor') {
+						const chosenCol = source.inst.chosenColor;
+						const kw = chosenCol ? PROTECTION_KEYWORD_BY_COLOR[chosenCol] : undefined;
+						if (kw) {
+							grantItem(
+								target,
+								'protection',
+								formatKeywordLabel(kw),
+								'keyword',
+								source.name,
+								source.timestamp
+							);
+						}
 					} else if (st.layer === '6' && st.mod.k === 'removeKeywords') {
 						removeMatchingKeywordsUpTo(target, st.mod.keywords, source.name, source.timestamp);
 						if (st.mod.cantHaveOrGain) {
@@ -2828,6 +2925,19 @@ function evaluatePerPermanent(
 								target,
 								key,
 								formatKeywordLabel(kwLow),
+								'keyword',
+								source.name,
+								source.timestamp
+							);
+						}
+					} else if (st.layer === '6' && st.mod.k === 'protectionFromChosenColor') {
+						const chosenCol = source.inst.chosenColor;
+						const kw = chosenCol ? PROTECTION_KEYWORD_BY_COLOR[chosenCol] : undefined;
+						if (kw) {
+							grantItem(
+								target,
+								'protection',
+								formatKeywordLabel(kw),
 								'keyword',
 								source.name,
 								source.timestamp

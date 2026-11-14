@@ -471,15 +471,20 @@ describe('Phase 5 (§6): ChoiceSpec and PromptPurpose exhaustiveness guards (#2)
 
 		const dir = dirname(new URL(import.meta.url).pathname);
 		const arenaTableSrc = readFileSync(join(dir, '..', 'ArenaTable.svelte'), 'utf8');
+		const choiceModalSrc = readFileSync(join(dir, '..', 'ui', 'ChoicePromptModal.svelte'), 'utf8');
+		assert.ok(
+			arenaTableSrc.includes('<ChoicePromptModal'),
+			'ArenaTable.svelte must delegate choice prompts to ChoicePromptModal.svelte'
+		);
 		for (const kind of allKinds!) {
 			assert.ok(
-				arenaTableSrc.includes(`myChoice.kind === '${kind}'`),
-				`ArenaTable.svelte must have a choice branch for myChoice.kind === '${kind}'`
+				choiceModalSrc.includes(`choice.kind === '${kind}'`),
+				`ChoicePromptModal.svelte must have a choice branch for choice.kind === '${kind}'`
 			);
 		}
 		assert.ok(
-			arenaTableSrc.includes('_exhaustiveChoice: never = myChoice'),
-			'ArenaTable.svelte must include a compile-time never exhaustiveness check on myChoice'
+			choiceModalSrc.includes('_exhaustiveChoice: never = choice'),
+			'ChoicePromptModal.svelte must include a compile-time never exhaustiveness check on choice'
 		);
 	});
 
@@ -498,7 +503,11 @@ describe('Phase 5 (§6): ChoiceSpec and PromptPurpose exhaustiveness guards (#2)
 			join(dir, '..', 'engine.ts'),
 			join(dir, 'triggers.ts'),
 			join(dir, 'effects.ts'),
-			join(dir, 'choices.ts')
+			join(dir, 'choices.ts'),
+			join(dir, 'orthogonalKeywords.ts'),
+			join(dir, 'tuckFreezeChosen.ts'),
+			join(dir, 'keywordActions.ts'),
+			join(dir, 'striatedFrames.ts')
 		];
 		const emittedPurposes = new Set<string>();
 		const purposeRegex = /\bpurpose\s*:\s*'([a-z_]+)'/g;
@@ -524,7 +533,7 @@ describe('Phase 5 (§6): ChoiceSpec and PromptPurpose exhaustiveness guards (#2)
 					? 'yesNo'
 					: purpose === 'trigger_targets'
 						? 'chooseObjects'
-						: purpose === 'trigger_modes'
+						: purpose === 'trigger_modes' || purpose === 'etb_choice'
 							? 'chooseMode'
 							: purpose === 'trigger_order'
 								? 'orderObjects'

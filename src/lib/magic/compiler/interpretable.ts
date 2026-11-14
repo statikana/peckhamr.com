@@ -69,6 +69,9 @@ export const INTERPRETED_VERBS: ReadonlySet<Verb> = new Set<Verb>([
 	'becomeMonarch',
 	'saddle',
 	'cumulativeUpkeep',
+	// --- Track P4 ---
+	'freezeUntap',
+	'exert',
 	// --- Track P5 ---
 	'amass',
 	'incubate',
@@ -92,7 +95,8 @@ export const SUPPORTED_OPTIONAL_COST_KINDS: ReadonlySet<CostDef['k']> = new Set<
 	'removeCounters',
 	'exileFrom',
 	'tapOthers',
-	'tapSubsetSum'
+	'tapSubsetSum',
+	'exertSelf'
 ]);
 
 /**

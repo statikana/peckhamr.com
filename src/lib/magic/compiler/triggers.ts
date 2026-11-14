@@ -214,6 +214,9 @@ function objectEvent(verb: string, subject: Subject): TriggerDef | null {
 			return def('becomesCrewed');
 		case 'becomes saddled':
 			return def('becomesSaddled');
+		case 'is exerted':
+		case 'are exerted':
+			return def('exert');
 		case 'is dealt damage':
 			return def('dealtDamage');
 		case 'deals combat damage to a player':
@@ -293,9 +296,9 @@ function spellFilter(text: string): EventFilter['object'] | null {
 	const m = text.match(/^(?:a|an) (.+)$/);
 	if (!m) return null;
 	if (m[1] === 'spell') return {};
-	const spell = m[1].match(/^(.+) spell$/);
+	const spell = m[1].match(/^(?:(.+) )?spell((?:\s+of the chosen (?:type|color))+)?$/i);
 	// "card" gives modifier-only phrases a noun: "noncreature" -> "noncreature card".
-	return spell ? parseObjectPhrase(`${spell[1]} card`) : null;
+	return spell ? parseObjectPhrase(`${spell[1] ? `${spell[1]} ` : ''}card${spell[2] ?? ''}`) : null;
 }
 
 function discardedCardFilter(text: string): ObjectFilter | null {
@@ -397,6 +400,11 @@ function playerEvent(player: EventFilter['player'], rest: string): TriggerDef | 
 	if (plot) {
 		const object = discardedCardFilter(plot[1]);
 		if (object) return { event: 'plot', filter: { object, player } };
+	}
+	const exert = rest.match(/^exerts? (?:(another .+?)|(?:a|an) (.+))$/);
+	if (exert) {
+		const object = parseObjectPhrase(exert[1] ?? exert[2]);
+		if (object) return { event: 'exert', filter: { object, player } };
 	}
 	return null;
 }
@@ -508,6 +516,20 @@ export function parseCondition(text: string): Condition | null {
 	if (/^if (?:its blitz cost was(?:n't| not) paid|(?:it|~) was(?:n't| not) blitzed)$/i.test(t)) {
 		return { k: 'not', of: { k: 'blitzed' } };
 	}
+	if (
+		/^if (?:~|it|he|she|they) (?:is|are|was|were|has been|have been) exerted(?: this turn)?$/i.test(
+			t
+		)
+	) {
+		return { k: 'exertedThisTurn' };
+	}
+	if (
+		/^if (?:(?:~|it|he|she|they) (?:is(?:n't| not)|are(?:n't| not)|was(?:n't| not)|were(?:n't| not)|has(?:n't| not) been|have(?:n't| not) been)|it's not) exerted(?: this turn)?$/i.test(
+			t
+		)
+	) {
+		return { k: 'not', of: { k: 'exertedThisTurn' } };
+	}
 	if (/^if you control (?:a|your) commander$/i.test(t)) {
 		return { k: 'controlCommander' };
 	}
@@ -522,9 +544,9 @@ export function parseCondition(text: string): Condition | null {
 			return { k: 'compare', left: { k: 'count', of: { ...filter, controller: 'you' } }, op: '>=', right: n(number(m[1])!) };
 		}
 	}
-	m = t.match(/^if you control (?:a|an) (.+)$/);
+	m = t.match(/^if you control (?:(?:a|an) (.+)|(another .+))$/i);
 	if (m) {
-		const filter = parseObjectPhrase(m[1]);
+		const filter = parseObjectPhrase(m[1] ?? m[2]);
 		if (filter && !filter.controller) {
 			return { k: 'compare', left: { k: 'count', of: { ...filter, controller: 'you' } }, op: '>=', right: n(1) };
 		}
@@ -552,6 +574,44 @@ export function parseCondition(text: string): Condition | null {
 	if (/^if an opponent is the monarch$/i.test(t)) return { k: 'isMonarch', relation: 'opponent' };
 	if (/^if a player is the monarch$/i.test(t)) return { k: 'isMonarch', relation: 'any' };
 	if (/^if there is no monarch$/i.test(t)) return { k: 'not', of: { k: 'isMonarch', relation: 'any' } };
+	return null;
+}
+
+export type ActivatedExtraRestriction =
+	| 'as a sorcery'
+	| 'once each turn'
+	| 'during your turn'
+	| 'during your upkeep'
+	| 'during combat';
+
+/**
+ * CR 602.5b: Parses `"Activate only if <condition>[ and only <timing/restriction>]."` while
+ * preserving subtype capitalization (e.g. `"Swamp"`, `"Plains"`). Excludes zone-only restrictions
+ * (`~ is in your hand|graveyard`) handled separately by `ACTIVATED_ZONE_RESTRICTION_SENTENCE`.
+ */
+export function parseActivatedIfConditionSentence(
+	raw: string
+): { condition: Condition; extra?: ActivatedExtraRestriction } | null {
+	const t = raw.trim().replace(/\.$/, '').trim();
+	if (/~ is in your (?:hand|graveyard)\b/i.test(t)) return null;
+	const ifFirst = t.match(
+		/^activate only if (.+?)(?: and only (as a sorcery|once each turn|during your turn|during your upkeep|during combat))?$/i
+	);
+	if (ifFirst) {
+		const condition = parseCondition(`if ${ifFirst[1].trim()}`);
+		if (!condition) return null;
+		const extra = ifFirst[2]?.toLowerCase() as ActivatedExtraRestriction | undefined;
+		return { condition, ...(extra ? { extra } : {}) };
+	}
+	const extraFirst = t.match(
+		/^activate only (as a sorcery|once each turn|during your turn|during your upkeep|during combat) and only if (.+)$/i
+	);
+	if (extraFirst) {
+		const condition = parseCondition(`if ${extraFirst[2].trim()}`);
+		if (!condition) return null;
+		const extra = extraFirst[1].toLowerCase() as ActivatedExtraRestriction;
+		return { condition, extra };
+	}
 	return null;
 }
 
@@ -622,6 +682,10 @@ const RUNTIME_OBJECT_FIELDS: ReadonlySet<string> = new Set([
 	'tapped',
 	'isCommander',
 	'saddled',
+	// --- Track P4 ---
+	'ofChosenType',
+	'ofChosenColor',
+	// --- Track P5 ---
 	'monstrous'
 ]);
 
@@ -656,6 +720,8 @@ const RUNTIME_EVENT_FIELDS: Partial<Record<TriggerDef['event'], ReadonlySet<stri
 	becomesSaddled: new Set(['object', 'orSelf']),
 	foretell: new Set(['object', 'player']),
 	plot: new Set(['object', 'player']),
+	// --- Track P4 ---
+	exert: new Set(['object', 'orSelf', 'player']),
 	// --- Track P5 ---
 	amass: new Set(['player', 'amassSubtype']),
 	manifestDread: new Set(['player']),

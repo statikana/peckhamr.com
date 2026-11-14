@@ -85,6 +85,17 @@ import { activeRuleModifiers, tokenMultiplier } from './replace.ts';
 import { flushTriggers, withSimultaneousDestroyLki } from './triggers.ts';
 import { nextRandom } from './random.ts';
 import {
+	applyNextUntapFreeze,
+	chooseBotLibraryPlacement,
+	computeLibraryInsertIndex,
+	exertPermanent,
+	expandCombinationBundles,
+	formatManaBundle,
+	orderBotSimultaneousLibraryCards,
+	pickBestBundleForRequirement,
+	pickCombinationForRequirement
+} from './tuckFreezeChosen.ts';
+import {
 	allocateTimestamp,
 	attachObject,
 	createEmptyCounters,
@@ -158,7 +169,18 @@ export interface EffectPorts {
 		pending?: EffectResumeFrame['pendingOptionalCost']
 	): PayOptionalCostResult;
 	/** Moves a permanent off the battlefield (replacement effects, attachments, tokens cease to exist). */
-	moveFromBattlefield(state: GameState, inst: CardInstance, to: 'graveyard' | 'exile' | 'hand' | 'library'): string;
+	moveFromBattlefield(
+		state: GameState,
+		inst: CardInstance,
+		to: 'graveyard' | 'exile' | 'hand' | 'library',
+		libraryOpts?: { position?: 'top' | 'bottom'; fromTop?: number }
+	): string;
+	/** Moves a spell on the stack into its owner's library without countering it (CR 401.2, 401.7). */
+	moveStackSpellToLibrary(
+		state: GameState,
+		target: StackItem,
+		libraryOpts?: { position?: 'top' | 'bottom'; fromTop?: number }
+	): void;
 	/** Counters a spell unless it can't be countered. Returns true if it was countered. */
 	counterSpell(state: GameState, item: StackItem, target: StackItem, controller: PlayerGameState): boolean;
 	createToken(state: GameState, controller: PlayerGameState, spec: TokenSpec): CardInstance;
@@ -283,6 +305,8 @@ export interface EffectResult {
 	turnEnded: boolean;
 	/** The spell exiles itself as it resolves ("Exile ~."). */
 	exileSelf: boolean;
+	/** The spell puts itself into its owner's library as it resolves (CR 401.2, 401.7, 608.2m). */
+	librarySelf?: { position: 'top' | 'bottom'; fromTop?: number };
 	/**
 	 * Step E2: a human must choose before the steps can go on. The prompt is queued and the resume
 	 * frame is stored on the stack item (`item.effectResume`); the caller leaves the item on the stack
@@ -728,6 +752,7 @@ class Run {
 			this.phase = resume.phase ?? 'step';
 			for (const [name, bound] of resume.bindings) this.bindings.set(name, bound.map((b) => ({ id: b.id, lki: { ...b.lki } })));
 			this.result.exileSelf = Boolean(resume.exileSelf);
+			if (resume.librarySelf) this.result.librarySelf = { ...resume.librarySelf };
 			this.answers = { ...resume.answers };
 			this.stepDecisions = { ...(resume.stepDecisions ?? {}) };
 			this.pendingOptionalCost = resume.pendingOptionalCost
@@ -1096,6 +1121,7 @@ class Run {
 			phase,
 			bindings: [...this.bindings.entries()].map(([name, bound]) => [name, bound.map((b) => ({ id: b.id, lki: { ...b.lki } }))]),
 			exileSelf: this.result.exileSelf || undefined,
+			...(this.result.librarySelf ? { librarySelf: { ...this.result.librarySelf } } : {}),
 			answers: { ...answers },
 			...(Object.keys(this.stepDecisions).length > 0
 				? { stepDecisions: { ...this.stepDecisions } }
@@ -1111,6 +1137,7 @@ class Run {
 			pr.kind === 'chooseReplacement' ||
 			pr.kind === 'commander_zone_choice' ||
 			pr.purpose === 'end_turn' ||
+			pr.purpose === 'etb_choice' ||
 			(pr.continuation?.kind === 'procedure' &&
 				(pr.continuation.procedure.kind === 'commander_zone_choice' ||
 					pr.continuation.procedure.kind === 'end_turn' ||
@@ -1598,6 +1625,16 @@ class Run {
 		}
 	}
 
+	private sourceChosenSubType(): string | undefined {
+		const src = this.locate(this.ctx.sourceId)?.inst;
+		return src?.chosenSubType ?? this.ctx.item.sourceChosenSubType;
+	}
+
+	private sourceChosenColor(): ManaColor | undefined {
+		const src = this.locate(this.ctx.sourceId)?.inst;
+		return src?.chosenColor ?? this.ctx.item.sourceChosenColor;
+	}
+
 	matches(c: CardInstance, f: ObjectFilter, zone: 'battlefield' | 'graveyard' | 'hand' | 'library' | 'exile'): boolean {
 		const ev = zone === 'battlefield' ? evaluatePermanent(this.state, c) : null;
 		const card = c.copiableCard ?? c.card;
@@ -1607,6 +1644,10 @@ class Run {
 		if (f.types && !f.types.some((t) => typeLine.includes(t))) return false;
 		if (f.subtypes && !f.subtypes.some(hasSub)) return false;
 		if (f.notSubtypes && f.notSubtypes.some(hasSub)) return false;
+		if (f.ofChosenType) {
+			const chosenSub = this.sourceChosenSubType();
+			if (!chosenSub || !hasSub(chosenSub)) return false;
+		}
 		if (f.notTypes && f.notTypes.some((t) => typeLine.includes(t))) return false;
 		if (f.supertypes && !f.supertypes.every((t) => typeLine.includes(t))) return false;
 		if (f.notSupertypes && f.notSupertypes.some((t) => typeLine.includes(t))) return false;
@@ -1643,6 +1684,10 @@ class Run {
 		}
 		const cols = ev ? (c.isFaceDown ? [] : ev.colors) : (card.colors ?? []);
 		if (f.colors && !f.colors.some((col) => cols.includes(col))) return false;
+		if (f.ofChosenColor) {
+			const chosenCol = this.sourceChosenColor();
+			if (!chosenCol || !cols.includes(chosenCol)) return false;
+		}
 		if (
 			f.manaValue &&
 			!compare(
@@ -2154,6 +2199,116 @@ class Run {
 			case 'addMana': {
 				const times = Math.max(0, this.amount(step.amount, 1));
 				const restriction = step.params?.manaRestriction;
+				if (step.params?.manaWithChosenColor) {
+					for (const c of step.params.manaWithChosenColor) {
+						addManaToPlayerPool(you, c, 1, restriction);
+					}
+					const chosenCol = this.sourceChosenColor();
+					if (chosenCol) {
+						addManaToPlayerPool(you, chosenCol, 1, restriction);
+					}
+					return;
+				}
+				if (step.params?.manaBundles && step.params.manaBundles.length > 0) {
+					const bundles = step.params.manaBundles;
+					let chosenBundle =
+						bundles.length === 1
+							? bundles[0]
+							: pickBestBundleForRequirement(bundles, you.manaPool, null, this.ctx.preferredColor);
+					if (!you.isBot && bundles.length > 1 && this.canPause) {
+						const manaKey = `manabundle:${this.stepIndex}`;
+						const ans = this.answers[manaKey] ?? this.answers[you.playerId];
+						if (!ans) {
+							const item = this.saveFrame(this.stepIndex, this.answers, 'step', this.subStepIndex);
+							const modes = bundles.map((b) => formatManaBundle(b));
+							enqueueChoicePrompt(s, {
+								id: p.uid('prompt', s),
+								kind: 'chooseMode',
+								playerId: you.playerId,
+								title: `${title} — Choose Mana Combination`,
+								description: `Choose mana to add (${modes.join(', ')}).`,
+								continuation: {
+									kind: 'effect_choice',
+									stackItemId: item.id,
+									stepIndex: this.stepIndex,
+									answerKey: manaKey
+								},
+								choice: {
+									kind: 'chooseMode',
+									modes,
+									min: 1,
+									max: 1,
+									defaultIndices: [0]
+								}
+							});
+							this.result.paused = true;
+							return;
+						}
+						if (ans.kind === 'chooseMode' && bundles[ans.indices[0] ?? -1]) {
+							chosenBundle = bundles[ans.indices[0]];
+						}
+					}
+					for (const c of chosenBundle) {
+						addManaToPlayerPool(you, c, 1, restriction);
+					}
+					return;
+				}
+				if (step.params?.manaCombinationColors) {
+					if (times <= 0) return;
+					const allowedCols: ManaColor[] =
+						step.params.manaCombinationColors === 'any'
+							? ['W', 'U', 'B', 'R', 'G']
+							: step.params.manaCombinationColors;
+					if (allowedCols.length === 0) return;
+					let chosenBundle = pickCombinationForRequirement(
+						allowedCols,
+						times,
+						you.manaPool,
+						null,
+						this.ctx.preferredColor,
+						you
+					);
+					if (!you.isBot && allowedCols.length > 1 && this.canPause) {
+						const bundles = times <= 5 ? expandCombinationBundles(allowedCols, times) : [];
+						if (bundles.length > 1) {
+							const manaKey = `manacomb:${this.stepIndex}`;
+							const ans = this.answers[manaKey] ?? this.answers[you.playerId];
+							if (!ans) {
+								const item = this.saveFrame(this.stepIndex, this.answers, 'step', this.subStepIndex);
+								const modes = bundles.map((b) => formatManaBundle(b));
+								enqueueChoicePrompt(s, {
+									id: p.uid('prompt', s),
+									kind: 'chooseMode',
+									playerId: you.playerId,
+									title: `${title} — Choose Mana Combination`,
+									description: `Choose ${times} mana in any combination (${allowedCols.map((c) => `{${c}}`).join(', ')}).`,
+									continuation: {
+										kind: 'effect_choice',
+										stackItemId: item.id,
+										stepIndex: this.stepIndex,
+										answerKey: manaKey
+									},
+									choice: {
+										kind: 'chooseMode',
+										modes,
+										min: 1,
+										max: 1,
+										defaultIndices: [0]
+									}
+								});
+								this.result.paused = true;
+								return;
+							}
+							if (ans.kind === 'chooseMode' && bundles[ans.indices[0] ?? -1]) {
+								chosenBundle = bundles[ans.indices[0]];
+							}
+						}
+					}
+					for (const c of chosenBundle) {
+						addManaToPlayerPool(you, c, 1, restriction);
+					}
+					return;
+				}
 				if (step.params?.mana) {
 					const mana = step.params.mana;
 					const loops = mana.length > 1 ? 1 : times;
@@ -2163,7 +2318,7 @@ class Run {
 					return;
 				}
 				if (step.params?.manaChoice) {
-					const allowed = manaChoiceColors(s, you, step.params.manaChoice);
+					const allowed = manaChoiceColors(s, you, step.params.manaChoice, this.sourceChosenColor());
 					if (allowed.length === 0 || times <= 0) return;
 					const defaultColor =
 						this.ctx.preferredColor && allowed.includes(this.ctx.preferredColor)
@@ -2339,6 +2494,39 @@ class Run {
 						}
 					}
 				}
+				return;
+			}
+			case 'freezeUntap': {
+				const objs = this.objects(step.subject).filter((o) => o.zone === 'battlefield');
+				this.bind(step, objs);
+				for (const o of objs) {
+					if (applyNextUntapFreeze(o)) {
+						const objLabel = o.isFaceDown ? (o.faceDownLabel || 'Face-Down Permanent') : o.card.name;
+						p.addLog(
+							s,
+							'rule',
+							`${objLabel} won't untap during its controller's next untap step (${title}).`,
+							you.playerId
+						);
+					}
+				}
+				return;
+			}
+			case 'exert': {
+				const objs = this.objects(step.subject).filter((o) => o.zone === 'battlefield');
+				this.bind(step, objs);
+				for (const o of objs) {
+					if (exertPermanent(s, o, you.playerId)) {
+						const objLabel = o.isFaceDown ? (o.faceDownLabel || 'Face-Down Permanent') : o.card.name;
+						p.addLog(
+							s,
+							'rule',
+							`${you.username} exerted ${objLabel} (${title}).`,
+							you.playerId
+						);
+					}
+				}
+				flushTriggers(s);
 				return;
 			}
 			case 'transform': {
@@ -3649,30 +3837,152 @@ class Run {
 		);
 	}
 
+	private resolveLibraryPlacementChoice(
+		chooser: PlayerGameState,
+		owner: PlayerGameState,
+		card: CardInstance,
+		rawPos: 'top' | 'bottom' | 'topOrBottom' | 'secondOrBottom',
+		rawFromTop: number | undefined,
+		answerKey: string,
+		cardLabel: string
+	): { position: 'top' | 'bottom'; fromTop?: number } | null {
+		if (rawPos === 'topOrBottom' || rawPos === 'secondOrBottom') {
+			const modes =
+				rawPos === 'secondOrBottom'
+					? ['Put second from top of library', 'Put on bottom of library']
+					: ['Put on top of library', 'Put on bottom of library'];
+			let choiceIdx: 0 | 1;
+			const ans = this.answers[answerKey];
+			if (ans?.kind === 'chooseMode') {
+				choiceIdx = (ans.indices[0] ?? 0) === 1 ? 1 : 0;
+			} else if (!chooser.isBot && this.canPause) {
+				const item = this.saveFrame(this.stepIndex, this.answers, 'step', this.subStepIndex);
+				enqueueChoicePrompt(this.state, {
+					id: P().uid('prompt', this.state),
+					kind: 'chooseMode',
+					playerId: chooser.playerId,
+					title: `${this.ctx.title} — Choose Library Placement (${cardLabel})`,
+					description: `Choose where to put ${cardLabel} in ${owner.username}'s library.`,
+					continuation: {
+						kind: 'effect_choice',
+						stackItemId: item.id,
+						stepIndex: this.stepIndex,
+						answerKey
+					},
+					choice: {
+						kind: 'chooseMode',
+						modes,
+						min: 1,
+						max: 1,
+						defaultIndices: [0]
+					}
+				});
+				this.result.paused = true;
+				return null;
+			} else {
+				choiceIdx = chooseBotLibraryPlacement(chooser, owner, card);
+			}
+			if (rawPos === 'secondOrBottom') {
+				return choiceIdx === 0 ? { position: 'top', fromTop: 2 } : { position: 'bottom' };
+			}
+			return { position: choiceIdx === 0 ? 'top' : 'bottom' };
+		}
+		return {
+			position: rawPos === 'bottom' ? 'bottom' : 'top',
+			...(rawFromTop !== undefined ? { fromTop: rawFromTop } : {})
+		};
+	}
+
 	move(step: EffectStep): void {
 		const s = this.state;
 		const p = P();
 		const you = this.you;
 		const params = step.params ?? {};
 		const batchKey = `batch:${this.stepIndex}`;
+		const rawPos = params.position ?? 'top';
+		const rawFromTop = params.fromTop;
+		const choiceBy = params.libraryChoiceBy ?? 'controller';
+
+		if (params.to === 'library' && step.subject.k === 'self' && this.ctx.item.kind === 'spell') {
+			const owner = this.player(this.ctx.item.ownerId ?? you.playerId) ?? you;
+			const chooser = choiceBy === 'owner' ? owner : you;
+			const synth = this.syntheticLkiObject(this.ctx.sourceId, you.playerId);
+			synth.card = this.ctx.item.card;
+			synth.ownerId = owner.playerId;
+			const resolved = this.resolveLibraryPlacementChoice(
+				chooser,
+				owner,
+				synth,
+				rawPos,
+				rawFromTop,
+				`libpos:self:${this.stepIndex}`,
+				this.ctx.item.card.name
+			);
+			if (!resolved) return;
+			this.result.librarySelf = resolved;
+			return;
+		}
+
 		if (params.from === 'hand') {
 			if (params.to === 'library') {
-				const top = params.position !== 'bottom';
 				if (!this.answers[batchKey]) {
 					const chosen = this.resolveHandMoveChosen(step);
 					if (!chosen) return;
-					this.bind(step, chosen);
-					const ordered = top ? [...chosen].reverse() : chosen;
-					if (chosen.length > 0) {
+					if (chosen.length === 0) {
+						this.answers[batchKey] = { kind: 'chooseObjects', objectIds: [] };
+					} else {
+						const resolvedFirst = this.resolveLibraryPlacementChoice(
+							choiceBy === 'owner' ? you : you,
+							you,
+							chosen[0],
+							rawPos,
+							rawFromTop,
+							`libpos:hand:${this.stepIndex}`,
+							chosen.length === 1 ? chosen[0].card.name : `${chosen.length} card(s)`
+						);
+						if (!resolvedFirst) return;
+						this.answers[`libeff:hand:${this.stepIndex}`] = {
+							kind: 'chooseObjects',
+							objectIds: [
+								resolvedFirst.position,
+								resolvedFirst.fromTop !== undefined ? String(resolvedFirst.fromTop) : ''
+							]
+						};
+						this.bind(step, chosen);
+						let ordered = chosen;
+						if (chosen.length > 1 && resolvedFirst.fromTop === undefined && you.isBot) {
+							ordered = orderBotSimultaneousLibraryCards(you, chosen, resolvedFirst.position);
+						}
+						const seq =
+							resolvedFirst.position === 'top' && resolvedFirst.fromTop === undefined
+								? [...ordered].reverse()
+								: ordered;
+						const placeDesc =
+							resolvedFirst.fromTop !== undefined
+								? `${resolvedFirst.fromTop} from top`
+								: resolvedFirst.position === 'bottom'
+									? 'the bottom'
+									: 'top';
 						p.addLog(
 							s,
 							'rule',
-							`${you.username} put ${chosen.length} card(s) from hand on ${top ? 'top' : 'the bottom'} of their library (${this.ctx.title}).`,
+							`${you.username} put ${chosen.length} card(s) from hand on ${placeDesc} of their library (${this.ctx.title}).`,
 							you.playerId
 						);
+						this.answers[batchKey] = { kind: 'chooseObjects', objectIds: seq.map((c) => c.instanceId) };
 					}
-					this.answers[batchKey] = { kind: 'chooseObjects', objectIds: ordered.map((c) => c.instanceId) };
 				}
+				const effAns = this.answers[`libeff:hand:${this.stepIndex}`];
+				const effPos: 'top' | 'bottom' =
+					effAns?.kind === 'chooseObjects' && effAns.objectIds[0] === 'bottom'
+						? 'bottom'
+						: rawPos === 'bottom'
+							? 'bottom'
+							: 'top';
+				const effFromTop =
+					effAns?.kind === 'chooseObjects' && effAns.objectIds[1]
+						? Number(effAns.objectIds[1])
+						: rawFromTop;
 				this.runIndexedBatch(
 					batchKey,
 					() => [],
@@ -3682,7 +3992,10 @@ class Run {
 						return moveObject(s, f.inst, 'library', {
 							from: { player: f.holder, zone: 'hand' },
 							toPlayer: f.holder,
-							insert: top ? 'start' : 'end',
+							insert: (dest) =>
+								dest === 'library'
+									? computeLibraryInsertIndex(effFromTop, effPos, f.holder.library.length)
+									: 'end',
 							commanderRedirect: true,
 							bumpVersion: true,
 							newTimestamp: true
@@ -3752,11 +4065,275 @@ class Run {
 						bumpVersion: true
 					});
 					p.addLog(s, 'cast', `${you.username} put ${o.card.name} from their hand onto the battlefield (${this.ctx.title}).`, you.playerId);
-					if (isAura && o.attachedToId) {
-						const host = p.findPermanent(s, o.attachedToId);
-						if (host) p.triggerOnAttach(s, you, o, host.inst);
+					if (o.zone === 'battlefield') {
+						if (isAura && o.attachedToId) {
+							const host = p.findPermanent(s, o.attachedToId);
+							if (host) p.triggerOnAttach(s, you, o, host.inst);
+						}
+						p.triggerOnEtb(s, you, o);
 					}
-					p.triggerOnEtb(s, you, o);
+					return res;
+				}
+			);
+			return;
+		}
+
+		if (params.to === 'library') {
+			const trigAbLib =
+				this.ctx.item.kind === 'triggered' && this.ctx.item.triggeredAbilityIndex !== undefined
+					? activeAbilityDefs(this.ctx.sourceCard, { faceIndex: this.ctx.item.faceIndex ?? 0 })[
+							this.ctx.item.triggeredAbilityIndex
+						]
+					: undefined;
+			const allowPostSbaAuraVersionLib =
+				trigAbLib?.kind === 'triggered' && trigAbLib.trigger.filter.object === 'attachedTo';
+			const checkSelfGyVersionLib =
+				this.stepIndex === 0 &&
+				step.subject.k === 'self' &&
+				this.ctx.item.sourceObjectVersion !== undefined;
+			const matchesSelfVersionLib = (inst: CardInstance): boolean => {
+				if (!checkSelfGyVersionLib || inst.zone !== 'graveyard') return true;
+				const sv = this.ctx.item.sourceObjectVersion!;
+				const cur = inst.objectVersion ?? 1;
+				return cur === sv || (allowPostSbaAuraVersionLib && cur === sv + 1);
+			};
+
+			// 1. Check stack spell targets (e.g. Commit, Memory Lapse, Aether Gust targeting a spell)
+			const stackTargets: StackItem[] = [];
+			if (step.subject.k === 'target') {
+				for (const t of this.targetsForSpecIndex(step.subject.index)) {
+					if (t.kind === 'stack') {
+						const foundStk = s.stack.find((x) => x.id === t.id || x.sourceInstanceId === t.id);
+						if (foundStk && foundStk.id !== this.ctx.item.id && foundStk.kind === 'spell') {
+							stackTargets.push(foundStk);
+						}
+					}
+				}
+			} else if (step.subject.k === 'eventObject' && this.ctx.eventObjectId) {
+				const foundStk = s.stack.find(
+					(x) =>
+						x.id !== this.ctx.item.id &&
+						x.kind === 'spell' &&
+						(x.id === this.ctx.eventObjectId || x.sourceInstanceId === this.ctx.eventObjectId)
+				);
+				if (foundStk) stackTargets.push(foundStk);
+			}
+			if (stackTargets.length > 0 && !this.answers[batchKey]) {
+				const stkPlacements = new Map<string, { position: 'top' | 'bottom'; fromTop?: number }>();
+				for (const stk of stackTargets) {
+					const owner = this.player(stk.ownerId ?? stk.controllerId) ?? you;
+					const chooser = choiceBy === 'owner' ? owner : you;
+					const synth = this.syntheticLkiObject(stk.sourceInstanceId, stk.controllerId);
+					synth.card = stk.card;
+					synth.ownerId = owner.playerId;
+					const resolved = this.resolveLibraryPlacementChoice(
+						chooser,
+						owner,
+						synth,
+						rawPos,
+						rawFromTop,
+						`libpos:stk:${stk.id}`,
+						stk.title
+					);
+					if (!resolved) return;
+					stkPlacements.set(stk.id, resolved);
+				}
+				const boundStk: Bound[] = [];
+				for (const stk of stackTargets) {
+					const owner = this.player(stk.ownerId ?? stk.controllerId) ?? you;
+					const resolved = stkPlacements.get(stk.id)!;
+					boundStk.push({
+						id: stk.sourceInstanceId,
+						lki: {
+							controllerId: stk.controllerId,
+							ownerId: owner.playerId,
+							power: 0,
+							toughness: 0,
+							manaValue: objectManaValue(s, stk)
+						}
+					});
+					p.moveStackSpellToLibrary(s, stk, resolved);
+					const placeDesc =
+						resolved.fromTop !== undefined
+							? `${resolved.fromTop} from top of`
+							: resolved.position === 'bottom'
+								? 'on the bottom of'
+								: 'on top of';
+					p.addLog(
+						s,
+						'cast',
+						`${this.ctx.title} put ${stk.title} ${placeDesc} ${owner.username}'s library.`,
+						you.playerId
+					);
+				}
+				if (step.bindAs) this.bindings.set(step.bindAs, boundStk);
+			}
+
+			// 2. Non-stack objects moving from battlefield, graveyard, or exile into owner's library
+			const allowedLibZones: ReadonlyArray<'battlefield' | 'graveyard' | 'exile'> =
+				params.from === 'battlefield'
+					? ['battlefield']
+					: params.from === 'graveyard'
+						? ['graveyard']
+						: params.from === 'exile'
+							? ['exile']
+							: ['battlefield', 'graveyard', 'exile'];
+			if (!this.answers[batchKey]) {
+				let objs = this.objects(step.subject).filter(
+					(o) =>
+						allowedLibZones.includes(o.zone as 'battlefield' | 'graveyard' | 'exile') &&
+						matchesSelfVersionLib(o)
+				);
+				if (params.topmostOnly && params.from === 'graveyard') {
+					objs = objs.length > 0 ? [objs[objs.length - 1]] : [];
+				}
+				if (objs.length === 0) return;
+
+				const perObjResolved = new Map<string, { position: 'top' | 'bottom'; fromTop?: number }>();
+				for (const o of objs) {
+					const owner = this.player(o.ownerId) ?? you;
+					const chooser = choiceBy === 'owner' ? owner : you;
+					const objLabel = o.isFaceDown ? (o.faceDownLabel || 'Face-Down Permanent') : o.card.name;
+					const resolved = this.resolveLibraryPlacementChoice(
+						chooser,
+						owner,
+						o,
+						rawPos,
+						rawFromTop,
+						`libpos:${o.instanceId}`,
+						objLabel
+					);
+					if (!resolved) return;
+					perObjResolved.set(o.instanceId, resolved);
+					this.answers[`libeff:${o.instanceId}`] = {
+						kind: 'chooseObjects',
+						objectIds: [
+							resolved.position,
+							resolved.fromTop !== undefined ? String(resolved.fromTop) : ''
+						]
+					};
+				}
+
+				// CR 401.4: When multiple cards are put on top or bottom of a single library simultaneously,
+				// that library's owner puts them there in any order.
+				const groups = new Map<string, CardInstance[]>();
+				for (const o of objs) {
+					const r = perObjResolved.get(o.instanceId)!;
+					const gKey =
+						r.fromTop !== undefined
+							? `nth:${o.instanceId}`
+							: `${o.ownerId}:${r.position}`;
+					let arr = groups.get(gKey);
+					if (!arr) {
+						arr = [];
+						groups.set(gKey, arr);
+					}
+					arr.push(o);
+				}
+
+				const finalSeqIds: string[] = [];
+				for (const [gKey, group] of groups.entries()) {
+					if (group.length <= 1 || gKey.startsWith('nth:')) {
+						for (const o of group) finalSeqIds.push(o.instanceId);
+						continue;
+					}
+					const owner = this.player(group[0].ownerId) ?? you;
+					const gPos = perObjResolved.get(group[0].instanceId)!.position;
+					const orderKey = `liborder:${this.stepIndex}:${gKey}`;
+					let orderedGroup: CardInstance[];
+					const ordAns = this.answers[orderKey];
+					if (ordAns?.kind === 'orderObjects') {
+						const byId = new Map(group.map((c) => [c.instanceId, c]));
+						orderedGroup = [];
+						for (const oid of ordAns.topIds) {
+							const foundCard = byId.get(oid);
+							if (foundCard) {
+								orderedGroup.push(foundCard);
+								byId.delete(oid);
+							}
+						}
+						for (const rem of byId.values()) orderedGroup.push(rem);
+					} else if (!owner.isBot && this.canPause) {
+						this.pauseForOrder(
+							owner,
+							`${this.ctx.title} — Order Cards (${gPos === 'top' ? 'Top' : 'Bottom'} of Library)`,
+							`Choose the order to put ${group.length} cards on the ${gPos} of your library (first = ${gPos === 'top' ? 'topmost card' : 'above the rest'}).`,
+							group.map((c) => c.instanceId),
+							orderKey
+						);
+						return;
+					} else {
+						orderedGroup = orderBotSimultaneousLibraryCards(owner, group, gPos);
+					}
+					const insertSeq = gPos === 'top' ? [...orderedGroup].reverse() : orderedGroup;
+					for (const o of insertSeq) finalSeqIds.push(o.instanceId);
+				}
+
+				this.bind(step, objs);
+				this.answers[batchKey] = { kind: 'chooseObjects', objectIds: finalSeqIds };
+			}
+
+			this.runIndexedBatch(
+				batchKey,
+				() => [],
+				(id) => {
+					const f = this.locate(id);
+					if (
+						!f ||
+						!allowedLibZones.includes(f.zone as 'battlefield' | 'graveyard' | 'exile') ||
+						!matchesSelfVersionLib(f.inst)
+					) {
+						return;
+					}
+					const o = f.inst;
+					const owner = this.player(o.ownerId) ?? f.holder;
+					const effAns = this.answers[`libeff:${o.instanceId}`];
+					const effPos: 'top' | 'bottom' =
+						effAns?.kind === 'chooseObjects' && effAns.objectIds[0] === 'bottom'
+							? 'bottom'
+							: 'top';
+					const effFromTop =
+						effAns?.kind === 'chooseObjects' && effAns.objectIds[1]
+							? Number(effAns.objectIds[1])
+							: undefined;
+					const objLabel = o.isFaceDown ? (o.faceDownLabel || 'Face-Down Permanent') : o.card.name;
+					const placeDesc =
+						effFromTop !== undefined
+							? `${effFromTop} from top of`
+							: effPos === 'bottom'
+								? 'on the bottom of'
+								: 'on top of';
+					if (f.zone === 'battlefield') {
+						const res = p.moveFromBattlefield(s, o, 'library', {
+							position: effPos,
+							...(effFromTop !== undefined ? { fromTop: effFromTop } : {})
+						});
+						p.addLog(
+							s,
+							'cast',
+							`${this.ctx.title} put ${objLabel} ${placeDesc} ${owner.username}'s library.`,
+							you.playerId
+						);
+						return res as MoveResult;
+					}
+					const actualFrom = f.zone as 'graveyard' | 'exile';
+					const res = moveObject(s, o, 'library', {
+						from: { player: f.holder, zone: actualFrom },
+						toPlayer: owner,
+						commanderRedirect: true,
+						bumpVersion: true,
+						newTimestamp: true,
+						insert: (dest) =>
+							dest === 'library'
+								? computeLibraryInsertIndex(effFromTop, effPos, owner.library.length)
+								: 'end'
+					});
+					p.addLog(
+						s,
+						'cast',
+						`${this.ctx.title} put ${objLabel} from ${f.holder.username}'s ${actualFrom} ${placeDesc} ${owner.username}'s library.`,
+						you.playerId
+					);
 					return res;
 				}
 			);
@@ -3943,11 +4520,13 @@ class Run {
 					`${controller.username} put ${enteringView.name} onto the battlefield${params.enteredTransformed ? ' transformed' : ''} from ${holder.username}'s ${actualFrom} (${this.ctx.title}).`,
 					you.playerId
 				);
-				if (isAura && o.attachedToId) {
-					const host = p.findPermanent(s, o.attachedToId);
-					if (host) p.triggerOnAttach(s, controller, o, host.inst);
+				if (o.zone === 'battlefield') {
+					if (isAura && o.attachedToId) {
+						const host = p.findPermanent(s, o.attachedToId);
+						if (host) p.triggerOnAttach(s, controller, o, host.inst);
+					}
+					p.triggerOnEtb(s, controller, o);
 				}
-				p.triggerOnEtb(s, controller, o);
 				return res;
 			}
 		);
@@ -4477,6 +5056,12 @@ class Run {
 			case 'saddled': {
 				const f = this.locate(this.ctx.sourceId);
 				return Boolean(f && f.zone === 'battlefield' && !f.inst.phasedOut && f.inst.saddledThisTurn);
+			}
+			// --- Track P4 ---
+			case 'exertedThisTurn': {
+				if (this.ctx.item.sourceExertedThisTurn) return true;
+				const f = this.locate(this.ctx.sourceId);
+				return Boolean(f && f.zone === 'battlefield' && !f.inst.phasedOut && f.inst.exertedThisTurn);
 			}
 			// --- Track P5 ---
 			case 'monstrous': {
@@ -5086,6 +5671,22 @@ function playerLandColors(
 			if (mana) {
 				for (const c of mana) if (c !== 'C') direct.add(c);
 			}
+			if (step.params?.manaWithChosenColor) {
+				for (const c of step.params.manaWithChosenColor) if (c !== 'C') direct.add(c);
+				if (perm.chosenColor && perm.chosenColor !== 'C') direct.add(perm.chosenColor);
+			}
+			if (step.params?.manaBundles) {
+				for (const b of step.params.manaBundles) {
+					for (const c of b) if (c !== 'C') direct.add(c);
+				}
+			}
+			if (step.params?.manaCombinationColors) {
+				const combCols =
+					step.params.manaCombinationColors === 'any'
+						? FIVE_COLORS
+						: step.params.manaCombinationColors;
+				for (const c of combCols) if (c !== 'C') direct.add(c);
+			}
 			const choice = step.params?.manaChoice;
 			if (!choice) continue;
 			if (Array.isArray(choice)) {
@@ -5094,6 +5695,8 @@ function playerLandColors(
 				for (const c of FIVE_COLORS) direct.add(c);
 			} else if (choice === 'commanderIdentity') {
 				for (const c of commanderColors(player)) direct.add(c);
+			} else if (choice === 'chosenColor') {
+				if (perm.chosenColor && perm.chosenColor !== 'C') direct.add(perm.chosenColor);
 			} else if (choice === 'opponentLandColors') {
 				hasOrchard = true;
 			}
@@ -5127,12 +5730,16 @@ export function opponentLandColors(state: GameState, controller: PlayerGameState
 export function manaChoiceColors(
 	state: GameState,
 	controller: PlayerGameState,
-	choice: NonNullable<NonNullable<EffectStep['params']>['manaChoice']>
+	choice: NonNullable<NonNullable<EffectStep['params']>['manaChoice']>,
+	chosenColor?: ManaColor
 ): ManaColor[] {
 	if (Array.isArray(choice)) return choice;
 	if (choice === 'any') return [...FIVE_COLORS];
 	if (choice === 'commanderIdentity') {
 		return commanderColors(controller);
+	}
+	if (choice === 'chosenColor') {
+		return chosenColor ? [chosenColor] : [];
 	}
 	return opponentLandColors(state, controller);
 }

@@ -151,6 +151,18 @@ export function parseObjectPhrase(phrase: string): ObjectFilter | null {
 			rest = exiledWithSelf[1];
 			continue;
 		}
+		const ofChosenType = rest.match(/^(.+?)\s+of the chosen type$/i);
+		if (ofChosenType && !filter.ofChosenType) {
+			filter.ofChosenType = true;
+			rest = ofChosenType[1];
+			continue;
+		}
+		const ofChosenColor = rest.match(/^(.+?)\s+of the chosen color$/i);
+		if (ofChosenColor && !filter.ofChosenColor) {
+			filter.ofChosenColor = true;
+			rest = ofChosenColor[1];
+			continue;
+		}
 		const youControl = rest.match(/^(.+?)\s+you control$/i);
 		if (youControl && !filter.controller) {
 			filter.controller = 'you';
@@ -212,7 +224,7 @@ export function parseObjectPhrase(phrase: string): ObjectFilter | null {
 	if (/\b(?:or|and\/or)\b/.test(joined)) {
 		const alts = joined
 			.split(/\s*(?:,\s*(?:or|and\/or)?|\bor\b|\band\/or\b)\s*/)
-			.map((a) => a.trim())
+			.map((a) => a.trim().replace(/^(?:a|an)\s+/i, ''))
 			.filter(Boolean);
 		const nouns = alts.map((a) => (a.includes(' ') ? null : noun(a)));
 		if (nouns.some((n) => !n || n.any || n.token)) return null;
@@ -383,6 +395,9 @@ const revealFromHand: Production = (part) => {
 	];
 };
 
+/** "Exert ~" (CR 701.43a). */
+const exertSelf: Production = (part) => (/^exert ~$/i.test(part) ? [{ k: 'exertSelf' }] : null);
+
 const PRODUCTIONS: Production[] = [
 	manaSymbols,
 	payLife,
@@ -393,7 +408,8 @@ const PRODUCTIONS: Production[] = [
 	discard,
 	exileFrom,
 	removeCounters,
-	revealFromHand
+	revealFromHand,
+	exertSelf
 ];
 
 const OR_BEFORE_VERB = new RegExp(`\\s+or\\s+(?=(?:${COST_VERBS})\\b)`, 'i');
@@ -528,26 +544,42 @@ export function parseCostModifierSentence(sentence: string): StaticDef | null {
 	}
 
 	const m = text.match(
-		/^(as long as ~ is in the command zone or on the battlefield, )?(.+?) spells you cast cost \{(\d+)\} (less|more) to cast$/i
+		/^(as long as ~ is in the command zone or on the battlefield, )?(?:(.+?) )?spells(?: of the chosen (type|color))?(?: (you|your opponents) cast)?(?: of the chosen (type|color))? cost \{(\d+)\} (less|more) to cast$/i
 	);
 	if (!m) return null;
-	let phrase = m[2];
+	const chosenKindA = m[3]?.toLowerCase();
+	const whoRaw = m[4]?.toLowerCase();
+	const chosenKindB = m[5]?.toLowerCase();
+	if (chosenKindA && chosenKindB && chosenKindA === chosenKindB) return null;
+	if (!m[2] && !chosenKindA && !chosenKindB && whoRaw !== 'you') return null;
+	let phrase = (m[2] ?? '').trim();
 	let other = false;
-	const otherMatch = phrase.match(/^other (.+)$/i);
-	if (otherMatch) {
-		other = true;
-		phrase = otherMatch[1];
+	if (phrase) {
+		const otherMatch = phrase.match(/^other (.+)$/i);
+		if (otherMatch) {
+			other = true;
+			phrase = otherMatch[1];
+		}
+		// "Instant and sorcery spells" means instant spells and sorcery spells: any of them.
+		phrase = phrase.replace(/\s+and\s+/gi, ' or ');
 	}
-	// "Instant and sorcery spells" means instant spells and sorcery spells: any of them.
-	phrase = phrase.replace(/\s+and\s+/gi, ' or ');
 	// "Noncreature spells": only modifiers, so the noun is the spell itself (any card).
-	const filter = parseObjectPhrase(phrase) ?? parseObjectPhrase(`${phrase} card`);
-	if (!filter || filter.controller || filter.other) return null;
+	const baseFilter: ObjectFilter | null = phrase
+		? (parseObjectPhrase(phrase) ?? parseObjectPhrase(`${phrase} card`))
+		: {};
+	if (!baseFilter || baseFilter.controller || baseFilter.other) return null;
+	const filter: ObjectFilter = {
+		...baseFilter,
+		...(other ? { other: true } : {}),
+		...(chosenKindA === 'type' || chosenKindB === 'type' ? { ofChosenType: true } : {}),
+		...(chosenKindA === 'color' || chosenKindB === 'color' ? { ofChosenColor: true } : {})
+	};
+	const who = whoRaw === 'you' ? 'you' : whoRaw === 'your opponents' ? 'each_opponent' : 'each_player';
 	return {
 		k: 'costModifier',
-		affects: { k: 'spell', filter: other ? { ...filter, other: true } : filter },
-		delta: { mode: m[4].toLowerCase() === 'less' ? 'reduce' : 'increase', generic: parseInt(m[3], 10) },
-		who: { relation: 'you' },
+		affects: { k: 'spell', filter },
+		delta: { mode: m[7].toLowerCase() === 'less' ? 'reduce' : 'increase', generic: parseInt(m[6], 10) },
+		who: { relation: who },
 		activeZones: m[1] ? ['battlefield', 'command'] : undefined
 	};
 }

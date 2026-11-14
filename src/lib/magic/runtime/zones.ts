@@ -11,8 +11,17 @@ import {
 	counterMultiplier,
 	applySelfEtbReplacements,
 	placeRegisteredCounters,
-	resolveZoneChangeReplacements
+	resolveZoneChangeReplacements,
+	selfEtbChoiceSpec,
+	type SelfEtbChoiceSpec
 } from './replace.ts';
+import {
+	buildColorChoiceOptions,
+	buildCreatureSubtypeOptions,
+	chooseBotBestColor,
+	chooseBotBestCreatureSubtype,
+	COLOR_CODE_BY_LABEL
+} from './tuckFreezeChosen.ts';
 import { flushTriggers } from './triggers.ts';
 
 /**
@@ -215,6 +224,74 @@ function pushSbaLog(
 	}
 }
 
+function enqueueNextEtbChoicePrompt(
+	state: GameState,
+	obj: CardInstance,
+	chooser: PlayerGameState,
+	spec: SelfEtbChoiceSpec,
+	baseData: Record<string, unknown>
+): boolean {
+	const objName = resolveObjectFaces(
+		effectiveCardForObject(obj),
+		instanceFaceOptions(obj, 'battlefield')
+	).name;
+	if (spec.chooseColor && !obj.chosenColor) {
+		const { labels } = buildColorChoiceOptions(spec.chooseColor.exclude);
+		const description = `As ${objName} enters the battlefield, choose a color${spec.chooseColor.exclude ? ` other than ${spec.chooseColor.exclude}` : ''} (CR 105.4, 614.12):`;
+		enqueueChoicePrompt(state, {
+			id: uid('prm', state),
+			playerId: chooser.playerId,
+			kind: 'chooseMode',
+			purpose: 'etb_choice',
+			title: `${objName} — Choose a Color`,
+			description,
+			continuation: {
+				kind: 'handler',
+				name: 'etb_choice',
+				data: {
+					...baseData,
+					choiceField: 'color'
+				}
+			},
+			choice: {
+				kind: 'chooseMode',
+				modes: labels,
+				min: 1,
+				max: 1
+			}
+		});
+		return true;
+	}
+	if (spec.chooseSubType === 'creature' && !obj.chosenSubType) {
+		const subtypeLabels = buildCreatureSubtypeOptions(state, chooser, obj);
+		const description = `As ${objName} enters the battlefield, choose a creature type (CR 205.3m, 614.12):`;
+		enqueueChoicePrompt(state, {
+			id: uid('prm', state),
+			playerId: chooser.playerId,
+			kind: 'chooseMode',
+			purpose: 'etb_choice',
+			title: `${objName} — Choose a Creature Type`,
+			description,
+			continuation: {
+				kind: 'handler',
+				name: 'etb_choice',
+				data: {
+					...baseData,
+					choiceField: 'creatureSubtype'
+				}
+			},
+			choice: {
+				kind: 'chooseMode',
+				modes: subtypeLabels,
+				min: 1,
+				max: 1
+			}
+		});
+		return true;
+	}
+	return false;
+}
+
 function finalizeZoneMove(
 	state: GameState,
 	obj: CardInstance,
@@ -226,7 +303,7 @@ function finalizeZoneMove(
 	replacedBy: string | null,
 	lki: LeftBattlefieldInfo | undefined,
 	opts: MoveOptions
-): ZoneType {
+): MoveResult {
 	const owner = state.players.find((p) => p.playerId === obj.ownerId);
 	let dest: ZoneType = initialDest;
 	let shuffleDestLibrary = initialShuffle;
@@ -317,6 +394,11 @@ function finalizeZoneMove(
 		obj.cantBeRegeneratedThisTurn = undefined;
 		obj.crewedThisTurnByIds = undefined;
 		obj.defaultControllerId = undefined;
+		// --- Track P4 (CR 400.7) ---
+		obj.doesntUntapNextUntapStep = undefined;
+		obj.exertedThisTurn = undefined;
+		obj.chosenSubType = undefined;
+		obj.chosenColor = undefined;
 		// --- Track P5 (CR 701.37b / 400.7) ---
 		obj.isMonstrous = undefined;
 		obj.monstrosityX = undefined;
@@ -351,6 +433,11 @@ function finalizeZoneMove(
 		obj.saddledThisTurnByIds = undefined;
 		obj.unearthLeaveExile = undefined;
 		obj.defaultControllerId = undefined;
+		// --- Track P4 (CR 400.7) ---
+		obj.doesntUntapNextUntapStep = undefined;
+		obj.exertedThisTurn = undefined;
+		obj.chosenSubType = undefined;
+		obj.chosenColor = undefined;
 		// --- Track P5 (CR 701.37b / 400.7) ---
 		obj.isMonstrous = undefined;
 		obj.monstrosityX = undefined;
@@ -419,6 +506,56 @@ function finalizeZoneMove(
 	const ceases =
 		opts.ceaseToExist === 'always' ||
 		(opts.ceaseToExist === 'tokens' && obj.isToken && dest !== 'battlefield');
+	if (
+		dest === 'battlefield' &&
+		!ceases &&
+		!obj.isFaceDown &&
+		(fromZone !== 'battlefield' || Boolean(opts.leaveBattlefieldReset))
+	) {
+		const ctrlId = opts.controllerId ?? obj.controllerId ?? effectiveReceiver.playerId;
+		const ctrl = state.players.find((p) => p.playerId === ctrlId) ?? effectiveReceiver;
+		obj.controllerId = ctrl.playerId;
+		const etbSpec = selfEtbChoiceSpec(state, obj);
+		if (etbSpec) {
+			if (ctrl.isBot) {
+				if (etbSpec.chooseColor && !obj.chosenColor) {
+					obj.chosenColor = chooseBotBestColor(state, ctrl, etbSpec.chooseColor.exclude, obj);
+				}
+				if (etbSpec.chooseSubType === 'creature' && !obj.chosenSubType) {
+					obj.chosenSubType = chooseBotBestCreatureSubtype(state, ctrl, obj);
+				}
+			} else if (
+				(etbSpec.chooseColor && !obj.chosenColor) ||
+				(etbSpec.chooseSubType === 'creature' && !obj.chosenSubType)
+			) {
+				const resolvedInsert = typeof opts.insert === 'function' ? opts.insert(dest) : opts.insert;
+				const insertSpec =
+					typeof resolvedInsert === 'number' ||
+					resolvedInsert === 'start' ||
+					resolvedInsert === 'end' ||
+					resolvedInsert === 'deferred'
+						? resolvedInsert
+						: 'end';
+				obj.zone = fromZone ?? 'hand';
+				(state.pendingZoneMoves ??= []).push(obj);
+				enqueueNextEtbChoicePrompt(state, obj, ctrl, etbSpec, {
+					objectId: obj.instanceId,
+					toPlayerId: effectiveReceiver.playerId,
+					fromZone,
+					fromPlayerId,
+					lkiJson: lki ? JSON.stringify(lki) : null,
+					setZone: opts.setZone !== false,
+					emit: opts.emit !== false,
+					insertSpec,
+					sbaLogJson: opts.sbaLog ? JSON.stringify(opts.sbaLog) : null,
+					replacedBy: effectiveReplacedBy,
+					...(opts.resumeStackItemId ? { resumeStackItemId: opts.resumeStackItemId } : {}),
+					...(opts.resumeStepIndex !== undefined ? { resumeStepIndex: opts.resumeStepIndex } : {})
+				});
+				return 'pending';
+			}
+		}
+	}
 	if (dest !== 'stack' && !ceases) {
 		const at = typeof opts.insert === 'function' ? opts.insert(dest) : opts.insert;
 		if (at !== 'deferred') insertInto(effectiveReceiver[dest as PlayerZone], obj, at);
@@ -673,6 +810,7 @@ function moveObjectInner(
 			if (stk.sourceInstanceId === obj.instanceId) {
 				if (lki.power !== undefined) stk.sourceLkiPower = lki.power;
 				if (lki.toughness !== undefined) stk.sourceLkiToughness = lki.toughness;
+				if (obj.exertedThisTurn) stk.sourceExertedThisTurn = true;
 			}
 			if (
 				stk.eventObjectId === obj.instanceId &&
@@ -979,6 +1117,154 @@ registerPromptHandler('zone_replacement_choice', (state, prompt, answer) => {
 	flushTriggers(state);
 });
 
+registerPromptHandler('etb_choice', (state, prompt, answer) => {
+	if (answer.kind !== 'chooseMode') return;
+	const data = prompt.continuation?.kind === 'handler' ? prompt.continuation.data : undefined;
+	if (!data) return;
+	const objectId = typeof data.objectId === 'string' ? data.objectId : '';
+	const toPlayerId = typeof data.toPlayerId === 'string' ? data.toPlayerId : '';
+	const choiceField = typeof data.choiceField === 'string' ? data.choiceField : '';
+	const fromZone = (data.fromZone as ZoneType | null | undefined) ?? null;
+	const fromPlayerId = (data.fromPlayerId as string | null | undefined) ?? null;
+	const lkiJson = typeof data.lkiJson === 'string' ? data.lkiJson : null;
+	const lki: LeftBattlefieldInfo | undefined = lkiJson
+		? (JSON.parse(lkiJson) as LeftBattlefieldInfo)
+		: undefined;
+	const setZone = data.setZone !== false;
+	const emit = data.emit !== false;
+	const insertSpec = data.insertSpec;
+	const sbaLogJson = typeof data.sbaLogJson === 'string' ? data.sbaLogJson : null;
+	const sbaLog: SbaMoveLog | undefined = sbaLogJson
+		? (JSON.parse(sbaLogJson) as SbaMoveLog)
+		: undefined;
+	const replacedBy = typeof data.replacedBy === 'string' ? data.replacedBy : null;
+	const resumeStackItemId =
+		typeof data.resumeStackItemId === 'string' ? data.resumeStackItemId : undefined;
+	const resumeStepIndex =
+		typeof data.resumeStepIndex === 'number' ? data.resumeStepIndex : undefined;
+
+	const pendingList = state.pendingZoneMoves;
+	if (!pendingList) return;
+	const idx = pendingList.findIndex((c) => c.instanceId === objectId);
+	if (idx < 0) return;
+	const obj = pendingList[idx];
+
+	const owner = state.players.find((p) => p.playerId === obj.ownerId);
+	const receiver = state.players.find((p) => p.playerId === toPlayerId) ?? owner;
+	if (!receiver) return;
+	const chooser =
+		state.players.find((p) => p.playerId === (obj.controllerId || receiver.playerId)) ?? receiver;
+
+	const options = prompt.choice?.kind === 'chooseMode' ? prompt.choice.modes : [];
+	const chosenIdx = answer.indices[0] ?? 0;
+	const chosenLabel = options[chosenIdx] ?? options[0] ?? '';
+
+	let awaitingMore = false;
+	whileLayerInputsChange(state, () => {
+		const bfView = resolveObjectFaces(
+			effectiveCardForObject(obj),
+			instanceFaceOptions(obj, 'battlefield')
+		);
+		if (choiceField === 'color') {
+			obj.chosenColor = COLOR_CODE_BY_LABEL[chosenLabel.toLowerCase()] ?? 'W';
+		} else if (choiceField === 'creatureSubtype') {
+			obj.chosenSubType = chosenLabel || 'Human';
+		}
+		state.log.push({
+			id: uid('log', state),
+			timestamp: Date.now(),
+			turn: state.turnNumber,
+			phase: state.phase,
+			actorId: chooser.playerId,
+			kind: 'rule',
+			text: `${chooser.username} chose ${chosenLabel} for ${bfView.name}.`
+		});
+		if (state.log.length > 160) {
+			state.log.shift();
+		}
+
+		const remainingSpec = selfEtbChoiceSpec(state, obj);
+		if (
+			remainingSpec &&
+			((remainingSpec.chooseColor && !obj.chosenColor) ||
+				(remainingSpec.chooseSubType === 'creature' && !obj.chosenSubType))
+		) {
+			enqueueNextEtbChoicePrompt(state, obj, chooser, remainingSpec, {
+				objectId: obj.instanceId,
+				toPlayerId: receiver.playerId,
+				fromZone,
+				fromPlayerId,
+				lkiJson,
+				setZone,
+				emit,
+				insertSpec,
+				sbaLogJson,
+				replacedBy,
+				...(resumeStackItemId !== undefined ? { resumeStackItemId } : {}),
+				...(resumeStepIndex !== undefined ? { resumeStepIndex } : {})
+			});
+			awaitingMore = true;
+			return;
+		}
+
+		pendingList.splice(idx, 1);
+		if (pendingList.length === 0) {
+			delete state.pendingZoneMoves;
+		}
+
+		if (setZone) obj.zone = 'battlefield';
+		const at: Exclude<InsertAt, 'deferred'> =
+			typeof insertSpec === 'number' || insertSpec === 'start' || insertSpec === 'end'
+				? insertSpec
+				: 'end';
+		if (insertSpec !== 'deferred') {
+			insertInto(receiver.battlefield, obj, at);
+		}
+		noteLayerInputsChanged(state);
+
+		if (sbaLog) {
+			pushSbaLog(state, obj, 'battlefield', replacedBy, sbaLog);
+		}
+		if (emit) {
+			emitZoneChange(
+				state,
+				obj,
+				fromZone,
+				'battlefield',
+				fromPlayerId,
+				receiver.playerId,
+				false,
+				lki
+			);
+			maybePlaceSagaEtbLoreCounter(state, obj);
+			if (
+				obj.attachedToId &&
+				(bfView.subtypes.includes('Aura') || bfView.typeLine.includes('Aura'))
+			) {
+				for (const pl of state.players) {
+					const host = pl.battlefield.find(
+						(b) => !b.phasedOut && b.instanceId === obj.attachedToId
+					);
+					if (host) {
+						emitEvent(state, {
+							kind: 'Attached',
+							attachmentId: obj.instanceId,
+							attachment: obj,
+							hostId: host.instanceId,
+							host
+						});
+						break;
+					}
+				}
+			}
+		}
+		syncBattlefieldControllers(state);
+	});
+	if (!awaitingMore) {
+		flushTriggers(state);
+	}
+});
+
 function captureLki(state: GameState, obj: CardInstance): LeftBattlefieldInfo {
 	const evaluated = evaluatePermanent(state, obj);
 	const power = evaluated.isCreature
@@ -1011,6 +1297,9 @@ function captureLki(state: GameState, obj: CardInstance): LeftBattlefieldInfo {
 		...(obj.foretold ? { foretold: true } : {}),
 		...(obj.blitzed ? { blitzed: true } : {}),
 		...(obj.saddledThisTurn ? { saddled: true } : {}),
+		...(obj.exertedThisTurn ? { exerted: true } : {}),
+		...(obj.chosenSubType ? { chosenSubType: obj.chosenSubType } : {}),
+		...(obj.chosenColor ? { chosenColor: obj.chosenColor } : {}),
 		...(obj.isMonstrous ? { monstrous: true } : {}),
 		counters: { ...obj.counters }
 	};

@@ -314,9 +314,24 @@ function opponentLandColors(state: GameState, actor: PlayerGameState): ManaColor
 							? ['W', 'U', 'B', 'R', 'G']
 							: choice === 'commanderIdentity'
 								? oppCmdId
-								: Array.isArray(choice)
-									? choice
-									: (s.params?.mana ?? []);
+								: choice === 'chosenColor'
+									? oppPerm.chosenColor
+										? [oppPerm.chosenColor]
+										: []
+									: Array.isArray(choice)
+										? choice
+										: s.params?.manaWithChosenColor
+											? [
+													...s.params.manaWithChosenColor,
+													...(oppPerm.chosenColor ? [oppPerm.chosenColor] : [])
+												]
+											: s.params?.manaBundles
+												? s.params.manaBundles.flat()
+												: s.params?.manaCombinationColors
+													? s.params.manaCombinationColors === 'any'
+														? ['W', 'U', 'B', 'R', 'G']
+														: s.params.manaCombinationColors
+													: (s.params?.mana ?? []);
 					for (const c of cols) if (c !== 'C') found.add(c);
 				}
 			}
@@ -327,6 +342,12 @@ function opponentLandColors(state: GameState, actor: PlayerGameState): ManaColor
 			const oppBreakdown = inspectCardContinuousBreakdown(oppPerm, state);
 			for (const item of oppBreakdown.items) {
 				if (item.removed || item.isInnate || !item.grantedAbility?.isMana) continue;
+				const grantSourceChosenColor = item.grantSourceId
+					? state.players
+							.flatMap((pl) => pl.battlefield)
+							.find((p) => p.instanceId === item.grantSourceId)?.chosenColor
+					: undefined;
+				const effChosenColor = grantSourceChosenColor ?? oppPerm.chosenColor;
 				for (const s of item.grantedAbility.effect) {
 					if (s.verb !== 'addMana') continue;
 					const choice = s.params?.manaChoice;
@@ -336,9 +357,24 @@ function opponentLandColors(state: GameState, actor: PlayerGameState): ManaColor
 							? ['W', 'U', 'B', 'R', 'G']
 							: choice === 'commanderIdentity'
 								? oppCmdId
-								: Array.isArray(choice)
-									? choice
-									: (s.params?.mana ?? []);
+								: choice === 'chosenColor'
+									? effChosenColor
+										? [effChosenColor]
+										: []
+									: Array.isArray(choice)
+										? choice
+										: s.params?.manaWithChosenColor
+											? [
+													...s.params.manaWithChosenColor,
+													...(effChosenColor ? [effChosenColor] : [])
+												]
+											: s.params?.manaBundles
+												? s.params.manaBundles.flat()
+												: s.params?.manaCombinationColors
+													? s.params.manaCombinationColors === 'any'
+														? ['W', 'U', 'B', 'R', 'G']
+														: s.params.manaCombinationColors
+													: (s.params?.mana ?? []);
 					for (const c of cols) if (c !== 'C') found.add(c);
 				}
 			}
@@ -349,8 +385,16 @@ function opponentLandColors(state: GameState, actor: PlayerGameState): ManaColor
 
 function manaStepProduction(
 	steps: EffectStep[],
-	commanderIdentity: ManaColor[]
-): { colors: ManaColor[]; amount: number; opponentLandColors?: boolean; manaRestriction?: EffectiveActivatedAbility['manaRestriction'] } | null {
+	commanderIdentity: ManaColor[],
+	chosenColor?: ManaColor
+): {
+	colors: ManaColor[];
+	amount: number;
+	opponentLandColors?: boolean;
+	manaRestriction?: EffectiveActivatedAbility['manaRestriction'];
+	manaBundles?: ManaColor[][];
+	manaCombinationColors?: ManaColor[] | 'any';
+} | null {
 	const addSteps = steps.filter((s) => s.verb === 'addMana');
 	if (addSteps.length === 0) return null;
 	const cmdColors: ManaColor[] = commanderIdentity.filter((c) => c !== 'C');
@@ -358,40 +402,104 @@ function manaStepProduction(
 	let totalAmount = 0;
 	let opponentLands = false;
 	let manaRestriction: EffectiveActivatedAbility['manaRestriction'];
+	let manaBundles: ManaColor[][] | undefined;
+	let manaCombinationColors: ManaColor[] | 'any' | undefined;
+	let fixedSymbols: ManaColor[] | null = [];
 	for (const s of addSteps) {
 		if (s.params?.manaRestriction) manaRestriction = s.params.manaRestriction;
 		const amt = s.amount?.k === 'const' ? s.amount.n : 1;
 		const choice = s.params?.manaChoice;
 		if (choice === 'opponentLandColors') {
+			fixedSymbols = null;
 			opponentLands = true;
 			totalAmount += amt;
 		} else if (choice === 'any') {
+			fixedSymbols = null;
 			for (const c of ['W', 'U', 'B', 'R', 'G'] as ManaColor[]) {
 				if (!colors.includes(c)) colors.push(c);
 			}
 			totalAmount += amt;
 		} else if (choice === 'commanderIdentity') {
+			fixedSymbols = null;
 			for (const c of cmdColors) {
 				if (!colors.includes(c)) colors.push(c);
 			}
 			totalAmount += amt;
+		} else if (choice === 'chosenColor') {
+			fixedSymbols = null;
+			if (chosenColor && !colors.includes(chosenColor)) {
+				colors.push(chosenColor);
+			}
+			totalAmount += amt;
 		} else if (Array.isArray(choice)) {
+			fixedSymbols = null;
 			for (const c of choice) {
 				if (!colors.includes(c)) colors.push(c);
 			}
 			totalAmount += amt;
+		} else if (Array.isArray(s.params?.manaWithChosenColor)) {
+			fixedSymbols = null;
+			const bundle: ManaColor[] = [
+				...s.params.manaWithChosenColor,
+				...(chosenColor ? [chosenColor] : [])
+			];
+			for (const c of bundle) {
+				if (!colors.includes(c)) colors.push(c);
+			}
+			totalAmount += bundle.length;
+			if (bundle.length > 0) manaBundles = [bundle];
+		} else if (Array.isArray(s.params?.manaBundles) && s.params.manaBundles.length > 0) {
+			fixedSymbols = null;
+			for (const b of s.params.manaBundles) {
+				for (const c of b) {
+					if (!colors.includes(c)) colors.push(c);
+				}
+			}
+			totalAmount += s.params.manaBundles[0].length || 1;
+			manaBundles = s.params.manaBundles.map((b) => [...b]);
+		} else if (s.params?.manaCombinationColors) {
+			fixedSymbols = null;
+			const combCols: ManaColor[] =
+				s.params.manaCombinationColors === 'any'
+					? ['W', 'U', 'B', 'R', 'G']
+					: s.params.manaCombinationColors;
+			for (const c of combCols) {
+				if (!colors.includes(c)) colors.push(c);
+			}
+			totalAmount += amt;
+			manaCombinationColors =
+				s.params.manaCombinationColors === 'any'
+					? 'any'
+					: [...s.params.manaCombinationColors];
 		} else if (Array.isArray(s.params?.mana)) {
 			for (const c of s.params.mana) {
 				if (!colors.includes(c)) colors.push(c);
 			}
-			totalAmount += s.amount?.k === 'const' ? s.amount.n : s.params.mana.length || 1;
+			const stepAmt = s.amount?.k === 'const' ? s.amount.n : s.params.mana.length || 1;
+			totalAmount += stepAmt;
+			if (
+				fixedSymbols !== null &&
+				(!s.amount || s.amount.k === 'const') &&
+				s.params.mana.length === stepAmt
+			) {
+				fixedSymbols.push(...s.params.mana);
+			} else {
+				fixedSymbols = null;
+			}
+		} else {
+			fixedSymbols = null;
 		}
+	}
+	if (!manaBundles && fixedSymbols && new Set(fixedSymbols).size > 1) {
+		manaBundles = [fixedSymbols];
 	}
 	return {
 		colors,
 		amount: Math.max(1, totalAmount),
 		...(opponentLands ? { opponentLandColors: true } : {}),
-		...(manaRestriction ? { manaRestriction } : {})
+		...(manaRestriction ? { manaRestriction } : {}),
+		...(manaBundles ? { manaBundles } : {}),
+		...(manaCombinationColors ? { manaCombinationColors } : {})
 	};
 }
 
@@ -404,6 +512,7 @@ interface BuildEffectiveAbilityOptions {
 	labelOverride?: string;
 	costTextOverride?: string;
 	effectTextOverride?: string;
+	chosenColor?: ManaColor;
 }
 
 function buildEffectiveActivatedAbility(
@@ -441,8 +550,12 @@ function buildEffectiveActivatedAbility(
 	let hasManaProduction = false;
 	let manaAmount: EffectiveActivatedAbility['manaAmount'];
 	let manaRestriction: EffectiveActivatedAbility['manaRestriction'];
+	let manaBundles: EffectiveActivatedAbility['manaBundles'];
+	let manaCombinationColors: EffectiveActivatedAbility['manaCombinationColors'];
+	const freezesSelfUntap =
+		isMana && effect.some((s) => s.verb === 'freezeUntap' && s.subject.k === 'self');
 	if (isMana) {
-		const prod = manaStepProduction(effect, commanderIdentity);
+		const prod = manaStepProduction(effect, commanderIdentity, opts.chosenColor);
 		if (prod?.opponentLandColors) {
 			const oppColors = resolveOpponentLandColors ? resolveOpponentLandColors() : [];
 			if (oppColors.length === 0) return null;
@@ -455,6 +568,8 @@ function buildEffectiveActivatedAbility(
 			producesAmount = prod.colors.length > 0 ? prod.amount : 0;
 			hasManaProduction = true;
 			manaRestriction = prod.manaRestriction;
+			manaBundles = prod.manaBundles;
+			manaCombinationColors = prod.manaCombinationColors;
 		}
 		const dynStep = effect.find((s) => s.verb === 'addMana' && s.amount && s.amount.k !== 'const');
 		if (dynStep?.amount) manaAmount = dynStep.amount;
@@ -462,7 +577,7 @@ function buildEffectiveActivatedAbility(
 
 	const modal = ab.kind === 'activated' ? ab.modal : undefined;
 	const targetInfo = modal ? modalTargetRequirement(modal) : targetRequirementFromSpecs(targets);
-	const isPureTapMana = isMana && id === 'mana_tap';
+	const isPureTapMana = isMana && id === 'mana_tap' && !manaBundles && !manaCombinationColors && !freezesSelfUntap;
 	const sourceSuffix = opts.grantSources && opts.grantSources.length > 0 ? ` (${opts.grantSources.join(', ')})` : '';
 	const maxEffectLen = opts.grantSources ? 60 : 45;
 	const baseLabel =
@@ -481,6 +596,7 @@ function buildEffectiveActivatedAbility(
 				: costPart);
 	const activationZones = ab.kind === 'activated' ? ab.activationZones : undefined;
 	const costKeyword = ab.kind === 'activated' ? ab.costKeyword : undefined;
+	const activationCondition = ab.activationCondition;
 
 	return {
 		id,
@@ -496,6 +612,7 @@ function buildEffectiveActivatedAbility(
 		isManaAbility: isMana && hasManaProduction,
 		sorcerySpeedOnly: timing === 'sorcery',
 		...(ab.activationRestrictions?.length ? { activationRestrictions: ab.activationRestrictions } : {}),
+		...(activationCondition ? { activationCondition } : {}),
 		...(activationZones?.length ? { activationZones } : {}),
 		...(costKeyword ? { costKeyword } : {}),
 		...(ab.grantCondition ? { grantCondition: ab.grantCondition } : {}),
@@ -503,6 +620,9 @@ function buildEffectiveActivatedAbility(
 		producesAmount,
 		...(manaAmount ? { manaAmount } : {}),
 		...(manaRestriction ? { manaRestriction } : {}),
+		...(manaBundles ? { manaBundles } : {}),
+		...(manaCombinationColors ? { manaCombinationColors } : {}),
+		...(freezesSelfUntap ? { freezesSelfUntap: true } : {}),
 		...(opts.grantSourceCard ? { grantSourceCard: opts.grantSourceCard } : {}),
 		effectText: opts.effectTextOverride ?? effectPart,
 		...(modal ? { modal } : {}),
@@ -518,7 +638,8 @@ function buildFaceActivatedAbilities(
 	abilities: ReturnType<typeof activeAbilityDefs>,
 	card: ScryfallCard,
 	commanderIdentity: ManaColor[],
-	resolveOpponentLandColors?: () => ManaColor[]
+	resolveOpponentLandColors?: () => ManaColor[],
+	chosenColor?: ManaColor
 ): EffectiveActivatedAbility[] {
 	const out: EffectiveActivatedAbility[] = [];
 
@@ -618,7 +739,8 @@ function buildFaceActivatedAbilities(
 								displayCard: card,
 								labelOverride: built.label,
 								costTextOverride: built.costText,
-								effectTextOverride: built.effectText
+								effectTextOverride: built.effectText,
+								chosenColor
 							}
 						);
 						if (effective) out.push({ ...effective, faceIndex });
@@ -635,7 +757,8 @@ function buildFaceActivatedAbilities(
 			if (ab.id === 'mana_tap' && out.some((x) => x.id === 'mana_tap')) continue;
 			const built = buildEffectiveActivatedAbility(ab, commanderIdentity, resolveOpponentLandColors, {
 				displayCardName: faceName,
-				displayCard: card
+				displayCard: card,
+				chosenColor
 			});
 			if (built) out.push({ ...built, faceIndex });
 		}
@@ -652,7 +775,8 @@ export function getCardActivatedAbilities(
 	card: ScryfallCard,
 	commanderIdentity: ManaColor[] = [],
 	resolveOpponentLandColors?: () => ManaColor[],
-	faceOpts?: ResolveObjectFacesOptions
+	faceOpts?: ResolveObjectFacesOptions,
+	chosenColor?: ManaColor
 ): EffectiveActivatedAbility[] {
 	const resolved = resolveObjectFaces(card, faceOpts);
 	const def = compileCard(card);
@@ -667,7 +791,8 @@ export function getCardActivatedAbilities(
 				face.abilities,
 				card,
 				commanderIdentity,
-				resolveOpponentLandColors
+				resolveOpponentLandColors,
+				chosenColor
 			)
 		);
 	}
@@ -703,7 +828,8 @@ export function getEffectiveActivatedAbilities(
 			perm.card,
 			commanderIdentity,
 			resolveOppLands,
-			instanceFaceOptions(perm, perm.zone)
+			instanceFaceOptions(perm, perm.zone),
+			perm.chosenColor
 		).filter((ab) => !ab.grantCondition);
 	} else {
 		const breakdown = inspectCardContinuousBreakdown(perm, state);
@@ -715,7 +841,8 @@ export function getEffectiveActivatedAbilities(
 					effectiveCard,
 					commanderIdentity,
 					resolveOppLands,
-					instanceFaceOptions(perm, 'battlefield')
+					instanceFaceOptions(perm, 'battlefield'),
+					perm.chosenColor
 				).filter(
 					(ab) =>
 						!ab.grantCondition ||
@@ -736,12 +863,18 @@ export function getEffectiveActivatedAbilities(
 					? `granted:${item.grantSourceId}:${grantedIr.id}`
 					: grantedIr.id;
 			if (rawAbilities.some((a) => a.id === abId)) continue;
+			const grantSourceChosenColor = item.grantSourceId
+				? state.players
+						.flatMap((pl) => pl.battlefield)
+						.find((p) => p.instanceId === item.grantSourceId)?.chosenColor
+				: undefined;
 			const built = buildEffectiveActivatedAbility(grantedIr, commanderIdentity, resolveOppLands, {
 				idOverride: abId,
 				displayCardName: effectiveCard.name,
 				displayCard: item.grantSourceCard ?? effectiveCard,
 				grantSourceCard: item.grantSourceCard,
-				grantSources: item.sources
+				grantSources: item.sources,
+				chosenColor: grantSourceChosenColor ?? perm.chosenColor
 			});
 			if (built) rawAbilities.push(built);
 		}

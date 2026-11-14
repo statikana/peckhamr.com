@@ -1,4 +1,12 @@
-import type { CardInstance, CounterType, GamePhase, GameState, ScryfallCard, ZoneType } from '../types.ts';
+import type {
+	CardInstance,
+	CounterType,
+	GamePhase,
+	GameState,
+	ManaColor,
+	ScryfallCard,
+	ZoneType
+} from '../types.ts';
 
 /**
  * Game events (ENGINE_ARCHITECTURE_PLAN.md section 2.3, Phase 2).
@@ -67,6 +75,10 @@ export interface LeftBattlefieldInfo {
 	foretold?: boolean;
 	blitzed?: boolean;
 	saddled?: boolean;
+	// --- Track P4 ---
+	exerted?: boolean;
+	chosenSubType?: string;
+	chosenColor?: ManaColor;
 	// --- Track P5 ---
 	monstrous?: boolean;
 	// --- Track P6 ---
@@ -303,6 +315,15 @@ export interface BecameMonarchEvent extends EventBase {
 	previousMonarchId: string | null;
 }
 
+// --- Track P4 ---
+/** A permanent on the battlefield was exerted by a player (CR 701.43a–d). */
+export interface ExertedEvent extends EventBase {
+	kind: 'Exerted';
+	playerId: string;
+	objectId: string;
+	object: CardInstance;
+}
+
 // --- Track P5 ---
 /** A player took the amass keyword action (CR 701.47a–c: emitted even if 0 counters were placed or token creation was prevented). */
 export interface AmassedEvent extends EventBase {
@@ -372,6 +393,8 @@ export type GameEvent =
 	| AttachedEvent
 	// --- Track P1 ---
 	| BecameMonarchEvent
+	// --- Track P4 ---
+	| ExertedEvent
 	// --- Track P5 ---
 	| AmassedEvent
 	| ManifestDreadEvent

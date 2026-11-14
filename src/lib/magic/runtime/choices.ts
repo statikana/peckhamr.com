@@ -59,6 +59,7 @@ export const ALL_PROMPT_PURPOSES: readonly PromptPurpose[] = [
 	'trigger_targets',
 	'trigger_order',
 	'trigger_may',
+	'etb_choice',
 	'generic'
 ] as const;
 

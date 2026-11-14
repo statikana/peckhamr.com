@@ -195,11 +195,23 @@ describe('Tier 2 Track A — Item 2: CR 602.5b Activation Restrictions', () => {
 			power: undefined,
 			toughness: undefined
 		});
+		const unknownConditionalArtifact = card({
+			name: 'Lunar Shrine',
+			typeLine: 'Artifact',
+			oracleText: "{1}: You gain 1 life. Activate only if it's night.",
+			power: undefined,
+			toughness: undefined
+		});
 
 		assert.equal(compileCard(upkeepArtifact).fullySupported, true);
 		assert.equal(compileCard(onceArtifact).fullySupported, true);
 		assert.equal(compileCard(yourTurnArtifact).fullySupported, true);
-		assert.equal(compileCard(conditionalArtifact).fullySupported, false, 'Unknown "Activate only if ..." must be unsupported');
+		assert.equal(compileCard(conditionalArtifact).fullySupported, true);
+		assert.equal(
+			compileCard(unknownConditionalArtifact).fullySupported,
+			false,
+			'Unknown "Activate only if ..." must be unsupported'
+		);
 
 		const state = createTestGame();
 		const alice = state.players[0];
