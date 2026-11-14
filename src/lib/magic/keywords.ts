@@ -31,7 +31,12 @@ export interface AlternativeCostKeywordMeta {
 	evoked?: boolean;
 	/** CR 702.138a–b: marks the cast spell / entering permanent as escaped. */
 	escaped?: boolean;
-	timing?: 'default' | 'instant_only';
+	// --- Track P3 ---
+	/** CR 702.152a: marks the cast spell / entering permanent as blitzed. */
+	blitzed?: boolean;
+	/** CR 702.146a–b / 712.8c: casts a double-faced card transformed with its back face up from graveyard (Disturb). */
+	castTransformedBackFace?: boolean;
+	timing?: 'default' | 'instant_only' | 'sorcery_only';
 	stackBadgeLabel?: string;
 	/** CR 708: casting this card face down as a 2/2 colorless creature (Morph / Megamorph / Disguise). */
 	faceDown?: {
@@ -272,6 +277,119 @@ export function buildUnearthAbility(
 		effectText,
 		label
 	};
+}
+
+// --- Track P3 ---
+/**
+ * CR 702.171a: "Saddle N" means "Tap any number of other untapped creatures you control with total
+ * power N or greater: This permanent becomes saddled until end of turn. Activate only as a sorcery."
+ */
+export function buildSaddleAbility(
+	kw: KeywordDef,
+	id: string,
+	span: Span
+): { ability: ActivatedAbility; costText: string; effectText: string; label: string } | null {
+	const raw = kw.param?.trim();
+	const n =
+		kw.n !== undefined
+			? kw.n
+			: raw && /^\d+$/.test(raw)
+				? Number(raw)
+				: null;
+	if (n === null || !Number.isInteger(n) || n < 0) return null;
+	const cost: CostDef[] = [
+		{
+			k: 'tapSubsetSum',
+			minTotal: { k: 'const', n },
+			metric: 'power',
+			filter: { controller: 'you', types: ['Creature'], other: true, tapped: false },
+			excludeSelf: true,
+			restrictionTag: 'saddle'
+		}
+	];
+	const effect: EffectStep[] = [
+		{
+			verb: 'saddle',
+			subject: { k: 'self' },
+			span
+		}
+	];
+	const costText = `Tap other untapped creatures with total power ${n} or more`;
+	const effectText = 'This permanent becomes saddled until end of turn. Saddle only as a sorcery.';
+	const label = `Saddle ${n}`;
+	return {
+		ability: {
+			kind: 'activated',
+			cost,
+			targets: [],
+			effect,
+			timing: 'sorcery',
+			isMana: false,
+			activationZones: ['battlefield'],
+			costKeyword: 'saddle',
+			id,
+			text: `${label} (${costText}: ${effectText})`,
+			span
+		},
+		costText,
+		effectText,
+		label
+	};
+}
+
+/**
+ * CR 702.24a: "Cumulative upkeep [cost]" means "At the beginning of your upkeep, if this permanent
+ * is on the battlefield, put an age counter on this permanent. Then you may pay [cost] for each age
+ * counter on it. If you don't, sacrifice it."
+ */
+export function buildCumulativeUpkeepTriggers(
+	kw: KeywordDef,
+	abilityIndex: number,
+	span: Span
+): RuntimeTrigger[] {
+	const costDefs = kw.costDefs;
+	if (!costDefs || costDefs.length === 0) return [];
+	const rawCost = (kw.cost ?? kw.param ?? '').trim();
+	const isManaOnly = /^(\{[^}]+\})+$/.test(rawCost);
+	const text = rawCost
+		? isManaOnly
+			? `Cumulative upkeep ${rawCost}`
+			: `Cumulative upkeep—${rawCost}`
+		: 'Cumulative upkeep';
+	return [
+		{
+			abilityIndex,
+			trigger: {
+				event: 'phaseBegin',
+				filter: { phase: 'upkeep' },
+				scope: 'controller_turn'
+			},
+			effectSupported: true,
+			text,
+			effect: {
+				steps: [
+					{
+						verb: 'putCounters',
+						subject: { k: 'self' },
+						amount: { k: 'const', n: 1 },
+						params: { counter: 'age' },
+						span
+					},
+					{
+						verb: 'cumulativeUpkeep',
+						subject: { k: 'self' },
+						params: {
+							cumulativeUpkeepCost: costDefs,
+							cumulativeUpkeepText: rawCost
+						},
+						span
+					}
+				],
+				targets: [],
+				unparsed: []
+			}
+		}
+	];
 }
 
 export interface KeywordSpec {
@@ -1015,7 +1133,54 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 	unimplemented('banding', '702.22'),
 	unimplemented('bargain', '702.166'),
 	unimplemented('bestow', '702.103', 'cost'),
-	unimplemented('blitz', '702.152', 'cost'),
+	// --- Track P3 ---
+	[
+		'blitz',
+		{
+			name: 'blitz',
+			cr: '702.152',
+			parameterKind: 'cost',
+			grantable: false,
+			status: 'implemented',
+			implementation: {
+				kind: 'castOption',
+				altCost: {
+					id: 'alt:blitz',
+					label: 'Cast with Blitz',
+					castSummarySuffix: ' (Blitz)',
+					zones: ['hand', 'command', 'exile'],
+					requiresZonePermission: true,
+					blitzed: true,
+					stackBadgeLabel: 'Blitz'
+				},
+				events: ['zoneChange'],
+				buildTriggers: (_kw, abilityIndex, span) => [
+					{
+						abilityIndex,
+						trigger: {
+							event: 'zoneChange',
+							filter: { object: 'self', from: 'battlefield', to: 'graveyard' }
+						},
+						condition: { k: 'blitzed' },
+						effectSupported: true,
+						text: 'Blitz',
+						effect: {
+							steps: [
+								{
+									verb: 'draw',
+									subject: { k: 'playerRef', ref: { k: 'you' } },
+									amount: { k: 'const', n: 1 },
+									span
+								}
+							],
+							targets: [],
+							unparsed: []
+						}
+					}
+				]
+			}
+		}
+	],
 	unimplemented('bloodthirst', '702.54', 'number'),
 	unimplemented('boast', '702.142', 'text'),
 	[
@@ -1061,7 +1226,22 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 			implementation: { kind: 'activated', buildActivated: buildCrewAbility }
 		}
 	],
-	unimplemented('cumulative upkeep', '702.24', 'cost'),
+	// --- Track P3 ---
+	[
+		'cumulative upkeep',
+		{
+			name: 'cumulative upkeep',
+			cr: '702.24',
+			parameterKind: 'cost',
+			grantable: false,
+			status: 'implemented',
+			implementation: {
+				kind: 'trigger',
+				events: ['phaseBegin'],
+				buildTriggers: buildCumulativeUpkeepTriggers
+			}
+		}
+	],
 	[
 		'cycling',
 		{
@@ -1114,7 +1294,30 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 	],
 	unimplemented('devour', '702.82', 'number'),
 	faceDownCostKeyword('disguise', '702.168', 'disguise', 'Cast face down (Disguise)', '{2}'),
-	unimplemented('disturb', '702.146', 'cost'),
+	// --- Track P3 ---
+	[
+		'disturb',
+		{
+			name: 'disturb',
+			cr: '702.146',
+			parameterKind: 'cost',
+			grantable: false,
+			status: 'implemented',
+			implementation: {
+				kind: 'castOption',
+				altCost: {
+					id: 'alt:disturb',
+					label: 'Cast with Disturb',
+					castSummarySuffix: ' (Disturb)',
+					zones: ['graveyard'],
+					requiresZonePermission: false,
+					disallowLand: true,
+					castTransformedBackFace: true,
+					stackBadgeLabel: 'Disturb'
+				}
+			}
+		}
+	],
 	unimplemented('double team', '702.156'),
 	unimplemented('dredge', '702.52', 'number'),
 	unimplemented('echo', '702.30', 'cost'),
@@ -1122,7 +1325,18 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 	unimplemented('emerge', '702.119', 'cost'),
 	unimplemented('encore', '702.141', 'cost'),
 	unimplemented('enlist', '702.154'),
-	unimplemented('entwine', '702.42', 'cost'),
+	// --- Track P3 ---
+	[
+		'entwine',
+		{
+			name: 'entwine',
+			cr: '702.42',
+			parameterKind: 'cost',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'castOption' }
+		}
+	],
 	unimplemented('epic', '702.50'),
 	unimplemented('escalate', '702.120', 'cost'),
 	[
@@ -1192,7 +1406,18 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 	unimplemented('fading', '702.32', 'number'),
 	unimplemented('flanking', '702.25'),
 	unimplemented('forecast', '702.57', 'text'),
-	unimplemented('foretell', '702.143', 'cost'),
+	// --- Track P3 ---
+	[
+		'foretell',
+		{
+			name: 'foretell',
+			cr: '702.143',
+			parameterKind: 'cost',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'castOption' }
+		}
+	],
 	unimplemented('fortify', '702.67', 'cost'),
 	unimplemented('frenzy', '702.68', 'number'),
 	unimplemented('friends forever', '702.124i'),
@@ -1205,7 +1430,19 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 	unimplemented('improvise', '702.126'),
 	unimplemented('impending', '702.176', 'text'),
 	unimplemented('ingest', '702.115'),
-	unimplemented('jump-start', '702.133'),
+	// --- Track P3 ---
+	[
+		'jump-start',
+		{
+			name: 'jump-start',
+			cr: '702.133',
+			parameterKind: 'none',
+			displayLabel: 'Jump-start',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'castOption' }
+		}
+	],
 	[
 		'basic landcycling',
 		{
@@ -1257,7 +1494,18 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 	unimplemented('offspring', '702.175', 'cost'),
 	unimplemented('outlast', '702.107', 'cost'),
 	unimplemented('persist', '702.79'),
-	unimplemented('plot', '702.170', 'cost'),
+	// --- Track P3 ---
+	[
+		'plot',
+		{
+			name: 'plot',
+			cr: '702.170',
+			parameterKind: 'cost',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'castOption' }
+		}
+	],
 	unimplemented('poisonous', '702.70', 'number'),
 	unimplemented('prototype', '702.160', 'text'),
 	unimplemented('provoke', '702.39'),
@@ -1271,10 +1519,33 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 	unimplemented('reinforce', '702.77', 'text'),
 	unimplemented('renown', '702.112', 'number'),
 	unimplemented('replicate', '702.56', 'cost'),
-	unimplemented('retrace', '702.81'),
+	// --- Track P3 ---
+	[
+		'retrace',
+		{
+			name: 'retrace',
+			cr: '702.81',
+			parameterKind: 'none',
+			displayLabel: 'Retrace',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'castOption' }
+		}
+	],
 	unimplemented('riot', '702.136'),
 	unimplemented('ripple', '702.60', 'number'),
-	unimplemented('saddle', '702.171', 'number'),
+	// --- Track P3 ---
+	[
+		'saddle',
+		{
+			name: 'saddle',
+			cr: '702.171',
+			parameterKind: 'number',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'activated', buildActivated: buildSaddleAbility }
+		}
+	],
 	unimplemented('scavenge', '702.97', 'cost'),
 	unimplemented('skulk', '702.118'),
 	unimplemented('soulbond', '702.95'),

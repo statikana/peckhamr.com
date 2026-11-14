@@ -30,8 +30,10 @@ import {
 	evaluateKickedCountAmount,
 	evaluateKickerCondition,
 	getObjectKickerInfo,
+	isObjectBlitzed,
 	isObjectEscaped,
-	isObjectEvoked
+	isObjectEvoked,
+	isObjectForetold
 } from './kicker.ts';
 import { withStableLayerInputs } from './layerCache.ts';
 import { instanceFaceOptions, matchesColorFilter, resolveObjectFaces, stackItemFaceOptions } from './faces.ts';
@@ -74,6 +76,8 @@ export interface PendingTrigger {
 	triggerEventStackItem?: StackItem;
 	/** Snapshot of spells cast before this spell in the current turn (CR 702.40a). */
 	stormCount?: number;
+	sourceForetold?: boolean;
+	sourceBlitzed?: boolean;
 	/** Match order (deterministic tie-break for a player's own simultaneous triggers). */
 	order: number;
 }
@@ -196,6 +200,9 @@ interface SimultaneousLkiEntry {
 	colors: string[];
 	activeFaceIndex?: number;
 	unlockedFaces?: number[];
+	foretold?: boolean;
+	blitzed?: boolean;
+	saddled?: boolean;
 }
 
 interface TriggerChannel {
@@ -251,6 +258,8 @@ function persistPendingTriggers(state: GameState, triggers: PendingTrigger[]): v
 			...(t.eventLki ? { eventLki: t.eventLki } : {}),
 			...(t.triggerEventStackItem ? { triggerEventStackItem: t.triggerEventStackItem } : {}),
 			...(t.stormCount !== undefined ? { stormCount: t.stormCount } : {}),
+			...(t.sourceForetold ? { sourceForetold: true } : {}),
+			...(t.sourceBlitzed ? { sourceBlitzed: true } : {}),
 			order: t.order
 		});
 	}
@@ -277,6 +286,8 @@ function hydratePendingTriggers(state: GameState, ch: TriggerChannel): void {
 		...(t.eventLki ? { eventLki: t.eventLki } : {}),
 		...(t.triggerEventStackItem ? { triggerEventStackItem: t.triggerEventStackItem } : {}),
 		...(t.stormCount !== undefined ? { stormCount: t.stormCount } : {}),
+		...(t.sourceForetold ? { sourceForetold: true } : {}),
+		...(t.sourceBlitzed ? { sourceBlitzed: true } : {}),
 		order: t.order
 	}));
 	ch.pending = [...hydrated, ...ch.pending];
@@ -316,7 +327,10 @@ export function withSimultaneousDestroyLki(
 			tapped: perm.tapped,
 			colors: perm.isFaceDown ? [] : [...ev.colors],
 			...(perm.activeFaceIndex !== undefined ? { activeFaceIndex: perm.activeFaceIndex } : {}),
-			...(perm.unlockedFaces ? { unlockedFaces: [...perm.unlockedFaces] } : {})
+			...(perm.unlockedFaces ? { unlockedFaces: [...perm.unlockedFaces] } : {}),
+			...(perm.foretold ? { foretold: true } : {}),
+			...(perm.blitzed ? { blitzed: true } : {}),
+			...(perm.saddledThisTurn ? { saddled: true } : {})
 		});
 	}
 	const prevMap = ch.simultaneousLki;
@@ -364,6 +378,7 @@ interface Subject {
 	controllerId: string;
 	isToken: boolean;
 	tapped: boolean;
+	saddled?: boolean;
 	colors: string[];
 	typeLine: () => string;
 	hasSubtype: (subtype: string) => boolean;
@@ -377,6 +392,7 @@ function battlefieldSubject(state: GameState, obj: CardInstance, controllerId: s
 		controllerId,
 		isToken: obj.isToken,
 		tapped: obj.tapped,
+		saddled: Boolean(obj.saddledThisTurn),
 		get colors() {
 			return obj.isFaceDown ? [] : ev().colors;
 		},
@@ -385,12 +401,22 @@ function battlefieldSubject(state: GameState, obj: CardInstance, controllerId: s
 	};
 }
 
-function printedSubject(obj: CardInstance, card: ScryfallCard, controllerId: string, allCreatureTypes = false, typeLine = card.typeLine, tapped = obj.tapped, colors: string[] = resolveObjectFaces(card, instanceFaceOptions(obj)).colors): Subject {
+function printedSubject(
+	obj: CardInstance,
+	card: ScryfallCard,
+	controllerId: string,
+	allCreatureTypes = false,
+	typeLine = card.typeLine,
+	tapped = obj.tapped,
+	colors: string[] = resolveObjectFaces(card, instanceFaceOptions(obj)).colors,
+	saddled = Boolean(obj.saddledThisTurn)
+): Subject {
 	return {
 		obj,
 		controllerId,
 		isToken: obj.isToken,
 		tapped,
+		saddled,
 		colors,
 		typeLine: () => typeLine,
 		hasSubtype: (s) => hasWord(subtypePart(typeLine), s) || (allCreatureTypes && hasWord(typeLine, 'Creature'))
@@ -431,6 +457,7 @@ function filterMatches(f: ObjectFilter, subject: Subject, source: Viewer): boole
 	if (f.isCommander !== undefined && Boolean(subject.obj.isCommander) !== f.isCommander) return false;
 	if (f.token !== undefined && subject.isToken !== f.token) return false;
 	if (f.tapped !== undefined && subject.tapped !== f.tapped) return false;
+	if (f.saddled !== undefined && Boolean(subject.saddled) !== f.saddled) return false;
 	if (f.colors && !matchesColorFilter(subject.colors, f.colors)) return false;
 	return true;
 }
@@ -457,6 +484,9 @@ interface Source {
 	/** Look-back for an object that left the battlefield (CR 603.10a). */
 	lostAllAbilities?: boolean;
 	isLookBack?: boolean;
+	foretold?: boolean;
+	blitzed?: boolean;
+	saddled?: boolean;
 }
 
 /**
@@ -539,7 +569,10 @@ interface MatchExtras {
 
 function record(state: GameState, source: Source, ability: RuntimeTrigger, kind: EventKind, extras: MatchExtras): void {
 	// CR 603.4: an intervening-if condition must be true when the event happens.
-	if (ability.condition && !evaluateCondition(state, ability.condition, source.controllerId, source.obj.instanceId)) {
+	if (
+		ability.condition &&
+		!evaluateCondition(state, ability.condition, source.controllerId, source.obj.instanceId, undefined, source)
+	) {
 		return;
 	}
 	let count = extras.times ?? 1;
@@ -555,6 +588,8 @@ function record(state: GameState, source: Source, ability: RuntimeTrigger, kind:
 		(state.triggeredOnceThisTurn ??= []).push(onceKey);
 		count = 1;
 	}
+	const sourceForetold = Boolean(source.foretold ?? source.obj.foretold);
+	const sourceBlitzed = Boolean(source.blitzed ?? source.obj.blitzed);
 	const ch = channel(state);
 	for (let i = 0; i < count; i++) {
 		ch.pending.push({
@@ -572,6 +607,8 @@ function record(state: GameState, source: Source, ability: RuntimeTrigger, kind:
 			eventLki: extras.eventLki,
 			...(extras.triggerEventStackItem ? { triggerEventStackItem: extras.triggerEventStackItem } : {}),
 			...(extras.stormCount !== undefined ? { stormCount: extras.stormCount } : {}),
+			...(sourceForetold ? { sourceForetold: true } : {}),
+			...(sourceBlitzed ? { sourceBlitzed: true } : {}),
 			eventPlayer: extras.eventPlayer ?? extras.eventPlayerId,
 			defendingPlayerId: extras.defendingPlayerId,
 			order: ch.nextOrder++
@@ -649,6 +686,12 @@ function matchTriggersInner(state: GameState, ev: GameEvent): void {
 			return matchObjectActionEvent(state, ev, 'connive', 'Connive Trigger', ev.nonlandDiscardedCount);
 		case 'BecomesCrewed':
 			return matchObjectActionEvent(state, ev, 'becomesCrewed', 'Crew Trigger');
+		case 'BecomesSaddled':
+			return matchObjectActionEvent(state, ev, 'becomesSaddled', 'Saddle Trigger');
+		case 'Foretold':
+			return matchExileActionCardEvent(state, ev.playerId, ev.card, 'foretell', 'Foretell Trigger', true);
+		case 'Plotted':
+			return matchExileActionCardEvent(state, ev.playerId, ev.card, 'plot', 'Plot Trigger', false);
 		case 'CombatDamageBatchPlayer':
 			return matchCombatDamageBatchPlayer(state, ev);
 	}
@@ -823,7 +866,7 @@ function matchTransformed(state: GameState, ev: Extract<GameEvent, { kind: 'Tran
 function matchObjectActionEvent(
 	state: GameState,
 	ev: { objectId: string; object: CardInstance; playerId: string },
-	event: 'explore' | 'connive' | 'becomesCrewed',
+	event: 'explore' | 'connive' | 'becomesCrewed' | 'becomesSaddled',
 	label: string,
 	amount?: number
 ): void {
@@ -841,6 +884,42 @@ function matchObjectActionEvent(
 					eventObject: found?.obj ?? ev.object,
 					eventPlayer: ev.playerId,
 					...(amount !== undefined ? { amount } : {})
+				});
+			}
+		}
+	}
+}
+
+function matchExileActionCardEvent(
+	state: GameState,
+	playerId: string,
+	card: CardInstance,
+	event: 'foretell' | 'plot',
+	label: string,
+	faceDown: boolean
+): void {
+	// CR 702.143a: A card exiled face down via Foretell has no characteristics; Plot exiles face up (CR 702.170a).
+	const view = faceDown
+		? null
+		: resolveObjectFaces(card.card, instanceFaceOptions(card, 'exile'));
+	const subject = faceDown
+		? printedSubject(card, card.card, playerId, false, '', false, [], false)
+		: printedSubject(card, card.card, playerId, false, view!.typeLine, false, view!.colors, false);
+	for (const source of sources(state, event)) {
+		for (const { ability, alts } of abilitiesFor(state, source, event)) {
+			const alt = alts.find((a) => {
+				const rel = a.filter.player?.relation ?? 'any';
+				if (rel === 'you' && playerId !== source.controllerId) return false;
+				if (rel === 'opponent' && playerId === source.controllerId) return false;
+				if (a.filter.object !== undefined && !objectMatches(a.filter, subject, source)) return false;
+				return true;
+			});
+			if (alt) {
+				record(state, source, ability, event, {
+					label,
+					eventObject: card,
+					eventPlayer: playerId,
+					eventPlayerId: playerId
 				});
 			}
 		}
@@ -924,10 +1003,20 @@ function matchZoneChange(state: GameState, ev: Extract<GameEvent, { kind: 'ZoneC
 						objBatchInfo.hasAllCreatureTypes,
 						objBatchInfo.typeLine,
 						objBatchInfo.tapped,
-						objBatchInfo.colors
+						objBatchInfo.colors,
+						Boolean(objBatchInfo.saddled)
 					)
 				: ev.lki
-					? printedSubject(obj, ev.lki.card, ev.lki.controllerId, ev.lki.hasAllCreatureTypes, ev.lki.typeLine, ev.lki.tapped)
+					? printedSubject(
+							obj,
+							ev.lki.card,
+							ev.lki.controllerId,
+							ev.lki.hasAllCreatureTypes,
+							ev.lki.typeLine,
+							ev.lki.tapped,
+							undefined,
+							Boolean(ev.lki.saddled)
+						)
 					: printedSubject(obj, obj.card, obj.ownerId);
 	const enters = ev.to === 'battlefield';
 	const label = (source: Source, alt: TriggerDef) => {
@@ -968,7 +1057,10 @@ function matchZoneChange(state: GameState, ev: Extract<GameEvent, { kind: 'ZoneC
 						controllerId: info.controllerId,
 						zone: 'battlefield',
 						lostAllAbilities: info.lostAllAbilities,
-						isLookBack: true
+						isLookBack: true,
+						...(info.foretold ? { foretold: true } : {}),
+						...(info.blitzed ? { blitzed: true } : {}),
+						...(info.saddled ? { saddled: true } : {})
 					});
 				}
 			}
@@ -985,7 +1077,10 @@ function matchZoneChange(state: GameState, ev: Extract<GameEvent, { kind: 'ZoneC
 					controllerId: ev.lki.controllerId,
 					zone: 'battlefield',
 					lostAllAbilities: ev.lki.lostAllAbilities,
-					isLookBack: true
+					isLookBack: true,
+					...(ev.lki.foretold ? { foretold: true } : {}),
+					...(ev.lki.blitzed ? { blitzed: true } : {}),
+					...(ev.lki.saddled ? { saddled: true } : {})
 				});
 			}
 		}
@@ -1730,26 +1825,44 @@ export function evaluateCondition(
 	cond: Condition,
 	controllerId: string,
 	sourceInstanceId: string,
-	stackItem?: StackItem
+	stackItem?: StackItem,
+	source?: Source
 ): boolean {
 	const controller = state.players.find((p) => p.playerId === controllerId);
 	if (!controller) return false;
 	switch (cond.k) {
 		case 'and':
-			return cond.of.every((c) => evaluateCondition(state, c, controllerId, sourceInstanceId, stackItem));
+			return cond.of.every((c) =>
+				evaluateCondition(state, c, controllerId, sourceInstanceId, stackItem, source)
+			);
 		case 'or':
-			return cond.of.some((c) => evaluateCondition(state, c, controllerId, sourceInstanceId, stackItem));
+			return cond.of.some((c) =>
+				evaluateCondition(state, c, controllerId, sourceInstanceId, stackItem, source)
+			);
 		case 'not':
-			return !evaluateCondition(state, cond.of, controllerId, sourceInstanceId, stackItem);
+			return !evaluateCondition(state, cond.of, controllerId, sourceInstanceId, stackItem, source);
 		case 'kicked':
 			return evaluateKickerCondition(
 				cond,
-				getObjectKickerInfo(state, stackItem?.card ?? ({} as ScryfallCard), sourceInstanceId, stackItem)
+				getObjectKickerInfo(state, stackItem?.card ?? ({} as ScryfallCard), sourceInstanceId, stackItem, source?.obj)
 			);
 		case 'evoked':
-			return isObjectEvoked(state, sourceInstanceId, stackItem);
+			return isObjectEvoked(state, sourceInstanceId, stackItem, source?.obj);
 		case 'escaped':
-			return isObjectEscaped(state, sourceInstanceId, stackItem);
+			return isObjectEscaped(state, sourceInstanceId, stackItem, source?.obj);
+		case 'foretold':
+			return source?.foretold !== undefined
+				? source.foretold
+				: isObjectForetold(state, sourceInstanceId, stackItem, source?.obj);
+		case 'blitzed':
+			return source?.blitzed !== undefined
+				? source.blitzed
+				: isObjectBlitzed(state, sourceInstanceId, stackItem, source?.obj);
+		case 'saddled': {
+			if (source) return Boolean(source.saddled ?? source.obj.saddledThisTurn);
+			const found = permanentById(state, sourceInstanceId);
+			return Boolean(found?.obj.saddledThisTurn);
+		}
 		case 'isTurnOf':
 			if (cond.player.k === 'you') return state.players[state.activePlayerIndex]?.playerId === controllerId;
 			return cond.player.k === 'activePlayer';

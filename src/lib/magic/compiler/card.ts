@@ -37,7 +37,11 @@ import { getCardFaces } from '../scryfall.ts';
 import type { CardLayout, ManaColor, ScryfallCard, ScryfallCardFace, ZoneType } from '../types.ts';
 import { parseAdditionalCostSentence, parseCost, parseCostModifierSentence, parseObjectPhrase } from './costs.ts';
 import { extractUnparsedTargets, parseEffects, parseModal, parseSpellFace, type EffectParse } from './effects.ts';
-import { staticallyInterpretable, triggerTargetsSupported } from './interpretable.ts';
+import {
+	SUPPORTED_OPTIONAL_COST_KINDS,
+	staticallyInterpretable,
+	triggerTargetsSupported
+} from './interpretable.ts';
 import { normalizeFace, splitSentences, type NormalizedFace, type NormalizedLine } from './normalize.ts';
 import { canonicalKickerTag } from './triggers.ts';
 import { parseStaticAbility } from './statics.ts';
@@ -231,6 +235,12 @@ function parseKeyword(part: string): KeywordDef | null {
 			kw === 'buyback' ||
 			kw === 'evoke' ||
 			kw === 'escape' ||
+			kw === 'foretell' ||
+			kw === 'plot' ||
+			kw === 'entwine' ||
+			kw === 'disturb' ||
+			kw === 'blitz' ||
+			kw === 'cumulative upkeep' ||
 			kw === 'cycling' ||
 			kw === 'basic landcycling' ||
 			kw === 'landcycling'
@@ -282,7 +292,7 @@ function keywordLine(line: NormalizedLine): AbilityDef[] | null {
 	if (
 		line.abilityWord ||
 		(/\.$/.test(line.body) &&
-			!/^(?:ward|flashback|kicker|multikicker|morph|megamorph|disguise|unearth|buyback|evoke|escape|cycling|(?:[a-z][a-z -]*\s+)?[a-z]*cycling)\s*[—-]/i.test(
+			!/^(?:ward|flashback|kicker|multikicker|morph|megamorph|disguise|unearth|buyback|evoke|escape|foretell|plot|entwine|disturb|blitz|cumulative upkeep|cycling|(?:[a-z][a-z -]*\s+)?[a-z]*cycling)\s*[—-]/i.test(
 				line.body
 			))
 	) {
@@ -291,7 +301,7 @@ function keywordLine(line: NormalizedLine): AbilityDef[] | null {
 	// "Enchant creature, land, or planeswalker", "Protection from white, from blue", and composite
 	// dash costs ("Ward—...", "Flashback—...", "Kicker—...", "Morph—...", "Cycling—...", "Escape—...") are one keyword.
 	const parts =
-		/^(?:enchant|protection from|hexproof from|partner with|(?:ward|flashback|kicker|multikicker|morph|megamorph|disguise|unearth|buyback|evoke|escape|cycling|(?:[a-z][a-z -]*\s+)?[a-z]*cycling)\s*[—-])/i.test(
+		/^(?:enchant|protection from|hexproof from|partner with|(?:ward|flashback|kicker|multikicker|morph|megamorph|disguise|unearth|buyback|evoke|escape|foretell|plot|entwine|disturb|blitz|cumulative upkeep|cycling|(?:[a-z][a-z -]*\s+)?[a-z]*cycling)\s*[—-])/i.test(
 			line.body
 		)
 			? [line.body]
@@ -354,11 +364,48 @@ function keywordLine(line: NormalizedLine): AbilityDef[] | null {
 			keyword.name === 'unearth' ||
 			keyword.name === 'buyback' ||
 			keyword.name === 'evoke' ||
-			keyword.name === 'escape'
+			keyword.name === 'escape' ||
+			keyword.name === 'foretell' ||
+			keyword.name === 'plot' ||
+			keyword.name === 'entwine' ||
+			keyword.name === 'disturb' ||
+			keyword.name === 'blitz'
 		) {
 			const kwCost = keyword.cost ?? keyword.param ?? '';
 			const parsed = parseCost(kwCost);
 			if (parsed.unparsed.length > 0 || parsed.defs.length === 0) {
+				out.push(unsupported('unparsed', part, span, [span]));
+				return;
+			}
+			keyword.costDefs = parsed.defs;
+		}
+		if (keyword.name === 'cumulative upkeep') {
+			let kwCost = (keyword.cost ?? keyword.param ?? '').trim();
+			// CR 702.24a Example 1: "Cumulative upkeep {W} or {U}" chooses {W} or {U} per age counter, identical to {W/U}.
+			const hybridOr = kwCost.match(/^\{([WUBRG])\}\s+or\s+\{([WUBRG])\}$/i);
+			if (hybridOr) {
+				kwCost = `{${hybridOr[1].toUpperCase()}/${hybridOr[2].toUpperCase()}}`;
+			}
+			const payManaAndLife = kwCost.match(/^pay\s+((?:\{[^}]+\})+)\s+and\s+(\d+\s+life)$/i);
+			if (payManaAndLife) {
+				kwCost = `${payManaAndLife[1]}, Pay ${payManaAndLife[2]}`;
+			}
+			const parsed = parseCost(kwCost);
+			const scalable =
+				parsed.unparsed.length === 0 &&
+				parsed.defs.length > 0 &&
+				parsed.defs.every((d) => {
+					if (!SUPPORTED_OPTIONAL_COST_KINDS.has(d.k)) return false;
+					if (d.k === 'mana') return !/\{X\}/i.test(d.cost);
+					if (d.k === 'payLife') return d.amount.k === 'const';
+					if (d.k === 'removeCounters') return d.count.k === 'const';
+					if (d.k === 'tapSubsetSum') return d.minTotal.k === 'const';
+					if (d.k === 'sacrifice' || d.k === 'discard' || d.k === 'exileFrom' || d.k === 'tapOthers') {
+						return d.count.k === 'const' && d.filter !== 'self';
+					}
+					return false;
+				});
+			if (!scalable) {
 				out.push(unsupported('unparsed', part, span, [span]));
 				return;
 			}
@@ -465,6 +512,7 @@ function keywordLine(line: NormalizedLine): AbilityDef[] | null {
 			keyword.name === 'typecycling';
 		const cyclingId = i === 0 ? `cycling_${line.rawIndex}` : `cycling_${line.rawIndex}_${i}`;
 		const crewId = i === 0 ? `crew_${line.rawIndex}` : `crew_${line.rawIndex}_${i}`;
+		const saddleId = i === 0 ? `saddle_${line.rawIndex}` : `saddle_${line.rawIndex}_${i}`;
 		const unearthId = i === 0 ? `unearth_${line.rawIndex}` : `unearth_${line.rawIndex}_${i}`;
 		out.push({
 			kind: 'keyword',
@@ -476,9 +524,11 @@ function keywordLine(line: NormalizedLine): AbilityDef[] | null {
 					? { id: cyclingId }
 					: keyword.name === 'crew'
 						? { id: crewId }
-						: keyword.name === 'unearth'
-							? { id: unearthId }
-							: {})
+						: keyword.name === 'saddle'
+							? { id: saddleId }
+							: keyword.name === 'unearth'
+								? { id: unearthId }
+								: {})
 		});
 		// CR 702.124j: "Partner with [name]" is two abilities. The pairing half is the keyword above
 		// (deck construction); the other is "When this permanent enters, target player may search their

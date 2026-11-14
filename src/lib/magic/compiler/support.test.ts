@@ -47,7 +47,7 @@ const UNSUPPORTED_STATIC = synthetic({
 const SADDLED_TRIGGER = synthetic({
 	name: 'Dunetrot Charger',
 	typeLine: 'Creature — Horse Mount',
-	oracleText: 'Whenever Dunetrot Charger attacks while saddled, draw a card.'
+	oracleText: 'Whenever Dunetrot Charger attacks while enchanted, draw a card.'
 });
 const PARTLY_PARSED_SPELL = synthetic({
 	name: 'Quillbright Surge',
@@ -97,18 +97,18 @@ describe('cardSupportReport', () => {
 		assert.deepEqual(u.unparsed, [], 'the whole ability is the gap, so no narrower fragment');
 	});
 
-	it('reports a trigger with an unrepresentable qualifier ("while saddled")', () => {
+	it('reports a trigger with an unrepresentable qualifier ("while enchanted")', () => {
 		const report = cardSupportReport(SADDLED_TRIGGER);
 		assert.equal(report.fullySupported, false);
 		assert.equal(report.unsupported.length, 1);
 		const [u] = report.unsupported;
 		assert.notEqual(u.reason, 'static_not_compiled');
-		assert.match(u.text, /^Whenever ~ attacks while saddled, draw a card\.$/);
+		assert.match(u.text, /^Whenever ~ attacks while enchanted, draw a card\.$/);
 		assert.ok(u.unparsed.length >= 1, 'the trigger head is the unparsed part');
 		assert.ok(u.unparsed.every((t) => u.text.includes(t)));
 		assert.equal(
 			displayAbilityText(u.text, u.face),
-			'Whenever Dunetrot Charger attacks while saddled, draw a card.'
+			'Whenever Dunetrot Charger attacks while enchanted, draw a card.'
 		);
 	});
 

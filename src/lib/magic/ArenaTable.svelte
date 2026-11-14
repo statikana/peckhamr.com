@@ -5,6 +5,7 @@
 		canPayOrAutoTap,
 		checkAbilityActivationLegality,
 		checkEndTurnLegality,
+		checkHandSpecialActionLegality,
 		checkLandPlayLegality,
 		checkMandatoryAttackersSatisfied,
 		checkSpellCastLegality,
@@ -17,6 +18,7 @@
 		getCreaturePower,
 		getCreatureToughness,
 		getEffectiveActivatedAbilities,
+		getHandSpecialActions,
 		getHostCardOnBoard,
 		getLandPlayOptions,
 		getModalDisabledIndices,
@@ -1181,11 +1183,16 @@
 		}
 	}
 
-	async function confirmModePicker(explicitModes?: number[]) {
+	async function confirmModePicker(explicitModes?: number[], allowAllModes = false) {
 		const picker = modePickerModal;
 		if (!picker) return;
 		const chosenModes = explicitModes ?? [...picker.selectedModes];
-		if (chosenModes.length < picker.modal.min || chosenModes.length > picker.modal.max) return;
+		if (
+			!allowAllModes &&
+			(chosenModes.length < picker.modal.min || chosenModes.length > picker.modal.max)
+		) {
+			return;
+		}
 		modePickerModal = null;
 
 		const expanded = expandModalEffects(picker.modal, chosenModes);
@@ -1291,6 +1298,14 @@
 			return true;
 		}
 		if (fromZone === 'hand' && checkSuspendLegality(gameState, me.playerId, inst).ok) {
+			return true;
+		}
+		if (
+			fromZone === 'hand' &&
+			getHandSpecialActions(gameState, me.playerId, inst).some(
+				(sa) => checkHandSpecialActionLegality(gameState, me.playerId, inst, sa.id).ok
+			)
+		) {
 			return true;
 		}
 		if (
@@ -1837,6 +1852,19 @@
 		if (landOptions.length === 0 && options.length === 0 && zoneAbs.length === 0) {
 			if (fromZone === 'hand' && checkSuspendLegality(gameState, me!.playerId, inst).ok) {
 				await onGameAction({ type: 'suspend_card', instanceId: inst.instanceId });
+				return;
+			}
+			if (fromZone === 'hand') {
+				const legalSpecial = getHandSpecialActions(gameState, me!.playerId, inst).find(
+					(sa) => checkHandSpecialActionLegality(gameState, me!.playerId, inst, sa.id).ok
+				);
+				if (legalSpecial) {
+					await onGameAction({
+						type: 'hand_special_action',
+						instanceId: inst.instanceId,
+						actionId: legalSpecial.id
+					});
+				}
 			}
 			return;
 		}
@@ -1915,7 +1943,33 @@
 			option?.spellMods?.castFaceDown || option?.fused
 				? null
 				: compileSpellEffects(inst.card, option?.faceIndex ?? 0, false);
+		const selectsAllModes = Boolean(
+			option?.optionalAdditionalCosts?.some(
+				(oc) => oc.chooseAllModes && (optionalCostCounts?.[oc.id] ?? 0) > 0
+			)
+		);
 		if (compiledSpell?.modal && me) {
+			if (selectsAllModes) {
+				modePickerModal = {
+					kind: 'spell',
+					inst,
+					modal: compiledSpell.modal,
+					modeLabels: [],
+					disabledIndices: [],
+					selectedModes: [],
+					fromZone,
+					xValue: xVal,
+					option,
+					optionalCostCounts,
+					...(hasAids ? { costAidIds } : {}),
+					...(hasColorChoices ? { costAidColorChoices } : {})
+				};
+				await confirmModePicker(
+					compiledSpell.modal.modes.map((_, idx) => idx),
+					true
+				);
+				return;
+			}
 			const disabledIndices = getModalDisabledIndices(
 				gameState,
 				me.playerId,
@@ -3516,9 +3570,14 @@
 								>
 									Exile {me.exile.length}
 								</button>
-								{#if gameState.players.some((p) => p.exile.some((c) => c.playableFromExileBy?.playerId === me.playerId))}
+								{#if gameState.players.some((p) => p.exile.some((c) => c.playableFromExileBy?.playerId === me.playerId || getCastOptions(gameState, me.playerId, c, 'exile').length > 0 || isCardPlayableNow(c, 'exile')))}
 									{@const myPlayableExileCards = gameState.players.flatMap((p) =>
-										p.exile.filter((c) => c.playableFromExileBy?.playerId === me.playerId)
+										p.exile.filter(
+											(c) =>
+												c.playableFromExileBy?.playerId === me.playerId ||
+												getCastOptions(gameState, me.playerId, c, 'exile').length > 0 ||
+												isCardPlayableNow(c, 'exile')
+										)
 									)}
 									<button
 										type="button"
@@ -3596,6 +3655,7 @@
 									{@const playable = isCardPlayableNow(cardInst, 'hand')}
 									{@const suspendClause = getSuspendSpec(cardInst.card)}
 									{@const canSuspend = me ? checkSuspendLegality(gameState, me.playerId, cardInst).ok : false}
+									{@const handSpecialActions = me ? getHandSpecialActions(gameState, me.playerId, cardInst) : []}
 									{@const offset = idx - (sortedHand.length - 1) / 2}
 									<div class="hand-card-wrap" style="--fan-rot: {offset * 1.4}deg; --fan-y: {Math.abs(offset) * 1.5}px;">
 										<button
@@ -3636,6 +3696,25 @@
 												⏳ Suspend ({suspendClause.timeCounters})
 											</button>
 										{/if}
+										{#each handSpecialActions as sa (sa.id)}
+											{#if me && checkHandSpecialActionLegality(gameState, me.playerId, cardInst, sa.id).ok}
+												<button
+													type="button"
+													class="hc-suspend-btn"
+													title={sa.label}
+													onclick={async (e) => {
+														e.stopPropagation();
+														await onGameAction({
+															type: 'hand_special_action',
+															instanceId: cardInst.instanceId,
+															actionId: sa.id
+														});
+													}}
+												>
+													✨ {sa.label}
+												</button>
+											{/if}
+										{/each}
 									</div>
 								{/each}
 							</div>
@@ -4625,7 +4704,8 @@
 						{:else}
 							{@const isMyGraveyard = me && zoneModal.title.includes('Graveyard') && zoneModal.ownerName === me.username}
 							{@const gyIndex = zoneModal.cards.findIndex((item) => item.instanceId === c.instanceId)}
-							{@const canPlayFromExile = Boolean(me && c.zone === 'exile' && c.playableFromExileBy?.playerId === me.playerId && isCardPlayableNow(c, 'exile'))}
+							{@const exileCastOptions = me && c.zone === 'exile' ? getCastOptions(gameState, me.playerId, c, 'exile') : []}
+							{@const canPlayFromExile = Boolean(me && c.zone === 'exile' && isCardPlayableNow(c, 'exile'))}
 							{@const gyCastOptions = me && isMyGraveyard && c.zone === 'graveyard' ? getCastOptions(gameState, me.playerId, c, 'graveyard') : []}
 							{@const gyZoneAbilities = me && isMyGraveyard && c.zone === 'graveyard' ? getZoneActivatedAbilities(c, 'graveyard') : []}
 							{@const canPlayFromGraveyard = Boolean(isMyGraveyard && c.zone === 'graveyard' && isCardPlayableNow(c, 'graveyard'))}
@@ -4641,10 +4721,14 @@
 								{#if c.isSuspended && c.counters.time > 0}
 									<span class="badge purple">⏳ {c.counters.time} Time (Suspended)</span>
 								{/if}
-								{#if me && c.playableFromExileBy?.playerId === me.playerId}
+								{#if me && c.zone === 'exile' && (c.playableFromExileBy?.playerId === me.playerId || exileCastOptions.length > 0)}
 									{@const exileIsLand = getLandPlayOptions(gameState, me.playerId, c, 'exile').length > 0}
-									{@const exileIsSpell = getCastOptions(gameState, me.playerId, c, 'exile').length > 0}
-									<span class="badge gold">✨ Playable ({c.playableFromExileBy.sourceName})</span>
+									{@const exileIsSpell = exileCastOptions.length > 0}
+									<span class="badge gold">
+										✨ {c.playableFromExileBy?.sourceName
+											? `Playable (${c.playableFromExileBy.sourceName})`
+											: `Castable (${exileCastOptions.map((o) => o.costDisplay).join(' / ')})`}
+									</span>
 									<button
 										type="button"
 										class="scry-zone-toggle to-top"

@@ -934,6 +934,9 @@ function matchesLayerFilter(
 		layerReads |= READ_TAPPED;
 		if (Boolean(target.inst.tapped) !== filter.tapped) return false;
 	}
+	if (filter.saddled !== undefined && Boolean(target.inst.saddledThisTurn) !== filter.saddled) {
+		return false;
+	}
 	if (filter.token !== undefined && Boolean(target.inst.isToken) !== filter.token) return false;
 	return true;
 }
@@ -1147,6 +1150,12 @@ function evaluateLayerCondition(
 			return Boolean(source.inst.evoked);
 		case 'escaped':
 			return Boolean(source.inst.escaped);
+		case 'foretold':
+			return Boolean(source.inst.foretold);
+		case 'blitzed':
+			return Boolean(source.inst.blitzed);
+		case 'saddled':
+			return Boolean(source.inst.saddledThisTurn);
 	}
 }
 
@@ -1276,6 +1285,9 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 			Boolean(perm.castViaSuspend),
 			Boolean(perm.evoked),
 			Boolean(perm.escaped),
+			Boolean(perm.foretold),
+			Boolean(perm.blitzed),
+			Boolean(perm.saddledThisTurn),
 			perm.kickedCount || 0,
 			perm.kickedTags?.length || 0,
 			perm.grantedKeywords?.length || 0
@@ -1410,6 +1422,9 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 			fp[i++] !== Boolean(perm.castViaSuspend) ||
 			fp[i++] !== Boolean(perm.evoked) ||
 			fp[i++] !== Boolean(perm.escaped) ||
+			fp[i++] !== Boolean(perm.foretold) ||
+			fp[i++] !== Boolean(perm.blitzed) ||
+			fp[i++] !== Boolean(perm.saddledThisTurn) ||
 			fp[i++] !== (perm.kickedCount || 0) ||
 			fp[i++] !== kickedTagsLen ||
 			fp[i++] !== grantedLen
@@ -2434,6 +2449,17 @@ function evaluatePerPermanent(
 		};
 
 		let timedIdx = 0;
+
+		// CR 702.152a: "As long as this permanent's blitz cost was paid, it has haste"
+		// (Layer 6 static ability of the permanent itself; suppressed if the permanent lost all abilities).
+		if (
+			target.inst.blitzed &&
+			!target.isFaceDown &&
+			!target.strippedByAttachment &&
+			target.allAbilityRemovalSources.length === 0
+		) {
+			grantItem(target, 'haste', 'Haste', 'keyword', 'Blitz', target.timestamp);
+		}
 
 		// Grant items, remove keywords, and apply Layer 7c continuous P/T modifications in timestamp order (CR 613.7)
 		for (const source of workList) {

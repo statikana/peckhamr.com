@@ -671,7 +671,17 @@ export function spellCannotBeCountered(state: GameState, item: StackItem): boole
 		zone: 'stack',
 		tapped: false,
 		summoningSick: false,
-		counters: { '+1/+1': 0, '-1/-1': 0, loyalty: 0, charge: 0, shield: 0, stun: 0, lore: 0, time: 0 },
+		counters: {
+			'+1/+1': 0,
+			'-1/-1': 0,
+			loyalty: 0,
+			charge: 0,
+			shield: 0,
+			stun: 0,
+			lore: 0,
+			time: 0,
+			age: 0
+		},
 		isToken: false,
 		damageMarked: 0,
 		deathtouchDamageMarked: false,

@@ -287,6 +287,9 @@ export interface ObjectFilter {
 	named?: string;
 	/** CR 607.2a: cards currently in exile whose `exiledBy` links to the source permanent's current objectVersion. */
 	exiledWithSelf?: boolean;
+	// --- Track P3 ---
+	/** CR 702.171b: true iff the permanent became saddled this turn. */
+	saddled?: boolean;
 }
 
 export interface Compare {
@@ -443,7 +446,10 @@ export type Verb =
 	| 'payCost'
 	| 'animate'
 	| 'gainControl'
-	| 'revealAndDiscard';
+	| 'revealAndDiscard'
+	// --- Track P3 ---
+	| 'saddle'
+	| 'cumulativeUpkeep';
 
 export type ManaRestriction = 'artifactSpellOrNonSpell';
 
@@ -589,6 +595,11 @@ export interface EffectParams {
 	 * a matching card from it (`optionalChoice` when "You may choose ..."), moving it to `destination`.
 	 */
 	coerciveDiscard?: CoerciveDiscardSpec;
+	// --- Track P3 ---
+	/** cumulativeUpkeep (CR 702.24a): per-age-counter cost definitions compiled from the keyword parameter. */
+	cumulativeUpkeepCost?: CostDef[];
+	/** cumulativeUpkeep (CR 702.24a): human-readable per-age-counter cost string for prompt titles. */
+	cumulativeUpkeepText?: string;
 }
 
 export interface CoerciveDiscardSpec {
@@ -670,7 +681,11 @@ export type EventKind =
 	| 'connive'
 	| 'becomesCrewed'
 	/** CR 603.2c / 510.2: One or more creatures dealt combat damage to a player simultaneously. */
-	| 'combatDamageBatchPlayer';
+	| 'combatDamageBatchPlayer'
+	// --- Track P3 ---
+	| 'foretell'
+	| 'plot'
+	| 'becomesSaddled';
 
 export interface EventFilter {
 	/**
@@ -702,6 +717,9 @@ export interface EventFilter {
 	toFaceFilter?: ObjectFilter;
 	/** "Whenever you draw your second card each turn" / "cast your second spell each turn": 1-based ordinal. */
 	nthThisTurn?: number;
+	// --- Track P3 ---
+	/** "Whenever ~ attacks while saddled" (CR 702.171b). */
+	saddled?: boolean;
 }
 
 export interface TriggerDef {
@@ -730,7 +748,14 @@ export type Condition =
 	/** CR 702.74a / 400.7d: true when cast by paying its evoke alternative cost. */
 	| { k: 'evoked' }
 	/** CR 702.138b / 400.7d: true when cast by paying its escape alternative cost. */
-	| { k: 'escaped' };
+	| { k: 'escaped' }
+	// --- Track P3 ---
+	/** CR 702.143d / 400.7d: true when cast by paying its foretell alternative cost. */
+	| { k: 'foretold' }
+	/** CR 702.171b: true when this permanent became saddled this turn. */
+	| { k: 'saddled' }
+	/** CR 702.152a / 400.7d: true when cast by paying its blitz alternative cost. */
+	| { k: 'blitzed' };
 
 // ---- Statics and replacements ---------------------------------------------------------------
 
@@ -804,7 +829,9 @@ export type RestrictionKind =
 	| 'blocksEachCombat'
 	| 'cantBeCountered'
 	| 'doesntUntap'
-	| 'cantCrewVehicles';
+	| 'cantCrewVehicles'
+	// --- Track P3 ---
+	| 'cantHaveCounters';
 
 export type StaticDef =
 	| {

@@ -273,7 +273,9 @@ export type CounterType =
 	| 'shield'
 	| 'stun'
 	| 'lore'
-	| 'time';
+	| 'time'
+	// --- Track P3 ---
+	| 'age';
 
 export interface TargetRequirementInfo {
 	requiresTarget: boolean;
@@ -463,6 +465,23 @@ export interface CardInstance {
 		sourceObjectVersion: number;
 		returnZone: ZoneType;
 	};
+	// --- Track P3 ---
+	/** CR 702.143a / 116.2h: playerId who exiled this card face down via Foretell. */
+	foretoldByPlayerId?: string;
+	/** CR 702.143a / 116.2h: turnNumber on which this card was exiled face down via Foretell. */
+	foretoldTurnNumber?: number;
+	/** CR 702.143d / 400.7d: true when this permanent entered from a spell whose foretell cost was paid. */
+	foretold?: boolean;
+	/** CR 702.170a / 116.2k: playerId who exiled this card face up via Plot. */
+	plottedByPlayerId?: string;
+	/** CR 702.170a / 116.2k: turnNumber on which this card was plotted. */
+	plottedTurnNumber?: number;
+	/** CR 702.171b: true when this Mount permanent became saddled this turn. */
+	saddledThisTurn?: boolean;
+	/** CR 702.171b: instanceIds of creatures that saddled this Mount this turn. */
+	saddledThisTurnByIds?: string[];
+	/** CR 702.152a / 400.7d: true when this permanent entered from a spell whose blitz cost was paid. */
+	blitzed?: boolean;
 }
 
 export interface TargetRef {
@@ -488,6 +507,13 @@ export interface SpellModifications {
 	evoked?: boolean;
 	/** CR 702.138a–b: cast by paying its escape cost. */
 	escaped?: boolean;
+	// --- Track P3 ---
+	/** CR 702.143d: cast by paying its foretell cost. */
+	foretold?: boolean;
+	/** CR 702.152a: cast by paying its blitz cost. */
+	blitzed?: boolean;
+	/** CR 702.146b / 712.8c: cast transformed with its back face up (Disturb). */
+	castTransformed?: boolean;
 }
 
 export interface CastOptionOptionalCost {
@@ -502,6 +528,9 @@ export interface CastOptionOptionalCost {
 	enablesTarget?: boolean;
 	/** CR 702.27a: true when paying this optional additional cost puts the resolving spell into its owner's hand. */
 	returnToHandOnResolve?: boolean;
+	// --- Track P3 ---
+	/** CR 702.42a–b: true when paying this optional additional cost chooses all modes of a modal spell (Entwine). */
+	chooseAllModes?: boolean;
 }
 
 export interface LandPlayOption {
@@ -538,10 +567,20 @@ export interface CastOption {
 	mandatoryAdditionalCosts?: CostDef[];
 	optionalAdditionalCosts?: CastOptionOptionalCost[];
 	paymentAids?: CastCostAid[];
-	timing: 'default' | 'instant_only';
+	// --- Track P3: added 'sorcery_only' for Plot (CR 702.170d) ---
+	timing: 'default' | 'instant_only' | 'sorcery_only';
 	spellMods: SpellModifications;
 	choosesX: boolean;
 	requiresTarget: boolean;
+}
+
+// --- Track P3 ---
+export interface HandSpecialActionOption {
+	id: string;
+	label: string;
+	costDisplay: string;
+	costDefs: CostDef[];
+	sorcerySpeedOnly: boolean;
 }
 
 export interface StackItem {
@@ -652,6 +691,13 @@ export interface StackItem {
 	faceDownLabel?: string;
 	/** InstanceIds of creatures tapped to pay a subset-sum cost (e.g. Crew) for this ability. */
 	crewedByIds?: string[];
+	// --- Track P3 ---
+	/** LKI foretold tracking on triggered abilities whose source left the battlefield before resolution (CR 603.4). */
+	sourceForetold?: boolean;
+	/** LKI blitzed tracking on triggered abilities whose source left the battlefield before resolution (CR 603.4). */
+	sourceBlitzed?: boolean;
+	/** InstanceIds of creatures tapped to pay a Saddle cost for this ability (CR 702.171a). */
+	saddledByIds?: string[];
 }
 
 /** One binding of the IR interpreter ("it", "that creature"): the objects and their LKI. */
@@ -708,6 +754,9 @@ export interface SerializedPendingTrigger {
 	eventLki?: { controllerId: string; power?: number; toughness?: number };
 	triggerEventStackItem?: StackItem;
 	stormCount?: number;
+	// --- Track P3 ---
+	sourceForetold?: boolean;
+	sourceBlitzed?: boolean;
 	order: number;
 }
 
@@ -757,7 +806,9 @@ export type DelayedTriggerEffect =
 	| { kind: 'exile'; targetInstanceId: string; targetObjectVersion?: number }
 	| { kind: 'lose' }
 	| { kind: 'draw'; playerId: string; amount: number; upTo?: boolean }
-	| CompiledDelayedEffect;
+	| CompiledDelayedEffect
+	// --- Track P3 ---
+	| { kind: 'sacrifice'; targetInstanceId: string; targetObjectVersion?: number };
 
 export interface DelayedTrigger {
 	id: string;
@@ -1245,9 +1296,12 @@ export interface SerializedPlannedCost {
  * `zone_replacement_choice` prompt mid-payment).
  */
 export interface PendingCostPayment {
-	kind: 'cast_spell' | 'activate_ability' | 'tap_mana' | 'turn_face_up';
+	// --- Track P3: added 'hand_special_action' ---
+	kind: 'cast_spell' | 'activate_ability' | 'tap_mana' | 'turn_face_up' | 'hand_special_action';
 	actorId: string;
 	sourceInstanceId: string;
+	// --- Track P3 ---
+	specialActionId?: string;
 	sourcePlayerId?: string;
 	sourceZone?: 'hand' | 'command' | 'exile' | 'graveyard';
 	targets?: TargetRef[];
@@ -1269,6 +1323,9 @@ export interface PendingCostPayment {
 	sourceLkiToughness?: number;
 	sourceEvoked?: boolean;
 	sourceEscaped?: boolean;
+	// --- Track P3 ---
+	sourceForetold?: boolean;
+	sourceBlitzed?: boolean;
 	onceEachTurn?: boolean;
 	effectText?: string;
 	abilityCostIncomplete?: boolean;
@@ -1445,6 +1502,13 @@ export type GameActionPayload =
 	/** Compatibility alias for answering a `cost_choice` prompt. */
 	| { type: 'cost_choice'; promptId: string; option?: number; instanceIds?: string[]; cancel?: boolean }
 	| { type: 'suspend_card'; instanceId: string }
+	// --- Track P3 ---
+	| {
+			type: 'hand_special_action';
+			instanceId: string;
+			actionId: string;
+			costPayment?: CostPayment;
+	  }
 	| { type: 'reorder_graveyard'; instanceIds: string[] }
 	| {
 			type: 'declare_attackers';

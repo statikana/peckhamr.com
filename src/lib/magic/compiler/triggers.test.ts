@@ -75,7 +75,8 @@ describe('Trigger grammar: trigger heads', () => {
 		['At the beginning of your upkeep, draw a card.', { event: 'phaseBegin', filter: { phase: 'upkeep' }, scope: 'controller_turn' }],
 		["At the beginning of each opponent's end step, draw a card.", { event: 'phaseBegin', filter: { phase: 'end_step' }, scope: 'opponent_turn' }],
 		['At the beginning of each end step, draw a card.', { event: 'phaseBegin', filter: { phase: 'end_step' }, scope: 'each_turn' }],
-		['At the beginning of combat on your turn, draw a card.', { event: 'phaseBegin', filter: { phase: 'begin_combat' }, scope: 'controller_turn' }]
+		['At the beginning of combat on your turn, draw a card.', { event: 'phaseBegin', filter: { phase: 'begin_combat' }, scope: 'controller_turn' }],
+		['Whenever ~ attacks while saddled, draw a card.', { event: 'attacks', filter: { object: 'self', saddled: true } }]
 	];
 	for (const [text, trigger] of cases) {
 		it(text, () => assert.deepEqual(head(text).trigger, trigger));
@@ -94,7 +95,7 @@ describe('Trigger grammar: trigger heads', () => {
 
 	it('does not claim heads with qualifiers it cannot represent', () => {
 		for (const text of [
-			'Whenever ~ attacks while saddled, draw a card.',
+			'Whenever ~ attacks while enchanted, draw a card.',
 			'Whenever ~ attacks and isn\'t blocked, draw a card.',
 			'When ~ enters untapped, draw a card.',
 			'Whenever ~ deals combat damage to a player or battle, draw a card.',

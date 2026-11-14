@@ -130,7 +130,8 @@ export function createEmptyCounters(): Record<CounterType, number> {
 		shield: 0,
 		stun: 0,
 		lore: 0,
-		time: 0
+		time: 0,
+		age: 0
 	};
 }
 
@@ -295,6 +296,10 @@ function finalizeZoneMove(
 		obj.kickedTags = undefined;
 		obj.evoked = undefined;
 		obj.escaped = undefined;
+		obj.foretold = undefined;
+		obj.blitzed = undefined;
+		obj.saddledThisTurn = undefined;
+		obj.saddledThisTurnByIds = undefined;
 		obj.unearthLeaveExile = undefined;
 		obj.regenerationShields = undefined;
 		obj.cantBeRegeneratedThisTurn = undefined;
@@ -324,15 +329,34 @@ function finalizeZoneMove(
 		obj.kickedTags = undefined;
 		obj.evoked = undefined;
 		obj.escaped = undefined;
+		obj.foretold = undefined;
+		obj.blitzed = undefined;
+		obj.saddledThisTurn = undefined;
+		obj.saddledThisTurnByIds = undefined;
 		obj.unearthLeaveExile = undefined;
 		obj.defaultControllerId = undefined;
+		if (dest !== 'stack') {
+			obj.activeFaceIndex = undefined;
+			obj.transformed = false;
+		}
 	}
 	if (opts.controllerId !== undefined) obj.controllerId = opts.controllerId;
 	const leavingVersion = obj.objectVersion || 1;
 	if (fromZone === 'exile') {
-		// CR 400.7: Leaving exile clears linked-exile and until-source-leaves tracking.
+		// CR 400.7: Leaving exile clears linked-exile, foretell, plot, and until-source-leaves tracking.
 		obj.exiledBy = undefined;
 		obj.untilSourceLeavesReturn = undefined;
+		if (dest !== 'exile') {
+			obj.foretoldByPlayerId = undefined;
+			obj.foretoldTurnNumber = undefined;
+			obj.plottedByPlayerId = undefined;
+			obj.plottedTurnNumber = undefined;
+			if (dest !== 'battlefield' && dest !== 'stack' && obj.isFaceDown) {
+				obj.isFaceDown = false;
+				obj.faceDownSpec = undefined;
+				obj.faceDownLabel = undefined;
+			}
+		}
 	}
 	if (fromZone !== dest) {
 		// CR 400.7 / CR 701.20d: Zone change creates a new object and clears revealed-hand visibility
@@ -933,7 +957,10 @@ function captureLki(state: GameState, obj: CardInstance): LeftBattlefieldInfo {
 		power,
 		toughness,
 		...(obj.activeFaceIndex !== undefined ? { activeFaceIndex: obj.activeFaceIndex } : {}),
-		...(obj.unlockedFaces ? { unlockedFaces: [...obj.unlockedFaces] } : {})
+		...(obj.unlockedFaces ? { unlockedFaces: [...obj.unlockedFaces] } : {}),
+		...(obj.foretold ? { foretold: true } : {}),
+		...(obj.blitzed ? { blitzed: true } : {}),
+		...(obj.saddledThisTurn ? { saddled: true } : {})
 	};
 }
 

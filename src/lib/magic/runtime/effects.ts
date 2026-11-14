@@ -72,10 +72,13 @@ import {
 	evaluateKickerCondition,
 	getObjectKickerInfo,
 	isConditionMetWithKicker,
+	isObjectBlitzed,
 	isObjectEscaped,
 	isObjectEvoked,
+	isObjectForetold,
 	type KickerTrackingInfo
 } from './kicker.ts';
+import { scaleCumulativeUpkeepCost } from './orthogonalKeywords.ts';
 import { noteLayerInputsChanged } from './layerCache.ts';
 import { matchesObjectFilter, objectManaValue, playerCommanderCastCount } from './objectFilter.ts';
 import { activeRuleModifiers, tokenMultiplier } from './replace.ts';
@@ -619,7 +622,8 @@ export function proliferateCandidates(
 		'shield',
 		'stun',
 		'lore',
-		'time'
+		'time',
+		'age'
 	];
 	const controllerPositiveTypes: CounterType[] = [
 		'+1/+1',
@@ -629,7 +633,7 @@ export function proliferateCandidates(
 		'lore',
 		'time'
 	];
-	const opponentNegativeTypes: CounterType[] = ['-1/-1', 'stun'];
+	const opponentNegativeTypes: CounterType[] = ['-1/-1', 'stun', 'age'];
 	const candidates: string[] = [];
 	const defaultIds: string[] = [];
 	for (const pl of state.players) {
@@ -1855,7 +1859,13 @@ class Run {
 				const { total, paused } = this.runIndexedBatch(
 					`batch:${this.stepIndex}`,
 					() => {
-						const objs = this.objects(step.subject).filter((o) => o.zone === 'battlefield');
+						const objs = this.objects(step.subject).filter(
+							(o) =>
+								o.zone === 'battlefield' &&
+								(step.subject.k !== 'self' ||
+									this.ctx.item.sourceObjectVersion === undefined ||
+									(o.objectVersion ?? 1) === this.ctx.item.sourceObjectVersion)
+						);
 						this.bind(step, objs);
 						return objs.map((o) => o.instanceId);
 					},
@@ -2506,6 +2516,73 @@ class Run {
 					}
 				}
 				return;
+			}
+			case 'saddle': {
+				const objs = this.objects(step.subject).filter(
+					(o) =>
+						o.zone === 'battlefield' &&
+						!o.phasedOut &&
+						(step.subject.k !== 'self' ||
+							this.ctx.item.sourceObjectVersion === undefined ||
+							(o.objectVersion ?? 1) === this.ctx.item.sourceObjectVersion)
+				);
+				this.bind(step, objs);
+				for (const o of objs) {
+					o.saddledThisTurn = true;
+					const saddledBy = this.ctx.item.saddledByIds ?? [];
+					const prev = o.saddledThisTurnByIds ?? [];
+					const merged = [...prev];
+					for (const cid of saddledBy) {
+						if (!merged.includes(cid)) merged.push(cid);
+					}
+					o.saddledThisTurnByIds = merged;
+					noteLayerInputsChanged(s);
+					p.addLog(
+						s,
+						'rule',
+						`${o.card.name} became saddled until end of turn (CR 702.171a).`,
+						you.playerId
+					);
+					emitEvent(s, {
+						kind: 'BecomesSaddled',
+						playerId: you.playerId,
+						objectId: o.instanceId,
+						object: o,
+						saddledByIds: [...saddledBy]
+					});
+				}
+				return;
+			}
+			case 'cumulativeUpkeep': {
+				const f = this.locate(this.ctx.sourceId);
+				const onBf = Boolean(
+					f &&
+						f.zone === 'battlefield' &&
+						!f.inst.phasedOut &&
+						(this.ctx.item.sourceObjectVersion === undefined ||
+							(f.inst.objectVersion ?? 1) === this.ctx.item.sourceObjectVersion)
+				);
+				const resumingOptionalCost =
+					Boolean(this.pendingOptionalCost && this.pendingOptionalCost.stepIndex === this.stepIndex) ||
+					this.stepDecisions[this.stepIndex] !== undefined;
+				if (!onBf && !resumingOptionalCost) return;
+				const ageCounters = onBf && f ? (f.inst.counters.age ?? 0) : 0;
+				const scaledCost = scaleCumulativeUpkeepCost(
+					step.params?.cumulativeUpkeepCost ?? [],
+					ageCounters
+				);
+				const ephemeralStep: EffectStep = {
+					...step,
+					verb: 'sacrifice',
+					optional: {
+						chooser: { k: 'you' },
+						cost: scaledCost,
+						mode: 'doUnlessPaid'
+					}
+				};
+				const shouldSacrifice = this.resolveOptional(ephemeralStep);
+				if (this.result.paused || !shouldSacrifice) return;
+				return this.sacrifice(step);
 			}
 			case 'gainControl': {
 				const objs = this.objects(step.subject).filter(
@@ -4029,6 +4106,14 @@ class Run {
 				return isObjectEvoked(this.state, this.ctx.sourceId, this.ctx.item);
 			case 'escaped':
 				return isObjectEscaped(this.state, this.ctx.sourceId, this.ctx.item);
+			case 'foretold':
+				return isObjectForetold(this.state, this.ctx.sourceId, this.ctx.item);
+			case 'blitzed':
+				return isObjectBlitzed(this.state, this.ctx.sourceId, this.ctx.item);
+			case 'saddled': {
+				const f = this.locate(this.ctx.sourceId);
+				return Boolean(f && f.zone === 'battlefield' && !f.inst.phasedOut && f.inst.saddledThisTurn);
+			}
 		}
 	}
 

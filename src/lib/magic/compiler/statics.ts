@@ -88,7 +88,8 @@ const COUNTERS: Record<string, CounterType> = {
 	shield: 'shield',
 	stun: 'stun',
 	lore: 'lore',
-	time: 'time'
+	time: 'time',
+	age: 'age'
 };
 
 /**
@@ -378,7 +379,7 @@ const replacements: Production = (s, span) => {
 	}
 
 	const suffixKicked = s.match(
-		/^(.+?) (if (?:(?:it|~) (?:was(?:n't| not)? kicked(?: with its .+? kicker| twice| \S+ times?)?|escaped|(?:didn't|did not) escape|was(?:n't| not)? evoked)|its evoke cost was(?:n't| not)? paid))$/i
+		/^(.+?) (if (?:(?:it|~) (?:was(?:n't| not)? (?:kicked(?: with its .+? kicker| twice| \S+ times?)?|evoked|foretold|blitzed)|escaped|(?:didn't|did not) escape)|its (?:evoke|blitz) cost was(?:n't| not)? paid))$/i
 	);
 	if (suffixKicked) {
 		const cond = parseCondition(suffixKicked[2]);
@@ -389,7 +390,7 @@ const replacements: Production = (s, span) => {
 	}
 
 	const prefixKicked = s.match(
-		/^(if (?:(?:it|~) (?:was(?:n't| not)? kicked(?: with its .+? kicker| twice| \S+ times?)?|escaped|(?:didn't|did not) escape|was(?:n't| not)? evoked)|its evoke cost was(?:n't| not)? paid)), (?:it )?(enters .+)$/i
+		/^(if (?:(?:it|~) (?:was(?:n't| not)? (?:kicked(?: with its .+? kicker| twice| \S+ times?)?|evoked|foretold|blitzed)|escaped|(?:didn't|did not) escape)|its (?:evoke|blitz) cost was(?:n't| not)? paid)), (?:it )?(enters .+)$/i
 	);
 	if (prefixKicked) {
 		const cond = parseCondition(prefixKicked[1]);
@@ -424,7 +425,9 @@ const RESTRICTIONS: Array<[RegExp, Extract<StaticDef, { k: 'restriction' }>['res
 	[/^(.+?) (?:blocks|block) each combat if able$/, 'blocksEachCombat'],
 	[/^(.+?) (?:can't|cannot) be countered$/i, 'cantBeCountered'],
 	[/^(.+?) (?:doesn't|don't) untap during (?:your|its controller's|their controllers') untap steps?$/, 'doesntUntap'],
-	[/^(.+?) (?:can't|cannot) crew Vehicles$/i, 'cantCrewVehicles']
+	[/^(.+?) (?:can't|cannot) crew Vehicles$/i, 'cantCrewVehicles'],
+	[/^counters (?:can't|cannot) be put on (.+?)$/i, 'cantHaveCounters'],
+	[/^(.+?) (?:can't|cannot) have counters put on (?:it|them)$/i, 'cantHaveCounters']
 ];
 
 /** "~ can't block.", "Enchanted creature can't attack or block.", "Creatures your opponents control can't block." */

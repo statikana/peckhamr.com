@@ -76,7 +76,8 @@ const COUNTERS: Record<string, CounterType> = {
 	shield: 'shield',
 	stun: 'stun',
 	lore: 'lore',
-	time: 'time'
+	time: 'time',
+	age: 'age'
 };
 
 const COST_VERBS =
@@ -169,6 +170,7 @@ export function parseObjectPhrase(phrase: string): ObjectFilter | null {
 		if (low === 'another' || low === 'other') filter.other = true;
 		else if (low === 'untapped') filter.tapped = false;
 		else if (low === 'tapped') filter.tapped = true;
+		else if (low === 'saddled') filter.saddled = true;
 		else if (low === 'nontoken') filter.token = false;
 		else if (low === 'commander' || low === 'commanders') filter.isCommander = true;
 		else if (SUPERTYPES[low]) (filter.supertypes ??= []).push(SUPERTYPES[low]);
@@ -241,7 +243,7 @@ const manaSymbols: Production = (part) => {
 		const up = s.toUpperCase();
 		if (up === '{T}') defs.push({ k: 'tapSelf' });
 		else if (up === '{Q}') defs.push({ k: 'untapSelf' });
-		else if (up === '{E}' || up === '{TK}' || up === '{P}') return null; // energy, tickets, pawprints
+		else if (up === '{E}' || up === '{TK}' || up === '{P}' || up === '{S}') return null; // energy, tickets, pawprints, snow
 		else mana += s;
 	}
 	if (mana) defs.push({ k: 'mana', cost: mana });
@@ -260,7 +262,7 @@ const payMana: Production = (part) => {
 	const m = part.match(/^pay ((?:\{[^}]+\})+)$/i);
 	if (!m) return null;
 	const symbols = m[1].match(/\{[^}]+\}/g)!;
-	if (symbols.some((s) => /^\{(?:T|Q|E|TK|P)\}$/i.test(s))) return null;
+	if (symbols.some((s) => /^\{(?:T|Q|E|TK|P|S)\}$/i.test(s))) return null;
 	return [{ k: 'mana', cost: m[1] }];
 };
 
