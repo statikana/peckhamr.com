@@ -472,6 +472,8 @@ export function scrubFaceDownStackItem(item: StackItem, viewerId: string | null)
 	const label = item.faceDownLabel || 'Face-Down Spell';
 	if (item.faceDownSpec) {
 		delete item.faceDownSpec.turnUpCost;
+		delete item.faceDownSpec.turnUpManaCost;
+		delete item.faceDownSpec.turnUpCostDefs;
 	}
 	item.card = scrubFaceDownCard(label, 'stack', item.faceDownSpec);
 	item.title = label;

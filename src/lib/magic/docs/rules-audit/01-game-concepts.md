@@ -245,7 +245,8 @@ Audited at engine-rewrite 917180b on 2026-11-09.
 |---|---|---|---|
 | 116.1, 116.3 | implemented | `engine.ts:1278-1381` | Special actions (`play_land`, `suspend_card`) require priority, do not use the stack, reset `passedPriorityPlayerIds = []`, and return priority to the acting player. |
 | 116.2, 116.2a | implemented | `engine.ts:1278-1335, 7844-7899` | Playing a land requires priority, active player, main phase, empty stack, and `landsPlayedThisTurn < effectiveMaxLands` (accounting for extra-land-play static effects). |
-| 116.2b, 116.2c, 116.2d, 116.2e, 116.2g, 116.2h, 116.2k, 116.2m | missing | `engine.ts`, `types.ts` | Special actions to turn a face-down creature face up (`116.2b`), end a continuous effect / stop a delayed trigger (`116.2c`), ignore a static ability (`116.2d`), Circling Vultures (`116.2e`), pay `{3}` for Companion (`116.2g`), Foretell (`116.2h`), Plot (`116.2k`), and unlock a Room door (`116.2m`) are not implemented. |
+| 116.2b, 116.2m | implemented | `engine.ts`, `types.ts` | **Updated 2026-11-13:** Special actions to turn a face-down permanent face up (`turn_face_up`, `116.2b`) and unlock a Room door (`unlock_room_door`, `116.2m`) are implemented cleanly without using the stack. |
+| 116.2c, 116.2d, 116.2e, 116.2g, 116.2h, 116.2k | missing | `engine.ts`, `types.ts` | Special actions to end a continuous effect / stop a delayed trigger (`116.2c`), ignore a static ability (`116.2d`), Circling Vultures (`116.2e`), pay `{3}` for Companion (`116.2g`), Foretell (`116.2h`), and Plot (`116.2k`) are not implemented. |
 | 116.2f | implemented | `engine.ts:1337-1381` | `suspend_card` exiles a card with Suspend from hand with time counters when the player has priority and could begin to cast it. |
 | 116.2i, 116.2j | N/A | — | Planechase planar die roll and Conspiracy Draft Hidden Agenda / Double Agenda. |
 

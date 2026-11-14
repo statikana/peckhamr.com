@@ -27,6 +27,12 @@ export interface AlternativeCostKeywordMeta {
 	exileOnLeaveStack?: boolean;
 	timing?: 'default' | 'instant_only';
 	stackBadgeLabel?: string;
+	/** CR 708: casting this card face down as a 2/2 colorless creature (Morph / Megamorph / Disguise). */
+	faceDown?: {
+		kind: 'morph' | 'megamorph' | 'disguise';
+		castManaCost: string;
+		wardCost?: string;
+	};
 }
 
 export type KeywordImplementation =
@@ -219,6 +225,42 @@ function unimplemented(
 			parameterKind,
 			grantable: false,
 			status: 'unimplemented'
+		}
+	];
+}
+
+function faceDownCostKeyword(
+	name: string,
+	cr: string,
+	kind: 'morph' | 'megamorph' | 'disguise',
+	label: string,
+	wardCost?: string
+): [string, KeywordSpec] {
+	return [
+		name,
+		{
+			name,
+			cr,
+			parameterKind: 'cost',
+			grantable: false,
+			status: 'implemented',
+			implementation: {
+				kind: 'castOption',
+				altCost: {
+					id: `alt:${name}`,
+					label,
+					castSummarySuffix: ' (Face Down)',
+					stackBadgeLabel: wardCost ? `Face Down (Ward ${wardCost})` : 'Face Down',
+					zones: ['hand', 'command', 'exile'],
+					requiresZonePermission: true,
+					timing: 'default',
+					faceDown: {
+						kind,
+						castManaCost: '{3}',
+						...(wardCost ? { wardCost } : {})
+					}
+				}
+			}
 		}
 	];
 }
@@ -893,7 +935,7 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 	unimplemented('dethrone', '702.105'),
 	unimplemented('devoid', '702.114'),
 	unimplemented('devour', '702.82', 'number'),
-	unimplemented('disguise', '702.168', 'cost'),
+	faceDownCostKeyword('disguise', '702.168', 'disguise', 'Cast face down (Disguise)', '{2}'),
 	unimplemented('disturb', '702.146', 'cost'),
 	unimplemented('double team', '702.156'),
 	unimplemented('dredge', '702.52', 'number'),
@@ -964,12 +1006,12 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 	unimplemented('level up', '702.87', 'cost'),
 	unimplemented('living metal', '702.161'),
 	unimplemented('madness', '702.35', 'cost'),
-	unimplemented('megamorph', '702.37b', 'cost'),
+	faceDownCostKeyword('megamorph', '702.37b', 'megamorph', 'Cast face down (Megamorph)'),
 	unimplemented('melee', '702.121'),
 	unimplemented('mentor', '702.134'),
 	unimplemented('miracle', '702.94', 'cost'),
 	unimplemented('modular', '702.43', 'number'),
-	unimplemented('morph', '702.37', 'cost'),
+	faceDownCostKeyword('morph', '702.37', 'morph', 'Cast face down (Morph)'),
 	unimplemented('more than meets the eye', '702.162', 'cost'),
 	unimplemented('mutate', '702.140', 'cost'),
 	unimplemented('myriad', '702.116'),

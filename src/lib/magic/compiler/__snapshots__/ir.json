@@ -1,7 +1,7 @@
 {
 	"Forest": {
 		"oracleId": "card_forest",
-		"compilerVersion": 19,
+		"compilerVersion": 20,
 		"textHash": "15dd7c47",
 		"name": "Forest",
 		"faces": [
@@ -66,7 +66,7 @@
 	},
 	"Sol Ring": {
 		"oracleId": "card_sol_ring",
-		"compilerVersion": 19,
+		"compilerVersion": 20,
 		"textHash": "9a66771f",
 		"name": "Sol Ring",
 		"faces": [
@@ -128,7 +128,7 @@
 	},
 	"Command Tower": {
 		"oracleId": "card_command_tower",
-		"compilerVersion": 19,
+		"compilerVersion": 20,
 		"textHash": "78e32af5",
 		"name": "Command Tower",
 		"faces": [
@@ -187,7 +187,7 @@
 	},
 	"Arcane Signet": {
 		"oracleId": "card_arcane_signet",
-		"compilerVersion": 19,
+		"compilerVersion": 20,
 		"textHash": "a2aed3ce",
 		"name": "Arcane Signet",
 		"faces": [
@@ -246,7 +246,7 @@
 	},
 	"Mind Stone": {
 		"oracleId": "card_mind_stone",
-		"compilerVersion": 19,
+		"compilerVersion": 20,
 		"textHash": "a1f55679",
 		"name": "Mind Stone",
 		"faces": [
@@ -355,7 +355,7 @@
 	},
 	"Elvish Archdruid": {
 		"oracleId": "card_elvish_archdruid",
-		"compilerVersion": 19,
+		"compilerVersion": 20,
 		"textHash": "6e743ff7",
 		"name": "Elvish Archdruid",
 		"faces": [
@@ -461,7 +461,7 @@
 	},
 	"Marwyn, the Nurturer": {
 		"oracleId": "card_marwyn",
-		"compilerVersion": 19,
+		"compilerVersion": 20,
 		"textHash": "a5a2689f",
 		"name": "Marwyn, the Nurturer",
 		"faces": [
@@ -575,7 +575,7 @@
 	},
 	"Swords to Plowshares": {
 		"oracleId": "card_swords_to_plowshares",
-		"compilerVersion": 19,
+		"compilerVersion": 20,
 		"textHash": "6beb79e6",
 		"name": "Swords to Plowshares",
 		"faces": [
@@ -661,7 +661,7 @@
 	},
 	"Counterspell": {
 		"oracleId": "card_counterspell",
-		"compilerVersion": 19,
+		"compilerVersion": 20,
 		"textHash": "226abcbe",
 		"name": "Counterspell",
 		"faces": [
@@ -717,7 +717,7 @@
 	},
 	"Cyclonic Rift": {
 		"oracleId": "card_cyclonic_rift",
-		"compilerVersion": 19,
+		"compilerVersion": 20,
 		"textHash": "2468ee4d",
 		"name": "Cyclonic Rift",
 		"faces": [
@@ -788,7 +788,7 @@
 	},
 	"Wrath of God": {
 		"oracleId": "card_wrath_of_god",
-		"compilerVersion": 19,
+		"compilerVersion": 20,
 		"textHash": "837bf0e9",
 		"name": "Wrath of God",
 		"faces": [
@@ -840,7 +840,7 @@
 	},
 	"Toxic Deluge": {
 		"oracleId": "card_toxic_deluge",
-		"compilerVersion": 19,
+		"compilerVersion": 20,
 		"textHash": "bd33a739",
 		"name": "Toxic Deluge",
 		"faces": [
@@ -914,7 +914,7 @@
 	},
 	"Farewell": {
 		"oracleId": "card_farewell",
-		"compilerVersion": 19,
+		"compilerVersion": 20,
 		"textHash": "1dffa987",
 		"name": "Farewell",
 		"faces": [
@@ -1052,7 +1052,7 @@
 	},
 	"Cultivate": {
 		"oracleId": "card_cultivate",
-		"compilerVersion": 19,
+		"compilerVersion": 20,
 		"textHash": "398e4ff3",
 		"name": "Cultivate",
 		"faces": [
@@ -1128,7 +1128,7 @@
 	},
 	"Ponder": {
 		"oracleId": "card_ponder",
-		"compilerVersion": 19,
+		"compilerVersion": 20,
 		"textHash": "c71e5be8",
 		"name": "Ponder",
 		"faces": [
@@ -1201,7 +1201,7 @@
 	},
 	"Final Fortune": {
 		"oracleId": "card_final_fortune",
-		"compilerVersion": 19,
+		"compilerVersion": 20,
 		"textHash": "efad4720",
 		"name": "Final Fortune",
 		"faces": [
@@ -1284,7 +1284,7 @@
 	},
 	"Rift Bolt": {
 		"oracleId": "card_rift_bolt",
-		"compilerVersion": 19,
+		"compilerVersion": 20,
 		"textHash": "6d9f0408",
 		"name": "Rift Bolt",
 		"faces": [
@@ -1364,7 +1364,7 @@
 	},
 	"Lightning Greaves": {
 		"oracleId": "card_lightning_greaves",
-		"compilerVersion": 19,
+		"compilerVersion": 20,
 		"textHash": "a92edff6",
 		"name": "Lightning Greaves",
 		"faces": [
@@ -1420,7 +1420,7 @@
 	},
 	"Craterhoof Behemoth": {
 		"oracleId": "card_craterhoof_behemoth",
-		"compilerVersion": 19,
+		"compilerVersion": 20,
 		"textHash": "28bd9419",
 		"name": "Craterhoof Behemoth",
 		"faces": [
@@ -1540,7 +1540,7 @@
 	},
 	"Lathril, Blade of the Elves": {
 		"oracleId": "cmd_lathril",
-		"compilerVersion": 19,
+		"compilerVersion": 20,
 		"textHash": "5431216d",
 		"name": "Lathril, Blade of the Elves",
 		"faces": [
@@ -1694,7 +1694,7 @@
 	},
 	"Atraxa, Praetors' Voice": {
 		"oracleId": "cmd_atraxa",
-		"compilerVersion": 19,
+		"compilerVersion": 20,
 		"textHash": "17c9a3d1",
 		"name": "Atraxa, Praetors' Voice",
 		"faces": [
@@ -1798,7 +1798,7 @@
 	},
 	"Nether Shadow": {
 		"oracleId": "card_nether_shadow",
-		"compilerVersion": 19,
+		"compilerVersion": 20,
 		"textHash": "66ed5173",
 		"name": "Nether Shadow",
 		"faces": [
@@ -1884,7 +1884,7 @@
 	},
 	"Felidar Sovereign": {
 		"oracleId": "card_felidar_sovereign",
-		"compilerVersion": 19,
+		"compilerVersion": 20,
 		"textHash": "1a772431",
 		"name": "Felidar Sovereign",
 		"faces": [
@@ -1979,7 +1979,7 @@
 	},
 	"Guttersnipe": {
 		"oracleId": "card_guttersnipe",
-		"compilerVersion": 19,
+		"compilerVersion": 20,
 		"textHash": "f48f2363",
 		"name": "Guttersnipe",
 		"faces": [
@@ -2051,7 +2051,7 @@
 	},
 	"Veyran, Voice of Duality": {
 		"oracleId": "cmd_veyran",
-		"compilerVersion": 19,
+		"compilerVersion": 20,
 		"textHash": "cb3b8a55",
 		"name": "Veyran, Voice of Duality",
 		"faces": [
@@ -2161,7 +2161,7 @@
 	},
 	"Bramblecrest, Warden of Ash": {
 		"oracleId": "synthetic_bramblecrest_warden_of_ash",
-		"compilerVersion": 19,
+		"compilerVersion": 20,
 		"textHash": "152cd88a",
 		"name": "Bramblecrest, Warden of Ash",
 		"faces": [
@@ -2340,7 +2340,7 @@
 	},
 	"Glimmerfen Overseer": {
 		"oracleId": "synthetic_glimmerfen_overseer",
-		"compilerVersion": 19,
+		"compilerVersion": 20,
 		"textHash": "a3a54a0f",
 		"name": "Glimmerfen Overseer",
 		"faces": [
@@ -2467,7 +2467,7 @@
 	},
 	"Twinned Lantern Wardens": {
 		"oracleId": "synthetic_twinned_lantern_wardens",
-		"compilerVersion": 19,
+		"compilerVersion": 20,
 		"textHash": "7369e68a",
 		"name": "Twinned Lantern Wardens",
 		"faces": [
@@ -2487,18 +2487,84 @@
 				},
 				"abilities": [
 					{
-						"kind": "unsupported",
-						"reason": "multiface",
-						"text": "Ward {2}\nKicker {1}{W}",
+						"kind": "keyword",
+						"keyword": {
+							"name": "ward",
+							"cost": "{2}",
+							"costDefs": [
+								{
+									"k": "mana",
+									"cost": "{2}"
+								}
+							]
+						},
 						"span": {
 							"start": 0,
-							"end": 22
+							"end": 8
+						}
+					},
+					{
+						"kind": "keyword",
+						"keyword": {
+							"name": "kicker",
+							"cost": "{1}{W}",
+							"kickerCosts": [
+								{
+									"cost": "{1}{W}",
+									"costDefs": [
+										{
+											"k": "mana",
+											"cost": "{1}{W}"
+										}
+									],
+									"tags": [
+										"{1}{W}",
+										"white"
+									]
+								}
+							],
+							"costDefs": [
+								{
+									"k": "mana",
+									"cost": "{1}{W}"
+								}
+							]
 						},
-						"unparsed": []
+						"span": {
+							"start": 9,
+							"end": 22
+						}
+					}
+				]
+			},
+			{
+				"name": "Lantern Wardens Ascendant",
+				"characteristics": {
+					"manaCost": "",
+					"types": [
+						"Creature"
+					],
+					"subtypes": [
+						"Human",
+						"Soldier"
+					],
+					"supertypes": [],
+					"colors": []
+				},
+				"abilities": [
+					{
+						"kind": "keyword",
+						"keyword": {
+							"name": "flying"
+						},
+						"span": {
+							"start": 0,
+							"end": 6
+						}
 					}
 				]
 			}
 		],
-		"fullySupported": false
+		"fullySupported": true
 	}
 }

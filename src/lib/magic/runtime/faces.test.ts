@@ -144,13 +144,13 @@ describe('Scryfall multi-face normalization & compiler support (B4 Phase 1)', ()
 		assert.equal(legacyFaces[1].name, 'Legacy Back');
 	});
 
-	it('bumps COMPILER_VERSION to 19 and tracks layout, colorIndicator, and faces in memo caching', () => {
-		assert.equal(COMPILER_VERSION, 19);
+	it('tracks COMPILER_VERSION (20) and tracks layout, colorIndicator, and faces in memo caching', () => {
+		assert.equal(COMPILER_VERSION, 20);
 		clearCompileCache();
 		const card = synthCard({
 			id: 'memo_test',
 			name: 'Memo DFC',
-			layout: 'transform',
+			layout: 'meld',
 			colorIndicator: ['G'],
 			faces: [
 				{
@@ -181,7 +181,7 @@ describe('Scryfall multi-face normalization & compiler support (B4 Phase 1)', ()
 			]
 		});
 		const def1 = compileCard(card);
-		assert.equal(def1.layout, 'transform');
+		assert.equal(def1.layout, 'meld');
 		assert.deepEqual(def1.faces[0].characteristics.colorIndicator, ['G']);
 		assert.equal(
 			def1.faces[0].abilities.some((a) => a.kind === 'unsupported' && a.reason === 'multiface'),
@@ -189,12 +189,13 @@ describe('Scryfall multi-face normalization & compiler support (B4 Phase 1)', ()
 		);
 
 		// Mutate layout & faces on same object id to ensure memoMatches invalidates;
-		// modal_dfc compiles both faces natively without unsupported('multiface')
-		card.layout = 'modal_dfc';
+		// transform compiles both faces natively in Phase 3 without unsupported('multiface')
+		card.layout = 'transform';
 		const def2 = compileCard(card);
 		assert.notEqual(def2, def1);
-		assert.equal(def2.layout, 'modal_dfc');
+		assert.equal(def2.layout, 'transform');
 		assert.equal(def2.faces.length, 2);
+		assert.deepEqual(def2.faces[1].characteristics.colorIndicator, ['G']);
 		assert.equal(
 			def2.faces.some((f) => f.abilities.some((a) => a.kind === 'unsupported' && a.reason === 'multiface')),
 			false

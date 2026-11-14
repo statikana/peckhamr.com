@@ -1004,19 +1004,34 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 		);
 		return true;
 	}
-	m = t.match(/^(?:return|put) (.+) (?:to|onto) the battlefield( tapped)?( under your control)?$/);
+	m = t.match(/^(?:return|put) (.+) (?:to|onto) the battlefield( tapped)?(?: (?:and )?(transformed))?( under your control| under its owner's control)?$/);
 	if (m) {
-		const self = m[1] === '~ from your graveyard' || (m[1] === '~' && p.context === 'triggered');
-		const obj = self ? { selector: { k: 'self' } as Selector, fromZone: 'graveyard' as const } : objectPhrase(p, m[1]);
+		const exiledSelf = m[1] === '~' && p.steps.some((s) => s.verb === 'exile' && s.subject.k === 'self');
+		const selfFromGy =
+			!exiledSelf && (m[1] === '~ from your graveyard' || (m[1] === '~' && p.context === 'triggered'));
+		const obj = exiledSelf
+			? { selector: { k: 'self' } as Selector, fromZone: 'exile' as const }
+			: selfFromGy
+				? { selector: { k: 'self' } as Selector, fromZone: 'graveyard' as const }
+				: objectPhrase(p, m[1]);
 		if (!obj) return false;
+		const boundFromExile =
+			obj.selector.k === 'binding' &&
+			p.steps.some((s) => s.bindAs === (obj.selector as { k: 'binding'; name: string }).name && s.verb === 'exile');
+		const fromExile =
+			obj.fromZone === 'exile' ||
+			boundFromExile ||
+			(obj.selector.k === 'target' && p.targets[obj.selector.index].filter.zone === 'exile');
 		const fromGy =
-			obj.fromZone === 'graveyard' ||
-			(obj.selector.k === 'target' && p.targets[obj.selector.index].filter.zone === 'graveyard');
-		if (!fromGy) return false;
-		const params: EffectStep['params'] = { from: 'graveyard', to: 'battlefield' };
+			!fromExile &&
+			(obj.fromZone === 'graveyard' ||
+				(obj.selector.k === 'target' && p.targets[obj.selector.index].filter.zone === 'graveyard'));
+		if (!fromGy && !fromExile) return false;
+		const params: EffectStep['params'] = { from: fromExile ? 'exile' : 'graveyard', to: 'battlefield' };
 		if ('topmostOnly' in obj && obj.topmostOnly) params.topmostOnly = true;
 		if (m[2]) params.tapped = true;
-		if (m[3]) params.underYourControl = true;
+		if (m[3]) params.enteredTransformed = true;
+		if (m[4]?.trim() === 'under your control') params.underYourControl = true;
 		p.push({ verb: 'move', subject: obj.selector, params, span }, true);
 		return true;
 	}
@@ -1087,6 +1102,14 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 		p.push({ verb: 'dig', subject: YOU, amount, span }, false);
 		return true;
 	}
+	m = t.match(/^(transform|flip) (.+)$/);
+	if (m) {
+		const verb = m[1] as 'transform' | 'flip';
+		const obj = objectPhrase(p, m[2]);
+		if (!obj) return false;
+		p.push({ verb, subject: obj.selector, span }, true);
+		return true;
+	}
 	if (/^take an extra turn after this one$/.test(t)) return playerPredicate(p, YOU, t, span, true);
 	return false;
 }
@@ -1143,7 +1166,7 @@ function addMana(p: Parser, text: string, span: Span): ClauseResult {
 
 // Words that start a new clause after " and " / ", then ".
 const CLAUSE_START =
-	/^(?:you|each opponent|each player|target player|target opponent|its controller|its owner|that player|they|draw|draws|lose|loses|gain|gains|get|gets|put|exile|destroy|return|create|creates|search|scry|mill|mills|sacrifice|deal|deals|add|take|takes|phase|phases|attach|counter|proliferate|switch|look|tap|untap|fight|fights)\b/;
+	/^(?:you|each opponent|each player|target player|target opponent|its controller|its owner|that player|they|draw|draws|lose|loses|gain|gains|get|gets|put|exile|destroy|return|create|creates|search|scry|mill|mills|sacrifice|deal|deals|add|take|takes|phase|phases|attach|counter|proliferate|switch|look|tap|untap|fight|fights|transform|transforms|flip|flips)\b/;
 
 /** Splits a sentence into clauses at ", then " and at " and " before a new verb or subject. */
 function splitClauses(text: string, offset: number): Clause[] {
@@ -1255,9 +1278,9 @@ function clause(p: Parser, c: Clause): ClauseResult {
 /** Sentence-initial words that are not names or subtypes, so they can be lower-cased. */
 const LOWER_START = new Set([
 	'a', 'add', 'all', 'an', 'another', 'any', 'at', 'attach', 'copy', 'counter', 'create', 'creatures', 'deal', 'destroy', 'draw',
-	'each', 'end', 'exile', 'fight', 'gain', 'if', 'it', 'its', 'look', 'lose', 'mill', 'permanents', 'proliferate', 'put',
+	'each', 'end', 'exile', 'fight', 'flip', 'gain', 'if', 'it', 'its', 'look', 'lose', 'mill', 'permanents', 'proliferate', 'put',
 	'return', 'sacrifice', 'scry', 'search', 'switch', 'take', 'tap', 'target', 'that', 'the', 'then', 'they', 'those',
-	'untap', 'until', 'up', 'you', 'your'
+	'transform', 'untap', 'until', 'up', 'you', 'your'
 ]);
 
 // ---- Sentences ------------------------------------------------------------------------------

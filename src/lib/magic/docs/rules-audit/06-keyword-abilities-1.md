@@ -288,7 +288,7 @@ Audited at engine-rewrite 917180b on 2026-11-09.
 ### 702.37 Morph
 | CR | Rule (short) | Status | Evidence / notes |
 |---|---|---|---|
-| 702.37a–g | Morph and Megamorph: cast face-down for `{3}`, turn face up special action | missing | Listed in `KNOWN_KEYWORDS` (`compiler/adapter.ts:141,142`) as `keyword_not_implemented`. Although `CardInstance.isFaceDown` is respected by layers/filters/SBAs (`runtime/layers.ts:865`, `engine.ts:6683`), there is no action to cast a card face-down with Morph or turn it face up. |
+| 702.37a–g | Morph and Megamorph: cast face-down for `{3}`, turn face up special action | implemented | **Updated 2026-11-13:** Implemented via `KEYWORD_REGISTRY` (`keywords.ts`), `CastOption.spellMods.castFaceDown` (`engine.ts`, `runtime/costs.ts`), composite cost support (`revealFromHand` in `compiler/costs.ts`), `{X}` preservation (`CR 702.37f`), Megamorph `+1/+1` counter (`CR 702.37b`), `turn_face_up` special action (`CR 116.2b`, `708.7–8`), and `turnFaceUp` triggers (`runtime/transform-flip-facedown.test.ts`). |
 
 ### 702.38 Amplify
 | CR | Rule (short) | Status | Evidence / notes |

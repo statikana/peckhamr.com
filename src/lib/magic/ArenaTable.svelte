@@ -20,6 +20,7 @@
 		getPlayerCommanderIdentity,
 		getSpellTargetRequirement,
 		getSuspendSpec,
+		getTurnFaceUpDisplay,
 		hasKeyword,
 		inspectCardContinuousBreakdown,
 		validateTargetLegality
@@ -236,7 +237,8 @@
 
 	let xCostModalCard = $state.raw<{
 		inst: CardInstance;
-		fromZone: 'hand' | 'command' | 'exile' | 'graveyard';
+		fromZone: 'hand' | 'command' | 'exile' | 'graveyard' | 'battlefield';
+		actionKind?: 'cast_spell' | 'turn_face_up';
 		castOption?: CastOption;
 		optionalCostCounts?: Record<string, number>;
 	} | null>(null);
@@ -974,9 +976,23 @@
 		}
 	}
 
+	const FACE_DOWN_ART_URI =
+		'data:image/svg+xml;utf8,' +
+		encodeURIComponent(
+			'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 168"><rect width="120" height="168" rx="8" fill="#1b1824" stroke="#6b5b7b" stroke-width="4"/><circle cx="60" cy="84" r="28" fill="none" stroke="#8a74a8" stroke-width="3"/><text x="60" y="92" text-anchor="middle" fill="#c7b8df" font-family="serif" font-size="28" font-weight="bold">?</text></svg>'
+		);
+
 	function effectivePermanentDisplay(perm: CardInstance) {
 		const card = effectiveCardForObject(perm);
 		const view = resolveObjectFaces(card, instanceFaceOptions(perm, 'battlefield'));
+		if (perm.isFaceDown) {
+			return {
+				name: perm.faceDownLabel || view.name || card.name,
+				imageUrl: FACE_DOWN_ART_URI,
+				artCropUrl: FACE_DOWN_ART_URI,
+				isCreature: view.types.includes('Creature')
+			};
+		}
 		return {
 			name: view.name || card.name,
 			imageUrl: view.imageUrl || card.imageUrl,
@@ -987,6 +1003,13 @@
 
 	function stackItemDisplay(item: (typeof gameState.stack)[0]) {
 		const view = resolveObjectFaces(item.card, stackItemFaceOptions(item));
+		if (item.isFaceDown) {
+			return {
+				name: item.faceDownLabel || item.title,
+				imageUrl: FACE_DOWN_ART_URI,
+				artCropUrl: FACE_DOWN_ART_URI
+			};
+		}
 		return {
 			name: view.name || item.title,
 			imageUrl: view.imageUrl || item.card.imageUrl,
@@ -1125,6 +1148,7 @@
 
 		if (!hasPriority) return false;
 
+		const isCreature = effectivePermanentDisplay(perm).isCreature;
 		if (
 			gameState.phase === 'declare_attackers' &&
 			isMyTurn &&
@@ -1132,7 +1156,7 @@
 			gameState.stack.length === 0
 		) {
 			if (
-				perm.card.typeLine.includes('Creature') &&
+				isCreature &&
 				!perm.tapped &&
 				(!perm.summoningSick || hasKeyword(perm, 'Haste', gameState)) &&
 				!hasKeyword(perm, 'Defender', gameState)
@@ -1149,7 +1173,7 @@
 			!(gameState.combat.declaredBlockersPlayerIds || []).includes(me.playerId)
 		) {
 			if (
-				perm.card.typeLine.includes('Creature') &&
+				isCreature &&
 				!perm.tapped &&
 				gameState.combat.attackers.some((a) => a.defenderPlayerId === me.playerId)
 			) {
@@ -1165,6 +1189,9 @@
 			}
 		}
 		if (getPermanentUnlockableFaces(perm).some((d) => d.check.ok)) {
+			return true;
+		}
+		if (getTurnFaceUpDisplay(gameState, me.playerId, perm)?.legal) {
 			return true;
 		}
 
@@ -1742,9 +1769,10 @@
 			const cmdId = getPlayerCommanderIdentity(me);
 			const abilities = getEffectiveActivatedAbilities(gameState, me, perm, cmdId);
 			const unlockables = getPermanentUnlockableFaces(perm);
-			if (abilities.length === 1 && abilities[0].isManaAbility && unlockables.length === 0) {
+			const turnUp = getTurnFaceUpDisplay(gameState, me.playerId, perm);
+			if (abilities.length === 1 && abilities[0].isManaAbility && unlockables.length === 0 && !turnUp) {
 				await onGameAction({ type: 'tap_mana', instanceId: perm.instanceId });
-			} else if (abilities.length > 0 || unlockables.length > 0) {
+			} else if (abilities.length > 0 || unlockables.length > 0 || turnUp) {
 				selectedPermanentForAbility = perm;
 			}
 		}
@@ -3606,14 +3634,44 @@
 			getPlayerCommanderIdentity(me)
 		)}
 		{@const unlockables = getPermanentUnlockableFaces(selectedPermanentForAbility)}
+		{@const turnUp = getTurnFaceUpDisplay(gameState, me.playerId, selectedPermanentForAbility)}
 		{@const permDisp = effectivePermanentDisplay(selectedPermanentForAbility)}
 		<div class="modal-backdrop">
 			<div class="arena-modal">
-				<h3>{permDisp.name} — Abilities</h3>
+				<h3>{permDisp.name} — Actions</h3>
 				<div class="modal-desc">
 					<ManaText text={selectedPermanentForAbility.card.oracleText} size={15} />
 				</div>
 				<div class="ability-list">
+					{#if turnUp}
+						<button
+							type="button"
+							class="ability-choice-btn"
+							data-testid="turn-face-up-btn"
+							disabled={!turnUp.legal}
+							title={turnUp.error || `Turn ${selectedPermanentForAbility.card.name} face up`}
+							onclick={async () => {
+								const perm = selectedPermanentForAbility!;
+								const choosesX = Boolean(turnUp?.choosesX);
+								selectedPermanentForAbility = null;
+								if (choosesX) {
+									xCostModalCard = {
+										inst: perm,
+										fromZone: 'battlefield',
+										actionKind: 'turn_face_up'
+									};
+									xCostValue = 1;
+									return;
+								}
+								await onGameAction({
+									type: 'turn_face_up',
+									instanceId: perm.instanceId
+								});
+							}}
+						>
+							Turn Face Up (<ManaText text={turnUp.costDisplay} size={14} />)
+						</button>
+					{/if}
 					{#each unlockables as door (door.faceIndex)}
 						<button
 							type="button"
@@ -3901,16 +3959,24 @@
 						onclick={async () => {
 							const item = xCostModalCard!;
 							xCostModalCard = null;
+							if (item.actionKind === 'turn_face_up') {
+								await onGameAction({
+									type: 'turn_face_up',
+									instanceId: item.inst.instanceId,
+									xValue: xCostValue
+								});
+								return;
+							}
 							await initiateCastSpell(
 								item.inst,
-								item.fromZone,
+								item.fromZone as 'hand' | 'command' | 'exile' | 'graveyard',
 								xCostValue,
 								item.castOption,
 								item.optionalCostCounts
 							);
 						}}
 					>
-						Cast with X = {xCostValue}
+						{xCostModalCard.actionKind === 'turn_face_up' ? 'Turn Face Up' : 'Cast'} with X = {xCostValue}
 					</button>
 					<button type="button" class="hud-btn" onclick={() => (xCostModalCard = null)}>
 						Cancel

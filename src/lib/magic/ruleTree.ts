@@ -181,6 +181,9 @@ export function getSpellTargetRequirement(
 	option?: CastOption,
 	optionalCostCounts?: Record<string, number>
 ): TargetRequirementInfo {
+	if (option?.spellMods?.castFaceDown) {
+		return NO_TARGET_REQUIREMENT;
+	}
 	const faceOpts = { zone: 'stack' as const, faceIndex: option?.faceIndex ?? 0, fused: option?.fused };
 	const abilities = activeAbilityDefs(card, faceOpts);
 	const chars = activeCharacteristics(card, faceOpts);

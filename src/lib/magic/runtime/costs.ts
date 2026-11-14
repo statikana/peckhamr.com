@@ -29,6 +29,7 @@ import type {
 	CostPayment,
 	CounterType,
 	EffectiveActivatedAbility,
+	FaceDownSpec,
 	GameState,
 	PlayerGameState,
 	ScryfallCard,
@@ -211,9 +212,10 @@ export function spellChoosesX(
 	baseCost?: CastOption['baseCost'] | string,
 	extraManaCosts?: string[],
 	faceIndex = 0,
-	fused = false
+	fused = false,
+	isFaceDown = false
 ): boolean {
-	let costStr = resolveObjectFaces(card, { zone: 'stack', faceIndex, fused }).manaCost;
+	let costStr = isFaceDown ? '' : resolveObjectFaces(card, { zone: 'stack', faceIndex, fused }).manaCost;
 	let altCostDefs: CostDef[] | undefined;
 	if (typeof baseCost === 'string') {
 		costStr = baseCost;
@@ -227,7 +229,8 @@ export function spellChoosesX(
 	if (extraManaCosts?.some((c) => /\{X\}/i.test(c))) return true;
 	const mentionsX = (defs: CostDef[] | undefined) => JSON.stringify(defs ?? []).includes('"k":"x"');
 	if (mentionsX(altCostDefs)) return true;
-	return abilitiesOf(card).some(
+	if (isFaceDown) return false;
+	return abilitiesOf(card, faceIndex, fused).some(
 		(a) =>
 			(a.kind === 'spell' && mentionsX(a.additionalCosts)) ||
 			(a.kind === 'unsupported' && a.id === 'cast' && mentionsX(a.cost))
@@ -285,11 +288,12 @@ export function effectiveSpellManaCost(
 	baseCost?: CastOption['baseCost'] | string,
 	extraManaCosts?: string[],
 	faceIndex = 0,
-	fused = false
+	fused = false,
+	faceDownSpec?: FaceDownSpec
 ): ManaCostRequirement {
 	// Read-only: one layer-cache validation for the battlefield scan (Phase 6d).
 	return withStableLayerInputs(state, () =>
-		effectiveSpellManaCostInner(state, player, inst, xValue, baseCost, extraManaCosts, faceIndex, fused)
+		effectiveSpellManaCostInner(state, player, inst, xValue, baseCost, extraManaCosts, faceIndex, fused, faceDownSpec)
 	);
 }
 
@@ -301,10 +305,11 @@ function effectiveSpellManaCostInner(
 	baseCost?: CastOption['baseCost'] | string,
 	extraManaCosts?: string[],
 	faceIndex = 0,
-	fused = false
+	fused = false,
+	faceDownSpec?: FaceDownSpec
 ): ManaCostRequirement {
 	const card = inst.copiableCard ?? inst.card;
-	const stackFaceOpts = { zone: 'stack' as const, faceIndex, fused };
+	const stackFaceOpts = { zone: 'stack' as const, faceIndex, fused, ...(faceDownSpec ? { isFaceDown: true, faceDownSpec } : {}) };
 	let baseCostStr = resolveObjectFaces(card, stackFaceOpts).manaCost;
 	if (typeof baseCost === 'string') {
 		baseCostStr = baseCost;
@@ -313,7 +318,7 @@ function effectiveSpellManaCostInner(
 	} else if (baseCost?.kind === 'free') {
 		baseCostStr = '';
 	}
-	const effectiveX = spellChoosesX(card, baseCost, extraManaCosts) ? xValue : 0;
+	const effectiveX = spellChoosesX(card, baseCost, extraManaCosts, faceIndex, fused, Boolean(faceDownSpec)) ? xValue : 0;
 
 	let forceZeroCost = false;
 	let genericReduction = 0;
@@ -344,6 +349,7 @@ function effectiveSpellManaCostInner(
 		...inst,
 		zone: 'stack',
 		activeFaceIndex: faceIndex,
+		...(faceDownSpec ? { isFaceDown: true, faceDownSpec } : {}),
 		...(fused ? { copiableState: { ...(inst.copiableState ?? { card }), faceIndex, fused: true } } : {})
 	};
 	const matchesSpell = (
@@ -365,16 +371,19 @@ function effectiveSpellManaCostInner(
 	};
 
 	// 1. Self cost modifiers on the spell itself ("This spell costs {1} less to cast for each ...").
-	const selfCtx: FilterContext = {
-		state,
-		controllerId: player.playerId,
-		source: stackProxy,
-		xValue: effectiveX
-	};
-	for (const mod of costModifiersOf(card, stackFaceOpts)) {
-		if (mod.affects.k !== 'self') continue;
-		if (mod.condition && !evaluateCondition(mod.condition, selfCtx)) continue;
-		applyDelta(mod, selfCtx);
+	// Face-down spells have no abilities (CR 708.2a), so hidden self-modifiers never apply (CR 708.4).
+	if (!faceDownSpec) {
+		const selfCtx: FilterContext = {
+			state,
+			controllerId: player.playerId,
+			source: stackProxy,
+			xValue: effectiveX
+		};
+		for (const mod of costModifiersOf(card, stackFaceOpts)) {
+			if (mod.affects.k !== 'self') continue;
+			if (mod.condition && !evaluateCondition(mod.condition, selfCtx)) continue;
+			applyDelta(mod, selfCtx);
+		}
 	}
 
 	// 2. Active cost modifiers on the battlefield and in the command zone (Eminence).
@@ -594,6 +603,8 @@ export function describeCost(defs: CostDef[]): string {
 					return d.filter === 'self'
 						? `Exile this from ${d.zone}`
 						: `Exile ${amountText(d.count)} card(s) from your ${d.zone}`;
+				case 'revealFromHand':
+					return `Reveal ${filterText(d.filter ?? {}, d.count)} in your hand`;
 				case 'choice':
 					return d.options.map((o) => describeCost(o)).join(' or ');
 				case 'optional':
@@ -633,7 +644,10 @@ export type CostQuestion =
 	| { kind: 'option'; index: number; labels: string[]; optional: boolean }
 	| { kind: 'objects'; index: number; label: string; count: number; candidateIds: string[] };
 
-type ObjectCostDef = Extract<CostDef, { k: 'tapOthers' | 'sacrifice' | 'discard' | 'exileFrom' }>;
+type ObjectCostDef = Extract<
+	CostDef,
+	{ k: 'tapOthers' | 'sacrifice' | 'discard' | 'exileFrom' | 'revealFromHand' }
+>;
 
 /** One cost part of a complete plan, with the objects it uses. */
 export type PlannedCost =
@@ -689,13 +703,17 @@ function objectCandidates(def: ObjectCostDef, ctx: CostContext, used: Set<string
 			const filter = def.filter as ObjectFilter | undefined;
 			return zoneOf(ctx.player, def.zone).filter((c) => free(c) && (!filter || matchesObjectFilter(c, filter, fctx)));
 		}
+		case 'revealFromHand': {
+			const filter = def.filter as ObjectFilter | undefined;
+			return ctx.player.hand.filter((c) => free(c) && (!filter || matchesObjectFilter(c, filter, fctx)));
+		}
 	}
 }
 
 /** Checks a cost part that doesn't involve choosing objects. Returns an error or null. */
 function checkSimple(def: CostDef, ctx: CostContext): string | null {
 	const src = ctx.source;
-	const name = src.card.name;
+	const name = src.isFaceDown ? (src.faceDownLabel || 'Face-Down Permanent') : src.card.name;
 	switch (def.k) {
 		case 'tapSelf':
 		case 'untapSelf': {
@@ -870,13 +888,21 @@ function planFlat(ctx: CostContext, flat: Flat[], objects: string[][] | undefine
 			parts.push({ def });
 			continue;
 		}
-		if (def.k !== 'tapOthers' && def.k !== 'sacrifice' && def.k !== 'discard' && def.k !== 'exileFrom') {
+		if (
+			def.k !== 'tapOthers' &&
+			def.k !== 'sacrifice' &&
+			def.k !== 'discard' &&
+			def.k !== 'exileFrom' &&
+			def.k !== 'revealFromHand'
+		) {
 			parts.push({ def });
 			continue;
 		}
 		const reserveSelf =
 			(def.k === 'tapOthers' && tapsSelf) ||
-			(discardsSelf && def.filter !== 'self' && (def.k === 'discard' || (def.k === 'exileFrom' && def.zone === 'hand')));
+			(discardsSelf &&
+				(def.k === 'revealFromHand' ||
+					(def.filter !== 'self' && (def.k === 'discard' || (def.k === 'exileFrom' && def.zone === 'hand')))));
 		const exclude = reserveSelf ? new Set([...used, ctx.source.instanceId]) : used;
 		const candidates = objectCandidates(def, ctx, exclude);
 		if (!candidates) {
@@ -1092,8 +1118,14 @@ export function serializeCostPlanParts(
 				isRandom: true
 			};
 		}
-		if (def.k === 'tapOthers' || def.k === 'sacrifice' || def.k === 'discard' || def.k === 'exileFrom') {
-			const objs = def.filter === 'self' ? [ctx.source] : (part.objects ?? []);
+		if (
+			def.k === 'tapOthers' ||
+			def.k === 'sacrifice' ||
+			def.k === 'discard' ||
+			def.k === 'exileFrom' ||
+			def.k === 'revealFromHand'
+		) {
+			const objs = 'filter' in def && def.filter === 'self' ? [ctx.source] : (part.objects ?? []);
 			return {
 				def,
 				objectIds: objs.map((c) => c.instanceId),
@@ -1232,6 +1264,11 @@ export function executeCostPaymentParts(
 					}
 				}
 				descriptions.push(`exiled ${names.join(', ')} from ${def.zone}`);
+				break;
+			}
+			case 'revealFromHand': {
+				const names = part.objectNames ?? [];
+				if (names.length > 0) descriptions.push(`revealed ${names.join(', ')}`);
 				break;
 			}
 			default: {

@@ -57,7 +57,7 @@ export { IMPLEMENTED_KEYWORDS };
 
 // ---- Entry point ----------------------------------------------------------------------------
 
-const SUPPORTED_MULTIFACE_LAYOUTS = new Set<CardLayout>(['split', 'modal_dfc', 'adventure']);
+const SUPPORTED_MULTIFACE_LAYOUTS = new Set<CardLayout>(['split', 'modal_dfc', 'adventure', 'transform', 'flip']);
 
 export function compileSingleFace(
 	face: ScryfallCard | ScryfallCardFace,
@@ -125,7 +125,8 @@ export function compileSingleFace(
 export function compileFaces(card: ScryfallCard): FaceDefinition[] {
 	const layout: CardLayout =
 		card.layout ?? (card.backFace ? 'transform' : card.faces && card.faces.length >= 2 ? 'split' : 'normal');
-	const faces = card.faces && card.faces.length >= 2 ? getCardFaces(card) : null;
+	const candidateFaces = getCardFaces(card);
+	const faces = candidateFaces.length >= 2 ? candidateFaces : null;
 
 	if (faces && SUPPORTED_MULTIFACE_LAYOUTS.has(layout)) {
 		return faces.map((f) => compileSingleFace(f, card, layout));
@@ -217,6 +218,9 @@ function parseKeyword(part: string): KeywordDef | null {
 			kw === 'flashback' ||
 			kw === 'kicker' ||
 			kw === 'multikicker' ||
+			kw === 'morph' ||
+			kw === 'megamorph' ||
+			kw === 'disguise' ||
 			kw === 'cycling' ||
 			kw === 'basic landcycling' ||
 			kw === 'landcycling'
@@ -268,16 +272,16 @@ function keywordLine(line: NormalizedLine): AbilityDef[] | null {
 	if (
 		line.abilityWord ||
 		(/\.$/.test(line.body) &&
-			!/^(?:ward|flashback|kicker|multikicker|cycling|(?:[a-z][a-z -]*\s+)?[a-z]*cycling)\s*[—-]/i.test(
+			!/^(?:ward|flashback|kicker|multikicker|morph|megamorph|disguise|cycling|(?:[a-z][a-z -]*\s+)?[a-z]*cycling)\s*[—-]/i.test(
 				line.body
 			))
 	) {
 		return null;
 	}
 	// "Enchant creature, land, or planeswalker", "Protection from white, from blue", and composite
-	// dash costs ("Ward—...", "Flashback—...", "Kicker—...", "Cycling—...") are one keyword.
+	// dash costs ("Ward—...", "Flashback—...", "Kicker—...", "Morph—...", "Cycling—...") are one keyword.
 	const parts =
-		/^(?:enchant|protection from|hexproof from|partner with|(?:ward|flashback|kicker|multikicker|cycling|(?:[a-z][a-z -]*\s+)?[a-z]*cycling)\s*[—-])/i.test(
+		/^(?:enchant|protection from|hexproof from|partner with|(?:ward|flashback|kicker|multikicker|morph|megamorph|disguise|cycling|(?:[a-z][a-z -]*\s+)?[a-z]*cycling)\s*[—-])/i.test(
 			line.body
 		)
 			? [line.body]
@@ -332,9 +336,14 @@ function keywordLine(line: NormalizedLine): AbilityDef[] | null {
 			}
 			keyword.costDefs = parsed.defs;
 		}
-		if (keyword.name === 'flashback') {
-			const fbCost = keyword.cost ?? keyword.param ?? '';
-			const parsed = parseCost(fbCost);
+		if (
+			keyword.name === 'flashback' ||
+			keyword.name === 'morph' ||
+			keyword.name === 'megamorph' ||
+			keyword.name === 'disguise'
+		) {
+			const kwCost = keyword.cost ?? keyword.param ?? '';
+			const parsed = parseCost(kwCost);
 			if (parsed.unparsed.length > 0 || parsed.defs.length === 0) {
 				out.push(unsupported('unparsed', part, span, [span]));
 				return;

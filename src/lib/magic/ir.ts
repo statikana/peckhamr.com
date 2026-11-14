@@ -343,6 +343,8 @@ export type CostDef =
 	| { k: 'loyalty'; delta: number }
 	| { k: 'removeCounters'; counter: CounterType; count: Amount; from: 'self' | ObjectFilter }
 	| { k: 'exileFrom'; zone: ZoneType; count: Amount; filter?: ObjectFilter | 'self' }
+	/** Reveal N matching cards in hand as part of a cost ("Morph—Reveal a white card in your hand."). */
+	| { k: 'revealFromHand'; count: Amount; filter?: ObjectFilter }
 	/** Pay exactly one of the options ("discard a card or pay 3 life", "sacrifice a creature or pay {3}{B}"). */
 	| { k: 'choice'; options: CostDef[][] }
 	/** The player may pay this cost or not ("As an additional cost to cast ~, you may sacrifice an artifact."). */
@@ -391,6 +393,8 @@ export type Verb =
 	| 'tap'
 	| 'untap'
 	| 'tapOrUntap'
+	| 'transform'
+	| 'flip'
 	/**
 	 * Look at the top N cards of your library, then put up to `dig.keep` of them somewhere and the
 	 * rest elsewhere ("Put up to one of them on top of your library and the rest on the bottom").
@@ -459,6 +463,8 @@ export interface EffectParams {
 	notLegendary?: boolean;
 	/** dig: where the kept cards and the rest go. */
 	dig?: { keep: number; upTo: boolean; keepTo: 'libraryTop' | 'hand'; rest: 'libraryBottom' | 'graveyard'; restRandom?: boolean };
+	/** move to battlefield: enters transformed with its back face up (CR 712.14a / 712.11a). */
+	enteredTransformed?: boolean;
 }
 
 export interface TokenSpec {
@@ -519,7 +525,11 @@ export type EventKind =
 	/** A card was discarded to pay a cycling or typecycling activation cost (CR 702.29c, 702.29f). */
 	| 'cycle'
 	/** A card was discarded from a player's hand, including via cycling (CR 701.9, 702.29d). */
-	| 'discard';
+	| 'discard'
+	/** A double-faced permanent transformed on the battlefield (CR 701.27). */
+	| 'transforms'
+	/** A face-down permanent was turned face up on the battlefield (CR 708.8). */
+	| 'turnFaceUp';
 
 export interface EventFilter {
 	/**
@@ -547,6 +557,8 @@ export interface EventFilter {
 	host?: ObjectFilter;
 	/** "Whenever a creature you control attacks alone": matches only when 1 attacker is declared (CR 702.83b). */
 	alone?: boolean;
+	/** transforms: optional filter on the new face after transforming ("transforms into an Eldrazi"). */
+	toFaceFilter?: ObjectFilter;
 }
 
 export interface TriggerDef {

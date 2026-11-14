@@ -109,6 +109,7 @@ import {
 	canPayCosts,
 	chooseCostPayment,
 	computeKickerTracking,
+	describeCost,
 	effectiveAbilityManaCost,
 	effectiveSpellManaCost,
 	executeCostPaymentParts,
@@ -140,6 +141,7 @@ import { compileCard, compiledStackItemEffects, compiledTriggerEffect, compileSp
 import {
 	activeFaceIndexForObject,
 	effectiveCardForObject,
+	getCardFaces,
 	scrubFaceDownCard,
 	scrubFaceDownStackItem
 } from './scryfall.ts';
@@ -226,6 +228,7 @@ import {
 	type ProcedureContinuation,
 	type PromptPurpose,
 	type ScryfallCard,
+	type FaceDownSpec,
 	type SpellModifications,
 	type StackItem,
 	type TriggerEventLki,
@@ -605,19 +608,25 @@ function enumerateCandidateCastOptions(
 		card.layout ?? (card.backFace ? 'transform' : card.faces && card.faces.length >= 2 ? 'split' : 'normal');
 	const isMultiFace = cardHasSupportedMultiFace(card);
 	const exileAllowed = fromZone === 'exile' ? inst.playableFromExileBy?.allowedFaceIndices : undefined;
+	const hasFaceDownKw = (fi: number) =>
+		Object.keys(ALTERNATIVE_COST_KEYWORDS).some(
+			(kw) => Boolean(ALTERNATIVE_COST_KEYWORDS[kw]?.faceDown) && keywordAltCost(card, kw, fi) !== null
+		);
 
 	const candidateFaceIndices: number[] = isMultiFace
 		? def.faces
 				.map((_, fi) => fi)
 				.filter((fi) => {
 					const types = def.faces[fi]?.characteristics.types ?? [];
-					if (types.includes('Land') && !types.includes('Creature')) return false;
+					const isLandOnly = types.includes('Land') && !types.includes('Creature');
+					if (isLandOnly && !(fi === 0 && hasFaceDownKw(fi))) return false;
 					if (exileAllowed && !exileAllowed.includes(fi)) return false;
 					return true;
 				})
 		: (() => {
 				const types = def.faces[0]?.characteristics.types ?? [];
-				if (types.includes('Land') && !types.includes('Creature')) return [];
+				const isLandOnly = types.includes('Land') && !types.includes('Creature');
+				if (isLandOnly && !hasFaceDownKw(0)) return [];
 				if (exileAllowed && !exileAllowed.includes(0)) return [];
 				return [0];
 			})();
@@ -658,32 +667,35 @@ function enumerateCandidateCastOptions(
 			: {};
 
 		let hasZonePermission = false;
+		const isLandOnlyFace = faceTypes.includes('Land') && !faceTypes.includes('Creature');
 
 		if (fromZone === 'hand' || fromZone === 'command') {
 			hasZonePermission = true;
-			const baseCost: CastOption['baseCost'] = { kind: 'printed' };
-			const label = isAdventureFace
-				? `Cast Adventure: ${faceName}`
-				: isMultiFace
-					? `Cast ${faceName}`
-					: 'Cast Normally';
-			options.push({
-				id: idFor('normal'),
-				label,
-				costDisplay: `${faceManaCost || '{0}'}${taxSuffix}`,
-				fromZone,
-				permission: 'zone_default',
-				...faceIndexProp,
-				baseCost,
-				...(mandatoryAdditionalCosts ? { mandatoryAdditionalCosts } : {}),
-				...optionalProp,
-				timing: 'default',
-				spellMods: { ...adventureMods },
-				choosesX: spellChoosesX(card, baseCost, undefined, fi, false),
-				requiresTarget: targetInfo.requiresTarget
-			});
+			if (!isLandOnlyFace) {
+				const baseCost: CastOption['baseCost'] = { kind: 'printed' };
+				const label = isAdventureFace
+					? `Cast Adventure: ${faceName}`
+					: isMultiFace
+						? `Cast ${faceName}`
+						: 'Cast Normally';
+				options.push({
+					id: idFor('normal'),
+					label,
+					costDisplay: `${faceManaCost || '{0}'}${taxSuffix}`,
+					fromZone,
+					permission: 'zone_default',
+					...faceIndexProp,
+					baseCost,
+					...(mandatoryAdditionalCosts ? { mandatoryAdditionalCosts } : {}),
+					...optionalProp,
+					timing: 'default',
+					spellMods: { ...adventureMods },
+					choosesX: spellChoosesX(card, baseCost, undefined, fi, false),
+					requiresTarget: targetInfo.requiresTarget
+				});
+			}
 		} else if (fromZone === 'exile') {
-			if (inst.castViaSuspend && fi === 0) {
+			if (inst.castViaSuspend && fi === 0 && !isLandOnlyFace) {
 				const baseCost: CastOption['baseCost'] = { kind: 'free' };
 				options.push({
 					id: 'exile:suspend',
@@ -702,34 +714,36 @@ function enumerateCandidateCastOptions(
 				});
 			} else if (inst.playableFromExileBy?.playerId === actorId) {
 				hasZonePermission = true;
-				const baseCost: CastOption['baseCost'] = { kind: 'printed' };
-				const src = inst.playableFromExileBy.sourceName;
-				const label = isAdventureFace
-					? src
-						? `Cast Adventure: ${faceName} from Exile (${src})`
-						: `Cast Adventure: ${faceName} from Exile`
-					: isMultiFace
+				if (!isLandOnlyFace) {
+					const baseCost: CastOption['baseCost'] = { kind: 'printed' };
+					const src = inst.playableFromExileBy.sourceName;
+					const label = isAdventureFace
 						? src
-							? `Cast ${faceName} from Exile (${src})`
-							: `Cast ${faceName} from Exile`
-						: src
-							? `Cast from Exile (${src})`
-							: 'Cast from Exile';
-				options.push({
-					id: idFor('exile:permission'),
-					label,
-					costDisplay: faceManaCost || '{0}',
-					fromZone: 'exile',
-					permission: 'exile_permission',
-					...faceIndexProp,
-					baseCost,
-					...(mandatoryAdditionalCosts ? { mandatoryAdditionalCosts } : {}),
-					...optionalProp,
-					timing: 'default',
-					spellMods: { ...adventureMods },
-					choosesX: spellChoosesX(card, baseCost, undefined, fi, false),
-					requiresTarget: targetInfo.requiresTarget
-				});
+							? `Cast Adventure: ${faceName} from Exile (${src})`
+							: `Cast Adventure: ${faceName} from Exile`
+						: isMultiFace
+							? src
+								? `Cast ${faceName} from Exile (${src})`
+								: `Cast ${faceName} from Exile`
+							: src
+								? `Cast from Exile (${src})`
+								: 'Cast from Exile';
+					options.push({
+						id: idFor('exile:permission'),
+						label,
+						costDisplay: faceManaCost || '{0}',
+						fromZone: 'exile',
+						permission: 'exile_permission',
+						...faceIndexProp,
+						baseCost,
+						...(mandatoryAdditionalCosts ? { mandatoryAdditionalCosts } : {}),
+						...optionalProp,
+						timing: 'default',
+						spellMods: { ...adventureMods },
+						choosesX: spellChoosesX(card, baseCost, undefined, fi, false),
+						requiresTarget: targetInfo.requiresTarget
+					});
+				}
 			}
 		}
 
@@ -739,6 +753,42 @@ function enumerateCandidateCastOptions(
 				if (!altCost) continue;
 				if (!meta.zones.includes(fromZone)) continue;
 				if (meta.requiresZonePermission && !hasZonePermission) continue;
+				if (meta.faceDown) {
+					if (isMultiFace && layout !== 'modal_dfc' && fi > 0) continue;
+					const baseCost: CastOption['baseCost'] = {
+						kind: 'alternative',
+						manaCost: meta.faceDown.castManaCost
+					};
+					const turnUpSummary = describeTurnUpCost(altCost.manaCost, altCost.costDefs);
+					const faceDownSpec: FaceDownSpec = {
+						kind: meta.faceDown.kind,
+						castManaCost: meta.faceDown.castManaCost,
+						...(meta.faceDown.wardCost ? { wardCost: meta.faceDown.wardCost } : {}),
+						...(altCost.manaCost !== undefined ? { turnUpManaCost: altCost.manaCost } : {}),
+						...(altCost.costDefs.length > 0 ? { turnUpCostDefs: altCost.costDefs } : {}),
+						...(turnUpSummary ? { turnUpCost: turnUpSummary } : {})
+					};
+					const spellMods: SpellModifications = {
+						castFaceDown: faceDownSpec,
+						...(meta.castSummarySuffix ? { castSummarySuffix: meta.castSummarySuffix } : {}),
+						...(meta.stackBadgeLabel ? { label: meta.stackBadgeLabel } : {})
+					};
+					options.push({
+						id: idFor(meta.id),
+						label: meta.label,
+						costDisplay: `${meta.faceDown.castManaCost}${taxSuffix}`,
+						fromZone,
+						permission: fromZone === 'exile' ? 'exile_permission' : 'zone_default',
+						...faceIndexProp,
+						baseCost,
+						timing: meta.timing ?? 'default',
+						spellMods,
+						choosesX: false,
+						requiresTarget: false
+					});
+					continue;
+				}
+				if (isLandOnlyFace) continue;
 				if (meta.spellTypes && meta.spellTypes.length > 0) {
 					if (!meta.spellTypes.some((t) => faceTypes.includes(t))) continue;
 				}
@@ -839,9 +889,6 @@ function resolveCastOptionForAction(
 		def.faces.every(
 			(f) => f.characteristics.types.includes('Land') && !f.characteristics.types.includes('Creature')
 		);
-	if (allLandFaces) {
-		return { ok: false, error: 'Lands are played using Play Land, not cast as spells.' };
-	}
 	if (
 		fromZone !== 'hand' &&
 		fromZone !== 'command' &&
@@ -861,7 +908,12 @@ function resolveCastOptionForAction(
 
 	if (optionId !== undefined) {
 		const match = candidates.find((o) => o.id === optionId);
-		if (match) return { ok: true, option: match };
+		if (match) {
+			if (allLandFaces && !match.spellMods?.castFaceDown) {
+				return { ok: false, error: 'Lands are played using Play Land, not cast as spells.' };
+			}
+			return { ok: true, option: match };
+		}
 
 		const altMeta = alternativeCostMetaById(optionId);
 		if (altMeta) {
@@ -880,10 +932,17 @@ function resolveCastOptionForAction(
 		if (fromZone === 'graveyard') {
 			return { ok: false, error: 'Spells can only be cast from your Hand, Command Zone, or Exile.' };
 		}
+		if (allLandFaces && !altMeta?.meta.faceDown) {
+			return { ok: false, error: 'Lands are played using Play Land, not cast as spells.' };
+		}
 		return {
 			ok: false,
 			error: `Cast option '${optionId}' is not valid for ${inst.card.name} from ${fromZone}.`
 		};
+	}
+
+	if (allLandFaces) {
+		return { ok: false, error: 'Lands are played using Play Land, not cast as spells.' };
 	}
 
 	if (fused) {
@@ -1001,7 +1060,8 @@ function getSpellCostRequirementForOption(
 			option.baseCost,
 			extraManaCosts,
 			option.faceIndex ?? 0,
-			option.fused ?? false
+			option.fused ?? false,
+			option.spellMods?.castFaceDown
 		)
 	);
 }
@@ -1064,7 +1124,10 @@ export function chooseBotSpellCostPayment(
 		: { nonManaDefs: [] };
 	const optFace = resolved.ok ? (resolved.option.faceIndex ?? 0) : 0;
 	const optFused = resolved.ok ? Boolean(resolved.option.fused) : false;
-	const additional = spellAdditionalCost(inst.card, optFace, optFused);
+	const additional =
+		resolved.ok && resolved.option.spellMods?.castFaceDown
+			? null
+			: spellAdditionalCost(inst.card, optFace, optFused);
 	const defs = [...altDefs, ...(additional?.defs ?? []), ...extraNonManaDefs];
 	if (defs.length === 0) return undefined;
 	const costReq = getSpellCostRequirement(
@@ -1182,12 +1245,15 @@ function finalizeCastSpell(
 	const actorId = actor.playerId;
 	const stackFaceIdx = opts.faceIndex ?? 0;
 	const stackFused = Boolean(opts.fused);
+	const castFaceDownSpec = opts.spellMods?.castFaceDown;
+	const faceDownLabel = castFaceDownSpec ? allocateFaceDownLabel(state) : undefined;
 	const stackView = resolveObjectFaces(effectiveCardForObject(inst), {
 		zone: 'stack',
 		faceIndex: stackFaceIdx,
-		fused: stackFused
+		fused: stackFused,
+		...(castFaceDownSpec ? { isFaceDown: true, faceDownSpec: castFaceDownSpec } : {})
 	});
-	const spellDisplayName = stackView.name;
+	const spellDisplayName = faceDownLabel ?? stackView.name;
 	if (opts.descriptions && opts.descriptions.length > 0) {
 		addLog(state, 'rule', `${actor.username} ${opts.descriptions.join('; ')} as an additional cost.`, actorId);
 	}
@@ -1196,6 +1262,11 @@ function finalizeCastSpell(
 	}
 
 	const exSourceName = opts.exSourceName ?? inst.playableFromExileBy?.sourceName;
+	if (castFaceDownSpec) {
+		inst.isFaceDown = true;
+		inst.faceDownSpec = { ...castFaceDownSpec };
+		inst.faceDownLabel = faceDownLabel;
+	}
 	moveObject(state, inst, 'stack', {
 		from: { player: sourcePlayer, zone: sourceZone },
 		newTimestamp: true,
@@ -1227,6 +1298,9 @@ function finalizeCastSpell(
 			title: spellDisplayName,
 			...(opts.faceIndex !== undefined ? { faceIndex: opts.faceIndex } : {}),
 			...(opts.fused ? { fused: true } : {}),
+			...(castFaceDownSpec
+				? { isFaceDown: true, faceDownSpec: { ...castFaceDownSpec }, faceDownLabel }
+				: {}),
 			targets,
 			...(chosenModes ? { chosenModes: [...chosenModes] } : {}),
 			targetObjectVersions: captureTargetObjectVersions(state, targets),
@@ -1238,7 +1312,7 @@ function finalizeCastSpell(
 			requiresGuidedResolution: false,
 			createdAt: Date.now()
 		},
-		inst.card
+		castFaceDownSpec ? '' : inst.card
 	);
 
 	state.stack.push(stackItem);
@@ -1450,6 +1524,8 @@ function executeOrResumePendingCostPayment(
 		}
 	} else if (pcp.kind === 'activate_ability') {
 		finalizeActivateAbility(state, actor, pcp);
+	} else if (pcp.kind === 'turn_face_up') {
+		finalizeTurnFaceUp(state, actor, pcp);
 	} else {
 		finalizeTapMana(state, actor, pcp);
 	}
@@ -1687,7 +1763,10 @@ function applyPhyrexianLifeChoice(
 function maybeAskPhyrexianCostChoice(
 	state: GameState,
 	actor: PlayerGameState,
-	action: Extract<GameActionPayload, { type: 'cast_spell' | 'activate_ability' | 'tap_mana' | 'unlock_room_door' }>,
+	action: Extract<
+		GameActionPayload,
+		{ type: 'cast_spell' | 'activate_ability' | 'tap_mana' | 'unlock_room_door' | 'turn_face_up' }
+	>,
 	req: ManaCostRequirement,
 	sourceName: string
 ): { ok: boolean; error?: string } | null {
@@ -1769,7 +1848,10 @@ function applySingleHybridChoice(
 function resolveHybridCostChoice(
 	state: GameState,
 	actor: PlayerGameState,
-	action: Extract<GameActionPayload, { type: 'cast_spell' | 'activate_ability' | 'tap_mana' | 'unlock_room_door' }>,
+	action: Extract<
+		GameActionPayload,
+		{ type: 'cast_spell' | 'activate_ability' | 'tap_mana' | 'unlock_room_door' | 'turn_face_up' }
+	>,
 	req: ManaCostRequirement,
 	sourceName: string
 ): { promptResult?: { ok: boolean; error?: string }; resolvedReq: ManaCostRequirement } {
@@ -2160,6 +2242,7 @@ export function winTheGame(state: GameState, player: PlayerGameState, reason: st
 		}
 	}
 	addLog(state, 'system', `${player.username} wins the game! (${reason})`, player.playerId);
+	revealFaceDownObjects(state);
 	emitVfx(state, {
 		kind: 'victory',
 		sourceId: player.playerId,
@@ -2849,6 +2932,96 @@ function applyGameActionInner(
 			return { ok: true };
 		}
 
+		case 'turn_face_up': {
+			const perm = actor.battlefield.find((c) => c.instanceId === action.instanceId);
+			if (!perm) {
+				return { ok: false, error: 'Face-down permanent not found on your battlefield.' };
+			}
+			const xRaw = action.xValue ?? 0;
+			const legality = checkTurnFaceUpLegality(state, actorId, perm, xRaw, action.costPayment);
+			if (!legality.ok) {
+				return legality;
+			}
+			const spec = perm.faceDownSpec!;
+			const turnUpManaCost = spec.turnUpManaCost;
+			const turnUpCostDefs = spec.turnUpCostDefs ?? [];
+			const choosesX = hasXInTurnUpCost(turnUpManaCost, turnUpCostDefs);
+			const effectiveX = choosesX ? Math.max(0, xRaw) : 0;
+			const promptName = perm.faceDownLabel || 'Face-Down Permanent';
+			const baseReq = resolveTurnUpManaRequirement(turnUpManaCost, effectiveX);
+			let effectiveReq = baseReq;
+			if (effectiveReq) {
+				const phyChoice = maybeAskPhyrexianCostChoice(
+					state,
+					actor,
+					action,
+					effectiveReq,
+					promptName
+				);
+				if (phyChoice) return phyChoice;
+				const hybChoice = resolveHybridCostChoice(
+					state,
+					actor,
+					action,
+					effectiveReq,
+					promptName
+				);
+				if (hybChoice.promptResult) return hybChoice.promptResult;
+				effectiveReq = hybChoice.resolvedReq;
+			}
+			if (turnUpCostDefs.length > 0) {
+				const ctx = costContext(
+					state,
+					actor,
+					perm,
+					effectiveX,
+					false,
+					effectiveReq,
+					action.costPayment?.phyrexianLifeCount
+				);
+				const plan = planCosts(ctx, turnUpCostDefs, action.costPayment);
+				if (!plan.ok) return { ok: false, error: plan.error };
+				if (plan.question) return askCostChoice(state, actor, action, plan.question, promptName);
+				const parts = serializeCostPlanParts(ctx, plan);
+				const pcp: PendingCostPayment = {
+					kind: 'turn_face_up',
+					actorId,
+					sourceInstanceId: perm.instanceId,
+					xValue: effectiveX,
+					sourceCard: perm.card,
+					parts,
+					manaPaid: plan.mana,
+					tapsAndManaDone: false,
+					nextPartIndex: 0,
+					nextObjectIndex: 0,
+					descriptions: []
+				};
+				return executeOrResumePendingCostPayment(state, pcp, ctx);
+			}
+			if (
+				effectiveReq &&
+				!payManaWithAutoTap(
+					actor,
+					effectiveReq,
+					state,
+					action.costPayment?.phyrexianLifeCount
+				)
+			) {
+				return {
+					ok: false,
+					error: `Insufficient mana to turn ${promptName} face up (requires ${turnUpManaCost || '{0}'}).`
+				};
+			}
+			completeTurnFaceUp(
+				state,
+				actor,
+				perm,
+				effectiveX,
+				turnUpManaCost ? [turnUpManaCost] : []
+			);
+			return { ok: true };
+		}
+
 		case 'unlock_room_door': {
 			const perm = actor.battlefield.find((c) => c.instanceId === action.instanceId);
 			if (!perm) {
@@ -3091,7 +3264,9 @@ function applyGameActionInner(
 			const targets = action.targets || [];
 			const optFaceIdx = castOption.faceIndex ?? 0;
 			const optFused = Boolean(castOption.fused);
-			const compiledModal = compileSpellEffects(inst.card, optFaceIdx, optFused)?.modal;
+			const compiledModal = castOption.spellMods?.castFaceDown
+				? undefined
+				: compileSpellEffects(inst.card, optFaceIdx, optFused)?.modal;
 			const activeSpec = (sp: TargetSpec) =>
 				!sp.condition || isCastConditionMet(sp.condition, inst.card, normalizedOptCounts, castOption);
 			let chosenModes = action.modes;
@@ -3206,6 +3381,8 @@ function applyGameActionInner(
 				castOption,
 				hasOptCounts ? normalizedOptCounts : undefined
 			);
+			const isFaceDownCast = Boolean(castOption.spellMods?.castFaceDown);
+			const spellPromptName = isFaceDownCast ? 'Face-Down Spell' : inst.card.name;
 			const baseManaDisplay =
 				castOption.baseCost.kind === 'alternative'
 					? (castOption.baseCost.manaCost ?? '')
@@ -3218,13 +3395,13 @@ function applyGameActionInner(
 							}).manaCost;
 			const displayedManaCost =
 				`${baseManaDisplay}${extraManaCosts.join('')}` || (castOption.baseCost.kind === 'free' ? '{0}' : '');
-			const manaError = `Insufficient mana to cast ${inst.card.name} (requires ${displayedManaCost || '{0}'}${sourceZone === 'command' && inst.commanderCastCount > 0 ? ` + {${inst.commanderCastCount * state.rules.commanderTaxIncrement}} Commander Tax` : ''}).`;
+			const manaError = `Insufficient mana to cast ${spellPromptName} (requires ${displayedManaCost || '{0}'}${sourceZone === 'command' && inst.commanderCastCount > 0 ? ` + {${inst.commanderCastCount * state.rules.commanderTaxIncrement}} Commander Tax` : ''}).`;
 			const phySpellChoice = maybeAskPhyrexianCostChoice(
 				state,
 				actor,
 				action,
 				costReq,
-				inst.card.name
+				spellPromptName
 			);
 			if (phySpellChoice) return phySpellChoice;
 			const hybSpellChoice = resolveHybridCostChoice(
@@ -3232,14 +3409,14 @@ function applyGameActionInner(
 				actor,
 				action,
 				costReq,
-				inst.card.name
+				spellPromptName
 			);
 			if (hybSpellChoice.promptResult) return hybSpellChoice.promptResult;
 			const effectiveCostReq = hybSpellChoice.resolvedReq;
 
 			// Phase 4: additional costs (plus any non-mana alternative costDefs and optional additional costs)
 			// from the IR, paid together with the mana (nothing is paid unless everything can be).
-			const additional = spellAdditionalCost(inst.card, optFaceIdx, optFused);
+			const additional = isFaceDownCast ? null : spellAdditionalCost(inst.card, optFaceIdx, optFused);
 			const altCostDefs =
 				castOption.baseCost.kind === 'alternative' ? (castOption.baseCost.costDefs ?? []) : [];
 			const combinedCostDefs = [
@@ -3259,7 +3436,7 @@ function applyGameActionInner(
 				);
 				const plan = planCosts(ctx, combinedCostDefs, action.costPayment);
 				if (!plan.ok) return { ok: false, error: plan.error.startsWith('Insufficient mana') ? manaError : plan.error };
-				if (plan.question) return askCostChoice(state, actor, action, plan.question, inst.card.name);
+				if (plan.question) return askCostChoice(state, actor, action, plan.question, spellPromptName);
 				const parts = serializeCostPlanParts(ctx, plan);
 				const pcp: PendingCostPayment = {
 					kind: 'cast_spell',
@@ -5936,6 +6113,14 @@ export function moveStackSpellToZone(
 	);
 	cardInst.instanceId = stackItem.sourceInstanceId;
 	cardInst.commanderCastCount = castCount;
+	if (stackItem.isFaceDown) {
+		addLog(
+			state,
+			'rule',
+			`CR 708.9: ${stackItem.faceDownLabel || 'Face-Down Spell'} left the stack to ${dest} and is revealed as ${stackItem.card.name}.`,
+			owner.playerId
+		);
+	}
 	moveObject(state, cardInst, dest, {
 		from: 'stack',
 		toPlayer: owner,
@@ -6269,7 +6454,9 @@ for (const kind of [
 	'GainLife',
 	'CardDrawn',
 	'BecomesTapped',
-	'CardDiscarded'
+	'CardDiscarded',
+	'Transformed',
+	'TurnedFaceUp'
 ] as const) {
 	registerEventHandler(kind, (state, ev) => matchTriggers(state, ev));
 }
@@ -6361,6 +6548,15 @@ function triggerEventLki(state: GameState, t: PendingTrigger): TriggerEventLki |
  * ("that creature", "that player", "that many"; CR 603.7c); `eventObjectId` defaults to the source
  * ("When ~ enters, ... it ..."). `targets` holds only the targets chosen for the ability.
  */
+function triggerSourcePublicName(state: GameState, t: PendingTrigger): string {
+	const foundSource = findPermanentOnBoard(state, t.source.instanceId);
+	const src = foundSource?.inst ?? t.source;
+	if (src.isFaceDown) {
+		return src.faceDownLabel || 'Face-Down Permanent';
+	}
+	return (t.faceIndex !== undefined ? t.sourceCard.faces?.[t.faceIndex]?.name : undefined) ?? t.sourceCard.name;
+}
+
 function triggeredStackItem(state: GameState, t: PendingTrigger, idPrefix: string): StackItem {
 	const foundSource = findPermanentOnBoard(state, t.source.instanceId);
 	const sourceEval = foundSource ? evaluatePermanent(state, foundSource.inst) : undefined;
@@ -6368,6 +6564,13 @@ function triggeredStackItem(state: GameState, t: PendingTrigger, idPrefix: strin
 	const sourceLkiToughness = sourceEval?.toughness ?? t.source.lastKnownToughness;
 	const eventObj = t.eventObject ?? t.source;
 	const kickerLki = getObjectKickerInfo(state, t.sourceCard, t.source.instanceId);
+	const sourceIsFaceDown = Boolean(foundSource?.inst.isFaceDown);
+	const sourceFaceDownLabel = foundSource?.inst.faceDownLabel;
+	const sourceFaceDownSpec = foundSource?.inst.faceDownSpec;
+	const faceTitleName =
+		(t.faceIndex !== undefined ? t.sourceCard.faces?.[t.faceIndex]?.name : undefined) ??
+		t.sourceCard.name;
+	const titleSource = sourceIsFaceDown ? sourceFaceDownLabel || 'Face-Down Permanent' : faceTitleName;
 	return withStackItemText(
 		{
 			id: uid(idPrefix, state),
@@ -6383,11 +6586,18 @@ function triggeredStackItem(state: GameState, t: PendingTrigger, idPrefix: strin
 				: {}),
 			card: t.sourceCard,
 			...(t.faceIndex !== undefined ? { faceIndex: t.faceIndex } : {}),
+			...(sourceIsFaceDown
+				? {
+						isFaceDown: true,
+						...(sourceFaceDownSpec ? { faceDownSpec: { ...sourceFaceDownSpec } } : {}),
+						...(sourceFaceDownLabel ? { faceDownLabel: sourceFaceDownLabel } : {})
+					}
+				: {}),
 			controllerId: t.controllerId,
 			kind: 'triggered',
-			title: `${(t.faceIndex !== undefined ? t.sourceCard.faces?.[t.faceIndex]?.name : undefined) ?? t.sourceCard.name} (${t.label})`,
+			title: `${titleSource} (${t.label})`,
 			targets: [],
-			xValue: 0,
+			xValue: t.ability.trigger.event === 'turnFaceUp' ? (t.amount ?? 0) : 0,
 			requiresGuidedResolution: false,
 			createdAt: Date.now(),
 			lkiPower: t.amount,
@@ -6482,7 +6692,7 @@ registerTriggerHost({
 		addLog(
 			state,
 			'trigger',
-			`${t.sourceCard.name} (${t.label}) triggered for ${controller.username}.`,
+			`${triggerSourcePublicName(state, t)} (${t.label}) triggered for ${controller.username}.`,
 			controller.playerId
 		);
 	},
@@ -6611,6 +6821,7 @@ function handleTriggerBackstopReached(state: GameState, t: PendingTrigger, reaso
 			);
 		}
 	} else {
+		revealFaceDownObjects(state);
 		state.status = 'finished';
 		state.winnerPlayerId = null;
 		state.winnerId = undefined;
@@ -6628,6 +6839,7 @@ registerPromptHandler(MANDATORY_LOOP_HANDLER, (state, prompt, answer) => {
 		| { abilityKey?: string; sourceName?: string; label?: string }
 		| undefined;
 	if (mode === 0) {
+		revealFaceDownObjects(state);
 		state.status = 'finished';
 		state.winnerPlayerId = null;
 		state.winnerId = undefined;
@@ -6763,7 +6975,7 @@ function putTriggerOnStack(state: GameState, t: PendingTrigger): StackItem | nul
 		return handleTriggerBackstopReached(
 			state,
 			t,
-			`${t.sourceCard.name}'s ${t.label} was not put onto the Stack: the stack already holds ${state.stack.length} objects (runaway trigger loop safety cap).`
+			`${triggerSourcePublicName(state, t)}'s ${t.label} was not put onto the Stack: the stack already holds ${state.stack.length} objects (runaway trigger loop safety cap).`
 		);
 	}
 	const currentTurnKey = state.turnSerial ?? state.turnNumber;
@@ -6858,6 +7070,7 @@ function putTriggerOnStack(state: GameState, t: PendingTrigger): StackItem | nul
 				activePlayers.find((p) => !p.isBot && p.playerId === state.players[state.activePlayerIndex]?.playerId) ??
 				activePlayers.find((p) => !p.isBot);
 			if (!human) {
+				revealFaceDownObjects(state);
 				state.status = 'finished';
 				state.winnerPlayerId = null;
 				state.winnerId = undefined;
@@ -6898,7 +7111,7 @@ function putTriggerOnStack(state: GameState, t: PendingTrigger): StackItem | nul
 
 	state.stack.push(item);
 	placed.count++;
-	addLog(state, 'trigger', `${t.sourceCard.name}'s ${t.label} was put onto the Stack.`, t.controllerId);
+	addLog(state, 'trigger', `${triggerSourcePublicName(state, t)}'s ${t.label} was put onto the Stack.`, t.controllerId);
 	const steps = triggerItemEffect(item)?.steps ?? [];
 	const targetsBySpec: TargetRef[][] = specs.map(() => []);
 	specs.forEach((spec, i) => {
@@ -7089,6 +7302,7 @@ function resolveWardTrigger(
 	controller: PlayerGameState,
 	ward: { cost: string; costDefs?: CostDef[] }
 ): boolean {
+	const srcLabel = item.isFaceDown ? (item.faceDownLabel || 'Face-Down Permanent') : item.card.name;
 	const targetItem = state.stack.find((s) => s.id === (item.eventStackItemId ?? item.targets[0]?.id));
 	if (!targetItem) return true;
 	const opp = state.players.find((p) => p.playerId === targetItem.controllerId);
@@ -7112,7 +7326,7 @@ function resolveWardTrigger(
 			playerId: opp.playerId,
 			kind: 'yesNo',
 			purpose: 'generic',
-			title: `Ward (${item.card.name})`,
+			title: `Ward (${srcLabel})`,
 			description: question,
 			yesLabel: `Pay ${wardCost}`,
 			noLabel: 'Decline (counter)',
@@ -7136,7 +7350,7 @@ function resolveWardTrigger(
 			addLog(
 				state,
 				'rule',
-				`${opp.username} paid ${lifeCost} life for ${item.card.name}'s Ward (CR 702.21a).`,
+				`${opp.username} paid ${lifeCost} life for ${srcLabel}'s Ward (CR 702.21a).`,
 				opp.playerId
 			);
 		} else if (req) {
@@ -7145,7 +7359,7 @@ function resolveWardTrigger(
 			addLog(
 				state,
 				'rule',
-				`${opp.username} paid ${wardCost} for ${item.card.name}'s Ward (CR 702.21a).`,
+				`${opp.username} paid ${wardCost} for ${srcLabel}'s Ward (CR 702.21a).`,
 				opp.playerId
 			);
 		}
@@ -7155,7 +7369,7 @@ function resolveWardTrigger(
 			addLog(
 				state,
 				'rule',
-				`${targetItem.title} could not be countered by ${item.card.name}'s Ward (CR 702.21a)!`,
+				`${targetItem.title} could not be countered by ${srcLabel}'s Ward (CR 702.21a)!`,
 				controller.playerId
 			);
 		} else {
@@ -7166,7 +7380,7 @@ function resolveWardTrigger(
 				addLog(
 					state,
 					'cast',
-					`${item.card.name}'s Ward countered ${countered.title} (CR 702.21a)!`,
+					`${srcLabel}'s Ward countered ${countered.title} (CR 702.21a)!`,
 					controller.playerId
 				);
 			}
@@ -7627,7 +7841,13 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 			// Reset pre-filled loyalty so moveObject initializes loyalty with counterMultiplier (CR 306.5b)
 			perm.counters.loyalty = 0;
 
-			if (item.faceIndex !== undefined) {
+			if (item.isFaceDown) {
+				perm.isFaceDown = true;
+				if (item.faceDownSpec) {
+					perm.faceDownSpec = { ...item.faceDownSpec };
+				}
+				perm.faceDownLabel = item.faceDownLabel ?? allocateFaceDownLabel(state);
+			} else if (item.faceIndex !== undefined) {
 				perm.activeFaceIndex = item.faceIndex;
 			}
 			// CR 709.5d: A Room permanent cast as a spell enters with the chosen half's door unlocked.
@@ -7695,10 +7915,12 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 			if (auraTargetId) {
 				attachObject(state, perm, auraTargetId);
 			}
-			const enteredName = resolveObjectFaces(
-				effectiveCardForObject(perm),
-				instanceFaceOptions(perm, 'battlefield')
-			).name;
+			const enteredName = perm.isFaceDown
+				? perm.faceDownLabel || 'Face-Down Permanent'
+				: resolveObjectFaces(
+						effectiveCardForObject(perm),
+						instanceFaceOptions(perm, 'battlefield')
+					).name;
 			applySelfEtbReplacements(state, perm);
 			moveObject(state, perm, 'battlefield', { from: 'stack', toPlayer: controller });
 			addLog(
@@ -8067,6 +8289,8 @@ registerEffectPorts({
 	search: (state, player, spec, item) =>
 		initiateLibrarySearch(state, player, spec, item),
 	phaseOut: phaseOutPermanent,
+	transformPermanent,
+	flipPermanent,
 	endTurn: endTheTurnImmediately,
 	activePlayerMayEndTurn,
 	win: (state, player, reason) => void winTheGame(state, player, reason),
@@ -10169,6 +10393,7 @@ export function checkStateBasedActions(state: GameState): void {
 			'system',
 			'All remaining players lost simultaneously — the game is a draw (CR 104.4a)!'
 		);
+		revealFaceDownObjects(state);
 	} else if (remaining.length === 1 && state.players.length > 1) {
 		// CR 104.2a: A player still in the game wins if all opponents have left the game.
 		// This happens immediately and overrides all effects that would preclude that player from winning.
@@ -10183,6 +10408,7 @@ export function checkStateBasedActions(state: GameState): void {
 				`${winner.username} wins the Commander match!`,
 				winner.playerId
 			);
+			revealFaceDownObjects(state);
 			emitVfx(state, {
 				kind: 'victory',
 				sourceId: winner.playerId,
@@ -10194,6 +10420,9 @@ export function checkStateBasedActions(state: GameState): void {
 
 export function cleanupEliminatedPlayer(state: GameState, eliminated: PlayerGameState): void {
 	const elimId = eliminated.playerId;
+
+	// CR 708.9: Reveal all face-down permanents and spells owned by the leaving player.
+	revealFaceDownObjects(state, elimId);
 
 	// 1. Remove pending prompts and delayed triggers for eliminated player (CR 800.4d)
 	state.pendingPrompts = state.pendingPrompts.filter((pr) => pr.playerId !== elimId);
@@ -11474,6 +11703,301 @@ function checkLandPlayLegalityInner(
 	return { ok: true };
 }
 
+function allocateFaceDownLabel(state: GameState): string {
+	const next = (state.faceDownLabelAllocCounter ?? 0) + 1;
+	state.faceDownLabelAllocCounter = next;
+	return `Face-Down #${next}`;
+}
+
+function describeTurnUpCost(manaCost?: string, costDefs?: CostDef[]): string {
+	const parts: string[] = [];
+	if (manaCost) parts.push(manaCost);
+	if (costDefs && costDefs.length > 0) parts.push(describeCost(costDefs));
+	return parts.join(', ');
+}
+
+/**
+ * CR 708.9: Reveals face-down permanents and spells to all players (when a player leaves the
+ * game or at the end of a game).
+ */
+function revealFaceDownObjects(state: GameState, ownerFilterId?: string): void {
+	for (const p of state.players) {
+		for (const perm of p.battlefield) {
+			if (!perm.isFaceDown) continue;
+			if (ownerFilterId && perm.ownerId !== ownerFilterId) continue;
+			const label = perm.faceDownLabel || 'Face-Down Permanent';
+			perm.isFaceDown = false;
+			perm.faceDownSpec = undefined;
+			perm.faceDownLabel = undefined;
+			addLog(
+				state,
+				'rule',
+				`CR 708.9: ${label} is revealed as ${perm.card.name}.`,
+				perm.controllerId
+			);
+		}
+	}
+	for (const item of state.stack) {
+		if (!item.isFaceDown) continue;
+		const itemOwnerId = item.ownerId || item.controllerId;
+		if (ownerFilterId && itemOwnerId !== ownerFilterId) continue;
+		const label = item.faceDownLabel || 'Face-Down Spell';
+		item.isFaceDown = false;
+		item.faceDownSpec = undefined;
+		item.faceDownLabel = undefined;
+		addLog(
+			state,
+			'rule',
+			`CR 708.9: ${label} on the stack is revealed as ${item.card.name}.`,
+			item.controllerId
+		);
+	}
+}
+
+/**
+ * CR 701.27a–f / CR 712.10–12a: Transforms a double-faced permanent on the battlefield.
+ */
+export function transformPermanent(state: GameState, perm: CardInstance): boolean {
+	if (!findPermanentOnBoard(state, perm.instanceId)) return false;
+	// CR 712.12a: A double-faced permanent can't transform while it's face down.
+	if (perm.isFaceDown) {
+		addLog(
+			state,
+			'rule',
+			`${perm.faceDownLabel || 'Face-Down Permanent'} can't transform while it is face down (CR 712.12a).`,
+			perm.controllerId
+		);
+		return false;
+	}
+	const effCard = effectiveCardForObject(perm);
+	const faces = getCardFaces(effCard);
+	// CR 701.27d: Non-DFCs / non-transforming DFCs cannot transform; nothing happens.
+	if (effCard.layout !== 'transform' || faces.length < 2) return false;
+	const oldIdx = activeFaceIndexForObject(perm);
+	const newTransformed = oldIdx === 0;
+	const nextFaceIdx = newTransformed ? 1 : 0;
+	// CR 701.27e: If the face the permanent would transform into is an instant or sorcery face, nothing happens.
+	if (/\b(?:Instant|Sorcery)\b/.test(faces[nextFaceIdx]?.typeLine ?? '')) return false;
+	const oldName = faces[oldIdx]?.name ?? effCard.name;
+	const newName = faces[nextFaceIdx]?.name ?? effCard.name;
+	perm.transformed = newTransformed;
+	perm.activeFaceIndex = nextFaceIdx;
+	noteLayerInputsChanged(state);
+	addLog(
+		state,
+		'rule',
+		`${oldName} transformed into ${newName} (CR 701.27a).`,
+		perm.controllerId
+	);
+	emitEvent(state, {
+		kind: 'Transformed',
+		objectId: perm.instanceId,
+		object: perm,
+		toFaceIndex: perm.activeFaceIndex
+	});
+	flushTriggers(state);
+	return true;
+}
+
+/**
+ * CR 710.1–2: Flips a flip permanent on the battlefield to its flipped (second) half.
+ * Once flipped, a permanent cannot flip back.
+ */
+export function flipPermanent(state: GameState, perm: CardInstance): boolean {
+	if (!findPermanentOnBoard(state, perm.instanceId)) return false;
+	if (perm.isFaceDown) return false;
+	const effCard = effectiveCardForObject(perm);
+	const faces = getCardFaces(effCard);
+	if (effCard.layout !== 'flip' || faces.length < 2) return false;
+	if (activeFaceIndexForObject(perm) !== 0) return false;
+	const oldName = faces[0]?.name ?? effCard.name;
+	const newName = faces[1]?.name ?? effCard.name;
+	perm.activeFaceIndex = 1;
+	noteLayerInputsChanged(state);
+	addLog(
+		state,
+		'rule',
+		`${oldName} flipped into ${newName} (CR 710.1).`,
+		perm.controllerId
+	);
+	return true;
+}
+
+function hasXInTurnUpCost(manaCost?: string, costDefs?: CostDef[]): boolean {
+	if (manaCost && /\{X\}/i.test(manaCost)) return true;
+	if (!costDefs || costDefs.length === 0) return false;
+	return JSON.stringify(costDefs).includes('"k":"x"');
+}
+
+function resolveTurnUpManaRequirement(
+	manaCost: string | undefined,
+	xValue: number
+): ManaCostRequirement | null {
+	if (manaCost === undefined) return null;
+	return parseManaCost(manaCost, Math.max(0, xValue));
+}
+
+export interface TurnFaceUpDisplayInfo {
+	costDisplay: string;
+	choosesX: boolean;
+	legal: boolean;
+	error?: string;
+}
+
+export function getTurnFaceUpDisplay(
+	state: GameState,
+	actorId: string,
+	perm: CardInstance
+): TurnFaceUpDisplayInfo | null {
+	if (!perm?.isFaceDown || !perm.faceDownSpec) return null;
+	const spec = perm.faceDownSpec;
+	if (spec.turnUpManaCost === undefined && (spec.turnUpCostDefs?.length ?? 0) === 0) {
+		return null;
+	}
+	const costDisplay =
+		describeTurnUpCost(spec.turnUpManaCost, spec.turnUpCostDefs) || spec.turnUpCost || '{0}';
+	const choosesX = hasXInTurnUpCost(spec.turnUpManaCost, spec.turnUpCostDefs);
+	const firstCheck = checkTurnFaceUpLegality(state, actorId, perm, 0);
+	const check =
+		!firstCheck.ok && choosesX ? checkTurnFaceUpLegality(state, actorId, perm, 1) : firstCheck;
+	return {
+		costDisplay,
+		choosesX,
+		legal: check.ok,
+		...(check.error ? { error: check.error } : {})
+	};
+}
+
+/**
+ * Checks whether `actorId` may take the special action to turn `inst` face up (CR 116.2b, 708.7).
+ */
+export function checkTurnFaceUpLegality(
+	state: GameState,
+	actorId: string,
+	inst: CardInstance,
+	xValue = 0,
+	costPayment?: CostPayment
+): { ok: boolean; error?: string } {
+	return withStableLayerInputs(state, () => {
+		if (state.status !== 'active') {
+			return { ok: false, error: 'Game is not currently active.' };
+		}
+		if (state.pendingPrompts.length > 0) {
+			return { ok: false, error: 'Resolve the active prompt first.' };
+		}
+		const actor = state.players.find((p) => p.playerId === actorId);
+		if (!actor || actor.lost) {
+			return { ok: false, error: 'Player is not active in this game.' };
+		}
+		if (inst.zone !== 'battlefield' || inst.controllerId !== actorId || inst.phasedOut) {
+			return { ok: false, error: 'Permanent must be an active permanent you control on the battlefield.' };
+		}
+		if (!inst.isFaceDown) {
+			return { ok: false, error: 'Permanent is already face up.' };
+		}
+		const spec = inst.faceDownSpec;
+		const turnUpManaCost = spec?.turnUpManaCost;
+		const turnUpCostDefs = spec?.turnUpCostDefs ?? [];
+		if (!spec || (turnUpManaCost === undefined && turnUpCostDefs.length === 0)) {
+			return { ok: false, error: 'This face-down permanent cannot be turned face up.' };
+		}
+		const priorityPlayer = state.players[state.priorityPlayerIndex];
+		const pendingCombatErr = getPendingCombatDeclarationError(state);
+		if (pendingCombatErr) {
+			return { ok: false, error: pendingCombatErr };
+		}
+		if (priorityPlayer?.playerId !== actorId) {
+			return { ok: false, error: 'You do not currently hold priority.' };
+		}
+		const choosesX = hasXInTurnUpCost(turnUpManaCost, turnUpCostDefs);
+		const effectiveX = choosesX ? Math.max(0, xValue) : 0;
+		const req = resolveTurnUpManaRequirement(turnUpManaCost, effectiveX);
+		if (turnUpCostDefs.length > 0) {
+			if (
+				!canPayCosts(
+					costContext(state, actor, inst, effectiveX, false, req, costPayment?.phyrexianLifeCount),
+					turnUpCostDefs
+				)
+			) {
+				return {
+					ok: false,
+					error: `You can't pay the turn-face-up cost (${describeTurnUpCost(turnUpManaCost, turnUpCostDefs)}).`
+				};
+			}
+		} else if (req && !canPayOrAutoTap(actor, req, state, costPayment?.phyrexianLifeCount)) {
+			return {
+				ok: false,
+				error: `Insufficient mana to turn ${inst.faceDownLabel || 'Face-Down Permanent'} face up (requires ${turnUpManaCost}).`
+			};
+		}
+		return { ok: true };
+	});
+}
+
+export function chooseBotTurnFaceUpPayment(
+	state: GameState,
+	player: PlayerGameState,
+	perm: CardInstance,
+	xValue = 0
+): CostPayment | undefined {
+	const spec = perm.faceDownSpec;
+	const defs = spec?.turnUpCostDefs ?? [];
+	if (defs.length === 0) return undefined;
+	const req = resolveTurnUpManaRequirement(spec?.turnUpManaCost, xValue);
+	return chooseCostPayment(costContext(state, player, perm, xValue, false, req), defs) ?? undefined;
+}
+
+function completeTurnFaceUp(
+	state: GameState,
+	actor: PlayerGameState,
+	perm: CardInstance,
+	xValue: number,
+	descriptions: string[]
+): void {
+	const wasLabel = perm.faceDownLabel || 'Face-Down Permanent';
+	const spec = perm.faceDownSpec;
+	perm.isFaceDown = false;
+	perm.faceDownSpec = undefined;
+	perm.faceDownLabel = undefined;
+	// CR 712.12a: Turning a face-down double-faced permanent face up leaves its front face up.
+	perm.transformed = false;
+	perm.activeFaceIndex = 0;
+	noteLayerInputsChanged(state);
+	state.passedPriorityPlayerIds = [];
+	state.priorityUpdatedAt = Date.now();
+	const costSuffix = descriptions.length > 0 ? ` (${descriptions.join(', ')})` : '';
+	addLog(
+		state,
+		'rule',
+		`${actor.username} turned ${wasLabel} face up as ${perm.card.name}${costSuffix} (CR 708.7).`,
+		actor.playerId
+	);
+	if (spec?.kind === 'megamorph') {
+		addCountersToPermanent(state, perm, '+1/+1', 1);
+	}
+	noteLayerInputsChanged(state);
+	emitEvent(state, {
+		kind: 'TurnedFaceUp',
+		objectId: perm.instanceId,
+		object: perm,
+		playerId: actor.playerId,
+		...(xValue > 0 ? { xValue } : {})
+	});
+	resetTriggerLoopTracking(state);
+	flushTriggers(state);
+	checkStateBasedActions(state);
+}
+
+function finalizeTurnFaceUp(
+	state: GameState,
+	actor: PlayerGameState,
+	pcp: PendingCostPayment
+): void {
+	const perm = findPermanentOnBoard(state, pcp.sourceInstanceId)?.inst;
+	if (!perm || !perm.isFaceDown) return;
+	completeTurnFaceUp(state, actor, perm, pcp.xValue ?? 0, pcp.descriptions);
+}
+
 /**
  * Whether `actorId` may unlock the Room door at `faceIndex` on `inst` (CR 709.5e).
  */
@@ -11651,10 +12175,15 @@ function checkSpellCastOptionLegalityInner(
 		return { ok: false, error: globalCastCheck.error };
 	}
 
+	const isFaceDownCast = Boolean(option.spellMods?.castFaceDown);
+	const castName = isFaceDownCast ? 'Face-Down Spell' : inst.card.name;
 	const castFaceOpts = {
 		zone: 'stack' as const,
 		faceIndex: option.faceIndex ?? 0,
-		fused: option.fused
+		fused: option.fused,
+		...(option.spellMods?.castFaceDown
+			? { isFaceDown: true, faceDownSpec: option.spellMods.castFaceDown }
+			: {})
 	};
 	const effectiveCard = effectiveCardForObject(inst);
 	const castChars = activeCharacteristics(effectiveCard, castFaceOpts);
@@ -11674,25 +12203,27 @@ function checkSpellCastOptionLegalityInner(
 		if (activePlayer?.playerId !== actorId) {
 			return {
 				ok: false,
-				error: `${inst.card.name} can only be cast on your turn at Sorcery speed.`
+				error: `${castName} can only be cast on your turn at Sorcery speed.`
 			};
 		}
 		if (state.phase !== 'main1' && state.phase !== 'main2') {
 			return {
 				ok: false,
-				error: `${inst.card.name} can only be cast during your Main Phase (1 or 2).`
+				error: `${castName} can only be cast during your Main Phase (1 or 2).`
 			};
 		}
 		if (state.stack.length > 0) {
 			return {
 				ok: false,
-				error: `${inst.card.name} cannot be cast while spells/abilities are on the Stack.`
+				error: `${castName} cannot be cast while spells/abilities are on the Stack.`
 			};
 		}
 	}
 
 	// Check timing restrictions from the IR
-	const castRestrictions = spellCastRestrictions(inst.card, option.faceIndex ?? 0, option.fused ?? false);
+	const castRestrictions = isFaceDownCast
+		? []
+		: spellCastRestrictions(inst.card, option.faceIndex ?? 0, option.fused ?? false);
 	if (castRestrictions.includes('duringYourTurn') && activePlayer?.playerId !== actorId) {
 		return {
 			ok: false,
@@ -11758,7 +12289,7 @@ function checkSpellCastOptionLegalityInner(
 	if (!canPayOrAutoTap(actor, costReq, state)) {
 		return {
 			ok: false,
-			error: `Insufficient mana to cast ${inst.card.name}.`
+			error: `Insufficient mana to cast ${castName}.`
 		};
 	}
 	// Phase 4: additional costs (plus any non-mana alternative costDefs and optional additional costs)
@@ -11776,7 +12307,7 @@ function checkSpellCastOptionLegalityInner(
 	) {
 		return {
 			ok: false,
-			error: `Illegal Cast: you can't pay the additional cost of ${inst.card.name}.`
+			error: `Illegal Cast: you can't pay the additional cost of ${castName}.`
 		};
 	}
 
@@ -12399,6 +12930,8 @@ function scrubFaceDownInstance(
 	delete inst.unlockedFaces;
 	if (inst.faceDownSpec) {
 		delete inst.faceDownSpec.turnUpCost;
+		delete inst.faceDownSpec.turnUpManaCost;
+		delete inst.faceDownSpec.turnUpCostDefs;
 	}
 	const label =
 		inst.faceDownLabel || (zone === 'battlefield' ? 'Face-Down Creature' : 'Face-Down Card');

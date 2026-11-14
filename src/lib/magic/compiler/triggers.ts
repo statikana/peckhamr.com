@@ -195,8 +195,21 @@ function objectEvent(verb: string, subject: Subject): TriggerDef | null {
 			return def('attached', { host: { types: ['Creature'] } });
 		case 'becomes attached to a creature you control':
 			return def('attached', { host: { types: ['Creature'], controller: 'you' } });
-		default:
+		case 'transforms':
+		case 'transform':
+			return def('transforms');
+		case 'is turned face up':
+		case 'are turned face up':
+			return def('turnFaceUp');
+		default: {
+			const transInto = verb.match(/^transforms? into (.+)$/i);
+			if (transInto) {
+				const phrase = transInto[1].replace(/^(?:a|an)\s+/i, '').trim();
+				const qual = parseObjectPhrase(phrase);
+				if (qual) return def('transforms', { toFaceFilter: qual });
+			}
 			return null;
+		}
 	}
 }
 
@@ -270,6 +283,11 @@ function playerEvent(player: EventFilter['player'], rest: string): TriggerDef | 
 		if (object) return { event: 'tappedForMana', filter: { object, player } };
 	}
 	if (rest === 'draw a card' || rest === 'draws a card') return { event: 'drawCard', filter: { player } };
+	const turnUp = rest.match(/^turns? (?:a|an) (.+) face up$/);
+	if (turnUp) {
+		const object = parseObjectPhrase(turnUp[1]);
+		if (object) return { event: 'turnFaceUp', filter: { object, player } };
+	}
 	return null;
 }
 
@@ -467,7 +485,9 @@ const RUNTIME_EVENT_FIELDS: Partial<Record<TriggerDef['event'], ReadonlySet<stri
 	drawCard: new Set(['player']),
 	becomesTapped: new Set(['object', 'orSelf']),
 	cycle: new Set(['object', 'player']),
-	discard: new Set(['object', 'player'])
+	discard: new Set(['object', 'player']),
+	transforms: new Set(['object', 'toFaceFilter']),
+	turnFaceUp: new Set(['object', 'player'])
 };
 
 function objectFilterProblem(f: ObjectFilter | undefined): string | null {
@@ -494,7 +514,7 @@ export function runtimeTriggerProblem(def: TriggerDef): string | null {
 		const p = objectFilterProblem(f.object);
 		if (p) return p;
 	}
-	const p = objectFilterProblem(f.host);
+	const p = objectFilterProblem(f.host) ?? objectFilterProblem(f.toFaceFilter);
 	if (p) return p;
 	// The object an Aura/Equipment is attached to has already been detached when it leaves.
 	if (f.object === 'attachedTo' && !['attacks', 'dealsDamage', 'tappedForMana', 'becomesTapped'].includes(def.event)) {

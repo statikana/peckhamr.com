@@ -10,9 +10,11 @@ import {
 	applyGameAction,
 	checkAbilityActivationLegality,
 	checkSpellCastLegality,
+	checkTurnFaceUpLegality,
 	chooseBotAttackAssignments,
 	chooseBotBlockAssignments,
 	chooseBotSpellCostPayment,
+	chooseBotTurnFaceUpPayment,
 	evaluatePermanent,
 	getCastOptions,
 	getCreaturePower,
@@ -21,6 +23,7 @@ import {
 	getLandPlayOptions,
 	getPlayerCommanderIdentity,
 	getSpellTargetRequirement,
+	getTurnFaceUpDisplay,
 	hasKeyword,
 	specTargetCandidates
 } from './engine.ts';
@@ -216,10 +219,6 @@ function hasAnyLegalInstantResponseInner(state: GameState, player: PlayerGameSta
 				return true;
 			}
 		}
-		const types = activeCharacteristics(cardInst.card, instanceFaceOptions(cardInst)).types;
-		if ((cardInst.card.faces?.length ?? 0) <= 1 && types.includes('Land') && !types.includes('Creature')) {
-			continue;
-		}
 		if (getCastOptions(state, player.playerId, cardInst, 'hand').length > 0) {
 			return true;
 		}
@@ -236,6 +235,9 @@ function hasAnyLegalInstantResponseInner(state: GameState, player: PlayerGameSta
 	}
 	for (const perm of player.battlefield) {
 		if (perm.phasedOut) continue;
+		if (getTurnFaceUpDisplay(state, player.playerId, perm)?.legal) {
+			return true;
+		}
 		const abilities = getEffectiveActivatedAbilities(state, player, perm, cmdId);
 		for (const ab of abilities) {
 			if (ab.isManaAbility) continue;
@@ -721,11 +723,10 @@ export function executeBotStep(
 			).length;
 
 			const isCandidateSpell = (c: CardInstance, zone: 'hand' | 'graveyard' | 'exile'): boolean => {
-				const types = activeCharacteristics(c.card, instanceFaceOptions(c, zone)).types;
-				if ((c.card.faces?.length ?? 0) <= 1 && types.includes('Land')) return false;
 				const options = getCastOptions(state, bot.playerId, c, zone);
 				if (options.length === 0) return false;
 				return options.some((opt) => {
+					if (opt.spellMods.castFaceDown) return true;
 					const fi = opt.faceIndex ?? 0;
 					const fused = opt.fused ?? false;
 					if (isCounterSpellCard(c.card, fi, fused)) return false;
@@ -755,6 +756,7 @@ export function executeBotStep(
 			// Read-only decision (Phase 6d).
 			const planned = withStableLayerInputs(state, () => {
 				const options = getCastOptions(state, bot.playerId, cardInst, fromZone).filter((opt) => {
+					if (opt.spellMods.castFaceDown) return true;
 					const fi = opt.faceIndex ?? 0;
 					const fused = opt.fused ?? false;
 					return !isCounterSpellCard(cardInst.card, fi, fused) && !isProtectionTrickCard(cardInst.card, fi, fused);
@@ -763,7 +765,9 @@ export function executeBotStep(
 				const nonEachOpt = options.find((o) => !o.spellMods.targetsBecomeEach) ?? options[0];
 				const optFace = nonEachOpt.faceIndex ?? 0;
 				const optFused = nonEachOpt.fused ?? false;
-				const modal = compileSpellEffects(cardInst.card, optFace, optFused)?.modal;
+				const modal = nonEachOpt.spellMods.castFaceDown
+					? undefined
+					: compileSpellEffects(cardInst.card, optFace, optFused)?.modal;
 				if (modal) {
 					const chosen = chooseBotModalSpell(state, bot, cardInst, optFace, optFused);
 					if (!chosen) return null;
@@ -941,6 +945,33 @@ export function executeBotStep(
 					if (equipAb.isManaAbility) return 'quiet';
 					return countBotCostChoicePrompts(state, bot.playerId) > costBefore ? 'quiet' : 'visible';
 				}
+			}
+		}
+
+		// 2d2. Turn face-down permanents face up when affordable.
+		for (const perm of [...bot.battlefield]) {
+			if (perm.phasedOut || !perm.isFaceDown) continue;
+			const turnUp = getTurnFaceUpDisplay(state, bot.playerId, perm);
+			if (!turnUp?.legal) continue;
+			let xValue = 0;
+			if (turnUp.choosesX) {
+				for (const candidateX of [3, 2, 1, 0]) {
+					if (checkTurnFaceUpLegality(state, bot.playerId, perm, candidateX).ok) {
+						xValue = candidateX;
+						break;
+					}
+				}
+			}
+			const costPayment = chooseBotTurnFaceUpPayment(state, bot, perm, xValue);
+			const costBefore = countBotCostChoicePrompts(state, bot.playerId);
+			const res = applyGameAction(state, bot.playerId, {
+				type: 'turn_face_up',
+				instanceId: perm.instanceId,
+				...(turnUp.choosesX ? { xValue } : {}),
+				...(costPayment ? { costPayment } : {})
+			});
+			if (res.ok) {
+				return countBotCostChoicePrompts(state, bot.playerId) > costBefore ? 'quiet' : 'visible';
 			}
 		}
 

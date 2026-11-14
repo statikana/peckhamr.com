@@ -50,6 +50,8 @@ export const INTERPRETED_VERBS: ReadonlySet<Verb> = new Set<Verb>([
 	'tap',
 	'untap',
 	'tapOrUntap' as Verb,
+	'transform',
+	'flip',
 	'dig'
 ]);
 

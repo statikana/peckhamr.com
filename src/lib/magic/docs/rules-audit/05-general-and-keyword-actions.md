@@ -213,7 +213,7 @@ Audited at engine-rewrite 917180b on 2026-11-09.
 ### 701.27–701.33 Transform, Convert, Fateseal, Clash, Planechase/Archenemy Actions
 | CR | Rule (short) | Status | Evidence / notes |
 |---|---|---|---|
-| 701.27, 701.27a–j | Transform a double-faced permanent | missing | `CardInstance.transformed` exists (`types.ts:365`), but multiface cards are marked `unsupported('multiface')` (`ir.ts:131`) and no transform action or back-face evaluation exists. |
+| 701.27, 701.27a–j | Transform a double-faced permanent | partial | **Updated 2026-11-13:** `'transform'` layout compiled (`compiler/card.ts`), `transform` IR verb (`ir.ts`, `compiler/effects.ts`), `transforms` + `toFaceFilter` triggers (`compiler/triggers.ts`, `runtime/triggers.ts`), and [`transformPermanent`](../../engine.ts) (`CR 701.27a–f` identity preservation, non-DFC/Instant/Sorcery guards). Double-faced tokens (`CR 701.27a`) and daybound/craft remain unimplemented. |
 | 701.28, 701.28a–h | Convert a double-faced permanent | missing | Same as 701.27; no convert action or multiface permanent support. |
 | 701.29, 701.29a | Fateseal N | missing | Not parsed or implemented. |
 | 701.30, 701.30a–d | Clash | missing | Not parsed or implemented. |

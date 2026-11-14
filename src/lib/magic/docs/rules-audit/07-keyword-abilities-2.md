@@ -467,7 +467,7 @@ Audited at engine-rewrite 917180b on 2026-11-09.
 ### 702.168 Disguise
 | CR | Rule (short) | Status | Evidence / notes |
 |---|---|---|---|
-| 702.168a–f | Disguise `[cost]` (cast face down for `{3}` as 2/2 with ward `{2}`; special action to turn face up by paying disguise cost) | missing | Listed in `KNOWN_KEYWORDS` (`compiler/adapter.ts:135`) → `keyword_not_implemented`. Although `CardInstance.isFaceDown` exists (`types.ts:288`), there is no face-down casting or turn-face-up special action in `engine.ts`. |
+| 702.168a–f | Disguise `[cost]` (cast face down for `{3}` as 2/2 with ward `{2}`; special action to turn face up by paying disguise cost) | implemented | **Updated 2026-11-13:** Implemented via `KEYWORD_REGISTRY` (`keywords.ts`), `{3}` face-down cast (`FaceDownSpec` with `wardCost: '{2}'`), `resolveObjectFaces` (`runtime/faces.ts`), `matchBecameTarget` Ward trigger (`runtime/triggers.ts`), and `turn_face_up` special action (`engine.ts`, `runtime/transform-flip-facedown.test.ts`). |
 
 ### 702.169 Solved
 | CR | Rule (short) | Status | Evidence / notes |

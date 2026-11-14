@@ -322,6 +322,22 @@ const removeCounters: Production = (part) => {
 	return n && counter ? [{ k: 'removeCounters', counter, count: n, from: 'self' }] : null;
 };
 
+/** "Reveal a white card in/from your hand", "Reveal two red cards in/from your hand". */
+const revealFromHand: Production = (part) => {
+	const m = part.match(/^reveal (\S+) (.+?) (?:in|from) your hand$/i);
+	if (!m) return null;
+	const n = count(m[1]);
+	const filter = /^cards?$/i.test(m[2]) ? {} : parseObjectPhrase(m[2]);
+	if (!n || !filter) return null;
+	return [
+		{
+			k: 'revealFromHand',
+			count: n,
+			...(Object.keys(filter).length > 0 ? { filter } : {})
+		}
+	];
+};
+
 const PRODUCTIONS: Production[] = [
 	manaSymbols,
 	payLife,
@@ -330,7 +346,8 @@ const PRODUCTIONS: Production[] = [
 	tapOthers,
 	discard,
 	exileFrom,
-	removeCounters
+	removeCounters,
+	revealFromHand
 ];
 
 const OR_BEFORE_VERB = new RegExp(`\\s+or\\s+(?=(?:${COST_VERBS})\\b)`, 'i');

@@ -602,6 +602,10 @@ function matchTriggersInner(state: GameState, ev: GameEvent): void {
 			return matchBecomesTapped(state, ev);
 		case 'CardDiscarded':
 			return matchCardDiscarded(state, ev);
+		case 'Transformed':
+			return matchTransformed(state, ev);
+		case 'TurnedFaceUp':
+			return matchTurnedFaceUp(state, ev);
 	}
 }
 
@@ -707,6 +711,55 @@ function matchCardDiscarded(state: GameState, ev: Extract<GameEvent, { kind: 'Ca
 	}
 
 	matchEventKind('discard', sources(state, 'discard'));
+}
+
+function matchTransformed(state: GameState, ev: Extract<GameEvent, { kind: 'Transformed' }>): void {
+	const found = permanentById(state, ev.objectId);
+	if (!found) return;
+	const subject = battlefieldSubject(state, found.obj, found.controllerId);
+	for (const source of sources(state, 'transforms')) {
+		const viewer = viewerOf(source);
+		for (const { ability, alts } of abilitiesFor(state, source, 'transforms')) {
+			const alt = alts.find((a) => {
+				if (!objectMatches(a.filter, subject, source)) return false;
+				if (a.filter.toFaceFilter && !filterMatches(a.filter.toFaceFilter, subject, viewer)) return false;
+				return true;
+			});
+			if (alt) {
+				record(state, source, ability, 'transforms', {
+					label: 'Transform Trigger',
+					eventObject: found.obj,
+					eventPlayer: found.controllerId
+				});
+			}
+		}
+	}
+}
+
+function matchTurnedFaceUp(state: GameState, ev: Extract<GameEvent, { kind: 'TurnedFaceUp' }>): void {
+	const found = permanentById(state, ev.objectId);
+	if (!found) return;
+	const subject = battlefieldSubject(state, found.obj, found.controllerId);
+	for (const source of sources(state, 'turnFaceUp')) {
+		for (const { ability, alts } of abilitiesFor(state, source, 'turnFaceUp')) {
+			const alt = alts.find((a) => {
+				if (a.filter.player) {
+					const rel = a.filter.player.relation ?? 'any';
+					if (rel === 'you' && ev.playerId !== source.controllerId) return false;
+					if (rel === 'opponent' && ev.playerId === source.controllerId) return false;
+				}
+				return objectMatches(a.filter, subject, source);
+			});
+			if (alt) {
+				record(state, source, ability, 'turnFaceUp', {
+					label: 'Turned Face Up',
+					eventObject: found.obj,
+					eventPlayer: ev.playerId,
+					...(ev.xValue !== undefined ? { amount: ev.xValue } : {})
+				});
+			}
+		}
+	}
 }
 
 function matchBecomesTapped(state: GameState, ev: Extract<GameEvent, { kind: 'BecomesTapped' }>): void {
@@ -1325,7 +1378,7 @@ function matchTargeted(state: GameState, ev: Extract<GameEvent, { kind: 'BecameT
 				grantedCount = item.grantCount;
 			} else {
 				for (const src of item.sources) {
-					if (src !== 'innate') grantedCount += 1;
+					if (src !== 'innate' || found.obj.isFaceDown) grantedCount += 1;
 				}
 			}
 			if (grantedCount <= 0) continue;

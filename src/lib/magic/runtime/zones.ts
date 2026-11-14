@@ -235,6 +235,11 @@ function finalizeZoneMove(
 			? owner
 			: receiver;
 
+	const leavingFaceDownLabel =
+		fromZone === 'battlefield' && dest !== 'battlefield' && obj.isFaceDown
+			? (obj.faceDownLabel || 'Face-Down Permanent')
+			: null;
+
 	if (opts.leaveBattlefieldReset) {
 		if (obj.printedCard) {
 			obj.card = obj.printedCard;
@@ -313,6 +318,20 @@ function finalizeZoneMove(
 	}
 	if (opts.sbaLog) {
 		pushSbaLog(state, obj, dest, replacedBy, opts.sbaLog);
+	}
+	if (leavingFaceDownLabel) {
+		state.log.push({
+			id: uid('log', state),
+			timestamp: Date.now(),
+			turn: state.turnNumber,
+			phase: state.phase,
+			actorId: obj.ownerId,
+			kind: 'rule',
+			text: `CR 708.9: ${leavingFaceDownLabel} left the battlefield and is revealed as ${(obj.printedCard ?? obj.card).name}.`
+		});
+		if (state.log.length > 160) {
+			state.log.shift();
+		}
 	}
 	if (opts.emit !== false) {
 		emitZoneChange(
@@ -488,7 +507,8 @@ function moveObjectInner(
 		(state.pendingZoneMoves ??= []).push(obj);
 		const insertSpec =
 			typeof opts.insert === 'function' ? 'fn_library_start' : (opts.insert ?? 'end');
-		const description = `Multiple replacement effects would modify how ${obj.card.name} moves to ${dest}. Choose which applies first (CR 616.1):`;
+		const objDisplay = obj.isFaceDown ? (obj.faceDownLabel || 'Face-Down Permanent') : obj.card.name;
+		const description = `Multiple replacement effects would modify how ${objDisplay} moves to ${dest}. Choose which applies first (CR 616.1):`;
 		enqueueChoicePrompt(state, {
 			id: uid('prm', state),
 			playerId: pendingZoneRep.chooserId,

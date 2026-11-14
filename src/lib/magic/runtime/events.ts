@@ -185,12 +185,31 @@ export interface CardDiscardedEvent extends EventBase {
 	destZone: ZoneType;
 }
 
+/** A double-faced permanent transformed on the battlefield (CR 701.27). */
+export interface TransformedEvent extends EventBase {
+	kind: 'Transformed';
+	objectId: string;
+	object: CardInstance;
+	toFaceIndex: number;
+}
+
+/** A face-down permanent was turned face up on the battlefield (CR 708.8). */
+export interface TurnedFaceUpEvent extends EventBase {
+	kind: 'TurnedFaceUp';
+	objectId: string;
+	object: CardInstance;
+	playerId: string;
+	xValue?: number;
+}
+
 export type GameEvent =
 	| TappedForManaEvent
 	| GainLifeEvent
 	| CardDrawnEvent
 	| BecomesTappedEvent
 	| CardDiscardedEvent
+	| TransformedEvent
+	| TurnedFaceUpEvent
 	| ZoneChangeEvent
 	| CastEvent
 	| AttackDeclaredEvent

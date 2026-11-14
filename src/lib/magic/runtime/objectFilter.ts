@@ -270,7 +270,9 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 		if (name.toLowerCase() !== filter.named.toLowerCase()) return false;
 	}
 	if (filter.colors) {
-		const colors = onBattlefield ? (obj.isFaceDown ? [] : evaluated!.colors) : (card.colors ?? []);
+		const colors = onBattlefield
+			? (obj.isFaceDown ? [] : evaluated!.colors)
+			: resolveObjectFaces(card, faceOpts).colors;
 		if (!filter.colors.some((c) => colors.includes(c))) return false;
 	}
 	if (

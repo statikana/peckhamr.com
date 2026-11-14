@@ -91,7 +91,10 @@ export interface ScryfallCardFace {
 
 export interface FaceDownSpec {
 	kind: 'morph' | 'megamorph' | 'disguise' | 'manifest' | 'cloak' | 'cyberman' | 'other';
+	castManaCost?: string;
 	turnUpCost?: string;
+	turnUpManaCost?: string;
+	turnUpCostDefs?: CostDef[];
 	wardCost?: string;
 	supertypes?: string[];
 	types?: string[];
@@ -429,6 +432,7 @@ export interface SpellModifications {
 	sacrificeAtEndStep?: boolean;
 	castSummarySuffix?: string;
 	label?: string;
+	castFaceDown?: FaceDownSpec;
 }
 
 export interface CastOptionOptionalCost {
@@ -1039,7 +1043,7 @@ export interface SerializedPlannedCost {
  * `zone_replacement_choice` prompt mid-payment).
  */
 export interface PendingCostPayment {
-	kind: 'cast_spell' | 'activate_ability' | 'tap_mana';
+	kind: 'cast_spell' | 'activate_ability' | 'tap_mana' | 'turn_face_up';
 	actorId: string;
 	sourceInstanceId: string;
 	sourcePlayerId?: string;
@@ -1142,6 +1146,7 @@ export interface GameState {
 	rngState?: number;
 	nextUid?: number;
 	idSalt?: number;
+	faceDownLabelAllocCounter?: number;
 }
 
 export interface MagicLobby {
@@ -1209,6 +1214,12 @@ export type GameActionPayload =
 			type: 'unlock_room_door';
 			instanceId: string;
 			faceIndex: number;
+			costPayment?: CostPayment;
+	  }
+	| {
+			type: 'turn_face_up';
+			instanceId: string;
+			xValue?: number;
 			costPayment?: CostPayment;
 	  }
 	| {

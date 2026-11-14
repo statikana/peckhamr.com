@@ -49,6 +49,7 @@ import type {
 	VfxEvent
 } from '../types.ts';
 import { cardManaSteps } from '../compiler/index.ts';
+import { getCardFaces } from '../scryfall.ts';
 import {
 	activeAbilityDefs,
 	instanceFaceOptions,
@@ -115,6 +116,10 @@ export interface EffectPorts {
 	scry(state: GameState, player: PlayerGameState, item: StackItem, count: number, mode: 'scry' | 'rearrange', mayShuffle: boolean): void;
 	search(state: GameState, player: PlayerGameState, spec: LibrarySearchSpec, item: StackItem): void;
 	phaseOut(state: GameState, inst: CardInstance): void;
+	/** CR 701.27 / 712: Transform a double-faced permanent on the battlefield. */
+	transformPermanent(state: GameState, inst: CardInstance): boolean;
+	/** CR 710.1: Flip a flip permanent to its flipped state. */
+	flipPermanent(state: GameState, inst: CardInstance): boolean;
 	endTurn(state: GameState, playerId: string): void;
 	/** "The player whose turn it is may end the turn": ends it for a bot/the controller, else prompts. */
 	activePlayerMayEndTurn(state: GameState, controller: PlayerGameState, sourceName: string): void;
@@ -1385,8 +1390,9 @@ class Run {
 					(id) => {
 						const f = this.locate(id);
 						if (!f || f.zone !== 'battlefield') return;
+						const objLabel = f.inst.isFaceDown ? (f.inst.faceDownLabel || 'Face-Down Permanent') : f.inst.card.name;
 						const res = p.moveFromBattlefield(s, f.inst, 'hand');
-						p.addLog(s, 'cast', `${title} returned ${f.inst.card.name} to its owner's hand.`, you.playerId);
+						p.addLog(s, 'cast', `${title} returned ${objLabel} to its owner's hand.`, you.playerId);
 						return res as MoveResult;
 					}
 				);
@@ -1697,6 +1703,18 @@ class Run {
 						}
 					}
 				}
+				return;
+			}
+			case 'transform': {
+				const objs = this.objects(step.subject).filter((o) => o.zone === 'battlefield');
+				this.bind(step, objs);
+				for (const o of objs) p.transformPermanent(s, o);
+				return;
+			}
+			case 'flip': {
+				const objs = this.objects(step.subject).filter((o) => o.zone === 'battlefield');
+				this.bind(step, objs);
+				for (const o of objs) p.flipPermanent(s, o);
 				return;
 			}
 			case 'copySpell': {
@@ -2226,16 +2244,17 @@ class Run {
 				const f = this.locate(id);
 				if (!f) return;
 				const o = f.inst;
+				const objLabel = o.isFaceDown ? (o.faceDownLabel || 'Face-Down Permanent') : o.card.name;
 				let res: MoveResult | string | void;
 				if (o.zone === 'battlefield') {
-					p.emitVfx(s, { kind: 'exile', targetId: o.instanceId, label: o.card.name });
+					p.emitVfx(s, { kind: 'exile', targetId: o.instanceId, label: objLabel });
 					res = p.moveFromBattlefield(s, o, 'exile');
 				} else if (o.zone === 'graveyard') {
 					res = moveObject(s, o, 'exile', { from: { player: f.holder, zone: 'graveyard' }, toPlayer: f.holder, bumpVersion: true, newTimestamp: true });
 				} else {
 					return;
 				}
-				p.addLog(s, 'cast', `${this.ctx.title} exiled ${o.card.name}.`, you.playerId);
+				p.addLog(s, 'cast', `${this.ctx.title} exiled ${objLabel}.`, you.playerId);
 				return res;
 			}
 		);
@@ -2354,25 +2373,39 @@ class Run {
 			);
 			return;
 		}
+		const expectedFrom: 'exile' | 'graveyard' = params.from === 'exile' ? 'exile' : 'graveyard';
+		const canEnterTransformed = (inst: CardInstance): boolean => {
+			if (!params.enteredTransformed) return true;
+			const baseCard = inst.copiableCard ?? inst.card;
+			const faces = getCardFaces(baseCard);
+			const isTransformingDfc = baseCard.layout === 'transform' || Boolean(baseCard.backFace);
+			const backTypes = faces[1]?.typeLine ?? '';
+			return isTransformingDfc && faces.length >= 2 && !/\b(?:Instant|Sorcery)\b/.test(backTypes);
+		};
 		if (!this.answers[batchKey]) {
-			let objs = this.objects(step.subject).filter((o) => o.zone === 'graveyard');
+			let objs = this.objects(step.subject).filter((o) => o.zone === expectedFrom);
 			if (params.topmostOnly) {
 				// CR 404.2: the graveyard's order matters; the top card is the last one in the array.
 				objs = objs.length > 0 ? [objs[objs.length - 1]] : [];
 			}
 			if (params.to !== 'hand' && this.canPause) {
 				for (const o of objs) {
+					if (!canEnterTransformed(o)) continue;
 					const holder = this.locate(o.instanceId)?.holder;
 					if (!holder) continue;
 					const controller = params.underYourControl ? you : (this.player(o.ownerId) ?? holder);
-					if (!(o.copiableCard ?? o.card).typeLine.includes('Aura')) continue;
+					const view = resolveObjectFaces(o.copiableCard ?? o.card, {
+						zone: 'battlefield',
+						faceIndex: params.enteredTransformed ? 1 : o.activeFaceIndex
+					});
+					if (!view.subtypes.includes('Aura') && !view.typeLine.includes('Aura')) continue;
 					const attachCands = p.legalAuraAttachCandidates(s, o, controller);
 					const auraKey = `aura:${o.instanceId}`;
 					if (attachCands.length > 0 && !controller.isBot && !this.answers[auraKey]) {
 						this.pauseForChoice(
 							controller,
-							`${this.ctx.title} — Choose what ${o.card.name} will enchant`,
-							`Choose a legal object or player for ${o.card.name} to enchant as it enters the battlefield (CR 303.4f).`,
+							`${this.ctx.title} — Choose what ${view.name} will enchant`,
+							`Choose a legal object or player for ${view.name} to enchant as it enters the battlefield (CR 303.4f).`,
 							attachCands,
 							1,
 							1,
@@ -2392,23 +2425,43 @@ class Run {
 			() => [],
 			(id) => {
 				const f = this.locate(id);
-				if (!f || f.zone !== 'graveyard') return;
+				if (!f || f.zone !== expectedFrom) return;
 				const o = f.inst;
 				const holder = f.holder;
 				if (params.to === 'hand') {
-					const res = moveObject(s, o, 'hand', { from: { player: holder, zone: 'graveyard' }, toPlayer: holder, commanderRedirect: true, bumpVersion: true, newTimestamp: true });
-					p.addLog(s, 'cast', `${this.ctx.title} returned ${o.card.name} from ${holder.username}'s graveyard to hand.`, you.playerId);
+					const res = moveObject(s, o, 'hand', { from: { player: holder, zone: expectedFrom }, toPlayer: holder, commanderRedirect: true, bumpVersion: true, newTimestamp: true });
+					p.addLog(s, 'cast', `${this.ctx.title} returned ${o.card.name} from ${holder.username}'s ${expectedFrom} to hand.`, you.playerId);
 					return res;
 				}
+				if (!canEnterTransformed(o)) {
+					p.addLog(
+						s,
+						'rule',
+						`${o.card.name} remained in ${holder.username}'s ${expectedFrom} because it can't enter transformed (CR 712.11).`,
+						you.playerId
+					);
+					return;
+				}
 				const controller = params.underYourControl ? you : (this.player(o.ownerId) ?? holder);
-				const isAura = (o.copiableCard ?? o.card).typeLine.includes('Aura');
+				if (params.enteredTransformed) {
+					o.transformed = true;
+					o.activeFaceIndex = 1;
+				}
+				o.isFaceDown = false;
+				o.faceDownSpec = undefined;
+				o.faceDownLabel = undefined;
+				const enteringView = resolveObjectFaces(o.copiableCard ?? o.card, {
+					zone: 'battlefield',
+					faceIndex: o.transformed ? 1 : o.activeFaceIndex
+				});
+				const isAura = enteringView.subtypes.includes('Aura') || enteringView.typeLine.includes('Aura');
 				if (isAura) {
 					const attachCands = p.legalAuraAttachCandidates(s, o, controller);
 					if (attachCands.length === 0) {
 						p.addLog(
 							s,
 							'rule',
-							`${o.card.name} remained in ${holder.username}'s graveyard because there is no legal object or player for it to enchant (CR 303.4g).`,
+							`${enteringView.name} remained in ${holder.username}'s ${expectedFrom} because there is no legal object or player for it to enchant (CR 303.4g).`,
 							controller.playerId
 						);
 						return;
@@ -2417,17 +2470,22 @@ class Run {
 					const pickedId = auraAns?.kind === 'chooseObjects' ? auraAns.objectIds[0] : undefined;
 					attachObject(s, o, pickedId && attachCands.includes(pickedId) ? pickedId : attachCands[0]);
 				}
-				o.summoningSick = o.card.typeLine.includes('Creature') && !o.card.keywords.includes('Haste');
+				o.summoningSick = enteringView.types.includes('Creature') && !enteringView.keywords.includes('Haste');
 				o.tapped = Boolean(params.tapped);
 				o.defaultControllerId = controller.playerId;
 				const res = moveObject(s, o, 'battlefield', {
-					from: { player: holder, zone: 'graveyard' },
+					from: { player: holder, zone: expectedFrom },
 					toPlayer: controller,
 					controllerId: controller.playerId,
 					newTimestamp: !isAura,
 					bumpVersion: true
 				});
-				p.addLog(s, 'cast', `${controller.username} put ${o.card.name} onto the battlefield from ${holder.username}'s graveyard (${this.ctx.title}).`, you.playerId);
+				p.addLog(
+					s,
+					'cast',
+					`${controller.username} put ${enteringView.name} onto the battlefield${params.enteredTransformed ? ' transformed' : ''} from ${holder.username}'s ${expectedFrom} (${this.ctx.title}).`,
+					you.playerId
+				);
 				if (isAura && o.attachedToId) {
 					const host = p.findPermanent(s, o.attachedToId);
 					if (host) p.triggerOnAttach(s, controller, o, host.inst);
