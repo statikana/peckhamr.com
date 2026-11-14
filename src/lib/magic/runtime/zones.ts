@@ -1,4 +1,5 @@
 import { shuffleWith, uid, type RngHolder } from './random.ts';
+import { compileCard } from '../compiler/index.ts';
 import { enqueueChoicePrompt, registerPromptHandler } from './choices.ts';
 import { evaluatePermanent } from '../ruleTree.ts';
 import { effectiveCardForObject } from '../scryfall.ts';
@@ -6,7 +7,12 @@ import type { CardInstance, CounterType, GameState, PlayerGameState, ZoneType } 
 import { emitEvent, type LeftBattlefieldInfo } from './events.ts';
 import { instanceFaceOptions, resolveObjectFaces } from './faces.ts';
 import { noteLayerInputsChanged, whileLayerInputsChange, withStableLayerInputs } from './layerCache.ts';
-import { counterMultiplier, applySelfEtbReplacements, resolveZoneChangeReplacements } from './replace.ts';
+import {
+	counterMultiplier,
+	applySelfEtbReplacements,
+	placeRegisteredCounters,
+	resolveZoneChangeReplacements
+} from './replace.ts';
 import { flushTriggers } from './triggers.ts';
 
 /**
@@ -108,7 +114,7 @@ export interface MoveOptions {
 }
 
 export interface SbaMoveLog {
-	kind: 'dying' | 'legend' | 'aura';
+	kind: 'dying' | 'legend' | 'aura' | 'saga';
 	controllerId: string;
 	controllerUsername: string;
 	legName?: string;
@@ -187,6 +193,8 @@ function pushSbaLog(
 		} else {
 			text = `${obj.card.name} was put into ${dest} instead of dying${replacedBy ? ` (${replacedBy})` : ''} (State-Based Action).`;
 		}
+	} else if (sbaLog.kind === 'saga') {
+		text = `Saga SBA (CR 704.5s): ${obj.card.name} was sacrificed into ${sbaLog.controllerUsername}'s ${dest}${replacedBy ? ` (${replacedBy})` : ''}.`;
 	} else {
 		text = `Legend Rule (CR 704.5j): Duplicate ${sbaLog.legName ?? obj.card.name} was put into ${sbaLog.controllerUsername}'s ${dest}.`;
 	}
@@ -418,6 +426,9 @@ function finalizeZoneMove(
 				destZone: dest
 			});
 		}
+		if (dest === 'battlefield' && fromZone !== 'battlefield' && !ceases) {
+			maybePlaceSagaEtbLoreCounter(state, obj);
+		}
 	}
 	if (
 		promptCommanderRedirect &&
@@ -567,6 +578,7 @@ export function returnLinkedExiledForSources(
 
 	for (const em of emitAfterAll) {
 		emitZoneChange(state, em.card, 'exile', 'battlefield', em.fromPlayerId, em.toPlayerId, false);
+		maybePlaceSagaEtbLoreCounter(state, em.card);
 	}
 
 	for (const { card, fromPlayer, returnZone } of nonBfReturns) {
@@ -964,6 +976,28 @@ function emitZoneChange(
 		ceasedToExist,
 		...(lki ? { lki } : {})
 	});
+}
+
+function sagaHasReadAhead(obj: CardInstance): boolean {
+	if (obj.isFaceDown) return false;
+	const card = effectiveCardForObject(obj);
+	const def = compileCard(card);
+	const resolved = resolveObjectFaces(card, instanceFaceOptions(obj, 'battlefield'));
+	return resolved.activeFaceIndices.some((fi) => Boolean(def.faces[fi]?.hasReadAhead));
+}
+
+/**
+ * CR 715.3a: As a Saga without read ahead enters the battlefield, its controller puts a lore
+ * counter on it. Evaluated after battlefield insertion so layer-4 type changes (CR 614.12) and
+ * counter multipliers apply accurately.
+ */
+function maybePlaceSagaEtbLoreCounter(state: GameState, obj: CardInstance): void {
+	if (obj.zone !== 'battlefield' || obj.phasedOut || obj.isFaceDown) return;
+	if ((obj.counters.lore || 0) > 0) return;
+	const ev = evaluatePermanent(state, obj);
+	if (!ev.hasSubType('Saga')) return;
+	if (sagaHasReadAhead(obj)) return;
+	placeRegisteredCounters(state, obj, 'lore', 1);
 }
 
 // ---------------------------------------------------------------------------------------------

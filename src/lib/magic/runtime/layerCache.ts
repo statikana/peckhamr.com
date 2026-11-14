@@ -62,7 +62,7 @@ export interface BoardSnapshot {
 const SNAPSHOTS = new WeakMap<GameState, BoardSnapshot>();
 
 function pushFingerprint(state: GameState, fp: unknown[]): void {
-	fp.push(state.players, state.players.length);
+	fp.push(state.players, state.players.length, state.monarchPlayerId ?? null);
 	for (const p of state.players) {
 		fp.push(p, p.lost, p.playerId, p.battlefield, p.battlefield.length);
 		for (const perm of p.battlefield) {
@@ -103,7 +103,13 @@ function pushFingerprint(state: GameState, fp: unknown[]): void {
 
 function fingerprintMatches(state: GameState, fp: unknown[]): boolean {
 	let i = 0;
-	if (fp[i++] !== state.players || fp[i++] !== state.players.length) return false;
+	if (
+		fp[i++] !== state.players ||
+		fp[i++] !== state.players.length ||
+		fp[i++] !== (state.monarchPlayerId ?? null)
+	) {
+		return false;
+	}
 	for (const p of state.players) {
 		if (
 			fp[i++] !== p ||

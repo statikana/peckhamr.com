@@ -32,6 +32,8 @@ export interface FaceDefinition {
 	name: string;
 	characteristics: Characteristics;
 	abilities: AbilityDef[];
+	// --- Track P1 ---
+	hasReadAhead?: boolean;
 }
 
 export interface Characteristics {
@@ -351,7 +353,9 @@ export type Amount =
 	/** CR 702.40a: number of other spells cast before the Storm spell this turn (snapshotted on cast). */
 	| { k: 'stormCount' }
 	| { k: 'negate'; of: Amount }
-	| { k: 'sum' | 'min' | 'max'; args: Amount[] };
+	| { k: 'sum' | 'min' | 'max'; args: Amount[] }
+	// --- Track P1 ---
+	| { k: 'energyCount'; player: PlayerRef };
 
 // ---- Costs ----------------------------------------------------------------------------------
 
@@ -380,7 +384,9 @@ export type CostDef =
 			filter: ObjectFilter;
 			excludeSelf?: boolean;
 			restrictionTag?: string;
-	  };
+	  }
+	// --- Track P1 ---
+	| { k: 'payEnergy'; count: Amount };
 
 // ---- Effects --------------------------------------------------------------------------------
 
@@ -443,7 +449,10 @@ export type Verb =
 	| 'payCost'
 	| 'animate'
 	| 'gainControl'
-	| 'revealAndDiscard';
+	| 'revealAndDiscard'
+	// --- Track P1 ---
+	| 'gainEnergy'
+	| 'becomeMonarch';
 
 export type ManaRestriction = 'artifactSpellOrNonSpell';
 
@@ -670,7 +679,9 @@ export type EventKind =
 	| 'connive'
 	| 'becomesCrewed'
 	/** CR 603.2c / 510.2: One or more creatures dealt combat damage to a player simultaneously. */
-	| 'combatDamageBatchPlayer';
+	| 'combatDamageBatchPlayer'
+	// --- Track P1 ---
+	| 'becameMonarch';
 
 export interface EventFilter {
 	/**
@@ -714,6 +725,9 @@ export interface TriggerDef {
 	onlyOncePerTurn?: boolean;
 	/** "Whenever ~ enters or attacks": the ability also triggers on each of these events. */
 	or?: TriggerDef[];
+	// --- Track P1 ---
+	chapterNumbers?: number[];
+	isChapterAbility?: boolean;
 }
 
 export type Condition =
@@ -730,7 +744,9 @@ export type Condition =
 	/** CR 702.74a / 400.7d: true when cast by paying its evoke alternative cost. */
 	| { k: 'evoked' }
 	/** CR 702.138b / 400.7d: true when cast by paying its escape alternative cost. */
-	| { k: 'escaped' };
+	| { k: 'escaped' }
+	// --- Track P1 ---
+	| { k: 'isMonarch'; player?: PlayerRef; relation?: 'you' | 'opponent' | 'any' };
 
 // ---- Statics and replacements ---------------------------------------------------------------
 

@@ -606,6 +606,8 @@ export function describeCost(defs: CostDef[]): string {
 						: `Discard ${amountText(d.count)} card(s)${d.filter ? ` (${filterText(d.filter, d.count)})` : ''}${d.random ? ' at random' : ''}`;
 				case 'payLife':
 					return `Pay ${amountText(d.amount)} life`;
+				case 'payEnergy':
+					return `Pay ${amountText(d.count)} {E}`;
 				case 'loyalty':
 					return d.delta >= 0 ? `+${d.delta}` : `${d.delta}`;
 				case 'removeCounters':
@@ -776,6 +778,14 @@ function checkSimple(def: CostDef, ctx: CostContext): string | null {
 			if (ctx.player.life < amount) return `Not enough life to pay ${amount} life.`;
 			return null;
 		}
+		case 'payEnergy': {
+			const amount = n(def.count, ctx);
+			if (amount === 0) return null;
+			if ((ctx.player.energyCounters || 0) < amount) {
+				return `Not enough energy counters to pay ${amount} {E}.`;
+			}
+			return null;
+		}
 		case 'loyalty':
 			if (def.delta < 0 && src.counters.loyalty < -def.delta) return 'Not enough loyalty counters.';
 			return null;
@@ -920,6 +930,14 @@ function planFlat(ctx: CostContext, flat: Flat[], objects: string[][] | undefine
 	const exilesSelfFromGraveyard = flat.some(
 		(f) => f.def.k === 'exileFrom' && f.def.zone === 'graveyard' && f.def.filter === 'self'
 	);
+
+	let totalEnergyNeeded = 0;
+	for (const { def } of flat) {
+		if (def.k === 'payEnergy') totalEnergyNeeded += n(def.count, ctx);
+	}
+	if (totalEnergyNeeded > 0 && (ctx.player.energyCounters || 0) < totalEnergyNeeded) {
+		return { ok: false, error: `Not enough energy counters to pay ${totalEnergyNeeded} {E}.` };
+	}
 
 	for (const { def, topLevel } of flat) {
 		const err = checkSimple(def, ctx);
@@ -1070,15 +1088,22 @@ function canPayManaAfterTaps(
 	reservedIds?: ReadonlySet<string>
 ): boolean {
 	const toTap = tapTargets(ctx, parts).filter((c) => !c.tapped);
-	if (toTap.length === 0) return ctx.canPayMana(mana, reservedIds);
-	// The hypothetical taps change a layer input (`tapped`): an enclosing `withStableLayerInputs`
-	// scope revalidates after tapping and again after untapping (Phase 6d).
+	const energyReserved = parts.reduce(
+		(sum, p) => sum + (p.def.k === 'payEnergy' ? n(p.def.count, ctx) : 0),
+		0
+	);
+	if (toTap.length === 0 && energyReserved === 0) return ctx.canPayMana(mana, reservedIds);
+	const prevEnergy = ctx.player.energyCounters || 0;
+	// The hypothetical taps/energy reservations change layer inputs: an enclosing
+	// `withStableLayerInputs` scope revalidates after reserving and again after restoring (Phase 6d).
 	for (const c of toTap) c.tapped = true;
+	if (energyReserved > 0) ctx.player.energyCounters = Math.max(0, prevEnergy - energyReserved);
 	noteLayerInputsChanged(ctx.state);
 	try {
 		return ctx.canPayMana(mana, reservedIds);
 	} finally {
 		for (const c of toTap) c.tapped = false;
+		if (energyReserved > 0) ctx.player.energyCounters = prevEnergy;
 		noteLayerInputsChanged(ctx.state);
 	}
 }
@@ -1362,7 +1387,26 @@ export function payTapAndManaCostParts(
 			targetLog.push(`tapped ${labelNames.join(', ')}`);
 		}
 	}
-	if (mana) ctx.payMana(mana);
+	if (mana) {
+		const energyReserved = parts.reduce(
+			(sum, p) => sum + (p.def.k === 'payEnergy' ? n(p.def.count, ctx) : 0),
+			0
+		);
+		if (energyReserved > 0) {
+			const prevEnergy = player.energyCounters || 0;
+			player.energyCounters = Math.max(0, prevEnergy - energyReserved);
+			noteLayerInputsChanged(ctx.state);
+			try {
+				ctx.payMana(mana);
+			} finally {
+				const spentByMana = Math.max(0, prevEnergy - energyReserved - (player.energyCounters || 0));
+				player.energyCounters = Math.max(0, prevEnergy - spentByMana);
+				noteLayerInputsChanged(ctx.state);
+			}
+		} else {
+			ctx.payMana(mana);
+		}
+	}
 }
 
 /**
@@ -1392,6 +1436,17 @@ export function executeCostPaymentParts(
 					if (amount > 0) {
 						player.life -= amount;
 						targetLog.push(`paid ${amount} life`);
+					}
+				}
+				break;
+			}
+			case 'payEnergy': {
+				if (objStart === 0) {
+					const amount = n(def.count, ctx);
+					if (amount > 0) {
+						player.energyCounters = Math.max(0, (player.energyCounters || 0) - amount);
+						noteLayerInputsChanged(ctx.state);
+						targetLog.push(`paid ${amount} {E}`);
 					}
 				}
 				break;

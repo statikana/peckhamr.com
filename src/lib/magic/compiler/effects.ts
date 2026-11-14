@@ -560,6 +560,7 @@ function equalTo(p: Parser, text: string): Amount | null {
 	if (entering && p.context === 'triggered') return { k: 'stat', of: { k: 'eventObject' }, stat: entering[1] as 'power' | 'toughness' };
 	if (t === "~'s power") return { k: 'stat', of: { k: 'self' }, stat: 'power' };
 	if (t === "~'s toughness") return { k: 'stat', of: { k: 'self' }, stat: 'toughness' };
+	if (/^the amount of \{E\} you have$/i.test(t)) return { k: 'energyCount', player: { k: 'you' } };
 	const num = t.match(/^the number of (.+)$/);
 	if (num) return numberOf(num[1]);
 	return null;
@@ -569,6 +570,9 @@ function equalTo(p: Parser, text: string): Amount | null {
 function numberOf(text: string): Amount | null {
 	const hand = text.match(/^cards in (your|target opponent's) hand$/);
 	if (hand && hand[1] === 'your') return { k: 'cardsIn', zone: 'hand', of: { k: 'you' } };
+	if (/^(?:energy counters|\{E\}) you have$/i.test(text.trim())) {
+		return { k: 'energyCount', player: { k: 'you' } };
+	}
 	if (/^times? you've cast (?:your|a) commander from the command zone this game$/i.test(text.trim())) {
 		return { k: 'commanderCastCount' };
 	}
@@ -1362,6 +1366,32 @@ function playerPredicate(p: Parser, subject: Selector, vp: string, span: Span, f
 		);
 		return true;
 	}
+	m = text.match(/^gets?\s+((?:\{E\}\s*)+)$/i);
+	if (m) {
+		const eCount = (m[1].match(/\{E\}/gi) ?? []).length;
+		if (eCount <= 0) return false;
+		p.push({ verb: 'gainEnergy', subject, amount: n(eCount), ...opt, span }, false);
+		return true;
+	}
+	m = text.match(/^gets?\s+(that many|\S+)\s*\{E\}$/i);
+	if (m) {
+		const amount = amountWord(p, m[1]);
+		if (!amount) return false;
+		p.push({ verb: 'gainEnergy', subject, amount, ...opt, span }, false);
+		return true;
+	}
+	m = text.match(/^gets?\s+an amount of \{E\} equal to (.+)$/i);
+	if (m) {
+		const amount = equalTo(p, m[1]);
+		if (!amount) return false;
+		p.push({ verb: 'gainEnergy', subject, amount, ...opt, span }, false);
+		return true;
+	}
+	if (/^becomes? the monarch$/i.test(text)) {
+		if (!singlePlayer(subject)) return false;
+		p.push({ verb: 'becomeMonarch', subject, ...opt, span }, false);
+		return true;
+	}
 	if (/^may end the turn$/.test(`may ${text}`) && optional && subject.k === 'playerRef' && subject.ref.k === 'activePlayer') {
 		p.push({ verb: 'endTurn', subject: { k: 'none' }, params: { activePlayerMay: true }, span }, false);
 		return true;
@@ -1834,7 +1864,7 @@ function addMana(p: Parser, text: string, span: Span): ClauseResult {
 
 // Words that start a new clause after " and " / ", then ".
 const CLAUSE_START =
-	/^(?:you|each opponent|each player|target player|target opponent|its controller|its owner|that player|they|draw|draws|lose|loses|gain|gains|get|gets|put|exile|destroy|return|create|creates|search|scry|surveil|surveils|investigate|investigates|mill|mills|sacrifice|deal|deals|add|take|takes|phase|phases|attach|counter|proliferate|switch|look|reveal|tap|untap|fight|fights|transform|transforms|flip|flips|discard|discards|connive|connives|explore|explores|goad|goads|regenerate|regenerates)\b/;
+	/^(?:you|each opponent|each player|target player|target opponent|its controller|its owner|that player|they|draw|draws|lose|loses|gain|gains|get|gets|become|becomes|put|exile|destroy|return|create|creates|search|scry|surveil|surveils|investigate|investigates|mill|mills|sacrifice|deal|deals|add|take|takes|phase|phases|attach|counter|proliferate|switch|look|reveal|tap|untap|fight|fights|transform|transforms|flip|flips|discard|discards|connive|connives|explore|explores|goad|goads|regenerate|regenerates)\b/;
 
 /** Splits a sentence into clauses at ", then " and at " and " before a new verb or subject. */
 function splitClauses(text: string, offset: number): Clause[] {
@@ -1961,7 +1991,7 @@ function clause(p: Parser, c: Clause, allowUnless = true): ClauseResult {
 		if (subject && playerPredicate(p, subject, ps[2], c.span)) return true;
 	}
 	// A continued predicate with the previous player as subject ("... and loses 2 life").
-	if (p.lastPlayer && /^(?:draws?|loses?|gains?|mills?|creates?|investigates?|surveils?|discards?|goads?)\b/.test(t)) {
+	if (p.lastPlayer && /^(?:draws?|loses?|gains?|gets?|becomes?|mills?|creates?|investigates?|surveils?|discards?|goads?)\b/.test(t)) {
 		if (playerPredicate(p, p.lastPlayer, t, c.span)) return true;
 	}
 	// Object subjects & "until end of turn, <player> may play ..." impulse exile clauses.
@@ -2043,13 +2073,24 @@ function clause(p: Parser, c: Clause, allowUnless = true): ClauseResult {
 		});
 		if (ok) return true;
 	}
+	const perEnergy = t.match(/^(.+?) for each \{E\} you have( until end of turn)?$/i);
+	if (perEnergy) {
+		const ok = scalePerClause(`${perEnergy[1]}${perEnergy[2] ?? ''}`, (a) => {
+			if (!a || a.k !== 'const') return null;
+			if (a.n === 1) return { k: 'energyCount', player: { k: 'you' } };
+			if (a.n === 0) return a;
+			if (a.n === -1) return { k: 'negate', of: { k: 'energyCount', player: { k: 'you' } } };
+			return null;
+		});
+		if (ok) return true;
+	}
 	return false;
 }
 
 /** Sentence-initial words that are not names or subtypes, so they can be lower-cased. */
 const LOWER_START = new Set([
-	'a', 'add', 'all', 'an', 'another', 'any', 'at', 'attach', 'connive', 'connives', 'copy', 'counter', 'create', 'creatures', 'deal', 'destroy', 'discard', 'discards', 'draw',
-	'each', 'end', 'exile', 'explore', 'explores', 'fight', 'flip', 'gain', 'goad', 'goads', 'if', 'investigate', 'it', 'its', 'look', 'lose', 'mill', 'otherwise', 'permanents', 'proliferate', 'put',
+	'a', 'add', 'all', 'an', 'another', 'any', 'at', 'attach', 'become', 'connive', 'connives', 'copy', 'counter', 'create', 'creatures', 'deal', 'destroy', 'discard', 'discards', 'draw',
+	'each', 'end', 'exile', 'explore', 'explores', 'fight', 'flip', 'gain', 'goad', 'goads', 'if', 'investigate', 'it', 'its', 'look', 'lose', 'mill', 'otherwise', 'pay', 'permanents', 'proliferate', 'put',
 	'regenerate', 'regenerates', 'return', 'reveal', 'sacrifice', 'scry', 'search', 'surveil', 'switch', 'take', 'tap', 'target', 'that', 'the', 'then', 'they', 'those',
 	'transform', 'untap', 'until', 'up', 'when', 'you', 'your'
 ]);
@@ -2147,6 +2188,25 @@ function sentence(p: Parser, text: string, span: Span): boolean {
 		if (/\binstead\b/i.test(innerText)) return fail();
 		innerText = innerText.replace(/^it (?:also )?deals\b/i, '~ deals').replace(/^also\s+/i, '');
 		const innerStart = Math.max(span.start, span.end - ifKicked[2].length);
+		if (!sentence(p, innerText, { start: innerStart, end: span.end })) return fail();
+		for (const step of p.steps.slice(stepsBefore)) {
+			step.condition = step.condition ? { k: 'and', of: [cond, step.condition] } : cond;
+		}
+		for (const target of p.targets.slice(targetsBefore)) {
+			target.condition = target.condition ? { k: 'and', of: [cond, target.condition] } : cond;
+		}
+		return true;
+	}
+
+	const ifMonarch = t.match(
+		/^(?:then\s+)?(if (?:you(?:'re| are|'re not| aren't| are not) the monarch|an opponent is the monarch|a player is the monarch|there is no monarch)), (.+)$/i
+	);
+	if (ifMonarch) {
+		const cond = parseCondition(ifMonarch[1]);
+		if (!cond) return fail();
+		const innerText = ifMonarch[2].trim();
+		if (/\binstead\b/i.test(innerText)) return fail();
+		const innerStart = Math.max(span.start, span.end - ifMonarch[2].length);
 		if (!sentence(p, innerText, { start: innerStart, end: span.end })) return fail();
 		for (const step of p.steps.slice(stepsBefore)) {
 			step.condition = step.condition ? { k: 'and', of: [cond, step.condition] } : cond;
@@ -2786,8 +2846,13 @@ export function parseModal(
 	const unparsed: Span[] = [];
 	const modes: ModalDef['modes'] = [];
 	for (const b of bullets) {
-		const body = b.text.replace(/^•\s*/, '');
-		const start = b.start + (b.text.length - body.length);
+		let body = b.text.replace(/^•\s*/, '');
+		let start = b.start + (b.text.length - body.length);
+		const flavor = body.match(/^([A-Z][A-Za-z0-9'’ !?-]*?) — (?=[A-Z{~])/);
+		if (flavor) {
+			body = body.slice(flavor[0].length);
+			start += flavor[0].length;
+		}
 		const parse = parseEffects(body, start, context);
 		unparsed.push(...parse.unparsed);
 		modes.push({ targets: parse.targets, effect: parse.steps, span: { start: b.start, end: b.end } });

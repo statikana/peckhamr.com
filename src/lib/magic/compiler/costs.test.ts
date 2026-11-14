@@ -47,7 +47,10 @@ describe('Cost grammar: activated ability costs', () => {
 			[{ k: 'exileFrom', zone: 'graveyard', count: ONE, filter: { other: true, types: ['Creature'] } }]
 		],
 		['Remove a +1/+1 counter from ~', [{ k: 'removeCounters', counter: '+1/+1', count: ONE, from: 'self' }]],
-		['Remove X charge counters from ~', [{ k: 'removeCounters', counter: 'charge', count: { k: 'x' }, from: 'self' }]]
+		['Remove X charge counters from ~', [{ k: 'removeCounters', counter: 'charge', count: { k: 'x' }, from: 'self' }]],
+		['Pay {E}{E}', [{ k: 'payEnergy', count: { k: 'const', n: 2 } }]],
+		['Pay six {E}', [{ k: 'payEnergy', count: { k: 'const', n: 6 } }]],
+		['Pay X {E}', [{ k: 'payEnergy', count: { k: 'x' } }]]
 	];
 	for (const [text, defs] of cases) {
 		it(`parses "${text}"`, () => {
@@ -58,12 +61,12 @@ describe('Cost grammar: activated ability costs', () => {
 	}
 
 	it('reports exactly the parts it does not understand, with spans', () => {
-		const text = '{1}, Pay {E}{E}, Sacrifice ~';
+		const text = '{1}, Pay {TK}{TK}, Sacrifice ~';
 		const parsed = parseCost(text, 100);
 		assert.deepEqual(parsed.defs, [{ k: 'mana', cost: '{1}' }, { k: 'sacrifice', count: ONE, filter: 'self' }]);
 		assert.deepEqual(
 			parsed.unparsed.map((s) => text.slice(s.start - 100, s.end - 100)),
-			['Pay {E}{E}']
+			['Pay {TK}{TK}']
 		);
 	});
 

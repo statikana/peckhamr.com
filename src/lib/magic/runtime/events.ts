@@ -103,6 +103,9 @@ export interface CounterPlacedEvent extends EventBase {
 	object: CardInstance;
 	counterType: CounterType;
 	amount: number;
+	// --- Track P1 ---
+	previousCount?: number;
+	newCount?: number;
 }
 
 /** Blockers were declared by one defending player (CR 509). */
@@ -254,6 +257,14 @@ export interface CombatDamageBatchPlayerEvent extends EventBase {
 	attackers: CardInstance[];
 }
 
+// --- Track P1 ---
+/** A player became the monarch (CR 726.1–3: not emitted if that player was already the monarch). */
+export interface BecameMonarchEvent extends EventBase {
+	kind: 'BecameMonarch';
+	playerId: string;
+	previousMonarchId: string | null;
+}
+
 export type GameEvent =
 	| TappedForManaEvent
 	| GainLifeEvent
@@ -277,7 +288,9 @@ export type GameEvent =
 	| BlockersDeclaredEvent
 	| BecameTargetEvent
 	| SpellCopiedEvent
-	| AttachedEvent;
+	| AttachedEvent
+	// --- Track P1 ---
+	| BecameMonarchEvent;
 
 export type GameEventKind = GameEvent['kind'];
 type EventOf<K extends GameEventKind> = Extract<GameEvent, { kind: K }>;
