@@ -11,6 +11,15 @@
  */
 import type { ActivatedAbility, CostDef, EffectStep, EventKind, KeywordDef, ObjectFilter, Span, StaticDef } from './ir.ts';
 import type { RuntimeTrigger } from './compiler/triggers.ts';
+import {
+	buildLevelUpActivatedAbility,
+	buildOffspringTrigger,
+	buildOptionalCostCastCopyTrigger,
+	buildReinforceActivatedAbility,
+	buildSquadTrigger,
+	buildStationActivatedAbility,
+	buildTransmuteActivatedAbility
+} from './runtime/striatedFrames.ts';
 
 export type KeywordParameterKind = 'none' | 'cost' | 'number' | 'quality' | 'cardName' | 'text';
 
@@ -36,6 +45,9 @@ export interface AlternativeCostKeywordMeta {
 	blitzed?: boolean;
 	/** CR 702.146a–b / 712.8c: casts a double-faced card transformed with its back face up from graveyard (Disturb). */
 	castTransformedBackFace?: boolean;
+	// --- Track P6 ---
+	/** CR 702.185a: marks the cast spell / entering permanent as warped from hand. */
+	warped?: boolean;
 	timing?: 'default' | 'instant_only' | 'sorcery_only';
 	stackBadgeLabel?: string;
 	/** CR 708: casting this card face down as a 2/2 colorless creature (Morph / Megamorph / Disguise). */
@@ -1195,13 +1207,68 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 		}
 	],
 	unimplemented('cascade', '702.85'),
-	unimplemented('casualty', '702.153', 'number'),
+	// --- Track P6 ---
+	[
+		'casualty',
+		{
+			name: 'casualty',
+			cr: '702.153',
+			parameterKind: 'number',
+			grantable: false,
+			status: 'implemented',
+			implementation: {
+				kind: 'castOption',
+				events: ['cast'],
+				buildTriggers: (_kw, abilityIndex, span) => {
+					const t = buildOptionalCostCastCopyTrigger('casualty', false, span);
+					return [
+						{
+							abilityIndex,
+							trigger: t.trigger,
+							condition: t.condition,
+							effectSupported: true,
+							text: 'Casualty',
+							effect: { steps: t.effect, targets: [], unparsed: [] }
+						}
+					];
+				}
+			}
+		}
+	],
 	unimplemented('champion', '702.72', 'quality'),
 	unimplemented('cipher', '702.99'),
 	unimplemented('cleave', '702.148', 'cost'),
 	unimplemented('companion', '702.139', 'text'),
 	unimplemented('compleated', '702.150'),
-	unimplemented('conspire', '702.78'),
+	// --- Track P6 ---
+	[
+		'conspire',
+		{
+			name: 'conspire',
+			cr: '702.78',
+			parameterKind: 'none',
+			displayLabel: 'Conspire',
+			grantable: false,
+			status: 'implemented',
+			implementation: {
+				kind: 'castOption',
+				events: ['cast'],
+				buildTriggers: (_kw, abilityIndex, span) => {
+					const t = buildOptionalCostCastCopyTrigger('conspire', false, span);
+					return [
+						{
+							abilityIndex,
+							trigger: t.trigger,
+							condition: t.condition,
+							effectSupported: true,
+							text: 'Conspire',
+							effect: { steps: t.effect, targets: [], unparsed: [] }
+						}
+					];
+				}
+			}
+		}
+	],
 	[
 		'convoke',
 		{
@@ -1403,7 +1470,18 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 	unimplemented('evolve', '702.100'),
 	unimplemented('extort', '702.101'),
 	unimplemented('fabricate', '702.123', 'number'),
-	unimplemented('fading', '702.32', 'number'),
+	// --- Track P6 ---
+	[
+		'fading',
+		{
+			name: 'fading',
+			cr: '702.32',
+			parameterKind: 'number',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'static', buildStatics: () => [] }
+		}
+	],
 	unimplemented('flanking', '702.25'),
 	unimplemented('forecast', '702.57', 'text'),
 	// --- Track P3 ---
@@ -1476,7 +1554,18 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 			implementation: { kind: 'activated', buildActivated: buildCyclingAbility }
 		}
 	],
-	unimplemented('level up', '702.87', 'cost'),
+	// --- Track P6 ---
+	[
+		'level up',
+		{
+			name: 'level up',
+			cr: '702.87',
+			parameterKind: 'cost',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'activated', buildActivated: buildLevelUpActivatedAbility }
+		}
+	],
 	unimplemented('living metal', '702.161'),
 	unimplemented('madness', '702.35', 'cost'),
 	faceDownCostKeyword('megamorph', '702.37b', 'megamorph', 'Cast face down (Megamorph)'),
@@ -1491,7 +1580,34 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 	unimplemented('nightbound', '702.145'),
 	unimplemented('ninjutsu', '702.49', 'cost'),
 	unimplemented('offering', '702.48', 'quality'),
-	unimplemented('offspring', '702.175', 'cost'),
+	// --- Track P6 ---
+	[
+		'offspring',
+		{
+			name: 'offspring',
+			cr: '702.175',
+			parameterKind: 'cost',
+			grantable: false,
+			status: 'implemented',
+			implementation: {
+				kind: 'castOption',
+				events: ['zoneChange'],
+				buildTriggers: (_kw, abilityIndex, span) => {
+					const t = buildOffspringTrigger(span);
+					return [
+						{
+							abilityIndex,
+							trigger: t.trigger,
+							condition: t.condition,
+							effectSupported: true,
+							text: 'Offspring',
+							effect: { steps: t.effect, targets: [], unparsed: [] }
+						}
+					];
+				}
+			}
+		}
+	],
 	unimplemented('outlast', '702.107', 'cost'),
 	unimplemented('persist', '702.79'),
 	// --- Track P3 ---
@@ -1507,7 +1623,18 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 		}
 	],
 	unimplemented('poisonous', '702.70', 'number'),
-	unimplemented('prototype', '702.160', 'text'),
+	// --- Track P6 ---
+	[
+		'prototype',
+		{
+			name: 'prototype',
+			cr: '702.160',
+			parameterKind: 'text',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'castOption' }
+		}
+	],
 	unimplemented('provoke', '702.39'),
 	unimplemented('prowl', '702.76', 'cost'),
 	unimplemented('rampage', '702.23', 'number'),
@@ -1516,9 +1643,47 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 	unimplemented('rebound', '702.88'),
 	unimplemented('reconfigure', '702.151', 'cost'),
 	unimplemented('recover', '702.59', 'cost'),
-	unimplemented('reinforce', '702.77', 'text'),
+	// --- Track P6 ---
+	[
+		'reinforce',
+		{
+			name: 'reinforce',
+			cr: '702.77',
+			parameterKind: 'text',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'activated', buildActivated: buildReinforceActivatedAbility }
+		}
+	],
 	unimplemented('renown', '702.112', 'number'),
-	unimplemented('replicate', '702.56', 'cost'),
+	// --- Track P6 ---
+	[
+		'replicate',
+		{
+			name: 'replicate',
+			cr: '702.56',
+			parameterKind: 'cost',
+			grantable: false,
+			status: 'implemented',
+			implementation: {
+				kind: 'castOption',
+				events: ['cast'],
+				buildTriggers: (_kw, abilityIndex, span) => {
+					const t = buildOptionalCostCastCopyTrigger('replicate', true, span);
+					return [
+						{
+							abilityIndex,
+							trigger: t.trigger,
+							condition: t.condition,
+							effectSupported: true,
+							text: 'Replicate',
+							effect: { steps: t.effect, targets: [], unparsed: [] }
+						}
+					];
+				}
+			}
+		}
+	],
 	// --- Track P3 ---
 	[
 		'retrace',
@@ -1554,7 +1719,34 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 	unimplemented('spectacle', '702.137', 'cost'),
 	unimplemented('splice', '702.47', 'text'),
 	unimplemented('split second', '702.61'),
-	unimplemented('squad', '702.157', 'cost'),
+	// --- Track P6 ---
+	[
+		'squad',
+		{
+			name: 'squad',
+			cr: '702.157',
+			parameterKind: 'cost',
+			grantable: false,
+			status: 'implemented',
+			implementation: {
+				kind: 'castOption',
+				events: ['zoneChange'],
+				buildTriggers: (_kw, abilityIndex, span) => {
+					const t = buildSquadTrigger(span);
+					return [
+						{
+							abilityIndex,
+							trigger: t.trigger,
+							condition: t.condition,
+							effectSupported: true,
+							text: 'Squad',
+							effect: { steps: t.effect, targets: [], unparsed: [] }
+						}
+					];
+				}
+			}
+		}
+	],
 	[
 		'storm',
 		{
@@ -1595,7 +1787,18 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 	unimplemented('totem armor', '702.89'),
 	unimplemented('training', '702.149'),
 	unimplemented('transfigure', '702.71', 'cost'),
-	unimplemented('transmute', '702.53', 'cost'),
+	// --- Track P6 ---
+	[
+		'transmute',
+		{
+			name: 'transmute',
+			cr: '702.53',
+			parameterKind: 'cost',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'activated', buildActivated: buildTransmuteActivatedAbility }
+		}
+	],
 	unimplemented('tribute', '702.104', 'number'),
 	unimplemented('umbra armor', '702.89'),
 	unimplemented('undaunted', '702.125'),
@@ -1612,10 +1815,33 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 		}
 	],
 	unimplemented('unleash', '702.98'),
-	unimplemented('vanishing', '702.63', 'number'),
+	// --- Track P6 ---
+	[
+		'vanishing',
+		{
+			name: 'vanishing',
+			cr: '702.63',
+			parameterKind: 'number',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'static', buildStatics: () => [] }
+		}
+	],
 	unimplemented('visit', '702.159'),
 	unimplemented('toxic', '702.164', 'number'),
-	unimplemented('station', '702.184'),
+	// --- Track P6 ---
+	[
+		'station',
+		{
+			name: 'station',
+			cr: '702.184',
+			parameterKind: 'none',
+			displayLabel: 'Station',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'activated', buildActivated: buildStationActivatedAbility }
+		}
+	],
 	unimplemented('exhaust', '702.177', 'text'),
 	unimplemented('harmonize', '702.180', 'cost'),
 	unimplemented('mobilize', '702.181', 'number'),
@@ -1624,7 +1850,30 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 	unimplemented('firebending', '702.189', 'number'),
 	unimplemented('waterbend', '701.67', 'cost'),
 	unimplemented('job select', '702.182'),
-	unimplemented('warp', '702.185', 'cost')
+	// --- Track P6 ---
+	[
+		'warp',
+		{
+			name: 'warp',
+			cr: '702.185',
+			parameterKind: 'cost',
+			grantable: false,
+			status: 'implemented',
+			implementation: {
+				kind: 'castOption',
+				altCost: {
+					id: 'alt:warp',
+					label: 'Cast with Warp',
+					castSummarySuffix: ' (Warped)',
+					zones: ['hand'],
+					requiresZonePermission: false,
+					disallowLand: true,
+					warped: true,
+					stackBadgeLabel: 'Warped'
+				}
+			}
+		}
+	]
 ];
 
 /** Single source of truth for all CR 702 keywords (and recognized keyword actions). */

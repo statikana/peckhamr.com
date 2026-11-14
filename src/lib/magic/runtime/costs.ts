@@ -51,6 +51,7 @@ import {
 	spellOptionalAdditionalCosts,
 	validateOptionalCostCounts
 } from './kicker.ts';
+import { emitEvent } from './events.ts';
 import { hasRestriction, playerLifeTotalCantChange } from './replace.ts';
 import { moveObject, tapPermanent, type MoveResult, type PlayerZone } from './zones.ts';
 
@@ -296,11 +297,23 @@ export function effectiveSpellManaCost(
 	extraManaCosts?: string[],
 	faceIndex = 0,
 	fused = false,
-	faceDownSpec?: FaceDownSpec
+	faceDownSpec?: FaceDownSpec,
+	prototyped?: boolean
 ): ManaCostRequirement {
 	// Read-only: one layer-cache validation for the battlefield scan (Phase 6d).
 	return withStableLayerInputs(state, () =>
-		effectiveSpellManaCostInner(state, player, inst, xValue, baseCost, extraManaCosts, faceIndex, fused, faceDownSpec)
+		effectiveSpellManaCostInner(
+			state,
+			player,
+			inst,
+			xValue,
+			baseCost,
+			extraManaCosts,
+			faceIndex,
+			fused,
+			faceDownSpec,
+			prototyped
+		)
 	);
 }
 
@@ -313,10 +326,17 @@ function effectiveSpellManaCostInner(
 	extraManaCosts?: string[],
 	faceIndex = 0,
 	fused = false,
-	faceDownSpec?: FaceDownSpec
+	faceDownSpec?: FaceDownSpec,
+	prototyped?: boolean
 ): ManaCostRequirement {
 	const card = inst.copiableCard ?? inst.card;
-	const stackFaceOpts = { zone: 'stack' as const, faceIndex, fused, ...(faceDownSpec ? { isFaceDown: true, faceDownSpec } : {}) };
+	const stackFaceOpts = {
+		zone: 'stack' as const,
+		faceIndex,
+		fused,
+		...(prototyped ? { prototyped: true } : {}),
+		...(faceDownSpec ? { isFaceDown: true, faceDownSpec } : {})
+	};
 	let baseCostStr = resolveObjectFaces(card, stackFaceOpts).manaCost;
 	if (typeof baseCost === 'string') {
 		baseCostStr = baseCost;
@@ -356,6 +376,7 @@ function effectiveSpellManaCostInner(
 		...inst,
 		zone: 'stack',
 		activeFaceIndex: faceIndex,
+		...(prototyped ? { prototyped: true } : {}),
 		...(faceDownSpec ? { isFaceDown: true, faceDownSpec } : {}),
 		...(fused ? { copiableState: { ...(inst.copiableState ?? { card }), faceIndex, fused: true } } : {})
 	};
@@ -1461,7 +1482,22 @@ export function executeCostPaymentParts(
 				if (objStart === 0) {
 					const amount = n(def.count, ctx);
 					const key = def.counter as CounterType;
-					source.counters[key] = Math.max(0, (source.counters[key] || 0) - amount);
+					const prev = source.counters[key] || 0;
+					const next = Math.max(0, prev - amount);
+					const removed = prev - next;
+					source.counters[key] = next;
+					noteLayerInputsChanged(ctx.state);
+					if (removed > 0 && source.zone === 'battlefield' && !source.phasedOut) {
+						emitEvent(ctx.state, {
+							kind: 'CounterRemoved',
+							objectId: source.instanceId,
+							object: source,
+							counterType: key,
+							amount: removed,
+							previousCount: prev,
+							newCount: next
+						});
+					}
 					targetLog.push(`removed ${amount} ${def.counter} counter(s)`);
 				}
 				break;

@@ -97,7 +97,21 @@ export const KEYWORD_COVERAGE_FILES: Record<string, readonly string[]> = {
 	'jump-start': ['runtime/orthogonal-keywords-p3.test.ts'],
 	plot: ['runtime/orthogonal-keywords-p3.test.ts'],
 	retrace: ['runtime/orthogonal-keywords-p3.test.ts'],
-	saddle: ['runtime/orthogonal-keywords-p3.test.ts']
+	saddle: ['runtime/orthogonal-keywords-p3.test.ts'],
+	// --- Track P6 ---
+	casualty: ['runtime/striated-frames-and-keywords-p6.test.ts'],
+	conspire: ['runtime/striated-frames-and-keywords-p6.test.ts'],
+	fading: ['runtime/striated-frames-and-keywords-p6.test.ts'],
+	'level up': ['runtime/striated-frames-and-keywords-p6.test.ts'],
+	offspring: ['runtime/striated-frames-and-keywords-p6.test.ts'],
+	prototype: ['runtime/striated-frames-and-keywords-p6.test.ts'],
+	reinforce: ['runtime/striated-frames-and-keywords-p6.test.ts'],
+	replicate: ['runtime/striated-frames-and-keywords-p6.test.ts'],
+	squad: ['runtime/striated-frames-and-keywords-p6.test.ts'],
+	station: ['runtime/striated-frames-and-keywords-p6.test.ts'],
+	transmute: ['runtime/striated-frames-and-keywords-p6.test.ts'],
+	vanishing: ['runtime/striated-frames-and-keywords-p6.test.ts'],
+	warp: ['runtime/striated-frames-and-keywords-p6.test.ts']
 };
 
 const SAMPLE_ORACLE_FOR_KEYWORD: Record<string, { typeLine: string; oracleText: string }> = {
@@ -152,7 +166,27 @@ const SAMPLE_ORACLE_FOR_KEYWORD: Record<string, { typeLine: string; oracleText: 
 	'jump-start': { typeLine: 'Instant', oracleText: 'Draw a card.\nJump-start' },
 	plot: { typeLine: 'Creature — Beast', oracleText: 'Plot {1}{G}' },
 	retrace: { typeLine: 'Sorcery', oracleText: 'Draw a card.\nRetrace' },
-	saddle: { typeLine: 'Creature — Beast Mount', oracleText: 'Saddle 2' }
+	saddle: { typeLine: 'Creature — Beast Mount', oracleText: 'Saddle 2' },
+	// --- Track P6 ---
+	casualty: { typeLine: 'Instant', oracleText: 'Casualty 2\nDraw a card.' },
+	conspire: { typeLine: 'Sorcery', oracleText: 'Draw two cards.\nConspire' },
+	fading: { typeLine: 'Creature — Beast', oracleText: 'Fading 3' },
+	'level up': {
+		typeLine: 'Creature — Human Soldier',
+		oracleText: 'Level up {1}{W}\nLEVEL 1-2\n3/3\nFirst strike\nLEVEL 3+\n4/4\nFlying, first strike'
+	},
+	offspring: { typeLine: 'Creature — Mouse', oracleText: 'Offspring {2}' },
+	prototype: { typeLine: 'Artifact Creature — Construct', oracleText: 'Prototype {1}{R}{R} — 3/3' },
+	reinforce: { typeLine: 'Instant', oracleText: 'Draw a card.\nReinforce 2—{1}{G}' },
+	replicate: { typeLine: 'Instant', oracleText: 'Replicate {1}{R}\n~ deals 1 damage to any target.' },
+	squad: { typeLine: 'Creature — Human Soldier', oracleText: 'Squad {2}' },
+	station: {
+		typeLine: 'Artifact — Spacecraft',
+		oracleText: 'Station\n5+ | Flying'
+	},
+	transmute: { typeLine: 'Instant', oracleText: 'Draw a card.\nTransmute {1}{U}{U}' },
+	vanishing: { typeLine: 'Creature — Sliver', oracleText: 'Vanishing 3' },
+	warp: { typeLine: 'Artifact Creature — Robot Giant', oracleText: 'Warp {3}' }
 };
 
 describe('Implemented Keywords Coverage Guard', () => {
@@ -255,7 +289,19 @@ describe('Implemented Keywords Coverage Guard', () => {
 			'entwine',
 			'foretell',
 			'plot',
-			'saddle'
+			'saddle',
+			// --- Track P6 ---
+			'casualty',
+			'fading',
+			'level up',
+			'offspring',
+			'prototype',
+			'reinforce',
+			'replicate',
+			'squad',
+			'transmute',
+			'vanishing',
+			'warp'
 		]);
 
 		assert.deepEqual(

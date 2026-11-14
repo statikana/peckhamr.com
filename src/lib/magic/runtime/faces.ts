@@ -9,6 +9,7 @@ import { getKeywordSpec } from '../keywords.ts';
 import type { AbilityDef, Characteristics, FaceDefinition } from '../ir.ts';
 import { parseManaCost } from '../oracle.ts';
 import { activeFaceIndexForObject, getCardFaces } from '../scryfall.ts';
+import { getFacePrototypeSpec, parseManaValueFromCostString } from './striatedFrames.ts';
 import type {
 	CardInstance,
 	CardLayout,
@@ -33,6 +34,7 @@ export interface ResolveObjectFacesOptions {
 	faceDownLabel?: string;
 	isSingleFaceCopy?: boolean;
 	copiableState?: CopiableState;
+	prototyped?: boolean;
 }
 
 export interface ResolvedObjectView {
@@ -120,12 +122,17 @@ function viewFromSingleFace(
 	manaFace?: ScryfallCardFace
 ): ResolvedObjectView {
 	const { supertypes, types, subtypes } = parseTypeLineParts(face.typeLine);
-	const power = parseStat(face.power);
-	const toughness = parseStat(face.toughness);
+	const rawPower = parseStat(face.power);
+	const rawToughness = parseStat(face.toughness);
+	// CR 722.2c: Non-creature Spacecraft cards have no printed P/T outside their station symbol.
+	const isNonCreatureSpacecraft = !types.includes('Creature') && subtypes.includes('Spacecraft');
+	const power = isNonCreatureSpacecraft ? undefined : rawPower;
+	const toughness = isNonCreatureSpacecraft ? undefined : rawToughness;
 	const loyalty = parseStat(face.loyalty);
 	const ptDefinedByAbility =
-		(face.power !== undefined && power === undefined) ||
-		(face.toughness !== undefined && toughness === undefined);
+		!isNonCreatureSpacecraft &&
+		((face.power !== undefined && rawPower === undefined) ||
+			(face.toughness !== undefined && rawToughness === undefined));
 	const colorSrc = manaFace ?? face;
 	const colors = faceColors(colorSrc);
 	const colorIndicator = colorSrc.colorIndicator ? [...colorSrc.colorIndicator] : undefined;
@@ -407,6 +414,27 @@ export function resolveObjectFaces(
 		}
 	}
 
+	// CR 719.3, 719.4, 707.2: Layer 1a prototyped characteristics apply only on stack and battlefield.
+	if (
+		!opts?.isFaceDown &&
+		(zone === 'stack' || zone === 'battlefield') &&
+		Boolean(opts?.prototyped || opts?.copiableState?.prototyped)
+	) {
+		const compiled = compileCard(baseCard);
+		const activeFi = view.activeFaceIndices[0] ?? 0;
+		const proto = getFacePrototypeSpec(compiled.faces[activeFi]);
+		if (proto) {
+			view = {
+				...view,
+				manaCost: proto.manaCost,
+				manaValue: parseManaValueFromCostString(proto.manaCost),
+				colors: [...proto.colors],
+				power: proto.power,
+				toughness: proto.toughness
+			};
+		}
+	}
+
 	if (!opts?.isFaceDown) {
 		const cdaColors = resolveLayer5CdaColors(baseCard, view.activeFaceIndices);
 		if (cdaColors !== null) {
@@ -466,7 +494,8 @@ export function instanceFaceOptions(
 		faceDownSpec: inst.faceDownSpec,
 		faceDownLabel: inst.faceDownLabel,
 		copiableState: inst.copiableState,
-		isSingleFaceCopy: inst.copiableState?.isSingleFaceCopy
+		isSingleFaceCopy: inst.copiableState?.isSingleFaceCopy,
+		prototyped: Boolean(inst.prototyped || inst.copiableState?.prototyped)
 	};
 }
 
@@ -479,7 +508,8 @@ export function stackItemFaceOptions(item: StackItem): ResolveObjectFacesOptions
 		faceDownSpec: item.faceDownSpec,
 		faceDownLabel: item.faceDownLabel,
 		copiableState: item.copiableState,
-		isSingleFaceCopy: item.copiableState?.isSingleFaceCopy
+		isSingleFaceCopy: item.copiableState?.isSingleFaceCopy,
+		prototyped: Boolean(item.spellMods?.prototyped || item.copiableState?.prototyped)
 	};
 }
 

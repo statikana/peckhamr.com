@@ -28,12 +28,23 @@ export interface CardDefinition {
 	fullySupported: boolean;
 }
 
+// --- Track P6 ---
+export interface PrototypeSpec {
+	manaCost: string;
+	power: number;
+	toughness: number;
+	colors: ManaColor[];
+}
+
 export interface FaceDefinition {
 	name: string;
 	characteristics: Characteristics;
 	abilities: AbilityDef[];
 	// --- Track P1 ---
 	hasReadAhead?: boolean;
+	// --- Track P6 ---
+	/** CR 719.2: inset prototype mana cost, derived colors, and power/toughness. */
+	prototypeSpec?: PrototypeSpec;
 }
 
 export interface Characteristics {
@@ -117,6 +128,9 @@ export interface ActivatedAbility {
 	id: string;
 	/** The ability's normalised text (`~` for the card's name). Display only. */
 	text?: string;
+	// --- Track P6 ---
+	/** Existence condition for striated frames (CR 711.5 Leveler, CR 722.2 Station). */
+	grantCondition?: Condition;
 	span: Span;
 }
 
@@ -125,6 +139,9 @@ export interface TriggeredAbility {
 	trigger: TriggerDef;
 	/** CR 603.4 intervening-if condition, checked when the trigger event occurs and on resolution. */
 	condition?: Condition;
+	// --- Track P6 ---
+	/** Existence condition for striated frames (CR 711.5 Leveler, CR 722.2 Station). */
+	grantCondition?: Condition;
 	targets: TargetSpec[];
 	effect: EffectStep[];
 	modal?: ModalDef;
@@ -198,6 +215,9 @@ export interface UnsupportedAbility {
 	 */
 	trigger?: TriggerDef;
 	condition?: Condition;
+	// --- Track P6 ---
+	/** Existence condition for striated frames (CR 711.5 Leveler, CR 722.2 Station). */
+	grantCondition?: Condition;
 }
 
 export type Timing = 'instant' | 'sorcery' | 'mana';
@@ -241,6 +261,9 @@ export interface KeywordDef {
 	cyclingFilter?: ObjectFilter;
 	/** Typecycling (CR 702.29e): human-readable quality phrase (e.g. 'basic land', 'Plains', 'Wizard'). */
 	cyclingDesc?: string;
+	// --- Track P6 ---
+	/** Prototype (CR 719, 702.160): inset mana cost, derived colors, and power/toughness. */
+	prototypeSpec?: PrototypeSpec;
 }
 
 // ---- Filters --------------------------------------------------------------------------------
@@ -366,7 +389,10 @@ export type Amount =
 	| { k: 'negate'; of: Amount }
 	| { k: 'sum' | 'min' | 'max'; args: Amount[] }
 	// --- Track P1 ---
-	| { k: 'energyCount'; player: PlayerRef };
+	| { k: 'energyCount'; player: PlayerRef }
+	// --- Track P6 ---
+	| { k: 'countersOn'; counter: CounterType; of: Ref }
+	| { k: 'tappedCostPower' };
 
 // ---- Costs ----------------------------------------------------------------------------------
 
@@ -466,7 +492,9 @@ export type Verb =
 	| 'becomeMonarch'
 	// --- Track P3 ---
 	| 'saddle'
-	| 'cumulativeUpkeep';
+	| 'cumulativeUpkeep'
+	// --- Track P6 ---
+	| 'removeCounters';
 
 export type ManaRestriction = 'artifactSpellOrNonSpell';
 
@@ -634,6 +662,11 @@ export interface EffectParams {
 	cumulativeUpkeepCost?: CostDef[];
 	/** cumulativeUpkeep (CR 702.24a): human-readable per-age-counter cost string for prompt titles. */
 	cumulativeUpkeepText?: string;
+	// --- Track P6 ---
+	/** removeCounters (CR 702.32a Fading): if unable to remove the counter, sacrifice the permanent. */
+	ifUnableSacrificeSelf?: boolean;
+	/** copyPermanent (CR 707.9b, 702.175a Offspring): Layer 1a base P/T exception on the token copy. */
+	exceptPT?: { power: number; toughness: number };
 }
 
 export interface CoerciveDiscardSpec {
@@ -721,7 +754,9 @@ export type EventKind =
 	// --- Track P3 ---
 	| 'foretell'
 	| 'plot'
-	| 'becomesSaddled';
+	| 'becomesSaddled'
+	// --- Track P6 ---
+	| 'counterRemoved';
 
 export interface EventFilter {
 	/**
@@ -762,6 +797,9 @@ export interface EventFilter {
 	// --- Track P3 ---
 	/** "Whenever ~ attacks while saddled" (CR 702.171b). */
 	saddled?: boolean;
+	// --- Track P6 ---
+	/** counterRemoved (CR 702.63a Vanishing): matches only when the last counter of that kind was removed. */
+	lastCounter?: boolean;
 }
 
 export interface TriggerDef {

@@ -24,7 +24,7 @@ import { runtimeTriggers, type RuntimeTrigger } from '../compiler/triggers.ts';
 import type { Amount, Condition, EventFilter, EventKind, ObjectFilter, TriggerDef } from '../ir.ts';
 import { getKeywordSpec, GRANTED_TRIGGER_KEYWORD_EVENTS } from '../keywords.ts';
 import { evaluatePermanent, inspectCardContinuousBreakdown, permanentHasLostAllAbilities } from '../ruleTree.ts';
-import type { CardInstance, GameState, ScryfallCard, SerializedPendingTrigger, StackItem, ZoneType } from '../types.ts';
+import type { CardInstance, CounterType, GameState, ScryfallCard, SerializedPendingTrigger, StackItem, ZoneType } from '../types.ts';
 import type { GameEvent } from './events.ts';
 import {
 	evaluateKickedCountAmount,
@@ -208,6 +208,7 @@ interface SimultaneousLkiEntry {
 	foretold?: boolean;
 	blitzed?: boolean;
 	saddled?: boolean;
+	counters?: Partial<Record<CounterType, number>>;
 }
 
 interface TriggerChannel {
@@ -354,7 +355,8 @@ export function withSimultaneousDestroyLki(
 			...(perm.unlockedFaces ? { unlockedFaces: [...perm.unlockedFaces] } : {}),
 			...(perm.foretold ? { foretold: true } : {}),
 			...(perm.blitzed ? { blitzed: true } : {}),
-			...(perm.saddledThisTurn ? { saddled: true } : {})
+			...(perm.saddledThisTurn ? { saddled: true } : {}),
+			counters: { ...perm.counters }
 		});
 	}
 	const prevMap = ch.simultaneousLki;
@@ -525,6 +527,7 @@ interface Source {
 	foretold?: boolean;
 	blitzed?: boolean;
 	saddled?: boolean;
+	counters?: Partial<Record<CounterType, number>>;
 }
 
 /**
@@ -575,6 +578,13 @@ function abilitiesFor(
 		if (
 			ability.trigger.fromZone !== 'any' &&
 			(source.zone === 'stack' ? kind !== 'cast' : zone !== source.zone)
+		) {
+			continue;
+		}
+		// CR 711.2 / CR 722.2: Striated Leveler and Station abilities exist only while their counter threshold holds.
+		if (
+			ability.grantCondition &&
+			!evaluateCondition(state, ability.grantCondition, source.controllerId, source.obj.instanceId, undefined, source)
 		) {
 			continue;
 		}
@@ -698,6 +708,8 @@ function matchTriggersInner(state: GameState, ev: GameEvent): void {
 			return matchPhase(state, ev);
 		case 'CounterPlaced':
 			return matchCounter(state, ev);
+		case 'CounterRemoved':
+			return matchCounterRemoved(state, ev);
 		case 'BecameTarget':
 			return matchTargeted(state, ev);
 		case 'Attached':
@@ -1122,7 +1134,8 @@ function matchZoneChange(state: GameState, ev: Extract<GameEvent, { kind: 'ZoneC
 						isLookBack: true,
 						...(info.foretold ? { foretold: true } : {}),
 						...(info.blitzed ? { blitzed: true } : {}),
-						...(info.saddled ? { saddled: true } : {})
+						...(info.saddled ? { saddled: true } : {}),
+						...(info.counters ? { counters: info.counters } : {})
 					});
 				}
 			}
@@ -1142,7 +1155,8 @@ function matchZoneChange(state: GameState, ev: Extract<GameEvent, { kind: 'ZoneC
 					isLookBack: true,
 					...(ev.lki.foretold ? { foretold: true } : {}),
 					...(ev.lki.blitzed ? { blitzed: true } : {}),
-					...(ev.lki.saddled ? { saddled: true } : {})
+					...(ev.lki.saddled ? { saddled: true } : {}),
+					...(ev.lki.counters ? { counters: ev.lki.counters } : {})
 				});
 			}
 		}
@@ -1260,10 +1274,21 @@ function emitGrantedTriggerKeywords(
 }
 
 function matchCast(state: GameState, casterId: string, spell: CardInstance, isCopy: boolean): void {
-	const subject = printedSubject(spell, spell.card, casterId);
 	const stackSpell = state.stack.findLast(
 		(s) => s.kind === 'spell' && s.sourceInstanceId === spell.instanceId
 	);
+	const resolvedSpellFaces = stackSpell ? resolveObjectFaces(spell.card, stackItemFaceOptions(stackSpell)) : undefined;
+	const subject = resolvedSpellFaces
+		? printedSubject(
+				spell,
+				spell.card,
+				casterId,
+				false,
+				resolvedSpellFaces.typeLine,
+				spell.tapped,
+				resolvedSpellFaces.colors
+			)
+		: printedSubject(spell, spell.card, casterId);
 	let triggerEventStackItem: StackItem | undefined;
 	if (stackSpell) {
 		triggerEventStackItem = JSON.parse(JSON.stringify(stackSpell)) as StackItem;
@@ -1688,6 +1713,50 @@ function matchCounter(state: GameState, ev: Extract<GameEvent, { kind: 'CounterP
 	}
 }
 
+function matchCounterRemoved(state: GameState, ev: Extract<GameEvent, { kind: 'CounterRemoved' }>): void {
+	if (ev.amount <= 0) return;
+	const found = permanentById(state, ev.objectId);
+	const subject = found
+		? battlefieldSubject(state, found.obj, found.controllerId)
+		: printedSubject(ev.object, ev.object.copiableCard ?? ev.object.card, ev.object.controllerId);
+	const candidates = sources(state, 'counterRemoved');
+	if (
+		ev.object.zone === 'battlefield' &&
+		!ev.object.phasedOut &&
+		!candidates.some((c) => c.obj.instanceId === ev.objectId) &&
+		!permanentHasLostAllAbilities(ev.object, state).lost
+	) {
+		const card = ev.object.copiableCard ?? ev.object.card;
+		for (const faceIndex of activeFacesForObject(ev.object, card, 'battlefield', state)) {
+			if (triggersOf(card, faceIndex).events.has('counterRemoved')) {
+				candidates.push({
+					obj: ev.object,
+					card,
+					faceIndex,
+					controllerId: ev.object.controllerId,
+					zone: 'battlefield'
+				});
+			}
+		}
+	}
+	for (const source of candidates) {
+		for (const { ability, alts } of abilitiesFor(state, source, 'counterRemoved')) {
+			const alt = alts.find((a) => {
+				if (!objectMatches(a.filter, subject, source)) return false;
+				if (a.filter.counter && a.filter.counter !== ev.counterType) return false;
+				if (a.filter.lastCounter && !(ev.previousCount > 0 && ev.newCount === 0)) return false;
+				return true;
+			});
+			if (!alt) continue;
+			record(state, source, ability, 'counterRemoved', {
+				label: 'Counter Removed',
+				eventObject: ev.object,
+				amount: ev.amount
+			});
+		}
+	}
+}
+
 function matchTargeted(state: GameState, ev: Extract<GameEvent, { kind: 'BecameTarget' }>): void {
 	const found = permanentById(state, ev.objectId);
 	if (!found) return;
@@ -1990,8 +2059,8 @@ export function evaluateCondition(
 			return n >= cond.count;
 		}
 		case 'compare': {
-			const l = amount(state, cond.left, controllerId, sourceInstanceId, stackItem);
-			const r = amount(state, cond.right, controllerId, sourceInstanceId, stackItem);
+			const l = amount(state, cond.left, controllerId, sourceInstanceId, stackItem, source);
+			const r = amount(state, cond.right, controllerId, sourceInstanceId, stackItem, source);
 			if (l === null || r === null) return false;
 			switch (cond.op) {
 				case '>=':
@@ -2017,7 +2086,8 @@ function amount(
 	a: Amount,
 	controllerId: string,
 	sourceInstanceId: string,
-	stackItem?: StackItem
+	stackItem?: StackItem,
+	source?: Source
 ): number | null {
 	const controller = state.players.find((p) => p.playerId === controllerId);
 	if (!controller) return null;
@@ -2028,6 +2098,18 @@ function amount(
 			return playerCommanderCastCount(state, controllerId);
 		case 'stormCount':
 			return stackItem?.stormCount ?? 0;
+		case 'tappedCostPower':
+			return stackItem?.tappedCostPower ?? 0;
+		case 'countersOn': {
+			if (a.of.k !== 'self') return null;
+			if (source?.isLookBack && source.counters) {
+				return source.counters[a.counter] ?? 0;
+			}
+			const found = permanentById(state, sourceInstanceId);
+			if (found) return found.obj.counters[a.counter] ?? 0;
+			if (source) return source.counters?.[a.counter] ?? source.obj.counters[a.counter] ?? 0;
+			return 0;
+		}
 		case 'kickedCount':
 			return evaluateKickedCountAmount(
 				a,

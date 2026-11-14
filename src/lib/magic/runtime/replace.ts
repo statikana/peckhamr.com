@@ -680,8 +680,11 @@ export function spellCannotBeCountered(state: GameState, item: StackItem): boole
 			stun: 0,
 			lore: 0,
 			time: 0,
-			age: 0
+			age: 0,
+			level: 0,
+			fade: 0
 		},
+		...(item.spellMods?.prototyped || item.copiableState?.prototyped ? { prototyped: true } : {}),
 		isToken: false,
 		damageMarked: 0,
 		deathtouchDamageMarked: false,

@@ -19,21 +19,33 @@ import type {
 	ActivatedAbility,
 	ActivationRestriction,
 	Characteristics,
+	Condition,
 	CostDef,
 	EffectStep,
 	FaceDefinition,
 	KeywordDef,
 	ObjectFilter,
+	PrototypeSpec,
 	SpellAbility,
 	Span,
 	StaticDef,
 	TargetSpec,
 	Timing,
+	TriggeredAbility,
 	TriggerDef,
 	UnsupportedAbility,
 	UnsupportedReason
 } from '../ir.ts';
 import { getKeywordSpec, IMPLEMENTED_KEYWORDS, KNOWN_KEYWORDS } from '../keywords.ts';
+import {
+	andConditions,
+	buildFadingAbilities,
+	buildLevelRangeCondition,
+	buildStationCounterCondition,
+	buildVanishingAbilities,
+	parseManaValueFromCostString,
+	parsePrototypeColorsFromManaCost
+} from '../runtime/striatedFrames.ts';
 import { getCardFaces } from '../scryfall.ts';
 import type { CardLayout, ManaColor, ScryfallCard, ScryfallCardFace, ZoneType } from '../types.ts';
 import { parseAdditionalCostSentence, parseCost, parseCostModifierSentence, parseObjectPhrase } from './costs.ts';
@@ -72,11 +84,17 @@ export function compileSingleFace(
 	const characteristics = buildCharacteristicsForFace(face, topCard, layout);
 	const norm = normalizeFace(face.name, face.oracleText);
 
+	const cardManaValue =
+		layout === 'split' && topCard?.faces && topCard.faces.length >= 2
+			? topCard.faces.reduce((sum, f) => sum + parseManaValueFromCostString(f.manaCost), 0)
+			: parseManaValueFromCostString(characteristics.manaCost);
+
 	const ctx: Ctx = {
 		isSpell: characteristics.types.includes('Instant') || characteristics.types.includes('Sorcery'),
 		isPlaneswalker: characteristics.types.includes('Planeswalker'),
 		manaTapTaken: false,
-		hasReadAhead: false
+		hasReadAhead: false,
+		cardManaValue
 	};
 	const abilities: AbilityDef[] = [];
 	const spellLines: NormalizedLine[] = [];
@@ -89,7 +107,9 @@ export function compileSingleFace(
 		}
 	}
 
-	for (const group of groupLines(norm.lines)) {
+	const { baseLines, levelStriations, stationStriations } = partitionStriatedLines(norm);
+
+	for (const group of groupLines(baseLines)) {
 		const line = group[0];
 		const sagaOut = sagaChapterLine(group);
 		if (sagaOut) {
@@ -117,6 +137,106 @@ export function compileSingleFace(
 			}
 		} else abilities.push(...staticGroup(group));
 	}
+
+	// CR 711.5: Leveler striations ("LEVEL N1-N2" / "LEVEL N3+").
+	for (const st of levelStriations) {
+		if (!st.pt) {
+			abilities.push(unsupported('unparsed', st.headerText, st.headerSpan, [st.headerSpan]));
+			continue;
+		}
+		const cond = buildLevelRangeCondition(st.min, st.max);
+		if (st.pt.power !== null && st.pt.toughness !== null) {
+			abilities.push({
+				kind: 'static',
+				static: {
+					k: 'continuous',
+					layer: '7b',
+					affected: 'self',
+					condition: cond,
+					mod: {
+						k: 'setBasePT',
+						power: { k: 'const', n: st.pt.power },
+						toughness: { k: 'const', n: st.pt.toughness }
+					}
+				},
+				span: st.pt.span
+			});
+		}
+		for (const innerGroup of groupLines(st.innerLines)) {
+			for (const ab of compilePermanentGroup(ctx, innerGroup)) {
+				abilities.push(...gateAbilityByStriationCondition(ab, cond, norm.text));
+			}
+		}
+	}
+
+	// CR 722.2: Station striations ("N+ | [abilities]" / "STATION N+").
+	if (stationStriations.length > 0) {
+		const isNonCreatureFace = !characteristics.types.includes('Creature');
+		const printedPower = characteristics.power;
+		const printedToughness = characteristics.toughness;
+		const hasPrintedStationPT =
+			isNonCreatureFace &&
+			(printedPower !== undefined ||
+				printedToughness !== undefined ||
+				Boolean(characteristics.ptDefinedByAbility));
+		const reminderThresholdMatch = face.oracleText.match(/\bcreature at (\d+)\+/i);
+		const defaultCreatureThreshold = reminderThresholdMatch
+			? parseInt(reminderThresholdMatch[1], 10)
+			: Math.max(...stationStriations.map((s) => s.threshold));
+		let animatedViaStation = false;
+
+		for (const st of stationStriations) {
+			const cond = buildStationCounterCondition(st.threshold);
+			const explicitPT = st.explicitPT;
+			const isImplicitCreatureTier =
+				!explicitPT && hasPrintedStationPT && st.threshold === defaultCreatureThreshold;
+			if (explicitPT || isImplicitCreatureTier) {
+				animatedViaStation = true;
+				abilities.push({
+					kind: 'static',
+					static: {
+						k: 'continuous',
+						layer: '4',
+						affected: 'self',
+						condition: cond,
+						mod: { k: 'addTypes', types: ['Artifact', 'Creature'] }
+					},
+					span: st.headerSpan
+				});
+				const p = explicitPT ? explicitPT.power : printedPower;
+				const t = explicitPT ? explicitPT.toughness : printedToughness;
+				if (p !== undefined && p !== null && t !== undefined && t !== null) {
+					abilities.push({
+						kind: 'static',
+						static: {
+							k: 'continuous',
+							layer: '7b',
+							affected: 'self',
+							condition: cond,
+							mod: {
+								k: 'setBasePT',
+								power: { k: 'const', n: p },
+								toughness: { k: 'const', n: t }
+							}
+						},
+						span: st.headerSpan
+					});
+				}
+			}
+			for (const innerGroup of groupLines(st.innerLines)) {
+				for (const ab of compilePermanentGroup(ctx, innerGroup)) {
+					abilities.push(...gateAbilityByStriationCondition(ab, cond, norm.text));
+				}
+			}
+		}
+
+		// CR 722.2c: Non-creature Station cards do not have printed power/toughness outside the station symbol.
+		if (animatedViaStation && isNonCreatureFace) {
+			delete characteristics.power;
+			delete characteristics.toughness;
+		}
+	}
+
 	if (spellLines.length > 0) abilities.push(...spellAbility(norm, spellLines));
 
 	let grantIdx = 0;
@@ -135,7 +255,8 @@ export function compileSingleFace(
 		name: face.name,
 		characteristics,
 		abilities,
-		...(ctx.hasReadAhead ? { hasReadAhead: true } : {})
+		...(ctx.hasReadAhead ? { hasReadAhead: true } : {}),
+		...(ctx.prototypeSpec ? { prototypeSpec: ctx.prototypeSpec } : {})
 	};
 }
 
@@ -165,6 +286,295 @@ interface Ctx {
 	/** The first "{T}: Add ..." ability gets the id `mana_tap`. */
 	manaTapTaken: boolean;
 	hasReadAhead: boolean;
+	cardManaValue: number;
+	prototypeSpec?: PrototypeSpec;
+}
+
+interface LevelStriation {
+	min: number;
+	max?: number;
+	headerText: string;
+	headerSpan: Span;
+	pt: { power: number | null; toughness: number | null; span: Span } | null;
+	innerLines: NormalizedLine[];
+}
+
+interface StationStriation {
+	threshold: number;
+	headerSpan: Span;
+	explicitPT?: { power: number; toughness: number };
+	innerLines: NormalizedLine[];
+}
+
+const LEVEL_HEADER_RE = /^LEVEL\s+(\d+)(?:\s*[—–-]\s*(\d+)|\+)(?:\s*(?:\|\s*)?(-?\d+|\*)\/(-?\d+|\*))?$/i;
+const STATION_HEADER_RE = /^(?:STATION\s+(\d+)\+(?:\s*\|\s*(.*))?|(\d+)\+\s*\|\s*(.*))$/i;
+const STANDALONE_PT_RE = /^\[?(-?\d+|\*)\/(-?\d+|\*)\]?$/;
+
+function parsePTPair(pRaw: string, tRaw: string): { power: number | null; toughness: number | null } {
+	return {
+		power: /^-?\d+$/.test(pRaw) ? parseInt(pRaw, 10) : null,
+		toughness: /^-?\d+$/.test(tRaw) ? parseInt(tRaw, 10) : null
+	};
+}
+
+function partitionStriatedLines(norm: NormalizedFace): {
+	baseLines: NormalizedLine[];
+	levelStriations: LevelStriation[];
+	stationStriations: StationStriation[];
+} {
+	const baseLines: NormalizedLine[] = [];
+	const levelStriations: LevelStriation[] = [];
+	const stationStriations: StationStriation[] = [];
+	const hasStation = norm.lines.some(
+		(l) => /^station$/i.test(l.body.trim()) || /^STATION\s+\d+\+/i.test(l.text.trim())
+	);
+
+	let i = 0;
+	while (i < norm.lines.length) {
+		const line = norm.lines[i];
+		const levelMatch = line.text.trim().match(LEVEL_HEADER_RE);
+		if (levelMatch) {
+			const min = parseInt(levelMatch[1], 10);
+			const max = levelMatch[2] !== undefined ? parseInt(levelMatch[2], 10) : undefined;
+			let pt: LevelStriation['pt'] = null;
+			if (levelMatch[3] !== undefined && levelMatch[4] !== undefined) {
+				pt = { ...parsePTPair(levelMatch[3], levelMatch[4]), span: line.span };
+			} else if (i + 1 < norm.lines.length) {
+				const nextPt = norm.lines[i + 1].text.trim().match(STANDALONE_PT_RE);
+				if (nextPt) {
+					pt = { ...parsePTPair(nextPt[1], nextPt[2]), span: norm.lines[i + 1].span };
+					i++;
+				}
+			}
+			const innerLines: NormalizedLine[] = [];
+			i++;
+			while (i < norm.lines.length) {
+				const cand = norm.lines[i];
+				if (LEVEL_HEADER_RE.test(cand.text.trim())) break;
+				if (hasStation && STATION_HEADER_RE.test(cand.text.trim())) break;
+				innerLines.push(cand);
+				i++;
+			}
+			levelStriations.push({
+				min,
+				max,
+				headerText: line.text,
+				headerSpan: line.span,
+				pt,
+				innerLines
+			});
+			continue;
+		}
+
+		const stationMatch = hasStation ? line.text.trim().match(STATION_HEADER_RE) : null;
+		if (stationMatch) {
+			const threshold = parseInt(stationMatch[1] ?? stationMatch[3], 10);
+			let explicitPT: StationStriation['explicitPT'];
+			const innerLines: NormalizedLine[] = [];
+
+			const pipeIdx = line.text.indexOf('|');
+			if (pipeIdx >= 0) {
+				let afterPipe = line.text.slice(pipeIdx + 1);
+				const leadSpaces = afterPipe.length - afterPipe.trimStart().length;
+				afterPipe = afterPipe.trimStart();
+				let bodyStart = line.span.start + pipeIdx + 1 + leadSpaces;
+				const trailingBracketPT = afterPipe.match(/\s*\[(-?\d+)\/(-?\d+)\]\s*$/);
+				if (trailingBracketPT) {
+					explicitPT = {
+						power: parseInt(trailingBracketPT[1], 10),
+						toughness: parseInt(trailingBracketPT[2], 10)
+					};
+					afterPipe = afterPipe.slice(0, afterPipe.length - trailingBracketPT[0].length);
+				}
+				const trimmedRight = afterPipe.trimEnd();
+				if (trimmedRight.length > 0) {
+					const subSpan: Span = { start: bodyStart, end: bodyStart + trimmedRight.length };
+					innerLines.push({
+						rawIndex: line.rawIndex,
+						raw: line.raw,
+						text: trimmedRight,
+						span: subSpan,
+						body: trimmedRight,
+						bodySpan: subSpan,
+						sentences: splitSentences(trimmedRight, bodyStart)
+					});
+				}
+			}
+
+			i++;
+			while (i < norm.lines.length) {
+				const cand = norm.lines[i];
+				if (STATION_HEADER_RE.test(cand.text.trim()) || LEVEL_HEADER_RE.test(cand.text.trim())) {
+					break;
+				}
+				const ptLine = cand.text.trim().match(/^\[?(-?\d+)\/(-?\d+)\]?$/);
+				if (ptLine && !explicitPT) {
+					explicitPT = { power: parseInt(ptLine[1], 10), toughness: parseInt(ptLine[2], 10) };
+				} else {
+					innerLines.push(cand);
+				}
+				i++;
+			}
+
+			stationStriations.push({
+				threshold,
+				headerSpan: line.span,
+				...(explicitPT ? { explicitPT } : {}),
+				innerLines
+			});
+			continue;
+		}
+
+		baseLines.push(line);
+		i++;
+	}
+
+	return { baseLines, levelStriations, stationStriations };
+}
+
+function compilePermanentGroup(ctx: Ctx, group: NormalizedLine[]): AbilityDef[] {
+	const line = group[0];
+	const sagaOut = sagaChapterLine(group);
+	if (sagaOut) return sagaOut;
+	return (
+		(group.length === 1 ? keywordLine(ctx, line) : null) ??
+		triggerLine(group) ??
+		activatedLine(ctx, group) ??
+		staticGroup(group)
+	);
+}
+
+function gateAbilityByStriationCondition(
+	ab: AbilityDef,
+	cond: Condition,
+	normText: string
+): AbilityDef[] {
+	if (ab.kind === 'keyword') {
+		const kw = ab.keyword;
+		const spec = getKeywordSpec(kw.name);
+		if (spec?.displayLabel && !kw.param && kw.cost === undefined && kw.n === undefined) {
+			return [
+				{
+					kind: 'static',
+					static: {
+						k: 'continuous',
+						layer: '6',
+						affected: 'self',
+						condition: cond,
+						mod: { k: 'addKeywords', keywords: [kw.name] }
+					},
+					span: ab.span
+				}
+			];
+		}
+		if (kw.name === 'hexproof' && kw.param) {
+			return [
+				{
+					kind: 'static',
+					static: {
+						k: 'continuous',
+						layer: '6',
+						affected: 'self',
+						condition: cond,
+						mod: { k: 'addKeywords', keywords: [`hexproof from ${kw.param.toLowerCase()}`] }
+					},
+					span: ab.span
+				}
+			];
+		}
+		if (kw.name === 'protection' && kw.param) {
+			return [
+				{
+					kind: 'static',
+					static: {
+						k: 'continuous',
+						layer: '6',
+						affected: 'self',
+						condition: cond,
+						mod: { k: 'addKeywords', keywords: [`protection from ${kw.param.toLowerCase()}`] }
+					},
+					span: ab.span
+				}
+			];
+		}
+		if (kw.name === 'ward' && (kw.cost || kw.param)) {
+			const wardStr = kw.cost ? `Ward ${kw.cost}` : `Ward—${kw.param}`;
+			return [
+				{
+					kind: 'static',
+					static: {
+						k: 'continuous',
+						layer: '6',
+						affected: 'self',
+						condition: cond,
+						mod: { k: 'addKeywords', keywords: [wardStr] }
+					},
+					span: ab.span
+				}
+			];
+		}
+		if (spec?.status === 'implemented' && spec.implementation?.kind === 'static') {
+			const statics = spec.implementation.buildStatics(kw);
+			if (statics.length > 0) {
+				return statics.map((st) => ({
+					kind: 'static' as const,
+					static: { ...st, condition: andConditions(st.condition, cond) },
+					span: ab.span
+				}));
+			}
+		}
+		if (
+			spec?.status === 'implemented' &&
+			spec.implementation?.kind === 'activated' &&
+			spec.implementation.buildActivated
+		) {
+			const built = spec.implementation.buildActivated(kw, ab.id ?? `act_${ab.span.start}`, ab.span);
+			if (built) {
+				return [
+					{
+						...built.ability,
+						grantCondition: andConditions(built.ability.grantCondition, cond)
+					}
+				];
+			}
+		}
+		if (spec?.status === 'implemented' && spec.implementation?.kind === 'trigger') {
+			const rts = spec.implementation.buildTriggers(kw, 0, ab.span);
+			if (rts.length > 0 && rts.every((rt) => rt.effect)) {
+				return rts.map(
+					(rt): TriggeredAbility => ({
+						kind: 'triggered',
+						trigger: rt.trigger,
+						...(rt.condition ? { condition: rt.condition } : {}),
+						grantCondition: cond,
+						targets: rt.effect!.targets,
+						effect: rt.effect!.steps,
+						...(rt.effect!.modal ? { modal: rt.effect!.modal } : {}),
+						text: rt.text,
+						span: ab.span
+					})
+				);
+			}
+		}
+		return [
+			unsupported('static_not_compiled', normText.slice(ab.span.start, ab.span.end), ab.span, [ab.span])
+		];
+	}
+	if (ab.kind === 'static') {
+		return [{ ...ab, static: { ...ab.static, condition: andConditions(ab.static.condition, cond) } }];
+	}
+	if (ab.kind === 'replacement') {
+		return [
+			{
+				...ab,
+				replacement: { ...ab.replacement, condition: andConditions(ab.replacement.condition, cond) }
+			}
+		];
+	}
+	if (ab.kind === 'triggered' || ab.kind === 'activated' || ab.kind === 'unsupported') {
+		return [{ ...ab, grantCondition: andConditions(ab.grantCondition, cond) }];
+	}
+	return [ab];
 }
 
 // ---- Grouping -------------------------------------------------------------------------------
@@ -251,9 +661,42 @@ function parseKeyword(part: string): KeywordDef | null {
 			kw === 'cumulative upkeep' ||
 			kw === 'cycling' ||
 			kw === 'basic landcycling' ||
-			kw === 'landcycling'
+			kw === 'landcycling' ||
+			kw === 'offspring' ||
+			kw === 'squad' ||
+			kw === 'replicate' ||
+			kw === 'warp' ||
+			kw === 'transmute' ||
+			kw === 'level up' ||
+			kw === 'reinforce' ||
+			kw === 'prototype'
 				? rawArg.replace(/\.$/, '').trim()
 				: rawArg;
+		if (kw === 'prototype') {
+			const protoMatch = arg.match(/^((?:\{[^}]+\})+)\s*[—–-]\s*(-?\d+)\/(-?\d+)$/);
+			if (protoMatch && !/\{X\}/i.test(protoMatch[1])) {
+				const manaCost = protoMatch[1];
+				return {
+					name: 'prototype',
+					cost: manaCost,
+					prototypeSpec: {
+						manaCost,
+						colors: parsePrototypeColorsFromManaCost(manaCost),
+						power: parseInt(protoMatch[2], 10),
+						toughness: parseInt(protoMatch[3], 10)
+					}
+				};
+			}
+		}
+		if (kw === 'reinforce') {
+			const reinfMatch = arg.match(/^(\d+)\s*[—–-]\s*(.+)$/);
+			if (reinfMatch) {
+				const n = parseInt(reinfMatch[1], 10);
+				const costPart = reinfMatch[2].trim();
+				if (/^(\{[^}]+\})+$/.test(costPart)) return { name: 'reinforce', n, cost: costPart };
+				return { name: 'reinforce', n, param: costPart };
+			}
+		}
 		if (/^(\{[^}]+\})+$/.test(arg)) return { name: kw, cost: arg };
 		if (/^\d+$/.test(arg)) return { name: kw, n: parseInt(arg, 10) };
 		const nCost = arg.match(/^(\d+)\s*—\s*((?:\{[^}]+\})+)$/);
@@ -300,7 +743,7 @@ function keywordLine(ctx: Ctx, line: NormalizedLine): AbilityDef[] | null {
 	if (
 		line.abilityWord ||
 		(/\.$/.test(line.body) &&
-			!/^(?:ward|flashback|kicker|multikicker|morph|megamorph|disguise|unearth|buyback|evoke|escape|foretell|plot|entwine|disturb|blitz|cumulative upkeep|cycling|(?:[a-z][a-z -]*\s+)?[a-z]*cycling)\s*[—-]/i.test(
+			!/^(?:ward|flashback|kicker|multikicker|morph|megamorph|disguise|unearth|buyback|evoke|escape|foretell|plot|entwine|disturb|blitz|cumulative upkeep|offspring|squad|replicate|warp|transmute|level up|reinforce(?:\s+\d+)?|cycling|(?:[a-z][a-z -]*\s+)?[a-z]*cycling)\s*[—-]/i.test(
 				line.body
 			))
 	) {
@@ -309,7 +752,7 @@ function keywordLine(ctx: Ctx, line: NormalizedLine): AbilityDef[] | null {
 	// "Enchant creature, land, or planeswalker", "Protection from white, from blue", and composite
 	// dash costs ("Ward—...", "Flashback—...", "Kicker—...", "Morph—...", "Cycling—...", "Escape—...") are one keyword.
 	const parts =
-		/^(?:enchant|protection from|hexproof from|partner with|(?:ward|flashback|kicker|multikicker|morph|megamorph|disguise|unearth|buyback|evoke|escape|foretell|plot|entwine|disturb|blitz|cumulative upkeep|cycling|(?:[a-z][a-z -]*\s+)?[a-z]*cycling)\s*[—-])/i.test(
+		/^(?:enchant|protection from|hexproof from|partner with|prototype\b|(?:ward|flashback|kicker|multikicker|morph|megamorph|disguise|unearth|buyback|evoke|escape|foretell|plot|entwine|disturb|blitz|cumulative upkeep|offspring|squad|replicate|warp|transmute|level up|reinforce(?:\s+\d+)?|cycling|(?:[a-z][a-z -]*\s+)?[a-z]*cycling)\s*[—–-])/i.test(
 			line.body
 		)
 			? [line.body]
@@ -377,7 +820,8 @@ function keywordLine(ctx: Ctx, line: NormalizedLine): AbilityDef[] | null {
 			keyword.name === 'plot' ||
 			keyword.name === 'entwine' ||
 			keyword.name === 'disturb' ||
-			keyword.name === 'blitz'
+			keyword.name === 'blitz' ||
+			keyword.name === 'warp'
 		) {
 			const kwCost = keyword.cost ?? keyword.param ?? '';
 			const parsed = parseCost(kwCost);
@@ -386,6 +830,70 @@ function keywordLine(ctx: Ctx, line: NormalizedLine): AbilityDef[] | null {
 				return;
 			}
 			keyword.costDefs = parsed.defs;
+		}
+		if (
+			keyword.name === 'offspring' ||
+			keyword.name === 'squad' ||
+			keyword.name === 'replicate'
+		) {
+			const kwCost = keyword.cost ?? keyword.param ?? '';
+			const parsed = parseCost(kwCost);
+			const ok =
+				parsed.unparsed.length === 0 &&
+				parsed.defs.length > 0 &&
+				parsed.defs.every(
+					(d) => SUPPORTED_OPTIONAL_COST_KINDS.has(d.k) && (d.k !== 'mana' || !/\{X\}/i.test(d.cost))
+				);
+			if (!ok) {
+				out.push(unsupported('unparsed', part, span, [span]));
+				return;
+			}
+			keyword.costDefs = parsed.defs;
+		}
+		if (
+			keyword.name === 'level up' ||
+			keyword.name === 'transmute' ||
+			keyword.name === 'reinforce'
+		) {
+			if (keyword.name === 'reinforce' && keyword.n === undefined) {
+				out.push(unsupported('unparsed', part, span, [span]));
+				return;
+			}
+			const kwCost = keyword.cost ?? keyword.param ?? '';
+			const parsed = parseCost(kwCost);
+			const ok =
+				parsed.unparsed.length === 0 &&
+				parsed.defs.length > 0 &&
+				parsed.defs.every((d) => d.k !== 'mana' || !/\{X\}/i.test(d.cost));
+			if (!ok) {
+				out.push(unsupported('unparsed', part, span, [span]));
+				return;
+			}
+			keyword.costDefs = parsed.defs;
+			if (keyword.name === 'transmute') {
+				keyword.n = ctx.cardManaValue;
+			}
+		}
+		if (keyword.name === 'prototype') {
+			if (!keyword.prototypeSpec) {
+				out.push(unsupported('unparsed', part, span, [span]));
+				return;
+			}
+			ctx.prototypeSpec = keyword.prototypeSpec;
+		}
+		if (
+			(keyword.name === 'casualty' || keyword.name === 'fading') &&
+			(keyword.n === undefined || keyword.cost !== undefined || keyword.param !== undefined)
+		) {
+			out.push(unsupported('unparsed', part, span, [span]));
+			return;
+		}
+		if (
+			keyword.name === 'vanishing' &&
+			(keyword.cost !== undefined || keyword.param !== undefined)
+		) {
+			out.push(unsupported('unparsed', part, span, [span]));
+			return;
 		}
 		if (keyword.name === 'cumulative upkeep') {
 			let kwCost = (keyword.cost ?? keyword.param ?? '').trim();
@@ -525,6 +1033,10 @@ function keywordLine(ctx: Ctx, line: NormalizedLine): AbilityDef[] | null {
 		const crewId = i === 0 ? `crew_${line.rawIndex}` : `crew_${line.rawIndex}_${i}`;
 		const saddleId = i === 0 ? `saddle_${line.rawIndex}` : `saddle_${line.rawIndex}_${i}`;
 		const unearthId = i === 0 ? `unearth_${line.rawIndex}` : `unearth_${line.rawIndex}_${i}`;
+		const stationId = i === 0 ? `station_${line.rawIndex}` : `station_${line.rawIndex}_${i}`;
+		const levelUpId = i === 0 ? `level_up_${line.rawIndex}` : `level_up_${line.rawIndex}_${i}`;
+		const transmuteId = i === 0 ? `transmute_${line.rawIndex}` : `transmute_${line.rawIndex}_${i}`;
+		const reinforceId = i === 0 ? `reinforce_${line.rawIndex}` : `reinforce_${line.rawIndex}_${i}`;
 		out.push({
 			kind: 'keyword',
 			keyword,
@@ -539,8 +1051,21 @@ function keywordLine(ctx: Ctx, line: NormalizedLine): AbilityDef[] | null {
 							? { id: saddleId }
 							: keyword.name === 'unearth'
 								? { id: unearthId }
-								: {})
+								: keyword.name === 'station'
+									? { id: stationId }
+									: keyword.name === 'level up'
+										? { id: levelUpId }
+										: keyword.name === 'transmute'
+											? { id: transmuteId }
+											: keyword.name === 'reinforce'
+												? { id: reinforceId }
+												: {})
 		});
+		if (keyword.name === 'vanishing') {
+			out.push(...buildVanishingAbilities(keyword.n, span));
+		} else if (keyword.name === 'fading' && keyword.n !== undefined) {
+			out.push(...buildFadingAbilities(keyword.n, span));
+		}
 		// CR 702.124j: "Partner with [name]" is two abilities. The pairing half is the keyword above
 		// (deck construction); the other is "When this permanent enters, target player may search their
 		// library for a card named [name], reveal it, put it into their hand, then shuffle."

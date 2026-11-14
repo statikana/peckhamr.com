@@ -151,7 +151,14 @@ export interface EffectPorts {
 	/** Counters a spell unless it can't be countered. Returns true if it was countered. */
 	counterSpell(state: GameState, item: StackItem, target: StackItem, controller: PlayerGameState): boolean;
 	createToken(state: GameState, controller: PlayerGameState, spec: TokenSpec): CardInstance;
-	copyPermanentAsToken(state: GameState, controller: PlayerGameState, inst: CardInstance, title: string, notLegendary?: boolean): CardInstance;
+	copyPermanentAsToken(
+		state: GameState,
+		controller: PlayerGameState,
+		inst: CardInstance,
+		title: string,
+		notLegendary?: boolean,
+		exceptPT?: { power: number; toughness: number }
+	): CardInstance;
 	triggerOnEtb(state: GameState, controller: PlayerGameState, inst: CardInstance): void;
 	triggerOnAttach(state: GameState, controller: PlayerGameState, attached: CardInstance, to: CardInstance): void;
 	addCounters(state: GameState, inst: CardInstance, counter: CounterType, amount: number): number;
@@ -627,7 +634,9 @@ export function proliferateCandidates(
 		'stun',
 		'lore',
 		'time',
-		'age'
+		'age',
+		'level',
+		'fade'
 	];
 	const controllerPositiveTypes: CounterType[] = [
 		'+1/+1',
@@ -635,7 +644,9 @@ export function proliferateCandidates(
 		'charge',
 		'shield',
 		'lore',
-		'time'
+		'time',
+		'level',
+		'fade'
 	];
 	const opponentNegativeTypes: CounterType[] = ['-1/-1', 'stun', 'age'];
 	const candidates: string[] = [];
@@ -1273,6 +1284,35 @@ class Run {
 				return this.ctx.item.stormCount ?? 0;
 			case 'kickedCount':
 				return evaluateKickedCountAmount(a, this.kickerInfo());
+			case 'tappedCostPower': {
+				const tappedId = this.ctx.item.stationTappedId;
+				if (tappedId) {
+					const found = this.locate(tappedId);
+					if (
+						found &&
+						found.zone === 'battlefield' &&
+						!found.inst.phasedOut &&
+						(this.ctx.item.stationTappedVersion === undefined ||
+							(found.inst.objectVersion ?? 1) === this.ctx.item.stationTappedVersion)
+					) {
+						return Math.max(0, P().power(this.state, found.inst));
+					}
+				}
+				return Math.max(0, this.ctx.item.tappedCostPower ?? 0);
+			}
+			case 'countersOn': {
+				const id = this.refId(a.of);
+				const found = id ? this.locate(id) : null;
+				if (!found || found.zone !== 'battlefield' || found.inst.phasedOut) return 0;
+				if (
+					a.of.k === 'self' &&
+					this.ctx.item.sourceObjectVersion !== undefined &&
+					(found.inst.objectVersion ?? 1) !== this.ctx.item.sourceObjectVersion
+				) {
+					return 0;
+				}
+				return found.inst.counters[a.counter] ?? 0;
+			}
 			case 'stat': {
 				const snap = this.refSnapshot(a.of, Boolean(a.lki));
 				if (!snap) return 0;
@@ -1884,12 +1924,38 @@ class Run {
 				return;
 			}
 			case 'copyPermanent': {
-				const objs = this.objects(step.subject).filter((o) => o.zone === 'battlefield');
 				const actor = step.actor ? this.playerRef(step.actor) : you;
 				if (!actor) return;
+				let objs = this.objects(step.subject).filter(
+					(o) =>
+						o.zone === 'battlefield' &&
+						(step.subject.k !== 'self' ||
+							this.ctx.item.sourceObjectVersion === undefined ||
+							(o.objectVersion ?? 1) === this.ctx.item.sourceObjectVersion)
+				);
+				// CR 707.11: If the source of an effect creating a token copy of itself (e.g. Offspring, Squad)
+				// left the battlefield before resolution, use its last known copiable characteristics.
+				if (objs.length === 0 && step.subject.k === 'self' && this.ctx.item.sourceInstanceId) {
+					const lkiSelf = this.syntheticLkiObject(this.ctx.item.sourceInstanceId, actor.playerId);
+					if (this.ctx.item.faceIndex !== undefined) {
+						lkiSelf.activeFaceIndex = this.ctx.item.faceIndex;
+					}
+					if (this.ctx.item.sourcePrototyped) {
+						lkiSelf.prototyped = true;
+					}
+					objs = [lkiSelf];
+				}
+				const copiesPerObj =
+					Math.max(0, this.amount(step.amount, 1)) * tokenMultiplier(s, actor.playerId);
+				if (copiesPerObj <= 0) return;
 				const notLegendary = Boolean(step.params?.notLegendary);
+				const exceptPT = step.params?.exceptPT;
 				const made: CardInstance[] = [];
-				for (const o of objs) made.push(p.copyPermanentAsToken(s, actor, o, title, notLegendary));
+				for (const o of objs) {
+					for (let i = 0; i < copiesPerObj; i++) {
+						made.push(p.copyPermanentAsToken(s, actor, o, title, notLegendary, exceptPT));
+					}
+				}
 				this.bind(step, made);
 				return;
 			}
@@ -1917,6 +1983,61 @@ class Run {
 				if (!paused && step.subject.k === 'all') {
 					p.addLog(s, 'cast', `${you.username} put ${n} ${counter} counter(s) on ${total} permanent(s).`, you.playerId);
 				}
+				return;
+			}
+			case 'removeCounters': {
+				const counter = step.params?.counter ?? '+1/+1';
+				const want = Math.max(0, this.amount(step.amount, 1));
+				const sacrificeIfUnable = Boolean(step.params?.ifUnableSacrificeSelf);
+				this.runIndexedBatch(
+					`batch:${this.stepIndex}`,
+					() => {
+						const objs = this.objects(step.subject).filter(
+							(o) =>
+								o.zone === 'battlefield' &&
+								(step.subject.k !== 'self' ||
+									this.ctx.item.sourceObjectVersion === undefined ||
+									(o.objectVersion ?? 1) === this.ctx.item.sourceObjectVersion)
+						);
+						this.bind(step, objs);
+						return objs.map((o) => o.instanceId);
+					},
+					(id) => {
+						const f = this.locate(id);
+						if (!f || f.zone !== 'battlefield') return;
+						const inst = f.inst;
+						const prev = inst.counters[counter] || 0;
+						const next = Math.max(0, prev - want);
+						const removed = prev - next;
+						if (removed > 0) {
+							inst.counters[counter] = next;
+							noteLayerInputsChanged(s);
+							p.addLog(
+								s,
+								'cast',
+								`Removed ${removed} ${counter} counter(s) from ${inst.card.name} (${next} remaining).`,
+								you.playerId
+							);
+							if (!inst.phasedOut) {
+								emitEvent(s, {
+									kind: 'CounterRemoved',
+									objectId: inst.instanceId,
+									object: inst,
+									counterType: counter,
+									amount: removed,
+									previousCount: prev,
+									newCount: next
+								});
+								flushTriggers(s);
+							}
+						}
+						if (sacrificeIfUnable && removed < want && inst.zone === 'battlefield') {
+							const res = p.moveFromBattlefield(s, inst, 'graveyard');
+							p.addLog(s, 'cast', `${you.username} sacrificed ${inst.card.name} (${title}).`, you.playerId);
+							return res as MoveResult;
+						}
+					}
+				);
 				return;
 			}
 			case 'proliferate': {
@@ -2154,13 +2275,28 @@ class Run {
 						// CR 122.1d: If a permanent with a stun counter on it would become untapped,
 						// instead remove a stun counter from it.
 						if ((o.counters.stun || 0) > 0) {
-							o.counters.stun = Math.max(0, (o.counters.stun || 0) - 1);
+							const prevStun = o.counters.stun || 0;
+							const nextStun = Math.max(0, prevStun - 1);
+							o.counters.stun = nextStun;
+							noteLayerInputsChanged(s);
 							p.addLog(
 								s,
 								'rule',
 								`A stun counter was removed from ${o.card.name} instead of untapping it (CR 122.1d).`,
 								you.playerId
 							);
+							if (!o.phasedOut) {
+								emitEvent(s, {
+									kind: 'CounterRemoved',
+									objectId: o.instanceId,
+									object: o,
+									counterType: 'stun',
+									amount: 1,
+									previousCount: prevStun,
+									newCount: nextStun
+								});
+								flushTriggers(s);
+							}
 						} else {
 							o.tapped = false;
 							noteLayerInputsChanged(s);
@@ -4219,7 +4355,8 @@ class Run {
 			...(this.ctx.eventLki ? { eventLki: { ...this.ctx.eventLki } } : {}),
 			...(this.ctx.xValue ? { xValue: this.ctx.xValue } : {}),
 			...(item.sourceKickedCount !== undefined ? { kickedCount: item.sourceKickedCount } : {}),
-			...(item.sourceKickedTags?.length ? { kickedTags: [...item.sourceKickedTags] } : {})
+			...(item.sourceKickedTags?.length ? { kickedTags: [...item.sourceKickedTags] } : {}),
+			...(item.sourceKickedTagCounts ? { kickedTagCounts: { ...item.sourceKickedTagCounts } } : {})
 		};
 		const phaseTitle =
 			phase === 'end_combat'

@@ -396,7 +396,7 @@ function extractInnateFromIR(
 			}
 		} else if (ab.kind === 'static') {
 			const st = ab.static;
-			if (st.k === 'restriction' && st.affected === 'self') {
+			if (st.k === 'restriction' && st.affected === 'self' && !st.condition) {
 				if (st.restriction === 'cantBeCountered') {
 					addResult("can't be countered", "Can't be countered", 'keyword');
 				} else if (st.restriction === 'cantBeBlocked') {
@@ -994,10 +994,17 @@ function evaluateLayerAmount(
 		}
 		case 'stormCount':
 			return 0;
+		case 'tappedCostPower':
+			return 0;
+		case 'countersOn': {
+			const refPerm = amount.of.k === 'affected' ? affected : source;
+			return refPerm.inst.counters[amount.counter] || 0;
+		}
 		case 'kickedCount':
 			return evaluateKickedCountAmount(amount, {
 				count: source.inst.kickedCount ?? 0,
-				tags: source.inst.kickedTags ?? []
+				tags: source.inst.kickedTags ?? [],
+				...(source.inst.kickedTagCounts ? { tagCounts: source.inst.kickedTagCounts } : {})
 			});
 		case 'negate':
 			return -evaluateLayerAmount(amount.of, state, workList, source, affected);
@@ -1156,7 +1163,8 @@ function evaluateLayerCondition(
 		case 'kicked':
 			return evaluateKickerCondition(cond, {
 				count: source.inst.kickedCount ?? 0,
-				tags: source.inst.kickedTags ?? []
+				tags: source.inst.kickedTags ?? [],
+				...(source.inst.kickedTagCounts ? { tagCounts: source.inst.kickedTagCounts } : {})
 			});
 		case 'evoked':
 			return Boolean(source.inst.evoked);
@@ -1312,6 +1320,8 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 		fp.push(
 			perm.counters['+1/+1'] || 0,
 			perm.counters['-1/-1'] || 0,
+			perm.counters.charge || 0,
+			perm.counters.level || 0,
 			perm.tempPowerMod || 0,
 			perm.tempToughnessMod || 0,
 			perm.switchedPTCount || 0,
@@ -1451,6 +1461,8 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 		if (
 			fp[i++] !== (perm.counters['+1/+1'] || 0) ||
 			fp[i++] !== (perm.counters['-1/-1'] || 0) ||
+			fp[i++] !== (perm.counters.charge || 0) ||
+			fp[i++] !== (perm.counters.level || 0) ||
 			fp[i++] !== (perm.tempPowerMod || 0) ||
 			fp[i++] !== (perm.tempToughnessMod || 0) ||
 			fp[i++] !== (perm.switchedPTCount || 0) ||
@@ -2090,13 +2102,15 @@ function evaluateAdditiveTypesAndColors(
 		if (source.strippedByAttachment || source.abilityRemovalEvents.length > 0) continue;
 		for (const st of source.statics) {
 			if (st.k !== 'continuous' || st.layer !== '4') continue;
-			if (st.affected !== 'attachedTo' && typeof st.affected !== 'object') continue;
+			if (st.affected !== 'self' && st.affected !== 'attachedTo' && typeof st.affected !== 'object') continue;
 			const candidateTargets: PermWorkState[] =
-				st.affected === 'attachedTo'
-					? source.inst.attachedToId && workMap.has(source.inst.attachedToId)
-						? [workMap.get(source.inst.attachedToId)!]
-						: []
-					: workList;
+				st.affected === 'self'
+					? [source]
+					: st.affected === 'attachedTo'
+						? source.inst.attachedToId && workMap.has(source.inst.attachedToId)
+							? [workMap.get(source.inst.attachedToId)!]
+							: []
+						: workList;
 			if (st.mod.k === 'addTypes') {
 				for (const target of candidateTargets) {
 					if (typeof st.affected === 'object' && !matchesLayerFilter(st.affected, target, source)) {
@@ -2348,11 +2362,39 @@ function evaluatePerPermanent(
 						st.affected === 'self' &&
 						st.mod.k === 'setBasePT'
 					) {
+						if (
+							st.condition &&
+							!evaluateLayerCondition(st.condition, state, workList, target, target)
+						) {
+							continue;
+						}
 						const p = evaluateLayerAmount(st.mod.power, state, workList, target, target);
 						const t = evaluateLayerAmount(st.mod.toughness, state, workList, target, target);
 						target.workingPower = p;
 						target.workingToughness = t;
 						target.ptModifiedBy.push(`${target.baseCard.name} CDA (${p}/${t})`);
+					} else if (
+						st.k === 'continuous' &&
+						st.layer === '7b' &&
+						st.affected === 'self' &&
+						st.mod.k === 'setBasePT'
+					) {
+						// CR 711.2 / CR 722.2b / CR 613.4b: Striated Leveler & Station self base P/T setters
+						// apply in Layer 7b at the permanent's timestamp and are suppressed by Layer 6 ability loss.
+						if (
+							st.condition &&
+							!evaluateLayerCondition(st.condition, state, workList, target, target)
+						) {
+							continue;
+						}
+						const p = evaluateLayerAmount(st.mod.power, state, workList, target, target);
+						const t = evaluateLayerAmount(st.mod.toughness, state, workList, target, target);
+						target.layer7bSetters.push({
+							sourceName: target.name,
+							power: p,
+							toughness: t,
+							timestamp: target.timestamp
+						});
 					}
 				}
 			}
@@ -2768,6 +2810,10 @@ function evaluatePerPermanent(
 						if (st.affected === 'self' && !st.condition) continue; // already in innate items
 						for (const kw of sortGrantedKeywords(st.mod.keywords)) {
 							const kwLow = kw.toLowerCase();
+							if (kwLow.startsWith('ward')) {
+								grantKeywordString(target, kw, source.name, source.timestamp);
+								continue;
+							}
 							const key = kwLow.startsWith('protection from ') ? 'protection' : kwLow;
 							grantItem(
 								target,
