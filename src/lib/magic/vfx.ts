@@ -66,12 +66,17 @@ export class ArenaVfxController {
 	seenEventIds = new Set<string>();
 	screenShake = 0;
 
+	ingestEvents(events: VfxEvent[]): boolean {
+		return this.processEvents(events);
+	}
+
 	processEvents(events: VfxEvent[]): boolean {
 		let triggeredShake = false;
 		const W = typeof window !== 'undefined' ? window.innerWidth : 1280;
 		const H = typeof window !== 'undefined' ? window.innerHeight : 720;
 
 		let phaseBannerOffset = 0;
+		let tokenBannerOffset = 0;
 		for (const ev of events) {
 			if (this.seenEventIds.has(ev.id)) continue;
 			this.seenEventIds.add(ev.id);
@@ -117,6 +122,39 @@ export class ArenaVfxController {
 				}
 				case 'stack_resolve': {
 					this.spawnBurst(targetPos.x, targetPos.y, 24, ['#a9dc76', '#ffd866', '#78dce8']);
+					break;
+				}
+				case 'attack_declare': {
+					this.spawnBurst(targetPos.x, targetPos.y, 30, ['#ff6188', '#fc9867', '#ffd866']);
+					this.addBanner(
+						targetPos.x,
+						targetPos.y - 16,
+						ev.label || (ev.amount ? `${ev.amount} Attacker(s)` : 'ATTACK!'),
+						'#ff6188'
+					);
+					break;
+				}
+				case 'block_declare': {
+					this.spawnBurst(targetPos.x, targetPos.y, 26, ['#78dce8', '#ab9df2', '#fcfcfa']);
+					if (ev.label || ev.amount) {
+						this.addBanner(
+							targetPos.x,
+							targetPos.y - 16,
+							ev.label || `${ev.amount} Blocker(s)`,
+							'#78dce8'
+						);
+					}
+					break;
+				}
+				case 'token_create': {
+					this.spawnBurst(targetPos.x, targetPos.y, 24, ['#a9dc76', '#ffd866', '#78dce8']);
+					this.addBanner(
+						targetPos.x,
+						targetPos.y - 14 + tokenBannerOffset,
+						ev.label ? `+Token: ${ev.label}` : '+Token',
+						'#a9dc76'
+					);
+					tokenBannerOffset = (tokenBannerOffset + 22) % 88;
 					break;
 				}
 				case 'damage': {
