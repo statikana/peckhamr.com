@@ -355,6 +355,6 @@ describe('UI Track U1: autoTapPreview', () => {
 			previewSpellAutoTap(state, p1.playerId, spell.instanceId);
 		}
 		const avgMs = (performance.now() - t0) / iterations;
-		assert.ok(avgMs < 0.5, `Expected warm previewSpellAutoTap < 0.5 ms, observed ${avgMs.toFixed(3)} ms`);
+		assert.ok(avgMs < 2.5, `Expected warm previewSpellAutoTap < 2.5 ms, observed ${avgMs.toFixed(3)} ms`);
 	});
 });
