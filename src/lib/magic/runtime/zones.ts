@@ -313,6 +313,9 @@ function finalizeZoneMove(
 		obj.cantBeRegeneratedThisTurn = undefined;
 		obj.crewedThisTurnByIds = undefined;
 		obj.defaultControllerId = undefined;
+		// --- Track P5 (CR 701.37b / 400.7) ---
+		obj.isMonstrous = undefined;
+		obj.monstrosityX = undefined;
 		const prevObjVersion = obj.objectVersion || 1;
 		const pruneLeftPerm = <T extends { affected: Array<{ instanceId: string; objectVersion?: number }> }>(
 			list: T[] | undefined
@@ -343,6 +346,9 @@ function finalizeZoneMove(
 		obj.saddledThisTurnByIds = undefined;
 		obj.unearthLeaveExile = undefined;
 		obj.defaultControllerId = undefined;
+		// --- Track P5 (CR 701.37b / 400.7) ---
+		obj.isMonstrous = undefined;
+		obj.monstrosityX = undefined;
 		if (dest !== 'stack') {
 			obj.activeFaceIndex = undefined;
 			obj.transformed = false;
@@ -996,7 +1002,8 @@ function captureLki(state: GameState, obj: CardInstance): LeftBattlefieldInfo {
 		...(attachedIds.length > 0 ? { attachedIds } : {}),
 		...(obj.foretold ? { foretold: true } : {}),
 		...(obj.blitzed ? { blitzed: true } : {}),
-		...(obj.saddledThisTurn ? { saddled: true } : {})
+		...(obj.saddledThisTurn ? { saddled: true } : {}),
+		...(obj.isMonstrous ? { monstrous: true } : {})
 	};
 }
 

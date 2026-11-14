@@ -11,7 +11,7 @@
 import type { Amount, CardDefinition, Condition, CostDef, EffectStep, EventFilter, ModalDef, ObjectFilter, Span, TargetSpec, TriggerDef } from '../ir.ts';
 import { getKeywordSpec } from '../keywords.ts';
 import type { GamePhase, TriggerScope } from '../types.ts';
-import { parseObjectPhrase } from './costs.ts';
+import { parseObjectPhrase, singularSubtype } from './costs.ts';
 
 export interface TriggerParse {
 	trigger?: TriggerDef;
@@ -260,6 +260,10 @@ function objectEvent(verb: string, subject: Subject): TriggerDef | null {
 		case 'connives':
 		case 'connive':
 			return def('connive');
+		// --- Track P5 ---
+		case 'becomes monstrous':
+		case 'become monstrous':
+			return def('becameMonstrous');
 		default: {
 			const transInto = verb.match(/^transforms? into (.+)$/i);
 			if (transInto) {
@@ -368,6 +372,16 @@ function playerEvent(player: EventFilter['player'], rest: string): TriggerDef | 
 	if (rest === 'draw a card' || rest === 'draws a card') return { event: 'drawCard', filter: { player } };
 	if (rest === 'investigate' || rest === 'investigates') return { event: 'investigate', filter: { player } };
 	if (rest === 'surveil' || rest === 'surveils') return { event: 'surveil', filter: { player } };
+	// --- Track P5 ---
+	if (rest === 'amass' || rest === 'amasses') return { event: 'amass', filter: { player } };
+	const amassSub = rest.match(/^amass(?:es)? ([A-Z][A-Za-z'-]*)$/);
+	if (amassSub) {
+		const sub = singularSubtype(amassSub[1]);
+		if (sub) return { event: 'amass', filter: { player, amassSubtype: sub } };
+	}
+	if (rest === 'manifest dread' || rest === 'manifests dread') {
+		return { event: 'manifestDread', filter: { player } };
+	}
 	if (/^becomes? the monarch$/i.test(rest)) return { event: 'becameMonarch', filter: { player } };
 	const turnUp = rest.match(/^turns? (?:a|an) (.+) face up$/);
 	if (turnUp) {
@@ -480,6 +494,13 @@ export function parseCondition(text: string): Condition | null {
 	}
 	if (/^if (?:(?:~|it) is(?:n't| not)|it's not) saddled$/i.test(t)) {
 		return { k: 'not', of: { k: 'saddled' } };
+	}
+	// --- Track P5 ---
+	if (/^if (?:(?:~|it) (?:is|was)|it's) monstrous$/i.test(t)) {
+		return { k: 'monstrous' };
+	}
+	if (/^if (?:(?:~|it) (?:is(?:n't| not)|was(?:n't| not))|it's not) monstrous$/i.test(t)) {
+		return { k: 'not', of: { k: 'monstrous' } };
 	}
 	if (/^if (?:its blitz cost was paid|(?:it|~) was blitzed)$/i.test(t)) {
 		return { k: 'blitzed' };
@@ -600,7 +621,8 @@ const RUNTIME_OBJECT_FIELDS: ReadonlySet<string> = new Set([
 	'colors',
 	'tapped',
 	'isCommander',
-	'saddled'
+	'saddled',
+	'monstrous'
 ]);
 
 /** EventFilter fields each event kind's matcher checks (runtime/triggers.ts). */
@@ -633,7 +655,11 @@ const RUNTIME_EVENT_FIELDS: Partial<Record<TriggerDef['event'], ReadonlySet<stri
 	becameMonarch: new Set(['player']),
 	becomesSaddled: new Set(['object', 'orSelf']),
 	foretell: new Set(['object', 'player']),
-	plot: new Set(['object', 'player'])
+	plot: new Set(['object', 'player']),
+	// --- Track P5 ---
+	amass: new Set(['player', 'amassSubtype']),
+	manifestDread: new Set(['player']),
+	becameMonstrous: new Set(['object', 'orSelf'])
 };
 
 function objectFilterProblem(f: ObjectFilter | undefined): string | null {

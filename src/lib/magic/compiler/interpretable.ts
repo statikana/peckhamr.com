@@ -68,7 +68,17 @@ export const INTERPRETED_VERBS: ReadonlySet<Verb> = new Set<Verb>([
 	'gainEnergy',
 	'becomeMonarch',
 	'saddle',
-	'cumulativeUpkeep'
+	'cumulativeUpkeep',
+	// --- Track P5 ---
+	'amass',
+	'incubate',
+	'populate',
+	'manifest',
+	'cloak',
+	'manifestDread',
+	'monstrosity',
+	'bolster',
+	'adapt'
 ]);
 
 export const SUPPORTED_OPTIONAL_COST_KINDS: ReadonlySet<CostDef['k']> = new Set<CostDef['k']>([
@@ -143,7 +153,15 @@ function stepSupported(step: EffectStep): boolean {
 		if (!d || !d.keepTo || !d.rest) return false;
 		if (!d.keepAllMatching && (typeof d.keep !== 'number' || d.keep < 0)) return false;
 	}
-	if (step.subject.k === 'libraryTop' && step.verb !== 'exile') return false;
+	if (
+		step.subject.k === 'libraryTop' &&
+		step.verb !== 'exile' &&
+		step.verb !== 'manifest' &&
+		step.verb !== 'cloak'
+	) {
+		return false;
+	}
+	if (step.verb === 'amass' && !step.params?.amassSubtype) return false;
 	if (step.verb === 'grantPlayFromExile' && !step.params?.playFromExile) return false;
 	if (step.verb === 'revealAndDiscard') {
 		const cd = step.params?.coerciveDiscard;

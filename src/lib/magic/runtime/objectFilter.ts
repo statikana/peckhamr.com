@@ -276,6 +276,7 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 
 	if (filter.tapped !== undefined && obj.tapped !== filter.tapped) return false;
 	if (filter.saddled !== undefined && Boolean(obj.saddledThisTurn) !== filter.saddled) return false;
+	if (filter.monstrous !== undefined && Boolean(obj.isMonstrous) !== filter.monstrous) return false;
 	if (filter.token !== undefined && obj.isToken !== filter.token) return false;
 	if (filter.isCommander !== undefined && Boolean(obj.isCommander) !== filter.isCommander) return false;
 	if (filter.exiledWithSelf) {
@@ -473,6 +474,8 @@ export function evaluateCondition(cond: Condition, ctx: FilterContext): boolean 
 				: false;
 		case 'saddled':
 			return Boolean(ctx.source?.saddledThisTurn);
+		case 'monstrous':
+			return Boolean(ctx.source?.isMonstrous);
 		default:
 			return false;
 	}

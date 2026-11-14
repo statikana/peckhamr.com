@@ -495,6 +495,11 @@ export interface CardInstance {
 	saddledThisTurnByIds?: string[];
 	/** CR 702.152a / 400.7d: true when this permanent entered from a spell whose blitz cost was paid. */
 	blitzed?: boolean;
+	// --- Track P5 ---
+	/** CR 701.37b: true once this permanent's monstrosity ability has resolved while on the battlefield. */
+	isMonstrous?: boolean;
+	/** CR 701.37c: the N (or X) value from when this permanent became monstrous. */
+	monstrosityX?: number;
 }
 
 export interface TargetRef {
@@ -716,6 +721,9 @@ export interface StackItem {
 	sourceBlitzed?: boolean;
 	/** InstanceIds of creatures tapped to pay a Saddle cost for this ability (CR 702.171a). */
 	saddledByIds?: string[];
+	// --- Track P5 ---
+	/** LKI monstrous tracking on triggered abilities whose source left the battlefield before resolution (CR 603.4). */
+	sourceMonstrous?: boolean;
 }
 
 /** One binding of the IR interpreter ("it", "that creature"): the objects and their LKI. */
@@ -775,6 +783,9 @@ export interface SerializedPendingTrigger {
 	// --- Track P3 ---
 	sourceForetold?: boolean;
 	sourceBlitzed?: boolean;
+	// --- Track P5 ---
+	sourceMonstrous?: boolean;
+	isBecameMonstrous?: boolean;
 	order: number;
 	// --- Track P1 ---
 	isChapterAbility?: boolean;
@@ -1519,6 +1530,7 @@ export type GameActionPayload =
 			abilityId: string;
 			targets?: TargetRef[];
 			chosenModes?: number[];
+			xValue?: number;
 			costPayment?: CostPayment;
 	  }
 	/** Compatibility alias for answering a `cost_choice` prompt. */

@@ -1,4 +1,5 @@
 import type {
+	CardLayout,
 	DelayedTrigger,
 	LibrarySearchDestination,
 	LibrarySearchSpec,
@@ -47,6 +48,10 @@ export function withDelayedTriggerSpec(
 
 export interface PredefinedTokenDef extends TokenCreationSpec {
 	oracleText: string;
+	// --- Track P5 ---
+	/** CR 111.10i: transforming double-faced predefined token (e.g. Incubator -> Phyrexian). */
+	layout?: CardLayout;
+	backFace?: PredefinedTokenDef;
 }
 
 /**
@@ -183,6 +188,26 @@ export const PREDEFINED_TOKEN_DEFS = {
 		keywords: [],
 		oracleText:
 			'{1}, {T}, Sacrifice this token: Target creature you control explores. Activate only as a sorcery.'
+	},
+	// --- Track P5 (CR 111.10i / 701.53a) ---
+	incubator: {
+		name: 'Incubator',
+		typeLine: 'Token Artifact — Incubator',
+		colors: [],
+		power: 0,
+		toughness: 0,
+		keywords: [],
+		oracleText: '{2}: Transform this token.',
+		layout: 'transform',
+		backFace: {
+			name: 'Phyrexian Token',
+			typeLine: 'Token Artifact Creature — Phyrexian',
+			colors: [],
+			power: 0,
+			toughness: 0,
+			keywords: [],
+			oracleText: ''
+		}
 	}
 } satisfies Record<string, PredefinedTokenDef>;
 
@@ -212,6 +237,63 @@ export function buildTokenScryfallCard(
 	const kwText = spec.keywords.join(', ');
 	const abilityText = predefined?.oracleText ?? '';
 	const oracleText = [kwText, abilityText].filter(Boolean).join('\n');
+	const frontImg = `https://api.scryfall.com/cards/named?fuzzy=${encodeURIComponent(spec.name.replace(' Token', ''))}&format=image&version=normal`;
+	const frontArt = `https://api.scryfall.com/cards/named?fuzzy=${encodeURIComponent(spec.name.replace(' Token', ''))}&format=image&version=art_crop`;
+	// --- Track P5: Transforming DFC predefined tokens (CR 111.10i: Incubator // Phyrexian) ---
+	if (predefined?.layout === 'transform' && predefined.backFace) {
+		const back = predefined.backFace;
+		const backIsCreature = /\bCreature\b/.test(back.typeLine);
+		const backKwText = back.keywords.join(', ');
+		const backOracle = [backKwText, back.oracleText].filter(Boolean).join('\n');
+		const backImg = `https://api.scryfall.com/cards/named?fuzzy=${encodeURIComponent(back.name.replace(' Token', ''))}&format=image&version=normal`;
+		const backArt = `https://api.scryfall.com/cards/named?fuzzy=${encodeURIComponent(back.name.replace(' Token', ''))}&format=image&version=art_crop`;
+		return {
+			id,
+			name: spec.name,
+			manaCost: '',
+			cmc: 0,
+			typeLine: spec.typeLine,
+			oracleText,
+			colors: spec.colors,
+			colorIdentity: spec.colors,
+			keywords: spec.keywords,
+			power: isCreature ? String(spec.power) : undefined,
+			toughness: isCreature ? String(spec.toughness) : undefined,
+			imageUrl: frontImg,
+			artCropUrl: frontArt,
+			layout: 'transform',
+			faces: [
+				{
+					name: spec.name,
+					manaCost: '',
+					typeLine: spec.typeLine,
+					oracleText,
+					colors: spec.colors,
+					power: isCreature ? String(spec.power) : undefined,
+					toughness: isCreature ? String(spec.toughness) : undefined,
+					imageUrl: frontImg,
+					artCropUrl: frontArt
+				},
+				{
+					name: back.name,
+					manaCost: '',
+					typeLine: back.typeLine,
+					oracleText: backOracle,
+					colors: back.colors,
+					power: backIsCreature ? String(back.power) : undefined,
+					toughness: backIsCreature ? String(back.toughness) : undefined,
+					imageUrl: backImg,
+					artCropUrl: backArt
+				}
+			],
+			legalCommander: true,
+			canBeCommander: false,
+			hasPartner: false,
+			hasChooseBackground: false,
+			hasPartnerWith: undefined,
+			isBackground: false
+		} as ScryfallCard;
+	}
 	return {
 		id,
 		name: spec.name,
@@ -224,8 +306,8 @@ export function buildTokenScryfallCard(
 		keywords: spec.keywords,
 		power: isCreature ? String(spec.power) : undefined,
 		toughness: isCreature ? String(spec.toughness) : undefined,
-		imageUrl: `https://api.scryfall.com/cards/named?fuzzy=${encodeURIComponent(spec.name.replace(' Token', ''))}&format=image&version=normal`,
-		artCropUrl: `https://api.scryfall.com/cards/named?fuzzy=${encodeURIComponent(spec.name.replace(' Token', ''))}&format=image&version=art_crop`,
+		imageUrl: frontImg,
+		artCropUrl: frontArt,
 		legalCommander: true,
 		canBeCommander: false,
 		hasPartner: false,

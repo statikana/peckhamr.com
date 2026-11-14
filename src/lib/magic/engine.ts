@@ -1880,6 +1880,7 @@ function finalizeActivateAbility(
 			...(pcp.sourceEscaped ? { sourceEscaped: true } : {}),
 			...(pcp.sourceForetold ? { sourceForetold: true } : {}),
 			...(pcp.sourceBlitzed ? { sourceBlitzed: true } : {}),
+			...(perm.isMonstrous ? { sourceMonstrous: true } : {}),
 			card,
 			...(pcp.grantSourceCard ? { grantSourceCard: pcp.grantSourceCard } : {}),
 			...(pcp.faceIndex !== undefined ? { faceIndex: pcp.faceIndex } : {}),
@@ -1893,7 +1894,7 @@ function finalizeActivateAbility(
 			...(pcp.targetsBySpec ? { targetsBySpec: pcp.targetsBySpec } : {}),
 			...(pcp.chosenModes ? { chosenModes: [...pcp.chosenModes] } : {}),
 			targetObjectVersions: captureTargetObjectVersions(state, targets),
-			xValue: 0,
+			xValue: pcp.xValue ?? 0,
 			requiresGuidedResolution: false,
 			createdAt: Date.now()
 		},
@@ -4315,6 +4316,7 @@ function applyGameActionInner(
 				return abLegality;
 			}
 
+			const abXValue = Math.max(0, Math.floor(action.xValue ?? 0));
 			const abTargetInfo: TargetRequirementInfo = ab.targetInfo;
 
 			const targets = action.targets || [];
@@ -4345,7 +4347,7 @@ function applyGameActionInner(
 					abTargetInfo,
 					perm.card,
 					perm.instanceId,
-					0
+					abXValue
 				);
 				if (!targetValidation.ok) {
 					return targetValidation;
@@ -4361,7 +4363,8 @@ function applyGameActionInner(
 				actorId,
 				ab.id,
 				ab.manaCost,
-				ab.costKeyword
+				ab.costKeyword,
+				abXValue
 			).requirement;
 			const phyAbilityChoice = maybeAskPhyrexianCostChoice(
 				state,
@@ -4383,7 +4386,7 @@ function applyGameActionInner(
 				state,
 				actor,
 				perm,
-				0,
+				abXValue,
 				false,
 				hybAbilityChoice.resolvedReq,
 				action.costPayment?.phyrexianLifeCount
@@ -4403,6 +4406,7 @@ function applyGameActionInner(
 				abilityId: ab.id,
 				...(ab.faceIndex !== undefined ? { faceIndex: ab.faceIndex } : {}),
 				...(ab.costKeyword ? { costKeyword: ab.costKeyword } : {}),
+				...(abXValue > 0 ? { xValue: abXValue } : {}),
 				targets,
 				...(targetsBySpec ? { targetsBySpec } : {}),
 				...(chosenModes ? { chosenModes: [...chosenModes] } : {}),
@@ -7529,7 +7533,10 @@ for (const kind of [
 	'Foretold',
 	'Plotted',
 	'CombatDamageBatchPlayer',
-	'BecameMonarch'
+	'BecameMonarch',
+	'Amassed',
+	'ManifestDread',
+	'BecameMonstrous'
 ] as const) {
 	registerEventHandler(kind, (state, ev) => matchTriggers(state, ev));
 }
@@ -7650,6 +7657,7 @@ function triggeredStackItem(state: GameState, t: PendingTrigger, idPrefix: strin
 	const sourceEscaped = isObjectEscaped(state, t.source.instanceId, undefined, t.source);
 	const sourceForetold = t.sourceForetold ?? isObjectForetold(state, t.source.instanceId, undefined, t.source);
 	const sourceBlitzed = t.sourceBlitzed ?? isObjectBlitzed(state, t.source.instanceId, undefined, t.source);
+	const sourceMonstrous = t.sourceMonstrous ?? Boolean((foundSource?.inst ?? t.source).isMonstrous);
 	const sourceIsFaceDown = Boolean(foundSource?.inst.isFaceDown);
 	const sourceFaceDownLabel = foundSource?.inst.faceDownLabel;
 	const sourceFaceDownSpec = foundSource?.inst.faceDownSpec;
@@ -7674,6 +7682,7 @@ function triggeredStackItem(state: GameState, t: PendingTrigger, idPrefix: strin
 			...(sourceEscaped ? { sourceEscaped: true } : {}),
 			...(sourceForetold ? { sourceForetold: true } : {}),
 			...(sourceBlitzed ? { sourceBlitzed: true } : {}),
+			...(sourceMonstrous ? { sourceMonstrous: true } : {}),
 			card: t.sourceCard,
 			...(t.faceIndex !== undefined ? { faceIndex: t.faceIndex } : {}),
 			...(sourceIsFaceDown
@@ -7687,7 +7696,12 @@ function triggeredStackItem(state: GameState, t: PendingTrigger, idPrefix: strin
 			kind: 'triggered',
 			title: `${titleSource} (${t.label})`,
 			targets: [],
-			xValue: t.ability.trigger.event === 'turnFaceUp' ? (t.amount ?? 0) : 0,
+			xValue:
+				t.ability.trigger.event === 'turnFaceUp' ||
+				t.ability.trigger.event === 'becameMonstrous' ||
+				Boolean(t.isBecameMonstrous)
+					? (t.amount ?? 0)
+					: 0,
 			requiresGuidedResolution: false,
 			createdAt: Date.now(),
 			lkiPower: t.amount,
@@ -9677,10 +9691,11 @@ function activePlayerMayEndTurn(
 	}
 }
 
-/** Builds Layer 1a copiable card and CopiableState from a target permanent (CR 707.2, 708.2, 712.6d). */
+/** Builds Layer 1a copiable card and CopiableState from a target permanent (CR 707.2, 707.8a, 708.2, 712.6d). */
 function buildCopiedPermanentFields(
 	target: CardInstance,
-	notLegendary = false
+	notLegendary = false,
+	isTokenCopy = false
 ): {
 	baseCardToCopy: ScryfallCard;
 	copiableState: CopiableState;
@@ -9715,15 +9730,25 @@ function buildCopiedPermanentFields(
 		}
 	}
 	const faceIdx = activeFaceIndexForObject(target);
-	const isSingleFaceCopy =
-		faceIdx > 0 ||
-		Boolean(target.transformed) ||
-		Boolean(target.copiableState?.isSingleFaceCopy) ||
-		((baseCardToCopy.layout === 'transform' || baseCardToCopy.layout === 'modal_dfc') &&
-			(baseCardToCopy.faces?.length ?? 0) > 1);
+	// CR 707.8a: A token created as a copy of a transforming permanent is a transforming token
+	// with both faces (unless the copied permanent was itself a single-face copy).
+	const isTransformingTokenCopy =
+		isTokenCopy &&
+		baseCardToCopy.layout === 'transform' &&
+		!target.copiableState?.isSingleFaceCopy &&
+		(baseCardToCopy.faces?.length ?? 0) > 1;
+	const isSingleFaceCopy = isTransformingTokenCopy
+		? false
+		: faceIdx > 0 ||
+			Boolean(target.transformed) ||
+			Boolean(target.copiableState?.isSingleFaceCopy) ||
+			((baseCardToCopy.layout === 'transform' || baseCardToCopy.layout === 'modal_dfc') &&
+				(baseCardToCopy.faces?.length ?? 0) > 1);
 	const copiableState: CopiableState = {
 		card: baseCardToCopy,
-		...(faceIdx > 0 || isSingleFaceCopy ? { faceIndex: faceIdx, isSingleFaceCopy: true } : {}),
+		...(!isTransformingTokenCopy && (faceIdx > 0 || isSingleFaceCopy)
+			? { faceIndex: faceIdx, isSingleFaceCopy: true }
+			: {}),
 		...(target.copiableState?.except || notLegendary
 			? {
 					except: {
@@ -9745,7 +9770,7 @@ function buildCopiedPermanentFields(
 	};
 }
 
-/** "Create a token that's a copy of ..." (CR 707.2: copiable values only). */
+/** "Create a token that's a copy of ..." (CR 707.2, CR 707.8a: copiable values + transforming DFC token support). */
 function copyPermanentAsToken(
 	state: GameState,
 	controller: PlayerGameState,
@@ -9755,7 +9780,8 @@ function copyPermanentAsToken(
 ): CardInstance {
 	const { baseCardToCopy, copiableState, displayName } = buildCopiedPermanentFields(
 		original,
-		notLegendary
+		notLegendary,
+		true
 	);
 	const tokenInst = createCardInstance(
 		baseCardToCopy,
@@ -9768,6 +9794,15 @@ function copyPermanentAsToken(
 	);
 	tokenInst.copiableState = copiableState;
 	tokenInst.copiableCard = baseCardToCopy;
+	const origFaceIdx = activeFaceIndexForObject(original);
+	if (
+		!copiableState.isSingleFaceCopy &&
+		baseCardToCopy.layout === 'transform' &&
+		(original.transformed || origFaceIdx > 0)
+	) {
+		tokenInst.transformed = true;
+		tokenInst.activeFaceIndex = origFaceIdx > 0 ? origFaceIdx : 1;
+	}
 	tokenInst.summoningSick = true;
 	moveObject(state, tokenInst, 'battlefield', { from: 'none', toPlayer: controller });
 	addLog(
@@ -10561,7 +10596,8 @@ registerEffectPorts({
 	validateStackItemRetarget,
 	chooseBotStackItemRetarget,
 	pushCopiedStackItem,
-	setMonarch
+	setMonarch,
+	allocateFaceDownLabel
 });
 
 /**

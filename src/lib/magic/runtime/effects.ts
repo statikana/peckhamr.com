@@ -95,6 +95,17 @@ import {
 	type MoveResult
 } from './zones.ts';
 import { PROMPTING_VERBS } from '../compiler/interpretable.ts';
+import {
+	executeAdapt,
+	executeAmass,
+	executeBolster,
+	executeIncubate,
+	executeManifestDread,
+	executeManifestOrCloak,
+	executeMonstrosity,
+	executePopulate,
+	type KeywordActionHost
+} from './keywordActions.ts';
 
 /** Seeded randomness lives in runtime/random.ts (re-exported here for existing importers). */
 export { nextRandom };
@@ -203,6 +214,8 @@ export interface EffectPorts {
 	): StackItem;
 	/** CR 726.1–3: Makes `playerId` the monarch (no-op if already the monarch). */
 	setMonarch(state: GameState, playerId: string): void;
+	// --- Track P5 ---
+	allocateFaceDownLabel(state: GameState): string;
 }
 
 export interface StackItemRetargetSlot {
@@ -1154,7 +1167,7 @@ class Run {
 	 * Stops immediately if any entry queues a replacement/procedure prompt so later entries wait
 	 * until resume.
 	 */
-	private runIndexedBatch(
+	runIndexedBatch(
 		batchKey: string,
 		captureIds: () => string[],
 		applyAt: (id: string, index: number) => MoveResult | string | void
@@ -1300,7 +1313,26 @@ class Run {
 				(this.ctx.eventObjectVersion === undefined || found.inst.objectVersion === this.ctx.eventObjectVersion);
 			if (same) return this.snapshot(found.inst);
 			if (this.ctx.eventLki) return { ...this.ctx.eventLki };
-			return found ? this.snapshot(found.inst) : null;
+			if (found) return this.snapshot(found.inst);
+			// CR 603.2 / 701.47 / 701.53: for 'cast' triggers ("Whenever you cast a noncreature spell,
+			// amass Orcs X, where X is that spell's mana value"), fall back to the triggering stack item.
+			const trigSpell =
+				this.ctx.item?.triggerEventStackItem ??
+				(id
+					? this.state.stack.find(
+							(st) => st.id !== this.ctx.item?.id && (st.id === id || st.sourceInstanceId === id)
+						)
+					: undefined);
+			if (trigSpell) {
+				return {
+					controllerId: trigSpell.controllerId,
+					ownerId: trigSpell.ownerId ?? trigSpell.controllerId,
+					power: 0,
+					toughness: 0,
+					manaValue: objectManaValue(this.state, trigSpell)
+				};
+			}
+			return null;
 		}
 		if (ref.k === 'self') {
 			const expectedVer = this.ctx.item?.sourceObjectVersion;
@@ -1534,6 +1566,7 @@ class Run {
 			ev ? ev.hasSubType(s) : matchesObjectFilter(c, { subtypes: [s] }, { state: this.state, controllerId: this.you.playerId });
 		if (f.types && !f.types.some((t) => typeLine.includes(t))) return false;
 		if (f.subtypes && !f.subtypes.some(hasSub)) return false;
+		if (f.notSubtypes && f.notSubtypes.some(hasSub)) return false;
 		if (f.notTypes && f.notTypes.some((t) => typeLine.includes(t))) return false;
 		if (f.supertypes && !f.supertypes.every((t) => typeLine.includes(t))) return false;
 		if (f.notSupertypes && f.notSupertypes.some((t) => typeLine.includes(t))) return false;
@@ -1548,6 +1581,8 @@ class Run {
 		if (f.owner === 'you' && c.ownerId !== you) return false;
 		if (f.owner === 'opponent' && c.ownerId === you) return false;
 		if (f.tapped !== undefined && c.tapped !== f.tapped) return false;
+		if (f.saddled !== undefined && Boolean(c.saddledThisTurn) !== f.saddled) return false;
+		if (f.monstrous !== undefined && Boolean(c.isMonstrous) !== f.monstrous) return false;
 		if (f.token !== undefined && c.isToken !== f.token) return false;
 		if (f.isCommander !== undefined && Boolean(c.isCommander) !== f.isCommander) return false;
 		if (f.exiledWithSelf) {
@@ -2063,7 +2098,8 @@ class Run {
 				if (found.controller.playerId !== you.playerId || !evaluatePermanent(s, found.inst).typeLine.includes('Creature')) return;
 				// CR 701.3b / 613.7e: No-op when already attached to this host; otherwise attach and allocate a fresh timestamp.
 				if (!attachObject(s, equipment.inst, found.inst.instanceId)) return;
-				p.addLog(s, 'cast', `${you.username} attached ${equipment.inst.card.name} to ${found.inst.card.name}.`, you.playerId);
+				const hostLabel = found.inst.isFaceDown ? (found.inst.faceDownLabel || 'Face-Down Creature') : found.inst.card.name;
+				p.addLog(s, 'cast', `${you.username} attached ${equipment.inst.card.name} to ${hostLabel}.`, you.playerId);
 				p.triggerOnAttach(s, you, equipment.inst, found.inst);
 				return;
 			}
@@ -2725,6 +2761,25 @@ class Run {
 				}
 				return;
 			}
+			// --- Track P5 ---
+			case 'amass':
+				return executeAmass(this.keywordHost(), step);
+			case 'incubate':
+				return executeIncubate(this.keywordHost(), step);
+			case 'populate':
+				return executePopulate(this.keywordHost(), step);
+			case 'manifest':
+				return executeManifestOrCloak(this.keywordHost(), step, 'manifest');
+			case 'cloak':
+				return executeManifestOrCloak(this.keywordHost(), step, 'cloak');
+			case 'manifestDread':
+				return executeManifestDread(this.keywordHost(), step);
+			case 'monstrosity':
+				return executeMonstrosity(this.keywordHost(), step);
+			case 'bolster':
+				return executeBolster(this.keywordHost(), step);
+			case 'adapt':
+				return executeAdapt(this.keywordHost(), step);
 			default:
 				// Not reachable: staticallyInterpretable rejects every other verb.
 				p.addLog(s, 'rule', `${title}: the "${step.verb}" step isn't supported yet and did nothing.`, you.playerId);
@@ -4286,7 +4341,69 @@ class Run {
 				const f = this.locate(this.ctx.sourceId);
 				return Boolean(f && f.zone === 'battlefield' && !f.inst.phasedOut && f.inst.saddledThisTurn);
 			}
+			// --- Track P5 ---
+			case 'monstrous': {
+				const f = this.locate(this.ctx.sourceId);
+				if (
+					f &&
+					f.zone === 'battlefield' &&
+					!f.inst.phasedOut &&
+					(this.ctx.item.sourceObjectVersion === undefined ||
+						(f.inst.objectVersion ?? 1) === this.ctx.item.sourceObjectVersion)
+				) {
+					return Boolean(f.inst.isMonstrous);
+				}
+				return Boolean(this.ctx.item.sourceMonstrous);
+			}
 		}
+	}
+
+	private keywordHost(): KeywordActionHost {
+		const self = this;
+		return {
+			get state() {
+				return self.state;
+			},
+			get ports() {
+				return P();
+			},
+			get you() {
+				return self.you;
+			},
+			get title() {
+				return self.ctx.title;
+			},
+			get sourceCard() {
+				return self.ctx.sourceCard;
+			},
+			get sourceId() {
+				return self.ctx.sourceId;
+			},
+			get sourceObjectVersion() {
+				return self.ctx.item.sourceObjectVersion;
+			},
+			get stepIndex() {
+				return self.stepIndex;
+			},
+			get canPause() {
+				return self.canPause;
+			},
+			get answers() {
+				return self.answers;
+			},
+			amount: (a, fb) => self.amount(a, fb),
+			objects: (sel) => self.objects(sel),
+			players: (sel) => self.players(sel),
+			playerRef: (ref) => self.playerRef(ref),
+			matches: (c, f, z) => self.matches(c, f, z),
+			locate: (id) => self.locate(id),
+			bind: (st, objs) => self.bind(st, objs),
+			answered: (key, cands, min, max) => self.answered(key, cands, min, max),
+			pauseForChoice: (chooser, title, desc, cands, min, max, zone, defaults, ansKey) =>
+				self.pauseForChoice(chooser, title, desc, cands, min, max, zone, defaults, ansKey),
+			runIndexedBatch: (batchKey, captureIds, applyAt) =>
+				self.runIndexedBatch(batchKey, captureIds, applyAt)
+		};
 	}
 
 	/** Synthetic LKI CardInstance fallback when an acting object ceased to exist before resolution. */
