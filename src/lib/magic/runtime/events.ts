@@ -217,6 +217,33 @@ export interface SurveilledEvent extends EventBase {
 	graveyardCount: number;
 }
 
+/** A permanent or object explored (CR 701.44). */
+export interface ExploredEvent extends EventBase {
+	kind: 'Explored';
+	playerId: string;
+	objectId: string;
+	object: CardInstance;
+	revealedLand: boolean;
+}
+
+/** A permanent or object connived (CR 701.50). */
+export interface ConnivedEvent extends EventBase {
+	kind: 'Connived';
+	playerId: string;
+	objectId: string;
+	object: CardInstance;
+	nonlandDiscardedCount: number;
+}
+
+/** A Vehicle became crewed by one or more creatures (CR 702.122d). */
+export interface BecomesCrewedEvent extends EventBase {
+	kind: 'BecomesCrewed';
+	playerId: string;
+	objectId: string;
+	object: CardInstance;
+	crewedByIds: string[];
+}
+
 export type GameEvent =
 	| TappedForManaEvent
 	| GainLifeEvent
@@ -227,6 +254,9 @@ export type GameEvent =
 	| TurnedFaceUpEvent
 	| InvestigatedEvent
 	| SurveilledEvent
+	| ExploredEvent
+	| ConnivedEvent
+	| BecomesCrewedEvent
 	| ZoneChangeEvent
 	| CastEvent
 	| AttackDeclaredEvent

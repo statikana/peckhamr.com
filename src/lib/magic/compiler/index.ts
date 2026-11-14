@@ -11,24 +11,28 @@ import type {
 	AbilityDef,
 	Amount,
 	CardDefinition,
+	Compare,
 	Condition,
+	CostDef,
 	EffectStep,
 	FaceDefinition,
 	KeywordAbility,
 	ModalDef,
+	ObjectFilter,
 	PlayerRef,
 	Ref,
 	Selector,
 	TargetSpec
 } from '../ir.ts';
 import { getKeywordSpec } from '../keywords.ts';
+import { getCardFaces } from '../scryfall.ts';
 import { compileFaces } from './card.ts';
 import { parseAbilityEffectText } from './effects.ts';
-import { hashText } from './normalize.ts';
+import { hashText, normalizeFace, printedText } from './normalize.ts';
 import { runtimeTriggers } from './triggers.ts';
 
 /** Bump whenever the IR produced for the same text could change. */
-export const COMPILER_VERSION = 22;
+export const COMPILER_VERSION = 26;
 
 const CACHE = new Map<string, CardDefinition>();
 
@@ -206,10 +210,12 @@ export interface CompiledEffect {
 	unparsed: [];
 }
 
-function effectOf(ab: AbilityDef | undefined): CompiledEffect | null {
+export function effectOf(ab: AbilityDef | undefined): CompiledEffect | null {
 	if (!ab) return null;
 	if (ab.kind === 'spell') return { steps: ab.effect, targets: ab.targets, modal: ab.modal, unparsed: [] };
-	if (ab.kind === 'activated' || ab.kind === 'triggered') return { steps: ab.effect, targets: ab.targets, unparsed: [] };
+	if (ab.kind === 'activated' || ab.kind === 'triggered') {
+		return { steps: ab.effect, targets: ab.targets, ...(ab.modal ? { modal: ab.modal } : {}), unparsed: [] };
+	}
 	if (ab.kind === 'keyword') {
 		if (ab.keyword.name === 'equip') return equipEffect(ab);
 		const spec = getKeywordSpec(ab.keyword.name);
@@ -297,7 +303,8 @@ export function compiledTriggerEffect(
 	card: ScryfallCard,
 	abilityIndex: number,
 	grantedKeyword?: string,
-	faceIndex = 0
+	faceIndex = 0,
+	chosenModes?: number[]
 ): CompiledEffect | null {
 	if (grantedKeyword || abilityIndex === -1) {
 		const spec = getKeywordSpec(grantedKeyword ?? 'prowess');
@@ -307,6 +314,9 @@ export function compiledTriggerEffect(
 		return null;
 	}
 	const t = runtimeTriggers(compileCard(card), faceIndex).find((x) => x.abilityIndex === abilityIndex);
+	if (t?.effect?.modal && chosenModes) {
+		return expandModalEffects(t.effect.modal, chosenModes);
+	}
 	return t?.effect ?? null;
 }
 
@@ -320,13 +330,42 @@ function shiftPlayerRef(ref: PlayerRef, offset: number): PlayerRef {
 	return ref;
 }
 
+function shiftCompare(cmp: Compare, offset: number): Compare {
+	return { ...cmp, value: shiftAmount(cmp.value, offset) };
+}
+
+function shiftObjectFilter(filter: ObjectFilter, offset: number): ObjectFilter {
+	let changed = false;
+	const out: ObjectFilter = { ...filter };
+	if (filter.controllerRef) {
+		out.controllerRef = shiftPlayerRef(filter.controllerRef, offset);
+		changed = true;
+	}
+	if (filter.manaValue) {
+		out.manaValue = shiftCompare(filter.manaValue, offset);
+		changed = true;
+	}
+	if (filter.power) {
+		out.power = shiftCompare(filter.power, offset);
+		changed = true;
+	}
+	if (filter.toughness) {
+		out.toughness = shiftCompare(filter.toughness, offset);
+		changed = true;
+	}
+	return changed ? out : filter;
+}
+
 function shiftSelector(sel: Selector, offset: number): Selector {
 	if (sel.k === 'target') return { k: 'target', index: sel.index + offset };
 	if (sel.k === 'playerRef') return { k: 'playerRef', ref: shiftPlayerRef(sel.ref, offset) };
+	if (sel.k === 'libraryTop' && sel.player) return { k: 'libraryTop', player: shiftPlayerRef(sel.player, offset) };
+	if (sel.k === 'all') return { k: 'all', filter: shiftObjectFilter(sel.filter, offset) };
 	return sel;
 }
 
 function shiftAmount(a: Amount, offset: number): Amount {
+	if (a.k === 'count') return { k: 'count', of: shiftObjectFilter(a.of, offset) };
 	if (a.k === 'stat') return { ...a, of: shiftRef(a.of, offset) };
 	if (a.k === 'life' || a.k === 'cardsIn') return { ...a, of: shiftPlayerRef(a.of, offset) };
 	if (a.k === 'negate') return { k: 'negate', of: shiftAmount(a.of, offset) };
@@ -336,10 +375,47 @@ function shiftAmount(a: Amount, offset: number): Amount {
 
 function shiftCondition(cond: Condition, offset: number): Condition {
 	if (cond.k === 'compare') return { ...cond, left: shiftAmount(cond.left, offset), right: shiftAmount(cond.right, offset) };
+	if (cond.k === 'graveyardAbove') return { ...cond, filter: shiftObjectFilter(cond.filter, offset) };
 	if (cond.k === 'isTurnOf') return { ...cond, player: shiftPlayerRef(cond.player, offset) };
 	if (cond.k === 'not') return { k: 'not', of: shiftCondition(cond.of, offset) };
 	if (cond.k === 'and' || cond.k === 'or') return { k: cond.k, of: cond.of.map((c) => shiftCondition(c, offset)) };
 	return cond;
+}
+
+function shiftCostDef(cost: CostDef, offset: number): CostDef {
+	if (cost.k === 'payLife') return { ...cost, amount: shiftAmount(cost.amount, offset) };
+	if (cost.k === 'tapOthers') {
+		return { ...cost, count: shiftAmount(cost.count, offset), filter: shiftObjectFilter(cost.filter, offset) };
+	}
+	if (cost.k === 'tapSubsetSum') {
+		return { ...cost, minTotal: shiftAmount(cost.minTotal, offset), filter: shiftObjectFilter(cost.filter, offset) };
+	}
+	if (cost.k === 'sacrifice' || cost.k === 'discard' || cost.k === 'exileFrom' || cost.k === 'revealFromHand') {
+		return {
+			...cost,
+			count: shiftAmount(cost.count, offset),
+			...(cost.filter && cost.filter !== 'self' ? { filter: shiftObjectFilter(cost.filter, offset) } : {})
+		};
+	}
+	if (cost.k === 'removeCounters') {
+		return {
+			...cost,
+			count: shiftAmount(cost.count, offset),
+			...(cost.from !== 'self' ? { from: shiftObjectFilter(cost.from, offset) } : {})
+		};
+	}
+	if (cost.k === 'choice') return { k: 'choice', options: cost.options.map((opt) => opt.map((c) => shiftCostDef(c, offset))) };
+	if (cost.k === 'optional') return { k: 'optional', cost: cost.cost.map((c) => shiftCostDef(c, offset)) };
+	return cost;
+}
+
+function shiftTargetSpec(spec: TargetSpec, offset: number): TargetSpec {
+	if (offset === 0) return spec;
+	return {
+		...spec,
+		filter: shiftObjectFilter(spec.filter, offset),
+		...(spec.condition ? { condition: shiftCondition(spec.condition, offset) } : {})
+	};
 }
 
 function shiftStepTargets(step: EffectStep, offset: number, stepOffset = 0): EffectStep {
@@ -348,7 +424,15 @@ function shiftStepTargets(step: EffectStep, offset: number, stepOffset = 0): Eff
 		...step,
 		subject: shiftSelector(step.subject, offset),
 		...(step.actor ? { actor: shiftPlayerRef(step.actor, offset) } : {}),
-		...(step.optional ? { optional: { chooser: shiftPlayerRef(step.optional.chooser, offset) } } : {}),
+		...(step.optional
+			? {
+					optional: {
+						...step.optional,
+						chooser: shiftPlayerRef(step.optional.chooser, offset),
+						...(step.optional.cost ? { cost: step.optional.cost.map((c) => shiftCostDef(c, offset)) } : {})
+					}
+				}
+			: {}),
 		...(step.amount ? { amount: shiftAmount(step.amount, offset) } : {}),
 		...(step.condition ? { condition: shiftCondition(step.condition, offset) } : {}),
 		...(step.params
@@ -357,7 +441,10 @@ function shiftStepTargets(step: EffectStep, offset: number, stepOffset = 0): Eff
 						...step.params,
 						...(step.params.with ? { with: shiftSelector(step.params.with, offset) } : {}),
 						...(step.params.toughness ? { toughness: shiftAmount(step.params.toughness, offset) } : {}),
-						...(step.params.condition ? { condition: shiftCondition(step.params.condition, offset) } : {})
+						...(step.params.condition ? { condition: shiftCondition(step.params.condition, offset) } : {}),
+						...(step.params.search
+							? { search: { ...step.params.search, filter: shiftObjectFilter(step.params.search.filter, offset) } }
+							: {})
 					}
 				}
 			: {}),
@@ -371,8 +458,56 @@ function shiftStepTargets(step: EffectStep, offset: number, stepOffset = 0): Eff
 			: {}),
 		...(step.ifPrecedingAccepted !== undefined
 			? { ifPrecedingAccepted: step.ifPrecedingAccepted + stepOffset }
+			: {}),
+		...(step.ifPrecedingDeclined !== undefined
+			? { ifPrecedingDeclined: step.ifPrecedingDeclined + stepOffset }
 			: {})
 	};
+}
+
+/** Expand chosen mode indices into a sequential CompiledEffect with re-indexed targets & steps. */
+export function expandModalEffects(modal: ModalDef, chosenModes: number[]): CompiledEffect | null {
+	const steps: EffectStep[] = [];
+	const targets: TargetSpec[] = [];
+	for (const idx of chosenModes) {
+		const mode = modal.modes[idx];
+		if (!mode) return null;
+		const offset = targets.length;
+		const stepOffset = steps.length;
+		targets.push(...mode.targets.map((spec) => shiftTargetSpec(spec, offset)));
+		steps.push(...mode.effect.map((s) => shiftStepTargets(s, offset, stepOffset)));
+	}
+	return { steps, targets, modal, unparsed: [] };
+}
+
+/** Return the `ModalDef` for an activated ability (printed or granted), if it is modal. */
+export function getAbilityModal(
+	card: ScryfallCard,
+	abilityId: string,
+	faceIndex = 0,
+	grantSourceCard?: ScryfallCard
+): ModalDef | undefined {
+	if (grantSourceCard && abilityId.startsWith('granted:')) {
+		const localId = abilityId.slice(abilityId.lastIndexOf(':') + 1);
+		const ab = grantedAbilityById(grantSourceCard, localId);
+		return ab?.kind === 'activated' ? ab.modal : undefined;
+	}
+	const ab = abilityById(card, abilityId, faceIndex);
+	return ab?.kind === 'activated' ? ab.modal : undefined;
+}
+
+/** Human-readable bullet descriptions for a `ModalDef` without leaking raw `oracleText` into runtime/UI. */
+export function describeModalModes(card: ScryfallCard, modal: ModalDef, faceIndex = 0): string[] {
+	const face = getCardFaces(card)[faceIndex] ?? getCardFaces(card)[0];
+	const faceName = face?.name ?? card.name;
+	const oracleText = face?.oracleText ?? '';
+	const normText = oracleText ? normalizeFace(faceName, oracleText).text : '';
+	return modal.modes.map((mode, idx) => {
+		if (!normText || mode.span.end <= mode.span.start) return `Mode ${idx + 1}`;
+		const raw = normText.slice(mode.span.start, mode.span.end).replace(/^•\s*/, '').trim();
+		if (!raw) return `Mode ${idx + 1}`;
+		return printedText(raw, faceName, oracleText);
+	});
 }
 
 function isSpellFaceDef(face: FaceDefinition | undefined): boolean {
@@ -395,28 +530,21 @@ export function compiledStackItemEffects(item: StackItem): CompiledEffect | null
 		}
 		const spell = compileSpellEffects(item.card, faceIdx, item.fused ?? false);
 		if (spell?.modal && item.chosenModes) {
-			const steps: EffectStep[] = [];
-			const targets: TargetSpec[] = [];
-			for (const idx of item.chosenModes) {
-				const mode = spell.modal.modes[idx];
-				if (!mode) return null;
-				const offset = targets.length;
-				const stepOffset = steps.length;
-				targets.push(...mode.targets);
-				steps.push(...mode.effect.map((s) => shiftStepTargets(s, offset, stepOffset)));
-			}
-			return { steps, targets, modal: spell.modal, unparsed: [] };
+			return expandModalEffects(spell.modal, item.chosenModes);
 		}
 		return spell;
 	}
 	if (item.kind !== 'activated') return null;
 	const faceIdx = item.faceIndex ?? 0;
 	if (item.abilityId) {
-		if (item.grantSourceCard && item.abilityId.startsWith('granted:')) {
-			const localId = item.abilityId.slice(item.abilityId.lastIndexOf(':') + 1);
-			return effectOf(grantedAbilityById(item.grantSourceCard, localId));
+		const base =
+			item.grantSourceCard && item.abilityId.startsWith('granted:')
+				? effectOf(grantedAbilityById(item.grantSourceCard, item.abilityId.slice(item.abilityId.lastIndexOf(':') + 1)))
+				: effectOf(abilityById(item.card, item.abilityId, faceIdx));
+		if (base?.modal && item.chosenModes) {
+			return expandModalEffects(base.modal, item.chosenModes);
 		}
-		return effectOf(abilityById(item.card, item.abilityId, faceIdx));
+		return base;
 	}
 	const faceName = item.card.faces?.[faceIdx]?.name ?? item.card.name;
 	const parse = parseAbilityEffectText(faceName, item.oracleText ?? '');

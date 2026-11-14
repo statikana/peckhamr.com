@@ -18,6 +18,8 @@
 import type {
 	Amount,
 	Condition,
+	CostDef,
+	Duration,
 	EffectStep,
 	ModalDef,
 	ObjectFilter,
@@ -33,7 +35,7 @@ import type {
 import { GRANTABLE_KEYWORDS } from '../keywords.ts';
 import type { CounterType, LibrarySearchSpec, ManaColor, ScryfallCard, StackItem } from '../types.ts';
 import { buildTokenSpec, parseLibrarySearchSpec, PREDEFINED_TOKEN_DEFS } from '../oracle.ts';
-import { parseAdditionalCostSentence, parseObjectPhrase } from './costs.ts';
+import { parseAdditionalCostSentence, parseCost, parseObjectPhrase } from './costs.ts';
 import { parseCondition } from './triggers.ts';
 import {
 	hashText,
@@ -73,7 +75,12 @@ const NUMBER_WORDS: Record<string, number> = {
 	eleven: 11,
 	twelve: 12,
 	thirteen: 13,
+	fourteen: 14,
 	fifteen: 15,
+	sixteen: 16,
+	seventeen: 17,
+	eighteen: 18,
+	nineteen: 19,
 	twenty: 20
 };
 
@@ -101,8 +108,6 @@ const COUNTER_WORDS: Record<string, CounterType> = {
 
 /** Sentences that carry no effect of their own. */
 const NEUTRAL_SENTENCES: RegExp[] = [
-	// The engine has no regeneration, so "can't be regenerated" always holds.
-	/^(?:it|they) can't be regenerated\.?$/i,
 	/^then shuffle\.?$/i
 ];
 
@@ -238,6 +243,46 @@ class Parser {
 		if (step.optional) this.lastOptionalStep = idx;
 		return idx;
 	}
+
+	/**
+	 * Resolves a player phrase against steps starting at `startStepIdx` before those steps have run
+	 * (for trailing "unless its controller pays ..." where bindings aren't populated yet).
+	 */
+	resolvePlayerAgainstStep(startStepIdx: number, fn: () => Selector | null): Selector | null {
+		const savedLastObj = this.lastObject;
+		const savedBindAs =
+			savedLastObj && savedLastObj.stepIndex >= startStepIdx
+				? this.steps[savedLastObj.stepIndex]?.bindAs
+				: undefined;
+		if (savedLastObj && savedLastObj.stepIndex >= startStepIdx) {
+			const subj = this.steps[savedLastObj.stepIndex]?.subject;
+			let directRef: Ref | null = null;
+			if (subj?.k === 'target') directRef = { k: 'target', index: subj.index };
+			else if (subj?.k === 'self') directRef = { k: 'self' };
+			else if (subj?.k === 'eventObject') directRef = { k: 'eventObject' };
+			else if (subj?.k === 'binding') directRef = { k: 'binding', name: subj.name };
+			if (!directRef) return null;
+			this.lastObject = { ref: directRef, stepIndex: -1 };
+		}
+		const res = fn();
+		this.lastObject = savedLastObj;
+		if (savedLastObj && savedLastObj.stepIndex >= startStepIdx && this.steps[savedLastObj.stepIndex]) {
+			if (savedBindAs === undefined) delete this.steps[savedLastObj.stepIndex].bindAs;
+			else this.steps[savedLastObj.stepIndex].bindAs = savedBindAs;
+		}
+		return res;
+	}
+
+	/** Shifts `lastObject` step index/binding name after inserting a preceding step at `insertedIdx`. */
+	shiftLastObjectFrom(insertedIdx: number): void {
+		if (!this.lastObject || this.lastObject.stepIndex < insertedIdx) return;
+		const oldIdx = this.lastObject.stepIndex;
+		const newIdx = oldIdx + 1;
+		const oldName = `b${oldIdx}`;
+		const newName = `b${newIdx}`;
+		if (this.steps[newIdx]?.bindAs === oldName) this.steps[newIdx].bindAs = newName;
+		this.lastObject = { ref: { k: 'binding', name: newName }, stepIndex: newIdx };
+	}
 }
 
 function refSelector(ref: Ref): Selector {
@@ -369,7 +414,18 @@ function objectPhrase(p: Parser, text: string): ObjectRes | null {
 	const all = t.match(/^(?:all|each) (.+)$/);
 	const bare = !all && /\b(?:you control|your opponents control|you don't control)$/.test(t) && !/^(?:a|an|another|target)\b/.test(t);
 	if (all || bare) {
-		const ctl = splitController(all ? all[1] : t);
+		const inner = all ? all[1] : t;
+		const refCtl = inner.match(/^(.+?) (target player|target opponent|that player) controls$/);
+		if (refCtl) {
+			const filter = objectFilter(refCtl[1]);
+			const playerSel = playerPhrase(p, refCtl[2]);
+			const ref = playerSel ? singlePlayer(playerSel) : null;
+			if (!filter || !ref) return null;
+			const out: ObjectFilter = { ...filter, zone: 'battlefield', controllerRef: ref };
+			if (/^other\b/.test(refCtl[1])) out.other = true;
+			return { selector: { k: 'all', filter: out }, plural: true };
+		}
+		const ctl = splitController(inner);
 		const filter = objectFilter(ctl.phrase);
 		if (!filter) return null;
 		const out: ObjectFilter = { ...filter, zone: 'battlefield' };
@@ -405,14 +461,14 @@ function playerPhrase(p: Parser, text: string): Selector | null {
 		return { k: 'playerRef', ref: of[1] === 'controller' ? { k: 'controllerOf', of: ref } : { k: 'ownerOf', of: ref } };
 	}
 	if (t === 'the player whose turn it is') return { k: 'playerRef', ref: { k: 'activePlayer' } };
-	if (t === 'that player' && p.context === 'triggered') {
+	if ((t === 'that player' || t === 'the player' || t === 'that opponent') && p.context === 'triggered') {
 		// In a triggered ability "that player" is the player the event was about ("Whenever an
 		// opponent casts a spell, that player ..."), unless an earlier clause chose a target player.
 		const last = p.lastPlayer;
 		if (last && last.k === 'playerRef' && last.ref.k === 'target') return last;
 		return { k: 'playerRef', ref: { k: 'eventPlayer' } };
 	}
-	if ((t === 'that player' || t === 'they') && p.lastPlayer) return p.lastPlayer;
+	if ((t === 'that player' || t === 'the player' || t === 'that opponent' || t === 'they') && p.lastPlayer) return p.lastPlayer;
 	return null;
 }
 
@@ -771,6 +827,17 @@ function objectPredicate(p: Parser, subject: ObjectRes, vp: string, span: Span):
 		p.push({ verb: 'fight', subject: subject.selector, params: { with: other.selector }, span }, false);
 		return true;
 	}
+	if (/^explores?$/.test(text) && !eot) {
+		p.push({ verb: 'explore', subject: subject.selector, span }, true);
+		return true;
+	}
+	const connive = text.match(/^connives?(?: (that many|\S+))?$/);
+	if (connive && !eot) {
+		const amount = connive[1] ? amountWord(p, connive[1]) : n(1);
+		if (!amount) return false;
+		p.push({ verb: 'connive', subject: subject.selector, amount, span }, true);
+		return true;
+	}
 	return false;
 }
 
@@ -780,7 +847,25 @@ function damageRecipient(p: Parser, text: string): Selector | null {
 	const player = playerPhrase(p, t);
 	if (player) return player;
 	const obj = objectPhrase(p, t);
-	return obj ? obj.selector : null;
+	if (!obj) return null;
+	if (obj.ref) p.setLastTarget(obj.ref);
+	return obj.selector;
+}
+
+function parseOptionalCostBody(costText: string): CostDef[] | null {
+	const t = costText
+		.trim()
+		.replace(/^pays\b/i, 'pay')
+		.replace(/^sacrifices\b/i, 'sacrifice')
+		.replace(/^discards\b/i, 'discard')
+		.replace(/^exiles\b/i, 'exile')
+		.replace(/^taps\b/i, 'tap')
+		.replace(/^removes\b/i, 'remove')
+		.replace(/\bfrom their (graveyard|hand)\b/gi, 'from your $1')
+		.replace(/\bthey control\b/gi, 'you control');
+	const parsed = parseCost(t);
+	if (parsed.unparsed.length > 0 || parsed.defs.length === 0) return null;
+	return parsed.defs;
 }
 
 /** Verb phrases whose subject is a player ("draws two cards", "loses 2 life", "creates a token"). */
@@ -812,6 +897,21 @@ function playerPredicate(p: Parser, subject: Selector, vp: string, span: Span, f
 		if (!chooser) return false;
 		optional = { chooser };
 		text = may[1];
+		if (/^pay\b/i.test(text)) {
+			const costDefs = parseOptionalCostBody(text);
+			if (!costDefs) return false;
+			p.lastPlayer = subject;
+			p.push(
+				{
+					verb: 'payCost',
+					subject: { k: 'none' },
+					optional: { chooser, cost: costDefs, mode: 'doIfPaid' },
+					span
+				},
+				false
+			);
+			return true;
+		}
 	}
 	const opt = optional ? { optional } : {};
 	p.lastPlayer = subject;
@@ -858,9 +958,9 @@ function playerPredicate(p: Parser, subject: Selector, vp: string, span: Span, f
 		p.push({ verb: m[1].startsWith('gain') ? 'gainLife' : 'loseLife', subject, amount, ...opt, span }, false);
 		return true;
 	}
-	m = text.match(/^mills? (\S+) cards?$/);
+	m = text.match(/^mills? (that many|\S+) cards?$/);
 	if (m) {
-		const amount = count(m[1]);
+		const amount = amountWord(p, m[1]);
 		if (!amount) return false;
 		p.push({ verb: 'mill', subject, amount, ...opt, span }, false);
 		return true;
@@ -938,17 +1038,41 @@ function playerPredicate(p: Parser, subject: Selector, vp: string, span: Span, f
 		} else if (actor && actor.k !== 'you') {
 			step.actor = actor;
 		} else if (!actor) {
-			return false;
+	return false;
 		}
 		p.push(step, true);
 		return true;
 	}
-	// Step E2: "discards two cards" (the player chooses, CR 701.8b).
-	m = text.match(/^discards? (a|one|two|three|\d+) cards?$/);
+	// Step E2: "discards two cards", "discards four cards" (the player chooses, CR 701.8b).
+	m = text.match(/^discards? (that many|\S+) cards?$/);
 	if (m && (subject.k === 'player' || singlePlayer(subject) !== null)) {
-		const amount = count(m[1] === 'a' ? 'one' : m[1]);
+		const amount = amountWord(p, m[1]);
 		if (!amount) return false;
 		p.push({ verb: 'discard', subject, amount, ...opt, span }, true);
+		return true;
+	}
+	m = text.match(/^goads? (.+?)(?: (until end of turn|until your next turn))?$/);
+	if (m) {
+		const actor = singlePlayer(subject);
+		if (!actor) return false;
+		const isAnotherTarget = /^another target\b/.test(m[1]);
+		const obj = objectPhrase(p, isAnotherTarget ? m[1].replace(/^another /, '') : m[1]);
+		if (!obj || obj.fromZone) return false;
+		if (isAnotherTarget && obj.selector.k === 'target') {
+			p.targets[obj.selector.index].filter.other = true;
+		}
+		const duration: Duration = m[2] === 'until end of turn' ? 'endOfTurn' : 'untilYourNextTurn';
+		p.push(
+			{
+				verb: 'goad',
+				subject: obj.selector,
+				...(actor.k !== 'you' ? { actor } : {}),
+				params: { duration },
+				...opt,
+				span
+			},
+			true
+		);
 		return true;
 	}
 	if (/^may end the turn$/.test(`may ${text}`) && optional && subject.k === 'playerRef' && subject.ref.k === 'activePlayer') {
@@ -1021,7 +1145,7 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 	const t = text.trim();
 	let m: RegExpMatchArray | null;
 
-	if (/^(?:draw|gain|lose|mill|create|search|take|scry|surveil|sacrifice|discard|investigate)\b/.test(t) && !/^lose hexproof/.test(t) && !/^create a token that's a copy\b/.test(t)) {
+	if (/^(?:draw|gain|lose|mill|create|search|take|scry|surveil|sacrifice|discard|investigate|goad)\b/.test(t) && !/^lose hexproof/.test(t) && !/^create a token that's a copy\b/.test(t)) {
 		return playerPredicate(p, YOU, t, span, true);
 	}
 	if (t === 'proliferate') {
@@ -1216,6 +1340,17 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 		p.push({ verb, subject: obj.selector, span }, true);
 		return true;
 	}
+	m = t.match(/^regenerate (.+)$/);
+	if (m) {
+		const isAnotherTarget = /^another target\b/.test(m[1]);
+		const obj = objectPhrase(p, isAnotherTarget ? m[1].replace(/^another /, '') : m[1]);
+		if (!obj || obj.fromZone) return false;
+		if (isAnotherTarget && obj.selector.k === 'target') {
+			p.targets[obj.selector.index].filter.other = true;
+		}
+		p.push({ verb: 'regenerate', subject: obj.selector, span }, true);
+		return true;
+	}
 	if (/^take an extra turn after this one$/.test(t)) return playerPredicate(p, YOU, t, span, true);
 	return false;
 }
@@ -1272,7 +1407,7 @@ function addMana(p: Parser, text: string, span: Span): ClauseResult {
 
 // Words that start a new clause after " and " / ", then ".
 const CLAUSE_START =
-	/^(?:you|each opponent|each player|target player|target opponent|its controller|its owner|that player|they|draw|draws|lose|loses|gain|gains|get|gets|put|exile|destroy|return|create|creates|search|scry|surveil|surveils|investigate|investigates|mill|mills|sacrifice|deal|deals|add|take|takes|phase|phases|attach|counter|proliferate|switch|look|tap|untap|fight|fights|transform|transforms|flip|flips)\b/;
+	/^(?:you|each opponent|each player|target player|target opponent|its controller|its owner|that player|they|draw|draws|lose|loses|gain|gains|get|gets|put|exile|destroy|return|create|creates|search|scry|surveil|surveils|investigate|investigates|mill|mills|sacrifice|deal|deals|add|take|takes|phase|phases|attach|counter|proliferate|switch|look|tap|untap|fight|fights|transform|transforms|flip|flips|discard|discards|connive|connives|explore|explores|goad|goads|regenerate|regenerates)\b/;
 
 /** Splits a sentence into clauses at ", then " and at " and " before a new verb or subject. */
 function splitClauses(text: string, offset: number): Clause[] {
@@ -1291,11 +1426,86 @@ function splitClauses(text: string, offset: number): Clause[] {
 	return out;
 }
 
+function markTrailingDestroyCantRegen(p: Parser): boolean {
+	let marked = false;
+	for (let i = p.steps.length - 1; i >= 0 && p.steps[i].verb === 'destroy'; i--) {
+		p.steps[i].params = { ...p.steps[i].params, cantBeRegenerated: true };
+		marked = true;
+	}
+	return marked;
+}
+
+function tryUnlessClause(p: Parser, text: string, span: Span): boolean {
+	const unlessMatch = text.match(/^(.+?)(?:,)?\s+unless\s+(.+)$/i);
+	if (!unlessMatch) return false;
+	const baseText = unlessMatch[1].trim();
+	const tail = unlessMatch[2].trim();
+	if (/\bunless\b/i.test(baseText)) return false;
+	const pm = tail.match(
+		/^(you|that player|the player whose turn it is|the player|that opponent|they|target player|target opponent|each opponent|each player|(?:its|that creature's|that permanent's|that spell's|their) (?:controller|owner))\s+(.+)$/i
+	);
+	if (!pm) return false;
+	const costDefs = parseOptionalCostBody(pm[2]);
+	if (!costDefs) return false;
+	const mark = p.mark();
+	if (!clause(p, { text: baseText, span }, false)) {
+		p.rollback(mark);
+		return false;
+	}
+	const addedCount = p.steps.length - mark.steps;
+	if (addedCount === 0) {
+		p.rollback(mark);
+		return false;
+	}
+	const chooserSel = p.resolvePlayerAgainstStep(mark.steps, () => playerPhrase(p, pm[1]));
+	const chooser = chooserSel ? singlePlayer(chooserSel) : null;
+	if (!chooser) {
+		p.rollback(mark);
+		return false;
+	}
+	const added = p.steps.slice(mark.steps);
+	if (added.length === 1 && !added[0].optional) {
+		added[0].optional = { chooser, cost: costDefs, mode: 'doUnlessPaid' };
+		p.lastOptionalStep = mark.steps;
+		return true;
+	}
+	const payIdx = mark.steps;
+	p.steps.splice(payIdx, 0, {
+		verb: 'payCost',
+		subject: { k: 'none' },
+		optional: { chooser, cost: costDefs, mode: 'doIfPaid' },
+		span
+	});
+	for (let i = payIdx + 1; i < p.steps.length; i++) {
+		const st = p.steps[i];
+		if (st.ifPrecedingAccepted !== undefined && st.ifPrecedingAccepted >= payIdx) st.ifPrecedingAccepted += 1;
+		if (st.ifPrecedingDeclined !== undefined && st.ifPrecedingDeclined >= payIdx) st.ifPrecedingDeclined += 1;
+		if (st.ifPrecedingDeclined === undefined) st.ifPrecedingDeclined = payIdx;
+	}
+	p.lastOptionalStep = payIdx;
+	p.shiftLastObjectFrom(payIdx);
+	return true;
+}
+
 /** One clause: an imperative, or a subject followed by a predicate. */
-function clause(p: Parser, c: Clause): ClauseResult {
+function clause(p: Parser, c: Clause, allowUnless = true): ClauseResult {
 	const t = c.text.trim();
 	if (!t) return false;
+	if (allowUnless && /\bunless\b/i.test(t) && tryUnlessClause(p, t, c.span)) return true;
 	if (imperative(p, t, c.span)) return true;
+
+	// "It/They can't be regenerated" / "<object> can't be regenerated this turn"
+	const cantRegen = t.match(/^(.+?) can't be regenerated(?: this turn)?$/i);
+	if (cantRegen) {
+		if (/^(?:it|they)$/i.test(cantRegen[1]) && !/this turn$/i.test(t) && markTrailingDestroyCantRegen(p)) {
+			return true;
+		}
+		const obj = objectPhrase(p, cantRegen[1]);
+		if (obj && !obj.fromZone) {
+			p.push({ verb: 'cantRegenerate', subject: obj.selector, span: c.span }, true);
+			return true;
+		}
+	}
 
 	// Player subjects.
 	const ps = t.match(
@@ -1306,7 +1516,7 @@ function clause(p: Parser, c: Clause): ClauseResult {
 		if (subject && playerPredicate(p, subject, ps[2], c.span)) return true;
 	}
 	// A continued predicate with the previous player as subject ("... and loses 2 life").
-	if (p.lastPlayer && /^(?:draws?|loses?|gains?|mills?|creates?|investigates?|surveils?)\b/.test(t)) {
+	if (p.lastPlayer && /^(?:draws?|loses?|gains?|mills?|creates?|investigates?|surveils?|discards?|goads?)\b/.test(t)) {
 		if (playerPredicate(p, p.lastPlayer, t, c.span)) return true;
 	}
 	// Object subjects & "until end of turn, <player> may play ..." impulse exile clauses.
@@ -1319,13 +1529,14 @@ function clause(p: Parser, c: Clause): ClauseResult {
 			const subj = playerPhrase(p, exileDur[1]);
 			if (subj && playerPredicate(p, subj, `${exileDur[2]} this turn`, c.span)) return true;
 		}
+		if (imperative(p, `${dur[1].trim()} until end of turn`, c.span)) return true;
 	}
 	const body = dur ? dur[1] : t;
 	const words = body.split(' ');
 	for (let i = words.length - 1; i >= 1; i--) {
 		const subjText = words.slice(0, i).join(' ');
 		const vp = words.slice(i).join(' ') + (dur ? ' until end of turn' : '');
-		if (!/^(?:gets?|gains?|loses?|phases?|deals|fights?)\b/.test(vp)) continue;
+		if (!/^(?:gets?|gains?|loses?|phases?|deals|fights?|explores?|connives?)\b/.test(vp)) continue;
 		const snapshot = p.targets.length;
 		const subject = objectPhrase(p, subjText);
 		if (!subject) continue;
@@ -1358,7 +1569,7 @@ function clause(p: Parser, c: Clause): ClauseResult {
 			if (ok) return true;
 		}
 		p.rollback(mark);
-		return false;
+	return false;
 	};
 	const perCmdCast = t.match(
 		/^(.+?) for each time you've cast (?:your|a) commander from the command zone this game( until end of turn)?$/i
@@ -1392,10 +1603,10 @@ function clause(p: Parser, c: Clause): ClauseResult {
 
 /** Sentence-initial words that are not names or subtypes, so they can be lower-cased. */
 const LOWER_START = new Set([
-	'a', 'add', 'all', 'an', 'another', 'any', 'at', 'attach', 'copy', 'counter', 'create', 'creatures', 'deal', 'destroy', 'draw',
-	'each', 'end', 'exile', 'fight', 'flip', 'gain', 'if', 'investigate', 'it', 'its', 'look', 'lose', 'mill', 'permanents', 'proliferate', 'put',
-	'return', 'sacrifice', 'scry', 'search', 'surveil', 'switch', 'take', 'tap', 'target', 'that', 'the', 'then', 'they', 'those',
-	'transform', 'untap', 'until', 'up', 'you', 'your'
+	'a', 'add', 'all', 'an', 'another', 'any', 'at', 'attach', 'connive', 'connives', 'copy', 'counter', 'create', 'creatures', 'deal', 'destroy', 'discard', 'discards', 'draw',
+	'each', 'end', 'exile', 'explore', 'explores', 'fight', 'flip', 'gain', 'goad', 'goads', 'if', 'investigate', 'it', 'its', 'look', 'lose', 'mill', 'otherwise', 'permanents', 'proliferate', 'put',
+	'regenerate', 'regenerates', 'return', 'sacrifice', 'scry', 'search', 'surveil', 'switch', 'take', 'tap', 'target', 'that', 'the', 'then', 'they', 'those',
+	'transform', 'untap', 'until', 'up', 'when', 'you', 'your'
 ]);
 
 // ---- Sentences ------------------------------------------------------------------------------
@@ -1433,7 +1644,7 @@ function sentence(p: Parser, text: string, span: Span): boolean {
 	const fail = () => {
 		p.steps.length = stepsBefore;
 		p.targets.length = targetsBefore;
-		return false;
+	return false;
 	};
 
 	if (/^you may shuffle$/.test(t)) {
@@ -1471,24 +1682,15 @@ function sentence(p: Parser, text: string, span: Span): boolean {
 		return true;
 	}
 
-	const ifDo = t.match(/^if (you do|that player does|they do), (.+)$/);
-	if (ifDo) {
-		const optIdx = p.lastOptionalStep;
-		const chooser = optIdx !== undefined ? p.steps[optIdx]?.optional?.chooser : undefined;
-		if (optIdx === undefined || !chooser) return fail();
-		if (ifDo[1] === 'you do' && chooser.k !== 'you') return fail();
-		if (ifDo[1] === 'that player does' && chooser.k === 'you') return fail();
-		const innerText = ifDo[2];
-		const innerStart = Math.max(span.start, span.end - innerText.length);
-		if (!sentence(p, innerText, { start: innerStart, end: span.end })) return fail();
-		for (const s of p.steps.slice(stepsBefore)) {
-			if (s.ifPrecedingAccepted === undefined) s.ifPrecedingAccepted = optIdx;
-		}
-		if (!p.steps.slice(stepsBefore).some((s) => s.optional !== undefined)) {
-			p.lastOptionalStep = undefined;
-		}
+	if (/^(?:it|they) can't be regenerated$/i.test(t) && markTrailingDestroyCantRegen(p)) {
+		p.lastOptionalStep = undefined;
 		return true;
 	}
+
+	const followUp = parseOptionalFollowUp(p, t, span, (innerText, innerStart) =>
+		sentence(p, innerText, { start: innerStart, end: span.end })
+	);
+	if (followUp !== null) return followUp;
 	if (t === 'put up to one of them on top of your library and the rest on the bottom of your library in a random order') {
 		const prev = p.steps[p.steps.length - 1];
 		if (prev?.verb !== 'dig') return fail();
@@ -1582,27 +1784,75 @@ function sentence(p: Parser, text: string, span: Span): boolean {
 	return true;
 }
 
-function clauses(p: Parser, text: string, offset: number): boolean {
-	const ifDoLead = text.match(/^if (you do|that player does|they do), (.+)$/);
-	if (ifDoLead) {
-		const optIdx = p.lastOptionalStep;
-		const chooser = optIdx !== undefined ? p.steps[optIdx]?.optional?.chooser : undefined;
-		if (optIdx === undefined || !chooser) return false;
-		if (ifDoLead[1] === 'you do' && chooser.k !== 'you') return false;
-		if (ifDoLead[1] === 'that player does' && chooser.k === 'you') return false;
-		const body = ifDoLead[2].trim();
-		const bodyStart = offset + text.indexOf(body);
-		const mark = p.mark();
-		if (!clauses(p, body, bodyStart)) {
-			p.rollback(mark);
-			return false;
-		}
-		for (const s of p.steps.slice(mark.steps)) {
-			if (s.ifPrecedingAccepted === undefined) s.ifPrecedingAccepted = optIdx;
-		}
-		return true;
+function parseOptionalFollowUp(
+	p: Parser,
+	text: string,
+	span: Span,
+	parseInner: (innerText: string, innerStart: number) => boolean
+): boolean | null {
+	const ifDo = text.match(/^(if|when) (you do|that player does|the player does|they do), (.+)$/i);
+	const ifDont = ifDo
+		? null
+		: text.match(/^(?:if (you don't|that player doesn't|the player doesn't|they don't)|otherwise), (.+)$/i);
+	if (!ifDo && !ifDont) return null;
+
+	const optIdx = p.lastOptionalStep;
+	const chooser = optIdx !== undefined ? p.steps[optIdx]?.optional?.chooser : undefined;
+	if (optIdx === undefined || !chooser) return false;
+
+	const isAccept = Boolean(ifDo);
+	const isReflexiveWhen = Boolean(ifDo && ifDo[1].toLowerCase() === 'when');
+	const who = (ifDo ? ifDo[2] : ifDont![1] ?? 'otherwise').toLowerCase();
+	if ((who === 'you do' || who === "you don't") && chooser.k !== 'you') return false;
+	if (
+		(who === 'that player does' ||
+			who === 'the player does' ||
+			who === 'they do' ||
+			who === "that player doesn't" ||
+			who === "the player doesn't" ||
+			who === "they don't") &&
+		chooser.k === 'you'
+	) {
+		return false;
 	}
-	const ifDoSplit = text.match(/^(.+?)(?:,\s*(?:and|then)|,?\s+(?:and|then))\s+(if (?:you do|that player does|they do), .+)$/);
+
+	const innerText = (ifDo ? ifDo[3] : ifDont![2]).trim();
+	const innerStart = Math.max(span.start, span.end - innerText.length);
+	const mark = p.mark();
+	if (!parseInner(innerText, innerStart)) {
+		p.rollback(mark);
+		return false;
+	}
+	// Reflexive "When you do" triggers that introduce new targets choose targets when triggered (CR 603.12), not on cast.
+	if (isReflexiveWhen && p.targets.length > mark.targets) {
+		p.rollback(mark);
+		return false;
+	}
+	for (const s of p.steps.slice(mark.steps)) {
+		if (s.ifPrecedingAccepted === undefined && s.ifPrecedingDeclined === undefined) {
+			if (isAccept) s.ifPrecedingAccepted = optIdx;
+			else s.ifPrecedingDeclined = optIdx;
+		}
+	}
+	// Preserve `lastOptionalStep` across "If you do" so a following "If you don't / Otherwise" can still link to it,
+	// even after recursive `sentence()` clears `lastOptionalStep` on inner non-optional steps.
+	if (isAccept) {
+		if (p.lastOptionalStep === undefined) p.lastOptionalStep = optIdx;
+	} else if (!p.steps.slice(mark.steps).some((s) => s.optional !== undefined)) {
+		p.lastOptionalStep = undefined;
+	}
+	return true;
+}
+
+function clauses(p: Parser, text: string, offset: number): boolean {
+	const followUp = parseOptionalFollowUp(p, text, { start: offset, end: offset + text.length }, (body, bodyStart) =>
+		clauses(p, body, bodyStart)
+	);
+	if (followUp !== null) return followUp;
+
+	const ifDoSplit = text.match(
+		/^(.+?)(?:,\s*(?:and|then)|,?\s+(?:and|then))\s+((?:(?:if|when) (?:you do|that player does|the player does|they do)|if (?:you don't|that player doesn't|the player doesn't|they don't)|otherwise), .+)$/i
+	);
 	if (ifDoSplit) {
 		const mark = p.mark();
 		const head = ifDoSplit[1].trim();
@@ -1631,7 +1881,7 @@ function clauses(p: Parser, text: string, offset: number): boolean {
 	for (const c of parts) {
 		if (!clause(p, c)) {
 			p.rollback(mark);
-			return false;
+	return false;
 		}
 	}
 	return true;
@@ -1654,27 +1904,110 @@ export function parseEffects(text: string, offset = 0, context: EffectContext = 
 	return { steps: p.steps, targets: p.targets, unparsed: p.unparsed };
 }
 
-/** "Choose one —" + bullet lines. */
-function parseModal(header: string, bullets: Array<{ text: string; start: number; end: number }>): EffectParse {
-	const counts: Record<string, [number, number]> = {
-		'choose one —': [1, 1],
-		'choose two —': [2, 2],
-		'choose one or both —': [1, 2],
-		'choose one or more —': [1, bullets.length],
-		'choose any number —': [0, bullets.length]
-	};
-	const range = counts[header.toLowerCase()];
+/**
+ * Modal header + bullet lines:
+ * - "Choose one —", "Choose two —", "Choose three —", "Choose one or both —",
+ *   "Choose one or more —", "Choose any number —", "Choose up to <N|word> —"
+ * - optional "that hasn't been chosen this turn"
+ * - optional "You may choose the same mode more than once." (before or after em-dash)
+ */
+export function parseModal(
+	header: string,
+	bullets: Array<{ text: string; start: number; end: number }>,
+	context: EffectContext = 'spell',
+	headerStart?: number
+): EffectParse {
+	let rest = header.trim();
+	let allowRepeat = false;
+	const repeatRe = /\s*(?:\.|—)?\s*you may choose the same mode more than once\.?\s*/i;
+	if (repeatRe.test(rest)) {
+		allowRepeat = true;
+		rest = rest.replace(repeatRe, ' ').trim();
+	}
+	rest = rest.replace(/[—.]+$/g, '').trim();
+
+	let oncePerTurnUnique = false;
+	const onceTurnRe = /\s+that hasn['’]t been chosen this turn$/i;
+	if (onceTurnRe.test(rest)) {
+		oncePerTurnUnique = true;
+		rest = rest.replace(onceTurnRe, '').trim();
+	}
+
+	const lower = rest.toLowerCase();
+	let min = 1;
+	let max = 1;
+	let upTo = false;
+	let matched = true;
+	const bulletCount = bullets.length;
+
+	if (lower === 'choose one') {
+		min = 1;
+		max = 1;
+	} else if (lower === 'choose one or both') {
+		min = 1;
+		max = 2;
+	} else if (lower === 'choose one or more') {
+		min = 1;
+		max = bulletCount;
+	} else if (lower === 'choose any number') {
+		min = 0;
+		max = bulletCount;
+	} else {
+		const upToMatch = lower.match(/^choose up to (\d+|[a-z]+)$/);
+		const exactMatch = lower.match(/^choose (\d+|[a-z]+)$/);
+		if (upToMatch) {
+			const val = count(upToMatch[1]);
+			if (val && val.k === 'const' && val.n >= 1) {
+				min = 0;
+				max = val.n;
+				upTo = true;
+			} else {
+				matched = false;
+			}
+		} else if (exactMatch) {
+			const val = count(exactMatch[1]);
+			if (val && val.k === 'const' && val.n >= 1) {
+				min = val.n;
+				max = val.n;
+			} else {
+				matched = false;
+			}
+		} else {
+			matched = false;
+		}
+	}
+
+	if (!allowRepeat && bulletCount > 0 && max > bulletCount) {
+		if (upTo) {
+			max = bulletCount;
+		} else {
+			matched = false;
+		}
+	}
+
 	const unparsed: Span[] = [];
 	const modes: ModalDef['modes'] = [];
 	for (const b of bullets) {
 		const body = b.text.replace(/^•\s*/, '');
 		const start = b.start + (b.text.length - body.length);
-		const parse = parseEffects(body, start, 'spell');
+		const parse = parseEffects(body, start, context);
 		unparsed.push(...parse.unparsed);
 		modes.push({ targets: parse.targets, effect: parse.steps, span: { start: b.start, end: b.end } });
 	}
-	if (!range) unparsed.push({ start: bullets[0]?.start ?? 0, end: bullets[bullets.length - 1]?.end ?? 0 });
-	return { steps: [], targets: [], modal: { min: range?.[0] ?? 1, max: range?.[1] ?? 1, modes }, unparsed };
+	if (!matched || bullets.length === 0 || max < min) {
+		const fallbackStart = headerStart ?? bullets[0]?.start ?? 0;
+		const fallbackEnd = bullets[bullets.length - 1]?.end ?? fallbackStart + header.length;
+		unparsed.push({ start: fallbackStart, end: fallbackEnd });
+	}
+	const modal: ModalDef = {
+		min,
+		max,
+		...(allowRepeat ? { allowRepeat: true } : {}),
+		...(oncePerTurnUnique ? { oncePerTurnUnique: true } : {}),
+		...(upTo ? { upTo: true } : {}),
+		modes
+	};
+	return { steps: [], targets: [], modal, unparsed };
 }
 
 /** Lines of an instant or sorcery that aren't part of its effect. */
@@ -1699,13 +2032,16 @@ export function parseSpellFace(norm: NormalizedFace, include: (line: NormalizedL
 
 	for (let i = 0; i < lines.length; i++) {
 		const line = lines[i];
-		if (/^choose\b.*—$/i.test(line.text)) {
+		if (
+			/^choose\b.*(?:—|you may choose the same mode more than once)/i.test(line.text) &&
+			(lines[i + 1]?.text.startsWith('•') || /—$/i.test(line.text))
+		) {
 			const bullets: Array<{ text: string; start: number; end: number }> = [];
 			while (lines[i + 1]?.text.startsWith('•')) {
 				const b = lines[++i];
 				bullets.push({ text: b.text, start: b.span.start, end: b.span.end });
 			}
-			const m = parseModal(line.text, bullets);
+			const m = parseModal(line.text, bullets, 'spell', line.span.start);
 			modal = m.modal;
 			unparsed.push(...m.unparsed);
 			continue;

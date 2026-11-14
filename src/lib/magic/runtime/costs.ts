@@ -47,7 +47,7 @@ import {
 	spellOptionalAdditionalCosts,
 	validateOptionalCostCounts
 } from './kicker.ts';
-import { playerLifeTotalCantChange } from './replace.ts';
+import { hasRestriction, playerLifeTotalCantChange } from './replace.ts';
 import { moveObject, tapPermanent, type MoveResult, type PlayerZone } from './zones.ts';
 
 export type { SerializedPlannedCost };
@@ -587,6 +587,8 @@ export function describeCost(defs: CostDef[]): string {
 					return '{Q}';
 				case 'tapOthers':
 					return `Tap ${filterText(d.filter, d.count)}`;
+				case 'tapSubsetSum':
+					return `Tap any number of ${filterText(d.filter, { k: 'const', n: 1 })}s with total ${d.metric} ${amountText(d.minTotal)} or more`;
 				case 'sacrifice':
 					return d.filter === 'self' ? 'Sacrifice this' : `Sacrifice ${filterText(d.filter, d.count)}`;
 				case 'discard':
@@ -642,11 +644,20 @@ export interface CostContext {
 
 export type CostQuestion =
 	| { kind: 'option'; index: number; labels: string[]; optional: boolean }
-	| { kind: 'objects'; index: number; label: string; count: number; candidateIds: string[] };
+	| {
+			kind: 'objects';
+			index: number;
+			label: string;
+			count: number;
+			candidateIds: string[];
+			minTotal?: number;
+			metric?: 'power';
+			candidateWeights?: Record<string, number>;
+	  };
 
 type ObjectCostDef = Extract<
 	CostDef,
-	{ k: 'tapOthers' | 'sacrifice' | 'discard' | 'exileFrom' | 'revealFromHand' }
+	{ k: 'tapOthers' | 'tapSubsetSum' | 'sacrifice' | 'discard' | 'exileFrom' | 'revealFromHand' }
 >;
 
 /** One cost part of a complete plan, with the objects it uses. */
@@ -687,6 +698,15 @@ function objectCandidates(def: ObjectCostDef, ctx: CostContext, used: Set<string
 			return ctx.player.battlefield.filter(
 				(c) => free(c) && !c.phasedOut && !c.tapped && matchesObjectFilter(c, def.filter, fctx)
 			);
+		case 'tapSubsetSum':
+			return ctx.player.battlefield.filter((c) => {
+				if (!free(c) || c.phasedOut || c.tapped) return false;
+				if (def.excludeSelf && c.instanceId === ctx.source.instanceId) return false;
+				if (def.restrictionTag === 'crew' && hasRestriction(ctx.state, c, 'cantCrewVehicles')) {
+					return false;
+				}
+				return matchesObjectFilter(c, def.filter, fctx);
+			});
 		case 'sacrifice':
 			if (def.filter === 'self') return null;
 			return ctx.player.battlefield.filter(
@@ -890,6 +910,7 @@ function planFlat(ctx: CostContext, flat: Flat[], objects: string[][] | undefine
 		}
 		if (
 			def.k !== 'tapOthers' &&
+			def.k !== 'tapSubsetSum' &&
 			def.k !== 'sacrifice' &&
 			def.k !== 'discard' &&
 			def.k !== 'exileFrom' &&
@@ -899,7 +920,7 @@ function planFlat(ctx: CostContext, flat: Flat[], objects: string[][] | undefine
 			continue;
 		}
 		const reserveSelf =
-			(def.k === 'tapOthers' && tapsSelf) ||
+			((def.k === 'tapOthers' || def.k === 'tapSubsetSum') && tapsSelf) ||
 			(discardsSelf &&
 				(def.k === 'revealFromHand' ||
 					(def.filter !== 'self' && (def.k === 'discard' || (def.k === 'exileFrom' && def.zone === 'hand')))));
@@ -907,7 +928,67 @@ function planFlat(ctx: CostContext, flat: Flat[], objects: string[][] | undefine
 		const candidates = objectCandidates(def, ctx, exclude);
 		if (!candidates) {
 			parts.push({ def });
-			if (def.filter === 'self') used.add(ctx.source.instanceId);
+			if ('filter' in def && def.filter === 'self') used.add(ctx.source.instanceId);
+			continue;
+		}
+		if (def.k === 'tapSubsetSum') {
+			const minTotal = n(def.minTotal, ctx);
+			const candidateWeights = withStableLayerInputs(ctx.state, () => {
+				const weights: Record<string, number> = {};
+				for (const c of candidates) {
+					const ev = evaluatePermanent(ctx.state, c);
+					weights[c.instanceId] = def.metric === 'power' ? (ev.power ?? 0) : 0;
+				}
+				return weights;
+			});
+			const maxAchievable = candidates.reduce(
+				(sum, c) => sum + Math.max(0, candidateWeights[c.instanceId] ?? 0),
+				0
+			);
+			if (maxAchievable < minTotal) {
+				return {
+					ok: false,
+					error: `Can't pay the cost: ${describeCost([def])} (insufficient total ${def.metric}).`
+				};
+			}
+			const index = objectIndex++;
+			const chosenIds = objects?.[index];
+			let chosen: CardInstance[];
+			if (chosenIds) {
+				if (new Set(chosenIds).size !== chosenIds.length) {
+					return { ok: false, error: `Duplicate choice for: ${describeCost([def])}.` };
+				}
+				const byId = new Map(candidates.map((c) => [c.instanceId, c]));
+				if (chosenIds.some((id) => !byId.has(id))) {
+					return { ok: false, error: `Illegal choice for: ${describeCost([def])}.` };
+				}
+				const sum = chosenIds.reduce((acc, id) => acc + (candidateWeights[id] ?? 0), 0);
+				if (sum < minTotal) {
+					return {
+						ok: false,
+						error: `Selected total ${def.metric} is ${sum}; need at least ${minTotal}.`
+					};
+				}
+				chosen = chosenIds.map((id) => byId.get(id)!);
+			} else if (minTotal <= 0) {
+				chosen = [];
+			} else {
+				return {
+					ok: true,
+					question: {
+						kind: 'objects',
+						index,
+						label: describeCost([def]),
+						count: 1,
+						candidateIds: candidates.map((c) => c.instanceId),
+						minTotal,
+						metric: def.metric,
+						candidateWeights
+					}
+				};
+			}
+			for (const c of chosen) used.add(c.instanceId);
+			parts.push({ def, objects: chosen });
 			continue;
 		}
 		const count = n(def.count, ctx);
@@ -976,9 +1057,88 @@ function tapTargets(ctx: CostContext, parts: PlannedCost[]): CardInstance[] {
 	const out: CardInstance[] = [];
 	for (const p of parts) {
 		if (p.def.k === 'tapSelf') out.push(ctx.source);
-		if (p.def.k === 'tapOthers') out.push(...(p.objects ?? []));
+		if (p.def.k === 'tapOthers' || p.def.k === 'tapSubsetSum') out.push(...(p.objects ?? []));
 	}
 	return out;
+}
+
+function subsetKeepScore(c: CardInstance): number {
+	return (c.summoningSick ? 0 : 2) + (c.isToken ? 0 : 1) + (c.card.cmc ?? 0) * 0.01;
+}
+
+function selectSubsetForMinSum(
+	candidates: CardInstance[],
+	minTotal: number,
+	weights: Record<string, number>
+): string[] {
+	if (minTotal <= 0) return [];
+	const pos = candidates.filter((c) => (weights[c.instanceId] ?? 0) > 0);
+	const totalPossible = pos.reduce((s, c) => s + (weights[c.instanceId] ?? 0), 0);
+	if (totalPossible < minTotal) return [];
+
+	const ordered = [...pos].sort((a, b) => {
+		const diff = subsetKeepScore(a) - subsetKeepScore(b);
+		if (diff !== 0) return diff;
+		return (weights[a.instanceId] ?? 0) - (weights[b.instanceId] ?? 0);
+	});
+
+	if (ordered.length <= 16) {
+		const nLen = ordered.length;
+		const suffixSum = new Array<number>(nLen + 1).fill(0);
+		for (let i = nLen - 1; i >= 0; i--) {
+			suffixSum[i] = suffixSum[i + 1] + (weights[ordered[i].instanceId] ?? 0);
+		}
+		let bestIds: string[] | null = null;
+		let bestSurplus = Infinity;
+		let bestCount = Infinity;
+		let bestScore = Infinity;
+		let nodes = 0;
+		const picked: string[] = [];
+
+		const dfs = (idx: number, sum: number, score: number): void => {
+			if (nodes++ > 4096) return;
+			if (sum >= minTotal) {
+				const surplus = sum - minTotal;
+				if (
+					surplus < bestSurplus ||
+					(surplus === bestSurplus &&
+						(picked.length < bestCount ||
+							(picked.length === bestCount && score < bestScore)))
+				) {
+					bestSurplus = surplus;
+					bestCount = picked.length;
+					bestScore = score;
+					bestIds = [...picked];
+				}
+				return;
+			}
+			if (idx >= nLen || sum + suffixSum[idx] < minTotal) return;
+			const c = ordered[idx];
+			const w = weights[c.instanceId] ?? 0;
+			picked.push(c.instanceId);
+			dfs(idx + 1, sum + w, score + subsetKeepScore(c));
+			picked.pop();
+			dfs(idx + 1, sum, score);
+		};
+		dfs(0, 0, 0);
+		if (bestIds) return bestIds;
+	}
+
+	const chosen: CardInstance[] = [];
+	let sum = 0;
+	for (const c of ordered) {
+		if (sum >= minTotal) break;
+		chosen.push(c);
+		sum += weights[c.instanceId] ?? 0;
+	}
+	for (let i = chosen.length - 1; i >= 0; i--) {
+		const w = weights[chosen[i].instanceId] ?? 0;
+		if (sum - w >= minTotal) {
+			sum -= w;
+			chosen.splice(i, 1);
+		}
+	}
+	return chosen.map((c) => c.instanceId);
 }
 
 /**
@@ -1021,7 +1181,10 @@ export function chooseCostPayment(ctx: CostContext, defs: CostDef[]): CostPaymen
 		const candidates = q.candidateIds
 			.map((id) => findById(ctx, id))
 			.filter((c): c is CardInstance => c !== undefined);
-		objects[q.index] = greedy(candidates, q.count);
+		objects[q.index] =
+			q.minTotal !== undefined && q.candidateWeights
+				? selectSubsetForMinSum(candidates, q.minTotal, q.candidateWeights)
+				: greedy(candidates, q.count);
 	}
 }
 
@@ -1120,6 +1283,7 @@ export function serializeCostPlanParts(
 		}
 		if (
 			def.k === 'tapOthers' ||
+			def.k === 'tapSubsetSum' ||
 			def.k === 'sacrifice' ||
 			def.k === 'discard' ||
 			def.k === 'exileFrom' ||
@@ -1152,7 +1316,7 @@ export function payTapAndManaCostParts(
 	for (const part of parts) {
 		if (part.def.k === 'tapSelf') tapPermanent(ctx.state, source);
 		if (part.def.k === 'untapSelf') source.tapped = false;
-		if (part.def.k === 'tapOthers') {
+		if (part.def.k === 'tapOthers' || part.def.k === 'tapSubsetSum') {
 			const ids = part.objectIds ?? [];
 			const names: string[] = [];
 			for (const id of ids) {

@@ -7,7 +7,7 @@
  * inspector labels (compiler/support.ts) and the runtime decision (interpreter or manual
  * resolution, engine.ts) can't disagree. Pure IR; no game state, no rules text.
  */
-import type { EffectStep, ModalDef, Selector, TargetSpec, Verb } from '../ir.ts';
+import type { CostDef, EffectStep, ModalDef, Selector, TargetSpec, Verb } from '../ir.ts';
 
 /**
  * Verbs that resolve on the interpreter. An ability that uses any other verb resolves on the
@@ -55,7 +55,25 @@ export const INTERPRETED_VERBS: ReadonlySet<Verb> = new Set<Verb>([
 	'transform',
 	'flip',
 	'dig',
-	'grantPlayFromExile'
+	'grantPlayFromExile',
+	'goad',
+	'explore',
+	'connive',
+	'regenerate',
+	'cantRegenerate',
+	'payCost',
+	'animate'
+]);
+
+const SUPPORTED_OPTIONAL_COST_KINDS: ReadonlySet<CostDef['k']> = new Set<CostDef['k']>([
+	'mana',
+	'payLife',
+	'sacrifice',
+	'discard',
+	'removeCounters',
+	'exileFrom',
+	'tapOthers',
+	'tapSubsetSum'
 ]);
 
 /**
@@ -70,8 +88,8 @@ export function triggerTargetsSupported(specs: TargetSpec[]): boolean {
 	});
 }
 
-/** Verbs whose chooser may get an engine prompt (scry, surveil, search); resolution pauses after the step. */
-export const PROMPTING_VERBS: ReadonlySet<Verb> = new Set<Verb>(['scry', 'surveil', 'lookAndReorder', 'search']);
+/** Verbs whose chooser may get an engine prompt (scry, surveil, search, explore, connive); resolution pauses after the step. */
+export const PROMPTING_VERBS: ReadonlySet<Verb> = new Set<Verb>(['scry', 'surveil', 'lookAndReorder', 'search', 'explore', 'connive']);
 
 function selectorSupported(sel: Selector): boolean {
 	return ['self', 'binding', 'target', 'all', 'player', 'playerRef', 'libraryTop', 'none', 'eventObject'].includes(sel.k);
@@ -80,6 +98,15 @@ function selectorSupported(sel: Selector): boolean {
 function stepSupported(step: EffectStep): boolean {
 	if (!INTERPRETED_VERBS.has(step.verb)) return false;
 	if (!selectorSupported(step.subject)) return false;
+	if (step.verb === 'payCost' && (!step.optional?.cost || step.optional.cost.length === 0)) return false;
+	if (step.optional?.cost) {
+		if (
+			step.optional.cost.length === 0 ||
+			!step.optional.cost.every((c) => SUPPORTED_OPTIONAL_COST_KINDS.has(c.k))
+		) {
+			return false;
+		}
+	}
 	if (step.verb === 'search') {
 		const s = step.params?.search;
 		if (!s) return false;
@@ -132,10 +159,11 @@ export function staticallyInterpretable(
 		if (parse.steps.length > 0) return parse.steps.every(stepSupported);
 		const m = parse.modal;
 		if (m.modes.length === 0 || m.min < 0 || m.max < m.min) return false;
-		return m.modes.every(
-			(mode) =>
-				mode.targets.length <= 1 &&
-				staticallyInterpretable({ steps: mode.effect, targets: mode.targets, unparsed: [] })
+		return m.modes.every((mode) =>
+			staticallyInterpretable(
+				{ steps: mode.effect, targets: mode.targets, unparsed: [] },
+				_allowOptionalPrefix
+			)
 		);
 	}
 	if (parse.steps.length === 0) return false;
@@ -148,6 +176,14 @@ export function staticallyInterpretable(
 			(s.ifPrecedingAccepted < 0 ||
 				s.ifPrecedingAccepted >= i ||
 				!parse.steps[s.ifPrecedingAccepted]?.optional)
+		) {
+			return false;
+		}
+		if (
+			s.ifPrecedingDeclined !== undefined &&
+			(s.ifPrecedingDeclined < 0 ||
+				s.ifPrecedingDeclined >= i ||
+				!parse.steps[s.ifPrecedingDeclined]?.optional)
 		) {
 			return false;
 		}

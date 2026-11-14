@@ -384,7 +384,8 @@ const RESTRICTIONS: Array<[RegExp, Extract<StaticDef, { k: 'restriction' }>['res
 	[/^(.+?) (?:attacks|attack) each combat if able$/, 'attacksEachCombat'],
 	[/^(.+?) (?:blocks|block) each combat if able$/, 'blocksEachCombat'],
 	[/^(.+?) (?:can't|cannot) be countered$/i, 'cantBeCountered'],
-	[/^(.+?) (?:doesn't|don't) untap during (?:your|its controller's|their controllers') untap steps?$/, 'doesntUntap']
+	[/^(.+?) (?:doesn't|don't) untap during (?:your|its controller's|their controllers') untap steps?$/, 'doesntUntap'],
+	[/^(.+?) (?:can't|cannot) crew Vehicles$/i, 'cantCrewVehicles']
 ];
 
 /** "~ can't block.", "Enchanted creature can't attack or block.", "Creatures your opponents control can't block." */

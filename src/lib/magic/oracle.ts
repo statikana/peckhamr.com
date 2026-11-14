@@ -173,6 +173,16 @@ export const PREDEFINED_TOKEN_DEFS = {
 		keywords: [],
 		oracleText:
 			'{T}, Sacrifice this token: Exile the top card of your library. You may play that card this turn. Activate only as a sorcery.'
+	},
+	map: {
+		name: 'Map',
+		typeLine: 'Token Artifact — Map',
+		colors: [],
+		power: 0,
+		toughness: 0,
+		keywords: [],
+		oracleText:
+			'{1}, {T}, Sacrifice this token: Target creature you control explores. Activate only as a sorcery.'
 	}
 } satisfies Record<string, PredefinedTokenDef>;
 

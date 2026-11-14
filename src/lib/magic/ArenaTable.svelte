@@ -17,6 +17,7 @@
 		getEffectiveActivatedAbilities,
 		getHostCardOnBoard,
 		getLandPlayOptions,
+		getModalDisabledIndices,
 		getPlayerCommanderIdentity,
 		getSpellTargetRequirement,
 		getSuspendSpec,
@@ -25,7 +26,14 @@
 		inspectCardContinuousBreakdown,
 		validateTargetLegality
 	} from './engine';
-	import { compileCard } from './compiler/index';
+	import {
+		compileCard,
+		compileSpellEffects,
+		describeModalModes,
+		expandModalEffects
+	} from './compiler/index';
+	import type { ModalDef, TargetSpec } from './ir';
+	import { evaluatePermanent, targetRequirementFromSpecs } from './ruleTree';
 	import ManaSymbol from './ManaSymbol.svelte';
 	import ManaText from './ManaText.svelte';
 	import { getTotalManaInPool, parseManaCost } from './oracle';
@@ -220,12 +228,29 @@
 		targetKind: string;
 		targetInfo: TargetRequirementInfo;
 		selectedTargets: TargetRef[];
+		accumulatedTargets?: TargetRef[];
+		remainingSpecs?: TargetSpec[];
+		modes?: number[];
 		fromZone?: 'hand' | 'command' | 'exile' | 'graveyard';
 		xValue: number;
 		optionId?: string;
 		faceIndex?: number;
 		fused?: boolean;
 		optionalCostCounts?: Record<string, number>;
+	} | null>(null);
+
+	let modePickerModal = $state.raw<{
+		kind: 'spell' | 'ability';
+		inst: CardInstance;
+		modal: ModalDef;
+		modeLabels: string[];
+		disabledIndices: number[];
+		selectedModes: number[];
+		fromZone?: 'hand' | 'command' | 'exile' | 'graveyard';
+		xValue?: number;
+		option?: CastOption;
+		optionalCostCounts?: Record<string, number>;
+		ability?: EffectiveActivatedAbility;
 	} | null>(null);
 
 	// Drag-and-drop state for hand and command zone cards
@@ -810,6 +835,7 @@
 					selectedPermanentForAbility ||
 					xCostModalCard ||
 					castOptionsModal ||
+					modePickerModal ||
 					zoneModal
 				) {
 					e.preventDefault();
@@ -818,6 +844,7 @@
 					selectedPermanentForAbility = null;
 					xCostModalCard = null;
 					castOptionsModal = null;
+					modePickerModal = null;
 					zoneModal = null;
 					zoneSearchQuery = '';
 					return;
@@ -985,19 +1012,20 @@
 	function effectivePermanentDisplay(perm: CardInstance) {
 		const card = effectiveCardForObject(perm);
 		const view = resolveObjectFaces(card, instanceFaceOptions(perm, 'battlefield'));
+		const isCreature = evaluatePermanent(gameState, perm).isCreature;
 		if (perm.isFaceDown) {
 			return {
 				name: perm.faceDownLabel || view.name || card.name,
 				imageUrl: FACE_DOWN_ART_URI,
 				artCropUrl: FACE_DOWN_ART_URI,
-				isCreature: view.types.includes('Creature')
+				isCreature
 			};
 		}
 		return {
 			name: view.name || card.name,
 			imageUrl: view.imageUrl || card.imageUrl,
 			artCropUrl: view.artCropUrl || card.artCropUrl || view.imageUrl || card.imageUrl,
-			isCreature: view.types.includes('Creature')
+			isCreature
 		};
 	}
 
@@ -1068,6 +1096,27 @@
 	}
 
 	async function triggerActivatedAbility(inst: CardInstance, ab: EffectiveActivatedAbility) {
+		if (ab.modal && me) {
+			const disabledIndices = getModalDisabledIndices(
+				gameState,
+				me.playerId,
+				inst.card,
+				inst,
+				ab.modal,
+				inst.usedModalModesThisTurn
+			);
+			const modeLabels = describeModalModes(inst.card, ab.modal, ab.faceIndex ?? 0);
+			modePickerModal = {
+				kind: 'ability',
+				inst,
+				modal: ab.modal,
+				modeLabels,
+				disabledIndices,
+				selectedModes: [],
+				ability: ab
+			};
+			return;
+		}
 		if (ab.requiresTarget) {
 			const abTargetInfo: TargetRequirementInfo = ab.targetInfo;
 			pendingTargetAction = {
@@ -1086,6 +1135,114 @@
 				type: 'activate_ability',
 				instanceId: inst.instanceId,
 				abilityId: ab.id
+			});
+		}
+	}
+
+	function toggleModePickerSelection(modeIdx: number) {
+		if (!modePickerModal || modePickerModal.disabledIndices.includes(modeIdx)) return;
+		const { modal, selectedModes } = modePickerModal;
+		if (modal.allowRepeat) return;
+		const next = selectedModes.includes(modeIdx)
+			? selectedModes.filter((i) => i !== modeIdx)
+			: selectedModes.length < modal.max
+				? [...selectedModes, modeIdx]
+				: selectedModes;
+		modePickerModal = { ...modePickerModal, selectedModes: next };
+	}
+
+	function adjustModePickerRepeat(modeIdx: number, delta: 1 | -1) {
+		if (!modePickerModal || modePickerModal.disabledIndices.includes(modeIdx)) return;
+		const { modal, selectedModes } = modePickerModal;
+		if (delta > 0) {
+			if (selectedModes.length >= modal.max) return;
+			modePickerModal = { ...modePickerModal, selectedModes: [...selectedModes, modeIdx] };
+		} else {
+			const pos = selectedModes.lastIndexOf(modeIdx);
+			if (pos < 0) return;
+			const next = [...selectedModes];
+			next.splice(pos, 1);
+			modePickerModal = { ...modePickerModal, selectedModes: next };
+		}
+	}
+
+	async function confirmModePicker(explicitModes?: number[]) {
+		const picker = modePickerModal;
+		if (!picker) return;
+		const chosenModes = explicitModes ?? [...picker.selectedModes];
+		if (chosenModes.length < picker.modal.min || chosenModes.length > picker.modal.max) return;
+		modePickerModal = null;
+
+		const expanded = expandModalEffects(picker.modal, chosenModes);
+		const specs = expanded?.targets ?? [];
+		const firstSpec = specs[0];
+		if (firstSpec) {
+			const firstReq = targetRequirementFromSpecs([firstSpec]);
+			const remainingSpecs = specs.slice(1);
+			if (picker.kind === 'spell' && picker.fromZone) {
+				pendingTargetAction = {
+					mode: 'spell',
+					instanceId: picker.inst.instanceId,
+					card: picker.inst.card,
+					targetKind: firstReq.targetKind,
+					targetInfo: firstReq,
+					selectedTargets: [],
+					accumulatedTargets: [],
+					remainingSpecs,
+					modes: chosenModes,
+					fromZone: picker.fromZone,
+					xValue: picker.xValue ?? 0,
+					...(picker.option ? { optionId: picker.option.id } : {}),
+					...(picker.option?.faceIndex !== undefined ? { faceIndex: picker.option.faceIndex } : {}),
+					...(picker.option?.fused ? { fused: true } : {}),
+					...(picker.optionalCostCounts && Object.keys(picker.optionalCostCounts).length > 0
+						? { optionalCostCounts: picker.optionalCostCounts }
+						: {})
+				};
+				openGraveyardTargetingModalIfNeeded(firstReq);
+				return;
+			}
+			if (picker.kind === 'ability' && picker.ability) {
+				pendingTargetAction = {
+					mode: 'ability',
+					instanceId: picker.inst.instanceId,
+					abilityId: picker.ability.id,
+					card: picker.inst.card,
+					targetKind: firstReq.targetKind,
+					targetInfo: firstReq,
+					selectedTargets: [],
+					accumulatedTargets: [],
+					remainingSpecs,
+					modes: chosenModes,
+					xValue: 0
+				};
+				openGraveyardTargetingModalIfNeeded(firstReq);
+				return;
+			}
+		}
+
+		if (picker.kind === 'spell' && picker.fromZone) {
+			await onGameAction({
+				type: 'cast_spell',
+				instanceId: picker.inst.instanceId,
+				fromZone: picker.fromZone,
+				xValue: picker.xValue ?? 0,
+				modes: chosenModes,
+				targets: [],
+				...(picker.option ? { optionId: picker.option.id } : {}),
+				...(picker.option?.faceIndex !== undefined ? { faceIndex: picker.option.faceIndex } : {}),
+				...(picker.option?.fused ? { fused: true } : {}),
+				...(picker.optionalCostCounts && Object.keys(picker.optionalCostCounts).length > 0
+					? { optionalCostCounts: picker.optionalCostCounts }
+					: {})
+			});
+		} else if (picker.kind === 'ability' && picker.ability) {
+			await onGameAction({
+				type: 'activate_ability',
+				instanceId: picker.inst.instanceId,
+				abilityId: picker.ability.id,
+				chosenModes,
+				targets: []
 			});
 		}
 	}
@@ -1312,6 +1469,25 @@
 		const maxReq = Math.max(1, pendingTargetAction.targetInfo.maxTargets);
 
 		if (nextTargets.length >= maxReq) {
+			if (pendingTargetAction.remainingSpecs && pendingTargetAction.remainingSpecs.length > 0) {
+				const [nextSpec, ...restSpecs] = pendingTargetAction.remainingSpecs;
+				const nextReq = targetRequirementFromSpecs([nextSpec]);
+				pendingTargetAction = {
+					...pendingTargetAction,
+					accumulatedTargets: [...(pendingTargetAction.accumulatedTargets ?? []), ...nextTargets],
+					selectedTargets: [],
+					targetInfo: nextReq,
+					targetKind: nextReq.targetKind,
+					remainingSpecs: restSpecs
+				};
+				if (nextReq.zone === 'graveyard') {
+					openGraveyardTargetingModalIfNeeded(nextReq);
+				} else {
+					zoneModal = null;
+					zoneSearchQuery = '';
+				}
+				return;
+			}
 			pendingTargetAction.selectedTargets = nextTargets;
 			await submitSelectedTargets();
 		} else {
@@ -1323,6 +1499,7 @@
 		if (!pendingTargetAction) return;
 		const pending = pendingTargetAction;
 		if (pending.selectedTargets.length < pending.targetInfo.minTargets) return;
+		const allTargets = [...(pending.accumulatedTargets ?? []), ...pending.selectedTargets];
 
 		pendingTargetAction = null;
 		if (pending.targetInfo.zone === 'graveyard') {
@@ -1336,20 +1513,22 @@
 				instanceId: pending.instanceId,
 				fromZone: pending.fromZone,
 				xValue: pending.xValue,
+				...(pending.modes ? { modes: pending.modes } : {}),
 				...(pending.optionId ? { optionId: pending.optionId } : {}),
 				...(pending.faceIndex !== undefined ? { faceIndex: pending.faceIndex } : {}),
 				...(pending.fused ? { fused: true } : {}),
 				...(pending.optionalCostCounts && Object.keys(pending.optionalCostCounts).length > 0
 					? { optionalCostCounts: pending.optionalCostCounts }
 					: {}),
-				targets: pending.selectedTargets
+				targets: allTargets
 			});
 		} else if (pending.mode === 'ability' && pending.abilityId) {
 			await onGameAction({
 				type: 'activate_ability',
 				instanceId: pending.instanceId,
 				abilityId: pending.abilityId,
-				targets: pending.selectedTargets
+				...(pending.modes ? { chosenModes: pending.modes } : {}),
+				targets: allTargets
 			});
 		}
 	}
@@ -1634,6 +1813,37 @@
 		option?: CastOption,
 		optionalCostCounts?: Record<string, number>
 	) {
+		const compiledSpell =
+			option?.spellMods?.castFaceDown || option?.fused
+				? null
+				: compileSpellEffects(inst.card, option?.faceIndex ?? 0, false);
+		if (compiledSpell?.modal && me) {
+			const disabledIndices = getModalDisabledIndices(
+				gameState,
+				me.playerId,
+				inst.card,
+				inst,
+				compiledSpell.modal
+			);
+			const modeLabels = describeModalModes(
+				inst.card,
+				compiledSpell.modal,
+				option?.faceIndex ?? 0
+			);
+			modePickerModal = {
+				kind: 'spell',
+				inst,
+				modal: compiledSpell.modal,
+				modeLabels,
+				disabledIndices,
+				selectedModes: [],
+				fromZone,
+				xValue: xVal,
+				option,
+				optionalCostCounts
+			};
+			return;
+		}
 		const targetInfo = getSpellTargetRequirement(inst.card, option, optionalCostCounts);
 		const requiresTarget = targetInfo.requiresTarget && !option?.spellMods?.targetsBecomeEach;
 		if (requiresTarget) {
@@ -1692,7 +1902,7 @@
 			gameState.phase === 'declare_attackers' &&
 			isMyTurn &&
 			owner.playerId === me.playerId &&
-			perm.card.typeLine.includes('Creature')
+			effectivePermanentDisplay(perm).isCreature
 		) {
 			if (draftAttackers[perm.instanceId]) {
 				delete draftAttackers[perm.instanceId];
@@ -1730,7 +1940,7 @@
 		}
 
 		if (gameState.phase === 'declare_blockers' && !isMyTurn) {
-			if (owner.playerId === me.playerId && perm.card.typeLine.includes('Creature')) {
+			if (owner.playerId === me.playerId && effectivePermanentDisplay(perm).isCreature) {
 				if (draftBlockers[perm.instanceId]) {
 					delete draftBlockers[perm.instanceId];
 					draftBlockers = { ...draftBlockers };
@@ -2128,11 +2338,31 @@
 		}
 	}
 
-	function togglePromptModeSelection(modeIdx: number, maxReq: number) {
+	function togglePromptModeSelection(modeIdx: number, maxReq: number, disabled?: number[]) {
+		if (disabled?.includes(modeIdx)) return;
 		if (selectedPromptModes.includes(modeIdx)) {
 			selectedPromptModes = selectedPromptModes.filter((idx) => idx !== modeIdx);
 		} else if (selectedPromptModes.length < maxReq) {
 			selectedPromptModes = [...selectedPromptModes, modeIdx];
+		}
+	}
+
+	function adjustPromptModeRepeat(
+		modeIdx: number,
+		delta: 1 | -1,
+		maxReq: number,
+		disabled?: number[]
+	) {
+		if (disabled?.includes(modeIdx)) return;
+		if (delta > 0) {
+			if (selectedPromptModes.length >= maxReq) return;
+			selectedPromptModes = [...selectedPromptModes, modeIdx];
+		} else {
+			const pos = selectedPromptModes.lastIndexOf(modeIdx);
+			if (pos < 0) return;
+			const next = [...selectedPromptModes];
+			next.splice(pos, 1);
+			selectedPromptModes = next;
 		}
 	}
 
@@ -2765,6 +2995,9 @@
 										</span>
 									{/if}
 									<span class="mc-name">{permDisp.name}</span>
+									{#if perm.goadedByPlayerIds && perm.goadedByPlayerIds.length > 0}
+										<span class="badge red">GOADED</span>
+									{/if}
 									{#if perm.counters['+1/+1'] > 0}
 										<span class="counter-badge">+{perm.counters['+1/+1']}</span>
 									{/if}
@@ -2909,6 +3142,7 @@
 											{#if perm.phasedOut}<span class="badge purple">PHASED</span>{/if}
 											{#if perm.isCommander}<span class="badge gold">CMD</span>{/if}
 											{#if perm.isToken}<span class="badge cyan">TOK</span>{/if}
+											{#if perm.goadedByPlayerIds && perm.goadedByPlayerIds.length > 0}<span class="badge red">GOADED</span>{/if}
 											{#if perm.tapped}<ManaSymbol symbol="T" size={15} />{/if}
 											{#if perm.counters['+1/+1'] > 0}
 												<span class="badge green">+{perm.counters['+1/+1']}/+{perm.counters['+1/+1']}</span>
@@ -2917,7 +3151,7 @@
 												<span class="badge purple">L:{perm.counters.loyalty}</span>
 											{/if}
 										</div>
-										{#if perm.card.typeLine.includes('Creature')}
+										{#if permDisp.isCreature}
 											<span class="bc-pt" class:damaged={perm.damageMarked > 0}>
 												{getCreaturePower(perm, gameState)}/{getCreatureToughness(perm, gameState) - perm.damageMarked}
 											</span>
@@ -3955,6 +4189,124 @@
 		</div>
 	{/if}
 
+	<!-- Modal Spell / Ability Mode Picker -->
+	{#if modePickerModal}
+		{@const picker = modePickerModal}
+		{@const m = picker.modal}
+		{@const isReady =
+			picker.selectedModes.length >= m.min && picker.selectedModes.length <= m.max}
+		<div class="modal-backdrop">
+			<div class="arena-modal">
+				<h3>Choose Mode(s) — {picker.inst.card.name}</h3>
+				<p class="modal-desc">
+					Choose {m.min === m.max ? m.min : `${m.min}–${m.max}`} mode{m.max === 1 ? '' : 's'}.
+					{#if m.allowRepeat}
+						You may choose the same mode more than once.
+					{/if}
+					{#if m.oncePerTurnUnique}
+						Modes already chosen this turn cannot be chosen again.
+					{/if}
+				</p>
+				{#if !m.allowRepeat && m.min === 1 && m.max === 1}
+					<div class="mode-picker-list">
+						{#each picker.modeLabels as label, i (i)}
+							{@const isDisabled = picker.disabledIndices.includes(i)}
+							<button
+								type="button"
+								class="hud-btn mode-option-btn"
+								disabled={isDisabled}
+								title={isDisabled ? 'Unavailable (no legal targets or already chosen this turn)' : label}
+								onclick={() => confirmModePicker([i])}
+							>
+								<ManaText text={`${i + 1}. ${label}`} size={14} />
+							</button>
+						{/each}
+					</div>
+					<div class="modal-actions">
+						<button type="button" class="hud-btn" onclick={() => (modePickerModal = null)}>
+							Cancel
+						</button>
+					</div>
+				{:else if m.allowRepeat}
+					<div class="mode-picker-list">
+						{#each picker.modeLabels as label, i (i)}
+							{@const isDisabled = picker.disabledIndices.includes(i)}
+							{@const pickedCount = picker.selectedModes.filter((x) => x === i).length}
+							<div class="mode-repeat-row" class:disabled={isDisabled}>
+								<span class="mode-repeat-label">
+									<ManaText text={`${i + 1}. ${label}`} size={14} />
+								</span>
+								<div class="mode-repeat-controls">
+									<button
+										type="button"
+										class="hud-btn mini-btn"
+										disabled={pickedCount === 0}
+										onclick={() => adjustModePickerRepeat(i, -1)}
+									>
+										−
+									</button>
+									<span class="mode-count-badge">×{pickedCount}</span>
+									<button
+										type="button"
+										class="hud-btn mini-btn"
+										disabled={isDisabled || picker.selectedModes.length >= m.max}
+										onclick={() => adjustModePickerRepeat(i, 1)}
+									>
+										+
+									</button>
+								</div>
+							</div>
+						{/each}
+					</div>
+					<div class="modal-actions">
+						<button
+							type="button"
+							class="arena-main-btn"
+							class:can-act={isReady}
+							disabled={!isReady}
+							onclick={() => confirmModePicker()}
+						>
+							Confirm Modes ({picker.selectedModes.length}/{m.max})
+						</button>
+						<button type="button" class="hud-btn" onclick={() => (modePickerModal = null)}>
+							Cancel
+						</button>
+					</div>
+				{:else}
+					<div class="mode-picker-list">
+						{#each picker.modeLabels as label, i (i)}
+							{@const isDisabled = picker.disabledIndices.includes(i)}
+							{@const isSelected = picker.selectedModes.includes(i)}
+							<button
+								type="button"
+								class={isSelected ? 'arena-main-btn can-act mode-option-btn' : 'hud-btn mode-option-btn'}
+								disabled={isDisabled}
+								title={isDisabled ? 'Unavailable (no legal targets or already chosen this turn)' : label}
+								onclick={() => toggleModePickerSelection(i)}
+							>
+								<ManaText text={`${i + 1}. ${label}`} size={14} />
+							</button>
+						{/each}
+					</div>
+					<div class="modal-actions">
+						<button
+							type="button"
+							class="arena-main-btn"
+							class:can-act={isReady}
+							disabled={!isReady}
+							onclick={() => confirmModePicker()}
+						>
+							Confirm Modes ({picker.selectedModes.length}/{m.max})
+						</button>
+						<button type="button" class="hud-btn" onclick={() => (modePickerModal = null)}>
+							Cancel
+						</button>
+					</div>
+				{/if}
+			</div>
+		</div>
+	{/if}
+
 	<!-- X-Cost Selector Modal -->
 	{#if xCostModalCard}
 		<div class="modal-backdrop">
@@ -4495,8 +4847,17 @@
 					{:else}
 						{@const minReq = myChoice.min}
 						{@const maxReq = myChoice.max}
+						{@const minWeightSum = myChoice.minWeightSum}
+						{@const weightsById = myChoice.weightsById}
+						{@const weightLabel = myChoice.weightLabel?.toLowerCase() ?? 'total'}
+						{@const selectedWeightSum =
+							minWeightSum !== undefined && weightsById
+								? selectedPromptCardIds.reduce((sum, id) => sum + (weightsById[id] ?? 0), 0)
+								: 0}
 						{@const isReadyToConfirm =
-							selectedPromptCardIds.length >= minReq && selectedPromptCardIds.length <= maxReq}
+							selectedPromptCardIds.length >= minReq &&
+							selectedPromptCardIds.length <= maxReq &&
+							(minWeightSum === undefined || selectedWeightSum >= minWeightSum)}
 						{@const candidateCards =
 							myChoice.zone === 'hand'
 								? sortedHand.filter(
@@ -4505,6 +4866,13 @@
 											myChoice.candidates.includes(c.instanceId)
 									)
 								: resolveCandidateObjects(myChoice.candidates)}
+						{#if minWeightSum !== undefined}
+							<div class="hand-toolbar modal-sort-bar">
+								<span class="hand-count-label">
+									Selected {weightLabel}: {selectedWeightSum} / {minWeightSum}
+								</span>
+							</div>
+						{/if}
 						{#if myChoice.zone === 'hand'}
 							<div class="hand-toolbar modal-sort-bar">
 								<span class="hand-count-label">
@@ -4562,6 +4930,9 @@
 								>
 									<img src={c.card.imageUrl} alt={c.card.name} />
 									<span>{c.card.name}</span>
+									{#if weightsById && weightsById[c.instanceId] !== undefined}
+										<span class="badge cyan">{weightsById[c.instanceId]} {weightLabel}</span>
+									{/if}
 								</button>
 							{/each}
 							{#each nonCardCandidates(myChoice.candidates) as nc (nc.id)}
@@ -4592,7 +4963,11 @@
 									});
 								}}
 							>
-								Confirm Selection ({selectedPromptCardIds.length}/{maxReq})
+								{#if minWeightSum !== undefined}
+									Confirm ({selectedWeightSum}/{minWeightSum} {weightLabel})
+								{:else}
+									Confirm Selection ({selectedPromptCardIds.length}/{maxReq})
+								{/if}
 							</button>
 							{#if myPromptPurpose === 'cost_choice'}
 								<button
@@ -4611,12 +4986,16 @@
 						</div>
 					{/if}
 				{:else if myChoice.kind === 'chooseMode'}
-					{#if myChoice.min === 1 && myChoice.max === 1}
-						<div class="modal-actions">
+					{@const disabledSet = new Set(myChoice.disabledIndices ?? [])}
+					{#if !myChoice.allowRepeat && myChoice.min === 1 && myChoice.max === 1}
+						<div class="mode-picker-list">
 							{#each myChoice.modes as label, i (i)}
+								{@const isDisabled = disabledSet.has(i)}
 								<button
 									type="button"
-									class={i === 0 ? 'arena-main-btn can-act' : 'hud-btn'}
+									class={i === 0 && !isDisabled ? 'arena-main-btn can-act mode-option-btn' : 'hud-btn mode-option-btn'}
+									disabled={isDisabled}
+									title={isDisabled ? 'Mode unavailable (no legal targets or already chosen this turn)' : label}
 									onclick={() =>
 										onGameAction({
 											type: 'choice',
@@ -4624,22 +5003,78 @@
 											answer: { kind: 'chooseMode', indices: [i] }
 										})}
 								>
-									{label}
+									<ManaText text={label} size={14} />
 								</button>
 							{/each}
+						</div>
+					{:else if myChoice.allowRepeat}
+						{@const isModeReady =
+							selectedPromptModes.length >= myChoice.min &&
+							selectedPromptModes.length <= myChoice.max}
+						<div class="mode-picker-list">
+							{#each myChoice.modes as label, i (i)}
+								{@const isDisabled = disabledSet.has(i)}
+								{@const pickedCount = selectedPromptModes.filter((x) => x === i).length}
+								<div class="mode-repeat-row" class:disabled={isDisabled}>
+									<span class="mode-repeat-label">
+										<ManaText text={label} size={14} />
+									</span>
+									<div class="mode-repeat-controls">
+										<button
+											type="button"
+											class="hud-btn mini-btn"
+											disabled={pickedCount === 0}
+											onclick={() => adjustPromptModeRepeat(i, -1, myChoice.max, myChoice.disabledIndices)}
+										>
+											−
+										</button>
+										<span class="mode-count-badge">×{pickedCount}</span>
+										<button
+											type="button"
+											class="hud-btn mini-btn"
+											disabled={isDisabled || selectedPromptModes.length >= myChoice.max}
+											onclick={() => adjustPromptModeRepeat(i, 1, myChoice.max, myChoice.disabledIndices)}
+										>
+											+
+										</button>
+									</div>
+								</div>
+							{/each}
+						</div>
+						<div class="modal-actions">
+							<button
+								type="button"
+								class="arena-main-btn"
+								class:can-act={isModeReady}
+								disabled={!isModeReady}
+								onclick={async () => {
+									const indices = [...selectedPromptModes];
+									selectedPromptModes = [];
+									await onGameAction({
+										type: 'choice',
+										promptId: myPrompt.id,
+										answer: { kind: 'chooseMode', indices }
+									});
+								}}
+							>
+								Confirm Modes ({selectedPromptModes.length}/{myChoice.max})
+							</button>
 						</div>
 					{:else}
 						{@const isModeReady =
 							selectedPromptModes.length >= myChoice.min &&
 							selectedPromptModes.length <= myChoice.max}
-						<div class="modal-actions">
+						<div class="mode-picker-list">
 							{#each myChoice.modes as label, i (i)}
+								{@const isDisabled = disabledSet.has(i)}
 								<button
 									type="button"
-									class={selectedPromptModes.includes(i) ? 'arena-main-btn can-act' : 'hud-btn'}
-									onclick={() => togglePromptModeSelection(i, myChoice.max)}
+									class={selectedPromptModes.includes(i) ? 'arena-main-btn can-act mode-option-btn' : 'hud-btn mode-option-btn'}
+									disabled={isDisabled}
+									title={isDisabled ? 'Mode unavailable (no legal targets or already chosen this turn)' : label}
+									onclick={() => togglePromptModeSelection(i, myChoice.max, myChoice.disabledIndices)}
 								>
-									{label}
+									<ManaText text={label} size={14} />
 								</button>
 							{/each}
 						</div>
@@ -5761,6 +6196,7 @@
 	.badge.cyan { background: #78dce8; color: #19181a; }
 	.badge.green { background: #a9dc76; color: #19181a; }
 	.badge.purple { background: #ab9df2; color: #19181a; }
+	.badge.red { background: #ff6188; color: #19181a; }
 
 	.bc-pt {
 		align-self: flex-end;
@@ -6751,6 +7187,47 @@
 		border-radius: 4px;
 		padding: 0.4rem;
 		font-family: inherit;
+	}
+	.mode-picker-list {
+		display: flex;
+		flex-direction: column;
+		gap: 0.45rem;
+		margin: 0.65rem 0;
+	}
+	.mode-option-btn {
+		text-align: left;
+		justify-content: flex-start;
+		width: 100%;
+	}
+	.mode-repeat-row {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.65rem;
+		padding: 0.4rem 0.55rem;
+		border: 1px solid var(--mp-border-strong);
+		border-radius: 6px;
+		background: rgba(255, 255, 255, 0.03);
+	}
+	.mode-repeat-row.disabled {
+		opacity: 0.45;
+	}
+	.mode-repeat-label {
+		flex: 1;
+		text-align: left;
+		font-size: 0.85rem;
+	}
+	.mode-repeat-controls {
+		display: flex;
+		align-items: center;
+		gap: 0.35rem;
+		flex-shrink: 0;
+	}
+	.mode-count-badge {
+		min-width: 1.8rem;
+		text-align: center;
+		font-weight: 600;
+		font-size: 0.85rem;
 	}
 	.modal-head-row {
 		display: flex;

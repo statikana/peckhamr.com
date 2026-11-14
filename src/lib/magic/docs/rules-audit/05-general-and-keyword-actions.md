@@ -8,12 +8,12 @@ Audited at engine-rewrite 917180b on 2026-11-09.
 ## Summary
 - Counts: implemented 17, partial 12, missing 67, N/A 8 (across 104 rule/subrule groups covering all numbered rules in CR 700–701).
 - Top gaps (most player-visible first):
-  - **CR 700.2 / 700.2a–f** — Modal spells and abilities (`Choose one —`, charms, commands) parse into `ModalDef` in the compiler (`compiler/effects.ts:1166-1216`) but are rejected by `staticallyInterpretable` (`runtime/effects.ts:250`), have no mode-choice prompt at cast/trigger time, and on legacy fallback execute every mode's parsed effects at once — **M**.
-  - **CR 701.14 / 701.26** — `fight`, `tap`, `untap`, and `tapOrUntap` are fully implemented in the IR interpreter (`runtime/effects.ts:971-1002, 1297-1337`), but `compiler/effects.ts` has **no grammar productions** that emit those verbs, so cards with "fights", "tap target ...", or "untap ..." never compile to IR — **S**.
+  - **CR 700.2 / 700.2a–d** — *(Updated 2026-11-13: Implemented across spells, triggered abilities via `trigger_modes -> trigger_targets` `CR 700.2b / 603.3c`, activated/loyalty abilities `CR 700.2a`, repeatable modes `CR 700.2d`, `oncePerTurnUnique`, and multi-target modes; Spree `700.2h`, `{P}` `700.2i`, and opponent mode choice `700.2e` remain missing.)*
+  - **CR 701.14 / 701.26** — `fight`, `tap`, `untap`, and `tapOrUntap` are implemented in the IR interpreter; check `compiler/effects.ts` for remaining phrasings.
   - **CR 701.34a** — `proliferate` is always invoked without `chosenIds` (`runtime/effects.ts:855`, `engine.ts:4888`), silently auto-choosing positive counters on the controller's permanents/self and negative counters (`-1/-1`, `stun`, `poison`) on opponents instead of prompting a human player — **S**.
-  - **CR 701.15a–d** — Goad combat enforcement exists in `engine.ts:1765-1812` via `creature.goadedByPlayerIds`, but no compiler production or runtime effect ever sets `goadedByPlayerIds`, nothing expires goad at the goader's next turn (`701.15a`), and `engine.ts:1777` illegally blocks goaded creatures from attacking planeswalkers even when no non-goader player can be attacked (`701.15b`) — **S**.
-  - **CR 701.44 / 701.50 / 701.57** — Common evergreen/deciduous Commander keyword actions **Explore**, **Connive**, and **Discover** have no compiler productions or runtime handlers — **M**. *(**Surveil** `CR 701.25` and **Investigate** `CR 701.16` updated to implemented on 2026-11-13.)*
-  - **CR 701.19 / 701.8c** — **Regenerate** is completely unimplemented (`compiler/adapter.ts:159-160` treats `"can't be regenerated"` as a no-op), so regeneration shields do not replace destruction, tap the creature, remove damage, or remove it from combat — **M**.
+  - **CR 701.15a–d** — *(Updated 2026-11-13: `goad` verb/runtime, deduplication `701.15d`, and `expirePlayerUntilNextTurnEffects` `701.15a / 800.4m` implemented in `runtime/goad-explore-connive.test.ts`.)*
+  - **CR 701.57** — **Discover** remains unimplemented — **M**. *(**Surveil** `CR 701.25`, **Investigate** `CR 701.16`, **Explore** `CR 701.44`, and **Connive** `CR 701.50` updated to implemented on 2026-11-13.)*
+  - **CR 701.19 / 614.8** — *(Updated 2026-11-13: **Regenerate** shield creation, combat/effect destruction replacement `tryRegenerateInsteadOfDestroy`, `CR 704.5f` exclusion, and `cantBeRegenerated` implemented in `runtime/regenerate-and-optional-costs.test.ts`.)*
   - **CR 700.5 / 700.5a** — `devotion` calculation exists in `runtime/effects.ts:1659-1672`, but `compiler/effects.ts:1082` only compiles it for Thassa's Oracle's exact win condition; general devotion amounts ("equal to your devotion to ...") and Theros God type-changing statics (`700.5a`) are missing — **M**.
   - **CR 701.10 / 701.11** — **Double** and **Triple** (doubling/tripling a creature's power/toughness, doubling life totals, counters, mana pool, or damage dealt) have no effect grammar productions, IR verbs, or damage-doubling replacement hooks — **M**.
   - **CR 701.12a–h** — **Exchange** (exchanging control of two permanents, life totals, zones, or numerical stats with the all-or-nothing rule `701.12a`) is completely unimplemented — **M**.
@@ -33,9 +33,9 @@ Audited at engine-rewrite 917180b on 2026-11-09.
 ### 700.2 Modal Spells and Abilities
 | CR | Rule (short) | Status | Evidence / notes |
 |---|---|---|---|
-| 700.2 | Bulleted mode list after `Choose ... —` defines a modal spell or ability | partial | `compiler/effects.ts:1166-1216` (`parseModal`) parses `Choose one —`, `Choose two —`, `Choose one or more —`, and `Choose up to two —` with `•` bullets into `ModalDef` (`ir.ts:227-237`), but `runtime/effects.ts:250` (`staticallyInterpretable`) returns `false` whenever `parse.modal` is present. |
-| 700.2a–d, 700.2f | Choosing modes on cast/activate/trigger, per-mode target legality, repeated mode choices, target changes can't change modes | missing | `StackItem` (`types.ts:435-480`) and cast/activate actions have no `chosenModes` field or mode-selection prompt. Legacy `oracle.ts:996-1011` and `engine.ts:7626-7643` accept any target matching *any* modal branch without recording a mode; on legacy resolution, `oracle.ts:1061-1085` parses all mode lines together so bots execute all modes simultaneously (humans get guided resolution via `engine.ts:3936-3949`). |
-| 700.2e, 700.2g–i | Non-controller mode choice, copying chosen modes, per-mode additional costs, pawprint `{P}` modes | missing | Not parsed or implemented; `compiler/costs.ts:226` explicitly rejects `{P}` pawprint symbols. |
+| 700.2, 700.2a–d, 700.2f | Modal spells, activated abilities, and triggered abilities (`Choose one/two/three/up to N —`, repeatable modes `700.2d`, `"that hasn't been chosen this turn"`, multi-target modes, stack-entry trigger choice `700.2b`, mode invariance on target change `700.2f`) | implemented | **Updated 2026-11-13:** Shared `ModalDef` compiled across `SpellAbility`, `ActivatedAbility`, and `TriggeredAbility` (`compiler/effects.ts`, `compiler/card.ts`, `compiler/index.ts` `expandModalEffects`), validated in `validateModalChoice`, queued via `trigger_modes -> trigger_targets` (`engine.ts`, `CR 603.3c`), and tested in `runtime/modals-and-triggers.test.ts`. |
+| 700.2g | Copying a modal spell copies chosen modes | implemented | `copySpell` (`runtime/effects.ts`) preserves `chosenModes` and `targetsBySpec`. |
+| 700.2e, 700.2h–i | Non-controller mode choice, per-mode additional costs (Spree), pawprint `{P}` modes | missing | Not parsed or implemented; `compiler/costs.ts` rejects `{P}` pawprint symbols. |
 
 ### 700.3 Piles
 | CR | Rule (short) | Status | Evidence / notes |
@@ -149,7 +149,7 @@ Audited at engine-rewrite 917180b on 2026-11-09.
 ### 701.15 Goad
 | CR | Rule (short) | Status | Evidence / notes |
 |---|---|---|---|
-| 701.15, 701.15a–d | Goad (designation until goader's next turn; must attack if able and attack a player other than a goader if able; multiple goaders) | partial | `engine.ts:1765-1812` checks `creature.goadedByPlayerIds` (`types.ts:379`, cleared on zone change in `runtime/zones.ts:265`), but: (1) no compiler production or runtime effect ever sets `goadedByPlayerIds`; (2) nothing expires `goadedByPlayerIds` at the goader's next turn (`701.15a`); (3) `engine.ts:1777` (`Boolean(assign.defenderPlaneswalkerId)`) blocks attacking planeswalkers when a non-goader player exists, which matches `701.15b`, but goad cannot be applied by any card in play. |
+| 701.15, 701.15a–d | Goad (designation until goader's next turn; must attack if able and attack a player other than a goader if able; multiple goaders; idempotency) | implemented | **Updated 2026-11-13:** `goad` verb & `goadExpirations` (`compiler/effects.ts`, `runtime/effects.ts`, `types.ts`, `runtime/zones.ts`), deduplicated re-goading (`701.15d`), cumulative multi-goader enforcement (`701.15c`), and `expirePlayerUntilNextTurnEffects` at turn start and skipped eliminated turns (`701.15a`, `CR 800.4m`) in `engine.ts` (`runtime/goad-explore-connive.test.ts`). |
 
 ### 701.16 Investigate
 | CR | Rule (short) | Status | Evidence / notes |
@@ -170,7 +170,8 @@ Audited at engine-rewrite 917180b on 2026-11-09.
 ### 701.19 Regenerate
 | CR | Rule (short) | Status | Evidence / notes |
 |---|---|---|---|
-| 701.19, 701.19a–c | Regenerate (replacement shield: remove marked damage, tap, remove from combat) | missing | Not parsed or implemented (`compiler/adapter.ts:159-160`). |
+| 701.19, 701.19a, 701.19c | Regenerate (replacement shield: remove marked damage, tap, remove from combat; `"can't be regenerated"` prevents replacement) | implemented | **Updated 2026-11-13:** `regenerate` & `cantRegenerate` verbs, `cantBeRegenerated` param on `destroy` (`compiler/effects.ts`, `runtime/effects.ts`), transient `regenerationShields` / `cantBeRegeneratedThisTurn` cleared in `clearEndOfTurnAndDamage` & `leaveBattlefieldReset`, and `tryRegenerateInsteadOfDestroy` (`engine.ts`) intercepting both effect destruction and lethal/deathtouch SBAs (`CR 704.5g–h`) while excluding `tough <= 0` (`704.5f`) and sacrifice (`runtime/regenerate-and-optional-costs.test.ts`). |
+| 701.19b | Static regeneration abilities | missing | No static continuous regeneration shield replacement exists; only resolving spell/ability regeneration (`701.19a`) is implemented. |
 
 ### 701.20 Reveal
 | CR | Rule (short) | Status | Evidence / notes |
@@ -240,13 +241,13 @@ Audited at engine-rewrite 917180b on 2026-11-09.
 | 701.41, 701.41a | Support N (+1/+1 counter on each of up to N other target creatures / target creatures) | missing | Not parsed or implemented. |
 | 701.42, 701.42a–c | Meld | missing | Not parsed or implemented (`multiface` non-goal in `ir.ts:131`). |
 | 701.43, 701.43a–d | Exert a permanent (doesn't untap during your next untap step; optional attack cost) | missing | Listed in `compiler/costs.ts:82` (`COST_VERBS`) for splitting cost clauses, but has no cost production or runtime support. |
-| 701.44, 701.44a–d | Explore (reveal top card: land to hand, else +1/+1 counter and may graveyard) | missing | Not parsed or implemented. |
+| 701.44, 701.44a–d | Explore (reveal top card: land to hand, else +1/+1 counter and may graveyard; LKI & APNAP order) | implemented | **Updated 2026-11-13:** `explore` verb & triggers (`compiler/effects.ts`, `compiler/triggers.ts`), `Explored` event, `PREDEFINED_TOKEN_DEFS.map` (`CR 111.10s`), APNAP `runIndexedBatch`, empty-library completion (`701.44b`), LKI controller fallback (`701.44c`), and resumable graveyard/replacement prompts (`runtime/effects.ts`, `runtime/goad-explore-connive.test.ts`). |
 | 701.45, 701.45a | Assemble a Contraption (Unstable set) | N/A | Silver-bordered / Unstable mechanic (`rules.txt:3707`). |
 | 701.46, 701.46a | Adapt N (if no +1/+1 counters on it, put N +1/+1 counters on it) | missing | Not parsed or implemented. |
 | 701.47, 701.47a–d | Amass [subtype] N | missing | `Army` subtype is in `runtime/objectFilter.ts`, but `amass` is not parsed or implemented. |
 | 701.48, 701.48a | Learn (may discard to draw, or wish for a Lesson) | missing | Not parsed or implemented. |
 | 701.49, 701.49a–d | Venture into the Dungeon / Venture into [quality] | missing | Not parsed or implemented. |
-| 701.50, 701.50a–f | Connive / Connive N | missing | Not parsed or implemented. |
+| 701.50, 701.50a–f | Connive / Connive N (draw N, discard N, +1/+1 counter per nonland discarded; connive 0 no-op; LKI & APNAP) | implemented | **Updated 2026-11-13:** `connive` verb & triggers (`compiler/effects.ts`, `compiler/triggers.ts`), `Connived` event, `n <= 0` no-op (`701.50e`), LKI fallback (`701.50b`), APNAP `runIndexedBatch` (`701.50c`), and resumable draw-then-discard counter placement without re-drawing (`runtime/effects.ts`, `runtime/goad-explore-connive.test.ts`). |
 | 701.51, 701.51a–c | Open an Attraction | N/A | Unfinity Attraction deck mechanic. |
 | 701.52, 701.52a | Roll to Visit Your Attractions | N/A | Unfinity Attraction deck mechanic. |
 | 701.53, 701.53a–b | Incubate N (double-faced Incubator artifact token with N +1/+1 counters) | missing | Not parsed or implemented. |

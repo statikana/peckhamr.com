@@ -1,4 +1,4 @@
-import type { ActivationRestriction, Amount, CostDef, ManaRestriction, TargetSpec } from './ir.ts';
+import type { ActivationRestriction, Amount, CostDef, ManaRestriction, ModalDef, TargetSpec } from './ir.ts';
 import type { RuntimeTrigger } from './compiler/triggers.ts';
 import type { ManaCostRequirement } from './oracle.ts';
 
@@ -314,6 +314,7 @@ export interface EffectiveActivatedAbility {
 	/** Card that granted this ability via Layer 6 `grantAbility`, if granted (transient / plain card data). */
 	grantSourceCard?: ScryfallCard;
 	effectText: string;
+	modal?: ModalDef;
 	requiresTarget: boolean;
 	targetKind: string;
 	targetInfo: TargetRequirementInfo;
@@ -395,6 +396,8 @@ export interface CardInstance {
 	usedLoyaltyThisTurn: boolean;
 	/** CR 602.5b / 602.5c: IDs of activated abilities on this permanent already activated this turn. */
 	activatedAbilityIdsThisTurn?: string[];
+	/** Mode indices already chosen this turn for `"that hasn't been chosen this turn"` abilities on this permanent. */
+	usedModalModesThisTurn?: number[];
 	transformed: boolean;
 	activeFaceIndex?: number;
 	unlockedFaces?: number[];
@@ -417,12 +420,18 @@ export interface CardInstance {
 	faceDownSpec?: FaceDownSpec;
 	faceDownLabel?: string;
 	goadedByPlayerIds?: string[];
+	/** Per-goader expiration timing (`'untilYourNextTurn'` default per CR 701.15a; `'endOfTurn'` if explicit). */
+	goadExpirations?: Record<string, 'endOfTurn' | 'untilYourNextTurn'>;
 	playableFromExileBy?: PlayableFromExilePermission;
 	commanderSbaDeclinedVersion?: number;
 	lastKnownCounters?: Record<CounterType, number>;
 	lastKnownPower?: number;
 	lastKnownToughness?: number;
 	damagePreventionShield?: number;
+	regenerationShields?: number;
+	cantBeRegeneratedThisTurn?: boolean;
+	/** CR 702.122c: instanceIds of creatures that crewed this Vehicle this turn. */
+	crewedThisTurnByIds?: string[];
 }
 
 export interface TargetRef {
@@ -580,6 +589,8 @@ export interface StackItem {
 	isFaceDown?: boolean;
 	faceDownSpec?: FaceDownSpec;
 	faceDownLabel?: string;
+	/** InstanceIds of creatures tapped to pay a subset-sum cost (e.g. Crew) for this ability. */
+	crewedByIds?: string[];
 }
 
 /** One binding of the IR interpreter ("it", "that creature"): the objects and their LKI. */
@@ -600,6 +611,14 @@ export interface EffectResumeFrame {
 	exileSelf?: boolean;
 	answers: Record<string, ChoiceAnswer>;
 	stepDecisions?: Record<number, boolean>;
+	pendingOptionalCost?: {
+		stepIndex: number;
+		parts: SerializedPlannedCost[];
+		nextPartIndex: number;
+		nextObjectIndex: number;
+		descriptions: string[];
+		tapsAndManaDone: boolean;
+	};
 }
 
 /** Last known information of a trigger's event object (plain data, JSON-serialisable). */
@@ -699,8 +718,20 @@ export type ChoiceRequest =
 			zone: ZoneType;
 			reason: string;
 			defaultObjectIds?: string[];
+			/** When set, selected objects must have sum of weightsById[id] >= minWeightSum. */
+			minWeightSum?: number;
+			weightsById?: Record<string, number>;
+			weightLabel?: string;
 	  }
-	| { kind: 'chooseMode'; modes: string[]; min: number; max: number; defaultIndices?: number[] }
+	| {
+			kind: 'chooseMode';
+			modes: string[];
+			min: number;
+			max: number;
+			defaultIndices?: number[];
+			allowRepeat?: boolean;
+			disabledIndices?: number[];
+	  }
 	| { kind: 'chooseNumber'; min: number; max: number; reason: string; defaultNumber?: number }
 	| {
 			kind: 'orderObjects';
@@ -769,6 +800,8 @@ export type PromptPurpose =
 	| 'guided_resolution'
 	| 'legend_rule'
 	| 'cost_choice'
+	/** Steps C+D / CR 700.2b: choosing a modal triggered ability's modes as it's put on the stack. */
+	| 'trigger_modes'
 	/** Steps C+D: choosing a triggered ability's targets as it's put on the stack (CR 603.3d). */
 	| 'trigger_targets'
 	/** Steps C+D: ordering a player's simultaneous triggered abilities (CR 603.3b). */
@@ -1049,6 +1082,32 @@ export interface TimedKeywordEffect {
 }
 
 /**
+ * Generalized Layer 4 / Layer 6 / Layer 7b continuous effect ("until end of turn") stored as plain
+ * JSON on GameState. Evaluated in timestamp order alongside other continuous effects in runtime/layers.ts.
+ */
+export interface TimedContinuousEffect {
+	timestamp: number;
+	sourceName: string;
+	controllerId: string;
+	affected: Array<{ instanceId: string; objectVersion?: number }>;
+	layer4?: {
+		addTypes?: string[];
+		setTypes?: string[];
+		addSubtypes?: string[];
+		setSubtypes?: string[];
+	};
+	layer6?: {
+		addKeywords?: string[];
+		removeKeywords?: string[];
+		cantHaveOrGain?: boolean;
+	};
+	layer7b?: {
+		setPower: number;
+		setToughness: number;
+	};
+}
+
+/**
  * Serialized step in an in-progress `PendingCostPayment` (Track B1 Slice 2).
  * Random discards are resolved up front into concrete `objectIds` before execution starts so
  * pausing mid-cost never re-rolls randomness.
@@ -1073,6 +1132,7 @@ export interface PendingCostPayment {
 	sourcePlayerId?: string;
 	sourceZone?: 'hand' | 'command' | 'exile' | 'graveyard';
 	targets?: TargetRef[];
+	targetsBySpec?: TargetRef[][];
 	chosenModes?: number[];
 	xValue?: number;
 	castOptionId?: string;
@@ -1128,6 +1188,7 @@ export interface GameState {
 	priorityUpdatedAt: number;
 	nextTimestamp?: number;
 	timedKeywordEffects?: TimedKeywordEffect[];
+	timedContinuousEffects?: TimedContinuousEffect[];
 	delayedTriggers?: DelayedTrigger[];
 	/**
 	 * Steps C+D + Phase 4 (CR 104.4b, CR 731): how many triggered abilities were put on the stack
@@ -1252,6 +1313,7 @@ export type GameActionPayload =
 			instanceId: string;
 			abilityId: string;
 			targets?: TargetRef[];
+			chosenModes?: number[];
 			costPayment?: CostPayment;
 	  }
 	/** Compatibility alias for answering a `cost_choice` prompt. */

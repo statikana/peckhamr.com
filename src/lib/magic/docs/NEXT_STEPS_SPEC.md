@@ -230,8 +230,28 @@ Implementation is a later spec.
 
 ---
 
-## Track C: keep the docs true
+## Track C: keep the docs true (ongoing ride-along)
 
-- **Ride-along:** every package above updates the docs it affects (see §0).
+- **Ride-along:** every package below updates the docs it affects (see §0).
 - **Rules-audit reconciliation:** `rules-audit/01`–`10` are stale; see their banners. When a package touches a section, reconcile that section's rows for the area touched, not the whole file.
 - **Separate small task (S):** replace the hand-typed totals in `rules-audit/00-SUMMARY-AND-PRIORITIZED-GAPS.md` §1 with numbers computed by a script from the section tables. Count both table rows and CR subrules. Then remove the miscount banner. See [`audits/02`](./audits/02-rules-audit-arithmetic-and-cr-citations.md) for the known errors, including the scrambled CR 122 table in `01-game-concepts.md`.
+
+---
+
+## Track D: High-Frequency Mechanics, Unified Optional Costs, Modal Abilities, & Vehicles
+
+See [`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.15 for the full design. Delivered in four reviewable slices (each keeping `oracleTextRead === 0` and UI/AI keyword-blind):
+
+1. **Slice 1 (Draw/Discard Clause Fix, Goad `CR 701.15`, Explore `CR 701.44`, Map `CR 111.10s`, Connive `CR 701.50`):**
+   - Fix `CLAUSE_START` / `LOWER_START` + `NUMBER_WORDS` for `discard`, `goad`, `explore`, `connive`, `regenerate`.
+   - `goad` verb + deduplication (`CR 701.15d`) + `expirePlayerUntilNextTurnEffects` at turn start and skipped eliminated turns (`CR 701.15a`, `CR 800.4m`).
+   - `explore` + `PREDEFINED_TOKEN_DEFS.map` (`CR 111.10s`) + `connive` / `connive N` (`CR 701.50`) + `Explored` / `Connived` triggers (`runIndexedBatch` APNAP order).
+2. **Slice 2 (`Regenerate` `CR 701.19` + Unified `OptionalSpec` / `CostDef[]` Payment):**
+   - `regenerationShields` + `cantBeRegenerated` + `tryRegenerateInsteadOfDestroy` on both effect destruction and lethal/deathtouch combat/SBA (`CR 614.8`, `CR 704.5g–h`).
+   - Unified `OptionalSpec` (`cost`, `mode: 'doIfPaid' | 'doUnlessPaid'`) + `ifPrecedingDeclined` (`"If you don't,"`), powering `"you may pay {COST}"`, `"Counter target spell unless its controller pays {COST}"`, and `"sacrifice ~ unless you pay {COST}"`.
+3. **Slice 3 (Modal Triggers, Activated Modals, Repeatable Modes `CR 700.2`):**
+   - Share `ModalDef` across `SpellAbility`, `ActivatedAbility`, and `TriggeredAbility` with `allowRepeat`, `oncePerTurnUnique`, `chooser`, `upTo`, and `targets.length > 1` support.
+   - `CR 700.2b` trigger modal selection on stack entry (`trigger_modes` -> `trigger_targets`), activated modal selection, and generic UI/AI mode pickers.
+4. **Slice 4 (`Crew N` `CR 702.122` & Generalized `TimedContinuousEffect`):**
+   - `state.timedContinuousEffects` evaluated cleanly in Layers 4/6/7b (`runtime/layers.ts`, `clearEndOfTurnAndDamage`, `CR 302.6` summoning sickness).
+   - Subset-sum cost `{ k: 'tapSubsetSum', metric: 'power', ... }`, `KEYWORD_REGISTRY` `'crew'` entry, `BecomesCrewed` / `crewedByIds`, and keyword-blind UI/AI subset selection, followed by final `COVERAGE.md`, `rules-audit/`, and live Chromium `/magic` verification.

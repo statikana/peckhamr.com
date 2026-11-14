@@ -159,6 +159,64 @@ export function buildCyclingAbility(
 	};
 }
 
+/**
+ * CR 702.122a: "Crew N" means "Tap any number of other untapped creatures you control with total
+ * power N or greater: This permanent becomes an artifact creature until end of turn."
+ */
+export function buildCrewAbility(
+	kw: KeywordDef,
+	id: string,
+	span: Span
+): { ability: ActivatedAbility; costText: string; effectText: string; label: string } | null {
+	const raw = kw.param?.trim();
+	const n =
+		kw.n !== undefined
+			? kw.n
+			: raw && /^\d+$/.test(raw)
+				? Number(raw)
+				: null;
+	if (n === null || !Number.isInteger(n) || n < 0) return null;
+	const cost: CostDef[] = [
+		{
+			k: 'tapSubsetSum',
+			minTotal: { k: 'const', n },
+			metric: 'power',
+			filter: { controller: 'you', types: ['Creature'], tapped: false },
+			excludeSelf: true,
+			restrictionTag: 'crew'
+		}
+	];
+	const effect: EffectStep[] = [
+		{
+			verb: 'animate',
+			subject: { k: 'self' },
+			params: { addTypes: ['Artifact', 'Creature'], duration: 'endOfTurn' },
+			span
+		}
+	];
+	const costText = `Tap untapped creatures with total power ${n} or more`;
+	const effectText = 'This permanent becomes an artifact creature until end of turn.';
+	const label = `Crew ${n}`;
+	return {
+		ability: {
+			kind: 'activated',
+			cost,
+			targets: [],
+			effect,
+			timing: 'instant',
+			isMana: false,
+			activationZones: ['battlefield'],
+			costKeyword: 'crew',
+			id,
+			text: `${label} (${costText}: ${effectText})`,
+			span
+		},
+		costText,
+		effectText,
+		label
+	};
+}
+
 export interface KeywordSpec {
 	/** Canonical lower-case keyword name. */
 	name: string;
@@ -914,7 +972,17 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 	unimplemented('conspire', '702.78'),
 	unimplemented('convoke', '702.51'),
 	unimplemented('craft', '702.167', 'text'),
-	unimplemented('crew', '702.122', 'number'),
+	[
+		'crew',
+		{
+			name: 'crew',
+			cr: '702.122',
+			parameterKind: 'number',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'activated', buildActivated: buildCrewAbility }
+		}
+	],
 	unimplemented('cumulative upkeep', '702.24', 'cost'),
 	[
 		'cycling',

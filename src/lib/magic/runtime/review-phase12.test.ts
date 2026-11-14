@@ -524,9 +524,11 @@ describe('Phase 5 (§6): ChoiceSpec and PromptPurpose exhaustiveness guards (#2)
 					? 'yesNo'
 					: purpose === 'trigger_targets'
 						? 'chooseObjects'
-						: purpose === 'trigger_order'
-							? 'orderObjects'
-							: purpose;
+						: purpose === 'trigger_modes'
+							? 'chooseMode'
+							: purpose === 'trigger_order'
+								? 'orderObjects'
+								: purpose;
 			const dummyPrompt: PendingPrompt = {
 				id: `prm_${purpose}`,
 				playerId: 'p1',

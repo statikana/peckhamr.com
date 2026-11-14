@@ -686,6 +686,45 @@ Introduce one pure resolver helper `resolveObjectFaces(card, objState, zone): Ac
 
 ---
 
+### 2.15 High-Frequency Mechanics, Unified Optional Costs, Modal Abilities, & Vehicles (Track D)
+
+**Motivation (`COVERAGE.md` @ `COMPILER_VERSION = 22`):** Five clusters dominate the remaining top unparsed / missing-action gaps across `35,062` Scryfall cards:
+- **`"you may pay {COST}"` (#1: 298 cards) & `"unless <player> pays {COST}"` (#13: 70 cards, #37: 48 cards)** — `697` Scryfall cards (`525` unparsed) + `97/97` `"Counter target spell unless its controller pays {COST}"`.
+- **`Crew N` (#2: 195 cards, 196/196 unparsed, `CR 702.122`)** — missing `state.timedContinuousEffects` Layer 4 animation and variable-cardinality subset-sum tap costs.
+- **`Regenerate` (#3: 162 cards, 273/274 unparsed, `CR 701.19` / `614.8`)** — currently ignored in `NEUTRAL_SENTENCES`.
+- **`"choose N —"` (#4: 156 cards, 612 unparsed modal cards, `CR 700.2`)** — triggered modals (`225`), activated modals (`31`), multi-target modes, `"choose the same mode more than once"`, and `"that hasn't been chosen this turn"`.
+- **`"Draw a card, then discard a card."` (#8: 88, #53: 39, #86: 31 — `151/207` unparsed), `Goad` (`91`, `CR 701.15`), `Explore` (`60`, `CR 701.44`), `Map` (`CR 111.10s`), and `Connive` (`51`, `CR 701.50`)** — blocked on `CLAUSE_START` / `LOWER_START` missing `discard`, turn-based `untilYourNextTurn` cleanup, and `explore`/`connive` verbs.
+
+#### Core Design Decisions
+
+1. **Unified Clause Splitting & Turn-Based Expiration (`Slice 1`):**
+   - Add `discard|discards|connive|connives|explore|explores|goad|goads|regenerate|regenerates` to both `CLAUSE_START` and `LOWER_START` (`compiler/effects.ts`), and generalize `NUMBER_WORDS` in `playerPredicate`.
+   - Replace ad-hoc player-only cleanup with `expirePlayerUntilNextTurnEffects(state, playerId)` invoked both at `runBeginningOfTurn` (active player) AND for each skipped `lost` player in `completeTurnCleanupAndPassTurn` (`CR 800.4m`), expiring `perm.goadedByPlayerIds` (`CR 701.15a`, deduplicated per `CR 701.15d`) and player `untilYourNextTurn` flags accurately.
+   - Share library reveal + interactive graveyard/draw/discard continuations across `explore` (`CR 701.44a–d`, empty library still completes `Explored`), `map` token (`CR 111.10s`, added to `PREDEFINED_TOKEN_DEFS`), and `connive` (`CR 701.50a–f`, `connive 0` is a no-op; multi-object connive/explore execute in APNAP order via `runIndexedBatch`; nonland discarded cards add `+1/+1` counters).
+
+2. **Destruction Replacement Shields (`Regenerate`, `CR 701.19` / `CR 614.8`, `Slice 2a`):**
+   - Store transient `regenerationShields?: number` and `cantBeRegeneratedThisTurn?: boolean` on `CardInstance` (`types.ts`), cleared in `clearEndOfTurnAndDamage` (`CR 514.2`) and reset on zone change (`runtime/zones.ts`).
+   - Stop dropping `"It can't be regenerated."` / `"They can't be regenerated."` in `NEUTRAL_SENTENCES`; propagate `params.cantBeRegenerated = true` onto `destroy` steps and `cantBeRegeneratedThisTurn` where applicable.
+   - Single helper `tryRegenerateInsteadOfDestroy(state, perm, canBeRegenerated)` intercepts BOTH effect destruction (`destroyPermanentByEffect` / `Run.destroy`) AND combat/SBA lethal damage / deathtouch destruction (`CR 704.5g–h`), NOT zero-toughness (`CR 704.5f`) or sacrifice/legend-rule (`CR 704.5j`): consumes 1 shield, removes all `damageMarked` and `deathtouchDamageMarked`, calls `tapPermanent`, and removes `perm` from combat (`CR 701.19a`).
+
+3. **Unified `OptionalSpec` + `CostDef[]` Payment (`"you may pay {COST}"` & `"unless <player> pays {COST}"`, `Slice 2b`):**
+   - Extend `OptionalSpec` (`ir.ts`) to `{ chooser: PlayerRef; cost?: CostDef[]; mode?: 'doIfPaid' | 'doUnlessPaid' }` and add `ifPrecedingDeclined?: number` alongside `ifPrecedingAccepted?: number` on `EffectStep` (shifted cleanly in `shiftStepTargets`).
+   - Add `{ k: 'controllerOf'; of: ObjectRef }` to `PlayerRef` if absent so `"Counter target spell unless its controller pays {2}"` targets `{ k: 'target', index: 0 }` and prompts that spell's controller uniformly.
+   - `Run.resolveOptional` delegates affordability & payment cleanly to `EffectPorts` using `{ isSpell: false }` `ManaSpendContext` (Powerstone/restricted mana CAN pay optional/tax costs), auto-declining when unaffordable, choosing sensibly for bots, and pausing humans with a `yesNo` / cost prompt; sets `stepDecisions[stepIndex] = paid` and executes the step iff `(mode === 'doUnlessPaid') ? !paid : paid`.
+   - Scope guard: `"you may pay {COST} rather than ~'s mana cost"` (`CR 118.9`), `"As ~ enters, you may pay..."` (`CR 614.1c`), and targeted `"When you do, target..."` reflexive triggers remain cleanly marked unsupported until their own rules hooks exist rather than silently miscompiling targets.
+
+4. **General Modal Abilities (`CR 700.2`, `Slice 3`):**
+   - Share `modal?: ModalDef` across `SpellAbility`, `ActivatedAbility`, and `TriggeredAbility` (`ir.ts`), and extract one `expandModalEffects(modal, chosenModes)` builder in `compiler/index.ts`.
+   - Extend `ModalDef` with `allowRepeat?: boolean` (`CR 700.2d`), `oncePerTurnUnique?: boolean`, `chooser?: 'controller' | 'opponent'` (`CR 700.2e`), and `upTo?: boolean`, and remove the artificial `mode.targets.length <= 1` limit while preserving linear target-slot shifting per chosen occurrence.
+   - Support `CR 700.2b` triggered modal selection on stack entry (`trigger_modes` -> `trigger_targets` when legal modes exist, removing triggers with `< min` legal modes per `CR 603.3c`), activated modal mode selection (`activate_ability.chosenModes`), and UI/AI count pickers for repeatable modes (`CR 700.2d`).
+
+5. **Layer 4/6/7b `TimedContinuousEffect` & Subset-Sum `Crew N` (`CR 702.122`, `Slice 4`):**
+   - Add `state.timedContinuousEffects?: TimedContinuousEffect[]` (cleared at `clearEndOfTurnAndDamage`, evaluated in Layer 4/6/7b in `evaluatePermanent` in timestamp order `CR 613.7`), preserving existing types/subtypes/P/T when `addTypes: ['Artifact', 'Creature']` animates a Vehicle (`CR 205.1b, 702.122a`), and ensure `summoningSick` applies to non-creature permanents that entered this turn (`CR 302.6`).
+   - Add subset-sum cost `{ k: 'tapSubsetSum'; minTotal: Amount; metric: 'power'; filter: ObjectFilter; excludeSelf?: boolean }` to `CostDef` (`ir.ts`) checked against evaluated Layer 7 power (`summoningSick` allowed per `CR 702.122a`, honoring `"can't crew Vehicles"` per `CR 702.122d`).
+   - Register `'crew'` in `KEYWORD_REGISTRY` (`keywords.ts`), track `crewedByIds` / `BecomesCrewed` event on crew resolution (`CR 702.122c,e`), and support generic multi-object subset cost selection in `ArenaTable.svelte` and `ai.ts` with zero `'crew'` keyword literals.
+
+---
+
 ## 3. Phases
 
 Each phase lists: **owns** (files only this phase's agent edits; others treat them as read-only

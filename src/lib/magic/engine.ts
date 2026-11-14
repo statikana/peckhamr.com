@@ -25,6 +25,7 @@ import {
 	getLibrarySearchInterceptor,
 	getSpellTargetRequirement,
 	inspectCardContinuousBreakdown,
+	modalTargetRequirement,
 	permanentHasLostAllAbilities,
 	playerCannotLoseGame,
 	playerCannotWinGame,
@@ -142,7 +143,15 @@ import { isConditionMetWithKicker } from './runtime/kicker.ts';
 export { getSuspendSpec };
 import { getKeywordSpec } from './keywords.ts';
 import { evaluateAmount, matchesObjectFilter, objectManaValue, type FilterContext } from './runtime/objectFilter.ts';
-import { compileCard, compiledStackItemEffects, compiledTriggerEffect, compileSpellEffects } from './compiler/index.ts';
+import {
+	compileCard,
+	compiledStackItemEffects,
+	compiledTriggerEffect,
+	compileSpellEffects,
+	describeModalModes,
+	expandModalEffects,
+	getAbilityModal
+} from './compiler/index.ts';
 import {
 	activeFaceIndexForObject,
 	effectiveCardForObject,
@@ -181,10 +190,11 @@ import {
 	registerEffectPorts,
 	sourceDamageInfo,
 	staticallyInterpretable,
+	type PayOptionalCostResult,
 	type SourceDamageInfo
 } from './runtime/effects.ts';
-import { chooseBotTriggerTargets } from './ai.ts';
-import type { CostDef, EffectStep, TargetSpec, TokenSpec } from './ir.ts';
+import { chooseBotModalTriggerModes, chooseBotTriggerTargets } from './ai.ts';
+import type { CostDef, EffectStep, ModalDef, TargetSpec, TokenSpec } from './ir.ts';
 import { deriveIdSalt, freshRngSeed, hash32, uid, type RngHolder, type UidHolder } from './runtime/random.ts';
 import { cardAbilityDisplayText, enteringNotices, stackItemDisplayText } from './compiler/support.ts';
 import {
@@ -214,6 +224,7 @@ import {
 	type DelayedTrigger,
 	type DelayedTriggerEffect,
 	type EffectiveActivatedAbility,
+	type EffectResumeFrame,
 	type GameActionPayload,
 	type GameLogEntry,
 	type GamePhase,
@@ -1154,6 +1165,27 @@ export function chooseBotSpellCostPayment(
 	return chooseCostPayment(costContext(state, player, inst, xValue, true, costReq, undefined, spendCtx), defs) ?? undefined;
 }
 
+/** Picks a legal `CostPayment` for activating `ab` on `perm` (used by bots before calling `activate_ability`). */
+export function chooseBotAbilityCostPayment(
+	state: GameState,
+	player: PlayerGameState,
+	perm: CardInstance,
+	ab: EffectiveActivatedAbility
+): CostPayment | undefined {
+	const abilityCost = activatedAbilityCost(perm.card, ab);
+	const abilityMana = effectiveAbilityManaCost(
+		state,
+		player.playerId,
+		ab.id,
+		ab.manaCost,
+		ab.costKeyword
+	).requirement;
+	return (
+		chooseCostPayment(costContext(state, player, perm, 0, false, abilityMana), abilityCost.defs) ??
+		undefined
+	);
+}
+
 /** Builds a ManaSpendContext for casting `inst` with the selected face/fuse/face-down mode. */
 function spellSpendContext(
 	inst: CardInstance,
@@ -1261,6 +1293,7 @@ function finalizeCastSpell(
 	sourceZone: 'hand' | 'command' | 'exile' | 'graveyard',
 	opts: {
 		targets: TargetRef[];
+		targetsBySpec?: TargetRef[][];
 		chosenModes?: number[];
 		xValue: number;
 		castOptionId?: string;
@@ -1315,7 +1348,7 @@ function finalizeCastSpell(
 	}
 	actor.spellsCastThisTurn = (actor.spellsCastThisTurn || 0) + 1;
 
-	const { targets, chosenModes, xValue: xVal, castOptionId, spellMods, optionalCostCounts } = opts;
+	const { targets, targetsBySpec, chosenModes, xValue: xVal, castOptionId, spellMods, optionalCostCounts } = opts;
 	const hasSpellMods = Boolean(spellMods && Object.keys(spellMods).length > 0);
 	const stackItem: StackItem = withStackItemText(
 		{
@@ -1333,6 +1366,7 @@ function finalizeCastSpell(
 				? { isFaceDown: true, faceDownSpec: { ...castFaceDownSpec }, faceDownLabel }
 				: {}),
 			targets,
+			...(targetsBySpec ? { targetsBySpec } : {}),
 			...(chosenModes ? { chosenModes: [...chosenModes] } : {}),
 			targetObjectVersions: captureTargetObjectVersions(state, targets),
 			xValue: xVal,
@@ -1413,12 +1447,27 @@ function finalizeActivateAbility(
 			pcp.abilityId
 		];
 	}
+	const abModal = pcp.abilityId
+		? getAbilityModal(card, pcp.abilityId, pcp.faceIndex ?? 0, pcp.grantSourceCard)
+		: undefined;
+	recordUsedModalModes(perm, pcp.sourceObjectVersion, abModal, pcp.chosenModes);
 	if (pcp.descriptions.length > 0) {
 		addLog(state, 'rule', `${actor.username} ${pcp.descriptions.join('; ')} to activate ${card.name}.`, actorId);
 	}
 	if (pcp.abilityCostIncomplete) {
 		addLog(state, 'rule', `Part of the cost of ${card.name}'s ability isn't automated; pay it manually.`, actorId);
 	}
+
+	const isCrewCost =
+		pcp.costKeyword === 'crew' ||
+		pcp.parts.some((pt) => pt.def.k === 'tapSubsetSum' && pt.def.restrictionTag === 'crew');
+	const crewedByIds = isCrewCost
+		? pcp.parts.flatMap((pt) =>
+				pt.def.k === 'tapSubsetSum' && pt.def.restrictionTag === 'crew'
+					? (pt.objectIds ?? [])
+					: []
+			)
+		: undefined;
 
 	const stackItem: StackItem = withStackItemText(
 		{
@@ -1430,11 +1479,14 @@ function finalizeActivateAbility(
 			card,
 			...(pcp.grantSourceCard ? { grantSourceCard: pcp.grantSourceCard } : {}),
 			...(pcp.faceIndex !== undefined ? { faceIndex: pcp.faceIndex } : {}),
+			...(crewedByIds !== undefined ? { crewedByIds } : {}),
 			controllerId: actorId,
 			kind: 'activated',
 			abilityId: pcp.abilityId,
 			title: `${resolveObjectFaces(card, { zone: perm.zone, faceIndex: pcp.faceIndex ?? 0 }).name} Ability`,
 			targets,
+			...(pcp.targetsBySpec ? { targetsBySpec: pcp.targetsBySpec } : {}),
+			...(pcp.chosenModes ? { chosenModes: [...pcp.chosenModes] } : {}),
 			targetObjectVersions: captureTargetObjectVersions(state, targets),
 			xValue: 0,
 			requiresGuidedResolution: false,
@@ -1546,6 +1598,7 @@ function executeOrResumePendingCostPayment(
 		if (inst) {
 			finalizeCastSpell(state, actor, inst, sourcePlayer, sourceZone, {
 				targets: pcp.targets ?? [],
+				targetsBySpec: pcp.targetsBySpec,
 				chosenModes: pcp.chosenModes,
 				xValue: pcp.xValue ?? 0,
 				castOptionId: pcp.castOptionId,
@@ -1626,7 +1679,9 @@ function askCostChoice(
 				? question.optional
 					? 'This cost is optional. Pay it?'
 					: 'Choose which cost to pay.'
-				: `Choose ${question.count}: ${question.label}.`,
+				: question.minTotal !== undefined
+					? `Choose any number with total ${question.metric ?? 'power'} ${question.minTotal}+: ${question.label}.`
+					: `Choose ${question.count}: ${question.label}.`,
 		choice,
 		cancellable: true,
 		yesLabel:
@@ -2524,6 +2579,7 @@ function executeUntapTurnBasedActions(state: GameState, activePlayer: PlayerGame
 		perm.summoningSick = false;
 		perm.usedLoyaltyThisTurn = false;
 		perm.activatedAbilityIdsThisTurn = undefined;
+		perm.usedModalModesThisTurn = undefined;
 	}
 }
 
@@ -2552,15 +2608,43 @@ function executeDrawTurnBasedAction(state: GameState, activePlayer: PlayerGameSt
 	}
 }
 
+/**
+ * Clears "until your next turn" effects created by `playerId`, including protection/prevention flags
+ * and goad obligations (CR 701.15a, CR 800.4m).
+ */
+export function expirePlayerUntilNextTurnEffects(state: GameState, playerId: string): void {
+	const player = state.players.find((p) => p.playerId === playerId);
+	if (player) {
+		player.cannotLoseGameThisTurn = false;
+		player.lifeTotalCannotChangeThisTurn = false;
+		player.protectionFromEverythingThisTurn = false;
+		player.preventAllCombatDamageThisTurn = false;
+	}
+	for (const p of state.players) {
+		for (const perm of p.battlefield) {
+			if (!perm.goadedByPlayerIds) continue;
+			const hasEntry = perm.goadedByPlayerIds.includes(playerId);
+			const exp = perm.goadExpirations?.[playerId];
+			if (!hasEntry && exp === undefined) continue;
+			// Only remove goad created by `playerId` when its duration was untilYourNextTurn (or unspecified).
+			if (exp === undefined || exp === 'untilYourNextTurn') {
+				perm.goadedByPlayerIds = perm.goadedByPlayerIds.filter((id) => id !== playerId);
+				if (perm.goadedByPlayerIds.length === 0) perm.goadedByPlayerIds = undefined;
+				if (perm.goadExpirations) {
+					delete perm.goadExpirations[playerId];
+					if (Object.keys(perm.goadExpirations).length === 0) perm.goadExpirations = undefined;
+				}
+			}
+		}
+	}
+}
+
 export function runBeginningOfTurn(state: GameState): void {
 	const activePlayer = state.players[state.activePlayerIndex];
 	if (!activePlayer || activePlayer.lost) return;
 
-	// Clear "until your next turn" effects (e.g., Teferi's Protection)
-	activePlayer.cannotLoseGameThisTurn = false;
-	activePlayer.lifeTotalCannotChangeThisTurn = false;
-	activePlayer.protectionFromEverythingThisTurn = false;
-	activePlayer.preventAllCombatDamageThisTurn = false;
+	// Clear "until your next turn" effects (e.g., Teferi's Protection, goad per CR 701.15a)
+	expirePlayerUntilNextTurnEffects(state, activePlayer.playerId);
 	activePlayer.spellsCastThisTurn = 0;
 	state.playersDrawnThisTurn = [];
 
@@ -2961,6 +3045,7 @@ function applyGameActionInner(
 			const exSourceName = landInst.playableFromExileBy?.sourceName;
 			landInst.playableFromExileBy = undefined;
 			landInst.tapped = false;
+			landInst.summoningSick = true;
 			landInst.defaultControllerId = actorId;
 			if (cardHasSupportedMultiFace(effectiveCardForObject(landInst)) || resolvedFace.faceIndex !== 0) {
 				landInst.activeFaceIndex = resolvedFace.faceIndex;
@@ -3332,92 +3417,21 @@ function applyGameActionInner(
 			const activeSpec = (sp: TargetSpec) =>
 				!sp.condition || isCastConditionMet(sp.condition, inst.card, normalizedOptCounts, castOption);
 			let chosenModes = action.modes;
-			if (compiledModal && !chosenModes && compiledModal.max === 1) {
-				// "Choose one" cast without naming the mode (older clients): the mode whose targets fit.
-				const fit = compiledModal.modes.findIndex((m) => {
-					const mTargets = m.targets.filter(activeSpec);
-					const minT = mTargets.reduce((s, sp) => s + sp.min, 0);
-					const maxT = mTargets.reduce((s, sp) => s + sp.max, 0);
-					if (targets.length < minT || targets.length > maxT) return false;
-					let cur = 0;
-					return mTargets.every((spec) => {
-						const count =
-							spec.min === spec.max ? spec.min : Math.min(spec.max, targets.length - cur);
-						const slice = targets.slice(cur, cur + count);
-						cur += count;
-						if (new Set(slice.map((t) => `${t.kind}:${t.id}`)).size !== slice.length) return false;
-						const cands = specTargetCandidates(state, actorId, inst.card, inst, spec);
-						return slice.every((t) => cands.some((c) => c.kind === t.kind && c.id === t.id));
-					});
-				});
-				if (fit >= 0) chosenModes = [fit];
-			}
+			let targetsBySpec: TargetRef[][] | undefined;
 			if (compiledModal) {
-				const modes = chosenModes;
-				if (
-					!Array.isArray(modes) ||
-					modes.length < compiledModal.min ||
-					modes.length > compiledModal.max ||
-					new Set(modes).size !== modes.length ||
-					modes.some((m) => !Number.isInteger(m) || m < 0 || m >= compiledModal.modes.length)
-				) {
-					return {
-						ok: false,
-						error: `Choose ${compiledModal.min}–${compiledModal.max} mode(s) for ${inst.card.name}.`
-					};
-				}
-				const rawSpecs: { modeIndex: number; specIndex: number; spec: TargetSpec }[] = [];
-				for (let modeIndex = 0; modeIndex < modes.length; modeIndex++) {
-					const m = modes[modeIndex];
-					compiledModal.modes[m].targets.filter(activeSpec).forEach((spec, specIndex) => {
-						rawSpecs.push({ modeIndex, specIndex, spec });
-					});
-				}
-				const minRequired = rawSpecs.reduce((sum, r) => sum + r.spec.min, 0);
-				const maxAllowed = rawSpecs.reduce((sum, r) => sum + r.spec.max, 0);
-				if (targets.length < minRequired || targets.length > maxAllowed) {
-					return {
-						ok: false,
-						error: `${inst.card.name} requires ${minRequired === maxAllowed ? minRequired : `${minRequired}–${maxAllowed}`} target(s) for the chosen mode(s).`
-					};
-				}
-				const counts = rawSpecs.map((r) => r.spec.min);
-				let extra = targets.length - minRequired;
-				for (let k = 0; k < rawSpecs.length && extra > 0; k++) {
-					const add = Math.min(extra, rawSpecs[k].spec.max - counts[k]);
-					if (add > 0) {
-						counts[k] += add;
-						extra -= add;
-					}
-				}
-				const targetOwner: { modeIndex: number; specIndex: number; spec: TargetSpec }[] = [];
-				let cursor = 0;
-				for (let k = 0; k < rawSpecs.length; k++) {
-					const { modeIndex, specIndex, spec } = rawSpecs[k];
-					const count = counts[k];
-					const specTargets = targets.slice(cursor, cursor + count);
-					cursor += count;
-					const uniqueInSpec = new Set(specTargets.map((t) => `${t.kind}:${t.id}`));
-					if (uniqueInSpec.size !== specTargets.length) {
-						return {
-							ok: false,
-							error: 'Strict Rules Violation: The same object cannot be chosen multiple times for the same target requirement (CR 115.3).'
-						};
-					}
-					for (let j = 0; j < count; j++) {
-						targetOwner.push({ modeIndex, specIndex, spec });
-					}
-				}
-				for (let i = 0; i < targets.length; i++) {
-					const owner = targetOwner[i];
-					const legal = specTargetCandidates(state, actorId, inst.card, inst, owner.spec);
-					if (!legal.some((c) => c.kind === targets[i].kind && c.id === targets[i].id)) {
-						return {
-							ok: false,
-							error: `Strict Rules Violation: ${targets[i].label} is not a legal target for mode ${modes[owner.modeIndex] + 1} of ${inst.card.name}.`
-						};
-					}
-				}
+				const modalVal = validateModalChoice(
+					state,
+					actorId,
+					inst.card,
+					inst,
+					compiledModal,
+					chosenModes,
+					targets,
+					activeSpec
+				);
+				if (!modalVal.ok) return modalVal;
+				chosenModes = modalVal.chosenModes;
+				targetsBySpec = modalVal.targetsBySpec;
 			} else {
 				const targetValidation = validateChosenTargets(
 					state,
@@ -3515,6 +3529,7 @@ function applyGameActionInner(
 					sourcePlayerId: sourcePlayer.playerId,
 					sourceZone,
 					targets,
+					...(targetsBySpec ? { targetsBySpec } : {}),
 					...(chosenModes ? { chosenModes: [...chosenModes] } : {}),
 					xValue: xVal,
 					castOptionId: castOption.id,
@@ -3549,6 +3564,7 @@ function applyGameActionInner(
 			}
 			finalizeCastSpell(state, actor, inst, sourcePlayer, sourceZone, {
 				targets,
+				targetsBySpec,
 				chosenModes,
 				xValue: xVal,
 				castOptionId: castOption.id,
@@ -3596,7 +3612,26 @@ function applyGameActionInner(
 			const abTargetInfo: TargetRequirementInfo = ab.targetInfo;
 
 			const targets = action.targets || [];
-			if (ab.requiresTarget) {
+			const abModal =
+				ab.modal ?? getAbilityModal(perm.card, ab.id, ab.faceIndex ?? 0, ab.grantSourceCard);
+			let chosenModes = action.chosenModes;
+			let targetsBySpec: TargetRef[][] | undefined;
+			if (abModal) {
+				const modalVal = validateModalChoice(
+					state,
+					actorId,
+					perm.card,
+					perm,
+					abModal,
+					chosenModes,
+					targets,
+					() => true,
+					perm.usedModalModesThisTurn
+				);
+				if (!modalVal.ok) return modalVal;
+				chosenModes = modalVal.chosenModes;
+				targetsBySpec = modalVal.targetsBySpec;
+			} else if (ab.requiresTarget) {
 				const targetValidation = validateChosenTargets(
 					state,
 					actorId,
@@ -3662,6 +3697,8 @@ function applyGameActionInner(
 				...(ab.faceIndex !== undefined ? { faceIndex: ab.faceIndex } : {}),
 				...(ab.costKeyword ? { costKeyword: ab.costKeyword } : {}),
 				targets,
+				...(targetsBySpec ? { targetsBySpec } : {}),
+				...(chosenModes ? { chosenModes: [...chosenModes] } : {}),
 				sourceObjectVersion: perm.objectVersion,
 				sourceLkiPower,
 				sourceLkiToughness,
@@ -4989,7 +5026,10 @@ function handlePromptResolution(
 	// Prompts with a `continuation` (such as IR `effect_choice` optional steps) flow below.
 	if (
 		!prompt.continuation &&
-		(purpose === 'trigger_targets' || purpose === 'trigger_order' || purpose === 'trigger_may')
+		(purpose === 'trigger_modes' ||
+			purpose === 'trigger_targets' ||
+			purpose === 'trigger_order' ||
+			purpose === 'trigger_may')
 	) {
 		return resolveTriggerPrompt(state, prompt, promptIdx, normalized.answer);
 	}
@@ -5273,6 +5313,7 @@ function handlePromptResolution(
 					}
 					if (!isAura || found.attachedToId) {
 						found.tapped = Boolean(prompt.enterTapped);
+						found.summoningSick = true;
 						found.defaultControllerId = libraryOwner.playerId;
 						applySelfEtbReplacements(state, found);
 						moveObject(state, found, 'battlefield', {
@@ -5830,6 +5871,7 @@ function executeProcedureContinuation(
 			if (!libraryOwner || !found || !chosenHostId) return;
 			attachObject(state, found, chosenHostId);
 			found.tapped = proc.enterTapped;
+			found.summoningSick = true;
 			found.defaultControllerId = libraryOwner.playerId;
 			applySelfEtbReplacements(state, found);
 			const promptsBefore = state.pendingPrompts.length;
@@ -6147,7 +6189,7 @@ function applyGuidedOperations(state: GameState, actor: PlayerGameState, ops: Gu
 				} else {
 					const owner = state.players.find((p) => p.playerId === found.inst.ownerId) ?? found.holder;
 					const toPlayer = dest === 'battlefield' ? actor : owner;
-					if (dest === 'battlefield') found.inst.summoningSick = found.inst.card.typeLine.includes('Creature');
+					if (dest === 'battlefield') found.inst.summoningSick = true;
 					moveObject(state, found.inst, dest, {
 						from: { player: found.holder, zone: found.zone as Exclude<ZoneType, 'stack'> },
 						toPlayer,
@@ -6619,7 +6661,10 @@ for (const kind of [
 	'Transformed',
 	'TurnedFaceUp',
 	'Investigated',
-	'Surveilled'
+	'Surveilled',
+	'Explored',
+	'Connived',
+	'BecomesCrewed'
 ] as const) {
 	registerEventHandler(kind, (state, ev) => matchTriggers(state, ev));
 }
@@ -6797,7 +6842,204 @@ export function triggerResolutionCounts(reset = false): { interpreter: number; m
 /** The compiled IR effect of a triggered stack item, or null (no compiled effect: legacy only). */
 function triggerItemEffect(item: StackItem) {
 	if (item.kind !== 'triggered' || item.triggeredAbilityIndex === undefined) return null;
-	return compiledTriggerEffect(item.card, item.triggeredAbilityIndex, item.grantedKeyword, item.faceIndex ?? 0);
+	return compiledTriggerEffect(
+		item.card,
+		item.triggeredAbilityIndex,
+		item.grantedKeyword,
+		item.faceIndex ?? 0,
+		item.chosenModes
+	);
+}
+
+/** The ModalDef for a modal triggered stack item, if any. */
+function triggerItemModal(item: StackItem): ModalDef | undefined {
+	if (item.kind !== 'triggered' || item.triggeredAbilityIndex === undefined) return undefined;
+	return compiledTriggerEffect(item.card, item.triggeredAbilityIndex, item.grantedKeyword, item.faceIndex ?? 0)?.modal;
+}
+
+function recordUsedModalModes(
+	perm: CardInstance | undefined,
+	expectedVersion: number | undefined,
+	modal: ModalDef | undefined,
+	chosenModes: number[] | undefined
+): void {
+	if (
+		!perm ||
+		!modal?.oncePerTurnUnique ||
+		!chosenModes?.length ||
+		(perm.zone !== 'battlefield' && perm.zone !== 'hand') ||
+		(expectedVersion !== undefined && perm.objectVersion !== expectedVersion)
+	) {
+		return;
+	}
+	const prev = perm.usedModalModesThisTurn ?? [];
+	const next = [...prev];
+	for (const idx of chosenModes) {
+		if (!next.includes(idx)) next.push(idx);
+	}
+	perm.usedModalModesThisTurn = next;
+}
+
+function modalCandidateModeStatus(
+	state: GameState,
+	controllerId: string,
+	sourceCard: ScryfallCard,
+	sourceInst: CardInstance | undefined,
+	modal: ModalDef,
+	usedModes: number[] | undefined,
+	activeSpecFilter: (sp: TargetSpec) => boolean = () => true
+): { disabledIndices: number[]; legalModes: number[] } {
+	const disabledIndices: number[] = [];
+	const legalModes: number[] = [];
+	for (let i = 0; i < modal.modes.length; i++) {
+		if (modal.oncePerTurnUnique && usedModes?.includes(i)) {
+			disabledIndices.push(i);
+			continue;
+		}
+		const modeSpecs = modal.modes[i].targets.filter(activeSpecFilter);
+		const hasLegal = modeSpecs.every(
+			(spec) => spec.min <= 0 || specTargetCandidates(state, controllerId, sourceCard, sourceInst, spec).length >= spec.min
+		);
+		if (hasLegal) legalModes.push(i);
+		else disabledIndices.push(i);
+	}
+	return { disabledIndices, legalModes };
+}
+
+export function getModalDisabledIndices(
+	state: GameState,
+	actorId: string,
+	sourceCard: ScryfallCard,
+	sourceInst: CardInstance | undefined,
+	modal: ModalDef,
+	usedModes?: number[]
+): number[] {
+	return modalCandidateModeStatus(state, actorId, sourceCard, sourceInst, modal, usedModes).disabledIndices;
+}
+
+function hasLegalModalCombination(modal: ModalDef, legalModes: number[]): boolean {
+	if (modal.min === 0 || modal.upTo) return true;
+	if (modal.allowRepeat && !modal.oncePerTurnUnique) return legalModes.length > 0;
+	return legalModes.length >= modal.min;
+}
+
+function validateModalChoice(
+	state: GameState,
+	actorId: string,
+	sourceCard: ScryfallCard,
+	sourceInst: CardInstance | undefined,
+	modal: ModalDef,
+	providedModes: number[] | undefined,
+	targets: TargetRef[],
+	activeSpecFilter: (sp: TargetSpec) => boolean = () => true,
+	usedModes?: number[]
+):
+	| { ok: true; chosenModes: number[]; targetsBySpec: TargetRef[][] }
+	| { ok: false; error: string } {
+	let chosenModes = providedModes;
+	if (!chosenModes && modal.max === 1) {
+		// "Choose one" call without naming the mode: pick the first unused mode whose targets fit.
+		const fit = modal.modes.findIndex((m, idx) => {
+			if (modal.oncePerTurnUnique && usedModes?.includes(idx)) return false;
+			const mTargets = m.targets.filter(activeSpecFilter);
+			const minT = mTargets.reduce((s, sp) => s + sp.min, 0);
+			const maxT = mTargets.reduce((s, sp) => s + sp.max, 0);
+			if (targets.length < minT || targets.length > maxT) return false;
+			let cur = 0;
+			return mTargets.every((spec) => {
+				const count = spec.min === spec.max ? spec.min : Math.min(spec.max, targets.length - cur);
+				const slice = targets.slice(cur, cur + count);
+				cur += count;
+				if (new Set(slice.map((t) => `${t.kind}:${t.id}`)).size !== slice.length) return false;
+				const cands = specTargetCandidates(state, actorId, sourceCard, sourceInst, spec);
+				return slice.every((t) => cands.some((c) => c.kind === t.kind && c.id === t.id));
+			});
+		});
+		if (fit >= 0) chosenModes = [fit];
+		else if (modal.min === 0 && targets.length === 0) chosenModes = [];
+	}
+
+	if (
+		!Array.isArray(chosenModes) ||
+		chosenModes.length < modal.min ||
+		chosenModes.length > modal.max ||
+		(!modal.allowRepeat && new Set(chosenModes).size !== chosenModes.length) ||
+		chosenModes.some((m) => !Number.isInteger(m) || m < 0 || m >= modal.modes.length)
+	) {
+		return {
+			ok: false,
+			error: `Choose ${modal.min}–${modal.max} mode(s) for ${sourceCard.name}.`
+		};
+	}
+
+	if (modal.oncePerTurnUnique && usedModes?.length) {
+		const dup = chosenModes.find((m) => usedModes.includes(m));
+		if (dup !== undefined) {
+			return {
+				ok: false,
+				error: `Mode ${dup + 1} of ${sourceCard.name} has already been chosen this turn.`
+			};
+		}
+	}
+
+	const allSpecs: { modeIndex: number; spec: TargetSpec; active: boolean }[] = [];
+	for (let modeIndex = 0; modeIndex < chosenModes.length; modeIndex++) {
+		const m = chosenModes[modeIndex];
+		for (const spec of modal.modes[m].targets) {
+			allSpecs.push({ modeIndex, spec, active: activeSpecFilter(spec) });
+		}
+	}
+
+	const activeEntries = allSpecs.filter((e) => e.active);
+	const minRequired = activeEntries.reduce((sum, r) => sum + r.spec.min, 0);
+	const maxAllowed = activeEntries.reduce((sum, r) => sum + r.spec.max, 0);
+	if (targets.length < minRequired || targets.length > maxAllowed) {
+		return {
+			ok: false,
+			error: `${sourceCard.name} requires ${minRequired === maxAllowed ? minRequired : `${minRequired}–${maxAllowed}`} target(s) for the chosen mode(s).`
+		};
+	}
+
+	const counts = activeEntries.map((r) => r.spec.min);
+	let extra = targets.length - minRequired;
+	for (let k = 0; k < activeEntries.length && extra > 0; k++) {
+		const add = Math.min(extra, activeEntries[k].spec.max - counts[k]);
+		if (add > 0) {
+			counts[k] += add;
+			extra -= add;
+		}
+	}
+
+	const targetsBySpec: TargetRef[][] = [];
+	let activeCursor = 0;
+	let targetCursor = 0;
+	for (const entry of allSpecs) {
+		if (!entry.active) {
+			targetsBySpec.push([]);
+			continue;
+		}
+		const count = counts[activeCursor++];
+		const slice = targets.slice(targetCursor, targetCursor + count);
+		targetCursor += count;
+		const uniqueInSpec = new Set(slice.map((t) => `${t.kind}:${t.id}`));
+		if (uniqueInSpec.size !== slice.length) {
+			return {
+				ok: false,
+				error: 'Strict Rules Violation: The same object cannot be chosen multiple times for the same target requirement (CR 115.3).'
+			};
+		}
+		const legal = specTargetCandidates(state, actorId, sourceCard, sourceInst, entry.spec);
+		for (const t of slice) {
+			if (!legal.some((c) => c.kind === t.kind && c.id === t.id)) {
+				return {
+					ok: false,
+					error: `Strict Rules Violation: ${t.label} is not a legal target for mode ${chosenModes[entry.modeIndex] + 1} of ${sourceCard.name}.`
+				};
+			}
+		}
+		targetsBySpec.push(slice);
+	}
+	return { ok: true, chosenModes, targetsBySpec };
 }
 
 /** The interpreter's EffectContext fields for a triggered ability's event (CR 603.7c). */
@@ -7132,6 +7374,69 @@ function triggerTargetStillLegal(state: GameState, item: StackItem, specs: Targe
  * specs (CR 603.3d): a bot chooses via ai.ts; a human gets a chooseObjects prompt (unless the choice
  * is forced). An ability with a required target and no legal one is removed, with a log line.
  */
+function assignOrPromptTriggerTargets(
+	state: GameState,
+	controller: PlayerGameState,
+	item: StackItem,
+	specs: TargetSpec[],
+	candidates: TargetRef[][]
+): void {
+	const steps = triggerItemEffect(item)?.steps ?? [];
+	const targetsBySpec: TargetRef[][] = specs.map(() => []);
+	specs.forEach((spec, i) => {
+		const legal = candidates[i];
+		const max = Math.min(spec.max, legal.length);
+		if (controller.isBot) {
+			targetsBySpec[i] = chooseBotTriggerTargets(state, controller, steps, i, spec, legal);
+		} else if (legal.length === spec.min && max === spec.min) {
+			// Forced: exactly as many legal targets as required.
+			targetsBySpec[i] = [...legal];
+		} else {
+			targetsBySpec[i] = [];
+			const reason = `Choose ${spec.min === max ? max : `${spec.min}–${max}`} target(s) for ${item.title}.`;
+			enqueueChoicePrompt(state, {
+				id: uid('prm', state),
+				playerId: controller.playerId,
+				kind: 'chooseObjects',
+				purpose: 'trigger_targets',
+				title: `Choose Targets (${item.card.name})`,
+				description: `${reason} (Its text is shown on the stack.)`,
+				triggerStackItemId: item.id,
+				triggerTargetSpecIndex: i,
+				candidateInstanceIds: legal.map((c) => c.id),
+				countRequired: spec.min,
+				choice: {
+					kind: 'chooseObjects',
+					candidates: legal.map((c) => c.id),
+					min: spec.min,
+					max,
+					zone: (spec.filter.zone as ZoneType | undefined) ?? 'battlefield',
+					reason
+				}
+			});
+		}
+	});
+	if (specs.length > 0) {
+		item.targetsBySpec = targetsBySpec;
+		item.targets = targetsBySpec.flat();
+	}
+	item.targetObjectVersions = captureTargetObjectVersions(state, item.targets);
+	// CR 115.1, 603.3d, 702.21a: permanents targeted as a triggered ability goes on the stack trigger Ward / becomes-target abilities.
+	for (const t of item.targets) {
+		const targeted = t.kind === 'permanent' ? findPermanentOnBoard(state, t.id) : null;
+		if (targeted) {
+			emitEvent(state, {
+				kind: 'BecameTarget',
+				objectId: t.id,
+				object: targeted.inst,
+				by: 'ability',
+				controllerId: item.controllerId,
+				stackItemId: item.id
+			});
+		}
+	}
+}
+
 function putTriggerOnStack(state: GameState, t: PendingTrigger): StackItem | null {
 	if (state.status === 'finished') return null;
 	if (state.stack.length >= MAX_STACK_FOR_TRIGGERS) {
@@ -7161,17 +7466,69 @@ function putTriggerOnStack(state: GameState, t: PendingTrigger): StackItem | nul
 	const controller = state.players.find((p) => p.playerId === t.controllerId);
 	if (!controller) return null;
 	const item = triggeredStackItem(state, t, 'stk');
-	const specs = triggerItemTargetSpecs(item);
-	const candidates = specs.map((spec) => triggerTargetCandidates(state, item, spec));
-	const impossible = specs.findIndex((spec, i) => spec.min > 0 && candidates[i].length < spec.min);
-	if (impossible >= 0) {
-		addLog(
+	const modal = t.ability.effect?.modal ?? triggerItemModal(item);
+	const foundSrcPerm = findPermanentOnBoard(state, t.source.instanceId);
+	const srcObj = triggerSourceObject(state, item);
+	const usedModes =
+		foundSrcPerm && foundSrcPerm.inst.objectVersion === t.source.objectVersion
+			? foundSrcPerm.inst.usedModalModesThisTurn
+			: undefined;
+
+	let needsHumanModePrompt = false;
+	let modalDisabledIndices: number[] = [];
+	if (modal && !item.chosenModes) {
+		const status = modalCandidateModeStatus(
 			state,
-			'rule',
-			`${item.title} was removed from the Stack: it has no legal targets (CR 603.3d).`,
-			t.controllerId
+			t.controllerId,
+			item.card,
+			srcObj,
+			modal,
+			usedModes
 		);
-		return null;
+		modalDisabledIndices = status.disabledIndices;
+		if (!hasLegalModalCombination(modal, status.legalModes)) {
+			addLog(
+				state,
+				'rule',
+				`${item.title} was removed from the Stack: no legal modes can be chosen (CR 700.2b / 603.3c).`,
+				t.controllerId
+			);
+			return null;
+		}
+		if (controller.isBot) {
+			const picked = chooseBotModalTriggerModes(state, controller, item, modal, usedModes);
+			if (picked.length === 0) {
+				addLog(
+					state,
+					'rule',
+					`${item.title} was removed from the Stack: no mode was chosen (CR 603.3c).`,
+					t.controllerId
+				);
+				return null;
+			}
+			item.chosenModes = picked;
+			recordUsedModalModes(foundSrcPerm?.inst, t.source.objectVersion, modal, picked);
+		} else if (!modal.allowRepeat && !modal.upTo && status.legalModes.length === modal.min && modal.min === modal.max) {
+			item.chosenModes = [...status.legalModes];
+			recordUsedModalModes(foundSrcPerm?.inst, t.source.objectVersion, modal, item.chosenModes);
+		} else {
+			needsHumanModePrompt = true;
+		}
+	}
+
+	const specs = needsHumanModePrompt ? [] : triggerItemTargetSpecs(item);
+	const candidates = specs.map((spec) => triggerTargetCandidates(state, item, spec));
+	if (!needsHumanModePrompt) {
+		const impossible = specs.findIndex((spec, i) => spec.min > 0 && candidates[i].length < spec.min);
+		if (impossible >= 0) {
+			addLog(
+				state,
+				'rule',
+				`${item.title} was removed from the Stack: it has no legal targets (CR 603.3d).`,
+				t.controllerId
+			);
+			return null;
+		}
 	}
 
 	// Phase 4 (CR 104.4b, CR 731): detect repeated trigger-resolution cycles for the same
@@ -7275,60 +7632,34 @@ function putTriggerOnStack(state: GameState, t: PendingTrigger): StackItem | nul
 	state.stack.push(item);
 	placed.count++;
 	addLog(state, 'trigger', `${triggerSourcePublicName(state, t)}'s ${t.label} was put onto the Stack.`, t.controllerId);
-	const steps = triggerItemEffect(item)?.steps ?? [];
-	const targetsBySpec: TargetRef[][] = specs.map(() => []);
-	specs.forEach((spec, i) => {
-		const legal = candidates[i];
-		const max = Math.min(spec.max, legal.length);
-		if (controller.isBot) {
-			targetsBySpec[i] = chooseBotTriggerTargets(state, controller, steps, i, spec, legal);
-		} else if (legal.length === spec.min && max === spec.min) {
-			// Forced: exactly as many legal targets as required.
-			targetsBySpec[i] = [...legal];
-		} else {
-			targetsBySpec[i] = [];
-			const reason = `Choose ${spec.min === max ? max : `${spec.min}–${max}`} target(s) for ${item.title}.`;
-			enqueueChoicePrompt(state, {
-				id: uid('prm', state),
-				playerId: controller.playerId,
-				kind: 'chooseObjects',
-				purpose: 'trigger_targets',
-				title: `Choose Targets (${item.card.name})`,
-				description: `${reason} (Its text is shown on the stack.)`,
-				triggerStackItemId: item.id,
-				triggerTargetSpecIndex: i,
-				candidateInstanceIds: legal.map((c) => c.id),
-				countRequired: spec.min,
-				choice: {
-					kind: 'chooseObjects',
-					candidates: legal.map((c) => c.id),
-					min: spec.min,
-					max,
-					zone: (spec.filter.zone as ZoneType | undefined) ?? 'battlefield',
-					reason
-				}
-			});
-		}
-	});
-	if (specs.length > 0) {
-		item.targetsBySpec = targetsBySpec;
-		item.targets = targetsBySpec.flat();
+
+	if (needsHumanModePrompt && modal) {
+		const modeLabels = describeModalModes(item.card, modal, item.faceIndex ?? 0);
+		const reason =
+			modal.min === modal.max
+				? `Choose ${modal.min} mode(s) for ${item.title}.`
+				: `Choose ${modal.min}–${modal.max} mode(s) for ${item.title}.`;
+		enqueueChoicePrompt(state, {
+			id: uid('prm', state),
+			playerId: controller.playerId,
+			kind: 'chooseMode',
+			purpose: 'trigger_modes',
+			title: `Choose Mode (${item.card.name})`,
+			description: reason,
+			triggerStackItemId: item.id,
+			choice: {
+				kind: 'chooseMode',
+				modes: modeLabels,
+				min: modal.min,
+				max: modal.max,
+				...(modal.allowRepeat ? { allowRepeat: true } : {}),
+				...(modalDisabledIndices.length > 0 ? { disabledIndices: modalDisabledIndices } : {})
+			}
+		});
+		return item;
 	}
-	item.targetObjectVersions = captureTargetObjectVersions(state, item.targets);
-	// CR 115.1, 603.3d, 702.21a: permanents targeted as a triggered ability goes on the stack trigger Ward / becomes-target abilities.
-	for (const t of item.targets) {
-		const targeted = t.kind === 'permanent' ? findPermanentOnBoard(state, t.id) : null;
-		if (targeted) {
-			emitEvent(state, {
-				kind: 'BecameTarget',
-				objectId: t.id,
-				object: targeted.inst,
-				by: 'ability',
-				controllerId: item.controllerId,
-				stackItemId: item.id
-			});
-		}
-	}
+
+	assignOrPromptTriggerTargets(state, controller, item, specs, candidates);
 	return item;
 }
 
@@ -7387,6 +7718,59 @@ function resolveTriggerPrompt(
 	const item = state.stack.find((s) => s.id === prompt.triggerStackItemId);
 	if (!item) {
 		return { ok: false, error: 'That triggered ability is no longer on the stack.' };
+	}
+	if (purpose === 'trigger_modes') {
+		if (answer?.kind !== 'chooseMode') {
+			return { ok: false, error: 'Choose the required mode(s).' };
+		}
+		const modal = triggerItemModal(item);
+		const controller = state.players.find((p) => p.playerId === item.controllerId);
+		if (!modal || !controller) {
+			return { ok: false, error: 'That modal trigger is no longer valid.' };
+		}
+		const foundSrcPerm = findPermanentOnBoard(state, item.sourceInstanceId);
+		const usedModes =
+			foundSrcPerm && foundSrcPerm.inst.objectVersion === item.sourceObjectVersion
+				? foundSrcPerm.inst.usedModalModesThisTurn
+				: undefined;
+		if (modal.oncePerTurnUnique && usedModes?.some((u) => answer.indices.includes(u))) {
+			return { ok: false, error: 'A chosen mode has already been chosen this turn.' };
+		}
+		const expanded = expandModalEffects(modal, answer.indices);
+		if (!expanded) {
+			return { ok: false, error: 'Invalid mode selection.' };
+		}
+		const candidates = expanded.targets.map((spec) => triggerTargetCandidates(state, item, spec));
+		const impossible = expanded.targets.findIndex((spec, i) => spec.min > 0 && candidates[i].length < spec.min);
+		if (impossible >= 0) {
+			return { ok: false, error: 'A chosen mode has no legal targets.' };
+		}
+
+		state.pendingPrompts.splice(promptIdx, 1);
+		if (answer.indices.length === 0) {
+			const idx = state.stack.indexOf(item);
+			if (idx >= 0) state.stack.splice(idx, 1);
+			addLog(
+				state,
+				'rule',
+				`${item.title} was removed from the Stack (no mode chosen, CR 603.3c).`,
+				item.controllerId
+			);
+			flushTriggers(state);
+			return { ok: true };
+		}
+		item.chosenModes = [...answer.indices];
+		recordUsedModalModes(foundSrcPerm?.inst, item.sourceObjectVersion, modal, item.chosenModes);
+		addLog(
+			state,
+			'trigger',
+			`${controller.username} chose mode(s) ${answer.indices.map((i) => i + 1).join(', ')} for ${item.title}.`,
+			item.controllerId
+		);
+		const specs = triggerItemTargetSpecs(item);
+		assignOrPromptTriggerTargets(state, controller, item, specs, candidates);
+		flushTriggers(state);
+		return { ok: true };
 	}
 	if (purpose === 'trigger_targets') {
 		if (answer?.kind !== 'chooseObjects') {
@@ -7742,10 +8126,13 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 	// Check if all targets are still legal (Fizzle rule CR 608.2b)
 	if (!resuming && item.targets.length > 0) {
 		const triggerSpecs = item.kind === 'triggered' ? triggerItemTargetSpecs(item) : [];
-		const validTargets = item.targets.filter((t) =>
+		const isTargetValid = (t: TargetRef) =>
 			isTargetStillValid(state, t, item.controllerId, item.card, item) &&
-			(triggerSpecs.length === 0 || triggerTargetStillLegal(state, item, triggerSpecs, t))
-		);
+			(triggerSpecs.length === 0 || triggerTargetStillLegal(state, item, triggerSpecs, t));
+		const validTargets = item.targets.filter(isTargetValid);
+		if (item.targetsBySpec) {
+			item.targetsBySpec = item.targetsBySpec.map((bucket) => bucket.filter(isTargetValid));
+		}
 		if (validTargets.length === 0) {
 			removeItemFromStack();
 			addLog(
@@ -7990,7 +8377,7 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 			perm.controllerId = controller.playerId;
 			perm.defaultControllerId = controller.playerId;
 			perm.commanderCastCount = castCount;
-			perm.summoningSick = stackTypes.includes('Creature');
+			perm.summoningSick = true;
 			perm.enteredWithX = item.xValue;
 			const resolvedKicker = computeKickerTracking(
 				item.card,
@@ -8249,11 +8636,7 @@ function copyPermanentAsToken(
 	);
 	tokenInst.copiableState = copiableState;
 	tokenInst.copiableCard = baseCardToCopy;
-	const tokenTypes = resolveObjectFaces(baseCardToCopy, {
-		zone: 'battlefield',
-		copiableState
-	}).types;
-	tokenInst.summoningSick = tokenTypes.includes('Creature');
+	tokenInst.summoningSick = true;
 	moveObject(state, tokenInst, 'battlefield', { from: 'none', toPlayer: controller });
 	addLog(
 		state,
@@ -8294,12 +8677,48 @@ function counterStackItemByEffect(
 	return true;
 }
 
-/** Destroy (CR 701.7) by a spell or ability: indestructible, then dies triggers. */
+/** CR 506.4 / 701.19a: Removes a permanent from combat (as attacker and/or blocker). */
+function removePermanentFromCombat(state: GameState, instanceId: string): void {
+	if (!state.combat.active) return;
+	state.combat.attackers = state.combat.attackers.filter((a) => a.attackerInstanceId !== instanceId);
+	for (const atk of state.combat.attackers) {
+		atk.blockerInstanceIds = atk.blockerInstanceIds.filter((id) => id !== instanceId);
+	}
+	if (state.combat.dealtFirstStrikeDamageIds) {
+		state.combat.dealtFirstStrikeDamageIds = state.combat.dealtFirstStrikeDamageIds.filter(
+			(id) => id !== instanceId
+		);
+	}
+}
+
+/**
+ * CR 701.19a / CR 614.8: If `perm` has a regeneration shield and can be regenerated this turn,
+ * consumes 1 shield, removes all damage marked on it, taps it, and removes it from combat.
+ */
+function tryRegenerateInsteadOfDestroy(
+	state: GameState,
+	perm: CardInstance,
+	canBeRegenerated = true
+): boolean {
+	if (!canBeRegenerated || perm.cantBeRegeneratedThisTurn) return false;
+	const shields = perm.regenerationShields ?? 0;
+	if (shields <= 0) return false;
+	perm.regenerationShields = shields - 1 > 0 ? shields - 1 : undefined;
+	perm.damageMarked = 0;
+	perm.deathtouchDamageMarked = false;
+	tapPermanent(state, perm);
+	removePermanentFromCombat(state, perm.instanceId);
+	addLog(state, 'rule', `${perm.card.name} regenerated instead of being destroyed.`);
+	return true;
+}
+
+/** Destroy (CR 701.7) by a spell or ability: indestructible, regeneration, then dies triggers. */
 function destroyPermanentByEffect(
 	state: GameState,
 	inst: CardInstance,
 	title: string,
-	actorId: string
+	actorId: string,
+	canBeRegenerated = true
 ): MoveResult | 'skipped' {
 	if (hasKeyword(inst, 'Indestructible', state)) {
 		addLog(state, 'rule', `${inst.card.name} is Indestructible and was not destroyed.`);
@@ -8307,6 +8726,9 @@ function destroyPermanentByEffect(
 	}
 	const found = findPermanentOnBoard(state, inst.instanceId);
 	if (!found) return 'skipped';
+	if (tryRegenerateInsteadOfDestroy(state, inst, canBeRegenerated)) {
+		return 'skipped';
+	}
 	emitVfx(state, { kind: 'destroy', targetId: inst.instanceId, label: inst.card.name });
 	const dest = movePermanentToZone(state, inst, 'graveyard');
 	addLog(state, 'cast', `${title} destroyed ${inst.card.name}.`, actorId);
@@ -8447,6 +8869,140 @@ function initiateLibraryScryOrSurveil(
 	}
 }
 
+function findSourceCardForOptionalCost(state: GameState, item: StackItem): CardInstance {
+	for (const zone of ['battlefield', 'graveyard', 'exile', 'hand', 'command', 'library'] as const) {
+		for (const pl of state.players) {
+			const inst = pl[zone].find((c) => c.instanceId === item.sourceInstanceId);
+			if (inst) return inst;
+		}
+	}
+	const base = createCardInstance(item.card, item.controllerId, 'stack', false, false, 0);
+	return { ...base, instanceId: item.sourceInstanceId };
+}
+
+function buildOptionalCostContext(
+	state: GameState,
+	player: PlayerGameState,
+	item: StackItem
+): CostContext {
+	const source = findSourceCardForOptionalCost(state, item);
+	return costContext(state, player, source, item.xValue ?? 0, false, null, undefined, {
+		isSpell: false
+	});
+}
+
+function canPayOptionalCost(
+	state: GameState,
+	player: PlayerGameState,
+	item: StackItem,
+	defs: CostDef[]
+): boolean {
+	return canPayCosts(buildOptionalCostContext(state, player, item), defs);
+}
+
+function payOptionalCost(
+	state: GameState,
+	player: PlayerGameState,
+	item: StackItem,
+	stepIndex: number,
+	defs: CostDef[],
+	answers: Record<string, ChoiceAnswer>,
+	pending?: EffectResumeFrame['pendingOptionalCost']
+): PayOptionalCostResult {
+	const ctx = buildOptionalCostContext(state, player, item);
+	if (pending && pending.stepIndex === stepIndex) {
+		if (!pending.tapsAndManaDone) {
+			payTapAndManaCostParts(ctx, pending.parts, null, pending.descriptions);
+			pending.tapsAndManaDone = true;
+		}
+		const promptsBefore = state.pendingPrompts.length;
+		const paid = executeCostPaymentParts(
+			ctx,
+			pending.parts,
+			pending.nextPartIndex,
+			pending.nextObjectIndex,
+			pending.descriptions
+		);
+		if (paid.paused) {
+			return {
+				status: 'paused',
+				pending: {
+					...pending,
+					nextPartIndex: paid.nextPartIndex ?? pending.nextPartIndex,
+					nextObjectIndex: paid.nextObjectIndex ?? pending.nextObjectIndex
+				},
+				queued: state.pendingPrompts.slice(promptsBefore)
+			};
+		}
+		addLog(
+			state,
+			'cast',
+			`${player.username} paid ${describeCost(defs)} for ${item.card.name}${pending.descriptions.length > 0 ? ` (${pending.descriptions.join('; ')})` : ''}.`,
+			player.playerId
+		);
+		return { status: 'paid' };
+	}
+
+	let payment: CostPayment | undefined;
+	if (player.isBot) {
+		const chosen = chooseCostPayment(ctx, defs);
+		if (!chosen) return { status: 'failed' };
+		payment = chosen;
+	} else {
+		const objects: string[][] = [];
+		for (let qIdx = 0; qIdx < defs.length + 4; qIdx++) {
+			const ans = answers[`__opt_cost_${stepIndex}_obj_${qIdx}`];
+			if (ans?.kind === 'chooseObjects') {
+				objects[qIdx] = ans.objectIds;
+			} else {
+				break;
+			}
+		}
+		if (objects.length > 0) payment = { objects };
+	}
+
+	const plan = planCosts(ctx, defs, payment);
+	if (!plan.ok) return { status: 'failed' };
+	if (plan.question) {
+		if (plan.question.kind !== 'objects' || player.isBot) return { status: 'failed' };
+		return {
+			status: 'needChoice',
+			answerKey: `__opt_cost_${stepIndex}_obj_${plan.question.index}`,
+			zone: inferObjectsZone(player, plan.question.candidateIds),
+			label: plan.question.label,
+			count: plan.question.count,
+			candidateIds: plan.question.candidateIds
+		};
+	}
+
+	const serializedParts = serializeCostPlanParts(ctx, plan);
+	const descriptions: string[] = [];
+	payTapAndManaCostParts(ctx, serializedParts, plan.mana, descriptions);
+	const promptsBefore = state.pendingPrompts.length;
+	const paid = executeCostPaymentParts(ctx, serializedParts, 0, 0, descriptions);
+	if (paid.paused) {
+		return {
+			status: 'paused',
+			pending: {
+				stepIndex,
+				parts: serializedParts,
+				nextPartIndex: paid.nextPartIndex ?? 0,
+				nextObjectIndex: paid.nextObjectIndex ?? 0,
+				descriptions,
+				tapsAndManaDone: true
+			},
+			queued: state.pendingPrompts.slice(promptsBefore)
+		};
+	}
+	addLog(
+		state,
+		'cast',
+		`${player.username} paid ${describeCost(defs)} for ${item.card.name}${descriptions.length > 0 ? ` (${descriptions.join('; ')})` : ''}.`,
+		player.playerId
+	);
+	return { status: 'paid' };
+}
+
 registerEffectPorts({
 	uid,
 	addLog,
@@ -8458,6 +9014,9 @@ registerEffectPorts({
 	drawCards: (state, player, count) => drawCards(state, player, count, true),
 	damageTarget: applyDamageToTarget,
 	destroy: destroyPermanentByEffect,
+	tryRegenerateInsteadOfDestroy,
+	canPayOptionalCost,
+	payOptionalCost,
 	moveFromBattlefield: movePermanentToZone,
 	counterSpell: counterStackItemByEffect,
 	createToken: createTokenOnBoard,
@@ -8796,6 +9355,7 @@ function initiateLibrarySearch(
 					attachObject(state, found, attachCands[0]);
 				}
 				found.tapped = Boolean(dest.tapped);
+				found.summoningSick = true;
 				found.defaultControllerId = searchingPlayer.playerId;
 				applySelfEtbReplacements(state, found);
 				moveObject(state, found, 'battlefield', {
@@ -8932,7 +9492,7 @@ export function createTokenOnBoard(
 		allocateTimestamp(state),
 		state
 	);
-	inst.summoningSick = spec.typeLine.includes('Creature');
+	inst.summoningSick = true;
 	if (spec.tapped) inst.tapped = true;
 	moveObject(state, inst, 'battlefield', { from: 'none', toPlayer: controller });
 	emitVfx(state, {
@@ -9642,6 +10202,7 @@ registerPromptHandler(COMBAT_DAMAGE_ASSIGNMENT_HANDLER, (state, prompt, answer) 
 
 function clearEndOfTurnAndDamage(state: GameState): void {
 	state.timedKeywordEffects = undefined;
+	state.timedContinuousEffects = undefined;
 	for (const p of state.players) {
 		p.manaPool = createEmptyManaPool();
 		p.restrictedMana = {};
@@ -9654,6 +10215,26 @@ function clearEndOfTurnAndDamage(state: GameState): void {
 			perm.grantedKeywords = [];
 			perm.switchedPTCount = 0;
 			perm.activatedAbilityIdsThisTurn = undefined;
+			perm.usedModalModesThisTurn = undefined;
+			perm.regenerationShields = undefined;
+			perm.cantBeRegeneratedThisTurn = undefined;
+			perm.crewedThisTurnByIds = undefined;
+			if (perm.goadExpirations) {
+				for (const [goaderId, dur] of Object.entries(perm.goadExpirations)) {
+					if (dur === 'endOfTurn') {
+						delete perm.goadExpirations[goaderId];
+						if (perm.goadedByPlayerIds) {
+							perm.goadedByPlayerIds = perm.goadedByPlayerIds.filter((id) => id !== goaderId);
+						}
+					}
+				}
+				if (perm.goadedByPlayerIds && perm.goadedByPlayerIds.length === 0) {
+					perm.goadedByPlayerIds = undefined;
+				}
+				if (Object.keys(perm.goadExpirations).length === 0) {
+					perm.goadExpirations = undefined;
+				}
+			}
 		}
 		for (const ex of p.exile) {
 			if (ex.playableFromExileBy?.expiresAtEndOfTurn) {
@@ -9771,14 +10352,17 @@ function completeTurnCleanupAndPassTurn(state: GameState): void {
 	const count = state.players.length;
 	for (let step = 1; step <= count; step++) {
 		const nextIdx = (baseIdx + step) % count;
-		if (!state.players[nextIdx].lost) {
-			if (nextIdx <= baseIdx) {
-				state.turnNumber += 1;
-			}
-			state.turnSerial = (state.turnSerial ?? state.turnNumber) + 1;
-			state.activePlayerIndex = nextIdx;
-			break;
+		if (state.players[nextIdx].lost) {
+			// CR 800.4m: "until your next turn" effects created by a player who left the game expire when their next turn would begin.
+			expirePlayerUntilNextTurnEffects(state, state.players[nextIdx].playerId);
+			continue;
 		}
+		if (nextIdx <= baseIdx) {
+			state.turnNumber += 1;
+		}
+		state.turnSerial = (state.turnSerial ?? state.turnNumber) + 1;
+		state.activePlayerIndex = nextIdx;
+		break;
 	}
 
 	runBeginningOfTurn(state);
@@ -10166,11 +10750,13 @@ export function checkStateBasedActions(state: GameState): void {
 						if (tough <= 0) {
 							dies = true;
 						} else if (perm.damageMarked >= tough || perm.deathtouchDamageMarked) {
-							if (!evalPerm.keywords.some((k) => k.toLowerCase() === 'indestructible')) {
-								dies = true;
-							} else if (perm.deathtouchDamageMarked) {
+							if (evalPerm.keywords.some((k) => k.toLowerCase() === 'indestructible')) {
 								// CR 704.5h: Clear deathtouch damage flag once SBAs have been checked and creature survived
-								perm.deathtouchDamageMarked = false;
+								if (perm.deathtouchDamageMarked) perm.deathtouchDamageMarked = false;
+							} else if (tryRegenerateInsteadOfDestroy(state, perm, true)) {
+								// CR 701.19a / 704.5g-h: Regenerated instead of lethal/deathtouch destruction
+							} else {
+								dies = true;
 							}
 						}
 					}
@@ -12515,22 +13101,45 @@ function checkSpellCastOptionLegalityInner(
 	}
 
 	// Check target legality (including multi-target & single-graveyard constraints)
-	const spellTargetInfo = getSpellTargetRequirement(
-		inst.card,
-		option,
-		hasOptCounts ? normalizedOptCounts : undefined
-	);
-	const targetCheck = hasRequiredLegalTargets(
-		state,
-		actorId,
-		spellTargetInfo,
-		inst.card,
-		inst.instanceId,
-		xValue,
-		option
-	);
-	if (!targetCheck.ok) {
-		return targetCheck;
+	const spellCompiled = isFaceDownCast
+		? null
+		: compileSpellEffects(inst.card, option.faceIndex ?? 0, Boolean(option.fused));
+	if (spellCompiled?.modal && !option.fused && !isFaceDownCast) {
+		const activeSpec = (sp: TargetSpec) =>
+			!sp.condition || isCastConditionMet(sp.condition, inst.card, normalizedOptCounts, option);
+		const status = modalCandidateModeStatus(
+			state,
+			actorId,
+			inst.card,
+			inst,
+			spellCompiled.modal,
+			undefined,
+			activeSpec
+		);
+		if (!hasLegalModalCombination(spellCompiled.modal, status.legalModes)) {
+			return {
+				ok: false,
+				error: `Illegal Cast: No valid mode combination of ${castName} has legal targets.`
+			};
+		}
+	} else {
+		const spellTargetInfo = getSpellTargetRequirement(
+			inst.card,
+			option,
+			hasOptCounts ? normalizedOptCounts : undefined
+		);
+		const targetCheck = hasRequiredLegalTargets(
+			state,
+			actorId,
+			spellTargetInfo,
+			inst.card,
+			inst.instanceId,
+			xValue,
+			option
+		);
+		if (!targetCheck.ok) {
+			return targetCheck;
+		}
 	}
 
 	return { ok: true };
@@ -12777,7 +13386,24 @@ function checkAbilityActivationLegalityInner(
 	const costCheck = checkCost();
 	if (!costCheck.ok) return costCheck;
 
-	if (ab.requiresTarget) {
+	const abModal =
+		ab.modal ?? getAbilityModal(perm.card, ab.id, ab.faceIndex ?? 0, ab.grantSourceCard);
+	if (abModal) {
+		const status = modalCandidateModeStatus(
+			state,
+			actorId,
+			perm.card,
+			perm,
+			abModal,
+			perm.usedModalModesThisTurn
+		);
+		if (!hasLegalModalCombination(abModal, status.legalModes)) {
+			return {
+				ok: false,
+				error: `${perm.card.name}: No legal mode combination is available.`
+			};
+		}
+	} else if (ab.requiresTarget) {
 		const abTargetInfo: TargetRequirementInfo = ab.targetInfo;
 
 		const targetCheck = hasRequiredLegalTargets(
@@ -13023,6 +13649,7 @@ function applyDamageToTarget(
  * All other purposes default to redacted for non-viewing players.
  */
 const PUBLIC_PROMPT_PURPOSES: ReadonlySet<PromptPurpose> = new Set<PromptPurpose>([
+	'trigger_modes',
 	'trigger_targets',
 	'trigger_order'
 ]);
@@ -13054,7 +13681,8 @@ function redactChoiceForOpponent(choice: ChoiceRequest): ChoiceRequest {
 				kind: 'chooseMode',
 				modes: [],
 				min: choice.min,
-				max: choice.max
+				max: choice.max,
+				...(choice.allowRepeat ? { allowRepeat: true } : {})
 			};
 		case 'chooseNumber':
 			return {

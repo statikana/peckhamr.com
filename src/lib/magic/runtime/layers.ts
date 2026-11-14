@@ -23,6 +23,7 @@ import type {
 	ManaColor,
 	PlayerGameState,
 	ScryfallCard,
+	TimedContinuousEffect,
 	TimedKeywordEffect
 } from '../types.ts';
 import {
@@ -1229,6 +1230,35 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 			if (eff.removeKeywords?.length) for (const kw of eff.removeKeywords) fp.push(kw);
 		}
 	}
+	const timedCont = state.timedContinuousEffects;
+	fp.push(timedCont?.length || 0);
+	if (timedCont?.length) {
+		for (const eff of timedCont) {
+			fp.push(
+				eff.timestamp,
+				eff.sourceName,
+				eff.controllerId,
+				eff.affected.length,
+				eff.layer4?.addTypes?.length || 0,
+				eff.layer4?.setTypes?.length || 0,
+				eff.layer4?.addSubtypes?.length || 0,
+				eff.layer4?.setSubtypes?.length || 0,
+				Boolean(eff.layer6?.cantHaveOrGain),
+				eff.layer6?.addKeywords?.length || 0,
+				eff.layer6?.removeKeywords?.length || 0,
+				eff.layer7b ? 1 : 0,
+				eff.layer7b?.setPower ?? 0,
+				eff.layer7b?.setToughness ?? 0
+			);
+			for (const a of eff.affected) fp.push(a.instanceId, a.objectVersion ?? 1);
+			if (eff.layer4?.addTypes?.length) for (const t of eff.layer4.addTypes) fp.push(t);
+			if (eff.layer4?.setTypes?.length) for (const t of eff.layer4.setTypes) fp.push(t);
+			if (eff.layer4?.addSubtypes?.length) for (const s of eff.layer4.addSubtypes) fp.push(s);
+			if (eff.layer4?.setSubtypes?.length) for (const s of eff.layer4.setSubtypes) fp.push(s);
+			if (eff.layer6?.addKeywords?.length) for (const kw of eff.layer6.addKeywords) fp.push(kw);
+			if (eff.layer6?.removeKeywords?.length) for (const kw of eff.layer6.removeKeywords) fp.push(kw);
+		}
+	}
 	return fp;
 }
 
@@ -1321,6 +1351,51 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 			if (remLen) {
 				for (const kw of eff.removeKeywords!) if (fp[i++] !== kw) return false;
 			}
+		}
+	}
+	const timedCont = state.timedContinuousEffects;
+	const contLen = timedCont?.length || 0;
+	if (fp[i++] !== contLen) return false;
+	if (contLen) {
+		for (const eff of timedCont!) {
+			const affLen = eff.affected.length;
+			const l4AddTypes = eff.layer4?.addTypes?.length || 0;
+			const l4SetTypes = eff.layer4?.setTypes?.length || 0;
+			const l4AddSubs = eff.layer4?.addSubtypes?.length || 0;
+			const l4SetSubs = eff.layer4?.setSubtypes?.length || 0;
+			const l6Cant = Boolean(eff.layer6?.cantHaveOrGain);
+			const l6Add = eff.layer6?.addKeywords?.length || 0;
+			const l6Rem = eff.layer6?.removeKeywords?.length || 0;
+			const hasL7b = eff.layer7b ? 1 : 0;
+			const l7bP = eff.layer7b?.setPower ?? 0;
+			const l7bT = eff.layer7b?.setToughness ?? 0;
+			if (
+				fp[i++] !== eff.timestamp ||
+				fp[i++] !== eff.sourceName ||
+				fp[i++] !== eff.controllerId ||
+				fp[i++] !== affLen ||
+				fp[i++] !== l4AddTypes ||
+				fp[i++] !== l4SetTypes ||
+				fp[i++] !== l4AddSubs ||
+				fp[i++] !== l4SetSubs ||
+				fp[i++] !== l6Cant ||
+				fp[i++] !== l6Add ||
+				fp[i++] !== l6Rem ||
+				fp[i++] !== hasL7b ||
+				fp[i++] !== l7bP ||
+				fp[i++] !== l7bT
+			) {
+				return false;
+			}
+			for (const a of eff.affected) {
+				if (fp[i++] !== a.instanceId || fp[i++] !== (a.objectVersion ?? 1)) return false;
+			}
+			if (l4AddTypes) for (const t of eff.layer4!.addTypes!) if (fp[i++] !== t) return false;
+			if (l4SetTypes) for (const t of eff.layer4!.setTypes!) if (fp[i++] !== t) return false;
+			if (l4AddSubs) for (const s of eff.layer4!.addSubtypes!) if (fp[i++] !== s) return false;
+			if (l4SetSubs) for (const s of eff.layer4!.setSubtypes!) if (fp[i++] !== s) return false;
+			if (l6Add) for (const kw of eff.layer6!.addKeywords!) if (fp[i++] !== kw) return false;
+			if (l6Rem) for (const kw of eff.layer6!.removeKeywords!) if (fp[i++] !== kw) return false;
 		}
 	}
 	return i === fp.length;
@@ -1608,6 +1683,32 @@ function evaluateTypeOverwrites(
 			}
 		}
 	}
+	if (state.timedContinuousEffects?.length) {
+		const sorted = [...state.timedContinuousEffects]
+			.filter((e) => e.layer4?.setTypes?.length || e.layer4?.setSubtypes?.length)
+			.sort((a, b) => a.timestamp - b.timestamp);
+		for (const eff of sorted) {
+			for (const aff of eff.affected) {
+				const target = workMap.get(aff.instanceId);
+				if (!target || (target.inst.objectVersion ?? 1) !== (aff.objectVersion ?? 1)) continue;
+				if (eff.layer4?.setTypes?.length) {
+					target.types = [...eff.layer4.setTypes];
+				}
+				if (eff.layer4?.setSubtypes?.length) {
+					const settingLandSubtypes = eff.layer4.setSubtypes.some((sub) => LAND_SUBTYPES.has(sub));
+					const retainedSubtypes = settingLandSubtypes
+						? target.subtypes.filter((sub) => !LAND_SUBTYPES.has(sub))
+						: [];
+					target.subtypes = [...eff.layer4.setSubtypes, ...retainedSubtypes];
+				}
+				const superPrefix = target.supertypes.length > 0 ? `${target.supertypes.join(' ')} ` : '';
+				const typeStr = target.types.join(' ');
+				const subStr = target.subtypes.length > 0 ? ` — ${target.subtypes.join(' ')}` : '';
+				target.effectiveTypeLine = `${superPrefix}${typeStr}${subStr}`;
+				if (!target.typeModifiedBy.includes(eff.sourceName)) target.typeModifiedBy.push(eff.sourceName);
+			}
+		}
+	}
 }
 
 function evaluateAdditiveTypesAndColors(
@@ -1664,6 +1765,37 @@ function evaluateAdditiveTypesAndColors(
 					target.effectiveTypeLine = addSubtypeToTypeLine(target.effectiveTypeLine, 'All-Types');
 					if (!target.typeModifiedBy.includes(source.name)) {
 						target.typeModifiedBy.push(source.name);
+					}
+				}
+			}
+		}
+	}
+	if (state.timedContinuousEffects?.length) {
+		const sorted = [...state.timedContinuousEffects]
+			.filter((e) => e.layer4?.addTypes?.length || e.layer4?.addSubtypes?.length)
+			.sort((a, b) => a.timestamp - b.timestamp);
+		for (const eff of sorted) {
+			for (const aff of eff.affected) {
+				const target = workMap.get(aff.instanceId);
+				if (!target || (target.inst.objectVersion ?? 1) !== (aff.objectVersion ?? 1)) continue;
+				for (const ct of eff.layer4?.addTypes ?? []) {
+					if (!target.types.includes(ct)) target.types.push(ct);
+					const nextType = addCardTypeToTypeLine(target.effectiveTypeLine, ct);
+					if (nextType !== target.effectiveTypeLine) {
+						target.effectiveTypeLine = nextType;
+						if (!target.typeModifiedBy.includes(eff.sourceName)) {
+							target.typeModifiedBy.push(eff.sourceName);
+						}
+					}
+				}
+				for (const sub of eff.layer4?.addSubtypes ?? []) {
+					if (!target.subtypes.includes(sub)) target.subtypes.push(sub);
+					const nextType = addSubtypeToTypeLine(target.effectiveTypeLine, sub);
+					if (nextType !== target.effectiveTypeLine) {
+						target.effectiveTypeLine = nextType;
+					}
+					if (!target.typeModifiedBy.includes(eff.sourceName)) {
+						target.typeModifiedBy.push(eff.sourceName);
 					}
 				}
 			}
@@ -1782,6 +1914,28 @@ function evaluatePerPermanent(
 			}
 		}
 
+		const targetVersion = target.inst.objectVersion ?? 1;
+		const matchingTimedCont: TimedContinuousEffect[] = [];
+		if (state.timedContinuousEffects?.length) {
+			for (const eff of state.timedContinuousEffects) {
+				if (
+					eff.affected.some(
+						(a) => a.instanceId === target.inst.instanceId && (a.objectVersion ?? 1) === targetVersion
+					)
+				) {
+					matchingTimedCont.push(eff);
+					if (isCreature && eff.layer7b) {
+						target.layer7bSetters.push({
+							sourceName: eff.sourceName,
+							power: eff.layer7b.setPower,
+							toughness: eff.layer7b.setToughness,
+							timestamp: eff.timestamp
+						});
+					}
+				}
+			}
+		}
+
 		// Layer 7b: Set Base P/T in timestamp order (CR 613.4b & 613.7)
 		target.layer7bSetters.sort((a, b) => a.timestamp - b.timestamp);
 		for (const setter of target.layer7bSetters) {
@@ -1809,7 +1963,6 @@ function evaluatePerPermanent(
 			}
 		}
 
-		const targetVersion = target.inst.objectVersion ?? 1;
 		const targetTimedEffects: TimedKeywordEffect[] = [];
 		const timedGrantedCounts = new Map<string, number>();
 		if (state.timedKeywordEffects?.length) {
@@ -1826,9 +1979,22 @@ function evaluatePerPermanent(
 					}
 				}
 			}
-			if (targetTimedEffects.length > 1) {
-				targetTimedEffects.sort((a, b) => a.timestamp - b.timestamp);
+		}
+		for (const eff of matchingTimedCont) {
+			if (eff.layer6 && (eff.layer6.addKeywords?.length || eff.layer6.removeKeywords?.length)) {
+				targetTimedEffects.push({
+					timestamp: eff.timestamp,
+					sourceName: eff.sourceName,
+					controllerId: eff.controllerId,
+					affected: eff.affected,
+					addKeywords: eff.layer6.addKeywords,
+					removeKeywords: eff.layer6.removeKeywords,
+					cantHaveOrGain: eff.layer6.cantHaveOrGain
+				});
 			}
+		}
+		if (targetTimedEffects.length > 1) {
+			targetTimedEffects.sort((a, b) => a.timestamp - b.timestamp);
 		}
 
 		// Direct array mutations on `grantedKeywords` (e.g. unit tests bypassing `executeEffectSteps`)

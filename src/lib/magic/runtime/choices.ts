@@ -55,6 +55,7 @@ export const ALL_PROMPT_PURPOSES: readonly PromptPurpose[] = [
 	'guided_resolution',
 	'legend_rule',
 	'cost_choice',
+	'trigger_modes',
 	'trigger_targets',
 	'trigger_order',
 	'trigger_may',
@@ -141,6 +142,19 @@ export function buildCostChoiceRequest(
 			modes: question.labels,
 			min: 1,
 			max: 1
+		};
+	}
+	if (question.minTotal !== undefined) {
+		return {
+			kind: 'chooseObjects',
+			candidates: question.candidateIds,
+			min: question.minTotal > 0 ? 1 : 0,
+			max: question.candidateIds.length,
+			zone,
+			reason: question.label,
+			minWeightSum: question.minTotal,
+			weightsById: question.candidateWeights,
+			weightLabel: question.metric === 'power' ? 'Power' : 'Total'
 		};
 	}
 	return {
@@ -385,6 +399,16 @@ export function validateChoiceAnswer(
 					};
 				}
 			}
+			if (choice.minWeightSum !== undefined && choice.weightsById) {
+				const total = a.objectIds.reduce((sum, id) => sum + (choice.weightsById![id] ?? 0), 0);
+				if (total < choice.minWeightSum) {
+					const label = choice.weightLabel?.toLowerCase() ?? 'total';
+					return {
+						ok: false,
+						error: `Selected ${label} is ${total}; need at least ${choice.minWeightSum}.`
+					};
+				}
+			}
 			return { ok: true };
 		}
 
@@ -393,15 +417,19 @@ export function validateChoiceAnswer(
 			if (!Array.isArray(a.indices)) {
 				return { ok: false, error: 'Mode choice must provide an `indices` array.' };
 			}
-			if (new Set(a.indices).size !== a.indices.length) {
+			if (!choice.allowRepeat && new Set(a.indices).size !== a.indices.length) {
 				return { ok: false, error: 'Cannot choose the same mode multiple times.' };
 			}
 			if (a.indices.length < choice.min || a.indices.length > choice.max) {
 				return { ok: false, error: 'Choose the required number of modes.' };
 			}
+			const disabled = choice.disabledIndices?.length ? new Set(choice.disabledIndices) : null;
 			for (const idx of a.indices) {
 				if (!Number.isInteger(idx) || idx < 0 || idx >= choice.modes.length) {
 					return { ok: false, error: `Mode index ${idx} is out of range.` };
+				}
+				if (disabled?.has(idx)) {
+					return { ok: false, error: `Mode ${idx + 1} cannot be chosen.` };
 				}
 			}
 			return { ok: true };
@@ -667,9 +695,24 @@ export function chooseBotAnswer(
 				const a = byId.get(idA);
 				const b = byId.get(idB);
 				if (!a || !b) return 0;
+				if (choice.minWeightSum !== undefined && a.summoningSick !== b.summoningSick) {
+					return a.summoningSick ? -1 : 1;
+				}
 				if (a.isToken !== b.isToken) return a.isToken ? -1 : 1;
 				return a.card.cmc - b.card.cmc;
 			});
+			if (choice.minWeightSum !== undefined && choice.weightsById) {
+				const picked: string[] = [];
+				let total = 0;
+				for (const id of sorted) {
+					if (total >= choice.minWeightSum) break;
+					const w = choice.weightsById[id] ?? 0;
+					if (w <= 0) continue;
+					picked.push(id);
+					total += w;
+				}
+				return { kind: 'chooseObjects', objectIds: picked };
+			}
 			return {
 				kind: 'chooseObjects',
 				objectIds: sorted.slice(0, count)
@@ -677,9 +720,25 @@ export function chooseBotAnswer(
 		}
 
 		case 'chooseMode': {
+			const disabled = new Set(choice.disabledIndices ?? []);
+			const allowed: number[] = [];
+			for (let i = 0; i < choice.modes.length; i++) {
+				if (!disabled.has(i)) allowed.push(i);
+			}
 			const indices: number[] = [];
-			const count = Math.min(Math.max(1, choice.min), choice.modes.length);
-			for (let i = 0; i < count; i++) indices.push(i);
+			const targetCount = Math.min(choice.max, Math.max(choice.min, 1));
+			if (choice.allowRepeat) {
+				if (allowed.length > 0) {
+					for (let k = 0; k < targetCount; k++) {
+						indices.push(allowed[k % allowed.length]);
+					}
+				}
+			} else {
+				for (const i of allowed) {
+					if (indices.length >= targetCount) break;
+					indices.push(i);
+				}
+			}
 			return { kind: 'chooseMode', indices };
 		}
 

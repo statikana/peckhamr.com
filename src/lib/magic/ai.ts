@@ -1,4 +1,4 @@
-import { compileSpellEffects } from './compiler/index.ts';
+import { abilityById, compileSpellEffects, effectOf } from './compiler/index.ts';
 import { effectiveCardForObject } from './scryfall.ts';
 import {
 	activeAbilityDefs,
@@ -11,6 +11,7 @@ import {
 	checkAbilityActivationLegality,
 	checkSpellCastLegality,
 	checkTurnFaceUpLegality,
+	chooseBotAbilityCostPayment,
 	chooseBotAttackAssignments,
 	chooseBotBlockAssignments,
 	chooseBotSpellCostPayment,
@@ -27,7 +28,7 @@ import {
 	hasKeyword,
 	specTargetCandidates
 } from './engine.ts';
-import type { EffectStep, RestrictionKind, TargetSpec } from './ir.ts';
+import type { EffectStep, ModalDef, RestrictionKind, TargetSpec } from './ir.ts';
 import { chooseBotAnswer, effectivePromptChoice, effectivePromptPurpose } from './runtime/choices.ts';
 import { withStableLayerInputs } from './runtime/layerCache.ts';
 import { evaluateCondition, matchesObjectFilter } from './runtime/objectFilter.ts';
@@ -152,6 +153,75 @@ function cardSpellTargetSpec(card: ScryfallCard, faceIndex = 0): TargetSpec | un
 	return undefined;
 }
 
+function chooseBotModesForModal(
+	state: GameState,
+	bot: PlayerGameState,
+	sourceCard: ScryfallCard,
+	sourceInst: CardInstance | undefined,
+	modal: ModalDef,
+	usedModes?: number[],
+	activeSpecFilter: (sp: TargetSpec) => boolean = () => true,
+	enforceHarmfulFilter = true
+): { modes: number[]; targets: TargetRef[] } | null {
+	const ownerOf = (t: TargetRef): string | undefined => {
+		if (t.kind === 'player') return t.id;
+		for (const p of state.players) {
+			const bf = p.battlefield.find((c) => c.instanceId === t.id);
+			if (bf) return bf.controllerId;
+			if (p.graveyard.some((c) => c.instanceId === t.id)) return p.playerId;
+		}
+		return undefined;
+	};
+	const pickTargetsForMode = (modeIndex: number): TargetRef[] | null => {
+		const mode = modal.modes[modeIndex];
+		if (!mode) return null;
+		const specs = mode.targets.filter(activeSpecFilter);
+		if (specs.length === 0) return [];
+		const modeTargets: TargetRef[] = [];
+		for (let sIdx = 0; sIdx < specs.length; sIdx++) {
+			const spec = specs[sIdx];
+			const allCandidates = specTargetCandidates(state, bot.playerId, sourceCard, sourceInst, spec);
+			const harmful = targetIsHarmed(mode.effect, sIdx);
+			const legal = enforceHarmfulFilter
+				? allCandidates.filter((t) => (ownerOf(t) === bot.playerId) !== harmful)
+				: allCandidates;
+			const chosen = chooseBotTriggerTargets(state, bot, mode.effect, sIdx, spec, legal);
+			if (chosen.length < spec.min) return null;
+			modeTargets.push(...chosen);
+		}
+		return modeTargets;
+	};
+
+	const eligible: Array<{ index: number; targets: TargetRef[] }> = [];
+	for (let i = 0; i < modal.modes.length; i++) {
+		if (modal.oncePerTurnUnique && usedModes?.includes(i)) continue;
+		const picked = pickTargetsForMode(i);
+		if (picked !== null) eligible.push({ index: i, targets: picked });
+	}
+
+	const modes: number[] = [];
+	const targets: TargetRef[] = [];
+	for (const entry of eligible) {
+		if (modes.length >= modal.max) break;
+		modes.push(entry.index);
+		targets.push(...entry.targets);
+	}
+	if (modal.allowRepeat && !modal.oncePerTurnUnique && eligible.length > 0 && modes.length < modal.max) {
+		const targetCount = Math.max(modal.min, modal.max);
+		let k = 0;
+		while (modes.length < targetCount) {
+			const entry = eligible[k % eligible.length];
+			k++;
+			const freshTargets = pickTargetsForMode(entry.index);
+			if (freshTargets === null) break;
+			modes.push(entry.index);
+			targets.push(...freshTargets);
+		}
+	}
+	if (modes.length < modal.min) return null;
+	return { modes, targets };
+}
+
 function chooseBotModalSpell(
 	state: GameState,
 	bot: PlayerGameState,
@@ -161,46 +231,28 @@ function chooseBotModalSpell(
 ): { modes: number[]; targets: TargetRef[] } | null {
 	const modal = compileSpellEffects(cardInst.card, faceIndex, fused)?.modal;
 	if (!modal) return null;
-	const modes: number[] = [];
-	const targets: TargetRef[] = [];
-	const ownerOf = (t: TargetRef): string | undefined => {
-		if (t.kind === 'player') return t.id;
-		for (const p of state.players) {
-			if (p.battlefield.some((c) => c.instanceId === t.id)) {
-				return p.battlefield.find((c) => c.instanceId === t.id)!.controllerId;
-			}
-			if (p.graveyard.some((c) => c.instanceId === t.id)) return p.playerId;
-		}
-		return undefined;
-	};
-	for (let i = 0; i < modal.modes.length && modes.length < modal.max; i++) {
-		const mode = modal.modes[i];
-		if (mode.targets.length === 0) {
-			modes.push(i);
-			continue;
-		}
-		const modeTargets: TargetRef[] = [];
-		let ok = true;
-		for (let sIdx = 0; sIdx < mode.targets.length; sIdx++) {
-			const spec = mode.targets[sIdx];
-			const harmful = targetIsHarmed(mode.effect, sIdx);
-			const legal = specTargetCandidates(state, bot.playerId, cardInst.card, cardInst, spec).filter(
-				(t) => (ownerOf(t) === bot.playerId) !== harmful
-			);
-			const chosen = chooseBotTriggerTargets(state, bot, mode.effect, sIdx, spec, legal);
-			if (chosen.length < spec.min) {
-				ok = false;
-				break;
-			}
-			modeTargets.push(...chosen);
-		}
-		if (ok) {
-			modes.push(i);
-			targets.push(...modeTargets);
-		}
-	}
-	if (modes.length < modal.min) return null;
-	return { modes, targets };
+	return chooseBotModesForModal(state, bot, cardInst.card, cardInst, modal);
+}
+
+/**
+ * Picks mode indices for a bot's modal triggered ability (CR 700.2b), preferring beneficial
+ * targets and falling back to any legal mode combination when a mandatory trigger requires it.
+ */
+export function chooseBotModalTriggerModes(
+	state: GameState,
+	bot: PlayerGameState,
+	item: StackItem,
+	modal: ModalDef,
+	usedModes?: number[]
+): number[] {
+	const srcInst = state.players
+		.flatMap((p) => p.battlefield)
+		.find((c) => c.instanceId === item.sourceInstanceId);
+	const preferred = chooseBotModesForModal(state, bot, item.card, srcInst, modal, usedModes, () => true, true);
+	if (preferred) return preferred.modes;
+	if (modal.min === 0) return [];
+	const fallback = chooseBotModesForModal(state, bot, item.card, srcInst, modal, usedModes, () => true, false);
+	return fallback?.modes ?? [];
 }
 
 export function hasAnyLegalInstantResponse(state: GameState, player: PlayerGameState): boolean {
@@ -990,6 +1042,90 @@ export function executeBotStep(
 			}
 		}
 
+		// 2d3. Activate non-free modal activated abilities on the battlefield when beneficial
+		{
+			const cmdId = getPlayerCommanderIdentity(bot);
+			const modalCandidate = withStableLayerInputs(state, () => {
+				for (const perm of bot.battlefield) {
+					if (perm.phasedOut) continue;
+					const abilities = getEffectiveActivatedAbilities(state, bot, perm, cmdId);
+					for (const ab of abilities) {
+						if (!ab.modal || ab.isManaAbility || ab.id.startsWith('equip_')) continue;
+						const hasCostOrCap =
+							ab.requiresTap ||
+							ab.requiresSacrificeSelf ||
+							ab.manaCost !== '' ||
+							ab.loyaltyCost !== null ||
+							Boolean(ab.activationRestrictions?.includes('onceEachTurn')) ||
+							Boolean(ab.modal.oncePerTurnUnique);
+						if (!hasCostOrCap) continue;
+						if (!checkAbilityActivationLegality(state, bot.playerId, perm, ab).ok) continue;
+						const picked = chooseBotModesForModal(
+							state,
+							bot,
+							perm.card,
+							perm,
+							ab.modal,
+							perm.usedModalModesThisTurn
+						);
+						if (!picked) continue;
+						return { perm, ab, picked };
+					}
+				}
+				return null;
+			});
+			if (modalCandidate) {
+				const costBefore = countBotCostChoicePrompts(state, bot.playerId);
+				const res = applyGameAction(state, bot.playerId, {
+					type: 'activate_ability',
+					instanceId: modalCandidate.perm.instanceId,
+					abilityId: modalCandidate.ab.id,
+					chosenModes: modalCandidate.picked.modes,
+					targets: modalCandidate.picked.targets
+				});
+				if (res.ok) {
+					return countBotCostChoicePrompts(state, bot.playerId) > costBefore ? 'quiet' : 'visible';
+				}
+			}
+		}
+
+		// 2d4. Animate non-creature permanents before combat when an animation ability can be paid cleanly
+		if (state.phase === 'main1') {
+			const cmdId = getPlayerCommanderIdentity(bot);
+			const animCandidate = withStableLayerInputs(state, () => {
+				for (const perm of bot.battlefield) {
+					if (perm.phasedOut || perm.tapped) continue;
+					if (perm.summoningSick && !hasKeyword(perm, 'Haste', state)) continue;
+					const ev = evaluatePermanent(state, perm);
+					if (ev.isCreature) continue;
+					const abilities = getEffectiveActivatedAbilities(state, bot, perm, cmdId);
+					for (const ab of abilities) {
+						if (ab.isManaAbility || ab.modal || ab.requiresTarget || ab.manaCost !== '') continue;
+						if (!checkAbilityActivationLegality(state, bot.playerId, perm, ab).ok) continue;
+						const eff = effectOf(abilityById(perm.card, ab.id, ab.faceIndex ?? 0));
+						if (!eff?.steps.some((s) => s.verb === 'animate')) continue;
+						const payment = chooseBotAbilityCostPayment(state, bot, perm, ab);
+						if (!payment) continue;
+						return { perm, ab, payment };
+					}
+				}
+				return null;
+			});
+			if (animCandidate) {
+				const costBefore = countBotCostChoicePrompts(state, bot.playerId);
+				const res = applyGameAction(state, bot.playerId, {
+					type: 'activate_ability',
+					instanceId: animCandidate.perm.instanceId,
+					abilityId: animCandidate.ab.id,
+					targets: [],
+					costPayment: animCandidate.payment
+				});
+				if (res.ok) {
+					return countBotCostChoicePrompts(state, bot.playerId) > costBefore ? 'quiet' : 'visible';
+				}
+			}
+		}
+
 		// 2e. Conservative fallback on bot's own main phase: activate hand-zone abilities
 		// on excess lands or uncastable high-CMC cards after land drops / spells / equips.
 		const mainHandRes = tryBotHandActivatedAbility(state, bot, true);
@@ -1054,6 +1190,18 @@ function tryBotHandActivatedAbility(
 			for (const ab of abilities) {
 				if (ab.isManaAbility || !ab.activationZones?.includes('hand')) continue;
 				if (!checkAbilityActivationLegality(state, bot.playerId, cardInst, ab).ok) continue;
+				if (ab.modal) {
+					const picked = chooseBotModesForModal(
+						state,
+						bot,
+						cardInst.card,
+						cardInst,
+						ab.modal,
+						cardInst.usedModalModesThisTurn
+					);
+					if (!picked) continue;
+					return { ab, targets: picked.targets, chosenModes: picked.modes };
+				}
 				let targets: TargetRef[] = [];
 				if (ab.requiresTarget) {
 					const spec = ab.targetInfo.targetSpecs?.[0];
@@ -1063,7 +1211,7 @@ function tryBotHandActivatedAbility(
 						continue;
 					}
 				}
-				return { ab, targets };
+				return { ab, targets, chosenModes: undefined as number[] | undefined };
 			}
 			return null;
 		});
@@ -1074,6 +1222,7 @@ function tryBotHandActivatedAbility(
 			type: 'activate_ability',
 			instanceId: cardInst.instanceId,
 			abilityId: candidate.ab.id,
+			...(candidate.chosenModes ? { chosenModes: candidate.chosenModes } : {}),
 			targets: candidate.targets
 		});
 		if (res.ok) {

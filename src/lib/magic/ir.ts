@@ -94,6 +94,7 @@ export interface ActivatedAbility {
 	cost: CostDef[];
 	targets: TargetSpec[];
 	effect: EffectStep[];
+	modal?: ModalDef;
 	timing: Timing;
 	isMana: boolean;
 	/** CR 602.5b: activation restrictions recognized on this ability. */
@@ -124,6 +125,7 @@ export interface TriggeredAbility {
 	condition?: Condition;
 	targets: TargetSpec[];
 	effect: EffectStep[];
+	modal?: ModalDef;
 	/** The ability's normalised text (`~` for the card's name). Display only. */
 	text?: string;
 	span: Span;
@@ -201,6 +203,12 @@ export type Timing = 'instant' | 'sorcery' | 'mana';
 export interface ModalDef {
 	min: number;
 	max: number;
+	/** CR 700.2d: "You may choose the same mode more than once." */
+	allowRepeat?: boolean;
+	/** "that hasn't been chosen this turn" — each mode index may be chosen at most once per turn per permanent instance. */
+	oncePerTurnUnique?: boolean;
+	/** "Choose up to N" — explicitly marked up-to (min = 0). */
+	upTo?: boolean;
 	modes: Array<{ targets: TargetSpec[]; effect: EffectStep[]; span: Span }>;
 }
 
@@ -251,6 +259,8 @@ export interface ObjectFilter {
 	/** "non-Aura". */
 	notSubtypes?: string[];
 	controller?: 'you' | 'opponent' | 'any';
+	/** Dynamic controller reference ("creatures target player controls"). */
+	controllerRef?: PlayerRef;
 	owner?: 'you' | 'opponent' | 'any';
 	tapped?: boolean;
 	token?: boolean;
@@ -348,7 +358,16 @@ export type CostDef =
 	/** Pay exactly one of the options ("discard a card or pay 3 life", "sacrifice a creature or pay {3}{B}"). */
 	| { k: 'choice'; options: CostDef[][] }
 	/** The player may pay this cost or not ("As an additional cost to cast ~, you may sacrifice an artifact."). */
-	| { k: 'optional'; cost: CostDef[] };
+	| { k: 'optional'; cost: CostDef[] }
+	/** Tap any number of matching untapped objects with total metric >= minTotal (e.g. Crew N). */
+	| {
+			k: 'tapSubsetSum';
+			minTotal: Amount;
+			metric: 'power';
+			filter: ObjectFilter;
+			excludeSelf?: boolean;
+			restrictionTag?: string;
+	  };
 
 // ---- Effects --------------------------------------------------------------------------------
 
@@ -402,11 +421,30 @@ export type Verb =
 	 * rest elsewhere ("Put up to one of them on top of your library and the rest on the bottom").
 	 */
 	| 'dig'
-	| 'grantPlayFromExile';
+	| 'grantPlayFromExile'
+	| 'goad'
+	| 'explore'
+	| 'connive'
+	| 'regenerate'
+	| 'cantRegenerate'
+	| 'payCost'
+	| 'animate';
 
 export type ManaRestriction = 'artifactSpellOrNonSpell';
 
 export type Duration = 'endOfTurn' | 'permanent' | 'untilYourNextTurn';
+
+export interface OptionalSpec {
+	chooser: PlayerRef;
+	cost?: CostDef[];
+	/**
+	 * - 'doIfPaid' (default): prompt `chooser` to pay `cost` (or accept free yes/no if `cost` is absent);
+	 *   step executes iff accepted & paid.
+	 * - 'doUnlessPaid': prompt `chooser` to pay `cost` (or accept free yes/no);
+	 *   step executes iff `chooser` DECLINES or CANNOT pay.
+	 */
+	mode?: 'doIfPaid' | 'doUnlessPaid';
+}
 
 /** An ordered list of verb steps whose results later steps can refer to (`bindAs`). */
 export interface EffectStep {
@@ -416,9 +454,11 @@ export interface EffectStep {
 	actor?: PlayerRef;
 	amount?: Amount;
 	params?: EffectParams;
-	optional?: { chooser: PlayerRef };
+	optional?: OptionalSpec;
 	/** Execute only if the preceding optional step at this step index was accepted ("If you do, ..."). */
 	ifPrecedingAccepted?: number;
+	/** Execute only if the preceding optional step at this step index was declined/unpaid ("If you don't, ..."). */
+	ifPrecedingDeclined?: number;
 	/** Execute only if this condition holds at resolution time (e.g. "If this spell was kicked, ..."). */
 	condition?: Condition;
 	bindAs?: BindingName;
@@ -474,6 +514,10 @@ export interface EffectParams {
 	enteredTransformed?: boolean;
 	/** grantPlayFromExile: permission to play the exiled card(s) from exile ("You may play that card this turn"). */
 	playFromExile?: { duration: 'thisTurn'; spendManaAsAnyColor?: boolean };
+	/** destroy: prevents regeneration shields (and "can't be regenerated" clauses) from replacing destruction. */
+	cantBeRegenerated?: boolean;
+	/** animate: Layer 4 card types to add until end of turn (e.g. ['Creature']). */
+	addTypes?: string[];
 }
 
 export interface TokenSpec {
@@ -543,7 +587,10 @@ export type EventKind =
 	/** A face-down permanent was turned face up on the battlefield (CR 708.8). */
 	| 'turnFaceUp'
 	| 'investigate'
-	| 'surveil';
+	| 'surveil'
+	| 'explore'
+	| 'connive'
+	| 'becomesCrewed';
 
 export interface EventFilter {
 	/**
@@ -667,7 +714,8 @@ export type RestrictionKind =
 	| 'attacksEachCombat'
 	| 'blocksEachCombat'
 	| 'cantBeCountered'
-	| 'doesntUntap';
+	| 'doesntUntap'
+	| 'cantCrewVehicles';
 
 export type StaticDef =
 	| {

@@ -266,6 +266,7 @@ function finalizeZoneMove(
 		obj.switchedPTCount = 0;
 		obj.usedLoyaltyThisTurn = false;
 		obj.activatedAbilityIdsThisTurn = undefined;
+		obj.usedModalModesThisTurn = undefined;
 		obj.transformed = false;
 		obj.activeFaceIndex = undefined;
 		obj.unlockedFaces = undefined;
@@ -273,10 +274,32 @@ function finalizeZoneMove(
 		obj.faceDownSpec = undefined;
 		obj.faceDownLabel = undefined;
 		obj.goadedByPlayerIds = undefined;
+		obj.goadExpirations = undefined;
 		obj.playableFromExileBy = undefined;
 		obj.enteredWithX = undefined;
 		obj.kickedCount = undefined;
 		obj.kickedTags = undefined;
+		obj.regenerationShields = undefined;
+		obj.cantBeRegeneratedThisTurn = undefined;
+		obj.crewedThisTurnByIds = undefined;
+		const prevObjVersion = obj.objectVersion || 1;
+		const pruneLeftPerm = <T extends { affected: Array<{ instanceId: string; objectVersion?: number }> }>(
+			list: T[] | undefined
+		): T[] | undefined => {
+			if (!list || list.length === 0) return list;
+			const next: T[] = [];
+			for (const eff of list) {
+				const remaining = eff.affected.filter(
+					(a) => !(a.instanceId === obj.instanceId && (a.objectVersion === undefined || a.objectVersion === prevObjVersion))
+				);
+				if (remaining.length > 0) {
+					next.push(remaining.length === eff.affected.length ? eff : { ...eff, affected: remaining });
+				}
+			}
+			return next.length > 0 ? next : undefined;
+		};
+		state.timedContinuousEffects = pruneLeftPerm(state.timedContinuousEffects);
+		state.timedKeywordEffects = pruneLeftPerm(state.timedKeywordEffects);
 	}
 	if (dest !== 'battlefield') {
 		obj.kickedCount = undefined;

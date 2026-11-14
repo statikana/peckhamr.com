@@ -21,6 +21,7 @@
 import type {
 	Amount,
 	Condition,
+	CostDef,
 	EffectStep,
 	ObjectFilter,
 	PlayerRef,
@@ -46,8 +47,10 @@ import type {
 	StackItem,
 	TargetRef,
 	TriggerEventLki,
-	VfxEvent
+	VfxEvent,
+	ZoneType
 } from '../types.ts';
+import { describeCost } from './costs.ts';
 import { cardManaSteps } from '../compiler/index.ts';
 import { addManaToPlayerPool } from './mana.ts';
 import { getCardFaces } from '../scryfall.ts';
@@ -91,6 +94,23 @@ export { nextRandom };
 // ---- Engine ports ---------------------------------------------------------------------------
 
 /** Engine primitives the interpreter uses. engine.ts registers them once at module load. */
+export type PayOptionalCostResult =
+	| { status: 'paid' }
+	| { status: 'failed' }
+	| {
+			status: 'needChoice';
+			answerKey: string;
+			zone: ZoneType;
+			label: string;
+			count: number;
+			candidateIds: string[];
+	  }
+	| {
+			status: 'paused';
+			pending: NonNullable<EffectResumeFrame['pendingOptionalCost']>;
+			queued: PendingPrompt[];
+	  };
+
 export interface EffectPorts {
 	uid(prefix: string, state?: GameState): string;
 	addLog(state: GameState, kind: 'rule' | 'cast' | 'trigger' | 'life' | 'combat', text: string, actorId?: string): void;
@@ -102,8 +122,22 @@ export interface EffectPorts {
 	drawCards(state: GameState, player: PlayerGameState, count: number): void;
 	/** Non-combat damage to a target permanent or player (protection, lifelink, events). */
 	damageTarget(state: GameState, sourcePlayerId: string, target: TargetRef, amount: number): void;
-	/** Destroy (CR 701.7): indestructible, dies triggers. */
-	destroy(state: GameState, inst: CardInstance, title: string, controllerId: string): MoveResult | 'skipped' | void;
+	/** Destroy (CR 701.7): indestructible, regeneration, dies triggers. */
+	destroy(state: GameState, inst: CardInstance, title: string, controllerId: string, canBeRegenerated?: boolean): MoveResult | 'skipped' | void;
+	/** CR 701.19a / 614.8: consumes a regeneration shield instead of destroying if permitted. */
+	tryRegenerateInsteadOfDestroy(state: GameState, perm: CardInstance, canBeRegenerated?: boolean): boolean;
+	/** Checks whether `player` can currently pay `defs` as an optional/unless cost (non-spell mana context). */
+	canPayOptionalCost(state: GameState, player: PlayerGameState, item: StackItem, defs: CostDef[]): boolean;
+	/** Pays (or prompts for object choices / zone replacements while paying) an optional/unless cost. */
+	payOptionalCost(
+		state: GameState,
+		player: PlayerGameState,
+		item: StackItem,
+		stepIndex: number,
+		defs: CostDef[],
+		answers: Record<string, ChoiceAnswer>,
+		pending?: EffectResumeFrame['pendingOptionalCost']
+	): PayOptionalCostResult;
 	/** Moves a permanent off the battlefield (replacement effects, attachments, tokens cease to exist). */
 	moveFromBattlefield(state: GameState, inst: CardInstance, to: 'graveyard' | 'exile' | 'hand' | 'library'): string;
 	/** Counters a spell unless it can't be countered. Returns true if it was countered. */
@@ -261,6 +295,12 @@ function playerFromRefStatic(state: GameState, ref: PlayerRef, item: StackItem, 
 	if (ref.k === 'controllerOf' || ref.k === 'ownerOf') {
 		const t = item.targets[0];
 		if (!t) return null;
+		if (t.kind === 'stack') {
+			const stackTarget = state.stack.find((x) => x.id === t.id || x.sourceInstanceId === t.id);
+			if (!stackTarget) return null;
+			const pid = ref.k === 'controllerOf' ? stackTarget.controllerId : (stackTarget.ownerId ?? stackTarget.controllerId);
+			return state.players.find((p) => p.playerId === pid) ?? null;
+		}
 		const found = P().findPermanent(state, t.id);
 		if (!found) return null;
 		return ref.k === 'controllerOf' ? found.controller : found.owner;
@@ -594,6 +634,8 @@ class Run {
 	answers: Record<string, ChoiceAnswer> = {};
 	/** Decisions recorded for optional steps (`stepIndex -> accepted`) for "If you do, ...". */
 	stepDecisions: Record<number, boolean> = {};
+	/** Serialized in-progress optional cost payment when paused on replacement choice. */
+	pendingOptionalCost?: EffectResumeFrame['pendingOptionalCost'];
 	/** Can this run pause for a human (the item is on the stack, so it can be resumed by id)? */
 	readonly canPause: boolean;
 
@@ -609,6 +651,13 @@ class Run {
 			this.result.exileSelf = Boolean(resume.exileSelf);
 			this.answers = { ...resume.answers };
 			this.stepDecisions = { ...(resume.stepDecisions ?? {}) };
+			this.pendingOptionalCost = resume.pendingOptionalCost
+				? {
+						...resume.pendingOptionalCost,
+						parts: resume.pendingOptionalCost.parts.map((part) => ({ ...part })),
+						descriptions: [...resume.pendingOptionalCost.descriptions]
+					}
+				: undefined;
 		}
 	}
 
@@ -625,11 +674,12 @@ class Run {
 		candidates: string[],
 		min: number,
 		max: number,
-		zone: 'battlefield' | 'hand' | 'library',
+		zone: ZoneType,
 		defaultObjectIds?: string[],
-		answerKey?: string
+		answerKey?: string,
+		phase: 'optional' | 'step' | 'afterStep' = 'step'
 	): void {
-		const item = this.saveFrame(this.stepIndex, this.answers, 'step', this.subStepIndex);
+		const item = this.saveFrame(this.stepIndex, this.answers, phase, this.subStepIndex);
 		enqueueChoicePrompt(this.state, {
 			id: P().uid('prompt', this.state),
 			kind: 'chooseObjects',
@@ -658,7 +708,12 @@ class Run {
 	}
 
 	/** Queues a `yesNo` prompt for an optional step (`step.optional`) and pauses execution. */
-	pauseForOptional(chooser: PlayerGameState, question: string, answerKey: string): void {
+	pauseForOptional(
+		chooser: PlayerGameState,
+		question: string,
+		answerKey: string,
+		labels?: { yesLabel: string; noLabel: string }
+	): void {
 		const item = this.saveFrame(this.stepIndex, this.answers, 'optional', this.subStepIndex);
 		const isTriggered = this.ctx.item.kind === 'triggered';
 		enqueueChoicePrompt(this.state, {
@@ -669,8 +724,8 @@ class Run {
 			title: isTriggered ? `Optional Ability (${this.ctx.sourceCard.name})` : `${this.ctx.title} — Optional Effect`,
 			description: question,
 			...(isTriggered ? { triggerStackItemId: item.id } : {}),
-			yesLabel: 'Yes',
-			noLabel: 'No',
+			yesLabel: labels?.yesLabel ?? 'Yes',
+			noLabel: labels?.noLabel ?? 'No',
 			continuation: {
 				kind: 'effect_choice',
 				stackItemId: item.id,
@@ -689,51 +744,197 @@ class Run {
 		return true;
 	}
 
-	resolveOptional(step: EffectStep): boolean {
-		const prior = this.stepDecisions[this.stepIndex];
-		if (prior !== undefined) return prior;
-		if (this.ctx.item.optionalAccepted !== undefined && step.optional?.chooser.k === 'you') {
-			const yes = this.ctx.item.optionalAccepted;
-			this.stepDecisions[this.stepIndex] = yes;
-			return yes;
+	botAcceptsOptionalCost(
+		_step: EffectStep,
+		chooser: PlayerGameState,
+		cost: CostDef[],
+		mode: 'doIfPaid' | 'doUnlessPaid'
+	): boolean {
+		for (const c of cost) {
+			if (c.k === 'payLife' && this.amount(c.amount, 0) >= chooser.life) return false;
 		}
-		const chooser = this.playerRef(step.optional!.chooser) ?? this.you;
-		if (!chooser || chooser.lost) {
-			this.stepDecisions[this.stepIndex] = false;
+		if (mode === 'doUnlessPaid') return true;
+		if (chooser.playerId !== this.you.playerId) {
+			return !cost.some((c) => c.k === 'sacrifice' || c.k === 'discard' || c.k === 'exileFrom');
+		}
+		return true;
+	}
+
+	private executeOptionalCostPayment(
+		chooser: PlayerGameState,
+		cost: CostDef[],
+		executeIfPaid: (paid: boolean) => boolean
+	): boolean {
+		const res = P().payOptionalCost(
+			this.state,
+			chooser,
+			this.ctx.item,
+			this.stepIndex,
+			cost,
+			this.answers,
+			this.pendingOptionalCost
+		);
+		if (res.status === 'needChoice') {
+			if (!this.canPause) {
+				this.pendingOptionalCost = undefined;
+				this.stepDecisions[this.stepIndex] = false;
+				return executeIfPaid(false);
+			}
+			this.pauseForChoice(
+				chooser,
+				`${this.ctx.title} — Pay Optional Cost`,
+				`Choose ${res.count}: ${res.label}.`,
+				res.candidateIds,
+				res.count,
+				res.count,
+				res.zone,
+				undefined,
+				res.answerKey,
+				'optional'
+			);
 			return false;
 		}
+		if (res.status === 'paused') {
+			this.pendingOptionalCost = res.pending;
+			this.saveFrame(this.stepIndex, this.answers, 'optional', this.subStepIndex);
+			this.linkPromptsToStackStep(res.queued, this.stepIndex);
+			this.result.paused = true;
+			return false;
+		}
+		this.pendingOptionalCost = undefined;
+		if (res.status === 'failed') {
+			this.stepDecisions[this.stepIndex] = false;
+			P().addLog(
+				this.state,
+				this.ctx.item.kind === 'triggered' ? 'trigger' : 'rule',
+				`${chooser.username} did not pay ${describeCost(cost)} for ${this.ctx.title}.`,
+				chooser.playerId
+			);
+			return executeIfPaid(false);
+		}
+		this.stepDecisions[this.stepIndex] = true;
+		return executeIfPaid(true);
+	}
+
+	resolveOptional(step: EffectStep): boolean {
+		const opt = step.optional!;
+		const mode = opt.mode ?? 'doIfPaid';
+		const executeIfPaid = (paid: boolean) => (mode === 'doUnlessPaid' ? !paid : paid);
+		const prior = this.stepDecisions[this.stepIndex];
+		if (prior !== undefined) return executeIfPaid(prior);
+
+		const cost = opt.cost;
+		const hasCost = Boolean(cost && cost.length > 0);
+		if (!hasCost && this.ctx.item.optionalAccepted !== undefined && opt.chooser.k === 'you') {
+			const yes = this.ctx.item.optionalAccepted;
+			this.stepDecisions[this.stepIndex] = yes;
+			return executeIfPaid(yes);
+		}
+		const chooser = this.playerRef(opt.chooser) ?? this.you;
+		if (!chooser || chooser.lost) {
+			this.stepDecisions[this.stepIndex] = false;
+			return executeIfPaid(false);
+		}
+
+		if (hasCost && this.pendingOptionalCost && this.pendingOptionalCost.stepIndex === this.stepIndex) {
+			return this.executeOptionalCostPayment(chooser, cost!, executeIfPaid);
+		}
+
 		const optKey = `opt:${this.stepIndex}`;
 		const ans = this.answers[optKey];
 		if (ans?.kind === 'yesNo') {
-			this.stepDecisions[this.stepIndex] = ans.yes;
+			if (!ans.yes) {
+				this.stepDecisions[this.stepIndex] = false;
+				P().addLog(
+					this.state,
+					this.ctx.item.kind === 'triggered' ? 'trigger' : 'rule',
+					hasCost
+						? `${chooser.username} declined to pay ${describeCost(cost!)} for ${this.ctx.title}.`
+						: `${chooser.username} declined to use ${this.ctx.title}'s optional effect.`,
+					chooser.playerId
+				);
+				return executeIfPaid(false);
+			}
+			if (!hasCost) {
+				this.stepDecisions[this.stepIndex] = true;
+				P().addLog(
+					this.state,
+					this.ctx.item.kind === 'triggered' ? 'trigger' : 'rule',
+					`${chooser.username} chose to use ${this.ctx.title}'s optional effect.`,
+					chooser.playerId
+				);
+				return executeIfPaid(true);
+			}
+			return this.executeOptionalCostPayment(chooser, cost!, executeIfPaid);
+		}
+
+		if (hasCost && !P().canPayOptionalCost(this.state, chooser, this.ctx.item, cost!)) {
+			this.stepDecisions[this.stepIndex] = false;
 			P().addLog(
 				this.state,
 				this.ctx.item.kind === 'triggered' ? 'trigger' : 'rule',
-				`${chooser.username} ${ans.yes ? 'chose to' : 'declined to'} use ${this.ctx.title}'s optional effect.`,
+				`${chooser.username} could not pay ${describeCost(cost!)} for ${this.ctx.title}.`,
 				chooser.playerId
 			);
-			return ans.yes;
+			return executeIfPaid(false);
 		}
+
 		if (chooser.isBot) {
-			const yes = this.botAcceptsOptional(step, chooser);
-			this.stepDecisions[this.stepIndex] = yes;
-			P().addLog(
-				this.state,
-				this.ctx.item.kind === 'triggered' ? 'trigger' : 'rule',
-				`${chooser.username} ${yes ? 'chose to' : 'declined to'} use ${this.ctx.title}'s optional effect.`,
-				chooser.playerId
-			);
-			return yes;
+			const yes = hasCost
+				? this.botAcceptsOptionalCost(step, chooser, cost!, mode)
+				: this.botAcceptsOptional(step, chooser);
+			if (!yes) {
+				this.stepDecisions[this.stepIndex] = false;
+				P().addLog(
+					this.state,
+					this.ctx.item.kind === 'triggered' ? 'trigger' : 'rule',
+					hasCost
+						? `${chooser.username} declined to pay ${describeCost(cost!)} for ${this.ctx.title}.`
+						: `${chooser.username} declined to use ${this.ctx.title}'s optional effect.`,
+					chooser.playerId
+				);
+				return executeIfPaid(false);
+			}
+			if (!hasCost) {
+				this.stepDecisions[this.stepIndex] = true;
+				P().addLog(
+					this.state,
+					this.ctx.item.kind === 'triggered' ? 'trigger' : 'rule',
+					`${chooser.username} chose to use ${this.ctx.title}'s optional effect.`,
+					chooser.playerId
+				);
+				return executeIfPaid(true);
+			}
+			return this.executeOptionalCostPayment(chooser, cost!, executeIfPaid);
 		}
+
 		if (!this.canPause) {
-			this.stepDecisions[this.stepIndex] = true;
-			return true;
+			if (!hasCost) {
+				this.stepDecisions[this.stepIndex] = true;
+				return executeIfPaid(true);
+			}
+			return this.executeOptionalCostPayment(chooser, cost!, executeIfPaid);
 		}
-		const question =
-			step.verb === 'search'
-				? `${this.ctx.title}: May ${chooser.username} search their library${step.params?.search?.description ? ` for ${step.params.search.description}` : ''}?`
-				: `Use the optional effect of ${this.ctx.title}?`;
-		this.pauseForOptional(chooser, question, optKey);
+
+		let question: string;
+		if (hasCost) {
+			const costDesc = describeCost(cost!);
+			question =
+				mode === 'doUnlessPaid'
+					? `${this.ctx.title}: ${chooser.username} may pay ${costDesc} to prevent this effect. Pay ${costDesc}?`
+					: `${this.ctx.title}: May ${chooser.username} pay ${costDesc}?`;
+		} else {
+			question =
+				step.verb === 'search'
+					? `${this.ctx.title}: May ${chooser.username} search their library${step.params?.search?.description ? ` for ${step.params.search.description}` : ''}?`
+					: `Use the optional effect of ${this.ctx.title}?`;
+		}
+		this.pauseForOptional(
+			chooser,
+			question,
+			optKey,
+			hasCost ? { yesLabel: 'Pay', noLabel: "Don't Pay" } : undefined
+		);
 		return false;
 	}
 
@@ -754,7 +955,8 @@ class Run {
 			answers: { ...answers },
 			...(Object.keys(this.stepDecisions).length > 0
 				? { stepDecisions: { ...this.stepDecisions } }
-				: {})
+				: {}),
+			...(this.pendingOptionalCost ? { pendingOptionalCost: this.pendingOptionalCost } : {})
 		};
 		return item;
 	}
@@ -1000,7 +1202,20 @@ class Run {
 						: this.ctx.sourceCard.cmc
 			};
 		}
-		return found ? this.snapshot(found.inst) : null;
+		if (found) return this.snapshot(found.inst);
+		if (id) {
+			const stackTarget = this.state.stack.find((x) => x.id === id || x.sourceInstanceId === id);
+			if (stackTarget) {
+				return {
+					controllerId: stackTarget.controllerId,
+					ownerId: stackTarget.ownerId ?? stackTarget.controllerId,
+					power: 0,
+					toughness: 0,
+					manaValue: objectManaValue(this.state, stackTarget)
+				};
+			}
+		}
+		return null;
 	}
 
 	kickerInfo(): KickerTrackingInfo {
@@ -1019,6 +1234,9 @@ class Run {
 	}
 
 	targetsForSpecIndex(specIndex: number): TargetRef[] {
+		if (this.ctx.item?.targetsBySpec && specIndex < this.ctx.item.targetsBySpec.length) {
+			return this.ctx.item.targetsBySpec[specIndex] ?? [];
+		}
 		if (this.ctx.targetSpecs.length === 0) {
 			return specIndex === 0 ? this.ctx.targets : [];
 		}
@@ -1165,7 +1383,7 @@ class Run {
 		}
 	}
 
-	matches(c: CardInstance, f: ObjectFilter, zone: 'battlefield' | 'graveyard' | 'hand'): boolean {
+	matches(c: CardInstance, f: ObjectFilter, zone: 'battlefield' | 'graveyard' | 'hand' | 'library'): boolean {
 		const ev = zone === 'battlefield' ? evaluatePermanent(this.state, c) : null;
 		const card = c.copiableCard ?? c.card;
 		const typeLine = ev ? ev.typeLine : card.typeLine;
@@ -1180,6 +1398,10 @@ class Run {
 		const controllerId = zone === 'battlefield' ? c.controllerId : c.ownerId;
 		if (f.controller === 'you' && controllerId !== you) return false;
 		if (f.controller === 'opponent' && controllerId === you) return false;
+		if (f.controllerRef) {
+			const refPlayer = this.playerRef(f.controllerRef);
+			if (!refPlayer || controllerId !== refPlayer.playerId) return false;
+		}
 		if (f.owner === 'you' && c.ownerId !== you) return false;
 		if (f.owner === 'opponent' && c.ownerId === you) return false;
 		if (f.tapped !== undefined && c.tapped !== f.tapped) return false;
@@ -1226,6 +1448,15 @@ class Run {
 			if (
 				step.ifPrecedingAccepted !== undefined &&
 				!this.stepDecisions[step.ifPrecedingAccepted]
+			) {
+				this.subStepIndex = 0;
+				this.phase = 'optional';
+				this.answers = {};
+				continue;
+			}
+			if (
+				step.ifPrecedingDeclined !== undefined &&
+				this.stepDecisions[step.ifPrecedingDeclined] !== false
 			) {
 				this.subStepIndex = 0;
 				this.phase = 'optional';
@@ -1336,6 +1567,7 @@ class Run {
 			case 'fight':
 				return this.fight(step);
 			case 'destroy': {
+				const cantRegen = Boolean(step.params?.cantBeRegenerated);
 				const batchKey = `batch:${this.stepIndex}`;
 				let ids: string[];
 				if (this.answers[batchKey]?.kind === 'chooseObjects') {
@@ -1348,6 +1580,9 @@ class Run {
 						const ev = evaluatePermanent(s, o);
 						if (ev.activeKeywords.some((k) => k.toLowerCase() === 'indestructible')) {
 							p.addLog(s, 'rule', `${o.card.name} is Indestructible and was not destroyed.`);
+							continue;
+						}
+						if (p.tryRegenerateInsteadOfDestroy(s, o, !cantRegen)) {
 							continue;
 						}
 						// CR 122.1c: If a permanent with a shield counter on it would be destroyed,
@@ -1382,7 +1617,7 @@ class Run {
 							() => ids,
 							(id) => {
 								const f = this.locate(id);
-								if (f && f.zone === 'battlefield') return p.destroy(s, f.inst, title, you.playerId);
+								if (f && f.zone === 'battlefield') return p.destroy(s, f.inst, title, you.playerId, !cantRegen);
 							}
 						).paused;
 					});
@@ -1437,7 +1672,10 @@ class Run {
 			case 'move':
 				return this.move(step);
 			case 'counterSpell': {
-				const ids = this.ctx.targets.filter((t) => t.kind === 'stack').map((t) => t.id);
+				const ids =
+					step.subject.k === 'eventObject' && this.ctx.eventObjectId
+						? [this.ctx.eventObjectId]
+						: this.ctx.targets.filter((t) => t.kind === 'stack').map((t) => t.id);
 				const countered: Bound[] = [];
 				for (const id of ids) {
 					const target = s.stack.find((x) => x.id === id || x.sourceInstanceId === id);
@@ -1774,6 +2012,9 @@ class Run {
 					ownerId: you.playerId,
 					title: `${orig.card.name} (Copy)`,
 					targets: orig.targets.map((trg) => ({ ...trg })),
+					targetsBySpec: orig.targetsBySpec
+						? orig.targetsBySpec.map((bucket) => bucket.map((trg) => ({ ...trg })))
+						: undefined,
 					chosenModes: orig.chosenModes ? [...orig.chosenModes] : undefined,
 					isCopy: true,
 					createdAt: Date.now()
@@ -1901,6 +2142,85 @@ class Run {
 				return this.delayed(step);
 			case 'dig':
 				return this.dig(step);
+			case 'goad':
+				return this.goad(step);
+			case 'explore':
+				return this.explore(step);
+			case 'connive':
+				return this.connive(step);
+			case 'regenerate': {
+				const objs = this.objects(step.subject).filter((o) => o.zone === 'battlefield');
+				this.bind(step, objs);
+				for (const o of objs) {
+					o.regenerationShields = (o.regenerationShields ?? 0) + 1;
+					p.addLog(
+						s,
+						'rule',
+						`${title}: created a regeneration shield on ${o.card.name} (CR 701.19a).`,
+						you.playerId
+					);
+				}
+				return;
+			}
+			case 'cantRegenerate': {
+				const objs = this.objects(step.subject).filter((o) => o.zone === 'battlefield');
+				this.bind(step, objs);
+				for (const o of objs) {
+					o.cantBeRegeneratedThisTurn = true;
+					p.addLog(
+						s,
+						'rule',
+						`${title}: ${o.card.name} can't be regenerated this turn.`,
+						you.playerId
+					);
+				}
+				return;
+			}
+			case 'payCost':
+				return;
+			case 'animate': {
+				const objs = this.objects(step.subject).filter((o) => {
+					if (o.zone !== 'battlefield' || o.phasedOut) return false;
+					if (
+						step.subject.k === 'self' &&
+						this.ctx.item.sourceObjectVersion !== undefined &&
+						o.objectVersion !== this.ctx.item.sourceObjectVersion
+					) {
+						return false;
+					}
+					return true;
+				});
+				this.bind(step, objs);
+				if (objs.length === 0) return;
+				const addTypes = step.params?.addTypes?.length ? [...step.params.addTypes] : ['Creature'];
+				for (const o of objs) {
+					const ts = allocateTimestamp(s);
+					(s.timedContinuousEffects ??= []).push({
+						timestamp: ts,
+						sourceName: this.ctx.sourceCard.name,
+						controllerId: you.playerId,
+						affected: [{ instanceId: o.instanceId, objectVersion: o.objectVersion ?? 1 }],
+						layer4: { addTypes }
+					});
+					noteLayerInputsChanged(s);
+					if (this.ctx.item.crewedByIds !== undefined) {
+						const prev = o.crewedThisTurnByIds ?? [];
+						const merged = [...prev];
+						for (const cid of this.ctx.item.crewedByIds) {
+							if (!merged.includes(cid)) merged.push(cid);
+						}
+						o.crewedThisTurnByIds = merged;
+						emitEvent(s, {
+							kind: 'BecomesCrewed',
+							playerId: you.playerId,
+							objectId: o.instanceId,
+							object: o,
+							crewedByIds: [...this.ctx.item.crewedByIds]
+						});
+					}
+				}
+				return;
+			}
 			default:
 				// Not reachable: staticallyInterpretable rejects every other verb.
 				p.addLog(s, 'rule', `${title}: the "${step.verb}" step isn't supported yet and did nothing.`, you.playerId);
@@ -2466,7 +2786,7 @@ class Run {
 						const pickedId = auraAns?.kind === 'chooseObjects' ? auraAns.objectIds[0] : undefined;
 						attachObject(s, o, pickedId && attachCands.includes(pickedId) ? pickedId : attachCands[0]);
 					}
-					o.summoningSick = o.card.typeLine.includes('Creature');
+					o.summoningSick = true;
 					o.tapped = Boolean(params.tapped);
 					o.defaultControllerId = you.playerId;
 					const res = moveObject(s, o, 'battlefield', {
@@ -2584,7 +2904,7 @@ class Run {
 					const pickedId = auraAns?.kind === 'chooseObjects' ? auraAns.objectIds[0] : undefined;
 					attachObject(s, o, pickedId && attachCands.includes(pickedId) ? pickedId : attachCands[0]);
 				}
-				o.summoningSick = enteringView.types.includes('Creature') && !enteringView.keywords.includes('Haste');
+				o.summoningSick = !enteringView.keywords.includes('Haste');
 				o.tapped = Boolean(params.tapped);
 				o.defaultControllerId = controller.playerId;
 				const res = moveObject(s, o, 'battlefield', {
@@ -2773,6 +3093,464 @@ class Run {
 				return this.you.battlefield.some((perm) => !perm.phasedOut && Boolean(perm.isCommander));
 			case 'kicked':
 				return evaluateKickerCondition(c, this.kickerInfo());
+		}
+	}
+
+	/** Synthetic LKI CardInstance fallback when an acting object ceased to exist before resolution. */
+	private syntheticLkiObject(instanceId: string, controllerId: string): CardInstance {
+		const lki = this.ctx.eventLki;
+		return {
+			instanceId,
+			card: this.ctx.sourceCard,
+			ownerId: lki?.ownerId ?? controllerId,
+			controllerId,
+			zone: 'graveyard',
+			tapped: false,
+			summoningSick: false,
+			damageMarked: 0,
+			deathtouchDamageMarked: false,
+			counters: createEmptyCounters(),
+			tempPowerMod: 0,
+			tempToughnessMod: 0,
+			grantedKeywords: [],
+			attachedToId: null,
+			isToken: true,
+			isCommander: false,
+			commanderCastCount: 0,
+			usedLoyaltyThisTurn: false,
+			transformed: false
+		};
+	}
+
+	/** Resolves action subjects for explore/connive in APNAP order with LKI fallback (CR 701.44c–d, 701.50b–c). */
+	private resolveActionObjects(
+		subject: Selector
+	): Array<{ id: string; controllerId: string; initialVersion: string; obj: CardInstance }> {
+		const out: Array<{ id: string; controllerId: string; initialVersion: string; obj: CardInstance }> = [];
+		switch (subject.k) {
+			case 'self': {
+				const f = this.locate(this.ctx.sourceId);
+				if (f && f.zone === 'battlefield' && !f.inst.phasedOut) {
+					out.push({
+						id: f.inst.instanceId,
+						controllerId: f.inst.controllerId,
+						initialVersion: String(f.inst.objectVersion ?? 0),
+						obj: f.inst
+					});
+				} else {
+					const controllerId = this.ctx.eventLki?.controllerId ?? this.you.playerId;
+					const obj = f?.inst ?? this.syntheticLkiObject(this.ctx.sourceId, controllerId);
+					out.push({ id: this.ctx.sourceId, controllerId, initialVersion: 'off', obj });
+				}
+				break;
+			}
+			case 'eventObject': {
+				const live = this.objects(subject);
+				if (live.length > 0) {
+					for (const o of live) {
+						out.push({
+							id: o.instanceId,
+							controllerId: o.zone === 'battlefield' ? o.controllerId : (this.ctx.eventLki?.controllerId ?? o.controllerId),
+							initialVersion: o.zone === 'battlefield' ? String(o.objectVersion ?? 0) : 'off',
+							obj: o
+						});
+					}
+				} else if (this.ctx.eventObjectId) {
+					const f = this.locate(this.ctx.eventObjectId);
+					const controllerId = this.ctx.eventLki?.controllerId ?? f?.inst.controllerId ?? this.you.playerId;
+					const obj = f?.inst ?? this.syntheticLkiObject(this.ctx.eventObjectId, controllerId);
+					out.push({ id: this.ctx.eventObjectId, controllerId, initialVersion: 'off', obj });
+				}
+				break;
+			}
+			case 'binding': {
+				for (const b of this.bindings.get(subject.name) ?? []) {
+					const f = this.locate(b.id);
+					if (f && f.zone === 'battlefield' && !f.inst.phasedOut) {
+						out.push({
+							id: f.inst.instanceId,
+							controllerId: f.inst.controllerId,
+							initialVersion: String(f.inst.objectVersion ?? 0),
+							obj: f.inst
+						});
+					} else {
+						const controllerId = b.lki.controllerId;
+						const obj = f?.inst ?? this.syntheticLkiObject(b.id, controllerId);
+						out.push({ id: b.id, controllerId, initialVersion: 'off', obj });
+					}
+				}
+				break;
+			}
+			default: {
+				for (const o of this.objects(subject)) {
+					if (o.zone !== 'battlefield') continue;
+					out.push({
+						id: o.instanceId,
+						controllerId: o.controllerId,
+						initialVersion: String(o.objectVersion ?? 0),
+						obj: o
+					});
+				}
+				break;
+			}
+		}
+		const apnapOrder = new Map(this.apnapPlayers().map((pl, idx) => [pl.playerId, idx]));
+		out.sort((a, b) => (apnapOrder.get(a.controllerId) ?? 999) - (apnapOrder.get(b.controllerId) ?? 999));
+		return out;
+	}
+
+	private decodeBatchEntries(
+		batchKey: string,
+		subject: Selector
+	): Array<{ id: string; controllerId: string; initialVersion: string }> {
+		if (!this.answers[batchKey]) {
+			const entries = this.resolveActionObjects(subject);
+			this.bind(
+				{ verb: 'explore', subject, span: { start: 0, end: 0 } },
+				entries.map((e) => e.obj)
+			);
+			const encoded = entries.map((e) => `${e.id}|${e.controllerId}|${e.initialVersion}`);
+			if (this.canPause) {
+				this.answers[batchKey] = { kind: 'chooseObjects', objectIds: encoded };
+			}
+			return entries.map(({ id, controllerId, initialVersion }) => ({ id, controllerId, initialVersion }));
+		}
+		const ans = this.answers[batchKey];
+		if (ans.kind !== 'chooseObjects') return [];
+		return ans.objectIds.map((raw) => {
+			const [id, controllerId, initialVersion] = raw.split('|');
+			return { id, controllerId, initialVersion };
+		});
+	}
+
+	goad(step: EffectStep): void {
+		const s = this.state;
+		const p = P();
+		const goader = step.actor ? this.playerRef(step.actor) : this.you;
+		if (!goader || goader.lost) return;
+		const objs = this.objects(step.subject).filter((o) => o.zone === 'battlefield');
+		this.bind(step, objs);
+		const duration: 'endOfTurn' | 'untilYourNextTurn' =
+			step.params?.duration === 'endOfTurn' ? 'endOfTurn' : 'untilYourNextTurn';
+		for (const o of objs) {
+			const list = (o.goadedByPlayerIds ??= []);
+			// CR 701.15d: a player goading an already-goaded creature by that player creates a redundant requirement.
+			if (!list.includes(goader.playerId)) list.push(goader.playerId);
+			const exp = (o.goadExpirations ??= {});
+			if (exp[goader.playerId] !== 'untilYourNextTurn') {
+				exp[goader.playerId] = duration;
+			}
+			p.addLog(
+				s,
+				'rule',
+				`${o.card.name} is goaded by ${goader.username} (${duration === 'endOfTurn' ? 'until end of turn' : 'until their next turn'}).`,
+				goader.playerId
+			);
+		}
+	}
+
+	explore(step: EffectStep): void {
+		const s = this.state;
+		const p = P();
+		const entries = this.decodeBatchEntries(`exploreBatch:${this.stepIndex}`, step.subject);
+
+		for (let i = Math.max(0, this.subStepIndex); i < entries.length; i++) {
+			const { id: objId, controllerId, initialVersion } = entries[i];
+			const controller = this.player(controllerId);
+			if (!controller || controller.lost) continue;
+			const found = this.locate(objId);
+			const stillOnBattlefield = Boolean(
+				found &&
+					found.zone === 'battlefield' &&
+					initialVersion !== 'off' &&
+					String(found.inst.objectVersion ?? 0) === initialVersion
+			);
+			const eventObj = found?.inst ?? this.syntheticLkiObject(objId, controllerId);
+			const stageKey = `explore:${this.stepIndex}:${i}:stage`;
+			const stageAns = this.answers[stageKey];
+			let stage = stageAns?.kind === 'chooseObjects' ? stageAns.objectIds[0] : 'start';
+			let revealedId = stageAns?.kind === 'chooseObjects' ? stageAns.objectIds[1] ?? '' : '';
+
+			if (stage === 'start') {
+				if (controller.library.length === 0) {
+					// CR 701.44b: still explores even with an empty library (no reveal, no counter).
+					p.addLog(s, 'rule', `${eventObj.card.name} explored (library is empty).`, controller.playerId);
+					emitEvent(s, {
+						kind: 'Explored',
+						playerId: controller.playerId,
+						objectId: objId,
+						object: eventObj,
+						revealedLand: false
+					});
+					flushTriggers(s);
+					this.answers[stageKey] = { kind: 'chooseObjects', objectIds: ['done', ''] };
+					continue;
+				}
+				const top = controller.library[0];
+				const isLand = this.matches(top, { types: ['Land'] }, 'library');
+				if (isLand) {
+					p.addLog(
+						s,
+						'rule',
+						`${controller.username} revealed land ${top.card.name} while ${eventObj.card.name} explored and put it into hand.`,
+						controller.playerId
+					);
+					this.answers[stageKey] = { kind: 'chooseObjects', objectIds: ['moving_hand', top.instanceId] };
+					const promptsBefore = s.pendingPrompts.length;
+					const res = moveObject(s, top, 'hand', {
+						from: { player: controller, zone: 'library' },
+						toPlayer: controller,
+						bumpVersion: true,
+						newTimestamp: true
+					});
+					if (res === 'pending' || s.pendingPrompts.length > promptsBefore) {
+						this.pauseForNestedPrompts(s.pendingPrompts.slice(promptsBefore), i);
+						return;
+					}
+					stage = 'moving_hand';
+				} else {
+					p.addLog(
+						s,
+						'rule',
+						`${controller.username} revealed nonland ${top.card.name} while ${eventObj.card.name} explored.`,
+						controller.playerId
+					);
+					if (stillOnBattlefield && found) {
+						p.addCounters(s, found.inst, '+1/+1', 1);
+					}
+					revealedId = top.instanceId;
+					stage = 'revealed_nonland';
+					this.answers[stageKey] = { kind: 'chooseObjects', objectIds: ['revealed_nonland', revealedId] };
+				}
+			}
+
+			if (stage === 'moving_hand') {
+				emitEvent(s, {
+					kind: 'Explored',
+					playerId: controller.playerId,
+					objectId: objId,
+					object: eventObj,
+					revealedLand: true
+				});
+				flushTriggers(s);
+				this.answers[stageKey] = { kind: 'chooseObjects', objectIds: ['done', ''] };
+				continue;
+			}
+
+			if (stage === 'revealed_nonland') {
+				const revealedInst =
+					controller.library[0]?.instanceId === revealedId ? controller.library[0] : undefined;
+				const choiceKey = `explore:${this.stepIndex}:${i}:gy`;
+				const ans = this.answers[choiceKey];
+				let putIntoGraveyard: boolean;
+				if (ans?.kind === 'yesNo') {
+					putIntoGraveyard = ans.yes;
+				} else if (!controller.isBot && this.canPause && revealedInst) {
+					this.subStepIndex = i;
+					const item = this.saveFrame(this.stepIndex, this.answers, 'step', i);
+					const q = `Put revealed nonland card ${revealedInst.card.name} into your graveyard? (No keeps it on top of your library.)`;
+					enqueueChoicePrompt(s, {
+						id: p.uid('prompt', s),
+						kind: 'yesNo',
+						purpose: 'generic',
+						playerId: controller.playerId,
+						title: `${this.ctx.title} — Explore (${eventObj.card.name})`,
+						description: q,
+						yesLabel: 'Put into graveyard',
+						noLabel: 'Keep on top',
+						continuation: {
+							kind: 'effect_choice',
+							stackItemId: item.id,
+							stepIndex: this.stepIndex,
+							answerKey: choiceKey
+						},
+						choice: { kind: 'yesNo', question: q }
+					});
+					this.result.paused = true;
+					return;
+				} else if (revealedInst) {
+					const handLands = controller.hand.filter((c) => this.matches(c, { types: ['Land'] }, 'hand')).length;
+					const mv = objectManaValue(s, revealedInst);
+					putIntoGraveyard = handLands <= 1 && mv >= 5;
+				} else {
+					putIntoGraveyard = false;
+				}
+
+				if (putIntoGraveyard && revealedInst) {
+					this.answers[stageKey] = { kind: 'chooseObjects', objectIds: ['moving_gy', revealedId] };
+					const promptsBefore = s.pendingPrompts.length;
+					const res = moveObject(s, revealedInst, 'graveyard', {
+						from: { player: controller, zone: 'library' },
+						toPlayer: controller,
+						graveyardReplacement: true,
+						bumpVersion: true,
+						newTimestamp: true
+					});
+					if (res === 'pending' || s.pendingPrompts.length > promptsBefore) {
+						this.pauseForNestedPrompts(s.pendingPrompts.slice(promptsBefore), i);
+						return;
+					}
+					p.addLog(
+						s,
+						'rule',
+						`${controller.username} put ${revealedInst.card.name} into their graveyard.`,
+						controller.playerId
+					);
+				} else if (revealedInst) {
+					p.addLog(
+						s,
+						'rule',
+						`${controller.username} left ${revealedInst.card.name} on top of their library.`,
+						controller.playerId
+					);
+				}
+				stage = 'moving_gy';
+			}
+
+			if (stage === 'moving_gy') {
+				emitEvent(s, {
+					kind: 'Explored',
+					playerId: controller.playerId,
+					objectId: objId,
+					object: eventObj,
+					revealedLand: false
+				});
+				flushTriggers(s);
+				this.answers[stageKey] = { kind: 'chooseObjects', objectIds: ['done', ''] };
+			}
+		}
+	}
+
+	connive(step: EffectStep): void {
+		const s = this.state;
+		const p = P();
+		const n = this.amount(step.amount, 1);
+		// CR 701.50e: if N <= 0, the permanent doesn't connive at all.
+		if (n <= 0) return;
+
+		const entries = this.decodeBatchEntries(`conniveBatch:${this.stepIndex}`, step.subject);
+
+		for (let i = Math.max(0, this.subStepIndex); i < entries.length; i++) {
+			const { id: objId, controllerId, initialVersion } = entries[i];
+			const controller = this.player(controllerId);
+			if (!controller || controller.lost) continue;
+			const stageKey = `connive:${this.stepIndex}:${i}:stage`;
+			const moveIdxKey = `connive:${this.stepIndex}:${i}:idx`;
+			const stageAns = this.answers[stageKey];
+			let stage = stageAns?.kind === 'chooseObjects' ? stageAns.objectIds[0] : 'start';
+			let nonlandCount = stageAns?.kind === 'chooseObjects' ? Number(stageAns.objectIds[1] ?? '0') : 0;
+			let chosenIds = stageAns?.kind === 'chooseObjects' ? stageAns.objectIds.slice(2) : [];
+
+			const found0 = this.locate(objId);
+			const eventObj0 = found0?.inst ?? this.syntheticLkiObject(objId, controllerId);
+
+			if (stage === 'start') {
+				p.drawCards(s, controller, n);
+				p.addLog(
+					s,
+					'rule',
+					`${eventObj0.card.name} connived ${n}: ${controller.username} drew ${n} card(s).`,
+					controller.playerId
+				);
+				stage = 'choose_discard';
+				this.answers[stageKey] = { kind: 'chooseObjects', objectIds: ['choose_discard', '0'] };
+			}
+
+			if (stage === 'choose_discard') {
+				const discardCount = Math.min(n, controller.hand.length);
+				if (discardCount === 0) {
+					nonlandCount = 0;
+					chosenIds = [];
+					stage = 'finishing';
+					this.answers[stageKey] = { kind: 'chooseObjects', objectIds: ['finishing', '0'] };
+				} else {
+					const discKey = `connive:${this.stepIndex}:${i}:disc`;
+					const ans = this.answers[discKey];
+					let chosen: CardInstance[];
+					if (ans?.kind === 'chooseObjects') {
+						chosen = this.answered(discKey, controller.hand, discardCount) ?? controller.hand.slice(0, discardCount);
+					} else if (!controller.isBot && this.canPause && controller.hand.length > discardCount) {
+						this.subStepIndex = i;
+						this.pauseForChoice(
+							controller,
+							`${this.ctx.title} — Connive ${n} (${eventObj0.card.name})`,
+							`Choose ${discardCount} card(s) to discard.`,
+							controller.hand.map((c) => c.instanceId),
+							discardCount,
+							discardCount,
+							'hand',
+							undefined,
+							discKey
+						);
+						return;
+					} else {
+						chosen = controller.hand.slice(0, discardCount);
+					}
+					nonlandCount = chosen.filter((c) => !this.matches(c, { types: ['Land'] }, 'hand')).length;
+					chosenIds = chosen.map((c) => c.instanceId);
+					stage = 'moving_discard';
+					this.answers[stageKey] = {
+						kind: 'chooseObjects',
+						objectIds: ['moving_discard', String(nonlandCount), ...chosenIds]
+					};
+					this.answers[moveIdxKey] = { kind: 'chooseNumber', n: 0 };
+				}
+			}
+
+			if (stage === 'moving_discard') {
+				const startK = this.answers[moveIdxKey]?.kind === 'chooseNumber' ? this.answers[moveIdxKey].n : 0;
+				for (let k = startK; k < chosenIds.length; k++) {
+					this.answers[moveIdxKey] = { kind: 'chooseNumber', n: k + 1 };
+					const cardInst = controller.hand.find((c) => c.instanceId === chosenIds[k]);
+					if (!cardInst) continue;
+					const promptsBefore = s.pendingPrompts.length;
+					const res = moveObject(s, cardInst, 'graveyard', {
+						from: { player: controller, zone: 'hand' },
+						toPlayer: controller,
+						graveyardReplacement: true,
+						bumpVersion: true,
+						newTimestamp: true,
+						discardReason: 'discard',
+						discardPlayerId: controller.playerId
+					});
+					if (res === 'pending' || s.pendingPrompts.length > promptsBefore) {
+						this.pauseForNestedPrompts(s.pendingPrompts.slice(promptsBefore), i);
+						return;
+					}
+					p.addLog(s, 'rule', `${controller.username} discarded ${cardInst.card.name}.`, controller.playerId);
+				}
+				stage = 'finishing';
+				this.answers[stageKey] = { kind: 'chooseObjects', objectIds: ['finishing', String(nonlandCount)] };
+			}
+
+			if (stage === 'finishing') {
+				const found = this.locate(objId);
+				const stillOnBattlefield = Boolean(
+					found &&
+						found.zone === 'battlefield' &&
+						initialVersion !== 'off' &&
+						String(found.inst.objectVersion ?? 0) === initialVersion
+				);
+				const eventObj = found?.inst ?? eventObj0;
+				if (nonlandCount > 0 && stillOnBattlefield && found) {
+					p.addCounters(s, found.inst, '+1/+1', nonlandCount);
+				}
+				p.addLog(
+					s,
+					'rule',
+					`${eventObj.card.name} finished conniving (${nonlandCount} nonland discarded).`,
+					controller.playerId
+				);
+				emitEvent(s, {
+					kind: 'Connived',
+					playerId: controller.playerId,
+					objectId: objId,
+					object: eventObj,
+					nonlandDiscardedCount: nonlandCount
+				});
+				flushTriggers(s);
+				this.answers[stageKey] = { kind: 'chooseObjects', objectIds: ['done', String(nonlandCount)] };
+			}
 		}
 	}
 }

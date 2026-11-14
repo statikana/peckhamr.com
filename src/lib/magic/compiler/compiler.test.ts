@@ -3,7 +3,14 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { clearCompileCache, compileCard, compiledStackItemEffects } from './index.ts';
+import {
+	clearCompileCache,
+	compileCard,
+	compiledStackItemEffects,
+	describeModalModes,
+	expandModalEffects,
+	getAbilityModal
+} from './index.ts';
 import { getCardActivatedAbilities } from '../ruleTree.ts';
 import { normalizeFace } from './normalize.ts';
 import { runtimeTriggers } from './triggers.ts';
@@ -970,6 +977,168 @@ describe('Cycling & Typecycling compilation', () => {
 			filter: { object: 'self', player: { relation: 'you' } },
 			fromZone: 'any'
 		});
+	});
+});
+
+describe('Track D Slice 3: modal triggered, activated, loyalty, and multi-target compilation', () => {
+	it('compiles modal ETB and Landfall triggered abilities onto IR and runtimeTriggers with modal metadata', () => {
+		const etbCard = synthetic({
+			name: 'Charmweaver Spirit',
+			manaCost: '{2}{W}',
+			cmc: 3,
+			typeLine: 'Creature — Spirit',
+			oracleText:
+				'When Charmweaver Spirit enters, choose one —\n• Put a +1/+1 counter on target creature.\n• Destroy target artifact.\n• Draw a card.'
+		});
+		const etbDef = compileFresh(etbCard);
+		assert.equal(etbDef.fullySupported, true);
+		const trig = etbDef.faces[0].abilities.find((a) => a.kind === 'triggered');
+		assert.ok(trig && trig.kind === 'triggered' && trig.modal);
+		assert.equal(trig.modal.min, 1);
+		assert.equal(trig.modal.max, 1);
+		assert.equal(trig.modal.modes.length, 3);
+		assert.equal(trig.modal.modes[0].targets.length, 1);
+
+		const rt = runtimeTriggers(etbDef);
+		assert.equal(rt.length, 1);
+		assert.ok(rt[0].effect?.modal);
+		assert.equal(rt[0].effect?.modal.modes.length, 3);
+
+		const landfallCard = synthetic({
+			name: 'Terracharm Elemental',
+			manaCost: '{3}{G}',
+			cmc: 4,
+			typeLine: 'Creature — Elemental',
+			oracleText:
+				'Landfall — Whenever a land enters under your control, choose up to two —\n• Draw a card.\n• Gain 2 life.\n• Scry 1.'
+		});
+		const landfallDef = compileFresh(landfallCard);
+		assert.equal(landfallDef.fullySupported, true);
+		const lTrig = landfallDef.faces[0].abilities.find((a) => a.kind === 'triggered');
+		assert.ok(lTrig && lTrig.kind === 'triggered' && lTrig.modal);
+		assert.deepEqual([lTrig.modal.min, lTrig.modal.max, lTrig.modal.upTo], [0, 2, true]);
+	});
+
+	it('compiles modal activated abilities (printed, loyalty, onceEachTurn, oncePerTurnUnique) and preserves rename invariance', () => {
+		const actCardA = synthetic({
+			name: 'Archivist Engine',
+			manaCost: '{3}',
+			cmc: 3,
+			typeLine: 'Artifact',
+			oracleText:
+				"{1}, {T}: Choose one that hasn't been chosen this turn —\n• Draw a card.\n• Add {C}{C}.\n• Gain 2 life."
+		});
+		const actCardB = synthetic({
+			name: 'Chronicle Apparatus',
+			manaCost: '{3}',
+			cmc: 3,
+			typeLine: 'Artifact',
+			oracleText:
+				"{1}, {T}: Choose one that hasn't been chosen this turn —\n• Draw a card.\n• Add {C}{C}.\n• Gain 2 life."
+		});
+		const defA = compileFresh(actCardA);
+		const defB = compileFresh(actCardB);
+		assert.equal(defA.fullySupported, true);
+		assert.deepEqual(defA.faces[0].abilities, defB.faces[0].abilities);
+
+		const ab = defA.faces[0].abilities.find((a) => a.kind === 'activated');
+		assert.ok(ab && ab.kind === 'activated' && ab.modal);
+		assert.equal(ab.isMana, false);
+		assert.equal(ab.modal.oncePerTurnUnique, true);
+		assert.equal(ab.modal.modes.length, 3);
+
+		const fetchedModal = getAbilityModal(actCardA, ab.id);
+		assert.ok(fetchedModal);
+		assert.equal(fetchedModal.oncePerTurnUnique, true);
+		assert.equal(describeModalModes(actCardA, fetchedModal).length, 3);
+
+		const expanded = expandModalEffects(fetchedModal, [0, 2]);
+		assert.ok(expanded);
+		assert.equal(expanded.steps.length, 2);
+		assert.deepEqual(
+			expanded.steps.map((s) => s.verb),
+			['draw', 'gainLife']
+		);
+
+		const walker = synthetic({
+			name: 'Nora, Modal Mind',
+			manaCost: '{2}{U}{R}',
+			cmc: 4,
+			typeLine: 'Legendary Planeswalker — Nora',
+			loyalty: '4',
+			oracleText:
+				'+1: Choose one —\n• Draw a card.\n• Nora, Modal Mind deals 1 damage to each opponent.\n−2: Draw two cards.'
+		});
+		const wDef = compileFresh(walker);
+		assert.equal(wDef.fullySupported, true);
+		const plus1 = wDef.faces[0].abilities[0];
+		assert.ok(plus1 && plus1.kind === 'activated' && plus1.modal);
+		assert.deepEqual(plus1.cost, [{ k: 'loyalty', delta: 1 }]);
+		assert.equal(plus1.timing, 'sorcery');
+		assert.equal(plus1.modal.modes.length, 2);
+	});
+
+	it('compiles multi-target modal spells as fullySupported and expands repeatable mode target indices properly', () => {
+		const multiCard = synthetic({
+			name: 'Twin Decrees',
+			manaCost: '{2}{W}{B}',
+			cmc: 4,
+			typeLine: 'Instant',
+			oracleText:
+				'Choose three. You may choose the same mode more than once. —\n• Target creature gets +1/+1 until end of turn. Destroy target artifact.\n• Draw a card.'
+		});
+		const def = compileFresh(multiCard);
+		assert.equal(def.fullySupported, true);
+		const spell = def.faces[0].abilities.find((a) => a.kind === 'spell');
+		assert.ok(spell && spell.kind === 'spell' && spell.modal);
+		assert.equal(spell.modal.allowRepeat, true);
+		assert.equal(spell.modal.modes[0].targets.length, 2);
+
+		// Choosing mode 0 twice then mode 1 shifts targetIndex for the second mode 0 copy by 2
+		const expanded = expandModalEffects(spell.modal, [0, 0, 1]);
+		assert.ok(expanded);
+		assert.equal(expanded.steps.length, 5);
+		const firstDestroy = expanded.steps[1];
+		const secondDestroy = expanded.steps[3];
+		assert.equal(firstDestroy.verb, 'destroy');
+		assert.equal(secondDestroy.verb, 'destroy');
+		assert.equal((firstDestroy.subject as { k: 'target'; index: number }).index, 1);
+		assert.equal((secondDestroy.subject as { k: 'target'; index: number }).index, 3);
+	});
+
+	it('compiles Crew N, "becomes crewed" triggers, and "can\'t crew Vehicles" restrictions', () => {
+		const vehicle = synthetic({
+			name: 'Sky Skiff Replica',
+			manaCost: '{2}',
+			cmc: 2,
+			typeLine: 'Artifact — Vehicle',
+			power: '4',
+			toughness: '4',
+			oracleText: 'Flying\nWhenever Sky Skiff Replica becomes crewed, draw a card.\nCrew 3'
+		});
+		const def = compileFresh(vehicle);
+		assert.equal(def.fullySupported, true);
+		const trig = def.faces[0].abilities.find((a) => a.kind === 'triggered');
+		assert.ok(trig && trig.kind === 'triggered');
+		assert.equal(trig.trigger.event, 'becomesCrewed');
+		const crewKw = def.faces[0].abilities.find((a) => a.kind === 'keyword' && a.keyword.name === 'crew');
+		assert.ok(crewKw && crewKw.kind === 'keyword');
+		assert.equal(crewKw.keyword.n, 3);
+
+		const ox = synthetic({
+			name: 'Pacifist Ox',
+			manaCost: '{1}{W}',
+			cmc: 2,
+			typeLine: 'Creature — Ox',
+			power: '4',
+			toughness: '4',
+			oracleText: "Pacifist Ox can't crew Vehicles."
+		});
+		const oxDef = compileFresh(ox);
+		assert.equal(oxDef.fullySupported, true);
+		const rest = oxDef.faces[0].abilities.find((a) => a.kind === 'static');
+		assert.ok(rest && rest.kind === 'static' && rest.static.k === 'restriction');
+		assert.equal(rest.static.restriction, 'cantCrewVehicles');
 	});
 });
 

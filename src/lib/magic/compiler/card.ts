@@ -36,7 +36,7 @@ import { getKeywordSpec, IMPLEMENTED_KEYWORDS, KNOWN_KEYWORDS } from '../keyword
 import { getCardFaces } from '../scryfall.ts';
 import type { CardLayout, ManaColor, ScryfallCard, ScryfallCardFace } from '../types.ts';
 import { parseAdditionalCostSentence, parseCost, parseCostModifierSentence, parseObjectPhrase } from './costs.ts';
-import { extractUnparsedTargets, parseEffects, parseSpellFace, type EffectParse } from './effects.ts';
+import { extractUnparsedTargets, parseEffects, parseModal, parseSpellFace, type EffectParse } from './effects.ts';
 import { staticallyInterpretable, triggerTargetsSupported } from './interpretable.ts';
 import { normalizeFace, splitSentences, type NormalizedFace, type NormalizedLine } from './normalize.ts';
 import { canonicalKickerTag } from './triggers.ts';
@@ -90,7 +90,7 @@ export function compileSingleFace(
 			abilities.push(unsupported('unparsed', line.text, line.span, [line.bodySpan]));
 			continue;
 		}
-		const out = keywordLine(line) ?? triggerLine(line) ?? activatedLine(ctx, line);
+		const out = (group.length === 1 ? keywordLine(line) : null) ?? triggerLine(group) ?? activatedLine(ctx, group);
 		if (out) abilities.push(...out);
 		else if (ctx.isSpell) {
 			if (
@@ -151,12 +151,12 @@ interface Ctx {
 
 // ---- Grouping -------------------------------------------------------------------------------
 
-/** A modal header ("Choose one —") and its bullet lines form one ability. */
+/** A modal header and its bullet lines form one ability. */
 function groupLines(lines: NormalizedLine[]): NormalizedLine[][] {
 	const groups: NormalizedLine[][] = [];
 	for (const line of lines) {
 		const prev = groups[groups.length - 1];
-		if (prev && line.text.startsWith('•') && /—$/.test(prev[0].text)) prev.push(line);
+		if (prev && line.text.startsWith('•')) prev.push(line);
 		else groups.push([line]);
 	}
 	return groups;
@@ -450,6 +450,7 @@ function keywordLine(line: NormalizedLine): AbilityDef[] | null {
 			keyword.name === 'landcycling' ||
 			keyword.name === 'typecycling';
 		const cyclingId = i === 0 ? `cycling_${line.rawIndex}` : `cycling_${line.rawIndex}_${i}`;
+		const crewId = i === 0 ? `crew_${line.rawIndex}` : `crew_${line.rawIndex}_${i}`;
 		out.push({
 			kind: 'keyword',
 			keyword,
@@ -458,7 +459,9 @@ function keywordLine(line: NormalizedLine): AbilityDef[] | null {
 				? { id: `equip_${line.rawIndex}` }
 				: isCyclingKw
 					? { id: cyclingId }
-					: {})
+					: keyword.name === 'crew'
+						? { id: crewId }
+						: {})
 		});
 		// CR 702.124j: "Partner with [name]" is two abilities. The pairing half is the keyword above
 		// (deck construction); the other is "When this permanent enters, target player may search their
@@ -499,24 +502,50 @@ function keywordLine(line: NormalizedLine): AbilityDef[] | null {
 
 // ---- Triggered abilities --------------------------------------------------------------------
 
-function triggerLine(line: NormalizedLine): AbilityDef[] | null {
+function triggerLine(group: NormalizedLine[]): AbilityDef[] | null {
+	const line = group[0];
 	if (!/^(when|whenever|at)\b/i.test(line.body)) return null;
-	const span = line.span;
+	const span = groupSpan(group);
+	const fullText = group.map((l) => l.text).join('\n');
 	const head = parseTriggerHeader(line.body, line.bodySpan.start);
 	if (!head || !head.trigger || head.unparsed.length > 0) {
-		return [unsupported('unparsed', line.text, span, head?.unparsed.length ? head.unparsed : [line.bodySpan])];
+		return [unsupported('unparsed', fullText, span, head?.unparsed.length ? head.unparsed : [line.bodySpan])];
 	}
 	const { trigger, condition } = head;
 	if (runtimeTriggerProblem(trigger)) {
 		const headSpan = { start: line.bodySpan.start, end: head.effectStart };
-		return [unsupported('event_not_implemented', line.text, span, [headSpan])];
+		return [unsupported('event_not_implemented', fullText, span, [headSpan])];
 	}
-	const effect = parseEffects(line.text.slice(head.effectStart - line.span.start), head.effectStart, 'triggered');
+
+	const headerEffectText = line.text.slice(head.effectStart - line.span.start);
+	if (group.length > 1) {
+		const bullets = group.slice(1).map((b) => ({ text: b.text, start: b.span.start, end: b.span.end }));
+		const modalParse = /^choose\b/i.test(headerEffectText.trim())
+			? parseModal(headerEffectText, bullets, 'triggered', head.effectStart)
+			: null;
+		const modal = modalParse?.modal;
+		const modesOk =
+			Boolean(modalParse && modal) &&
+			modalParse!.unparsed.length === 0 &&
+			modal!.modes.length > 0 &&
+			modal!.min >= 0 &&
+			modal!.max >= modal!.min &&
+			modal!.modes.every((m) => interpretableTrigger({ steps: m.effect, targets: m.targets, unparsed: [] }));
+		if (!modesOk) {
+			const gaps = modalParse?.unparsed.length
+				? modalParse.unparsed
+				: [{ start: head.effectStart, end: span.end }];
+			return [{ ...unsupported('unparsed', fullText, span, gaps), trigger, condition }];
+		}
+		return [{ kind: 'triggered', trigger, condition, targets: [], effect: [], modal, text: fullText, span }];
+	}
+
+	const effect = parseEffects(headerEffectText, head.effectStart, 'triggered');
 	if (!interpretableTrigger(effect)) {
 		const gaps = effect.unparsed.length > 0 ? effect.unparsed : [{ start: head.effectStart, end: span.end }];
-		return [{ ...unsupported('unparsed', line.text, span, gaps), trigger, condition }];
+		return [{ ...unsupported('unparsed', fullText, span, gaps), trigger, condition }];
 	}
-	return [{ kind: 'triggered', trigger, condition, targets: effect.targets, effect: effect.steps, text: line.text, span }];
+	return [{ kind: 'triggered', trigger, condition, targets: effect.targets, effect: effect.steps, text: fullText, span }];
 }
 
 function interpretableTrigger(effect: EffectParse): boolean {
@@ -533,10 +562,41 @@ function costColon(body: string): number {
 	return colon > 0 && (quote < 0 || colon < quote) ? colon : -1;
 }
 
-function activatedLine(ctx: Ctx, line: NormalizedLine): AbilityDef[] | null {
+const ACTIVATED_RESTRICTION_SENTENCES: ReadonlyArray<[RegExp, ActivationRestriction]> = [
+	[/^activate only once each turn\.?$/, 'onceEachTurn'],
+	[/^activate only during your turn\.?$/, 'duringYourTurn'],
+	[/^activate only during your upkeep\.?$/, 'duringYourUpkeep'],
+	[/^activate only during combat\.?$/, 'duringCombat']
+];
+
+function extractActivatedTimingAndRestrictions(
+	effectText: string,
+	effectStart: number,
+	isLoyalty: boolean,
+	isMana: boolean
+): { timing: Timing; activationRestrictions: ActivationRestriction[]; cleanedModalHeader: string } {
+	const sentences = splitSentences(effectText, effectStart);
+	const lowerTexts = sentences.map((s) => s.text.toLowerCase());
+	const sorcery = isLoyalty || lowerTexts.some((s) => /^(?:activate|equip) only as a sorcery\.?$/.test(s));
+	const timing: Timing = isMana ? 'mana' : sorcery ? 'sorcery' : 'instant';
+	const activationRestrictions: ActivationRestriction[] = [];
+	for (const [re, tag] of ACTIVATED_RESTRICTION_SENTENCES) {
+		if (lowerTexts.some((s) => re.test(s))) activationRestrictions.push(tag);
+	}
+	const cleanedModalHeader = effectText
+		.replace(/\b(?:activate|equip) only as a sorcery\.?\s*/gi, ' ')
+		.replace(/\bactivate only (?:once each turn|during your turn|during your upkeep|during combat)\.?\s*/gi, ' ')
+		.trim();
+	return { timing, activationRestrictions, cleanedModalHeader };
+}
+
+function activatedLine(ctx: Ctx, group: NormalizedLine[]): AbilityDef[] | null {
+	const line = group[0];
 	const colon = costColon(line.body);
 	if (colon < 0 || /^(?:when|whenever|at|choose)\b/i.test(line.body)) return null;
 
+	const span = groupSpan(group);
+	const fullText = group.map((l) => l.text).join('\n');
 	const costText = line.body.slice(0, colon).trim();
 	const effectStart = line.bodySpan.start + colon + 1;
 	const effectText = line.body.slice(colon + 1);
@@ -552,40 +612,84 @@ function activatedLine(ctx: Ctx, line: NormalizedLine): AbilityDef[] | null {
 		cost = parseCost(costText, line.bodySpan.start);
 	}
 
+	const costComplete = cost.unparsed.length === 0;
+	if (group.length > 1) {
+		const id = loyalty ? `loyalty_${line.rawIndex}` : `act_${line.rawIndex}`;
+		const { timing, activationRestrictions, cleanedModalHeader } = extractActivatedTimingAndRestrictions(
+			effectText,
+			effectStart,
+			Boolean(loyalty),
+			false
+		);
+		const bullets = group.slice(1).map((b) => ({ text: b.text, start: b.span.start, end: b.span.end }));
+		const modalParse = /^choose\b/i.test(cleanedModalHeader)
+			? parseModal(cleanedModalHeader, bullets, 'activated', effectStart)
+			: null;
+		const modal = modalParse?.modal;
+		const effectOk =
+			Boolean(modalParse && modal) &&
+			modalParse!.unparsed.length === 0 &&
+			modal!.modes.length > 0 &&
+			modal!.min >= 0 &&
+			modal!.max >= modal!.min &&
+			modal!.modes.every((m) => staticallyInterpretable({ steps: m.effect, targets: m.targets, unparsed: [] }));
+		if (!costComplete || !effectOk) {
+			const gaps = [
+				...cost.unparsed,
+				...(effectOk ? [] : modalParse?.unparsed.length ? modalParse.unparsed : [{ start: effectStart, end: span.end }])
+			];
+			return [
+				{
+					...unsupported('unparsed', fullText, span, gaps),
+					id,
+					cost: cost.defs,
+					costComplete,
+					timing,
+					isMana: false,
+					...(activationRestrictions.length > 0 ? { activationRestrictions } : {})
+				}
+			];
+		}
+		return [
+			{
+				kind: 'activated',
+				id,
+				cost: cost.defs,
+				targets: [],
+				effect: [],
+				modal,
+				timing,
+				isMana: false,
+				...(activationRestrictions.length > 0 ? { activationRestrictions } : {}),
+				text: fullText,
+				span
+			}
+		];
+	}
+
 	const effect = parseEffects(effectText, effectStart, 'activated');
-	const sentences = splitSentences(effectText, effectStart).map((s) => s.text.toLowerCase());
 	const isMana =
 		!loyalty &&
 		effect.steps.length > 0 &&
 		effect.targets.length === 0 &&
 		effect.steps.every((s) => s.verb === 'addMana');
-	const sorcery = Boolean(loyalty) || sentences.some((s) => /^(?:activate|equip) only as a sorcery\.?$/.test(s));
-	const timing: Timing = isMana ? 'mana' : sorcery ? 'sorcery' : 'instant';
-	const activationRestrictions: ActivationRestriction[] = [];
-	if (sentences.some((s) => /^activate only once each turn\.?$/.test(s))) {
-		activationRestrictions.push('onceEachTurn');
-	}
-	if (sentences.some((s) => /^activate only during your turn\.?$/.test(s))) {
-		activationRestrictions.push('duringYourTurn');
-	}
-	if (sentences.some((s) => /^activate only during your upkeep\.?$/.test(s))) {
-		activationRestrictions.push('duringYourUpkeep');
-	}
-	if (sentences.some((s) => /^activate only during combat\.?$/.test(s))) {
-		activationRestrictions.push('duringCombat');
-	}
+	const { timing, activationRestrictions } = extractActivatedTimingAndRestrictions(
+		effectText,
+		effectStart,
+		Boolean(loyalty),
+		isMana
+	);
 	const isManaTap = isMana && cost.defs.length === 1 && cost.defs[0].k === 'tapSelf' && !ctx.manaTapTaken;
 	const id = isManaTap ? 'mana_tap' : loyalty ? `loyalty_${line.rawIndex}` : `act_${line.rawIndex}`;
 	if (isManaTap) ctx.manaTapTaken = true;
 
-	const costComplete = cost.unparsed.length === 0;
 	const effectOk = isMana ? effect.unparsed.length === 0 && effect.steps.every(manaStepComplete) : staticallyInterpretable(effect);
 	if (!costComplete || !effectOk) {
-		const gaps = [...cost.unparsed, ...(effectOk ? [] : effect.unparsed.length > 0 ? effect.unparsed : [{ start: effectStart, end: line.span.end }])];
+		const gaps = [...cost.unparsed, ...(effectOk ? [] : effect.unparsed.length > 0 ? effect.unparsed : [{ start: effectStart, end: span.end }])];
 		const manaSteps = isMana && effect.steps.every(manaStepComplete) ? effect.steps : undefined;
 		return [
 			{
-				...unsupported('unparsed', line.text, line.span, gaps),
+				...unsupported('unparsed', fullText, span, gaps),
 				id,
 				cost: cost.defs,
 				costComplete,
@@ -606,8 +710,8 @@ function activatedLine(ctx: Ctx, line: NormalizedLine): AbilityDef[] | null {
 		timing,
 		isMana,
 		...(activationRestrictions.length > 0 ? { activationRestrictions } : {}),
-		text: line.text,
-		span: line.span
+		text: fullText,
+		span
 	};
 	return [ability];
 }
@@ -727,11 +831,11 @@ function spellAbility(norm: NormalizedFace, lines: NormalizedLine[]): AbilityDef
 	return [...statics, spell];
 }
 
-/** A modal spell resolves on the interpreter when every mode does (each with at most one target). */
+/** A modal spell resolves on the interpreter when every mode does. */
 function modalInterpretable(effect: EffectParse): boolean {
 	const modal = effect.modal!;
 	if (modal.modes.length === 0 || modal.min < 0 || modal.max < modal.min) return false;
-	return modal.modes.every((m) => m.targets.length <= 1 && staticallyInterpretable({ steps: m.effect, targets: m.targets, unparsed: [] }));
+	return modal.modes.every((m) => staticallyInterpretable({ steps: m.effect, targets: m.targets, unparsed: [] }));
 }
 
 // ---- Statics --------------------------------------------------------------------------------

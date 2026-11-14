@@ -554,7 +554,7 @@ function record(state: GameState, source: Source, ability: RuntimeTrigger, kind:
  */
 function modeFor(kind: EventKind, _source: Source, ability?: RuntimeTrigger): TriggerMode {
 	const e = ability?.effect;
-	if (kind === 'tappedForMana' && e && e.targets.length === 0 && e.steps.length > 0 && e.steps.every((st) => st.verb === 'addMana')) {
+	if (kind === 'tappedForMana' && e && !e.modal && e.targets.length === 0 && e.steps.length > 0 && e.steps.every((st) => st.verb === 'addMana')) {
 		return 'inline';
 	}
 	return 'stack';
@@ -610,6 +610,12 @@ function matchTriggersInner(state: GameState, ev: GameEvent): void {
 			return matchInvestigated(state, ev);
 		case 'Surveilled':
 			return matchSurveilled(state, ev);
+		case 'Explored':
+			return matchObjectActionEvent(state, ev, 'explore', 'Explore Trigger');
+		case 'Connived':
+			return matchObjectActionEvent(state, ev, 'connive', 'Connive Trigger', ev.nonlandDiscardedCount);
+		case 'BecomesCrewed':
+			return matchObjectActionEvent(state, ev, 'becomesCrewed', 'Crew Trigger');
 	}
 }
 
@@ -770,6 +776,33 @@ function matchTransformed(state: GameState, ev: Extract<GameEvent, { kind: 'Tran
 					label: 'Transform Trigger',
 					eventObject: found.obj,
 					eventPlayer: found.controllerId
+				});
+			}
+		}
+	}
+}
+
+function matchObjectActionEvent(
+	state: GameState,
+	ev: { objectId: string; object: CardInstance; playerId: string },
+	event: 'explore' | 'connive' | 'becomesCrewed',
+	label: string,
+	amount?: number
+): void {
+	const found = permanentById(state, ev.objectId);
+	// CR 701.44c / CR 701.50b: use LKI printed characteristics & controller if the object left the battlefield.
+	const subject = found
+		? battlefieldSubject(state, found.obj, found.controllerId)
+		: printedSubject(ev.object, ev.object.copiableCard ?? ev.object.card, ev.playerId);
+	for (const source of sources(state, event)) {
+		for (const { ability, alts } of abilitiesFor(state, source, event)) {
+			const alt = alts.find((a) => objectMatches(a.filter, subject, source));
+			if (alt) {
+				record(state, source, ability, event, {
+					label,
+					eventObject: found?.obj ?? ev.object,
+					eventPlayer: ev.playerId,
+					...(amount !== undefined ? { amount } : {})
 				});
 			}
 		}

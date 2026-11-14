@@ -7,7 +7,7 @@ import {
 	type ResolveObjectFacesOptions
 } from './runtime/faces.ts';
 import { displayAbilityText } from './compiler/support.ts';
-import type { ActivatedAbility, CostDef, EffectStep, TargetSpec, UnsupportedAbility } from './ir.ts';
+import type { ActivatedAbility, CostDef, EffectStep, ModalDef, TargetSpec, UnsupportedAbility } from './ir.ts';
 import { getKeywordSpec } from './keywords.ts';
 import { effectiveAbilityManaCost } from './runtime/costs.ts';
 import { isCastConditionMet } from './runtime/kicker.ts';
@@ -176,6 +176,29 @@ export function targetRequirementFromSpecs(specs: TargetSpec[]): TargetRequireme
  * Returns the spell target requirement for casting `card` (Instant, Sorcery, or Aura) from the
  * compiled IR. Non-Aura permanent spells do not target on the stack (CR 115.1b).
  */
+export function modalTargetRequirement(
+	modal: ModalDef,
+	filterSpecs: (specs: TargetSpec[]) => TargetSpec[] = (s) => s
+): TargetRequirementInfo {
+	const branches = modal.modes.map((m) => targetRequirementFromSpecs(filterSpecs(m.targets)));
+	const firstReq = branches.find((b) => b.requiresTarget) ?? branches[0] ?? NO_TARGET_REQUIREMENT;
+	const anyReq = branches.some((b) => b.requiresTarget);
+	return {
+		requiresTarget: anyReq && modal.min > 0 && !modal.upTo,
+		targetKind: firstReq.targetKind,
+		minTargets: anyReq
+			? Math.min(...branches.filter((b) => b.requiresTarget).map((b) => b.minTargets))
+			: 0,
+		maxTargets: Math.max(0, ...branches.map((b) => b.maxTargets)),
+		zone: firstReq.zone,
+		sameGraveyard: firstReq.sameGraveyard,
+		controllerFilter: firstReq.controllerFilter,
+		cardTypeFilter: firstReq.cardTypeFilter,
+		isModal: true,
+		modalBranches: branches
+	};
+}
+
 export function getSpellTargetRequirement(
 	card: ScryfallCard,
 	option?: CastOption,
@@ -231,23 +254,7 @@ export function getSpellTargetRequirement(
 	for (const ab of abilities) {
 		if (ab.kind === 'spell') {
 			if (ab.modal && !option?.fused) {
-				const branches = ab.modal.modes.map((m) => targetRequirementFromSpecs(activeSpecs(m.targets)));
-				const firstReq = branches.find((b) => b.requiresTarget) ?? branches[0] ?? NO_TARGET_REQUIREMENT;
-				const anyReq = branches.some((b) => b.requiresTarget);
-				return {
-					requiresTarget: anyReq,
-					targetKind: firstReq.targetKind,
-					minTargets: anyReq
-						? Math.min(...branches.filter((b) => b.requiresTarget).map((b) => b.minTargets))
-						: 0,
-					maxTargets: Math.max(0, ...branches.map((b) => b.maxTargets)),
-					zone: firstReq.zone,
-					sameGraveyard: firstReq.sameGraveyard,
-					controllerFilter: firstReq.controllerFilter,
-					cardTypeFilter: firstReq.cardTypeFilter,
-					isModal: true,
-					modalBranches: branches
-				};
+				return modalTargetRequirement(ab.modal, activeSpecs);
 			}
 			nonModalSpecs.push(...activeSpecs(ab.targets));
 		} else if (ab.kind === 'unsupported' && ab.id === 'cast' && ab.targets) {
@@ -427,7 +434,8 @@ function buildEffectiveActivatedAbility(
 		if (dynStep?.amount) manaAmount = dynStep.amount;
 	}
 
-	const targetInfo = targetRequirementFromSpecs(targets);
+	const modal = ab.kind === 'activated' ? ab.modal : undefined;
+	const targetInfo = modal ? modalTargetRequirement(modal) : targetRequirementFromSpecs(targets);
 	const isPureTapMana = isMana && id === 'mana_tap';
 	const sourceSuffix = opts.grantSources && opts.grantSources.length > 0 ? ` (${opts.grantSources.join(', ')})` : '';
 	const maxEffectLen = opts.grantSources ? 60 : 45;
@@ -470,6 +478,7 @@ function buildEffectiveActivatedAbility(
 		...(manaRestriction ? { manaRestriction } : {}),
 		...(opts.grantSourceCard ? { grantSourceCard: opts.grantSourceCard } : {}),
 		effectText: opts.effectTextOverride ?? effectPart,
+		...(modal ? { modal } : {}),
 		requiresTarget: targetInfo.requiresTarget,
 		targetKind: targetInfo.targetKind,
 		targetInfo

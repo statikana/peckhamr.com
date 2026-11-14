@@ -8,7 +8,7 @@
  *
  * compiler/card.ts uses it for every "When/Whenever/At" line.
  */
-import type { Amount, CardDefinition, Condition, CostDef, EffectStep, EventFilter, ObjectFilter, Span, TargetSpec, TriggerDef } from '../ir.ts';
+import type { Amount, CardDefinition, Condition, CostDef, EffectStep, EventFilter, ModalDef, ObjectFilter, Span, TargetSpec, TriggerDef } from '../ir.ts';
 import { getKeywordSpec } from '../keywords.ts';
 import type { GamePhase, TriggerScope } from '../types.ts';
 import { parseObjectPhrase } from './costs.ts';
@@ -168,6 +168,8 @@ function objectEvent(verb: string, subject: Subject): TriggerDef | null {
 			return def('becomesBlocked');
 		case 'becomes tapped':
 			return def('becomesTapped');
+		case 'becomes crewed':
+			return def('becomesCrewed');
 		case 'is dealt damage':
 			return def('dealtDamage');
 		case 'deals combat damage to a player':
@@ -201,6 +203,12 @@ function objectEvent(verb: string, subject: Subject): TriggerDef | null {
 		case 'is turned face up':
 		case 'are turned face up':
 			return def('turnFaceUp');
+		case 'explores':
+		case 'explore':
+			return def('explore');
+		case 'connives':
+		case 'connive':
+			return def('connive');
 		default: {
 			const transInto = verb.match(/^transforms? into (.+)$/i);
 			if (transInto) {
@@ -491,7 +499,10 @@ const RUNTIME_EVENT_FIELDS: Partial<Record<TriggerDef['event'], ReadonlySet<stri
 	transforms: new Set(['object', 'toFaceFilter']),
 	turnFaceUp: new Set(['object', 'player']),
 	investigate: new Set(['player']),
-	surveil: new Set(['player'])
+	surveil: new Set(['player']),
+	explore: new Set(['object', 'orSelf']),
+	connive: new Set(['object', 'orSelf']),
+	becomesCrewed: new Set(['object', 'orSelf'])
 };
 
 function objectFilterProblem(f: ObjectFilter | undefined): string | null {
@@ -557,7 +568,7 @@ export interface RuntimeTrigger {
 	 * ability whose effect the compiler marked unsupported: it still triggers and goes on the stack,
 	 * and is resolved manually (plan section 2.7).
 	 */
-	effect?: { steps: EffectStep[]; targets: TargetSpec[]; unparsed: [] };
+	effect?: { steps: EffectStep[]; targets: TargetSpec[]; modal?: ModalDef; unparsed: [] };
 	/**
 	 * Ward (CR 702.21a), a keyword the engine implements itself: "Whenever this permanent becomes the
 	 * target of a spell or ability an opponent controls, counter it unless that player pays [cost]."
@@ -600,7 +611,7 @@ export function runtimeTriggers(def: CardDefinition, faceIndex = 0): RuntimeTrig
 				condition: ab.condition,
 				effectSupported: true,
 				text: ab.text ?? '',
-				effect: { steps: ab.effect, targets: ab.targets, unparsed: [] }
+				effect: { steps: ab.effect, targets: ab.targets, ...(ab.modal ? { modal: ab.modal } : {}), unparsed: [] }
 			});
 		} else if (ab.kind === 'unsupported' && ab.reason === 'unparsed' && ab.trigger) {
 			// An unparsed intervening-if leaves `condition` undefined: such abilities are 'unparsed' via
