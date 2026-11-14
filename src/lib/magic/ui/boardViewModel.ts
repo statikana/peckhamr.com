@@ -211,10 +211,12 @@ const KNOWN_COUNTER_ORDER: readonly CounterType[] = [
 	'-1/-1',
 	'loyalty',
 	'lore',
+	'level',
 	'charge',
 	'shield',
 	'stun',
 	'time',
+	'fade',
 	'age'
 ];
 

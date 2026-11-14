@@ -206,7 +206,9 @@ function createSyntheticStackInstance(item: StackItem, displayCard: ScryfallCard
 			stun: 0,
 			lore: 0,
 			time: 0,
-			age: 0
+			age: 0,
+			level: 0,
+			fade: 0
 		},
 		tempPowerMod: 0,
 		tempToughnessMod: 0,
