@@ -310,7 +310,9 @@ export function interpretableNow(
 	} else if (targetsBecomeEach) {
 		if (spec.kind !== 'object') return false;
 	} else if (activeTargets.length > 1) {
-		if (item.targets.length === 0 || item.targets.length > activeTargets.length) return false;
+		const maxPossible = activeTargets.reduce((sum, sp) => sum + sp.max, 0);
+		if (item.targets.length === 0 && activeTargets.some((sp) => sp.min > 0)) return false;
+		if (item.targets.length > maxPossible) return false;
 		if (!item.targets.every((t) => activeTargets.some((sp) => targetRefMatchesSpec(t, sp)))) return false;
 	} else {
 		// CR 608.2b: targets that became illegal were dropped; the spell resolves with the rest.
@@ -1387,6 +1389,10 @@ class Run {
 				return this.bindings.get(ref.name)?.[0]?.id ?? null;
 			case 'eventObject':
 				return this.ctx.eventObjectId ?? null;
+			case 'attachedTo': {
+				const src = this.locate(this.ctx.sourceId)?.inst;
+				return src && src.zone === 'battlefield' && !src.phasedOut ? (src.attachedToId ?? null) : null;
+			}
 			case 'affected':
 				return null;
 		}
@@ -1488,6 +1494,12 @@ class Run {
 				if (!f || f.inst.phasedOut) return [];
 				if (this.ctx.eventObjectVersion !== undefined && f.inst.objectVersion !== this.ctx.eventObjectVersion) return [];
 				return [f.inst];
+			}
+			case 'attachedTo': {
+				const src = this.locate(this.ctx.sourceId)?.inst;
+				if (!src || src.zone !== 'battlefield' || src.phasedOut || !src.attachedToId) return [];
+				const host = this.locate(src.attachedToId)?.inst;
+				return host && host.zone === 'battlefield' && !host.phasedOut ? [host] : [];
 			}
 			case 'all': {
 				const zone = sel.filter.zone ?? 'battlefield';
@@ -1770,19 +1782,41 @@ class Run {
 			case 'grantPlayFromExile': {
 				const actor = (step.actor ? this.playerRef(step.actor) : null) ?? you;
 				const playSpec = step.params?.playFromExile;
-				const expiresAtEndOfTurn = !playSpec || playSpec.duration === 'thisTurn';
+				const dur = playSpec?.duration ?? 'thisTurn';
+				const expiresAtEndOfTurn = dur === 'thisTurn';
 				const objs = this.objects(step.subject).filter((o) => o.zone === 'exile');
 				for (const o of objs) {
 					o.playableFromExileBy = {
 						playerId: actor.playerId,
 						spendManaAsAnyColor: Boolean(playSpec?.spendManaAsAnyColor),
 						sourceName: this.ctx.sourceCard.name || title,
-						...(expiresAtEndOfTurn ? { expiresAtEndOfTurn: true } : {})
+						duration: dur,
+						...(expiresAtEndOfTurn ? { expiresAtEndOfTurn: true } : {}),
+						...(dur === 'untilEndOfYourNextTurn'
+							? {
+									expiresOnCleanupOfPlayerId: actor.playerId,
+									grantedOnTurnSerial: s.turnSerial ?? s.turnNumber
+								}
+							: {}),
+						...(dur === 'untilYourNextEndStep'
+							? { expiresAtNextEndStepOfPlayerId: actor.playerId }
+							: {}),
+						...(playSpec?.spellsOnly ? { spellsOnly: true } : {}),
+						...(playSpec?.withoutPayingManaCost ? { withoutPayingManaCost: true } : {})
 					};
+					const verbDesc = playSpec?.spellsOnly ? 'cast' : 'play';
+					const durDesc =
+						dur === 'untilEndOfYourNextTurn'
+							? 'until the end of their next turn'
+							: dur === 'untilYourNextEndStep'
+								? 'until their next end step'
+								: dur === 'asLongAsExiled'
+									? 'for as long as it remains exiled'
+									: 'this turn';
 					p.addLog(
 						s,
 						'cast',
-						`${actor.username} may play ${o.card.name} from exile this turn (${title}).`,
+						`${actor.username} may ${verbDesc} ${o.card.name} from exile ${durDesc}${playSpec?.withoutPayingManaCost ? ' without paying its mana cost' : ''} (${title}).`,
 						actor.playerId
 					);
 				}
@@ -2662,19 +2696,73 @@ class Run {
 		applyLifelinkGain(this.state, controller, totalDealt);
 	}
 
+	resolveDamageSource(
+		dmgSrc: Selector | undefined
+	): { srcPerm: CardInstance | null; srcId: string; srcCard: ScryfallCard; srcController: PlayerGameState } | null {
+		const you = this.you;
+		if (!dmgSrc || dmgSrc.k === 'self') {
+			const found = this.locate(this.ctx.sourceId);
+			const expectedVer = this.ctx.item?.sourceObjectVersion;
+			const livePerm =
+				found &&
+				found.zone === 'battlefield' &&
+				!found.inst.phasedOut &&
+				(expectedVer === undefined || found.inst.objectVersion === expectedVer)
+					? found.inst
+					: null;
+			const srcCard = livePerm ? (livePerm.copiableCard ?? livePerm.card) : this.ctx.sourceCard;
+			const srcController = livePerm ? (this.player(livePerm.controllerId) ?? you) : you;
+			return { srcPerm: livePerm, srcId: this.ctx.sourceId, srcCard, srcController };
+		}
+		if (dmgSrc.k === 'eventObject') {
+			const found = this.ctx.eventObjectId ? this.locate(this.ctx.eventObjectId) : null;
+			const sameOnBf =
+				found &&
+				found.zone === 'battlefield' &&
+				!found.inst.phasedOut &&
+				(this.ctx.eventObjectVersion === undefined || found.inst.objectVersion === this.ctx.eventObjectVersion);
+			const livePerm = sameOnBf ? found.inst : null;
+			const srcId = this.ctx.eventObjectId ?? this.ctx.sourceId;
+			const srcCard = found ? (found.inst.copiableCard ?? found.inst.card) : this.ctx.sourceCard;
+			const ctrlId = livePerm ? livePerm.controllerId : (this.ctx.eventLki?.controllerId ?? you.playerId);
+			const srcController = this.player(ctrlId) ?? you;
+			return { srcPerm: livePerm, srcId, srcCard, srcController };
+		}
+		if (dmgSrc.k === 'target') {
+			// CR 608.2b: if the targeted creature dealing damage is illegal or no longer on the battlefield, it deals 0 damage.
+			const t = this.targetsForSpecIndex(dmgSrc.index)[0];
+			if (!t || t.kind !== 'permanent') return null;
+			const found = this.locate(t.id);
+			if (!found || found.zone !== 'battlefield' || found.inst.phasedOut) return null;
+			const inst = found.inst;
+			return {
+				srcPerm: inst,
+				srcId: inst.instanceId,
+				srcCard: inst.copiableCard ?? inst.card,
+				srcController: this.player(inst.controllerId) ?? you
+			};
+		}
+		const inst = this.objects(dmgSrc).find((o) => o.zone === 'battlefield' && !o.phasedOut) ?? null;
+		if (!inst) return null;
+		return {
+			srcPerm: inst,
+			srcId: inst.instanceId,
+			srcCard: inst.copiableCard ?? inst.card,
+			srcController: this.player(inst.controllerId) ?? you
+		};
+	}
+
 	damage(step: EffectStep): void {
 		const s = this.state;
 		const p = P();
 		const you = this.you;
+		const resolvedSrc = this.resolveDamageSource(step.params?.damageSource);
+		if (!resolvedSrc) return;
 		const n = this.amount(step.amount);
 		if (n <= 0) return;
 		const sel = step.subject;
-		const srcPerm = this.locate(this.ctx.sourceId)?.inst ?? null;
-		const srcInfo = this.sourceDamageInfo(srcPerm, this.ctx.sourceCard);
-		const srcController =
-			srcPerm && srcPerm.zone === 'battlefield'
-				? (this.player(srcPerm.controllerId) ?? you)
-				: you;
+		const { srcPerm, srcId, srcCard, srcController } = resolvedSrc;
+		const srcInfo = this.sourceDamageInfo(srcPerm, srcCard);
 		let totalDealt = 0;
 
 		if (sel.k === 'target' && !(this.ctx.targetsBecomeEach ?? this.ctx.item.spellMods?.targetsBecomeEach)) {
@@ -2682,11 +2770,11 @@ class Run {
 			for (const t of targetRefs) {
 				if (t.kind === 'player') {
 					const pl = this.player(t.id);
-					if (pl) totalDealt += this.dealDamageToPlayer(pl, n, this.ctx.sourceId, srcInfo);
+					if (pl) totalDealt += this.dealDamageToPlayer(pl, n, srcId, srcInfo);
 				} else if (t.kind === 'permanent') {
 					const perm = this.locate(t.id)?.inst;
 					if (perm && perm.zone === 'battlefield') {
-						totalDealt += this.dealDamageToPermanent(perm, n, this.ctx.sourceId, srcInfo);
+						totalDealt += this.dealDamageToPermanent(perm, n, srcId, srcInfo);
 					}
 				}
 			}
@@ -2695,14 +2783,20 @@ class Run {
 		}
 		if (sel.k === 'player' || sel.k === 'playerRef') {
 			for (const pl of this.players(sel)) {
-				totalDealt += this.dealDamageToPlayer(pl, n, this.ctx.sourceId, srcInfo);
+				totalDealt += this.dealDamageToPlayer(pl, n, srcId, srcInfo);
 			}
 			if (srcInfo.hasLifelink) this.applyLifelinkGain(srcController, totalDealt);
 			return;
 		}
 		const objs = this.objects(sel).filter((o) => o.zone === 'battlefield');
 		for (const o of objs) {
-			totalDealt += this.dealDamageToPermanent(o, n, this.ctx.sourceId, srcInfo);
+			totalDealt += this.dealDamageToPermanent(o, n, srcId, srcInfo);
+		}
+		const extraPlayers = step.params?.alsoDamagePlayers
+			? this.players({ k: 'player', filter: step.params.alsoDamagePlayers })
+			: [];
+		for (const pl of extraPlayers) {
+			totalDealt += this.dealDamageToPlayer(pl, n, srcId, srcInfo);
 		}
 		if (srcInfo.hasLifelink) this.applyLifelinkGain(srcController, totalDealt);
 		if (sel.k === 'all') {
@@ -2714,6 +2808,7 @@ class Run {
 		if (sel.k === 'target') {
 			const active = this.activeTargetSpecs();
 			if (
+				!this.ctx.item?.targetsBySpec &&
 				active.length > 1 &&
 				this.ctx.targets.length < active.filter((entry) => entry.spec.min > 0).length
 			) {
@@ -3399,7 +3494,14 @@ class Run {
 			);
 			return;
 		}
-		const expectedFrom: 'exile' | 'graveyard' = params.from === 'exile' ? 'exile' : 'graveyard';
+		const allowedFromZones: ReadonlyArray<'exile' | 'graveyard'> =
+			params.from === 'exile'
+				? ['exile']
+				: params.from === 'graveyard'
+					? ['graveyard']
+					: step.subject.k === 'eventObject'
+						? ['graveyard', 'exile']
+						: ['graveyard'];
 		const canEnterTransformed = (inst: CardInstance): boolean => {
 			if (!params.enteredTransformed) return true;
 			const baseCard = inst.copiableCard ?? inst.card;
@@ -3408,16 +3510,30 @@ class Run {
 			const backTypes = faces[1]?.typeLine ?? '';
 			return isTransformingDfc && faces.length >= 2 && !/\b(?:Instant|Sorcery)\b/.test(backTypes);
 		};
+		const trigAb =
+			this.ctx.item.kind === 'triggered' && this.ctx.item.triggeredAbilityIndex !== undefined
+				? activeAbilityDefs(this.ctx.sourceCard, { faceIndex: this.ctx.item.faceIndex ?? 0 })[
+						this.ctx.item.triggeredAbilityIndex
+					]
+				: undefined;
+		const allowPostSbaAuraVersion =
+			trigAb?.kind === 'triggered' && trigAb.trigger.filter.object === 'attachedTo';
 		const checkSelfGyVersion =
 			this.stepIndex === 0 &&
-			expectedFrom === 'graveyard' &&
+			allowedFromZones.includes('graveyard') &&
 			step.subject.k === 'self' &&
 			this.ctx.item.sourceObjectVersion !== undefined;
-		const matchesSelfVersion = (inst: CardInstance): boolean =>
-			!checkSelfGyVersion || (inst.objectVersion ?? 1) === this.ctx.item.sourceObjectVersion;
+		const matchesSelfVersion = (inst: CardInstance): boolean => {
+			if (!checkSelfGyVersion) return true;
+			const sv = this.ctx.item.sourceObjectVersion!;
+			const cur = inst.objectVersion ?? 1;
+			// CR 400.7f: an Aura put into a graveyard via SBA CR 704.5m after its enchanted permanent died
+			// incremented objectVersion once since the trigger fired on the battlefield.
+			return cur === sv || (allowPostSbaAuraVersion && cur === sv + 1);
+		};
 		if (!this.answers[batchKey]) {
 			let objs = this.objects(step.subject).filter(
-				(o) => o.zone === expectedFrom && matchesSelfVersion(o)
+				(o) => allowedFromZones.includes(o.zone as 'exile' | 'graveyard') && matchesSelfVersion(o)
 			);
 			if (params.topmostOnly) {
 				// CR 404.2: the graveyard's order matters; the top card is the last one in the array.
@@ -3460,19 +3576,26 @@ class Run {
 			() => [],
 			(id) => {
 				const f = this.locate(id);
-				if (!f || f.zone !== expectedFrom || !matchesSelfVersion(f.inst)) return;
+				if (
+					!f ||
+					!allowedFromZones.includes(f.zone as 'exile' | 'graveyard') ||
+					!matchesSelfVersion(f.inst)
+				) {
+					return;
+				}
+				const actualFrom = f.zone as 'exile' | 'graveyard';
 				const o = f.inst;
 				const holder = f.holder;
 				if (params.to === 'hand') {
-					const res = moveObject(s, o, 'hand', { from: { player: holder, zone: expectedFrom }, toPlayer: holder, commanderRedirect: true, bumpVersion: true, newTimestamp: true });
-					p.addLog(s, 'cast', `${this.ctx.title} returned ${o.card.name} from ${holder.username}'s ${expectedFrom} to hand.`, you.playerId);
+					const res = moveObject(s, o, 'hand', { from: { player: holder, zone: actualFrom }, toPlayer: holder, commanderRedirect: true, bumpVersion: true, newTimestamp: true });
+					p.addLog(s, 'cast', `${this.ctx.title} returned ${o.card.name} from ${holder.username}'s ${actualFrom} to hand.`, you.playerId);
 					return res;
 				}
 				if (!canEnterTransformed(o)) {
 					p.addLog(
 						s,
 						'rule',
-						`${o.card.name} remained in ${holder.username}'s ${expectedFrom} because it can't enter transformed (CR 712.11).`,
+						`${o.card.name} remained in ${holder.username}'s ${actualFrom} because it can't enter transformed (CR 712.11).`,
 						you.playerId
 					);
 					return;
@@ -3496,7 +3619,7 @@ class Run {
 						p.addLog(
 							s,
 							'rule',
-							`${enteringView.name} remained in ${holder.username}'s ${expectedFrom} because there is no legal object or player for it to enchant (CR 303.4g).`,
+							`${enteringView.name} remained in ${holder.username}'s ${actualFrom} because there is no legal object or player for it to enchant (CR 303.4g).`,
 							controller.playerId
 						);
 						return;
@@ -3509,7 +3632,7 @@ class Run {
 				o.tapped = Boolean(params.tapped);
 				o.defaultControllerId = controller.playerId;
 				const res = moveObject(s, o, 'battlefield', {
-					from: { player: holder, zone: expectedFrom },
+					from: { player: holder, zone: actualFrom },
 					toPlayer: controller,
 					controllerId: controller.playerId,
 					newTimestamp: !isAura,
@@ -3549,7 +3672,7 @@ class Run {
 				p.addLog(
 					s,
 					'cast',
-					`${controller.username} put ${enteringView.name} onto the battlefield${params.enteredTransformed ? ' transformed' : ''} from ${holder.username}'s ${expectedFrom} (${this.ctx.title}).`,
+					`${controller.username} put ${enteringView.name} onto the battlefield${params.enteredTransformed ? ' transformed' : ''} from ${holder.username}'s ${actualFrom} (${this.ctx.title}).`,
 					you.playerId
 				);
 				if (isAura && o.attachedToId) {

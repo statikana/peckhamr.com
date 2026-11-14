@@ -166,6 +166,7 @@ class Parser {
 	readonly targets: TargetSpec[] = [];
 	readonly unparsed: Span[] = [];
 	readonly context: EffectContext;
+	readonly trigger?: TriggerDef;
 	/** What "it", "that creature", "its controller" refer to. */
 	lastObject?: { ref: Ref; stepIndex: number };
 	/** Implicit subject of a continued predicate ("Target player draws two cards and loses 2 life"). */
@@ -179,8 +180,9 @@ class Parser {
 	/** Multi-sentence coercive hand reveal + choose + discard/exile builder (CR 701.9, 701.20). */
 	pendingCoercive?: PendingCoerciveState;
 
-	constructor(context: EffectContext) {
+	constructor(context: EffectContext, trigger?: TriggerDef) {
 		this.context = context;
+		this.trigger = trigger;
 	}
 
 	/** Records that `stepIndex` acted on objects later clauses may call "it". */
@@ -300,6 +302,7 @@ class Parser {
 			if (subj?.k === 'target') directRef = { k: 'target', index: subj.index };
 			else if (subj?.k === 'self') directRef = { k: 'self' };
 			else if (subj?.k === 'eventObject') directRef = { k: 'eventObject' };
+			else if (subj?.k === 'attachedTo') directRef = { k: 'attachedTo' };
 			else if (subj?.k === 'binding') directRef = { k: 'binding', name: subj.name };
 			if (!directRef) return null;
 			this.lastObject = { ref: directRef, stepIndex: -1 };
@@ -336,6 +339,8 @@ function refSelector(ref: Ref): Selector {
 			return { k: 'binding', name: ref.name };
 		case 'eventObject':
 			return { k: 'eventObject' };
+		case 'attachedTo':
+			return { k: 'attachedTo' };
 	}
 }
 
@@ -411,6 +416,22 @@ function targetPhrase(text: string): Omit<TargetSpec, 'min' | 'max'> | null {
 	if (/^creature or player$/.test(phrase) && !ctl.controller) {
 		return { kind: 'objectOrPlayer', filter: { zone: 'battlefield', types: ['Creature'] }, player: { relation: 'any' } };
 	}
+	if (/^(?:player or planeswalker|planeswalker or player)$/.test(phrase) && !ctl.controller) {
+		return {
+			kind: 'objectOrPlayer',
+			filter: { zone: 'battlefield', types: ['Planeswalker'] },
+			player: { relation: 'any' }
+		};
+	}
+	if (/^(?:opponent or planeswalker|planeswalker or opponent)$/.test(phrase)) {
+		const pwFilter: ObjectFilter = { zone: 'battlefield', types: ['Planeswalker'] };
+		if (ctl.controller) pwFilter.controller = ctl.controller;
+		return {
+			kind: 'objectOrPlayer',
+			filter: pwFilter,
+			player: { relation: 'opponent' }
+		};
+	}
 	const filter = objectFilter(phrase);
 	if (!filter) return null;
 	const resolvedZone = filter.zone ?? zone;
@@ -430,8 +451,17 @@ function targetPhrase(text: string): Omit<TargetSpec, 'min' | 'max'> | null {
 function objectPhrase(p: Parser, text: string): ObjectRes | null {
 	const t = text.trim();
 	if (t === '~') return { selector: { k: 'self' }, ref: { k: 'self' } };
-	if (t === '~ from your graveyard') return { selector: { k: 'self' }, ref: { k: 'self' }, fromZone: 'graveyard' };
+	if (t === '~ from your graveyard' || t === "~ from its owner's graveyard") {
+		return { selector: { k: 'self' }, ref: { k: 'self' }, fromZone: 'graveyard' };
+	}
+	if (/^(?:equipped creature|enchanted (?:creature|permanent|land|artifact|enchantment|planeswalker))$/.test(t)) {
+		return { selector: { k: 'attachedTo' }, ref: { k: 'attachedTo' } };
+	}
 	if (IT_WORDS.test(t)) {
+		if (!p.lastObject && p.context === 'triggered' && p.trigger?.filter.targetsSelf) {
+			const heroRef: Ref = /^(?:that|the) spell$/i.test(t) ? { k: 'eventObject' } : { k: 'self' };
+			return { selector: refSelector(heroRef), ref: heroRef };
+		}
 		const ref = p.itRef();
 		return ref ? { selector: refSelector(ref), ref } : null;
 	}
@@ -1044,39 +1074,90 @@ function objectPredicate(p: Parser, subject: ObjectRes, vp: string, span: Span):
 		p.push({ verb: 'phaseOut', subject: subject.selector, span }, true);
 		return true;
 	}
+	const canDealDamage =
+		subject.selector.k === 'self' ||
+		subject.selector.k === 'target' ||
+		subject.selector.k === 'binding' ||
+		subject.selector.k === 'eventObject' ||
+		subject.selector.k === 'attachedTo';
 	const dmg = text.match(/^deals (\S+) damage to (.+)$/);
-	if (dmg && !eot && subject.selector.k === 'self') {
+	if (dmg && !eot && canDealDamage) {
 		const amount = count(dmg[1]);
-		const target = damageRecipient(p, dmg[2]);
-		if (!amount || !target) return false;
-		p.push({ verb: 'damage', subject: target, amount, span }, false);
+		const rec = damageRecipientSpec(p, dmg[2], subject.selector);
+		if (!amount || !rec) return false;
+		const params: EffectStep['params'] = {
+			...(subject.selector.k !== 'self' ? { damageSource: subject.selector } : {}),
+			...(rec.alsoDamagePlayers ? { alsoDamagePlayers: rec.alsoDamagePlayers } : {})
+		};
+		p.push(
+			{
+				verb: 'damage',
+				subject: rec.subject,
+				amount,
+				...(Object.keys(params).length > 0 ? { params } : {}),
+				span
+			},
+			false
+		);
 		return true;
 	}
 	const dmgThat = text.match(/^deals (that much|that many) damage to (.+)$/);
-	if (dmgThat && !eot && subject.selector.k === 'self') {
+	if (dmgThat && !eot && canDealDamage) {
 		const amount = amountWord(p, dmgThat[1]);
-		const target = amount && damageRecipient(p, dmgThat[2]);
-		if (!amount || !target) return false;
-		p.push({ verb: 'damage', subject: target, amount, span }, false);
+		const rec = amount ? damageRecipientSpec(p, dmgThat[2], subject.selector) : null;
+		if (!amount || !rec) return false;
+		const params: EffectStep['params'] = {
+			...(subject.selector.k !== 'self' ? { damageSource: subject.selector } : {}),
+			...(rec.alsoDamagePlayers ? { alsoDamagePlayers: rec.alsoDamagePlayers } : {})
+		};
+		p.push(
+			{
+				verb: 'damage',
+				subject: rec.subject,
+				amount,
+				...(Object.keys(params).length > 0 ? { params } : {}),
+				span
+			},
+			false
+		);
 		return true;
 	}
 	const dmgEq = text.match(/^deals damage equal to (.+?) to (.+)$/);
-	if (dmgEq && !eot && subject.selector.k === 'self') {
-		const amount = equalTo(p, dmgEq[1]);
-		const target = amount && damageRecipient(p, dmgEq[2]);
-		if (!amount || !target) return false;
-		p.push({ verb: 'damage', subject: target, amount, span }, false);
+	if (dmgEq && !eot && canDealDamage) {
+		let amount: Amount | null = null;
+		const ownStat =
+			subject.selector.k !== 'self' && subject.ref
+				? dmgEq[1].trim().match(/^its (power|toughness|mana value)$/)
+				: null;
+		if (ownStat && subject.ref) {
+			const stat = ownStat[1] === 'mana value' ? 'manaValue' : (ownStat[1] as 'power' | 'toughness');
+			amount = { k: 'stat', of: subject.ref, stat };
+		} else {
+			amount = equalTo(p, dmgEq[1]);
+		}
+		const rec = amount ? damageRecipientSpec(p, dmgEq[2], subject.selector) : null;
+		if (!amount || !rec) return false;
+		const params: EffectStep['params'] = {
+			...(subject.selector.k !== 'self' ? { damageSource: subject.selector } : {}),
+			...(rec.alsoDamagePlayers ? { alsoDamagePlayers: rec.alsoDamagePlayers } : {})
+		};
+		p.push(
+			{
+				verb: 'damage',
+				subject: rec.subject,
+				amount,
+				...(Object.keys(params).length > 0 ? { params } : {}),
+				span
+			},
+			false
+		);
 		return true;
 	}
 	const fight = text.match(/^fights? (.+)$/);
 	if (fight && !eot) {
-		const isAnotherTarget = /^another target\b/.test(fight[1]);
-		const other = objectPhrase(p, isAnotherTarget ? fight[1].replace(/^another /, '') : fight[1]);
+		const other = parseFightOpponent(p, fight[1], subject.selector);
 		if (!other) return false;
-		if (isAnotherTarget && subject.selector.k === 'self' && other.selector.k === 'target') {
-			p.targets[other.selector.index].filter.other = true;
-		}
-		p.push({ verb: 'fight', subject: subject.selector, params: { with: other.selector }, span }, false);
+		p.push({ verb: 'fight', subject: subject.selector, params: { with: other }, span }, false);
 		return true;
 	}
 	if (/^explores?$/.test(text) && !eot) {
@@ -1093,15 +1174,68 @@ function objectPredicate(p: Parser, subject: ObjectRes, vp: string, span: Span):
 	return false;
 }
 
+function parseFightOpponent(p: Parser, rawText: string, fighterASelector: Selector): Selector | null {
+	const trimmed = rawText.trim();
+	const isAnotherTarget = /^(?:another target|up to one other target)\b/.test(trimmed);
+	const normalized = trimmed
+		.replace(/^another target\b/, 'target')
+		.replace(/^up to one other target\b/, 'up to one target');
+	const other = objectPhrase(p, normalized);
+	if (!other) return null;
+	if (isAnotherTarget && other.selector.k === 'target') {
+		if (fighterASelector.k === 'self') {
+			p.targets[other.selector.index].filter.other = true;
+		} else if (other.selector.index > 0) {
+			p.targets[other.selector.index].otherTarget = true;
+		}
+	}
+	return other.selector;
+}
+
 /** The recipient of "deals N damage to ...". */
-function damageRecipient(p: Parser, text: string): Selector | null {
+function damageRecipientSpec(
+	p: Parser,
+	text: string,
+	sourceSelector: Selector
+): { subject: Selector; alsoDamagePlayers?: EffectParams['alsoDamagePlayers'] } | null {
 	const t = text.trim();
+	const eachCreatureAndPlayer = t.match(/^each creature and each (player|opponent)$/);
+	if (eachCreatureAndPlayer) {
+		return {
+			subject: { k: 'all', filter: { zone: 'battlefield', types: ['Creature'] } },
+			alsoDamagePlayers: {
+				relation: eachCreatureAndPlayer[1] === 'player' ? 'each_player' : 'each_opponent'
+			}
+		};
+	}
+	if (/^each creature and (?:each )?planeswalker$/.test(t)) {
+		return {
+			subject: { k: 'all', filter: { zone: 'battlefield', types: ['Creature', 'Planeswalker'] } }
+		};
+	}
+	const isAnotherTarget = /^(?:another target|up to one other target)\b/.test(t);
+	if (isAnotherTarget) {
+		const normalized = t
+			.replace(/^another target\b/, 'target')
+			.replace(/^up to one other target\b/, 'up to one target');
+		const obj = objectPhrase(p, normalized);
+		if (!obj) return null;
+		if (obj.selector.k === 'target') {
+			if (sourceSelector.k === 'self') {
+				p.targets[obj.selector.index].filter.other = true;
+			} else if (obj.selector.index > 0) {
+				p.targets[obj.selector.index].otherTarget = true;
+			}
+		}
+		if (obj.ref) p.setLastTarget(obj.ref);
+		return { subject: obj.selector };
+	}
 	const player = playerPhrase(p, t);
-	if (player) return player;
+	if (player) return { subject: player };
 	const obj = objectPhrase(p, t);
 	if (!obj) return null;
 	if (obj.ref) p.setLastTarget(obj.ref);
-	return obj.selector;
+	return { subject: obj.selector };
 }
 
 function parseOptionalCostBody(costText: string): CostDef[] | null {
@@ -1120,28 +1254,98 @@ function parseOptionalCostBody(costText: string): CostDef[] | null {
 	return parsed.defs;
 }
 
+type ImpulseDuration = NonNullable<EffectParams['playFromExile']>['duration'];
+
+function parseImpulseDurationPhrase(raw: string): ImpulseDuration | null {
+	const d = raw.trim().toLowerCase();
+	if (d === 'this turn' || d === 'until end of turn') return 'thisTurn';
+	if (/^until (?:the )?end of your next turn$/.test(d)) return 'untilEndOfYourNextTurn';
+	if (d === 'until your next end step') return 'untilYourNextEndStep';
+	if (/^for as long as (?:it remains|they remain|that card remains|those cards remain) exiled$/.test(d)) {
+		return 'asLongAsExiled';
+	}
+	return null;
+}
+
+function parsePlayFromExilePredicate(
+	p: Parser,
+	subject: Selector,
+	rawText: string,
+	span: Span,
+	forcedDuration?: ImpulseDuration
+): boolean {
+	const head = rawText
+		.trim()
+		.match(
+			/^may (play|cast) (that card|those cards|it|them|the exiled cards?|cards exiled this way|spells from among (?:them|those cards|the exiled cards))(?:\s+(.+))?$/i
+		);
+	if (!head) return false;
+	const actor = singlePlayer(subject);
+	if (!actor) return false;
+	const verbWord = head[1].toLowerCase();
+	const objPhrase = head[2].toLowerCase();
+	const spellsOnly = verbWord === 'cast' || objPhrase.startsWith('spells');
+	if (!spellsOnly && objPhrase.startsWith('spells')) return false;
+
+	let tail = (head[3] ?? '').trim();
+	let spendManaAsAnyColor = false;
+	const anyColorMatch = tail.match(
+		/^(.*?)(?:,?\s+and you may spend mana as though it were mana of any color to cast (?:it|them|that spell|those spells))$/i
+	);
+	if (anyColorMatch) {
+		spendManaAsAnyColor = true;
+		tail = anyColorMatch[1].trim();
+	}
+
+	let withoutPayingManaCost = false;
+	let duration: ImpulseDuration | null = forcedDuration ?? null;
+	if (forcedDuration) {
+		if (/^without paying (?:its|their) mana costs?$/i.test(tail)) {
+			withoutPayingManaCost = true;
+		} else if (tail.length > 0) {
+			return false;
+		}
+	} else {
+		const freeBefore = tail.match(/^without paying (?:its|their) mana costs?\s+(.+)$/i);
+		const freeAfter = !freeBefore ? tail.match(/^(.+?)\s+without paying (?:its|their) mana costs?$/i) : null;
+		if (freeBefore) {
+			withoutPayingManaCost = true;
+			duration = parseImpulseDurationPhrase(freeBefore[1]);
+		} else if (freeAfter) {
+			withoutPayingManaCost = true;
+			duration = parseImpulseDurationPhrase(freeAfter[1]);
+		} else {
+			duration = parseImpulseDurationPhrase(tail);
+		}
+	}
+	if (!duration) return false;
+
+	const ref = p.itRef();
+	if (!ref) return false;
+	const playFromExile: NonNullable<EffectParams['playFromExile']> = {
+		duration,
+		...(spellsOnly ? { spellsOnly: true } : {}),
+		...(withoutPayingManaCost ? { withoutPayingManaCost: true } : {}),
+		...(spendManaAsAnyColor ? { spendManaAsAnyColor: true } : {})
+	};
+	p.lastPlayer = subject;
+	p.push(
+		{
+			verb: 'grantPlayFromExile',
+			subject: refSelector(ref),
+			...(actor.k !== 'you' ? { actor } : {}),
+			params: { playFromExile },
+			span
+		},
+		false
+	);
+	return true;
+}
+
 /** Verb phrases whose subject is a player ("draws two cards", "loses 2 life", "creates a token"). */
 function playerPredicate(p: Parser, subject: Selector, vp: string, span: Span, fromImperative = false): ClauseResult {
 	let text = vp.trim();
-	const playExile = text.match(/^may play (that card|those cards|it|them|cards exiled this way) this turn$/i);
-	if (playExile) {
-		const actor = singlePlayer(subject);
-		if (!actor) return false;
-		const ref = p.itRef();
-		if (!ref) return false;
-		p.lastPlayer = subject;
-		p.push(
-			{
-				verb: 'grantPlayFromExile',
-				subject: refSelector(ref),
-				...(actor.k !== 'you' ? { actor } : {}),
-				params: { playFromExile: { duration: 'thisTurn' } },
-				span
-			},
-			false
-		);
-		return true;
-	}
+	if (parsePlayFromExilePredicate(p, subject, text, span)) return true;
 	let optional: EffectStep['optional'];
 	const may = text.match(/^may (.+)$/);
 	if (may) {
@@ -1158,6 +1362,28 @@ function playerPredicate(p: Parser, subject: Selector, vp: string, span: Span, f
 					verb: 'payCost',
 					subject: { k: 'none' },
 					optional: { chooser, cost: costDefs, mode: 'doIfPaid' },
+					span
+				},
+				false
+			);
+			return true;
+		}
+		const haveFight = text.match(/^have (.+?) fight (.+)$/);
+		if (haveFight) {
+			const snapshot = p.targets.length;
+			const fighterA = objectPhrase(p, haveFight[1]);
+			const fighterB = fighterA ? parseFightOpponent(p, haveFight[2], fighterA.selector) : null;
+			if (!fighterA || !fighterB) {
+				p.targets.length = snapshot;
+				return false;
+			}
+			p.lastPlayer = subject;
+			p.push(
+				{
+					verb: 'fight',
+					subject: fighterA.selector,
+					params: { with: fighterB },
+					optional,
 					span
 				},
 				false
@@ -1545,8 +1771,53 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 	}
 	m = t.match(/^return (.+?) to (?:its|their) owners?'s? hands?$/);
 	if (m) {
+		const selfTrigGy =
+			m[1] === '~' &&
+			p.context === 'triggered' &&
+			p.trigger?.event === 'zoneChange' &&
+			p.trigger.filter.from === 'battlefield' &&
+			p.trigger.filter.to === 'graveyard';
+		if (selfTrigGy) {
+			p.push({ verb: 'move', subject: { k: 'self' }, params: { from: 'graveyard', to: 'hand' }, span }, true);
+			return true;
+		}
 		const obj = objectPhrase(p, m[1]);
-		if (!obj || obj.fromZone) return false;
+		if (!obj) return false;
+		if (obj.fromZone === 'graveyard' || obj.fromZone === 'exile') {
+			p.push({ verb: 'move', subject: obj.selector, params: { from: obj.fromZone, to: 'hand' }, span }, true);
+			return true;
+		}
+		if (obj.fromZone) return false;
+		if (
+			obj.selector.k === 'eventObject' &&
+			p.context === 'triggered' &&
+			p.trigger?.event === 'zoneChange' &&
+			p.trigger.filter.from === 'battlefield'
+		) {
+			const trigTo = p.trigger.filter.to;
+			const alts = p.trigger.or ?? [];
+			const allGyOrExile =
+				(trigTo === 'graveyard' || trigTo === 'exile') &&
+				alts.every(
+					(alt) =>
+						alt.event === 'zoneChange' &&
+						alt.filter.from === 'battlefield' &&
+						(alt.filter.to === 'graveyard' || alt.filter.to === 'exile')
+				);
+			if (allGyOrExile) {
+				const mixed = alts.some((alt) => alt.filter.to !== trigTo);
+				p.push(
+					{
+						verb: 'move',
+						subject: obj.selector,
+						params: { ...(mixed ? {} : { from: trigTo }), to: 'hand' },
+						span
+					},
+					true
+				);
+				return true;
+			}
+		}
 		const tgtZone = obj.selector.k === 'target' ? p.targets[obj.selector.index].filter.zone : undefined;
 		if (tgtZone === 'graveyard' || tgtZone === 'exile') {
 			p.push({ verb: 'move', subject: obj.selector, params: { from: tgtZone, to: 'hand' }, span }, true);
@@ -1587,19 +1858,46 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 				? { selector: { k: 'self' } as Selector, fromZone: 'graveyard' as const }
 				: objectPhrase(p, m[1]);
 		if (!obj) return false;
+		let eventObjFrom: 'graveyard' | 'exile' | 'either' | undefined;
+		if (
+			obj.selector.k === 'eventObject' &&
+			p.context === 'triggered' &&
+			p.trigger?.event === 'zoneChange' &&
+			p.trigger.filter.from === 'battlefield'
+		) {
+			const trigTo = p.trigger.filter.to;
+			const alts = p.trigger.or ?? [];
+			const allGyOrExile =
+				(trigTo === 'graveyard' || trigTo === 'exile') &&
+				alts.every(
+					(alt) =>
+						alt.event === 'zoneChange' &&
+						alt.filter.from === 'battlefield' &&
+						(alt.filter.to === 'graveyard' || alt.filter.to === 'exile')
+				);
+			if (allGyOrExile) {
+				eventObjFrom = alts.some((alt) => alt.filter.to !== trigTo) ? 'either' : trigTo;
+			}
+		}
 		const boundFromExile =
 			obj.selector.k === 'binding' &&
 			p.steps.some((s) => s.bindAs === (obj.selector as { k: 'binding'; name: string }).name && s.verb === 'exile');
 		const fromExile =
+			eventObjFrom === 'exile' ||
 			obj.fromZone === 'exile' ||
 			boundFromExile ||
 			(obj.selector.k === 'target' && p.targets[obj.selector.index].filter.zone === 'exile');
 		const fromGy =
 			!fromExile &&
-			(obj.fromZone === 'graveyard' ||
+			(eventObjFrom === 'graveyard' ||
+				obj.fromZone === 'graveyard' ||
 				(obj.selector.k === 'target' && p.targets[obj.selector.index].filter.zone === 'graveyard'));
-		if (!fromGy && !fromExile) return false;
-		const params: EffectStep['params'] = { from: fromExile ? 'exile' : 'graveyard', to: 'battlefield' };
+		const fromEither = !fromExile && !fromGy && eventObjFrom === 'either';
+		if (!fromGy && !fromExile && !fromEither) return false;
+		const params: EffectStep['params'] = {
+			...(fromEither ? {} : { from: fromExile ? 'exile' : 'graveyard' }),
+			to: 'battlefield'
+		};
 		if ('topmostOnly' in obj && obj.topmostOnly) params.topmostOnly = true;
 		if (m[2]) params.tapped = true;
 		if (m[3]) params.enteredTransformed = true;
@@ -1864,7 +2162,7 @@ function addMana(p: Parser, text: string, span: Span): ClauseResult {
 
 // Words that start a new clause after " and " / ", then ".
 const CLAUSE_START =
-	/^(?:you|each opponent|each player|target player|target opponent|its controller|its owner|that player|they|draw|draws|lose|loses|gain|gains|get|gets|become|becomes|put|exile|destroy|return|create|creates|search|scry|surveil|surveils|investigate|investigates|mill|mills|sacrifice|deal|deals|add|take|takes|phase|phases|attach|counter|proliferate|switch|look|reveal|tap|untap|fight|fights|transform|transforms|flip|flips|discard|discards|connive|connives|explore|explores|goad|goads|regenerate|regenerates)\b/;
+	/^(?:you|each opponent|each player|target player|target opponent|its controller|its owner|that player|they|it (?=deals|fights?|gets?|gains?|loses?|explores?|connives?|phases?|becomes?)|that creature |that permanent |enchanted |equipped |until (?:end of turn|(?:the )?end of your next turn|your next end step), |for as long as |draw|draws|lose|loses|gain|gains|get|gets|become|becomes|put|exile|destroy|return|create|creates|search|scry|surveil|surveils|investigate|investigates|mill|mills|sacrifice|deal|deals|add|take|takes|phase|phases|attach|counter|proliferate|switch|look|reveal|tap|untap|fight|fights|transform|transforms|flip|flips|discard|discards|connive|connives|explore|explores|goad|goads|regenerate|regenerates)\b/;
 
 /** Splits a sentence into clauses at ", then " and at " and " before a new verb or subject. */
 function splitClauses(text: string, offset: number): Clause[] {
@@ -1994,16 +2292,19 @@ function clause(p: Parser, c: Clause, allowUnless = true): ClauseResult {
 	if (p.lastPlayer && /^(?:draws?|loses?|gains?|gets?|becomes?|mills?|creates?|investigates?|surveils?|discards?|goads?)\b/.test(t)) {
 		if (playerPredicate(p, p.lastPlayer, t, c.span)) return true;
 	}
-	// Object subjects & "until end of turn, <player> may play ..." impulse exile clauses.
+	// Object subjects & leading-duration impulse exile clauses ("Until the end of your next turn, you may play ...").
+	const leadingImpulse = t.match(
+		/^(until end of turn|until (?:the )?end of your next turn|until your next end step|for as long as (?:it remains|they remain|that card remains|those cards remain) exiled), (you|that player|they|its owner) (may (?:play|cast) .+)$/i
+	);
+	if (leadingImpulse) {
+		const impulseDur = parseImpulseDurationPhrase(leadingImpulse[1]);
+		const subj = impulseDur ? playerPhrase(p, leadingImpulse[2].toLowerCase()) : null;
+		if (impulseDur && subj && parsePlayFromExilePredicate(p, subj, leadingImpulse[3], c.span, impulseDur)) {
+			return true;
+		}
+	}
 	const dur = t.match(/^until end of turn, (.+)$/);
 	if (dur) {
-		const exileDur = dur[1].match(
-			/^(you|that player|they) (may play (?:that card|those cards|it|them|cards exiled this way))$/i
-		);
-		if (exileDur) {
-			const subj = playerPhrase(p, exileDur[1]);
-			if (subj && playerPredicate(p, subj, `${exileDur[2]} this turn`, c.span)) return true;
-		}
 		if (imperative(p, `${dur[1].trim()} until end of turn`, c.span)) return true;
 	}
 	const body = dur ? dur[1] : t;
@@ -2013,7 +2314,10 @@ function clause(p: Parser, c: Clause, allowUnless = true): ClauseResult {
 		const vp = words.slice(i).join(' ') + (dur ? ' until end of turn' : '');
 		if (!/^(?:gets?|gains?|loses?|phases?|deals|fights?|explores?|connives?|becomes?)\b/.test(vp)) continue;
 		const snapshot = p.targets.length;
-		const subject = objectPhrase(p, subjText);
+		const subject =
+			subjText === 'it' && !p.lastObject && p.context === 'activated' && /^(?:deals|fights?)\b/.test(vp)
+				? { selector: { k: 'self' } as Selector, ref: { k: 'self' } as Ref }
+				: objectPhrase(p, subjText);
 		if (!subject) continue;
 		if (objectPredicate(p, subject, vp, c.span)) return true;
 		p.targets.length = snapshot;
@@ -2090,7 +2394,7 @@ function clause(p: Parser, c: Clause, allowUnless = true): ClauseResult {
 /** Sentence-initial words that are not names or subtypes, so they can be lower-cased. */
 const LOWER_START = new Set([
 	'a', 'add', 'all', 'an', 'another', 'any', 'at', 'attach', 'become', 'connive', 'connives', 'copy', 'counter', 'create', 'creatures', 'deal', 'destroy', 'discard', 'discards', 'draw',
-	'each', 'end', 'exile', 'explore', 'explores', 'fight', 'flip', 'gain', 'goad', 'goads', 'if', 'investigate', 'it', 'its', 'look', 'lose', 'mill', 'otherwise', 'pay', 'permanents', 'proliferate', 'put',
+	'each', 'enchanted', 'end', 'equipped', 'exile', 'explore', 'explores', 'fight', 'flip', 'for', 'gain', 'goad', 'goads', 'if', 'investigate', 'it', 'its', 'look', 'lose', 'mana', 'mill', 'otherwise', 'pay', 'permanents', 'proliferate', 'put',
 	'regenerate', 'regenerates', 'return', 'reveal', 'sacrifice', 'scry', 'search', 'surveil', 'switch', 'take', 'tap', 'target', 'that', 'the', 'then', 'they', 'those',
 	'transform', 'untap', 'until', 'up', 'when', 'you', 'your'
 ]);
@@ -2174,6 +2478,20 @@ function sentence(p: Parser, text: string, span: Span): boolean {
 		const prev = p.steps[p.steps.length - 1];
 		if (prev?.verb !== 'copySpell') return fail();
 		prev.params = { ...prev.params, mayChooseNewTargets: true };
+		return true;
+	}
+
+	if (
+		/^(?:if you cast a spell this way, )?you may spend mana as though it were mana of any color to cast (?:it|them|that spell|those spells)$/i.test(
+			t
+		)
+	) {
+		const prev = p.steps[p.steps.length - 1];
+		if (prev?.verb !== 'grantPlayFromExile' || !prev.params?.playFromExile) return fail();
+		prev.params = {
+			...prev.params,
+			playFromExile: { ...prev.params.playFromExile, spendManaAsAnyColor: true }
+		};
 		return true;
 	}
 
@@ -2750,8 +3068,13 @@ function tryCoerciveStart(p: Parser, text: string, span: Span): boolean {
  * Parses effect text (one or more sentences of normalised text). `offset` is the position of `text`
  * in the face's normalised text, so spans line up with the rest of the IR.
  */
-export function parseEffects(text: string, offset = 0, context: EffectContext = 'spell'): EffectParse {
-	const p = new Parser(context);
+export function parseEffects(
+	text: string,
+	offset = 0,
+	context: EffectContext = 'spell',
+	trigger?: TriggerDef
+): EffectParse {
+	const p = new Parser(context, trigger);
 	for (const s of splitSentences(text, offset)) {
 		if (!sentence(p, s.text, s.span)) {
 			p.unparsed.push(s.span);
@@ -2773,7 +3096,8 @@ export function parseModal(
 	header: string,
 	bullets: Array<{ text: string; start: number; end: number }>,
 	context: EffectContext = 'spell',
-	headerStart?: number
+	headerStart?: number,
+	trigger?: TriggerDef
 ): EffectParse {
 	let rest = header.trim();
 	let allowRepeat = false;
@@ -2853,7 +3177,7 @@ export function parseModal(
 			body = body.slice(flavor[0].length);
 			start += flavor[0].length;
 		}
-		const parse = parseEffects(body, start, context);
+		const parse = parseEffects(body, start, context, trigger);
 		unparsed.push(...parse.unparsed);
 		modes.push({ targets: parse.targets, effect: parse.steps, span: { start: b.start, end: b.end } });
 	}

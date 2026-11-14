@@ -196,6 +196,9 @@ interface SimultaneousLkiEntry {
 	hasAllCreatureTypes: boolean;
 	tapped: boolean;
 	colors: string[];
+	power?: number;
+	toughness?: number;
+	attachedIds?: string[];
 	activeFaceIndex?: number;
 	unlockedFaces?: number[];
 }
@@ -310,6 +313,20 @@ export function withSimultaneousDestroyLki(
 		if (perm.zone !== 'battlefield' || perm.phasedOut) continue;
 		const ev = evaluatePermanent(state, perm);
 		const lost = permanentHasLostAllAbilities(perm, state).lost;
+		const attachedIds: string[] = [];
+		for (const pl of state.players) {
+			for (const pObj of pl.battlefield) {
+				if (!pObj.phasedOut && pObj.attachedToId === perm.instanceId) {
+					attachedIds.push(pObj.instanceId);
+				}
+			}
+		}
+		const power = ev.isCreature
+			? (perm.lastKnownPower ?? ev.breakdown.effectivePower ?? ev.power)
+			: undefined;
+		const toughness = ev.isCreature
+			? (perm.lastKnownToughness ?? ev.breakdown.effectiveToughness ?? ev.toughness)
+			: undefined;
 		map.set(perm, {
 			obj: perm,
 			card: perm.copiableCard ?? perm.card,
@@ -319,6 +336,9 @@ export function withSimultaneousDestroyLki(
 			hasAllCreatureTypes: ev.hasAllCreatureTypes,
 			tapped: perm.tapped,
 			colors: perm.isFaceDown ? [] : [...ev.colors],
+			...(power !== undefined ? { power } : {}),
+			...(toughness !== undefined ? { toughness } : {}),
+			...(attachedIds.length > 0 ? { attachedIds } : {}),
 			...(perm.activeFaceIndex !== undefined ? { activeFaceIndex: perm.activeFaceIndex } : {}),
 			...(perm.unlockedFaces ? { unlockedFaces: [...perm.unlockedFaces] } : {})
 		});
@@ -440,11 +460,25 @@ function filterMatches(f: ObjectFilter, subject: Subject, source: Viewer): boole
 }
 
 /** EventFilter.object (+ orSelf) against the event's object. */
-function objectMatches(filter: EventFilter, subject: Subject, source: Source): boolean {
+function objectMatches(
+	filter: EventFilter,
+	subject: Subject,
+	source: Source,
+	lkiAttachedIds?: readonly string[]
+): boolean {
 	const o = filter.object;
 	const isSelf = subject.obj.instanceId === source.obj.instanceId;
 	if (o === 'self') return isSelf;
-	if (o === 'attachedTo') return source.obj.attachedToId === subject.obj.instanceId;
+	if (o === 'attachedTo') {
+		const wasAttached =
+			source.obj.attachedToId === subject.obj.instanceId ||
+			Boolean(lkiAttachedIds && lkiAttachedIds.includes(source.obj.instanceId));
+		if (!wasAttached) return false;
+		if (filter.attachedFilter && !filterMatches(filter.attachedFilter, subject, viewerOf(source))) {
+			return false;
+		}
+		return true;
+	}
 	if (filter.orSelf && isSelf) return true;
 	return filterMatches(o ?? {}, subject, viewerOf(source));
 }
@@ -1018,9 +1052,10 @@ function matchZoneChange(state: GameState, ev: Extract<GameEvent, { kind: 'ZoneC
 			}
 		}
 	}
+	const lkiAttachedIds = objBatchInfo?.attachedIds ?? ev.lki?.attachedIds;
 	for (const source of candidates) {
 		for (const { ability, alts } of abilitiesFor(state, source, 'zoneChange', fits)) {
-			const alt = alts.find((a) => objectMatches(a.filter, subject, source));
+			const alt = alts.find((a) => objectMatches(a.filter, subject, source, lkiAttachedIds));
 			if (!alt) continue;
 			// Only look-back objects check leaves-the-battlefield triggers; other permanents see the event normally.
 			if ((source.obj === obj || source.isLookBack) && ev.from === 'battlefield' && alt.filter.from !== 'battlefield') continue;
@@ -1037,7 +1072,11 @@ function matchZoneChange(state: GameState, ev: Extract<GameEvent, { kind: 'ZoneC
 			const eventLki = enters
 				? undefined
 				: objBatchInfo
-					? { controllerId: objBatchInfo.controllerId }
+					? {
+							controllerId: objBatchInfo.controllerId,
+							...(objBatchInfo.power !== undefined ? { power: objBatchInfo.power } : {}),
+							...(objBatchInfo.toughness !== undefined ? { toughness: objBatchInfo.toughness } : {})
+						}
 					: ev.lki
 						? { controllerId: ev.lki.controllerId, power: ev.lki.power, toughness: ev.lki.toughness }
 						: undefined;
@@ -1158,6 +1197,12 @@ function matchCast(state: GameState, casterId: string, spell: CardInstance, isCo
 				if (rel === 'opponent' && casterId === source.controllerId) return false;
 				// "When you cast ~" only from the stack; other cast triggers only from other zones.
 				if ((a.filter.object === 'self') !== (source.zone === 'stack')) return false;
+				if (a.filter.targetsSelf) {
+					if (source.zone !== 'battlefield') return false;
+					if (!stackSpell?.targets?.some((t) => t.kind === 'permanent' && t.id === source.obj.instanceId)) {
+						return false;
+					}
+				}
 				return objectMatches(a.filter, subject, source);
 			});
 			if (!alt) continue;
@@ -1173,8 +1218,9 @@ function matchCast(state: GameState, casterId: string, spell: CardInstance, isCo
 			const isStorm = Boolean(
 				ability.effect?.steps.some((st) => st.params?.count?.k === 'stormCount')
 			);
+			const isHeroic = Boolean(alt.filter.targetsSelf);
 			record(state, source, ability, 'cast', {
-				label: isStorm ? 'Storm' : ability.text === 'Prowess' ? 'Prowess' : 'On Cast',
+				label: isStorm ? 'Storm' : ability.text === 'Prowess' ? 'Prowess' : isHeroic ? 'Heroic' : 'On Cast',
 				times,
 				eventObject: spell,
 				eventPlayer: casterId,

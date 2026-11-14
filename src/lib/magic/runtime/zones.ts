@@ -636,6 +636,21 @@ function moveObjectInner(
 				if (lki.power !== undefined) stk.sourceLkiPower = lki.power;
 				if (lki.toughness !== undefined) stk.sourceLkiToughness = lki.toughness;
 			}
+			if (
+				stk.eventObjectId === obj.instanceId &&
+				(stk.eventObjectVersion === undefined || stk.eventObjectVersion === obj.objectVersion)
+			) {
+				stk.eventLki = {
+					controllerId: lki.controllerId,
+					ownerId: stk.eventLki?.ownerId ?? obj.ownerId,
+					power: lki.power ?? stk.eventLki?.power ?? (parseInt(obj.card.power ?? '0', 10) || 0),
+					toughness:
+						lki.toughness ??
+						stk.eventLki?.toughness ??
+						(parseInt(obj.card.toughness ?? '0', 10) || 0),
+					manaValue: stk.eventLki?.manaValue ?? (obj.card.cmc ?? 0)
+				};
+			}
 		}
 	}
 
@@ -934,6 +949,14 @@ function captureLki(state: GameState, obj: CardInstance): LeftBattlefieldInfo {
 	const toughness = evaluated.isCreature
 		? (obj.lastKnownToughness ?? evaluated.breakdown.effectiveToughness ?? evaluated.toughness)
 		: undefined;
+	const attachedIds: string[] = [];
+	for (const p of state.players) {
+		for (const perm of p.battlefield) {
+			if (!perm.phasedOut && perm.attachedToId === obj.instanceId) {
+				attachedIds.push(perm.instanceId);
+			}
+		}
+	}
 	return {
 		card: effectiveCardForObject(obj),
 		controllerId: obj.controllerId,
@@ -945,7 +968,8 @@ function captureLki(state: GameState, obj: CardInstance): LeftBattlefieldInfo {
 		power,
 		toughness,
 		...(obj.activeFaceIndex !== undefined ? { activeFaceIndex: obj.activeFaceIndex } : {}),
-		...(obj.unlockedFaces ? { unlockedFaces: [...obj.unlockedFaces] } : {})
+		...(obj.unlockedFaces ? { unlockedFaces: [...obj.unlockedFaces] } : {}),
+		...(attachedIds.length > 0 ? { attachedIds } : {})
 	};
 }
 

@@ -361,6 +361,19 @@ export interface PlayableFromExilePermission {
 	allowedFaceIndices?: number[];
 	onAdventure?: boolean;
 	expiresAtEndOfTurn?: boolean;
+	// --- Track P2 ---
+	duration?: 'thisTurn' | 'untilEndOfYourNextTurn' | 'untilYourNextEndStep' | 'asLongAsExiled';
+	/** Player whose cleanup step expires an `'untilEndOfYourNextTurn'` permission once `turnSerial > grantedOnTurnSerial`. */
+	expiresOnCleanupOfPlayerId?: string;
+	/** `state.turnSerial ?? state.turnNumber` when the permission was granted. */
+	grantedOnTurnSerial?: number;
+	/** Player whose next `end_step` expires an `'untilYourNextEndStep'` permission (CR 611.2b). */
+	expiresAtNextEndStepOfPlayerId?: string;
+	/** `"may cast"`: only nonland spells may be cast; lands cannot be played (CR 601.1a). */
+	spellsOnly?: boolean;
+	/** `"without paying its mana cost"`: free alternative cost `{0}` with `X = 0` (CR 118.9, 107.3b). */
+	withoutPayingManaCost?: boolean;
+	// --- End Track P2 ---
 }
 
 export interface LibrarySearchInterceptorInfo {

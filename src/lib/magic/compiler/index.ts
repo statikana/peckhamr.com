@@ -482,6 +482,7 @@ function shiftStepTargets(step: EffectStep, offset: number, stepOffset = 0): Eff
 					params: {
 						...step.params,
 						...(step.params.with ? { with: shiftSelector(step.params.with, offset) } : {}),
+						...(step.params.damageSource ? { damageSource: shiftSelector(step.params.damageSource, offset) } : {}),
 						...(step.params.toughness ? { toughness: shiftAmount(step.params.toughness, offset) } : {}),
 						...(step.params.setPower ? { setPower: shiftAmount(step.params.setPower, offset) } : {}),
 						...(step.params.setToughness ? { setToughness: shiftAmount(step.params.setToughness, offset) } : {}),
