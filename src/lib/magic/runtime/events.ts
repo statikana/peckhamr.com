@@ -1,4 +1,12 @@
-import type { CardInstance, CounterType, GamePhase, GameState, ScryfallCard, ZoneType } from '../types.ts';
+import type {
+	CardInstance,
+	CounterType,
+	GamePhase,
+	GameState,
+	ManaColor,
+	ScryfallCard,
+	ZoneType
+} from '../types.ts';
 
 /**
  * Game events (ENGINE_ARCHITECTURE_PLAN.md section 2.3, Phase 2).
@@ -67,6 +75,10 @@ export interface LeftBattlefieldInfo {
 	foretold?: boolean;
 	blitzed?: boolean;
 	saddled?: boolean;
+	// --- Track P4 ---
+	exerted?: boolean;
+	chosenSubType?: string;
+	chosenColor?: ManaColor;
 }
 
 /** A spell was cast (it is already on the stack). */
@@ -299,6 +311,15 @@ export interface BecameMonarchEvent extends EventBase {
 	previousMonarchId: string | null;
 }
 
+// --- Track P4 ---
+/** A permanent on the battlefield was exerted by a player (CR 701.43a–d). */
+export interface ExertedEvent extends EventBase {
+	kind: 'Exerted';
+	playerId: string;
+	objectId: string;
+	object: CardInstance;
+}
+
 export type GameEvent =
 	| TappedForManaEvent
 	| GainLifeEvent
@@ -327,7 +348,9 @@ export type GameEvent =
 	| SpellCopiedEvent
 	| AttachedEvent
 	// --- Track P1 ---
-	| BecameMonarchEvent;
+	| BecameMonarchEvent
+	// --- Track P4 ---
+	| ExertedEvent;
 
 export type GameEventKind = GameEvent['kind'];
 type EventOf<K extends GameEventKind> = Extract<GameEvent, { kind: K }>;

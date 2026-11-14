@@ -34,6 +34,7 @@ export interface FilterContext {
 	controllerId: string;
 	/** The source object; `other` excludes it and `{k:'self'}` refers to it. */
 	source?: CardInstance;
+	stackItem?: StackItem;
 	xValue?: number;
 }
 
@@ -267,6 +268,18 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 
 	if (filter.subtypes && !filter.subtypes.some(hasSubType)) return false;
 	if (filter.notSubtypes && filter.notSubtypes.some(hasSubType)) return false;
+	if (filter.ofChosenType) {
+		const chosenType = ctx.source?.chosenSubType ?? ctx.stackItem?.sourceChosenSubType;
+		if (!chosenType || !hasSubType(chosenType)) return false;
+	}
+	if (filter.ofChosenColor) {
+		const chosenColor = ctx.source?.chosenColor ?? ctx.stackItem?.sourceChosenColor;
+		if (!chosenColor) return false;
+		const colors = onBattlefield
+			? (obj.isFaceDown ? [] : evaluated!.colors)
+			: resolveObjectFaces(card, faceOpts).colors;
+		if (!colors.includes(chosenColor)) return false;
+	}
 
 	const controllerId = onBattlefield ? obj.controllerId : obj.ownerId;
 	if (filter.controller === 'you' && controllerId !== ctx.controllerId) return false;
@@ -473,6 +486,8 @@ export function evaluateCondition(cond: Condition, ctx: FilterContext): boolean 
 				: false;
 		case 'saddled':
 			return Boolean(ctx.source?.saddledThisTurn);
+		case 'exertedThisTurn':
+			return Boolean(ctx.source?.exertedThisTurn || ctx.stackItem?.sourceExertedThisTurn);
 		default:
 			return false;
 	}

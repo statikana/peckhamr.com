@@ -1,6 +1,7 @@
 import type {
 	ActivationRestriction,
 	Amount,
+	Condition,
 	CostDef,
 	ManaRestriction,
 	ModalDef,
@@ -329,6 +330,15 @@ export interface EffectiveActivatedAbility {
 	requiresTarget: boolean;
 	targetKind: string;
 	targetInfo: TargetRequirementInfo;
+	// --- Track P4 ---
+	/** CR 602.5b: conditional activation restriction ("Activate only if ..."). */
+	activationCondition?: Condition;
+	/** Exact multi-mana bundle options ("Add {W}{W}, {W}{B}, or {B}{B}"). */
+	manaBundles?: ManaColor[][];
+	/** Multi-mana combination color domain ("in any combination of colors" / "{R} and/or {G}"). */
+	manaCombinationColors?: ManaColor[] | 'any';
+	/** Depletion-land rider ("~ doesn't untap during your next untap step") on a mana ability (CR 605.1a). */
+	freezesSelfUntap?: boolean;
 }
 
 export interface LibrarySearchDestination {
@@ -495,6 +505,15 @@ export interface CardInstance {
 	saddledThisTurnByIds?: string[];
 	/** CR 702.152a / 400.7d: true when this permanent entered from a spell whose blitz cost was paid. */
 	blitzed?: boolean;
+	// --- Track P4 ---
+	/** CR 502.3 / 611.2b / 701.43a: skip untapping at controller's next untap step, then clear. */
+	doesntUntapNextUntapStep?: boolean;
+	/** CR 701.43: true when this permanent has been exerted this turn; cleared at cleanup / zone exit. */
+	exertedThisTurn?: boolean;
+	/** CR 614.1c / 614.12 / 205.3m: creature subtype chosen as this permanent entered; not copiable (CR 707.2). */
+	chosenSubType?: string;
+	/** CR 614.1c / 614.12 / 105.4: color chosen as this permanent entered; not copiable (CR 707.2). */
+	chosenColor?: ManaColor;
 }
 
 export interface TargetRef {
@@ -716,6 +735,12 @@ export interface StackItem {
 	sourceBlitzed?: boolean;
 	/** InstanceIds of creatures tapped to pay a Saddle cost for this ability (CR 702.171a). */
 	saddledByIds?: string[];
+	// --- Track P4 ---
+	/** LKI exertedThisTurn tracking on triggered abilities whose source left the battlefield before resolution (CR 603.4). */
+	sourceExertedThisTurn?: boolean;
+	/** LKI chosen creature subtype / color when the source left the battlefield before resolution (CR 608.2h). */
+	sourceChosenSubType?: string;
+	sourceChosenColor?: ManaColor;
 }
 
 /** One binding of the IR interpreter ("it", "that creature"): the objects and their LKI. */
@@ -734,6 +759,9 @@ export interface EffectResumeFrame {
 	phase?: 'optional' | 'step' | 'afterStep';
 	bindings: Array<[string, EffectBindingSnapshot[]]>;
 	exileSelf?: boolean;
+	// --- Track P4 ---
+	/** CR 608.2m / 401.2 / 401.7: resolving spell puts itself into its owner's library instead of graveyard. */
+	librarySelf?: { position: 'top' | 'bottom'; fromTop?: number };
 	answers: Record<string, ChoiceAnswer>;
 	stepDecisions?: Record<number, boolean>;
 	pendingOptionalCost?: {
@@ -775,6 +803,10 @@ export interface SerializedPendingTrigger {
 	// --- Track P3 ---
 	sourceForetold?: boolean;
 	sourceBlitzed?: boolean;
+	// --- Track P4 ---
+	sourceExertedThisTurn?: boolean;
+	sourceChosenSubType?: string;
+	sourceChosenColor?: ManaColor;
 	order: number;
 	// --- Track P1 ---
 	isChapterAbility?: boolean;
@@ -985,6 +1017,8 @@ export type PromptPurpose =
 	| 'trigger_order'
 	/** Steps C+D: "you may" in a resolving triggered ability. */
 	| 'trigger_may'
+	/** Track P4: choosing a color or creature type as a permanent enters (CR 614.1c, 614.12). */
+	| 'etb_choice'
 	| 'generic';
 
 export interface PendingPrompt {
@@ -1351,6 +1385,12 @@ export interface PendingCostPayment {
 	abilityCostIncomplete?: boolean;
 	grantSourceCard?: ScryfallCard;
 	chosenColor?: ManaColor;
+	// --- Track P4 ---
+	chosenBundle?: ManaColor[];
+	freezesSelfUntap?: boolean;
+	sourceExertedThisTurn?: boolean;
+	sourceChosenSubType?: string;
+	sourceChosenColor?: ManaColor;
 	amount?: number;
 	manaRestriction?: ManaRestriction;
 	sacrificeSelfInCost?: boolean;
@@ -1484,6 +1524,7 @@ export type GameActionPayload =
 			instanceId: string;
 			abilityId?: string;
 			preferredColor?: ManaColor;
+			chosenBundle?: ManaColor[];
 			costPayment?: CostPayment;
 	  }
 	| {

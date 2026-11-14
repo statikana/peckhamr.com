@@ -19,6 +19,7 @@ import type {
 	ActivatedAbility,
 	ActivationRestriction,
 	Characteristics,
+	Condition,
 	CostDef,
 	EffectStep,
 	FaceDefinition,
@@ -44,7 +45,7 @@ import {
 	triggerTargetsSupported
 } from './interpretable.ts';
 import { normalizeFace, splitSentences, type NormalizedFace, type NormalizedLine } from './normalize.ts';
-import { canonicalKickerTag } from './triggers.ts';
+import { canonicalKickerTag, parseActivatedIfConditionSentence } from './triggers.ts';
 import { parseStaticAbility } from './statics.ts';
 import { parseTriggerHeader, runtimeTriggerProblem } from './triggers.ts';
 
@@ -101,6 +102,7 @@ export function compileSingleFace(
 			/^at (?:the beginning of (?:the next|that turn's)|(?:the )?end of combat)\b/i.test(line.body);
 		const out =
 			(group.length === 1 ? keywordLine(ctx, line) : null) ??
+			(ctx.isSpell ? null : exertAttackLine(group)) ??
 			(skipSpellDelayedTrigger ? null : triggerLine(group)) ??
 			activatedLine(ctx, group);
 		if (out) abilities.push(...out);
@@ -662,6 +664,92 @@ function sagaChapterLine(group: NormalizedLine[]): AbilityDef[] | null {
 	return [{ kind: 'triggered', trigger, targets: effect.targets, effect: effect.steps, text: fullText, span }];
 }
 
+/**
+ * CR 701.43d: Attack-exert abilities ("You may exert ~ as it attacks." and
+ * "If ~ hasn't been exerted this turn, you may exert it as it attacks.", optionally followed by a
+ * non-targeted "When you do, <effect>"). Targeted reflexive "When you do, ... target ..." triggers
+ * are intentionally left unsupported because CR 603.12 chooses targets only after exerting.
+ */
+function exertAttackLine(group: NormalizedLine[]): AbilityDef[] | null {
+	if (group.length !== 1) return null;
+	const line = group[0];
+	const m = line.body.match(
+		/^(?:(if (?:~|it|he|she|they) (?:hasn't|wasn't|has not|was not) (?:been )?exerted this turn),\s+)?you may exert (?:~|it|him|her|them) as (?:~|it|he|she|they) attacks\.(?:\s+when you do,\s+(.+))?$/i
+	);
+	if (!m) return null;
+
+	const span = groupSpan(group);
+	const fullText = line.text;
+	const trigger: TriggerDef = { event: 'attacks', filter: { object: 'self' } };
+	const condition: Condition | undefined = m[1]
+		? { k: 'not', of: { k: 'exertedThisTurn' } }
+		: undefined;
+	const exertStep: EffectStep = {
+		verb: 'exert',
+		subject: { k: 'self' },
+		optional: { chooser: { k: 'you' } },
+		span: line.bodySpan
+	};
+
+	if (!m[2]) {
+		return [
+			{
+				kind: 'triggered',
+				trigger,
+				...(condition ? { condition } : {}),
+				targets: [],
+				effect: [exertStep],
+				text: fullText,
+				span
+			}
+		];
+	}
+
+	const followText = m[2];
+	const followStart = Math.max(line.bodySpan.start, line.bodySpan.end - followText.length);
+	const followEffect = parseEffects(followText, followStart, 'triggered', trigger);
+	if (
+		followEffect.targets.length > 0 ||
+		followEffect.steps.length === 0 ||
+		!staticallyInterpretable(followEffect, true)
+	) {
+		const gaps =
+			followEffect.unparsed.length > 0
+				? followEffect.unparsed
+				: [{ start: followStart, end: span.end }];
+		return [
+			{
+				...unsupported('unparsed', fullText, span, gaps),
+				trigger,
+				...(condition ? { condition } : {})
+			}
+		];
+	}
+
+	const shiftedSteps: EffectStep[] = followEffect.steps.map((s) => ({
+		...s,
+		ifPrecedingAccepted:
+			s.ifPrecedingAccepted !== undefined
+				? s.ifPrecedingAccepted + 1
+				: s.ifPrecedingDeclined === undefined
+					? 0
+					: undefined,
+		...(s.ifPrecedingDeclined !== undefined ? { ifPrecedingDeclined: s.ifPrecedingDeclined + 1 } : {})
+	}));
+
+	return [
+		{
+			kind: 'triggered',
+			trigger,
+			...(condition ? { condition } : {}),
+			targets: [],
+			effect: [exertStep, ...shiftedSteps],
+			text: fullText,
+			span
+		}
+	];
+}
+
 function triggerLine(group: NormalizedLine[]): AbilityDef[] | null {
 	const line = group[0];
 	if (!/^(when|whenever|at)\b/i.test(line.body)) return null;
@@ -751,6 +839,7 @@ function extractActivatedTimingAndRestrictions(
 ): {
 	timing: Timing;
 	activationRestrictions: ActivationRestriction[];
+	activationCondition?: Condition;
 	explicitActivationZones?: ZoneType[];
 	cleanedModalHeader: string;
 } {
@@ -777,8 +866,40 @@ function extractActivatedTimingAndRestrictions(
 		else if (extra === 'during your upkeep') addRestriction('duringYourUpkeep');
 		else if (extra === 'during combat') addRestriction('duringCombat');
 	}
+	const activationConditions: Condition[] = [];
+	const strippedSpans: Span[] = [];
+	for (const sent of sentences) {
+		const condSpec = parseActivatedIfConditionSentence(sent.text);
+		if (!condSpec) continue;
+		activationConditions.push(condSpec.condition);
+		strippedSpans.push(sent.span);
+		if (condSpec.extra === 'as a sorcery') sorcery = true;
+		else if (condSpec.extra === 'once each turn') addRestriction('onceEachTurn');
+		else if (condSpec.extra === 'during your turn') addRestriction('duringYourTurn');
+		else if (condSpec.extra === 'during your upkeep') addRestriction('duringYourUpkeep');
+		else if (condSpec.extra === 'during combat') addRestriction('duringCombat');
+	}
+	const activationCondition: Condition | undefined =
+		activationConditions.length === 1
+			? activationConditions[0]
+			: activationConditions.length > 1
+				? { k: 'and', of: activationConditions }
+				: undefined;
 	const timing: Timing = isMana ? 'mana' : sorcery ? 'sorcery' : 'instant';
-	const cleanedModalHeader = effectText
+	let modalBase = effectText;
+	if (strippedSpans.length > 0) {
+		let rebuilt = '';
+		let cursor = 0;
+		for (const sp of strippedSpans) {
+			const relStart = Math.max(0, sp.start - effectStart);
+			const relEnd = Math.min(effectText.length, sp.end - effectStart);
+			rebuilt += effectText.slice(cursor, relStart) + ' ';
+			cursor = relEnd;
+		}
+		rebuilt += effectText.slice(cursor);
+		modalBase = rebuilt;
+	}
+	const cleanedModalHeader = modalBase
 		.replace(
 			/\bactivate only (?:if ~ is in your (?:hand|graveyard)(?: and only (?:as a sorcery|once each turn|during your turn|during your upkeep|during combat))?|(?:as a sorcery|once each turn|during your turn|during your upkeep|during combat) and only if ~ is in your (?:hand|graveyard))\.?\s*/gi,
 			' '
@@ -786,7 +907,13 @@ function extractActivatedTimingAndRestrictions(
 		.replace(/\b(?:activate|equip) only as a sorcery\.?\s*/gi, ' ')
 		.replace(/\bactivate only (?:once each turn|during your turn|during your upkeep|during combat)\.?\s*/gi, ' ')
 		.trim();
-	return { timing, activationRestrictions, explicitActivationZones, cleanedModalHeader };
+	return {
+		timing,
+		activationRestrictions,
+		...(activationCondition ? { activationCondition } : {}),
+		explicitActivationZones,
+		cleanedModalHeader
+	};
 }
 
 function inferActivatedZones(
@@ -832,8 +959,13 @@ function activatedLine(ctx: Ctx, group: NormalizedLine[]): AbilityDef[] | null {
 	const costComplete = cost.unparsed.length === 0;
 	if (group.length > 1) {
 		const id = loyalty ? `loyalty_${line.rawIndex}` : `act_${line.rawIndex}`;
-		const { timing, activationRestrictions, explicitActivationZones, cleanedModalHeader } =
-			extractActivatedTimingAndRestrictions(effectText, effectStart, Boolean(loyalty), false);
+		const {
+			timing,
+			activationRestrictions,
+			activationCondition,
+			explicitActivationZones,
+			cleanedModalHeader
+		} = extractActivatedTimingAndRestrictions(effectText, effectStart, Boolean(loyalty), false);
 		const bullets = group.slice(1).map((b) => ({ text: b.text, start: b.span.start, end: b.span.end }));
 		const modalParse = /^choose\b/i.test(cleanedModalHeader)
 			? parseModal(cleanedModalHeader, bullets, 'activated', effectStart)
@@ -861,7 +993,8 @@ function activatedLine(ctx: Ctx, group: NormalizedLine[]): AbilityDef[] | null {
 					costComplete,
 					timing,
 					isMana: false,
-					...(activationRestrictions.length > 0 ? { activationRestrictions } : {})
+					...(activationRestrictions.length > 0 ? { activationRestrictions } : {}),
+					...(activationCondition ? { activationCondition } : {})
 				}
 			];
 		}
@@ -876,6 +1009,7 @@ function activatedLine(ctx: Ctx, group: NormalizedLine[]): AbilityDef[] | null {
 				timing,
 				isMana: false,
 				...(activationRestrictions.length > 0 ? { activationRestrictions } : {}),
+				...(activationCondition ? { activationCondition } : {}),
 				...(activationZones ? { activationZones } : {}),
 				text: fullText,
 				span
@@ -888,13 +1022,14 @@ function activatedLine(ctx: Ctx, group: NormalizedLine[]): AbilityDef[] | null {
 		!loyalty &&
 		effect.steps.length > 0 &&
 		effect.targets.length === 0 &&
-		effect.steps.every((s) => s.verb === 'addMana');
-	const { timing, activationRestrictions, explicitActivationZones } = extractActivatedTimingAndRestrictions(
-		effectText,
-		effectStart,
-		Boolean(loyalty),
-		isMana
-	);
+		effect.steps.some((s) => s.verb === 'addMana') &&
+		effect.steps.every(
+			(s) =>
+				s.verb === 'addMana' ||
+				(s.verb === 'freezeUntap' && s.subject.k === 'self' && !s.condition && !s.optional)
+		);
+	const { timing, activationRestrictions, activationCondition, explicitActivationZones } =
+		extractActivatedTimingAndRestrictions(effectText, effectStart, Boolean(loyalty), isMana);
 	const activationZones = inferActivatedZones(cost.defs, effect.steps, explicitActivationZones);
 	const isManaTap = isMana && cost.defs.length === 1 && cost.defs[0].k === 'tapSelf' && !ctx.manaTapTaken;
 	const id = isManaTap ? 'mana_tap' : loyalty ? `loyalty_${line.rawIndex}` : `act_${line.rawIndex}`;
@@ -913,6 +1048,7 @@ function activatedLine(ctx: Ctx, group: NormalizedLine[]): AbilityDef[] | null {
 				timing,
 				isMana,
 				...(activationRestrictions.length > 0 ? { activationRestrictions } : {}),
+				...(activationCondition ? { activationCondition } : {}),
 				...(manaSteps ? { effect: manaSteps } : {}),
 				...(effect.targets.length > 0 ? { targets: effect.targets } : {})
 			}
@@ -927,6 +1063,7 @@ function activatedLine(ctx: Ctx, group: NormalizedLine[]): AbilityDef[] | null {
 		timing,
 		isMana,
 		...(activationRestrictions.length > 0 ? { activationRestrictions } : {}),
+		...(activationCondition ? { activationCondition } : {}),
 		...(activationZones ? { activationZones } : {}),
 		text: fullText,
 		span
@@ -935,7 +1072,16 @@ function activatedLine(ctx: Ctx, group: NormalizedLine[]): AbilityDef[] | null {
 }
 
 function manaStepComplete(step: EffectStep): boolean {
-	return Boolean(step.params?.mana || step.params?.manaChoice);
+	if (step.verb === 'freezeUntap') {
+		return step.subject.k === 'self' && !step.condition && !step.optional;
+	}
+	return Boolean(
+		step.params?.mana ||
+			step.params?.manaChoice ||
+			step.params?.manaWithChosenColor ||
+			step.params?.manaBundles ||
+			step.params?.manaCombinationColors
+	);
 }
 
 function intrinsicManaAbility(ctx: Ctx, color: ManaColor): ActivatedAbility {

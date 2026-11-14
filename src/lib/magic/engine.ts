@@ -161,7 +161,24 @@ import {
 } from './runtime/orthogonalKeywords.ts';
 export { applyCastCostAids, formatManaRequirement, getSuspendSpec };
 import { getKeywordSpec } from './keywords.ts';
-import { evaluateAmount, matchesObjectFilter, objectManaValue, type FilterContext } from './runtime/objectFilter.ts';
+import {
+	evaluateAmount,
+	evaluateCondition,
+	matchesObjectFilter,
+	objectManaValue,
+	type FilterContext
+} from './runtime/objectFilter.ts';
+import {
+	FIVE_MANA_COLORS,
+	applyNextUntapFreeze,
+	computeLibraryInsertIndex,
+	consumeNextUntapFreeze,
+	expandCombinationBundles,
+	formatManaBundle,
+	pickBestBundleForRequirement,
+	pickCombinationForRequirement,
+	scoreBundleForRequirement
+} from './runtime/tuckFreezeChosen.ts';
 import {
 	compileCard,
 	compiledStackItemEffects,
@@ -1869,6 +1886,10 @@ function finalizeActivateAbility(
 			)
 		: undefined;
 
+	const sourceExertedThisTurn = Boolean(pcp.sourceExertedThisTurn || perm.exertedThisTurn);
+	const sourceChosenSubType = pcp.sourceChosenSubType ?? perm.chosenSubType;
+	const sourceChosenColor = pcp.sourceChosenColor ?? perm.chosenColor;
+
 	const stackItem: StackItem = withStackItemText(
 		{
 			id: uid('stk', state),
@@ -1880,6 +1901,9 @@ function finalizeActivateAbility(
 			...(pcp.sourceEscaped ? { sourceEscaped: true } : {}),
 			...(pcp.sourceForetold ? { sourceForetold: true } : {}),
 			...(pcp.sourceBlitzed ? { sourceBlitzed: true } : {}),
+			...(sourceExertedThisTurn ? { sourceExertedThisTurn: true } : {}),
+			...(sourceChosenSubType ? { sourceChosenSubType } : {}),
+			...(sourceChosenColor ? { sourceChosenColor } : {}),
 			card,
 			...(pcp.grantSourceCard ? { grantSourceCard: pcp.grantSourceCard } : {}),
 			...(pcp.faceIndex !== undefined ? { faceIndex: pcp.faceIndex } : {}),
@@ -1932,34 +1956,43 @@ function finalizeTapMana(
 		resolveCostSourceCard(state, pcp);
 	const card = pcp.sourceCard ?? perm.card;
 	const abStub =
-		pcp.abilityId && pcp.onceEachTurn
+		pcp.abilityId || pcp.manaRestriction || pcp.freezesSelfUntap
 			? ({
-					id: pcp.abilityId,
+					...(pcp.abilityId ? { id: pcp.abilityId } : {}),
 					...(pcp.faceIndex !== undefined ? { faceIndex: pcp.faceIndex } : {}),
 					...(pcp.manaRestriction ? { manaRestriction: pcp.manaRestriction } : {}),
-					activationRestrictions: ['onceEachTurn']
+					...(pcp.onceEachTurn ? { activationRestrictions: ['onceEachTurn'] } : {}),
+					...(pcp.freezesSelfUntap ? { freezesSelfUntap: true } : {})
 				} as EffectiveActivatedAbility)
-			: pcp.abilityId
-				? ({
-						id: pcp.abilityId,
-						...(pcp.faceIndex !== undefined ? { faceIndex: pcp.faceIndex } : {}),
-						...(pcp.manaRestriction ? { manaRestriction: pcp.manaRestriction } : {})
-					} as EffectiveActivatedAbility)
-				: pcp.manaRestriction
-					? ({ manaRestriction: pcp.manaRestriction } as EffectiveActivatedAbility)
-					: undefined;
+			: undefined;
 	const chosenColor = pcp.chosenColor;
+	const chosenBundle = pcp.chosenBundle;
 	const amount = pcp.amount ?? 0;
 	const tappedSource = pcp.parts.some((part) => part.def.k === 'tapSelf');
 	resetTriggerLoopTracking(state);
-	resolveActivatedManaAbility(state, actor, perm, abStub, chosenColor, amount, tappedSource);
+	resolveActivatedManaAbility(
+		state,
+		actor,
+		perm,
+		abStub,
+		chosenColor,
+		amount,
+		tappedSource,
+		chosenBundle
+	);
 	flushTriggers(state);
 	if (pcp.descriptions.length > 0 || pcp.sacrificeSelfInCost) {
+		const manaSummary =
+			chosenBundle && chosenBundle.length > 0
+				? formatManaBundle(chosenBundle)
+				: chosenColor && amount > 0
+					? `${amount > 1 ? `${amount}x ` : ''}{${chosenColor}}`
+					: null;
 		addLog(
 			state,
 			'rule',
-			chosenColor && amount > 0
-				? `${actor.username} activated ${card.name} for ${amount > 1 ? `${amount}x ` : ''}{${chosenColor}}${pcp.descriptions.length > 0 ? ` (${pcp.descriptions.join('; ')})` : ''}.`
+			manaSummary
+				? `${actor.username} activated ${card.name} for ${manaSummary}${pcp.descriptions.length > 0 ? ` (${pcp.descriptions.join('; ')})` : ''}.`
 				: `${actor.username} activated ${card.name} for no mana (CR 106.5)${pcp.descriptions.length > 0 ? ` (${pcp.descriptions.join('; ')})` : ''}.`,
 			actorId
 		);
@@ -2152,6 +2185,15 @@ function checkActivationRestrictionsOnly(
 	perm: CardInstance,
 	ab: EffectiveActivatedAbility
 ): { ok: boolean; error?: string } {
+	if (
+		ab.activationCondition &&
+		!evaluateCondition(ab.activationCondition, { state, controllerId: actorId, source: perm })
+	) {
+		return {
+			ok: false,
+			error: `${perm.card.name}: Activation condition is not met.`
+		};
+	}
 	const restrictions = ab.activationRestrictions;
 	if (!restrictions?.length) return { ok: true };
 	const activePlayer = state.players[state.activePlayerIndex];
@@ -2215,7 +2257,13 @@ function autoTapManaAbilities(
 	}
 	const evalPerm = evaluatePermanent(state, perm);
 	const noManaCtx = costContext(state, player, perm, 0, false, null);
-	const scored: Array<{ ab: EffectiveActivatedAbility; tier: number; restricted: number; amount: number }> = [];
+	const scored: Array<{
+		ab: EffectiveActivatedAbility;
+		tier: number;
+		freezes: number;
+		restricted: number;
+		amount: number;
+	}> = [];
 	for (const a of getEffectiveActivatedAbilities(state, player, perm, cmdIdentity)) {
 		if (!a.isManaAbility || a.producesMana.length === 0) continue;
 		if (a.manaRestriction && !canSpendRestrictedMana(a.manaRestriction, spendCtx)) continue;
@@ -2241,9 +2289,21 @@ function autoTapManaAbilities(
 			a
 		);
 		if (amount <= 0) continue;
-		scored.push({ ab: a, tier, restricted: a.manaRestriction ? 0 : 1, amount });
+		scored.push({
+			ab: a,
+			tier,
+			freezes: a.freezesSelfUntap ? 1 : 0,
+			restricted: a.manaRestriction ? 0 : 1,
+			amount
+		});
 	}
-	scored.sort((x, y) => x.tier - y.tier || x.restricted - y.restricted || y.amount - x.amount);
+	scored.sort(
+		(x, y) =>
+			x.tier - y.tier ||
+			x.freezes - y.freezes ||
+			x.restricted - y.restricted ||
+			y.amount - x.amount
+	);
 	return scored.map((s) => s.ab);
 }
 
@@ -2486,6 +2546,7 @@ function resolveHybridCostChoice(
 
 const TAP_MANA_ABILITY_CHOICE_HANDLER = 'tap_mana_ability_choice';
 const TAP_MANA_COLOR_CHOICE_HANDLER = 'tap_mana_color_choice';
+const TAP_MANA_BUNDLE_CHOICE_HANDLER = 'tap_mana_bundle_choice';
 
 registerPromptHandler(TAP_MANA_ABILITY_CHOICE_HANDLER, (state, prompt, answer) => {
 	const data = prompt.continuation?.kind === 'handler' ? prompt.continuation.data : undefined;
@@ -2500,6 +2561,10 @@ registerPromptHandler(TAP_MANA_ABILITY_CHOICE_HANDLER, (state, prompt, answer) =
 		typeof data?.preferredColor === 'string' && data.preferredColor.length > 0
 			? (data.preferredColor as ManaColor)
 			: undefined;
+	const chosenBundle =
+		typeof data?.chosenBundleCsv === 'string' && data.chosenBundleCsv.length > 0
+			? (data.chosenBundleCsv.split(',') as ManaColor[])
+			: undefined;
 	const costPayment =
 		typeof data?.costPaymentJson === 'string'
 			? (JSON.parse(data.costPaymentJson) as CostPayment)
@@ -2509,6 +2574,7 @@ registerPromptHandler(TAP_MANA_ABILITY_CHOICE_HANDLER, (state, prompt, answer) =
 		instanceId,
 		...(abilityId ? { abilityId } : {}),
 		...(preferredColor ? { preferredColor } : {}),
+		...(chosenBundle ? { chosenBundle } : {}),
 		...(costPayment ? { costPayment } : {})
 	});
 });
@@ -2537,6 +2603,30 @@ registerPromptHandler(TAP_MANA_COLOR_CHOICE_HANDLER, (state, prompt, answer) => 
 	});
 });
 
+registerPromptHandler(TAP_MANA_BUNDLE_CHOICE_HANDLER, (state, prompt, answer) => {
+	const data = prompt.continuation?.kind === 'handler' ? prompt.continuation.data : undefined;
+	const instanceId = typeof data?.instanceId === 'string' ? data.instanceId : '';
+	const abilityId =
+		typeof data?.abilityId === 'string' && data.abilityId.length > 0 ? data.abilityId : undefined;
+	const bundles =
+		typeof data?.bundlesCsv === 'string' && data.bundlesCsv.length > 0
+			? data.bundlesCsv.split('|').map((s) => s.split(',') as ManaColor[])
+			: [];
+	const idx = answer.kind === 'chooseMode' ? (answer.indices[0] ?? 0) : 0;
+	const chosenBundle = bundles[idx] ?? bundles[0];
+	const costPayment =
+		typeof data?.costPaymentJson === 'string'
+			? (JSON.parse(data.costPaymentJson) as CostPayment)
+			: undefined;
+	applyGameActionInner(state, prompt.playerId, {
+		type: 'tap_mana',
+		instanceId,
+		...(abilityId ? { abilityId } : {}),
+		...(chosenBundle ? { chosenBundle } : {}),
+		...(costPayment ? { costPayment } : {})
+	});
+});
+
 /**
  * CR 106.12, 605.1b, 605.3b, 605.4a: Single funnel for resolving an activated mana ability of `perm`
  * after its activation costs (such as `{T}`) have been paid. Records `onceEachTurn`, adds the
@@ -2550,12 +2640,20 @@ function resolveActivatedManaAbility(
 	ab: EffectiveActivatedAbility | undefined,
 	chosenColor: ManaColor | undefined,
 	amount: number,
-	tappedForMana = true
+	tappedForMana = true,
+	chosenBundle?: readonly ManaColor[]
 ): void {
 	if (ab?.activationRestrictions?.includes('onceEachTurn')) {
 		perm.activatedAbilityIdsThisTurn = [...(perm.activatedAbilityIdsThisTurn ?? []), ab.id];
 	}
-	if (chosenColor && amount > 0) {
+	if (ab?.freezesSelfUntap) {
+		applyNextUntapFreeze(perm);
+	}
+	if (chosenBundle && chosenBundle.length > 0) {
+		for (const col of chosenBundle) {
+			addManaToPlayerPool(player, col, 1, ab?.manaRestriction);
+		}
+	} else if (chosenColor && amount > 0) {
 		addManaToPlayerPool(player, chosenColor, amount, ab?.manaRestriction);
 	}
 	if (tappedForMana) {
@@ -2577,7 +2675,8 @@ function simulateOrExecuteManaOnly(
 	mutate: boolean,
 	lifeToPay: number,
 	spendCtx: ManaSpendContext = { isSpell: false },
-	reservedTapIds?: ReadonlySet<string>
+	reservedTapIds?: ReadonlySet<string>,
+	filterDepth = 0
 ): boolean {
 	if (lifeToPay > 0 && (playerLifeTotalCantChange(state, player) || player.life < lifeToPay)) {
 		return false;
@@ -2614,9 +2713,11 @@ function simulateOrExecuteManaOnly(
 		const abs = manaAbilitiesOf(perm);
 		return abs.some((a) => isTapOnlyManaCost(activatedAbilityCost(perm.card, a).defs)) ? 0 : 1;
 	};
+	const permFreezes = (perm: CardInstance): number =>
+		manaAbilitiesOf(perm).every((a) => a.freezesSelfUntap) ? 1 : 0;
 
 	// Sort untapped mana sources: {T}-only before sacrifice-self (and tokens before nontokens when sacrificing),
-	// restricted sources before unrestricted sources (preserving unrestricted mana for nonartifact spells),
+	// pain-free {T} sources before depletion-freezing {T} sources, restricted sources before unrestricted sources,
 	// then most-constrained (fewest colors) first, then non-creatures before creatures.
 	// Read-only scan: validate the layer cache once (Phase 6c).
 	const candidates = withStableLayerInputs(state, () =>
@@ -2630,6 +2731,11 @@ function simulateOrExecuteManaOnly(
 				const ta = permCostTier(a);
 				const tb = permCostTier(b);
 				if (ta !== tb) return ta - tb;
+				if (ta === 0) {
+					const fa = permFreezes(a);
+					const fb = permFreezes(b);
+					if (fa !== fb) return fa - fb;
+				}
 				if (ta === 1) {
 					const aNonToken = a.isToken ? 0 : 1;
 					const bNonToken = b.isToken ? 0 : 1;
@@ -2655,8 +2761,68 @@ function simulateOrExecuteManaOnly(
 		ab ? (manaCostPayEnergyAmount(activatedAbilityCost(perm.card, ab).defs) ?? 0) : 0;
 	const manaChoices = new Map<
 		string,
-		{ color: ManaColor; amount: number; ab: EffectiveActivatedAbility | undefined }
+		{
+			color: ManaColor;
+			amount: number;
+			bundle?: ManaColor[];
+			ab: EffectiveActivatedAbility | undefined;
+		}
 	>();
+
+	const applyChosenAbilityToPool = (
+		perm: CardInstance,
+		ab: EffectiveActivatedAbility | undefined,
+		preferredCol?: ManaColor
+	) => {
+		const baseAmt = Math.max(1, ab?.producesAmount || 1);
+		const amount = getProducedAmount(perm, baseAmt, ab);
+		availableEnergy -= abilityEnergyCost(perm, ab);
+		tappedSet.add(perm.instanceId);
+		if (ab?.manaBundles && ab.manaBundles.length > 0) {
+			const eligibleBundles = preferredCol
+				? ab.manaBundles.filter((b) => b.includes(preferredCol))
+				: ab.manaBundles;
+			const bundle = pickBestBundleForRequirement(
+				eligibleBundles.length > 0 ? eligibleBundles : ab.manaBundles,
+				pool,
+				manaReq,
+				preferredCol
+			);
+			for (const c of bundle) pool[c] += 1;
+			manaChoices.set(perm.instanceId, {
+				color: bundle[0] ?? preferredCol ?? 'C',
+				amount: bundle.length,
+				bundle,
+				ab
+			});
+			return;
+		}
+		if (ab?.manaCombinationColors) {
+			const allowed =
+				ab.manaCombinationColors === 'any' ? FIVE_MANA_COLORS : ab.manaCombinationColors;
+			const bundle = pickCombinationForRequirement(
+				allowed,
+				amount,
+				pool,
+				manaReq,
+				preferredCol,
+				player
+			);
+			for (const c of bundle) pool[c] += 1;
+			manaChoices.set(perm.instanceId, {
+				color: bundle[0] ?? preferredCol ?? 'C',
+				amount: bundle.length,
+				bundle,
+				ab
+			});
+			return;
+		}
+		const chosenColor: ManaColor = preferredCol ?? ab?.producesMana[0] ?? 'C';
+		pool[chosenColor] += amount;
+		manaChoices.set(perm.instanceId, { color: chosenColor, amount, ab });
+	};
+
+	let greedySucceeded = true;
 
 	// Pass 1: Satisfy missing colored mana pips using the most-constrained sources first.
 	// Any remaining Phyrexian symbol not already converted to life must be paid with its primaryColor.
@@ -2664,48 +2830,270 @@ function simulateOrExecuteManaOnly(
 		const flexCountForCol =
 			manaReq.flexibleSymbols?.filter((s) => s.primaryColor === col && !s.altLife).length ?? 0;
 		while (pool[col] < manaReq.colored[col]) {
-			const perm = candidates.find((c) => {
-				if (tappedSet.has(c.instanceId)) return false;
-				return manaAbilitiesOf(c).some(
-					(a) => a.producesMana.includes(col) && abilityEnergyCost(c, a) <= availableEnergy
-				);
-			});
+			const perm =
+				candidates.find((c) => {
+					if (tappedSet.has(c.instanceId)) return false;
+					return manaAbilitiesOf(c).some(
+						(a) =>
+							!a.freezesSelfUntap &&
+							a.producesMana.includes(col) &&
+							abilityEnergyCost(c, a) <= availableEnergy
+					);
+				}) ??
+				candidates.find((c) => {
+					if (tappedSet.has(c.instanceId)) return false;
+					return manaAbilitiesOf(c).some(
+						(a) => a.producesMana.includes(col) && abilityEnergyCost(c, a) <= availableEnergy
+					);
+				});
 			if (!perm) {
 				if (manaReq.colored[col] - pool[col] <= flexCountForCol) {
 					break;
 				}
-				return false;
+				greedySucceeded = false;
+				break;
 			}
-			const matchedAb = manaAbilitiesOf(perm).find(
-				(a) => a.producesMana.includes(col) && abilityEnergyCost(perm, a) <= availableEnergy
-			);
-			const baseAmt = Math.max(1, matchedAb?.producesAmount || 1);
-			const amount = getProducedAmount(perm, baseAmt, matchedAb);
-			availableEnergy -= abilityEnergyCost(perm, matchedAb);
-			tappedSet.add(perm.instanceId);
-			pool[col] += amount;
-			manaChoices.set(perm.instanceId, { color: col, amount, ab: matchedAb });
+			const matchedAb =
+				manaAbilitiesOf(perm).find(
+					(a) =>
+						!a.freezesSelfUntap &&
+						a.producesMana.includes(col) &&
+						abilityEnergyCost(perm, a) <= availableEnergy
+				) ??
+				manaAbilitiesOf(perm).find(
+					(a) => a.producesMana.includes(col) && abilityEnergyCost(perm, a) <= availableEnergy
+				);
+			applyChosenAbilityToPool(perm, matchedAb, col);
 		}
+		if (!greedySucceeded) break;
 	}
 
 	// Pass 2: Satisfy remaining generic / non-Phyrexian flexible mana cost using remaining untapped sources
-	while (!canPayManaCost(pool, manaReq)) {
-		const perm = candidates.find(
-			(c) =>
-				!tappedSet.has(c.instanceId) &&
-				manaAbilitiesOf(c).some((a) => abilityEnergyCost(c, a) <= availableEnergy)
-		);
+	while (greedySucceeded && !canPayManaCost(pool, manaReq)) {
+		const perm =
+			candidates.find(
+				(c) =>
+					!tappedSet.has(c.instanceId) &&
+					manaAbilitiesOf(c).some(
+						(a) => !a.freezesSelfUntap && abilityEnergyCost(c, a) <= availableEnergy
+					)
+			) ??
+			candidates.find(
+				(c) =>
+					!tappedSet.has(c.instanceId) &&
+					manaAbilitiesOf(c).some((a) => abilityEnergyCost(c, a) <= availableEnergy)
+			);
 		if (!perm) {
-			return false;
+			greedySucceeded = false;
+			break;
 		}
-		const ab0 = manaAbilitiesOf(perm).find((a) => abilityEnergyCost(perm, a) <= availableEnergy);
-		const chosenColor: ManaColor = ab0?.producesMana[0] || 'C';
-		const baseAmt = Math.max(1, ab0?.producesAmount || 1);
-		const amount = getProducedAmount(perm, baseAmt, ab0);
-		availableEnergy -= abilityEnergyCost(perm, ab0);
-		tappedSet.add(perm.instanceId);
-		pool[chosenColor] += amount;
-		manaChoices.set(perm.instanceId, { color: chosenColor, amount, ab: ab0 });
+		const ab0 =
+			manaAbilitiesOf(perm).find(
+				(a) => !a.freezesSelfUntap && abilityEnergyCost(perm, a) <= availableEnergy
+			) ?? manaAbilitiesOf(perm).find((a) => abilityEnergyCost(perm, a) <= availableEnergy);
+		applyChosenAbilityToPool(perm, ab0);
+	}
+
+	if (!greedySucceeded) {
+		if (filterDepth >= 2) return false;
+		const clonePlayerMana = (p: PlayerGameState): PlayerGameState => ({
+			...p,
+			manaPool: { ...p.manaPool },
+			restrictedMana: p.restrictedMana
+				? Object.fromEntries(
+						Object.entries(p.restrictedMana).map(([k, v]) => [k, v ? { ...v } : v])
+					)
+				: undefined
+		});
+		const abilitySpendCtx: ManaSpendContext = { isSpell: false };
+
+		for (const fPerm of player.battlefield) {
+			if (fPerm.phasedOut || fPerm.tapped || reservedTapIds?.has(fPerm.instanceId)) continue;
+			if (!checkGlobalAbilityActivationRestrictions(state, player.playerId, fPerm).ok) continue;
+			for (const fAb of getEffectiveActivatedAbilities(state, player, fPerm, cmdIdentity)) {
+				if (!fAb.isManaAbility || fAb.producesMana.length === 0) continue;
+				if (fAb.manaRestriction && !canSpendRestrictedMana(fAb.manaRestriction, spendCtx)) {
+					continue;
+				}
+				if (!checkActivationRestrictionsOnly(state, player.playerId, fPerm, fAb).ok) continue;
+				const fDefs = activatedAbilityCost(fPerm.card, fAb).defs;
+				if (isTapOnlyManaCost(fDefs)) continue;
+				if (
+					!fDefs.some((d) => d.k === 'tapSelf') ||
+					!fDefs.every((d) => d.k === 'tapSelf' || d.k === 'mana')
+				) {
+					continue;
+				}
+				const inReq = parseManaCost(fAb.manaCost === '{0}' ? '' : fAb.manaCost);
+				const inTotal = inReq.totalCmc;
+				if (inTotal < 1 || inTotal > 2) continue;
+
+				const fAmt = getProducedAmount(fPerm, Math.max(1, fAb.producesAmount || 1), fAb);
+				if (fAmt <= 0) continue;
+				let outBundles: ManaColor[][];
+				if (fAb.manaBundles && fAb.manaBundles.length > 0) {
+					outBundles = fAb.manaBundles.map((b) => [...b]);
+				} else if (fAb.manaCombinationColors) {
+					const allowed =
+						fAb.manaCombinationColors === 'any' ? FIVE_MANA_COLORS : fAb.manaCombinationColors;
+					outBundles =
+						fAmt <= 4
+							? expandCombinationBundles(allowed, fAmt)
+							: [pickCombinationForRequirement(allowed, fAmt, initialPool, manaReq, undefined, player)];
+				} else {
+					outBundles = fAb.producesMana.map((c) => Array(fAmt).fill(c) as ManaColor[]);
+				}
+				outBundles.sort(
+					(x, y) =>
+						scoreBundleForRequirement(initialPool, y, manaReq) -
+						scoreBundleForRequirement(initialPool, x, manaReq)
+				);
+
+				// Way A: pay Filter-land input from existing floating mana pool
+				if (canPayManaCost(combinedManaPoolForSpend(player, abilitySpendCtx), inReq)) {
+					for (const bundle of outBundles) {
+						const sim = clonePlayerMana(player);
+						deductManaForSpendContext(sim, inReq, abilitySpendCtx);
+						for (const c of bundle) addManaToPlayerPool(sim, c, 1, fAb.manaRestriction);
+						const nextReserved = new Set<string>([...(reservedTapIds ?? []), fPerm.instanceId]);
+						if (
+							simulateOrExecuteManaOnly(
+								sim,
+								manaReq,
+								state,
+								false,
+								lifeToPay,
+								spendCtx,
+								nextReserved,
+								filterDepth + 1
+							)
+						) {
+							if (!mutate) return true;
+							deductManaForSpendContext(player, inReq, abilitySpendCtx);
+							tapPermanent(state, fPerm);
+							resolveActivatedManaAbility(
+								state,
+								player,
+								fPerm,
+								fAb,
+								bundle[0],
+								bundle.length,
+								true,
+								bundle
+							);
+							return simulateOrExecuteManaOnly(
+								player,
+								manaReq,
+								state,
+								true,
+								lifeToPay,
+								spendCtx,
+								nextReserved,
+								filterDepth + 1
+							);
+						}
+					}
+				}
+
+				// Way B: tap one {T}-only feeder source to pay Filter-land input
+				for (const feeder of candidates) {
+					if (feeder.instanceId === fPerm.instanceId) continue;
+					for (const feedAb of manaAbilitiesOf(feeder)) {
+						if (feedAb.manaRestriction) continue;
+						const feedDefs = activatedAbilityCost(feeder.card, feedAb).defs;
+						if (!isTapOnlyManaCost(feedDefs)) continue;
+						const feedAmt = getProducedAmount(
+							feeder,
+							Math.max(1, feedAb.producesAmount || 1),
+							feedAb
+						);
+						if (feedAmt <= 0) continue;
+						const feedOutputs: Array<{ color: ManaColor; amount: number; bundle?: ManaColor[] }> =
+							feedAb.manaBundles && feedAb.manaBundles.length > 0
+								? feedAb.manaBundles.map((b) => ({
+										color: b[0] ?? 'C',
+										amount: b.length,
+										bundle: [...b]
+									}))
+								: feedAb.producesMana.map((c) => ({ color: c, amount: feedAmt }));
+						for (const fo of feedOutputs) {
+							const simAfterFeed = clonePlayerMana(player);
+							if (fo.bundle) {
+								for (const c of fo.bundle) addManaToPlayerPool(simAfterFeed, c, 1);
+							} else {
+								addManaToPlayerPool(simAfterFeed, fo.color, fo.amount);
+							}
+							if (
+								!canPayManaCost(
+									combinedManaPoolForSpend(simAfterFeed, abilitySpendCtx),
+									inReq
+								)
+							) {
+								continue;
+							}
+							deductManaForSpendContext(simAfterFeed, inReq, abilitySpendCtx);
+							const nextReserved = new Set<string>([
+								...(reservedTapIds ?? []),
+								fPerm.instanceId,
+								feeder.instanceId
+							]);
+							for (const bundle of outBundles) {
+								const sim2 = clonePlayerMana(simAfterFeed);
+								for (const c of bundle) addManaToPlayerPool(sim2, c, 1, fAb.manaRestriction);
+								if (
+									simulateOrExecuteManaOnly(
+										sim2,
+										manaReq,
+										state,
+										false,
+										lifeToPay,
+										spendCtx,
+										nextReserved,
+										filterDepth + 1
+									)
+								) {
+									if (!mutate) return true;
+									tapPermanent(state, feeder);
+									resolveActivatedManaAbility(
+										state,
+										player,
+										feeder,
+										feedAb,
+										fo.color,
+										fo.amount,
+										true,
+										fo.bundle
+									);
+									deductManaForSpendContext(player, inReq, abilitySpendCtx);
+									tapPermanent(state, fPerm);
+									resolveActivatedManaAbility(
+										state,
+										player,
+										fPerm,
+										fAb,
+										bundle[0],
+										bundle.length,
+										true,
+										bundle
+									);
+									return simulateOrExecuteManaOnly(
+										player,
+										manaReq,
+										state,
+										true,
+										lifeToPay,
+										spendCtx,
+										nextReserved,
+										filterDepth + 1
+									);
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+		return false;
 	}
 
 	if (mutate) {
@@ -2729,7 +3117,8 @@ function simulateOrExecuteManaOnly(
 					choice.ab,
 					choice.color,
 					choice.amount,
-					tappedSource
+					tappedSource,
+					choice.bundle
 				);
 			}
 		}
@@ -3047,7 +3436,8 @@ function executeUntapTurnBasedActions(state: GameState, activePlayer: PlayerGame
 	});
 	for (const perm of activePlayer.battlefield) {
 		if (perm.phasedOut) continue;
-		if (perm.tapped && !keptTapped.has(perm.instanceId)) {
+		const frozenNextUntap = consumeNextUntapFreeze(perm);
+		if (!frozenNextUntap && perm.tapped && !keptTapped.has(perm.instanceId)) {
 			if (perm.counters.stun > 0) {
 				perm.counters.stun -= 1;
 			} else {
@@ -3309,14 +3699,18 @@ function applyGameActionInner(
 			if (!globalAbCheck.ok) return globalAbCheck;
 
 			const preferred = action.preferredColor;
+			const requestedBundle = action.chosenBundle;
 			let ab: EffectiveActivatedAbility | undefined;
 			if (action.abilityId) {
 				ab = manaAbs.find((a) => a.id === action.abilityId);
 				if (!ab) return { ok: false, error: 'Mana ability not found on this permanent.' };
 			} else {
-				const matchingAbs = preferred
-					? manaAbs.filter((a) => a.producesMana.includes(preferred))
-					: manaAbs.filter((a) => a.producesMana.length > 0);
+				const matchingAbs =
+					requestedBundle && requestedBundle.length > 0
+						? manaAbs.filter((a) => requestedBundle.every((c) => a.producesMana.includes(c)))
+						: preferred
+							? manaAbs.filter((a) => a.producesMana.includes(preferred))
+							: manaAbs.filter((a) => a.producesMana.length > 0);
 				const payableAbs = matchingAbs.filter((candidate) => {
 					if (!checkActivationRestrictionsOnly(state, actorId, perm, candidate).ok) return false;
 					const cDefs = activatedAbilityCost(perm.card, candidate).defs;
@@ -3338,7 +3732,7 @@ function applyGameActionInner(
 						candidate
 					);
 					const colorSig = preferred ? preferred : candidate.producesMana.join(',');
-					const sig = `${JSON.stringify(cDefs)}|${JSON.stringify(candidate.activationRestrictions ?? [])}|${amt}|${colorSig}`;
+					const sig = `${JSON.stringify(cDefs)}|${JSON.stringify(candidate.activationRestrictions ?? [])}|${JSON.stringify(candidate.activationCondition ?? null)}|${Boolean(candidate.freezesSelfUntap)}|${JSON.stringify(candidate.manaBundles ?? null)}|${JSON.stringify(candidate.manaCombinationColors ?? null)}|${amt}|${colorSig}`;
 					if (!seenSignatures.has(sig)) {
 						seenSignatures.add(sig);
 						distinctPayableAbs.push(candidate);
@@ -3347,6 +3741,7 @@ function applyGameActionInner(
 				if (!actor.isBot && distinctPayableAbs.length > 1) {
 					let bestIdx = 0;
 					let bestAmt = -1;
+					let bestFreezes = 1;
 					for (let i = 0; i < distinctPayableAbs.length; i++) {
 						const amt = getDynamicManaProducedAmount(
 							state,
@@ -3355,8 +3750,10 @@ function applyGameActionInner(
 							Math.max(1, distinctPayableAbs[i].producesAmount),
 							distinctPayableAbs[i]
 						);
-						if (amt > bestAmt) {
+						const frz = distinctPayableAbs[i].freezesSelfUntap ? 1 : 0;
+						if (amt > bestAmt || (amt === bestAmt && frz < bestFreezes)) {
 							bestAmt = amt;
+							bestFreezes = frz;
 							bestIdx = i;
 						}
 					}
@@ -3375,6 +3772,7 @@ function applyGameActionInner(
 								instanceId: perm.instanceId,
 								abilityIdsCsv: distinctPayableAbs.map((a) => a.id).join('\u001f'),
 								preferredColor: preferred ?? null,
+								chosenBundleCsv: requestedBundle ? requestedBundle.join(',') : null,
 								costPaymentJson: action.costPayment ? JSON.stringify(action.costPayment) : null
 							}
 						},
@@ -3389,11 +3787,13 @@ function applyGameActionInner(
 					return { ok: true };
 				}
 				if (payableAbs.length > 0) {
-					ab = [...payableAbs].sort(
-						(x, y) =>
+					ab = [...payableAbs].sort((x, y) => {
+						const diff =
 							getDynamicManaProducedAmount(state, actor, perm, Math.max(1, y.producesAmount), y) -
-							getDynamicManaProducedAmount(state, actor, perm, Math.max(1, x.producesAmount), x)
-					)[0];
+							getDynamicManaProducedAmount(state, actor, perm, Math.max(1, x.producesAmount), x);
+						if (diff !== 0) return diff;
+						return (x.freezesSelfUntap ? 1 : 0) - (y.freezesSelfUntap ? 1 : 0);
+					})[0];
 				} else {
 					ab =
 						(preferred && manaAbs.find((a) => a.producesMana.includes(preferred))) ||
@@ -3402,10 +3802,10 @@ function applyGameActionInner(
 				}
 			}
 			const allowedColors = ab.producesMana;
-			const chosenColor: ManaColor | undefined =
+			let chosenColor: ManaColor | undefined =
 				preferred && allowedColors.includes(preferred) ? preferred : allowedColors[0];
 
-			if (ab.activationRestrictions?.length) {
+			if (ab.activationRestrictions?.length || ab.activationCondition) {
 				const manaAbLegality = checkAbilityActivationLegality(state, actorId, perm, ab);
 				if (!manaAbLegality.ok) return manaAbLegality;
 			}
@@ -3420,7 +3820,106 @@ function applyGameActionInner(
 			if (!plan.ok) return { ok: false, error: plan.error };
 			if (plan.question) return askCostChoice(state, actor, action, plan.question, perm.card.name);
 
-			if (!actor.isBot && !preferred && allowedColors.length > 1) {
+			const baseAmount = Math.max(1, ab.producesAmount);
+			const dynamicAmount = getDynamicManaProducedAmount(state, actor, perm, baseAmount, ab);
+			let chosenBundle: ManaColor[] | undefined;
+
+			if ((ab.manaBundles && ab.manaBundles.length > 0) || ab.manaCombinationColors) {
+				const combAllowed =
+					ab.manaCombinationColors === 'any'
+						? [...FIVE_MANA_COLORS]
+						: (ab.manaCombinationColors ?? []);
+				let candidateBundles: ManaColor[][] = [];
+				if (ab.manaBundles && ab.manaBundles.length > 0) {
+					candidateBundles = ab.manaBundles.map((b) => [...b]);
+				} else if (dynamicAmount > 0 && combAllowed.length > 0) {
+					candidateBundles =
+						dynamicAmount <= 5
+							? expandCombinationBundles(combAllowed, dynamicAmount)
+							: combAllowed.map((c) => Array(dynamicAmount).fill(c) as ManaColor[]);
+				}
+				const canonicalBundleKey = (b: readonly ManaColor[]) => [...b].sort().join(',');
+				if (candidateBundles.length === 0) {
+					chosenColor = undefined;
+				} else if (requestedBundle && requestedBundle.length > 0) {
+					const reqKey = canonicalBundleKey(requestedBundle);
+					const matched = candidateBundles.find((b) => canonicalBundleKey(b) === reqKey);
+					if (matched) {
+						chosenBundle = [...matched];
+					} else if (
+						ab.manaCombinationColors &&
+						requestedBundle.length === dynamicAmount &&
+						requestedBundle.every((c) => combAllowed.includes(c))
+					) {
+						chosenBundle = [...requestedBundle];
+					} else {
+						return { ok: false, error: 'Invalid mana combination choice.' };
+					}
+				} else if (candidateBundles.length === 1) {
+					chosenBundle = [...candidateBundles[0]];
+				} else if (
+					preferred &&
+					ab.manaCombinationColors &&
+					combAllowed.includes(preferred) &&
+					dynamicAmount > 0
+				) {
+					chosenBundle = Array(dynamicAmount).fill(preferred) as ManaColor[];
+				} else if (actor.isBot) {
+					chosenBundle = ab.manaCombinationColors
+						? pickCombinationForRequirement(
+								combAllowed,
+								dynamicAmount,
+								actor.manaPool,
+								null,
+								preferred,
+								actor
+							)
+						: pickBestBundleForRequirement(candidateBundles, actor.manaPool, null, preferred);
+				} else {
+					const bestDefault = ab.manaCombinationColors
+						? pickCombinationForRequirement(
+								combAllowed,
+								dynamicAmount,
+								actor.manaPool,
+								null,
+								preferred,
+								actor
+							)
+						: pickBestBundleForRequirement(candidateBundles, actor.manaPool, null, preferred);
+					const bestKey = canonicalBundleKey(bestDefault);
+					const defaultIdx = Math.max(
+						0,
+						candidateBundles.findIndex((b) => canonicalBundleKey(b) === bestKey)
+					);
+					enqueueChoicePrompt(state, {
+						id: uid('prm', state),
+						playerId: actor.playerId,
+						kind: 'chooseMode',
+						purpose: 'generic',
+						title: `${perm.card.name} — Choose Mana Combination`,
+						description: `Choose mana to add from ${perm.card.name}.`,
+						cancellable: true,
+						continuation: {
+							kind: 'handler',
+							name: TAP_MANA_BUNDLE_CHOICE_HANDLER,
+							data: {
+								instanceId: perm.instanceId,
+								abilityId: ab.id,
+								bundlesCsv: candidateBundles.map((b) => b.join(',')).join('|'),
+								costPaymentJson: action.costPayment ? JSON.stringify(action.costPayment) : null
+							}
+						},
+						choice: {
+							kind: 'chooseMode',
+							modes: candidateBundles.map((b) => formatManaBundle(b)),
+							min: 1,
+							max: 1,
+							defaultIndices: [defaultIdx]
+						}
+					});
+					return { ok: true };
+				}
+			} else if (!actor.isBot && !preferred && allowedColors.length > 1) {
 				const defaultIdx = chosenColor ? Math.max(0, allowedColors.indexOf(chosenColor)) : 0;
 				const reason = `Choose a color of mana to add from ${perm.card.name} (${allowedColors.join(', ')}).`;
 				enqueueChoicePrompt(state, {
@@ -3452,8 +3951,14 @@ function applyGameActionInner(
 				return { ok: true };
 			}
 
-			const baseAmount = Math.max(1, ab.producesAmount);
-			const amount = chosenColor ? getDynamicManaProducedAmount(state, actor, perm, baseAmount, ab) : 0;
+			if (chosenBundle && chosenBundle.length > 0) {
+				chosenColor = chosenBundle[0];
+			}
+			const amount = chosenBundle
+				? chosenBundle.length
+				: chosenColor
+					? dynamicAmount
+					: 0;
 
 			const parts = serializeCostPlanParts(ctx, plan);
 			const pcp: PendingCostPayment = {
@@ -3464,6 +3969,8 @@ function applyGameActionInner(
 				abilityId: ab.id,
 				...(ab.faceIndex !== undefined ? { faceIndex: ab.faceIndex } : {}),
 				chosenColor,
+				...(chosenBundle ? { chosenBundle } : {}),
+				...(ab.freezesSelfUntap ? { freezesSelfUntap: true } : {}),
 				amount,
 				...(ab.manaRestriction ? { manaRestriction: ab.manaRestriction } : {}),
 				onceEachTurn: Boolean(ab.activationRestrictions?.includes('onceEachTurn')),
@@ -4413,6 +4920,9 @@ function applyGameActionInner(
 				...(perm.escaped ? { sourceEscaped: true } : {}),
 				...(perm.foretold ? { sourceForetold: true } : {}),
 				...(perm.blitzed ? { sourceBlitzed: true } : {}),
+				...(perm.exertedThisTurn ? { sourceExertedThisTurn: true } : {}),
+				...(perm.chosenSubType ? { sourceChosenSubType: perm.chosenSubType } : {}),
+				...(perm.chosenColor ? { sourceChosenColor: perm.chosenColor } : {}),
 				onceEachTurn: Boolean(ab.activationRestrictions?.includes('onceEachTurn')),
 				effectText: ab.effectText,
 				abilityCostIncomplete: !abilityCost.complete,
@@ -7006,7 +7516,8 @@ function givePriorityToActiveOrNextPlayer(state: GameState): void {
 export function moveStackSpellToZone(
 	state: GameState,
 	stackItem: StackItem,
-	dest: 'graveyard' | 'exile' | 'hand' | 'library' = 'graveyard'
+	dest: 'graveyard' | 'exile' | 'hand' | 'library' = 'graveyard',
+	libraryOpts?: { position?: 'top' | 'bottom'; fromTop?: number }
 ): void {
 	if (stackItem.kind !== 'spell' || stackItem.isCopy) return;
 	// CR 702.34a (and similar stack-exit replacements): exile instead of putting it anywhere else.
@@ -7051,7 +7562,14 @@ export function moveStackSpellToZone(
 		toPlayer: owner,
 		graveyardReplacement: dest === 'graveyard',
 		commanderRedirect: true,
-		insert: dest === 'library' ? 'start' : 'end'
+		insert: (actual) =>
+			actual === 'library'
+				? computeLibraryInsertIndex(
+						libraryOpts?.fromTop,
+						libraryOpts?.position ?? 'top',
+						owner.library.length
+					)
+				: 'end'
 	});
 	// CR 716.3d: Resolving Adventure spell exiles itself with permission for its controller to cast its main face.
 	if (
@@ -7529,7 +8047,8 @@ for (const kind of [
 	'Foretold',
 	'Plotted',
 	'CombatDamageBatchPlayer',
-	'BecameMonarch'
+	'BecameMonarch',
+	'Exerted'
 ] as const) {
 	registerEventHandler(kind, (state, ev) => matchTriggers(state, ev));
 }
@@ -7650,6 +8169,13 @@ function triggeredStackItem(state: GameState, t: PendingTrigger, idPrefix: strin
 	const sourceEscaped = isObjectEscaped(state, t.source.instanceId, undefined, t.source);
 	const sourceForetold = t.sourceForetold ?? isObjectForetold(state, t.source.instanceId, undefined, t.source);
 	const sourceBlitzed = t.sourceBlitzed ?? isObjectBlitzed(state, t.source.instanceId, undefined, t.source);
+	const sourceExertedThisTurn = Boolean(
+		t.sourceExertedThisTurn ?? foundSource?.inst.exertedThisTurn ?? t.source.exertedThisTurn
+	);
+	const sourceChosenSubType =
+		t.sourceChosenSubType ?? foundSource?.inst.chosenSubType ?? t.source.chosenSubType;
+	const sourceChosenColor =
+		t.sourceChosenColor ?? foundSource?.inst.chosenColor ?? t.source.chosenColor;
 	const sourceIsFaceDown = Boolean(foundSource?.inst.isFaceDown);
 	const sourceFaceDownLabel = foundSource?.inst.faceDownLabel;
 	const sourceFaceDownSpec = foundSource?.inst.faceDownSpec;
@@ -7674,6 +8200,9 @@ function triggeredStackItem(state: GameState, t: PendingTrigger, idPrefix: strin
 			...(sourceEscaped ? { sourceEscaped: true } : {}),
 			...(sourceForetold ? { sourceForetold: true } : {}),
 			...(sourceBlitzed ? { sourceBlitzed: true } : {}),
+			...(sourceExertedThisTurn ? { sourceExertedThisTurn: true } : {}),
+			...(sourceChosenSubType ? { sourceChosenSubType } : {}),
+			...(sourceChosenColor ? { sourceChosenColor } : {}),
 			card: t.sourceCard,
 			...(t.faceIndex !== undefined ? { faceIndex: t.faceIndex } : {}),
 			...(sourceIsFaceDown
@@ -8223,7 +8752,8 @@ export function specTargetCandidates(
 	sourceCard: ScryfallCard,
 	source: CardInstance | undefined,
 	spec: TargetSpec,
-	excludeStackItemId?: string
+	excludeStackItemId?: string,
+	stackItem?: StackItem
 ): TargetRef[] {
 	const out: TargetRef[] = [];
 	if (spec.kind === 'player' || spec.kind === 'objectOrPlayer') {
@@ -8237,7 +8767,12 @@ export function specTargetCandidates(
 		}
 	}
 	if (spec.kind === 'player') return out;
-	const ctx: FilterContext = { state, controllerId, source };
+	const ctx: FilterContext = {
+		state,
+		controllerId,
+		source,
+		...(stackItem ? { stackItem } : {})
+	};
 	const zone = spec.filter.zone ?? 'battlefield';
 	if (zone === 'stack') {
 		const stackKind = spec.filter.stackKind ?? 'spell';
@@ -8301,7 +8836,8 @@ function triggerTargetCandidates(state: GameState, item: StackItem, spec: Target
 		item.card,
 		triggerSourceObject(state, item),
 		spec,
-		item.id
+		item.id,
+		item
 	);
 }
 
@@ -9325,6 +9861,7 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 		}
 	}
 	let exiledBySelfReference = false;
+	let librarySelf: { position: 'top' | 'bottom'; fromTop?: number } | undefined;
 	const steps: EffectStep[] = compiled?.steps ?? [];
 	if (interpreted) {
 		const result = executeEffectSteps(
@@ -9360,6 +9897,7 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 		}
 		if (result.turnEnded) return;
 		exiledBySelfReference = result.exileSelf;
+		librarySelf = result.librarySelf;
 	}
 
 	if (item.kind === 'triggered') triggerPathCounts[interpreted ? 'interpreter' : 'manual']++;
@@ -9591,29 +10129,34 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 						instanceFaceOptions(perm, 'battlefield')
 					).name;
 			applySelfEtbReplacements(state, perm);
-			moveObject(state, perm, 'battlefield', { from: 'stack', toPlayer: controller });
+			const moveRes = moveObject(state, perm, 'battlefield', {
+				from: 'stack',
+				toPlayer: controller
+			});
 			syncBattlefieldControllers(state);
-			if (item.spellMods?.blitzed && perm.zone === 'battlefield') {
+			if (item.spellMods?.blitzed && (perm.zone === 'battlefield' || moveRes === 'pending')) {
 				(state.delayedTriggers ??= []).push(
 					buildBlitzSacrificeDelayedTrigger(uid('dtrig', state), controller.playerId, perm, item.card)
 				);
 			}
-			addLog(
-				state,
-				'cast',
-				`${enteredName} entered the battlefield under ${controller.username}'s control.`,
-				controller.playerId
-			);
-			if (stackSubtypes.includes('Aura') && perm.attachedToId) {
-				const attachedTarget = findPermanentOnBoard(state, perm.attachedToId);
-				if (attachedTarget) {
-					emitEvent(state, {
-						kind: 'Attached',
-						attachmentId: perm.instanceId,
-						attachment: perm,
-						hostId: attachedTarget.inst.instanceId,
-						host: attachedTarget.inst
-					});
+			if (perm.zone === 'battlefield') {
+				addLog(
+					state,
+					'cast',
+					`${enteredName} entered the battlefield under ${controller.username}'s control.`,
+					controller.playerId
+				);
+				if (stackSubtypes.includes('Aura') && perm.attachedToId) {
+					const attachedTarget = findPermanentOnBoard(state, perm.attachedToId);
+					if (attachedTarget) {
+						emitEvent(state, {
+							kind: 'Attached',
+							attachmentId: perm.instanceId,
+							attachment: perm,
+							hostId: attachedTarget.inst.instanceId,
+							host: attachedTarget.inst
+						});
+					}
 				}
 			}
 			flushTriggers(state);
@@ -9621,13 +10164,14 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 			// CR 702.27a: If the buyback cost was paid, put the resolving spell into its owner's hand
 			// instead of into that player's graveyard (moveStackSpellToZone still overrides with
 			// exileOnLeaveStack per CR 702.34a when cast via Flashback).
-			const dest =
-				exiledBySelfReference || item.spellMods?.exileAdventureOnResolve
-					? 'exile'
-					: item.spellMods?.returnToHandOnResolve
-						? 'hand'
-						: 'graveyard';
-			moveStackSpellToZone(state, item, dest);
+			if (exiledBySelfReference || item.spellMods?.exileAdventureOnResolve) {
+				moveStackSpellToZone(state, item, 'exile');
+			} else if (librarySelf) {
+				moveStackSpellToZone(state, item, 'library', librarySelf);
+			} else {
+				const dest = item.spellMods?.returnToHandOnResolve ? 'hand' : 'graveyard';
+				moveStackSpellToZone(state, item, dest);
+			}
 		}
 	}
 
@@ -10439,6 +10983,9 @@ function pushCopiedStackItem(
 			...(orig.sourceEscaped ? { sourceEscaped: true } : {}),
 			...(orig.sourceForetold ? { sourceForetold: true } : {}),
 			...(orig.sourceBlitzed ? { sourceBlitzed: true } : {}),
+			...(orig.sourceExertedThisTurn ? { sourceExertedThisTurn: true } : {}),
+			...(orig.sourceChosenSubType ? { sourceChosenSubType: orig.sourceChosenSubType } : {}),
+			...(orig.sourceChosenColor ? { sourceChosenColor: orig.sourceChosenColor } : {}),
 			card: orig.card,
 			...(orig.faceIndex !== undefined ? { faceIndex: orig.faceIndex } : {}),
 			...(orig.isFaceDown
@@ -10528,7 +11075,15 @@ registerEffectPorts({
 	tryRegenerateInsteadOfDestroy,
 	canPayOptionalCost,
 	payOptionalCost,
-	moveFromBattlefield: movePermanentToZone,
+	moveFromBattlefield: (state, inst, to, libraryOpts) =>
+		movePermanentToZone(state, inst, to, undefined, libraryOpts),
+	moveStackSpellToLibrary: (state, target, libraryOpts) => {
+		const idx = state.stack.indexOf(target);
+		if (idx >= 0) {
+			const [removed] = state.stack.splice(idx, 1);
+			moveStackSpellToZone(state, removed, 'library', libraryOpts);
+		}
+	},
 	counterSpell: counterStackItemByEffect,
 	createToken: createTokenOnBoard,
 	copyPermanentAsToken,
@@ -12035,6 +12590,7 @@ function clearEndOfTurnAndDamage(state: GameState): void {
 			perm.crewedThisTurnByIds = undefined;
 			perm.saddledThisTurn = undefined;
 			perm.saddledThisTurnByIds = undefined;
+			perm.exertedThisTurn = undefined;
 			if (perm.goadExpirations) {
 				for (const [goaderId, dur] of Object.entries(perm.goadExpirations)) {
 					if (dur === 'endOfTurn') {
@@ -13284,9 +13840,14 @@ export function movePermanentToZone(
 	inst: CardInstance,
 	dest: ZoneType,
 	sbaLog?: SbaMoveLog,
-	moveOpts?: { skipLinkedReturn?: boolean }
+	moveOpts?: {
+		skipLinkedReturn?: boolean;
+		position?: 'top' | 'bottom';
+		fromTop?: number;
+	}
 ): MoveResult {
 	inst.defaultControllerId = undefined;
+	const owner = state.players.find((p) => p.playerId === inst.ownerId);
 	return moveObject(state, inst, dest, {
 		from: 'anyBattlefield',
 		detachAttachments: true,
@@ -13295,8 +13856,14 @@ export function movePermanentToZone(
 		leaveBattlefieldReset: true,
 		bumpVersion: true,
 		newTimestamp: true,
-		// The old code put cards on top of the library and at the end of every other zone.
-		insert: (actual) => (actual === 'library' ? 'start' : 'end'),
+		insert: (actual) =>
+			actual === 'library'
+				? computeLibraryInsertIndex(
+						moveOpts?.fromTop,
+						moveOpts?.position ?? 'top',
+						owner?.library.length ?? 0
+					)
+				: 'end',
 		ceaseToExist: 'tokens',
 		sbaLog,
 		...(moveOpts?.skipLinkedReturn ? { skipLinkedReturn: true } : {})
@@ -15528,6 +16095,15 @@ function checkAbilityActivationLegalityInner(
 	const activePlayer = state.players[state.activePlayerIndex];
 
 	// CR 602.5b / 602.5c: Enforce activation restrictions ("Activate only ...").
+	if (
+		ab.activationCondition &&
+		!evaluateCondition(ab.activationCondition, { state, controllerId: actorId, source: perm })
+	) {
+		return {
+			ok: false,
+			error: `${perm.card.name}: Activation condition is not met.`
+		};
+	}
 	const restrictions = ab.activationRestrictions;
 	if (restrictions?.length) {
 		if (restrictions.includes('onceEachTurn') && perm.activatedAbilityIdsThisTurn?.includes(ab.id)) {
@@ -15845,6 +16421,7 @@ function isTargetStillValid(
 					state,
 					controllerId: controllerId || item.controllerId,
 					source: sourceInst,
+					stackItem: item,
 					xValue: item.xValue
 				};
 				const matchesAnySpec = objectSpecs.some((ts) =>

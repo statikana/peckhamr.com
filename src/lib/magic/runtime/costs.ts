@@ -52,6 +52,7 @@ import {
 	validateOptionalCostCounts
 } from './kicker.ts';
 import { hasRestriction, playerLifeTotalCantChange } from './replace.ts';
+import { exertPermanent } from './tuckFreezeChosen.ts';
 import { moveObject, tapPermanent, type MoveResult, type PlayerZone } from './zones.ts';
 
 export type { SerializedPlannedCost };
@@ -594,6 +595,8 @@ export function describeCost(defs: CostDef[]): string {
 					return '{T}';
 				case 'untapSelf':
 					return '{Q}';
+				case 'exertSelf':
+					return 'Exert this';
 				case 'tapOthers':
 					return `Tap ${filterText(d.filter, d.count)}`;
 				case 'tapSubsetSum':
@@ -765,6 +768,10 @@ function checkSimple(def: CostDef, ctx: CostContext): string | null {
 			if (evaluatePermanent(ctx.state, src).isCreature && src.summoningSick && !hasHaste(ctx.state, src)) {
 				return `${name} has summoning sickness and cannot use {${def.k === 'tapSelf' ? 'T' : 'Q'}} abilities yet.`;
 			}
+			return null;
+		}
+		case 'exertSelf': {
+			if (!sourceOnBattlefield(ctx)) return `${name} must be on the battlefield to be exerted.`;
 			return null;
 		}
 		case 'payLife': {
@@ -1455,6 +1462,12 @@ export function executeCostPaymentParts(
 				if (objStart === 0) {
 					source.counters.loyalty += def.delta;
 					source.usedLoyaltyThisTurn = true;
+				}
+				break;
+			case 'exertSelf':
+				if (objStart === 0 && source.zone === 'battlefield' && !source.phasedOut) {
+					exertPermanent(ctx.state, source, player.playerId);
+					targetLog.push(`exerted ${source.card.name}`);
 				}
 				break;
 			case 'removeCounters': {

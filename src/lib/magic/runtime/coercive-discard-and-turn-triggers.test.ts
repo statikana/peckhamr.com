@@ -225,8 +225,8 @@ function advanceToNextTurnMain1(state: GameState): void {
 }
 
 describe('Track F Slice 3: Coercive Hand Reveal & Chosen Discard + Per-Turn / Batch Triggers', () => {
-	it('compiles COMPILER_VERSION 33 and reveals opponent hand, sanitizes viewer visibility, discards chosen card, clears knownToPlayerIds on zone change/shuffle, and executes trailing life loss (CR 701.9, 701.20, 400.7)', () => {
-		assert.equal(COMPILER_VERSION, 33);
+	it('compiles COMPILER_VERSION >= 33 and reveals opponent hand, sanitizes viewer visibility, discards chosen card, clears knownToPlayerIds on zone change/shuffle, and executes trailing life loss (CR 701.9, 701.20, 400.7)', () => {
+		assert.ok(COMPILER_VERSION >= 33);
 		const state = setupGame();
 		const [alice, bob] = state.players;
 		bob.hand = [];

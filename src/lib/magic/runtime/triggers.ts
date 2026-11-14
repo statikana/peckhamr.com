@@ -24,7 +24,15 @@ import { runtimeTriggers, type RuntimeTrigger } from '../compiler/triggers.ts';
 import type { Amount, Condition, EventFilter, EventKind, ObjectFilter, TriggerDef } from '../ir.ts';
 import { getKeywordSpec, GRANTED_TRIGGER_KEYWORD_EVENTS } from '../keywords.ts';
 import { evaluatePermanent, inspectCardContinuousBreakdown, permanentHasLostAllAbilities } from '../ruleTree.ts';
-import type { CardInstance, GameState, ScryfallCard, SerializedPendingTrigger, StackItem, ZoneType } from '../types.ts';
+import type {
+	CardInstance,
+	GameState,
+	ManaColor,
+	ScryfallCard,
+	SerializedPendingTrigger,
+	StackItem,
+	ZoneType
+} from '../types.ts';
 import type { GameEvent } from './events.ts';
 import {
 	evaluateKickedCountAmount,
@@ -36,7 +44,7 @@ import {
 	isObjectForetold
 } from './kicker.ts';
 import { withStableLayerInputs } from './layerCache.ts';
-import { instanceFaceOptions, matchesColorFilter, resolveObjectFaces, stackItemFaceOptions } from './faces.ts';
+import { activeAbilityDefs, instanceFaceOptions, matchesColorFilter, resolveObjectFaces, stackItemFaceOptions } from './faces.ts';
 import { playerCommanderCastCount } from './objectFilter.ts';
 import { triggerMultiplier } from './replace.ts';
 
@@ -80,6 +88,9 @@ export interface PendingTrigger {
 	isChapterAbility?: boolean;
 	sourceForetold?: boolean;
 	sourceBlitzed?: boolean;
+	sourceExertedThisTurn?: boolean;
+	sourceChosenSubType?: string;
+	sourceChosenColor?: ManaColor;
 	/** Match order (deterministic tie-break for a player's own simultaneous triggers). */
 	order: number;
 }
@@ -208,6 +219,9 @@ interface SimultaneousLkiEntry {
 	foretold?: boolean;
 	blitzed?: boolean;
 	saddled?: boolean;
+	exerted?: boolean;
+	chosenSubType?: string;
+	chosenColor?: ManaColor;
 }
 
 interface TriggerChannel {
@@ -266,6 +280,9 @@ function persistPendingTriggers(state: GameState, triggers: PendingTrigger[]): v
 			...(t.isChapterAbility ? { isChapterAbility: true } : {}),
 			...(t.sourceForetold ? { sourceForetold: true } : {}),
 			...(t.sourceBlitzed ? { sourceBlitzed: true } : {}),
+			...(t.sourceExertedThisTurn ? { sourceExertedThisTurn: true } : {}),
+			...(t.sourceChosenSubType ? { sourceChosenSubType: t.sourceChosenSubType } : {}),
+			...(t.sourceChosenColor ? { sourceChosenColor: t.sourceChosenColor } : {}),
 			order: t.order
 		});
 	}
@@ -295,6 +312,9 @@ function hydratePendingTriggers(state: GameState, ch: TriggerChannel): void {
 		...(t.isChapterAbility ? { isChapterAbility: true } : {}),
 		...(t.sourceForetold ? { sourceForetold: true } : {}),
 		...(t.sourceBlitzed ? { sourceBlitzed: true } : {}),
+		...(t.sourceExertedThisTurn ? { sourceExertedThisTurn: true } : {}),
+		...(t.sourceChosenSubType ? { sourceChosenSubType: t.sourceChosenSubType } : {}),
+		...(t.sourceChosenColor ? { sourceChosenColor: t.sourceChosenColor } : {}),
 		order: t.order
 	}));
 	ch.pending = [...hydrated, ...ch.pending];
@@ -354,7 +374,10 @@ export function withSimultaneousDestroyLki(
 			...(perm.unlockedFaces ? { unlockedFaces: [...perm.unlockedFaces] } : {}),
 			...(perm.foretold ? { foretold: true } : {}),
 			...(perm.blitzed ? { blitzed: true } : {}),
-			...(perm.saddledThisTurn ? { saddled: true } : {})
+			...(perm.saddledThisTurn ? { saddled: true } : {}),
+			...(perm.exertedThisTurn ? { exerted: true } : {}),
+			...(perm.chosenSubType ? { chosenSubType: perm.chosenSubType } : {}),
+			...(perm.chosenColor ? { chosenColor: perm.chosenColor } : {})
 		});
 	}
 	const prevMap = ch.simultaneousLki;
@@ -460,9 +483,20 @@ function hasWord(text: string, word: string): boolean {
 interface Viewer {
 	id: string;
 	controllerId: string;
+	chosenSubType?: string;
+	chosenColor?: ManaColor;
 }
 
-const viewerOf = (source: Source): Viewer => ({ id: source.obj.instanceId, controllerId: source.controllerId });
+const viewerOf = (source: Source): Viewer => ({
+	id: source.obj.instanceId,
+	controllerId: source.controllerId,
+	...(source.chosenSubType ?? source.obj.chosenSubType
+		? { chosenSubType: source.chosenSubType ?? source.obj.chosenSubType }
+		: {}),
+	...(source.chosenColor ?? source.obj.chosenColor
+		? { chosenColor: source.chosenColor ?? source.obj.chosenColor }
+		: {})
+});
 
 /** Does `subject` match an ObjectFilter, from the point of view of the trigger's source? */
 function filterMatches(f: ObjectFilter, subject: Subject, source: Viewer): boolean {
@@ -474,6 +508,12 @@ function filterMatches(f: ObjectFilter, subject: Subject, source: Viewer): boole
 	if (f.notSupertypes && f.notSupertypes.some((t) => hasWord(typeLine, t))) return false;
 	if (f.subtypes && !f.subtypes.some((s) => subject.hasSubtype(s))) return false;
 	if (f.notSubtypes && f.notSubtypes.some((s) => subject.hasSubtype(s))) return false;
+	if (f.ofChosenType) {
+		if (!source.chosenSubType || !subject.hasSubtype(source.chosenSubType)) return false;
+	}
+	if (f.ofChosenColor) {
+		if (!source.chosenColor || !subject.colors.includes(source.chosenColor)) return false;
+	}
 	if (f.controller === 'you' && subject.controllerId !== source.controllerId) return false;
 	if (f.controller === 'opponent' && subject.controllerId === source.controllerId) return false;
 	if (f.owner === 'you' && subject.obj.ownerId !== source.controllerId) return false;
@@ -525,6 +565,9 @@ interface Source {
 	foretold?: boolean;
 	blitzed?: boolean;
 	saddled?: boolean;
+	exerted?: boolean;
+	chosenSubType?: string;
+	chosenColor?: ManaColor;
 }
 
 /**
@@ -629,6 +672,9 @@ function record(state: GameState, source: Source, ability: RuntimeTrigger, kind:
 	}
 	const sourceForetold = Boolean(source.foretold ?? source.obj.foretold);
 	const sourceBlitzed = Boolean(source.blitzed ?? source.obj.blitzed);
+	const sourceExertedThisTurn = Boolean(source.exerted ?? source.obj.exertedThisTurn);
+	const sourceChosenSubType = source.chosenSubType ?? source.obj.chosenSubType;
+	const sourceChosenColor = source.chosenColor ?? source.obj.chosenColor;
 	const ch = channel(state);
 	for (let i = 0; i < count; i++) {
 		ch.pending.push({
@@ -649,6 +695,9 @@ function record(state: GameState, source: Source, ability: RuntimeTrigger, kind:
 			...(extras.isChapterAbility ? { isChapterAbility: true } : {}),
 			...(sourceForetold ? { sourceForetold: true } : {}),
 			...(sourceBlitzed ? { sourceBlitzed: true } : {}),
+			...(sourceExertedThisTurn ? { sourceExertedThisTurn: true } : {}),
+			...(sourceChosenSubType ? { sourceChosenSubType } : {}),
+			...(sourceChosenColor ? { sourceChosenColor } : {}),
 			eventPlayer: extras.eventPlayer ?? extras.eventPlayerId,
 			defendingPlayerId: extras.defendingPlayerId,
 			order: ch.nextOrder++
@@ -736,6 +785,38 @@ function matchTriggersInner(state: GameState, ev: GameEvent): void {
 			return matchCombatDamageBatchPlayer(state, ev);
 		case 'BecameMonarch':
 			return matchBecameMonarch(state, ev);
+		case 'Exerted':
+			return matchExerted(state, ev);
+	}
+}
+
+function matchExerted(state: GameState, ev: Extract<GameEvent, { kind: 'Exerted' }>): void {
+	const found = permanentById(state, ev.objectId);
+	const subject = found
+		? battlefieldSubject(state, found.obj, found.controllerId)
+		: printedSubject(ev.object, ev.object.copiableCard ?? ev.object.card, ev.playerId);
+	for (const source of sources(state, 'exert')) {
+		for (const { ability, alts } of abilitiesFor(state, source, 'exert')) {
+			const alt = alts.find((a) => {
+				if (a.filter.player) {
+					const rel = a.filter.player.relation ?? 'any';
+					if (rel === 'you' && ev.playerId !== source.controllerId) return false;
+					if (rel === 'opponent' && ev.playerId === source.controllerId) return false;
+				}
+				if (a.filter.object !== undefined && !objectMatches(a.filter, subject, source)) {
+					return false;
+				}
+				return true;
+			});
+			if (!alt) continue;
+			record(state, source, ability, 'exert', {
+				label: 'Exert Trigger',
+				eventObject: found?.obj ?? ev.object,
+				eventPlayer: ev.playerId,
+				eventPlayerId: ev.playerId,
+				times: 1
+			});
+		}
 	}
 }
 
@@ -1122,7 +1203,10 @@ function matchZoneChange(state: GameState, ev: Extract<GameEvent, { kind: 'ZoneC
 						isLookBack: true,
 						...(info.foretold ? { foretold: true } : {}),
 						...(info.blitzed ? { blitzed: true } : {}),
-						...(info.saddled ? { saddled: true } : {})
+						...(info.saddled ? { saddled: true } : {}),
+						...(info.exerted ? { exerted: true } : {}),
+						...(info.chosenSubType ? { chosenSubType: info.chosenSubType } : {}),
+						...(info.chosenColor ? { chosenColor: info.chosenColor } : {})
 					});
 				}
 			}
@@ -1142,7 +1226,10 @@ function matchZoneChange(state: GameState, ev: Extract<GameEvent, { kind: 'ZoneC
 					isLookBack: true,
 					...(ev.lki.foretold ? { foretold: true } : {}),
 					...(ev.lki.blitzed ? { blitzed: true } : {}),
-					...(ev.lki.saddled ? { saddled: true } : {})
+					...(ev.lki.saddled ? { saddled: true } : {}),
+					...(ev.lki.exerted ? { exerted: true } : {}),
+					...(ev.lki.chosenSubType ? { chosenSubType: ev.lki.chosenSubType } : {}),
+					...(ev.lki.chosenColor ? { chosenColor: ev.lki.chosenColor } : {})
 				});
 			}
 		}
@@ -1260,9 +1347,26 @@ function emitGrantedTriggerKeywords(
 }
 
 function matchCast(state: GameState, casterId: string, spell: CardInstance, isCopy: boolean): void {
-	const subject = printedSubject(spell, spell.card, casterId);
 	const stackSpell = state.stack.findLast(
 		(s) => s.kind === 'spell' && s.sourceInstanceId === spell.instanceId
+	);
+	const castFaceOpts = stackSpell ? stackItemFaceOptions(stackSpell) : instanceFaceOptions(spell, 'stack');
+	const castView = resolveObjectFaces(spell.card, castFaceOpts);
+	const spellHasChangeling =
+		!spell.isFaceDown &&
+		activeAbilityDefs(spell.card, castFaceOpts).some(
+			(ab) =>
+				(ab.kind === 'keyword' && ab.keyword.name.toLowerCase() === 'changeling') ||
+				(ab.kind === 'static' && ab.static.k === 'continuous' && ab.static.mod.k === 'allCreatureTypes')
+		);
+	const subject = printedSubject(
+		spell,
+		spell.card,
+		casterId,
+		spellHasChangeling,
+		castView.typeLine,
+		spell.tapped,
+		castView.colors
 	);
 	let triggerEventStackItem: StackItem | undefined;
 	if (stackSpell) {
@@ -1956,6 +2060,12 @@ export function evaluateCondition(
 			const found = permanentById(state, sourceInstanceId);
 			return Boolean(found?.obj.saddledThisTurn);
 		}
+		case 'exertedThisTurn': {
+			if (stackItem?.sourceExertedThisTurn) return true;
+			if (source) return Boolean(source.exerted ?? source.obj.exertedThisTurn);
+			const found = permanentById(state, sourceInstanceId);
+			return Boolean(found?.obj.exertedThisTurn);
+		}
 		case 'isTurnOf':
 			if (cond.player.k === 'you') return state.players[state.activePlayerIndex]?.playerId === controllerId;
 			return cond.player.k === 'activePlayer';
@@ -2054,7 +2164,13 @@ function amount(
 				: null;
 		}
 		case 'count': {
-			const viewer: Viewer = { id: sourceInstanceId, controllerId };
+			const srcFound = permanentById(state, sourceInstanceId);
+			const viewer: Viewer = {
+				id: sourceInstanceId,
+				controllerId,
+				...(srcFound?.obj.chosenSubType ? { chosenSubType: srcFound.obj.chosenSubType } : {}),
+				...(srcFound?.obj.chosenColor ? { chosenColor: srcFound.obj.chosenColor } : {})
+			};
 			let n = 0;
 			for (const p of state.players) {
 				if (p.lost) continue;

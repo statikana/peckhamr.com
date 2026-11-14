@@ -101,6 +101,9 @@ export interface ActivatedAbility {
 	isMana: boolean;
 	/** CR 602.5b: activation restrictions recognized on this ability. */
 	activationRestrictions?: ActivationRestriction[];
+	// --- Track P4 ---
+	/** CR 602.5b: conditional activation restriction ("Activate only if you control a Swamp or a Plains."). */
+	activationCondition?: Condition;
 	/** Zones from which this ability can be activated; omitted defaults to `['battlefield']`. */
 	activationZones?: ZoneType[];
 	/** Canonical keyword tag for ability cost modifiers (`'equip'`, `'cycling'`), CR 702.6 / 702.29f. */
@@ -190,6 +193,9 @@ export interface UnsupportedAbility {
 	targets?: TargetSpec[];
 	/** CR 602.5b: activation restrictions recognized on an unsupported activated ability. */
 	activationRestrictions?: ActivationRestriction[];
+	// --- Track P4 ---
+	/** CR 602.5b: conditional activation restriction recognized on an unsupported activated ability. */
+	activationCondition?: Condition;
 	/** CR 601.3: timing restrictions recognized on an unsupported spell. */
 	castRestrictions?: Array<'duringCombat' | 'duringYourTurn' | 'beforeAttackers'>;
 	/**
@@ -292,6 +298,11 @@ export interface ObjectFilter {
 	// --- Track P3 ---
 	/** CR 702.171b: true iff the permanent became saddled this turn. */
 	saddled?: boolean;
+	// --- Track P4 ---
+	/** CR 205.3m / 614.12: matches the `chosenSubType` recorded on the source permanent. */
+	ofChosenType?: boolean;
+	/** CR 105.4 / 614.12: matches the `chosenColor` recorded on the source permanent. */
+	ofChosenColor?: boolean;
 }
 
 export interface Compare {
@@ -397,7 +408,10 @@ export type CostDef =
 			restrictionTag?: string;
 	  }
 	// --- Track P1 ---
-	| { k: 'payEnergy'; count: Amount };
+	| { k: 'payEnergy'; count: Amount }
+	// --- Track P4 ---
+	/** CR 701.43a: "Exert ~" activation or additional cost. */
+	| { k: 'exertSelf' };
 
 // ---- Effects --------------------------------------------------------------------------------
 
@@ -466,7 +480,10 @@ export type Verb =
 	| 'becomeMonarch'
 	// --- Track P3 ---
 	| 'saddle'
-	| 'cumulativeUpkeep';
+	| 'cumulativeUpkeep'
+	// --- Track P4 ---
+	| 'freezeUntap'
+	| 'exert';
 
 export type ManaRestriction = 'artifactSpellOrNonSpell';
 
@@ -520,7 +537,7 @@ export interface EffectParams {
 	/** addMana: the exact symbols produced, e.g. ['C', 'C'] for "Add {C}{C}". */
 	mana?: ManaColor[];
 	/** addMana: `amount` mana of one colour chosen from this set ("Add {W} or {U}", "any color"). */
-	manaChoice?: ManaColor[] | 'any' | 'commanderIdentity' | 'opponentLandColors';
+	manaChoice?: ManaColor[] | 'any' | 'commanderIdentity' | 'opponentLandColors' | 'chosenColor';
 	/** addMana: spending restriction attached to the produced mana (CR 106.6). */
 	manaRestriction?: ManaRestriction;
 	/** grantPlayer: the rules the player gets. */
@@ -540,8 +557,8 @@ export interface EffectParams {
 	with?: Selector;
 	/** discard / sacrifice: "at random". */
 	atRandom?: boolean;
-	/** move to a library: top or bottom ("put two cards from your hand on top of your library"). */
-	position?: 'top' | 'bottom';
+	/** move to a library: top, bottom, or top/second-or-bottom choice ("put target creature on top or bottom of its owner's library"). */
+	position?: 'top' | 'bottom' | 'topOrBottom' | 'secondOrBottom';
 	/** The chooser picks up to `amount` ("draw up to two cards", "you may put a permanent card ..."). */
 	upTo?: boolean;
 	/** copyPermanent: "except the token isn't legendary". */
@@ -634,6 +651,17 @@ export interface EffectParams {
 	cumulativeUpkeepCost?: CostDef[];
 	/** cumulativeUpkeep (CR 702.24a): human-readable per-age-counter cost string for prompt titles. */
 	cumulativeUpkeepText?: string;
+	// --- Track P4 ---
+	/** move to library (CR 401.7): 1-based ordinal from top (2 = second from top, 3 = third from top). */
+	fromTop?: number;
+	/** move to library (`topOrBottom` / `secondOrBottom`): whether the spell/ability's controller or the object's owner chooses. */
+	libraryChoiceBy?: 'controller' | 'owner';
+	/** addMana: fixed color options combined with the permanent's `chosenColor` ("Add {C} or one mana of the chosen color"). */
+	manaWithChosenColor?: ManaColor[];
+	/** addMana: exact multi-mana bundle options ("Add {W}{W}, {W}{B}, or {B}{B}"). */
+	manaBundles?: ManaColor[][];
+	/** addMana: `amount` mana in any combination of the given colors or `'any'` ("in any combination of colors"). */
+	manaCombinationColors?: ManaColor[] | 'any';
 }
 
 export interface CoerciveDiscardSpec {
@@ -721,7 +749,9 @@ export type EventKind =
 	// --- Track P3 ---
 	| 'foretell'
 	| 'plot'
-	| 'becomesSaddled';
+	| 'becomesSaddled'
+	// --- Track P4 ---
+	| 'exert';
 
 export interface EventFilter {
 	/**
@@ -802,7 +832,10 @@ export type Condition =
 	/** CR 702.171b: true when this permanent became saddled this turn. */
 	| { k: 'saddled' }
 	/** CR 702.152a / 400.7d: true when cast by paying its blitz alternative cost. */
-	| { k: 'blitzed' };
+	| { k: 'blitzed' }
+	// --- Track P4 ---
+	/** CR 701.43: true when this permanent has been exerted this turn. */
+	| { k: 'exertedThisTurn' };
 
 // ---- Statics and replacements ---------------------------------------------------------------
 
@@ -831,7 +864,14 @@ export type LayerMod =
 	/** Layer 6: "lose flying"; `cantHaveOrGain` for "and can't have or gain flying". */
 	| { k: 'removeKeywords'; keywords: string[]; cantHaveOrGain?: boolean }
 	/** Layer 6: a quoted ability granted to the affected objects ('have "{T}: Add {C}."'). */
-	| { k: 'grantAbility'; ability: AbilityDef };
+	| { k: 'grantAbility'; ability: AbilityDef }
+	// --- Track P4 ---
+	/** Layer 4: adds `source.chosenSubType` ("is the chosen type in addition to its other types", CR 205.3m). */
+	| { k: 'addChosenSubtype' }
+	/** Layer 5: sets color to `[source.chosenColor]` ("~ is the chosen color", CR 105.4). */
+	| { k: 'setChosenColor' }
+	/** Layer 6: grants protection from `source.chosenColor` ("has protection from the chosen color", CR 702.16). */
+	| { k: 'protectionFromChosenColor' };
 
 export interface CostDelta {
 	/** 'setZero' makes the cost {0}; 'reduce'/'increase' change the generic component. */
@@ -946,6 +986,11 @@ export interface ReplacementDef {
 				counters?: { counter: CounterType; amount: Amount };
 				/** "You may have ~ enter as a copy of any creature on the battlefield" (CR 707). */
 				copyOf?: ObjectFilter;
+				// --- Track P4 ---
+				/** CR 614.1c / 614.12: "As ~ enters, choose a creature type." */
+				chooseSubType?: 'creature';
+				/** CR 614.1c / 614.12 / 105.4: "As ~ enters, choose a color [other than <color>]." */
+				chooseColor?: { exclude?: ManaColor };
 		  };
 	/** CR 614.15 / 616.1a: true when this is a self-replacement effect applied before other replacements. */
 	selfReplacement?: boolean;

@@ -95,7 +95,10 @@ function pushFingerprint(state: GameState, fp: unknown[]): void {
 				perm.faceDownSpec?.toughness,
 				perm.faceDownLabel,
 				perm.controllerId,
-				perm.defaultControllerId
+				perm.defaultControllerId,
+				perm.chosenSubType ?? '',
+				perm.chosenColor ?? '',
+				Boolean(perm.exertedThisTurn)
 			);
 		}
 	}
@@ -150,7 +153,10 @@ function fingerprintMatches(state: GameState, fp: unknown[]): boolean {
 				fp[i++] !== perm.faceDownSpec?.toughness ||
 				fp[i++] !== perm.faceDownLabel ||
 				fp[i++] !== perm.controllerId ||
-				fp[i++] !== perm.defaultControllerId
+				fp[i++] !== perm.defaultControllerId ||
+				fp[i++] !== (perm.chosenSubType ?? '') ||
+				fp[i++] !== (perm.chosenColor ?? '') ||
+				fp[i++] !== Boolean(perm.exertedThisTurn)
 			) {
 				return false;
 			}

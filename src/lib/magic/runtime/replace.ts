@@ -30,12 +30,17 @@ import type {
 	CounterType,
 	GameState,
 	LibrarySearchInterceptorInfo,
+	ManaColor,
 	PlayerGameState,
 	ScryfallCard,
 	StackItem,
 	ZoneType
 } from '../types.ts';
 import type { LeftBattlefieldInfo } from './events.ts';
+import {
+	chooseBotBestColor,
+	chooseBotBestCreatureSubtype
+} from './tuckFreezeChosen.ts';
 import { withStableLayerInputs } from './layerCache.ts';
 import { abilityActivePermanents, evaluatePermanent, type AbilityActivePermanent } from './layers.ts';
 import {
@@ -1028,17 +1033,65 @@ export function placeRegisteredCounters(
 	return added;
 }
 
+export interface SelfEtbChoiceSpec {
+	chooseSubType?: 'creature';
+	chooseColor?: { exclude?: ManaColor };
+}
+
+/**
+ * CR 614.1c, CR 614.12, CR 105.4, CR 205.3m: Inspects active self-ETB replacement abilities
+ * (`"As ~ enters, choose a creature type / choose a color..."`) for a face-up permanent entering
+ * the battlefield.
+ */
+export function selfEtbChoiceSpec(state: GameState, perm: CardInstance): SelfEtbChoiceSpec | null {
+	if (perm.isFaceDown) return null;
+	const card = effectiveCardForObject(perm);
+	const abilities = activeAbilityDefs(card, instanceFaceOptions(perm, 'battlefield'));
+	const ctx: FilterContext = {
+		state,
+		controllerId: perm.controllerId || perm.defaultControllerId || perm.ownerId,
+		source: perm,
+		xValue: perm.enteredWithX
+	};
+	let chooseSubType: 'creature' | undefined;
+	let chooseColor: { exclude?: ManaColor } | undefined;
+	for (const ability of abilities) {
+		if (ability.kind !== 'replacement') continue;
+		const rep = ability.replacement;
+		if (rep.replaces.event !== 'zoneChange') continue;
+		if (rep.replaces.filter?.object !== 'self' || rep.replaces.filter?.to !== 'battlefield') {
+			continue;
+		}
+		if (Array.isArray(rep.with) || rep.with.k !== 'modify') continue;
+		if (!evalReplaceCondition(rep.condition, ctx)) continue;
+		if (rep.with.chooseSubType === 'creature') {
+			chooseSubType = 'creature';
+		}
+		if (rep.with.chooseColor) {
+			chooseColor = { ...rep.with.chooseColor };
+		}
+	}
+	if (!chooseSubType && !chooseColor) return null;
+	return {
+		...(chooseSubType ? { chooseSubType } : {}),
+		...(chooseColor ? { chooseColor } : {})
+	};
+}
+
 /**
  * Applies self-replacement effects (`~ enters tapped`, `~ enters with N <counter> counters on it`)
  * to `perm` as it enters the battlefield. Counter amounts are routed through `addCountersToPermanent`
  * so `CounterPlaced` is emitted and active counter multipliers on the battlefield apply (CR 122.6).
  */
 export function applySelfEtbReplacements(state: GameState, perm: CardInstance): void {
+	if (perm.isFaceDown) return;
 	const card = effectiveCardForObject(perm);
 	const abilities = activeAbilityDefs(card, instanceFaceOptions(perm, 'battlefield'));
+	const ctrlId = perm.controllerId || perm.defaultControllerId || perm.ownerId;
+	const ctrl = state.players.find((p) => p.playerId === ctrlId);
 	const ctx: FilterContext = {
 		state,
-		controllerId: perm.controllerId,
+		controllerId: ctrlId,
 		source: perm,
 		xValue: perm.enteredWithX
 	};
@@ -1055,6 +1108,14 @@ export function applySelfEtbReplacements(state: GameState, perm: CardInstance): 
 
 		if (rep.with.tapped) {
 			perm.tapped = true;
+		}
+		if (ctrl?.isBot) {
+			if (rep.with.chooseColor && !perm.chosenColor) {
+				perm.chosenColor = chooseBotBestColor(state, ctrl, rep.with.chooseColor.exclude, perm);
+			}
+			if (rep.with.chooseSubType === 'creature' && !perm.chosenSubType) {
+				perm.chosenSubType = chooseBotBestCreatureSubtype(state, ctrl, perm);
+			}
 		}
 		if (rep.with.counters) {
 			const baseAmount = Math.max(0, evalReplaceAmount(rep.with.counters.amount, ctx));
