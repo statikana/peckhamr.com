@@ -297,3 +297,13 @@ See [`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.17 for th
 4. **Slice 4 (Precon & Commander Closers: `Evolve` `CR 702.100`, Trigger `, where X is ...`, Targeting Cost Taxes, Off-Battlefield Colorless, Conditional Modal Both + Opponent Hand Count, Partitioned `Dig`, Extra Combat Phases `CR 500.8`, Snapshots, `COVERAGE.md`, & Live Verification):**
    - Implement `'evolve'` (`CR 702.100a–d`, *Fathom Mage*), general trailing `, where X is <amount>` in trigger/activated/spell effects (*Scourge of Valkas*), targeting non-mana/mana `costModifier` taxes (*Terror of the Peaks*), `allOffBattlefieldAndSpellsColorless` rule modifier (*Mycosynth Lattice*), `ModalDef.conditionalChooseAll` + target-player `zoneCount` (*Jeska's Will*), multi-destination `dig.partitions` (*Expressive Iteration*), and LIFO `state.extraPhases` (`CR 500.8`, *Hellkite Charger*).
    - Bump `COMPILER_VERSION`, regenerate `compiler/__snapshots__/ir.json` & `COVERAGE.md`, update `ENGINE_INVARIANTS.md` & `rules-audit/` docs, and run live `vite dev` Chromium `/magic` verification.
+
+---
+
+## Track P: Orthogonal Parallel Worktree Tracks (P1–P3 alongside `teamwork-mtg-engine`)
+
+See [`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.18 for the full architecture and CR specification. Each worktree branches cleanly off `engine-rewrite`, keeps `ir.ts` / `types.ts` / `keywords.ts` edits strictly additive, writes its own dedicated runtime test file, and defers `COMPILER_VERSION`, `ir.json`, and `COVERAGE.md` regeneration to the post-merge integration step:
+
+1. **Track P1 (`mtg_p1_sagas_energy`):** Saga Cards (`CR 715.1–4`), Energy `{E}` Counters (`CR 107.14`), & The Monarch (`CR 726.1–5`, `CR 800.4k`) -> `src/lib/magic/runtime/sagas-energy-monarch.test.ts`.
+2. **Track P2 (`mtg_p2_fight_impulse_triggers`):** Two-Target Fight & Power-Damage "Bite" (`CR 701.14`, `CR 608.2b`), Multi-Turn & Free-Cast Impulsive Draw (`CR 601.1a`, `CR 118.9`), & Attached-Permanent LKI Death (*Skullclamp*) + Cast-Targeting Heroic Triggers (`CR 603.10a`) -> `src/lib/magic/runtime/fight-impulse-attached-triggers.test.ts`.
+3. **Track P3 (`mtg_p3_orthogonal_keywords`):** `Foretell` (`CR 702.143`), `Plot` (`CR 702.170`), `Saddle` (`CR 702.171`), `Entwine` (`CR 702.42`), `Disturb` (`CR 702.146`), `Blitz` (`CR 702.152`), `Retrace` (`CR 702.81`), `Jump-start` (`CR 702.133`), & `Cumulative upkeep` (`CR 702.24`) -> `src/lib/magic/runtime/orthogonal-keywords-p3.test.ts`.

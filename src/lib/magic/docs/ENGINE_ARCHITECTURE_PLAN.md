@@ -861,6 +861,53 @@ Introduce one pure resolver helper `resolveObjectFaces(card, objState, zone): Ac
 
 ---
 
+### 2.18 Orthogonal Parallel Worktree Tracks: Sagas/Energy/Monarch, Fight/Impulse/Attached-LKI, & Cast/Special-Action CR 702 Keywords (Track P1–P3)
+
+**Motivation:** While the `teamwork_preview` pipeline (`teamwork-mtg-engine` worktree) executes its 51-feature plan (`Precons 140/140`, damage prevention, blocking/evasion, conditional dual lands, Threshold/Metalcraft/Delirium, and 21 CR 702 keywords), three large, completely orthogonal Scryfall card clusters (`~1,400+` cards total) sit outside its feature manifest and decompose cleanly into three isolated git worktrees (`P1`, `P2`, `P3`) with additive IR/type extensions:
+
+1. **Worktree Track P1 (`mtg_p1_sagas_energy` — Saga Cards `CR 715.1–4`, Energy `{E}` `CR 107.14`, & The Monarch `CR 726.1–5`):**
+   - **Saga Cards (`CR 715.1–4`, `250` cards):**
+     - Compile chapter ability lines (`I — <effect>`, `I, II — <effect>`, `I, II, III — <effect>`, `IV — <effect>`, `CR 715.2a–c`) into `TriggeredAbility` entries with `chapterNumbers: number[]` (`CR 715.2b`: `"When one or more lore counters are put on this Saga, if the number of lore counters on it was less than N and became at least N, [Effect]"` — if multiple lore counters are placed at once crossing `I` and `II`, both chapter triggers fire!). Keep `Read ahead` (`CR 702.155`) unsupported on Sagas that carry it so non-Read-ahead Sagas (`~235` cards) compile honestly.
+     - Derive `finalChapterNumber` (`CR 715.2d`: greatest chapter number among chapter abilities the Saga currently has; `0` if it loses all abilities via Layer 6, preventing sacrifice per `CR 715.4`).
+     - **`CR 715.3a` ETB Lore Counter:** As a Saga enters the battlefield, put `1` `lore` counter on it (`applySelfEtbReplacements` / `moveObject` onto battlefield, honoring counter replacement effects and emitting `CounterPlaced` with `prevCount` -> `newCount` so chapter `I` triggers).
+     - **`CR 715.3b` Precombat Main Turn-Based Action:** Immediately at the start of the active player's precombat main phase (`main1` in `beginPhase`, before priority), put `1` `lore` counter on each phased-in Saga the active player controls.
+     - **`CR 715.4` / `CR 704.5s` State-Based Action:** In `checkStateBasedActions`, sacrifice any Saga whose `lore` counter count `>= finalChapterNumber > 0` **only when** no chapter ability from that Saga (`sourceInstanceId === perm.instanceId && isChapterAbility`) is currently on `state.stack` or queued in `state.pendingTriggers`.
+   - **Energy `{E}` Counters (`CR 107.14`, `CR 122.1f`, `144` cards):**
+     - Add plain-JSON `energyCounters?: number` on `PlayerGameState` (`types.ts`), proliferatable alongside `poisonCounters` when `(player.energyCounters ?? 0) > 0` (`CR 701.34a`).
+     - Parse `"Pay {E}..."` / `"Pay N {E}"` in `compiler/costs.ts` into `{ k: 'payEnergy', count: Amount }` (enforced in `runtime/costs.ts` `checkSimple` & `executeCostPaymentParts`, automatically composing with `OptionalSpec` for `"you may pay {E}{E}. If you do, ..."`).
+     - Parse `"[You / Target player] get(s) {E}..."` into `{ verb: 'gainEnergy', player, amount }` (`compiler/effects.ts`, `runtime/effects.ts`) and `"{E}"` player counter amounts (`{ k: 'energyCount', player }`).
+   - **The Monarch (`CR 726.1–5`, `CR 800.4k`, `67` cards):**
+     - Add `monarchPlayerId?: string | null` on `GameState` (`types.ts`), `{ verb: 'becomeMonarch', player }`, `BecameMonarch` event (`"Whenever you become the monarch"`), and `{ k: 'isMonarch', player }` `Condition`.
+     - Implement both inherent game-level triggered abilities (`CR 726.2`, pushed onto `state.stack` independent of any permanent): (a) at the beginning of the monarch's `end_step`, that player draws a card; (b) whenever a creature deals combat damage to the monarch, its controller becomes the monarch. Handle `CR 800.4k` succession if the monarch leaves a multiplayer game.
+
+2. **Worktree Track P2 (`mtg_p2_fight_impulse_triggers` — Two-Target Fight/Bite `CR 701.14`, Multi-Turn/Free Impulsive Draw `CR 601.1a`, & Attached-LKI / Heroic Triggers `CR 603.10a`):**
+   - **Two-Target Fight & Power-Damage "Bite" (`CR 701.14a–d`, `CR 120.3`, `CR 608.2b`, `313` cards):**
+     - Compile two-target fight (`"Target creature you control fights [up to one] target creature [you don't control / an opponent controls]"`) enforcing `CR 701.14b` (if either target is illegal or not a creature on the battlefield at resolution, neither deals nor is dealt damage) and `CR 701.14c` (if a creature fights itself, it deals damage equal to its power to itself once, not twice).
+     - Compile two-target & pronoun one-way power-damage "bite" (`"Target creature you control deals damage equal to its power to target [creature / creature or planeswalker / any target]"`, `"It deals damage equal to its power to ..."`), enforcing `CR 608.2b` (*an illegal target cannot perform actions*: if target #0 — your creature — is illegal/gone on resolution while target #1 remains legal, the spell still resolves without fizzling so trailing effects run, and target #0 deals `0` damage!).
+     - Compile `"~ deals N damage to target player or planeswalker"` (`53` cards) and `"~ deals N damage to each creature and each player"` (`26` cards).
+   - **Multi-Turn & Free-Cast Impulsive Draw (`CR 601.1a`, `CR 406`, `CR 118.9`, `219` cards):**
+     - Extend `PlayableFromExilePermission` (`types.ts`) and `grantPlayFromExile` (`ir.ts`, `compiler/effects.ts`, `runtime/effects.ts`, `engine.ts`) with `duration: 'thisTurn' | 'untilEndOfYourNextTurn' | 'untilYourNextEndStep' | 'asLongAsExiled'`, `spellsOnly?: boolean` (`"may cast"` forbids lands vs `"may play"` allows lands respecting land drops `CR 305.2`), and `withoutPayingManaCost?: boolean` (`CR 118.9` `{0}` alternative cost `CastOption` from `'exile'`, X = 0 per `CR 107.3b`).
+   - **Attached-Permanent LKI Death Triggers & Cast-Targeting Heroic Triggers (`CR 603.10a`, `CR 603.2`, `~125` cards):**
+     - Compile `"When enchanted [creature/permanent/land] dies, ..."` and `"When equipped creature dies, ..."` (*Skullclamp*, *Kaya's Ghostform*, *Rancor*-style triggers), capturing LKI `attachedToId` at the moment of battlefield exit (`CR 603.10a` look-back in time before SBA unattachment) and binding `that card` (`eventObject`) so `"return that card to the battlefield under your control / its owner's control"` and `"draw two cards"` execute accurately.
+     - Strip `Heroic —` ability word (`compiler/normalize.ts`) and compile `"Whenever you cast a spell that targets ~, ..."` (`event: 'cast'`, `!isCopy`, `targetsSelf: true`).
+
+3. **Worktree Track P3 (`mtg_p3_orthogonal_keywords` — 9 Orthogonal `CR 702` Keywords Reusing CastOption / Special Action / Crew Infrastructure):**
+   - Implement with **zero** keyword literals in `ArenaTable.svelte` or `ai.ts` (surfacing via generic `CastOption`, generic hand special actions, and `ActivatedAbility`):
+     - **`Foretell [cost]` (`CR 702.143a–f`, `CR 116.2h`, `52` cards):** Priority special action during your turn paying `{2}` to exile face-down from `'hand'` (`knownToPlayerIds: [actorId]`, `foretoldTurnNumber`); `'exile:foretell'` `CastOption` on any later turn (`state.turnNumber > foretoldTurnNumber`) for `[cost]`.
+     - **`Plot [cost]` (`CR 702.170a–d`, `CR 116.2k`, `34` cards):** Sorcery-speed special action paying `[cost]` to exile face-up from `'hand'` (`plottedTurnNumber`); `'exile:plot'` `CastOption` on a later turn (`withoutPayingManaCost`, sorcery timing even for Instants per `CR 702.170d`).
+     - **`Saddle N` (`CR 702.171a–c`, `34` cards):** Sorcery-speed `ActivatedAbility` reusing `{ k: 'tapSubsetSum', metric: 'power', minTotal: N, other: true }`, setting `perm.saddledThisTurn = true` (cleared at cleanup / leave battlefield), emitting `BecomesSaddled`, and supporting `"Whenever ~ attacks while saddled"` (`saddled` filter/condition).
+     - **`Entwine [cost]` (`CR 702.42a–b`, `31` cards):** `CastOption.optionalAdditionalCosts` (`id: 'entwine:0'`, `maxCount: 1`) choosing all modes of a modal spell when paid.
+     - **`Disturb [cost]` (`CR 702.146a–b`, `CR 712.8c`, `25` cards):** `'alt:disturb'` `CastOption` from `'graveyard'` casting back face (`faceIndex: 1`, `transformed: true`), plus back-face `"If ~ would be put into a graveyard from anywhere, exile it instead"` static replacement.
+     - **`Blitz [cost]` (`CR 702.152a–c`, `17` cards):** `'alt:blitz'` `CastOption` granting Haste, `"When this creature dies, draw a card"`, and end-step sacrifice `DelayedTrigger`.
+     - **`Retrace` (`CR 702.81a`, `18` cards) & `Jump-start` (`CR 702.133a`, `13` cards):** `'graveyard:retrace'` (`discard a land card`) and `'graveyard:jumpstart'` (`discard a card` + `exileOnLeaveStack: true`) `CastOption`s.
+     - **`Cumulative upkeep [cost]` (`CR 702.24a–b`, `61` cards):** Upkeep triggered ability placing `1` `age` counter on `self`, then sacrificing `self` unless controller pays `[cost] × ageCounters`.
+
+4. **Merge Hygiene Across Parallel Worktrees:**
+   - Keep `ir.ts`, `types.ts`, and `keywords.ts` additions strictly additive inside labeled `// --- Track P1 ---` / `P2` / `P3` sections.
+   - Defer `COMPILER_VERSION` bump, `compiler/__snapshots__/ir.json`, and `docs/COVERAGE.md` regeneration to the unified post-merge integration commit on `engine-rewrite`.
+
+---
+
 ## 3. Phases
 
 Each phase lists: **owns** (files only this phase's agent edits; others treat them as read-only
