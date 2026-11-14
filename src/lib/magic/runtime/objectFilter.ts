@@ -21,8 +21,10 @@ import {
 	evaluateKickedCountAmount,
 	evaluateKickerCondition,
 	getObjectKickerInfo,
+	isObjectBlitzed,
 	isObjectEscaped,
-	isObjectEvoked
+	isObjectEvoked,
+	isObjectForetold
 } from './kicker.ts';
 import { splitSubtypes } from './layers.ts';
 
@@ -273,6 +275,7 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 	if (filter.owner === 'opponent' && obj.ownerId === ctx.controllerId) return false;
 
 	if (filter.tapped !== undefined && obj.tapped !== filter.tapped) return false;
+	if (filter.saddled !== undefined && Boolean(obj.saddledThisTurn) !== filter.saddled) return false;
 	if (filter.token !== undefined && obj.isToken !== filter.token) return false;
 	if (filter.isCommander !== undefined && Boolean(obj.isCommander) !== filter.isCommander) return false;
 	if (filter.exiledWithSelf) {
@@ -460,6 +463,16 @@ export function evaluateCondition(cond: Condition, ctx: FilterContext): boolean 
 			if (rel === 'opponent') return monarchId !== ctx.controllerId;
 			return true;
 		}
+		case 'foretold':
+			return ctx.source
+				? isObjectForetold(ctx.state, ctx.source.instanceId, undefined, ctx.source)
+				: false;
+		case 'blitzed':
+			return ctx.source
+				? isObjectBlitzed(ctx.state, ctx.source.instanceId, undefined, ctx.source)
+				: false;
+		case 'saddled':
+			return Boolean(ctx.source?.saddledThisTurn);
 		default:
 			return false;
 	}

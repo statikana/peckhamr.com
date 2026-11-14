@@ -87,7 +87,17 @@ export const KEYWORD_COVERAGE_FILES: Record<string, readonly string[]> = {
 	unearth: ['runtime/graveyard-hand-cast-keywords.test.ts'],
 	vigilance: ['runtime/keywords-evasion.test.ts', 'runtime/tier3b.test.ts'],
 	ward: ['runtime/keywords-protection-attachments.test.ts', 'runtime/wave4-cr-completion.test.ts'],
-	wither: ['runtime/keywords-combat-damage.test.ts', 'runtime/keywords-damage.test.ts']
+	wither: ['runtime/keywords-combat-damage.test.ts', 'runtime/keywords-damage.test.ts'],
+	// --- Track P3 ---
+	blitz: ['runtime/orthogonal-keywords-p3.test.ts'],
+	'cumulative upkeep': ['runtime/orthogonal-keywords-p3.test.ts'],
+	disturb: ['runtime/orthogonal-keywords-p3.test.ts'],
+	entwine: ['runtime/orthogonal-keywords-p3.test.ts'],
+	foretell: ['runtime/orthogonal-keywords-p3.test.ts'],
+	'jump-start': ['runtime/orthogonal-keywords-p3.test.ts'],
+	plot: ['runtime/orthogonal-keywords-p3.test.ts'],
+	retrace: ['runtime/orthogonal-keywords-p3.test.ts'],
+	saddle: ['runtime/orthogonal-keywords-p3.test.ts']
 };
 
 const SAMPLE_ORACLE_FOR_KEYWORD: Record<string, { typeLine: string; oracleText: string }> = {
@@ -129,7 +139,20 @@ const SAMPLE_ORACLE_FOR_KEYWORD: Record<string, { typeLine: string; oracleText: 
 	suspend: { typeLine: 'Sorcery', oracleText: 'Draw a card.\nSuspend 4—{U}' },
 	typecycling: { typeLine: 'Creature — Human Wizard', oracleText: 'Wizardcycling {3}' },
 	unearth: { typeLine: 'Creature — Zombie', oracleText: 'Unearth {1}{B}' },
-	ward: { typeLine: 'Creature — Drake', oracleText: 'Ward {2}' }
+	ward: { typeLine: 'Creature — Drake', oracleText: 'Ward {2}' },
+	// --- Track P3 ---
+	blitz: { typeLine: 'Creature — Viashino Warrior', oracleText: 'Blitz {1}{R}' },
+	'cumulative upkeep': { typeLine: 'Creature — Illusion', oracleText: 'Cumulative upkeep {1}' },
+	disturb: { typeLine: 'Creature — Spirit', oracleText: 'Disturb {1}{W}' },
+	entwine: {
+		typeLine: 'Instant',
+		oracleText: 'Choose one —\n• Draw a card.\n• Gain 3 life.\nEntwine {2}'
+	},
+	foretell: { typeLine: 'Instant', oracleText: 'Draw two cards.\nForetell {1}{U}' },
+	'jump-start': { typeLine: 'Instant', oracleText: 'Draw a card.\nJump-start' },
+	plot: { typeLine: 'Creature — Beast', oracleText: 'Plot {1}{G}' },
+	retrace: { typeLine: 'Sorcery', oracleText: 'Draw a card.\nRetrace' },
+	saddle: { typeLine: 'Creature — Beast Mount', oracleText: 'Saddle 2' }
 };
 
 describe('Implemented Keywords Coverage Guard', () => {
@@ -224,7 +247,15 @@ describe('Implemented Keywords Coverage Guard', () => {
 			'suspend',
 			'typecycling',
 			'unearth',
-			'ward'
+			'ward',
+			// --- Track P3 ---
+			'blitz',
+			'cumulative upkeep',
+			'disturb',
+			'entwine',
+			'foretell',
+			'plot',
+			'saddle'
 		]);
 
 		assert.deepEqual(

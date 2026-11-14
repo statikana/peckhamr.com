@@ -2496,7 +2496,7 @@ function sentence(p: Parser, text: string, span: Span): boolean {
 	}
 
 	const ifKicked = t.match(
-		/^(if (?:it|~) (?:was(?:n't| not)? kicked(?: with its .+? kicker| twice| \S+ times?)?|escaped|(?:didn't|did not) escape)), (.+)$/i
+		/^(if (?:(?:it|~) (?:was(?:n't| not)? (?:kicked(?: with its .+? kicker| twice| \S+ times?)?|foretold|blitzed)|is(?:n't| not)? saddled|escaped|(?:didn't|did not) escape)|it's(?: not)? saddled|its blitz cost was(?:n't| not)? paid)), (.+)$/i
 	);
 	if (ifKicked) {
 		const cond = parseCondition(ifKicked[1]);

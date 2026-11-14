@@ -66,10 +66,12 @@ export const INTERPRETED_VERBS: ReadonlySet<Verb> = new Set<Verb>([
 	'gainControl',
 	'revealAndDiscard',
 	'gainEnergy',
-	'becomeMonarch'
+	'becomeMonarch',
+	'saddle',
+	'cumulativeUpkeep'
 ]);
 
-const SUPPORTED_OPTIONAL_COST_KINDS: ReadonlySet<CostDef['k']> = new Set<CostDef['k']>([
+export const SUPPORTED_OPTIONAL_COST_KINDS: ReadonlySet<CostDef['k']> = new Set<CostDef['k']>([
 	'mana',
 	'payLife',
 	'payEnergy',
@@ -115,6 +117,12 @@ function stepSupported(step: EffectStep): boolean {
 	if (!INTERPRETED_VERBS.has(step.verb)) return false;
 	if (!selectorSupported(step.subject)) return false;
 	if (step.verb === 'payCost' && (!step.optional?.cost || step.optional.cost.length === 0)) return false;
+	if (step.verb === 'cumulativeUpkeep') {
+		const cu = step.params?.cumulativeUpkeepCost;
+		if (!cu || cu.length === 0 || !cu.every((c) => SUPPORTED_OPTIONAL_COST_KINDS.has(c.k))) {
+			return false;
+		}
+	}
 	if (step.optional?.cost) {
 		if (
 			step.optional.cost.length === 0 ||

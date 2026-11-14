@@ -289,6 +289,9 @@ export interface ObjectFilter {
 	named?: string;
 	/** CR 607.2a: cards currently in exile whose `exiledBy` links to the source permanent's current objectVersion. */
 	exiledWithSelf?: boolean;
+	// --- Track P3 ---
+	/** CR 702.171b: true iff the permanent became saddled this turn. */
+	saddled?: boolean;
 }
 
 export interface Compare {
@@ -460,7 +463,10 @@ export type Verb =
 	| 'revealAndDiscard'
 	// --- Track P1 ---
 	| 'gainEnergy'
-	| 'becomeMonarch';
+	| 'becomeMonarch'
+	// --- Track P3 ---
+	| 'saddle'
+	| 'cumulativeUpkeep';
 
 export type ManaRestriction = 'artifactSpellOrNonSpell';
 
@@ -623,6 +629,11 @@ export interface EffectParams {
 	/** damage: players dealt the same simultaneous damage alongside permanent `subject` ("each creature and each player"). */
 	alsoDamagePlayers?: PlayerFilter;
 	// --- End Track P2 ---
+	// --- Track P3 ---
+	/** cumulativeUpkeep (CR 702.24a): per-age-counter cost definitions compiled from the keyword parameter. */
+	cumulativeUpkeepCost?: CostDef[];
+	/** cumulativeUpkeep (CR 702.24a): human-readable per-age-counter cost string for prompt titles. */
+	cumulativeUpkeepText?: string;
 }
 
 export interface CoerciveDiscardSpec {
@@ -706,7 +717,11 @@ export type EventKind =
 	/** CR 603.2c / 510.2: One or more creatures dealt combat damage to a player simultaneously. */
 	| 'combatDamageBatchPlayer'
 	// --- Track P1 ---
-	| 'becameMonarch';
+	| 'becameMonarch'
+	// --- Track P3 ---
+	| 'foretell'
+	| 'plot'
+	| 'becomesSaddled';
 
 export interface EventFilter {
 	/**
@@ -744,6 +759,9 @@ export interface EventFilter {
 	/** cast: spell on the stack targets `~` ("Whenever you cast a spell that targets ~", CR 603.2, 707.10). */
 	targetsSelf?: boolean;
 	// --- End Track P2 ---
+	// --- Track P3 ---
+	/** "Whenever ~ attacks while saddled" (CR 702.171b). */
+	saddled?: boolean;
 }
 
 export interface TriggerDef {
@@ -777,7 +795,14 @@ export type Condition =
 	/** CR 702.138b / 400.7d: true when cast by paying its escape alternative cost. */
 	| { k: 'escaped' }
 	// --- Track P1 ---
-	| { k: 'isMonarch'; player?: PlayerRef; relation?: 'you' | 'opponent' | 'any' };
+	| { k: 'isMonarch'; player?: PlayerRef; relation?: 'you' | 'opponent' | 'any' }
+	// --- Track P3 ---
+	/** CR 702.143d / 400.7d: true when cast by paying its foretell alternative cost. */
+	| { k: 'foretold' }
+	/** CR 702.171b: true when this permanent became saddled this turn. */
+	| { k: 'saddled' }
+	/** CR 702.152a / 400.7d: true when cast by paying its blitz alternative cost. */
+	| { k: 'blitzed' };
 
 // ---- Statics and replacements ---------------------------------------------------------------
 
@@ -851,7 +876,9 @@ export type RestrictionKind =
 	| 'blocksEachCombat'
 	| 'cantBeCountered'
 	| 'doesntUntap'
-	| 'cantCrewVehicles';
+	| 'cantCrewVehicles'
+	// --- Track P3 ---
+	| 'cantHaveCounters';
 
 export type StaticDef =
 	| {

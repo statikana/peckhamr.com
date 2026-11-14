@@ -10,7 +10,7 @@ import { displayAbilityText } from './compiler/support.ts';
 import type { ActivatedAbility, CostDef, EffectStep, ModalDef, TargetSpec, UnsupportedAbility } from './ir.ts';
 import { getKeywordSpec } from './keywords.ts';
 import { effectiveAbilityManaCost } from './runtime/costs.ts';
-import { isCastConditionMet } from './runtime/kicker.ts';
+import { hasChooseAllModesOptionalCost, isCastConditionMet } from './runtime/kicker.ts';
 import {
 	evaluatePermanent,
 	getAttachedAbilityStrippingAuraSources,
@@ -273,6 +273,12 @@ export function getSpellTargetRequirement(
 	for (const ab of abilities) {
 		if (ab.kind === 'spell') {
 			if (ab.modal && !option?.fused) {
+				// CR 702.42b: When Entwine (or another chooseAllModes optional cost) is paid,
+				// all modes are chosen in printed order and their target specs combine sequentially.
+				if (hasChooseAllModesOptionalCost(option, optionalCostCounts)) {
+					nonModalSpecs.push(...ab.modal.modes.flatMap((m) => activeSpecs(m.targets)));
+					continue;
+				}
 				return modalTargetRequirement(ab.modal, activeSpecs);
 			}
 			nonModalSpecs.push(...activeSpecs(ab.targets));

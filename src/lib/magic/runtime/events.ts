@@ -63,6 +63,10 @@ export interface LeftBattlefieldInfo {
 	/** Instance IDs of battlefield attachments attached to this permanent right before detachment (CR 603.10a). */
 	attachedIds?: string[];
 	// --- End Track P2 ---
+	// --- Track P3 ---
+	foretold?: boolean;
+	blitzed?: boolean;
+	saddled?: boolean;
 }
 
 /** A spell was cast (it is already on the stack). */
@@ -251,6 +255,32 @@ export interface BecomesCrewedEvent extends EventBase {
 	crewedByIds: string[];
 }
 
+// --- Track P3 ---
+/** A player exiled a card from hand face down via Foretell (CR 116.2h, CR 702.143a). */
+export interface ForetoldEvent extends EventBase {
+	kind: 'Foretold';
+	playerId: string;
+	objectId: string;
+	card: CardInstance;
+}
+
+/** A player exiled a card from hand face up via Plot (CR 116.2k, CR 702.170a). */
+export interface PlottedEvent extends EventBase {
+	kind: 'Plotted';
+	playerId: string;
+	objectId: string;
+	card: CardInstance;
+}
+
+/** A Mount became saddled by one or more creatures (CR 702.171c). */
+export interface BecomesSaddledEvent extends EventBase {
+	kind: 'BecomesSaddled';
+	playerId: string;
+	objectId: string;
+	object: CardInstance;
+	saddledByIds: string[];
+}
+
 /**
  * One or more creatures dealt combat damage to a single player simultaneously in a combat damage step
  * (CR 510.2, 510.4, 603.2c). Emitted once per damaged player after atomic combat damage dealing.
@@ -282,6 +312,9 @@ export type GameEvent =
 	| ExploredEvent
 	| ConnivedEvent
 	| BecomesCrewedEvent
+	| ForetoldEvent
+	| PlottedEvent
+	| BecomesSaddledEvent
 	| CombatDamageBatchPlayerEvent
 	| ZoneChangeEvent
 	| CastEvent

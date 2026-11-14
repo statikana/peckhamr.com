@@ -200,6 +200,9 @@ function objectEvent(verb: string, subject: Subject): TriggerDef | null {
 		case 'attacks':
 		case 'attack':
 			return def('attacks');
+		case 'attacks while saddled':
+		case 'attack while saddled':
+			return def('attacks', { saddled: true });
 		case 'blocks':
 		case 'block':
 			return def('blocks');
@@ -209,6 +212,8 @@ function objectEvent(verb: string, subject: Subject): TriggerDef | null {
 			return def('becomesTapped');
 		case 'becomes crewed':
 			return def('becomesCrewed');
+		case 'becomes saddled':
+			return def('becomesSaddled');
 		case 'is dealt damage':
 			return def('dealtDamage');
 		case 'deals combat damage to a player':
@@ -369,6 +374,16 @@ function playerEvent(player: EventFilter['player'], rest: string): TriggerDef | 
 		const object = parseObjectPhrase(turnUp[1]);
 		if (object) return { event: 'turnFaceUp', filter: { object, player } };
 	}
+	const foretell = rest.match(/^foretells? (.+)$/);
+	if (foretell) {
+		const object = discardedCardFilter(foretell[1]);
+		if (object) return { event: 'foretell', filter: { object, player } };
+	}
+	const plot = rest.match(/^plots? (.+)$/);
+	if (plot) {
+		const object = discardedCardFilter(plot[1]);
+		if (object) return { event: 'plot', filter: { object, player } };
+	}
 	return null;
 }
 
@@ -453,6 +468,24 @@ export function parseCondition(text: string): Condition | null {
 	}
 	if (/^if (?:its evoke cost was(?:n't| not) paid|(?:it|~) was(?:n't| not) evoked)$/i.test(t)) {
 		return { k: 'not', of: { k: 'evoked' } };
+	}
+	if (/^if (?:it|~) was foretold$/i.test(t)) {
+		return { k: 'foretold' };
+	}
+	if (/^if (?:it|~) was(?:n't| not) foretold$/i.test(t)) {
+		return { k: 'not', of: { k: 'foretold' } };
+	}
+	if (/^if (?:(?:~|it) is|it's) saddled$/i.test(t)) {
+		return { k: 'saddled' };
+	}
+	if (/^if (?:(?:~|it) is(?:n't| not)|it's not) saddled$/i.test(t)) {
+		return { k: 'not', of: { k: 'saddled' } };
+	}
+	if (/^if (?:its blitz cost was paid|(?:it|~) was blitzed)$/i.test(t)) {
+		return { k: 'blitzed' };
+	}
+	if (/^if (?:its blitz cost was(?:n't| not) paid|(?:it|~) was(?:n't| not) blitzed)$/i.test(t)) {
+		return { k: 'not', of: { k: 'blitzed' } };
 	}
 	if (/^if you control (?:a|your) commander$/i.test(t)) {
 		return { k: 'controlCommander' };
@@ -566,14 +599,15 @@ const RUNTIME_OBJECT_FIELDS: ReadonlySet<string> = new Set([
 	'other',
 	'colors',
 	'tapped',
-	'isCommander'
+	'isCommander',
+	'saddled'
 ]);
 
 /** EventFilter fields each event kind's matcher checks (runtime/triggers.ts). */
 const RUNTIME_EVENT_FIELDS: Partial<Record<TriggerDef['event'], ReadonlySet<string>>> = {
 	zoneChange: new Set(['object', 'orSelf', 'from', 'to', 'attachedFilter']),
 	cast: new Set(['object', 'player', 'orCopy', 'nthThisTurn', 'targetsSelf']),
-	attacks: new Set(['object', 'oneOrMore', 'player']),
+	attacks: new Set(['object', 'oneOrMore', 'player', 'saddled']),
 	combatDamageBatchPlayer: new Set(['object', 'oneOrMore', 'player']),
 	blocks: new Set(['object']),
 	becomesBlocked: new Set(['object']),
@@ -596,7 +630,10 @@ const RUNTIME_EVENT_FIELDS: Partial<Record<TriggerDef['event'], ReadonlySet<stri
 	explore: new Set(['object', 'orSelf']),
 	connive: new Set(['object', 'orSelf']),
 	becomesCrewed: new Set(['object', 'orSelf']),
-	becameMonarch: new Set(['player'])
+	becameMonarch: new Set(['player']),
+	becomesSaddled: new Set(['object', 'orSelf']),
+	foretell: new Set(['object', 'player']),
+	plot: new Set(['object', 'player'])
 };
 
 function objectFilterProblem(f: ObjectFilter | undefined): string | null {

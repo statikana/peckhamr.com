@@ -21,6 +21,7 @@ const KICKER_KEYWORDS: Record<string, boolean> = {
 };
 
 const RETURN_TO_HAND_OPTIONAL_KEYWORDS: ReadonlySet<string> = new Set(['buyback']);
+const CHOOSE_ALL_MODES_OPTIONAL_KEYWORDS: ReadonlySet<string> = new Set(['entwine']);
 
 function rawOptionalEntriesForCard(
 	card: ScryfallCard,
@@ -31,8 +32,26 @@ function rawOptionalEntriesForCard(
 	const out: CastOptionOptionalCost[] = [];
 	let idx = 0;
 	let buybackIdx = 0;
+	let entwineIdx = 0;
 	for (const ab of abilities) {
 		if (ab.kind !== 'keyword') continue;
+		if (
+			CHOOSE_ALL_MODES_OPTIONAL_KEYWORDS.has(ab.keyword.name) &&
+			ab.keyword.costDefs &&
+			ab.keyword.costDefs.length > 0
+		) {
+			const rawCost = (ab.keyword.cost ?? ab.keyword.param ?? '').trim();
+			const isManaOnly = /^(\{[^}]+\})+$/.test(rawCost);
+			out.push({
+				id: `entwine:${entwineIdx++}`,
+				label: rawCost ? (isManaOnly ? `Entwine (${rawCost})` : `Entwine—${rawCost}`) : 'Entwine',
+				costDisplay: rawCost,
+				costDefs: ab.keyword.costDefs,
+				maxCount: 1,
+				chooseAllModes: true
+			});
+			continue;
+		}
 		if (
 			RETURN_TO_HAND_OPTIONAL_KEYWORDS.has(ab.keyword.name) &&
 			ab.keyword.costDefs &&
@@ -70,6 +89,8 @@ export interface KickerTrackingInfo {
 	count: number;
 	tags: string[];
 	tagCounts?: Record<string, number>;
+	foretold?: boolean;
+	blitzed?: boolean;
 }
 
 export type CastOptionLike = Partial<
@@ -100,7 +121,13 @@ export function computeKickerTracking(
 			tagCounts[tag] = (tagCounts[tag] ?? 0) + n;
 		}
 	}
-	return { count, tags, tagCounts };
+	return {
+		count,
+		tags,
+		tagCounts,
+		...(option?.spellMods?.foretold ? { foretold: true } : {}),
+		...(option?.spellMods?.blitzed ? { blitzed: true } : {})
+	};
 }
 
 export function evaluateKickerCondition(
@@ -129,6 +156,8 @@ export function evaluateKickedCountAmount(
 
 export function isConditionMetWithKicker(cond: Condition, info: KickerTrackingInfo): boolean {
 	if (cond.k === 'kicked') return evaluateKickerCondition(cond, info);
+	if (cond.k === 'foretold') return Boolean(info.foretold);
+	if (cond.k === 'blitzed') return Boolean(info.blitzed);
 	if (cond.k === 'not') return !isConditionMetWithKicker(cond.of, info);
 	if (cond.k === 'and') return cond.of.every((c) => isConditionMetWithKicker(c, info));
 	if (cond.k === 'or') return cond.of.some((c) => isConditionMetWithKicker(c, info));
@@ -245,20 +274,34 @@ export function getObjectKickerInfo(
 			return computeKickerTracking(
 				stackItem.card,
 				stackItem.optionalCostCounts,
-				undefined,
+				{ spellMods: stackItem.spellMods },
 				stackItem.faceIndex ?? 0,
 				stackItem.fused ?? false
 			);
 		}
-		if (stackItem.sourceKickedCount !== undefined) {
-			return { count: stackItem.sourceKickedCount, tags: stackItem.sourceKickedTags ?? [] };
+		if (
+			stackItem.sourceKickedCount !== undefined ||
+			stackItem.sourceForetold !== undefined ||
+			stackItem.sourceBlitzed !== undefined
+		) {
+			return {
+				count: stackItem.sourceKickedCount ?? 0,
+				tags: stackItem.sourceKickedTags ?? [],
+				...(stackItem.sourceForetold ? { foretold: true } : {}),
+				...(stackItem.sourceBlitzed ? { blitzed: true } : {})
+			};
 		}
 	}
 	if (instanceId) {
 		for (const p of state.players) {
 			const perm: CardInstance | undefined = p.battlefield.find((c) => c.instanceId === instanceId);
 			if (perm) {
-				return { count: perm.kickedCount ?? 0, tags: perm.kickedTags ?? [] };
+				return {
+					count: perm.kickedCount ?? 0,
+					tags: perm.kickedTags ?? [],
+					...(perm.foretold ? { foretold: true } : {}),
+					...(perm.blitzed ? { blitzed: true } : {})
+				};
 			}
 		}
 		const stackSpell = state.stack.find((s) => s.sourceInstanceId === instanceId);
@@ -267,21 +310,38 @@ export function getObjectKickerInfo(
 				return computeKickerTracking(
 					stackSpell.card,
 					stackSpell.optionalCostCounts,
-					undefined,
+					{ spellMods: stackSpell.spellMods },
 					stackSpell.faceIndex ?? 0,
 					stackSpell.fused ?? false
 				);
 			}
-			if (stackSpell.sourceKickedCount !== undefined) {
+			if (
+				stackSpell.sourceKickedCount !== undefined ||
+				stackSpell.sourceForetold !== undefined ||
+				stackSpell.sourceBlitzed !== undefined
+			) {
 				return {
-					count: stackSpell.sourceKickedCount,
-					tags: stackSpell.sourceKickedTags ?? []
+					count: stackSpell.sourceKickedCount ?? 0,
+					tags: stackSpell.sourceKickedTags ?? [],
+					...(stackSpell.sourceForetold ? { foretold: true } : {}),
+					...(stackSpell.sourceBlitzed ? { blitzed: true } : {})
 				};
 			}
 		}
 	}
-	if (source && (source.kickedCount !== undefined || (source.kickedTags && source.kickedTags.length > 0))) {
-		return { count: source.kickedCount ?? 0, tags: source.kickedTags ?? [] };
+	if (
+		source &&
+		(source.kickedCount !== undefined ||
+			(source.kickedTags && source.kickedTags.length > 0) ||
+			source.foretold ||
+			source.blitzed)
+	) {
+		return {
+			count: source.kickedCount ?? 0,
+			tags: source.kickedTags ?? [],
+			...(source.foretold ? { foretold: true } : {}),
+			...(source.blitzed ? { blitzed: true } : {})
+		};
 	}
 	// Fallback: unused card-level helper when source instance is unavailable
 	void card;
@@ -343,6 +403,67 @@ export function isObjectEscaped(
 		if (stackSpell) {
 			if (stackSpell.kind === 'spell') return Boolean(stackSpell.spellMods?.escaped);
 			if (stackSpell.sourceEscaped !== undefined) return stackSpell.sourceEscaped;
+		}
+	}
+	return false;
+}
+
+// --- Track P3 ---
+export function hasChooseAllModesOptionalCost(
+	option: Partial<Pick<CastOption, 'optionalAdditionalCosts'>> | undefined,
+	optionalCostCounts?: Record<string, number>
+): boolean {
+	if (!option?.optionalAdditionalCosts || !optionalCostCounts) return false;
+	return option.optionalAdditionalCosts.some(
+		(opt) => Boolean(opt.chooseAllModes) && (optionalCostCounts[opt.id] ?? 0) > 0
+	);
+}
+
+export function isObjectForetold(
+	state: GameState,
+	instanceId?: string,
+	stackItem?: StackItem,
+	source?: CardInstance
+): boolean {
+	if (stackItem) {
+		if (stackItem.kind === 'spell') return Boolean(stackItem.spellMods?.foretold);
+		if (stackItem.sourceForetold !== undefined) return stackItem.sourceForetold;
+	}
+	if (source?.foretold !== undefined) return Boolean(source.foretold);
+	if (instanceId) {
+		for (const p of state.players) {
+			const perm = p.battlefield.find((c) => c.instanceId === instanceId);
+			if (perm) return Boolean(perm.foretold);
+		}
+		const stackSpell = state.stack.find((s) => s.sourceInstanceId === instanceId);
+		if (stackSpell) {
+			if (stackSpell.kind === 'spell') return Boolean(stackSpell.spellMods?.foretold);
+			if (stackSpell.sourceForetold !== undefined) return stackSpell.sourceForetold;
+		}
+	}
+	return false;
+}
+
+export function isObjectBlitzed(
+	state: GameState,
+	instanceId?: string,
+	stackItem?: StackItem,
+	source?: CardInstance
+): boolean {
+	if (stackItem) {
+		if (stackItem.kind === 'spell') return Boolean(stackItem.spellMods?.blitzed);
+		if (stackItem.sourceBlitzed !== undefined) return stackItem.sourceBlitzed;
+	}
+	if (source?.blitzed !== undefined) return Boolean(source.blitzed);
+	if (instanceId) {
+		for (const p of state.players) {
+			const perm = p.battlefield.find((c) => c.instanceId === instanceId);
+			if (perm) return Boolean(perm.blitzed);
+		}
+		const stackSpell = state.stack.find((s) => s.sourceInstanceId === instanceId);
+		if (stackSpell) {
+			if (stackSpell.kind === 'spell') return Boolean(stackSpell.spellMods?.blitzed);
+			if (stackSpell.sourceBlitzed !== undefined) return stackSpell.sourceBlitzed;
 		}
 	}
 	return false;
