@@ -15,6 +15,7 @@
 ## 0. Rules for every work package
 
 - **Read first:** [`ENGINE_INVARIANTS.md`](./ENGINE_INVARIANTS.md) and [`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2. Never add card-name checks or runtime reads of rules text.
+- **Comprehensive Rules lookup (`src/lib/rules/`):** Prefer the split, single-read CR section files in [`src/lib/rules/INDEX.md`](../../rules/INDEX.md) (every file `< 44 KB` and `< 760` lines, including [`701-INDEX.md`](../../rules/700-additional-rules/701-keyword-actions/701-INDEX.md), [`702-INDEX.md`](../../rules/700-additional-rules/702-keyword-abilities/702-INDEX.md), and [`glossary/`](../../rules/glossary/glossary-a-to-c.md)) over grepping or slicing the monolithic `src/lib/rules.txt`.
 - **Tests:**
   - Run the full suite before starting, and record the result: `node --test 'src/lib/magic/**/*.test.ts'`. It takes about 40 s.
   - Every behaviour change gets a test that fails before the change. Use a real card where one fits, plus a synthetic card with an invented name.
