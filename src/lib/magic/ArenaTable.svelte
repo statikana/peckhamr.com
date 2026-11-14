@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import {
+		applyCastCostAids,
 		canPayOrAutoTap,
 		checkAbilityActivationLegality,
 		checkEndTurnLegality,
@@ -10,6 +11,7 @@
 		checkSuspendLegality,
 		checkUnlockRoomDoorLegality,
 		computeCombatDamageForecast,
+		formatManaRequirement,
 		getAttachedCardsOnBoard,
 		getCastOptions,
 		getCreaturePower,
@@ -19,6 +21,7 @@
 		getLandPlayOptions,
 		getModalDisabledIndices,
 		getPlayerCommanderIdentity,
+		getSpellOptionCostRequirement,
 		getSpellTargetRequirement,
 		getSuspendSpec,
 		getTurnFaceUpDisplay,
@@ -46,6 +49,7 @@
 		PHASE_LABELS,
 		PHASE_ORDER,
 		type CardInstance,
+		type CastCostAid,
 		type CastOption,
 		type CounterType,
 		type EffectiveActivatedAbility,
@@ -237,6 +241,8 @@
 		faceIndex?: number;
 		fused?: boolean;
 		optionalCostCounts?: Record<string, number>;
+		costAidIds?: Record<string, string[]>;
+		costAidColorChoices?: Record<string, ManaColor | 'generic'>;
 	} | null>(null);
 
 	let modePickerModal = $state.raw<{
@@ -250,6 +256,8 @@
 		xValue?: number;
 		option?: CastOption;
 		optionalCostCounts?: Record<string, number>;
+		costAidIds?: Record<string, string[]>;
+		costAidColorChoices?: Record<string, ManaColor | 'generic'>;
 		ability?: EffectiveActivatedAbility;
 	} | null>(null);
 
@@ -266,6 +274,8 @@
 		actionKind?: 'cast_spell' | 'turn_face_up';
 		castOption?: CastOption;
 		optionalCostCounts?: Record<string, number>;
+		costAidIds?: Record<string, string[]>;
+		costAidColorChoices?: Record<string, ManaColor | 'generic'>;
 	} | null>(null);
 	let xCostValue = $state(1);
 	let castOptionsModal = $state.raw<{
@@ -273,6 +283,8 @@
 		fromZone: 'hand' | 'command' | 'exile' | 'graveyard';
 		options: CastOption[];
 		optionalCounts: Record<string, number>;
+		selectedAidIds: Record<string, string[]>;
+		aidColorChoices: Record<string, ManaColor | 'generic'>;
 		landOptions?: LandPlayOption[];
 		handAbilities?: EffectiveActivatedAbility[];
 	} | null>(null);
@@ -1197,6 +1209,12 @@
 					...(picker.option?.fused ? { fused: true } : {}),
 					...(picker.optionalCostCounts && Object.keys(picker.optionalCostCounts).length > 0
 						? { optionalCostCounts: picker.optionalCostCounts }
+						: {}),
+					...(picker.costAidIds && Object.keys(picker.costAidIds).length > 0
+						? { costAidIds: picker.costAidIds }
+						: {}),
+					...(picker.costAidColorChoices && Object.keys(picker.costAidColorChoices).length > 0
+						? { costAidColorChoices: picker.costAidColorChoices }
 						: {})
 				};
 				openGraveyardTargetingModalIfNeeded(firstReq);
@@ -1234,6 +1252,12 @@
 				...(picker.option?.fused ? { fused: true } : {}),
 				...(picker.optionalCostCounts && Object.keys(picker.optionalCostCounts).length > 0
 					? { optionalCostCounts: picker.optionalCostCounts }
+					: {}),
+				...(picker.costAidIds && Object.keys(picker.costAidIds).length > 0
+					? { costAidIds: picker.costAidIds }
+					: {}),
+				...(picker.costAidColorChoices && Object.keys(picker.costAidColorChoices).length > 0
+					? { costAidColorChoices: picker.costAidColorChoices }
 					: {})
 			});
 		} else if (picker.kind === 'ability' && picker.ability) {
@@ -1520,6 +1544,12 @@
 				...(pending.optionalCostCounts && Object.keys(pending.optionalCostCounts).length > 0
 					? { optionalCostCounts: pending.optionalCostCounts }
 					: {}),
+				...(pending.costAidIds && Object.keys(pending.costAidIds).length > 0
+					? { costAidIds: pending.costAidIds }
+					: {}),
+				...(pending.costAidColorChoices && Object.keys(pending.costAidColorChoices).length > 0
+					? { costAidColorChoices: pending.costAidColorChoices }
+					: {}),
 				targets: allTargets
 			});
 		} else if (pending.mode === 'ability' && pending.abilityId) {
@@ -1655,7 +1685,10 @@
 				targetOpt.id,
 				undefined,
 				targetOpt.faceIndex,
-				targetOpt.fused
+				targetOpt.fused,
+				undefined,
+				undefined,
+				true
 			).ok
 		) {
 			return;
@@ -1705,28 +1738,74 @@
 		);
 	}
 
+	function aidCandidateLabel(kind: CastCostAid['kind'], candidateId: string): string {
+		if (!me) return candidateId;
+		const cardInst =
+			kind === 'tapPermanent'
+				? me.battlefield.find((c) => c.instanceId === candidateId)
+				: me.graveyard.find((c) => c.instanceId === candidateId);
+		return cardInst ? cardInst.card.name : candidateId;
+	}
+
+	function toggleCastAidCandidate(aidId: string, candidateId: string) {
+		if (!castOptionsModal) return;
+		const currentList = castOptionsModal.selectedAidIds[aidId] ?? [];
+		const nextAidIds = { ...castOptionsModal.selectedAidIds };
+		const nextColors = { ...castOptionsModal.aidColorChoices };
+		if (currentList.includes(candidateId)) {
+			const filtered = currentList.filter((id) => id !== candidateId);
+			if (filtered.length > 0) nextAidIds[aidId] = filtered;
+			else delete nextAidIds[aidId];
+			delete nextColors[candidateId];
+		} else {
+			nextAidIds[aidId] = [...currentList, candidateId];
+		}
+		castOptionsModal = {
+			...castOptionsModal,
+			selectedAidIds: nextAidIds,
+			aidColorChoices: nextColors
+		};
+	}
+
+	function setCastAidColorChoice(candidateId: string, rawChoice: string) {
+		if (!castOptionsModal) return;
+		const nextColors = { ...castOptionsModal.aidColorChoices };
+		if (!rawChoice) delete nextColors[candidateId];
+		else nextColors[candidateId] = rawChoice as ManaColor | 'generic';
+		castOptionsModal = { ...castOptionsModal, aidColorChoices: nextColors };
+	}
+
 	async function proceedCastWithOption(
 		inst: CardInstance,
 		fromZone: 'hand' | 'command' | 'exile' | 'graveyard',
 		option: CastOption,
-		optionalCostCounts?: Record<string, number>
+		optionalCostCounts?: Record<string, number>,
+		costAidIds?: Record<string, string[]>,
+		costAidColorChoices?: Record<string, ManaColor | 'generic'>
 	) {
 		const nonZeroCounts = optionalCostCounts
 			? Object.fromEntries(Object.entries(optionalCostCounts).filter(([, v]) => v > 0))
 			: undefined;
 		const normalizedCounts =
 			nonZeroCounts && Object.keys(nonZeroCounts).length > 0 ? nonZeroCounts : undefined;
+		const hasAids = Boolean(costAidIds && Object.keys(costAidIds).length > 0);
+		const hasColorChoices = Boolean(costAidColorChoices && Object.keys(costAidColorChoices).length > 0);
 		if (optionChoosesX(option, normalizedCounts) && !xCostModalCard) {
+			const totalAidSelected = hasAids
+				? Object.values(costAidIds!).reduce((sum, list) => sum + list.length, 0)
+				: 0;
 			xCostModalCard = {
 				inst,
 				fromZone,
 				castOption: option,
-				...(normalizedCounts ? { optionalCostCounts: normalizedCounts } : {})
+				...(normalizedCounts ? { optionalCostCounts: normalizedCounts } : {}),
+				...(hasAids ? { costAidIds } : {}),
+				...(hasColorChoices ? { costAidColorChoices } : {})
 			};
-			xCostValue = 2;
+			xCostValue = Math.max(2, totalAidSelected);
 			return;
 		}
-		await initiateCastSpell(inst, fromZone, 0, option, normalizedCounts);
+		await initiateCastSpell(inst, fromZone, 0, option, normalizedCounts, costAidIds, costAidColorChoices);
 	}
 
 	async function handleCardClickInHandOrCommand(
@@ -1752,6 +1831,7 @@
 
 		const totalChoices = landOptions.length + options.length + handAbs.length;
 		const hasOptionalCosts = options.some((o) => (o.optionalAdditionalCosts?.length ?? 0) > 0);
+		const hasPaymentAids = options.some((o) => (o.paymentAids?.length ?? 0) > 0);
 		if (totalChoices === 1) {
 			if (landOptions.length === 1 && (fromZone === 'hand' || fromZone === 'exile')) {
 				await onGameAction({
@@ -1766,7 +1846,7 @@
 				await triggerActivatedAbility(inst, handAbs[0]);
 				return;
 			}
-			if (options.length === 1 && !hasOptionalCosts) {
+			if (options.length === 1 && !hasOptionalCosts && !hasPaymentAids) {
 				await proceedCastWithOption(inst, fromZone, options[0]);
 				return;
 			}
@@ -1777,6 +1857,8 @@
 			fromZone,
 			options,
 			optionalCounts: {},
+			selectedAidIds: {},
+			aidColorChoices: {},
 			...(landOptions.length > 0 ? { landOptions } : {}),
 			...(handAbs.length > 0 ? { handAbilities: handAbs } : {})
 		};
@@ -1811,8 +1893,12 @@
 		fromZone: 'hand' | 'command' | 'exile' | 'graveyard',
 		xVal: number,
 		option?: CastOption,
-		optionalCostCounts?: Record<string, number>
+		optionalCostCounts?: Record<string, number>,
+		costAidIds?: Record<string, string[]>,
+		costAidColorChoices?: Record<string, ManaColor | 'generic'>
 	) {
+		const hasAids = Boolean(costAidIds && Object.keys(costAidIds).length > 0);
+		const hasColorChoices = Boolean(costAidColorChoices && Object.keys(costAidColorChoices).length > 0);
 		const compiledSpell =
 			option?.spellMods?.castFaceDown || option?.fused
 				? null
@@ -1840,7 +1926,9 @@
 				fromZone,
 				xValue: xVal,
 				option,
-				optionalCostCounts
+				optionalCostCounts,
+				...(hasAids ? { costAidIds } : {}),
+				...(hasColorChoices ? { costAidColorChoices } : {})
 			};
 			return;
 		}
@@ -1861,7 +1949,9 @@
 				...(option?.fused ? { fused: true } : {}),
 				...(optionalCostCounts && Object.keys(optionalCostCounts).length > 0
 					? { optionalCostCounts }
-					: {})
+					: {}),
+				...(hasAids ? { costAidIds } : {}),
+				...(hasColorChoices ? { costAidColorChoices } : {})
 			};
 			openGraveyardTargetingModalIfNeeded(targetInfo);
 			return;
@@ -1878,6 +1968,8 @@
 			...(optionalCostCounts && Object.keys(optionalCostCounts).length > 0
 				? { optionalCostCounts }
 				: {}),
+			...(hasAids ? { costAidIds } : {}),
+			...(hasColorChoices ? { costAidColorChoices } : {}),
 			...(!requiresTarget ? { targets: [] } : {})
 		});
 	}
@@ -3978,6 +4070,13 @@
 					.map((oc) => [oc.id, oc])
 			).values()
 		)}
+		{@const modalPaymentAids = Array.from(
+			new Map(
+				castOptionsModal.options
+					.flatMap((o) => o.paymentAids ?? [])
+					.map((aid) => [aid.id, aid])
+			).values()
+		)}
 		<div class="modal-backdrop">
 			<div class="arena-modal">
 				<h3>
@@ -4074,6 +4173,60 @@
 						{/each}
 					</div>
 				{/if}
+				{#if modalPaymentAids.length > 0}
+					<div
+						style="display:flex;flex-direction:column;gap:0.55rem;margin-bottom:0.85rem;padding:0.6rem 0.7rem;border:1px solid rgba(255,255,255,0.16);border-radius:0.5rem;background:rgba(0,0,0,0.2);"
+					>
+						<div style="font-weight:600;font-size:0.85rem;letter-spacing:0.02em;">
+							Optional Mana Payment
+						</div>
+						{#each modalPaymentAids as aid (aid.id)}
+							{@const selectedForAid = castOptionsModal.selectedAidIds[aid.id] ?? []}
+							<div style="display:flex;flex-direction:column;gap:0.3rem;">
+								<div style="font-size:0.8rem;opacity:0.85;">
+									{aid.label} ({selectedForAid.length} selected)
+								</div>
+								<div style="display:flex;flex-wrap:wrap;gap:0.4rem;">
+									{#each aid.candidateIds as candId (candId)}
+										{@const isChecked = selectedForAid.includes(candId)}
+										{@const usedInOtherAid = Object.entries(castOptionsModal.selectedAidIds).some(
+											([otherId, ids]) => otherId !== aid.id && ids.includes(candId)
+										)}
+										{@const candColors = aid.colorsByCandidate?.[candId] ?? []}
+										{@const candColorChoice = castOptionsModal.aidColorChoices[candId] ?? ''}
+										<div
+											style="display:inline-flex;align-items:center;gap:0.3rem;padding:0.22rem 0.45rem;border:1px solid rgba(255,255,255,0.2);border-radius:0.35rem;background:rgba(255,255,255,0.05);"
+										>
+											<label style="display:inline-flex;align-items:center;gap:0.35rem;cursor:pointer;font-size:0.82rem;">
+												<input
+													type="checkbox"
+													checked={isChecked}
+													disabled={!isChecked && usedInOtherAid}
+													onchange={() => toggleCastAidCandidate(aid.id, candId)}
+												/>
+												<span>{aidCandidateLabel(aid.kind, candId)}</span>
+											</label>
+											{#if isChecked && aid.kind === 'tapPermanent'}
+												<select
+													aria-label="Mana contribution for {aidCandidateLabel(aid.kind, candId)}"
+													value={candColorChoice}
+													onchange={(e) => setCastAidColorChoice(candId, e.currentTarget.value)}
+													style="font-size:0.75rem;padding:0.1rem 0.25rem;background:#1e293b;color:inherit;border:1px solid rgba(255,255,255,0.25);border-radius:0.25rem;"
+												>
+													<option value="">Auto</option>
+													{#each candColors as col (col)}
+														<option value={col}>Pay {'{' + col + '}'}</option>
+													{/each}
+													<option value="generic">Generic {'{1}'}</option>
+												</select>
+											{/if}
+										</div>
+									{/each}
+								</div>
+							</div>
+						{/each}
+					</div>
+				{/if}
 				<div class="modal-actions">
 					{#if castOptionsModal.landOptions && castOptionsModal.landOptions.length > 0}
 						{#each castOptionsModal.landOptions as landOpt (landOpt.faceIndex)}
@@ -4103,36 +4256,76 @@
 								([id, v]) => v > 0 && opt.optionalAdditionalCosts?.some((c) => c.id === id)
 							)
 						)}
+						{@const optAidIds = Object.fromEntries(
+							Object.entries(castOptionsModal?.selectedAidIds ?? {}).filter(
+								([aidId, ids]) =>
+									ids.length > 0 && opt.paymentAids?.some((a) => a.id === aidId)
+							)
+						)}
+						{@const selectedAidTotal = Object.values(optAidIds).reduce((s, ids) => s + ids.length, 0)}
+						{@const optSelectedSet = new Set(Object.values(optAidIds).flat())}
+						{@const optAidColors = Object.fromEntries(
+							Object.entries(castOptionsModal?.aidColorChoices ?? {}).filter(([id]) =>
+								optSelectedSet.has(id)
+							)
+						)}
+						{@const isXOpt = optionChoosesX(opt, optCounts)}
+						{@const previewX = isXOpt ? (selectedAidTotal > 0 ? selectedAidTotal : 0) : 0}
+						{@const optReq = me
+							? getSpellOptionCostRequirement(
+									gameState,
+									me.playerId,
+									castOptionsModal.inst,
+									opt,
+									previewX,
+									optCounts
+								)
+							: null}
+						{@const aidPreview =
+							optReq && (opt.paymentAids?.length ?? 0) > 0
+								? applyCastCostAids(optReq, opt, optAidIds, optAidColors)
+								: null}
 						{@const extraParts = (opt.optionalAdditionalCosts ?? [])
 							.filter((oc) => (optCounts[oc.id] ?? 0) > 0)
 							.map((oc) =>
 								optCounts[oc.id] > 1 ? `${optCounts[oc.id]}× ${oc.costDisplay}` : oc.costDisplay
 							)}
-						{@const combinedDisplay = [opt.costDisplay, ...extraParts].join(' + ')}
+						{@const mainCostDisplay = aidPreview?.ok
+							? formatManaRequirement(aidPreview.remainingReq, isXOpt)
+							: opt.costDisplay}
+						{@const combinedDisplay = [mainCostDisplay, ...extraParts].join(' + ')}
+						{@const hasStrictAids = (opt.paymentAids?.length ?? 0) > 0}
 						{@const isOptLegal = me
-							? optionChoosesX(opt, optCounts)
+							? isXOpt
 								? checkSpellCastLegality(
 										gameState,
 										me.playerId,
 										castOptionsModal.inst,
 										castOptionsModal.fromZone,
-										0,
+										selectedAidTotal > 0 ? selectedAidTotal : 0,
 										opt.id,
 										optCounts,
 										opt.faceIndex,
-										opt.fused
+										opt.fused,
+										optAidIds,
+										optAidColors,
+										hasStrictAids
 									).ok ||
-									checkSpellCastLegality(
-										gameState,
-										me.playerId,
-										castOptionsModal.inst,
-										castOptionsModal.fromZone,
-										1,
-										opt.id,
-										optCounts,
-										opt.faceIndex,
-										opt.fused
-									).ok
+									(selectedAidTotal === 0 &&
+										checkSpellCastLegality(
+											gameState,
+											me.playerId,
+											castOptionsModal.inst,
+											castOptionsModal.fromZone,
+											1,
+											opt.id,
+											optCounts,
+											opt.faceIndex,
+											opt.fused,
+											optAidIds,
+											optAidColors,
+											hasStrictAids
+										).ok)
 								: checkSpellCastLegality(
 										gameState,
 										me.playerId,
@@ -4142,9 +4335,17 @@
 										opt.id,
 										optCounts,
 										opt.faceIndex,
-										opt.fused
+										opt.fused,
+										optAidIds,
+										optAidColors,
+										hasStrictAids
 									).ok
 							: false}
+						{#if aidPreview && !aidPreview.ok}
+							<div style="width:100%;font-size:0.78rem;color:#fca5a5;">
+								{opt.label}: {aidPreview.error}
+							</div>
+						{/if}
 						<button
 							type="button"
 							class="arena-main-btn can-act"
@@ -4156,8 +4357,25 @@
 										([id, v]) => v > 0 && opt.optionalAdditionalCosts?.some((c) => c.id === id)
 									)
 								);
+								const chosenAidIds = Object.fromEntries(
+									Object.entries(item.selectedAidIds).filter(
+										([aidId, ids]) =>
+											ids.length > 0 && opt.paymentAids?.some((a) => a.id === aidId)
+									)
+								);
+								const chosenSet = new Set(Object.values(chosenAidIds).flat());
+								const chosenAidColors = Object.fromEntries(
+									Object.entries(item.aidColorChoices).filter(([id]) => chosenSet.has(id))
+								);
 								castOptionsModal = null;
-								await proceedCastWithOption(item.inst, item.fromZone, opt, chosenOptCounts);
+								await proceedCastWithOption(
+									item.inst,
+									item.fromZone,
+									opt,
+									chosenOptCounts,
+									chosenAidIds,
+									chosenAidColors
+								);
 							}}
 						>
 							{opt.label} (<ManaText text={combinedDisplay} size={14} />)
@@ -4335,7 +4553,9 @@
 								item.fromZone as 'hand' | 'command' | 'exile' | 'graveyard',
 								xCostValue,
 								item.castOption,
-								item.optionalCostCounts
+								item.optionalCostCounts,
+								item.costAidIds,
+								item.costAidColorChoices
 							);
 						}}
 					>

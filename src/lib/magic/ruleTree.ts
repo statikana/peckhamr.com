@@ -107,9 +107,9 @@ export function targetRequirementFromSpecs(specs: TargetSpec[]): TargetRequireme
 			targetSpecs: specs
 		};
 	}
-	if (f.zone === 'graveyard') {
+	if (f.zone === 'graveyard' || f.zone === 'exile') {
 		const controllerFilter = f.owner ?? f.controller ?? 'any';
-		const sameGraveyard = Boolean(spec.sameOwner || f.owner === 'you' || maxTargets <= 1);
+		const sameGraveyard = f.zone === 'graveyard' && Boolean(spec.sameOwner || f.owner === 'you' || maxTargets <= 1);
 		let cardTypeFilter: string | undefined;
 		if (f.types?.includes('Instant') && f.types?.includes('Sorcery')) {
 			cardTypeFilter = 'InstantOrSorcery';
@@ -122,10 +122,10 @@ export function targetRequirementFromSpecs(specs: TargetSpec[]): TargetRequireme
 		}
 		return {
 			requiresTarget: minTargets > 0,
-			targetKind: 'graveyard_card',
+			targetKind: f.zone === 'exile' ? 'exile_card' : 'graveyard_card',
 			minTargets,
 			maxTargets,
-			zone: 'graveyard',
+			zone: f.zone,
 			sameGraveyard,
 			controllerFilter,
 			...(cardTypeFilter ? { cardTypeFilter } : {}),

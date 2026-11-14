@@ -31,6 +31,7 @@ import type {
 	EffectiveActivatedAbility,
 	FaceDownSpec,
 	GameState,
+	ManaColor,
 	PlayerGameState,
 	ScryfallCard,
 	SerializedPlannedCost
@@ -638,7 +639,9 @@ export interface CostContext {
 	 * caller; top-level `mana` defs are not added again. Mana inside a chosen option is added.
 	 */
 	baseMana: ManaCostRequirement | null;
-	canPayMana: (req: ManaCostRequirement) => boolean;
+	/** Object IDs already committed to another payment (e.g. CastCostAid) that cannot be reused (CR 118.10). */
+	reservedObjectIds?: ReadonlySet<string>;
+	canPayMana: (req: ManaCostRequirement, reservedIds?: ReadonlySet<string>) => boolean;
 	payMana: (req: ManaCostRequirement) => boolean;
 }
 
@@ -892,7 +895,7 @@ export function planCosts(ctx: CostContext, defs: CostDef[], payment?: CostPayme
 
 function planFlat(ctx: CostContext, flat: Flat[], objects: string[][] | undefined): CostPlan {
 	const parts: PlannedCost[] = [];
-	const used = new Set<string>();
+	const used = new Set<string>(ctx.reservedObjectIds);
 	let mana: ManaCostRequirement | null = ctx.baseMana;
 	let objectIndex = 0;
 	// CR 118.3: with {T} in the cost, the source can't also be tapped for "Tap an untapped ...".
@@ -1031,22 +1034,27 @@ function planFlat(ctx: CostContext, flat: Flat[], objects: string[][] | undefine
 		parts.push({ def, objects: chosen });
 	}
 
-	if (mana && !canPayManaAfterTaps(ctx, parts, mana)) {
+	if (mana && !canPayManaAfterTaps(ctx, parts, mana, used)) {
 		return { ok: false, error: 'Insufficient mana to pay the cost.' };
 	}
 	return { ok: true, parts, mana };
 }
 
 /** Mana is paid after tap costs, so permanents tapped for the cost can't also tap for mana. */
-function canPayManaAfterTaps(ctx: CostContext, parts: PlannedCost[], mana: ManaCostRequirement): boolean {
+function canPayManaAfterTaps(
+	ctx: CostContext,
+	parts: PlannedCost[],
+	mana: ManaCostRequirement,
+	reservedIds?: ReadonlySet<string>
+): boolean {
 	const toTap = tapTargets(ctx, parts).filter((c) => !c.tapped);
-	if (toTap.length === 0) return ctx.canPayMana(mana);
+	if (toTap.length === 0) return ctx.canPayMana(mana, reservedIds);
 	// The hypothetical taps change a layer input (`tapped`): an enclosing `withStableLayerInputs`
 	// scope revalidates after tapping and again after untapping (Phase 6d).
 	for (const c of toTap) c.tapped = true;
 	noteLayerInputsChanged(ctx.state);
 	try {
-		return ctx.canPayMana(mana);
+		return ctx.canPayMana(mana, reservedIds);
 	} finally {
 		for (const c of toTap) c.tapped = false;
 		noteLayerInputsChanged(ctx.state);
@@ -1248,7 +1256,7 @@ function moveFromZone(
 	}
 	return moveObject(ctx.state, card, to, {
 		from: { player: ctx.player, zone },
-		graveyardReplacement: to === 'graveyard',
+		graveyardReplacement: to === 'graveyard' || to === 'exile',
 		commanderRedirect: true,
 		newTimestamp: true,
 		bumpVersion: true,
@@ -1310,7 +1318,8 @@ export function payTapAndManaCostParts(
 	ctx: CostContext,
 	parts: SerializedPlannedCost[],
 	mana: ManaCostRequirement | null,
-	descriptions: string[]
+	descriptions: string[],
+	aidDescriptions?: string[]
 ): void {
 	const { player, source } = ctx;
 	for (const part of parts) {
@@ -1327,7 +1336,8 @@ export function payTapAndManaCostParts(
 				}
 			}
 			const labelNames = part.objectNames && part.objectNames.length > 0 ? part.objectNames : names;
-			descriptions.push(`tapped ${labelNames.join(', ')}`);
+			const targetLog = part.isCostAid && aidDescriptions ? aidDescriptions : descriptions;
+			targetLog.push(`tapped ${labelNames.join(', ')}`);
 		}
 	}
 	if (mana) ctx.payMana(mana);
@@ -1344,20 +1354,22 @@ export function executeCostPaymentParts(
 	startPartIndex = 0,
 	startObjectIndex = 0,
 	descriptions: string[] = [],
-	costKeyword?: string
+	costKeyword?: string,
+	aidDescriptions?: string[]
 ): PaidCosts {
 	const { player, source } = ctx;
 	for (let partIdx = startPartIndex; partIdx < parts.length; partIdx++) {
 		const part = parts[partIdx];
 		const def = part.def;
 		const objStart = partIdx === startPartIndex ? startObjectIndex : 0;
+		const targetLog = part.isCostAid && aidDescriptions ? aidDescriptions : descriptions;
 		switch (def.k) {
 			case 'payLife': {
 				if (objStart === 0) {
 					const amount = n(def.amount, ctx);
 					if (amount > 0) {
 						player.life -= amount;
-						descriptions.push(`paid ${amount} life`);
+						targetLog.push(`paid ${amount} life`);
 					}
 				}
 				break;
@@ -1373,7 +1385,7 @@ export function executeCostPaymentParts(
 					const amount = n(def.count, ctx);
 					const key = def.counter as CounterType;
 					source.counters[key] = Math.max(0, (source.counters[key] || 0) - amount);
-					descriptions.push(`removed ${amount} ${def.counter} counter(s)`);
+					targetLog.push(`removed ${amount} ${def.counter} counter(s)`);
 				}
 				break;
 			}
@@ -1390,7 +1402,7 @@ export function executeCostPaymentParts(
 						return { descriptions, paused: true, nextPartIndex: partIdx, nextObjectIndex: j + 1 };
 					}
 				}
-				if (def.filter !== 'self') descriptions.push(`sacrificed ${names.join(', ')}`);
+				if (def.filter !== 'self') targetLog.push(`sacrificed ${names.join(', ')}`);
 				break;
 			}
 			case 'discard': {
@@ -1407,7 +1419,7 @@ export function executeCostPaymentParts(
 						return { descriptions, paused: true, nextPartIndex: partIdx, nextObjectIndex: j + 1 };
 					}
 				}
-				descriptions.push(
+				targetLog.push(
 					def.filter === 'self'
 						? `discarded ${names[0] ?? source.card.name}`
 						: `discarded ${names.join(', ')}${part.isRandom ? ' at random' : ''}`
@@ -1427,12 +1439,12 @@ export function executeCostPaymentParts(
 						return { descriptions, paused: true, nextPartIndex: partIdx, nextObjectIndex: j + 1 };
 					}
 				}
-				descriptions.push(`exiled ${names.join(', ')} from ${def.zone}`);
+				targetLog.push(`exiled ${names.join(', ')} from ${def.zone}`);
 				break;
 			}
 			case 'revealFromHand': {
 				const names = part.objectNames ?? [];
-				if (names.length > 0) descriptions.push(`revealed ${names.join(', ')}`);
+				if (names.length > 0) targetLog.push(`revealed ${names.join(', ')}`);
 				break;
 			}
 			default: {
@@ -1448,7 +1460,7 @@ export function executeCostPaymentParts(
 						}
 					}
 					if (milledNames.length > 0) {
-						descriptions.push(`milled ${milledNames.join(', ')}`);
+						targetLog.push(`milled ${milledNames.join(', ')}`);
 					}
 				}
 				break;
@@ -1464,4 +1476,218 @@ export function payPlannedCosts(ctx: CostContext, plan: Extract<CostPlan, { part
 	const descriptions: string[] = [];
 	payTapAndManaCostParts(ctx, parts, plan.mana, descriptions);
 	return executeCostPaymentParts(ctx, parts, 0, 0, descriptions);
+}
+
+// ---- Generic CastCostAid Application (CR 601.2f-h, 702.51, 702.66) -------------------------
+
+const AID_COLORS: readonly ManaColor[] = ['W', 'U', 'B', 'R', 'G'];
+
+export type ApplyCastCostAidsResult =
+	| {
+			ok: true;
+			remainingReq: ManaCostRequirement;
+			tapIds: string[];
+			exileIds: string[];
+			summaryParts: string[];
+			paidByCandidate: Record<string, ManaColor | 'generic'>;
+	  }
+	| { ok: false; error: string };
+
+/** Formats a `ManaCostRequirement` back into canonical `{N}{W}{U}...` notation. */
+export function formatManaRequirement(req: ManaCostRequirement, showUnsetX = false): string {
+	let out = '';
+	if (showUnsetX && req.hasX && req.xCount > 0) {
+		out += '{X}'.repeat(req.xCount);
+	}
+	if (req.generic > 0) {
+		out += `{${req.generic}}`;
+	}
+	for (const c of ['W', 'U', 'B', 'R', 'G', 'C'] as const) {
+		const count = req.colored[c] ?? 0;
+		if (count > 0) out += `{${c}}`.repeat(count);
+	}
+	return out || '{0}';
+}
+
+function cloneManaRequirement(req: ManaCostRequirement): ManaCostRequirement {
+	return {
+		...req,
+		colored: { ...req.colored },
+		...(req.flexibleSymbols ? { flexibleSymbols: req.flexibleSymbols.map((s) => ({ ...s })) } : {})
+	};
+}
+
+/**
+ * Validates and applies post-determination `CastCostAid` selections (`CR 601.2f–h`, `CR 118.10`)
+ * against the spell's already-determined total mana requirement `costReq`.
+ */
+export function applyCastCostAids(
+	costReq: ManaCostRequirement,
+	option: CastOption,
+	costAidIds?: Record<string, string[]>,
+	costAidColorChoices?: Record<string, ManaColor | 'generic'>
+): ApplyCastCostAidsResult {
+	if (!costAidIds || Object.keys(costAidIds).length === 0) {
+		return {
+			ok: true,
+			remainingReq: cloneManaRequirement(costReq),
+			tapIds: [],
+			exileIds: [],
+			summaryParts: [],
+			paidByCandidate: {}
+		};
+	}
+
+	const aidById = new Map((option.paymentAids ?? []).map((a) => [a.id, a]));
+	const seenIds = new Set<string>();
+	const tapEntries: Array<{ id: string; colors: ManaColor[]; paysGeneric: number }> = [];
+	const exileEntries: Array<{ id: string; paysGeneric: number }> = [];
+
+	for (const [aidId, rawIds] of Object.entries(costAidIds)) {
+		if (!rawIds || rawIds.length === 0) continue;
+		const aid = aidById.get(aidId);
+		if (!aid) {
+			return { ok: false, error: `Unknown payment aid "${aidId}".` };
+		}
+		const eligible = new Set(aid.candidateIds);
+		if (
+			aid.kind === 'exileCard' &&
+			aid.maxGenericReduction !== undefined &&
+			rawIds.length * aid.paysGeneric > aid.maxGenericReduction
+		) {
+			return {
+				ok: false,
+				error: `Selected ${rawIds.length} card(s) for ${aid.label}, exceeding max reduction ${aid.maxGenericReduction}.`
+			};
+		}
+		for (const id of rawIds) {
+			if (seenIds.has(id)) {
+				return { ok: false, error: `Duplicate payment aid candidate "${id}" (CR 118.10).` };
+			}
+			if (!eligible.has(id)) {
+				return { ok: false, error: `Ineligible candidate "${id}" for ${aid.label}.` };
+			}
+			seenIds.add(id);
+			if (aid.kind === 'tapPermanent') {
+				const rawColors = aid.colorsByCandidate?.[id] ?? [];
+				const colors = rawColors.filter((c): c is ManaColor => AID_COLORS.includes(c));
+				tapEntries.push({ id, colors, paysGeneric: aid.paysGeneric });
+			} else {
+				exileEntries.push({ id, paysGeneric: aid.paysGeneric });
+			}
+		}
+	}
+
+	const colored = { ...costReq.colored };
+	let generic = costReq.generic;
+	const paidByCandidate: Record<string, ManaColor | 'generic'> = {};
+	const flexibleTaps: Array<{ id: string; colors: ManaColor[]; paysGeneric: number }> = [];
+
+	for (const entry of tapEntries) {
+		const choice = costAidColorChoices?.[entry.id];
+		if (choice === undefined) {
+			flexibleTaps.push(entry);
+			continue;
+		}
+		if (choice === 'generic') {
+			if (generic < entry.paysGeneric) {
+				return {
+					ok: false,
+					error: 'Cannot pay generic mana with payment aid: no generic mana remaining.'
+				};
+			}
+			generic -= entry.paysGeneric;
+			paidByCandidate[entry.id] = 'generic';
+			continue;
+		}
+		if (!entry.colors.includes(choice)) {
+			return { ok: false, error: `Selected permanent cannot pay {${choice}}.` };
+		}
+		if ((colored[choice] ?? 0) <= 0) {
+			return { ok: false, error: `No {${choice}} mana remaining in total cost.` };
+		}
+		colored[choice] -= 1;
+		paidByCandidate[entry.id] = choice;
+	}
+
+	const exileGenericTotal = exileEntries.reduce((sum, e) => sum + e.paysGeneric, 0);
+	if (exileGenericTotal > generic) {
+		return {
+			ok: false,
+			error: `Cannot exile ${exileEntries.length} card(s): only ${generic} generic mana remaining in total cost.`
+		};
+	}
+	generic -= exileGenericTotal;
+	for (const e of exileEntries) {
+		paidByCandidate[e.id] = 'generic';
+	}
+
+	// Sort flexible taps with fewer eligible needed colors first so mono-color taps get priority.
+	const sortedFlex = [...flexibleTaps].sort((a, b) => {
+		const aNeed = a.colors.filter((c) => colored[c] > 0).length;
+		const bNeed = b.colors.filter((c) => colored[c] > 0).length;
+		return aNeed - bNeed;
+	});
+
+	const colorSlots: ManaColor[] = [];
+	for (const c of AID_COLORS) {
+		for (let i = 0; i < (colored[c] ?? 0); i++) colorSlots.push(c);
+	}
+	const matchSlotToTap = new Array<number>(colorSlots.length).fill(-1);
+	const matchTapToSlot = new Array<number>(sortedFlex.length).fill(-1);
+
+	const tryAugment = (tapIdx: number, visitedSlots: boolean[]): boolean => {
+		const tap = sortedFlex[tapIdx];
+		for (let slotIdx = 0; slotIdx < colorSlots.length; slotIdx++) {
+			if (visitedSlots[slotIdx]) continue;
+			if (!tap.colors.includes(colorSlots[slotIdx])) continue;
+			visitedSlots[slotIdx] = true;
+			if (matchSlotToTap[slotIdx] === -1 || tryAugment(matchSlotToTap[slotIdx], visitedSlots)) {
+				matchSlotToTap[slotIdx] = tapIdx;
+				matchTapToSlot[tapIdx] = slotIdx;
+				return true;
+			}
+		}
+		return false;
+	};
+
+	for (let i = 0; i < sortedFlex.length; i++) {
+		tryAugment(i, new Array<boolean>(colorSlots.length).fill(false));
+	}
+
+	for (let i = 0; i < sortedFlex.length; i++) {
+		const tap = sortedFlex[i];
+		const slotIdx = matchTapToSlot[i];
+		if (slotIdx !== -1) {
+			const c = colorSlots[slotIdx];
+			colored[c] -= 1;
+			paidByCandidate[tap.id] = c;
+		} else {
+			if (generic < tap.paysGeneric) {
+				return {
+					ok: false,
+					error: `Too many permanents tapped for payment aid: exceeds remaining payable mana.`
+				};
+			}
+			generic -= tap.paysGeneric;
+			paidByCandidate[tap.id] = 'generic';
+		}
+	}
+
+	const summaryParts: string[] = [];
+	if (tapEntries.length > 0) summaryParts.push(`tapped ${tapEntries.length} creature(s)`);
+	if (exileEntries.length > 0) summaryParts.push(`exiled ${exileEntries.length} card(s) from graveyard`);
+
+	return {
+		ok: true,
+		remainingReq: {
+			...costReq,
+			colored,
+			generic
+		},
+		tapIds: tapEntries.map((e) => e.id),
+		exileIds: exileEntries.map((e) => e.id),
+		summaryParts,
+		paidByCandidate
+	};
 }

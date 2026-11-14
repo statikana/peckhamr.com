@@ -970,7 +970,18 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 	unimplemented('companion', '702.139', 'text'),
 	unimplemented('compleated', '702.150'),
 	unimplemented('conspire', '702.78'),
-	unimplemented('convoke', '702.51'),
+	[
+		'convoke',
+		{
+			name: 'convoke',
+			cr: '702.51',
+			parameterKind: 'none',
+			displayLabel: 'Convoke',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'static', buildStatics: () => [] }
+		}
+	],
 	unimplemented('craft', '702.167', 'text'),
 	[
 		'crew',
@@ -998,10 +1009,42 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 	unimplemented('dash', '702.109', 'cost'),
 	unimplemented('daybound', '702.145'),
 	unimplemented('decayed', '702.147'),
-	unimplemented('delve', '702.66'),
+	[
+		'delve',
+		{
+			name: 'delve',
+			cr: '702.66',
+			parameterKind: 'none',
+			displayLabel: 'Delve',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'static', buildStatics: () => [] }
+		}
+	],
 	unimplemented('demonstrate', '702.144'),
 	unimplemented('dethrone', '702.105'),
-	unimplemented('devoid', '702.114'),
+	[
+		'devoid',
+		{
+			name: 'devoid',
+			cr: '702.114',
+			parameterKind: 'none',
+			grantable: false,
+			displayLabel: 'Devoid',
+			status: 'implemented',
+			implementation: {
+				kind: 'static',
+				buildStatics: () => [
+					{
+						k: 'continuous',
+						layer: '5',
+						affected: 'self',
+						mod: { k: 'setColors', colors: [] }
+					}
+				]
+			}
+		}
+	],
 	unimplemented('devour', '702.82', 'number'),
 	faceDownCostKeyword('disguise', '702.168', 'disguise', 'Cast face down (Disguise)', '{2}'),
 	unimplemented('disturb', '702.146', 'cost'),

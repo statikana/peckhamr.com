@@ -5,8 +5,8 @@ import { effectiveCardForObject } from '../scryfall.ts';
 import type { CardInstance, CounterType, GameState, PlayerGameState, ZoneType } from '../types.ts';
 import { emitEvent, type LeftBattlefieldInfo } from './events.ts';
 import { instanceFaceOptions, resolveObjectFaces } from './faces.ts';
-import { noteLayerInputsChanged, whileLayerInputsChange } from './layerCache.ts';
-import { counterMultiplier, resolveZoneChangeReplacements } from './replace.ts';
+import { noteLayerInputsChanged, whileLayerInputsChange, withStableLayerInputs } from './layerCache.ts';
+import { counterMultiplier, applySelfEtbReplacements, resolveZoneChangeReplacements } from './replace.ts';
 import { flushTriggers } from './triggers.ts';
 
 /**
@@ -100,6 +100,11 @@ export interface MoveOptions {
 	discardReason?: 'discard' | 'cycle';
 	/** Player who discarded the card (defaults to `fromPlayerId ?? obj.ownerId`). */
 	discardPlayerId?: string;
+	/**
+	 * When true, defers linked-exile one-shot returns (`CR 610.3`) to the caller (used by SBA
+	 * multi-object batching so simultaneous battlefield returns happen after all SBA deaths settle).
+	 */
+	skipLinkedReturn?: boolean;
 }
 
 export interface SbaMoveLog {
@@ -282,6 +287,7 @@ function finalizeZoneMove(
 		obj.regenerationShields = undefined;
 		obj.cantBeRegeneratedThisTurn = undefined;
 		obj.crewedThisTurnByIds = undefined;
+		obj.defaultControllerId = undefined;
 		const prevObjVersion = obj.objectVersion || 1;
 		const pruneLeftPerm = <T extends { affected: Array<{ instanceId: string; objectVersion?: number }> }>(
 			list: T[] | undefined
@@ -304,12 +310,22 @@ function finalizeZoneMove(
 	if (dest !== 'battlefield') {
 		obj.kickedCount = undefined;
 		obj.kickedTags = undefined;
+		obj.defaultControllerId = undefined;
 	}
 	if (opts.controllerId !== undefined) obj.controllerId = opts.controllerId;
+	const leavingVersion = obj.objectVersion || 1;
+	if (fromZone === 'exile') {
+		// CR 400.7: Leaving exile clears linked-exile and until-source-leaves tracking.
+		obj.exiledBy = undefined;
+		obj.untilSourceLeavesReturn = undefined;
+	}
 	if (opts.bumpVersion) obj.objectVersion = (obj.objectVersion || 1) + 1;
 	if (opts.newTimestamp) obj.enteredTimestamp = allocateTimestamp(state);
 	// CR 306.5b: A planeswalker entering the battlefield receives starting loyalty counters (with counter multipliers).
 	if (dest === 'battlefield') {
+		if (!obj.defaultControllerId) {
+			obj.defaultControllerId = opts.controllerId ?? effectiveReceiver.playerId;
+		}
 		const bfView = resolveObjectFaces(
 			effectiveCardForObject(obj),
 			instanceFaceOptions(obj, 'battlefield')
@@ -414,7 +430,129 @@ function finalizeZoneMove(
 			}
 		});
 	}
+	if (fromZone === 'battlefield' && dest !== 'battlefield' && !opts.skipLinkedReturn) {
+		returnLinkedExiledForSource(state, obj.instanceId, leavingVersion);
+		syncBattlefieldControllers(state);
+	}
 	return dest;
+}
+
+/**
+ * CR 610.3: Return all cards in exile whose `untilSourceLeavesReturn` matches
+ * `(leavingId, leavingVersion)` immediately after the source permanent leaves the battlefield.
+ * Simultaneous battlefield returns are inserted first so ETB triggers see all entrants (CR 610.3d).
+ */
+export function returnLinkedExiledForSource(
+	state: GameState,
+	leavingId: string,
+	leavingVersion: number
+): void {
+	returnLinkedExiledForSources(state, [{ leavingId, leavingVersion }]);
+}
+
+/**
+ * CR 610.3 / 610.3d: Return all cards in exile whose `untilSourceLeavesReturn` matches any of
+ * `sources` immediately after those permanents leave the battlefield. All simultaneous battlefield
+ * returns are placed onto the battlefield before any `ZoneChange` events are emitted so ETB
+ * triggers see every returning permanent (CR 610.3d).
+ */
+export function returnLinkedExiledForSources(
+	state: GameState,
+	sources: ReadonlyArray<{ leavingId: string; leavingVersion: number }>
+): void {
+	if (sources.length === 0) return;
+	const linked: Array<{
+		card: CardInstance;
+		fromPlayer: PlayerGameState;
+		returnZone: ZoneType;
+	}> = [];
+	for (const p of state.players) {
+		for (const c of p.exile) {
+			const ret = c.untilSourceLeavesReturn;
+			if (
+				ret &&
+				sources.some(
+					(s) => ret.sourceInstanceId === s.leavingId && ret.sourceObjectVersion === s.leavingVersion
+				)
+			) {
+				linked.push({ card: c, fromPlayer: p, returnZone: ret.returnZone });
+			}
+		}
+	}
+	if (linked.length === 0) return;
+
+	const bfReturns: Array<{ card: CardInstance; fromPlayer: PlayerGameState; ownerPlayer: PlayerGameState }> = [];
+	const nonBfReturns: Array<{ card: CardInstance; fromPlayer: PlayerGameState; returnZone: ZoneType }> = [];
+
+	for (const entry of linked) {
+		entry.card.exiledBy = undefined;
+		entry.card.untilSourceLeavesReturn = undefined;
+		// CR 111.8: A token that has left the battlefield cannot return to the battlefield or move zones.
+		if (entry.card.isToken) continue;
+		if (entry.returnZone === 'battlefield') {
+			const ownerPlayer = state.players.find((p) => p.playerId === entry.card.ownerId && !p.lost);
+			if (ownerPlayer) bfReturns.push({ card: entry.card, fromPlayer: entry.fromPlayer, ownerPlayer });
+		} else {
+			nonBfReturns.push(entry);
+		}
+	}
+
+	const emitAfterAll: Array<{
+		card: CardInstance;
+		fromPlayerId: string;
+		toPlayerId: string;
+	}> = [];
+	const batchEmit = bfReturns.length > 1;
+
+	for (const { card, fromPlayer, ownerPlayer } of bfReturns) {
+		const res = moveObject(state, card, 'battlefield', {
+			from: { player: fromPlayer, zone: 'exile' },
+			toPlayer: ownerPlayer,
+			controllerId: ownerPlayer.playerId,
+			bumpVersion: true,
+			newTimestamp: true,
+			emit: !batchEmit,
+			beforeInsert: (returned, d) => {
+				if (d === 'battlefield') {
+					returned.summoningSick = true;
+					applySelfEtbReplacements(state, returned);
+				}
+			}
+		});
+		if (res === 'battlefield') {
+			state.log.push({
+				id: uid('log', state),
+				timestamp: Date.now(),
+				turn: state.turnNumber,
+				phase: state.phase,
+				actorId: ownerPlayer.playerId,
+				kind: 'rule',
+				text: `${card.card.name} returns to the battlefield under ${ownerPlayer.username}'s control (CR 610.3c).`
+			});
+			if (state.log.length > 160) state.log.shift();
+			if (batchEmit) {
+				emitAfterAll.push({
+					card,
+					fromPlayerId: fromPlayer.playerId,
+					toPlayerId: ownerPlayer.playerId
+				});
+			}
+		}
+	}
+
+	for (const em of emitAfterAll) {
+		emitZoneChange(state, em.card, 'exile', 'battlefield', em.fromPlayerId, em.toPlayerId, false);
+	}
+
+	for (const { card, fromPlayer, returnZone } of nonBfReturns) {
+		if (returnZone === 'stack' || returnZone === 'exile') continue;
+		moveObject(state, card, returnZone, {
+			from: { player: fromPlayer, zone: 'exile' },
+			bumpVersion: true,
+			commanderRedirect: true,
+			emit: true
+		});
+	}
 }
 
 function moveObjectInner(
@@ -506,7 +644,7 @@ function moveObjectInner(
 	let shuffleDestLibrary = false;
 	let replacedBy: string | null = null;
 	let pendingZoneRep: ReturnType<typeof resolveZoneChangeReplacements> | undefined;
-	if (opts.graveyardReplacement && to === 'graveyard') {
+	if (opts.graveyardReplacement && (to === 'graveyard' || to === 'exile')) {
 		pendingZoneRep = resolveZoneChangeReplacements(
 			state,
 			obj,
@@ -876,15 +1014,134 @@ export function transferBattlefieldControl(
 	perm: CardInstance,
 	fromPlayer: PlayerGameState,
 	toPlayer: PlayerGameState,
-	state?: GameState
+	state?: GameState,
+	opts?: { preserveDefaultController?: boolean }
 ): void {
 	removeFirst(fromPlayer.battlefield, perm.instanceId);
+	if (!opts?.preserveDefaultController) {
+		if (!perm.defaultControllerId) {
+			perm.defaultControllerId = perm.controllerId || fromPlayer.playerId;
+		}
+		if (state) {
+			const ts = (state.nextTimestamp = (state.nextTimestamp || 0) + 1);
+			(state.timedContinuousEffects ??= []).push({
+				timestamp: ts,
+				sourceName: 'Control change',
+				controllerId: toPlayer.playerId,
+				expires: 'never',
+				affected: [{ instanceId: perm.instanceId, objectVersion: perm.objectVersion ?? 1 }],
+				layer2: { controllerId: toPlayer.playerId }
+			});
+		}
+	}
 	perm.controllerId = toPlayer.playerId;
 	perm.summoningSick = true;
 	perm.castViaSuspend = false;
 	toPlayer.battlefield.push(perm);
 	noteLayerInputsChanged(state);
 	removeFromCombat(state, perm.instanceId);
+}
+
+/**
+ * CR 613.1b, 613.7, 302.6, 506.4: Synchronizes each battlefield permanent's physical
+ * `player.battlefield` array and `perm.controllerId` with its evaluated Layer 2 controller.
+ *
+ * 1. Prunes `TimedContinuousEffect` entries whose `layer2.untilSourceLeaves` source is no longer
+ *    on any active player's battlefield with matching `objectVersion` (phased-out permanents remain
+ *    on the battlefield per CR 702.26d and are not pruned).
+ * 2. Evaluates all active permanents via `evaluatePermanent` and moves any permanent whose
+ *    `controllerId` or hosting `battlefield` differs from its evaluated Layer 2 controller,
+ *    preserving `defaultControllerId`, marking `summoningSick = true` (CR 302.6), clearing
+ *    `castViaSuspend` (CR 702.62a), and removing from combat (CR 506.4).
+ *
+ * Returns true if any permanent changed controller/battlefield.
+ */
+let syncingControllers = false;
+
+export function syncBattlefieldControllers(state: GameState): boolean {
+	if (syncingControllers) return false;
+	syncingControllers = true;
+	try {
+		if (state.timedContinuousEffects?.length) {
+			const boardVersions = new Map<string, number>();
+			for (const p of state.players) {
+				if (p.lost) continue;
+				for (const c of p.battlefield) {
+					boardVersions.set(c.instanceId, c.objectVersion ?? 1);
+				}
+			}
+			const remaining = state.timedContinuousEffects.filter((eff) => {
+				const usl = eff.layer2?.untilSourceLeaves;
+				if (!usl) return true;
+				return boardVersions.get(usl.sourceInstanceId) === usl.sourceObjectVersion;
+			});
+			if (remaining.length !== state.timedContinuousEffects.length) {
+				state.timedContinuousEffects = remaining.length > 0 ? remaining : undefined;
+				noteLayerInputsChanged(state);
+			}
+		}
+
+		let anyMoved = false;
+		for (let pass = 0; pass < 8; pass++) {
+			const moves: Array<{
+				perm: CardInstance;
+				fromPlayer: PlayerGameState;
+				targetControllerId: string;
+			}> = [];
+			withStableLayerInputs(state, () => {
+				for (const p of state.players) {
+					if (p.lost) continue;
+					for (const perm of p.battlefield) {
+						if (perm.phasedOut) continue;
+						const targetControllerId = evaluatePermanent(state, perm).controllerId;
+						if (perm.controllerId !== targetControllerId || p.playerId !== targetControllerId) {
+							moves.push({ perm, fromPlayer: p, targetControllerId });
+						}
+					}
+				}
+			});
+			if (moves.length === 0) break;
+
+			let passMoved = false;
+			for (const { perm, fromPlayer, targetControllerId } of moves) {
+				if (!perm.defaultControllerId) {
+					perm.defaultControllerId = perm.controllerId || fromPlayer.playerId;
+				}
+				const targetPlayer = state.players.find((pl) => pl.playerId === targetControllerId);
+				if (!targetPlayer || targetPlayer.lost) {
+					// CR 800.4a / 800.4c: Previous/default controller left the game; exile foreign permanent.
+					moveObject(state, perm, 'exile', {
+						from: { player: fromPlayer, zone: 'battlefield' },
+						detachAttachments: true,
+						leaveBattlefieldReset: true,
+						bumpVersion: true,
+						newTimestamp: true,
+						ceaseToExist: 'tokens'
+					});
+					passMoved = true;
+					anyMoved = true;
+					continue;
+				}
+				if (fromPlayer.playerId !== targetPlayer.playerId) {
+					transferBattlefieldControl(perm, fromPlayer, targetPlayer, state, {
+						preserveDefaultController: true
+					});
+				} else {
+					perm.controllerId = targetControllerId;
+					perm.summoningSick = true;
+					perm.castViaSuspend = false;
+					noteLayerInputsChanged(state);
+					removeFromCombat(state, perm.instanceId);
+				}
+				passMoved = true;
+				anyMoved = true;
+			}
+			if (!passMoved) break;
+		}
+		return anyMoved;
+	} finally {
+		syncingControllers = false;
+	}
 }
 
 /**

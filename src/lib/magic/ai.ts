@@ -23,10 +23,13 @@ import {
 	getEffectiveActivatedAbilities,
 	getLandPlayOptions,
 	getPlayerCommanderIdentity,
+	getSpellOptionCostRequirement,
 	getSpellTargetRequirement,
 	getTurnFaceUpDisplay,
 	hasKeyword,
-	specTargetCandidates
+	planCastCostAids,
+	specTargetCandidates,
+	spellSpendContext
 } from './engine.ts';
 import type { EffectStep, ModalDef, RestrictionKind, TargetSpec } from './ir.ts';
 import { chooseBotAnswer, effectivePromptChoice, effectivePromptPurpose } from './runtime/choices.ts';
@@ -39,6 +42,7 @@ import type {
 	ChoiceAnswer,
 	GamePhase,
 	GameState,
+	ManaColor,
 	PendingPrompt,
 	PlayerGameState,
 	ScryfallCard,
@@ -737,6 +741,7 @@ export function executeBotStep(
 					? chooseBotTargetsForCard(state, bot, cmd, opt, optionalCostCounts)
 					: [];
 				if (targetReq.minTargets > 0 && targets.length < targetReq.minTargets) return null;
+				const costAids = chooseBotCostPaymentAids(state, bot, cmd, opt, optionalCostCounts);
 				return {
 					optionId: opt.id,
 					faceIndex: opt.faceIndex,
@@ -750,11 +755,21 @@ export function executeBotStep(
 						faceIndex,
 						opt.id,
 						optionalCostCounts
-					)
+					),
+					...(costAids ? costAids : {})
 				};
 			});
 			if (plan) {
-				const { optionId, faceIndex, fused, optionalCostCounts, targets, costPayment } = plan;
+				const {
+					optionId,
+					faceIndex,
+					fused,
+					optionalCostCounts,
+					targets,
+					costPayment,
+					costAidIds,
+					costAidColorChoices
+				} = plan;
 				const costBefore = countBotCostChoicePrompts(state, bot.playerId);
 				const res = applyGameAction(state, bot.playerId, {
 					type: 'cast_spell',
@@ -765,7 +780,9 @@ export function executeBotStep(
 					...(fused ? { fused: true } : {}),
 					...(optionalCostCounts ? { optionalCostCounts } : {}),
 					targets,
-					...(costPayment ? { costPayment } : {})
+					...(costPayment ? { costPayment } : {}),
+					...(costAidIds ? { costAidIds } : {}),
+					...(costAidColorChoices ? { costAidColorChoices } : {})
 				});
 				if (res.ok) {
 					return countBotCostChoicePrompts(state, bot.playerId) > costBefore ? 'quiet' : 'visible';
@@ -839,6 +856,7 @@ export function executeBotStep(
 					const chosen = chooseBotModalSpell(state, bot, cardInst, optFace, optFused);
 					if (!chosen) return null;
 					const optionalCostCounts = chooseBotOptionalCostCounts(state, bot, cardInst, fromZone, nonEachOpt);
+					const costAids = chooseBotCostPaymentAids(state, bot, cardInst, nonEachOpt, optionalCostCounts);
 					return {
 						targets: chosen.targets,
 						modes: chosen.modes,
@@ -853,7 +871,8 @@ export function executeBotStep(
 							optFace,
 							nonEachOpt.id,
 							optionalCostCounts
-						)
+						),
+						...(costAids ? costAids : {})
 					};
 				}
 
@@ -889,6 +908,7 @@ export function executeBotStep(
 							fromZone,
 							eachOpt
 						);
+						const costAids = chooseBotCostPaymentAids(state, bot, cardInst, eachOpt, optionalCostCounts);
 						return {
 							targets: [] as TargetRef[],
 							modes: undefined as number[] | undefined,
@@ -903,7 +923,8 @@ export function executeBotStep(
 								eachFace,
 								eachOpt.id,
 								optionalCostCounts
-							)
+							),
+							...(costAids ? costAids : {})
 						};
 					}
 				}
@@ -924,6 +945,7 @@ export function executeBotStep(
 					? chooseBotTargetsForCard(state, bot, cardInst, normalOpt, optionalCostCounts)
 					: [];
 				if (targetReq.minTargets > 0 && targets.length < targetReq.minTargets) return null;
+				const costAids = chooseBotCostPaymentAids(state, bot, cardInst, normalOpt, optionalCostCounts);
 				return {
 					targets,
 					modes: undefined as number[] | undefined,
@@ -938,11 +960,22 @@ export function executeBotStep(
 						normalFace,
 						normalOpt.id,
 						optionalCostCounts
-					)
+					),
+					...(costAids ? costAids : {})
 				};
 			});
 			if (!planned) continue;
-			const { targets, modes, optionId, faceIndex, fused, optionalCostCounts, costPayment } = planned;
+			const {
+				targets,
+				modes,
+				optionId,
+				faceIndex,
+				fused,
+				optionalCostCounts,
+				costPayment,
+				costAidIds,
+				costAidColorChoices
+			} = planned;
 			const costBefore = countBotCostChoicePrompts(state, bot.playerId);
 			const res = applyGameAction(state, bot.playerId, {
 				type: 'cast_spell',
@@ -954,7 +987,9 @@ export function executeBotStep(
 				...(faceIndex !== undefined ? { faceIndex } : {}),
 				...(fused ? { fused: true } : {}),
 				...(optionalCostCounts ? { optionalCostCounts } : {}),
-				...(costPayment ? { costPayment } : {})
+				...(costPayment ? { costPayment } : {}),
+				...(costAidIds ? { costAidIds } : {}),
+				...(costAidColorChoices ? { costAidColorChoices } : {})
 			});
 			if (res.ok) {
 				return countBotCostChoicePrompts(state, bot.playerId) > costBefore ? 'quiet' : 'visible';
@@ -1230,6 +1265,42 @@ function tryBotHandActivatedAbility(
 		}
 	}
 	return null;
+}
+
+function chooseBotCostPaymentAids(
+	state: GameState,
+	bot: PlayerGameState,
+	cardInst: CardInstance,
+	option: CastOption,
+	optionalCostCounts?: Record<string, number>
+):
+	| { costAidIds: Record<string, string[]>; costAidColorChoices: Record<string, ManaColor | 'generic'> }
+	| undefined {
+	if (!option.paymentAids || option.paymentAids.length === 0) return undefined;
+	const costReq = getSpellOptionCostRequirement(state, bot.playerId, cardInst, option, 0, optionalCostCounts);
+	if (!costReq) return undefined;
+	const hasExtraNonMana =
+		(option.baseCost.kind === 'alternative' && (option.baseCost.costDefs?.length ?? 0) > 0) ||
+		(option.mandatoryAdditionalCosts?.length ?? 0) > 0;
+	const planned = planCastCostAids(
+		state,
+		bot,
+		option,
+		costReq,
+		spellSpendContext(cardInst, {
+			faceIndex: option.faceIndex ?? 0,
+			fused: Boolean(option.fused),
+			isFaceDown: Boolean(option.spellMods?.castFaceDown)
+		}),
+		undefined,
+		undefined,
+		!hasExtraNonMana
+	);
+	if (Object.keys(planned.costAidIds).length === 0) return undefined;
+	return {
+		costAidIds: planned.costAidIds,
+		costAidColorChoices: planned.costAidColorChoices
+	};
 }
 
 function chooseBotOptionalCostCounts(

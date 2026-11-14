@@ -6,7 +6,7 @@
  * be stored in GameState: stack items refer to abilities by id or index and the runtime looks the IR
  * up here.
  */
-import type { CardLayout, ManaColor, ScryfallCard, StackItem } from '../types.ts';
+import type { CardLayout, CompiledDelayedEffect, ManaColor, ScryfallCard, StackItem } from '../types.ts';
 import type {
 	AbilityDef,
 	Amount,
@@ -32,7 +32,7 @@ import { hashText, normalizeFace, printedText } from './normalize.ts';
 import { runtimeTriggers } from './triggers.ts';
 
 /** Bump whenever the IR produced for the same text could change. */
-export const COMPILER_VERSION = 26;
+export const COMPILER_VERSION = 30;
 
 const CACHE = new Map<string, CardDefinition>();
 
@@ -318,6 +318,45 @@ export function compiledTriggerEffect(
 		return expandModalEffects(t.effect.modal, chosenModes);
 	}
 	return t?.effect ?? null;
+}
+
+/**
+ * Dynamically recompile and walk `stepPath` to recover the `EffectStep[]` for a `compiledDelayed`
+ * trigger (CR 603.7) without storing IR in `GameState`.
+ */
+export function resolveCompiledDelayedSteps(eff: CompiledDelayedEffect): CompiledEffect | null {
+	const faceIdx = eff.faceIndex ?? 0;
+	let root: CompiledEffect | null = null;
+	if (eff.abilityKind === 'spell') {
+		const spell = compileSpellEffects(eff.sourceCard, faceIdx, eff.fused ?? false);
+		root = spell?.modal && eff.chosenModes ? expandModalEffects(spell.modal, eff.chosenModes) : spell;
+	} else if (eff.abilityKind === 'activated') {
+		if (eff.abilityId) {
+			const base =
+				eff.grantSourceCard && eff.abilityId.startsWith('granted:')
+					? effectOf(grantedAbilityById(eff.grantSourceCard, eff.abilityId.slice(eff.abilityId.lastIndexOf(':') + 1)))
+					: effectOf(abilityById(eff.sourceCard, eff.abilityId, faceIdx));
+			root = base?.modal && eff.chosenModes ? expandModalEffects(base.modal, eff.chosenModes) : base;
+		}
+	} else if (eff.abilityKind === 'triggered') {
+		if (eff.grantedKeyword || eff.abilityIndex !== undefined) {
+			root = compiledTriggerEffect(
+				eff.sourceCard,
+				eff.abilityIndex ?? -1,
+				eff.grantedKeyword,
+				faceIdx,
+				eff.chosenModes
+			);
+		}
+	}
+	if (!root || eff.stepPath.length === 0) return null;
+	let steps: EffectStep[] = root.steps;
+	for (let i = 0; i < eff.stepPath.length; i++) {
+		const step = steps[eff.stepPath[i]];
+		if (!step?.delayed) return null;
+		steps = step.delayed.effect;
+	}
+	return { steps, targets: root.targets, unparsed: [] };
 }
 
 function shiftRef(ref: Ref, offset: number): Ref {

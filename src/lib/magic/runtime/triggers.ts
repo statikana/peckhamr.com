@@ -28,7 +28,7 @@ import type { CardInstance, GameState, ScryfallCard, SerializedPendingTrigger, S
 import type { GameEvent } from './events.ts';
 import { evaluateKickedCountAmount, evaluateKickerCondition, getObjectKickerInfo } from './kicker.ts';
 import { withStableLayerInputs } from './layerCache.ts';
-import { instanceFaceOptions, resolveObjectFaces, stackItemFaceOptions } from './faces.ts';
+import { instanceFaceOptions, matchesColorFilter, resolveObjectFaces, stackItemFaceOptions } from './faces.ts';
 import { playerCommanderCastCount } from './objectFilter.ts';
 import { triggerMultiplier } from './replace.ts';
 
@@ -371,7 +371,7 @@ function battlefieldSubject(state: GameState, obj: CardInstance, controllerId: s
 	};
 }
 
-function printedSubject(obj: CardInstance, card: ScryfallCard, controllerId: string, allCreatureTypes = false, typeLine = card.typeLine, tapped = obj.tapped, colors: string[] = card.colors): Subject {
+function printedSubject(obj: CardInstance, card: ScryfallCard, controllerId: string, allCreatureTypes = false, typeLine = card.typeLine, tapped = obj.tapped, colors: string[] = resolveObjectFaces(card, instanceFaceOptions(obj)).colors): Subject {
 	return {
 		obj,
 		controllerId,
@@ -415,7 +415,7 @@ function filterMatches(f: ObjectFilter, subject: Subject, source: Viewer): boole
 	if (f.isCommander !== undefined && Boolean(subject.obj.isCommander) !== f.isCommander) return false;
 	if (f.token !== undefined && subject.isToken !== f.token) return false;
 	if (f.tapped !== undefined && subject.tapped !== f.tapped) return false;
-	if (f.colors && !f.colors.some((c) => subject.colors.includes(c))) return false;
+	if (f.colors && !matchesColorFilter(subject.colors, f.colors)) return false;
 	return true;
 }
 

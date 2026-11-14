@@ -34,6 +34,7 @@ import type {
 import type {
 	CardInstance,
 	ChoiceAnswer,
+	CompiledDelayedEffect,
 	CounterType,
 	DelayedTrigger,
 	EffectBindingSnapshot,
@@ -44,6 +45,7 @@ import type {
 	PendingPrompt,
 	PlayerGameState,
 	ScryfallCard,
+	SerializedBoundRef,
 	StackItem,
 	TargetRef,
 	TriggerEventLki,
@@ -83,6 +85,7 @@ import {
 	createEmptyCounters,
 	moveObject,
 	rearrangeLibrary,
+	syncBattlefieldControllers,
 	tapPermanent,
 	type MoveResult
 } from './zones.ts';
@@ -143,7 +146,7 @@ export interface EffectPorts {
 	/** Counters a spell unless it can't be countered. Returns true if it was countered. */
 	counterSpell(state: GameState, item: StackItem, target: StackItem, controller: PlayerGameState): boolean;
 	createToken(state: GameState, controller: PlayerGameState, spec: TokenSpec): CardInstance;
-	copyPermanentAsToken(state: GameState, controller: PlayerGameState, inst: CardInstance, title: string, notLegendary?: boolean): void;
+	copyPermanentAsToken(state: GameState, controller: PlayerGameState, inst: CardInstance, title: string, notLegendary?: boolean): CardInstance;
 	triggerOnEtb(state: GameState, controller: PlayerGameState, inst: CardInstance): void;
 	triggerOnAttach(state: GameState, controller: PlayerGameState, attached: CardInstance, to: CardInstance): void;
 	addCounters(state: GameState, inst: CardInstance, counter: CounterType, amount: number): number;
@@ -205,6 +208,10 @@ export interface EffectContext {
 	eventPlayerId?: string;
 	/** The defending player for an attack trigger (CR 508.5, 702.86a). */
 	defendingPlayerId?: string;
+	/** Pre-hydrated bindings for a resolving `compiledDelayed` trigger (CR 603.7c). */
+	initialBindings?: Record<string, EffectBindingSnapshot[]>;
+	/** Step index prefix when resolving a nested `compiledDelayed` trigger. */
+	stepPathPrefix?: number[];
 }
 
 export interface EffectResult {
@@ -236,6 +243,7 @@ function targetRefMatchesSpec(t: TargetRef, spec: TargetSpec): boolean {
 	const zone = spec.filter.zone;
 	if (zone === 'stack') return t.kind === 'stack';
 	if (zone === 'graveyard') return t.kind === 'graveyard_card' || t.kind === 'card_in_graveyard';
+	if (zone === 'exile') return t.kind === 'exile_card';
 	return t.kind === 'permanent';
 }
 
@@ -658,6 +666,10 @@ class Run {
 						descriptions: [...resume.pendingOptionalCost.descriptions]
 					}
 				: undefined;
+		} else if (ctx.initialBindings) {
+			for (const [name, bound] of Object.entries(ctx.initialBindings)) {
+				this.bindings.set(name, bound.map((b) => ({ id: b.id, lki: { ...b.lki } })));
+			}
 		}
 	}
 
@@ -702,6 +714,38 @@ class Run {
 				zone,
 				reason: title,
 				...(defaultObjectIds ? { defaultObjectIds } : {})
+			}
+		});
+		this.result.paused = true;
+	}
+
+	pauseForOrder(
+		chooser: PlayerGameState,
+		title: string,
+		description: string,
+		objectIds: string[],
+		answerKey: string
+	): void {
+		const item = this.saveFrame(this.stepIndex, this.answers, 'step', this.subStepIndex);
+		enqueueChoicePrompt(this.state, {
+			id: P().uid('prompt', this.state),
+			kind: 'orderObjects',
+			playerId: chooser.playerId,
+			title,
+			description,
+			candidateInstanceIds: objectIds,
+			continuation: {
+				kind: 'effect_choice',
+				stackItemId: item.id,
+				stepIndex: this.stepIndex,
+				answerKey
+			},
+			choice: {
+				kind: 'orderObjects',
+				objectIds,
+				allowSplitBottom: false,
+				allowShuffle: false,
+				reason: description
 			}
 		});
 		this.result.paused = true;
@@ -1344,7 +1388,7 @@ class Run {
 			case 'binding':
 				return (this.bindings.get(sel.name) ?? [])
 					.map((b) => this.locate(b.id)?.inst)
-					.filter((c): c is CardInstance => Boolean(c));
+					.filter((c): c is CardInstance => Boolean(c && !(c.zone === 'battlefield' && c.phasedOut)));
 			case 'target': {
 				if (this.ctx.targetsBecomeEach ?? this.ctx.item.spellMods?.targetsBecomeEach) {
 					const spec = this.ctx.targetSpecs[sel.index];
@@ -1374,6 +1418,8 @@ class Run {
 						for (const c of p.graveyard) if (this.matches(c, sel.filter, 'graveyard')) out.push(c);
 					} else if (zone === 'hand') {
 						for (const c of p.hand) if (this.matches(c, sel.filter, 'hand')) out.push(c);
+					} else if (zone === 'exile') {
+						for (const c of p.exile) if (this.matches(c, sel.filter, 'exile')) out.push(c);
 					}
 				}
 				return out;
@@ -1383,7 +1429,7 @@ class Run {
 		}
 	}
 
-	matches(c: CardInstance, f: ObjectFilter, zone: 'battlefield' | 'graveyard' | 'hand' | 'library'): boolean {
+	matches(c: CardInstance, f: ObjectFilter, zone: 'battlefield' | 'graveyard' | 'hand' | 'library' | 'exile'): boolean {
 		const ev = zone === 'battlefield' ? evaluatePermanent(this.state, c) : null;
 		const card = c.copiableCard ?? c.card;
 		const typeLine = ev ? ev.typeLine : card.typeLine;
@@ -1407,6 +1453,17 @@ class Run {
 		if (f.tapped !== undefined && c.tapped !== f.tapped) return false;
 		if (f.token !== undefined && c.isToken !== f.token) return false;
 		if (f.isCommander !== undefined && Boolean(c.isCommander) !== f.isCommander) return false;
+		if (f.exiledWithSelf) {
+			if (zone !== 'exile' || !c.exiledBy) return false;
+			const srcInst = this.locate(this.ctx.sourceId)?.inst;
+			const expectedVer = this.ctx.item.sourceObjectVersion ?? srcInst?.objectVersion ?? 1;
+			if (
+				c.exiledBy.sourceInstanceId !== this.ctx.sourceId ||
+				c.exiledBy.sourceObjectVersion !== expectedVer
+			) {
+				return false;
+			}
+		}
 		if (f.other && c.instanceId === this.ctx.sourceId) return false;
 		if (f.named !== undefined) {
 			const name = c.isFaceDown ? '' : ev ? ev.effectiveName : card.name;
@@ -1712,7 +1769,9 @@ class Run {
 				const actor = step.actor ? this.playerRef(step.actor) : you;
 				if (!actor) return;
 				const notLegendary = Boolean(step.params?.notLegendary);
-				for (const o of objs) p.copyPermanentAsToken(s, actor, o, title, notLegendary);
+				const made: CardInstance[] = [];
+				for (const o of objs) made.push(p.copyPermanentAsToken(s, actor, o, title, notLegendary));
+				this.bind(step, made);
 				return;
 			}
 			case 'putCounters': {
@@ -2221,6 +2280,76 @@ class Run {
 				}
 				return;
 			}
+			case 'gainControl': {
+				const objs = this.objects(step.subject).filter(
+					(o) => o.zone === 'battlefield' && !o.phasedOut
+				);
+				this.bind(step, objs);
+				if (objs.length === 0) return;
+				const actorPlayer = (step.actor ? this.playerRef(step.actor) : null) ?? you;
+				if (actorPlayer.lost) return;
+				const duration = step.params?.duration ?? 'permanent';
+				const expires: 'endOfTurn' | 'never' | 'untilSourceLeaves' =
+					duration === 'endOfTurn'
+						? 'endOfTurn'
+						: duration === 'untilSourceLeaves'
+							? 'untilSourceLeaves'
+							: 'never';
+
+				let untilSourceLeavesMeta: { sourceInstanceId: string; sourceObjectVersion: number } | undefined;
+				if (expires === 'untilSourceLeaves') {
+					const srcFound = this.ctx.sourceId ? p.findPermanent(s, this.ctx.sourceId) : null;
+					const expectedVer = this.ctx.item.sourceObjectVersion;
+					if (
+						!srcFound ||
+						(expectedVer !== undefined && (srcFound.inst.objectVersion ?? 1) !== expectedVer)
+					) {
+						return;
+					}
+					untilSourceLeavesMeta = {
+						sourceInstanceId: srcFound.inst.instanceId,
+						sourceObjectVersion: srcFound.inst.objectVersion ?? 1
+					};
+				}
+
+				for (const o of objs) {
+					if (!o.defaultControllerId) {
+						o.defaultControllerId = o.controllerId;
+					}
+					const ts = allocateTimestamp(s);
+					(s.timedContinuousEffects ??= []).push({
+						timestamp: ts,
+						sourceName: this.ctx.sourceCard.name,
+						controllerId: actorPlayer.playerId,
+						expires,
+						affected: [{ instanceId: o.instanceId, objectVersion: o.objectVersion ?? 1 }],
+						layer2: {
+							controllerId: actorPlayer.playerId,
+							...(untilSourceLeavesMeta ? { untilSourceLeaves: untilSourceLeavesMeta } : {})
+						},
+						...(step.params?.keywords?.length
+							? { layer6: { addKeywords: [...step.params.keywords] } }
+							: {})
+					});
+					if (step.params?.untap && o.tapped) {
+						if ((o.counters.stun || 0) > 0) {
+							o.counters.stun = Math.max(0, (o.counters.stun || 0) - 1);
+						} else {
+							o.tapped = false;
+						}
+					}
+					const objLabel = o.isFaceDown ? (o.faceDownLabel || 'Face-Down Permanent') : o.card.name;
+					p.addLog(
+						s,
+						'rule',
+						`${actorPlayer.username} gains control of ${objLabel}${expires === 'endOfTurn' ? ' until end of turn' : ''}.`,
+						actorPlayer.playerId
+					);
+				}
+				noteLayerInputsChanged(s);
+				syncBattlefieldControllers(s);
+				return;
+			}
 			default:
 				// Not reachable: staticallyInterpretable rejects every other verb.
 				p.addLog(s, 'rule', `${title}: the "${step.verb}" step isn't supported yet and did nothing.`, you.playerId);
@@ -2394,8 +2523,8 @@ class Run {
 		const sel = step.subject;
 		const batchKey = `batch:${this.stepIndex}`;
 
-		// Specific object(s) (e.g. "sacrifice ~" or "sacrifice it")
-		if (sel.k === 'self' || sel.k === 'binding' || sel.k === 'target') {
+		// Specific object(s) (e.g. "sacrifice ~", "sacrifice it", or "sacrifice that creature")
+		if (sel.k === 'self' || sel.k === 'binding' || sel.k === 'target' || sel.k === 'eventObject') {
 			const actor = step.actor ? (this.playerRef(step.actor) ?? you) : you;
 			this.runIndexedBatch(
 				batchKey,
@@ -2610,6 +2739,36 @@ class Run {
 		const p = P();
 		const you = this.you;
 		const sel = step.subject;
+		const untilSourceLeaves = Boolean(step.params?.untilSourceLeaves);
+		const srcFound = this.locate(this.ctx.sourceId);
+		const sourceVer = this.ctx.item.sourceObjectVersion ?? srcFound?.inst.objectVersion ?? 1;
+		// CR 610.3a–b: If the source permanent has already left the battlefield (or changed objects),
+		// an "until ~ leaves the battlefield" one-shot effect never exiles the target/subject.
+		if (
+			untilSourceLeaves &&
+			(!srcFound ||
+				srcFound.zone !== 'battlefield' ||
+				(srcFound.inst.objectVersion ?? 1) !== sourceVer)
+		) {
+			p.addLog(
+				s,
+				'rule',
+				`${this.ctx.title} did not exile anything because ${this.ctx.sourceCard.name} is no longer on the battlefield (CR 610.3a).`,
+				you.playerId
+			);
+			return;
+		}
+		const stampExiledMetadata = (inst: CardInstance, returnZone?: ZoneType): void => {
+			if (!s.players.some((pl) => pl.exile.some((x) => x.instanceId === inst.instanceId))) return;
+			inst.exiledBy = { sourceInstanceId: this.ctx.sourceId, sourceObjectVersion: sourceVer };
+			if (untilSourceLeaves && returnZone && returnZone !== 'exile' && returnZone !== 'stack') {
+				inst.untilSourceLeavesReturn = {
+					sourceInstanceId: this.ctx.sourceId,
+					sourceObjectVersion: sourceVer,
+					returnZone
+				};
+			}
+		};
 		if (sel.k === 'libraryTop') {
 			const targetPlayer = (sel.player ? this.playerRef(sel.player) : null) ?? you;
 			const count = Math.max(0, this.amount(step.amount, 1));
@@ -2622,7 +2781,10 @@ class Run {
 					bumpVersion: true,
 					newTimestamp: true
 				});
-				if (res === 'exile') moved.push(top);
+				if (res === 'exile') {
+					stampExiledMetadata(top, 'library');
+					moved.push(top);
+				}
 			}
 			this.bind(step, moved);
 			if (moved.length > 0) {
@@ -2655,11 +2817,13 @@ class Run {
 				(id) => {
 					const f = this.locate(id);
 					if (!f || f.zone !== 'graveyard') return;
-					return moveObject(s, f.inst, 'exile', {
+					const res = moveObject(s, f.inst, 'exile', {
 						from: { player: f.holder, zone: 'graveyard' },
 						toPlayer: f.holder,
 						bumpVersion: true
 					});
+					if (res === 'exile') stampExiledMetadata(f.inst, 'graveyard');
+					return res;
 				}
 			);
 			if (!paused) {
@@ -2678,6 +2842,7 @@ class Run {
 				const f = this.locate(id);
 				if (!f) return;
 				const o = f.inst;
+				const prevZone = f.zone;
 				const objLabel = o.isFaceDown ? (o.faceDownLabel || 'Face-Down Permanent') : o.card.name;
 				let res: MoveResult | string | void;
 				if (o.zone === 'battlefield') {
@@ -2688,6 +2853,7 @@ class Run {
 				} else {
 					return;
 				}
+				if (res === 'exile') stampExiledMetadata(o, prevZone);
 				p.addLog(s, 'cast', `${this.ctx.title} exiled ${objLabel}.`, you.playerId);
 				return res;
 			}
@@ -2965,43 +3131,275 @@ class Run {
 		return candidates.slice(0, max);
 	}
 
+	private moveDigCardToBattlefield(o: CardInstance, pl: PlayerGameState, tapped: boolean): MoveResult | void {
+		const s = this.state;
+		const p = P();
+		o.isFaceDown = false;
+		o.faceDownSpec = undefined;
+		o.faceDownLabel = undefined;
+		const enteringView = resolveObjectFaces(o.copiableCard ?? o.card, {
+			zone: 'battlefield',
+			faceIndex: o.activeFaceIndex
+		});
+		if (enteringView.types.includes('Instant') || enteringView.types.includes('Sorcery')) {
+			p.addLog(
+				s,
+				'rule',
+				`${enteringView.name} remained in ${pl.username}'s library because an instant or sorcery card can't enter the battlefield (CR 304.4 / 307.4).`,
+				pl.playerId
+			);
+			return;
+		}
+		const isAura = enteringView.subtypes.includes('Aura') || enteringView.typeLine.includes('Aura');
+		if (isAura) {
+			const attachCands = p.legalAuraAttachCandidates(s, o, pl);
+			if (attachCands.length === 0) {
+				p.addLog(
+					s,
+					'rule',
+					`${enteringView.name} remained in ${pl.username}'s library because there is no legal object or player for it to enchant (CR 303.4g).`,
+					pl.playerId
+				);
+				return;
+			}
+			const auraAns = this.answers[`aura:${o.instanceId}`];
+			const pickedId = auraAns?.kind === 'chooseObjects' ? auraAns.objectIds[0] : undefined;
+			attachObject(s, o, pickedId && attachCands.includes(pickedId) ? pickedId : attachCands[0]);
+		}
+		o.summoningSick = !enteringView.keywords.includes('Haste');
+		o.tapped = tapped;
+		o.defaultControllerId = pl.playerId;
+		const res = moveObject(s, o, 'battlefield', {
+			from: { player: pl, zone: 'library' },
+			toPlayer: pl,
+			controllerId: pl.playerId,
+			newTimestamp: !isAura,
+			bumpVersion: true
+		});
+		if (o.zone === 'battlefield') {
+			p.addLog(
+				s,
+				'cast',
+				`${pl.username} put ${enteringView.name} onto the battlefield (${this.ctx.title}).`,
+				pl.playerId
+			);
+			if (isAura && o.attachedToId) {
+				const host = p.findPermanent(s, o.attachedToId);
+				if (host) p.triggerOnAttach(s, pl, o, host.inst);
+			}
+			p.triggerOnEtb(s, pl, o);
+		}
+		return res;
+	}
+
 	dig(step: EffectStep): void {
 		const s = this.state;
 		const p = P();
 		const dig = step.params?.dig;
 		if (!dig) return;
 		const pl = this.players(step.subject)[0] ?? this.you;
-		const count = Math.min(Math.max(0, this.amount(step.amount)), pl.library.length);
-		if (count <= 0) return;
-		const topCards = pl.library.slice(0, count);
-		const max = Math.min(dig.keep, count);
-		const min = dig.upTo ? 0 : max;
-		if (!pl.isBot && this.canPause && !this.answers[pl.playerId]) {
-			const title = `${this.ctx.title} — Look at top ${count} card(s)`;
-			this.pauseForChoice(
-				pl,
-				title,
-				`Choose ${min === max ? max : `up to ${max}`} card(s) to put on top of your library; the rest go on the bottom.`,
-				topCards.map((c) => c.instanceId),
-				min,
-				max,
-				'library'
-			);
-			return;
-		}
-		const kept = this.answered(pl, topCards, min, max) ?? topCards.slice(0, max);
-		const rest = topCards.filter((c) => !kept.includes(c));
-		if (dig.restRandom && rest.length > 1) {
-			for (let i = rest.length - 1; i > 0; i--) {
-				const j = Math.floor(nextRandom(s) * (i + 1));
-				[rest[i], rest[j]] = [rest[j], rest[i]];
+
+		const topKey = `dig_top:${this.stepIndex}`;
+		const keepAnsKey = `dig_keep:${this.stepIndex}`;
+		const keptFrozenKey = `dig_kept_ids:${this.stepIndex}`;
+		const restFrozenKey = `dig_rest_ids:${this.stepIndex}`;
+		const orderAnsKey = `dig_order:${this.stepIndex}`;
+		const keepDoneKey = `dig_keep_done:${this.stepIndex}`;
+
+		let topIds: string[];
+		const savedTop = this.answers[topKey];
+		if (savedTop?.kind === 'chooseObjects') {
+			topIds = savedTop.objectIds;
+		} else {
+			const count = Math.min(Math.max(0, this.amount(step.amount)), pl.library.length);
+			if (count <= 0) return;
+			const topCards = pl.library.slice(0, count);
+			topIds = topCards.map((c) => c.instanceId);
+			this.answers[topKey] = { kind: 'chooseObjects', objectIds: topIds };
+			if (dig.revealAll) {
+				p.addLog(
+					s,
+					'rule',
+					`${pl.username} revealed ${topCards.map((c) => c.card.name).join(', ')} from the top of their library.`,
+					pl.playerId
+				);
 			}
 		}
-		rearrangeLibrary(pl, topCards, kept, rest);
+
+		let keptIds: string[];
+		let restIds: string[];
+		const savedKept = this.answers[keptFrozenKey];
+		const savedRest = this.answers[restFrozenKey];
+		if (savedKept?.kind === 'chooseObjects' && savedRest?.kind === 'chooseObjects') {
+			keptIds = savedKept.objectIds;
+			restIds = savedRest.objectIds;
+		} else {
+			const topCards = topIds
+				.map((id) => pl.library.find((c) => c.instanceId === id))
+				.filter((c): c is CardInstance => Boolean(c));
+			const eligible = dig.keepFilter
+				? topCards.filter((c) => this.matches(c, dig.keepFilter!, 'library'))
+				: topCards;
+
+			let kept: CardInstance[];
+			if (dig.keepAllMatching) {
+				kept = eligible;
+			} else {
+				const max = Math.min(dig.keep, eligible.length);
+				const min = dig.upTo ? 0 : max;
+				const needsPrompt = max > 0 && (dig.upTo || eligible.length > min);
+				if (needsPrompt && !pl.isBot && this.canPause && !this.answers[keepAnsKey]) {
+					const title = `${this.ctx.title} — Look at top ${topIds.length} card(s)`;
+					const labelDesc = dig.keepLabel ? `${dig.keepLabel} ` : '';
+					const destDesc =
+						dig.keepTo === 'hand'
+							? 'into your hand'
+							: dig.keepTo === 'battlefield'
+								? dig.keepTapped
+									? 'onto the battlefield tapped'
+									: 'onto the battlefield'
+								: dig.keepTo === 'graveyard'
+									? 'into your graveyard'
+									: 'on top of your library';
+					const restDesc =
+						dig.rest === 'graveyard' ? 'the rest go into your graveyard.' : 'the rest go on the bottom.';
+					this.pauseForChoice(
+						pl,
+						title,
+						`Choose ${min === max ? max : `up to ${max}`} ${labelDesc}card(s) to put ${destDesc}; ${restDesc}`,
+						eligible.map((c) => c.instanceId),
+						min,
+						max,
+						'library',
+						undefined,
+						keepAnsKey
+					);
+					return;
+				}
+				if (max <= 0) {
+					kept = [];
+				} else if (this.answers[keepAnsKey]?.kind === 'chooseObjects') {
+					kept = this.answered(keepAnsKey, eligible, min, max) ?? [];
+				} else if (pl.isBot && dig.keepTo === 'battlefield') {
+					kept = [...eligible].sort((a, b) => objectManaValue(s, b) - objectManaValue(s, a)).slice(0, max);
+				} else {
+					kept = eligible.slice(0, max);
+				}
+			}
+
+			keptIds = kept.map((c) => c.instanceId);
+			const keptSet = new Set(keptIds);
+			restIds = topCards.filter((c) => !keptSet.has(c.instanceId)).map((c) => c.instanceId);
+			this.answers[keptFrozenKey] = { kind: 'chooseObjects', objectIds: keptIds };
+			this.answers[restFrozenKey] = { kind: 'chooseObjects', objectIds: restIds };
+			if (dig.revealKept && !dig.revealAll && kept.length > 0) {
+				p.addLog(
+					s,
+					'rule',
+					`${pl.username} revealed ${kept.map((c) => c.card.name).join(', ')}.`,
+					pl.playerId
+				);
+			}
+		}
+
+		let orderedRestIds = [...restIds];
+		if (dig.rest === 'libraryBottom' && restIds.length > 1) {
+			const savedOrder = this.answers[orderAnsKey];
+			if (savedOrder?.kind === 'orderObjects') {
+				orderedRestIds = savedOrder.topIds.filter((id) => restIds.includes(id));
+			} else if (dig.restRandom) {
+				for (let i = orderedRestIds.length - 1; i > 0; i--) {
+					const j = Math.floor(nextRandom(s) * (i + 1));
+					[orderedRestIds[i], orderedRestIds[j]] = [orderedRestIds[j], orderedRestIds[i]];
+				}
+				this.answers[orderAnsKey] = { kind: 'orderObjects', topIds: orderedRestIds };
+			} else if (dig.restOrder === 'any' && !pl.isBot && this.canPause) {
+				this.pauseForOrder(
+					pl,
+					`${this.ctx.title} — Order cards on bottom`,
+					`Put the remaining ${restIds.length} card(s) on the bottom of your library in any order.`,
+					restIds,
+					orderAnsKey
+				);
+				return;
+			}
+		}
+
+		if (dig.keepTo !== 'libraryTop' && !this.answers[keepDoneKey]) {
+			const batch = this.runIndexedBatch(
+				`dig_keep_batch:${this.stepIndex}`,
+				() => keptIds,
+				(id) => {
+					const o = pl.library.find((c) => c.instanceId === id);
+					if (!o) return;
+					if (dig.keepTo === 'hand') {
+						return moveObject(s, o, 'hand', {
+							from: { player: pl, zone: 'library' },
+							toPlayer: pl,
+							newTimestamp: true,
+							bumpVersion: true
+						});
+					}
+					if (dig.keepTo === 'graveyard') {
+						return moveObject(s, o, 'graveyard', {
+							from: { player: pl, zone: 'library' },
+							toPlayer: pl,
+							newTimestamp: true,
+							bumpVersion: true
+						});
+					}
+					if (dig.keepTo === 'battlefield') {
+						return this.moveDigCardToBattlefield(o, pl, Boolean(dig.keepTapped));
+					}
+				}
+			);
+			if (batch.paused) return;
+			this.answers[keepDoneKey] = { kind: 'yesNo', yes: true };
+			this.subStepIndex = 0;
+		}
+
+		if (dig.rest === 'graveyard') {
+			const batch = this.runIndexedBatch(
+				`dig_rest_batch:${this.stepIndex}`,
+				() => orderedRestIds,
+				(id) => {
+					const o = pl.library.find((c) => c.instanceId === id);
+					if (!o) return;
+					return moveObject(s, o, 'graveyard', {
+						from: { player: pl, zone: 'library' },
+						toPlayer: pl,
+						newTimestamp: true,
+						bumpVersion: true
+					});
+				}
+			);
+			if (batch.paused) return;
+		} else {
+			const keptInLib =
+				dig.keepTo === 'libraryTop'
+					? keptIds
+							.map((id) => pl.library.find((c) => c.instanceId === id))
+							.filter((c): c is CardInstance => Boolean(c))
+					: [];
+			const restInLib = orderedRestIds
+				.map((id) => pl.library.find((c) => c.instanceId === id))
+				.filter((c): c is CardInstance => Boolean(c));
+			rearrangeLibrary(pl, [...keptInLib, ...restInLib], keptInLib, restInLib);
+		}
+
+		const keptSummary =
+			dig.keepTo === 'libraryTop'
+				? 'on top'
+				: dig.keepTo === 'hand'
+					? 'to hand'
+					: dig.keepTo === 'battlefield'
+						? 'to battlefield'
+						: 'to graveyard';
+		const restSummary = dig.rest === 'graveyard' ? 'to graveyard' : 'on bottom';
 		p.addLog(
 			s,
 			'rule',
-			`${pl.username} looked at the top ${count} card(s) of their library (${kept.length} on top, ${rest.length} on bottom).`,
+			`${pl.username} looked at the top ${topIds.length} card(s) of their library (${keptIds.length} ${keptSummary}, ${restIds.length} ${restSummary}).`,
 			pl.playerId
 		);
 	}
@@ -3027,7 +3425,8 @@ class Run {
 			...(d.nextTurn ? { notDuringTurn: `${s.turnNumber}:${s.activePlayerIndex}` } : {})
 		};
 		if (!s.delayedTriggers) s.delayedTriggers = [];
-		if (e.verb === 'exile' && e.subject.k === 'binding') {
+		const singlePlain = d.effect.length === 1 && !e?.condition && !e?.optional;
+		if (singlePlain && phase === 'end_step' && e.verb === 'exile' && e.subject.k === 'binding') {
 			for (const b of this.bindings.get(e.subject.name) ?? []) {
 				const found = this.locate(b.id);
 				const label = found ? found.inst.card.name : 'it';
@@ -3048,7 +3447,13 @@ class Run {
 			}
 			return;
 		}
-		if (e.verb === 'lose') {
+		if (
+			singlePlain &&
+			phase === 'end_step' &&
+			e.verb === 'lose' &&
+			e.subject.k === 'player' &&
+			e.subject.filter.relation === 'you'
+		) {
 			s.delayedTriggers.push({
 				id: p.uid('dtrig', s),
 				...base,
@@ -3058,7 +3463,7 @@ class Run {
 			});
 			return;
 		}
-		if (e.verb === 'draw') {
+		if (d.effect.length === 1 && phase === 'upkeep' && e.verb === 'draw' && !e.condition) {
 			const amount = Math.max(0, this.amount(e.amount, 1));
 			const upTo = Boolean(e.params?.upTo);
 			for (const pl of this.players(e.subject)) {
@@ -3070,7 +3475,105 @@ class Run {
 					delayedEffect: { kind: 'draw', playerId: pl.playerId, amount, upTo }
 				});
 			}
+			return;
 		}
+
+		// CR 603.7: General IR-safe delayed trigger — store only a plain-JSON ability locator and
+		// versioned binding/target snapshots, never EffectStep[].
+		const item = this.ctx.item;
+		const existingLocator =
+			item.delayedEffect?.kind === 'compiledDelayed' ? item.delayedEffect : undefined;
+		const boundRefs: SerializedBoundRef[] = [];
+		for (const [key, list] of this.bindings.entries()) {
+			for (const b of list) {
+				const found = this.locate(b.id);
+				if (!found) continue;
+				boundRefs.push({
+					key,
+					id: b.id,
+					expectedZone: found.zone,
+					objectVersion: found.inst.objectVersion ?? 1,
+					lki: { ...b.lki }
+				});
+			}
+		}
+		const targetObjectVersions: Record<string, number> = {};
+		for (const t of this.ctx.targets) {
+			if (t.kind === 'player' || t.kind === 'stack') continue;
+			const found = this.locate(t.id);
+			if (found) targetObjectVersions[t.id] = found.inst.objectVersion ?? 1;
+			else if (item.targetObjectVersions?.[t.id] !== undefined) {
+				targetObjectVersions[t.id] = item.targetObjectVersions[t.id];
+			}
+		}
+		const abilityKind: CompiledDelayedEffect['abilityKind'] = existingLocator
+			? existingLocator.abilityKind
+			: item.kind === 'spell'
+				? 'spell'
+				: item.kind === 'activated'
+					? 'activated'
+					: 'triggered';
+		const compiledDelayed: CompiledDelayedEffect = {
+			kind: 'compiledDelayed',
+			sourceCard: existingLocator ? existingLocator.sourceCard : this.ctx.sourceCard,
+			...(existingLocator?.faceIndex !== undefined
+				? { faceIndex: existingLocator.faceIndex }
+				: item.faceIndex !== undefined
+					? { faceIndex: item.faceIndex }
+					: {}),
+			...(existingLocator?.fused ?? item.fused ? { fused: true } : {}),
+			abilityKind,
+			...(existingLocator?.abilityId ?? item.abilityId
+				? { abilityId: existingLocator?.abilityId ?? item.abilityId }
+				: {}),
+			...(existingLocator?.abilityIndex !== undefined
+				? { abilityIndex: existingLocator.abilityIndex }
+				: item.triggeredAbilityIndex !== undefined
+					? { abilityIndex: item.triggeredAbilityIndex }
+					: {}),
+			...(existingLocator?.grantSourceCard ?? item.grantSourceCard
+				? { grantSourceCard: existingLocator?.grantSourceCard ?? item.grantSourceCard }
+				: {}),
+			...(existingLocator?.grantedKeyword ?? item.grantedKeyword
+				? { grantedKeyword: existingLocator?.grantedKeyword ?? item.grantedKeyword }
+				: {}),
+			...(existingLocator?.chosenModes ?? item.chosenModes
+				? { chosenModes: [...(existingLocator?.chosenModes ?? item.chosenModes)!] }
+				: {}),
+			stepPath: [...(this.ctx.stepPathPrefix ?? []), this.stepIndex],
+			boundRefs,
+			targets: this.ctx.targets.map((t) => ({ ...t })),
+			...(Object.keys(targetObjectVersions).length > 0 ? { targetObjectVersions } : {}),
+			...(this.ctx.eventObjectId ? { eventObjectId: this.ctx.eventObjectId } : {}),
+			...(this.ctx.eventObjectVersion !== undefined
+				? { eventObjectVersion: this.ctx.eventObjectVersion }
+				: {}),
+			...(this.ctx.eventPlayerId ? { eventPlayerId: this.ctx.eventPlayerId } : {}),
+			...(this.ctx.defendingPlayerId ? { defendingPlayerId: this.ctx.defendingPlayerId } : {}),
+			...(this.ctx.eventLki ? { eventLki: { ...this.ctx.eventLki } } : {}),
+			...(this.ctx.xValue ? { xValue: this.ctx.xValue } : {}),
+			...(item.sourceKickedCount !== undefined ? { kickedCount: item.sourceKickedCount } : {}),
+			...(item.sourceKickedTags?.length ? { kickedTags: [...item.sourceKickedTags] } : {})
+		};
+		const phaseTitle =
+			phase === 'end_combat'
+				? 'Delayed End of Combat Trigger'
+				: phase === 'upkeep'
+					? 'Delayed Upkeep Trigger'
+					: 'Delayed End Step Trigger';
+		const phaseDesc =
+			phase === 'end_combat'
+				? 'At end of combat, resolve delayed trigger.'
+				: phase === 'upkeep'
+					? "At the beginning of the next turn's upkeep, resolve delayed trigger."
+					: 'At the beginning of the next end step, resolve delayed trigger.';
+		s.delayedTriggers.push({
+			id: p.uid('dtrig', s),
+			...base,
+			title: `${this.ctx.title} — ${phaseTitle}`,
+			description: phaseDesc,
+			delayedEffect: compiledDelayed
+		});
 	}
 
 	condition(c: Condition): boolean {

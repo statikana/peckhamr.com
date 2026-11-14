@@ -272,7 +272,7 @@ export interface TargetRequirementInfo {
 	targetKind: string;
 	minTargets: number;
 	maxTargets: number;
-	zone: 'battlefield' | 'stack' | 'graveyard' | 'player' | 'any' | 'none';
+	zone: 'battlefield' | 'stack' | 'graveyard' | 'exile' | 'player' | 'any' | 'none';
 	sameGraveyard: boolean;
 	controllerFilter: 'any' | 'you' | 'opponent';
 	cardTypeFilter?: string;
@@ -432,10 +432,24 @@ export interface CardInstance {
 	cantBeRegeneratedThisTurn?: boolean;
 	/** CR 702.122c: instanceIds of creatures that crewed this Vehicle this turn. */
 	crewedThisTurnByIds?: string[];
+	/**
+	 * CR 607.2a: source permanent instanceId + objectVersion that exiled this card
+	 * (valid only while this card remains in exile; cleared on zone exit per CR 400.7).
+	 */
+	exiledBy?: { sourceInstanceId: string; sourceObjectVersion: number };
+	/**
+	 * CR 610.3: if set, this exiled card returns to `returnZone` (owner's control on battlefield)
+	 * as a one-shot effect immediately after the source permanent leaves the battlefield.
+	 */
+	untilSourceLeavesReturn?: {
+		sourceInstanceId: string;
+		sourceObjectVersion: number;
+		returnZone: ZoneType;
+	};
 }
 
 export interface TargetRef {
-	kind: 'permanent' | 'player' | 'stack' | 'graveyard_card' | 'card_in_graveyard';
+	kind: 'permanent' | 'player' | 'stack' | 'graveyard_card' | 'card_in_graveyard' | 'exile_card';
 	id: string; // instanceId, playerId, or stackItemId
 	label: string;
 }
@@ -472,6 +486,18 @@ export interface LandPlayOption {
 	fromZone: 'hand' | 'exile';
 }
 
+export interface CastCostAid {
+	id: string;
+	label: string;
+	kind: 'tapPermanent' | 'exileCard';
+	candidateIds: string[];
+	/** Optional colored mana types payable per candidate (1 mana total per candidate); absent/empty means generic only. */
+	colorsByCandidate?: Record<string, ManaColor[]>;
+	paysGeneric: number;
+	/** Max total generic mana reduction allowed by this aid. */
+	maxGenericReduction?: number;
+}
+
 export interface CastOption {
 	id: string;
 	label: string;
@@ -486,6 +512,7 @@ export interface CastOption {
 		| { kind: 'free' };
 	mandatoryAdditionalCosts?: CostDef[];
 	optionalAdditionalCosts?: CastOptionOptionalCost[];
+	paymentAids?: CastCostAid[];
 	timing: 'default' | 'instant_only';
 	spellMods: SpellModifications;
 	choosesX: boolean;
@@ -648,10 +675,53 @@ export interface SerializedPendingTrigger {
 	order: number;
 }
 
+/** Snapshot of an IR effect binding carried into a delayed trigger (CR 603.7c). */
+export interface SerializedBoundRef {
+	key: string;
+	id: string;
+	expectedZone: ZoneType;
+	objectVersion: number;
+	lki: TriggerEventLki;
+}
+
+/**
+ * Plain-JSON locator for a general delayed trigger (CR 603.7).
+ * Never stores `EffectStep[]` in `GameState`; steps are dynamically recompiled on resolution.
+ */
+export interface CompiledDelayedEffect {
+	kind: 'compiledDelayed';
+	sourceCard: ScryfallCard;
+	faceIndex?: number;
+	fused?: boolean;
+	abilityKind: 'spell' | 'activated' | 'triggered';
+	abilityId?: string;
+	abilityIndex?: number;
+	grantSourceCard?: ScryfallCard;
+	grantedKeyword?: string;
+	chosenModes?: number[];
+	/** Index path to the `delayedTrigger` step from the originating compiled effect's root steps. */
+	stepPath: number[];
+	/** Bound objects ("it", "that creature", created tokens, etc.) captured at creation time. */
+	boundRefs: SerializedBoundRef[];
+	/** Targets of the originating spell/ability (for `k: 'target'` references inside the delayed effect). */
+	targets: TargetRef[];
+	/** Expected objectVersion per target id at creation time (CR 603.7c). */
+	targetObjectVersions?: Record<string, number>;
+	eventObjectId?: string;
+	eventObjectVersion?: number;
+	eventPlayerId?: string;
+	defendingPlayerId?: string;
+	eventLki?: TriggerEventLki;
+	xValue?: number;
+	kickedCount?: number;
+	kickedTags?: string[];
+}
+
 export type DelayedTriggerEffect =
 	| { kind: 'exile'; targetInstanceId: string; targetObjectVersion?: number }
 	| { kind: 'lose' }
-	| { kind: 'draw'; playerId: string; amount: number; upTo?: boolean };
+	| { kind: 'draw'; playerId: string; amount: number; upTo?: boolean }
+	| CompiledDelayedEffect;
 
 export interface DelayedTrigger {
 	id: string;
@@ -1090,11 +1160,22 @@ export interface TimedContinuousEffect {
 	sourceName: string;
 	controllerId: string;
 	affected: Array<{ instanceId: string; objectVersion?: number }>;
+	/** Omitted defaults to `'endOfTurn'` for backward compatibility with Crew etc. */
+	expires?: 'endOfTurn' | 'never' | 'untilSourceLeaves';
+	layer2?: {
+		controllerId: string;
+		/** When set, this Layer 2 effect expires as soon as the source permanent is no longer on the battlefield with matching objectVersion. */
+		untilSourceLeaves?: { sourceInstanceId: string; sourceObjectVersion: number };
+	};
 	layer4?: {
 		addTypes?: string[];
 		setTypes?: string[];
 		addSubtypes?: string[];
 		setSubtypes?: string[];
+	};
+	layer5?: {
+		setColors?: ManaColor[];
+		addColors?: ManaColor[];
 	};
 	layer6?: {
 		addKeywords?: string[];
@@ -1118,6 +1199,7 @@ export interface SerializedPlannedCost {
 	objectNames?: string[];
 	isRandom?: boolean;
 	millTotal?: number;
+	isCostAid?: boolean;
 }
 
 /**
@@ -1162,6 +1244,7 @@ export interface PendingCostPayment {
 	nextPartIndex: number;
 	nextObjectIndex: number;
 	descriptions: string[];
+	aidDescriptions?: string[];
 }
 
 export interface GameState {
@@ -1293,6 +1376,8 @@ export type GameActionPayload =
 			faceIndex?: number;
 			fused?: boolean;
 			optionalCostCounts?: Record<string, number>;
+			costAidIds?: Record<string, string[]>;
+			costAidColorChoices?: Record<string, ManaColor | 'generic'>;
 			fromZone?: 'hand' | 'command' | 'graveyard' | 'exile';
 			costPayment?: CostPayment;
 	  }

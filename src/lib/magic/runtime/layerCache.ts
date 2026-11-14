@@ -94,7 +94,8 @@ function pushFingerprint(state: GameState, fp: unknown[]): void {
 				perm.faceDownSpec?.power,
 				perm.faceDownSpec?.toughness,
 				perm.faceDownLabel,
-				perm.controllerId
+				perm.controllerId,
+				perm.defaultControllerId
 			);
 		}
 	}
@@ -142,7 +143,8 @@ function fingerprintMatches(state: GameState, fp: unknown[]): boolean {
 				fp[i++] !== perm.faceDownSpec?.power ||
 				fp[i++] !== perm.faceDownSpec?.toughness ||
 				fp[i++] !== perm.faceDownLabel ||
-				fp[i++] !== perm.controllerId
+				fp[i++] !== perm.controllerId ||
+				fp[i++] !== perm.defaultControllerId
 			) {
 				return false;
 			}

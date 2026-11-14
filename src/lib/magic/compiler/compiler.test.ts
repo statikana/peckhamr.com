@@ -9,7 +9,8 @@ import {
 	compiledStackItemEffects,
 	describeModalModes,
 	expandModalEffects,
-	getAbilityModal
+	getAbilityModal,
+	resolveCompiledDelayedSteps
 } from './index.ts';
 import { getCardActivatedAbilities } from '../ruleTree.ts';
 import { normalizeFace } from './normalize.ts';
@@ -1140,5 +1141,326 @@ describe('Track D Slice 3: modal triggered, activated, loyalty, and multi-target
 		assert.ok(rest && rest.kind === 'static' && rest.static.k === 'restriction');
 		assert.equal(rest.static.restriction, 'cantCrewVehicles');
 	});
+
+	it('compiles general delayed triggers (sacrifice, return, end of combat, multi-step) and resolves stepPath', () => {
+		const sacTokenSpell = synthetic({
+			name: 'Temporary Militia',
+			manaCost: '{1}{W}',
+			cmc: 2,
+			typeLine: 'Sorcery',
+			oracleText: 'Create two 1/1 white Soldier creature tokens. Sacrifice them at the beginning of the next end step.'
+		});
+		const sacDef = compileFresh(sacTokenSpell);
+		assert.equal(sacDef.fullySupported, true);
+		const sacSpell = sacDef.faces[0].abilities.find((a) => a.kind === 'spell');
+		assert.ok(sacSpell && sacSpell.kind === 'spell' && sacSpell.effect);
+		assert.equal(sacSpell.effect[0]?.verb, 'createToken');
+		assert.equal(sacSpell.effect[1]?.verb, 'delayedTrigger');
+		assert.equal(sacSpell.effect[1]?.delayed?.trigger.filter.phase, 'end_step');
+		assert.equal(sacSpell.effect[1]?.delayed?.effect[0]?.verb, 'sacrifice');
+
+		const copyCombatSpell = synthetic({
+			name: 'Combat Mirage',
+			manaCost: '{2}{R}',
+			cmc: 3,
+			typeLine: 'Sorcery',
+			oracleText: "Create a token that's a copy of target creature you control. Sacrifice it at end of combat."
+		});
+		const copyDef = compileFresh(copyCombatSpell);
+		assert.equal(copyDef.fullySupported, true);
+		const copySpell = copyDef.faces[0].abilities.find((a) => a.kind === 'spell');
+		assert.ok(copySpell && copySpell.kind === 'spell' && copySpell.effect);
+		assert.equal(copySpell.effect[0]?.verb, 'copyPermanent');
+		assert.ok(copySpell.effect[0]?.bindAs);
+		assert.equal(copySpell.effect[1]?.delayed?.trigger.filter.phase, 'end_combat');
+		assert.equal(copySpell.effect[1]?.delayed?.effect[0]?.verb, 'sacrifice');
+
+		const blinkSpell = synthetic({
+			name: 'Ephemeral Glimpse',
+			manaCost: '{W}',
+			cmc: 1,
+			typeLine: 'Instant',
+			oracleText:
+				"Exile target creature you control. Return that card to the battlefield under its owner's control at the beginning of the next end step."
+		});
+		const blinkDef = compileFresh(blinkSpell);
+		assert.equal(blinkDef.fullySupported, true);
+		const blinkEff = blinkDef.faces[0].abilities.find((a) => a.kind === 'spell');
+		assert.ok(blinkEff && blinkEff.kind === 'spell' && blinkEff.effect);
+		assert.equal(blinkEff.effect[1]?.delayed?.effect[0]?.verb, 'move');
+		assert.equal(blinkEff.effect[1]?.delayed?.effect[0]?.params?.from, 'exile');
+		assert.equal(blinkEff.effect[1]?.delayed?.effect[0]?.params?.to, 'battlefield');
+
+		const multiStep = synthetic({
+			name: 'Pyre Pact',
+			manaCost: '{1}{B}',
+			cmc: 2,
+			typeLine: 'Sorcery',
+			oracleText:
+				'Create a 2/2 black Zombie creature token. At the beginning of the next end step, sacrifice it and lose 2 life.'
+		});
+		const multiDef = compileFresh(multiStep);
+		assert.equal(multiDef.fullySupported, true);
+		const multiSpell = multiDef.faces[0].abilities.find((a) => a.kind === 'spell');
+		assert.ok(multiSpell && multiSpell.kind === 'spell' && multiSpell.effect);
+		assert.equal(multiSpell.effect[1]?.delayed?.effect.length, 2);
+		assert.equal(multiSpell.effect[1]?.delayed?.effect[0]?.verb, 'sacrifice');
+		assert.equal(multiSpell.effect[1]?.delayed?.effect[1]?.verb, 'loseLife');
+
+		const upkeepBounce = synthetic({
+			name: 'Delayed Recall',
+			manaCost: '{U}',
+			cmc: 1,
+			typeLine: 'Instant',
+			oracleText: "At the beginning of the next turn's upkeep, return ~ to your hand."
+		});
+		const upkeepDef = compileFresh(upkeepBounce);
+		assert.equal(upkeepDef.fullySupported, true);
+
+		// resolveCompiledDelayedSteps dynamically locates nested delayed EffectStep[] without serializing IR.
+		const resolved = resolveCompiledDelayedSteps({
+			kind: 'compiledDelayed',
+			sourceCard: multiStep,
+			abilityKind: 'spell',
+			stepPath: [1],
+			boundRefs: [],
+			targets: []
+		});
+		assert.ok(resolved);
+		assert.equal(resolved.steps.length, 2);
+		assert.equal(resolved.steps[0]?.verb, 'sacrifice');
+		assert.equal(resolved.steps[1]?.verb, 'loseLife');
+	});
+
+	it('compiles linked exile (until ~ leaves the battlefield, cards exiled with ~) with rename invariance', () => {
+		const oRingA = synthetic({
+			name: 'Banishing Sentinel',
+			manaCost: '{1}{W}{W}',
+			cmc: 3,
+			typeLine: 'Creature — Human Soldier',
+			power: '2',
+			toughness: '2',
+			oracleText:
+				'When Banishing Sentinel enters the battlefield, exile target creature an opponent controls until Banishing Sentinel leaves the battlefield.'
+		});
+		const oRingB = synthetic({
+			name: 'Crystalline Warden',
+			manaCost: '{1}{W}{W}',
+			cmc: 3,
+			typeLine: 'Creature — Human Soldier',
+			power: '2',
+			toughness: '2',
+			oracleText:
+				'When Crystalline Warden enters the battlefield, exile target creature an opponent controls until Crystalline Warden leaves the battlefield.'
+		});
+		const defA = compileFresh(oRingA);
+		const defB = compileFresh(oRingB);
+		assert.equal(defA.fullySupported, true);
+		assert.equal(defB.fullySupported, true);
+		const trigA = defA.faces[0].abilities.find((a) => a.kind === 'triggered');
+		const trigB = defB.faces[0].abilities.find((a) => a.kind === 'triggered');
+		assert.ok(trigA && trigA.kind === 'triggered' && trigA.effect);
+		assert.equal(trigA.effect[0]?.verb, 'exile');
+		assert.equal(trigA.effect[0]?.params?.untilSourceLeaves, true);
+		assert.deepEqual(
+			JSON.parse(JSON.stringify(defA.faces[0].abilities)),
+			JSON.parse(JSON.stringify(defB.faces[0].abilities))
+		);
+
+		const vault = synthetic({
+			name: 'Archive Vault',
+			manaCost: '{2}',
+			cmc: 2,
+			typeLine: 'Artifact',
+			oracleText:
+				"When Archive Vault enters the battlefield, exile target card from a graveyard.\n{T}: Return target card exiled with Archive Vault to its owner's hand."
+		});
+		const vaultDef = compileFresh(vault);
+		assert.equal(vaultDef.fullySupported, true);
+		const act = vaultDef.faces[0].abilities.find((a) => a.kind === 'activated');
+		assert.ok(act && act.kind === 'activated' && act.targets);
+		assert.equal(act.targets[0]?.kind, 'object');
+		assert.equal(act.targets[0]?.filter.zone, 'exile');
+		assert.equal(act.targets[0]?.filter.exiledWithSelf, true);
+
+		const devourer = synthetic({
+			name: 'Vault Golem',
+			manaCost: '{3}',
+			cmc: 3,
+			typeLine: 'Artifact Creature — Golem',
+			power: '1',
+			toughness: '1',
+			oracleText:
+				'When Vault Golem enters the battlefield, exile target card from a graveyard.\nVault Golem gets +1/+1 for each card exiled with Vault Golem.'
+		});
+		const devDef = compileFresh(devourer);
+		assert.equal(devDef.fullySupported, true);
+		const stat = devDef.faces[0].abilities.find((a) => a.kind === 'static');
+		assert.ok(stat && stat.kind === 'static' && stat.static.k === 'continuous' && stat.static.mod.k === 'pt');
+		assert.deepEqual(stat.static.mod.power, { k: 'count', of: { zone: 'exile', exiledWithSelf: true } });
+	});
+
+	it('compiles Layer 2 control changes (Control Magic / Act of Treason / untilSourceLeaves) with rename invariance', () => {
+		const auraA = synthetic({
+			name: 'Mind Tether',
+			manaCost: '{2}{U}{U}',
+			cmc: 4,
+			typeLine: 'Enchantment — Aura',
+			oracleText: 'Enchant creature\nYou control enchanted creature.'
+		});
+		const auraB = synthetic({
+			name: 'Psychic Leash',
+			manaCost: '{2}{U}{U}',
+			cmc: 4,
+			typeLine: 'Enchantment — Aura',
+			oracleText: 'Enchant creature\nYou control enchanted creature.'
+		});
+		const defA = compileFresh(auraA);
+		const defB = compileFresh(auraB);
+		assert.equal(defA.fullySupported, true);
+		assert.equal(defB.fullySupported, true);
+		assert.deepEqual(
+			JSON.parse(JSON.stringify(defA.faces[0].abilities)),
+			JSON.parse(JSON.stringify(defB.faces[0].abilities))
+		);
+
+		const treasonA = synthetic({
+			name: 'Spark of Mutiny',
+			manaCost: '{2}{R}',
+			cmc: 3,
+			typeLine: 'Sorcery',
+			oracleText: 'Gain control of target creature until end of turn. Untap that creature. It gains haste until end of turn.'
+		});
+		const treasonB = synthetic({
+			name: 'Furious Betrayal',
+			manaCost: '{2}{R}',
+			cmc: 3,
+			typeLine: 'Sorcery',
+			oracleText: 'Gain control of target creature until end of turn. Untap that creature. It gains haste until end of turn.'
+		});
+		const tDefA = compileFresh(treasonA);
+		const tDefB = compileFresh(treasonB);
+		assert.equal(tDefA.fullySupported, true);
+		assert.equal(tDefB.fullySupported, true);
+		assert.deepEqual(
+			JSON.parse(JSON.stringify(tDefA.faces[0].abilities)),
+			JSON.parse(JSON.stringify(tDefB.faces[0].abilities))
+		);
+
+		const sowerA = synthetic({
+			name: 'Lure Fae',
+			manaCost: '{2}{U}{U}',
+			cmc: 4,
+			typeLine: 'Creature — Faerie',
+			power: '2',
+			toughness: '2',
+			oracleText: 'When Lure Fae enters the battlefield, gain control of target creature for as long as you control Lure Fae.'
+		});
+		const sowerB = synthetic({
+			name: 'Beckon Nixie',
+			manaCost: '{2}{U}{U}',
+			cmc: 4,
+			typeLine: 'Creature — Faerie',
+			power: '2',
+			toughness: '2',
+			oracleText: 'When Beckon Nixie enters the battlefield, gain control of target creature for as long as you control Beckon Nixie.'
+		});
+		const sDefA = compileFresh(sowerA);
+		const sDefB = compileFresh(sowerB);
+		assert.equal(sDefA.fullySupported, true);
+		assert.equal(sDefB.fullySupported, true);
+		assert.deepEqual(
+			JSON.parse(JSON.stringify(sDefA.faces[0].abilities)),
+			JSON.parse(JSON.stringify(sDefB.faces[0].abilities))
+		);
+	});
+
+	it('compiles Convoke and Delve across creatures, spells with reminder text, duplicates, and multi-face cards', () => {
+		const convokeCreature = synthetic({
+			name: 'Siege Behemoth Alpha',
+			manaCost: '{5}{G}{G}',
+			cmc: 7,
+			typeLine: 'Creature — Wurm',
+			power: '6',
+			toughness: '6',
+			oracleText:
+				'Convoke (Your creatures can help cast this spell. Each creature you tap while casting this spell pays for {1} or one mana of that creature\'s color.)'
+		});
+		const cDef = compileFresh(convokeCreature);
+		assert.equal(cDef.fullySupported, true);
+		assert.ok(
+			cDef.faces[0].abilities.some((a) => a.kind === 'keyword' && a.keyword.name === 'convoke')
+		);
+
+		const convokeSpell = synthetic({
+			name: 'Gathering Call',
+			manaCost: '{2}{W}',
+			cmc: 3,
+			typeLine: 'Instant',
+			oracleText: 'Convoke\nCreate two 1/1 white Soldier creature tokens.'
+		});
+		const csDef = compileFresh(convokeSpell);
+		assert.equal(csDef.fullySupported, true);
+		assert.ok(
+			csDef.faces[0].abilities.some((a) => a.kind === 'keyword' && a.keyword.name === 'convoke')
+		);
+
+		const delveSpell = synthetic({
+			name: 'Abyssal Vision',
+			manaCost: '{6}{U}',
+			cmc: 7,
+			typeLine: 'Sorcery',
+			oracleText:
+				'Delve (Each card you exile from your graveyard while casting this spell pays for {1}.)\nDraw three cards.'
+		});
+		const dsDef = compileFresh(delveSpell);
+		assert.equal(dsDef.fullySupported, true);
+		assert.ok(
+			dsDef.faces[0].abilities.some((a) => a.kind === 'keyword' && a.keyword.name === 'delve')
+		);
+
+		const splitCard = synthetic({
+			name: 'Aid // Ponder',
+			manaCost: '{2}{W}',
+			cmc: 3,
+			layout: 'split',
+			typeLine: 'Instant // Sorcery',
+			oracleText: '',
+			faces: [
+				{
+					name: 'Aid',
+					manaCost: '{2}{W}',
+					cmc: 3,
+					typeLine: 'Instant',
+					oracleText: 'Convoke\nGain 3 life.',
+					colors: ['W'],
+					keywords: ['Convoke'],
+					imageUrl: ''
+				},
+				{
+					name: 'Ponder',
+					manaCost: '{4}{U}',
+					cmc: 5,
+					typeLine: 'Sorcery',
+					oracleText: 'Delve\nDraw two cards.',
+					colors: ['U'],
+					keywords: ['Delve'],
+					imageUrl: ''
+				}
+			]
+		});
+		const spDef = compileFresh(splitCard);
+		assert.equal(spDef.fullySupported, true);
+		assert.ok(
+			spDef.faces[0].abilities.some((a) => a.kind === 'keyword' && a.keyword.name === 'convoke')
+		);
+		assert.ok(
+			!spDef.faces[0].abilities.some((a) => a.kind === 'keyword' && a.keyword.name === 'delve')
+		);
+		assert.ok(
+			spDef.faces[1].abilities.some((a) => a.kind === 'keyword' && a.keyword.name === 'delve')
+		);
+	});
 });
+
 

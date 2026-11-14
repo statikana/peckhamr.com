@@ -90,7 +90,13 @@ export function compileSingleFace(
 			abilities.push(unsupported('unparsed', line.text, line.span, [line.bodySpan]));
 			continue;
 		}
-		const out = (group.length === 1 ? keywordLine(line) : null) ?? triggerLine(group) ?? activatedLine(ctx, group);
+		const skipSpellDelayedTrigger =
+			ctx.isSpell &&
+			/^at (?:the beginning of (?:the next|that turn's)|(?:the )?end of combat)\b/i.test(line.body);
+		const out =
+			(group.length === 1 ? keywordLine(line) : null) ??
+			(skipSpellDelayedTrigger ? null : triggerLine(group)) ??
+			activatedLine(ctx, group);
 		if (out) abilities.push(...out);
 		else if (ctx.isSpell) {
 			if (

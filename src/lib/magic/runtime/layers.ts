@@ -6,13 +6,14 @@
  * layer order (1, 4, 5, 6, 7a, 7b, 7c, 7d) and memoised on the `BoardSnapshot` from `layerCache.ts`.
  */
 import { compileCard } from '../compiler/index.ts';
-import { KEYWORD_LABELS } from '../keywords.ts';
+import { getKeywordSpec, KEYWORD_LABELS } from '../keywords.ts';
 import type {
 	ActivatedAbility,
 	Amount,
 	CardDefinition,
 	Condition,
 	ObjectFilter,
+	PlayerRef,
 	Span,
 	StaticDef
 } from '../ir.ts';
@@ -30,6 +31,7 @@ import {
 	activeAbilityDefs,
 	activeCharacteristics,
 	instanceFaceOptions,
+	matchesColorFilter,
 	resolveObjectFaces,
 	type ResolveObjectFacesOptions
 } from './faces.ts';
@@ -78,6 +80,7 @@ export interface CardContinuousBreakdown {
 
 export interface EvaluatedPermanent {
 	instanceId: string;
+	controllerId: string;
 	effectiveName: string;
 	effectiveTypeLine: string;
 	typeLine: string;
@@ -620,6 +623,7 @@ function innateKeywordsAndAbilitiesOf(
 
 interface PermWorkState {
 	inst: CardInstance;
+	controllerId: string;
 	baseCard: ScryfallCard;
 	timestamp: number;
 	name: string;
@@ -862,16 +866,16 @@ function matchesLayerFilter(
 	source: PermWorkState
 ): boolean {
 	if (filter.other && target.inst.instanceId === source.inst.instanceId) return false;
-	if (filter.controller === 'you' && target.inst.controllerId !== source.inst.controllerId) {
+	if (filter.controller === 'you' && target.controllerId !== source.controllerId) {
 		return false;
 	}
-	if (filter.controller === 'opponent' && target.inst.controllerId === source.inst.controllerId) {
+	if (filter.controller === 'opponent' && target.controllerId === source.controllerId) {
 		return false;
 	}
-	if (filter.owner === 'you' && target.inst.ownerId !== source.inst.controllerId) {
+	if (filter.owner === 'you' && target.inst.ownerId !== source.controllerId) {
 		return false;
 	}
-	if (filter.owner === 'opponent' && target.inst.ownerId === source.inst.controllerId) {
+	if (filter.owner === 'opponent' && target.inst.ownerId === source.controllerId) {
 		return false;
 	}
 	if (filter.isCommander !== undefined && Boolean(target.inst.isCommander) !== filter.isCommander) {
@@ -924,7 +928,7 @@ function matchesLayerFilter(
 		}
 	}
 	if (filter.colors?.length) {
-		if (!filter.colors.some((c) => target.colors.includes(c))) return false;
+		if (!matchesColorFilter(target.colors, filter.colors)) return false;
 	}
 	if (filter.tapped !== undefined) {
 		layerReads |= READ_TAPPED;
@@ -955,12 +959,12 @@ function evaluateLayerAmount(
 		}
 		case 'life': {
 			layerReads |= READ_LIFE;
-			const p = state.players.find((pl) => pl.playerId === source.inst.controllerId);
+			const p = state.players.find((pl) => pl.playerId === source.controllerId);
 			return p?.life ?? 0;
 		}
 		case 'cardsIn': {
 			layerReads |= READ_ZONE_SIZES;
-			const p = state.players.find((pl) => pl.playerId === source.inst.controllerId);
+			const p = state.players.find((pl) => pl.playerId === source.controllerId);
 			if (!p) return 0;
 			if (amount.zone === 'hand') return p.hand.length;
 			if (amount.zone === 'graveyard') return p.graveyard.length;
@@ -971,7 +975,7 @@ function evaluateLayerAmount(
 		}
 		case 'commanderCastCount': {
 			layerReads |= READ_COMMANDER_CAST_COUNT;
-			return playerCommanderCastCount(state, source.inst.controllerId);
+			return playerCommanderCastCount(state, source.controllerId);
 		}
 		case 'kickedCount':
 			return evaluateKickedCountAmount(amount, {
@@ -1007,8 +1011,8 @@ function evaluateLayerAmount(
 				layerReads |= READ_GRAVEYARDS;
 				let total = 0;
 				for (const pl of state.players) {
-					if (f.controller === 'you' && pl.playerId !== source.inst.controllerId) continue;
-					if (f.controller === 'opponent' && pl.playerId === source.inst.controllerId) continue;
+					if (f.controller === 'you' && pl.playerId !== source.controllerId) continue;
+					if (f.controller === 'opponent' && pl.playerId === source.controllerId) continue;
 					for (const g of pl.graveyard) {
 						const gChars = activeCharacteristics(
 							effectiveCardForObject(g),
@@ -1027,6 +1031,56 @@ function evaluateLayerAmount(
 							)
 						) {
 							continue;
+						}
+						total += 1;
+					}
+				}
+				return total;
+			}
+			if (zone === 'exile') {
+				layerReads |= READ_EXILE;
+				const srcVer = source.inst.objectVersion ?? 1;
+				let total = 0;
+				for (const pl of state.players) {
+					if (f.controller === 'you' && pl.playerId !== source.controllerId) continue;
+					if (f.controller === 'opponent' && pl.playerId === source.controllerId) continue;
+					for (const ex of pl.exile) {
+						if (f.owner === 'you' && ex.ownerId !== source.controllerId) continue;
+						if (f.owner === 'opponent' && ex.ownerId === source.controllerId) continue;
+						if (f.exiledWithSelf) {
+							if (
+								!ex.exiledBy ||
+								ex.exiledBy.sourceInstanceId !== source.inst.instanceId ||
+								ex.exiledBy.sourceObjectVersion !== srcVer
+							) {
+								continue;
+							}
+						}
+						if (f.types?.length || f.notTypes?.length || f.subtypes?.length) {
+							const eChars = activeCharacteristics(
+								effectiveCardForObject(ex),
+								instanceFaceOptions(ex, 'exile')
+							);
+							if (
+								f.types?.length &&
+								!f.types.some((t) => eChars.types.some((et) => et.toLowerCase() === t.toLowerCase()))
+							) {
+								continue;
+							}
+							if (
+								f.notTypes?.length &&
+								f.notTypes.some((t) => eChars.types.some((et) => et.toLowerCase() === t.toLowerCase()))
+							) {
+								continue;
+							}
+							if (
+								f.subtypes?.length &&
+								!f.subtypes.some((s) =>
+									eChars.subtypes.some((es) => es.toLowerCase() === s.toLowerCase())
+								)
+							) {
+								continue;
+							}
 						}
 						total += 1;
 					}
@@ -1057,7 +1111,7 @@ function evaluateLayerCondition(
 		case 'isTurnOf': {
 			layerReads |= READ_ACTIVE_PLAYER;
 			const activePlayer = state.players[state.activePlayerIndex];
-			return activePlayer?.playerId === source.inst.controllerId;
+			return activePlayer?.playerId === source.controllerId;
 		}
 		case 'compare': {
 			const left = evaluateLayerAmount(cond.left, state, workList, source, affected);
@@ -1080,7 +1134,7 @@ function evaluateLayerCondition(
 			return false;
 		case 'controlCommander':
 			return workList.some(
-				(w) => w.inst.controllerId === source.inst.controllerId && Boolean(w.inst.isCommander)
+				(w) => w.controllerId === source.controllerId && Boolean(w.inst.isCommander)
 			);
 		case 'kicked':
 			return evaluateKickerCondition(cond, {
@@ -1171,6 +1225,7 @@ const READ_ZONE_SIZES = 4;
 const READ_GRAVEYARDS = 8;
 const READ_ACTIVE_PLAYER = 16;
 const READ_COMMANDER_CAST_COUNT = 32;
+const READ_EXILE = 64;
 
 /** Inputs read by the evaluation in progress (bits above). */
 let layerReads = 0;
@@ -1188,6 +1243,18 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 			fp.push(p.graveyard.length);
 			for (const g of p.graveyard) {
 				fp.push(g.card, g.copiableCard, g.copiableState);
+			}
+		}
+		if (reads & READ_EXILE) {
+			fp.push(p.exile.length);
+			for (const ex of p.exile) {
+				fp.push(
+					ex.card,
+					ex.copiableCard,
+					ex.copiableState,
+					ex.exiledBy?.sourceInstanceId,
+					ex.exiledBy?.sourceObjectVersion
+				);
 			}
 		}
 	}
@@ -1238,11 +1305,18 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 				eff.timestamp,
 				eff.sourceName,
 				eff.controllerId,
+				eff.expires,
+				eff.layer2?.controllerId,
+				eff.layer2?.untilSourceLeaves?.sourceInstanceId,
+				eff.layer2?.untilSourceLeaves?.sourceObjectVersion,
 				eff.affected.length,
 				eff.layer4?.addTypes?.length || 0,
 				eff.layer4?.setTypes?.length || 0,
 				eff.layer4?.addSubtypes?.length || 0,
 				eff.layer4?.setSubtypes?.length || 0,
+				eff.layer5?.setColors !== undefined ? 1 : 0,
+				eff.layer5?.setColors?.length || 0,
+				eff.layer5?.addColors?.length || 0,
 				Boolean(eff.layer6?.cantHaveOrGain),
 				eff.layer6?.addKeywords?.length || 0,
 				eff.layer6?.removeKeywords?.length || 0,
@@ -1255,6 +1329,8 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 			if (eff.layer4?.setTypes?.length) for (const t of eff.layer4.setTypes) fp.push(t);
 			if (eff.layer4?.addSubtypes?.length) for (const s of eff.layer4.addSubtypes) fp.push(s);
 			if (eff.layer4?.setSubtypes?.length) for (const s of eff.layer4.setSubtypes) fp.push(s);
+			if (eff.layer5?.setColors?.length) for (const c of eff.layer5.setColors) fp.push(c);
+			if (eff.layer5?.addColors?.length) for (const c of eff.layer5.addColors) fp.push(c);
 			if (eff.layer6?.addKeywords?.length) for (const kw of eff.layer6.addKeywords) fp.push(kw);
 			if (eff.layer6?.removeKeywords?.length) for (const kw of eff.layer6.removeKeywords) fp.push(kw);
 		}
@@ -1290,6 +1366,20 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 			if (fp[i++] !== p.graveyard.length) return false;
 			for (const g of p.graveyard) {
 				if (fp[i++] !== g.card || fp[i++] !== g.copiableCard || fp[i++] !== g.copiableState) {
+					return false;
+				}
+			}
+		}
+		if (reads & READ_EXILE) {
+			if (fp[i++] !== p.exile.length) return false;
+			for (const ex of p.exile) {
+				if (
+					fp[i++] !== ex.card ||
+					fp[i++] !== ex.copiableCard ||
+					fp[i++] !== ex.copiableState ||
+					fp[i++] !== ex.exiledBy?.sourceInstanceId ||
+					fp[i++] !== ex.exiledBy?.sourceObjectVersion
+				) {
 					return false;
 				}
 			}
@@ -1363,6 +1453,9 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 			const l4SetTypes = eff.layer4?.setTypes?.length || 0;
 			const l4AddSubs = eff.layer4?.addSubtypes?.length || 0;
 			const l4SetSubs = eff.layer4?.setSubtypes?.length || 0;
+			const hasL5Set = eff.layer5?.setColors !== undefined ? 1 : 0;
+			const l5SetLen = eff.layer5?.setColors?.length || 0;
+			const l5AddLen = eff.layer5?.addColors?.length || 0;
 			const l6Cant = Boolean(eff.layer6?.cantHaveOrGain);
 			const l6Add = eff.layer6?.addKeywords?.length || 0;
 			const l6Rem = eff.layer6?.removeKeywords?.length || 0;
@@ -1373,11 +1466,18 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 				fp[i++] !== eff.timestamp ||
 				fp[i++] !== eff.sourceName ||
 				fp[i++] !== eff.controllerId ||
+				fp[i++] !== eff.expires ||
+				fp[i++] !== eff.layer2?.controllerId ||
+				fp[i++] !== eff.layer2?.untilSourceLeaves?.sourceInstanceId ||
+				fp[i++] !== eff.layer2?.untilSourceLeaves?.sourceObjectVersion ||
 				fp[i++] !== affLen ||
 				fp[i++] !== l4AddTypes ||
 				fp[i++] !== l4SetTypes ||
 				fp[i++] !== l4AddSubs ||
 				fp[i++] !== l4SetSubs ||
+				fp[i++] !== hasL5Set ||
+				fp[i++] !== l5SetLen ||
+				fp[i++] !== l5AddLen ||
 				fp[i++] !== l6Cant ||
 				fp[i++] !== l6Add ||
 				fp[i++] !== l6Rem ||
@@ -1394,6 +1494,8 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 			if (l4SetTypes) for (const t of eff.layer4!.setTypes!) if (fp[i++] !== t) return false;
 			if (l4AddSubs) for (const s of eff.layer4!.addSubtypes!) if (fp[i++] !== s) return false;
 			if (l4SetSubs) for (const s of eff.layer4!.setSubtypes!) if (fp[i++] !== s) return false;
+			if (l5SetLen) for (const c of eff.layer5!.setColors!) if (fp[i++] !== c) return false;
+			if (l5AddLen) for (const c of eff.layer5!.addColors!) if (fp[i++] !== c) return false;
 			if (l6Add) for (const kw of eff.layer6!.addKeywords!) if (fp[i++] !== kw) return false;
 			if (l6Rem) for (const kw of eff.layer6!.removeKeywords!) if (fp[i++] !== kw) return false;
 		}
@@ -1422,9 +1524,11 @@ function evaluateBoard(state: GameState, snap: BoardSnapshot): BoardLayerCache['
 	const workList: PermWorkState[] = [];
 	const workMap = new Map<string, PermWorkState>();
 	evaluateLayer1(state, snap, workList, workMap);
+	evaluateLayer2Control(state, workList, workMap);
 	evaluateAttachedTypes(state, snap, workList, workMap);
 	evaluateTypeOverwrites(state, snap, workList, workMap);
 	evaluateAdditiveTypesAndColors(state, snap, workList, workMap);
+	evaluateLayer5Colors(state, workList, workMap);
 	evaluateGlobalAbilityLoss(state, snap, workList, workMap);
 	evaluatePerPermanent(state, snap, workList, workMap);
 	return buildBoardResults(workList);
@@ -1498,9 +1602,20 @@ function evaluateLayer1(
 		const statics: StaticDef[] = [];
 		const grantsKeywordViaAbility = new Set<string>();
 		if (!isFaceDown) {
+			const hasCopyColorException = inst.copiableState?.except?.colors !== undefined;
 			for (const ab of activeAbilityDefs(baseCard, layer1aOpts)) {
 				if (ab.kind === 'static') {
 					statics.push(ab.static);
+				} else if (ab.kind === 'keyword') {
+					const kwSpec = getKeywordSpec(ab.keyword.name);
+					if (kwSpec?.status === 'implemented' && kwSpec.implementation?.kind === 'static') {
+						for (const st of kwSpec.implementation.buildStatics(ab.keyword)) {
+							if (hasCopyColorException && st.k === 'continuous' && st.layer === '5' && st.affected === 'self') {
+								continue;
+							}
+							statics.push(st);
+						}
+					}
 				} else if (ab.kind === 'activated' || ab.kind === 'triggered') {
 					for (const step of ab.effect) {
 						if (step.verb === 'grant' && Array.isArray(step.params?.keywords)) {
@@ -1514,6 +1629,12 @@ function evaluateLayer1(
 			const layerOrder = (st: StaticDef): number => {
 				if (st.k !== 'continuous') return 99;
 				switch (st.layer) {
+					case '1':
+						return 1;
+					case '2':
+						return 2;
+					case '3':
+						return 3;
 					case '4':
 						return 4;
 					case '5':
@@ -1537,6 +1658,7 @@ function evaluateLayer1(
 
 		const work: PermWorkState = {
 			inst,
+			controllerId: inst.defaultControllerId ?? inst.controllerId,
 			baseCard,
 			timestamp: entry.timestamp,
 			name: view.name,
@@ -1568,6 +1690,118 @@ function evaluateLayer1(
 		};
 		workList.push(work);
 		workMap.set(inst.instanceId, work);
+	}
+}
+
+function isTimedContinuousEffectActive(
+	eff: TimedContinuousEffect,
+	workMap: Map<string, PermWorkState>
+): boolean {
+	const usl = eff.layer2?.untilSourceLeaves;
+	if (!usl) return true;
+	const src = workMap.get(usl.sourceInstanceId);
+	return Boolean(src && (src.inst.objectVersion ?? 1) === usl.sourceObjectVersion);
+}
+
+function resolveLayerPlayerRef(
+	ref: PlayerRef,
+	state: GameState,
+	source: PermWorkState,
+	target: PermWorkState
+): string {
+	switch (ref.k) {
+		case 'you':
+			return source.controllerId;
+		case 'activePlayer':
+			layerReads |= READ_ACTIVE_PLAYER;
+			return state.players[state.activePlayerIndex]?.playerId ?? source.controllerId;
+		case 'ownerOf':
+			return ref.of.k === 'affected' ? target.inst.ownerId : source.inst.ownerId;
+		case 'controllerOf':
+			return ref.of.k === 'affected' ? target.controllerId : source.controllerId;
+		default:
+			return source.controllerId;
+	}
+}
+
+/**
+ * Pass 0 — Layer 2 continuous control-changing effects (CR 613.1b, CR 613.6, CR 613.7).
+ * Evaluated BEFORE Layers 4–7 so `"creatures you control"` anthems and restrictions immediately
+ * reflect the Layer 2 controller, and BEFORE Layer 6 ability removal per CR 613.6.
+ */
+function evaluateLayer2Control(
+	state: GameState,
+	workList: PermWorkState[],
+	workMap: Map<string, PermWorkState>
+): void {
+	type Layer2Op =
+		| {
+				kind: 'static';
+				timestamp: number;
+				order: number;
+				source: PermWorkState;
+				st: StaticDef & { k: 'continuous' };
+		  }
+		| { kind: 'timed'; timestamp: number; order: number; eff: TimedContinuousEffect };
+	const ops: Layer2Op[] = [];
+	let order = 0;
+
+	for (const source of workList) {
+		for (const st of source.statics) {
+			if (st.k === 'continuous' && st.layer === '2' && st.mod.k === 'setController') {
+				ops.push({ kind: 'static', timestamp: source.timestamp, order: order++, source, st });
+			}
+		}
+	}
+
+	if (state.timedContinuousEffects?.length) {
+		for (const eff of state.timedContinuousEffects) {
+			if (!eff.layer2) continue;
+			if (!isTimedContinuousEffectActive(eff, workMap)) continue;
+			const targetPlayer = state.players.find((pl) => pl.playerId === eff.layer2!.controllerId);
+			if (!targetPlayer || targetPlayer.lost) continue;
+			ops.push({ kind: 'timed', timestamp: eff.timestamp, order: order++, eff });
+		}
+	}
+
+	if (ops.length === 0) return;
+	ops.sort((a, b) => a.timestamp - b.timestamp || a.order - b.order);
+
+	for (const op of ops) {
+		if (op.kind === 'static') {
+			const { source, st } = op;
+			if (st.mod.k !== 'setController') continue;
+			if (st.affected === 'attachedTo') {
+				if (!source.inst.attachedToId) continue;
+				const target = workMap.get(source.inst.attachedToId);
+				if (!target) continue;
+				if (st.condition && !evaluateLayerCondition(st.condition, state, workList, source, target)) {
+					continue;
+				}
+				target.controllerId = resolveLayerPlayerRef(st.mod.controller, state, source, target);
+			} else if (st.affected === 'self') {
+				if (st.condition && !evaluateLayerCondition(st.condition, state, workList, source, source)) {
+					continue;
+				}
+				source.controllerId = resolveLayerPlayerRef(st.mod.controller, state, source, source);
+			} else if (typeof st.affected === 'object') {
+				for (const target of workList) {
+					if (!matchesLayerFilter(st.affected, target, source)) continue;
+					if (st.condition && !evaluateLayerCondition(st.condition, state, workList, source, target)) {
+						continue;
+					}
+					target.controllerId = resolveLayerPlayerRef(st.mod.controller, state, source, target);
+				}
+			}
+		} else {
+			const { eff } = op;
+			const nextControllerId = eff.layer2!.controllerId;
+			for (const aff of eff.affected) {
+				const target = workMap.get(aff.instanceId);
+				if (!target || (target.inst.objectVersion ?? 1) !== (aff.objectVersion ?? 1)) continue;
+				target.controllerId = nextControllerId;
+			}
+		}
 	}
 }
 
@@ -1617,12 +1851,6 @@ function evaluateAttachedTypes(
 							toughness: null,
 							timestamp: att.timestamp
 						});
-					}
-				} else if (st.layer === '5' && st.mod.k === 'setColors') {
-					target.colors = [...st.mod.colors];
-				} else if (st.layer === '5' && st.mod.k === 'addColors') {
-					for (const c of st.mod.colors) {
-						if (!target.colors.includes(c)) target.colors.push(c);
 					}
 				} else if (st.layer === '7b' && st.mod.k === 'setBasePT') {
 					const p = evaluateLayerAmount(st.mod.power, state, workList, att, target);
@@ -1685,7 +1913,11 @@ function evaluateTypeOverwrites(
 	}
 	if (state.timedContinuousEffects?.length) {
 		const sorted = [...state.timedContinuousEffects]
-			.filter((e) => e.layer4?.setTypes?.length || e.layer4?.setSubtypes?.length)
+			.filter(
+				(e) =>
+					isTimedContinuousEffectActive(e, workMap) &&
+					(e.layer4?.setTypes?.length || e.layer4?.setSubtypes?.length)
+			)
 			.sort((a, b) => a.timestamp - b.timestamp);
 		for (const eff of sorted) {
 			for (const aff of eff.affected) {
@@ -1772,7 +2004,11 @@ function evaluateAdditiveTypesAndColors(
 	}
 	if (state.timedContinuousEffects?.length) {
 		const sorted = [...state.timedContinuousEffects]
-			.filter((e) => e.layer4?.addTypes?.length || e.layer4?.addSubtypes?.length)
+			.filter(
+				(e) =>
+					isTimedContinuousEffectActive(e, workMap) &&
+					(e.layer4?.addTypes?.length || e.layer4?.addSubtypes?.length)
+			)
 			.sort((a, b) => a.timestamp - b.timestamp);
 		for (const eff of sorted) {
 			for (const aff of eff.affected) {
@@ -1801,35 +2037,94 @@ function evaluateAdditiveTypesAndColors(
 			}
 		}
 	}
+}
 
-	// 4b. Layer 5: Color-changing effects (CR 613.1e — setColors / addColors on self or filter)
+function evaluateLayer5Colors(
+	state: GameState,
+	workList: PermWorkState[],
+	workMap: Map<string, PermWorkState>
+): void {
+	const applyColorMod = (
+		target: PermWorkState,
+		mod: { setColors?: ManaColor[]; addColors?: ManaColor[] }
+	): void => {
+		if (mod.setColors !== undefined) {
+			target.colors = [...mod.setColors];
+		}
+		if (mod.addColors) {
+			for (const c of mod.addColors) {
+				if (!target.colors.includes(c)) target.colors.push(c);
+			}
+		}
+	};
+
+	// 5a. Layer 5 CDAs (CR 613.3: applied first; CR 613.6: unaffected by Layer 6 ability removal).
+	for (const source of workList) {
+		for (const st of source.statics) {
+			if (st.k !== 'continuous' || st.layer !== '5' || st.affected !== 'self') continue;
+			if (st.condition && !evaluateLayerCondition(st.condition, state, workList, source, source)) {
+				continue;
+			}
+			applyColorMod(source, {
+				setColors: st.mod.k === 'setColors' ? st.mod.colors : undefined,
+				addColors: st.mod.k === 'addColors' ? st.mod.colors : undefined
+			});
+		}
+	}
+
+	// 5b. Non-CDA Layer 5 effects (attached, global, timed) sorted by timestamp (CR 613.3, 613.7).
+	interface Layer5Op {
+		timestamp: number;
+		target: PermWorkState;
+		setColors?: ManaColor[];
+		addColors?: ManaColor[];
+	}
+	const ops: Layer5Op[] = [];
 	for (const source of workList) {
 		if (source.strippedByAttachment || source.abilityRemovalEvents.length > 0) continue;
 		for (const st of source.statics) {
-			if (st.k !== 'continuous' || st.layer !== '5') continue;
-			if (st.affected === 'attachedTo') continue;
-			const targets =
-				st.affected === 'self'
-					? [source]
-					: typeof st.affected === 'object'
-						? workList.filter((t) => matchesLayerFilter(st.affected as ObjectFilter, t, source))
-						: [];
+			if (st.k !== 'continuous' || st.layer !== '5' || st.affected === 'self') continue;
+			if (st.mod.k !== 'setColors' && st.mod.k !== 'addColors') continue;
+			let targets: PermWorkState[] = [];
+			if (st.affected === 'attachedTo') {
+				const hostId = source.inst.attachedToId;
+				const host = hostId ? workMap.get(hostId) : undefined;
+				if (host) targets = [host];
+			} else if (typeof st.affected === 'object') {
+				targets = workList.filter((t) => matchesLayerFilter(st.affected as ObjectFilter, t, source));
+			}
 			for (const target of targets) {
-				if (
-					st.condition &&
-					!evaluateLayerCondition(st.condition, state, workList, source, target)
-				) {
+				if (st.condition && !evaluateLayerCondition(st.condition, state, workList, source, target)) {
 					continue;
 				}
-				if (st.mod.k === 'setColors') {
-					target.colors = [...st.mod.colors];
-				} else if (st.mod.k === 'addColors') {
-					for (const c of st.mod.colors) {
-						if (!target.colors.includes(c)) target.colors.push(c);
-					}
-				}
+				ops.push({
+					timestamp: source.timestamp,
+					target,
+					setColors: st.mod.k === 'setColors' ? st.mod.colors : undefined,
+					addColors: st.mod.k === 'addColors' ? st.mod.colors : undefined
+				});
 			}
 		}
+	}
+	if (state.timedContinuousEffects?.length) {
+		for (const eff of state.timedContinuousEffects) {
+			if (!eff.layer5 || !isTimedContinuousEffectActive(eff, workMap)) continue;
+			for (const ref of eff.affected) {
+				const target = workMap.get(ref.instanceId);
+				if (!target) continue;
+				if ((target.inst.objectVersion ?? 1) !== (ref.objectVersion ?? 1)) continue;
+				ops.push({
+					timestamp: eff.timestamp,
+					target,
+					setColors: eff.layer5.setColors,
+					addColors: eff.layer5.addColors
+				});
+			}
+		}
+	}
+	ops.sort((a, b) => a.timestamp - b.timestamp);
+	for (const op of ops) {
+		applyColorMod(op.target, op);
 	}
 }
 
@@ -1918,6 +2213,7 @@ function evaluatePerPermanent(
 		const matchingTimedCont: TimedContinuousEffect[] = [];
 		if (state.timedContinuousEffects?.length) {
 			for (const eff of state.timedContinuousEffects) {
+				if (!isTimedContinuousEffectActive(eff, workMap)) continue;
 				if (
 					eff.affected.some(
 						(a) => a.instanceId === target.inst.instanceId && (a.objectVersion ?? 1) === targetVersion
@@ -2009,7 +2305,7 @@ function evaluatePerPermanent(
 			let sourceLabel = 'Temporary Effect';
 			for (const w of workList) {
 				if (
-					w.inst.controllerId === target.inst.controllerId &&
+					w.controllerId === target.controllerId &&
 					w.grantsKeywordViaAbility.has(gLow)
 				) {
 					sourceLabel = w.baseCard.name;
@@ -2447,6 +2743,7 @@ function buildBoardResults(workList: PermWorkState[]): BoardLayerCache['byInstan
 
 		const evaluated: EvaluatedPermanent = {
 			instanceId: work.inst.instanceId,
+			controllerId: work.controllerId,
 			effectiveName: work.name,
 			effectiveTypeLine: tLine,
 			typeLine: tLine,
@@ -2799,6 +3096,7 @@ export function evaluatePermanent(state: GameState, inst: CardInstance): Evaluat
 		const faceView = resolveObjectFaces(baseCard, instanceFaceOptions(inst));
 		result = {
 			instanceId: inst.instanceId,
+			controllerId: inst.controllerId,
 			effectiveName: inst.isFaceDown
 				? (inst.faceDownLabel ?? 'Face-Down Creature')
 				: faceView.name,
@@ -2817,7 +3115,7 @@ export function evaluatePermanent(state: GameState, inst: CardInstance): Evaluat
 			power: breakdown.effectivePower ?? 0,
 			toughness: breakdown.effectiveToughness ?? 0,
 			unclampedToughness: breakdown.effectiveToughness,
-			colors: inst.isFaceDown ? [] : [...(baseCard.colors ?? [])],
+			colors: [...faceView.colors],
 			activeKeywords,
 			keywords: activeKeywords,
 			breakdown,

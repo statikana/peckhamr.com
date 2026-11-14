@@ -94,9 +94,12 @@ import {
 	placeDeferred,
 	rearrangeLibrary,
 	removeFromGame,
+	returnLinkedExiledForSource,
+	returnLinkedExiledForSources,
 	setZoneOrder,
 	shuffleArray,
 	shuffleLibrary,
+	syncBattlefieldControllers,
 	tapPermanent,
 	transferBattlefieldControl,
 	type MoveResult,
@@ -112,6 +115,7 @@ import {
 	ALTERNATIVE_COST_KEYWORDS,
 	activatedAbilityCost,
 	alternativeCostMetaById,
+	applyCastCostAids,
 	canPayCosts,
 	chooseCostPayment,
 	computeKickerTracking,
@@ -120,6 +124,7 @@ import {
 	effectiveSpellManaCost,
 	executeCostPaymentParts,
 	expandOptionalAdditionalCosts,
+	formatManaRequirement,
 	getObjectKickerInfo,
 	getSuspendSpec,
 	isCastConditionMet,
@@ -140,7 +145,7 @@ import {
 	type CostQuestion
 } from './runtime/costs.ts';
 import { isConditionMetWithKicker } from './runtime/kicker.ts';
-export { getSuspendSpec };
+export { applyCastCostAids, formatManaRequirement, getSuspendSpec };
 import { getKeywordSpec } from './keywords.ts';
 import { evaluateAmount, matchesObjectFilter, objectManaValue, type FilterContext } from './runtime/objectFilter.ts';
 import {
@@ -150,7 +155,8 @@ import {
 	compileSpellEffects,
 	describeModalModes,
 	expandModalEffects,
-	getAbilityModal
+	getAbilityModal,
+	resolveCompiledDelayedSteps
 } from './compiler/index.ts';
 import {
 	activeFaceIndexForObject,
@@ -164,6 +170,7 @@ import {
 	activeCharacteristics,
 	effectiveManaValue,
 	instanceFaceOptions,
+	matchesColorFilter,
 	resolveObjectFaces,
 	stackItemFaceOptions
 } from './runtime/faces.ts';
@@ -215,15 +222,18 @@ import {
 	ENGINE_VERSION,
 	PHASE_LABELS,
 	type CardInstance,
+	type CastCostAid,
 	type CastOption,
 	type ChoiceAnswer,
 	type ChoiceRequest,
+	type CompiledDelayedEffect,
 	type CopiableState,
 	type CostPayment,
 	type CounterType,
 	type DelayedTrigger,
 	type DelayedTriggerEffect,
 	type EffectiveActivatedAbility,
+	type EffectBindingSnapshot,
 	type EffectResumeFrame,
 	type GameActionPayload,
 	type GameLogEntry,
@@ -246,6 +256,8 @@ import {
 	type ProcedureContinuation,
 	type PromptPurpose,
 	type ScryfallCard,
+	type SerializedBoundRef,
+	type SerializedPlannedCost,
 	type FaceDownSpec,
 	type SpellModifications,
 	type StackItem,
@@ -611,6 +623,61 @@ function cardHasSupportedMultiFace(card: ScryfallCard): boolean {
 	return Boolean(card.faces && card.faces.length >= 2 && SUPPORTED_MULTIFACE_LAYOUTS.has(layout));
 }
 
+function buildCastPaymentAids(
+	state: GameState,
+	actor: PlayerGameState | undefined,
+	inst: CardInstance,
+	fromZone: CastableSourceZone,
+	faceIndex: number,
+	fused: boolean,
+	isFaceDown: boolean
+): CastCostAid[] | undefined {
+	if (!actor || isFaceDown) return undefined;
+	const effectiveCard = effectiveCardForObject(inst);
+	const abilities = activeAbilityDefs(effectiveCard, { zone: 'stack', faceIndex, fused });
+	const hasKw = (kw: string): boolean =>
+		abilities.some((a) => a.kind === 'keyword' && a.keyword.name === kw) ||
+		Boolean(inst.grantedKeywords?.some((k) => k.toLowerCase() === kw));
+
+	const aids: CastCostAid[] = [];
+	if (hasKw('convoke')) {
+		const candidateIds: string[] = [];
+		const colorsByCandidate: Record<string, ManaColor[]> = {};
+		for (const perm of actor.battlefield) {
+			if (perm.tapped || perm.phasedOut) continue;
+			const ev = evaluatePermanent(state, perm);
+			if (!ev.isCreature) continue;
+			candidateIds.push(perm.instanceId);
+			colorsByCandidate[perm.instanceId] = [...ev.colors];
+		}
+		if (candidateIds.length > 0) {
+			aids.push({
+				id: 'aid:convoke',
+				label: 'Convoke — Tap creatures to pay mana',
+				kind: 'tapPermanent',
+				candidateIds,
+				colorsByCandidate,
+				paysGeneric: 1
+			});
+		}
+	}
+	if (hasKw('delve')) {
+		const candidateIds = actor.graveyard
+			.filter((c) => !(fromZone === 'graveyard' && c.instanceId === inst.instanceId))
+			.map((c) => c.instanceId);
+		if (candidateIds.length > 0) {
+			aids.push({
+				id: 'aid:delve',
+				label: 'Delve — Exile graveyard cards for generic mana',
+				kind: 'exileCard',
+				candidateIds,
+				paysGeneric: 1
+			});
+		}
+	}
+	return aids.length > 0 ? aids : undefined;
+}
+
 function enumerateCandidateCastOptions(
 	state: GameState,
 	actorId: string,
@@ -680,6 +747,8 @@ function enumerateCandidateCastOptions(
 		const optionalAdditionalCosts = spellOptionalAdditionalCosts(card, fi, false);
 		const optionalProp =
 			optionalAdditionalCosts.length > 0 ? { optionalAdditionalCosts } : {};
+		const facePaymentAids = buildCastPaymentAids(state, actor, inst, fromZone, fi, false, false);
+		const paymentAidsProp = facePaymentAids ? { paymentAids: facePaymentAids } : {};
 		const targetInfo = getSpellTargetRequirement(card, { faceIndex: fi } as CastOption);
 		const adventureMods: Partial<SpellModifications> = isAdventureFace
 			? { exileAdventureOnResolve: true }
@@ -707,6 +776,7 @@ function enumerateCandidateCastOptions(
 					baseCost,
 					...(mandatoryAdditionalCosts ? { mandatoryAdditionalCosts } : {}),
 					...optionalProp,
+					...paymentAidsProp,
 					timing: 'default',
 					spellMods: { ...adventureMods },
 					choosesX: spellChoosesX(card, baseCost, undefined, fi, false),
@@ -726,6 +796,7 @@ function enumerateCandidateCastOptions(
 					baseCost,
 					...(mandatoryAdditionalCosts ? { mandatoryAdditionalCosts } : {}),
 					...optionalProp,
+					...paymentAidsProp,
 					timing: 'default',
 					spellMods: {},
 					choosesX: spellChoosesX(card, baseCost, undefined, fi, false),
@@ -757,6 +828,7 @@ function enumerateCandidateCastOptions(
 						baseCost,
 						...(mandatoryAdditionalCosts ? { mandatoryAdditionalCosts } : {}),
 						...optionalProp,
+						...paymentAidsProp,
 						timing: 'default',
 						spellMods: { ...adventureMods },
 						choosesX: spellChoosesX(card, baseCost, undefined, fi, false),
@@ -833,6 +905,7 @@ function enumerateCandidateCastOptions(
 					baseCost,
 					...(mandatoryAdditionalCosts ? { mandatoryAdditionalCosts } : {}),
 					...optionalProp,
+					...paymentAidsProp,
 					timing: meta.timing ?? 'default',
 					spellMods,
 					choosesX: spellChoosesX(card, baseCost, undefined, fi, false),
@@ -864,6 +937,7 @@ function enumerateCandidateCastOptions(
 			const combinedMana = `${def.faces[0].characteristics.manaCost || ''}${def.faces[1].characteristics.manaCost || ''}`;
 			const fusedAdditional = spellAdditionalCost(card, 0, true);
 			const fusedOptional = spellOptionalAdditionalCosts(card, 0, true);
+			const fusedPaymentAids = buildCastPaymentAids(state, actor, inst, 'hand', 0, true, false);
 			const fusedTargetInfo = getSpellTargetRequirement(card, {
 				faceIndex: 0,
 				fused: true
@@ -881,6 +955,7 @@ function enumerateCandidateCastOptions(
 					? { mandatoryAdditionalCosts: fusedAdditional.defs }
 					: {}),
 				...(fusedOptional.length > 0 ? { optionalAdditionalCosts: fusedOptional } : {}),
+				...(fusedPaymentAids ? { paymentAids: fusedPaymentAids } : {}),
 				timing: 'default',
 				spellMods: { castSummarySuffix: ' (Fused)', label: 'Fused' },
 				choosesX: spellChoosesX(card, baseCost, undefined, 0, true),
@@ -1009,6 +1084,212 @@ function resolveCastOptionForAction(
 		return { ok: false, error: 'Choose how to cast this spell (optionId is required).' };
 	}
 	return { ok: true, option: defaultOpt };
+}
+
+export interface PlannedCastCostAids {
+	costAidIds: Record<string, string[]>;
+	costAidColorChoices: Record<string, ManaColor | 'generic'>;
+	remainingReq: ManaCostRequirement;
+	reservedTapIds: Set<string>;
+	reservedExileIds: Set<string>;
+}
+
+/**
+ * Greedily selects eligible `CastCostAid` candidates (`tapPermanent` / `exileCard`) to satisfy or
+ * reduce `costReq` when casting a spell, stopping early unless `preferUseAids` is true.
+ */
+export function planCastCostAids(
+	state: GameState,
+	actor: PlayerGameState,
+	option: CastOption,
+	costReq: ManaCostRequirement,
+	spendCtx: ManaSpendContext = { isSpell: false },
+	phyrexianLifeCount?: number,
+	reservedIds?: ReadonlySet<string>,
+	preferUseAids = false
+): PlannedCastCostAids {
+	const emptyResult: PlannedCastCostAids = {
+		costAidIds: {},
+		costAidColorChoices: {},
+		remainingReq: costReq,
+		reservedTapIds: new Set<string>(),
+		reservedExileIds: new Set<string>()
+	};
+	const aids = option.paymentAids;
+	if (!aids || aids.length === 0) return emptyResult;
+	if (!preferUseAids && canPayOrAutoTap(actor, costReq, state, phyrexianLifeCount, spendCtx, reservedIds)) {
+		return emptyResult;
+	}
+
+	const remaining: ManaCostRequirement = {
+		...costReq,
+		colored: { ...costReq.colored }
+	};
+	const costAidIds: Record<string, string[]> = {};
+	const costAidColorChoices: Record<string, ManaColor | 'generic'> = {};
+	const used = new Set<string>(reservedIds);
+	const reservedTapIds = new Set<string>();
+	const reservedExileIds = new Set<string>();
+	const currentReserved = (): ReadonlySet<string> | undefined => (used.size > 0 ? used : undefined);
+	const canCurrentlyPay = (): boolean =>
+		canPayOrAutoTap(actor, remaining, state, phyrexianLifeCount, spendCtx, currentReserved());
+
+	const aidColors: ManaColor[] = ['W', 'U', 'B', 'R', 'G', 'C'];
+	const hasGraveyardCastKeyword = (c: CardInstance): boolean =>
+		compileCard(c.card).faces.some((f) =>
+			f.abilities.some(
+				(a) =>
+					a.kind === 'keyword' &&
+					Boolean(ALTERNATIVE_COST_KEYWORDS[a.keyword.name]?.zones.includes('graveyard'))
+			)
+		);
+
+	for (const aid of aids) {
+		if (aid.kind !== 'exileCard') continue;
+		const eligible = aid.candidateIds
+			.filter((id) => !used.has(id))
+			.map((id) => actor.graveyard.find((c) => c.instanceId === id))
+			.filter((c): c is CardInstance => Boolean(c))
+			.sort((a, b) => {
+				const aGy = hasGraveyardCastKeyword(a) ? 1 : 0;
+				const bGy = hasGraveyardCastKeyword(b) ? 1 : 0;
+				if (aGy !== bGy) return aGy - bGy;
+				return (a.card.cmc ?? 0) - (b.card.cmc ?? 0);
+			});
+		const maxRed = aid.maxGenericReduction ?? remaining.generic;
+		let reduced = 0;
+		for (const c of eligible) {
+			if (!preferUseAids && canCurrentlyPay()) break;
+			if (remaining.generic < aid.paysGeneric || reduced + aid.paysGeneric > maxRed) break;
+			used.add(c.instanceId);
+			reservedExileIds.add(c.instanceId);
+			(costAidIds[aid.id] ??= []).push(c.instanceId);
+			costAidColorChoices[c.instanceId] = 'generic';
+			remaining.generic -= aid.paysGeneric;
+			reduced += aid.paysGeneric;
+		}
+	}
+
+	const cmdIdentity = getPlayerCommanderIdentity(actor);
+	const pickTapFromPool = (
+		aid: CastCostAid,
+		pool: Array<{ perm: CardInstance; colors: ManaColor[] }>,
+		keepGoingWhenPayable: boolean
+	): void => {
+		const remainingPool = [...pool];
+		while (remainingPool.length > 0 && (keepGoingWhenPayable || !canCurrentlyPay())) {
+			const neededColors = aidColors.filter((c) => remaining.colored[c] > 0);
+			const canPayGeneric = remaining.generic >= aid.paysGeneric;
+			if (neededColors.length === 0 && !canPayGeneric) break;
+
+			let bestIdx = -1;
+			let bestChoice: ManaColor | 'generic' | null = null;
+			let bestRank = Number.POSITIVE_INFINITY;
+
+			for (let i = 0; i < remainingPool.length; i++) {
+				const { perm, colors } = remainingPool[i];
+				const matchingNeeded = colors.filter((c) => remaining.colored[c] > 0);
+				if (matchingNeeded.length === 0 && !canPayGeneric) continue;
+				const pow = evaluatePermanent(state, perm).power;
+				if (matchingNeeded.length > 0) {
+					// Most-constrained color-matching permanent first, then lower power.
+					const rank = matchingNeeded.length * 1000 + colors.length * 100 + pow;
+					if (rank < bestRank) {
+						bestRank = rank;
+						bestIdx = i;
+						bestChoice = matchingNeeded[0];
+					}
+				} else if (canPayGeneric) {
+					const rank = 100_000 + colors.length * 100 + pow;
+					if (rank < bestRank) {
+						bestRank = rank;
+						bestIdx = i;
+						bestChoice = 'generic';
+					}
+				}
+			}
+
+			if (bestIdx < 0 || !bestChoice) break;
+			const [{ perm }] = remainingPool.splice(bestIdx, 1);
+			used.add(perm.instanceId);
+			reservedTapIds.add(perm.instanceId);
+			(costAidIds[aid.id] ??= []).push(perm.instanceId);
+			costAidColorChoices[perm.instanceId] = bestChoice;
+			if (bestChoice === 'generic') {
+				remaining.generic -= aid.paysGeneric;
+			} else {
+				remaining.colored[bestChoice] -= 1;
+			}
+		}
+	};
+
+	for (const aid of aids) {
+		if (aid.kind !== 'tapPermanent') continue;
+		const nonMana: Array<{ perm: CardInstance; colors: ManaColor[] }> = [];
+		const manaDorks: Array<{ perm: CardInstance; colors: ManaColor[] }> = [];
+		for (const id of aid.candidateIds) {
+			if (used.has(id)) continue;
+			const perm = actor.battlefield.find((c) => c.instanceId === id);
+			if (!perm || perm.tapped || perm.phasedOut) continue;
+			const colors = aid.colorsByCandidate?.[id] ?? [];
+			const hasManaAb = autoTapManaAbilities(state, actor, perm, cmdIdentity, spendCtx).length > 0;
+			if (hasManaAb) manaDorks.push({ perm, colors });
+			else nonMana.push({ perm, colors });
+		}
+		pickTapFromPool(aid, nonMana, preferUseAids);
+		if (!canCurrentlyPay()) {
+			pickTapFromPool(aid, manaDorks, false);
+		}
+	}
+
+	return { costAidIds, costAidColorChoices, remainingReq: remaining, reservedTapIds, reservedExileIds };
+}
+
+function canPayManaWithPaymentAids(
+	state: GameState,
+	actor: PlayerGameState,
+	option: CastOption,
+	costReq: ManaCostRequirement,
+	spendCtx: ManaSpendContext,
+	phyrexianLifeCount?: number,
+	reservedIds?: ReadonlySet<string>
+): { ok: boolean; reservedAidIds: Set<string> } {
+	if (canPayOrAutoTap(actor, costReq, state, phyrexianLifeCount, spendCtx, reservedIds)) {
+		return { ok: true, reservedAidIds: new Set<string>() };
+	}
+	if (!option.paymentAids || option.paymentAids.length === 0) {
+		return { ok: false, reservedAidIds: new Set<string>() };
+	}
+	const planned = planCastCostAids(
+		state,
+		actor,
+		option,
+		costReq,
+		spendCtx,
+		phyrexianLifeCount,
+		reservedIds,
+		false
+	);
+	const reserved = new Set<string>(reservedIds);
+	for (const id of planned.reservedTapIds) reserved.add(id);
+	for (const id of planned.reservedExileIds) reserved.add(id);
+	const ok = canPayOrAutoTap(actor, planned.remainingReq, state, phyrexianLifeCount, spendCtx, reserved);
+	return { ok, reservedAidIds: reserved };
+}
+
+export function getSpellOptionCostRequirement(
+	state: GameState,
+	actorId: string,
+	inst: CardInstance,
+	option: CastOption,
+	xValue = 0,
+	optionalCostCounts?: Record<string, number>
+): ManaCostRequirement | null {
+	const actor = state.players.find((p) => p.playerId === actorId);
+	if (!actor) return null;
+	return withStableLayerInputs(state, () =>
+		getSpellCostRequirementForOption(actor, inst, state, xValue, option, optionalCostCounts)
+	);
 }
 
 /**
@@ -1187,7 +1468,7 @@ export function chooseBotAbilityCostPayment(
 }
 
 /** Builds a ManaSpendContext for casting `inst` with the selected face/fuse/face-down mode. */
-function spellSpendContext(
+export function spellSpendContext(
 	inst: CardInstance,
 	opts?: { faceIndex?: number; fused?: boolean; isFaceDown?: boolean }
 ): ManaSpendContext {
@@ -1234,8 +1515,17 @@ function costContext(
 	isSpell: boolean,
 	baseMana: ManaCostRequirement | null,
 	phyrexianLifeCount?: number,
-	spendCtx: ManaSpendContext = { isSpell: false }
+	spendCtx: ManaSpendContext = { isSpell: false },
+	reservedObjectIds?: ReadonlySet<string>,
+	canPayManaOverride?: (req: ManaCostRequirement, reservedIds?: ReadonlySet<string>) => boolean
 ): CostContext {
+	const combineReserved = (reservedIds?: ReadonlySet<string>): ReadonlySet<string> | undefined => {
+		if (!reservedObjectIds?.size) return reservedIds;
+		if (!reservedIds?.size) return reservedObjectIds;
+		const merged = new Set<string>(reservedObjectIds);
+		for (const id of reservedIds) merged.add(id);
+		return merged;
+	};
 	return {
 		state,
 		player,
@@ -1243,8 +1533,12 @@ function costContext(
 		xValue,
 		isSpell,
 		baseMana,
-		canPayMana: (req) => canPayOrAutoTap(player, req, state, phyrexianLifeCount, spendCtx),
-		payMana: (req) => payManaWithAutoTap(player, req, state, phyrexianLifeCount, spendCtx)
+		reservedObjectIds,
+		canPayMana: canPayManaOverride
+			? (req, reservedIds) => canPayManaOverride(req, combineReserved(reservedIds))
+			: (req, reservedIds) =>
+					canPayOrAutoTap(player, req, state, phyrexianLifeCount, spendCtx, combineReserved(reservedIds)),
+		payMana: (req) => payManaWithAutoTap(player, req, state, phyrexianLifeCount, spendCtx, reservedObjectIds)
 	};
 }
 
@@ -1303,6 +1597,7 @@ function finalizeCastSpell(
 		optionalCostCounts?: Record<string, number>;
 		exSourceName?: string;
 		descriptions?: string[];
+		aidDescriptions?: string[];
 		additionalIncomplete?: boolean;
 	}
 ): void {
@@ -1318,6 +1613,14 @@ function finalizeCastSpell(
 		...(castFaceDownSpec ? { isFaceDown: true, faceDownSpec: castFaceDownSpec } : {})
 	});
 	const spellDisplayName = faceDownLabel ?? stackView.name;
+	if (opts.aidDescriptions && opts.aidDescriptions.length > 0) {
+		addLog(
+			state,
+			'rule',
+			`${actor.username} ${opts.aidDescriptions.join('; ')} while casting ${spellDisplayName}.`,
+			actorId
+		);
+	}
 	if (opts.descriptions && opts.descriptions.length > 0) {
 		addLog(state, 'rule', `${actor.username} ${opts.descriptions.join('; ')} as an additional cost.`, actorId);
 	}
@@ -1567,8 +1870,9 @@ function executeOrResumePendingCostPayment(
 	pcp: PendingCostPayment,
 	ctx: CostContext
 ): { ok: true } {
+	pcp.aidDescriptions ??= [];
 	if (!pcp.tapsAndManaDone) {
-		payTapAndManaCostParts(ctx, pcp.parts, pcp.manaPaid ?? null, pcp.descriptions);
+		payTapAndManaCostParts(ctx, pcp.parts, pcp.manaPaid ?? null, pcp.descriptions, pcp.aidDescriptions);
 		pcp.tapsAndManaDone = true;
 	}
 	const paid = executeCostPaymentParts(
@@ -1577,7 +1881,8 @@ function executeOrResumePendingCostPayment(
 		pcp.nextPartIndex,
 		pcp.nextObjectIndex,
 		pcp.descriptions,
-		pcp.costKeyword
+		pcp.costKeyword,
+		pcp.aidDescriptions
 	);
 	if (paid.paused) {
 		pcp.nextPartIndex = paid.nextPartIndex ?? pcp.nextPartIndex;
@@ -1608,6 +1913,7 @@ function executeOrResumePendingCostPayment(
 				optionalCostCounts: pcp.optionalCostCounts,
 				exSourceName: pcp.exSourceName,
 				descriptions: pcp.descriptions,
+				aidDescriptions: pcp.aidDescriptions,
 				additionalIncomplete: pcp.additionalIncomplete
 			});
 		}
@@ -1873,7 +2179,8 @@ function maybeAskPhyrexianCostChoice(
 	>,
 	req: ManaCostRequirement,
 	sourceName: string,
-	spendCtx: ManaSpendContext = { isSpell: false }
+	spendCtx: ManaSpendContext = { isSpell: false },
+	canPayCheck?: (candidateReq: ManaCostRequirement) => boolean
 ): { ok: boolean; error?: string } | null {
 	if (actor.isBot || action.costPayment?.phyrexianLifeCount !== undefined) return null;
 	const phySymbols = req.flexibleSymbols?.filter((s) => s.altLife) ?? [];
@@ -1881,14 +2188,17 @@ function maybeAskPhyrexianCostChoice(
 	const canPayLife = !playerLifeTotalCantChange(state, actor);
 	const maxLifeCount = canPayLife ? Math.min(phySymbols.length, Math.floor(actor.life / 2)) : 0;
 	if (maxLifeCount <= 0) return null;
-	// No mana possible: keep today's behavior of paying life without prompting.
+	// No mana possible: keep today's behavior of paying life without prompting (unless payment aids are available).
 	if (
+		!canPayCheck &&
 		getTotalPooledManaForContext(actor, spendCtx) === 0 &&
 		!hasUntappedManaSources(state, actor, spendCtx)
 	) {
 		return null;
 	}
-	if (!canPayOrAutoTap(actor, req, state, undefined, spendCtx)) return null;
+	const canPay =
+		canPayCheck ?? ((candidateReq: ManaCostRequirement) => canPayOrAutoTap(actor, candidateReq, state, undefined, spendCtx));
+	if (!canPay(req)) return null;
 	const labels: string[] = [];
 	for (let k = 0; k <= maxLifeCount; k++) {
 		const manaSymbols = phySymbols
@@ -1962,7 +2272,8 @@ function resolveHybridCostChoice(
 	>,
 	req: ManaCostRequirement,
 	sourceName: string,
-	spendCtx: ManaSpendContext = { isSpell: false }
+	spendCtx: ManaSpendContext = { isSpell: false },
+	canPayCheck?: (candidateReq: ManaCostRequirement) => boolean
 ): { promptResult?: { ok: boolean; error?: string }; resolvedReq: ManaCostRequirement } {
 	let currentReq = req;
 	const hybridChoices = action.costPayment?.hybridChoices ?? [];
@@ -1977,12 +2288,16 @@ function resolveHybridCostChoice(
 	if (actor.isBot) {
 		return { resolvedReq: currentReq };
 	}
+	const canPay =
+		canPayCheck ??
+		((candidateReq: ManaCostRequirement) =>
+			canPayOrAutoTap(actor, candidateReq, state, action.costPayment?.phyrexianLifeCount, spendCtx));
 	while (currentReq.flexibleSymbols?.some((s) => !s.altLife)) {
 		const sym = currentReq.flexibleSymbols.find((s) => !s.altLife)!;
 		const req0 = applySingleHybridChoice(currentReq, 0);
 		const req1 = applySingleHybridChoice(currentReq, 1);
-		const canPay0 = canPayOrAutoTap(actor, req0, state, action.costPayment?.phyrexianLifeCount, spendCtx);
-		const canPay1 = canPayOrAutoTap(actor, req1, state, action.costPayment?.phyrexianLifeCount, spendCtx);
+		const canPay0 = canPay(req0);
+		const canPay1 = canPay(req1);
 		if (canPay0 && !canPay1) {
 			currentReq = req0;
 			choiceIdx += 1;
@@ -2118,7 +2433,8 @@ function simulateOrExecuteManaOnly(
 	state: GameState,
 	mutate: boolean,
 	lifeToPay: number,
-	spendCtx: ManaSpendContext = { isSpell: false }
+	spendCtx: ManaSpendContext = { isSpell: false },
+	reservedTapIds?: ReadonlySet<string>
 ): boolean {
 	if (lifeToPay > 0 && (playerLifeTotalCantChange(state, player) || player.life < lifeToPay)) {
 		return false;
@@ -2164,6 +2480,7 @@ function simulateOrExecuteManaOnly(
 		player.battlefield
 			.filter((perm) => {
 				if (perm.phasedOut) return false;
+				if (reservedTapIds?.has(perm.instanceId)) return false;
 				return manaAbilitiesOf(perm).length > 0;
 			})
 			.sort((a, b) => {
@@ -2275,11 +2592,12 @@ function simulateOrExecuteAutoTap(
 	state: GameState,
 	mutate: boolean,
 	phyrexianLifeCount?: number,
-	spendCtx: ManaSpendContext = { isSpell: false }
+	spendCtx: ManaSpendContext = { isSpell: false },
+	reservedTapIds?: ReadonlySet<string>
 ): boolean {
 	const phySymbols = req.flexibleSymbols?.filter((s) => s.altLife) ?? [];
 	if (phySymbols.length === 0) {
-		return simulateOrExecuteManaOnly(player, req, state, mutate, 0, spendCtx);
+		return simulateOrExecuteManaOnly(player, req, state, mutate, 0, spendCtx, reservedTapIds);
 	}
 
 	const canPayLife = !playerLifeTotalCantChange(state, player);
@@ -2290,7 +2608,7 @@ function simulateOrExecuteAutoTap(
 			return false;
 		}
 		const { manaReq, lifeToPay } = applyPhyrexianLifeChoice(req, phyrexianLifeCount);
-		return simulateOrExecuteManaOnly(player, manaReq, state, mutate, lifeToPay, spendCtx);
+		return simulateOrExecuteManaOnly(player, manaReq, state, mutate, lifeToPay, spendCtx, reservedTapIds);
 	}
 
 	// Bot heuristic: pay Phyrexian symbols with life while life > 10; otherwise prefer mana and only
@@ -2307,9 +2625,9 @@ function simulateOrExecuteAutoTap(
 
 	for (const k of kOrder) {
 		const { manaReq, lifeToPay } = applyPhyrexianLifeChoice(req, k);
-		if (simulateOrExecuteManaOnly(player, manaReq, state, false, lifeToPay, spendCtx)) {
+		if (simulateOrExecuteManaOnly(player, manaReq, state, false, lifeToPay, spendCtx, reservedTapIds)) {
 			return mutate
-				? simulateOrExecuteManaOnly(player, manaReq, state, true, lifeToPay, spendCtx)
+				? simulateOrExecuteManaOnly(player, manaReq, state, true, lifeToPay, spendCtx, reservedTapIds)
 				: true;
 		}
 	}
@@ -2321,9 +2639,10 @@ export function canPayOrAutoTap(
 	req: ManaCostRequirement,
 	state: GameState,
 	phyrexianLifeCount?: number,
-	spendCtx: ManaSpendContext = { isSpell: false }
+	spendCtx: ManaSpendContext = { isSpell: false },
+	reservedTapIds?: ReadonlySet<string>
 ): boolean {
-	return simulateOrExecuteAutoTap(player, req, state, false, phyrexianLifeCount, spendCtx);
+	return simulateOrExecuteAutoTap(player, req, state, false, phyrexianLifeCount, spendCtx, reservedTapIds);
 }
 
 export function payManaWithAutoTap(
@@ -2331,9 +2650,10 @@ export function payManaWithAutoTap(
 	req: ManaCostRequirement,
 	state: GameState,
 	phyrexianLifeCount?: number,
-	spendCtx: ManaSpendContext = { isSpell: false }
+	spendCtx: ManaSpendContext = { isSpell: false },
+	reservedTapIds?: ReadonlySet<string>
 ): boolean {
-	return simulateOrExecuteAutoTap(player, req, state, true, phyrexianLifeCount, spendCtx);
+	return simulateOrExecuteAutoTap(player, req, state, true, phyrexianLifeCount, spendCtx, reservedTapIds);
 }
 
 export function winTheGame(state: GameState, player: PlayerGameState, reason: string): boolean {
@@ -2536,6 +2856,7 @@ function executeUntapTurnBasedActions(state: GameState, activePlayer: PlayerGame
 	}
 	if (phasedInNames.length > 0 || phasedOutNames.length > 0) {
 		noteLayerInputsChanged(state);
+		syncBattlefieldControllers(state);
 	}
 	if (phasedInNames.length > 0) {
 		addLog(
@@ -3397,7 +3718,12 @@ function applyGameActionInner(
 				sourceZone,
 				xVal,
 				castOption.id,
-				hasOptCounts ? normalizedOptCounts : undefined
+				hasOptCounts ? normalizedOptCounts : undefined,
+				undefined,
+				undefined,
+				action.costAidIds,
+				action.costAidColorChoices,
+				true
 			);
 			if (!legality.ok) {
 				return legality;
@@ -3477,13 +3803,42 @@ function applyGameActionInner(
 			const displayedManaCost =
 				`${baseManaDisplay}${extraManaCosts.join('')}` || (castOption.baseCost.kind === 'free' ? '{0}' : '');
 			const manaError = `Insufficient mana to cast ${spellPromptName} (requires ${displayedManaCost || '{0}'}${sourceZone === 'command' && inst.commanderCastCount > 0 ? ` + {${inst.commanderCastCount * state.rules.commanderTaxIncrement}} Commander Tax` : ''}).`;
+			const canPayCandidateWithAids = (candidateReq: ManaCostRequirement): boolean => {
+				if (action.costAidIds && Object.keys(action.costAidIds).length > 0) {
+					const r = applyCastCostAids(
+						candidateReq,
+						castOption,
+						action.costAidIds,
+						action.costAidColorChoices
+					);
+					if (!r.ok) return false;
+					const res = new Set<string>([...r.tapIds, ...r.exileIds]);
+					return canPayOrAutoTap(
+						actor,
+						r.remainingReq,
+						state,
+						action.costPayment?.phyrexianLifeCount,
+						spendCtx,
+						res
+					);
+				}
+				return canPayManaWithPaymentAids(
+					state,
+					actor,
+					castOption,
+					candidateReq,
+					spendCtx,
+					action.costPayment?.phyrexianLifeCount
+				).ok;
+			};
 			const phySpellChoice = maybeAskPhyrexianCostChoice(
 				state,
 				actor,
 				action,
 				costReq,
 				spellPromptName,
-				spendCtx
+				spendCtx,
+				castOption.paymentAids?.length ? canPayCandidateWithAids : undefined
 			);
 			if (phySpellChoice) return phySpellChoice;
 			const hybSpellChoice = resolveHybridCostChoice(
@@ -3492,10 +3847,59 @@ function applyGameActionInner(
 				action,
 				costReq,
 				spellPromptName,
-				spendCtx
+				spendCtx,
+				castOption.paymentAids?.length ? canPayCandidateWithAids : undefined
 			);
 			if (hybSpellChoice.promptResult) return hybSpellChoice.promptResult;
 			const effectiveCostReq = hybSpellChoice.resolvedReq;
+
+			const aidResult = applyCastCostAids(
+				effectiveCostReq,
+				castOption,
+				action.costAidIds,
+				action.costAidColorChoices
+			);
+			if (!aidResult.ok) {
+				return { ok: false, error: aidResult.error };
+			}
+			const remainingCostReq = aidResult.remainingReq;
+			const aidTapIds = aidResult.tapIds;
+			const aidExileIds = aidResult.exileIds;
+			const reservedAidIds = new Set<string>([...aidTapIds, ...aidExileIds]);
+			const tapAidParts: SerializedPlannedCost[] =
+				aidTapIds.length > 0
+					? [
+							{
+								def: {
+									k: 'tapOthers',
+									count: { k: 'const', n: aidTapIds.length },
+									filter: { types: ['Creature'] }
+								},
+								objectIds: aidTapIds,
+								objectNames: aidTapIds.map(
+									(id) => actor.battlefield.find((c) => c.instanceId === id)?.card.name ?? id
+								),
+								isCostAid: true
+							}
+						]
+					: [];
+			const exileAidParts: SerializedPlannedCost[] =
+				aidExileIds.length > 0
+					? [
+							{
+								def: {
+									k: 'exileFrom',
+									zone: 'graveyard',
+									count: { k: 'const', n: aidExileIds.length }
+								},
+								objectIds: aidExileIds,
+								objectNames: aidExileIds.map(
+									(id) => actor.graveyard.find((c) => c.instanceId === id)?.card.name ?? id
+								),
+								isCostAid: true
+							}
+						]
+					: [];
 
 			// Phase 4: additional costs (plus any non-mana alternative costDefs and optional additional costs)
 			// from the IR, paid together with the mana (nothing is paid unless everything can be).
@@ -3507,21 +3911,40 @@ function applyGameActionInner(
 				...(castOption.mandatoryAdditionalCosts ?? []),
 				...extraNonManaDefs
 			];
-			if (combinedCostDefs.length > 0) {
+			if (combinedCostDefs.length > 0 || tapAidParts.length > 0 || exileAidParts.length > 0) {
 				const ctx = costContext(
 					state,
 					actor,
 					inst,
 					xVal,
 					true,
-					effectiveCostReq,
+					remainingCostReq,
 					action.costPayment?.phyrexianLifeCount,
-					spendCtx
+					spendCtx,
+					reservedAidIds.size > 0 ? reservedAidIds : undefined
 				);
-				const plan = planCosts(ctx, combinedCostDefs, action.costPayment);
-				if (!plan.ok) return { ok: false, error: plan.error.startsWith('Insufficient mana') ? manaError : plan.error };
-				if (plan.question) return askCostChoice(state, actor, action, plan.question, spellPromptName);
-				const parts = serializeCostPlanParts(ctx, plan);
+				let parts: SerializedPlannedCost[] = [];
+				let manaPaid: ManaCostRequirement | null = remainingCostReq;
+				if (combinedCostDefs.length > 0) {
+					const plan = planCosts(ctx, combinedCostDefs, action.costPayment);
+					if (!plan.ok) {
+						return { ok: false, error: plan.error.startsWith('Insufficient mana') ? manaError : plan.error };
+					}
+					if (plan.question) return askCostChoice(state, actor, action, plan.question, spellPromptName);
+					parts = serializeCostPlanParts(ctx, plan);
+					manaPaid = plan.mana;
+				} else if (
+					!canPayOrAutoTap(
+						actor,
+						remainingCostReq,
+						state,
+						action.costPayment?.phyrexianLifeCount,
+						spendCtx,
+						reservedAidIds
+					)
+				) {
+					return { ok: false, error: manaError };
+				}
 				const pcp: PendingCostPayment = {
 					kind: 'cast_spell',
 					actorId,
@@ -3542,22 +3965,24 @@ function applyGameActionInner(
 						: {}),
 					sourceCard: inst.card,
 					additionalIncomplete: Boolean(additional && !additional.complete),
-					parts,
-					manaPaid: plan.mana,
+					parts: [...tapAidParts, ...parts, ...exileAidParts],
+					manaPaid,
 					tapsAndManaDone: false,
 					nextPartIndex: 0,
 					nextObjectIndex: 0,
-					descriptions: []
+					descriptions: [],
+					aidDescriptions: []
 				};
 				return executeOrResumePendingCostPayment(state, pcp, ctx);
 			}
 			if (
 				!payManaWithAutoTap(
 					actor,
-					effectiveCostReq,
+					remainingCostReq,
 					state,
 					action.costPayment?.phyrexianLifeCount,
-					spendCtx
+					spendCtx,
+					reservedAidIds
 				)
 			) {
 				return { ok: false, error: manaError };
@@ -5391,7 +5816,11 @@ function handlePromptResolution(
 					const remainingCandidates = libraryOwner.library
 						.filter((c) =>
 							prompt.searchSpec
-								? matchesLibrarySearchSpec(c.card, prompt.searchSpec)
+								? matchesLibrarySearchSpec(
+										c.card,
+										prompt.searchSpec,
+										resolveObjectFaces(c.card, instanceFaceOptions(c)).colors
+									)
 								: c.card.typeLine.includes('Basic') && c.card.typeLine.includes('Land')
 						)
 						.map((c) => c.instanceId);
@@ -5453,7 +5882,7 @@ function handlePromptResolution(
 		return { ok: true };
 	}
 
-	if (purpose === 'scry_choice' || choice.kind === 'orderObjects') {
+	if (prompt.continuation?.kind !== 'effect_choice' && (purpose === 'scry_choice' || choice.kind === 'orderObjects')) {
 		const valid = validateChoiceAnswer(choice, normalized.answer);
 		if (!valid.ok || normalized.answer?.kind !== 'orderObjects') {
 			return { ok: false, error: valid.ok ? 'Invalid orderObjects answer.' : valid.error };
@@ -6509,8 +6938,9 @@ function runDelayedTriggers(state: GameState, phase: GamePhase, activePlayer: Pl
 				(!dt.waitUntilAfterTurn || state.turnNumber > dt.waitUntilAfterTurn) &&
 				dt.notDuringTurn !== `${state.turnNumber}:${state.activePlayerIndex}`;
 			if (dt.triggerPhase === phase && matchesTurn) {
+				const isCompiled = dt.delayedEffect?.kind === 'compiledDelayed';
 				const targets: TargetRef[] = [];
-				if (dt.targetInstanceId) {
+				if (!isCompiled && dt.targetInstanceId) {
 					const found = findPermanentOnBoard(state, dt.targetInstanceId);
 					if (
 						found &&
@@ -6533,17 +6963,27 @@ function runDelayedTriggers(state: GameState, phase: GamePhase, activePlayer: Pl
 								targetObjectVersion: dt.targetObjectVersion
 							}
 						: undefined);
+				const compiledMeta =
+					delayedEffect?.kind === 'compiledDelayed' ? delayedEffect : undefined;
+				const phaseLabel =
+					phase === 'upkeep'
+						? 'Delayed Upkeep Trigger'
+						: phase === 'end_combat'
+							? 'Delayed End of Combat Trigger'
+							: 'Delayed End Step Trigger';
 				const stkItem: StackItem = withStackItemText(
 					{
 						id: uid('stk', state),
-						sourceInstanceId: dt.id,
+						sourceInstanceId: compiledMeta ? (dt.sourceInstanceId ?? dt.id) : dt.id,
 						card: dt.sourceCard,
 						controllerId: dt.controllerId,
 						kind: 'triggered',
-						title: `${dt.sourceCard.name} (${phase === 'upkeep' ? 'Delayed Upkeep Trigger' : 'Delayed End Step Trigger'})`,
+						title: `${dt.sourceCard.name} (${phaseLabel})`,
 						targets,
 						targetObjectVersions: captureTargetObjectVersions(state, targets),
-						xValue: 0,
+						xValue: compiledMeta?.xValue ?? 0,
+						...(compiledMeta?.kickedCount !== undefined ? { sourceKickedCount: compiledMeta.kickedCount } : {}),
+						...(compiledMeta?.kickedTags?.length ? { sourceKickedTags: [...compiledMeta.kickedTags] } : {}),
 						...(delayedEffect ? { delayedEffect } : {}),
 						requiresGuidedResolution: false,
 						createdAt: Date.now()
@@ -6720,7 +7160,7 @@ registerEventHandler('PhaseBegin', (state, ev) => {
 	const activePlayer = state.players.find((p) => p.playerId === ev.activePlayerId);
 	if (ev.phase === 'upkeep' && activePlayer) runSuspendUpkeep(state, activePlayer);
 	matchTriggers(state, ev);
-	if ((ev.phase === 'end_step' || ev.phase === 'upkeep') && activePlayer) {
+	if ((ev.phase === 'end_step' || ev.phase === 'upkeep' || ev.phase === 'end_combat') && activePlayer) {
 		flushTriggers(state);
 		runDelayedTriggers(state, ev.phase, activePlayer);
 	}
@@ -7334,9 +7774,19 @@ export function specTargetCandidates(
 	if (zone === 'stack') {
 		for (const stk of state.stack) {
 			if (source && stk.sourceInstanceId === source.instanceId) continue;
-			if (spec.filter.types && spec.filter.types.length > 0 && stk.card) {
-				const stkTypes = activeCharacteristics(stk.card, stackItemFaceOptions(stk)).types;
-				if (!spec.filter.types.some((t) => stkTypes.includes(t))) continue;
+			if (spec.filter.controller === 'opponent' && stk.controllerId === controllerId) continue;
+			if (spec.filter.controller === 'you' && stk.controllerId !== controllerId) continue;
+			if (stk.card) {
+				const stkFace = resolveObjectFaces(stk.card, stackItemFaceOptions(stk));
+				if (spec.filter.types?.length && !spec.filter.types.some((t) => stkFace.types.includes(t))) {
+					continue;
+				}
+				if (spec.filter.notTypes?.length && spec.filter.notTypes.some((t) => stkFace.types.includes(t))) {
+					continue;
+				}
+				if (spec.filter.colors?.length && !matchesColorFilter(stkFace.colors, spec.filter.colors)) {
+					continue;
+				}
 			}
 			out.push({ kind: 'stack', id: stk.id, label: stk.title });
 		}
@@ -7353,6 +7803,10 @@ export function specTargetCandidates(
 		} else if (zone === 'graveyard') {
 			for (const c of p.graveyard) {
 				if (matchesObjectFilter(c, spec.filter, ctx)) out.push({ kind: 'graveyard_card', id: c.instanceId, label: c.card.name });
+			}
+		} else if (zone === 'exile') {
+			for (const c of p.exile) {
+				if (matchesObjectFilter(c, spec.filter, ctx)) out.push({ kind: 'exile_card', id: c.instanceId, label: c.card.name });
 			}
 		}
 	}
@@ -8083,6 +8537,36 @@ function stackItemAwaitsPrompt(state: GameState, item: StackItem): boolean {
 	});
 }
 
+function rehydrateDelayedBindings(
+	state: GameState,
+	boundRefs: SerializedBoundRef[]
+): Record<string, EffectBindingSnapshot[]> {
+	const out: Record<string, EffectBindingSnapshot[]> = {};
+	for (const ref of boundRefs) {
+		const found = findCardAnywhere(state, ref.id);
+		// CR 603.7c & CR 400.7: Omit bound objects that changed zones or objectVersion since trigger creation.
+		if (!found || found.zone !== ref.expectedZone) continue;
+		if ((found.inst.objectVersion ?? 1) !== ref.objectVersion) continue;
+		(out[ref.key] ??= []).push({ id: ref.id, lki: { ...ref.lki } });
+	}
+	return out;
+}
+
+function filterDelayedTargets(state: GameState, eff: CompiledDelayedEffect): TargetRef[] {
+	return eff.targets.filter((t) => {
+		if (t.kind === 'player') {
+			const pl = state.players.find((p) => p.playerId === t.id);
+			return Boolean(pl && !pl.lost);
+		}
+		if (t.kind === 'stack') return state.stack.some((s) => s.id === t.id);
+		const found = findCardAnywhere(state, t.id);
+		if (!found) return false;
+		const expectedVer = eff.targetObjectVersions?.[t.id];
+		if (expectedVer !== undefined && (found.inst.objectVersion ?? 1) !== expectedVer) return false;
+		return true;
+	});
+}
+
 function resolveStackItemNow(state: GameState, item: StackItem): void {
 	if (stackItemAwaitsPrompt(state, item)) return;
 	const resuming = Boolean(item.resolutionStarted);
@@ -8188,6 +8672,46 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 		return;
 	}
 	if (item.delayedEffect) {
+		if (item.delayedEffect.kind === 'compiledDelayed') {
+			const eff = item.delayedEffect;
+			const compiled = resolveCompiledDelayedSteps(eff);
+			if (compiled && staticallyInterpretable(compiled, true)) {
+				const initialBindings = rehydrateDelayedBindings(state, eff.boundRefs);
+				const delayedTargets = filterDelayedTargets(state, eff);
+				const result = executeEffectSteps(
+					state,
+					{
+						controller,
+						sourceId: item.sourceInstanceId,
+						sourceCard: eff.sourceCard,
+						title: item.title,
+						item,
+						targets: delayedTargets,
+						targetSpecs: compiled.targets,
+						xValue: eff.xValue ?? item.xValue,
+						...(eff.eventObjectId ? { eventObjectId: eff.eventObjectId } : {}),
+						...(eff.eventObjectVersion !== undefined ? { eventObjectVersion: eff.eventObjectVersion } : {}),
+						...(eff.eventPlayerId ? { eventPlayerId: eff.eventPlayerId } : {}),
+						...(eff.defendingPlayerId ? { defendingPlayerId: eff.defendingPlayerId } : {}),
+						...(eff.eventLki ? { eventLki: eff.eventLki } : {}),
+						...(eff.stepPath.length > 0 ? { stepPathPrefix: eff.stepPath } : {}),
+						initialBindings
+					},
+					compiled.steps,
+					item.effectResume
+				);
+				if (result.paused) return;
+				delete item.effectResume;
+				if (result.turnEnded) return;
+			}
+			syncBattlefieldControllers(state);
+			triggerPathCounts.interpreter++;
+			removeItemFromStack();
+			givePriorityToActiveOrNextPlayer(state);
+			state.passedPriorityPlayerIds = [];
+			checkStateBasedActions(state);
+			return;
+		}
 		resolveDelayedTriggerEffect(state, item, controller, item.delayedEffect);
 		triggerPathCounts.interpreter++;
 		removeItemFromStack();
@@ -8473,6 +8997,7 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 					).name;
 			applySelfEtbReplacements(state, perm);
 			moveObject(state, perm, 'battlefield', { from: 'stack', toPlayer: controller });
+			syncBattlefieldControllers(state);
 			addLog(
 				state,
 				'cast',
@@ -8620,7 +9145,7 @@ function copyPermanentAsToken(
 	original: CardInstance,
 	sourceName: string,
 	notLegendary = false
-): void {
+): CardInstance {
 	const { baseCardToCopy, copiableState, displayName } = buildCopiedPermanentFields(
 		original,
 		notLegendary
@@ -8645,6 +9170,7 @@ function copyPermanentAsToken(
 		controller.playerId
 	);
 	flushTriggers(state);
+	return tokenInst;
 }
 
 /** Counters `target` unless it can't be countered. Returns true if it was countered. */
@@ -9304,7 +9830,11 @@ function initiateLibrarySearch(
 		: searchingPlayer;
 
 	const matchingCards = searchingPlayer.library.filter((c) =>
-		matchesLibrarySearchSpec(c.card, searchSpec)
+		matchesLibrarySearchSpec(
+			c.card,
+			searchSpec,
+			resolveObjectFaces(c.card, instanceFaceOptions(c)).colors
+		)
 	);
 	const canFailToFind =
 		searchSpec.statedQuality || searchSpec.upTo || matchingCards.length === 0;
@@ -9313,7 +9843,11 @@ function initiateLibrarySearch(
 		const topCardsToPlace: CardInstance[] = [];
 		for (const dest of searchSpec.destinations) {
 			const idx = searchingPlayer.library.findIndex((c) =>
-				matchesLibrarySearchSpec(c.card, searchSpec)
+				matchesLibrarySearchSpec(
+					c.card,
+					searchSpec,
+					resolveObjectFaces(c.card, instanceFaceOptions(c)).colors
+				)
 			);
 			if (idx < 0) break;
 			const found = searchingPlayer.library[idx];
@@ -10202,7 +10736,12 @@ registerPromptHandler(COMBAT_DAMAGE_ASSIGNMENT_HANDLER, (state, prompt, answer) 
 
 function clearEndOfTurnAndDamage(state: GameState): void {
 	state.timedKeywordEffects = undefined;
-	state.timedContinuousEffects = undefined;
+	if (state.timedContinuousEffects?.length) {
+		const persisting = state.timedContinuousEffects.filter(
+			(eff) => eff.expires && eff.expires !== 'endOfTurn'
+		);
+		state.timedContinuousEffects = persisting.length > 0 ? persisting : undefined;
+	}
 	for (const p of state.players) {
 		p.manaPool = createEmptyManaPool();
 		p.restrictedMana = {};
@@ -10243,6 +10782,7 @@ function clearEndOfTurnAndDamage(state: GameState): void {
 		}
 	}
 	noteLayerInputsChanged(state);
+	syncBattlefieldControllers(state);
 }
 
 function runCleanupStep(state: GameState): void {
@@ -10579,6 +11119,8 @@ export function checkStateBasedActions(state: GameState): void {
 	if (state.pendingProcedure) return;
 	if (state.stack.some((s) => Boolean(s.resolutionStarted))) return;
 
+	syncBattlefieldControllers(state);
+
 	let maxIterations = 25;
 	let anyActionTaken = true;
 
@@ -10898,6 +11440,7 @@ export function checkStateBasedActions(state: GameState): void {
 				owner: PlayerGameState | undefined;
 			}
 		>();
+		const pendingLinkedReturns: Array<{ leavingId: string; leavingVersion: number }> = [];
 
 		for (const p of state.players) {
 			if (p.lost) continue;
@@ -10933,12 +11476,22 @@ export function checkStateBasedActions(state: GameState): void {
 						label: item.perm.card.name
 					});
 				}
-				const actualDest = movePermanentToZone(state, item.perm, 'graveyard', {
-					kind: item.kind,
-					controllerId: item.controller.playerId,
-					controllerUsername: item.controller.username,
-					...(item.kind === 'legend' ? { legName: item.legName } : {})
-				});
+				const leavingVersion = item.perm.objectVersion || 1;
+				const actualDest = movePermanentToZone(
+					state,
+					item.perm,
+					'graveyard',
+					{
+						kind: item.kind,
+						controllerId: item.controller.playerId,
+						controllerUsername: item.controller.username,
+						...(item.kind === 'legend' ? { legName: item.legName } : {})
+					},
+					sbaGraveyardBatch.length > 1 ? { skipLinkedReturn: true } : undefined
+				);
+				if (sbaGraveyardBatch.length > 1 && actualDest !== 'battlefield' && actualDest !== 'pending') {
+					pendingLinkedReturns.push({ leavingId: item.perm.instanceId, leavingVersion });
+				}
 
 				if (sbaGraveyardBatch.length > 1) {
 					const owner = state.players.find((pl) => pl.playerId === item.perm.ownerId);
@@ -11089,6 +11642,10 @@ export function checkStateBasedActions(state: GameState): void {
 					}
 				}
 			}
+			returnLinkedExiledForSources(state, pendingLinkedReturns);
+		}
+		if (syncBattlefieldControllers(state)) {
+			anyActionTaken = true;
 		}
 
 		// 7. Simultaneous Player Loss SBAs (CR 104.3c, 104.4a, 704.5a-c, 903.10a) — respects Platinum Angel!
@@ -11255,12 +11812,20 @@ export function cleanupEliminatedPlayer(state: GameState, eliminated: PlayerGame
 	}
 
 	// 4. Handle permanents on the eliminated player's battlefield (CR 800.4a, 800.4c):
-	// - First, control-changing effects giving the eliminated player control end, returning control
-	//   to the permanent's default controller if that player is still in the game.
-	// - Second, any foreign-owned permanents still controlled by the eliminated player (because the
-	//   eliminated player is their default controller, or their default controller has left the game)
+	// - First, any control-changing TimedContinuousEffects giving the eliminated player control end.
+	// - Then, any foreign-owned permanents with an alive default controller return to that player
+	//   (preserving defaultControllerId so syncBattlefieldControllers can re-apply any other Layer 2
+	//   effects such as another alive player's Control Magic), and any remaining foreign permanents
 	//   are exiled.
-	// - Finally, all objects owned by the eliminated player leave the game.
+	// - Finally, all objects owned by the eliminated player leave the game, and controllers sync.
+	if (state.timedContinuousEffects?.length) {
+		const remaining = state.timedContinuousEffects.filter(
+			(eff) => eff.layer2?.controllerId !== elimId
+		);
+		state.timedContinuousEffects = remaining.length > 0 ? remaining : undefined;
+		noteLayerInputsChanged(state);
+	}
+	const leftBattlefieldIds = new Set<string>();
 	for (const perm of [...eliminated.battlefield]) {
 		if (perm.ownerId !== elimId) {
 			const defaultCtrlId = perm.defaultControllerId ?? perm.ownerId;
@@ -11270,14 +11835,18 @@ export function cleanupEliminatedPlayer(state: GameState, eliminated: PlayerGame
 					: undefined;
 			if (defaultCtrl) {
 				perm.controllerId = defaultCtrl.playerId;
-				perm.attachedToId = null;
-				transferBattlefieldControl(perm, eliminated, defaultCtrl);
+				transferBattlefieldControl(perm, eliminated, defaultCtrl, state, {
+					preserveDefaultController: true
+				});
 			} else {
+				leftBattlefieldIds.add(perm.instanceId);
 				const owner = state.players.find((pl) => pl.playerId === perm.ownerId && !pl.lost);
 				if (owner) {
 					movePermanentToZone(state, perm, 'exile');
 				}
 			}
+		} else {
+			leftBattlefieldIds.add(perm.instanceId);
 		}
 	}
 	removeFromGame(eliminated, 'battlefield');
@@ -11293,6 +11862,9 @@ export function cleanupEliminatedPlayer(state: GameState, eliminated: PlayerGame
 	removeFromGame(eliminated, 'library');
 	for (const other of state.players) {
 		if (other.playerId === elimId) continue;
+		for (const c of other.battlefield) {
+			if (c.ownerId === elimId) leftBattlefieldIds.add(c.instanceId);
+		}
 		removeFromGame(other, 'battlefield', (c) => c.ownerId === elimId);
 		removeFromGame(other, 'graveyard', (c) => c.ownerId === elimId);
 		removeFromGame(other, 'command', (c) => c.ownerId === elimId);
@@ -11304,12 +11876,16 @@ export function cleanupEliminatedPlayer(state: GameState, eliminated: PlayerGame
 				exCard.playableFromExileBy = undefined;
 			}
 		}
+	}
+	for (const other of state.players) {
+		if (other.playerId === elimId) continue;
 		for (const b of other.battlefield) {
-			if (b.attachedToId && elimPermIds.has(b.attachedToId)) {
+			if (b.attachedToId && leftBattlefieldIds.has(b.attachedToId)) {
 				b.attachedToId = null;
 			}
 		}
 	}
+	syncBattlefieldControllers(state);
 
 	state.passedPriorityPlayerIds = state.passedPriorityPlayerIds.filter((id) => id !== elimId);
 
@@ -11366,7 +11942,8 @@ export function movePermanentToZone(
 	state: GameState,
 	inst: CardInstance,
 	dest: ZoneType,
-	sbaLog?: SbaMoveLog
+	sbaLog?: SbaMoveLog,
+	moveOpts?: { skipLinkedReturn?: boolean }
 ): MoveResult {
 	inst.defaultControllerId = undefined;
 	return moveObject(state, inst, dest, {
@@ -11380,7 +11957,8 @@ export function movePermanentToZone(
 		// The old code put cards on top of the library and at the end of every other zone.
 		insert: (actual) => (actual === 'library' ? 'start' : 'end'),
 		ceaseToExist: 'tokens',
-		sbaLog
+		sbaLog,
+		...(moveOpts?.skipLinkedReturn ? { skipLinkedReturn: true } : {})
 	});
 }
 
@@ -11421,6 +11999,25 @@ export function matchesPermanentTypeFilter(
 	return tLine.includes(typeFilter);
 }
 
+function sourceEffectiveQualities(
+	state: GameState,
+	sCard: ScryfallCard,
+	sPerm?: CardInstance
+): { colors: ManaColor[]; typeLine: string } {
+	const evalSource =
+		sPerm && sPerm.zone === 'battlefield' && !sPerm.phasedOut
+			? evaluatePermanent(state, sPerm)
+			: null;
+	if (evalSource) {
+		return {
+			colors: sPerm!.isFaceDown ? [] : evalSource.colors,
+			typeLine: evalSource.typeLine
+		};
+	}
+	const offFace = resolveObjectFaces(sCard, sPerm ? instanceFaceOptions(sPerm) : undefined);
+	return { colors: offFace.colors, typeLine: offFace.typeLine };
+}
+
 export function hasProtectionFrom(
 	targetPerm: CardInstance,
 	sourceCard: ScryfallCard | undefined,
@@ -11432,12 +12029,11 @@ export function hasProtectionFrom(
 	const combined = evalTarget.activeKeywords.map((k) => k.toLowerCase()).join('\n');
 	if (!combined.includes('protection from')) return false;
 
-	const evalSource =
-		sourcePerm && sourcePerm.zone === 'battlefield' && !sourcePerm.phasedOut
-			? evaluatePermanent(state, sourcePerm)
-			: null;
-	const srcColors = evalSource ? (sourcePerm!.isFaceDown ? [] : evalSource.colors) : sourceCard.colors;
-	const srcTypeLine = evalSource ? evalSource.typeLine : sourceCard.typeLine;
+	const { colors: srcColors, typeLine: srcTypeLine } = sourceEffectiveQualities(
+		state,
+		sourceCard,
+		sourcePerm
+	);
 
 	if (/protection from everything/i.test(combined)) return true;
 	if (/protection from all colors/i.test(combined) && srcColors.length > 0) return true;
@@ -11486,12 +12082,11 @@ export function hasHexproofFromQuality(
 	const combined = evalTarget.activeKeywords.map((k) => k.toLowerCase()).join('\n');
 	if (!combined.includes('hexproof from')) return false;
 
-	const evalSource =
-		sourcePerm && sourcePerm.zone === 'battlefield' && !sourcePerm.phasedOut
-			? evaluatePermanent(state, sourcePerm)
-			: null;
-	const srcColors = evalSource ? (sourcePerm!.isFaceDown ? [] : evalSource.colors) : sourceCard.colors;
-	const srcTypeLine = evalSource ? evalSource.typeLine : sourceCard.typeLine;
+	const { colors: srcColors, typeLine: srcTypeLine } = sourceEffectiveQualities(
+		state,
+		sourceCard,
+		sourcePerm
+	);
 
 	if (/hexproof from everything/i.test(combined)) return true;
 	if (/hexproof from all colors/i.test(combined) && srcColors.length > 0) return true;
@@ -11560,9 +12155,11 @@ function normalizeTargetRequirement(
 				? 'stack'
 				: kind === 'graveyard_card'
 					? 'graveyard'
-					: kind === 'any'
-						? 'any'
-						: 'battlefield',
+					: kind === 'exile_card'
+						? 'exile'
+						: kind === 'any'
+							? 'any'
+							: 'battlefield',
 		sameGraveyard: false,
 		controllerFilter: kind === 'controlled_creature' ? 'you' : 'any',
 		cardTypeFilter:
@@ -11687,6 +12284,18 @@ function validateTargetLegalityInner(
 				};
 			}
 		}
+		const stackSpec = info.targetSpecs?.find(
+			(s) => s.kind === 'object' && (s.filter.zone === 'stack' || targetKind === 'spell')
+		);
+		if (stackSpec?.kind === 'object' && stackSpec.filter.colors?.length) {
+			const sColors = resolveObjectFaces(inStack.card, stackItemFaceOptions(inStack)).colors;
+			if (!matchesColorFilter(sColors, stackSpec.filter.colors)) {
+				return {
+					ok: false,
+					error: `Strict Rules Violation: ${inStack.card.name} does not match the required spell color.`
+				};
+			}
+		}
 		return { ok: true };
 	}
 
@@ -11769,6 +12378,44 @@ function validateTargetLegalityInner(
 					error: `Strict Rules Violation: ${foundCard.card.name} is not a ${info.cardTypeFilter} card.`
 				};
 			}
+		}
+		return { ok: true };
+	}
+
+	// 2b. Exile card target validation (CR 607.2a linked exile / exile-zone targets)
+	if (target.kind === 'exile_card' || info.zone === 'exile' || targetKind === 'exile_card') {
+		if (target.kind !== 'exile_card') {
+			return {
+				ok: false,
+				error: 'Strict Rules Violation: This spell or ability must target a card in exile.'
+			};
+		}
+		let foundOwner: PlayerGameState | undefined;
+		let foundCard: CardInstance | undefined;
+		for (const p of state.players) {
+			const c = p.exile.find((x) => x.instanceId === target.id);
+			if (c) {
+				foundOwner = p;
+				foundCard = c;
+				break;
+			}
+		}
+		if (!foundCard || !foundOwner) {
+			return { ok: false, error: 'Target card is not in exile.' };
+		}
+		if (info.controllerFilter === 'you' && foundOwner.playerId !== actorId) {
+			return { ok: false, error: 'Strict Rules Violation: Must target your card in exile.' };
+		}
+		if (info.controllerFilter === 'opponent' && foundOwner.playerId === actorId) {
+			return { ok: false, error: "Strict Rules Violation: Must target an opponent's card in exile." };
+		}
+		const sourceInst = sourceInstanceId ? findCardAnywhere(state, sourceInstanceId)?.inst : undefined;
+		const spec = info.targetSpecs?.[0];
+		if (spec?.kind === 'object' && !matchesObjectFilter(foundCard, spec.filter, { state, controllerId: actorId, source: sourceInst })) {
+			return {
+				ok: false,
+				error: `Strict Rules Violation: ${foundCard.card.name} does not match the exile target filter.`
+			};
 		}
 		return { ok: true };
 	}
@@ -12117,6 +12764,18 @@ function getAllLegalTargetsForRequirementInner(
 		return results;
 	}
 
+	if (info.zone === 'exile' || info.targetKind === 'exile_card') {
+		for (const p of state.players) {
+			for (const c of p.exile) {
+				const ref: TargetRef = { kind: 'exile_card', id: c.instanceId, label: c.card.name };
+				if (validateTargetLegalityInner(state, actorId, ref, info, sourceCard, sourceInstanceId).ok) {
+					results.push(ref);
+				}
+			}
+		}
+		return results;
+	}
+
 	if (info.targetKind === 'player' || info.targetKind === 'any') {
 		for (const p of state.players) {
 			if (p.lost) continue;
@@ -12262,6 +12921,23 @@ function hasRequiredLegalTargetsInner(
 			}
 			return { ok: true };
 		}
+	}
+
+	if (info.zone === 'exile' || info.targetKind === 'exile_card') {
+		const allExileTargets = getAllLegalTargetsForRequirement(
+			state,
+			actorId,
+			info,
+			sourceCard,
+			sourceInstanceId
+		);
+		if (allExileTargets.length < info.minTargets) {
+			return {
+				ok: false,
+				error: `Illegal Cast: ${sourceCard?.name || 'Spell'} requires at least ${info.minTargets} valid target card(s) in exile.`
+			};
+		}
+		return { ok: true };
 	}
 
 	const legalTargets = getAllLegalTargetsForRequirement(
@@ -12856,7 +13532,10 @@ export function checkSpellCastLegality(
 	optionId?: string,
 	optionalCostCounts?: Record<string, number>,
 	faceIndex?: number,
-	fused?: boolean
+	fused?: boolean,
+	costAidIds?: Record<string, string[]>,
+	costAidColorChoices?: Record<string, ManaColor | 'generic'>,
+	strictCostAids = false
 ): { ok: boolean; error?: string } {
 	return withStableLayerInputs(state, () =>
 		checkSpellCastLegalityInner(
@@ -12868,7 +13547,10 @@ export function checkSpellCastLegality(
 			optionId,
 			optionalCostCounts,
 			faceIndex,
-			fused
+			fused,
+			costAidIds,
+			costAidColorChoices,
+			strictCostAids
 		)
 	);
 }
@@ -12882,7 +13564,10 @@ function checkSpellCastLegalityInner(
 	optionId?: string,
 	optionalCostCounts?: Record<string, number>,
 	faceIndex?: number,
-	fused?: boolean
+	fused?: boolean,
+	costAidIds?: Record<string, string[]>,
+	costAidColorChoices?: Record<string, ManaColor | 'generic'>,
+	strictCostAids = false
 ): { ok: boolean; error?: string } {
 	if (state.status !== 'active') {
 		return { ok: false, error: 'Game is not currently active.' };
@@ -12913,7 +13598,10 @@ function checkSpellCastLegalityInner(
 		resolved.option.fromZone,
 		xValue,
 		resolved.option,
-		optionalCostCounts
+		optionalCostCounts,
+		costAidIds,
+		costAidColorChoices,
+		strictCostAids
 	);
 }
 
@@ -12924,7 +13612,10 @@ function checkSpellCastOptionLegalityInner(
 	fromZone: CastableSourceZone,
 	xValue: number,
 	option: CastOption,
-	optionalCostCounts?: Record<string, number>
+	optionalCostCounts?: Record<string, number>,
+	costAidIds?: Record<string, string[]>,
+	costAidColorChoices?: Record<string, ManaColor | 'generic'>,
+	strictCostAids = false
 ): { ok: boolean; error?: string } {
 	if (state.status !== 'active') {
 		return { ok: false, error: 'Game is not currently active.' };
@@ -13075,11 +13766,40 @@ function checkSpellCastOptionLegalityInner(
 		fused: option.fused,
 		isFaceDown: Boolean(option.spellMods?.castFaceDown)
 	});
-	if (!canPayOrAutoTap(actor, costReq, state, undefined, spendCtx)) {
-		return {
-			ok: false,
-			error: `Insufficient mana to cast ${castName}.`
-		};
+	let effectiveManaReq = costReq;
+	let reservedAidIds = new Set<string>();
+	if (
+		strictCostAids &&
+		!(costReq.flexibleSymbols?.length && costAidIds && Object.keys(costAidIds).length > 0)
+	) {
+		const aidRes = applyCastCostAids(costReq, option, costAidIds, costAidColorChoices);
+		if (!aidRes.ok) {
+			return { ok: false, error: aidRes.error };
+		}
+		effectiveManaReq = aidRes.remainingReq;
+		for (const id of aidRes.tapIds) reservedAidIds.add(id);
+		for (const id of aidRes.exileIds) reservedAidIds.add(id);
+		if (!canPayOrAutoTap(actor, effectiveManaReq, state, undefined, spendCtx, reservedAidIds)) {
+			return {
+				ok: false,
+				error: `Insufficient mana to cast ${castName}.`
+			};
+		}
+	} else {
+		const manaAidCheck = canPayManaWithPaymentAids(
+			state,
+			actor,
+			option,
+			costReq,
+			spendCtx
+		);
+		if (!manaAidCheck.ok) {
+			return {
+				ok: false,
+				error: `Insufficient mana to cast ${castName}.`
+			};
+		}
+		reservedAidIds = manaAidCheck.reservedAidIds;
 	}
 	// Phase 4: additional costs (plus any non-mana alternative costDefs and optional additional costs)
 	// from the IR, together with the mana.
@@ -13092,7 +13812,23 @@ function checkSpellCastOptionLegalityInner(
 	];
 	if (
 		combinedCostDefs.length > 0 &&
-		!canPayCosts(costContext(state, actor, inst, xValue, true, costReq, undefined, spendCtx), combinedCostDefs)
+		!canPayCosts(
+			costContext(
+				state,
+				actor,
+				inst,
+				xValue,
+				true,
+				effectiveManaReq,
+				undefined,
+				spendCtx,
+				reservedAidIds.size > 0 ? reservedAidIds : undefined,
+				strictCostAids
+					? undefined
+					: (req, resIds) => canPayManaWithPaymentAids(state, actor, option, req, spendCtx, undefined, resIds).ok
+			),
+			combinedCostDefs
+		)
 	) {
 		return {
 			ok: false,
@@ -13440,6 +14176,14 @@ function captureTargetObjectVersions(
 					break;
 				}
 			}
+		} else if (t.kind === 'exile_card') {
+			for (const p of state.players) {
+				const found = p.exile.find((c) => c.instanceId === t.id);
+				if (found) {
+					versions[t.id] = found.objectVersion ?? 1;
+					break;
+				}
+			}
 		} else if (t.kind === 'stack') {
 			const found = state.stack.find((s) => s.id === t.id || s.sourceInstanceId === t.id);
 			if (found?.sourceObjectVersion !== undefined) {
@@ -13481,6 +14225,21 @@ function isTargetStillValid(
 		let foundCard: CardInstance | undefined;
 		for (const p of state.players) {
 			const c = p.graveyard.find((x) => x.instanceId === target.id);
+			if (c) {
+				foundCard = c;
+				break;
+			}
+		}
+		if (!foundCard) return false;
+		if (expectedVersion !== undefined && foundCard.objectVersion !== expectedVersion) {
+			return false;
+		}
+		return true;
+	}
+	if (target.kind === 'exile_card') {
+		let foundCard: CardInstance | undefined;
+		for (const p of state.players) {
+			const c = p.exile.find((x) => x.instanceId === target.id);
 			if (c) {
 				foundCard = c;
 				break;

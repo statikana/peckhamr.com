@@ -337,3 +337,18 @@ describe('Static grammar: multipliers', () => {
 		unparsed('If a triggered ability of an Ally you control triggers, that ability triggers an additional time.');
 	});
 });
+
+describe('Static grammar: Layer 2 control changes (CR 613.1b)', () => {
+	it('compiles Aura and Equipment control-changing static abilities', () => {
+		assert.deepEqual(defs('You control enchanted creature.'), [
+			{ k: 'continuous', layer: '2', affected: 'attachedTo', mod: { k: 'setController', controller: { k: 'you' } } }
+		]);
+		assert.deepEqual(defs('You control enchanted permanent.'), [
+			{ k: 'continuous', layer: '2', affected: 'attachedTo', mod: { k: 'setController', controller: { k: 'you' } } }
+		]);
+		assert.deepEqual(defs('You control equipped creature.'), [
+			{ k: 'continuous', layer: '2', affected: 'attachedTo', mod: { k: 'setController', controller: { k: 'you' } } }
+		]);
+	});
+});
+

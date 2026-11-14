@@ -5,6 +5,7 @@
  * active face index, unlocked designations, copy state (Layer 1a), and face-down status (Layer 1b).
  */
 import { compileCard } from '../compiler/index.ts';
+import { getKeywordSpec } from '../keywords.ts';
 import type { AbilityDef, Characteristics, FaceDefinition } from '../ir.ts';
 import { parseManaCost } from '../oracle.ts';
 import { activeFaceIndexForObject, getCardFaces } from '../scryfall.ts';
@@ -406,10 +407,51 @@ export function resolveObjectFaces(
 		}
 	}
 
+	if (!opts?.isFaceDown) {
+		const cdaColors = resolveLayer5CdaColors(baseCard, view.activeFaceIndices);
+		if (cdaColors !== null) {
+			view = { ...view, colors: cdaColors };
+		}
+	}
+
 	if (opts?.copiableState?.except) {
 		view = applyCopyExceptions(view, opts.copiableState.except);
 	}
 	return view;
+}
+
+function resolveLayer5CdaColors(
+	card: ScryfallCard,
+	activeFaceIndices: readonly number[]
+): ManaColor[] | null {
+	const compiled = compileCard(card);
+	let result: ManaColor[] | null = null;
+	for (const idx of activeFaceIndices) {
+		const face = compiled.faces[idx];
+		if (!face) continue;
+		for (const ab of face.abilities) {
+			if (ab.kind !== 'keyword') continue;
+			const spec = getKeywordSpec(ab.keyword.name);
+			if (spec?.status !== 'implemented' || spec.implementation?.kind !== 'static') continue;
+			for (const st of spec.implementation.buildStatics(ab.keyword)) {
+				if (st.k === 'continuous' && st.layer === '5' && st.affected === 'self' && st.mod.k === 'setColors') {
+					result = [...st.mod.colors];
+				}
+			}
+		}
+	}
+	return result;
+}
+
+/**
+ * Matches an object's effective colors against an ObjectFilter's `colors` array,
+ * treating `'C'` (colorless) as `colors.length === 0`.
+ */
+export function matchesColorFilter(
+	objectColors: readonly string[],
+	filterColors: readonly string[]
+): boolean {
+	return filterColors.some((c) => (c === 'C' ? objectColors.length === 0 : objectColors.includes(c)));
 }
 
 export function instanceFaceOptions(

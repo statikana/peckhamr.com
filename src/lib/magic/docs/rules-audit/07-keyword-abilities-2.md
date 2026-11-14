@@ -184,7 +184,7 @@ Audited at engine-rewrite 917180b on 2026-11-09.
 ### 702.114 Devoid
 | CR | Rule (short) | Status | Evidence / notes |
 |---|---|---|---|
-| 702.114a | Devoid characteristic-defining ability (object is colorless in all zones) | missing | Listed in `KNOWN_KEYWORDS` (`compiler/adapter.ts:134`) → `keyword_not_implemented`. (Scryfall already sets `colors: []` on printed Devoid cards, but effects that grant/remove abilities or inspect Devoid as a CDA do not evaluate it in `runtime/layers.ts`.) |
+| 702.114a | Devoid characteristic-defining ability (object is colorless in all zones) | implemented | Promoted in `keywords.ts` (`cr: '702.114'`, static Layer 5 colorless CDA in `runtime/layers.ts` & off-battlefield `runtime/objectFilter.ts`, tested in `runtime/keywords-devoid-and-dig.test.ts`). |
 
 ### 702.115 Ingest
 | CR | Rule (short) | Status | Evidence / notes |

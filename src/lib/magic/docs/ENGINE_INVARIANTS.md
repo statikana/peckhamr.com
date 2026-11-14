@@ -49,7 +49,7 @@ Identifiers are from `ir.ts`, `types.ts` and `runtime/`; CR numbers are from [`s
    - Within each layer/sublayer, effects apply in dependency order (`CR 613.8`, e.g. *Blood Moon* before *Urborg*) and then timestamp order (`CR 613.7`).
    - An Aura, Equipment, or Fortification receives a new timestamp each time it becomes attached to an object (`CR 613.7e`).
    - **Not yet enforced:**
-     - `runtime/layers.ts` evaluates layers 1, 4, 5, 6 and 7a–7d. Control changes (layer 2) move the permanent between battlefields (`transferBattlefieldControl`), and text-changing effects (layer 3, `CR 612`) are unimplemented.
+     - `runtime/layers.ts` evaluates layers 1, 2, 4, 5, 6 and 7a–7d; text-changing effects (layer 3, `CR 612`) are unimplemented.
      - There is no general `CR 613.8` dependency system: layer 4 runs three fixed sub-passes (attached types, type overwrites, additive types and colors) and then timestamps.
 3. **Ability-Loss & Cross-Layer Persistence (`CR 613.1f, 613.6, 708.2a`)**
    - If `evaluatePermanent(state, perm).losesAllAbilities` is true (e.g. *Humility*, *Darksteel Mutation*, *Song of the Dryads* per `CR 305.7`) or `perm.isFaceDown` is true (`CR 708.2a`), the permanent's printed triggered, activated, static, and replacement abilities do not function, unless the continuous effect began applying in an earlier layer (`CR 613.6`). Example: Changeling's creature types are added in layer 4 and survive layer-6 ability loss.
@@ -59,8 +59,7 @@ Identifiers are from `ir.ts`, `types.ts` and `runtime/`; CR numbers are from [`s
 5. **All-Zone Characteristic-Defining Abilities (`CR 604.3, 208.2a, 702.73a`)**
    - Characteristic-defining abilities (Changeling `CR 702.73a`, Devoid `CR 702.114a`, and `*/*` P/T CDAs `CR 208.2a`) function in **all zones** (`hand`, `library`, `graveyard`, `exile`, `command`, `stack`, and `battlefield`).
    - **Not yet enforced:**
-     - Devoid is unimplemented (`keyword_not_implemented`).
-     - Off-battlefield Changeling works in `runtime/objectFilter.ts` and layer breakdowns. The audit found it missing from library-search matching (`oracle.ts`), layer-7 graveyard subtype counts, and trigger subject matching (`runtime/triggers.ts`).
+     - Devoid (`CR 702.114a`) is implemented across all zones (`keywords.ts`, `runtime/objectFilter.ts`, `runtime/layers.ts`, `runtime/keywords-devoid-and-dig.test.ts`); off-battlefield Changeling works in `runtime/objectFilter.ts` and layer breakdowns, while the audit found it missing from library-search matching (`oracle.ts`), layer-7 graveyard subtype counts, and trigger subject matching (`runtime/triggers.ts`).
 6. **Unclamped Signed Characteristics vs Action Clamping (`CR 107.1b, 208.5`)**
    - Evaluated power and toughness can be negative during layer calculation (so a `1/3` with `-3/-0` and `+2/+0` has power `0`, not `2`). Clamping to `0` happens only when an action uses the number for combat damage assignment (`CR 510.1a`), life gain/loss, token/counter creation, or card draw.
    - Non-creature permanents have no power or toughness (`CR 208.3`), even if P/T is printed on the card (e.g. uncrewed Vehicles or creatures turned into non-creature lands).

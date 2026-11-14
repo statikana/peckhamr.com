@@ -705,7 +705,11 @@ export function parseLibrarySearchSpec(oracleText: string): LibrarySearchSpec | 
 /**
  * Evaluates whether a `ScryfallCard` in a library satisfies `LibrarySearchSpec`.
  */
-export function matchesLibrarySearchSpec(card: ScryfallCard, spec: LibrarySearchSpec): boolean {
+export function matchesLibrarySearchSpec(
+	card: ScryfallCard,
+	spec: LibrarySearchSpec,
+	overrideColors?: readonly ManaColor[] | readonly string[]
+): boolean {
 	if (spec.named && card.name.toLowerCase() !== spec.named.toLowerCase()) {
 		return false;
 	}
@@ -730,7 +734,7 @@ export function matchesLibrarySearchSpec(card: ScryfallCard, spec: LibrarySearch
 	}
 	if (spec.allowedColors && spec.allowedColors.length > 0) {
 		const wantsColorless = spec.allowedColors.includes('C');
-		const cardColors = card.colors || [];
+		const cardColors = overrideColors ?? card.colors ?? [];
 		const matchesColor =
 			(wantsColorless && cardColors.length === 0) ||
 			spec.allowedColors.some((c) => c !== 'C' && cardColors.includes(c));

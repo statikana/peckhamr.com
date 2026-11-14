@@ -20,6 +20,7 @@ import type {
 	Condition,
 	CostDef,
 	Duration,
+	EffectParams,
 	EffectStep,
 	ModalDef,
 	ObjectFilter,
@@ -140,7 +141,14 @@ interface ObjectRes {
 	/** The step that acts on this object should bind its result under this name. */
 	plural?: boolean;
 	topmostOnly?: boolean;
-	fromZone?: 'graveyard';
+	fromZone?: 'graveyard' | 'exile';
+}
+
+interface PendingDigState {
+	stepIndex: number;
+	hasKeep: boolean;
+	hasRest: boolean;
+	draft: NonNullable<EffectParams['dig']>;
 }
 
 class Parser {
@@ -149,13 +157,15 @@ class Parser {
 	readonly unparsed: Span[] = [];
 	readonly context: EffectContext;
 	/** What "it", "that creature", "its controller" refer to. */
-	private lastObject?: { ref: Ref; stepIndex: number };
+	lastObject?: { ref: Ref; stepIndex: number };
 	/** Implicit subject of a continued predicate ("Target player draws two cards and loses 2 life"). */
 	lastPlayer?: Selector;
 	/** Most recent optional step index for "If you do / If that player does / If they do". */
 	lastOptionalStep?: number;
 	/** "where X is ..." defined in an earlier sentence of the same ability (Thassa's Oracle). */
 	definedX?: Amount;
+	/** Multi-clause / multi-sentence dig builder; committed to step.params.dig only once both keep and rest are parsed. */
+	pendingDig?: PendingDigState;
 
 	constructor(context: EffectContext) {
 		this.context = context;
@@ -203,6 +213,7 @@ class Parser {
 		lastObject?: { ref: Ref; stepIndex: number };
 		lastOptionalStep?: number;
 		definedX?: Amount;
+		pendingDig?: PendingDigState;
 		binds: Array<string | undefined>;
 	} {
 		return {
@@ -212,6 +223,9 @@ class Parser {
 			lastObject: this.lastObject,
 			lastOptionalStep: this.lastOptionalStep,
 			definedX: this.definedX,
+			pendingDig: this.pendingDig
+				? { ...this.pendingDig, draft: { ...this.pendingDig.draft } }
+				: undefined,
 			binds: this.steps.map((s) => s.bindAs)
 		};
 	}
@@ -223,6 +237,7 @@ class Parser {
 		this.lastObject = m.lastObject;
 		this.lastOptionalStep = m.lastOptionalStep;
 		this.definedX = m.definedX;
+		this.pendingDig = m.pendingDig;
 		this.steps.forEach((s, i) => {
 			if (m.binds[i] === undefined) delete s.bindAs;
 			else s.bindAs = m.binds[i];
@@ -301,7 +316,7 @@ function refSelector(ref: Ref): Selector {
 
 // ---- Object phrases -------------------------------------------------------------------------
 
-const IT_WORDS = /^(?:it|them|that creature|that permanent|that card|that token|the creature|the card|those cards|those creatures|those permanents)$/i;
+const IT_WORDS = /^(?:it|them|that creature|that permanent|that card|that token|those tokens|the token|the creature|the card|those cards|those creatures|those permanents)$/i;
 
 /** Controller qualifiers at the end of an object phrase. */
 function splitController(phrase: string): { phrase: string; controller?: ObjectFilter['controller'] } {
@@ -352,9 +367,10 @@ function targetPhrase(text: string): Omit<TargetSpec, 'min' | 'max'> | null {
 	}
 	const filter = objectFilter(phrase);
 	if (!filter) return null;
-	if (zone === 'graveyard' && !/\bcards?$/.test(phrase)) return null;
-	if (zone === 'battlefield' && /\bcards?$/.test(phrase)) return null;
-	const out: ObjectFilter = { ...filter, zone };
+	const resolvedZone = filter.zone ?? zone;
+	if (resolvedZone === 'graveyard' && !/\bcards?$/.test(phrase)) return null;
+	if (resolvedZone === 'battlefield' && /\bcards?$/.test(phrase)) return null;
+	const out: ObjectFilter = { ...filter, zone: resolvedZone };
 	if (ctl.controller) out.controller = ctl.controller;
 	if (owner) out.owner = owner;
 	return { kind: 'object', filter: out, ...(sameOwner ? { sameOwner: true } : {}) };
@@ -421,14 +437,14 @@ function objectPhrase(p: Parser, text: string): ObjectRes | null {
 			const playerSel = playerPhrase(p, refCtl[2]);
 			const ref = playerSel ? singlePlayer(playerSel) : null;
 			if (!filter || !ref) return null;
-			const out: ObjectFilter = { ...filter, zone: 'battlefield', controllerRef: ref };
+			const out: ObjectFilter = { zone: 'battlefield', ...filter, controllerRef: ref };
 			if (/^other\b/.test(refCtl[1])) out.other = true;
 			return { selector: { k: 'all', filter: out }, plural: true };
 		}
 		const ctl = splitController(inner);
 		const filter = objectFilter(ctl.phrase);
 		if (!filter) return null;
-		const out: ObjectFilter = { ...filter, zone: 'battlefield' };
+		const out: ObjectFilter = { zone: 'battlefield', ...filter };
 		if (ctl.controller) out.controller = ctl.controller;
 		if (/^other\b/.test(ctl.phrase)) out.other = true;
 		return { selector: { k: 'all', filter: out }, plural: true };
@@ -512,7 +528,7 @@ function numberOf(text: string): Amount | null {
 	const ctl = splitController(text.trim());
 	const filter = objectFilter(ctl.phrase);
 	if (!filter) return null;
-	const of: ObjectFilter = { ...filter, zone: 'battlefield' };
+	const of: ObjectFilter = { zone: 'battlefield', ...filter };
 	if (ctl.controller) of.controller = ctl.controller;
 	return { k: 'count', of };
 }
@@ -1021,9 +1037,18 @@ function playerPredicate(p: Parser, subject: Selector, vp: string, span: Span, f
 		p.push({ verb: 'investigate', subject, amount, ...opt, span }, false);
 		return true;
 	}
-	if (/^sacrifices? ~$/.test(text) && subject.k === 'player' && subject.filter.relation === 'you') {
-		p.push({ verb: 'sacrifice', subject: { k: 'self' }, ...opt, span }, false);
-		return true;
+	m = text.match(/^sacrifices? (.+)$/);
+	if (m && subject.k === 'player' && subject.filter.relation === 'you') {
+		if (m[1] === '~') {
+			p.push({ verb: 'sacrifice', subject: { k: 'self' }, ...opt, span }, false);
+			return true;
+		}
+		if (IT_WORDS.test(m[1])) {
+			const obj = objectPhrase(p, m[1]);
+			if (!obj) return false;
+			p.push({ verb: 'sacrifice', subject: obj.selector, ...opt, span }, false);
+			return true;
+		}
 	}
 	// Step E2: "sacrifices a creature", "sacrifice two artifacts": the player chooses (CR 701.21a).
 	m = text.match(/^sacrifices? (a|an|one|two|three|\d+) (.+)$/);
@@ -1049,6 +1074,36 @@ function playerPredicate(p: Parser, subject: Selector, vp: string, span: Span, f
 		const amount = amountWord(p, m[1]);
 		if (!amount) return false;
 		p.push({ verb: 'discard', subject, amount, ...opt, span }, true);
+		return true;
+	}
+	m = text.match(
+		/^gains? control of (.+?)(?: (until end of turn|for as long as (?:you control ~|~ remains on the battlefield)))?$/
+	);
+	if (m) {
+		const actor = singlePlayer(subject);
+		if (!actor) return false;
+		const obj = objectPhrase(p, m[1]);
+		if (!obj || obj.fromZone) return false;
+		if (obj.selector.k === 'target' && p.targets[obj.selector.index]?.kind === 'player') {
+			return false;
+		}
+		const duration: Duration =
+			m[2] === 'until end of turn'
+				? 'endOfTurn'
+				: m[2]?.startsWith('for as long as')
+					? 'untilSourceLeaves'
+					: 'permanent';
+		p.push(
+			{
+				verb: 'gainControl',
+				subject: obj.selector,
+				...(actor.k !== 'you' ? { actor } : {}),
+				params: { duration },
+				...opt,
+				span
+			},
+			true
+		);
 		return true;
 	}
 	m = text.match(/^goads? (.+?)(?: (until end of turn|until your next turn))?$/);
@@ -1165,15 +1220,30 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 	}
 	m = t.match(/^(destroy|exile) (.+)$/);
 	if (m) {
+		let expr = m[2];
+		let untilSourceLeaves = false;
 		if (m[1] === 'exile') {
-			const top = parseExileTopOfLibrary(p, m[2], span);
-			if (top !== undefined) return top;
+			const untilMatch = expr.match(/^(.+?)\s+until ~ leaves the battlefield$/);
+			if (untilMatch) {
+				untilSourceLeaves = true;
+				expr = untilMatch[1];
+			}
+			const top = parseExileTopOfLibrary(p, expr, span);
+			if (top !== undefined) return untilSourceLeaves ? false : top;
 		}
-		const obj = objectPhrase(p, m[2]);
+		const obj = objectPhrase(p, expr);
 		if (!obj) return false;
 		const verb = m[1] as 'destroy' | 'exile';
 		if (verb === 'destroy' && obj.selector.k === 'self') return false;
-		p.push({ verb, subject: obj.selector, span }, true);
+		p.push(
+			{
+				verb,
+				subject: obj.selector,
+				...(untilSourceLeaves ? { params: { untilSourceLeaves: true } } : {}),
+				span
+			},
+			true
+		);
 		return true;
 	}
 	m = t.match(/^(tap or untap|tap|untap) (.+)$/);
@@ -1206,8 +1276,9 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 	if (m) {
 		const obj = objectPhrase(p, m[1]);
 		if (!obj || obj.fromZone) return false;
-		if (obj.selector.k === 'target' && p.targets[obj.selector.index].filter.zone === 'graveyard') {
-			p.push({ verb: 'move', subject: obj.selector, params: { from: 'graveyard', to: 'hand' }, span }, true);
+		const tgtZone = obj.selector.k === 'target' ? p.targets[obj.selector.index].filter.zone : undefined;
+		if (tgtZone === 'graveyard' || tgtZone === 'exile') {
+			p.push({ verb: 'move', subject: obj.selector, params: { from: tgtZone, to: 'hand' }, span }, true);
 			return true;
 		}
 		p.push({ verb: 'bounce', subject: obj.selector, span }, true);
@@ -1269,9 +1340,27 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 	if (m) {
 		const obj = objectPhrase(p, m[1]);
 		if (!obj) return false;
-		const fromGy = obj.selector.k === 'target' && p.targets[obj.selector.index].filter.zone === 'graveyard';
-		if (!fromGy) return false;
-		p.push({ verb: 'move', subject: obj.selector, params: { from: 'graveyard', to: 'hand' }, span }, true);
+		const boundFromExile =
+			obj.selector.k === 'binding' &&
+			p.steps.some((s) => s.bindAs === (obj.selector as { k: 'binding'; name: string }).name && s.verb === 'exile');
+		const fromExile =
+			obj.fromZone === 'exile' ||
+			boundFromExile ||
+			(obj.selector.k === 'target' && p.targets[obj.selector.index].filter.zone === 'exile');
+		const fromGy =
+			!fromExile &&
+			(obj.fromZone === 'graveyard' ||
+				(obj.selector.k === 'target' && p.targets[obj.selector.index].filter.zone === 'graveyard'));
+		if (fromExile) {
+			p.push({ verb: 'move', subject: obj.selector, params: { from: 'exile', to: 'hand' }, span }, true);
+			return true;
+		}
+		if (fromGy) {
+			p.push({ verb: 'move', subject: obj.selector, params: { from: 'graveyard', to: 'hand' }, span }, true);
+			return true;
+		}
+		if (obj.fromZone) return false;
+		p.push({ verb: 'bounce', subject: obj.selector, span }, true);
 		return true;
 	}
 	m = t.match(/^put (that many|\S+) (\S+) counters? on (.+)$/);
@@ -1325,11 +1414,23 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 		p.push({ verb: 'lookAndReorder', subject: YOU, amount, span }, false);
 		return true;
 	}
-	m = t.match(/^look at the top (\S+) cards of your library$/);
+	m = t.match(/^(look at|reveal) the top (\S+) cards? of your library$/);
 	if (m) {
-		const amount = count(m[1]);
+		const amount = count(m[2]);
 		if (!amount) return false;
-		p.push({ verb: 'dig', subject: YOU, amount, span }, false);
+		const stepIndex = p.push({ verb: 'dig', subject: YOU, amount, span }, false);
+		p.pendingDig = {
+			stepIndex,
+			hasKeep: false,
+			hasRest: false,
+			draft: {
+				keep: 0,
+				upTo: false,
+				keepTo: 'hand',
+				rest: 'libraryBottom',
+				...(m[1] === 'reveal' ? { revealAll: true } : {})
+			}
+		};
 		return true;
 	}
 	m = t.match(/^(transform|flip) (.+)$/);
@@ -1407,7 +1508,7 @@ function addMana(p: Parser, text: string, span: Span): ClauseResult {
 
 // Words that start a new clause after " and " / ", then ".
 const CLAUSE_START =
-	/^(?:you|each opponent|each player|target player|target opponent|its controller|its owner|that player|they|draw|draws|lose|loses|gain|gains|get|gets|put|exile|destroy|return|create|creates|search|scry|surveil|surveils|investigate|investigates|mill|mills|sacrifice|deal|deals|add|take|takes|phase|phases|attach|counter|proliferate|switch|look|tap|untap|fight|fights|transform|transforms|flip|flips|discard|discards|connive|connives|explore|explores|goad|goads|regenerate|regenerates)\b/;
+	/^(?:you|each opponent|each player|target player|target opponent|its controller|its owner|that player|they|draw|draws|lose|loses|gain|gains|get|gets|put|exile|destroy|return|create|creates|search|scry|surveil|surveils|investigate|investigates|mill|mills|sacrifice|deal|deals|add|take|takes|phase|phases|attach|counter|proliferate|switch|look|reveal|tap|untap|fight|fights|transform|transforms|flip|flips|discard|discards|connive|connives|explore|explores|goad|goads|regenerate|regenerates)\b/;
 
 /** Splits a sentence into clauses at ", then " and at " and " before a new verb or subject. */
 function splitClauses(text: string, offset: number): Clause[] {
@@ -1605,7 +1706,7 @@ function clause(p: Parser, c: Clause, allowUnless = true): ClauseResult {
 const LOWER_START = new Set([
 	'a', 'add', 'all', 'an', 'another', 'any', 'at', 'attach', 'connive', 'connives', 'copy', 'counter', 'create', 'creatures', 'deal', 'destroy', 'discard', 'discards', 'draw',
 	'each', 'end', 'exile', 'explore', 'explores', 'fight', 'flip', 'gain', 'goad', 'goads', 'if', 'investigate', 'it', 'its', 'look', 'lose', 'mill', 'otherwise', 'permanents', 'proliferate', 'put',
-	'regenerate', 'regenerates', 'return', 'sacrifice', 'scry', 'search', 'surveil', 'switch', 'take', 'tap', 'target', 'that', 'the', 'then', 'they', 'those',
+	'regenerate', 'regenerates', 'return', 'reveal', 'sacrifice', 'scry', 'search', 'surveil', 'switch', 'take', 'tap', 'target', 'that', 'the', 'then', 'they', 'those',
 	'transform', 'untap', 'until', 'up', 'when', 'you', 'your'
 ]);
 
@@ -1614,11 +1715,13 @@ const LOWER_START = new Set([
 const NEXT_END_STEP: TriggerDef = { event: 'phaseBegin', filter: { phase: 'end_step' }, scope: 'each_turn' };
 const THAT_TURNS_END_STEP: TriggerDef = { event: 'phaseBegin', filter: { phase: 'end_step' }, scope: 'controller_turn' };
 const NEXT_TURNS_UPKEEP: TriggerDef = { event: 'phaseBegin', filter: { phase: 'upkeep' }, scope: 'each_turn' };
+const END_OF_COMBAT: TriggerDef = { event: 'phaseBegin', filter: { phase: 'end_combat' }, scope: 'each_turn' };
 
 function delayedTrigger(when: string): { trigger: TriggerDef; nextTurn?: boolean } | null {
 	if (when === 'the next end step') return { trigger: NEXT_END_STEP };
 	if (when === "that turn's end step") return { trigger: THAT_TURNS_END_STEP };
 	if (when === "the next turn's upkeep") return { trigger: NEXT_TURNS_UPKEEP, nextTurn: true };
+	if (when === 'end of combat' || when === 'the end of combat') return { trigger: END_OF_COMBAT };
 	return null;
 }
 
@@ -1691,14 +1794,12 @@ function sentence(p: Parser, text: string, span: Span): boolean {
 		sentence(p, innerText, { start: innerStart, end: span.end })
 	);
 	if (followUp !== null) return followUp;
-	if (t === 'put up to one of them on top of your library and the rest on the bottom of your library in a random order') {
-		const prev = p.steps[p.steps.length - 1];
-		if (prev?.verb !== 'dig') return fail();
-		prev.params = {
-			...prev.params,
-			dig: { keep: 1, upTo: true, keepTo: 'libraryTop', rest: 'libraryBottom', restRandom: true }
-		};
+	if (p.pendingDig && tryDigFollowUp(p, t)) {
+		p.lastOptionalStep = undefined;
 		return true;
+	}
+	if (p.pendingDig) {
+		p.pendingDig = undefined;
 	}
 	if (t === "until your next turn, your life total can't change and you gain protection from everything") {
 		p.push(
@@ -1736,20 +1837,28 @@ function sentence(p: Parser, text: string, span: Span): boolean {
 		return true;
 	}
 
-	// Delayed effects: "At the beginning of the next end step, exile it." / "Exile it at the beginning of the next end step."
-	const lead = t.match(/^at the beginning of (the next end step|that turn's end step|the next turn's upkeep), (.+)$/);
-	const trail = t.match(/^(.+) at the beginning of (the next end step|that turn's end step|the next turn's upkeep)$/);
+	// Delayed effects: "At the beginning of the next end step, exile it." / "Sacrifice it at end of combat."
+	const lead = t.match(/^at (?:the beginning of (the next end step|that turn's end step|the next turn's upkeep)|(end of combat|the end of combat)), (.+)$/);
+	const trail = t.match(/^(.+) at (?:the beginning of (the next end step|that turn's end step|the next turn's upkeep)|(end of combat|the end of combat))$/);
 	if (lead || trail) {
-		const dt = delayedTrigger(lead ? lead[1] : trail![2]);
-		const inner = lead ? lead[2] : trail![1];
+		const when = lead ? (lead[1] ?? lead[2]) : (trail![2] ?? trail![3]);
+		const dt = delayedTrigger(when);
+		const inner = lead ? lead[3] : trail![1];
 		if (!dt) return fail();
 		const before = p.steps.length;
-		if (!clauses(p, inner, span.start)) return fail();
+		const savedLastObj = p.lastObject;
+		if (!clauses(p, inner, span.start)) {
+			p.lastObject = savedLastObj;
+			return fail();
+		}
 		const effect = p.steps.splice(before);
 		effect.forEach((s) => {
 			s.span = span;
 			if (s.ifPrecedingAccepted !== undefined && s.ifPrecedingAccepted >= before) {
 				s.ifPrecedingAccepted -= before;
+			}
+			if (s.ifPrecedingDeclined !== undefined && s.ifPrecedingDeclined >= before) {
+				s.ifPrecedingDeclined -= before;
 			}
 		});
 		p.push(
@@ -1879,12 +1988,177 @@ function clauses(p: Parser, text: string, offset: number): boolean {
 	const parts = splitClauses(text, offset);
 	if (parts.length === 1) return false;
 	for (const c of parts) {
+		if (p.pendingDig && tryDigFollowUp(p, c.text)) continue;
 		if (!clause(p, c)) {
 			p.rollback(mark);
-	return false;
+			return false;
 		}
 	}
 	return true;
+}
+
+type DigKeepSpec = Pick<
+	NonNullable<EffectParams['dig']>,
+	'keep' | 'upTo' | 'keepAllMatching' | 'keepFilter' | 'keepLabel' | 'keepTo' | 'keepTapped' | 'revealKept'
+>;
+type DigRestSpec = Pick<NonNullable<EffectParams['dig']>, 'rest' | 'restRandom' | 'restOrder'>;
+
+function parseDigDestination(dest: string): { keepTo: DigKeepSpec['keepTo']; keepTapped?: true } | null {
+	const d = dest.trim().toLowerCase();
+	if (d === 'into your hand') return { keepTo: 'hand' };
+	if (d === 'on top of your library') return { keepTo: 'libraryTop' };
+	if (d === 'onto the battlefield tapped') return { keepTo: 'battlefield', keepTapped: true };
+	if (d === 'onto the battlefield') return { keepTo: 'battlefield' };
+	if (d === 'into your graveyard') return { keepTo: 'graveyard' };
+	return null;
+}
+
+function parseDigRestDestination(dest: string): DigRestSpec | null {
+	const d = dest.trim().toLowerCase();
+	if (d === 'on the bottom of your library in a random order') {
+		return { rest: 'libraryBottom', restRandom: true };
+	}
+	if (d === 'on the bottom of your library in any order' || d === 'on the bottom of your library') {
+		return { rest: 'libraryBottom', restOrder: 'any' };
+	}
+	if (d === 'into your graveyard') {
+		return { rest: 'graveyard' };
+	}
+	return null;
+}
+
+function parseDigKeepClause(clauseStr: string): DigKeepSpec | null {
+	const s = clauseStr.trim();
+	const mayPrefix = /^you may\s+/i.test(s);
+	const body = s.replace(/^you may\s+/i, '');
+
+	let whatStr: string | undefined;
+	let destStr: string | undefined;
+	let revealKept = false;
+
+	let m = body.match(
+		/^reveal (.+?) (?:from among (?:them|those cards)|of (?:them|those cards)|revealed this way),?\s*(?:and\s+)?put (?:it|them|that card|those cards) (.+)$/i
+	);
+	if (m) {
+		revealKept = true;
+		whatStr = m[1].trim();
+		destStr = m[2].trim();
+	} else {
+		m = body.match(/^put (.+?) (?:from among (?:them|those cards)|of (?:them|those cards)|revealed this way) (.+)$/i);
+		if (m) {
+			whatStr = m[1].trim();
+			destStr = m[2].trim();
+		}
+	}
+	if (!whatStr || !destStr) return null;
+
+	const dest = parseDigDestination(destStr);
+	if (!dest) return null;
+
+	let upTo = false;
+	let keep = 0;
+	let keepAllMatching = false;
+	let filterStr = whatStr;
+
+	if (/^up to\s+/i.test(filterStr)) {
+		upTo = true;
+		filterStr = filterStr.replace(/^up to\s+/i, '').trim();
+	}
+
+	if (/^any number(?:\s+of\b|$)/i.test(filterStr)) {
+		upTo = true;
+		keep = 999;
+		filterStr = filterStr.replace(/^any number(?:\s+of\b)?/i, '').trim();
+	} else if (/^all\b/i.test(filterStr)) {
+		keepAllMatching = true;
+		keep = 999;
+		filterStr = filterStr.replace(/^all\b/i, '').trim();
+	} else {
+		const wm = filterStr.match(/^(\S+)(?:\s+(.*))?$/);
+		if (!wm) return null;
+		const lowWord = wm[1].toLowerCase();
+		if (lowWord === 'a' || lowWord === 'an') {
+			keep = 1;
+			if (mayPrefix) upTo = true;
+		} else {
+			const c = count(lowWord);
+			if (!c || c.k !== 'const' || c.n < 0) return null;
+			keep = c.n;
+			if (mayPrefix && keep === 1) upTo = true;
+		}
+		filterStr = (wm[2] ?? '').trim();
+	}
+
+	filterStr = filterStr.replace(/^of\s+/i, '').trim();
+	let keepFilter: ObjectFilter | undefined;
+	let keepLabel: string | undefined;
+	if (filterStr !== '' && !/^cards?$/i.test(filterStr)) {
+		const parsed = parseObjectPhrase(filterStr);
+		if (!parsed) return null;
+		keepFilter = parsed;
+		keepLabel = filterStr.replace(/\s+cards?$/i, '').trim();
+	}
+
+	return {
+		keep,
+		upTo,
+		...(keepAllMatching ? { keepAllMatching: true } : {}),
+		...(keepFilter ? { keepFilter } : {}),
+		...(keepLabel ? { keepLabel } : {}),
+		keepTo: dest.keepTo,
+		...(dest.keepTapped ? { keepTapped: true } : {}),
+		...(revealKept ? { revealKept: true } : {})
+	};
+}
+
+function commitPendingDig(p: Parser, pd: PendingDigState): void {
+	const step = p.steps[pd.stepIndex];
+	if (step?.verb === 'dig') {
+		step.params = { ...step.params, dig: { ...pd.draft } };
+	}
+	p.pendingDig = undefined;
+}
+
+function tryDigFollowUp(p: Parser, text: string): boolean {
+	const pd = p.pendingDig;
+	if (!pd) return false;
+	const t = text.trim();
+
+	if (!pd.hasKeep) {
+		const combined = t.match(
+			/^(.+?)(?:,\s*|\s+)(?:and|then)\s+(?:put\s+)?(?:the rest|the other(?:s| cards)?)\s+(.+)$/i
+		);
+		if (combined) {
+			const keepSpec = parseDigKeepClause(combined[1]);
+			const restSpec = parseDigRestDestination(combined[2]);
+			if (!keepSpec || !restSpec) return false;
+			pd.draft = { ...pd.draft, ...keepSpec, ...restSpec };
+			pd.hasKeep = true;
+			pd.hasRest = true;
+			commitPendingDig(p, pd);
+			return true;
+		}
+		const keepSpec = parseDigKeepClause(t);
+		if (!keepSpec) return false;
+		pd.draft = { ...pd.draft, ...keepSpec };
+		pd.hasKeep = true;
+		return true;
+	}
+
+	if (!pd.hasRest) {
+		const restMatch = t.match(
+			/^(?:then\s+)?(?:put\s+)?(?:the rest|the other(?:s| cards)?)\s+(.+)$/i
+		);
+		if (!restMatch) return false;
+		const restSpec = parseDigRestDestination(restMatch[1]);
+		if (!restSpec) return false;
+		pd.draft = { ...pd.draft, ...restSpec };
+		pd.hasRest = true;
+		commitPendingDig(p, pd);
+		return true;
+	}
+
+	return false;
 }
 
 // ---- Entry points ---------------------------------------------------------------------------
@@ -2012,8 +2286,8 @@ export function parseModal(
 
 /** Lines of an instant or sorcery that aren't part of its effect. */
 function isNonEffectLine(body: string): boolean {
-	// Implemented/handled spell keyword lines ("Buyback {2}", "Overload {6}{U}", "Suspend 4—{U}", "Flash") have no period.
-	if (!/[.!]$/.test(body) && /^(?:overload|suspend|flash|buyback)\b/i.test(body.trim())) return true;
+	// Implemented/handled spell keyword lines ("Buyback {2}", "Overload {6}{U}", "Suspend 4—{U}", "Flash", "Convoke", "Delve") have no period.
+	if (!/[.!]$/.test(body) && /^(?:overload|suspend|flash|buyback|convoke|delve)\b/i.test(body.trim())) return true;
 	return false;
 }
 
@@ -2047,7 +2321,10 @@ export function parseSpellFace(norm: NormalizedFace, include: (line: NormalizedL
 			continue;
 		}
 		if (isNonEffectLine(line.body)) continue;
-		if (/^(?:when|whenever|at the beginning of (?:your|each|the))\b/i.test(line.body) && !/^at the beginning of (?:the next|that turn's)/i.test(line.body)) {
+		if (
+			/^(?:when|whenever|at the beginning of (?:your|each|the)|at (?:the )?end of combat)\b/i.test(line.body) &&
+			!/^at (?:the beginning of (?:the next|that turn's)|(?:the )?end of combat)/i.test(line.body)
+		) {
 			// A triggered ability on an instant/sorcery (rare); not part of the spell's effect.
 			unparsed.push(line.span);
 			continue;

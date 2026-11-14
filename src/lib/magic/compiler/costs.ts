@@ -9,7 +9,7 @@
  * Runs alongside the Phase 1 adapter for now. scripts/magic-costs-diff.ts compares the two.
  */
 import type { Amount, Compare, CostDef, ObjectFilter, Span, StaticDef } from '../ir.ts';
-import type { CounterType } from '../types.ts';
+import type { CounterType, ManaColor } from '../types.ts';
 
 export interface CostParse {
 	defs: CostDef[];
@@ -47,12 +47,13 @@ const CARD_TYPES: Record<string, string> = {
 
 const SUPERTYPES: Record<string, string> = { basic: 'Basic', legendary: 'Legendary', snow: 'Snow' };
 
-const COLORS: Record<string, 'W' | 'U' | 'B' | 'R' | 'G'> = {
+const COLORS: Record<string, ManaColor> = {
 	white: 'W',
 	blue: 'U',
 	black: 'B',
 	red: 'R',
-	green: 'G'
+	green: 'G',
+	colorless: 'C'
 };
 
 const IRREGULAR_PLURALS: Record<string, string> = {
@@ -126,6 +127,13 @@ export function parseObjectPhrase(phrase: string): ObjectFilter | null {
 
 	// Trailing qualifiers, in either order: "creature you control with power 4 or greater".
 	for (;;) {
+		const exiledWithSelf = rest.match(/^(.+?)\s+exiled with ~$/i);
+		if (exiledWithSelf && !filter.exiledWithSelf) {
+			filter.zone = 'exile';
+			filter.exiledWithSelf = true;
+			rest = exiledWithSelf[1];
+			continue;
+		}
 		const youControl = rest.match(/^(.+?)\s+you control$/i);
 		if (youControl && !filter.controller) {
 			filter.controller = 'you';
@@ -156,7 +164,8 @@ export function parseObjectPhrase(phrase: string): ObjectFilter | null {
 
 	// Leading modifiers.
 	while (words.length > 0) {
-		const low = words[0].toLowerCase();
+		const rawWord = words[0].replace(/,$/, '');
+		const low = rawWord.toLowerCase();
 		if (low === 'another' || low === 'other') filter.other = true;
 		else if (low === 'untapped') filter.tapped = false;
 		else if (low === 'tapped') filter.tapped = true;
@@ -168,8 +177,8 @@ export function parseObjectPhrase(phrase: string): ObjectFilter | null {
 			(filter.notTypes ??= []).push(CARD_TYPES[low.slice(3)]);
 		} else if (/^non[a-z]+$/.test(low) && SUPERTYPES[low.slice(3)]) {
 			(filter.notSupertypes ??= []).push(SUPERTYPES[low.slice(3)]);
-		} else if (/^non-[A-Z][a-z]+$/.test(words[0])) {
-			(filter.notSubtypes ??= []).push(words[0].slice(4));
+		} else if (/^non-[A-Z][a-z]+$/.test(rawWord)) {
+			(filter.notSubtypes ??= []).push(rawWord.slice(4));
 		} else break;
 		words.shift();
 	}

@@ -168,7 +168,7 @@ function parseCountAmount(text: string): Amount | null {
 	const m = t.match(/^the number of (.+?)( on the battlefield)?$/);
 	if (!m) return null;
 	const f = parseObjectPhrase(m[1]);
-	return f ? { k: 'count', of: { ...f, zone: 'battlefield' } } : null;
+	return f ? { k: 'count', of: { zone: 'battlefield', ...f } } : null;
 }
 
 // ---- Builders -------------------------------------------------------------------------------
@@ -707,6 +707,17 @@ const globalChanges: Production = (s) => {
 	return null;
 };
 
+/** Layer 2 control-changing statics ("You control enchanted creature."). */
+const controlChange: Production = (s) => {
+	const m = s.match(
+		/^You control (enchanted (?:creature|permanent|land|artifact|planeswalker)|equipped creature)$/i
+	);
+	if (m) {
+		return [continuous('2', 'attachedTo', { k: 'setController', controller: { k: 'you' } })];
+	}
+	return null;
+};
+
 /** "Creatures your opponents control lose flying and can't have or gain flying." */
 const keywordRemoval: Production = (s) => {
 	const m = s.match(/^(.+?) loses? (.+?)(?: and can't have or gain (.+))?$/);
@@ -818,7 +829,7 @@ function parseSentence(sentence: string, span: Span): StaticItem[] | null {
 		s = s.charAt(0).toUpperCase() + s.slice(1);
 	}
 
-	const productions: Production[] = [replacements, multipliers, ruleModifiers, costModifiers(), cda, attachedTypeChange, globalChanges, restrictions, keywordRemoval, grants()];
+	const productions: Production[] = [replacements, multipliers, ruleModifiers, costModifiers(), cda, attachedTypeChange, globalChanges, controlChange, restrictions, keywordRemoval, grants()];
 	for (const p of productions) {
 		const items = p(s, span);
 		if (!items) continue;

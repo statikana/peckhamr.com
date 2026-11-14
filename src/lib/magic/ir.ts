@@ -276,6 +276,8 @@ export interface ObjectFilter {
 	isCommander?: boolean;
 	/** Exact card name match ("named <Name>", e.g. Partner with). */
 	named?: string;
+	/** CR 607.2a: cards currently in exile whose `exiledBy` links to the source permanent's current objectVersion. */
+	exiledWithSelf?: boolean;
 }
 
 export interface Compare {
@@ -428,11 +430,12 @@ export type Verb =
 	| 'regenerate'
 	| 'cantRegenerate'
 	| 'payCost'
-	| 'animate';
+	| 'animate'
+	| 'gainControl';
 
 export type ManaRestriction = 'artifactSpellOrNonSpell';
 
-export type Duration = 'endOfTurn' | 'permanent' | 'untilYourNextTurn';
+export type Duration = 'endOfTurn' | 'permanent' | 'untilYourNextTurn' | 'untilSourceLeaves';
 
 export interface OptionalSpec {
 	chooser: PlayerRef;
@@ -509,7 +512,20 @@ export interface EffectParams {
 	/** copyPermanent: "except the token isn't legendary". */
 	notLegendary?: boolean;
 	/** dig: where the kept cards and the rest go. */
-	dig?: { keep: number; upTo: boolean; keepTo: 'libraryTop' | 'hand'; rest: 'libraryBottom' | 'graveyard'; restRandom?: boolean };
+	dig?: {
+		keep: number;
+		upTo: boolean;
+		keepFilter?: ObjectFilter;
+		keepAllMatching?: boolean;
+		keepLabel?: string;
+		keepTo: 'libraryTop' | 'hand' | 'battlefield' | 'graveyard';
+		keepTapped?: boolean;
+		revealAll?: boolean;
+		revealKept?: boolean;
+		rest: 'libraryBottom' | 'graveyard';
+		restRandom?: boolean;
+		restOrder?: 'any' | 'random';
+	};
 	/** move to battlefield: enters transformed with its back face up (CR 712.14a / 712.11a). */
 	enteredTransformed?: boolean;
 	/** grantPlayFromExile: permission to play the exiled card(s) from exile ("You may play that card this turn"). */
@@ -518,6 +534,13 @@ export interface EffectParams {
 	cantBeRegenerated?: boolean;
 	/** animate: Layer 4 card types to add until end of turn (e.g. ['Creature']). */
 	addTypes?: string[];
+	/**
+	 * exile: "until ~ leaves the battlefield" (CR 610.3).
+	 * Checks CR 610.3a–b before exiling and records `untilSourceLeavesReturn` on the exiled card.
+	 */
+	untilSourceLeaves?: boolean;
+	/** gainControl: also untap the stolen permanent when the control change applies. */
+	untap?: boolean;
 }
 
 export interface TokenSpec {
@@ -649,6 +672,7 @@ export type Condition =
 export type Layer = '1' | '2' | '3' | '4' | '5' | '6' | '7a' | '7b' | '7c' | '7d';
 
 export type LayerMod =
+	| { k: 'setController'; controller: PlayerRef }
 	| { k: 'pt'; power: Amount; toughness: Amount }
 	| { k: 'setBasePT'; power: Amount; toughness: Amount }
 	| { k: 'addKeywords'; keywords: string[] }

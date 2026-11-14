@@ -1,12 +1,12 @@
 # MTG Engine: Next Steps Spec
 
-**Status:** spec, written 2026-11-12 against `engine-rewrite` at `ad82d00`, updated after Track A (`972a90c`), Track B1 (`961b8e5`), Track B2 (`bd98235`), Track B3 (`9bd2f3f`), **Cycling** (`e4a2dec`, `COMPILER_VERSION = 17`), and **B4 design doc** ([`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.14, approved). Track A (`A1`–`A4`), **B1**, **B2**, **B3**, **Cycling** (`CR 702.29`), and **B4 (design doc)** are **done**.
+**Status:** spec, written 2026-11-12 against `engine-rewrite` at `ad82d00`, updated through **Track E** (`COMPILER_VERSION = 30`). Track A (`A1`–`A4`), **B1**, **B2**, **B3**, **Cycling** (`CR 702.29`), **B4** (Phases 1–3: `0fc1211`, `8b772d5`, `91335a5`), **Track B Tokens/Investigate/Surveil** (`eab9015`), **Track D** (`f988d0c`), and **Track E** are **done**.
 
-**Purpose:** the recommended next work for the engine, written so that each work package can be handed to one agent. Track A is near-term fixes (complete). Track B is the structural work that full keyword and rules coverage needs (the reasoning is in [`FULL_COVERAGE_STRUCTURE.md`](./FULL_COVERAGE_STRUCTURE.md)). Track C keeps the docs honest as the code changes.
+**Purpose:** the recommended next work for the engine, written so that each work package can be handed to one agent. Track A is near-term fixes (complete). Track B is the structural work that full keyword and rules coverage needs (the reasoning is in [`FULL_COVERAGE_STRUCTURE.md`](./FULL_COVERAGE_STRUCTURE.md)). Track C keeps the docs honest as the code changes. Track E knocked out top unparsed `COVERAGE.md` templates and core Commander interactions.
 
 **Order:**
 1. ~~A1, A2, A3 and A4~~ — **done** (`b68ef55`, `dfbc69e`, `94b04de`, `972a90c`).
-2. ~~B1~~ — **done** (`961b8e5`, [`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.10); ~~B2~~ — **done** (`bd98235`, [`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.11); ~~B3~~ — **done** (`9bd2f3f`, [`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.12); ~~Cycling (`CR 702.29`)~~ — **done** (`e4a2dec`, [`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.13); ~~B4 (design doc)~~ — **done** ([`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.14; implementation deferred).
+2. ~~B1, B2, B3, Cycling, B4, Track B Tokens, Track D, Track E~~ — **done**.
 3. Track C rides along with every package.
 
 ---
@@ -238,7 +238,7 @@ Implementation is a later spec.
 
 ---
 
-## Track D: High-Frequency Mechanics, Unified Optional Costs, Modal Abilities, & Vehicles
+## Track D: High-Frequency Mechanics, Unified Optional Costs, Modal Abilities, & Vehicles — ✅ Done (`f988d0c`)
 
 See [`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.15 for the full design. Delivered in four reviewable slices (each keeping `oracleTextRead === 0` and UI/AI keyword-blind):
 
@@ -255,3 +255,23 @@ See [`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.15 for th
 4. **Slice 4 (`Crew N` `CR 702.122` & Generalized `TimedContinuousEffect`):**
    - `state.timedContinuousEffects` evaluated cleanly in Layers 4/6/7b (`runtime/layers.ts`, `clearEndOfTurnAndDamage`, `CR 302.6` summoning sickness).
    - Subset-sum cost `{ k: 'tapSubsetSum', metric: 'power', ... }`, `KEYWORD_REGISTRY` `'crew'` entry, `BecomesCrewed` / `crewedByIds`, and keyword-blind UI/AI subset selection, followed by final `COVERAGE.md`, `rules-audit/`, and live Chromium `/magic` verification.
+
+---
+
+## Track E: Dig, Devoid, Delayed Triggers, Linked Exile, Layer 2 Control, & Convoke/Delve — ✅ Done (`COMPILER_VERSION = 30`)
+
+See [`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.16 for the full architecture spec. Dispatch sequentially in four slices (`oracleTextRead === 0`, `cardNameComparison === 0`, no IR serialized in `GameState`, UI/AI keyword-blind):
+
+1. **Slice 1 (Generalized Top-N `Dig` & All-Zone `Devoid` `CR 702.114a`):**
+   - Expand `dig` IR (`keepFilter`, `keepTo`, `keepTapped`, `revealAll`, `revealKept`, `keepAllMatching`, `restOrder: 'any' | 'random'`) + multi-sentence combining (`Look at the top N cards...` / `Reveal the top N cards...` + keep/reveal filter clause + `Put the rest on the bottom in a random order` / `in any order`) + `Run.dig` (`chooseObjects`, `orderObjects`, `nextRandom`, replacement-pausable moves).
+   - Register `'devoid'` (`CR 702.114a`) in `KEYWORD_REGISTRY` as an all-zone Layer 5 CDA (`colors: []` in `layers.ts`, `faces.ts`, `objectFilter.ts`, `CR 613.3` ordering before non-CDA Layer 5 effects, `CR 903.4` color identity preserved).
+2. **Slice 2 (IR-Safe Delayed Triggers `CR 603.7` & Linked Exile `CR 607.2a`, `610.3`):**
+   - Add `compiledDelayed` locator (`sourceCard`, `faceIndex`, `fused`, `abilityKey`, `stepIndex`, `boundRefs`) on `DelayedTrigger` / `StackItem` (zero IR in `GameState`) supporting arbitrary delayed steps (`sacrifice`, `exile`, `destroy`, `bounce`, `draw`, `lose`, `damage`, etc.) across `next end step` / `that turn's end step` / `next turn's upkeep` / `end of combat` with `CR 603.7c` object/zone checks.
+   - Add `exiledBy` (`CR 607.2a`) and `untilSourceLeavesReturn` (`CR 610.3a–d`) on `CardInstance`, `"Exile target ... until ~ leaves the battlefield"` (`CR 610.3` pre-exile source check + immediate one-shot return when source leaves battlefield), and `"cards exiled with ~"` filter (`{ k: 'exiledWithSelf' }`).
+3. **Slice 3 (Layer 2 Continuous Control Changes `CR 613.1b`, `613.7`, `302.6`):**
+   - Add `layer: '2'` `{ k: 'setController', controller: PlayerRef }` + `TimedContinuousEffect.layer2` (`expires: 'endOfTurn' | 'never' | 'untilSourceLeaves'`) and `gainControl` verb.
+   - Evaluate Layer 2 in Pass 0 (`runtime/layers.ts`, timestamp order `CR 613.7`) BEFORE Layers 4–7; update `layerCache.ts` fingerprinting; run `syncBattlefieldControllers(state)` (`runtime/zones.ts` / `engine.ts`) so overlapping *Control Magic* + *Act of Treason* effects stack, transfer between battlefields with `summoningSick = true` (`CR 302.6`) + combat removal (`CR 506.4`), and revert accurately on expiration/removal.
+4. **Slice 4 (`Convoke` `CR 702.51` & `Delve` `CR 702.66`, Snapshots, `COVERAGE.md`, & Live Verification):**
+   - Register `'convoke'` (`CR 702.51`) and `'delve'` (`CR 702.66`) in `KEYWORD_REGISTRY`.
+   - Expose generic `CastCostAid` (`paymentAids` on `CastOption`, `costAidIds` / `costAidColorChoices` on `cast_spell`), enforcing post-determination `CR 601.2f–h` reduction, `CR 118.10` no double-tap, `CR 702.51c` `BecomesTapped` triggers, `PendingCostPayment` pause safety, and keyword-blind UI (`ArenaTable.svelte`) + AI (`ai.ts`) with zero `'convoke'`/`'delve'` literals.
+   - Bump `COMPILER_VERSION`, regenerate `compiler/__snapshots__/ir.json` & `COVERAGE.md`, update `rules-audit/` docs, and run live Chromium `/magic` verification.

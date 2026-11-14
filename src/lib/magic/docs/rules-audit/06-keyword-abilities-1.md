@@ -358,7 +358,7 @@ Audited at engine-rewrite 917180b on 2026-11-09.
 ### 702.51 Convoke
 | CR | Rule (short) | Status | Evidence / notes |
 |---|---|---|---|
-| 702.51a–d | Convoke (tap creatures to pay colored/generic mana in spell's total cost) | missing | Listed in `KNOWN_KEYWORDS` (`compiler/adapter.ts:133`) as `keyword_not_implemented`. |
+| 702.51a–d | Convoke (tap creatures to pay colored/generic mana in spell's total cost) | implemented | Implemented via generic `CastCostAid` (`id: 'aid:convoke'`, `kind: 'tapPermanent'`) in `keywords.ts`, `runtime/costs.ts`, `engine.ts`, keyword-blind UI/AI (`ArenaTable.svelte`, `ai.ts`), and tested in `runtime/convoke-delve.test.ts` (colored/generic matching, double-tap prevention `CR 118.10`, `BecomesTapped` trigger ordering `CR 702.51c`, redundant multiples `CR 702.51d`, cost modifications applied first `CR 601.2f–h`). |
 
 ### 702.52 Dredge
 | CR | Rule (short) | Status | Evidence / notes |
@@ -436,7 +436,7 @@ Audited at engine-rewrite 917180b on 2026-11-09.
 ### 702.66 Delve
 | CR | Rule (short) | Status | Evidence / notes |
 |---|---|---|---|
-| 702.66a–c | Delve (exile cards from graveyard to pay generic mana) | missing | Listed in `KNOWN_KEYWORDS` (`compiler/adapter.ts:134`) as `keyword_not_implemented`. |
+| 702.66a–c | Delve (exile cards from graveyard to pay generic mana) | implemented | Implemented via generic `CastCostAid` (`id: 'aid:delve'`, `kind: 'exileCard'`) in `keywords.ts`, `runtime/costs.ts`, `engine.ts`, keyword-blind UI/AI (`ArenaTable.svelte`, `ai.ts`), and tested in `runtime/convoke-delve.test.ts` (generic-only payment, graveyard-cast exclusion, redundant multiples `CR 702.66c`, cost modifications applied first `CR 601.2f–h`, `PendingCostPayment` pause/resume on `zone_replacement_choice`). |
 
 ### 702.67 Fortify
 | CR | Rule (short) | Status | Evidence / notes |

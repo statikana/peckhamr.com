@@ -62,7 +62,8 @@ export const INTERPRETED_VERBS: ReadonlySet<Verb> = new Set<Verb>([
 	'regenerate',
 	'cantRegenerate',
 	'payCost',
-	'animate'
+	'animate',
+	'gainControl'
 ]);
 
 const SUPPORTED_OPTIONAL_COST_KINDS: ReadonlySet<CostDef['k']> = new Set<CostDef['k']>([
@@ -114,9 +115,20 @@ function stepSupported(step: EffectStep): boolean {
 		if (step.optional && !s.statedQuality && !s.filter.named) return false;
 	}
 	if (step.verb === 'addMana' && !step.params?.mana && !step.params?.manaChoice) return false;
-	if (step.verb === 'dig' && !step.params?.dig) return false;
+	if (step.verb === 'dig') {
+		const d = step.params?.dig;
+		if (!d || !d.keepTo || !d.rest) return false;
+		if (!d.keepAllMatching && (typeof d.keep !== 'number' || d.keep < 0)) return false;
+	}
 	if (step.subject.k === 'libraryTop' && step.verb !== 'exile') return false;
 	if (step.verb === 'grantPlayFromExile' && !step.params?.playFromExile) return false;
+	if (step.verb === 'gainControl') {
+		if (step.subject.k === 'none') return false;
+		const d = step.params?.duration;
+		if (d !== undefined && d !== 'endOfTurn' && d !== 'permanent' && d !== 'untilSourceLeaves') {
+			return false;
+		}
+	}
 	if ((step.verb === 'pump' || step.verb === 'grant' || step.verb === 'switchPT') && step.params?.duration !== 'endOfTurn') return false;
 	if (step.verb === 'grant' && !step.params?.keywords?.length && !step.params?.removeKeywords?.length) return false;
 	if (step.verb === 'createToken' && !step.params?.token) return false;
@@ -129,20 +141,35 @@ function stepSupported(step: EffectStep): boolean {
 	return true;
 }
 
+const DELAYED_PHASES = new Set<string | undefined>(['end_step', 'upkeep', 'end_combat']);
+
+function stepsSupported(steps: EffectStep[]): boolean {
+	if (steps.length === 0) return false;
+	for (let i = 0; i < steps.length; i++) {
+		const s = steps[i];
+		if (!stepSupported(s)) return false;
+		if (
+			s.ifPrecedingAccepted !== undefined &&
+			(s.ifPrecedingAccepted < 0 || s.ifPrecedingAccepted >= i || !steps[s.ifPrecedingAccepted]?.optional)
+		) {
+			return false;
+		}
+		if (
+			s.ifPrecedingDeclined !== undefined &&
+			(s.ifPrecedingDeclined < 0 || s.ifPrecedingDeclined >= i || !steps[s.ifPrecedingDeclined]?.optional)
+		) {
+			return false;
+		}
+	}
+	return true;
+}
+
 function delayedSupported(step: EffectStep): boolean {
 	const d = step.delayed;
-	if (!d || d.effect.length !== 1) return false;
+	if (!d || d.effect.length === 0) return false;
 	if (d.trigger.event !== 'phaseBegin') return false;
-	const phase = d.trigger.filter.phase;
-	const e = d.effect[0];
-	if (phase === 'end_step') {
-		if (e.verb === 'exile' && e.subject.k === 'binding') return true;
-		if (e.verb === 'lose' && e.subject.k === 'player' && e.subject.filter.relation === 'you') return true;
-	}
-	if (phase === 'upkeep' && e.verb === 'draw') {
-		return selectorSupported(e.subject) && (!e.optional || Boolean(e.params?.upTo));
-	}
-	return false;
+	if (!DELAYED_PHASES.has(d.trigger.filter.phase)) return false;
+	return stepsSupported(d.effect);
 }
 
 /**
@@ -168,27 +195,7 @@ export function staticallyInterpretable(
 	}
 	if (parse.steps.length === 0) return false;
 	if (parse.targets.length > 1 && !parse.targets.every((t) => t.min === 1 && t.max === 1)) return false;
-	for (let i = 0; i < parse.steps.length; i++) {
-		const s = parse.steps[i];
-		if (!stepSupported(s)) return false;
-		if (
-			s.ifPrecedingAccepted !== undefined &&
-			(s.ifPrecedingAccepted < 0 ||
-				s.ifPrecedingAccepted >= i ||
-				!parse.steps[s.ifPrecedingAccepted]?.optional)
-		) {
-			return false;
-		}
-		if (
-			s.ifPrecedingDeclined !== undefined &&
-			(s.ifPrecedingDeclined < 0 ||
-				s.ifPrecedingDeclined >= i ||
-				!parse.steps[s.ifPrecedingDeclined]?.optional)
-		) {
-			return false;
-		}
-	}
-	return true;
+	return stepsSupported(parse.steps);
 }
 
 /**

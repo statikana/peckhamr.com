@@ -844,4 +844,67 @@ describe('Track D Slice 1: Draw-then-discard, Goad, Explore, Map, and Connive', 
 		const choiceCost = parseSpellText('Split Tax', 'You may pay {2} or pay 3 life.');
 		assert.equal(staticallyInterpretable(choiceCost), false);
 	});
+
+	it('compiles gainControl spells and abilities with explicit duration and target guards', () => {
+		const act = ok(
+			parseSpellText('Hijack Act', 'Gain control of target creature until end of turn. Untap that creature. It gains haste until end of turn.')
+		);
+		assert.equal(staticallyInterpretable(act), true);
+		assert.deepEqual(steps(act), [
+			{
+				verb: 'gainControl',
+				subject: { k: 'target', index: 0 },
+				bindAs: 'b0',
+				params: { duration: 'endOfTurn' }
+			},
+			{
+				verb: 'untap',
+				subject: { k: 'binding', name: 'b0' }
+			},
+			{
+				verb: 'grant',
+				subject: { k: 'binding', name: 'b0' },
+				params: { keywords: ['Haste'], duration: 'endOfTurn' }
+			}
+		]);
+
+		const sower = compileCard(
+			synthCard({
+				name: 'Tempting Sprite',
+				typeLine: 'Creature — Faerie Wizard',
+				power: '2',
+				toughness: '2',
+				oracleText: 'Flying\nWhen Tempting Sprite enters the battlefield, gain control of target creature for as long as you control Tempting Sprite.'
+			})
+		);
+		assert.equal(sower.fullySupported, true);
+		const sowerTrig = sower.faces[0].abilities.find((a) => a.kind === 'triggered');
+		assert.ok(sowerTrig && sowerTrig.kind === 'triggered' && sowerTrig.effect);
+		assert.equal(sowerTrig.effect[0]?.verb, 'gainControl');
+		assert.equal(sowerTrig.effect[0]?.params?.duration, 'untilSourceLeaves');
+
+		const remains = compileCard(
+			synthCard({
+				name: 'Binding Drake',
+				typeLine: 'Creature — Drake',
+				power: '3',
+				toughness: '3',
+				oracleText: 'When Binding Drake enters the battlefield, gain control of target creature for as long as Binding Drake remains on the battlefield.'
+			})
+		);
+		assert.equal(remains.fullySupported, true);
+
+		const permGain = ok(parseSpellText('Permanent Seize', 'Gain control of target permanent.'));
+		assert.equal(staticallyInterpretable(permGain), true);
+		assert.equal(permGain.steps[0]?.params?.duration, 'permanent');
+
+		const targetPlayerGain = ok(parseSpellText('Gift of Command', 'Target player gains control of target creature.'));
+		assert.equal(staticallyInterpretable(targetPlayerGain), true);
+		assert.deepEqual(targetPlayerGain.steps[0]?.actor, { k: 'target', index: 0 });
+		assert.deepEqual(targetPlayerGain.steps[0]?.subject, { k: 'target', index: 1 });
+
+		const invalidPlayerTarget = parseSpellText('Mind Steal', 'Gain control of target player.');
+		assert.equal(staticallyInterpretable(invalidPlayerTarget), false);
+	});
 });
+

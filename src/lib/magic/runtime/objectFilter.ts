@@ -14,6 +14,7 @@ import {
 	activeAbilityDefs,
 	effectiveManaValue,
 	instanceFaceOptions,
+	matchesColorFilter,
 	resolveObjectFaces
 } from './faces.ts';
 import { evaluateKickedCountAmount, evaluateKickerCondition, getObjectKickerInfo } from './kicker.ts';
@@ -268,6 +269,16 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 	if (filter.tapped !== undefined && obj.tapped !== filter.tapped) return false;
 	if (filter.token !== undefined && obj.isToken !== filter.token) return false;
 	if (filter.isCommander !== undefined && Boolean(obj.isCommander) !== filter.isCommander) return false;
+	if (filter.exiledWithSelf) {
+		if (obj.zone !== 'exile' || !ctx.source || !obj.exiledBy) return false;
+		const srcVer = ctx.source.objectVersion ?? 1;
+		if (
+			obj.exiledBy.sourceInstanceId !== ctx.source.instanceId ||
+			obj.exiledBy.sourceObjectVersion !== srcVer
+		) {
+			return false;
+		}
+	}
 	if (filter.other && ctx.source && obj.instanceId === ctx.source.instanceId) return false;
 	if (filter.named !== undefined) {
 		const name = obj.isFaceDown ? '' : evaluated ? evaluated.effectiveName : card.name;
@@ -277,7 +288,7 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 		const colors = onBattlefield
 			? (obj.isFaceDown ? [] : evaluated!.colors)
 			: resolveObjectFaces(card, faceOpts).colors;
-		if (!filter.colors.some((c) => colors.includes(c))) return false;
+		if (!matchesColorFilter(colors, filter.colors)) return false;
 	}
 	if (
 		filter.manaValue &&
