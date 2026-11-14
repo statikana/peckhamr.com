@@ -549,7 +549,7 @@ function triggerLine(group: NormalizedLine[]): AbilityDef[] | null {
 	if (group.length > 1) {
 		const bullets = group.slice(1).map((b) => ({ text: b.text, start: b.span.start, end: b.span.end }));
 		const modalParse = /^choose\b/i.test(headerEffectText.trim())
-			? parseModal(headerEffectText, bullets, 'triggered', head.effectStart)
+			? parseModal(headerEffectText, bullets, 'triggered', head.effectStart, trigger)
 			: null;
 		const modal = modalParse?.modal;
 		const modesOk =
@@ -568,7 +568,7 @@ function triggerLine(group: NormalizedLine[]): AbilityDef[] | null {
 		return [{ kind: 'triggered', trigger, condition, targets: [], effect: [], modal, text: fullText, span }];
 	}
 
-	const effect = parseEffects(headerEffectText, head.effectStart, 'triggered');
+	const effect = parseEffects(headerEffectText, head.effectStart, 'triggered', trigger);
 	if (!interpretableTrigger(effect)) {
 		const gaps = effect.unparsed.length > 0 ? effect.unparsed : [{ start: head.effectStart, end: span.end }];
 		return [{ ...unsupported('unparsed', fullText, span, gaps), trigger, condition }];

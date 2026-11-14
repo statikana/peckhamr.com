@@ -59,6 +59,10 @@ export interface LeftBattlefieldInfo {
 	toughness?: number;
 	activeFaceIndex?: number;
 	unlockedFaces?: number[];
+	// --- Track P2 ---
+	/** Instance IDs of battlefield attachments attached to this permanent right before detachment (CR 603.10a). */
+	attachedIds?: string[];
+	// --- End Track P2 ---
 }
 
 /** A spell was cast (it is already on the stack). */

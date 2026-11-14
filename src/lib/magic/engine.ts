@@ -809,23 +809,25 @@ function enumerateCandidateCastOptions(
 			} else if (inst.playableFromExileBy?.playerId === actorId) {
 				hasZonePermission = true;
 				if (!isLandOnlyFace) {
-					const baseCost: CastOption['baseCost'] = { kind: 'printed' };
+					const freeExile = Boolean(inst.playableFromExileBy.withoutPayingManaCost);
+					const baseCost: CastOption['baseCost'] = freeExile ? { kind: 'free' } : { kind: 'printed' };
 					const src = inst.playableFromExileBy.sourceName;
+					const freeSuffix = freeExile ? ' — Free' : '';
 					const label = isAdventureFace
 						? src
-							? `Cast Adventure: ${faceName} from Exile (${src})`
-							: `Cast Adventure: ${faceName} from Exile`
+							? `Cast Adventure: ${faceName} from Exile${freeSuffix} (${src})`
+							: `Cast Adventure: ${faceName} from Exile${freeSuffix}`
 						: isMultiFace
 							? src
-								? `Cast ${faceName} from Exile (${src})`
-								: `Cast ${faceName} from Exile`
+								? `Cast ${faceName} from Exile${freeSuffix} (${src})`
+								: `Cast ${faceName} from Exile${freeSuffix}`
 							: src
-								? `Cast from Exile (${src})`
-								: 'Cast from Exile';
+								? `Cast from Exile${freeSuffix} (${src})`
+								: `Cast from Exile${freeSuffix}`;
 					options.push({
 						id: idFor('exile:permission'),
 						label,
-						costDisplay: faceManaCost || '{0}',
+						costDisplay: `${freeExile ? '{0}' : faceManaCost || '{0}'}${taxSuffix}`,
 						fromZone: 'exile',
 						permission: 'exile_permission',
 						...faceIndexProp,
@@ -842,7 +844,10 @@ function enumerateCandidateCastOptions(
 			}
 		}
 
-		if (!inst.castViaSuspend) {
+		if (
+			!inst.castViaSuspend &&
+			!(fromZone === 'exile' && inst.playableFromExileBy?.withoutPayingManaCost)
+		) {
 			for (const [kwName, meta] of Object.entries(ALTERNATIVE_COST_KEYWORDS)) {
 				const altCost = keywordAltCost(card, kwName, fi);
 				if (!altCost) continue;
@@ -1018,7 +1023,10 @@ function resolveCastOptionForAction(
 
 		const altMeta = alternativeCostMetaById(optionId);
 		if (altMeta) {
-			if (inst.castViaSuspend) {
+			if (
+				inst.castViaSuspend ||
+				(fromZone === 'exile' && inst.playableFromExileBy?.withoutPayingManaCost)
+			) {
 				return {
 					ok: false,
 					error: 'Only one alternative cost can be applied to a spell (CR 118.9a).'
@@ -3786,6 +3794,9 @@ function applyGameActionInner(
 				if (!targetValidation.ok) {
 					return targetValidation;
 				}
+				if (!optionTargetsBecomeEach(inst.card, castOption)) {
+					targetsBySpec = partitionTargetsBySpecs(targets, spellTargetInfo, inst.card);
+				}
 			}
 
 			// Check & pay mana cost (including Commander Tax if from Command Zone, or any-color mana if exiled with Opposition Agent!)
@@ -4078,7 +4089,7 @@ function applyGameActionInner(
 				if (!modalVal.ok) return modalVal;
 				chosenModes = modalVal.chosenModes;
 				targetsBySpec = modalVal.targetsBySpec;
-			} else if (ab.requiresTarget) {
+			} else if (ab.requiresTarget || targets.length > 0) {
 				const targetValidation = validateChosenTargets(
 					state,
 					actorId,
@@ -4091,6 +4102,7 @@ function applyGameActionInner(
 				if (!targetValidation.ok) {
 					return targetValidation;
 				}
+				targetsBySpec = partitionTargetsBySpecs(targets, abTargetInfo, perm.card);
 			}
 
 			// Phase 4: pay the whole cost from the IR. Mana comes from effectiveAbilityManaCost (cost
@@ -7070,6 +7082,14 @@ function beginPhase(state: GameState, phase: GamePhase, activePlayer?: PlayerGam
 			stepTurnBasedPaused = executeCombatDamageStep(state, true);
 		} else if (phase === 'combat_damage') {
 			stepTurnBasedPaused = executeCombatDamageStep(state, false);
+		} else if (phase === 'end_step' && active) {
+			for (const p of state.players) {
+				for (const ex of p.exile) {
+					if (ex.playableFromExileBy?.expiresAtNextEndStepOfPlayerId === active.playerId) {
+						ex.playableFromExileBy = undefined;
+					}
+				}
+			}
 		} else if (phase === 'cleanup') {
 			clearEndOfTurnAndDamage(state);
 		}
@@ -7889,7 +7909,18 @@ function assignOrPromptTriggerTargets(
 	const steps = triggerItemEffect(item)?.steps ?? [];
 	const targetsBySpec: TargetRef[][] = specs.map(() => []);
 	specs.forEach((spec, i) => {
-		const legal = candidates[i];
+		const priorChosen =
+			spec.otherTarget && i > 0
+				? new Set(
+						targetsBySpec
+							.slice(0, i)
+							.flat()
+							.map((t) => `${t.kind}:${t.id}`)
+					)
+				: null;
+		const legal = priorChosen
+			? candidates[i].filter((c) => !priorChosen.has(`${c.kind}:${c.id}`))
+			: candidates[i];
 		const max = Math.min(spec.max, legal.length);
 		if (controller.isBot) {
 			targetsBySpec[i] = chooseBotTriggerTargets(state, controller, steps, i, spec, legal);
@@ -8664,9 +8695,46 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 		const isTargetValid = (t: TargetRef) =>
 			isTargetStillValid(state, t, item.controllerId, item.card, item) &&
 			(triggerSpecs.length === 0 || triggerTargetStillLegal(state, item, triggerSpecs, t));
-		const validTargets = item.targets.filter(isTargetValid);
+		let validTargets: TargetRef[];
 		if (item.targetsBySpec) {
-			item.targetsBySpec = item.targetsBySpec.map((bucket) => bucket.filter(isTargetValid));
+			let bucketSpecs: Array<TargetSpec | undefined> | undefined;
+			if (item.kind === 'triggered' && triggerSpecs.length === item.targetsBySpec.length) {
+				bucketSpecs = triggerSpecs;
+			} else if (!item.chosenModes && !item.card?.typeLine.includes('Aura')) {
+				const comp = compiledStackItemEffects(item);
+				if (comp && !comp.modal && comp.targets.length > 0) {
+					const itemKicker = getObjectKickerInfo(state, item.card, item.sourceInstanceId, item);
+					const activeCompSpecs = comp.targets.filter(
+						(sp) => !sp.condition || isConditionMetWithKicker(sp.condition, itemKicker)
+					);
+					if (activeCompSpecs.length === item.targetsBySpec.length) {
+						bucketSpecs = activeCompSpecs;
+					}
+				}
+			}
+			item.targetsBySpec = item.targetsBySpec.map((bucket, idx) => {
+				const bSpec = bucketSpecs?.[idx];
+				return bucket.filter((t) => {
+					if (!isTargetValid(t)) return false;
+					if (!bSpec) return true;
+					if (item.kind === 'triggered') {
+						return triggerTargetCandidates(state, item, bSpec).some(
+							(c) => c.kind === t.kind && c.id === t.id
+						);
+					}
+					return validateTargetLegality(
+						state,
+						item.controllerId,
+						t,
+						targetRequirementFromSpecs([bSpec]),
+						item.card,
+						item.sourceInstanceId
+					).ok;
+				});
+			});
+			validTargets = item.targetsBySpec.flat();
+		} else {
+			validTargets = item.targets.filter(isTargetValid);
 		}
 		if (validTargets.length === 0) {
 			removeItemFromStack();
@@ -11233,8 +11301,18 @@ function clearEndOfTurnAndDamage(state: GameState): void {
 				}
 			}
 		}
+		const cleanupActivePlayer = state.players[state.activePlayerIndex];
+		const currentTurnSerial = state.turnSerial ?? state.turnNumber;
 		for (const ex of p.exile) {
-			if (ex.playableFromExileBy?.expiresAtEndOfTurn) {
+			const perm = ex.playableFromExileBy;
+			if (!perm) continue;
+			if (perm.expiresAtEndOfTurn) {
+				ex.playableFromExileBy = undefined;
+			} else if (
+				perm.duration === 'untilEndOfYourNextTurn' &&
+				cleanupActivePlayer?.playerId === perm.expiresOnCleanupOfPlayerId &&
+				currentTurnSerial > (perm.grantedOnTurnSerial ?? 0)
+			) {
 				ex.playableFromExileBy = undefined;
 			}
 		}
@@ -12946,13 +13024,22 @@ function validateTargetLegalityInner(
 		}
 		const p = state.players.find((pl) => pl.playerId === target.id && !pl.lost);
 		if (!p) return { ok: false, error: 'Target player is not valid.' };
-		if (info.controllerFilter === 'opponent' && p.playerId === actorId) {
+		const playerSpecs =
+			info.targetSpecs?.filter((ts) => ts.kind === 'player' || ts.kind === 'objectOrPlayer') ?? [];
+		const specRequiresOpponent =
+			playerSpecs.length > 0 &&
+			playerSpecs.every(
+				(ts) => ts.player?.relation === 'opponent' || ts.player?.relation === 'each_opponent'
+			);
+		const specRequiresYou =
+			playerSpecs.length > 0 && playerSpecs.every((ts) => ts.player?.relation === 'you');
+		if ((info.controllerFilter === 'opponent' || specRequiresOpponent) && p.playerId === actorId) {
 			return {
 				ok: false,
 				error: 'Strict Rules Violation: Must target an opponent.'
 			};
 		}
-		if (info.controllerFilter === 'you' && p.playerId !== actorId) {
+		if ((info.controllerFilter === 'you' || specRequiresYou) && p.playerId !== actorId) {
 			return {
 				ok: false,
 				error: 'Strict Rules Violation: Must target yourself.'
@@ -13089,6 +13176,32 @@ function validateTargetLegalityInner(
 	return { ok: true };
 }
 
+function partitionTargetsBySpecs(
+	targets: TargetRef[],
+	info: TargetRequirementInfo,
+	sourceCard?: ScryfallCard
+): TargetRef[][] | undefined {
+	if (sourceCard?.typeLine.includes('Aura')) return undefined;
+	const specs = info.targetSpecs;
+	if (!specs || specs.length === 0) return undefined;
+	const counts = specs.map((sp) => (sp.max > 0 ? sp.min : 0));
+	let extra = targets.length - counts.reduce((a, b) => a + b, 0);
+	for (let k = 0; k < specs.length && extra > 0; k++) {
+		if (specs[k].max <= 0) continue;
+		const add = Math.min(extra, specs[k].max - counts[k]);
+		if (add > 0) {
+			counts[k] += add;
+			extra -= add;
+		}
+	}
+	let cursor = 0;
+	return specs.map((_, k) => {
+		const slice = targets.slice(cursor, cursor + counts[k]);
+		cursor += counts[k];
+		return slice;
+	});
+}
+
 export function validateChosenTargets(
 	state: GameState,
 	actorId: string,
@@ -13180,6 +13293,7 @@ export function validateChosenTargets(
 			}
 		}
 		let cursor = 0;
+		const seenInPriorSpecs = new Set<string>();
 		for (let k = 0; k < activeSpecs.length; k++) {
 			const spec = activeSpecs[k];
 			const specTargets = targets.slice(cursor, cursor + counts[k]);
@@ -13191,10 +13305,21 @@ export function validateChosenTargets(
 					error: 'Strict Rules Violation: The same object cannot be chosen multiple times for the same target requirement (CR 115.3).'
 				};
 			}
+			if (spec.otherTarget) {
+				for (const t of specTargets) {
+					if (seenInPriorSpecs.has(`${t.kind}:${t.id}`)) {
+						return {
+							ok: false,
+							error: 'Strict Rules Violation: "Another target" must be a different object from earlier target(s) (CR 115.3).'
+						};
+					}
+				}
+			}
 			const specInfo = targetRequirementFromSpecs([spec]);
 			for (const t of specTargets) {
 				const res = validateTargetLegality(state, actorId, t, specInfo, sourceCard, sourceInstanceId);
 				if (!res.ok) return res;
+				seenInPriorSpecs.add(`${t.kind}:${t.id}`);
 			}
 		}
 	} else {
@@ -13627,6 +13752,12 @@ function checkLandPlayLegalityInner(
 			return {
 				ok: false,
 				error: `You do not have permission to play ${inst.card.name} from Exile.`
+			};
+		}
+		if (inst.playableFromExileBy.spellsOnly) {
+			return {
+				ok: false,
+				error: `${inst.card.name} may only be cast as a spell from Exile, not played as a land (CR 601.1a).`
 			};
 		}
 	} else if (fromZone !== 'hand') {

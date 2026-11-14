@@ -57,7 +57,10 @@ export function targetRequirementFromSpecs(specs: TargetSpec[]): TargetRequireme
 	const minTargets = specs.reduce((s, x) => s + x.min, 0);
 	const maxTargets = specs.reduce((s, x) => s + x.max, 0);
 	const spec = specs[0];
-	if (spec.kind === 'objectOrPlayer') {
+	if (
+		spec.kind === 'objectOrPlayer' ||
+		(specs.length > 1 && specs.some((s) => s.kind !== spec.kind))
+	) {
 		return {
 			requiresTarget: minTargets > 0,
 			targetKind: 'any',
@@ -138,9 +141,21 @@ export function targetRequirementFromSpecs(specs: TargetSpec[]): TargetRequireme
 	}
 	const allSameController = specs.every((s) => (s.filter.controller ?? 'any') === (f.controller ?? 'any'));
 	const controllerFilter = allSameController ? (f.controller ?? 'any') : 'any';
+	const allSameTypes =
+		specs.length === 1 ||
+		specs.every(
+			(s) =>
+				JSON.stringify(s.filter.types ?? null) === JSON.stringify(f.types ?? null) &&
+				JSON.stringify(s.filter.notTypes ?? null) === JSON.stringify(f.notTypes ?? null) &&
+				JSON.stringify(s.filter.subtypes ?? null) === JSON.stringify(f.subtypes ?? null) &&
+				JSON.stringify(s.filter.supertypes ?? null) === JSON.stringify(f.supertypes ?? null)
+		);
 	let targetKind = 'permanent';
 	let cardTypeFilter: string | undefined = 'Permanent';
-	if (f.types?.length === 1 && f.types[0] === 'Creature') {
+	if (!allSameTypes) {
+		targetKind = 'permanent';
+		cardTypeFilter = undefined;
+	} else if (f.types?.length === 1 && f.types[0] === 'Creature') {
 		targetKind = controllerFilter === 'you' ? 'controlled_creature' : 'creature';
 		const qual = [...(f.supertypes ?? []), ...(f.subtypes ?? [])];
 		cardTypeFilter = qual.length > 0 ? `${qual.join(' ')} Creature` : 'Creature';

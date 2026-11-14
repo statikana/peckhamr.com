@@ -94,7 +94,18 @@ export function triggerTargetsSupported(specs: TargetSpec[]): boolean {
 export const PROMPTING_VERBS: ReadonlySet<Verb> = new Set<Verb>(['scry', 'surveil', 'lookAndReorder', 'search', 'explore', 'connive']);
 
 function selectorSupported(sel: Selector): boolean {
-	return ['self', 'binding', 'target', 'all', 'player', 'playerRef', 'libraryTop', 'none', 'eventObject'].includes(sel.k);
+	return [
+		'self',
+		'binding',
+		'target',
+		'all',
+		'player',
+		'playerRef',
+		'libraryTop',
+		'none',
+		'eventObject',
+		'attachedTo'
+	].includes(sel.k);
 }
 
 function stepSupported(step: EffectStep): boolean {
@@ -153,6 +164,10 @@ function stepSupported(step: EffectStep): boolean {
 	if (step.verb === 'grant' && !step.params?.keywords?.length && !step.params?.removeKeywords?.length) return false;
 	if (step.verb === 'createToken' && !step.params?.token) return false;
 	if (step.verb === 'delayedTrigger') return delayedSupported(step);
+	if (step.params?.damageSource && (step.verb !== 'damage' || !selectorSupported(step.params.damageSource))) {
+		return false;
+	}
+	if (step.params?.alsoDamagePlayers && step.verb !== 'damage') return false;
 	if (step.verb === 'fight') return Boolean(step.params?.with && selectorSupported(step.params.with));
 	if (step.verb === 'exile' && step.subject.k === 'all' && step.subject.filter.zone === 'graveyard') return true;
 	if ((step.verb === 'destroy' || step.verb === 'exile' || step.verb === 'bounce') && step.subject.k === 'all') {
@@ -221,7 +236,15 @@ export function staticallyInterpretable(
 		);
 	}
 	if (parse.steps.length === 0) return false;
-	if (parse.targets.length > 1 && !parse.targets.every((t) => t.min === 1 && t.max === 1)) return false;
+	if (
+		parse.targets.length > 1 &&
+		!(
+			parse.targets.every((t) => (t.min === 0 || t.min === 1) && t.max === 1) &&
+			parse.targets.filter((t) => t.min === 0).length <= 1
+		)
+	) {
+		return false;
+	}
 	return stepsSupported(parse.steps);
 }
 

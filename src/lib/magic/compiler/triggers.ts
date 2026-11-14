@@ -79,15 +79,32 @@ function phaseBegin(rest: string): TriggerDef | null {
 
 interface Subject {
 	object?: EventFilter['object'];
+	attachedFilter?: ObjectFilter;
 	orSelf?: boolean;
 	oneOrMore?: boolean;
 	player?: EventFilter['player'];
 }
 
+const ATTACHED_SUBJ_TYPES: Record<string, string> = {
+	creature: 'Creature',
+	land: 'Land',
+	artifact: 'Artifact',
+	enchantment: 'Enchantment',
+	planeswalker: 'Planeswalker'
+};
+
 function objectSubject(text: string): Subject | null {
 	if (text === '~') return { object: 'self' };
-	if (text === 'equipped creature' || text === 'enchanted creature' || text === 'enchanted permanent' || text === 'enchanted land') {
-		return { object: 'attachedTo' };
+	if (text === 'equipped creature') {
+		return { object: 'attachedTo', attachedFilter: { types: ['Creature'] } };
+	}
+	const enchSubj = text.match(/^enchanted (creature|permanent|land|artifact|enchantment|planeswalker)$/);
+	if (enchSubj) {
+		const mappedType = ATTACHED_SUBJ_TYPES[enchSubj[1]];
+		return {
+			object: 'attachedTo',
+			...(mappedType ? { attachedFilter: { types: [mappedType] } } : {})
+		};
 	}
 	const orSelf = text.match(/^~ or (another .+)$/);
 	if (orSelf) {
@@ -154,10 +171,32 @@ function objectEvent(verb: string, subject: Subject): TriggerDef | null {
 		case 'die':
 		case 'is put into a graveyard from the battlefield':
 		case 'are put into a graveyard from the battlefield':
-			return def('zoneChange', { from: 'battlefield', to: 'graveyard' });
+			return def('zoneChange', {
+				from: 'battlefield',
+				to: 'graveyard',
+				...(subject.attachedFilter ? { attachedFilter: subject.attachedFilter } : {})
+			});
+		case 'is put into exile from the battlefield':
+		case 'are put into exile from the battlefield':
+			return def('zoneChange', {
+				from: 'battlefield',
+				to: 'exile',
+				...(subject.attachedFilter ? { attachedFilter: subject.attachedFilter } : {})
+			});
+		case 'is put into exile':
+		case 'are put into exile':
+			if (subject.object !== 'attachedTo' && subject.object !== 'self') return null;
+			return def('zoneChange', {
+				from: 'battlefield',
+				to: 'exile',
+				...(subject.attachedFilter ? { attachedFilter: subject.attachedFilter } : {})
+			});
 		case 'leaves the battlefield':
 		case 'leave the battlefield':
-			return def('zoneChange', { from: 'battlefield' });
+			return def('zoneChange', {
+				from: 'battlefield',
+				...(subject.attachedFilter ? { attachedFilter: subject.attachedFilter } : {})
+			});
 		case 'attacks':
 		case 'attack':
 			return def('attacks');
@@ -289,6 +328,14 @@ function playerEvent(player: EventFilter['player'], rest: string): TriggerDef | 
 	if (nthCast) {
 		if ((nthCast[1] === 'your') !== (player?.relation === 'you')) return null;
 		return { event: 'cast', filter: { object: {}, player, nthThisTurn: ORDINAL_WORDS[nthCast[2]] } };
+	}
+	const castTargetsSelf = rest.match(/^(cast or copy|casts or copies|casts?) (.+?) that targets ~$/);
+	if (castTargetsSelf) {
+		const object = spellFilter(castTargetsSelf[2]);
+		if (object === null || object === 'self') return null;
+		const filter: EventFilter = { object, player, targetsSelf: true };
+		if (/copy|copies/.test(castTargetsSelf[1])) filter.orCopy = true;
+		return { event: 'cast', filter };
 	}
 	const cast = rest.match(/^(cast or copy|casts or copies|casts?) (.+)$/);
 	if (cast) {
@@ -516,8 +563,8 @@ const RUNTIME_OBJECT_FIELDS: ReadonlySet<string> = new Set([
 
 /** EventFilter fields each event kind's matcher checks (runtime/triggers.ts). */
 const RUNTIME_EVENT_FIELDS: Partial<Record<TriggerDef['event'], ReadonlySet<string>>> = {
-	zoneChange: new Set(['object', 'orSelf', 'from', 'to']),
-	cast: new Set(['object', 'player', 'orCopy', 'nthThisTurn']),
+	zoneChange: new Set(['object', 'orSelf', 'from', 'to', 'attachedFilter']),
+	cast: new Set(['object', 'player', 'orCopy', 'nthThisTurn', 'targetsSelf']),
 	attacks: new Set(['object', 'oneOrMore', 'player']),
 	combatDamageBatchPlayer: new Set(['object', 'oneOrMore', 'player']),
 	blocks: new Set(['object']),
@@ -567,10 +614,16 @@ export function runtimeTriggerProblem(def: TriggerDef): string | null {
 		const p = objectFilterProblem(f.object);
 		if (p) return p;
 	}
-	const p = objectFilterProblem(f.host) ?? objectFilterProblem(f.toFaceFilter);
+	const p =
+		objectFilterProblem(f.host) ??
+		objectFilterProblem(f.toFaceFilter) ??
+		objectFilterProblem(f.attachedFilter);
 	if (p) return p;
-	// The object an Aura/Equipment is attached to has already been detached when it leaves.
-	if (f.object === 'attachedTo' && !['attacks', 'dealsDamage', 'tappedForMana', 'becomesTapped'].includes(def.event)) {
+	if (
+		f.object === 'attachedTo' &&
+		!['attacks', 'dealsDamage', 'tappedForMana', 'becomesTapped'].includes(def.event) &&
+		!(def.event === 'zoneChange' && f.from === 'battlefield')
+	) {
 		return `"${def.event}" of the attached-to object`;
 	}
 	if (def.event === 'phaseBegin' && (!f.phase || !RUNTIME_PHASES.has(f.phase))) return `phase "${f.phase}"`;

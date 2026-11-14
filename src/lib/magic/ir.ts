@@ -308,6 +308,10 @@ export interface TargetSpec {
 	sameOwner?: boolean;
 	/** CR 702.33g: target exists/is required only when this condition holds on cast. */
 	condition?: Condition;
+	// --- Track P2 ---
+	/** "another target ...": cannot choose the same object as an earlier TargetSpec (CR 115.3). */
+	otherTarget?: boolean;
+	// --- End Track P2 ---
 }
 
 // ---- Amounts (replaces dynamicFormula strings) ----------------------------------------------
@@ -320,7 +324,11 @@ export type Ref =
 	| { k: 'binding'; name: BindingName }
 	| { k: 'eventObject' }
 	/** Each object a continuous effect applies to ("base P/T equal to its mana value"). */
-	| { k: 'affected' };
+	| { k: 'affected' }
+	// --- Track P2 ---
+	/** The permanent this Aura/Equipment is attached to ("Enchanted creature deals damage equal to its power"). */
+	| { k: 'attachedTo' };
+	// --- End Track P2 ---
 
 export type PlayerRef =
 	| { k: 'you' }
@@ -541,7 +549,18 @@ export interface EffectParams {
 	/** move to battlefield: enters transformed with its back face up (CR 712.14a / 712.11a). */
 	enteredTransformed?: boolean;
 	/** grantPlayFromExile: permission to play the exiled card(s) from exile ("You may play that card this turn"). */
-	playFromExile?: { duration: 'thisTurn'; spendManaAsAnyColor?: boolean };
+	playFromExile?: {
+		duration:
+			| 'thisTurn'
+			// --- Track P2 ---
+			| 'untilEndOfYourNextTurn'
+			| 'untilYourNextEndStep'
+			| 'asLongAsExiled';
+		spendManaAsAnyColor?: boolean;
+		spellsOnly?: boolean;
+		withoutPayingManaCost?: boolean;
+		// --- End Track P2 ---
+	};
 	/** destroy: prevents regeneration shields (and "can't be regenerated" clauses) from replacing destruction. */
 	cantBeRegenerated?: boolean;
 	/** animate: Layer 4 card types to add (e.g. ['Creature']). */
@@ -589,6 +608,12 @@ export interface EffectParams {
 	 * a matching card from it (`optionalChoice` when "You may choose ..."), moving it to `destination`.
 	 */
 	coerciveDiscard?: CoerciveDiscardSpec;
+	// --- Track P2 ---
+	/** damage: creature/permanent source dealing the damage when not `~` ("bite" spells/abilities, CR 608.2b / 608.2h). */
+	damageSource?: Selector;
+	/** damage: players dealt the same simultaneous damage alongside permanent `subject` ("each creature and each player"). */
+	alsoDamagePlayers?: PlayerFilter;
+	// --- End Track P2 ---
 }
 
 export interface CoerciveDiscardSpec {
@@ -702,6 +727,12 @@ export interface EventFilter {
 	toFaceFilter?: ObjectFilter;
 	/** "Whenever you draw your second card each turn" / "cast your second spell each turn": 1-based ordinal. */
 	nthThisTurn?: number;
+	// --- Track P2 ---
+	/** Characteristics required of the permanent `source` is/was attached to ("When enchanted creature dies", CR 603.10a). */
+	attachedFilter?: ObjectFilter;
+	/** cast: spell on the stack targets `~` ("Whenever you cast a spell that targets ~", CR 603.2, 707.10). */
+	targetsSelf?: boolean;
+	// --- End Track P2 ---
 }
 
 export interface TriggerDef {
