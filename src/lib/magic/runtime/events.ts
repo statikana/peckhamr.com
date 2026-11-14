@@ -69,6 +69,8 @@ export interface LeftBattlefieldInfo {
 	saddled?: boolean;
 	// --- Track P5 ---
 	monstrous?: boolean;
+	// --- Track P6 ---
+	counters?: Partial<Record<CounterType, number>>;
 }
 
 /** A spell was cast (it is already on the stack). */
@@ -329,6 +331,18 @@ export interface BecameMonstrousEvent extends EventBase {
 	amount: number;
 }
 
+// --- Track P6 ---
+/** One or more counters of a single kind were removed from a permanent (CR 702.63a Vanishing). */
+export interface CounterRemovedEvent extends EventBase {
+	kind: 'CounterRemoved';
+	objectId: string;
+	object: CardInstance;
+	counterType: string;
+	amount: number;
+	previousCount: number;
+	newCount: number;
+}
+
 export type GameEvent =
 	| TappedForManaEvent
 	| GainLifeEvent
@@ -361,7 +375,9 @@ export type GameEvent =
 	// --- Track P5 ---
 	| AmassedEvent
 	| ManifestDreadEvent
-	| BecameMonstrousEvent;
+	| BecameMonstrousEvent
+	// --- Track P6 ---
+	| CounterRemovedEvent;
 
 export type GameEventKind = GameEvent['kind'];
 type EventOf<K extends GameEventKind> = Extract<GameEvent, { kind: K }>;

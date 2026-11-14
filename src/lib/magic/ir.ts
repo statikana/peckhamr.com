@@ -28,12 +28,23 @@ export interface CardDefinition {
 	fullySupported: boolean;
 }
 
+// --- Track P6 ---
+export interface PrototypeSpec {
+	manaCost: string;
+	power: number;
+	toughness: number;
+	colors: ManaColor[];
+}
+
 export interface FaceDefinition {
 	name: string;
 	characteristics: Characteristics;
 	abilities: AbilityDef[];
 	// --- Track P1 ---
 	hasReadAhead?: boolean;
+	// --- Track P6 ---
+	/** CR 719.2: inset prototype mana cost, derived colors, and power/toughness. */
+	prototypeSpec?: PrototypeSpec;
 }
 
 export interface Characteristics {
@@ -117,6 +128,9 @@ export interface ActivatedAbility {
 	id: string;
 	/** The ability's normalised text (`~` for the card's name). Display only. */
 	text?: string;
+	// --- Track P6 ---
+	/** Existence condition for striated frames (CR 711.5 Leveler, CR 722.2 Station). */
+	grantCondition?: Condition;
 	span: Span;
 }
 
@@ -125,6 +139,9 @@ export interface TriggeredAbility {
 	trigger: TriggerDef;
 	/** CR 603.4 intervening-if condition, checked when the trigger event occurs and on resolution. */
 	condition?: Condition;
+	// --- Track P6 ---
+	/** Existence condition for striated frames (CR 711.5 Leveler, CR 722.2 Station). */
+	grantCondition?: Condition;
 	targets: TargetSpec[];
 	effect: EffectStep[];
 	modal?: ModalDef;
@@ -198,6 +215,9 @@ export interface UnsupportedAbility {
 	 */
 	trigger?: TriggerDef;
 	condition?: Condition;
+	// --- Track P6 ---
+	/** Existence condition for striated frames (CR 711.5 Leveler, CR 722.2 Station). */
+	grantCondition?: Condition;
 }
 
 export type Timing = 'instant' | 'sorcery' | 'mana';
@@ -241,6 +261,9 @@ export interface KeywordDef {
 	cyclingFilter?: ObjectFilter;
 	/** Typecycling (CR 702.29e): human-readable quality phrase (e.g. 'basic land', 'Plains', 'Wizard'). */
 	cyclingDesc?: string;
+	// --- Track P6 ---
+	/** Prototype (CR 719, 702.160): inset mana cost, derived colors, and power/toughness. */
+	prototypeSpec?: PrototypeSpec;
 }
 
 // ---- Filters --------------------------------------------------------------------------------
@@ -369,7 +392,10 @@ export type Amount =
 	| { k: 'negate'; of: Amount }
 	| { k: 'sum' | 'min' | 'max'; args: Amount[] }
 	// --- Track P1 ---
-	| { k: 'energyCount'; player: PlayerRef };
+	| { k: 'energyCount'; player: PlayerRef }
+	// --- Track P6 ---
+	| { k: 'countersOn'; counter: CounterType; of: Ref }
+	| { k: 'tappedCostPower' };
 
 // ---- Costs ----------------------------------------------------------------------------------
 
@@ -479,7 +505,9 @@ export type Verb =
 	| 'manifestDread'
 	| 'monstrosity'
 	| 'bolster'
-	| 'adapt';
+	| 'adapt'
+	// --- Track P6 ---
+	| 'removeCounters';
 
 export type ManaRestriction = 'artifactSpellOrNonSpell';
 
@@ -650,6 +678,11 @@ export interface EffectParams {
 	// --- Track P5 ---
 	/** amass (CR 701.47a,d): singular creature subtype amassed (e.g. 'Zombie', 'Orc', 'Army' companion). */
 	amassSubtype?: string;
+	// --- Track P6 ---
+	/** removeCounters (CR 702.32a Fading): if unable to remove the counter, sacrifice the permanent. */
+	ifUnableSacrificeSelf?: boolean;
+	/** copyPermanent (CR 707.9b, 702.175a Offspring): Layer 1a base P/T exception on the token copy. */
+	exceptPT?: { power: number; toughness: number };
 }
 
 export interface CoerciveDiscardSpec {
@@ -741,7 +774,9 @@ export type EventKind =
 	// --- Track P5 ---
 	| 'amass'
 	| 'manifestDread'
-	| 'becameMonstrous';
+	| 'becameMonstrous'
+	// --- Track P6 ---
+	| 'counterRemoved';
 
 export interface EventFilter {
 	/**
@@ -785,6 +820,9 @@ export interface EventFilter {
 	// --- Track P5 ---
 	/** "Whenever you amass Orcs" (CR 701.47b–c): optional singular subtype constraint on amass triggers. */
 	amassSubtype?: string;
+	// --- Track P6 ---
+	/** counterRemoved (CR 702.63a Vanishing): matches only when the last counter of that kind was removed. */
+	lastCounter?: boolean;
 }
 
 export interface TriggerDef {

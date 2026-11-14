@@ -13,6 +13,7 @@
  * Pure IR and GameState metadata only — zero card-name or runtime rules-text reads.
  */
 import { compileCard } from '../compiler/index.ts';
+import { hasWarpExilePermission } from './striatedFrames.ts';
 import type { CardDefinition, CostDef } from '../ir.ts';
 import type {
 	CardInstance,
@@ -73,12 +74,13 @@ export function enumerateHandSpecialActions(card: ScryfallCard): HandSpecialActi
 }
 
 /**
- * True when `inst` in exile carries an owner-scoped keyword cast permission (Foretell or Plot) for `actorId`.
+ * True when `inst` in exile carries an owner-scoped keyword cast permission (Foretell, Plot, or Warp) for `actorId`.
  */
 export function hasExileKeywordPermission(inst: CardInstance, actorId: string): boolean {
 	return (
 		(inst.foretoldByPlayerId === actorId && inst.ownerId === actorId) ||
-		(inst.plottedByPlayerId === actorId && inst.ownerId === actorId)
+		(inst.plottedByPlayerId === actorId && inst.ownerId === actorId) ||
+		hasWarpExilePermission(inst, actorId)
 	);
 }
 

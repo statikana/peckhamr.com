@@ -4,7 +4,7 @@
  * Shared cleanly between ruleTree, runtime/costs, runtime/objectFilter, runtime/layers,
  * runtime/triggers, runtime/effects, and engine without introducing module cycles.
  */
-import { activeAbilityDefs } from './faces.ts';
+import { activeAbilityDefs, activeCharacteristics } from './faces.ts';
 import type { Amount, Condition, CostDef, TargetSpec } from '../ir.ts';
 import type {
 	CardInstance,
@@ -26,13 +26,21 @@ const CHOOSE_ALL_MODES_OPTIONAL_KEYWORDS: ReadonlySet<string> = new Set(['entwin
 function rawOptionalEntriesForCard(
 	card: ScryfallCard,
 	faceIndex = 0,
-	fused = false
+	fused = false,
+	prototyped = false
 ): CastOptionOptionalCost[] {
-	const abilities = activeAbilityDefs(card, { zone: 'stack', faceIndex, fused });
+	const faceOpts = { zone: 'stack' as const, faceIndex, fused, prototyped };
+	const abilities = activeAbilityDefs(card, faceOpts);
+	const chars = activeCharacteristics(card, faceOpts);
 	const out: CastOptionOptionalCost[] = [];
 	let idx = 0;
 	let buybackIdx = 0;
 	let entwineIdx = 0;
+	let offspringIdx = 0;
+	let squadIdx = 0;
+	let replicateIdx = 0;
+	let conspireIdx = 0;
+	let casualtyIdx = 0;
 	for (const ab of abilities) {
 		if (ab.kind !== 'keyword') continue;
 		if (
@@ -65,6 +73,107 @@ function rawOptionalEntriesForCard(
 				costDefs: ab.keyword.costDefs,
 				maxCount: 1,
 				returnToHandOnResolve: true
+			});
+			continue;
+		}
+		const { name: kwName } = ab.keyword;
+		if (kwName === 'offspring' && ab.keyword.costDefs && ab.keyword.costDefs.length > 0) {
+			const rawCost = (ab.keyword.cost ?? ab.keyword.param ?? '').trim();
+			const isManaOnly = /^(\{[^}]+\})+$/.test(rawCost);
+			out.push({
+				id: `offspring:${offspringIdx++}`,
+				label: rawCost ? (isManaOnly ? `Offspring (${rawCost})` : `Offspring—${rawCost}`) : 'Offspring',
+				costDisplay: rawCost,
+				costDefs: ab.keyword.costDefs,
+				maxCount: 1,
+				kickedTag: 'offspring',
+				kickedTags: ['offspring']
+			});
+			continue;
+		}
+		if (kwName === 'squad' && ab.keyword.costDefs && ab.keyword.costDefs.length > 0) {
+			const rawCost = (ab.keyword.cost ?? ab.keyword.param ?? '').trim();
+			const isManaOnly = /^(\{[^}]+\})+$/.test(rawCost);
+			out.push({
+				id: `squad:${squadIdx++}`,
+				label: rawCost ? (isManaOnly ? `Squad (${rawCost})` : `Squad—${rawCost}`) : 'Squad',
+				costDisplay: rawCost,
+				costDefs: ab.keyword.costDefs,
+				maxCount: 99,
+				kickedTag: 'squad',
+				kickedTags: ['squad']
+			});
+			continue;
+		}
+		if (kwName === 'replicate' && ab.keyword.costDefs && ab.keyword.costDefs.length > 0) {
+			const rawCost = (ab.keyword.cost ?? ab.keyword.param ?? '').trim();
+			const isManaOnly = /^(\{[^}]+\})+$/.test(rawCost);
+			out.push({
+				id: `replicate:${replicateIdx++}`,
+				label: rawCost ? (isManaOnly ? `Replicate (${rawCost})` : `Replicate—${rawCost}`) : 'Replicate',
+				costDisplay: rawCost,
+				costDefs: ab.keyword.costDefs,
+				maxCount: 99,
+				kickedTag: 'replicate',
+				kickedTags: ['replicate']
+			});
+			continue;
+		}
+		if (kwName === 'conspire') {
+			const spellColors = chars.colors;
+			const conspireCostDef: CostDef =
+				spellColors.length > 0
+					? {
+							k: 'tapOthers',
+							count: { k: 'const', n: 2 },
+							filter: {
+								types: ['Creature'],
+								controller: 'you',
+								tapped: false,
+								colors: [...spellColors]
+							}
+						}
+					: {
+							k: 'tapOthers',
+							count: { k: 'const', n: 2 },
+							filter: {
+								types: ['Creature'],
+								notTypes: ['Creature'],
+								controller: 'you',
+								tapped: false
+							}
+						};
+			out.push({
+				id: `conspire:${conspireIdx++}`,
+				label: 'Conspire (Tap two untapped creatures sharing a color)',
+				costDisplay: 'Tap two untapped creatures you control that share a color with this spell',
+				costDefs: [conspireCostDef],
+				maxCount: 1,
+				kickedTag: 'conspire',
+				kickedTags: ['conspire']
+			});
+			continue;
+		}
+		if (kwName === 'casualty' && ab.keyword.n !== undefined && ab.keyword.n > 0) {
+			const n = ab.keyword.n;
+			out.push({
+				id: `casualty:${casualtyIdx++}`,
+				label: `Casualty ${n} (Sacrifice a creature with power ${n}+)`,
+				costDisplay: `Sacrifice a creature with power ${n} or greater`,
+				costDefs: [
+					{
+						k: 'sacrifice',
+						count: { k: 'const', n: 1 },
+						filter: {
+							types: ['Creature'],
+							controller: 'you',
+							power: { op: '>=', value: { k: 'const', n } }
+						}
+					}
+				],
+				maxCount: 1,
+				kickedTag: 'casualty',
+				kickedTags: ['casualty']
 			});
 			continue;
 		}
@@ -106,16 +215,20 @@ export function computeKickerTracking(
 ): KickerTrackingInfo {
 	const resolvedFace = option?.faceIndex ?? faceIndex;
 	const resolvedFused = option?.fused ?? fused;
-	const entries = option?.optionalAdditionalCosts ?? rawOptionalEntriesForCard(card, resolvedFace, resolvedFused);
+	const resolvedPrototyped = Boolean(option?.spellMods?.prototyped);
+	const entries =
+		option?.optionalAdditionalCosts ??
+		rawOptionalEntriesForCard(card, resolvedFace, resolvedFused, resolvedPrototyped);
 	let count = 0;
 	const tags: string[] = [];
 	const tagCounts: Record<string, number> = {};
 	for (const entry of entries) {
-		if (!entry.id.startsWith('kicker:')) continue;
 		const n = optionalCostCounts?.[entry.id] ?? 0;
 		if (n <= 0) continue;
-		count += n;
+		const isKicker = entry.id.startsWith('kicker:');
+		if (isKicker) count += n;
 		const entryTags = entry.kickedTags ?? (entry.kickedTag ? [entry.kickedTag] : []);
+		if (!isKicker && entryTags.length === 0) continue;
 		for (const tag of entryTags) {
 			if (!tags.includes(tag)) tags.push(tag);
 			tagCounts[tag] = (tagCounts[tag] ?? 0) + n;
@@ -137,7 +250,7 @@ export function evaluateKickerCondition(
 	const min = cond.minCount ?? 1;
 	if (!cond.tag) return info.count >= min;
 	if (info.tagCounts) return (info.tagCounts[cond.tag] ?? 0) >= min;
-	return info.tags.includes(cond.tag) && info.count >= min;
+	return info.tags.includes(cond.tag) && Math.max(1, info.count) >= min;
 }
 
 export function evaluateKickedCountAmount(
@@ -148,7 +261,7 @@ export function evaluateKickedCountAmount(
 		? info.tagCounts
 			? (info.tagCounts[amount.tag] ?? 0)
 			: info.tags.includes(amount.tag)
-				? info.count
+				? Math.max(1, info.count)
 				: 0
 		: info.count;
 	return base * (amount.multiplier ?? 1);
@@ -185,11 +298,12 @@ export function isCastConditionMet(
 export function spellOptionalAdditionalCosts(
 	card: ScryfallCard,
 	faceIndex = 0,
-	fused = false
+	fused = false,
+	prototyped = false
 ): CastOptionOptionalCost[] {
-	const entries = rawOptionalEntriesForCard(card, faceIndex, fused);
+	const entries = rawOptionalEntriesForCard(card, faceIndex, fused, prototyped);
 	if (entries.length === 0) return [];
-	const abilities = activeAbilityDefs(card, { zone: 'stack', faceIndex, fused });
+	const abilities = activeAbilityDefs(card, { zone: 'stack', faceIndex, fused, prototyped });
 	const conditionalSpecs: TargetSpec[] = [];
 	for (const ab of abilities) {
 		if (ab.kind === 'spell') {
@@ -201,12 +315,13 @@ export function spellOptionalAdditionalCosts(
 			for (const sp of ab.targets) if (sp.condition) conditionalSpecs.push(sp);
 		}
 	}
+	const optLike: CastOptionLike | undefined = prototyped ? { spellMods: { prototyped: true } } : undefined;
 	for (const entry of entries) {
 		const enables = conditionalSpecs.some(
 			(sp) =>
 				sp.condition &&
-				!isCastConditionMet(sp.condition, card, undefined, undefined, faceIndex, fused) &&
-				isCastConditionMet(sp.condition, card, { [entry.id]: 1 }, undefined, faceIndex, fused)
+				!isCastConditionMet(sp.condition, card, undefined, optLike, faceIndex, fused) &&
+				isCastConditionMet(sp.condition, card, { [entry.id]: 1 }, optLike, faceIndex, fused)
 		);
 		if (enables) entry.enablesTarget = true;
 	}
@@ -271,22 +386,29 @@ export function getObjectKickerInfo(
 ): KickerTrackingInfo {
 	if (stackItem) {
 		if (stackItem.kind === 'spell') {
+			const spellMods =
+				stackItem.spellMods?.prototyped || stackItem.copiableState?.prototyped
+					? { ...stackItem.spellMods, prototyped: true }
+					: stackItem.spellMods;
 			return computeKickerTracking(
 				stackItem.card,
 				stackItem.optionalCostCounts,
-				{ spellMods: stackItem.spellMods },
+				{ spellMods },
 				stackItem.faceIndex ?? 0,
 				stackItem.fused ?? false
 			);
 		}
 		if (
 			stackItem.sourceKickedCount !== undefined ||
+			(stackItem.sourceKickedTags && stackItem.sourceKickedTags.length > 0) ||
+			stackItem.sourceKickedTagCounts !== undefined ||
 			stackItem.sourceForetold !== undefined ||
 			stackItem.sourceBlitzed !== undefined
 		) {
 			return {
 				count: stackItem.sourceKickedCount ?? 0,
 				tags: stackItem.sourceKickedTags ?? [],
+				...(stackItem.sourceKickedTagCounts ? { tagCounts: stackItem.sourceKickedTagCounts } : {}),
 				...(stackItem.sourceForetold ? { foretold: true } : {}),
 				...(stackItem.sourceBlitzed ? { blitzed: true } : {})
 			};
@@ -299,6 +421,7 @@ export function getObjectKickerInfo(
 				return {
 					count: perm.kickedCount ?? 0,
 					tags: perm.kickedTags ?? [],
+					...(perm.kickedTagCounts ? { tagCounts: perm.kickedTagCounts } : {}),
 					...(perm.foretold ? { foretold: true } : {}),
 					...(perm.blitzed ? { blitzed: true } : {})
 				};
@@ -307,22 +430,29 @@ export function getObjectKickerInfo(
 		const stackSpell = state.stack.find((s) => s.sourceInstanceId === instanceId);
 		if (stackSpell) {
 			if (stackSpell.kind === 'spell') {
+				const spellMods =
+					stackSpell.spellMods?.prototyped || stackSpell.copiableState?.prototyped
+						? { ...stackSpell.spellMods, prototyped: true }
+						: stackSpell.spellMods;
 				return computeKickerTracking(
 					stackSpell.card,
 					stackSpell.optionalCostCounts,
-					{ spellMods: stackSpell.spellMods },
+					{ spellMods },
 					stackSpell.faceIndex ?? 0,
 					stackSpell.fused ?? false
 				);
 			}
 			if (
 				stackSpell.sourceKickedCount !== undefined ||
+				(stackSpell.sourceKickedTags && stackSpell.sourceKickedTags.length > 0) ||
+				stackSpell.sourceKickedTagCounts !== undefined ||
 				stackSpell.sourceForetold !== undefined ||
 				stackSpell.sourceBlitzed !== undefined
 			) {
 				return {
 					count: stackSpell.sourceKickedCount ?? 0,
 					tags: stackSpell.sourceKickedTags ?? [],
+					...(stackSpell.sourceKickedTagCounts ? { tagCounts: stackSpell.sourceKickedTagCounts } : {}),
 					...(stackSpell.sourceForetold ? { foretold: true } : {}),
 					...(stackSpell.sourceBlitzed ? { blitzed: true } : {})
 				};
@@ -333,12 +463,14 @@ export function getObjectKickerInfo(
 		source &&
 		(source.kickedCount !== undefined ||
 			(source.kickedTags && source.kickedTags.length > 0) ||
+			source.kickedTagCounts !== undefined ||
 			source.foretold ||
 			source.blitzed)
 	) {
 		return {
 			count: source.kickedCount ?? 0,
 			tags: source.kickedTags ?? [],
+			...(source.kickedTagCounts ? { tagCounts: source.kickedTagCounts } : {}),
 			...(source.foretold ? { foretold: true } : {}),
 			...(source.blitzed ? { blitzed: true } : {})
 		};

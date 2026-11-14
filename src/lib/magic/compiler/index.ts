@@ -406,6 +406,7 @@ function shiftSelector(sel: Selector, offset: number): Selector {
 function shiftAmount(a: Amount, offset: number): Amount {
 	if (a.k === 'count') return { k: 'count', of: shiftObjectFilter(a.of, offset) };
 	if (a.k === 'stat') return { ...a, of: shiftRef(a.of, offset) };
+	if (a.k === 'countersOn') return { ...a, of: shiftRef(a.of, offset) };
 	if (a.k === 'life' || a.k === 'cardsIn') return { ...a, of: shiftPlayerRef(a.of, offset) };
 	if (a.k === 'energyCount') return { k: 'energyCount', player: shiftPlayerRef(a.player, offset) };
 	if (a.k === 'negate') return { k: 'negate', of: shiftAmount(a.of, offset) };

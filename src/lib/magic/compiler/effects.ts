@@ -104,7 +104,9 @@ const COUNTER_WORDS: Record<string, CounterType> = {
 	stun: 'stun',
 	lore: 'lore',
 	time: 'time',
-	loyalty: 'loyalty'
+	loyalty: 'loyalty',
+	level: 'level',
+	fade: 'fade'
 };
 
 /** Sentences that carry no effect of their own. */

@@ -659,7 +659,9 @@ const RUNTIME_EVENT_FIELDS: Partial<Record<TriggerDef['event'], ReadonlySet<stri
 	// --- Track P5 ---
 	amass: new Set(['player', 'amassSubtype']),
 	manifestDread: new Set(['player']),
-	becameMonstrous: new Set(['object', 'orSelf'])
+	becameMonstrous: new Set(['object', 'orSelf']),
+	// --- Track P6 ---
+	counterRemoved: new Set(['object', 'counter', 'lastCounter'])
 };
 
 function objectFilterProblem(f: ObjectFilter | undefined): string | null {
@@ -728,6 +730,8 @@ export interface RuntimeTrigger {
 	abilityIndex: number;
 	trigger: TriggerDef;
 	condition?: Condition;
+	/** Existence condition for striated frames (CR 711.5 Leveler, CR 722.2 Station). */
+	grantCondition?: Condition;
 	/** The IR effect is fully understood and interpretable (kind 'triggered'). */
 	effectSupported: boolean;
 	/** The ability's normalised text (`~` for the card's name), shown on the stack. Display only. */
@@ -782,6 +786,7 @@ export function runtimeTriggers(def: CardDefinition, faceIndex = 0): RuntimeTrig
 				abilityIndex,
 				trigger: ab.trigger,
 				condition: ab.condition,
+				...(ab.grantCondition ? { grantCondition: ab.grantCondition } : {}),
 				effectSupported: true,
 				text: ab.text ?? '',
 				effect: { steps: ab.effect, targets: ab.targets, ...(ab.modal ? { modal: ab.modal } : {}), unparsed: [] }
@@ -789,7 +794,14 @@ export function runtimeTriggers(def: CardDefinition, faceIndex = 0): RuntimeTrig
 		} else if (ab.kind === 'unsupported' && ab.reason === 'unparsed' && ab.trigger) {
 			// An unparsed intervening-if leaves `condition` undefined: such abilities are 'unparsed' via
 			// the trigger head (no ab.trigger), so they never get here.
-			out.push({ abilityIndex, trigger: ab.trigger, condition: ab.condition, effectSupported: false, text: ab.text });
+			out.push({
+				abilityIndex,
+				trigger: ab.trigger,
+				condition: ab.condition,
+				...(ab.grantCondition ? { grantCondition: ab.grantCondition } : {}),
+				effectSupported: false,
+				text: ab.text
+			});
 		}
 	});
 	if (!byFace) {

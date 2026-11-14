@@ -189,9 +189,21 @@ export function objectManaValue(
 			);
 	const onStack = isStackItem || obj.zone === 'stack' || Boolean(stk);
 	const faceOpts = isStackItem
-		? { zone: 'stack' as const, faceIndex: obj.faceIndex, fused: obj.fused, isFaceDown: obj.isFaceDown }
+		? {
+				zone: 'stack' as const,
+				faceIndex: obj.faceIndex,
+				fused: obj.fused,
+				isFaceDown: obj.isFaceDown,
+				...(obj.spellMods?.prototyped || obj.copiableState?.prototyped ? { prototyped: true } : {})
+			}
 		: stk
-			? { zone: 'stack' as const, faceIndex: stk.faceIndex, fused: stk.fused, isFaceDown: stk.isFaceDown }
+			? {
+					zone: 'stack' as const,
+					faceIndex: stk.faceIndex,
+					fused: stk.fused,
+					isFaceDown: stk.isFaceDown,
+					...(stk.spellMods?.prototyped || stk.copiableState?.prototyped ? { prototyped: true } : {})
+				}
 			: instanceFaceOptions(obj);
 	const view = resolveObjectFaces(card, faceOpts);
 	const base = effectiveManaValue(card, faceOpts);
@@ -372,6 +384,12 @@ export function evaluateAmount(amount: Amount, ctx: FilterContext): number {
 			return playerCommanderCastCount(ctx.state, ctx.controllerId);
 		case 'stormCount':
 			return 0;
+		case 'tappedCostPower':
+			return 0;
+		case 'countersOn': {
+			if (amount.of.k !== 'self' || !ctx.source) return 0;
+			return ctx.source.counters[amount.counter] ?? 0;
+		}
 		case 'kickedCount': {
 			const info = ctx.source
 				? getObjectKickerInfo(ctx.state, ctx.source.card, ctx.source.instanceId, undefined, ctx.source)

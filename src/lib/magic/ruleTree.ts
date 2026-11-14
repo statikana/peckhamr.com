@@ -11,6 +11,7 @@ import type { ActivatedAbility, CostDef, EffectStep, ModalDef, TargetSpec, Unsup
 import { getKeywordSpec } from './keywords.ts';
 import { effectiveAbilityManaCost } from './runtime/costs.ts';
 import { hasChooseAllModesOptionalCost, isCastConditionMet } from './runtime/kicker.ts';
+import { evaluateCondition as evaluateFilterCondition } from './runtime/objectFilter.ts';
 import {
 	evaluatePermanent,
 	getAttachedAbilityStrippingAuraSources,
@@ -497,6 +498,7 @@ function buildEffectiveActivatedAbility(
 		...(ab.activationRestrictions?.length ? { activationRestrictions: ab.activationRestrictions } : {}),
 		...(activationZones?.length ? { activationZones } : {}),
 		...(costKeyword ? { costKeyword } : {}),
+		...(ab.grantCondition ? { grantCondition: ab.grantCondition } : {}),
 		producesMana,
 		producesAmount,
 		...(manaAmount ? { manaAmount } : {}),
@@ -702,7 +704,7 @@ export function getEffectiveActivatedAbilities(
 			commanderIdentity,
 			resolveOppLands,
 			instanceFaceOptions(perm, perm.zone)
-		);
+		).filter((ab) => !ab.grantCondition);
 	} else {
 		const breakdown = inspectCardContinuousBreakdown(perm, state);
 		const allInnateRemoved = permanentHasLostAllAbilities(perm, state).lost;
@@ -714,6 +716,14 @@ export function getEffectiveActivatedAbilities(
 					commanderIdentity,
 					resolveOppLands,
 					instanceFaceOptions(perm, 'battlefield')
+				).filter(
+					(ab) =>
+						!ab.grantCondition ||
+						evaluateFilterCondition(ab.grantCondition, {
+							state,
+							controllerId: actor.playerId,
+							source: perm
+						})
 				);
 
 		// Add granted activated abilities from Layer 4 / Layer 6 IR (`AttributedKeywordOrEffect.grantedAbility`)

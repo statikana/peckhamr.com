@@ -137,7 +137,9 @@ export function createEmptyCounters(): Record<CounterType, number> {
 		stun: 0,
 		lore: 0,
 		time: 0,
-		age: 0
+		age: 0,
+		level: 0,
+		fade: 0
 	};
 }
 
@@ -302,6 +304,8 @@ function finalizeZoneMove(
 		obj.enteredWithX = undefined;
 		obj.kickedCount = undefined;
 		obj.kickedTags = undefined;
+		obj.kickedTagCounts = undefined;
+		obj.prototyped = undefined;
 		obj.evoked = undefined;
 		obj.escaped = undefined;
 		obj.foretold = undefined;
@@ -338,6 +342,7 @@ function finalizeZoneMove(
 	if (dest !== 'battlefield') {
 		obj.kickedCount = undefined;
 		obj.kickedTags = undefined;
+		obj.kickedTagCounts = undefined;
 		obj.evoked = undefined;
 		obj.escaped = undefined;
 		obj.foretold = undefined;
@@ -350,6 +355,7 @@ function finalizeZoneMove(
 		obj.isMonstrous = undefined;
 		obj.monstrosityX = undefined;
 		if (dest !== 'stack') {
+			obj.prototyped = undefined;
 			obj.activeFaceIndex = undefined;
 			obj.transformed = false;
 		}
@@ -357,7 +363,7 @@ function finalizeZoneMove(
 	if (opts.controllerId !== undefined) obj.controllerId = opts.controllerId;
 	const leavingVersion = obj.objectVersion || 1;
 	if (fromZone === 'exile') {
-		// CR 400.7: Leaving exile clears linked-exile, foretell, plot, and until-source-leaves tracking.
+		// CR 400.7: Leaving exile clears linked-exile, foretell, plot, warp, and until-source-leaves tracking.
 		obj.exiledBy = undefined;
 		obj.untilSourceLeavesReturn = undefined;
 		if (dest !== 'exile') {
@@ -365,6 +371,8 @@ function finalizeZoneMove(
 			obj.foretoldTurnNumber = undefined;
 			obj.plottedByPlayerId = undefined;
 			obj.plottedTurnNumber = undefined;
+			obj.warpedByOwnerId = undefined;
+			obj.warpedTurnSerial = undefined;
 			if (dest !== 'battlefield' && dest !== 'stack' && obj.isFaceDown) {
 				obj.isFaceDown = false;
 				obj.faceDownSpec = undefined;
@@ -1003,7 +1011,8 @@ function captureLki(state: GameState, obj: CardInstance): LeftBattlefieldInfo {
 		...(obj.foretold ? { foretold: true } : {}),
 		...(obj.blitzed ? { blitzed: true } : {}),
 		...(obj.saddledThisTurn ? { saddled: true } : {}),
-		...(obj.isMonstrous ? { monstrous: true } : {})
+		...(obj.isMonstrous ? { monstrous: true } : {}),
+		counters: { ...obj.counters }
 	};
 }
 

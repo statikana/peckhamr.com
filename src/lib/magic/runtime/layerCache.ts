@@ -80,7 +80,11 @@ function pushFingerprint(state: GameState, fp: unknown[]): void {
 				perm.copiableState?.faceIndex,
 				perm.copiableState?.isSingleFaceCopy,
 				perm.copiableState?.fused,
+				perm.copiableState?.prototyped,
 				perm.copiableState?.except,
+				perm.copiableState?.except?.power,
+				perm.copiableState?.except?.toughness,
+				perm.prototyped,
 				perm.transformed,
 				perm.activeFaceIndex,
 				perm.unlockedFaces,
@@ -135,7 +139,11 @@ function fingerprintMatches(state: GameState, fp: unknown[]): boolean {
 				fp[i++] !== perm.copiableState?.faceIndex ||
 				fp[i++] !== perm.copiableState?.isSingleFaceCopy ||
 				fp[i++] !== perm.copiableState?.fused ||
+				fp[i++] !== perm.copiableState?.prototyped ||
 				fp[i++] !== perm.copiableState?.except ||
+				fp[i++] !== perm.copiableState?.except?.power ||
+				fp[i++] !== perm.copiableState?.except?.toughness ||
+				fp[i++] !== perm.prototyped ||
 				fp[i++] !== perm.transformed ||
 				fp[i++] !== perm.activeFaceIndex ||
 				fp[i++] !== perm.unlockedFaces ||

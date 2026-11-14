@@ -118,6 +118,9 @@ export interface CopiableState {
 	faceIndex?: number;
 	fused?: boolean;
 	isSingleFaceCopy?: boolean;
+	// --- Track P6 ---
+	/** CR 719.3d: preserved on copies of a prototyped spell or permanent. */
+	prototyped?: boolean;
 	except?: {
 		power?: number;
 		toughness?: number;
@@ -275,7 +278,10 @@ export type CounterType =
 	| 'lore'
 	| 'time'
 	// --- Track P3 ---
-	| 'age';
+	| 'age'
+	// --- Track P6 ---
+	| 'level'
+	| 'fade';
 
 export interface TargetRequirementInfo {
 	requiresTarget: boolean;
@@ -324,6 +330,9 @@ export interface EffectiveActivatedAbility {
 	manaRestriction?: ManaRestriction;
 	/** Card that granted this ability via Layer 6 `grantAbility`, if granted (transient / plain card data). */
 	grantSourceCard?: ScryfallCard;
+	// --- Track P6 ---
+	/** Existence condition for striated frames (CR 711.5 Leveler, CR 722.2 Station); transient / never serialized in GameState. */
+	grantCondition?: import('./ir.ts').Condition;
 	effectText: string;
 	modal?: ModalDef;
 	requiresTarget: boolean;
@@ -500,6 +509,15 @@ export interface CardInstance {
 	isMonstrous?: boolean;
 	/** CR 701.37c: the N (or X) value from when this permanent became monstrous. */
 	monstrosityX?: number;
+	// --- Track P6 ---
+	/** Per-tag optional additional cost counts (e.g. `squad`, `offspring`, `kicker`) paid when cast (CR 400.7d). */
+	kickedTagCounts?: Record<string, number>;
+	/** CR 719.3b / 719.4: true while on the stack/battlefield after being cast prototyped. */
+	prototyped?: boolean;
+	/** CR 702.185a: owner playerId permitted to cast this card from exile after `warpedTurnSerial` ends. */
+	warpedByOwnerId?: string;
+	/** CR 702.185a: `state.turnSerial ?? state.turnNumber` of the turn this card was exiled by Warp's delayed trigger. */
+	warpedTurnSerial?: number;
 }
 
 export interface TargetRef {
@@ -532,6 +550,11 @@ export interface SpellModifications {
 	blitzed?: boolean;
 	/** CR 702.146b / 712.8c: cast transformed with its back face up (Disturb). */
 	castTransformed?: boolean;
+	// --- Track P6 ---
+	/** CR 719.3a–b: cast prototyped using its inset prototype mana cost, color, and P/T. */
+	prototyped?: boolean;
+	/** CR 702.185a: cast from hand by paying its warp cost. */
+	warped?: boolean;
 }
 
 export interface CastOptionOptionalCost {
@@ -724,6 +747,15 @@ export interface StackItem {
 	// --- Track P5 ---
 	/** LKI monstrous tracking on triggered abilities whose source left the battlefield before resolution (CR 603.4). */
 	sourceMonstrous?: boolean;
+	// --- Track P6 ---
+	/** Per-tag optional additional cost counts carried onto triggered abilities (e.g. Squad, Replicate). */
+	sourceKickedTagCounts?: Record<string, number>;
+	/** LKI prototyped tracking on triggered abilities whose source left the battlefield before resolution (CR 707.11, CR 719.3d). */
+	sourcePrototyped?: boolean;
+	/** CR 702.184a: evaluated power (and tapped creature locator for CR 608.2h resolution check) of the creature tapped to pay a Station cost. */
+	tappedCostPower?: number;
+	stationTappedId?: string;
+	stationTappedVersion?: number;
 }
 
 /** One binding of the IR interpreter ("it", "that creature"): the objects and their LKI. */
@@ -831,6 +863,8 @@ export interface CompiledDelayedEffect {
 	xValue?: number;
 	kickedCount?: number;
 	kickedTags?: string[];
+	// --- Track P6 ---
+	kickedTagCounts?: Record<string, number>;
 }
 
 export type DelayedTriggerEffect =
@@ -839,7 +873,9 @@ export type DelayedTriggerEffect =
 	| { kind: 'draw'; playerId: string; amount: number; upTo?: boolean }
 	| CompiledDelayedEffect
 	// --- Track P3 ---
-	| { kind: 'sacrifice'; targetInstanceId: string; targetObjectVersion?: number };
+	| { kind: 'sacrifice'; targetInstanceId: string; targetObjectVersion?: number }
+	// --- Track P6 ---
+	| { kind: 'warpExile'; targetInstanceId: string; targetObjectVersion?: number };
 
 export interface DelayedTrigger {
 	id: string;
@@ -1357,6 +1393,10 @@ export interface PendingCostPayment {
 	// --- Track P3 ---
 	sourceForetold?: boolean;
 	sourceBlitzed?: boolean;
+	// --- Track P6 ---
+	tappedCostPower?: number;
+	stationTappedId?: string;
+	stationTappedVersion?: number;
 	onceEachTurn?: boolean;
 	effectText?: string;
 	abilityCostIncomplete?: boolean;

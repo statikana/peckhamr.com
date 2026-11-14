@@ -159,6 +159,10 @@ import {
 	enumerateHandSpecialActions,
 	hasExileKeywordPermission
 } from './runtime/orthogonalKeywords.ts';
+import {
+	buildTrackP6CastOptions,
+	buildWarpExileDelayedTrigger
+} from './runtime/striatedFrames.ts';
 export { applyCastCostAids, formatManaRequirement, getSuspendSpec };
 import { getKeywordSpec } from './keywords.ts';
 import { evaluateAmount, matchesObjectFilter, objectManaValue, type FilterContext } from './runtime/objectFilter.ts';
@@ -919,6 +923,7 @@ function enumerateCandidateCastOptions(
 					...(meta.evoked ? { evoked: true } : {}),
 					...(meta.escaped ? { escaped: true } : {}),
 					...(meta.blitzed ? { blitzed: true } : {}),
+					...(meta.warped ? { warped: true } : {}),
 					...(meta.castSummarySuffix ? { castSummarySuffix: meta.castSummarySuffix } : {}),
 					...(meta.stackBadgeLabel ? { label: meta.stackBadgeLabel } : {})
 				};
@@ -952,6 +957,24 @@ function enumerateCandidateCastOptions(
 			fromZone,
 			taxSuffix,
 			keywordAltCost,
+			spellAdditionalCost,
+			spellOptionalAdditionalCosts,
+			buildPaymentAids: (zone, faceIdx, isFused, isFree) =>
+				buildCastPaymentAids(state, actor, inst, zone, faceIdx, isFused, isFree),
+			getSpellTargetRequirement,
+			spellChoosesX
+		}),
+		...buildTrackP6CastOptions({
+			state,
+			actorId,
+			inst,
+			card,
+			def,
+			fromZone,
+			isMultiFace,
+			layout,
+			candidateFaceIndices,
+			taxSuffix,
 			spellAdditionalCost,
 			spellOptionalAdditionalCosts,
 			buildPaymentAids: (zone, faceIdx, isFused, isFree) =>
@@ -1135,6 +1158,7 @@ function resolveCastOptionForAction(
 		candidates.find((o) => o.id === 'exile:permission') ??
 		candidates.find((o) => o.id === 'exile:foretell') ??
 		candidates.find((o) => o.id === 'exile:plot') ??
+		candidates.find((o) => o.id === 'exile:warp') ??
 		(candidates.length === 1 ? candidates[0] : undefined);
 	if (!defaultOpt) {
 		return { ok: false, error: 'Choose how to cast this spell (optionId is required).' };
@@ -1417,7 +1441,8 @@ function getSpellCostRequirementForOption(
 			extraManaCosts,
 			option.faceIndex ?? 0,
 			option.fused ?? false,
-			option.spellMods?.castFaceDown
+			option.spellMods?.castFaceDown,
+			option.spellMods?.prototyped
 		)
 	);
 }
@@ -1673,6 +1698,7 @@ function finalizeCastSpell(
 		zone: 'stack',
 		faceIndex: stackFaceIdx,
 		fused: stackFused,
+		...(opts.spellMods?.prototyped ? { prototyped: true } : {}),
 		...(castFaceDownSpec ? { isFaceDown: true, faceDownSpec: castFaceDownSpec } : {})
 	});
 	const spellDisplayName = faceDownLabel ?? stackView.name;
@@ -1703,7 +1729,9 @@ function finalizeCastSpell(
 			? 'Foretell'
 			: opts.castOptionId === 'exile:plot'
 				? 'Plot'
-				: undefined);
+				: opts.castOptionId === 'exile:warp' || inst.warpedByOwnerId
+					? 'Warp'
+					: undefined);
 	if (castFaceDownSpec) {
 		inst.isFaceDown = true;
 		inst.faceDownSpec = { ...castFaceDownSpec };
@@ -1714,6 +1742,7 @@ function finalizeCastSpell(
 		inst.faceDownSpec = undefined;
 		inst.faceDownLabel = undefined;
 	}
+	inst.prototyped = effectiveSpellMods?.prototyped ? true : undefined;
 	moveObject(state, inst, 'stack', {
 		from: { player: sourcePlayer, zone: sourceZone },
 		newTimestamp: true,
@@ -1886,6 +1915,9 @@ function finalizeActivateAbility(
 			...(pcp.faceIndex !== undefined ? { faceIndex: pcp.faceIndex } : {}),
 			...(crewedByIds !== undefined ? { crewedByIds } : {}),
 			...(saddledByIds !== undefined ? { saddledByIds } : {}),
+			...(pcp.tappedCostPower !== undefined ? { tappedCostPower: pcp.tappedCostPower } : {}),
+			...(pcp.stationTappedId ? { stationTappedId: pcp.stationTappedId } : {}),
+			...(pcp.stationTappedVersion !== undefined ? { stationTappedVersion: pcp.stationTappedVersion } : {}),
 			controllerId: actorId,
 			kind: 'activated',
 			abilityId: pcp.abilityId,
@@ -1975,6 +2007,20 @@ function executeOrResumePendingCostPayment(
 ): { ok: true } {
 	pcp.aidDescriptions ??= [];
 	if (!pcp.tapsAndManaDone) {
+		if (pcp.costKeyword === 'station') {
+			const tapPart = pcp.parts.find(
+				(pt) => !pt.isCostAid && pt.def.k === 'tapOthers' && (pt.objectIds?.length ?? 0) > 0
+			);
+			const tappedId = tapPart?.objectIds?.[0];
+			if (tappedId) {
+				const foundTapped = findPermanentOnBoard(state, tappedId);
+				pcp.stationTappedId = tappedId;
+				if (foundTapped) {
+					pcp.stationTappedVersion = foundTapped.inst.objectVersion ?? 1;
+					pcp.tappedCostPower = Math.max(0, evaluatePermanent(state, foundTapped.inst).power);
+				}
+			}
+		}
 		payTapAndManaCostParts(ctx, pcp.parts, pcp.manaPaid ?? null, pcp.descriptions, pcp.aidDescriptions);
 		pcp.tapsAndManaDone = true;
 	}
@@ -7291,6 +7337,7 @@ function runDelayedTriggers(state: GameState, phase: GamePhase, activePlayer: Pl
 						xValue: compiledMeta?.xValue ?? 0,
 						...(compiledMeta?.kickedCount !== undefined ? { sourceKickedCount: compiledMeta.kickedCount } : {}),
 						...(compiledMeta?.kickedTags?.length ? { sourceKickedTags: [...compiledMeta.kickedTags] } : {}),
+						...(compiledMeta?.kickedTagCounts ? { sourceKickedTagCounts: { ...compiledMeta.kickedTagCounts } } : {}),
 						...(delayedEffect ? { delayedEffect } : {}),
 						requiresGuidedResolution: false,
 						createdAt: Date.now()
@@ -7515,6 +7562,7 @@ for (const kind of [
 	'BlockersDeclared',
 	'DamageDealt',
 	'CounterPlaced',
+	'CounterRemoved',
 	'BecameTarget',
 	'Attached',
 	'TappedForMana',
@@ -7658,6 +7706,10 @@ function triggeredStackItem(state: GameState, t: PendingTrigger, idPrefix: strin
 	const sourceForetold = t.sourceForetold ?? isObjectForetold(state, t.source.instanceId, undefined, t.source);
 	const sourceBlitzed = t.sourceBlitzed ?? isObjectBlitzed(state, t.source.instanceId, undefined, t.source);
 	const sourceMonstrous = t.sourceMonstrous ?? Boolean((foundSource?.inst ?? t.source).isMonstrous);
+	const sourceObjForProto = foundSource?.inst ?? t.source;
+	const sourcePrototyped = Boolean(
+		sourceObjForProto.prototyped || sourceObjForProto.copiableState?.prototyped
+	);
 	const sourceIsFaceDown = Boolean(foundSource?.inst.isFaceDown);
 	const sourceFaceDownLabel = foundSource?.inst.faceDownLabel;
 	const sourceFaceDownSpec = foundSource?.inst.faceDownSpec;
@@ -7665,6 +7717,10 @@ function triggeredStackItem(state: GameState, t: PendingTrigger, idPrefix: strin
 		(t.faceIndex !== undefined ? t.sourceCard.faces?.[t.faceIndex]?.name : undefined) ??
 		t.sourceCard.name;
 	const titleSource = sourceIsFaceDown ? sourceFaceDownLabel || 'Face-Down Permanent' : faceTitleName;
+	const hasKickerInfo =
+		kickerLki.count > 0 ||
+		kickerLki.tags.length > 0 ||
+		Boolean(kickerLki.tagCounts && Object.keys(kickerLki.tagCounts).length > 0);
 	return withStackItemText(
 		{
 			id: uid(idPrefix, state),
@@ -7672,10 +7728,13 @@ function triggeredStackItem(state: GameState, t: PendingTrigger, idPrefix: strin
 			sourceObjectVersion: t.source.objectVersion,
 			sourceLkiPower,
 			sourceLkiToughness,
-			...(kickerLki.count > 0
+			...(hasKickerInfo
 				? {
 						sourceKickedCount: kickerLki.count,
-						sourceKickedTags: [...kickerLki.tags]
+						sourceKickedTags: [...kickerLki.tags],
+						...(kickerLki.tagCounts && Object.keys(kickerLki.tagCounts).length > 0
+							? { sourceKickedTagCounts: { ...kickerLki.tagCounts } }
+							: {})
 					}
 				: {}),
 			...(sourceEvoked ? { sourceEvoked: true } : {}),
@@ -7683,6 +7742,7 @@ function triggeredStackItem(state: GameState, t: PendingTrigger, idPrefix: strin
 			...(sourceForetold ? { sourceForetold: true } : {}),
 			...(sourceBlitzed ? { sourceBlitzed: true } : {}),
 			...(sourceMonstrous ? { sourceMonstrous: true } : {}),
+			...(sourcePrototyped ? { sourcePrototyped: true } : {}),
 			card: t.sourceCard,
 			...(t.faceIndex !== undefined ? { faceIndex: t.faceIndex } : {}),
 			...(sourceIsFaceDown
@@ -8940,6 +9000,30 @@ function resolveDelayedTriggerEffect(
 		}
 		return;
 	}
+	if (eff.kind === 'warpExile') {
+		const found = findPermanentOnBoard(state, eff.targetInstanceId);
+		if (
+			found &&
+			!found.inst.phasedOut &&
+			(eff.targetObjectVersion === undefined || found.inst.objectVersion === eff.targetObjectVersion)
+		) {
+			const targetInst = found.inst;
+			emitVfx(state, { kind: 'exile', targetId: targetInst.instanceId, label: targetInst.card.name });
+			movePermanentToZone(state, targetInst, 'exile');
+			// CR 702.185a / 702.185b: If exiled this way, its owner may cast it after the current turn has ended.
+			if (targetInst.zone === 'exile' && !targetInst.isToken) {
+				targetInst.warpedByOwnerId = targetInst.ownerId;
+				targetInst.warpedTurnSerial = state.turnSerial ?? state.turnNumber;
+			}
+			addLog(
+				state,
+				'cast',
+				`${item.title} exiled ${targetInst.card.name} (Warp — castable from exile on a later turn).`,
+				controller.playerId
+			);
+		}
+		return;
+	}
 	if (eff.kind === 'lose') {
 		loseTheGame(state, controller, `${item.title} ("you lose the game")`);
 		return;
@@ -9495,19 +9579,30 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 			perm.commanderCastCount = castCount;
 			perm.summoningSick = true;
 			perm.enteredWithX = item.xValue;
+			const isPrototypedSpell = Boolean(
+				item.spellMods?.prototyped || item.copiableState?.prototyped
+			);
+			const effectiveModsForKicker = isPrototypedSpell
+				? { ...item.spellMods, prototyped: true }
+				: item.spellMods;
 			const resolvedKicker = computeKickerTracking(
 				item.card,
 				item.optionalCostCounts,
-				{ spellMods: item.spellMods },
+				{ spellMods: effectiveModsForKicker },
 				item.faceIndex ?? 0,
 				item.fused ?? false
 			);
 			perm.kickedCount = resolvedKicker.count > 0 ? resolvedKicker.count : undefined;
 			perm.kickedTags = resolvedKicker.tags.length > 0 ? resolvedKicker.tags : undefined;
+			perm.kickedTagCounts =
+				resolvedKicker.tagCounts && Object.keys(resolvedKicker.tagCounts).length > 0
+					? resolvedKicker.tagCounts
+					: undefined;
 			perm.evoked = item.spellMods?.evoked ? true : undefined;
 			perm.escaped = item.spellMods?.escaped ? true : undefined;
 			perm.foretold = item.spellMods?.foretold ? true : undefined;
 			perm.blitzed = item.spellMods?.blitzed ? true : undefined;
+			perm.prototyped = isPrototypedSpell ? true : undefined;
 			// Reset pre-filled loyalty so moveObject initializes loyalty with counterMultiplier (CR 306.5b)
 			perm.counters.loyalty = 0;
 
@@ -9612,6 +9707,11 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 					buildBlitzSacrificeDelayedTrigger(uid('dtrig', state), controller.playerId, perm, item.card)
 				);
 			}
+			if (item.spellMods?.warped && perm.zone === 'battlefield') {
+				(state.delayedTriggers ??= []).push(
+					buildWarpExileDelayedTrigger(uid('dtrig', state), controller.playerId, perm)
+				);
+			}
 			addLog(
 				state,
 				'cast',
@@ -9691,10 +9791,11 @@ function activePlayerMayEndTurn(
 	}
 }
 
-/** Builds Layer 1a copiable card and CopiableState from a target permanent (CR 707.2, 707.8a, 708.2, 712.6d). */
+/** Builds Layer 1a copiable card and CopiableState from a target permanent (CR 707.2, 707.8a, 708.2, 712.6d, 719.3d). */
 function buildCopiedPermanentFields(
 	target: CardInstance,
 	notLegendary = false,
+	exceptPT?: { power: number; toughness: number },
 	isTokenCopy = false
 ): {
 	baseCardToCopy: ScryfallCard;
@@ -9711,12 +9812,21 @@ function buildCopiedPermanentFields(
 					(s) => s.toLowerCase() !== 'legendary'
 				);
 			}
+			if (exceptPT) {
+				strippedSpec.power = exceptPT.power;
+				strippedSpec.toughness = exceptPT.toughness;
+			}
 		}
 		const label = target.faceDownLabel || 'Face-Down Creature';
 		const baseCardToCopy = scrubFaceDownCard(label, 'battlefield', strippedSpec);
 		return {
 			baseCardToCopy,
-			copiableState: { card: baseCardToCopy },
+			copiableState: {
+				card: baseCardToCopy,
+				...(exceptPT
+					? { except: { power: exceptPT.power, toughness: exceptPT.toughness } }
+					: {})
+			},
 			displayName: label
 		};
 	}
@@ -9744,16 +9854,20 @@ function buildCopiedPermanentFields(
 			Boolean(target.copiableState?.isSingleFaceCopy) ||
 			((baseCardToCopy.layout === 'transform' || baseCardToCopy.layout === 'modal_dfc') &&
 				(baseCardToCopy.faces?.length ?? 0) > 1);
+	const isPrototyped = Boolean(target.prototyped || target.copiableState?.prototyped);
+	const hasExcept = Boolean(target.copiableState?.except || notLegendary || exceptPT);
 	const copiableState: CopiableState = {
 		card: baseCardToCopy,
 		...(!isTransformingTokenCopy && (faceIdx > 0 || isSingleFaceCopy)
 			? { faceIndex: faceIdx, isSingleFaceCopy: true }
 			: {}),
-		...(target.copiableState?.except || notLegendary
+		...(isPrototyped ? { prototyped: true } : {}),
+		...(hasExcept
 			? {
 					except: {
 						...target.copiableState?.except,
-						...(notLegendary ? { removeSupertypes: ['Legendary'] } : {})
+						...(notLegendary ? { removeSupertypes: ['Legendary'] } : {}),
+						...(exceptPT ? { power: exceptPT.power, toughness: exceptPT.toughness } : {})
 					}
 				}
 			: {})
@@ -9761,7 +9875,8 @@ function buildCopiedPermanentFields(
 	const view = resolveObjectFaces(baseCardToCopy, {
 		zone: 'battlefield',
 		faceIndex: faceIdx,
-		isSingleFaceCopy
+		isSingleFaceCopy,
+		prototyped: isPrototyped
 	});
 	return {
 		baseCardToCopy,
@@ -9776,11 +9891,13 @@ function copyPermanentAsToken(
 	controller: PlayerGameState,
 	original: CardInstance,
 	sourceName: string,
-	notLegendary = false
+	notLegendary = false,
+	exceptPT?: { power: number; toughness: number }
 ): CardInstance {
 	const { baseCardToCopy, copiableState, displayName } = buildCopiedPermanentFields(
 		original,
 		notLegendary,
+		exceptPT,
 		true
 	);
 	const tokenInst = createCardInstance(
@@ -9802,6 +9919,9 @@ function copyPermanentAsToken(
 	) {
 		tokenInst.transformed = true;
 		tokenInst.activeFaceIndex = origFaceIdx > 0 ? origFaceIdx : 1;
+	}
+	if (copiableState.prototyped) {
+		tokenInst.prototyped = true;
 	}
 	tokenInst.summoningSick = true;
 	moveObject(state, tokenInst, 'battlefield', { from: 'none', toPlayer: controller });
@@ -10331,26 +10451,33 @@ function pushCopiedStackItem(
 	let copiableState: CopiableState | undefined = orig.copiableState
 		? (JSON.parse(JSON.stringify(orig.copiableState)) as CopiableState)
 		: undefined;
-	if (opts?.exceptColors !== undefined || opts?.nonLegendary) {
+	const origPrototyped = Boolean(orig.spellMods?.prototyped || orig.copiableState?.prototyped);
+	if (opts?.exceptColors !== undefined || opts?.nonLegendary || origPrototyped) {
 		const base: CopiableState = copiableState ?? {
 			card: orig.card,
 			...(orig.faceIndex !== undefined ? { faceIndex: orig.faceIndex } : {}),
-			...(orig.fused !== undefined ? { fused: orig.fused } : {})
+			...(orig.fused !== undefined ? { fused: orig.fused } : {}),
+			...(origPrototyped ? { prototyped: true } : {})
 		};
-		base.except = { ...(base.except ?? {}) };
-		if (opts.exceptColors !== undefined) {
-			base.except.colors = [...opts.exceptColors];
+		if (origPrototyped) {
+			base.prototyped = true;
 		}
-		if (opts.nonLegendary) {
-			const cardCopy = JSON.parse(JSON.stringify(base.card)) as ScryfallCard;
-			cardCopy.typeLine = cardCopy.typeLine.replace(/\bLegendary\s+/g, '');
-			for (const f of cardCopy.faces ?? []) {
-				if (f.typeLine) f.typeLine = f.typeLine.replace(/\bLegendary\s+/g, '');
+		if (opts?.exceptColors !== undefined || opts?.nonLegendary) {
+			base.except = { ...(base.except ?? {}) };
+			if (opts.exceptColors !== undefined) {
+				base.except.colors = [...opts.exceptColors];
 			}
-			base.card = cardCopy;
-			const rem = new Set(base.except.removeSupertypes ?? []);
-			rem.add('Legendary');
-			base.except.removeSupertypes = [...rem];
+			if (opts.nonLegendary) {
+				const cardCopy = JSON.parse(JSON.stringify(base.card)) as ScryfallCard;
+				cardCopy.typeLine = cardCopy.typeLine.replace(/\bLegendary\s+/g, '');
+				for (const f of cardCopy.faces ?? []) {
+					if (f.typeLine) f.typeLine = f.typeLine.replace(/\bLegendary\s+/g, '');
+				}
+				base.card = cardCopy;
+				const rem = new Set(base.except.removeSupertypes ?? []);
+				rem.add('Legendary');
+				base.except.removeSupertypes = [...rem];
+			}
 		}
 		copiableState = base;
 	}
@@ -10405,6 +10532,7 @@ function pushCopiedStackItem(
 			objectVersion: 1,
 			card: orig.card,
 			...(copiableState ? { copiableState, copiableCard: copiableState.card } : {}),
+			...(origPrototyped ? { prototyped: true } : {}),
 			ownerId: controller.playerId,
 			controllerId: controller.playerId,
 			defaultControllerId: controller.playerId,
@@ -10470,10 +10598,14 @@ function pushCopiedStackItem(
 				? { sourceKickedCount: orig.sourceKickedCount }
 				: {}),
 			...(orig.sourceKickedTags ? { sourceKickedTags: [...orig.sourceKickedTags] } : {}),
+			...(orig.sourceKickedTagCounts
+				? { sourceKickedTagCounts: { ...orig.sourceKickedTagCounts } }
+				: {}),
 			...(orig.sourceEvoked ? { sourceEvoked: true } : {}),
 			...(orig.sourceEscaped ? { sourceEscaped: true } : {}),
 			...(orig.sourceForetold ? { sourceForetold: true } : {}),
 			...(orig.sourceBlitzed ? { sourceBlitzed: true } : {}),
+			...(orig.sourcePrototyped ? { sourcePrototyped: true } : {}),
 			card: orig.card,
 			...(orig.faceIndex !== undefined ? { faceIndex: orig.faceIndex } : {}),
 			...(orig.isFaceDown
@@ -10498,6 +10630,11 @@ function pushCopiedStackItem(
 			...(orig.grantSourceCard ? { grantSourceCard: orig.grantSourceCard } : {}),
 			...(orig.crewedByIds ? { crewedByIds: [...orig.crewedByIds] } : {}),
 			...(orig.saddledByIds ? { saddledByIds: [...orig.saddledByIds] } : {}),
+			...(orig.tappedCostPower !== undefined ? { tappedCostPower: orig.tappedCostPower } : {}),
+			...(orig.stationTappedId ? { stationTappedId: orig.stationTappedId } : {}),
+			...(orig.stationTappedVersion !== undefined
+				? { stationTappedVersion: orig.stationTappedVersion }
+				: {}),
 			...(orig.triggeredAbilityIndex !== undefined
 				? { triggeredAbilityIndex: orig.triggeredAbilityIndex }
 				: {}),
@@ -15156,6 +15293,7 @@ function checkSpellCastOptionLegalityInner(
 		zone: 'stack' as const,
 		faceIndex: option.faceIndex ?? 0,
 		fused: option.fused,
+		...(option.spellMods?.prototyped ? { prototyped: true } : {}),
 		...(option.spellMods?.castFaceDown
 			? { isFaceDown: true, faceDownSpec: option.spellMods.castFaceDown }
 			: {})

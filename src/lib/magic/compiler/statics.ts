@@ -89,7 +89,9 @@ const COUNTERS: Record<string, CounterType> = {
 	stun: 'stun',
 	lore: 'lore',
 	time: 'time',
-	age: 'age'
+	age: 'age',
+	level: 'level',
+	fade: 'fade'
 };
 
 /**
