@@ -1,4 +1,22 @@
 import type { DeckCardEntry, MagicDeck, ManaColor, ScryfallCard } from './types.ts';
+import archidektPreconsJson from './precons.archidekt.json' with { type: 'json' };
+
+export interface ArchidektPreconDeckSpec {
+	id: string;
+	archidektId: number;
+	archidektUrl: string;
+	name: string;
+	description: string;
+	commanderNames: string[];
+	companionName?: string;
+	nonBasicCounts: Array<[string, number]>;
+	basicCounts: Array<[string, number]>;
+}
+
+export interface ArchidektPreconStore {
+	cards: ScryfallCard[];
+	decks: ArchidektPreconDeckSpec[];
+}
 
 function makeCard(spec: {
 	id: string;
@@ -1678,20 +1696,53 @@ reg({
 	colorIdentity: ['W']
 });
 
+const WUBRG_ORDER: readonly ManaColor[] = ['W', 'U', 'B', 'R', 'G'];
+
+function lookupStapleCard(name: string): ScryfallCard | undefined {
+	const key = name.trim().toLowerCase();
+	if (STAPLE_CARDS[key]) return STAPLE_CARDS[key];
+	for (const card of Object.values(STAPLE_CARDS)) {
+		if (card.faces?.[0]?.name.toLowerCase() === key) return card;
+	}
+	return undefined;
+}
+
+const ARCHIDEKT_PRECON_STORE = archidektPreconsJson as unknown as ArchidektPreconStore;
+for (const importedCard of ARCHIDEKT_PRECON_STORE.cards) {
+	const key = importedCard.name.toLowerCase();
+	if (!STAPLE_CARDS[key]) {
+		STAPLE_CARDS[key] = importedCard;
+	}
+}
+
 function buildPreconDeck(params: {
 	id: string;
 	name: string;
 	description: string;
-	commanderName: string;
+	commanderName?: string;
+	commanderNames?: string[];
+	companionName?: string;
 	nonBasicCounts: Array<[string, number]>;
 	basicCounts: Array<[string, number]>;
 }): MagicDeck {
-	const commander = STAPLE_CARDS[params.commanderName.toLowerCase()];
+	const rawCmdNames =
+		params.commanderNames && params.commanderNames.length > 0
+			? params.commanderNames
+			: params.commanderName
+				? [params.commanderName]
+				: [];
+	const commanders = rawCmdNames
+		.map((n) => lookupStapleCard(n))
+		.filter((c): c is ScryfallCard => Boolean(c));
+	if (commanders.length === 0) {
+		throw new Error(`Precon "${params.id}" could not resolve commander(s): ${rawCmdNames.join(', ')}`);
+	}
+	const companion = params.companionName ? lookupStapleCard(params.companionName) : undefined;
 	const cards: DeckCardEntry[] = [];
 	let totalMain = 0;
 
 	for (const [name, qty] of params.nonBasicCounts) {
-		const card = STAPLE_CARDS[name.toLowerCase()];
+		const card = lookupStapleCard(name);
 		if (card) {
 			cards.push({ quantity: qty, card });
 			totalMain += qty;
@@ -1699,16 +1750,17 @@ function buildPreconDeck(params: {
 	}
 
 	for (const [name, qty] of params.basicCounts) {
-		const card = STAPLE_CARDS[name.toLowerCase()];
+		const card = lookupStapleCard(name);
 		if (card) {
 			cards.push({ quantity: qty, card });
 			totalMain += qty;
 		}
 	}
 
-	// Ensure exact 99 mainboard + 1 commander = 100 cards
-	if (totalMain < 99 && params.basicCounts.length > 0) {
-		const diff = 99 - totalMain;
+	const targetMain = 100 - commanders.length;
+	// Ensure exact (100 - commanders.length) mainboard + commanders = 100 cards
+	if (totalMain < targetMain && params.basicCounts.length > 0) {
+		const diff = targetMain - totalMain;
 		const lastBasic = cards[cards.length - 1];
 		if (lastBasic) {
 			lastBasic.quantity += diff;
@@ -1716,15 +1768,22 @@ function buildPreconDeck(params: {
 		}
 	}
 
+	const identitySet = new Set<ManaColor>();
+	for (const cmd of commanders) {
+		for (const c of cmd.colorIdentity) identitySet.add(c);
+	}
+	const colorIdentity = WUBRG_ORDER.filter((c) => identitySet.has(c));
+
 	return {
 		id: params.id,
 		userId: 'system_precon',
 		name: params.name,
 		description: params.description,
-		commanders: [commander],
+		commanders,
+		...(companion ? { companion } : {}),
 		cards,
-		colorIdentity: commander.colorIdentity,
-		cardCount: 1 + totalMain,
+		colorIdentity,
+		cardCount: commanders.length + totalMain,
 		isLegal: true,
 		validationErrors: [],
 		winCount: 0,
@@ -1954,5 +2013,6 @@ export const PRECON_DECKS: MagicDeck[] = [
 			['Swamp', 9],
 			['Plains', 8]
 		]
-	})
+	}),
+	...ARCHIDEKT_PRECON_STORE.decks.map((d) => buildPreconDeck(d))
 ];
