@@ -21,6 +21,7 @@
 		opponent: PlayerGameState;
 		status: PlayerStatusView;
 		boardViews: PermanentView[];
+		revealedHandCards?: CardInstance[];
 		commanderTaxIncrement?: number;
 		activeTurn?: boolean;
 		hasPriority?: boolean;
@@ -36,9 +37,9 @@
 		onAvatarClick?: (opponent: PlayerGameState) => void;
 		onDropTarget?: (e: DragEvent, target: TargetRef) => void;
 		onOpenZoneModal?: (req: ZoneModalRequest) => void;
-		onHoverCard?: (card: ScryfallCard, inst: CardInstance) => void;
-		onLeaveCard?: (card: ScryfallCard, inst: CardInstance) => void;
-		onInspectCard?: (card: ScryfallCard, inst: CardInstance) => void;
+		onHoverCard?: (card: ScryfallCard, inst?: CardInstance) => void;
+		onLeaveCard?: (card: ScryfallCard, inst?: CardInstance) => void;
+		onInspectCard?: (card: ScryfallCard, inst?: CardInstance) => void;
 		onPermanentClick?: (perm: CardInstance, owner: PlayerGameState) => void;
 	}
 
@@ -46,6 +47,7 @@
 		opponent,
 		status,
 		boardViews,
+		revealedHandCards = [],
 		commanderTaxIncrement = 2,
 		activeTurn = false,
 		hasPriority = false,
@@ -240,13 +242,31 @@
 		{/if}
 
 		<div class="opp-zones">
-			<span
-				class="z-chip"
-				data-game-id="{opponent.playerId}:hand"
-				title="Cards in Hand"
-			>
-				Hand: {opponent.handCount ?? opponent.hand.length}
-			</span>
+			{#if revealedHandCards.length > 0}
+				<button
+					type="button"
+					class="z-chip clickable revealed-hand-chip"
+					data-testid="opp-revealed-hand-btn"
+					data-game-id="{opponent.playerId}:hand"
+					title={`View ${revealedHandCards.length} revealed/known card(s) in ${opponent.username}'s hand (CR 400.2 / CR 701.20)`}
+					onclick={() =>
+						onOpenZoneModal?.({
+							title: 'Revealed Hand',
+							cards: revealedHandCards,
+							ownerName: opponent.username
+						})}
+				>
+					Hand: {opponent.handCount ?? opponent.hand.length} (👁 {revealedHandCards.length})
+				</button>
+			{:else}
+				<span
+					class="z-chip"
+					data-game-id="{opponent.playerId}:hand"
+					title="Cards in Hand"
+				>
+					Hand: {opponent.handCount ?? opponent.hand.length}
+				</span>
+			{/if}
 			<span
 				class="z-chip"
 				data-game-id="{opponent.playerId}:library"
@@ -254,6 +274,35 @@
 			>
 				Lib: {opponent.libraryCount ?? opponent.library.length}
 			</span>
+			{#if status.topOfLibraryView?.topCard}
+				{@const oppTop = status.topOfLibraryView.topCard}
+				<button
+					type="button"
+					class="z-chip clickable top-lib-chip"
+					data-testid="opp-top-library-pill"
+					data-game-id={oppTop.instanceId}
+					title={`Revealed top card of ${opponent.username}'s library: ${oppTop.card.name} (CR 401.5)`}
+					onmouseenter={() => onHoverCard?.(oppTop.card, oppTop)}
+					onmouseleave={() => onLeaveCard?.(oppTop.card, oppTop)}
+					onclick={() => onInspectCard?.(oppTop.card, oppTop)}
+				>
+					📖 Top: {oppTop.card.name}
+				</button>
+			{/if}
+			{#if status.companionView}
+				{@const oppComp = status.companionView}
+				<button
+					type="button"
+					class="z-chip clickable companion-chip"
+					data-testid="opp-companion-pill"
+					title={`${opponent.username}'s designated outside-the-game card: ${oppComp.card.name} (CR 702.139)`}
+					onmouseenter={() => onHoverCard?.(oppComp.card)}
+					onmouseleave={() => onLeaveCard?.(oppComp.card)}
+					onclick={() => onInspectCard?.(oppComp.card)}
+				>
+					🐾 Companion: {oppComp.card.name}
+				</button>
+			{/if}
 			<button
 				type="button"
 				class="z-chip clickable"
@@ -618,6 +667,26 @@
 	.z-chip.clickable:hover {
 		border-color: var(--mp-cyan);
 		color: var(--mp-cyan);
+	}
+	.z-chip.revealed-hand-chip {
+		border-color: var(--mp-cyan);
+		color: var(--mp-cyan);
+	}
+	.z-chip.top-lib-chip {
+		border-color: #ffd866;
+		color: #ffd866;
+		max-width: 170px;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.z-chip.companion-chip {
+		border-color: var(--mp-purple);
+		color: var(--mp-purple);
+		max-width: 180px;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 
 	.opp-field {

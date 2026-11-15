@@ -36,7 +36,7 @@ import {
 	type AllocationState
 } from './promptViewModel.ts';
 
-export type CastableZone = 'hand' | 'command' | 'exile' | 'graveyard' | 'battlefield';
+export type CastableZone = 'hand' | 'command' | 'exile' | 'graveyard' | 'library' | 'battlefield';
 
 export interface TargetingSession {
 	mode: 'spell' | 'ability';

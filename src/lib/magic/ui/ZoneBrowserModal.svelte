@@ -169,6 +169,10 @@
 							c.zone === 'exile' &&
 							(isCardPlayableNow ? isCardPlayableNow(c, 'exile') : exileCastOptions.length > 0)
 					)}
+					{@const gyLandOptions =
+						viewer && isMyGraveyard && c.zone === 'graveyard'
+							? getLandPlayOptions(gameState, viewer.playerId, c, 'graveyard')
+							: []}
 					{@const gyCastOptions =
 						viewer && isMyGraveyard && c.zone === 'graveyard'
 							? getCastOptions(gameState, viewer.playerId, c, 'graveyard')
@@ -180,7 +184,9 @@
 							c.zone === 'graveyard' &&
 							(isCardPlayableNow
 								? isCardPlayableNow(c, 'graveyard')
-								: gyCastOptions.length > 0 || gyZoneAbilities.length > 0)
+								: gyLandOptions.length > 0 ||
+									gyCastOptions.length > 0 ||
+									gyZoneAbilities.length > 0)
 					)}
 					<!-- svelte-ignore a11y_no_static_element_interactions -->
 					<div
@@ -205,6 +211,8 @@
 							<span class="badge purple">🛡️ Emblem (CR 114)</span>
 						{:else if c.isDungeon}
 							<span class="badge gold">🗺️ Dungeon (CR 309)</span>
+						{:else if c.zone === 'hand'}
+							<span class="badge cyan" data-testid="revealed-hand-card-badge">👁 Revealed</span>
 						{/if}
 
 						{#if c.isSuspended && c.counters.time > 0}
@@ -248,6 +256,43 @@
 											: '▶ Cast from Exile'}
 								</button>
 							{/if}
+						{/if}
+
+						{#if gyLandOptions.length > 0}
+							<span class="badge gold" data-testid="gy-playable-land-badge">
+								✨ Playable Land
+							</span>
+							{#each gyLandOptions as landOpt (landOpt.faceIndex)}
+								<button
+									type="button"
+									class="scry-zone-toggle to-top"
+									data-testid="gy-play-land-btn"
+									disabled={!canPlayFromGraveyard}
+									onclick={async () => {
+										zoneSearchQuery = '';
+										onClose();
+										if (
+											onPlayFromZone &&
+											gyLandOptions.length === 1 &&
+											gyCastOptions.length === 0 &&
+											gyZoneAbilities.length === 0
+										) {
+											await onPlayFromZone(c, 'graveyard');
+										} else {
+											await onGameAction({
+												type: 'play_land',
+												instanceId: c.instanceId,
+												fromZone: 'graveyard',
+												faceIndex: landOpt.faceIndex
+											});
+										}
+									}}
+								>
+									{gyLandOptions.length > 1
+										? `▶ Play Land (${landOpt.label})`
+										: '▶ Play Land'}
+								</button>
+							{/each}
 						{/if}
 
 						{#if gyCastOptions.length > 0 || gyZoneAbilities.length > 0}
@@ -452,6 +497,11 @@
 		background: rgba(255, 216, 102, 0.16);
 		color: #ffd866;
 		border: 1px solid rgba(255, 216, 102, 0.55);
+	}
+	.badge.cyan {
+		background: rgba(120, 220, 232, 0.16);
+		color: var(--mp-cyan, #78dce8);
+		border: 1px solid rgba(120, 220, 232, 0.55);
 	}
 	.scry-zone-toggle {
 		width: 100%;
