@@ -128,7 +128,10 @@ describe('Static grammar: continuous effects', () => {
 		assert.deepEqual(defs("Creatures your opponents control lose flying and can't have or gain flying."), [
 			{ k: 'continuous', layer: '6', affected: { types: ['Creature'], controller: 'opponent' }, mod: { k: 'removeKeywords', keywords: ['flying'], cantHaveOrGain: true } }
 		]);
-		unparsed('Enchanted creature has defender and loses flying.');
+		assert.deepEqual(defs('Enchanted creature has defender and loses flying.'), [
+			{ k: 'continuous', layer: '6', affected: 'attachedTo', mod: { k: 'addKeywords', keywords: ['defender'] } },
+			{ k: 'continuous', layer: '6', affected: 'attachedTo', mod: { k: 'removeKeywords', keywords: ['flying'] } }
+		]);
 	});
 
 	it('characteristic-defining abilities (layer 7a)', () => {
@@ -528,5 +531,223 @@ describe('Static grammar: Track P11 dynamic P/T, quoted grants, cost modifiers, 
 		]);
 	});
 });
+
+describe('Static grammar: Track P14 devotion, protection exemption, combat rules, zone permissions, prepared, and damage prevention', () => {
+	it('compiles Theros God devotion Layer 4 type removal, self-safe Aura protection, super-trample, and graveyard Incarnation statics', () => {
+		assert.deepEqual(defs("As long as your devotion to white is less than five, ~ isn't a creature."), [
+			{
+				k: 'continuous',
+				layer: '4',
+				affected: 'self',
+				mod: { k: 'removeTypes', types: ['Creature'] },
+				condition: {
+					k: 'compare',
+					left: { k: 'devotion', colors: ['W'], player: { k: 'you' } },
+					op: '<',
+					right: n(5)
+				}
+			}
+		]);
+		assert.deepEqual(
+			defs("Enchanted creature has protection from all colors. This effect doesn't remove ~."),
+			[
+				{
+					k: 'continuous',
+					layer: '6',
+					affected: 'attachedTo',
+					mod: {
+						k: 'addKeywords',
+						keywords: ['protection from all colors'],
+						protectionAttachmentExemption: 'self'
+					}
+				}
+			]
+		);
+		assert.deepEqual(defs("You may have ~ assign its combat damage as though it weren't blocked."), [
+			{ k: 'combatRule', affected: 'self', rule: { kind: 'assignCombatDamageAsThoughUnblocked' } }
+		]);
+		assert.deepEqual(
+			defs('As long as ~ is in your graveyard and you control an Island, creatures you control have flying.'),
+			[
+				{
+					k: 'continuous',
+					layer: '6',
+					affected: { types: ['Creature'], controller: 'you' },
+					mod: { k: 'addKeywords', keywords: ['flying'] },
+					activeInZone: 'graveyard',
+					condition: {
+						k: 'compare',
+						left: { k: 'count', of: { subtypes: ['Island'], controller: 'you' } },
+						op: '>=',
+						right: n(1)
+					}
+				}
+			]
+		);
+	});
+
+	it('compiles single-axis Layer 7b, compound inline tails, two-sentence Otherwise, context-aware attached conditions, and colorsOfObject', () => {
+		assert.deepEqual(defs('Creatures your opponents control have base toughness 1.'), [
+			{
+				k: 'continuous',
+				layer: '7b',
+				affected: { types: ['Creature'], controller: 'opponent' },
+				mod: { k: 'setBaseToughness', toughness: n(1) }
+			}
+		]);
+		assert.deepEqual(
+			defs('Other Spiders, Boars, Birds, and Squirrels you control get +1/+1 and have vigilance.'),
+			[
+				{
+					k: 'continuous',
+					layer: '7c',
+					affected: { other: true, subtypes: ['Spider', 'Boar', 'Bird', 'Squirrel'], controller: 'you' },
+					mod: { k: 'pt', power: n(1), toughness: n(1) }
+				},
+				{
+					k: 'continuous',
+					layer: '6',
+					affected: { other: true, subtypes: ['Spider', 'Boar', 'Bird', 'Squirrel'], controller: 'you' },
+					mod: { k: 'addKeywords', keywords: ['vigilance'] }
+				}
+			]
+		);
+		assert.deepEqual(
+			defs("Enchanted creature gets +2/+2 as long as it's a Vampire. Otherwise, it gets -2/-2."),
+			[
+				{
+					k: 'continuous',
+					layer: '7c',
+					affected: 'attachedTo',
+					mod: { k: 'pt', power: n(2), toughness: n(2) },
+					condition: { k: 'objectState', of: 'attachedTo', filter: { subtypes: ['Vampire'] } }
+				},
+				{
+					k: 'continuous',
+					layer: '7c',
+					affected: 'attachedTo',
+					mod: { k: 'pt', power: n(-2), toughness: n(-2) },
+					condition: {
+						k: 'not',
+						of: { k: 'objectState', of: 'attachedTo', filter: { subtypes: ['Vampire'] } }
+					}
+				}
+			]
+		);
+		assert.deepEqual(
+			defs("As long as enchanted permanent is a Vehicle, it's a creature in addition to its other types."),
+			[
+				{
+					k: 'continuous',
+					layer: '4',
+					affected: 'attachedTo',
+					mod: { k: 'addTypes', types: ['Creature'] },
+					condition: { k: 'objectState', of: 'attachedTo', filter: { subtypes: ['Vehicle'] } }
+				}
+			]
+		);
+		assert.deepEqual(
+			defs('Each other multicolored creature you control gets +1/+1 for each of its colors.'),
+			[
+				{
+					k: 'continuous',
+					layer: '7c',
+					affected: { other: true, multicolored: true, types: ['Creature'], controller: 'you' },
+					mod: {
+						k: 'pt',
+						power: { k: 'colorsOfObject', of: 'affected' },
+						toughness: { k: 'colorsOfObject', of: 'affected' }
+					}
+				}
+			]
+		);
+	});
+
+	it('compiles combat rules, flash grants, commander designation, zone play permissions, prepared ETB, and damage prevention', () => {
+		assert.deepEqual(defs("~ can attack as though it didn't have defender."), [
+			{ k: 'combatRule', affected: 'self', rule: { kind: 'canAttackDespiteDefender' } }
+		]);
+		assert.deepEqual(defs('Enchanted creature is goaded.'), [
+			{ k: 'combatRule', affected: 'attachedTo', rule: { kind: 'isGoaded' } }
+		]);
+		assert.deepEqual(defs("~ can't be blocked by creatures with greater power."), [
+			{ k: 'combatRule', affected: 'self', rule: { kind: 'cantBeBlockedByPowerGreaterThanSelf' } }
+		]);
+		assert.deepEqual(defs("~ can't block creatures with flying."), [
+			{
+				k: 'combatRule',
+				affected: 'self',
+				rule: { kind: 'cantBlockFilter', filter: { types: ['Creature'], hasKeywords: ['flying'] } }
+			}
+		]);
+		assert.deepEqual(defs('You may cast creature spells as though they had flash.'), [
+			{
+				k: 'ruleModifier',
+				rule: 'castAsThoughFlash',
+				who: { relation: 'you' },
+				params: { spells: { types: ['Creature'] } }
+			}
+		]);
+		assert.deepEqual(defs('~ can be your commander.'), [{ k: 'commanderDesignation' }]);
+		assert.deepEqual(defs('~ enters prepared.'), [
+			{
+				replacement: {
+					replaces: { event: 'zoneChange', filter: { object: 'self', to: 'battlefield' } },
+					with: { k: 'modify', entersPrepared: true }
+				}
+			}
+		]);
+		assert.deepEqual(
+			defs('During each of your turns, you may play a land and cast a permanent spell of each permanent type from your graveyard.'),
+			[
+				{
+					k: 'zonePlayPermission',
+					zone: 'graveyard',
+					allowLands: true,
+					allowSpells: true,
+					spellFilter: {
+						types: ['Artifact', 'Battle', 'Creature', 'Enchantment', 'Land', 'Planeswalker']
+					},
+					duringYourTurnOnly: true,
+					slotMode: 'perPermanentType'
+				}
+			]
+		);
+		assert.deepEqual(defs('You may cast ~ from your graveyard or from exile.'), [
+			{
+				k: 'zonePlayPermission',
+				zone: 'graveyard',
+				affects: 'self',
+				allowSpells: true
+			},
+			{
+				k: 'zonePlayPermission',
+				zone: 'exile',
+				affects: 'self',
+				allowSpells: true
+			}
+		]);
+		assert.deepEqual(
+			defs('If damage would be dealt to ~, prevent that damage and remove a +1/+1 counter from ~.'),
+			[
+				{
+					k: 'staticDamagePrevention',
+					amount: 'all',
+					target: 'self',
+					phantomCounterRemoval: { counter: '+1/+1', mode: 'one' }
+				}
+			]
+		);
+		assert.deepEqual(defs('Prevent all damage that would be dealt by sources with the chosen name.'), [
+			{
+				k: 'staticDamagePrevention',
+				amount: 'all',
+				target: 'any',
+				sourceFilter: { ofChosenName: true }
+			}
+		]);
+	});
+});
+
 
 

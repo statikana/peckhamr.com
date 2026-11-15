@@ -67,6 +67,13 @@ import {
 	matchesP13ObjectFilterFields
 } from './effectsWave5.ts';
 // --- End Track P13 ---
+// --- Track P14 ---
+import {
+	evaluateWave5Amount,
+	evaluateWave5Condition,
+	matchesWave5ObjectFilter
+} from './staticsAndCostsWave5.ts';
+// --- End Track P14 ---
 
 export interface FilterContext {
 	state: GameState;
@@ -651,6 +658,9 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 		return false;
 	}
 	// --- End Track P13 ---
+	// --- Track P14 ---
+	if (!matchesWave5ObjectFilter(obj, filter, ctx)) return false;
+	// --- End Track P14 ---
 	return true;
 }
 
@@ -797,9 +807,11 @@ export function evaluateAmount(amount: Amount, ctx: FilterContext): number {
 			);
 		}
 		// --- End Track P11 ---
-		// --- Track P13 ---
+		// --- Track P13 + Track P14 ---
 		case 'devotion':
-			return computeDevotionTo(ctx.state, ctx.controllerId, amount.colors);
+			return amount.player
+				? (evaluateWave5Amount(amount, ctx) ?? 0)
+				: computeDevotionTo(ctx.state, ctx.controllerId, amount.colors);
 		case 'unlockedDoorsCount': {
 			const pid =
 				amount.player.k === 'activePlayer'
@@ -835,16 +847,32 @@ export function evaluateAmount(amount: Amount, ctx: FilterContext): number {
 			const pl = ctx.state.players.find((p) => p.playerId === pid);
 			return pl?.dungeonsCompletedCount ?? 0;
 		}
-		case 'greatestStatAmong':
+		case 'greatestStatAmong': {
+			if (amount.filter.zone && amount.filter.zone !== 'battlefield') {
+				return evaluateWave5Amount(amount, ctx) ?? 0;
+			}
+			return computeStatAggregateAmong(
+				ctx.state,
+				amount.filter,
+				amount.stat,
+				'greatest',
+				(perm, f) => matchesObjectFilter(perm, f, ctx)
+			);
+		}
 		case 'totalStatAmong':
 			return computeStatAggregateAmong(
 				ctx.state,
 				amount.filter,
 				amount.stat,
-				amount.k === 'greatestStatAmong' ? 'greatest' : 'total',
+				'total',
 				(perm, f) => matchesObjectFilter(perm, f, ctx)
 			);
-		// --- End Track P13 ---
+		case 'targetsBeyondFirst':
+		case 'colorsOfObject':
+		case 'totalStatOf':
+		case 'anyNumber':
+			return evaluateWave5Amount(amount, ctx) ?? 0;
+		// --- End Track P13 + Track P14 ---
 		default:
 			return 0;
 	}
@@ -994,6 +1022,12 @@ export function evaluateCondition(cond: Condition, ctx: FilterContext): boolean 
 				}) ?? false
 			);
 		// --- End Track P13 ---
+		// --- Track P14 ---
+		case 'anyOpponentMetric':
+		case 'cardsDrawnThisTurnAtLeast':
+		case 'nthMatchingSpellThisTurn':
+			return evaluateWave5Condition(cond, ctx) ?? false;
+		// --- End Track P14 ---
 		default:
 			return false;
 	}

@@ -2,6 +2,12 @@ import { cardAbilities } from './compiler/index.ts';
 import { parseManaCost } from './oracle.ts';
 import { STAPLE_CARDS } from './precons.ts';
 import { splitSubtypes } from './runtime/layers.ts';
+// --- Track P14 ---
+import {
+	cardHasCommanderDesignation,
+	getCardDeckCopyLimit
+} from './runtime/staticsAndCostsWave5.ts';
+// --- End Track P14 ---
 import { isScryfallSyntaxQuery, matchesScryfallQuery } from './search.ts';
 import type {
 	CardInstance,
@@ -710,17 +716,37 @@ function isLegendaryBackground(card: ScryfallCard): boolean {
 	);
 }
 
+// --- Track P14 ---
+export function canCardBeCommander(card: ScryfallCard): boolean {
+	if (card.canBeCommander) return true;
+	const frontType = card.typeLine.includes(' // ') ? card.typeLine.split(' // ')[0] : card.typeLine;
+	if (
+		frontType.includes('Legendary') &&
+		(frontType.includes('Creature') ||
+			frontType.includes('Vehicle') ||
+			frontType.includes('Spacecraft'))
+	) {
+		return true;
+	}
+	return cardHasCommanderDesignation(card);
+}
+// --- End Track P14 ---
+
 function areValidCommanderPartners(c1: ScryfallCard, c2: ScryfallCard): boolean {
+	// --- Track P14 ---
+	const cmd1 = canCardBeCommander(c1);
+	const cmd2 = canCardBeCommander(c2);
+	// --- End Track P14 ---
 	// CR 702.124h: Partner + Partner
-	if (c1.canBeCommander && c2.canBeCommander && hasGenericPartner(c1) && hasGenericPartner(c2)) {
+	if (cmd1 && cmd2 && hasGenericPartner(c1) && hasGenericPartner(c2)) {
 		return true;
 	}
 	// CR 702.124j: Partner with [name] + [name]
 	const pw1 = partnerWithTarget(c1);
 	const pw2 = partnerWithTarget(c2);
 	if (
-		c1.canBeCommander &&
-		c2.canBeCommander &&
+		cmd1 &&
+		cmd2 &&
 		pw1 !== null &&
 		pw2 !== null &&
 		pw1 === c2.name.toLowerCase() &&
@@ -729,26 +755,26 @@ function areValidCommanderPartners(c1: ScryfallCard, c2: ScryfallCard): boolean 
 		return true;
 	}
 	// CR 702.124i: Friends forever + Friends forever
-	if (c1.canBeCommander && c2.canBeCommander && hasFriendsForever(c1) && hasFriendsForever(c2)) {
+	if (cmd1 && cmd2 && hasFriendsForever(c1) && hasFriendsForever(c2)) {
 		return true;
 	}
 	// CR 702.124i: the same partner—[text] ability on both ("Partner—Survivors"). Different partner
 	// abilities can't be combined (CR 702.124f), so the texts must match.
 	const pt1 = partnerTextVariant(c1);
-	if (c1.canBeCommander && c2.canBeCommander && pt1 !== null && pt1 === partnerTextVariant(c2)) {
+	if (cmd1 && cmd2 && pt1 !== null && pt1 === partnerTextVariant(c2)) {
 		return true;
 	}
 	// CR 702.124k: Choose a Background + Legendary Background enchantment
 	if (
-		(c1.canBeCommander && hasChooseABackground(c1) && isLegendaryBackground(c2)) ||
-		(c2.canBeCommander && hasChooseABackground(c2) && isLegendaryBackground(c1))
+		(cmd1 && hasChooseABackground(c1) && isLegendaryBackground(c2)) ||
+		(cmd2 && hasChooseABackground(c2) && isLegendaryBackground(c1))
 	) {
 		return true;
 	}
 	// CR 702.124m: Doctor's companion + Legendary Time Lord Doctor with no other creature types
 	if (
-		(c1.canBeCommander && hasDoctorsCompanion(c1) && isTimeLordDoctor(c2)) ||
-		(c2.canBeCommander && hasDoctorsCompanion(c2) && isTimeLordDoctor(c1))
+		(cmd1 && hasDoctorsCompanion(c1) && isTimeLordDoctor(c2)) ||
+		(cmd2 && hasDoctorsCompanion(c2) && isTimeLordDoctor(c1))
 	) {
 		return true;
 	}
@@ -772,9 +798,11 @@ export function validateCommanderDeck(
 		errors.push(`Too many Commanders (${commanders.length}); maximum is 2 with Partner/Background.`);
 	} else if (commanders.length === 1) {
 		const c = commanders[0];
-		if (!c.canBeCommander) {
+		// --- Track P14 ---
+		if (!canCardBeCommander(c)) {
 			errors.push(`${c.name} cannot legally be a Commander (not a Legendary Creature/Vehicle or allowed walker).`);
 		}
+		// --- End Track P14 ---
 	} else if (commanders.length === 2) {
 		const [c1, c2] = commanders;
 		if (!areValidCommanderPartners(c1, c2)) {
@@ -815,10 +843,15 @@ export function validateCommanderDeck(
 
 		const isBasic =
 			BASIC_LAND_NAMES.has(cNameLow) || entry.card.typeLine.includes('Basic Land');
-		const copyCap = CAPPED_COPY_CARDS[cNameLow];
+		// --- Track P14: IR-first deckCopyLimit (CR 903.5b, 100.2a) ---
+		const irCopyLimit = getCardDeckCopyLimit(entry.card);
+		const copyCap =
+			typeof irCopyLimit === 'number' ? irCopyLimit : CAPPED_COPY_CARDS[cNameLow];
 		const allowsMulti =
+			irCopyLimit === 'any' ||
 			MULTI_COPY_CARDS.has(cNameLow) ||
 			entry.card.oracleText.toLowerCase().includes('a deck can have any number of cards named');
+		// --- End Track P14 ---
 
 		if (copyCap !== undefined) {
 			if (totalForCard > copyCap) {

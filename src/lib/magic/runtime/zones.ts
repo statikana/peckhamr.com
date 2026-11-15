@@ -838,6 +838,9 @@ function finalizeZoneMove(
 		// --- Track P7 (CR 400.7) ---
 		obj.wasCast = undefined;
 		obj.castFromZone = undefined;
+		// --- Track P14 (CR 400.7 / 723.3b) ---
+		obj.isPrepared = undefined;
+		// --- End Track P14 ---
 		// --- Track P9 (CR 400.7) ---
 		obj.cameUnderControlAt = undefined;
 		obj.dashed = undefined;
@@ -863,6 +866,9 @@ function finalizeZoneMove(
 		delete obj.canAttackAsThoughNoDefenderThisTurn;
 		delete obj.ringBlockedForPlayerIds;
 		// --- End Track P13 ---
+		// --- Track P14 (CR 400.7 / 723.3b) ---
+		obj.isPrepared = undefined;
+		// --- End Track P14 ---
 		const prevObjVersion = obj.objectVersion || 1;
 		const pruneLeftPerm = <T extends { affected: Array<{ instanceId: string; objectVersion?: number }> }>(
 			list: T[] | undefined
@@ -905,6 +911,9 @@ function finalizeZoneMove(
 		// --- Track P7 (CR 400.7) ---
 		obj.wasCast = undefined;
 		obj.castFromZone = undefined;
+		// --- Track P14 (CR 400.7 / 723.3b) ---
+		obj.isPrepared = undefined;
+		// --- End Track P14 ---
 		// --- Track P9 (CR 400.7) ---
 		obj.cameUnderControlAt = undefined;
 		obj.riotHaste = undefined;
@@ -938,6 +947,9 @@ function finalizeZoneMove(
 		delete obj.canAttackAsThoughNoDefenderThisTurn;
 		delete obj.ringBlockedForPlayerIds;
 		// --- End Track P13 ---
+		// --- Track P14 (CR 400.7 / 723.3b) ---
+		obj.isPrepared = undefined;
+		// --- End Track P14 ---
 		if (dest !== 'stack') {
 			obj.manaColorsSpent = undefined;
 			// --- Track P10 ---

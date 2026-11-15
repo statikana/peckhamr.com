@@ -695,7 +695,10 @@ export function collectStaticAltCastOptions(
 	inst: CardInstance,
 	fromZone: CastOption['fromZone'],
 	faceIndex: number | undefined,
-	requiresTarget: boolean
+	requiresTarget: boolean,
+	// --- Track P14 ---
+	hasZonePermission = true
+	// --- End Track P14 ---
 ): CastOption[] {
 	const out: CastOption[] = [];
 	const card = effectiveCardForObject(inst);
@@ -706,11 +709,14 @@ export function collectStaticAltCastOptions(
 	const view = resolveObjectFaces(card, stackFaceOpts);
 	if (view.types.some((t) => t.toLowerCase() === 'land') && view.types.length === 1) return out;
 
-	const stackProxy: CardInstance = {
+	const stackProxy: CardInstance & { castSourceZone?: CastOption['fromZone'] } = {
 		...inst,
 		controllerId: actor.playerId,
 		zone: 'stack',
-		activeFaceIndex: faceIndex
+		activeFaceIndex: faceIndex,
+		// --- Track P14 ---
+		castSourceZone: fromZone
+		// --- End Track P14 ---
 	};
 	const choosesX = /\{X\}/i.test(view.manaCost || '');
 
@@ -725,9 +731,20 @@ export function collectStaticAltCastOptions(
 		const ab = selfAbilities[i];
 		if (ab.kind !== 'static' || ab.static.k !== 'altCastPermission') continue;
 		if (ab.static.affects !== 'self') continue;
+		// --- Track P14 ---
+		if (ab.static.allowedZones) {
+			if (!ab.static.allowedZones.includes(fromZone)) continue;
+		} else if (!hasZonePermission) {
+			continue;
+		}
+		// --- End Track P14 ---
 		if (ab.static.condition && !evaluateCondition(ab.static.condition, selfCtx)) continue;
 		const altMana = ab.static.manaCost;
-		const altChoosesX = /\{X\}/i.test(altMana) || choosesX;
+		// --- Track P14: CR 107.3b — alternative cost chooses X only if the alternative cost itself mentions X ---
+		const altChoosesX =
+			/\{X\}/i.test(altMana) ||
+			Boolean(ab.static.costDefs && JSON.stringify(ab.static.costDefs).includes('"k":"x"'));
+		// --- End Track P14 ---
 		out.push({
 			id: `static_alt_self_${faceIndex ?? 0}_${i}`,
 			label: `Alternative cost ${altMana || '{0}'} (${view.name})`,
@@ -754,6 +771,13 @@ export function collectStaticAltCastOptions(
 		(sourcePerm, controllerId, sourceName, st) => {
 			if (st.k !== 'altCastPermission' || st.affects === 'self') return;
 			if (controllerId !== actor.playerId) return;
+			// --- Track P14 ---
+			if (st.allowedZones) {
+				if (!st.allowedZones.includes(fromZone)) return;
+			} else if (!hasZonePermission) {
+				return;
+			}
+			// --- End Track P14 ---
 			const ctx: FilterContext = {
 				state,
 				controllerId,

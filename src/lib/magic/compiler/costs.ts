@@ -9,7 +9,7 @@
  * Runs alongside the Phase 1 adapter for now. scripts/magic-costs-diff.ts compares the two.
  */
 import type { Amount, Compare, Condition, CostDef, CostDelta, ObjectFilter, Span, StaticDef } from '../ir.ts';
-import type { CounterType, ManaColor } from '../types.ts';
+import type { CounterType, ManaColor, ZoneType } from '../types.ts';
 
 export interface CostParse {
 	defs: CostDef[];
@@ -124,17 +124,34 @@ const IRREGULAR_PLURALS: Record<string, string> = {
 	Elves: 'Elf',
 	Dwarves: 'Dwarf',
 	Wolves: 'Wolf',
+	Werewolves: 'Werewolf',
 	Zombies: 'Zombie',
 	Faeries: 'Faerie',
 	Valkyries: 'Valkyrie',
 	Mice: 'Mouse',
 	Fungi: 'Fungus',
+	Allies: 'Ally',
+	Mercenaries: 'Mercenary',
+	Heroes: 'Hero',
+	Loci: 'Locus',
+	Octopuses: 'Octopus',
 	Sorceries: 'Sorcery',
 	sorceries: 'sorcery'
 };
 
 // Subtypes whose singular ends in "s".
-const SINGULAR_S = new Set(['Plains', 'Fungus', 'Octopus', 'Homunculus', 'Atog', 'Nephilim', 'Astartes']);
+const SINGULAR_S = new Set([
+	'Plains',
+	'Fungus',
+	'Octopus',
+	'Homunculus',
+	'Atog',
+	'Nephilim',
+	'Astartes',
+	'Cyclops',
+	'Sphinx',
+	'Locus'
+]);
 
 export const COUNTERS: Record<string, CounterType> = {
 	'+1/+1': '+1/+1',
@@ -179,7 +196,7 @@ export const COUNTERS: Record<string, CounterType> = {
 };
 
 const COST_VERBS =
-	'sacrifice|tap|untap|discard|pay|exile|remove|return|put|reveal|mill|collect|forage|exert|blight|waterbend';
+	'sacrifice|tap|untap|discard|pay|exile|remove|return|put|reveal|mill|collect|forage|exert|blight|waterbend|behold';
 const COST_VERB = new RegExp(`^(?:\\{|(?:${COST_VERBS})\\b)`, 'i');
 const COST_SEPARATOR = new RegExp(`,\\s*|\\s+and\\s+(?=(?:${COST_VERBS})\\b)`, 'gi');
 
@@ -220,8 +237,49 @@ function noun(word: string): Noun | null {
 	if (low === 'permanent' || low === 'card') return { any: true };
 	if (low === 'token') return { token: true };
 	if (low === 'commander') return { isCommander: true };
-	if (/^[A-Z][a-z'-]+$/.test(s)) return { subtypes: [s] };
+	if (/^[A-Z][A-Za-z'-]*$/.test(s)) return { subtypes: [s] };
 	return null;
+}
+
+/**
+ * Parses a disjunctive color prefix from `words` ("white or blue ...", "white, blue, or black ...")
+ * when an `or` / `and/or` connector joins color words before the remaining phrase.
+ * Never consumes `and` so conjunctions like "white and blue creature" stay distinct from OR filters.
+ */
+function consumeLeadingColorDisjunction(words: string[]): ManaColor[] | null {
+	if (words.length < 3) return null;
+	const firstClean = words[0].replace(/,$/, '').toLowerCase();
+	if (!COLORS[firstClean] || firstClean === 'colorless') return null;
+	const colors: ManaColor[] = [COLORS[firstClean]];
+	let idx = 1;
+	let sawOr = false;
+	for (let guard = 0; guard < 8 && idx < words.length; guard++) {
+		const tok = words[idx].toLowerCase();
+		if (tok === 'or' || tok === 'and/or') {
+			if (idx + 1 >= words.length) return null;
+			const nextClean = words[idx + 1].replace(/,$/, '').toLowerCase();
+			if (!COLORS[nextClean] || nextClean === 'colorless') return null;
+			const col = COLORS[nextClean];
+			if (!colors.includes(col)) colors.push(col);
+			sawOr = true;
+			idx += 2;
+			break;
+		}
+		// Comma-separated color in a 3+ list ("white, blue, or black ...")
+		if (words[idx - 1].endsWith(',')) {
+			const clean = tok.replace(/,$/, '');
+			if (COLORS[clean] && clean !== 'colorless') {
+				const col = COLORS[clean];
+				if (!colors.includes(col)) colors.push(col);
+				idx += 1;
+				continue;
+			}
+		}
+		break;
+	}
+	if (!sawOr || idx >= words.length) return null;
+	words.splice(0, idx);
+	return colors;
 }
 
 /**
@@ -229,12 +287,41 @@ function noun(word: string): Noun | null {
  * "artifact or creature", "nonland permanent", "basic land card", "Goblin creature".
  * Returns null unless the whole phrase is understood.
  */
-export function parseObjectPhrase(phrase: string): ObjectFilter | null {
+export function parseObjectPhrase(
+	phrase: string,
+	opts?: { allowPluralAndDisjunction?: boolean; allowPlural?: boolean }
+): ObjectFilter | null {
 	const filter: ObjectFilter = {};
 	let rest = phrase.trim();
 
 	// Trailing qualifiers, in either order: "creature you control with power 4 or greater".
 	for (let guard = 0; guard < 24; guard++) {
+		// --- Track P14 ---
+		const onBfSuffix = rest.match(/^(.+?)\s+on the battlefield$/i);
+		if (onBfSuffix && !filter.zone) {
+			filter.zone = 'battlefield';
+			rest = onBfSuffix[1];
+			continue;
+		}
+		const namedSelf = rest.match(/^(.+?)\s+named ~$/i);
+		if (namedSelf && !filter.sameNameAsSource) {
+			filter.sameNameAsSource = true;
+			rest = namedSelf[1];
+			continue;
+		}
+		const sharesColor = rest.match(/^(.+?)\s+that shares? a color with ~$/i);
+		if (sharesColor && !filter.sharesColorWithSelf) {
+			filter.sharesColorWithSelf = true;
+			rest = sharesColor[1];
+			continue;
+		}
+		const noCounters = rest.match(/^(.+?)\s+with no counters on (?:it|them)$/i);
+		if (noCounters && filter.hasAnyCounter === undefined && !filter.hasCounters) {
+			filter.hasAnyCounter = false;
+			rest = noCounters[1];
+			continue;
+		}
+		// --- End Track P14 ---
 		const exiledWithSelf = rest.match(/^(.+?)\s+exiled with ~$/i);
 		if (exiledWithSelf && !filter.exiledWithSelf) {
 			filter.zone = 'exile';
@@ -312,7 +399,7 @@ export function parseObjectPhrase(phrase: string): ObjectFilter | null {
 			continue;
 		}
 		const withTypedCounter = rest.match(
-			/^(.+?)\s+with (?:(?:a|an|one or more)\s+)?([+-−]\d+\/[+-−]\d+|first strike|double strike|[a-z]+) counters? on (?:it|them)$/i
+			/^(.+?)\s+with (?:(?:a|an|one or more)\s+)?([+\-−]\d+\/[+\-−]\d+|first strike|double strike|[a-z]+) counters? on (?:it|them)$/i
 		);
 		if (withTypedCounter && !filter.hasCounters) {
 			const rawCounter = withTypedCounter[2].toLowerCase().replace(/−/g, '-');
@@ -322,6 +409,43 @@ export function parseObjectPhrase(phrase: string): ObjectFilter | null {
 				continue;
 			}
 		}
+		// --- Track P14: "that's / that are equipped / enchanted / tapped / untapped / <subtypes>" ---
+		const thatState = rest.match(
+			/^(.+?)\s+that(?:'s| is| are) (equipped|enchanted|tapped|untapped)$/i
+		);
+		if (thatState) {
+			const stKind = thatState[2].toLowerCase();
+			if (stKind === 'equipped' && filter.equipped === undefined) {
+				filter.equipped = true;
+				rest = thatState[1];
+				continue;
+			}
+			if (stKind === 'enchanted' && filter.enchanted === undefined) {
+				filter.enchanted = true;
+				rest = thatState[1];
+				continue;
+			}
+			if ((stKind === 'tapped' || stKind === 'untapped') && filter.tapped === undefined) {
+				filter.tapped = stKind === 'tapped';
+				rest = thatState[1];
+				continue;
+			}
+		}
+		const thatSubtypes = rest.match(/^(.+?)\s+that(?:'s| is| are)\s+(.+)$/i);
+		if (
+			thatSubtypes &&
+			!filter.subtypes &&
+			!/\bthat(?:'s| is| are)\b/i.test(thatSubtypes[2])
+		) {
+			const rhs = thatSubtypes[2].trim().replace(/^(?:a|an)\s+/i, '');
+			const subF = parseObjectPhrase(rhs, { allowPluralAndDisjunction: true });
+			if (subF && Object.keys(subF).length === 1 && subF.subtypes?.length) {
+				filter.subtypes = subF.subtypes;
+				rest = thatSubtypes[1];
+				continue;
+			}
+		}
+		// --- End Track P14 ---
 		const withoutKw = rest.match(/^(.+?)\s+without ([a-z ,/]+)$/i);
 		if (withoutKw) {
 			const kws = parseKeywordList(withoutKw[2], true);
@@ -363,8 +487,33 @@ export function parseObjectPhrase(phrase: string): ObjectFilter | null {
 		else if (low === 'blocking') filter.blocking = true;
 		else if (low === 'multicolored') filter.multicolored = true;
 		else if (low === 'monocolored') filter.monocolored = true;
+		// --- Track P14: Plural "equipped creatures" / "enchanted creatures" ---
+		else if (
+			low === 'equipped' &&
+			words.length >= 2 &&
+			/^(?:creatures|permanents|artifacts|lands)$/i.test(words[words.length - 1])
+		) {
+			filter.equipped = true;
+		} else if (
+			low === 'enchanted' &&
+			words.length >= 2 &&
+			/^(?:creatures|permanents|artifacts|lands)$/i.test(words[words.length - 1])
+		) {
+			filter.enchanted = true;
+		}
+		// --- End Track P14 ---
 		else if (SUPERTYPES[low]) (filter.supertypes ??= []).push(SUPERTYPES[low]);
-		else if (COLORS[low]) (filter.colors ??= []).push(COLORS[low]);
+		else if (COLORS[low]) {
+			const disjColors = consumeLeadingColorDisjunction(words);
+			if (disjColors) {
+				const dst = (filter.colors ??= []);
+				for (const c of disjColors) {
+					if (!dst.includes(c)) dst.push(c);
+				}
+				continue;
+			}
+			(filter.colors ??= []).push(COLORS[low]);
+		}
 		else if (NON_COLORS[low]) (filter.notColors ??= []).push(NON_COLORS[low]);
 		else if (/^non[a-z]+$/.test(low) && CARD_TYPES[low.slice(3)]) {
 			(filter.notTypes ??= []).push(CARD_TYPES[low.slice(3)]);
@@ -397,6 +546,42 @@ export function parseObjectPhrase(phrase: string): ObjectFilter | null {
 		else filter.subtypes = nouns.flatMap((n) => n!.subtypes!);
 		return filter;
 	}
+
+	// --- Track P14: Plural union subjects in static affected clauses ("Other Spiders, Boars, ... and Squirrels", "Other Elf and Warrior creatures") ---
+	if (opts?.allowPluralAndDisjunction && /\band\b/i.test(joined)) {
+		const copyWords = [...words];
+		let trailingType: string | undefined;
+		if (copyWords.length >= 4 && /^creatures$/i.test(copyWords[copyWords.length - 1])) {
+			trailingType = 'Creature';
+			copyWords.pop();
+		} else if (copyWords.length >= 4 && /^permanents$/i.test(copyWords[copyWords.length - 1])) {
+			copyWords.pop();
+		}
+		const copyJoined = copyWords.join(' ').replace(/,/g, ' ,');
+		if (/\band\b/i.test(copyJoined)) {
+			const alts = copyJoined
+				.split(/\s*(?:,\s*(?:and\b)?|\band\b)\s*/i)
+				.map((a) => a.trim())
+				.filter(Boolean);
+			if (alts.length >= 2) {
+				const nouns = alts.map((a) => (a.includes(' ') ? null : noun(a)));
+				if (!nouns.some((n) => !n || n.any || n.token)) {
+					const allTypes = nouns.every((n) => n!.types);
+					const allSubtypes = nouns.every((n) => n!.subtypes);
+					if (allTypes && !trailingType) {
+						filter.types = nouns.flatMap((n) => n!.types!);
+						return filter;
+					}
+					if (allSubtypes) {
+						filter.subtypes = nouns.flatMap((n) => n!.subtypes!);
+						if (trailingType) filter.types = [trailingType];
+						return filter;
+					}
+				}
+			}
+		}
+	}
+	// --- End Track P14 ---
 
 	// Conjunction: "Goblin creature", "Elf Warrior", "artifact creature" (all must hold).
 	const matchedTypes: string[] = [];
@@ -476,42 +661,104 @@ const payMana: Production = (part) => {
 	return [{ k: 'mana', cost: m[1] }];
 };
 
-/** "Sacrifice ~", "Sacrifice a creature", "Sacrifice two Foods", "Sacrifice another creature". */
+/** Parses a leading count token (`a`, `two`, `X`, `3`, `any number of`, or implicit `another`/`other`). */
+function parseLeadingCostCount(
+	raw: string,
+	allowImplicitAnother = true
+): { count: Amount; phrase: string } | null {
+	const trimmed = raw.trim();
+	const anyNum = trimmed.match(/^any number of\s+(.+)$/i);
+	if (anyNum) return { count: { k: 'anyNumber' }, phrase: anyNum[1].trim() };
+	const [first, ...rest] = trimmed.split(/\s+/);
+	if (!first) return null;
+	const n = count(first);
+	if (n && rest.length > 0) return { count: n, phrase: rest.join(' ') };
+	if (allowImplicitAnother && /^(?:another|other)\b/i.test(trimmed)) {
+		return { count: ONE, phrase: trimmed };
+	}
+	return null;
+}
+
+/** "Sacrifice ~", "Sacrifice a creature", "Sacrifice two Foods", "Sacrifice another creature", "Sacrifice any number of creatures". */
 const sacrifice: Production = (part) => {
 	const m = part.match(/^sacrifice (.+)$/i);
 	if (!m) return null;
 	if (m[1] === '~') return [{ k: 'sacrifice', count: ONE, filter: 'self' }];
-	const [first, ...rest] = m[1].split(' ');
-	const n = count(first);
-	const phrase = n ? rest.join(' ') : m[1];
-	if (!n && !/^(?:another|other)\b/i.test(phrase)) return null;
-	const filter = parseObjectPhrase(phrase);
+	const lead = parseLeadingCostCount(m[1], true);
+	if (!lead) return null;
+	const filter = parseObjectPhrase(lead.phrase);
 	if (!filter || filter.controller) return null;
-	return [{ k: 'sacrifice', count: n ?? ONE, filter: { ...filter, controller: 'you' } }];
+	return [{ k: 'sacrifice', count: lead.count, filter: { ...filter, controller: 'you' } }];
 };
 
-/** "Tap ten untapped Elves you control", "Tap an untapped creature you control". */
+/** "Tap ten untapped Elves you control", "Tap an untapped creature you control", "Tap another untapped creature you control", "Tap enchanted creature". */
 const tapOthers: Production = (part) => {
-	const m = part.match(/^tap (\S+) untapped (.+) you control$/i);
+	if (/^tap (?:enchanted|equipped) (?:creature|permanent|artifact|land|planeswalker)$/i.test(part)) {
+		return [{ k: 'tapAttached' }];
+	}
+	const anyUntapped = part.match(/^tap any number of untapped (.+) you control$/i);
+	if (anyUntapped) {
+		const filter = parseObjectPhrase(anyUntapped[1]);
+		if (!filter || filter.controller) return null;
+		return [
+			{
+				k: 'tapOthers',
+				count: { k: 'anyNumber' },
+				filter: { ...filter, controller: 'you', tapped: false }
+			}
+		];
+	}
+	const anotherUntapped = part.match(/^tap (another|other) untapped (.+) you control$/i);
+	if (anotherUntapped) {
+		const filter = parseObjectPhrase(`other ${anotherUntapped[2]}`);
+		if (!filter || filter.controller) return null;
+		return [{ k: 'tapOthers', count: ONE, filter: { ...filter, controller: 'you', tapped: false } }];
+	}
+	const m = part.match(/^tap (\S+) (other )?untapped (.+) you control$/i);
 	if (!m) return null;
 	const n = count(m[1]);
-	const filter = parseObjectPhrase(m[2]);
-	if (!n || !filter) return null;
+	const filter = parseObjectPhrase(`${m[2] ?? ''}${m[3]}`);
+	if (!n || !filter || filter.controller) return null;
 	return [{ k: 'tapOthers', count: n, filter: { ...filter, controller: 'you', tapped: false } }];
 };
 
-/** "Discard ~", "Discard a card", "Discard two cards", "Discard a creature card", "Discard a card at random". */
+function parseSingleDiscardBody(bodyRaw: string): Extract<CostDef, { k: 'discard' }> | null {
+	const body = bodyRaw.trim();
+	const randMatch = body.match(/^(.+?)( at random)?$/i);
+	if (!randMatch) return null;
+	const random = randMatch[2] ? true : undefined;
+	const lead = parseLeadingCostCount(randMatch[1], true);
+	if (!lead) return null;
+	if (/^cards?$/i.test(lead.phrase)) {
+		return { k: 'discard', count: lead.count, random };
+	}
+	if (!/\bcards?\b/i.test(lead.phrase)) return null;
+	const filter = parseObjectPhrase(lead.phrase);
+	if (!filter) return null;
+	return {
+		k: 'discard',
+		count: lead.count,
+		...(Object.keys(filter).length > 0 ? { filter } : {}),
+		random
+	};
+}
+
+/** "Discard ~", "Discard your hand", "Discard a card", "Discard another card named ~", "Discard an Island card and another card". */
 const discard: Production = (part) => {
 	if (/^discard ~$/i.test(part)) return [{ k: 'discard', count: ONE, filter: 'self' }];
-	const m = part.match(/^discard (\S+) (.+?)( at random)?$/i);
+	if (/^discard your hand$/i.test(part)) return [{ k: 'discardHand' }];
+	const m = part.match(/^discard (.+)$/i);
 	if (!m) return null;
-	const n = count(m[1]);
-	if (!n) return null;
-	const random = m[3] ? true : undefined;
-	if (/^cards?$/i.test(m[2])) return [{ k: 'discard', count: n, random }];
-	if (!/\bcards?$/i.test(m[2])) return null;
-	const filter = parseObjectPhrase(m[2]);
-	return filter ? [{ k: 'discard', count: n, filter, random }] : null;
+	const single = parseSingleDiscardBody(m[1]);
+	if (single) return [single];
+	// Compound single-verb discard ("discard an Island card and another card" — Foil).
+	const splitAnd = m[1].match(/^(.+?\bcards?)\s+and\s+(.+)$/i);
+	if (splitAnd) {
+		const d1 = parseSingleDiscardBody(splitAnd[1]);
+		const d2 = parseSingleDiscardBody(splitAnd[2]);
+		if (d1 && d2) return [d1, d2];
+	}
+	return null;
 };
 
 /** "Exile ~", "Exile ~ from your graveyard/hand", "Exile two creature cards from your graveyard", "Exile an artifact you control". */
@@ -530,36 +777,30 @@ const exileFrom: Production = (part) => {
 	}
 	const bf = part.match(/^exile (.+?) you control$/i);
 	if (bf) {
-		const [first, ...rest] = bf[1].trim().split(/\s+/);
-		const n = count(first);
-		const phrase = n ? rest.join(' ') : bf[1].trim();
-		if (!n && !/^(?:another|other)\b/i.test(phrase)) return null;
-		if (!phrase) return null;
-		const filter = parseObjectPhrase(phrase);
+		const lead = parseLeadingCostCount(bf[1], true);
+		if (!lead || !lead.phrase) return null;
+		const filter = parseObjectPhrase(lead.phrase);
 		if (!filter || filter.controller) return null;
 		return [
 			{
 				k: 'exileFrom',
 				zone: 'battlefield',
-				count: n ?? ONE,
+				count: lead.count,
 				filter: { ...filter, controller: 'you' }
 			}
 		];
 	}
 	const m = part.match(/^exile (.+?) from your (graveyard|hand)$/i);
 	if (!m) return null;
-	const [first, ...rest] = m[1].trim().split(/\s+/);
-	const n = count(first);
-	const phrase = n ? rest.join(' ') : m[1].trim();
-	if (!n && !/^(?:another|other)\b/i.test(phrase)) return null;
-	if (!phrase) return null;
-	const filter = /^cards?$/i.test(phrase) ? {} : parseObjectPhrase(phrase);
+	const lead = parseLeadingCostCount(m[1], true);
+	if (!lead || !lead.phrase) return null;
+	const filter = /^cards?$/i.test(lead.phrase) ? {} : parseObjectPhrase(lead.phrase);
 	if (!filter) return null;
 	return [
 		{
 			k: 'exileFrom',
 			zone: m[2].toLowerCase() as 'graveyard' | 'hand',
-			count: n ?? ONE,
+			count: lead.count,
 			filter: Object.keys(filter).length > 0 ? filter : undefined
 		}
 	];
@@ -658,17 +899,18 @@ const millCost: Production = (part) => {
 	return n ? [{ k: 'mill', count: n }] : null;
 };
 
-/** "Reveal a white card in/from your hand", "Reveal two red cards in/from your hand". */
+/** "Reveal a white card in/from your hand", "Reveal two red cards in/from your hand", "Reveal another Dragon card from your hand". */
 const revealFromHand: Production = (part) => {
-	const m = part.match(/^reveal (\S+) (.+?) (?:in|from) your hand$/i);
+	const m = part.match(/^reveal (.+?) (?:in|from) your hand$/i);
 	if (!m) return null;
-	const n = count(m[1]);
-	const filter = /^cards?$/i.test(m[2]) ? {} : parseObjectPhrase(m[2]);
-	if (!n || !filter) return null;
+	const lead = parseLeadingCostCount(m[1], true);
+	if (!lead) return null;
+	const filter = /^cards?$/i.test(lead.phrase) ? {} : parseObjectPhrase(lead.phrase);
+	if (!filter) return null;
 	return [
 		{
 			k: 'revealFromHand',
-			count: n,
+			count: lead.count,
 			...(Object.keys(filter).length > 0 ? { filter } : {})
 		}
 	];
@@ -677,11 +919,80 @@ const revealFromHand: Production = (part) => {
 /** "Exert ~" (CR 701.43a). */
 const exertSelf: Production = (part) => (/^exert ~$/i.test(part) ? [{ k: 'exertSelf' }] : null);
 
+// --- Track P14: Waterbend, Behold, Put Counters, & Put From Hand on Top of Library ---
+
+/** CR 701.67a–b: "Waterbend {4}", "Waterbend {X}", "Waterbend {2}{U}". */
+const waterbendCost: Production = (part) => {
+	const m = part.match(/^waterbend\s+((?:\{[^}]+\})+)$/i);
+	if (!m) return null;
+	const symbols = m[1].match(/\{[^}]+\}/g);
+	if (!symbols || symbols.some((s) => /^\{(?:T|Q|E|TK|P)\}$/i.test(s))) return null;
+	return [{ k: 'waterbend', cost: m[1] }];
+};
+
+/** CR 701.4a–b: "Behold a Dragon", "Behold an Elemental", "Behold a Dragon creature". */
+const beholdCost: Production = (part) => {
+	const m = part.match(/^behold\s+(?:a|an|one)\s+(.+)$/i);
+	if (!m) return null;
+	const filter = parseObjectPhrase(m[1]);
+	if (!filter || filter.controller) return null;
+	return [{ k: 'behold', count: ONE, filter }];
+};
+
+/** "Put a -1/-1 counter on ~", "Put two +1/+1 counters on ~", "Put a -1/-1 counter on a creature you control". */
+const putCountersCost: Production = (part) => {
+	const selfMatch = part.match(/^put (\S+) (.+?) counters? on ~$/i);
+	if (selfMatch) {
+		const cnt = count(selfMatch[1]);
+		const counter = lookupCounterWord(selfMatch[2]);
+		return cnt && counter ? [{ k: 'putCounters', count: cnt, counter, on: 'self' }] : null;
+	}
+	const ctrlMatch = part.match(
+		/^put (\S+) (.+?) counters? on (?:(?:a|an)\s+|(?=(?:another|other)\b))(.+?) you control$/i
+	);
+	if (ctrlMatch) {
+		const cnt = count(ctrlMatch[1]);
+		const counter = lookupCounterWord(ctrlMatch[2]);
+		const filter = parseObjectPhrase(ctrlMatch[3]);
+		return cnt && counter && filter && !filter.controller
+			? [{ k: 'putCounters', count: cnt, counter, on: { ...filter, controller: 'you' } }]
+			: null;
+	}
+	return null;
+};
+
+/** "Put a card from your hand on top of your library", "Put two cards from your hand on top of your library". */
+const putOnTopOfLibraryCost: Production = (part) => {
+	const m = part.match(/^put (.+?) from your hand on top of your library$/i);
+	if (!m) return null;
+	const lead = parseLeadingCostCount(m[1], true);
+	if (!lead) return null;
+	if (/^cards?$/i.test(lead.phrase)) {
+		return [{ k: 'putFromHandOnTopOfLibrary', count: lead.count }];
+	}
+	if (!/\bcards?\b/i.test(lead.phrase)) return null;
+	const filter = parseObjectPhrase(lead.phrase);
+	if (!filter) return null;
+	return [
+		{
+			k: 'putFromHandOnTopOfLibrary',
+			count: lead.count,
+			...(Object.keys(filter).length > 0 ? { filter } : {})
+		}
+	];
+};
+
+// --- End Track P14 ---
+
 const PRODUCTIONS: Production[] = [
 	manaSymbols,
 	payLife,
 	payEnergy,
 	payMana,
+	waterbendCost,
+	beholdCost,
+	putCountersCost,
+	putOnTopOfLibraryCost,
 	sacrifice,
 	tapOthers,
 	discard,
@@ -693,7 +1004,7 @@ const PRODUCTIONS: Production[] = [
 	exertSelf
 ];
 
-const OR_BEFORE_VERB = new RegExp(`\\s+or\\s+(?=(?:${COST_VERBS})\\b)`, 'i');
+const OR_BEFORE_VERB = new RegExp(`\\s+or\\s+(?=\\{|(?:${COST_VERBS})\\b)`, 'i');
 
 function parsePart(text: string): CostDef[] | null {
 	const out = PRODUCTIONS.reduce<CostDef[] | null>((acc, p) => acc ?? p(text), null);
@@ -755,10 +1066,24 @@ export function parseCost(text: string, offset = 0): CostParse {
 /**
  * Parses an additional-cost sentence: "As an additional cost to cast ~, <cost>." Returns null if the
  * sentence isn't one. "<cost> or <cost>" is a `choice`; "you may <cost>" is `optional`.
+ *
+ * Also returns `{ defs: [], unparsed: [] }` when `offset === 0` (`parseSpellFace` effect-sentence filter)
+ * and `sentence` is a compiled spell-face static (`costModifier`, `altCastPermission`, or `deckCopyLimit`),
+ * so `parseSpellFace` skips non-effect static sentences already collected by `spellAbilityCore`.
  */
-export function parseAdditionalCostSentence(sentence: string, offset = 0): CostParse | null {
+export function parseAdditionalCostSentence(sentence: string, offset = 0, _fromSpellCheck = true): CostParse | null {
 	const m = sentence.match(/^as an additional cost to cast (?:~|this spell), (.+?)\.?$/i);
-	if (!m) return null;
+	if (!m) {
+		// --- Track P14: Skip compiled spell-face static sentences inside parseSpellFace (offset === 0) ---
+		if (offset === 0 && _fromSpellCheck && !/^draw\b/i.test(sentence.trim())) {
+			const spellStatic = parseCostModifierSentence(sentence);
+			if (spellStatic) {
+				return { defs: [], unparsed: [] };
+			}
+		}
+		// --- End Track P14 ---
+		return null;
+	}
 	const start = offset + sentence.indexOf(m[1]);
 	const may = m[1].match(/^you may (.+)$/i);
 	if (may) {
@@ -814,8 +1139,83 @@ export function parseCostManaDelta(costStr: string, mode: 'reduce' | 'increase')
 	};
 }
 
+// --- Track P14: Devotion color list parser ("white", "white and blue", "white, blue, and black") ---
+export function parseDevotionColorList(raw: string): ManaColor[] | null {
+	const parts = raw
+		.trim()
+		.toLowerCase()
+		.split(/\s*(?:,\s*(?:and\s+)?|\band\b)\s*/)
+		.filter(Boolean);
+	if (parts.length === 0) return null;
+	const out: ManaColor[] = [];
+	for (const p of parts) {
+		const col = COLORS[p];
+		if (!col || col === 'C') return null;
+		if (!out.includes(col)) out.push(col);
+	}
+	return out;
+}
+
+function isSpellAltCostCompatible(def: CostDef): boolean {
+	switch (def.k) {
+		case 'mana':
+		case 'payLife':
+		case 'payEnergy':
+		case 'mill':
+		case 'waterbend':
+		case 'behold':
+		case 'discardHand':
+		case 'putFromHandOnTopOfLibrary':
+			return true;
+		case 'sacrifice':
+		case 'discard':
+		case 'tapOthers':
+		case 'returnToHand':
+		case 'revealFromHand':
+			return def.filter !== 'self';
+		case 'exileFrom':
+			return (
+				def.filter !== 'self' &&
+				(def.zone === 'graveyard' || def.zone === 'hand' || def.zone === 'battlefield')
+			);
+		case 'removeCounters':
+			return def.from !== 'self';
+		case 'putCounters':
+			return def.on !== 'self';
+		case 'choice':
+			return def.options.length > 0 && def.options.every((opt) => opt.length > 0 && opt.every(isSpellAltCostCompatible));
+		default:
+			return false;
+	}
+}
+
+function buildSelfAltCastStatic(costBodyRaw: string, condition?: Condition): StaticDef | null {
+	const parsed = parseCost(costBodyRaw.trim());
+	if (parsed.unparsed.length > 0 || parsed.defs.length === 0) return null;
+	if (!parsed.defs.every(isSpellAltCostCompatible)) return null;
+	const manaParts = parsed.defs.filter((d): d is Extract<CostDef, { k: 'mana' }> => d.k === 'mana');
+	const nonManaDefs = parsed.defs.filter((d) => d.k !== 'mana');
+	const manaCost = manaParts.length > 0 ? manaParts.map((m) => m.cost).join('') : '{0}';
+	return {
+		k: 'altCastPermission',
+		affects: 'self',
+		manaCost,
+		...(nonManaDefs.length > 0 ? { costDefs: nonManaDefs } : {}),
+		...(condition ? { condition } : {})
+	};
+}
+// --- End Track P14 ---
+
 export function parseCostMetricAmount(metricRaw: string): Amount | null {
 	const metric = metricRaw.trim().replace(/^(?:a|an)\s+/i, '');
+	// --- Track P14 ---
+	if (/^targets? beyond the first$/i.test(metric)) {
+		return { k: 'targetsBeyondFirst' };
+	}
+	if (/^opponents? you have$/i.test(metric)) {
+		return { k: 'opponentCount' };
+	}
+	// --- End Track P14 ---
 	if (/^time you've cast (?:your|a) commander from the command zone this game$/i.test(metric)) {
 		return { k: 'commanderCastCount' };
 	}
@@ -881,11 +1281,181 @@ export function parseCostMetricAmount(metricRaw: string): Amount | null {
 		const f = parseObjectPhrase(onBf[1].replace(/\s+and\s+/gi, ' or '));
 		if (f && !f.controller) return { k: 'count', of: { ...f, zone: 'battlefield' } };
 	}
+	// --- Track P14: "<noun> you control with ..." where `you control` precedes trailing qualifiers ---
+	const directCtrl = parseObjectPhrase(metric.replace(/\s+and\s+/gi, ' or '));
+	if (directCtrl && directCtrl.controller) {
+		return { k: 'count', of: { ...directCtrl, zone: 'battlefield' } };
+	}
+	// --- End Track P14 ---
 	return null;
 }
 
 export function parseSelfCostCondition(condRaw: string): Condition | null {
 	const c = condRaw.trim();
+	// --- Track P14: Compound AND/OR conditions, devotion, opponent life/comparison, spells cast ---
+	if (/\s+and\s+/i.test(c)) {
+		const subParts = c.split(/\s+and\s+/i).map((p) => p.trim());
+		if (subParts.length >= 2 && subParts.every((p) => /^(?:you|an opponent|it|there|a |your )\b/i.test(p))) {
+			const parsedSubs = subParts.map((p) => parseSelfCostCondition(p));
+			if (parsedSubs.every((x): x is Condition => x !== null)) {
+				return { k: 'and', of: parsedSubs };
+			}
+		}
+	}
+	const devAtLeast = c.match(/^your devotion to (.+?) is (\S+) or more$/i);
+	if (devAtLeast) {
+		const colors = parseDevotionColorList(devAtLeast[1]);
+		const min = count(devAtLeast[2]);
+		if (colors && min) {
+			return {
+				k: 'compare',
+				left: { k: 'devotion', colors, player: { k: 'you' } },
+				op: '>=',
+				right: min
+			};
+		}
+	}
+	const devLess = c.match(/^your devotion to (.+?) is less than (\S+)$/i);
+	if (devLess) {
+		const colors = parseDevotionColorList(devLess[1]);
+		const max = count(devLess[2]);
+		if (colors && max) {
+			return {
+				k: 'compare',
+				left: { k: 'devotion', colors, player: { k: 'you' } },
+				op: '<',
+				right: max
+			};
+		}
+	}
+	if (/^an opponent lost life this turn$/i.test(c)) return { k: 'opponentLostLifeThisTurn' };
+	if (/^a permanent card was put into your graveyard from anywhere this turn$/i.test(c)) {
+		return { k: 'descendedThisTurn' };
+	}
+	if (/^an opponent controls more lands than you$/i.test(c)) {
+		return { k: 'opponentComparison', metric: 'lands' };
+	}
+	if (/^an opponent controls more creatures than you$/i.test(c)) {
+		return { k: 'opponentComparison', metric: 'creatures' };
+	}
+	if (/^an opponent has more life than you$/i.test(c)) {
+		return { k: 'opponentComparison', metric: 'life' };
+	}
+	if (/^an opponent has more cards in hand than you$/i.test(c)) {
+		return { k: 'opponentComparison', metric: 'hand' };
+	}
+	if (/^you(?:'ve)? cast another spell this turn$/i.test(c)) {
+		return { k: 'spellsCastThisTurnCount', min: 1 };
+	}
+	const oppCastCnt = c.match(/^an opponent cast (\S+) or more spells this turn$/i);
+	const youCastCnt = c.match(/^you(?:'ve)? cast (\S+) or more (?:(.+?) )?spells this turn$/i);
+	if (youCastCnt && !oppCastCnt) {
+		const min = count(youCastCnt[1]);
+		const sf = youCastCnt[2] ? parseSpellFilterPhrase(youCastCnt[2]) : { filter: {}, other: false };
+		if (min && min.k === 'const' && sf && !sf.other) {
+			return {
+				k: 'spellsCastThisTurnCount',
+				min: min.n,
+				...(Object.keys(sf.filter).length > 0 ? { filter: sf.filter } : {})
+			};
+		}
+	}
+	const totalPwr = c.match(/^creatures you control have total power (\S+) or greater$/i);
+	if (totalPwr) {
+		const min = count(totalPwr[1]);
+		if (min && min.k === 'const') return { k: 'totalPowerControlled', min: min.n };
+	}
+	const drawnN = c.match(/^you(?:'ve)? drawn (\S+) or more cards this turn$/i);
+	if (drawnN) {
+		const min = count(drawnN[1]);
+		if (min && min.k === 'const') return { k: 'cardsDrawnThisTurnAtLeast', min: min.n };
+	}
+	if (/^an opponent has no cards in (?:their )?hand$/i.test(c)) {
+		return { k: 'anyOpponentMetric', metric: 'hand', op: '=', count: 0 };
+	}
+	const oppHandMax = c.match(/^an opponent has (\S+) or (?:fewer|less) cards? in (?:their )?hand$/i);
+	if (oppHandMax) {
+		const mx = count(oppHandMax[1]);
+		if (mx && mx.k === 'const') {
+			return { k: 'anyOpponentMetric', metric: 'hand', op: '<=', count: mx.n };
+		}
+	}
+	const oppLifeMax = c.match(/^an opponent has (\S+) or (?:less|fewer) life$/i);
+	if (oppLifeMax) {
+		const mx = count(oppLifeMax[1]);
+		if (mx && mx.k === 'const') {
+			return { k: 'anyOpponentMetric', metric: 'life', op: '<=', count: mx.n };
+		}
+	}
+	const oppGyMin = c.match(/^an opponent has (\S+) or more cards in (?:their|a) graveyard$/i);
+	if (oppGyMin) {
+		const mn = count(oppGyMin[1]);
+		if (mn && mn.k === 'const') {
+			return { k: 'anyOpponentMetric', metric: 'graveyard', op: '>=', count: mn.n };
+		}
+	}
+	if (/^you have no cards in (?:your )?hand$/i.test(c)) {
+		return {
+			k: 'compare',
+			left: { k: 'cardsIn', zone: 'hand', of: { k: 'you' } },
+			op: '=',
+			right: { k: 'const', n: 0 }
+		};
+	}
+	const youHandCmp = c.match(/^you have (\S+) or (fewer|less|more) cards? in (?:your )?hand$/i);
+	if (youHandCmp) {
+		const cnt = count(youHandCmp[1]);
+		if (cnt) {
+			return {
+				k: 'compare',
+				left: { k: 'cardsIn', zone: 'hand', of: { k: 'you' } },
+				op: youHandCmp[2].toLowerCase() === 'more' ? '>=' : '<=',
+				right: cnt
+			};
+		}
+	}
+	const youLifeMin = c.match(/^you have (\S+) or more life$/i);
+	if (youLifeMin) {
+		const mn = count(youLifeMin[1]);
+		if (mn) {
+			return { k: 'compare', left: { k: 'life', of: { k: 'you' } }, op: '>=', right: mn };
+		}
+	}
+	const youLifeMax = c.match(/^you have (\S+) or less life$/i);
+	if (youLifeMax) {
+		const mx = count(youLifeMax[1]);
+		if (mx) {
+			return { k: 'compare', left: { k: 'life', of: { k: 'you' } }, op: '<=', right: mx };
+		}
+	}
+	const singleGy = c.match(/^there is (?:a|an) (.+?) card in your graveyard$/i);
+	if (singleGy) {
+		const f = parseObjectPhrase(`${singleGy[1].replace(/\s+and\s+/gi, ' or ')} card`);
+		if (f && !f.controller) {
+			return {
+				k: 'compare',
+				left: { k: 'count', of: { ...f, zone: 'graveyard', owner: 'you' } },
+				op: '>=',
+				right: { k: 'const', n: 1 }
+			};
+		}
+	}
+	const allGyTotal = c.match(/^there are (\S+) or more (?:(.+?) )?cards(?: total)? in all graveyards$/i);
+	if (allGyTotal) {
+		const mn = count(allGyTotal[1]);
+		const f = allGyTotal[2]
+			? parseObjectPhrase(`${allGyTotal[2].replace(/\s+and\s+/gi, ' or ')} card`)
+			: {};
+		if (mn && f && !f.controller) {
+			return {
+				k: 'compare',
+				left: { k: 'count', of: { ...f, zone: 'graveyard' } },
+				op: '>=',
+				right: mn
+			};
+		}
+	}
+	// --- End Track P14 ---
 	if (/^you control (?:a|your) commander$/i.test(c)) return { k: 'controlCommander' };
 	if (/^a creature died this turn$/i.test(c)) return { k: 'creatureDiedThisTurn' };
 	if (/^you attacked(?: with a creature)? this turn$/i.test(c)) return { k: 'attackedThisTurn' };
@@ -1020,6 +1590,14 @@ export function parseCostModifierSentence(sentence: string): StaticDef | null {
 	let text = sentence.trim().replace(/\.$/, '');
 	let coloredOnly = false;
 	let minTotalMana: number | undefined;
+	// --- Track P14: Turn-timing prefix ("During your turn, ..." / "During turns other than yours, ...") ---
+	let turnPrefixCondition: Condition | undefined;
+	const otherTurnsPrefix = text.match(/^during turns other than yours,\s*(.+)$/i);
+	if (otherTurnsPrefix) {
+		turnPrefixCondition = { k: 'not', of: { k: 'isTurnOf', player: { k: 'you' } } };
+		text = otherTurnsPrefix[1].trim();
+	}
+	// --- End Track P14 ---
 
 	for (let guard = 0; guard < 4; guard++) {
 		const coloredClause = text.match(/^(.+?)\.\s*this effect reduces only the amount of colored mana you pay$/i);
@@ -1058,6 +1636,236 @@ export function parseCostModifierSentence(sentence: string): StaticDef | null {
 			condition: { k: 'controlCommander' }
 		};
 	}
+
+	// --- Track P14: Deck copy limits, pitch/bounce/conditional self alt-cast permissions, `{X} less` stat reductions, and non-hand spell modifiers ---
+	if (!coloredOnly && minTotalMana === undefined) {
+		if (/^a deck can have any number of cards named ~$/i.test(text)) {
+			return { k: 'deckCopyLimit', limit: 'any' };
+		}
+		const upToCopies = text.match(/^a deck can have up to (\S+) cards named ~$/i);
+		if (upToCopies) {
+			const lim = count(upToCopies[1]);
+			if (lim && lim.k === 'const' && lim.n >= 1) {
+				return { k: 'deckCopyLimit', limit: lim.n };
+			}
+		}
+
+		// "You may <cost> rather than pay this spell's/~'s mana cost." (Force of Will, Foil, Daze, Gush, Borderposts, Flares, Allosaurus Rider, ...)
+		const selfPitchAlt = text.match(
+			/^you may (.+?) rather than pay (?:this spell's|~'s) mana cost$/i
+		);
+		if (selfPitchAlt) {
+			const alt = buildSelfAltCastStatic(selfPitchAlt[1]);
+			if (alt) return alt;
+		}
+
+		// "If <condition>, you may <cost> rather than pay this spell's/~'s mana cost." (Force of Negation/Vigor/Despair, Snuff Out, Traps, ...)
+		const condPitchAlt = text.match(
+			/^if (.+?),\s*you may (.+?) rather than pay (?:this spell's|~'s) mana cost$/i
+		);
+		if (condPitchAlt) {
+			const cond = parseSelfCostCondition(condPitchAlt[1]);
+			if (cond) {
+				const alt = buildSelfAltCastStatic(condPitchAlt[2], cond);
+				if (alt) return alt;
+			}
+		}
+
+		// "If <condition>, you may cast this spell/~ without paying its mana cost." (Submerge, Mogg Salvage, Massacre, Once Upon a Time partial, ...)
+		const condFreeAlt = text.match(
+			/^if (.+?),\s*you may cast (?:this spell|~) without paying its mana cost$/i
+		);
+		if (condFreeAlt) {
+			const cond = parseSelfCostCondition(condFreeAlt[1]);
+			if (cond) {
+				return {
+					k: 'altCastPermission',
+					affects: 'self',
+					manaCost: '{0}',
+					condition: cond
+				};
+			}
+		}
+	}
+
+	// "{X} less to cast, where X is ..." (The Great Henge, Ghalta, Pride of Hull Clade, devotion, ...)
+	const selfWhereX = text.match(
+		/^(?:during your turn,\s*)?(?:this spell|~) costs \{X\} less to cast,\s*where X is (.+)$/i
+	);
+	if (selfWhereX) {
+		const isDuringYourTurn = /^during your turn,/i.test(text);
+		const xClause = selfWhereX[1].trim();
+		let xAmt: Amount | null = null;
+		const greatestMatch = xClause.match(
+			/^the greatest (power|toughness|mana value) among (.+?) you control$/i
+		);
+		if (greatestMatch) {
+			const statKind = greatestMatch[1].toLowerCase();
+			const stat = statKind === 'power' ? 'power' : statKind === 'toughness' ? 'toughness' : 'manaValue';
+			const f = parseObjectPhrase(greatestMatch[2].replace(/\s+and\s+/gi, ' or '));
+			if (f && !f.controller) {
+				xAmt = { k: 'greatestStatAmong', stat, filter: { ...f, controller: 'you', zone: 'battlefield' } };
+			}
+		}
+		if (!xAmt) {
+			const totalMatch = xClause.match(
+				/^the total (power|toughness|mana value) of (.+?) you control$/i
+			);
+			if (totalMatch) {
+				const statKind = totalMatch[1].toLowerCase();
+				const stat = statKind === 'power' ? 'power' : statKind === 'toughness' ? 'toughness' : 'manaValue';
+				const f = parseObjectPhrase(totalMatch[2].replace(/\s+and\s+/gi, ' or '));
+				if (f && !f.controller) {
+					xAmt = { k: 'totalStatOf', stat, filter: { ...f, controller: 'you', zone: 'battlefield' } };
+				}
+			}
+		}
+		if (!xAmt) {
+			const devMatch = xClause.match(/^your devotion to (.+)$/i);
+			if (devMatch) {
+				const cols = parseDevotionColorList(devMatch[1]);
+				if (cols) xAmt = { k: 'devotion', colors: cols, player: { k: 'you' } };
+			}
+		}
+		if (!xAmt && /^your life total$/i.test(xClause)) {
+			xAmt = { k: 'life', of: { k: 'you' } };
+		}
+		if (!xAmt) {
+			const numOf = xClause.match(/^the number of (.+)$/i);
+			if (numOf) xAmt = parseCostMetricAmount(numOf[1]);
+		}
+		const delta = withFloorAndColored({ mode: 'reduce', generic: 1 });
+		if (xAmt && delta) {
+			return {
+				k: 'costModifier',
+				affects: { k: 'self' },
+				delta: { ...delta, per: xAmt },
+				who: { relation: 'you' },
+				...(isDuringYourTurn ? { condition: { k: 'isTurnOf', player: { k: 'you' } } } : {})
+			};
+		}
+	}
+
+	// "[<phrase> ]spells you/your opponents cast from anywhere other than your/their hand(s) cost {N} less/more to cast"
+	const outsideHandMod = text.match(
+		/^(?:(.+?) )?spells (you|your opponents) cast from anywhere other than (?:your|their|a player's) hands? cost ((?:\{[^}]+\})+) (less|more) to cast$/i
+	);
+	if (outsideHandMod) {
+		const sp = outsideHandMod[1] ? parseSpellFilterPhrase(outsideHandMod[1]) : { filter: {}, other: false };
+		const rawDelta = parseCostManaDelta(
+			outsideHandMod[3],
+			outsideHandMod[4].toLowerCase() === 'less' ? 'reduce' : 'increase'
+		);
+		const delta = rawDelta && withFloorAndColored(rawDelta);
+		if (sp && delta) {
+			const who = outsideHandMod[2].toLowerCase() === 'you' ? 'you' : 'each_opponent';
+			return {
+				k: 'costModifier',
+				affects: {
+					k: 'spell',
+					filter: {
+						...sp.filter,
+						...(sp.other ? { other: true } : {}),
+						castFromOutsideHand: true
+					}
+				},
+				delta,
+				who: { relation: who },
+				...(turnPrefixCondition ? { condition: turnPrefixCondition } : {})
+			};
+		}
+	}
+
+	// "[<phrase> ]spells you/your opponents cast from your graveyard / exile cost {N} less/more to cast"
+	const fromZoneMod = text.match(
+		/^(?:(.+?) )?spells (you|your opponents) cast from (your graveyard|their graveyards|a graveyard|exile) cost ((?:\{[^}]+\})+) (less|more) to cast$/i
+	);
+	if (fromZoneMod) {
+		const sp = fromZoneMod[1] ? parseSpellFilterPhrase(fromZoneMod[1]) : { filter: {}, other: false };
+		const rawDelta = parseCostManaDelta(
+			fromZoneMod[4],
+			fromZoneMod[5].toLowerCase() === 'less' ? 'reduce' : 'increase'
+		);
+		const delta = rawDelta && withFloorAndColored(rawDelta);
+		if (sp && delta) {
+			const who = fromZoneMod[2].toLowerCase() === 'you' ? 'you' : 'each_opponent';
+			const castFromZone: ZoneType = /exile/i.test(fromZoneMod[3]) ? 'exile' : 'graveyard';
+			return {
+				k: 'costModifier',
+				affects: {
+					k: 'spell',
+					filter: {
+						...sp.filter,
+						...(sp.other ? { other: true } : {}),
+						castFromZone
+					}
+				},
+				delta,
+				who: { relation: who },
+				...(turnPrefixCondition ? { condition: turnPrefixCondition } : {})
+			};
+		}
+	}
+
+	// "If <condition>, this spell/~ costs {N} less/more to cast" (Avatar of Will/Woe/Fury/Might/Hope, etc.)
+	const prefixIfSelf = text.match(
+		/^if (.+?),\s*(?:this spell|~) costs ((?:\{[^}]+\})+) (less|more) to cast$/i
+	);
+	if (prefixIfSelf) {
+		const cond = parseSelfCostCondition(prefixIfSelf[1]);
+		const rawDelta = parseCostManaDelta(
+			prefixIfSelf[2],
+			prefixIfSelf[3].toLowerCase() === 'less' ? 'reduce' : 'increase'
+		);
+		const delta = rawDelta && withFloorAndColored(rawDelta);
+		if (cond && delta) {
+			const fullCond: Condition = turnPrefixCondition
+				? { k: 'and', of: [turnPrefixCondition, cond] }
+				: cond;
+			return {
+				k: 'costModifier',
+				affects: { k: 'self' },
+				delta,
+				who: { relation: 'you' },
+				condition: fullCond
+			};
+		}
+	}
+
+	// "The first/second [<phrase>] spell you cast each turn costs {N} less/more to cast"
+	const nthSpellMod = text.match(
+		/^(?:during your turn,\s*)?the (first|second) (?:(.+?) )?spell you cast each turn costs ((?:\{[^}]+\})+) (less|more) to cast$/i
+	);
+	if (nthSpellMod) {
+		const duringTurn = /^during your turn,/i.test(text);
+		const ordinal: 1 | 2 = nthSpellMod[1].toLowerCase() === 'first' ? 1 : 2;
+		const sp = nthSpellMod[2] ? parseSpellFilterPhrase(nthSpellMod[2]) : { filter: {}, other: false };
+		const rawDelta = parseCostManaDelta(
+			nthSpellMod[3],
+			nthSpellMod[4].toLowerCase() === 'less' ? 'reduce' : 'increase'
+		);
+		const delta = rawDelta && withFloorAndColored(rawDelta);
+		if (sp && !sp.other && delta) {
+			const hasFilter = Object.keys(sp.filter).length > 0;
+			const nthCond: Condition = {
+				k: 'nthMatchingSpellThisTurn',
+				ordinal,
+				...(hasFilter ? { filter: sp.filter } : {})
+			};
+			const extraConds: Condition[] = [];
+			if (turnPrefixCondition) extraConds.push(turnPrefixCondition);
+			if (duringTurn) extraConds.push({ k: 'isTurnOf', player: { k: 'you' } });
+			extraConds.push(nthCond);
+			return {
+				k: 'costModifier',
+				affects: { k: 'spell', filter: sp.filter },
+				delta,
+				who: { relation: 'you' },
+				condition: extraConds.length === 1 ? extraConds[0] : { k: 'and', of: extraConds }
+			};
+		}
+	}
+	// --- End Track P14 ---
 
 	// Self cost modifier with "for each <metric>" or "if <condition>" or unconditional ("during your turn, ~ costs ...").
 	const selfTurnPrefix = text.match(/^during your turn,\s*((?:this spell|~) costs .+)$/i);
@@ -1129,15 +1937,20 @@ export function parseCostModifierSentence(sentence: string): StaticDef | null {
 		};
 	}
 
-	// Targeting mana cost modifier ("Spells your opponents cast that target ~ / a <filter> you control cost {N} more to cast",
-	// or "Spells you cast that target a <filter> [you control / an opponent controls] cost {N} less to cast").
+	// Targeting mana cost modifier ("Spells [you/your opponents cast] that target ~ / a <filter> you control cost {N} more/less to cast").
 	const targetManaMod = text.match(
-		/^(?:(.+?) )?spells (you|your opponents) cast that target (~|(?:a|an) .+?) cost ((?:\{[^}]+\})+) (less|more) to cast$/i
+		/^(?:(.+?) )?spells(?: (you|your opponents) cast)? that target (~|(?:a|an) .+?) cost ((?:\{[^}]+\})+) (less|more) to cast$/i
 	);
 	if (targetManaMod) {
 		const spellPrefix = targetManaMod[1] ? parseSpellFilterPhrase(targetManaMod[1]) : { filter: {}, other: false };
 		if (!spellPrefix) return null;
-		const who = targetManaMod[2].toLowerCase() === 'you' ? 'you' : 'each_opponent';
+		const whoRawTgt = targetManaMod[2]?.toLowerCase();
+		const who =
+			whoRawTgt === 'you'
+				? 'you'
+				: whoRawTgt === 'your opponents'
+					? 'each_opponent'
+					: 'each_player';
 		const rawTarget = targetManaMod[3].trim();
 		const rawDelta = parseCostManaDelta(
 			targetManaMod[4],
@@ -1238,6 +2051,12 @@ export function parseCostModifierSentence(sentence: string): StaticDef | null {
 		};
 	}
 
+	const duringYourTurnGeneral = text.match(/^during your turn,\s*(.+)$/i);
+	if (duringYourTurnGeneral && !turnPrefixCondition) {
+		turnPrefixCondition = { k: 'isTurnOf', player: { k: 'you' } };
+		text = duringYourTurnGeneral[1].trim();
+	}
+
 	// General spell cost modifiers:
 	// "[As long as ~ is in the command zone or on the battlefield, ][<phrase> ]spells [of the chosen type/color] [you/your opponents cast] [with power/toughness/mana value ...] cost <mana> less/more to cast [for each <metric>]"
 	const m = text.match(
@@ -1292,6 +2111,7 @@ export function parseCostModifierSentence(sentence: string): StaticDef | null {
 			...(per ? { per } : {})
 		},
 		who: { relation: who },
-		activeZones: m[1] ? ['battlefield', 'command'] : undefined
+		activeZones: m[1] ? ['battlefield', 'command'] : undefined,
+		...(turnPrefixCondition ? { condition: turnPrefixCondition } : {})
 	};
 }

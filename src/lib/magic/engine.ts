@@ -276,6 +276,19 @@ import {
 	wave4TriggerTargetSpecs
 } from './runtime/keywordsWave4.ts';
 // --- End Track P12 ---
+// --- Track P14 ---
+import {
+	collectWave5ZoneCastOptions,
+	consumeWave5StaticPlaySlot,
+	creatureCanAttackDespiteDefender,
+	creatureMayAssignCombatDamageAsThoughUnblocked,
+	doesProtectionQualityMatchSource,
+	getEffectiveGoaderPlayerIds,
+	getWave5SlottedLandPlayPermission,
+	hasWave5ExilePlayPermission,
+	isAttachmentExemptFromProtectionGrant
+} from './runtime/staticsAndCostsWave5.ts';
+// --- End Track P14 ---
 export { applyCastCostAids, formatManaRequirement, getSuspendSpec };
 import { getKeywordSpec } from './keywords.ts';
 import {
@@ -1148,6 +1161,37 @@ function enumerateCandidateCastOptions(
 			}
 		}
 
+		// --- Track P14 ---
+		const wave5ZoneOpts = collectWave5ZoneCastOptions({
+			state,
+			actor,
+			actorId,
+			inst,
+			fromZone,
+			faceIndex: fi,
+			isMultiFace,
+			isAdventureFace,
+			faceName,
+			faceManaCost,
+			faceTypes,
+			taxSuffix,
+			mandatoryAdditionalCosts,
+			optionalAdditionalCosts,
+			paymentAids: facePaymentAids,
+			adventureMods,
+			requiresTarget: targetInfo.requiresTarget,
+			choosesX: spellChoosesX(card, { kind: 'printed' }, undefined, fi, false)
+		});
+		if (wave5ZoneOpts.length > 0) {
+			options.push(...wave5ZoneOpts);
+		}
+		const wave5ZoneOpt = wave5ZoneOpts[0];
+		const hadBaseZonePermission = hasZonePermission;
+		if (wave5ZoneOpt) {
+			hasZonePermission = true;
+		}
+		// --- End Track P14 ---
+
 		if (
 			!inst.castViaSuspend &&
 			!(fromZone === 'exile' && inst.playableFromExileBy?.withoutPayingManaCost)
@@ -1158,6 +1202,10 @@ function enumerateCandidateCastOptions(
 				if (!altCost) continue;
 				if (!(meta.zones as readonly string[]).includes(fromZone)) continue;
 				if (meta.requiresZonePermission && !hasZonePermission) continue;
+				// --- Track P14 ---
+				const viaWave5Slot =
+					meta.requiresZonePermission && !hadBaseZonePermission && wave5ZoneOpt ? wave5ZoneOpt : undefined;
+				// --- End Track P14 ---
 				if (meta.faceDown) {
 					if (isMultiFace && layout !== 'modal_dfc' && fi > 0) continue;
 					const baseCost: CastOption['baseCost'] = {
@@ -1176,7 +1224,12 @@ function enumerateCandidateCastOptions(
 					const spellMods: SpellModifications = {
 						castFaceDown: faceDownSpec,
 						...(meta.castSummarySuffix ? { castSummarySuffix: meta.castSummarySuffix } : {}),
-						...(meta.stackBadgeLabel ? { label: meta.stackBadgeLabel } : {})
+						...(meta.stackBadgeLabel ? { label: meta.stackBadgeLabel } : {}),
+						// --- Track P14 ---
+						...(viaWave5Slot?.spellMods?.exileIfPutIntoGraveyard
+							? { exileIfPutIntoGraveyard: true }
+							: {})
+						// --- End Track P14 ---
 					};
 					options.push({
 						id: idFor(meta.id),
@@ -1189,7 +1242,12 @@ function enumerateCandidateCastOptions(
 						timing: meta.timing ?? 'default',
 						spellMods,
 						choosesX: false,
-						requiresTarget: false
+						requiresTarget: false,
+						// --- Track P14 ---
+						...(viaWave5Slot?.staticPlaySlotKey
+							? { staticPlaySlotKey: viaWave5Slot.staticPlaySlotKey }
+							: {})
+						// --- End Track P14 ---
 					});
 					continue;
 				}
@@ -1214,6 +1272,11 @@ function enumerateCandidateCastOptions(
 					// --- Track P9 ---
 					...(meta.dashed ? { dashed: true } : {}),
 					// --- End Track P9 ---
+					// --- Track P14 ---
+					...(viaWave5Slot?.spellMods?.exileIfPutIntoGraveyard
+						? { exileIfPutIntoGraveyard: true }
+						: {}),
+					// --- End Track P14 ---
 					...(meta.castSummarySuffix ? { castSummarySuffix: meta.castSummarySuffix } : {}),
 					...(meta.stackBadgeLabel ? { label: meta.stackBadgeLabel } : {})
 				};
@@ -1231,32 +1294,57 @@ function enumerateCandidateCastOptions(
 					timing: meta.timing ?? 'default',
 					spellMods,
 					choosesX: spellChoosesX(card, baseCost, undefined, fi, false),
-					requiresTarget: meta.targetsBecomeEach ? false : targetInfo.requiresTarget
+					requiresTarget: meta.targetsBecomeEach ? false : targetInfo.requiresTarget,
+					// --- Track P14 ---
+					...(viaWave5Slot?.staticPlaySlotKey
+						? { staticPlaySlotKey: viaWave5Slot.staticPlaySlotKey }
+						: {})
+					// --- End Track P14 ---
 				});
 			}
 			// --- Track P11: Self & external static alternative cast permissions (CR 118.9) ---
-			if (actor && hasZonePermission && !isLandOnlyFace) {
+			// --- Track P14: Allow allowedZones static alt-casts & propagate Wave 5 zone slots ---
+			if (actor && !isLandOnlyFace) {
 				const staticAltOpts = collectStaticAltCastOptions(
 					state,
 					actor,
 					inst,
 					fromZone,
 					isMultiFace ? fi : undefined,
-					targetInfo.requiresTarget
+					targetInfo.requiresTarget,
+					hasZonePermission
 				);
 				for (const sOpt of staticAltOpts) {
 					const isFreeAlt = sOpt.baseCost.kind === 'alternative' && sOpt.baseCost.manaCost === '{0}';
+					const altCostSummary =
+						sOpt.baseCost.kind === 'alternative' && sOpt.baseCost.costDefs?.length
+							? describeTurnUpCost(
+									sOpt.baseCost.manaCost === '{0}' ? undefined : sOpt.baseCost.manaCost,
+									sOpt.baseCost.costDefs
+								) || sOpt.costDisplay
+							: sOpt.costDisplay;
+					const viaSlot = !hadBaseZonePermission && wave5ZoneOpt ? wave5ZoneOpt : undefined;
 					options.push({
 						...sOpt,
-						costDisplay: `${sOpt.costDisplay}${taxSuffix}`,
+						costDisplay: `${altCostSummary}${taxSuffix}`,
 						...(mandatoryAdditionalCosts ? { mandatoryAdditionalCosts } : {}),
 						...optionalProp,
 						...(isFreeAlt ? {} : paymentAidsProp),
-						spellMods: { ...adventureMods, ...sOpt.spellMods },
-						choosesX: spellChoosesX(card, sOpt.baseCost, undefined, fi, false)
+						spellMods: {
+							...adventureMods,
+							...sOpt.spellMods,
+							...(viaSlot?.spellMods?.exileIfPutIntoGraveyard
+								? { exileIfPutIntoGraveyard: true }
+								: {})
+						},
+						choosesX: spellChoosesX(card, sOpt.baseCost, undefined, fi, false),
+						...(viaSlot?.staticPlaySlotKey && !sOpt.staticPlaySlotKey
+							? { staticPlaySlotKey: viaSlot.staticPlaySlotKey }
+							: {})
 					});
 				}
 			}
+			// --- End Track P14 ---
 			// --- End Track P11 ---
 		}
 	}
@@ -1398,7 +1486,10 @@ function resolveCastOptionForAction(
 		inst.airbentCastPermission?.playerId !== actorId &&
 		// --- End Track P13 ---
 		!inst.castViaSuspend &&
-		!hasExileKeywordPermission(inst, actorId)
+		!hasExileKeywordPermission(inst, actorId) &&
+		// --- Track P14 ---
+		!hasWave5ExilePlayPermission(state, actorId, inst)
+		// --- End Track P14 ---
 	) {
 		return {
 			ok: false,
@@ -1586,15 +1677,26 @@ export function planCastCostAids(
 	}
 
 	const cmdIdentity = getPlayerCommanderIdentity(actor);
+	// --- Track P14 ---
+	const genericReducedByAid = new Map<string, number>();
+	// --- End Track P14 ---
 	const pickTapFromPool = (
 		aid: CastCostAid,
 		pool: Array<{ perm: CardInstance; colors: ManaColor[] }>,
 		keepGoingWhenPayable: boolean
 	): void => {
 		const remainingPool = [...pool];
-		while (remainingPool.length > 0 && (keepGoingWhenPayable || !canCurrentlyPay())) {
+		const maxTapSteps = remainingPool.length;
+		for (let step = 0; step < maxTapSteps; step++) {
+			if (remainingPool.length === 0 || (!keepGoingWhenPayable && canCurrentlyPay())) break;
 			const neededColors = aidColors.filter((c) => remaining.colored[c] > 0);
-			const canPayGeneric = remaining.generic >= aid.paysGeneric;
+			// --- Track P14 ---
+			const prevGenRed = genericReducedByAid.get(aid.id) ?? 0;
+			const withinCap =
+				aid.maxGenericReduction === undefined ||
+				prevGenRed + aid.paysGeneric <= aid.maxGenericReduction;
+			const canPayGeneric = withinCap && remaining.generic >= aid.paysGeneric;
+			// --- End Track P14 ---
 			if (neededColors.length === 0 && !canPayGeneric) break;
 
 			let bestIdx = -1;
@@ -1632,6 +1734,9 @@ export function planCastCostAids(
 			costAidColorChoices[perm.instanceId] = bestChoice;
 			if (bestChoice === 'generic') {
 				remaining.generic -= aid.paysGeneric;
+				// --- Track P14 ---
+				genericReducedByAid.set(aid.id, prevGenRed + aid.paysGeneric);
+				// --- End Track P14 ---
 			} else {
 				remaining.colored[bestChoice] -= 1;
 			}
@@ -2155,9 +2260,15 @@ function finalizeCastSpell(
 		// --- Track P10 ---
 		manaSpentCount?: number;
 		// --- End Track P10 ---
+		// --- Track P14 ---
+		staticPlaySlotKey?: string;
+		// --- End Track P14 ---
 	}
 ): void {
 	const actorId = actor.playerId;
+	// --- Track P14 ---
+	consumeWave5StaticPlaySlot(actor, opts.staticPlaySlotKey);
+	// --- End Track P14 ---
 	const stackFaceIdx = opts.faceIndex ?? 0;
 	const stackFused = Boolean(opts.fused);
 	const castFaceDownSpec = opts.spellMods?.castFaceDown;
@@ -2753,8 +2864,11 @@ function executeOrResumePendingCostPayment(
 				manaColorsAllSpent: pcp.manaColorsAllSpent,
 				// --- End Track P13 ---
 				// --- Track P10 ---
-				manaSpentCount: pcp.manaSpentCount
+				manaSpentCount: pcp.manaSpentCount,
 				// --- End Track P10 ---
+				// --- Track P14 ---
+				staticPlaySlotKey: pcp.staticPlaySlotKey
+				// --- End Track P14 ---
 			});
 		}
 	} else if (pcp.kind === 'activate_ability') {
@@ -4620,6 +4734,9 @@ registerPromptHandler(UNTAP_STEP_CHOICE_HANDLER, (state, prompt, answer) => {
 function executeUntapTurnBasedActions(state: GameState, activePlayer: PlayerGameState): boolean {
 	activePlayer.landsPlayedThisTurn = 0;
 	activePlayer.maxLandsPerTurn = 1;
+	// --- Track P14 ---
+	activePlayer.usedStaticPlaySlotsThisTurn = undefined;
+	// --- End Track P14 ---
 
 	// CR 502.1 & CR 702.26a/g: Before untapping, phasing in and phasing out happen simultaneously!
 	// 1. Collect all permanents that will phase in:
@@ -5405,7 +5522,13 @@ function applyGameActionInner(
 			} else if (!action.fromZone || action.fromZone === 'exile') {
 				for (const p of state.players) {
 					const exIdx = p.exile.findIndex(
-						(c) => c.instanceId === action.instanceId && c.playableFromExileBy?.playerId === actorId
+						(c) =>
+							c.instanceId === action.instanceId &&
+							(c.playableFromExileBy?.playerId === actorId ||
+								// --- Track P14 ---
+								(c.ownerId === actorId &&
+									getWave5SlottedLandPlayPermission(state, actorId, 'exile', c) !== null))
+						// --- End Track P14 ---
 					);
 					if (exIdx >= 0) {
 						landInst = p.exile[exIdx];
@@ -5456,12 +5579,26 @@ function applyGameActionInner(
 			);
 			if (!resolvedFace.ok) return resolvedFace;
 
+			// --- Track P14 ---
+			const wave5LandSlot =
+				sourceZone === 'library' || sourceZone === 'graveyard' || sourceZone === 'exile'
+					? getWave5SlottedLandPlayPermission(state, actorId, sourceZone, landInst)
+					: null;
+			const unlimitedZoneLandSrc =
+				sourceZone === 'library' || sourceZone === 'graveyard'
+					? getActiveZoneLandPlayPermissionSource(state, actorId, sourceZone, landInst)
+					: null;
+			// Only consume a turn-slot if an unlimited permission didn't already cover it.
+			if (wave5LandSlot && !unlimitedZoneLandSrc && !landInst.playableFromExileBy) {
+				consumeWave5StaticPlaySlot(actor, wave5LandSlot.slotKey);
+			}
+			// --- End Track P14 ---
+
 			const exSourceName =
 				sourceZone === 'exile'
-					? landInst.playableFromExileBy?.sourceName
+					? (landInst.playableFromExileBy?.sourceName ?? wave5LandSlot?.sourceName)
 					: sourceZone === 'library' || sourceZone === 'graveyard'
-						? (getActiveZoneLandPlayPermissionSource(state, actorId, sourceZone, landInst) ??
-							undefined)
+						? (unlimitedZoneLandSrc ?? wave5LandSlot?.sourceName ?? undefined)
 						: undefined;
 			landInst.playableFromExileBy = undefined;
 			landInst.tapped = false;
@@ -5903,7 +6040,10 @@ function applyGameActionInner(
 										// --- Track P13 ---
 										c.airbentCastPermission?.playerId === actorId ||
 										// --- End Track P13 ---
-										hasExileKeywordPermission(c, actorId))
+										hasExileKeywordPermission(c, actorId) ||
+										// --- Track P14 ---
+										hasWave5ExilePlayPermission(state, actorId, c))
+								// --- End Track P14 ---
 							);
 							if (exIdx >= 0) {
 								inst = p.exile[exIdx];
@@ -5959,7 +6099,10 @@ function applyGameActionInner(
 			const castChoosesX =
 				castOption.choosesX ||
 				extraManaCosts.some((c) => /\{X\}/i.test(c)) ||
-				JSON.stringify(extraNonManaDefs).includes('"k":"x"');
+				JSON.stringify(extraNonManaDefs).includes('"k":"x"') ||
+				// --- Track P14 ---
+				extraNonManaDefs.some((d) => d.k === 'waterbend' && /\{X\}/i.test(d.cost));
+			// --- End Track P14 ---
 			const rawXVal = action.xValue || 0;
 			const xVal = castChoosesX ? rawXVal : 0;
 			const legality = checkSpellCastLegality(
@@ -6400,6 +6543,11 @@ function applyGameActionInner(
 					...(inst.playableFromExileBy?.sourceName
 						? { exSourceName: inst.playableFromExileBy.sourceName }
 						: {}),
+					// --- Track P14 ---
+					...(castOption.staticPlaySlotKey
+						? { staticPlaySlotKey: castOption.staticPlaySlotKey }
+						: {}),
+					// --- End Track P14 ---
 					sourceCard: inst.card,
 					additionalIncomplete: Boolean(additional && !additional.complete),
 					parts: [
@@ -6450,8 +6598,11 @@ function applyGameActionInner(
 				manaColorsAllSpent: spendCtx.capturedColorsAllSpent,
 				// --- End Track P13 ---
 				// --- Track P10 ---
-				manaSpentCount: spendCtx.capturedManaSpentCount
+				manaSpentCount: spendCtx.capturedManaSpentCount,
 				// --- End Track P10 ---
+				// --- Track P14 ---
+				staticPlaySlotKey: castOption.staticPlaySlotKey
+				// --- End Track P14 ---
 			});
 			return { ok: true };
 		}
@@ -6985,12 +7136,19 @@ function chooseBotRequiredAttackAssignments(
 				!evaluatePermanent(state, c).isCreature ||
 				c.tapped ||
 				(c.summoningSick && !hasKeyword(c, 'Haste', state)) ||
-				(hasKeyword(c, 'Defender', state) && !c.canAttackAsThoughNoDefenderThisTurn) ||
+				// --- Track P13 + Track P14 ---
+				(hasKeyword(c, 'Defender', state) &&
+					!c.canAttackAsThoughNoDefenderThisTurn &&
+					!creatureCanAttackDespiteDefender(state, c)) ||
+				// --- End Track P13 + Track P14 ---
 				hasRestriction(state, c, 'cantAttack')
 			) {
 				continue;
 			}
-			const isGoaded = Boolean(c.goadedByPlayerIds && c.goadedByPlayerIds.length > 0);
+			// --- Track P14 ---
+			const goaderIds = getEffectiveGoaderPlayerIds(state, c);
+			const isGoaded = goaderIds.length > 0;
+			// --- End Track P14 ---
 			const mustAttack = isGoaded || hasRestriction(state, c, 'attacksEachCombat');
 			if (!mustAttack) continue;
 
@@ -7000,7 +7158,9 @@ function chooseBotRequiredAttackAssignments(
 			if (candidateDefenders.length === 0) continue;
 			if (isGoaded) {
 				const nonGoaders = candidateDefenders.filter(
-					(p) => !c.goadedByPlayerIds!.includes(p.playerId)
+					// --- Track P14 ---
+					(p) => !goaderIds.includes(p.playerId)
+					// --- End Track P14 ---
 				);
 				if (nonGoaders.length > 0) {
 					candidateDefenders = nonGoaders;
@@ -7031,7 +7191,11 @@ function chooseBotRequiredAttackAssignments(
 						!evaluatePermanent(state, other).isCreature ||
 						other.tapped ||
 						(other.summoningSick && !hasKeyword(other, 'Haste', state)) ||
-						(hasKeyword(other, 'Defender', state) && !other.canAttackAsThoughNoDefenderThisTurn) ||
+						// --- Track P13 + Track P14 ---
+						(hasKeyword(other, 'Defender', state) &&
+							!other.canAttackAsThoughNoDefenderThisTurn &&
+							!creatureCanAttackDespiteDefender(state, other)) ||
+						// --- End Track P13 + Track P14 ---
 						hasRestriction(state, other, 'cantAttack')
 					) {
 						continue;
@@ -7077,7 +7241,11 @@ export function chooseBotAttackAssignments(
 				evaluatePermanent(state, c).isCreature &&
 				!c.tapped &&
 				(!c.summoningSick || hasKeyword(c, 'Haste', state)) &&
-				(!hasKeyword(c, 'Defender', state) || Boolean(c.canAttackAsThoughNoDefenderThisTurn)) &&
+				// --- Track P13 + Track P14 ---
+				(!hasKeyword(c, 'Defender', state) ||
+					Boolean(c.canAttackAsThoughNoDefenderThisTurn) ||
+					creatureCanAttackDespiteDefender(state, c)) &&
+				// --- End Track P13 + Track P14 ---
 				!hasRestriction(state, c, 'cantAttack') &&
 				getCreaturePower(c, state) >= 2
 		)
@@ -7171,11 +7339,15 @@ function performDeclareAttackers(
 				error: `${creature.card.name} has summoning sickness and cannot attack this turn.`
 			};
 		}
-		// --- Track P13 ---
-		if (hasKeyword(creature, 'Defender', state) && !creature.canAttackAsThoughNoDefenderThisTurn) {
-		// --- End Track P13 ---
+		// --- Track P13 + Track P14 ---
+		if (
+			hasKeyword(creature, 'Defender', state) &&
+			!creature.canAttackAsThoughNoDefenderThisTurn &&
+			!creatureCanAttackDespiteDefender(state, creature)
+		) {
 			return { ok: false, error: `${creature.card.name} has Defender and cannot attack.` };
 		}
+		// --- End Track P13 + Track P14 ---
 		if (hasRestriction(state, creature, 'cantAttack')) {
 			return { ok: false, error: `${creature.card.name} cannot attack.` };
 		}
@@ -7212,12 +7384,14 @@ function performDeclareAttackers(
 		}
 
 		// CR 701.15b: Goad requires attacking a player other than the goader if able
-		if (creature.goadedByPlayerIds && creature.goadedByPlayerIds.length > 0) {
+		// --- Track P14 ---
+		const effectiveGoaders = getEffectiveGoaderPlayerIds(state, creature);
+		if (effectiveGoaders.length > 0) {
 			const nonGoaderAvailable = state.players.some(
 				(p) =>
 					p.playerId !== actorId &&
 					!p.lost &&
-					!creature.goadedByPlayerIds!.includes(p.playerId) &&
+					!effectiveGoaders.includes(p.playerId) &&
 					getAttackTaxGeneric(state, p) === 0 &&
 					getStaticAttackRestrictionReason(
 						state,
@@ -7228,7 +7402,7 @@ function performDeclareAttackers(
 			);
 			if (
 				nonGoaderAvailable &&
-				(creature.goadedByPlayerIds.includes(defender.playerId) ||
+				(effectiveGoaders.includes(defender.playerId) ||
 					Boolean(assign.defenderPlaneswalkerId))
 			) {
 				return {
@@ -7237,6 +7411,7 @@ function performDeclareAttackers(
 				};
 			}
 		}
+		// --- End Track P14 ---
 
 		// --- Track P12: Encore mandatory opponent attack (CR 702.141a) ---
 		if (creature.encoreMustAttackPlayerId) {
@@ -7851,7 +8026,9 @@ function findMandatoryAttackerViolation(
 
 		for (const perm of actor.battlefield) {
 			if (perm.phasedOut || !evaluatePermanent(state, perm).isCreature) continue;
-			const isGoaded = Boolean(perm.goadedByPlayerIds && perm.goadedByPlayerIds.length > 0);
+			// --- Track P14 ---
+			const isGoaded = getEffectiveGoaderPlayerIds(state, perm).length > 0;
+			// --- End Track P14 ---
 			// --- Track P12 ---
 			const isEncoreObligated = Boolean(perm.encoreMustAttackPlayerId);
 			// --- End Track P12 ---
@@ -7861,7 +8038,11 @@ function findMandatoryAttackerViolation(
 				const canAttack =
 					!perm.tapped &&
 					(!perm.summoningSick || hasKeyword(perm, 'Haste', state)) &&
-					(!hasKeyword(perm, 'Defender', state) || Boolean(perm.canAttackAsThoughNoDefenderThisTurn)) &&
+					// --- Track P13 + Track P14 ---
+					(!hasKeyword(perm, 'Defender', state) ||
+						Boolean(perm.canAttackAsThoughNoDefenderThisTurn) ||
+						creatureCanAttackDespiteDefender(state, perm)) &&
+					// --- End Track P13 + Track P14 ---
 					!hasRestriction(state, perm, 'cantAttack');
 				if (!canAttack) continue;
 
@@ -7892,7 +8073,11 @@ function findMandatoryAttackerViolation(
 							!evaluatePermanent(state, other).isCreature ||
 							other.tapped ||
 							(other.summoningSick && !hasKeyword(other, 'Haste', state)) ||
-							(hasKeyword(other, 'Defender', state) && !other.canAttackAsThoughNoDefenderThisTurn) ||
+							// --- Track P13 + Track P14 ---
+							(hasKeyword(other, 'Defender', state) &&
+								!other.canAttackAsThoughNoDefenderThisTurn &&
+								!creatureCanAttackDespiteDefender(state, other)) ||
+							// --- End Track P13 + Track P14 ---
 							hasRestriction(state, other, 'cantAttack')
 						) {
 							return false;
@@ -9392,6 +9577,11 @@ export function moveStackSpellToZone(
 	if (stackItem.spellMods?.exileOnLeaveStack) {
 		dest = 'exile';
 	}
+	// --- Track P14: Kess-style graveyard-only replacement ("If a spell cast this way would be put into your graveyard, exile it instead") ---
+	if (dest === 'graveyard' && stackItem.spellMods?.exileIfPutIntoGraveyard) {
+		dest = 'exile';
+	}
+	// --- End Track P14 ---
 	const ownerId = stackItem.ownerId || stackItem.controllerId;
 	const owner =
 		state.players.find((p) => p.playerId === ownerId) ||
@@ -15069,7 +15259,48 @@ function executeCombatDamageStep(
 						)
 					: undefined;
 
-			if (!atkEntry.wasBlocked && blockers.length === 0) {
+			// --- Track P14: CR 510.1c–d "assign its combat damage as though it weren't blocked" ---
+			const atkSuperTrample =
+				creatureMayAssignCombatDamageAsThoughUnblocked(state, attacker) &&
+				(!attackingPlaneswalker || Boolean(defWalker));
+			let assignAsThoughUnblocked = false;
+			if (atkSuperTrample && (atkEntry.wasBlocked || blockers.length > 0)) {
+				if (atkPlayer.isBot) {
+					assignAsThoughUnblocked = true;
+				} else {
+					const unblockedKey = `${attacker.instanceId}:__unblocked`;
+					const chosenFlag = chosenDamage[unblockedKey];
+					if (chosenFlag === undefined) {
+						const question = `Assign combat damage from ${attacker.card.name} (${remainingDamage}) as though it weren't blocked?`;
+						enqueueChoicePrompt(state, {
+							id: uid('prm', state),
+							playerId: atkPlayer.playerId,
+							kind: 'yesNo',
+							purpose: 'generic',
+							title: `Combat Damage — ${attacker.card.name}`,
+							description: question,
+							continuation: {
+								kind: 'handler',
+								name: COMBAT_DAMAGE_ASSIGNMENT_HANDLER,
+								data: {
+									isFirstStrikeStep,
+									chosenDamage,
+									key: unblockedKey
+								}
+							},
+							choice: {
+								kind: 'yesNo',
+								question
+							}
+						});
+						return true;
+					}
+					assignAsThoughUnblocked = chosenFlag === 1;
+				}
+			}
+			// --- End Track P14 ---
+
+			if ((!atkEntry.wasBlocked && blockers.length === 0) || assignAsThoughUnblocked) {
 				if (defWalker) {
 					attackerAssignments.push({
 						kind: 'planeswalker',
@@ -15115,9 +15346,13 @@ function executeCombatDamageStep(
 							: Math.min(remainingDamage, lethalNeeded);
 
 					let dmgToBlocker = autoDmg;
-					// CR 510.1c–d, 702.19b: When blocked by multiple creatures, human controller divides combat damage
+					// CR 702.19b: When blocked by multiple creatures, human controller divides combat damage
 					// among the blockers (and with Trample, must assign lethal to all blockers before excess tramples over).
-					if (!atkPlayer.isBot && (blockers.length >= 2 || canTrampleOver) && remainingDamage > 0) {
+					if (
+						!atkPlayer.isBot &&
+						(blockers.length >= 2 || canTrampleOver) &&
+						remainingDamage > 0
+					) {
 						const minDmg = isLastBlocker
 							? canTrampleOver && allPriorBlockersLethal && remainingDamage > lethalNeeded
 								? lethalNeeded
@@ -15441,7 +15676,16 @@ registerPromptHandler(COMBAT_DAMAGE_ASSIGNMENT_HANDLER, (state, prompt, answer) 
 			? (data.chosenDamage as Record<string, number>)
 			: {};
 	const key = typeof data?.key === 'string' ? data.key : '';
-	const n = answer.kind === 'chooseNumber' ? answer.n : 0;
+	// --- Track P14: support yesNo answer for super-trample choice ---
+	const n =
+		answer.kind === 'chooseNumber'
+			? answer.n
+			: answer.kind === 'yesNo'
+				? answer.yes
+					? 1
+					: 0
+				: 0;
+	// --- End Track P14 ---
 	const nextChosen: Record<string, number> = key ? { ...prevChosen, [key]: n } : { ...prevChosen };
 
 	let paused = false;
@@ -15754,7 +15998,9 @@ function isAuraAttachmentLegal(
 	if (aura.instanceId === host.instanceId) return false;
 	if (evalAura.isCreature) return false;
 	if (host.phasedOut) return false;
-	if (hasProtectionFrom(host, aura.copiableCard ?? aura.card, state, aura)) return false;
+	// --- Track P14: CR 702.16n, 702.16p attachment exemption check ---
+	if (hasProtectionFrom(host, aura.copiableCard ?? aura.card, state, aura, true)) return false;
+	// --- End Track P14 ---
 
 	const enchantParams = getAuraEnchantParams(aura, evalAura);
 	// CR 704.5m / 303.4c: If an Aura has lost all its enchant abilities, it can't legally enchant anything.
@@ -16088,7 +16334,9 @@ export function checkStateBasedActions(state: GameState): void {
 							perm.instanceId === perm.attachedToId ||
 							!targetFound ||
 							!validHostType ||
-							hasProtectionFrom(targetFound.inst, perm.copiableCard ?? perm.card, state, perm)
+							// --- Track P14: CR 702.16n, 702.16p attachment exemption check ---
+							hasProtectionFrom(targetFound.inst, perm.copiableCard ?? perm.card, state, perm, true)
+							// --- End Track P14 ---
 						) {
 							perm.attachedToId = null;
 							noteLayerInputsChanged(state);
@@ -16960,7 +17208,10 @@ export function hasProtectionFrom(
 	targetPerm: CardInstance,
 	sourceCard: ScryfallCard | undefined,
 	state: GameState,
-	sourcePerm?: CardInstance
+	sourcePerm?: CardInstance,
+	// --- Track P14 ---
+	isAttachmentCheck = false
+	// --- End Track P14 ---
 ): boolean {
 	if (!sourceCard || targetPerm.phasedOut) return false;
 	const evalTarget = evaluatePermanent(state, targetPerm);
@@ -16972,6 +17223,22 @@ export function hasProtectionFrom(
 		sourceCard,
 		sourcePerm
 	);
+
+	// --- Track P14: CR 702.16n, 702.16p per-grant attachment exemption ---
+	if (isAttachmentCheck && sourcePerm) {
+		for (let i = 0; i < evalTarget.breakdown.items.length; i++) {
+			const it = evalTarget.breakdown.items[i];
+			if (it.removed || it.kind !== 'keyword') continue;
+			if (isAttachmentExemptFromProtectionGrant(sourcePerm, state, it.protectionExemption)) {
+				continue;
+			}
+			if (doesProtectionQualityMatchSource(it.name.toLowerCase(), srcColors, srcTypeLine)) {
+				return true;
+			}
+		}
+		return false;
+	}
+	// --- End Track P14 ---
 
 	if (/protection from everything/i.test(combined)) return true;
 	if (/protection from all colors/i.test(combined) && srcColors.length > 0) return true;
@@ -18219,13 +18486,19 @@ function checkLandPlayLegalityInner(
 		return { ok: false, error: 'Player is not active in this game.' };
 	}
 	if (fromZone === 'exile') {
-		if (inst.playableFromExileBy?.playerId !== actorId) {
+		// --- Track P14 ---
+		const slottedExileLand =
+			inst.ownerId === actorId
+				? getWave5SlottedLandPlayPermission(state, actorId, 'exile', inst)
+				: null;
+		// --- End Track P14 ---
+		if (inst.playableFromExileBy?.playerId !== actorId && !slottedExileLand) {
 			return {
 				ok: false,
 				error: `You do not have permission to play ${inst.card.name} from Exile.`
 			};
 		}
-		if (inst.playableFromExileBy.spellsOnly) {
+		if (inst.playableFromExileBy?.spellsOnly && !slottedExileLand) {
 			return {
 				ok: false,
 				error: `${inst.card.name} may only be cast as a spell from Exile, not played as a land (CR 601.1a).`
@@ -18236,7 +18509,12 @@ function checkLandPlayLegalityInner(
 		if (actor.library[0]?.instanceId !== inst.instanceId) {
 			return { ok: false, error: `${inst.card.name} is not the top card of your library.` };
 		}
-		if (!getActiveZoneLandPlayPermissionSource(state, actorId, 'library', inst)) {
+		if (
+			!getActiveZoneLandPlayPermissionSource(state, actorId, 'library', inst) &&
+			// --- Track P14 ---
+			!getWave5SlottedLandPlayPermission(state, actorId, 'library', inst)
+			// --- End Track P14 ---
+		) {
 			return {
 				ok: false,
 				error: `You do not have permission to play ${inst.card.name} from the top of your library.`
@@ -18248,6 +18526,9 @@ function checkLandPlayLegalityInner(
 		}
 		if (
 			!getActiveZoneLandPlayPermissionSource(state, actorId, 'graveyard', inst) &&
+			// --- Track P14 ---
+			!getWave5SlottedLandPlayPermission(state, actorId, 'graveyard', inst) &&
+			// --- End Track P14 ---
 			// --- Track P12 ---
 			!canPlayGraveyardLandViaMayhem(state, actorId, inst, faceIndex)
 			// --- End Track P12 ---
@@ -18444,6 +18725,9 @@ export function flipPermanent(state: GameState, perm: CardInstance): boolean {
 function hasXInTurnUpCost(manaCost?: string, costDefs?: CostDef[]): boolean {
 	if (manaCost && /\{X\}/i.test(manaCost)) return true;
 	if (!costDefs || costDefs.length === 0) return false;
+	// --- Track P14 ---
+	if (costDefs.some((d) => d.k === 'waterbend' && /\{X\}/i.test(d.cost))) return true;
+	// --- End Track P14 ---
 	return JSON.stringify(costDefs).includes('"k":"x"');
 }
 
@@ -18807,10 +19091,16 @@ function checkSpellCastOptionLegalityInner(
 
 	// Check global Rule-Modifying Cast Permissions & Restrictions (CR 101.2: "Can't beats Can")
 	// Covers Vedalken Orrery, Leyline of Anticipation, Rule of Law, Drannith Magistrate, Grand Abolisher, Teferi
+	// --- Track P14: Evaluate castAsThoughFlash against proposed cast face ---
+	const castProposalInst: CardInstance =
+		option.faceIndex !== undefined && option.faceIndex !== inst.activeFaceIndex
+			? { ...inst, activeFaceIndex: option.faceIndex }
+			: inst;
+	// --- End Track P14 ---
 	const globalCastCheck = checkGlobalCastPermissionsAndRestrictions(
 		state,
 		actorId,
-		inst,
+		castProposalInst,
 		fromZone
 	);
 	if (!globalCastCheck.ok) {

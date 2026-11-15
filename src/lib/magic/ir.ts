@@ -473,6 +473,22 @@ export interface ObjectFilter {
 	/** Stack filter: matches spells cast from a specific zone (e.g. `'graveyard'`, `'exile'`). */
 	castFromZoneFilter?: ZoneType;
 	// --- End Track P13 ---
+	// --- Track P14 ---
+	/** Grandeur / same-name filter ("another card named ~"): matches objects whose evaluated/face name equals source's evaluated/face name. */
+	sameNameAsSource?: boolean;
+	/** Matches spells cast from anywhere other than a player's hand ("spells you cast from anywhere other than your hand"). */
+	castFromOutsideHand?: boolean;
+	/** Matches spells cast from a specific zone ("spells you cast from your graveyard", "spells you cast from exile"). */
+	castFromZone?: ZoneType;
+	/** Matches objects that share at least one color with `source` ("shares a color with ~"). */
+	sharesColorWithSelf?: boolean;
+	/** Matches permanents that have (`true`) or don't have (`false`) any counters on them. */
+	hasAnyCounter?: boolean;
+	/** Matches permanents that have (`true`) or don't have (`false`) an Equipment attached to them. */
+	equipped?: boolean;
+	/** Matches permanents that have (`true`) or don't have (`false`) an Aura attached to them. */
+	enchanted?: boolean;
+	// --- End Track P14 ---
 }
 
 export interface Compare {
@@ -536,7 +552,9 @@ export type Amount =
 	| { k: 'x' }
 	| { k: 'count'; of: ObjectFilter }
 	| { k: 'stat'; of: Ref; stat: 'power' | 'toughness' | 'manaValue'; lki?: boolean }
-	| { k: 'devotion'; colors: ManaColor[] }
+	// --- Track P14: optional player ref on devotion ---
+	| { k: 'devotion'; colors: ManaColor[]; player?: PlayerRef }
+	// --- End Track P14 ---
 	| { k: 'resultCount'; of: BindingName }
 	/** The amount carried by the trigger event, e.g. combat damage dealt ("that many"). */
 	| { k: 'eventAmount' }
@@ -595,11 +613,21 @@ export type Amount =
 	| { k: 'half'; of: Amount; round: 'up' | 'down' }
 	/** CR 309.7: number of dungeons `player` has completed this game. */
 	| { k: 'dungeonsCompleted'; player: PlayerRef }
-	/** Greatest power / toughness / mana value among matching battlefield permanents (0 if none). */
+	/** Greatest power / toughness / mana value among matching objects (0 if none). */
 	| { k: 'greatestStatAmong'; filter: ObjectFilter; stat: 'power' | 'toughness' | 'manaValue' }
 	/** Total power / toughness / mana value across matching battlefield permanents. */
-	| { k: 'totalStatAmong'; filter: ObjectFilter; stat: 'power' | 'toughness' | 'manaValue' };
+	| { k: 'totalStatAmong'; filter: ObjectFilter; stat: 'power' | 'toughness' | 'manaValue' }
 	// --- End Track P13 ---
+	// --- Track P14 ---
+	/** Strive: number of chosen targets beyond the first (`Math.max(0, chosenTargets.length - 1)`). */
+	| { k: 'targetsBeyondFirst' }
+	/** Number of distinct colors of `'self'`, `'attachedTo'`, or `'affected'` ("for each of its colors"). */
+	| { k: 'colorsOfObject'; of: 'self' | 'attachedTo' | 'affected' }
+	/** Total power / toughness / mana value among matching objects ("total power of creatures you control"). */
+	| { k: 'totalStatOf'; stat: 'power' | 'toughness' | 'manaValue'; filter: ObjectFilter }
+	/** Any non-negative integer chosen as part of a variable-count cost ("any number of"). */
+	| { k: 'anyNumber' };
+	// --- End Track P14 ---
 
 // ---- Costs ----------------------------------------------------------------------------------
 
@@ -648,8 +676,22 @@ export type CostDef =
 	| { k: 'returnToHand'; count: Amount; filter: ObjectFilter | 'self' }
 	// --- Track P11 ---
 	/** CR 701.13: "Mill a card" / "Mill N cards" activation or additional cost. */
-	| { k: 'mill'; count: Amount };
+	| { k: 'mill'; count: Amount }
 	// --- End Track P11 ---
+	// --- Track P14 ---
+	/** CR 701.67a–b: "Waterbend [cost]" — pay [cost]; each {1} in [cost] may be paid by tapping an untapped artifact or creature you control. */
+	| { k: 'waterbend'; cost: string }
+	/** CR 701.4a–b: "Behold a [quality]" — choose a [quality] permanent you control OR reveal a [quality] card from your hand. */
+	| { k: 'behold'; count: Amount; filter: ObjectFilter }
+	/** "Put N <counter> counter(s) on ~ / a <filter> you control" activation or additional cost. */
+	| { k: 'putCounters'; count: Amount; counter: CounterType; on: 'self' | ObjectFilter }
+	/** "Discard your hand" activation or additional cost. */
+	| { k: 'discardHand' }
+	/** "Put a card / N cards from your hand on top of your library" activation or additional cost. */
+	| { k: 'putFromHandOnTopOfLibrary'; count: Amount; filter?: ObjectFilter }
+	/** "Tap enchanted/equipped creature" activation cost. */
+	| { k: 'tapAttached' };
+	// --- End Track P14 ---
 
 // ---- Effects --------------------------------------------------------------------------------
 
@@ -1546,8 +1588,21 @@ export type Condition =
 	/** Void: true iff a nonland permanent left the battlefield this turn or a spell was warped this turn. */
 	| { k: 'voidThisTurn' }
 	/** Adamant: true iff >= `min` mana of `color` (or of any single color when omitted) was spent to cast this spell. */
-	| { k: 'sameColorManaSpentAtLeast'; min: number; color?: ManaColor };
+	| { k: 'sameColorManaSpentAtLeast'; min: number; color?: ManaColor }
 	// --- End Track P13 ---
+	// --- Track P14 ---
+	/** True iff at least one non-lost opponent's life / hand size / graveyard size satisfies `op count`. */
+	| {
+			k: 'anyOpponentMetric';
+			metric: 'life' | 'hand' | 'graveyard';
+			op: '>=' | '<=' | '=' | '>' | '<';
+			count: number;
+	  }
+	/** True iff controller has drawn >= `min` cards this turn. */
+	| { k: 'cardsDrawnThisTurnAtLeast'; min: number }
+	/** True while casting the `ordinal`-th (1st or 2nd) matching spell you cast this turn (`matchingCastCount === ordinal - 1`). */
+	| { k: 'nthMatchingSpellThisTurn'; ordinal: 1 | 2; filter?: ObjectFilter };
+	// --- End Track P14 ---
 
 // ---- Statics and replacements ---------------------------------------------------------------
 
@@ -1557,7 +1612,18 @@ export type LayerMod =
 	| { k: 'setController'; controller: PlayerRef }
 	| { k: 'pt'; power: Amount; toughness: Amount }
 	| { k: 'setBasePT'; power: Amount; toughness: Amount }
-	| { k: 'addKeywords'; keywords: string[] }
+	| {
+			k: 'addKeywords';
+			keywords: string[];
+			// --- Track P14 ---
+			/** CR 702.16n: "This effect doesn't remove ~ / Auras / Auras and Equipment you control". */
+			protectionAttachmentExemption?:
+				| 'self'
+				| 'allAuras'
+				| 'controlledAuras'
+				| 'controlledAttachments';
+			// --- End Track P14 ---
+	  }
 	| { k: 'removeAllAbilities' }
 	| { k: 'addTypes'; types: string[]; subtypes?: string[] }
 	| { k: 'setTypes'; types: string[]; subtypes?: string[] }
@@ -1583,12 +1649,25 @@ export type LayerMod =
 	/** Layer 5: sets color to `[source.chosenColor]` ("~ is the chosen color", CR 105.4). */
 	| { k: 'setChosenColor' }
 	/** Layer 6: grants protection from `source.chosenColor` ("has protection from the chosen color", CR 702.16). */
-	| { k: 'protectionFromChosenColor' }
+	| {
+			k: 'protectionFromChosenColor';
+			// --- Track P14 ---
+			protectionAttachmentExemption?:
+				| 'self'
+				| 'allAuras'
+				| 'controlledAuras'
+				| 'controlledAttachments';
+			// --- End Track P14 ---
+	  }
 	// --- Track P8 ---
 	/** Layer 7a/7b single-axis base power setter ("~'s power is equal to ...", CR 208.2a, 613.4a). */
 	| { k: 'setBasePower'; power: Amount }
 	/** Layer 7a/7b single-axis base toughness setter ("~'s toughness is equal to ...", CR 208.2a, 613.4a). */
-	| { k: 'setBaseToughness'; toughness: Amount };
+	| { k: 'setBaseToughness'; toughness: Amount }
+	// --- Track P14 ---
+	/** CR 613.1d, 205.1a, 700.5: Layer 4 type removal ("~ isn't a creature", "Enchanted permanent isn't a creature"). */
+	| { k: 'removeTypes'; types: string[] };
+	// --- End Track P14 ---
 
 export interface CostDelta {
 	/** 'setZero' makes the cost {0}; 'reduce'/'increase' change the generic component. */
@@ -1676,7 +1755,25 @@ export type CombatRuleSpec =
 	| { kind: 'cantAttackAlone' }
 	| { kind: 'cantBlockAlone' }
 	| { kind: 'globalMaxAttackers'; max: number; againstYouOnly?: boolean }
-	| { kind: 'globalMaxBlockers'; max: number };
+	| { kind: 'globalMaxBlockers'; max: number }
+	// --- Track P14 ---
+	/** CR 510.1c–d: "You may have [affected] assign its combat damage as though it weren't blocked." */
+	| { kind: 'assignCombatDamageAsThoughUnblocked' }
+	/** CR 508.1c, 702.3b: "[affected] can attack as though it didn't have defender." */
+	| { kind: 'canAttackDespiteDefender' }
+	/** "[affected] can't be blocked as long as defending player controls a [filter]." */
+	| { kind: 'cantBeBlockedIfDefenderControls'; filter: ObjectFilter }
+	/** "[affected] can't be blocked by creatures with power greater than [affected]'s power." */
+	| { kind: 'cantBeBlockedByPowerGreaterThanSelf' }
+	/** "[affected] can't block [filter]." */
+	| { kind: 'cantBlockFilter'; filter: ObjectFilter }
+	/** "[affected] can't block creatures with power greater than [affected]'s power." */
+	| { kind: 'cantBlockPowerGreaterThanSelf' }
+	/** "[affected] can't block creatures with power less than [affected]'s power." */
+	| { kind: 'cantBlockPowerLessThanSelf' }
+	/** CR 701.15: "Enchanted creature is goaded." (goaded by the static source's controller). */
+	| { kind: 'isGoaded' };
+	// --- End Track P14 ---
 
 export type StaticDef =
 	| {
@@ -1685,6 +1782,10 @@ export type StaticDef =
 			affected: ObjectFilter | 'attachedTo' | 'self';
 			mod: LayerMod;
 			condition?: Condition;
+			// --- Track P14 ---
+			/** CR 113.6b: Static ability that functions while this card is in its owner's graveyard (e.g. Wonder, Brawn, Anger, Filth, Valor, Glory). */
+			activeInZone?: 'graveyard';
+			// --- End Track P14 ---
 	  }
 	| {
 			k: 'costModifier';
@@ -1750,12 +1851,18 @@ export type StaticDef =
 			condition?: Condition;
 	  }
 	| {
-			/** CR 305.1, 601.3e: play lands or cast spells from non-hand zones (`library` top card or `graveyard`). */
+			/** CR 305.1, 601.3e: play lands or cast spells from non-hand zones (`library`, `graveyard`, or `exile`). */
 			k: 'zonePlayPermission';
-			zone: 'library' | 'graveyard';
+			// --- Track P14: widened zone & added turn-slotted / self play options ---
+			zone: 'library' | 'graveyard' | 'exile';
 			allowLands?: boolean;
 			allowSpells?: boolean;
 			spellFilter?: ObjectFilter;
+			affects?: 'self';
+			duringYourTurnOnly?: boolean;
+			slotMode?: 'unlimited' | 'oncePerTurn' | 'perPermanentType';
+			exileIfPutIntoGraveyard?: boolean;
+			// --- End Track P14 ---
 			condition?: Condition;
 	  }
 	// --- Track P12 ---
@@ -1773,6 +1880,9 @@ export type StaticDef =
 			manaCost: string;
 			costDefs?: CostDef[];
 			affects: 'self' | { filter: ObjectFilter };
+			// --- Track P14 ---
+			allowedZones?: ZoneType[];
+			// --- End Track P14 ---
 			condition?: Condition;
 	  }
 	| {
@@ -1786,8 +1896,43 @@ export type StaticDef =
 			k: 'assignCombatDamageByToughness';
 			affected: 'self' | 'attachedTo' | ObjectFilter;
 			condition?: Condition;
-	  };
+	  }
 	// --- End Track P11 ---
+	// --- Track P14 ---
+	| {
+			/** CR 903.3a: "~ can be your commander." */
+			k: 'commanderDesignation';
+			condition?: Condition;
+	  }
+	| {
+			/** CR 903.5b / 100.2a: "A deck can have any number of / up to N cards named ~." */
+			k: 'deckCopyLimit';
+			limit: number | 'any';
+			condition?: Condition;
+	  }
+	| {
+			/** CR 615.1, 615.5–6, 615.10, 615.12: Static damage prevention & Phantom counter-removal prevention. */
+			k: 'staticDamagePrevention';
+			combatOnly?: boolean;
+			noncombatOnly?: boolean;
+			amount: number | 'all';
+			target: 'self' | 'attachedTo' | 'you' | 'youAndControlled' | 'any' | { filter: ObjectFilter };
+			alsoPreventDealtBy?: boolean;
+			dealtByOnly?: 'self' | 'attachedTo';
+			dealtByTargetFilter?: ObjectFilter;
+			sourceFilter?:
+				| ObjectFilter
+				| 'blockingOrBlockedBySelf'
+				| 'blockingSelf'
+				| 'blockedBySelf';
+			phantomCounterRemoval?: {
+				counter: CounterType;
+				mode: 'one' | 'thatMany';
+				requireCounterPresent?: boolean;
+			};
+			condition?: Condition;
+	  };
+	// --- End Track P14 ---
 
 export interface EventPattern {
 	event: EventKind | 'draw' | 'damage' | 'lifeGain';
@@ -1846,6 +1991,10 @@ export interface ReplacementDef {
 					add?: Amount;
 				};
 				// --- End Track P11 ---
+				// --- Track P14 ---
+				/** CR 723.3a: "~ enters prepared." */
+				entersPrepared?: boolean;
+				// --- End Track P14 ---
 		  };
 	/** CR 614.15 / 616.1a: true when this is a self-replacement effect applied before other replacements. */
 	selfReplacement?: boolean;

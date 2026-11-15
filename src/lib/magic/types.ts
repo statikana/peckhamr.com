@@ -827,6 +827,10 @@ export interface CardInstance {
 	/** Full multiset of mana colors spent to cast this spell/permanent (for Adamant single-color counts). */
 	manaColorsAllSpent?: ManaColor[];
 	// --- End Track P13 ---
+	// --- Track P14 ---
+	/** CR 723.3a–b: true while this permanent has the "prepared" designation on the battlefield; cleared on zone exit. */
+	isPrepared?: boolean;
+	// --- End Track P14 ---
 }
 
 export interface TargetRef {
@@ -883,6 +887,10 @@ export interface SpellModifications {
 	/** CR 702.190b: player or planeswalker that the returned unblocked attacker was attacking. */
 	sneakAttackTarget?: { defenderPlayerId: string; defenderPlaneswalkerId?: string | null };
 	// --- End Track P12 ---
+	// --- Track P14 ---
+	/** CR 601.3e (e.g. Kess, Dissident Mage): if this spell would be put into your graveyard, exile it instead. */
+	exileIfPutIntoGraveyard?: boolean;
+	// --- End Track P14 ---
 }
 
 export interface CastOptionOptionalCost {
@@ -908,6 +916,9 @@ export interface LandPlayOption {
 	typeLine: string;
 	// --- Track P8: widened fromZone for top-of-library & graveyard land play ---
 	fromZone: 'hand' | 'exile' | 'library' | 'graveyard';
+	// --- Track P14 ---
+	staticPlaySlotKey?: string;
+	// --- End Track P14 ---
 }
 
 export interface CastCostAid {
@@ -952,6 +963,10 @@ export interface CastOption {
 	/** CR 702.119a: Legal permanents you control matching emergeFilter that can be sacrificed for Emerge. */
 	emergeCandidateIds?: string[];
 	// --- End Track P12 ---
+	// --- Track P14 ---
+	/** Turn-slotted static play permission slot key consumed when this spell becomes cast. */
+	staticPlaySlotKey?: string;
+	// --- End Track P14 ---
 }
 
 // --- Track P3 ---
@@ -1909,6 +1924,10 @@ export interface PlayerGameState {
 	hexproofThisTurn?: boolean;
 	hexproofUntilNextTurn?: boolean;
 	// --- End Track P13 ---
+	// --- Track P14 ---
+	/** Turn-slotted static zone-play permission keys used by this player during the current turn (cleared at turn start). */
+	usedStaticPlaySlotsThisTurn?: string[];
+	// --- End Track P14 ---
 }
 
 export interface ManaRider {
@@ -2100,6 +2119,9 @@ export interface PendingCostPayment {
 	grantedAbilityText?: string;
 	manaSpentCount?: number;
 	// --- End Track P10 ---
+	// --- Track P14 ---
+	staticPlaySlotKey?: string;
+	// --- End Track P14 ---
 	sacrificeSelfInCost?: boolean;
 	parts: SerializedPlannedCost[];
 	manaPaid?: ManaCostRequirement | null;

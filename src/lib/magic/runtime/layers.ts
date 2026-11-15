@@ -71,8 +71,18 @@ import {
 } from './staticsDynamicAndCosts.ts';
 // --- End Track P11 ---
 // --- Track P13 ---
-import { countDevotionInManaCost, evaluateP13Condition } from './effectsWave5.ts';
+import { evaluateP13Condition } from './effectsWave5.ts';
 // --- End Track P13 ---
+// --- Track P14 ---
+import {
+	cardHasGraveyardContinuousStatic,
+	collectGraveyardContinuousStaticsForPlayer,
+	computeWorkListDevotionToColors,
+	evaluateWave5Amount,
+	evaluateWave5Condition,
+	type ProtectionAttachmentExemptionInfo
+} from './staticsAndCostsWave5.ts';
+// --- End Track P14 ---
 
 export interface AttributedKeywordOrEffect {
 	id: string;
@@ -92,6 +102,9 @@ export interface AttributedKeywordOrEffect {
 	grantFaceIndex?: number;
 	grantAbilityIndex?: number;
 	// --- End Track P11 ---
+	// --- Track P14 ---
+	protectionExemption?: ProtectionAttachmentExemptionInfo;
+	// --- End Track P14 ---
 	grantSourceCard?: ScryfallCard;
 	grantSourceId?: string;
 	removed: boolean;
@@ -688,6 +701,9 @@ interface PermWorkState {
 	baseCard: ScryfallCard;
 	timestamp: number;
 	name: string;
+	// --- Track P14 ---
+	manaCost: string;
+	// --- End Track P14 ---
 	manaValue: number;
 	isFaceDown: boolean;
 	baseTypeLine: string;
@@ -709,8 +725,8 @@ interface PermWorkState {
 	abilityRemovalEvents: Array<{ sourceName: string; timestamp: number }>;
 	layer7bSetters: Array<{
 		sourceName: string;
-		power: number | null;
-		toughness: number | null;
+		power?: number | null;
+		toughness?: number | null;
 		timestamp: number;
 	}>;
 	items: AttributedKeywordOrEffect[];
@@ -742,6 +758,9 @@ interface GrantedAbilityMeta {
 	grantFaceIndex?: number;
 	grantAbilityIndex?: number;
 	// --- End Track P11 ---
+	// --- Track P14 ---
+	protectionExemption?: ProtectionAttachmentExemptionInfo;
+	// --- End Track P14 ---
 	grantSourceCard?: ScryfallCard;
 	grantSourceId?: string;
 }
@@ -810,13 +829,19 @@ function grantItem(
 ): void {
 	const keyLow = canonicalKey.toLowerCase();
 	const existingActive =
-		keyLow === 'toxic'
+		keyLow === 'toxic' ||
+		// --- Track P14 (CR 702.16n): Keep attachment-exempt protection grants distinct ---
+		(keyLow === 'protection' && Boolean(grantMeta?.protectionExemption))
+		// --- End Track P14 ---
 			? undefined
 			: work.items.find(
 					(it) =>
 						it.canonicalKey === keyLow &&
 						!it.removed &&
 						it.kind === kind &&
+						// --- Track P14 ---
+						!it.protectionExemption &&
+						// --- End Track P14 ---
 						(keyLow !== 'protection' && keyLow !== 'ward'
 							? true
 							: it.name.toLowerCase() === name.toLowerCase())
@@ -886,6 +911,11 @@ function grantItem(
 						? { grantAbilityIndex: grantMeta.grantAbilityIndex }
 						: {}),
 					// --- End Track P11 ---
+					// --- Track P14 ---
+					...(grantMeta.protectionExemption
+						? { protectionExemption: grantMeta.protectionExemption }
+						: {}),
+					// --- End Track P14 ---
 					...(grantMeta.grantSourceCard ? { grantSourceCard: grantMeta.grantSourceCard } : {}),
 					...(grantMeta.grantSourceId ? { grantSourceId: grantMeta.grantSourceId } : {})
 				}
@@ -1106,8 +1136,15 @@ function offBattlefieldFilterNeedsExtendedMatch(f: ObjectFilter): boolean {
 			f.castFromZoneFilter !== undefined ||
 			f.enteredThisTurn !== undefined ||
 			f.dealtDamageThisTurn !== undefined ||
-			f.attackingOrBlocking !== undefined
+			f.attackingOrBlocking !== undefined ||
 			// --- End Track P13 ---
+			// --- Track P14 ---
+			f.sameNameAsSource ||
+			f.sharesColorWithSelf ||
+			f.hasAnyCounter !== undefined ||
+			f.equipped !== undefined ||
+			f.enchanted !== undefined
+			// --- End Track P14 ---
 	);
 }
 
@@ -1317,7 +1354,7 @@ function matchesLayerFilter(
 	}
 	// --- End Track P10 ---
 	if (filter.token !== undefined && Boolean(target.inst.isToken) !== filter.token) return false;
-	// --- Track P13 ---
+	// --- Track P13 + Track P14 ---
 	if (filter.anyOf?.length) {
 		if (!filter.anyOf.some((sub) => matchesLayerFilter(sub, target, source, state, workList))) {
 			return false;
@@ -1359,7 +1396,50 @@ function matchesLayerFilter(
 			Boolean(target.inst.castFromZone && zones.includes(target.inst.castFromZone));
 		if (!ok) return false;
 	}
-	// --- End Track P13 ---
+	if (filter.sameNameAsSource) {
+		if (
+			target.isFaceDown ||
+			source.isFaceDown ||
+			!target.name ||
+			!source.name ||
+			target.name !== source.name
+		) {
+			return false;
+		}
+	}
+	if (filter.sharesColorWithSelf) {
+		if (
+			target.colors.length === 0 ||
+			source.colors.length === 0 ||
+			!target.colors.some((c) => source.colors.includes(c))
+		) {
+			return false;
+		}
+	}
+	if (filter.hasAnyCounter !== undefined) {
+		layerReads |= READ_ALL_COUNTERS;
+		const hasAny = Object.values(target.inst.counters).some((v) => v > 0);
+		if (hasAny !== filter.hasAnyCounter) return false;
+	}
+	if (filter.equipped !== undefined) {
+		const isEq = workList.some(
+			(w) =>
+				w.inst.attachedToId === target.inst.instanceId &&
+				w.types.includes('Artifact') &&
+				w.subtypes.includes('Equipment')
+		);
+		if (isEq !== filter.equipped) return false;
+	}
+	if (filter.enchanted !== undefined) {
+		const isEnch = workList.some(
+			(w) =>
+				w.inst.attachedToId === target.inst.instanceId &&
+				w.types.includes('Enchantment') &&
+				w.subtypes.includes('Aura')
+		);
+		if (isEnch !== filter.enchanted) return false;
+	}
+	// --- End Track P13 + Track P14 ---
 	return true;
 }
 
@@ -1690,17 +1770,25 @@ function evaluateLayerAmount(
 		case 'devouredCount':
 			return source.inst.devouredCount ?? 0;
 		// --- End Track P12 ---
-		// --- Track P13 ---
+		// --- Track P13 + Track P14 ---
 		case 'devotion': {
-			let total = 0;
-			for (const w of workList) {
-				if (w.controllerId !== source.controllerId || w.isFaceDown) continue;
-				const effCopy = activeTimedLayer1aForPermanent(state, w.inst) ?? w.inst.copiableState;
-				if (effCopy?.except?.noManaCost) continue;
-				const view = resolveObjectFaces(w.baseCard, instanceFaceOptions(w.inst, 'battlefield'));
-				total += countDevotionInManaCost(view.manaCost, amount.colors);
+			let pid = source.controllerId;
+			if (amount.player) {
+				if (amount.player.k === 'activePlayer') {
+					layerReads |= READ_ACTIVE_PLAYER;
+					pid = state.players[state.activePlayerIndex]?.playerId ?? '';
+				} else if (
+					amount.player.k === 'controllerOf' &&
+					amount.player.of.k === 'attachedTo' &&
+					source.inst.attachedToId
+				) {
+					const host = workList.find((w) => w.inst.instanceId === source.inst.attachedToId);
+					pid = host?.controllerId ?? '';
+				} else if (amount.player.k === 'ownerOf' && amount.player.of.k === 'self') {
+					pid = source.inst.ownerId;
+				}
 			}
-			return total;
+			return computeWorkListDevotionToColors(workList, pid, amount.colors);
 		}
 		case 'unlockedDoorsCount': {
 			if (amount.player.k === 'activePlayer') layerReads |= READ_ACTIVE_PLAYER;
@@ -1745,32 +1833,65 @@ function evaluateLayerAmount(
 			const pl = state.players.find((p) => p.playerId === pid);
 			return pl?.dungeonsCompletedCount ?? 0;
 		}
-		case 'greatestStatAmong':
-		case 'totalStatAmong': {
-			let best = 0;
-			let found = false;
-			let sum = 0;
-			for (const w of workList) {
-				if (!matchesLayerFilter(amount.filter, w, source, state, workList)) continue;
-				let val: number | null = null;
-				if (amount.stat === 'power') {
-					val = w.types.includes('Creature') ? (w.workingPower ?? 0) : null;
-				} else if (amount.stat === 'toughness') {
-					val = w.types.includes('Creature') ? (w.workingToughness ?? 0) : null;
-				} else if (amount.stat === 'manaValue') {
-					val = w.manaValue;
-				}
-				if (val === null) continue;
-				if (!found || val > best) {
-					best = val;
-					found = true;
-				}
-				sum += Math.max(0, val);
+		case 'colorsOfObject': {
+			if (amount.of === 'affected') {
+				return affected.colors.length;
 			}
-			if (amount.k === 'greatestStatAmong') return found ? Math.max(0, best) : 0;
-			return sum;
+			if (amount.of === 'attachedTo') {
+				if (source.inst.attachedToId === affected.inst.instanceId) {
+					return affected.colors.length;
+				}
+				const host = workList.find((w) => w.inst.instanceId === source.inst.attachedToId);
+				return host?.colors.length ?? 0;
+			}
+			return source.colors.length;
 		}
-		// --- End Track P13 ---
+		case 'greatestStatAmong':
+		case 'totalStatAmong':
+		case 'totalStatOf': {
+			const z = amount.filter.zone ?? 'battlefield';
+			if (z === 'battlefield') {
+				let best = 0;
+				let found = false;
+				let sum = 0;
+				for (let i = 0; i < workList.length; i++) {
+					const w = workList[i];
+					if (!matchesLayerFilter(amount.filter, w, source, state, workList)) continue;
+					let val: number | null = null;
+					if (amount.stat === 'manaValue') {
+						val = w.manaValue;
+					} else if (amount.stat === 'power') {
+						val = w.types.includes('Creature') ? (w.workingPower ?? 0) : null;
+					} else if (amount.stat === 'toughness') {
+						val = w.types.includes('Creature') ? (w.workingToughness ?? 0) : null;
+					}
+					if (val === null) continue;
+					if (!found || val > best) {
+						best = val;
+						found = true;
+					}
+					if (val > 0) sum += val;
+				}
+				if (amount.k === 'greatestStatAmong') return found ? Math.max(0, best) : 0;
+				return sum;
+			}
+			if (z === 'graveyard') layerReads |= READ_GRAVEYARDS;
+			else if (z === 'exile') layerReads |= READ_EXILE;
+			else layerReads |= READ_HIDDEN_ZONES;
+			return (
+				evaluateWave5Amount(
+					amount.k === 'totalStatAmong'
+						? { k: 'totalStatOf', stat: amount.stat, filter: amount.filter }
+						: amount,
+					{
+						state,
+						controllerId: source.controllerId,
+						source: source.inst
+					}
+				) ?? 0
+			);
+		}
+		// --- End Track P13 + Track P14 ---
 		default:
 			return 0;
 	}
@@ -2079,6 +2200,30 @@ function evaluateLayerCondition(
 				}) ?? false
 			);
 		// --- End Track P13 ---
+		// --- Track P14 ---
+		case 'anyOpponentMetric': {
+			if (cond.metric === 'life') layerReads |= READ_LIFE;
+			else layerReads |= READ_ZONE_SIZES;
+			return (
+				evaluateWave5Condition(cond, {
+					state,
+					controllerId: source.controllerId,
+					source: source.inst
+				}) ?? false
+			);
+		}
+		case 'cardsDrawnThisTurnAtLeast':
+		case 'nthMatchingSpellThisTurn': {
+			layerReads |= READ_P14;
+			return (
+				evaluateWave5Condition(cond, {
+					state,
+					controllerId: source.controllerId,
+					source: source.inst
+				}) ?? false
+			);
+		}
+		// --- End Track P14 ---
 		default:
 			return false;
 	}
@@ -2187,6 +2332,9 @@ const READ_P12 = 65536;
 // --- Track P13 ---
 const READ_P13 = 131072; // 1 << 17
 // --- End Track P13 ---
+// --- Track P14 ---
+const READ_P14 = 262144; // 1 << 18
+// --- End Track P14 ---
 
 /** Inputs read by the evaluation in progress (bits above). */
 let layerReads = 0;
@@ -2298,6 +2446,31 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 			for (const c of p.library) fp.push(c.card, c.copiableCard, c.copiableState);
 			for (const c of p.command) fp.push(c.card, c.copiableCard, c.copiableState);
 		}
+		// --- Track P14 ---
+		if (reads & READ_P14) {
+			fp.push(
+				p.cardsDrawnThisTurn ?? 0,
+				p.spellsCastThisTurn ?? 0,
+				p.spellsCastThisTurnCards?.length ?? 0
+			);
+			let gyStaticCount = 0;
+			for (let gi = 0; gi < p.graveyard.length; gi++) {
+				if (cardHasGraveyardContinuousStatic(effectiveCardForObject(p.graveyard[gi]))) {
+					gyStaticCount += 1;
+				}
+			}
+			fp.push(gyStaticCount);
+			if (gyStaticCount > 0) {
+				for (let gi = 0; gi < p.graveyard.length; gi++) {
+					const g = p.graveyard[gi];
+					const gCard = effectiveCardForObject(g);
+					if (cardHasGraveyardContinuousStatic(gCard)) {
+						fp.push(gCard, g.enteredTimestamp ?? 0);
+					}
+				}
+			}
+		}
+		// --- End Track P14 ---
 	}
 	for (const entry of snap.active) {
 		const perm = entry.perm;
@@ -2615,6 +2788,35 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 				}
 			}
 		}
+		// --- Track P14 ---
+		if (reads & READ_P14) {
+			if (
+				fp[i++] !== (p.cardsDrawnThisTurn ?? 0) ||
+				fp[i++] !== (p.spellsCastThisTurn ?? 0) ||
+				fp[i++] !== (p.spellsCastThisTurnCards?.length ?? 0)
+			) {
+				return false;
+			}
+			let gyStaticCount = 0;
+			for (let gi = 0; gi < p.graveyard.length; gi++) {
+				if (cardHasGraveyardContinuousStatic(effectiveCardForObject(p.graveyard[gi]))) {
+					gyStaticCount += 1;
+				}
+			}
+			if (fp[i++] !== gyStaticCount) return false;
+			if (gyStaticCount > 0) {
+				for (let gi = 0; gi < p.graveyard.length; gi++) {
+					const g = p.graveyard[gi];
+					const gCard = effectiveCardForObject(g);
+					if (cardHasGraveyardContinuousStatic(gCard)) {
+						if (fp[i++] !== gCard || fp[i++] !== (g.enteredTimestamp ?? 0)) {
+							return false;
+						}
+					}
+				}
+			}
+		}
+		// --- End Track P14 ---
 	}
 	const readsTapped = (reads & READ_TAPPED) !== 0;
 	const readsAllCounters = (reads & READ_ALL_COUNTERS) !== 0;
@@ -2891,6 +3093,7 @@ function buildEmblemWorkStates(state: GameState): PermWorkState[] {
 				baseCard: cmd.card,
 				timestamp: cmd.enteredTimestamp ?? 0,
 				name: cmd.card.name,
+				manaCost: '',
 				manaValue: 0,
 				isFaceDown: false,
 				baseTypeLine: 'Emblem',
@@ -2929,6 +3132,9 @@ interface PlainLayer1Template {
 	keywordsRef: ScryfallCard['keywords'];
 	keywordsJoin: string;
 	name: string;
+	// --- Track P14 ---
+	manaCost: string;
+	// --- End Track P14 ---
 	manaValue: number;
 	baseTypeLine: string;
 	supertypes: readonly string[];
@@ -3019,6 +3225,9 @@ function getPlainLayer1Template(baseCard: ScryfallCard): PlainLayer1Template {
 	const grantsSet = new Set<string>();
 	for (const ab of activeAbilityDefs(baseCard, PLAIN_LAYER1_OPTS)) {
 		if (ab.kind === 'static') {
+			// --- Track P14 (CR 113.6b): Graveyard-only statics do not function on the battlefield ---
+			if (ab.static.k === 'continuous' && ab.static.activeInZone === 'graveyard') continue;
+			// --- End Track P14 ---
 			statics.push(ab.static);
 		} else if (ab.kind === 'keyword') {
 			const kwSpec = getKeywordSpec(ab.keyword.name);
@@ -3044,6 +3253,9 @@ function getPlainLayer1Template(baseCard: ScryfallCard): PlainLayer1Template {
 		keywordsRef: baseCard.keywords,
 		keywordsJoin: baseCard.keywords?.join('\u0001') ?? '',
 		name: view.name,
+		// --- Track P14 ---
+		manaCost: view.manaCost,
+		// --- End Track P14 ---
 		manaValue: view.manaValue,
 		baseTypeLine,
 		supertypes,
@@ -3117,6 +3329,9 @@ function evaluateLayer1(
 				baseCard,
 				timestamp: entry.timestamp,
 				name: tpl.name,
+				// --- Track P14 ---
+				manaCost: tpl.manaCost,
+				// --- End Track P14 ---
 				manaValue: tpl.manaValue,
 				isFaceDown: false,
 				baseTypeLine: tpl.baseTypeLine,
@@ -3250,6 +3465,9 @@ function evaluateLayer1(
 			// --- End Track P7 ---
 			for (const ab of activeAbilityDefs(baseCard, layer1aOpts)) {
 				if (ab.kind === 'static') {
+					// --- Track P14 (CR 113.6b): Graveyard-only statics do not function on the battlefield ---
+					if (ab.static.k === 'continuous' && ab.static.activeInZone === 'graveyard') continue;
+					// --- End Track P14 ---
 					statics.push(ab.static);
 				} else if (ab.kind === 'keyword') {
 					const kwSpec = getKeywordSpec(ab.keyword.name);
@@ -3321,6 +3539,12 @@ function evaluateLayer1(
 			baseCard,
 			timestamp: entry.timestamp,
 			name: view.name,
+			// --- Track P14 ---
+			manaCost:
+				isFaceDown || effectiveCopy?.except?.noManaCost
+					? ''
+					: view.manaCost,
+			// --- End Track P14 ---
 			// --- Track P7 ---
 			manaValue: !isFaceDown && effectiveCopy?.except?.noManaCost ? 0 : view.manaValue,
 			// --- End Track P7 ---
@@ -3451,7 +3675,7 @@ function evaluateLayer2Control(
 				source.controllerId = resolveLayerPlayerRef(st.mod.controller, state, source, source);
 			} else if (typeof st.affected === 'object') {
 				for (const target of workList) {
-					if (!matchesLayerFilter(st.affected, target, source, state)) continue;
+					if (!matchesLayerFilter(st.affected, target, source, state, workList)) continue;
 					if (st.condition && !evaluateLayerCondition(st.condition, state, workList, source, target, workMap)) {
 						continue;
 					}
@@ -3529,6 +3753,22 @@ function evaluateAttachedTypes(
 						toughness: t,
 						timestamp: att.timestamp
 					});
+				// --- Track P14 ---
+				} else if (st.layer === '7b' && st.mod.k === 'setBasePower') {
+					const p = evaluateLayerAmount(st.mod.power, state, workList, att, target);
+					target.layer7bSetters.push({
+						sourceName: att.name,
+						power: p,
+						timestamp: att.timestamp
+					});
+				} else if (st.layer === '7b' && st.mod.k === 'setBaseToughness') {
+					const t = evaluateLayerAmount(st.mod.toughness, state, workList, att, target);
+					target.layer7bSetters.push({
+						sourceName: att.name,
+						toughness: t,
+						timestamp: att.timestamp
+					});
+				// --- End Track P14 ---
 				}
 			}
 			if (losesAbilities) {
@@ -3569,7 +3809,7 @@ function evaluateTypeOverwrites(
 						})()
 					: workList;
 			for (const target of candidates) {
-				if (typeof st.affected === 'object' && !matchesLayerFilter(st.affected, target, source, state)) {
+				if (typeof st.affected === 'object' && !matchesLayerFilter(st.affected, target, source, state, workList)) {
 					continue;
 				}
 				if (st.condition && !evaluateLayerCondition(st.condition, state, workList, source, target, workMap)) {
@@ -3711,6 +3951,9 @@ function evaluateAdditiveTypesAndColors(
 	};
 
 	// 4. Layer 4 Pass C: Attached & global additive type effects (Awaken the Ancient, Opalescence, Urborg, Yavimaya, Mycosynth Lattice, Maskwood Nexus)
+	// --- Track P14 ---
+	const latestRemovedTypeTs = new Map<string, number>();
+	// --- End Track P14 ---
 	const additiveSources = emblemWorkList.length > 0 ? [...workList, ...emblemWorkList] : workList;
 	for (const source of additiveSources) {
 		if (source.strippedByAttachment || source.abilityRemovalEvents.length > 0) continue;
@@ -3735,7 +3978,7 @@ function evaluateAdditiveTypesAndColors(
 				const chosenSub = source.inst.chosenSubType;
 				if (!chosenSub) continue;
 				for (const target of candidateTargets) {
-					if (typeof st.affected === 'object' && !matchesLayerFilter(st.affected, target, source, state)) {
+					if (typeof st.affected === 'object' && !matchesLayerFilter(st.affected, target, source, state, workList)) {
 						continue;
 					}
 					if (
@@ -3763,7 +4006,7 @@ function evaluateAdditiveTypesAndColors(
 				}
 			} else if (st.mod.k === 'addTypes') {
 				for (const target of candidateTargets) {
-					if (typeof st.affected === 'object' && !matchesLayerFilter(st.affected, target, source, state)) {
+					if (typeof st.affected === 'object' && !matchesLayerFilter(st.affected, target, source, state, workList)) {
 						continue;
 					}
 					if (
@@ -3798,7 +4041,7 @@ function evaluateAdditiveTypesAndColors(
 				}
 			} else if (st.mod.k === 'allCreatureTypes' && typeof st.affected === 'object') {
 				for (const target of workList) {
-					if (!matchesLayerFilter(st.affected, target, source, state)) continue;
+					if (!matchesLayerFilter(st.affected, target, source, state, workList)) continue;
 					if (
 						st.condition &&
 						!evaluateLayerCondition(st.condition, state, workList, source, target, workMap)
@@ -3811,7 +4054,77 @@ function evaluateAdditiveTypesAndColors(
 						target.typeModifiedBy.push(source.name);
 					}
 				}
+			// --- Track P14 (CR 700.5, CR 613.1d, CR 205.1a): Layer 4 type removal (Theros Gods, etc.) ---
+			} else if (st.mod.k === 'removeTypes') {
+				for (const target of candidateTargets) {
+					if (
+						typeof st.affected === 'object' &&
+						!matchesLayerFilter(st.affected, target, source, state, workList)
+					) {
+						continue;
+					}
+					if (
+						st.condition &&
+						!evaluateLayerCondition(st.condition, state, workList, source, target, workMap)
+					) {
+						continue;
+					}
+					if (
+						(st.affected === 'attachedTo' || st.affected === 'self') &&
+						latestSetTypesTimestampOn(target) > source.timestamp
+					) {
+						continue;
+					}
+					let changed = false;
+					let removedCreature = false;
+					for (const rt of st.mod.types) {
+						const rtLow = rt.toLowerCase();
+						latestRemovedTypeTs.set(`${target.inst.instanceId}:${rtLow}`, source.timestamp);
+						const beforeLen = target.types.length;
+						target.types = target.types.filter((t) => t.toLowerCase() !== rtLow);
+						if (target.types.length !== beforeLen) {
+							changed = true;
+							if (rtLow === 'creature') removedCreature = true;
+						}
+					}
+					if (changed) {
+						// CR 205.1a: Removing Creature (when neither Creature nor Kindred/Tribal remains)
+						// also removes creature subtypes (such as God).
+						if (
+							removedCreature &&
+							!target.types.some((t) => {
+								const nl = normalizeLayerCardType(t);
+								return nl === 'creature' || nl === 'kindred' || nl === 'planeswalker';
+							})
+						) {
+							target.subtypes = target.subtypes.filter(
+								(sub) => LAND_SUBTYPES.has(sub) || NON_CREATURE_SUBTYPES.has(sub)
+							);
+							target.hasAllCreatureTypes = false;
+						}
+						const superPrefix =
+							target.supertypes.length > 0 ? `${target.supertypes.join(' ')} ` : '';
+						const typeStr = target.types.join(' ');
+						const rightParts = [...target.subtypes];
+						if (
+							target.hasAllCreatureTypes &&
+							target.types.some((t) => {
+								const nl = normalizeLayerCardType(t);
+								return nl === 'creature' || nl === 'kindred';
+							}) &&
+							!rightParts.includes('All-Types')
+						) {
+							rightParts.push('All-Types');
+						}
+						const subStr = rightParts.length > 0 ? ` — ${rightParts.join(' ')}` : '';
+						target.effectiveTypeLine = `${superPrefix}${typeStr}${subStr}`.trim();
+						if (!target.typeModifiedBy.includes(source.name)) {
+							target.typeModifiedBy.push(source.name);
+						}
+					}
+				}
 			}
+			// --- End Track P14 ---
 		}
 	}
 	if (state.timedContinuousEffects?.length) {
@@ -3828,6 +4141,10 @@ function evaluateAdditiveTypesAndColors(
 				if (!target || (target.inst.objectVersion ?? 1) !== (aff.objectVersion ?? 1)) continue;
 				if (latestSetTypesTimestampOn(target) > eff.timestamp) continue;
 				for (const ct of eff.layer4?.addTypes ?? []) {
+					// --- Track P14 ---
+					const remTs = latestRemovedTypeTs.get(`${target.inst.instanceId}:${ct.toLowerCase()}`);
+					if (remTs !== undefined && remTs > eff.timestamp) continue;
+					// --- End Track P14 ---
 					if (!target.types.includes(ct)) target.types.push(ct);
 					const nextType = addCardTypeToTypeLine(target.effectiveTypeLine, ct);
 					if (nextType !== target.effectiveTypeLine) {
@@ -3947,7 +4264,7 @@ function evaluateLayer5Colors(
 				if (host) targets = [host];
 			} else if (typeof st.affected === 'object') {
 				targets = workList.filter((t) =>
-					matchesLayerFilter(st.affected as ObjectFilter, t, source, state)
+					matchesLayerFilter(st.affected as ObjectFilter, t, source, state, workList)
 				);
 			}
 			for (const target of targets) {
@@ -4010,7 +4327,7 @@ function evaluateGlobalAbilityLoss(
 			if (st.k !== 'continuous' || typeof st.affected !== 'object') continue;
 			if (st.layer === '6' && st.mod.k === 'removeAllAbilities') {
 				for (const target of workList) {
-					if (!matchesLayerFilter(st.affected, target, source, state)) continue;
+					if (!matchesLayerFilter(st.affected, target, source, state, workList)) continue;
 					if (
 						st.condition &&
 						!evaluateLayerCondition(st.condition, state, workList, source, target, workMap)
@@ -4093,6 +4410,68 @@ function evaluatePerPermanent(
 				].sort((a, b) => a.timestamp - b.timestamp)
 			: workList.filter((w) => w.statics.length > 0 && !w.strippedByAttachment);
 	// --- End Track P11 + Track P13 ---
+	// --- Track P14 (CR 113.6b): Graveyard continuous statics (Wonder, Brawn, Anger, Filth, Valor, Glory) ---
+	layerReads |= READ_P14;
+	const graveyardStaticSources: PermWorkState[] = [];
+	for (let pi = 0; pi < state.players.length; pi++) {
+		const pl = state.players[pi];
+		if (pl.lost || pl.graveyard.length === 0) continue;
+		const gyEntries = collectGraveyardContinuousStaticsForPlayer(pl);
+		if (gyEntries.length === 0) continue;
+		const byInst = new Map<CardInstance, StaticDef[]>();
+		for (let gi = 0; gi < gyEntries.length; gi++) {
+			const e = gyEntries[gi];
+			let list = byInst.get(e.cardInst);
+			if (!list) {
+				list = [];
+				byInst.set(e.cardInst, list);
+			}
+			list.push(e.staticDef);
+		}
+		for (const [gyInst, gyStatics] of byInst) {
+			const gyCard = effectiveCardForObject(gyInst);
+			const gyView = resolveObjectFaces(gyCard, instanceFaceOptions(gyInst, 'graveyard'));
+			const gyWork: PermWorkState = {
+				inst: gyInst,
+				controllerId: pl.playerId,
+				baseCard: gyCard,
+				timestamp: gyInst.enteredTimestamp ?? 0,
+				name: gyView.name,
+				manaCost: gyView.manaCost,
+				manaValue: gyView.manaValue,
+				isFaceDown: false,
+				baseTypeLine: gyView.typeLine,
+				effectiveTypeLine: gyView.typeLine,
+				supertypes: [...gyView.supertypes],
+				types: [...gyView.types],
+				subtypes: normalizeSubtypes(gyView.subtypes),
+				colors: [...gyView.colors],
+				isLegendary: gyView.supertypes.includes('Legendary'),
+				prefixLegendary: gyView.supertypes.includes('Legendary') ? 'Legendary ' : '',
+				hasAllCreatureTypes: false,
+				basePower: gyView.power ?? null,
+				baseToughness: gyView.toughness ?? null,
+				workingPower: gyView.power ?? null,
+				workingToughness: gyView.toughness ?? null,
+				typeModifiedBy: [],
+				ptModifiedBy: [],
+				allAbilityRemovalSources: [],
+				abilityRemovalEvents: [],
+				layer7bSetters: [],
+				items: [],
+				itemTimestamps: new Map(),
+				statics: gyStatics,
+				grantsKeywordViaAbility: new Set(),
+				strippedByAttachment: false
+			};
+			graveyardStaticSources.push(gyWork);
+			staticSources.push(gyWork);
+		}
+	}
+	if (graveyardStaticSources.length > 0) {
+		staticSources.sort((a, b) => a.timestamp - b.timestamp);
+	}
+	// --- End Track P14 ---
 	// 6b. Layer 6 across ALL permanents (CR 613.1f): innate removal, Layer 6 grants/removals, cantHaveLocks, Suspend/Blitz haste.
 	for (const target of workList) {
 		const targetVersion = target.inst.objectVersion ?? 1;
@@ -4431,6 +4810,18 @@ function evaluatePerPermanent(
 						}
 					// --- End Track P11 ---
 					} else if (st.mod.k === 'addKeywords') {
+						// --- Track P14 ---
+						const protMeta: GrantedAbilityMeta | undefined = st.mod.protectionAttachmentExemption
+							? {
+									grantSourceId: source.inst.instanceId,
+									protectionExemption: {
+										mode: st.mod.protectionAttachmentExemption,
+										sourceId: source.inst.instanceId,
+										controllerId: source.controllerId
+									}
+								}
+							: undefined;
+						// --- End Track P14 ---
 						for (const kw of sortGrantedKeywords(st.mod.keywords)) {
 							const kwLow = kw.toLowerCase();
 							if (kwLow.startsWith('ward')) {
@@ -4444,20 +4835,39 @@ function evaluatePerPermanent(
 								formatKeywordLabel(kwLow),
 								'keyword',
 								source.name,
-								source.timestamp
+								source.timestamp,
+								// --- Track P14 ---
+								key === 'protection' ? protMeta : undefined
+								// --- End Track P14 ---
 							);
 						}
 					} else if (st.layer === '6' && st.mod.k === 'protectionFromChosenColor') {
 						const chosenCol = source.inst.chosenColor;
 						const kw = chosenCol ? PROTECTION_KEYWORD_BY_COLOR[chosenCol] : undefined;
 						if (kw) {
+							// --- Track P14 ---
+							const chosenProtMeta: GrantedAbilityMeta | undefined = st.mod
+								.protectionAttachmentExemption
+								? {
+										grantSourceId: source.inst.instanceId,
+										protectionExemption: {
+											mode: st.mod.protectionAttachmentExemption,
+											sourceId: source.inst.instanceId,
+											controllerId: source.controllerId
+										}
+									}
+								: undefined;
+							// --- End Track P14 ---
 							grantItem(
 								target,
 								'protection',
 								formatKeywordLabel(kw),
 								'keyword',
 								source.name,
-								source.timestamp
+								source.timestamp,
+								// --- Track P14 ---
+								chosenProtMeta
+								// --- End Track P14 ---
 							);
 						}
 					} else if (st.layer === '6' && st.mod.k === 'removeKeywords') {
@@ -4477,7 +4887,7 @@ function evaluatePerPermanent(
 					if (st.affected === 'self') {
 						if (source.inst.instanceId !== target.inst.instanceId) continue;
 					} else {
-						if (!matchesLayerFilter(st.affected, target, source, state)) continue;
+						if (!matchesLayerFilter(st.affected, target, source, state, workList)) continue;
 					}
 					if (
 						st.condition &&
@@ -4561,6 +4971,18 @@ function evaluatePerPermanent(
 					// --- End Track P11 ---
 					} else if (st.layer === '6' && st.mod.k === 'addKeywords') {
 						if (st.affected === 'self' && !st.condition) continue; // already in innate items
+						// --- Track P14 ---
+						const protMeta: GrantedAbilityMeta | undefined = st.mod.protectionAttachmentExemption
+							? {
+									grantSourceId: source.inst.instanceId,
+									protectionExemption: {
+										mode: st.mod.protectionAttachmentExemption,
+										sourceId: source.inst.instanceId,
+										controllerId: source.controllerId
+									}
+								}
+							: undefined;
+						// --- End Track P14 ---
 						for (const kw of sortGrantedKeywords(st.mod.keywords)) {
 							const kwLow = kw.toLowerCase();
 							if (kwLow.startsWith('ward')) {
@@ -4574,20 +4996,39 @@ function evaluatePerPermanent(
 								formatKeywordLabel(kwLow),
 								'keyword',
 								source.name,
-								source.timestamp
+								source.timestamp,
+								// --- Track P14 ---
+								key === 'protection' ? protMeta : undefined
+								// --- End Track P14 ---
 							);
 						}
 					} else if (st.layer === '6' && st.mod.k === 'protectionFromChosenColor') {
 						const chosenCol = source.inst.chosenColor;
 						const kw = chosenCol ? PROTECTION_KEYWORD_BY_COLOR[chosenCol] : undefined;
 						if (kw) {
+							// --- Track P14 ---
+							const chosenProtMeta: GrantedAbilityMeta | undefined = st.mod
+								.protectionAttachmentExemption
+								? {
+										grantSourceId: source.inst.instanceId,
+										protectionExemption: {
+											mode: st.mod.protectionAttachmentExemption,
+											sourceId: source.inst.instanceId,
+											controllerId: source.controllerId
+										}
+									}
+								: undefined;
+							// --- End Track P14 ---
 							grantItem(
 								target,
 								'protection',
 								formatKeywordLabel(kw),
 								'keyword',
 								source.name,
-								source.timestamp
+								source.timestamp,
+								// --- Track P14 ---
+								chosenProtMeta
+								// --- End Track P14 ---
 							);
 						}
 					} else if (st.layer === '6' && st.mod.k === 'removeKeywords') {
@@ -4669,7 +5110,15 @@ function evaluatePerPermanent(
 		);
 		if (source.allAbilityRemovalSources.length > 0 && !startedEarlier) continue;
 		for (const st of source.statics) {
-			if (st.k !== 'continuous' || st.layer !== '7b' || st.mod.k !== 'setBasePT') continue;
+			if (
+				st.k !== 'continuous' ||
+				st.layer !== '7b' ||
+				(st.mod.k !== 'setBasePT' &&
+					st.mod.k !== 'setBasePower' &&
+					st.mod.k !== 'setBaseToughness')
+			) {
+				continue;
+			}
 			if (st.affected === 'self') {
 				if (!source.types.includes('Creature') || source.allAbilityRemovalSources.length > 0) {
 					continue;
@@ -4680,30 +5129,42 @@ function evaluatePerPermanent(
 				) {
 					continue;
 				}
-				const p = evaluateLayerAmount(st.mod.power, state, workList, source, source);
-				const t = evaluateLayerAmount(st.mod.toughness, state, workList, source, source);
+				const p =
+					st.mod.k === 'setBasePT' || st.mod.k === 'setBasePower'
+						? evaluateLayerAmount(st.mod.power, state, workList, source, source)
+						: undefined;
+				const t =
+					st.mod.k === 'setBasePT' || st.mod.k === 'setBaseToughness'
+						? evaluateLayerAmount(st.mod.toughness, state, workList, source, source)
+						: undefined;
 				source.layer7bSetters.push({
 					sourceName: source.name,
-					power: p,
-					toughness: t,
+					...(p !== undefined ? { power: p } : {}),
+					...(t !== undefined ? { toughness: t } : {}),
 					timestamp: source.timestamp
 				});
 			} else if (typeof st.affected === 'object') {
 				for (const target of workList) {
 					if (!target.types.includes('Creature')) continue;
-					if (!matchesLayerFilter(st.affected, target, source, state)) continue;
+					if (!matchesLayerFilter(st.affected, target, source, state, workList)) continue;
 					if (
 						st.condition &&
 						!evaluateLayerCondition(st.condition, state, workList, source, target, workMap)
 					) {
 						continue;
 					}
-					const p = evaluateLayerAmount(st.mod.power, state, workList, source, target);
-					const t = evaluateLayerAmount(st.mod.toughness, state, workList, source, target);
+					const p =
+						st.mod.k === 'setBasePT' || st.mod.k === 'setBasePower'
+							? evaluateLayerAmount(st.mod.power, state, workList, source, target)
+							: undefined;
+					const t =
+						st.mod.k === 'setBasePT' || st.mod.k === 'setBaseToughness'
+							? evaluateLayerAmount(st.mod.toughness, state, workList, source, target)
+							: undefined;
 					target.layer7bSetters.push({
 						sourceName: source.name,
-						power: p,
-						toughness: t,
+						...(p !== undefined ? { power: p } : {}),
+						...(t !== undefined ? { toughness: t } : {}),
 						timestamp: source.timestamp
 					});
 				}
@@ -4761,10 +5222,13 @@ function evaluatePerPermanent(
 		// --- End Track P11 ---
 		target.layer7bSetters.sort((a, b) => a.timestamp - b.timestamp);
 		for (const setter of target.layer7bSetters) {
-			target.workingPower = setter.power;
-			target.workingToughness = setter.toughness;
-			if (setter.power !== null && setter.toughness !== null) {
-				const label = `${setter.sourceName} (base ${setter.power}/${setter.toughness})`;
+			if (setter.power !== undefined) target.workingPower = setter.power;
+			if (setter.toughness !== undefined) target.workingToughness = setter.toughness;
+			if (
+				(setter.power !== undefined && setter.power !== null) ||
+				(setter.toughness !== undefined && setter.toughness !== null)
+			) {
+				const label = `${setter.sourceName} (base ${target.workingPower ?? '*'}/${target.workingToughness ?? '*'})`;
 				if (!target.ptModifiedBy.includes(label)) {
 					target.ptModifiedBy.push(label);
 				}
@@ -4807,11 +5271,15 @@ function evaluatePerPermanent(
 		// --- End Track P13 ---
 	}
 
+	// --- Track P13 + Track P14 ---
 	const layer7cSources = anyGrantedStaticInBoard
-		? emblemWorkList.length > 0
-			? [...workList, ...emblemWorkList]
+		? emblemWorkList.length > 0 || graveyardStaticSources.length > 0
+			? [...workList, ...emblemWorkList, ...graveyardStaticSources].sort(
+					(a, b) => a.timestamp - b.timestamp
+				)
 			: workList
 		: staticSources;
+	// --- End Track P13 + Track P14 ---
 	for (const source of layer7cSources) {
 		if (source.strippedByAttachment) continue;
 
@@ -4852,7 +5320,7 @@ function evaluatePerPermanent(
 				const candidates = st.affected === 'self' ? [source] : workList;
 				for (const target of candidates) {
 					if (target.workingPower === null || target.workingToughness === null) continue;
-					if (typeof st.affected === 'object' && !matchesLayerFilter(st.affected, target, source, state)) {
+					if (typeof st.affected === 'object' && !matchesLayerFilter(st.affected, target, source, state, workList)) {
 						continue;
 					}
 					if (
@@ -4897,7 +5365,7 @@ function evaluatePerPermanent(
 					if (target.workingPower === null || target.workingToughness === null) continue;
 					if (
 						typeof gst.affected === 'object' &&
-						!matchesLayerFilter(gst.affected, target, source, state)
+						!matchesLayerFilter(gst.affected, target, source, state, workList)
 					) {
 						continue;
 					}
@@ -4997,9 +5465,20 @@ function buildBoardResults(workList: PermWorkState[]): BoardLayerCache['byInstan
 		};
 
 		const tLine = breakdown.effectiveTypeLine;
-		const activeKeywords = breakdown.items
-			.filter((it) => it.kind === 'keyword' && !it.removed)
-			.map((it) => it.name);
+		// --- Track P14 ---
+		const activeKeywords: string[] = [];
+		let seenProtLabels: Set<string> | undefined;
+		for (let ki = 0; ki < breakdown.items.length; ki++) {
+			const it = breakdown.items[ki];
+			if (it.kind !== 'keyword' || it.removed) continue;
+			if (it.canonicalKey === 'protection') {
+				const pLow = it.name.toLowerCase();
+				if (seenProtLabels?.has(pLow)) continue;
+				(seenProtLabels ??= new Set()).add(pLow);
+			}
+			activeKeywords.push(it.name);
+		}
+		// --- End Track P14 ---
 		// CR 613.1d, 613.5, 702.73a: Changeling applies in Layer 4 before Layer 6 ability removal.
 		const hasAllCreatureTypes = work.hasAllCreatureTypes || tLine.includes('All-Types');
 
@@ -5094,6 +5573,9 @@ function cloneBreakdown(b: CardContinuousBreakdown): CardContinuousBreakdown {
 		ptModifiedBy: [...b.ptModifiedBy],
 		items: b.items.map((it) => ({
 			...it,
+			// --- Track P14 ---
+			...(it.protectionExemption ? { protectionExemption: { ...it.protectionExemption } } : {}),
+			// --- End Track P14 ---
 			sources: [...it.sources],
 			removedBy: [...it.removedBy]
 		}))
@@ -5403,9 +5885,20 @@ export function evaluatePermanent(state: GameState, inst: CardInstance): Evaluat
 		const baseCard = effectiveCardForObject(inst);
 		const breakdown = buildOffBattlefieldBreakdown(baseCard, inst, state);
 		const tLine = breakdown.effectiveTypeLine;
-		const activeKeywords = breakdown.items
-			.filter((it) => it.kind === 'keyword' && !it.removed)
-			.map((it) => it.name);
+		// --- Track P14 ---
+		const activeKeywords: string[] = [];
+		let seenProtLabels: Set<string> | undefined;
+		for (let ki = 0; ki < breakdown.items.length; ki++) {
+			const it = breakdown.items[ki];
+			if (it.kind !== 'keyword' || it.removed) continue;
+			if (it.canonicalKey === 'protection') {
+				const pLow = it.name.toLowerCase();
+				if (seenProtLabels?.has(pLow)) continue;
+				(seenProtLabels ??= new Set()).add(pLow);
+			}
+			activeKeywords.push(it.name);
+		}
+		// --- End Track P14 ---
 		const hasAllCreatureTypes =
 			tLine.includes('All-Types') ||
 			breakdown.items.some((it) => it.canonicalKey === 'changeling' && !it.removed);
