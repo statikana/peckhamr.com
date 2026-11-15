@@ -91,6 +91,9 @@ import {
 	type ProtectionAttachmentExemptionInfo
 } from './staticsAndCostsWave5.ts';
 // --- End Track P14 ---
+// --- Track P17b ---
+import { evaluateP17bAmount, evaluateP17bCondition } from './costsWave6.ts';
+// --- End Track P17b ---
 
 export interface AttributedKeywordOrEffect {
 	id: string;
@@ -1240,14 +1243,15 @@ function offBattlefieldFilterNeedsExtendedMatch(f: ObjectFilter): boolean {
 			f.isPrepared !== undefined ||
 			Boolean(f.sharesCreatureTypeWithSelf) ||
 			// --- End Track P15 ---
-			// --- Track P16b ---
+			// --- Track P16b & P17b ---
+			Boolean(f.allSubtypes?.length) ||
 			f.modified !== undefined ||
 			f.outlaw !== undefined ||
 			f.hasAdventure !== undefined ||
 			f.hasXInManaCost !== undefined ||
 			f.powerEqualsToughness !== undefined ||
 			f.manaValueEqualsSourcePower !== undefined
-			// --- End Track P16b ---
+			// --- End Track P16b & P17b ---
 	);
 }
 
@@ -1570,18 +1574,29 @@ function matchesLayerFilter(
 		if (isEnch !== filter.enchanted) return false;
 	}
 	// --- End Track P13 + Track P14 ---
-	// --- Track P16b ---
+	// --- Track P16b & P17b ---
+	if (filter.allSubtypes?.length) {
+		if (!filter.allSubtypes.every((sub) => hasSubtypeInWork(target, sub))) {
+			return false;
+		}
+	}
 	if (filter.modified !== undefined) {
 		layerReads |= READ_ALL_COUNTERS;
 		const hasCtr = Object.values(target.inst.counters).some((v) => v > 0);
-		const isMod =
-			hasCtr ||
-			workList.some(
-				(w) =>
-					w.inst.attachedToId === target.inst.instanceId &&
-					(w.subtypes.includes('Equipment') ||
-						(w.subtypes.includes('Aura') && w.controllerId === target.controllerId))
-			);
+		const isEq = workList.some(
+			(w) =>
+				w.inst.attachedToId === target.inst.instanceId &&
+				w.types.includes('Artifact') &&
+				w.subtypes.includes('Equipment')
+		);
+		const isAuraControlledByYou = workList.some(
+			(w) =>
+				w.inst.attachedToId === target.inst.instanceId &&
+				w.controllerId === source.controllerId &&
+				w.types.includes('Enchantment') &&
+				w.subtypes.includes('Aura')
+		);
+		const isMod = target.types.includes('Creature') && (hasCtr || isEq || isAuraControlledByYou);
 		if (isMod !== filter.modified) return false;
 	}
 	if (filter.outlaw !== undefined) {
@@ -1627,7 +1642,7 @@ function matchesLayerFilter(
 		const isGoaded = (target.inst.goadedByPlayerIds?.length ?? 0) > 0;
 		if (isGoaded !== filter.goaded) return false;
 	}
-	// --- End Track P16b ---
+	// --- End Track P16b & P17b ---
 	return true;
 }
 
@@ -2095,6 +2110,22 @@ function evaluateLayerAmount(
 			layerReads |= READ_P15;
 			return state.permanentsPutIntoGraveyardFromBattlefieldThisTurn ?? 0;
 		// --- End Track P15 ---
+		// --- Track P17b ---
+		case 'p17bMetric':
+			layerReads |=
+				READ_P17B |
+				READ_ALL_COUNTERS |
+				READ_GRAVEYARDS |
+				READ_HIDDEN_ZONES |
+				READ_COMBAT |
+				READ_LIFE |
+				READ_ACTIVE_PLAYER;
+			return evaluateP17bAmount(
+				amount,
+				{ state, controllerId: source.controllerId, source: source.inst },
+				matchesObjectFilter
+			);
+		// --- End Track P17b ---
 		default:
 			return 0;
 	}
@@ -2502,6 +2533,22 @@ function evaluateLayerCondition(
 				) ?? false
 			);
 		// --- End Track P16b ---
+		// --- Track P17b ---
+		case 'p17bCondition':
+			layerReads |=
+				READ_P17B |
+				READ_ALL_COUNTERS |
+				READ_GRAVEYARDS |
+				READ_HIDDEN_ZONES |
+				READ_COMBAT |
+				READ_LIFE |
+				READ_ACTIVE_PLAYER;
+			return evaluateP17bCondition(
+				cond,
+				{ state, controllerId: source.controllerId, source: source.inst },
+				matchesObjectFilter
+			);
+		// --- End Track P17b ---
 		default:
 			return false;
 	}
@@ -2733,7 +2780,19 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 	// --- End Track P17a ---
 	// --- Track P17b ---
 	if (reads & READ_P17B) {
-		fp.push(0);
+		fp.push(
+			state.startingPlayerId ?? '',
+			state.creaturesAttackedCountThisTurn ?? 0
+		);
+		for (const p of state.players) {
+			fp.push(
+				p.lifeGainedThisTurn ?? 0,
+				p.spellsCastThisTurn ?? 0,
+				p.poison || 0,
+				p.experienceCounters || 0,
+				p.energyCounters || 0
+			);
+		}
 	}
 	// --- End Track P17b ---
 	// --- Track P18a ---
@@ -3128,7 +3187,23 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 	// --- End Track P17a ---
 	// --- Track P17b ---
 	if (reads & READ_P17B) {
-		if (fp[i++] !== 0) return false;
+		if (
+			fp[i++] !== (state.startingPlayerId ?? '') ||
+			fp[i++] !== (state.creaturesAttackedCountThisTurn ?? 0)
+		) {
+			return false;
+		}
+		for (const p of state.players) {
+			if (
+				fp[i++] !== (p.lifeGainedThisTurn ?? 0) ||
+				fp[i++] !== (p.spellsCastThisTurn ?? 0) ||
+				fp[i++] !== (p.poison || 0) ||
+				fp[i++] !== (p.experienceCounters || 0) ||
+				fp[i++] !== (p.energyCounters || 0)
+			) {
+				return false;
+			}
+		}
 	}
 	// --- End Track P17b ---
 	// --- Track P18a ---

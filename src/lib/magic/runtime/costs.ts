@@ -60,7 +60,6 @@ import { hasRestriction, playerLifeTotalCantChange } from './replace.ts';
 import { markHandCardRevealedToAll } from './staticsLayersAndRestrictions.ts';
 // --- Track P11 ---
 import {
-	ALL_COUNTER_TYPES,
 	boardMayGrantStaticAbility,
 	cardMayHaveCostModifier,
 	collectActiveGrantedStaticDefs
@@ -85,6 +84,25 @@ import {
 // --- Track P15 ---
 import { onPlayerLostLifeCheckSpeedTrigger } from './framesBattlesAndKeywordsWave5.ts';
 // --- End Track P15 ---
+// --- Track P17b ---
+import {
+	checkSimpleP17bCost,
+	deductMatchingCountersWave6,
+	describeP17bCost,
+	executeP17bCostPart,
+	findCostCandidateByIdWave6,
+	isP17bObjectCostDef,
+	matchesP17bAbilityCostMod,
+	matchesP17bSpellCostMod,
+	p17bObjectCandidates,
+	payP17bUntapOthers,
+	pickGreedyP17bObjects,
+	planP17bSpecialCostPart,
+	serializeP17bCostPart,
+	totalMatchingCountersWave6,
+	type P17bSpellCastMeta
+} from './costsWave6.ts';
+// --- End Track P17b ---
 
 export type { SerializedPlannedCost };
 export {
@@ -373,8 +391,11 @@ export function effectiveSpellManaCost(
 	faceDownSpec?: FaceDownSpec,
 	prototyped?: boolean,
 	// --- Track P11 ---
-	chosenTargets?: TargetRef[]
+	chosenTargets?: TargetRef[],
 	// --- End Track P11 ---
+	// --- Track P17b ---
+	castMeta?: P17bSpellCastMeta
+	// --- End Track P17b ---
 ): ManaCostRequirement {
 	// Read-only: one layer-cache validation for the battlefield scan (Phase 6d).
 	return withStableLayerInputs(state, () =>
@@ -389,7 +410,8 @@ export function effectiveSpellManaCost(
 			fused,
 			faceDownSpec,
 			prototyped,
-			chosenTargets
+			chosenTargets,
+			castMeta
 		)
 	);
 }
@@ -406,8 +428,11 @@ function effectiveSpellManaCostInner(
 	faceDownSpec?: FaceDownSpec,
 	prototyped?: boolean,
 	// --- Track P11 ---
-	chosenTargets?: TargetRef[]
+	chosenTargets?: TargetRef[],
 	// --- End Track P11 ---
+	// --- Track P17b ---
+	castMeta?: P17bSpellCastMeta
+	// --- End Track P17b ---
 ): ManaCostRequirement {
 	const card = inst.copiableCard ?? inst.card;
 	const stackFaceOpts = {
@@ -446,7 +471,15 @@ function effectiveSpellManaCostInner(
 		if (mod.delta.mode === 'setZero') {
 			forceZeroCost = true;
 		} else if (mod.delta.mode === 'reduce') {
-			if (mod.delta.generic) genericReduction += mod.delta.generic * factor;
+			// --- Track P17b ---
+			if (mod.delta.generic) {
+				let genRed = mod.delta.generic * factor;
+				if (mod.delta.maxReduction !== undefined && genRed > mod.delta.maxReduction) {
+					genRed = mod.delta.maxReduction;
+				}
+				genericReduction += genRed;
+			}
+			// --- End Track P17b ---
 			// --- Track P11 ---
 			if (mod.delta.colored) {
 				for (const [col, amt] of Object.entries(mod.delta.colored) as Array<[ManaColor, number]>) {
@@ -496,7 +529,10 @@ function effectiveSpellManaCostInner(
 		return true;
 	};
 
-	const stackProxy: CardInstance & { targets?: TargetRef[]; castSourceZone?: CardInstance['zone'] } = {
+	const stackProxy: CardInstance & {
+		targets?: TargetRef[];
+		castSourceZone?: CardInstance['zone'];
+	} = {
 		...inst,
 		zone: 'stack',
 		activeFaceIndex: faceIndex,
@@ -507,8 +543,11 @@ function effectiveSpellManaCostInner(
 		...(chosenTargets !== undefined ? { targets: chosenTargets } : {}),
 		// --- End Track P11 ---
 		// --- Track P14 ---
-		castSourceZone: inst.zone
+		castSourceZone: inst.zone,
 		// --- End Track P14 ---
+		// --- Track P17b ---
+		...(castMeta?.kickedTags ? { kickedTags: castMeta.kickedTags } : {})
+		// --- End Track P17b ---
 	};
 	const matchesSpell = (
 		mod: Extract<StaticDef, { k: 'costModifier' }>,
@@ -525,6 +564,18 @@ function effectiveSpellManaCostInner(
 			source: sourceInst,
 			xValue: effectiveX
 		};
+		// --- Track P17b ---
+		const p17bMatch = matchesP17bSpellCostMod(
+			mod,
+			stackProxy,
+			sourceInst,
+			fctx,
+			chosenTargets,
+			castMeta,
+			matchesObjectFilter
+		);
+		if (p17bMatch !== null) return p17bMatch;
+		// --- End Track P17b ---
 		// --- Track P11 (CR 601.2c -> 601.2f): pre-target optimistic check for targeting reductions ---
 		if (
 			chosenTargets === undefined &&
@@ -587,7 +638,15 @@ function effectiveSpellManaCostInner(
 		if (p.lost) continue;
 		for (const perm of p.battlefield) {
 			if (perm.phasedOut) continue;
-			const ctx: FilterContext = { state, controllerId: p.playerId, source: perm, xValue: effectiveX };
+			// --- Track P17b: Include spellTargets on FilterContext for per-target battlefield cost modifiers ---
+			const ctx = {
+				state,
+				controllerId: p.playerId,
+				source: perm,
+				xValue: effectiveX,
+				...(chosenTargets ? { spellTargets: chosenTargets } : {})
+			} as FilterContext;
+			// --- End Track P17b ---
 			const pCard = perm.copiableCard ?? perm.card;
 			const mods = costModifiersOf(pCard, instanceFaceOptions(perm, 'battlefield'));
 			if (mods.length > 0 && !evaluatePermanent(state, perm).losesAllAbilities) {
@@ -618,7 +677,13 @@ function effectiveSpellManaCostInner(
 			// --- Track P13: Ring emblem does not carry cost modifiers; custom emblems function in command zone (CR 114.4) ---
 			if (cmd.isRingEmblem) continue;
 			const cCard = cmd.copiableCard ?? cmd.card;
-			const ctx: FilterContext = { state, controllerId: p.playerId, source: cmd, xValue: effectiveX };
+			const ctx = {
+				state,
+				controllerId: p.playerId,
+				source: cmd,
+				xValue: effectiveX,
+				...(chosenTargets ? { spellTargets: chosenTargets } : {})
+			} as FilterContext;
 			for (const mod of costModifiersOf(cCard, instanceFaceOptions(cmd, cmd.zone))) {
 				if (!cmd.isEmblem && !mod.activeZones?.includes('command')) continue;
 				if (!matchesWho(mod, p.playerId)) continue;
@@ -629,6 +694,40 @@ function effectiveSpellManaCostInner(
 			// --- End Track P13 ---
 		}
 	}
+	// --- Track P17b: Stack-active spell cost modifiers ("As long as ~ is on the stack, spells that target it cost {2} more to cast") ---
+	for (const stk of state.stack) {
+		if (stk.kind !== 'spell' || !stk.card || stk.sourceInstanceId === inst.instanceId) continue;
+		const mods = costModifiersOf(stk.card, { zone: 'stack', faceIndex: stk.faceIndex });
+		if (mods.length === 0) continue;
+		const stkSource: CardInstance = {
+			...inst,
+			instanceId: stk.id,
+			card: stk.card,
+			ownerId: stk.controllerId,
+			controllerId: stk.controllerId,
+			zone: 'stack',
+			tapped: false,
+			summoningSick: false,
+			counters: {} as CardInstance['counters'],
+			damageMarked: 0,
+			attachedToId: null,
+			isToken: false
+		};
+		const stkCtx: FilterContext = {
+			state,
+			controllerId: stk.controllerId,
+			source: stkSource,
+			xValue: effectiveX
+		};
+		for (const mod of mods) {
+			if (!mod.activeZones?.includes('stack')) continue;
+			if (!matchesWho(mod, stk.controllerId)) continue;
+			if (mod.condition && !evaluateCondition(mod.condition, stkCtx)) continue;
+			if (!matchesSpell(mod, stk.controllerId, stkSource)) continue;
+			applyDelta(mod, stkCtx);
+		}
+	}
+	// --- End Track P17b ---
 
 	// 3. Commander Tax from the command zone (CR 903.8).
 	if (inst.isCommander && inst.zone === 'command') {
@@ -683,8 +782,12 @@ export function effectiveAbilityManaCost(
 	isManaAbility = false,
 	// --- End Track P11 ---
 	// --- Track P15 ---
-	powerUpReduction = false
+	powerUpReduction = false,
 	// --- End Track P15 ---
+	// --- Track P17b ---
+	chosenTargets?: TargetRef[],
+	isLoyaltyAbility = false
+	// --- End Track P17b ---
 ): { manaCost: string; requirement: ManaCostRequirement } {
 	// Read-only: one layer-cache validation for the battlefield scan (Phase 6d).
 	return withStableLayerInputs(state, () =>
@@ -697,7 +800,9 @@ export function effectiveAbilityManaCost(
 			xValue,
 			sourcePerm,
 			isManaAbility,
-			powerUpReduction
+			powerUpReduction,
+			chosenTargets,
+			isLoyaltyAbility
 		)
 	);
 }
@@ -714,8 +819,12 @@ function effectiveAbilityManaCostInner(
 	isManaAbility = false,
 	// --- End Track P11 ---
 	// --- Track P15 ---
-	powerUpReduction = false
+	powerUpReduction = false,
 	// --- End Track P15 ---
+	// --- Track P17b ---
+	chosenTargets?: TargetRef[],
+	isLoyaltyAbility = false
+	// --- End Track P17b ---
 ): { manaCost: string; requirement: ManaCostRequirement } {
 	const kw =
 		abilityKeyword ??
@@ -731,7 +840,15 @@ function effectiveAbilityManaCostInner(
 							? 'commander ninjutsu'
 							: abilityId.startsWith('scavenge_')
 								? 'scavenge'
-								: undefined);
+								// --- Track P17b ---
+								: abilityId.startsWith('boast_')
+									? 'boast'
+									: abilityId.startsWith('exhaust_')
+										? 'exhaust'
+										: abilityId.startsWith('powerup_')
+											? 'power-up'
+											// --- End Track P17b ---
+											: undefined);
 	let forceZeroCost = false;
 	let genericReduction = 0;
 	let genericIncrease = 0;
@@ -744,6 +861,9 @@ function effectiveAbilityManaCostInner(
 	let extraColoredIncreaseStr = '';
 	let anyModifierApplied = false;
 	const isManaAb = isManaAbility || abilityId === 'mana_tap';
+	// --- Track P17b ---
+	const isLoyaltyAb = isLoyaltyAbility || abilityId.startsWith('loy_') || abilityId.includes(':loy_');
+	// --- End Track P17b ---
 
 	const visitAbilityMod = (
 		mod: Extract<StaticDef, { k: 'costModifier' }>,
@@ -751,24 +871,27 @@ function effectiveAbilityManaCostInner(
 		ctx: FilterContext
 	) => {
 		if (mod.affects.k !== 'ability') return;
-		if (mod.affects.keyword) {
-			if (mod.affects.keyword !== kw) return;
-		} else {
-			// CR 605: general activated-ability cost modifiers never apply to mana abilities.
-			if (isManaAb) return;
-			if (!sourcePerm) return;
-			if (mod.affects.filter && !matchesObjectFilter(sourcePerm, mod.affects.filter, ctx)) {
-				return;
-			}
-		}
-		if (mod.who.relation === 'you' && modControllerId !== actorId) return;
+		// --- Track P17b ---
 		if (
-			(mod.who.relation === 'opponent' || mod.who.relation === 'each_opponent') &&
-			modControllerId === actorId
+			!ctx.source ||
+			!matchesP17bAbilityCostMod(
+				mod,
+				actorId,
+				abilityId,
+				kw,
+				sourcePerm,
+				isManaAb,
+				isLoyaltyAb,
+				modControllerId,
+				ctx.source,
+				ctx,
+				chosenTargets,
+				matchesObjectFilter
+			)
 		) {
 			return;
 		}
-		if (mod.condition && !evaluateCondition(mod.condition, ctx)) return;
+		// --- End Track P17b ---
 		const perAmount = mod.delta.per ?? mod.delta.times;
 		const factor = perAmount ? Math.max(0, evaluateAmount(perAmount, ctx)) : 1;
 		if (factor === 0 && perAmount) return;
@@ -776,7 +899,15 @@ function effectiveAbilityManaCostInner(
 		if (mod.delta.mode === 'setZero') {
 			forceZeroCost = true;
 		} else if (mod.delta.mode === 'reduce') {
-			if (mod.delta.generic) genericReduction += mod.delta.generic * factor;
+			// --- Track P17b ---
+			if (mod.delta.generic) {
+				let genRed = mod.delta.generic * factor;
+				if (mod.delta.maxReduction !== undefined && genRed > mod.delta.maxReduction) {
+					genRed = mod.delta.maxReduction;
+				}
+				genericReduction += genRed;
+			}
+			// --- End Track P17b ---
 			if (mod.delta.colored) {
 				for (const [col, amt] of Object.entries(mod.delta.colored) as Array<[ManaColor, number]>) {
 					if (amt > 0) {
@@ -807,6 +938,21 @@ function effectiveAbilityManaCostInner(
 		}
 	};
 
+	// --- Track P17b: Self-cost modifiers on off-battlefield ability sources (e.g. graveyard abilities) ---
+	if (sourcePerm && sourcePerm.zone !== 'battlefield') {
+		const sCard = sourcePerm.copiableCard ?? sourcePerm.card;
+		const sCtx: FilterContext = {
+			state,
+			controllerId: actorId,
+			source: sourcePerm,
+			xValue
+		};
+		for (const mod of costModifiersOf(sCard, instanceFaceOptions(sourcePerm, sourcePerm.zone))) {
+			if (mod.activeZones && !mod.activeZones.includes(sourcePerm.zone)) continue;
+			visitAbilityMod(mod, actorId, sCtx);
+		}
+	}
+	// --- End Track P17b ---
 	const mayGrantAbilityCostMod = boardMayGrantStaticAbility(state, 'costModifier');
 	for (const p of state.players) {
 		if (p.lost) continue;
@@ -1008,6 +1154,10 @@ export function describeCost(defs: CostDef[]): string {
 	if (defs.length === 0) return "Don't pay";
 	return defs
 		.map((d): string => {
+			// --- Track P17b ---
+			const p17bDesc = describeP17bCost(d);
+			if (p17bDesc !== null) return p17bDesc;
+			// --- End Track P17b ---
 			switch (d.k) {
 				case 'mana':
 					return `Pay ${d.cost}`;
@@ -1126,6 +1276,9 @@ export interface CostContext {
 		// --- End Track P15 ---
 	};
 	// --- End Track P10 ---
+	// --- Track P17b ---
+	spellColors?: ManaColor[];
+	// --- End Track P17b ---
 	canPayMana: (req: ManaCostRequirement, reservedIds?: ReadonlySet<string>) => boolean;
 	payMana: (req: ManaCostRequirement) => boolean;
 }
@@ -1142,7 +1295,10 @@ export type CostQuestion =
 			// --- End Track P14 ---
 			candidateIds: string[];
 			minTotal?: number;
-			metric?: 'power';
+			// --- Track P17b ---
+			metric?: 'power' | 'manaValue';
+			costDef?: CostDef;
+			// --- End Track P17b ---
 			candidateWeights?: Record<string, number>;
 	  };
 
@@ -1163,14 +1319,27 @@ type ObjectCostDef = Extract<
 			// --- Track P14 ---
 			| 'behold'
 			| 'putCounters'
-			| 'putFromHandOnTopOfLibrary';
+			| 'putFromHandOnTopOfLibrary'
 			// --- End Track P14 ---
+			// --- Track P17b ---
+			| 'untapOthers'
+			| 'putOnBottomOfLibrary'
+			| 'processOpponentExile'
+			| 'putExiledWithSelfToGraveyard';
+			// --- End Track P17b ---
 	}
 >;
 
 /** One cost part of a complete plan, with the objects it uses. */
 export type PlannedCost =
-	| { def: CostDef; objects?: CardInstance[]; random?: { candidates: CardInstance[]; count: number } };
+	| {
+			def: CostDef;
+			objects?: CardInstance[];
+			random?: { candidates: CardInstance[]; count: number };
+			// --- Track P17b ---
+			emitForaged?: boolean;
+			// --- End Track P17b ---
+	  };
 
 export type CostPlan =
 	| { ok: false; error: string }
@@ -1182,7 +1351,15 @@ function n(amount: Amount, ctx: CostContext): number {
 }
 
 function filterCtx(ctx: CostContext): FilterContext {
-	return { state: ctx.state, controllerId: ctx.player.playerId, source: ctx.source, xValue: ctx.xValue };
+	return {
+		state: ctx.state,
+		controllerId: ctx.player.playerId,
+		source: ctx.source,
+		xValue: ctx.xValue,
+		// --- Track P17b ---
+		...(ctx.spellColors ? { spellColors: ctx.spellColors } : {})
+		// --- End Track P17b ---
+	} as FilterContext;
 }
 
 function zoneOf(player: PlayerGameState, zone: PlayerZone): CardInstance[] {
@@ -1197,14 +1374,9 @@ function sourceOnBattlefield(ctx: CostContext): boolean {
 	return !ctx.isSpell && ctx.player.battlefield.some((c) => c.instanceId === ctx.source.instanceId);
 }
 
-// --- Track P11: Counter counting & deduction helpers for removeCounters ---
+// --- Track P11 + Track P17b: Counter counting & deduction helpers for removeCounters ---
 function totalMatchingCountersOn(perm: CardInstance, counter: CounterType | 'any'): number {
-	if (counter !== 'any') return perm.counters[counter] || 0;
-	let sum = 0;
-	for (const t of ALL_COUNTER_TYPES) {
-		sum += perm.counters[t] || 0;
-	}
-	return sum;
+	return totalMatchingCountersWave6(perm, counter);
 }
 
 function deductMatchingCountersFrom(
@@ -1213,38 +1385,16 @@ function deductMatchingCountersFrom(
 	counter: CounterType | 'any',
 	toRemove: number
 ): number {
-	if (toRemove <= 0) return 0;
-	let removedTotal = 0;
-	const types: readonly CounterType[] = counter === 'any' ? ALL_COUNTER_TYPES : [counter];
-	for (const key of types) {
-		if (removedTotal >= toRemove) break;
-		const prev = perm.counters[key] || 0;
-		if (prev <= 0) continue;
-		const take = Math.min(prev, toRemove - removedTotal);
-		const next = prev - take;
-		perm.counters[key] = next;
-		removedTotal += take;
-		if (perm.zone === 'battlefield' && !perm.phasedOut) {
-			emitEvent(state, {
-				kind: 'CounterRemoved',
-				objectId: perm.instanceId,
-				object: perm,
-				counterType: key,
-				amount: take,
-				previousCount: prev,
-				newCount: next
-			});
-		}
-	}
-	if (removedTotal > 0) {
-		noteLayerInputsChanged(state);
-	}
-	return removedTotal;
+	return deductMatchingCountersWave6(state, perm, counter, toRemove);
 }
-// --- End Track P11 ---
+// --- End Track P11 + Track P17b ---
 
 /** Does this cost need the player to choose objects, and which objects could pay it? */
 function objectCandidates(def: ObjectCostDef, ctx: CostContext, used: Set<string>): CardInstance[] | null {
+	// --- Track P17b ---
+	const p17bCand = p17bObjectCandidates(def, ctx, used, matchesObjectFilter);
+	if (p17bCand.handled) return p17bCand.candidates;
+	// --- End Track P17b ---
 	const fctx = filterCtx(ctx);
 	const free = (c: CardInstance) => !used.has(c.instanceId) && !(ctx.isSpell && c.instanceId === ctx.source.instanceId);
 	switch (def.k) {
@@ -1347,11 +1497,22 @@ function objectCandidates(def: ObjectCostDef, ctx: CostContext, used: Set<string
 			);
 		}
 		// --- End Track P14 ---
+		// --- Track P17b ---
+		case 'untapOthers':
+		case 'putOnBottomOfLibrary':
+		case 'processOpponentExile':
+		case 'putExiledWithSelfToGraveyard':
+			return null;
+		// --- End Track P17b ---
 	}
 }
 
 /** Checks a cost part that doesn't involve choosing objects. Returns an error or null. */
 function checkSimple(def: CostDef, ctx: CostContext): string | null {
+	// --- Track P17b ---
+	const p17bSimple = checkSimpleP17bCost(def, ctx, matchesObjectFilter);
+	if (p17bSimple.handled) return p17bSimple.error;
+	// --- End Track P17b ---
 	const src = ctx.source;
 	const name = src.isFaceDown ? (src.faceDownLabel || 'Face-Down Permanent') : src.card.name;
 	switch (def.k) {
@@ -1361,8 +1522,13 @@ function checkSimple(def: CostDef, ctx: CostContext): string | null {
 			if (def.k === 'tapSelf' && src.tapped) return `${name} is already tapped.`;
 			if (def.k === 'untapSelf' && !src.tapped) return `${name} is already untapped.`;
 			// CR 302.6: {T}/{Q} abilities of a creature need it to have been under your control since your
-			// most recent turn began (or haste). Tapping *other* creatures for a cost doesn't.
-			if (evaluatePermanent(ctx.state, src).isCreature && src.summoningSick && !hasHaste(ctx.state, src)) {
+			// most recent turn began (or haste). Spelled-out "Untap ~" (viaSymbol === false) does not!
+			if (
+				!(def.k === 'untapSelf' && def.viaSymbol === false) &&
+				evaluatePermanent(ctx.state, src).isCreature &&
+				src.summoningSick &&
+				!hasHaste(ctx.state, src)
+			) {
 				return `${name} has summoning sickness and cannot use {${def.k === 'tapSelf' ? 'T' : 'Q'}} abilities yet.`;
 			}
 			return null;
@@ -1560,6 +1726,9 @@ interface Flat {
 	def: CostDef;
 	/** A `mana` def from the ability's own cost (covered by ctx.baseMana). */
 	topLevel: boolean;
+	// --- Track P17b ---
+	emitForaged?: boolean;
+	// --- End Track P17b ---
 }
 
 /**
@@ -1570,32 +1739,50 @@ interface Flat {
 function flatten(
 	defs: CostDef[],
 	options: number[] | undefined,
-	decide: (prefix: Flat[], rest: CostDef[], choice: Extract<CostDef, { k: 'choice' | 'optional' }>, index: number) =>
-		| { option: number }
-		| { error: string }
-		| { question: CostQuestion }
+	decide: (
+		prefix: Flat[],
+		rest: Array<{ def: CostDef; topLevel: boolean }>,
+		choice: Extract<CostDef, { k: 'choice' | 'optional' }>,
+		index: number
+	) => { option: number } | { error: string } | { question: CostQuestion },
+	// --- Track P17b: Preserve topLevel=false on branch mana costs across nested canPayCosts checks ---
+	nonTopLevelDefs?: ReadonlySet<CostDef>
+	// --- End Track P17b ---
 ): { flat: Flat[] } | { error: string } | { question: CostQuestion } {
 	const flat: Flat[] = [];
-	const work: Array<{ def: CostDef; topLevel: boolean }> = defs.map((def) => ({ def, topLevel: true }));
+	const work: Array<{ def: CostDef; topLevel: boolean; emitForaged?: boolean }> = defs.map((def) => ({
+		def,
+		topLevel: !nonTopLevelDefs?.has(def)
+	}));
 	let choiceIndex = 0;
-	while (work.length > 0) {
-		const { def, topLevel } = work.shift()!;
+	for (let guard = 0; guard < 128 && work.length > 0; guard++) {
+		const { def, topLevel, emitForaged } = work.shift()!;
 		if (def.k !== 'choice' && def.k !== 'optional') {
-			flat.push({ def, topLevel });
+			flat.push({ def, topLevel, ...(emitForaged ? { emitForaged: true } : {}) });
 			continue;
 		}
 		const opts = def.k === 'choice' ? def.options : [def.cost, []];
 		const index = choiceIndex++;
 		let chosen = options?.[index];
 		if (chosen === undefined) {
-			const d = decide(flat, work.map((w) => w.def), def, index);
+			const d = decide(flat, work, def, index);
 			if ('error' in d || 'question' in d) return d;
 			chosen = d.option;
 		}
 		if (!Number.isInteger(chosen) || chosen < 0 || chosen >= opts.length) {
 			return { error: 'Invalid cost choice.' };
 		}
-		work.unshift(...opts[chosen].map((d) => ({ def: d, topLevel: false })));
+		// --- Track P17b: Propagate Forage event flag onto the chosen option's final step ---
+		const chosenBranch = opts[chosen];
+		const isForage = Boolean((def.k === 'choice' && def.forage) || emitForaged);
+		work.unshift(
+			...chosenBranch.map((d, bi) => ({
+				def: d,
+				topLevel: false,
+				...(isForage && bi === chosenBranch.length - 1 ? { emitForaged: true } : {})
+			}))
+		);
+		// --- End Track P17b ---
 	}
 	return { flat };
 }
@@ -1609,7 +1796,22 @@ export function planCosts(ctx: CostContext, defs: CostDef[], payment?: CostPayme
 		const opts = choice.k === 'choice' ? choice.options : [choice.cost, []];
 		// An option is legal if the whole cost can be paid with it (later choices still open).
 		const legal = opts
-			.map((o, i) => ({ i, ok: canPayCosts(ctx, [...prefix.map((f) => f.def), ...o, ...rest]) }))
+			.map((o, i) => {
+				// --- Track P17b ---
+				const nonTop = new Set<CostDef>();
+				for (const f of prefix) if (!f.topLevel) nonTop.add(f.def);
+				for (const d of o) nonTop.add(d);
+				for (const r of rest) if (!r.topLevel) nonTop.add(r.def);
+				return {
+					i,
+					ok: canPayCosts(
+						ctx,
+						[...prefix.map((f) => f.def), ...o, ...rest.map((r) => r.def)],
+						nonTop
+					)
+				};
+				// --- End Track P17b ---
+			})
 			.filter((o) => o.ok)
 			.map((o) => o.i);
 		if (legal.length === 0) return { error: `Can't pay the cost: ${describeCost([choice])}.` };
@@ -1637,6 +1839,9 @@ function planFlat(ctx: CostContext, flat: Flat[], objects: string[][] | undefine
 	// CR 118.3: with {T} in the cost, the source can't also be tapped for "Tap an untapped ...".
 	// Similarly, a discard-self cost can't use the source card to pay another discard/exile-from-hand cost.
 	const tapsSelf = flat.some((f) => f.def.k === 'tapSelf');
+	// --- Track P17b ---
+	const untapsSelf = flat.some((f) => f.def.k === 'untapSelf');
+	// --- End Track P17b ---
 	const discardsSelf = flat.some((f) => f.def.k === 'discard' && f.def.filter === 'self');
 	const exilesSelfFromGraveyard = flat.some(
 		(f) => f.def.k === 'exileFrom' && f.def.zone === 'graveyard' && f.def.filter === 'self'
@@ -1650,12 +1855,12 @@ function planFlat(ctx: CostContext, flat: Flat[], objects: string[][] | undefine
 		return { ok: false, error: `Not enough energy counters to pay ${totalEnergyNeeded} {E}.` };
 	}
 
-	for (const { def, topLevel } of flat) {
+	for (const { def, topLevel, emitForaged } of flat) {
 		const err = checkSimple(def, ctx);
 		if (err) return { ok: false, error: err };
 		if (def.k === 'mana') {
 			if (!topLevel || !ctx.baseMana) mana = addRequirements(mana, parseManaCost(def.cost, ctx.xValue));
-			parts.push({ def });
+			parts.push({ def, ...(emitForaged ? { emitForaged: true } : {}) });
 			continue;
 		}
 		// --- Track P14 (CR 701.67a–b): Waterbend [cost] ---
@@ -1791,24 +1996,31 @@ function planFlat(ctx: CostContext, flat: Flat[], objects: string[][] | undefine
 			// --- Track P14 ---
 			def.k !== 'behold' &&
 			def.k !== 'putCounters' &&
-			def.k !== 'putFromHandOnTopOfLibrary'
+			def.k !== 'putFromHandOnTopOfLibrary' &&
 			// --- End Track P14 ---
+			// --- Track P17b ---
+			def.k !== 'untapOthers' &&
+			def.k !== 'putOnBottomOfLibrary' &&
+			def.k !== 'processOpponentExile' &&
+			def.k !== 'putExiledWithSelfToGraveyard'
+			// --- End Track P17b ---
 		) {
-			parts.push({ def });
+			parts.push({ def, ...(emitForaged ? { emitForaged: true } : {}) });
 			continue;
 		}
 		const reserveSelf =
 			((def.k === 'tapOthers' || def.k === 'tapSubsetSum') && tapsSelf) ||
+			// --- Track P17b ---
+			(def.k === 'untapOthers' && untapsSelf) ||
+			// --- End Track P17b ---
 			(discardsSelf &&
 				(def.k === 'revealFromHand' ||
 					// --- Track P14 ---
 					def.k === 'behold' ||
 					def.k === 'putFromHandOnTopOfLibrary' ||
 					// --- End Track P14 ---
-					(def.k !== 'removeCounters' &&
-						def.k !== 'putCounters' &&
-						def.filter !== 'self' &&
-						(def.k === 'discard' || (def.k === 'exileFrom' && def.zone === 'hand'))))) ||
+					((def.k === 'discard' || (def.k === 'exileFrom' && def.zone === 'hand')) &&
+						def.filter !== 'self'))) ||
 			(exilesSelfFromGraveyard &&
 				def.k === 'exileFrom' &&
 				def.zone === 'graveyard' &&
@@ -1816,10 +2028,41 @@ function planFlat(ctx: CostContext, flat: Flat[], objects: string[][] | undefine
 		const exclude = reserveSelf ? new Set([...used, ctx.source.instanceId]) : used;
 		const candidates = objectCandidates(def, ctx, exclude);
 		if (!candidates) {
-			parts.push({ def });
+			parts.push({ def, ...(emitForaged ? { emitForaged: true } : {}) });
 			if ('filter' in def && def.filter === 'self') used.add(ctx.source.instanceId);
 			continue;
 		}
+		// --- Track P17b: Special subset/group cost planning (Collect evidence, halfRoundedUp, shareCreatureType, etc.) ---
+		const p17bSpecial = planP17bSpecialCostPart(
+			def,
+			candidates,
+			ctx,
+			used,
+			objects,
+			objectIndex,
+			(d) => describeCost([d])
+		);
+		if (p17bSpecial.handled) {
+			const spRes = p17bSpecial.result;
+			if (!spRes.ok) return spRes;
+			if ('question' in spRes) {
+				return {
+					ok: true,
+					question:
+						spRes.question.kind === 'objects'
+							? { ...spRes.question, costDef: def }
+							: spRes.question
+				};
+			}
+			objectIndex = spRes.nextObjectIndex;
+			parts.push({
+				def,
+				objects: spRes.chosen,
+				...(emitForaged ? { emitForaged: true } : {})
+			});
+			continue;
+		}
+		// --- End Track P17b ---
 		if (def.k === 'tapSubsetSum') {
 			const minTotal = n(def.minTotal, ctx);
 			const candidateWeights = withStableLayerInputs(ctx.state, () => {
@@ -1926,7 +2169,11 @@ function planFlat(ctx: CostContext, flat: Flat[], objects: string[][] | undefine
 		}
 		if (def.k === 'discard' && def.random) {
 			// Random isn't a choice; the cards are picked when the cost is paid.
-			parts.push({ def, random: { candidates, count } });
+			parts.push({
+				def,
+				random: { candidates, count },
+				...(emitForaged ? { emitForaged: true } : {})
+			});
 			for (const c of candidates) used.add(c.instanceId); // conservatively reserved
 			continue;
 		}
@@ -1952,14 +2199,21 @@ function planFlat(ctx: CostContext, flat: Flat[], objects: string[][] | undefine
 					index,
 					label: describeCost([def]),
 					count,
-					candidateIds: candidates.map((c) => c.instanceId)
+					candidateIds: candidates.map((c) => c.instanceId),
+					// --- Track P17b ---
+					costDef: def
+					// --- End Track P17b ---
 				}
 			};
 		}
 		if (def.k !== 'removeCounters' && def.k !== 'putCounters' && def.k !== 'behold') {
 			for (const c of chosen) used.add(c.instanceId);
 		}
-		parts.push({ def, objects: chosen });
+		parts.push({
+			def,
+			objects: chosen,
+			...(emitForaged ? { emitForaged: true } : {})
+		});
 	}
 
 	if (mana && !canPayManaAfterTaps(ctx, parts, mana, used)) {
@@ -2105,19 +2359,42 @@ function selectSubsetForMinSum(
  * choices (declining optional costs), and tokens-first then lowest-CMC for objects. Returns null if
  * the cost can't be paid.
  */
-export function chooseCostPayment(ctx: CostContext, defs: CostDef[]): CostPayment | null {
+export function chooseCostPayment(
+	ctx: CostContext,
+	defs: CostDef[],
+	// --- Track P17b ---
+	nonTopLevelDefs?: ReadonlySet<CostDef>
+	// --- End Track P17b ---
+): CostPayment | null {
 	const options: number[] = [];
-	const result = flatten(defs, undefined, (prefix, rest, choice, index) => {
-		const opts = choice.k === 'choice' ? choice.options : [choice.cost, []];
-		const order = choice.k === 'optional' ? [1, 0] : opts.map((_, i) => i);
-		for (const i of order) {
-			if (canPayCosts(ctx, [...prefix.map((f) => f.def), ...opts[i], ...rest])) {
-				options[index] = i;
-				return { option: i };
+	const result = flatten(
+		defs,
+		undefined,
+		(prefix, rest, choice, index) => {
+			const opts = choice.k === 'choice' ? choice.options : [choice.cost, []];
+			const order = choice.k === 'optional' ? [1, 0] : opts.map((_, i) => i);
+			for (const i of order) {
+				// --- Track P17b ---
+				const nonTop = new Set<CostDef>();
+				for (const f of prefix) if (!f.topLevel) nonTop.add(f.def);
+				for (const d of opts[i]) nonTop.add(d);
+				for (const r of rest) if (!r.topLevel) nonTop.add(r.def);
+				if (
+					canPayCosts(
+						ctx,
+						[...prefix.map((f) => f.def), ...opts[i], ...rest.map((r) => r.def)],
+						nonTop
+					)
+				) {
+					options[index] = i;
+					return { option: i };
+				}
+				// --- End Track P17b ---
 			}
-		}
-		return { error: 'unpayable' };
-	});
+			return { error: 'unpayable' };
+		},
+		nonTopLevelDefs
+	);
 	if (!('flat' in result)) return null;
 	// Choose objects greedily: tokens first, then cheapest (any legal choice proves payability).
 	const greedy = (ids: CardInstance[], count: number) =>
@@ -2159,6 +2436,15 @@ export function chooseCostPayment(ctx: CostContext, defs: CostDef[]): CostPaymen
 			continue;
 		}
 		// --- End Track P14 ---
+		// --- Track P17b ---
+		if (q.costDef) {
+			const p17bPick = pickGreedyP17bObjects(q.costDef, candidates, q.count, ctx);
+			if (p17bPick) {
+				objects[q.index] = p17bPick;
+				continue;
+			}
+		}
+		// --- End Track P17b ---
 		objects[q.index] =
 			q.minTotal !== undefined && q.candidateWeights
 				? selectSubsetForMinSum(candidates, q.minTotal, q.candidateWeights)
@@ -2168,16 +2454,20 @@ export function chooseCostPayment(ctx: CostContext, defs: CostDef[]): CostPaymen
 }
 
 /** Can `defs` be paid in some way? Object choices are made greedily (tokens first, then cheapest). */
-export function canPayCosts(ctx: CostContext, defs: CostDef[]): boolean {
-	return chooseCostPayment(ctx, defs) !== null;
+export function canPayCosts(
+	ctx: CostContext,
+	defs: CostDef[],
+	// --- Track P17b ---
+	nonTopLevelDefs?: ReadonlySet<CostDef>
+	// --- End Track P17b ---
+): boolean {
+	return chooseCostPayment(ctx, defs, nonTopLevelDefs) !== null;
 }
 
 function findById(ctx: CostContext, id: string): CardInstance | undefined {
-	for (const z of ['battlefield', 'hand', 'graveyard', 'exile'] as const) {
-		const c = ctx.player[z].find((x) => x.instanceId === id);
-		if (c) return c;
-	}
-	return undefined;
+	// --- Track P17b ---
+	return findCostCandidateByIdWave6(ctx.state, ctx.player, id);
+	// --- End Track P17b ---
 }
 
 // ---- Paying ----------------------------------------------------------------------------------
@@ -2256,6 +2546,19 @@ export function serializeCostPlanParts(
 	const ordered = [...plan.parts.filter((p) => !p.random), ...plan.parts.filter((p) => p.random)];
 	return ordered.map((part): SerializedPlannedCost => {
 		const def = part.def;
+		// --- Track P17b ---
+		const forageExtra = part.emitForaged ? { emitForaged: true } : {};
+		if (!part.random) {
+			const p17bSer = serializeP17bCostPart(
+				def,
+				part.objects,
+				ctx,
+				matchesObjectFilter,
+				part.emitForaged
+			);
+			if (p17bSer) return p17bSer;
+		}
+		// --- End Track P17b ---
 		if (part.random) {
 			const pool = [...part.random.candidates];
 			const picked: CardInstance[] = [];
@@ -2266,7 +2569,10 @@ export function serializeCostPlanParts(
 				def,
 				objectIds: picked.map((c) => c.instanceId),
 				objectNames: picked.map((c) => c.card.name),
-				isRandom: true
+				isRandom: true,
+				// --- Track P17b ---
+				...forageExtra
+				// --- End Track P17b ---
 			};
 		}
 		if (
@@ -2291,7 +2597,10 @@ export function serializeCostPlanParts(
 			return {
 				def,
 				objectIds: objs.map((c) => c.instanceId),
-				objectNames: objs.map((c) => c.card.name)
+				objectNames: objs.map((c) => c.card.name),
+				// --- Track P17b ---
+				...forageExtra
+				// --- End Track P17b ---
 			};
 		}
 		// --- Track P14 ---
@@ -2302,16 +2611,19 @@ export function serializeCostPlanParts(
 			return {
 				def,
 				objectIds: handCards.map((c) => c.instanceId),
-				objectNames: handCards.map((c) => c.card.name)
+				objectNames: handCards.map((c) => c.card.name),
+				// --- Track P17b ---
+				...forageExtra
+				// --- End Track P17b ---
 			};
 		}
 		// --- End Track P14 ---
 		if ((def as { k: string }).k === 'mill') {
 			const extra = def as { k: string; count?: Amount };
 			const millTotal = extra.count ? n(extra.count, ctx) : 0;
-			return { def, millTotal, objectNames: [] };
+			return { def, millTotal, objectNames: [], ...forageExtra };
 		}
-		return { def };
+		return { def, ...forageExtra };
 	});
 }
 
@@ -2376,6 +2688,9 @@ export function payTapAndManaCostParts(
 			}
 		}
 		// --- End Track P14 ---
+		// --- Track P17b ---
+		payP17bUntapOthers(ctx, part, descriptions, aidDescriptions);
+		// --- End Track P17b ---
 	}
 	if (mana) {
 		const energyReserved = parts.reduce(
@@ -2419,6 +2734,16 @@ export function executeCostPaymentParts(
 		const def = part.def;
 		const objStart = partIdx === startPartIndex ? startObjectIndex : 0;
 		const targetLog = part.isCostAid && aidDescriptions ? aidDescriptions : descriptions;
+		// --- Track P17b ---
+		const p17bExec = executeP17bCostPart(ctx, part, partIdx, objStart, descriptions, targetLog);
+		if (p17bExec.handled) {
+			if (p17bExec.pausedResult) return p17bExec.pausedResult;
+			if (part.emitForaged) {
+				emitEvent(ctx.state, { kind: 'Foraged', playerId: player.playerId });
+			}
+			continue;
+		}
+		// --- End Track P17b ---
 		switch (def.k) {
 			case 'payLife': {
 				if (objStart === 0) {
@@ -2759,6 +3084,11 @@ export function executeCostPaymentParts(
 				break;
 			}
 		}
+		// --- Track P17b ---
+		if (part.emitForaged) {
+			emitEvent(ctx.state, { kind: 'Foraged', playerId: player.playerId });
+		}
+		// --- End Track P17b ---
 	}
 	return { descriptions, paused: false };
 }

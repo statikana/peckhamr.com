@@ -118,6 +118,9 @@ import {
 	matchesP16bObjectFilter
 } from './triggersWave6.ts';
 // --- End Track P16b ---
+// --- Track P17b ---
+import { evaluateP17bAmount, evaluateP17bCondition } from './costsWave6.ts';
+// --- End Track P17b ---
 import { noteLayerInputsChanged } from './layerCache.ts';
 import {
 	matchesObjectFilter,
@@ -1983,6 +1986,22 @@ class Run {
 					}) ?? fallback
 				);
 			// --- End Track P15 ---
+			// --- Track P17b ---
+			case 'p17bMetric': {
+				const srcFound = this.locate(this.ctx.sourceId);
+				return evaluateP17bAmount(
+					a,
+					{
+						state: this.state,
+						controllerId: this.you.playerId,
+						source: srcFound?.inst,
+						stackItem: this.ctx.item,
+						xValue: this.ctx.xValue
+					},
+					matchesObjectFilter
+				);
+			}
+			// --- End Track P17b ---
 		}
 	}
 
@@ -7940,6 +7959,22 @@ class Run {
 					) ?? false
 				);
 			// --- End Track P16b ---
+			// --- Track P17b ---
+			case 'p17bCondition': {
+				const srcFound = this.locate(this.ctx.sourceId);
+				return evaluateP17bCondition(
+					c,
+					{
+						state: this.state,
+						controllerId: this.you.playerId,
+						source: srcFound?.inst,
+						stackItem: this.ctx.item,
+						xValue: this.ctx.xValue
+					},
+					matchesObjectFilter
+				);
+			}
+			// --- End Track P17b ---
 		}
 	}
 

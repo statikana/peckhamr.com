@@ -83,7 +83,11 @@ export function isObjectOutlaw(
  * CR 700.9: A permanent is modified if it has one or more counters on it, if it is equipped, or
  * if it is enchanted by an Aura controlled by that permanent's controller.
  */
-export function isPermanentModified(state: GameState, perm: CardInstance): boolean {
+export function isPermanentModified(
+	state: GameState,
+	perm: CardInstance,
+	perspectiveControllerId?: string
+): boolean {
 	if (perm.phasedOut) return false;
 	let permControllerId: string | undefined;
 	for (const p of state.players) {
@@ -94,6 +98,7 @@ export function isPermanentModified(state: GameState, perm: CardInstance): boole
 		}
 	}
 	if (!permControllerId) return false;
+	const auraControllerId = perspectiveControllerId ?? permControllerId;
 
 	if (perm.counters) {
 		for (const val of Object.values(perm.counters)) {
@@ -107,7 +112,7 @@ export function isPermanentModified(state: GameState, perm: CardInstance): boole
 			if (att.phasedOut || att.attachedToId !== perm.instanceId) continue;
 			const attEval = evaluatePermanent(state, att);
 			if (attEval.hasSubType('Equipment')) return true;
-			if (attEval.hasSubType('Aura') && p.playerId === permControllerId) {
+			if (attEval.hasSubType('Aura') && p.playerId === auraControllerId) {
 				return true;
 			}
 		}
@@ -171,7 +176,10 @@ export function matchesP16bObjectFilter(
 	const effectiveZone = ctx.zone ?? obj.zone;
 
 	if (filter.modified !== undefined) {
-		const isMod = effectiveZone === 'battlefield' && isPermanentModified(state, obj);
+		const isMod =
+			effectiveZone === 'battlefield' &&
+			evaluatePermanent(state, obj).isCreature &&
+			isPermanentModified(state, obj, ctx.controllerId);
 		if (isMod !== filter.modified) return false;
 	}
 	if (filter.outlaw !== undefined) {

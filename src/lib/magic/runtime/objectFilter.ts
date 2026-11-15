@@ -87,6 +87,13 @@ import {
 	matchesP16bObjectFilter
 } from './triggersWave6.ts';
 // --- End Track P16b ---
+// --- Track P17b ---
+import {
+	evaluateP17bAmount,
+	evaluateP17bCondition,
+	matchesP17bObjectFilter
+} from './costsWave6.ts';
+// --- End Track P17b ---
 
 export interface FilterContext {
 	state: GameState;
@@ -704,6 +711,9 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 		return false;
 	}
 	// --- End Track P16b ---
+	// --- Track P17b ---
+	if (!matchesP17bObjectFilter(filter, obj, ctx, matchesObjectFilter)) return false;
+	// --- End Track P17b ---
 	return true;
 }
 
@@ -921,6 +931,10 @@ export function evaluateAmount(amount: Amount, ctx: FilterContext): number {
 		case 'gravestormCount':
 			return evaluateP15Amount(amount, ctx.state, ctx.controllerId) ?? 0;
 		// --- End Track P15 ---
+		// --- Track P17b ---
+		case 'p17bMetric':
+			return evaluateP17bAmount(amount, ctx, matchesObjectFilter);
+		// --- End Track P17b ---
 		default:
 			return 0;
 	}
@@ -1139,6 +1153,10 @@ export function evaluateCondition(cond: Condition, ctx: FilterContext): boolean 
 				) ?? false
 			);
 		// --- End Track P16b ---
+		// --- Track P17b ---
+		case 'p17bCondition':
+			return evaluateP17bCondition(cond, ctx, matchesObjectFilter);
+		// --- End Track P17b ---
 		default:
 			return false;
 	}

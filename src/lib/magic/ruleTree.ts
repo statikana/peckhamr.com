@@ -708,7 +708,16 @@ function buildEffectiveActivatedAbility(
 				(c.k === 'payEnergy' && c.count.k === 'x') ||
 				(c.k === 'removeCounters' && c.count.k === 'x') ||
 				(c.k === 'discard' && c.count.k === 'x') ||
-				(c.k === 'exileFrom' && c.count.k === 'x')
+				(c.k === 'exileFrom' && c.count.k === 'x') ||
+				// --- Track P17b ---
+				(c.k === 'sacrifice' && c.count.k === 'x') ||
+				(c.k === 'tapOthers' && c.count.k === 'x') ||
+				(c.k === 'untapOthers' && c.count.k === 'x') ||
+				(c.k === 'returnToHand' && c.count.k === 'x') ||
+				(c.k === 'putCounters' && c.count.k === 'x') ||
+				(c.k === 'putOnBottomOfLibrary' && c.count.k === 'x') ||
+				(c.k === 'mill' && c.count.k === 'x')
+				// --- End Track P17b ---
 		);
 	const activatorWho = ab.kind === 'activated' ? ab.activatorWho : undefined;
 	const powerUpReduction = ab.kind === 'activated' ? ab.powerUpReduction : undefined;
@@ -1225,33 +1234,58 @@ export function getEffectiveActivatedAbilities(
 			};
 		}
 		// --- End Track P10 ---
+		// --- Track P17b ---
+		const rawBaseMana = ab.baseManaCost ?? ab.manaCost;
+		const isKeywordAb = Boolean(
+			ab.costKeyword ||
+				ab.id.startsWith('equip_') ||
+				ab.id.startsWith('cycling_') ||
+				ab.id.startsWith('unearth_') ||
+				ab.id.startsWith('ninjutsu_') ||
+				ab.id.startsWith('commander_ninjutsu_') ||
+				ab.id.startsWith('scavenge_') ||
+				ab.id.startsWith('boast_') ||
+				ab.id.startsWith('exhaust_') ||
+				ab.id.startsWith('powerup_')
+		);
 		const { manaCost: effMana } = effectiveAbilityManaCost(
 			state,
 			actor.playerId,
 			ab.id,
-			ab.manaCost,
-			ab.costKeyword
+			rawBaseMana,
+			ab.costKeyword,
+			0,
+			isKeywordAb ? perm : undefined,
+			ab.isManaAbility,
+			Boolean(ab.powerUpReduction),
+			undefined,
+			ab.loyaltyCost !== null
 		);
-		if (effMana !== ab.manaCost) {
-			const nextCost = ab.cost.map((c) =>
-				c.k === 'mana' ? { k: 'mana' as const, cost: effMana } : c
-			);
+		// --- End Track P17b ---
+		if (effMana !== rawBaseMana) {
+			const hasManaEntry = ab.cost.some((c) => c.k === 'mana');
+			const nextCost = hasManaEntry
+				? ab.cost.map((c) => (c.k === 'mana' ? { k: 'mana' as const, cost: effMana } : c))
+				: effMana && effMana !== '{0}'
+					? [{ k: 'mana' as const, cost: effMana }, ...ab.cost]
+					: ab.cost;
 			const filteredCost =
 				effMana === '{0}' || effMana === '' ? nextCost.filter((c) => c.k !== 'mana') : nextCost;
 			const nextCostText =
 				ab.id.startsWith('equip_') && effMana === '{0}'
 					? 'Equip {0}'
-					: ab.manaCost && ab.costText.includes(ab.manaCost)
-						? ab.costText.replace(ab.manaCost, effMana || '{0}')
+					: rawBaseMana && ab.costText.includes(rawBaseMana)
+						? ab.costText.replace(rawBaseMana, effMana || '{0}')
 						: ab.costText;
 			const nextLabel =
 				ab.id.startsWith('equip_') && effMana === '{0}'
-					? `Equip {0} (was ${ab.manaCost})`
-					: ab.manaCost && ab.label.includes(ab.manaCost)
-						? ab.label.replace(ab.manaCost, effMana || '{0}')
+					? `Equip {0} (was ${rawBaseMana})`
+					: rawBaseMana && ab.label.includes(rawBaseMana)
+						? ab.label.replace(rawBaseMana, effMana || '{0}')
 						: ab.label;
 			return {
 				...ab,
+				baseManaCost: rawBaseMana,
 				manaCost: effMana,
 				cost: filteredCost,
 				costText: nextCostText,

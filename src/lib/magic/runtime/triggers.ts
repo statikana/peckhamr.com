@@ -129,6 +129,9 @@ import {
 	matchesSpellCastOrdinal
 } from './triggersWave6.ts';
 // --- End Track P16b ---
+// --- Track P17b ---
+import { evaluateP17bCondition } from './costsWave6.ts';
+// --- End Track P17b ---
 // --- Track P18a ---
 import {
 	attachWave6TagToBaseRuntimeTrigger,
@@ -6071,6 +6074,13 @@ export function evaluateCondition(
 		matchesObjectFilter
 	);
 	if (p16b !== null) return p16b;
+	if (cond.k === 'p17bCondition') {
+		return evaluateP17bCondition(
+			cond,
+			{ state, controllerId, source: srcObjFallback, stackItem },
+			matchesObjectFilter
+		);
+	}
 	// --- End Track P16b ---
 	return false;
 }

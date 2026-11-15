@@ -143,6 +143,9 @@ import {
 	canPayCosts,
 	chooseCostPayment,
 	computeKickerTracking,
+	// --- Track P17b ---
+	costModifiersOf,
+	// --- End Track P17b ---
 	describeCost,
 	effectiveAbilityManaCost,
 	effectiveSpellManaCost,
@@ -343,6 +346,13 @@ import {
 	wave6TriggerTargetSpecs
 } from './runtime/keywordsWave6.ts';
 // --- End Track P18a ---
+// --- Track P17b ---
+import {
+	applyAltCastEnterCountersWave6,
+	collectActiveAbilityAdditionalCostsWave6,
+	collectSpellPerTargetLifeCostsWave6
+} from './runtime/costsWave6.ts';
+// --- End Track P17b ---
 export { applyCastCostAids, formatManaRequirement, getSuspendSpec };
 import { getKeywordSpec } from './keywords.ts';
 import {
@@ -725,7 +735,10 @@ export function createInitialGameState(
 		nextTimestamp: 200,
 		delayedTriggers: [],
 		extraTurnQueue: [],
-		stackTriggersEnabled: false
+		stackTriggersEnabled: false,
+		// --- Track P17b ---
+		startingPlayerId: players[0]?.playerId
+		// --- End Track P17b ---
 	};
 
 	// Smart bot opening hand mulligan
@@ -2144,6 +2157,20 @@ function getSpellCostRequirementForOption(
 			? [...extraManaCosts, ...modalExtra.manaCosts]
 			: extraManaCosts;
 	// --- End Track P12 ---
+	// --- Track P17b ---
+	const p17bKickerTags = optionalCostCounts
+		? computeKickerTracking(
+				inst.card,
+				optionalCostCounts,
+				{ spellMods: option.spellMods },
+				option.faceIndex ?? 0,
+				Boolean(option.fused)
+			).tags
+		: undefined;
+	const finalExtraManaCosts = option.spellMods?.additionalManaCost
+		? [...allExtraManaCosts, option.spellMods.additionalManaCost]
+		: allExtraManaCosts;
+	// --- End Track P17b ---
 	return applyAnyColorPermission(
 		effectiveSpellManaCost(
 			state,
@@ -2151,14 +2178,17 @@ function getSpellCostRequirementForOption(
 			inst,
 			xValue,
 			option.baseCost,
-			allExtraManaCosts,
+			finalExtraManaCosts,
 			option.faceIndex ?? 0,
 			option.fused ?? false,
 			option.spellMods?.castFaceDown,
 			option.spellMods?.prototyped,
 			// --- Track P11 ---
-			chosenTargets
+			chosenTargets,
 			// --- End Track P11 ---
+			// --- Track P17b ---
+			{ optionId: option.id, kickedTags: p17bKickerTags }
+			// --- End Track P17b ---
 		)
 	);
 }
@@ -2260,21 +2290,44 @@ export function chooseBotAbilityCostPayment(
 	ab: EffectiveActivatedAbility
 ): CostPayment | undefined {
 	const abilityCost = activatedAbilityCost(perm.card, ab);
+	const isLoyaltyAb = ab.loyaltyCost !== null || Boolean(ab.loyaltySign);
 	const abilityMana = effectiveAbilityManaCost(
 		state,
 		player.playerId,
 		ab.id,
-		ab.manaCost,
+		// --- Track P17b ---
+		ab.baseManaCost ?? ab.manaCost,
+		// --- End Track P17b ---
 		ab.costKeyword,
 		// --- Track P11 & P15 ---
 		0,
 		perm,
 		ab.isManaAbility,
-		ab.powerUpReduction
+		ab.powerUpReduction,
 		// --- End Track P11 & P15 ---
+		// --- Track P17b ---
+		undefined,
+		isLoyaltyAb
+		// --- End Track P17b ---
 	).requirement;
+	// --- Track P17b ---
+	const extraAbDefs = collectActiveAbilityAdditionalCostsWave6(
+		state,
+		player.playerId,
+		ab.id,
+		ab.costKeyword,
+		perm,
+		ab.isManaAbility,
+		isLoyaltyAb,
+		undefined,
+		matchesObjectFilter,
+		costModifiersOf
+	);
+	const allAbDefs =
+		extraAbDefs.length > 0 ? [...abilityCost.defs, ...extraAbDefs] : abilityCost.defs;
+	// --- End Track P17b ---
 	return (
-		chooseCostPayment(costContext(state, player, perm, 0, false, abilityMana), abilityCost.defs) ??
+		chooseCostPayment(costContext(state, player, perm, 0, false, abilityMana), allAbDefs) ??
 		undefined
 	);
 }
@@ -2368,7 +2421,10 @@ function getDynamicManaProducedAmount(
 	player: PlayerGameState,
 	perm: CardInstance,
 	baseAmount: number,
-	ab?: EffectiveActivatedAbility
+	ab?: EffectiveActivatedAbility,
+	// --- Track P17b ---
+	xValue = 0
+	// --- End Track P17b ---
 ): number {
 	const evalPerm = evaluatePermanent(state, perm);
 	if (evalPerm.losesAllAbilities && (!ab || (!ab.manaAmount && !ab.grantSourceCard))) {
@@ -2378,7 +2434,10 @@ function getDynamicManaProducedAmount(
 	const fallback = { id: 'mana_tap' } as EffectiveActivatedAbility;
 	const amount = manaAbilityAmount(pCard, ab ?? fallback);
 	if (!amount) return baseAmount;
-	return Math.max(0, evaluateAmount(amount, { state, controllerId: player.playerId, source: perm }));
+	return Math.max(
+		0,
+		evaluateAmount(amount, { state, controllerId: player.playerId, source: perm, xValue })
+	);
 }
 
 /** Builds the context runtime/costs.ts pays costs in. */
@@ -2401,6 +2460,18 @@ function costContext(
 		for (const id of reservedIds) merged.add(id);
 		return merged;
 	};
+	// --- Track P17b ---
+	const spellColors =
+		isSpell && spendCtx.spellCard
+			? resolveObjectFaces(spendCtx.spellCard, {
+					zone: 'stack',
+					faceIndex: spendCtx.spellFaceIndex ?? 0,
+					fused: spendCtx.spellFused
+				}).colors
+			: isSpell && !source.isFaceDown
+				? resolveObjectFaces(effectiveCardForObject(source), { zone: 'stack' }).colors
+				: undefined;
+	// --- End Track P17b ---
 	return {
 		state,
 		player,
@@ -2410,6 +2481,9 @@ function costContext(
 		baseMana,
 		reservedObjectIds,
 		spendCtx,
+		// --- Track P17b ---
+		...(spellColors ? { spellColors } : {}),
+		// --- End Track P17b ---
 		canPayMana: canPayManaOverride
 			? (req, reservedIds) => canPayManaOverride(req, combineReserved(reservedIds))
 			: (req, reservedIds) =>
@@ -3316,7 +3390,9 @@ function askCostChoice(
 		return { ok: false, error: `A cost choice is required to pay for ${sourceName}.` };
 	}
 	const zone =
-		question.kind === 'objects' ? inferObjectsZone(actor, question.candidateIds) : 'battlefield';
+		question.kind === 'objects'
+			? inferObjectsZone(actor, question.candidateIds, state)
+			: 'battlefield';
 	const choice = buildCostChoiceRequest(question, zone);
 	state.pendingPrompts.push({
 		id: uid('prm', state),
@@ -4013,13 +4089,19 @@ registerPromptHandler(TAP_MANA_ABILITY_CHOICE_HANDLER, (state, prompt, answer) =
 		typeof data?.costPaymentJson === 'string'
 			? (JSON.parse(data.costPaymentJson) as CostPayment)
 			: undefined;
+	// --- Track P17b ---
+	const xValue = typeof data?.xValue === 'number' ? data.xValue : undefined;
+	// --- End Track P17b ---
 	applyGameActionInner(state, prompt.playerId, {
 		type: 'tap_mana',
 		instanceId,
 		...(abilityId ? { abilityId } : {}),
 		...(preferredColor ? { preferredColor } : {}),
 		...(chosenBundle ? { chosenBundle } : {}),
-		...(costPayment ? { costPayment } : {})
+		...(costPayment ? { costPayment } : {}),
+		// --- Track P17b ---
+		...(xValue !== undefined ? { xValue } : {})
+		// --- End Track P17b ---
 	});
 });
 
@@ -4038,12 +4120,18 @@ registerPromptHandler(TAP_MANA_COLOR_CHOICE_HANDLER, (state, prompt, answer) => 
 		typeof data?.costPaymentJson === 'string'
 			? (JSON.parse(data.costPaymentJson) as CostPayment)
 			: undefined;
+	// --- Track P17b ---
+	const xValue = typeof data?.xValue === 'number' ? data.xValue : undefined;
+	// --- End Track P17b ---
 	applyGameActionInner(state, prompt.playerId, {
 		type: 'tap_mana',
 		instanceId,
 		...(abilityId ? { abilityId } : {}),
 		preferredColor,
-		...(costPayment ? { costPayment } : {})
+		...(costPayment ? { costPayment } : {}),
+		// --- Track P17b ---
+		...(xValue !== undefined ? { xValue } : {})
+		// --- End Track P17b ---
 	});
 });
 
@@ -4062,12 +4150,18 @@ registerPromptHandler(TAP_MANA_BUNDLE_CHOICE_HANDLER, (state, prompt, answer) =>
 		typeof data?.costPaymentJson === 'string'
 			? (JSON.parse(data.costPaymentJson) as CostPayment)
 			: undefined;
+	// --- Track P17b ---
+	const xValue = typeof data?.xValue === 'number' ? data.xValue : undefined;
+	// --- End Track P17b ---
 	applyGameActionInner(state, prompt.playerId, {
 		type: 'tap_mana',
 		instanceId,
 		...(abilityId ? { abilityId } : {}),
 		...(chosenBundle ? { chosenBundle } : {}),
-		...(costPayment ? { costPayment } : {})
+		...(costPayment ? { costPayment } : {}),
+		// --- Track P17b ---
+		...(xValue !== undefined ? { xValue } : {})
+		// --- End Track P17b ---
 	});
 });
 
@@ -5674,6 +5768,9 @@ function applyGameActionInner(
 
 			const preferred = action.preferredColor;
 			const requestedBundle = action.chosenBundle;
+			// --- Track P17b ---
+			const tapXValue = Math.max(0, Math.floor(action.xValue ?? 0));
+			// --- End Track P17b ---
 			let ab: EffectiveActivatedAbility | undefined;
 			if (action.abilityId) {
 				ab = manaAbs.find((a) => a.id === action.abilityId);
@@ -5690,8 +5787,11 @@ function applyGameActionInner(
 					// --- Track P7 ---
 					const cDefs = activatedAbilityCost(permEffCard, candidate).defs;
 					// --- End Track P7 ---
-					const cReq = parseManaCost(candidate.manaCost === '{0}' ? '' : candidate.manaCost);
-					const cCtx = costContext(state, actor, perm, 0, false, cReq);
+					const cReq = parseManaCost(
+						candidate.manaCost === '{0}' ? '' : candidate.manaCost,
+						tapXValue
+					);
+					const cCtx = costContext(state, actor, perm, tapXValue, false, cReq);
 					return canPayCosts(cCtx, cDefs);
 				});
 				// Deduplicate functionally identical mana abilities (e.g. two copies of the same granter, or
@@ -5707,7 +5807,8 @@ function applyGameActionInner(
 						actor,
 						perm,
 						Math.max(1, candidate.producesAmount),
-						candidate
+						candidate,
+						tapXValue
 					);
 					const colorSig = preferred ? preferred : candidate.producesMana.join(',');
 					const sig = `${JSON.stringify(cDefs)}|${JSON.stringify(candidate.activationRestrictions ?? [])}|${JSON.stringify(candidate.activationCondition ?? null)}|${Boolean(candidate.freezesSelfUntap)}|${JSON.stringify(candidate.manaBundles ?? null)}|${JSON.stringify(candidate.manaCombinationColors ?? null)}|${JSON.stringify(candidate.manaRestrictionSpec ?? null)}|${Boolean(candidate.retainManaUntilEndOfTurn)}|${amt}|${colorSig}`;
@@ -5726,7 +5827,8 @@ function applyGameActionInner(
 							actor,
 							perm,
 							Math.max(1, distinctPayableAbs[i].producesAmount),
-							distinctPayableAbs[i]
+							distinctPayableAbs[i],
+							tapXValue
 						);
 						const frz = distinctPayableAbs[i].freezesSelfUntap ? 1 : 0;
 						if (amt > bestAmt || (amt === bestAmt && frz < bestFreezes)) {
@@ -5751,7 +5853,10 @@ function applyGameActionInner(
 								abilityIdsCsv: distinctPayableAbs.map((a) => a.id).join('\u001f'),
 								preferredColor: preferred ?? null,
 								chosenBundleCsv: requestedBundle ? requestedBundle.join(',') : null,
-								costPaymentJson: action.costPayment ? JSON.stringify(action.costPayment) : null
+								costPaymentJson: action.costPayment ? JSON.stringify(action.costPayment) : null,
+								// --- Track P17b ---
+								...(action.xValue !== undefined ? { xValue: tapXValue } : {})
+								// --- End Track P17b ---
 							}
 						},
 						choice: {
@@ -5767,8 +5872,22 @@ function applyGameActionInner(
 				if (payableAbs.length > 0) {
 					ab = [...payableAbs].sort((x, y) => {
 						const diff =
-							getDynamicManaProducedAmount(state, actor, perm, Math.max(1, y.producesAmount), y) -
-							getDynamicManaProducedAmount(state, actor, perm, Math.max(1, x.producesAmount), x);
+							getDynamicManaProducedAmount(
+								state,
+								actor,
+								perm,
+								Math.max(1, y.producesAmount),
+								y,
+								tapXValue
+							) -
+							getDynamicManaProducedAmount(
+								state,
+								actor,
+								perm,
+								Math.max(1, x.producesAmount),
+								x,
+								tapXValue
+							);
 						if (diff !== 0) return diff;
 						return (x.freezesSelfUntap ? 1 : 0) - (y.freezesSelfUntap ? 1 : 0);
 					})[0];
@@ -5792,16 +5911,23 @@ function applyGameActionInner(
 			// --- Track P7 ---
 			const cost = activatedAbilityCost(permEffCard, ab);
 			// --- End Track P7 ---
-			const rawTapMana = parseManaCost(ab.manaCost === '{0}' ? '' : ab.manaCost);
+			const rawTapMana = parseManaCost(ab.manaCost === '{0}' ? '' : ab.manaCost, tapXValue);
 			const hybTapChoice = resolveHybridCostChoice(state, actor, action, rawTapMana, perm.card.name);
 			if (hybTapChoice.promptResult) return hybTapChoice.promptResult;
-			const ctx = costContext(state, actor, perm, 0, false, hybTapChoice.resolvedReq);
+			const ctx = costContext(state, actor, perm, tapXValue, false, hybTapChoice.resolvedReq);
 			const plan = planCosts(ctx, cost.defs, action.costPayment);
 			if (!plan.ok) return { ok: false, error: plan.error };
 			if (plan.question) return askCostChoice(state, actor, action, plan.question, perm.card.name);
 
 			const baseAmount = Math.max(1, ab.producesAmount);
-			const dynamicAmount = getDynamicManaProducedAmount(state, actor, perm, baseAmount, ab);
+			const dynamicAmount = getDynamicManaProducedAmount(
+				state,
+				actor,
+				perm,
+				baseAmount,
+				ab,
+				tapXValue
+			);
 			let chosenBundle: ManaColor[] | undefined;
 
 			if ((ab.manaBundles && ab.manaBundles.length > 0) || ab.manaCombinationColors) {
@@ -5886,7 +6012,10 @@ function applyGameActionInner(
 								instanceId: perm.instanceId,
 								abilityId: ab.id,
 								bundlesCsv: candidateBundles.map((b) => b.join(',')).join('|'),
-								costPaymentJson: action.costPayment ? JSON.stringify(action.costPayment) : null
+								costPaymentJson: action.costPayment ? JSON.stringify(action.costPayment) : null,
+								// --- Track P17b ---
+								...(action.xValue !== undefined ? { xValue: tapXValue } : {})
+								// --- End Track P17b ---
 							}
 						},
 						choice: {
@@ -5917,7 +6046,10 @@ function applyGameActionInner(
 							instanceId: perm.instanceId,
 							abilityId: ab.id,
 							colorsCsv: allowedColors.join(','),
-							costPaymentJson: action.costPayment ? JSON.stringify(action.costPayment) : null
+							costPaymentJson: action.costPayment ? JSON.stringify(action.costPayment) : null,
+							// --- Track P17b ---
+							...(action.xValue !== undefined ? { xValue: tapXValue } : {})
+							// --- End Track P17b ---
 						}
 					},
 					choice: {
@@ -5950,6 +6082,9 @@ function applyGameActionInner(
 				// --- End Track P7 ---
 				abilityId: ab.id,
 				...(ab.faceIndex !== undefined ? { faceIndex: ab.faceIndex } : {}),
+				// --- Track P17b ---
+				...(tapXValue > 0 ? { xValue: tapXValue } : {}),
+				// --- End Track P17b ---
 				chosenColor,
 				...(chosenBundle ? { chosenBundle } : {}),
 				...(ab.freezesSelfUntap ? { freezesSelfUntap: true } : {}),
@@ -6987,8 +7122,19 @@ function applyGameActionInner(
 				...(castOption.mandatoryAdditionalCosts ?? []),
 				...extraNonManaDefs,
 				// --- Track P12: Spree / Tiered / Escalate non-mana per-mode costs ---
-				...modalExtraCosts.costDefs
+				...modalExtraCosts.costDefs,
 				// --- End Track P12 ---
+				// --- Track P17b: Per-target spell life costs (e.g. Phyrexian Purge) ---
+				...(isFaceDownCast
+					? []
+					: collectSpellPerTargetLifeCostsWave6(
+							inst,
+							optFaceIdx,
+							optFused,
+							targets,
+							costModifiersOf
+						))
+				// --- End Track P17b ---
 			];
 			for (const p of state.players) {
 				if (p.lost) continue;
@@ -7242,7 +7388,10 @@ function applyGameActionInner(
 					abilityId: ab.id,
 					preferredColor:
 						ab.producesMana.length === 1 || actor.isBot ? ab.producesMana[0] : undefined,
-					costPayment: action.costPayment
+					costPayment: action.costPayment,
+					// --- Track P17b ---
+					...(action.xValue !== undefined ? { xValue: action.xValue } : {})
+					// --- End Track P17b ---
 				});
 			}
 
@@ -7333,18 +7482,43 @@ function applyGameActionInner(
 			// --- Track P7 ---
 			const abilityCost = activatedAbilityCost(permEffCard, ab);
 			// --- End Track P7 ---
+			// --- Track P17b ---
+			const isLoyaltyAb = ab.loyaltyCost !== null || Boolean(ab.loyaltySign);
+			const extraAbilityCostDefs = collectActiveAbilityAdditionalCostsWave6(
+				state,
+				actorId,
+				ab.id,
+				ab.costKeyword,
+				perm,
+				ab.isManaAbility,
+				isLoyaltyAb,
+				targets,
+				matchesObjectFilter,
+				costModifiersOf
+			);
+			const allAbilityCostDefs =
+				extraAbilityCostDefs.length > 0
+					? [...abilityCost.defs, ...extraAbilityCostDefs]
+					: abilityCost.defs;
+			// --- End Track P17b ---
 			const abilityMana = effectiveAbilityManaCost(
 				state,
 				actorId,
 				ab.id,
-				ab.manaCost,
+				// --- Track P17b ---
+				ab.baseManaCost ?? ab.manaCost,
+				// --- End Track P17b ---
 				ab.costKeyword,
 				abXValue,
 				// --- Track P11 & P15 ---
 				perm,
 				ab.isManaAbility,
-				ab.powerUpReduction
+				ab.powerUpReduction,
 				// --- End Track P11 & P15 ---
+				// --- Track P17b ---
+				targets,
+				isLoyaltyAb
+				// --- End Track P17b ---
 			).requirement;
 			const phyAbilityChoice = maybeAskPhyrexianCostChoice(
 				state,
@@ -7376,7 +7550,7 @@ function applyGameActionInner(
 				action.costPayment?.phyrexianLifeCount,
 				abilitySpendCtx
 			);
-			const abilityPlan = planCosts(abilityCtx, abilityCost.defs, action.costPayment);
+			const abilityPlan = planCosts(abilityCtx, allAbilityCostDefs, action.costPayment);
 			if (!abilityPlan.ok) return { ok: false, error: abilityPlan.error };
 			if (abilityPlan.question) return askCostChoice(state, actor, action, abilityPlan.question, perm.card.name);
 			const preCostEval = perm.zone === 'battlefield' ? evaluatePermanent(state, perm) : null;
@@ -13881,6 +14055,11 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 						instanceFaceOptions(perm, 'battlefield')
 					).name;
 			applySelfEtbReplacements(state, perm);
+			// --- Track P17b: Static alt-cast ETB counters ("enters with an additional <c> counter on it") ---
+			if (item.spellMods?.altCastEnterCounters) {
+				applyAltCastEnterCountersWave6(state, perm, item.spellMods.altCastEnterCounters);
+			}
+			// --- End Track P17b ---
 			// --- Track P12: CR 702.190b Sneak enters tapped and attacking if in combat ---
 			if (item.spellMods?.sneaked && state.combat.active) {
 				perm.tapped = true;
@@ -21237,14 +21416,20 @@ function checkAbilityActivationLegalityInner(
 		state,
 		actorId,
 		ab.id,
-		ab.manaCost,
+		// --- Track P17b ---
+		ab.baseManaCost ?? ab.manaCost,
+		// --- End Track P17b ---
 		ab.costKeyword,
 		// --- Track P11 & P15 ---
 		0,
 		perm,
 		ab.isManaAbility,
-		ab.powerUpReduction
+		ab.powerUpReduction,
 		// --- End Track P11 & P15 ---
+		// --- Track P17b ---
+		undefined,
+		ab.loyaltyCost !== null || Boolean(ab.loyaltySign)
+		// --- End Track P17b ---
 	).requirement;
 	// --- Track P7 ---
 	const permEffCard =
