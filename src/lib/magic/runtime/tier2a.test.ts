@@ -587,14 +587,14 @@ describe('Tier 2 Track A — Item 3: CR 509.1b / 702.11d / 702.13 / 702.28 / 702
 	});
 });
 
-describe('Tier 2 Track A — Item 4: CR 702.85a / 702.88a Unsupported Keywords on Instants & Sorceries', () => {
+describe('Tier 2 Track A — Item 4: CR 702.50a Unsupported Keywords on Instants & Sorceries', () => {
 	it('marks non-period keyword lines on instants/sorceries as unsupported and logs an unautomated notice on cast', () => {
-		const cascadeSorcery = card({
+		const epicSorcery = card({
 			name: 'Ardent Plea Scroll',
 			typeLine: 'Sorcery',
 			manaCost: '{2}{U}',
 			colors: ['U'],
-			oracleText: 'Cascade\nYou gain 2 life.',
+			oracleText: 'Epic\nYou gain 2 life.',
 			power: undefined,
 			toughness: undefined
 		});
@@ -608,12 +608,12 @@ describe('Tier 2 Track A — Item 4: CR 702.85a / 702.88a Unsupported Keywords o
 			toughness: undefined
 		});
 
-		assert.equal(compileCard(cascadeSorcery).fullySupported, false, 'Cascade sorcery must be unsupported (CR 702.85a)');
+		assert.equal(compileCard(epicSorcery).fullySupported, false, 'Unimplemented keyword sorcery must be unsupported (CR 702.50a)');
 		assert.equal(compileCard(freecastInstant).fullySupported, false, 'Unrecognized non-period keyword line on instant must not be silently skipped');
 
 		const state = createTestGame();
 		const alice = state.players[0];
-		const spellInst = putOnBoard(state, alice, cascadeSorcery, 'hand');
+		const spellInst = putOnBoard(state, alice, epicSorcery, 'hand');
 
 		const logLenBefore = state.log.length;
 		assert.equal(
@@ -626,8 +626,8 @@ describe('Tier 2 Track A — Item 4: CR 702.85a / 702.88a Unsupported Keywords o
 
 		const newLogs = state.log.slice(logLenBefore).map((l) => l.text);
 		assert.ok(
-			newLogs.some((m) => m.includes('Cascade') && m.includes('not automated — resolve manually')),
-			`Expected cast log to mention 'Cascade is not automated — resolve manually', got: ${JSON.stringify(newLogs)}`
+			newLogs.some((m) => m.includes('Epic') && m.includes('not automated — resolve manually')),
+			`Expected cast log to mention 'Epic is not automated — resolve manually', got: ${JSON.stringify(newLogs)}`
 		);
 	});
 });

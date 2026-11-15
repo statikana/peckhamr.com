@@ -265,6 +265,10 @@ function formatKeywordLabel(kw: string): string {
 	if (low.startsWith('ward ')) {
 		return `Ward ${kw.trim().slice(5).trim()}`;
 	}
+	// --- Track P9 ---
+	if (low.startsWith('toxic ')) {
+		return `Toxic ${kw.trim().slice(6).trim()}`;
+	}
 	return kw.charAt(0).toUpperCase() + kw.slice(1);
 }
 
@@ -334,14 +338,20 @@ function extractInnateFromIR(
 	const addResult = (canonicalKey: string, name: string, kind: 'keyword' | 'ability') => {
 		const k = canonicalKey.toLowerCase();
 		const dedupKey =
-			k === 'protection' ||
-			k === 'ward' ||
-			k === 'afterlife' ||
-			k === 'bushido' ||
-			k === 'annihilator' ||
-			k === 'affinity'
-				? `${k}::${name.toLowerCase()}`
-				: k;
+			k === 'toxic'
+				? `toxic::${results.length}`
+				: k === 'protection' ||
+					  k === 'ward' ||
+					  k === 'afterlife' ||
+					  k === 'bushido' ||
+					  k === 'annihilator' ||
+					  k === 'affinity' ||
+					  k === 'modular' ||
+					  k === 'soulshift' ||
+					  k === 'fabricate' ||
+					  k === 'bloodthirst'
+					? `${k}::${name.toLowerCase()}`
+					: k;
 		if (seenKeys.has(dedupKey)) return;
 		seenKeys.add(dedupKey);
 		results.push({ canonicalKey: k, name, kind });
@@ -393,6 +403,20 @@ function extractInnateFromIR(
 				addResult('annihilator', `Annihilator ${ab.keyword.n ?? 0}`, 'keyword');
 			} else if (kwName === 'affinity') {
 				addResult('affinity', `Affinity ${ab.keyword.param ?? ''}`.trim(), 'keyword');
+			} else if (kwName === 'toxic') {
+				addResult('toxic', `Toxic ${ab.keyword.n ?? 0}`, 'keyword');
+			} else if (kwName === 'modular') {
+				addResult('modular', `Modular ${ab.keyword.n ?? 0}`, 'keyword');
+			} else if (kwName === 'soulshift') {
+				addResult('soulshift', `Soulshift ${ab.keyword.n ?? 0}`, 'keyword');
+			} else if (kwName === 'fabricate') {
+				addResult('fabricate', `Fabricate ${ab.keyword.n ?? 0}`, 'keyword');
+			} else if (kwName === 'bloodthirst') {
+				addResult(
+					'bloodthirst',
+					`Bloodthirst ${ab.keyword.param === 'X' ? 'X' : (ab.keyword.n ?? 0)}`,
+					'keyword'
+				);
 			} else {
 				addResult(kwName, formatKeywordLabel(kwName), 'keyword');
 				selfGrantedKeywords.add(kwName);
@@ -420,6 +444,8 @@ function extractInnateFromIR(
 							selfGrantedKeywords.add(kwLow);
 							if (kwLow.startsWith('protection from ')) {
 								addResult('protection', formatKeywordLabel(kwLow), 'keyword');
+							} else if (kwLow.startsWith('toxic ')) {
+								addResult('toxic', formatKeywordLabel(kwLow), 'keyword');
 							} else {
 								addResult(kwLow, formatKeywordLabel(kwLow), 'keyword');
 							}
@@ -427,6 +453,8 @@ function extractInnateFromIR(
 							grantedToOthersKeywords.add(kwLow);
 							if (kwLow.startsWith('protection from ')) {
 								grantedToOthersKeywords.add('protection');
+							} else if (kwLow.startsWith('toxic ')) {
+								grantedToOthersKeywords.add('toxic');
 							}
 						}
 					}
@@ -744,13 +772,18 @@ function grantItem(
 	grantMeta?: GrantedAbilityMeta
 ): void {
 	const keyLow = canonicalKey.toLowerCase();
-	const existingActive = work.items.find(
-		(it) =>
-			it.canonicalKey === keyLow &&
-			!it.removed &&
-			it.kind === kind &&
-			(keyLow !== 'protection' && keyLow !== 'ward' ? true : it.name.toLowerCase() === name.toLowerCase())
-	);
+	const existingActive =
+		keyLow === 'toxic'
+			? undefined
+			: work.items.find(
+					(it) =>
+						it.canonicalKey === keyLow &&
+						!it.removed &&
+						it.kind === kind &&
+						(keyLow !== 'protection' && keyLow !== 'ward'
+							? true
+							: it.name.toLowerCase() === name.toLowerCase())
+				);
 	if (existingActive) {
 		if (!existingActive.sources.includes(sourceName)) {
 			existingActive.sources.push(sourceName);
@@ -818,7 +851,9 @@ function grantKeywordString(
 		? 'protection'
 		: gLow.startsWith('ward ') || gLow.startsWith('ward—')
 			? 'ward'
-			: gLow;
+			: gLow.startsWith('toxic ')
+				? 'toxic'
+				: gLow;
 	const formattedLabel = formatKeywordLabel(gLow);
 	grantItem(work, gKey, formattedLabel, 'keyword', sourceLabel, grantTimestamp);
 }
@@ -839,7 +874,9 @@ function removeMatchingKeywordsUpTo(
 				item.canonicalKey === kwLow ||
 				(kwLow === 'hexproof' && item.canonicalKey.startsWith('hexproof from ')) ||
 				(kwLow === 'protection' && item.canonicalKey.startsWith('protection')) ||
-				(kwLow === 'ward' && item.canonicalKey.startsWith('ward'))
+				(kwLow === 'ward' && item.canonicalKey.startsWith('ward')) ||
+				(kwLow === 'toxic' && item.canonicalKey === 'toxic') ||
+				(kwLow.startsWith('toxic ') && item.name.toLowerCase() === kwLow)
 			) {
 				item.removed = true;
 				if (!item.removedBy.includes(sourceName)) {
@@ -964,6 +1001,14 @@ function matchesLayerFilter(
 				const want = normalizeLayerCardType(t);
 				return target.types.some((tt) => normalizeLayerCardType(tt) === want);
 			})
+		) {
+			return false;
+		}
+	}
+	// --- Track P9 ---
+	if (filter.allTypes?.length) {
+		if (
+			!filter.allTypes.every((t) => target.types.some((tt) => tt.toLowerCase() === t.toLowerCase()))
 		) {
 			return false;
 		}
@@ -1503,6 +1548,7 @@ function evaluateLayerCondition(
 			}
 			return true;
 		}
+		// --- Track P9 ---
 		default:
 			return false;
 	}
@@ -1673,6 +1719,8 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 			Boolean(perm.escaped),
 			Boolean(perm.foretold),
 			Boolean(perm.blitzed),
+			Boolean(perm.dashed),
+			Boolean(perm.riotHaste),
 			Boolean(perm.saddledThisTurn),
 			Boolean(perm.isMonstrous),
 			perm.kickedCount || 0,
@@ -1869,6 +1917,8 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 			fp[i++] !== Boolean(perm.escaped) ||
 			fp[i++] !== Boolean(perm.foretold) ||
 			fp[i++] !== Boolean(perm.blitzed) ||
+			fp[i++] !== Boolean(perm.dashed) ||
+			fp[i++] !== Boolean(perm.riotHaste) ||
 			fp[i++] !== Boolean(perm.saddledThisTurn) ||
 			fp[i++] !== Boolean(perm.isMonstrous) ||
 			fp[i++] !== (perm.kickedCount || 0) ||
@@ -2953,6 +3003,20 @@ function evaluatePerPermanent(
 			target.allAbilityRemovalSources.length === 0
 		) {
 			grantItem(target, 'haste', 'Haste', 'keyword', 'Blitz', target.timestamp);
+		}
+		// --- Track P9 ---
+		// CR 702.109a: "As long as this permanent's dash cost was paid, it has haste."
+		if (
+			target.inst.dashed &&
+			!target.isFaceDown &&
+			!target.strippedByAttachment &&
+			target.allAbilityRemovalSources.length === 0
+		) {
+			grantItem(target, 'haste', 'Haste', 'keyword', 'Dash', target.timestamp);
+		}
+		// CR 702.136a: Riot haste option ("If you don't, it gains haste").
+		if (target.inst.riotHaste) {
+			grantItem(target, 'haste', 'Haste', 'keyword', 'Riot', target.timestamp);
 		}
 
 		for (const source of workList) {

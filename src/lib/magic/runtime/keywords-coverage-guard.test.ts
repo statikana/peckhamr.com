@@ -114,7 +114,28 @@ export const KEYWORD_COVERAGE_FILES: Record<string, readonly string[]> = {
 	vanishing: ['runtime/striated-frames-and-keywords-p6.test.ts'],
 	warp: ['runtime/striated-frames-and-keywords-p6.test.ts'],
 	// --- Track P8 ---
-	skulk: ['runtime/statics-layers-restrictions.test.ts']
+	skulk: ['runtime/statics-layers-restrictions.test.ts'],
+	// --- Track P9 ---
+	bloodthirst: ['runtime/keywords-wave3-p9.test.ts'],
+	cascade: ['runtime/keywords-wave3-p9.test.ts'],
+	'commander ninjutsu': ['runtime/keywords-wave3-p9.test.ts'],
+	dash: ['runtime/keywords-wave3-p9.test.ts'],
+	echo: ['runtime/keywords-wave3-p9.test.ts'],
+	extort: ['runtime/keywords-wave3-p9.test.ts'],
+	fabricate: ['runtime/keywords-wave3-p9.test.ts'],
+	flanking: ['runtime/keywords-wave3-p9.test.ts'],
+	improvise: ['runtime/keywords-wave3-p9.test.ts'],
+	madness: ['runtime/keywords-wave3-p9.test.ts'],
+	modular: ['runtime/keywords-wave3-p9.test.ts'],
+	ninjutsu: ['runtime/keywords-wave3-p9.test.ts'],
+	persist: ['runtime/keywords-wave3-p9.test.ts'],
+	rebound: ['runtime/keywords-wave3-p9.test.ts'],
+	riot: ['runtime/keywords-wave3-p9.test.ts'],
+	scavenge: ['runtime/keywords-wave3-p9.test.ts'],
+	soulshift: ['runtime/keywords-wave3-p9.test.ts'],
+	toxic: ['runtime/keywords-wave3-p9.test.ts'],
+	undying: ['runtime/keywords-wave3-p9.test.ts'],
+	unleash: ['runtime/keywords-wave3-p9.test.ts']
 };
 
 const SAMPLE_ORACLE_FOR_KEYWORD: Record<string, { typeLine: string; oracleText: string }> = {
@@ -189,7 +210,31 @@ const SAMPLE_ORACLE_FOR_KEYWORD: Record<string, { typeLine: string; oracleText: 
 	},
 	transmute: { typeLine: 'Instant', oracleText: 'Draw a card.\nTransmute {1}{U}{U}' },
 	vanishing: { typeLine: 'Creature — Sliver', oracleText: 'Vanishing 3' },
-	warp: { typeLine: 'Artifact Creature — Robot Giant', oracleText: 'Warp {3}' }
+	warp: { typeLine: 'Artifact Creature — Robot Giant', oracleText: 'Warp {3}' },
+	// --- Track P9 ---
+	bloodthirst: { typeLine: 'Creature — Berserker', oracleText: 'Bloodthirst 2' },
+	cascade: { typeLine: 'Sorcery', oracleText: 'Cascade\nDraw a card.' },
+	'commander ninjutsu': {
+		typeLine: 'Legendary Creature — Human Ninja',
+		oracleText: 'Commander ninjutsu {U}{B}'
+	},
+	dash: { typeLine: 'Creature — Goblin Berserker', oracleText: 'Dash {1}{R}' },
+	echo: { typeLine: 'Creature — Goblin', oracleText: 'Echo {1}{R}' },
+	extort: { typeLine: 'Creature — Thrull', oracleText: 'Extort' },
+	fabricate: { typeLine: 'Creature — Artificer', oracleText: 'Fabricate 2' },
+	flanking: { typeLine: 'Creature — Human Knight', oracleText: 'Flanking' },
+	improvise: { typeLine: 'Instant', oracleText: 'Improvise\nDraw two cards.' },
+	madness: { typeLine: 'Instant', oracleText: '~ deals 3 damage to any target.\nMadness {R}' },
+	modular: { typeLine: 'Artifact Creature — Construct', oracleText: 'Modular 2' },
+	ninjutsu: { typeLine: 'Creature — Rat Ninja', oracleText: 'Ninjutsu {1}{B}' },
+	persist: { typeLine: 'Creature — Faerie', oracleText: 'Persist' },
+	rebound: { typeLine: 'Instant', oracleText: 'Draw a card.\nRebound' },
+	riot: { typeLine: 'Creature — Ogre Warrior', oracleText: 'Riot' },
+	scavenge: { typeLine: 'Creature — Plant Zombie', oracleText: 'Scavenge {2}{G}' },
+	soulshift: { typeLine: 'Creature — Spirit', oracleText: 'Soulshift 3' },
+	toxic: { typeLine: 'Creature — Phyrexian Mite', oracleText: 'Toxic 1' },
+	undying: { typeLine: 'Creature — Wolf', oracleText: 'Undying' },
+	unleash: { typeLine: 'Creature — Devil', oracleText: 'Unleash' }
 };
 
 describe('Implemented Keywords Coverage Guard', () => {
@@ -304,7 +349,19 @@ describe('Implemented Keywords Coverage Guard', () => {
 			'squad',
 			'transmute',
 			'vanishing',
-			'warp'
+			'warp',
+			// --- Track P9 ---
+			'bloodthirst',
+			'commander ninjutsu',
+			'dash',
+			'echo',
+			'fabricate',
+			'madness',
+			'modular',
+			'ninjutsu',
+			'scavenge',
+			'soulshift',
+			'toxic'
 		]);
 
 		assert.deepEqual(
@@ -331,7 +388,7 @@ describe('Implemented Keywords Coverage Guard', () => {
 			'Every non-parameterized keyword in IMPLEMENTED_KEYWORDS must have a display label in KEYWORD_LABELS'
 		);
 
-		// Verify unimplemented keywords (Evolve, Cascade) do not render activeKeywords badges even if present in card.keywords
+		// Verify unimplemented keywords (Evolve, Mentor) do not render activeKeywords badges even if present in card.keywords
 		const d = PRECON_DECKS[0];
 		const seats: LobbySeat[] = [
 			{
@@ -358,10 +415,10 @@ describe('Implemented Keywords Coverage Guard', () => {
 			manaCost: '{2}{G}{U}',
 			cmc: 4,
 			typeLine: 'Creature — Mutant',
-			oracleText: 'Cascade\nDredge',
+			oracleText: 'Mentor\nDredge',
 			colors: ['G', 'U'],
 			colorIdentity: ['G', 'U'],
-			keywords: ['Cascade', 'Dredge'],
+			keywords: ['Mentor', 'Dredge'],
 			power: '2',
 			toughness: '2',
 			imageUrl: '',

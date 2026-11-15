@@ -350,6 +350,9 @@ export interface ObjectFilter {
 	hasCounters?: CounterType | string | 'any';
 	/** CR 205.2b AND-semantics for compound card types ("artifact creature" requires BOTH Artifact and Creature). */
 	allTypes?: string[];
+	// --- Track P9 ---
+	/** CR 702.49a: true iff the creature is an unblocked attacking creature you control. */
+	unblockedAttacker?: boolean;
 }
 
 export interface Compare {
@@ -432,7 +435,10 @@ export type Amount =
 	| { k: 'colorsOfManaSpentToCast' }
 	// --- Track P8 ---
 	/** CR 300.1: count of distinct MTG card types (of the 9 card types) among cards in `zone` across `whose` players. */
-	| { k: 'distinctCardTypesInZone'; zone: ZoneType; whose: 'you' | 'opponents' | 'all' };
+	| { k: 'distinctCardTypesInZone'; zone: ZoneType; whose: 'you' | 'opponents' | 'all' }
+	// --- Track P9 ---
+	/** CR 702.43a / 704.8: count of `counter` on the event/source object as it last existed on the battlefield. */
+	| { k: 'lkiCounterCount'; counter: CounterType };
 
 // ---- Costs ----------------------------------------------------------------------------------
 
@@ -448,7 +454,7 @@ export type CostDef =
 	| { k: 'removeCounters'; counter: CounterType; count: Amount; from: 'self' | ObjectFilter }
 	| { k: 'exileFrom'; zone: ZoneType; count: Amount; filter?: ObjectFilter | 'self' }
 	/** Reveal N matching cards in hand as part of a cost ("Morph—Reveal a white card in your hand."). */
-	| { k: 'revealFromHand'; count: Amount; filter?: ObjectFilter }
+	| { k: 'revealFromHand'; count: Amount; filter?: ObjectFilter | 'self' }
 	/** Pay exactly one of the options ("discard a card or pay 3 life", "sacrifice a creature or pay {3}{B}"). */
 	| { k: 'choice'; options: CostDef[][] }
 	/** The player may pay this cost or not ("As an additional cost to cast ~, you may sacrifice an artifact."). */
@@ -466,7 +472,10 @@ export type CostDef =
 	| { k: 'payEnergy'; count: Amount }
 	// --- Track P4 ---
 	/** CR 701.43a: "Exert ~" activation or additional cost. */
-	| { k: 'exertSelf' };
+	| { k: 'exertSelf' }
+	// --- Track P9 ---
+	/** CR 702.49a: "Return an unblocked attacker you control to hand" (or return matching permanent to owner's hand). */
+	| { k: 'returnToHand'; count: Amount; filter: ObjectFilter | 'self' };
 
 // ---- Effects --------------------------------------------------------------------------------
 
@@ -748,6 +757,9 @@ export interface EffectParams {
 	ifUnableSacrificeSelf?: boolean;
 	/** copyPermanent (CR 707.9b, 702.175a Offspring): Layer 1a base P/T exception on the token copy. */
 	exceptPT?: { power: number; toughness: number };
+	// --- Track P9 ---
+	/** move to battlefield (CR 702.93a Undying, CR 702.79a Persist): enters with counters placed via ETB replacement. */
+	withCounters?: { counter: CounterType; count: number };
 }
 
 export interface CoerciveDiscardSpec {
@@ -843,7 +855,10 @@ export type EventKind =
 	| 'manifestDread'
 	| 'becameMonstrous'
 	// --- Track P6 ---
-	| 'counterRemoved';
+	| 'counterRemoved'
+	// --- Track P9 ---
+	/** CR 702.25a: "Whenever ~ becomes blocked by a creature without flanking" (fires once per blocker; eventObject = blocker). */
+	| 'becomesBlockedBy';
 
 export interface EventFilter {
 	/**
@@ -890,6 +905,11 @@ export interface EventFilter {
 	// --- Track P6 ---
 	/** counterRemoved (CR 702.63a Vanishing): matches only when the last counter of that kind was removed. */
 	lastCounter?: boolean;
+	// --- Track P9 ---
+	/** discard (CR 702.35a Madness): matches when the discarded card was exiled via its madness replacement effect. */
+	madnessExiled?: boolean;
+	/** becomesBlockedBy (CR 702.25a Flanking): matches only when the blocking creature does not have flanking. */
+	withoutFlanking?: boolean;
 }
 
 export interface TriggerDef {
@@ -960,7 +980,14 @@ export type Condition =
 	/** True iff any non-lost player's life satisfies `op count` ("unless a player has 13 or less life"). */
 	| { k: 'anyPlayerLife'; op: '>=' | '<=' | '=' | '>' | '<'; count: number }
 	/** Coven — true iff you control >= `count` creatures with different powers. */
-	| { k: 'distinctControlledCreaturePowers'; count: number };
+	| { k: 'distinctControlledCreaturePowers'; count: number }
+	// --- Track P9 ---
+	/** CR 702.30a Echo: true if this permanent entered or came under your control since your last upkeep began. */
+	| { k: 'cameUnderControlSinceLastUpkeep' }
+	/** CR 702.49a Ninjutsu: true during combat after blockers have been declared. */
+	| { k: 'ninjutsuWindow' }
+	/** CR 702.93a / 702.79a / 704.8: true if the dying permanent had zero `counter` counters in pre-SBA LKI. */
+	| { k: 'lkiHasNoCounter'; counter: CounterType };
 
 // ---- Statics and replacements ---------------------------------------------------------------
 

@@ -495,7 +495,13 @@ function effectiveAbilityManaCostInner(
 				? 'cycling'
 				: abilityId.startsWith('unearth_')
 					? 'unearth'
-					: undefined);
+					: abilityId.startsWith('ninjutsu_')
+						? 'ninjutsu'
+						: abilityId.startsWith('commander_ninjutsu_')
+							? 'commander ninjutsu'
+							: abilityId.startsWith('scavenge_')
+								? 'scavenge'
+								: undefined);
 	let forceZeroCost = false;
 	let genericReduction = 0;
 	let genericIncrease = 0;
@@ -597,11 +603,17 @@ function filterText(f: ObjectFilter, n: Amount): string {
 	const words: string[] = [];
 	if (f.other) words.push('another');
 	if (f.tapped === false) words.push('untapped');
+	// --- Track P9 ---
+	if (f.unblockedAttacker) words.push('unblocked attacking');
 	if (f.token === false) words.push('nontoken');
 	if (f.supertypes) words.push(...f.supertypes.map((s) => s.toLowerCase()));
 	if (f.notTypes) words.push(...f.notTypes.map((t) => `non${t.toLowerCase()}`));
-	const nouns = [...(f.subtypes ?? []), ...(f.types ?? []).map((t) => t.toLowerCase())];
-	words.push(nouns.length > 0 ? nouns.join(' or ') : 'permanent');
+	const nouns = [
+		...(f.subtypes ?? []),
+		...(f.allTypes ?? []).map((t) => t.toLowerCase()),
+		...(f.types ?? []).map((t) => t.toLowerCase())
+	];
+	words.push(nouns.length > 0 ? nouns.join(f.allTypes?.length ? ' ' : ' or ') : 'permanent');
 	let text = words.join(' ');
 	if (f.power) text += ` with power ${f.power.op} ${amountText(f.power.value)}`;
 	if (f.manaValue) text += ` with mana value ${f.manaValue.op} ${amountText(f.manaValue.value)}`;
@@ -645,7 +657,14 @@ export function describeCost(defs: CostDef[]): string {
 						? `Exile this from ${d.zone}`
 						: `Exile ${amountText(d.count)} card(s) from your ${d.zone}`;
 				case 'revealFromHand':
-					return `Reveal ${filterText(d.filter ?? {}, d.count)} in your hand`;
+					// --- Track P9 ---
+					return d.filter === 'self'
+						? 'Reveal this card'
+						: `Reveal ${filterText(d.filter ?? {}, d.count)} in your hand`;
+				case 'returnToHand':
+					return d.filter === 'self'
+						? "Return this to its owner's hand"
+						: `Return ${filterText(d.filter, d.count)} you control to its owner's hand`;
 				case 'choice':
 					return d.options.map((o) => describeCost(o)).join(' or ');
 				case 'optional':
@@ -699,7 +718,17 @@ export type CostQuestion =
 
 type ObjectCostDef = Extract<
 	CostDef,
-	{ k: 'tapOthers' | 'tapSubsetSum' | 'sacrifice' | 'discard' | 'exileFrom' | 'revealFromHand' }
+	{
+		k:
+			| 'tapOthers'
+			| 'tapSubsetSum'
+			| 'sacrifice'
+			| 'discard'
+			| 'exileFrom'
+			| 'revealFromHand'
+			// --- Track P9 ---
+			| 'returnToHand';
+	}
 >;
 
 /** One cost part of a complete plan, with the objects it uses. */
@@ -773,8 +802,20 @@ function objectCandidates(def: ObjectCostDef, ctx: CostContext, used: Set<string
 			);
 		}
 		case 'revealFromHand': {
+			// --- Track P9 ---
+			if (def.filter === 'self') return null;
 			const filter = def.filter as ObjectFilter | undefined;
 			return ctx.player.hand.filter((c) => free(c) && (!filter || matchesObjectFilter(c, filter, fctx)));
+		}
+		// --- Track P9 ---
+		case 'returnToHand': {
+			if (def.filter === 'self') return null;
+			return ctx.player.battlefield.filter(
+				(c) =>
+					free(c) &&
+					!c.phasedOut &&
+					matchesObjectFilter(c, { ...(def.filter as ObjectFilter), controller: 'you' }, fctx)
+			);
 		}
 	}
 }
@@ -850,6 +891,21 @@ function checkSimple(def: CostDef, ctx: CostContext): string | null {
 				if (!zoneOf(ctx.player, zone)?.some((c) => c.instanceId === src.instanceId)) {
 					return `${name} must be in your ${def.zone} to be exiled.`;
 				}
+			}
+			return null;
+		// --- Track P9 ---
+		case 'revealFromHand':
+			if (def.filter === 'self') {
+				const inHand = ctx.player.hand.some((c) => c.instanceId === src.instanceId);
+				const inCommand = ctx.player.command.some((c) => c.instanceId === src.instanceId);
+				if (!inHand && !inCommand) {
+					return `${name} must be in your hand or command zone to be revealed.`;
+				}
+			}
+			return null;
+		case 'returnToHand':
+			if (def.filter === 'self' && !sourceOnBattlefield(ctx)) {
+				return `${name} must be on the battlefield to be returned to hand.`;
 			}
 			return null;
 		default: {
@@ -986,7 +1042,9 @@ function planFlat(ctx: CostContext, flat: Flat[], objects: string[][] | undefine
 			def.k !== 'sacrifice' &&
 			def.k !== 'discard' &&
 			def.k !== 'exileFrom' &&
-			def.k !== 'revealFromHand'
+			def.k !== 'revealFromHand' &&
+			// --- Track P9 ---
+			def.k !== 'returnToHand'
 		) {
 			parts.push({ def });
 			continue;
@@ -1375,7 +1433,9 @@ export function serializeCostPlanParts(
 			def.k === 'sacrifice' ||
 			def.k === 'discard' ||
 			def.k === 'exileFrom' ||
-			def.k === 'revealFromHand'
+			def.k === 'revealFromHand' ||
+			// --- Track P9 ---
+			def.k === 'returnToHand'
 		) {
 			const objs = 'filter' in def && def.filter === 'self' ? [ctx.source] : (part.objects ?? []);
 			return {
@@ -1574,13 +1634,51 @@ export function executeCostPaymentParts(
 				break;
 			}
 			case 'revealFromHand': {
-				// --- Track P8: CR 701.20a stamp revealed hand cards as known to all living players ---
-				for (const id of part.objectIds ?? []) {
-					const card = player.hand.find((c) => c.instanceId === id);
-					if (card) markHandCardRevealedToAll(ctx.state, card);
+				// --- Track P8 + Track P9: CR 701.20a stamp revealed hand/command cards as known to all living players ---
+				const ids = part.objectIds ?? (def.filter === 'self' ? [source.instanceId] : []);
+				const names = part.objectNames ?? (def.filter === 'self' ? [source.card.name] : []);
+				for (const id of ids) {
+					const card =
+						player.hand.find((c) => c.instanceId === id) ??
+						player.command.find((c) => c.instanceId === id);
+					if (card) {
+						markHandCardRevealedToAll(ctx.state, card);
+					}
 				}
-				const names = part.objectNames ?? [];
 				if (names.length > 0) targetLog.push(`revealed ${names.join(', ')}`);
+				break;
+			}
+			// --- Track P9 ---
+			case 'returnToHand': {
+				const ids = part.objectIds ?? (def.filter === 'self' ? [source.instanceId] : []);
+				const names = part.objectNames ?? [];
+				for (let j = objStart; j < ids.length; j++) {
+					const perm =
+						player.battlefield.find((c) => c.instanceId === ids[j]) ??
+						ctx.state.players.flatMap((pl) => pl.battlefield).find((c) => c.instanceId === ids[j]) ??
+						(def.filter === 'self' && source.zone === 'battlefield' ? source : undefined);
+					if (!perm) continue;
+					const owner = ctx.state.players.find((pl) => pl.playerId === perm.ownerId) ?? player;
+					if (
+						moveObject(ctx.state, perm, 'hand', {
+							from: 'anyBattlefield',
+							toPlayer: owner,
+							detachAttachments: true,
+							commanderRedirect: true,
+							leaveBattlefieldReset: true,
+							bumpVersion: true,
+							newTimestamp: true,
+							ceaseToExist: 'tokens'
+						}) === 'pending'
+					) {
+						return { descriptions, paused: true, nextPartIndex: partIdx, nextObjectIndex: j + 1 };
+					}
+				}
+				targetLog.push(
+					def.filter === 'self'
+						? `returned ${names[0] ?? source.card.name} to hand`
+						: `returned ${names.join(', ')} to hand`
+				);
 				break;
 			}
 			default: {

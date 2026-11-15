@@ -51,6 +51,8 @@ import {
 } from './objectFilter.ts';
 // --- Track P8 ---
 import { checkStaticActivatedAbilityLocks } from './staticsLayersAndRestrictions.ts';
+// --- Track P9 ---
+import { hasUnleashCantBlock } from './keywordsWave3.ts';
 
 // ---- Condition & Amount Evaluation ----------------------------------------------------------
 
@@ -618,6 +620,10 @@ function hasRestrictionInner(
 	restriction: RestrictionKind
 ): boolean {
 	const onBf = isOnBattlefield(state, obj.instanceId);
+	// --- Track P9 ---
+	if (onBf && matchesRestrictionKind('cantBlock', restriction) && hasUnleashCantBlock(state, obj)) {
+		return true;
+	}
 	const canCheckSelf =
 		!onBf || (!obj.phasedOut && !permanentHasLostAllAbilities(obj, state).lost);
 
@@ -1348,7 +1354,8 @@ export function tokenMultiplier(state: GameState, recipientPlayerId: string): nu
 }
 
 export interface TriggerMultiplierCause {
-	event: 'cast' | 'zoneChange' | 'attacks' | 'cycle' | 'discard';
+	// --- Track P9: added 'becomesBlockedBy' ---
+	event: 'cast' | 'zoneChange' | 'attacks' | 'cycle' | 'discard' | 'becomesBlockedBy';
 	spell?: CardInstance;
 	casterId?: string;
 	isCopy?: boolean;

@@ -514,6 +514,21 @@ function gateAbilityByStriationCondition(
 				}
 			];
 		}
+		if (kw.name === 'toxic' && kw.n !== undefined) {
+			return [
+				{
+					kind: 'static',
+					static: {
+						k: 'continuous',
+						layer: '6',
+						affected: 'self',
+						condition: cond,
+						mod: { k: 'addKeywords', keywords: [`toxic ${kw.n}`] }
+					},
+					span: ab.span
+				}
+			];
+		}
 		if (spec?.status === 'implemented' && spec.implementation?.kind === 'static') {
 			const statics = spec.implementation.buildStatics(kw);
 			if (statics.length > 0) {
@@ -634,6 +649,34 @@ function formatCyclingDesc(rawQuality: string, filter: ObjectFilter): string {
 		.join(' ');
 }
 
+const COST_SYM_COUNT_WORDS: Readonly<Record<string, number>> = {
+	one: 1,
+	two: 2,
+	three: 3,
+	four: 4,
+	five: 5,
+	six: 6,
+	seven: 7,
+	eight: 8,
+	nine: 9,
+	ten: 10
+};
+
+function normalizeKeywordCostText(raw: string): string {
+	const trimmed = raw.trim();
+	const payMultiSym = trimmed.match(
+		/^pay\s+(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s*(\{[WUBRGC]\})$/i
+	);
+	if (payMultiSym) {
+		const countRaw = payMultiSym[1].toLowerCase();
+		const n = /^\d+$/.test(countRaw) ? parseInt(countRaw, 10) : COST_SYM_COUNT_WORDS[countRaw];
+		if (n && n > 0 && n <= 20) {
+			return payMultiSym[2].toUpperCase().repeat(n);
+		}
+	}
+	return trimmed;
+}
+
 function parseKeyword(part: string): KeywordDef | null {
 	const low = part.toLowerCase();
 	for (const kw of KNOWN_KEYWORDS) {
@@ -670,7 +713,13 @@ function parseKeyword(part: string): KeywordDef | null {
 			kw === 'transmute' ||
 			kw === 'level up' ||
 			kw === 'reinforce' ||
-			kw === 'prototype'
+			kw === 'prototype' ||
+			kw === 'echo' ||
+			kw === 'madness' ||
+			kw === 'dash' ||
+			kw === 'ninjutsu' ||
+			kw === 'commander ninjutsu' ||
+			kw === 'scavenge'
 				? rawArg.replace(/\.$/, '').trim()
 				: rawArg;
 		if (kw === 'prototype') {
@@ -744,7 +793,7 @@ function keywordLine(ctx: Ctx, line: NormalizedLine): AbilityDef[] | null {
 	if (
 		line.abilityWord ||
 		(/\.$/.test(line.body) &&
-			!/^(?:ward|flashback|kicker|multikicker|morph|megamorph|disguise|unearth|buyback|evoke|escape|foretell|plot|entwine|disturb|blitz|cumulative upkeep|offspring|squad|replicate|warp|transmute|level up|reinforce(?:\s+\d+)?|cycling|(?:[a-z][a-z -]*\s+)?[a-z]*cycling)\s*[—-]/i.test(
+			!/^(?:ward|flashback|kicker|multikicker|morph|megamorph|disguise|unearth|buyback|evoke|escape|foretell|plot|entwine|disturb|blitz|cumulative upkeep|offspring|squad|replicate|warp|transmute|level up|reinforce(?:\s+\d+)?|echo|madness|dash|commander ninjutsu|ninjutsu|scavenge|cycling|(?:[a-z][a-z -]*\s+)?[a-z]*cycling)\s*[—-]/i.test(
 				line.body
 			))
 	) {
@@ -753,7 +802,7 @@ function keywordLine(ctx: Ctx, line: NormalizedLine): AbilityDef[] | null {
 	// "Enchant creature, land, or planeswalker", "Protection from white, from blue", and composite
 	// dash costs ("Ward—...", "Flashback—...", "Kicker—...", "Morph—...", "Cycling—...", "Escape—...") are one keyword.
 	const parts =
-		/^(?:enchant|protection from|hexproof from|partner with|prototype\b|(?:ward|flashback|kicker|multikicker|morph|megamorph|disguise|unearth|buyback|evoke|escape|foretell|plot|entwine|disturb|blitz|cumulative upkeep|offspring|squad|replicate|warp|transmute|level up|reinforce(?:\s+\d+)?|cycling|(?:[a-z][a-z -]*\s+)?[a-z]*cycling)\s*[—–-])/i.test(
+		/^(?:enchant|protection from|hexproof from|partner with|prototype\b|(?:ward|flashback|kicker|multikicker|morph|megamorph|disguise|unearth|buyback|evoke|escape|foretell|plot|entwine|disturb|blitz|cumulative upkeep|offspring|squad|replicate|warp|transmute|level up|reinforce(?:\s+\d+)?|echo|madness|dash|commander ninjutsu|ninjutsu|scavenge|cycling|(?:[a-z][a-z -]*\s+)?[a-z]*cycling)\s*[—–-])/i.test(
 			line.body
 		)
 			? [line.body]
@@ -822,9 +871,11 @@ function keywordLine(ctx: Ctx, line: NormalizedLine): AbilityDef[] | null {
 			keyword.name === 'entwine' ||
 			keyword.name === 'disturb' ||
 			keyword.name === 'blitz' ||
-			keyword.name === 'warp'
+			keyword.name === 'warp' ||
+			keyword.name === 'madness' ||
+			keyword.name === 'dash'
 		) {
-			const kwCost = keyword.cost ?? keyword.param ?? '';
+			const kwCost = normalizeKeywordCostText(keyword.cost ?? keyword.param ?? '');
 			const parsed = parseCost(kwCost);
 			if (parsed.unparsed.length > 0 || parsed.defs.length === 0) {
 				out.push(unsupported('unparsed', part, span, [span]));
@@ -835,9 +886,10 @@ function keywordLine(ctx: Ctx, line: NormalizedLine): AbilityDef[] | null {
 		if (
 			keyword.name === 'offspring' ||
 			keyword.name === 'squad' ||
-			keyword.name === 'replicate'
+			keyword.name === 'replicate' ||
+			keyword.name === 'echo'
 		) {
-			const kwCost = keyword.cost ?? keyword.param ?? '';
+			const kwCost = normalizeKeywordCostText(keyword.cost ?? keyword.param ?? '');
 			const parsed = parseCost(kwCost);
 			const ok =
 				parsed.unparsed.length === 0 &&
@@ -854,13 +906,16 @@ function keywordLine(ctx: Ctx, line: NormalizedLine): AbilityDef[] | null {
 		if (
 			keyword.name === 'level up' ||
 			keyword.name === 'transmute' ||
-			keyword.name === 'reinforce'
+			keyword.name === 'reinforce' ||
+			keyword.name === 'ninjutsu' ||
+			keyword.name === 'commander ninjutsu' ||
+			keyword.name === 'scavenge'
 		) {
 			if (keyword.name === 'reinforce' && keyword.n === undefined) {
 				out.push(unsupported('unparsed', part, span, [span]));
 				return;
 			}
-			const kwCost = keyword.cost ?? keyword.param ?? '';
+			const kwCost = normalizeKeywordCostText(keyword.cost ?? keyword.param ?? '');
 			const parsed = parseCost(kwCost);
 			const ok =
 				parsed.unparsed.length === 0 &&
@@ -961,7 +1016,19 @@ function keywordLine(ctx: Ctx, line: NormalizedLine): AbilityDef[] | null {
 		) {
 			implemented = false;
 		}
-		if (
+		if (keyword.name === 'bloodthirst') {
+			const isBloodthirstX =
+				keyword.n === undefined &&
+				keyword.cost === undefined &&
+				keyword.param?.trim().toUpperCase() === 'X';
+			const isBloodthirstN =
+				keyword.n !== undefined && keyword.cost === undefined && keyword.param === undefined;
+			if (isBloodthirstX) {
+				keyword.param = 'X';
+			} else if (!isBloodthirstN) {
+				implemented = false;
+			}
+		} else if (
 			kwSpec?.parameterKind === 'number' &&
 			(keyword.n === undefined || keyword.cost !== undefined || keyword.param !== undefined)
 		) {
@@ -1038,6 +1105,10 @@ function keywordLine(ctx: Ctx, line: NormalizedLine): AbilityDef[] | null {
 		const levelUpId = i === 0 ? `level_up_${line.rawIndex}` : `level_up_${line.rawIndex}_${i}`;
 		const transmuteId = i === 0 ? `transmute_${line.rawIndex}` : `transmute_${line.rawIndex}_${i}`;
 		const reinforceId = i === 0 ? `reinforce_${line.rawIndex}` : `reinforce_${line.rawIndex}_${i}`;
+		const ninjutsuId = i === 0 ? `ninjutsu_${line.rawIndex}` : `ninjutsu_${line.rawIndex}_${i}`;
+		const commanderNinjutsuId =
+			i === 0 ? `commander_ninjutsu_${line.rawIndex}` : `commander_ninjutsu_${line.rawIndex}_${i}`;
+		const scavengeId = i === 0 ? `scavenge_${line.rawIndex}` : `scavenge_${line.rawIndex}_${i}`;
 		out.push({
 			kind: 'keyword',
 			keyword,
@@ -1060,7 +1131,13 @@ function keywordLine(ctx: Ctx, line: NormalizedLine): AbilityDef[] | null {
 											? { id: transmuteId }
 											: keyword.name === 'reinforce'
 												? { id: reinforceId }
-												: {})
+												: keyword.name === 'ninjutsu'
+													? { id: ninjutsuId }
+													: keyword.name === 'commander ninjutsu'
+														? { id: commanderNinjutsuId }
+														: keyword.name === 'scavenge'
+															? { id: scavengeId }
+															: {})
 		});
 		if (keyword.name === 'vanishing') {
 			out.push(...buildVanishingAbilities(keyword.n, span));

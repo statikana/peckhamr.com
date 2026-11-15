@@ -546,6 +546,19 @@ export interface CardInstance {
 	warpedByOwnerId?: string;
 	/** CR 702.185a: `state.turnSerial ?? state.turnNumber` of the turn this card was exiled by Warp's delayed trigger. */
 	warpedTurnSerial?: number;
+	// --- Track P9 ---
+	/** CR 702.30a Echo: monotonic timestamp when this permanent entered or last changed controllers. */
+	cameUnderControlAt?: number;
+	/** CR 702.35a Madness: owner playerId when exiled from hand via Madness replacement; cleared on leaving exile. */
+	madnessOwnerId?: string;
+	/** CR 702.109a Dash: true while on the stack/battlefield after being cast for its dash cost. */
+	dashed?: boolean;
+	/** CR 702.136a Riot: true when a Riot ETB choice selected permanent haste on this permanent. */
+	riotHaste?: boolean;
+	/** CR 702.136b Riot: count of Riot ETB choices already completed as this permanent enters. */
+	riotChoicesDone?: number;
+	/** CR 702.98a Unleash: true once the Unleash ETB choice has been completed as this permanent enters. */
+	unleashChoiceDone?: boolean;
 }
 
 export interface TargetRef {
@@ -583,6 +596,9 @@ export interface SpellModifications {
 	prototyped?: boolean;
 	/** CR 702.185a: cast from hand by paying its warp cost. */
 	warped?: boolean;
+	// --- Track P9 ---
+	/** CR 702.109a: cast by paying its dash alternative cost. */
+	dashed?: boolean;
 }
 
 export interface CastOptionOptionalCost {
@@ -794,6 +810,26 @@ export interface StackItem {
 	tappedCostPower?: number;
 	stationTappedId?: string;
 	stationTappedVersion?: number;
+	// --- Track P9 ---
+	/** CR 702.88a Rebound: zone from which this spell was cast ('hand' enables Rebound). */
+	castFromZone?: ZoneType;
+	/** CR 702.49c / 508.4 Ninjutsu: defender player / planeswalker the returned unblocked attacker was attacking. */
+	ninjutsuAttackTarget?: { defenderPlayerId: string; defenderPlaneswalkerId?: string | null };
+	/** Plain-JSON continuation frame for Wave 3 keyword resolution prompts (Madness, Cascade, Rebound, Fabricate, Extort). */
+	wave3Resume?: {
+		step: string;
+		cardId?: string;
+		cardVersion?: number;
+		exiledIds?: string[];
+		chosenFaceIndex?: number;
+		xValue?: number;
+		chosenModes?: number[];
+		chosenTargetIds?: string[];
+		targetKinds?: string[];
+		costOptions?: number[];
+		costObjects?: string[][];
+		extortColor?: ManaColor;
+	};
 }
 
 /** One binding of the IR interpreter ("it", "that creature"): the objects and their LKI. */
@@ -834,6 +870,9 @@ export interface TriggerEventLki {
 	power: number;
 	toughness: number;
 	manaValue: number;
+	// --- Track P9 ---
+	/** CR 704.8: pre-SBA counter counts on the object as it last existed on the battlefield. */
+	counters?: Partial<Record<CounterType, number>>;
 }
 
 export interface SerializedPendingTrigger {
@@ -850,7 +889,13 @@ export interface SerializedPendingTrigger {
 	defendingPlayerId?: string;
 	targetStackItemId?: string;
 	amount?: number;
-	eventLki?: { controllerId: string; power?: number; toughness?: number };
+	eventLki?: {
+		controllerId: string;
+		power?: number;
+		toughness?: number;
+		// --- Track P9 ---
+		counters?: Partial<Record<CounterType, number>>;
+	};
 	triggerEventStackItem?: StackItem;
 	stormCount?: number;
 	// --- Track P3 ---
@@ -921,7 +966,10 @@ export type DelayedTriggerEffect =
 	// --- Track P3 ---
 	| { kind: 'sacrifice'; targetInstanceId: string; targetObjectVersion?: number }
 	// --- Track P6 ---
-	| { kind: 'warpExile'; targetInstanceId: string; targetObjectVersion?: number };
+	| { kind: 'warpExile'; targetInstanceId: string; targetObjectVersion?: number }
+	// --- Track P9 ---
+	| { kind: 'dashBounce'; targetInstanceId: string; targetObjectVersion?: number }
+	| { kind: 'reboundCast'; targetInstanceId: string; targetObjectVersion?: number };
 
 export interface DelayedTrigger {
 	id: string;
@@ -1330,6 +1378,13 @@ export interface PlayerGameState {
 	commanderColorIdentity?: ManaColor[];
 	/** CR 106.6 / 603.7: Delayed riders attached to mana in the pool (e.g. Path of Ancestry). */
 	manaRiders?: ManaRider[];
+	// --- Track P9 ---
+	/** CR 702.30a Echo: monotonic timestamp of the beginning of this player's previous upkeep step. */
+	previousUpkeepBeganAt?: number;
+	/** CR 702.30a Echo: monotonic timestamp of the beginning of this player's most recent upkeep step. */
+	currentUpkeepBeganAt?: number;
+	/** CR 702.54a–b Bloodthirst: total damage dealt to this player so far this turn (reset at turn start). */
+	damageDealtToThisTurn?: number;
 }
 
 export interface ManaRider {
@@ -1458,6 +1513,8 @@ export interface PendingCostPayment {
 	tappedCostPower?: number;
 	stationTappedId?: string;
 	stationTappedVersion?: number;
+	// --- Track P9 ---
+	ninjutsuAttackTarget?: { defenderPlayerId: string; defenderPlaneswalkerId?: string | null };
 	onceEachTurn?: boolean;
 	effectText?: string;
 	abilityCostIncomplete?: boolean;
@@ -1556,6 +1613,9 @@ export interface GameState {
 	monarchPlayerId?: string | null;
 	/** CR 500.8: number of additional combat phases to begin after the current combat phase ends. */
 	additionalCombatPhases?: number;
+	// --- Track P9 ---
+	/** CR 702.30a Echo: monotonic clock for upkeep & control-gain ordering (independent of CR 613 `nextTimestamp`). */
+	echoClock?: number;
 }
 
 export interface MagicLobby {

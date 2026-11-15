@@ -95,6 +95,13 @@ import {
 import { activeRuleModifiers, applySelfEtbReplacements, tokenMultiplier } from './replace.ts';
 import { flushTriggers, withSimultaneousDestroyLki } from './triggers.ts';
 import { nextRandom } from './random.ts';
+// --- Track P9 ---
+import {
+	cameUnderControlSinceLastUpkeep,
+	isNinjutsuWindowOpen,
+	isUnblockedAttackerForPlayer,
+	sumEvaluatedToxic
+} from './keywordsWave3.ts';
 import {
 	applyNextUntapFreeze,
 	chooseBotLibraryPlacement,
@@ -428,6 +435,8 @@ export interface SourceDamageInfo {
 	hasWither: boolean;
 	colors: ManaColor[];
 	types: string[];
+	// --- Track P9 ---
+	toxicTotal?: number;
 }
 
 export function sourceDamageInfo(
@@ -447,7 +456,9 @@ export function sourceDamageInfo(
 			types: ev.typeLine
 				.split(/\s+[—-]\s+/)[0]
 				.split(/\s+/)
-				.filter(Boolean)
+				.filter(Boolean),
+			// --- Track P9 ---
+			toxicTotal: sumEvaluatedToxic(ev)
 		};
 	}
 	const faceOpts = sourcePerm ? instanceFaceOptions(sourcePerm) : undefined;
@@ -620,6 +631,11 @@ export function dealDamageToPlayer(
 			Boolean(pl.lifeTotalCannotChangeThisTurn) ||
 			activeRuleModifiers(state, 'lifeTotalCantChange', pl.playerId).length > 0;
 		if (!cantChange) pl.life -= dmg;
+	}
+	// --- Track P9 ---
+	pl.damageDealtToThisTurn = (pl.damageDealtToThisTurn ?? 0) + dmg;
+	if (combat && (srcInfo.toxicTotal ?? 0) > 0) {
+		pl.poison = (pl.poison || 0) + srcInfo.toxicTotal!;
 	}
 
 	emitEvent(state, {
@@ -1431,6 +1447,9 @@ class Run {
 			// --- Track P8 ---
 			case 'distinctCardTypesInZone':
 				return countDistinctCardTypesInZone(this.state, this.you.playerId, a.zone, a.whose);
+			// --- Track P9 ---
+			case 'lkiCounterCount':
+				return this.ctx.eventLki?.counters?.[a.counter] ?? 0;
 		}
 	}
 
@@ -1725,8 +1744,14 @@ class Run {
 		const hasSub = (s: string) =>
 			ev ? ev.hasSubType(s) : matchesObjectFilter(c, { subtypes: [s] }, { state: this.state, controllerId: this.you.playerId });
 		if (f.types && !f.types.some((t) => typeLine.includes(t))) return false;
-		// --- Track P8 ---
+		// --- Track P8 + Track P9 ---
 		if (f.allTypes && !f.allTypes.every((t) => typeLine.includes(t))) return false;
+		if (
+			f.unblockedAttacker !== undefined &&
+			isUnblockedAttackerForPlayer(this.state, c, this.you.playerId) !== f.unblockedAttacker
+		) {
+			return false;
+		}
 		if (f.subtypes && !f.subtypes.some(hasSub)) return false;
 		if (f.notSubtypes && f.notSubtypes.some(hasSub)) return false;
 		if (f.ofChosenType) {
@@ -4756,6 +4781,8 @@ class Run {
 				}
 				const actualFrom = f.zone as 'exile' | 'graveyard' | 'library';
 				const o = f.inst;
+				// --- Track P9: CR 111.8 tokens that left the battlefield cannot move to another zone ---
+				if (o.isToken) return;
 				const holder = f.holder;
 				if (params.to === 'hand') {
 					const res = moveObject(s, o, 'hand', { from: { player: holder, zone: actualFrom }, toPlayer: holder, commanderRedirect: true, bumpVersion: true, newTimestamp: true });
@@ -4813,7 +4840,9 @@ class Run {
 						if (d === 'battlefield') {
 							applySelfEtbReplacements(s, returned);
 						}
-					}
+					},
+					// --- Track P9 ---
+					...(params.withCounters ? { withCounters: params.withCounters } : {})
 				});
 				if (params.unearth && o.zone === 'battlefield') {
 					// CR 702.84a: permanent Haste, leave-battlefield exile replacement, and next-end-step exile delayed trigger.
@@ -5582,6 +5611,19 @@ class Run {
 					xValue: this.ctx.xValue
 				});
 			}
+			// --- Track P9 ---
+			case 'cameUnderControlSinceLastUpkeep': {
+				const f = this.locate(this.ctx.sourceId);
+				return cameUnderControlSinceLastUpkeep(
+					this.state,
+					this.you.playerId,
+					f && f.zone === 'battlefield' ? f.inst : undefined
+				);
+			}
+			case 'ninjutsuWindow':
+				return isNinjutsuWindowOpen(this.state);
+			case 'lkiHasNoCounter':
+				return (this.ctx.eventLki?.counters?.[c.counter] ?? 0) <= 0;
 		}
 	}
 
