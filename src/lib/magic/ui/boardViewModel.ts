@@ -1,5 +1,6 @@
 import { compileCard } from '../compiler/index.ts';
 import {
+	canPayOrAutoTap,
 	checkAbilityActivationLegality,
 	checkHandSpecialActionLegality,
 	checkSpellCastLegality,
@@ -13,10 +14,11 @@ import {
 	getTurnFaceUpDisplay
 } from '../engine.ts';
 import type { CostDef, ModalDef } from '../ir.ts';
-import { DUNGEON_SPECS } from '../oracle.ts';
+import { DUNGEON_SPECS, parseManaCost } from '../oracle.ts';
 import { evaluatePermanent, type EvaluatedPermanent } from '../ruleTree.ts';
 import { describeCost, getSuspendSpec } from '../runtime/costs.ts';
 import { instanceFaceOptions, resolveObjectFaces } from '../runtime/faces.ts';
+import { checkCompanionSpecialActionLegality } from '../runtime/framesModalsWave6.ts';
 import {
 	cardHasEscalate,
 	computeModalModeAdditionalCosts
@@ -24,6 +26,12 @@ import {
 import { withStableLayerInputs } from '../runtime/layerCache.ts';
 import { splitSubtypes } from '../runtime/layers.ts';
 import { totalSnowManaInPool } from '../runtime/staticsDynamicAndCosts.ts';
+import { getPlayerTopOfLibraryVisibility } from '../runtime/staticsLayersAndRestrictions.ts';
+import {
+	getRequiredFlagbearerIdsForActor,
+	isPlayerHandRevealedToViewer,
+	isPlayerTopLibraryRevealedByGlobalStatic
+} from '../runtime/staticsWave6.ts';
 import { activeFaceIndexForObject, effectiveCardForObject } from '../scryfall.ts';
 import type {
 	CardInstance,
@@ -166,6 +174,41 @@ export interface ModalModeCostView {
 	hasModeCosts: boolean;
 }
 
+export interface CompanionView {
+	card: ScryfallCard;
+	canMoveToHand: boolean;
+	illegalityReason: string | null;
+}
+
+export interface TopOfLibraryView {
+	topCard: CardInstance | null;
+	card: ScryfallCard | null;
+	visibility: 'revealed' | 'look' | 'known' | 'hidden';
+	isRevealedToAll: boolean;
+	isLookableByViewer: boolean;
+	libraryLandPlayOptions: LandPlayOption[];
+	libraryCastOptions: CastOption[];
+	canPlayOrCast: boolean;
+}
+
+const CHOSEN_COLOR_NAMES: Record<ManaColor, string> = {
+	W: 'White',
+	U: 'Blue',
+	B: 'Black',
+	R: 'Red',
+	G: 'Green',
+	C: 'Colorless'
+};
+
+export function formatPermanentChosenDescriptor(perm: CardInstance): string | null {
+	const parts: string[] = [];
+	if (perm.chosenCardName) parts.push(perm.chosenCardName);
+	if (perm.chosenSubType) parts.push(perm.chosenSubType);
+	if (perm.chosenColor) parts.push(CHOSEN_COLOR_NAMES[perm.chosenColor] ?? perm.chosenColor);
+	if (perm.chosenAnchorWord) parts.push(`"${perm.chosenAnchorWord}"`);
+	return parts.length > 0 ? parts.join(' • ') : null;
+}
+
 export interface PermanentView {
 	instanceId: string;
 	perm: CardInstance;
@@ -205,6 +248,14 @@ export interface PermanentView {
 	isSaddled: boolean;
 	isRingBearer: boolean;
 	isPrepared: boolean;
+	isPrototyped: boolean;
+	regenerationShields: number;
+	isFlagbearer: boolean;
+	chosenDescriptor: string | null;
+	isStolen: boolean;
+	ownerName: string | null;
+	isFrozen: boolean;
+	isMonstrous: boolean;
 	protectorId: string | null;
 	protectorName: string | null;
 	canBeAttackedAsBattle: boolean;
@@ -273,6 +324,8 @@ export interface PlayerStatusView {
 	damagePreventionShield: number;
 	preventAllCombatDamageThisTurn: boolean;
 	turnShieldBadges: PlayerShieldBadge[];
+	companionView: CompanionView | null;
+	topOfLibraryView: TopOfLibraryView | null;
 }
 
 export interface HandSpecialActionView extends HandSpecialActionOption {
@@ -307,11 +360,17 @@ export interface BoardViewModel {
 	playerStatusesById: Record<string, PlayerStatusView>;
 	handPlayabilityById: Record<string, HandCardPlayabilityView>;
 	commandPlayabilityById: Record<string, boolean>;
+	companionView: CompanionView | null;
+	gyLandPlayOptions: Record<string, LandPlayOption[]>;
+	hasPlayableGraveyardActions: boolean;
 	playableGraveyardIds: string[];
 	playableExileIds: string[];
 	playableExileCards: CardInstance[];
 	permittedExileCards: CardInstance[];
 	exileHauntingTargetNameById: Record<string, string>;
+	topOfLibraryView: TopOfLibraryView | null;
+	topOfLibraryByPlayerId: Record<string, TopOfLibraryView>;
+	revealedOpponentHandsByPlayerId: Record<string, CardInstance[]>;
 	waitingOnPlayerIds: string[];
 }
 
@@ -680,7 +739,102 @@ function extractActiveDungeonView(player: PlayerGameState): ActiveDungeonView | 
 	};
 }
 
-function extractPlayerStatus(gameState: GameState, player: PlayerGameState): PlayerStatusView {
+function extractCompanionView(
+	gameState: GameState,
+	player: PlayerGameState,
+	viewerId: string
+): CompanionView | null {
+	if (!player.companion || player.companionMovedToHand) {
+		return null;
+	}
+	if (player.playerId !== viewerId) {
+		return {
+			card: player.companion,
+			canMoveToHand: false,
+			illegalityReason: 'Opponent designated card (CR 702.139a).'
+		};
+	}
+	const legality = checkCompanionSpecialActionLegality(gameState, player.playerId);
+	if (!legality.ok) {
+		return {
+			card: player.companion,
+			canMoveToHand: false,
+			illegalityReason: legality.reason ?? 'Cannot use special action right now.'
+		};
+	}
+	const canPay = canPayOrAutoTap(player, parseManaCost('{3}'), gameState, undefined, {
+		isSpell: false
+	});
+	if (!canPay) {
+		return {
+			card: player.companion,
+			canMoveToHand: false,
+			illegalityReason: 'Insufficient mana to pay {3} (CR 116.2g).'
+		};
+	}
+	return {
+		card: player.companion,
+		canMoveToHand: true,
+		illegalityReason: null
+	};
+}
+
+function extractTopOfLibraryView(
+	gameState: GameState,
+	player: PlayerGameState,
+	viewerId: string,
+	viewerCanActNow: boolean
+): TopOfLibraryView {
+	const topVis = getPlayerTopOfLibraryVisibility(gameState, player.playerId);
+	const isRevealedToAll = Boolean(
+		topVis.revealToAll || isPlayerTopLibraryRevealedByGlobalStatic(gameState, player.playerId)
+	);
+	const isLookableByViewer = Boolean(
+		topVis.lookByController && player.playerId === viewerId && !gameState.pendingCostPayment
+	);
+	const candidateTop = player.library[0] ?? null;
+	const isKnownToViewer = Boolean(
+		candidateTop && viewerId && candidateTop.knownToPlayerIds?.includes(viewerId)
+	);
+	const topCard =
+		candidateTop && (isRevealedToAll || isLookableByViewer || isKnownToViewer)
+			? candidateTop
+			: null;
+	const visibility: TopOfLibraryView['visibility'] = !topCard
+		? 'hidden'
+		: isRevealedToAll
+			? 'revealed'
+			: isLookableByViewer
+				? 'look'
+				: 'known';
+	const isViewerLibrary = player.playerId === viewerId;
+	const libraryLandPlayOptions =
+		topCard && isViewerLibrary && viewerCanActNow
+			? getLandPlayOptions(gameState, viewerId, topCard, 'library')
+			: [];
+	const libraryCastOptions =
+		topCard && isViewerLibrary && viewerCanActNow
+			? getCastOptions(gameState, viewerId, topCard, 'library')
+			: [];
+	const canPlayOrCast = libraryLandPlayOptions.length > 0 || libraryCastOptions.length > 0;
+	return {
+		topCard,
+		card: topCard?.card ?? null,
+		visibility,
+		isRevealedToAll,
+		isLookableByViewer,
+		libraryLandPlayOptions,
+		libraryCastOptions,
+		canPlayOrCast
+	};
+}
+
+function extractPlayerStatus(
+	gameState: GameState,
+	player: PlayerGameState,
+	viewerId: string,
+	viewerCanActNow: boolean
+): { status: PlayerStatusView; topView: TopOfLibraryView } {
 	const poison = player.poison || 0;
 	const energyCounters = player.energyCounters || 0;
 	const experienceCounters = player.experienceCounters || 0;
@@ -825,41 +979,49 @@ function extractPlayerStatus(gameState: GameState, player: PlayerGameState): Pla
 		});
 	}
 
+	const companionView = extractCompanionView(gameState, player, viewerId);
+	const topView = extractTopOfLibraryView(gameState, player, viewerId, viewerCanActNow);
+
 	return {
-		playerId: player.playerId,
-		username: player.username,
-		life: player.life,
-		poison,
-		energyCounters,
-		experienceCounters,
-		radCounters,
-		isMonarch,
-		hasInitiative,
-		activeDungeon,
-		completedDungeonCount,
-		completedDungeonNames,
-		speed,
-		isMaxSpeed,
-		hasCitysBlessing,
-		hasEnduringStory,
-		cannotCastSpellsForRestOfGame,
-		epicSpellNames,
-		ringLevel,
-		ringBearerId,
-		ringAbilities,
-		snowManaTotal,
-		snowManaByColor,
-		commanders,
-		emblems,
-		dungeonCommandCards,
-		restrictedManaEntries,
-		commanderDamageEntries,
-		protectionFromEverythingThisTurn,
-		cannotLoseGameThisTurn,
-		lifeTotalCannotChangeThisTurn,
-		damagePreventionShield,
-		preventAllCombatDamageThisTurn,
-		turnShieldBadges
+		status: {
+			playerId: player.playerId,
+			username: player.username,
+			life: player.life,
+			poison,
+			energyCounters,
+			experienceCounters,
+			radCounters,
+			isMonarch,
+			hasInitiative,
+			activeDungeon,
+			completedDungeonCount,
+			completedDungeonNames,
+			speed,
+			isMaxSpeed,
+			hasCitysBlessing,
+			hasEnduringStory,
+			cannotCastSpellsForRestOfGame,
+			epicSpellNames,
+			ringLevel,
+			ringBearerId,
+			ringAbilities,
+			snowManaTotal,
+			snowManaByColor,
+			commanders,
+			emblems,
+			dungeonCommandCards,
+			restrictedManaEntries,
+			commanderDamageEntries,
+			protectionFromEverythingThisTurn,
+			cannotLoseGameThisTurn,
+			lifeTotalCannotChangeThisTurn,
+			damagePreventionShield,
+			preventAllCombatDamageThisTurn,
+			turnShieldBadges,
+			companionView,
+			topOfLibraryView: topView.topCard ? topView : null
+		},
+		topView
 	};
 }
 
@@ -904,9 +1066,27 @@ function buildViewModelStateSignature(gameState: GameState, viewerId: string): s
 		gameState.combat.active,
 		gameState.combat.attackers.length,
 		(gameState.combat.declaredBlockersPlayerIds ?? []).join(','),
-		gameState.pendingPrompts.map((pr) => `${pr.id}:${pr.playerId}:${pr.kind}`).join(','),
+		Boolean(gameState.pendingCostPayment),
+		gameState.pendingPrompts
+			.map(
+				(pr) =>
+					`${pr.id}:${pr.playerId}:${pr.kind}:${
+						pr.choice?.kind === 'chooseObjects'
+							? `${pr.choice.zone ?? ''}[${pr.choice.candidates.join(',')}]`
+							: ''
+					}`
+			)
+			.join(','),
 		(gameState.timedKeywordEffects ?? []).length,
-		(gameState.timedContinuousEffects ?? []).length
+		(gameState.timedContinuousEffects ?? []).length,
+		(gameState.timedContinuousEffects ?? [])
+			.map(
+				(ce) =>
+					`${ce.timestamp}:${ce.layer2?.controllerId ?? ''}:${
+						Array.isArray(ce.affected) ? ce.affected.join(',') : ''
+					}`
+			)
+			.join(';')
 	];
 	for (const item of gameState.stack) {
 		parts.push(item.id, item.targets.map((t) => t.id).join(','));
@@ -921,6 +1101,7 @@ function buildViewModelStateSignature(gameState: GameState, viewerId: string): s
 		);
 	}
 	for (const p of gameState.players) {
+		const topLib = p.library[0];
 		parts.push(
 			p.playerId,
 			p.lost,
@@ -934,6 +1115,15 @@ function buildViewModelStateSignature(gameState: GameState, viewerId: string): s
 			p.hasEnduringStory ?? false,
 			p.cannotCastSpellsForRestOfGame ?? false,
 			(p.epicSpells ?? []).map((ep) => `${ep.card.id}:${ep.card.name}:${ep.faceIndex ?? 0}`).join(','),
+			p.companion ? `${p.companion.id}:${p.companion.name}` : '',
+			p.companionMovedToHand ?? false,
+			(p.usedStaticPlaySlotsThisTurn ?? []).join(','),
+			p.handCount ?? -1,
+			p.libraryCount ?? -1,
+			p.library.length,
+			topLib
+				? `${topLib.instanceId}:${topLib.objectVersion ?? 0}:${(topLib.knownToPlayerIds ?? []).join(',')}`
+				: '',
 			p.ringLevel ?? 0,
 			p.ringBearerId ?? '',
 			p.activeDungeon
@@ -976,6 +1166,7 @@ function buildViewModelStateSignature(gameState: GameState, viewerId: string): s
 			parts.push(
 				perm.instanceId,
 				perm.objectVersion ?? 0,
+				perm.ownerId,
 				perm.controllerId,
 				perm.protectorId ?? '',
 				perm.tapped,
@@ -991,6 +1182,16 @@ function buildViewModelStateSignature(gameState: GameState, viewerId: string): s
 				perm.activeFaceIndex ?? 0,
 				(perm.unlockedFaces ?? []).join(','),
 				perm.isPrepared ?? false,
+				perm.prototyped ?? false,
+				perm.copiableState?.prototyped ?? false,
+				perm.copiableCard ? `${perm.copiableCard.id}:${perm.copiableCard.name}` : '',
+				perm.regenerationShields ?? 0,
+				perm.chosenCardName ?? '',
+				perm.chosenSubType ?? '',
+				perm.chosenColor ?? '',
+				perm.chosenAnchorWord ?? '',
+				perm.doesntUntapNextUntapStep ?? false,
+				perm.isMonstrous ?? false,
 				perm.usedLoyaltyThisTurn,
 				(perm.activatedAbilityIdsThisTurn ?? []).join(','),
 				(perm.goadedByPlayerIds ?? []).join(','),
@@ -1015,7 +1216,7 @@ function buildViewModelStateSignature(gameState: GameState, viewerId: string): s
 			}
 		}
 		for (const c of p.hand) {
-			parts.push(c.instanceId, c.objectVersion ?? 0);
+			parts.push(c.instanceId, c.objectVersion ?? 0, (c.knownToPlayerIds ?? []).join(','));
 		}
 		for (const c of p.graveyard) {
 			parts.push(c.instanceId, c.objectVersion ?? 0);
@@ -1088,29 +1289,8 @@ function computeBoardViewModelInner(
 	const backRow: PermanentView[] = [];
 	const opponentBoardsById: Record<string, PermanentView[]> = {};
 	const playerStatusesById: Record<string, PlayerStatusView> = {};
-
-	// Step 1 (O(B)): Index all active battlefield permanents by instanceId, then link attachments in O(B).
-	const activeById = new Map<string, CardInstance>();
-	for (const player of gameState.players) {
-		playerStatusesById[player.playerId] = extractPlayerStatus(gameState, player);
-		for (const perm of player.battlefield) {
-			if (!perm.phasedOut) {
-				activeById.set(perm.instanceId, perm);
-			}
-		}
-	}
-
-	for (const player of gameState.players) {
-		for (const perm of player.battlefield) {
-			if (!perm.phasedOut && perm.attachedToId) {
-				const host = activeById.get(perm.attachedToId);
-				if (host) {
-					(attachmentsByHostId[perm.attachedToId] ??= []).push(perm);
-					hostByAttachmentId[perm.instanceId] = host;
-				}
-			}
-		}
-	}
+	const topOfLibraryByPlayerId: Record<string, TopOfLibraryView> = {};
+	const revealedOpponentHandsByPlayerId: Record<string, CardInstance[]> = {};
 
 	// Waiting status: players with active pendingPrompts when viewer has none.
 	const viewerHasPrompt = gameState.pendingPrompts.some((pr) => pr.playerId === viewerId);
@@ -1135,6 +1315,70 @@ function computeBoardViewModelInner(
 			gameState.pendingPrompts.length === 0
 	);
 	const viewerCmdIdentity = viewer ? getPlayerCommanderIdentity(viewer) : [];
+
+	const activeHandCandidateIds = new Set<string>();
+	for (const pr of gameState.pendingPrompts) {
+		if (
+			pr.playerId === viewerId &&
+			pr.choice?.kind === 'chooseObjects' &&
+			pr.choice.zone === 'hand'
+		) {
+			for (const cid of pr.choice.candidates) {
+				activeHandCandidateIds.add(cid);
+			}
+		}
+	}
+
+	// Step 1 (O(B)): Index all active battlefield permanents by instanceId, extract player status & visibility, and link attachments in O(B).
+	const activeById = new Map<string, CardInstance>();
+	for (const player of gameState.players) {
+		const { status, topView } = extractPlayerStatus(gameState, player, viewerId, viewerCanActNow);
+		playerStatusesById[player.playerId] = status;
+		topOfLibraryByPlayerId[player.playerId] = topView;
+		if (player.playerId !== viewerId) {
+			const fullHandRevealed = isPlayerHandRevealedToViewer(gameState, player.playerId, viewerId);
+			revealedOpponentHandsByPlayerId[player.playerId] = fullHandRevealed
+				? [...player.hand]
+				: player.hand.filter(
+						(c) =>
+							Boolean(c.knownToPlayerIds?.includes(viewerId)) ||
+							activeHandCandidateIds.has(c.instanceId)
+					);
+		}
+		for (const perm of player.battlefield) {
+			if (!perm.phasedOut) {
+				activeById.set(perm.instanceId, perm);
+			}
+		}
+	}
+
+	for (const player of gameState.players) {
+		for (const perm of player.battlefield) {
+			if (!perm.phasedOut && perm.attachedToId) {
+				const host = activeById.get(perm.attachedToId);
+				if (host) {
+					(attachmentsByHostId[perm.attachedToId] ??= []).push(perm);
+					hostByAttachmentId[perm.instanceId] = host;
+				}
+			}
+		}
+	}
+
+	const activeFlagbearerIds = new Set<string>(getRequiredFlagbearerIdsForActor(gameState, viewerId));
+	let probedOtherActor = false;
+	for (const pl of gameState.players) {
+		if (!pl.lost && pl.playerId !== viewerId) {
+			probedOtherActor = true;
+			for (const fid of getRequiredFlagbearerIdsForActor(gameState, pl.playerId)) {
+				activeFlagbearerIds.add(fid);
+			}
+		}
+	}
+	if (!probedOtherActor) {
+		for (const fid of getRequiredFlagbearerIdsForActor(gameState, '__other_actor_probe__')) {
+			activeFlagbearerIds.add(fid);
+		}
+	}
 
 	const isAttackStepReady =
 		viewerCanActNow &&
@@ -1258,6 +1502,16 @@ function computeBoardViewModelInner(
 					controllerPlayer.ringBearerId === perm.instanceId
 			);
 			const isPrepared = Boolean(perm.isPrepared);
+			const isPrototyped = Boolean(!isFaceDown && (perm.prototyped || perm.copiableState?.prototyped));
+			const regenerationShields = Math.max(0, perm.regenerationShields ?? 0);
+			const isFlagbearer = Boolean(!perm.phasedOut && activeFlagbearerIds.has(perm.instanceId));
+			const chosenDescriptor = !isFaceDown ? formatPermanentChosenDescriptor(perm) : null;
+			const isStolen = Boolean(perm.ownerId && perm.ownerId !== evaluated.controllerId);
+			const ownerName = perm.ownerId
+				? (gameState.players.find((pl) => pl.playerId === perm.ownerId)?.username ?? perm.ownerId)
+				: null;
+			const isFrozen = Boolean(perm.doesntUntapNextUntapStep);
+			const isMonstrous = Boolean(perm.isMonstrous);
 			const protectorId = isBattle ? (perm.protectorId ?? null) : null;
 			const protectorPlayer = protectorId
 				? gameState.players.find((pl) => pl.playerId === protectorId)
@@ -1432,6 +1686,14 @@ function computeBoardViewModelInner(
 				isSaddled,
 				isRingBearer,
 				isPrepared,
+				isPrototyped,
+				regenerationShields,
+				isFlagbearer,
+				chosenDescriptor,
+				isStolen,
+				ownerName,
+				isFrozen,
+				isMonstrous,
 				protectorId,
 				protectorName,
 				canBeAttackedAsBattle,
@@ -1464,6 +1726,7 @@ function computeBoardViewModelInner(
 	// Step 3: Precompute hand, command, graveyard, and exile playability for the viewer, plus exile Haunt links.
 	const handPlayabilityById: Record<string, HandCardPlayabilityView> = {};
 	const commandPlayabilityById: Record<string, boolean> = {};
+	const gyLandPlayOptions: Record<string, LandPlayOption[]> = {};
 	const playableGraveyardIds: string[] = [];
 	const playableExileIds: string[] = [];
 	const playableExileCards: CardInstance[] = [];
@@ -1554,8 +1817,14 @@ function computeBoardViewModelInner(
 
 		if (viewerCanActNow) {
 			for (const gyCard of viewer.graveyard) {
+				const gyLandOpts = getLandPlayOptions(gameState, viewerId, gyCard, 'graveyard');
+				if (gyLandOpts.length > 0) {
+					gyLandPlayOptions[gyCard.instanceId] = gyLandOpts;
+				}
+				const canPlayGyLand = gyLandOpts.length > 0;
 				const canCastGy = getCastOptions(gameState, viewerId, gyCard, 'graveyard').length > 0;
 				const canActGy =
+					!canPlayGyLand &&
 					!canCastGy &&
 					getZoneLegalActivatedAbilities(
 						gameState,
@@ -1564,7 +1833,7 @@ function computeBoardViewModelInner(
 						gyCard,
 						'graveyard'
 					).length > 0;
-				if (canCastGy || canActGy) {
+				if (canPlayGyLand || canCastGy || canActGy) {
 					playableGraveyardIds.push(gyCard.instanceId);
 				}
 			}
@@ -1592,6 +1861,11 @@ function computeBoardViewModelInner(
 		}
 	}
 
+	const companionView = viewer ? (playerStatusesById[viewerId]?.companionView ?? null) : null;
+	const viewerTopView = viewer ? topOfLibraryByPlayerId[viewerId] : undefined;
+	const topOfLibraryView = viewerTopView?.topCard ? viewerTopView : null;
+	const hasPlayableGraveyardActions = playableGraveyardIds.length > 0;
+
 	return {
 		viewerId,
 		dayNight: gameState.dayNight ?? null,
@@ -1607,11 +1881,17 @@ function computeBoardViewModelInner(
 		playerStatusesById,
 		handPlayabilityById,
 		commandPlayabilityById,
+		companionView,
+		gyLandPlayOptions,
+		hasPlayableGraveyardActions,
 		playableGraveyardIds,
 		playableExileIds,
 		playableExileCards,
 		permittedExileCards,
 		exileHauntingTargetNameById,
+		topOfLibraryView,
+		topOfLibraryByPlayerId,
+		revealedOpponentHandsByPlayerId,
 		waitingOnPlayerIds
 	};
 }

@@ -588,12 +588,24 @@
 		);
 	}
 
+	function isLandPlayableZone(
+		zone: CastableZone
+	): zone is 'hand' | 'exile' | 'graveyard' | 'library' {
+		return zone === 'hand' || zone === 'exile' || zone === 'graveyard' || zone === 'library';
+	}
+
 	function isZoneCardPlayableNow(inst: CardInstance, zone: CastableZone): boolean {
 		if (!me || me.lost || gameState.status !== 'active' || !hasPriority || myPrompt || targetingSession) {
 			return false;
 		}
 		if (zone === 'battlefield') {
 			return Boolean(boardVM.permanentsById[inst.instanceId]?.actableSummary.preparationCopyOption);
+		}
+		if (zone === 'library') {
+			return Boolean(
+				boardVM.topOfLibraryView?.canPlayOrCast &&
+					boardVM.topOfLibraryView.topCard?.instanceId === inst.instanceId
+			);
 		}
 		if (zone === 'hand') return Boolean(boardVM.handPlayabilityById[inst.instanceId]?.playable);
 		if (zone === 'command') return Boolean(boardVM.commandPlayabilityById[inst.instanceId]);
@@ -606,10 +618,9 @@
 		const zones = new Set<'front_row' | 'lands_area' | 'stack'>();
 		if (!me || !isZoneCardPlayableNow(inst, fromZone)) return zones;
 
-		const landOpts =
-			fromZone === 'hand' || fromZone === 'exile'
-				? getLandPlayOptions(gameState, me.playerId, inst, fromZone)
-				: [];
+		const landOpts = isLandPlayableZone(fromZone)
+			? getLandPlayOptions(gameState, me.playerId, inst, fromZone)
+			: [];
 		if (landOpts.length > 0) zones.add('lands_area');
 
 		const castOpts = getCastOptions(gameState, me.playerId, inst, fromZone);
@@ -648,10 +659,9 @@
 	const dragDropZoneLabel = $derived.by(() => {
 		if (!draggingCard || !me) return 'DROP TO CAST';
 		const { inst, fromZone } = draggingCard;
-		const landOpts =
-			fromZone === 'hand' || fromZone === 'exile'
-				? getLandPlayOptions(gameState, me.playerId, inst, fromZone)
-				: [];
+		const landOpts = isLandPlayableZone(fromZone)
+			? getLandPlayOptions(gameState, me.playerId, inst, fromZone)
+			: [];
 		const castOpts = getCastOptions(gameState, me.playerId, inst, fromZone);
 		return landOpts.length > 0 && castOpts.length === 0 ? 'DROP TO PLAY LAND' : 'DROP TO CAST';
 	});
@@ -831,10 +841,9 @@
 
 		const zoneAbilities =
 			fromZone === 'hand' || fromZone === 'graveyard' ? getZoneActivatedAbilities(inst, fromZone) : [];
-		const landOptions =
-			fromZone === 'hand' || fromZone === 'exile'
-				? getLandPlayOptions(gameState, me.playerId, inst, fromZone)
-				: [];
+		const landOptions = isLandPlayableZone(fromZone)
+			? getLandPlayOptions(gameState, me.playerId, inst, fromZone)
+			: [];
 		const options = getCastOptions(gameState, me.playerId, inst, fromZone);
 
 		if (landOptions.length === 0 && options.length === 0 && zoneAbilities.length === 0) {
@@ -863,7 +872,7 @@
 		const hasOptionalCosts = options.some((o) => (o.optionalAdditionalCosts?.length ?? 0) > 0);
 		const hasPaymentAids = options.some((o) => (o.paymentAids?.length ?? 0) > 0);
 		if (totalChoices === 1) {
-			if (landOptions.length === 1 && (fromZone === 'hand' || fromZone === 'exile')) {
+			if (landOptions.length === 1 && isLandPlayableZone(fromZone)) {
 				await dispatchGameAction({
 					type: 'play_land',
 					instanceId: inst.instanceId,
@@ -883,7 +892,34 @@
 		}
 
 		activeAutoTapPreview = null;
-		castOptionsModal = { inst, fromZone, options, landOptions, zoneAbilities };
+		castOptionsModal = {
+			inst,
+			fromZone,
+			options,
+			landOptions: fromZone === 'hand' || fromZone === 'exile' ? landOptions : [],
+			zoneAbilities
+		};
+	}
+
+	async function handleCastFromLibrary(inst: CardInstance): Promise<void> {
+		setInspectedCard(inst.card, inst);
+		if (!me || !isZoneCardPlayableNow(inst, 'library')) return;
+		const options = getCastOptions(gameState, me.playerId, inst, 'library');
+		if (options.length === 0) return;
+		const hasOptionalCosts = options.some((o) => (o.optionalAdditionalCosts?.length ?? 0) > 0);
+		const hasPaymentAids = options.some((o) => (o.paymentAids?.length ?? 0) > 0);
+		if (options.length === 1 && !hasOptionalCosts && !hasPaymentAids) {
+			await proceedCastWithOption({ inst, fromZone: 'library', option: options[0] });
+			return;
+		}
+		activeAutoTapPreview = null;
+		castOptionsModal = {
+			inst,
+			fromZone: 'library',
+			options,
+			landOptions: [],
+			zoneAbilities: []
+		};
 	}
 
 	async function proceedCastWithOption(selection: CastOptionSelection): Promise<void> {
@@ -1673,6 +1709,7 @@
 					{#if oppStatus}
 						<OpponentPod
 							opponent={opp} status={oppStatus} boardViews={boardVM.opponentBoardsById[opp.playerId] ?? []}
+							revealedHandCards={boardVM.revealedOpponentHandsByPlayerId[opp.playerId] ?? []}
 							commanderTaxIncrement={gameState.rules.commanderTaxIncrement}
 							activeTurn={activePlayer?.playerId === opp.playerId} hasPriority={priorityPlayer?.playerId === opp.playerId}
 							targetable={isPlayerTargetableNow(opp)} isThinkingBot={thinkingBotId === opp.playerId}
@@ -1774,6 +1811,42 @@
 											</div>
 										</button>
 									{/each}
+									{#if boardVM.companionView}
+										{@const compView = boardVM.companionView}
+										{@const compArt = compView.card.artCropUrl || compView.card.imageUrl || ''}
+										<div class="companion-pedestal-item" data-testid="pedestal-companion-card">
+											<button
+												type="button"
+												class="board-card cmd-card companion-cmd"
+												class:playable={compView.canMoveToHand && !targetingSession && !myPrompt}
+												class:unactable={!compView.canMoveToHand}
+												title={`Designated outside-the-game card: ${compView.card.name} (CR 702.139)`}
+												onmouseenter={() => hoverCard(compView.card)}
+												onmouseleave={() => leaveCard(compView.card)}
+												onclick={() => setInspectedCard(compView.card)}
+											>
+												{#if compArt}
+													<img src={compArt} alt={compView.card.name} />
+												{/if}
+												<div class="bc-overlay">
+													<span class="bc-name">{compView.card.name}</span>
+													<span class="badge companion-tag">🐾 OUTSIDE</span>
+												</div>
+											</button>
+											<button
+												type="button"
+												class="companion-action-btn"
+												data-testid="pedestal-companion-to-hand-btn"
+												disabled={!compView.canMoveToHand || Boolean(targetingSession || myPrompt)}
+												title={compView.canMoveToHand
+													? 'Pay {3} to put your designated card into your hand (CR 116.2g)'
+													: (compView.illegalityReason ?? 'Cannot use special action right now.')}
+												onclick={() => dispatchGameAction({ type: 'companion_to_hand' })}
+											>
+												&#123;3&#125; → Hand
+											</button>
+										</div>
+									{/if}
 								</div>
 							</div>
 
@@ -1825,6 +1898,20 @@
 								targetable={isPlayerTargetableNow(me)} canAcceptDrop={draggingCard !== null}
 								previewManaPoolSpent={activeAutoTapPreview?.manaPoolSpent} previewEnergySpent={activeAutoTapPreview?.energySpent ?? 0}
 								onAvatarClick={handlePlayerAvatarClick} onDropTarget={handleDropOnTarget} onOpenZoneModal={(req) => (zoneModal = req)}
+								onInspectCard={(card, inst) => setInspectedCard(card, inst)}
+								onHoverCard={hoverCard}
+								onLeaveCard={(card) => leaveCard(card)}
+								onCompanionToHand={() => dispatchGameAction({ type: 'companion_to_hand' })}
+								onPlayLandFromLibrary={(inst, faceIndex) =>
+									dispatchGameAction({
+										type: 'play_land',
+										instanceId: inst.instanceId,
+										fromZone: 'library',
+										faceIndex
+									})}
+								onCastFromLibrary={handleCastFromLibrary}
+								onDragTopLibraryCard={(e, inst) => handleCardDragStart(e, inst, 'library')}
+								onDragEndTopLibraryCard={handleCardDragEnd}
 							/>
 						{/if}
 
@@ -2263,6 +2350,43 @@
 	.badge.dungeon-tag { align-self: flex-start; font-size: 0.52rem; font-weight: 700; padding: 1px 4px; border-radius: 3px; background: rgba(120, 220, 232, 0.9); color: #19181a; }
 	.board-card.cmd-card.emblem-cmd { border-color: var(--mp-purple); }
 	.board-card.cmd-card.dungeon-cmd { border-color: var(--mp-cyan); }
+	.board-card.cmd-card.companion-cmd { border-color: var(--mp-purple); }
+	.badge.companion-tag {
+		align-self: flex-start;
+		font-size: 0.5rem;
+		font-weight: 700;
+		padding: 1px 4px;
+		border-radius: 3px;
+		background: rgba(171, 157, 242, 0.92);
+		color: #19181a;
+	}
+	.companion-pedestal-item {
+		display: flex;
+		flex-direction: column;
+		gap: 0.16rem;
+		width: 104px;
+	}
+	.companion-action-btn {
+		width: 100%;
+		background: rgba(255, 216, 102, 0.18);
+		color: #ffd866;
+		border: 1px solid rgba(255, 216, 102, 0.7);
+		border-radius: 4px;
+		padding: 0.1rem 0.25rem;
+		font-family: inherit;
+		font-size: 0.58rem;
+		font-weight: 800;
+		cursor: pointer;
+		transition: background 0.14s ease, color 0.14s ease, opacity 0.14s ease;
+	}
+	.companion-action-btn:hover:not(:disabled) {
+		background: #ffd866;
+		color: #19181a;
+	}
+	.companion-action-btn:disabled {
+		opacity: 0.4;
+		cursor: not-allowed;
+	}
 
 	.division-modal-backdrop {
 		position: fixed;

@@ -12,6 +12,7 @@
 		buildBoardViewModel,
 		DUNGEON_ART_URI,
 		EMBLEM_ART_URI,
+		formatPermanentChosenDescriptor,
 		resolveExileHauntingTargetName
 	} from './boardViewModel.ts';
 	import { FACE_DOWN_ART_URI } from './promptViewModel.ts';
@@ -126,6 +127,51 @@
 			? inspectedPermView.hasEnduringStory
 			: Boolean(inspectedInstance?.hasEnduringStory)
 	);
+	const inspectorIsPrototyped = $derived(
+		inspectedPermView
+			? inspectedPermView.isPrototyped
+			: Boolean(
+					inspectedInstance &&
+						!inspectedInstance.isFaceDown &&
+						(inspectedInstance.prototyped || inspectedInstance.copiableState?.prototyped)
+				)
+	);
+	const inspectorRegenShields = $derived(
+		inspectedPermView
+			? inspectedPermView.regenerationShields
+			: Math.max(0, inspectedInstance?.regenerationShields ?? 0)
+	);
+	const inspectorIsFlagbearer = $derived(inspectedPermView?.isFlagbearer ?? false);
+	const inspectorChosenDescriptor = $derived.by(() => {
+		if (inspectedPermView) return inspectedPermView.chosenDescriptor;
+		if (!inspectedInstance || inspectedInstance.isFaceDown) return null;
+		return formatPermanentChosenDescriptor(inspectedInstance);
+	});
+	const inspectorIsStolen = $derived(
+		inspectedPermView
+			? inspectedPermView.isStolen
+			: Boolean(
+					inspectedInstance &&
+						inspectedInstance.ownerId &&
+						inspectedInstance.ownerId !== inspectedInstance.controllerId
+				)
+	);
+	const inspectorOwnerName = $derived.by(() => {
+		if (inspectedPermView) return inspectedPermView.ownerName;
+		if (!inspectedInstance?.ownerId) return null;
+		return (
+			gameState?.players.find((p) => p.playerId === inspectedInstance.ownerId)?.username ??
+			inspectedInstance.ownerId
+		);
+	});
+	const inspectorIsFrozen = $derived(
+		inspectedPermView
+			? inspectedPermView.isFrozen
+			: Boolean(inspectedInstance?.doesntUntapNextUntapStep)
+	);
+	const inspectorIsMonstrous = $derived(
+		inspectedPermView ? inspectedPermView.isMonstrous : Boolean(inspectedInstance?.isMonstrous)
+	);
 	const hasAnyStatusTags = $derived(
 		Boolean(
 			inspectedInstance &&
@@ -145,7 +191,14 @@
 					inspectorIsGoaded ||
 					inspectorIsHarnessed ||
 					inspectorIsRenowned ||
-					inspectorHasEnduringStory)
+					inspectorHasEnduringStory ||
+					inspectorIsPrototyped ||
+					inspectorRegenShields > 0 ||
+					inspectorIsFlagbearer ||
+					inspectorChosenDescriptor !== null ||
+					inspectorIsStolen ||
+					inspectorIsFrozen ||
+					inspectorIsMonstrous)
 		)
 	);
 </script>
@@ -270,6 +323,41 @@
 						{/if}
 						{#if inspectorHasEnduringStory}
 							<span class="inspector-tag gold" data-testid="inspector-storied">📜 Storied</span>
+						{/if}
+						{#if inspectorIsPrototyped}
+							<span class="inspector-tag cyan" data-testid="inspector-prototyped">
+								⚙ Prototyped
+							</span>
+						{/if}
+						{#if inspectorRegenShields > 0}
+							<span class="inspector-tag green" data-testid="inspector-regen-shields">
+								🛡 Regen ×{inspectorRegenShields}
+							</span>
+						{/if}
+						{#if inspectorIsFlagbearer}
+							<span class="inspector-tag gold" data-testid="inspector-flagbearer">
+								🚩 Flagbearer
+							</span>
+						{/if}
+						{#if inspectorChosenDescriptor !== null}
+							<span class="inspector-tag purple" data-testid="inspector-chosen-descriptor">
+								🎯 Chosen: {inspectorChosenDescriptor}
+							</span>
+						{/if}
+						{#if inspectorIsStolen}
+							<span class="inspector-tag gold" data-testid="inspector-stolen">
+								⇄ Controlled{inspectorOwnerName ? ` (Owner: ${inspectorOwnerName})` : ''}
+							</span>
+						{/if}
+						{#if inspectorIsFrozen}
+							<span class="inspector-tag cyan" data-testid="inspector-frozen">
+								❄ Won't Untap
+							</span>
+						{/if}
+						{#if inspectorIsMonstrous}
+							<span class="inspector-tag green" data-testid="inspector-monstrous">
+								🦖 Monstrous
+							</span>
 						{/if}
 					</div>
 				{/if}

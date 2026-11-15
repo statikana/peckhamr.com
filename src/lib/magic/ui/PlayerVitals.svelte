@@ -1,7 +1,13 @@
 <script lang="ts">
 	import type { PlayerIncomingForecast } from '../engine.ts';
 	import ManaSymbol from '../ManaSymbol.svelte';
-	import type { CardInstance, ManaColor, PlayerGameState, TargetRef } from '../types.ts';
+	import type {
+		CardInstance,
+		ManaColor,
+		PlayerGameState,
+		ScryfallCard,
+		TargetRef
+	} from '../types.ts';
 	import type { PlayerStatusView } from './boardViewModel.ts';
 
 	interface ZoneModalRequest {
@@ -24,6 +30,14 @@
 		onAvatarClick?: (player: PlayerGameState) => void;
 		onDropTarget?: (e: DragEvent, target: TargetRef) => void;
 		onOpenZoneModal?: (req: ZoneModalRequest) => void;
+		onInspectCard?: (card: ScryfallCard, inst?: CardInstance) => void;
+		onHoverCard?: (card: ScryfallCard, inst?: CardInstance) => void;
+		onLeaveCard?: (card: ScryfallCard) => void;
+		onCompanionToHand?: () => void | Promise<void>;
+		onPlayLandFromLibrary?: (inst: CardInstance, faceIndex?: number) => void | Promise<void>;
+		onCastFromLibrary?: (inst: CardInstance) => void | Promise<void>;
+		onDragTopLibraryCard?: (e: DragEvent, inst: CardInstance) => void;
+		onDragEndTopLibraryCard?: () => void;
 	}
 
 	let {
@@ -39,7 +53,15 @@
 		previewEnergySpent = 0,
 		onAvatarClick,
 		onDropTarget,
-		onOpenZoneModal
+		onOpenZoneModal,
+		onInspectCard,
+		onHoverCard,
+		onLeaveCard,
+		onCompanionToHand,
+		onPlayLandFromLibrary,
+		onCastFromLibrary,
+		onDragTopLibraryCard,
+		onDragEndTopLibraryCard
 	}: Props = $props();
 
 	const MANA_ORB_COLORS: readonly ManaColor[] = ['W', 'U', 'B', 'R', 'G', 'C'];
@@ -368,6 +390,81 @@
 				✨ Exile Play ({permittedExileCards.length})
 			</button>
 		{/if}
+		{#if status.companionView}
+			{@const compView = status.companionView}
+			<div class="vitals-special-strip" data-testid="vitals-companion-strip">
+				<button
+					type="button"
+					class="vitals-card-link"
+					title={`Designated outside-the-game card: ${compView.card.name} (CR 702.139)`}
+					onmouseenter={() => onHoverCard?.(compView.card)}
+					onmouseleave={() => onLeaveCard?.(compView.card)}
+					onclick={() => onInspectCard?.(compView.card)}
+				>
+					🐾 {compView.card.name}
+				</button>
+				{#if onCompanionToHand}
+					<button
+						type="button"
+						class="vitals-mini-action"
+						data-testid="vitals-companion-to-hand-btn"
+						disabled={!compView.canMoveToHand}
+						title={compView.canMoveToHand
+							? 'Pay {3} to put your designated card into your hand (CR 116.2g)'
+							: (compView.illegalityReason ?? 'Cannot use special action right now.')}
+						onclick={() => onCompanionToHand?.()}
+					>
+						&#123;3&#125; → Hand
+					</button>
+				{/if}
+			</div>
+		{/if}
+		{#if status.topOfLibraryView?.topCard}
+			{@const topLibView = status.topOfLibraryView}
+			{@const topCard = topLibView.topCard!}
+			<div
+				class="vitals-special-strip"
+				class:has-playable={topLibView.canPlayOrCast}
+				data-testid="vitals-top-of-library"
+			>
+				<button
+					type="button"
+					class="vitals-card-link"
+					draggable={topLibView.canPlayOrCast}
+					data-game-id={topCard.instanceId}
+					title={`Top of library (${topLibView.visibility === 'revealed' ? 'Revealed' : topLibView.visibility === 'look' ? 'Lookable' : 'Known'} — CR 401.5): ${topCard.card.name}`}
+					onmouseenter={() => onHoverCard?.(topCard.card, topCard)}
+					onmouseleave={() => onLeaveCard?.(topCard.card)}
+					onclick={() => onInspectCard?.(topCard.card, topCard)}
+					ondragstart={(e) => onDragTopLibraryCard?.(e, topCard)}
+					ondragend={() => onDragEndTopLibraryCard?.()}
+				>
+					📖 Top: {topCard.card.name}
+				</button>
+				{#each topLibView.libraryLandPlayOptions as landOpt (landOpt.faceIndex)}
+					<button
+						type="button"
+						class="vitals-mini-action"
+						data-testid="vitals-top-lib-play-land-btn"
+						onclick={() => onPlayLandFromLibrary?.(topCard, landOpt.faceIndex)}
+					>
+						{topLibView.libraryLandPlayOptions.length > 1
+							? `Play (${landOpt.label})`
+							: 'Play Land'}
+					</button>
+				{/each}
+				{#if topLibView.libraryCastOptions.length > 0}
+					<button
+						type="button"
+						class="vitals-mini-action"
+						data-testid="vitals-top-lib-cast-btn"
+						onclick={() => onCastFromLibrary?.(topCard)}
+					>
+						Cast
+					</button>
+				{/if}
+			</div>
+		{/if}
 	</div>
 </div>
 
@@ -664,6 +761,60 @@
 	}
 	.exile-playable-chip {
 		grid-column: 1 / -1;
+	}
+	.vitals-special-strip {
+		grid-column: 1 / -1;
+		display: flex;
+		align-items: center;
+		gap: 0.2rem;
+		background: var(--mp-bg);
+		border: 1px solid var(--mp-border-strong);
+		border-radius: 4px;
+		padding: 0.1rem 0.22rem;
+		min-width: 0;
+	}
+	.vitals-special-strip.has-playable {
+		border-color: #ffd866;
+		box-shadow: 0 0 6px rgba(255, 216, 102, 0.3);
+	}
+	.vitals-card-link {
+		flex: 1;
+		min-width: 0;
+		background: transparent;
+		border: none;
+		color: var(--mp-cyan);
+		font-family: inherit;
+		font-size: 0.6rem;
+		font-weight: 700;
+		text-align: left;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		padding: 0;
+		cursor: pointer;
+	}
+	.vitals-card-link:hover {
+		color: #ffd866;
+	}
+	.vitals-mini-action {
+		flex-shrink: 0;
+		background: rgba(255, 216, 102, 0.16);
+		color: #ffd866;
+		border: 1px solid rgba(255, 216, 102, 0.65);
+		border-radius: 3px;
+		padding: 0.04rem 0.28rem;
+		font-family: inherit;
+		font-size: 0.56rem;
+		font-weight: 800;
+		cursor: pointer;
+	}
+	.vitals-mini-action:hover:not(:disabled) {
+		background: #ffd866;
+		color: #19181a;
+	}
+	.vitals-mini-action:disabled {
+		opacity: 0.42;
+		cursor: not-allowed;
 	}
 
 	.incoming-dmg-layover {

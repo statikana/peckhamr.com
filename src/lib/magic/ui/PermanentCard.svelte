@@ -58,6 +58,13 @@
 		stackOffsetIndex ??
 			Math.min(3, view.attachments.length + Math.max(0, view.mergedComponentNames.length - 1))
 	);
+	const compactChosenLabel = $derived(
+		view.chosenDescriptor
+			? view.chosenDescriptor.length > 12
+				? `${view.chosenDescriptor.slice(0, 11)}…`
+				: view.chosenDescriptor
+			: null
+	);
 
 	function counterToneClass(entry: CounterBadgeEntry): string {
 		switch (entry.badgeKind) {
@@ -105,6 +112,9 @@
 	class:is-paired={view.pairedPartnerName !== null}
 	class:is-mounted={view.isSaddled}
 	class:is-ring-bearer={view.isRingBearer}
+	class:is-prototyped={view.isPrototyped}
+	class:is-stolen={view.isStolen}
+	class:is-frozen={view.isFrozen}
 	class:is-battle={view.isBattle}
 	class:has-stack={effectiveStackDepth > 0}
 	class:attacking={Boolean(attackerForecast)}
@@ -302,6 +312,71 @@
 					title="Renowned (CR 702.112)"
 				>
 					★ RENOWNED
+				</span>
+			{/if}
+			{#if view.isPrototyped}
+				<span
+					class="badge cyan"
+					data-testid="prototype-badge"
+					title="Prototyped permanent (CR 719)"
+				>
+					⚙ PROTO
+				</span>
+			{/if}
+			{#if view.regenerationShields > 0}
+				<span
+					class="badge green"
+					data-testid="regen-shield-badge"
+					title="Regeneration shields active: {view.regenerationShields} (CR 701.19)"
+				>
+					🛡 ×{view.regenerationShields}
+				</span>
+			{/if}
+			{#if view.isFlagbearer}
+				<span
+					class="badge gold"
+					data-testid="flagbearer-badge"
+					title="Opponents must choose at least one Flagbearer target if able (CR 115.1)"
+				>
+					🚩 FLAG
+				</span>
+			{/if}
+			{#if view.chosenDescriptor !== null && compactChosenLabel}
+				<span
+					class="badge purple"
+					data-testid="chosen-descriptor-badge"
+					title="Chosen value: {view.chosenDescriptor}"
+				>
+					🎯 {compactChosenLabel}
+				</span>
+			{/if}
+			{#if view.isStolen}
+				<span
+					class="badge amber"
+					data-testid="stolen-badge"
+					title={view.ownerName
+						? `Controlled by another player (Owner: ${view.ownerName})`
+						: 'Controlled by another player'}
+				>
+					⇄
+				</span>
+			{/if}
+			{#if view.isFrozen}
+				<span
+					class="badge cyan"
+					data-testid="frozen-badge"
+					title="Doesn't untap during controller's next untap step"
+				>
+					❄
+				</span>
+			{/if}
+			{#if view.isMonstrous}
+				<span
+					class="badge green"
+					data-testid="monstrous-badge"
+					title="Monstrous permanent (CR 701.37)"
+				>
+					🦖 MONST
 				</span>
 			{/if}
 			{#if view.isSaddled}
@@ -514,6 +589,71 @@
 						title="Renowned (CR 702.112)"
 					>
 						★ {isCompact ? 'REN' : 'Renowned'}
+					</span>
+				{/if}
+				{#if view.isPrototyped}
+					<span
+						class="badge cyan"
+						data-testid="prototype-badge"
+						title="Prototyped permanent (CR 719)"
+					>
+						{#if isCompact}⚙ PROTO{:else}⚙ Prototype{/if}
+					</span>
+				{/if}
+				{#if view.regenerationShields > 0}
+					<span
+						class="badge green"
+						data-testid="regen-shield-badge"
+						title="Regeneration shields active: {view.regenerationShields} (CR 701.19)"
+					>
+						🛡 Regen ×{view.regenerationShields}
+					</span>
+				{/if}
+				{#if view.isFlagbearer}
+					<span
+						class="badge gold"
+						data-testid="flagbearer-badge"
+						title="Opponents must choose at least one Flagbearer target if able (CR 115.1)"
+					>
+						{#if isCompact}🚩 FLAG{:else}🚩 Flagbearer{/if}
+					</span>
+				{/if}
+				{#if view.chosenDescriptor !== null && compactChosenLabel}
+					<span
+						class="badge purple"
+						data-testid="chosen-descriptor-badge"
+						title="Chosen value: {view.chosenDescriptor}"
+					>
+						🎯 {compactChosenLabel}
+					</span>
+				{/if}
+				{#if view.isStolen}
+					<span
+						class="badge amber"
+						data-testid="stolen-badge"
+						title={view.ownerName
+							? `Controlled by another player (Owner: ${view.ownerName})`
+							: 'Controlled by another player'}
+					>
+						⇄ {isCompact ? 'STL' : 'Stolen'}
+					</span>
+				{/if}
+				{#if view.isFrozen}
+					<span
+						class="badge cyan"
+						data-testid="frozen-badge"
+						title="Doesn't untap during controller's next untap step"
+					>
+						❄ {isCompact ? 'FRZ' : 'Frozen'}
+					</span>
+				{/if}
+				{#if view.isMonstrous}
+					<span
+						class="badge green"
+						data-testid="monstrous-badge"
+						title="Monstrous permanent (CR 701.37)"
+					>
+						🦖 {isCompact ? 'MONST' : 'Monstrous'}
 					</span>
 				{/if}
 				{#if view.isSaddled}
@@ -960,6 +1100,19 @@
 	.board-card.is-suspected,
 	.mini-card.is-suspected {
 		border-color: rgba(255, 97, 136, 0.78);
+	}
+	.board-card.is-prototyped,
+	.mini-card.is-prototyped {
+		border-color: rgba(120, 220, 232, 0.85);
+		box-shadow: inset 0 0 6px rgba(120, 220, 232, 0.35);
+	}
+	.board-card.is-stolen,
+	.mini-card.is-stolen {
+		border-color: rgba(245, 158, 11, 0.82);
+	}
+	.board-card.is-frozen,
+	.mini-card.is-frozen {
+		border-color: rgba(120, 220, 232, 0.68);
 	}
 	.badge.ring-bearer {
 		box-shadow: 0 0 6px rgba(255, 216, 102, 0.7);
