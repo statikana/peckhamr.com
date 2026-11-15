@@ -171,7 +171,13 @@ export function buildCostChoiceRequest(
 }
 
 /** Infers the zone of candidate objects for a cost question across a player's zones. */
-export function inferObjectsZone(player: PlayerGameState, candidateIds: string[]): ZoneType {
+export function inferObjectsZone(
+	player: PlayerGameState,
+	candidateIds: string[],
+	// --- Track P17b ---
+	state?: GameState
+	// --- End Track P17b ---
+): ZoneType {
 	const first = candidateIds[0];
 	if (!first) return 'battlefield';
 	if (player.hand.some((c) => c.instanceId === first)) return 'hand';
@@ -179,6 +185,16 @@ export function inferObjectsZone(player: PlayerGameState, candidateIds: string[]
 	if (player.exile.some((c) => c.instanceId === first)) return 'exile';
 	if (player.library.some((c) => c.instanceId === first)) return 'library';
 	if (player.command.some((c) => c.instanceId === first)) return 'command';
+	// --- Track P17b ---
+	if (state) {
+		if (state.stack.some((s) => s.id === first || s.sourceInstanceId === first)) return 'stack';
+		for (const p of state.players) {
+			if (p.playerId === player.playerId) continue;
+			if (p.graveyard.some((c) => c.instanceId === first)) return 'graveyard';
+			if (p.exile.some((c) => c.instanceId === first)) return 'exile';
+		}
+	}
+	// --- End Track P17b ---
 	return 'battlefield';
 }
 

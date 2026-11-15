@@ -19,6 +19,9 @@ import type {
 	Amount,
 	CardDefinition,
 	Condition,
+	// --- Track P17b ---
+	CostDef,
+	// --- End Track P17b ---
 	EventKind,
 	ObjectFilter,
 	PlayerFilter,
@@ -46,6 +49,9 @@ import {
 	evaluateAmount,
 	evaluateCondition,
 	matchesObjectFilter,
+	// --- Track P17b ---
+	objectManaValue,
+	// --- End Track P17b ---
 	type FilterContext
 } from './objectFilter.ts';
 
@@ -734,12 +740,74 @@ export function collectStaticAltCastOptions(
 		// --- Track P14 ---
 		if (ab.static.allowedZones) {
 			if (!ab.static.allowedZones.includes(fromZone)) continue;
+			// --- Track P17b ---
+			if (ab.static.requireZonePermission && !hasZonePermission) continue;
+			// --- End Track P17b ---
 		} else if (!hasZonePermission) {
 			continue;
 		}
 		// --- End Track P14 ---
+		// --- Track P17b ---
+		if (
+			ab.static.duringYourTurnOnly &&
+			state.players[state.activePlayerIndex]?.playerId !== actor.playerId
+		) {
+			continue;
+		}
+		const selfSlotKey = ab.static.onceEachTurn
+			? `p17b_alt_self:${inst.instanceId}:${inst.objectVersion ?? 1}:${i}`
+			: undefined;
+		if (selfSlotKey && actor.usedStaticPlaySlotsThisTurn?.includes(selfSlotKey)) continue;
+		// --- End Track P17b ---
 		if (ab.static.condition && !evaluateCondition(ab.static.condition, selfCtx)) continue;
 		const altMana = ab.static.manaCost;
+		// --- Track P17b: additional-only self permissions (flash + {N}, graveyard + discard/life/per-metric) ---
+		if (ab.static.additionalOnly) {
+			if (!view.manaCost && !view.types.includes('Land')) continue;
+			let extraMana = altMana && altMana !== '{0}' ? altMana : '';
+			if (ab.static.additionalPerMetric && extraMana) {
+				const mult = Math.max(0, evaluateAmount(ab.static.additionalPerMetric, selfCtx));
+				extraMana = mult > 0 ? extraMana.repeat(mult) : '';
+			}
+			const existingMandatory =
+				activeAbilityDefs(card, stackFaceOpts)
+					.filter(
+						(a): a is Extract<AbilityDef, { kind: 'static' }> =>
+							a.kind === 'static' && a.static.k === 'additionalCastCost'
+					)
+					.flatMap((a) => (a.static.k === 'additionalCastCost' ? a.static.costs : [])) ?? [];
+			const spellAb = activeAbilityDefs(card, stackFaceOpts).find(
+				(a): a is Extract<AbilityDef, { kind: 'spell' }> => a.kind === 'spell'
+			);
+			const allMandatory: CostDef[] = [
+				...(spellAb?.additionalCosts ?? []),
+				...existingMandatory,
+				...(ab.static.costDefs ?? [])
+			];
+			const dispCost = `${view.manaCost || '{0}'}${extraMana}`;
+			out.push({
+				id: `static_alt_self_${faceIndex ?? 0}_${i}`,
+				label: `Cast ${view.name} (${dispCost})`,
+				costDisplay: dispCost,
+				fromZone,
+				permission: 'static_alt',
+				...(faceIndex !== undefined ? { faceIndex } : {}),
+				...(selfSlotKey ? { staticPlaySlotKey: selfSlotKey } : {}),
+				baseCost: { kind: 'printed' },
+				...(allMandatory.length > 0 ? { mandatoryAdditionalCosts: allMandatory } : {}),
+				timing: ab.static.grantFlash ? 'instant_only' : 'default',
+				spellMods: {
+					...(ab.static.enterCounters ? { altCastEnterCounters: ab.static.enterCounters } : {}),
+					...(extraMana ? { additionalManaCost: extraMana } : {})
+				},
+				choosesX:
+					choosesX ||
+					Boolean(allMandatory.length > 0 && JSON.stringify(allMandatory).includes('"k":"x"')),
+				requiresTarget
+			});
+			continue;
+		}
+		// --- End Track P17b ---
 		// --- Track P14: CR 107.3b — alternative cost chooses X only if the alternative cost itself mentions X ---
 		const altChoosesX =
 			/\{X\}/i.test(altMana) ||
@@ -752,13 +820,20 @@ export function collectStaticAltCastOptions(
 			fromZone,
 			permission: 'static_alt',
 			...(faceIndex !== undefined ? { faceIndex } : {}),
+			// --- Track P17b ---
+			...(selfSlotKey ? { staticPlaySlotKey: selfSlotKey } : {}),
+			// --- End Track P17b ---
 			baseCost: {
 				kind: 'alternative',
 				manaCost: altMana,
 				...(ab.static.costDefs?.length ? { costDefs: ab.static.costDefs } : {})
 			},
-			timing: 'default',
-			spellMods: {},
+			// --- Track P17b ---
+			timing: ab.static.grantFlash ? 'instant_only' : 'default',
+			spellMods: ab.static.enterCounters
+				? { altCastEnterCounters: ab.static.enterCounters }
+				: {},
+			// --- End Track P17b ---
 			choosesX: altChoosesX,
 			requiresTarget
 		});
@@ -770,38 +845,133 @@ export function collectStaticAltCastOptions(
 		state,
 		(sourcePerm, controllerId, sourceName, st) => {
 			if (st.k !== 'altCastPermission' || st.affects === 'self') return;
-			if (controllerId !== actor.playerId) return;
+			// --- Track P17b ---
+			if (!st.anyPlayer && controllerId !== actor.playerId) return;
+			if (
+				st.duringYourTurnOnly &&
+				state.players[state.activePlayerIndex]?.playerId !== actor.playerId
+			) {
+				return;
+			}
+			const thisExtIdx = extIdx++;
+			const slotKey = st.onceEachTurn
+				? `p17b_alt:${sourcePerm.instanceId}:${sourcePerm.objectVersion ?? 1}:${thisExtIdx}`
+				: undefined;
+			if (slotKey && actor.usedStaticPlaySlotsThisTurn?.includes(slotKey)) return;
+			// --- End Track P17b ---
 			// --- Track P14 ---
 			if (st.allowedZones) {
 				if (!st.allowedZones.includes(fromZone)) return;
+				// --- Track P17b ---
+				if (st.requireZonePermission && !hasZonePermission) return;
+				// --- End Track P17b ---
 			} else if (!hasZonePermission) {
 				return;
 			}
 			// --- End Track P14 ---
 			const ctx: FilterContext = {
 				state,
-				controllerId,
+				controllerId: st.anyPlayer ? actor.playerId : controllerId,
 				source: sourcePerm,
 				zone: 'stack'
 			};
 			if (st.condition && !evaluateCondition(st.condition, ctx)) return;
 			if (!matchesObjectFilter(stackProxy, st.affects.filter, ctx)) return;
-			const altMana = st.manaCost;
-			const altChoosesX = /\{X\}/i.test(altMana);
+			// --- Track P17b ---
+			if (st.maxManaValueBySelfCounters) {
+				const maxMv = sourcePerm.counters[st.maxManaValueBySelfCounters] || 0;
+				if (objectManaValue(state, stackProxy) > maxMv) return;
+			}
+			if (st.maxManaValueByControlledCount) {
+				const maxMv = actor.battlefield.filter(
+					(perm) =>
+						!perm.phasedOut &&
+						matchesObjectFilter(
+							perm,
+							{ ...st.maxManaValueByControlledCount!, controller: 'you' },
+							ctx
+						)
+				).length;
+				if (objectManaValue(state, stackProxy) > maxMv) return;
+			}
+			const altMana = st.dynamicManaCostFromMV
+				? `{${Math.max(0, objectManaValue(state, stackProxy))}}`
+				: st.manaCost;
+			const extraCostDefs: CostDef[] = [
+				...(st.payLifeEqualToSpellMV
+					? [
+							{
+								k: 'payLife' as const,
+								amount: { k: 'const' as const, n: Math.max(0, objectManaValue(state, stackProxy)) }
+							}
+						]
+					: []),
+				...(st.costDefs ?? [])
+			];
+			if (st.additionalOnly) {
+				if (!view.manaCost && !view.types.includes('Land')) return;
+				const extraMana = altMana && altMana !== '{0}' ? altMana : '';
+				const cardMandatory =
+					activeAbilityDefs(card, stackFaceOpts)
+						.filter(
+							(a): a is Extract<AbilityDef, { kind: 'static' }> =>
+								a.kind === 'static' && a.static.k === 'additionalCastCost'
+						)
+						.flatMap((a) => (a.static.k === 'additionalCastCost' ? a.static.costs : [])) ?? [];
+				const spellAb = activeAbilityDefs(card, stackFaceOpts).find(
+					(a): a is Extract<AbilityDef, { kind: 'spell' }> => a.kind === 'spell'
+				);
+				const allMandatory: CostDef[] = [
+					...(spellAb?.additionalCosts ?? []),
+					...cardMandatory,
+					...extraCostDefs
+				];
+				const dispCost = `${view.manaCost || '{0}'}${extraMana}`;
+				out.push({
+					id: `static_alt_ext_${sourcePerm.instanceId}_${thisExtIdx}`,
+					label: `Cast via ${sourceName} (${dispCost})`,
+					costDisplay: dispCost,
+					fromZone,
+					permission: 'static_alt',
+					...(faceIndex !== undefined ? { faceIndex } : {}),
+					...(slotKey ? { staticPlaySlotKey: slotKey } : {}),
+					baseCost: { kind: 'printed' },
+					...(allMandatory.length > 0 ? { mandatoryAdditionalCosts: allMandatory } : {}),
+					timing: st.grantFlash ? 'instant_only' : 'default',
+					spellMods: {
+						...(st.enterCounters ? { altCastEnterCounters: st.enterCounters } : {}),
+						...(extraMana ? { additionalManaCost: extraMana } : {})
+					},
+					choosesX:
+						choosesX ||
+						Boolean(allMandatory.length > 0 && JSON.stringify(allMandatory).includes('"k":"x"')),
+					requiresTarget
+				});
+				return;
+			}
+			const altChoosesX =
+				/\{X\}/i.test(altMana) ||
+				Boolean(extraCostDefs.length > 0 && JSON.stringify(extraCostDefs).includes('"k":"x"'));
+			// --- End Track P17b ---
 			out.push({
-				id: `static_alt_ext_${sourcePerm.instanceId}_${extIdx++}`,
+				id: `static_alt_ext_${sourcePerm.instanceId}_${thisExtIdx}`,
 				label: `Pay ${altMana || '{0}'} (${sourceName})`,
 				costDisplay: altMana || '{0}',
 				fromZone,
 				permission: 'static_alt',
 				...(faceIndex !== undefined ? { faceIndex } : {}),
+				// --- Track P17b ---
+				...(slotKey ? { staticPlaySlotKey: slotKey } : {}),
+				// --- End Track P17b ---
 				baseCost: {
 					kind: 'alternative',
 					manaCost: altMana,
-					...(st.costDefs?.length ? { costDefs: st.costDefs } : {})
+					...(extraCostDefs.length > 0 ? { costDefs: extraCostDefs } : {})
 				},
-				timing: 'default',
-				spellMods: {},
+				// --- Track P17b ---
+				timing: st.grantFlash ? 'instant_only' : 'default',
+				spellMods: st.enterCounters ? { altCastEnterCounters: st.enterCounters } : {},
+				// --- End Track P17b ---
 				choosesX: altChoosesX,
 				requiresTarget
 			});

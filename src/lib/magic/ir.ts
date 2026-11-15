@@ -534,6 +534,22 @@ export interface ObjectFilter {
 	/** CR 702.38 / 702.76: matches cards/permanents sharing at least one creature subtype with `source`. */
 	sharesCreatureTypeWithSelf?: boolean;
 	// --- End Track P15 ---
+	// --- Track P17b ---
+	/** CR 700.9: matches modified creatures (equipped, enchanted by an Aura you control, or having any counter). */
+	modified?: boolean;
+	/** Stack filter: matches spells whose bargain optional cost was paid (`kickedTags.includes('bargain')`). */
+	bargainedSpell?: boolean;
+	/** Stack filter: matches spells that target `'attachedTo'` ("spells that target enchanted/equipped creature"). */
+	targetsAttached?: boolean;
+	/** Stack filter: matches spells that target `'you'` OR a permanent matching `targetsYouOrFilter` ("that target you or a permanent you control"). */
+	targetsYouOrFilter?: ObjectFilter;
+	/** Stack filter: matches spells sharing at least one card type with a card exiled with `source` (CR 607.2a). */
+	sharesCardTypeWithExiled?: boolean;
+	/** Hand/zone filter: matches cards sharing at least one color with `ctx.spellCard` when paying an alternative cost. */
+	sharesColorWithSpell?: boolean;
+	/** CR 205.3m: matches objects having ALL listed subtypes simultaneously (e.g. `['Eldrazi', 'Scion']`, `['Eldrazi', 'Spawn']`). */
+	allSubtypes?: string[];
+	// --- End Track P17b ---
 }
 
 export interface Compare {
@@ -677,19 +693,66 @@ export type Amount =
 	/** CR 702.179f: player's current speed (0 if player has no speed). */
 	| { k: 'playerSpeed'; player: PlayerRef }
 	/** CR 702.69a: number of permanents put into a graveyard from the battlefield so far this turn. */
-	| { k: 'gravestormCount' };
+	| { k: 'gravestormCount' }
 	// --- End Track P15 ---
+	// --- Track P17b ---
+	| {
+			k: 'p17bMetric';
+			metric:
+				| 'distinctManaValuesInGraveyard'
+				| 'distinctCreatureTypesControlled'
+				| 'distinctLandNamesControlled'
+				| 'distinctNamesControlled'
+				| 'countersAmongPlayersAndPermanents'
+				| 'lifeGainedThisTurn'
+				| 'startingLifeDifference'
+				| 'creaturesAttackedWithThisTurn'
+				| 'creaturesAttackedTotalThisTurn'
+				| 'opponentsDealtDamageThisTurn'
+				| 'commanderColorIdentityCount'
+				| 'landsOpponentControlsProducingColorless'
+				| 'sameNameInGraveyardAsSpell'
+				| 'targetsCount'
+				| 'targetsMatchingCount'
+				| 'targetColorsCount'
+				| 'targetCounterCount'
+				| 'targetPower';
+			filter?: ObjectFilter;
+			counter?: CounterType | 'any';
+	  };
+	// --- End Track P17b ---
 
 // ---- Costs ----------------------------------------------------------------------------------
 
 export type CostDef =
 	| { k: 'mana'; cost: string }
 	| { k: 'tapSelf' }
-	| { k: 'untapSelf' }
-	| { k: 'tapOthers'; count: Amount; filter: ObjectFilter }
-	| { k: 'sacrifice'; count: Amount; filter: ObjectFilter | 'self' }
-	| { k: 'discard'; count: Amount; filter?: ObjectFilter | 'self'; random?: boolean }
-	| { k: 'payLife'; amount: Amount }
+	// --- Track P17b: optional viaSymbol flag (default true for {Q}; false for spelled-out "Untap ~", CR 302.6) ---
+	| { k: 'untapSelf'; viaSymbol?: boolean }
+	| {
+			k: 'tapOthers';
+			count: Amount;
+			filter: ObjectFilter;
+			shareCreatureType?: boolean;
+	  }
+	| {
+			k: 'sacrifice';
+			count: Amount;
+			filter: ObjectFilter | 'self';
+			sacrificeAll?: boolean;
+			halfRoundedUp?: boolean;
+			attachedCreature?: boolean;
+	  }
+	| {
+			k: 'discard';
+			count: Amount;
+			filter?: ObjectFilter | 'self';
+			random?: boolean;
+			sameNamePair?: boolean;
+			sameNameAsControlledFilter?: ObjectFilter;
+	  }
+	| { k: 'payLife'; amount: Amount; halfLifeRoundedUp?: boolean }
+	// --- End Track P17b ---
 	// --- Track P15: widened loyalty for +X / -X loyalty abilities (CR 606.4) ---
 	| { k: 'loyalty'; delta: number; isX?: boolean; sign?: '+' | '-' }
 	// --- End Track P15 ---
@@ -703,11 +766,23 @@ export type CostDef =
 			among?: boolean;
 	  }
 	// --- End Track P11 ---
-	| { k: 'exileFrom'; zone: ZoneType; count: Amount; filter?: ObjectFilter | 'self' }
+	// --- Track P17b: widened exileFrom & choice ---
+	| {
+			k: 'exileFrom';
+			zone: ZoneType | 'stack';
+			count: Amount;
+			filter?: ObjectFilter | 'self';
+			fromTop?: boolean;
+			anyGraveyard?: boolean;
+			singleGraveyard?: boolean;
+			minTotalManaValue?: number;
+			collectEvidence?: boolean;
+	  }
 	/** Reveal N matching cards in hand as part of a cost ("Morph—Reveal a white card in your hand."). */
 	| { k: 'revealFromHand'; count: Amount; filter?: ObjectFilter | 'self' }
 	/** Pay exactly one of the options ("discard a card or pay 3 life", "sacrifice a creature or pay {3}{B}"). */
-	| { k: 'choice'; options: CostDef[][] }
+	| { k: 'choice'; options: CostDef[][]; forage?: boolean }
+	// --- End Track P17b ---
 	/** The player may pay this cost or not ("As an additional cost to cast ~, you may sacrifice an artifact."). */
 	| { k: 'optional'; cost: CostDef[] }
 	/** Tap any number of matching untapped objects with total metric >= minTotal (e.g. Crew N). */
@@ -743,8 +818,27 @@ export type CostDef =
 	/** "Put a card / N cards from your hand on top of your library" activation or additional cost. */
 	| { k: 'putFromHandOnTopOfLibrary'; count: Amount; filter?: ObjectFilter }
 	/** "Tap enchanted/equipped creature" activation cost. */
-	| { k: 'tapAttached' };
+	| { k: 'tapAttached' }
 	// --- End Track P14 ---
+	// --- Track P17b ---
+	/** CR 302.6 / 602.2: Spelled-out "Untap N tapped <filter> you control" activation or additional cost. */
+	| { k: 'untapOthers'; count: Amount; filter: ObjectFilter }
+	/** CR 701.20a: "Reveal your hand" activation, additional, or alternative cost. */
+	| { k: 'revealHand' }
+	/** CR 118.12: "Have an opponent / each other player gain N life" alternative or additional cost. */
+	| { k: 'opponentGainsLife'; amount: Amount; eachOtherPlayer?: boolean }
+	/** "Put ~ / N <filter> card(s) [from your graveyard] on the bottom of your / its owner's library" cost. */
+	| {
+			k: 'putOnBottomOfLibrary';
+			from: 'graveyard' | 'battlefield' | 'hand';
+			count: Amount;
+			filter?: ObjectFilter | 'self';
+	  }
+	/** Eldrazi Processor cost: "Put N card(s) an opponent owns from exile into that player's graveyard". */
+	| { k: 'processOpponentExile'; count: Amount; filter?: ObjectFilter }
+	/** "Put N <filter> card(s) exiled with ~ into its owner's graveyard" cost (CR 607.2a). */
+	| { k: 'putExiledWithSelfToGraveyard'; count: Amount; filter?: ObjectFilter };
+	// --- End Track P17b ---
 
 // ---- Effects --------------------------------------------------------------------------------
 
@@ -1703,8 +1797,30 @@ export type Condition =
 	| { k: 'isPaired' }
 	| { k: 'tributePaid' }
 	| { k: 'hasEnduringStory' }
-	| { k: 'isHarnessed' };
+	| { k: 'isHarnessed' }
 	// --- End Wave 6 Shared ---
+	// --- Track P17b ---
+	| {
+			k: 'p17bCondition';
+			kind:
+				| 'notStartingPlayer'
+				| 'notYourTurn'
+				| 'notSpellControllerTurn'
+				| 'opponentGainedLifeThisTurn'
+				| 'opponentCastSpellsAtLeast'
+				| 'opponentControlsAtLeastNMore'
+				| 'attackingCount'
+				| 'attackingYouCount'
+				| 'noMatchingCardsInHand'
+				| 'onlyNamedOrNoMatchingInHand'
+				| 'spellWasBargained'
+				| 'abilityTargetsFilter'
+				| 'targetsStackSpell';
+			filter?: ObjectFilter;
+			n?: number;
+			op?: '>=' | '==' | '<=';
+	  };
+	// --- End Track P17b ---
 
 // ---- Statics and replacements ---------------------------------------------------------------
 
@@ -1791,13 +1907,32 @@ export interface CostDelta {
 	/** Minimum total mana floor ("This effect can't reduce the mana in that cost to less than one mana"). */
 	minTotalMana?: number;
 	// --- End Track P11 ---
+	// --- Track P17b ---
+	/** Maximum generic/total mana reduction applied by this single costModifier ("can't reduce ... by more than {5}"). */
+	maxReduction?: number;
+	/** Per-target life payment added by a spell costModifier ("~ costs 3 life more to cast for each target"). */
+	perTargetLife?: number;
+	// --- End Track P17b ---
 }
 
 export type SpellOrAbilityFilter =
-	| { k: 'spell'; filter: ObjectFilter }
-	// --- Track P11: widened ability filter for general activated abilities of permanents ---
-	| { k: 'ability'; keyword?: string; filter?: ObjectFilter }
-	// --- End Track P11 ---
+	// --- Track P17b: optional altCostKeyword ('flashback' | 'dash') on spell costModifier ---
+	| { k: 'spell'; filter: ObjectFilter; altCostKeyword?: string }
+	// --- Track P11 + Track P17b: widened ability filter for general & targeted activated abilities ---
+	| {
+			k: 'ability';
+			keyword?: string;
+			filter?: ObjectFilter;
+			nonManaOnly?: boolean;
+			loyaltyOnly?: boolean;
+			sourceZone?: ZoneType;
+			selfSourceOnly?: boolean;
+			attachedSourceOnly?: boolean;
+			targetsSelf?: boolean;
+			targetsAttached?: boolean;
+			targetsFilter?: ObjectFilter;
+	  }
+	// --- End Track P11 + Track P17b ---
 	/** The spell that has this ability ("This spell costs {1} less to cast ..."); works while it's being cast. */
 	| { k: 'self' };
 
@@ -1985,6 +2120,20 @@ export type StaticDef =
 			// --- Track P14 ---
 			allowedZones?: ZoneType[];
 			// --- End Track P14 ---
+			// --- Track P17b ---
+			onceEachTurn?: boolean;
+			duringYourTurnOnly?: boolean;
+			grantFlash?: boolean;
+			anyPlayer?: boolean;
+			dynamicManaCostFromMV?: boolean;
+			maxManaValueBySelfCounters?: CounterType;
+			maxManaValueByControlledCount?: ObjectFilter;
+			enterCounters?: { counter: CounterType; count: number };
+			additionalOnly?: boolean;
+			additionalPerMetric?: Amount;
+			requireZonePermission?: boolean;
+			payLifeEqualToSpellMV?: boolean;
+			// --- End Track P17b ---
 			condition?: Condition;
 	  }
 	| {

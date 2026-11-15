@@ -656,6 +656,10 @@ export interface EffectiveActivatedAbility {
 	label: string;
 	costText: string;
 	manaCost: string;
+	// --- Track P17b ---
+	/** Unmodified base mana cost before static ability cost modifiers, preventing double application. */
+	baseManaCost?: string;
+	// --- End Track P17b ---
 	cost: CostDef[];
 	costComplete: boolean;
 	requiresTap: boolean;
@@ -1151,6 +1155,12 @@ export interface SpellModifications {
 	/** CR 702.174a: Cast with a promised gift. */
 	giftPromised?: boolean;
 	// --- End Track P15 ---
+	// --- Track P17b ---
+	/** CR 118.9: Additional counters placed on permanent when cast via static alternative cost ("If you do, it enters with N <counter> counters on it"). */
+	altCastEnterCounters?: { counter: CounterType; count: number };
+	/** CR 118.8 / 601.2f: Extra mana added on top of printed mana cost when casting via a conditional/graveyard/flash permission. */
+	additionalManaCost?: string;
+	// --- End Track P17b ---
 }
 
 export interface CastOptionOptionalCost {
@@ -2373,6 +2383,9 @@ export interface SerializedPlannedCost {
 	isRandom?: boolean;
 	millTotal?: number;
 	isCostAid?: boolean;
+	// --- Track P17b ---
+	emitForaged?: boolean;
+	// --- End Track P17b ---
 }
 
 /**
@@ -2619,6 +2632,10 @@ export interface GameState {
 	/** CR 310.11b / 704.5v: `${instanceId}:${objectVersion}` keys of Sieges with an unresolved 0-defense trigger on stack / pending. */
 	siegeZeroDefenseTriggeredKeys?: string[];
 	// --- End Track P15 ---
+	// --- Track P17b ---
+	/** CR 103.2: playerId of the starting player for the game (defaults to `players[0]?.playerId`). */
+	startingPlayerId?: string;
+	// --- End Track P17b ---
 }
 
 export interface MagicLobby {
@@ -2674,6 +2691,9 @@ export type GameActionPayload =
 			abilityId?: string;
 			preferredColor?: ManaColor;
 			chosenBundle?: ManaColor[];
+			// --- Track P17b ---
+			xValue?: number;
+			// --- End Track P17b ---
 			costPayment?: CostPayment;
 	  }
 	| {
