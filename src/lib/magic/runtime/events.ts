@@ -92,6 +92,10 @@ export interface LeftBattlefieldInfo {
 	/** CR 603.10a: EOT-granted quoted ability texts active on this permanent right before leaving the battlefield. */
 	grantedAbilityTexts?: string[];
 	// --- End Track P10 ---
+	// --- Track P18a ---
+	/** CR 731.2b / 603.10a: Merged permanent components active right before leaving the battlefield. */
+	mergedComponents?: ScryfallCard[];
+	// --- End Track P18a ---
 }
 
 /** A spell was cast (it is already on the stack). */
@@ -469,7 +473,7 @@ export type GameEvent =
 	| DungeonCompletedEvent
 	| TookInitiativeEvent
 	// --- End Track P13 & P15 ---
-	// --- Track P16b ---
+	// --- Track P16b & P18a ---
 	| MutatedEvent
 	| SoulbondPairedEvent
 	| HauntedCreatureDiedEvent
@@ -482,7 +486,7 @@ export type GameEvent =
 	| CollectedEvidenceEvent
 	| LandPlayedEvent
 	| PlayerTargetedEvent;
-	// --- End Track P16b ---
+	// --- End Track P16b & P18a ---
 
 // --- Track P10 ---
 export interface UnblockedAttackersEvent extends EventBase {

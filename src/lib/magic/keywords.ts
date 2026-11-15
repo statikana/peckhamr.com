@@ -28,10 +28,10 @@ export interface AlternativeCostKeywordMeta {
 	id: string;
 	label: string;
 	castSummarySuffix: string;
-	zones: Array<'hand' | 'command' | 'exile' | 'graveyard'>;
+	zones: Array<'hand' | 'command' | 'exile' | 'graveyard' | 'library'>;
 	/** True when casting from non-hand zones requires an existing zone permission (not granted by the keyword itself). */
 	requiresZonePermission?: boolean;
-	spellTypes?: Array<'Instant' | 'Sorcery'>;
+	spellTypes?: Array<'Instant' | 'Sorcery' | 'Creature'>;
 	/** True when Land cards cannot be cast via this alternative cost (CR 702.138a: "cast this card from your graveyard" — lands can't be cast). */
 	disallowLand?: boolean;
 	targetsBecomeEach?: boolean;
@@ -946,6 +946,52 @@ export function buildAuraSwapAbility(
 }
 // --- End Track P15 ---
 
+// --- Track P18a ---
+/**
+ * CR 702.67a: "Fortify [cost]" means "[Cost]: Attach this permanent to target land you control.
+ * Activate only as a sorcery."
+ */
+export function buildFortifyAbility(
+	kw: KeywordDef,
+	id: string,
+	span: Span
+): { ability: ActivatedAbility; costText: string; effectText: string; label: string } | null {
+	const costDefs = kw.costDefs;
+	if (!costDefs || costDefs.length === 0) return null;
+	const prefix = formatKeywordCostLabel('Fortify', kw);
+	const costText = prefix;
+	const effectText = 'Attach to target land you control. Fortify only as a sorcery.';
+	const label = `${prefix}: Attach to target land you control`;
+	const targets = [
+		{
+			kind: 'object' as const,
+			filter: { zone: 'battlefield' as const, types: ['Land'], controller: 'you' as const },
+			min: 1,
+			max: 1
+		}
+	];
+	const effect: EffectStep[] = [{ verb: 'attach', subject: { k: 'target', index: 0 }, span }];
+	return {
+		ability: {
+			kind: 'activated',
+			cost: costDefs,
+			targets,
+			effect,
+			timing: 'sorcery',
+			isMana: false,
+			activationZones: ['battlefield'],
+			costKeyword: 'fortify',
+			id,
+			text: `${costText}: ${effectText}`,
+			span
+		},
+		costText,
+		effectText,
+		label
+	};
+}
+// --- End Track P18a ---
+
 export interface KeywordSpec {
 	/** Canonical lower-case keyword name. */
 	name: string;
@@ -1720,7 +1766,19 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 	// --- End Track P15 ---
 
 	// ---- Unimplemented CR 702 keywords recognized on keyword lines ----
-	unimplemented('absorb', '702.64', 'number'),
+	// --- Track P18a ---
+	[
+		'absorb',
+		{
+			name: 'absorb',
+			cr: '702.64',
+			parameterKind: 'number',
+			grantable: true,
+			status: 'implemented',
+			implementation: { kind: 'primitive' }
+		}
+	],
+	// --- End Track P18a ---
 	// --- Track P12 ---
 	[
 		'aftermath',
@@ -1882,7 +1940,9 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 		}
 	],
 	// --- End Track P12 ---
-	unimplemented('banding', '702.22'),
+	// --- Track P18a ---
+	simpleImplemented('banding', '702.22', 'Banding'),
+	// --- End Track P18a ---
 	// --- Track P12 ---
 	[
 		'bargain',
@@ -2528,7 +2588,9 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 			implementation: { kind: 'castOption' }
 		}
 	],
-	unimplemented('epic', '702.50'),
+	// --- Track P18a ---
+	simpleImplemented('epic', '702.50', 'Epic', false),
+	// --- End Track P18a ---
 	// --- Track P12 ---
 	[
 		'escalate',
@@ -2777,8 +2839,59 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 			implementation: { kind: 'castOption' }
 		}
 	],
-	unimplemented('fortify', '702.67', 'cost'),
-	unimplemented('frenzy', '702.68', 'number'),
+	// --- Track P18a ---
+	[
+		'fortify',
+		{
+			name: 'fortify',
+			cr: '702.67',
+			parameterKind: 'cost',
+			costParseMode: 'activated',
+			activatedIdPrefix: 'fortify',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'activated', buildActivated: buildFortifyAbility }
+		}
+	],
+	[
+		'frenzy',
+		{
+			name: 'frenzy',
+			cr: '702.68',
+			parameterKind: 'number',
+			grantable: true,
+			status: 'implemented',
+			implementation: {
+				kind: 'trigger',
+				events: ['attackedAndUnblocked'],
+				buildTriggers: (kw, abilityIndex, span) => {
+					const n = kw.n ?? 1;
+					return [
+						{
+							abilityIndex,
+							trigger: { event: 'attackedAndUnblocked', filter: { object: 'self' } },
+							effectSupported: true,
+							text: `Frenzy ${n}`,
+							effect: {
+								steps: [
+									{
+										verb: 'pump',
+										subject: { k: 'self' },
+										amount: { k: 'const', n },
+										params: { toughness: { k: 'const', n: 0 }, duration: 'endOfTurn' },
+										span
+									}
+								],
+								targets: [],
+								unparsed: []
+							}
+						}
+					];
+				}
+			}
+		}
+	],
+	// --- End Track P18a ---
 	// --- Track P15 ---
 	[
 		'freerunning',
@@ -2889,9 +3002,79 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 		}
 	],
 	// --- End Track P15 ---
-	unimplemented('haunt', '702.55'),
+	// --- Track P18a ---
+	[
+		'haunt',
+		{
+			name: 'haunt',
+			cr: '702.55',
+			parameterKind: 'none',
+			displayLabel: 'Haunt',
+			grantable: false,
+			status: 'implemented',
+			implementation: {
+				kind: 'trigger',
+				events: ['zoneChange'],
+				buildTriggers: (_kw, abilityIndex, _span) => [
+					{
+						abilityIndex,
+						trigger: {
+							event: 'zoneChange',
+							filter: { object: 'self', from: 'battlefield', to: 'graveyard' }
+						},
+						effectSupported: true,
+						text: 'Haunt',
+						effect: {
+							steps: [],
+							targets: [
+								{
+									kind: 'object',
+									filter: { zone: 'battlefield', types: ['Creature'] },
+									min: 1,
+									max: 1
+								}
+							],
+							unparsed: []
+						}
+					}
+				]
+			}
+		}
+	],
+	// --- End Track P18a ---
 	unimplemented('hidden agenda', '702.106'),
-	unimplemented('hideaway', '702.75', 'number'),
+	// --- Track P18a ---
+	[
+		'hideaway',
+		{
+			name: 'hideaway',
+			cr: '702.75',
+			parameterKind: 'number',
+			optionalParameter: true,
+			grantable: false,
+			status: 'implemented',
+			implementation: {
+				kind: 'trigger',
+				events: ['zoneChange'],
+				buildTriggers: (kw, abilityIndex, _span) => {
+					const n = kw.n ?? 4;
+					return [
+						{
+							abilityIndex,
+							trigger: {
+								event: 'zoneChange',
+								filter: { object: 'self', to: 'battlefield' }
+							},
+							effectSupported: true,
+							text: `Hideaway ${n}`,
+							effect: { steps: [], targets: [], unparsed: [] }
+						}
+					];
+				}
+			}
+		}
+	],
+	// --- End Track P18a ---
 	// --- Track P9 ---
 	[
 		'improvise',
@@ -3280,7 +3463,33 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 		}
 	],
 	// --- End Track P15 ---
-	unimplemented('mutate', '702.140', 'cost'),
+	// --- Track P18a ---
+	[
+		'mutate',
+		{
+			name: 'mutate',
+			cr: '702.140',
+			parameterKind: 'cost',
+			costParseMode: 'castOption',
+			grantable: false,
+			status: 'implemented',
+			implementation: {
+				kind: 'castOption',
+				altCost: {
+					id: 'alt:mutate',
+					label: 'Cast with Mutate',
+					castSummarySuffix: ' (Mutating)',
+					stackBadgeLabel: 'Mutating',
+					zones: ['hand', 'command', 'exile', 'graveyard', 'library'],
+					requiresZonePermission: true,
+					disallowLand: true,
+					spellTypes: ['Creature'],
+					mutating: true
+				}
+			}
+		}
+	],
+	// --- End Track P18a ---
 	// --- Track P12 ---
 	[
 		'myriad',
@@ -3431,7 +3640,37 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 			implementation: { kind: 'castOption' }
 		}
 	],
-	unimplemented('poisonous', '702.70', 'number'),
+	// --- Track P18a ---
+	[
+		'poisonous',
+		{
+			name: 'poisonous',
+			cr: '702.70',
+			parameterKind: 'number',
+			grantable: true,
+			status: 'implemented',
+			implementation: {
+				kind: 'trigger',
+				events: ['dealsDamage'],
+				buildTriggers: (kw, abilityIndex, _span) => {
+					const n = kw.n ?? 1;
+					return [
+						{
+							abilityIndex,
+							trigger: {
+								event: 'dealsDamage',
+								filter: { object: 'self', combat: true, damageTo: 'player' }
+							},
+							effectSupported: true,
+							text: `Poisonous ${n}`,
+							effect: { steps: [], targets: [], unparsed: [] }
+						}
+					];
+				}
+			}
+		}
+	],
+	// --- End Track P18a ---
 	// --- Track P15 ---
 	[
 		'paradigm',
@@ -3771,7 +4010,49 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 			implementation: { kind: 'activated', buildActivated: buildScavengeAbility }
 		}
 	],
-	unimplemented('soulbond', '702.95'),
+	// --- Track P18a ---
+	[
+		'soulbond',
+		{
+			name: 'soulbond',
+			cr: '702.95',
+			parameterKind: 'none',
+			displayLabel: 'Soulbond',
+			grantable: true,
+			status: 'implemented',
+			implementation: {
+				kind: 'trigger',
+				events: ['zoneChange'],
+				buildTriggers: (_kw, abilityIndex, _span) => [
+					{
+						abilityIndex,
+						trigger: {
+							event: 'zoneChange',
+							filter: { object: 'self', to: 'battlefield' }
+						},
+						effectSupported: true,
+						text: 'Soulbond',
+						effect: { steps: [], targets: [], unparsed: [] }
+					},
+					{
+						abilityIndex,
+						trigger: {
+							event: 'zoneChange',
+							filter: {
+								object: { types: ['Creature'], controller: 'you', other: true },
+								to: 'battlefield'
+							}
+						},
+						condition: { k: 'not', of: { k: 'isPaired' } },
+						effectSupported: true,
+						text: 'Soulbond',
+						effect: { steps: [], targets: [], unparsed: [] }
+					}
+				]
+			}
+		}
+	],
+	// --- End Track P18a ---
 	// --- Track P9 ---
 	[
 		'soulshift',
@@ -4020,7 +4301,19 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 			implementation: { kind: 'activated', buildActivated: buildTransmuteActivatedAbility }
 		}
 	],
-	unimplemented('tribute', '702.104', 'number'),
+	// --- Track P18a ---
+	[
+		'tribute',
+		{
+			name: 'tribute',
+			cr: '702.104',
+			parameterKind: 'number',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'static', buildStatics: () => [] }
+		}
+	],
+	// --- End Track P18a ---
 	// --- Track P12 ---
 	simpleImplemented('umbra armor', '702.89', 'Umbra armor'),
 	[
@@ -4317,7 +4610,22 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 				}
 			}
 		}
-	]
+	],
+	// --- Track P18a ---
+	[
+		'teamwork',
+		{
+			name: 'teamwork',
+			cr: '702.194',
+			parameterKind: 'number',
+			optionalParameter: true,
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'castOption' }
+		}
+	],
+	simpleImplemented('storied', '702.195', 'Storied')
+	// --- End Track P18a ---
 ];
 
 /** Single source of truth for all CR 702 keywords (and recognized keyword actions). */
@@ -4367,14 +4675,36 @@ const WAVE4_GRANT_PHRASES = [
 	'renown 3'
 ] as const;
 // --- End Track P12 ---
+// --- Track P18a ---
+const WAVE6_GRANT_PHRASES = [
+	'absorb 1',
+	'absorb 2',
+	'absorb 3',
+	'absorb 4',
+	'absorb 5',
+	'frenzy 1',
+	'frenzy 2',
+	'frenzy 3',
+	'frenzy 4',
+	'frenzy 5',
+	'poisonous 1',
+	'poisonous 2',
+	'poisonous 3',
+	'poisonous 4',
+	'poisonous 5'
+] as const;
+// --- End Track P18a ---
 
 /** Bare keywords accepted in static continuous ability grants ("Creatures you control have ..."). */
 export const STATIC_CONTINUOUS_KEYWORDS: ReadonlySet<string> = new Set([
 	...REGISTRY_ENTRIES.filter(([name, spec]) => isSimpleContinuousGrantable(name, spec)).map(([name]) => name),
 	...TOXIC_GRANT_PHRASES,
 	// --- Track P12 ---
-	...WAVE4_GRANT_PHRASES
+	...WAVE4_GRANT_PHRASES,
 	// --- End Track P12 ---
+	// --- Track P18a ---
+	...WAVE6_GRANT_PHRASES
+	// --- End Track P18a ---
 ]);
 
 /** Bare keywords accepted by effect "gains <keyword>" clauses ("gains flying, battle cry until end of turn"). */
@@ -4382,8 +4712,11 @@ export const GRANTABLE_KEYWORDS: readonly string[] = [
 	...REGISTRY_ENTRIES.filter(([name, spec]) => isSimpleContinuousGrantable(name, spec)).map(([name]) => name),
 	...TOXIC_GRANT_PHRASES,
 	// --- Track P12 ---
-	...WAVE4_GRANT_PHRASES
+	...WAVE4_GRANT_PHRASES,
 	// --- End Track P12 ---
+	// --- Track P18a ---
+	...WAVE6_GRANT_PHRASES
+	// --- End Track P18a ---
 ];
 
 /** Display labels for non-parameterized implemented keywords (insertion order preserved). */

@@ -44,6 +44,9 @@ function rawOptionalEntriesForCard(
 	// --- Track P12 ---
 	let bargainIdx = 0;
 	// --- End Track P12 ---
+	// --- Track P18a ---
+	let teamworkIdx = 0;
+	// --- End Track P18a ---
 	for (const ab of abilities) {
 		if (ab.kind !== 'keyword') continue;
 		if (
@@ -203,6 +206,33 @@ function rawOptionalEntriesForCard(
 			continue;
 		}
 		// --- End Track P12 ---
+		// --- Track P18a: Teamwork [N] (CR 702.194a–c) ---
+		if (kwName === 'teamwork') {
+			const n = Math.max(1, ab.keyword.n ?? 1);
+			out.push({
+				id: `teamwork:${teamworkIdx++}`,
+				label: `Teamwork ${n} (Tap creatures with total power ${n}+)`,
+				costDisplay: `Tap any number of untapped creatures you control with total power ${n} or greater`,
+				costDefs: [
+					{
+						k: 'tapSubsetSum',
+						minTotal: { k: 'const', n },
+						metric: 'power',
+						filter: {
+							controller: 'you',
+							types: ['Creature'],
+							tapped: false
+						},
+						restrictionTag: 'teamwork'
+					}
+				],
+				maxCount: 1,
+				kickedTag: 'teamwork',
+				kickedTags: ['teamwork']
+			});
+			continue;
+		}
+		// --- End Track P18a ---
 		const isMulti = KICKER_KEYWORDS[ab.keyword.name];
 		if (isMulti === undefined) continue;
 		for (const entry of ab.keyword.kickerCosts ?? []) {

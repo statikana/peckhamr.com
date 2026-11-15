@@ -7904,8 +7904,14 @@ class Run {
 						? f.inst
 						: undefined;
 				if (c.k === 'isPaired') return Boolean(liveObj?.pairedWithId);
-				if (c.k === 'tributePaid') return Boolean(liveObj?.tributePaid);
-				if (c.k === 'hasEnduringStory') return Boolean(liveObj?.hasEnduringStory);
+				// --- Track P18a ---
+				if (c.k === 'tributePaid') {
+					return Boolean(liveObj?.tributePaid || this.ctx.item.sourceTributePaid);
+				}
+				if (c.k === 'hasEnduringStory') {
+					return Boolean(liveObj?.hasEnduringStory || this.ctx.controller.hasEnduringStory);
+				}
+				// --- End Track P18a ---
 				return Boolean(liveObj?.isHarnessed);
 			}
 			// --- End Wave 6 Shared ---

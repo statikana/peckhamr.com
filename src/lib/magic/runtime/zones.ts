@@ -90,6 +90,16 @@ import {
 // --- Track P16b ---
 import { clearDoThisOnceKeysForObject } from './triggersWave6.ts';
 // --- End Track P16b ---
+// --- Track P18a ---
+import {
+	checkStoriedDesignations,
+	chooseBotTributeDecision,
+	enforceSoulbondPairs,
+	getTributeTotalN,
+	handleHauntedCreatureDies,
+	syncHideawayExilePeekPermissions
+} from './keywordsWave6.ts';
+// --- End Track P18a ---
 
 /**
  * The single zone-change module (ENGINE_ARCHITECTURE_PLAN.md section 2.3, Phase 2).
@@ -833,6 +843,86 @@ function enqueueNextEtbChoicePrompt(
 				return true;
 			}
 		}
+
+		// --- Track P18a: Tribute N (CR 702.104a) ---
+		const tributeN = getTributeTotalN(obj);
+		if (tributeN > 0 && !obj.tributeDone) {
+			const opps = state.players.filter((p) => !p.lost && p.playerId !== chooser.playerId);
+			if (opps.length === 0) {
+				obj.tributeDone = true;
+				obj.tributePaid = false;
+			} else {
+				if (!obj.tributeOpponentId) {
+					if (opps.length === 1 || chooser.isBot) {
+						obj.tributeOpponentId = opps[0]!.playerId;
+					} else {
+						const description = `As ${objName} enters the battlefield, choose an opponent for Tribute ${tributeN} (CR 702.104a):`;
+						enqueueChoicePrompt(state, {
+							id: uid('prm', state),
+							playerId: chooser.playerId,
+							kind: 'chooseMode',
+							purpose: 'etb_choice',
+							title: `${objName} — Tribute ${tributeN} (Choose Opponent)`,
+							description,
+							continuation: {
+								kind: 'handler',
+								name: 'etb_choice',
+								data: {
+									...(baseData as Record<
+										string,
+										string | number | boolean | null | string[] | Record<string, number>
+									>),
+									choiceField: 'tributeOpponent',
+									candidatePlayerIds: opps.map((o) => o.playerId)
+								}
+							},
+							choice: {
+								kind: 'chooseMode',
+								modes: opps.map((o) => `${o.username} (${o.life} life)`),
+								min: 1,
+								max: 1
+							}
+						});
+						return true;
+					}
+				}
+				const opp = opps.find((o) => o.playerId === obj.tributeOpponentId) ?? opps[0]!;
+				if (opp.isBot) {
+					const pay = chooseBotTributeDecision(state, opp, obj, tributeN);
+					obj.tributeDone = true;
+					obj.tributePaid = pay;
+				} else {
+					const question = `Pay Tribute ${tributeN} for ${objName}? If Yes, ${objName} enters with ${tributeN} +1/+1 counter${tributeN === 1 ? '' : 's'} on it (CR 702.104a).`;
+					enqueueChoicePrompt(state, {
+						id: uid('prm', state),
+						playerId: opp.playerId,
+						kind: 'yesNo',
+						purpose: 'etb_choice',
+						title: `${objName} — Tribute ${tributeN}`,
+						description: question,
+						continuation: {
+							kind: 'handler',
+							name: 'etb_choice',
+							data: {
+								...(baseData as Record<
+									string,
+									string | number | boolean | null | string[] | Record<string, number>
+								>),
+								choiceField: 'tributePay',
+								tributeN,
+								tributeOpponentId: opp.playerId
+							}
+						},
+						choice: {
+							kind: 'yesNo',
+							question
+						}
+					});
+					return true;
+				}
+			}
+		}
+		// --- End Track P18a ---
 	}
 	// --- End Track P15 ---
 	return false;
@@ -914,6 +1004,28 @@ function finalizeZoneMove(
 	// --- Track P13: capture earthbentReturn before leaveBattlefieldReset clears it ---
 	const hadEarthbentReturn = Boolean(fromZone === 'battlefield' && obj.earthbentReturn);
 	// --- End Track P13 ---
+	// --- Track P18a: capture merged permanent components before LTB reset clears them (CR 731.3) ---
+	const savedMergedCards =
+		fromZone === 'battlefield' &&
+		dest !== 'battlefield' &&
+		obj.mergedComponents &&
+		obj.mergedComponents.length > 1
+			? [...obj.mergedComponents]
+			: null;
+	const savedMergedTokens =
+		savedMergedCards &&
+		obj.mergedComponentIsToken &&
+		obj.mergedComponentIsToken.length === savedMergedCards.length
+			? [...obj.mergedComponentIsToken]
+			: savedMergedCards
+				? savedMergedCards.map((_, idx) => (idx === 0 ? Boolean(obj.isToken) : false))
+				: null;
+	if (savedMergedCards && savedMergedTokens) {
+		obj.card = savedMergedCards[0]!;
+		obj.printedCard = undefined;
+		obj.isToken = Boolean(savedMergedTokens[0]);
+	}
+	// --- End Track P18a ---
 	if (opts.leaveBattlefieldReset) {
 		if (obj.printedCard) {
 			obj.card = obj.printedCard;
@@ -1022,6 +1134,17 @@ function finalizeZoneMove(
 		delete obj.usedOncePerGameAbilityIds;
 		delete obj.amplifyDone;
 		// --- End Track P14 & P15 ---
+		// --- Track P18a (CR 400.7 / 731.3 / 702.95e) ---
+		delete obj.mergedComponents;
+		delete obj.mergedComponentIsToken;
+		delete obj.mutateCount;
+		delete obj.pairedWithId;
+		delete obj.tributeDone;
+		delete obj.tributeOpponentId;
+		delete obj.tributePaid;
+		delete obj.hauntedByCards;
+		delete obj.hasEnduringStory;
+		// --- End Track P18a ---
 		const prevObjVersion = obj.objectVersion || 1;
 		const pruneLeftPerm = <T extends { affected: Array<{ instanceId: string; objectVersion?: number }> }>(
 			list: T[] | undefined
@@ -1112,6 +1235,17 @@ function finalizeZoneMove(
 		delete obj.usedOncePerGameAbilityIds;
 		delete obj.amplifyDone;
 		// --- End Track P14 & P15 ---
+		// --- Track P18a (CR 400.7 / 731.3 / 702.95e) ---
+		delete obj.mergedComponents;
+		delete obj.mergedComponentIsToken;
+		delete obj.mutateCount;
+		delete obj.pairedWithId;
+		delete obj.tributeDone;
+		delete obj.tributeOpponentId;
+		delete obj.tributePaid;
+		delete obj.hauntedByCards;
+		delete obj.hasEnduringStory;
+		// --- End Track P18a ---
 		if (dest !== 'stack') {
 			obj.manaColorsSpent = undefined;
 			// --- Track P10 ---
@@ -1144,6 +1278,10 @@ function finalizeZoneMove(
 			obj.plottedTurnNumber = undefined;
 			obj.warpedByOwnerId = undefined;
 			obj.warpedTurnSerial = undefined;
+			// --- Track P18a ---
+			delete obj.hauntingTargetId;
+			delete obj.hauntingTargetVersion;
+			// --- End Track P18a ---
 			if (dest !== 'battlefield' && dest !== 'stack' && obj.isFaceDown) {
 				obj.isFaceDown = false;
 				obj.faceDownSpec = undefined;
@@ -1478,6 +1616,17 @@ function finalizeZoneMove(
 				wave5AmplifyCounters = botAmpN * ampCands.length;
 			}
 			// --- End Track P15 ---
+			// --- Track P18a: Tribute N (CR 702.104a) — opponent may be human even when caster is a bot ---
+			const botTribN = getTributeTotalN(obj);
+			if (botTribN > 0 && !obj.tributeDone) {
+				const baseData = buildPendingEtbData();
+				if (enqueueNextEtbChoicePrompt(state, obj, ctrl, null, baseData, null)) {
+					obj.zone = fromZone ?? 'hand';
+					(state.pendingZoneMoves ??= []).push(obj);
+					return 'pending';
+				}
+			}
+			// --- End Track P18a ---
 		} else {
 			const baseData = buildPendingEtbData();
 			if (enqueueNextEtbChoicePrompt(state, obj, ctrl, etbSpec, baseData, null)) {
@@ -1542,12 +1691,71 @@ function finalizeZoneMove(
 				wave5AmplifyCounters
 			);
 			// --- End Track P15 ---
+			// --- Track P18a ---
+			if (!obj.isFaceDown && obj.tributePaid) {
+				const tribN = getTributeTotalN(obj);
+				if (tribN > 0) {
+					placeRegisteredCounters(state, obj, '+1/+1', tribN);
+				}
+			}
+			checkStoriedDesignations(state);
+			enforceSoulbondPairs(state);
+			syncHideawayExilePeekPermissions(state);
+			// --- End Track P18a ---
 			noteLayerInputsChanged(state);
 		}
 		if (shuffleDestLibrary && dest === 'library') {
 			shuffleLibrary(state, effectiveReceiver);
 		}
 	}
+	// --- Track P18a: Merged permanent LTB component split (CR 731.3) & Soulbond LTB unpair (CR 702.95e) ---
+	if (savedMergedCards && savedMergedTokens && dest !== 'stack' && dest !== 'battlefield') {
+		const rawAt = typeof opts.insert === 'function' ? opts.insert(dest) : opts.insert;
+		const splitAt: Exclude<InsertAt, 'deferred'> =
+			typeof rawAt === 'number' || rawAt === 'start' || rawAt === 'end' ? rawAt : 'end';
+		const compOwner = owner ?? effectiveReceiver;
+		for (let cIdx = 1; cIdx < savedMergedCards.length; cIdx++) {
+			if (savedMergedTokens[cIdx]) continue;
+			const compCard = savedMergedCards[cIdx]!;
+			const compInst: CardInstance = {
+				instanceId: uid('inst', state),
+				objectVersion: 1,
+				enteredTimestamp: allocateTimestamp(state),
+				card: compCard,
+				ownerId: compOwner.playerId,
+				controllerId: compOwner.playerId,
+				zone: dest,
+				tapped: false,
+				summoningSick: false,
+				damageMarked: 0,
+				deathtouchDamageMarked: false,
+				tempPowerMod: 0,
+				tempToughnessMod: 0,
+				grantedKeywords: [],
+				attachedToId: null,
+				isCommander: false,
+				isToken: false,
+				commanderCastCount: 0,
+				usedLoyaltyThisTurn: false,
+				transformed: false,
+				counters: createEmptyCounters()
+			};
+			if (rawAt !== 'deferred') {
+				insertInto(compOwner[dest as PlayerZone], compInst, splitAt);
+			}
+			if (dest === 'graveyard') {
+				state.cardsPutIntoGraveyardThisTurn = (state.cardsPutIntoGraveyardThisTurn ?? 0) + 1;
+			}
+		}
+		if (shuffleDestLibrary && dest === 'library') {
+			shuffleLibrary(state, compOwner);
+		}
+		noteLayerInputsChanged(state);
+	}
+	if (fromZone === 'battlefield' && dest !== 'battlefield') {
+		enforceSoulbondPairs(state);
+	}
+	// --- End Track P18a ---
 	if (opts.sbaLog) {
 		pushSbaLog(state, obj, dest, effectiveReplacedBy, opts.sbaLog);
 	}
@@ -1621,22 +1829,6 @@ function finalizeZoneMove(
 							host: obj
 						});
 						break;
-					}
-				}
-			}
-		}
-		if (fromZone === 'battlefield' && dest === 'graveyard' && lki) {
-			for (const pl of state.players) {
-				for (const ex of pl.exile) {
-					if (ex.hauntingTargetId === obj.instanceId) {
-						emitEvent(state, {
-							kind: 'HauntedCreatureDied',
-							haunterId: ex.instanceId,
-							haunter: ex,
-							hauntedId: obj.instanceId,
-							hauntedObject: obj,
-							lki
-						});
 					}
 				}
 			}
@@ -1717,6 +1909,11 @@ function finalizeZoneMove(
 			noteLayerInputsChanged(state);
 		}
 		// --- End Track P13 ---
+		// --- Track P18a: Haunted permanent dies -> fire Haunt triggers from exile (CR 702.55c) ---
+		if (fromZone === 'battlefield' && dest === 'graveyard') {
+			handleHauntedCreatureDies(state, obj, leavingVersion, lki);
+		}
+		// --- End Track P18a ---
 	}
 	if (
 		promptCommanderRedirect &&
@@ -2594,11 +2791,38 @@ registerPromptHandler('etb_choice', (state, prompt, answer) => {
 				`${chooser.username} revealed ${revealedCount} card(s) from hand for ${bfView.name}'s Amplify ${amplifyN} (CR 702.38a).`
 			);
 		// --- End Track P15 ---
+		// --- Track P18a: Tribute N (CR 702.104a) ---
+		} else if (choiceField === 'tributeOpponent' && answer.kind === 'chooseMode') {
+			const candPids = Array.isArray(data.candidatePlayerIds)
+				? (data.candidatePlayerIds as string[])
+				: state.players
+						.filter((p) => !p.lost && p.playerId !== chooser.playerId)
+						.map((p) => p.playerId);
+			const chosenIdx = answer.indices[0] ?? 0;
+			obj.tributeOpponentId = candPids[chosenIdx] ?? candPids[0];
+		} else if (choiceField === 'tributePay' && answer.kind === 'yesNo') {
+			const pay = Boolean(answer.yes);
+			const tribN = typeof data.tributeN === 'number' ? data.tributeN : getTributeTotalN(obj);
+			const oppId =
+				typeof data.tributeOpponentId === 'string'
+					? data.tributeOpponentId
+					: obj.tributeOpponentId;
+			const opp = state.players.find((p) => p.playerId === oppId);
+			obj.tributeDone = true;
+			obj.tributePaid = pay;
+			pushEtbRuleLog(
+				state,
+				opp?.playerId ?? chooser.playerId,
+				`${opp?.username ?? 'Opponent'} ${pay ? `paid Tribute ${tribN} (${tribN} +1/+1 counter${tribN === 1 ? '' : 's'})` : `declined Tribute ${tribN}`} for ${bfView.name} (CR 702.104a).`
+			);
+		// --- End Track P18a ---
 		} else {
 			return;
 		}
 
-		const remainingSpec = selfEtbChoiceSpec(state, obj);
+		// --- Track P18a ---
+		const remainingSpec = chooser.isBot ? null : selfEtbChoiceSpec(state, obj);
+		// --- End Track P18a ---
 		if (enqueueNextEtbChoicePrompt(state, obj, chooser, remainingSpec, nextData, null)) {
 			awaitingMore = true;
 			return;
@@ -2648,6 +2872,17 @@ registerPromptHandler('etb_choice', (state, prompt, answer) => {
 				p15AmpCounters
 			);
 			// --- End Track P15 ---
+			// --- Track P18a ---
+			if (!obj.isFaceDown && obj.tributePaid) {
+				const tribN = getTributeTotalN(obj);
+				if (tribN > 0) {
+					placeRegisteredCounters(state, obj, '+1/+1', tribN);
+				}
+			}
+			checkStoriedDesignations(state);
+			enforceSoulbondPairs(state);
+			syncHideawayExilePeekPermissions(state);
+			// --- End Track P18a ---
 		}
 		noteLayerInputsChanged(state);
 
@@ -2757,8 +2992,19 @@ export function captureLki(state: GameState, obj: CardInstance): LeftBattlefield
 				}
 			}
 			return texts.length > 0 ? { grantedAbilityTexts: texts } : {};
-		})()
+		})(),
 		// --- End Track P10 ---
+		// --- Track P18a ---
+		...(() => {
+			if (obj.isFaceDown) return {};
+			const effMergedLki = obj.copiableState
+				? obj.copiableState.mergedComponents
+				: obj.mergedComponents;
+			return effMergedLki && effMergedLki.length > 1
+				? { mergedComponents: [...effMergedLki] }
+				: {};
+		})()
+		// --- End Track P18a ---
 	};
 }
 
@@ -3041,6 +3287,11 @@ export function syncBattlefieldControllers(state: GameState): boolean {
 			}
 			if (!passMoved) break;
 		}
+		// --- Track P18a (CR 702.95e, 702.75a, 702.195b) ---
+		enforceSoulbondPairs(state);
+		syncHideawayExilePeekPermissions(state);
+		checkStoriedDesignations(state);
+		// --- End Track P18a ---
 		return anyMoved;
 	} finally {
 		syncingControllers = false;

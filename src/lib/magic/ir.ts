@@ -556,6 +556,10 @@ export interface ObjectFilter {
 	/** CR 701.58: matches goaded permanents (`true`). */
 	goaded?: boolean;
 	// --- End Track P16b ---
+	// --- Track P18a ---
+	/** CR 702.140a Mutate: matches objects whose `ownerId` equals the spell/ability source's `ownerId`. */
+	sameOwnerAsSource?: boolean;
+	// --- End Track P18a ---
 }
 
 export interface Compare {

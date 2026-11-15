@@ -126,6 +126,10 @@ export interface CopiableState {
 	// --- Track P6 ---
 	/** CR 719.3d: preserved on copies of a prototyped spell or permanent. */
 	prototyped?: boolean;
+	// --- Track P18a ---
+	/** CR 707.2 / CR 731.2a: ordered component cards whose combined abilities are part of a copied merged permanent's copiable values. */
+	mergedComponents?: ScryfallCard[];
+	// --- End Track P18a ---
 	except?: {
 		power?: number;
 		toughness?: number;
@@ -1067,6 +1071,16 @@ export interface CardInstance {
 	/** CR 710 Flip: true once a Kamigawa flip permanent has been flipped on the battlefield (irreversible). */
 	isFlipped?: boolean;
 	// --- End Wave 6 Shared ---
+	// --- Track P18a ---
+	/** CR 702.104a Tribute: true once the Tribute ETB choice has completed as this permanent enters. */
+	tributeDone?: boolean;
+	/** CR 702.104a Tribute: chosen opponent playerId asked whether to place Tribute counters. */
+	tributeOpponentId?: string;
+	/** CR 731.2–3: per-component token flags parallel to `mergedComponents` (`true` iff that component is a token). */
+	mergedComponentIsToken?: boolean[];
+	/** CR 702.55a–c Haunt: `objectVersion` of `hauntingTargetId` when this exiled card began haunting it. */
+	hauntingTargetVersion?: number;
+	// --- End Track P18a ---
 }
 
 export interface TargetRef {
@@ -1234,6 +1248,10 @@ export interface CastOption {
 	/** Turn-slotted static play permission slot key consumed when this spell becomes cast. */
 	staticPlaySlotKey?: string;
 	// --- End Track P14 ---
+	// --- Track P18a ---
+	/** CR 702.140a: True when this option casts the card as a mutating creature spell. */
+	mutate?: boolean;
+	// --- End Track P18a ---
 }
 
 // --- Track P3 ---
@@ -1522,6 +1540,23 @@ export interface StackItem {
 		nextIndex?: number;
 	};
 	// --- End Track P15 ---
+	// --- Track P18a ---
+	/** Plain-JSON tag identifying a Wave 6 (Track P18a) keyword triggered/activated stack item. */
+	wave6Tag?: string;
+	/** Numeric parameter `N` for a Wave 6 keyword stack item (Hideaway N, Poisonous N). */
+	wave6N?: number;
+	/** Snapshot card for Epic upkeep triggered abilities (`wave6Tag: 'epic_upkeep'`). */
+	wave6Card?: ScryfallCard;
+	wave6FaceIndex?: number;
+	/** LKI `tributePaid` flag recorded when a Tribute triggered ability is put on the stack. */
+	sourceTributePaid?: boolean;
+	/** Plain-JSON continuation frame for Wave 6 keyword resolution prompts. */
+	wave6Resume?: {
+		step: string;
+		chosenObjectIds?: string[];
+		yes?: boolean;
+	};
+	// --- End Track P18a ---
 }
 
 // --- Track P10 ---
@@ -1687,6 +1722,13 @@ export interface SerializedPendingTrigger {
 	wave5CostText?: string;
 	wave5Card?: ScryfallCard;
 	// --- End Track P15 ---
+	// --- Track P18a ---
+	wave6Tag?: string;
+	wave6N?: number;
+	wave6Card?: ScryfallCard;
+	wave6FaceIndex?: number;
+	sourceTributePaid?: boolean;
+	// --- End Track P18a ---
 }
 
 /** Snapshot of an IR effect binding carried into a delayed trigger (CR 603.7c). */
@@ -1793,6 +1835,16 @@ export interface CombatState {
 	dealtFirstStrikeDamageIds?: string[];
 	blockersDeclared?: boolean;
 	awaitingAttackersDeclaration?: boolean;
+	// --- Track P18a ---
+	/** CR 702.22c–k Banding: attacking bands declared for the current combat phase. */
+	bands?: Array<{
+		id: string;
+		defenderPlayerId: string;
+		defenderPlaneswalkerId?: string | null;
+		defenderBattleId?: string | null;
+		memberIds: string[];
+	}>;
+	// --- End Track P18a ---
 }
 
 /**
@@ -2264,6 +2316,18 @@ export interface PlayerGameState {
 	/** True once this player has begun at least one upkeep step this game. */
 	hadUpkeepThisGame?: boolean;
 	// --- End Track P16b ---
+	// --- Track P18a ---
+	/** CR 702.195b–c Storied: permanent player designation once granted for the rest of the game. */
+	hasEnduringStory?: boolean;
+	/** CR 702.50a Epic: true once an Epic spell has resolved under this player's control ("can't cast spells"). */
+	cannotCastSpellsForRestOfGame?: boolean;
+	/** CR 702.50a Epic: resolved Epic spells copied at the beginning of each of this player's upkeeps. */
+	epicSpells?: Array<{
+		card: ScryfallCard;
+		faceIndex?: number;
+		triggerEventStackItem?: StackItem;
+	}>;
+	// --- End Track P18a ---
 }
 
 export interface ManaRider {
@@ -2770,6 +2834,10 @@ export type GameActionPayload =
 				defenderBattleId?: string | null;
 				// --- End Track P15 ---
 			}>;
+			// --- Track P18a ---
+			/** CR 702.22c Banding: optional groups of `attackerInstanceId`s declared as attacking bands. */
+			bands?: string[][];
+			// --- End Track P18a ---
 	  }
 	| {
 			type: 'declare_blockers';

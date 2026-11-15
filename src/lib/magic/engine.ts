@@ -320,6 +320,29 @@ import {
 	wave5TriggerTargetSpecs
 } from './runtime/framesBattlesAndKeywordsWave5.ts';
 // --- End Track P15 ---
+// --- Track P18a ---
+import {
+	checkStoriedDesignations,
+	chooseBotBandingAttackerDamageTarget,
+	chooseBotBandingBlockerDamageTarget,
+	enforceSoulbondPairs,
+	enqueueEpicUpkeepTriggers,
+	epicUpkeepCompiledEffect,
+	grantedFrenzyCompiledEffect,
+	isFortificationIllegalAttachment,
+	isMutateTargetStillLegal,
+	isWave6StackItem,
+	maybeEnqueueSpellHauntTrigger,
+	mutateTargetSpec,
+	propagateBandingBlockers,
+	registerResolvedEpicSpell,
+	registerWave6Host,
+	resolveMutatingSpellOnStack,
+	resolveWave6StackItem,
+	validateAndBuildAttackingBands,
+	wave6TriggerTargetSpecs
+} from './runtime/keywordsWave6.ts';
+// --- End Track P18a ---
 export { applyCastCostAids, formatManaRequirement, getSuspendSpec };
 import { getKeywordSpec } from './keywords.ts';
 import {
@@ -449,6 +472,10 @@ import {
 	type CastOption,
 	type ChoiceAnswer,
 	type ChoiceRequest,
+	// --- Track P18a ---
+	type CombatAttacker,
+	type CombatState,
+	// --- End Track P18a ---
 	type CompiledDelayedEffect,
 	type CopiableState,
 	type CostPayment,
@@ -1341,6 +1368,9 @@ function enumerateCandidateCastOptions(
 					// --- Track P9 ---
 					...(meta.dashed ? { dashed: true } : {}),
 					// --- End Track P9 ---
+					// --- Track P18a ---
+					...(meta.mutating ? { mutating: true } : {}),
+					// --- End Track P18a ---
 					// --- Track P14 ---
 					...(viaWave5Slot?.spellMods?.exileIfPutIntoGraveyard
 						? { exileIfPutIntoGraveyard: true }
@@ -1363,7 +1393,14 @@ function enumerateCandidateCastOptions(
 					timing: meta.timing ?? 'default',
 					spellMods,
 					choosesX: spellChoosesX(card, baseCost, undefined, fi, false),
-					requiresTarget: meta.targetsBecomeEach ? false : targetInfo.requiresTarget,
+					requiresTarget: meta.mutating
+						? true
+						: meta.targetsBecomeEach
+							? false
+							: targetInfo.requiresTarget,
+					// --- Track P18a ---
+					...(meta.mutating ? { mutate: true } : {}),
+					// --- End Track P18a ---
 					// --- Track P14 ---
 					...(viaWave5Slot?.staticPlaySlotKey
 						? { staticPlaySlotKey: viaWave5Slot.staticPlaySlotKey }
@@ -6989,12 +7026,17 @@ function applyGameActionInner(
 				hasOptCounts ? normalizedOptCounts : undefined
 			);
 			const nextSummarySuffix = `${castOption.spellMods?.castSummarySuffix ?? ''}${paidReturnToHand ? ' (Buyback)' : ''}${paidChooseAllModes ? ' (Entwined)' : ''}`;
+			const mutateTargetId =
+				castOption.spellMods?.mutating && targets[0]?.id ? targets[0].id : undefined;
 			const effectiveSpellMods: SpellModifications | undefined =
-				paidReturnToHand || paidChooseAllModes
+				paidReturnToHand || paidChooseAllModes || mutateTargetId
 					? {
 							...castOption.spellMods,
 							...(paidReturnToHand ? { returnToHandOnResolve: true } : {}),
-							...(nextSummarySuffix ? { castSummarySuffix: nextSummarySuffix } : {})
+							...(nextSummarySuffix ? { castSummarySuffix: nextSummarySuffix } : {}),
+							// --- Track P18a ---
+							...(mutateTargetId ? { mutateTargetId } : {})
+							// --- End Track P18a ---
 						}
 					: castOption.spellMods;
 			if (
@@ -7406,7 +7448,9 @@ function applyGameActionInner(
 			if (state.combat.active) {
 				return { ok: false, error: 'Attackers have already been declared this combat.' };
 			}
-			return performDeclareAttackers(state, actor, action.assignments, false);
+			// --- Track P18a: Banding (CR 702.22c) ---
+			return performDeclareAttackers(state, actor, action.assignments, false, false, action.bands);
+			// --- End Track P18a ---
 		}
 
 		case 'declare_blockers': {
@@ -7897,7 +7941,10 @@ function performDeclareAttackers(
 	}>,
 	fromPhaseEntry: boolean,
 	/** Only for the bot's last-resort empty declaration, after a 'rule' line has been logged. */
-	ignoreAttackRequirements = false
+	ignoreAttackRequirements = false,
+	// --- Track P18a: Banding (CR 702.22c) ---
+	rawBands?: string[][]
+	// --- End Track P18a ---
 ): { ok: boolean; error?: string } {
 	const actorId = actor.playerId;
 	const validAttackers = [];
@@ -8080,6 +8127,32 @@ function performDeclareAttackers(
 		return { ok: false, error: mandatoryViolation };
 	}
 
+	// --- Track P18a: Validate Banding formations before paying taxes / tapping (CR 702.22c) ---
+	let validatedBands: CombatState['bands'];
+	if (rawBands && rawBands.length > 0) {
+		const previewAttackers: CombatAttacker[] = assignments.map((assign) => {
+			const defBattleProtectorId = assign.defenderBattleId
+				? findPermanentOnBoard(state, assign.defenderBattleId)?.inst.protectorId
+				: undefined;
+			const effectiveDefId = defBattleProtectorId ?? assign.defenderPlayerId;
+			return {
+				attackerInstanceId: assign.attackerInstanceId,
+				controllerId: actorId,
+				defenderPlayerId: effectiveDefId,
+				defenderPlaneswalkerId: assign.defenderPlaneswalkerId || null,
+				...(assign.defenderBattleId ? { defenderBattleId: assign.defenderBattleId } : {}),
+				blockerInstanceIds: [],
+				wasBlocked: false
+			};
+		});
+		const bandRes = validateAndBuildAttackingBands(state, actor, previewAttackers, rawBands);
+		if (!bandRes.ok) {
+			return { ok: false, error: bandRes.error };
+		}
+		validatedBands = bandRes.bands;
+	}
+	// --- End Track P18a ---
+
 	// Pay attack tax if applicable
 	if (totalPropagandaTaxGeneric > 0) {
 		const taxReq = parseManaCost(`{${totalPropagandaTaxGeneric}}`);
@@ -8144,6 +8217,9 @@ function performDeclareAttackers(
 	state.combat.active = true;
 	state.combat.awaitingAttackersDeclaration = false;
 	state.combat.attackers = validAttackers;
+	// --- Track P18a ---
+	state.combat.bands = validatedBands;
+	// --- End Track P18a ---
 	state.combat.declaredBlockersPlayerIds = [];
 	state.combat.blockersDeclared = false;
 	state.combat.damageDealtFirstStrike = false;
@@ -8495,6 +8571,9 @@ function applyValidatedDefenderBlockers(
 			}
 		}
 	}
+	// --- Track P18a: CR 702.22h Propagate blockers across Banding bands ---
+	propagateBandingBlockers(state);
+	// --- End Track P18a ---
 	noteLayerInputsChanged(state);
 
 	if (!state.combat.declaredBlockersPlayerIds) {
@@ -10674,6 +10753,9 @@ function beginPhase(state: GameState, phase: GamePhase, activePlayer?: PlayerGam
 		} else if (phase === 'declare_attackers') {
 			state.combat.active = false;
 			state.combat.attackers = [];
+			// --- Track P18a ---
+			delete state.combat.bands;
+			// --- End Track P18a ---
 			state.combat.declaredBlockersPlayerIds = [];
 			state.combat.blockersDeclared = false;
 			state.combat.damageDealtFirstStrike = false;
@@ -10752,6 +10834,11 @@ function beginPhase(state: GameState, phase: GamePhase, activePlayer?: PlayerGam
 		active.hadUpkeepThisGame = true;
 	}
 	// --- End Track P16b ---
+	// --- Track P18a: CR 702.50a Epic upkeep delayed triggered abilities ---
+	if (phase === 'upkeep' && active && !active.lost) {
+		enqueueEpicUpkeepTriggers(state, active);
+	}
+	// --- End Track P18a ---
 	// Triggered abilities go on the stack now: the callers check the stack right after this.
 	flushTriggers(state);
 }
@@ -10842,7 +10929,7 @@ for (const kind of [
 	'DungeonCompleted',
 	'TookInitiative',
 	// --- End Track P13 & P15 ---
-	// --- Track P16b ---
+	// --- Track P16b & P18a ---
 	'Mutated',
 	'SoulbondPaired',
 	'HauntedCreatureDied',
@@ -10855,7 +10942,7 @@ for (const kind of [
 	'CollectedEvidence',
 	'LandPlayed',
 	'PlayerTargeted'
-	// --- End Track P16b ---
+	// --- End Track P16b & P18a ---
 ] as const) {
 	registerEventHandler(kind, (state, ev) => {
 		// --- Track P12 ---
@@ -11120,6 +11207,13 @@ function triggeredStackItem(state: GameState, t: PendingTrigger, idPrefix: strin
 			...(t.wave5CostText !== undefined ? { wave5CostText: t.wave5CostText } : {}),
 			...(t.wave5Card ? { wave5Card: t.wave5Card } : {}),
 			// --- End Track P15 ---
+			// --- Track P18a ---
+			...(t.wave6Tag ? { wave6Tag: t.wave6Tag } : {}),
+			...(t.wave6N !== undefined ? { wave6N: t.wave6N } : {}),
+			...(t.wave6Card ? { wave6Card: t.wave6Card } : {}),
+			...(t.wave6FaceIndex !== undefined ? { wave6FaceIndex: t.wave6FaceIndex } : {}),
+			...(t.sourceTributePaid ? { sourceTributePaid: true } : {}),
+			// --- End Track P18a ---
 			...(sourcePrototyped ? { sourcePrototyped: true } : {}),
 			// --- Track P7 ---
 			...(sourceWasCast ? { sourceWasCast: true } : {}),
@@ -11157,7 +11251,11 @@ function triggeredStackItem(state: GameState, t: PendingTrigger, idPrefix: strin
 			// --- End Track P10 ---
 			eventObjectId: eventObj.instanceId,
 			eventObjectVersion: eventObj.objectVersion,
-			...(t.eventPlayer ? { eventPlayerId: t.eventPlayer } : {}),
+			// --- Track P18a: Forward t.eventPlayerId when t.eventPlayer is omitted (e.g. Poisonous N) ---
+			...((t.eventPlayer ?? t.eventPlayerId)
+				? { eventPlayerId: t.eventPlayer ?? t.eventPlayerId }
+				: {}),
+			// --- End Track P18a ---
 			...(t.defendingPlayerId ? { defendingPlayerId: t.defendingPlayerId } : {}),
 			...(t.amount !== undefined ? { eventAmount: t.amount } : {}),
 			...(t.targetStackItemId ? { eventStackItemId: t.targetStackItemId } : {}),
@@ -11189,6 +11287,15 @@ export function triggerResolutionCounts(reset = false): { interpreter: number; m
 /** The compiled IR effect of a triggered stack item, or null (no compiled effect: legacy only). */
 function triggerItemEffect(item: StackItem) {
 	if (item.kind !== 'triggered') return null;
+	// --- Track P18a: CR 702.50a Epic upkeep copy trigger & CR 702.68 granted Frenzy N ---
+	if (item.wave6Tag === 'epic_upkeep') {
+		return { ...epicUpkeepCompiledEffect(), unparsed: [] };
+	}
+	if (item.grantedKeyword) {
+		const frenzyEff = grantedFrenzyCompiledEffect(item.grantedKeyword);
+		if (frenzyEff) return frenzyEff;
+	}
+	// --- End Track P18a ---
 	// --- Track P10 ---
 	if (item.reflexiveTrigger) {
 		const spec = resolveReflexiveSpecFromCompiled(item.reflexiveTrigger);
@@ -11882,6 +11989,10 @@ function triggerItemTargetSpecs(item: StackItem): TargetSpec[] {
 	const w5Specs = wave5TriggerTargetSpecs(item);
 	if (w5Specs) return w5Specs;
 	// --- End Track P15 ---
+	// --- Track P18a: Haunt target specs (CR 702.55a–c) ---
+	const w6Specs = wave6TriggerTargetSpecs(item);
+	if (w6Specs.length > 0) return w6Specs;
+	// --- End Track P18a ---
 	const compiled = triggerItemEffect(item);
 	if (!compiled || !staticallyInterpretable(compiled, true) || !triggerSpecsSupported(compiled.targets)) return [];
 	return compiled.targets;
@@ -12901,6 +13012,9 @@ function isUnautomatedStackItem(item: StackItem): boolean {
 	// --- Track P15 ---
 	if (isWave5StackItem(item)) return false;
 	// --- End Track P15 ---
+	// --- Track P18a ---
+	if (isWave6StackItem(item) || item.wave6Tag === 'epic_upkeep') return false;
+	// --- End Track P18a ---
 	if (item.kind === 'activated') return true;
 	if (item.kind === 'spell') {
 		const types = resolveObjectFaces(item.card, stackItemFaceOptions(item)).types;
@@ -13069,7 +13183,11 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 		let validTargets: TargetRef[];
 		if (item.targetsBySpec) {
 			let bucketSpecs: Array<TargetSpec | undefined> | undefined;
-			if (item.kind === 'triggered' && triggerSpecs.length === item.targetsBySpec.length) {
+			// --- Track P18a: Mutating creature spell target spec (CR 702.140a–b) ---
+			if (item.kind === 'spell' && item.spellMods?.mutating && item.targetsBySpec.length === 1) {
+				bucketSpecs = [mutateTargetSpec()];
+			} else if (item.kind === 'triggered' && triggerSpecs.length === item.targetsBySpec.length) {
+			// --- End Track P18a ---
 				bucketSpecs = triggerSpecs;
 			} else if (!item.chosenModes && !item.card?.typeLine.includes('Aura')) {
 				// --- Track P10 ---
@@ -13109,9 +13227,35 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 		} else {
 			validTargets = item.targets.filter(isTargetValid);
 		}
+		// --- Track P18a: CR 702.140a–b Re-verify non-Human Creature + same owner on resolution ---
+		if (item.kind === 'spell' && item.spellMods?.mutating) {
+			validTargets = validTargets.filter((t) => {
+				if (t.kind !== 'permanent') return false;
+				const found = findPermanentOnBoard(state, t.id);
+				return isMutateTargetStillLegal(state, item, found?.inst);
+			});
+		}
+		// --- End Track P18a ---
 		if (validTargets.length === 0) {
-			// --- Track P12: CR 702.103e Bestow ceases to be bestowed instead of being countered ---
-			if (item.kind === 'spell' && item.spellMods?.bestowed) {
+			// --- Track P18a: CR 702.140b Mutating spell with illegal target resolves as a creature spell ---
+			if (item.kind === 'spell' && item.spellMods?.mutating) {
+				item.spellMods = {
+					...item.spellMods,
+					mutating: false,
+					mutateTargetId: undefined,
+					mutateUnder: undefined
+				};
+				item.targets = [];
+				item.targetsBySpec = undefined;
+				addLog(
+					state,
+					'rule',
+					`${item.title}'s mutate target became illegal; it ceases to be a mutating creature spell and resolves as a creature spell (CR 702.140b).`,
+					item.controllerId
+				);
+			} else if (item.kind === 'spell' && item.spellMods?.bestowed) {
+				// --- End Track P18a ---
+				// --- Track P12: CR 702.103e Bestow ceases to be bestowed instead of being countered ---
 				item.spellMods = { ...item.spellMods, bestowed: false };
 				item.targets = [];
 				item.targetsBySpec = undefined;
@@ -13357,6 +13501,20 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 	}
 	// --- End Track P15 ---
 
+	// --- Track P18a ---
+	if (isWave6StackItem(item)) {
+		const wave6Res = resolveWave6StackItem(state, item, controller);
+		if (wave6Res === 'paused') return;
+		triggerPathCounts.interpreter++;
+		removeItemFromStack();
+		flushTriggers(state);
+		givePriorityToActiveOrNextPlayer(state);
+		state.passedPriorityPlayerIds = [];
+		checkStateBasedActions(state);
+		return;
+	}
+	// --- End Track P18a ---
+
 	// A spell or ability the compiler marked supported resolves on the IR interpreter
 	// (runtime/effects.ts); anything else isn't automated (below).
 	// --- Track P12: Backup-granted innate activated ability lookup ---
@@ -13455,6 +13613,22 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 
 	if (item.kind === 'triggered') triggerPathCounts[interpreted ? 'interpreter' : 'manual']++;
 
+	// --- Track P18a: CR 702.140c–d / CR 731.2a–e Resolve mutating creature spell onto target ---
+	if (item.kind === 'spell' && item.spellMods?.mutating) {
+		const mutRes = resolveMutatingSpellOnStack(state, item, controller);
+		if (mutRes === 'paused') return;
+		if (mutRes === 'merged') {
+			removeItemFromStack();
+			registerResolvedEpicSpell(state, item, controller);
+			flushTriggers(state);
+			givePriorityToActiveOrNextPlayer(state);
+			state.passedPriorityPlayerIds = [];
+			checkStateBasedActions(state);
+			return;
+		}
+	}
+	// --- End Track P18a ---
+
 	// CR 707.5: Before a Clone-style permanent spell leaves the stack to enter the battlefield,
 	// a human controller chooses which creature on the battlefield (if any) it enters as a copy of.
 	if (
@@ -13511,6 +13685,9 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 	// If this was a spell, move it to Battlefield (for permanents; copies become tokens per CR 111.13 / 608.3f / 707.10f)
 	// or Graveyard/Exile (for nontoken Instants/Sorceries).
 	if (item.kind === 'spell') {
+		// --- Track P18a: CR 702.50a Register Epic rest-of-game cast lock & upkeep copy ---
+		registerResolvedEpicSpell(state, item, controller);
+		// --- End Track P18a ---
 		const stackFaceOpts = stackItemFaceOptions(item);
 		const stackView = resolveObjectFaces(item.card, stackFaceOpts);
 		const stackTypes = stackView.types;
@@ -13836,6 +14013,11 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 			} else {
 				const dest = item.spellMods?.returnToHandOnResolve ? 'hand' : 'graveyard';
 				moveStackSpellToZone(state, item, dest);
+				// --- Track P18a: CR 702.55a Haunt on resolving Instant/Sorcery ---
+				if (dest === 'graveyard') {
+					maybeEnqueueSpellHauntTrigger(state, item, cardOwner, controller);
+				}
+				// --- End Track P18a ---
 			}
 		}
 	}
@@ -15144,6 +15326,45 @@ registerWave5Host({
 });
 // --- End Track P15 ---
 
+// --- Track P18a ---
+registerWave6Host({
+	uid,
+	addLog,
+	emitEvent,
+	flushTriggers,
+	allocateTimestamp,
+	resumeStackItem: (state, stackItemId) => {
+		const found = state.stack.find((s) => s.id === stackItemId);
+		if (found) resumeStackItem(state, found);
+	},
+	hasKeyword: (perm, keyword, st) => hasKeyword(perm, keyword, st ?? null!),
+	executeSpellCardEffectOnStack: (state, item, controller, spellCard) => {
+		const def = compileCard(spellCard);
+		const spellAb = def.faces[0]?.abilities.find((a) => a.kind === 'spell');
+		if (!spellAb || spellAb.kind !== 'spell') return 'done';
+		const result = executeEffectSteps(
+			state,
+			{
+				controller,
+				sourceId: item.sourceInstanceId,
+				sourceCard: spellCard,
+				title: item.title,
+				item,
+				targets: item.targets,
+				targetSpecs: spellAb.targets,
+				xValue: item.xValue,
+				...triggerEventContext(item, state)
+			},
+			spellAb.effect,
+			item.effectResume
+		);
+		if (result.paused) return 'paused';
+		delete item.effectResume;
+		return 'done';
+	}
+});
+// --- End Track P18a ---
+
 /**
  * CR 702.26: Phasing Out a permanent also indirectly phases out any Auras/Equipment attached to it.
  * Phased-out permanents do not change zones (no LTB/ETB triggers fire!).
@@ -15251,6 +15472,19 @@ export function executeSuspendFreeCastFromExile(
 ): void {
 	const eIdx = owner.exile.findIndex((c) => c.instanceId === suspCard.instanceId);
 	if (eIdx < 0) return;
+
+	// --- Track P18a: CR 702.50a Epic blocks casting spells for the rest of the game ---
+	if (owner.cannotCastSpellsForRestOfGame) {
+		suspCard.isSuspended = false;
+		addLog(
+			state,
+			'rule',
+			`${suspCard.card.name}'s last time counter was removed, but ${owner.username} cannot cast spells for the rest of the game (Epic, CR 702.50a); it remains in Exile.`,
+			owner.playerId
+		);
+		return;
+	}
+	// --- End Track P18a ---
 
 	// Check if global cast restrictions (like Rule of Law / Drannith Magistrate) block casting from Exile
 	const globalCheck = checkGlobalCastPermissionsAndRestrictions(
@@ -16007,6 +16241,9 @@ export function advancePhaseOrStep(state: GameState): void {
 				// CR 508.8: If no creatures are declared as attackers, skip declare_blockers, combat_damage, and end_combat
 				state.combat.active = false;
 				state.combat.attackers = [];
+				// --- Track P18a ---
+				delete state.combat.bands;
+				// --- End Track P18a ---
 				state.combat.declaredBlockersPlayerIds = [];
 				state.combat.blockersDeclared = false;
 				state.combat.dealtFirstStrikeDamageIds = [];
@@ -16048,6 +16285,9 @@ export function advancePhaseOrStep(state: GameState): void {
 			// CR 511.3: At the end of the end of combat step, all creatures are removed from combat
 			state.combat.active = false;
 			state.combat.attackers = [];
+			// --- Track P18a ---
+			delete state.combat.bands;
+			// --- End Track P18a ---
 			state.combat.declaredBlockersPlayerIds = [];
 			state.combat.blockersDeclared = false;
 			state.combat.dealtFirstStrikeDamageIds = [];
@@ -16205,7 +16445,33 @@ function executeCombatDamageStep(
 	// CR 510.1: First compute all combat damage assignments before dealing any damage (CR 510.2).
 	const assignedDamageOnPerm = new Map<string, number>();
 	const assignedDeathtouchOnPerm = new Set<string>();
-	const scheduledCombats: ScheduledCombatEntry[] = []; [];
+	const scheduledCombats: ScheduledCombatEntry[] = [];
+	// --- Track P18a: Precompute multi-attacker blocking map for Banding / CR 510.1d & CR 702.22k ---
+	const blockedAttackersByBlockerId = new Map<string, CardInstance[]>();
+	const blockerRemainingDmg = new Map<string, number>();
+	const blockerVisitIndex = new Map<string, number>();
+	for (const atkEntry of state.combat.attackers) {
+		const atkOwner = state.players.find((p) => p.playerId === atkEntry.controllerId);
+		const defOwner = state.players.find((p) => p.playerId === atkEntry.defenderPlayerId);
+		if (!atkOwner || !defOwner) continue;
+		const atkPerm = atkOwner.battlefield.find(
+			(c) => !c.phasedOut && c.instanceId === atkEntry.attackerInstanceId
+		);
+		if (!atkPerm) continue;
+		for (const blkId of atkEntry.blockerInstanceIds) {
+			const blkPerm = defOwner.battlefield.find((c) => !c.phasedOut && c.instanceId === blkId);
+			if (!blkPerm) continue;
+			let list = blockedAttackersByBlockerId.get(blkId);
+			if (!list) {
+				list = [];
+				blockedAttackersByBlockerId.set(blkId, list);
+			}
+			if (!list.includes(atkPerm)) {
+				list.push(atkPerm);
+			}
+		}
+	}
+	// --- End Track P18a ---
 
 	for (const atkEntry of state.combat.attackers) {
 		const atkPlayer = state.players.find((p) => p.playerId === atkEntry.controllerId);
@@ -16339,6 +16605,17 @@ function executeCombatDamageStep(
 					atkTrample &&
 					(!attackingPlaneswalker || Boolean(defWalker)) &&
 					(!attackingBattle || Boolean(defBattle));
+				// --- Track P18a: CR 702.22j Defender divides attacker's combat damage if any blocker has Banding ---
+				const defenderAssignsViaBanding =
+					blockers.length > 0 &&
+					blockers.some(
+						(blk) => blk.controllerId === defPlayer.playerId && hasKeyword(blk, 'Banding', state)
+					);
+				const bandingPreferredBlockerId = defenderAssignsViaBanding
+					? chooseBotBandingAttackerDamageTarget(state, blockers, remainingDamage, atkDeathtouch)
+					: null;
+				const atkDamageAssigner = defenderAssignsViaBanding ? defPlayer : atkPlayer;
+				// --- End Track P18a ---
 				let allPriorBlockersLethal = true;
 				for (let i = 0; i < blockers.length; i++) {
 					const b = blockers[i];
@@ -16355,16 +16632,22 @@ function executeCombatDamageStep(
 								: remTough;
 
 					const isLastBlocker = i === blockers.length - 1;
-					const autoDmg =
-						isLastBlocker && (!canTrampleOver || !allPriorBlockersLethal)
+					// --- Track P18a: CR 702.22j Defender-assigned combat damage absorbs trample & concentrates damage ---
+					const autoDmg = defenderAssignsViaBanding
+						? isLastBlocker
+							? remainingDamage
+							: b.instanceId === bandingPreferredBlockerId
+								? remainingDamage
+								: 0
+						: isLastBlocker && (!canTrampleOver || !allPriorBlockersLethal)
 							? remainingDamage
 							: Math.min(remainingDamage, lethalNeeded);
+					// --- End Track P18a ---
 
 					let dmgToBlocker = autoDmg;
-					// CR 702.19b: When blocked by multiple creatures, human controller divides combat damage
-					// among the blockers (and with Trample, must assign lethal to all blockers before excess tramples over).
+					// CR 702.19b / CR 702.22j: Human assigner divides combat damage among blockers.
 					if (
-						!atkPlayer.isBot &&
+						!atkDamageAssigner.isBot &&
 						(blockers.length >= 2 || canTrampleOver) &&
 						remainingDamage > 0
 					) {
@@ -16381,7 +16664,7 @@ function executeCombatDamageStep(
 								const reason = `Assign combat damage from ${attacker.card.name} (${remainingDamage} remaining) to blocker ${b.card.name} (${minDmg}–${maxDmg}; lethal is ${lethalNeeded}).`;
 								enqueueChoicePrompt(state, {
 									id: uid('prm', state),
-									playerId: atkPlayer.playerId,
+									playerId: atkDamageAssigner.playerId,
 									kind: 'chooseNumber',
 									purpose: 'generic',
 									title: `Combat Damage — ${attacker.card.name} → ${b.card.name}`,
@@ -16458,7 +16741,88 @@ function executeCombatDamageStep(
 				const bSnap = snapshots.get(b.instanceId)!;
 				const blockerDealsNow = bSnap.dealsNow;
 				if (blockerDealsNow && bSnap.power > 0) {
-					blockerAssignments.push({ blocker: b, bSnap, amount: bSnap.power });
+					// --- Track P18a: CR 510.1d & CR 702.22k Divide blocker damage across multiple blocked attackers ---
+					const blockedAtks = blockedAttackersByBlockerId.get(b.instanceId) ?? [attacker];
+					if (blockedAtks.length <= 1) {
+						blockerAssignments.push({ blocker: b, bSnap, amount: bSnap.power });
+					} else {
+						const remBlk = blockerRemainingDmg.get(b.instanceId) ?? bSnap.power;
+						const visitIdx = blockerVisitIndex.get(b.instanceId) ?? 0;
+						const isLastAtk = visitIdx >= blockedAtks.length - 1;
+						const attackerAssignsViaBanding = blockedAtks.some(
+							(a) => a.controllerId === atkPlayer.playerId && hasKeyword(a, 'Banding', state)
+						);
+						const blkAssigner = attackerAssignsViaBanding ? atkPlayer : defPlayer;
+						let autoBlkDmg = 0;
+						if (remBlk > 0) {
+							if (isLastAtk) {
+								autoBlkDmg = remBlk;
+							} else if (attackerAssignsViaBanding) {
+								const preferredAtkId = chooseBotBandingBlockerDamageTarget(
+									state,
+									blockedAtks,
+									bSnap.power,
+									bSnap.srcInfo.hasDeathtouch
+								);
+								autoBlkDmg = attacker.instanceId === preferredAtkId ? remBlk : 0;
+							} else {
+								const alreadyOnAtk =
+									assignedDamageOnPerm.get(attacker.instanceId) ?? atkSnap.damageMarkedBefore;
+								const remAtkTough = Math.max(0, atkSnap.toughness - alreadyOnAtk);
+								const atkLethal =
+									remAtkTough === 0 || assignedDeathtouchOnPerm.has(attacker.instanceId)
+										? 0
+										: bSnap.srcInfo.hasDeathtouch
+											? 1
+											: remAtkTough;
+								autoBlkDmg = Math.min(remBlk, atkLethal);
+							}
+						}
+						let dmgFromBlocker = autoBlkDmg;
+						if (!blkAssigner.isBot && !isLastAtk && remBlk > 0) {
+							const blkKey = `blk:${b.instanceId}:${attacker.instanceId}`;
+							const chosenBlk = chosenDamage[blkKey];
+							if (chosenBlk === undefined) {
+								const reason = `Assign combat damage from blocker ${b.card.name} (${remBlk} remaining) to attacker ${attacker.card.name} (0–${remBlk}).`;
+								enqueueChoicePrompt(state, {
+									id: uid('prm', state),
+									playerId: blkAssigner.playerId,
+									kind: 'chooseNumber',
+									purpose: 'generic',
+									title: `Combat Damage — ${b.card.name} → ${attacker.card.name}`,
+									description: reason,
+									continuation: {
+										kind: 'handler',
+										name: COMBAT_DAMAGE_ASSIGNMENT_HANDLER,
+										data: {
+											isFirstStrikeStep,
+											chosenDamage,
+											key: blkKey
+										}
+									},
+									choice: {
+										kind: 'chooseNumber',
+										min: 0,
+										max: remBlk,
+										defaultNumber: Math.max(0, Math.min(remBlk, autoBlkDmg)),
+										reason
+									}
+								});
+								return true;
+							}
+							dmgFromBlocker = Math.max(0, Math.min(remBlk, chosenBlk));
+						}
+						blockerRemainingDmg.set(b.instanceId, Math.max(0, remBlk - dmgFromBlocker));
+						blockerVisitIndex.set(b.instanceId, visitIdx + 1);
+						if (dmgFromBlocker > 0) {
+							const alreadyOnAtk =
+								assignedDamageOnPerm.get(attacker.instanceId) ?? atkSnap.damageMarkedBefore;
+							assignedDamageOnPerm.set(attacker.instanceId, alreadyOnAtk + dmgFromBlocker);
+							if (bSnap.srcInfo.hasDeathtouch) assignedDeathtouchOnPerm.add(attacker.instanceId);
+							blockerAssignments.push({ blocker: b, bSnap, amount: dmgFromBlocker });
+						}
+					}
+					// --- End Track P18a ---
 				}
 			}
 		}
@@ -17302,6 +17666,10 @@ export function checkStateBasedActions(state: GameState): void {
 					const isAura = evalPerm.hasSubType('Aura') || evalPerm.typeLine.includes('Aura');
 					const isEquipment =
 						evalPerm.hasSubType('Equipment') || evalPerm.typeLine.includes('Equipment');
+					// --- Track P18a: CR 301.6 / CR 704.5n Fortification attachment SBA ---
+					const isFortification =
+						evalPerm.hasSubType('Fortification') || evalPerm.typeLine.includes('Fortification');
+					// --- End Track P18a ---
 
 					if (isAura) {
 						if (!perm.attachedToId) {
@@ -17404,6 +17772,35 @@ export function checkStateBasedActions(state: GameState): void {
 							});
 							// --- End Track P16b ---
 						}
+					// --- Track P18a: CR 301.6 / CR 704.5n Unattach Fortification from non-Land or when creature ---
+					} else if (isFortification && perm.attachedToId) {
+						const targetFound = findPermanentOnBoard(state, perm.attachedToId);
+						const targetEval = targetFound ? getSbaEval(targetFound.inst) : null;
+						const hasProt = targetFound
+							? hasProtectionFrom(
+									targetFound.inst,
+									perm.copiableCard ?? perm.card,
+									state,
+									perm,
+									true
+								)
+							: false;
+						if (
+							isFortificationIllegalAttachment(
+								evalPerm,
+								perm.instanceId,
+								perm.attachedToId,
+								targetFound,
+								targetEval,
+								hasProt
+							)
+						) {
+							perm.attachedToId = null;
+							noteLayerInputsChanged(state);
+							boardInvalidatedInPass = true;
+							anyActionTaken = true;
+						}
+					// --- End Track P18a ---
 					} else if (perm.attachedToId) {
 						const targetFound = findPermanentOnBoard(state, perm.attachedToId);
 						if (!targetFound) {
@@ -17843,6 +18240,16 @@ export function checkStateBasedActions(state: GameState): void {
 			boardInvalidatedInPass = true;
 		}
 		// --- End Track P15 ---
+		// --- Track P18a: Soulbond unpair (CR 702.95e) & Storied enduring story check (CR 702.195b–c) ---
+		if (enforceSoulbondPairs(state)) {
+			anyActionTaken = true;
+			boardInvalidatedInPass = true;
+		}
+		if (checkStoriedDesignations(state)) {
+			anyActionTaken = true;
+			boardInvalidatedInPass = true;
+		}
+		// --- End Track P18a ---
 
 		// 7. Simultaneous Player Loss SBAs (CR 104.3c, 104.4a, 704.5a-c, 903.10a) — respects Platinum Angel!
 		const newlyEliminated: Array<{
@@ -18957,14 +19364,24 @@ function validateTargetLegalityInner(
 			(ts) => ts.kind === 'object' || ts.kind === 'objectOrPlayer'
 		);
 		if (objectSpecs.length > 0) {
+			// --- Track P18a: Resolve off-battlefield / stack source so `sameOwnerAsSource` sees true spell owner ---
 			const sourceInst = sourceInstanceId
-				? findPermanentOnBoard(state, sourceInstanceId)?.inst
+				? (findPermanentOnBoard(state, sourceInstanceId)?.inst ??
+					findCardAnywhere(state, sourceInstanceId)?.inst)
 				: undefined;
+			const sourceStackItem =
+				!sourceInst && sourceInstanceId
+					? state.stack.find(
+							(s) => s.sourceInstanceId === sourceInstanceId || s.id === sourceInstanceId
+						)
+					: undefined;
 			const fctx: FilterContext = {
 				state,
 				controllerId: actorId,
-				source: sourceInst
+				source: sourceInst,
+				...(sourceStackItem ? { stackItem: sourceStackItem } : {})
 			};
+			// --- End Track P18a ---
 			const isAuraSpell = Boolean(sourceCard?.typeLine.includes('Aura'));
 			const matchesFilter = isAuraSpell
 				? objectSpecs.every((ts) => matchesObjectFilter(found.inst, ts.filter, fctx))
@@ -20191,6 +20608,15 @@ function checkSpellCastOptionLegalityInner(
 		};
 	}
 	// --- End Track P12 ---
+
+	// --- Track P18a: CR 702.50a Epic blocks casting spells for the rest of the game ---
+	if (actor.cannotCastSpellsForRestOfGame) {
+		return {
+			ok: false,
+			error: 'Strict Rules Violation: You cannot cast spells for the rest of the game (Epic, CR 702.50a).'
+		};
+	}
+	// --- End Track P18a ---
 
 	// Check global Rule-Modifying Cast Permissions & Restrictions (CR 101.2: "Can't beats Can")
 	// Covers Vedalken Orrery, Leyline of Anticipation, Rule of Law, Drannith Magistrate, Grand Abolisher, Teferi
