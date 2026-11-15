@@ -108,6 +108,36 @@ import {
 	staticallyInterpretableP15
 } from './framesBattlesAndKeywordsWave5.ts';
 // --- End Track P15 ---
+// --- Track P16a ---
+import {
+	buildDoOnceThisTurnKey,
+	buildP16aDurationExpiryFields,
+	canDoOnceThisTurn,
+	evaluateP16aStepCondition,
+	executeAssimilate,
+	executeCastFree,
+	executeConvert,
+	executeCopyCountersFrom,
+	executeEmpowerJace,
+	executeGeneralizedMoveCounters,
+	executeHarness,
+	executeHeal,
+	executePileSplit,
+	executePutPlayerCounters,
+	executeRecruit,
+	executeRemoveFromCombat,
+	getPlayerCounterCount,
+	isNegativeArbitraryCounter,
+	isSpellUncounterableByP16a,
+	latchBrokenP16aSourceConditions,
+	markDoneOnceThisTurn,
+	resolveChosenBasicLandSubtypeForAnimate,
+	resolveChosenCreatureSubtypeForAnimate,
+	resolveChosenKeywordFromOptions,
+	resolveChosenProtectionKeyword,
+	type P16aStepHost
+} from './effectsWave6.ts';
+// --- End Track P16a ---
 import { noteLayerInputsChanged } from './layerCache.ts';
 import {
 	matchesObjectFilter,
@@ -459,8 +489,11 @@ export interface EffectResult {
 	turnEnded: boolean;
 	/** The spell exiles itself as it resolves ("Exile ~."). */
 	exileSelf: boolean;
+	// --- Track P16a: counters placed on self-exiled resolving spell ("Exile ~ with N time counters on it") ---
+	exileSelfWithCounters?: { counter: CounterType; count: number };
 	/** The spell puts itself into its owner's library as it resolves (CR 401.2, 401.7, 608.2m). */
-	librarySelf?: { position: 'top' | 'bottom'; fromTop?: number };
+	// --- Track P16a: added optional `shuffle` ---
+	librarySelf?: { position: 'top' | 'bottom'; fromTop?: number; shuffle?: boolean };
 	/**
 	 * Step E2: a human must choose before the steps can go on. The prompt is queued and the resume
 	 * frame is stored on the stack item (`item.effectResume`); the caller leaves the item on the stack
@@ -991,15 +1024,9 @@ export function proliferateCandidates(
 	state: GameState,
 	controller: PlayerGameState
 ): { candidates: string[]; defaultIds: string[] } {
-	// --- Track P11 ---
-	const allCounterTypes = ALL_COUNTER_TYPES;
-	const controllerPositiveTypes = ALL_COUNTER_TYPES.filter(
-		(c) => !NEGATIVE_COUNTER_TYPES.has(c) && c !== 'age'
-	);
-	const opponentNegativeTypes = ALL_COUNTER_TYPES.filter(
-		(c) => NEGATIVE_COUNTER_TYPES.has(c) || c === 'age'
-	);
-	// --- End Track P11 ---
+	// --- Track P11 + Track P16a ---
+	void ALL_COUNTER_TYPES;
+	// --- End Track P11 + Track P16a ---
 	const candidates: string[] = [];
 	const defaultIds: string[] = [];
 	for (const pl of state.players) {
@@ -1007,28 +1034,46 @@ export function proliferateCandidates(
 		const isSelf = pl.playerId === controller.playerId;
 		for (const perm of pl.battlefield) {
 			if (perm.phasedOut) continue;
-			if (allCounterTypes.some((cType) => (perm.counters[cType] || 0) > 0)) {
+			// --- Track P16a (CR 701.34a): Proliferate supports arbitrary & named counters ---
+			const presentTypes = Object.entries(perm.counters)
+				.filter(([, cnt]) => (cnt || 0) > 0)
+				.map(([k]) => k);
+			if (presentTypes.length > 0) {
 				candidates.push(perm.instanceId);
-				const wantTypes = isSelf ? controllerPositiveTypes : opponentNegativeTypes;
-				if (wantTypes.some((cType) => (perm.counters[cType] || 0) > 0)) {
+				const hasWanted = presentTypes.some((cType) => {
+					const isNeg =
+						NEGATIVE_COUNTER_TYPES.has(cType as CounterType) ||
+						cType === 'age' ||
+						isNegativeArbitraryCounter(cType);
+					return isSelf ? !isNeg : isNeg;
+				});
+				if (hasWanted) {
 					defaultIds.push(perm.instanceId);
 				}
 			}
+			// --- End Track P16a ---
 		}
 		if (
 			pl.poison > 0 ||
 			(pl.experienceCounters || 0) > 0 ||
-			(pl.energyCounters || 0) > 0
+			(pl.energyCounters || 0) > 0 ||
+			// --- Track P16a ---
+			(pl.radCounters || 0) > 0 ||
+			(pl.ticketCounters || 0) > 0
+			// --- End Track P16a ---
 		) {
 			candidates.push(pl.playerId);
 			if (isSelf) {
 				if (
-					((pl.experienceCounters || 0) > 0 || (pl.energyCounters || 0) > 0) &&
-					pl.poison === 0
+					((pl.experienceCounters || 0) > 0 ||
+						(pl.energyCounters || 0) > 0 ||
+						(pl.ticketCounters || 0) > 0) &&
+					pl.poison === 0 &&
+					(pl.radCounters || 0) === 0
 				) {
 					defaultIds.push(pl.playerId);
 				}
-			} else if (pl.poison > 0) {
+			} else if (pl.poison > 0 || (pl.radCounters || 0) > 0) {
 				defaultIds.push(pl.playerId);
 			}
 		}
@@ -1062,6 +1107,10 @@ class Run {
 	lastExcessDamage?: number;
 	lastEffectAmount?: number;
 	// --- End Track P13 ---
+	// --- Track P16a ---
+	lastCountersRemoved?: number;
+	private prevStepDiedIds = new Set<string>();
+	// --- End Track P16a ---
 	currentSteps: EffectStep[] = [];
 	subPathPrefix?: number[];
 	private stepActedIds: string[] = [];
@@ -1087,6 +1136,9 @@ class Run {
 		this.lastExcessDamage = resume?.lastExcessDamage ?? ctx.item.lastExcessDamage;
 		this.lastEffectAmount = resume?.lastEffectAmount ?? ctx.item.lastEffectAmount;
 		// --- End Track P13 ---
+		// --- Track P16a ---
+		this.lastCountersRemoved = ctx.item.lastCountersRemoved;
+		// --- End Track P16a ---
 		for (const t of ctx.targets) {
 			const f = this.locate(t.id);
 			if (f) this.initialSnapshots.set(t.id, this.snapshot(f.inst));
@@ -1973,6 +2025,14 @@ class Run {
 					}) ?? fallback
 				);
 			// --- End Track P15 ---
+			// --- Track P16a ---
+			case 'countersRemovedThisWay':
+				return this.lastCountersRemoved ?? this.ctx.item.lastCountersRemoved ?? 0;
+			case 'playerCounters': {
+				const p = this.playerRef(a.player);
+				return getPlayerCounterCount(p, a.counter);
+			}
+			// --- End Track P16a ---
 		}
 	}
 
@@ -2316,6 +2376,19 @@ class Run {
 				return false;
 			}
 		}
+		// --- Track P16a (CR 701.72, CR 607.2a) ---
+		if (f.assimilatedWithSelf) {
+			if (!c.assimilatedBy) return false;
+			const srcInst = this.locate(this.ctx.sourceId)?.inst;
+			const expectedVer = this.ctx.item.sourceObjectVersion ?? srcInst?.objectVersion ?? 1;
+			if (
+				c.assimilatedBy.sourceInstanceId !== this.ctx.sourceId ||
+				c.assimilatedBy.sourceObjectVersion !== expectedVer
+			) {
+				return false;
+			}
+		}
+		// --- End Track P16a ---
 		if (f.other && c.instanceId === this.ctx.sourceId) return false;
 		if (f.named !== undefined) {
 			const name = c.isFaceDown ? '' : ev ? ev.effectiveName : card.name;
@@ -2448,6 +2521,11 @@ class Run {
 	}
 
 	private resetStepReflexiveTracking(step: EffectStep): void {
+		// --- Track P16a ---
+		if (this.stepDiedIds.size > 0) {
+			this.prevStepDiedIds = new Set(this.stepDiedIds);
+		}
+		// --- End Track P16a ---
 		this.stepActedIds = [];
 		this.stepDiedIds.clear();
 		this.stepPreSnapshots.clear();
@@ -2528,6 +2606,28 @@ class Run {
 		for (; this.stepIndex < steps.length; this.stepIndex++) {
 			if (this.result.turnEnded) return;
 			const step = steps[this.stepIndex];
+			// --- Track P16a (CR 603.2h: "Do this only once each turn") ---
+			const onceAbilityTag = `${this.ctx.item.triggeredAbilityIndex ?? this.ctx.item.abilityId ?? this.ctx.title}:${this.stepIndex}`;
+			const doOnceKey = step.doThisOncePerTurn
+				? buildDoOnceThisTurnKey(
+						this.ctx.sourceId,
+						this.ctx.item.sourceObjectVersion,
+						onceAbilityTag
+					)
+				: null;
+			if (
+				doOnceKey &&
+				this.phase === 'optional' &&
+				Object.keys(this.answers).length === 0 &&
+				!canDoOnceThisTurn(this.state, doOnceKey)
+			) {
+				this.stepDecisions[this.stepIndex] = false;
+				this.subStepIndex = 0;
+				this.phase = 'optional';
+				this.answers = {};
+				continue;
+			}
+			// --- End Track P16a ---
 			// --- Track P10 ---
 			this.resetStepReflexiveTracking(step);
 			// --- End Track P10 ---
@@ -2550,6 +2650,9 @@ class Run {
 				continue;
 			}
 			if (step.condition && this.phase !== 'afterStep' && !this.condition(step.condition)) {
+				// --- Track P16a ---
+				if (step.optional) this.stepDecisions[this.stepIndex] = false;
+				// --- End Track P16a ---
 				this.subStepIndex = 0;
 				this.phase = 'optional';
 				this.answers = {};
@@ -2606,6 +2709,14 @@ class Run {
 			// --- Track P10 ---
 			this.finishStepReflexive(step);
 			// --- End Track P10 ---
+			// --- Track P16a ---
+			if (doOnceKey && this.stepDecisions[this.stepIndex] !== false) {
+				markDoneOnceThisTurn(this.state, doOnceKey);
+			}
+			if (this.stepDiedIds.size > 0) {
+				this.stepDecisions[-1000 - this.stepIndex] = true;
+			}
+			// --- End Track P16a ---
 			this.subStepIndex = 0;
 			this.phase = 'optional';
 			this.answers = {};
@@ -2808,8 +2919,66 @@ class Run {
 				return;
 			}
 			case 'bounce': {
+				// --- Track P16a: Non-targeted choice bounce ("Return a/up to N <filter> you control to its owner's hand") ---
+				const batchKey = `batch:${this.stepIndex}`;
+				if (step.params?.choiceCount !== undefined && !this.answers[batchKey]) {
+					const chooser = (step.actor ? this.playerRef(step.actor) : null) ?? you;
+					const cands = this.objects(step.subject).filter((o) => o.zone === 'battlefield');
+					const want = Math.min(cands.length, Math.max(0, this.amount(step.params.choiceCount, 1)));
+					const minPick = step.params.upTo ? 0 : want;
+					const choiceKey = `bounce_pick:${this.stepIndex}`;
+					if (want <= 0) {
+						if (step.params.upTo) this.stepDecisions[this.stepIndex] = false;
+						this.bind(step, []);
+						this.answers[batchKey] = { kind: 'chooseObjects', objectIds: [] };
+						return;
+					}
+					if (
+						!chooser.isBot &&
+						this.canPause &&
+						(step.params.upTo || cands.length > minPick) &&
+						!this.answers[choiceKey]
+					) {
+						this.pauseForChoice(
+							chooser,
+							`${title} — Return Permanent(s) to Hand`,
+							`Choose ${minPick === want ? want : `up to ${want}`} permanent(s) to return to hand.`,
+							cands.map((c) => c.instanceId),
+							minPick,
+							want,
+							'battlefield',
+							cands.slice(0, want).map((c) => c.instanceId),
+							choiceKey
+						);
+						return;
+					}
+					let chosen: CardInstance[];
+					if (this.answers[choiceKey]?.kind === 'chooseObjects') {
+						chosen = this.answered(choiceKey, cands, minPick, want) ?? [];
+					} else if (step.params.upTo && chooser.playerId === you.playerId && cands.every((c) => c.controllerId === you.playerId)) {
+						// Prefer tapped lands on bouncelands, else lowest MV
+						const sorted = [...cands].sort((a, b) => {
+							if (a.tapped !== b.tapped) return a.tapped ? -1 : 1;
+							return objectManaValue(s, a) - objectManaValue(s, b);
+						});
+						chosen = sorted.slice(0, minPick === 0 ? Math.min(1, want) : want);
+					} else {
+						const sorted = [...cands].sort((a, b) => {
+							if (a.tapped !== b.tapped) return a.tapped ? -1 : 1;
+							return objectManaValue(s, a) - objectManaValue(s, b);
+						});
+						chosen = sorted.slice(0, want);
+					}
+					this.stepDecisions[this.stepIndex] = chosen.length > 0;
+					this.bind(step, chosen);
+					this.answers[batchKey] = {
+						kind: 'chooseObjects',
+						objectIds: chosen.map((c) => c.instanceId)
+					};
+				}
+				// --- End Track P16a ---
 				this.runIndexedBatch(
-					`batch:${this.stepIndex}`,
+					batchKey,
 					() => {
 						const objs = this.objects(step.subject).filter((o) => o.zone === 'battlefield');
 						this.bind(step, objs);
@@ -2843,6 +3012,17 @@ class Run {
 				for (const id of ids) {
 					const target = s.stack.find((x) => x.id === id || x.sourceInstanceId === id);
 					if (!target) continue;
+					// --- Track P16a: Turn/next-spell uncounterable protection ---
+					if (isSpellUncounterableByP16a(s, target)) {
+						p.addLog(
+							s,
+							'cast',
+							`${target.title} can't be countered (${title}).`,
+							you.playerId
+						);
+						continue;
+					}
+					// --- End Track P16a ---
 					countered.push({
 						id: target.sourceInstanceId,
 						lki: {
@@ -2941,13 +3121,71 @@ class Run {
 				return;
 			}
 			case 'putCounters': {
+				// --- Track P16a (CR 122.8–9): Copy counters from source/LKI or place multiple counter kinds ---
+				if (step.params?.copyCountersFrom) {
+					executeCopyCountersFrom(this.p16aHost(), step);
+					return;
+				}
+				const multiSpecs = step.params?.multiCounters;
+				// --- End Track P16a ---
 				const counter = step.params?.counter ?? '+1/+1';
 				const n = this.amount(step.amount, 1);
 				// --- Track P7 ---
 				const isDivided = Boolean(step.params?.divided);
 				// --- End Track P7 ---
+				// --- Track P16a: Non-targeted choice counter placement ("Put N counters on a/up to K <filter> you control") ---
+				const ctrBatchKey = `batch:${this.stepIndex}`;
+				if (step.params?.choiceCount !== undefined && !this.answers[ctrBatchKey]) {
+					const chooser = (step.actor ? this.playerRef(step.actor) : null) ?? you;
+					const cands = this.objects(step.subject).filter(
+						(o) =>
+							o.zone === 'battlefield' &&
+							(step.subject.k !== 'self' ||
+								this.ctx.item.sourceObjectVersion === undefined ||
+								(o.objectVersion ?? 1) === this.ctx.item.sourceObjectVersion)
+					);
+					const want = Math.min(cands.length, Math.max(0, this.amount(step.params.choiceCount, 1)));
+					const minPick = step.params.upTo ? 0 : want;
+					const choiceKey = `putctr_pick:${this.stepIndex}`;
+					if (want <= 0) {
+						if (step.params.upTo) this.stepDecisions[this.stepIndex] = false;
+						this.bind(step, []);
+						this.answers[ctrBatchKey] = { kind: 'chooseObjects', objectIds: [] };
+						return;
+					}
+					if (
+						!chooser.isBot &&
+						this.canPause &&
+						(step.params.upTo || cands.length > minPick) &&
+						!this.answers[choiceKey]
+					) {
+						this.pauseForChoice(
+							chooser,
+							`${title} — Choose Permanent(s) for Counter(s)`,
+							`Choose ${minPick === want ? want : `up to ${want}`} permanent(s) to put counter(s) on.`,
+							cands.map((c) => c.instanceId),
+							minPick,
+							want,
+							'battlefield',
+							cands.slice(0, want).map((c) => c.instanceId),
+							choiceKey
+						);
+						return;
+					}
+					const chosen =
+						this.answers[choiceKey]?.kind === 'chooseObjects'
+							? (this.answered(choiceKey, cands, minPick, want) ?? [])
+							: cands.slice(0, want);
+					this.stepDecisions[this.stepIndex] = chosen.length > 0;
+					this.bind(step, chosen);
+					this.answers[ctrBatchKey] = {
+						kind: 'chooseObjects',
+						objectIds: chosen.map((c) => c.instanceId)
+					};
+				}
+				// --- End Track P16a ---
 				const { total, paused } = this.runIndexedBatch(
-					`batch:${this.stepIndex}`,
+					ctrBatchKey,
 					() => {
 						const objs = this.objects(step.subject).filter(
 							(o) =>
@@ -2962,6 +3200,15 @@ class Run {
 					(id, idx) => {
 						const f = this.locate(id);
 						if (!f || f.zone !== 'battlefield') return;
+						// --- Track P16a ---
+						if (multiSpecs?.length) {
+							for (const mc of multiSpecs) {
+								const cnt = this.amount(mc.count, 1);
+								if (cnt > 0) p.addCounters(s, f.inst, mc.counter, cnt);
+							}
+							return;
+						}
+						// --- End Track P16a ---
 						// --- Track P7 ---
 						const amt = isDivided
 							? getLockedTargetDivisionAmount(this.ctx.item, id, n, idx, Math.max(1, this.ctx.targets.length))
@@ -2979,6 +3226,11 @@ class Run {
 				const counter = step.params?.counter ?? '+1/+1';
 				const want = Math.max(0, this.amount(step.amount, 1));
 				const sacrificeIfUnable = Boolean(step.params?.ifUnableSacrificeSelf);
+				// --- Track P16a ---
+				let totalRemovedInStep = 0;
+				this.lastCountersRemoved = 0;
+				this.ctx.item.lastCountersRemoved = 0;
+				// --- End Track P16a ---
 				this.runIndexedBatch(
 					`batch:${this.stepIndex}`,
 					() => {
@@ -2999,10 +3251,65 @@ class Run {
 						// --- Track P10 ---
 						const preSnap = this.captureTriggerEventLki(inst);
 						// --- End Track P10 ---
+						// --- Track P16a: Support `counter === 'any'` ("remove a/N/all counters") ---
+						if (counter === 'any') {
+							let remainingBudget = want;
+							let removedFromInst = 0;
+							for (const [cKey, curVal] of Object.entries(inst.counters)) {
+								if (!curVal || curVal <= 0 || remainingBudget <= 0) continue;
+								const take = Math.min(curVal, remainingBudget);
+								const nextVal = curVal - take;
+								inst.counters[cKey] = nextVal;
+								remainingBudget -= take;
+								removedFromInst += take;
+								totalRemovedInStep += take;
+								this.lastCountersRemoved = totalRemovedInStep;
+								this.ctx.item.lastCountersRemoved = totalRemovedInStep;
+								noteLayerInputsChanged(s);
+								if (!inst.phasedOut) {
+									emitEvent(s, {
+										kind: 'CounterRemoved',
+										objectId: inst.instanceId,
+										object: inst,
+										counterType: cKey,
+										amount: take,
+										previousCount: curVal,
+										newCount: nextVal
+									});
+									if (cKey === 'defense') {
+										onBattleDefenseCountersRemoved(s, inst, curVal, nextVal);
+									}
+								}
+							}
+							if (removedFromInst > 0) {
+								this.recordStepActedObject(inst, preSnap, false);
+								p.addLog(
+									s,
+									'cast',
+									`Removed ${removedFromInst} counter(s) from ${inst.card.name}.`,
+									you.playerId
+								);
+								if (!inst.phasedOut) flushTriggers(s);
+							}
+							if (sacrificeIfUnable && removedFromInst < want && inst.zone === 'battlefield') {
+								const res = p.moveFromBattlefield(s, inst, 'graveyard', {
+									sacrificedByPlayerId: you.playerId
+								});
+								p.addLog(s, 'cast', `${you.username} sacrificed ${inst.card.name} (${title}).`, you.playerId);
+								return res as MoveResult;
+							}
+							return;
+						}
+						// --- End Track P16a ---
 						const prev = inst.counters[counter] || 0;
 						const next = Math.max(0, prev - want);
 						const removed = prev - next;
 						if (removed > 0) {
+							// --- Track P16a ---
+							totalRemovedInStep += removed;
+							this.lastCountersRemoved = totalRemovedInStep;
+							this.ctx.item.lastCountersRemoved = totalRemovedInStep;
+							// --- End Track P16a ---
 							inst.counters[counter] = next;
 							noteLayerInputsChanged(s);
 							// --- Track P10 ---
@@ -3043,9 +3350,18 @@ class Run {
 						}
 					}
 				);
+				// --- Track P16a ---
+				this.stepDecisions[this.stepIndex] = totalRemovedInStep > 0;
+				// --- End Track P16a ---
 				return;
 			}
 			case 'moveCounters': {
+				// --- Track P16a (CR 122.5): Generalized counter movement between objects ---
+				if (step.params?.moveCounterSpec) {
+					executeGeneralizedMoveCounters(this.p16aHost(), step);
+					return;
+				}
+				// --- End Track P16a ---
 				const counter = step.params?.counter ?? '+1/+1';
 				const src = this.sourcePerm;
 				if (!src || src.zone !== 'battlefield') return;
@@ -3229,6 +3545,41 @@ class Run {
 				const tg = this.amount(step.params?.toughness);
 				// --- Track P13 (CR 611.2b): Cross-turn / permanent P/T modifiers ---
 				const dur = step.params?.duration;
+				// --- Track P16a (CR 511.2, CR 611.2b) ---
+				if (
+					dur === 'untilEndOfCombat' ||
+					dur === 'forAsLongAsYouControlSelf' ||
+					dur === 'forAsLongAsSelfRemainsTapped'
+				) {
+					if (objs.length === 0 || (pw === 0 && tg === 0)) return;
+					const srcVer =
+						this.ctx.item.sourceObjectVersion ??
+						this.locate(this.ctx.sourceId)?.inst.objectVersion ??
+						1;
+					const p16Dur = buildP16aDurationExpiryFields(
+						s,
+						dur,
+						this.ctx.sourceId,
+						srcVer,
+						you.playerId
+					);
+					if (!p16Dur.ok || !p16Dur.fields) return;
+					const ts = allocateTimestamp(s);
+					(s.timedContinuousEffects ??= []).push({
+						timestamp: ts,
+						sourceName: this.ctx.sourceCard.name,
+						controllerId: you.playerId,
+						affected: objs.map((o) => ({
+							instanceId: o.instanceId,
+							objectVersion: o.objectVersion ?? 1
+						})),
+						...p16Dur.fields,
+						layer7c: { power: pw, toughness: tg }
+					});
+					noteLayerInputsChanged(s);
+					return;
+				}
+				// --- End Track P16a ---
 				if (
 					objs.length > 0 &&
 					(pw !== 0 || tg !== 0) &&
@@ -3260,9 +3611,58 @@ class Run {
 			case 'grant': {
 				const objs = this.objects(step.subject).filter((o) => o.zone === 'battlefield');
 				this.bind(step, objs);
-				const addKws = step.params?.keywords;
+				// --- Track P16a: Choice-based keyword / protection grant & combat flags ---
+				let addKws = step.params?.keywords ? [...step.params.keywords] : undefined;
+				if (objs.length > 0 && step.params?.chooseKeywordOptions?.length) {
+					const chosenKw = resolveChosenKeywordFromOptions(
+						this.p16aHost(),
+						step.params.chooseKeywordOptions
+					);
+					if (chosenKw === null) return;
+					(addKws ??= []).push(chosenKw);
+				}
+				if (objs.length > 0 && step.params?.chooseProtectionColor) {
+					const chosenProt = resolveChosenProtectionKeyword(this.p16aHost());
+					if (chosenProt === null) return;
+					(addKws ??= []).push(chosenProt);
+				}
+				if (step.params?.mustAttackThisTurn) {
+					for (const o of objs) o.mustAttackThisTurn = true;
+				}
+				if (step.params?.mustBeBlockedThisTurn) {
+					for (const o of objs) o.mustBeBlockedThisTurn = true;
+				}
+				if (step.params?.mustBlockThisTurn) {
+					for (const o of objs) o.mustBlockThisTurn = true;
+				}
+				if (step.params?.mustBlockSelfThisTurn || step.params?.cantBlockSelfThisTurn) {
+					const srcLoc = this.locate(this.ctx.sourceId);
+					const srcValid =
+						srcLoc?.zone === 'battlefield' &&
+						!srcLoc.inst.phasedOut &&
+						(this.ctx.item.sourceObjectVersion === undefined ||
+							srcLoc.inst.objectVersion === this.ctx.item.sourceObjectVersion);
+					if (srcValid) {
+						if (step.params?.mustBlockSelfThisTurn) {
+							for (const o of objs) o.provokeMustBlockId = this.ctx.sourceId;
+						}
+						if (step.params?.cantBlockSelfThisTurn) {
+							for (const o of objs) {
+								const arr = (o.cantBlockAttackerIdsThisTurn ??= []);
+								if (!arr.includes(this.ctx.sourceId)) arr.push(this.ctx.sourceId);
+							}
+						}
+					}
+				}
+				if (step.params?.assignsNoCombatDamageThisTurn) {
+					for (const o of objs) o.assignsNoCombatDamageThisTurn = true;
+				}
+				// --- End Track P16a ---
 				const removeKws = step.params?.removeKeywords;
 				const grantedTexts = step.params?.grantedAbilityTexts;
+				// --- Track P16a ---
+				const remAllAbs = Boolean(step.params?.removeAllAbilities);
+				// --- End Track P16a ---
 				// --- Track P13 ---
 				if (step.params?.canAttackNoDefender) {
 					for (const o of objs) {
@@ -3271,10 +3671,63 @@ class Run {
 					if (objs.length > 0) noteLayerInputsChanged(s);
 				}
 				const dur = step.params?.duration;
+				// --- Track P16a (CR 511.2, CR 611.2b) ---
+				if (
+					dur === 'untilEndOfCombat' ||
+					dur === 'forAsLongAsYouControlSelf' ||
+					dur === 'forAsLongAsSelfRemainsTapped'
+				) {
+					if (
+						objs.length > 0 &&
+						(addKws?.length ||
+							removeKws?.length ||
+							remAllAbs ||
+							step.params?.cantHaveOrGain ||
+							grantedTexts?.length)
+					) {
+						const srcVer =
+							this.ctx.item.sourceObjectVersion ??
+							this.locate(this.ctx.sourceId)?.inst.objectVersion ??
+							1;
+						const p16Dur = buildP16aDurationExpiryFields(
+							s,
+							dur,
+							this.ctx.sourceId,
+							srcVer,
+							you.playerId
+						);
+						if (!p16Dur.ok || !p16Dur.fields) return;
+						const ts = allocateTimestamp(s);
+						(s.timedContinuousEffects ??= []).push({
+							timestamp: ts,
+							sourceName: this.ctx.sourceCard.name,
+							controllerId: you.playerId,
+							affected: objs.map((o) => ({
+								instanceId: o.instanceId,
+								objectVersion: o.objectVersion ?? 1
+							})),
+							...p16Dur.fields,
+							layer6: {
+								...(addKws?.length ? { addKeywords: [...addKws] } : {}),
+								...(removeKws?.length ? { removeKeywords: [...removeKws] } : {}),
+								...(remAllAbs ? { removeAllAbilities: true } : {}),
+								...(step.params?.cantHaveOrGain ? { cantHaveOrGain: true } : {}),
+								...(grantedTexts?.length ? { grantedAbilityTexts: [...grantedTexts] } : {})
+							}
+						});
+						noteLayerInputsChanged(s);
+					}
+					return;
+				}
+				// --- End Track P16a ---
 				if (
 					objs.length > 0 &&
 					(dur === 'untilYourNextTurn' || dur === 'untilEndOfYourNextTurn' || dur === 'permanent') &&
-					(addKws?.length || removeKws?.length || step.params?.cantHaveOrGain || grantedTexts?.length)
+					(addKws?.length ||
+						removeKws?.length ||
+						remAllAbs ||
+						step.params?.cantHaveOrGain ||
+						grantedTexts?.length)
 				) {
 					const ts = allocateTimestamp(s);
 					(s.timedContinuousEffects ??= []).push({
@@ -3289,6 +3742,7 @@ class Run {
 						layer6: {
 							...(addKws?.length ? { addKeywords: [...addKws] } : {}),
 							...(removeKws?.length ? { removeKeywords: [...removeKws] } : {}),
+							...(remAllAbs ? { removeAllAbilities: true } : {}),
 							...(step.params?.cantHaveOrGain ? { cantHaveOrGain: true } : {}),
 							...(grantedTexts?.length ? { grantedAbilityTexts: [...grantedTexts] } : {})
 						}
@@ -3321,8 +3775,8 @@ class Run {
 					});
 					noteLayerInputsChanged(s);
 				}
-				// --- Track P10 ---
-				if (objs.length > 0 && grantedTexts?.length) {
+				// --- Track P10 + Track P16a ---
+				if (objs.length > 0 && (grantedTexts?.length || remAllAbs)) {
 					const ts = allocateTimestamp(s);
 					const expires: 'endOfTurn' | 'never' =
 						step.params?.duration === 'permanent' ? 'never' : 'endOfTurn';
@@ -3335,15 +3789,39 @@ class Run {
 							objectVersion: o.objectVersion ?? 1
 						})),
 						expires,
-						layer6: { grantedAbilityTexts: [...grantedTexts] }
+						layer6: {
+							...(grantedTexts?.length ? { grantedAbilityTexts: [...grantedTexts] } : {}),
+							...(remAllAbs ? { removeAllAbilities: true } : {})
+						}
 					});
 					noteLayerInputsChanged(s);
 				}
-				// --- End Track P10 ---
+				// --- End Track P10 + Track P16a ---
 				return;
 			}
 			case 'grantPlayer': {
 				const rules = step.params?.playerRules ?? [];
+				// --- Track P16a: Turn & next-spell cast permissions / restrictions ---
+				if (rules.includes('opponentsCantCastThisTurn')) {
+					for (const opp of this.apnapPlayers()) {
+						if (opp.playerId === you.playerId) continue;
+						opp.cantCastSpellsThisTurn = true;
+					}
+					p.addLog(
+						s,
+						'rule',
+						`${title}: Opponents can't cast spells this turn.`,
+						you.playerId
+					);
+				}
+				const nextFilter = step.params?.nextSpellFilter;
+				const plainGrant = nextFilter
+					? {
+							...(nextFilter.types?.length ? { types: [...nextFilter.types] } : {}),
+							...(nextFilter.notTypes?.length ? { notTypes: [...nextFilter.notTypes] } : {})
+						}
+					: {};
+				// --- End Track P16a ---
 				// --- Track P7 ---
 				if (rules.includes('damageCantBePrevented')) {
 					s.damageCantBePreventedThisTurn = true;
@@ -3391,6 +3869,53 @@ class Run {
 						);
 					}
 					// --- End Track P13 ---
+					// --- Track P16a ---
+					if (rules.includes('cantCastSpellsThisTurn')) {
+						pl.cantCastSpellsThisTurn = true;
+						p.addLog(
+							s,
+							'rule',
+							`${pl.username} can't cast spells this turn (${title}).`,
+							you.playerId
+						);
+					}
+					if (rules.includes('spellsCantBeCounteredThisTurn')) {
+						pl.spellsCantBeCounteredThisTurn = true;
+						p.addLog(
+							s,
+							'rule',
+							`Spells ${pl.username} casts this turn can't be countered (${title}).`,
+							you.playerId
+						);
+					}
+					if (rules.includes('castAsThoughFlashThisTurn')) {
+						pl.castAsThoughFlashThisTurn = true;
+						p.addLog(
+							s,
+							'rule',
+							`${pl.username} may cast spells this turn as though they had flash (${title}).`,
+							you.playerId
+						);
+					}
+					if (rules.includes('nextSpellFlash')) {
+						(pl.nextSpellFlashGrants ??= []).push({ ...plainGrant });
+						p.addLog(
+							s,
+							'rule',
+							`The next matching spell ${pl.username} casts this turn can be cast as though it had flash (${title}).`,
+							you.playerId
+						);
+					}
+					if (rules.includes('nextSpellCantBeCountered')) {
+						(pl.nextSpellCantBeCounteredGrants ??= []).push({ ...plainGrant });
+						p.addLog(
+							s,
+							'rule',
+							`The next matching spell ${pl.username} casts this turn can't be countered (${title}).`,
+							you.playerId
+						);
+					}
+					// --- End Track P16a ---
 					if (rules.includes('lifeTotalCantChange') || rules.includes('protectionFromEverything')) {
 						p.addLog(s, 'rule', `${pl.username}'s life total can't change and they have protection from everything until their next turn.`, you.playerId);
 					}
@@ -3503,6 +4028,58 @@ class Run {
 					}
 					return;
 				}
+				// --- Track P16a: "Add {W} or one mana of the chosen color" (Thriving / Gate lands) ---
+				if (step.params?.manaOrChosenColor && step.params.manaOrChosenColor.length > 0) {
+					const chosenCol = this.sourceChosenColor();
+					const candCols: ManaColor[] = [];
+					for (const c of step.params.manaOrChosenColor) {
+						if (!candCols.includes(c)) candCols.push(c);
+					}
+					if (chosenCol && !candCols.includes(chosenCol)) candCols.push(chosenCol);
+					const orBundles = candCols.map((c) => [c]);
+					let chosenBundle =
+						orBundles.length === 1
+							? orBundles[0]
+							: pickBestBundleForRequirement(orBundles, you.manaPool, null, this.ctx.preferredColor);
+					if (!you.isBot && orBundles.length > 1 && this.canPause) {
+						const manaKey = `manaorchosen:${this.stepIndex}`;
+						const ans = this.answers[manaKey] ?? this.answers[you.playerId];
+						if (!ans) {
+							const item = this.saveFrame(this.stepIndex, this.answers, 'step', this.subStepIndex);
+							const modes = orBundles.map((b) => formatManaBundle(b));
+							enqueueChoicePrompt(s, {
+								id: p.uid('prompt', s),
+								kind: 'chooseMode',
+								playerId: you.playerId,
+								title: `${title} — Choose Mana Color`,
+								description: `Choose mana to add (${modes.join(', ')}).`,
+								continuation: {
+									kind: 'effect_choice',
+									stackItemId: item.id,
+									stepIndex: this.stepIndex,
+									answerKey: manaKey
+								},
+								choice: {
+									kind: 'chooseMode',
+									modes,
+									min: 1,
+									max: 1,
+									defaultIndices: [0]
+								}
+							});
+							this.result.paused = true;
+							return;
+						}
+						if (ans.kind === 'chooseMode' && orBundles[ans.indices[0] ?? -1]) {
+							chosenBundle = orBundles[ans.indices[0]];
+						}
+					}
+					for (const c of chosenBundle) {
+						addManaToPlayerPool(you, c, 1, restriction, addOpts);
+					}
+					return;
+				}
+				// --- End Track P16a ---
 				if (step.params?.manaBundles && step.params.manaBundles.length > 0) {
 					const bundles = step.params.manaBundles;
 					let chosenBundle =
@@ -3786,7 +4363,50 @@ class Run {
 			case 'tap':
 			case 'untap':
 			case 'tapOrUntap' as Verb: {
-				const objs = this.objects(step.subject).filter((o) => o.zone === 'battlefield');
+				let objs = this.objects(step.subject).filter((o) => o.zone === 'battlefield');
+				// --- Track P16a: Non-targeted choice tap/untap ("tap/untap up to N <filter> you control") ---
+				if (step.params?.choiceCount !== undefined) {
+					const chooser = (step.actor ? this.playerRef(step.actor) : null) ?? you;
+					const want = Math.min(objs.length, Math.max(0, this.amount(step.params.choiceCount, 1)));
+					const minPick = step.params.upTo ? 0 : want;
+					const choiceKey = `tapuntap_pick:${this.stepIndex}`;
+					if (want <= 0) {
+						if (step.params.upTo) this.stepDecisions[this.stepIndex] = false;
+						this.bind(step, []);
+						return;
+					}
+					const sortedForBot = [...objs].sort((a, b) => {
+						if (step.verb === 'untap' && a.tapped !== b.tapped) return a.tapped ? -1 : 1;
+						if (step.verb === 'tap' && a.tapped !== b.tapped) return !a.tapped ? -1 : 1;
+						return objectManaValue(s, b) - objectManaValue(s, a);
+					});
+					if (
+						!chooser.isBot &&
+						this.canPause &&
+						(step.params.upTo || objs.length > minPick) &&
+						!this.answers[choiceKey]
+					) {
+						const actionWord = step.verb === 'untap' ? 'untap' : 'tap';
+						this.pauseForChoice(
+							chooser,
+							`${title} — Choose Permanent(s) to ${actionWord === 'untap' ? 'Untap' : 'Tap'}`,
+							`Choose ${minPick === want ? want : `up to ${want}`} permanent(s) to ${actionWord}.`,
+							objs.map((c) => c.instanceId),
+							minPick,
+							want,
+							'battlefield',
+							sortedForBot.slice(0, want).map((c) => c.instanceId),
+							choiceKey
+						);
+						return;
+					}
+					objs =
+						this.answers[choiceKey]?.kind === 'chooseObjects'
+							? (this.answered(choiceKey, objs, minPick, want) ?? [])
+							: sortedForBot.slice(0, step.params.upTo ? sortedForBot.filter((x) => (step.verb === 'untap' ? x.tapped : !x.tapped)).slice(0, want).length : want);
+					this.stepDecisions[this.stepIndex] = objs.length > 0;
+				}
+				// --- End Track P16a ---
 				this.bind(step, objs);
 				const explicitTap = (step.params as { tap?: boolean } | undefined)?.tap;
 				for (const o of objs) {
@@ -3838,6 +4458,9 @@ class Run {
 							const preSnap = this.captureTriggerEventLki(o);
 							o.tapped = false;
 							noteLayerInputsChanged(s);
+							// --- Track P16a (CR 611.2b): Latch any remains-tapped source conditions ---
+							latchBrokenP16aSourceConditions(s);
+							// --- End Track P16a ---
 							this.recordStepActedObject(o, preSnap, false);
 							if (!o.phasedOut) {
 								emitEvent(s, {
@@ -3856,6 +4479,34 @@ class Run {
 			case 'freezeUntap': {
 				const objs = this.objects(step.subject).filter((o) => o.zone === 'battlefield');
 				this.bind(step, objs);
+				// --- Track P16a (CR 611.2b): Source-conditioned untap locks ---
+				const dur = step.params?.duration;
+				if (dur === 'forAsLongAsSelfRemainsTapped' || dur === 'forAsLongAsYouControlSelf') {
+					const srcVer =
+						this.ctx.item.sourceObjectVersion ??
+						this.locate(this.ctx.sourceId)?.inst.objectVersion ??
+						1;
+					const p16Dur = buildP16aDurationExpiryFields(
+						s,
+						dur,
+						this.ctx.sourceId,
+						srcVer,
+						you.playerId
+					);
+					if (!p16Dur.ok || !p16Dur.fields?.sourceCondition) return;
+					for (const o of objs) {
+						(o.doesntUntapWhileSource ??= []).push({ ...p16Dur.fields.sourceCondition });
+						const objLabel = o.isFaceDown ? (o.faceDownLabel || 'Face-Down Permanent') : o.card.name;
+						p.addLog(
+							s,
+							'rule',
+							`${objLabel} doesn't untap during its controller's untap step for as long as ${this.ctx.sourceCard.name}'s duration holds (${title}).`,
+							you.playerId
+						);
+					}
+					return;
+				}
+				// --- End Track P16a ---
 				for (const o of objs) {
 					if (applyNextUntapFreeze(o)) {
 						const objLabel = o.isFaceDown ? (o.faceDownLabel || 'Face-Down Permanent') : o.card.name;
@@ -4074,6 +4725,9 @@ class Run {
 			}
 			case 'mill': {
 				const batchKey = `batch:${this.stepIndex}:mill`;
+				// --- Track P16a: Bind milled cards so "if a <filter> card was milled this way" resolves ---
+				const milled: CardInstance[] = [];
+				// --- End Track P16a ---
 				const { paused } = this.runIndexedBatch(
 					batchKey,
 					() => {
@@ -4088,16 +4742,24 @@ class Run {
 					(playerId) => {
 						const pl = this.player(playerId);
 						if (!pl || pl.library.length === 0) return;
-						return moveObject(s, pl.library[0], 'graveyard', {
+						const topInst = pl.library[0];
+						const res = moveObject(s, topInst, 'graveyard', {
 							from: { player: pl, zone: 'library' },
 							toPlayer: pl,
 							graveyardReplacement: true,
 							bumpVersion: true,
 							newTimestamp: true
 						});
+						// --- Track P16a ---
+						if (topInst.zone !== 'library') milled.push(topInst);
+						// --- End Track P16a ---
+						return res;
 					}
 				);
 				if (paused) return;
+				// --- Track P16a ---
+				this.bind(step, milled);
+				// --- End Track P16a ---
 				return;
 			}
 			case 'scry':
@@ -4223,15 +4885,52 @@ class Run {
 						? [...pParams.addTypes]
 						: ['Creature']
 					: undefined;
-				const setSubtypes =
+				let setSubtypes =
 					pParams.setSubtypes !== undefined ? [...pParams.setSubtypes] : undefined;
-				const addSubtypes = pParams.addSubtypes?.length ? [...pParams.addSubtypes] : undefined;
-				const layer4 = {
-					...(addTypes ? { addTypes } : {}),
+				let addSubtypes = pParams.addSubtypes?.length ? [...pParams.addSubtypes] : undefined;
+				// --- Track P16a: Choice-based creature type / basic land type & non-type-changing Layer 5/7b ---
+				const BASIC_LAND_SUBTYPES_SET = new Set(['Plains', 'Island', 'Swamp', 'Mountain', 'Forest']);
+				const isPureBasicLandSubtypeShift =
+					Boolean(
+						pParams.setSubtypes?.some((st) => BASIC_LAND_SUBTYPES_SET.has(st)) ||
+							pParams.addSubtypes?.some((st) => BASIC_LAND_SUBTYPES_SET.has(st))
+					);
+				const suppressDefaultCreatureType =
+					!pParams.addTypes?.length &&
+					!pParams.setTypes?.length &&
+					Boolean(
+						pParams.chooseBasicLandType ||
+							pParams.chooseCreatureType ||
+							pParams.keepExistingTypes ||
+							isPureBasicLandSubtypeShift
+					);
+				const effectiveAddTypes = suppressDefaultCreatureType ? undefined : addTypes;
+				if (pParams.chooseCreatureType) {
+					const chosenCreatureSub = resolveChosenCreatureSubtypeForAnimate(this.p16aHost());
+					if (chosenCreatureSub === null) return;
+					if (pParams.keepExistingTypes) {
+						(addSubtypes ??= []).push(chosenCreatureSub);
+					} else {
+						setSubtypes = [chosenCreatureSub];
+					}
+				}
+				if (pParams.chooseBasicLandType) {
+					const chosenLandSub = resolveChosenBasicLandSubtypeForAnimate(this.p16aHost());
+					if (chosenLandSub === null) return;
+					if (pParams.keepExistingTypes) {
+						(addSubtypes ??= []).push(chosenLandSub);
+					} else {
+						setSubtypes = [chosenLandSub];
+					}
+				}
+				const layer4Raw = {
+					...(effectiveAddTypes ? { addTypes: effectiveAddTypes } : {}),
 					...(setTypes ? { setTypes } : {}),
 					...(addSubtypes ? { addSubtypes } : {}),
 					...(setSubtypes !== undefined ? { setSubtypes } : {})
 				};
+				const layer4 = Object.keys(layer4Raw).length > 0 ? layer4Raw : undefined;
+				// --- End Track P16a ---
 				const layer5 =
 					pParams.setColors !== undefined || pParams.addColors?.length
 						? {
@@ -4240,12 +4939,15 @@ class Run {
 							}
 						: undefined;
 				const layer6 =
-					pParams.addKeywords?.length || pParams.grantedAbilityTexts?.length
+					pParams.addKeywords?.length ||
+					pParams.grantedAbilityTexts?.length ||
+					pParams.removeAllAbilities
 						? {
 								...(pParams.addKeywords?.length ? { addKeywords: [...pParams.addKeywords] } : {}),
 								...(pParams.grantedAbilityTexts?.length
 									? { grantedAbilityTexts: [...pParams.grantedAbilityTexts] }
-									: {})
+									: {}),
+								...(pParams.removeAllAbilities ? { removeAllAbilities: true } : {})
 							}
 						: undefined;
 				const layer7b =
@@ -4255,9 +4957,31 @@ class Run {
 								setToughness: this.amount(pParams.setToughness)
 							}
 						: undefined;
-				// --- Track P13 ---
-				const expiryFields = buildDurationExpiryFields(s, pParams.duration ?? 'endOfTurn', you.playerId);
-				// --- End Track P13 ---
+				// --- Track P13 + Track P16a ---
+				const animDur = pParams.duration ?? 'endOfTurn';
+				let expiryFields: ReturnType<typeof buildDurationExpiryFields>;
+				if (
+					animDur === 'untilEndOfCombat' ||
+					animDur === 'forAsLongAsYouControlSelf' ||
+					animDur === 'forAsLongAsSelfRemainsTapped'
+				) {
+					const srcVer =
+						this.ctx.item.sourceObjectVersion ??
+						this.locate(this.ctx.sourceId)?.inst.objectVersion ??
+						1;
+					const p16Dur = buildP16aDurationExpiryFields(
+						s,
+						animDur,
+						this.ctx.sourceId,
+						srcVer,
+						you.playerId
+					);
+					if (!p16Dur.ok || !p16Dur.fields) return;
+					expiryFields = p16Dur.fields;
+				} else {
+					expiryFields = buildDurationExpiryFields(s, animDur, you.playerId);
+				}
+				// --- End Track P13 + Track P16a ---
 				for (const o of objs) {
 					const ts = allocateTimestamp(s);
 					(s.timedContinuousEffects ??= []).push({
@@ -4266,7 +4990,7 @@ class Run {
 						controllerId: you.playerId,
 						affected: [{ instanceId: o.instanceId, objectVersion: o.objectVersion ?? 1 }],
 						...expiryFields,
-						layer4,
+						...(layer4 ? { layer4 } : {}),
 						...(layer5 ? { layer5 } : {}),
 						...(layer6 ? { layer6 } : {}),
 						...(layer7b ? { layer7b } : {})
@@ -4366,10 +5090,31 @@ class Run {
 				const actorPlayer = (step.actor ? this.playerRef(step.actor) : null) ?? you;
 				if (actorPlayer.lost) return;
 				const duration = step.params?.duration ?? 'permanent';
-				// --- Track P13 ---
-				const expiryFields = buildDurationExpiryFields(s, duration, actorPlayer.playerId);
+				// --- Track P13 + Track P16a ---
+				let expiryFields: ReturnType<typeof buildDurationExpiryFields>;
+				if (
+					duration === 'untilEndOfCombat' ||
+					duration === 'forAsLongAsYouControlSelf' ||
+					duration === 'forAsLongAsSelfRemainsTapped'
+				) {
+					const srcVer =
+						this.ctx.item.sourceObjectVersion ??
+						this.locate(this.ctx.sourceId)?.inst.objectVersion ??
+						1;
+					const p16Dur = buildP16aDurationExpiryFields(
+						s,
+						duration,
+						this.ctx.sourceId,
+						srcVer,
+						you.playerId
+					);
+					if (!p16Dur.ok || !p16Dur.fields) return;
+					expiryFields = p16Dur.fields;
+				} else {
+					expiryFields = buildDurationExpiryFields(s, duration, actorPlayer.playerId);
+				}
 				const expires = expiryFields.expires;
-				// --- End Track P13 ---
+				// --- End Track P13 + Track P16a ---
 
 				let untilSourceLeavesMeta: { sourceInstanceId: string; sourceObjectVersion: number } | undefined;
 				if (expires === 'untilSourceLeaves') {
@@ -4432,6 +5177,11 @@ class Run {
 				}
 				noteLayerInputsChanged(s);
 				syncBattlefieldControllers(s);
+				// --- Track P16a ---
+				if (step.params?.untap) {
+					latchBrokenP16aSourceConditions(s);
+				}
+				// --- End Track P16a ---
 				return;
 			}
 			case 'gainEnergy': {
@@ -4811,6 +5561,28 @@ class Run {
 				return;
 			}
 			// --- End Track P15 ---
+			// --- Track P16a ---
+			case 'pileSplit':
+				return executePileSplit(this.p16aHost(), step);
+			case 'castFree':
+				return executeCastFree(this.p16aHost(), step);
+			case 'putPlayerCounters':
+				return executePutPlayerCounters(this.p16aHost(), step);
+			case 'removeFromCombat':
+				return executeRemoveFromCombat(this.p16aHost(), step);
+			case 'harness':
+				return executeHarness(this.p16aHost(), step);
+			case 'convert':
+				return executeConvert(this.p16aHost(), step);
+			case 'empowerJace':
+				return executeEmpowerJace(this.p16aHost(), step);
+			case 'assimilate':
+				return executeAssimilate(this.p16aHost(), step);
+			case 'recruit':
+				return executeRecruit(this.p16aHost(), step);
+			case 'heal':
+				return executeHeal(this.p16aHost(), step);
+			// --- End Track P16a ---
 			default:
 				// Not reachable: staticallyInterpretable rejects every other verb.
 				p.addLog(s, 'rule', `${title}: the "${step.verb}" step isn't supported yet and did nothing.`, you.playerId);
@@ -5399,6 +6171,9 @@ class Run {
 								(o.objectVersion ?? 1) === this.ctx.item.sourceObjectVersion)
 					);
 					this.bind(step, objs);
+					// --- Track P16a ---
+					this.stepDecisions[this.stepIndex] = objs.length > 0;
+					// --- End Track P16a ---
 					return objs.map((o) => o.instanceId);
 				},
 				(id) => {
@@ -5471,6 +6246,9 @@ class Run {
 				sacrificed.push(...chosen);
 			}
 			this.bind(step, sacrificed);
+			// --- Track P16a ---
+			this.stepDecisions[this.stepIndex] = sacrificed.length > 0;
+			// --- End Track P16a ---
 			this.answers[batchKey] = {
 				kind: 'chooseObjects',
 				objectIds: sacrificed.map((o) => o.instanceId)
@@ -5567,12 +6345,23 @@ class Run {
 				choices.push({ pl, candidates, count });
 			}
 			const atRandom = Boolean(step.params?.atRandom);
+			// --- Track P16a: Support `upTo` discard ("Discard up to N cards") ---
+			const upToDiscard = Boolean(step.params?.upTo) && !atRandom;
 			if (!atRandom && this.canPause) {
 				for (const { pl, candidates, count } of choices) {
 					const actorKey = `actor:${this.stepIndex}:${pl.playerId}`;
-					if (pl.isBot || candidates.length <= count || this.answers[actorKey] || this.answers[pl.playerId]) continue;
-					const title = `${this.ctx.title} — Discard ${count} card(s)`;
-					this.pauseForChoice(pl, title, `Choose ${count} card(s) to discard.`, candidates.map((c) => c.instanceId), count, count, 'hand', undefined, actorKey);
+					const minPick = upToDiscard ? 0 : count;
+					if (
+						pl.isBot ||
+						(!upToDiscard && candidates.length <= count) ||
+						this.answers[actorKey] ||
+						this.answers[pl.playerId]
+					) {
+						continue;
+					}
+					const label = upToDiscard ? `up to ${count}` : `${count}`;
+					const title = `${this.ctx.title} — Discard ${label} card(s)`;
+					this.pauseForChoice(pl, title, `Choose ${label} card(s) to discard.`, candidates.map((c) => c.instanceId), minPick, count, 'hand', undefined, actorKey);
 					return;
 				}
 			}
@@ -5588,11 +6377,17 @@ class Run {
 					}
 				} else {
 					const actorKey = `actor:${this.stepIndex}:${pl.playerId}`;
-					chosen = this.answered(actorKey, candidates, count) ?? this.answered(pl, candidates, count) ?? candidates.slice(0, count);
+					const minPick = upToDiscard ? 0 : count;
+					chosen =
+						this.answered(actorKey, candidates, minPick, count) ??
+						this.answered(pl, candidates, minPick, count) ??
+						candidates.slice(0, count);
 				}
 				discarded.push({ pl, cards: chosen });
 			}
 			const flatCards = discarded.flatMap((x) => x.cards);
+			this.stepDecisions[this.stepIndex] = flatCards.length > 0;
+			// --- End Track P16a ---
 			this.bind(step, flatCards);
 			for (const { pl, cards } of discarded) {
 				p.addLog(s, 'rule', `${pl.username} discarded ${cards.length} card(s)${atRandom ? ' at random' : ''}.`, pl.playerId);
@@ -5798,6 +6593,12 @@ class Run {
 		const stampExiledMetadata = (inst: CardInstance, returnZone?: ZoneType): void => {
 			if (!s.players.some((pl) => pl.exile.some((x) => x.instanceId === inst.instanceId))) return;
 			inst.exiledBy = { sourceInstanceId: this.ctx.sourceId, sourceObjectVersion: sourceVer };
+			// --- Track P16a: Exile with counters (e.g. time / silver / page counters) ---
+			if (step.params?.exileWithCounters && step.params.exileWithCounters.count > 0) {
+				const { counter, count: cCount } = step.params.exileWithCounters;
+				inst.counters[counter] = (inst.counters[counter] ?? 0) + cCount;
+			}
+			// --- End Track P16a ---
 			if (untilSourceLeaves && returnZone && returnZone !== 'exile' && returnZone !== 'stack') {
 				inst.untilSourceLeavesReturn = {
 					sourceInstanceId: this.ctx.sourceId,
@@ -5845,6 +6646,11 @@ class Run {
 		if (sel.k === 'self' && this.ctx.item.kind === 'spell') {
 			// The spell itself, as it finishes resolving (CR 608.2n).
 			this.result.exileSelf = true;
+			// --- Track P16a ---
+			if (step.params?.exileWithCounters && step.params.exileWithCounters.count > 0) {
+				this.result.exileSelfWithCounters = { ...step.params.exileWithCounters };
+			}
+			// --- End Track P16a ---
 			return;
 		}
 		// --- Track P10 ---
@@ -5936,7 +6742,7 @@ class Run {
 			return;
 		}
 		// --- End Track P10 ---
-		if (sel.k === 'all' && sel.filter.zone === 'graveyard') {
+		if (sel.k === 'all' && sel.filter.zone === 'graveyard' && !step.params?.choiceCount) {
 			// --- Track P10 ---
 			const gyLeftByOwner = new Map<string, CardInstance[]>();
 			const { total, paused } = this.runIndexedBatch(
@@ -5990,6 +6796,62 @@ class Run {
 			}
 			return;
 		}
+		// --- Track P16a: Non-targeted choice exile (battlefield or graveyard) ---
+		const exileBatchKey = `batch:${this.stepIndex}`;
+		if (step.params?.choiceCount && !this.answers[exileBatchKey]) {
+			const rawCands = this.objects(sel);
+			const cands = step.params.moveFilter
+				? rawCands.filter((o) =>
+						this.matches(
+							o,
+							step.params!.moveFilter!,
+							o.zone as 'library' | 'hand' | 'battlefield' | 'graveyard' | 'exile'
+						)
+					)
+				: rawCands;
+			const want = Math.max(0, this.amount(step.params.choiceCount, 1));
+			const maxPick = Math.min(cands.length, want);
+			const minPick = step.params.upTo ? 0 : maxPick;
+			if (maxPick <= 0) {
+				if (step.params.upTo) this.stepDecisions[this.stepIndex] = false;
+				this.bind(step, []);
+				return;
+			}
+			const chooser = (step.actor ? this.playerRef(step.actor) : null) ?? you;
+			const chooseKey = `p16_exile_pick:${this.stepIndex}`;
+			let chosen: CardInstance[];
+			if (this.answers[chooseKey]?.kind === 'chooseObjects') {
+				chosen = this.answered(chooseKey, cands, minPick, maxPick) ?? cands.slice(0, maxPick);
+			} else if (!chooser.isBot && this.canPause && (minPick < maxPick || cands.length > maxPick)) {
+				const rawZone = sel.k === 'all' && sel.filter.zone ? sel.filter.zone : undefined;
+				const z: ZoneType = Array.isArray(rawZone)
+					? (rawZone[0] ?? 'battlefield')
+					: (rawZone ?? cands[0]?.zone ?? 'battlefield');
+				this.pauseForChoice(
+					chooser,
+					`${this.ctx.title} — Choose card(s) to exile`,
+					`Choose ${minPick === maxPick ? maxPick : `up to ${maxPick}`} card(s) to exile.`,
+					cands.map((c) => c.instanceId),
+					minPick,
+					maxPick,
+					z,
+					cands.slice(0, maxPick).map((c) => c.instanceId),
+					chooseKey
+				);
+				return;
+			} else {
+				chosen = cands.slice(0, maxPick);
+			}
+			if (step.params.upTo) {
+				this.stepDecisions[this.stepIndex] = chosen.length > 0;
+			}
+			this.bind(step, chosen);
+			this.answers[exileBatchKey] = {
+				kind: 'chooseObjects',
+				objectIds: chosen.map((c) => c.instanceId)
+			};
+		}
+		// --- End Track P16a ---
 		// --- Track P10 ---
 		const gyLeftGeneral = new Map<string, CardInstance[]>();
 		// --- End Track P10 ---
@@ -6118,6 +6980,12 @@ class Run {
 		const choiceBy = params.libraryChoiceBy ?? 'controller';
 
 		if (params.to === 'library' && step.subject.k === 'self' && this.ctx.item.kind === 'spell') {
+			// --- Track P16a: "Shuffle ~ into its owner's library" on a resolving spell ---
+			if (params.mayShuffle) {
+				this.result.librarySelf = { position: 'top', shuffle: true };
+				return;
+			}
+			// --- End Track P16a ---
 			const owner = this.player(this.ctx.item.ownerId ?? you.playerId) ?? you;
 			const chooser = choiceBy === 'owner' ? owner : you;
 			const synth = this.syntheticLkiObject(this.ctx.sourceId, you.playerId);
@@ -6284,7 +7152,10 @@ class Run {
 						toPlayer: you,
 						controllerId: you.playerId,
 						newTimestamp: !isAura,
-						bumpVersion: true
+						bumpVersion: true,
+						// --- Track P16a ---
+						...(params.withCounters ? { withCounters: params.withCounters } : {})
+						// --- End Track P16a ---
 					});
 					p.addLog(s, 'cast', `${you.username} put ${o.card.name} from their hand onto the battlefield (${this.ctx.title}).`, you.playerId);
 					if (o.zone === 'battlefield') {
@@ -6336,6 +7207,29 @@ class Run {
 						p.addLog(s, 'rule', `${owner.username} shuffled their library (${this.ctx.title}).`, owner.playerId);
 					}
 				}
+				// --- Track P16a (CR 701.20d): Even if zone was empty, affected players still shuffle ---
+				if (shuffledOwners.size === 0 && step.subject.k === 'all') {
+					const fallbackShufflers: PlayerGameState[] = step.actor
+						? this.players({ k: 'playerRef', ref: step.actor })
+						: step.subject.filter.owner === 'you' || step.subject.filter.controller === 'you'
+							? [you]
+							: step.subject.filter.owner === 'opponent' ||
+								  step.subject.filter.controller === 'opponent'
+								? this.players({ k: 'player', filter: { relation: 'each_opponent' } })
+								: this.apnapPlayers();
+					for (const shufPl of fallbackShufflers) {
+						if (shufPl.lost || shuffledOwners.has(shufPl.playerId)) continue;
+						shuffledOwners.add(shufPl.playerId);
+						shuffleLibrary(s, shufPl);
+						p.addLog(
+							s,
+							'rule',
+							`${shufPl.username} shuffled their library (${this.ctx.title}).`,
+							shufPl.playerId
+						);
+					}
+				}
+				// --- End Track P16a ---
 				return;
 			}
 			const trigAbLib =
@@ -6429,18 +7323,24 @@ class Run {
 			}
 
 			// 2. Non-stack objects moving from battlefield, graveyard, or exile into owner's library
-			const allowedLibZones: ReadonlyArray<'battlefield' | 'graveyard' | 'exile'> =
+			// --- Track P16a: Allow moving bound revealed/looked-at libraryTop cards to library top/bottom ---
+			const allowedLibZones: ReadonlyArray<'battlefield' | 'graveyard' | 'exile' | 'library'> =
 				params.from === 'battlefield'
 					? ['battlefield']
 					: params.from === 'graveyard'
 						? ['graveyard']
 						: params.from === 'exile'
 							? ['exile']
-							: ['battlefield', 'graveyard', 'exile'];
+							: params.from === 'library'
+								? ['library']
+								: step.subject.k === 'binding' || step.subject.k === 'libraryTop'
+									? ['battlefield', 'graveyard', 'exile', 'library']
+									: ['battlefield', 'graveyard', 'exile'];
+			// --- End Track P16a ---
 			if (!this.answers[batchKey]) {
 				let objs = this.objects(step.subject).filter(
 					(o) =>
-						allowedLibZones.includes(o.zone as 'battlefield' | 'graveyard' | 'exile') &&
+						allowedLibZones.includes(o.zone as 'battlefield' | 'graveyard' | 'exile' | 'library') &&
 						matchesSelfVersionLib(o)
 				);
 				if (params.topmostOnly && params.from === 'graveyard') {
@@ -6549,7 +7449,7 @@ class Run {
 					const f = this.locate(id);
 					if (
 						!f ||
-						!allowedLibZones.includes(f.zone as 'battlefield' | 'graveyard' | 'exile') ||
+						!allowedLibZones.includes(f.zone as 'battlefield' | 'graveyard' | 'exile' | 'library') ||
 						!matchesSelfVersionLib(f.inst)
 					) {
 						return;
@@ -6585,7 +7485,7 @@ class Run {
 						);
 						return res as MoveResult;
 					}
-					const actualFrom = f.zone as 'graveyard' | 'exile';
+					const actualFrom = f.zone as 'graveyard' | 'exile' | 'library';
 					const res = moveObject(s, o, 'library', {
 						from: { player: f.holder, zone: actualFrom },
 						toPlayer: owner,
@@ -6655,11 +7555,67 @@ class Run {
 					allowedFromZones.includes(o.zone as 'exile' | 'graveyard' | 'library') &&
 					matchesSelfVersion(o)
 			);
+			// --- Track P16a: Optional filter on bound milled/exiled/revealed objects ---
+			if (params.moveFilter) {
+				objs = objs.filter((o) =>
+					this.matches(
+						o,
+						params.moveFilter!,
+						o.zone as 'library' | 'hand' | 'battlefield' | 'graveyard' | 'exile'
+					)
+				);
+			}
+			// --- End Track P16a ---
 			if (params.topmostOnly) {
 				// CR 404.2: the graveyard's order matters; the top card is the last one in the array.
 				objs = objs.length > 0 ? [objs[objs.length - 1]] : [];
 			}
-			if (params.to !== 'hand' && this.canPause) {
+			// --- Track P16a: Non-targeted choice move from graveyard/exile ---
+			if (params.choiceCount) {
+				const want = Math.max(0, this.amount(params.choiceCount, 1));
+				const maxPick = Math.min(objs.length, want);
+				const minPick = params.upTo ? 0 : maxPick;
+				if (maxPick <= 0) {
+					if (params.upTo) this.stepDecisions[this.stepIndex] = false;
+					objs = [];
+				} else {
+					const chooser = (step.actor ? this.playerRef(step.actor) : null) ?? you;
+					const chooseKey = `p16_move_pick:${this.stepIndex}`;
+					const sortedForBot = [...objs].sort(
+						(a, b) => objectManaValue(s, b) - objectManaValue(s, a)
+					);
+					if (this.answers[chooseKey]?.kind === 'chooseObjects') {
+						objs = this.answered(chooseKey, objs, minPick, maxPick) ?? sortedForBot.slice(0, maxPick);
+					} else if (!chooser.isBot && this.canPause && (minPick < maxPick || objs.length > maxPick)) {
+						const z: ZoneType =
+							objs[0]?.zone ??
+							(params.from === 'exile'
+								? 'exile'
+								: params.from === 'library'
+									? 'library'
+									: 'graveyard');
+						this.pauseForChoice(
+							chooser,
+							`${this.ctx.title} — Choose card(s) to return`,
+							`Choose ${minPick === maxPick ? maxPick : `up to ${maxPick}`} card(s) to return.`,
+							objs.map((c) => c.instanceId),
+							minPick,
+							maxPick,
+							z,
+							sortedForBot.slice(0, maxPick).map((c) => c.instanceId),
+							chooseKey
+						);
+						return;
+					} else {
+						objs = sortedForBot.slice(0, maxPick);
+					}
+					if (params.upTo) {
+						this.stepDecisions[this.stepIndex] = objs.length > 0;
+					}
+				}
+			}
+			// --- End Track P16a ---
+			if (params.to !== 'hand' && params.to !== 'graveyard' && this.canPause) {
 				for (const o of objs) {
 					if (!canEnterTransformed(o)) continue;
 					const holder = this.locate(o.instanceId)?.holder;
@@ -6743,6 +7699,28 @@ class Run {
 					p.addLog(s, 'cast', `${this.ctx.title} returned ${o.card.name} from ${holder.username}'s ${actualFrom} to hand.`, you.playerId);
 					return res;
 				}
+				// --- Track P16a: Move bound card from library/exile to graveyard ---
+				if (params.to === 'graveyard') {
+					const owner = this.player(o.ownerId) ?? holder;
+					const res = moveObject(s, o, 'graveyard', {
+						from: { player: holder, zone: actualFrom },
+						toPlayer: owner,
+						commanderRedirect: true,
+						bumpVersion: true,
+						newTimestamp: true
+					});
+					if (o.zone === 'graveyard') {
+						this.recordStepActedObject(o, preSnap, false);
+					}
+					p.addLog(
+						s,
+						'cast',
+						`${this.ctx.title} put ${o.card.name} from ${holder.username}'s ${actualFrom} into ${owner.username}'s graveyard.`,
+						you.playerId
+					);
+					return res;
+				}
+				// --- End Track P16a ---
 				if (!canEnterTransformed(o)) {
 					p.addLog(
 						s,
@@ -6994,7 +7972,12 @@ class Run {
 			topIds = savedTop.objectIds;
 		} else if (dig.untilFilter) {
 			// --- Track P10: CR 701.20 reveal cards from top of library until a matching card is revealed ---
-			if (pl.library.length === 0) return;
+			if (pl.library.length === 0) {
+				// --- Track P16a ---
+				if (dig.shuffleRest) shuffleLibrary(s, pl);
+				// --- End Track P16a ---
+				return;
+			}
 			const revealed: CardInstance[] = [];
 			let matchedCard: CardInstance | undefined;
 			for (let i = 0; i < pl.library.length; i++) {
@@ -7030,7 +8013,13 @@ class Run {
 			// --- End Track P10 ---
 		} else {
 			const count = Math.min(Math.max(0, this.amount(step.amount)), pl.library.length);
-			if (count <= 0) return;
+			if (count <= 0) {
+				// --- Track P16a ---
+				if (dig.upTo) this.stepDecisions[this.stepIndex] = false;
+				this.bind(step, []);
+				// --- End Track P16a ---
+				return;
+			}
 			const topCards = pl.library.slice(0, count);
 			topIds = topCards.map((c) => c.instanceId);
 			this.answers[topKey] = { kind: 'chooseObjects', objectIds: topIds };
@@ -7231,6 +8220,10 @@ class Run {
 			restIds = topCards.filter((c) => !keptSet.has(c.instanceId)).map((c) => c.instanceId);
 			this.answers[keptFrozenKey] = { kind: 'chooseObjects', objectIds: keptIds };
 			this.answers[restFrozenKey] = { kind: 'chooseObjects', objectIds: restIds };
+			// --- Track P16a: Bind kept cards and record upTo decision for "If you don't" follow-ups ---
+			this.bind(step, kept);
+			if (dig.upTo) this.stepDecisions[this.stepIndex] = kept.length > 0;
+			// --- End Track P16a ---
 			if (dig.revealKept && !dig.revealAll && kept.length > 0) {
 				p.addLog(
 					s,
@@ -7313,6 +8306,24 @@ class Run {
 				}
 			);
 			if (batch.paused) return;
+		// --- Track P16a: restToHand support on top-N dig ---
+		} else if (dig.restToHand) {
+			const batch = this.runIndexedBatch(
+				`dig_rest_hand_batch:${this.stepIndex}`,
+				() => orderedRestIds,
+				(id) => {
+					const o = pl.library.find((c) => c.instanceId === id);
+					if (!o) return;
+					return moveObject(s, o, 'hand', {
+						from: { player: pl, zone: 'library' },
+						toPlayer: pl,
+						newTimestamp: true,
+						bumpVersion: true
+					});
+				}
+			);
+			if (batch.paused) return;
+		// --- End Track P16a ---
 		} else {
 			const keptInLib =
 				dig.keepTo === 'libraryTop'
@@ -7325,6 +8336,11 @@ class Run {
 				.filter((c): c is CardInstance => Boolean(c));
 			rearrangeLibrary(pl, [...keptInLib, ...restInLib], keptInLib, restInLib);
 		}
+		// --- Track P16a: Polymorph / shuffle-remainder dig ---
+		if (dig.shuffleRest) {
+			shuffleLibrary(s, pl);
+		}
+		// --- End Track P16a ---
 
 		const keptSummary =
 			dig.keepTo === 'libraryTop'
@@ -7584,7 +8600,7 @@ class Run {
 				const targetRef = c.target ?? { k: 'self' };
 				const objs = this.objects(targetRef as Selector);
 				if (objs.length === 0) return false;
-				return objs.every((o) =>
+				const matchOne = (o: CardInstance) =>
 					this.matches(
 						o,
 						c.filter,
@@ -7594,8 +8610,10 @@ class Run {
 							| 'hand'
 							| 'library'
 							| 'exile'
-					)
-				);
+					);
+				// --- Track P16a: `c.any` checks `some` for multi-card bindings ---
+				return c.any ? objs.some(matchOne) : objs.every(matchOne);
+				// --- End Track P16a ---
 			}
 			case 'evolveCompare': {
 				const src = this.sourcePerm;
@@ -7821,6 +8839,10 @@ class Run {
 				return Boolean(liveObj?.isHarnessed);
 			}
 			// --- End Wave 6 Shared ---
+			// --- Track P16a ---
+			case 'diedThisWay':
+				return Boolean(evaluateP16aStepCondition(this.p16aHost(), c));
+			// --- End Track P16a ---
 		}
 	}
 
@@ -7875,6 +8897,10 @@ class Run {
 		childRun.lastExcessDamage = this.lastExcessDamage;
 		childRun.lastEffectAmount = this.lastEffectAmount;
 		// --- End Track P13 ---
+		// --- Track P16a ---
+		childRun.lastCountersRemoved = this.lastCountersRemoved;
+		for (const did of this.prevStepDiedIds) childRun.prevStepDiedIds.add(did);
+		// --- End Track P16a ---
 		for (const [name, bound] of this.bindings.entries()) {
 			childRun.bindings.set(
 				name,
@@ -7899,11 +8925,20 @@ class Run {
 				this.ctx.item.lastEffectAmount = this.lastEffectAmount;
 			}
 			// --- End Track P13 ---
+			// --- Track P16a ---
+			this.lastCountersRemoved = childRun.lastCountersRemoved;
+			if (this.lastCountersRemoved !== undefined) {
+				this.ctx.item.lastCountersRemoved = this.lastCountersRemoved;
+			}
+			// --- End Track P16a ---
 			this.bindings.clear();
 			for (const [name, bound] of childRun.bindings.entries()) {
 				this.bindings.set(name, bound);
 			}
 			if (childRun.result.exileSelf) this.result.exileSelf = true;
+			if (childRun.result.exileSelfWithCounters) {
+				this.result.exileSelfWithCounters = { ...childRun.result.exileSelfWithCounters };
+			}
 			if (childRun.result.librarySelf) this.result.librarySelf = { ...childRun.result.librarySelf };
 			if (childRun.result.turnEnded) this.result.turnEnded = true;
 		};
@@ -8228,6 +9263,162 @@ class Run {
 		return false;
 	}
 	// --- End Track P13 ---
+
+	// --- Track P16a ---
+	private p16aHost(): P16aStepHost {
+		const self = this;
+		return {
+			get state() {
+				return self.state;
+			},
+			get you() {
+				return self.you;
+			},
+			get title() {
+				return self.ctx.title;
+			},
+			get sourceCard() {
+				return self.ctx.sourceCard;
+			},
+			get sourceId() {
+				return self.ctx.sourceId;
+			},
+			get sourceObjectVersion() {
+				return self.ctx.item.sourceObjectVersion;
+			},
+			get stepIndex() {
+				return self.stepIndex;
+			},
+			get canPause() {
+				return self.canPause;
+			},
+			get answers() {
+				return self.answers;
+			},
+			get item() {
+				return self.ctx.item;
+			},
+			get eventLki() {
+				return self.ctx.eventLki;
+			},
+			amount: (a, fb) => self.amount(a, fb),
+			objects: (sel) => self.objects(sel),
+			players: (sel) => self.players(sel),
+			playerRef: (ref) => self.playerRef(ref),
+			refObjects: (ref) => {
+				if (ref.k === 'affected') return [];
+				return self.objects(ref as Selector);
+			},
+			refLkiCounters: (ref) => {
+				if (ref.k === 'eventObject' && self.ctx.eventLki?.counters) {
+					return { ...self.ctx.eventLki.counters };
+				}
+				const id = self.refId(ref);
+				if (!id) return undefined;
+				const loc = self.locate(id);
+				if (loc && loc.zone === 'battlefield') {
+					return { ...loc.inst.counters };
+				}
+				if (loc?.inst.lastKnownCounters) {
+					return { ...loc.inst.lastKnownCounters };
+				}
+				if (self.ctx.eventLki?.counters) {
+					return { ...self.ctx.eventLki.counters };
+				}
+				return undefined;
+			},
+			matches: (c, f, z) => self.matches(c, f, z),
+			locate: (id) => self.locate(id),
+			bind: (st, objs) => self.bind(st, objs),
+			answered: (key, cands, min, max) => self.answered(key, cands, min, max),
+			pauseForChoice: (chooser, title, desc, cands, min, max, zone, defaults, ansKey) =>
+				self.pauseForChoice(chooser, title, desc, cands, min, max, zone, defaults, ansKey),
+			pauseForYesNo: (chooser, title, question, answerKey, labels) =>
+				self.pauseForYesNo(chooser, title, question, answerKey, labels),
+			pauseForMode: (chooser, title, description, modes, min, max, answerKey, defaultIndices) => {
+				const item = self.saveFrame(self.stepIndex, self.answers, 'step', self.subStepIndex);
+				enqueueChoicePrompt(self.state, {
+					id: P().uid('prompt', self.state),
+					kind: 'chooseMode',
+					playerId: chooser.playerId,
+					title,
+					description,
+					continuation: {
+						kind: 'effect_choice',
+						stackItemId: item.id,
+						stepIndex: self.stepIndex,
+						answerKey
+					},
+					choice: {
+						kind: 'chooseMode',
+						modes,
+						min,
+						max,
+						...(defaultIndices ? { defaultIndices } : {})
+					}
+				});
+				self.result.paused = true;
+			},
+			setStepDecision: (accepted: boolean) => {
+				self.stepDecisions[self.stepIndex] = accepted;
+			},
+			recordCountersRemoved: (n: number) => {
+				self.lastCountersRemoved = n;
+				self.ctx.item.lastCountersRemoved = n;
+			},
+			didObjectDieInPrecedingStep: (id: string) => self.prevStepDiedIds.has(id),
+			didAnyActedObjectDieInPrecedingStep: () =>
+				self.prevStepDiedIds.size > 0 || Boolean(self.stepDecisions[-1000 - (self.stepIndex - 1)]),
+			createTokens: (controller, spec, count) => {
+				const total = Math.max(0, count) * tokenMultiplier(self.state, controller.playerId);
+				const made: CardInstance[] = [];
+				withSimultaneousZoneBatch(self.state, () => {
+					for (let i = 0; i < total; i++) {
+						made.push(P().createToken(self.state, controller, spec));
+					}
+				});
+				self.recordEffectAmount(made.length);
+				return made;
+			},
+			addCounters: (perm, counter, count) => {
+				if (count > 0) P().addCounters(self.state, perm, counter, count);
+			},
+			removeCounters: (perm, counter, count) => {
+				const want = Math.max(0, count);
+				const prev = perm.counters[counter] || 0;
+				const next = Math.max(0, prev - want);
+				const removed = prev - next;
+				if (removed > 0) {
+					perm.counters[counter] = next;
+					noteLayerInputsChanged(self.state);
+					if (!perm.phasedOut) {
+						emitEvent(self.state, {
+							kind: 'CounterRemoved',
+							objectId: perm.instanceId,
+							object: perm,
+							counterType: counter,
+							amount: removed,
+							previousCount: prev,
+							newCount: next
+						});
+						if (counter === 'defense') {
+							onBattleDefenseCountersRemoved(self.state, perm, prev, next);
+						}
+						flushTriggers(self.state);
+					}
+				}
+				return removed;
+			},
+			transformPermanent: (perm) => P().transformPermanent(self.state, perm),
+			drawCards: (player, count) => P().drawCards(self.state, player, count),
+			flushTriggers: () => flushTriggers(self.state),
+			addLog: (kind, text, actorId) => {
+				const mappedKind = kind === 'sba' || kind === 'system' ? 'rule' : kind;
+				P().addLog(self.state, mappedKind, text, actorId);
+			}
+		};
+	}
+	// --- End Track P16a ---
 
 	private keywordHost(): KeywordActionHost {
 		const self = this;
@@ -8824,6 +10015,12 @@ function playerLandColors(
 				for (const c of step.params.manaWithChosenColor) if (c !== 'C') direct.add(c);
 				if (perm.chosenColor && perm.chosenColor !== 'C') direct.add(perm.chosenColor);
 			}
+			// --- Track P16a ---
+			if (step.params?.manaOrChosenColor) {
+				for (const c of step.params.manaOrChosenColor) if (c !== 'C') direct.add(c);
+				if (perm.chosenColor && perm.chosenColor !== 'C') direct.add(perm.chosenColor);
+			}
+			// --- End Track P16a ---
 			if (step.params?.manaBundles) {
 				for (const b of step.params.manaBundles) {
 					for (const c of b) if (c !== 'C') direct.add(c);

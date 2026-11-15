@@ -83,6 +83,31 @@ import {
 	type ProtectionAttachmentExemptionInfo
 } from './staticsAndCostsWave5.ts';
 // --- End Track P14 ---
+// --- Track P16a ---
+const P16A_EXTRA_KEYWORD_COUNTERS = ['shadow', 'exalted', 'decayed'] as const;
+const P16A_ARBITRARY_PT_COUNTER_RE = /^([+-]\d+)\/([+-]\d+)$/;
+
+function collectP16aArbitraryPtCounters(
+	counters: Record<string, number>
+): Array<{ key: string; count: number; dp: number; dt: number }> | null {
+	let items: Array<{ key: string; count: number; dp: number; dt: number }> | null = null;
+	for (const key in counters) {
+		if (key === '+1/+1' || key === '-1/-1') continue;
+		const count = counters[key];
+		if (!count || count <= 0) continue;
+		if (key.charCodeAt(0) !== 43 && key.charCodeAt(0) !== 45) continue;
+		const m = P16A_ARBITRARY_PT_COUNTER_RE.exec(key);
+		if (!m) continue;
+		const cp = parseInt(m[1], 10);
+		const ct = parseInt(m[2], 10);
+		(items ??= []).push({ key, count, dp: cp * count, dt: ct * count });
+	}
+	if (items && items.length > 1) {
+		items.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+	}
+	return items;
+}
+// --- End Track P16a ---
 
 export interface AttributedKeywordOrEffect {
 	id: string;
@@ -1499,6 +1524,20 @@ function matchesLayerFilter(
 		if (isEnch !== filter.enchanted) return false;
 	}
 	// --- End Track P13 + Track P14 ---
+	// --- Track P16a ---
+	if (filter.assimilatedWithSelf) {
+		layerReads |= READ_P16A;
+		const aBy = target.inst.assimilatedBy;
+		const srcVer = source.inst.objectVersion ?? 1;
+		if (
+			!aBy ||
+			aBy.sourceInstanceId !== source.inst.instanceId ||
+			aBy.sourceObjectVersion !== srcVer
+		) {
+			return false;
+		}
+	}
+	// --- End Track P16a ---
 	return true;
 }
 
@@ -1966,6 +2005,24 @@ function evaluateLayerAmount(
 			layerReads |= READ_P15;
 			return state.permanentsPutIntoGraveyardFromBattlefieldThisTurn ?? 0;
 		// --- End Track P15 ---
+		// --- Track P16a ---
+		case 'playerCounters': {
+			layerReads |= READ_P16A;
+			if (amount.player.k === 'activePlayer') layerReads |= READ_ACTIVE_PLAYER;
+			const pid =
+				amount.player.k === 'activePlayer'
+					? (state.players[state.activePlayerIndex]?.playerId ?? source.controllerId)
+					: source.controllerId;
+			const p = state.players.find((pl) => pl.playerId === pid);
+			if (!p) return 0;
+			if (amount.counter === 'poison') return p.poison ?? 0;
+			if (amount.counter === 'experience') return p.experienceCounters ?? 0;
+			if (amount.counter === 'energy') return p.energyCounters ?? 0;
+			if (amount.counter === 'rad') return p.radCounters ?? 0;
+			if (amount.counter === 'ticket') return p.ticketCounters ?? 0;
+			return 0;
+		}
+		// --- End Track P16a ---
 		default:
 			return 0;
 	}
@@ -2543,7 +2600,39 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 	// --- End Track P15 ---
 	// --- Track P16a ---
 	if (reads & READ_P16A) {
-		fp.push(0);
+		for (const p of state.players) {
+			fp.push(
+				p.poison ?? 0,
+				p.experienceCounters ?? 0,
+				p.energyCounters ?? 0,
+				p.radCounters ?? 0,
+				p.ticketCounters ?? 0
+			);
+		}
+		for (const entry of snap.active) {
+			const perm = entry.perm;
+			fp.push(
+				perm.assimilatedBy?.sourceInstanceId ?? null,
+				perm.assimilatedBy?.sourceObjectVersion ?? 0
+			);
+			let extraKwMask = 0;
+			if ((perm.counters.shadow || 0) > 0) extraKwMask |= 1;
+			if ((perm.counters.exalted || 0) > 0) extraKwMask |= 2;
+			if ((perm.counters.decayed || 0) > 0) extraKwMask |= 4;
+			fp.push(extraKwMask);
+			if (extraKwMask !== 0) {
+				for (const kw of P16A_EXTRA_KEYWORD_COUNTERS) {
+					if ((perm.counters[kw] || 0) > 0) {
+						fp.push(perm.counterTimestamps?.[kw] ?? 0);
+					}
+				}
+			}
+			const arb = collectP16aArbitraryPtCounters(perm.counters as Record<string, number>);
+			fp.push(arb ? arb.length : 0);
+			if (arb) {
+				for (const it of arb) fp.push(it.key, it.count);
+			}
+		}
 	}
 	// --- End Track P16a ---
 	// --- Track P16b ---
@@ -2799,8 +2888,16 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 				// --- Track P13 ---
 				eff.layer7c ? 1 : 0,
 				eff.layer7c?.power ?? 0,
-				eff.layer7c?.toughness ?? 0
+				eff.layer7c?.toughness ?? 0,
 				// --- End Track P13 ---
+				// --- Track P16a ---
+				Boolean(eff.sourceCondition?.broken),
+				eff.sourceCondition?.kind ?? '',
+				eff.sourceCondition?.sourceInstanceId ?? '',
+				eff.sourceCondition?.sourceObjectVersion ?? 0,
+				eff.sourceCondition?.controllerId ?? '',
+				Boolean(eff.layer6?.removeAllAbilities)
+				// --- End Track P16a ---
 			);
 			for (const a of eff.affected) fp.push(a.instanceId, a.objectVersion ?? 1);
 			if (eff.layer4?.addTypes?.length) for (const t of eff.layer4.addTypes) fp.push(t);
@@ -2912,7 +3009,46 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 	// --- End Track P15 ---
 	// --- Track P16a ---
 	if (reads & READ_P16A) {
-		if (fp[i++] !== 0) return false;
+		for (const p of state.players) {
+			if (
+				fp[i++] !== (p.poison ?? 0) ||
+				fp[i++] !== (p.experienceCounters ?? 0) ||
+				fp[i++] !== (p.energyCounters ?? 0) ||
+				fp[i++] !== (p.radCounters ?? 0) ||
+				fp[i++] !== (p.ticketCounters ?? 0)
+			) {
+				return false;
+			}
+		}
+		for (const entry of snap.active) {
+			const perm = entry.perm;
+			if (
+				fp[i++] !== (perm.assimilatedBy?.sourceInstanceId ?? null) ||
+				fp[i++] !== (perm.assimilatedBy?.sourceObjectVersion ?? 0)
+			) {
+				return false;
+			}
+			let extraKwMask = 0;
+			if ((perm.counters.shadow || 0) > 0) extraKwMask |= 1;
+			if ((perm.counters.exalted || 0) > 0) extraKwMask |= 2;
+			if ((perm.counters.decayed || 0) > 0) extraKwMask |= 4;
+			if (fp[i++] !== extraKwMask) return false;
+			if (extraKwMask !== 0) {
+				for (const kw of P16A_EXTRA_KEYWORD_COUNTERS) {
+					if ((perm.counters[kw] || 0) > 0) {
+						if (fp[i++] !== (perm.counterTimestamps?.[kw] ?? 0)) return false;
+					}
+				}
+			}
+			const arb = collectP16aArbitraryPtCounters(perm.counters as Record<string, number>);
+			const arbLen = arb ? arb.length : 0;
+			if (fp[i++] !== arbLen) return false;
+			if (arb) {
+				for (const it of arb) {
+					if (fp[i++] !== it.key || fp[i++] !== it.count) return false;
+				}
+			}
+		}
 	}
 	// --- End Track P16a ---
 	// --- Track P16b ---
@@ -3253,8 +3389,16 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 				// --- Track P13 ---
 				fp[i++] !== (eff.layer7c ? 1 : 0) ||
 				fp[i++] !== (eff.layer7c?.power ?? 0) ||
-				fp[i++] !== (eff.layer7c?.toughness ?? 0)
+				fp[i++] !== (eff.layer7c?.toughness ?? 0) ||
 				// --- End Track P13 ---
+				// --- Track P16a ---
+				fp[i++] !== Boolean(eff.sourceCondition?.broken) ||
+				fp[i++] !== (eff.sourceCondition?.kind ?? '') ||
+				fp[i++] !== (eff.sourceCondition?.sourceInstanceId ?? '') ||
+				fp[i++] !== (eff.sourceCondition?.sourceObjectVersion ?? 0) ||
+				fp[i++] !== (eff.sourceCondition?.controllerId ?? '') ||
+				fp[i++] !== Boolean(eff.layer6?.removeAllAbilities)
+				// --- End Track P16a ---
 			) {
 				return false;
 			}
@@ -3833,6 +3977,22 @@ function isTimedContinuousEffectActive(
 	eff: TimedContinuousEffect,
 	workMap: Map<string, PermWorkState>
 ): boolean {
+	// --- Track P16a (CR 611.2b) ---
+	if (
+		eff.expires === 'forAsLongAsYouControlSelf' ||
+		eff.expires === 'forAsLongAsSelfRemainsTapped'
+	) {
+		const cond = eff.sourceCondition;
+		if (!cond || cond.broken) return false;
+		const src = workMap.get(cond.sourceInstanceId);
+		if (!src || (src.inst.objectVersion ?? 1) !== cond.sourceObjectVersion) return false;
+		if (cond.kind === 'controlledByPlayer') {
+			return src.controllerId === cond.controllerId;
+		}
+		layerReads |= READ_TAPPED;
+		return Boolean(src.inst.tapped);
+	}
+	// --- End Track P16a ---
 	const usl = eff.layer2?.untilSourceLeaves;
 	if (!usl) return true;
 	const src = workMap.get(usl.sourceInstanceId);
@@ -4622,6 +4782,19 @@ function evaluateGlobalAbilityLoss(
 			}
 		}
 	}
+	// --- Track P16a (CR 613.1f): Timed Layer 6 "loses all abilities" continuous effects ---
+	if (state.timedContinuousEffects?.length) {
+		for (const eff of state.timedContinuousEffects) {
+			if (!eff.layer6?.removeAllAbilities) continue;
+			if (!isTimedContinuousEffectActive(eff, workMap)) continue;
+			for (const a of eff.affected) {
+				const target = workMap.get(a.instanceId);
+				if (!target || (target.inst.objectVersion ?? 1) !== (a.objectVersion ?? 1)) continue;
+				recordAbilityRemoval(target, eff.sourceName || 'Temporary Effect', eff.timestamp);
+			}
+		}
+	}
+	// --- End Track P16a ---
 }
 
 // --- Track P8 ---
@@ -4874,6 +5047,22 @@ function evaluatePerPermanent(
 			}
 		}
 		// --- End Track P11 ---
+		// --- Track P16a (CR 122.1b, 613.7c): Extended keyword counters ('shadow', 'exalted', 'decayed') ---
+		layerReads |= READ_P16A;
+		for (const kw of P16A_EXTRA_KEYWORD_COUNTERS) {
+			if ((target.inst.counters[kw] || 0) <= 0) continue;
+			const kwTs = target.inst.counterTimestamps?.[kw] ?? target.timestamp;
+			targetTimedEffects.push({
+				timestamp: kwTs,
+				sourceName: `${formatKeywordLabel(kw)} counter`,
+				controllerId: target.controllerId,
+				affected: [
+					{ instanceId: target.inst.instanceId, objectVersion: target.inst.objectVersion ?? 1 }
+				],
+				addKeywords: [kw]
+			});
+		}
+		// --- End Track P16a ---
 		if (targetTimedEffects.length > 1) {
 			targetTimedEffects.sort((a, b) => a.timestamp - b.timestamp);
 		}
@@ -5524,8 +5713,22 @@ function evaluatePerPermanent(
 		if (target.workingPower === null || target.workingToughness === null) continue;
 		const plusOnes = target.inst.counters['+1/+1'] || 0;
 		const minusOnes = target.inst.counters['-1/-1'] || 0;
-		target.workingPower += plusOnes - minusOnes + target.inst.tempPowerMod;
-		target.workingToughness += plusOnes - minusOnes + target.inst.tempToughnessMod;
+		// --- Track P16a (CR 122.1a, 613.4c): Arbitrary ±M/±N counters ---
+		layerReads |= READ_P16A;
+		const arbCounters = collectP16aArbitraryPtCounters(
+			target.inst.counters as Record<string, number>
+		);
+		let arbDp = 0;
+		let arbDt = 0;
+		if (arbCounters) {
+			for (const it of arbCounters) {
+				arbDp += it.dp;
+				arbDt += it.dt;
+			}
+		}
+		// --- End Track P16a ---
+		target.workingPower += plusOnes - minusOnes + arbDp + target.inst.tempPowerMod;
+		target.workingToughness += plusOnes - minusOnes + arbDt + target.inst.tempToughnessMod;
 		// --- Track P13 (CR 613.4c): Cross-turn / permanent Layer 7c P/T modifications ---
 		if (state.timedContinuousEffects?.length) {
 			const targetVersion = target.inst.objectVersion ?? 1;
@@ -5690,6 +5893,24 @@ function evaluatePerPermanent(
 			);
 			target.ptModifiedBy.push(`-${minusOnes}/-${minusOnes} (-1/-1 Counters)`);
 		}
+		// --- Track P16a (CR 122.1a): Arbitrary ±M/±N counter breakdown items ---
+		const arbBreakdown = collectP16aArbitraryPtCounters(
+			target.inst.counters as Record<string, number>
+		);
+		if (arbBreakdown) {
+			for (const it of arbBreakdown) {
+				const deltaStr = formatSignedDelta(it.dp, it.dt);
+				grantItem(
+					target,
+					`counters_${it.key}`,
+					deltaStr,
+					'stat_mod',
+					`${it.key} Counters`
+				);
+				target.ptModifiedBy.push(`${deltaStr} (${it.key} Counters)`);
+			}
+		}
+		// --- End Track P16a ---
 		if (target.inst.tempPowerMod !== 0 || target.inst.tempToughnessMod !== 0) {
 			const deltaStr = formatSignedDelta(target.inst.tempPowerMod, target.inst.tempToughnessMod);
 			grantItem(target, 'temp_pt', deltaStr, 'stat_mod', 'Temporary Effect');

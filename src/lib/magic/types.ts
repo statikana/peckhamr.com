@@ -1067,6 +1067,28 @@ export interface CardInstance {
 	/** CR 710 Flip: true once a Kamigawa flip permanent has been flipped on the battlefield (irreversible). */
 	isFlipped?: boolean;
 	// --- End Wave 6 Shared ---
+	// --- Track P16a ---
+	/** CR 701.72 / CR 607.2: source permanent `(instanceId, objectVersion)` that assimilated this permanent on the battlefield. */
+	assimilatedBy?: { sourceInstanceId: string; sourceObjectVersion: number };
+	/** CR 611.2b: source-linked untap freezes ("doesn't untap during its controller's untap step for as long as ~ remains tapped / you control ~"). */
+	doesntUntapWhileSource?: Array<{
+		sourceInstanceId: string;
+		sourceObjectVersion: number;
+		kind: 'controlledByPlayer' | 'remainsTapped';
+		controllerId: string;
+		broken?: boolean;
+	}>;
+	/** CR 510.1: "~ assigns no combat damage this turn". */
+	assignsNoCombatDamageThisTurn?: boolean;
+	/** CR 508.1d: "attacks this turn if able". */
+	mustAttackThisTurn?: boolean;
+	/** CR 509.1c: "must be blocked this turn if able". */
+	mustBeBlockedThisTurn?: boolean;
+	/** CR 509.1c: "blocks this turn if able". */
+	mustBlockThisTurn?: boolean;
+	/** CR 509.1b: attacker instanceIds this creature cannot block this turn ("can't block ~ this turn"). */
+	cantBlockAttackerIdsThisTurn?: string[];
+	// --- End Track P16a ---
 }
 
 export interface TargetRef {
@@ -1522,6 +1544,12 @@ export interface StackItem {
 		nextIndex?: number;
 	};
 	// --- End Track P15 ---
+	// --- Track P16a ---
+	/** True when cast under a turn/next-spell "can't be countered" effect. */
+	cantBeCounteredByEffect?: boolean;
+	/** Count of counters removed in the most recent `removeCounters` step of this resolving effect. */
+	lastCountersRemoved?: number;
+	// --- End Track P16a ---
 }
 
 // --- Track P10 ---
@@ -1586,8 +1614,9 @@ export interface EffectResumeFrame {
 	bindings: Array<[string, EffectBindingSnapshot[]]>;
 	exileSelf?: boolean;
 	// --- Track P4 ---
+	// --- Track P16a: added optional `shuffle` for "Shuffle ~ into its owner's library" spells ---
 	/** CR 608.2m / 401.2 / 401.7: resolving spell puts itself into its owner's library instead of graveyard. */
-	librarySelf?: { position: 'top' | 'bottom'; fromTop?: number };
+	librarySelf?: { position: 'top' | 'bottom'; fromTop?: number; shuffle?: boolean };
 	answers: Record<string, ChoiceAnswer>;
 	stepDecisions?: Record<number, boolean>;
 	// --- Track P10 ---
@@ -2256,6 +2285,22 @@ export interface PlayerGameState {
 	/** CR 702.192a Paradigm: Paradigm spell cards whose exiled copies are created at the beginning of each of this player's precombat main phases. */
 	paradigmCards?: ScryfallCard[];
 	// --- End Track P15 ---
+	// --- Track P16a ---
+	/** CR 725: Rad counters on this player. */
+	radCounters?: number;
+	/** CR 122.1h: Ticket counters (`{TK}`) on this player. */
+	ticketCounters?: number;
+	/** Silence / Orim's Chant: true iff this player can't cast spells this turn. */
+	cantCastSpellsThisTurn?: boolean;
+	/** Veil of Summer / Allosaurus Shepherd-style: true iff spells controlled by this player can't be countered this turn. */
+	spellsCantBeCounteredThisTurn?: boolean;
+	/** Borne Upon a Wind: true iff this player may cast spells this turn as though they had flash. */
+	castAsThoughFlashThisTurn?: boolean;
+	/** Quicken / Scout's Warning: pending one-shot flash grants for the next matching spell cast by this player this turn. */
+	nextSpellFlashGrants?: Array<{ types?: string[]; notTypes?: string[] }>;
+	/** Overmaster / Savage Summoning: pending one-shot uncounterable grants for the next matching spell cast by this player this turn. */
+	nextSpellCantBeCounteredGrants?: Array<{ types?: string[]; notTypes?: string[] }>;
+	// --- End Track P16a ---
 }
 
 export interface ManaRider {
@@ -2302,12 +2347,25 @@ export interface TimedContinuousEffect {
 	affected: Array<{ instanceId: string; objectVersion?: number }>;
 	/** Omitted defaults to `'endOfTurn'` for backward compatibility with Crew etc. */
 	// --- Track P13: added 'untilYourNextTurn' & 'untilEndOfYourNextTurn' & layer7c ---
+	// --- Track P16a: added 'untilEndOfCombat' | 'forAsLongAsYouControlSelf' | 'forAsLongAsSelfRemainsTapped' & sourceCondition ---
 	expires?:
 		| 'endOfTurn'
 		| 'never'
 		| 'untilSourceLeaves'
 		| 'untilYourNextTurn'
-		| 'untilEndOfYourNextTurn';
+		| 'untilEndOfYourNextTurn'
+		| 'untilEndOfCombat'
+		| 'forAsLongAsYouControlSelf'
+		| 'forAsLongAsSelfRemainsTapped';
+	/** CR 611.2b: source permanent state condition; once broken (`broken === true`), the effect expires permanently. */
+	sourceCondition?: {
+		sourceInstanceId: string;
+		sourceObjectVersion: number;
+		kind: 'controlledByPlayer' | 'remainsTapped';
+		controllerId: string;
+		broken?: boolean;
+	};
+	// --- End Track P16a ---
 	/** CR 611.2b / 800.4m: player whose next turn start expires `'untilYourNextTurn'`. */
 	expiresOnTurnStartOfPlayerId?: string;
 	/** CR 611.2b / 800.4m: player whose next turn cleanup expires `'untilEndOfYourNextTurn'`. */
@@ -2342,6 +2400,9 @@ export interface TimedContinuousEffect {
 		// --- Track P10 ---
 		grantedAbilityTexts?: string[];
 		// --- End Track P10 ---
+		// --- Track P16a ---
+		removeAllAbilities?: boolean;
+		// --- End Track P16a ---
 	};
 	layer7b?: {
 		setPower: number;
@@ -2619,6 +2680,10 @@ export interface GameState {
 	/** CR 310.11b / 704.5v: `${instanceId}:${objectVersion}` keys of Sieges with an unresolved 0-defense trigger on stack / pending. */
 	siegeZeroDefenseTriggeredKeys?: string[];
 	// --- End Track P15 ---
+	// --- Track P16a ---
+	/** CR 603.2h: `${sourceInstanceId}:${sourceObjectVersion}:${abilityKey}` keys for "Do this only once each turn." */
+	doneOnceThisTurnKeys?: string[];
+	// --- End Track P16a ---
 }
 
 export interface MagicLobby {

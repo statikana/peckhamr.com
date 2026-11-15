@@ -534,6 +534,10 @@ export interface ObjectFilter {
 	/** CR 702.38 / 702.76: matches cards/permanents sharing at least one creature subtype with `source`. */
 	sharesCreatureTypeWithSelf?: boolean;
 	// --- End Track P15 ---
+	// --- Track P16a ---
+	/** CR 701.72 / CR 607.2: matches permanents currently assimilated by `source` (matching `objectVersion`). */
+	assimilatedWithSelf?: boolean;
+	// --- End Track P16a ---
 }
 
 export interface Compare {
@@ -677,8 +681,18 @@ export type Amount =
 	/** CR 702.179f: player's current speed (0 if player has no speed). */
 	| { k: 'playerSpeed'; player: PlayerRef }
 	/** CR 702.69a: number of permanents put into a graveyard from the battlefield so far this turn. */
-	| { k: 'gravestormCount' };
+	| { k: 'gravestormCount' }
 	// --- End Track P15 ---
+	// --- Track P16a ---
+	/** Number of counters removed in the preceding `removeCounters` step ("that many", "for each counter removed this way"). */
+	| { k: 'countersRemovedThisWay' }
+	/** Count of counters of `counter` on `player` ("for each poison/experience/energy/rad/ticket counter you have"). */
+	| {
+			k: 'playerCounters';
+			counter: 'poison' | 'experience' | 'energy' | 'rad' | 'ticket';
+			player: PlayerRef;
+	  };
+	// --- End Track P16a ---
 
 // ---- Costs ----------------------------------------------------------------------------------
 
@@ -873,18 +887,35 @@ export type Verb =
 	// --- Track P15 ---
 	| 'prepare'
 	| 'unprepare'
-	| 'increaseSpeed';
+	| 'increaseSpeed'
 	// --- End Track P15 ---
+	// --- Track P16a ---
+	| 'pileSplit'
+	| 'castFree'
+	| 'putPlayerCounters'
+	| 'removeFromCombat'
+	| 'harness'
+	| 'convert'
+	| 'empowerJace'
+	| 'assimilate'
+	| 'recruit'
+	| 'heal';
+	// --- End Track P16a ---
 
 export type ManaRestriction = 'artifactSpellOrNonSpell';
 
 // --- Track P13: added 'untilEndOfYourNextTurn' ---
+// --- Track P16a: added 'untilEndOfCombat' | 'forAsLongAsYouControlSelf' | 'forAsLongAsSelfRemainsTapped' ---
 export type Duration =
 	| 'endOfTurn'
 	| 'permanent'
 	| 'untilYourNextTurn'
 	| 'untilEndOfYourNextTurn'
-	| 'untilSourceLeaves';
+	| 'untilSourceLeaves'
+	| 'untilEndOfCombat'
+	| 'forAsLongAsYouControlSelf'
+	| 'forAsLongAsSelfRemainsTapped';
+// --- End Track P16a ---
 // --- End Track P13 ---
 
 export interface OptionalSpec {
@@ -956,6 +987,14 @@ export interface EffectParams {
 		| 'cannotLoseGame'
 		| 'hexproof'
 		// --- End Track P13 ---
+		// --- Track P16a ---
+		| 'opponentsCantCastThisTurn'
+		| 'cantCastSpellsThisTurn'
+		| 'spellsCantBeCounteredThisTurn'
+		| 'castAsThoughFlashThisTurn'
+		| 'nextSpellFlash'
+		| 'nextSpellCantBeCountered'
+		// --- End Track P16a ---
 	>;
 	search?: SearchSpec;
 	to?: ZoneType;
@@ -998,6 +1037,10 @@ export interface EffectParams {
 		/** Put all revealed/remaining cards into hand (e.g. Treasure Hunt-style effects). */
 		restToHand?: boolean;
 		// --- End Track P10 ---
+		// --- Track P16a ---
+		/** Shuffle the unkept cards back into the library (e.g. Polymorph / Chaos Warp / Transmogrify). */
+		shuffleRest?: boolean;
+		// --- End Track P16a ---
 		/** Ordered multi-destination partition (e.g. Expressive Iteration: 1 hand, 1 bottom, 1 exile playable this turn). */
 		partitions?: Array<{
 			count: number;
@@ -1174,7 +1217,72 @@ export interface EffectParams {
 	/** grant: allows creature(s) to attack this turn as though they didn't have defender. */
 	canAttackNoDefender?: boolean;
 	// --- End Track P13 ---
+	// --- Track P16a ---
+	/** grantPlayer: filter restricting `nextSpellFlash` / `nextSpellCantBeCountered` (types / notTypes). */
+	nextSpellFilter?: { types?: string[]; notTypes?: string[] };
+	/** putCounters: multiple counter kinds placed together ("a flying counter and a +1/+1 counter"). */
+	multiCounters?: Array<{ counter: CounterType; count: Amount }>;
+	/** moveCounters (CR 122.5): generalized source/counter/count specification. */
+	moveCounterSpec?: {
+		from: Selector;
+		counter: CounterType | 'any';
+		all?: boolean;
+		upTo?: boolean;
+	};
+	/** putCounters (CR 122.8–9): copy all live or LKI counters from `copyCountersFrom` onto `subject`. */
+	copyCountersFrom?: Selector;
+	/** putPlayerCounters: counter kind placed on player(s). */
+	playerCounter?: 'poison' | 'experience' | 'energy' | 'rad' | 'ticket';
+	/** pileSplit (CR 700.3): Fact-or-Fiction / Steam-Augury pile-making and pile-choosing spec. */
+	pileSplit?: PileSplitSpec;
+	/** castFree (CR 707.12): copy-card and/or free-cast spec. */
+	castFreeSpec?: CastFreeSpec;
+	/** bounce / exile / move: choose `choiceCount` (or up to `choiceCount`) matching objects instead of all. */
+	choiceCount?: Amount;
+	/** exile / move: filter applied to bound or candidate objects before choosing/moving. */
+	moveFilter?: ObjectFilter;
+	/** exile: counters placed on each card exiled this way (e.g. time / silver / page counters). */
+	exileWithCounters?: { counter: CounterType; count: number };
+	/** addMana: choose between one of `manaOrChosenColor` or one mana of `source.chosenColor` (Thriving/Gate lands). */
+	manaOrChosenColor?: ManaColor[];
+	/** grant: controller chooses one keyword from `chooseKeywordOptions` on resolution. */
+	chooseKeywordOptions?: string[];
+	/** grant: controller chooses a color on resolution and grants `protection from <color>`. */
+	chooseProtectionColor?: boolean;
+	/** animate: controller chooses a creature subtype on resolution. */
+	chooseCreatureType?: boolean;
+	/** animate: controller chooses a basic land subtype on resolution. */
+	chooseBasicLandType?: boolean;
+	/** combat flags applied until end of turn. */
+	mustAttackThisTurn?: boolean;
+	mustBeBlockedThisTurn?: boolean;
+	mustBlockThisTurn?: boolean;
+	mustBlockSelfThisTurn?: boolean;
+	cantBlockSelfThisTurn?: boolean;
+	assignsNoCombatDamageThisTurn?: boolean;
+	/** grant / animate (CR 613.1f): affected permanent(s) lose all abilities in Layer 6 for the duration. */
+	removeAllAbilities?: boolean;
+	// --- End Track P16a ---
 }
+
+// --- Track P16a ---
+export interface PileSplitSpec {
+	reveal?: boolean;
+	pileMaker: 'you' | 'opponent';
+	pileChooser: 'you' | 'opponent';
+	chosenTo: 'hand' | 'battlefield';
+	otherTo: 'graveyard' | 'libraryBottom' | 'exile';
+	otherRandomOrder?: boolean;
+}
+
+export interface CastFreeSpec {
+	copyCardFirst?: boolean;
+	withoutPayingManaCost: boolean;
+	filter?: ObjectFilter;
+	upToCount?: number;
+	exileIfPutIntoGraveyard?: boolean;
+}
+// --- End Track P16a ---
 
 // --- Track P13 ---
 export type RoleTokenKind =
@@ -1553,7 +1661,8 @@ export type Condition =
 	/** CR 702.100a: entering creature's power > self's power OR entering creature's toughness > self's toughness. */
 	| { k: 'evolveCompare' }
 	/** Checks whether `target` (or event/bound object) matches `filter` (e.g. Chaos Warp "if it's a permanent card"). */
-	| { k: 'matchesFilter'; target?: Ref; filter: ObjectFilter }
+	// --- Track P16a: added optional `any` for multi-card bindings ("if a land card was milled this way") ---
+	| { k: 'matchesFilter'; target?: Ref; filter: ObjectFilter; any?: boolean }
 	// --- Track P7 ---
 	/** Morbid: true when at least one creature died (battlefield -> graveyard) this turn. */
 	| { k: 'creatureDiedThisTurn' }
@@ -1703,8 +1812,12 @@ export type Condition =
 	| { k: 'isPaired' }
 	| { k: 'tributePaid' }
 	| { k: 'hasEnduringStory' }
-	| { k: 'isHarnessed' };
+	| { k: 'isHarnessed' }
 	// --- End Wave 6 Shared ---
+	// --- Track P16a ---
+	/** True iff `ref` (or the object acted on by the preceding step) moved to a graveyard from the battlefield. */
+	| { k: 'diedThisWay'; ref?: Ref };
+	// --- End Track P16a ---
 
 // ---- Statics and replacements ---------------------------------------------------------------
 

@@ -202,7 +202,18 @@ export function objectPower(state: GameState, obj: CardInstance): number | null 
 			}
 		}
 	}
-	return base + (obj.counters['+1/+1'] || 0) - (obj.counters['-1/-1'] || 0) + (obj.tempPowerMod || 0);
+	// --- Track P16a (CR 122.1a): Arbitrary ±M/±N counters off-battlefield ---
+	let arbDp = 0;
+	for (const key in obj.counters) {
+		if (key === '+1/+1' || key === '-1/-1') continue;
+		const c = (obj.counters as Record<string, number>)[key];
+		if (!c || c <= 0) continue;
+		if (key.charCodeAt(0) !== 43 && key.charCodeAt(0) !== 45) continue;
+		const m = /^([+-]\d+)\/([+-]\d+)$/.exec(key);
+		if (m) arbDp += parseInt(m[1], 10) * c;
+	}
+	// --- End Track P16a ---
+	return base + (obj.counters['+1/+1'] || 0) - (obj.counters['-1/-1'] || 0) + arbDp + (obj.tempPowerMod || 0);
 }
 
 /** Toughness of an object (CR 107.1b, 208.2a, 208.3). */
@@ -240,7 +251,18 @@ export function objectToughness(state: GameState, obj: CardInstance): number | n
 			}
 		}
 	}
-	return base + (obj.counters['+1/+1'] || 0) - (obj.counters['-1/-1'] || 0) + (obj.tempToughnessMod || 0);
+	// --- Track P16a (CR 122.1a): Arbitrary ±M/±N counters off-battlefield ---
+	let arbDt = 0;
+	for (const key in obj.counters) {
+		if (key === '+1/+1' || key === '-1/-1') continue;
+		const c = (obj.counters as Record<string, number>)[key];
+		if (!c || c <= 0) continue;
+		if (key.charCodeAt(0) !== 43 && key.charCodeAt(0) !== 45) continue;
+		const m = /^([+-]\d+)\/([+-]\d+)$/.exec(key);
+		if (m) arbDt += parseInt(m[2], 10) * c;
+	}
+	// --- End Track P16a ---
+	return base + (obj.counters['+1/+1'] || 0) - (obj.counters['-1/-1'] || 0) + arbDt + (obj.tempToughnessMod || 0);
 }
 
 /**
@@ -679,6 +701,18 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 	// --- Track P15 ---
 	if (!matchesP15ObjectFilter(filter, obj, ctx)) return false;
 	// --- End Track P15 ---
+	// --- Track P16a (CR 701.72, CR 607.2a) ---
+	if (filter.assimilatedWithSelf) {
+		if (!ctx.source || !obj.assimilatedBy) return false;
+		const srcVer = ctx.source.objectVersion ?? 1;
+		if (
+			obj.assimilatedBy.sourceInstanceId !== ctx.source.instanceId ||
+			obj.assimilatedBy.sourceObjectVersion !== srcVer
+		) {
+			return false;
+		}
+	}
+	// --- End Track P16a ---
 	return true;
 }
 
@@ -896,6 +930,24 @@ export function evaluateAmount(amount: Amount, ctx: FilterContext): number {
 		case 'gravestormCount':
 			return evaluateP15Amount(amount, ctx.state, ctx.controllerId) ?? 0;
 		// --- End Track P15 ---
+		// --- Track P16a ---
+		case 'countersRemovedThisWay':
+			return ctx.stackItem?.lastCountersRemoved ?? 0;
+		case 'playerCounters': {
+			const pid =
+				amount.player.k === 'activePlayer'
+					? (ctx.state.players[ctx.state.activePlayerIndex]?.playerId ?? ctx.controllerId)
+					: ctx.controllerId;
+			const pl = ctx.state.players.find((p) => p.playerId === pid);
+			if (!pl) return 0;
+			if (amount.counter === 'poison') return pl.poison ?? 0;
+			if (amount.counter === 'experience') return pl.experienceCounters ?? 0;
+			if (amount.counter === 'energy') return pl.energyCounters ?? 0;
+			if (amount.counter === 'rad') return pl.radCounters ?? 0;
+			if (amount.counter === 'ticket') return pl.ticketCounters ?? 0;
+			return 0;
+		}
+		// --- End Track P16a ---
 		default:
 			return 0;
 	}
