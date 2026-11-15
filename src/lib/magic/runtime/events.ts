@@ -5,6 +5,7 @@ import type {
 	GameState,
 	ManaColor,
 	ScryfallCard,
+	TargetRef,
 	ZoneType
 } from '../types.ts';
 
@@ -104,6 +105,13 @@ export interface CastEvent extends EventBase {
 	playerId: string;
 	objectId: string;
 	object: CardInstance;
+	// --- Track P22b ---
+	targets?: TargetRef[];
+	manaSpentCount?: number;
+	coloredManaSpent?: number;
+	kicked?: boolean;
+	stackItemId?: string;
+	// --- End Track P22b ---
 }
 
 /** Attackers were declared (CR 508). */
@@ -212,6 +220,10 @@ export interface CardDrawnEvent extends EventBase {
 	playerId: string;
 	objectId: string;
 	object: CardInstance;
+	// --- Track P22b ---
+	/** 1-based ordinal among cards this player drew during their own draw step this turn. */
+	inOwnDrawStepOrdinal?: number;
+	// --- End Track P22b ---
 }
 
 /** An untapped permanent became tapped (CR 603.2e: does not fire if already tapped or entering tapped). */
@@ -502,8 +514,17 @@ export type GameEvent =
 	| EnergyGainedEvent
 	| ProliferatedEvent
 	| EvolvedEvent
-	| CrewedVehicleEvent;
+	| CrewedVehicleEvent
 	// --- End Track P19b ---
+	// --- Track P22b ---
+	| AbilityActivatedEvent
+	| PlayersFinishedVotingEvent
+	| ClashEvent
+	| LibraryShuffledEvent
+	| SpellCounteredEvent
+	| SagaChapterResolvedEvent
+	| SaddledMountEvent;
+	// --- End Track P22b ---
 
 // --- Track P10 ---
 export interface UnblockedAttackersEvent extends EventBase {
@@ -775,6 +796,63 @@ export interface CrewedVehicleEvent extends EventBase {
 	playerId: string;
 }
 // --- End Track P19b ---
+
+// --- Track P22b ---
+export interface AbilityActivatedEvent extends EventBase {
+	kind: 'AbilityActivated';
+	playerId: string;
+	sourceId: string;
+	source: CardInstance;
+	abilityId?: string;
+	isManaAbility: boolean;
+	isLoyaltyAbility: boolean;
+	lifePaid?: number;
+	stackItemId?: string;
+}
+
+export interface PlayersFinishedVotingEvent extends EventBase {
+	kind: 'PlayersFinishedVoting';
+	controllerId: string;
+}
+
+export interface ClashEvent extends EventBase {
+	kind: 'Clash';
+	playerId: string;
+	won: boolean;
+}
+
+export interface LibraryShuffledEvent extends EventBase {
+	kind: 'LibraryShuffled';
+	playerId: string;
+}
+
+export interface SpellCounteredEvent extends EventBase {
+	kind: 'SpellCountered';
+	counteredStackItemId: string;
+	counteredCard: ScryfallCard;
+	byControllerId: string;
+	bySourceId?: string;
+	bySpellOrAbility: boolean;
+}
+
+export interface SagaChapterResolvedEvent extends EventBase {
+	kind: 'SagaChapterResolved';
+	objectId: string;
+	object: CardInstance;
+	controllerId: string;
+	chapterNumbers: number[];
+	isFinalChapter: boolean;
+}
+
+export interface SaddledMountEvent extends EventBase {
+	kind: 'SaddledMount';
+	creatureId: string;
+	creature: CardInstance;
+	mountId: string;
+	mount: CardInstance;
+	playerId: string;
+}
+// --- End Track P22b ---
 
 export type GameEventKind = GameEvent['kind'];
 type EventOf<K extends GameEventKind> = Extract<GameEvent, { kind: K }>;

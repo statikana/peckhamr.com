@@ -6739,6 +6739,10 @@ function costModifiers(activeZones?: ZoneType[]): Production {
 					case 'behold':
 					case 'discardHand':
 					case 'putFromHandOnTopOfLibrary':
+					case 'chooseCreatureType':
+					case 'beholdOrChoose':
+					case 'chooseNumberBetween':
+					case 'repeatableOptionalMana':
 						return true;
 					case 'sacrifice':
 					case 'discard':

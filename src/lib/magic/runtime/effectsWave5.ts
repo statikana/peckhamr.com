@@ -2286,6 +2286,9 @@ export function executeCouncilVote(
 
 	const summary = spec.options.map((opt, idx) => `${opt}: ${tallies[idx]}`).join(', ');
 	pushP13Log(state, actor.playerId, 'rule', `Vote results (CR 701.38): ${summary}.`);
+	// --- Track P22b ---
+	emitEvent(state, { kind: 'PlayersFinishedVoting', controllerId: actor.playerId });
+	// --- End Track P22b ---
 
 	if (spec.perOptionEffect) {
 		for (let optIdx = 0; optIdx < spec.options.length; optIdx++) {

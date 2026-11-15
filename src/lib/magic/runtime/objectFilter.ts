@@ -138,6 +138,14 @@ import {
 	matchesSameNameAsNontokenPermanentWave8
 } from './staticsWave8.ts';
 // --- End Track P22a ---
+// --- Track P22b ---
+import {
+	evaluateP22bAmount,
+	evaluateP22bCondition,
+	hasP22bObjectFilterFields,
+	matchesP22bObjectFilter
+} from './triggersWave8.ts';
+// --- End Track P22b ---
 
 export interface FilterContext {
 	state: GameState;
@@ -152,6 +160,12 @@ export interface FilterContext {
 	// --- Track P10 ---
 	lastRollResult?: number;
 	// --- End Track P10 ---
+	// --- Track P22b ---
+	eventPlayerId?: string;
+	lki?: {
+		damagedByThisTurn?: Array<{ sourceId: string; sourceVersion?: number }>;
+	};
+	// --- End Track P22b ---
 }
 
 const ZONES = ['library', 'hand', 'battlefield', 'graveyard', 'exile', 'command'] as const;
@@ -960,6 +974,11 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 		if (!matchesSameNameAsNontokenPermanentWave8(state, effName)) return false;
 	}
 	// --- End Track P22a ---
+	// --- Track P22b ---
+	if (hasP22bObjectFilterFields(filter) && !matchesP22bObjectFilter(obj, filter, ctx)) {
+		return false;
+	}
+	// --- End Track P22b ---
 	return true;
 }
 
@@ -1281,6 +1300,11 @@ export function evaluateAmount(amount: Amount, ctx: FilterContext): number {
 				amount.who
 			);
 		// --- End Track P22a ---
+		// --- Track P22b ---
+		case 'opponentsLifeLostThisTurn':
+		case 'targetsTotalManaValue':
+			return evaluateP22bAmount(amount, ctx.state, ctx.controllerId, ctx.stackItem) ?? 0;
+		// --- End Track P22b ---
 		default:
 			return 0;
 	}
@@ -1571,7 +1595,22 @@ export function evaluateCondition(cond: Condition, ctx: FilterContext): boolean 
 		case 'enteredBattlefieldUnderYourControlThisTurn':
 			return evaluateWave8Condition(cond, ctx.state, ctx.controllerId, ctx.source) ?? false;
 		// --- End Track P22a ---
-		default:
-			return false;
+		// --- Track P22b ---
+		default: {
+			const p22b = evaluateP22bCondition(
+				cond,
+				{
+					state: ctx.state,
+					controllerId: ctx.controllerId,
+					sourceInstanceId: ctx.source?.instanceId ?? '',
+					source: ctx.source,
+					stackItem: ctx.stackItem,
+					eventPlayerId: ctx.eventPlayerId
+				},
+				matchesObjectFilter
+			);
+			return p22b ?? false;
+		}
+		// --- End Track P22b ---
 	}
 }

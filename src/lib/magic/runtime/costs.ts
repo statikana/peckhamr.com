@@ -141,6 +141,17 @@ import {
 // --- Track P19a ---
 import { captureP19aSacrificedCostLki } from './effectsWave7.ts';
 // --- End Track P19a ---
+// --- Track P22b ---
+import {
+	checkSimpleP22bCost,
+	describeP22bCost,
+	executeP22bCostPart,
+	matchesP22bCostModifierWho,
+	p22bObjectCandidates,
+	pickGreedyP22bObjects,
+	planP22bSpecialCostPart
+} from './triggersWave8.ts';
+// --- End Track P22b ---
 
 export type { SerializedPlannedCost };
 export {
@@ -709,6 +720,9 @@ function effectiveSpellManaCostInner(
 					const zones = mod.activeZones ?? ['battlefield'];
 					if (!zones.includes('battlefield')) continue;
 					if (!matchesWho(mod, p.playerId)) continue;
+					// --- Track P22b ---
+					if (!matchesP22bCostModifierWho(mod, perm, player.playerId)) continue;
+					// --- End Track P22b ---
 					if (mod.condition && !evaluateCondition(mod.condition, ctx)) continue;
 					if (!matchesSpell(mod, p.playerId, perm)) continue;
 					applyDelta(mod, ctx);
@@ -721,6 +735,9 @@ function effectiveSpellManaCostInner(
 					const zones = gDef.activeZones ?? ['battlefield'];
 					if (!zones.includes('battlefield')) continue;
 					if (!matchesWho(gDef, p.playerId)) continue;
+					// --- Track P22b ---
+					if (!matchesP22bCostModifierWho(gDef, perm, player.playerId)) continue;
+					// --- End Track P22b ---
 					if (gDef.condition && !evaluateCondition(gDef.condition, ctx)) continue;
 					if (!matchesSpell(gDef, p.playerId, perm)) continue;
 					applyDelta(gDef, ctx);
@@ -1278,6 +1295,10 @@ export function describeCost(defs: CostDef[]): string {
 			const p20bDesc = describeP20bCost(d);
 			if (p20bDesc !== null) return p20bDesc;
 			// --- End Track P20b ---
+			// --- Track P22b ---
+			const p22bDesc = describeP22bCost(d);
+			if (p22bDesc !== null) return p22bDesc;
+			// --- End Track P22b ---
 			// --- Track P17b ---
 			const p17bDesc = describeP17bCost(d);
 			if (p17bDesc !== null) return p17bDesc;
@@ -1388,6 +1409,9 @@ export interface CostContext {
 	baseMana: ManaCostRequirement | null;
 	/** Object IDs already committed to another payment (e.g. CastCostAid) that cannot be reused (CR 118.10). */
 	reservedObjectIds?: ReadonlySet<string>;
+	// --- Track P22b ---
+	targets?: TargetRef[];
+	// --- End Track P22b ---
 	// --- Track P10 ---
 	spendCtx?: {
 		capturedColorsSpent?: ManaColor[];
@@ -1455,8 +1479,13 @@ type ObjectCostDef = Extract<
 			| 'putExiledWithSelfToGraveyard'
 			// --- End Track P17b ---
 			// --- Track P20b ---
-			| 'unattachOther';
+			| 'unattachOther'
 			// --- End Track P20b ---
+			// --- Track P22b ---
+			| 'beholdOrChoose'
+			| 'exileFromGraveyardAndPayManaCost'
+			| 'exileFaceDownPermanentFaceUp';
+			// --- End Track P22b ---
 	}
 >;
 
@@ -1473,6 +1502,12 @@ export type PlannedCost =
 			counterCount?: number;
 			counterDistribution?: Record<string, number>;
 			// --- End Track P20b ---
+			// --- Track P22b ---
+			chosenSubTypeCost?: string;
+			chosenNumberCost?: number;
+			chosenKeywordCost?: string;
+			repeatableManaPaidCount?: number;
+			// --- End Track P22b ---
 	  };
 
 export type CostPlan =
@@ -1525,6 +1560,12 @@ function deductMatchingCountersFrom(
 
 /** Does this cost need the player to choose objects, and which objects could pay it? */
 function objectCandidates(def: ObjectCostDef, ctx: CostContext, used: Set<string>): CardInstance[] | null {
+	const fctx = filterCtx(ctx);
+	const free = (c: CardInstance) => !used.has(c.instanceId) && !(ctx.isSpell && c.instanceId === ctx.source.instanceId);
+	// --- Track P22b ---
+	const p22bCand = p22bObjectCandidates(def, ctx, free, matchesObjectFilter);
+	if (p22bCand !== null) return p22bCand;
+	// --- End Track P22b ---
 	// --- Track P20b ---
 	const p20bCand = p20bObjectCandidates(def, ctx, used, matchesObjectFilter);
 	if (p20bCand.handled) return p20bCand.candidates;
@@ -1533,8 +1574,6 @@ function objectCandidates(def: ObjectCostDef, ctx: CostContext, used: Set<string
 	const p17bCand = p17bObjectCandidates(def, ctx, used, matchesObjectFilter);
 	if (p17bCand.handled) return p17bCand.candidates;
 	// --- End Track P17b ---
-	const fctx = filterCtx(ctx);
-	const free = (c: CardInstance) => !used.has(c.instanceId) && !(ctx.isSpell && c.instanceId === ctx.source.instanceId);
 	switch (def.k) {
 		case 'tapOthers':
 			return ctx.player.battlefield.filter(
@@ -1643,6 +1682,11 @@ function objectCandidates(def: ObjectCostDef, ctx: CostContext, used: Set<string
 		// --- Track P20b ---
 		case 'unattachOther':
 		// --- End Track P20b ---
+		// --- Track P22b ---
+		case 'beholdOrChoose':
+		case 'exileFromGraveyardAndPayManaCost':
+		case 'exileFaceDownPermanentFaceUp':
+		// --- End Track P22b ---
 			return null;
 		// --- End Track P17b ---
 	}
@@ -1650,6 +1694,10 @@ function objectCandidates(def: ObjectCostDef, ctx: CostContext, used: Set<string
 
 /** Checks a cost part that doesn't involve choosing objects. Returns an error or null. */
 function checkSimple(def: CostDef, ctx: CostContext): string | null {
+	// --- Track P22b ---
+	const p22bSimple = checkSimpleP22bCost(def, ctx, matchesObjectFilter);
+	if (p22bSimple.handled) return p22bSimple.error;
+	// --- End Track P22b ---
 	// --- Track P20b ---
 	const p20bSimple = checkSimpleP20bCost(def, ctx, matchesObjectFilter);
 	if (p20bSimple.handled) return p20bSimple.error;
@@ -2157,6 +2205,47 @@ function planFlat(
 			continue;
 		}
 		// --- End Track P20b ---
+		// --- Track P22b: non-object special costs (choice/mana-per-counter/repeatable) before object gate ---
+		if (def.k === 'payManaPerCounter') {
+			const cnt = ctx.source.counters[def.counter] ?? 0;
+			for (let k = 0; k < cnt; k++) {
+				mana = addRequirements(mana, parseManaCost(def.perMana, ctx.xValue));
+			}
+			parts.push({ def, ...(emitForaged ? { emitForaged: true } : {}) });
+			continue;
+		}
+		if (
+			def.k === 'chooseCreatureType' ||
+			def.k === 'chooseNumberBetween' ||
+			def.k === 'chooseFromKeywordList' ||
+			def.k === 'repeatableOptionalMana'
+		) {
+			const p22bNonObj = planP22bSpecialCostPart(
+				def,
+				null,
+				ctx,
+				used,
+				objects ?? [],
+				objectIndex,
+				payment ?? {},
+				(d) => describeCost([d])
+			);
+			if (p22bNonObj.handled) {
+				const spRes = p22bNonObj.result;
+				if (!spRes.ok) return spRes;
+				if ('question' in spRes) {
+					return { ok: true, question: spRes.question };
+				}
+				objectIndex = spRes.nextObjectIndex;
+				parts.push({
+					def,
+					...(spRes.extra ?? {}),
+					...(emitForaged ? { emitForaged: true } : {})
+				});
+				continue;
+			}
+		}
+		// --- End Track P22b ---
 		if (
 			def.k !== 'tapOthers' &&
 			def.k !== 'tapSubsetSum' &&
@@ -2180,8 +2269,13 @@ function planFlat(
 			def.k !== 'putExiledWithSelfToGraveyard' &&
 			// --- End Track P17b ---
 			// --- Track P20b ---
-			def.k !== 'unattachOther'
+			def.k !== 'unattachOther' &&
 			// --- End Track P20b ---
+			// --- Track P22b ---
+			def.k !== 'beholdOrChoose' &&
+			def.k !== 'exileFromGraveyardAndPayManaCost' &&
+			def.k !== 'exileFaceDownPermanentFaceUp'
+			// --- End Track P22b ---
 		) {
 			parts.push({ def, ...(emitForaged ? { emitForaged: true } : {}) });
 			continue;
@@ -2210,6 +2304,39 @@ function planFlat(
 			if ('filter' in def && def.filter === 'self') used.add(ctx.source.instanceId);
 			continue;
 		}
+		// --- Track P22b ---
+		const p22bSpecial = planP22bSpecialCostPart(
+			def,
+			candidates,
+			ctx,
+			used,
+			objects ?? [],
+			objectIndex,
+			payment ?? {},
+			(d) => describeCost([d])
+		);
+		if (p22bSpecial.handled) {
+			const spRes = p22bSpecial.result;
+			if (!spRes.ok) return spRes;
+			if ('question' in spRes) {
+				return {
+					ok: true,
+					question:
+						spRes.question.kind === 'objects'
+							? { ...spRes.question, costDef: def }
+							: spRes.question
+				};
+			}
+			objectIndex = spRes.nextObjectIndex;
+			parts.push({
+				def,
+				objects: spRes.chosen,
+				...(spRes.extra ?? {}),
+				...(emitForaged ? { emitForaged: true } : {})
+			});
+			continue;
+		}
+		// --- End Track P22b ---
 		// --- Track P20b: Multi-permanent counter removal, unattachOther, beholdExile, & multi-object constraints ---
 		const p20bSpecial = planP20bSpecialCostPart(
 			def,
@@ -2376,7 +2503,13 @@ function planFlat(
 		// --- End Track P14 ---
 		// --- Track P11 + Track P14: removeCounters / putCounters from/on a single permanent chooses 1 object ---
 		const count =
-			def.k === 'removeCounters' || def.k === 'putCounters' ? 1 : n(def.count, ctx);
+			def.k === 'removeCounters' ||
+			def.k === 'putCounters' ||
+			def.k === 'beholdOrChoose' ||
+			def.k === 'exileFromGraveyardAndPayManaCost' ||
+			def.k === 'exileFaceDownPermanentFaceUp'
+				? 1
+				: n(def.count, ctx);
 		// --- End Track P11 + Track P14 ---
 		if (candidates.length < count) {
 			return { ok: false, error: `Can't pay the cost: ${describeCost([def])} (not enough to choose from).` };
@@ -2652,6 +2785,15 @@ export function chooseCostPayment(
 		const candidates = q.candidateIds
 			.map((id) => findById(ctx, id))
 			.filter((c): c is CardInstance => c !== undefined);
+		// --- Track P22b ---
+		if (q.costDef) {
+			const p22bPick = pickGreedyP22bObjects(q.costDef, candidates, q.count, ctx);
+			if (p22bPick) {
+				objects[q.index] = p22bPick;
+				continue;
+			}
+		}
+		// --- End Track P22b ---
 		// --- Track P20b ---
 		if (q.costDef) {
 			const p20bPick = pickGreedyP20bObjects(q.costDef, candidates, q.count, ctx);
@@ -2723,6 +2865,16 @@ export interface PaidCosts {
 	paused?: boolean;
 	nextPartIndex?: number;
 	nextObjectIndex?: number;
+	// --- Track P22b ---
+	lifePaidCount?: number;
+	chosenSubTypeCost?: string;
+	chosenNumberCost?: number;
+	chosenKeywordCost?: string;
+	beheldOrChosenPower?: number;
+	beheldOrChosenCard?: ScryfallCard;
+	repeatableManaPaidCount?: number;
+	exiledCostCards?: ScryfallCard[];
+	// --- End Track P22b ---
 }
 
 function sacrifice(ctx: CostContext, perm: CardInstance): MoveResult {
@@ -2843,8 +2995,13 @@ export function serializeCostPlanParts(
 			def.k === 'waterbend' ||
 			def.k === 'behold' ||
 			(def.k === 'putCounters' && part.objects !== undefined) ||
-			def.k === 'putFromHandOnTopOfLibrary'
+			def.k === 'putFromHandOnTopOfLibrary' ||
 			// --- End Track P14 ---
+			// --- Track P22b ---
+			def.k === 'beholdOrChoose' ||
+			def.k === 'exileFromGraveyardAndPayManaCost' ||
+			def.k === 'exileFaceDownPermanentFaceUp'
+			// --- End Track P22b ---
 		) {
 			const objs = 'filter' in def && def.filter === 'self' ? [ctx.source] : (part.objects ?? []);
 			return {
@@ -2876,7 +3033,17 @@ export function serializeCostPlanParts(
 			const millTotal = extra.count ? n(extra.count, ctx) : 0;
 			return { def, millTotal, objectNames: [], ...forageExtra };
 		}
-		return { def, ...forageExtra };
+		// --- Track P22b ---
+		const p22bExtras = {
+			...(part.chosenSubTypeCost !== undefined ? { chosenSubTypeCost: part.chosenSubTypeCost } : {}),
+			...(part.chosenNumberCost !== undefined ? { chosenNumberCost: part.chosenNumberCost } : {}),
+			...(part.chosenKeywordCost !== undefined ? { chosenKeywordCost: part.chosenKeywordCost } : {}),
+			...(part.repeatableManaPaidCount !== undefined
+				? { repeatableManaPaidCount: part.repeatableManaPaidCount }
+				: {})
+		};
+		return { def, ...forageExtra, ...p22bExtras };
+		// --- End Track P22b ---
 	});
 }
 
@@ -2982,11 +3149,33 @@ export function executeCostPaymentParts(
 	aidDescriptions?: string[]
 ): PaidCosts {
 	const { player, source } = ctx;
+	// --- Track P22b ---
+	const p22bPaidExtras: Partial<PaidCosts> = {};
+	// --- End Track P22b ---
 	for (let partIdx = startPartIndex; partIdx < parts.length; partIdx++) {
 		const part = parts[partIdx];
 		const def = part.def;
 		const objStart = partIdx === startPartIndex ? startObjectIndex : 0;
 		const targetLog = part.isCostAid && aidDescriptions ? aidDescriptions : descriptions;
+		// --- Track P22b ---
+		const p22bExec = executeP22bCostPart(
+			ctx,
+			part,
+			partIdx,
+			objStart,
+			descriptions,
+			targetLog,
+			(id) => findById(ctx, id),
+			p22bPaidExtras
+		);
+		if (p22bExec.handled) {
+			if (p22bExec.pausedResult) return { ...p22bExec.pausedResult, ...p22bPaidExtras };
+			if (part.emitForaged) {
+				emitEvent(ctx.state, { kind: 'Foraged', playerId: player.playerId });
+			}
+			continue;
+		}
+		// --- End Track P22b ---
 		// --- Track P20b ---
 		const p20bExec = executeP20bCostPart(ctx, part, partIdx, objStart, descriptions, targetLog, (id) =>
 			findById(ctx, id)
@@ -3025,6 +3214,9 @@ export function executeCostPaymentParts(
 						// --- Track P15: CR 702.179d Start your engines! opponent life-loss check ---
 						onPlayerLostLifeCheckSpeedTrigger(ctx.state, player.playerId, amount);
 						// --- End Track P15 ---
+						// --- Track P22b ---
+						p22bPaidExtras.lifePaidCount = (p22bPaidExtras.lifePaidCount ?? 0) + amount;
+						// --- End Track P22b ---
 						targetLog.push(`paid ${amount} life`);
 					}
 				}
@@ -3368,7 +3560,7 @@ export function executeCostPaymentParts(
 		}
 		// --- End Track P17b ---
 	}
-	return { descriptions, paused: false };
+	return { descriptions, paused: false, ...p22bPaidExtras };
 }
 
 /** Pays a complete plan from `planCosts`. */

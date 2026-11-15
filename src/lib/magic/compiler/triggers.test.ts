@@ -81,7 +81,8 @@ describe('Trigger grammar: trigger heads', () => {
 		['When ~ enters untapped, draw a card.', { event: 'zoneChange', filter: { object: 'self', to: 'battlefield', entersUntapped: true } }],
 		['Whenever ~ deals combat damage to a player or battle, draw a card.', { event: 'dealsDamage', filter: { object: 'self', combat: true, damageTargetKind: 'playerOrBattle' } }],
 		['When ~ enters, attacks, or dies, draw a card.', { event: 'zoneChange', filter: { object: 'self', to: 'battlefield' }, or: [{ event: 'attacks', filter: { object: 'self' } }, { event: 'zoneChange', filter: { object: 'self', from: 'battlefield', to: 'graveyard' } }] }],
-		['When ~ enters and at the beginning of your upkeep, draw a card.', { event: 'zoneChange', filter: { object: 'self', to: 'battlefield' }, or: [{ event: 'phaseBegin', filter: { phase: 'upkeep' }, scope: 'controller_turn' }] }]
+		['When ~ enters and at the beginning of your upkeep, draw a card.', { event: 'zoneChange', filter: { object: 'self', to: 'battlefield' }, or: [{ event: 'phaseBegin', filter: { phase: 'upkeep' }, scope: 'controller_turn' }] }],
+		['Whenever ~ attacks the player with the most life, draw a card.', { event: 'attacks', filter: { object: 'self', attackedTarget: 'playerWithMostLife' } }]
 	];
 	for (const [text, trigger] of cases) {
 		it(text, () => assert.deepEqual(head(text).trigger, trigger));
@@ -101,7 +102,7 @@ describe('Trigger grammar: trigger heads', () => {
 	it('does not claim heads with qualifiers it cannot represent', () => {
 		for (const text of [
 			'Whenever ~ attacks while enchanted, draw a card.',
-			'Whenever ~ attacks the player with the most life, draw a card.',
+			'Whenever ~ attacks a player who controls an Island, draw a card.',
 			'When ~ enters from the command zone, draw a card.',
 			'Whenever ~ deals combat damage to a player with poison counters, draw a card.',
 			'Whenever you draw two or more cards, draw a card.'

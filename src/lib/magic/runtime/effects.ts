@@ -73,6 +73,9 @@ import { getKeywordSpec } from '../keywords.ts';
 import { evaluatePermanent, inspectCardContinuousBreakdown } from '../ruleTree.ts';
 import { enqueueChoicePrompt } from './choices.ts';
 import { emitEvent } from './events.ts';
+// --- Track P22b ---
+import { recordP22bExcessDamage } from './triggersWave8.ts';
+// --- End Track P22b ---
 import {
 	evaluateKickedCountAmount,
 	evaluateKickerCondition,
@@ -966,6 +969,15 @@ export function dealDamageToPermanent(
 		target.counters.loyalty = Math.max(0, (target.counters.loyalty || 0) - dmg);
 	}
 	if (evTarget.isCreature) {
+		// --- Track P22b ---
+		recordP22bExcessDamage(
+			target,
+			dmg,
+			Boolean(srcInfo.hasDeathtouch),
+			evTarget.isCreature,
+			evTarget.toughness
+		);
+		// --- End Track P22b ---
 		// CR 702.80 / 702.90b–c: Source with wither or infect deals damage to a creature in the form of -1/-1 counters.
 		if (srcInfo.hasInfect || srcInfo.hasWither) {
 			p.addCounters(state, target, '-1/-1', dmg);
@@ -4569,7 +4581,14 @@ class Run {
 				// --- Track P19a (CR 605.1b, CR 106.7): Honor `step.actor` (e.g. `eventPlayer` on Mana Flare / Dictate of Karametra) ---
 				const recipient = (step.actor ? this.playerRef(step.actor) : null) ?? you;
 				if (recipient.lost) return;
-				// --- End Track P19a ---
+				// --- Track P22b: CR 603 / Carpet of Flowers per-turn mana-added flag on triggering source ---
+				const noteTriggeredManaAdded = () => {
+					if (this.ctx.item.kind === 'triggered') {
+						const srcPerm = p.findPermanent(s, this.ctx.sourceId)?.inst;
+						if (srcPerm) srcPerm.addedManaThisTurn = true;
+					}
+				};
+				// --- End Track P22b & P19a ---
 				const times = Math.max(0, this.amount(step.amount, 1));
 				const restriction = step.params?.manaRestriction;
 				// --- Track P10 ---
@@ -4599,6 +4618,7 @@ class Run {
 					if (chosenCol) {
 						addManaToPlayerPool(recipient, chosenCol, 1, restriction, addOpts);
 					}
+					noteTriggeredManaAdded();
 					return;
 				}
 				// --- Track P16a: "Add {W} or one mana of the chosen color" (Thriving / Gate lands) ---
@@ -4650,6 +4670,7 @@ class Run {
 					for (const c of chosenBundle) {
 						addManaToPlayerPool(recipient, c, 1, restriction, addOpts);
 					}
+					if (chosenBundle.length > 0) noteTriggeredManaAdded();
 					return;
 				}
 				// --- End Track P16a ---
@@ -4695,6 +4716,7 @@ class Run {
 					for (const c of chosenBundle) {
 						addManaToPlayerPool(recipient, c, 1, restriction, addOpts);
 					}
+					if (chosenBundle.length > 0) noteTriggeredManaAdded();
 					return;
 				}
 				if (step.params?.manaCombinationColors) {
@@ -4751,6 +4773,7 @@ class Run {
 					for (const c of chosenBundle) {
 						addManaToPlayerPool(recipient, c, 1, restriction, addOpts);
 					}
+					if (chosenBundle.length > 0) noteTriggeredManaAdded();
 					return;
 				}
 				if (step.params?.mana) {
@@ -4771,6 +4794,7 @@ class Run {
 							}
 						}
 					}
+					if (loops > 0 && mana.length > 0) noteTriggeredManaAdded();
 					return;
 				}
 				if (step.params?.manaChoice) {
@@ -4825,6 +4849,7 @@ class Run {
 						if (picked && allowed.includes(picked)) chosen = picked;
 					}
 					addManaToPlayerPool(recipient, chosen, times, restriction, addOpts);
+					if (times > 0) noteTriggeredManaAdded();
 					if (step.delayed) {
 						for (let i = 0; i < times; i++) {
 							(recipient.manaRiders ??= []).push({

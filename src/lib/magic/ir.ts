@@ -695,6 +695,14 @@ export interface ObjectFilter {
 	/** Matches objects with the same name as any nontoken permanent currently on the battlefield (*Cornered Market*). */
 	sameNameAsNontokenPermanent?: boolean;
 	// --- End Track P22a ---
+	// --- Track P22b ---
+	/** Matches creatures/permanents that are either enchanted OR equipped (*Dogmeat, Ever Loyal*, *Koll, the Forgemaster*). */
+	enchantedOrEquipped?: boolean;
+	/** Matches permanents controlled by `relation` whose owner is a different player (*Edea, Possessed Sorceress*). */
+	controllerAndNotOwner?: 'you' | 'opponent';
+	/** CR 120.4: Matches permanents dealt damage this turn by the object `source` is currently attached to (*Scythe of the Wretched*). */
+	dealtDamageByAttachedThisTurn?: boolean;
+	// --- End Track P22b ---
 }
 
 export interface Compare {
@@ -933,8 +941,14 @@ export type Amount =
 	/** Number of creatures that died this turn (optionally scoped to `controller`: `'you'` | `'opponent'` | `'any'`). */
 	| { k: 'creaturesDiedThisTurn'; controller?: 'you' | 'opponent' | 'any' }
 	/** Number of spells cast this turn by `who` (default `'you'`) matching optional `filter` (*Ral, Monsoon Mage*). */
-	| { k: 'spellsCastThisTurnCount'; filter?: ObjectFilter; who?: 'you' | 'activePlayer' };
+	| { k: 'spellsCastThisTurnCount'; filter?: ObjectFilter; who?: 'you' | 'activePlayer' }
 	// --- End Track P22a ---
+	// --- Track P22b ---
+	/** Total life lost by all opponents of the controller this turn (*Rakdos, Lord of Riots*). */
+	| { k: 'opponentsLifeLostThisTurn' }
+	/** Total mana value of current permanent targets of the spell/ability (*Urgent Necropsy*). */
+	| { k: 'targetsTotalManaValue' };
+	// --- End Track P22b ---
 
 // ---- Costs ----------------------------------------------------------------------------------
 
@@ -997,6 +1011,10 @@ export type CostDef =
 			// --- Track P20b ---
 			oneOrMore?: boolean;
 			// --- End Track P20b ---
+			// --- Track P22b ---
+			/** Allow removing counters from either a matching permanent you control OR a suspended card you own in exile (*Rift Elemental*). */
+			orSuspendedYouOwn?: boolean;
+			// --- End Track P22b ---
 	  }
 	// --- End Track P11 ---
 	// --- Track P17b: widened exileFrom & choice ---
@@ -1015,6 +1033,10 @@ export type CostDef =
 			totalManaValueEqualsX?: boolean;
 			andOtherSameNameCount?: number;
 			// --- End Track P20b ---
+			// --- Track P22b ---
+			minTotalManaValueAmount?: Amount;
+			minColoredManaSymbols?: { color: ManaColor; min: number };
+			// --- End Track P22b ---
 	  }
 	/** Reveal N matching cards in hand as part of a cost ("Morph—Reveal a white card in your hand."). */
 	| {
@@ -1099,8 +1121,36 @@ export type CostDef =
 	/** CR 706.2: "Roll a dN" activation cost. */
 	| { k: 'rollDie'; sides: number }
 	/** CR 705.1: "Flip a coin" activation cost. */
-	| { k: 'flipCoin' };
+	| { k: 'flipCoin' }
 	// --- End Track P20b ---
+	// --- Track P22b ---
+	/** Additional/activation cost: choose a creature type (*Caller of the Hunt*, *Celestial Reunion*). */
+	| { k: 'chooseCreatureType' }
+	/** Additional cost: choose a matching permanent you control OR reveal a matching card from hand (*Dragon's Fire*, *Monstrous Emergence*). */
+	| { k: 'beholdOrChoose'; count: Amount; filter: ObjectFilter; ofChosenCreatureType?: boolean }
+	/** Additional cost: choose an integer between `min` and `max` inclusive (*Liquid Fire*). */
+	| { k: 'chooseNumberBetween'; min: number; max: number }
+	/** Activation cost: reveal the secretly chosen player (*Stalking Leonin*, *Guardian Archon*, *Emissary of Grudges*). */
+	| { k: 'revealChosenPlayer' }
+	/** Activation cost: reveal the secretly chosen creature type (*A Killer Among Us*). */
+	| { k: 'revealChosenSubType' }
+	/** Activation cost: discard the last card you drew this turn (*Jandor's Ring*). */
+	| { k: 'discardLastDrawnThisTurn' }
+	/** Activation cost: choose one of the listed keywords (*Phyrexian Splicer*). */
+	| { k: 'chooseFromKeywordList'; keywords: string[] }
+	/** Activation cost: pay the mana cost of the attached permanent (*Merseine*). */
+	| { k: 'payAttachedManaCost' }
+	/** Activation cost: exile a matching card from your graveyard and pay its mana cost (*Back from the Brink*). */
+	| { k: 'exileFromGraveyardAndPayManaCost'; filter?: ObjectFilter }
+	/** Activation cost: exile a face-down permanent you control face up (*Primordial Mist*). */
+	| { k: 'exileFaceDownPermanentFaceUp' }
+	/** Dynamic mana cost: "Pay {N} for each +1/+1 counter on ~" (*Skeleton Scavengers*). */
+	| { k: 'payManaPerCounter'; perMana: string; counter: CounterType; of: 'self' }
+	/** Additional cost: "you may pay {COST} any number of times" (*Taste of Paradise*). */
+	| { k: 'repeatableOptionalMana'; cost: string }
+	/** Reveal ~ from your hand as part of an activation cost (*Tetzimoc, Primal Death*). */
+	| { k: 'revealSelfFromHand' };
+	// --- End Track P22b ---
 
 // ---- Effects --------------------------------------------------------------------------------
 
@@ -2020,8 +2070,26 @@ export type EventKind =
 	/** CR 702.100: A permanent evolved. */
 	| 'evolved'
 	/** CR 702.122c: A creature crewed a Vehicle. */
-	| 'crewedVehicle';
+	| 'crewedVehicle'
 	// --- End Track P19b ---
+	// --- Track P22b ---
+	/** CR 602.2 / 606: A player activated an ability (loyalty, mana, or non-mana). */
+	| 'abilityActivated'
+	/** CR 701.38: Players finished voting on a spell or ability. */
+	| 'playersFinishedVoting'
+	/** CR 701.30: A player clashed. */
+	| 'clash'
+	/** CR 701.20: A player shuffled their library. */
+	| 'libraryShuffled'
+	/** CR 707.10: A player copied a spell on the stack. */
+	| 'spellCopied'
+	/** CR 701.5: A spell or ability countered a spell. */
+	| 'spellCountered'
+	/** CR 715.2b: A Saga's chapter ability resolved. */
+	| 'sagaChapterResolved'
+	/** CR 702.171c: A creature saddled a Mount. */
+	| 'saddledMount';
+	// --- End Track P22b ---
 
 export interface EventFilter {
 	/**
@@ -2142,7 +2210,10 @@ export interface EventFilter {
 		| 'opponentOrPlaneswalkerOpponentControls'
 		| 'enchantedPlayer'
 		| 'planeswalker'
-		| 'battle';
+		| 'battle'
+		// --- Track P22b ---
+		| 'playerWithMostLife';
+		// --- End Track P22b ---
 	/** attacks: requires at least `coAttackerMin` (default 1) other attacking creatures matching `coAttackerFilter`. */
 	coAttackerFilter?: ObjectFilter;
 	coAttackerMin?: number;
@@ -2186,6 +2257,37 @@ export interface EventFilter {
 	/** dealsDamage: requires damaged player to be `source.attachedToId` ("Whenever a creature deals combat damage to enchanted player"). */
 	damageTargetEnchantedPlayer?: boolean;
 	// --- End Track P19b ---
+	// --- Track P22b ---
+	/** abilityActivated: requires a loyalty ability. */
+	isLoyaltyAbility?: boolean;
+	/** abilityActivated: requires a non-mana ability (`!ev.isManaAbility`). */
+	isNonManaAbility?: boolean;
+	/** abilityActivated: matches source of the activated ability (`'self'` | `'attachedTo'` | ObjectFilter). */
+	abilitySourceFilter?: ObjectFilter | 'self' | 'attachedTo';
+	/** spellCast: requires spell to have ONLY `'self'` as its single target (*Reflective Golem*). */
+	targetsOnlySelf?: boolean;
+	/** spellCast: requires spell to have this keyword (*Joyful Stormsculptor*, *The First Doctor*). */
+	spellHasKeyword?: string;
+	/** spellCast: requires spell's controller to be `source.attachedToId` (*Curse of Silence*). */
+	enchantedPlayerCasts?: boolean;
+	/** cardDrawn: excludes the first card drawn by the active player during their own draw step (*Leela, Sevateem Warrior*). */
+	exceptFirstInDrawStep?: boolean;
+	/** saddledMount / crewedVehicle: step restriction (`'main'` = precombat or postcombat main phase, *Reckless Velocitaur*). */
+	duringPhase?: 'main';
+	/** attached: requires the host permanent to be `'self'` (*Bramble Elemental*). */
+	hostSelf?: boolean;
+	/** sagaChapterResolved: requires the resolved chapter ability to include the Saga's final chapter number (*Narci, Fable Singer*). */
+	finalChapter?: boolean;
+	/** phaseBegin: matches only on the turn of `source.chosenPlayerId` (*The Rack*). */
+	phaseChosenPlayer?: boolean;
+	/** attacks: matches when player attacks with `minAttackingWithCount` or more creatures matching `attackingWithFilter` (*Aurelia, the Law Above*, *W'Kabi*, *Tomik*). */
+	attackingWithFilter?: ObjectFilter;
+	minAttackingWithCount?: number;
+	/** phaseBegin: matches both `'main1'` and `'main2'` (*Carpet of Flowers*). */
+	anyMainPhase?: boolean;
+	/** clash: matches when the clashing player won/lost (`ev.won`). */
+	won?: boolean;
+	// --- End Track P22b ---
 }
 
 export interface TriggerDef {
@@ -2539,8 +2641,48 @@ export type Condition =
 	/** True iff `you` have begun at least `min` turns of your own (or when `onlyDuringYourTurn` is true and it's not your turn, *Serra Avenger*). */
 	| { k: 'yourTurnsTakenAtLeast'; min: number; onlyDuringYourTurn?: boolean }
 	/** True iff a permanent matching `filter` entered the battlefield under `you`r control this turn (*Mechan Shieldmate*, *Swordsworn Cavalier*). */
-	| { k: 'enteredBattlefieldUnderYourControlThisTurn'; filter: ObjectFilter };
+	| { k: 'enteredBattlefieldUnderYourControlThisTurn'; filter: ObjectFilter }
 	// --- End Track P22a ---
+	// --- Track P22b ---
+	| { k: 'eventAbilityIsNotMana' }
+	| { k: 'eventAbilityLifePaid' }
+	| { k: 'eventSpellWasKicked' }
+	| { k: 'eventSpellHasKeyword'; keyword: string }
+	| { k: 'eventSpellNoColoredManaSpent' }
+	| { k: 'eventSpellManaSpentLessThanMv' }
+	| { k: 'eventEnteredOrCastFromZone'; zone: ZoneType }
+	| { k: 'eventObjectPowerOrToughnessGreaterThanSelf' }
+	| { k: 'eventObjectWasNotSubtype'; subtype: string }
+	| { k: 'eventWasAttachedEnchantedOrEquipped' }
+	| { k: 'eventCrewCountEquals'; count: number }
+	| { k: 'eventDamageDealtBySubtype'; subtype: string }
+	| { k: 'eventDamagedTargetDealtExcessDamageThisTurn' }
+	| { k: 'eventAttackingPlayerWithMostLife' }
+	| { k: 'eventAttackerHasAnotherUnattackedOpponent' }
+	| { k: 'eventMinAttackersToYouOrPlaneswalkers'; min: number }
+	| { k: 'eventSharesCardTypeWithLinkedExile' }
+	| { k: 'eventPlayerControlsMoreThanYou'; filter: ObjectFilter }
+	| { k: 'eventPlayerControlsMoreThanEachOther'; filter: ObjectFilter }
+	| { k: 'youHaveMostLife' }
+	| { k: 'playerLostLifeLastTurn' }
+	| { k: 'discardedCardThisTurn'; who: 'you' | 'opponent' | 'any' }
+	| { k: 'putCounterOnCreatureThisTurn'; who: 'you' | 'any' }
+	| { k: 'sacrificedFilterThisTurn'; filter: ObjectFilter; min: number; who: 'you' | 'any' }
+	| { k: 'noCreaturesAttackedThisTurn' }
+	| { k: 'castCreatureAndNoncreatureThisTurn' }
+	| { k: 'enchantedCreaturePowerAtLeast'; min: number }
+	| { k: 'allLandsAreSubtype'; subtype: string }
+	| { k: 'youControlGreatestManaValueFilter'; filter: ObjectFilter }
+	| { k: 'yourTeamGainedLifeThisTurn' }
+	| { k: 'yourTeamControlsOtherFilter'; filter: ObjectFilter }
+	| { k: 'playersLostGameAtLeast'; min: number }
+	| { k: 'selfAttackedThisCombat' }
+	| { k: 'selfDidntAttackThisTurn' }
+	| { k: 'selfHaventAddedManaThisTurn' }
+	| { k: 'zoneChangeFromToThisTurn'; from?: ZoneType | 'any'; to: ZoneType; filter: ObjectFilter; min: number }
+	| { k: 'enteredUnderYourControlThisTurnCount'; filter: ObjectFilter; min: number }
+	| { k: 'yourLifeLessThanStarting' };
+	// --- End Track P22b ---
 
 // ---- Statics and replacements ---------------------------------------------------------------
 
@@ -2826,6 +2968,10 @@ export type StaticDef =
 			affects: SpellOrAbilityFilter;
 			delta: CostDelta;
 			who: PlayerFilter;
+			// --- Track P22b ---
+			/** When true, applies only to the player enchanted by `source` (*Curse of Silence*). */
+			whoEnchantedPlayer?: boolean;
+			// --- End Track P22b ---
 			/** Functions from these zones (Eminence works from the command zone too). */
 			activeZones?: ZoneType[];
 			condition?: Condition;

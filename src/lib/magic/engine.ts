@@ -686,6 +686,12 @@ import {
 	withInlineManaResolutionGuard
 } from './runtime/triggersWave7.ts';
 // --- End Track P19b ---
+// --- Track P22b ---
+import {
+	clearP22bEndOfTurnState,
+	recordP22bTurnEvent
+} from './runtime/triggersWave8.ts';
+// --- End Track P22b ---
 import { chooseBotModalTriggerModes, chooseBotTriggerTargets } from './ai.ts';
 import { splitSubtypes } from './runtime/layers.ts';
 // --- Track P7 ---
@@ -2958,7 +2964,10 @@ function costContext(
 	phyrexianLifeCount?: number,
 	spendCtx: ManaSpendContext = { isSpell: false },
 	reservedObjectIds?: ReadonlySet<string>,
-	canPayManaOverride?: (req: ManaCostRequirement, reservedIds?: ReadonlySet<string>) => boolean
+	canPayManaOverride?: (req: ManaCostRequirement, reservedIds?: ReadonlySet<string>) => boolean,
+	// --- Track P22b ---
+	targets?: TargetRef[]
+	// --- End Track P22b ---
 ): CostContext {
 	const combineReserved = (reservedIds?: ReadonlySet<string>): ReadonlySet<string> | undefined => {
 		if (!reservedObjectIds?.size) return reservedIds;
@@ -2988,6 +2997,9 @@ function costContext(
 		baseMana,
 		reservedObjectIds,
 		spendCtx,
+		// --- Track P22b ---
+		...(targets ? { targets } : {}),
+		// --- End Track P22b ---
 		// --- Track P17b ---
 		...(spellColors ? { spellColors } : {}),
 		// --- End Track P17b ---
@@ -3082,6 +3094,15 @@ function finalizeCastSpell(
 		// --- Track P19a ---
 		sacrificedCostLki?: SacrificedCostLkiEntry[];
 		// --- End Track P19a ---
+		// --- Track P22b ---
+		chosenSubTypeCost?: string;
+		chosenNumberCost?: number;
+		chosenKeywordCost?: string;
+		beheldOrChosenPower?: number;
+		beheldOrChosenCard?: ScryfallCard;
+		repeatableManaPaidCount?: number;
+		exiledCostCards?: ScryfallCard[];
+		// --- End Track P22b ---
 	}
 ): void {
 	const actorId = actor.playerId;
@@ -3336,6 +3357,25 @@ function finalizeCastSpell(
 			// --- Track P10 ---
 			...(opts.manaSpentCount !== undefined ? { manaSpentCount: opts.manaSpentCount } : {}),
 			// --- End Track P10 ---
+			// --- Track P22b ---
+			...(opts.manaSpentCount !== undefined ? { manaSpentToCastCount: opts.manaSpentCount } : {}),
+			...(opts.manaColorsAllSpent !== undefined || opts.manaColorsSpent !== undefined
+				? {
+						coloredManaSpentToCast: (opts.manaColorsAllSpent ?? opts.manaColorsSpent ?? []).filter(
+							(c) => c !== 'C'
+						).length
+					}
+				: {}),
+			...(opts.chosenSubTypeCost !== undefined ? { chosenSubTypeCost: opts.chosenSubTypeCost } : {}),
+			...(opts.chosenNumberCost !== undefined ? { chosenNumberCost: opts.chosenNumberCost } : {}),
+			...(opts.chosenKeywordCost !== undefined ? { chosenKeywordCost: opts.chosenKeywordCost } : {}),
+			...(opts.beheldOrChosenPower !== undefined ? { beheldOrChosenPower: opts.beheldOrChosenPower } : {}),
+			...(opts.beheldOrChosenCard !== undefined ? { beheldOrChosenCard: opts.beheldOrChosenCard } : {}),
+			...(opts.repeatableManaPaidCount !== undefined
+				? { repeatableManaPaidCount: opts.repeatableManaPaidCount }
+				: {}),
+			...(opts.exiledCostCards?.length ? { exiledCostCards: opts.exiledCostCards } : {}),
+			// --- End Track P22b ---
 			...(opts.faceIndex !== undefined ? { faceIndex: opts.faceIndex } : {}),
 			...(opts.fused ? { fused: true } : {}),
 			...(castFaceDownSpec
@@ -3484,7 +3524,19 @@ function finalizeCastSpell(
 		label: spellDisplayName
 	});
 
-	emitEvent(state, { kind: 'Cast', playerId: actor.playerId, objectId: inst.instanceId, object: inst });
+	emitEvent(state, {
+		kind: 'Cast',
+		playerId: actor.playerId,
+		objectId: inst.instanceId,
+		object: inst,
+		// --- Track P22b ---
+		targets: [...targets],
+		manaSpentCount: opts.manaSpentCount,
+		coloredManaSpent: stackItem.coloredManaSpentToCast,
+		kicked: kickerInfo.count > 0,
+		stackItemId: stackItem.id
+		// --- End Track P22b ---
+	});
 	// --- Track P16b ---
 	if (chosenModes && chosenModes.length > 0) {
 		emitEvent(state, {
@@ -3723,6 +3775,18 @@ function finalizeActivateAbility(
 			// --- Track P19a ---
 			...(pcp.sacrificedCostLki?.length ? { sacrificedCostLki: pcp.sacrificedCostLki } : {}),
 			// --- End Track P19a ---
+			// --- Track P22b ---
+			...(pcp.lifePaidCount !== undefined ? { abilityLifePaidCount: pcp.lifePaidCount } : {}),
+			...(pcp.chosenSubTypeCost !== undefined ? { chosenSubTypeCost: pcp.chosenSubTypeCost } : {}),
+			...(pcp.chosenNumberCost !== undefined ? { chosenNumberCost: pcp.chosenNumberCost } : {}),
+			...(pcp.chosenKeywordCost !== undefined ? { chosenKeywordCost: pcp.chosenKeywordCost } : {}),
+			...(pcp.beheldOrChosenPower !== undefined ? { beheldOrChosenPower: pcp.beheldOrChosenPower } : {}),
+			...(pcp.beheldOrChosenCard !== undefined ? { beheldOrChosenCard: pcp.beheldOrChosenCard } : {}),
+			...(pcp.repeatableManaPaidCount !== undefined
+				? { repeatableManaPaidCount: pcp.repeatableManaPaidCount }
+				: {}),
+			...(pcp.exiledCostCards?.length ? { exiledCostCards: pcp.exiledCostCards } : {}),
+			// --- End Track P22b ---
 			controllerId: actorId,
 			kind: 'activated',
 			abilityId: pcp.abilityId,
@@ -3784,6 +3848,34 @@ function finalizeActivateAbility(
 		}
 	}
 	// --- End Track P19b ---
+	// --- Track P22b ---
+	if (saddledByIds && saddledByIds.length > 0) {
+		for (const saddleId of saddledByIds) {
+			const saddleFound = findPermanentOnBoard(state, saddleId);
+			if (saddleFound) {
+				emitEvent(state, {
+					kind: 'SaddledMount',
+					creatureId: saddleFound.inst.instanceId,
+					creature: saddleFound.inst,
+					mountId: perm.instanceId,
+					mount: perm,
+					playerId: actor.playerId
+				});
+			}
+		}
+	}
+	emitEvent(state, {
+		kind: 'AbilityActivated',
+		playerId: actor.playerId,
+		sourceId: perm.instanceId,
+		source: perm,
+		abilityId: pcp.abilityId,
+		isManaAbility: false,
+		isLoyaltyAbility: pcp.parts.some((pt) => pt.def.k === 'loyalty'),
+		...(pcp.lifePaidCount !== undefined ? { lifePaid: pcp.lifePaidCount } : {}),
+		stackItemId: stackItem.id
+	});
+	// --- End Track P22b ---
 	for (const t of targets) {
 		const targeted = t.kind === 'permanent' ? findPermanentOnBoard(state, t.id) : null;
 		if (targeted) {
@@ -3863,6 +3955,18 @@ function finalizeTapMana(
 		tappedSource,
 		chosenBundle
 	);
+	// --- Track P22b ---
+	emitEvent(state, {
+		kind: 'AbilityActivated',
+		playerId: actor.playerId,
+		sourceId: perm.instanceId,
+		source: perm,
+		abilityId: pcp.abilityId,
+		isManaAbility: true,
+		isLoyaltyAbility: false,
+		...(pcp.lifePaidCount !== undefined ? { lifePaid: pcp.lifePaidCount } : {})
+	});
+	// --- End Track P22b ---
 	flushTriggers(state);
 	if (pcp.descriptions.length > 0 || pcp.sacrificeSelfInCost) {
 		const manaSummary =
@@ -3954,6 +4058,30 @@ function executeOrResumePendingCostPayment(
 		flushTriggers(state);
 		return { ok: true };
 	}
+	// --- Track P22b ---
+	const paidExtra = paid as typeof paid & {
+		lifePaidCount?: number;
+		chosenSubTypeCost?: string;
+		chosenNumberCost?: number;
+		chosenKeywordCost?: string;
+		beheldOrChosenPower?: number;
+		beheldOrChosenCard?: ScryfallCard;
+		repeatableManaPaidCount?: number;
+		exiledCostCards?: ScryfallCard[];
+	};
+	if (paidExtra.lifePaidCount !== undefined) {
+		pcp.lifePaidCount = (pcp.lifePaidCount ?? 0) + paidExtra.lifePaidCount;
+	}
+	if (paidExtra.chosenSubTypeCost !== undefined) pcp.chosenSubTypeCost = paidExtra.chosenSubTypeCost;
+	if (paidExtra.chosenNumberCost !== undefined) pcp.chosenNumberCost = paidExtra.chosenNumberCost;
+	if (paidExtra.chosenKeywordCost !== undefined) pcp.chosenKeywordCost = paidExtra.chosenKeywordCost;
+	if (paidExtra.beheldOrChosenPower !== undefined) pcp.beheldOrChosenPower = paidExtra.beheldOrChosenPower;
+	if (paidExtra.beheldOrChosenCard !== undefined) pcp.beheldOrChosenCard = paidExtra.beheldOrChosenCard;
+	if (paidExtra.repeatableManaPaidCount !== undefined) {
+		pcp.repeatableManaPaidCount = paidExtra.repeatableManaPaidCount;
+	}
+	if (paidExtra.exiledCostCards?.length) pcp.exiledCostCards = paidExtra.exiledCostCards;
+	// --- End Track P22b ---
 	delete state.pendingCostPayment;
 	const actor = ctx.player;
 	if (pcp.kind === 'cast_spell') {
@@ -4001,8 +4129,17 @@ function executeOrResumePendingCostPayment(
 				giftRecipientId: pcp.giftRecipientId,
 				// --- End Track P15 ---
 				// --- Track P19a ---
-				sacrificedCostLki: pcp.sacrificedCostLki
+				sacrificedCostLki: pcp.sacrificedCostLki,
 				// --- End Track P19a ---
+				// --- Track P22b ---
+				chosenSubTypeCost: pcp.chosenSubTypeCost,
+				chosenNumberCost: pcp.chosenNumberCost,
+				chosenKeywordCost: pcp.chosenKeywordCost,
+				beheldOrChosenPower: pcp.beheldOrChosenPower,
+				beheldOrChosenCard: pcp.beheldOrChosenCard,
+				repeatableManaPaidCount: pcp.repeatableManaPaidCount,
+				exiledCostCards: pcp.exiledCostCards
+				// --- End Track P22b ---
 			});
 		}
 	} else if (pcp.kind === 'activate_ability') {
@@ -6049,12 +6186,26 @@ function drawSingleCardWithoutDredge(
 				drawnPlayers.push(player.playerId);
 			}
 			player.cardsDrawnThisTurn = (player.cardsDrawnThisTurn ?? 0) + 1;
+			// --- Track P22b ---
+			player.lastDrawnCardIdThisTurn = drawnCard.instanceId;
+			let inOwnDrawStepOrdinal: number | undefined;
+			if (
+				state.phase === 'draw' &&
+				state.players[state.activePlayerIndex]?.playerId === player.playerId
+			) {
+				inOwnDrawStepOrdinal = (player.drawsInYourDrawStepThisTurn ?? 0) + 1;
+				player.drawsInYourDrawStepThisTurn = inOwnDrawStepOrdinal;
+			}
+			// --- End Track P22b ---
 			noteDrawnCardForMiracle(state, player, drawnCard);
 			emitEvent(state, {
 				kind: 'CardDrawn',
 				playerId: player.playerId,
 				objectId: drawnCard.instanceId,
-				object: drawnCard
+				object: drawnCard,
+				// --- Track P22b ---
+				...(inOwnDrawStepOrdinal !== undefined ? { inOwnDrawStepOrdinal } : {})
+				// --- End Track P22b ---
 			});
 		}
 	}
@@ -8474,7 +8625,9 @@ function applyGameActionInner(
 					remainingCostReq,
 					action.costPayment?.phyrexianLifeCount,
 					spendCtx,
-					reservedAidIds.size > 0 ? reservedAidIds : undefined
+					reservedAidIds.size > 0 ? reservedAidIds : undefined,
+					undefined,
+					targets
 				);
 				let parts: SerializedPlannedCost[] = [];
 				let manaPaid: ManaCostRequirement | null = remainingCostReq;
@@ -12738,10 +12891,22 @@ for (const kind of [
 	'EnergyGained',
 	'Proliferated',
 	'Evolved',
-	'CrewedVehicle'
+	'CrewedVehicle',
 	// --- End Track P19b ---
+	// --- Track P22b ---
+	'AbilityActivated',
+	'PlayersFinishedVoting',
+	'Clash',
+	'LibraryShuffled',
+	'SpellCountered',
+	'SagaChapterResolved',
+	'SaddledMount'
+	// --- End Track P22b ---
 ] as const) {
 	registerEventHandler(kind, (state, ev) => {
+		// --- Track P22b ---
+		recordP22bTurnEvent(state, ev);
+		// --- End Track P22b ---
 		// --- Track P12 ---
 		if (ev.kind === 'DamageDealt') {
 			recordDamageSourceWave4(state, ev.sourceId, ev.amount);
@@ -12774,6 +12939,9 @@ for (const kind of [
 	});
 }
 registerEventHandler('Cast', (state, ev) => {
+	// --- Track P22b ---
+	recordP22bTurnEvent(state, ev);
+	// --- End Track P22b ---
 	matchTriggers(state, ev);
 	noteUnautomatedOnCast(state, ev.object, ev.playerId);
 });
@@ -15017,6 +15185,18 @@ function resolveWardTrigger(
 				}
 				// --- End Track P20b ---
 				moveStackSpellToZone(state, countered, 'graveyard');
+				// --- Track P22b ---
+				if (countered.kind === 'spell') {
+					emitEvent(state, {
+						kind: 'SpellCountered',
+						counteredStackItemId: countered.id,
+						counteredCard: countered.card,
+						byControllerId: controller.playerId,
+						bySourceId: item.sourceInstanceId,
+						bySpellOrAbility: true
+					});
+				}
+				// --- End Track P22b ---
 				addLog(
 					state,
 					'cast',
@@ -15961,6 +16141,27 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 
 	// CR 608.2n: As the final part of resolution, the resolving spell or ability leaves the stack.
 	removeItemFromStack();
+	// --- Track P22b: CR 715.2b Saga chapter resolution ---
+	if (item.kind === 'triggered' && item.isChapterAbility) {
+		const sagaPerm = findPermanentOnBoard(state, item.sourceInstanceId)?.inst;
+		const ab =
+			item.triggeredAbilityIndex !== undefined
+				? compileCard(item.card).faces[item.faceIndex ?? 0]?.abilities[item.triggeredAbilityIndex]
+				: undefined;
+		const chapters = ab && ab.kind === 'triggered' ? (ab.trigger.chapterNumbers ?? []) : [];
+		const maxCh = sagaPerm ? getSagaFinalChapterNumber(state, sagaPerm) : Math.max(0, ...chapters);
+		if (sagaPerm && chapters.length > 0) {
+			emitEvent(state, {
+				kind: 'SagaChapterResolved',
+				objectId: sagaPerm.instanceId,
+				object: sagaPerm,
+				controllerId: controller.playerId,
+				chapterNumbers: [...chapters],
+				isFinalChapter: maxCh > 0 && chapters.includes(maxCh)
+			});
+		}
+	}
+	// --- End Track P22b ---
 
 	// If this was a spell, move it to Battlefield (for permanents; copies become tokens per CR 111.13 / 608.3f / 707.10f)
 	// or Graveyard/Exile (for nontoken Instants/Sorceries).
@@ -16625,6 +16826,18 @@ function counterStackItemByEffect(
 		moveStackSpellToZone(state, countered, 'graveyard');
 	}
 	// --- End Track P10 ---
+	// --- Track P22b ---
+	if (countered.kind === 'spell') {
+		emitEvent(state, {
+			kind: 'SpellCountered',
+			counteredStackItemId: countered.id,
+			counteredCard: countered.card,
+			byControllerId: controller.playerId,
+			bySourceId: item.sourceInstanceId,
+			bySpellOrAbility: true
+		});
+	}
+	// --- End Track P22b ---
 	emitVfx(state, {
 		kind: 'counter_spell',
 		sourceId: controller.playerId,
@@ -19871,6 +20084,9 @@ registerPromptHandler(COMBAT_DAMAGE_ASSIGNMENT_HANDLER, (state, prompt, answer) 
 });
 
 function clearEndOfTurnAndDamage(state: GameState): void {
+	// --- Track P22b ---
+	clearP22bEndOfTurnState(state);
+	// --- End Track P22b ---
 	// --- Track P19b ---
 	clearP19bEndOfTurnState(state);
 	// --- End Track P19b ---

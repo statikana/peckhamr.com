@@ -1255,6 +1255,9 @@ export function executeClash(host: P10EffectHost, step: EffectStep): void {
 
 	const won = opponent ? yourMv > oppMv : yourMv > 0;
 	host.setStepDecision(won);
+	// --- Track P22b ---
+	emitEvent(state, { kind: 'Clash', playerId: you.playerId, won });
+	// --- End Track P22b ---
 	host.ports.addLog(
 		state,
 		'rule',

@@ -212,9 +212,9 @@ export const COUNTERS: Record<string, CounterType> = {
 };
 
 const COST_VERBS =
-	'sacrifice|tap|untap|unattach|discard|pay|exile|remove|return|put|reveal|mill|collect|forage|exert|blight|waterbend|behold|have|roll|flip';
+	'sacrifice|tap|untap|unattach|discard|pay|exile|remove|return|put|reveal|mill|collect|forage|exert|blight|waterbend|behold|have|roll|flip|choose';
 const COST_VERB = new RegExp(`^(?:\\{|(?:${COST_VERBS})\\b)`, 'i');
-const COST_SEPARATOR = new RegExp(`,\\s*|\\s+and\\s+(?=(?:${COST_VERBS})\\b)`, 'gi');
+const COST_SEPARATOR = new RegExp(`,\\s*|\\s+and\\s+(?=(?:${COST_VERBS})\\b)(?!pay\\s+its\\s+mana\\s+cost\\b)`, 'gi');
 
 const DISALLOWED_COUNTER_WORDS = new Set([
 	'a',
@@ -518,6 +518,28 @@ export function parseObjectPhrase(
 		if (enteredTurn && filter.enteredThisTurn === undefined) {
 			filter.enteredThisTurn = true;
 			rest = enteredTurn[1];
+			continue;
+		}
+		const wasDamagedByAttached = rest.match(
+			/^(.+?)\s+that (?:was|were|has been|have been) dealt damage this turn by (?:enchanted|equipped) (?:creature|permanent)$/i
+		);
+		if (wasDamagedByAttached && filter.dealtDamageByAttachedThisTurn === undefined) {
+			filter.dealtDamageByAttachedThisTurn = true;
+			rest = wasDamagedByAttached[1];
+			continue;
+		}
+		const ctrlNotOwn = rest.match(/^(.+?)\s+(?:that )?you control but don't own$/i);
+		if (ctrlNotOwn && filter.controllerAndNotOwner === undefined) {
+			filter.controllerAndNotOwner = 'you';
+			rest = ctrlNotOwn[1];
+			continue;
+		}
+		const enchOrEqTrail = rest.match(
+			/^(.+?)\s+that(?:'s| is| are) (?:enchanted or equipped|equipped or enchanted)$/i
+		);
+		if (enchOrEqTrail && filter.enchantedOrEquipped === undefined) {
+			filter.enchantedOrEquipped = true;
+			rest = enchOrEqTrail[1];
 			continue;
 		}
 		const wasDamagedTurn = rest.match(/^(.+?)\s+that (?:was|were) dealt damage this turn$/i);
@@ -1392,6 +1414,39 @@ const exileFrom: Production = (part) => {
 			return [...first, { k: 'exileFrom', zone: 'battlefield', count: ONE, filter: 'self' }];
 		}
 	}
+	// --- Track P22b: Exile face-down permanent face up, exile from graveyard & pay mana cost, minColoredManaSymbols ---
+	if (/^exile a face-down permanent you control face up$/i.test(part)) {
+		return [{ k: 'exileFaceDownPermanentFaceUp' }];
+	}
+	const exileGyPayMana = part.match(
+		/^exile (?:(?:a|an) (.+?) )?(?:a |an )?cards? from your graveyard and pay its mana cost$/i
+	);
+	if (exileGyPayMana) {
+		const phrase = exileGyPayMana[1]?.trim();
+		const filter = !phrase ? undefined : parseObjectPhrase(`${phrase} card`);
+		if (phrase && !filter) return null;
+		return [{ k: 'exileFromGraveyardAndPayManaCost', ...(filter ? { filter } : {}) }];
+	}
+	const exileMinColored = part.match(
+		/^exile (?:any number of )?(?:(.+?) )?cards? from your graveyard with (?:at least )?(\S+) \{([WUBRG])\} (?:mana )?symbols?(?: (?:in their mana costs|among them))?$/i
+	);
+	if (exileMinColored) {
+		const minAmt = count(exileMinColored[2]);
+		if (minAmt && minAmt.k === 'const' && minAmt.n >= 1) {
+			const filter = exileMinColored[1] ? parseObjectPhrase(`${exileMinColored[1]} card`) : {};
+			if (!filter) return null;
+			return [
+				{
+					k: 'exileFrom',
+					zone: 'graveyard',
+					count: { k: 'anyNumber' },
+					...(Object.keys(filter).length > 0 ? { filter } : {}),
+					minColoredManaSymbols: { color: exileMinColored[3].toUpperCase() as ManaColor, min: minAmt.n }
+				}
+			];
+		}
+	}
+	// --- End Track P22b ---
 	// "Exile the top [N] [<phrase>] card(s) of your graveyard/library"
 	const topOfZone = part.match(/^exile the top (.+?) of your (graveyard|library)$/i);
 	if (topOfZone) {
@@ -1500,6 +1555,18 @@ const exileFrom: Production = (part) => {
 
 /** "Remove a +1/+1 counter from ~", "Remove a -0/-1 counter from ~", "Remove X storage counters from ~", "Remove two +1/+1 counters from among creatures you control". */
 const removeCounters: Production = (part) => {
+	// --- Track P22b: removeCounters.orSuspendedYouOwn (*Rift Elemental*) ---
+	const removeOrSusp = part.match(
+		/^remove (\S+) (?:(.+?) )?counters? from a permanent you control or (?:a )?suspended card you own$/i
+	);
+	if (removeOrSusp) {
+		const n = count(removeOrSusp[1]);
+		const ctr = removeOrSusp[2] ? lookupCounterWord(removeOrSusp[2]) : 'any';
+		if (n && ctr) {
+			return [{ k: 'removeCounters', counter: ctr, count: n, from: {}, orSuspendedYouOwn: true }];
+		}
+	}
+	// --- End Track P22b ---
 	// Choice of counter types: "Remove a +1/+1 counter or a charge counter from ~ / a permanent you control"
 	const choiceSelf = part.match(
 		/^remove (?:a|an|one) (.+?) counter or (?:a|an|one) (.+?) counter from ~$/i
@@ -1820,6 +1887,23 @@ const forageCost: Production = (part) =>
 
 /** CR 701.59a: "Collect evidence N" — exile any number of cards from your graveyard with total mana value N or greater. */
 const collectEvidenceCost: Production = (part) => {
+	// --- Track P22b: Urgent Necropsy ("collect evidence X, where X is the total mana value of the permanents it targets") ---
+	if (
+		/^collect evidence X,\s*where X is the total mana value of (?:the permanents it targets|its targets)$/i.test(
+			part
+		)
+	) {
+		return [
+			{
+				k: 'exileFrom',
+				zone: 'graveyard',
+				count: { k: 'anyNumber' },
+				minTotalManaValueAmount: { k: 'targetsTotalManaValue' },
+				collectEvidence: true
+			}
+		];
+	}
+	// --- End Track P22b ---
 	const m = part.match(/^collect evidence (\S+)$/i);
 	if (!m) return null;
 	const n = count(m[1]);
@@ -2004,16 +2088,114 @@ const flipCoinCost: Production = (part) =>
 
 // --- End Track P20b ---
 
+// --- Track P22b: Additional & activation special costs ---
+const chooseCreatureTypeCost: Production = (part) =>
+	/^choose a creature type$/i.test(part) ? [{ k: 'chooseCreatureType' }] : null;
+
+const beholdOrChooseCost: Production = (part) => {
+	const m = part.match(
+		/^(?:behold|choose) (?:a|an) (.+?) you control or reveal (?:a|an) (.+?) card (?:from|in) your hand$/i
+	);
+	if (!m) return null;
+	const rawPerm = m[1].trim();
+	const ofChosen = /^creature of the chosen type$/i.test(rawPerm);
+	const filter: ObjectFilter | null = ofChosen ? { types: ['Creature'] } : parseObjectPhrase(rawPerm);
+	if (!filter || filter.controller) return null;
+	return [
+		{
+			k: 'beholdOrChoose',
+			count: ONE,
+			filter,
+			...(ofChosen ? { ofChosenCreatureType: true } : {})
+		}
+	];
+};
+
+const chooseNumberBetweenCost: Production = (part) => {
+	const m = part.match(/^choose a number between (\d+) and (\d+)$/i);
+	if (!m) return null;
+	const min = parseInt(m[1], 10);
+	const max = parseInt(m[2], 10);
+	if (!Number.isFinite(min) || !Number.isFinite(max) || min > max) return null;
+	return [{ k: 'chooseNumberBetween', min, max }];
+};
+
+const revealChosenPlayerCost: Production = (part) =>
+	/^reveal the player you chose$/i.test(part) ? [{ k: 'revealChosenPlayer' }] : null;
+
+const revealChosenSubTypeCost: Production = (part) =>
+	/^reveal the creature type you chose$/i.test(part) ? [{ k: 'revealChosenSubType' }] : null;
+
+const discardLastDrawnCost: Production = (part) =>
+	/^discard the last card you drew this turn$/i.test(part)
+		? [{ k: 'discardLastDrawnThisTurn' }]
+		: null;
+
+const chooseFromKeywordListCost: Production = (part) => {
+	const m = part.match(/^choose ([a-z ,-]+,\s*or\s+[a-z -]+|[a-z -]+\s+or\s+[a-z -]+)$/i);
+	if (!m) return null;
+	const kws = parseKeywordList(m[1], true);
+	if (kws && kws.length >= 2) return [{ k: 'chooseFromKeywordList', keywords: kws }];
+	const parts = m[1]
+		.trim()
+		.toLowerCase()
+		.split(/\s*(?:,\s*(?:or)?|\bor\b)\s*/)
+		.filter(Boolean);
+	if (
+		parts.length >= 2 &&
+		parts.every((p) =>
+			/^(?:flying|first strike|double strike|deathtouch|haste|hexproof|indestructible|lifelink|menace|reach|trample|vigilance|banding|shadow|horsemanship|fear|intimidate|flanking|shroud|defender)$/.test(
+				p
+			)
+		)
+	) {
+		return [{ k: 'chooseFromKeywordList', keywords: parts }];
+	}
+	return null;
+};
+
+const payAttachedManaCostProd: Production = (part) =>
+	/^pay (?:enchanted|equipped) (?:creature|permanent)'s mana cost$/i.test(part)
+		? [{ k: 'payAttachedManaCost' }]
+		: null;
+
+const payManaPerCounterCost: Production = (part) => {
+	const m = part.match(/^pay ((?:\{[^}]+\})+) for each (?:(.+?) )?counters? on ~$/i);
+	if (!m) return null;
+	const ctr = m[2] ? lookupCounterWord(m[2]) : 'any';
+	if (!ctr) return null;
+	return [{ k: 'payManaPerCounter', perMana: m[1], counter: ctr, of: 'self' }];
+};
+
+const repeatableOptionalManaCost: Production = (part) => {
+	const m = part.match(/^(?:you may )?pay ((?:\{[^}]+\})+) any number of times$/i);
+	if (!m) return null;
+	const symbols = m[1].match(/\{[^}]+\}/g);
+	if (!symbols || symbols.some((s) => /^\{(?:T|Q|E|TK|P)\}$/i.test(s))) return null;
+	return [{ k: 'repeatableOptionalMana', cost: m[1] }];
+};
+
+const revealSelfFromHandCost: Production = (part) =>
+	/^reveal ~ from your hand$/i.test(part) ? [{ k: 'revealSelfFromHand' }] : null;
+// --- End Track P22b ---
+
 const PRODUCTIONS: Production[] = [
 	manaSymbols,
+	repeatableOptionalManaCost,
+	payManaPerCounterCost,
+	payAttachedManaCostProd,
 	payLife,
 	payEnergy,
 	payMana,
 	waterbendCost,
+	beholdOrChooseCost,
 	beholdCost,
 	forageCost,
 	collectEvidenceCost,
 	blightCost,
+	revealSelfFromHandCost,
+	revealChosenPlayerCost,
+	revealChosenSubTypeCost,
 	revealHandCost,
 	opponentGainsLifeCost,
 	putCountersCost,
@@ -2024,6 +2206,10 @@ const PRODUCTIONS: Production[] = [
 	unattachCost,
 	rollDieCost,
 	flipCoinCost,
+	chooseCreatureTypeCost,
+	chooseNumberBetweenCost,
+	chooseFromKeywordListCost,
+	discardLastDrawnCost,
 	sacrifice,
 	tapOthers,
 	untapCost,
@@ -2169,6 +2355,8 @@ export function parseAdditionalCostSentence(sentence: string, offset = 0, _fromS
 	const start = offset + sentence.indexOf(m[1]);
 	const may = m[1].match(/^you may (.+)$/i);
 	if (may) {
+		const rep = repeatableOptionalManaCost(m[1]);
+		if (rep) return { defs: rep, unparsed: [] };
 		const inner = parseCost(may[1], start + m[1].length - may[1].length);
 		if (inner.unparsed.length > 0 || inner.defs.length === 0) {
 			return { defs: [], unparsed: [{ start, end: start + m[1].length }] };
@@ -2251,6 +2439,10 @@ function isSpellAltCostCompatible(def: CostDef): boolean {
 		case 'revealHand':
 		case 'opponentGainsLife':
 		case 'processOpponentExile':
+		case 'chooseCreatureType':
+		case 'beholdOrChoose':
+		case 'chooseNumberBetween':
+		case 'repeatableOptionalMana':
 			return true;
 		case 'sacrifice':
 		case 'discard':
@@ -2328,6 +2520,14 @@ function buildSelfAltCastStatic(costBodyRaw: string, condition?: Condition): Sta
 
 export function parseCostMetricAmount(metricRaw: string): Amount | null {
 	const metric = metricRaw.trim().replace(/^(?:a|an)\s+/i, '');
+	// --- Track P22b ---
+	if (/^(?:total )?life your opponents lost this turn$/i.test(metric)) {
+		return { k: 'opponentsLifeLostThisTurn' };
+	}
+	if (/^the total mana value of (?:its targets|the permanents it targets|target permanents)$/i.test(metric)) {
+		return { k: 'targetsTotalManaValue' };
+	}
+	// --- End Track P22b ---
 	// --- Track P17b: Compound metrics, distinct graveyard/board metrics, turn-history & targeting metrics ---
 	const andEach = metric.match(/^(.+?)\s+and\s+each\s+(.+)$/i);
 	if (andEach) {
@@ -4415,6 +4615,40 @@ export function parseCostModifierSentence(sentence: string): StaticDef | null {
 			};
 		}
 	}
+
+	// --- Track P22b: Enchanted player spell cost modifiers (*Curse of Silence*) ---
+	const enchantedPlayerChosenSpellMod = text.match(
+		/^(?:(.+?) )?spells(?: (with the chosen name))? the enchanted player casts(?: (with the chosen name))? cost ((?:\{[^}]+\})+) (less|more) to cast$/i
+	);
+	if (enchantedPlayerChosenSpellMod) {
+		const sp = enchantedPlayerChosenSpellMod[1]
+			? parseSpellFilterPhrase(enchantedPlayerChosenSpellMod[1])
+			: { filter: {}, other: false };
+		const rawDelta = parseCostManaDelta(
+			enchantedPlayerChosenSpellMod[4],
+			enchantedPlayerChosenSpellMod[5].toLowerCase() === 'less' ? 'reduce' : 'increase'
+		);
+		const delta = rawDelta && withFloorAndColored(rawDelta);
+		if (sp && delta) {
+			const ofChosenName = Boolean(enchantedPlayerChosenSpellMod[2] || enchantedPlayerChosenSpellMod[3]);
+			return {
+				k: 'costModifier',
+				affects: {
+					k: 'spell',
+					filter: {
+						...sp.filter,
+						...(sp.other ? { other: true } : {}),
+						...(ofChosenName ? { ofChosenName: true } : {})
+					}
+				},
+				delta,
+				who: { relation: 'any' },
+				whoEnchantedPlayer: true,
+				...(turnPrefixCondition ? { condition: turnPrefixCondition } : {})
+			};
+		}
+	}
+	// --- End Track P22b ---
 
 	// "Spells with the chosen name cost {N} more/less to cast"
 	const chosenNameSpellMod = text.match(

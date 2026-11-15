@@ -1203,6 +1203,18 @@ export interface CardInstance {
 	/** CR 903.4 / 103: Pre-game chosen color for a commander card, persisting across all zone moves for the rest of the game. */
 	preGameChosenColor?: ManaColor;
 	// --- End Track P22a ---
+	// --- Track P22b ---
+	/** Zone this permanent entered the battlefield from (*Kotis*, *Twilight Diviner*). */
+	enteredFromZone?: ZoneType | null;
+	/** Excess damage dealt to this creature this turn (*Overclocked Electromancer*). */
+	dealtExcessDamageThisTurn?: number;
+	/** Secretly chosen opponent playerId before reveal (*Stalking Leonin*, *Guardian Archon*, *Emissary of Grudges*). */
+	secretChosenPlayerId?: string;
+	/** Secretly chosen creature subtype before reveal (*A Killer Among Us*). */
+	secretChosenSubType?: string;
+	/** True once this permanent's mana-adding trigger/ability added mana this turn (*Carpet of Flowers*). */
+	addedManaThisTurn?: boolean;
+	// --- End Track P22b ---
 }
 
 export interface TargetRef {
@@ -1765,6 +1777,28 @@ export interface StackItem {
 	/** CR 122.2: Counters carried onto the stack by a spell that retains counters across non-hidden zones. */
 	carriedCounters?: Record<CounterType, number>;
 	// --- End Track P22a ---
+	// --- Track P22b ---
+	/** Mana spent count recorded at cast time (*Tokka & Rahzar*). */
+	manaSpentToCastCount?: number;
+	/** Colored mana count spent at cast time (*Void Mirror*). */
+	coloredManaSpentToCast?: number;
+	/** Life paid while activating this ability (*Verrak, Warped Sengir*). */
+	abilityLifePaidCount?: number;
+	/** Creature type chosen as an additional cost (*Caller of the Hunt*, *Celestial Reunion*). */
+	chosenSubTypeCost?: string;
+	/** Integer chosen as an additional cost (*Liquid Fire*). */
+	chosenNumberCost?: number;
+	/** Keyword chosen as part of an activation cost (*Phyrexian Splicer*). */
+	chosenKeywordCost?: string;
+	/** Power of the creature chosen or revealed as part of `beholdOrChoose` (*Monstrous Emergence*, *Dragon's Fire*). */
+	beheldOrChosenPower?: number;
+	/** Card snapshot of the permanent/card chosen or revealed via `beholdOrChoose`. */
+	beheldOrChosenCard?: ScryfallCard;
+	/** Repeat count paid for `repeatableOptionalMana` (*Taste of Paradise*). */
+	repeatableManaPaidCount?: number;
+	/** Card snapshots exiled while paying a graveyard/board cost (*Back from the Brink*, *Baron Helmut Zemo*). */
+	exiledCostCards?: ScryfallCard[];
+	// --- End Track P22b ---
 }
 
 // --- Track P10 ---
@@ -2365,6 +2399,12 @@ export interface CostPayment {
 	counterCount?: number;
 	counterDistribution?: Record<string, number>;
 	// --- End Track P20b ---
+	// --- Track P22b ---
+	chosenSubTypeCost?: string;
+	chosenNumberCost?: number;
+	chosenKeywordCost?: string;
+	repeatableManaPaidCount?: number;
+	// --- End Track P22b ---
 }
 
 export interface VfxEvent {
@@ -2647,6 +2687,24 @@ export interface PlayerGameState {
 	/** Total number of creatures that died across all battlefields this turn. */
 	creaturesDiedCountThisTurn?: number;
 	// --- End Track P22a ---
+	// --- Track P22b ---
+	/** Total life lost by this player during the immediately preceding turn (*First Response*). */
+	lifeLostLastTurn?: number;
+	/** True once this player discarded >= 1 card this turn (*Tinybones*, *Mysterio's Mirage*). */
+	discardedCardThisTurn?: boolean;
+	/** InstanceId of the most recent card drawn by this player this turn (*Jandor's Ring*). */
+	lastDrawnCardIdThisTurn?: string;
+	/** Number of cards this player has drawn during their own draw step this turn (*Leela, Sevateem Warrior*). */
+	drawsInYourDrawStepThisTurn?: number;
+	/** True once this player put >= 1 counter on a creature this turn (*Lord Jyscal Guado*). */
+	putCounterOnCreatureThisTurn?: boolean;
+	/** Plain JSON `ScryfallCard` snapshots of permanents sacrificed by this player this turn (*Briarbridge Patrol*). */
+	sacrificedCardsThisTurn?: ScryfallCard[];
+	/** True once this player cast a creature spell this turn (*Eshki Dragonclaw*). */
+	castCreatureSpellThisTurn?: boolean;
+	/** True once this player cast a noncreature spell this turn (*Eshki Dragonclaw*). */
+	castNoncreatureSpellThisTurn?: boolean;
+	// --- End Track P22b ---
 }
 
 export interface ManaRider {
@@ -2788,6 +2846,12 @@ export interface SerializedPlannedCost {
 	counterDistribution?: Record<string, number>;
 	rollResult?: number;
 	// --- End Track P20b ---
+	// --- Track P22b ---
+	chosenSubTypeCost?: string;
+	chosenNumberCost?: number;
+	chosenKeywordCost?: string;
+	repeatableManaPaidCount?: number;
+	// --- End Track P22b ---
 }
 
 /**
@@ -2892,6 +2956,16 @@ export interface PendingCostPayment {
 	altCostManaPaid?: string;
 	additionalCostPaid?: boolean;
 	// --- End Track P20b ---
+	// --- Track P22b ---
+	lifePaidCount?: number;
+	chosenSubTypeCost?: string;
+	chosenNumberCost?: number;
+	chosenKeywordCost?: string;
+	beheldOrChosenPower?: number;
+	beheldOrChosenCard?: ScryfallCard;
+	repeatableManaPaidCount?: number;
+	exiledCostCards?: ScryfallCard[];
+	// --- End Track P22b ---
 }
 
 // --- Track P7 ---
@@ -3076,6 +3150,10 @@ export interface GameState {
 	/** CR 603.7 / 707.10: Pending "When you next cast a [filter] spell this turn, copy that spell" entries. */
 	delayedNextSpellCopies?: DelayedNextSpellCopyEntry[];
 	// --- End Track P19a ---
+	// --- Track P22b ---
+	/** Plain JSON `ScryfallCard` snapshots of objects put into graveyards from the battlefield this turn (*Ichor Shade*). */
+	battlefieldToGraveyardThisTurnCards?: ScryfallCard[];
+	// --- End Track P22b ---
 }
 
 // --- Track P19b ---

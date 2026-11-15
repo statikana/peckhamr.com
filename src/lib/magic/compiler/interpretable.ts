@@ -169,8 +169,23 @@ export const SUPPORTED_OPTIONAL_COST_KINDS: ReadonlySet<CostDef['k']> = new Set<
 	'opponentGainsLife',
 	'processOpponentExile',
 	'putExiledWithSelfToGraveyard',
-	'mill'
+	'mill',
 	// --- End Track P19a ---
+	// --- Track P22b ---
+	'chooseCreatureType',
+	'beholdOrChoose',
+	'chooseNumberBetween',
+	'revealChosenPlayer',
+	'revealChosenSubType',
+	'discardLastDrawnThisTurn',
+	'chooseFromKeywordList',
+	'payAttachedManaCost',
+	'exileFromGraveyardAndPayManaCost',
+	'exileFaceDownPermanentFaceUp',
+	'payManaPerCounter',
+	'repeatableOptionalMana',
+	'revealSelfFromHand'
+	// --- End Track P22b ---
 ]);
 
 // --- Track P19a ---

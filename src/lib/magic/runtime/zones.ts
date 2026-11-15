@@ -4047,6 +4047,11 @@ function emitZoneChange(
 	ceasedToExist: boolean,
 	lki?: LeftBattlefieldInfo
 ): void {
+	// --- Track P22b ---
+	if (to === 'battlefield' && !ceasedToExist) {
+		obj.enteredFromZone = from;
+	}
+	// --- End Track P22b ---
 	emitEvent(state, {
 		kind: 'ZoneChange',
 		objectId: obj.instanceId,
@@ -4127,6 +4132,15 @@ export function shuffleLibrary(state: RngHolder, player: PlayerGameState, keepTo
 			...shuffleArray(state, player.library.slice(keepTop))
 		];
 	}
+	// --- Track P22b ---
+	const maybeGameState = state as Partial<GameState>;
+	if (Array.isArray(maybeGameState.players) && maybeGameState.status !== 'mulligan') {
+		emitEvent(maybeGameState as GameState, {
+			kind: 'LibraryShuffled',
+			playerId: player.playerId
+		});
+	}
+	// --- End Track P22b ---
 }
 
 /** Replaces a zone's order. `ordered` must contain exactly the zone's current objects. */

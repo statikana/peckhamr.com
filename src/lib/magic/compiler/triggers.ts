@@ -114,6 +114,23 @@ function phaseBegin(rest: string): TriggerDef | null {
 	}
 	if (rest === 'each combat') return { event: 'phaseBegin', filter: { phase: 'begin_combat' }, scope: 'each_turn' };
 	// --- Track P16b ---
+	if (rest === 'each of your main phases' || rest === 'your main phase') {
+		return {
+			event: 'phaseBegin',
+			filter: { phase: 'main1', anyMainPhase: true },
+			scope: 'controller_turn'
+		};
+	}
+	const chosenPlayerPhase = rest.match(/^the chosen player's (upkeep|draw step|end step)$/);
+	if (chosenPlayerPhase) {
+		const phase = STEPS[chosenPlayerPhase[1]];
+		if (!phase) return null;
+		return {
+			event: 'phaseBegin',
+			filter: { phase, phaseChosenPlayer: true },
+			scope: 'each_turn'
+		};
+	}
 	if (rest === "combat on each opponent's turn" || rest === "combat on an opponent's turn") {
 		return { event: 'phaseBegin', filter: { phase: 'begin_combat' }, scope: 'opponent_turn' };
 	}
@@ -364,6 +381,28 @@ function parseP16bObjectPhrase(
 			rest = mvEqSelfPwr[1].trim();
 			continue;
 		}
+		const dealtDmgByAttached = rest.match(
+			/^(.+?)\s+that (?:was|were|has been|have been) dealt damage this turn by (?:enchanted|equipped) (?:creature|permanent)$/i
+		);
+		if (dealtDmgByAttached && outer.dealtDamageByAttachedThisTurn === undefined) {
+			outer.dealtDamageByAttachedThisTurn = true;
+			rest = dealtDmgByAttached[1].trim();
+			continue;
+		}
+		const ctrlNotOwn = rest.match(/^(.+?)\s+(?:that )?you control but don't own$/i);
+		if (ctrlNotOwn && outer.controllerAndNotOwner === undefined) {
+			outer.controllerAndNotOwner = 'you';
+			rest = ctrlNotOwn[1].trim();
+			continue;
+		}
+		const enchOrEqTrail = rest.match(
+			/^(.+?)\s+that(?:'s| is| are) (?:enchanted or equipped|equipped or enchanted)$/i
+		);
+		if (enchOrEqTrail && outer.enchantedOrEquipped === undefined) {
+			outer.enchantedOrEquipped = true;
+			rest = enchOrEqTrail[1].trim();
+			continue;
+		}
 		const dealtDmg = rest.match(/^(.+?)\s+that (?:has|have) been dealt damage this turn$/i);
 		if (dealtDmg && outer.dealtDamageThisTurn === undefined) {
 			outer.dealtDamageThisTurn = true;
@@ -424,6 +463,12 @@ function parseP16bObjectPhrase(
 		if (goadLead && outer.goaded === undefined) {
 			outer.goaded = true;
 			rest = goadLead[1].trim();
+			continue;
+		}
+		const enchOrEqLead = rest.match(/^(?:enchanted or equipped|equipped or enchanted)\s+(.+)$/i);
+		if (enchOrEqLead && outer.enchantedOrEquipped === undefined) {
+			outer.enchantedOrEquipped = true;
+			rest = enchOrEqLead[1].trim();
 			continue;
 		}
 		const enchLead = rest.match(/^enchanted\s+(.+)$/i);
@@ -1104,6 +1149,11 @@ function objectEvent(verb: string, subject: Subject): TriggerDef | null {
 			}
 			// Attacks against specific player/planeswalker targets (never matching "~ attacks a player")
 			if (typeof base.object === 'object' || base.object === 'self') {
+				if (
+					/^attacks? (?:the|a) player with the most life(?: or tied for most life)?$/i.test(verb)
+				) {
+					return def('attacks', { attackedTarget: 'playerWithMostLife' });
+				}
 				if (/^attacks? you$/i.test(verb)) {
 					return def('attacks', { attackedTarget: 'you' });
 				}
@@ -1220,6 +1270,31 @@ function objectEvent(verb: string, subject: Subject): TriggerDef | null {
 			if (/^transforms? into ~$/i.test(verb) && subject.object === 'self') {
 				return def('transforms');
 			}
+			// --- Track P22b ---
+			if (/^becomes? attached to ~$/i.test(verb) && !subject.oneOrMore) {
+				return def('attached', { hostSelf: true });
+			}
+			const saddlesMount = verb.match(/^saddles? a Mount(?: during (your )?main phase)?$/i);
+			if (saddlesMount && !subject.oneOrMore) {
+				return def('saddledMount', {
+					...(saddlesMount[1]
+						? { duringPhase: 'main' as const, duringTurn: 'your' as const }
+						: /during main phase/i.test(verb)
+							? { duringPhase: 'main' as const }
+							: {})
+				});
+			}
+			const crewsVehicle = verb.match(/^crews? a Vehicle(?: during (your )?main phase)?$/i);
+			if (crewsVehicle && !subject.oneOrMore) {
+				return def('crewedVehicle', {
+					...(crewsVehicle[1]
+						? { duringPhase: 'main' as const, duringTurn: 'your' as const }
+						: /during main phase/i.test(verb)
+							? { duringPhase: 'main' as const }
+							: {})
+				});
+			}
+			// --- End Track P22b ---
 			const becomesAttached = verb.match(/^becomes? attached to (?:a|an) (.+)$/i);
 			if (becomesAttached && !subject.oneOrMore) {
 				const host = parseP16bObjectPhrase(becomesAttached[1]);
@@ -1308,6 +1383,18 @@ function objectEvents(verbs: string, subject: Subject): TriggerDef | null {
 		};
 	}
 	if (!/\bor\b/i.test(verbs)) return null;
+	// --- Track P22b: shared trailing "during (your) main phase" across compound saddle/crew ---
+	const mainPhaseTrail = verbs.match(/^(.+?)\s+(during (?:your )?main phase)$/i);
+	if (mainPhaseTrail && /\b(?:saddles?|crews?)\b/i.test(mainPhaseTrail[1])) {
+		const subParts = mainPhaseTrail[1].split(/,? or |, /);
+		if (subParts.length >= 2) {
+			const subDefs = subParts.map((v) => objectEvent(`${v.trim()} ${mainPhaseTrail[2]}`, subject));
+			if (subDefs.every((d): d is TriggerDef => d !== null)) {
+				return { ...subDefs[0], or: subDefs.slice(1) };
+			}
+		}
+	}
+	// --- End Track P22b ---
 	// --- End Track P16b ---
 	const parts = verbs.split(/,? or |, /);
 	if (parts.length < 2) return null;
@@ -1485,6 +1572,42 @@ function playerEvent(player: EventFilter['player'], rest: string): TriggerDef | 
 		return { event: 'cast', filter };
 	}
 	// --- End Track P16b ---
+	// --- Track P22b: targetsOnlySelf & spellHasKeyword ---
+	const castTargetsOnlySelf = rest.match(
+		/^(cast or copy|casts or copies|casts?) (.+?) that targets only ~$/i
+	);
+	if (castTargetsOnlySelf) {
+		const object = spellFilter(castTargetsOnlySelf[2]);
+		if (object !== null && object !== 'self') {
+			const filter: EventFilter = { object, player, targetsOnlySelf: true };
+			if (/copy|copies/i.test(castTargetsOnlySelf[1])) filter.orCopy = true;
+			return { event: 'cast', filter };
+		}
+	}
+	const castWithKw = rest.match(
+		/^(cast or copy|casts or copies|casts?) (?:a|an) (?:(other) )?spell with ([a-z][a-z -]+?)(?: from (?:your |their |a )?(graveyard|exile|library|hand))?$/i
+	);
+	if (castWithKw) {
+		const rawKw = castWithKw[3].trim().toLowerCase();
+		if (
+			rawKw !== 'the chosen name' &&
+			!/^(?:mana value|power|toughness)\b/i.test(rawKw)
+		) {
+			const sf = spellFilter(
+				`a ${castWithKw[2] ? 'other ' : ''}spell with ${castWithKw[3].trim()}`
+			);
+			const zLow = castWithKw[4]?.toLowerCase() as ZoneType | undefined;
+			const filter: EventFilter = {
+				object: sf && sf !== 'self' && sf !== 'attachedTo' ? sf : castWithKw[2] ? { other: true } : {},
+				player,
+				...(sf ? {} : { spellHasKeyword: rawKw }),
+				...(zLow ? { castFromZone: zLow } : {})
+			};
+			if (/copy|copies/i.test(castWithKw[1])) filter.orCopy = true;
+			return { event: 'cast', filter };
+		}
+	}
+	// --- End Track P22b ---
 	const castTargetsSelf = rest.match(/^(cast or copy|casts or copies|casts?) (.+?) that targets ~$/);
 	if (castTargetsSelf) {
 		const object = spellFilter(castTargetsSelf[2]);
@@ -1568,6 +1691,11 @@ function playerEvent(player: EventFilter['player'], rest: string): TriggerDef | 
 	// --- Track P16b: player-subject attack triggers ("Whenever a player/an opponent attacks [you ...]") ---
 	if (rest === 'attack' || rest === 'attacks') {
 		return { event: 'attacks', filter: { player, oneOrMore: true } };
+	}
+	if (
+		/^attacks? (?:the|a) player with the most life(?: or tied for most life)?$/i.test(rest)
+	) {
+		return { event: 'attacks', filter: { player, oneOrMore: true, attackedTarget: 'playerWithMostLife' } };
 	}
 	if (/^attacks? you$/i.test(rest)) {
 		return { event: 'attacks', filter: { player, oneOrMore: true, attackedTarget: 'you' } };
@@ -1843,6 +1971,15 @@ function playerEvent(player: EventFilter['player'], rest: string): TriggerDef | 
 		}
 	}
 	// --- End Track P19b ---
+	// --- Track P22b: exceptFirstInDrawStep ---
+	if (
+		/^draws? a card except the first one (?:you|they) draws? in each of (?:your|their) draw steps$/i.test(
+			rest
+		)
+	) {
+		return { event: 'drawCard', filter: { player, exceptFirstInDrawStep: true } };
+	}
+	// --- End Track P22b ---
 	const nthDraw = rest.match(/^draws? (your|their) (first|second|third) card (?:each turn|in a turn)$/);
 	if (nthDraw) {
 		if ((nthDraw[1] === 'your') !== (player?.relation === 'you')) return null;
@@ -1897,6 +2034,24 @@ function playerEvent(player: EventFilter['player'], rest: string): TriggerDef | 
 			const object = parseP16bObjectPhrase(atkOne[1]);
 			if (object) {
 				return { event: 'attacks', filter: { player, oneOrMore: true, minAttackers: 1, object } };
+			}
+		}
+	} else {
+		// --- Track P22b: any-player / opponent "attacks with N or more <filter>" ---
+		const atkWithFilter = rest.match(/^attacks? with (\S+) or more (.+)$/i);
+		if (atkWithFilter) {
+			const minN = number(atkWithFilter[1]);
+			const obj = parseP16bObjectPhrase(atkWithFilter[2]);
+			if (minN !== null && minN >= 1 && obj && !objectFilterProblem(obj)) {
+				return {
+					event: 'attacks',
+					filter: {
+						player,
+						oneOrMore: true,
+						attackingWithFilter: obj,
+						minAttackingWithCount: minN
+					}
+				};
 			}
 		}
 	}
@@ -2030,6 +2185,59 @@ function playerEvent(player: EventFilter['player'], rest: string): TriggerDef | 
 		);
 	}
 	// --- End Track P19b ---
+	// --- Track P22b: clash, shuffle, spellCopied, spellCountered, abilityActivated ---
+	if (/^clash(?:es)?$/i.test(rest)) {
+		return { event: 'clash', filter: { player } };
+	}
+	if (/^wins? a clash$/i.test(rest)) {
+		return { event: 'clash', filter: { player, won: true } };
+	}
+	if (/^loses? a clash$/i.test(rest)) {
+		return { event: 'clash', filter: { player, won: false } };
+	}
+	if (/^shuffles?(?: (?:your|their|a) library)?$/i.test(rest)) {
+		return { event: 'libraryShuffled', filter: { player } };
+	}
+	const copySpellEv = rest.match(/^cop(?:y|ies) (.+)$/i);
+	if (copySpellEv) {
+		const sf = spellFilter(copySpellEv[1]);
+		if (sf) return { event: 'spellCopied', filter: { object: sf, player } };
+	}
+	const counterSpellEv = rest.match(/^counters? (.+)$/i);
+	if (counterSpellEv) {
+		const sf = spellFilter(counterSpellEv[1]);
+		if (sf) return { event: 'spellCountered', filter: { object: sf, player } };
+	}
+	const activateAbil = rest.match(
+		/^activates? (?:a|an) (loyalty )?ability(?: of (.+?))?( that isn't a mana ability)?$/i
+	);
+	if (activateAbil) {
+		const isLoyaltyAbility = Boolean(activateAbil[1]);
+		const isNonManaAbility = Boolean(activateAbil[3]);
+		let abilitySourceFilter: EventFilter['abilitySourceFilter'];
+		if (activateAbil[2]) {
+			const srcRaw = activateAbil[2].trim();
+			if (srcRaw === '~') {
+				abilitySourceFilter = 'self';
+			} else if (/^(?:enchanted|equipped) (?:creature|permanent|artifact|land|enchantment|planeswalker)$/i.test(srcRaw)) {
+				abilitySourceFilter = 'attachedTo';
+			} else {
+				const sub = objectSubject(srcRaw);
+				if (!sub || typeof sub.object !== 'object') return null;
+				abilitySourceFilter = sub.object;
+			}
+		}
+		return {
+			event: 'abilityActivated',
+			filter: {
+				player,
+				...(isLoyaltyAbility ? { isLoyaltyAbility: true } : {}),
+				...(isNonManaAbility ? { isNonManaAbility: true } : {}),
+				...(abilitySourceFilter ? { abilitySourceFilter } : {})
+			}
+		};
+	}
+	// --- End Track P22b ---
 	return null;
 }
 
@@ -2626,6 +2834,79 @@ function triggerHead(head: string, depth = 0): TriggerDef | null {
 		}
 	}
 	// --- End Track P19b ---
+
+	// --- Track P22b: triggerHead event heads ---
+	if (/^players finish voting$/i.test(body)) {
+		return { event: 'playersFinishedVoting', filter: {} };
+	}
+	if (/^the final chapter ability of ~ resolves$/i.test(body)) {
+		return { event: 'sagaChapterResolved', filter: { object: 'self', finalChapter: true } };
+	}
+	const finalChapterSubj = body.match(/^the final chapter ability of (.+?) resolves$/i);
+	if (finalChapterSubj) {
+		const sub = objectSubject(finalChapterSubj[1].trim());
+		if (sub && sub.object !== undefined && !sub.oneOrMore) {
+			return { event: 'sagaChapterResolved', filter: { object: sub.object, finalChapter: true } };
+		}
+	}
+	const sagaChapterSubj = body.match(/^a chapter ability of (.+?) resolves$/i);
+	if (sagaChapterSubj) {
+		const sub = objectSubject(sagaChapterSubj[1].trim());
+		if (sub && sub.object !== undefined && !sub.oneOrMore) {
+			return { event: 'sagaChapterResolved', filter: { object: sub.object } };
+		}
+	}
+	const enchPlayerCasts = body.match(/^enchanted player casts? (.+)$/i);
+	if (enchPlayerCasts) {
+		const obj = spellFilter(enchPlayerCasts[1]);
+		if (obj !== null) {
+			return { event: 'cast', filter: { object: obj, enchantedPlayerCasts: true } };
+		}
+	}
+	const spellCounteredHead = body.match(
+		/^(.+?) is countered(?: by (?:a|an) (?:spell or ability|spell|ability)(?: (you control|an opponent controls))?)?$/i
+	);
+	if (spellCounteredHead) {
+		const sf = spellFilter(spellCounteredHead[1].trim());
+		if (sf) {
+			const ctrlRaw = spellCounteredHead[2]?.toLowerCase();
+			const pl: PlayerFilter | undefined =
+				ctrlRaw === 'you control'
+					? { relation: 'you' }
+					: ctrlRaw === 'an opponent controls'
+						? { relation: 'opponent' }
+						: undefined;
+			return { event: 'spellCountered', filter: { object: sf, ...(pl ? { player: pl } : {}) } };
+		}
+	}
+	const abilActivatedHead = body.match(
+		/^an? (loyalty )?ability of (~|.+?) is activated(?: (?:and|if) it isn't a mana ability)?$/i
+	);
+	if (abilActivatedHead) {
+		const isLoyaltyAbility = Boolean(abilActivatedHead[1]);
+		const isNonManaAbility = /isn't a mana ability/i.test(body);
+		const srcRaw = abilActivatedHead[2].trim();
+		let abilitySourceFilter: EventFilter['abilitySourceFilter'];
+		if (srcRaw === '~') {
+			abilitySourceFilter = 'self';
+		} else if (/^(?:enchanted|equipped) (?:creature|permanent|artifact|land|enchantment|planeswalker)$/i.test(srcRaw)) {
+			abilitySourceFilter = 'attachedTo';
+		} else {
+			const sub = objectSubject(srcRaw);
+			if (sub && typeof sub.object === 'object') abilitySourceFilter = sub.object;
+		}
+		if (abilitySourceFilter) {
+			return {
+				event: 'abilityActivated',
+				filter: {
+					...(isLoyaltyAbility ? { isLoyaltyAbility: true } : {}),
+					...(isNonManaAbility ? { isNonManaAbility: true } : {}),
+					abilitySourceFilter
+				}
+			};
+		}
+	}
+	// --- End Track P22b ---
 
 	// Player subjects first ("you cast", "an opponent draws a card").
 	const ps = body.match(/^(you|a player|an opponent) (.+)$/);
@@ -3653,6 +3934,206 @@ export function parseCondition(
 		return { k: 'not', of: { k: 'selfDealtDamageToOpponentThisTurn' } };
 	}
 	// --- End Track P19b ---
+	// --- Track P22b: Trigger intervening-if conditions ---
+	if (/^if (?:that|the) ability (?:isn't|is not) a mana ability$/i.test(t)) {
+		return { k: 'eventAbilityIsNotMana' };
+	}
+	if (/^if life was paid to activate (?:it|that ability)$/i.test(t)) {
+		return { k: 'eventAbilityLifePaid' };
+	}
+	if (/^if (?:that|the) spell was kicked$/i.test(t)) {
+		return { k: 'eventSpellWasKicked' };
+	}
+	const spellHasKwCond = t.match(/^if (?:that|the) spell has ([a-z][a-z -]+)$/i);
+	if (spellHasKwCond) {
+		return { k: 'eventSpellHasKeyword', keyword: spellHasKwCond[1].trim().toLowerCase() };
+	}
+	if (/^if no colored mana was spent to cast (?:that|the) spell$/i.test(t)) {
+		return { k: 'eventSpellNoColoredManaSpent' };
+	}
+	if (
+		/^if (?:the amount of )?mana spent to cast (?:that|the) spell (?:is|was) less than its mana value$/i.test(
+			t
+		)
+	) {
+		return { k: 'eventSpellManaSpentLessThanMv' };
+	}
+	const enteredOrCastZoneM = t.match(
+		/^if (?:it|that [a-z -]+) (?:entered(?: the battlefield)?|was cast) from (?:your |a |an opponent's |their )?(graveyard|exile|hand|library)$/i
+	);
+	if (enteredOrCastZoneM) {
+		return {
+			k: 'eventEnteredOrCastFromZone',
+			zone: enteredOrCastZoneM[1].toLowerCase() as ZoneType
+		};
+	}
+	if (
+		/^if (?:its|that (?:creature|permanent)'s) power or toughness is greater than ~'s(?: power or toughness)?$/i.test(
+			t
+		)
+	) {
+		return { k: 'eventObjectPowerOrToughnessGreaterThanSelf' };
+	}
+	const objNotSubM = t.match(
+		/^if (?:that|the) (?:creature|permanent|spell|card) (?:wasn't|was not|isn't|is not) (?:a|an) ([A-Z][A-Za-z'-]*)$/i
+	);
+	if (objNotSubM) {
+		const sub = singularSubtype(objNotSubM[1]);
+		if (sub) return { k: 'eventObjectWasNotSubtype', subtype: sub };
+	}
+	if (/^if (?:it|that (?:creature|permanent)) was (?:enchanted or equipped|equipped or enchanted)$/i.test(t)) {
+		return { k: 'eventWasAttachedEnchantedOrEquipped' };
+	}
+	const crewCntM = t.match(
+		/^if (?:(\S+) creatures? crewed it(?: this way)?|it was crewed by (?:exactly )?(\S+) creatures?)$/i
+	);
+	if (crewCntM) {
+		const cNum = number(crewCntM[1] ?? crewCntM[2]);
+		if (cNum !== null) return { k: 'eventCrewCountEquals', count: cNum };
+	}
+	const dmgBySubM = t.match(/^if (?:the|that) damage was dealt by (?:a|an) ([A-Z][A-Za-z'-]*)$/i);
+	if (dmgBySubM) {
+		const sub = singularSubtype(dmgBySubM[1]);
+		if (sub) return { k: 'eventDamageDealtBySubtype', subtype: sub };
+	}
+	if (/^if (?:that|the) (?:creature|permanent|planeswalker) was dealt excess damage this turn$/i.test(t)) {
+		return { k: 'eventDamagedTargetDealtExcessDamageThisTurn' };
+	}
+	if (/^if (?:you're|that player is|they're|they are) attacking the player with the most life(?: or tied for most life)?$/i.test(t)) {
+		return { k: 'eventAttackingPlayerWithMostLife' };
+	}
+	if (/^if (?:there's|there is) another opponent(?: that)? didn't get attacked$/i.test(t) || /^if another opponent wasn't attacked(?: this combat)?$/i.test(t)) {
+		return { k: 'eventAttackerHasAnotherUnattackedOpponent' };
+	}
+	const minAtkToYouPwM = t.match(
+		/^if (\S+) or more creatures? (?:are|were) attacking you(?: and\/or| or) planeswalkers? you control$/i
+	);
+	if (minAtkToYouPwM && number(minAtkToYouPwM[1]) !== null) {
+		return { k: 'eventMinAttackersToYouOrPlaneswalkers', min: number(minAtkToYouPwM[1])! };
+	}
+	if (/^if (?:it|that [a-z-]+) shares? a card type with the exiled card$/i.test(t)) {
+		return { k: 'eventSharesCardTypeWithLinkedExile' };
+	}
+	const plCtrlMoreThanYouM = t.match(/^if that player controls more (.+?) than you$/i);
+	if (plCtrlMoreThanYouM) {
+		const f = parseP16bObjectPhrase(plCtrlMoreThanYouM[1]);
+		if (f && !objectFilterProblem(f)) return { k: 'eventPlayerControlsMoreThanYou', filter: f };
+	}
+	const plCtrlMoreEachOtherM = t.match(/^if that player controls more (.+?) than each other player$/i);
+	if (plCtrlMoreEachOtherM) {
+		const f = parseP16bObjectPhrase(plCtrlMoreEachOtherM[1]);
+		if (f && !objectFilterProblem(f)) return { k: 'eventPlayerControlsMoreThanEachOther', filter: f };
+	}
+	if (/^if you have the most life(?: or are tied for the most life)?$/i.test(t)) {
+		return { k: 'youHaveMostLife' };
+	}
+	if (/^if (?:that player|they) lost life (?:last|their last) turn$/i.test(t)) {
+		return { k: 'playerLostLifeLastTurn' };
+	}
+	const discTurnM = t.match(/^if (you|an opponent|a player) discarded a card this turn$/i);
+	if (discTurnM) {
+		const wLow = discTurnM[1].toLowerCase();
+		const who = wLow === 'you' ? 'you' : wLow === 'an opponent' ? 'opponent' : 'any';
+		return { k: 'discardedCardThisTurn', who };
+	}
+	const putCtrTurnM = t.match(/^if (you|a player) put a counter on a creature this turn$/i);
+	if (putCtrTurnM) {
+		return {
+			k: 'putCounterOnCreatureThisTurn',
+			who: putCtrTurnM[1].toLowerCase() === 'you' ? 'you' : 'any'
+		};
+	}
+	if (/^if a counter was put on a creature(?: you control)? this turn$/i.test(t)) {
+		return { k: 'putCounterOnCreatureThisTurn', who: /you control/i.test(t) ? 'you' : 'any' };
+	}
+	const sacFilterTurnM = t.match(
+		/^if (you|a player) sacrificed (?:(?:a|an)|(\S+) or more) (.+?) this turn$/i
+	);
+	if (sacFilterTurnM) {
+		const minN = sacFilterTurnM[2] ? number(sacFilterTurnM[2]) : 1;
+		const f = parseP16bObjectPhrase(sacFilterTurnM[3]);
+		if (minN !== null && f && !objectFilterProblem(f)) {
+			return {
+				k: 'sacrificedFilterThisTurn',
+				filter: f,
+				min: minN,
+				who: sacFilterTurnM[1].toLowerCase() === 'you' ? 'you' : 'any'
+			};
+		}
+	}
+	if (/^if no creatures attacked this turn$/i.test(t)) {
+		return { k: 'noCreaturesAttackedThisTurn' };
+	}
+	if (/^if you've cast both a creature spell and a noncreature spell this turn$/i.test(t)) {
+		return { k: 'castCreatureAndNoncreatureThisTurn' };
+	}
+	const enchPwrMinM = t.match(/^if enchanted creature has power (\S+) or (?:greater|more)$/i);
+	if (enchPwrMinM && number(enchPwrMinM[1]) !== null) {
+		return { k: 'enchantedCreaturePowerAtLeast', min: number(enchPwrMinM[1])! };
+	}
+	const allLandsM = t.match(
+		/^if (?:every land on the battlefield is (?:a|an)|all lands are) ([A-Z][A-Za-z'-]*)$/i
+	);
+	if (allLandsM) {
+		const sub = singularSubtype(allLandsM[1]);
+		if (sub) return { k: 'allLandsAreSubtype', subtype: sub };
+	}
+	const greatestMvM = t.match(
+		/^if you control the (.+?) with the greatest mana value(?: among all .+)?$/i
+	);
+	if (greatestMvM) {
+		const f = parseP16bObjectPhrase(greatestMvM[1]);
+		if (f && !objectFilterProblem(f)) return { k: 'youControlGreatestManaValueFilter', filter: f };
+	}
+	if (/^if your team gained life this turn$/i.test(t)) {
+		return { k: 'yourTeamGainedLifeThisTurn' };
+	}
+	const teamCtrlOtherM = t.match(/^if your team controls another (.+)$/i);
+	if (teamCtrlOtherM) {
+		const f = parseP16bObjectPhrase(teamCtrlOtherM[1]);
+		if (f && !objectFilterProblem(f)) return { k: 'yourTeamControlsOtherFilter', filter: f };
+	}
+	const playersLostM = t.match(/^if (\S+) or more players have lost the game$/i);
+	if (playersLostM && number(playersLostM[1]) !== null) {
+		return { k: 'playersLostGameAtLeast', min: number(playersLostM[1])! };
+	}
+	if (/^if ~ attacked this combat$/i.test(t)) {
+		return { k: 'selfAttackedThisCombat' };
+	}
+	if (/^if ~ (?:didn't|did not) attack this turn$/i.test(t)) {
+		return { k: 'selfDidntAttackThisTurn' };
+	}
+	if (
+		/^if (?:this ability hasn't added mana|~ hasn't added mana|it hasn't been triggered to add mana) this turn$/i.test(
+			t
+		)
+	) {
+		return { k: 'selfHaventAddedManaThisTurn' };
+	}
+	const zoneTurnGyM = t.match(
+		/^if (?:(?:a|an)|(\S+) or more) (.+?) (?:was|were) put into a graveyard from the battlefield this turn$/i
+	);
+	if (zoneTurnGyM) {
+		const minN = zoneTurnGyM[1] ? number(zoneTurnGyM[1]) : 1;
+		const f = parseP16bObjectPhrase(zoneTurnGyM[2]);
+		if (minN !== null && f && !objectFilterProblem(f)) {
+			return { k: 'zoneChangeFromToThisTurn', from: 'battlefield', to: 'graveyard', filter: f, min: minN };
+		}
+	}
+	const enteredCtrlTurnM = t.match(
+		/^if (?:(?:a|an)|(\S+) or more) (.+?) entered(?: the battlefield)? under your control this turn$/i
+	);
+	if (enteredCtrlTurnM) {
+		const minN = enteredCtrlTurnM[1] ? number(enteredCtrlTurnM[1]) : 1;
+		const f = parseP16bObjectPhrase(enteredCtrlTurnM[2]);
+		if (minN !== null && f && !objectFilterProblem(f)) {
+			return { k: 'enteredUnderYourControlThisTurnCount', filter: f, min: minN };
+		}
+	}
+	if (/^if you have less life than your starting life total$/i.test(t)) {
+		return { k: 'yourLifeLessThanStarting' };
+	}
+	// --- End Track P22b ---
 	return null;
 }
 
@@ -3969,8 +4450,13 @@ const RUNTIME_OBJECT_FIELDS: ReadonlySet<string> = new Set([
 	'pairedWithSource',
 	'toughnessGreaterThanPower',
 	'manaValueParity',
-	'controlledByChosenPlayer'
+	'controlledByChosenPlayer',
 	// --- End Track P16a & P20a ---
+	// --- Track P22b ---
+	'enchantedOrEquipped',
+	'controllerAndNotOwner',
+	'dealtDamageByAttachedThisTurn'
+	// --- End Track P22b ---
 ]);
 
 /** EventFilter fields each event kind's matcher checks (runtime/triggers.ts). */
@@ -4003,7 +4489,10 @@ const RUNTIME_EVENT_FIELDS: Partial<Record<TriggerDef['event'], ReadonlySet<stri
 		'duringTurn',
 		'castFromNotHand',
 		'castFromZone',
-		'wasKicked'
+		'wasKicked',
+		'targetsOnlySelf',
+		'spellHasKeyword',
+		'enchantedPlayerCasts'
 	]),
 	attacks: new Set([
 		'object',
@@ -4020,7 +4509,9 @@ const RUNTIME_EVENT_FIELDS: Partial<Record<TriggerDef['event'], ReadonlySet<stri
 		'coAttackerMin',
 		'perAttackedPlayer',
 		'firstTimeEachTurn',
-		'nthEventThisTurn'
+		'nthEventThisTurn',
+		'attackingWithFilter',
+		'minAttackingWithCount'
 	]),
 	combatDamageBatchPlayer: new Set(['object', 'oneOrMore', 'player']),
 	blocks: new Set([
@@ -4060,7 +4551,9 @@ const RUNTIME_EVENT_FIELDS: Partial<Record<TriggerDef['event'], ReadonlySet<stri
 		'enchantedControllerUpkeep',
 		'enchantedPlayerUpkeep',
 		'attachedFilter',
-		'phaseTurnFilter'
+		'phaseTurnFilter',
+		'anyMainPhase',
+		'phaseChosenPlayer'
 	]),
 	counterPlaced: new Set([
 		'object',
@@ -4084,7 +4577,7 @@ const RUNTIME_EVENT_FIELDS: Partial<Record<TriggerDef['event'], ReadonlySet<stri
 		'attachedFilter',
 		'firstTimeEachTurn'
 	]),
-	attached: new Set(['object', 'host']),
+	attached: new Set(['object', 'host', 'hostSelf']),
 	tappedForMana: new Set([
 		'object',
 		'player',
@@ -4093,7 +4586,7 @@ const RUNTIME_EVENT_FIELDS: Partial<Record<TriggerDef['event'], ReadonlySet<stri
 		'tappedManaChosenColor'
 	]),
 	gainLife: new Set(['player', 'duringTurn', 'firstTimeEachTurn', 'nthEventThisTurn']),
-	drawCard: new Set(['player', 'nthThisTurn']),
+	drawCard: new Set(['player', 'nthThisTurn', 'exceptFirstInDrawStep']),
 	becomesTapped: new Set([
 		'object',
 		'orSelf',
@@ -4170,8 +4663,25 @@ const RUNTIME_EVENT_FIELDS: Partial<Record<TriggerDef['event'], ReadonlySet<stri
 	energyGained: new Set(['player']),
 	proliferated: new Set(['player']),
 	evolved: new Set(['object', 'orSelf']),
-	crewedVehicle: new Set(['object', 'orSelf'])
+	crewedVehicle: new Set(['object', 'orSelf', 'duringPhase', 'duringTurn']),
 	// --- End Track P19b ---
+	// --- Track P22b ---
+	abilityActivated: new Set([
+		'object',
+		'player',
+		'orSelf',
+		'isLoyaltyAbility',
+		'isNonManaAbility',
+		'abilitySourceFilter'
+	]),
+	playersFinishedVoting: new Set(['player']),
+	clash: new Set(['player', 'won']),
+	libraryShuffled: new Set(['player']),
+	spellCopied: new Set(['object', 'player']),
+	spellCountered: new Set(['object', 'player']),
+	sagaChapterResolved: new Set(['object', 'orSelf', 'finalChapter']),
+	saddledMount: new Set(['object', 'orSelf', 'duringPhase', 'duringTurn'])
+	// --- End Track P22b ---
 };
 
 function objectFilterProblem(f: ObjectFilter | undefined): string | null {
@@ -4236,7 +4746,9 @@ export function runtimeTriggerProblem(def: TriggerDef): string | null {
 		objectFilterProblem(f.blockedAttackerFilter) ??
 		objectFilterProblem(f.targetingSourceFilter) ??
 		objectFilterProblem(f.coAttackerFilter) ??
-		objectFilterProblem(f.damageTargetFilter);
+		objectFilterProblem(f.damageTargetFilter) ??
+		objectFilterProblem(f.attackingWithFilter) ??
+		(typeof f.abilitySourceFilter === 'object' ? objectFilterProblem(f.abilitySourceFilter) : null);
 	if (p) return p;
 	if (
 		f.object === 'attachedTo' &&
@@ -4256,7 +4768,10 @@ export function runtimeTriggerProblem(def: TriggerDef): string | null {
 			'turnFaceUp',
 			'mutates',
 			'phasedIn',
-			'counterPlaced'
+			'counterPlaced',
+			'saddledMount',
+			'crewedVehicle',
+			'abilityActivated'
 		].includes(def.event) &&
 		!(def.event === 'zoneChange' && f.from === 'battlefield')
 	) {

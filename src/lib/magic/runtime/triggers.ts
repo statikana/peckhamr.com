@@ -45,6 +45,7 @@ import {
 	isObjectForetold
 } from './kicker.ts';
 import { withStableLayerInputs } from './layerCache.ts';
+import { splitSubtypes } from './layers.ts';
 import { activeAbilityDefs, instanceFaceOptions, matchesColorFilter, resolveObjectFaces, stackItemFaceOptions } from './faces.ts';
 import {
 	// --- Track P7 ---
@@ -159,6 +160,18 @@ import {
 	resolveTapActorId
 } from './triggersWave7.ts';
 // --- End Track P19b ---
+// --- Track P22b ---
+import {
+	dispatchP22bTriggerEvent,
+	evaluateP22bAmount,
+	evaluateP22bCondition,
+	hasP22bObjectFilterFields,
+	matchesP22bAttackedTargetWithMostLife,
+	matchesP22bCastFilter,
+	matchesP22bObjectFilter,
+	matchesP22bPhaseFilter
+} from './triggersWave8.ts';
+// --- End Track P22b ---
 
 /**
  * How a pending trigger is executed. 'stack': a StackItem put on the stack the next time a player
@@ -885,6 +898,9 @@ interface Subject {
 	zone?: ZoneType;
 	stackItem?: StackItem;
 	// --- End Track P13 ---
+	// --- Track P22b ---
+	damagedByThisTurn?: Array<{ sourceId: string; sourceVersion?: number }>;
+	// --- End Track P22b ---
 }
 
 function battlefieldSubject(state: GameState, obj: CardInstance, controllerId: string): Subject {
@@ -1287,6 +1303,23 @@ function filterMatches(f: ObjectFilter, subject: Subject, source: Viewer): boole
 		}
 	}
 	// --- End Track P19b ---
+	// --- Track P22b ---
+	if (stP16b && hasP22bObjectFilterFields(f)) {
+		const srcPermP22b = source.sourceObj ?? permanentById(stP16b, source.id)?.obj;
+		if (
+			!matchesP22bObjectFilter(subject.obj, f, {
+				state: stP16b,
+				controllerId: source.controllerId,
+				source: srcPermP22b,
+				zone: subject.zone ?? subject.obj.zone,
+				stackItem: subject.stackItem,
+				...(subject.damagedByThisTurn ? { lki: { damagedByThisTurn: subject.damagedByThisTurn } } : {})
+			})
+		) {
+			return false;
+		}
+	}
+	// --- End Track P22b ---
 	return true;
 }
 
@@ -1744,6 +1777,13 @@ interface MatchExtras {
 	// --- Track P19b ---
 	lastTappedManaColors?: ManaColor[];
 	// --- End Track P19b ---
+	// --- Track P22b ---
+	p22bEventIsManaAbility?: boolean;
+	p22bEventLifePaid?: number;
+	p22bEventCrewCount?: number;
+	p22bEventDamageSourceSubtypes?: string[];
+	p22bEventAttackedTargetPlayerId?: string;
+	// --- End Track P22b ---
 }
 
 function record(state: GameState, source: Source, ability: RuntimeTrigger, kind: EventKind, extras: MatchExtras): void {
@@ -1762,7 +1802,14 @@ function record(state: GameState, source: Source, ability: RuntimeTrigger, kind:
 			// --- Track P16b ---
 			{
 				eventPlayerId: extras.eventPlayerId ?? extras.eventPlayer,
-				triggerEventStackItem: extras.triggerEventStackItem
+				triggerEventStackItem: extras.triggerEventStackItem,
+				// --- Track P22b ---
+				p22bEventIsManaAbility: extras.p22bEventIsManaAbility,
+				p22bEventLifePaid: extras.p22bEventLifePaid,
+				p22bEventCrewCount: extras.p22bEventCrewCount,
+				p22bEventDamageSourceSubtypes: extras.p22bEventDamageSourceSubtypes,
+				p22bEventAttackedTargetPlayerId: extras.p22bEventAttackedTargetPlayerId
+				// --- End Track P22b ---
 			}
 			// --- End Track P16b ---
 		)
@@ -2143,6 +2190,26 @@ function matchTriggersInner(state: GameState, ev: GameEvent): void {
 		case 'CrewedVehicle':
 			return matchCrewedVehicle(state, ev);
 		// --- End Track P19b ---
+		// --- Track P22b ---
+		case 'AbilityActivated':
+		case 'PlayersFinishedVoting':
+		case 'Clash':
+		case 'LibraryShuffled':
+		case 'SpellCountered':
+		case 'SagaChapterResolved':
+		case 'SaddledMount':
+			dispatchP22bTriggerEvent(state, ev, {
+				sources,
+				abilitiesFor,
+				objectMatches,
+				filterMatches,
+				battlefieldSubject,
+				printedSubject,
+				viewerOf,
+				record
+			});
+			return;
+		// --- End Track P22b ---
 	}
 }
 
@@ -2808,9 +2875,18 @@ function matchCrewedVehicle(
 	const subject = found
 		? battlefieldSubject(state, found.obj, found.controllerId)
 		: printedSubject(ev.creature, ev.creature.copiableCard ?? ev.creature.card, ev.playerId, false, undefined, undefined, undefined, false, false, { state });
+	const activePlayerId = state.players[state.activePlayerIndex]?.playerId;
 	for (const source of sources(state, 'crewedVehicle')) {
 		for (const { ability, alts } of abilitiesFor(state, source, 'crewedVehicle')) {
-			const alt = alts.find((a) => objectMatches(a.filter, subject, source));
+			const alt = alts.find((a) => {
+				if (a.filter.duringPhase === 'main' && state.phase !== 'main1' && state.phase !== 'main2') {
+					return false;
+				}
+				if (a.filter.duringTurn === 'your' && activePlayerId !== source.controllerId) {
+					return false;
+				}
+				return objectMatches(a.filter, subject, source);
+			});
 			if (!alt) continue;
 			record(state, source, ability, 'crewedVehicle', {
 				label: 'Crew Trigger',
@@ -3672,6 +3748,9 @@ function matchCardDrawn(state: GameState, ev: Extract<GameEvent, { kind: 'CardDr
 				if (rel === 'you' && ev.playerId !== source.controllerId) return false;
 				if (rel === 'opponent' && ev.playerId === source.controllerId) return false;
 				if (a.filter.nthThisTurn !== undefined && drawnCount !== a.filter.nthThisTurn) return false;
+				// --- Track P22b ---
+				if (a.filter.exceptFirstInDrawStep && ev.inOwnDrawStepOrdinal === 1) return false;
+				// --- End Track P22b ---
 				return true;
 			});
 			if (alt) {
@@ -4077,6 +4156,11 @@ function matchZoneChange(state: GameState, ev: Extract<GameEvent, { kind: 'ZoneC
 							// --- End Track P7 ---
 						);
 	// --- Track P16b: CR 603.6c "from anywhere" checks characteristics as the object exists in the destination zone ---
+	// --- Track P22b ---
+	if (ev.lki?.damagedByThisTurn?.length) {
+		subject.damagedByThisTurn = ev.lki.damagedByThisTurn;
+	}
+	// --- End Track P22b ---
 	const postMoveSubject: Subject = printedSubject(
 		obj,
 		obj.card,
@@ -4802,6 +4886,27 @@ function matchCast(state: GameState, casterId: string, spell: CardInstance, isCo
 	// --- Track P15 ---
 	const gravestormCount = isCopy ? 0 : (state.permanentsPutIntoGraveyardFromBattlefieldThisTurn ?? 0);
 	// --- End Track P15 ---
+	// --- Track P19b ---
+	if (isCopy) {
+		for (const source of sources(state, 'spellCopied')) {
+			for (const { ability, alts } of abilitiesFor(state, source, 'spellCopied')) {
+				const alt = alts.find((a) => {
+					const rel = a.filter.player?.relation ?? 'any';
+					if (rel === 'you' && casterId !== source.controllerId) return false;
+					if (rel === 'opponent' && casterId === source.controllerId) return false;
+					return !a.filter.object || objectMatches(a.filter, subject, source);
+				});
+				if (!alt) continue;
+				record(state, source, ability, 'spellCopied', {
+					label: 'Spell Copy Trigger',
+					eventObject: spell,
+					eventPlayer: casterId,
+					...(triggerEventStackItem ? { triggerEventStackItem } : {})
+				});
+			}
+		}
+	}
+	// --- End Track P22b ---
 	const candidates = sources(state, 'cast');
 	if (!isCopy) {
 		const stackFaces = new Set(activeFacesForObject(spell, spell.card, 'stack', state));
@@ -4878,6 +4983,11 @@ function matchCast(state: GameState, casterId: string, spell: CardInstance, isCo
 						return false;
 					}
 				}
+				// --- Track P22b ---
+				if (!matchesP22bCastFilter(state, a.filter, spell, casterId, isCopy, source.obj, stackSpell)) {
+					return false;
+				}
+				// --- End Track P22b ---
 				return objectMatches(a.filter, subject, source);
 			});
 			if (!alt) continue;
@@ -5097,8 +5207,40 @@ function matchAttack(state: GameState, attackingPlayerId: string, attackerIds: s
 							const b = permanentById(state, entry.defenderBattleId);
 							return Boolean(b && evaluatePermanent(state, b.obj).typeLine.includes('Battle'));
 						}
+						// --- Track P22b ---
+						case 'playerWithMostLife':
+							return matchesP22bAttackedTargetWithMostLife(
+								state,
+								entry.defenderPlayerId,
+								hasPermTarget
+							);
+						// --- End Track P22b ---
 					}
 				};
+				// --- Track P22b ---
+				if (f.attackingWithFilter && f.minAttackingWithCount !== undefined) {
+					const rel = f.player?.relation ?? 'any';
+					const playerMatches =
+						rel === 'you'
+							? attackingPlayerId === source.controllerId
+							: rel === 'opponent'
+								? attackingPlayerId !== source.controllerId
+								: true;
+					if (!playerMatches) continue;
+					const atkViewer = viewerOf(source);
+					const matchedCount = attackers.filter((s) =>
+						filterMatches(f.attackingWithFilter!, s, atkViewer)
+					).length;
+					if (matchedCount < f.minAttackingWithCount) continue;
+					record(state, source, ability, 'attacks', {
+						label: ability.text || 'Attack Trigger',
+						eventPlayer: attackingPlayerId,
+						eventPlayerId: attackingPlayerId,
+						amount: matchedCount
+					});
+					break;
+				}
+				// --- End Track P22b ---
 				if (f.coAttackerFilter) {
 					const coViewer = viewerOf(source);
 					const coCount = attackers.filter(
@@ -5267,7 +5409,9 @@ function matchAttack(state: GameState, attackingPlayerId: string, attackerIds: s
 						label: ability.text || 'Attack',
 						times,
 						...(f.alone && matching.length === 1 ? { eventObject: matching[0].obj } : {}),
-						...(defendingPlayerId ? { defendingPlayerId } : {}),
+						...(defendingPlayerId
+							? { defendingPlayerId, p22bEventAttackedTargetPlayerId: defendingPlayerId }
+							: {}),
 						...(f.oneOrMore ? { amount: matching.length } : {}),
 						...(mentorPower !== undefined ? { amount: mentorPower } : {})
 					});
@@ -5285,7 +5429,9 @@ function matchAttack(state: GameState, attackingPlayerId: string, attackerIds: s
 						record(state, source, ability, 'attacks', {
 							label: f.alone && ability.text ? ability.text : 'Attack Trigger',
 							eventObject: s.obj,
-							...(defendingPlayerId ? { defendingPlayerId } : {}),
+							...(defendingPlayerId
+								? { defendingPlayerId, p22bEventAttackedTargetPlayerId: defendingPlayerId }
+								: {}),
 							times
 						});
 					}
@@ -5777,7 +5923,18 @@ function matchDamage(state: GameState, ev: Extract<GameEvent, { kind: 'DamageDea
 				) {
 					continue;
 				}
-				record(state, source, ability, 'dealtDamage', { label: 'Dealt Damage', eventObject: damagedSubject.obj, amount: ev.amount });
+				record(state, source, ability, 'dealtDamage', {
+					label: 'Dealt Damage',
+					eventObject: damagedSubject.obj,
+					amount: ev.amount,
+					...(dealerSubject
+						? {
+								p22bEventDamageSourceSubtypes: splitSubtypes(
+									evaluatePermanent(state, dealerSubject.obj).effectiveTypeLine
+								)
+							}
+						: {})
+				});
 			}
 		}
 	}
@@ -5867,7 +6024,11 @@ function matchPhase(state: GameState, ev: Extract<GameEvent, { kind: 'PhaseBegin
 			// --- Track P10 ---
 			let matchedHostObj: CardInstance | undefined;
 			const phaseAlt = alts.find((a) => {
-				if (a.filter.phase !== ev.phase) return false;
+				// --- Track P22b ---
+				if (!matchesP22bPhaseFilter(state, a.filter, source.obj, ev.activePlayerId!, ev.phase)) {
+					return false;
+				}
+				// --- End Track P22b ---
 				if (a.filter.enchantedControllerUpkeep) {
 					const hostId = source.obj.attachedToId;
 					if (!hostId) return false;
@@ -6207,7 +6368,10 @@ function matchAttached(state: GameState, ev: Extract<GameEvent, { kind: 'Attache
 			const alt = alts.find(
 				(a) =>
 					objectMatches(a.filter, attachmentSubject, source) &&
-					(!a.filter.host || filterMatches(a.filter.host, hostSubject, viewerOf(source)))
+					(!a.filter.host || filterMatches(a.filter.host, hostSubject, viewerOf(source))) &&
+					// --- Track P22b ---
+					(!a.filter.hostSelf || hostObj.obj.instanceId === source.obj.instanceId)
+					// --- End Track P22b ---
 			);
 			if (alt) record(state, source, ability, 'attached', { label: 'On Attach', eventObject: hostObj.obj });
 		}
@@ -6413,7 +6577,17 @@ export function evaluateCondition(
 	eventObject?: CardInstance,
 	eventLki?: PendingTrigger['eventLki'],
 	// --- Track P16b ---
-	matchExtras?: { eventPlayerId?: string; triggerEventStackItem?: StackItem }
+	matchExtras?: {
+		eventPlayerId?: string;
+		triggerEventStackItem?: StackItem;
+		// --- Track P22b ---
+		p22bEventIsManaAbility?: boolean;
+		p22bEventLifePaid?: number;
+		p22bEventCrewCount?: number;
+		p22bEventDamageSourceSubtypes?: string[];
+		p22bEventAttackedTargetPlayerId?: string;
+		// --- End Track P22b ---
+	}
 	// --- End Track P16b ---
 ): boolean {
 	const controller = state.players.find((p) => p.playerId === controllerId);
@@ -6854,6 +7028,31 @@ export function evaluateCondition(
 	);
 	if (p19b !== undefined) return p19b;
 	// --- End Track P19b ---
+	// --- Track P22b ---
+	const p22b = evaluateP22bCondition(
+		cond,
+		{
+			state,
+			controllerId,
+			sourceInstanceId,
+			source: srcObjFallback,
+			stackItem,
+			triggerEventStackItem: effTriggerEventStackItem,
+			eventObject:
+				eventObject ??
+				(stackItem?.eventObjectId ? permanentById(state, stackItem.eventObjectId)?.obj : undefined),
+			eventLki: eventLki ?? stackItem?.eventLki,
+			eventPlayerId: effEventPlayerId,
+			eventIsManaAbility: matchExtras?.p22bEventIsManaAbility,
+			eventLifePaid: matchExtras?.p22bEventLifePaid,
+			eventCrewCount: matchExtras?.p22bEventCrewCount,
+			eventDamageSourceSubtypes: matchExtras?.p22bEventDamageSourceSubtypes,
+			eventAttackedTargetPlayerId: matchExtras?.p22bEventAttackedTargetPlayerId
+		},
+		matchesObjectFilter
+	);
+	if (p22b !== undefined) return p22b;
+	// --- End Track P22b ---
 	return false;
 }
 
@@ -7095,6 +7294,11 @@ function amount(
 				gravestormOverride: stackItem?.gravestormCount
 			});
 		// --- End Track P15 ---
+		// --- Track P22b ---
+		case 'opponentsLifeLostThisTurn':
+		case 'targetsTotalManaValue':
+			return evaluateP22bAmount(a, state, controllerId, stackItem);
+		// --- End Track P22b ---
 		default:
 			return null;
 	}

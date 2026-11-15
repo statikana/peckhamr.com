@@ -78,6 +78,9 @@ import { evaluatePermanent } from './layers.ts';
 import { objectPower, type FilterContext } from './objectFilter.ts';
 import { playerLifeTotalCantChange } from './replace.ts';
 import { allocateTimestamp, moveObject } from './zones.ts';
+// --- Track P22b ---
+import { snapshotP22bLifeLostLastTurn } from './triggersWave8.ts';
+// --- End Track P22b ---
 
 export interface Wave4RuntimeTrigger extends RuntimeTrigger {
 	wave4Tag?: string;
@@ -509,6 +512,9 @@ export function resetWave4TurnStateAtTurnStart(state: GameState): void {
 	state.creaturesAttackedCountThisTurn = 0;
 	state.cardsPutIntoGraveyardThisTurn = 0;
 	for (const p of state.players) {
+		// --- Track P22b ---
+		snapshotP22bLifeLostLastTurn(p);
+		// --- End Track P22b ---
 		delete p.lifeLostThisTurn;
 		delete p.firebendingRedMana;
 		delete p.sourcesDealtDamageIdsThisTurn;
