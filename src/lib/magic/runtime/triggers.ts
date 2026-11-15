@@ -4641,6 +4641,24 @@ export function evaluateCondition(
 			);
 		}
 		// --- End Track P15 ---
+		// --- Wave 6 Shared ---
+		case 'isPaired': {
+			const srcObj = permanentById(state, sourceInstanceId)?.obj ?? source?.obj;
+			return Boolean(srcObj?.pairedWithId);
+		}
+		case 'tributePaid': {
+			const srcObj = permanentById(state, sourceInstanceId)?.obj ?? source?.obj;
+			return Boolean(srcObj?.tributePaid);
+		}
+		case 'hasEnduringStory': {
+			const srcObj = permanentById(state, sourceInstanceId)?.obj ?? source?.obj;
+			return Boolean(srcObj?.hasEnduringStory);
+		}
+		case 'isHarnessed': {
+			const srcObj = permanentById(state, sourceInstanceId)?.obj ?? source?.obj;
+			return Boolean(srcObj?.isHarnessed);
+		}
+		// --- End Wave 6 Shared ---
 		case 'isTurnOf':
 			if (cond.player.k === 'you') return state.players[state.activePlayerIndex]?.playerId === controllerId;
 			return cond.player.k === 'activePlayer';
@@ -4803,7 +4821,10 @@ function amount(
 			const readCtrs = (ctrs: Partial<Record<CounterType, number>> | undefined): number => {
 				if (!ctrs) return 0;
 				if (a.counter === 'any') {
-					return Object.values(ctrs).reduce((acc, n) => acc + (n && n > 0 ? n : 0), 0);
+					return Object.values(ctrs).reduce<number>(
+						(acc, n) => acc + (n && n > 0 ? n : 0),
+						0
+					);
 				}
 				return ctrs[a.counter] ?? 0;
 			};

@@ -2328,6 +2328,16 @@ function evaluateLayerCondition(
 		case 'enteredWithXAtLeast':
 			return (source.inst.enteredWithX ?? 0) >= cond.n;
 		// --- End Track P15 ---
+		// --- Wave 6 Shared ---
+		case 'isPaired':
+			return Boolean(source.inst.pairedWithId);
+		case 'tributePaid':
+			return Boolean(source.inst.tributePaid);
+		case 'hasEnduringStory':
+			return Boolean(source.inst.hasEnduringStory);
+		case 'isHarnessed':
+			return Boolean(source.inst.isHarnessed);
+		// --- End Wave 6 Shared ---
 		default:
 			return false;
 	}
@@ -2442,6 +2452,24 @@ const READ_P14 = 262144; // 1 << 18
 // --- Track P15 ---
 const READ_P15 = 524288; // 1 << 19
 // --- End Track P15 ---
+// --- Track P16a ---
+const READ_P16A = 1 << 20;
+// --- End Track P16a ---
+// --- Track P16b ---
+const READ_P16B = 1 << 21;
+// --- End Track P16b ---
+// --- Track P17a ---
+const READ_P17A = 1 << 22;
+// --- End Track P17a ---
+// --- Track P17b ---
+const READ_P17B = 1 << 23;
+// --- End Track P17b ---
+// --- Track P18a ---
+const READ_P18A = 1 << 24;
+// --- End Track P18a ---
+// --- Track P18b ---
+const READ_P18B = 1 << 25;
+// --- End Track P18b ---
 
 /** Inputs read by the evaluation in progress (bits above). */
 let layerReads = 0;
@@ -2513,6 +2541,36 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 		}
 	}
 	// --- End Track P15 ---
+	// --- Track P16a ---
+	if (reads & READ_P16A) {
+		fp.push(0);
+	}
+	// --- End Track P16a ---
+	// --- Track P16b ---
+	if (reads & READ_P16B) {
+		fp.push(0);
+	}
+	// --- End Track P16b ---
+	// --- Track P17a ---
+	if (reads & READ_P17A) {
+		fp.push(0);
+	}
+	// --- End Track P17a ---
+	// --- Track P17b ---
+	if (reads & READ_P17B) {
+		fp.push(0);
+	}
+	// --- End Track P17b ---
+	// --- Track P18a ---
+	if (reads & READ_P18A) {
+		fp.push(0);
+	}
+	// --- End Track P18a ---
+	// --- Track P18b ---
+	if (reads & READ_P18B) {
+		fp.push(0);
+	}
+	// --- End Track P18b ---
 	for (const p of state.players) {
 		if (reads & READ_LIFE) fp.push(p.life);
 		if (reads & READ_ENERGY) fp.push(p.energyCounters || 0);
@@ -2664,6 +2722,14 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 			perm.enteredWithX ?? 0,
 			Boolean(perm.giftPromised),
 			// --- End Track P15 ---
+			// --- Wave 6 Shared ---
+			perm.pairedWithId ?? null,
+			Boolean(perm.tributePaid),
+			Boolean(perm.hasEnduringStory),
+			Boolean(perm.isHarnessed),
+			Boolean(perm.isFlipped),
+			perm.mergedComponents?.length ?? 0,
+			// --- End Wave 6 Shared ---
 			perm.kickedCount || 0,
 			perm.kickedTags?.length || 0,
 			perm.grantedKeywords?.length || 0
@@ -2844,6 +2910,36 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 		}
 	}
 	// --- End Track P15 ---
+	// --- Track P16a ---
+	if (reads & READ_P16A) {
+		if (fp[i++] !== 0) return false;
+	}
+	// --- End Track P16a ---
+	// --- Track P16b ---
+	if (reads & READ_P16B) {
+		if (fp[i++] !== 0) return false;
+	}
+	// --- End Track P16b ---
+	// --- Track P17a ---
+	if (reads & READ_P17A) {
+		if (fp[i++] !== 0) return false;
+	}
+	// --- End Track P17a ---
+	// --- Track P17b ---
+	if (reads & READ_P17B) {
+		if (fp[i++] !== 0) return false;
+	}
+	// --- End Track P17b ---
+	// --- Track P18a ---
+	if (reads & READ_P18A) {
+		if (fp[i++] !== 0) return false;
+	}
+	// --- End Track P18a ---
+	// --- Track P18b ---
+	if (reads & READ_P18B) {
+		if (fp[i++] !== 0) return false;
+	}
+	// --- End Track P18b ---
 	for (const p of state.players) {
 		if (reads & READ_LIFE && fp[i++] !== p.life) return false;
 		if (reads & READ_ENERGY && fp[i++] !== (p.energyCounters || 0)) return false;
@@ -3048,6 +3144,14 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 			fp[i++] !== (perm.enteredWithX ?? 0) ||
 			fp[i++] !== Boolean(perm.giftPromised) ||
 			// --- End Track P15 ---
+			// --- Wave 6 Shared ---
+			fp[i++] !== (perm.pairedWithId ?? null) ||
+			fp[i++] !== Boolean(perm.tributePaid) ||
+			fp[i++] !== Boolean(perm.hasEnduringStory) ||
+			fp[i++] !== Boolean(perm.isHarnessed) ||
+			fp[i++] !== Boolean(perm.isFlipped) ||
+			fp[i++] !== (perm.mergedComponents?.length ?? 0) ||
+			// --- End Wave 6 Shared ---
 			fp[i++] !== (perm.kickedCount || 0) ||
 			fp[i++] !== kickedTagsLen ||
 			fp[i++] !== grantedLen

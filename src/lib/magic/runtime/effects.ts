@@ -7801,6 +7801,26 @@ class Run {
 				);
 			}
 			// --- End Track P15 ---
+			// --- Wave 6 Shared ---
+			case 'isPaired':
+			case 'tributePaid':
+			case 'hasEnduringStory':
+			case 'isHarnessed': {
+				const f = this.locate(this.ctx.sourceId);
+				const liveObj =
+					f &&
+					f.zone === 'battlefield' &&
+					!f.inst.phasedOut &&
+					(this.ctx.item.sourceObjectVersion === undefined ||
+						(f.inst.objectVersion ?? 1) === this.ctx.item.sourceObjectVersion)
+						? f.inst
+						: undefined;
+				if (c.k === 'isPaired') return Boolean(liveObj?.pairedWithId);
+				if (c.k === 'tributePaid') return Boolean(liveObj?.tributePaid);
+				if (c.k === 'hasEnduringStory') return Boolean(liveObj?.hasEnduringStory);
+				return Boolean(liveObj?.isHarnessed);
+			}
+			// --- End Wave 6 Shared ---
 		}
 	}
 

@@ -285,7 +285,7 @@ export interface LobbySeat {
 	lastHeartbeat: number;
 }
 
-export type CounterType =
+export type CoreCounterType =
 	| '+1/+1'
 	| '-1/-1'
 	| 'loyalty'
@@ -341,8 +341,156 @@ export type CounterType =
 	| 'flood'
 	// --- End Track P13 ---
 	// --- Track P15 ---
-	| 'defense';
+	| 'defense'
 	// --- End Track P15 ---
+	// --- Wave 6 Shared ---
+	| 'shadow'
+	| 'exalted'
+	| 'story'
+	| 'energy'
+	| 'poison'
+	| 'experience'
+	| 'ticket';
+
+/**
+ * CR 122.1: Open-ended counter kind — preserves autocomplete on all core/keyword counters while
+ * allowing arbitrary named counters (`spore`, `bounty`, `lore`, ...) and `±M/±N` counters (`+2/+2`, `-0/-1`).
+ */
+export type CounterType = CoreCounterType | (string & {});
+
+const MULTIWORD_COUNTER_NAMES = new Set<string>(['first strike', 'double strike']);
+
+const NON_COUNTER_STOPWORDS = new Set<string>([
+	'a',
+	'an',
+	'the',
+	'one',
+	'two',
+	'three',
+	'four',
+	'five',
+	'six',
+	'seven',
+	'eight',
+	'nine',
+	'ten',
+	'all',
+	'any',
+	'each',
+	'every',
+	'other',
+	'another',
+	'more',
+	'fewer',
+	'less',
+	'many',
+	'much',
+	'most',
+	'least',
+	'no',
+	'some',
+	'such',
+	'that',
+	'these',
+	'this',
+	'those',
+	'its',
+	'their',
+	'your',
+	'his',
+	'her',
+	'additional',
+	'extra',
+	'same',
+	'different',
+	'chosen',
+	'named',
+	'random',
+	'target',
+	'new',
+	'kind',
+	'kinds',
+	'type',
+	'types',
+	'number',
+	'amount',
+	'equal',
+	'half',
+	'twice',
+	'x',
+	'y',
+	'creature',
+	'creatures',
+	'artifact',
+	'artifacts',
+	'enchantment',
+	'enchantments',
+	'land',
+	'lands',
+	'permanent',
+	'permanents',
+	'planeswalker',
+	'planeswalkers',
+	'battle',
+	'battles',
+	'player',
+	'players',
+	'opponent',
+	'opponents',
+	'spell',
+	'spells',
+	'card',
+	'cards',
+	'token',
+	'tokens',
+	'source',
+	'object',
+	'it',
+	'them',
+	'you',
+	'who',
+	'which',
+	'where',
+	'when',
+	'while',
+	'from',
+	'onto',
+	'into',
+	'with',
+	'without',
+	'among',
+	'on',
+	'of',
+	'or',
+	'and',
+	'if',
+	'as',
+	'to',
+	'for',
+	'by',
+	'in',
+	'at',
+	'up'
+]);
+
+/**
+ * Normalizes a raw counter name (e.g. `"+1/+1"`, `"-0/-1"`, `"First strike"`, `"bounty"`, `"charge counters"`)
+ * into a canonical `CounterType`, or returns `null` if `raw` is not a valid counter designator (`CR 122.1`).
+ */
+export function normalizeCounterName(raw: string): CounterType | null {
+	const cleaned = raw
+		.trim()
+		.toLowerCase()
+		.replace(/\s+counters?$/, '')
+		.trim();
+	if (!cleaned) return null;
+	if (/^[+-]\d+\/[+-]\d+$/.test(cleaned)) return cleaned as CounterType;
+	if (MULTIWORD_COUNTER_NAMES.has(cleaned)) return cleaned as CounterType;
+	if (!/^[a-z][a-z'-]{1,22}$/.test(cleaned)) return null;
+	if (NON_COUNTER_STOPWORDS.has(cleaned)) return null;
+	return cleaned as CounterType;
+}
+// --- End Wave 6 Shared ---
 
 export function createEmptyCounterMap(): Record<CounterType, number> {
 	return {
@@ -398,8 +546,17 @@ export function createEmptyCounterMap(): Record<CounterType, number> {
 		flood: 0,
 		// --- End Track P13 ---
 		// --- Track P15 ---
-		defense: 0
+		defense: 0,
 		// --- End Track P15 ---
+		// --- Wave 6 Shared ---
+		shadow: 0,
+		exalted: 0,
+		story: 0,
+		energy: 0,
+		poison: 0,
+		experience: 0,
+		ticket: 0
+		// --- End Wave 6 Shared ---
 	};
 }
 	// --- End Track P11 ---
@@ -888,6 +1045,28 @@ export interface CardInstance {
 	/** CR 310.11a Siege: true once the Siege protector ETB choice has completed as this permanent enters. */
 	siegeProtectorChosen?: boolean;
 	// --- End Track P15 ---
+	// --- Wave 6 Shared ---
+	/** CR 702.95 Soulbond: instanceId of the creature currently paired with this creature on the battlefield. */
+	pairedWithId?: string;
+	/** CR 702.55 Haunt: instanceId of the creature on the battlefield haunted by this exiled card. */
+	hauntingTargetId?: string;
+	/** CR 702.55 Haunt: card snapshots currently haunting this creature on the battlefield. */
+	hauntedByCards?: ScryfallCard[];
+	/** CR 702.104 Tribute: true iff tribute counters were placed on this permanent as it entered. */
+	tributePaid?: boolean;
+	/** CR 702.195 Storied: true while this permanent has an enduring story designation. */
+	hasEnduringStory?: boolean;
+	/** CR 701.64 / 702.186 Harness: true once this permanent has become harnessed on the battlefield. */
+	isHarnessed?: boolean;
+	/** CR 702.140 / CR 731 Mutate: ordered top-to-bottom component cards of a merged permanent (length >= 2). */
+	mergedComponents?: ScryfallCard[];
+	/** CR 702.140d Mutate: number of times this merged permanent has mutated while on the battlefield. */
+	mutateCount?: number;
+	/** CR 713 Meld: the two component cards represented by a melded permanent on the battlefield. */
+	meldedComponents?: [ScryfallCard, ScryfallCard];
+	/** CR 710 Flip: true once a Kamigawa flip permanent has been flipped on the battlefield (irreversible). */
+	isFlipped?: boolean;
+	// --- End Wave 6 Shared ---
 }
 
 export interface TargetRef {
@@ -908,6 +1087,12 @@ export interface SpellModifications {
 	label?: string;
 	castFaceDown?: FaceDownSpec;
 	/** CR 702.27a: Buyback — put this resolving spell into its owner's hand instead of graveyard as it resolves. */
+	// --- Wave 6 Shared ---
+	/** CR 702.140a Mutate: true when this spell is cast as a mutating creature spell targeting a non-Human creature. */
+	mutating?: boolean;
+	mutateTargetId?: string;
+	mutateUnder?: boolean;
+	// --- End Wave 6 Shared ---
 	returnToHandOnResolve?: boolean;
 	/** CR 702.74a: cast by paying its evoke cost. */
 	evoked?: boolean;

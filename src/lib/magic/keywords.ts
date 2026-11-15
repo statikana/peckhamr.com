@@ -51,6 +51,10 @@ export interface AlternativeCostKeywordMeta {
 	// --- Track P9 ---
 	/** CR 702.109a: marks the cast spell / entering permanent as dashed. */
 	dashed?: boolean;
+	// --- Wave 6 Shared ---
+	/** CR 702.140a: marks the cast spell as mutating onto a target non-Human creature you own. */
+	mutating?: boolean;
+	// --- End Wave 6 Shared ---
 	timing?: 'default' | 'instant_only' | 'sorcery_only';
 	stackBadgeLabel?: string;
 	/** CR 708: casting this card face down as a 2/2 colorless creature (Morph / Megamorph / Disguise). */
@@ -954,6 +958,14 @@ export interface KeywordSpec {
 	grantable: boolean;
 	status: 'implemented' | 'unimplemented';
 	implementation?: KeywordImplementation;
+	// --- Wave 6 Shared ---
+	/** Generic cost-parsing dispatch in `compiler/card.ts` so cost-bearing keywords need zero `card.ts` edits. */
+	costParseMode?: 'castOption' | 'optionalCost' | 'activated';
+	/** Ability id prefix (e.g. `'fortify'`) when `costParseMode === 'activated'`. */
+	activatedIdPrefix?: string;
+	/** True when a `parameterKind: 'number'` keyword also allows a bare parameterless form (e.g. Vanishing / Teamwork). */
+	optionalParameter?: boolean;
+	// --- End Wave 6 Shared ---
 }
 
 function simpleImplemented(

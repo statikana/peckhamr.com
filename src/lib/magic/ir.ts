@@ -917,6 +917,10 @@ export interface EffectStep {
 	bindAs?: BindingName;
 	/** `nextTurn`: "at the beginning of the next turn's upkeep" (not this turn's). */
 	delayed?: { trigger: TriggerDef; effect: EffectStep[]; nextTurn?: boolean };
+	// --- Wave 6 Shared ---
+	/** CR 603.2h: "Do this only once each turn." */
+	doThisOncePerTurn?: boolean;
+	// --- End Wave 6 Shared ---
 	span: Span;
 }
 
@@ -1394,8 +1398,16 @@ export type EventKind =
 	/** CR 309.7: "Whenever you complete a dungeon". */
 	| 'dungeonCompleted'
 	/** CR 727.2: "Whenever you take the initiative". */
-	| 'tookInitiative';
+	| 'tookInitiative'
 	// --- End Track P13 & P15 ---
+	// --- Wave 6 Shared ---
+	/** CR 702.140d: "Whenever this creature mutates". */
+	| 'mutates'
+	/** CR 702.95a: Soulbond pairing trigger. */
+	| 'soulbondPaired'
+	/** CR 702.55c: "When the creature ~ haunts dies". */
+	| 'hauntedCreatureDies';
+	// --- End Wave 6 Shared ---
 
 export interface EventFilter {
 	/**
@@ -1500,6 +1512,12 @@ export interface TriggerDef {
 	// --- Track P1 ---
 	chapterNumbers?: number[];
 	isChapterAbility?: boolean;
+	// --- Wave 6 Shared ---
+	/** CR 603.2h: "Do this only once each turn." */
+	doThisOncePerTurn?: boolean;
+	/** CR 603.8: State-triggered ability (won't trigger again while already on the stack). */
+	isStateTrigger?: boolean;
+	// --- End Wave 6 Shared ---
 }
 
 export type Condition =
@@ -1679,8 +1697,14 @@ export type Condition =
 	/** CR 702.176a: true iff this permanent was cast for its impending cost and still has >= 1 time counter. */
 	| { k: 'isImpending' }
 	/** CR 702.156a Ravenous: true iff this permanent entered from a spell whose chosen X was >= `n`. */
-	| { k: 'enteredWithXAtLeast'; n: number };
+	| { k: 'enteredWithXAtLeast'; n: number }
 	// --- End Track P15 ---
+	// --- Wave 6 Shared ---
+	| { k: 'isPaired' }
+	| { k: 'tributePaid' }
+	| { k: 'hasEnduringStory' }
+	| { k: 'isHarnessed' };
+	// --- End Wave 6 Shared ---
 
 // ---- Statics and replacements ---------------------------------------------------------------
 

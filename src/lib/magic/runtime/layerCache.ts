@@ -197,8 +197,16 @@ function pushFingerprint(state: GameState, fp: unknown[]): void {
 				Boolean(perm.isPrepared),
 				Boolean(perm.castWithImpending),
 				(perm.counters.time || 0) > 0,
-				perm.enteredWithX ?? 0
+				perm.enteredWithX ?? 0,
 				// --- End Track P15 ---
+				// --- Wave 6 Shared ---
+				perm.pairedWithId ?? null,
+				Boolean(perm.tributePaid),
+				Boolean(perm.hasEnduringStory),
+				Boolean(perm.isHarnessed),
+				Boolean(perm.isFlipped),
+				perm.mergedComponents?.length ?? 0
+				// --- End Wave 6 Shared ---
 			);
 		}
 	}
@@ -321,8 +329,16 @@ function fingerprintMatches(state: GameState, fp: unknown[]): boolean {
 				fp[i++] !== Boolean(perm.isPrepared) ||
 				fp[i++] !== Boolean(perm.castWithImpending) ||
 				fp[i++] !== ((perm.counters.time || 0) > 0) ||
-				fp[i++] !== (perm.enteredWithX ?? 0)
+				fp[i++] !== (perm.enteredWithX ?? 0) ||
 				// --- End Track P15 ---
+				// --- Wave 6 Shared ---
+				fp[i++] !== (perm.pairedWithId ?? null) ||
+				fp[i++] !== Boolean(perm.tributePaid) ||
+				fp[i++] !== Boolean(perm.hasEnduringStory) ||
+				fp[i++] !== Boolean(perm.isHarnessed) ||
+				fp[i++] !== Boolean(perm.isFlipped) ||
+				fp[i++] !== (perm.mergedComponents?.length ?? 0)
+				// --- End Wave 6 Shared ---
 			) {
 				return false;
 			}

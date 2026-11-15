@@ -1072,6 +1072,16 @@ export function evaluateCondition(cond: Condition, ctx: FilterContext): boolean 
 				}) ?? false
 			);
 		// --- End Track P15 ---
+		// --- Wave 6 Shared ---
+		case 'isPaired':
+			return Boolean(ctx.source?.pairedWithId);
+		case 'tributePaid':
+			return Boolean(ctx.source?.tributePaid);
+		case 'hasEnduringStory':
+			return Boolean(ctx.source?.hasEnduringStory);
+		case 'isHarnessed':
+			return Boolean(ctx.source?.isHarnessed);
+		// --- End Wave 6 Shared ---
 		default:
 			return false;
 	}

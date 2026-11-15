@@ -1326,7 +1326,8 @@ function parseKeyword(part: string): KeywordDef | null {
 			kw === 'prowl' ||
 			kw === 'more than meets the eye' ||
 			kw === 'transfigure' ||
-			kw === 'aura swap'
+			kw === 'aura swap' ||
+			getKeywordSpec(kw)?.parameterKind === 'cost'
 				? rawArg.replace(/\.$/, '').trim()
 				: rawArg;
 		if (kw === 'prototype') {
@@ -1410,11 +1411,22 @@ function parseAffinityQuality(phrase: string): ObjectFilter | null {
 	return parseObjectPhrase(phrase);
 }
 
+function isDashCostKeywordLine(body: string): boolean {
+	const low = body.toLowerCase();
+	for (const kw of KNOWN_KEYWORDS) {
+		if (!low.startsWith(kw)) continue;
+		if (getKeywordSpec(kw)?.parameterKind !== 'cost') continue;
+		if (/^\s*[—–-]/.test(body.slice(kw.length))) return true;
+	}
+	return false;
+}
+
 /** "Flying, vigilance", "Equip {2}", "Protection from black". A trailing period means an effect. */
 function keywordLine(ctx: Ctx, line: NormalizedLine): AbilityDef[] | null {
 	if (
 		line.abilityWord ||
 		(/\.$/.test(line.body) &&
+			!isDashCostKeywordLine(line.body) &&
 			!/^(?:craft\s+with\b|gift\s+an?\b|splice\s+onto\b|(?:ward|equip(?:\s+[a-z][a-z ,'-]*?)?|flashback|kicker|multikicker|morph|megamorph|disguise|unearth|buyback|evoke|escape|foretell|plot|entwine|disturb|blitz|cumulative upkeep|offspring|squad|replicate|warp|transmute|level up|reinforce(?:\s+\d+)?|echo|madness|dash|commander ninjutsu|ninjutsu|scavenge|outlast|embalm|eternalize|encore|bestow|escalate|recover|harmonize|miracle|spectacle|surge|awaken(?:\s+\d+)?|emerge|sneak|beam me up|mayhem|web-slinging|partner|cleave|reconfigure|freerunning|impending(?:\s+\d+)?|prowl|more than meets the eye|transfigure|aura swap|cycling|(?:[a-z][a-z -]*\s+)?[a-z]*cycling)\s*[—–-])/i.test(
 				line.body
 			))
@@ -1424,6 +1436,7 @@ function keywordLine(ctx: Ctx, line: NormalizedLine): AbilityDef[] | null {
 	// "Enchant creature, land, or planeswalker", "Protection from white, from blue", and composite
 	// dash costs ("Ward—...", "Flashback—...", "Kicker—...", "Morph—...", "Cycling—...", "Escape—...") are one keyword.
 	const parts =
+		isDashCostKeywordLine(line.body) ||
 		/^(?:enchant|protection from|hexproof from|partner with|craft\s+with\b|gift\s+an?\b|splice\s+onto\b|prototype\b|devour\s+x\b|equip\s+[a-z][a-z '-]*,\s*[a-z]|(?:ward|equip(?:\s+[a-z][a-z ,'-]*?)?|flashback|kicker|multikicker|morph|megamorph|disguise|unearth|buyback|evoke|escape|foretell|plot|entwine|disturb|blitz|cumulative upkeep|offspring|squad|replicate|warp|transmute|level up|reinforce(?:\s+\d+)?|echo|madness|dash|commander ninjutsu|ninjutsu|scavenge|outlast|embalm|eternalize|encore|bestow|escalate|recover|harmonize|miracle|spectacle|surge|awaken(?:\s+\d+)?|emerge|sneak|beam me up|mayhem|web-slinging|partner|cleave|reconfigure|freerunning|impending(?:\s+\d+)?|prowl|more than meets the eye|transfigure|aura swap|cycling|(?:[a-z][a-z -]*\s+)?[a-z]*cycling)\s*[—–-])/i.test(
 			line.body
 		)
@@ -1859,6 +1872,12 @@ function keywordLine(ctx: Ctx, line: NormalizedLine): AbilityDef[] | null {
 			}
 		} else if (
 			kwSpec?.parameterKind === 'number' &&
+			!(
+				kwSpec.optionalParameter &&
+				keyword.n === undefined &&
+				keyword.cost === undefined &&
+				keyword.param === undefined
+			) &&
 			(keyword.n === undefined || keyword.cost !== undefined || keyword.param !== undefined)
 		) {
 			implemented = false;
@@ -2033,6 +2052,44 @@ function keywordLine(ctx: Ctx, line: NormalizedLine): AbilityDef[] | null {
 				}
 			}
 		}
+		// --- Wave 6 Shared: Generic KeywordSpec cost-dispatch hook ---
+		if (implemented && kwSpec?.costParseMode && !keyword.costDefs) {
+			const rawKwCost = normalizeKeywordCostText(keyword.cost ?? keyword.param ?? '');
+			const parsed = parseCost(rawKwCost);
+			const validator =
+				kwSpec.costParseMode === 'activated' ? isEquipPayableCostDef : isCastPayableCostDef;
+			if (
+				parsed.unparsed.length > 0 ||
+				parsed.defs.length === 0 ||
+				!parsed.defs.every(validator)
+			) {
+				out.push(unsupported('unparsed', part, span, [span]));
+				return;
+			}
+			keyword.costDefs = parsed.defs;
+			const manaParts = parsed.defs.filter(
+				(d): d is Extract<CostDef, { k: 'mana' }> => d.k === 'mana'
+			);
+			if (
+				manaParts.length > 0 &&
+				(kwSpec.costParseMode !== 'activated' || parsed.defs.length === 1)
+			) {
+				keyword.cost = manaParts.map((m) => m.cost).join('');
+			}
+			if (kwSpec.costParseMode !== 'activated' || parsed.defs.length === 1) {
+				delete keyword.param;
+			}
+			if (kwSpec.costParseMode === 'optionalCost') {
+				keyword.kickerCosts = [
+					{
+						cost: rawKwCost,
+						costDefs: parsed.defs,
+						tags: kickerTagsForEntry(rawKwCost, parsed.defs)
+					}
+				];
+			}
+		}
+		// --- End Wave 6 Shared ---
 		if (!implemented) {
 			out.push(unsupported('keyword_not_implemented', part, span, [span]));
 			return;
@@ -2151,7 +2208,15 @@ function keywordLine(ctx: Ctx, line: NormalizedLine): AbilityDef[] | null {
 																						? { id: transfigureId }
 																						: keyword.name === 'aura swap'
 																							? { id: auraSwapId }
-																							: {})
+																							: kwSpec?.costParseMode === 'activated' &&
+																								  kwSpec.activatedIdPrefix
+																								? {
+																										id:
+																											i === 0
+																												? `${kwSpec.activatedIdPrefix}_${line.rawIndex}`
+																												: `${kwSpec.activatedIdPrefix}_${line.rawIndex}_${i}`
+																									}
+																								: {})
 		});
 		if (keyword.name === 'vanishing') {
 			out.push(...buildVanishingAbilities(keyword.n, span));
