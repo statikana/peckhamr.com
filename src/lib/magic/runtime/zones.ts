@@ -78,6 +78,9 @@ import {
 	stashPreLeaveGrantedReplacements
 } from './staticsDynamicAndCosts.ts';
 // --- End Track P11 ---
+// --- Track P21 ---
+import { isGraveyardOrReanimatingAura } from './framesWave7.ts';
+// --- End Track P21 ---
 // --- Track P15 ---
 import {
 	amplifyMatchingHandCards,
@@ -1079,6 +1082,11 @@ function finalizeZoneMove(
 			? obj.meldedComponents
 			: undefined;
 	// --- End Track P18b ---
+	// --- Track P21: preserve pre-exit battlefield objectVersion for LTB linked-object lookups ---
+	if (fromZone === 'battlefield' && dest !== 'battlefield') {
+		obj.lastBattlefieldVersion = obj.objectVersion ?? 1;
+	}
+	// --- End Track P21 ---
 	if (opts.leaveBattlefieldReset) {
 		if (obj.printedCard) {
 			obj.card = obj.printedCard;
@@ -1210,6 +1218,13 @@ function finalizeZoneMove(
 			obj.printedCard = undefined;
 		}
 		// --- End Track P18b ---
+		// --- Track P21 (CR 400.7) ---
+		delete obj.auraReanimatedHostId;
+		delete obj.reanimatedByAura;
+		delete obj.castAtNonSorceryTiming;
+		delete obj.sacrificeAtNextCleanupStep;
+		delete obj.spaceSector;
+		// --- End Track P21 ---
 		const prevObjVersion = obj.objectVersion || 1;
 		const pruneLeftPerm = <T extends { affected: Array<{ instanceId: string; objectVersion?: number }> }>(
 			list: T[] | undefined
@@ -1323,7 +1338,14 @@ function finalizeZoneMove(
 			obj.printedCard = undefined;
 		}
 		// --- End Track P18b ---
+		// --- Track P21 (CR 400.7) ---
+		delete obj.auraReanimatedHostId;
+		delete obj.reanimatedByAura;
+		delete obj.sacrificeAtNextCleanupStep;
+		delete obj.spaceSector;
+		// --- End Track P21 ---
 		if (dest !== 'stack') {
+			delete obj.castAtNonSorceryTiming;
 			obj.manaColorsSpent = undefined;
 			// --- Track P10 ---
 			obj.manaSpentCount = undefined;
@@ -3507,7 +3529,29 @@ export function tapPermanent(state: GameState, perm: CardInstance): boolean {
  *   notifies the layer cache, and returns `true`.
  */
 export function attachObject(state: GameState, obj: CardInstance, hostId: string): boolean {
-	if (obj.attachedToId === hostId) return false;
+	// --- Track P21: Graveyard/Reanimating Aura transition onto battlefield creature (CR 303.4, 400.7, 613.7e) ---
+	let bfHost: CardInstance | undefined;
+	let reanimTransition = false;
+	if (obj.zone === 'battlefield' && !obj.phasedOut && !obj.auraReanimatedHostId && isGraveyardOrReanimatingAura(state, obj)) {
+		for (const p of state.players) {
+			if (p.lost) continue;
+			const found = p.battlefield.find((c) => !c.phasedOut && c.instanceId === hostId);
+			if (found) {
+				bfHost = found;
+				reanimTransition = true;
+				break;
+			}
+		}
+	}
+	if (obj.attachedToId === hostId && !reanimTransition) return false;
+	if (reanimTransition && bfHost) {
+		obj.auraReanimatedHostId = hostId;
+		bfHost.reanimatedByAura = {
+			sourceInstanceId: obj.instanceId,
+			sourceObjectVersion: obj.objectVersion ?? 1
+		};
+	}
+	// --- End Track P21 ---
 	// --- Track P16b ---
 	const prevHostId = obj.zone === 'battlefield' && !obj.phasedOut ? obj.attachedToId : null;
 	// --- End Track P16b ---
@@ -3515,7 +3559,7 @@ export function attachObject(state: GameState, obj: CardInstance, hostId: string
 	obj.enteredTimestamp = allocateTimestamp(state);
 	noteLayerInputsChanged(state);
 	// --- Track P16b ---
-	if (prevHostId) {
+	if (prevHostId && prevHostId !== hostId) {
 		emitEvent(state, {
 			kind: 'Unattached',
 			attachmentId: obj.instanceId,

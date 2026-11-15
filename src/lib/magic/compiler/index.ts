@@ -25,6 +25,7 @@ import type {
 	TargetSpec
 } from '../ir.ts';
 import { getKeywordSpec } from '../keywords.ts';
+import { resolveCardOverride } from '../overrides/index.ts';
 import { getCardFaces } from '../scryfall.ts';
 import { compileFaces } from './card.ts';
 import { parseAbilityEffectText } from './effects.ts';
@@ -183,6 +184,12 @@ function compileCardByText(card: ScryfallCard): CardDefinition {
 	const key = `${oracleId}:${textHash}:${COMPILER_VERSION}`;
 	const cached = CACHE.get(key);
 	if (cached) return cached;
+
+	const overridden = resolveCardOverride(oracleId, textHash, card.name, COMPILER_VERSION);
+	if (overridden) {
+		CACHE.set(key, overridden);
+		return overridden;
+	}
 
 	const faces = compileFaces(card);
 	const def: CardDefinition = {

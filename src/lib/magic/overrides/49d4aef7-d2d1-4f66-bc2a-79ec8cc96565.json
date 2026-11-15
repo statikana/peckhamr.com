@@ -1,0 +1,34 @@
+{
+	"oracleId": "49d4aef7-d2d1-4f66-bc2a-79ec8cc96565",
+	"expectedTextHash": "80127b9f",
+	"faces": [
+		{
+			"name": "Panglacial Wurm",
+			"characteristics": {
+				"manaCost": "{5}{G}{G}",
+				"types": ["Creature"],
+				"subtypes": ["Wurm"],
+				"supertypes": [],
+				"colors": ["G"],
+				"power": 9,
+				"toughness": 5
+			},
+			"abilities": [
+				{
+					"kind": "keyword",
+					"keyword": {
+						"name": "trample"
+					},
+					"span": { "start": 0, "end": 7 }
+				},
+				{
+					"kind": "static",
+					"static": {
+						"k": "castFromLibraryWhileSearching"
+					},
+					"span": { "start": 8, "end": 78 }
+				}
+			]
+		}
+	]
+}

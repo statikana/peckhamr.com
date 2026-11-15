@@ -60,7 +60,14 @@ import {
 	type ZoneType
 } from '../types.ts';
 import { parseAdditionalCostSentence, parseCost, parseCostModifierSentence, parseObjectPhrase } from './costs.ts';
-import { extractUnparsedTargets, parseEffects, parseModal, parseSpellFace, type EffectParse } from './effects.ts';
+import {
+	compileQuotedAbilityString,
+	extractUnparsedTargets,
+	parseEffects,
+	parseModal,
+	parseSpellFace,
+	type EffectParse
+} from './effects.ts';
 import {
 	SUPPORTED_OPTIONAL_COST_KINDS,
 	staticallyInterpretable,
@@ -238,7 +245,7 @@ export function compileSingleFace(
 			if (
 				group.length === 1 &&
 				!line.abilityWord &&
-				!/[.!—"”]$/.test(line.body) &&
+				!/[.!—"”\]~]$/.test(line.body) &&
 				!line.text.startsWith('•')
 			) {
 				abilities.push(unsupported('keyword_not_implemented', line.text, line.span, [line.span]));
@@ -1038,6 +1045,17 @@ function parseEquipQualityPhrase(
 ): { equipFilter: ObjectFilter; equipAllowPlaneswalker?: boolean } | null {
 	const phrase = rawPhrase.trim();
 	if (!phrase) return null;
+	// --- Track P21 (CR 700.16): "worthy" = legendary, isn't a Villain, and is red and/or white ---
+	if (/^worthy(?:\s+creatures?)?$/i.test(phrase)) {
+		return {
+			equipFilter: {
+				supertypes: ['Legendary'],
+				notSubtypes: ['Villain'],
+				colors: ['R', 'W']
+			}
+		};
+	}
+	// --- End Track P21 ---
 	if (/^planeswalkers?$/i.test(phrase)) {
 		return { equipFilter: { types: ['Planeswalker'] }, equipAllowPlaneswalker: true };
 	}
@@ -1155,10 +1173,34 @@ function parseMultiOrObjectPhrase(phrase: string): ObjectFilter | null {
 
 function parseEnchantPhrase(rawParam: string): ObjectFilter | null {
 	let phrase = rawParam.trim();
-	if (!phrase || /\bgraveyard\b/i.test(phrase)) return null;
+	if (!phrase) return null;
+	// --- Track P21 (CR 303.4, CR 704.5m): Graveyard-card Auras ("Enchant creature/instant/permanent card in a graveyard") ---
+	const gyCardMatch = phrase.match(
+		/^(.+?)\s+card\s+in\s+(a|your|an\s+opponent['’]s)\s+graveyard$/i
+	);
+	if (gyCardMatch) {
+		const base = parseMultiOrObjectPhrase(gyCardMatch[1].trim());
+		if (!base) return null;
+		const ownerWord = gyCardMatch[2].toLowerCase();
+		const owner: ObjectFilter['owner'] =
+			ownerWord === 'your' ? 'you' : ownerWord.startsWith('an') ? 'opponent' : undefined;
+		return {
+			...base,
+			zone: 'graveyard',
+			...(owner ? { owner } : {})
+		};
+	}
+	if (/\bgraveyard\b/i.test(phrase)) return null;
+	let hasAnotherAuraAttached: boolean | undefined;
+	if (/\s+with\s+another\s+aura\s+attached\s+to\s+it$/i.test(phrase)) {
+		hasAnotherAuraAttached = true;
+		phrase = phrase.replace(/\s+with\s+another\s+aura\s+attached\s+to\s+it$/i, '').trim();
+	}
+	// --- End Track P21 ---
 	let controller: ObjectFilter['controller'];
 	let other: boolean | undefined;
 	let tapped: boolean | undefined;
+	let isCommander: boolean | undefined;
 
 	if (/\s+you\s+control$/i.test(phrase)) {
 		controller = 'you';
@@ -1178,6 +1220,12 @@ function parseEnchantPhrase(rawParam: string): ObjectFilter | null {
 		tapped = false;
 		phrase = phrase.replace(/^untapped\s+/i, '').trim();
 	}
+	// --- Track P21: "Enchant noncommander creature" ---
+	if (/^noncommander\s+/i.test(phrase)) {
+		isCommander = false;
+		phrase = phrase.replace(/^noncommander\s+/i, '').trim();
+	}
+	// --- End Track P21 ---
 
 	const base = parseMultiOrObjectPhrase(phrase);
 	if (!base) return null;
@@ -1185,7 +1233,9 @@ function parseEnchantPhrase(rawParam: string): ObjectFilter | null {
 		...base,
 		...(controller ? { controller } : {}),
 		...(other ? { other: true } : {}),
-		...(tapped !== undefined ? { tapped } : {})
+		...(tapped !== undefined ? { tapped } : {}),
+		...(isCommander !== undefined ? { isCommander } : {}),
+		...(hasAnotherAuraAttached ? { hasAnotherAuraAttached: true } : {})
 	};
 }
 
@@ -1230,9 +1280,23 @@ function parseSingleCraftMaterialPhrase(raw: string): ObjectFilter | null {
 
 function parseCraftMaterialsSpec(
 	rawMaterials: string
-): { materials: ObjectFilter[]; anyNumber?: boolean; minCount?: number } | null {
+): { materials: ObjectFilter[]; anyNumber?: boolean; minCount?: number; shareCardType?: boolean } | null {
 	const s = rawMaterials.trim();
 	if (!s) return null;
+	// --- Track P21: "two that share a card type" (Eye of Ojer Taq, CR 702.167) ---
+	const shareTypeMatch = s.match(
+		/^(two|three|four|\d+)\s+(?:(?:permanents?|cards?)\s+)?that\s+share\s+a\s+card\s+type$/i
+	);
+	if (shareTypeMatch) {
+		const count = parseSmallNumberToken(shareTypeMatch[1]);
+		if (count !== null && count >= 2 && count <= 10) {
+			return {
+				materials: Array.from({ length: count }, () => ({})),
+				shareCardType: true
+			};
+		}
+	}
+	// --- End Track P21 ---
 	const oneOrMore = s.match(/^(one|any\s+number\s+of)\s+(?:or\s+more\s+)?(.+)$/i);
 	if (oneOrMore && (/^any\s+number/i.test(oneOrMore[1]) || /\bor\s+more\b/i.test(s))) {
 		const f = parseSingleCraftMaterialPhrase(oneOrMore[2]);
@@ -1481,7 +1545,64 @@ const COMPANION_CONDITION_PATTERNS: ReadonlyArray<[RegExp, CompanionDeckConditio
 	[/^each permanent card in your starting deck has an activated ability\.?$/i, 'zirda']
 ];
 
-function parseP18bFrameKeywordLine(line: NormalizedLine): AbilityDef[] | null {
+function parseP21ForEachObjectFilter(rawPhrase: string): ObjectFilter | null {
+	let phrase = rawPhrase.trim().replace(/\.$/, '').trim();
+	if (!phrase) return null;
+	let controller: ObjectFilter['controller'];
+	let other: boolean | undefined;
+	if (/\s+you\s+control$/i.test(phrase)) {
+		controller = 'you';
+		phrase = phrase.replace(/\s+you\s+control$/i, '').trim();
+	} else if (/\s+(?:an\s+opponent\s+controls|you\s+don't\s+control)$/i.test(phrase)) {
+		controller = 'opponent';
+		phrase = phrase.replace(/\s+(?:an\s+opponent\s+controls|you\s+don't\s+control)$/i, '').trim();
+	}
+	if (/^(?:other|another)\s+/i.test(phrase)) {
+		other = true;
+		phrase = phrase.replace(/^(?:other|another)\s+/i, '').trim();
+	}
+	const base = parseMultiOrObjectPhrase(phrase);
+	if (!base) return null;
+	return {
+		...base,
+		zone: 'battlefield',
+		...(controller ? { controller } : {}),
+		...(other ? { other: true } : {})
+	};
+}
+
+function parseP21DynamicEquipCost(rawCost: string): CostDef[] | null {
+	const handLife = rawCost.match(/^pay\s+(\S+)\s+life\s+for\s+each\s+card\s+in\s+your\s+hand$/i);
+	if (handLife) {
+		const n = parseSmallNumberToken(handLife[1]);
+		if (n !== null && n >= 1) {
+			const baseAmt: Amount = { k: 'cardsIn', zone: 'hand', of: { k: 'you' } };
+			return [
+				{
+					k: 'payLife',
+					amount: n === 1 ? baseAmt : { k: 'mul', factor: n, of: baseAmt }
+				}
+			];
+		}
+	}
+	const controlLife = rawCost.match(/^pay\s+(\S+)\s+life\s+for\s+each\s+(.+)$/i);
+	if (controlLife) {
+		const n = parseSmallNumberToken(controlLife[1]);
+		const filter = parseP21ForEachObjectFilter(controlLife[2]);
+		if (n !== null && n >= 1 && filter) {
+			const baseAmt: Amount = { k: 'count', of: filter };
+			return [
+				{
+					k: 'payLife',
+					amount: n === 1 ? baseAmt : { k: 'mul', factor: n, of: baseAmt }
+				}
+			];
+		}
+	}
+	return null;
+}
+
+function parseP18bFrameKeywordLine(ctx: Ctx, line: NormalizedLine): AbilityDef[] | null {
 	if (line.abilityWord) return null;
 	const trimmed = line.body.trim();
 	// CR 702.139: "Companion — <deckbuilding condition>"
@@ -1493,6 +1614,11 @@ function parseP18bFrameKeywordLine(line: NormalizedLine): AbilityDef[] | null {
 			return [unsupported('keyword_not_implemented', line.text, line.span, [line.span])];
 		}
 		return [
+			{
+				kind: 'keyword',
+				keyword: { name: 'companion', param: condBody },
+				span: line.span
+			},
 			{
 				kind: 'static',
 				static: { k: 'companionCondition', companionId: entry[1] },
@@ -1512,6 +1638,11 @@ function parseP18bFrameKeywordLine(line: NormalizedLine): AbilityDef[] | null {
 		}
 		return [
 			{
+				kind: 'keyword',
+				keyword: { name: 'offering', param: qualRaw },
+				span: line.span
+			},
+			{
 				kind: 'static',
 				static: { k: 'offering', filter, quality: qualRaw },
 				span: line.span
@@ -1525,6 +1656,92 @@ function parseP18bFrameKeywordLine(line: NormalizedLine): AbilityDef[] | null {
 			{ kind: 'keyword', keyword: { name: 'modular', n: 0 }, span: line.span }
 		];
 	}
+	// --- Track P21 ---
+	// CR 702.62a, 107.3a: "Suspend X—{cost}. X can't be 0."
+	const suspXMatch = trimmed.match(
+		/^suspend\s+x\s*[—–-]\s*((?:\{[^}]+\})+)(?:\.\s*x\s+can['’]t\s+be\s+0\.?)?$/i
+	);
+	if (suspXMatch) {
+		return [
+			{
+				kind: 'keyword',
+				keyword: {
+					name: 'suspend',
+					cost: suspXMatch[1],
+					suspendX: true
+				},
+				span: line.span
+			}
+		];
+	}
+	// Space Beleren: "Space sculptor" static sector-assignment ability.
+	if (/^space\s+sculptor\.?$/i.test(trimmed)) {
+		return [
+			{
+				kind: 'static',
+				static: { k: 'spaceSculptorSectors' },
+				span: line.span
+			}
+		];
+	}
+	// Inline Equip cost reduction ("Equip {3}. This ability costs {1} less to activate for each other Equipment you control.")
+	const equipWithRed = trimmed.match(
+		/^(equip(?:\s+[a-z][a-z ,'-]*?)?\s+(?:\{[^}]+\})+|\bequip(?:\s+[a-z][a-z ,'-]*?)?\s*[—–-]\s*[^.]+)\.\s+this\s+ability\s+costs\s+\{(\d+)\}\s+less\s+to\s+activate(?:\s+for\s+each\s+(.+?))?\.?$/i
+	);
+	if (equipWithRed) {
+		const equipHead = equipWithRed[1].trim();
+		const generic = parseInt(equipWithRed[2], 10);
+		const forEachRaw = equipWithRed[3]?.trim();
+		const perFilter = forEachRaw ? parseP21ForEachObjectFilter(forEachRaw) : undefined;
+		if (!Number.isNaN(generic) && generic >= 1 && (!forEachRaw || perFilter)) {
+			const headSpan: Span = {
+				start: line.bodySpan.start,
+				end: line.bodySpan.start + equipHead.length
+			};
+			const synthLine: NormalizedLine = {
+				...line,
+				text: equipHead,
+				body: equipHead,
+				span: headSpan,
+				bodySpan: headSpan,
+				sentences: [{ text: equipHead, span: headSpan }]
+			};
+			const equipAbilities = keywordLine(ctx, synthLine);
+			if (equipAbilities && equipAbilities.every((a) => a.kind !== 'unsupported')) {
+				const perAmt: Amount | undefined = perFilter ? { k: 'count', of: perFilter } : undefined;
+				for (const a of equipAbilities) {
+					if (a.kind === 'keyword' && a.keyword.name === 'equip') {
+						a.keyword.equipCostReduction = {
+							generic,
+							...(perAmt ? { per: perAmt } : {})
+						};
+					}
+				}
+				const tailSpan: Span = {
+					start: Math.min(line.span.end, headSpan.end + 2),
+					end: line.span.end
+				};
+				return [
+					...equipAbilities,
+					{
+						kind: 'static',
+						static: {
+							k: 'costModifier',
+							affects: { k: 'ability', keyword: 'equip', selfSourceOnly: true },
+							delta: {
+								mode: 'reduce',
+								generic,
+								...(perAmt ? { per: perAmt } : {})
+							},
+							who: { relation: 'you' }
+						},
+						span: tailSpan
+					}
+				];
+			}
+		}
+	}
+	// --- End Track P21 ---
 	return null;
 }
 
@@ -1548,7 +1765,7 @@ function splitKeywordLineParts(body: string): string[] {
 
 /** "Flying, vigilance", "Flying; fear", "Equip {2}", "Protection from black". A trailing period means an effect. */
 function keywordLine(ctx: Ctx, line: NormalizedLine): AbilityDef[] | null {
-	const frameKw = parseP18bFrameKeywordLine(line);
+	const frameKw = parseP18bFrameKeywordLine(ctx, line);
 	if (frameKw) return frameKw;
 	if (
 		line.abilityWord ||
@@ -1581,12 +1798,15 @@ function keywordLine(ctx: Ctx, line: NormalizedLine): AbilityDef[] | null {
 				const rawQual = dashEquip[1]?.trim();
 				const rawCost = normalizeKeywordCostText(dashEquip[2].replace(/\.$/, '').trim());
 				const parsedCost = parseCost(rawCost);
+				const dynEquipDefs =
+					parsedCost.unparsed.length > 0 ? parseP21DynamicEquipCost(rawCost) : null;
+				const effDefs = dynEquipDefs ?? parsedCost.defs;
 				const qualParsed = rawQual ? parseEquipQualityPhrase(rawQual) : null;
 				if (
 					(rawQual && !qualParsed) ||
-					parsedCost.unparsed.length > 0 ||
-					parsedCost.defs.length === 0 ||
-					!parsedCost.defs.every(isEquipPayableCostDef)
+					(!dynEquipDefs && parsedCost.unparsed.length > 0) ||
+					effDefs.length === 0 ||
+					!effDefs.every(isEquipPayableCostDef)
 				) {
 					out.push(unsupported('unparsed', part, span, [span]));
 					return;
@@ -1598,9 +1818,9 @@ function keywordLine(ctx: Ctx, line: NormalizedLine): AbilityDef[] | null {
 				} else {
 					delete keyword.param;
 				}
-				keyword.costDefs = parsedCost.defs;
-				if (parsedCost.defs.length === 1 && parsedCost.defs[0].k === 'mana') {
-					keyword.cost = parsedCost.defs[0].cost;
+				keyword.costDefs = effDefs;
+				if (effDefs.length === 1 && effDefs[0].k === 'mana') {
+					keyword.cost = effDefs[0].cost;
 				}
 			} else {
 				const directEquipCost = keyword.param
@@ -2150,6 +2370,9 @@ function keywordLine(ctx: Ctx, line: NormalizedLine): AbilityDef[] | null {
 			}
 			keyword.param = cm[1].trim();
 			keyword.craftMaterials = matSpec.materials;
+			if (matSpec.shareCardType) {
+				keyword.craftShareCardType = true;
+			}
 			if (matSpec.anyNumber) {
 				keyword.craftAnyNumber = true;
 				keyword.n = matSpec.minCount ?? 1;
@@ -2461,6 +2684,7 @@ function sagaChapterLine(group: NormalizedLine[]): AbilityDef[] | null {
 	}
 
 	const effect =
+		parseP21EffectText(headerEffectText, effectStart, 'triggered', trigger) ??
 		parseP18bEffectText(headerEffectText, effectStart, 'triggered', trigger) ??
 		parseEffects(headerEffectText, effectStart, 'triggered');
 	if (!interpretableTrigger(effect)) {
@@ -3727,6 +3951,224 @@ function parseP18bInterveningConditionClause(raw: string): Condition | null {
 	return parseP15ActivatedIfConditionClause(s);
 }
 
+function normalizeInnerSingleQuotedAbilities(inner: string): string {
+	return inner.replace(
+		/\b(with|have|has|gains?)\s+['‘]([\s\S]+)['’]\s*$/i,
+		(_m, verb: string, body: string) => `${verb} "${body}"`
+	);
+}
+
+function parseP21EffectText(
+	rawEffect: string,
+	effectStart: number,
+	context: 'spell' | 'activated' | 'triggered',
+	trigger?: TriggerDef
+): EffectParse | null {
+	const trimmed = rawEffect.trim();
+	if (!trimmed) return null;
+	const fullSpan: Span = { start: effectStart, end: effectStart + rawEffect.length };
+
+	// 1. Permanent quoted ability grants ("~ gains '{T}: Add {C}.'", Urza's Saga I & II, Huatli II).
+	const permGrant = trimmed.match(/^(?:~|it)\s+(?:gains|has)\s+[“"]([\s\S]+)[”"]\.?$/i);
+	if (permGrant) {
+		const normalizedInner = normalizeInnerSingleQuotedAbilities(permGrant[1].trim());
+		const wrappedQuote = `"${normalizedInner}"`;
+		if (compileQuotedAbilityString(wrappedQuote).length > 0) {
+			return {
+				steps: [
+					{
+						verb: 'grant',
+						subject: { k: 'self' },
+						params: {
+							duration: 'permanent',
+							grantedAbilityTexts: [wrappedQuote]
+						},
+						span: fullSpan
+					}
+				],
+				targets: [],
+				unparsed: []
+			};
+		}
+	}
+
+	// 2. Multi-sentence split after a closing quotation mark (e.g. Vorinclex // The Grand Evolution III).
+	if (/[.!][”"]\s+[A-Z~]/.test(trimmed)) {
+		const segRe = /([.!][”"])(\s+)(?=[A-Z~])/g;
+		const segments: Array<{ text: string; start: number }> = [];
+		let lastIdx = 0;
+		for (const m of rawEffect.matchAll(segRe)) {
+			const cutEnd = (m.index ?? 0) + m[1].length;
+			const chunk = rawEffect.slice(lastIdx, cutEnd);
+			if (chunk.trim()) segments.push({ text: chunk, start: effectStart + lastIdx });
+			lastIdx = cutEnd + m[2].length;
+		}
+		const tail = rawEffect.slice(lastIdx);
+		if (tail.trim()) segments.push({ text: tail, start: effectStart + lastIdx });
+		if (segments.length >= 2) {
+			const parsedSegs = segments.map(
+				(seg) =>
+					parseP21EffectText(seg.text, seg.start, context, trigger) ??
+					parseP18bEffectText(seg.text, seg.start, context, trigger) ??
+					parseEffects(seg.text, seg.start, context, trigger)
+			);
+			const targetedSegCount = parsedSegs.filter((p) => p.targets.length > 0).length;
+			if (
+				targetedSegCount <= 1 &&
+				parsedSegs.every((p) => p.unparsed.length === 0 && p.steps.length > 0)
+			) {
+				return {
+					steps: parsedSegs.flatMap((p) => p.steps),
+					targets: parsedSegs.flatMap((p) => p.targets),
+					unparsed: []
+				};
+			}
+		}
+	}
+
+	// 3. Defiling Tears: "Until end of turn, target creature becomes black, gets +1/-1, and gains \"{B}: Regenerate ~.\""
+	const defilingMatch = trimmed.match(
+		/^until end of turn,\s*target\s+(.+?)\s+becomes\s+(white|blue|black|red|green),\s*gets\s+([+-]\d+)\/([+-]\d+),\s*and\s+gains\s+[“"]([\s\S]+)[”"]\.?$/i
+	);
+	if (defilingMatch) {
+		const tgtFilter = parseMultiOrObjectPhrase(defilingMatch[1].trim());
+		const color = COLOR_WORD_TO_MANA[defilingMatch[2].toLowerCase()];
+		const pDelta = parseInt(defilingMatch[3], 10);
+		const tDelta = parseInt(defilingMatch[4], 10);
+		const normInner = normalizeInnerSingleQuotedAbilities(defilingMatch[5].trim());
+		const wrappedQuote = `"${normInner}"`;
+		if (
+			tgtFilter?.types?.includes('Creature') &&
+			color &&
+			!Number.isNaN(pDelta) &&
+			!Number.isNaN(tDelta) &&
+			compileQuotedAbilityString(wrappedQuote).length > 0
+		) {
+			return {
+				steps: [
+					{
+						verb: 'animate',
+						subject: { k: 'target', index: 0 },
+						params: {
+							setColors: [color],
+							grantedAbilityTexts: [wrappedQuote],
+							duration: 'endOfTurn'
+						},
+						span: fullSpan
+					},
+					{
+						verb: 'pump',
+						subject: { k: 'target', index: 0 },
+						amount: { k: 'const', n: pDelta },
+						params: {
+							toughness: { k: 'const', n: tDelta },
+							duration: 'endOfTurn'
+						},
+						span: fullSpan
+					}
+				],
+				targets: [{ kind: 'object', filter: { ...tgtFilter, zone: 'battlefield' }, min: 1, max: 1 }],
+				unparsed: []
+			};
+		}
+	}
+
+	// 4. Ignis Scientia: "Exile target card from a graveyard. If a <filter> card was exiled this way, <effect>."
+	const ignisMatch = trimmed.match(
+		/^(exile target card from (?:a|your|an opponent['’]s) graveyard\.)\s+if an?\s+(.+?)\s+card was exiled this way,\s*([\s\S]+)$/i
+	);
+	if (ignisMatch) {
+		const preText = ignisMatch[1];
+		const filter = parseMultiOrObjectPhrase(ignisMatch[2].trim());
+		const followText = ignisMatch[3];
+		const followStart = Math.max(effectStart, fullSpan.end - followText.length);
+		if (filter) {
+			const exileParse = parseEffects(preText, effectStart, context, trigger);
+			const followParse = parseEffects(followText, followStart, context, trigger);
+			if (
+				exileParse.unparsed.length === 0 &&
+				exileParse.steps.length === 1 &&
+				exileParse.steps[0].verb === 'exile' &&
+				followParse.unparsed.length === 0 &&
+				followParse.targets.length === 0 &&
+				followParse.steps.length > 0
+			) {
+				const exiledCond: Condition = {
+					k: 'matchesFilter',
+					target: { k: 'binding', name: 'exiled' },
+					filter
+				};
+				return {
+					steps: [
+						{ ...exileParse.steps[0], bindAs: 'exiled' },
+						...followParse.steps.map((st) => ({
+							...st,
+							condition: st.condition ? { k: 'and' as const, of: [exiledCond, st.condition] } : exiledCond
+						}))
+					],
+					targets: exileParse.targets,
+					unparsed: []
+				};
+			}
+		}
+	}
+
+	// 5. Kozilek's Command Mode 2: "Target player scries X, then draws a card."
+	const kozModeMatch = trimmed.match(
+		/^target player scries (x|\d+),\s*then draws (a|an|\S+) cards?\.?$/i
+	);
+	if (kozModeMatch) {
+		const scryRaw = kozModeMatch[1].toLowerCase();
+		const scryAmt: Amount =
+			scryRaw === 'x' ? { k: 'x' } : { k: 'const', n: parseInt(scryRaw, 10) };
+		const drawN = parseSmallNumberToken(kozModeMatch[2]);
+		if (drawN !== null && drawN >= 1) {
+			return {
+				steps: [
+					{
+						verb: 'scry',
+						subject: { k: 'target', index: 0 },
+						amount: scryAmt,
+						span: fullSpan
+					},
+					{
+						verb: 'draw',
+						subject: { k: 'target', index: 0 },
+						amount: { k: 'const', n: drawN },
+						span: fullSpan
+					}
+				],
+				targets: [{ kind: 'player', filter: {}, player: { relation: 'any' }, min: 1, max: 1 }],
+				unparsed: []
+			};
+		}
+	}
+
+	// 6. Standalone trailing X-definition sentence ("<Effect>. X is the number of <filter>.", e.g. Lantern Flare).
+	const trailingXDef = trimmed.match(
+		/^([\s\S]+?)\.\s+x\s+is\s+(the\s+number\s+of\s+[^.]+)\.?$/i
+	);
+	if (trailingXDef && /\bx\b/i.test(trailingXDef[1])) {
+		const rewritten = `${trailingXDef[1]}, where X is ${trailingXDef[2]}.`;
+		const sub = parseEffects(rewritten, effectStart, context, trigger);
+		if (sub.unparsed.length === 0 && sub.steps.length > 0) {
+			return {
+				steps: sub.steps.map((st) => ({
+					...st,
+					span: {
+						start: Math.min(st.span.start, fullSpan.end),
+						end: Math.min(st.span.end, fullSpan.end)
+					}
+				})),
+				targets: sub.targets,
+				unparsed: []
+			};
+		}
+	}
+
+	return null;
+}
+
 function parseP18bEffectText(
 	rawEffect: string,
 	effectStart: number,
@@ -4293,6 +4735,7 @@ function parseExpandedModalP18b(
 		const preSteps: EffectStep[] = [];
 		for (const ps of allPreSents) {
 			const sub =
+				parseP21EffectText(ps.text, ps.span.start, context, trigger) ??
 				parseP18bEffectText(ps.text, ps.span.start, context, trigger) ??
 				parseEffects(ps.text, ps.span.start, context, trigger);
 			if (sub.unparsed.length > 0 || sub.targets.length > 0 || sub.steps.length === 0) {
@@ -4308,6 +4751,7 @@ function parseExpandedModalP18b(
 		const sufSteps: EffectStep[] = [];
 		for (const ss of extraSuffixSentences) {
 			const sub =
+				parseP21EffectText(ss.text, ss.span.start, context, trigger) ??
 				parseP18bEffectText(ss.text, ss.span.start, context, trigger) ??
 				parseEffects(ss.text, ss.span.start, context, trigger);
 			if (sub.unparsed.length > 0 || sub.targets.length > 0 || sub.steps.length === 0) {
@@ -4343,6 +4787,7 @@ function parseExpandedModalP18b(
 			start += stripped.strippedLen;
 		}
 		const modeParse =
+			parseP21EffectText(body, start, context, trigger) ??
 			parseP18bEffectText(body, start, context, trigger) ??
 			parseEffects(body, start, context, trigger);
 		unparsed.push(...modeParse.unparsed);
@@ -4468,6 +4913,7 @@ function triggerLineCore(group: NormalizedLine[]): AbilityDef[] | null {
 	const meldPartnerFromCond = extractMeldPartnerFromCondition(condition);
 	const effect =
 		parseTriggerMeldEffectWithPartner(headerEffectText, effectStart, meldPartnerFromCond) ??
+		parseP21EffectText(headerEffectText, effectStart, 'triggered', trigger) ??
 		parseP18bEffectText(headerEffectText, effectStart, 'triggered', trigger) ??
 		parseEffects(headerEffectText, effectStart, 'triggered', trigger);
 	if (!interpretableTrigger(effect)) {
@@ -4483,12 +4929,35 @@ function interpretableTrigger(effect: EffectParse): boolean {
 
 // ---- Activated abilities --------------------------------------------------------------------
 
-/** A colon before any quotation mark: "{2}, {T}: Draw a card." (not 'have "{T}: Add {C}."'). */
+/** First colon outside any quotation marks: "{2}, {T}: Draw a card." (not 'have "{T}: Add {C}."'). */
 function costColon(body: string): number {
-	const quoteMatch = body.match(/(?:^|\s)['"“‘]/);
-	const quote = quoteMatch ? (quoteMatch.index ?? 0) + (quoteMatch[0].startsWith(' ') ? 1 : 0) : -1;
-	const colon = body.indexOf(':');
-	return colon > 0 && (quote < 0 || colon < quote) ? colon : -1;
+	let inDouble = false;
+	let inSingle = false;
+	for (let i = 0; i < body.length; i++) {
+		const ch = body[i];
+		if (!inSingle && (ch === '"' || ch === '“' || ch === '”')) {
+			if (ch === '“') inDouble = true;
+			else if (ch === '”') inDouble = false;
+			else inDouble = !inDouble;
+			continue;
+		}
+		if (!inDouble && (ch === "'" || ch === '‘' || ch === '’')) {
+			const prev = i > 0 ? body[i - 1] : '';
+			const next = i + 1 < body.length ? body[i + 1] : '';
+			if (!inSingle) {
+				if (i === 0 || /[\s([{"“]/.test(prev)) {
+					inSingle = true;
+				}
+			} else if (i === body.length - 1 || !/[A-Za-z0-9]/.test(next)) {
+				inSingle = false;
+			}
+			continue;
+		}
+		if (!inDouble && !inSingle && ch === ':') {
+			return i > 0 ? i : -1;
+		}
+	}
+	return -1;
 }
 
 const ACTIVATED_RESTRICTION_SENTENCES: ReadonlyArray<[RegExp, ActivationRestriction]> = [
@@ -5104,7 +5573,7 @@ function activatedLineCore(ctx: Ctx, group: NormalizedLine[]): AbilityDef[] | nu
 	let kwIdOverride: string | undefined;
 	let forcedZones: ZoneType[] | undefined;
 	let powerUpReduction = false;
-	let powerUpKeywordAbility: AbilityDef | undefined;
+	let costKeywordAbility: AbilityDef | undefined;
 
 	const exhaustMatch = costText.match(/^Exhaust\s*—\s*([\s\S]+)$/i);
 	const boastMatch = !exhaustMatch ? costText.match(/^Boast\s*—\s*([\s\S]+)$/i) : null;
@@ -5118,24 +5587,39 @@ function activatedLineCore(ctx: Ctx, group: NormalizedLine[]): AbilityDef[] | nu
 	if (exhaustMatch) {
 		costKeyword = 'exhaust';
 		kwIdOverride = `exhaust_${line.rawIndex}`;
+		costKeywordAbility = {
+			kind: 'keyword',
+			keyword: { name: 'exhaust', param: exhaustMatch[1].trim() },
+			span: { start: line.bodySpan.start, end: line.bodySpan.start + colon }
+		};
 		costStartOffset += costText.length - exhaustMatch[1].length;
 		costText = exhaustMatch[1].trim();
 	} else if (boastMatch) {
 		costKeyword = 'boast';
 		kwIdOverride = `boast_${line.rawIndex}`;
+		costKeywordAbility = {
+			kind: 'keyword',
+			keyword: { name: 'boast', param: boastMatch[1].trim() },
+			span: { start: line.bodySpan.start, end: line.bodySpan.start + colon }
+		};
 		costStartOffset += costText.length - boastMatch[1].length;
 		costText = boastMatch[1].trim();
 	} else if (forecastMatch) {
 		costKeyword = 'forecast';
 		kwIdOverride = `forecast_${line.rawIndex}`;
 		forcedZones = ['hand'];
+		costKeywordAbility = {
+			kind: 'keyword',
+			keyword: { name: 'forecast', param: forecastMatch[1].trim() },
+			span: { start: line.bodySpan.start, end: line.bodySpan.start + colon }
+		};
 		costStartOffset += costText.length - forecastMatch[1].length;
 		costText = forecastMatch[1].trim();
 	} else if (powerUpMatch) {
 		costKeyword = 'power-up';
 		kwIdOverride = `power_up_${line.rawIndex}`;
 		powerUpReduction = true;
-		powerUpKeywordAbility = {
+		costKeywordAbility = {
 			kind: 'keyword',
 			keyword: { name: 'power-up', param: powerUpMatch[1].trim() },
 			span: { start: line.bodySpan.start, end: line.bodySpan.start + colon }
@@ -5194,7 +5678,19 @@ function activatedLineCore(ctx: Ctx, group: NormalizedLine[]): AbilityDef[] | nu
 	}
 
 	const costComplete = cost.unparsed.length === 0;
-	const prefixAbilities = powerUpKeywordAbility ? [powerUpKeywordAbility] : [];
+	const prefixAbilities: AbilityDef[] = costKeywordAbility ? [costKeywordAbility] : [];
+	if (!costKeyword) {
+		const wbDef = cost.defs.find(
+			(d): d is Extract<CostDef, { k: 'waterbend' }> => d.k === 'waterbend'
+		);
+		if (wbDef) {
+			prefixAbilities.push({
+				kind: 'keyword',
+				keyword: { name: 'waterbend', cost: wbDef.cost },
+				span: { start: line.bodySpan.start, end: line.bodySpan.start + colon }
+			});
+		}
+	}
 	if (group.length > 1) {
 		const id = kwIdOverride ?? (loyalty ? `loyalty_${line.rawIndex}` : `act_${line.rawIndex}`);
 		const {
@@ -5280,6 +5776,7 @@ function activatedLineCore(ctx: Ctx, group: NormalizedLine[]): AbilityDef[] | nu
 
 	const preTiming = extractActivatedTimingAndRestrictions(effectText, effectStart, Boolean(loyalty), false);
 	const effect =
+		parseP21EffectText(preTiming.cleanedEffectForParse, effectStart, 'activated') ??
 		parseP18bEffectText(preTiming.cleanedEffectForParse, effectStart, 'activated') ??
 		parseEffects(preTiming.cleanedEffectForParse, effectStart, 'activated');
 	const isMana =
@@ -6058,7 +6555,12 @@ function spellAbilityCore(norm: NormalizedFace, lines: NormalizedLine[]): Abilit
 		if (fallbackModal && fallbackModal.modal && fallbackModal.modal.modes.length > 0) {
 			const fbInterpretable =
 				fallbackModal.unparsed.length === 0 && modalInterpretable(fallbackModal);
-			if (fbInterpretable || !effect.modal || effect.steps.length > 0) {
+			if (
+				fbInterpretable ||
+				!effect.modal ||
+				effect.steps.length > 0 ||
+				fallbackModal.unparsed.length < effect.unparsed.length
+			) {
 				effect = fallbackModal;
 				spellInterpretable = fbInterpretable;
 			}
@@ -6066,6 +6568,25 @@ function spellAbilityCore(norm: NormalizedFace, lines: NormalizedLine[]): Abilit
 			spellInterpretable = false;
 		}
 	}
+
+	// --- Track P21: Single-line non-modal spell fallback (e.g. Defiling Tears) ---
+	if ((effect.unparsed.length > 0 || !spellInterpretable) && !effect.modal) {
+		const activeLines = normForSpellParse.lines.filter(
+			(l) => include.has(l.rawIndex) && l.body.trim().length > 0
+		);
+		if (activeLines.length === 1) {
+			const p21Eff = parseP21EffectText(
+				activeLines[0].body,
+				activeLines[0].bodySpan.start,
+				'spell'
+			);
+			if (p21Eff && p21Eff.unparsed.length === 0 && staticallyInterpretableP15(p21Eff)) {
+				effect = p21Eff;
+				spellInterpretable = true;
+			}
+		}
+	}
+	// --- End Track P21 ---
 
 	unparsed.push(...effect.unparsed);
 	if (unparsed.length > 0 || !spellInterpretable) {

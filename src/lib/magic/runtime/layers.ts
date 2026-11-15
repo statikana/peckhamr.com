@@ -1398,9 +1398,27 @@ function matchesLayerFilter(
 		}
 	}
 	if (filter.attachedToRef !== undefined) {
-		const wantHostId =
-			filter.attachedToRef === 'self' ? source.inst.instanceId : source.inst.attachedToId;
-		if (!wantHostId || target.inst.attachedToId !== wantHostId) return false;
+		// --- Track P21 ---
+		if (filter.attachedToRef === 'hostOfSelf') {
+			const hostId = source.inst.attachedToId;
+			if (!hostId || target.inst.instanceId !== hostId) return false;
+		} else if (filter.attachedToRef === 'reanimatedBySelf') {
+			const link = target.inst.reanimatedByAura;
+			if (
+				!link ||
+				link.sourceInstanceId !== source.inst.instanceId ||
+				link.sourceObjectVersion !== (source.inst.objectVersion ?? 1)
+			) {
+				return false;
+			}
+		} else {
+			// --- End Track P21 ---
+			const wantHostId =
+				filter.attachedToRef === 'self' ? source.inst.instanceId : source.inst.attachedToId;
+			if (!wantHostId || target.inst.attachedToId !== wantHostId) return false;
+			// --- Track P21 ---
+		}
+		// --- End Track P21 ---
 	}
 	if (filter.historic !== undefined) {
 		const isHist =
@@ -1669,6 +1687,18 @@ function matchesLayerFilter(
 		if (isGoaded !== filter.goaded) return false;
 	}
 	// --- End Track P16b & P17b ---
+	// --- Track P21 ---
+	if (filter.hasAnotherAuraAttached !== undefined) {
+		const foundOtherAura = workList.some(
+			(w) =>
+				w.inst.instanceId !== source.inst.instanceId &&
+				w.inst.attachedToId === target.inst.instanceId &&
+				w.types.includes('Enchantment') &&
+				w.subtypes.includes('Aura')
+		);
+		if (foundOtherAura !== filter.hasAnotherAuraAttached) return false;
+	}
+	// --- End Track P21 ---
 	return true;
 }
 
@@ -4235,6 +4265,42 @@ function evaluateLayer1(
 		workList.push(work);
 		workMap.set(inst.instanceId, work);
 	}
+
+	// --- Track P21: Timed granted quoted statics & static keywords (CR 613.1f / 613.1g) ---
+	if (state.timedContinuousEffects?.length) {
+		for (const eff of state.timedContinuousEffects) {
+			if (!eff.layer6?.grantedAbilityTexts?.length) continue;
+			if (!isTimedContinuousEffectActive(eff, workMap)) continue;
+			for (const aff of eff.affected) {
+				const work = workMap.get(aff.instanceId);
+				if (!work) continue;
+				if (aff.objectVersion !== undefined && (work.inst.objectVersion ?? 1) !== aff.objectVersion) {
+					continue;
+				}
+				let addedStatic = false;
+				for (const gt of eff.layer6.grantedAbilityTexts) {
+					for (const qDef of resolveQuotedAbilityDefs(gt, work.baseCard.name)) {
+						if (qDef.kind === 'static') {
+							work.statics.push(qDef.static);
+							addedStatic = true;
+						} else if (qDef.kind === 'keyword') {
+							const kwSpec = getKeywordSpec(qDef.keyword.name);
+							if (kwSpec?.status === 'implemented' && kwSpec.implementation?.kind === 'static') {
+								for (const st of kwSpec.implementation.buildStatics(qDef.keyword)) {
+									work.statics.push(st);
+									addedStatic = true;
+								}
+							}
+						}
+					}
+				}
+				if (addedStatic) {
+					work.statics.sort((a, b) => staticLayerOrder(a) - staticLayerOrder(b));
+				}
+			}
+		}
+	}
+	// --- End Track P21 ---
 }
 
 function isTimedContinuousEffectActive(

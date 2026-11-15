@@ -1,0 +1,32 @@
+{
+	"oracleId": "c823e687-6311-4c99-974b-fd77d204141a",
+	"expectedTextHash": "3e508aa2",
+	"faces": [
+		{
+			"name": "Timetwister",
+			"characteristics": {
+				"manaCost": "{2}{U}",
+				"types": ["Sorcery"],
+				"subtypes": [],
+				"supertypes": [],
+				"colors": ["U"]
+			},
+			"abilities": [
+				{
+					"kind": "spell",
+					"additionalCosts": [],
+					"targets": [],
+					"effect": [
+						{
+							"verb": "reveal",
+							"subject": { "k": "none" },
+							"params": { "wave7Effect": "timetwister" },
+							"span": { "start": 0, "end": 89 }
+						}
+					],
+					"span": { "start": 0, "end": 89 }
+				}
+			]
+		}
+	]
+}
