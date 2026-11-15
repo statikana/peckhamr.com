@@ -42,6 +42,13 @@ import {
 	isCantBlockThisTurn
 } from './copyPreventionAndEffects.ts';
 import { abilityActivePermanents, evaluatePermanent } from './layers.ts';
+// --- Track P22a ---
+import {
+	checkWave8AbilityActivationLocks,
+	getWave8AttackRestrictionReason,
+	getWave8BlockerRestrictionReason
+} from './staticsWave8.ts';
+// --- End Track P22a ---
 import {
 	evaluateCondition,
 	matchesObjectFilter,
@@ -377,6 +384,15 @@ export function getStaticAttackRestrictionReason(
 			return `Strict Rules Violation: ${attacker.card.name} cannot attack ${defender.username} unless they control a required permanent (CR 508.1c).`;
 		}
 	}
+	// --- Track P22a ---
+	const w8AtkErr = getWave8AttackRestrictionReason(
+		state,
+		attacker,
+		evaluatePermanent(state, attacker).controllerId,
+		defenderPlayerId
+	);
+	if (w8AtkErr) return `Strict Rules Violation: ${w8AtkErr}`;
+	// --- End Track P22a ---
 	return null;
 }
 
@@ -591,6 +607,17 @@ export function getStaticBlockerPairRestrictionReason(
 			return `Strict Rules Violation: ${blocker.card.name} (power ${blkP}) cannot block ${attacker.card.name} (power ${atkP}) due to Skulk (CR 702.118b).`;
 		}
 	}
+
+	// --- Track P22a ---
+	const w8BlkErr = getWave8BlockerRestrictionReason(
+		state,
+		blocker,
+		evaluatePermanent(state, blocker).controllerId,
+		attacker,
+		evalAtk.controllerId
+	);
+	if (w8BlkErr) return `Strict Rules Violation: ${w8BlkErr}`;
+	// --- End Track P22a ---
 
 	return null;
 }
@@ -1291,6 +1318,10 @@ export function checkStaticActivatedAbilityLocks(
 			}
 		}
 	}
+	// --- Track P22a ---
+	const w8ActErr = checkWave8AbilityActivationLocks(state, _actorId, isManaAbility);
+	if (w8ActErr) return { ok: false, error: w8ActErr };
+	// --- End Track P22a ---
 	return { ok: true };
 }
 

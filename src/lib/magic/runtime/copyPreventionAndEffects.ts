@@ -46,6 +46,12 @@ import { noteLayerInputsChanged } from './layerCache.ts';
 import { recordDescendedOnZoneChange } from './reflexiveManaAndActions.ts';
 // --- End Track P10 ---
 import { activeRuleModifiers } from './replace.ts';
+// --- Track P22a ---
+import {
+	isDamageUnpreventableWave8,
+	type UnpreventableDamageSourceContext
+} from './staticsWave8.ts';
+// --- End Track P22a ---
 
 // ---- Subtype classification for CR 205.1a type-overwriting copy exceptions ------------------
 
@@ -140,10 +146,19 @@ function filterSubtypesForRetainedTypes(
  * CR 615.12: Checks whether damage currently cannot be prevented (either via a resolving turn-wide
  * effect or an active static `damageCantBePrevented` rule modifier).
  */
-export function isDamageUnpreventable(state: GameState, isCombat = false): boolean {
+export function isDamageUnpreventable(
+	state: GameState,
+	isCombat = false,
+	// --- Track P22a ---
+	sourceCtx?: UnpreventableDamageSourceContext
+	// --- End Track P22a ---
+): boolean {
 	if (state.damageCantBePreventedThisTurn) return true;
 	if (isCombat && state.combatDamageCantBePreventedThisTurn) return true;
 	if (activeRuleModifiers(state, 'damageCantBePrevented').length > 0) return true;
+	// --- Track P22a ---
+	if (isDamageUnpreventableWave8(state, isCombat, sourceCtx)) return true;
+	// --- End Track P22a ---
 	return false;
 }
 
@@ -311,7 +326,17 @@ export function applyDamagePreventionShields(
 ): number {
 	if (opts.amount <= 0) return 0;
 	// --- Track P14 (CR 615.1, 615.5–6, 615.10, 615.12): Static damage prevention & Phantom counter removal ---
-	const unpreventable = isDamageUnpreventable(state, opts.isCombat);
+	const unpreventable = isDamageUnpreventable(
+		state,
+		opts.isCombat,
+		// --- Track P22a ---
+		{
+			sourcePerm: opts.sourceInst,
+			sourceCard: opts.sourceCard,
+			sourceControllerId: opts.sourceControllerId
+		}
+		// --- End Track P22a ---
+	);
 	let remainingDamage = applyStaticDamagePreventionWave5(
 		state,
 		{

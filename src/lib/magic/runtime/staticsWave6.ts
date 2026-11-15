@@ -28,6 +28,9 @@ import {
 	parseManaCost
 } from '../oracle.ts';
 import { effectiveCardForObject } from '../scryfall.ts';
+// --- Track P22a ---
+import { filterPlayerCountersGrantedWave8 } from './staticsWave8.ts';
+// --- End Track P22a ---
 import {
 	createEmptyCounterMap,
 	type CardInstance,
@@ -1204,6 +1207,20 @@ export function scalePlayerCountersPlaced(
 	placerPlayerId?: string
 ): number {
 	if (initialAmount <= 0) return 0;
+	// --- Track P22a (CR 122.6): Player counter locks (*Solemnity* / *Melira*) ---
+	if (
+		counterType === 'poison' ||
+		counterType === 'experience' ||
+		counterType === 'energy' ||
+		counterType === 'rad' ||
+		counterType === 'ticket'
+	) {
+		const pCounter = counterType as 'poison' | 'experience' | 'energy' | 'rad' | 'ticket';
+		if (filterPlayerCountersGrantedWave8(state, recipientPlayerId, pCounter, initialAmount) <= 0) {
+			return 0;
+		}
+	}
+	// --- End Track P22a ---
 	let amount = initialAmount;
 	const effectivePlacer = placerPlayerId ?? recipientPlayerId;
 	withStableLayerInputs(state, () => {

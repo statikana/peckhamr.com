@@ -88,6 +88,19 @@ import {
 	chooseBotPlayerForEtb
 } from './staticsWave7.ts';
 // --- End Track P20a ---
+// --- Track P22a ---
+import {
+	buildCardTypeChoiceOptions,
+	canPutCounterOnPermanentWave8,
+	checkWave8SpellCastLocks,
+	chooseBotBestCardType,
+	chooseBotBestEtbObject,
+	chooseBotBestNumber,
+	chooseBotTwoColors,
+	chooseBotTwoPlayers,
+	revealOpponentHandForEtbLook
+} from './staticsWave8.ts';
+// --- End Track P22a ---
 
 // ---- Condition & Amount Evaluation ----------------------------------------------------------
 
@@ -609,6 +622,23 @@ export function checkGlobalCastPermissionsAndRestrictions(
 		};
 	}
 	// --- End Track P20a ---
+	// --- Track P22a: Combat / own-turn / linked-exile-name spell cast locks ---
+	const w8CastError = checkWave8SpellCastLocks(
+		state,
+		actor.playerId,
+		spellInst ? (effectiveCardForObject(spellInst) ?? spellInst.card) : undefined,
+		spellInst?.activeFaceIndex
+	);
+	if (w8CastError) {
+		return {
+			allowedAsThoughFlash,
+			grantsFlash: allowedAsThoughFlash,
+			blocked: true,
+			ok: false,
+			error: w8CastError
+		};
+	}
+	// --- End Track P22a ---
 
 	return {
 		allowedAsThoughFlash,
@@ -1377,6 +1407,9 @@ export function placeRegisteredCounters(
 	type: CounterType,
 	amount: number
 ): number {
+	// --- Track P22a (CR 122.6) ---
+	if (!canPutCounterOnPermanentWave8(state, perm, type)) return 0;
+	// --- End Track P22a ---
 	if (placeCounters) {
 		return placeCounters(state, perm, type, amount);
 	}
@@ -1408,6 +1441,15 @@ export interface SelfEtbChoiceSpec {
 	choosePlayer?: 'any' | 'opponent';
 	chooseParity?: boolean;
 	// --- End Track P20a ---
+	// --- Track P22a ---
+	chooseCardType?: { exclude?: string[]; options?: string[]; lookAtOpponentHand?: boolean };
+	chooseNumber?: { min?: number; max?: number };
+	chooseTwoColors?: boolean;
+	chooseTwoPlayers?: boolean;
+	chooseObjectOnBattlefield?: { filter: ObjectFilter; optional?: boolean };
+	chooseSubTypeOptions?: string[];
+	lookAtOpponentHandBeforeCardName?: boolean;
+	// --- End Track P22a ---
 }
 
 /**
@@ -1438,6 +1480,17 @@ export function selfEtbChoiceSpec(state: GameState, perm: CardInstance): SelfEtb
 	let choosePlayer: 'any' | 'opponent' | undefined;
 	let chooseParity: boolean | undefined;
 	// --- End Track P20a ---
+	// --- Track P22a ---
+	let chooseCardType:
+		| { exclude?: string[]; options?: string[]; lookAtOpponentHand?: boolean }
+		| undefined;
+	let chooseNumber: { min?: number; max?: number } | undefined;
+	let chooseTwoColors: boolean | undefined;
+	let chooseTwoPlayers: boolean | undefined;
+	let chooseObjectOnBattlefield: { filter: ObjectFilter } | undefined;
+	let chooseSubTypeOptions: string[] | undefined;
+	let lookAtOpponentHandBeforeCardName: boolean | undefined;
+	// --- End Track P22a ---
 	for (const ability of abilities) {
 		if (ability.kind !== 'replacement') continue;
 		const rep = ability.replacement;
@@ -1475,6 +1528,29 @@ export function selfEtbChoiceSpec(state: GameState, perm: CardInstance): SelfEtb
 			chooseParity = true;
 		}
 		// --- End Track P20a ---
+		// --- Track P22a ---
+		if (rep.with.chooseCardType) {
+			chooseCardType = { ...rep.with.chooseCardType };
+		}
+		if (rep.with.chooseNumber) {
+			chooseNumber = { ...rep.with.chooseNumber };
+		}
+		if (rep.with.chooseTwoColors) {
+			chooseTwoColors = true;
+		}
+		if (rep.with.chooseTwoPlayers) {
+			chooseTwoPlayers = true;
+		}
+		if (rep.with.chooseObjectOnBattlefield) {
+			chooseObjectOnBattlefield = { filter: rep.with.chooseObjectOnBattlefield.filter };
+		}
+		if (rep.with.chooseSubTypeOptions && rep.with.chooseSubTypeOptions.length > 0) {
+			chooseSubTypeOptions = [...rep.with.chooseSubTypeOptions];
+		}
+		if (rep.with.lookAtOpponentHandBeforeCardName) {
+			lookAtOpponentHandBeforeCardName = true;
+		}
+		// --- End Track P22a ---
 	}
 	if (
 		!chooseSubType &&
@@ -1484,7 +1560,16 @@ export function selfEtbChoiceSpec(state: GameState, perm: CardInstance): SelfEtb
 		!chooseCardName &&
 		!chooseCounter &&
 		!choosePlayer &&
-		!chooseParity
+		!chooseParity &&
+		// --- Track P22a ---
+		!chooseCardType &&
+		!chooseNumber &&
+		!chooseTwoColors &&
+		!chooseTwoPlayers &&
+		!chooseObjectOnBattlefield &&
+		!chooseSubTypeOptions &&
+		!lookAtOpponentHandBeforeCardName
+		// --- End Track P22a ---
 	) {
 		return null;
 	}
@@ -1496,7 +1581,16 @@ export function selfEtbChoiceSpec(state: GameState, perm: CardInstance): SelfEtb
 		...(chooseCardName ? { chooseCardName } : {}),
 		...(chooseCounter ? { chooseCounter } : {}),
 		...(choosePlayer ? { choosePlayer } : {}),
-		...(chooseParity ? { chooseParity } : {})
+		...(chooseParity ? { chooseParity } : {}),
+		// --- Track P22a ---
+		...(chooseCardType ? { chooseCardType } : {}),
+		...(chooseNumber ? { chooseNumber } : {}),
+		...(chooseTwoColors ? { chooseTwoColors } : {}),
+		...(chooseTwoPlayers ? { chooseTwoPlayers } : {}),
+		...(chooseObjectOnBattlefield ? { chooseObjectOnBattlefield } : {}),
+		...(chooseSubTypeOptions ? { chooseSubTypeOptions } : {}),
+		...(lookAtOpponentHandBeforeCardName ? { lookAtOpponentHandBeforeCardName } : {})
+		// --- End Track P22a ---
 	};
 }
 
@@ -1564,6 +1658,11 @@ export function applySelfEtbReplacements(state: GameState, perm: CardInstance): 
 			// --- End Track P20a ---
 			// --- Track P11 ---
 			if (rep.with.chooseCardName && !perm.chosenCardName) {
+				// --- Track P22a ---
+				if (rep.with.lookAtOpponentHandBeforeCardName) {
+					revealOpponentHandForEtbLook(state, ctrlId);
+				}
+				// --- End Track P22a ---
 				perm.chosenCardName = chooseBotBestCardName(
 					state,
 					ctrl,
@@ -1571,6 +1670,43 @@ export function applySelfEtbReplacements(state: GameState, perm: CardInstance): 
 					Boolean(rep.with.chooseCardName.nonlandOnly)
 				);
 			}
+			// --- Track P22a ---
+			if (rep.with.chooseCardType && !perm.chosenCardType) {
+				if (rep.with.chooseCardType.lookAtOpponentHand) {
+					revealOpponentHandForEtbLook(state, ctrlId);
+				}
+				const opts = buildCardTypeChoiceOptions(rep.with.chooseCardType);
+				perm.chosenCardType = chooseBotBestCardType(state, ctrlId, opts);
+			}
+			if (rep.with.chooseNumber && perm.chosenNumber === undefined) {
+				perm.chosenNumber = chooseBotBestNumber(state, ctrlId, rep.with.chooseNumber);
+			}
+			if (rep.with.chooseTwoColors && !perm.chosenColors) {
+				const pair = chooseBotTwoColors(state, ctrlId);
+				perm.chosenColors = pair;
+				if (!perm.chosenColor) perm.chosenColor = pair[0];
+			}
+			if (rep.with.chooseTwoPlayers && !perm.chosenPlayerIds) {
+				const pids = chooseBotTwoPlayers(state, ctrlId);
+				perm.chosenPlayerIds = pids;
+				if (!perm.chosenPlayerId && pids.length > 0) perm.chosenPlayerId = pids[0];
+			}
+			if (rep.with.chooseObjectOnBattlefield && !perm.chosenObjectId) {
+				perm.chosenObjectId = chooseBotBestEtbObject(
+					state,
+					ctrlId,
+					perm,
+					rep.with.chooseObjectOnBattlefield.filter
+				);
+			}
+			if (
+				rep.with.chooseSubTypeOptions &&
+				rep.with.chooseSubTypeOptions.length > 0 &&
+				!perm.chosenSubType
+			) {
+				perm.chosenSubType = rep.with.chooseSubTypeOptions[0];
+			}
+			// --- End Track P22a ---
 			if (
 				rep.with.chooseCounter &&
 				rep.with.chooseCounter.length > 0 &&

@@ -1132,6 +1132,28 @@ export interface CardInstance {
 	/** CR 614.1c / 614.12: mana-value parity chosen as this permanent entered ("As ~ enters, choose odd or even"); not copiable (CR 707.2). */
 	chosenParity?: 'odd' | 'even';
 	// --- End Track P20a ---
+	// --- Track P22a ---
+	/** CR 614.1c / 614.12 / 300.1: Title-Case MTG card type chosen as this permanent entered ("As ~ enters, choose a card type"); not copiable (CR 707.2). */
+	chosenCardType?: string;
+	/** CR 614.1c / 614.12: Non-negative integer chosen as this permanent entered ("As ~ enters, choose a number"); not copiable (CR 707.2). */
+	chosenNumber?: number;
+	/** CR 614.1c / 614.12: Ordered pair of colors chosen as this permanent entered ("As ~ enters, choose two colors"); not copiable (CR 707.2). */
+	chosenColors?: ManaColor[];
+	/** CR 614.1c / 614.12: Player IDs chosen as this permanent entered ("As ~ enters, choose two players"); not copiable (CR 707.2). */
+	chosenPlayerIds?: string[];
+	/** CR 614.1c / 614.12: Battlefield permanent `instanceId` chosen as this permanent entered ("As ~ enters, choose another creature"); not copiable (CR 707.2). */
+	chosenObjectId?: string;
+	/** True once this permanent has dealt >= 1 combat or noncombat damage since entering the battlefield (*Karakyk Guardian*). */
+	dealtDamageEver?: boolean;
+	/** Player IDs this creature has already been declared as attacking this turn (*Port Razer*). */
+	attackedPlayerIdsThisTurn?: string[];
+	/** CR 702.143e: Foretell mana cost string stamped on a card exiled face down via a granted foretell special action (*Dream Devourer*). */
+	grantedForetellCost?: string;
+	/** CR 903.4 / 103: True once a commander pre-game color choice has been resolved for this card (*The Prismatic Piper*, *Faceless One*). */
+	commanderPreGameColorDone?: boolean;
+	/** CR 903.4 / 103: Pre-game chosen color for a commander card, persisting across all zone moves for the rest of the game. */
+	preGameChosenColor?: ManaColor;
+	// --- End Track P22a ---
 }
 
 export interface TargetRef {
@@ -1640,6 +1662,14 @@ export interface StackItem {
 	/** Count of counters removed in the most recent `removeCounters` step of this resolving effect. */
 	lastCountersRemoved?: number;
 	// --- End Track P16a ---
+	// --- Track P22a ---
+	/** LKI snapshot of `source.chosenCardType` at stack creation time. */
+	sourceChosenCardType?: string;
+	/** LKI snapshot of `source.chosenNumber` at stack creation time. */
+	sourceChosenNumber?: number;
+	/** CR 122.2: Counters carried onto the stack by a spell that retains counters across non-hidden zones. */
+	carriedCounters?: Record<CounterType, number>;
+	// --- End Track P22a ---
 }
 
 // --- Track P10 ---
@@ -2445,6 +2475,18 @@ export interface PlayerGameState {
 	/** Overmaster / Savage Summoning: pending one-shot uncounterable grants for the next matching spell cast by this player this turn. */
 	nextSpellCantBeCounteredGrants?: Array<{ types?: string[]; notTypes?: string[] }>;
 	// --- End Track P16a ---
+	// --- Track P22a ---
+	/** Number of turns begun by this player so far this game (*Serra Avenger*: 1 on their first turn, 2 on their second, etc.). */
+	turnsTakenCount?: number;
+	/** Plain `ScryfallCard` snapshots of permanents that entered the battlefield under this player's control this turn (*Mechan Shieldmate*, *Swordsworn Cavalier*). */
+	enteredBattlefieldCardsThisTurn?: ScryfallCard[];
+	/** Number of creatures controlled by this player that died this turn. */
+	controlledCreaturesDiedCountThisTurn?: number;
+	/** Number of creatures controlled by opponents of this player that died this turn. */
+	opponentCreaturesDiedCountThisTurn?: number;
+	/** Total number of creatures that died across all battlefields this turn. */
+	creaturesDiedCountThisTurn?: number;
+	// --- End Track P22a ---
 }
 
 export interface ManaRider {

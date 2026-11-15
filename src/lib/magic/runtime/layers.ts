@@ -128,6 +128,17 @@ import {
 	matchesManaValueParity
 } from './staticsWave7.ts';
 // --- End Track P20a ---
+// --- Track P22a ---
+import {
+	evaluateCreaturesDiedThisTurnWave8,
+	evaluateDistinctNamesFilterCountWave8,
+	evaluatePlayerCountersAmountWave8,
+	evaluateSpellsCastThisTurnWave8,
+	evaluateWave8Condition,
+	matchesChosenCardType,
+	pluralizeCardTypeForProtection
+} from './staticsWave8.ts';
+// --- End Track P22a ---
 
 export interface AttributedKeywordOrEffect {
 	id: string;
@@ -1439,8 +1450,18 @@ function matchesLayerFilter(
 		}
 	}
 	if (filter.ofChosenType) {
+		// --- Track P22a: Support both chosenSubType and chosenCardType (CR 614.12 / 300.1) ---
 		const chosenSub = source.inst.chosenSubType;
-		if (!chosenSub || !hasSubtypeInWork(target, chosenSub)) return false;
+		const chosenCardType = source.inst.chosenCardType;
+		if (chosenSub) {
+			if (!hasSubtypeInWork(target, chosenSub)) return false;
+		} else if (chosenCardType) {
+			layerReads |= READ_P22A;
+			if (!matchesChosenCardType(target.types, chosenCardType)) return false;
+		} else {
+			return false;
+		}
+		// --- End Track P22a ---
 	}
 	if (filter.ofChosenColor) {
 		const chosenCol = source.inst.chosenColor;
@@ -1771,6 +1792,18 @@ function matchesLayerFilter(
 		}
 	}
 	// --- End Track P20a ---
+	// --- Track P22a ---
+	if (filter.manaValueEqualsChosenNumber) {
+		layerReads |= READ_P22A;
+		const chosenNum = source.inst.chosenNumber;
+		if (chosenNum === undefined || target.manaValue !== chosenNum) return false;
+	}
+	if (filter.chosenObject) {
+		layerReads |= READ_P22A;
+		const chosenObjId = source.inst.chosenObjectId;
+		if (!chosenObjId || target.inst.instanceId !== chosenObjId) return false;
+	}
+	// --- End Track P22a ---
 	return true;
 }
 
@@ -2282,6 +2315,20 @@ function evaluateLayerAmount(
 		case 'playerCounters': {
 			layerReads |= READ_P16A;
 			if (amount.player.k === 'activePlayer') layerReads |= READ_ACTIVE_PLAYER;
+			// --- Track P22a ---
+			if (amount.players) {
+				layerReads |= READ_P22A;
+				if (amount.players === 'defendingPlayer') layerReads |= READ_COMBAT;
+				return evaluatePlayerCountersAmountWave8(
+					state,
+					source.controllerId,
+					amount.counter,
+					amount.player.k,
+					amount.players,
+					source.inst
+				);
+			}
+			// --- End Track P22a ---
 			const pid =
 				amount.player.k === 'activePlayer'
 					? (state.players[state.activePlayerIndex]?.playerId ?? source.controllerId)
@@ -2330,6 +2377,43 @@ function evaluateLayerAmount(
 			layerReads |= READ_P20A | READ_LIFE;
 			return countOpponentsWithLifeLessThanHalfStarting(state, source.controllerId);
 		// --- End Track P20a ---
+		// --- Track P22a ---
+		case 'distinctNamesCount': {
+			const zone = amount.of.zone ?? 'battlefield';
+			if (zone === 'battlefield') {
+				const names = new Set<string>();
+				for (const w of workList) {
+					if (w.isFaceDown) continue;
+					if (!matchesLayerFilter(amount.of, w, source, state, workList)) continue;
+					const nm = w.name.trim();
+					if (nm) names.add(nm);
+				}
+				return names.size;
+			}
+			layerReads |= READ_P22A | READ_ZONE_SIZES;
+			if (zone === 'graveyard') layerReads |= READ_GRAVEYARDS;
+			else if (zone === 'exile') layerReads |= READ_EXILE;
+			else layerReads |= READ_HIDDEN_ZONES;
+			return evaluateDistinctNamesFilterCountWave8(
+				state,
+				source.controllerId,
+				amount.of,
+				source.inst
+			);
+		}
+		case 'creaturesDiedThisTurn':
+			layerReads |= READ_P22A;
+			return evaluateCreaturesDiedThisTurnWave8(state, source.controllerId, amount.controller);
+		case 'spellsCastThisTurnCount':
+			layerReads |= READ_P22A | READ_P12;
+			if (amount.who === 'activePlayer') layerReads |= READ_ACTIVE_PLAYER;
+			return evaluateSpellsCastThisTurnWave8(
+				state,
+				source.controllerId,
+				amount.filter,
+				amount.who
+			);
+		// --- End Track P22a ---
 		default:
 			return 0;
 	}
@@ -2786,6 +2870,23 @@ function evaluateLayerCondition(
 			return evaluateMostCommonColorFromCounts(counts, cond.color, cond.allowTie);
 		}
 		// --- End Track P20a ---
+		// --- Track P22a ---
+		case 'lifeAtLeastAboveStarting':
+			layerReads |= READ_P22A | READ_LIFE;
+			return evaluateWave8Condition(cond, state, source.controllerId, source.inst) ?? false;
+		case 'isAttackingAlone':
+			layerReads |= READ_P22A | READ_COMBAT;
+			return evaluateWave8Condition(cond, state, source.controllerId, source.inst) ?? false;
+		case 'hasntDealtDamageYet':
+			layerReads |= READ_P22A;
+			return evaluateWave8Condition(cond, state, source.controllerId, source.inst) ?? false;
+		case 'yourTurnsTakenAtLeast':
+			layerReads |= READ_P22A | READ_ACTIVE_PLAYER;
+			return evaluateWave8Condition(cond, state, source.controllerId, source.inst) ?? false;
+		case 'enteredBattlefieldUnderYourControlThisTurn':
+			layerReads |= READ_P22A;
+			return evaluateWave8Condition(cond, state, source.controllerId, source.inst) ?? false;
+		// --- End Track P22a ---
 		default:
 			return false;
 	}
@@ -2954,6 +3055,9 @@ const READ_P18B = 1 << 25;
 // --- Track P20a ---
 const READ_P20A = 1 << 28;
 // --- End Track P20a ---
+// --- Track P22a ---
+const READ_P22A = -2147483648; // 1 << 31
+// --- End Track P22a ---
 
 /** Inputs read by the evaluation in progress (bits above). */
 let layerReads = 0;
@@ -3133,6 +3237,33 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 		}
 	}
 	// --- End Track P20a ---
+	// --- Track P22a ---
+	if (reads & READ_P22A) {
+		fp.push(state.rules?.startingLife ?? 20, state.players.length, state.activePlayerIndex);
+		for (const p of state.players) {
+			const etbCards = p.enteredBattlefieldCardsThisTurn;
+			fp.push(
+				p.life,
+				Boolean(p.lost),
+				p.poison ?? 0,
+				p.experienceCounters ?? 0,
+				p.energyCounters ?? 0,
+				p.radCounters ?? 0,
+				p.ticketCounters ?? 0,
+				p.turnsTakenCount ?? 0,
+				p.creaturesDiedCountThisTurn ?? 0,
+				p.controlledCreaturesDiedCountThisTurn ?? 0,
+				p.opponentCreaturesDiedCountThisTurn ?? 0,
+				p.spellsCastThisTurn ?? 0,
+				p.spellsCastThisTurnCards?.length ?? 0,
+				etbCards?.length ?? 0
+			);
+			if (etbCards) {
+				for (const sc of etbCards) fp.push(sc);
+			}
+		}
+	}
+	// --- End Track P22a ---
 	for (const p of state.players) {
 		if (reads & READ_LIFE) fp.push(p.life);
 		if (reads & READ_ENERGY) fp.push(p.energyCounters || 0);
@@ -3626,6 +3757,43 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 		}
 	}
 	// --- End Track P20a ---
+	// --- Track P22a ---
+	if (reads & READ_P22A) {
+		if (
+			fp[i++] !== (state.rules?.startingLife ?? 20) ||
+			fp[i++] !== state.players.length ||
+			fp[i++] !== state.activePlayerIndex
+		) {
+			return false;
+		}
+		for (const p of state.players) {
+			const etbCards = p.enteredBattlefieldCardsThisTurn;
+			if (
+				fp[i++] !== p.life ||
+				fp[i++] !== Boolean(p.lost) ||
+				fp[i++] !== (p.poison ?? 0) ||
+				fp[i++] !== (p.experienceCounters ?? 0) ||
+				fp[i++] !== (p.energyCounters ?? 0) ||
+				fp[i++] !== (p.radCounters ?? 0) ||
+				fp[i++] !== (p.ticketCounters ?? 0) ||
+				fp[i++] !== (p.turnsTakenCount ?? 0) ||
+				fp[i++] !== (p.creaturesDiedCountThisTurn ?? 0) ||
+				fp[i++] !== (p.controlledCreaturesDiedCountThisTurn ?? 0) ||
+				fp[i++] !== (p.opponentCreaturesDiedCountThisTurn ?? 0) ||
+				fp[i++] !== (p.spellsCastThisTurn ?? 0) ||
+				fp[i++] !== (p.spellsCastThisTurnCards?.length ?? 0) ||
+				fp[i++] !== (etbCards?.length ?? 0)
+			) {
+				return false;
+			}
+			if (etbCards) {
+				for (const sc of etbCards) {
+					if (fp[i++] !== sc) return false;
+				}
+			}
+		}
+	}
+	// --- End Track P22a ---
 	for (const p of state.players) {
 		if (reads & READ_LIFE && fp[i++] !== p.life) return false;
 		if (reads & READ_ENERGY && fp[i++] !== (p.energyCounters || 0)) return false;
@@ -5273,6 +5441,19 @@ function evaluateLayer5Colors(
 	for (const source of layer5Sources) {
 		if (source.strippedByAttachment || source.abilityRemovalEvents.length > 0) continue;
 		for (const st of source.statics) {
+			// --- Track P22a: Pre-game commander color choice (CR 903.4 / 103) ---
+			if (st.k === 'commanderPreGameColorChoice') {
+				const preCol = source.inst.preGameChosenColor ?? source.inst.chosenColor;
+				if (preCol && preCol !== 'C') {
+					ops.push({
+						timestamp: source.timestamp,
+						target: source,
+						setColors: [preCol]
+					});
+				}
+				continue;
+			}
+			// --- End Track P22a ---
 			if (st.k !== 'continuous' || st.layer !== '5') continue;
 			if (st.affected === 'self' && st.mod.k !== 'setChosenColor') continue;
 			if (
@@ -5993,6 +6174,22 @@ function evaluatePerPermanent(
 							);
 						}
 					// --- End Track P20a ---
+					// --- Track P22a ---
+					} else if (st.layer === '6' && st.mod.k === 'protectionFromChosenCardType') {
+						layerReads |= READ_P22A;
+						const chosenCt = source.inst.chosenCardType;
+						if (chosenCt) {
+							const kw = `protection from ${pluralizeCardTypeForProtection(chosenCt)}`;
+							grantItem(
+								target,
+								'protection',
+								formatKeywordLabel(kw),
+								'keyword',
+								source.name,
+								source.timestamp
+							);
+						}
+					// --- End Track P22a ---
 					}
 				}
 			}
@@ -6000,6 +6197,28 @@ function evaluatePerPermanent(
 			// B. Self & Global Layer 4/6 effects from `source` (only if `source` has not lost all abilities)
 			if (!sourceLostAbilities) {
 				for (const st of source.statics) {
+					// --- Track P22a: Dynamic Ward {X} (CR 702.21a) ---
+					if (st.k === 'dynamicWardMana') {
+						if (st.affected === 'attachedTo') {
+							if (source.inst.attachedToId !== target.inst.instanceId) continue;
+						} else if (st.affected === 'self') {
+							if (source.inst.instanceId !== target.inst.instanceId) continue;
+						} else {
+							if (!matchesLayerFilter(st.affected, target, source, state, workList)) continue;
+						}
+						if (
+							st.condition &&
+							!evaluateLayerCondition(st.condition, state, workList, source, target, workMap)
+						) {
+							continue;
+						}
+						const wardVal = evaluateLayerAmount(st.generic, state, workList, source, target);
+						if (wardVal >= 0) {
+							grantKeywordString(target, `Ward {${wardVal}}`, source.name, source.timestamp);
+						}
+						continue;
+					}
+					// --- End Track P22a ---
 					if (st.k !== 'continuous' || st.affected === 'attachedTo') continue;
 					if (st.layer !== '4' && st.layer !== '6') continue;
 					if (st.affected === 'self') {
@@ -6179,6 +6398,22 @@ function evaluatePerPermanent(
 							);
 						}
 					// --- End Track P20a ---
+					// --- Track P22a ---
+					} else if (st.layer === '6' && st.mod.k === 'protectionFromChosenCardType') {
+						layerReads |= READ_P22A;
+						const chosenCt = source.inst.chosenCardType;
+						if (chosenCt) {
+							const kw = `protection from ${pluralizeCardTypeForProtection(chosenCt)}`;
+							grantItem(
+								target,
+								'protection',
+								formatKeywordLabel(kw),
+								'keyword',
+								source.name,
+								source.timestamp
+							);
+						}
+					// --- End Track P22a ---
 					}
 				}
 			}

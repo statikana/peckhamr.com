@@ -272,6 +272,40 @@ function parseObjectPhraseCore(rawPhrase: string): ObjectFilter | null {
 			extra.manaValueParity = 'notChosenQuality';
 			continue;
 		}
+		// --- Track P22a: chosen-number MV, chosen-type/name, & linked-exile/nontoken-name qualifiers ---
+		const mvEqChosenNum = p.match(/^(.+?)\s+with mana values? equal to the chosen number$/i);
+		if (mvEqChosenNum) {
+			p = mvEqChosenNum[1].trim();
+			extra.manaValueEqualsChosenNumber = true;
+			continue;
+		}
+		const ofChosenTypeQual = p.match(/^(.+?)\s+(?:of|with) the chosen (?:card )?type$/i);
+		if (ofChosenTypeQual) {
+			p = ofChosenTypeQual[1].trim();
+			extra.ofChosenType = true;
+			continue;
+		}
+		const ofChosenNameQual = p.match(/^(.+?)\s+(?:of|with) the chosen name$/i);
+		if (ofChosenNameQual) {
+			p = ofChosenNameQual[1].trim();
+			extra.ofChosenName = true;
+			continue;
+		}
+		const sameNameExile = p.match(
+			/^(.+?)\s+with the same name as (?:a card exiled with ~|cards exiled with ~|the exiled card)$/i
+		);
+		if (sameNameExile) {
+			p = sameNameExile[1].trim();
+			extra.sameNameAsLinkedExile = true;
+			continue;
+		}
+		const sameNameNontoken = p.match(/^(.+?)\s+with the same name as a nontoken permanent$/i);
+		if (sameNameNontoken) {
+			p = sameNameNontoken[1].trim();
+			extra.sameNameAsNontokenPermanent = true;
+			continue;
+		}
+		// --- End Track P22a ---
 		const chosenPlCtrl = p.match(
 			/^(.+?)\s+(?:the chosen player controls|controlled by the chosen player)$/i
 		);
@@ -473,6 +507,11 @@ export function parseAffected(subject: string): Affected | null {
 	if (/^sources? (?:with|of) the chosen name$/i.test(s)) {
 		return { ofChosenName: true };
 	}
+	// --- Track P22a: "the chosen creature/permanent/..." ---
+	if (/^the chosen (?:creature|permanent|artifact|enchantment|land|planeswalker)$/i.test(s)) {
+		return { chosenObject: true };
+	}
+	// --- End Track P22a ---
 	const thatIsSub = s.match(
 		/^(?:each\s+)?(other\s+)?(creature|permanent)s?\s+(you control|your opponents control|an opponent controls)?\s*that(?:'s| is| are) (?:a |an )?([A-Z][A-Za-z'-]*)(?:,\s*(?:a |an )?([A-Z][A-Za-z'-]*),?)?\s+or (?:a |an )?([A-Z][A-Za-z'-]*)$/i
 	);
@@ -534,12 +573,12 @@ export function parseAffected(subject: string): Affected | null {
 	let chosenTypeFlag = false;
 	let chosenColorFlag = false;
 	const ctrlChosen = phrase.match(
-		/^(.+?) (you control|your opponents control|an opponent controls) of the chosen (type|color)$/i
+		/^(.+?) (you control|your opponents control|an opponent controls) of the chosen (card type|type|color)$/i
 	);
 	if (ctrlChosen) {
 		phrase = `${ctrlChosen[1]} ${ctrlChosen[2]}`;
-		if (ctrlChosen[3].toLowerCase() === 'type') chosenTypeFlag = true;
-		else chosenColorFlag = true;
+		if (ctrlChosen[3].toLowerCase() === 'color') chosenColorFlag = true;
+		else chosenTypeFlag = true;
 	}
 	if (/^(other\s+)?outlaws(\s+you control)?$/i.test(phrase)) {
 		const mOutlaw = phrase.match(/^(other\s+)?outlaws(\s+you control)?$/i)!;
@@ -623,6 +662,90 @@ function parseCountAmount(text: string): Amount | null {
 	if (/^(?:the amount of \{E\} you have|the number of energy counters? you have)$/i.test(t)) {
 		return { k: 'energyCount', player: { k: 'you' } };
 	}
+	// --- Track P22a: Player-counter scaling, creatures-died-this-turn, spells-cast-this-turn, & distinct-name counts ---
+	const playerCtrsMatch = t.match(
+		/^the (?:total )?number of (poison|experience|energy|rad|ticket) counters? (you have|your opponents have|an opponent has|players have|all players have|defending player has)$/i
+	);
+	if (playerCtrsMatch) {
+		const counter = playerCtrsMatch[1].toLowerCase() as
+			| 'poison'
+			| 'experience'
+			| 'energy'
+			| 'rad'
+			| 'ticket';
+		const whoRaw = playerCtrsMatch[2].toLowerCase();
+		const players: 'you' | 'opponents' | 'all' | 'defendingPlayer' =
+			whoRaw === 'you have'
+				? 'you'
+				: whoRaw === 'defending player has'
+					? 'defendingPlayer'
+					: whoRaw === 'players have' || whoRaw === 'all players have'
+						? 'all'
+						: 'opponents';
+		return { k: 'playerCounters', counter, player: { k: 'you' }, players };
+	}
+	const diedTurnMatch = t.match(
+		/^the number of creatures? that died(?: (under your control|under an opponent's control|under your opponents' control))? this turn$/i
+	);
+	if (diedTurnMatch) {
+		const rawScope = diedTurnMatch[1]?.toLowerCase();
+		const controller: 'you' | 'opponent' | 'any' = !rawScope
+			? 'any'
+			: rawScope === 'under your control'
+				? 'you'
+				: 'opponent';
+		return { k: 'creaturesDiedThisTurn', controller };
+	}
+	const spellsYouCastMatch = t.match(
+		/^the number of (?:(.+?) )?spells? you(?:'ve| have) cast this turn$/i
+	);
+	if (spellsYouCastMatch) {
+		if (!spellsYouCastMatch[1]) {
+			return { k: 'spellsCastThisTurnCount', who: 'you' };
+		}
+		const sf = parseObjectPhraseWithQualifiers(
+			`${spellsYouCastMatch[1].replace(/\s+and\s+/gi, ' or ')} card`,
+			true
+		);
+		if (sf && !sf.controller) {
+			return { k: 'spellsCastThisTurnCount', filter: sf, who: 'you' };
+		}
+	}
+	const diffNamedGy = t.match(
+		/^the number of differently named (.+?) cards? in (your graveyard|all graveyards)$/i
+	);
+	if (diffNamedGy) {
+		const f = parseGraveyardCardFilter(diffNamedGy[1]);
+		if (f) {
+			const isYours = diffNamedGy[2].toLowerCase() === 'your graveyard';
+			return {
+				k: 'distinctNamesCount',
+				of: { ...f, zone: 'graveyard', ...(isYours ? { controller: 'you' } : {}) }
+			};
+		}
+	}
+	const diffNamedBf = t.match(
+		/^the number of differently named (.+?)(?: on the battlefield)?$/i
+	);
+	if (diffNamedBf) {
+		const rawDiff = diffNamedBf[1].trim();
+		const oppDiff = rawDiff.match(/^(.+) (?:your opponents control|an opponent controls)$/i);
+		if (oppDiff) {
+			const fOpp = parseObjectPhraseWithQualifiers(oppDiff[1].replace(/\s+and\s+/gi, ' or '), true);
+			if (fOpp && !fOpp.controller) {
+				return {
+					k: 'distinctNamesCount',
+					of: { zone: 'battlefield', ...fOpp, controller: 'opponent' }
+				};
+			}
+		} else {
+			const fBf = parseObjectPhraseWithQualifiers(rawDiff.replace(/\s+and\s+/gi, ' or '), true);
+			if (fBf) {
+				return { k: 'distinctNamesCount', of: { zone: 'battlefield', ...fBf } };
+			}
+		}
+	}
+	// --- End Track P22a ---
 	if (/^your speed$/i.test(t)) {
 		return { k: 'playerSpeed', player: { k: 'you' } };
 	}
@@ -1375,6 +1498,43 @@ function parseDamageSourcePhrase(raw: string): ObjectFilter | 'self' | 'attached
 
 /** "If a card or token would be put into a graveyard from anywhere, exile it instead." etc. */
 const replacements: Production = (s, span) => {
+	// --- Track P22a: CR 614.9 static damage redirection, CR 614.1a damage-to-counters, & CR 122.2 zone-persistent counters ---
+	const redirectDmg = s.match(
+		/^all damage that would be dealt to you( and other permanents you control)? is dealt to (~|(?:enchanted|equipped) (?:creature|permanent)) instead$/i
+	);
+	if (redirectDmg) {
+		const from: 'you' | 'youAndOtherControlled' = redirectDmg[1]
+			? 'youAndOtherControlled'
+			: 'you';
+		const to: 'self' | 'attachedTo' = redirectDmg[2].trim() === '~' ? 'self' : 'attachedTo';
+		return [{ kind: 'static', static: { k: 'staticDamageRedirection', from, to } }];
+	}
+	const selfDmgToCounters = s.match(
+		/^if damage would be dealt to ~, (?:prevent that damage and )?put that many (.+?) counters? on (?:it|~)(?: instead)?$/i
+	);
+	if (selfDmgToCounters) {
+		const ctr = lookupStaticCounter(selfDmgToCounters[1]);
+		if (ctr) {
+			return [
+				{
+					kind: 'replacement',
+					replacement: {
+						replaces: { event: 'damage', filter: { object: 'self' } },
+						with: { k: 'modify', damageToSelfAsPlusCounters: ctr },
+						selfReplacement: true
+					}
+				}
+			];
+		}
+	}
+	if (
+		/^counters remain on ~ as it moves to any zone other than a player's hand or library$/i.test(
+			s
+		)
+	) {
+		return [{ kind: 'static', static: { k: 'countersRemainInNonHiddenZones' } }];
+	}
+	// --- End Track P22a ---
 	// --- Track P20a: CR 106.12 tap-for-mana multipliers, CR 614.10 extra-turn skip, CR 614.1a discard/damage/exile, CR 701.19 regeneration ---
 	const tapManaMult = s.match(
 		/^if you tap (?:a|an) (.+?) for mana, it produces (twice|three times) as much of that mana instead$/i
@@ -2162,10 +2322,123 @@ const replacements: Production = (s, span) => {
 			const ex = chooseCol[1] ? COLORS[chooseCol[1].toLowerCase()] : undefined;
 			return { k: 'modify', chooseColor: ex ? { exclude: ex } : {} };
 		}
-		const chooseName = body.match(/^as (?:~|it) enters(?: the battlefield)?, choose a (nonland )?card name$/i);
+		const chooseName = body.match(
+			/^as (?:~|it) enters(?: the battlefield)?, choose (?:a (nonland )?|any )card name$/i
+		);
 		if (chooseName) {
 			return { k: 'modify', chooseCardName: chooseName[1] ? { nonlandOnly: true } : {} };
 		}
+		// --- Track P22a: CR 614.12 remaining ETB choices (CardType, Number, TwoColors, TwoPlayers, AnotherCreature, SubtypeOptions, LookHand+CardName) ---
+		const ALL_CHOSEN_CARD_TYPES: Record<string, string> = {
+			artifact: 'Artifact',
+			battle: 'Battle',
+			creature: 'Creature',
+			enchantment: 'Enchantment',
+			instant: 'Instant',
+			kindred: 'Kindred',
+			tribal: 'Kindred',
+			land: 'Land',
+			planeswalker: 'Planeswalker',
+			sorcery: 'Sorcery'
+		};
+		const lookThenCardName = body.match(
+			/^as (?:~|it) enters(?: the battlefield)?, look at an opponent's hand, then choose (?:a (nonland )?|any )card name$/i
+		);
+		if (lookThenCardName) {
+			return {
+				k: 'modify',
+				chooseCardName: lookThenCardName[1] ? { nonlandOnly: true } : {},
+				lookAtOpponentHandBeforeCardName: true
+			};
+		}
+		const chooseCardTypeM = body.match(
+			/^as (?:~|it) enters(?: the battlefield)?, (look at an opponent's hand, then )?choose a card type(?: other than (.+))?$/i
+		);
+		if (chooseCardTypeM) {
+			let exclude: string[] | undefined;
+			if (chooseCardTypeM[2]) {
+				const rawEx = chooseCardTypeM[2]
+					.split(/,\s*or\s+|\s+or\s+|,\s*/)
+					.map((x) => x.trim().toLowerCase())
+					.filter(Boolean);
+				if (rawEx.length === 0 || !rawEx.every((w) => Boolean(ALL_CHOSEN_CARD_TYPES[w]))) {
+					return null;
+				}
+				exclude = rawEx.map((w) => ALL_CHOSEN_CARD_TYPES[w]);
+			}
+			return {
+				k: 'modify',
+				chooseCardType: {
+					...(exclude ? { exclude } : {}),
+					...(chooseCardTypeM[1] ? { lookAtOpponentHand: true } : {})
+				}
+			};
+		}
+		const chooseNumberM = body.match(
+			/^as (?:~|it) enters(?: the battlefield)?, choose a number(?: between (\S+) and (\S+))?$/i
+		);
+		if (chooseNumberM) {
+			if (!chooseNumberM[1]) return { k: 'modify', chooseNumber: {} };
+			const minAmt = count(chooseNumberM[1]);
+			const maxAmt = count(chooseNumberM[2]);
+			if (minAmt?.k === 'const' && maxAmt?.k === 'const' && maxAmt.n >= minAmt.n) {
+				return { k: 'modify', chooseNumber: { min: minAmt.n, max: maxAmt.n } };
+			}
+			return null;
+		}
+		if (/^as (?:~|it) enters(?: the battlefield)?, choose two colors$/i.test(body)) {
+			return { k: 'modify', chooseTwoColors: true };
+		}
+		if (/^as (?:~|it) enters(?: the battlefield)?, choose two players$/i.test(body)) {
+			return { k: 'modify', chooseTwoPlayers: true };
+		}
+		if (/^as (?:~|it) enters(?: the battlefield)?, secretly choose an opponent$/i.test(body)) {
+			return { k: 'modify', choosePlayer: 'opponent' };
+		}
+		const chooseAnotherObj = body.match(
+			/^as (?:~|it) enters(?: the battlefield)?, (you may )?choose (another .+)$/i
+		);
+		if (chooseAnotherObj) {
+			const objFilter = parseObjectPhraseWithQualifiers(chooseAnotherObj[2], true);
+			if (objFilter) {
+				return {
+					k: 'modify',
+					chooseObjectOnBattlefield: {
+						filter: { ...objFilter, other: true },
+						...(chooseAnotherObj[1] ? { optional: true } : {})
+					}
+				};
+			}
+		}
+		const chooseDisj = body.match(
+			/^as (?:~|it) enters(?: the battlefield)?, choose ([A-Za-z'-]+(?:,\s*[A-Za-z'-]+)*,?\s+or\s+[A-Za-z'-]+)$/i
+		);
+		if (chooseDisj) {
+			const opts = chooseDisj[1]
+				.split(/,\s*or\s+|\s+or\s+|,\s*/)
+				.map((x) => x.trim())
+				.filter(Boolean);
+			if (opts.length >= 2 && opts.every((w) => Boolean(ALL_CHOSEN_CARD_TYPES[w.toLowerCase()]))) {
+				return {
+					k: 'modify',
+					chooseCardType: {
+						options: opts.map((w) => ALL_CHOSEN_CARD_TYPES[w.toLowerCase()])
+					}
+				};
+			}
+			if (
+				opts.length >= 3 &&
+				opts.every(
+					(w) =>
+						/^[A-Z][A-Za-z'-]*$/.test(w) &&
+						!ALL_CHOSEN_CARD_TYPES[w.toLowerCase()] &&
+						!COLORS[w.toLowerCase()]
+				)
+			) {
+				return { k: 'modify', chooseSubTypeOptions: opts };
+			}
+		}
+		// --- End Track P22a ---
 		return null;
 	};
 	const direct = parseSelfEtbModify(s);
@@ -2181,7 +2454,13 @@ const replacements: Production = (s, span) => {
 					direct.becomesDayIfNeither ||
 					direct.choosePlayer ||
 					direct.chooseParity ||
-					direct.enterUnderOpponentControl)
+					direct.enterUnderOpponentControl ||
+					direct.chooseCardType ||
+					direct.chooseNumber ||
+					direct.chooseTwoColors ||
+					direct.chooseTwoPlayers ||
+					direct.chooseObjectOnBattlefield ||
+					direct.chooseSubTypeOptions)
 		);
 		return [
 			{
@@ -2419,6 +2698,11 @@ function parsePreventionSourceFilter(
 	if (/^sources? (?:with|of) the chosen name$/i.test(s)) {
 		return { ofChosenName: true };
 	}
+	// --- Track P22a: "the chosen creature/permanent/..." ---
+	if (/^the chosen (?:creature|permanent|artifact|enchantment|land|planeswalker)$/i.test(s)) {
+		return { chosenObject: true };
+	}
+	// --- End Track P22a ---
 	if (/^sources? (?:your opponents control|an opponent controls|you don't control)$/i.test(s)) {
 		return { controller: 'opponent' };
 	}
@@ -2460,6 +2744,48 @@ function parsePreventionSourceFilter(
 }
 
 const damagePrevention: Production = (s) => {
+	// --- Track P22a: CR 615.12 source-scoped unpreventable damage & CR 514.2 cleanup damage retention ---
+	const unprevDmg = s.match(
+		/^(combat )?damage (?:that would be )?dealt by (.+?) can't be prevented$/i
+	);
+	if (unprevDmg) {
+		const combatOnly = Boolean(unprevDmg[1]);
+		const rawSrc = unprevDmg[2].trim();
+		let sourceFilter: 'self' | 'attachedTo' | ObjectFilter | null = null;
+		if (rawSrc === '~' || /^it$/i.test(rawSrc)) {
+			sourceFilter = 'self';
+		} else if (/^(?:enchanted|equipped) (?:creature|permanent)$/i.test(rawSrc)) {
+			sourceFilter = 'attachedTo';
+		} else {
+			const parsedSrc = parsePreventionSourceFilter(rawSrc);
+			if (parsedSrc && typeof parsedSrc === 'object') {
+				sourceFilter = parsedSrc;
+			}
+		}
+		if (sourceFilter) {
+			return [
+				{
+					kind: 'static',
+					static: {
+						k: 'unpreventableDamage',
+						...(combatOnly ? { combatOnly: true } : {}),
+						sourceFilter
+					}
+				}
+			];
+		}
+	}
+	if (/^combat damage can't be prevented$/i.test(s)) {
+		return [{ kind: 'static', static: { k: 'unpreventableDamage', combatOnly: true } }];
+	}
+	const noCleanupDmg = s.match(/^damage isn't removed from (.+?) during cleanup steps$/i);
+	if (noCleanupDmg) {
+		const aff = parseAffected(noCleanupDmg[1].trim());
+		if (aff) {
+			return [{ kind: 'static', static: { k: 'damageNotRemovedInCleanup', affected: aff } }];
+		}
+	}
+	// --- End Track P22a ---
 	// 1. Single-sentence Phantom / Oathsworn Knight / Polukranos / Ugin's Conjurant counter-removal prevention
 	const phantomOne = s.match(
 		/^if (combat |noncombat )?damage would be dealt to ~(?: while it has (?:a|an|one) (.+?) counter on (?:it|~))?, prevent (?:all of )?that damage and remove (a|an|one|that many) (.+?) counters? from (?:it|~)$/i
@@ -2804,6 +3130,30 @@ const RESTRICTIONS: Array<[RegExp, Extract<StaticDef, { k: 'restriction' }>['res
 /** "~ can't block.", "Enchanted creature can't attack or block.", "Creatures your opponents control can't block." */
 function restrictions(depth = 0): Production {
 	const inner: Production = (s, span) => {
+		// --- Track P22a: CR 122.6 specific counter locks ("can't have -1/-1 counters put on them", etc.) ---
+		const typedCtrSubj = s.match(
+			/^(.+?) (?:can't|cannot) have (.+?) counters? put on (?:it|them)$/i
+		);
+		if (typedCtrSubj && !/^any$/i.test(typedCtrSubj[2].trim())) {
+			const affected = parseAffected(typedCtrSubj[1]);
+			const ctr = lookupStaticCounter(typedCtrSubj[2]);
+			if (affected && ctr) {
+				return [
+					{ kind: 'static', static: { k: 'cantHaveCounterType', affected, counter: ctr } }
+				];
+			}
+		}
+		const typedCtrPass = s.match(/^(.+?) counters? (?:can't|cannot) be put on (.+)$/i);
+		if (typedCtrPass) {
+			const ctr = lookupStaticCounter(typedCtrPass[1]);
+			const affected = parseAffected(typedCtrPass[2]);
+			if (affected && ctr) {
+				return [
+					{ kind: 'static', static: { k: 'cantHaveCounterType', affected, counter: ctr } }
+				];
+			}
+		}
+		// --- End Track P22a ---
 		const bothBlock = s.match(/^(.+?) can't block and can't be blocked$/i);
 		if (bothBlock) {
 			const affected = parseAffected(bothBlock[1]);
@@ -3679,6 +4029,97 @@ const combatAndActivationRules: Production = (s) => {
 		}
 	}
 
+	// --- Track P22a: Port Razer, Veteran Brawlers, & Mogg Toady combat rules ---
+	const cantAtkAlready = s.match(
+		/^(.+?) can't attack a player (?:it|he|she|they) (?:has|have) already attacked this turn$/i
+	);
+	if (cantAtkAlready) {
+		const affected = parseAffected(cantAtkAlready[1]);
+		if (affected) {
+			return [
+				{
+					kind: 'static',
+					static: {
+						k: 'combatRule',
+						affected,
+						rule: { kind: 'cantAttackAlreadyAttackedPlayerThisTurn' }
+					}
+				}
+			];
+		}
+	}
+	const cantAtkIfDef = s.match(/^(.+?) can't attack if defending player controls (?:a |an )?(.+)$/i);
+	if (cantAtkIfDef) {
+		const affected = parseAffected(cantAtkIfDef[1]);
+		const filter = parseCombatObjectPhrase(cantAtkIfDef[2]);
+		if (affected && filter) {
+			return [
+				{
+					kind: 'static',
+					static: {
+						k: 'combatRule',
+						affected,
+						rule: { kind: 'cantAttackIfDefenderControls', filter }
+					}
+				}
+			];
+		}
+	}
+	const cantBlkIfYou = s.match(/^(.+?) can't block if you control (?:a |an )?(.+)$/i);
+	if (cantBlkIfYou) {
+		const affected = parseAffected(cantBlkIfYou[1]);
+		const filter = parseCombatObjectPhrase(cantBlkIfYou[2]);
+		if (affected && filter) {
+			return [
+				{
+					kind: 'static',
+					static: {
+						k: 'combatRule',
+						affected,
+						rule: { kind: 'cantBlockIfYouControl', filter }
+					}
+				}
+			];
+		}
+	}
+	const cantAtkMoreCreatures = s.match(
+		/^(.+?) can't attack unless you control more creatures than defending player$/i
+	);
+	if (cantAtkMoreCreatures) {
+		const affected = parseAffected(cantAtkMoreCreatures[1]);
+		if (affected) {
+			return [
+				{
+					kind: 'static',
+					static: {
+						k: 'combatRule',
+						affected,
+						rule: { kind: 'cantAttackUnlessMoreCreaturesThanDefender' }
+					}
+				}
+			];
+		}
+	}
+	const cantBlkMoreCreatures = s.match(
+		/^(.+?) can't block unless you control more creatures than attacking player$/i
+	);
+	if (cantBlkMoreCreatures) {
+		const affected = parseAffected(cantBlkMoreCreatures[1]);
+		if (affected) {
+			return [
+				{
+					kind: 'static',
+					static: {
+						k: 'combatRule',
+						affected,
+						rule: { kind: 'cantBlockUnlessMoreCreaturesThanAttacker' }
+					}
+				}
+			];
+		}
+	}
+	// --- End Track P22a ---
+
 	const cantAtkOrBlkAlone = s.match(/^(.+?) can't attack or block alone$/i);
 	if (cantAtkOrBlkAlone) {
 		const affected = parseAffected(cantAtkOrBlkAlone[1]);
@@ -4157,6 +4598,18 @@ const topOfLibraryAndGraveyardPlay: Production = (s, span) => {
 			}
 		];
 	}
+	// --- Track P22a: Graveyard keyword alt-cast ("using its blitz/dash/bestow/mutate/warp ability") & exiled-with-self look ---
+	const selfGyKwCast = s.match(
+		/^You may cast ~ from your graveyard using its (blitz|dash|bestow|mutate|warp) ability$/i
+	);
+	if (selfGyKwCast) {
+		const keyword = selfGyKwCast[1].toLowerCase() as 'blitz' | 'dash' | 'bestow' | 'mutate' | 'warp';
+		return [{ kind: 'static', static: { k: 'selfGraveyardKeywordCast', keyword } }];
+	}
+	if (/^You may look at cards exiled with ~$/i.test(s)) {
+		return [{ kind: 'static', static: { k: 'mayLookAtExiledWithSelf' } }];
+	}
+	// --- End Track P22a ---
 	const playLandsAndGySpells = s.match(
 		/^You may play lands and cast (.+?) from your graveyard$/i
 	);
@@ -5957,6 +6410,133 @@ const ruleModifiers: Production = (s) => {
 		const amt = count(extraLands[1]);
 		if (amt && amt.k === 'const') return [rule('extraLandPlays', 'you', { count: amt.n })];
 	}
+	// --- Track P22a: Symmetrical land drops, stax locks, player counter locks, & protection from chosen card type ---
+	const symExtraLands = low.match(
+		/^(?:each player|players) may play (?:(an?|one|two|three|four|\d+) additional|an additional (one|two|three|four|\d+)) lands?(?: on each of their turns)?$/
+	);
+	if (symExtraLands) {
+		const amt = count(symExtraLands[1] ?? symExtraLands[2]);
+		if (amt && amt.k === 'const') return [rule('extraLandPlays', 'each_player', { count: amt.n })];
+	}
+	if (low === "players can't play lands" || low === "each player can't play lands") {
+		return [rule('cantPlayLands', 'each_player')];
+	}
+	if (low === "your opponents can't play lands") return [rule('cantPlayLands', 'each_opponent')];
+	if (low === "you can't play lands") return [rule('cantPlayLands', 'you')];
+	if (low === "lands can't enter the battlefield") {
+		return [{ kind: 'static', static: { k: 'landsCantEnterBattlefield' } }];
+	}
+	if (low === "your opponents can't cast spells during combat") {
+		return [rule('cantCastDuringCombat', 'each_opponent')];
+	}
+	if (low === "players can't cast spells during combat" || low === "each player can't cast spells during combat") {
+		return [rule('cantCastDuringCombat', 'each_player')];
+	}
+	if (
+		low === 'players can cast spells only any time they could cast a sorcery' ||
+		low === 'each player can cast spells only any time they could cast a sorcery'
+	) {
+		return [rule('castOnlySorcerySpeed', 'each_player')];
+	}
+	if (
+		low === 'players can cast spells only during their own turns' ||
+		low === 'each player can cast spells only during their own turn'
+	) {
+		return [rule('castOnlyDuringOwnTurn', 'each_player')];
+	}
+	if (low === 'your opponents can cast spells only during their own turns') {
+		return [rule('castOnlyDuringOwnTurn', 'each_opponent')];
+	}
+	if (
+		low ===
+		"your opponents can't cast spells or activate abilities of artifacts, creatures, or enchantments during your turn"
+	) {
+		return [rule('opponentsCantCastDuringYourTurn', 'each_opponent')];
+	}
+	const actOwnTurn = s.match(
+		/^(Players|Each player|Your opponents) can activate abilities(?: of (.+?))? only (?:during their own turns|any time they could cast a sorcery)$/i
+	);
+	if (actOwnTurn) {
+		const rel = actOwnTurn[1].toLowerCase() === 'your opponents' ? 'each_opponent' : 'each_player';
+		const isSorcery = /sorcery$/i.test(s);
+		if (!actOwnTurn[2]) {
+			return [
+				rule('activateOnlyDuringOwnTurn', rel, isSorcery ? { sorceryTiming: true } : undefined)
+			];
+		}
+		const af = parseObjectPhrase(actOwnTurn[2].replace(/\s+and\s+/gi, ' or '), {
+			allowPluralAndDisjunction: true
+		});
+		if (af) {
+			return [
+				rule('activateOnlyDuringOwnTurn', rel, {
+					filter: af,
+					...(isSorcery ? { sorceryTiming: true } : {})
+				})
+			];
+		}
+	}
+	const sameNameExileLock = s.match(
+		/^(?:(Your opponents|Players|Each player) can't cast spells|Spells) with the same name as (?:a card exiled with ~|cards exiled with ~|the exiled card)(?: can't be cast)?$/i
+	);
+	if (sameNameExileLock) {
+		const whoRaw = sameNameExileLock[1]?.toLowerCase();
+		const rel = whoRaw === 'your opponents' ? 'each_opponent' : 'each_player';
+		return [rule('cantCastSameNameAsLinkedExile', rel)];
+	}
+	const playerCtrLock = s.match(
+		/^(Players|Your opponents|You) can't get(?: (poison|experience|energy|rad|ticket))? counters$/i
+	);
+	if (playerCtrLock) {
+		const whoRaw = playerCtrLock[1].toLowerCase();
+		const rel =
+			whoRaw === 'you' ? 'you' : whoRaw === 'players' ? 'each_player' : 'each_opponent';
+		const counter = playerCtrLock[2]?.toLowerCase();
+		return [rule('playerCantGetCounters', rel, counter ? { counter } : undefined)];
+	}
+	if (
+		/^Spells and abilities your opponents control can't cause you to sacrifice permanents$/i.test(
+			s
+		)
+	) {
+		return [rule('immuneToOpponentForcedSacrifice', 'you')];
+	}
+	if (
+		/^Spells and abilities your opponents control can't cause you to discard cards$/i.test(s)
+	) {
+		return [rule('immuneToOpponentForcedDiscard', 'you')];
+	}
+	if (/^You have protection from the chosen (?:card )?type$/i.test(s)) {
+		return [rule('playerProtectionFromChosenCardType', 'you')];
+	}
+	const youAndProtType = s.match(
+		/^You and (.+?) have protection from the chosen (?:card )?type$/i
+	);
+	if (youAndProtType) {
+		const aff = parseAffected(youAndProtType[1]);
+		if (aff) {
+			return [
+				rule('playerProtectionFromChosenCardType', 'you'),
+				continuous('6', aff, { k: 'protectionFromChosenCardType' })
+			];
+		}
+	}
+	if (
+		/^You can't cast (?:~|this spell) during your first, second, or third turns of the game$/i.test(
+			s
+		)
+	) {
+		return [
+			{
+				kind: 'static',
+				static: {
+					k: 'selfCastRestriction',
+					castCondition: { k: 'yourTurnsTakenAtLeast', min: 4, onlyDuringYourTurn: true }
+				}
+			}
+		];
+	}
+	// --- End Track P22a ---
 	return null;
 };
 
@@ -6101,7 +6681,7 @@ function costModifiers(activeZones?: ZoneType[]): Production {
 			if (times) return build({ k: 'self' }, self[1], self[2], 'you', times);
 		}
 		const spells = s.match(
-			/^(?:(.+?) )?[Ss]pells(?: of the chosen (type|color))?(?: (you|your opponents) cast)?(?: of the chosen (type|color))? cost (\{\d+\}) (less|more) to cast$/
+			/^(?:(.+?) )?[Ss]pells(?: of the chosen (card type|type|color))?(?: (you|your opponents) cast)?(?: of the chosen (card type|type|color))? cost (\{\d+\}) (less|more) to cast$/
 		);
 		if (spells) {
 			const chosenA = spells[2]?.toLowerCase();
@@ -6115,7 +6695,14 @@ function costModifiers(activeZones?: ZoneType[]): Production {
 				if (!f) return null;
 				filter = f;
 			}
-			if (chosenA === 'type' || chosenB === 'type') filter = { ...filter, ofChosenType: true };
+			if (
+				chosenA === 'type' ||
+				chosenA === 'card type' ||
+				chosenB === 'type' ||
+				chosenB === 'card type'
+			) {
+				filter = { ...filter, ofChosenType: true };
+			}
 			if (chosenA === 'color' || chosenB === 'color') filter = { ...filter, ofChosenColor: true };
 			return build({ k: 'spell', filter }, spells[5], spells[6], who);
 		}
@@ -7408,6 +7995,28 @@ function parseHasGrantTail(
 	if (/^protection from the chosen player$/i.test(hasBody)) {
 		return [continuous('6', affected, { k: 'protectionFromChosenPlayer' }, condition)];
 	}
+	// --- Track P22a: protectionFromChosenCardType & dynamicWardMana ---
+	if (/^protection from the chosen (?:card )?type$/i.test(hasBody)) {
+		return [continuous('6', affected, { k: 'protectionFromChosenCardType' }, condition)];
+	}
+	const dynWard = hasBody.match(/^ward \{X\},?\s+where X is (.+)$/i);
+	if (dynWard) {
+		const generic = parseCountAmount(dynWard[1]);
+		if (generic) {
+			return [
+				{
+					kind: 'static',
+					static: {
+						k: 'dynamicWardMana',
+						affected,
+						generic,
+						...(condition ? { condition } : {})
+					}
+				}
+			];
+		}
+	}
+	// --- End Track P22a ---
 	const singleQuoted = hasBody.match(/^(?:"([^"]+)"|'([^']+)')$/);
 	if (singleQuoted) {
 		const abilities = parseGrantedAbilities(singleQuoted[1] ?? singleQuoted[2], depth);
@@ -7727,6 +8336,49 @@ function parseStaticCondition(
 	defaultSubject: 'self' | 'attachedTo' = 'self'
 ): Condition | null {
 	const t = clause.trim();
+
+	// --- Track P22a: Above-starting-life, attacking-alone, hasn't-dealt-damage, & entered-under-your-control conditions ---
+	const lifeAboveStart = t.match(
+		/^you have at least (\S+) life more than your starting life total$/i
+	);
+	if (lifeAboveStart) {
+		const cnt = count(lifeAboveStart[1]);
+		if (cnt && cnt.k === 'const' && cnt.n >= 1) {
+			return { k: 'lifeAtLeastAboveStarting', delta: cnt.n };
+		}
+	}
+	const atkAlone = t.match(
+		/^(~|it|(?:enchanted|equipped) (?:creature|permanent))(?:'s| is) attacking alone$/i
+	);
+	if (atkAlone) {
+		const rawWho = atkAlone[1].toLowerCase();
+		const of: 'self' | 'attachedTo' =
+			rawWho === '~' ? 'self' : rawWho === 'it' ? defaultSubject : 'attachedTo';
+		return { k: 'isAttackingAlone', of };
+	}
+	const notDealtDmg = t.match(
+		/^(~|it|(?:enchanted|equipped) (?:creature|permanent)) hasn't dealt damage(?: yet)?$/i
+	);
+	if (notDealtDmg) {
+		const rawWho = notDealtDmg[1].toLowerCase();
+		const of: 'self' | 'attachedTo' =
+			rawWho === '~' ? 'self' : rawWho === 'it' ? defaultSubject : 'attachedTo';
+		return { k: 'hasntDealtDamageYet', of };
+	}
+	const enteredCtrlTurn = t.match(
+		/^(?:a|an|another) (.+?) entered(?: the battlefield)? under your control this turn$/i
+	);
+	if (enteredCtrlTurn) {
+		const isAnother = /^another\b/i.test(t);
+		const f = parseObjectPhraseWithQualifiers(enteredCtrlTurn[1], true);
+		if (f && !f.controller) {
+			return {
+				k: 'enteredBattlefieldUnderYourControlThisTurn',
+				filter: isAnother ? { ...f, other: true } : f
+			};
+		}
+	}
+	// --- End Track P22a ---
 
 	// --- Track P20a: Half-starting-life, most-common-color, & empty-library conditions ---
 	const mapHalfOp = (
@@ -8693,6 +9345,76 @@ function parseStaticAbilityInner(text: string, offset = 0, depth = 0): StaticPar
 		// --- Track P8: Two-sentence Shocklands & Reveal Lands (CR 614.12, 119.4, 119.8) ---
 		if (idx + 1 < sentences.length) {
 			const nextTrimmed = sentences[idx + 1].text.replace(/’/g, "'").replace(/\.$/, '').trim();
+			// --- Track P22a: Commander pre-game color choice, Graveyard Escape/Scavenge/Unearth grants, & Hand Foretell grants ---
+			if (
+				/^If ~ is your commander, choose a color before the game begins$/i.test(trimmed) &&
+				/^~ is the chosen color$/i.test(nextTrimmed)
+			) {
+				items.push(
+					{ kind: 'static', static: { k: 'commanderPreGameColorChoice' } },
+					continuous('5', 'self', { k: 'setChosenColor' })
+				);
+				idx += 1;
+				continue;
+			}
+			const gyEscapeHead = trimmed.match(
+				/^Each (.+?) card in your graveyard has escape$/i
+			);
+			const gyEscapeTail = nextTrimmed.match(
+				/^The escape cost is equal to (?:the card's|its) mana cost plus exile (\S+) other cards? from your graveyard$/i
+			);
+			if (gyEscapeHead && gyEscapeTail) {
+				const filter = parseGraveyardCardFilter(gyEscapeHead[1]);
+				const exAmt = count(gyEscapeTail[1]);
+				if (filter && exAmt && exAmt.k === 'const' && exAmt.n >= 1) {
+					items.push({
+						kind: 'static',
+						static: { k: 'grantGraveyardEscape', filter, exileCount: exAmt.n }
+					});
+					idx += 1;
+					continue;
+				}
+			}
+			const gyKwHead = trimmed.match(
+				/^Each (.+?) card in your graveyard has (scavenge|unearth)$/i
+			);
+			const gyKwTail = nextTrimmed.match(
+				/^The (scavenge|unearth) cost is equal to (?:the card's|its) mana cost$/i
+			);
+			if (gyKwHead && gyKwTail && gyKwHead[2].toLowerCase() === gyKwTail[1].toLowerCase()) {
+				const filter = parseGraveyardCardFilter(gyKwHead[1]);
+				if (filter) {
+					const keyword = gyKwHead[2].toLowerCase() as 'scavenge' | 'unearth';
+					items.push({
+						kind: 'static',
+						static: { k: 'grantGraveyardKeywordAbility', keyword, filter }
+					});
+					idx += 1;
+					continue;
+				}
+			}
+			const handForetellHead = trimmed.match(
+				/^Each (?:(.+?) )?card in your hand(?: without foretell)? has foretell$/i
+			);
+			const handForetellTail = nextTrimmed.match(
+				/^Its foretell cost is equal to its mana cost reduced by \{(\d+)\}$/i
+			);
+			if (handForetellHead && handForetellTail) {
+				let filter: ObjectFilter | null = {};
+				if (handForetellHead[1]) {
+					filter = parseGraveyardCardFilter(handForetellHead[1]);
+				}
+				const reduceGeneric = parseInt(handForetellTail[1], 10);
+				if (filter && reduceGeneric >= 0) {
+					items.push({
+						kind: 'static',
+						static: { k: 'grantHandForetell', filter, reduceGeneric }
+					});
+					idx += 1;
+					continue;
+				}
+			}
+			// --- End Track P22a ---
 			if (
 				/^You may cast (?:~|this spell) as though it had flash$/i.test(trimmed) &&
 				/^If you cast it any time a sorcery couldn't have been cast, the controller of the permanent it becomes sacrifices it at the beginning of the next cleanup step$/i.test(

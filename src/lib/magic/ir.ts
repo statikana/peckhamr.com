@@ -651,6 +651,16 @@ export interface ObjectFilter {
 	/** Matches permanents controlled by `source.chosenPlayerId` ("the chosen player controls"). */
 	controlledByChosenPlayer?: boolean;
 	// --- End Track P20a ---
+	// --- Track P22a ---
+	/** CR 614.12 / 107.1c: matches objects whose mana value equals `source.chosenNumber` ("spells with mana value equal to the chosen number"). */
+	manaValueEqualsChosenNumber?: boolean;
+	/** CR 614.12 / 607.2: matches the object on the battlefield whose `instanceId === source.chosenObjectId` ("the chosen creature"). */
+	chosenObject?: boolean;
+	/** CR 607.2a: matches objects with the same name as a card exiled with `source` ("spells with the same name as the exiled card"). */
+	sameNameAsLinkedExile?: boolean;
+	/** Matches objects with the same name as any nontoken permanent currently on the battlefield (*Cornered Market*). */
+	sameNameAsNontokenPermanent?: boolean;
+	// --- End Track P22a ---
 }
 
 export interface Compare {
@@ -830,6 +840,10 @@ export type Amount =
 			k: 'playerCounters';
 			counter: 'poison' | 'experience' | 'energy' | 'rad' | 'ticket';
 			player: PlayerRef;
+			// --- Track P22a ---
+			/** Multi-player counter sum ('opponents' = sum across non-lost opponents, 'all' = all players, 'defendingPlayer' = defending player in combat). */
+			players?: 'you' | 'opponents' | 'all' | 'defendingPlayer';
+			// --- End Track P22a ---
 	  }
 	// --- End Track P16a ---
 	// --- Track P20a ---
@@ -838,8 +852,16 @@ export type Amount =
 	/** Count of cards matching optional `filter` in `source.chosenPlayerId`'s `zone` ("cards in the chosen player's hand/graveyard"). */
 	| { k: 'chosenPlayerZoneCount'; zone: ZoneType; filter?: ObjectFilter }
 	/** Number of non-lost opponents whose life total is strictly less than half their starting life total (*Anya, Merciless Angel*). */
-	| { k: 'opponentsWithLifeLessThanHalfStarting' };
+	| { k: 'opponentsWithLifeLessThanHalfStarting' }
 	// --- End Track P20a ---
+	// --- Track P22a ---
+	/** CR 201.2: number of differently named objects matching `of` (face-down objects without a name have no name and are excluded). */
+	| { k: 'distinctNamesCount'; of: ObjectFilter }
+	/** Number of creatures that died this turn (optionally scoped to `controller`: `'you'` | `'opponent'` | `'any'`). */
+	| { k: 'creaturesDiedThisTurn'; controller?: 'you' | 'opponent' | 'any' }
+	/** Number of spells cast this turn by `who` (default `'you'`) matching optional `filter` (*Ral, Monsoon Mage*). */
+	| { k: 'spellsCastThisTurnCount'; filter?: ObjectFilter; who?: 'you' | 'activePlayer' };
+	// --- End Track P22a ---
 
 // ---- Costs ----------------------------------------------------------------------------------
 
@@ -2159,8 +2181,20 @@ export type Condition =
 			k: 'mostCommonColorAmongPermanents';
 			color: ManaColor;
 			allowTie: boolean;
-	  };
+	  }
 	// --- End Track P20a ---
+	// --- Track P22a ---
+	/** True iff `you` have at least `delta` life more than the game's starting life total (*Righteous Valkyrie*: `state.rules.startingLife + delta`). */
+	| { k: 'lifeAtLeastAboveStarting'; delta: number }
+	/** CR 506.5: true iff `'self'` or `'attachedTo'` is currently attacking alone (`combat.attackers.length === 1`). */
+	| { k: 'isAttackingAlone'; of: 'self' | 'attachedTo' }
+	/** True iff `'self'` or `'attachedTo'` has not dealt damage since entering the battlefield (*Karakyk Guardian*, *Palladia-Mors, the Ruiner*). */
+	| { k: 'hasntDealtDamageYet'; of?: 'self' | 'attachedTo' }
+	/** True iff `you` have begun at least `min` turns of your own (or when `onlyDuringYourTurn` is true and it's not your turn, *Serra Avenger*). */
+	| { k: 'yourTurnsTakenAtLeast'; min: number; onlyDuringYourTurn?: boolean }
+	/** True iff a permanent matching `filter` entered the battlefield under `you`r control this turn (*Mechan Shieldmate*, *Swordsworn Cavalier*). */
+	| { k: 'enteredBattlefieldUnderYourControlThisTurn'; filter: ObjectFilter };
+	// --- End Track P22a ---
 
 // ---- Statics and replacements ---------------------------------------------------------------
 
@@ -2239,8 +2273,12 @@ export type LayerMod =
 	/** CR 702.16j: Layer 6 grants protection from `source.chosenPlayerId` ("has protection from the chosen player"). */
 	| { k: 'protectionFromChosenPlayer' }
 	/** CR 305.7 / 613.1d: Layer 4 replaces land/creature subtypes with `[source.chosenSubType]` ("is the chosen type"). */
-	| { k: 'setChosenSubtype' };
+	| { k: 'setChosenSubtype' }
 	// --- End Track P20a ---
+	// --- Track P22a ---
+	/** CR 702.16: Layer 6 grants protection from `source.chosenCardType` ("have protection from the chosen card type", *Serra's Emissary*). */
+	| { k: 'protectionFromChosenCardType' };
+	// --- End Track P22a ---
 
 export interface CostDelta {
 	/** 'setZero' makes the cost {0}; 'reduce'/'increase' change the generic component. */
@@ -2335,8 +2373,19 @@ export type RuleModKind =
 	| 'dontLoseAtZeroOrLessLife'
 	| 'damageToYouAsInfect'
 	| 'allDamageHasWither'
-	| 'skipExtraTurns';
+	| 'skipExtraTurns'
 	// --- End Track P20a ---
+	// --- Track P22a ---
+	| 'cantPlayLands'
+	| 'cantCastDuringCombat'
+	| 'castOnlyDuringOwnTurn'
+	| 'activateOnlyDuringOwnTurn'
+	| 'cantCastSameNameAsLinkedExile'
+	| 'playerCantGetCounters'
+	| 'immuneToOpponentForcedSacrifice'
+	| 'immuneToOpponentForcedDiscard'
+	| 'playerProtectionFromChosenCardType';
+	// --- End Track P22a ---
 
 export type RestrictionKind =
 	| 'cantAttack'
@@ -2399,8 +2448,20 @@ export type CombatRuleSpec =
 			appliesTo: 'crew' | 'saddle' | 'both';
 			delta?: number;
 			useToughness?: boolean;
-	  };
+	  }
 	// --- End Track P17a ---
+	// --- Track P22a ---
+	/** CR 508.1c: "~ can't attack a player it has already attacked this turn" (*Port Razer*). */
+	| { kind: 'cantAttackAlreadyAttackedPlayerThisTurn' }
+	/** CR 508.1c: "~ can't attack if defending player controls a [filter]" (*Veteran Brawlers*). */
+	| { kind: 'cantAttackIfDefenderControls'; filter: ObjectFilter }
+	/** CR 509.1b: "~ can't block if you control a [filter]" (*Veteran Brawlers*). */
+	| { kind: 'cantBlockIfYouControl'; filter: ObjectFilter }
+	/** CR 508.1c: "~ can't attack unless you control more creatures than defending player" (*Mogg Toady*). */
+	| { kind: 'cantAttackUnlessMoreCreaturesThanDefender' }
+	/** CR 509.1b: "~ can't block unless you control more creatures than attacking player" (*Mogg Toady*). */
+	| { kind: 'cantBlockUnlessMoreCreaturesThanAttacker' };
+	// --- End Track P22a ---
 
 export type StaticDef =
 	| {
@@ -2700,8 +2761,92 @@ export type StaticDef =
 			/** Draft-only rules text that has no effect during constructed/regular gameplay (*Deal Broker*, *Cogwork Librarian*, etc.). */
 			k: 'draftNoOp';
 			condition?: Condition;
-	  };
+	  }
 	// --- End Track P20a ---
+	// --- Track P22a ---
+	| {
+			/** CR 903.4 / 103: "If ~ is your commander, choose a color before the game begins. ~ is the chosen color." */
+			k: 'commanderPreGameColorChoice';
+			condition?: Condition;
+	  }
+	| {
+			/** CR 614.9 / 614.5: "All damage that would be dealt to you [and other permanents you control] is dealt to ~ / enchanted|equipped creature instead." */
+			k: 'staticDamageRedirection';
+			from: 'you' | 'youAndOtherControlled';
+			to: 'self' | 'attachedTo';
+			condition?: Condition;
+	  }
+	| {
+			/** CR 615.12: "[Combat] damage [that would be dealt by <sourceFilter>] can't be prevented." */
+			k: 'unpreventableDamage';
+			combatOnly?: boolean;
+			sourceFilter?: 'self' | 'attachedTo' | ObjectFilter;
+			condition?: Condition;
+	  }
+	| {
+			/** CR 122.6: "[affected] can't have [<counter>] counters put on it/them." */
+			k: 'cantHaveCounterType';
+			affected: ObjectFilter | 'attachedTo' | 'self';
+			counter?: CounterType;
+			condition?: Condition;
+	  }
+	| {
+			/** CR 122.2: "Counters remain on ~ as it moves to any zone other than a player's hand or library." (*Skullbriar*, *Me, the Immortal*). */
+			k: 'countersRemainInNonHiddenZones';
+			condition?: Condition;
+	  }
+	| {
+			/** CR 514.2: "Damage isn't removed from [affected] during cleanup steps." (*Ancient Adamantoise*). */
+			k: 'damageNotRemovedInCleanup';
+			affected: 'self' | 'attachedTo' | ObjectFilter;
+			condition?: Condition;
+	  }
+	| {
+			/** CR 406.3: "You may look at cards exiled with ~." (*Bane Alley Broker*). */
+			k: 'mayLookAtExiledWithSelf';
+			condition?: Condition;
+	  }
+	| {
+			/** "You may cast ~ from your graveyard using its <keyword> ability." (*Tenacious Underdog*, *Detective's Phoenix*, *Timeline Culler*). */
+			k: 'selfGraveyardKeywordCast';
+			keyword: 'blitz' | 'dash' | 'bestow' | 'mutate' | 'warp';
+			condition?: Condition;
+	  }
+	| {
+			/** CR 702.138: "Each [filter] card in your graveyard has escape. The escape cost is equal to its mana cost plus exile <exileCount> other cards from your graveyard." */
+			k: 'grantGraveyardEscape';
+			filter: ObjectFilter;
+			exileCount: number;
+			condition?: Condition;
+	  }
+	| {
+			/** CR 702.97 / 702.84: "Each [filter] card in your graveyard has scavenge / unearth [costOverride or equal to its mana cost]." */
+			k: 'grantGraveyardKeywordAbility';
+			keyword: 'scavenge' | 'unearth';
+			filter: ObjectFilter;
+			costOverride?: string;
+			condition?: Condition;
+	  }
+	| {
+			/** CR 702.143: "Each [filter] card in your hand without foretell has foretell. Its foretell cost is equal to its mana cost reduced by {<reduceGeneric>}." */
+			k: 'grantHandForetell';
+			filter: ObjectFilter;
+			reduceGeneric: number;
+			condition?: Condition;
+	  }
+	| {
+			/** CR 614.17c: "Lands can't enter the battlefield." (*Worms of the Earth*). */
+			k: 'landsCantEnterBattlefield';
+			condition?: Condition;
+	  }
+	| {
+			/** CR 702.21a: Dynamic mana ward ("~ has ward {X}, where X is ...", *Minthara, Merciless Soul*). */
+			k: 'dynamicWardMana';
+			affected: 'self' | 'attachedTo' | ObjectFilter;
+			generic: Amount;
+			condition?: Condition;
+	  };
+	// --- End Track P22a ---
 
 // --- Track P18b ---
 export type CompanionDeckConditionId =
@@ -2824,6 +2969,28 @@ export interface ReplacementDef {
 					sourceFilter?: ObjectFilter | 'self' | 'attachedTo';
 				};
 				// --- End Track P20a ---
+				// --- Track P22a ---
+				/** CR 614.1c / 614.12 / 300.1: "As ~ enters, [look at an opponent's hand, then] choose a card type [other than ...] / choose X, Y, or Z." */
+				chooseCardType?: {
+					exclude?: string[];
+					options?: string[];
+					lookAtOpponentHand?: boolean;
+				};
+				/** CR 614.1c / 614.12: "As ~ enters, choose a number [between <min> and <max>]." */
+				chooseNumber?: { min?: number; max?: number };
+				/** CR 614.1c / 614.12: "As ~ enters, choose two colors." (*Tablet of the Guilds*). */
+				chooseTwoColors?: boolean;
+				/** CR 614.1c / 614.12: "As ~ enters, choose two players." (*Sower of Discord*). */
+				chooseTwoPlayers?: boolean;
+				/** CR 614.1c / 614.12: "As ~ enters, choose another creature [you control]." (*Dauntless Bodyguard*, *Metamorphic Alteration*). */
+				chooseObjectOnBattlefield?: { filter: ObjectFilter; optional?: boolean };
+				/** CR 614.1c / 614.12: Disjunctive subtype choice ("As ~ enters, choose A, B, or C", *Dawn-Blessed Pennant*, *Roots of Life*). */
+				chooseSubTypeOptions?: string[];
+				/** CR 614.1c / 614.12: "As ~ enters, look at an opponent's hand, then choose any card name." (*Anointed Peacekeeper*). */
+				lookAtOpponentHandBeforeCardName?: boolean;
+				/** CR 614.1a: "If damage would be dealt to ~, put that many <counter> counters on it instead." (*Phytohydra*). */
+				damageToSelfAsPlusCounters?: CounterType;
+				// --- End Track P22a ---
 		  };
 	/** CR 614.15 / 616.1a: true when this is a self-replacement effect applied before other replacements. */
 	selfReplacement?: boolean;

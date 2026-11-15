@@ -35,6 +35,9 @@ import type {
 } from '../ir.ts';
 import type { ManaCostRequirement } from '../oracle.ts';
 import { evaluatePermanent } from '../ruleTree.ts';
+// --- Track P22a ---
+import { filterPlayerCountersGrantedWave8 } from './staticsWave8.ts';
+// --- End Track P22a ---
 import { effectiveCardForObject, getCardFaces } from '../scryfall.ts';
 import {
 	createEmptyCounterMap,
@@ -660,24 +663,28 @@ export function executePutPlayerCounters(host: P16aStepHost, step: EffectStep): 
 	const players = host.players(step.subject);
 	for (const pl of players) {
 		if (pl.lost) continue;
+		// --- Track P22a ---
+		const allowed = filterPlayerCountersGrantedWave8(host.state, pl.playerId, counter, count);
+		if (allowed <= 0) continue;
+		// --- End Track P22a ---
 		switch (counter) {
 			case 'poison':
-				pl.poison = (pl.poison ?? 0) + count;
+				pl.poison = (pl.poison ?? 0) + allowed;
 				break;
 			case 'experience':
-				pl.experienceCounters = (pl.experienceCounters ?? 0) + count;
+				pl.experienceCounters = (pl.experienceCounters ?? 0) + allowed;
 				break;
 			case 'energy':
-				pl.energyCounters = (pl.energyCounters ?? 0) + count;
+				pl.energyCounters = (pl.energyCounters ?? 0) + allowed;
 				break;
 			case 'rad':
-				pl.radCounters = (pl.radCounters ?? 0) + count;
+				pl.radCounters = (pl.radCounters ?? 0) + allowed;
 				break;
 			case 'ticket':
-				pl.ticketCounters = (pl.ticketCounters ?? 0) + count;
+				pl.ticketCounters = (pl.ticketCounters ?? 0) + allowed;
 				break;
 		}
-		host.addLog('rule', `${pl.username} got ${count} ${counter} counter(s) (${host.title}).`, pl.playerId);
+		host.addLog('rule', `${pl.username} got ${allowed} ${counter} counter(s) (${host.title}).`, pl.playerId);
 	}
 	noteLayerInputsChanged(host.state);
 }

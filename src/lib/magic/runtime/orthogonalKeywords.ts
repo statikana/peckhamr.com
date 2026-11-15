@@ -145,7 +145,17 @@ export function buildTrackP3CastOptions(h: TrackP3CastOptionHooks): CastOption[]
 			inst.foretoldTurnNumber !== undefined &&
 			state.turnNumber > inst.foretoldTurnNumber
 		) {
-			const altCost = h.keywordAltCost(card, 'foretell', 0);
+			// --- Track P22a (CR 702.143e): Fall back to stamped grantedForetellCost (*Dream Devourer*) ---
+			const altCost =
+				h.keywordAltCost(card, 'foretell', 0) ??
+				(inst.grantedForetellCost
+					? {
+							manaCost: inst.grantedForetellCost,
+							costDefs: [],
+							display: inst.grantedForetellCost
+						}
+					: null);
+			// --- End Track P22a ---
 			if (altCost) {
 				const baseCost: CastOption['baseCost'] = {
 					kind: 'alternative',

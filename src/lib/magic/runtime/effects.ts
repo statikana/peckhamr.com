@@ -158,6 +158,16 @@ import {
 	type P16aStepHost
 } from './effectsWave6.ts';
 // --- End Track P16a ---
+// --- Track P22a ---
+import {
+	filterPlayerCountersGrantedWave8,
+	playerImmuneToOpponentForcedDiscardWave8,
+	playerImmuneToOpponentForcedSacrificeWave8,
+	playerProtectedFromSourceWave8,
+	resolveStaticDamageRedirection,
+	shouldReplaceDamageWithCountersWave8
+} from './staticsWave8.ts';
+// --- End Track P22a ---
 import { noteLayerInputsChanged } from './layerCache.ts';
 import {
 	evaluateAmount,
@@ -733,7 +743,13 @@ export function permanentProtectedFromSource(
 		instants: 'Instant',
 		instant: 'Instant',
 		sorceries: 'Sorcery',
-		sorcery: 'Sorcery'
+		sorcery: 'Sorcery',
+		// --- Track P22a ---
+		battles: 'Battle',
+		battle: 'Battle',
+		kindred: 'Kindred',
+		tribal: 'Kindred'
+		// --- End Track P22a ---
 	};
 	for (const kw of ev.activeKeywords) {
 		const low = kw.toLowerCase();
@@ -761,16 +777,51 @@ export function dealDamageToPermanent(
 	rawAmount: number,
 	sourceId: string,
 	srcInfo: SourceDamageInfo,
-	opts?: { combat?: boolean; actorId?: string; vfxLabel?: string }
+	opts?: { combat?: boolean; actorId?: string; vfxLabel?: string; redirectedByIds?: Set<string> }
 ): number {
 	const p = P();
 	const combat = opts?.combat ?? false;
 	let dmg = rawAmount;
 	if (dmg <= 0 || target.zone !== 'battlefield' || target.phasedOut) return 0;
 
+	// --- Track P22a (CR 614.9 / 614.5): Static damage redirection ---
+	const srcPermInitial = p.findPermanent(state, sourceId)?.inst;
+	const stackSrcInitial = !srcPermInitial
+		? state.stack.find((s) => s.id === sourceId || s.sourceInstanceId === sourceId)
+		: undefined;
+	const initialSrcCtrlId = srcInfo.sourceControllerId ?? stackSrcInitial?.controllerId ?? opts?.actorId;
+	const initialSrcCard = srcInfo.sourceCard ?? stackSrcInitial?.card;
+	{
+		const redirectSet = opts?.redirectedByIds ?? new Set<string>();
+		const redirectedPerm = resolveStaticDamageRedirection(
+			state,
+			'permanent',
+			undefined,
+			target,
+			redirectSet
+		);
+		if (redirectedPerm && redirectedPerm.instanceId !== target.instanceId) {
+			return dealDamageToPermanent(state, redirectedPerm, dmg, sourceId, srcInfo, {
+				...opts,
+				redirectedByIds: redirectSet
+			});
+		}
+	}
+	// --- End Track P22a ---
+
 	const evTarget = evaluatePermanent(state, target);
 	// --- Track P7 ---
-	const unpreventable = isDamageUnpreventable(state, combat);
+	const unpreventable = isDamageUnpreventable(
+		state,
+		combat,
+		// --- Track P22a ---
+		{
+			sourcePerm: srcPermInitial,
+			sourceCard: initialSrcCard,
+			sourceControllerId: initialSrcCtrlId
+		}
+		// --- End Track P22a ---
+	);
 	if (!unpreventable) {
 		// CR 702.16b / 702.16e: Protection prevents all damage from sources with the stated quality.
 		if (permanentProtectedFromSource(state, target, srcInfo, evTarget)) return 0;
@@ -856,6 +907,15 @@ export function dealDamageToPermanent(
 		return 0;
 	}
 	// --- End Track P20a ---
+	// --- Track P22a (CR 614.1a): Replace damage dealt to self with +1/+1 counters (*Phytohydra*) ---
+	{
+		const selfPlusCounter = shouldReplaceDamageWithCountersWave8(state, target);
+		if (selfPlusCounter) {
+			p.addCounters(state, target, selfPlusCounter, dmg);
+			return 0;
+		}
+	}
+	// --- End Track P22a ---
 
 	// --- Track P15 (CR 120.3h / CR 310.6 / CR 310.11b): Damage dealt to a battle removes defense counters ---
 	const targetIsBattle = isPermanentBattle(state, target);
@@ -910,6 +970,12 @@ export function dealDamageToPermanent(
 		noteLayerInputsChanged(state);
 	}
 	// --- End Track P13 ---
+	// --- Track P22a ---
+	if (dmg > 0 && srcPermInitial && !srcPermInitial.dealtDamageEver) {
+		srcPermInitial.dealtDamageEver = true;
+		noteLayerInputsChanged(state);
+	}
+	// --- End Track P22a ---
 
 	emitEvent(state, {
 		kind: 'DamageDealt',
@@ -949,16 +1015,44 @@ export function dealDamageToPlayer(
 	rawAmount: number,
 	sourceId: string,
 	srcInfo: SourceDamageInfo,
-	opts?: { combat?: boolean; vfxSourceId?: string; vfxLabel?: string }
+	opts?: {
+		combat?: boolean;
+		vfxSourceId?: string;
+		vfxLabel?: string;
+		redirectedByIds?: Set<string>;
+	}
 ): number {
 	const p = P();
 	const combat = opts?.combat ?? false;
 	let dmg = rawAmount;
 	if (dmg <= 0 || pl.lost) return 0;
+	// --- Track P22a ---
+	const srcPermInitial = p.findPermanent(state, sourceId)?.inst;
+	const stackSrcInitial = !srcPermInitial
+		? state.stack.find((s) => s.id === sourceId || s.sourceInstanceId === sourceId)
+		: undefined;
+	const initialSrcCtrlId = srcInfo.sourceControllerId ?? stackSrcInitial?.controllerId;
+	const initialSrcCard = srcInfo.sourceCard ?? stackSrcInitial?.card;
+	// --- End Track P22a ---
 	// --- Track P7 ---
-	const unpreventable = isDamageUnpreventable(state, combat);
+	const unpreventable = isDamageUnpreventable(
+		state,
+		combat,
+		// --- Track P22a ---
+		{
+			sourcePerm: srcPermInitial,
+			sourceCard: initialSrcCard,
+			sourceControllerId: initialSrcCtrlId
+		}
+		// --- End Track P22a ---
+	);
 	if (!unpreventable) {
 		if (pl.protectionFromEverythingThisTurn) return 0;
+		// --- Track P22a (CR 702.16j): Player protection from chosen card type ---
+		if (playerProtectedFromSourceWave8(state, pl.playerId, initialSrcCard, srcPermInitial)) {
+			return 0;
+		}
+		// --- End Track P22a ---
 
 		if ((pl.damagePreventionShield ?? 0) > 0) {
 			const prevented = Math.min(dmg, pl.damagePreventionShield!);
@@ -967,6 +1061,27 @@ export function dealDamageToPlayer(
 			if (dmg <= 0) return 0;
 		}
 	}
+
+	// --- Track P22a (CR 614.9 / 614.5): Static damage redirection (*Pariah* / *Palisade Giant*) ---
+	{
+		const redirectSet = opts?.redirectedByIds ?? new Set<string>();
+		const redirectedPerm = resolveStaticDamageRedirection(
+			state,
+			'player',
+			pl.playerId,
+			undefined,
+			redirectSet
+		);
+		if (redirectedPerm) {
+			return dealDamageToPermanent(state, redirectedPerm, dmg, sourceId, srcInfo, {
+				combat,
+				actorId: initialSrcCtrlId,
+				vfxLabel: opts?.vfxLabel,
+				redirectedByIds: redirectSet
+			});
+		}
+	}
+	// --- End Track P22a ---
 
 	dmg = applyDamagePreventionShields(state, {
 		amount: dmg,
@@ -1015,7 +1130,12 @@ export function dealDamageToPlayer(
 		// --- End Track P20a ---
 	) {
 		// CR 702.90b: Damage dealt to a player by a source with infect is dealt in the form of poison counters.
-		pl.poison = (pl.poison || 0) + dmg;
+		// --- Track P22a ---
+		const poisonAdded = filterPlayerCountersGrantedWave8(state, pl.playerId, 'poison', dmg);
+		if (poisonAdded > 0) {
+			pl.poison = (pl.poison || 0) + poisonAdded;
+		}
+		// --- End Track P22a ---
 	} else {
 		const cantChange =
 			Boolean(pl.lifeTotalCannotChangeThisTurn) ||
@@ -1039,8 +1159,24 @@ export function dealDamageToPlayer(
 	// --- Track P9 ---
 	pl.damageDealtToThisTurn = (pl.damageDealtToThisTurn ?? 0) + dmg;
 	if (combat && (srcInfo.toxicTotal ?? 0) > 0) {
-		pl.poison = (pl.poison || 0) + srcInfo.toxicTotal!;
+		// --- Track P22a ---
+		const toxicAdded = filterPlayerCountersGrantedWave8(
+			state,
+			pl.playerId,
+			'poison',
+			srcInfo.toxicTotal!
+		);
+		if (toxicAdded > 0) {
+			pl.poison = (pl.poison || 0) + toxicAdded;
+		}
+		// --- End Track P22a ---
 	}
+	// --- Track P22a ---
+	if (dmg > 0 && srcPermInitial && !srcPermInitial.dealtDamageEver) {
+		srcPermInitial.dealtDamageEver = true;
+		noteLayerInputsChanged(state);
+	}
+	// --- End Track P22a ---
 
 	emitEvent(state, {
 		kind: 'DamageDealt',
@@ -2132,7 +2268,13 @@ class Run {
 			// --- Track P20a ---
 			case 'manaSpentToCast':
 			case 'opponentsWithLifeLessThanHalfStarting':
-			case 'chosenPlayerZoneCount': {
+			case 'chosenPlayerZoneCount':
+			// --- End Track P20a ---
+			// --- Track P22a ---
+			case 'distinctNamesCount':
+			case 'creaturesDiedThisTurn':
+			case 'spellsCastThisTurnCount': {
+			// --- End Track P22a ---
 				const srcFound = this.locate(this.ctx.sourceId);
 				return evaluateAmount(a, {
 					state: this.state,
@@ -2145,7 +2287,6 @@ class Run {
 					xValue: this.ctx.xValue
 				});
 			}
-			// --- End Track P20a ---
 		}
 	}
 
@@ -5384,12 +5525,16 @@ class Run {
 						: this.players(step.subject);
 				for (const pl of targets) {
 					if (pl.lost) continue;
-					pl.energyCounters = (pl.energyCounters || 0) + n;
+					// --- Track P22a ---
+					const allowedEnergy = filterPlayerCountersGrantedWave8(s, pl.playerId, 'energy', n);
+					if (allowedEnergy <= 0) continue;
+					// --- End Track P22a ---
+					pl.energyCounters = (pl.energyCounters || 0) + allowedEnergy;
 					noteLayerInputsChanged(s);
 					p.addLog(
 						s,
 						'rule',
-						`${title}: ${pl.username} gets ${n} {E} (now ${pl.energyCounters} {E}).`,
+						`${title}: ${pl.username} gets ${allowedEnergy} {E} (now ${pl.energyCounters} {E}).`,
 						you.playerId
 					);
 				}
@@ -6424,6 +6569,13 @@ class Run {
 		// Specific object(s) (e.g. "sacrifice ~", "sacrifice it", or "sacrifice that creature")
 		if (sel.k === 'self' || sel.k === 'binding' || sel.k === 'target' || sel.k === 'eventObject') {
 			const actor = step.actor ? (this.playerRef(step.actor) ?? you) : you;
+			// --- Track P22a ---
+			if (playerImmuneToOpponentForcedSacrificeWave8(s, actor.playerId, you.playerId)) {
+				this.bind(step, []);
+				this.stepDecisions[this.stepIndex] = false;
+				return;
+			}
+			// --- End Track P22a ---
 			this.runIndexedBatch(
 				batchKey,
 				() => {
@@ -6470,6 +6622,11 @@ class Run {
 
 			const choices: Array<{ actor: PlayerGameState; candidates: CardInstance[]; count: number }> = [];
 			for (const actor of actors) {
+				// --- Track P22a ---
+				if (playerImmuneToOpponentForcedSacrificeWave8(s, actor.playerId, you.playerId)) {
+					continue;
+				}
+				// --- End Track P22a ---
 				const candidates = actor.battlefield.filter(
 					(c) => !c.phasedOut && c.controllerId === actor.playerId && this.matches(c, filter, 'battlefield')
 				);
@@ -6567,7 +6724,13 @@ class Run {
 			this.runIndexedBatch(
 				batchKey,
 				() => {
-					const objs = this.objects(sel).filter((o) => o.zone === 'hand');
+					const objs = this.objects(sel).filter(
+						(o) =>
+							o.zone === 'hand' &&
+							// --- Track P22a ---
+							!playerImmuneToOpponentForcedDiscardWave8(s, o.ownerId, you.playerId)
+							// --- End Track P22a ---
+					);
 					this.bind(step, objs);
 					return objs.map((o) => o.instanceId);
 				},
@@ -6598,6 +6761,11 @@ class Run {
 			// choice gets a prompt; resolution pauses until every such human answered.
 			const choices: Array<{ pl: PlayerGameState; candidates: CardInstance[]; count: number }> = [];
 			for (const pl of actors) {
+				// --- Track P22a ---
+				if (playerImmuneToOpponentForcedDiscardWave8(s, pl.playerId, you.playerId)) {
+					continue;
+				}
+				// --- End Track P22a ---
 				const candidates = filter
 					? pl.hand.filter((c) => this.matches(c, filter, 'hand'))
 					: [...pl.hand];
@@ -9187,7 +9355,15 @@ class Run {
 			// --- End Track P16a ---
 			// --- Track P20a ---
 			case 'lifeCompareHalfStarting':
-			case 'mostCommonColorAmongPermanents': {
+			case 'mostCommonColorAmongPermanents':
+			// --- End Track P20a ---
+			// --- Track P22a ---
+			case 'lifeAtLeastAboveStarting':
+			case 'isAttackingAlone':
+			case 'hasntDealtDamageYet':
+			case 'yourTurnsTakenAtLeast':
+			case 'enteredBattlefieldUnderYourControlThisTurn': {
+			// --- End Track P22a ---
 				const srcFound = this.locate(this.ctx.sourceId);
 				return evaluateCondition(c, {
 					state: this.state,
@@ -9195,7 +9371,6 @@ class Run {
 					source: srcFound?.inst
 				});
 			}
-			// --- End Track P20a ---
 		}
 	}
 

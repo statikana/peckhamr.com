@@ -307,6 +307,15 @@ export function doesProtectionQualityMatchSource(
 	if (/protection from planeswalkers/i.test(kwLower) && srcTypeLine.includes('Planeswalker')) {
 		return true;
 	}
+	// --- Track P22a ---
+	if (/protection from battles/i.test(kwLower) && srcTypeLine.includes('Battle')) return true;
+	if (
+		/protection from (?:kindred|tribal)/i.test(kwLower) &&
+		(srcTypeLine.includes('Kindred') || srcTypeLine.includes('Tribal'))
+	) {
+		return true;
+	}
+	// --- End Track P22a ---
 	return false;
 }
 

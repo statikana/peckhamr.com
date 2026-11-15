@@ -27,6 +27,9 @@ import {
 // --- Track P18a ---
 import { mutateTargetSpec } from './runtime/keywordsWave6.ts';
 // --- End Track P18a ---
+// --- Track P22a ---
+import { collectGrantedGraveyardActivatedAbilitiesWave8 } from './runtime/staticsWave8.ts';
+// --- End Track P22a ---
 import {
 	evaluatePermanent,
 	getAttachedAbilityStrippingAuraSources,
@@ -1044,6 +1047,30 @@ export function getEffectiveActivatedAbilities(
 			instanceFaceOptions(perm, perm.zone),
 			perm.chosenColor
 		).filter((ab) => !ab.grantCondition);
+		// --- Track P22a (CR 702.97 Scavenge / CR 702.84 Unearth graveyard grants) ---
+		if (perm.zone === 'graveyard' && perm.ownerId === actor.playerId) {
+			for (const g of collectGrantedGraveyardActivatedAbilitiesWave8(state, actor, perm)) {
+				if (rawAbilities.some((a) => a.id === g.abilityId)) continue;
+				const built = buildEffectiveActivatedAbility(
+					g.ability,
+					commanderIdentity,
+					resolveOppLands,
+					{
+						idOverride: g.abilityId,
+						displayCardName: perm.card.name,
+						displayCard: g.grantSourceCard,
+						grantSourceCard: g.grantSourceCard,
+						grantSources: [g.grantSourceName],
+						labelOverride: g.label,
+						costTextOverride: g.costText,
+						effectTextOverride: g.effectText,
+						chosenColor: perm.chosenColor
+					}
+				);
+				if (built) rawAbilities.push(built);
+			}
+		}
+		// --- End Track P22a ---
 	} else {
 		const breakdown = inspectCardContinuousBreakdown(perm, state);
 		const allInnateRemoved = permanentHasLostAllAbilities(perm, state).lost;
