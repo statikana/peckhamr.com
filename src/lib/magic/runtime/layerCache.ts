@@ -94,9 +94,27 @@ export interface BoardSnapshot {
 const SNAPSHOTS = new WeakMap<GameState, BoardSnapshot>();
 
 function pushFingerprint(state: GameState, fp: unknown[]): void {
-	fp.push(state.players, state.players.length, state.monarchPlayerId ?? null);
+	fp.push(
+		state.players,
+		state.players.length,
+		state.monarchPlayerId ?? null,
+		// --- Track P15 ---
+		state.dayNight ?? null,
+		state.activePlayerIndex
+		// --- End Track P15 ---
+	);
 	for (const p of state.players) {
-		fp.push(p, p.lost, p.playerId, p.battlefield, p.battlefield.length);
+		fp.push(
+			p,
+			p.lost,
+			p.playerId,
+			p.battlefield,
+			p.battlefield.length,
+			// --- Track P15 ---
+			p.speed ?? 0,
+			Boolean(p.hasCitysBlessing)
+			// --- End Track P15 ---
+		);
 		// --- Track P13 ---
 		fp.push(p.ringBearerId ?? null, p.ringLevel ?? 0, p.command.length);
 		for (const cmd of p.command) {
@@ -173,8 +191,14 @@ function pushFingerprint(state: GameState, fp: unknown[]): void {
 				perm.classLevel ?? 1,
 				Boolean(perm.isSolved),
 				Boolean(perm.isRenowned),
-				Boolean(perm.isBestowed)
+				Boolean(perm.isBestowed),
 				// --- End Track P12 ---
+				// --- Track P15 ---
+				Boolean(perm.isPrepared),
+				Boolean(perm.castWithImpending),
+				(perm.counters.time || 0) > 0,
+				perm.enteredWithX ?? 0
+				// --- End Track P15 ---
 			);
 		}
 	}
@@ -185,7 +209,11 @@ function fingerprintMatches(state: GameState, fp: unknown[]): boolean {
 	if (
 		fp[i++] !== state.players ||
 		fp[i++] !== state.players.length ||
-		fp[i++] !== (state.monarchPlayerId ?? null)
+		fp[i++] !== (state.monarchPlayerId ?? null) ||
+		// --- Track P15 ---
+		fp[i++] !== (state.dayNight ?? null) ||
+		fp[i++] !== state.activePlayerIndex
+		// --- End Track P15 ---
 	) {
 		return false;
 	}
@@ -195,7 +223,11 @@ function fingerprintMatches(state: GameState, fp: unknown[]): boolean {
 			fp[i++] !== p.lost ||
 			fp[i++] !== p.playerId ||
 			fp[i++] !== p.battlefield ||
-			fp[i++] !== p.battlefield.length
+			fp[i++] !== p.battlefield.length ||
+			// --- Track P15 ---
+			fp[i++] !== (p.speed ?? 0) ||
+			fp[i++] !== Boolean(p.hasCitysBlessing)
+			// --- End Track P15 ---
 		) {
 			return false;
 		}
@@ -283,8 +315,14 @@ function fingerprintMatches(state: GameState, fp: unknown[]): boolean {
 				fp[i++] !== (perm.classLevel ?? 1) ||
 				fp[i++] !== Boolean(perm.isSolved) ||
 				fp[i++] !== Boolean(perm.isRenowned) ||
-				fp[i++] !== Boolean(perm.isBestowed)
+				fp[i++] !== Boolean(perm.isBestowed) ||
 				// --- End Track P12 ---
+				// --- Track P15 ---
+				fp[i++] !== Boolean(perm.isPrepared) ||
+				fp[i++] !== Boolean(perm.castWithImpending) ||
+				fp[i++] !== ((perm.counters.time || 0) > 0) ||
+				fp[i++] !== (perm.enteredWithX ?? 0)
+				// --- End Track P15 ---
 			) {
 				return false;
 			}

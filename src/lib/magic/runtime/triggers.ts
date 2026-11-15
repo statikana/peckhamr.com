@@ -106,6 +106,15 @@ import {
 	matchesP13ObjectFilterFields
 } from './effectsWave5.ts';
 // --- End Track P13 ---
+// --- Track P15 ---
+import {
+	evaluateP15Amount,
+	evaluateP15Condition,
+	findFaceGiftKeyword,
+	objectsShareCreatureSubtype,
+	type Wave5RuntimeTrigger
+} from './framesBattlesAndKeywordsWave5.ts';
+// --- End Track P15 ---
 
 /**
  * How a pending trigger is executed. 'stack': a StackItem put on the stack the next time a player
@@ -180,6 +189,18 @@ export interface PendingTrigger {
 	wave4N?: number;
 	wave4CostText?: string;
 	// --- End Track P12 ---
+	// --- Track P15 ---
+	gravestormCount?: number;
+	sourceGiftPromised?: boolean;
+	sourceEnteredWithX?: number;
+	sourceCastWithImpending?: boolean;
+	giftKind?: 'card' | 'food' | 'treasure' | 'tappedFish' | 'octopus' | 'extraTurn';
+	giftRecipientId?: string;
+	wave5Tag?: string;
+	wave5N?: number;
+	wave5CostText?: string;
+	wave5Card?: ScryfallCard;
+	// --- End Track P15 ---
 	/** Match order (deterministic tie-break for a player's own simultaneous triggers). */
 	order: number;
 }
@@ -468,6 +489,18 @@ function persistPendingTriggers(state: GameState, triggers: PendingTrigger[]): v
 			...(t.wave4N !== undefined ? { wave4N: t.wave4N } : {}),
 			...(t.wave4CostText !== undefined ? { wave4CostText: t.wave4CostText } : {}),
 			// --- End Track P12 ---
+			// --- Track P15 ---
+			...(t.gravestormCount !== undefined ? { gravestormCount: t.gravestormCount } : {}),
+			...(t.sourceGiftPromised ? { sourceGiftPromised: true } : {}),
+			...(t.sourceEnteredWithX !== undefined ? { sourceEnteredWithX: t.sourceEnteredWithX } : {}),
+			...(t.sourceCastWithImpending ? { sourceCastWithImpending: true } : {}),
+			...(t.giftKind ? { giftKind: t.giftKind } : {}),
+			...(t.giftRecipientId ? { giftRecipientId: t.giftRecipientId } : {}),
+			...(t.wave5Tag ? { wave5Tag: t.wave5Tag } : {}),
+			...(t.wave5N !== undefined ? { wave5N: t.wave5N } : {}),
+			...(t.wave5CostText !== undefined ? { wave5CostText: t.wave5CostText } : {}),
+			...(t.wave5Card ? { wave5Card: t.wave5Card } : {}),
+			// --- End Track P15 ---
 			order: t.order
 		});
 	}
@@ -522,6 +555,18 @@ function hydratePendingTriggers(state: GameState, ch: TriggerChannel): void {
 		...(t.wave4N !== undefined ? { wave4N: t.wave4N } : {}),
 		...(t.wave4CostText !== undefined ? { wave4CostText: t.wave4CostText } : {}),
 		// --- End Track P12 ---
+		// --- Track P15 ---
+		...(t.gravestormCount !== undefined ? { gravestormCount: t.gravestormCount } : {}),
+		...(t.sourceGiftPromised ? { sourceGiftPromised: true } : {}),
+		...(t.sourceEnteredWithX !== undefined ? { sourceEnteredWithX: t.sourceEnteredWithX } : {}),
+		...(t.sourceCastWithImpending ? { sourceCastWithImpending: true } : {}),
+		...(t.giftKind ? { giftKind: t.giftKind } : {}),
+		...(t.giftRecipientId ? { giftRecipientId: t.giftRecipientId } : {}),
+		...(t.wave5Tag ? { wave5Tag: t.wave5Tag } : {}),
+		...(t.wave5N !== undefined ? { wave5N: t.wave5N } : {}),
+		...(t.wave5CostText !== undefined ? { wave5CostText: t.wave5CostText } : {}),
+		...(t.wave5Card ? { wave5Card: t.wave5Card } : {}),
+		// --- End Track P15 ---
 		order: t.order
 	}));
 	ch.pending = [...hydrated, ...ch.pending];
@@ -687,6 +732,20 @@ export function peekPendingTriggers(state: GameState): readonly PendingTrigger[]
 	return [...(state.pendingTriggers ?? []), ...(channels.get(state)?.pending ?? [])];
 }
 
+// --- Track P15 ---
+export function enqueuePendingTrigger(
+	state: GameState,
+	trigger: Omit<PendingTrigger, 'order'>
+): void {
+	const ch = channel(state);
+	ch.pending.push({
+		...trigger,
+		order: ch.nextOrder++
+	});
+	flushTriggers(state);
+}
+// --- End Track P15 ---
+
 // ---- Objects as triggers see them -----------------------------------------------------------
 
 /** The object an event is about, with the characteristics trigger filters check. */
@@ -700,6 +759,9 @@ interface Subject {
 	// --- Track P10 ---
 	suspected?: boolean;
 	// --- End Track P10 ---
+	// --- Track P15 ---
+	isPrepared?: boolean;
+	// --- End Track P15 ---
 	colors: string[];
 	typeLine: () => string;
 	hasSubtype: (subtype: string) => boolean;
@@ -733,6 +795,9 @@ function battlefieldSubject(state: GameState, obj: CardInstance, controllerId: s
 		// --- Track P10 ---
 		suspected: Boolean(obj.isSuspected),
 		// --- End Track P10 ---
+		// --- Track P15 ---
+		isPrepared: Boolean(obj.isPrepared),
+		// --- End Track P15 ---
 		get colors() {
 			return obj.isFaceDown ? [] : ev().colors;
 		},
@@ -798,6 +863,9 @@ function printedSubject(
 		tapped,
 		saddled,
 		monstrous,
+		// --- Track P15 ---
+		isPrepared: Boolean(obj.isPrepared),
+		// --- End Track P15 ---
 		colors,
 		typeLine: () => typeLine,
 		hasSubtype: (s) => hasWord(subtypePart(typeLine), s) || (allCreatureTypes && hasWord(typeLine, 'Creature')),
@@ -851,6 +919,10 @@ interface Viewer {
 	chosenCardName?: string;
 	attachedToId?: string | null;
 	// --- End Track P11 ---
+	// --- Track P15 ---
+	sourceObj?: CardInstance;
+	state?: GameState;
+	// --- End Track P15 ---
 }
 
 const viewerOf = (source: Source): Viewer => ({
@@ -866,8 +938,11 @@ const viewerOf = (source: Source): Viewer => ({
 	...(source.chosenCardName ?? source.obj.chosenCardName
 		? { chosenCardName: source.chosenCardName ?? source.obj.chosenCardName }
 		: {}),
-	attachedToId: source.obj.attachedToId
+	attachedToId: source.obj.attachedToId,
 	// --- End Track P11 ---
+	// --- Track P15 ---
+	sourceObj: source.obj
+	// --- End Track P15 ---
 });
 
 // --- Track P7 ---
@@ -1025,6 +1100,14 @@ function filterMatches(f: ObjectFilter, subject: Subject, source: Viewer): boole
 		}
 	}
 	// --- End Track P13 ---
+	// --- Track P15 ---
+	if (f.isPrepared !== undefined && Boolean(subject.isPrepared) !== f.isPrepared) return false;
+	if (f.sharesCreatureTypeWithSelf) {
+		const st = source.state ?? subject.state;
+		if (!st || !source.sourceObj) return false;
+		if (!objectsShareCreatureSubtype(st, source.sourceObj, subject.obj)) return false;
+	}
+	// --- End Track P15 ---
 	return true;
 }
 
@@ -1366,6 +1449,9 @@ interface MatchExtras {
 	// --- Track P10 ---
 	grantedAbilityText?: string;
 	// --- End Track P10 ---
+	// --- Track P15 ---
+	gravestormCount?: number;
+	// --- End Track P15 ---
 }
 
 function record(state: GameState, source: Source, ability: RuntimeTrigger, kind: EventKind, extras: MatchExtras): void {
@@ -1474,6 +1560,26 @@ function record(state: GameState, source: Source, ability: RuntimeTrigger, kind:
 				? { wave4CostText: (ability as Wave4RuntimeTrigger).wave4CostText }
 				: {}),
 			// --- End Track P12 ---
+			// --- Track P15 ---
+			...(extras.gravestormCount !== undefined ? { gravestormCount: extras.gravestormCount } : {}),
+			...(source.obj.giftPromised ? { sourceGiftPromised: true } : {}),
+			...(source.obj.enteredWithX !== undefined
+				? { sourceEnteredWithX: source.obj.enteredWithX }
+				: {}),
+			...(source.obj.castWithImpending ? { sourceCastWithImpending: true } : {}),
+			...((ability as Wave5RuntimeTrigger).wave5Tag
+				? { wave5Tag: (ability as Wave5RuntimeTrigger).wave5Tag }
+				: {}),
+			...((ability as Wave5RuntimeTrigger).wave5N !== undefined
+				? { wave5N: (ability as Wave5RuntimeTrigger).wave5N }
+				: {}),
+			...((ability as Wave5RuntimeTrigger).wave5CostText !== undefined
+				? { wave5CostText: (ability as Wave5RuntimeTrigger).wave5CostText }
+				: {}),
+			...((ability as Wave5RuntimeTrigger).wave5Card
+				? { wave5Card: (ability as Wave5RuntimeTrigger).wave5Card }
+				: {}),
+			// --- End Track P15 ---
 			eventPlayer: extras.eventPlayer ?? extras.eventPlayerId,
 			defendingPlayerId: extras.defendingPlayerId,
 			order: ch.nextOrder++
@@ -1603,7 +1709,7 @@ function matchTriggersInner(state: GameState, ev: GameEvent): void {
 		case 'BecameRenowned':
 			return matchWave4ObjectEvent(state, ev, 'becameRenowned', 'Renown Trigger', undefined, ev.amount);
 		// --- End Track P12 ---
-		// --- Track P13 ---
+		// --- Track P13 & P15 ---
 		case 'DoorUnlocked':
 			return matchDoorUnlocked(state, ev);
 		case 'RoomFullyUnlocked':
@@ -1625,11 +1731,11 @@ function matchTriggersInner(state: GameState, ev: GameEvent): void {
 			return matchP13PlayerEvent(state, 'dungeonCompleted', ev.playerId, 'Dungeon Completed Trigger');
 		case 'TookInitiative':
 			return matchP13PlayerEvent(state, 'tookInitiative', ev.playerId, 'Initiative Trigger');
-		// --- End Track P13 ---
+		// --- End Track P13 & P15 ---
 	}
 }
 
-// --- Track P13 ---
+// --- Track P13 & P15 ---
 function matchDoorUnlocked(
 	state: GameState,
 	ev: Extract<GameEvent, { kind: 'DoorUnlocked' }>
@@ -1652,7 +1758,21 @@ function matchDoorUnlocked(
 							: a.filter.thisDoorFaceIndex;
 					if (ev.faceIndex !== wantFace) return false;
 				}
-				if (a.filter.object !== undefined && !objectMatches(a.filter, subject, source)) return false;
+				if (a.filter.object === 'self') {
+					if (source.obj.instanceId !== ev.objectId) return false;
+					// CR 709.5h: "When you unlock this door" only triggers for the specific unlocked half.
+					if (
+						a.filter.thisDoorFaceIndex === undefined &&
+						source.faceIndex !== undefined &&
+						source.faceIndex !== ev.faceIndex
+					) {
+						return false;
+					}
+					return true;
+				}
+				if (a.filter.object !== undefined && !objectMatches(a.filter, subject, source)) {
+					return false;
+				}
 				return true;
 			});
 			if (!alt) continue;
@@ -1688,7 +1808,9 @@ function matchRoomFullyUnlocked(
 				const rel = a.filter.player?.relation ?? 'any';
 				if (rel === 'you' && ev.playerId !== source.controllerId) return false;
 				if (rel === 'opponent' && ev.playerId === source.controllerId) return false;
-				if (a.filter.object !== undefined && !objectMatches(a.filter, subject, source)) return false;
+				if (a.filter.object !== undefined && !objectMatches(a.filter, subject, source)) {
+					return false;
+				}
 				return true;
 			});
 			if (!alt) continue;
@@ -1742,7 +1864,7 @@ function matchP13PlayerEvent(
 		}
 	}
 }
-// --- End Track P13 ---
+// --- End Track P13 & P15 ---
 
 // --- Track P12 ---
 function matchWave4ObjectEvent(
@@ -2927,6 +3049,50 @@ function matchZoneChange(state: GameState, ev: Extract<GameEvent, { kind: 'ZoneC
 			record(state, source, ability, 'zoneChange', { label: label(source, alt), eventObject: obj, amount: enteredPower(), times, eventLki });
 		}
 	}
+	// --- Track P15: CR 702.174b Gift on permanent ETB ("When this permanent enters, if its gift cost was paid, ...") ---
+	if (
+		ev.to === 'battlefield' &&
+		obj.zone === 'battlefield' &&
+		!obj.phasedOut &&
+		obj.giftPromised &&
+		obj.giftRecipientId &&
+		!permanentHasLostAllAbilities(obj, state).lost
+	) {
+		const giftCard = activeTimedLayer1aForPermanent(state, obj)?.card ?? obj.copiableCard ?? obj.card;
+		const giftKw = findFaceGiftKeyword(giftCard, obj.activeFaceIndex ?? 0);
+		if (giftKw?.giftKind) {
+			const mult = triggerMultiplier(state, obj, obj.controllerId, {
+				event: 'zoneChange',
+				object: obj,
+				from: ev.from,
+				to: ev.to
+			});
+			const ch = channel(state);
+			const syntheticGiftRt: RuntimeTrigger = {
+				abilityIndex: -15,
+				trigger: { event: 'zoneChange', filter: { to: 'battlefield', object: 'self' } },
+				effectSupported: true,
+				text: `${obj.card.name} — Gift`
+			};
+			for (let g = 0; g < mult; g++) {
+				ch.pending.push({
+					ability: syntheticGiftRt,
+					source: obj,
+					sourceCard: giftCard,
+					faceIndex: obj.activeFaceIndex ?? 0,
+					controllerId: obj.controllerId,
+					mode: 'stack',
+					label: `${obj.card.name} — Gift`,
+					sourceGiftPromised: true,
+					giftKind: giftKw.giftKind,
+					giftRecipientId: obj.giftRecipientId,
+					wave5Tag: 'gift_etb',
+					order: ch.nextOrder++
+				});
+			}
+		}
+	}
+	// --- End Track P15 ---
 	// --- Track P9: Layer 6 granted death keywords (Undying, Persist) via LKI (CR 603.10a, CR 704.8) ---
 	if (ev.from === 'battlefield' && ev.to === 'graveyard') {
 		const lkiInfo = objBatchInfo ?? ev.lki;
@@ -3139,9 +3305,14 @@ function matchCast(state: GameState, casterId: string, spell: CardInstance, isCo
 	}
 	const totalCast = state.players.reduce((sum, pl) => sum + (pl.spellsCastThisTurn ?? 0), 0);
 	const stormCount = isCopy ? 0 : Math.max(0, totalCast - 1);
+	// --- Track P15 ---
+	const gravestormCount = isCopy ? 0 : (state.permanentsPutIntoGraveyardFromBattlefieldThisTurn ?? 0);
+	// --- End Track P15 ---
 	const candidates = sources(state, 'cast');
 	if (!isCopy) {
-		for (const faceIndex of activeFacesForObject(spell, spell.card, 'stack', state)) {
+		const stackFaces = new Set(activeFacesForObject(spell, spell.card, 'stack', state));
+		if (stackSpell?.faceIndex !== undefined) stackFaces.add(stackSpell.faceIndex);
+		for (const faceIndex of stackFaces) {
 			candidates.push({ obj: spell, card: spell.card, faceIndex, controllerId: casterId, zone: 'stack' });
 		}
 	}
@@ -3204,14 +3375,28 @@ function matchCast(state: GameState, casterId: string, spell: CardInstance, isCo
 			const isStorm = Boolean(
 				ability.effect?.steps.some((st) => st.params?.count?.k === 'stormCount')
 			);
+			// --- Track P15 ---
+			const isGravestorm = Boolean(
+				ability.effect?.steps.some((st) => st.params?.count?.k === 'gravestormCount')
+			);
+			// --- End Track P15 ---
 			const isHeroic = Boolean(alt.filter.targetsSelf);
 			record(state, source, ability, 'cast', {
-				label: isStorm ? 'Storm' : ability.text === 'Prowess' ? 'Prowess' : isHeroic ? 'Heroic' : 'On Cast',
+				label: isStorm
+					? 'Storm'
+					: isGravestorm
+						? 'Gravestorm'
+						: ability.text === 'Prowess'
+							? 'Prowess'
+							: isHeroic
+								? 'Heroic'
+								: 'On Cast',
 				times,
 				eventObject: spell,
 				eventPlayer: casterId,
 				...(triggerEventStackItem ? { triggerEventStackItem } : {}),
-				...(isStorm ? { stormCount } : {})
+				...(isStorm ? { stormCount } : {}),
+				...(isGravestorm ? { gravestormCount } : {})
 			});
 		}
 	}
@@ -3886,8 +4071,15 @@ function matchCounter(state: GameState, ev: Extract<GameEvent, { kind: 'CounterP
 				if (ev.counterType !== 'lore') continue;
 				const next = ev.newCount ?? (ev.object.counters.lore || 0);
 				const prev = ev.previousCount ?? next - ev.amount;
+				// --- Track P15: CR 702.155b Read ahead skips earlier chapters on the turn the Saga entered ---
+				const isReadAheadTurn =
+					ev.object.readAheadChosenChapter !== undefined &&
+					ev.object.enteredTurnSerial !== undefined &&
+					ev.object.enteredTurnSerial === (state.turnSerial ?? state.turnNumber);
+				// --- End Track P15 ---
 				for (const ch of chapterAlt.chapterNumbers!) {
-					if (prev < ch && next >= ch) {
+					const triggersChapter = isReadAheadTurn ? prev < ch && next === ch : prev < ch && next >= ch;
+					if (triggersChapter) {
 						record(state, source, ability, 'counterPlaced', {
 							label: `Chapter ${CHAPTER_ROMAN[ch] ?? String(ch)}`,
 							amount: ev.amount,
@@ -4422,6 +4614,33 @@ export function evaluateCondition(
 			);
 		}
 		// --- End Track P13 ---
+		// --- Track P15 ---
+		case 'maxSpeed':
+		case 'citysBlessing':
+		case 'giftPromised':
+		case 'isDay':
+		case 'isNight':
+		case 'isYourTurn':
+		case 'selfPrepared':
+		case 'isImpending':
+		case 'enteredWithXAtLeast': {
+			const found = permanentById(state, sourceInstanceId);
+			const srcObj = found?.obj ?? source?.obj;
+			return (
+				evaluateP15Condition(cond, state, controllerId, {
+					source: srcObj,
+					giftPromised: Boolean(
+						stackItem?.giftKind || stackItem?.sourceGiftPromised || srcObj?.giftPromised
+					),
+					enteredWithX:
+						srcObj?.enteredWithX ?? stackItem?.sourceEnteredWithX ?? stackItem?.xValue,
+					castWithImpending: Boolean(
+						srcObj?.castWithImpending ?? stackItem?.sourceCastWithImpending
+					)
+				}) ?? false
+			);
+		}
+		// --- End Track P15 ---
 		case 'isTurnOf':
 			if (cond.player.k === 'you') return state.players[state.activePlayerIndex]?.playerId === controllerId;
 			return cond.player.k === 'activePlayer';
@@ -4632,8 +4851,12 @@ function amount(
 				...(srcFound?.obj.chosenCardName ?? stackItem?.sourceChosenCardName
 					? { chosenCardName: srcFound?.obj.chosenCardName ?? stackItem?.sourceChosenCardName }
 					: {}),
-				attachedToId: srcFound?.obj.attachedToId ?? source?.obj.attachedToId
+				attachedToId: srcFound?.obj.attachedToId ?? source?.obj.attachedToId,
 				// --- End Track P11 ---
+				// --- Track P15 ---
+				sourceObj: srcFound?.obj ?? source?.obj,
+				state
+				// --- End Track P15 ---
 			};
 			// --- Track P10: Support graveyard count conditions (Threshold / N+ creature cards in graveyard) ---
 			if (a.of.zone === 'graveyard') {
@@ -4766,6 +4989,13 @@ function amount(
 			return a.round === 'up' ? Math.ceil(sub / 2) : Math.floor(sub / 2);
 		}
 		// --- End Track P13 ---
+		// --- Track P15 ---
+		case 'playerSpeed':
+		case 'gravestormCount':
+			return evaluateP15Amount(a, state, controllerId, {
+				gravestormOverride: stackItem?.gravestormCount
+			});
+		// --- End Track P15 ---
 		default:
 			return null;
 	}

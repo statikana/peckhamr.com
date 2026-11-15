@@ -743,6 +743,205 @@ export function buildEncoreAbility(
 }
 // --- End Track P12 ---
 
+// --- Track P15 ---
+/**
+ * CR 702.167a: "Craft with [materials] [cost]" means "[Cost], Exile this permanent, Exile
+ * [materials] from among other permanents you control and/or cards in your graveyard: Return this
+ * card to the battlefield transformed under its owner's control. Craft only as a sorcery."
+ */
+export function buildCraftAbility(
+	kw: KeywordDef,
+	id: string,
+	span: Span
+): { ability: ActivatedAbility; costText: string; effectText: string; label: string } | null {
+	const costDefs = kw.costDefs;
+	if (!costDefs || costDefs.length === 0) return null;
+	const matDesc = kw.param ?? 'materials';
+	const rawCost = (kw.cost ?? '').trim();
+	const label = rawCost ? `Craft with ${matDesc} ${rawCost}` : `Craft with ${matDesc}`;
+	const cost: CostDef[] = [
+		...costDefs,
+		{ k: 'exileFrom', zone: 'battlefield', count: { k: 'const', n: 1 }, filter: 'self' }
+	];
+	const costText = `${label}, Exile this permanent and ${matDesc}`;
+	const effectText =
+		"Return this card to the battlefield transformed under its owner's control. Craft only as a sorcery.";
+	return {
+		ability: {
+			kind: 'activated',
+			cost,
+			targets: [],
+			effect: [],
+			timing: 'sorcery',
+			isMana: false,
+			activationZones: ['battlefield'],
+			costKeyword: 'craft',
+			id,
+			text: `${label} (${costText}: ${effectText})`,
+			span
+		},
+		costText,
+		effectText,
+		label
+	};
+}
+
+/**
+ * CR 702.151a: "Reconfigure [cost]" defines "[Cost]: Attach this permanent to another target
+ * creature you control. Activate only as a sorcery" and "[Cost]: Unattach this permanent. Activate
+ * only if this permanent is attached to a creature and only as a sorcery."
+ */
+export function buildReconfigureAttachAbility(
+	kw: KeywordDef,
+	id: string,
+	span: Span
+): { ability: ActivatedAbility; costText: string; effectText: string; label: string } | null {
+	const costDefs = kw.costDefs;
+	if (!costDefs || costDefs.length === 0) return null;
+	const prefix = formatKeywordCostLabel('Reconfigure', kw);
+	const costText = prefix;
+	const effectText =
+		'Attach this permanent to another target creature you control. Activate only as a sorcery.';
+	const label = `${prefix}: Attach to another target creature you control`;
+	const targets = [
+		{
+			kind: 'object' as const,
+			filter: { zone: 'battlefield' as const, types: ['Creature'], controller: 'you' as const, other: true },
+			min: 1,
+			max: 1
+		}
+	];
+	const effect: EffectStep[] = [{ verb: 'attach', subject: { k: 'target', index: 0 }, span }];
+	return {
+		ability: {
+			kind: 'activated',
+			cost: costDefs,
+			targets,
+			effect,
+			timing: 'sorcery',
+			isMana: false,
+			activationZones: ['battlefield'],
+			costKeyword: 'reconfigure',
+			id,
+			text: `${costText}: ${effectText}`,
+			span
+		},
+		costText,
+		effectText,
+		label
+	};
+}
+
+export function buildReconfigureUnattachAbility(
+	kw: KeywordDef,
+	id: string,
+	span: Span
+): { ability: ActivatedAbility; costText: string; effectText: string; label: string } | null {
+	const costDefs = kw.costDefs;
+	if (!costDefs || costDefs.length === 0) return null;
+	const prefix = formatKeywordCostLabel('Reconfigure', kw);
+	const costText = prefix;
+	const effectText =
+		'Unattach this permanent. Activate only if this permanent is attached to a creature and only as a sorcery.';
+	const label = `${prefix}: Unattach this permanent`;
+	const unattachId = id.startsWith('reconfigure_')
+		? id.replace(/^reconfigure_/, 'reconfigure_unattach_')
+		: `reconfigure_unattach_${id}`;
+	return {
+		ability: {
+			kind: 'activated',
+			cost: costDefs,
+			targets: [],
+			effect: [],
+			timing: 'sorcery',
+			isMana: false,
+			activationZones: ['battlefield'],
+			costKeyword: 'reconfigure',
+			id: unattachId,
+			text: `${costText}: ${effectText}`,
+			span
+		},
+		costText,
+		effectText,
+		label
+	};
+}
+
+/**
+ * CR 702.71a: "Transfigure [cost]" means "[Cost], Sacrifice this permanent: Search your library
+ * for a creature card with the same mana value as this permanent, put it onto the battlefield,
+ * then shuffle. Activate only as a sorcery."
+ */
+export function buildTransfigureAbility(
+	kw: KeywordDef,
+	id: string,
+	span: Span
+): { ability: ActivatedAbility; costText: string; effectText: string; label: string } | null {
+	const costDefs = kw.costDefs;
+	if (!costDefs || costDefs.length === 0) return null;
+	const label = formatKeywordCostLabel('Transfigure', kw);
+	const cost: CostDef[] = [
+		...costDefs,
+		{ k: 'sacrifice', count: { k: 'const', n: 1 }, filter: 'self' }
+	];
+	const costText = `${label}, Sacrifice this permanent`;
+	const effectText =
+		'Search your library for a creature card with the same mana value as this permanent, put it onto the battlefield, then shuffle. Activate only as a sorcery.';
+	return {
+		ability: {
+			kind: 'activated',
+			cost,
+			targets: [],
+			effect: [],
+			timing: 'sorcery',
+			isMana: false,
+			activationZones: ['battlefield'],
+			costKeyword: 'transfigure',
+			id,
+			text: `${label} (${costText}: ${effectText})`,
+			span
+		},
+		costText,
+		effectText,
+		label
+	};
+}
+
+/**
+ * CR 702.65a: "Aura swap [cost]" means "[Cost]: You may exchange this permanent with an Aura card
+ * in your hand."
+ */
+export function buildAuraSwapAbility(
+	kw: KeywordDef,
+	id: string,
+	span: Span
+): { ability: ActivatedAbility; costText: string; effectText: string; label: string } | null {
+	const costDefs = kw.costDefs;
+	if (!costDefs || costDefs.length === 0) return null;
+	const label = formatKeywordCostLabel('Aura swap', kw);
+	const costText = label;
+	const effectText = 'You may exchange this permanent with an Aura card in your hand.';
+	return {
+		ability: {
+			kind: 'activated',
+			cost: costDefs,
+			targets: [],
+			effect: [],
+			timing: 'instant',
+			isMana: false,
+			activationZones: ['battlefield'],
+			costKeyword: 'aura swap',
+			id,
+			text: `${label} (${costText}: ${effectText})`,
+			span
+		},
+		costText,
+		effectText,
+		label
+	};
+}
+// --- End Track P15 ---
+
 export interface KeywordSpec {
 	/** Canonical lower-case keyword name. */
 	name: string;
@@ -1474,6 +1673,39 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 	landwalkImplemented('mountainwalk', 'Mountainwalk', { types: ['Land'], subtypes: ['Mountain'] }),
 	landwalkImplemented('forestwalk', 'Forestwalk', { types: ['Land'], subtypes: ['Forest'] }),
 	landwalkImplemented('nonbasic landwalk', 'Nonbasic landwalk', { types: ['Land'], notSupertypes: ['Basic'] }),
+	// --- Track P15 ---
+	landwalkImplemented('snow landwalk', 'Snow landwalk', { types: ['Land'], supertypes: ['Snow'] }),
+	landwalkImplemented('snow plainswalk', 'Snow plainswalk', {
+		types: ['Land'],
+		supertypes: ['Snow'],
+		subtypes: ['Plains']
+	}),
+	landwalkImplemented('snow islandwalk', 'Snow islandwalk', {
+		types: ['Land'],
+		supertypes: ['Snow'],
+		subtypes: ['Island']
+	}),
+	landwalkImplemented('snow swampwalk', 'Snow swampwalk', {
+		types: ['Land'],
+		supertypes: ['Snow'],
+		subtypes: ['Swamp']
+	}),
+	landwalkImplemented('snow mountainwalk', 'Snow mountainwalk', {
+		types: ['Land'],
+		supertypes: ['Snow'],
+		subtypes: ['Mountain']
+	}),
+	landwalkImplemented('snow forestwalk', 'Snow forestwalk', {
+		types: ['Land'],
+		supertypes: ['Snow'],
+		subtypes: ['Forest']
+	}),
+	landwalkImplemented('legendary landwalk', 'Legendary landwalk', {
+		types: ['Land'],
+		supertypes: ['Legendary']
+	}),
+	landwalkImplemented('artifact landwalk', 'Artifact landwalk', { allTypes: ['Artifact', 'Land'] }),
+	// --- End Track P15 ---
 
 	// ---- Unimplemented CR 702 keywords recognized on keyword lines ----
 	unimplemented('absorb', '702.64', 'number'),
@@ -1528,9 +1760,66 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 		}
 	],
 	// --- End Track P12 ---
-	unimplemented('amplify', '702.38', 'number'),
-	unimplemented('ascend', '702.131'),
-	unimplemented('aura swap', '702.65', 'cost'),
+	// --- Track P15 ---
+	[
+		'amplify',
+		{
+			name: 'amplify',
+			cr: '702.38',
+			parameterKind: 'number',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'static', buildStatics: () => [] }
+		}
+	],
+	[
+		'ascend',
+		{
+			name: 'ascend',
+			cr: '702.131',
+			parameterKind: 'none',
+			displayLabel: 'Ascend',
+			grantable: true,
+			status: 'implemented',
+			implementation: { kind: 'static', buildStatics: () => [] }
+		}
+	],
+	[
+		'assist',
+		{
+			name: 'assist',
+			cr: '702.132',
+			parameterKind: 'none',
+			displayLabel: 'Assist',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'castOption' }
+		}
+	],
+	[
+		'aura swap',
+		{
+			name: 'aura swap',
+			cr: '702.65',
+			parameterKind: 'cost',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'activated', buildActivated: buildAuraSwapAbility }
+		}
+	],
+	[
+		'choose a background',
+		{
+			name: 'choose a background',
+			cr: '702.124k',
+			parameterKind: 'none',
+			displayLabel: 'Choose a Background',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'primitive' }
+		}
+	],
+	// --- End Track P15 ---
 	// --- Track P12 ---
 	[
 		'awaken',
@@ -1782,8 +2071,31 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 		}
 	],
 	// --- End Track P12 ---
-	unimplemented('cipher', '702.99'),
-	unimplemented('cleave', '702.148', 'cost'),
+	// --- Track P15 ---
+	[
+		'cipher',
+		{
+			name: 'cipher',
+			cr: '702.99',
+			parameterKind: 'none',
+			displayLabel: 'Cipher',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'castOption' }
+		}
+	],
+	[
+		'cleave',
+		{
+			name: 'cleave',
+			cr: '702.148',
+			parameterKind: 'cost',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'castOption' }
+		}
+	],
+	// --- End Track P15 ---
 	unimplemented('companion', '702.139', 'text'),
 	// --- Track P9 ---
 	[
@@ -1797,7 +2109,20 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 			implementation: { kind: 'activated', buildActivated: buildNinjutsuAbility }
 		}
 	],
-	unimplemented('compleated', '702.150'),
+	// --- Track P15 ---
+	[
+		'compleated',
+		{
+			name: 'compleated',
+			cr: '702.150',
+			parameterKind: 'none',
+			displayLabel: 'Compleated',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'static', buildStatics: () => [] }
+		}
+	],
+	// --- End Track P15 ---
 	// --- Track P6 ---
 	[
 		'conspire',
@@ -1839,7 +2164,19 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 			implementation: { kind: 'static', buildStatics: () => [] }
 		}
 	],
-	unimplemented('craft', '702.167', 'text'),
+	// --- Track P15 ---
+	[
+		'craft',
+		{
+			name: 'craft',
+			cr: '702.167',
+			parameterKind: 'text',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'activated', buildActivated: buildCraftAbility }
+		}
+	],
+	// --- End Track P15 ---
 	[
 		'crew',
 		{
@@ -1902,7 +2239,20 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 			}
 		}
 	],
-	unimplemented('daybound', '702.145'),
+	// --- Track P15 ---
+	[
+		'daybound',
+		{
+			name: 'daybound',
+			cr: '702.145',
+			parameterKind: 'none',
+			displayLabel: 'Daybound',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'static', buildStatics: () => [] }
+		}
+	],
+	// --- End Track P15 ---
 	// --- Track P12 ---
 	[
 		'decayed',
@@ -1941,7 +2291,32 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 			implementation: { kind: 'static', buildStatics: () => [] }
 		}
 	],
-	unimplemented('demonstrate', '702.144'),
+	// --- Track P15 ---
+	[
+		'demonstrate',
+		{
+			name: 'demonstrate',
+			cr: '702.144',
+			parameterKind: 'none',
+			displayLabel: 'Demonstrate',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'primitive' }
+		}
+	],
+	[
+		"doctor's companion",
+		{
+			name: "doctor's companion",
+			cr: '702.124m',
+			parameterKind: 'none',
+			displayLabel: "Doctor's companion",
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'primitive' }
+		}
+	],
+	// --- End Track P15 ---
 	// --- Track P12 ---
 	[
 		'dethrone',
@@ -2392,8 +2767,42 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 	],
 	unimplemented('fortify', '702.67', 'cost'),
 	unimplemented('frenzy', '702.68', 'number'),
-	unimplemented('friends forever', '702.124i'),
-	unimplemented('gift', '702.174', 'quality'),
+	// --- Track P15 ---
+	[
+		'freerunning',
+		{
+			name: 'freerunning',
+			cr: '702.173',
+			parameterKind: 'cost',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'castOption' }
+		}
+	],
+	[
+		'friends forever',
+		{
+			name: 'friends forever',
+			cr: '702.124j',
+			parameterKind: 'none',
+			displayLabel: 'Friends forever',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'primitive' }
+		}
+	],
+	[
+		'gift',
+		{
+			name: 'gift',
+			cr: '702.174',
+			parameterKind: 'quality',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'castOption' }
+		}
+	],
+	// --- End Track P15 ---
 	// --- Track P12 ---
 	[
 		'graft',
@@ -2431,7 +2840,43 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 		}
 	],
 	// --- End Track P12 ---
-	unimplemented('gravestorm', '702.69'),
+	// --- Track P15 ---
+	[
+		'gravestorm',
+		{
+			name: 'gravestorm',
+			cr: '702.69',
+			parameterKind: 'none',
+			displayLabel: 'Gravestorm',
+			grantable: false,
+			status: 'implemented',
+			implementation: {
+				kind: 'trigger',
+				events: ['cast'],
+				buildTriggers: (_kw, abilityIndex, span) => [
+					{
+						abilityIndex,
+						trigger: { event: 'cast', filter: { object: 'self', player: { relation: 'you' } } },
+						effectSupported: true,
+						text: 'Gravestorm',
+						effect: {
+							steps: [
+								{
+									verb: 'copySpell',
+									subject: { k: 'self' },
+									params: { count: { k: 'gravestormCount' }, mayChooseNewTargets: true },
+									span
+								}
+							],
+							targets: [],
+							unparsed: []
+						}
+					}
+				]
+			}
+		}
+	],
+	// --- End Track P15 ---
 	unimplemented('haunt', '702.55'),
 	unimplemented('hidden agenda', '702.106'),
 	unimplemented('hideaway', '702.75', 'number'),
@@ -2448,7 +2893,63 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 			implementation: { kind: 'static', buildStatics: () => [] }
 		}
 	],
-	unimplemented('impending', '702.176', 'text'),
+	// --- Track P15 ---
+	[
+		'impending',
+		{
+			name: 'impending',
+			cr: '702.176',
+			parameterKind: 'text',
+			grantable: false,
+			status: 'implemented',
+			implementation: {
+				kind: 'castOption',
+				events: ['phaseBegin'],
+				buildTriggers: (kw, abilityIndex, span) => {
+					const n = kw.impendingN ?? kw.n ?? 1;
+					return [
+						{
+							abilityIndex,
+							trigger: {
+								event: 'phaseBegin',
+								filter: { phase: 'end_step' },
+								scope: 'controller_turn'
+							},
+							condition: { k: 'isImpending' },
+							effectSupported: true,
+							text: `Impending ${n}`,
+							effect: {
+								steps: [
+									{
+										verb: 'removeCounters',
+										subject: { k: 'self' },
+										amount: { k: 'const', n: 1 },
+										params: { counter: 'time' },
+										span
+									}
+								],
+								targets: [],
+								unparsed: []
+							}
+						}
+					];
+				}
+			}
+		}
+	],
+	[
+		'increment',
+		{
+			name: 'increment',
+			cr: '702.191',
+			parameterKind: 'none',
+			displayLabel: 'Increment',
+			grantable: true,
+			status: 'implemented',
+			implementation: { kind: 'primitive' }
+		}
+	],
+	// --- End Track P15 ---
 	// --- Track P12 ---
 	[
 		'ingest',
@@ -2547,7 +3048,31 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 			implementation: { kind: 'activated', buildActivated: buildLevelUpActivatedAbility }
 		}
 	],
-	unimplemented('living metal', '702.161'),
+	// --- Track P15 ---
+	[
+		'living metal',
+		{
+			name: 'living metal',
+			cr: '702.161',
+			parameterKind: 'none',
+			displayLabel: 'Living metal',
+			grantable: true,
+			status: 'implemented',
+			implementation: {
+				kind: 'static',
+				buildStatics: () => [
+					{
+						k: 'continuous',
+						layer: '4',
+						affected: 'self',
+						condition: { k: 'isTurnOf', player: { k: 'you' } },
+						mod: { k: 'addTypes', types: ['Artifact', 'Creature'] }
+					}
+				]
+			}
+		}
+	],
+	// --- End Track P15 ---
 	// --- Track P9 ---
 	[
 		'madness',
@@ -2730,7 +3255,19 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 		}
 	],
 	faceDownCostKeyword('morph', '702.37', 'morph', 'Cast face down (Morph)'),
-	unimplemented('more than meets the eye', '702.162', 'cost'),
+	// --- Track P15 ---
+	[
+		'more than meets the eye',
+		{
+			name: 'more than meets the eye',
+			cr: '702.162',
+			parameterKind: 'cost',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'castOption' }
+		}
+	],
+	// --- End Track P15 ---
 	unimplemented('mutate', '702.140', 'cost'),
 	// --- Track P12 ---
 	[
@@ -2758,7 +3295,20 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 		}
 	],
 	// --- End Track P12 ---
-	unimplemented('nightbound', '702.145'),
+	// --- Track P15 ---
+	[
+		'nightbound',
+		{
+			name: 'nightbound',
+			cr: '702.145',
+			parameterKind: 'none',
+			displayLabel: 'Nightbound',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'static', buildStatics: () => [] }
+		}
+	],
+	// --- End Track P15 ---
 	// --- Track P9 ---
 	[
 		'ninjutsu',
@@ -2870,6 +3420,31 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 		}
 	],
 	unimplemented('poisonous', '702.70', 'number'),
+	// --- Track P15 ---
+	[
+		'paradigm',
+		{
+			name: 'paradigm',
+			cr: '702.192',
+			parameterKind: 'none',
+			displayLabel: 'Paradigm',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'castOption' }
+		}
+	],
+	[
+		'power-up',
+		{
+			name: 'power-up',
+			cr: '702.193',
+			parameterKind: 'text',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'static', buildStatics: () => [] }
+		}
+	],
+	// --- End Track P15 ---
 	// --- Track P6 ---
 	[
 		'prototype',
@@ -2882,8 +3457,31 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 			implementation: { kind: 'castOption' }
 		}
 	],
-	unimplemented('provoke', '702.39'),
-	unimplemented('prowl', '702.76', 'cost'),
+	// --- Track P15 ---
+	[
+		'provoke',
+		{
+			name: 'provoke',
+			cr: '702.39',
+			parameterKind: 'none',
+			displayLabel: 'Provoke',
+			grantable: true,
+			status: 'implemented',
+			implementation: { kind: 'primitive' }
+		}
+	],
+	[
+		'prowl',
+		{
+			name: 'prowl',
+			cr: '702.76',
+			parameterKind: 'cost',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'castOption' }
+		}
+	],
+	// --- End Track P15 ---
 	// --- Track P12 ---
 	[
 		'rampage',
@@ -2912,8 +3510,56 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 		}
 	],
 	// --- End Track P12 ---
-	unimplemented('ravenous', '702.156'),
-	unimplemented('read ahead', '702.155'),
+	// --- Track P15 ---
+	[
+		'ravenous',
+		{
+			name: 'ravenous',
+			cr: '702.156',
+			parameterKind: 'none',
+			displayLabel: 'Ravenous',
+			grantable: false,
+			status: 'implemented',
+			implementation: {
+				kind: 'trigger',
+				events: ['zoneChange'],
+				buildTriggers: (_kw, abilityIndex, span) => [
+					{
+						abilityIndex,
+						trigger: { event: 'zoneChange', filter: { object: 'self', to: 'battlefield' } },
+						condition: { k: 'enteredWithXAtLeast', n: 5 },
+						effectSupported: true,
+						text: 'Ravenous',
+						effect: {
+							steps: [
+								{
+									verb: 'draw',
+									subject: { k: 'playerRef', ref: { k: 'you' } },
+									amount: { k: 'const', n: 1 },
+									span
+								}
+							],
+							targets: [],
+							unparsed: []
+						}
+					}
+				]
+			}
+		}
+	],
+	[
+		'read ahead',
+		{
+			name: 'read ahead',
+			cr: '702.155',
+			parameterKind: 'none',
+			displayLabel: 'Read ahead',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'static', buildStatics: () => [] }
+		}
+	],
+	// --- End Track P15 ---
 	// --- Track P9 ---
 	[
 		'rebound',
@@ -2927,7 +3573,19 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 			implementation: { kind: 'static', buildStatics: () => [] }
 		}
 	],
-	unimplemented('reconfigure', '702.151', 'cost'),
+	// --- Track P15 ---
+	[
+		'reconfigure',
+		{
+			name: 'reconfigure',
+			cr: '702.151',
+			parameterKind: 'cost',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'activated', buildActivated: buildReconfigureAttachAbility }
+		}
+	],
+	// --- End Track P15 ---
 	// --- Track P12 ---
 	[
 		'recover',
@@ -3064,7 +3722,19 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 			implementation: { kind: 'static', buildStatics: () => [] }
 		}
 	],
-	unimplemented('ripple', '702.60', 'number'),
+	// --- Track P15 ---
+	[
+		'ripple',
+		{
+			name: 'ripple',
+			cr: '702.60',
+			parameterKind: 'number',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'primitive' }
+		}
+	],
+	// --- End Track P15 ---
 	// --- Track P3 ---
 	[
 		'saddle',
@@ -3158,7 +3828,31 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 		}
 	],
 	// --- End Track P12 ---
-	unimplemented('splice', '702.47', 'text'),
+	// --- Track P15 ---
+	[
+		'splice',
+		{
+			name: 'splice',
+			cr: '702.47',
+			parameterKind: 'text',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'castOption' }
+		}
+	],
+	[
+		'start your engines!',
+		{
+			name: 'start your engines!',
+			cr: '702.179',
+			parameterKind: 'none',
+			displayLabel: 'Start your engines!',
+			grantable: true,
+			status: 'implemented',
+			implementation: { kind: 'static', buildStatics: () => [] }
+		}
+	],
+	// --- End Track P15 ---
 	// --- Track P12 ---
 	simpleImplemented('split second', '702.61', 'Split second'),
 	// --- End Track P12 ---
@@ -3289,7 +3983,19 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 		}
 	],
 	// --- End Track P12 ---
-	unimplemented('transfigure', '702.71', 'cost'),
+	// --- Track P15 ---
+	[
+		'transfigure',
+		{
+			name: 'transfigure',
+			cr: '702.71',
+			parameterKind: 'cost',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'activated', buildActivated: buildTransfigureAbility }
+		}
+	],
+	// --- End Track P15 ---
 	// --- Track P6 ---
 	[
 		'transmute',
@@ -3523,7 +4229,59 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 	],
 	// --- End Track P12 ---
 	unimplemented('waterbend', '701.67', 'cost'),
-	unimplemented('job select', '702.182'),
+	// --- Track P15 ---
+	[
+		'job select',
+		{
+			name: 'job select',
+			cr: '702.182',
+			parameterKind: 'none',
+			displayLabel: 'Job select',
+			grantable: false,
+			status: 'implemented',
+			implementation: {
+				kind: 'trigger',
+				events: ['zoneChange'],
+				buildTriggers: (_kw, abilityIndex, span) => [
+					{
+						abilityIndex,
+						trigger: { event: 'zoneChange', filter: { object: 'self', to: 'battlefield' } },
+						effectSupported: true,
+						text: 'Job select',
+						effect: {
+							steps: [
+								{
+									verb: 'createToken',
+									subject: { k: 'none' },
+									amount: { k: 'const', n: 1 },
+									bindAs: 'hero',
+									params: {
+										token: {
+											name: 'Hero Token',
+											power: 1,
+											toughness: 1,
+											colors: [],
+											typeLine: 'Token Creature — Hero',
+											keywords: []
+										}
+									},
+									span
+								},
+								{
+									verb: 'attach',
+									subject: { k: 'binding', name: 'hero' },
+									span
+								}
+							],
+							targets: [],
+							unparsed: []
+						}
+					}
+				]
+			}
+		}
+	],
+	// --- End Track P15 ---
 	// --- Track P6 ---
 	[
 		'warp',

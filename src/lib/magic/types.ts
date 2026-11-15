@@ -79,7 +79,11 @@ export type CardLayout =
 	| 'modal_dfc'
 	| 'adventure'
 	| 'meld'
-	| 'reversible_card';
+	| 'reversible_card'
+	// --- Track P15 ---
+	| 'prepare'
+	| 'omen';
+	// --- End Track P15 ---
 
 export interface ScryfallCardFace {
 	name: string;
@@ -156,6 +160,9 @@ export interface ScryfallCard {
 	power?: string;
 	toughness?: string;
 	loyalty?: string;
+	// --- Track P15 ---
+	defense?: string;
+	// --- End Track P15 ---
 	imageUrl: string;
 	artCropUrl: string;
 	rarity?: string;
@@ -175,6 +182,9 @@ export interface ScryfallCard {
 		power?: string;
 		toughness?: string;
 		loyalty?: string;
+		// --- Track P15 ---
+		defense?: string;
+		// --- End Track P15 ---
 		imageUrl: string;
 	};
 }
@@ -328,8 +338,11 @@ export type CounterType =
 	| 'rev'
 	| 'slime'
 	| 'soul'
-	| 'flood';
+	| 'flood'
 	// --- End Track P13 ---
+	// --- Track P15 ---
+	| 'defense';
+	// --- End Track P15 ---
 
 export function createEmptyCounterMap(): Record<CounterType, number> {
 	return {
@@ -382,8 +395,11 @@ export function createEmptyCounterMap(): Record<CounterType, number> {
 		rev: 0,
 		slime: 0,
 		soul: 0,
-		flood: 0
+		flood: 0,
 		// --- End Track P13 ---
+		// --- Track P15 ---
+		defense: 0
+		// --- End Track P15 ---
 	};
 }
 	// --- End Track P11 ---
@@ -427,6 +443,9 @@ export interface ManaSpendContext {
 	sourceChosenSubType?: string;
 	capturedManaSpentCount?: number;
 	// --- End Track P10 ---
+	// --- Track P15 ---
+	capturedPhyrexianLifePaidCount?: number;
+	// --- End Track P15 ---
 }
 
 // --- Track P10 ---
@@ -526,6 +545,16 @@ export interface EffectiveActivatedAbility {
 	/** Quoted ability text when granted temporarily until end of turn. */
 	grantedAbilityText?: string;
 	// --- End Track P10 ---
+	// --- Track P15 ---
+	/** CR 606.4 / 107.3: true when activating this ability chooses a value for X (e.g. +X / -X loyalty or {X} cost). */
+	choosesX?: boolean;
+	/** CR 606.4: '+' or '-' when loyalty cost is +X or -X (`loyaltyCost` is null). */
+	loyaltySign?: '+' | '-';
+	/** CR 602.2: who may activate this ability ('any' for any player, 'opponent' for any opponent). */
+	activatorWho?: 'you' | 'any' | 'opponent';
+	/** CR 702.193a–b Power-up: reduce activation mana cost by permanent's mana cost if it entered this turn. */
+	powerUpReduction?: boolean;
+	// --- End Track P15 ---
 }
 
 export interface LibrarySearchDestination {
@@ -827,10 +856,38 @@ export interface CardInstance {
 	/** Full multiset of mana colors spent to cast this spell/permanent (for Adamant single-color counts). */
 	manaColorsAllSpent?: ManaColor[];
 	// --- End Track P13 ---
-	// --- Track P14 ---
-	/** CR 723.3a–b: true while this permanent has the "prepared" designation on the battlefield; cleared on zone exit. */
+	// --- Track P14 & P15 ---
+	/** CR 723.2–3: true while this permanent has the "prepared" designation on the battlefield; cleared on zone exit. */
 	isPrepared?: boolean;
-	// --- End Track P14 ---
+	// --- End Track P14 & P15 ---
+	// --- Track P15 ---
+	/** CR 310.8: player protecting this Battle permanent on the battlefield. */
+	protectorId?: string | null;
+	/** `state.turnSerial ?? state.turnNumber` on which this permanent entered the battlefield (Power-up CR 702.193a, Read ahead CR 702.155b). */
+	enteredTurnSerial?: number;
+	/** CR 702.155b: chapter number chosen as a Read ahead Saga entered the battlefield. */
+	readAheadChosenChapter?: number;
+	/** CR 702.176a: true iff this permanent's impending cost was paid. */
+	castWithImpending?: boolean;
+	/** CR 702.150a Compleated: number of Phyrexian mana symbols paid with 2 life when cast. */
+	compleatedLifePaidCount?: number;
+	/** CR 702.174b Gift: true iff a gift was promised when this permanent's spell was cast. */
+	giftPromised?: boolean;
+	/** CR 702.174b Gift: chosen opponent ID promised the gift on ETB (for permanents with Gift). */
+	giftRecipientId?: string;
+	/** CR 702.167c Craft: exiled card snapshots used to craft this permanent. */
+	craftedWithCards?: ScryfallCard[];
+	/** CR 702.99b Cipher: exiled spell card snapshots encoded on this creature. */
+	encodedSpellCards?: ScryfallCard[];
+	/** CR 702.39a Provoke: attacking creature instanceId this creature must block this combat if able. */
+	provokeMustBlockId?: string;
+	/** CR 602.5b / 702.193a: IDs of 'oncePerGame' activated abilities already activated on this permanent. */
+	usedOncePerGameAbilityIds?: string[];
+	/** CR 702.38a Amplify: true once the Amplify ETB hand-reveal choice has completed as this permanent enters. */
+	amplifyDone?: boolean;
+	/** CR 310.11a Siege: true once the Siege protector ETB choice has completed as this permanent enters. */
+	siegeProtectorChosen?: boolean;
+	// --- End Track P15 ---
 }
 
 export interface TargetRef {
@@ -885,12 +942,30 @@ export interface SpellModifications {
 	/** CR 702.190a–b: cast during declare blockers step by paying its sneak cost. */
 	sneaked?: boolean;
 	/** CR 702.190b: player or planeswalker that the returned unblocked attacker was attacking. */
-	sneakAttackTarget?: { defenderPlayerId: string; defenderPlaneswalkerId?: string | null };
+	sneakAttackTarget?: { defenderPlayerId: string; defenderPlaneswalkerId?: string | null; defenderBattleId?: string | null };
 	// --- End Track P12 ---
 	// --- Track P14 ---
 	/** CR 601.3e (e.g. Kess, Dissident Mage): if this spell would be put into your graveyard, exile it instead. */
 	exileIfPutIntoGraveyard?: boolean;
 	// --- End Track P14 ---
+	// --- Track P15 ---
+	/** CR 721.3d: Omen spell shuffles into its owner's library instead of going to graveyard as it resolves. */
+	shuffleOmenOnResolve?: boolean;
+	/** CR 723.4: Spell copy of a prepared permanent's Preparation face. */
+	preparationCopy?: boolean;
+	/** CR 702.148a: Cast by paying its cleave cost (uses `cleavedSpellSpec`). */
+	cleaved?: boolean;
+	/** CR 702.176a: Cast by paying its impending cost (`impendingN` time counters on ETB). */
+	impendingN?: number;
+	/** CR 702.162a: Cast converted via More Than Meets the Eye. */
+	convertedMttm?: boolean;
+	/** CR 702.173a: Cast by paying its freerunning cost. */
+	freerunning?: boolean;
+	/** CR 702.76a: Cast by paying its prowl cost. */
+	prowled?: boolean;
+	/** CR 702.174a: Cast with a promised gift. */
+	giftPromised?: boolean;
+	// --- End Track P15 ---
 }
 
 export interface CastOptionOptionalCost {
@@ -908,6 +983,10 @@ export interface CastOptionOptionalCost {
 	// --- Track P3 ---
 	/** CR 702.42a–b: true when paying this optional additional cost chooses all modes of a modal spell (Entwine). */
 	chooseAllModes?: boolean;
+	// --- Track P15 ---
+	/** CR 702.47a: spliced card whose target/effect text is appended when this Splice optional cost is paid. */
+	spliceCard?: ScryfallCard;
+	// --- End Track P15 ---
 }
 
 export interface LandPlayOption {
@@ -924,7 +1003,9 @@ export interface LandPlayOption {
 export interface CastCostAid {
 	id: string;
 	label: string;
-	kind: 'tapPermanent' | 'exileCard';
+	// --- Track P15: added 'assistPlayer' & 'spliceCard' ---
+	kind: 'tapPermanent' | 'exileCard' | 'assistPlayer' | 'spliceCard';
+	// --- End Track P15 ---
 	candidateIds: string[];
 	/** Optional colored mana types payable per candidate (1 mana total per candidate); absent/empty means generic only. */
 	colorsByCandidate?: Record<string, ManaColor[]>;
@@ -938,9 +1019,10 @@ export interface CastOption {
 	label: string;
 	costDisplay: string;
 	// --- Track P8: widened fromZone & permission for top-of-library spell casting ---
-	fromZone: 'hand' | 'command' | 'exile' | 'graveyard' | 'library';
+	// --- Track P15: widened fromZone with 'battlefield' for prepared permanents (CR 723.4) ---
+	fromZone: 'hand' | 'command' | 'exile' | 'graveyard' | 'library' | 'battlefield';
 	// --- Track P11: added 'static_alt' for static alternative cast permissions ---
-	permission: 'zone_default' | 'keyword_alt' | 'exile_permission' | 'library_top_permission' | 'static_alt' | 'graveyard_permission';
+	permission: 'zone_default' | 'keyword_alt' | 'exile_permission' | 'library_top_permission' | 'static_alt' | 'graveyard_permission' | 'preparation_copy';
 	faceIndex?: number;
 	fused?: boolean;
 	baseCost:
@@ -1116,8 +1198,11 @@ export interface StackItem {
 				cardObjectVersion: number;
 				fromZone: 'graveyard' | 'exile';
 				ownerId: string;
-		  };
+		  }
 		// --- End Track P13 ---
+		// --- Track P15 ---
+		| { kind: 'increaseSpeed'; playerId: string };
+		// --- End Track P15 ---
 	// --- Track P3 ---
 	/** LKI foretold tracking on triggered abilities whose source left the battlefield before resolution (CR 603.4). */
 	sourceForetold?: boolean;
@@ -1222,6 +1307,36 @@ export interface StackItem {
 	/** Numeric result of the most recent effect step (damage dealt, life lost/gained, cards milled/drawn). */
 	lastEffectAmount?: number;
 	// --- End Track P13 ---
+	// --- Track P15 ---
+	/** CR 702.69a Gravestorm: permanents put into a graveyard from the battlefield this turn when cast. */
+	gravestormCount?: number;
+	/** CR 702.150a Compleated: number of Phyrexian mana symbols paid with 2 life when this spell was cast. */
+	phyrexianLifePaidCount?: number;
+	/** CR 702.174: Gift kind & promised recipient opponent ID on a resolving spell or ETB trigger. */
+	giftKind?: 'card' | 'food' | 'treasure' | 'tappedFish' | 'octopus' | 'extraTurn';
+	giftRecipientId?: string;
+	sourceGiftPromised?: boolean;
+	sourceEnteredWithX?: number;
+	sourceCastWithImpending?: boolean;
+	/** CR 702.47c Splice: cards spliced onto this spell (in splice order). */
+	splicedCards?: ScryfallCard[];
+	/** Plain-JSON tag identifying a Wave 5 (Track P15) frame/keyword triggered or activated stack item. */
+	wave5Tag?: string;
+	wave5N?: number;
+	wave5CostText?: string;
+	wave5Card?: ScryfallCard;
+	wave5Resume?: {
+		step: string;
+		cardId?: string;
+		cardVersion?: number;
+		chosenObjectIds?: string[];
+		chosenPlayerId?: string;
+		chosenNumber?: number;
+		opponentId?: string;
+		remainingCards?: ScryfallCard[];
+		nextIndex?: number;
+	};
+	// --- End Track P15 ---
 }
 
 // --- Track P10 ---
@@ -1375,6 +1490,18 @@ export interface SerializedPendingTrigger {
 	grantAbilityIndex?: number;
 	sourceChosenCardName?: string;
 	// --- End Track P11 ---
+	// --- Track P15 ---
+	gravestormCount?: number;
+	sourceGiftPromised?: boolean;
+	sourceEnteredWithX?: number;
+	sourceCastWithImpending?: boolean;
+	giftKind?: 'card' | 'food' | 'treasure' | 'tappedFish' | 'octopus' | 'extraTurn';
+	giftRecipientId?: string;
+	wave5Tag?: string;
+	wave5N?: number;
+	wave5CostText?: string;
+	wave5Card?: ScryfallCard;
+	// --- End Track P15 ---
 }
 
 /** Snapshot of an IR effect binding carried into a delayed trigger (CR 603.7c). */
@@ -1464,6 +1591,10 @@ export interface CombatAttacker {
 	controllerId: string;
 	defenderPlayerId: string;
 	defenderPlaneswalkerId?: string | null;
+	// --- Track P15 ---
+	/** CR 310.8: Battle permanent this attacker is attacking (`defenderPlayerId` is set to `battle.protectorId`). */
+	defenderBattleId?: string | null;
+	// --- End Track P15 ---
 	blockerInstanceIds: string[];
 	wasBlocked?: boolean;
 }
@@ -1908,9 +2039,9 @@ export interface PlayerGameState {
 	ringLevel?: number;
 	/** CR 701.54a: instanceId of the creature controlled by this player designated as their Ring-bearer. */
 	ringBearerId?: string | null;
-	/** CR 702.131c Ascend: permanent designation once granted for the rest of the game. */
+	/** CR 702.131b–c Ascend: permanent designation once granted for the rest of the game. */
 	hasCitysBlessing?: boolean;
-	/** CR 702.179 Speed: player speed (1..4; 4 = max speed). */
+	/** CR 702.179 Speed: player's speed (`undefined` or `0` = no speed; `1..4` = speed, `4` = max speed). */
 	speed?: number;
 	/** Additional land plays granted until end of turn ("You may play an additional land this turn"). */
 	extraLandPlaysThisTurn?: number;
@@ -1928,6 +2059,18 @@ export interface PlayerGameState {
 	/** Turn-slotted static zone-play permission keys used by this player during the current turn (cleared at turn start). */
 	usedStaticPlaySlotsThisTurn?: string[];
 	// --- End Track P14 ---
+	// --- Track P15 ---
+	/** CR 702.179d: true once this player's inherent speed trigger has triggered this turn. */
+	speedIncreasedThisTurn?: boolean;
+	/** CR 702.76a Prowl / CR 702.173a Freerunning: creature subtypes controlled by this player that dealt combat damage to a player this turn. */
+	dealtCombatDamageWithSubtypesThisTurn?: string[];
+	/** CR 702.173a Freerunning: true iff a commander controlled by this player dealt combat damage to a player this turn. */
+	dealtCombatDamageWithCommanderThisTurn?: boolean;
+	/** CR 702.192a Paradigm: lower-cased names of Paradigm spells this player has resolved for the first time this game. */
+	paradigmResolvedNames?: string[];
+	/** CR 702.192a Paradigm: Paradigm spell cards whose exiled copies are created at the beginning of each of this player's precombat main phases. */
+	paradigmCards?: ScryfallCard[];
+	// --- End Track P15 ---
 }
 
 export interface ManaRider {
@@ -2061,7 +2204,8 @@ export interface PendingCostPayment {
 	specialActionId?: string;
 	sourcePlayerId?: string;
 	// --- Track P8: widened sourceZone for top-of-library casting ---
-	sourceZone?: 'hand' | 'command' | 'exile' | 'graveyard' | 'library';
+	// --- Track P15: widened sourceZone with 'battlefield' for prepared permanents (CR 723.4) ---
+	sourceZone?: 'hand' | 'command' | 'exile' | 'graveyard' | 'library' | 'battlefield';
 	targets?: TargetRef[];
 	targetsBySpec?: TargetRef[][];
 	// --- Track P7 ---
@@ -2122,6 +2266,14 @@ export interface PendingCostPayment {
 	// --- Track P14 ---
 	staticPlaySlotKey?: string;
 	// --- End Track P14 ---
+	// --- Track P15 ---
+	phyrexianLifePaidCount?: number;
+	giftKind?: 'card' | 'food' | 'treasure' | 'tappedFish' | 'octopus' | 'extraTurn';
+	giftRecipientId?: string;
+	splicedCards?: ScryfallCard[];
+	oncePerGame?: boolean;
+	craftMaterialIds?: string[];
+	// --- End Track P15 ---
 	sacrificeSelfInCost?: boolean;
 	parts: SerializedPlannedCost[];
 	manaPaid?: ManaCostRequirement | null;
@@ -2270,6 +2422,18 @@ export interface GameState {
 	/** Maximum spells cast by any single player during the immediately preceding turn. */
 	maxSpellsCastBySinglePlayerLastTurn?: number;
 	// --- End Track P13 ---
+	// --- Track P15 ---
+	/** CR 732: game-wide day/night designation (`undefined` = neither day nor night yet). */
+	dayNight?: 'day' | 'night';
+	/** CR 732.2a–b: number of spells cast by the active player during the current turn. */
+	spellsCastByActivePlayerThisTurn?: number;
+	/** CR 732.2a–b: number of spells cast by the active player during the previous turn. */
+	prevTurnSpellsCastByActivePlayer?: number;
+	/** CR 702.69a Gravestorm: number of permanents put into a graveyard from the battlefield this turn. */
+	permanentsPutIntoGraveyardFromBattlefieldThisTurn?: number;
+	/** CR 310.11b / 704.5v: `${instanceId}:${objectVersion}` keys of Sieges with an unresolved 0-defense trigger on stack / pending. */
+	siegeZeroDefenseTriggeredKeys?: string[];
+	// --- End Track P15 ---
 }
 
 export interface MagicLobby {
@@ -2342,9 +2506,23 @@ export type GameActionPayload =
 			optionalCostCounts?: Record<string, number>;
 			costAidIds?: Record<string, string[]>;
 			costAidColorChoices?: Record<string, ManaColor | 'generic'>;
-			fromZone?: 'hand' | 'command' | 'graveyard' | 'exile' | 'library';
+			fromZone?: 'hand' | 'command' | 'graveyard' | 'exile' | 'library' | 'battlefield';
+			// --- Track P15 ---
+			giftRecipientId?: string;
+			// --- End Track P15 ---
 			costPayment?: CostPayment;
 	  }
+	// --- Track P15 ---
+	| {
+			type: 'cast_preparation_copy';
+			instanceId: string;
+			targets?: TargetRef[];
+			targetDivisions?: Record<string, number>;
+			modes?: number[];
+			xValue?: number;
+			costPayment?: CostPayment;
+	  }
+	// --- End Track P15 ---
 	| {
 			type: 'unlock_room_door';
 			instanceId: string;
@@ -2367,6 +2545,9 @@ export type GameActionPayload =
 			// --- End Track P7 ---
 			chosenModes?: number[];
 			xValue?: number;
+			// --- Track P15 ---
+			craftMaterialIds?: string[];
+			// --- End Track P15 ---
 			costPayment?: CostPayment;
 	  }
 	/** Compatibility alias for answering a `cost_choice` prompt. */
@@ -2386,6 +2567,9 @@ export type GameActionPayload =
 				attackerInstanceId: string;
 				defenderPlayerId: string;
 				defenderPlaneswalkerId?: string | null;
+				// --- Track P15 ---
+				defenderBattleId?: string | null;
+				// --- End Track P15 ---
 			}>;
 	  }
 	| {

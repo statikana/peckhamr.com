@@ -74,6 +74,13 @@ import {
 	matchesWave5ObjectFilter
 } from './staticsAndCostsWave5.ts';
 // --- End Track P14 ---
+// --- Track P15 ---
+import {
+	evaluateP15Amount,
+	evaluateP15Condition,
+	matchesP15ObjectFilter
+} from './framesBattlesAndKeywordsWave5.ts';
+// --- End Track P15 ---
 
 export interface FilterContext {
 	state: GameState;
@@ -475,6 +482,14 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 			wantPid = tRef?.kind === 'player' ? tRef.id : undefined;
 		} else if (filter.controllerRef.k === 'eventPlayer') {
 			wantPid = ctx.stackItem?.eventPlayerId;
+		} else if (filter.controllerRef.k === 'defendingPlayer') {
+			wantPid =
+				ctx.stackItem?.defendingPlayerId ??
+				(ctx.source
+					? state.combat?.attackers.find((a) => a.attackerInstanceId === ctx.source!.instanceId)
+							?.defenderPlayerId
+					: undefined);
+			if (!wantPid) return false;
 		}
 		if (wantPid !== undefined && controllerId !== wantPid) return false;
 	}
@@ -661,6 +676,9 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 	// --- Track P14 ---
 	if (!matchesWave5ObjectFilter(obj, filter, ctx)) return false;
 	// --- End Track P14 ---
+	// --- Track P15 ---
+	if (!matchesP15ObjectFilter(filter, obj, ctx)) return false;
+	// --- End Track P15 ---
 	return true;
 }
 
@@ -873,6 +891,11 @@ export function evaluateAmount(amount: Amount, ctx: FilterContext): number {
 		case 'anyNumber':
 			return evaluateWave5Amount(amount, ctx) ?? 0;
 		// --- End Track P13 + Track P14 ---
+		// --- Track P15 ---
+		case 'playerSpeed':
+		case 'gravestormCount':
+			return evaluateP15Amount(amount, ctx.state, ctx.controllerId) ?? 0;
+		// --- End Track P15 ---
 		default:
 			return 0;
 	}
@@ -1028,6 +1051,27 @@ export function evaluateCondition(cond: Condition, ctx: FilterContext): boolean 
 		case 'nthMatchingSpellThisTurn':
 			return evaluateWave5Condition(cond, ctx) ?? false;
 		// --- End Track P14 ---
+		// --- Track P15 ---
+		case 'maxSpeed':
+		case 'citysBlessing':
+		case 'giftPromised':
+		case 'isDay':
+		case 'isNight':
+		case 'isYourTurn':
+		case 'selfPrepared':
+		case 'isImpending':
+		case 'enteredWithXAtLeast':
+			return (
+				evaluateP15Condition(cond, ctx.state, ctx.controllerId, {
+					source: ctx.source,
+					giftPromised: Boolean(
+						ctx.source?.giftPromised ||
+							ctx.stackItem?.giftKind ||
+							ctx.stackItem?.sourceGiftPromised
+					)
+				}) ?? false
+			);
+		// --- End Track P15 ---
 		default:
 			return false;
 	}

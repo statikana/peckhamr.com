@@ -279,7 +279,12 @@ const NON_CREATURE_SUBTYPES = new Set([
 	'Adventure',
 	'Lesson',
 	'Trap',
-	'Chorus'
+	'Chorus',
+	// --- Track P15 ---
+	'Siege',
+	'Omen',
+	'Spacecraft'
+	// --- End Track P15 ---
 ]);
 
 export { KEYWORD_LABELS };
@@ -460,6 +465,23 @@ function extractInnateFromIR(
 					`Bloodthirst ${ab.keyword.param === 'X' ? 'X' : (ab.keyword.n ?? 0)}`,
 					'keyword'
 				);
+			// --- Track P15 ---
+			} else if (kwName === 'reconfigure') {
+				const costStr = ab.keyword.cost ?? (ab.keyword.n !== undefined ? `${ab.keyword.n}` : '');
+				addResult('reconfigure', `Reconfigure ${costStr}`.trim(), 'keyword');
+				selfGrantedKeywords.add('reconfigure');
+			} else if (kwName === 'impending') {
+				const nStr = ab.keyword.impendingN ?? ab.keyword.n ?? 1;
+				const costStr = ab.keyword.cost ? `—${ab.keyword.cost}` : '';
+				addResult('impending', `Impending ${nStr}${costStr}`, 'keyword');
+				selfGrantedKeywords.add('impending');
+			} else if (kwName === 'amplify') {
+				addResult('amplify', `Amplify ${ab.keyword.n ?? 1}`, 'keyword');
+				selfGrantedKeywords.add('amplify');
+			} else if (kwName === 'ripple') {
+				addResult('ripple', `Ripple ${ab.keyword.n ?? 1}`, 'keyword');
+				selfGrantedKeywords.add('ripple');
+			// --- End Track P15 ---
 			} else {
 				addResult(kwName, formatKeywordLabel(kwName), 'keyword');
 				selfGrantedKeywords.add(kwName);
@@ -545,7 +567,13 @@ function extractInnateFromIR(
 			!chars.types.includes('Creature') &&
 			kwLow !== 'flash' &&
 			kwLow !== 'indestructible' &&
-			kwLow !== 'phasing'
+			kwLow !== 'phasing' &&
+			// --- Track P15 ---
+			kwLow !== 'reconfigure' &&
+			kwLow !== 'job select' &&
+			kwLow !== 'living metal' &&
+			kwLow !== 'aura swap'
+			// --- End Track P15 ---
 		) {
 			continue;
 		}
@@ -1143,8 +1171,12 @@ function offBattlefieldFilterNeedsExtendedMatch(f: ObjectFilter): boolean {
 			f.sharesColorWithSelf ||
 			f.hasAnyCounter !== undefined ||
 			f.equipped !== undefined ||
-			f.enchanted !== undefined
+			f.enchanted !== undefined ||
 			// --- End Track P14 ---
+			// --- Track P15 ---
+			f.isPrepared !== undefined ||
+			Boolean(f.sharesCreatureTypeWithSelf)
+			// --- End Track P15 ---
 	);
 }
 
@@ -1353,6 +1385,33 @@ function matchesLayerFilter(
 		if (Boolean(target.inst.isSuspected) !== filter.suspected) return false;
 	}
 	// --- End Track P10 ---
+	// --- Track P15 ---
+	if (filter.isPrepared !== undefined) {
+		if (Boolean(target.inst.isPrepared) !== filter.isPrepared) return false;
+	}
+	if (filter.sharesCreatureTypeWithSelf) {
+		const srcHasCreatSub =
+			source.types.some(
+				(t) => normalizeLayerCardType(t) === 'creature' || normalizeLayerCardType(t) === 'kindred'
+			) &&
+			(source.hasAllCreatureTypes || source.subtypes.some((s) => !NON_CREATURE_SUBTYPES.has(s)));
+		const tgtHasCreatSub =
+			target.types.some(
+				(t) => normalizeLayerCardType(t) === 'creature' || normalizeLayerCardType(t) === 'kindred'
+			) &&
+			(target.hasAllCreatureTypes || target.subtypes.some((s) => !NON_CREATURE_SUBTYPES.has(s)));
+		if (!srcHasCreatSub || !tgtHasCreatSub) return false;
+		if (!source.hasAllCreatureTypes && !target.hasAllCreatureTypes) {
+			const srcSubs = new Set(
+				source.subtypes.filter((s) => !NON_CREATURE_SUBTYPES.has(s)).map((s) => s.toLowerCase())
+			);
+			const shared = target.subtypes.some(
+				(s) => !NON_CREATURE_SUBTYPES.has(s) && srcSubs.has(s.toLowerCase())
+			);
+			if (!shared) return false;
+		}
+	}
+	// --- End Track P15 ---
 	if (filter.token !== undefined && Boolean(target.inst.isToken) !== filter.token) return false;
 	// --- Track P13 + Track P14 ---
 	if (filter.anyOf?.length) {
@@ -1892,6 +1951,21 @@ function evaluateLayerAmount(
 			);
 		}
 		// --- End Track P13 + Track P14 ---
+		// --- Track P15 ---
+		case 'playerSpeed': {
+			layerReads |= READ_P15;
+			if (amount.player.k === 'activePlayer') layerReads |= READ_ACTIVE_PLAYER;
+			const pid =
+				amount.player.k === 'you'
+					? source.controllerId
+					: (state.players[state.activePlayerIndex]?.playerId ?? source.controllerId);
+			const p = state.players.find((pl) => pl.playerId === pid);
+			return p?.speed ?? 0;
+		}
+		case 'gravestormCount':
+			layerReads |= READ_P15;
+			return state.permanentsPutIntoGraveyardFromBattlefieldThisTurn ?? 0;
+		// --- End Track P15 ---
 		default:
 			return 0;
 	}
@@ -2224,6 +2298,36 @@ function evaluateLayerCondition(
 			);
 		}
 		// --- End Track P14 ---
+		// --- Track P15 ---
+		case 'maxSpeed': {
+			layerReads |= READ_P15;
+			const p = state.players.find((pl) => pl.playerId === source.controllerId);
+			return (p?.speed ?? 0) >= 4;
+		}
+		case 'citysBlessing': {
+			layerReads |= READ_P15;
+			const p = state.players.find((pl) => pl.playerId === source.controllerId);
+			return Boolean(p?.hasCitysBlessing);
+		}
+		case 'giftPromised':
+			return Boolean(source.inst.giftPromised);
+		case 'isDay':
+			layerReads |= READ_P15;
+			return state.dayNight === 'day';
+		case 'isNight':
+			layerReads |= READ_P15;
+			return state.dayNight === 'night';
+		case 'isYourTurn': {
+			layerReads |= READ_ACTIVE_PLAYER;
+			return state.players[state.activePlayerIndex]?.playerId === source.controllerId;
+		}
+		case 'selfPrepared':
+			return Boolean(source.inst.isPrepared);
+		case 'isImpending':
+			return Boolean(source.inst.castWithImpending) && (source.inst.counters.time || 0) > 0;
+		case 'enteredWithXAtLeast':
+			return (source.inst.enteredWithX ?? 0) >= cond.n;
+		// --- End Track P15 ---
 		default:
 			return false;
 	}
@@ -2335,6 +2439,9 @@ const READ_P13 = 131072; // 1 << 17
 // --- Track P14 ---
 const READ_P14 = 262144; // 1 << 18
 // --- End Track P14 ---
+// --- Track P15 ---
+const READ_P15 = 524288; // 1 << 19
+// --- End Track P15 ---
 
 /** Inputs read by the evaluation in progress (bits above). */
 let layerReads = 0;
@@ -2395,6 +2502,17 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 		}
 	}
 	// --- End Track P13 ---
+	// --- Track P15 ---
+	if (reads & READ_P15) {
+		fp.push(
+			state.dayNight ?? null,
+			state.permanentsPutIntoGraveyardFromBattlefieldThisTurn ?? 0
+		);
+		for (const p of state.players) {
+			fp.push(p.speed ?? 0, Boolean(p.hasCitysBlessing));
+		}
+	}
+	// --- End Track P15 ---
 	for (const p of state.players) {
 		if (reads & READ_LIFE) fp.push(p.life);
 		if (reads & READ_ENERGY) fp.push(p.energyCounters || 0);
@@ -2539,6 +2657,13 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 			perm.devouredCount ?? 0,
 			perm.exhaustedAbilityIds?.length ?? 0,
 			// --- End Track P12 ---
+			// --- Track P15 ---
+			Boolean(perm.isPrepared),
+			Boolean(perm.castWithImpending),
+			perm.counters.time || 0,
+			perm.enteredWithX ?? 0,
+			Boolean(perm.giftPromised),
+			// --- End Track P15 ---
 			perm.kickedCount || 0,
 			perm.kickedTags?.length || 0,
 			perm.grantedKeywords?.length || 0
@@ -2704,6 +2829,21 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 		}
 	}
 	// --- End Track P13 ---
+	// --- Track P15 ---
+	if (reads & READ_P15) {
+		if (
+			fp[i++] !== (state.dayNight ?? null) ||
+			fp[i++] !== (state.permanentsPutIntoGraveyardFromBattlefieldThisTurn ?? 0)
+		) {
+			return false;
+		}
+		for (const p of state.players) {
+			if (fp[i++] !== (p.speed ?? 0) || fp[i++] !== Boolean(p.hasCitysBlessing)) {
+				return false;
+			}
+		}
+	}
+	// --- End Track P15 ---
 	for (const p of state.players) {
 		if (reads & READ_LIFE && fp[i++] !== p.life) return false;
 		if (reads & READ_ENERGY && fp[i++] !== (p.energyCounters || 0)) return false;
@@ -2901,6 +3041,13 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 			fp[i++] !== (perm.devouredCount ?? 0) ||
 			fp[i++] !== (perm.exhaustedAbilityIds?.length ?? 0) ||
 			// --- End Track P12 ---
+			// --- Track P15 ---
+			fp[i++] !== Boolean(perm.isPrepared) ||
+			fp[i++] !== Boolean(perm.castWithImpending) ||
+			fp[i++] !== (perm.counters.time || 0) ||
+			fp[i++] !== (perm.enteredWithX ?? 0) ||
+			fp[i++] !== Boolean(perm.giftPromised) ||
+			// --- End Track P15 ---
 			fp[i++] !== (perm.kickedCount || 0) ||
 			fp[i++] !== kickedTagsLen ||
 			fp[i++] !== grantedLen
@@ -3900,6 +4047,38 @@ function evaluateTypeOverwrites(
 			}
 		}
 	}
+
+	// --- Track P15: CR 702.176a (Impending) & CR 702.151b (Reconfigure) Layer 4 Creature-type removal ---
+	for (const target of workList) {
+		if (target.strippedByAttachment || target.abilityRemovalEvents.length > 0) continue;
+		const losesCreatureViaImpending =
+			Boolean(target.inst.castWithImpending) &&
+			(target.inst.counters.time || 0) > 0 &&
+			workHasActiveKeyword(target, 'impending');
+		const losesCreatureViaReconfigure =
+			target.inst.attachedToId !== null &&
+			workMap.has(target.inst.attachedToId) &&
+			workHasActiveKeyword(target, 'reconfigure');
+		if ((losesCreatureViaImpending || losesCreatureViaReconfigure) && target.types.includes('Creature')) {
+			target.types = target.types.filter((t) => t !== 'Creature');
+			const retainsCreatureSubtypes = target.types.some(
+				(t) => normalizeLayerCardType(t) === 'kindred'
+			);
+			if (!retainsCreatureSubtypes) {
+				target.subtypes = target.subtypes.filter((sub) => NON_CREATURE_SUBTYPES.has(sub));
+				target.hasAllCreatureTypes = false;
+			}
+			const superPrefix = target.supertypes.length > 0 ? `${target.supertypes.join(' ')} ` : '';
+			const typeStr = target.types.join(' ');
+			const subStr = target.subtypes.length > 0 ? ` — ${target.subtypes.join(' ')}` : '';
+			target.effectiveTypeLine = `${superPrefix}${typeStr}${subStr}`;
+			const srcReason = losesCreatureViaImpending ? 'Impending' : 'Reconfigure';
+			if (!target.typeModifiedBy.includes(srcReason)) {
+				target.typeModifiedBy.push(srcReason);
+			}
+		}
+	}
+	// --- End Track P15 ---
 }
 
 function evaluateAdditiveTypesAndColors(

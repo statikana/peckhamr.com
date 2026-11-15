@@ -101,6 +101,12 @@ export interface FaceDefinition {
 	// --- Track P6 ---
 	/** CR 719.2: inset prototype mana cost, derived colors, and power/toughness. */
 	prototypeSpec?: PrototypeSpec;
+	// --- Track P15 ---
+	/** CR 702.148: compiled spell ability with bracketed `[...]` text removed when cast for its cleave cost. */
+	cleavedSpellSpec?: SpellAbility;
+	/** CR 702.174: compiled spell ability used when a Gift was promised on cast. */
+	giftPromisedSpellSpec?: SpellAbility;
+	// --- End Track P15 ---
 }
 
 export interface Characteristics {
@@ -114,6 +120,10 @@ export interface Characteristics {
 	power?: number;
 	toughness?: number;
 	loyalty?: number;
+	// --- Track P15 ---
+	/** CR 310.4: printed defense value on a Battle card face. */
+	defense?: number;
+	// --- End Track P15 ---
 	/** CR 604.3: power and/or toughness come from a characteristic-defining ability. */
 	ptDefinedByAbility?: boolean;
 }
@@ -156,7 +166,11 @@ export type ActivationRestriction =
 	| 'onceEachTurn'
 	| 'duringYourTurn'
 	| 'duringYourUpkeep'
-	| 'duringCombat';
+	| 'duringCombat'
+	// --- Track P15 ---
+	| 'beforeAttackers'
+	| 'oncePerGame';
+	// --- End Track P15 ---
 
 export interface ActivatedAbility {
 	kind: 'activated';
@@ -171,6 +185,12 @@ export interface ActivatedAbility {
 	// --- Track P4 ---
 	/** CR 602.5b: conditional activation restriction ("Activate only if you control a Swamp or a Plains."). */
 	activationCondition?: Condition;
+	// --- Track P15 ---
+	/** CR 602.2: who may activate this ability ('any' for "Any player may activate", 'opponent' for "Only any opponent"). */
+	activatorWho?: 'you' | 'any' | 'opponent';
+	/** CR 702.193a–b Power-up: reduce activation mana cost by this permanent's mana cost if it entered this turn. */
+	powerUpReduction?: boolean;
+	// --- End Track P15 ---
 	/** Zones from which this ability can be activated; omitted defaults to `['battlefield']`. */
 	activationZones?: ZoneType[];
 	/** Canonical keyword tag for ability cost modifiers (`'equip'`, `'cycling'`), CR 702.6 / 702.29f. */
@@ -269,6 +289,12 @@ export interface UnsupportedAbility {
 	// --- Track P4 ---
 	/** CR 602.5b: conditional activation restriction recognized on an unsupported activated ability. */
 	activationCondition?: Condition;
+	// --- Track P15 ---
+	/** CR 602.2: who may activate this ability on an unsupported activated ability. */
+	activatorWho?: 'you' | 'any' | 'opponent';
+	/** CR 702.193a–b Power-up cost reduction flag on an unsupported activated ability. */
+	powerUpReduction?: boolean;
+	// --- End Track P15 ---
 	/** CR 601.3: timing restrictions recognized on an unsupported spell. */
 	castRestrictions?: Array<'duringCombat' | 'duringYourTurn' | 'beforeAttackers'>;
 	/**
@@ -348,6 +374,19 @@ export interface KeywordDef {
 	/** Backup N (CR 702.165c): index of the Backup keyword ability so abilities after it are granted to another creature. */
 	backupAbilityStartIndex?: number;
 	// --- End Track P12 ---
+	// --- Track P15 ---
+	/** Gift a [thing] (CR 702.174): kind of gift promised to an opponent. */
+	giftKind?: 'card' | 'food' | 'treasure' | 'tappedFish' | 'octopus' | 'extraTurn';
+	/** Craft with [materials] [cost] (CR 702.167): material slot filters (or single repeatable filter when `craftAnyNumber`). */
+	craftMaterials?: ObjectFilter[];
+	craftAnyNumber?: boolean;
+	/** Splice onto [subtype/type] [cost] (CR 702.47): filter on the spell being spliced onto. */
+	spliceFilter?: ObjectFilter;
+	/** Impending N—[cost] (CR 702.176): number of time counters placed on ETB when cast for impending. */
+	impendingN?: number;
+	/** Nonbasic / snow / supertype landwalk filter (CR 702.14). */
+	landwalkFilter?: ObjectFilter;
+	// --- End Track P15 ---
 }
 
 // ---- Filters --------------------------------------------------------------------------------
@@ -489,6 +528,12 @@ export interface ObjectFilter {
 	/** Matches permanents that have (`true`) or don't have (`false`) an Aura attached to them. */
 	enchanted?: boolean;
 	// --- End Track P14 ---
+	// --- Track P15 ---
+	/** CR 723: matches prepared (`true`) or unprepared (`false`) permanents on the battlefield. */
+	isPrepared?: boolean;
+	/** CR 702.38 / 702.76: matches cards/permanents sharing at least one creature subtype with `source`. */
+	sharesCreatureTypeWithSelf?: boolean;
+	// --- End Track P15 ---
 }
 
 export interface Compare {
@@ -626,8 +671,14 @@ export type Amount =
 	/** Total power / toughness / mana value among matching objects ("total power of creatures you control"). */
 	| { k: 'totalStatOf'; stat: 'power' | 'toughness' | 'manaValue'; filter: ObjectFilter }
 	/** Any non-negative integer chosen as part of a variable-count cost ("any number of"). */
-	| { k: 'anyNumber' };
+	| { k: 'anyNumber' }
 	// --- End Track P14 ---
+	// --- Track P15 ---
+	/** CR 702.179f: player's current speed (0 if player has no speed). */
+	| { k: 'playerSpeed'; player: PlayerRef }
+	/** CR 702.69a: number of permanents put into a graveyard from the battlefield so far this turn. */
+	| { k: 'gravestormCount' };
+	// --- End Track P15 ---
 
 // ---- Costs ----------------------------------------------------------------------------------
 
@@ -639,7 +690,9 @@ export type CostDef =
 	| { k: 'sacrifice'; count: Amount; filter: ObjectFilter | 'self' }
 	| { k: 'discard'; count: Amount; filter?: ObjectFilter | 'self'; random?: boolean }
 	| { k: 'payLife'; amount: Amount }
-	| { k: 'loyalty'; delta: number }
+	// --- Track P15: widened loyalty for +X / -X loyalty abilities (CR 606.4) ---
+	| { k: 'loyalty'; delta: number; isX?: boolean; sign?: '+' | '-' }
+	// --- End Track P15 ---
 	// --- Track P11: widened removeCounters & added mill ---
 	| {
 			k: 'removeCounters';
@@ -815,8 +868,13 @@ export type Verb =
 	| 'airbend'
 	| 'learn'
 	| 'villainousChoice'
-	| 'vote';
+	| 'vote'
 	// --- End Track P13 ---
+	// --- Track P15 ---
+	| 'prepare'
+	| 'unprepare'
+	| 'increaseSpeed';
+	// --- End Track P15 ---
 
 export type ManaRestriction = 'artifactSpellOrNonSpell';
 
@@ -1324,7 +1382,7 @@ export type EventKind =
 	/** CR 702.112b: "When ~ becomes renowned" when a creature becomes renowned. */
 	| 'becameRenowned'
 	// --- End Track P12 ---
-	// --- Track P13 ---
+	// --- Track P13 & P15 ---
 	/** CR 709.5h: "When you unlock this door" / "Whenever you unlock a door of a Room you control". */
 	| 'doorUnlocked'
 	/** CR 709.5i (Eerie): "Whenever you fully unlock a Room". */
@@ -1337,7 +1395,7 @@ export type EventKind =
 	| 'dungeonCompleted'
 	/** CR 727.2: "Whenever you take the initiative". */
 	| 'tookInitiative';
-	// --- End Track P13 ---
+	// --- End Track P13 & P15 ---
 
 export interface EventFilter {
 	/**
@@ -1601,8 +1659,28 @@ export type Condition =
 	/** True iff controller has drawn >= `min` cards this turn. */
 	| { k: 'cardsDrawnThisTurnAtLeast'; min: number }
 	/** True while casting the `ordinal`-th (1st or 2nd) matching spell you cast this turn (`matchingCastCount === ordinal - 1`). */
-	| { k: 'nthMatchingSpellThisTurn'; ordinal: 1 | 2; filter?: ObjectFilter };
+	| { k: 'nthMatchingSpellThisTurn'; ordinal: 1 | 2; filter?: ObjectFilter }
 	// --- End Track P14 ---
+	// --- Track P15 ---
+	/** CR 702.178a / 702.179e: true iff controller's speed is 4 (max speed). */
+	| { k: 'maxSpeed' }
+	/** CR 702.131c: true iff controller has the city's blessing. */
+	| { k: 'citysBlessing' }
+	/** CR 702.174b: true iff a Gift optional cost was promised for this spell/permanent. */
+	| { k: 'giftPromised' }
+	/** CR 732: true iff it is currently day (`state.dayNight === 'day'`). */
+	| { k: 'isDay' }
+	/** CR 732: true iff it is currently night (`state.dayNight === 'night'`). */
+	| { k: 'isNight' }
+	/** CR 702.161 Living metal: true iff it is currently the controller's turn. */
+	| { k: 'isYourTurn' }
+	/** CR 723: true iff this permanent is currently prepared (`Boolean(self.isPrepared)`). */
+	| { k: 'selfPrepared' }
+	/** CR 702.176a: true iff this permanent was cast for its impending cost and still has >= 1 time counter. */
+	| { k: 'isImpending' }
+	/** CR 702.156a Ravenous: true iff this permanent entered from a spell whose chosen X was >= `n`. */
+	| { k: 'enteredWithXAtLeast'; n: number };
+	// --- End Track P15 ---
 
 // ---- Statics and replacements ---------------------------------------------------------------
 
@@ -1931,8 +2009,15 @@ export type StaticDef =
 				requireCounterPresent?: boolean;
 			};
 			condition?: Condition;
-	  };
+	  }
 	// --- End Track P14 ---
+	// --- Track P15 ---
+	| {
+			/** CR 723.3: "~ enters prepared." */
+			k: 'entersPrepared';
+			condition?: Condition;
+	  };
+	// --- End Track P15 ---
 
 export interface EventPattern {
 	event: EventKind | 'draw' | 'damage' | 'lifeGain';
@@ -1991,10 +2076,10 @@ export interface ReplacementDef {
 					add?: Amount;
 				};
 				// --- End Track P11 ---
-				// --- Track P14 ---
+				// --- Track P14 & P15 ---
 				/** CR 723.3a: "~ enters prepared." */
 				entersPrepared?: boolean;
-				// --- End Track P14 ---
+				// --- End Track P14 & P15 ---
 		  };
 	/** CR 614.15 / 616.1a: true when this is a self-replacement effect applied before other replacements. */
 	selfReplacement?: boolean;

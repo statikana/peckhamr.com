@@ -176,10 +176,10 @@ function passBoth(state: GameState): void {
 
 describe('Transform, Flip, Morph, Megamorph, Disguise & Face-Down Rules', () => {
 	it('keeps unimplemented related keywords honest', () => {
-		for (const kw of ['daybound', 'nightbound', 'craft', 'meld']) {
+		for (const kw of ['meld']) {
 			assert.equal(IMPLEMENTED_KEYWORDS.has(kw), false, `${kw} should stay unimplemented`);
 		}
-		for (const kw of ['morph', 'megamorph', 'disguise', 'disturb']) {
+		for (const kw of ['morph', 'megamorph', 'disguise', 'disturb', 'daybound', 'nightbound', 'craft']) {
 			assert.equal(IMPLEMENTED_KEYWORDS.has(kw), true, `${kw} should be implemented`);
 		}
 	});

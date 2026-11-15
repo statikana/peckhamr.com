@@ -455,14 +455,14 @@ export type GameEvent =
 	| CaseSolvedEvent
 	| BecameRenownedEvent
 	// --- End Track P12 ---
-	// --- Track P13 ---
+	// --- Track P13 & P15 ---
 	| DoorUnlockedEvent
 	| RoomFullyUnlockedEvent
 	| RingTemptedEvent
 	| DungeonRoomEnteredEvent
 	| DungeonCompletedEvent
 	| TookInitiativeEvent;
-	// --- End Track P13 ---
+	// --- End Track P13 & P15 ---
 
 // --- Track P10 ---
 export interface UnblockedAttackersEvent extends EventBase {

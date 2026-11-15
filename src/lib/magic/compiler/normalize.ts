@@ -32,7 +32,7 @@ export interface NormalizedFace {
 }
 
 const SELF_REFERENCE_TYPES =
-	'creature|permanent|spell|card|artifact|enchantment|land|equipment|aura|vehicle|mount|spacecraft|planet|planeswalker|battle|saga|class|case|siege|token';
+	'creature|permanent|spell|card|artifact|enchantment|land|equipment|aura|vehicle|mount|spacecraft|planet|planeswalker|battle|saga|class|case|siege|room|omen|token';
 const SELF_REFERENCE = new RegExp(`\\bthis (?:${SELF_REFERENCE_TYPES})\\b`, 'gi');
 
 /**
@@ -395,7 +395,10 @@ const RULES_SECTION_702_KEYWORDS: readonly string[] = [
 	'power-up',
 	'teamwork',
 	'storied',
-	'beam me up'
+	'beam me up',
+	'choose a background',
+	"doctor's companion",
+	'friends forever'
 ];
 
 const RULES_TERM_BLOCKLIST: ReadonlySet<string> = new Set([
@@ -407,7 +410,15 @@ const RULES_TERM_BLOCKLIST: ReadonlySet<string> = new Set([
 const RULES_PARAM_PREFIXES: readonly string[] = [
 	'boast',
 	'exhaust',
+	'power-up',
 	'craft',
+	'splice',
+	'cleave',
+	'reconfigure',
+	'transfigure',
+	'aura swap',
+	'more than meets the eye',
+	'partner',
 	'saddle',
 	'crew',
 	'equip',

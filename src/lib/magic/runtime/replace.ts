@@ -1441,11 +1441,11 @@ export function applySelfEtbReplacements(state: GameState, perm: CardInstance): 
 		if (rep.with.tapped && !rep.with.copyOf) {
 			perm.tapped = true;
 		}
-		// --- Track P14 (CR 723.3a): "~ enters prepared." ---
+		// --- Track P14 & P15 (CR 723.3a): "~ enters prepared." ---
 		if (rep.with.entersPrepared) {
 			perm.isPrepared = true;
 		}
-		// --- End Track P14 ---
+		// --- End Track P14 & P15 ---
 		if (ctrl?.isBot) {
 			if (rep.with.chooseColor && !perm.chosenColor) {
 				perm.chosenColor = chooseBotBestColor(state, ctrl, rep.with.chooseColor.exclude, perm);
