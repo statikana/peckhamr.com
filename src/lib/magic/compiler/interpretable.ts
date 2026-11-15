@@ -134,8 +134,15 @@ export const INTERPRETED_VERBS: ReadonlySet<Verb> = new Set<Verb>([
 	'empowerJace',
 	'assimilate',
 	'recruit',
-	'heal'
+	'heal',
 	// --- End Track P16a ---
+	// --- Track P19a ---
+	'redirectTargets',
+	'skipTurn',
+	'exileUntil',
+	'delayedTapManaTrigger',
+	'delayedNextSpellCopy'
+	// --- End Track P19a ---
 ]);
 
 export const SUPPORTED_OPTIONAL_COST_KINDS: ReadonlySet<CostDef['k']> = new Set<CostDef['k']>([
@@ -148,8 +155,35 @@ export const SUPPORTED_OPTIONAL_COST_KINDS: ReadonlySet<CostDef['k']> = new Set<
 	'exileFrom',
 	'tapOthers',
 	'tapSubsetSum',
-	'exertSelf'
+	'exertSelf',
+	// --- Track P19a ---
+	'returnToHand',
+	'revealFromHand',
+	'behold',
+	'putCounters',
+	'discardHand',
+	'putFromHandOnTopOfLibrary',
+	'putOnBottomOfLibrary',
+	'untapOthers',
+	'revealHand',
+	'opponentGainsLife',
+	'processOpponentExile',
+	'putExiledWithSelfToGraveyard',
+	'mill'
+	// --- End Track P19a ---
 ]);
+
+// --- Track P19a ---
+function isSupportedOptionalCostDef(c: CostDef): boolean {
+	if (c.k === 'choice') {
+		return (
+			c.options.length > 0 &&
+			c.options.every((opt) => opt.length > 0 && opt.every(isSupportedOptionalCostDef))
+		);
+	}
+	return SUPPORTED_OPTIONAL_COST_KINDS.has(c.k);
+}
+// --- End Track P19a ---
 
 /**
  * Target specs a triggered ability can choose when it is put on the stack (the zones the engine's
@@ -217,14 +251,14 @@ function stepSupported(step: EffectStep): boolean {
 	if (step.verb === 'payCost' && (!step.optional?.cost || step.optional.cost.length === 0)) return false;
 	if (step.verb === 'cumulativeUpkeep') {
 		const cu = step.params?.cumulativeUpkeepCost;
-		if (!cu || cu.length === 0 || !cu.every((c) => SUPPORTED_OPTIONAL_COST_KINDS.has(c.k))) {
+		if (!cu || cu.length === 0 || !cu.every(isSupportedOptionalCostDef)) {
 			return false;
 		}
 	}
 	if (step.optional?.cost) {
 		if (
 			step.optional.cost.length === 0 ||
-			!step.optional.cost.every((c) => SUPPORTED_OPTIONAL_COST_KINDS.has(c.k))
+			!step.optional.cost.every(isSupportedOptionalCostDef)
 		) {
 			return false;
 		}
@@ -232,8 +266,6 @@ function stepSupported(step: EffectStep): boolean {
 	if (step.verb === 'search') {
 		const s = step.params?.search;
 		if (!s) return false;
-		// "may search" requires a stated quality (CR 701.19b) so the chooser can fail to find.
-		if (step.optional && !s.statedQuality && !s.filter.named) return false;
 	}
 	if (
 		step.verb === 'addMana' &&
@@ -276,6 +308,15 @@ function stepSupported(step: EffectStep): boolean {
 	if (step.verb === 'amass' && !step.params?.amassSubtype) return false;
 	if (step.verb === 'grantPlayFromExile' && !step.params?.playFromExile) return false;
 	if (step.verb === 'revealAndDiscard') {
+		// --- Track P19a ---
+		if (
+			step.params?.discardAllWithChosenName ||
+			step.params?.discardAllMatchingSacrificedColors ||
+			(step.params?.partialRevealCount !== undefined && !step.params?.coerciveDiscard)
+		) {
+			return true;
+		}
+		// --- End Track P19a ---
 		const cd = step.params?.coerciveDiscard;
 		if (!cd || (cd.destination !== 'graveyard' && cd.destination !== 'exile')) return false;
 	}
@@ -379,7 +420,11 @@ function stepSupported(step: EffectStep): boolean {
 		!step.params?.mustBlockSelfThisTurn &&
 		!step.params?.cantBlockSelfThisTurn &&
 		!step.params?.assignsNoCombatDamageThisTurn &&
-		!step.params?.removeAllAbilities
+		!step.params?.removeAllAbilities &&
+		// --- Track P19a ---
+		!step.params?.chooseLoseKeywordOptions?.length &&
+		!step.params?.chooseColorForAnimate
+		// --- End Track P19a ---
 	) {
 		return false;
 	}
@@ -406,6 +451,23 @@ function stepSupported(step: EffectStep): boolean {
 		return true;
 	}
 	// --- End Track P16a ---
+	// --- Track P19a ---
+	if (step.verb === 'redirectTargets') {
+		return Boolean(step.params?.redirectSpec && step.subject.k !== 'none');
+	}
+	if (step.verb === 'skipTurn') {
+		return step.subject.k !== 'none';
+	}
+	if (step.verb === 'exileUntil') {
+		return Boolean(step.params?.exileUntilSpec);
+	}
+	if (step.verb === 'delayedTapManaTrigger') {
+		return Boolean(step.params?.delayedTapManaSpec);
+	}
+	if (step.verb === 'delayedNextSpellCopy') {
+		return Boolean(step.params?.delayedNextSpellCopySpec);
+	}
+	// --- End Track P19a ---
 	// --- Track P13 ---
 	if (step.verb === 'createEmblem') {
 		return Boolean(step.params?.emblemAbilities && step.params.emblemAbilities.length > 0);
@@ -492,6 +554,16 @@ function stepSupported(step: EffectStep): boolean {
 		return true;
 	}
 	// --- End Track P10 ---
+	// --- Track P19a ---
+	if (
+		step.verb === 'exile' &&
+		step.subject.k === 'all' &&
+		step.subject.filter.zone === 'library' &&
+		(step.amount !== undefined || step.params?.choiceCount !== undefined)
+	) {
+		return true;
+	}
+	// --- End Track P19a ---
 	if ((step.verb === 'destroy' || step.verb === 'exile' || step.verb === 'bounce') && step.subject.k === 'all') {
 		return step.subject.filter.zone === 'battlefield';
 	}
@@ -536,6 +608,15 @@ function stepProducesDecision(step: EffectStep | undefined): boolean {
 		return true;
 	}
 	// --- End Track P16a ---
+	// --- Track P19a ---
+	if (
+		Boolean(step.params?.unlessPaysGenericAmount) ||
+		step.verb === 'exileUntil' ||
+		(step.verb === 'redirectTargets' && step.params?.redirectSpec?.mode === 'chooseNewTargets')
+	) {
+		return true;
+	}
+	// --- End Track P19a ---
 	return false;
 }
 

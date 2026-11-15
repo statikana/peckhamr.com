@@ -65,6 +65,19 @@ import {
 	tryParseWave6ObjectPredicate,
 	tryParseWave6Sentence
 } from './effectsWave6.ts';
+// --- Track P19a ---
+import {
+	convertDigStepToExileUntil,
+	parseWave7AddMana,
+	parseWave7Amount,
+	parseWave7Condition,
+	parseWave7StackTargetQualifiers,
+	parseWave7TokenPhrase,
+	tryParseWave7ObjectPredicate,
+	tryParseWave7Sentence,
+	tryStitchExileUntilFollowUp
+} from './effectsWave7.ts';
+// --- End Track P19a ---
 import { staticallyInterpretable } from './interpretable.ts';
 import { parseActivatedIfConditionSentence, parseCondition } from './triggers.ts';
 import {
@@ -263,6 +276,11 @@ interface PendingCoerciveState {
 	lookOnly?: boolean;
 	optionalChoice?: boolean;
 	filter?: ObjectFilter;
+	// --- Track P19a ---
+	coerciveCount?: Amount;
+	includeGraveyardInCoercive?: boolean;
+	partialRevealCount?: Amount | 'randomOne';
+	// --- End Track P19a ---
 	spans: Span[];
 }
 
@@ -482,8 +500,7 @@ class Parser {
 			else if (subj?.k === 'eventObject') directRef = { k: 'eventObject' };
 			else if (subj?.k === 'attachedTo') directRef = { k: 'attachedTo' };
 			else if (subj?.k === 'binding') directRef = { k: 'binding', name: subj.name };
-			if (!directRef) return null;
-			this.lastObject = { ref: directRef, stepIndex: -1 };
+			this.lastObject = directRef ? { ref: directRef, stepIndex: -1 } : undefined;
 		}
 		const res = fn();
 		this.lastObject = savedLastObj;
@@ -659,6 +676,12 @@ function targetPhrase(text: string, p?: Parser): Omit<TargetSpec, 'min' | 'max'>
 		phrase = rawFromSrc[1].trim();
 	}
 	// --- End Track P10 ---
+	// --- Track P19a: Stack target qualifiers ("with a single target", "that targets only ...", "that targets ...") ---
+	const w7StackQual = zone === 'battlefield' ? parseWave7StackTargetQualifiers(phrase, objectFilter) : null;
+	if (w7StackQual) {
+		phrase = w7StackQual.phrase;
+	}
+	// --- End Track P19a ---
 	const ctl = splitController(phrase);
 	phrase = ctl.phrase;
 	if (zone === 'battlefield') {
@@ -666,16 +689,27 @@ function targetPhrase(text: string, p?: Parser): Omit<TargetSpec, 'min' | 'max'>
 			...base,
 			...(ctl.controller ? { controller: ctl.controller } : {}),
 			...(wasNotCast ? { wasNotCast: true } : {}),
-			...(abilitySourceFilter ? { abilitySourceFilter } : {})
+			...(abilitySourceFilter ? { abilitySourceFilter } : {}),
+			...(w7StackQual?.withSingleTarget ? { withSingleTarget: true } : {}),
+			...(w7StackQual?.targetsSelf ? { targetsSelf: true } : {}),
+			...(w7StackQual?.singleTargetFilter ? { singleTargetFilter: w7StackQual.singleTargetFilter } : {}),
+			...(w7StackQual?.singleTargetPlayer ? { singleTargetPlayer: w7StackQual.singleTargetPlayer } : {}),
+			...(w7StackQual?.targetsFilter ? { targetsFilter: w7StackQual.targetsFilter } : {}),
+			...(w7StackQual?.targetsPlayerFilter ? { targetsPlayerFilter: w7StackQual.targetsPlayerFilter } : {})
+		});
+		const withStackSpec = (filter: ObjectFilter): Omit<TargetSpec, 'min' | 'max'> => ({
+			kind: 'object',
+			filter,
+			...(w7StackQual?.withSingleTarget ? { withSingleTarget: true } : {})
 		});
 		if (/^(?:activated or triggered abilit(?:y|ies)|abilit(?:y|ies))$/.test(phrase)) {
-			return { kind: 'object', filter: withCtl({ zone: 'stack', stackKind: 'ability' }) };
+			return withStackSpec(withCtl({ zone: 'stack', stackKind: 'ability' }));
 		}
 		if (/^activated abilit(?:y|ies)$/.test(phrase)) {
-			return { kind: 'object', filter: withCtl({ zone: 'stack', stackKind: 'activatedAbility' }) };
+			return withStackSpec(withCtl({ zone: 'stack', stackKind: 'activatedAbility' }));
 		}
 		if (/^triggered abilit(?:y|ies)$/.test(phrase)) {
-			return { kind: 'object', filter: withCtl({ zone: 'stack', stackKind: 'triggeredAbility' }) };
+			return withStackSpec(withCtl({ zone: 'stack', stackKind: 'triggeredAbility' }));
 		}
 		if (abilitySourceFilter) return null;
 		if (
@@ -684,14 +718,13 @@ function targetPhrase(text: string, p?: Parser): Omit<TargetSpec, 'min' | 'max'>
 			)
 		) {
 			const onlyInstSorc = /^instant or sorcery/i.test(phrase);
-			return {
-				kind: 'object',
-				filter: withCtl({
+			return withStackSpec(
+				withCtl({
 					zone: 'stack',
 					stackKind: 'spellOrAbility',
 					...(onlyInstSorc ? { types: ['Instant', 'Sorcery'] } : {})
 				})
-			};
+			);
 		}
 		// --- Track P16a: Qualified stack spell targets ("spell with mana value 3 or less", "spell an opponent controls with ...") ---
 		let spellPhrase = phrase;
@@ -708,12 +741,12 @@ function targetPhrase(text: string, p?: Parser): Omit<TargetSpec, 'min' | 'max'>
 			const cardPhrase = `${spell[1] ? `${spell[1]} ` : ''}card${spell[2] ? ` ${spell[2]}` : ''}`;
 			const filter = cardPhrase === 'card' ? {} : objectFilter(cardPhrase);
 			if (!filter) return null;
-			return {
-				kind: 'object',
-				filter: withCtl({ ...filter, ...(midCtl ? { controller: midCtl } : {}), zone: 'stack' })
-			};
+			return withStackSpec(
+				withCtl({ ...filter, ...(midCtl ? { controller: midCtl } : {}), zone: 'stack' })
+			);
 		}
 		// --- End Track P16a ---
+		if (w7StackQual) return null;
 	}
 	if (wasNotCast) return null;
 	if (/^(?:creatures? (?:or|and\/or) players?|players? (?:or|and\/or) creatures?)$/.test(phrase) && !ctl.controller) {
@@ -915,14 +948,24 @@ function objectPhrase(p: Parser, text: string): ObjectRes | null {
 	}
 	const multiTyped = parseTypedMultiTargetQuantifier(t);
 	if (multiTyped) {
-		const spec = targetPhrase(multiTyped.rest, p);
+		let restPhrase = multiTyped.rest;
+		let maxTotalManaValue: number | undefined;
+		const totalMvM = restPhrase.match(/^(.+?)\s+with total mana value (\S+) or less$/i);
+		if (totalMvM) {
+			const mvAmt = count(totalMvM[2]);
+			if (!mvAmt || mvAmt.k !== 'const') return null;
+			maxTotalManaValue = mvAmt.n;
+			restPhrase = totalMvM[1].trim();
+		}
+		const spec = targetPhrase(restPhrase, p);
 		if (!spec) return null;
 		const { sameOwner, ...restSpec } = spec;
 		const index = p.addTarget({
 			...restSpec,
 			min: multiTyped.min,
 			max: multiTyped.max,
-			...(sameOwner && multiTyped.max > 1 ? { sameOwner: true } : {})
+			...(sameOwner && multiTyped.max > 1 ? { sameOwner: true } : {}),
+			...(maxTotalManaValue !== undefined ? { maxTotalManaValue } : {})
 		});
 		return {
 			selector: { k: 'target', index },
@@ -1020,17 +1063,45 @@ function objectPhrase(p: Parser, text: string): ObjectRes | null {
 		const countWord = tgt[2] ?? tgt[3];
 		const c = countWord ? count(countWord) : n(1);
 		if (c && c.k === 'const') {
-			const spec = targetPhrase(tgt[4], p);
+			let restPhrase = tgt[4];
+			let maxTotalManaValue: number | undefined;
+			if (c.n > 1) {
+				const totalMvM = restPhrase.match(/^(.+?)\s+with total mana value (\S+) or less$/i);
+				if (totalMvM) {
+					const mvAmt = count(totalMvM[2]);
+					if (!mvAmt || mvAmt.k !== 'const') return null;
+					maxTotalManaValue = mvAmt.n;
+					restPhrase = totalMvM[1].trim();
+				}
+			}
+			const spec = targetPhrase(restPhrase, p);
 			if (!spec) return null;
 			const { sameOwner, ...restSpec } = spec;
 			const index = p.addTarget({
 				...restSpec,
 				min: tgt[1] ? 0 : c.n,
 				max: c.n,
-				...(sameOwner && c.n > 1 ? { sameOwner: true } : {})
+				...(sameOwner && c.n > 1 ? { sameOwner: true } : {}),
+				...(maxTotalManaValue !== undefined ? { maxTotalManaValue } : {})
 			});
 			return { selector: { k: 'target', index }, ref: { k: 'target', index }, plural: c.n > 1 };
 		}
+		// --- Track P19a: Dynamic X / up to X targets ("target X creatures", "up to X target creatures") ---
+		if (c && c.k === 'x') {
+			const spec = targetPhrase(tgt[4], p);
+			if (!spec) return null;
+			const { sameOwner, ...restSpec } = spec;
+			const index = p.addTarget({
+				...restSpec,
+				min: 0,
+				max: 99,
+				dynamicCount: p.definedX ?? { k: 'x' },
+				...(tgt[1] ? { dynamicUpTo: true } : {}),
+				...(sameOwner ? { sameOwner: true } : {})
+			});
+			return { selector: { k: 'target', index }, ref: { k: 'target', index }, plural: true };
+		}
+		// --- End Track P19a ---
 		if (tgt[1]) return null;
 	}
 	const top = t.match(/^the top (.+) card of your graveyard$/);
@@ -1192,6 +1263,18 @@ function equalTo(p: Parser, text: string): Amount | null {
 		const pRef = pSel ? singlePlayer(pSel) : null;
 		if (pRef) return { k: 'life', of: pRef };
 	}
+	// --- Track P19a: Sacrificed-cost LKI (`CR 608.2h`, `CR 707.10`) when no prior effect step sacrificed an object ---
+	const hasSacStep =
+		p.steps.some((s) => s.verb === 'sacrifice') ||
+		(p.context === 'triggered' && p.trigger?.event === 'sacrifice');
+	if (!hasSacStep) {
+		const sacCostAmt = parseWave7Amount(t, {
+			hasBoundObject: false,
+			objectFilter
+		});
+		if (sacCostAmt?.k === 'sacrificedCostStat') return sacCostAmt;
+	}
+	// --- End Track P19a ---
 	const stat = t.match(
 		/^(?:(its)|(?:that|the exiled|the sacrificed|the destroyed|the discarded) (?:card|creature|permanent|spell|artifact|enchantment|land|planeswalker|battle|token)'s|the amassed army's) (power|toughness|mana value)$/i
 	);
@@ -1236,6 +1319,13 @@ function equalTo(p: Parser, text: string): Amount | null {
 		if (w6Num) return w6Num;
 		const nRes = numberOf(num[1]);
 		if (nRes) return nRes;
+		// --- Track P19a ---
+		const w7Num = parseWave7Amount(num[1], {
+			hasBoundObject: Boolean(p.lastObject),
+			objectFilter
+		});
+		if (w7Num) return w7Num;
+		// --- End Track P19a ---
 	}
 	const w6Direct = parseWave6Amount(t, {
 		itRef: () => p.itRef(),
@@ -1246,6 +1336,14 @@ function equalTo(p: Parser, text: string): Amount | null {
 		}
 	});
 	if (w6Direct) return w6Direct;
+	// --- Track P19a ---
+	const w7Direct = parseWave7Amount(t, {
+		hasBoundObject: Boolean(p.lastObject),
+		objectFilter,
+		parseSubAmount: (sub) => equalTo(p, sub) ?? numberOf(sub) ?? amountWord(p, sub.toLowerCase())
+	});
+	if (w7Direct) return w7Direct;
+	// --- End Track P19a ---
 	const p13Amt = parseP13Amount(
 		t,
 		(sub) => equalTo(p, sub) ?? numberOf(sub) ?? amountWord(p, sub.toLowerCase())
@@ -1269,6 +1367,13 @@ function numberOf(text: string): Amount | null {
 		resolvePlayerRef: (phrase) => (phrase.trim().toLowerCase() === 'you' ? { k: 'you' } : null)
 	});
 	if (w6Count) return w6Count;
+	// --- Track P19a ---
+	const w7Count = parseWave7Amount(text, {
+		hasBoundObject: false,
+		objectFilter
+	});
+	if (w7Count) return w7Count;
+	// --- End Track P19a ---
 	const hand = text.match(/^cards in (your|target opponent's) hand$/);
 	if (hand && hand[1] === 'your') return { k: 'cardsIn', zone: 'hand', of: { k: 'you' } };
 	// --- Track P10: graveyard counts & card types among cards in graveyards ---
@@ -1407,6 +1512,11 @@ function substituteX(a: Amount, x: Amount | undefined): Amount {
 	if (a.k === 'min' || a.k === 'max' || a.k === 'sum') {
 		return { k: a.k, args: a.args.map((arg) => substituteX(arg, x)) };
 	}
+	// --- Track P19a ---
+	if (a.k === 'difference') {
+		return { k: 'difference', left: substituteX(a.left, x), right: substituteX(a.right, x) };
+	}
+	// --- End Track P19a ---
 	return a;
 }
 
@@ -1429,7 +1539,15 @@ export function predefinedTokenToSpec(
 }
 
 /** "a 3/3 green Beast creature token", "two 1/1 white Soldier creature tokens with lifelink", "a Treasure token". */
-function tokenPhrase(p: Parser, text: string): { amount: Amount; token: TokenSpec } | null {
+function tokenPhrase(
+	p: Parser,
+	text: string
+): {
+	amount: Amount;
+	token: TokenSpec;
+	dynamicTokenPT?: { power: Amount; toughness: Amount };
+	tappedAndAttacking?: boolean;
+} | null {
 	const t = text.trim();
 	// --- Track P10: "a number of <tokens> equal to <expr>" ---
 	const numEqual = t.match(/^(?:a|the) number of (.+?\btokens?(?: tapped)?) equal to (.+)$/i);
@@ -1565,6 +1683,14 @@ function tokenPhrase(p: Parser, text: string): { amount: Amount; token: TokenSpe
 		};
 	}
 	// --- End Track P10 ---
+	// --- Track P19a: Named, legendary, tapped-and-attacking, & dynamic X/X tokens ---
+	const w7Tok = parseWave7TokenPhrase(t, {
+		amountWord: (word) => amountWord(p, word),
+		equalTo: (sub) => equalTo(p, sub),
+		isSupportedTokenQuotedAbility
+	});
+	if (w7Tok) return w7Tok;
+	// --- End Track P19a ---
 	return null;
 }
 
@@ -2572,6 +2698,21 @@ function objectPredicate(p: Parser, subject: ObjectRes, vp: string, span: Span):
 		return true;
 	}
 	// --- End Track P16a ---
+	// --- Track P19a: Choice pump, choice lose-keyword, choice color animation, dynamic base P/T ---
+	const w7ObjSteps = tryParseWave7ObjectPredicate(
+		subject.selector,
+		validBattlefieldObjectSubject,
+		predText,
+		eot,
+		duration,
+		span,
+		{ equalTo: (sub) => equalTo(p, sub) }
+	);
+	if (w7ObjSteps) {
+		for (const st of w7ObjSteps) p.push(st, true);
+		return true;
+	}
+	// --- End Track P19a ---
 	const ptAndLose = predText.match(/^gets? (\S+)(?:,)? and loses? (.+)$/);
 	if (ptAndLose && eot) {
 		const pt = ptChange(ptAndLose[1]);
@@ -3138,7 +3279,7 @@ function parsePlayFromExilePredicate(
 	let tail = (head[3] ?? '').trim();
 	let spendManaAsAnyColor = false;
 	const anyColorMatch = tail.match(
-		/^(.*?)(?:,?\s+and you may spend mana as though it were mana of any color to cast (?:it|them|that spell|those spells))$/i
+		/^(.*?)(?:,?\s+and (?:you|they|that player) may spend mana as though it were mana of any (?:color|type) to cast (?:it|them|that spell|those spells|spells this way))$/i
 	);
 	if (anyColorMatch) {
 		spendManaAsAnyColor = true;
@@ -3680,7 +3821,18 @@ function playerPredicate(p: Parser, subject: Selector, vp: string, span: Span, f
 		if (parseTokenCopyPhrase(p, actor, opt, m[1], span)) return true;
 		const tok = tokenPhrase(p, m[1]);
 		if (!tok) return false;
-		const step: EffectStep = { verb: 'createToken', subject: { k: 'none' }, amount: tok.amount, params: { token: tok.token }, ...opt, span };
+		const step: EffectStep = {
+			verb: 'createToken',
+			subject: { k: 'none' },
+			amount: tok.amount,
+			params: {
+				token: tok.token,
+				...(tok.dynamicTokenPT ? { dynamicTokenPT: tok.dynamicTokenPT } : {}),
+				...(tok.tappedAndAttacking ? { tappedAndAttacking: true } : {})
+			},
+			...opt,
+			span
+		};
 		if (actor.k !== 'you') step.actor = actor;
 		p.push(step, true);
 		return true;
@@ -4833,6 +4985,64 @@ function tryWave6Clause(p: Parser, text: string, span: Span): boolean {
 	return true;
 }
 
+// --- Track P19a ---
+function tryWave7Clause(p: Parser, text: string, span: Span): boolean {
+	const mark = p.mark();
+	const steps = tryParseWave7Sentence(
+		text,
+		{
+			context: p.context,
+			addTarget: (spec) => p.addTarget(spec),
+			getTarget: (index) => p.targets[index],
+			itRef: () => p.itRef() ?? undefined,
+			subjectSelector: (phrase) => {
+				const strippedEach = phrase.replace(/^each of\s+/i, '');
+				const isAnother = /^another target\b/i.test(strippedEach);
+				const obj = objectPhrase(
+					p,
+					isAnother ? strippedEach.replace(/^another /i, '') : strippedEach
+				);
+				if (!obj) return null;
+				if (isAnother && obj.selector.k === 'target' && p.targets[obj.selector.index]) {
+					p.targets[obj.selector.index].filter.other = true;
+				}
+				return { sel: obj.selector, fromZone: obj.fromZone, bind: true };
+			},
+			playerSubject: (phrase) => {
+				const sel = playerPhrase(p, phrase);
+				if (sel) p.lastPlayer = sel;
+				return sel;
+			},
+			singlePlayer: (sel) => singlePlayer(sel),
+			objectFilter: (phrase) => objectFilter(phrase),
+			parseAmount: (amtText) =>
+				amountWord(p, amtText.toLowerCase()) ??
+				equalTo(p, amtText) ??
+				numberOf(amtText) ??
+				parseP13Amount(
+					amtText,
+					(sub) => equalTo(p, sub) ?? numberOf(sub) ?? amountWord(p, sub.toLowerCase())
+				),
+			numberOf: (sub) => numberOf(sub)
+		},
+		span
+	);
+	if (!steps || steps.length === 0) {
+		p.rollback(mark);
+		return false;
+	}
+	for (const st of steps) {
+		const actsOnObj = Boolean(st.bindAs);
+		const { bindAs: _unusedBind, ...restStep } = st;
+		const idx = p.push({ ...restStep, span }, actsOnObj);
+		if (stepOptionalChooser(p.steps[idx]) !== undefined) {
+			p.lastOptionalStep = idx;
+		}
+	}
+	return true;
+}
+// --- End Track P19a ---
+
 /** Clauses without a subject: "Destroy target creature", "Draw a card", "Create a Treasure token". */
 function imperative(p: Parser, text: string, span: Span): ClauseResult {
 	const t = text.trim();
@@ -4845,6 +5055,10 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 	// --- Track P13: Imperative P13 keyword actions & designations ---
 	if (tryP13Clause(p, t, span)) return true;
 	// --- End Track P13 ---
+
+	// --- Track P19a ---
+	if (tryWave7Clause(p, t, span)) return true;
+	// --- End Track P19a ---
 
 	// --- Track P7: Damage prevention shields & CR 615.12 unpreventable damage ---
 	if (parsePreventDamageClause(p, t, span)) return true;
@@ -4970,7 +5184,7 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 	}
 	// --- End Track P10 ---
 	m = t.match(/^(destroy|exile) (.+)$/);
-	if (m) {
+	if (m && !/^exile cards from the top of /i.test(t)) {
 		let expr = m[2];
 		let untilSourceLeaves = false;
 		if (m[1] === 'exile') {
@@ -6150,6 +6364,21 @@ function addMana(p: Parser, text: string, span: Span): ClauseResult {
 		p.push({ verb: 'addMana', subject: { k: 'none' }, amount, params: { mana: [m[1] as ManaColor] }, span }, false);
 		return true;
 	}
+	// --- Track P19a: Triggered-mana & land-produced addMana completions (`CR 605.1b`, `CR 106.7`) ---
+	const w7Mana = parseWave7AddMana(
+		t,
+		{
+			amountWord: (w) => amountWord(p, w),
+			equalTo: (sub) => equalTo(p, sub),
+			numberOf: (sub) => numberOf(sub)
+		},
+		span
+	);
+	if (w7Mana) {
+		p.push(w7Mana, false);
+		return true;
+	}
+	// --- End Track P19a ---
 	return false;
 }
 
@@ -6292,7 +6521,14 @@ function parseEffectResolutionCondition(p: Parser, rawCondText: string): Conditi
 				: p.context === 'triggered'
 					? { k: 'eventPlayer' }
 					: null
-	});
+	}) ??
+		// --- Track P19a ---
+		parseWave7Condition(
+			rawCondText,
+			p.lastObject?.ref ?? (p.targets.length === 1 ? { k: 'target', index: 0 } : null)
+		)
+	// --- End Track P19a ---
+	;
 }
 
 function tryReplacementIfSentence(
@@ -6322,6 +6558,19 @@ function tryReplacementIfSentence(
 			p.lastObject = { ref: directRef, stepIndex: -1 };
 			delete baseStep.bindAs;
 		}
+	} else {
+		// --- Track P19a: Allow multi-step base sentences when all target-bearing steps share a single target ---
+		const targetIndices = new Set<number>();
+		for (const bs of baseSteps) {
+			if (bs.subject.k === 'target') targetIndices.add(bs.subject.index);
+		}
+		if (targetIndices.size === 1) {
+			const [onlyIdx] = [...targetIndices];
+			directRef = { k: 'target', index: onlyIdx };
+			p.lastObject = { ref: directRef, stepIndex: -1 };
+			for (const bs of baseSteps) delete bs.bindAs;
+		}
+		// --- End Track P19a ---
 	}
 
 	let normInner = innerClauseText.trim();
@@ -6459,6 +6708,9 @@ function clause(p: Parser, c: Clause, allowUnless = true): ClauseResult {
 	if (imperative(p, t, c.span)) return true;
 	if (tryWave6Clause(p, t, c.span)) return true;
 	if (tryP13Clause(p, t, c.span)) return true;
+	// --- Track P19a ---
+	if (tryWave7Clause(p, t, c.span)) return true;
+	// --- End Track P19a ---
 
 	// "It/They can't be regenerated" / "<object> can't be regenerated this turn"
 	const cantRegen = t.match(/^(.+?) can't be regenerated(?: this turn)?$/i);
@@ -7313,6 +7565,11 @@ function sentenceBody(
 			};
 			return true;
 		}
+		// --- Track P19a ---
+		if (prev?.verb === 'grantPlayFromExile' || prev?.verb === 'copySpell') {
+			return true;
+		}
+		// --- End Track P19a ---
 		const reflSteps = prev?.params?.reflexiveTrigger?.effect;
 		if (reflSteps && reflSteps.length > 0) {
 			const lastRefl = reflSteps[reflSteps.length - 1];
@@ -7561,9 +7818,19 @@ function sentenceBody(
 			t
 		)
 	) {
-		const prev = p.steps[p.steps.length - 1];
-		if (prev?.verb !== 'animate') return fail();
-		const prevParams = { ...prev.params };
+		let animStep: EffectStep | undefined;
+		for (let i = p.steps.length - 1; i >= 0; i--) {
+			const st = p.steps[i];
+			if (st.verb === 'animate') {
+				animStep = st;
+				break;
+			}
+			if (st.verb !== 'grant' && st.verb !== 'putCounters' && st.verb !== 'untap' && st.verb !== 'tap') {
+				break;
+			}
+		}
+		if (!animStep) return fail();
+		const prevParams = { ...animStep.params };
 		const typesToAdd = prevParams.setTypes ?? prevParams.addTypes ?? ['Creature'];
 		const subtypesToAdd = prevParams.setSubtypes ?? prevParams.addSubtypes;
 		delete prevParams.setTypes;
@@ -7573,7 +7840,7 @@ function sentenceBody(
 			prevParams.addSubtypes = subtypesToAdd;
 		}
 		prevParams.keepExistingTypes = true;
-		prev.params = prevParams;
+		animStep.params = prevParams;
 		return true;
 	}
 
@@ -7583,6 +7850,18 @@ function sentenceBody(
 			prev.params = { ...prev.params, mayChooseNewTargets: true };
 			return true;
 		}
+		// --- Track P19a ---
+		if (prev?.verb === 'delayedNextSpellCopy' && prev.params?.delayedNextSpellCopySpec) {
+			prev.params = {
+				...prev.params,
+				delayedNextSpellCopySpec: {
+					...prev.params.delayedNextSpellCopySpec,
+					mayChooseNewTargets: true
+				}
+			};
+			return true;
+		}
+		// --- End Track P19a ---
 		const delSteps = prev?.delayed?.effect;
 		if (delSteps && delSteps.length > 0 && delSteps[delSteps.length - 1]?.verb === 'copySpell') {
 			const updated = [...delSteps];
@@ -7623,18 +7902,49 @@ function sentenceBody(
 	}
 
 	if (
-		/^(?:if you cast a spell this way, )?you may spend mana as though it were mana of any color to cast (?:it|them|that spell|those spells)$/i.test(
+		/^(?:if you cast a spell this way, )?(?:you|they|that player) may spend mana as though it were mana of any (?:color|type) to cast (?:it|them|that spell|those spells|spells this way)$/i.test(
 			t
 		)
 	) {
 		const prev = p.steps[p.steps.length - 1];
-		if (prev?.verb !== 'grantPlayFromExile' || !prev.params?.playFromExile) return fail();
-		prev.params = {
-			...prev.params,
-			playFromExile: { ...prev.params.playFromExile, spendManaAsAnyColor: true }
-		};
+		if (prev?.verb === 'grantPlayFromExile' && prev.params?.playFromExile) {
+			prev.params = {
+				...prev.params,
+				playFromExile: { ...prev.params.playFromExile, spendManaAsAnyColor: true }
+			};
+			return true;
+		}
+		if (prev?.verb === 'exileUntil' && prev.params?.exileUntilSpec) {
+			prev.params = {
+				...prev.params,
+				exileUntilSpec: { ...prev.params.exileUntilSpec, spendManaAsAnyColor: true }
+			};
+			return true;
+		}
+		return fail();
+	}
+
+	// --- Track P19a: Excess damage rider (`CR 120.10`) & Enduring enchantment return rider ---
+	if (
+		/^excess damage is dealt to (?:that creature's|that permanent's|that planeswalker's|its) controller instead$/i.test(
+			t
+		)
+	) {
+		const prev = p.steps[p.steps.length - 1];
+		if (prev?.verb !== 'damage') return fail();
+		prev.params = { ...prev.params, excessDamageToController: true };
 		return true;
 	}
+	if (
+		/^(?:it's an enchantment|except it's an enchantment and isn't a creature)$/i.test(t) &&
+		p.steps[p.steps.length - 1]?.verb === 'move' &&
+		p.steps[p.steps.length - 1]?.params?.to === 'battlefield'
+	) {
+		const prev = p.steps[p.steps.length - 1];
+		prev.params = { ...prev.params, asEnchantmentOnly: true };
+		return true;
+	}
+	// --- End Track P19a ---
 
 	const ifKicked = t.match(
 		/^(if (?:(?:it|~) (?:was(?:n't| not)? (?:kicked(?: with its .+? kicker| twice| \S+ times?)?|foretold|blitzed)|is(?:n't| not)? (?:saddled|monstrous)|escaped|(?:didn't|did not) escape)|(?:~|it|he|she|they) (?:was(?:n't| not)?|were(?:n't| not)?|has(?:n't| not)? been|have(?:n't| not)? been) exerted this turn|it's(?: not)? (?:saddled|monstrous)|its blitz cost was(?:n't| not)? paid)), (.+)$/i
@@ -7643,7 +7953,19 @@ function sentenceBody(
 		const cond = parseCondition(ifKicked[1]);
 		if (!cond) return fail();
 		let innerText = ifKicked[2].trim();
-		// Replacement-style kicker clauses ("instead") override an earlier step and are not additive.
+		// --- Track P19a: Support replacement-style blitz/saddle/monstrous/foretell/escape/exert clauses ---
+		const leadInstead = innerText.match(/^instead,?\s+(.+)$/i);
+		if ((/\s+instead$/i.test(innerText) || leadInstead) && cond.k !== 'kicked') {
+			const stripped = leadInstead
+				? leadInstead[1].trim()
+				: innerText.replace(/\s+instead$/i, '').trim();
+			if (!tryReplacementIfSentence(p, stripped, cond, stepsBefore, targetsBefore, span)) {
+				return fail();
+			}
+			p.lastOptionalStep = undefined;
+			return true;
+		}
+		// --- End Track P19a ---
 		if (/\binstead\b/i.test(innerText)) return fail();
 		innerText = innerText.replace(/^it (?:also )?deals\b/i, '~ deals').replace(/^also\s+/i, '');
 		const innerStart = Math.max(span.start, span.end - ifKicked[2].length);
@@ -7665,6 +7987,19 @@ function sentenceBody(
 		const cond = parseCondition(ifMonarch[1]);
 		if (!cond) return fail();
 		const innerText = ifMonarch[2].trim();
+		// --- Track P19a: Support replacement-style monarch clauses ("If you're the monarch, ... instead") ---
+		const leadInstead = innerText.match(/^instead,?\s+(.+)$/i);
+		if (/\s+instead$/i.test(innerText) || leadInstead) {
+			const stripped = leadInstead
+				? leadInstead[1].trim()
+				: innerText.replace(/\s+instead$/i, '').trim();
+			if (!tryReplacementIfSentence(p, stripped, cond, stepsBefore, targetsBefore, span)) {
+				return fail();
+			}
+			p.lastOptionalStep = undefined;
+			return true;
+		}
+		// --- End Track P19a ---
 		if (/\binstead\b/i.test(innerText)) return fail();
 		const innerStart = Math.max(span.start, span.end - ifMonarch[2].length);
 		if (!sentence(p, innerText, { start: innerStart, end: span.end }, true)) return fail();
@@ -7784,7 +8119,7 @@ function sentenceBody(
 			const cond = parseEffectResolutionCondition(p, rawCondPart);
 			if (!cond) continue;
 			const leadInstead = innerText.match(/^instead,?\s+(.+)$/i);
-			if (/\s+instead$/i.test(innerText) || leadInstead) {
+			if ((/\s+instead$/i.test(innerText) || leadInstead) && cond.k !== 'kicked') {
 				const stripped = leadInstead
 					? leadInstead[1].trim()
 					: innerText.replace(/\s+instead$/i, '').trim();
@@ -7889,6 +8224,37 @@ function sentenceBody(
 		return true;
 	}
 	// --- End Track P16a ---
+
+	// --- Track P19a: Multi-sentence `exileUntil` (Cascade / exile-until-cast-free / play-this-turn) ---
+	if (p.pendingDig && !p.pendingDig.hasKeep && p.pendingDig.draft.untilFilter) {
+		const pdStep = p.steps[p.pendingDig.stepIndex];
+		const exUntilSpec = pdStep
+			? convertDigStepToExileUntil(p.pendingDig.draft.untilFilter, t)
+			: null;
+		if (pdStep && exUntilSpec) {
+			const idx = p.pendingDig.stepIndex;
+			pdStep.verb = 'exileUntil';
+			pdStep.subject = { k: 'none' };
+			delete pdStep.amount;
+			pdStep.params = { exileUntilSpec: exUntilSpec };
+			pdStep.span = { start: pdStep.span.start, end: span.end };
+			p.pendingDig = undefined;
+			p.setLastObject(idx);
+			p.lastOptionalStep = idx;
+			return true;
+		}
+	}
+	if (
+		p.steps[p.steps.length - 1]?.verb === 'exileUntil' &&
+		tryStitchExileUntilFollowUp(p.steps[p.steps.length - 1], t)
+	) {
+		p.steps[p.steps.length - 1].span = {
+			start: p.steps[p.steps.length - 1].span.start,
+			end: span.end
+		};
+		return true;
+	}
+	// --- End Track P19a ---
 
 	if (p.pendingDig && tryDigFollowUp(p, t)) {
 		if (!p.pendingDig && stepOptionalChooser(p.steps[p.steps.length - 1]) !== undefined) {
@@ -8039,9 +8405,29 @@ function sentenceBody(
 					if (rs.params?.toughness) rs.params.toughness = substituteX(rs.params.toughness, resolvedX);
 				}
 			}
+			// --- Track P19a ---
+			if (s.params?.unlessPaysGenericAmount) {
+				s.params.unlessPaysGenericAmount = substituteX(s.params.unlessPaysGenericAmount, resolvedX);
+			}
+			if (s.params?.dynamicTokenPT) {
+				s.params.dynamicTokenPT = {
+					power: substituteX(s.params.dynamicTokenPT.power, resolvedX),
+					toughness: substituteX(s.params.dynamicTokenPT.toughness, resolvedX)
+				};
+			}
+			if (s.params?.coerciveCount) {
+				s.params.coerciveCount = substituteX(s.params.coerciveCount, resolvedX);
+			}
+			if (s.params?.partialRevealCount && s.params.partialRevealCount !== 'randomOne') {
+				s.params.partialRevealCount = substituteX(s.params.partialRevealCount, resolvedX);
+			}
+			// --- End Track P19a ---
 		}
 		for (const tSpec of p.targets.slice(targetsBefore)) {
 			if (tSpec.divideTotal) tSpec.divideTotal = substituteX(tSpec.divideTotal, resolvedX);
+			// --- Track P19a ---
+			if (tSpec.dynamicCount) tSpec.dynamicCount = substituteX(tSpec.dynamicCount, resolvedX);
+			// --- End Track P19a ---
 		}
 	}
 	if (!p.steps.slice(stepsBefore).some((s) => stepOptionalChooser(s) !== undefined)) {
@@ -8080,6 +8466,18 @@ function stepOptionalChooser(step: EffectStep | undefined): PlayerRef | undefine
 		return step.actor ?? { k: 'you' };
 	}
 	// --- End Track P16a ---
+	// --- Track P19a ---
+	if (step.params?.unlessPaysGenericAmount) {
+		return {
+			k: 'controllerOf',
+			of: step.subject.k === 'target' ? { k: 'target', index: step.subject.index } : { k: 'eventObject' }
+		};
+	}
+	if (step.verb === 'exileUntil') return { k: 'you' };
+	if (step.verb === 'redirectTargets' && step.params?.redirectSpec?.mode === 'chooseNewTargets') {
+		return { k: 'you' };
+	}
+	// --- End Track P19a ---
 	return undefined;
 }
 
@@ -8379,14 +8777,17 @@ function clauses(p: Parser, text: string, offset: number): boolean {
 
 type DigKeepSpec = Pick<
 	NonNullable<EffectParams['dig']>,
-	'keep' | 'upTo' | 'keepAllMatching' | 'keepFilter' | 'keepLabel' | 'keepTo' | 'keepTapped' | 'revealKept'
+	'keep' | 'upTo' | 'keepAllMatching' | 'keepFilter' | 'keepLabel' | 'keepTo' | 'keepTapped' | 'keepAttacking' | 'revealKept'
 >;
 type DigRestSpec = Pick<NonNullable<EffectParams['dig']>, 'rest' | 'restRandom' | 'restOrder' | 'restToHand'>;
 
-function parseDigDestination(dest: string): { keepTo: DigKeepSpec['keepTo']; keepTapped?: true } | null {
+function parseDigDestination(dest: string): { keepTo: DigKeepSpec['keepTo']; keepTapped?: true; keepAttacking?: true } | null {
 	const d = dest.trim().toLowerCase();
 	if (d === 'into your hand') return { keepTo: 'hand' };
 	if (d === 'on top of your library' || d === 'back on top of your library') return { keepTo: 'libraryTop' };
+	if (d === 'onto the battlefield tapped and attacking') {
+		return { keepTo: 'battlefield', keepTapped: true, keepAttacking: true };
+	}
 	if (d === 'onto the battlefield tapped') return { keepTo: 'battlefield', keepTapped: true };
 	if (d === 'onto the battlefield') return { keepTo: 'battlefield' };
 	if (d === 'into your graveyard') return { keepTo: 'graveyard' };
@@ -8400,6 +8801,14 @@ function parseDigRestDestination(dest: string): DigRestSpec | null {
 	}
 	if (d === 'on the bottom of your library in any order' || d === 'on the bottom of your library') {
 		return { rest: 'libraryBottom', restOrder: 'any' };
+	}
+	if (
+		d === 'on top of your library in any order' ||
+		d === 'back on top of your library in any order' ||
+		d === 'on top of your library' ||
+		d === 'back on top of your library'
+	) {
+		return { rest: 'libraryTop', restOrder: 'any' };
 	}
 	if (d === 'into your graveyard') {
 		return { rest: 'graveyard' };
@@ -8424,7 +8833,8 @@ function parseDigKeepClause(clauseStr: string, hasUntilFilter = false): DigKeepS
 				keep: 1,
 				upTo: mayPrefix,
 				keepTo: dest.keepTo,
-				...(dest.keepTapped ? { keepTapped: true } : {})
+				...(dest.keepTapped ? { keepTapped: true } : {}),
+				...(dest.keepAttacking ? { keepAttacking: true } : {})
 			};
 		}
 	}
@@ -8504,6 +8914,7 @@ function parseDigKeepClause(clauseStr: string, hasUntilFilter = false): DigKeepS
 		...(keepLabel ? { keepLabel } : {}),
 		keepTo: dest.keepTo,
 		...(dest.keepTapped ? { keepTapped: true } : {}),
+		...(dest.keepAttacking ? { keepAttacking: true } : {}),
 		...(revealKept ? { revealKept: true } : {})
 	};
 }
@@ -8609,7 +9020,7 @@ function tryDigFollowUp(p: Parser, text: string): boolean {
 
 function parseCoerciveCardPhrase(phrase: string): { ok: boolean; filter?: ObjectFilter } {
 	const trimmed = phrase.trim();
-	if (/^card$/i.test(trimmed)) return { ok: true };
+	if (/^cards?$/i.test(trimmed)) return { ok: true };
 	if (!/\bcards?\b/i.test(trimmed)) return { ok: false };
 	const parsed = objectFilter(trimmed);
 	if (!parsed) return { ok: false };
@@ -8620,10 +9031,45 @@ function parseCoerciveActionClause(clauseText: string): 'graveyard' | 'exile' | 
 	const m = clauseText
 		.trim()
 		.match(
-			/^(?:if you do,\s*)?(?:(?:that player|the player|that opponent|they) discards? (?:that card|it)|(?:you )?exile (?:that card|it))$/i
+			/^(?:if you do,\s*)?(?:(?:that player|the player|that opponent|they) discards? (?:that card|those cards|it|them)|(?:you )?exile (?:that card|those cards|it|them))$/i
 		);
 	if (!m) return null;
 	return /\bexile\b/i.test(clauseText) ? 'exile' : 'graveyard';
+}
+
+function parseCoerciveChooseClause(
+	p: Parser,
+	rawChooseBody: string
+): {
+	ok: boolean;
+	optionalChoice?: boolean;
+	coerciveCount?: Amount;
+	includeGraveyardInCoercive?: boolean;
+	filter?: ObjectFilter;
+	actionTail?: string;
+} {
+	const m = rawChooseBody
+		.trim()
+		.match(
+			/^you (may )?choose (up to )?(a|an|one|two|three|four|five|\d+|x|that many) (.+?) from (?:it|them|those cards)( and\/or from (?:their|that player's) graveyard)?(?:,?\s+and\s+(.+))?$/i
+		);
+	if (!m) return { ok: false };
+	const mayOpt = Boolean(m[1]);
+	const upTo = Boolean(m[2]);
+	const cntWord = m[3].toLowerCase();
+	const isSingleDefault = (cntWord === 'a' || cntWord === 'an') && !upTo;
+	const parsedAmt = isSingleDefault ? undefined : amountWord(p, cntWord === 'a' || cntWord === 'an' ? 'one' : cntWord);
+	if (!isSingleDefault && !parsedAmt) return { ok: false };
+	const cardParsed = parseCoerciveCardPhrase(m[4]);
+	if (!cardParsed.ok) return { ok: false };
+	return {
+		ok: true,
+		optionalChoice: mayOpt || upTo || undefined,
+		coerciveCount: parsedAmt,
+		includeGraveyardInCoercive: Boolean(m[5]) || undefined,
+		filter: cardParsed.filter,
+		actionTail: m[6]?.trim()
+	};
 }
 
 function commitPendingCoercive(
@@ -8641,7 +9087,10 @@ function commitPendingCoercive(
 				...(pc.filter ? { filter: pc.filter } : {}),
 				...(pc.optionalChoice ? { optionalChoice: true } : {}),
 				destination
-			}
+			},
+			...(pc.coerciveCount ? { coerciveCount: pc.coerciveCount } : {}),
+			...(pc.includeGraveyardInCoercive ? { includeGraveyardInCoercive: true } : {}),
+			...(pc.partialRevealCount ? { partialRevealCount: pc.partialRevealCount } : {})
 		};
 		step.span = { start: pc.spans[0]?.start ?? step.span.start, end: endSpan.end };
 		p.setLastObject(pc.stepIndex);
@@ -8656,17 +9105,15 @@ function tryCoerciveFollowUp(p: Parser, text: string, span: Span): boolean {
 	const t = text.trim();
 
 	if (pc.phase === 'awaitChoose') {
-		const combined = t.match(
-			/^you (may )?choose (?:a|an) (.+?) from it(?:,?\s+and\s+((?:if you do,\s*)?(?:(?:that player|the player|that opponent|they) discards? (?:that card|it)|(?:you )?exile (?:that card|it))))?$/i
-		);
-		if (!combined) return false;
-		const parsed = parseCoerciveCardPhrase(combined[2]);
-		if (!parsed.ok) return false;
-		pc.optionalChoice = Boolean(combined[1]);
-		pc.filter = parsed.filter;
+		const ch = parseCoerciveChooseClause(p, t);
+		if (!ch.ok) return false;
+		pc.optionalChoice = ch.optionalChoice;
+		pc.coerciveCount = ch.coerciveCount;
+		pc.includeGraveyardInCoercive = ch.includeGraveyardInCoercive;
+		pc.filter = ch.filter;
 		pc.spans.push(span);
-		if (combined[3]) {
-			const dest = parseCoerciveActionClause(combined[3]);
+		if (ch.actionTail) {
+			const dest = parseCoerciveActionClause(ch.actionTail);
 			if (!dest) return false;
 			commitPendingCoercive(p, pc, dest, span);
 			return true;
@@ -8689,30 +9136,49 @@ function tryCoerciveFollowUp(p: Parser, text: string, span: Span): boolean {
 function tryCoerciveStart(p: Parser, text: string, span: Span): boolean {
 	const trimmed = text.trim();
 	let lookOnly = false;
-	let m = trimmed.match(
-		/^(.+?) reveals? their hand(?:,?\s+(?:and\s+)?you (may )?choose (?:a|an) (.+?) from it(?:,?\s+and\s+((?:if you do,\s*)?(?:(?:that player|the player|that opponent|they) discards? (?:that card|it)|(?:you )?exile (?:that card|it))))?)?$/i
+	let whoStr: string | undefined;
+	let partialRevealCount: Amount | undefined;
+	let chooseTail: string | undefined;
+
+	const revPartM = trimmed.match(
+		/^(.+?) reveals? (\S+) cards? from their hand(?:,?\s+(?:and\s+)?(you (?:may )?choose .+))?$/i
 	);
-	if (!m) {
-		const lookM = trimmed.match(
-			/^look at (target player's|target opponent's|that player's|their) hand(?:,?\s+(?:and\s+)?you (may )?choose (?:a|an) (.+?) from it(?:,?\s+and\s+((?:if you do,\s*)?(?:(?:that player|the player|that opponent|they) discards? (?:that card|it)|(?:you )?exile (?:that card|it))))?)?$/i
-		);
-		if (lookM) {
-			lookOnly = true;
-			const whoPoss = lookM[1].toLowerCase();
-			const whoNom =
-				whoPoss === "target player's"
-					? 'target player'
-					: whoPoss === "target opponent's"
-						? 'target opponent'
-						: whoPoss === "that player's"
-							? 'that player'
-							: 'they';
-			m = [lookM[0], whoNom, lookM[2], lookM[3], lookM[4]];
+	if (revPartM) {
+		const revAmt = amountWord(p, revPartM[2].toLowerCase());
+		if (revAmt) {
+			whoStr = revPartM[1].trim();
+			partialRevealCount = revAmt;
+			chooseTail = revPartM[3]?.trim();
 		}
 	}
-	if (!m) return false;
+
+	if (!whoStr) {
+		const m = trimmed.match(/^(.+?) reveals? their hand(?:,?\s+(?:and\s+)?(you (?:may )?choose .+))?$/i);
+		if (m) {
+			whoStr = m[1].trim();
+			chooseTail = m[2]?.trim();
+		} else {
+			const lookM = trimmed.match(
+				/^look at (target player's|target opponent's|that player's|their) hand(?:,?\s+(?:and\s+)?(you (?:may )?choose .+))?$/i
+			);
+			if (lookM) {
+				lookOnly = true;
+				const whoPoss = lookM[1].toLowerCase();
+				whoStr =
+					whoPoss === "target player's"
+						? 'target player'
+						: whoPoss === "target opponent's"
+							? 'target opponent'
+							: whoPoss === "that player's"
+								? 'that player'
+								: 'they';
+				chooseTail = lookM[2]?.trim();
+			}
+		}
+	}
+	if (!whoStr) return false;
 	const mark = p.mark();
-	const sel = playerPhrase(p, m[1].trim());
+	const sel = playerPhrase(p, whoStr);
 	const ref = sel ? singlePlayer(sel) : null;
 	if (!sel || !ref || ref.k === 'you') {
 		p.rollback(mark);
@@ -8720,16 +9186,22 @@ function tryCoerciveStart(p: Parser, text: string, span: Span): boolean {
 	}
 
 	let optionalChoice: boolean | undefined;
+	let coerciveCount: Amount | undefined;
+	let includeGraveyardInCoercive: boolean | undefined;
 	let filter: ObjectFilter | undefined;
+	let actionTail: string | undefined;
 	let phase: PendingCoerciveState['phase'] = 'awaitChoose';
-	if (m[3] !== undefined) {
-		const parsed = parseCoerciveCardPhrase(m[3]);
-		if (!parsed.ok) {
+	if (chooseTail !== undefined) {
+		const ch = parseCoerciveChooseClause(p, chooseTail);
+		if (!ch.ok) {
 			p.rollback(mark);
 			return false;
 		}
-		optionalChoice = Boolean(m[2]);
-		filter = parsed.filter;
+		optionalChoice = ch.optionalChoice;
+		coerciveCount = ch.coerciveCount;
+		includeGraveyardInCoercive = ch.includeGraveyardInCoercive;
+		filter = ch.filter;
+		actionTail = ch.actionTail;
 		phase = 'awaitAction';
 	}
 
@@ -8741,11 +9213,14 @@ function tryCoerciveStart(p: Parser, text: string, span: Span): boolean {
 		phase,
 		...(lookOnly ? { lookOnly: true } : {}),
 		...(optionalChoice ? { optionalChoice: true } : {}),
+		...(coerciveCount ? { coerciveCount } : {}),
+		...(includeGraveyardInCoercive ? { includeGraveyardInCoercive: true } : {}),
+		...(partialRevealCount ? { partialRevealCount } : {}),
 		...(filter ? { filter } : {}),
 		spans: [span]
 	};
-	if (m[4] !== undefined) {
-		const dest = parseCoerciveActionClause(m[4]);
+	if (actionTail !== undefined) {
+		const dest = parseCoerciveActionClause(actionTail);
 		if (!dest) {
 			p.rollback(mark);
 			return false;

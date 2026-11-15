@@ -1126,6 +1126,12 @@ export interface CardInstance {
 	/** CR 509.1b: attacker instanceIds this creature cannot block this turn ("can't block ~ this turn"). */
 	cantBlockAttackerIdsThisTurn?: string[];
 	// --- End Track P16a ---
+	// --- Track P19a ---
+	/** CR 605.1b / 106.1: Mana types most recently produced when this permanent was tapped for mana. */
+	lastManaProduced?: ManaColor[];
+	/** Per-abilityId activation count on this permanent during the current turn (cleared at cleanup). */
+	abilityActivationCountsThisTurn?: Record<string, number>;
+	// --- End Track P19a ---
 }
 
 export interface TargetRef {
@@ -1630,6 +1636,14 @@ export interface StackItem {
 	/** Count of counters removed in the most recent `removeCounters` step of this resolving effect. */
 	lastCountersRemoved?: number;
 	// --- End Track P16a ---
+	// --- Track P19a ---
+	/** CR 707.10 / 608.2h: Last-known information of permanent(s) sacrificed to pay this spell or ability's cost (copied onto stack copies per CR 707.10). */
+	sacrificedCostLki?: SacrificedCostLkiEntry[];
+	/** Per-category counts recorded by preceding steps during resolution ("cards exiled from their hand this way", "damage prevented this way", etc.). */
+	lastCountedByKind?: Record<string, number>;
+	/** Per-target-index snapshot of whether `controllerId` controlled that target when resolution began ("If you controlled that permanent"). */
+	targetWasControlledByActor?: Record<number, boolean>;
+	// --- End Track P19a ---
 }
 
 // --- Track P10 ---
@@ -1706,6 +1720,9 @@ export interface EffectResumeFrame {
 	lastExcessDamage?: number;
 	lastEffectAmount?: number;
 	// --- End Track P13 ---
+	// --- Track P19a ---
+	lastCountedByKind?: Record<string, number>;
+	// --- End Track P19a ---
 	pendingOptionalCost?: {
 		stepIndex: number;
 		parts: SerializedPlannedCost[];
@@ -2428,6 +2445,12 @@ export interface PlayerGameState {
 	/** Overmaster / Savage Summoning: pending one-shot uncounterable grants for the next matching spell cast by this player this turn. */
 	nextSpellCantBeCounteredGrants?: Array<{ types?: string[]; notTypes?: string[] }>;
 	// --- End Track P16a ---
+	// --- Track P19a ---
+	/** CR 614.10: Number of upcoming turns this player skips ("You skip your next turn"). */
+	skipNextTurns?: number;
+	/** CR 609.4b: True iff this player may spend mana as though it were mana of any color to cast spells from the top of libraries this turn. */
+	spendManaAsAnyColorFromTopOfLibraryThisTurn?: boolean;
+	// --- End Track P19a ---
 }
 
 export interface ManaRider {
@@ -2650,6 +2673,10 @@ export interface PendingCostPayment {
 	oncePerGame?: boolean;
 	craftMaterialIds?: string[];
 	// --- End Track P15 ---
+	// --- Track P19a ---
+	/** CR 707.10: LKI snapshots of permanents sacrificed while paying costs for this spell/ability. */
+	sacrificedCostLki?: SacrificedCostLkiEntry[];
+	// --- End Track P19a ---
 	sacrificeSelfInCost?: boolean;
 	parts: SerializedPlannedCost[];
 	manaPaid?: ManaCostRequirement | null;
@@ -2824,7 +2851,51 @@ export interface GameState {
 	/** CR 603.2h: `${sourceInstanceId}:${sourceObjectVersion}:${abilityKey}` keys for "Do this only once each turn." */
 	doneOnceThisTurnKeys?: string[];
 	// --- End Track P16a ---
+	// --- Track P19a ---
+	/** CR 605.1b: Mana types produced by the most recently resolved `TappedForMana` ability. */
+	lastTappedManaProduced?: ManaColor[];
+	/** CR 605.1b / 605.4a: Active until-end-of-turn delayed tap-for-mana triggers (High Tide, Bubbling Muck, etc.). */
+	delayedTapManaTriggers?: DelayedTapManaTriggerEntry[];
+	/** CR 603.7 / 707.10: Pending "When you next cast a [filter] spell this turn, copy that spell" entries. */
+	delayedNextSpellCopies?: DelayedNextSpellCopyEntry[];
+	// --- End Track P19a ---
 }
+
+// --- Track P19a ---
+/** CR 707.10 / 608.2h: Plain-JSON LKI snapshot of a permanent sacrificed to pay a spell or ability cost. */
+export interface SacrificedCostLkiEntry {
+	instanceId: string;
+	power: number;
+	toughness: number;
+	manaValue: number;
+	colors: ManaColor[];
+	types: string[];
+	subtypes: string[];
+}
+
+/** CR 605.1b / 605.4a: Delayed triggered mana ability active until end of turn (e.g. High Tide, Bubbling Muck). */
+export interface DelayedTapManaTriggerEntry {
+	id: string;
+	controllerId: string;
+	sourceName: string;
+	who: 'any' | 'you';
+	landSubtype?: string;
+	mana: ManaColor[];
+	recipient: 'tappingPlayer' | 'controller';
+}
+
+/** CR 603.7 / 707.10: Delayed trigger copying the next matching spell cast by `controllerId` this turn. */
+export interface DelayedNextSpellCopyEntry {
+	id: string;
+	controllerId: string;
+	sourceName: string;
+	types?: string[];
+	notTypes?: string[];
+	colors?: ManaColor[];
+	copyCount: number;
+	mayChooseNewTargets: boolean;
+}
+// --- End Track P19a ---
 
 export interface MagicLobby {
 	code: string;

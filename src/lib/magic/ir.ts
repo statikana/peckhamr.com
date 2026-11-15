@@ -635,6 +635,15 @@ export interface ObjectFilter {
 	/** CR 701.72 / CR 607.2: matches permanents currently assimilated by `source` (matching `objectVersion`). */
 	assimilatedWithSelf?: boolean;
 	// --- End Track P16a ---
+	// --- Track P19a ---
+	/** CR 115.9a: Stack filter matching spells/abilities that currently have only a single target (`stk.targets.length === 1`). */
+	withSingleTarget?: boolean;
+	/** CR 115.9b–c: Stack filter matching spells/abilities that target ONLY a single object/player matching `singleTargetFilter` / `singleTargetPlayer`. */
+	singleTargetFilter?: ObjectFilter;
+	singleTargetPlayer?: PlayerFilter;
+	/** Stack filter matching spells/abilities that target at least one player matching `targetsPlayerFilter`. */
+	targetsPlayerFilter?: PlayerFilter;
+	// --- End Track P19a ---
 }
 
 export interface Compare {
@@ -664,6 +673,15 @@ export interface TargetSpec {
 	/** CR 601.2d: total amount divided as caster/activator chooses among targets (`>= 1` per chosen target). */
 	divideTotal?: Amount;
 	// --- End Track P7 ---
+	// --- Track P19a ---
+	/** CR 115.9a: Target stack item must have only a single target (`stk.targets.length === 1`). */
+	withSingleTarget?: boolean;
+	/** Dynamic target count ("Destroy X target creatures", "Tap X target lands", "up to X target creatures"). */
+	dynamicCount?: Amount;
+	dynamicUpTo?: boolean;
+	/** Maximum total mana value across chosen targets ("up to two target creatures with total mana value 6 or less"). */
+	maxTotalManaValue?: number;
+	// --- End Track P19a ---
 }
 
 // ---- Amounts (replaces dynamicFormula strings) ----------------------------------------------
@@ -814,8 +832,30 @@ export type Amount =
 			k: 'playerCounters';
 			counter: 'poison' | 'experience' | 'energy' | 'rad' | 'ticket';
 			player: PlayerRef;
-	  };
+	  }
 	// --- End Track P16a ---
+	// --- Track P19a ---
+	/** CR 707.10 / 608.2h: Power, toughness, mana value, or distinct color count of the permanent(s) sacrificed to pay the spell/ability's cost. */
+	| { k: 'sacrificedCostStat'; stat: 'power' | 'toughness' | 'manaValue' | 'colorsCount' }
+	/** Least power / toughness / mana value among matching objects (0 if none). */
+	| { k: 'leastStatAmong'; filter: ObjectFilter; stat: 'power' | 'toughness' | 'manaValue' }
+	/** Count recorded in a preceding step by category ("cards exiled from their hand this way", "damage prevented this way", etc.). */
+	| {
+			k: 'countedThisWay';
+			kind:
+				| 'exiledFromHand'
+				| 'damagePrevented'
+				| 'greatestDiscarded'
+				| 'manaPaidJoinForces'
+				| 'tappedThisWay'
+				| 'destroyedThisWay'
+				| 'sacrificedThisWay'
+				| 'discardedThisWay'
+				| 'exiledThisWay';
+	  }
+	/** Non-negative difference `Math.max(0, left - right)` ("where X is 3 minus the number of cards in their hand", "draw cards equal to the difference"). */
+	| { k: 'difference'; left: Amount; right: Amount };
+	// --- End Track P19a ---
 
 // ---- Costs ----------------------------------------------------------------------------------
 
@@ -1077,8 +1117,15 @@ export type Verb =
 	| 'empowerJace'
 	| 'assimilate'
 	| 'recruit'
-	| 'heal';
+	| 'heal'
 	// --- End Track P16a ---
+	// --- Track P19a ---
+	| 'redirectTargets'
+	| 'skipTurn'
+	| 'exileUntil'
+	| 'delayedTapManaTrigger'
+	| 'delayedNextSpellCopy';
+	// --- End Track P19a ---
 
 export type ManaRestriction = 'artifactSpellOrNonSpell';
 
@@ -1150,7 +1197,18 @@ export interface EffectParams {
 	/** addMana: the exact symbols produced, e.g. ['C', 'C'] for "Add {C}{C}". */
 	mana?: ManaColor[];
 	/** addMana: `amount` mana of one colour chosen from this set ("Add {W} or {U}", "any color"). */
-	manaChoice?: ManaColor[] | 'any' | 'commanderIdentity' | 'opponentLandColors' | 'chosenColor';
+	manaChoice?:
+		| ManaColor[]
+		| 'any'
+		| 'commanderIdentity'
+		| 'opponentLandColors'
+		| 'chosenColor'
+		// --- Track P19a ---
+		| 'eventProducedTypes'
+		| 'eventProducedColors'
+		| 'controlledLandProducedTypes'
+		| 'controlledLandProducedColors';
+	// --- End Track P19a ---
 	/** addMana: spending restriction attached to the produced mana (CR 106.6). */
 	manaRestriction?: ManaRestriction;
 	/** grantPlayer: the rules the player gets. */
@@ -1204,9 +1262,12 @@ export interface EffectParams {
 		keepLabel?: string;
 		keepTo: 'libraryTop' | 'hand' | 'battlefield' | 'graveyard';
 		keepTapped?: boolean;
+		// --- Track P19a ---
+		keepAttacking?: boolean;
+		// --- End Track P19a ---
 		revealAll?: boolean;
 		revealKept?: boolean;
-		rest: 'libraryBottom' | 'graveyard';
+		rest: 'libraryBottom' | 'graveyard' | 'libraryTop';
 		restRandom?: boolean;
 		restOrder?: 'any' | 'random';
 		// --- Track P10 ---
@@ -1450,7 +1511,83 @@ export interface EffectParams {
 	/** grant / animate (CR 613.1f): affected permanent(s) lose all abilities in Layer 6 for the duration. */
 	removeAllAbilities?: boolean;
 	// --- End Track P16a ---
+	// --- Track P19a ---
+	/** CR 115.7: Stack target redirection specification (`changeSingleTarget` vs `chooseNewTargets`). */
+	redirectSpec?: RedirectTargetsSpec;
+	/** CR 406 / 608.2: Exile cards from top of library until a card matches `filter`. */
+	exileUntilSpec?: ExileUntilSpec;
+	/** CR 605.1b / 605.4a: Until-end-of-turn delayed tap-for-mana trigger specification (High Tide, Bubbling Muck). */
+	delayedTapManaSpec?: {
+		who: 'any' | 'you';
+		landSubtype?: string;
+		mana: ManaColor[];
+		recipient: 'tappingPlayer' | 'controller';
+	};
+	/** CR 603.7 / 707.10: Delayed trigger copying the next matching spell cast this turn. */
+	delayedNextSpellCopySpec?: {
+		types?: string[];
+		notTypes?: string[];
+		colors?: ManaColor[];
+		copyCount: number;
+		mayChooseNewTargets: boolean;
+	};
+	/** animate / grant: controller chooses 1 color (`'single'`) or 1+ colors (`'oneOrMore'`) on resolution ("becomes the color [or colors] of your choice"). */
+	chooseColorForAnimate?: 'single' | 'oneOrMore';
+	/** grant: controller chooses one keyword from `chooseLoseKeywordOptions` to remove until `duration` (Walking Sponge). */
+	chooseLoseKeywordOptions?: string[];
+	/** pump: controller chooses one `(+dp, +dt)` pair on resolution ("~ gets +1/-1 or -1/+1 until end of turn"). */
+	pumpChoices?: Array<{ power: number; toughness: number }>;
+	/** damage: CR 120.10 excess damage is dealt to that permanent's controller instead ("Excess damage is dealt to that creature's controller instead"). */
+	excessDamageToController?: boolean;
+	/** revealAndDiscard: discard ALL cards in revealed hand matching sacrificed cost creature's colors. */
+	discardAllMatchingSacrificedColors?: boolean;
+	/** revealAndDiscard: discard ALL cards in revealed hand matching `chosenCardName` ("discards all cards with that name"). */
+	discardAllWithChosenName?: boolean;
+	/** revealAndDiscard: number of cards revealed from hand when partial ("reveals N cards from their hand"), or `'randomOne'`. */
+	partialRevealCount?: Amount | 'randomOne';
+	/** revealAndDiscard: number of cards `chooser` selects from the revealed cards (default 1). */
+	coerciveCount?: Amount;
+	/** revealAndDiscard: also include target player's graveyard as candidate pool ("from that player's graveyard or hand and exile it"). */
+	includeGraveyardInCoercive?: boolean;
+	/** move to battlefield: enters as an Enchantment only (loses Creature/other types, e.g. Enduring Vitality "It's an enchantment"). */
+	asEnchantmentOnly?: boolean;
+	/** move to battlefield: enters tapped and attacking (CR 508.4, e.g. Winota / Squee). */
+	entersTappedAndAttacking?: boolean;
+	/** createToken: dynamic power and toughness amounts ("Create an X/X green Spirit creature token"). */
+	dynamicTokenPT?: { power: Amount; toughness: Amount };
+	/** counterSpell: dynamic generic mana tax ("unless its controller pays {1} for each ... / pays {X}"). */
+	unlessPaysGenericAmount?: Amount;
+	/** grantPlayer: CR 609.4b spend mana as though any color to cast spells from top of library this turn. */
+	spendManaAsAnyColorTopOfLibraryThisTurn?: boolean;
+	/** setLife: sets player(s)' life total to `amount` (CR 119.5: gains or loses the necessary life, e.g. Magister Sphinx). */
+	setLifeTotal?: boolean;
+	// --- End Track P19a ---
 }
+
+// --- Track P19a ---
+export interface RedirectTargetsSpec {
+	mode: 'changeSingleTarget' | 'chooseNewTargets';
+	forceTargetSelf?: boolean;
+}
+
+export interface ExileUntilSpec {
+	filter: ObjectFilter;
+	libraryOwner?: Selector;
+	hitAction:
+		| 'playThisTurn'
+		| 'playUntilEndOfNextTurn'
+		| 'castFree'
+		| 'hand'
+		| 'battlefield'
+		| 'battlefieldOrHand'
+		| 'none';
+	castFreeCondition?: Condition;
+	fallbackToHand?: boolean;
+	spendManaAsAnyColor?: boolean;
+	spellsOnly?: boolean;
+	restDestination: 'libraryBottomRandom' | 'graveyard' | 'stayExiled';
+}
+// --- End Track P19a ---
 
 // --- Track P16a ---
 export interface PileSplitSpec {
@@ -2121,8 +2258,16 @@ export type Condition =
 	// --- End Track P18b ---
 	// --- Track P16a ---
 	/** True iff `ref` (or the object acted on by the preceding step) moved to a graveyard from the battlefield. */
-	| { k: 'diedThisWay'; ref?: Ref };
+	| { k: 'diedThisWay'; ref?: Ref }
 	// --- End Track P16a ---
+	// --- Track P19a ---
+	/** True iff at least one player's graveyard has >= `min` cards ("If a graveyard has twenty or more cards in it"). */
+	| { k: 'anyGraveyardAtLeast'; min: number }
+	/** True iff `actor` controlled `targetIndex` when resolution began ("If you controlled that permanent"). */
+	| { k: 'controlledTargetAtResolution'; targetIndex: number }
+	/** True iff the resolving activated ability has been activated >= `min` times on its source permanent this turn ("If this ability has been activated four or more times this turn"). */
+	| { k: 'abilityActivatedCountThisTurn'; min: number };
+	// --- End Track P19a ---
 
 // ---- Statics and replacements ---------------------------------------------------------------
 
