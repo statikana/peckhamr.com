@@ -956,6 +956,35 @@ export function spellCannotBeCountered(state: GameState, item: StackItem): boole
 	return hasRestriction(state, stackObj, 'cantBeCountered');
 }
 
+// --- Track P22c ---
+export function spellCannotBeCopied(state: GameState, item: StackItem): boolean {
+	if (item.kind !== 'spell' || !item.card) return false;
+	const stackObj: CardInstance = {
+		instanceId: item.sourceInstanceId,
+		card: item.card,
+		ownerId: item.ownerId ?? item.controllerId,
+		controllerId: item.controllerId,
+		zone: 'stack',
+		tapped: false,
+		summoningSick: false,
+		counters: createEmptyCounterMap(),
+		...(item.spellMods?.prototyped || item.copiableState?.prototyped ? { prototyped: true } : {}),
+		isToken: false,
+		damageMarked: 0,
+		deathtouchDamageMarked: false,
+		attachedToId: null,
+		tempPowerMod: 0,
+		tempToughnessMod: 0,
+		grantedKeywords: [],
+		usedLoyaltyThisTurn: false,
+		isCommander: false,
+		commanderCastCount: 0,
+		transformed: false
+	};
+	return hasRestriction(state, stackObj, 'cantBeCopied');
+}
+// --- End Track P22c ---
+
 // ---- Replacement Effects --------------------------------------------------------------------
 
 export interface ActiveReplacement {

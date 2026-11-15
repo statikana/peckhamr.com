@@ -1,0 +1,91 @@
+{
+  "oracleId": "fd949f82-fc10-4e37-8aa9-6c7569fe3c55",
+  "cardName": "Akroma's Will",
+  "expectedTextHash": "3d90b106",
+  "compiledVersion": 39,
+  "notes": "Wave 8 P22c override: Conditional modal spell (choose 1, or choose both if you control a commander) using Wave 8 conditionalChooseRange.",
+  "faces": [
+    {
+      "name": "Akroma's Will",
+      "characteristics": {
+        "manaCost": "{3}{W}",
+        "types": ["Instant"],
+        "subtypes": [],
+        "supertypes": [],
+        "colors": ["W"]
+      },
+      "abilities": [
+        {
+          "kind": "spell",
+          "additionalCosts": [],
+          "targets": [],
+          "effect": [],
+          "modal": {
+            "min": 1,
+            "max": 1,
+            "conditionalChooseRange": {
+              "condition": { "k": "controlCommander" },
+              "min": 1,
+              "max": 2
+            },
+            "modes": [
+              {
+                "targets": [],
+                "effect": [
+                  {
+                    "verb": "grant",
+                    "subject": {
+                      "k": "all",
+                      "filter": {
+                        "zone": "battlefield",
+                        "controller": "you",
+                        "types": ["Creature"]
+                      }
+                    },
+                    "params": {
+                      "keywords": ["Flying", "Vigilance", "Double strike"],
+                      "duration": "endOfTurn"
+                    },
+                    "span": { "start": 88, "end": 170 }
+                  }
+                ],
+                "span": { "start": 86, "end": 171 }
+              },
+              {
+                "targets": [],
+                "effect": [
+                  {
+                    "verb": "grant",
+                    "subject": {
+                      "k": "all",
+                      "filter": {
+                        "zone": "battlefield",
+                        "controller": "you",
+                        "types": ["Creature"]
+                      }
+                    },
+                    "params": {
+                      "keywords": [
+                        "Lifelink",
+                        "Indestructible",
+                        "Protection from white",
+                        "Protection from blue",
+                        "Protection from black",
+                        "Protection from red",
+                        "Protection from green"
+                      ],
+                      "duration": "endOfTurn"
+                    },
+                    "span": { "start": 173, "end": 281 }
+                  }
+                ],
+                "span": { "start": 171, "end": 281 }
+              }
+            ]
+          },
+          "span": { "start": 0, "end": 281 }
+        }
+      ]
+    }
+  ]
+}

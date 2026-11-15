@@ -474,9 +474,11 @@ const RULES_PARAM_PREFIXES: readonly string[] = [
 	'reinforce'
 ];
 
-function isAbilityOrFlavorWord(rawPrefix: string): boolean {
+export function isAbilityOrFlavorWord(rawPrefix: string): boolean {
 	const low = rawPrefix.toLowerCase().replace(/’/g, "'").trim();
 	if (ABILITY_WORDS.has(low)) return true;
+	// Protect Saga chapter prefixes ("I —", "I, II —", "III, IV —") from ability-word stripping.
+	if (/^[ivx]+(?:\s*,\s*[ivx]+)*$/.test(low)) return false;
 	if (RULES_TERM_BLOCKLIST.has(low)) return false;
 	if (low.endsWith('cycling')) return false;
 	for (const p of RULES_PARAM_PREFIXES) {
@@ -486,10 +488,16 @@ function isAbilityOrFlavorWord(rawPrefix: string): boolean {
 }
 
 // "Landfall — Whenever ...", "Keen Sight — Whenever ...", "Channel — {2}{G}, Discard ~: ...".
+// Also handles Unicode/digits/commas such as "Githyanki Crèche —", "Pavitr's Sevā —", "10,000 Needles —".
 // Keyword costs use an unspaced dash ("Ward—Pay 3 life"), so a spaced em dash followed by a
 // capital letter, bullet, or mana symbol marks a CR 207.2c ability-word or CR 207.2d flavor-word
-// candidate unless the prefix is a rules term (CR 701/702).
-const ABILITY_WORD = /^([A-Z][A-Za-z0-9'’! -]*?) — (?=[A-Z•{~])/;
+// candidate unless the prefix is a rules term (CR 701/702) or Saga chapter numeral.
+const ABILITY_WORD = /^([\p{Lu}0-9][\p{L}0-9'’!, -]*?) — (?=[\p{Lu}•{~])/u;
+
+// Modal bullet flavor words: "• Feed — Target opponent...", "• ~ — You may cast..."
+// Excludes Tiered double-dash ("• Blizzard — {0} — ..."), villainous choices, and {P} prefixes.
+const BULLET_ABILITY_WORD =
+	/^•\s+([\p{L}0-9~][\p{L}0-9'’!?,.~ -]*?) — (?!\{[^}]+\}\s*—)(?=[\p{Lu}0-9{~])/u;
 
 function escapeRegex(s: string): string {
 	return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -514,23 +522,286 @@ const NON_CHARACTER_LEGEND_FIRST_WORDS = new Set([
 	'patron',
 	'warden',
 	'keeper',
-	'master'
+	'master',
+	'guardian',
+	'herald',
+	'emissary',
+	'archon',
+	'angel',
+	'demon',
+	'dragon',
+	'elder',
+	'beast',
+	'elemental',
+	'knight',
+	'soldier',
+	'wizard',
+	'god',
+	'goddess',
+	'bringer',
+	'sliver',
+	'flash',
+	'space',
+	'mutagen',
+	'time',
+	'blood',
+	'fire',
+	'ice',
+	'soul',
+	'mind',
+	'hand',
+	'land',
+	'mana',
+	'dark',
+	'light',
+	'shadow',
+	'storm',
+	'iron',
+	'gold',
+	'silver',
+	'star',
+	'sun',
+	'moon',
+	'night',
+	'day',
+	'death',
+	'life',
+	'war',
+	'rage',
+	'fury',
+	'hope',
+	'grace',
+	'fate',
+	'doom',
+	'void',
+	'chaos',
+	'order',
+	'wild',
+	'true',
+	'pure',
+	'last',
+	'first',
+	'high',
+	'great',
+	'old',
+	'new',
+	'red',
+	'blue',
+	'black',
+	'white',
+	'green',
+	'ancient',
+	'eternal',
+	'prime',
+	'grand',
+	'tiny',
+	'giant',
+	'little',
+	'big',
+	'young',
+	'arch',
+	'captain',
+	'commander',
+	'lieutenant',
+	'ensign',
+	'admiral',
+	'general',
+	'major',
+	'colonel',
+	'sergeant',
+	'marshal',
+	'minister',
+	'senator',
+	'mayor',
+	'duke',
+	'baron',
+	'count',
+	'earl',
+	'doctor',
+	'professor',
+	'saint',
+	'father',
+	'mother',
+	'brother',
+	'sister',
+	'uncle',
+	'aunt'
 ]);
 
+const CONNECTOR_WORDS = new Set(['the', 'of', 'and', 'a', 'an', 'in', 'on', 'at', 'to', 'from', 'da', 'de', 'von', 'van']);
+
+const WORD_CHAR_RE = /^[\p{L}\p{N}_]$/u;
+const NAMED_BEFORE_RE = /\bnamed\s+$/i;
+const CREATE_BEFORE_RE = /\bcreate\s+$/i;
+const TOKEN_NAME_POSSESSIVE_AFTER_RE = /^['’]s\s+[\p{Lu}][\p{L}'’-]*,\s*a\b/u;
+const VERB_OR_POSS_AFTER_RE =
+	/^(?:['’]s\b|\s+(?:enters|leaves|dies|attacks|blocks|becomes|is|deals|can't|can’t|gets|gains|has|loses|costs|remains|stays|transforms|flips)\b)/;
+const LEAD_BEFORE_RE =
+	/(?:^|\n|[.;:]\s*|\b(?:when|whenever|as|if|unless|until|while|exile|return|put|sacrifice|destroy|tap|untap|transform|flip|on|to|with|from)\s+)$/i;
+const LEAD_AFTER_OK_RE =
+	/^(?:[\s.,;:!?]|$)(?!\s+(?:token|tokens|card|cards|creature|creatures|spell|spells)\b)/;
+
+function replaceNameOccurrences(text: string, sortedNames: string[], fullName: string): string {
+	let out = text;
+	for (const n of sortedNames) {
+		if (!n || !out.includes(n)) continue;
+		let pos = 0;
+		let rebuilt = '';
+		const checkNamed = n !== fullName;
+		for (let guard = 0; guard < 200; guard++) {
+			const idx = out.indexOf(n, pos);
+			if (idx < 0) {
+				rebuilt += out.slice(pos);
+				break;
+			}
+			const before = idx > 0 ? out[idx - 1] : '';
+			const afterIdx = idx + n.length;
+			const after = afterIdx < out.length ? out[afterIdx] : '';
+			const okLeft = !before || !WORD_CHAR_RE.test(before);
+			const okRight = !after || !WORD_CHAR_RE.test(after);
+			const prefixSlice = checkNamed ? out.slice(Math.max(0, idx - 16), idx) : '';
+			const isNamed =
+				checkNamed &&
+				((idx >= 6 && NAMED_BEFORE_RE.test(prefixSlice)) ||
+					(idx >= 7 &&
+						CREATE_BEFORE_RE.test(prefixSlice) &&
+						TOKEN_NAME_POSSESSIVE_AFTER_RE.test(out.slice(afterIdx, afterIdx + 48))));
+			if (okLeft && okRight && !isNamed) {
+				rebuilt += out.slice(pos, idx) + '~';
+			} else {
+				rebuilt += out.slice(pos, afterIdx);
+			}
+			pos = afterIdx;
+		}
+		out = rebuilt;
+	}
+	return out;
+}
+
+function addUniqueName(names: string[], candidate: string): void {
+	if (candidate && !names.includes(candidate)) names.push(candidate);
+}
+
+function hasFallbackSelfContext(remaining: string, cand: string): boolean {
+	if (!remaining.includes(cand)) return false;
+	let pos = 0;
+	for (let guard = 0; guard < 200; guard++) {
+		const idx = remaining.indexOf(cand, pos);
+		if (idx < 0) return false;
+		const afterIdx = idx + cand.length;
+		const before = idx > 0 ? remaining[idx - 1] : '';
+		const okLeft = !before || !WORD_CHAR_RE.test(before);
+		const isNamed =
+			idx >= 6 && NAMED_BEFORE_RE.test(remaining.slice(Math.max(0, idx - 16), idx));
+		if (okLeft && !isNamed) {
+			const tail = remaining.slice(afterIdx, afterIdx + 48);
+			const afterChar = afterIdx < remaining.length ? remaining[afterIdx] : '';
+			if (!afterChar || !WORD_CHAR_RE.test(afterChar)) {
+				if (VERB_OR_POSS_AFTER_RE.test(tail)) return true;
+				const head = remaining.slice(Math.max(0, idx - 24), idx);
+				if (LEAD_BEFORE_RE.test(head) && LEAD_AFTER_OK_RE.test(tail)) return true;
+			}
+		}
+		pos = afterIdx;
+	}
+	return false;
+}
+
+function addCharacterLegendFallbackNames(
+	names: string[],
+	name: string,
+	faceOracleText: string
+): void {
+	const stripped = stripReminderText(faceOracleText);
+	const remaining = replaceNameOccurrences(
+		stripped,
+		[...names].sort((a, b) => b.length - a.length),
+		name
+	);
+
+	const words = name.split(/\s+/);
+	if (words.length < 2) return;
+	const candidates: string[] = [];
+	const w0 = words[0];
+	const w1 = words[1];
+
+	if (
+		words.length >= 3 &&
+		/^\p{Lu}[\p{L}'’-]{2,}$/u.test(w0) &&
+		/^\p{Lu}[\p{L}'’-]{2,}$/u.test(w1) &&
+		!CONNECTOR_WORDS.has(w0.toLowerCase()) &&
+		!CONNECTOR_WORDS.has(w1.toLowerCase()) &&
+		!NON_CHARACTER_LEGEND_FIRST_WORDS.has(w0.toLowerCase())
+	) {
+		candidates.push(`${w0} ${w1}`);
+	}
+
+	if (
+		/^\p{Lu}[\p{L}'’-]{2,}$/u.test(w0) &&
+		!w0.endsWith('.') &&
+		!CONNECTOR_WORDS.has(w0.toLowerCase()) &&
+		!NON_CHARACTER_LEGEND_FIRST_WORDS.has(w0.toLowerCase())
+	) {
+		candidates.push(w0);
+	}
+
+	for (const cand of candidates) {
+		if (names.includes(cand)) continue;
+		if (hasFallbackSelfContext(remaining, cand)) {
+			addUniqueName(names, cand);
+		}
+	}
+}
+
 /** Names that refer to the card itself: the full name and, for "Name, Title" (or legendary character "Name the/of ..."), the short name. */
-export function selfNames(name: string, isCharacterLegend = false): string[] {
+export function selfNames(
+	name: string,
+	isCharacterLegend = false,
+	faceOracleText?: string
+): string[] {
 	const names = [name];
 	const comma = name.indexOf(', ');
-	if (comma > 0) names.push(name.slice(0, comma));
-	const nickTitle = name.match(/^([A-Z][A-Za-z.]+)\s+[A-Za-z'’-]+\s+"[^"]+"\s+([A-Z][A-Za-z'’-]+)$/);
+	if (comma > 0) addUniqueName(names, name.slice(0, comma));
+
+	const nickTitle = name.match(
+		/^([\p{Lu}][\p{L}.]+)\s+[\p{L}'’-]+\s+"[^"]+"\s+([\p{Lu}][\p{L}'’-]+)$/u
+	);
 	if (nickTitle) {
-		const titled = `${nickTitle[1]} ${nickTitle[2]}`;
-		if (!names.includes(titled)) names.push(titled);
+		addUniqueName(names, `${nickTitle[1]} ${nickTitle[2]}`);
 	}
+
+	if (isCharacterLegend) {
+		const baseName = comma > 0 ? name.slice(0, comma) : name;
+		const rankSurname = baseName.match(
+			/^(Captain|Commander|Lieutenant|Ensign|Admiral|General|Major|Colonel|Sergeant|Dr\.|Professor)\s+(?:[\p{Lu}][\p{L}.'’-]*\s+)+([\p{Lu}][\p{L}'’-]{2,})$/u
+		);
+		if (rankSurname) {
+			addUniqueName(names, `${rankSurname[1]} ${rankSurname[2]}`);
+		}
+	}
+
 	if (isCharacterLegend && comma < 0) {
-		const epithet = name.match(/^([A-Z][A-Za-z'’-]{2,})\s+(?:the|of)\s+[A-Z]/);
-		if (epithet && !NON_CHARACTER_LEGEND_FIRST_WORDS.has(epithet[1].toLowerCase())) {
-			if (!names.includes(epithet[1])) names.push(epithet[1]);
+		const roman = name.match(
+			/^([\p{Lu}][\p{L}'’-]{2,}(?:\s+[\p{Lu}][\p{L}'’-]{2,})*)\s+(?:II|III|IV|VI|VII|VIII|IX|XI|XII|XL|XLVIII|[IVX]{2,})$/u
+		);
+		if (roman && !NON_CHARACTER_LEGEND_FIRST_WORDS.has(roman[1].split(/\s+/)[0].toLowerCase())) {
+			addUniqueName(names, roman[1]);
+		}
+
+		const epithet = name.match(
+			/^([\p{Lu}][\p{L}'’-]{2,}(?:\s+[\p{Lu}][\p{L}'’-]{2,})?)\s+(?:the|of(?:\s+(?:the|a))?|and\s+the)\s+[\p{Lu}]/u
+		);
+		if (epithet) {
+			const candidate = epithet[1];
+			const words = candidate.split(/\s+/);
+			const w0 = words[0].toLowerCase();
+			if (!NON_CHARACTER_LEGEND_FIRST_WORDS.has(w0)) {
+				addUniqueName(names, candidate);
+			}
+		}
+
+		if (faceOracleText) {
+			addCharacterLegendFallbackNames(names, name, faceOracleText);
 		}
 	}
 	return names;
@@ -575,17 +846,26 @@ function normalizeSelfPronounsOutsideQuotes(text: string): string {
 	return parts.join('');
 }
 
+function replaceSelfReferencesWithNames(
+	line: string,
+	name: string,
+	sortedNames: string[]
+): string {
+	let out = replaceNameOccurrences(line, sortedNames, name);
+	out = out.replace(SELF_REFERENCE, '~');
+	return normalizeSelfPronounsOutsideQuotes(out);
+}
+
 export function replaceSelfReferences(
 	line: string,
 	name: string,
-	isCharacterLegend = false
+	isCharacterLegend = false,
+	faceOracleText?: string
 ): string {
-	let out = line;
-	for (const n of selfNames(name, isCharacterLegend)) {
-		out = out.replace(new RegExp(`\\b${escapeRegex(n)}(?!\\w)`, 'g'), '~');
-	}
-	out = out.replace(SELF_REFERENCE, '~');
-	return normalizeSelfPronounsOutsideQuotes(out);
+	const sortedNames = selfNames(name, isCharacterLegend, faceOracleText).sort(
+		(a, b) => b.length - a.length
+	);
+	return replaceSelfReferencesWithNames(line, name, sortedNames);
 }
 
 /** Splits on sentence-ending periods that are outside quotation marks. */
@@ -637,15 +917,29 @@ export function normalizeFace(
 	const lines: NormalizedLine[] = [];
 	const parts: string[] = [];
 	let offset = 0;
+	const sortedNames = selfNames(name, isCharacterLegend, rulesText).sort(
+		(a, b) => b.length - a.length
+	);
 
 	rulesText.split('\n').forEach((raw, rawIndex) => {
-		const text = replaceSelfReferences(stripReminderText(raw), name, isCharacterLegend);
+		const text = replaceSelfReferencesWithNames(stripReminderText(raw), name, sortedNames);
 		if (!text) return;
 		if (parts.length > 0) offset += 1; // the joining newline
 		const span = { start: offset, end: offset + text.length };
 
 		const m = text.match(ABILITY_WORD);
-		const aw = m && isAbilityOrFlavorWord(m[1]) ? m : null;
+		let aw = m && isAbilityOrFlavorWord(m[1]) ? m : null;
+		if (!aw) {
+			const bm = text.match(BULLET_ABILITY_WORD);
+			if (
+				bm &&
+				!/\bfaces a villainous choice$/i.test(bm[1]) &&
+				!/^\{P\}/i.test(bm[1]) &&
+				isAbilityOrFlavorWord(bm[1])
+			) {
+				aw = bm;
+			}
+		}
 		const bodyOffset = aw ? aw[0].length : 0;
 		const body = text.slice(bodyOffset);
 		const bodySpan = { start: offset + bodyOffset, end: span.end };
@@ -683,7 +977,8 @@ export function printedText(text: string, name: string, rulesText: string): stri
 	const hasTilde = text.includes('~');
 	const hasPronoun = /\b(?:it|its|itself|it's)\b/i.test(text);
 	if (!hasTilde && !hasPronoun) return text;
-	const self = `(?:${selfNames(name, true).map(escapeRegex).join('|')}|[Tt]his (?:${SELF_REFERENCE_TYPES})\\b)`;
+	const selfNamesList = selfNames(name, true, rulesText).sort((a, b) => b.length - a.length);
+	const self = `(?:${selfNamesList.map(escapeRegex).join('|')}|[Tt]his (?:${SELF_REFERENCE_TYPES})\\b)`;
 	const expandPronouns = (chunk: string) =>
 		escapeRegex(chunk)
 			.replace(/\b([Ii])tself\b/g, '(?:$1tself|[Hh]imself|[Hh]erself)')

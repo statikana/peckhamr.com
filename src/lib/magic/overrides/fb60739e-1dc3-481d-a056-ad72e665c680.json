@@ -1,0 +1,66 @@
+{
+  "oracleId": "fb60739e-1dc3-481d-a056-ad72e665c680",
+  "cardName": "Rite of Replication",
+  "expectedTextHash": "7b023cda",
+  "compiledVersion": 39,
+  "notes": "Wave 8 P22c override: Kicker {5}; create a token copy of target creature, or 5 copies if kicked.",
+  "faces": [
+    {
+      "name": "Rite of Replication",
+      "characteristics": {
+        "manaCost": "{2}{U}{U}",
+        "types": ["Sorcery"],
+        "subtypes": [],
+        "supertypes": [],
+        "colors": ["U"]
+      },
+      "abilities": [
+        {
+          "kind": "keyword",
+          "keyword": {
+            "name": "kicker",
+            "cost": "{5}",
+            "kickerCosts": [
+              {
+                "cost": "{5}",
+                "costDefs": [{ "k": "mana", "cost": "{5}" }],
+                "tags": ["{5}"]
+              }
+            ],
+            "costDefs": [{ "k": "mana", "cost": "{5}" }]
+          },
+          "span": { "start": 0, "end": 10 }
+        },
+        {
+          "kind": "spell",
+          "additionalCosts": [],
+          "targets": [
+            {
+              "kind": "object",
+              "filter": { "zone": "battlefield", "types": ["Creature"] },
+              "min": 1,
+              "max": 1
+            }
+          ],
+          "effect": [
+            {
+              "verb": "copyPermanent",
+              "subject": { "k": "target", "index": 0 },
+              "amount": { "k": "const", "n": 1 },
+              "condition": { "k": "not", "of": { "k": "kicked" } },
+              "span": { "start": 69, "end": 122 }
+            },
+            {
+              "verb": "copyPermanent",
+              "subject": { "k": "target", "index": 0 },
+              "amount": { "k": "const", "n": 5 },
+              "condition": { "k": "kicked" },
+              "span": { "start": 124, "end": 178 }
+            }
+          ],
+          "span": { "start": 69, "end": 178 }
+        }
+      ]
+    }
+  ]
+}

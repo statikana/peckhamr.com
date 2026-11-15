@@ -1,0 +1,71 @@
+{
+  "oracleId": "4ff07b7c-e97a-4b57-bcf1-2f22c37a8bd6",
+  "cardName": "Flare of Fortitude",
+  "expectedTextHash": "97adf131",
+  "compiledVersion": 39,
+  "notes": "Wave 8 P22c override: Free-cast sacrifice nontoken white creature altCastPermission + lifeTotalCantChange + hexproof & indestructible.",
+  "faces": [
+    {
+      "name": "Flare of Fortitude",
+      "characteristics": {
+        "manaCost": "{2}{W}{W}",
+        "types": ["Instant"],
+        "subtypes": [],
+        "supertypes": [],
+        "colors": ["W"]
+      },
+      "abilities": [
+        {
+          "kind": "static",
+          "static": {
+            "k": "altCastPermission",
+            "affects": "self",
+            "manaCost": "{0}",
+            "costDefs": [
+              {
+                "k": "sacrifice",
+                "count": { "k": "const", "n": 1 },
+                "filter": {
+                  "token": false,
+                  "colors": ["W"],
+                  "types": ["Creature"],
+                  "controller": "you"
+                }
+              }
+            ]
+          },
+          "span": { "start": 0, "end": 74 }
+        },
+        {
+          "kind": "spell",
+          "additionalCosts": [],
+          "targets": [],
+          "effect": [
+            {
+              "verb": "grantPlayer",
+              "subject": { "k": "player", "filter": { "relation": "you" } },
+              "params": {
+                "playerRules": ["lifeTotalCantChange"],
+                "duration": "endOfTurn"
+              },
+              "span": { "start": 75, "end": 122 }
+            },
+            {
+              "verb": "grant",
+              "subject": {
+                "k": "all",
+                "filter": { "zone": "battlefield", "controller": "you" }
+              },
+              "params": {
+                "keywords": ["Hexproof", "Indestructible"],
+                "duration": "endOfTurn"
+              },
+              "span": { "start": 124, "end": 193 }
+            }
+          ],
+          "span": { "start": 75, "end": 193 }
+        }
+      ]
+    }
+  ]
+}

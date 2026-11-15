@@ -473,6 +473,14 @@ import {
 	validatePawprintBudget
 } from './runtime/framesModalsWave6.ts';
 // --- End Track P18b ---
+// --- Track P22c ---
+import {
+	filterTriggerDifferentPlayerCandidates,
+	isModalRandomActive,
+	resolveWave8ModalEffectiveBounds,
+	validateDifferentPlayerTargetsPerMode
+} from './runtime/framesWave8.ts';
+// --- End Track P22c ---
 // --- Track P16a ---
 import {
 	cleanupP16aTurnState,
@@ -8087,8 +8095,30 @@ function applyGameActionInner(
 						undefined,
 						chooseAllModes,
 						// --- Track P18b ---
-						xVal
+						xVal,
 						// --- End Track P18b ---
+						// --- Track P22c ---
+						(c) =>
+							(c.k === 'p20bCondition' &&
+								c.kind === 'additionalCostPaid' &&
+								wasAnyAdditionalCostPaidP20b(
+									castOption.mandatoryAdditionalCosts,
+									action.costPayment,
+									hasOptCounts ? normalizedOptCounts : undefined
+								)) ||
+							isCastConditionMet(
+								c,
+								inst.card,
+								hasOptCounts ? normalizedOptCounts : undefined,
+								castOption
+							) ||
+							evaluateCondition(c, {
+								state,
+								controllerId: actorId,
+								source: inst,
+								xValue: xVal
+							})
+						// --- End Track P22c ---
 					);
 					if (!modalVal.ok) return modalVal;
 					chosenModes = modalVal.chosenModes;
@@ -13665,14 +13695,23 @@ function validateModalChoice(
 	usedModes?: number[],
 	chooseAllModes = false,
 	// --- Track P18b ---
-	xValue = 0
+	xValue = 0,
 	// --- End Track P18b ---
+	// --- Track P22c ---
+	castConditionCheck?: (cond: Condition) => boolean
+	// --- End Track P22c ---
 ):
 	| { ok: true; chosenModes: number[]; targetsBySpec: TargetRef[][] }
 	| { ok: false; error: string } {
 	let chosenModes = providedModes;
+	const modalInitCtx: FilterContext = {
+		state,
+		controllerId: actorId,
+		source: sourceInst,
+		xValue
+	};
 	// --- Track P18b: Random mode selection ("Choose one at random —") ---
-	if (modal.randomMode && !chosenModes) {
+	if (isModalRandomActive(modal, modalInitCtx, evaluateCondition) && !chosenModes) {
 		const status = modalCandidateModeStatus(
 			state,
 			actorId,
@@ -13731,14 +13770,25 @@ function validateModalChoice(
 		source: sourceInst,
 		xValue
 	};
+	const evalModalCond = (cond: Condition): boolean =>
+		castConditionCheck ? castConditionCheck(cond) : evaluateCondition(cond, modalEvalCtx);
 	const condChooseAllMet = Boolean(
-		modal.conditionalChooseAll && evaluateCondition(modal.conditionalChooseAll, modalEvalCtx)
+		modal.conditionalChooseAll && evalModalCond(modal.conditionalChooseAll)
+	);
+	const condChooseRangeMet = Boolean(
+		modal.conditionalChooseRange && evalModalCond(modal.conditionalChooseRange.condition)
 	);
 	const evaluatedDynMax =
 		modal.dynamicMax && modal.dynamicMax.k !== 'x'
 			? evaluateAmount(modal.dynamicMax, modalEvalCtx)
 			: undefined;
-	const bounds = resolveModalEffectiveBounds(modal, chooseAllModes, xValue, evaluatedDynMax);
+	const bounds = resolveWave8ModalEffectiveBounds(
+		modal,
+		chooseAllModes,
+		xValue,
+		evaluatedDynMax,
+		condChooseRangeMet
+	);
 	const effectiveMin = bounds.min;
 	const effectiveMax = condChooseAllMet ? Math.max(bounds.max, modal.modes.length) : bounds.max;
 	// --- End Track P18b ---
@@ -13854,6 +13904,10 @@ function validateModalChoice(
 		if (!fbCheck.ok) return { ok: false, error: fbCheck.error! };
 	}
 	// --- End Track P17a ---
+	// --- Track P22c ---
+	const diffPlayersCheck = validateDifferentPlayerTargetsPerMode(modal, allSpecs, targetsBySpec);
+	if (!diffPlayersCheck.ok) return { ok: false, error: diffPlayersCheck.error! };
+	// --- End Track P22c ---
 	return { ok: true, chosenModes, targetsBySpec };
 }
 
@@ -14438,9 +14492,18 @@ function assignOrPromptTriggerTargets(
 							.map((t) => `${t.kind}:${t.id}`)
 					)
 				: null;
-		const legal = priorChosen
+		const baseLegal = priorChosen
 			? candidates[i].filter((c) => !priorChosen.has(`${c.kind}:${c.id}`))
 			: candidates[i];
+		// --- Track P22c ---
+		const legal = filterTriggerDifferentPlayerCandidates(
+			triggerItemModal(item),
+			item,
+			i,
+			targetsBySpec,
+			baseLegal
+		);
+		// --- End Track P22c ---
 		// --- Track P7 ---
 		const divTotal = evaluateSpecDivideTotal(
 			state,
@@ -14607,7 +14670,13 @@ function putTriggerOnStack(state: GameState, t: PendingTrigger): StackItem | nul
 			return null;
 		}
 		// --- Track P18b ---
-		if (modal.randomMode) {
+		const trigModalEvalCtx: FilterContext = {
+			state,
+			controllerId: t.controllerId,
+			source: srcObj,
+			xValue: item.xValue
+		};
+		if (isModalRandomActive(modal, trigModalEvalCtx, evaluateCondition)) {
 			const rIdx = Math.floor(nextRandom(state) * status.legalModes.length) % status.legalModes.length;
 			item.chosenModes = [status.legalModes[rIdx]];
 			recordUsedModalModes(foundSrcPerm?.inst, t.source.objectVersion, modal, item.chosenModes);
@@ -14627,6 +14696,8 @@ function putTriggerOnStack(state: GameState, t: PendingTrigger): StackItem | nul
 		} else if (
 			!modal.allowRepeat &&
 			!modal.upTo &&
+			!modal.conditionalChooseRange &&
+			!modal.dynamicMax &&
 			modal.pawprintBudget === undefined &&
 			status.legalModes.length === modal.min &&
 			modal.min === modal.max
@@ -14768,7 +14839,27 @@ function putTriggerOnStack(state: GameState, t: PendingTrigger): StackItem | nul
 	if (needsHumanModePrompt && modal) {
 		const modeLabels = describeModalModes(item.card, modal, item.faceIndex ?? 0);
 		// --- Track P18b ---
-		const trigBounds = resolveModalEffectiveBounds(modal, false, item.xValue);
+		const trigBoundsCtx: FilterContext = {
+			state,
+			controllerId: modeChooser.playerId,
+			source: srcObj,
+			xValue: item.xValue
+		};
+		const trigDynMax =
+			modal.dynamicMax && modal.dynamicMax.k !== 'x'
+				? evaluateAmount(modal.dynamicMax, trigBoundsCtx)
+				: undefined;
+		const condRangeMet = Boolean(
+			modal.conditionalChooseRange &&
+				evaluateCondition(modal.conditionalChooseRange.condition, trigBoundsCtx)
+		);
+		const trigBounds = resolveWave8ModalEffectiveBounds(
+			modal,
+			false,
+			item.xValue,
+			trigDynMax,
+			condRangeMet
+		);
 		const reason =
 			trigBounds.min === trigBounds.max
 				? `Choose ${trigBounds.min} mode(s) for ${item.title}.`
@@ -14938,7 +15029,16 @@ function resolveTriggerPrompt(
 			return { ok: false, error: 'That target requirement is no longer valid.' };
 		}
 		state.pendingPrompts.splice(promptIdx, 1);
-		const legal = triggerTargetCandidates(state, item, spec);
+		const baseLegal = triggerTargetCandidates(state, item, spec);
+		// --- Track P22c ---
+		const legal = filterTriggerDifferentPlayerCandidates(
+			triggerItemModal(item),
+			item,
+			specIdx,
+			item.targetsBySpec ?? [],
+			baseLegal
+		);
+		// --- End Track P22c ---
 		const chosen = answer.objectIds
 			.map((id) => legal.find((c) => c.id === id))
 			.filter((c): c is TargetRef => Boolean(c));
@@ -15909,7 +16009,13 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 			modal,
 			usedModes
 		);
-		if (modal.randomMode && status.legalModes.length > 0) {
+		const defEvalCtx: FilterContext = {
+			state,
+			controllerId: item.controllerId,
+			source: srcPerm,
+			xValue: item.xValue
+		};
+		if (isModalRandomActive(modal, defEvalCtx, evaluateCondition) && status.legalModes.length > 0) {
 			const rIdx = Math.floor(nextRandom(state) * status.legalModes.length) % status.legalModes.length;
 			item.chosenModes = [status.legalModes[rIdx]];
 			recordUsedModalModes(srcPerm, item.sourceObjectVersion, modal, item.chosenModes);
@@ -15917,7 +16023,20 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 		} else if (modal.opponentChooses && hasLegalModalCombination(modal, status.legalModes)) {
 			const oppChooser =
 				state.players.find((p) => !p.lost && p.playerId !== item.controllerId) ?? controller;
-			const bounds = resolveModalEffectiveBounds(modal, false, item.xValue);
+			const defDynMax =
+				modal.dynamicMax && modal.dynamicMax.k !== 'x'
+					? evaluateAmount(modal.dynamicMax, defEvalCtx)
+					: undefined;
+			const bounds = resolveWave8ModalEffectiveBounds(
+				modal,
+				false,
+				item.xValue,
+				defDynMax,
+				Boolean(
+					modal.conditionalChooseRange &&
+						evaluateCondition(modal.conditionalChooseRange.condition, defEvalCtx)
+				)
+			);
 			if (oppChooser.isBot) {
 				item.chosenModes = status.legalModes.slice(0, Math.max(1, bounds.min));
 				recordUsedModalModes(srcPerm, item.sourceObjectVersion, modal, item.chosenModes);
@@ -17858,6 +17977,138 @@ registerWave3Host({
 });
 // --- End Track P9 ---
 
+// --- Track P22c ---
+function enqueueHumanTriggerModesPrompt(
+	state: GameState,
+	modeChooser: PlayerGameState,
+	item: StackItem,
+	modal: ModalDef,
+	srcObj: CardInstance | undefined,
+	modalDisabledIndices: number[]
+): void {
+	const modeLabels = describeModalModes(item.card, modal, item.faceIndex ?? 0);
+	const trigBoundsCtx: FilterContext = {
+		state,
+		controllerId: modeChooser.playerId,
+		source: srcObj,
+		xValue: item.xValue
+	};
+	const trigDynMax =
+		modal.dynamicMax && modal.dynamicMax.k !== 'x'
+			? evaluateAmount(modal.dynamicMax, trigBoundsCtx)
+			: undefined;
+	const condRangeMet = Boolean(
+		modal.conditionalChooseRange &&
+			evaluateCondition(modal.conditionalChooseRange.condition, trigBoundsCtx)
+	);
+	const trigBounds = resolveWave8ModalEffectiveBounds(
+		modal,
+		false,
+		item.xValue,
+		trigDynMax,
+		condRangeMet
+	);
+	const reason =
+		trigBounds.min === trigBounds.max
+			? `Choose ${trigBounds.min} mode(s) for ${item.title}.`
+			: `Choose ${trigBounds.min}–${trigBounds.max} mode(s) for ${item.title}.`;
+	enqueueChoicePrompt(state, {
+		id: uid('prm', state),
+		playerId: modeChooser.playerId,
+		kind: 'chooseMode',
+		purpose: 'trigger_modes',
+		title: `Choose Mode (${item.card.name})`,
+		description: reason,
+		triggerStackItemId: item.id,
+		choice: {
+			kind: 'chooseMode',
+			modes: modeLabels,
+			min: trigBounds.min,
+			max: trigBounds.max,
+			...(modal.allowRepeat ? { allowRepeat: true } : {}),
+			...(modalDisabledIndices.length > 0 ? { disabledIndices: modalDisabledIndices } : {})
+		}
+	});
+}
+
+function resolveTriggerModalBeforeStack(
+	state: GameState,
+	controller: PlayerGameState,
+	item: StackItem,
+	modal: ModalDef,
+	srcObj: CardInstance | undefined,
+	foundSrcPerm: { inst: CardInstance } | undefined,
+	sourceVersion: number | undefined
+): { status: 'removed' | 'prompt' | 'ready'; modeChooser: PlayerGameState; disabledIndices: number[] } {
+	const usedModes =
+		foundSrcPerm && foundSrcPerm.inst.objectVersion === sourceVersion
+			? getEffectiveUsedModalModes(modal, foundSrcPerm.inst)
+			: undefined;
+	const modeChooser =
+		modal.opponentChooses
+			? (state.players.find((p) => !p.lost && p.playerId !== controller.playerId) ?? controller)
+			: controller;
+	const status = modalCandidateModeStatus(
+		state,
+		controller.playerId,
+		item.card,
+		srcObj,
+		modal,
+		usedModes
+	);
+	if (!hasLegalModalCombination(modal, status.legalModes)) {
+		addLog(
+			state,
+			'rule',
+			`${item.title} was removed from the Stack: no legal modes can be chosen (CR 700.2b / 603.3c).`,
+			controller.playerId
+		);
+		return { status: 'removed', modeChooser, disabledIndices: status.disabledIndices };
+	}
+	const trigModalEvalCtx: FilterContext = {
+		state,
+		controllerId: controller.playerId,
+		source: srcObj,
+		xValue: item.xValue
+	};
+	if (isModalRandomActive(modal, trigModalEvalCtx, evaluateCondition)) {
+		const rIdx = Math.floor(nextRandom(state) * status.legalModes.length) % status.legalModes.length;
+		item.chosenModes = [status.legalModes[rIdx]];
+		recordUsedModalModes(foundSrcPerm?.inst, sourceVersion, modal, item.chosenModes);
+		return { status: 'ready', modeChooser, disabledIndices: status.disabledIndices };
+	}
+	if (modeChooser.isBot) {
+		const picked = chooseBotModalTriggerModes(state, modeChooser, item, modal, usedModes);
+		if (picked.length === 0) {
+			addLog(
+				state,
+				'rule',
+				`${item.title} was removed from the Stack: no mode was chosen (CR 603.3c).`,
+				controller.playerId
+			);
+			return { status: 'removed', modeChooser, disabledIndices: status.disabledIndices };
+		}
+		item.chosenModes = picked;
+		recordUsedModalModes(foundSrcPerm?.inst, sourceVersion, modal, picked);
+		return { status: 'ready', modeChooser, disabledIndices: status.disabledIndices };
+	}
+	if (
+		!modal.allowRepeat &&
+		!modal.upTo &&
+		!modal.conditionalChooseRange &&
+		!modal.dynamicMax &&
+		modal.pawprintBudget === undefined &&
+		status.legalModes.length === modal.min &&
+		modal.min === modal.max
+	) {
+		item.chosenModes = [...status.legalModes];
+		recordUsedModalModes(foundSrcPerm?.inst, sourceVersion, modal, item.chosenModes);
+		return { status: 'ready', modeChooser, disabledIndices: status.disabledIndices };
+	}
+	return { status: 'prompt', modeChooser, disabledIndices: status.disabledIndices };
+}
+// --- End Track P22c ---
+
 // --- Track P10 ---
 registerP10RuntimeHost({
 	uid,
@@ -17872,11 +18123,45 @@ registerP10RuntimeHost({
 		specTargetCandidates(state, actorId, sourceCard, sourceInst, spec),
 	finalizeCastSpell: (state, actor, inst, sourcePlayer, sourceZone, opts) =>
 		finalizeCastSpell(state, actor, inst, sourcePlayer, sourceZone, opts),
+
 	assignOrPromptTriggerTargets: (state, item, specs) => {
 		const controller = state.players.find((p) => p.playerId === item.controllerId);
 		if (!controller) return 'removed';
-		const candidates = specs.map((spec) => triggerTargetCandidates(state, item, spec));
-		const impossible = specs.findIndex(
+		// --- Track P22c: Reflexive modal triggers choose/prompt modes before targets ---
+		const reflModal = triggerItemModal(item);
+		if (reflModal && !item.chosenModes) {
+			const foundSrcPerm = findPermanentOnBoard(state, item.sourceInstanceId);
+			const srcObj = triggerSourceObject(state, item);
+			const modalOutcome = resolveTriggerModalBeforeStack(
+				state,
+				controller,
+				item,
+				reflModal,
+				srcObj,
+				foundSrcPerm ?? undefined,
+				item.sourceObjectVersion
+			);
+			if (modalOutcome.status === 'removed') {
+				const idx = state.stack.indexOf(item);
+				if (idx >= 0) state.stack.splice(idx, 1);
+				return 'removed';
+			}
+			if (modalOutcome.status === 'prompt') {
+				enqueueHumanTriggerModesPrompt(
+					state,
+					modalOutcome.modeChooser,
+					item,
+					reflModal,
+					srcObj,
+					modalOutcome.disabledIndices
+				);
+				return 'prompted';
+			}
+		}
+		const effSpecs = reflModal && item.chosenModes ? triggerItemTargetSpecs(item) : specs;
+		// --- End Track P22c ---
+		const candidates = effSpecs.map((spec) => triggerTargetCandidates(state, item, spec));
+		const impossible = effSpecs.findIndex(
 			(spec, i) => spec.min > 0 && candidates[i].length < spec.min
 		);
 		if (impossible >= 0) {
@@ -17891,7 +18176,7 @@ registerP10RuntimeHost({
 			return 'removed';
 		}
 		const promptsBefore = state.pendingPrompts.length;
-		assignOrPromptTriggerTargets(state, controller, item, specs, candidates);
+		assignOrPromptTriggerTargets(state, controller, item, effSpecs, candidates);
 		return state.pendingPrompts.length > promptsBefore ? 'prompted' : 'ready';
 	}
 });

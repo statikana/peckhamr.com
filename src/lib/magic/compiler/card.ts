@@ -73,7 +73,13 @@ import {
 	staticallyInterpretable,
 	triggerTargetsSupported
 } from './interpretable.ts';
-import { normalizeFace, splitSentences, type NormalizedFace, type NormalizedLine } from './normalize.ts';
+import {
+	isAbilityOrFlavorWord,
+	normalizeFace,
+	splitSentences,
+	type NormalizedFace,
+	type NormalizedLine
+} from './normalize.ts';
 import { canonicalKickerTag, parseActivatedIfConditionSentence } from './triggers.ts';
 import { parseStaticAbility } from './statics.ts';
 import { parseTriggerHeader, runtimeTriggerProblem } from './triggers.ts';
@@ -3167,7 +3173,18 @@ function normalizeStepVerbForInterpretability(step: EffectStep): EffectStep {
 					? {
 							reflexiveTrigger: {
 								...step.params.reflexiveTrigger,
-								effect: step.params.reflexiveTrigger.effect.map(normalizeStepVerbForInterpretability)
+								effect: step.params.reflexiveTrigger.effect.map(normalizeStepVerbForInterpretability),
+								...(step.params.reflexiveTrigger.modal
+									? {
+											modal: {
+												...step.params.reflexiveTrigger.modal,
+												modes: step.params.reflexiveTrigger.modal.modes.map((m) => ({
+													...m,
+													effect: m.effect.map(normalizeStepVerbForInterpretability)
+												}))
+											}
+										}
+									: {})
 							}
 						}
 					: {}),
@@ -3234,12 +3251,31 @@ function staticallyInterpretableP15(
 				...(parse.modal.conditionalChooseAll
 					? { conditionalChooseAll: normalizeConditionForInterpretability(parse.modal.conditionalChooseAll) }
 					: {}),
+				...(parse.modal.conditionalChooseRange
+					? {
+							conditionalChooseRange: {
+								...parse.modal.conditionalChooseRange,
+								condition: normalizeConditionForInterpretability(
+									parse.modal.conditionalChooseRange.condition
+								)
+							}
+						}
+					: {}),
+				...(parse.modal.conditionalNotRandom
+					? { conditionalNotRandom: normalizeConditionForInterpretability(parse.modal.conditionalNotRandom) }
+					: {}),
 				modes: parse.modal.modes.map((m) => ({
 					...m,
 					effect: m.effect.map(normalizeStepVerbForInterpretability)
 				}))
 			}
 		: undefined;
+	for (const st of parse.steps) {
+		const rtModal = st.params?.reflexiveTrigger?.modal;
+		if (rtModal && !modalInterpretable({ steps: [], targets: [], modal: rtModal, unparsed: [] }, true)) {
+			return false;
+		}
+	}
 	return staticallyInterpretable(
 		{
 			steps: parse.steps.map(normalizeStepVerbForInterpretability),
@@ -4472,6 +4508,55 @@ function extractMeldPartnerFromCondition(cond: Condition | undefined): string | 
 	return undefined;
 }
 
+function parseModalHeaderCondition(condClause: string): Condition | null {
+	const cleaned = condClause.trim();
+	if (/^you discarded a card this turn$/i.test(cleaned)) {
+		return { k: 'youDiscardedThisTurn' };
+	}
+	if (/^(?:this spell|~) was cast using teamwork$/i.test(cleaned)) {
+		return { k: 'kicked', tag: 'teamwork' };
+	}
+	if (/^(?:this spell|~)['’]s additional cost was paid$/i.test(cleaned)) {
+		return { k: 'p20bCondition', kind: 'additionalCostPaid' };
+	}
+	if (/^you control a commander$/i.test(cleaned)) {
+		return { k: 'controlCommander' };
+	}
+	if (/^(?:this spell|~) was kicked$/i.test(cleaned)) {
+		return { k: 'kicked' };
+	}
+	if (/^you have max speed$/i.test(cleaned)) {
+		return { k: 'maxSpeed' };
+	}
+	const parsed =
+		parseActivatedIfConditionSentence(`Activate only if ${cleaned}.`)?.condition ??
+		parseP15ActivatedIfConditionClause(cleaned) ??
+		parseP18bInterveningConditionClause(cleaned);
+	if (parsed) return parsed;
+	const effCond = parseEffects(`If ${cleaned}, you draw a card.`, 0);
+	if (effCond.unparsed.length === 0 && effCond.steps[0]?.condition) {
+		return effCond.steps[0].condition;
+	}
+	return null;
+}
+
+function parseModalDynamicAmountText(amtText: string): Amount | null {
+	const cleaned = amtText.replace(/\.+$/, '').trim();
+	if (/^the number of spells you['’]ve cast this turn$/i.test(cleaned)) {
+		return { k: 'spellsCastThisTurnCount', who: 'you' };
+	}
+	const p = parseEffects(`You gain X life, where X is ${cleaned}.`, 0);
+	if (p.unparsed.length === 0 && p.steps[0]?.amount) {
+		return p.steps[0].amount;
+	}
+	return null;
+}
+
+function replaceXAmountInStep(step: EffectStep, xAmount: Amount): EffectStep {
+	const nextAmount = step.amount?.k === 'x' ? xAmount : step.amount;
+	return nextAmount !== step.amount ? { ...step, amount: nextAmount } : step;
+}
+
 function parseExpandedModalHeaderClause(
 	rawHeader: string,
 	bulletCount: number
@@ -4483,9 +4568,14 @@ function parseExpandedModalHeaderClause(
 	unchosenPermanent?: boolean;
 	upTo?: boolean;
 	conditionalChooseAll?: Condition;
+	conditionalChooseRange?: { condition: Condition; min: number; max: number };
+	conditionalNotRandom?: Condition;
+	differentPlayerTargetsPerMode?: boolean;
 	opponentChooses?: 'opponent' | 'targetOpponent';
 	randomMode?: boolean;
 	dynamicMax?: Amount;
+	dynamicXAmount?: Amount;
+	inlineSuffixText?: string;
 	pawprintBudget?: number;
 } | null {
 	let rest = rawHeader.trim();
@@ -4494,6 +4584,13 @@ function parseExpandedModalHeaderClause(
 	if (repeatRe.test(rest)) {
 		allowRepeat = true;
 		rest = rest.replace(repeatRe, ' ').trim();
+	}
+
+	let differentPlayerTargetsPerMode = false;
+	const diffPlayerRe = /\s*(?:\.|—)?\s*each mode must target a different player\.?\s*/i;
+	if (diffPlayerRe.test(rest)) {
+		differentPlayerTargetsPerMode = true;
+		rest = rest.replace(diffPlayerRe, ' ').trim();
 	}
 
 	// CR 700.2i: Season pawprint budget ("Choose up to five {P} worth of modes")
@@ -4509,72 +4606,77 @@ function parseExpandedModalHeaderClause(
 				max: budget,
 				upTo: true,
 				...(allowRepeat ? { allowRepeat: true } : {}),
+				...(differentPlayerTargetsPerMode ? { differentPlayerTargetsPerMode: true } : {}),
 				pawprintBudget: budget
 			};
 		}
 		return null;
 	}
 
-	let conditionalChooseAll: Condition | undefined;
-	const cmdBothRe =
-		/\s*(?:\.|—)?\s*if you control a commander(?: as you cast (?:this spell|~))?,\s*(?:you may )?choose (?:both|all|one or more|any number) instead\.?\s*/i;
-	const kickedAllRe =
-		/\s*(?:\.|—)?\s*if (?:this spell|~) was kicked,\s*(?:you may )?choose (?:both|all|one or more|any number) instead\.?\s*/i;
-	const maxSpeedBothRe =
-		/\s*(?:\.|—)?\s*if you have max speed,\s*(?:you may )?choose (?:both|all|one or more|any number) instead\.?\s*/i;
-	const descendPermRe =
-		/\s*(?:\.|—)?\s*if there are (\S+) or more permanent cards in your graveyard(?: as you cast (?:this spell|~))?,\s*(?:you may )?choose (?:both|all|one or more|any number) instead\.?\s*/i;
-	const oppGyBothRe =
-		/\s*(?:\.|—)?\s*if an opponent has (\S+) or more cards in their graveyard,\s*(?:you may )?choose (?:both|all|one or more|any number) instead\.?\s*/i;
-	const generalChooseInsteadRe =
-		/\s*(?:\.|—)?\s*if (.+?)(?: as you cast (?:this spell|~))?,\s*(?:you may )?choose (?:both|all|one or more|any number) instead\.?\s*$/i;
+	let dynamicXAmount: Amount | undefined;
+	const xDefSentenceRe = /\.\s*x\s+is\s+(.+?)\s*(?:—|\.)?\s*$/i;
+	const xm = rest.match(xDefSentenceRe);
+	if (xm) {
+		const parsedAmt = parseModalDynamicAmountText(xm[1]);
+		if (!parsedAmt) return null;
+		dynamicXAmount = parsedAmt;
+		rest = rest.slice(0, xm.index).trim();
+	}
 
-	if (cmdBothRe.test(rest)) {
-		conditionalChooseAll = { k: 'controlCommander' };
-		rest = rest.replace(cmdBothRe, ' ').trim();
-	} else if (kickedAllRe.test(rest)) {
-		conditionalChooseAll = { k: 'kicked' };
-		rest = rest.replace(kickedAllRe, ' ').trim();
-	} else if (maxSpeedBothRe.test(rest)) {
-		conditionalChooseAll = { k: 'maxSpeed' };
-		rest = rest.replace(maxSpeedBothRe, ' ').trim();
+	let conditionalChooseAll: Condition | undefined;
+	let conditionalNotRandom: Condition | undefined;
+	let pendingCondRange: { condition: Condition; targetCount: number; may: boolean } | undefined;
+
+	const descendPermRe =
+		/\s*(?:\.|—)?\s*if there are (\S+) or more permanent cards in your graveyard(?: as you cast (?:this spell|~))?,\s*(?:you may )?choose (?:both|all|one or more|any number) instead\s*[.—]*\s*$/i;
+	const oppGyBothRe =
+		/\s*(?:\.|—)?\s*if an opponent has (\S+) or more cards in their graveyard,\s*(?:you may )?choose (?:both|all|one or more|any number) instead\s*[.—]*\s*$/i;
+	const generalChooseInsteadRe =
+		/\s*(?:\.|—)?\s*if (.+?)(?: as you cast (?:this spell|~))?,\s*(?:you\s+)?(may\s+)?choose (one|two|three|four|both|all|one or more|any number) instead\s*[.—]*\s*$/i;
+
+	const dm = rest.match(descendPermRe);
+	const om = !dm ? rest.match(oppGyBothRe) : null;
+	if (dm) {
+		const n = parseSmallNumberToken(dm[1]);
+		if (n !== null) {
+			conditionalChooseAll = {
+				k: 'compare',
+				left: {
+					k: 'count',
+					of: {
+						types: ['Artifact', 'Battle', 'Creature', 'Enchantment', 'Land', 'Planeswalker'],
+						controller: 'you',
+						zone: 'graveyard'
+					}
+				},
+				op: '>=',
+				right: { k: 'const', n }
+			};
+			rest = rest.replace(descendPermRe, ' ').trim();
+		}
+	} else if (om) {
+		const n = parseSmallNumberToken(om[1]);
+		if (n !== null) {
+			conditionalChooseAll = { k: 'anyOpponentMetric', metric: 'graveyard', op: '>=', count: n };
+			rest = rest.replace(oppGyBothRe, ' ').trim();
+		}
 	} else {
-		const dm = rest.match(descendPermRe);
-		const om = !dm ? rest.match(oppGyBothRe) : null;
-		if (dm) {
-			const n = parseSmallNumberToken(dm[1]);
-			if (n !== null) {
-				conditionalChooseAll = {
-					k: 'compare',
-					left: {
-						k: 'count',
-						of: {
-							types: ['Artifact', 'Battle', 'Creature', 'Enchantment', 'Land', 'Planeswalker'],
-							controller: 'you',
-							zone: 'graveyard'
-						}
-					},
-					op: '>=',
-					right: { k: 'const', n }
-				};
-				rest = rest.replace(descendPermRe, ' ').trim();
-			}
-		} else if (om) {
-			const n = parseSmallNumberToken(om[1]);
-			if (n !== null) {
-				conditionalChooseAll = { k: 'anyOpponentMetric', metric: 'graveyard', op: '>=', count: n };
-				rest = rest.replace(oppGyBothRe, ' ').trim();
-			}
-		} else {
-			const gm = rest.match(generalChooseInsteadRe);
-			if (gm) {
-				const condClause = gm[1].trim();
-				const parsedCond =
-					parseActivatedIfConditionSentence(`Activate only if ${condClause}.`)?.condition ??
-					parseP15ActivatedIfConditionClause(condClause) ??
-					parseP18bInterveningConditionClause(condClause);
-				if (parsedCond) {
+		const gm = rest.match(generalChooseInsteadRe);
+		if (gm) {
+			const condClause = gm[1].trim();
+			const mayWord = Boolean(gm[2]);
+			const targetWord = gm[3].toLowerCase();
+			const parsedCond = parseModalHeaderCondition(condClause);
+			if (parsedCond) {
+				if (/^(?:both|all|one or more|any number)$/.test(targetWord)) {
 					conditionalChooseAll = parsedCond;
+				} else {
+					const n = parseSmallNumberToken(targetWord);
+					if (n !== null && n >= 1) {
+						pendingCondRange = { condition: parsedCond, targetCount: n, may: mayWord };
+					}
+				}
+				if (conditionalChooseAll || pendingCondRange) {
 					rest = rest.replace(generalChooseInsteadRe, ' ').trim();
 				}
 			}
@@ -4585,6 +4687,24 @@ function parseExpandedModalHeaderClause(
 		.replace(/^(?:then,?\s+)/i, '')
 		.replace(/\s*[—.]+\s*$/g, '')
 		.trim();
+
+	let whereXAmount: Amount | undefined;
+	const whereXMatch = rest.match(/,\s*where\s+x\s+is\s+(.+)$/i);
+	if (whereXMatch) {
+		const parsedWhere = parseModalDynamicAmountText(whereXMatch[1]);
+		if (!parsedWhere) return null;
+		whereXAmount = parsedWhere;
+		rest = rest.slice(0, whereXMatch.index).trim();
+	}
+
+	let inlineSuffixText: string | undefined;
+	const inlineAndMatch = rest.match(
+		/^((?:you may\s+)?choose\s+(?:one|two|both|one or both)(?:\s+that\s+hasn['’]t\s+been\s+chosen(?:\s+this\s+turn)?)?)\s+and\s+(.+)$/i
+	);
+	if (inlineAndMatch) {
+		rest = inlineAndMatch[1].trim();
+		inlineSuffixText = `${inlineAndMatch[2].trim().replace(/\.?$/, '.')}`;
+	}
 
 	let mayOptionalChoose = false;
 	if (/^you may choose\s+/i.test(rest)) {
@@ -4643,12 +4763,12 @@ function parseExpandedModalHeaderClause(
 	} else if (lower === 'choose x') {
 		min = 0;
 		max = allowRepeat ? 20 : bulletCount;
-		dynamicMax = { k: 'x' };
+		dynamicMax = whereXAmount ?? { k: 'x' };
 	} else if (lower === 'choose up to x') {
 		min = 0;
 		max = allowRepeat ? 20 : bulletCount;
 		upTo = true;
-		dynamicMax = { k: 'x' };
+		dynamicMax = whereXAmount ?? { k: 'x' };
 	} else {
 		const upToMatch = lower.match(/^choose up to (\S+)$/);
 		const exactMatch = !upToMatch ? lower.match(/^choose (\S+)$/) : null;
@@ -4673,6 +4793,19 @@ function parseExpandedModalHeaderClause(
 		upTo = true;
 	}
 
+	let conditionalChooseRange: { condition: Condition; min: number; max: number } | undefined;
+	if (pendingCondRange) {
+		if (randomMode && pendingCondRange.targetCount === min && pendingCondRange.targetCount === max) {
+			conditionalNotRandom = pendingCondRange.condition;
+		} else {
+			conditionalChooseRange = {
+				condition: pendingCondRange.condition,
+				min: pendingCondRange.may ? Math.min(min, pendingCondRange.targetCount) : pendingCondRange.targetCount,
+				max: pendingCondRange.targetCount
+			};
+		}
+	}
+
 	if (!allowRepeat && !dynamicMax && bulletCount > 0 && max > bulletCount) {
 		if (upTo) {
 			max = bulletCount;
@@ -4690,15 +4823,27 @@ function parseExpandedModalHeaderClause(
 		...(unchosenPermanent ? { unchosenPermanent: true } : {}),
 		...(upTo ? { upTo: true } : {}),
 		...(conditionalChooseAll ? { conditionalChooseAll } : {}),
+		...(conditionalChooseRange ? { conditionalChooseRange } : {}),
+		...(conditionalNotRandom ? { conditionalNotRandom } : {}),
+		...(differentPlayerTargetsPerMode ? { differentPlayerTargetsPerMode: true } : {}),
 		...(opponentChooses ? { opponentChooses } : {}),
 		...(randomMode ? { randomMode: true } : {}),
-		...(dynamicMax ? { dynamicMax } : {})
+		...(dynamicMax ? { dynamicMax } : {}),
+		...(dynamicXAmount ? { dynamicXAmount } : {}),
+		...(inlineSuffixText ? { inlineSuffixText } : {})
 	};
 }
 
 function stripModalBulletFlavorWord(body: string): { body: string; strippedLen: number } {
-	const flavor = body.match(/^([A-Z0-9][A-Za-z0-9'’ !?,.-]*?) — (?=[A-Z{~])/);
-	if (flavor && !/\bfaces a villainous choice$/i.test(flavor[1]) && !/^\{P\}/i.test(flavor[1])) {
+	const flavor = body.match(
+		/^([\p{Lu}0-9~][\p{L}0-9'’ !?,.-]*?) — (?!\{[^}]+\}\s*—)(?=[\p{Lu}0-9{~])/u
+	);
+	if (
+		flavor &&
+		!/\bfaces a villainous choice$/i.test(flavor[1]) &&
+		!/^\{P\}/i.test(flavor[1]) &&
+		isAbilityOrFlavorWord(flavor[1])
+	) {
 		return { body: body.slice(flavor[0].length), strippedLen: flavor[0].length };
 	}
 	return { body, strippedLen: 0 };
@@ -4750,9 +4895,13 @@ function parseExpandedModalP18b(
 	}
 
 	let suffixEffect: EffectStep[] | undefined;
-	if (extraSuffixSentences.length > 0) {
+	const suffixEntries: Array<{ text: string; span: Span }> = [
+		...(spec.inlineSuffixText ? [{ text: spec.inlineSuffixText, span: { start: headerStart, end: headerStart } }] : []),
+		...extraSuffixSentences
+	];
+	if (suffixEntries.length > 0) {
 		const sufSteps: EffectStep[] = [];
-		for (const ss of extraSuffixSentences) {
+		for (const ss of suffixEntries) {
 			const sub =
 				parseP21EffectText(ss.text, ss.span.start, context, trigger) ??
 				parseP18bEffectText(ss.text, ss.span.start, context, trigger) ??
@@ -4794,9 +4943,12 @@ function parseExpandedModalP18b(
 			parseP18bEffectText(body, start, context, trigger) ??
 			parseEffects(body, start, context, trigger);
 		unparsed.push(...modeParse.unparsed);
+		const modeSteps = spec.dynamicXAmount
+			? modeParse.steps.map((st) => replaceXAmountInStep(st, spec.dynamicXAmount!))
+			: modeParse.steps;
 		modes.push({
 			targets: modeParse.targets,
-			effect: modeParse.steps,
+			effect: modeSteps,
 			span: { start: b.start, end: b.end }
 		});
 	}
@@ -4809,6 +4961,9 @@ function parseExpandedModalP18b(
 		...(spec.unchosenPermanent ? { unchosenPermanent: true } : {}),
 		...(spec.upTo ? { upTo: true } : {}),
 		...(spec.conditionalChooseAll ? { conditionalChooseAll: spec.conditionalChooseAll } : {}),
+		...(spec.conditionalChooseRange ? { conditionalChooseRange: spec.conditionalChooseRange } : {}),
+		...(spec.conditionalNotRandom ? { conditionalNotRandom: spec.conditionalNotRandom } : {}),
+		...(spec.differentPlayerTargetsPerMode ? { differentPlayerTargetsPerMode: true } : {}),
 		...(spec.opponentChooses ? { opponentChooses: spec.opponentChooses } : {}),
 		...(spec.randomMode ? { randomMode: true } : {}),
 		...(spec.dynamicMax ? { dynamicMax: spec.dynamicMax } : {}),
@@ -4889,6 +5044,62 @@ function triggerLineCore(group: NormalizedLine[]): AbilityDef[] | null {
 	}
 	if (group.length > 1) {
 		const bullets = group.slice(1).map((b) => ({ text: b.text, start: b.span.start, end: b.span.end }));
+		const reflexiveMatch = headerEffectText.match(
+			/^([\s\S]+?\.)\s*(When\s+(?:you\s+do|you\s+(?:pay|sacrifice|exile|discard|remove)[^,]*\s+this\s+way))\s*,\s*((?:you\s+may\s+)?choose[\s\S]+)$/i
+		);
+		if (reflexiveMatch) {
+			const preActionText = reflexiveMatch[1].trim();
+			const reflClause = reflexiveMatch[2].toLowerCase();
+			const modalHeaderText = reflexiveMatch[3].trim();
+			const modalHeaderStart = effectStart + headerEffectText.indexOf(reflexiveMatch[3]);
+			const preParse =
+				parseP21EffectText(preActionText, effectStart, 'triggered', trigger) ??
+				parseP18bEffectText(preActionText, effectStart, 'triggered', trigger) ??
+				parseEffects(preActionText, effectStart, 'triggered', trigger);
+			const reflModalParse = parseExpandedModalP18b(
+				modalHeaderText,
+				bullets,
+				'triggered',
+				modalHeaderStart,
+				trigger
+			);
+			if (
+				preParse.unparsed.length === 0 &&
+				preParse.steps.length > 0 &&
+				interpretableTrigger(preParse) &&
+				reflModalParse?.modal &&
+				reflModalParse.unparsed.length === 0 &&
+				modalInterpretable(reflModalParse, true)
+			) {
+				const eventFilter: NonNullable<NonNullable<EffectStep['params']>['reflexiveTrigger']>['eventFilter'] =
+					reflClause.includes('remove') && reflClause.includes('counter')
+						? 'removedCounterThisWay'
+						: reflClause.includes('sacrifice')
+							? 'sacrificedThisWay'
+							: reflClause.includes('exile')
+								? 'exiledThisWay'
+								: reflClause.includes('discard')
+									? 'discardedThisWay'
+									: 'whenYouDo';
+				const steps = preParse.steps.map((st, idx) =>
+					idx === preParse.steps.length - 1
+						? {
+								...st,
+								params: {
+									...st.params,
+									reflexiveTrigger: {
+										targets: [],
+										effect: [],
+										modal: reflModalParse.modal,
+										eventFilter
+									}
+								}
+							}
+						: st
+				);
+				return [{ kind: 'triggered', trigger, condition, targets: preParse.targets, effect: steps, text: fullText, span }];
+			}
+		}
 		const stdModal = /^choose\b/i.test(headerEffectText.trim())
 			? parseModal(headerEffectText, bullets, 'triggered', effectStart, trigger)
 			: null;
@@ -6204,6 +6415,7 @@ function compileSpreeOrTieredSpell(
 			(s) =>
 				Boolean(parseCostModifierSentence(s.text)) ||
 				/^(?:~|this spell) can(?:'t|not) be countered\.?$/i.test(s.text) ||
+				/^(?:~|this spell) can(?:'t|not) be copied\.?$/i.test(s.text) ||
 				Boolean(parseAdditionalCostSentence(s.text, s.span.start)) ||
 				CAST_RESTRICTIONS.some(([re]) => re.test(s.text)) ||
 				Boolean(parseP18bCastRestrictionSentence(s.text)) ||
@@ -6439,6 +6651,13 @@ function spellAbilityCore(norm: NormalizedFace, lines: NormalizedLine[]): Abilit
 				const st: StaticDef = { k: 'restriction', affected: 'self', restriction: 'cantBeCountered' };
 				statics.push({ kind: 'static', static: st, span: s.span });
 				markPreConsumed(s.span);
+				continue;
+			}
+			if (/^(?:~|this spell) can(?:'t|not) be copied\.?$/i.test(s.text)) {
+				const st: StaticDef = { k: 'restriction', affected: 'self', restriction: 'cantBeCopied' };
+				statics.push({ kind: 'static', static: st, span: s.span });
+				markPreConsumed(s.span);
+				p18bBlankSpans.push(s.span);
 				continue;
 			}
 			if (/^if ~ would be put into a graveyard from anywhere\b/i.test(s.text)) {

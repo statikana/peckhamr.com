@@ -398,6 +398,14 @@ export interface ModalDef {
 	/** Post-modal rider steps executed after chosen mode effects on resolution. */
 	suffixEffect?: EffectStep[];
 	// --- End Track P18b ---
+	// --- Track P22c ---
+	/** CR 700.2a: Conditional alternative bounds ("If you control a Wizard as you cast ~, you may choose two instead."). */
+	conditionalChooseRange?: { condition: Condition; min: number; max: number };
+	/** Condition that overrides `randomMode` and lets controller choose modes normally. */
+	conditionalNotRandom?: Condition;
+	/** "Each mode must target a different player." */
+	differentPlayerTargetsPerMode?: boolean;
+	// --- End Track P22c ---
 }
 
 // ---- Keywords -------------------------------------------------------------------------------
@@ -947,8 +955,11 @@ export type Amount =
 	/** Total life lost by all opponents of the controller this turn (*Rakdos, Lord of Riots*). */
 	| { k: 'opponentsLifeLostThisTurn' }
 	/** Total mana value of current permanent targets of the spell/ability (*Urgent Necropsy*). */
-	| { k: 'targetsTotalManaValue' };
+	| { k: 'targetsTotalManaValue' }
 	// --- End Track P22b ---
+	// --- Track P22c ---
+	| { k: 'conditional'; condition: Condition; then: Amount; else: Amount };
+	// --- End Track P22c ---
 
 // ---- Costs ----------------------------------------------------------------------------------
 
@@ -2643,6 +2654,10 @@ export type Condition =
 	/** True iff a permanent matching `filter` entered the battlefield under `you`r control this turn (*Mechan Shieldmate*, *Swordsworn Cavalier*). */
 	| { k: 'enteredBattlefieldUnderYourControlThisTurn'; filter: ObjectFilter }
 	// --- End Track P22a ---
+	// --- Track P22c ---
+	/** True iff controller discarded one or more cards this turn (*Typhoid Mary, Fractured*). */
+	| { k: 'youDiscardedThisTurn' }
+	// --- End Track P22c ---
 	// --- Track P22b ---
 	| { k: 'eventAbilityIsNotMana' }
 	| { k: 'eventAbilityLifePaid' }
@@ -2890,8 +2905,11 @@ export type RestrictionKind =
 	// --- Track P17a ---
 	| 'attacksOrBlocksEachCombat'
 	| 'cantAttackYou'
-	| 'cantAttackYouOrPlaneswalkers';
+	| 'cantAttackYouOrPlaneswalkers'
 	// --- End Track P17a ---
+	// --- Track P22c ---
+	| 'cantBeCopied';
+	// --- End Track P22c ---
 
 // --- Track P8 ---
 export type CombatRuleSpec =

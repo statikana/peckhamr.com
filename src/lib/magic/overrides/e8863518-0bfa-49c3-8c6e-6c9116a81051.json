@@ -1,0 +1,46 @@
+{
+  "oracleId": "e8863518-0bfa-49c3-8c6e-6c9116a81051",
+  "cardName": "Worldly Tutor",
+  "expectedTextHash": "e22d5724",
+  "compiledVersion": 39,
+  "notes": "Wave 8 P22c override: Search library for a creature card, reveal it, shuffle, and put it on top.",
+  "faces": [
+    {
+      "name": "Worldly Tutor",
+      "characteristics": {
+        "manaCost": "{G}",
+        "types": ["Instant"],
+        "subtypes": [],
+        "supertypes": [],
+        "colors": ["G"]
+      },
+      "abilities": [
+        {
+          "kind": "spell",
+          "additionalCosts": [],
+          "targets": [],
+          "effect": [
+            {
+              "verb": "search",
+              "subject": { "k": "none" },
+              "amount": { "k": "const", "n": 1 },
+              "params": {
+                "search": {
+                  "filter": { "types": ["Creature"] },
+                  "count": 1,
+                  "upTo": false,
+                  "statedQuality": true,
+                  "reveal": true,
+                  "destinations": [{ "zone": "library", "onTop": true }],
+                  "description": "a creature card"
+                }
+              },
+              "span": { "start": 0, "end": 88 }
+            }
+          ],
+          "span": { "start": 0, "end": 89 }
+        }
+      ]
+    }
+  ]
+}

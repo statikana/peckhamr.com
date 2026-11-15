@@ -48,6 +48,10 @@ import { withStableLayerInputs } from './layerCache.ts';
 import { splitSubtypes } from './layers.ts';
 import { activeAbilityDefs, instanceFaceOptions, matchesColorFilter, resolveObjectFaces, stackItemFaceOptions } from './faces.ts';
 import {
+	// --- Track P22c ---
+	evaluateAmount as evaluateObjectFilterAmount,
+	evaluateCondition as evaluateObjectFilterCondition,
+	// --- End Track P22c ---
 	// --- Track P7 ---
 	objectManaValue,
 	objectPower,
@@ -7053,6 +7057,16 @@ export function evaluateCondition(
 	);
 	if (p22b !== undefined) return p22b;
 	// --- End Track P22b ---
+	// --- Track P22c ---
+	if (cond.k === 'youDiscardedThisTurn') {
+		return evaluateObjectFilterCondition(cond, {
+			state,
+			controllerId,
+			source: srcObjFallback,
+			stackItem
+		});
+	}
+	// --- End Track P22c ---
 	return false;
 }
 
@@ -7299,6 +7313,21 @@ function amount(
 		case 'targetsTotalManaValue':
 			return evaluateP22bAmount(a, state, controllerId, stackItem);
 		// --- End Track P22b ---
+		// --- Track P22c ---
+		case 'distinctNamesCount':
+		case 'creaturesDiedThisTurn':
+		case 'spellsCastThisTurnCount':
+		case 'playerCounters':
+		case 'conditional': {
+			const srcFound = permanentById(state, sourceInstanceId);
+			return evaluateObjectFilterAmount(a, {
+				state,
+				controllerId,
+				source: srcFound?.obj ?? source?.obj,
+				stackItem
+			});
+		}
+		// --- End Track P22c ---
 		default:
 			return null;
 	}

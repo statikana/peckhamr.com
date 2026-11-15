@@ -1,0 +1,46 @@
+{
+  "oracleId": "6f4ac4a4-53ec-4bc9-8f5c-d4b801d867b2",
+  "cardName": "Grave Pact",
+  "expectedTextHash": "7b12f81a",
+  "compiledVersion": 39,
+  "notes": "Wave 8 P22c override: Whenever a creature you control dies, each opponent sacrifices a creature.",
+  "faces": [
+    {
+      "name": "Grave Pact",
+      "characteristics": {
+        "manaCost": "{1}{B}{B}{B}",
+        "types": ["Enchantment"],
+        "subtypes": [],
+        "supertypes": [],
+        "colors": ["B"]
+      },
+      "abilities": [
+        {
+          "kind": "triggered",
+          "trigger": {
+            "event": "zoneChange",
+            "filter": {
+              "object": { "types": ["Creature"], "controller": "you" },
+              "from": "battlefield",
+              "to": "graveyard"
+            }
+          },
+          "targets": [],
+          "effect": [
+            {
+              "verb": "sacrifice",
+              "subject": {
+                "k": "all",
+                "filter": { "zone": "battlefield", "controller": "opponent", "types": ["Creature"] }
+              },
+              "amount": { "k": "const", "n": 1 },
+              "span": { "start": 39, "end": 94 }
+            }
+          ],
+          "text": "Whenever a creature you control dies, each other player sacrifices a creature of their choice.",
+          "span": { "start": 0, "end": 94 }
+        }
+      ]
+    }
+  ]
+}
