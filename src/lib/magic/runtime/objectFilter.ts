@@ -26,7 +26,7 @@ import {
 	isObjectEvoked,
 	isObjectForetold
 } from './kicker.ts';
-import { splitSubtypes } from './layers.ts';
+import { splitSubtypes, hasAllOffBattlefieldAndSpellsColorless } from './layers.ts';
 
 export interface FilterContext {
 	state: GameState;
@@ -232,6 +232,81 @@ function compare(actual: number, cmp: Compare, ctx: FilterContext): boolean {
 	}
 }
 
+function sharesCreatureTypeWithCommander(
+	state: GameState,
+	controllerId: string,
+	obj: CardInstance,
+	evaluated: ReturnType<typeof evaluatePermanent> | null,
+	card: ReturnType<typeof effectiveCardForObject>,
+	faceOpts: ReturnType<typeof instanceFaceOptions>,
+	types: string[],
+	subtypes: string[],
+	hasSubType: (s: string) => boolean
+): boolean {
+	const player = state.players.find((p) => p.playerId === controllerId);
+	if (!player) return false;
+	const commanderCards: CardInstance[] = [
+		...player.command.filter((c) => c.isCommander),
+		...player.battlefield.filter((c) => c.isCommander && c.ownerId === player.playerId),
+		...player.graveyard.filter((c) => c.isCommander && c.ownerId === player.playerId),
+		...player.exile.filter((c) => c.isCommander && c.ownerId === player.playerId),
+		...player.hand.filter((c) => c.isCommander && c.ownerId === player.playerId),
+		...player.library.filter((c) => c.isCommander && c.ownerId === player.playerId)
+	];
+	if (commanderCards.length === 0) return false;
+
+	const objIsCreatureOrKindred = types.some((t) => {
+		const tl = t.toLowerCase();
+		return tl === 'creature' || tl === 'kindred' || tl === 'tribal';
+	});
+	const objHasChangeling =
+		objIsCreatureOrKindred &&
+		!obj.isFaceDown &&
+		activeAbilityDefs(card, faceOpts).some(
+			(ab) =>
+				(ab.kind === 'keyword' && ab.keyword.name.toLowerCase() === 'changeling') ||
+				(ab.kind === 'static' && ab.static.k === 'continuous' && ab.static.mod.k === 'allCreatureTypes')
+		);
+
+	const objCreatureSubtypes = (evaluated ? splitTypeLine(evaluated.typeLine).subtypes : subtypes).filter(
+		(s: string) => !NON_CREATURE_SUBTYPES.has(s)
+	);
+
+	for (const cmd of commanderCards) {
+		const cmdEvaluated = cmd.zone === 'battlefield' ? evaluatePermanent(state, cmd) : null;
+		const cmdCard = effectiveCardForObject(cmd);
+		const cmdFaceOpts = instanceFaceOptions(cmd);
+		const cmdTypeLine = cmdEvaluated
+			? cmdEvaluated.typeLine
+			: resolveObjectFaces(cmdCard, cmdFaceOpts).typeLine;
+		const cmdParsed = splitTypeLine(cmdTypeLine);
+		const cmdIsCreatureOrKindred = cmdParsed.types.some((t) => {
+			const tl = t.toLowerCase();
+			return tl === 'creature' || tl === 'kindred' || tl === 'tribal';
+		});
+		const cmdHasChangeling =
+			cmdIsCreatureOrKindred &&
+			!cmd.isFaceDown &&
+			activeAbilityDefs(cmdCard, cmdFaceOpts).some(
+				(ab) =>
+					(ab.kind === 'keyword' && ab.keyword.name.toLowerCase() === 'changeling') ||
+					(ab.kind === 'static' && ab.static.k === 'continuous' && ab.static.mod.k === 'allCreatureTypes')
+			);
+
+		const cmdCreatureSubtypes = cmdParsed.subtypes.filter(
+			(s: string) => !NON_CREATURE_SUBTYPES.has(s)
+		);
+
+		if (cmdHasChangeling && (objCreatureSubtypes.length > 0 || objHasChangeling)) return true;
+		if (objHasChangeling && (cmdCreatureSubtypes.length > 0 || cmdHasChangeling)) return true;
+
+		for (const sub of cmdCreatureSubtypes) {
+			if (hasSubType(sub)) return true;
+		}
+	}
+	return false;
+}
+
 /** Does `obj` match `filter`? Zone is checked only if the filter names one. */
 export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx: FilterContext): boolean {
 	const { state } = ctx;
@@ -289,7 +364,9 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 		if (!chosenColor) return false;
 		const colors = onBattlefield
 			? (obj.isFaceDown ? [] : evaluated!.colors)
-			: resolveObjectFaces(card, faceOpts).colors;
+			: hasAllOffBattlefieldAndSpellsColorless(state)
+				? []
+				: resolveObjectFaces(card, faceOpts).colors;
 		if (!colors.includes(chosenColor)) return false;
 	}
 
@@ -322,8 +399,31 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 	if (filter.colors) {
 		const colors = onBattlefield
 			? (obj.isFaceDown ? [] : evaluated!.colors)
-			: resolveObjectFaces(card, faceOpts).colors;
+			: hasAllOffBattlefieldAndSpellsColorless(state)
+				? []
+				: resolveObjectFaces(card, faceOpts).colors;
 		if (!matchesColorFilter(colors, filter.colors)) return false;
+	}
+	if (
+		filter.sharesTypeWithCommander &&
+		!sharesCreatureTypeWithCommander(
+			state,
+			ctx.controllerId,
+			obj,
+			evaluated,
+			card,
+			faceOpts,
+			types,
+			subtypes,
+			hasSubType
+		)
+	) {
+		return false;
+	}
+	if (filter.targetsSelf) {
+		if (!ctx.source) return false;
+		const targets = (obj as { targets?: Array<{ kind: string; id: string }> }).targets ?? [];
+		if (!targets.some((t) => (t.kind === 'permanent' || t.kind === 'card') && t.id === ctx.source?.instanceId)) return false;
 	}
 	if (
 		filter.manaValue &&
@@ -397,6 +497,8 @@ export function evaluateAmount(amount: Amount, ctx: FilterContext): number {
 			return playerCommanderCastCount(ctx.state, ctx.controllerId);
 		case 'stormCount':
 			return 0;
+		case 'colorsOfManaSpentToCast':
+			return ctx.source?.manaColorsSpent?.length ?? 0;
 		case 'tappedCostPower':
 			return 0;
 		case 'countersOn': {
@@ -509,6 +611,8 @@ export function evaluateCondition(cond: Condition, ctx: FilterContext): boolean 
 			return Boolean(ctx.source?.exertedThisTurn || ctx.stackItem?.sourceExertedThisTurn);
 		case 'monstrous':
 			return Boolean(ctx.source?.isMonstrous);
+		case 'matchesFilter':
+			return ctx.source ? matchesObjectFilter(ctx.source, cond.filter, ctx) : false;
 		default:
 			return false;
 	}

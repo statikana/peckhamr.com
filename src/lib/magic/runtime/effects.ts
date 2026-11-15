@@ -81,7 +81,7 @@ import {
 import { scaleCumulativeUpkeepCost } from './orthogonalKeywords.ts';
 import { noteLayerInputsChanged } from './layerCache.ts';
 import { matchesObjectFilter, objectManaValue, playerCommanderCastCount } from './objectFilter.ts';
-import { activeRuleModifiers, tokenMultiplier } from './replace.ts';
+import { activeRuleModifiers, applySelfEtbReplacements, tokenMultiplier } from './replace.ts';
 import { flushTriggers, withSimultaneousDestroyLki } from './triggers.ts';
 import { nextRandom } from './random.ts';
 import {
@@ -101,6 +101,7 @@ import {
 	createEmptyCounters,
 	moveObject,
 	rearrangeLibrary,
+	shuffleLibrary,
 	syncBattlefieldControllers,
 	tapPermanent,
 	type MoveResult
@@ -741,11 +742,24 @@ class Run {
 	pendingOptionalCost?: EffectResumeFrame['pendingOptionalCost'];
 	/** Can this run pause for a human (the item is on the stack, so it can be resumed by id)? */
 	readonly canPause: boolean;
+	readonly initialSnapshots = new Map<string, Snapshot>();
 
 	constructor(state: GameState, ctx: EffectContext, resume?: EffectResumeFrame) {
 		this.state = state;
 		this.ctx = ctx;
 		this.canPause = state.stack.some((s) => s.id === ctx.item.id);
+		for (const t of ctx.targets) {
+			const f = this.locate(t.id);
+			if (f) this.initialSnapshots.set(t.id, this.snapshot(f.inst));
+		}
+		if (ctx.sourceId) {
+			const f = this.locate(ctx.sourceId);
+			if (f) this.initialSnapshots.set(ctx.sourceId, this.snapshot(f.inst));
+		}
+		if (ctx.eventObjectId) {
+			const f = this.locate(ctx.eventObjectId);
+			if (f) this.initialSnapshots.set(ctx.eventObjectId, this.snapshot(f.inst));
+		}
 		if (resume) {
 			this.stepIndex = resume.stepIndex;
 			this.subStepIndex = resume.subStepIndex ?? 0;
@@ -872,6 +886,41 @@ class Run {
 				answerKey
 			},
 			choice: { kind: 'yesNo', question }
+		});
+		this.result.paused = true;
+	}
+
+	/** Queues a `chooseNumber` prompt within the current step (`phase = 'step'`) and pauses execution. */
+	pauseForNumber(
+		chooser: PlayerGameState,
+		title: string,
+		reason: string,
+		min: number,
+		max: number,
+		defaultNumber: number,
+		answerKey: string
+	): void {
+		const item = this.saveFrame(this.stepIndex, this.answers, 'step', this.subStepIndex);
+		enqueueChoicePrompt(this.state, {
+			id: P().uid('prompt', this.state),
+			kind: 'chooseNumber',
+			purpose: 'generic',
+			playerId: chooser.playerId,
+			title,
+			description: reason,
+			continuation: {
+				kind: 'effect_choice',
+				stackItemId: item.id,
+				stepIndex: this.stepIndex,
+				answerKey
+			},
+			choice: {
+				kind: 'chooseNumber',
+				min,
+				max,
+				defaultNumber,
+				reason
+			}
 		});
 		this.result.paused = true;
 	}
@@ -1255,6 +1304,10 @@ class Run {
 		return this.ctx.controller;
 	}
 
+	get sourcePerm(): CardInstance | null {
+		return this.locate(this.ctx.sourceId)?.inst ?? null;
+	}
+
 	player(id: string): PlayerGameState | undefined {
 		return this.state.players.find((p) => p.playerId === id);
 	}
@@ -1271,8 +1324,8 @@ class Run {
 	}
 
 	/** Finds an object by id in any zone (battlefield first). */
-	locate(id: string): { inst: CardInstance; holder: PlayerGameState; zone: 'battlefield' | 'graveyard' | 'exile' | 'hand' | 'library' } | null {
-		for (const zone of ['battlefield', 'graveyard', 'exile', 'hand', 'library'] as const) {
+	locate(id: string): { inst: CardInstance; holder: PlayerGameState; zone: 'battlefield' | 'graveyard' | 'exile' | 'hand' | 'library' | 'command' } | null {
+		for (const zone of ['battlefield', 'graveyard', 'exile', 'hand', 'library', 'command'] as const) {
 			for (const p of this.state.players) {
 				const inst = p[zone].find((c) => c.instanceId === id);
 				if (inst) return { inst, holder: p, zone };
@@ -1322,6 +1375,8 @@ class Run {
 				return playerCommanderCastCount(this.state, this.you.playerId);
 			case 'stormCount':
 				return this.ctx.item.stormCount ?? 0;
+			case 'colorsOfManaSpentToCast':
+				return this.sourcePerm?.manaColorsSpent?.length ?? this.ctx.item.manaColorsSpent?.length ?? 0;
 			case 'kickedCount':
 				return evaluateKickedCountAmount(a, this.kickerInfo());
 			case 'tappedCostPower': {
@@ -1444,6 +1499,12 @@ class Run {
 					manaValue: objectManaValue(this.state, stackTarget)
 				};
 			}
+			for (const [_, bList] of this.bindings) {
+				const b = bList.find((x) => x.id === id);
+				if (b) return { ...b.lki };
+			}
+			const initSnap = this.initialSnapshots.get(id);
+			if (initSnap) return { ...initSnap };
 		}
 		return null;
 	}
@@ -1619,6 +1680,10 @@ class Run {
 					}
 				}
 				return out;
+			}
+			case 'libraryTop': {
+				const pl = (sel.player ? this.playerRef(sel.player) : null) ?? this.you;
+				return pl && pl.library.length > 0 ? [pl.library[0]] : [];
 			}
 			default:
 				return [];
@@ -2120,6 +2185,143 @@ class Run {
 				);
 				return;
 			}
+			case 'moveCounters': {
+				const counter = step.params?.counter ?? '+1/+1';
+				const src = this.sourcePerm;
+				if (!src || src.zone !== 'battlefield') return;
+				const initialAvailable = src.counters?.[counter] ?? 0;
+				if (initialAvailable <= 0) return;
+				const filter = step.params?.toFilter ?? { other: true, types: ['Creature'] };
+				const cands = this.objects({ k: 'all', filter }).filter(
+					(c: CardInstance) => c.instanceId !== src.instanceId && c.zone === 'battlefield'
+				);
+				if (cands.length === 0) return;
+
+				// Bot AI or non-pausing environment: move all available counters to first candidate
+				if (you.isBot || !this.canPause) {
+					const dest = cands[0];
+					if (dest && dest.zone === 'battlefield') {
+						src.counters[counter] -= initialAvailable;
+						noteLayerInputsChanged(s);
+						p.addCounters(s, dest, counter, initialAvailable);
+						p.addLog(
+							s,
+							'rule',
+							`${you.username} moved ${initialAvailable} ${counter} counter(s) from ${src.card.name} to ${dest.card.name}.`,
+							you.playerId
+						);
+					}
+					return;
+				}
+
+				// Interactive human flow: iterative counter distribution across eligible creatures
+				let remaining = initialAvailable;
+				let iter = 0;
+				for (; ; iter++) {
+					const destKey = `move_counters_dest:${this.stepIndex}:${iter}`;
+					const countKey = `move_counters_count:${this.stepIndex}:${iter}`;
+					const destAns = this.answers[destKey];
+
+					if (destAns?.kind === 'chooseObjects') {
+						const pickedIds = destAns.objectIds;
+						if (pickedIds.length === 0) {
+							break;
+						}
+						const destId = pickedIds[0];
+						const countAns = this.answers[countKey];
+						if (countAns?.kind === 'chooseNumber') {
+							const chosenCount = Math.max(1, Math.min(remaining, countAns.n));
+							remaining -= chosenCount;
+							if (remaining <= 0) {
+								break;
+							}
+							continue;
+						} else {
+							const destPerm = this.locate(destId)?.inst;
+							const destName = destPerm?.card?.name ?? 'chosen creature';
+							this.pauseForNumber(
+								you,
+								`${title} — Move ${counter} counters`,
+								`Choose how many ${counter} counters to move onto ${destName} (1–${remaining}).`,
+								1,
+								remaining,
+								remaining,
+								countKey
+							);
+							return;
+						}
+					} else {
+						if (remaining <= 0) break;
+						const promptReason =
+							iter === 0
+								? `Choose a creature to move ${counter} counters onto.`
+								: `Choose another creature to move remaining ${remaining} ${counter} counter(s) onto (or choose none to finish).`;
+						this.pauseForChoice(
+							you,
+							`${title} — Move ${counter} counters`,
+							promptReason,
+							cands.map((c: CardInstance) => c.instanceId),
+							0,
+							1,
+							'battlefield',
+							undefined,
+							destKey
+						);
+						return;
+					}
+				}
+
+				// All choices completed: execute counter movements atomically
+				for (let i = 0; i <= iter; i++) {
+					const dKey = `move_counters_dest:${this.stepIndex}:${i}`;
+					const cKey = `move_counters_count:${this.stepIndex}:${i}`;
+					const dAns = this.answers[dKey];
+					const cAns = this.answers[cKey];
+					const destIds = dAns?.kind === 'chooseObjects' ? dAns.objectIds : undefined;
+					if (!destIds || destIds.length === 0) continue;
+					const destId = destIds[0];
+					const moveN = cAns?.kind === 'chooseNumber' ? cAns.n : 0;
+					if (moveN <= 0) continue;
+					const dest = this.locate(destId)?.inst;
+					if (!dest || dest.zone !== 'battlefield') continue;
+					// CR 122.5: verify source still has sufficient counters
+					const actual = Math.min(moveN, src.counters?.[counter] ?? 0);
+					if (actual <= 0) continue;
+					src.counters[counter] -= actual;
+					noteLayerInputsChanged(s);
+					p.addCounters(s, dest, counter, actual);
+					p.addLog(
+						s,
+						'rule',
+						`${you.username} moved ${actual} ${counter} counter(s) from ${src.card.name} to ${dest.card.name}.`,
+						you.playerId
+					);
+				}
+				return;
+			}
+			case 'reveal': {
+				const objs = this.objects(step.subject);
+				this.bind(step, objs);
+				if (objs.length > 0) {
+					p.addLog(
+						s,
+						'rule',
+						`${you.username} revealed ${objs.map((o) => o.card.name).join(', ')} (${title}).`,
+						you.playerId
+					);
+				}
+				return;
+			}
+			case 'extraCombatPhase': {
+				s.additionalCombatPhases = (s.additionalCombatPhases ?? 0) + 1;
+				p.addLog(
+					s,
+					'rule',
+					`There will be an additional combat phase after this phase (${this.ctx.title}).`,
+					you.playerId
+				);
+				return;
+			}
 			case 'proliferate': {
 				const { candidates, defaultIds } = proliferateCandidates(s, you);
 				const ans = this.answers[you.playerId];
@@ -2313,7 +2515,19 @@ class Run {
 					const mana = step.params.mana;
 					const loops = mana.length > 1 ? 1 : times;
 					for (let i = 0; i < loops; i++) {
-						for (const c of mana) addManaToPlayerPool(you, c, 1, restriction);
+						for (const c of mana) {
+							addManaToPlayerPool(you, c, 1, restriction);
+							if (step.delayed) {
+								(you.manaRiders ??= []).push({
+									id: p.uid('rider', s),
+									color: c,
+									sourceInstanceId: this.ctx.sourceId,
+									sourceCard: this.ctx.sourceCard,
+									condition: { sharesCreatureTypeWithCommander: true },
+									scryAmount: 1
+								});
+							}
+						}
 					}
 					return;
 				}
@@ -2363,6 +2577,18 @@ class Run {
 						if (picked && allowed.includes(picked)) chosen = picked;
 					}
 					addManaToPlayerPool(you, chosen, times, restriction);
+					if (step.delayed) {
+						for (let i = 0; i < times; i++) {
+							(you.manaRiders ??= []).push({
+								id: p.uid('rider', s),
+								color: chosen,
+								sourceInstanceId: this.ctx.sourceId,
+								sourceCard: this.ctx.sourceCard,
+								condition: { sharesCreatureTypeWithCommander: true },
+								scryAmount: 1
+							});
+						}
+					}
 				}
 				return;
 			}
@@ -4079,6 +4305,40 @@ class Run {
 		}
 
 		if (params.to === 'library') {
+			if (params.mayShuffle) {
+				const objs = this.objects(step.subject);
+				this.bind(step, objs);
+				if (!step.bindAs && objs.length > 0) {
+					this.bindings.set(
+						`__lki_${this.stepIndex}`,
+						objs.map((o) => ({ id: o.instanceId, lki: this.snapshot(o) }))
+					);
+				}
+				const shuffledOwners = new Set<string>();
+				for (const o of objs) {
+					const f = this.locate(o.instanceId);
+					if (!f) continue;
+					const owner = this.player(o.ownerId) ?? f.holder;
+					const top = params.position !== 'bottom';
+					moveObject(s, o, 'library', {
+						from: { player: f.holder, zone: f.zone },
+						toPlayer: owner,
+						insert: top ? 'start' : 'end',
+						commanderRedirect: true,
+						leaveBattlefieldReset: f.zone === 'battlefield',
+						detachAttachments: f.zone === 'battlefield',
+						bumpVersion: true,
+						newTimestamp: true,
+						ceaseToExist: 'tokens'
+					});
+					if (!shuffledOwners.has(owner.playerId)) {
+						shuffledOwners.add(owner.playerId);
+						shuffleLibrary(s, owner);
+						p.addLog(s, 'rule', `${owner.username} shuffled their library (${this.ctx.title}).`, owner.playerId);
+					}
+				}
+				return;
+			}
 			const trigAbLib =
 				this.ctx.item.kind === 'triggered' && this.ctx.item.triggeredAbilityIndex !== undefined
 					? activeAbilityDefs(this.ctx.sourceCard, { faceIndex: this.ctx.item.faceIndex ?? 0 })[
@@ -4339,14 +4599,18 @@ class Run {
 			);
 			return;
 		}
-		const allowedFromZones: ReadonlyArray<'exile' | 'graveyard'> =
-			params.from === 'exile'
-				? ['exile']
-				: params.from === 'graveyard'
-					? ['graveyard']
-					: step.subject.k === 'eventObject'
-						? ['graveyard', 'exile']
-						: ['graveyard'];
+		const allowedFromZones: ReadonlyArray<'exile' | 'graveyard' | 'library'> =
+			params.from === 'library'
+				? ['library']
+				: params.from === 'exile'
+					? ['exile']
+					: params.from === 'graveyard'
+						? ['graveyard']
+						: step.subject.k === 'eventObject' ||
+							  step.subject.k === 'binding' ||
+							  step.subject.k === 'libraryTop'
+							? ['graveyard', 'exile', 'library']
+							: ['graveyard'];
 		const canEnterTransformed = (inst: CardInstance): boolean => {
 			if (!params.enteredTransformed) return true;
 			const baseCard = inst.copiableCard ?? inst.card;
@@ -4369,7 +4633,7 @@ class Run {
 			step.subject.k === 'self' &&
 			this.ctx.item.sourceObjectVersion !== undefined;
 		const matchesSelfVersion = (inst: CardInstance): boolean => {
-			if (!checkSelfGyVersion) return true;
+			if (!checkSelfGyVersion || inst.zone !== 'graveyard') return true;
 			const sv = this.ctx.item.sourceObjectVersion!;
 			const cur = inst.objectVersion ?? 1;
 			// CR 400.7f: an Aura put into a graveyard via SBA CR 704.5m after its enchanted permanent died
@@ -4378,7 +4642,9 @@ class Run {
 		};
 		if (!this.answers[batchKey]) {
 			let objs = this.objects(step.subject).filter(
-				(o) => allowedFromZones.includes(o.zone as 'exile' | 'graveyard') && matchesSelfVersion(o)
+				(o) =>
+					allowedFromZones.includes(o.zone as 'exile' | 'graveyard' | 'library') &&
+					matchesSelfVersion(o)
 			);
 			if (params.topmostOnly) {
 				// CR 404.2: the graveyard's order matters; the top card is the last one in the array.
@@ -4389,7 +4655,8 @@ class Run {
 					if (!canEnterTransformed(o)) continue;
 					const holder = this.locate(o.instanceId)?.holder;
 					if (!holder) continue;
-					const controller = params.underYourControl ? you : (this.player(o.ownerId) ?? holder);
+					const actorPlayer = step.actor ? this.playerRef(step.actor) : null;
+					const controller = params.underYourControl ? you : (actorPlayer ?? this.player(o.ownerId) ?? holder);
 					const view = resolveObjectFaces(o.copiableCard ?? o.card, {
 						zone: 'battlefield',
 						faceIndex: params.enteredTransformed ? 1 : o.activeFaceIndex
@@ -4423,12 +4690,12 @@ class Run {
 				const f = this.locate(id);
 				if (
 					!f ||
-					!allowedFromZones.includes(f.zone as 'exile' | 'graveyard') ||
+					!allowedFromZones.includes(f.zone as 'exile' | 'graveyard' | 'library') ||
 					!matchesSelfVersion(f.inst)
 				) {
 					return;
 				}
-				const actualFrom = f.zone as 'exile' | 'graveyard';
+				const actualFrom = f.zone as 'exile' | 'graveyard' | 'library';
 				const o = f.inst;
 				const holder = f.holder;
 				if (params.to === 'hand') {
@@ -4445,7 +4712,8 @@ class Run {
 					);
 					return;
 				}
-				const controller = params.underYourControl ? you : (this.player(o.ownerId) ?? holder);
+				const actorPlayer = step.actor ? this.playerRef(step.actor) : null;
+				const controller = params.underYourControl ? you : (actorPlayer ?? this.player(o.ownerId) ?? holder);
 				if (params.enteredTransformed) {
 					o.transformed = true;
 					o.activeFaceIndex = 1;
@@ -4481,7 +4749,12 @@ class Run {
 					toPlayer: controller,
 					controllerId: controller.playerId,
 					newTimestamp: !isAura,
-					bumpVersion: true
+					bumpVersion: true,
+					beforeInsert: (returned, d) => {
+						if (d === 'battlefield') {
+							applySelfEtbReplacements(s, returned);
+						}
+					}
 				});
 				if (params.unearth && o.zone === 'battlefield') {
 					// CR 702.84a: permanent Haste, leave-battlefield exile replacement, and next-end-step exile delayed trigger.
@@ -4660,6 +4933,127 @@ class Run {
 					pl.playerId
 				);
 			}
+		}
+
+		if (dig.partitions && dig.partitions.length > 0) {
+			const topCards = topIds
+				.map((id) => pl.library.find((c) => c.instanceId === id))
+				.filter((c): c is CardInstance => Boolean(c));
+			if (topCards.length === 0) return;
+
+			const partHandKey = `dig_part_hand:${this.stepIndex}`;
+			const partExileKey = `dig_part_exile:${this.stepIndex}`;
+
+			let handCard: CardInstance | undefined;
+			let exileCard: CardInstance | undefined;
+			let bottomCards: CardInstance[] = [];
+
+			if (topCards.length === 1) {
+				handCard = topCards[0];
+			} else if (topCards.length === 2) {
+				if (!pl.isBot && this.canPause && !this.answers[partHandKey]) {
+					this.pauseForChoice(
+						pl,
+						`${this.ctx.title} — Choose card for hand`,
+						`Choose 1 card to put into your hand; the other card will be exiled (playable this turn).`,
+						topCards.map((c) => c.instanceId),
+						1,
+						1,
+						'library',
+						[topCards[0].instanceId],
+						partHandKey
+					);
+					return;
+				}
+				const handId =
+					this.answers[partHandKey]?.kind === 'chooseObjects'
+						? this.answers[partHandKey].objectIds[0]
+						: topCards[0].instanceId;
+				handCard = topCards.find((c) => c.instanceId === handId) ?? topCards[0];
+				exileCard = topCards.find((c) => c.instanceId !== handCard!.instanceId);
+			} else {
+				if (!pl.isBot && this.canPause && !this.answers[partHandKey]) {
+					this.pauseForChoice(
+						pl,
+						`${this.ctx.title} — Choose card for hand`,
+						`Choose 1 card to put into your hand.`,
+						topCards.map((c) => c.instanceId),
+						1,
+						1,
+						'library',
+						[topCards[0].instanceId],
+						partHandKey
+					);
+					return;
+				}
+				const handId =
+					this.answers[partHandKey]?.kind === 'chooseObjects'
+						? this.answers[partHandKey].objectIds[0]
+						: topCards[0].instanceId;
+				handCard = topCards.find((c) => c.instanceId === handId) ?? topCards[0];
+				const remCards = topCards.filter((c) => c.instanceId !== handCard!.instanceId);
+
+				if (!pl.isBot && this.canPause && !this.answers[partExileKey]) {
+					this.pauseForChoice(
+						pl,
+						`${this.ctx.title} — Choose card to exile`,
+						`Choose 1 card to exile (you may play it this turn); the remaining card goes on the bottom of your library.`,
+						remCards.map((c) => c.instanceId),
+						1,
+						1,
+						'library',
+						[remCards[0].instanceId],
+						partExileKey
+					);
+					return;
+				}
+				const exileId =
+					this.answers[partExileKey]?.kind === 'chooseObjects'
+						? this.answers[partExileKey].objectIds[0]
+						: remCards[0].instanceId;
+				exileCard = remCards.find((c) => c.instanceId === exileId) ?? remCards[0];
+				bottomCards = remCards.filter((c) => c.instanceId !== exileCard!.instanceId);
+			}
+
+			if (handCard) {
+				moveObject(s, handCard, 'hand', {
+					from: { player: pl, zone: 'library' },
+					toPlayer: pl,
+					newTimestamp: true,
+					bumpVersion: true
+				});
+			}
+			if (exileCard) {
+				moveObject(s, exileCard, 'exile', {
+					from: { player: pl, zone: 'library' },
+					toPlayer: pl,
+					newTimestamp: true,
+					bumpVersion: true
+				});
+				exileCard.playableFromExileBy = {
+					playerId: pl.playerId,
+					expiresAtEndOfTurn: true,
+					sourceName: this.ctx.title,
+					spendManaAsAnyColor: false
+				};
+			}
+			for (const bCard of bottomCards) {
+				moveObject(s, bCard, 'library', {
+					from: { player: pl, zone: 'library' },
+					toPlayer: pl,
+					insert: 'end',
+					newTimestamp: true,
+					bumpVersion: true
+				});
+			}
+
+			p.addLog(
+				s,
+				'rule',
+				`${pl.username} put ${handCard ? handCard.card.name : 'nothing'} into hand, exiled ${exileCard ? exileCard.card.name : 'nothing'}, and put ${bottomCards.length} card(s) on the bottom of their library (${this.ctx.title}).`,
+				pl.playerId
+			);
+			return;
 		}
 
 		let keptIds: string[];
@@ -5076,6 +5470,44 @@ class Run {
 					return Boolean(f.inst.isMonstrous);
 				}
 				return Boolean(this.ctx.item.sourceMonstrous);
+			}
+			case 'matchesFilter': {
+				const targetRef = c.target ?? { k: 'self' };
+				const objs = this.objects(targetRef as Selector);
+				if (objs.length === 0) return false;
+				return objs.every((o) =>
+					this.matches(
+						o,
+						c.filter,
+						(o.zone === 'command' ? 'exile' : o.zone) as
+							| 'battlefield'
+							| 'graveyard'
+							| 'hand'
+							| 'library'
+							| 'exile'
+					)
+				);
+			}
+			case 'evolveCompare': {
+				const src = this.sourcePerm;
+				if (!src || src.zone !== 'battlefield') return false;
+				const srcEval = evaluatePermanent(this.state, src);
+				if (!srcEval.isCreature) return false;
+				let enterPower: number | undefined;
+				let enterToughness: number | undefined;
+				if (this.ctx.eventObjectId) {
+					const enterPerm = this.locate(this.ctx.eventObjectId)?.inst;
+					if (enterPerm && enterPerm.zone === 'battlefield') {
+						const enterEval = evaluatePermanent(this.state, enterPerm);
+						enterPower = enterEval.power;
+						enterToughness = enterEval.toughness;
+					} else if (this.ctx.eventLki) {
+						enterPower = this.ctx.eventLki.power;
+						enterToughness = this.ctx.eventLki.toughness;
+					}
+				}
+				if (enterPower === undefined || enterToughness === undefined) return false;
+				return enterPower > srcEval.power || enterToughness > srcEval.toughness;
 			}
 		}
 	}

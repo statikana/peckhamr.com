@@ -356,7 +356,7 @@ const replacements: Production = (s, span) => {
 			return { k: 'modify', tapped: true };
 		}
 		const counters = body.match(
-			/^~ enters (?:the battlefield )?with (\S+) (\S+) counters? on it( for each time (?:it|~) was kicked)?$/i
+			/^~ enters (?:the battlefield )?with (\S+) (\S+) counters? on it( for each time (?:it|~) was kicked| for each color of mana spent to cast (?:it|~))?$/i
 		);
 		if (counters) {
 			const baseAmount = count(counters[1]);
@@ -364,7 +364,10 @@ const replacements: Production = (s, span) => {
 			if (baseAmount && counter) {
 				let amount: Amount | null = baseAmount;
 				if (counters[3]) {
-					if (baseAmount.k === 'const' && baseAmount.n === 1) amount = { k: 'kickedCount' };
+					if (/color of mana/i.test(counters[3])) {
+						if (baseAmount.k === 'const' && baseAmount.n === 1) amount = { k: 'colorsOfManaSpentToCast' };
+						else amount = null;
+					} else if (baseAmount.k === 'const' && baseAmount.n === 1) amount = { k: 'kickedCount' };
 					else if (baseAmount.k === 'const' && baseAmount.n > 1) amount = { k: 'kickedCount', multiplier: baseAmount.n };
 					else amount = null;
 				}
@@ -653,6 +656,24 @@ function costModifiers(activeZones?: ZoneType[]): Production {
 			if (activeZones) def.activeZones = activeZones;
 			return [{ kind: 'static', static: def }];
 		}
+		const targetTax = s.match(
+			/^Spells your opponents cast that target ~ cost an additional (\d+) life to cast$/i
+		);
+		if (targetTax) {
+			const life = parseInt(targetTax[1], 10);
+			const def: StaticDef = {
+				k: 'costModifier',
+				affects: { k: 'spell', filter: { targetsSelf: true } },
+				delta: {
+					mode: 'increase',
+					generic: 0,
+					additionalCosts: [{ k: 'payLife', amount: n(life) }]
+				},
+				who: { relation: 'each_opponent' }
+			};
+			if (activeZones) def.activeZones = activeZones;
+			return [{ kind: 'static', static: def }];
+		}
 		const self = s.match(/^~ costs (\{\d+\}) (less|more) to cast(?: for each (.+))?$/);
 		if (self) {
 			if (!self[3]) return build({ k: 'self' }, self[1], self[2], 'you');
@@ -846,6 +867,19 @@ const attachedTypeChange: Production = (s) => {
 
 /** Global type and ability changers: Humility, Blood Moon, Urborg, Opalescence, Mycosynth, Maskwood. */
 const globalChanges: Production = (s) => {
+	if (/^All cards that aren't on the battlefield, spells, and permanents are colorless$/i.test(s)) {
+		return [
+			continuous('5', {}, { k: 'setColors', colors: [] }),
+			{
+				kind: 'static',
+				static: {
+					k: 'ruleModifier',
+					rule: 'allOffBattlefieldAndSpellsColorless',
+					who: { relation: 'each_player' }
+				}
+			}
+		];
+	}
 	const lose = s.match(/^(All creatures|Creatures) lose all abilities(?: and have base power and toughness (\d+)\/(\d+))?$/);
 	if (lose) {
 		const affected: ObjectFilter = { types: ['Creature'] };
@@ -1006,6 +1040,9 @@ function parseStaticCondition(clause: string): Condition | null {
 
 function parseSentence(sentence: string, span: Span): StaticItem[] | null {
 	let s = sentence.replace(/’/g, "'").replace(/\.$/, '');
+	if (/^if ~ is in your opening hand, you may begin the game with it on the battlefield$/i.test(s)) {
+		return [{ kind: 'static', static: { k: 'pregameAction', action: 'beginOnBattlefield' } }];
+	}
 
 	const eminence = s.match(EMINENCE);
 	if (eminence) {

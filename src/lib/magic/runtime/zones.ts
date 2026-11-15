@@ -385,6 +385,7 @@ function finalizeZoneMove(
 		obj.prototyped = undefined;
 		obj.evoked = undefined;
 		obj.escaped = undefined;
+		obj.manaColorsSpent = undefined;
 		obj.foretold = undefined;
 		obj.blitzed = undefined;
 		obj.saddledThisTurn = undefined;
@@ -442,6 +443,7 @@ function finalizeZoneMove(
 		obj.isMonstrous = undefined;
 		obj.monstrosityX = undefined;
 		if (dest !== 'stack') {
+			obj.manaColorsSpent = undefined;
 			obj.prototyped = undefined;
 			obj.activeFaceIndex = undefined;
 			obj.transformed = false;

@@ -153,7 +153,7 @@ describe('Cost grammar: cost modifiers', () => {
 	});
 
 	it('rejects what it does not understand', () => {
-		assert.equal(parseCostModifierSentence('Spells your opponents cast cost {1} more to cast.'), null);
+		assert.equal(parseCostModifierSentence('Spells cost {X} more to cast.'), null);
 		assert.equal(parseCostModifierSentence('Draw a card.'), null);
 	});
 });

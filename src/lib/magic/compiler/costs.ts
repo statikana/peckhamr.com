@@ -202,6 +202,8 @@ export function parseObjectPhrase(phrase: string): ObjectFilter | null {
 		else if (low === 'monstrous') filter.monstrous = true;
 		else if (low === 'nontoken') filter.token = false;
 		else if (low === 'commander' || low === 'commanders') filter.isCommander = true;
+		else if (low === 'attacking') filter.attacking = true;
+		else if (low === 'blocking') filter.blocking = true;
 		else if (SUPERTYPES[low]) (filter.supertypes ??= []).push(SUPERTYPES[low]);
 		else if (COLORS[low]) (filter.colors ??= []).push(COLORS[low]);
 		else if (/^non[a-z]+$/.test(low) && CARD_TYPES[low.slice(3)]) {
@@ -543,6 +545,17 @@ export function parseCostModifierSentence(sentence: string): StaticDef | null {
 		};
 	}
 
+	const targetTax = text.match(/^Spells your opponents cast that target ~ cost an additional (\d+) life to cast$/i);
+	if (targetTax) {
+		const life = parseInt(targetTax[1], 10);
+		return {
+			k: 'costModifier',
+			affects: { k: 'spell', filter: { targetsSelf: true } },
+			delta: { mode: 'increase', generic: 0, additionalCosts: [{ k: 'payLife', amount: { k: 'const', n: life } }] },
+			who: { relation: 'each_opponent' }
+		};
+	}
+
 	const m = text.match(
 		/^(as long as ~ is in the command zone or on the battlefield, )?(?:(.+?) )?spells(?: of the chosen (type|color))?(?: (you|your opponents) cast)?(?: of the chosen (type|color))? cost \{(\d+)\} (less|more) to cast$/i
 	);
@@ -551,7 +564,6 @@ export function parseCostModifierSentence(sentence: string): StaticDef | null {
 	const whoRaw = m[4]?.toLowerCase();
 	const chosenKindB = m[5]?.toLowerCase();
 	if (chosenKindA && chosenKindB && chosenKindA === chosenKindB) return null;
-	if (!m[2] && !chosenKindA && !chosenKindB && whoRaw !== 'you') return null;
 	let phrase = (m[2] ?? '').trim();
 	let other = false;
 	if (phrase) {

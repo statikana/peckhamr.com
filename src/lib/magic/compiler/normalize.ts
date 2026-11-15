@@ -478,7 +478,7 @@ function isAbilityOrFlavorWord(rawPrefix: string): boolean {
 // Keyword costs use an unspaced dash ("Ward—Pay 3 life"), so a spaced em dash followed by a
 // capital letter, bullet, or mana symbol marks a CR 207.2c ability-word or CR 207.2d flavor-word
 // candidate unless the prefix is a rules term (CR 701/702).
-const ABILITY_WORD = /^([A-Z][A-Za-z0-9'’ -]*?) — (?=[A-Z•{])/;
+const ABILITY_WORD = /^([A-Z][A-Za-z0-9'’ -]*?) — (?=[A-Z•{~])/;
 
 function escapeRegex(s: string): string {
 	return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

@@ -302,6 +302,7 @@ export interface TargetRequirementInfo {
 export interface ManaSpendContext {
 	isSpell: boolean;
 	isArtifactSpell?: boolean;
+	capturedColorsSpent?: ManaColor[];
 }
 
 export interface EffectiveActivatedAbility {
@@ -458,6 +459,8 @@ export interface CardInstance {
 	evoked?: boolean;
 	/** CR 702.138b / 400.7d: true when this permanent entered from a spell whose escape cost was paid. */
 	escaped?: boolean;
+	/** CR 601.2h / 400.7d / CR 105: distinct colors of mana spent to cast this spell / permanent (Converge). */
+	manaColorsSpent?: ManaColor[];
 	/** CR 702.84a: true while on the battlefield via Unearth ("If it would leave the battlefield, exile it instead of putting it anywhere else"). */
 	unearthLeaveExile?: boolean;
 	phasedOut?: boolean;
@@ -668,6 +671,8 @@ export interface StackItem {
 	/** CR 702.40a: number of other spells cast before this spell this turn, snapshotted when the cast trigger fired. */
 	stormCount?: number;
 	sourceObjectVersion?: number;
+	/** CR 601.2h / CR 105: distinct colors of mana spent to cast this spell. */
+	manaColorsSpent?: ManaColor[];
 	lkiPower?: number;
 	lkiToughness?: number;
 	lkiTypeLine?: string;
@@ -903,6 +908,7 @@ export type DelayedTriggerEffect =
 	| { kind: 'exile'; targetInstanceId: string; targetObjectVersion?: number }
 	| { kind: 'lose' }
 	| { kind: 'draw'; playerId: string; amount: number; upTo?: boolean }
+	| { kind: 'scry'; amount: number }
 	| CompiledDelayedEffect
 	// --- Track P3 ---
 	| { kind: 'sacrifice'; targetInstanceId: string; targetObjectVersion?: number }
@@ -1314,6 +1320,17 @@ export interface PlayerGameState {
 	preventAllCombatDamageThisTurn?: boolean;
 	attemptedEmptyLibraryDraw?: boolean;
 	commanderColorIdentity?: ManaColor[];
+	/** CR 106.6 / 603.7: Delayed riders attached to mana in the pool (e.g. Path of Ancestry). */
+	manaRiders?: ManaRider[];
+}
+
+export interface ManaRider {
+	id?: string;
+	color?: ManaColor;
+	sourceInstanceId?: string;
+	sourceCard?: ScryfallCard;
+	condition?: { sharesCreatureTypeWithCommander: true };
+	scryAmount?: number;
 }
 
 export interface TriggerLoopEntry {
@@ -1414,6 +1431,7 @@ export interface PendingCostPayment {
 	fused?: boolean;
 	spellMods?: SpellModifications;
 	optionalCostCounts?: Record<string, number>;
+	manaColorsSpent?: ManaColor[];
 	exSourceName?: string;
 	sourceCard?: ScryfallCard;
 	additionalIncomplete?: boolean;
@@ -1527,6 +1545,8 @@ export interface GameState {
 	faceDownLabelAllocCounter?: number;
 	// --- Track P1 ---
 	monarchPlayerId?: string | null;
+	/** CR 500.8: number of additional combat phases to begin after the current combat phase ends. */
+	additionalCombatPhases?: number;
 }
 
 export interface MagicLobby {

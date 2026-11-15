@@ -1225,6 +1225,8 @@ function evaluateLayerCondition(
 		// --- Track P5 ---
 		case 'monstrous':
 			return Boolean(source.inst.isMonstrous);
+		default:
+			return false;
 	}
 }
 
@@ -3359,6 +3361,21 @@ export function permanentHasLostAllAbilities(
 	return out;
 }
 
+export function hasAllOffBattlefieldAndSpellsColorless(state: GameState): boolean {
+	for (const { perm, card } of abilityActivePermanents(state)) {
+		for (const ab of activeAbilityDefs(card, instanceFaceOptions(perm, 'battlefield'))) {
+			if (
+				ab.kind === 'static' &&
+				ab.static.k === 'ruleModifier' &&
+				ab.static.rule === 'allOffBattlefieldAndSpellsColorless'
+			) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
 export function inspectCardContinuousBreakdown(
 	cardOrInst: CardInstance | ScryfallCard,
 	state?: GameState
@@ -3456,7 +3473,7 @@ export function evaluatePermanent(state: GameState, inst: CardInstance): Evaluat
 			power: breakdown.effectivePower ?? 0,
 			toughness: breakdown.effectiveToughness ?? 0,
 			unclampedToughness: breakdown.effectiveToughness,
-			colors: [...faceView.colors],
+			colors: state && hasAllOffBattlefieldAndSpellsColorless(state) ? [] : [...faceView.colors],
 			activeKeywords,
 			keywords: activeKeywords,
 			breakdown,
