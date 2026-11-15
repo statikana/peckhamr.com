@@ -382,9 +382,10 @@ describe('Phase 5 bug: unsupported qualifiers never fire', () => {
 		});
 	}
 
-	it('When ~ enters untapped, draw a card.', () => {
+	// --- Track P16b ---
+	it('When ~ enters from the command zone, draw a card.', () => {
 		const { state, p } = game();
-		const c = card({ name: 'Quiet Grange', typeLine: 'Land', manaCost: '', cmc: 0, oracleText: 'When Quiet Grange enters untapped, draw a card.' });
+		const c = card({ name: 'Quiet Grange', typeLine: 'Land', manaCost: '', cmc: 0, oracleText: 'When Quiet Grange enters from the command zone, draw a card.' });
 		assert.ok(compileCard(c).faces[0].abilities.some((a) => a.kind === 'unsupported'));
 		const inst = put(state, p[0], c, 'hand');
 		const handBefore = p[0].hand.length;
@@ -397,7 +398,7 @@ describe('Phase 5 bug: unsupported qualifiers never fire', () => {
 		const c = card({
 			name: 'Tide Sage',
 			typeLine: 'Creature — Merfolk',
-			oracleText: 'Whenever you cast a noncreature spell, if at least four mana was spent to cast it, draw a card.',
+			oracleText: 'Whenever you cast a noncreature spell, if mana from a Treasure was spent to cast it, draw a card.',
 			power: '1',
 			toughness: '3'
 		});
@@ -408,6 +409,7 @@ describe('Phase 5 bug: unsupported qualifiers never fire', () => {
 		cast(state, p[0], spell);
 		assert.equal(p[0].hand.length, handBefore - 1, 'did not draw');
 	});
+	// --- End Track P16b ---
 });
 
 describe('Phase 5 bug: lines matched to the wrong event', () => {

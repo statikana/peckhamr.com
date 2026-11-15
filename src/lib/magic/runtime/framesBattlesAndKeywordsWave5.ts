@@ -71,7 +71,9 @@ import {
 	spellOptionalAdditionalCosts,
 	type CostContext
 } from './costs.ts';
-import type { emitEvent } from './events.ts';
+// --- Track P16b ---
+import { emitEvent } from './events.ts';
+// --- End Track P16b ---
 import {
 	activeAbilityDefs,
 	activeCharacteristics,
@@ -972,10 +974,20 @@ export function setDayNight(state: GameState, designation: 'day' | 'night'): boo
 		return syncDayboundNightboundPermanents(state);
 	}
 	const host = getHost();
+	// --- Track P16b ---
+	const previous = state.dayNight;
+	// --- End Track P16b ---
 	state.dayNight = designation;
 	noteLayerInputsChanged(state);
 	host.addLog(state, 'rule', `It becomes ${designation}.`);
 	syncDayboundNightboundPermanents(state);
+	// --- Track P16b ---
+	host.emitEvent(state, {
+		kind: 'DayNightChanged',
+		previous,
+		current: designation
+	});
+	// --- End Track P16b ---
 	return true;
 }
 
@@ -1043,6 +1055,13 @@ export function onPlayerLostLifeCheckSpeedTrigger(
 	// CR 702.179d: "Whenever one or more opponents lose life during your turn, if your speed is less than 4,
 	// your speed increases by 1. This ability triggers only once each turn."
 	if (amountLost <= 0) return;
+	// --- Track P16b ---
+	emitEvent(state, {
+		kind: 'LifeLost',
+		playerId: losingPlayerId,
+		amount: amountLost
+	});
+	// --- End Track P16b ---
 	const active = state.players[state.activePlayerIndex];
 	if (!active || active.lost) return;
 	if (active.playerId === losingPlayerId) return;
@@ -2695,8 +2714,19 @@ export function resolveWave5StackItem(state: GameState, item: StackItem): 'done'
 						(c.objectVersion || 1) === item.sourceObjectVersion)
 			);
 			if (perm && perm.attachedToId) {
+				// --- Track P16b ---
+				const prevHostId = perm.attachedToId;
+				// --- End Track P16b ---
 				perm.attachedToId = null;
 				noteLayerInputsChanged(state);
+				// --- Track P16b ---
+				emitEvent(state, {
+					kind: 'Unattached',
+					attachmentId: perm.instanceId,
+					attachment: perm,
+					hostId: prevHostId
+				});
+				// --- End Track P16b ---
 				host.addLog(
 					state,
 					'rule',

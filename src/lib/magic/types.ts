@@ -2256,6 +2256,14 @@ export interface PlayerGameState {
 	/** CR 702.192a Paradigm: Paradigm spell cards whose exiled copies are created at the beginning of each of this player's precombat main phases. */
 	paradigmCards?: ScryfallCard[];
 	// --- End Track P15 ---
+	// --- Track P16b ---
+	/** CR 700.13: true iff this player committed a crime this turn. */
+	committedCrimeThisTurn?: boolean;
+	/** True iff one or more cards left this player's graveyard this turn. */
+	cardLeftGraveyardThisTurn?: boolean;
+	/** True once this player has begun at least one upkeep step this game. */
+	hadUpkeepThisGame?: boolean;
+	// --- End Track P16b ---
 }
 
 export interface ManaRider {
@@ -2619,6 +2627,12 @@ export interface GameState {
 	/** CR 310.11b / 704.5v: `${instanceId}:${objectVersion}` keys of Sieges with an unresolved 0-defense trigger on stack / pending. */
 	siegeZeroDefenseTriggeredKeys?: string[];
 	// --- End Track P15 ---
+	// --- Track P16b ---
+	/** CR 603.2h: `${instanceId}:${objectVersion}:${faceIndex}:${abilityIndex}` keys whose "Do this only once each turn" action was taken this turn. */
+	doThisOnceTakenThisTurn?: string[];
+	/** Number of combat phases begun so far during the current turn (1 during the first combat phase). */
+	combatPhasesCountThisTurn?: number;
+	// --- End Track P16b ---
 }
 
 export interface MagicLobby {

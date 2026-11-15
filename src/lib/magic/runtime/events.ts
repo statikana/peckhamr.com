@@ -139,6 +139,9 @@ export interface CounterPlacedEvent extends EventBase {
 	// --- Track P1 ---
 	previousCount?: number;
 	newCount?: number;
+	// --- Track P16b ---
+	actorId?: string;
+	// --- End Track P16b ---
 }
 
 /** Blockers were declared by one defending player (CR 509). */
@@ -219,6 +222,9 @@ export interface CardDiscardedEvent extends EventBase {
 	object: CardInstance;
 	reason: 'discard' | 'cycle';
 	destZone: ZoneType;
+	// --- Track P16b ---
+	causeControllerId?: string;
+	// --- End Track P16b ---
 }
 
 /** A double-faced permanent transformed on the battlefield (CR 701.27). */
@@ -461,8 +467,22 @@ export type GameEvent =
 	| RingTemptedEvent
 	| DungeonRoomEnteredEvent
 	| DungeonCompletedEvent
-	| TookInitiativeEvent;
+	| TookInitiativeEvent
 	// --- End Track P13 & P15 ---
+	// --- Track P16b ---
+	| MutatedEvent
+	| SoulbondPairedEvent
+	| HauntedCreatureDiedEvent
+	| DayNightChangedEvent
+	| FacedDilemmaEvent
+	| LifeLostEvent
+	| ExhaustActivatedEvent
+	| UnattachedEvent
+	| PhasedInEvent
+	| CollectedEvidenceEvent
+	| LandPlayedEvent
+	| PlayerTargetedEvent;
+	// --- End Track P16b ---
 
 // --- Track P10 ---
 export interface UnblockedAttackersEvent extends EventBase {
@@ -578,6 +598,98 @@ export interface TookInitiativeEvent extends EventBase {
 	playerId: string;
 }
 // --- End Track P13 ---
+
+// --- Track P16b ---
+export interface MutatedEvent extends EventBase {
+	kind: 'Mutated';
+	playerId: string;
+	objectId: string;
+	object: CardInstance;
+	mutateCount: number;
+}
+
+export interface SoulbondPairedEvent extends EventBase {
+	kind: 'SoulbondPaired';
+	playerId: string;
+	objectId: string;
+	object: CardInstance;
+	partnerId: string;
+	partner: CardInstance;
+}
+
+export interface HauntedCreatureDiedEvent extends EventBase {
+	kind: 'HauntedCreatureDied';
+	haunterId: string;
+	haunter: CardInstance;
+	hauntedId: string;
+	hauntedObject: CardInstance;
+	lki?: LeftBattlefieldInfo;
+}
+
+export interface DayNightChangedEvent extends EventBase {
+	kind: 'DayNightChanged';
+	previous?: 'day' | 'night';
+	current: 'day' | 'night';
+}
+
+export interface FacedDilemmaEvent extends EventBase {
+	kind: 'FacedDilemma';
+	playerId: string;
+	sourceControllerId?: string;
+	stackItemId?: string;
+}
+
+export interface LifeLostEvent extends EventBase {
+	kind: 'LifeLost';
+	playerId: string;
+	amount: number;
+}
+
+export interface ExhaustActivatedEvent extends EventBase {
+	kind: 'ExhaustActivated';
+	playerId: string;
+	objectId: string;
+	object: CardInstance;
+}
+
+export interface UnattachedEvent extends EventBase {
+	kind: 'Unattached';
+	attachmentId: string;
+	attachment: CardInstance;
+	hostId: string;
+	host?: CardInstance;
+}
+
+export interface PhasedInEvent extends EventBase {
+	kind: 'PhasedIn';
+	objectId: string;
+	object: CardInstance;
+	controllerId?: string;
+}
+
+export interface CollectedEvidenceEvent extends EventBase {
+	kind: 'CollectedEvidence';
+	playerId: string;
+	amount?: number;
+	totalManaValue?: number;
+}
+
+export interface LandPlayedEvent extends EventBase {
+	kind: 'LandPlayed';
+	playerId: string;
+	objectId: string;
+	object: CardInstance;
+	fromZone?: ZoneType;
+}
+
+export interface PlayerTargetedEvent extends EventBase {
+	kind: 'PlayerTargeted';
+	targetPlayerId: string;
+	by: 'spell' | 'ability';
+	controllerId: string;
+	stackItemId?: string;
+}
+// --- End Track P16b ---
 
 export type GameEventKind = GameEvent['kind'];
 type EventOf<K extends GameEventKind> = Extract<GameEvent, { kind: K }>;

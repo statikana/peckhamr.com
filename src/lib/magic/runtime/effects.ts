@@ -108,6 +108,16 @@ import {
 	staticallyInterpretableP15
 } from './framesBattlesAndKeywordsWave5.ts';
 // --- End Track P15 ---
+// --- Track P16b ---
+import {
+	doThisOnceKey,
+	evaluateP16bCondition,
+	isDoThisOnceTakenThisTurn,
+	isStackItemTriggerDoThisOnce,
+	markDoThisOnceTakenThisTurn,
+	matchesP16bObjectFilter
+} from './triggersWave6.ts';
+// --- End Track P16b ---
 import { noteLayerInputsChanged } from './layerCache.ts';
 import {
 	matchesObjectFilter,
@@ -2417,6 +2427,45 @@ class Run {
 			return false;
 		}
 		// --- End Track P13 ---
+		// --- Track P16b ---
+		if (
+			f.sameNameAsSource !== undefined ||
+			f.sharesColorWithSelf !== undefined ||
+			f.hasAnyCounter !== undefined ||
+			f.equipped !== undefined ||
+			f.enchanted !== undefined
+		) {
+			const srcInst = this.locate(this.ctx.sourceId)?.inst;
+			if (
+				!matchesObjectFilter(
+					c,
+					{
+						...(f.sameNameAsSource !== undefined ? { sameNameAsSource: f.sameNameAsSource } : {}),
+						...(f.sharesColorWithSelf !== undefined
+							? { sharesColorWithSelf: f.sharesColorWithSelf }
+							: {}),
+						...(f.hasAnyCounter !== undefined ? { hasAnyCounter: f.hasAnyCounter } : {}),
+						...(f.equipped !== undefined ? { equipped: f.equipped } : {}),
+						...(f.enchanted !== undefined ? { enchanted: f.enchanted } : {})
+					},
+					{ state: this.state, controllerId: you, source: srcInst }
+				)
+			) {
+				return false;
+			}
+		}
+		if (
+			!matchesP16bObjectFilter(c, f, {
+				state: this.state,
+				controllerId: you,
+				source: this.locate(this.ctx.sourceId)?.inst,
+				zone,
+				stackItem: this.ctx.item
+			})
+		) {
+			return false;
+		}
+		// --- End Track P16b ---
 		return true;
 	}
 
@@ -2555,6 +2604,26 @@ class Run {
 				this.answers = {};
 				continue;
 			}
+			// --- Track P16b: CR 603.2h "Do this only once each turn" gate ---
+			const isOnceStep =
+				Boolean(step.doThisOncePerTurn) ||
+				(this.stepIndex === 0 && isStackItemTriggerDoThisOnce(this.ctx.item, this.ctx.sourceCard));
+			const onceKey = isOnceStep
+				? doThisOnceKey(
+						this.ctx.item.sourceInstanceId,
+						this.ctx.item.sourceObjectVersion,
+						this.ctx.item.faceIndex,
+						this.ctx.item.triggeredAbilityIndex
+					)
+				: '';
+			if (isOnceStep && this.phase !== 'afterStep' && isDoThisOnceTakenThisTurn(this.state, onceKey)) {
+				this.stepDecisions[this.stepIndex] = false;
+				this.subStepIndex = 0;
+				this.phase = 'optional';
+				this.answers = {};
+				continue;
+			}
+			// --- End Track P16b ---
 			if (step.optional && this.phase !== 'afterStep') {
 				const accepted = this.resolveOptional(step);
 				if (this.result.paused) return;
@@ -2577,14 +2646,14 @@ class Run {
 				if (this.canPause && queued.length > 0) {
 					const hasNestedPrompt = queued.some((pr) => this.isNestedBlockingPrompt(pr));
 					if (PROMPTING_VERBS.has(step.verb) || hasNestedPrompt) {
-						// --- Track P10 ---
-						const hasReflexive = Boolean(step.params?.reflexiveTrigger);
+						// --- Track P10 + Track P16b ---
+						const hasReflexive = Boolean(step.params?.reflexiveTrigger) || isOnceStep;
 						const resumeIdx = hasReflexive ? this.stepIndex : this.stepIndex + 1;
 						const resumePhase = hasReflexive ? 'afterStep' : 'optional';
 						const resumeAnswers = hasReflexive ? this.answers : {};
 						const item = this.saveFrame(resumeIdx, resumeAnswers, resumePhase, 0);
 						this.linkPromptsToStackStep(queued, resumeIdx);
-						// --- End Track P10 ---
+						// --- End Track P10 + Track P16b ---
 						for (const pr of queued) {
 							if (
 								PROMPTING_VERBS.has(step.verb) &&
@@ -2603,6 +2672,11 @@ class Run {
 					}
 				}
 			}
+			// --- Track P16b ---
+			if (isOnceStep && this.stepDecisions[this.stepIndex] !== false) {
+				markDoThisOnceTakenThisTurn(this.state, onceKey);
+			}
+			// --- End Track P16b ---
 			// --- Track P10 ---
 			this.finishStepReflexive(step);
 			// --- End Track P10 ---
@@ -4493,8 +4567,22 @@ class Run {
 				return executeDetain(this.p10Host(), step);
 			case 'suspect':
 				return executeSuspect(this.p10Host(), step);
-			case 'collectEvidence':
-				return executeCollectEvidence(this.p10Host(), step);
+			case 'collectEvidence': {
+				executeCollectEvidence(this.p10Host(), step);
+				// --- Track P16b ---
+				if (!this.result.paused && this.stepDecisions[this.stepIndex] !== false) {
+					const actor = (step.actor ? this.playerRef(step.actor) : null) ?? you;
+					const evAmt = Math.max(0, this.amount(step.amount, 0));
+					emitEvent(s, {
+						kind: 'CollectedEvidence',
+						playerId: actor.playerId,
+						amount: evAmt,
+						totalManaValue: evAmt
+					});
+				}
+				// --- End Track P16b ---
+				return;
+			}
 			case 'forage':
 				return executeForage(this.p10Host(), step);
 			case 'endure':
@@ -7821,6 +7909,31 @@ class Run {
 				return Boolean(liveObj?.isHarnessed);
 			}
 			// --- End Wave 6 Shared ---
+			// --- Track P16b ---
+			case 'attackingTotalPowerAtLeast':
+			case 'firstCombatPhaseOfTurn':
+			case 'eventPlayerHandCount':
+			case 'notEventPlayerTurn':
+			case 'cardLeftYourGraveyardThisTurn':
+			case 'committedCrimeThisTurn':
+			case 'controlledByOtherThanOwner':
+			case 'youLostLifeThisTurn':
+			case 'playerLostLifeAtLeastThisTurn':
+			case 'moreCardsInHandThanEachOpponent':
+			case 'eventObjectMatchedLki':
+				return (
+					evaluateP16bCondition(
+						c,
+						{
+							state: this.state,
+							controllerId: this.you.playerId,
+							source: this.locate(this.ctx.sourceId)?.inst,
+							stackItem: this.ctx.item
+						},
+						matchesObjectFilter
+					) ?? false
+				);
+			// --- End Track P16b ---
 		}
 	}
 
