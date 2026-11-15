@@ -236,7 +236,10 @@ export function buildTokenScryfallCard(
 	const isCreature = /\bCreature\b/.test(spec.typeLine);
 	const kwText = spec.keywords.join(', ');
 	const abilityText = predefined?.oracleText ?? '';
-	const oracleText = [kwText, abilityText].filter(Boolean).join('\n');
+	// --- Track P10 ---
+	const quotedLines = (spec.quotedAbilities ?? []).map((q) => q.replace(/~/g, spec.name));
+	const oracleText = [kwText, ...quotedLines, abilityText].filter(Boolean).join('\n');
+	// --- End Track P10 ---
 	const frontImg = `https://api.scryfall.com/cards/named?fuzzy=${encodeURIComponent(spec.name.replace(' Token', ''))}&format=image&version=normal`;
 	const frontArt = `https://api.scryfall.com/cards/named?fuzzy=${encodeURIComponent(spec.name.replace(' Token', ''))}&format=image&version=art_crop`;
 	// --- Track P5: Transforming DFC predefined tokens (CR 111.10i: Incubator // Phyrexian) ---

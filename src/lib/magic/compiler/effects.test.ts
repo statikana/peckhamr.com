@@ -768,15 +768,19 @@ describe('Track D Slice 1: Draw-then-discard, Goad, Explore, Map, and Connive', 
 			}
 		]);
 
+		// --- Track P10: CR 603.12 reflexive "When you do" triggers store targets/effect on reflexiveTrigger ---
 		const untargetedWhen = ok(
 			parseSpellText('Solar Tithe', 'You may pay 2 life. When you do, create a 1/1 white Soldier creature token.')
 		);
 		assert.equal(staticallyInterpretable(untargetedWhen), true);
-		assert.equal(untargetedWhen.steps[1].ifPrecedingAccepted, 0);
+		assert.equal(untargetedWhen.steps[0].params?.reflexiveTrigger?.effect[0]?.verb, 'createToken');
 
-		// CR 603.12 guard: reflexive "When you do" introducing targets must not compile as same-cast targeting.
+		// CR 603.12: reflexive "When you do" introducing targets chooses targets when triggered, NOT on cast!
 		const targetedWhen = parseSpellText('Reflexive Trap', 'You may pay {2}. When you do, destroy target creature.');
-		assert.equal(staticallyInterpretable(targetedWhen), false);
+		assert.equal(staticallyInterpretable(targetedWhen), true);
+		assert.equal(targetedWhen.targets.length, 0);
+		assert.equal(targetedWhen.steps[0].params?.reflexiveTrigger?.targets.length, 1);
+		// --- End Track P10 ---
 
 		const manaLeak = ok(
 			parseSpellText('Arcane Leak', 'Counter target spell unless its controller pays {2}.')

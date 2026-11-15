@@ -309,7 +309,69 @@ export interface ManaSpendContext {
 	isSpell: boolean;
 	isArtifactSpell?: boolean;
 	capturedColorsSpent?: ManaColor[];
+	// --- Track P10 ---
+	spellCard?: ScryfallCard;
+	spellFaceIndex?: number;
+	spellFused?: boolean;
+	spellSourceZone?: ZoneType;
+	spellHasXInCost?: boolean;
+	isCommanderSpell?: boolean;
+	isActivatedAbility?: boolean;
+	abilitySourceCard?: ScryfallCard;
+	abilitySourceFaceIndex?: number;
+	abilitySourceTypes?: string[];
+	abilitySourceSubtypes?: string[];
+	abilitySourceColors?: ManaColor[];
+	isForetellAction?: boolean;
+	sourceChosenSubType?: string;
+	capturedManaSpentCount?: number;
+	// --- End Track P10 ---
 }
+
+// --- Track P10 ---
+export interface PlainManaObjectFilter {
+	types?: string[];
+	allTypes?: string[];
+	notTypes?: string[];
+	supertypes?: string[];
+	notSupertypes?: string[];
+	subtypes?: string[];
+	colors?: ManaColor[];
+	notColors?: ManaColor[];
+	multicolored?: boolean;
+	monocolored?: boolean;
+	colorless?: boolean;
+	minManaValue?: number;
+	maxManaValue?: number;
+	hasKeywords?: string[];
+	castFromZone?: ZoneType;
+	ofChosenType?: boolean;
+}
+
+export interface ManaSpendingRestrictionSpec {
+	allowSpells?: {
+		filter?: PlainManaObjectFilter;
+		hasXInCost?: boolean;
+		withoutXInCost?: boolean;
+		isCommander?: boolean;
+		altFilter?: PlainManaObjectFilter;
+		altHasXInCost?: boolean;
+	};
+	allowAbilities?: {
+		anyAbility?: boolean;
+		sourceFilter?: PlainManaObjectFilter;
+		foretell?: boolean;
+	};
+	sourceChosenSubType?: string;
+}
+
+export interface RestrictedManaBucket {
+	key: string;
+	spec: ManaSpendingRestrictionSpec;
+	pool: ManaPool;
+	retainUntilEndOfTurn?: boolean;
+}
+// --- End Track P10 ---
 
 export interface EffectiveActivatedAbility {
 	id: string;
@@ -355,6 +417,14 @@ export interface EffectiveActivatedAbility {
 	manaCombinationColors?: ManaColor[] | 'any';
 	/** Depletion-land rider ("~ doesn't untap during your next untap step") on a mana ability (CR 605.1a). */
 	freezesSelfUntap?: boolean;
+	// --- Track P10 ---
+	/** Generalized mana spending restriction (CR 106.6). */
+	manaRestrictionSpec?: ManaSpendingRestrictionSpec;
+	/** CR 106.4: "Until end of turn, you don't lose this mana as steps and phases end." */
+	retainManaUntilEndOfTurn?: boolean;
+	/** Quoted ability text when granted temporarily until end of turn. */
+	grantedAbilityText?: string;
+	// --- End Track P10 ---
 }
 
 export interface LibrarySearchDestination {
@@ -421,6 +491,9 @@ export interface TokenCreationSpec {
 	typeLine: string;
 	keywords: string[];
 	tapped?: boolean;
+	// --- Track P10 ---
+	quotedAbilities?: string[];
+	// --- End Track P10 ---
 }
 
 export interface CardInstance {
@@ -564,6 +637,16 @@ export interface CardInstance {
 	riotChoicesDone?: number;
 	/** CR 702.98a Unleash: true once the Unleash ETB choice has been completed as this permanent enters. */
 	unleashChoiceDone?: boolean;
+	// --- Track P10 ---
+	/** CR 701.60a–c Suspect: true while this permanent is suspected on the battlefield; cleared on zone change. */
+	isSuspected?: boolean;
+	/** CR 701.35a Detain: playerIds whose detain effect stops this permanent from attacking, blocking, or activating abilities until their next turn. */
+	detainedByPlayerIds?: string[];
+	/** Source permanent `(sourceId, sourceVersion)` entries that dealt damage to this creature this turn; cleared on zone change & cleanup. */
+	damagedByThisTurn?: Array<{ sourceId: string; sourceVersion?: number }>;
+	/** CR 601.2h / 400.7d: total amount of mana spent to cast this spell / permanent. */
+	manaSpentCount?: number;
+	// --- End Track P10 ---
 }
 
 export interface TargetRef {
@@ -840,7 +923,62 @@ export interface StackItem {
 		costObjects?: string[][];
 		extortColor?: ManaColor;
 	};
+	// --- Track P10 ---
+	/** CR 603.12: plain-JSON locator for a reflexive triggered ability put on the stack when a resolving action completes. */
+	reflexiveTrigger?: CompiledReflexiveTrigger;
+	/** Quoted ability text when this triggered or activated ability came from a temporary Layer 6 grant. */
+	grantedAbilityText?: string;
+	/** Last die roll / coin flip count stored for `where X is the result` follow-up steps during resolution. */
+	lastRollResult?: number;
+	/** CR 601.2h: total amount of mana spent to cast this spell (or LKI carried onto its ETB trigger). */
+	manaSpentCount?: number;
+	// --- End Track P10 ---
 }
+
+// --- Track P10 ---
+/**
+ * Plain-JSON locator for a reflexive triggered ability (CR 603.12).
+ * Never stores IR (`EffectStep`, `TargetSpec`) in `GameState`; steps and target specs are resolved via compiler cache.
+ */
+export interface CompiledReflexiveTrigger {
+	sourceCard: ScryfallCard;
+	faceIndex?: number;
+	fused?: boolean;
+	abilityKind: 'spell' | 'activated' | 'triggered';
+	abilityId?: string;
+	abilityIndex?: number;
+	grantSourceCard?: ScryfallCard;
+	grantedKeyword?: string;
+	grantedAbilityText?: string;
+	chosenModes?: number[];
+	/** Step index path from the parent ability's root `EffectStep[]` to the step carrying `params.reflexiveTrigger`. */
+	stepPath: number[];
+	boundRefs: SerializedBoundRef[];
+	xValue?: number;
+	eventObjectId?: string;
+	eventObjectVersion?: number;
+	eventPlayerId?: string;
+	defendingPlayerId?: string;
+	eventAmount?: number;
+	eventLki?: TriggerEventLki;
+	kickedCount?: number;
+	kickedTags?: string[];
+	kickedTagCounts?: Record<string, number>;
+}
+
+export interface PendingReflexiveTrigger {
+	id: string;
+	controllerId: string;
+	sourceInstanceId: string;
+	sourceObjectVersion?: number;
+	sourceLkiPower?: number;
+	sourceLkiToughness?: number;
+	sourceChosenSubType?: string;
+	sourceChosenColor?: ManaColor;
+	displayText: string;
+	reflexive: CompiledReflexiveTrigger;
+}
+// --- End Track P10 ---
 
 /** One binding of the IR interpreter ("it", "that creature"): the objects and their LKI. */
 export interface EffectBindingSnapshot {
@@ -863,6 +1001,9 @@ export interface EffectResumeFrame {
 	librarySelf?: { position: 'top' | 'bottom'; fromTop?: number };
 	answers: Record<string, ChoiceAnswer>;
 	stepDecisions?: Record<number, boolean>;
+	// --- Track P10 ---
+	lastRollResult?: number;
+	// --- End Track P10 ---
 	pendingOptionalCost?: {
 		stepIndex: number;
 		parts: SerializedPlannedCost[];
@@ -925,6 +1066,9 @@ export interface SerializedPendingTrigger {
 	order: number;
 	// --- Track P1 ---
 	isChapterAbility?: boolean;
+	// --- Track P10 ---
+	grantedAbilityText?: string;
+	// --- End Track P10 ---
 }
 
 /** Snapshot of an IR effect binding carried into a delayed trigger (CR 603.7c). */
@@ -1406,6 +1550,20 @@ export interface PlayerGameState {
 	currentUpkeepBeganAt?: number;
 	/** CR 702.54a–b Bloodthirst: total damage dealt to this player so far this turn (reset at turn start). */
 	damageDealtToThisTurn?: number;
+	// --- Track P10 ---
+	/** Generalized mana buckets with structured spending restrictions (CR 106.6). */
+	restrictedManaBuckets?: RestrictedManaBucket[];
+	/** CR 106.4: unspent mana counts per color retained across steps/phases until cleanup. */
+	retainedManaCounts?: Partial<Record<ManaColor, number>>;
+	/** CR 106.4: colors of unspent mana this player does not lose as steps and phases end this turn. */
+	unemptiedManaColorsThisTurn?: ManaColor[] | 'all';
+	/** CR 700.14 Expend: total mana spent by this player to cast spells this turn. */
+	manaSpentOnSpellsThisTurn?: number;
+	/** True iff this player lost >= 1 life this turn (damage or life loss; reset at turn start). */
+	lostLifeThisTurn?: boolean;
+	/** CR 700.11 Descend: true iff a permanent card (nontoken) was put into this player's graveyard from anywhere this turn. */
+	descendedThisTurn?: boolean;
+	// --- End Track P10 ---
 }
 
 export interface ManaRider {
@@ -1471,6 +1629,9 @@ export interface TimedContinuousEffect {
 		addKeywords?: string[];
 		removeKeywords?: string[];
 		cantHaveOrGain?: boolean;
+		// --- Track P10 ---
+		grantedAbilityTexts?: string[];
+		// --- End Track P10 ---
 	};
 	layer7b?: {
 		setPower: number;
@@ -1556,6 +1717,12 @@ export interface PendingCostPayment {
 	sourceChosenColor?: ManaColor;
 	amount?: number;
 	manaRestriction?: ManaRestriction;
+	// --- Track P10 ---
+	manaRestrictionSpec?: ManaSpendingRestrictionSpec;
+	retainManaUntilEndOfTurn?: boolean;
+	grantedAbilityText?: string;
+	manaSpentCount?: number;
+	// --- End Track P10 ---
 	sacrificeSelfInCost?: boolean;
 	parts: SerializedPlannedCost[];
 	manaPaid?: ManaCostRequirement | null;
@@ -1686,6 +1853,10 @@ export interface GameState {
 	// --- Track P9 ---
 	/** CR 702.30a Echo: monotonic clock for upkeep & control-gain ordering (independent of CR 613 `nextTimestamp`). */
 	echoClock?: number;
+	// --- Track P10 ---
+	/** CR 603.12: reflexive triggered abilities waiting to be put onto the stack. */
+	pendingReflexiveTriggers?: PendingReflexiveTrigger[];
+	// --- End Track P10 ---
 }
 
 export interface MagicLobby {

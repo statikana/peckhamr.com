@@ -149,8 +149,11 @@ function pushFingerprint(state: GameState, fp: unknown[]): void {
 				// --- Track P7 ---
 				perm.copiableState?.except?.addKeywords,
 				Boolean(perm.copiableState?.except?.noManaCost),
-				activeTimedLayer1aForPermanent(state, perm)
+				activeTimedLayer1aForPermanent(state, perm),
 				// --- End Track P7 ---
+				// --- Track P10 ---
+				Boolean(perm.isSuspected)
+				// --- End Track P10 ---
 			);
 		}
 	}
@@ -227,8 +230,11 @@ function fingerprintMatches(state: GameState, fp: unknown[]): boolean {
 				// --- Track P7 ---
 				fp[i++] !== perm.copiableState?.except?.addKeywords ||
 				fp[i++] !== Boolean(perm.copiableState?.except?.noManaCost) ||
-				fp[i++] !== activeTimedLayer1aForPermanent(state, perm)
+				fp[i++] !== activeTimedLayer1aForPermanent(state, perm) ||
 				// --- End Track P7 ---
+				// --- Track P10 ---
+				fp[i++] !== Boolean(perm.isSuspected)
+				// --- End Track P10 ---
 			) {
 				return false;
 			}

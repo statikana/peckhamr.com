@@ -15,6 +15,9 @@ import { evaluateCondition as evaluateFilterCondition } from './runtime/objectFi
 // --- Track P7 ---
 import { activeTimedLayer1aForPermanent } from './runtime/layerCache.ts';
 // --- End Track P7 ---
+// --- Track P10 ---
+import { resolveQuotedAbilityDefs } from './runtime/reflexiveManaAndActions.ts';
+// --- End Track P10 ---
 import {
 	evaluatePermanent,
 	getAttachedAbilityStrippingAuraSources,
@@ -412,6 +415,10 @@ function manaStepProduction(
 	manaRestriction?: EffectiveActivatedAbility['manaRestriction'];
 	manaBundles?: ManaColor[][];
 	manaCombinationColors?: ManaColor[] | 'any';
+	// --- Track P10 ---
+	manaRestrictionSpec?: EffectiveActivatedAbility['manaRestrictionSpec'];
+	retainManaUntilEndOfTurn?: boolean;
+	// --- End Track P10 ---
 } | null {
 	const addSteps = steps.filter((s) => s.verb === 'addMana');
 	if (addSteps.length === 0) return null;
@@ -422,9 +429,17 @@ function manaStepProduction(
 	let manaRestriction: EffectiveActivatedAbility['manaRestriction'];
 	let manaBundles: ManaColor[][] | undefined;
 	let manaCombinationColors: ManaColor[] | 'any' | undefined;
+	// --- Track P10 ---
+	let manaRestrictionSpec: EffectiveActivatedAbility['manaRestrictionSpec'];
+	let retainManaUntilEndOfTurn = false;
+	// --- End Track P10 ---
 	let fixedSymbols: ManaColor[] | null = [];
 	for (const s of addSteps) {
 		if (s.params?.manaRestriction) manaRestriction = s.params.manaRestriction;
+		// --- Track P10 ---
+		if (s.params?.manaRestrictionSpec) manaRestrictionSpec = s.params.manaRestrictionSpec;
+		if (s.params?.retainManaUntilEndOfTurn) retainManaUntilEndOfTurn = true;
+		// --- End Track P10 ---
 		const amt = s.amount?.k === 'const' ? s.amount.n : 1;
 		const choice = s.params?.manaChoice;
 		if (choice === 'opponentLandColors') {
@@ -517,7 +532,11 @@ function manaStepProduction(
 		...(opponentLands ? { opponentLandColors: true } : {}),
 		...(manaRestriction ? { manaRestriction } : {}),
 		...(manaBundles ? { manaBundles } : {}),
-		...(manaCombinationColors ? { manaCombinationColors } : {})
+		...(manaCombinationColors ? { manaCombinationColors } : {}),
+		// --- Track P10 ---
+		...(manaRestrictionSpec ? { manaRestrictionSpec } : {}),
+		...(retainManaUntilEndOfTurn ? { retainManaUntilEndOfTurn: true } : {})
+		// --- End Track P10 ---
 	};
 }
 
@@ -531,6 +550,9 @@ interface BuildEffectiveAbilityOptions {
 	costTextOverride?: string;
 	effectTextOverride?: string;
 	chosenColor?: ManaColor;
+	// --- Track P10 ---
+	grantedAbilityText?: string;
+	// --- End Track P10 ---
 }
 
 function buildEffectiveActivatedAbility(
@@ -570,6 +592,10 @@ function buildEffectiveActivatedAbility(
 	let manaRestriction: EffectiveActivatedAbility['manaRestriction'];
 	let manaBundles: EffectiveActivatedAbility['manaBundles'];
 	let manaCombinationColors: EffectiveActivatedAbility['manaCombinationColors'];
+	// --- Track P10 ---
+	let manaRestrictionSpec: EffectiveActivatedAbility['manaRestrictionSpec'];
+	let retainManaUntilEndOfTurn: boolean | undefined;
+	// --- End Track P10 ---
 	const freezesSelfUntap =
 		isMana && effect.some((s) => s.verb === 'freezeUntap' && s.subject.k === 'self');
 	if (isMana) {
@@ -581,6 +607,10 @@ function buildEffectiveActivatedAbility(
 			producesAmount = prod.amount;
 			hasManaProduction = true;
 			manaRestriction = prod.manaRestriction;
+			// --- Track P10 ---
+			manaRestrictionSpec = prod.manaRestrictionSpec;
+			retainManaUntilEndOfTurn = prod.retainManaUntilEndOfTurn;
+			// --- End Track P10 ---
 		} else if (prod) {
 			producesMana = prod.colors;
 			producesAmount = prod.colors.length > 0 ? prod.amount : 0;
@@ -588,6 +618,10 @@ function buildEffectiveActivatedAbility(
 			manaRestriction = prod.manaRestriction;
 			manaBundles = prod.manaBundles;
 			manaCombinationColors = prod.manaCombinationColors;
+			// --- Track P10 ---
+			manaRestrictionSpec = prod.manaRestrictionSpec;
+			retainManaUntilEndOfTurn = prod.retainManaUntilEndOfTurn;
+			// --- End Track P10 ---
 		}
 		const dynStep = effect.find((s) => s.verb === 'addMana' && s.amount && s.amount.k !== 'const');
 		if (dynStep?.amount) manaAmount = dynStep.amount;
@@ -640,6 +674,11 @@ function buildEffectiveActivatedAbility(
 		...(manaRestriction ? { manaRestriction } : {}),
 		...(manaBundles ? { manaBundles } : {}),
 		...(manaCombinationColors ? { manaCombinationColors } : {}),
+		// --- Track P10 ---
+		...(manaRestrictionSpec ? { manaRestrictionSpec } : {}),
+		...(retainManaUntilEndOfTurn ? { retainManaUntilEndOfTurn: true } : {}),
+		...(opts.grantedAbilityText ? { grantedAbilityText: opts.grantedAbilityText } : {}),
+		// --- End Track P10 ---
 		...(freezesSelfUntap ? { freezesSelfUntap: true } : {}),
 		...(opts.grantSourceCard ? { grantSourceCard: opts.grantSourceCard } : {}),
 		effectText: opts.effectTextOverride ?? effectPart,
@@ -909,9 +948,52 @@ export function getEffectiveActivatedAbilities(
 			});
 			if (built) rawAbilities.push(built);
 		}
+
+		// --- Track P10: EOT-granted quoted activated abilities (`TimedContinuousEffect.layer6.grantedAbilityTexts`) ---
+		if (state.timedContinuousEffects?.length) {
+			const permVer = perm.objectVersion ?? 1;
+			let quoteIdx = 0;
+			for (const eff of state.timedContinuousEffects) {
+				if (!eff.layer6?.grantedAbilityTexts?.length) continue;
+				if (
+					!eff.affected.some(
+						(a) => a.instanceId === perm.instanceId && (a.objectVersion ?? 1) === permVer
+					)
+				) {
+					continue;
+				}
+				for (const gt of eff.layer6.grantedAbilityTexts) {
+					for (const def of resolveQuotedAbilityDefs(gt, effectiveCard.name)) {
+						if (def.kind !== 'activated') continue;
+						const abId = `quoted_eot:${eff.timestamp}:${quoteIdx++}`;
+						const built = buildEffectiveActivatedAbility(def, commanderIdentity, resolveOppLands, {
+							idOverride: abId,
+							displayCardName: effectiveCard.name,
+							displayCard: effectiveCard,
+							grantSources: [eff.sourceName],
+							chosenColor: perm.chosenColor,
+							grantedAbilityText: gt
+						});
+						if (built) rawAbilities.push(built);
+					}
+				}
+			}
+		}
+		// --- End Track P10 ---
 	}
 
 	return rawAbilities.map((ab) => {
+		// --- Track P10: Bind chosen creature subtype onto manaRestrictionSpec ---
+		if (ab.manaRestrictionSpec && perm.chosenSubType && !ab.manaRestrictionSpec.sourceChosenSubType) {
+			ab = {
+				...ab,
+				manaRestrictionSpec: {
+					...ab.manaRestrictionSpec,
+					sourceChosenSubType: perm.chosenSubType
+				}
+			};
+		}
+		// --- End Track P10 ---
 		const { manaCost: effMana } = effectiveAbilityManaCost(
 			state,
 			actor.playerId,

@@ -10,7 +10,7 @@
  */
 import type { Amount, CardDefinition, Compare, Condition, CostDef, EffectStep, EventFilter, ModalDef, ObjectFilter, Span, TargetSpec, TriggerDef } from '../ir.ts';
 import { getKeywordSpec } from '../keywords.ts';
-import type { GamePhase, TriggerScope } from '../types.ts';
+import type { CounterType, GamePhase, ManaColor, TriggerScope } from '../types.ts';
 import { parseObjectPhrase, singularSubtype } from './costs.ts';
 
 export interface TriggerParse {
@@ -66,6 +66,35 @@ const STEPS: Record<string, GamePhase> = {
 function phaseBegin(rest: string): TriggerDef | null {
 	if (rest === 'combat on your turn') return { event: 'phaseBegin', filter: { phase: 'begin_combat' }, scope: 'controller_turn' };
 	if (rest === 'each combat') return { event: 'phaseBegin', filter: { phase: 'begin_combat' }, scope: 'each_turn' };
+	// --- Track P10 ---
+	const enchCtrl = rest.match(
+		/^the (upkeep|draw step|end step) of (?:enchanted|equipped) (creature|permanent|land|artifact|enchantment|planeswalker)'s controller$/
+	);
+	if (enchCtrl) {
+		const phase = STEPS[enchCtrl[1]];
+		if (!phase) return null;
+		const mappedType = ATTACHED_SUBJ_TYPES[enchCtrl[2]];
+		return {
+			event: 'phaseBegin',
+			filter: {
+				phase,
+				enchantedControllerUpkeep: true,
+				...(mappedType ? { attachedFilter: { types: [mappedType] } } : {})
+			},
+			scope: 'each_turn'
+		};
+	}
+	const enchPlayer = rest.match(/^enchanted player's (upkeep|draw step|end step)$/);
+	if (enchPlayer) {
+		const phase = STEPS[enchPlayer[1]];
+		if (!phase) return null;
+		return {
+			event: 'phaseBegin',
+			filter: { phase, enchantedPlayerUpkeep: true },
+			scope: 'each_turn'
+		};
+	}
+	// --- End Track P10 ---
 	const m = rest.match(/^(each other player's|each opponent's|each player's|each|your|the) (.+)$/);
 	if (!m) return null;
 	const phase = STEPS[m[2]];
@@ -314,7 +343,101 @@ function objectEvent(verb: string, subject: Subject): TriggerDef | null {
 		case 'becomes monstrous':
 		case 'become monstrous':
 			return def('becameMonstrous');
+		// --- Track P10 ---
+		case "attacks and isn't blocked":
+		case "attack and aren't blocked":
+		case 'attacks and is not blocked':
+		case 'attack and are not blocked':
+			return def(
+				'attackedAndUnblocked',
+				subject.attachedFilter ? { attachedFilter: subject.attachedFilter } : {}
+			);
+		case 'attacks alone':
+		case 'attack alone':
+			return subject.oneOrMore
+				? null
+				: def('attacks', {
+						alone: true,
+						...(subject.attachedFilter ? { attachedFilter: subject.attachedFilter } : {})
+					});
+		case 'becomes untapped':
+		case 'become untapped':
+			return subject.oneOrMore
+				? null
+				: def(
+						'becomesUntapped',
+						subject.attachedFilter ? { attachedFilter: subject.attachedFilter } : {}
+					);
+		case 'deals noncombat damage to a player':
+		case 'deal noncombat damage to a player':
+			return subject.oneOrMore ? null : def('dealsDamage', { combat: false, damageTo: 'player' });
+		case 'deals noncombat damage to an opponent':
+		case 'deals noncombat damage to one of your opponents':
+		case 'deal noncombat damage to an opponent':
+		case 'deal noncombat damage to one of your opponents':
+			return subject.oneOrMore
+				? null
+				: def('dealsDamage', {
+						combat: false,
+						damageTo: 'player',
+						player: { relation: 'opponent' }
+					});
+		case 'deals noncombat damage to you':
+		case 'deal noncombat damage to you':
+			return subject.oneOrMore
+				? null
+				: def('dealsDamage', { combat: false, damageTo: 'player', player: { relation: 'you' } });
+		case 'deals noncombat damage to a creature':
+		case 'deal noncombat damage to a creature':
+			return subject.oneOrMore ? null : def('dealsDamage', { combat: false, damageTo: 'creature' });
+		case 'deals noncombat damage':
+		case 'deal noncombat damage':
+			return subject.oneOrMore ? null : def('dealsDamage', { combat: false, damageTo: 'any' });
+		case 'exploits a creature':
+		case 'exploit a creature':
+			return subject.oneOrMore ? null : def('exploited');
+		case 'blocks or becomes blocked':
+		case 'block or become blocked':
+			return subject.oneOrMore
+				? null
+				: def(
+						'blocksOrBecomesBlocked',
+						subject.attachedFilter ? { attachedFilter: subject.attachedFilter } : {}
+					);
+		// --- End Track P10 ---
 		default: {
+			// --- Track P10 ---
+			const bobb = verb.match(/^blocks? or becomes? blocked by (?:a|an) (.+)$/i);
+			if (bobb && !subject.oneOrMore) {
+				const host = parseObjectPhrase(bobb[1]);
+				if (host) {
+					return def('blocksOrBecomesBlocked', {
+						host,
+						...(subject.attachedFilter ? { attachedFilter: subject.attachedFilter } : {})
+					});
+				}
+			}
+			const blocksHost = verb.match(/^blocks? (?:a|an) (.+)$/i);
+			if (blocksHost && !subject.oneOrMore) {
+				const host = parseObjectPhrase(blocksHost[1]);
+				if (host) {
+					return def('blocks', {
+						host,
+						...(subject.attachedFilter ? { attachedFilter: subject.attachedFilter } : {})
+					});
+				}
+			}
+			const blockedByHost = verb.match(/^becomes? blocked by (?:a|an) (.+)$/i);
+			if (blockedByHost && !subject.oneOrMore) {
+				const host = parseObjectPhrase(blockedByHost[1]);
+				if (host) {
+					return def('becomesBlocked', {
+						host,
+						...(subject.attachedFilter ? { attachedFilter: subject.attachedFilter } : {})
+					});
+				}
+			}
+			// --- End Track P10 ---
 			const transInto = verb.match(/^transforms? into (.+)$/i);
 			if (transInto) {
 				const phrase = transInto[1].replace(/^(?:a|an)\s+/i, '').trim();
@@ -489,7 +612,64 @@ function playerEvent(player: EventFilter['player'], rest: string): TriggerDef | 
 		const object = parseObjectPhrase(exert[1] ?? exert[2]);
 		if (object) return { event: 'exert', filter: { object, player } };
 	}
+	// --- Track P10 ---
+	if (player?.relation === 'you') {
+		const atkMin = rest.match(/^attacks? with (\S+) or more (.+)$/i);
+		if (atkMin) {
+			const minN = number(atkMin[1]);
+			const object = parseObjectPhrase(atkMin[2]);
+			if (minN !== null && minN >= 1 && object) {
+				return { event: 'attacks', filter: { player, oneOrMore: true, minAttackers: minN, object } };
+			}
+		}
+		const atkOne = rest.match(/^attacks? with (?:a|an) (.+)$/i);
+		if (atkOne && !/\balone$/i.test(atkOne[1])) {
+			const object = parseObjectPhrase(atkOne[1]);
+			if (object) {
+				return { event: 'attacks', filter: { player, oneOrMore: true, minAttackers: 1, object } };
+			}
+		}
+	}
+	if (rest === 'sacrifice ~' || rest === 'sacrifices ~') {
+		return { event: 'sacrificed', filter: { player, object: 'self' } };
+	}
+	const sac = rest.match(/^sacrifices? (one or more |another |(?:a|an) )(.+)$/i);
+	if (sac) {
+		const oneOrMore = /^one or more /i.test(sac[1]);
+		const phrase = /^another /i.test(sac[1]) ? `another ${sac[2]}` : sac[2];
+		const object = parseObjectPhrase(phrase);
+		if (object) {
+			return {
+				event: 'sacrificed',
+				filter: { player, object, ...(oneOrMore ? { oneOrMore: true } : {}) }
+			};
+		}
+	}
+	if (rest === 'scry' || rest === 'scries') return { event: 'scry', filter: { player } };
+	if (rest === 'commit a crime' || rest === 'commits a crime') {
+		return { event: 'committedCrime', filter: { player } };
+	}
+	const exp = rest.match(/^expends? (\S+)$/i);
+	if (exp) {
+		const thresh = number(exp[1]);
+		if (thresh !== null && thresh >= 1) {
+			return { event: 'expended', filter: { player, expendThreshold: thresh } };
+		}
+	}
+	if (rest === 'discover' || rest === 'discovers') return { event: 'discover', filter: { player } };
+	if (rest === 'forage' || rest === 'forages') return { event: 'forage', filter: { player } };
+	// --- End Track P10 ---
 	return null;
+}
+
+const PERMANENT_TYPES_LIST = ['Artifact', 'Battle', 'Creature', 'Enchantment', 'Land', 'Planeswalker'];
+
+function parseGraveyardLeaveCardFilter(raw: string | undefined): ObjectFilter | null {
+	if (!raw) return {};
+	const trimmed = raw.trim();
+	if (/^permanents?$/i.test(trimmed)) return { types: [...PERMANENT_TYPES_LIST] };
+	const normalized = trimmed.replace(/\s+(?:and\/or|and)\s+/gi, ' or ');
+	return parseObjectPhrase(`${normalized} card`);
 }
 
 /** "a +1/+1 counter is put on ~", "one or more +1/+1 counters are put on ~". */
@@ -510,6 +690,48 @@ function triggerHead(head: string): TriggerDef | null {
 	const body = ww[1];
 	const counter = counterEvent(body);
 	if (counter) return counter;
+
+	// --- Track P10 ---
+	const dealtDmgDies = body.match(
+		/^(?:a )?creature dealt (?:combat )?damage by ~ this turn (?:dies|is put into a graveyard from the battlefield)$/i
+	);
+	if (dealtDmgDies) {
+		return {
+			event: 'zoneChange',
+			filter: {
+				object: { types: ['Creature'] },
+				from: 'battlefield',
+				to: 'graveyard',
+				dealtDamageBySelfThisTurn: true
+			}
+		};
+	}
+	const gyLeave = body.match(/^(one or more|(?:a|an)) (?:(.+?) )?cards? leaves? your graveyard$/i);
+	if (gyLeave) {
+		const oneOrMore = /^one or more$/i.test(gyLeave[1]);
+		const object = parseGraveyardLeaveCardFilter(gyLeave[2]);
+		if (object) {
+			return {
+				event: 'graveyardLeaveBatch',
+				filter: {
+					player: { relation: 'you' },
+					object,
+					...(oneOrMore ? { oneOrMore: true } : {})
+				}
+			};
+		}
+	}
+	const battalion = body.match(/^~ and at least (\S+) other creatures attack$/i);
+	if (battalion) {
+		const nOther = number(battalion[1]);
+		if (nOther !== null && nOther >= 1) {
+			return {
+				event: 'attacks',
+				filter: { object: 'self', minAttackers: nOther + 1 }
+			};
+		}
+	}
+	// --- End Track P10 ---
 
 	// Player subjects first ("you cast", "an opponent draws a card").
 	const ps = body.match(/^(you|a player|an opponent) (.+)$/);
@@ -697,6 +919,136 @@ export function parseCondition(text: string): Condition | null {
 		return { k: 'not', of: { k: 'wasCast' } };
 	}
 	// --- End Track P7 ---
+	// --- Track P10 ---
+	if (/^if an opponent lost life this turn$/i.test(t)) {
+		return { k: 'opponentLostLifeThisTurn' };
+	}
+	if (/^if no opponents? lost life this turn$/i.test(t)) {
+		return { k: 'not', of: { k: 'opponentLostLifeThisTurn' } };
+	}
+	if (/^if you(?:'ve| have)? descended this turn$/i.test(t)) {
+		return { k: 'descendedThisTurn' };
+	}
+	if (/^if you (?:didn't descend|did not descend|haven't descended|have not descended) this turn$/i.test(t)) {
+		return { k: 'not', of: { k: 'descendedThisTurn' } };
+	}
+	const hadCtr = t.match(
+		/^if (?:it|~|that (?:creature|permanent)) had (?:a|an|one or more) (?:(\S+) )?counters? on it$/i
+	);
+	if (hadCtr) {
+		const rawCtr = hadCtr[1]?.toLowerCase().replace(/−/g, '-');
+		const ctrMap: Record<string, CounterType> = {
+			'+1/+1': '+1/+1',
+			'-1/-1': '-1/-1',
+			charge: 'charge',
+			loyalty: 'loyalty',
+			shield: 'shield',
+			stun: 'stun',
+			lore: 'lore',
+			time: 'time',
+			age: 'age',
+			level: 'level',
+			fade: 'fade'
+		};
+		if (!rawCtr) return { k: 'hadCounterOnIt', counter: 'any' };
+		const mapped = ctrMap[rawCtr];
+		if (mapped) return { k: 'hadCounterOnIt', counter: mapped };
+	}
+	const hadNoCtr = t.match(
+		/^if (?:it|~|that (?:creature|permanent)) (?:had no|didn't have a|did not have a) (?:(\S+) )?counters? on it$/i
+	);
+	if (hadNoCtr) {
+		const rawCtr = hadNoCtr[1]?.toLowerCase().replace(/−/g, '-');
+		const ctrMap: Record<string, CounterType> = {
+			'+1/+1': '+1/+1',
+			'-1/-1': '-1/-1',
+			charge: 'charge',
+			loyalty: 'loyalty',
+			shield: 'shield',
+			stun: 'stun',
+			lore: 'lore',
+			time: 'time',
+			age: 'age',
+			level: 'level',
+			fade: 'fade'
+		};
+		if (!rawCtr) return { k: 'not', of: { k: 'hadCounterOnIt', counter: 'any' } };
+		const mapped = ctrMap[rawCtr];
+		if (mapped) return { k: 'not', of: { k: 'hadCounterOnIt', counter: mapped } };
+	}
+	const singleSpent = t.match(/^if \{([WUBRG])\} was spent to cast (?:it|~)$/i);
+	if (singleSpent) {
+		return { k: 'manaColorSpentToCast', color: singleSpent[1].toUpperCase() as ManaColor };
+	}
+	const orSpent = t.match(/^if \{([WUBRG])\} or \{([WUBRG])\} was spent to cast (?:it|~)$/i);
+	if (orSpent) {
+		return {
+			k: 'or',
+			of: [
+				{ k: 'manaColorSpentToCast', color: orSpent[1].toUpperCase() as ManaColor },
+				{ k: 'manaColorSpentToCast', color: orSpent[2].toUpperCase() as ManaColor }
+			]
+		};
+	}
+	const andSpent = t.match(
+		/^if (?:both )?\{([WUBRG])\} and \{([WUBRG])\} were spent to cast (?:it|~)$/i
+	);
+	if (andSpent) {
+		return {
+			k: 'and',
+			of: [
+				{ k: 'manaColorSpentToCast', color: andSpent[1].toUpperCase() as ManaColor },
+				{ k: 'manaColorSpentToCast', color: andSpent[2].toUpperCase() as ManaColor }
+			]
+		};
+	}
+	if (/^if an opponent controls more lands than you$/i.test(t)) {
+		return { k: 'opponentComparison', metric: 'lands' };
+	}
+	if (/^if an opponent controls more creatures than you$/i.test(t)) {
+		return { k: 'opponentComparison', metric: 'creatures' };
+	}
+	if (/^if an opponent has more life than you$/i.test(t)) {
+		return { k: 'opponentComparison', metric: 'life' };
+	}
+	if (/^if an opponent has more cards in hand than you$/i.test(t)) {
+		return { k: 'opponentComparison', metric: 'hand' };
+	}
+	const gyThreshold = t.match(/^if (?:there are )?(\S+) or more cards(?: are)? in your graveyard$/i);
+	if (gyThreshold && number(gyThreshold[1]) !== null) {
+		return {
+			k: 'compare',
+			left: { k: 'cardsIn', zone: 'graveyard', of: { k: 'you' } },
+			op: '>=',
+			right: n(number(gyThreshold[1])!)
+		};
+	}
+	const delirium = t.match(
+		/^if (?:there are )?(\S+) or more card types(?: are)? among cards in your graveyard$/i
+	);
+	if (delirium && number(delirium[1]) !== null) {
+		return {
+			k: 'compare',
+			left: { k: 'distinctCardTypesInZone', zone: 'graveyard', whose: 'you' },
+			op: '>=',
+			right: n(number(delirium[1])!)
+		};
+	}
+	const gyTypedCond = t.match(
+		/^if (?:there are )?(\S+) or more (.+?) cards(?: are)? in your graveyard$/i
+	);
+	if (gyTypedCond && number(gyTypedCond[1]) !== null) {
+		const f = parseGraveyardLeaveCardFilter(gyTypedCond[2]);
+		if (f) {
+			return {
+				k: 'compare',
+				left: { k: 'count', of: { ...f, zone: 'graveyard', controller: 'you' } },
+				op: '>=',
+				right: n(number(gyTypedCond[1])!)
+			};
+		}
+	}
+	// --- End Track P10 ---
 	return null;
 }
 
@@ -813,20 +1165,38 @@ const RUNTIME_OBJECT_FIELDS: ReadonlySet<string> = new Set([
 	// --- Track P7 ---
 	'power',
 	'toughness',
-	'manaValue'
+	'manaValue',
+	// --- Track P10 ---
+	'suspected',
+	'allTypes',
+	'notColors',
+	'multicolored',
+	'monocolored'
 ]);
 
 /** EventFilter fields each event kind's matcher checks (runtime/triggers.ts). */
 const RUNTIME_EVENT_FIELDS: Partial<Record<TriggerDef['event'], ReadonlySet<string>>> = {
-	zoneChange: new Set(['object', 'orSelf', 'from', 'to', 'attachedFilter']),
+	zoneChange: new Set([
+		'object',
+		'orSelf',
+		'from',
+		'to',
+		'attachedFilter',
+		'dealtDamageBySelfThisTurn'
+	]),
 	cast: new Set(['object', 'player', 'orCopy', 'nthThisTurn', 'targetsSelf']),
-	attacks: new Set(['object', 'oneOrMore', 'player', 'saddled']),
+	attacks: new Set(['object', 'orSelf', 'oneOrMore', 'player', 'saddled', 'alone', 'minAttackers', 'attachedFilter']),
 	combatDamageBatchPlayer: new Set(['object', 'oneOrMore', 'player']),
-	blocks: new Set(['object', 'orSelf']),
-	becomesBlocked: new Set(['object', 'orSelf']),
+	blocks: new Set(['object', 'orSelf', 'host', 'attachedFilter']),
+	becomesBlocked: new Set(['object', 'orSelf', 'host', 'attachedFilter']),
 	dealsDamage: new Set(['object', 'orSelf', 'combat', 'damageTo', 'player']),
 	dealtDamage: new Set(['object', 'orSelf']),
-	phaseBegin: new Set(['phase']),
+	phaseBegin: new Set([
+		'phase',
+		'enchantedControllerUpkeep',
+		'enchantedPlayerUpkeep',
+		'attachedFilter'
+	]),
 	counterPlaced: new Set(['object', 'counter']),
 	becomesTarget: new Set(['object', 'orSelf', 'targetedBy', 'player']),
 	attached: new Set(['object', 'host']),
@@ -854,7 +1224,19 @@ const RUNTIME_EVENT_FIELDS: Partial<Record<TriggerDef['event'], ReadonlySet<stri
 	manifestDread: new Set(['player']),
 	becameMonstrous: new Set(['object', 'orSelf']),
 	// --- Track P6 ---
-	counterRemoved: new Set(['object', 'counter', 'lastCounter'])
+	counterRemoved: new Set(['object', 'counter', 'lastCounter']),
+	// --- Track P10 ---
+	attackedAndUnblocked: new Set(['object', 'orSelf', 'oneOrMore', 'attachedFilter']),
+	becomesUntapped: new Set(['object', 'orSelf', 'attachedFilter']),
+	scry: new Set(['player']),
+	committedCrime: new Set(['player']),
+	exploited: new Set(['object', 'orSelf']),
+	expended: new Set(['player', 'expendThreshold']),
+	sacrificed: new Set(['object', 'orSelf', 'player', 'oneOrMore']),
+	blocksOrBecomesBlocked: new Set(['object', 'orSelf', 'host', 'attachedFilter']),
+	graveyardLeaveBatch: new Set(['object', 'player', 'oneOrMore']),
+	discover: new Set(['player']),
+	forage: new Set(['player'])
 };
 
 function objectFilterProblem(f: ObjectFilter | undefined): string | null {
@@ -899,7 +1281,10 @@ export function runtimeTriggerProblem(def: TriggerDef): string | null {
 			'dealtDamage',
 			'becomesTarget',
 			'tappedForMana',
-			'becomesTapped'
+			'becomesTapped',
+			'attackedAndUnblocked',
+			'becomesUntapped',
+			'blocksOrBecomesBlocked'
 		].includes(def.event) &&
 		!(def.event === 'zoneChange' && f.from === 'battlefield')
 	) {

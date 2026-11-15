@@ -64,6 +64,14 @@ import {
 	extractGrantedDeathKeywords,
 	isNinjutsuWindowOpen
 } from './keywordsWave3.ts';
+// --- Track P10 ---
+import { countDistinctCardTypesInZone } from './staticsLayersAndRestrictions.ts';
+import {
+	evaluateP10Condition,
+	flushPendingReflexiveTriggers,
+	resolveQuotedAbilityDefs
+} from './reflexiveManaAndActions.ts';
+// --- End Track P10 ---
 
 /**
  * How a pending trigger is executed. 'stack': a StackItem put on the stack the next time a player
@@ -122,6 +130,9 @@ export interface PendingTrigger {
 	sourceWasCast?: boolean;
 	sourceCastFromZone?: ZoneType;
 	// --- End Track P7 ---
+	// --- Track P10 ---
+	grantedAbilityText?: string;
+	// --- End Track P10 ---
 	/** Match order (deterministic tie-break for a player's own simultaneous triggers). */
 	order: number;
 }
@@ -271,6 +282,10 @@ interface SimultaneousLkiEntry {
 	castFromZone?: ZoneType;
 	// --- Track P9 ---
 	grantedDeathKeywords?: Record<string, number>;
+	// --- Track P10 ---
+	damagedByThisTurn?: Array<{ sourceId: string; sourceVersion?: number }>;
+	grantedAbilityTexts?: string[];
+	// --- End Track P10 ---
 }
 
 interface TriggerChannel {
@@ -338,6 +353,9 @@ function persistPendingTriggers(state: GameState, triggers: PendingTrigger[]): v
 			...(t.sourceWasCast ? { sourceWasCast: true } : {}),
 			...(t.sourceCastFromZone ? { sourceCastFromZone: t.sourceCastFromZone } : {}),
 			// --- End Track P7 ---
+			// --- Track P10 ---
+			...(t.grantedAbilityText ? { grantedAbilityText: t.grantedAbilityText } : {}),
+			// --- End Track P10 ---
 			order: t.order
 		});
 	}
@@ -376,6 +394,9 @@ function hydratePendingTriggers(state: GameState, ch: TriggerChannel): void {
 		...(t.sourceWasCast ? { sourceWasCast: true } : {}),
 		...(t.sourceCastFromZone ? { sourceCastFromZone: t.sourceCastFromZone } : {}),
 		// --- End Track P7 ---
+		// --- Track P10 ---
+		...(t.grantedAbilityText ? { grantedAbilityText: t.grantedAbilityText } : {}),
+		// --- End Track P10 ---
 		order: t.order
 	}));
 	ch.pending = [...hydrated, ...ch.pending];
@@ -449,7 +470,28 @@ export function withSimultaneousDestroyLki(
 			...(perm.castFromZone ? { castFromZone: perm.castFromZone } : {}),
 			// --- Track P9 ---
 			counters: { ...(perm.lastKnownCounters ?? perm.counters) },
-			...(grantedDeathKeywords ? { grantedDeathKeywords } : {})
+			...(grantedDeathKeywords ? { grantedDeathKeywords } : {}),
+			// --- Track P10 ---
+			...(perm.damagedByThisTurn?.length
+				? { damagedByThisTurn: perm.damagedByThisTurn.map((d) => ({ ...d })) }
+				: {}),
+			...(() => {
+				if (!state.timedContinuousEffects?.length || lost) return {};
+				const ver = perm.objectVersion || 1;
+				const texts: string[] = [];
+				for (const eff of state.timedContinuousEffects) {
+					if (!eff.layer6?.grantedAbilityTexts?.length) continue;
+					if (
+						eff.affected.some(
+							(a) => a.instanceId === perm.instanceId && (a.objectVersion ?? 1) === ver
+						)
+					) {
+						texts.push(...eff.layer6.grantedAbilityTexts);
+					}
+				}
+				return texts.length > 0 ? { grantedAbilityTexts: texts } : {};
+			})()
+			// --- End Track P10 ---
 		});
 	}
 	const prevMap = ch.simultaneousLki;
@@ -481,7 +523,13 @@ export function withTriggersDeferred<T>(state: GameState, fn: () => T): T {
 }
 
 export function hasPendingTriggers(state: GameState): boolean {
-	return (channels.get(state)?.pending.length ?? 0) > 0 || (state.pendingTriggers?.length ?? 0) > 0;
+	return (
+		(channels.get(state)?.pending.length ?? 0) > 0 ||
+		(state.pendingTriggers?.length ?? 0) > 0 ||
+		// --- Track P10 ---
+		(state.pendingReflexiveTriggers?.length ?? 0) > 0
+		// --- End Track P10 ---
+	);
 }
 
 /** For tests: the triggers waiting for the next flush. */
@@ -499,6 +547,9 @@ interface Subject {
 	tapped: boolean;
 	saddled?: boolean;
 	monstrous?: boolean;
+	// --- Track P10 ---
+	suspected?: boolean;
+	// --- End Track P10 ---
 	colors: string[];
 	typeLine: () => string;
 	hasSubtype: (subtype: string) => boolean;
@@ -519,6 +570,9 @@ function battlefieldSubject(state: GameState, obj: CardInstance, controllerId: s
 		tapped: obj.tapped,
 		saddled: Boolean(obj.saddledThisTurn),
 		monstrous: Boolean(obj.isMonstrous),
+		// --- Track P10 ---
+		suspected: Boolean(obj.isSuspected),
+		// --- End Track P10 ---
 		get colors() {
 			return obj.isFaceDown ? [] : ev().colors;
 		},
@@ -666,6 +720,22 @@ function filterMatches(f: ObjectFilter, subject: Subject, source: Viewer): boole
 	if (f.tapped !== undefined && subject.tapped !== f.tapped) return false;
 	if (f.saddled !== undefined && Boolean(subject.saddled) !== f.saddled) return false;
 	if (f.monstrous !== undefined && Boolean(subject.monstrous) !== f.monstrous) return false;
+	// --- Track P10 ---
+	if (f.suspected !== undefined && Boolean(subject.suspected) !== f.suspected) return false;
+	if (f.notColors || f.multicolored !== undefined || f.monocolored !== undefined) {
+		const wubrgCount = new Set(
+			subject.colors.filter((c) => c === 'W' || c === 'U' || c === 'B' || c === 'R' || c === 'G')
+		).size;
+		if (
+			f.notColors &&
+			f.notColors.some((c) => (c === 'C' ? wubrgCount === 0 : subject.colors.includes(c)))
+		) {
+			return false;
+		}
+		if (f.multicolored !== undefined && (wubrgCount >= 2) !== f.multicolored) return false;
+		if (f.monocolored !== undefined && (wubrgCount === 1) !== f.monocolored) return false;
+	}
+	// --- End Track P10 ---
 	if (f.colors && !matchesColorFilter(subject.colors, f.colors)) return false;
 	// --- Track P7 ---
 	if (f.power && !matchesFilterCompare(subject.power(), f.power)) return false;
@@ -724,7 +794,53 @@ interface Source {
 	castFromZone?: ZoneType;
 	// --- Track P9 ---
 	grantedDeathKeywords?: Record<string, number>;
+	// --- Track P10 ---
+	damagedByThisTurn?: Array<{ sourceId: string; sourceVersion?: number }>;
+	grantedAbilityTexts?: string[];
+	// --- End Track P10 ---
 }
+
+// --- Track P10: Compile quoted EOT-granted triggered abilities on demand ---
+function quotedTriggersForTexts(
+	cardName: string,
+	texts: readonly string[]
+): Array<{ ability: RuntimeTrigger; text: string }> {
+	const out: Array<{ ability: RuntimeTrigger; text: string }> = [];
+	for (const gt of texts) {
+		const defs = resolveQuotedAbilityDefs(gt, cardName);
+		const rts = runtimeTriggers(
+			{
+				oracleId: '',
+				name: cardName,
+				compilerVersion: 0,
+				textHash: '',
+				fullySupported: true,
+				faces: [
+					{
+						name: cardName,
+						characteristics: {
+							manaCost: '',
+							types: [],
+							subtypes: [],
+							supertypes: [],
+							colors: []
+						},
+						abilities: defs
+					}
+				]
+			},
+			0
+		).filter((t) => !host?.canExecute || host.canExecute(t));
+		for (const rt of rts) {
+			out.push({
+				ability: { ...rt, ...(gt ? { grantedAbilityText: gt } : {}) } as RuntimeTrigger,
+				text: gt
+			});
+		}
+	}
+	return out;
+}
+// --- End Track P10 ---
 
 /**
  * Every object whose abilities can trigger on `kind`: battlefield permanents (not phased out) and
@@ -733,6 +849,11 @@ interface Source {
  */
 function sources(state: GameState, kind: EventKind): Source[] {
 	const out: Source[] = [];
+	// --- Track P10 ---
+	const hasAnyQuotedCont = Boolean(
+		state.timedContinuousEffects?.some((eff) => Boolean(eff.layer6?.grantedAbilityTexts?.length))
+	);
+	// --- End Track P10 ---
 	for (const p of state.players) {
 		if (p.lost) continue;
 		for (const perm of p.battlefield) {
@@ -740,11 +861,53 @@ function sources(state: GameState, kind: EventKind): Source[] {
 			// --- Track P7 ---
 			const card = activeTimedLayer1aForPermanent(state, perm)?.card ?? perm.copiableCard ?? perm.card;
 			// --- End Track P7 ---
-			for (const faceIndex of activeFacesForObject(perm, card, 'battlefield', state)) {
-				if (triggersOf(card, faceIndex).events.has(kind)) {
-					out.push({ obj: perm, card, faceIndex, controllerId: p.playerId, zone: 'battlefield' });
+			// --- Track P10 ---
+			let grantedTexts: string[] | undefined;
+			if (hasAnyQuotedCont && state.timedContinuousEffects) {
+				const ver = perm.objectVersion ?? 1;
+				for (const eff of state.timedContinuousEffects) {
+					if (!eff.layer6?.grantedAbilityTexts?.length) continue;
+					if (
+						eff.affected.some(
+							(a) => a.instanceId === perm.instanceId && (a.objectVersion ?? 1) === ver
+						)
+					) {
+						(grantedTexts ??= []).push(...eff.layer6.grantedAbilityTexts);
+					}
 				}
 			}
+			let addedForPerm = false;
+			// --- End Track P10 ---
+			for (const faceIndex of activeFacesForObject(perm, card, 'battlefield', state)) {
+				if (triggersOf(card, faceIndex).events.has(kind)) {
+					out.push({
+						obj: perm,
+						card,
+						faceIndex,
+						controllerId: p.playerId,
+						zone: 'battlefield',
+						// --- Track P10 ---
+						...(!addedForPerm && grantedTexts ? { grantedAbilityTexts: grantedTexts } : {})
+						// --- End Track P10 ---
+					});
+					addedForPerm = true;
+				}
+			}
+			// --- Track P10 ---
+			if (!addedForPerm && grantedTexts) {
+				const qts = quotedTriggersForTexts(card.name, grantedTexts);
+				if (qts.some((q) => alternatives(q.ability.trigger).some((a) => a.event === kind))) {
+					out.push({
+						obj: perm,
+						card,
+						faceIndex: 0,
+						controllerId: p.playerId,
+						zone: 'battlefield',
+						grantedAbilityTexts: grantedTexts
+					});
+				}
+			}
+			// --- End Track P10 ---
 		}
 		for (const c of p.graveyard) {
 			for (const faceIndex of activeFacesForObject(c, c.card, 'graveyard', state)) {
@@ -767,8 +930,8 @@ function abilitiesFor(
 	source: Source,
 	kind: EventKind,
 	pre: (alt: TriggerDef) => boolean = () => true
-): Array<{ ability: RuntimeTrigger; alts: TriggerDef[] }> {
-	const out: Array<{ ability: RuntimeTrigger; alts: TriggerDef[] }> = [];
+): Array<{ ability: RuntimeTrigger; alts: TriggerDef[]; grantedAbilityText?: string }> {
+	const out: Array<{ ability: RuntimeTrigger; alts: TriggerDef[]; grantedAbilityText?: string }> = [];
 	for (const ability of triggersOf(source.card, source.faceIndex ?? 0).all) {
 		const zone = ability.trigger.fromZone ?? 'battlefield';
 		// "When you cast ~" functions while the spell is on the stack (CR 603.2, 113.6).
@@ -789,6 +952,16 @@ function abilitiesFor(
 		const alts = alternatives(ability.trigger).filter((a) => a.event === kind && pre(a));
 		if (alts.length > 0) out.push({ ability, alts });
 	}
+	// --- Track P10 ---
+	if (source.grantedAbilityTexts?.length && source.zone === 'battlefield') {
+		for (const q of quotedTriggersForTexts(source.card.name, source.grantedAbilityTexts)) {
+			const alts = alternatives(q.ability.trigger).filter((a) => a.event === kind && pre(a));
+			if (alts.length > 0) {
+				out.push({ ability: q.ability, alts, grantedAbilityText: q.text });
+			}
+		}
+	}
+	// --- End Track P10 ---
 	if (out.length === 0) return out;
 	// CR 613 layer 6: a permanent that lost all abilities has no triggered abilities.
 	if (source.lostAllAbilities ?? (source.zone === 'battlefield' && permanentHasLostAllAbilities(source.obj, state).lost)) {
@@ -813,13 +986,25 @@ interface MatchExtras {
 	defendingPlayerId?: string;
 	isChapterAbility?: boolean;
 	isBecameMonstrous?: boolean;
+	// --- Track P10 ---
+	grantedAbilityText?: string;
+	// --- End Track P10 ---
 }
 
 function record(state: GameState, source: Source, ability: RuntimeTrigger, kind: EventKind, extras: MatchExtras): void {
 	// CR 603.4: an intervening-if condition must be true when the event happens.
 	if (
 		ability.condition &&
-		!evaluateCondition(state, ability.condition, source.controllerId, source.obj.instanceId, undefined, source, extras.eventObject)
+		!evaluateCondition(
+			state,
+			ability.condition,
+			source.controllerId,
+			source.obj.instanceId,
+			undefined,
+			source,
+			extras.eventObject,
+			extras.eventLki
+		)
 	) {
 		return;
 	}
@@ -827,8 +1012,13 @@ function record(state: GameState, source: Source, ability: RuntimeTrigger, kind:
 	if (count <= 0) return;
 	// CR 603.2i: "This ability triggers only once each turn" cannot trigger more than once per turn
 	// per object identity in that zone (CR 400.7), even under trigger multipliers.
+	const grantedAbilityText =
+		extras.grantedAbilityText ?? (ability as { grantedAbilityText?: string }).grantedAbilityText;
 	if (ability.trigger.onlyOncePerTurn) {
-		const abilityTag = ability.grantedKeyword ?? `${source.faceIndex ?? 0}:${ability.abilityIndex}`;
+		const abilityTag =
+			grantedAbilityText ??
+			ability.grantedKeyword ??
+			`${source.faceIndex ?? 0}:${ability.abilityIndex}`;
 		const onceKey = `${source.obj.instanceId}:${source.zone}:${abilityTag}`;
 		if (state.triggeredOnceThisTurn?.includes(onceKey)) {
 			return;
@@ -875,6 +1065,9 @@ function record(state: GameState, source: Source, ability: RuntimeTrigger, kind:
 			...(sourceWasCast ? { sourceWasCast: true } : {}),
 			...(sourceCastFromZone ? { sourceCastFromZone } : {}),
 			// --- End Track P7 ---
+			// --- Track P10 ---
+			...(grantedAbilityText ? { grantedAbilityText } : {}),
+			// --- End Track P10 ---
 			eventPlayer: extras.eventPlayer ?? extras.eventPlayerId,
 			defendingPlayerId: extras.defendingPlayerId,
 			order: ch.nextOrder++
@@ -974,8 +1167,448 @@ function matchTriggersInner(state: GameState, ev: GameEvent): void {
 			return matchManifestDread(state, ev);
 		case 'BecameMonstrous':
 			return matchObjectActionEvent(state, ev, 'becameMonstrous', 'Monstrosity Trigger', ev.amount);
+		// --- Track P10 ---
+		case 'UnblockedAttackers':
+			return matchUnblockedAttackers(state, ev);
+		case 'BecomesUntapped':
+			return matchBecomesUntapped(state, ev);
+		case 'Scried':
+			return matchScried(state, ev);
+		case 'CrimeCommitted':
+			return matchCrimeCommitted(state, ev);
+		case 'Exploited':
+			return matchExploited(state, ev);
+		case 'ManaExpended':
+			return matchManaExpended(state, ev);
+		case 'Sacrificed':
+			return matchSacrificed(state, ev);
+		case 'GraveyardLeaveBatch':
+			return matchGraveyardLeaveBatch(state, ev);
+		case 'Discovered':
+			return matchDiscovered(state, ev);
+		case 'Foraged':
+			return matchForaged(state, ev);
+		// --- End Track P10 ---
 	}
 }
+
+// --- Track P10 ---
+function matchUnblockedAttackers(
+	state: GameState,
+	ev: Extract<GameEvent, { kind: 'UnblockedAttackers' }>
+): void {
+	if (ev.attackerIds.length === 0) return;
+	const attackers = ev.attackerIds
+		.map((id) => permanentById(state, id))
+		.filter((a): a is NonNullable<typeof a> => Boolean(a))
+		.map((a) => battlefieldSubject(state, a.obj, a.controllerId));
+	if (attackers.length === 0) return;
+	const attackerDefenderId = (id: string): string | undefined =>
+		state.combat.attackers.find((a) => a.attackerInstanceId === id)?.defenderPlayerId;
+
+	const atkControllerId = attackers[0].controllerId;
+	for (const source of sources(state, 'attackedAndUnblocked')) {
+		for (const { ability, alts } of abilitiesFor(state, source, 'attackedAndUnblocked')) {
+			for (const alt of alts) {
+				const f = alt.filter;
+				if (f.player) {
+					const rel = f.player.relation ?? 'any';
+					if (rel === 'you' && atkControllerId !== source.controllerId) continue;
+					if (rel === 'opponent' && atkControllerId === source.controllerId) continue;
+				}
+				const matching =
+					f.object === undefined ? attackers : attackers.filter((s) => objectMatches(f, s, source));
+				if (matching.length === 0) continue;
+				if (f.object === 'self' || f.oneOrMore || f.object === undefined) {
+					const defendingPlayerId =
+						f.object === 'self'
+							? attackerDefenderId(source.obj.instanceId)
+							: matching.length === 1
+								? attackerDefenderId(matching[0].obj.instanceId)
+								: undefined;
+					const times =
+						source.zone === 'battlefield'
+							? triggerMultiplier(state, source.obj, source.controllerId, {
+									event: 'attackedAndUnblocked',
+									attackers: matching.map((s) => s.obj)
+								})
+							: 1;
+					record(state, source, ability, 'attackedAndUnblocked', {
+						label: ability.text || 'Unblocked Trigger',
+						times,
+						...(matching.length === 1 ? { eventObject: matching[0].obj } : {}),
+						...(defendingPlayerId
+							? { defendingPlayerId, eventPlayerId: defendingPlayerId, eventPlayer: defendingPlayerId }
+							: {}),
+						...(f.oneOrMore ? { amount: matching.length } : {})
+					});
+				} else {
+					for (const s of matching) {
+						const defendingPlayerId = attackerDefenderId(s.obj.instanceId);
+						const times =
+							source.zone === 'battlefield'
+								? triggerMultiplier(state, source.obj, source.controllerId, {
+										event: 'attackedAndUnblocked',
+										object: s.obj,
+										attackers: [s.obj]
+									})
+								: 1;
+						record(state, source, ability, 'attackedAndUnblocked', {
+							label: ability.text || 'Unblocked Trigger',
+							eventObject: s.obj,
+							...(defendingPlayerId
+								? { defendingPlayerId, eventPlayerId: defendingPlayerId, eventPlayer: defendingPlayerId }
+								: {}),
+							times
+						});
+					}
+				}
+				break;
+			}
+		}
+	}
+}
+
+function matchBecomesUntapped(
+	state: GameState,
+	ev: Extract<GameEvent, { kind: 'BecomesUntapped' }>
+): void {
+	const found = permanentById(state, ev.objectId);
+	if (!found) return;
+	const subject = battlefieldSubject(state, found.obj, found.controllerId);
+	for (const source of sources(state, 'becomesUntapped')) {
+		for (const { ability, alts } of abilitiesFor(state, source, 'becomesUntapped')) {
+			const alt = alts.find((a) => objectMatches(a.filter, subject, source));
+			if (!alt) continue;
+			const times =
+				source.zone === 'battlefield'
+					? triggerMultiplier(state, source.obj, source.controllerId, {
+							event: 'becomesUntapped',
+							object: found.obj
+						})
+					: 1;
+			record(state, source, ability, 'becomesUntapped', {
+				label: 'Untap Trigger',
+				eventObject: found.obj,
+				eventPlayer: found.controllerId,
+				times
+			});
+		}
+	}
+}
+
+function matchScried(state: GameState, ev: Extract<GameEvent, { kind: 'Scried' }>): void {
+	if (ev.amount <= 0) return;
+	for (const source of sources(state, 'scry')) {
+		for (const { ability, alts } of abilitiesFor(state, source, 'scry')) {
+			const alt = alts.find((a) => {
+				const rel = a.filter.player?.relation ?? 'any';
+				if (rel === 'you' && ev.playerId !== source.controllerId) return false;
+				if (rel === 'opponent' && ev.playerId === source.controllerId) return false;
+				return true;
+			});
+			if (!alt) continue;
+			const times =
+				source.zone === 'battlefield'
+					? triggerMultiplier(state, source.obj, source.controllerId, { event: 'scry' })
+					: 1;
+			record(state, source, ability, 'scry', {
+				label: 'Scry Trigger',
+				amount: ev.amount,
+				eventPlayer: ev.playerId,
+				eventPlayerId: ev.playerId,
+				times
+			});
+		}
+	}
+}
+
+function matchCrimeCommitted(
+	state: GameState,
+	ev: Extract<GameEvent, { kind: 'CrimeCommitted' }>
+): void {
+	for (const source of sources(state, 'committedCrime')) {
+		for (const { ability, alts } of abilitiesFor(state, source, 'committedCrime')) {
+			const alt = alts.find((a) => {
+				const rel = a.filter.player?.relation ?? 'any';
+				if (rel === 'you' && ev.playerId !== source.controllerId) return false;
+				if (rel === 'opponent' && ev.playerId === source.controllerId) return false;
+				return true;
+			});
+			if (!alt) continue;
+			const times =
+				source.zone === 'battlefield'
+					? triggerMultiplier(state, source.obj, source.controllerId, { event: 'committedCrime' })
+					: 1;
+			record(state, source, ability, 'committedCrime', {
+				label: 'Crime Trigger',
+				eventPlayer: ev.playerId,
+				eventPlayerId: ev.playerId,
+				times
+			});
+		}
+	}
+}
+
+function matchExploited(state: GameState, ev: Extract<GameEvent, { kind: 'Exploited' }>): void {
+	const foundSource = permanentById(state, ev.exploiterId);
+	const exploiterObj = foundSource?.obj ?? ev.exploited;
+	const sacLki = ev.exploitedLki;
+	const exploiterSubject = foundSource
+		? battlefieldSubject(state, foundSource.obj, foundSource.controllerId)
+		: sacLki && ev.exploiterId === ev.exploitedId
+			? printedSubject(
+					ev.exploited,
+					sacLki.card,
+					sacLki.controllerId,
+					sacLki.hasAllCreatureTypes,
+					sacLki.typeLine,
+					sacLki.tapped,
+					undefined,
+					Boolean(sacLki.saddled),
+					Boolean(sacLki.monstrous),
+					{ state, power: sacLki.power, toughness: sacLki.toughness }
+				)
+			: printedSubject(exploiterObj, exploiterObj.copiableCard ?? exploiterObj.card, ev.playerId, false, undefined, undefined, undefined, false, false, { state });
+	const candidateSources = [...sources(state, 'exploited')];
+	// CR 702.110b: If the exploiting creature sacrificed itself, it left the battlefield right before
+	// `Exploited` fired, so include its LKI battlefield snapshot as a candidate trigger source.
+	if (!foundSource && ev.exploiterId === ev.exploitedId && sacLki) {
+		candidateSources.push({
+			obj: ev.exploited,
+			card: sacLki.card,
+			controllerId: sacLki.controllerId,
+			zone: 'battlefield',
+			faceIndex: sacLki.activeFaceIndex,
+			counters: sacLki.counters
+		});
+	}
+	for (const source of candidateSources) {
+		for (const { ability, alts } of abilitiesFor(state, source, 'exploited')) {
+			const alt = alts.find((a) => {
+				if (a.filter.player) {
+					const rel = a.filter.player.relation ?? 'any';
+					if (rel === 'you' && ev.playerId !== source.controllerId) return false;
+					if (rel === 'opponent' && ev.playerId === source.controllerId) return false;
+				}
+				if (a.filter.object !== undefined && !objectMatches(a.filter, exploiterSubject, source)) {
+					return false;
+				}
+				return true;
+			});
+			if (!alt) continue;
+			const times =
+				source.zone === 'battlefield'
+					? triggerMultiplier(state, source.obj, source.controllerId, {
+							event: 'exploited',
+							object: exploiterObj
+						})
+					: 1;
+			record(state, source, ability, 'exploited', {
+				label: 'Exploit Trigger',
+				eventObject: ev.exploited,
+				eventPlayer: ev.playerId,
+				eventPlayerId: ev.playerId,
+				...(sacLki
+					? {
+							eventLki: {
+								controllerId: sacLki.controllerId,
+								...(sacLki.power !== undefined ? { power: sacLki.power } : {}),
+								...(sacLki.toughness !== undefined ? { toughness: sacLki.toughness } : {}),
+								...(sacLki.counters ? { counters: sacLki.counters } : {})
+							}
+						}
+					: {}),
+				times
+			});
+		}
+	}
+}
+
+function matchManaExpended(
+	state: GameState,
+	ev: Extract<GameEvent, { kind: 'ManaExpended' }>
+): void {
+	for (const source of sources(state, 'expended')) {
+		for (const { ability, alts } of abilitiesFor(state, source, 'expended')) {
+			const alt = alts.find((a) => {
+				const rel = a.filter.player?.relation ?? 'you';
+				if (rel === 'you' && ev.playerId !== source.controllerId) return false;
+				if (rel === 'opponent' && ev.playerId === source.controllerId) return false;
+				if (a.filter.expendThreshold !== undefined) {
+					const thresh = a.filter.expendThreshold;
+					if (!(ev.previousTotal < thresh && ev.newTotal >= thresh)) return false;
+				}
+				return true;
+			});
+			if (!alt) continue;
+			const thresh = alt.filter.expendThreshold ?? ev.newTotal;
+			const times =
+				source.zone === 'battlefield'
+					? triggerMultiplier(state, source.obj, source.controllerId, { event: 'expended' })
+					: 1;
+			record(state, source, ability, 'expended', {
+				label: `Expend ${thresh}`,
+				amount: thresh,
+				eventPlayer: ev.playerId,
+				eventPlayerId: ev.playerId,
+				times
+			});
+		}
+	}
+}
+
+function matchSacrificed(state: GameState, ev: Extract<GameEvent, { kind: 'Sacrificed' }>): void {
+	const lki = ev.lki;
+	const subject = lki
+		? printedSubject(
+				ev.object,
+				lki.card,
+				lki.controllerId,
+				lki.hasAllCreatureTypes,
+				lki.typeLine,
+				lki.tapped,
+				undefined,
+				Boolean(lki.saddled),
+				Boolean(lki.monstrous),
+				{ state, power: lki.power, toughness: lki.toughness }
+			)
+		: printedSubject(ev.object, ev.object.copiableCard ?? ev.object.card, ev.playerId, false, undefined, undefined, undefined, false, false, { state });
+	for (const source of sources(state, 'sacrificed')) {
+		for (const { ability, alts } of abilitiesFor(state, source, 'sacrificed')) {
+			const alt = alts.find((a) => {
+				if (a.filter.player) {
+					const rel = a.filter.player.relation ?? 'any';
+					if (rel === 'you' && ev.playerId !== source.controllerId) return false;
+					if (rel === 'opponent' && ev.playerId === source.controllerId) return false;
+				}
+				if (a.filter.object !== undefined && !objectMatches(a.filter, subject, source)) {
+					return false;
+				}
+				return true;
+			});
+			if (!alt) continue;
+			const times =
+				source.zone === 'battlefield'
+					? triggerMultiplier(state, source.obj, source.controllerId, {
+							event: 'sacrificed',
+							object: ev.object
+						})
+					: 1;
+			record(state, source, ability, 'sacrificed', {
+				label: 'Sacrifice Trigger',
+				eventObject: ev.object,
+				eventPlayer: ev.playerId,
+				eventPlayerId: ev.playerId,
+				...(lki
+					? {
+							eventLki: {
+								controllerId: lki.controllerId,
+								...(lki.power !== undefined ? { power: lki.power } : {}),
+								...(lki.toughness !== undefined ? { toughness: lki.toughness } : {}),
+								...(lki.counters ? { counters: lki.counters } : {})
+							}
+						}
+					: {}),
+				times
+			});
+		}
+	}
+}
+
+function matchGraveyardLeaveBatch(
+	state: GameState,
+	ev: Extract<GameEvent, { kind: 'GraveyardLeaveBatch' }>
+): void {
+	if (ev.objects.length === 0) return;
+	const subjects = ev.objects.map((c) =>
+		printedSubject(c, c.card, ev.ownerId, false, undefined, false, undefined, false, false, { state })
+	);
+	for (const source of sources(state, 'graveyardLeaveBatch')) {
+		for (const { ability, alts } of abilitiesFor(state, source, 'graveyardLeaveBatch')) {
+			let matchedObjs: Subject[] = [];
+			const alt = alts.find((a) => {
+				const rel = a.filter.player?.relation ?? 'you';
+				if (rel === 'you' && ev.ownerId !== source.controllerId) return false;
+				if (rel === 'opponent' && ev.ownerId === source.controllerId) return false;
+				const matching =
+					a.filter.object === undefined
+						? subjects
+						: subjects.filter((s) => objectMatches(a.filter, s, source));
+				if (matching.length === 0) return false;
+				matchedObjs = matching;
+				return true;
+			});
+			if (!alt) continue;
+			const times =
+				source.zone === 'battlefield'
+					? triggerMultiplier(state, source.obj, source.controllerId, {
+							event: 'graveyardLeaveBatch',
+							object: matchedObjs[0]?.obj
+						})
+					: 1;
+			record(state, source, ability, 'graveyardLeaveBatch', {
+				label: 'Leaves Graveyard Trigger',
+				...(matchedObjs.length === 1 ? { eventObject: matchedObjs[0].obj } : {}),
+				amount: matchedObjs.length,
+				eventPlayer: ev.ownerId,
+				eventPlayerId: ev.ownerId,
+				times
+			});
+		}
+	}
+}
+
+function matchDiscovered(state: GameState, ev: Extract<GameEvent, { kind: 'Discovered' }>): void {
+	for (const source of sources(state, 'discover')) {
+		for (const { ability, alts } of abilitiesFor(state, source, 'discover')) {
+			const alt = alts.find((a) => {
+				const rel = a.filter.player?.relation ?? 'any';
+				if (rel === 'you' && ev.playerId !== source.controllerId) return false;
+				if (rel === 'opponent' && ev.playerId === source.controllerId) return false;
+				return true;
+			});
+			if (!alt) continue;
+			const times =
+				source.zone === 'battlefield'
+					? triggerMultiplier(state, source.obj, source.controllerId, { event: 'discover' })
+					: 1;
+			record(state, source, ability, 'discover', {
+				label: 'Discover Trigger',
+				...(ev.hitCard ? { eventObject: ev.hitCard } : {}),
+				amount: ev.n,
+				eventPlayer: ev.playerId,
+				eventPlayerId: ev.playerId,
+				times
+			});
+		}
+	}
+}
+
+function matchForaged(state: GameState, ev: Extract<GameEvent, { kind: 'Foraged' }>): void {
+	for (const source of sources(state, 'forage')) {
+		for (const { ability, alts } of abilitiesFor(state, source, 'forage')) {
+			const alt = alts.find((a) => {
+				const rel = a.filter.player?.relation ?? 'any';
+				if (rel === 'you' && ev.playerId !== source.controllerId) return false;
+				if (rel === 'opponent' && ev.playerId === source.controllerId) return false;
+				return true;
+			});
+			if (!alt) continue;
+			const times =
+				source.zone === 'battlefield'
+					? triggerMultiplier(state, source.obj, source.controllerId, { event: 'forage' })
+					: 1;
+			record(state, source, ability, 'forage', {
+				label: 'Forage Trigger',
+				eventPlayer: ev.playerId,
+				eventPlayerId: ev.playerId,
+				times
+			});
+		}
+	}
+}
+// --- End Track P10 ---
 
 // --- Track P4 ---
 function matchExerted(state: GameState, ev: Extract<GameEvent, { kind: 'Exerted' }>): void {
@@ -1479,6 +2112,7 @@ function matchZoneChange(state: GameState, ev: Extract<GameEvent, { kind: 'ZoneC
 		if (batchLki) {
 			for (const [peerPerm, info] of batchLki) {
 				if (candidates.some((c) => c.obj === peerPerm)) continue;
+				let pushedPeer = false;
 				for (const faceIndex of activeFacesForObject(peerPerm, info.card, 'battlefield', state, {
 					activeFaceIndex: info.activeFaceIndex,
 					unlockedFaces: info.unlockedFaces
@@ -1503,11 +2137,36 @@ function matchZoneChange(state: GameState, ev: Extract<GameEvent, { kind: 'ZoneC
 						...(info.wasCast ? { wasCast: true } : {}),
 						...(info.castFromZone ? { castFromZone: info.castFromZone } : {}),
 						// --- End Track P7 ---
-						...(info.counters ? { counters: info.counters } : {})
+						...(info.counters ? { counters: info.counters } : {}),
+						// --- Track P10 ---
+						...(!pushedPeer && info.grantedAbilityTexts
+							? { grantedAbilityTexts: info.grantedAbilityTexts }
+							: {})
+						// --- End Track P10 ---
 					});
+					pushedPeer = true;
 				}
+				// --- Track P10 ---
+				if (!pushedPeer && info.grantedAbilityTexts?.length) {
+					const qts = quotedTriggersForTexts(info.card.name, info.grantedAbilityTexts);
+					if (qts.some((q) => alternatives(q.ability.trigger).some((a) => a.event === 'zoneChange'))) {
+						candidates.push({
+							obj: peerPerm,
+							card: info.card,
+							faceIndex: 0,
+							controllerId: info.controllerId,
+							zone: 'battlefield',
+							lostAllAbilities: info.lostAllAbilities,
+							isLookBack: true,
+							...(info.counters ? { counters: info.counters } : {}),
+							grantedAbilityTexts: info.grantedAbilityTexts
+						});
+					}
+				}
+				// --- End Track P10 ---
 			}
 		} else if (ev.lki) {
+			let pushedSelf = false;
 			for (const faceIndex of activeFacesForObject(obj, ev.lki.card, 'battlefield', state, {
 				activeFaceIndex: ev.lki.activeFaceIndex,
 				unlockedFaces: ev.lki.unlockedFaces
@@ -1528,15 +2187,58 @@ function matchZoneChange(state: GameState, ev: Extract<GameEvent, { kind: 'ZoneC
 					...(ev.lki.chosenSubType ? { chosenSubType: ev.lki.chosenSubType } : {}),
 					...(ev.lki.chosenColor ? { chosenColor: ev.lki.chosenColor } : {}),
 					...(ev.lki.monstrous ? { monstrous: true } : {}),
-					...(ev.lki.counters ? { counters: ev.lki.counters } : {})
+					...(ev.lki.counters ? { counters: ev.lki.counters } : {}),
+					// --- Track P10 ---
+					...(!pushedSelf && ev.lki.grantedAbilityTexts
+						? { grantedAbilityTexts: ev.lki.grantedAbilityTexts }
+						: {})
+					// --- End Track P10 ---
 				});
+				pushedSelf = true;
 			}
+			// --- Track P10 ---
+			if (!pushedSelf && ev.lki.grantedAbilityTexts?.length) {
+				const qts = quotedTriggersForTexts(ev.lki.card.name, ev.lki.grantedAbilityTexts);
+				if (qts.some((q) => alternatives(q.ability.trigger).some((a) => a.event === 'zoneChange'))) {
+					candidates.push({
+						obj,
+						card: ev.lki.card,
+						faceIndex: 0,
+						controllerId: ev.lki.controllerId,
+						zone: 'battlefield',
+						lostAllAbilities: ev.lki.lostAllAbilities,
+						isLookBack: true,
+						...(ev.lki.counters ? { counters: ev.lki.counters } : {}),
+						grantedAbilityTexts: ev.lki.grantedAbilityTexts
+					});
+				}
+			}
+			// --- End Track P10 ---
 		}
 	}
 	const lkiAttachedIds = objBatchInfo?.attachedIds ?? ev.lki?.attachedIds;
+	// --- Track P10 ---
+	const lkiDamagedBy = objBatchInfo?.damagedByThisTurn ?? ev.lki?.damagedByThisTurn;
+	// --- End Track P10 ---
 	for (const source of candidates) {
 		for (const { ability, alts } of abilitiesFor(state, source, 'zoneChange', fits)) {
-			const alt = alts.find((a) => objectMatches(a.filter, subject, source, lkiAttachedIds));
+			const alt = alts.find((a) => {
+				// --- Track P10 ---
+				if (a.filter.dealtDamageBySelfThisTurn) {
+					const srcVer = source.obj.objectVersion ?? 1;
+					if (
+						!lkiDamagedBy?.some(
+							(d) =>
+								d.sourceId === source.obj.instanceId &&
+								(d.sourceVersion === undefined || d.sourceVersion === srcVer)
+						)
+					) {
+						return false;
+					}
+				}
+				// --- End Track P10 ---
+				return objectMatches(a.filter, subject, source, lkiAttachedIds);
+			});
 			if (!alt) continue;
 			// Only look-back objects check leaves-the-battlefield triggers; other permanents see the event normally.
 			if ((source.obj === obj || source.isLookBack) && ev.from === 'battlefield' && alt.filter.from !== 'battlefield') continue;
@@ -1853,9 +2555,23 @@ function matchAttack(state: GameState, attackingPlayerId: string, attackerIds: s
 			for (const alt of alts) {
 				const f = alt.filter;
 				if (f.alone && attackers.length !== 1) continue;
+				// --- Track P10 ---
+				if (
+					f.minAttackers !== undefined &&
+					(f.object === 'self' || f.object === undefined) &&
+					attackers.length < f.minAttackers
+				) {
+					continue;
+				}
 				if (f.object === undefined) {
-					// "Whenever you attack".
-					if (f.player?.relation === 'you' && attackingPlayerId === source.controllerId && attackers.length > 0) {
+					const rel = f.player?.relation ?? 'any';
+					const playerMatches =
+						rel === 'you'
+							? attackingPlayerId === source.controllerId
+							: rel === 'opponent'
+								? attackingPlayerId !== source.controllerId
+								: true;
+					if (playerMatches && attackers.length > 0) {
 						const times =
 							source.zone === 'battlefield'
 								? triggerMultiplier(state, source.obj, source.controllerId, {
@@ -1863,13 +2579,23 @@ function matchAttack(state: GameState, attackingPlayerId: string, attackerIds: s
 										attackers: attackers.map((s) => s.obj)
 									})
 								: 1;
-						record(state, source, ability, 'attacks', { label: 'Attack', times });
+						record(state, source, ability, 'attacks', {
+							label: 'Attack',
+							times,
+							eventPlayer: attackingPlayerId,
+							eventPlayerId: attackingPlayerId,
+							amount: attackers.length
+						});
 						break;
 					}
 					continue;
 				}
+				// --- End Track P10 ---
 				const matching = attackers.filter((s) => objectMatches(f, s, source));
 				if (matching.length === 0) continue;
+				if (f.minAttackers !== undefined && f.object !== 'self' && matching.length < f.minAttackers) {
+					continue;
+				}
 				if (f.object === 'self' || f.oneOrMore) {
 					const defendingPlayerId =
 						f.object === 'self'
@@ -1981,12 +2707,42 @@ function matchBlocks(state: GameState, defenderId: string, blocks: Array<{ block
 	};
 	const blockers = [...new Set(blocks.map((b) => b.blockerId))].map(subjectFor).filter((s): s is Subject => Boolean(s));
 	const blocked = [...new Set(blocks.map((b) => b.attackerId))].map(subjectFor).filter((s): s is Subject => Boolean(s));
+	const subjectById = new Map<string, Subject>();
+	for (const s of [...blockers, ...blocked]) {
+		subjectById.set(s.obj.instanceId, s);
+	}
+	const dedupPairs: Array<{ blocker: Subject; attacker: Subject }> = [];
+	const seenPairKeys = new Set<string>();
+	for (const b of blocks) {
+		const pairKey = `${b.blockerId}::${b.attackerId}`;
+		if (seenPairKeys.has(pairKey)) continue;
+		seenPairKeys.add(pairKey);
+		const blocker = subjectById.get(b.blockerId);
+		const attacker = subjectById.get(b.attackerId);
+		if (blocker && attacker) dedupPairs.push({ blocker, attacker });
+	}
 	void defenderId;
 	for (const kind of ['blocks', 'becomesBlocked'] as const) {
 		const subjects = kind === 'blocks' ? blockers : blocked;
 		for (const source of sources(state, kind)) {
-			for (const { ability, alts } of abilitiesFor(state, source, kind)) {
+			for (const { ability, alts } of abilitiesFor(state, kind === 'blocks' ? source : source, kind)) {
 				const alt = alts[0];
+				// --- Track P10: CR 509.3b / CR 509.3d per-opposing-creature host filter ---
+				if (alt.filter.host) {
+					const viewer = viewerOf(source);
+					for (const pair of dedupPairs) {
+						const selfSide = kind === 'blocks' ? pair.blocker : pair.attacker;
+						const otherSide = kind === 'blocks' ? pair.attacker : pair.blocker;
+						if (!objectMatches(alt.filter, selfSide, source)) continue;
+						if (!filterMatches(alt.filter.host, otherSide, viewer)) continue;
+						record(state, source, ability, kind, {
+							label: kind === 'blocks' ? 'Block' : 'Blocked',
+							eventObject: otherSide.obj
+						});
+					}
+					continue;
+				}
+				// --- End Track P10 ---
 				const matching = subjects.filter((s) => objectMatches(alt.filter, s, source));
 				if (alt.filter.object === 'self') {
 					if (matching.length > 0) record(state, source, ability, kind, { label: kind === 'blocks' ? 'Block' : 'Blocked' });
@@ -2009,6 +2765,87 @@ function matchBlocks(state: GameState, defenderId: string, blocks: Array<{ block
 			}
 		}
 	}
+	// --- Track P10: blocksOrBecomesBlocked (CR 509.3a–d / 509.1h) ---
+	const combinedCombatants = [
+		...new Map([...blockers, ...blocked].map((s) => [s.obj.instanceId, s])).values()
+	];
+	for (const source of sources(state, 'blocksOrBecomesBlocked')) {
+		for (const { ability, alts } of abilitiesFor(state, source, 'blocksOrBecomesBlocked')) {
+			const alt = alts[0];
+			if (alt.filter.host) {
+				const viewer = viewerOf(source);
+				for (const pair of dedupPairs) {
+					for (const [selfSide, otherSide] of [
+						[pair.blocker, pair.attacker],
+						[pair.attacker, pair.blocker]
+					] as const) {
+						if (!objectMatches(alt.filter, selfSide, source)) continue;
+						if (!filterMatches(alt.filter.host, otherSide, viewer)) continue;
+						const times =
+							source.zone === 'battlefield'
+								? triggerMultiplier(state, source.obj, source.controllerId, {
+										event: 'blocksOrBecomesBlocked',
+										object: selfSide.obj
+									})
+								: 1;
+						record(state, source, ability, 'blocksOrBecomesBlocked', {
+							label: 'Blocks or Blocked',
+							eventObject: otherSide.obj,
+							times
+						});
+					}
+				}
+				continue;
+			}
+			const matching = combinedCombatants.filter((s) => objectMatches(alt.filter, s, source));
+			if (alt.filter.object === 'self') {
+				if (matching.length > 0) {
+					const times =
+						source.zone === 'battlefield'
+							? triggerMultiplier(state, source.obj, source.controllerId, {
+									event: 'blocksOrBecomesBlocked',
+									object: source.obj
+								})
+							: 1;
+					record(state, source, ability, 'blocksOrBecomesBlocked', {
+						label: 'Blocks or Blocked',
+						times
+					});
+				}
+			} else if (alt.filter.oneOrMore) {
+				if (matching.length > 0) {
+					const times =
+						source.zone === 'battlefield'
+							? triggerMultiplier(state, source.obj, source.controllerId, {
+									event: 'blocksOrBecomesBlocked',
+									object: matching[0].obj
+								})
+							: 1;
+					record(state, source, ability, 'blocksOrBecomesBlocked', {
+						label: 'Blocks or Blocked',
+						amount: matching.length,
+						times
+					});
+				}
+			} else {
+				for (const s of matching) {
+					const times =
+						source.zone === 'battlefield'
+							? triggerMultiplier(state, source.obj, source.controllerId, {
+									event: 'blocksOrBecomesBlocked',
+									object: s.obj
+								})
+							: 1;
+					record(state, source, ability, 'blocksOrBecomesBlocked', {
+						label: 'Blocks or Blocked',
+						eventObject: s.obj,
+						times
+					});
+				}
+			}
+		}
+	}
+	// --- End Track P10 ---
 	// --- Track P9: Flanking / becomesBlockedBy (CR 702.25a–b) ---
 	const blockedObjs = blocked.map((s) => s.obj);
 	const canGrantBlockedBy = boardCanGrantTriggerKeyword(state, 'becomesBlockedBy', blockedObjs);
@@ -2097,11 +2934,17 @@ function matchDamage(state: GameState, ev: Extract<GameEvent, { kind: 'DamageDea
 				const alt = alts.find((a) => {
 					if ((a.filter.combat && !ev.combat) || !damageToFits(a.filter.damageTo)) return false;
 					// --- Track P7 ---
-					const rel = a.filter.player?.relation ?? 'any';
-					if (rel === 'you' && (ev.targetKind !== 'player' || ev.targetId !== source.controllerId)) {
+					const rel = a.filter.damagePlayerRelation ?? a.filter.player?.relation ?? 'any';
+					const damagedPid =
+						ev.targetKind === 'player'
+							? ev.targetId
+							: a.filter.damageTo === 'playerOrPlaneswalker' && damagedEval?.isPlaneswalker
+								? damaged?.controllerId
+								: undefined;
+					if (rel === 'you' && damagedPid !== source.controllerId) {
 						return false;
 					}
-					if (rel === 'opponent' && (ev.targetKind !== 'player' || ev.targetId === source.controllerId)) {
+					if (rel === 'opponent' && (!damagedPid || damagedPid === source.controllerId)) {
 						return false;
 					}
 					// --- End Track P7 ---
@@ -2164,13 +3007,31 @@ function matchPhase(state: GameState, ev: Extract<GameEvent, { kind: 'PhaseBegin
 	if (!ev.activePlayerId) return;
 	for (const source of sources(state, 'phaseBegin')) {
 		for (const { ability, alts } of abilitiesFor(state, source, 'phaseBegin')) {
-			if (!alts.some((a) => a.filter.phase === ev.phase)) continue;
+			// --- Track P10 ---
+			let matchedHostObj: CardInstance | undefined;
+			const phaseAlt = alts.find((a) => {
+				if (a.filter.phase !== ev.phase) return false;
+				if (a.filter.enchantedControllerUpkeep) {
+					const hostId = source.obj.attachedToId;
+					if (!hostId) return false;
+					const hostFound = permanentById(state, hostId);
+					if (!hostFound || hostFound.controllerId !== ev.activePlayerId) return false;
+					matchedHostObj = hostFound.obj;
+				}
+				if (a.filter.enchantedPlayerUpkeep) {
+					if (source.obj.attachedToId !== ev.activePlayerId) return false;
+				}
+				return true;
+			});
+			if (!phaseAlt) continue;
+			// --- End Track P10 ---
 			const scope = ability.trigger.scope ?? 'each_turn';
 			if (scope === 'controller_turn' && source.controllerId !== ev.activePlayerId) continue;
 			if (scope === 'opponent_turn' && source.controllerId === ev.activePlayerId) continue;
 			const step = ev.phase === 'upkeep' ? 'Upkeep' : ev.phase === 'end_step' ? 'End Step' : 'Phase';
 			record(state, source, ability, 'phaseBegin', {
 				label: source.zone === 'graveyard' ? `Graveyard ${step}` : `${step} Trigger`,
+				...(matchedHostObj ? { eventObject: matchedHostObj } : {}),
 				// "At the beginning of each opponent's upkeep, that player ...": the active player.
 				eventPlayer: ev.activePlayerId ?? undefined
 			});
@@ -2420,29 +3281,44 @@ export function flushTriggers(state: GameState): void {
 	hydratePendingTriggers(state, ch);
 	ch.flushing += 1;
 	try {
-		for (let guard = 0; ch.pending.length > 0 && guard < 1000; guard++) {
+		for (
+			let guard = 0;
+			(ch.pending.length > 0 || (state.pendingReflexiveTriggers?.length ?? 0) > 0) && guard < 1000;
+			guard++
+		) {
+			if (isResolutionPaused(state)) {
+				if (ch.pending.length > 0) persistPendingTriggers(state, ch.pending.splice(0));
+				return;
+			}
 			const batch = ch.pending.splice(0);
 			if (state.status === 'finished') return;
-			const order = apnap(state);
-			const byPlayer = (mode: TriggerMode, pid: string) =>
-				batch.filter((t) => t.mode === mode && t.controllerId === pid).sort((a, b) => a.order - b.order);
-			const inline = [...order].reverse().flatMap((pid) => byPlayer('inline', pid));
-			const stacked = order.flatMap((pid) => byPlayer('stack', pid));
-			for (const t of inline) {
-				if ((state.status as GameState['status']) === 'finished') return;
-				// CR 603.4: checked again as it resolves.
-				if (t.ability.condition && !evaluateCondition(state, t.ability.condition, t.controllerId, t.source.instanceId)) continue;
-				host.executeInline(state, t);
-			}
-			for (const pid of order) {
-				const ids: string[] = [];
-				for (const t of stacked) {
-					if (t.controllerId !== pid) continue;
-					const item = host.putOnStack(state, t);
-					if (item) ids.push(item.id);
+			if (batch.length > 0) {
+				const order = apnap(state);
+				const byPlayer = (mode: TriggerMode, pid: string) =>
+					batch.filter((t) => t.mode === mode && t.controllerId === pid).sort((a, b) => a.order - b.order);
+				const inline = [...order].reverse().flatMap((pid) => byPlayer('inline', pid));
+				const stacked = order.flatMap((pid) => byPlayer('stack', pid));
+				for (const t of inline) {
+					if ((state.status as GameState['status']) === 'finished') return;
+					// CR 603.4: checked again as it resolves.
+					if (t.ability.condition && !evaluateCondition(state, t.ability.condition, t.controllerId, t.source.instanceId)) continue;
+					host.executeInline(state, t);
 				}
-				if (ids.length > 1) host.orderSimultaneous?.(state, pid, ids);
+				for (const pid of order) {
+					const ids: string[] = [];
+					for (const t of stacked) {
+						if (t.controllerId !== pid) continue;
+						const item = host.putOnStack(state, t);
+						if (item) ids.push(item.id);
+					}
+					if (ids.length > 1) host.orderSimultaneous?.(state, pid, ids);
+				}
 			}
+			// --- Track P10 (CR 603.12): Flush queued reflexive triggers in APNAP order without doubling ---
+			if ((state.pendingReflexiveTriggers?.length ?? 0) > 0 && !isResolutionPaused(state)) {
+				flushPendingReflexiveTriggers(state);
+			}
+			// --- End Track P10 ---
 		}
 	} finally {
 		ch.flushing -= 1;
@@ -2513,6 +3389,13 @@ export function stackTriggerConditionHolds(
 			return evaluateCondition(state, cond, controllerId, sourceInstanceId, stackItem);
 		}
 	}
+	// --- Track P10 ---
+	if (stackItem?.grantedAbilityText) {
+		const quoted = quotedTriggersForTexts(card.name, [stackItem.grantedAbilityText])[0];
+		if (!quoted?.ability.condition) return true;
+		return evaluateCondition(state, quoted.ability.condition, controllerId, sourceInstanceId, stackItem);
+	}
+	// --- End Track P10 ---
 	const ability = triggersOf(card, stackItem?.faceIndex ?? 0).all.find((t) => t.abilityIndex === abilityIndex);
 	if (!ability?.condition) return true;
 	return evaluateCondition(state, ability.condition, controllerId, sourceInstanceId, stackItem);
@@ -2526,21 +3409,22 @@ export function evaluateCondition(
 	sourceInstanceId: string,
 	stackItem?: StackItem,
 	source?: Source,
-	eventObject?: CardInstance
+	eventObject?: CardInstance,
+	eventLki?: PendingTrigger['eventLki']
 ): boolean {
 	const controller = state.players.find((p) => p.playerId === controllerId);
 	if (!controller) return false;
 	switch (cond.k) {
 		case 'and':
 			return cond.of.every((c) =>
-				evaluateCondition(state, c, controllerId, sourceInstanceId, stackItem, source, eventObject)
+				evaluateCondition(state, c, controllerId, sourceInstanceId, stackItem, source, eventObject, eventLki)
 			);
 		case 'or':
 			return cond.of.some((c) =>
-				evaluateCondition(state, c, controllerId, sourceInstanceId, stackItem, source, eventObject)
+				evaluateCondition(state, c, controllerId, sourceInstanceId, stackItem, source, eventObject, eventLki)
 			);
 		case 'not':
-			return !evaluateCondition(state, cond.of, controllerId, sourceInstanceId, stackItem, source, eventObject);
+			return !evaluateCondition(state, cond.of, controllerId, sourceInstanceId, stackItem, source, eventObject, eventLki);
 		case 'kicked':
 			return evaluateKickerCondition(
 				cond,
@@ -2613,6 +3497,27 @@ export function evaluateCondition(
 			const counters = found?.obj.counters ?? source?.obj.lastKnownCounters ?? source?.obj.counters;
 			return (counters?.[cond.counter] ?? 0) <= 0;
 		}
+		// --- Track P10 ---
+		case 'opponentLostLifeThisTurn':
+		case 'descendedThisTurn':
+		case 'hadCounterOnIt':
+		case 'manaColorSpentToCast':
+		case 'opponentComparison': {
+			const srcObj = source?.obj ?? permanentById(state, sourceInstanceId)?.obj;
+			return evaluateP10Condition(cond, {
+				state,
+				controllerId,
+				source: srcObj,
+				stackItem,
+				eventLkiCounters:
+					eventLki?.counters ??
+					stackItem?.eventLki?.counters ??
+					source?.counters ??
+					eventObject?.lastKnownCounters ??
+					eventObject?.counters
+			});
+		}
+		// --- End Track P10 ---
 		case 'isTurnOf':
 			if (cond.player.k === 'you') return state.players[state.activePlayerIndex]?.playerId === controllerId;
 			return cond.player.k === 'activePlayer';
@@ -2786,6 +3691,22 @@ function amount(
 				...(srcFound?.obj.chosenSubType ? { chosenSubType: srcFound.obj.chosenSubType } : {}),
 				...(srcFound?.obj.chosenColor ? { chosenColor: srcFound.obj.chosenColor } : {})
 			};
+			// --- Track P10: Support graveyard count conditions (Threshold / N+ creature cards in graveyard) ---
+			if (a.of.zone === 'graveyard') {
+				let n = 0;
+				for (const p of state.players) {
+					if (p.lost) continue;
+					if (a.of.owner === 'you' && p.playerId !== controllerId) continue;
+					if (a.of.owner === 'opponent' && p.playerId === controllerId) continue;
+					if (a.of.controller === 'you' && p.playerId !== controllerId) continue;
+					if (a.of.controller === 'opponent' && p.playerId === controllerId) continue;
+					for (const c of p.graveyard) {
+						if (filterMatches(a.of, printedSubject(c, c.card, p.playerId), viewer)) n++;
+					}
+				}
+				return n;
+			}
+			// --- End Track P10 ---
 			let n = 0;
 			for (const p of state.players) {
 				if (p.lost) continue;
@@ -2798,6 +3719,10 @@ function amount(
 			}
 			return n;
 		}
+		// --- Track P10: Delirium distinctCardTypesInZone condition ---
+		case 'distinctCardTypesInZone':
+			return countDistinctCardTypesInZone(state, controllerId, a.zone, a.whose);
+		// --- End Track P10 ---
 		default:
 			return null;
 	}

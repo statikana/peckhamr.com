@@ -36,6 +36,9 @@ import type {
 } from '../types.ts';
 import { matchesColorFilter, resolveObjectFaces } from './faces.ts';
 import { noteLayerInputsChanged } from './layerCache.ts';
+// --- Track P10 ---
+import { recordDescendedOnZoneChange } from './reflexiveManaAndActions.ts';
+// --- End Track P10 ---
 import { activeRuleModifiers } from './replace.ts';
 
 // ---- Subtype classification for CR 205.1a type-overwriting copy exceptions ------------------
@@ -1008,6 +1011,12 @@ export function resetTurnHistoryAtTurnStart(state: GameState): void {
 		delete p.attackedThisTurn;
 		delete p.permanentLeftBattlefieldThisTurn;
 		delete p.lifeGainedThisTurn;
+		// --- Track P10 ---
+		delete p.descendedThisTurn;
+		delete p.lostLifeThisTurn;
+		delete p.manaSpentOnSpellsThisTurn;
+		delete p.unemptiedManaColorsThisTurn;
+		// --- End Track P10 ---
 	}
 	noteLayerInputsChanged(state);
 }
@@ -1018,6 +1027,13 @@ export function clearP7EndOfTurnEffects(state: GameState): void {
 	delete state.combatDamageCantBePreventedThisTurn;
 	delete state.exileInsteadOfDyingThisTurn;
 	delete state.timedCombatRestrictions;
+	// --- Track P10 ---
+	for (const p of state.players) {
+		for (const perm of p.battlefield) {
+			delete perm.damagedByThisTurn;
+		}
+	}
+	// --- End Track P10 ---
 }
 
 export function recordZoneChangeTurnHistory(
@@ -1028,6 +1044,9 @@ export function recordZoneChangeTurnHistory(
 	wasCreatureOnBattlefield: boolean,
 	movedObject: CardInstance
 ): void {
+	// --- Track P10: CR 700.11 Descended ---
+	recordDescendedOnZoneChange(state, movedObject, toZone);
+	// --- End Track P10 ---
 	if (fromZone === 'battlefield' && toZone !== 'battlefield') {
 		pruneExileInsteadOfDyingOnLtb(state, movedObject.instanceId);
 		delete movedObject.wasCast;

@@ -361,7 +361,9 @@ describe('Phase 5 bug: Goldspan Dragon "or becomes the target of a spell"', () =
 describe('Phase 5 bug: unsupported qualifiers never fire', () => {
 	const cases: Array<[string, string]> = [
 		['Enchanted Runner', 'Whenever Enchanted Runner attacks while enchanted, draw a card.'],
-		['Unseen Courier', "Whenever Unseen Courier attacks and isn't blocked, draw a card."],
+		// --- Track P10 ---
+		['Most Life Hunter', 'Whenever Most Life Hunter attacks the player with the most life, draw a card.'],
+		// --- End Track P10 ---
 		['Player Hunter', 'Whenever Player Hunter attacks a player, draw a card.']
 	];
 	for (const [name, text] of cases) {

@@ -92,7 +92,21 @@ export const INTERPRETED_VERBS: ReadonlySet<Verb> = new Set<Verb>([
 	'exileInsteadOfDying',
 	'combatRestriction',
 	'becomeCopy',
-	'discardHand'
+	'discardHand',
+	// --- Track P10 ---
+	'discover',
+	'clash',
+	'detain',
+	'suspect',
+	'collectEvidence',
+	'forage',
+	'endure',
+	'timeTravel',
+	'blight',
+	'fateseal',
+	'flipCoin',
+	'rollDie',
+	'retainMana'
 ]);
 
 export const SUPPORTED_OPTIONAL_COST_KINDS: ReadonlySet<CostDef['k']> = new Set<CostDef['k']>([
@@ -141,6 +155,35 @@ function selectorSupported(sel: Selector): boolean {
 function stepSupported(step: EffectStep): boolean {
 	if (!INTERPRETED_VERBS.has(step.verb)) return false;
 	if (!selectorSupported(step.subject)) return false;
+	// --- Track P10 ---
+	if (step.params?.reflexiveTrigger) {
+		const rt = step.params.reflexiveTrigger;
+		if (!triggerTargetsSupported(rt.targets)) return false;
+		if (!staticallyInterpretable({ steps: rt.effect, targets: rt.targets, unparsed: [] })) {
+			return false;
+		}
+	}
+	if (step.verb === 'attach' && step.params?.attachObject && !selectorSupported(step.params.attachObject)) {
+		return false;
+	}
+	if (step.verb === 'flipCoin') {
+		if (step.params?.winFlipEffect && !stepsSupported(step.params.winFlipEffect)) return false;
+		if (step.params?.loseFlipEffect && !stepsSupported(step.params.loseFlipEffect)) return false;
+	}
+	if (step.verb === 'rollDie') {
+		if (!step.params?.dieSides || step.params.dieSides < 2) return false;
+		if (
+			step.params.dieRollTable &&
+			(step.params.dieRollTable.length === 0 ||
+				!step.params.dieRollTable.every((b) => stepsSupported(b.effect)))
+		) {
+			return false;
+		}
+	}
+	if (step.verb === 'retainMana' && !step.params?.unemptiedColors?.length) {
+		return false;
+	}
+	// --- End Track P10 ---
 	if (step.verb === 'removeCounters' && !step.params?.counter) return false;
 	if (step.verb === 'payCost' && (!step.optional?.cost || step.optional.cost.length === 0)) return false;
 	if (step.verb === 'cumulativeUpkeep') {
@@ -170,7 +213,7 @@ function stepSupported(step: EffectStep): boolean {
 		if (!d) return false;
 		if (d.partitions && d.partitions.length > 0) return true;
 		if (!d.keepTo || !d.rest) return false;
-		if (!d.keepAllMatching && (typeof d.keep !== 'number' || d.keep < 0)) return false;
+		if (!d.untilFilter && !d.keepAllMatching && (typeof d.keep !== 'number' || d.keep < 0)) return false;
 	}
 	if (
 		step.subject.k === 'libraryTop' &&
@@ -239,7 +282,14 @@ function stepSupported(step: EffectStep): boolean {
 		}
 	}
 	if ((step.verb === 'pump' || step.verb === 'grant' || step.verb === 'switchPT') && step.params?.duration !== 'endOfTurn') return false;
-	if (step.verb === 'grant' && !step.params?.keywords?.length && !step.params?.removeKeywords?.length) return false;
+	if (
+		step.verb === 'grant' &&
+		!step.params?.keywords?.length &&
+		!step.params?.removeKeywords?.length &&
+		!step.params?.grantedAbilityTexts?.length
+	) {
+		return false;
+	}
 	if (step.verb === 'createToken' && !step.params?.token) return false;
 	if (step.verb === 'delayedTrigger') return delayedSupported(step);
 	if (step.params?.damageSource && (step.verb !== 'damage' || !selectorSupported(step.params.damageSource))) {
@@ -248,6 +298,16 @@ function stepSupported(step: EffectStep): boolean {
 	if (step.params?.alsoDamagePlayers && step.verb !== 'damage') return false;
 	if (step.verb === 'fight') return Boolean(step.params?.with && selectorSupported(step.params.with));
 	if (step.verb === 'exile' && step.subject.k === 'all' && step.subject.filter.zone === 'graveyard') return true;
+	// --- Track P10 ---
+	if (
+		step.verb === 'exile' &&
+		step.subject.k === 'all' &&
+		step.subject.filter.zone === 'hand' &&
+		step.amount !== undefined
+	) {
+		return true;
+	}
+	// --- End Track P10 ---
 	if ((step.verb === 'destroy' || step.verb === 'exile' || step.verb === 'bounce') && step.subject.k === 'all') {
 		return step.subject.filter.zone === 'battlefield';
 	}
@@ -260,6 +320,19 @@ function stepProducesDecision(step: EffectStep | undefined): boolean {
 	if (!step) return false;
 	if (step.optional) return true;
 	if (step.verb === 'revealAndDiscard' && step.params?.coerciveDiscard) return true;
+	// --- Track P10 ---
+	if (
+		step.verb === 'clash' ||
+		step.verb === 'flipCoin' ||
+		step.verb === 'collectEvidence' ||
+		step.verb === 'forage' ||
+		step.verb === 'blight' ||
+		step.verb === 'discover' ||
+		(step.verb === 'move' && step.params?.from === 'hand' && step.params?.to === 'battlefield' && step.params?.upTo)
+	) {
+		return true;
+	}
+	// --- End Track P10 ---
 	return false;
 }
 

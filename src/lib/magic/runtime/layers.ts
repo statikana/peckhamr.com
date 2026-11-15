@@ -52,6 +52,9 @@ import { evaluateKickedCountAmount, evaluateKickerCondition } from './kicker.ts'
 import { evaluateAmount, matchesObjectFilter, playerCommanderCastCount } from './objectFilter.ts';
 // --- Track P8 ---
 import { compareNumbers, countDistinctCardTypesInZone } from './staticsLayersAndRestrictions.ts';
+// --- Track P10 ---
+import { evaluateP10Condition, resolveQuotedAbilityDefs } from './reflexiveManaAndActions.ts';
+// --- End Track P10 ---
 import { PROTECTION_KEYWORD_BY_COLOR } from './tuckFreezeChosen.ts';
 
 export interface AttributedKeywordOrEffect {
@@ -1117,6 +1120,12 @@ function matchesLayerFilter(
 	if (filter.monstrous !== undefined && Boolean(target.inst.isMonstrous) !== filter.monstrous) {
 		return false;
 	}
+	// --- Track P10 ---
+	if (filter.suspected !== undefined) {
+		layerReads |= READ_P10_SUSPECT;
+		if (Boolean(target.inst.isSuspected) !== filter.suspected) return false;
+	}
+	// --- End Track P10 ---
 	if (filter.token !== undefined && Boolean(target.inst.isToken) !== filter.token) return false;
 	return true;
 }
@@ -1576,6 +1585,22 @@ function evaluateLayerCondition(
 			}
 			return true;
 		}
+		// --- Track P10 ---
+		case 'opponentLostLifeThisTurn':
+		case 'descendedThisTurn':
+		case 'hadCounterOnIt':
+		case 'manaColorSpentToCast':
+		case 'opponentComparison':
+			layerReads |= READ_P10_SUSPECT;
+			if (cond.k === 'opponentComparison' && cond.metric === 'life') {
+				layerReads |= READ_LIFE;
+			}
+			return evaluateP10Condition(cond, {
+				state,
+				controllerId: source.controllerId,
+				source: source.inst
+			});
+		// --- End Track P10 ---
 		// --- Track P9 ---
 		default:
 			return false;
@@ -1672,6 +1697,9 @@ const READ_ALL_COUNTERS = 1024;
 const READ_HIDDEN_ZONES = 2048;
 // --- Track P7 ---
 const READ_TURN_HISTORY = 4096;
+// --- Track P10 ---
+const READ_P10_SUSPECT = 8192;
+// --- End Track P10 ---
 
 /** Inputs read by the evaluation in progress (bits above). */
 let layerReads = 0;
@@ -1708,6 +1736,16 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 			);
 		}
 		// --- End Track P7 ---
+		// --- Track P10 ---
+		if (reads & READ_P10_SUSPECT) {
+			fp.push(
+				Boolean(p.descendedThisTurn),
+				Boolean(p.lostLifeThisTurn),
+				p.manaSpentOnSpellsThisTurn || 0,
+				p.unemptiedManaColorsThisTurn?.length || 0
+			);
+		}
+		// --- End Track P10 ---
 		if (reads & READ_COMMANDER_CAST_COUNT) fp.push(playerCommanderCastCount(state, p.playerId));
 		if (reads & READ_ZONE_SIZES) {
 			fp.push(p.hand.length, p.graveyard.length, p.library.length, p.exile.length, p.command.length);
@@ -1768,6 +1806,9 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 			Boolean(perm.wasCast),
 			perm.castFromZone ?? '',
 			// --- End Track P7 ---
+			// --- Track P10 ---
+			Boolean(perm.isSuspected),
+			// --- End Track P10 ---
 			perm.kickedCount || 0,
 			perm.kickedTags?.length || 0,
 			perm.grantedKeywords?.length || 0
@@ -1824,8 +1865,11 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 				eff.layer7b?.setPower ?? 0,
 				eff.layer7b?.setToughness ?? 0,
 				// --- Track P7 ---
-				eff.layer1a
+				eff.layer1a,
 				// --- End Track P7 ---
+				// --- Track P10 ---
+				eff.layer6?.grantedAbilityTexts?.length || 0
+				// --- End Track P10 ---
 			);
 			for (const a of eff.affected) fp.push(a.instanceId, a.objectVersion ?? 1);
 			if (eff.layer4?.addTypes?.length) for (const t of eff.layer4.addTypes) fp.push(t);
@@ -1836,6 +1880,11 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 			if (eff.layer5?.addColors?.length) for (const c of eff.layer5.addColors) fp.push(c);
 			if (eff.layer6?.addKeywords?.length) for (const kw of eff.layer6.addKeywords) fp.push(kw);
 			if (eff.layer6?.removeKeywords?.length) for (const kw of eff.layer6.removeKeywords) fp.push(kw);
+			// --- Track P10 ---
+			if (eff.layer6?.grantedAbilityTexts?.length) {
+				for (const gt of eff.layer6.grantedAbilityTexts) fp.push(gt);
+			}
+			// --- End Track P10 ---
 		}
 	}
 	return fp;
@@ -1884,6 +1933,17 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 			return false;
 		}
 		// --- End Track P7 ---
+		// --- Track P10 ---
+		if (
+			reads & READ_P10_SUSPECT &&
+			(fp[i++] !== Boolean(p.descendedThisTurn) ||
+				fp[i++] !== Boolean(p.lostLifeThisTurn) ||
+				fp[i++] !== (p.manaSpentOnSpellsThisTurn || 0) ||
+				fp[i++] !== (p.unemptiedManaColorsThisTurn?.length || 0))
+		) {
+			return false;
+		}
+		// --- End Track P10 ---
 		if (reads & READ_COMMANDER_CAST_COUNT && fp[i++] !== playerCommanderCastCount(state, p.playerId)) {
 			return false;
 		}
@@ -1985,6 +2045,9 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 			fp[i++] !== Boolean(perm.wasCast) ||
 			fp[i++] !== (perm.castFromZone ?? '') ||
 			// --- End Track P7 ---
+			// --- Track P10 ---
+			fp[i++] !== Boolean(perm.isSuspected) ||
+			// --- End Track P10 ---
 			fp[i++] !== (perm.kickedCount || 0) ||
 			fp[i++] !== kickedTagsLen ||
 			fp[i++] !== grantedLen
@@ -2047,6 +2110,9 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 			const hasL7b = eff.layer7b ? 1 : 0;
 			const l7bP = eff.layer7b?.setPower ?? 0;
 			const l7bT = eff.layer7b?.setToughness ?? 0;
+			// --- Track P10 ---
+			const l6Texts = eff.layer6?.grantedAbilityTexts?.length || 0;
+			// --- End Track P10 ---
 			if (
 				fp[i++] !== eff.timestamp ||
 				fp[i++] !== eff.sourceName ||
@@ -2070,8 +2136,11 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 				fp[i++] !== l7bP ||
 				fp[i++] !== l7bT ||
 				// --- Track P7 ---
-				fp[i++] !== eff.layer1a
+				fp[i++] !== eff.layer1a ||
 				// --- End Track P7 ---
+				// --- Track P10 ---
+				fp[i++] !== l6Texts
+				// --- End Track P10 ---
 			) {
 				return false;
 			}
@@ -2086,6 +2155,9 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 			if (l5AddLen) for (const c of eff.layer5!.addColors!) if (fp[i++] !== c) return false;
 			if (l6Add) for (const kw of eff.layer6!.addKeywords!) if (fp[i++] !== kw) return false;
 			if (l6Rem) for (const kw of eff.layer6!.removeKeywords!) if (fp[i++] !== kw) return false;
+			// --- Track P10 ---
+			if (l6Texts) for (const gt of eff.layer6!.grantedAbilityTexts!) if (fp[i++] !== gt) return false;
+			// --- End Track P10 ---
 		}
 	}
 	return i === fp.length;
@@ -3049,13 +3121,28 @@ function evaluatePerPermanent(
 			}
 		}
 		for (const eff of matchingTimedCont) {
-			if (eff.layer6 && (eff.layer6.addKeywords?.length || eff.layer6.removeKeywords?.length)) {
+			// --- Track P10 ---
+			let extraQuotedKws: string[] | undefined;
+			if (eff.layer6?.grantedAbilityTexts?.length) {
+				for (const gt of eff.layer6.grantedAbilityTexts) {
+					for (const def of resolveQuotedAbilityDefs(gt, target.name)) {
+						if (def.kind === 'keyword') {
+							(extraQuotedKws ??= []).push(def.keyword.name);
+						}
+					}
+				}
+			}
+			const combinedAddKws = extraQuotedKws
+				? [...(eff.layer6?.addKeywords ?? []), ...extraQuotedKws]
+				: eff.layer6?.addKeywords;
+			// --- End Track P10 ---
+			if (eff.layer6 && (combinedAddKws?.length || eff.layer6.removeKeywords?.length)) {
 				targetTimedEffects.push({
 					timestamp: eff.timestamp,
 					sourceName: eff.sourceName,
 					controllerId: eff.controllerId,
 					affected: eff.affected,
-					addKeywords: eff.layer6.addKeywords,
+					addKeywords: combinedAddKws,
 					removeKeywords: eff.layer6.removeKeywords,
 					cantHaveOrGain: eff.layer6.cantHaveOrGain
 				});
@@ -3131,6 +3218,11 @@ function evaluatePerPermanent(
 		if (target.inst.riotHaste) {
 			grantItem(target, 'haste', 'Haste', 'keyword', 'Riot', target.timestamp);
 		}
+		// --- Track P10 (CR 701.60c): Suspected permanents have menace ---
+		if (target.inst.isSuspected) {
+			grantItem(target, 'menace', 'Menace', 'keyword', 'Suspected', target.timestamp);
+		}
+		// --- End Track P10 ---
 
 		for (const source of workList) {
 			while (

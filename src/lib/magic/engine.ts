@@ -13,6 +13,12 @@ import {
 import {
 	addManaToPlayerPool,
 	canSpendRestrictedMana,
+	// --- Track P10 ---
+	canSpendManaRestrictionSpec,
+	clearPlayerManaPoolAtCleanup,
+	emptyPlayerManaPoolForStepEnd,
+	type AddManaOptions,
+	// --- End Track P10 ---
 	combinedManaPoolForSpend,
 	deductManaForSpendContext,
 	getTotalPooledManaForContext
@@ -207,6 +213,16 @@ import {
 	resolveWave3StackItem,
 	sumPermanentToxic
 } from './runtime/keywordsWave3.ts';
+// --- Track P10 ---
+import {
+	checkAndEmitCrimeCommitted,
+	expireDetainedEffectsForPlayer,
+	recordSpellManaExpended,
+	registerP10RuntimeHost,
+	resolveQuotedActivatedOrTriggeredSteps,
+	resolveReflexiveSpecFromCompiled
+} from './runtime/reflexiveManaAndActions.ts';
+// --- End Track P10 ---
 export { applyCastCostAids, formatManaRequirement, getSuspendSpec };
 import { getKeywordSpec } from './keywords.ts';
 import {
@@ -284,6 +300,7 @@ import {
 	type StackItemRetargetSlot
 } from './runtime/effects.ts';
 import { chooseBotModalTriggerModes, chooseBotTriggerTargets } from './ai.ts';
+import { splitSubtypes } from './runtime/layers.ts';
 // --- Track P7 ---
 import type { Condition, CopyModificationSpec, CostDef, EffectStep, ModalDef, TargetSpec, TokenSpec } from './ir.ts';
 // --- End Track P7 ---
@@ -1739,17 +1756,80 @@ export function spellSpendContext(
 	inst: CardInstance,
 	opts?: { faceIndex?: number; fused?: boolean; isFaceDown?: boolean }
 ): ManaSpendContext {
-	if (opts?.isFaceDown) return { isSpell: true, isArtifactSpell: false };
-	const resolved = resolveObjectFaces(effectiveCardForObject(inst), {
+	if (opts?.isFaceDown) {
+		return {
+			isSpell: true,
+			isArtifactSpell: false,
+			// --- Track P10 ---
+			spellSourceZone: inst.zone,
+			isCommanderSpell: Boolean(inst.isCommander)
+			// --- End Track P10 ---
+		};
+	}
+	const effCard = effectiveCardForObject(inst);
+	const resolved = resolveObjectFaces(effCard, {
 		zone: 'stack',
 		faceIndex: opts?.faceIndex,
 		fused: opts?.fused
 	});
 	return {
 		isSpell: true,
-		isArtifactSpell: /\bArtifact\b/i.test(resolved.typeLine)
+		isArtifactSpell: /\bArtifact\b/i.test(resolved.typeLine),
+		// --- Track P10 ---
+		spellCard: effCard,
+		spellFaceIndex: opts?.faceIndex ?? 0,
+		spellFused: opts?.fused,
+		spellSourceZone: inst.zone,
+		isCommanderSpell: Boolean(inst.isCommander)
+		// --- End Track P10 ---
 	};
 }
+
+// --- Track P10 ---
+function activatedAbilitySpendContext(
+	state: GameState,
+	perm: CardInstance,
+	ab?: Pick<EffectiveActivatedAbility, 'faceIndex'>
+): ManaSpendContext {
+	const effCard =
+		perm.zone === 'battlefield' ? getEffectiveCardForPermanent(state, perm) : effectiveCardForObject(perm);
+	const evalPerm = perm.zone === 'battlefield' ? evaluatePermanent(state, perm) : null;
+	let abilitySourceTypes: string[] | undefined;
+	let abilitySourceSubtypes: string[] | undefined;
+	if (evalPerm) {
+		abilitySourceTypes = [];
+		if (evalPerm.isArtifact) abilitySourceTypes.push('Artifact');
+		if (evalPerm.isCreature) abilitySourceTypes.push('Creature');
+		if (evalPerm.isEnchantment) abilitySourceTypes.push('Enchantment');
+		if (evalPerm.isLand) abilitySourceTypes.push('Land');
+		if (evalPerm.isPlaneswalker) abilitySourceTypes.push('Planeswalker');
+		if (/\bBattle\b/.test(evalPerm.effectiveTypeLine)) abilitySourceTypes.push('Battle');
+		if (/\bKindred\b|\bTribal\b/.test(evalPerm.effectiveTypeLine)) abilitySourceTypes.push('Kindred');
+		abilitySourceSubtypes = splitSubtypes(evalPerm.effectiveTypeLine);
+	}
+	return {
+		isSpell: false,
+		isActivatedAbility: true,
+		abilitySourceCard: effCard,
+		abilitySourceFaceIndex: ab?.faceIndex ?? 0,
+		...(evalPerm
+			? {
+					abilitySourceTypes,
+					abilitySourceSubtypes,
+					abilitySourceColors: evalPerm.colors
+				}
+			: {})
+	};
+}
+
+function p10AddManaOptions(ab?: EffectiveActivatedAbility): AddManaOptions | undefined {
+	if (!ab?.manaRestrictionSpec && !ab?.retainManaUntilEndOfTurn) return undefined;
+	return {
+		...(ab.manaRestrictionSpec ? { restrictionSpec: ab.manaRestrictionSpec } : {}),
+		...(ab.retainManaUntilEndOfTurn ? { retainUntilEndOfTurn: true } : {})
+	};
+}
+// --- End Track P10 ---
 
 /**
  * The amount a mana ability adds. Dynamic amounts ("for each Elf you control", "equal to ~'s power")
@@ -1875,6 +1955,9 @@ function finalizeCastSpell(
 		aidDescriptions?: string[];
 		additionalIncomplete?: boolean;
 		manaColorsSpent?: ManaColor[];
+		// --- Track P10 ---
+		manaSpentCount?: number;
+		// --- End Track P10 ---
 	}
 ): void {
 	const actorId = actor.playerId;
@@ -1932,6 +2015,9 @@ function finalizeCastSpell(
 	}
 	inst.prototyped = effectiveSpellMods?.prototyped ? true : undefined;
 	inst.manaColorsSpent = opts.manaColorsSpent ? [...opts.manaColorsSpent] : undefined;
+	// --- Track P10 ---
+	inst.manaSpentCount = opts.manaSpentCount;
+	// --- End Track P10 ---
 	// --- Track P9 ---
 	inst.dashed = effectiveSpellMods?.dashed ? true : undefined;
 	// --- End Track P9 ---
@@ -1966,6 +2052,9 @@ function finalizeCastSpell(
 			kind: 'spell',
 			title: spellDisplayName,
 			...(opts.manaColorsSpent ? { manaColorsSpent: [...opts.manaColorsSpent] } : {}),
+			// --- Track P10 ---
+			...(opts.manaSpentCount !== undefined ? { manaSpentCount: opts.manaSpentCount } : {}),
+			// --- End Track P10 ---
 			...(opts.faceIndex !== undefined ? { faceIndex: opts.faceIndex } : {}),
 			...(opts.fused ? { fused: true } : {}),
 			...(castFaceDownSpec
@@ -2086,6 +2175,12 @@ function finalizeCastSpell(
 			});
 		}
 	}
+	// --- Track P10 ---
+	checkAndEmitCrimeCommitted(state, actor.playerId, targets);
+	if ((opts.manaSpentCount ?? 0) > 0) {
+		recordSpellManaExpended(state, actor, opts.manaSpentCount!);
+	}
+	// --- End Track P10 ---
 	resetTriggerLoopTracking(state);
 	flushTriggers(state);
 	checkStateBasedActions(state);
@@ -2117,9 +2212,14 @@ function finalizeActivateAbility(
 			pcp.abilityId
 		];
 	}
-	const abModal = pcp.abilityId
-		? getAbilityModal(card, pcp.abilityId, pcp.faceIndex ?? 0, pcp.grantSourceCard)
-		: undefined;
+	const abModal =
+		// --- Track P10 ---
+		pcp.grantedAbilityText
+			? resolveQuotedActivatedOrTriggeredSteps(pcp.grantedAbilityText, card.name, 'activated')?.modal
+			: // --- End Track P10 ---
+				pcp.abilityId
+				? getAbilityModal(card, pcp.abilityId, pcp.faceIndex ?? 0, pcp.grantSourceCard)
+				: undefined;
 	recordUsedModalModes(perm, pcp.sourceObjectVersion, abModal, pcp.chosenModes);
 	if (pcp.descriptions.length > 0) {
 		addLog(state, 'rule', `${actor.username} ${pcp.descriptions.join('; ')} to activate ${card.name}.`, actorId);
@@ -2179,6 +2279,9 @@ function finalizeActivateAbility(
 			// --- Track P9 ---
 			...(pcp.ninjutsuAttackTarget ? { ninjutsuAttackTarget: pcp.ninjutsuAttackTarget } : {}),
 			// --- End Track P9 ---
+			// --- Track P10 ---
+			...(pcp.grantedAbilityText ? { grantedAbilityText: pcp.grantedAbilityText } : {}),
+			// --- End Track P10 ---
 			controllerId: actorId,
 			kind: 'activated',
 			abilityId: pcp.abilityId,
@@ -2213,6 +2316,9 @@ function finalizeActivateAbility(
 			});
 		}
 	}
+	// --- Track P10 ---
+	checkAndEmitCrimeCommitted(state, actor.playerId, targets);
+	// --- End Track P10 ---
 	resetTriggerLoopTracking(state);
 	flushTriggers(state);
 	checkStateBasedActions(state);
@@ -2229,11 +2335,23 @@ function finalizeTapMana(
 		resolveCostSourceCard(state, pcp);
 	const card = pcp.sourceCard ?? perm.card;
 	const abStub =
-		pcp.abilityId || pcp.manaRestriction || pcp.freezesSelfUntap
+		pcp.abilityId ||
+		pcp.manaRestriction ||
+		pcp.freezesSelfUntap ||
+		// --- Track P10 ---
+		pcp.manaRestrictionSpec ||
+		pcp.retainManaUntilEndOfTurn ||
+		pcp.grantedAbilityText
+		// --- End Track P10 ---
 			? ({
 					...(pcp.abilityId ? { id: pcp.abilityId } : {}),
 					...(pcp.faceIndex !== undefined ? { faceIndex: pcp.faceIndex } : {}),
 					...(pcp.manaRestriction ? { manaRestriction: pcp.manaRestriction } : {}),
+					// --- Track P10 ---
+					...(pcp.manaRestrictionSpec ? { manaRestrictionSpec: pcp.manaRestrictionSpec } : {}),
+					...(pcp.retainManaUntilEndOfTurn ? { retainManaUntilEndOfTurn: true } : {}),
+					...(pcp.grantedAbilityText ? { grantedAbilityText: pcp.grantedAbilityText } : {}),
+					// --- End Track P10 ---
 					...(pcp.onceEachTurn ? { activationRestrictions: ['onceEachTurn'] } : {}),
 					...(pcp.freezesSelfUntap ? { freezesSelfUntap: true } : {})
 				} as EffectiveActivatedAbility)
@@ -2304,6 +2422,11 @@ function executeOrResumePendingCostPayment(
 		if (ctx.spendCtx?.capturedColorsSpent) {
 			pcp.manaColorsSpent = ctx.spendCtx.capturedColorsSpent;
 		}
+		// --- Track P10 ---
+		if (ctx.spendCtx?.capturedManaSpentCount) {
+			pcp.manaSpentCount = ctx.spendCtx.capturedManaSpentCount;
+		}
+		// --- End Track P10 ---
 	}
 	const paid = executeCostPaymentParts(
 		ctx,
@@ -2348,7 +2471,10 @@ function executeOrResumePendingCostPayment(
 				descriptions: pcp.descriptions,
 				aidDescriptions: pcp.aidDescriptions,
 				additionalIncomplete: pcp.additionalIncomplete,
-				manaColorsSpent: pcp.manaColorsSpent
+				manaColorsSpent: pcp.manaColorsSpent,
+				// --- Track P10 ---
+				manaSpentCount: pcp.manaSpentCount
+				// --- End Track P10 ---
 			});
 		}
 	} else if (pcp.kind === 'activate_ability') {
@@ -2379,7 +2505,13 @@ function resumePendingCostPayment(state: GameState): void {
 					fused: pcp.fused,
 					isFaceDown: Boolean(pcp.spellMods?.castFaceDown)
 				})
-			: { isSpell: false };
+			: // --- Track P10 ---
+				pcp.kind === 'activate_ability'
+				? activatedAbilitySpendContext(state, source, { faceIndex: pcp.faceIndex })
+				: pcp.kind === 'hand_special_action' && pcp.specialActionId === 'special:foretell'
+					? { isSpell: false, isForetellAction: true }
+					: // --- End Track P10 ---
+						{ isSpell: false };
 	const reservedIds =
 		pcp.kind === 'hand_special_action' ? new Set<string>([pcp.sourceInstanceId]) : undefined;
 	const ctx = costContext(
@@ -2661,6 +2793,9 @@ function autoTapManaAbilities(
 	for (const a of getEffectiveActivatedAbilities(state, player, perm, cmdIdentity)) {
 		if (!a.isManaAbility || a.producesMana.length === 0) continue;
 		if (a.manaRestriction && !canSpendRestrictedMana(a.manaRestriction, spendCtx)) continue;
+		// --- Track P10 ---
+		if (a.manaRestrictionSpec && !canSpendManaRestrictionSpec(a.manaRestrictionSpec, spendCtx)) continue;
+		// --- End Track P10 ---
 		if (!checkActivationRestrictionsOnly(state, player.playerId, perm, a).ok) continue;
 		const defs = activatedAbilityCost(perm.card, a).defs;
 		let tier = -1;
@@ -2687,7 +2822,13 @@ function autoTapManaAbilities(
 			ab: a,
 			tier,
 			freezes: a.freezesSelfUntap ? 1 : 0,
-			restricted: a.manaRestriction ? 0 : 1,
+			restricted:
+				a.manaRestriction ||
+				// --- Track P10 ---
+				a.manaRestrictionSpec
+				// --- End Track P10 ---
+					? 0
+					: 1,
 			amount
 		});
 	}
@@ -3043,9 +3184,12 @@ function resolveActivatedManaAbility(
 	if (ab?.freezesSelfUntap) {
 		applyNextUntapFreeze(perm);
 	}
+	// --- Track P10 ---
+	const addOpts = p10AddManaOptions(ab);
+	// --- End Track P10 ---
 	if (chosenBundle && chosenBundle.length > 0) {
 		for (const col of chosenBundle) {
-			addManaToPlayerPool(player, col, 1, ab?.manaRestriction);
+			addManaToPlayerPool(player, col, 1, ab?.manaRestriction, addOpts);
 		}
 		const abilityDef = activeAbilityDefs(
 			effectiveCardForObject(perm),
@@ -3068,7 +3212,7 @@ function resolveActivatedManaAbility(
 			}
 		}
 	} else if (chosenColor && amount > 0) {
-		addManaToPlayerPool(player, chosenColor, amount, ab?.manaRestriction);
+		addManaToPlayerPool(player, chosenColor, amount, ab?.manaRestriction, addOpts);
 		const abilityDef = activeAbilityDefs(
 			effectiveCardForObject(perm),
 			instanceFaceOptions(perm, 'battlefield')
@@ -3121,6 +3265,10 @@ function simulateOrExecuteManaOnly(
 			deductManaForSpendContext(player, manaReq, spendCtx);
 			if (lifeToPay > 0) {
 				player.life -= lifeToPay;
+				// --- Track P10 ---
+				player.lostLifeThisTurn = true;
+				noteLayerInputsChanged(state);
+				// --- End Track P10 ---
 			}
 		}
 		return true;
@@ -3175,8 +3323,17 @@ function simulateOrExecuteManaOnly(
 					const bNonToken = b.isToken ? 0 : 1;
 					if (aNonToken !== bNonToken) return aNonToken - bNonToken;
 				}
-				const aRestr = manaAbilitiesOf(a)[0]?.manaRestriction ? 0 : 1;
-				const bRestr = manaAbilitiesOf(b)[0]?.manaRestriction ? 0 : 1;
+				const aRestr =
+					manaAbilitiesOf(a)[0]?.manaRestriction ||
+					// --- Track P10 ---
+					manaAbilitiesOf(a)[0]?.manaRestrictionSpec
+						? 0
+						: 1;
+				const bRestr =
+					manaAbilitiesOf(b)[0]?.manaRestriction || manaAbilitiesOf(b)[0]?.manaRestrictionSpec
+						? 0
+						: 1;
+				// --- End Track P10 ---
 				if (aRestr !== bRestr) return aRestr - bRestr;
 				const ca = manaAbilitiesOf(a)[0]?.producesMana ?? [];
 				const cb = manaAbilitiesOf(b)[0]?.producesMana ?? [];
@@ -3337,9 +3494,20 @@ function simulateOrExecuteManaOnly(
 				? Object.fromEntries(
 						Object.entries(p.restrictedMana).map(([k, v]) => [k, v ? { ...v } : v])
 					)
-				: undefined
+				: undefined,
+			// --- Track P10 ---
+			restrictedManaBuckets: p.restrictedManaBuckets
+				? p.restrictedManaBuckets.map((b) => ({ ...b, pool: { ...b.pool } }))
+				: undefined,
+			retainedManaCounts: p.retainedManaCounts ? { ...p.retainedManaCounts } : undefined
+			// --- End Track P10 ---
 		});
-		const abilitySpendCtx: ManaSpendContext = { isSpell: false };
+		const abilitySpendCtx: ManaSpendContext = {
+			isSpell: false,
+			// --- Track P10 ---
+			isActivatedAbility: true
+			// --- End Track P10 ---
+		};
 
 		for (const fPerm of player.battlefield) {
 			if (fPerm.phasedOut || fPerm.tapped || reservedTapIds?.has(fPerm.instanceId)) continue;
@@ -3349,6 +3517,12 @@ function simulateOrExecuteManaOnly(
 				if (fAb.manaRestriction && !canSpendRestrictedMana(fAb.manaRestriction, spendCtx)) {
 					continue;
 				}
+				// --- Track P10 ---
+				if (fAb.manaRestrictionSpec && !canSpendManaRestrictionSpec(fAb.manaRestrictionSpec, spendCtx)) {
+					continue;
+				}
+				const fAddOpts = p10AddManaOptions(fAb);
+				// --- End Track P10 ---
 				if (!checkActivationRestrictionsOnly(state, player.playerId, fPerm, fAb).ok) continue;
 				const fDefs = activatedAbilityCost(fPerm.card, fAb).defs;
 				if (isTapOnlyManaCost(fDefs)) continue;
@@ -3361,6 +3535,9 @@ function simulateOrExecuteManaOnly(
 				const inReq = parseManaCost(fAb.manaCost === '{0}' ? '' : fAb.manaCost);
 				const inTotal = inReq.totalCmc;
 				if (inTotal < 1 || inTotal > 2) continue;
+				// --- Track P10 ---
+				const filterInputSpendCtx = activatedAbilitySpendContext(state, fPerm, fAb);
+				// --- End Track P10 ---
 
 				const fAmt = getProducedAmount(fPerm, Math.max(1, fAb.producesAmount || 1), fAb);
 				if (fAmt <= 0) continue;
@@ -3384,11 +3561,11 @@ function simulateOrExecuteManaOnly(
 				);
 
 				// Way A: pay Filter-land input from existing floating mana pool
-				if (canPayManaCost(combinedManaPoolForSpend(player, abilitySpendCtx), inReq)) {
+				if (canPayManaCost(combinedManaPoolForSpend(player, filterInputSpendCtx), inReq)) {
 					for (const bundle of outBundles) {
 						const sim = clonePlayerMana(player);
-						deductManaForSpendContext(sim, inReq, abilitySpendCtx);
-						for (const c of bundle) addManaToPlayerPool(sim, c, 1, fAb.manaRestriction);
+						deductManaForSpendContext(sim, inReq, filterInputSpendCtx);
+						for (const c of bundle) addManaToPlayerPool(sim, c, 1, fAb.manaRestriction, fAddOpts);
 						const nextReserved = new Set<string>([...(reservedTapIds ?? []), fPerm.instanceId]);
 						if (
 							simulateOrExecuteManaOnly(
@@ -3403,7 +3580,7 @@ function simulateOrExecuteManaOnly(
 							)
 						) {
 							if (!mutate) return true;
-							deductManaForSpendContext(player, inReq, abilitySpendCtx);
+							deductManaForSpendContext(player, inReq, filterInputSpendCtx);
 							tapPermanent(state, fPerm);
 							resolveActivatedManaAbility(
 								state,
@@ -3433,7 +3610,15 @@ function simulateOrExecuteManaOnly(
 				for (const feeder of candidates) {
 					if (feeder.instanceId === fPerm.instanceId) continue;
 					for (const feedAb of manaAbilitiesOf(feeder)) {
-						if (feedAb.manaRestriction) continue;
+						if (
+							feedAb.manaRestriction ||
+							// --- Track P10 ---
+							(feedAb.manaRestrictionSpec &&
+								!canSpendManaRestrictionSpec(feedAb.manaRestrictionSpec, filterInputSpendCtx))
+							// --- End Track P10 ---
+						) {
+							continue;
+						}
 						const feedDefs = activatedAbilityCost(feeder.card, feedAb).defs;
 						if (!isTapOnlyManaCost(feedDefs)) continue;
 						const feedAmt = getProducedAmount(
@@ -3442,6 +3627,7 @@ function simulateOrExecuteManaOnly(
 							feedAb
 						);
 						if (feedAmt <= 0) continue;
+						const feedAddOpts = p10AddManaOptions(feedAb);
 						const feedOutputs: Array<{ color: ManaColor; amount: number; bundle?: ManaColor[] }> =
 							feedAb.manaBundles && feedAb.manaBundles.length > 0
 								? feedAb.manaBundles.map((b) => ({
@@ -3453,19 +3639,19 @@ function simulateOrExecuteManaOnly(
 						for (const fo of feedOutputs) {
 							const simAfterFeed = clonePlayerMana(player);
 							if (fo.bundle) {
-								for (const c of fo.bundle) addManaToPlayerPool(simAfterFeed, c, 1);
+								for (const c of fo.bundle) addManaToPlayerPool(simAfterFeed, c, 1, undefined, feedAddOpts);
 							} else {
-								addManaToPlayerPool(simAfterFeed, fo.color, fo.amount);
+								addManaToPlayerPool(simAfterFeed, fo.color, fo.amount, undefined, feedAddOpts);
 							}
 							if (
 								!canPayManaCost(
-									combinedManaPoolForSpend(simAfterFeed, abilitySpendCtx),
+									combinedManaPoolForSpend(simAfterFeed, filterInputSpendCtx),
 									inReq
 								)
 							) {
 								continue;
 							}
-							deductManaForSpendContext(simAfterFeed, inReq, abilitySpendCtx);
+							deductManaForSpendContext(simAfterFeed, inReq, filterInputSpendCtx);
 							const nextReserved = new Set<string>([
 								...(reservedTapIds ?? []),
 								fPerm.instanceId,
@@ -3473,7 +3659,7 @@ function simulateOrExecuteManaOnly(
 							]);
 							for (const bundle of outBundles) {
 								const sim2 = clonePlayerMana(simAfterFeed);
-								for (const c of bundle) addManaToPlayerPool(sim2, c, 1, fAb.manaRestriction);
+								for (const c of bundle) addManaToPlayerPool(sim2, c, 1, fAb.manaRestriction, fAddOpts);
 								if (
 									simulateOrExecuteManaOnly(
 										sim2,
@@ -3498,7 +3684,7 @@ function simulateOrExecuteManaOnly(
 										true,
 										fo.bundle
 									);
-									deductManaForSpendContext(player, inReq, abilitySpendCtx);
+									deductManaForSpendContext(player, inReq, filterInputSpendCtx);
 									tapPermanent(state, fPerm);
 									resolveActivatedManaAbility(
 										state,
@@ -3559,6 +3745,10 @@ function simulateOrExecuteManaOnly(
 		deductManaForSpendContext(player, manaReq, spendCtx);
 		if (lifeToPay > 0) {
 			player.life -= lifeToPay;
+			// --- Track P10 ---
+			player.lostLifeThisTurn = true;
+			noteLayerInputsChanged(state);
+			// --- End Track P10 ---
 		}
 	}
 
@@ -3741,8 +3931,9 @@ export function drawCards(
 
 export function emptyAllPlayersManaPools(state: GameState): void {
 	for (const p of state.players) {
-		p.manaPool = createEmptyManaPool();
-		p.restrictedMana = {};
+		// --- Track P10 ---
+		emptyPlayerManaPoolForStepEnd(p);
+		// --- End Track P10 ---
 		p.manaRiders = [];
 	}
 }
@@ -3869,6 +4060,9 @@ function executeUntapTurnBasedActions(state: GameState, activePlayer: PlayerGame
 		}
 		return ids;
 	});
+	// --- Track P10 ---
+	const untappedPerms: CardInstance[] = [];
+	// --- End Track P10 ---
 	for (const perm of activePlayer.battlefield) {
 		if (perm.phasedOut) continue;
 		const frozenNextUntap = consumeNextUntapFreeze(perm);
@@ -3877,6 +4071,9 @@ function executeUntapTurnBasedActions(state: GameState, activePlayer: PlayerGame
 				perm.counters.stun -= 1;
 			} else {
 				perm.tapped = false;
+				// --- Track P10 ---
+				untappedPerms.push(perm);
+				// --- End Track P10 ---
 			}
 		}
 		perm.summoningSick = false;
@@ -3884,6 +4081,18 @@ function executeUntapTurnBasedActions(state: GameState, activePlayer: PlayerGame
 		perm.activatedAbilityIdsThisTurn = undefined;
 		perm.usedModalModesThisTurn = undefined;
 	}
+	// --- Track P10 ---
+	if (untappedPerms.length > 0) {
+		noteLayerInputsChanged(state);
+		for (const perm of untappedPerms) {
+			emitEvent(state, {
+				kind: 'BecomesUntapped',
+				objectId: perm.instanceId,
+				object: perm
+			});
+		}
+	}
+	// --- End Track P10 ---
 }
 
 function executeDrawTurnBasedAction(state: GameState, activePlayer: PlayerGameState): void {
@@ -3940,6 +4149,9 @@ export function expirePlayerUntilNextTurnEffects(state: GameState, playerId: str
 			}
 		}
 	}
+	// --- Track P10 ---
+	expireDetainedEffectsForPlayer(state, playerId);
+	// --- End Track P10 ---
 }
 
 export function runBeginningOfTurn(state: GameState): void {
@@ -4180,7 +4392,7 @@ function applyGameActionInner(
 						candidate
 					);
 					const colorSig = preferred ? preferred : candidate.producesMana.join(',');
-					const sig = `${JSON.stringify(cDefs)}|${JSON.stringify(candidate.activationRestrictions ?? [])}|${JSON.stringify(candidate.activationCondition ?? null)}|${Boolean(candidate.freezesSelfUntap)}|${JSON.stringify(candidate.manaBundles ?? null)}|${JSON.stringify(candidate.manaCombinationColors ?? null)}|${amt}|${colorSig}`;
+					const sig = `${JSON.stringify(cDefs)}|${JSON.stringify(candidate.activationRestrictions ?? [])}|${JSON.stringify(candidate.activationCondition ?? null)}|${Boolean(candidate.freezesSelfUntap)}|${JSON.stringify(candidate.manaBundles ?? null)}|${JSON.stringify(candidate.manaCombinationColors ?? null)}|${JSON.stringify(candidate.manaRestrictionSpec ?? null)}|${Boolean(candidate.retainManaUntilEndOfTurn)}|${amt}|${colorSig}`;
 					if (!seenSignatures.has(sig)) {
 						seenSignatures.add(sig);
 						distinctPayableAbs.push(candidate);
@@ -4425,6 +4637,11 @@ function applyGameActionInner(
 				...(ab.freezesSelfUntap ? { freezesSelfUntap: true } : {}),
 				amount,
 				...(ab.manaRestriction ? { manaRestriction: ab.manaRestriction } : {}),
+				// --- Track P10 ---
+				...(ab.manaRestrictionSpec ? { manaRestrictionSpec: ab.manaRestrictionSpec } : {}),
+				...(ab.retainManaUntilEndOfTurn ? { retainManaUntilEndOfTurn: true } : {}),
+				...(ab.grantedAbilityText ? { grantedAbilityText: ab.grantedAbilityText } : {}),
+				// --- End Track P10 ---
 				onceEachTurn: Boolean(ab.activationRestrictions?.includes('onceEachTurn')),
 				sacrificeSelfInCost: cost.defs.some((d) => d.k === 'sacrifice' && d.filter === 'self'),
 				parts,
@@ -4768,6 +4985,12 @@ function applyGameActionInner(
 			const nonManaDefs = actionOpt.costDefs.filter((d) => d.k !== 'mana');
 			const promptName =
 				actionOpt.id === 'special:foretell' ? 'Foretell' : `${inst.card.name} (${actionOpt.label})`;
+			// --- Track P10 ---
+			const specialSpendCtx: ManaSpendContext = {
+				isSpell: false,
+				...(actionOpt.id === 'special:foretell' ? { isForetellAction: true } : {})
+			};
+			// --- End Track P10 ---
 			let effectiveReq = topManaStr ? parseManaCost(topManaStr) : null;
 			if (effectiveReq) {
 				const phyChoice = maybeAskPhyrexianCostChoice(
@@ -4783,7 +5006,8 @@ function applyGameActionInner(
 					actor,
 					action,
 					effectiveReq,
-					promptName
+					promptName,
+					specialSpendCtx
 				);
 				if (hybChoice.promptResult) return hybChoice.promptResult;
 				effectiveReq = hybChoice.resolvedReq;
@@ -4798,7 +5022,7 @@ function applyGameActionInner(
 					false,
 					effectiveReq,
 					action.costPayment?.phyrexianLifeCount,
-					undefined,
+					specialSpendCtx,
 					reservedSelf
 				);
 				const plan = planCosts(ctx, nonManaDefs, action.costPayment);
@@ -4826,7 +5050,8 @@ function applyGameActionInner(
 					actor,
 					effectiveReq,
 					state,
-					action.costPayment?.phyrexianLifeCount
+					action.costPayment?.phyrexianLifeCount,
+					specialSpendCtx
 				)
 			) {
 				return {
@@ -5319,7 +5544,10 @@ function applyGameActionInner(
 				spellMods: effectiveSpellMods,
 				...(hasOptCounts ? { optionalCostCounts: normalizedOptCounts } : {}),
 				additionalIncomplete: Boolean(additional && !additional.complete),
-				manaColorsSpent: spendCtx.capturedColorsSpent
+				manaColorsSpent: spendCtx.capturedColorsSpent,
+				// --- Track P10 ---
+				manaSpentCount: spendCtx.capturedManaSpentCount
+				// --- End Track P10 ---
 			});
 			return { ok: true };
 		}
@@ -5446,12 +5674,16 @@ function applyGameActionInner(
 				perm.card.name
 			);
 			if (phyAbilityChoice) return phyAbilityChoice;
+			// --- Track P10 ---
+			const abilitySpendCtx = activatedAbilitySpendContext(state, perm, ab);
+			// --- End Track P10 ---
 			const hybAbilityChoice = resolveHybridCostChoice(
 				state,
 				actor,
 				action,
 				abilityMana,
-				perm.card.name
+				perm.card.name,
+				abilitySpendCtx
 			);
 			if (hybAbilityChoice.promptResult) return hybAbilityChoice.promptResult;
 			const abilityCtx = costContext(
@@ -5461,7 +5693,8 @@ function applyGameActionInner(
 				abXValue,
 				false,
 				hybAbilityChoice.resolvedReq,
-				action.costPayment?.phyrexianLifeCount
+				action.costPayment?.phyrexianLifeCount,
+				abilitySpendCtx
 			);
 			const abilityPlan = planCosts(abilityCtx, abilityCost.defs, action.costPayment);
 			if (!abilityPlan.ok) return { ok: false, error: abilityPlan.error };
@@ -5505,6 +5738,9 @@ function applyGameActionInner(
 				effectText: ab.effectText,
 				abilityCostIncomplete: !abilityCost.complete,
 				...(ab.grantSourceCard ? { grantSourceCard: ab.grantSourceCard } : {}),
+				// --- Track P10 ---
+				...(ab.grantedAbilityText ? { grantedAbilityText: ab.grantedAbilityText } : {}),
+				// --- End Track P10 ---
 				parts,
 				manaPaid: abilityPlan.mana,
 				tapsAndManaDone: false,
@@ -5580,6 +5816,9 @@ function applyGameActionInner(
 
 			// CR 509.1i, 509.2, 117.5: All attacked defenders have declared blockers; put block/phase-begin
 			// triggers on the stack in APNAP order before giving priority to the active player.
+			// --- Track P10 ---
+			emitUnblockedAttackersEvents(state);
+			// --- End Track P10 ---
 			emitEvent(state, {
 				kind: 'PhaseBegin',
 				phase: 'declare_blockers',
@@ -5660,6 +5899,9 @@ function applyGameActionInner(
 							}
 						}
 					} else {
+						// --- Track P10 ---
+						emitUnblockedAttackersEvents(state);
+						// --- End Track P10 ---
 						emitEvent(state, {
 							kind: 'PhaseBegin',
 							phase: 'declare_blockers',
@@ -7435,6 +7677,16 @@ function handlePromptResolution(
 				`${actor.username} scried ${extracted.length} (${topList.length} on top, ${bottomList.length} on bottom).`,
 				actor.playerId
 			);
+			// --- Track P10 ---
+			if (extracted.length > 0) {
+				emitEvent(state, {
+					kind: 'Scried',
+					playerId: actor.playerId,
+					amount: extracted.length
+				});
+				flushTriggers(state);
+			}
+			// --- End Track P10 ---
 		}
 
 		state.pendingPrompts.splice(promptIdx, 1);
@@ -8660,6 +8912,11 @@ function beginPhase(state: GameState, phase: GamePhase, activePlayer?: PlayerGam
 		}
 	});
 	if (stepTurnBasedPaused || state.status === 'finished') return;
+	// --- Track P10 ---
+	if (phase === 'declare_blockers') {
+		emitUnblockedAttackersEvents(state);
+	}
+	// --- End Track P10 ---
 	emitEvent(state, {
 		kind: 'PhaseBegin',
 		phase,
@@ -8668,6 +8925,33 @@ function beginPhase(state: GameState, phase: GamePhase, activePlayer?: PlayerGam
 	// Triggered abilities go on the stack now: the callers check the stack right after this.
 	flushTriggers(state);
 }
+
+// --- Track P10 ---
+function emitUnblockedAttackersEvents(state: GameState): void {
+	if (!state.combat.active || state.combat.attackers.length === 0) return;
+	const byDefender = new Map<string, string[]>();
+	for (const atk of state.combat.attackers) {
+		if (atk.blockerInstanceIds.length > 0 || atk.wasBlocked) continue;
+		const permFound = findPermanentOnBoard(state, atk.attackerInstanceId);
+		if (!permFound || permFound.inst.phasedOut) continue;
+		let arr = byDefender.get(atk.defenderPlayerId);
+		if (!arr) {
+			arr = [];
+			byDefender.set(atk.defenderPlayerId, arr);
+		}
+		arr.push(atk.attackerInstanceId);
+	}
+	for (const [defenderPlayerId, attackerIds] of byDefender) {
+		if (attackerIds.length > 0) {
+			emitEvent(state, {
+				kind: 'UnblockedAttackers',
+				defenderPlayerId,
+				attackerIds
+			});
+		}
+	}
+}
+// --- End Track P10 ---
 
 // Event dispatch (Phase 5). Every event is matched against compiled triggered abilities
 // (runtime/triggers.ts); matches wait for the next flushTriggers. PhaseBegin also runs the suspend
@@ -8702,7 +8986,19 @@ for (const kind of [
 	'Exerted',
 	'Amassed',
 	'ManifestDread',
-	'BecameMonstrous'
+	'BecameMonstrous',
+	// --- Track P10 ---
+	'UnblockedAttackers',
+	'BecomesUntapped',
+	'Scried',
+	'CrimeCommitted',
+	'Exploited',
+	'ManaExpended',
+	'Sacrificed',
+	'GraveyardLeaveBatch',
+	'Discovered',
+	'Foraged'
+	// --- End Track P10 ---
 ] as const) {
 	registerEventHandler(kind, (state, ev) => matchTriggers(state, ev));
 }
@@ -8917,6 +9213,9 @@ function triggeredStackItem(state: GameState, t: PendingTrigger, idPrefix: strin
 			lkiPower: t.amount,
 			triggeredAbilityIndex: t.ability.abilityIndex,
 			...(t.ability.grantedKeyword ? { grantedKeyword: t.ability.grantedKeyword } : {}),
+			// --- Track P10 ---
+			...(t.grantedAbilityText ? { grantedAbilityText: t.grantedAbilityText } : {}),
+			// --- End Track P10 ---
 			eventObjectId: eventObj.instanceId,
 			eventObjectVersion: eventObj.objectVersion,
 			...(t.eventPlayer ? { eventPlayerId: t.eventPlayer } : {}),
@@ -8950,7 +9249,39 @@ export function triggerResolutionCounts(reset = false): { interpreter: number; m
 
 /** The compiled IR effect of a triggered stack item, or null (no compiled effect: legacy only). */
 function triggerItemEffect(item: StackItem) {
-	if (item.kind !== 'triggered' || item.triggeredAbilityIndex === undefined) return null;
+	if (item.kind !== 'triggered') return null;
+	// --- Track P10 ---
+	if (item.reflexiveTrigger) {
+		const spec = resolveReflexiveSpecFromCompiled(item.reflexiveTrigger);
+		if (!spec) return null;
+		if (spec.modal && item.chosenModes) {
+			const expanded = expandModalEffects(spec.modal, item.chosenModes);
+			if (expanded) {
+				return {
+					steps: expanded.steps,
+					targets: expanded.targets,
+					modal: spec.modal,
+					unparsed: []
+				};
+			}
+		}
+		return {
+			steps: spec.effect,
+			targets: spec.targets,
+			...(spec.modal ? { modal: spec.modal } : {}),
+			unparsed: []
+		};
+	}
+	if (item.grantedAbilityText) {
+		return resolveQuotedActivatedOrTriggeredSteps(
+			item.grantedAbilityText,
+			item.card.name,
+			'triggered',
+			item.chosenModes
+		);
+	}
+	// --- End Track P10 ---
+	if (item.triggeredAbilityIndex === undefined) return null;
 	return compiledTriggerEffect(
 		item.card,
 		item.triggeredAbilityIndex,
@@ -8962,9 +9293,78 @@ function triggerItemEffect(item: StackItem) {
 
 /** The ModalDef for a modal triggered stack item, if any. */
 function triggerItemModal(item: StackItem): ModalDef | undefined {
-	if (item.kind !== 'triggered' || item.triggeredAbilityIndex === undefined) return undefined;
+	if (item.kind !== 'triggered') return undefined;
+	// --- Track P10 ---
+	if (item.reflexiveTrigger) {
+		return resolveReflexiveSpecFromCompiled(item.reflexiveTrigger)?.modal;
+	}
+	if (item.grantedAbilityText) {
+		return resolveQuotedActivatedOrTriggeredSteps(
+			item.grantedAbilityText,
+			item.card.name,
+			'triggered'
+		)?.modal;
+	}
+	// --- End Track P10 ---
+	if (item.triggeredAbilityIndex === undefined) return undefined;
 	return compiledTriggerEffect(item.card, item.triggeredAbilityIndex, item.grantedKeyword, item.faceIndex ?? 0)?.modal;
 }
+
+// --- Track P10 ---
+function resolveStackItemCompiledEffects(item: StackItem) {
+	if (item.kind === 'triggered' && (item.reflexiveTrigger || item.grantedAbilityText)) {
+		return triggerItemEffect(item);
+	}
+	if (item.kind === 'activated' && item.grantedAbilityText) {
+		return resolveQuotedActivatedOrTriggeredSteps(
+			item.grantedAbilityText,
+			item.card.name,
+			'activated',
+			item.chosenModes
+		);
+	}
+	return compiledStackItemEffects(item);
+}
+
+function stackAbilitySourceMatchesFilter(
+	state: GameState,
+	stk: StackItem,
+	actorId: string,
+	abilitySourceFilter: NonNullable<TargetSpec['filter']['abilitySourceFilter']>,
+	source?: CardInstance,
+	stackItem?: StackItem
+): boolean {
+	if (stk.kind !== 'activated' && stk.kind !== 'triggered') return false;
+	const liveFound = findPermanentOnBoard(state, stk.sourceInstanceId);
+	let srcObj: CardInstance;
+	if (liveFound && !liveFound.inst.phasedOut) {
+		srcObj = liveFound.inst;
+	} else {
+		const foundAny = findCardAnywhere(state, stk.sourceInstanceId);
+		if (foundAny) {
+			srcObj = foundAny.inst;
+		} else {
+			srcObj = createCardInstance(
+				stk.card,
+				stk.controllerId,
+				'battlefield',
+				false,
+				false,
+				0
+			);
+			srcObj.instanceId = stk.sourceInstanceId;
+			srcObj.controllerId = stk.controllerId;
+			if (stk.faceIndex !== undefined) srcObj.activeFaceIndex = stk.faceIndex;
+		}
+	}
+	return matchesObjectFilter(srcObj, abilitySourceFilter, {
+		state,
+		controllerId: actorId,
+		source,
+		stackItem
+	});
+}
+// --- End Track P10 ---
 
 function recordUsedModalModes(
 	perm: CardInstance | undefined,
@@ -9185,15 +9585,49 @@ function validateModalChoice(
 	return { ok: true, chosenModes, targetsBySpec };
 }
 
+// --- Track P10 ---
+function rehydrateReflexiveBindings(
+	state: GameState,
+	boundRefs: SerializedBoundRef[] | undefined
+): Record<string, EffectBindingSnapshot[]> | undefined {
+	if (!boundRefs || boundRefs.length === 0) return undefined;
+	const out: Record<string, EffectBindingSnapshot[]> = {};
+	for (const ref of boundRefs) {
+		const found = findCardAnywhere(state, ref.id);
+		const sameObject =
+			found &&
+			found.zone === ref.expectedZone &&
+			(found.inst.objectVersion ?? 1) === ref.objectVersion;
+		// CR 400.7 & CR 608.2h: If the object changed zones/version since the reflexive trigger fired,
+		// mask its live id so zone-moving instructions ignore the new object, while keeping `lki`
+		// intact for LKI characteristic queries ("damage equal to that creature's power").
+		(out[ref.key] ??= []).push({
+			id: sameObject || !found ? ref.id : `__expired_${ref.id}`,
+			lki: { ...ref.lki }
+		});
+	}
+	return out;
+}
+// --- End Track P10 ---
+
 /** The interpreter's EffectContext fields for a triggered ability's event (CR 603.7c). */
-function triggerEventContext(item: StackItem) {
+function triggerEventContext(item: StackItem, state?: GameState) {
+	// --- Track P10 ---
+	const initialBindings =
+		state && item.reflexiveTrigger?.boundRefs?.length
+			? rehydrateReflexiveBindings(state, item.reflexiveTrigger.boundRefs)
+			: undefined;
+	// --- End Track P10 ---
 	return {
 		eventObjectId: item.eventObjectId,
 		eventObjectVersion: item.eventObjectVersion,
 		eventPlayerId: item.eventPlayerId,
 		defendingPlayerId: item.defendingPlayerId,
 		eventAmount: item.eventAmount,
-		eventLki: item.eventLki
+		eventLki: item.eventLki,
+		// --- Track P10 ---
+		...(initialBindings ? { initialBindings } : {})
+		// --- End Track P10 ---
 	};
 }
 
@@ -9498,6 +9932,23 @@ export function specTargetCandidates(
 			}
 			if (spec.filter.controller === 'opponent' && stk.controllerId === controllerId) continue;
 			if (spec.filter.controller === 'you' && stk.controllerId !== controllerId) continue;
+			// --- Track P10 ---
+			if (spec.filter.wasNotCast === true && !stk.isCopy) continue;
+			if (spec.filter.wasNotCast === false && stk.isCopy) continue;
+			if (
+				spec.filter.abilitySourceFilter &&
+				!stackAbilitySourceMatchesFilter(
+					state,
+					stk,
+					controllerId,
+					spec.filter.abilitySourceFilter,
+					source,
+					stackItem
+				)
+			) {
+				continue;
+			}
+			// --- End Track P10 ---
 			if (stk.kind === 'spell' && stk.card) {
 				const stkFace = resolveObjectFaces(stk.card, stackItemFaceOptions(stk));
 				if (spec.filter.types?.length && !spec.filter.types.some((t) => stkFace.types.includes(t))) {
@@ -9662,6 +10113,16 @@ function assignOrPromptTriggerTargets(
 			});
 		}
 	}
+	// --- Track P10 ---
+	if (
+		item.targets.length > 0 &&
+		!state.pendingPrompts.some(
+			(p) => p.purpose === 'trigger_targets' && p.triggerStackItemId === item.id
+		)
+	) {
+		checkAndEmitCrimeCommitted(state, item.controllerId, item.targets);
+	}
+	// --- End Track P10 ---
 }
 
 function putTriggerOnStack(state: GameState, t: PendingTrigger): StackItem | null {
@@ -10064,6 +10525,16 @@ function resolveTriggerPrompt(
 				});
 			}
 		}
+		// --- Track P10 ---
+		if (
+			item.targets.length > 0 &&
+			!state.pendingPrompts.some(
+				(p) => p.purpose === 'trigger_targets' && p.triggerStackItemId === item.id
+			)
+		) {
+			checkAndEmitCrimeCommitted(state, item.controllerId, item.targets);
+		}
+		// --- End Track P10 ---
 		flushTriggers(state);
 		return { ok: true };
 	}
@@ -10325,7 +10796,10 @@ function isUnautomatedStackItem(item: StackItem): boolean {
 		item.triggeredAbilityIndex !== undefined &&
 		!itemWard(item) &&
 		!item.delayedEffect &&
-		!item.inherentTrigger
+		!item.inherentTrigger &&
+		// --- Track P10 ---
+		!item.reflexiveTrigger
+		// --- End Track P10 ---
 	);
 }
 
@@ -10484,7 +10958,9 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 			if (item.kind === 'triggered' && triggerSpecs.length === item.targetsBySpec.length) {
 				bucketSpecs = triggerSpecs;
 			} else if (!item.chosenModes && !item.card?.typeLine.includes('Aura')) {
-				const comp = compiledStackItemEffects(item);
+				// --- Track P10 ---
+				const comp = resolveStackItemCompiledEffects(item);
+				// --- End Track P10 ---
 				if (comp && !comp.modal && comp.targets.length > 0) {
 					const itemKicker = getObjectKickerInfo(state, item.card, item.sourceInstanceId, item);
 					const activeCompSpecs = comp.targets.filter(
@@ -10666,7 +11142,9 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 	const compiled =
 		item.kind === 'triggered'
 			? triggerItemEffect(item)
-			: compiledStackItemEffects(item);
+			: // --- Track P10 ---
+				resolveStackItemCompiledEffects(item);
+	// --- End Track P10 ---
 	const targetsBecomeEach = Boolean(item.spellMods?.targetsBecomeEach);
 	const interpreted =
 		!item.manualResolution &&
@@ -10702,7 +11180,7 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 				targetSpecs: compiled.targets,
 				xValue: item.xValue,
 				targetsBecomeEach,
-				...triggerEventContext(item)
+				...triggerEventContext(item, state)
 			},
 			steps,
 			item.effectResume
@@ -10834,6 +11312,9 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 			perm.summoningSick = true;
 			perm.enteredWithX = item.xValue;
 			perm.manaColorsSpent = item.manaColorsSpent ? [...item.manaColorsSpent] : undefined;
+			// --- Track P10 ---
+			perm.manaSpentCount = item.manaSpentCount;
+			// --- End Track P10 ---
 			const isPrototypedSpell = Boolean(
 				item.spellMods?.prototyped || item.copiableState?.prototyped
 			);
@@ -11032,6 +11513,9 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 		}
 	}
 
+	// --- Track P10 ---
+	flushTriggers(state);
+	// --- End Track P10 ---
 	givePriorityToActiveOrNextPlayer(state);
 	state.passedPriorityPlayerIds = [];
 	checkStateBasedActions(state);
@@ -11195,7 +11679,10 @@ function counterStackItemByEffect(
 	state: GameState,
 	item: StackItem,
 	candidate: StackItem,
-	controller: PlayerGameState
+	controller: PlayerGameState,
+	// --- Track P10 ---
+	replacementZone?: 'exile' | 'libraryTop' | 'libraryBottom'
+	// --- End Track P10 ---
 ): boolean {
 	if (spellCannotBeCountered(state, candidate)) {
 		addLog(
@@ -11209,7 +11696,17 @@ function counterStackItemByEffect(
 	const stkIdx = state.stack.indexOf(candidate);
 	if (stkIdx < 0) return false;
 	const [countered] = state.stack.splice(stkIdx, 1);
-	moveStackSpellToZone(state, countered, 'graveyard');
+	// --- Track P10 ---
+	if (replacementZone === 'exile') {
+		moveStackSpellToZone(state, countered, 'exile');
+	} else if (replacementZone === 'libraryTop') {
+		moveStackSpellToZone(state, countered, 'library', { position: 'top' });
+	} else if (replacementZone === 'libraryBottom') {
+		moveStackSpellToZone(state, countered, 'library', { position: 'bottom' });
+	} else {
+		moveStackSpellToZone(state, countered, 'graveyard');
+	}
+	// --- End Track P10 ---
 	emitVfx(state, {
 		kind: 'counter_spell',
 		sourceId: controller.playerId,
@@ -11308,6 +11805,21 @@ function initiateLibraryScryOrSurveil(
 				graveyardCount: 0
 			});
 			flushTriggers(state);
+		} else if (mode === 'scry') {
+			// --- Track P10 ---
+			addLog(
+				state,
+				'rule',
+				`${controller.username} scried ${amount} (library is empty).`,
+				controller.playerId
+			);
+			emitEvent(state, {
+				kind: 'Scried',
+				playerId: controller.playerId,
+				amount
+			});
+			flushTriggers(state);
+			// --- End Track P10 ---
 		}
 		return;
 	}
@@ -11339,6 +11851,14 @@ function initiateLibraryScryOrSurveil(
 					`${controller.username} scried ${count} (${keepTop.length} on top, ${moveOther.length} on bottom).`,
 					controller.playerId
 				);
+				// --- Track P10 ---
+				emitEvent(state, {
+					kind: 'Scried',
+					playerId: controller.playerId,
+					amount: count
+				});
+				flushTriggers(state);
+				// --- End Track P10 ---
 			}
 		} else {
 			const topCards = controller.library.slice(0, count);
@@ -11557,11 +12077,15 @@ function stackItemTargetSpecsAndSteps(
 		return { specs: eff?.targets ?? [], steps: eff?.steps ?? [] };
 	}
 	if (orig.kind === 'activated') {
-		const eff = compiledStackItemEffects(orig);
+		// --- Track P10 ---
+		const eff = resolveStackItemCompiledEffects(orig);
+		// --- End Track P10 ---
 		return { specs: eff?.targets ?? [], steps: eff?.steps ?? [] };
 	}
 	if (orig.spellMods?.targetsBecomeEach) return { specs: [], steps: [] };
-	const eff = compiledStackItemEffects(orig);
+	// --- Track P10 ---
+	const eff = resolveStackItemCompiledEffects(orig);
+	// --- End Track P10 ---
 	if (eff) {
 		const kickerInfo = getObjectKickerInfo(state, orig.card, orig.sourceInstanceId, orig);
 		const specs = eff.targets.filter(
@@ -11941,6 +12465,12 @@ function pushCopiedStackItem(
 				? { triggeredAbilityIndex: orig.triggeredAbilityIndex }
 				: {}),
 			...(orig.grantedKeyword ? { grantedKeyword: orig.grantedKeyword } : {}),
+			// --- Track P10 ---
+			...(orig.grantedAbilityText ? { grantedAbilityText: orig.grantedAbilityText } : {}),
+			...(orig.reflexiveTrigger
+				? { reflexiveTrigger: JSON.parse(JSON.stringify(orig.reflexiveTrigger)) }
+				: {}),
+			// --- End Track P10 ---
 			...(orig.delayedEffect ? { delayedEffect: orig.delayedEffect } : {}),
 			...(orig.inherentTrigger ? { inherentTrigger: { ...orig.inherentTrigger } } : {}),
 			...(orig.wardCost !== undefined ? { wardCost: orig.wardCost } : {}),
@@ -12080,6 +12610,45 @@ registerWave3Host({
 	}
 });
 // --- End Track P9 ---
+
+// --- Track P10 ---
+registerP10RuntimeHost({
+	uid,
+	addLog,
+	canPayOrAutoTap: (player, req, state) =>
+		canPayOrAutoTap(player, req, state, undefined, { isSpell: false }),
+	payManaWithAutoTap: (player, req, state) =>
+		payManaWithAutoTap(player, req, state, undefined, { isSpell: false }),
+	costContext: (state, player, source, xValue, isSpell, baseMana) =>
+		costContext(state, player, source, xValue, isSpell, baseMana),
+	specTargetCandidates: (state, actorId, sourceCard, sourceInst, spec) =>
+		specTargetCandidates(state, actorId, sourceCard, sourceInst, spec),
+	finalizeCastSpell: (state, actor, inst, sourcePlayer, sourceZone, opts) =>
+		finalizeCastSpell(state, actor, inst, sourcePlayer, sourceZone, opts),
+	assignOrPromptTriggerTargets: (state, item, specs) => {
+		const controller = state.players.find((p) => p.playerId === item.controllerId);
+		if (!controller) return 'removed';
+		const candidates = specs.map((spec) => triggerTargetCandidates(state, item, spec));
+		const impossible = specs.findIndex(
+			(spec, i) => spec.min > 0 && candidates[i].length < spec.min
+		);
+		if (impossible >= 0) {
+			const idx = state.stack.indexOf(item);
+			if (idx >= 0) state.stack.splice(idx, 1);
+			addLog(
+				state,
+				'rule',
+				`${item.title} was removed from the Stack: it has no legal targets (CR 603.3d).`,
+				item.controllerId
+			);
+			return 'removed';
+		}
+		const promptsBefore = state.pendingPrompts.length;
+		assignOrPromptTriggerTargets(state, controller, item, specs, candidates);
+		return state.pendingPrompts.length > promptsBefore ? 'prompted' : 'ready';
+	}
+});
+// --- End Track P10 ---
 
 /**
  * CR 702.26: Phasing Out a permanent also indirectly phases out any Auras/Equipment attached to it.
@@ -13558,8 +14127,9 @@ function clearEndOfTurnAndDamage(state: GameState): void {
 		state.timedContinuousEffects = persisting.length > 0 ? persisting : undefined;
 	}
 	for (const p of state.players) {
-		p.manaPool = createEmptyManaPool();
-		p.restrictedMana = {};
+		// --- Track P10 ---
+		clearPlayerManaPoolAtCleanup(p);
+		// --- End Track P10 ---
 		p.preventAllCombatDamageThisTurn = false;
 		// --- Track P9 ---
 		p.damageDealtToThisTurn = 0;
@@ -14843,6 +15413,10 @@ export function movePermanentToZone(
 		skipLinkedReturn?: boolean;
 		position?: 'top' | 'bottom';
 		fromTop?: number;
+		// --- Track P10 ---
+		sacrificedByPlayerId?: string;
+		suppressGraveyardLeaveBatch?: boolean;
+		// --- End Track P10 ---
 	}
 ): MoveResult {
 	inst.defaultControllerId = undefined;
@@ -14865,7 +15439,13 @@ export function movePermanentToZone(
 				: 'end',
 		ceaseToExist: 'tokens',
 		sbaLog,
-		...(moveOpts?.skipLinkedReturn ? { skipLinkedReturn: true } : {})
+		...(moveOpts?.skipLinkedReturn ? { skipLinkedReturn: true } : {}),
+		// --- Track P10 ---
+		...(moveOpts?.sacrificedByPlayerId
+			? { sacrificedByPlayerId: moveOpts.sacrificedByPlayerId }
+			: {}),
+		...(moveOpts?.suppressGraveyardLeaveBatch ? { suppressGraveyardLeaveBatch: true } : {})
+		// --- End Track P10 ---
 	});
 }
 
@@ -15257,6 +15837,41 @@ function validateTargetLegalityInner(
 				};
 			}
 		}
+		// --- Track P10 ---
+		if (stackSpec?.kind === 'object') {
+			if (stackSpec.filter.wasNotCast === true && !inStack.isCopy) {
+				return {
+					ok: false,
+					error: `Strict Rules Violation: ${inStack.card.name} was cast (requires a spell that was not cast).`
+				};
+			}
+			if (stackSpec.filter.wasNotCast === false && inStack.isCopy) {
+				return {
+					ok: false,
+					error: `Strict Rules Violation: ${inStack.card.name} was not cast.`
+				};
+			}
+			if (stackSpec.filter.abilitySourceFilter) {
+				const castingSrc = sourceInstanceId
+					? findCardAnywhere(state, sourceInstanceId)?.inst
+					: undefined;
+				if (
+					!stackAbilitySourceMatchesFilter(
+						state,
+						inStack,
+						actorId,
+						stackSpec.filter.abilitySourceFilter,
+						castingSrc
+					)
+				) {
+					return {
+						ok: false,
+						error: `Strict Rules Violation: Target ability's source does not match the required filter.`
+					};
+				}
+			}
+		}
+		// --- End Track P10 ---
 		return { ok: true };
 	}
 
@@ -17462,11 +18077,15 @@ function isTargetStillValid(
 			);
 			targetInfo = ab?.targetInfo;
 			if (!targetInfo) {
-				const comp = compiledStackItemEffects(item);
+				// --- Track P10 ---
+				const comp = resolveStackItemCompiledEffects(item);
+				// --- End Track P10 ---
 				if (comp) targetInfo = targetRequirementFromSpecs(comp.targets);
 			}
 		} else {
-			const comp = compiledStackItemEffects(item);
+			// --- Track P10 ---
+			const comp = resolveStackItemCompiledEffects(item);
+			// --- End Track P10 ---
 			if (comp) targetInfo = targetRequirementFromSpecs(comp.targets);
 		}
 		if (targetInfo && targetInfo.requiresTarget) {
@@ -17496,7 +18115,9 @@ function isTargetStillValid(
 				return false;
 			}
 		}
-		const compiled = compiledStackItemEffects(item);
+		// --- Track P10 ---
+		const compiled = resolveStackItemCompiledEffects(item);
+		// --- End Track P10 ---
 		if (compiled && compiled.targets.length > 0) {
 			const itemKicker = getObjectKickerInfo(state, item.card, item.sourceInstanceId, item);
 			const activeCompiledTargets = compiled.targets.filter(

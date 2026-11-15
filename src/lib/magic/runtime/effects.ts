@@ -57,7 +57,7 @@ import type {
 } from '../types.ts';
 import { describeCost } from './costs.ts';
 import { cardManaSteps } from '../compiler/index.ts';
-import { addManaToPlayerPool } from './mana.ts';
+import { addManaToPlayerPool, type AddManaOptions } from './mana.ts';
 import { getCardFaces } from '../scryfall.ts';
 import {
 	activeAbilityDefs,
@@ -119,6 +119,9 @@ import {
 import {
 	allocateTimestamp,
 	attachObject,
+	// --- Track P10 ---
+	captureLki,
+	// --- End Track P10 ---
 	createEmptyCounters,
 	moveObject,
 	rearrangeLibrary,
@@ -153,6 +156,30 @@ import {
 	registerTimedCombatRestriction
 } from './copyPreventionAndEffects.ts';
 // --- End Track P7 ---
+// --- Track P10 ---
+import type { ManaSpendingRestrictionSpec } from '../types.ts';
+import {
+	enqueueReflexiveTriggerForStep,
+	evaluateP10Condition,
+	executeAttachP10,
+	executeBlight,
+	executeClash,
+	executeCollectEvidence,
+	executeDetain,
+	executeDiscover,
+	executeEndure,
+	executeFateseal,
+	executeFlipCoin,
+	executeForage,
+	executeMultiZoneSearchP10,
+	executeRollDie,
+	executeSuspect,
+	executeTimeTravel,
+	isExploitTriggerStackItem,
+	isP10ExtendedSearch,
+	type P10EffectHost
+} from './reflexiveManaAndActions.ts';
+// --- End Track P10 ---
 
 /** Seeded randomness lives in runtime/random.ts (re-exported here for existing importers). */
 export { nextRandom };
@@ -209,7 +236,14 @@ export interface EffectPorts {
 		state: GameState,
 		inst: CardInstance,
 		to: 'graveyard' | 'exile' | 'hand' | 'library',
-		libraryOpts?: { position?: 'top' | 'bottom'; fromTop?: number }
+		// --- Track P10 ---
+		libraryOpts?: {
+			position?: 'top' | 'bottom';
+			fromTop?: number;
+			sacrificedByPlayerId?: string;
+			suppressGraveyardLeaveBatch?: boolean;
+		}
+		// --- End Track P10 ---
 	): string;
 	/** Moves a spell on the stack into its owner's library without countering it (CR 401.2, 401.7). */
 	moveStackSpellToLibrary(
@@ -218,7 +252,15 @@ export interface EffectPorts {
 		libraryOpts?: { position?: 'top' | 'bottom'; fromTop?: number }
 	): void;
 	/** Counters a spell unless it can't be countered. Returns true if it was countered. */
-	counterSpell(state: GameState, item: StackItem, target: StackItem, controller: PlayerGameState): boolean;
+	// --- Track P10 ---
+	counterSpell(
+		state: GameState,
+		item: StackItem,
+		target: StackItem,
+		controller: PlayerGameState,
+		replacementZone?: 'exile' | 'libraryTop' | 'libraryBottom'
+	): boolean;
+	// --- End Track P10 ---
 	createToken(state: GameState, controller: PlayerGameState, spec: TokenSpec): CardInstance;
 	copyPermanentAsToken(
 		state: GameState,
@@ -620,6 +662,19 @@ export function dealDamageToPermanent(
 		if (srcInfo.hasDeathtouch) {
 			target.deathtouchDamageMarked = true;
 		}
+		// --- Track P10 ---
+		if (dmg > 0 && sourceId) {
+			const srcPerm = p.findPermanent(state, sourceId)?.inst;
+			const srcVer = srcPerm?.objectVersion;
+			const dmgList = (target.damagedByThisTurn ??= []);
+			if (!dmgList.some((e) => e.sourceId === sourceId && e.sourceVersion === srcVer)) {
+				dmgList.push({
+					sourceId,
+					...(srcVer !== undefined ? { sourceVersion: srcVer } : {})
+				});
+			}
+		}
+		// --- End Track P10 ---
 	} else if (!evTarget.isPlaneswalker) {
 		target.damageMarked += dmg;
 	}
@@ -686,7 +741,15 @@ export function dealDamageToPlayer(
 		const cantChange =
 			Boolean(pl.lifeTotalCannotChangeThisTurn) ||
 			activeRuleModifiers(state, 'lifeTotalCantChange', pl.playerId).length > 0;
-		if (!cantChange) pl.life -= dmg;
+		// --- Track P10 ---
+		if (!cantChange) {
+			pl.life -= dmg;
+			if (dmg > 0 && !pl.lostLifeThisTurn) {
+				pl.lostLifeThisTurn = true;
+				noteLayerInputsChanged(state);
+			}
+		}
+		// --- End Track P10 ---
 	}
 	// --- Track P9 ---
 	pl.damageDealtToThisTurn = (pl.damageDealtToThisTurn ?? 0) + dmg;
@@ -829,11 +892,29 @@ class Run {
 	/** Can this run pause for a human (the item is on the stack, so it can be resumed by id)? */
 	readonly canPause: boolean;
 	readonly initialSnapshots = new Map<string, Snapshot>();
+	// --- Track P10 ---
+	lastRollResult?: number;
+	currentSteps: EffectStep[] = [];
+	subPathPrefix?: number[];
+	private stepActedIds: string[] = [];
+	private stepDiedIds = new Set<string>();
+	private stepPreSnapshots = new Map<string, TriggerEventLki>();
+	private saveFrameOverride?: (
+		stepIndex: number,
+		answers: Record<string, ChoiceAnswer>,
+		phase: 'optional' | 'step' | 'afterStep',
+		subStepIndex: number
+	) => StackItem;
+	// --- End Track P10 ---
 
 	constructor(state: GameState, ctx: EffectContext, resume?: EffectResumeFrame) {
 		this.state = state;
 		this.ctx = ctx;
 		this.canPause = state.stack.some((s) => s.id === ctx.item.id);
+		// --- Track P10 ---
+		this.subPathPrefix = ctx.stepPathPrefix ? [...ctx.stepPathPrefix] : undefined;
+		this.lastRollResult = resume?.lastRollResult ?? ctx.item.lastRollResult;
+		// --- End Track P10 ---
 		for (const t of ctx.targets) {
 			const f = this.locate(t.id);
 			if (f) this.initialSnapshots.set(t.id, this.snapshot(f.inst));
@@ -1043,10 +1124,86 @@ class Run {
 
 	botAcceptsOptional(step: EffectStep, chooser: PlayerGameState): boolean {
 		if (step.verb === 'draw' && chooser.library.length <= 3) return false;
-		if (step.verb === 'sacrifice' || step.verb === 'loseLife' || step.verb === 'discard') return false;
+		// --- Track P10 ---
+		if (step.verb === 'sacrifice' || step.verb === 'loseLife' || step.verb === 'discard') {
+			const hasPayoff =
+				Boolean(step.params?.reflexiveTrigger) ||
+				this.currentSteps.some((st) => st.ifPrecedingAccepted === this.stepIndex);
+			if (!hasPayoff || chooser.playerId !== this.you.playerId) return false;
+			if (step.verb === 'loseLife' && this.amount(step.amount, 0) >= chooser.life) return false;
+			return true;
+		}
+		// --- End Track P10 ---
 		if (step.verb === 'search' && chooser.library.length === 0) return false;
 		return true;
 	}
+
+	// --- Track P10 ---
+	/** CR 118.12: An optional action cannot be accepted if the chooser cannot legally perform it. */
+	private canPerformOptionalActionStep(step: EffectStep, chooser: PlayerGameState): boolean {
+		const sel = step.subject;
+		if (step.verb === 'sacrifice') {
+			const actor = step.actor ? (this.playerRef(step.actor) ?? chooser) : chooser;
+			if (sel.k === 'self' || sel.k === 'binding' || sel.k === 'target' || sel.k === 'eventObject') {
+				const objs = this.objects(sel).filter(
+					(o) =>
+						o.zone === 'battlefield' &&
+						o.controllerId === actor.playerId &&
+						(sel.k !== 'self' ||
+							this.ctx.item.sourceObjectVersion === undefined ||
+							(o.objectVersion ?? 1) === this.ctx.item.sourceObjectVersion)
+				);
+				return objs.length > 0;
+			}
+			const required = sel.k === 'all' && !step.amount ? 1 : Math.max(1, this.amount(step.amount, 1));
+			const filter: ObjectFilter = sel.k === 'all' ? { ...sel.filter, controller: undefined } : {};
+			const cands = actor.battlefield.filter(
+				(c) => !c.phasedOut && c.controllerId === actor.playerId && this.matches(c, filter, 'battlefield')
+			);
+			return cands.length >= required;
+		}
+		if (step.verb === 'discard') {
+			const actor = step.actor ? (this.playerRef(step.actor) ?? chooser) : chooser;
+			if (sel.k === 'self' || sel.k === 'binding') {
+				return this.objects(sel).some((o) => o.zone === 'hand');
+			}
+			const required = sel.k === 'all' && !step.amount ? 1 : Math.max(1, this.amount(step.amount, 1));
+			const filter: ObjectFilter | null =
+				sel.k === 'all' ? { ...sel.filter, controller: undefined, owner: undefined } : null;
+			const cands = filter
+				? actor.hand.filter((c) => this.matches(c, filter, 'hand'))
+				: actor.hand;
+			return cands.length >= required;
+		}
+		if (step.verb === 'removeCounters') {
+			const counter = step.params?.counter ?? '+1/+1';
+			const want = Math.max(1, this.amount(step.amount, 1));
+			return this.objects(sel).some(
+				(o) => o.zone === 'battlefield' && !o.phasedOut && (o.counters[counter] || 0) >= want
+			);
+		}
+		if (step.verb === 'forage') {
+			const actor = step.actor ? (this.playerRef(step.actor) ?? chooser) : chooser;
+			const hasFood = actor.battlefield.some(
+				(c) => !c.phasedOut && evaluatePermanent(this.state, c).hasSubType('Food')
+			);
+			return hasFood || actor.graveyard.length >= 3;
+		}
+		if (step.verb === 'collectEvidence') {
+			const actor = step.actor ? (this.playerRef(step.actor) ?? chooser) : chooser;
+			const need = Math.max(0, this.amount(step.amount, 1));
+			if (need <= 0) return true;
+			let totalMv = 0;
+			for (const c of actor.graveyard) totalMv += Math.max(0, objectManaValue(this.state, c));
+			return totalMv >= need;
+		}
+		if (step.verb === 'blight') {
+			const actor = step.actor ? (this.playerRef(step.actor) ?? chooser) : chooser;
+			return actor.battlefield.some((c) => !c.phasedOut && evaluatePermanent(this.state, c).isCreature);
+		}
+		return true;
+	}
+	// --- End Track P10 ---
 
 	botAcceptsOptionalCost(
 		_step: EffectStep,
@@ -1129,15 +1286,21 @@ class Run {
 
 		const cost = opt.cost;
 		const hasCost = Boolean(cost && cost.length > 0);
-		if (!hasCost && this.ctx.item.optionalAccepted !== undefined && opt.chooser.k === 'you') {
-			const yes = this.ctx.item.optionalAccepted;
-			this.stepDecisions[this.stepIndex] = yes;
-			return executeIfPaid(yes);
-		}
 		const chooser = this.playerRef(opt.chooser) ?? this.you;
 		if (!chooser || chooser.lost) {
 			this.stepDecisions[this.stepIndex] = false;
 			return executeIfPaid(false);
+		}
+		// --- Track P10 ---
+		if (!hasCost && !this.canPerformOptionalActionStep(step, chooser)) {
+			this.stepDecisions[this.stepIndex] = false;
+			return executeIfPaid(false);
+		}
+		// --- End Track P10 ---
+		if (!hasCost && this.ctx.item.optionalAccepted !== undefined && opt.chooser.k === 'you') {
+			const yes = this.ctx.item.optionalAccepted;
+			this.stepDecisions[this.stepIndex] = yes;
+			return executeIfPaid(yes);
 		}
 
 		if (hasCost && this.pendingOptionalCost && this.pendingOptionalCost.stepIndex === this.stepIndex) {
@@ -1249,6 +1412,11 @@ class Run {
 		phase: 'optional' | 'step' | 'afterStep' = this.phase,
 		subStepIndex = this.subStepIndex
 	): StackItem {
+		// --- Track P10 ---
+		if (this.saveFrameOverride) {
+			return this.saveFrameOverride(stepIndex, answers, phase, subStepIndex);
+		}
+		// --- End Track P10 ---
 		const item = this.state.stack.find((s) => s.id === this.ctx.item.id)!;
 		item.effectResume = {
 			stepIndex,
@@ -1261,7 +1429,10 @@ class Run {
 			...(Object.keys(this.stepDecisions).length > 0
 				? { stepDecisions: { ...this.stepDecisions } }
 				: {}),
-			...(this.pendingOptionalCost ? { pendingOptionalCost: this.pendingOptionalCost } : {})
+			...(this.pendingOptionalCost ? { pendingOptionalCost: this.pendingOptionalCost } : {}),
+			// --- Track P10 ---
+			...(this.lastRollResult !== undefined ? { lastRollResult: this.lastRollResult } : {})
+			// --- End Track P10 ---
 		};
 		return item;
 	}
@@ -1509,6 +1680,10 @@ class Run {
 			// --- Track P9 ---
 			case 'lkiCounterCount':
 				return this.ctx.eventLki?.counters?.[a.counter] ?? 0;
+			// --- Track P10 ---
+			case 'lastRollResult':
+				return this.lastRollResult ?? this.ctx.item.lastRollResult ?? 0;
+			// --- End Track P10 ---
 		}
 	}
 
@@ -1833,6 +2008,9 @@ class Run {
 		if (f.tapped !== undefined && c.tapped !== f.tapped) return false;
 		if (f.saddled !== undefined && Boolean(c.saddledThisTurn) !== f.saddled) return false;
 		if (f.monstrous !== undefined && Boolean(c.isMonstrous) !== f.monstrous) return false;
+		// --- Track P10 ---
+		if (f.suspected !== undefined && Boolean(c.isSuspected) !== f.suspected) return false;
+		// --- End Track P10 ---
 		if (f.token !== undefined && c.isToken !== f.token) return false;
 		if (f.isCommander !== undefined && Boolean(c.isCommander) !== f.isCommander) return false;
 		if (f.exiledWithSelf) {
@@ -1923,10 +2101,107 @@ class Run {
 
 	// ---- Steps
 
+	// --- Track P10 ---
+	private captureTriggerEventLki(inst: CardInstance): TriggerEventLki {
+		const snap = this.snapshot(inst);
+		const ctrs: Partial<Record<CounterType, number>> = {};
+		let hasCtrs = false;
+		for (const [k, v] of Object.entries(inst.counters) as Array<[CounterType, number]>) {
+			if (v > 0) {
+				ctrs[k] = v;
+				hasCtrs = true;
+			}
+		}
+		return {
+			...snap,
+			...(hasCtrs ? { counters: ctrs } : {})
+		};
+	}
+
+	private resetStepReflexiveTracking(step: EffectStep): void {
+		this.stepActedIds = [];
+		this.stepDiedIds.clear();
+		this.stepPreSnapshots.clear();
+		if (!step.params?.reflexiveTrigger) return;
+		const actedAns = this.answers[`__p10_acted:${this.stepIndex}`];
+		if (actedAns?.kind === 'chooseObjects') {
+			this.stepActedIds = [...actedAns.objectIds];
+		}
+		const diedAns = this.answers[`__p10_died:${this.stepIndex}`];
+		if (diedAns?.kind === 'chooseObjects') {
+			for (const id of diedAns.objectIds) this.stepDiedIds.add(id);
+		}
+	}
+
+	private recordStepActedObject(
+		inst: CardInstance,
+		preSnap?: TriggerEventLki,
+		died = false
+	): void {
+		if (!this.stepActedIds.includes(inst.instanceId)) {
+			this.stepActedIds.push(inst.instanceId);
+		}
+		if (preSnap && !this.stepPreSnapshots.has(inst.instanceId)) {
+			this.stepPreSnapshots.set(inst.instanceId, preSnap);
+		}
+		if (died) {
+			this.stepDiedIds.add(inst.instanceId);
+		}
+		const curStep = this.currentSteps[this.stepIndex];
+		if (this.canPause && curStep?.params?.reflexiveTrigger) {
+			this.answers[`__p10_acted:${this.stepIndex}`] = {
+				kind: 'chooseObjects',
+				objectIds: [...this.stepActedIds]
+			};
+			if (this.stepDiedIds.size > 0) {
+				this.answers[`__p10_died:${this.stepIndex}`] = {
+					kind: 'chooseObjects',
+					objectIds: [...this.stepDiedIds]
+				};
+			}
+		}
+	}
+
+	private finishStepReflexive(step: EffectStep): void {
+		if (!step.params?.reflexiveTrigger) return;
+		const actedObjects: CardInstance[] = [];
+		for (const id of this.stepActedIds) {
+			const found = this.locate(id);
+			if (found) {
+				actedObjects.push(found.inst);
+			} else {
+				const pre = this.stepPreSnapshots.get(id);
+				actedObjects.push(this.syntheticLkiObject(id, pre?.controllerId ?? this.you.playerId));
+			}
+		}
+		if (actedObjects.length === 0 && step.bindAs) {
+			for (const b of this.bindings.get(step.bindAs) ?? []) {
+				const found = this.locate(b.id);
+				actedObjects.push(
+					found ? found.inst : this.syntheticLkiObject(b.id, b.lki.controllerId)
+				);
+				if (!this.stepPreSnapshots.has(b.id)) {
+					this.stepPreSnapshots.set(b.id, { ...b.lki });
+				}
+			}
+		}
+		enqueueReflexiveTriggerForStep(this.p10Host(), step, actedObjects, {
+			diedObjectIds: this.stepDiedIds,
+			preSnapshots: this.stepPreSnapshots
+		});
+	}
+	// --- End Track P10 ---
+
 	run(steps: EffectStep[]): void {
+		// --- Track P10 ---
+		this.currentSteps = steps;
+		// --- End Track P10 ---
 		for (; this.stepIndex < steps.length; this.stepIndex++) {
 			if (this.result.turnEnded) return;
 			const step = steps[this.stepIndex];
+			// --- Track P10 ---
+			this.resetStepReflexiveTracking(step);
+			// --- End Track P10 ---
 			if (
 				step.ifPrecedingAccepted !== undefined &&
 				!this.stepDecisions[step.ifPrecedingAccepted]
@@ -1973,8 +2248,14 @@ class Run {
 				if (this.canPause && queued.length > 0) {
 					const hasNestedPrompt = queued.some((pr) => this.isNestedBlockingPrompt(pr));
 					if (PROMPTING_VERBS.has(step.verb) || hasNestedPrompt) {
-						const item = this.saveFrame(this.stepIndex + 1, {}, 'optional', 0);
-						this.linkPromptsToStackStep(queued, this.stepIndex + 1);
+						// --- Track P10 ---
+						const hasReflexive = Boolean(step.params?.reflexiveTrigger);
+						const resumeIdx = hasReflexive ? this.stepIndex : this.stepIndex + 1;
+						const resumePhase = hasReflexive ? 'afterStep' : 'optional';
+						const resumeAnswers = hasReflexive ? this.answers : {};
+						const item = this.saveFrame(resumeIdx, resumeAnswers, resumePhase, 0);
+						this.linkPromptsToStackStep(queued, resumeIdx);
+						// --- End Track P10 ---
 						for (const pr of queued) {
 							if (
 								PROMPTING_VERBS.has(step.verb) &&
@@ -1984,7 +2265,7 @@ class Run {
 								pr.continuation = {
 									kind: 'effect_resume',
 									stackItemId: item.id,
-									stepIndex: this.stepIndex + 1
+									stepIndex: resumeIdx
 								};
 							}
 						}
@@ -1993,6 +2274,9 @@ class Run {
 					}
 				}
 			}
+			// --- Track P10 ---
+			this.finishStepReflexive(step);
+			// --- End Track P10 ---
 			this.subStepIndex = 0;
 			this.phase = 'optional';
 			this.answers = {};
@@ -2028,7 +2312,15 @@ class Run {
 						const cantChange =
 							Boolean(pl.lifeTotalCannotChangeThisTurn) ||
 							activeRuleModifiers(s, 'lifeTotalCantChange', pl.playerId).length > 0;
-						if (!cantChange) pl.life += delta;
+						// --- Track P10 ---
+						if (!cantChange) {
+							pl.life += delta;
+							if (n > 0 && !pl.lostLifeThisTurn) {
+								pl.lostLifeThisTurn = true;
+								noteLayerInputsChanged(s);
+							}
+						}
+						// --- End Track P10 ---
 					}
 					p.emitVfx(s, {
 						kind: delta >= 0 ? 'heal' : 'damage',
@@ -2099,7 +2391,16 @@ class Run {
 							() => ids,
 							(id) => {
 								const f = this.locate(id);
-								if (f && f.zone === 'battlefield') return p.destroy(s, f.inst, title, you.playerId, !cantRegen);
+								if (f && f.zone === 'battlefield') {
+									// --- Track P10 ---
+									const preSnap = this.captureTriggerEventLki(f.inst);
+									const res = p.destroy(s, f.inst, title, you.playerId, !cantRegen);
+									if (f.inst.zone !== 'battlefield') {
+										this.recordStepActedObject(f.inst, preSnap, f.inst.zone === 'graveyard');
+									}
+									return res;
+									// --- End Track P10 ---
+								}
 							}
 						).paused;
 					});
@@ -2166,7 +2467,13 @@ class Run {
 						const f = this.locate(id);
 						if (!f || f.zone !== 'battlefield') return;
 						const objLabel = f.inst.isFaceDown ? (f.inst.faceDownLabel || 'Face-Down Permanent') : f.inst.card.name;
+						// --- Track P10 ---
+						const preSnap = this.captureTriggerEventLki(f.inst);
 						const res = p.moveFromBattlefield(s, f.inst, 'hand');
+						if (f.inst.zone !== 'battlefield') {
+							this.recordStepActedObject(f.inst, preSnap, false);
+						}
+						// --- End Track P10 ---
 						p.addLog(s, 'cast', `${title} returned ${objLabel} to its owner's hand.`, you.playerId);
 						return res as MoveResult;
 					}
@@ -2194,7 +2501,9 @@ class Run {
 							manaValue: objectManaValue(s, target)
 						}
 					});
-					p.counterSpell(s, this.ctx.item, target, you);
+					// --- Track P10 ---
+					p.counterSpell(s, this.ctx.item, target, you, step.params?.counterReplacementZone);
+					// --- End Track P10 ---
 				}
 				if (step.bindAs) this.bindings.set(step.bindAs, countered);
 				return;
@@ -2325,12 +2634,18 @@ class Run {
 						const f = this.locate(id);
 						if (!f || f.zone !== 'battlefield') return;
 						const inst = f.inst;
+						// --- Track P10 ---
+						const preSnap = this.captureTriggerEventLki(inst);
+						// --- End Track P10 ---
 						const prev = inst.counters[counter] || 0;
 						const next = Math.max(0, prev - want);
 						const removed = prev - next;
 						if (removed > 0) {
 							inst.counters[counter] = next;
 							noteLayerInputsChanged(s);
+							// --- Track P10 ---
+							this.recordStepActedObject(inst, preSnap, false);
+							// --- End Track P10 ---
 							p.addLog(
 								s,
 								'cast',
@@ -2351,7 +2666,11 @@ class Run {
 							}
 						}
 						if (sacrificeIfUnable && removed < want && inst.zone === 'battlefield') {
-							const res = p.moveFromBattlefield(s, inst, 'graveyard');
+							// --- Track P10 ---
+							const res = p.moveFromBattlefield(s, inst, 'graveyard', {
+								sacrificedByPlayerId: you.playerId
+							});
+							// --- End Track P10 ---
 							p.addLog(s, 'cast', `${you.username} sacrificed ${inst.card.name} (${title}).`, you.playerId);
 							return res as MoveResult;
 						}
@@ -2561,6 +2880,26 @@ class Run {
 					});
 					noteLayerInputsChanged(s);
 				}
+				// --- Track P10 ---
+				const grantedTexts = step.params?.grantedAbilityTexts;
+				if (objs.length > 0 && grantedTexts?.length) {
+					const ts = allocateTimestamp(s);
+					const expires: 'endOfTurn' | 'never' =
+						step.params?.duration === 'permanent' ? 'never' : 'endOfTurn';
+					(s.timedContinuousEffects ??= []).push({
+						timestamp: ts,
+						sourceName: this.ctx.sourceCard.name,
+						controllerId: you.playerId,
+						affected: objs.map((o) => ({
+							instanceId: o.instanceId,
+							objectVersion: o.objectVersion ?? 1
+						})),
+						expires,
+						layer6: { grantedAbilityTexts: [...grantedTexts] }
+					});
+					noteLayerInputsChanged(s);
+				}
+				// --- End Track P10 ---
 				return;
 			}
 			case 'grantPlayer': {
@@ -2661,13 +3000,32 @@ class Run {
 			case 'addMana': {
 				const times = Math.max(0, this.amount(step.amount, 1));
 				const restriction = step.params?.manaRestriction;
+				// --- Track P10 ---
+				const rawRestrSpec = step.params?.manaRestrictionSpec;
+				const chosenSub = this.sourceChosenSubType();
+				const boundRestrSpec: ManaSpendingRestrictionSpec | undefined = rawRestrSpec
+					? {
+							...rawRestrSpec,
+							...(chosenSub && !rawRestrSpec.sourceChosenSubType
+								? { sourceChosenSubType: chosenSub }
+								: {})
+						}
+					: undefined;
+				const addOpts: AddManaOptions | undefined =
+					boundRestrSpec || step.params?.retainManaUntilEndOfTurn
+						? {
+								...(boundRestrSpec ? { restrictionSpec: boundRestrSpec } : {}),
+								...(step.params?.retainManaUntilEndOfTurn ? { retainUntilEndOfTurn: true } : {})
+							}
+						: undefined;
+				// --- End Track P10 ---
 				if (step.params?.manaWithChosenColor) {
 					for (const c of step.params.manaWithChosenColor) {
-						addManaToPlayerPool(you, c, 1, restriction);
+						addManaToPlayerPool(you, c, 1, restriction, addOpts);
 					}
 					const chosenCol = this.sourceChosenColor();
 					if (chosenCol) {
-						addManaToPlayerPool(you, chosenCol, 1, restriction);
+						addManaToPlayerPool(you, chosenCol, 1, restriction, addOpts);
 					}
 					return;
 				}
@@ -2711,7 +3069,7 @@ class Run {
 						}
 					}
 					for (const c of chosenBundle) {
-						addManaToPlayerPool(you, c, 1, restriction);
+						addManaToPlayerPool(you, c, 1, restriction, addOpts);
 					}
 					return;
 				}
@@ -2767,7 +3125,7 @@ class Run {
 						}
 					}
 					for (const c of chosenBundle) {
-						addManaToPlayerPool(you, c, 1, restriction);
+						addManaToPlayerPool(you, c, 1, restriction, addOpts);
 					}
 					return;
 				}
@@ -2776,7 +3134,7 @@ class Run {
 					const loops = mana.length > 1 ? 1 : times;
 					for (let i = 0; i < loops; i++) {
 						for (const c of mana) {
-							addManaToPlayerPool(you, c, 1, restriction);
+							addManaToPlayerPool(you, c, 1, restriction, addOpts);
 							if (step.delayed) {
 								(you.manaRiders ??= []).push({
 									id: p.uid('rider', s),
@@ -2836,7 +3194,7 @@ class Run {
 									: undefined;
 						if (picked && allowed.includes(picked)) chosen = picked;
 					}
-					addManaToPlayerPool(you, chosen, times, restriction);
+					addManaToPlayerPool(you, chosen, times, restriction, addOpts);
 					if (step.delayed) {
 						for (let i = 0; i < times; i++) {
 							(you.manaRiders ??= []).push({
@@ -2852,18 +3210,38 @@ class Run {
 				}
 				return;
 			}
-			case 'attach': {
-				const equipment = p.findPermanent(s, this.ctx.sourceId);
-				const target = this.objects(step.subject)[0];
-				const found = target ? p.findPermanent(s, target.instanceId) : null;
-				if (!equipment || !found) return;
-				if (found.controller.playerId !== you.playerId || !evaluatePermanent(s, found.inst).typeLine.includes('Creature')) return;
-				// CR 701.3b / 613.7e: No-op when already attached to this host; otherwise attach and allocate a fresh timestamp.
-				if (!attachObject(s, equipment.inst, found.inst.instanceId)) return;
-				const hostLabel = found.inst.isFaceDown ? (found.inst.faceDownLabel || 'Face-Down Creature') : found.inst.card.name;
-				p.addLog(s, 'cast', `${you.username} attached ${equipment.inst.card.name} to ${hostLabel}.`, you.playerId);
-				p.triggerOnAttach(s, you, equipment.inst, found.inst);
+			// --- Track P10 ---
+			case 'retainMana': {
+				const colors: ManaColor[] =
+					step.params?.unemptiedColors === 'all' || !step.params?.unemptiedColors
+						? ['W', 'U', 'B', 'R', 'G', 'C']
+						: step.params.unemptiedColors;
+				const targets =
+					step.subject.k === 'player' || step.subject.k === 'playerRef'
+						? this.players(step.subject)
+						: [you];
+				for (const pl of targets) {
+					if (pl.lost) continue;
+					if (pl.unemptiedManaColorsThisTurn === 'all') continue;
+					if (step.params?.unemptiedColors === 'all' || !step.params?.unemptiedColors) {
+						pl.unemptiedManaColorsThisTurn = 'all';
+						continue;
+					}
+					const list: ManaColor[] = Array.isArray(pl.unemptiedManaColorsThisTurn)
+						? pl.unemptiedManaColorsThisTurn
+						: [];
+					pl.unemptiedManaColorsThisTurn = list;
+					for (const c of colors) {
+						if (!list.includes(c)) list.push(c);
+					}
+				}
 				return;
+			}
+			// --- End Track P10 ---
+			case 'attach': {
+				// --- Track P10 ---
+				return executeAttachP10(this.p10Host(), step);
+				// --- End Track P10 ---
 			}
 			case 'phaseOut': {
 				const objs = this.objects(step.subject).filter((o) => o.zone === 'battlefield' && !o.phasedOut);
@@ -2947,7 +3325,14 @@ class Run {
 									? Boolean(explicitTap)
 									: !o.tapped;
 					if (shouldTap) {
+						// --- Track P10 ---
+						const preSnap = this.captureTriggerEventLki(o);
+						const wasTapped = o.tapped;
 						tapPermanent(s, o);
+						if (!wasTapped && o.tapped) {
+							this.recordStepActedObject(o, preSnap, false);
+						}
+						// --- End Track P10 ---
 					} else if (o.tapped) {
 						// CR 122.1d: If a permanent with a stun counter on it would become untapped,
 						// instead remove a stun counter from it.
@@ -2975,8 +3360,20 @@ class Run {
 								flushTriggers(s);
 							}
 						} else {
+							// --- Track P10 ---
+							const preSnap = this.captureTriggerEventLki(o);
 							o.tapped = false;
 							noteLayerInputsChanged(s);
+							this.recordStepActedObject(o, preSnap, false);
+							if (!o.phasedOut) {
+								emitEvent(s, {
+									kind: 'BecomesUntapped',
+									objectId: o.instanceId,
+									object: o
+								});
+								flushTriggers(s);
+							}
+							// --- End Track P10 ---
 						}
 					}
 				}
@@ -3279,6 +3676,11 @@ class Run {
 				if (!actor || actor.lost) return;
 				const search = step.params?.search;
 				if (!search) return;
+				// --- Track P10 ---
+				if (isP10ExtendedSearch(search)) {
+					return executeMultiZoneSearchP10(this.p10Host(), step);
+				}
+				// --- End Track P10 ---
 				p.search(s, actor, legacySearchSpec(search), this.ctx.item);
 				return;
 			}
@@ -3359,9 +3761,15 @@ class Run {
 								...(pParams.addColors?.length ? { addColors: [...pParams.addColors] } : {})
 							}
 						: undefined;
-				const layer6 = pParams.addKeywords?.length
-					? { addKeywords: [...pParams.addKeywords] }
-					: undefined;
+				const layer6 =
+					pParams.addKeywords?.length || pParams.grantedAbilityTexts?.length
+						? {
+								...(pParams.addKeywords?.length ? { addKeywords: [...pParams.addKeywords] } : {}),
+								...(pParams.grantedAbilityTexts?.length
+									? { grantedAbilityTexts: [...pParams.grantedAbilityTexts] }
+									: {})
+							}
+						: undefined;
 				const layer7b =
 					pParams.setPower !== undefined && pParams.setToughness !== undefined
 						? {
@@ -3526,6 +3934,15 @@ class Run {
 							o.counters.stun = Math.max(0, (o.counters.stun || 0) - 1);
 						} else {
 							o.tapped = false;
+							// --- Track P10 ---
+							if (!o.phasedOut) {
+								emitEvent(s, {
+									kind: 'BecomesUntapped',
+									objectId: o.instanceId,
+									object: o
+								});
+							}
+							// --- End Track P10 ---
 						}
 					}
 					const objLabel = o.isFaceDown ? (o.faceDownLabel || 'Face-Down Permanent') : o.card.name;
@@ -3590,6 +4007,32 @@ class Run {
 				return executeBolster(this.keywordHost(), step);
 			case 'adapt':
 				return executeAdapt(this.keywordHost(), step);
+			// --- Track P10 ---
+			case 'discover':
+				return executeDiscover(this.p10Host(), step);
+			case 'clash':
+				return executeClash(this.p10Host(), step);
+			case 'detain':
+				return executeDetain(this.p10Host(), step);
+			case 'suspect':
+				return executeSuspect(this.p10Host(), step);
+			case 'collectEvidence':
+				return executeCollectEvidence(this.p10Host(), step);
+			case 'forage':
+				return executeForage(this.p10Host(), step);
+			case 'endure':
+				return executeEndure(this.p10Host(), step);
+			case 'timeTravel':
+				return executeTimeTravel(this.p10Host(), step);
+			case 'blight':
+				return executeBlight(this.p10Host(), step);
+			case 'fateseal':
+				return executeFateseal(this.p10Host(), step);
+			case 'flipCoin':
+				return executeFlipCoin(this.p10Host(), step);
+			case 'rollDie':
+				return executeRollDie(this.p10Host(), step);
+			// --- End Track P10 ---
 			default:
 				// Not reachable: staticallyInterpretable rejects every other verb.
 				p.addLog(s, 'rule', `${title}: the "${step.verb}" step isn't supported yet and did nothing.`, you.playerId);
@@ -4106,6 +4549,36 @@ class Run {
 		const sel = step.subject;
 		const batchKey = `batch:${this.stepIndex}`;
 
+		// --- Track P10 ---
+		const isExploit = isExploitTriggerStackItem(this.ctx.item);
+		const sacrificePermanent = (actor: PlayerGameState, perm: CardInstance): MoveResult => {
+			const preSnap = this.captureTriggerEventLki(perm);
+			const exploitedLki = isExploit ? captureLki(s, perm) : undefined;
+			const res = p.moveFromBattlefield(s, perm, 'graveyard', {
+				sacrificedByPlayerId: actor.playerId
+			});
+			p.addLog(s, 'rule', `${actor.username} sacrificed ${perm.card.name}.`, actor.playerId);
+			if (perm.zone !== 'battlefield') {
+				this.recordStepActedObject(perm, preSnap, perm.zone === 'graveyard');
+				if (isExploit) {
+					emitEvent(s, {
+						kind: 'Exploited',
+						playerId: actor.playerId,
+						exploiterId: this.ctx.sourceId,
+						...(this.ctx.item.sourceObjectVersion !== undefined
+							? { exploiterVersion: this.ctx.item.sourceObjectVersion }
+							: {}),
+						exploitedId: perm.instanceId,
+						exploited: perm,
+						...(exploitedLki ? { exploitedLki } : {})
+					});
+					flushTriggers(s);
+				}
+			}
+			return res as MoveResult;
+		};
+		// --- End Track P10 ---
+
 		// Specific object(s) (e.g. "sacrifice ~", "sacrifice it", or "sacrifice that creature")
 		if (sel.k === 'self' || sel.k === 'binding' || sel.k === 'target' || sel.k === 'eventObject') {
 			const actor = step.actor ? (this.playerRef(step.actor) ?? you) : you;
@@ -4126,9 +4599,7 @@ class Run {
 				(id) => {
 					const f = this.locate(id);
 					if (!f || f.zone !== 'battlefield') return;
-					const res = p.moveFromBattlefield(s, f.inst, 'graveyard');
-					p.addLog(s, 'rule', `${actor.username} sacrificed ${f.inst.card.name}.`, actor.playerId);
-					return res as MoveResult;
+					return sacrificePermanent(actor, f.inst);
 				}
 			);
 			return;
@@ -4208,9 +4679,9 @@ class Run {
 				const f = this.locate(id);
 				if (!f || f.zone !== 'battlefield') return;
 				const actor = f.holder;
-				const res = p.moveFromBattlefield(s, f.inst, 'graveyard');
-				p.addLog(s, 'rule', `${actor.username} sacrificed ${f.inst.card.name}.`, actor.playerId);
-				return res as MoveResult;
+				// --- Track P10 ---
+				return sacrificePermanent(actor, f.inst);
+				// --- End Track P10 ---
 			}
 		);
 	}
@@ -4224,7 +4695,10 @@ class Run {
 
 		const discardCard = (pl: PlayerGameState, cardInst: CardInstance): MoveResult | void => {
 			if (!pl.hand.includes(cardInst)) return;
-			return moveObject(s, cardInst, 'graveyard', {
+			// --- Track P10 ---
+			const preSnap = this.captureTriggerEventLki(cardInst);
+			// --- End Track P10 ---
+			const res = moveObject(s, cardInst, 'graveyard', {
 				from: { player: pl, zone: 'hand' },
 				toPlayer: pl,
 				graveyardReplacement: true,
@@ -4233,6 +4707,12 @@ class Run {
 				discardReason: 'discard',
 				discardPlayerId: pl.playerId
 			});
+			// --- Track P10 ---
+			if (!pl.hand.includes(cardInst)) {
+				this.recordStepActedObject(cardInst, preSnap, false);
+			}
+			// --- End Track P10 ---
+			return res;
 		};
 
 		if (sel.k === 'self' || sel.k === 'binding') {
@@ -4562,27 +5042,152 @@ class Run {
 			this.result.exileSelf = true;
 			return;
 		}
-		if (sel.k === 'all' && sel.filter.zone === 'graveyard') {
-			const { total, paused } = this.runIndexedBatch(
-				`batch:${this.stepIndex}`,
-				() => s.players.flatMap((pl) => [...pl.graveyard].reverse().map((c) => c.instanceId)),
+		// --- Track P10 ---
+		if (sel.k === 'all' && sel.filter.zone === 'hand' && step.amount !== undefined) {
+			const batchKey = `batch:${this.stepIndex}`;
+			if (!this.answers[batchKey]) {
+				const actors = step.actor
+					? this.players({ k: 'playerRef', ref: step.actor })
+					: sel.filter.controller === 'opponent' || sel.filter.owner === 'opponent'
+						? this.players({ k: 'player', filter: { relation: 'each_opponent' } })
+						: [you];
+				const itemFilter: ObjectFilter = {
+					...sel.filter,
+					controller: undefined,
+					owner: undefined
+				};
+				const choices: Array<{ pl: PlayerGameState; candidates: CardInstance[]; count: number }> = [];
+				for (const pl of actors) {
+					const candidates = pl.hand.filter((c) => this.matches(c, itemFilter, 'hand'));
+					if (candidates.length === 0) continue;
+					const count = Math.min(candidates.length, Math.max(0, this.amount(step.amount, 1)));
+					if (count <= 0) continue;
+					choices.push({ pl, candidates, count });
+				}
+				if (this.canPause) {
+					for (const { pl, candidates, count } of choices) {
+						const actorKey = `exile_hand:${this.stepIndex}:${pl.playerId}`;
+						const minPick = step.params?.upTo ? 0 : count;
+						if (pl.isBot || (!step.params?.upTo && candidates.length <= count) || this.answers[actorKey]) {
+							continue;
+						}
+						this.pauseForChoice(
+							pl,
+							`${this.ctx.title} — Exile ${minPick === count ? count : `up to ${count}`} card(s) from hand`,
+							`Choose ${minPick === count ? count : `up to ${count}`} card(s) from your hand to exile.`,
+							candidates.map((c) => c.instanceId),
+							minPick,
+							count,
+							'hand',
+							candidates.slice(0, count).map((c) => c.instanceId),
+							actorKey
+						);
+						return;
+					}
+				}
+				const pickedAll: CardInstance[] = [];
+				for (const { pl, candidates, count } of choices) {
+					const actorKey = `exile_hand:${this.stepIndex}:${pl.playerId}`;
+					const minPick = step.params?.upTo ? 0 : count;
+					const chosen =
+						this.answered(actorKey, candidates, minPick, count) ?? candidates.slice(0, count);
+					pickedAll.push(...chosen);
+				}
+				if (step.params?.upTo) {
+					this.stepDecisions[this.stepIndex] = pickedAll.length > 0;
+				}
+				this.bind(step, pickedAll);
+				this.answers[batchKey] = {
+					kind: 'chooseObjects',
+					objectIds: pickedAll.map((c) => c.instanceId)
+				};
+			}
+			this.runIndexedBatch(
+				batchKey,
+				() => [],
 				(id) => {
 					const f = this.locate(id);
-					if (!f || f.zone !== 'graveyard') return;
+					if (!f || f.zone !== 'hand') return;
+					const preSnap = this.captureTriggerEventLki(f.inst);
 					const res = moveObject(s, f.inst, 'exile', {
-						from: { player: f.holder, zone: 'graveyard' },
+						from: { player: f.holder, zone: 'hand' },
 						toPlayer: f.holder,
-						bumpVersion: true
+						bumpVersion: true,
+						newTimestamp: true
 					});
-					if (res === 'exile') stampExiledMetadata(f.inst, 'graveyard');
+					if (res === 'exile') {
+						stampExiledMetadata(f.inst, 'hand');
+						this.recordStepActedObject(f.inst, preSnap, false);
+					}
+					p.addLog(
+						s,
+						'cast',
+						`${f.holder.username} exiled ${f.inst.card.name} from their hand (${this.ctx.title}).`,
+						f.holder.playerId
+					);
 					return res;
 				}
 			);
+			return;
+		}
+		// --- End Track P10 ---
+		if (sel.k === 'all' && sel.filter.zone === 'graveyard') {
+			// --- Track P10 ---
+			const gyLeftByOwner = new Map<string, CardInstance[]>();
+			const { total, paused } = this.runIndexedBatch(
+				`batch:${this.stepIndex}`,
+				() => {
+					const matching = this.objects(sel);
+					this.bind(step, matching);
+					const matchingIds = new Set(matching.map((c) => c.instanceId));
+					return s.players.flatMap((pl) =>
+						[...pl.graveyard]
+							.reverse()
+							.filter((c) => matchingIds.has(c.instanceId))
+							.map((c) => c.instanceId)
+					);
+				},
+				(id) => {
+					const f = this.locate(id);
+					if (!f || f.zone !== 'graveyard') return;
+					const preSnap = this.captureTriggerEventLki(f.inst);
+					const ownerId = f.holder.playerId;
+					const res = moveObject(s, f.inst, 'exile', {
+						from: { player: f.holder, zone: 'graveyard' },
+						toPlayer: f.holder,
+						bumpVersion: true,
+						suppressGraveyardLeaveBatch: true
+					});
+					if (res === 'exile') {
+						stampExiledMetadata(f.inst, 'graveyard');
+						this.recordStepActedObject(f.inst, preSnap, false);
+					}
+					if (f.inst.zone !== 'graveyard') {
+						let arr = gyLeftByOwner.get(ownerId);
+						if (!arr) {
+							arr = [];
+							gyLeftByOwner.set(ownerId, arr);
+						}
+						arr.push(f.inst);
+					}
+					return res;
+				}
+			);
+			for (const [ownerId, objects] of gyLeftByOwner) {
+				if (objects.length > 0) {
+					emitEvent(s, { kind: 'GraveyardLeaveBatch', ownerId, objects });
+				}
+			}
+			if (gyLeftByOwner.size > 0) flushTriggers(s);
+			// --- End Track P10 ---
 			if (!paused) {
 				p.addLog(s, 'trigger', `${this.ctx.title} exiled all ${total} card(s) from all graveyards!`, you.playerId);
 			}
 			return;
 		}
+		// --- Track P10 ---
+		const gyLeftGeneral = new Map<string, CardInstance[]>();
+		// --- End Track P10 ---
 		this.runIndexedBatch(
 			`batch:${this.stepIndex}`,
 			() => {
@@ -4595,21 +5200,50 @@ class Run {
 				if (!f) return;
 				const o = f.inst;
 				const prevZone = f.zone;
+				// --- Track P10 ---
+				const preSnap = this.captureTriggerEventLki(o);
+				const holderOwnerId = f.holder.playerId;
+				// --- End Track P10 ---
 				const objLabel = o.isFaceDown ? (o.faceDownLabel || 'Face-Down Permanent') : o.card.name;
 				let res: MoveResult | string | void;
 				if (o.zone === 'battlefield') {
 					p.emitVfx(s, { kind: 'exile', targetId: o.instanceId, label: objLabel });
 					res = p.moveFromBattlefield(s, o, 'exile');
 				} else if (o.zone === 'graveyard') {
-					res = moveObject(s, o, 'exile', { from: { player: f.holder, zone: 'graveyard' }, toPlayer: f.holder, bumpVersion: true, newTimestamp: true });
+					res = moveObject(s, o, 'exile', {
+						from: { player: f.holder, zone: 'graveyard' },
+						toPlayer: f.holder,
+						bumpVersion: true,
+						newTimestamp: true,
+						suppressGraveyardLeaveBatch: true
+					});
+					if (o.zone !== 'graveyard') {
+						let arr = gyLeftGeneral.get(holderOwnerId);
+						if (!arr) {
+							arr = [];
+							gyLeftGeneral.set(holderOwnerId, arr);
+						}
+						arr.push(o);
+					}
 				} else {
 					return;
 				}
-				if (res === 'exile') stampExiledMetadata(o, prevZone);
+				if (res === 'exile') {
+					stampExiledMetadata(o, prevZone);
+					this.recordStepActedObject(o, preSnap, false);
+				}
 				p.addLog(s, 'cast', `${this.ctx.title} exiled ${objLabel}.`, you.playerId);
 				return res;
 			}
 		);
+		// --- Track P10 ---
+		for (const [ownerId, objects] of gyLeftGeneral) {
+			if (objects.length > 0) {
+				emitEvent(s, { kind: 'GraveyardLeaveBatch', ownerId, objects });
+			}
+		}
+		if (gyLeftGeneral.size > 0) flushTriggers(s);
+		// --- End Track P10 ---
 	}
 
 	private resolveLibraryPlacementChoice(
@@ -4782,6 +5416,11 @@ class Run {
 			if (!this.answers[batchKey]) {
 				const chosen = this.resolveHandMoveChosen(step);
 				if (!chosen) return;
+				// --- Track P10 ---
+				if (params.upTo) {
+					this.stepDecisions[this.stepIndex] = chosen.length > 0;
+				}
+				// --- End Track P10 ---
 				this.bind(step, chosen);
 				if (this.canPause && !you.isBot) {
 					for (const o of chosen) {
@@ -4813,6 +5452,9 @@ class Run {
 					const f = this.locate(id);
 					if (!f || f.zone !== 'hand') return;
 					const o = f.inst;
+					// --- Track P10 ---
+					const preSnap = this.captureTriggerEventLki(o);
+					// --- End Track P10 ---
 					const isAura = (o.copiableCard ?? o.card).typeLine.includes('Aura');
 					if (isAura) {
 						const attachCands = p.legalAuraAttachCandidates(s, o, you);
@@ -4841,6 +5483,9 @@ class Run {
 					});
 					p.addLog(s, 'cast', `${you.username} put ${o.card.name} from their hand onto the battlefield (${this.ctx.title}).`, you.playerId);
 					if (o.zone === 'battlefield') {
+						// --- Track P10 ---
+						this.recordStepActedObject(o, preSnap, false);
+						// --- End Track P10 ---
 						if (isAura && o.attachedToId) {
 							const host = p.findPermanent(s, o.attachedToId);
 							if (host) p.triggerOnAttach(s, you, o, host.inst);
@@ -5232,6 +5877,9 @@ class Run {
 			this.bind(step, objs);
 			this.answers[batchKey] = { kind: 'chooseObjects', objectIds: objs.map((o) => o.instanceId) };
 		}
+		// --- Track P10 ---
+		const gyLeftMove = new Map<string, CardInstance[]>();
+		// --- End Track P10 ---
 		this.runIndexedBatch(
 			batchKey,
 			() => [],
@@ -5246,11 +5894,37 @@ class Run {
 				}
 				const actualFrom = f.zone as 'exile' | 'graveyard' | 'library';
 				const o = f.inst;
+				// --- Track P10 ---
+				const preSnap = this.captureTriggerEventLki(o);
+				const holderOwnerId = f.holder.playerId;
+				// --- End Track P10 ---
 				// --- Track P9: CR 111.8 tokens that left the battlefield cannot move to another zone ---
 				if (o.isToken) return;
 				const holder = f.holder;
 				if (params.to === 'hand') {
-					const res = moveObject(s, o, 'hand', { from: { player: holder, zone: actualFrom }, toPlayer: holder, commanderRedirect: true, bumpVersion: true, newTimestamp: true });
+					const res = moveObject(s, o, 'hand', {
+						from: { player: holder, zone: actualFrom },
+						toPlayer: holder,
+						commanderRedirect: true,
+						bumpVersion: true,
+						newTimestamp: true,
+						// --- Track P10 ---
+						...(actualFrom === 'graveyard' ? { suppressGraveyardLeaveBatch: true } : {})
+						// --- End Track P10 ---
+					});
+					// --- Track P10 ---
+					if (actualFrom === 'graveyard' && o.zone !== 'graveyard') {
+						let arr = gyLeftMove.get(holderOwnerId);
+						if (!arr) {
+							arr = [];
+							gyLeftMove.set(holderOwnerId, arr);
+						}
+						arr.push(o);
+					}
+					if (o.zone === 'hand') {
+						this.recordStepActedObject(o, preSnap, false);
+					}
+					// --- End Track P10 ---
 					p.addLog(s, 'cast', `${this.ctx.title} returned ${o.card.name} from ${holder.username}'s ${actualFrom} to hand.`, you.playerId);
 					return res;
 				}
@@ -5307,8 +5981,24 @@ class Run {
 						}
 					},
 					// --- Track P9 ---
-					...(params.withCounters ? { withCounters: params.withCounters } : {})
+					...(params.withCounters ? { withCounters: params.withCounters } : {}),
+					// --- Track P10 ---
+					...(actualFrom === 'graveyard' ? { suppressGraveyardLeaveBatch: true } : {})
+					// --- End Track P10 ---
 				});
+				// --- Track P10 ---
+				if (actualFrom === 'graveyard' && o.zone !== 'graveyard') {
+					let arr = gyLeftMove.get(holderOwnerId);
+					if (!arr) {
+						arr = [];
+						gyLeftMove.set(holderOwnerId, arr);
+					}
+					arr.push(o);
+				}
+				if (o.zone === 'battlefield') {
+					this.recordStepActedObject(o, preSnap, false);
+				}
+				// --- End Track P10 ---
 				if (params.unearth && o.zone === 'battlefield') {
 					// CR 702.84a: permanent Haste, leave-battlefield exile replacement, and next-end-step exile delayed trigger.
 					o.unearthLeaveExile = true;
@@ -5356,6 +6046,14 @@ class Run {
 				return res;
 			}
 		);
+		// --- Track P10 ---
+		for (const [ownerId, objects] of gyLeftMove) {
+			if (objects.length > 0) {
+				emitEvent(s, { kind: 'GraveyardLeaveBatch', ownerId, objects });
+			}
+		}
+		if (gyLeftMove.size > 0) flushTriggers(s);
+		// --- End Track P10 ---
 	}
 
 	private resolveHandMoveChosen(step: EffectStep): CardInstance[] | null {
@@ -5365,7 +6063,14 @@ class Run {
 		const candidates = you.hand.filter((c) => this.matches(c, filter, 'hand'));
 		const max = Math.min(candidates.length, Math.max(0, this.amount(step.amount, 1)));
 		const min = params.upTo ? 0 : max;
-		if (max <= 0) return null;
+		// --- Track P10 ---
+		if (max <= 0) {
+			if (params.upTo) {
+				this.stepDecisions[this.stepIndex] = false;
+			}
+			return null;
+		}
+		// --- End Track P10 ---
 		if (
 			!you.isBot &&
 			this.canPause &&
@@ -5472,6 +6177,42 @@ class Run {
 		const savedTop = this.answers[topKey];
 		if (savedTop?.kind === 'chooseObjects') {
 			topIds = savedTop.objectIds;
+		} else if (dig.untilFilter) {
+			// --- Track P10: CR 701.20 reveal cards from top of library until a matching card is revealed ---
+			if (pl.library.length === 0) return;
+			const revealed: CardInstance[] = [];
+			let matchedCard: CardInstance | undefined;
+			for (let i = 0; i < pl.library.length; i++) {
+				const c = pl.library[i];
+				revealed.push(c);
+				c.knownToPlayerIds = s.players.filter((x) => !x.lost).map((x) => x.playerId);
+				if (this.matches(c, dig.untilFilter, 'library')) {
+					matchedCard = c;
+					break;
+				}
+			}
+			topIds = revealed.map((c) => c.instanceId);
+			this.answers[topKey] = { kind: 'chooseObjects', objectIds: topIds };
+			const keptList = dig.restToHand ? revealed : matchedCard ? [matchedCard] : [];
+			const restList = dig.restToHand
+				? []
+				: revealed.filter((c) => c.instanceId !== matchedCard?.instanceId);
+			this.answers[keptFrozenKey] = {
+				kind: 'chooseObjects',
+				objectIds: keptList.map((c) => c.instanceId)
+			};
+			this.answers[restFrozenKey] = {
+				kind: 'chooseObjects',
+				objectIds: restList.map((c) => c.instanceId)
+			};
+			this.bind(step, keptList);
+			p.addLog(
+				s,
+				'rule',
+				`${pl.username} revealed ${revealed.map((c) => c.card.name).join(', ')} from their library.`,
+				pl.playerId
+			);
+			// --- End Track P10 ---
 		} else {
 			const count = Math.min(Math.max(0, this.amount(step.amount)), pl.library.length);
 			if (count <= 0) return;
@@ -6112,8 +6853,322 @@ class Run {
 				return isNinjutsuWindowOpen(this.state);
 			case 'lkiHasNoCounter':
 				return (this.ctx.eventLki?.counters?.[c.counter] ?? 0) <= 0;
+			// --- Track P10 ---
+			case 'opponentLostLifeThisTurn':
+			case 'descendedThisTurn':
+			case 'hadCounterOnIt':
+			case 'manaColorSpentToCast':
+			case 'opponentComparison': {
+				const f = this.locate(this.ctx.sourceId);
+				const liveObj =
+					f &&
+					f.zone === 'battlefield' &&
+					!f.inst.phasedOut &&
+					(this.ctx.item.sourceObjectVersion === undefined ||
+						(f.inst.objectVersion ?? 1) === this.ctx.item.sourceObjectVersion)
+						? f.inst
+						: undefined;
+				return evaluateP10Condition(c, {
+					state: this.state,
+					controllerId: this.you.playerId,
+					source: liveObj,
+					stackItem: this.ctx.item,
+					eventLkiCounters: this.ctx.eventLki?.counters
+				});
+			}
+			// --- End Track P10 ---
 		}
 	}
+
+	// --- Track P10 ---
+	private runInlineBranchSteps(inlineSteps: EffectStep[], subPathTag: number): boolean {
+		if (inlineSteps.length === 0) return false;
+		const parentStepIndex = this.stepIndex;
+		const parentPrefix = this.subPathPrefix ?? this.ctx.stepPathPrefix ?? [];
+		const ns = `inl:${parentStepIndex}:${subPathTag}:`;
+
+		const idxAns = this.answers[`${ns}__idx`];
+		const startIdx = idxAns?.kind === 'chooseNumber' ? idxAns.n : 0;
+		const subAns = this.answers[`${ns}__sub`];
+		const startSub = subAns?.kind === 'chooseNumber' ? subAns.n : 0;
+		const phaseAns = this.answers[`${ns}__phase`];
+		const startPhase: 'optional' | 'step' | 'afterStep' =
+			phaseAns?.kind === 'chooseObjects' &&
+			(phaseAns.objectIds[0] === 'optional' ||
+				phaseAns.objectIds[0] === 'step' ||
+				phaseAns.objectIds[0] === 'afterStep')
+				? phaseAns.objectIds[0]
+				: 'optional';
+
+		const childAnswers: Record<string, ChoiceAnswer> = {};
+		const childDecisions: Record<number, boolean> = {};
+		for (const [k, v] of Object.entries(this.answers)) {
+			if (!k.startsWith(ns)) continue;
+			const subKey = k.slice(ns.length);
+			if (subKey === '__idx' || subKey === '__sub' || subKey === '__phase') continue;
+			if (subKey.startsWith('__dec:')) {
+				const dIdx = Number(subKey.slice(6));
+				if (Number.isFinite(dIdx) && v.kind === 'yesNo') {
+					childDecisions[dIdx] = v.yes;
+				}
+				continue;
+			}
+			childAnswers[subKey] = v;
+		}
+
+		const childCtx: EffectContext = {
+			...this.ctx,
+			stepPathPrefix: [...parentPrefix, parentStepIndex, subPathTag]
+		};
+		const childRun = new Run(this.state, childCtx);
+		childRun.stepIndex = startIdx;
+		childRun.subStepIndex = startSub;
+		childRun.phase = startPhase;
+		childRun.answers = childAnswers;
+		childRun.stepDecisions = childDecisions;
+		childRun.lastRollResult = this.lastRollResult;
+		for (const [name, bound] of this.bindings.entries()) {
+			childRun.bindings.set(
+				name,
+				bound.map((b) => ({ id: b.id, lki: { ...b.lki } }))
+			);
+		}
+		childRun.result.exileSelf = this.result.exileSelf;
+		if (this.result.librarySelf) childRun.result.librarySelf = { ...this.result.librarySelf };
+
+		const syncParentFromChild = () => {
+			this.lastRollResult = childRun.lastRollResult;
+			if (this.lastRollResult !== undefined) {
+				this.ctx.item.lastRollResult = this.lastRollResult;
+			}
+			this.bindings.clear();
+			for (const [name, bound] of childRun.bindings.entries()) {
+				this.bindings.set(name, bound);
+			}
+			if (childRun.result.exileSelf) this.result.exileSelf = true;
+			if (childRun.result.librarySelf) this.result.librarySelf = { ...childRun.result.librarySelf };
+			if (childRun.result.turnEnded) this.result.turnEnded = true;
+		};
+
+		childRun.saveFrameOverride = (cStepIdx, cAnswers, cPhase, cSubIdx) => {
+			syncParentFromChild();
+			const merged: Record<string, ChoiceAnswer> = {};
+			for (const [k, v] of Object.entries(this.answers)) {
+				if (!k.startsWith(ns)) merged[k] = v;
+			}
+			merged[`${ns}__idx`] = { kind: 'chooseNumber', n: cStepIdx };
+			merged[`${ns}__sub`] = { kind: 'chooseNumber', n: cSubIdx };
+			merged[`${ns}__phase`] = { kind: 'chooseObjects', objectIds: [cPhase] };
+			for (const [dIdx, dVal] of Object.entries(childRun.stepDecisions)) {
+				merged[`${ns}__dec:${dIdx}`] = { kind: 'yesNo', yes: Boolean(dVal) };
+			}
+			for (const [ck, cv] of Object.entries(cAnswers)) {
+				merged[`${ns}${ck}`] = cv;
+			}
+			this.answers = merged;
+			return this.saveFrame(parentStepIndex, merged, 'step', this.subStepIndex);
+		};
+
+		const promptsBefore = this.state.pendingPrompts.length;
+		childRun.run(inlineSteps);
+		syncParentFromChild();
+
+		if (childRun.result.paused) {
+			const queued = this.state.pendingPrompts.slice(promptsBefore);
+			for (const pr of queued) {
+				if (pr.continuation?.kind === 'effect_choice') {
+					pr.continuation.stepIndex = parentStepIndex;
+					pr.continuation.answerKey = `${ns}${pr.continuation.answerKey ?? pr.playerId}`;
+				} else if (pr.continuation?.kind === 'effect_resume') {
+					pr.continuation.stepIndex = parentStepIndex;
+				} else if (pr.continuation?.kind === 'handler' && pr.continuation.data) {
+					pr.continuation.data.resumeStepIndex = parentStepIndex;
+				} else if (pr.continuation?.kind === 'procedure') {
+					const proc = pr.continuation.procedure;
+					if ('resumeStepIndex' in proc && proc.resumeStepIndex !== undefined) {
+						proc.resumeStepIndex = parentStepIndex;
+					}
+				}
+			}
+			if (
+				this.state.pendingProcedure?.kind === 'surveil_graveyard' &&
+				this.state.pendingProcedure.resumeStackItemId === this.ctx.item.id
+			) {
+				this.state.pendingProcedure.resumeStepIndex = parentStepIndex;
+			}
+			this.result.paused = true;
+			return true;
+		}
+		return false;
+	}
+
+	private p10Host(): P10EffectHost {
+		const self = this;
+		const base = this.keywordHost();
+		return {
+			...base,
+			get state() {
+				return self.state;
+			},
+			get ports() {
+				return P();
+			},
+			get you() {
+				return self.you;
+			},
+			get title() {
+				return self.ctx.title;
+			},
+			get sourceCard() {
+				return self.ctx.sourceCard;
+			},
+			get sourceId() {
+				return self.ctx.sourceId;
+			},
+			get sourceObjectVersion() {
+				return self.ctx.item.sourceObjectVersion;
+			},
+			get stepIndex() {
+				return self.stepIndex;
+			},
+			get canPause() {
+				return self.canPause;
+			},
+			get answers() {
+				return self.answers;
+			},
+			get item() {
+				return self.ctx.item;
+			},
+			get stepPathPrefix() {
+				return self.subPathPrefix ?? self.ctx.stepPathPrefix;
+			},
+			setStepDecision: (accepted: boolean) => {
+				self.stepDecisions[self.stepIndex] = accepted;
+			},
+			getStepDecision: (idx?: number) => self.stepDecisions[idx ?? self.stepIndex],
+			setLastRollResult: (n: number) => {
+				self.lastRollResult = n;
+				self.ctx.item.lastRollResult = n;
+			},
+			getLastRollResult: () => self.lastRollResult ?? self.ctx.item.lastRollResult,
+			pauseForYesNo: (chooser, title, question, answerKey, labels) =>
+				self.pauseForYesNo(chooser, title, question, answerKey, labels),
+			pauseForMode: (chooser, title, description, modes, min, max, answerKey, defaultIndices) => {
+				const item = self.saveFrame(self.stepIndex, self.answers, 'step', self.subStepIndex);
+				enqueueChoicePrompt(self.state, {
+					id: P().uid('prompt', self.state),
+					kind: 'chooseMode',
+					playerId: chooser.playerId,
+					title,
+					description,
+					continuation: {
+						kind: 'effect_choice',
+						stackItemId: item.id,
+						stepIndex: self.stepIndex,
+						answerKey
+					},
+					choice: {
+						kind: 'chooseMode',
+						modes,
+						min,
+						max,
+						...(defaultIndices ? { defaultIndices } : {})
+					}
+				});
+				self.result.paused = true;
+			},
+			pauseForWeightedChoice: (
+				chooser,
+				title,
+				description,
+				candidates,
+				min,
+				max,
+				zone,
+				weightsById,
+				minWeightSum,
+				weightLabel,
+				defaultObjectIds,
+				answerKey
+			) => {
+				const item = self.saveFrame(self.stepIndex, self.answers, 'step', self.subStepIndex);
+				enqueueChoicePrompt(self.state, {
+					id: P().uid('prompt', self.state),
+					kind: 'chooseObjects',
+					playerId: chooser.playerId,
+					title,
+					description,
+					candidateInstanceIds: candidates,
+					countRequired: min,
+					continuation: {
+						kind: 'effect_choice',
+						stackItemId: item.id,
+						stepIndex: self.stepIndex,
+						answerKey
+					},
+					choice: {
+						kind: 'chooseObjects',
+						candidates,
+						min,
+						max,
+						zone,
+						reason: title,
+						defaultObjectIds,
+						minWeightSum,
+						weightsById,
+						weightLabel
+					}
+				});
+				self.result.paused = true;
+			},
+			pauseForSplitOrder: (chooser, title, description, objectIds, allowSplitBottom, answerKey) => {
+				const item = self.saveFrame(self.stepIndex, self.answers, 'step', self.subStepIndex);
+				enqueueChoicePrompt(self.state, {
+					id: P().uid('prompt', self.state),
+					kind: 'orderObjects',
+					playerId: chooser.playerId,
+					title,
+					description,
+					candidateInstanceIds: objectIds,
+					allowBottom: allowSplitBottom,
+					continuation: {
+						kind: 'effect_choice',
+						stackItemId: item.id,
+						stepIndex: self.stepIndex,
+						answerKey
+					},
+					choice: {
+						kind: 'orderObjects',
+						objectIds,
+						allowSplitBottom,
+						allowShuffle: false,
+						splitLabel: 'bottom',
+						reason: description
+					}
+				});
+				self.result.paused = true;
+			},
+			runInlineSteps: (steps, subPathTag) => self.runInlineBranchSteps(steps, subPathTag),
+			captureBoundRefs: () => {
+				const boundRefs: SerializedBoundRef[] = [];
+				for (const [key, list] of self.bindings.entries()) {
+					for (const b of list) {
+						const found = self.locate(b.id);
+						boundRefs.push({
+							key,
+							id: b.id,
+							expectedZone: found ? found.zone : 'graveyard',
+							objectVersion: found ? (found.inst.objectVersion ?? 1) : 1,
+							lki: { ...b.lki }
+						});
+					}
+				}
+				return boundRefs;
+			}
+		};
+	}
+	// --- End Track P10 ---
 
 	private keywordHost(): KeywordActionHost {
 		const self = this;

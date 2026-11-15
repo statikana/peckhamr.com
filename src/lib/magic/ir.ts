@@ -7,7 +7,17 @@
  *
  * Changes to this file must be additive while parallel phases are running (plan section 4).
  */
-import type { CardLayout, CounterType, GamePhase, ManaColor, TriggerScope, ZoneType } from './types.ts';
+import type {
+	CardLayout,
+	CounterType,
+	GamePhase,
+	ManaColor,
+	// --- Track P10 ---
+	ManaSpendingRestrictionSpec,
+	// --- End Track P10 ---
+	TriggerScope,
+	ZoneType
+} from './types.ts';
 
 /** Offsets into the face's normalised text (reminder text stripped, self-references as `~`). */
 export interface Span {
@@ -399,6 +409,14 @@ export interface ObjectFilter {
 	// --- Track P9 ---
 	/** CR 702.49a: true iff the creature is an unblocked attacking creature you control. */
 	unblockedAttacker?: boolean;
+	// --- Track P10 ---
+	/** CR 701.60: matches suspected (`true`) or non-suspected (`false`) permanents on the battlefield. */
+	suspected?: boolean;
+	/** Stack filter: `"that wasn't cast"` (`isCopy || kind !== 'spell'`). */
+	wasNotCast?: boolean;
+	/** Stack ability filter: `"from a [filter] source"`. */
+	abilitySourceFilter?: ObjectFilter;
+	// --- End Track P10 ---
 }
 
 export interface Compare {
@@ -488,7 +506,11 @@ export type Amount =
 	| { k: 'distinctCardTypesInZone'; zone: ZoneType; whose: 'you' | 'opponents' | 'all' }
 	// --- Track P9 ---
 	/** CR 702.43a / 704.8: count of `counter` on the event/source object as it last existed on the battlefield. */
-	| { k: 'lkiCounterCount'; counter: CounterType };
+	| { k: 'lkiCounterCount'; counter: CounterType }
+	// --- Track P10 ---
+	/** Result of the most recent die roll or coin-flip streak in the resolving effect ("where X is the result"). */
+	| { k: 'lastRollResult' };
+	// --- End Track P10 ---
 
 // ---- Costs ----------------------------------------------------------------------------------
 
@@ -618,7 +640,22 @@ export type Verb =
 	| 'exileInsteadOfDying'
 	| 'combatRestriction'
 	| 'becomeCopy'
-	| 'discardHand';
+	| 'discardHand'
+	// --- Track P10 ---
+	| 'discover'
+	| 'clash'
+	| 'detain'
+	| 'suspect'
+	| 'collectEvidence'
+	| 'forage'
+	| 'endure'
+	| 'timeTravel'
+	| 'blight'
+	| 'fateseal'
+	| 'flipCoin'
+	| 'rollDie'
+	| 'retainMana';
+	// --- End Track P10 ---
 
 export type ManaRestriction = 'artifactSpellOrNonSpell';
 
@@ -720,6 +757,12 @@ export interface EffectParams {
 		rest: 'libraryBottom' | 'graveyard';
 		restRandom?: boolean;
 		restOrder?: 'any' | 'random';
+		// --- Track P10 ---
+		/** Reveal from top of library until a card matches `untilFilter` (CR 701.20). */
+		untilFilter?: ObjectFilter;
+		/** Put all revealed/remaining cards into hand (e.g. Treasure Hunt-style effects). */
+		restToHand?: boolean;
+		// --- End Track P10 ---
 		/** Ordered multi-destination partition (e.g. Expressive Iteration: 1 hand, 1 bottom, 1 exile playable this turn). */
 		partitions?: Array<{
 			count: number;
@@ -837,7 +880,58 @@ export interface EffectParams {
 	// --- Track P9 ---
 	/** move to battlefield (CR 702.93a Undying, CR 702.79a Persist): enters with counters placed via ETB replacement. */
 	withCounters?: { counter: CounterType; count: number };
+	// --- Track P10 ---
+	/** CR 603.12: reflexive triggered ability placed on the stack when this step's action completes. */
+	reflexiveTrigger?: ReflexiveTriggerSpec;
+	/** CR 106.6: generalized spending restriction attached to mana produced by `addMana`. */
+	manaRestrictionSpec?: ManaSpendingRestrictionSpec;
+	/** CR 106.4: "Until end of turn, you don't lose this mana as steps and phases end." */
+	retainManaUntilEndOfTurn?: boolean;
+	/** retainMana: colors of unspent mana retained across steps/phases until end of turn. */
+	unemptiedColors?: ManaColor[] | 'all';
+	/** grant / pump / animate: quoted ability strings granted until end of turn. */
+	grantedAbilityTexts?: string[];
+	/** attach (CR 701.3a–d): explicit selector for the Equipment/Aura being attached when not `self`. */
+	attachObject?: Selector;
+	/** counterSpell (CR 614.15): if countered this way, exile it (or put on top/bottom of library) instead of owner's graveyard. */
+	counterReplacementZone?: 'exile' | 'libraryTop' | 'libraryBottom';
+	/** suspect (CR 701.60b): true when removing suspected status ("is no longer suspected"). */
+	unsuspect?: boolean;
+	/** flipCoin (CR 705): flip repeatedly until losing a flip; stores win count in `lastRollResult`. */
+	coinFlipUntilLose?: boolean;
+	/** flipCoin (CR 705): inline steps executed on winning / losing the coin flip. */
+	winFlipEffect?: EffectStep[];
+	loseFlipEffect?: EffectStep[];
+	/** rollDie (CR 706): die sides (4, 6, 8, 10, 12, 20) and optional modifier added to the roll. */
+	dieSides?: number;
+	dieBonus?: Amount;
+	/** rollDie (CR 706.2): result table branches (`1—9 | ...`, `10—19 | ...`, `20 | ...`). */
+	dieRollTable?: DieRollBranch[];
+	// --- End Track P10 ---
 }
+
+// --- Track P10 ---
+export interface ReflexiveTriggerSpec {
+	targets: TargetSpec[];
+	effect: EffectStep[];
+	modal?: ModalDef;
+	text?: string;
+	eventFilter?:
+		| 'whenYouDo'
+		| 'sacrificedThisWay'
+		| 'diedThisWay'
+		| 'discardedThisWay'
+		| 'exiledThisWay'
+		| 'removedCounterThisWay';
+	objectFilter?: ObjectFilter;
+}
+
+export interface DieRollBranch {
+	min: number;
+	max: number;
+	effect: EffectStep[];
+}
+// --- End Track P10 ---
 
 export interface CoerciveDiscardSpec {
 	chooser: PlayerRef;
@@ -854,6 +948,9 @@ export interface TokenSpec {
 	typeLine: string;
 	keywords: string[];
 	tapped?: boolean;
+	// --- Track P10 ---
+	quotedAbilities?: string[];
+	// --- End Track P10 ---
 }
 
 export interface SearchSpec {
@@ -862,11 +959,25 @@ export interface SearchSpec {
 	upTo: boolean;
 	/** False only for unrestricted "a card" tutors (CR 701.19b: must find one if possible). */
 	statedQuality: boolean;
-	destinations: Array<{ zone: 'battlefield' | 'hand' | 'library'; tapped?: boolean; onTop?: boolean }>;
+	destinations: Array<{
+		zone: 'battlefield' | 'hand' | 'library' | 'exile' | 'graveyard';
+		tapped?: boolean;
+		onTop?: boolean;
+	}>;
 	/** True when the searched card must be revealed (CR 702.29e / CR 701.19a). */
 	reveal?: boolean;
 	/** The searched-for phrase as printed ("a basic land card"), for prompts. */
 	description?: string;
+	// --- Track P10 ---
+	/** Zones searched when broader than library alone ("Search your library and/or graveyard..."). */
+	zones?: Array<'library' | 'graveyard' | 'hand'>;
+	/** "with different names": found cards must have pairwise distinct names. */
+	differentNames?: boolean;
+	/** "If you search your library this way, shuffle": only shuffles library when >= 1 card was taken from library or library was searched. */
+	shuffleOnlyIfLibrary?: boolean;
+	/** Searches target player's / opponent's library instead of `actor`'s library ("Search target opponent's library..."). */
+	searchedPlayer?: PlayerRef;
+	// --- End Track P10 ---
 }
 
 export type Selector =
@@ -935,7 +1046,30 @@ export type EventKind =
 	| 'counterRemoved'
 	// --- Track P9 ---
 	/** CR 702.25a: "Whenever ~ becomes blocked by a creature without flanking" (fires once per blocker; eventObject = blocker). */
-	| 'becomesBlockedBy';
+	| 'becomesBlockedBy'
+	// --- Track P10 ---
+	/** CR 509.1h / 509.3g: "Whenever ~ / a creature you control attacks and isn't blocked". */
+	| 'attackedAndUnblocked'
+	/** CR 603.2e: "Whenever ~ becomes untapped". */
+	| 'becomesUntapped'
+	/** CR 701.22: "Whenever you scry". */
+	| 'scry'
+	/** CR 700.13: "Whenever you commit a crime". */
+	| 'committedCrime'
+	/** CR 702.110b: "When ~ / a creature you control exploits a creature". */
+	| 'exploited'
+	/** CR 700.14: "Whenever you expend N". */
+	| 'expended'
+	/** CR 701.21: "Whenever you / a player sacrifices a [filter]". */
+	| 'sacrificed'
+	/** CR 700.1 / 509.3b,d: "Whenever ~ blocks or becomes blocked by a [filter]". */
+	| 'blocksOrBecomesBlocked'
+	/** CR 603.10a: "Whenever one or more [filter] cards leave your graveyard". */
+	| 'graveyardLeaveBatch'
+	/** CR 701.57: "Whenever you discover" / CR 701.61: "Whenever you forage". */
+	| 'discover'
+	| 'forage';
+	// --- End Track P10 ---
 
 export interface EventFilter {
 	/**
@@ -987,6 +1121,20 @@ export interface EventFilter {
 	madnessExiled?: boolean;
 	/** becomesBlockedBy (CR 702.25a Flanking): matches only when the blocking creature does not have flanking. */
 	withoutFlanking?: boolean;
+	// --- Track P10 ---
+	/** attacks: "Whenever you attack with N or more [filter]". */
+	minAttackers?: number;
+	/** zoneChange (dies): "Whenever a creature dealt damage by ~ this turn dies". */
+	dealtDamageBySelfThisTurn?: boolean;
+	/** phaseBegin: "At the beginning of the upkeep of enchanted [permanent]'s controller". */
+	enchantedControllerUpkeep?: boolean;
+	/** phaseBegin: "At the beginning of enchanted player's upkeep". */
+	enchantedPlayerUpkeep?: boolean;
+	/** expended (CR 700.14): mana threshold N ("Whenever you expend 4"). */
+	expendThreshold?: number;
+	/** dealsDamage: filter on target player ("to an opponent" vs "to a player"). */
+	damagePlayerRelation?: 'opponent' | 'you' | 'any';
+	// --- End Track P10 ---
 }
 
 export interface TriggerDef {
@@ -1075,7 +1223,22 @@ export type Condition =
 	/** CR 702.49a Ninjutsu: true during combat after blockers have been declared. */
 	| { k: 'ninjutsuWindow' }
 	/** CR 702.93a / 702.79a / 704.8: true if the dying permanent had zero `counter` counters in pre-SBA LKI. */
-	| { k: 'lkiHasNoCounter'; counter: CounterType };
+	| { k: 'lkiHasNoCounter'; counter: CounterType }
+	// --- Track P10 ---
+	/** True iff an opponent lost >= 1 life this turn (damage or life loss). */
+	| { k: 'opponentLostLifeThisTurn' }
+	/** CR 700.11 Descend: true iff a permanent card (nontoken) was put into controller's graveyard this turn. */
+	| { k: 'descendedThisTurn' }
+	/** LKI check on dying/leaving permanent: true iff it had >= 1 `counter` (or any counter for `'any'`) on it. */
+	| { k: 'hadCounterOnIt'; counter: CounterType | 'any' }
+	/** True iff mana of `color` (or at least `minTotal` mana if `color` is omitted) was spent to cast the spell/permanent. */
+	| { k: 'manaColorSpentToCast'; color?: ManaColor; minTotal?: number }
+	/** True iff an opponent controls more lands / creatures / has more life / has more cards in hand than you. */
+	| {
+			k: 'opponentComparison';
+			metric: 'lands' | 'creatures' | 'life' | 'hand';
+	  };
+	// --- End Track P10 ---
 
 // ---- Statics and replacements ---------------------------------------------------------------
 

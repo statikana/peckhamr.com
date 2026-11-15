@@ -57,6 +57,9 @@ import { hasRestriction, playerLifeTotalCantChange } from './replace.ts';
 import { markHandCardRevealedToAll } from './staticsLayersAndRestrictions.ts';
 import { exertPermanent } from './tuckFreezeChosen.ts';
 import { moveObject, tapPermanent, type MoveResult, type PlayerZone } from './zones.ts';
+// --- Track P10 ---
+import { resolveQuotedAbilityDefs } from './reflexiveManaAndActions.ts';
+// --- End Track P10 ---
 
 export type { SerializedPlannedCost };
 export {
@@ -570,9 +573,23 @@ function effectiveAbilityManaCostInner(
 export function manaAbilityAmount(
 	card: ScryfallCard,
 	ab: Pick<EffectiveActivatedAbility, 'id'> &
-		Partial<Pick<EffectiveActivatedAbility, 'manaAmount' | 'grantSourceCard' | 'faceIndex'>>
+		Partial<
+			Pick<
+				EffectiveActivatedAbility,
+				'manaAmount' | 'grantSourceCard' | 'faceIndex' | 'grantedAbilityText'
+			>
+		>
 ): Amount | null {
 	if (ab.manaAmount) return ab.manaAmount;
+	// --- Track P10 ---
+	if (ab.grantedAbilityText) {
+		const quoted = resolveQuotedAbilityDefs(ab.grantedAbilityText, card.name).find(
+			(d) => d.kind === 'activated'
+		);
+		const step = quoted?.kind === 'activated' ? quoted.effect.find((e) => e.verb === 'addMana') : undefined;
+		return step?.amount && step.amount.k !== 'const' ? step.amount : null;
+	}
+	// --- End Track P10 ---
 	if (ab.grantSourceCard && ab.id.startsWith('granted:')) {
 		const localId = ab.id.slice(ab.id.lastIndexOf(':') + 1);
 		const granted = grantedAbilityById(ab.grantSourceCard, localId);
@@ -698,7 +715,9 @@ export interface CostContext {
 	baseMana: ManaCostRequirement | null;
 	/** Object IDs already committed to another payment (e.g. CastCostAid) that cannot be reused (CR 118.10). */
 	reservedObjectIds?: ReadonlySet<string>;
-	spendCtx?: { capturedColorsSpent?: ManaColor[] };
+	// --- Track P10 ---
+	spendCtx?: { capturedColorsSpent?: ManaColor[]; capturedManaSpentCount?: number };
+	// --- End Track P10 ---
 	canPayMana: (req: ManaCostRequirement, reservedIds?: ReadonlySet<string>) => boolean;
 	payMana: (req: ManaCostRequirement) => boolean;
 }
@@ -1369,7 +1388,10 @@ function sacrifice(ctx: CostContext, perm: CardInstance): MoveResult {
 		bumpVersion: true,
 		newTimestamp: true,
 		insert: (actual) => (actual === 'library' ? 'start' : 'end'),
-		ceaseToExist: 'tokens'
+		ceaseToExist: 'tokens',
+		// --- Track P10 ---
+		sacrificedByPlayerId: ctx.player.playerId
+		// --- End Track P10 ---
 	});
 }
 
@@ -1378,7 +1400,10 @@ function moveFromZone(
 	card: CardInstance,
 	zone: PlayerZone,
 	to: 'graveyard' | 'exile',
-	discardReason?: 'discard' | 'cycle'
+	discardReason?: 'discard' | 'cycle',
+	// --- Track P10 ---
+	suppressGraveyardLeaveBatch?: boolean
+	// --- End Track P10 ---
 ): MoveResult {
 	if (zone === 'battlefield') {
 		return moveObject(ctx.state, card, to, {
@@ -1398,7 +1423,10 @@ function moveFromZone(
 		commanderRedirect: true,
 		newTimestamp: true,
 		bumpVersion: true,
-		...(discardReason ? { discardReason, discardPlayerId: ctx.player.playerId } : {})
+		...(discardReason ? { discardReason, discardPlayerId: ctx.player.playerId } : {}),
+		// --- Track P10 ---
+		...(suppressGraveyardLeaveBatch ? { suppressGraveyardLeaveBatch: true } : {})
+		// --- End Track P10 ---
 	});
 }
 
@@ -1464,7 +1492,19 @@ export function payTapAndManaCostParts(
 	const { player, source } = ctx;
 	for (const part of parts) {
 		if (part.def.k === 'tapSelf') tapPermanent(ctx.state, source);
-		if (part.def.k === 'untapSelf') source.tapped = false;
+		// --- Track P10: Emit BecomesUntapped when {Q} untaps a tapped permanent (CR 603.2e) ---
+		if (part.def.k === 'untapSelf' && source.tapped) {
+			source.tapped = false;
+			noteLayerInputsChanged(ctx.state);
+			if (source.zone === 'battlefield' && !source.phasedOut) {
+				emitEvent(ctx.state, {
+					kind: 'BecomesUntapped',
+					objectId: source.instanceId,
+					object: source
+				});
+			}
+		}
+		// --- End Track P10 ---
 		if (part.def.k === 'tapOthers' || part.def.k === 'tapSubsetSum') {
 			const ids = part.objectIds ?? [];
 			const names: string[] = [];
@@ -1528,6 +1568,10 @@ export function executeCostPaymentParts(
 					const amount = n(def.amount, ctx);
 					if (amount > 0) {
 						player.life -= amount;
+						// --- Track P10 (CR 119.4): Paying life causes life loss ---
+						player.lostLifeThisTurn = true;
+						noteLayerInputsChanged(ctx.state);
+						// --- End Track P10 ---
 						targetLog.push(`paid ${amount} life`);
 					}
 				}
@@ -1621,14 +1665,36 @@ export function executeCostPaymentParts(
 				const zone = def.zone as PlayerZone;
 				const ids = part.objectIds ?? (def.filter === 'self' ? [source.instanceId] : []);
 				const names = part.objectNames ?? [];
+				// --- Track P10: Batch GraveyardLeaveBatch when exiling graveyard cards as a cost ---
+				const batchGy = zone === 'graveyard' && ids.length > 1;
+				const movedFromGy: CardInstance[] = [];
+				// --- End Track P10 ---
 				for (let j = objStart; j < ids.length; j++) {
 					const card =
 						zoneOf(player, zone).find((c) => c.instanceId === ids[j]) ??
 						(def.filter === 'self' && source.zone === zone ? source : undefined);
 					if (!card) continue;
-					if (moveFromZone(ctx, card, zone, 'exile') === 'pending') {
+					const res = moveFromZone(ctx, card, zone, 'exile', undefined, batchGy);
+					if (res === 'pending') {
+						if (batchGy && movedFromGy.length > 0) {
+							emitEvent(ctx.state, {
+								kind: 'GraveyardLeaveBatch',
+								ownerId: player.playerId,
+								objects: movedFromGy
+							});
+						}
 						return { descriptions, paused: true, nextPartIndex: partIdx, nextObjectIndex: j + 1 };
 					}
+					if (batchGy && res !== 'graveyard') {
+						movedFromGy.push(card);
+					}
+				}
+				if (batchGy && movedFromGy.length > 0) {
+					emitEvent(ctx.state, {
+						kind: 'GraveyardLeaveBatch',
+						ownerId: player.playerId,
+						objects: movedFromGy
+					});
 				}
 				targetLog.push(`exiled ${names.join(', ')} from ${def.zone}`);
 				break;

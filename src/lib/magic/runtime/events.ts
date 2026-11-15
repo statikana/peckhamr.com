@@ -86,6 +86,12 @@ export interface LeftBattlefieldInfo {
 	// --- Track P9 ---
 	/** CR 603.10a / 704.8: non-innate Layer 6 granted 'dies' trigger keywords (e.g. undying, persist) active right before leaving. */
 	grantedDeathKeywords?: Record<string, number>;
+	// --- Track P10 ---
+	/** Source permanent `(sourceId, sourceVersion)` entries that dealt damage to this creature this turn prior to leaving the battlefield. */
+	damagedByThisTurn?: Array<{ sourceId: string; sourceVersion?: number }>;
+	/** CR 603.10a: EOT-granted quoted ability texts active on this permanent right before leaving the battlefield. */
+	grantedAbilityTexts?: string[];
+	// --- End Track P10 ---
 }
 
 /** A spell was cast (it is already on the stack). */
@@ -403,7 +409,90 @@ export type GameEvent =
 	| ManifestDreadEvent
 	| BecameMonstrousEvent
 	// --- Track P6 ---
-	| CounterRemovedEvent;
+	| CounterRemovedEvent
+	// --- Track P10 ---
+	| UnblockedAttackersEvent
+	| BecomesUntappedEvent
+	| ScriedEvent
+	| CrimeCommittedEvent
+	| ExploitedEvent
+	| ManaExpendedEvent
+	| SacrificedEvent
+	| GraveyardLeaveBatchEvent
+	| DiscoveredEvent
+	| ForagedEvent;
+	// --- End Track P10 ---
+
+// --- Track P10 ---
+export interface UnblockedAttackersEvent extends EventBase {
+	kind: 'UnblockedAttackers';
+	defenderPlayerId: string;
+	attackerIds: string[];
+}
+
+export interface BecomesUntappedEvent extends EventBase {
+	kind: 'BecomesUntapped';
+	objectId: string;
+	object: CardInstance;
+}
+
+export interface ScriedEvent extends EventBase {
+	kind: 'Scried';
+	playerId: string;
+	amount: number;
+}
+
+export interface CrimeCommittedEvent extends EventBase {
+	kind: 'CrimeCommitted';
+	playerId: string;
+	stackItemId?: string;
+}
+
+export interface ExploitedEvent extends EventBase {
+	kind: 'Exploited';
+	playerId: string;
+	exploiterId: string;
+	exploiterVersion?: number;
+	exploitedId: string;
+	exploited: CardInstance;
+	exploitedLki?: LeftBattlefieldInfo;
+}
+
+export interface ManaExpendedEvent extends EventBase {
+	kind: 'ManaExpended';
+	playerId: string;
+	previousTotal: number;
+	newTotal: number;
+	amountSpent: number;
+}
+
+export interface SacrificedEvent extends EventBase {
+	kind: 'Sacrificed';
+	playerId: string;
+	objectId: string;
+	object: CardInstance;
+	lki?: LeftBattlefieldInfo;
+}
+
+export interface GraveyardLeaveBatchEvent extends EventBase {
+	kind: 'GraveyardLeaveBatch';
+	ownerId: string;
+	objects: CardInstance[];
+}
+
+export interface DiscoveredEvent extends EventBase {
+	kind: 'Discovered';
+	playerId: string;
+	n: number;
+	hitCard?: CardInstance;
+	wasCast?: boolean;
+}
+
+export interface ForagedEvent extends EventBase {
+	kind: 'Foraged';
+	playerId: string;
+}
+// --- End Track P10 ---
 
 export type GameEventKind = GameEvent['kind'];
 type EventOf<K extends GameEventKind> = Extract<GameEvent, { kind: K }>;

@@ -16,6 +16,9 @@ import {
 import type {
 	Amount,
 	Condition,
+	// --- Track P10 ---
+	EventKind,
+	// --- End Track P10 ---
 	EventPattern,
 	ObjectFilter,
 	PlayerFilter,
@@ -41,6 +44,9 @@ import {
 	chooseBotBestColor,
 	chooseBotBestCreatureSubtype
 } from './tuckFreezeChosen.ts';
+// --- Track P10 ---
+import { isPermanentDetained } from './reflexiveManaAndActions.ts';
+// --- End Track P10 ---
 import { withStableLayerInputs } from './layerCache.ts';
 import { abilityActivePermanents, evaluatePermanent, type AbilityActivePermanent } from './layers.ts';
 import {
@@ -492,6 +498,14 @@ export function checkGlobalAbilityActivationRestrictions(
 	// --- Track P8 ---
 	isManaAbility = false
 ): { ok: boolean; error?: string } {
+	// --- Track P10 (CR 701.35a): Detain prevents activating any activated abilities (including mana abilities) ---
+	if (perm.zone === 'battlefield' && !perm.phasedOut && isPermanentDetained(perm)) {
+		return {
+			ok: false,
+			error: `Illegal Activation: ${perm.card.name} is detained and its activated abilities can't be activated (CR 701.35a).`
+		};
+	}
+	// --- End Track P10 ---
 	// --- Track P8: CR 602.5a / 606.2 static activated-ability locks ---
 	const staticLock = checkStaticActivatedAbilityLocks(state, actorId, perm, isManaAbility);
 	if (!staticLock.ok) return staticLock;
@@ -620,6 +634,20 @@ function hasRestrictionInner(
 	restriction: RestrictionKind
 ): boolean {
 	const onBf = isOnBattlefield(state, obj.instanceId);
+	// --- Track P10 (CR 701.35a Detain & CR 701.60c Suspect) ---
+	if (onBf && !obj.phasedOut) {
+		if (
+			isPermanentDetained(obj) &&
+			(matchesRestrictionKind('cantAttack', restriction) ||
+				matchesRestrictionKind('cantBlock', restriction))
+		) {
+			return true;
+		}
+		if (obj.isSuspected && matchesRestrictionKind('cantBlock', restriction)) {
+			return true;
+		}
+	}
+	// --- End Track P10 ---
 	// --- Track P9 ---
 	if (onBf && matchesRestrictionKind('cantBlock', restriction) && hasUnleashCantBlock(state, obj)) {
 		return true;
@@ -1354,8 +1382,8 @@ export function tokenMultiplier(state: GameState, recipientPlayerId: string): nu
 }
 
 export interface TriggerMultiplierCause {
-	// --- Track P9: added 'becomesBlockedBy' ---
-	event: 'cast' | 'zoneChange' | 'attacks' | 'cycle' | 'discard' | 'becomesBlockedBy';
+	// --- Track P9 & Track P10: generalized to EventKind ---
+	event: EventKind;
 	spell?: CardInstance;
 	casterId?: string;
 	isCopy?: boolean;

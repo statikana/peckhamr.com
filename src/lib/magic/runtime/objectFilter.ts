@@ -40,6 +40,9 @@ import {
 	isNinjutsuWindowOpen,
 	isUnblockedAttackerForPlayer
 } from './keywordsWave3.ts';
+// --- Track P10 ---
+import { evaluateP10Condition } from './reflexiveManaAndActions.ts';
+// --- End Track P10 ---
 
 export interface FilterContext {
 	state: GameState;
@@ -51,6 +54,9 @@ export interface FilterContext {
 	xValue?: number;
 	// --- Track P8 ---
 	zone?: ZoneType | 'stack';
+	// --- Track P10 ---
+	lastRollResult?: number;
+	// --- End Track P10 ---
 }
 
 const ZONES = ['library', 'hand', 'battlefield', 'graveyard', 'exile', 'command'] as const;
@@ -407,6 +413,9 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 	if (filter.tapped !== undefined && obj.tapped !== filter.tapped) return false;
 	if (filter.saddled !== undefined && Boolean(obj.saddledThisTurn) !== filter.saddled) return false;
 	if (filter.monstrous !== undefined && Boolean(obj.isMonstrous) !== filter.monstrous) return false;
+	// --- Track P10 ---
+	if (filter.suspected !== undefined && Boolean(obj.isSuspected) !== filter.suspected) return false;
+	// --- End Track P10 ---
 	if (filter.token !== undefined && obj.isToken !== filter.token) return false;
 	if (filter.isCommander !== undefined && Boolean(obj.isCommander) !== filter.isCommander) return false;
 	if (filter.exiledWithSelf) {
@@ -622,6 +631,10 @@ export function evaluateAmount(amount: Amount, ctx: FilterContext): number {
 		// --- Track P8 ---
 		case 'distinctCardTypesInZone':
 			return countDistinctCardTypesInZone(ctx.state, ctx.controllerId, amount.zone, amount.whose);
+		// --- Track P10 ---
+		case 'lastRollResult':
+			return ctx.lastRollResult ?? ctx.stackItem?.lastRollResult ?? 0;
+		// --- End Track P10 ---
 		default:
 			return 0;
 	}
@@ -724,6 +737,14 @@ export function evaluateCondition(cond: Condition, ctx: FilterContext): boolean 
 				0;
 			return c <= 0;
 		}
+		// --- Track P10 ---
+		case 'opponentLostLifeThisTurn':
+		case 'descendedThisTurn':
+		case 'hadCounterOnIt':
+		case 'manaColorSpentToCast':
+		case 'opponentComparison':
+			return evaluateP10Condition(cond, ctx);
+		// --- End Track P10 ---
 		default:
 			return false;
 	}

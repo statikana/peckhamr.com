@@ -148,6 +148,12 @@ export interface MoveOptions {
 	 * multi-object batching so simultaneous battlefield returns happen after all SBA deaths settle).
 	 */
 	skipLinkedReturn?: boolean;
+	// --- Track P10 ---
+	/** Player who sacrificed this permanent (`CR 701.21a`), emitting a `Sacrificed` event. */
+	sacrificedByPlayerId?: string;
+	/** Suppresses per-card `GraveyardLeaveBatch` when a caller emits a single batch event for simultaneous graveyard leaves. */
+	suppressGraveyardLeaveBatch?: boolean;
+	// --- End Track P10 ---
 }
 
 export interface SbaMoveLog {
@@ -698,6 +704,12 @@ function finalizeZoneMove(
 		obj.riotHaste = undefined;
 		obj.riotChoicesDone = undefined;
 		obj.unleashChoiceDone = undefined;
+		// --- Track P10 (CR 400.7) ---
+		obj.isSuspected = undefined;
+		obj.detainedByPlayerIds = undefined;
+		obj.damagedByThisTurn = undefined;
+		obj.manaSpentCount = undefined;
+		// --- End Track P10 ---
 		const prevObjVersion = obj.objectVersion || 1;
 		const pruneLeftPerm = <T extends { affected: Array<{ instanceId: string; objectVersion?: number }> }>(
 			list: T[] | undefined
@@ -745,8 +757,16 @@ function finalizeZoneMove(
 		obj.riotHaste = undefined;
 		obj.riotChoicesDone = undefined;
 		obj.unleashChoiceDone = undefined;
+		// --- Track P10 (CR 400.7) ---
+		obj.isSuspected = undefined;
+		obj.detainedByPlayerIds = undefined;
+		obj.damagedByThisTurn = undefined;
+		// --- End Track P10 ---
 		if (dest !== 'stack') {
 			obj.manaColorsSpent = undefined;
+			// --- Track P10 ---
+			obj.manaSpentCount = undefined;
+			// --- End Track P10 ---
 			obj.dashed = undefined;
 			obj.prototyped = undefined;
 			obj.activeFaceIndex = undefined;
@@ -1039,6 +1059,24 @@ function finalizeZoneMove(
 				destZone: dest
 			});
 		}
+		// --- Track P10 ---
+		if (fromZone === 'battlefield' && opts.sacrificedByPlayerId && lki) {
+			emitEvent(state, {
+				kind: 'Sacrificed',
+				playerId: opts.sacrificedByPlayerId,
+				objectId: obj.instanceId,
+				object: obj,
+				lki
+			});
+		}
+		if (fromZone === 'graveyard' && dest !== 'graveyard' && !opts.suppressGraveyardLeaveBatch) {
+			emitEvent(state, {
+				kind: 'GraveyardLeaveBatch',
+				ownerId: fromPlayerId ?? obj.ownerId,
+				objects: [obj]
+			});
+		}
+		// --- End Track P10 ---
 		if (dest === 'battlefield' && fromZone !== 'battlefield' && !ceases) {
 			maybePlaceSagaEtbLoreCounter(state, obj);
 		}
@@ -1401,7 +1439,11 @@ function moveObjectInner(
 					insertSpec,
 					sbaLogJson: opts.sbaLog ? JSON.stringify(opts.sbaLog) : null,
 					discardReason: opts.discardReason ?? null,
-					discardPlayerId: opts.discardPlayerId ?? null
+					discardPlayerId: opts.discardPlayerId ?? null,
+					// --- Track P10 ---
+					sacrificedByPlayerId: opts.sacrificedByPlayerId ?? null,
+					suppressGraveyardLeaveBatch: Boolean(opts.suppressGraveyardLeaveBatch)
+					// --- End Track P10 ---
 				}
 			},
 			choice: {
@@ -1464,6 +1506,11 @@ registerPromptHandler('zone_replacement_choice', (state, prompt, answer) => {
 			: undefined;
 	const discardPlayerId =
 		typeof data.discardPlayerId === 'string' ? data.discardPlayerId : undefined;
+	// --- Track P10 ---
+	const sacrificedByPlayerId =
+		typeof data.sacrificedByPlayerId === 'string' ? data.sacrificedByPlayerId : undefined;
+	const suppressGraveyardLeaveBatch = Boolean(data.suppressGraveyardLeaveBatch);
+	// --- End Track P10 ---
 
 	const pendingList = state.pendingZoneMoves;
 	if (!pendingList) return;
@@ -1524,6 +1571,10 @@ registerPromptHandler('zone_replacement_choice', (state, prompt, answer) => {
 						sbaLogJson,
 						discardReason: discardReason ?? null,
 						discardPlayerId: discardPlayerId ?? null,
+						// --- Track P10 ---
+						sacrificedByPlayerId: sacrificedByPlayerId ?? null,
+						suppressGraveyardLeaveBatch,
+						// --- End Track P10 ---
 						...(resumeStackItemId !== undefined ? { resumeStackItemId } : {}),
 						...(resumeStepIndex !== undefined ? { resumeStepIndex } : {})
 					}
@@ -1576,6 +1627,10 @@ registerPromptHandler('zone_replacement_choice', (state, prompt, answer) => {
 				sbaLog,
 				...(discardReason ? { discardReason } : {}),
 				...(discardPlayerId ? { discardPlayerId } : {}),
+				// --- Track P10 ---
+				...(sacrificedByPlayerId ? { sacrificedByPlayerId } : {}),
+				...(suppressGraveyardLeaveBatch ? { suppressGraveyardLeaveBatch: true } : {}),
+				// --- End Track P10 ---
 				...(resumeStackItemId ? { resumeStackItemId } : {}),
 				...(resumeStepIndex !== undefined ? { resumeStepIndex } : {})
 			}
@@ -1867,7 +1922,9 @@ registerPromptHandler('etb_choice', (state, prompt, answer) => {
 	}
 });
 
-function captureLki(state: GameState, obj: CardInstance): LeftBattlefieldInfo {
+// --- Track P10 ---
+export function captureLki(state: GameState, obj: CardInstance): LeftBattlefieldInfo {
+// --- End Track P10 ---
 	const evaluated = evaluatePermanent(state, obj);
 	const power = evaluated.isCreature
 		? (obj.lastKnownPower ?? evaluated.breakdown.effectivePower ?? evaluated.power)
@@ -1908,7 +1965,28 @@ function captureLki(state: GameState, obj: CardInstance): LeftBattlefieldInfo {
 		...(() => {
 			const g = extractGrantedDeathKeywords(state, obj, evaluated);
 			return g ? { grantedDeathKeywords: g } : {};
+		})(),
+		// --- Track P10 ---
+		...(obj.damagedByThisTurn && obj.damagedByThisTurn.length > 0
+			? { damagedByThisTurn: [...obj.damagedByThisTurn] }
+			: {}),
+		...(() => {
+			if (!state.timedContinuousEffects?.length || evaluated.hasLostAllAbilities) return {};
+			const ver = obj.objectVersion || 1;
+			const texts: string[] = [];
+			for (const eff of state.timedContinuousEffects) {
+				if (!eff.layer6?.grantedAbilityTexts?.length) continue;
+				if (
+					eff.affected.some(
+						(a) => a.instanceId === obj.instanceId && (a.objectVersion ?? 1) === ver
+					)
+				) {
+					texts.push(...eff.layer6.grantedAbilityTexts);
+				}
+			}
+			return texts.length > 0 ? { grantedAbilityTexts: texts } : {};
 		})()
+		// --- End Track P10 ---
 	};
 }
 
