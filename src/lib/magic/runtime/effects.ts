@@ -105,6 +105,18 @@ import {
 	isUnblockedAttackerForPlayer,
 	sumEvaluatedToxic
 } from './keywordsWave3.ts';
+// --- Track P11 ---
+import {
+	ALL_COUNTER_TYPES,
+	applyStaticDamageModifiers,
+	applyStaticLifeGainModifiers,
+	computeAttachmentsOnCount,
+	computeDomainCount,
+	computePartyCount,
+	NEGATIVE_COUNTER_TYPES,
+	playerCantGainLife
+} from './staticsDynamicAndCosts.ts';
+// --- End Track P11 ---
 import {
 	applyNextUntapFreeze,
 	chooseBotLibraryPlacement,
@@ -458,6 +470,10 @@ export interface SourceDamageInfo {
 	types: string[];
 	// --- Track P9 ---
 	toxicTotal?: number;
+	// --- Track P11 ---
+	sourceCard?: ScryfallCard;
+	sourceControllerId?: string;
+	// --- End Track P11 ---
 }
 
 export function sourceDamageInfo(
@@ -479,7 +495,11 @@ export function sourceDamageInfo(
 				.split(/\s+/)
 				.filter(Boolean),
 			// --- Track P9 ---
-			toxicTotal: sumEvaluatedToxic(ev)
+			toxicTotal: sumEvaluatedToxic(ev),
+			// --- Track P11 ---
+			sourceCard,
+			sourceControllerId: ev.controllerId
+			// --- End Track P11 ---
 		};
 	}
 	const faceOpts = sourcePerm ? instanceFaceOptions(sourcePerm) : undefined;
@@ -494,7 +514,11 @@ export function sourceDamageInfo(
 		hasInfect: kws.has('infect'),
 		hasWither: kws.has('wither'),
 		colors: [...view.colors],
-		types: [...view.types]
+		types: [...view.types],
+		// --- Track P11 ---
+		sourceCard,
+		...(sourcePerm?.controllerId ? { sourceControllerId: sourcePerm.controllerId } : {})
+		// --- End Track P11 ---
 	};
 }
 
@@ -605,6 +629,24 @@ export function dealDamageToPermanent(
 	});
 	if (dmg <= 0) return 0;
 	// --- End Track P7 ---
+	// --- Track P11 (CR 614.7a): Static damage addition/multiplication replacements ---
+	{
+		const srcPerm = p.findPermanent(state, sourceId)?.inst;
+		const stackSrc = !srcPerm
+			? state.stack.find((s) => s.id === sourceId || s.sourceInstanceId === sourceId)
+			: undefined;
+		dmg = applyStaticDamageModifiers(state, dmg, {
+			source: srcPerm,
+			sourceCard: srcInfo.sourceCard ?? stackSrc?.card,
+			sourceControllerId:
+				srcInfo.sourceControllerId ?? stackSrc?.controllerId ?? opts?.actorId,
+			isCombat: combat,
+			targetKind: 'permanent',
+			targetPermanent: target
+		});
+		if (dmg <= 0) return 0;
+	}
+	// --- End Track P11 ---
 
 	if (evTarget.isPlaneswalker) {
 		// CR 120.3c / 306.8: Damage dealt to a planeswalker removes that many loyalty counters.
@@ -678,6 +720,23 @@ export function dealDamageToPlayer(
 	});
 	if (dmg <= 0) return 0;
 	// --- End Track P7 ---
+	// --- Track P11 (CR 614.7a): Static damage addition/multiplication replacements ---
+	{
+		const srcPerm = p.findPermanent(state, sourceId)?.inst;
+		const stackSrc = !srcPerm
+			? state.stack.find((s) => s.id === sourceId || s.sourceInstanceId === sourceId)
+			: undefined;
+		dmg = applyStaticDamageModifiers(state, dmg, {
+			source: srcPerm,
+			sourceCard: srcInfo.sourceCard ?? stackSrc?.card,
+			sourceControllerId: srcInfo.sourceControllerId ?? stackSrc?.controllerId,
+			isCombat: combat,
+			targetKind: 'player',
+			targetPlayerId: pl.playerId
+		});
+		if (dmg <= 0) return 0;
+	}
+	// --- End Track P11 ---
 
 	if (srcInfo.hasInfect) {
 		// CR 702.90b: Damage dealt to a player by a source with infect is dealt in the form of poison counters.
@@ -724,15 +783,22 @@ export function gainPlayerLife(
 	if (amount <= 0 || player.lost) return 0;
 	const cantChange =
 		Boolean(player.lifeTotalCannotChangeThisTurn) ||
-		activeRuleModifiers(state, 'lifeTotalCantChange', player.playerId).length > 0;
+		activeRuleModifiers(state, 'lifeTotalCantChange', player.playerId).length > 0 ||
+		// --- Track P11 (CR 119.7) ---
+		playerCantGainLife(state, player.playerId);
+	// --- End Track P11 ---
 	if (cantChange) return 0;
-	player.life += amount;
+	// --- Track P11 (CR 119.6, 119.10): Static life gain +N / ×2 replacements ---
+	const finalAmount = applyStaticLifeGainModifiers(state, player.playerId, amount);
+	if (finalAmount <= 0) return 0;
+	player.life += finalAmount;
 	// --- Track P7 ---
-	recordLifeGainedThisTurn(state, player, amount);
+	recordLifeGainedThisTurn(state, player, finalAmount);
 	// --- End Track P7 ---
-	emitEvent(state, { kind: 'GainLife', playerId: player.playerId, amount });
+	emitEvent(state, { kind: 'GainLife', playerId: player.playerId, amount: finalAmount });
 	flushTriggers(state);
-	return amount;
+	return finalAmount;
+	// --- End Track P11 ---
 }
 
 export function applyLifelinkGain(
@@ -749,30 +815,15 @@ export function proliferateCandidates(
 	state: GameState,
 	controller: PlayerGameState
 ): { candidates: string[]; defaultIds: string[] } {
-	const allCounterTypes: CounterType[] = [
-		'+1/+1',
-		'-1/-1',
-		'loyalty',
-		'charge',
-		'shield',
-		'stun',
-		'lore',
-		'time',
-		'age',
-		'level',
-		'fade'
-	];
-	const controllerPositiveTypes: CounterType[] = [
-		'+1/+1',
-		'loyalty',
-		'charge',
-		'shield',
-		'lore',
-		'time',
-		'level',
-		'fade'
-	];
-	const opponentNegativeTypes: CounterType[] = ['-1/-1', 'stun', 'age'];
+	// --- Track P11 ---
+	const allCounterTypes = ALL_COUNTER_TYPES;
+	const controllerPositiveTypes = ALL_COUNTER_TYPES.filter(
+		(c) => !NEGATIVE_COUNTER_TYPES.has(c) && c !== 'age'
+	);
+	const opponentNegativeTypes = ALL_COUNTER_TYPES.filter(
+		(c) => NEGATIVE_COUNTER_TYPES.has(c) || c === 'age'
+	);
+	// --- End Track P11 ---
 	const candidates: string[] = [];
 	const defaultIds: string[] = [];
 	for (const pl of state.players) {
@@ -1509,6 +1560,32 @@ class Run {
 			// --- Track P9 ---
 			case 'lkiCounterCount':
 				return this.ctx.eventLki?.counters?.[a.counter] ?? 0;
+			// --- Track P11 ---
+			case 'mul':
+				return a.factor * this.amount(a.of);
+			case 'domain': {
+				const p = this.playerRef(a.player);
+				return p ? computeDomainCount(this.state, p.playerId) : 0;
+			}
+			case 'partyCount': {
+				const p = this.playerRef(a.player);
+				return p ? computePartyCount(this.state, p.playerId) : 0;
+			}
+			case 'attachmentsOn': {
+				const src = this.sourcePerm ?? undefined;
+				const hostId =
+					a.target === 'self'
+						? (src?.instanceId ?? this.ctx.sourceId)
+						: src?.attachedToId;
+				return computeAttachmentsOnCount(
+					this.state,
+					hostId,
+					a.filter,
+					this.you.playerId,
+					src
+				);
+			}
+			// --- End Track P11 ---
 		}
 	}
 

@@ -288,7 +288,77 @@ export type CounterType =
 	| 'age'
 	// --- Track P6 ---
 	| 'level'
-	| 'fade';
+	| 'fade'
+	// --- Track P11 ---
+	| 'flying'
+	| 'first strike'
+	| 'double strike'
+	| 'deathtouch'
+	| 'haste'
+	| 'hexproof'
+	| 'indestructible'
+	| 'lifelink'
+	| 'menace'
+	| 'reach'
+	| 'trample'
+	| 'vigilance'
+	| 'finality'
+	| 'oil'
+	| 'ki'
+	| 'quest'
+	| 'storage'
+	| 'verse'
+	| 'spore'
+	| 'divinity'
+	| 'feather'
+	| 'gold'
+	| 'plague'
+	| 'blight'
+	| 'stash'
+	| 'vitality';
+
+export function createEmptyCounterMap(): Record<CounterType, number> {
+	return {
+		'+1/+1': 0,
+		'-1/-1': 0,
+		loyalty: 0,
+		charge: 0,
+		shield: 0,
+		stun: 0,
+		lore: 0,
+		time: 0,
+		age: 0,
+		level: 0,
+		fade: 0,
+		flying: 0,
+		'first strike': 0,
+		'double strike': 0,
+		deathtouch: 0,
+		haste: 0,
+		hexproof: 0,
+		indestructible: 0,
+		lifelink: 0,
+		menace: 0,
+		reach: 0,
+		trample: 0,
+		vigilance: 0,
+		finality: 0,
+		oil: 0,
+		ki: 0,
+		quest: 0,
+		storage: 0,
+		verse: 0,
+		spore: 0,
+		divinity: 0,
+		feather: 0,
+		gold: 0,
+		plague: 0,
+		blight: 0,
+		stash: 0,
+		vitality: 0
+	};
+}
+	// --- End Track P11 ---
 
 export interface TargetRequirementInfo {
 	requiresTarget: boolean;
@@ -564,6 +634,14 @@ export interface CardInstance {
 	riotChoicesDone?: number;
 	/** CR 702.98a Unleash: true once the Unleash ETB choice has been completed as this permanent enters. */
 	unleashChoiceDone?: boolean;
+	// --- Track P11 ---
+	/** CR 614.1c / 614.12 / 201.2a: card name chosen as this permanent entered; not copiable (CR 707.2). */
+	chosenCardName?: string;
+	/** CR 614.1c / 614.12: true once an ETB counter-choice replacement on this permanent has completed. */
+	etbCounterChoiceDone?: boolean;
+	/** CR 613.7c: per-counter-type timestamp allocated when counters of that kind are placed on this permanent. */
+	counterTimestamps?: Partial<Record<CounterType, number>>;
+	// --- End Track P11 ---
 }
 
 export interface TargetRef {
@@ -649,7 +727,8 @@ export interface CastOption {
 	costDisplay: string;
 	// --- Track P8: widened fromZone & permission for top-of-library spell casting ---
 	fromZone: 'hand' | 'command' | 'exile' | 'graveyard' | 'library';
-	permission: 'zone_default' | 'keyword_alt' | 'exile_permission' | 'library_top_permission';
+	// --- Track P11: added 'static_alt' for static alternative cast permissions ---
+	permission: 'zone_default' | 'keyword_alt' | 'exile_permission' | 'library_top_permission' | 'static_alt';
 	faceIndex?: number;
 	fused?: boolean;
 	baseCost:
@@ -840,6 +919,13 @@ export interface StackItem {
 		costObjects?: string[][];
 		extortColor?: ManaColor;
 	};
+	// --- Track P11 ---
+	/** CR 113.7a, 613.1f: face index and ability index on `grantSourceCard` for a Layer 6 granted triggered ability. */
+	grantFaceIndex?: number;
+	grantAbilityIndex?: number;
+	/** LKI chosenCardName carried onto triggered abilities. */
+	sourceChosenCardName?: string;
+	// --- End Track P11 ---
 }
 
 /** One binding of the IR interpreter ("it", "that creature"): the objects and their LKI. */
@@ -925,6 +1011,12 @@ export interface SerializedPendingTrigger {
 	order: number;
 	// --- Track P1 ---
 	isChapterAbility?: boolean;
+	// --- Track P11 ---
+	grantSourceCard?: ScryfallCard;
+	grantFaceIndex?: number;
+	grantAbilityIndex?: number;
+	sourceChosenCardName?: string;
+	// --- End Track P11 ---
 }
 
 /** Snapshot of an IR effect binding carried into a delayed trigger (CR 603.7c). */
@@ -949,6 +1041,10 @@ export interface CompiledDelayedEffect {
 	abilityId?: string;
 	abilityIndex?: number;
 	grantSourceCard?: ScryfallCard;
+	// --- Track P11 ---
+	grantFaceIndex?: number;
+	grantAbilityIndex?: number;
+	// --- End Track P11 ---
 	grantedKeyword?: string;
 	chosenModes?: number[];
 	/** Index path to the `delayedTrigger` step from the originating compiled effect's root steps. */
@@ -1311,6 +1407,10 @@ export interface CostPayment {
 	objects?: string[][];
 	phyrexianLifeCount?: number;
 	hybridChoices?: number[];
+	// --- Track P11 ---
+	/** Per-Phyrexian-symbol payment choice ('life' | 'primary' | 'alt') for mixed/hybrid Phyrexian costs. */
+	phyrexianChoices?: Array<'life' | 'primary' | 'alt'>;
+	// --- End Track P11 ---
 }
 
 export interface VfxEvent {
@@ -1406,6 +1506,12 @@ export interface PlayerGameState {
 	currentUpkeepBeganAt?: number;
 	/** CR 702.54a–b Bloodthirst: total damage dealt to this player so far this turn (reset at turn start). */
 	damageDealtToThisTurn?: number;
+	// --- Track P11 ---
+	/** CR 107.4h: count of mana in `manaPool` per color produced by a Snow source. */
+	snowManaByColor?: Partial<Record<ManaColor, number>>;
+	/** CR 502.3: instanceIds already prompted/decided for 'You may choose not to untap ~' during this untap step. */
+	untapChoiceEvaluatedIds?: string[];
+	// --- End Track P11 ---
 }
 
 export interface ManaRider {

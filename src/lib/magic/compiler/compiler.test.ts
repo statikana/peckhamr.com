@@ -385,7 +385,7 @@ describe('KEYWORD_REGISTRY and Track B3 Slice 1 keyword compilation', () => {
 			'Bushido',
 			'Bushido X',
 			'Affinity',
-			'Affinity for historic permanents',
+			'Affinity for emblems',
 			'Flying 2'
 		];
 		for (const line of malformedCases) {

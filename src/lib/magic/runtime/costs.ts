@@ -34,7 +34,10 @@ import type {
 	ManaColor,
 	PlayerGameState,
 	ScryfallCard,
-	SerializedPlannedCost
+	SerializedPlannedCost,
+	// --- Track P11 ---
+	TargetRef
+	// --- End Track P11 ---
 } from '../types.ts';
 import { evaluateAmount, evaluateCondition, matchesObjectFilter, type FilterContext } from './objectFilter.ts';
 import { noteLayerInputsChanged, withStableLayerInputs } from './layerCache.ts';
@@ -55,6 +58,14 @@ import { emitEvent } from './events.ts';
 import { hasRestriction, playerLifeTotalCantChange } from './replace.ts';
 // --- Track P8 ---
 import { markHandCardRevealedToAll } from './staticsLayersAndRestrictions.ts';
+// --- Track P11 ---
+import {
+	ALL_COUNTER_TYPES,
+	boardMayGrantStaticAbility,
+	cardMayHaveCostModifier,
+	collectActiveGrantedStaticDefs
+} from './staticsDynamicAndCosts.ts';
+// --- End Track P11 ---
 import { exertPermanent } from './tuckFreezeChosen.ts';
 import { moveObject, tapPermanent, type MoveResult, type PlayerZone } from './zones.ts';
 
@@ -128,6 +139,17 @@ export function spellAdditionalCost(card: ScryfallCard, faceIndex = 0, fused = f
 		if (a.kind === 'spell' && a.additionalCosts.length > 0) {
 			defs.push(...a.additionalCosts);
 			matched = true;
+		} else if (
+			// --- Track P11: Permanent spell self-additional costs ---
+			a.kind === 'static' &&
+			a.static.k === 'costModifier' &&
+			a.static.affects.k === 'self' &&
+			a.static.delta.additionalCosts &&
+			a.static.delta.additionalCosts.length > 0
+		) {
+			defs.push(...a.static.delta.additionalCosts);
+			matched = true;
+			// --- End Track P11 ---
 		} else if (a.kind === 'unsupported' && a.id === 'cast') {
 			defs.push(...(a.cost ?? []));
 			if (!a.costComplete) complete = false;
@@ -244,6 +266,12 @@ export function spellChoosesX(
 	return abilitiesOf(card, faceIndex, fused).some(
 		(a) =>
 			(a.kind === 'spell' && mentionsX(a.additionalCosts)) ||
+			// --- Track P11 ---
+			(a.kind === 'static' &&
+				a.static.k === 'costModifier' &&
+				a.static.affects.k === 'self' &&
+				mentionsX(a.static.delta.additionalCosts)) ||
+			// --- End Track P11 ---
 			(a.kind === 'unsupported' && a.id === 'cast' && mentionsX(a.cost))
 	);
 }
@@ -264,11 +292,18 @@ export function keywordsOf(card: ScryfallCard): KeywordDef[] {
 	return abilitiesOf(card).flatMap((a) => (a.kind === 'keyword' ? [a.keyword] : []));
 }
 
+const EMPTY_COST_MODS: Array<Extract<StaticDef, { k: 'costModifier' }>> = [];
+
 /** The cost-modifying statics of a card (CR 601.2f), including registry `'static'` keywords (e.g. Affinity). */
 export function costModifiersOf(
 	card: ScryfallCard,
 	faceOpts?: Parameters<typeof activeAbilityDefs>[1]
 ): Array<Extract<StaticDef, { k: 'costModifier' }>> {
+	// --- Track P11: O(1) skip when no face of `card` compiles any costModifier ---
+	if (!faceOpts?.copiableState?.card && !cardMayHaveCostModifier(card)) {
+		return EMPTY_COST_MODS;
+	}
+	// --- End Track P11 ---
 	const out: Array<Extract<StaticDef, { k: 'costModifier' }>> = [];
 	for (const a of activeAbilityDefs(card, faceOpts)) {
 		if (a.kind === 'static' && a.static.k === 'costModifier') {
@@ -301,7 +336,10 @@ export function effectiveSpellManaCost(
 	faceIndex = 0,
 	fused = false,
 	faceDownSpec?: FaceDownSpec,
-	prototyped?: boolean
+	prototyped?: boolean,
+	// --- Track P11 ---
+	chosenTargets?: TargetRef[]
+	// --- End Track P11 ---
 ): ManaCostRequirement {
 	// Read-only: one layer-cache validation for the battlefield scan (Phase 6d).
 	return withStableLayerInputs(state, () =>
@@ -315,7 +353,8 @@ export function effectiveSpellManaCost(
 			faceIndex,
 			fused,
 			faceDownSpec,
-			prototyped
+			prototyped,
+			chosenTargets
 		)
 	);
 }
@@ -330,7 +369,10 @@ function effectiveSpellManaCostInner(
 	faceIndex = 0,
 	fused = false,
 	faceDownSpec?: FaceDownSpec,
-	prototyped?: boolean
+	prototyped?: boolean,
+	// --- Track P11 ---
+	chosenTargets?: TargetRef[]
+	// --- End Track P11 ---
 ): ManaCostRequirement {
 	const card = inst.copiableCard ?? inst.card;
 	const stackFaceOpts = {
@@ -353,6 +395,14 @@ function effectiveSpellManaCostInner(
 	let forceZeroCost = false;
 	let genericReduction = 0;
 	let genericIncrease = 0;
+	// --- Track P11 ---
+	const coloredReduction: Partial<Record<ManaColor, number>> = {};
+	const hybridColoredReduction: Array<[ManaColor, ManaColor]> = [];
+	let hasColoredReduction = false;
+	let coloredOnly = false;
+	let minTotalMana = 0;
+	let extraColoredIncreaseStr = '';
+	// --- End Track P11 ---
 
 	const applyDelta = (mod: Extract<StaticDef, { k: 'costModifier' }>, ctx: FilterContext) => {
 		const perAmount = mod.delta.per ?? mod.delta.times;
@@ -360,10 +410,46 @@ function effectiveSpellManaCostInner(
 		if (factor === 0 && perAmount) return;
 		if (mod.delta.mode === 'setZero') {
 			forceZeroCost = true;
-		} else if (mod.delta.mode === 'reduce' && mod.delta.generic) {
-			genericReduction += mod.delta.generic * factor;
-		} else if (mod.delta.mode === 'increase' && mod.delta.generic) {
-			genericIncrease += mod.delta.generic * factor;
+		} else if (mod.delta.mode === 'reduce') {
+			if (mod.delta.generic) genericReduction += mod.delta.generic * factor;
+			// --- Track P11 ---
+			if (mod.delta.colored) {
+				for (const [col, amt] of Object.entries(mod.delta.colored) as Array<[ManaColor, number]>) {
+					if (amt > 0) {
+						coloredReduction[col] = (coloredReduction[col] ?? 0) + amt * factor;
+						hasColoredReduction = true;
+					}
+				}
+			}
+			if (mod.delta.hybridColored) {
+				for (let f = 0; f < factor; f++) {
+					for (const pair of mod.delta.hybridColored) {
+						hybridColoredReduction.push(pair);
+						hasColoredReduction = true;
+					}
+				}
+			}
+			if (mod.delta.coloredOnly) coloredOnly = true;
+			if (mod.delta.minTotalMana && mod.delta.minTotalMana > minTotalMana) {
+				minTotalMana = mod.delta.minTotalMana;
+			}
+			// --- End Track P11 ---
+		} else if (mod.delta.mode === 'increase') {
+			if (mod.delta.generic) genericIncrease += mod.delta.generic * factor;
+			// --- Track P11 ---
+			if (mod.delta.colored) {
+				for (const [col, amt] of Object.entries(mod.delta.colored) as Array<[ManaColor, number]>) {
+					if (amt > 0) extraColoredIncreaseStr += `{${col}}`.repeat(amt * factor);
+				}
+			}
+			if (mod.delta.hybridColored) {
+				for (let f = 0; f < factor; f++) {
+					for (const [c1, c2] of mod.delta.hybridColored) {
+						extraColoredIncreaseStr += `{${c1}/${c2}}`;
+					}
+				}
+			}
+			// --- End Track P11 ---
 		}
 	};
 
@@ -375,13 +461,16 @@ function effectiveSpellManaCostInner(
 		return true;
 	};
 
-	const stackProxy: CardInstance = {
+	const stackProxy: CardInstance & { targets?: TargetRef[] } = {
 		...inst,
 		zone: 'stack',
 		activeFaceIndex: faceIndex,
 		...(prototyped ? { prototyped: true } : {}),
 		...(faceDownSpec ? { isFaceDown: true, faceDownSpec } : {}),
-		...(fused ? { copiableState: { ...(inst.copiableState ?? { card }), faceIndex, fused: true } } : {})
+		...(fused ? { copiableState: { ...(inst.copiableState ?? { card }), faceIndex, fused: true } } : {}),
+		// --- Track P11 ---
+		...(chosenTargets !== undefined ? { targets: chosenTargets } : {})
+		// --- End Track P11 ---
 	};
 	const matchesSpell = (
 		mod: Extract<StaticDef, { k: 'costModifier' }>,
@@ -398,6 +487,19 @@ function effectiveSpellManaCostInner(
 			source: sourceInst,
 			xValue: effectiveX
 		};
+		// --- Track P11 (CR 601.2c -> 601.2f): pre-target optimistic check for targeting reductions ---
+		if (
+			chosenTargets === undefined &&
+			mod.delta.mode === 'reduce' &&
+			mod.affects.filter.targetsSelf &&
+			sourceInst.zone === 'battlefield' &&
+			!sourceInst.phasedOut
+		) {
+			const withoutTargetsSelf: ObjectFilter = { ...mod.affects.filter };
+			delete withoutTargetsSelf.targetsSelf;
+			return matchesObjectFilter(stackProxy, withoutTargetsSelf, fctx);
+		}
+		// --- End Track P11 ---
 		return matchesObjectFilter(stackProxy, mod.affects.filter, fctx);
 	};
 
@@ -412,26 +514,67 @@ function effectiveSpellManaCostInner(
 		};
 		for (const mod of costModifiersOf(card, stackFaceOpts)) {
 			if (mod.affects.k !== 'self') continue;
-			if (mod.condition && !evaluateCondition(mod.condition, selfCtx)) continue;
+			if (mod.condition) {
+				// --- Track P11: pre-target optimistic check for "if it targets a <filter>" self-reductions ---
+				if (
+					chosenTargets === undefined &&
+					mod.delta.mode === 'reduce' &&
+					mod.condition.k === 'matchesFilter' &&
+					(!mod.condition.target || mod.condition.target.k === 'self') &&
+					mod.condition.filter.targetsFilter
+				) {
+					const tf = mod.condition.filter.targetsFilter;
+					const hasMatchingPerm = state.players.some(
+						(pl) =>
+							!pl.lost &&
+							pl.battlefield.some(
+								(b) => !b.phasedOut && matchesObjectFilter(b, tf, selfCtx)
+							)
+					);
+					if (!hasMatchingPerm) continue;
+				} else if (!evaluateCondition(mod.condition, selfCtx)) {
+					continue;
+				}
+				// --- End Track P11 ---
+			}
 			applyDelta(mod, selfCtx);
 		}
 	}
 
 	// 2. Active cost modifiers on the battlefield and in the command zone (Eminence).
+	// --- Track P11 ---
+	const mayGrantSpellCostMod = boardMayGrantStaticAbility(state, 'costModifier');
+	// --- End Track P11 ---
 	for (const p of state.players) {
 		if (p.lost) continue;
 		for (const perm of p.battlefield) {
-			if (perm.phasedOut || evaluatePermanent(state, perm).losesAllAbilities) continue;
-			const pCard = perm.copiableCard ?? perm.card;
+			if (perm.phasedOut) continue;
 			const ctx: FilterContext = { state, controllerId: p.playerId, source: perm, xValue: effectiveX };
-			for (const mod of costModifiersOf(pCard, instanceFaceOptions(perm, 'battlefield'))) {
-				const zones = mod.activeZones ?? ['battlefield'];
-				if (!zones.includes('battlefield')) continue;
-				if (!matchesWho(mod, p.playerId)) continue;
-				if (mod.condition && !evaluateCondition(mod.condition, ctx)) continue;
-				if (!matchesSpell(mod, p.playerId, perm)) continue;
-				applyDelta(mod, ctx);
+			const pCard = perm.copiableCard ?? perm.card;
+			const mods = costModifiersOf(pCard, instanceFaceOptions(perm, 'battlefield'));
+			if (mods.length > 0 && !evaluatePermanent(state, perm).losesAllAbilities) {
+				for (const mod of mods) {
+					const zones = mod.activeZones ?? ['battlefield'];
+					if (!zones.includes('battlefield')) continue;
+					if (!matchesWho(mod, p.playerId)) continue;
+					if (mod.condition && !evaluateCondition(mod.condition, ctx)) continue;
+					if (!matchesSpell(mod, p.playerId, perm)) continue;
+					applyDelta(mod, ctx);
+				}
 			}
+			// --- Track P11: Layer 6 granted costModifier statics ---
+			if (mayGrantSpellCostMod) {
+				for (const gDef of collectActiveGrantedStaticDefs(state, perm)) {
+					if (gDef.k !== 'costModifier') continue;
+					const zones = gDef.activeZones ?? ['battlefield'];
+					if (!zones.includes('battlefield')) continue;
+					if (!matchesWho(gDef, p.playerId)) continue;
+					if (gDef.condition && !evaluateCondition(gDef.condition, ctx)) continue;
+					if (!matchesSpell(gDef, p.playerId, perm)) continue;
+					applyDelta(gDef, ctx);
+				}
+			}
+			// --- End Track P11 ---
 		}
 		for (const cmd of p.command) {
 			const cCard = cmd.copiableCard ?? cmd.card;
@@ -454,11 +597,33 @@ function effectiveSpellManaCostInner(
 		}
 	}
 
-	const extraManaStr = extraManaCosts?.join('') ?? '';
+	const parseOpts =
+		hasColoredReduction || coloredOnly || minTotalMana > 0
+			? {
+					...(hasColoredReduction ? { coloredReduction } : {}),
+					...(hybridColoredReduction.length > 0 ? { hybridColoredReduction } : {}),
+					...(coloredOnly ? { coloredOnly: true } : {}),
+					...(minTotalMana > 0 ? { minTotalMana } : {})
+				}
+			: undefined;
+
+	const extraManaStr = `${extraManaCosts?.join('') ?? ''}${extraColoredIncreaseStr}`;
 	if (forceZeroCost) {
-		return parseManaCost(extraManaStr, extraManaStr.includes('{X}') ? effectiveX : 0, genericIncrease, genericReduction);
+		return parseManaCost(
+			extraManaStr,
+			extraManaStr.includes('{X}') ? effectiveX : 0,
+			genericIncrease,
+			genericReduction,
+			parseOpts
+		);
 	}
-	return parseManaCost(`${baseCostStr}${extraManaStr}`, effectiveX, genericIncrease, genericReduction);
+	return parseManaCost(
+		`${baseCostStr}${extraManaStr}`,
+		effectiveX,
+		genericIncrease,
+		genericReduction,
+		parseOpts
+	);
 }
 
 /**
@@ -471,11 +636,24 @@ export function effectiveAbilityManaCost(
 	abilityId: string,
 	baseManaCost: string,
 	abilityKeyword?: string,
-	xValue = 0
+	xValue = 0,
+	// --- Track P11 ---
+	sourcePerm?: CardInstance,
+	isManaAbility = false
+	// --- End Track P11 ---
 ): { manaCost: string; requirement: ManaCostRequirement } {
 	// Read-only: one layer-cache validation for the battlefield scan (Phase 6d).
 	return withStableLayerInputs(state, () =>
-		effectiveAbilityManaCostInner(state, actorId, abilityId, baseManaCost, abilityKeyword, xValue)
+		effectiveAbilityManaCostInner(
+			state,
+			actorId,
+			abilityId,
+			baseManaCost,
+			abilityKeyword,
+			xValue,
+			sourcePerm,
+			isManaAbility
+		)
 	);
 }
 
@@ -485,7 +663,11 @@ function effectiveAbilityManaCostInner(
 	abilityId: string,
 	baseManaCost: string,
 	abilityKeyword?: string,
-	xValue = 0
+	xValue = 0,
+	// --- Track P11 ---
+	sourcePerm?: CardInstance,
+	isManaAbility = false
+	// --- End Track P11 ---
 ): { manaCost: string; requirement: ManaCostRequirement } {
 	const kw =
 		abilityKeyword ??
@@ -505,60 +687,132 @@ function effectiveAbilityManaCostInner(
 	let forceZeroCost = false;
 	let genericReduction = 0;
 	let genericIncrease = 0;
+	// --- Track P11 ---
+	const coloredReduction: Partial<Record<ManaColor, number>> = {};
+	const hybridColoredReduction: Array<[ManaColor, ManaColor]> = [];
+	let hasColoredReduction = false;
+	let coloredOnly = false;
+	let minTotalMana = 0;
+	let extraColoredIncreaseStr = '';
+	let anyModifierApplied = false;
+	const isManaAb = isManaAbility || abilityId === 'mana_tap';
 
-	if (kw) {
-		for (const p of state.players) {
-			if (p.lost) continue;
-			for (const b of p.battlefield) {
-				if (b.phasedOut || evaluatePermanent(state, b).losesAllAbilities) continue;
-				const bCard = b.copiableCard ?? b.card;
-				const ctx: FilterContext = { state, controllerId: p.playerId, source: b };
-				for (const mod of costModifiersOf(bCard)) {
-					if (mod.affects.k !== 'ability' || mod.affects.keyword !== kw) continue;
-					if (mod.who.relation === 'you' && p.playerId !== actorId) continue;
-					if (
-						(mod.who.relation === 'opponent' || mod.who.relation === 'each_opponent') &&
-						p.playerId === actorId
-					) {
-						continue;
+	const visitAbilityMod = (
+		mod: Extract<StaticDef, { k: 'costModifier' }>,
+		modControllerId: string,
+		ctx: FilterContext
+	) => {
+		if (mod.affects.k !== 'ability') return;
+		if (mod.affects.keyword) {
+			if (mod.affects.keyword !== kw) return;
+		} else {
+			// CR 605: general activated-ability cost modifiers never apply to mana abilities.
+			if (isManaAb) return;
+			if (!sourcePerm) return;
+			if (mod.affects.filter && !matchesObjectFilter(sourcePerm, mod.affects.filter, ctx)) {
+				return;
+			}
+		}
+		if (mod.who.relation === 'you' && modControllerId !== actorId) return;
+		if (
+			(mod.who.relation === 'opponent' || mod.who.relation === 'each_opponent') &&
+			modControllerId === actorId
+		) {
+			return;
+		}
+		if (mod.condition && !evaluateCondition(mod.condition, ctx)) return;
+		const perAmount = mod.delta.per ?? mod.delta.times;
+		const factor = perAmount ? Math.max(0, evaluateAmount(perAmount, ctx)) : 1;
+		if (factor === 0 && perAmount) return;
+		anyModifierApplied = true;
+		if (mod.delta.mode === 'setZero') {
+			forceZeroCost = true;
+		} else if (mod.delta.mode === 'reduce') {
+			if (mod.delta.generic) genericReduction += mod.delta.generic * factor;
+			if (mod.delta.colored) {
+				for (const [col, amt] of Object.entries(mod.delta.colored) as Array<[ManaColor, number]>) {
+					if (amt > 0) {
+						coloredReduction[col] = (coloredReduction[col] ?? 0) + amt * factor;
+						hasColoredReduction = true;
 					}
-					if (mod.condition && !evaluateCondition(mod.condition, ctx)) continue;
-					const perAmount = mod.delta.per ?? mod.delta.times;
-					const factor = perAmount ? Math.max(0, evaluateAmount(perAmount, ctx)) : 1;
-					if (factor === 0 && perAmount) continue;
-					if (mod.delta.mode === 'setZero') {
-						forceZeroCost = true;
-					} else if (mod.delta.mode === 'reduce' && mod.delta.generic) {
-						genericReduction += mod.delta.generic * factor;
-					} else if (mod.delta.mode === 'increase' && mod.delta.generic) {
-						genericIncrease += mod.delta.generic * factor;
+				}
+			}
+			if (mod.delta.hybridColored) {
+				for (let f = 0; f < factor; f++) {
+					for (const pair of mod.delta.hybridColored) {
+						hybridColoredReduction.push(pair);
+						hasColoredReduction = true;
 					}
+				}
+			}
+			if (mod.delta.coloredOnly) coloredOnly = true;
+			if (mod.delta.minTotalMana && mod.delta.minTotalMana > minTotalMana) {
+				minTotalMana = mod.delta.minTotalMana;
+			}
+		} else if (mod.delta.mode === 'increase') {
+			if (mod.delta.generic) genericIncrease += mod.delta.generic * factor;
+			if (mod.delta.colored) {
+				for (const [col, amt] of Object.entries(mod.delta.colored) as Array<[ManaColor, number]>) {
+					if (amt > 0) extraColoredIncreaseStr += `{${col}}`.repeat(amt * factor);
+				}
+			}
+		}
+	};
+
+	const mayGrantAbilityCostMod = boardMayGrantStaticAbility(state, 'costModifier');
+	for (const p of state.players) {
+		if (p.lost) continue;
+		for (const b of p.battlefield) {
+			if (b.phasedOut) continue;
+			const ctx: FilterContext = { state, controllerId: p.playerId, source: b, xValue };
+			const bCard = b.copiableCard ?? b.card;
+			const mods = costModifiersOf(bCard, instanceFaceOptions(b, 'battlefield'));
+			if (mods.length > 0 && !evaluatePermanent(state, b).losesAllAbilities) {
+				for (const mod of mods) {
+					const zones = mod.activeZones ?? ['battlefield'];
+					if (!zones.includes('battlefield')) continue;
+					visitAbilityMod(mod, p.playerId, ctx);
+				}
+			}
+			if (mayGrantAbilityCostMod) {
+				for (const gDef of collectActiveGrantedStaticDefs(state, b)) {
+					if (gDef.k !== 'costModifier') continue;
+					const zones = gDef.activeZones ?? ['battlefield'];
+					if (!zones.includes('battlefield')) continue;
+					visitAbilityMod(gDef, p.playerId, ctx);
 				}
 			}
 		}
 	}
+	// --- End Track P11 ---
+
+	const parseOpts =
+		hasColoredReduction || coloredOnly || minTotalMana > 0
+			? {
+					...(hasColoredReduction ? { coloredReduction } : {}),
+					...(hybridColoredReduction.length > 0 ? { hybridColoredReduction } : {}),
+					...(coloredOnly ? { coloredOnly: true } : {}),
+					...(minTotalMana > 0 ? { minTotalMana } : {})
+				}
+			: undefined;
 
 	if (forceZeroCost) {
 		return {
 			manaCost: '{0}',
-			requirement: parseManaCost('', 0, genericIncrease, genericReduction)
+			requirement: parseManaCost(extraColoredIncreaseStr, 0, genericIncrease, genericReduction, parseOpts)
 		};
 	}
 	const req = parseManaCost(
-		baseManaCost === '{0}' ? '' : baseManaCost,
+		`${baseManaCost === '{0}' ? '' : baseManaCost}${extraColoredIncreaseStr}`,
 		xValue,
 		genericIncrease,
-		genericReduction
+		genericReduction,
+		parseOpts
 	);
 	let effectiveManaCost = baseManaCost;
-	if (genericReduction > 0 || genericIncrease > 0) {
-		const coloredPart = (['W', 'U', 'B', 'R', 'G', 'C'] as const)
-			.flatMap((c) => Array<string>(req.colored[c]).fill(`{${c}}`))
-			.join('');
-		effectiveManaCost =
-			req.generic > 0
-				? `{${req.generic}}${coloredPart}`
-				: coloredPart || (baseManaCost ? '{0}' : '');
+	if (anyModifierApplied) {
+		const formatted = formatManaRequirement(req, xValue === 0 && req.hasX);
+		effectiveManaCost = formatted === '{0}' && !baseManaCost ? '' : formatted;
 	}
 	return { manaCost: effectiveManaCost, requirement: req };
 }
@@ -650,8 +904,19 @@ export function describeCost(defs: CostDef[]): string {
 					return `Pay ${amountText(d.count)} {E}`;
 				case 'loyalty':
 					return d.delta >= 0 ? `+${d.delta}` : `${d.delta}`;
-				case 'removeCounters':
-					return `Remove ${amountText(d.count)} ${d.counter} counter(s)`;
+				case 'removeCounters': {
+					// --- Track P11 ---
+					const amtStr = d.removeAll ? 'all' : amountText(d.count);
+					const ctrStr = d.counter === 'any' ? '' : ` ${d.counter}`;
+					const fromStr =
+						d.from === 'self'
+							? ''
+							: d.among
+								? ` from among ${filterText(d.from, { k: 'const', n: 2 })} you control`
+								: ` from ${filterText(d.from, { k: 'const', n: 1 })} you control`;
+					return `Remove ${amtStr}${ctrStr} counter(s)${fromStr}`;
+					// --- End Track P11 ---
+				}
 				case 'exileFrom':
 					return d.filter === 'self'
 						? `Exile this from ${d.zone}`
@@ -727,7 +992,9 @@ type ObjectCostDef = Extract<
 			| 'exileFrom'
 			| 'revealFromHand'
 			// --- Track P9 ---
-			| 'returnToHand';
+			| 'returnToHand'
+			// --- Track P11 ---
+			| 'removeCounters';
 	}
 >;
 
@@ -759,6 +1026,52 @@ function hasHaste(state: GameState, perm: CardInstance): boolean {
 function sourceOnBattlefield(ctx: CostContext): boolean {
 	return !ctx.isSpell && ctx.player.battlefield.some((c) => c.instanceId === ctx.source.instanceId);
 }
+
+// --- Track P11: Counter counting & deduction helpers for removeCounters ---
+function totalMatchingCountersOn(perm: CardInstance, counter: CounterType | 'any'): number {
+	if (counter !== 'any') return perm.counters[counter] || 0;
+	let sum = 0;
+	for (const t of ALL_COUNTER_TYPES) {
+		sum += perm.counters[t] || 0;
+	}
+	return sum;
+}
+
+function deductMatchingCountersFrom(
+	state: GameState,
+	perm: CardInstance,
+	counter: CounterType | 'any',
+	toRemove: number
+): number {
+	if (toRemove <= 0) return 0;
+	let removedTotal = 0;
+	const types: readonly CounterType[] = counter === 'any' ? ALL_COUNTER_TYPES : [counter];
+	for (const key of types) {
+		if (removedTotal >= toRemove) break;
+		const prev = perm.counters[key] || 0;
+		if (prev <= 0) continue;
+		const take = Math.min(prev, toRemove - removedTotal);
+		const next = prev - take;
+		perm.counters[key] = next;
+		removedTotal += take;
+		if (perm.zone === 'battlefield' && !perm.phasedOut) {
+			emitEvent(state, {
+				kind: 'CounterRemoved',
+				objectId: perm.instanceId,
+				object: perm,
+				counterType: key,
+				amount: take,
+				previousCount: prev,
+				newCount: next
+			});
+		}
+	}
+	if (removedTotal > 0) {
+		noteLayerInputsChanged(state);
+	}
+	return removedTotal;
+}
+// --- End Track P11 ---
 
 /** Does this cost need the player to choose objects, and which objects could pay it? */
 function objectCandidates(def: ObjectCostDef, ctx: CostContext, used: Set<string>): CardInstance[] | null {
@@ -797,8 +1110,14 @@ function objectCandidates(def: ObjectCostDef, ctx: CostContext, used: Set<string
 			return zoneOf(ctx.player, def.zone).filter(
 				(c) =>
 					free(c) &&
+					(def.zone !== 'battlefield' || !c.phasedOut) &&
 					(!excludeSelf || c.instanceId !== ctx.source.instanceId) &&
-					(!filter || matchesObjectFilter(c, filter, fctx))
+					(!filter ||
+						matchesObjectFilter(
+							c,
+							def.zone === 'battlefield' ? { ...filter, controller: 'you' } : filter,
+							fctx
+						))
 			);
 		}
 		case 'revealFromHand': {
@@ -815,6 +1134,19 @@ function objectCandidates(def: ObjectCostDef, ctx: CostContext, used: Set<string
 					free(c) &&
 					!c.phasedOut &&
 					matchesObjectFilter(c, { ...(def.filter as ObjectFilter), controller: 'you' }, fctx)
+			);
+		}
+		// --- Track P11 ---
+		case 'removeCounters': {
+			if (def.from === 'self' || def.among || def.removeAll) return null;
+			const fromFilter = typeof def.from === 'object' ? def.from : {};
+			const needed = n(def.count, ctx);
+			return ctx.player.battlefield.filter(
+				(c) =>
+					!(ctx.isSpell && c.instanceId === ctx.source.instanceId) &&
+					!c.phasedOut &&
+					matchesObjectFilter(c, { ...fromFilter, controller: 'you' }, fctx) &&
+					totalMatchingCountersOn(c, def.counter) >= needed
 			);
 		}
 	}
@@ -864,12 +1196,35 @@ function checkSimple(def: CostDef, ctx: CostContext): string | null {
 			if (def.delta < 0 && src.counters.loyalty < -def.delta) return 'Not enough loyalty counters.';
 			return null;
 		case 'removeCounters': {
-			if (def.from !== 'self') return 'Removing counters from other objects is not supported yet.';
-			const amount = n(def.count, ctx);
-			if ((src.counters[def.counter as CounterType] || 0) < amount) {
-				return `${name} doesn't have ${amount} ${def.counter} counter(s).`;
+			// --- Track P11 ---
+			const amount = def.removeAll ? 0 : n(def.count, ctx);
+			if (def.from === 'self') {
+				if (totalMatchingCountersOn(src, def.counter) < amount) {
+					const label = def.counter === 'any' ? 'counter(s)' : `${def.counter} counter(s)`;
+					return `${name} doesn't have ${amount} ${label}.`;
+				}
+				return null;
+			}
+			const fromFilter = typeof def.from === 'object' ? def.from : {};
+			const fctx = filterCtx(ctx);
+			const matching = ctx.player.battlefield.filter(
+				(c) => !c.phasedOut && matchesObjectFilter(c, { ...fromFilter, controller: 'you' }, fctx)
+			);
+			if (def.among) {
+				const totalAvail = matching.reduce(
+					(acc, c) => acc + totalMatchingCountersOn(c, def.counter),
+					0
+				);
+				if (totalAvail < amount) {
+					return `Not enough counters among matching permanents to remove ${amount}.`;
+				}
+				return null;
+			}
+			if (!matching.some((c) => totalMatchingCountersOn(c, def.counter) >= amount)) {
+				return `No matching permanent has ${amount} counter(s) to remove.`;
 			}
 			return null;
+			// --- End Track P11 ---
 		}
 		case 'sacrifice':
 			if (def.filter === 'self' && !sourceOnBattlefield(ctx)) return `${name} must be on the battlefield to be sacrificed.`;
@@ -888,7 +1243,11 @@ function checkSimple(def: CostDef, ctx: CostContext): string | null {
 		case 'exileFrom':
 			if (def.filter === 'self') {
 				const zone = def.zone as PlayerZone;
-				if (!zoneOf(ctx.player, zone)?.some((c) => c.instanceId === src.instanceId)) {
+				if (
+					!zoneOf(ctx.player, zone)?.some(
+						(c) => c.instanceId === src.instanceId && (zone !== 'battlefield' || !c.phasedOut)
+					)
+				) {
 					return `${name} must be in your ${def.zone} to be exiled.`;
 				}
 			}
@@ -925,12 +1284,23 @@ function addRequirements(a: ManaCostRequirement | null, b: ManaCostRequirement):
 	if (!a) return b;
 	const colored = { ...a.colored };
 	for (const c of Object.keys(colored) as Array<keyof typeof colored>) colored[c] += b.colored[c];
+	// --- Track P11 ---
+	const snow = (a.snow ?? 0) + (b.snow ?? 0);
+	const flexibleSymbols =
+		a.flexibleSymbols || b.flexibleSymbols
+			? [...(a.flexibleSymbols ?? []), ...(b.flexibleSymbols ?? [])]
+			: undefined;
+	// --- End Track P11 ---
 	return {
 		colored,
 		generic: a.generic + b.generic,
 		hasX: a.hasX || b.hasX,
 		xCount: a.xCount + b.xCount,
-		totalCmc: a.totalCmc + b.totalCmc
+		totalCmc: a.totalCmc + b.totalCmc,
+		// --- Track P11 ---
+		...(snow > 0 ? { snow } : {}),
+		...(flexibleSymbols ? { flexibleSymbols } : {})
+		// --- End Track P11 ---
 	};
 }
 
@@ -1044,7 +1414,9 @@ function planFlat(ctx: CostContext, flat: Flat[], objects: string[][] | undefine
 			def.k !== 'exileFrom' &&
 			def.k !== 'revealFromHand' &&
 			// --- Track P9 ---
-			def.k !== 'returnToHand'
+			def.k !== 'returnToHand' &&
+			// --- Track P11 ---
+			def.k !== 'removeCounters'
 		) {
 			parts.push({ def });
 			continue;
@@ -1053,7 +1425,9 @@ function planFlat(ctx: CostContext, flat: Flat[], objects: string[][] | undefine
 			((def.k === 'tapOthers' || def.k === 'tapSubsetSum') && tapsSelf) ||
 			(discardsSelf &&
 				(def.k === 'revealFromHand' ||
-					(def.filter !== 'self' && (def.k === 'discard' || (def.k === 'exileFrom' && def.zone === 'hand'))))) ||
+					(def.k !== 'removeCounters' &&
+						def.filter !== 'self' &&
+						(def.k === 'discard' || (def.k === 'exileFrom' && def.zone === 'hand'))))) ||
 			(exilesSelfFromGraveyard &&
 				def.k === 'exileFrom' &&
 				def.zone === 'graveyard' &&
@@ -1125,7 +1499,9 @@ function planFlat(ctx: CostContext, flat: Flat[], objects: string[][] | undefine
 			parts.push({ def, objects: chosen });
 			continue;
 		}
-		const count = n(def.count, ctx);
+		// --- Track P11: removeCounters from a single permanent chooses 1 object with >= N counters ---
+		const count = def.k === 'removeCounters' ? 1 : n(def.count, ctx);
+		// --- End Track P11 ---
 		if (candidates.length < count) {
 			return { ok: false, error: `Can't pay the cost: ${describeCost([def])} (not enough to choose from).` };
 		}
@@ -1161,7 +1537,9 @@ function planFlat(ctx: CostContext, flat: Flat[], objects: string[][] | undefine
 				}
 			};
 		}
-		for (const c of chosen) used.add(c.instanceId);
+		if (def.k !== 'removeCounters') {
+			for (const c of chosen) used.add(c.instanceId);
+		}
 		parts.push({ def, objects: chosen });
 	}
 
@@ -1435,7 +1813,9 @@ export function serializeCostPlanParts(
 			def.k === 'exileFrom' ||
 			def.k === 'revealFromHand' ||
 			// --- Track P9 ---
-			def.k === 'returnToHand'
+			def.k === 'returnToHand' ||
+			// --- Track P11 ---
+			(def.k === 'removeCounters' && part.objects !== undefined)
 		) {
 			const objs = 'filter' in def && def.filter === 'self' ? [ctx.source] : (part.objects ?? []);
 			return {
@@ -1558,25 +1938,55 @@ export function executeCostPaymentParts(
 				break;
 			case 'removeCounters': {
 				if (objStart === 0) {
-					const amount = n(def.count, ctx);
-					const key = def.counter as CounterType;
-					const prev = source.counters[key] || 0;
-					const next = Math.max(0, prev - amount);
-					const removed = prev - next;
-					source.counters[key] = next;
-					noteLayerInputsChanged(ctx.state);
-					if (removed > 0 && source.zone === 'battlefield' && !source.phasedOut) {
-						emitEvent(ctx.state, {
-							kind: 'CounterRemoved',
-							objectId: source.instanceId,
-							object: source,
-							counterType: key,
-							amount: removed,
-							previousCount: prev,
-							newCount: next
-						});
+					// --- Track P11 ---
+					const amount = def.removeAll
+						? totalMatchingCountersOn(source, def.counter)
+						: n(def.count, ctx);
+					const ctrLabel = def.counter === 'any' ? 'counter(s)' : `${def.counter} counter(s)`;
+					if (def.from === 'self') {
+						const removed = deductMatchingCountersFrom(ctx.state, source, def.counter, amount);
+						targetLog.push(`removed ${removed} ${ctrLabel}`);
+					} else if (def.among) {
+						const fromFilter = typeof def.from === 'object' ? def.from : {};
+						const fctx = filterCtx(ctx);
+						const eligible = player.battlefield.filter(
+							(c) =>
+								!c.phasedOut &&
+								matchesObjectFilter(c, { ...fromFilter, controller: 'you' }, fctx) &&
+								totalMatchingCountersOn(c, def.counter) > 0
+						);
+						let remaining = amount;
+						let totalRemoved = 0;
+						for (const perm of eligible) {
+							if (remaining <= 0) break;
+							const took = deductMatchingCountersFrom(ctx.state, perm, def.counter, remaining);
+							remaining -= took;
+							totalRemoved += took;
+						}
+						targetLog.push(`removed ${totalRemoved} ${ctrLabel}`);
+					} else {
+						const fromFilter = typeof def.from === 'object' ? def.from : {};
+						const chosenId = part.objectIds?.[0];
+						const fctx = filterCtx(ctx);
+						const targetPerm =
+							(chosenId ? player.battlefield.find((c) => c.instanceId === chosenId) : undefined) ??
+							player.battlefield.find(
+								(c) =>
+									!c.phasedOut &&
+									matchesObjectFilter(c, { ...fromFilter, controller: 'you' }, fctx) &&
+									totalMatchingCountersOn(c, def.counter) >= amount
+							);
+						if (targetPerm) {
+							const removed = deductMatchingCountersFrom(
+								ctx.state,
+								targetPerm,
+								def.counter,
+								amount
+							);
+							targetLog.push(`removed ${removed} ${ctrLabel} from ${targetPerm.card.name}`);
+						}
 					}
-					targetLog.push(`removed ${amount} ${def.counter} counter(s)`);
+					// --- End Track P11 ---
 				}
 				break;
 			}
@@ -1736,10 +2146,38 @@ export function formatManaRequirement(req: ManaCostRequirement, showUnsetX = fal
 	if (req.generic > 0) {
 		out += `{${req.generic}}`;
 	}
+	// --- Track P11 ---
+	if (req.snow && req.snow > 0) {
+		out += '{S}'.repeat(req.snow);
+	}
+	const remColored: Record<ManaColor, number> = { ...req.colored };
+	let flexOut = '';
+	if (req.flexibleSymbols && req.flexibleSymbols.length > 0) {
+		for (const f of req.flexibleSymbols) {
+			if ((remColored[f.primaryColor] ?? 0) > 0) {
+				remColored[f.primaryColor] -= 1;
+				if (f.altColor && f.altLife) {
+					flexOut += `{${f.primaryColor}/${f.altColor}/P}`;
+				} else if (f.altColor) {
+					flexOut += `{${f.primaryColor}/${f.altColor}}`;
+				} else if (f.altGeneric !== undefined && f.altLife) {
+					flexOut += `{${f.altGeneric}/${f.primaryColor}/P}`;
+				} else if (f.altGeneric !== undefined) {
+					flexOut += `{${f.altGeneric}/${f.primaryColor}}`;
+				} else if (f.altLife) {
+					flexOut += `{${f.primaryColor}/P}`;
+				} else {
+					flexOut += `{${f.primaryColor}}`;
+				}
+			}
+		}
+	}
 	for (const c of ['W', 'U', 'B', 'R', 'G', 'C'] as const) {
-		const count = req.colored[c] ?? 0;
+		const count = remColored[c] ?? 0;
 		if (count > 0) out += `{${c}}`.repeat(count);
 	}
+	out += flexOut;
+	// --- End Track P11 ---
 	return out || '{0}';
 }
 

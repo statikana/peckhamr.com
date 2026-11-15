@@ -24,7 +24,20 @@ export interface ManaCostRequirement {
 	xCount: number;
 	totalCmc: number;
 	flexibleSymbols?: FlexibleManaSymbol[];
+	// --- Track P11 ---
+	/** CR 107.4h: count of {S} snow mana symbols required (payable with any mana produced by a Snow source). */
+	snow?: number;
+	// --- End Track P11 ---
 }
+
+// --- Track P11 ---
+export interface ParseManaCostOptions {
+	coloredReduction?: Partial<Record<ManaColor, number>>;
+	hybridColoredReduction?: Array<[ManaColor, ManaColor]>;
+	coloredOnly?: boolean;
+	minTotalMana?: number;
+}
+// --- End Track P11 ---
 
 export function withStackItemText(
 	item: Omit<StackItem, 'oracleText'>,
@@ -329,13 +342,19 @@ export function parseManaCost(
 	manaCostStr: string,
 	xValue = 0,
 	additionalGeneric = 0,
-	genericReduction = 0
+	genericReduction = 0,
+	// --- Track P11 ---
+	options?: ParseManaCostOptions
+	// --- End Track P11 ---
 ): ManaCostRequirement {
 	const colored: Record<ManaColor, number> = { W: 0, U: 0, B: 0, R: 0, G: 0, C: 0 };
 	let generic = Math.max(0, additionalGeneric);
 	let hasX = false;
 	let xCount = 0;
 	let hybridExtraCmc = 0;
+	// --- Track P11 ---
+	let snow = 0;
+	// --- End Track P11 ---
 	const flexibleSymbols: FlexibleManaSymbol[] = [];
 
 	const symbols = manaCostStr.match(/\{([^}]+)\}/g) || [];
@@ -346,10 +365,13 @@ export function parseManaCost(
 			xCount += 1;
 		} else if (/^\d+$/.test(sym)) {
 			generic += parseInt(sym, 10);
+		} else if (sym === 'S') {
+			// --- Track P11 (CR 107.4h, 202.3h, 118.7a): {S} has MV 1 and is not reduced by generic reductions ---
+			snow += 1;
 		} else if (sym === 'W' || sym === 'U' || sym === 'B' || sym === 'R' || sym === 'G' || sym === 'C') {
 			colored[sym] += 1;
 		} else if (sym.includes('/')) {
-			// CR 107.4e-f / 202.3f: Hybrid {W/U}, monocolored hybrid {2/W} (MV 2), or Phyrexian {W/P}
+			// CR 107.4e-g / 202.3f-g: Hybrid {W/U}, {C/W}, twobrid {2/W} (MV 2), Phyrexian {W/P}, or hybrid Phyrexian {W/U/P}
 			const parts = sym.split('/');
 			const cols = parts.filter(
 				(p): p is ManaColor =>
@@ -361,10 +383,19 @@ export function parseManaCost(
 			if (firstCol) {
 				colored[firstCol] += 1;
 				if (cols.length >= 2) {
-					flexibleSymbols.push({ primaryColor: firstCol, altColor: cols[1] });
+					flexibleSymbols.push({
+						primaryColor: firstCol,
+						altColor: cols[1],
+						// --- Track P11 (CR 107.4g): hybrid Phyrexian {W/U/P} ---
+						...(hasPhyrexian ? { altLife: 2 } : {})
+					});
 				} else if (numPart) {
 					const numVal = parseInt(numPart, 10);
-					flexibleSymbols.push({ primaryColor: firstCol, altGeneric: numVal });
+					flexibleSymbols.push({
+						primaryColor: firstCol,
+						altGeneric: numVal,
+						...(hasPhyrexian ? { altLife: 2 } : {})
+					});
 					if (numVal > 1) {
 						hybridExtraCmc += numVal - 1;
 					}
@@ -380,7 +411,74 @@ export function parseManaCost(
 	}
 
 	generic += xCount * Math.max(0, xValue);
-	generic = Math.max(0, generic - Math.max(0, genericReduction));
+
+	// --- Track P11 (CR 118.7b-e): colored/hybrid cost reductions & minTotalMana floor ---
+	const baseManaBeforeReduction =
+		colored.W + colored.U + colored.B + colored.R + colored.G + colored.C + snow + generic;
+	let effGenericReduction = Math.max(0, genericReduction);
+
+	const reduceSingleColor = (col: ManaColor, amount: number): void => {
+		let rem = Math.max(0, amount);
+		for (let guard = 0; guard < 64 && rem > 0 && colored[col] > 0; guard++) {
+			const flexCount = flexibleSymbols.filter((f) => f.primaryColor === col).length;
+			const fixedCount = colored[col] - flexCount;
+			colored[col] -= 1;
+			if (fixedCount <= 0) {
+				const idx = flexibleSymbols.findIndex((f) => f.primaryColor === col);
+				if (idx !== -1) flexibleSymbols.splice(idx, 1);
+			}
+			rem -= 1;
+		}
+		if (rem > 0) {
+			// Check if any flexible symbol has `altColor === col`
+			for (let guard = 0; guard < 64 && rem > 0; guard++) {
+				const altIdx = flexibleSymbols.findIndex((f) => f.altColor === col);
+				if (altIdx === -1) break;
+				const primary = flexibleSymbols[altIdx].primaryColor;
+				if (colored[primary] <= 0) break;
+				colored[primary] -= 1;
+				flexibleSymbols.splice(altIdx, 1);
+				rem -= 1;
+			}
+		}
+		if (rem > 0 && !options?.coloredOnly) {
+			effGenericReduction += rem;
+		}
+	};
+
+	if (options?.coloredReduction) {
+		const allCols: ManaColor[] = ['W', 'U', 'B', 'R', 'G', 'C'];
+		for (const c of allCols) {
+			const amt = options.coloredReduction[c] ?? 0;
+			if (amt > 0) reduceSingleColor(c, amt);
+		}
+	}
+	if (options?.hybridColoredReduction) {
+		for (const [c1, c2] of options.hybridColoredReduction) {
+			if (colored[c1] > 0 || flexibleSymbols.some((f) => f.altColor === c1)) {
+				reduceSingleColor(c1, 1);
+			} else if (colored[c2] > 0 || flexibleSymbols.some((f) => f.altColor === c2)) {
+				reduceSingleColor(c2, 1);
+			} else if (!options.coloredOnly) {
+				effGenericReduction += 1;
+			}
+		}
+	}
+
+	generic = Math.max(0, generic - effGenericReduction);
+
+	if (
+		options?.minTotalMana !== undefined &&
+		options.minTotalMana > 0 &&
+		baseManaBeforeReduction >= options.minTotalMana
+	) {
+		const curTotal =
+			colored.W + colored.U + colored.B + colored.R + colored.G + colored.C + snow + generic;
+		if (curTotal < options.minTotalMana) {
+			generic += options.minTotalMana - curTotal;
+		}
+	}
+	// --- End Track P11 ---
 
 	const totalColored = colored.W + colored.U + colored.B + colored.R + colored.G + colored.C;
 	return {
@@ -388,8 +486,9 @@ export function parseManaCost(
 		generic,
 		hasX,
 		xCount,
-		totalCmc: totalColored + generic + hybridExtraCmc,
-		...(flexibleSymbols.length > 0 ? { flexibleSymbols } : {})
+		totalCmc: totalColored + snow + generic + hybridExtraCmc,
+		...(flexibleSymbols.length > 0 ? { flexibleSymbols } : {}),
+		...(snow > 0 ? { snow } : {})
 	};
 }
 
@@ -433,8 +532,15 @@ export function resolveFlexibleManaRequirement(
 export function canPayManaCost(
 	pool: ManaPool,
 	req: ManaCostRequirement,
-	availableLife?: number
+	availableLife?: number,
+	// --- Track P11 ---
+	availableSnowMana?: number
+	// --- End Track P11 ---
 ): boolean {
+	const snowReq = req.snow ?? 0;
+	if (snowReq > 0 && availableSnowMana !== undefined && availableSnowMana < snowReq) {
+		return false;
+	}
 	const resolved = resolveFlexibleManaRequirement(pool, req, availableLife);
 	const colors: ManaColor[] = ['W', 'U', 'B', 'R', 'G', 'C'];
 	let remainingPool = 0;
@@ -444,7 +550,7 @@ export function canPayManaCost(
 		}
 		remainingPool += pool[c] - resolved.colored[c];
 	}
-	return remainingPool >= resolved.generic;
+	return remainingPool >= resolved.generic + snowReq;
 }
 
 export function deductManaFromPool(
@@ -462,7 +568,7 @@ export function deductManaFromPool(
 		next[c] = Math.max(0, next[c] - resolved.colored[c]);
 	}
 
-	let remGeneric = resolved.generic;
+	let remGeneric = resolved.generic + (req.snow ?? 0);
 	// Spend colorless C first for generic costs, then colors with highest surplus
 	if (remGeneric > 0 && next.C > 0) {
 		const take = Math.min(next.C, remGeneric);
@@ -471,7 +577,7 @@ export function deductManaFromPool(
 	}
 
 	const colorOrder: ManaColor[] = ['G', 'R', 'B', 'U', 'W'];
-	while (remGeneric > 0) {
+	for (let guard = 0; guard < 256 && remGeneric > 0; guard++) {
 		// Pick color with largest remaining count
 		let bestColor: ManaColor | null = null;
 		let bestAmt = 0;

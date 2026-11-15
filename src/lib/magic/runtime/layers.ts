@@ -8,14 +8,17 @@
 import { compileCard } from '../compiler/index.ts';
 import { getKeywordSpec, KEYWORD_LABELS } from '../keywords.ts';
 import type {
+	AbilityDef,
 	ActivatedAbility,
 	Amount,
 	CardDefinition,
 	Condition,
 	ObjectFilter,
 	PlayerRef,
+	ReplacementDef,
 	Span,
-	StaticDef
+	StaticDef,
+	TriggeredAbility
 } from '../ir.ts';
 import { effectiveCardForObject } from '../scryfall.ts';
 import type {
@@ -53,6 +56,14 @@ import { evaluateAmount, matchesObjectFilter, playerCommanderCastCount } from '.
 // --- Track P8 ---
 import { compareNumbers, countDistinctCardTypesInZone } from './staticsLayersAndRestrictions.ts';
 import { PROTECTION_KEYWORD_BY_COLOR } from './tuckFreezeChosen.ts';
+// --- Track P11 ---
+import {
+	KEYWORD_COUNTER_TYPES,
+	PARTY_ROLE_SUBTYPES,
+	computeKeywordCounterMask,
+	computePartyCountFromRoleMasks
+} from './staticsDynamicAndCosts.ts';
+// --- End Track P11 ---
 
 export interface AttributedKeywordOrEffect {
 	id: string;
@@ -65,6 +76,13 @@ export interface AttributedKeywordOrEffect {
 	grantCount?: number;
 	/** Granted activated ability IR and granting source metadata (derived/cached only, never stored in GameState). */
 	grantedAbility?: ActivatedAbility;
+	// --- Track P11 ---
+	grantedTriggeredAbility?: TriggeredAbility;
+	grantedStaticAbility?: StaticDef;
+	grantedReplacementAbility?: ReplacementDef;
+	grantFaceIndex?: number;
+	grantAbilityIndex?: number;
+	// --- End Track P11 ---
 	grantSourceCard?: ScryfallCard;
 	grantSourceId?: string;
 	removed: boolean;
@@ -707,7 +725,14 @@ function recordAbilityRemoval(work: PermWorkState, sourceName: string, timestamp
 }
 
 interface GrantedAbilityMeta {
-	grantedAbility: ActivatedAbility;
+	grantedAbility?: ActivatedAbility;
+	// --- Track P11 ---
+	grantedTriggeredAbility?: TriggeredAbility;
+	grantedStaticAbility?: StaticDef;
+	grantedReplacementAbility?: ReplacementDef;
+	grantFaceIndex?: number;
+	grantAbilityIndex?: number;
+	// --- End Track P11 ---
 	grantSourceCard?: ScryfallCard;
 	grantSourceId?: string;
 }
@@ -798,7 +823,24 @@ function grantItem(
 				work.itemTimestamps.set(existingActive.id, grantTimestamp);
 			}
 			if (grantMeta) {
-				existingActive.grantedAbility = grantMeta.grantedAbility;
+				if (grantMeta.grantedAbility) existingActive.grantedAbility = grantMeta.grantedAbility;
+				// --- Track P11 ---
+				if (grantMeta.grantedTriggeredAbility) {
+					existingActive.grantedTriggeredAbility = grantMeta.grantedTriggeredAbility;
+				}
+				if (grantMeta.grantedStaticAbility) {
+					existingActive.grantedStaticAbility = grantMeta.grantedStaticAbility;
+				}
+				if (grantMeta.grantedReplacementAbility) {
+					existingActive.grantedReplacementAbility = grantMeta.grantedReplacementAbility;
+				}
+				if (grantMeta.grantFaceIndex !== undefined) {
+					existingActive.grantFaceIndex = grantMeta.grantFaceIndex;
+				}
+				if (grantMeta.grantAbilityIndex !== undefined) {
+					existingActive.grantAbilityIndex = grantMeta.grantAbilityIndex;
+				}
+				// --- End Track P11 ---
 				if (grantMeta.grantSourceCard) existingActive.grantSourceCard = grantMeta.grantSourceCard;
 				if (grantMeta.grantSourceId) existingActive.grantSourceId = grantMeta.grantSourceId;
 			}
@@ -817,7 +859,24 @@ function grantItem(
 		grantCount: 1,
 		...(grantMeta
 			? {
-					grantedAbility: grantMeta.grantedAbility,
+					...(grantMeta.grantedAbility ? { grantedAbility: grantMeta.grantedAbility } : {}),
+					// --- Track P11 ---
+					...(grantMeta.grantedTriggeredAbility
+						? { grantedTriggeredAbility: grantMeta.grantedTriggeredAbility }
+						: {}),
+					...(grantMeta.grantedStaticAbility
+						? { grantedStaticAbility: grantMeta.grantedStaticAbility }
+						: {}),
+					...(grantMeta.grantedReplacementAbility
+						? { grantedReplacementAbility: grantMeta.grantedReplacementAbility }
+						: {}),
+					...(grantMeta.grantFaceIndex !== undefined
+						? { grantFaceIndex: grantMeta.grantFaceIndex }
+						: {}),
+					...(grantMeta.grantAbilityIndex !== undefined
+						? { grantAbilityIndex: grantMeta.grantAbilityIndex }
+						: {}),
+					// --- End Track P11 ---
 					...(grantMeta.grantSourceCard ? { grantSourceCard: grantMeta.grantSourceCard } : {}),
 					...(grantMeta.grantSourceId ? { grantSourceId: grantMeta.grantSourceId } : {})
 				}
@@ -826,6 +885,83 @@ function grantItem(
 		removedBy: []
 	});
 }
+
+// --- Track P11 ---
+const STATIC_LOCATORS_BY_DEF = new WeakMap<
+	CardDefinition,
+	ReadonlyMap<StaticDef, { faceIndex: number; abilityIndex: number }>
+>();
+
+function lookupStaticLocator(
+	card: ScryfallCard,
+	st: StaticDef
+): { faceIndex: number; abilityIndex: number } | undefined {
+	const def = compileCard(card);
+	let map = STATIC_LOCATORS_BY_DEF.get(def);
+	if (!map) {
+		const built = new Map<StaticDef, { faceIndex: number; abilityIndex: number }>();
+		for (let fi = 0; fi < def.faces.length; fi++) {
+			const faceAbs = def.faces[fi]?.abilities ?? [];
+			for (let ai = 0; ai < faceAbs.length; ai++) {
+				const fab = faceAbs[ai];
+				if (fab.kind === 'static') {
+					built.set(fab.static, { faceIndex: fi, abilityIndex: ai });
+				}
+			}
+		}
+		map = built;
+		STATIC_LOCATORS_BY_DEF.set(def, map);
+	}
+	return map.get(st);
+}
+
+function grantNonActivatedAbility(
+	target: PermWorkState,
+	source: PermWorkState,
+	st: StaticDef,
+	ab: AbilityDef
+): boolean {
+	const loc = lookupStaticLocator(source.baseCard, st);
+	const faceIndex = loc?.faceIndex ?? 0;
+	const abilityIndex = loc?.abilityIndex ?? 0;
+	const srcId = source.inst.instanceId;
+	if (ab.kind === 'triggered') {
+		const key = `granted_trig_${srcId}_${faceIndex}_${abilityIndex}`;
+		const name = `Triggered Ability: ${ab.text || 'Granted'}`;
+		grantItem(target, key, name, 'ability', source.name, source.timestamp, {
+			grantedTriggeredAbility: ab,
+			grantSourceCard: source.baseCard,
+			grantSourceId: srcId,
+			grantFaceIndex: faceIndex,
+			grantAbilityIndex: abilityIndex
+		});
+		return false;
+	} else if (ab.kind === 'static') {
+		const key = `granted_static_${srcId}_${faceIndex}_${abilityIndex}`;
+		const name = 'Granted Static Ability';
+		grantItem(target, key, name, 'ability', source.name, source.timestamp, {
+			grantedStaticAbility: ab.static,
+			grantSourceCard: source.baseCard,
+			grantSourceId: srcId,
+			grantFaceIndex: faceIndex,
+			grantAbilityIndex: abilityIndex
+		});
+		return true;
+	} else if (ab.kind === 'replacement') {
+		const key = `granted_repl_${srcId}_${faceIndex}_${abilityIndex}`;
+		const name = 'Granted Replacement Effect';
+		grantItem(target, key, name, 'ability', source.name, source.timestamp, {
+			grantedReplacementAbility: ab.replacement,
+			grantSourceCard: source.baseCard,
+			grantSourceId: srcId,
+			grantFaceIndex: faceIndex,
+			grantAbilityIndex: abilityIndex
+		});
+		return false;
+	}
+	return false;
+}
+// --- End Track P11 ---
 
 function applyRemovalsUpTo(work: PermWorkState, cutoffTimestamp: number): void {
 	for (const ev of work.abilityRemovalEvents) {
@@ -893,13 +1029,17 @@ function removeMatchingKeywordsUpTo(
 function hasSubtypeInWork(work: PermWorkState, sub: string): boolean {
 	const low = sub.toLowerCase();
 	if (work.subtypes.some((s) => s.toLowerCase() === low)) return true;
+	// --- Track P11 (CR 702.73a, CR 700.8b): normalizeLayerCardType returns lowercase ('creature' | 'kindred') ---
 	if (
-		work.types.includes('Creature') &&
+		work.types.some(
+			(t) => normalizeLayerCardType(t) === 'creature' || normalizeLayerCardType(t) === 'kindred'
+		) &&
 		work.hasAllCreatureTypes &&
 		!NON_CREATURE_SUBTYPES.has(sub)
 	) {
 		return true;
 	}
+	// --- End Track P11 ---
 	return false;
 }
 
@@ -942,7 +1082,12 @@ function offBattlefieldFilterNeedsExtendedMatch(f: ObjectFilter): boolean {
 			f.lacksKeywords?.length ||
 			f.manaValue !== undefined ||
 			f.power !== undefined ||
-			f.toughness !== undefined
+			f.toughness !== undefined ||
+			// --- Track P11 ---
+			f.ofChosenName ||
+			f.attachedToRef !== undefined ||
+			f.historic !== undefined
+			// --- End Track P11 ---
 	);
 }
 
@@ -1048,6 +1193,28 @@ function matchesLayerFilter(
 		const chosenCol = source.inst.chosenColor;
 		if (!chosenCol || !target.colors.includes(chosenCol)) return false;
 	}
+	// --- Track P11 ---
+	if (filter.ofChosenName) {
+		layerReads |= READ_CHOSEN_CARD_NAME;
+		const chosen = source.inst.chosenCardName;
+		if (!chosen || target.isFaceDown || target.name.toLowerCase() !== chosen.toLowerCase()) {
+			return false;
+		}
+	}
+	if (filter.attachedToRef !== undefined) {
+		const wantHostId =
+			filter.attachedToRef === 'self' ? source.inst.instanceId : source.inst.attachedToId;
+		if (!wantHostId || target.inst.attachedToId !== wantHostId) return false;
+	}
+	if (filter.historic !== undefined) {
+		const isHist =
+			!target.isFaceDown &&
+			(target.isLegendary ||
+				target.types.some((t) => normalizeLayerCardType(t) === 'artifact') ||
+				hasSubtypeInWork(target, 'Saga'));
+		if (isHist !== filter.historic) return false;
+	}
+	// --- End Track P11 ---
 	if (filter.colors?.length) {
 		if (!matchesColorFilter(target.colors, filter.colors)) return false;
 	}
@@ -1218,6 +1385,64 @@ function evaluateLayerAmount(
 			return Math.max(
 				...amount.args.map((a) => evaluateLayerAmount(a, state, workList, source, affected))
 			);
+		// --- Track P11 ---
+		case 'mul':
+			return amount.factor * evaluateLayerAmount(amount.of, state, workList, source, affected);
+		case 'domain': {
+			if (amount.player.k === 'activePlayer') layerReads |= READ_ACTIVE_PLAYER;
+			const pid =
+				amount.player.k === 'you'
+					? source.controllerId
+					: (state.players[state.activePlayerIndex]?.playerId ?? source.controllerId);
+			let domainCount = 0;
+			for (const basicSub of BASIC_LAND_SUBTYPES) {
+				let foundSub = false;
+				for (const w of workList) {
+					if (w.controllerId !== pid) continue;
+					if (!w.types.some((t) => normalizeLayerCardType(t) === 'land')) continue;
+					if (hasSubtypeInWork(w, basicSub)) {
+						foundSub = true;
+						break;
+					}
+				}
+				if (foundSub) domainCount += 1;
+			}
+			return domainCount;
+		}
+		case 'partyCount': {
+			if (amount.player.k === 'activePlayer') layerReads |= READ_ACTIVE_PLAYER;
+			const pid =
+				amount.player.k === 'you'
+					? source.controllerId
+					: (state.players[state.activePlayerIndex]?.playerId ?? source.controllerId);
+			const roleMasks: number[] = [];
+			for (const w of workList) {
+				if (w.controllerId !== pid) continue;
+				if (!w.types.some((t) => normalizeLayerCardType(t) === 'creature')) continue;
+				let mask = 0;
+				for (let r = 0; r < PARTY_ROLE_SUBTYPES.length; r++) {
+					if (hasSubtypeInWork(w, PARTY_ROLE_SUBTYPES[r])) {
+						mask |= 1 << r;
+					}
+				}
+				if (mask !== 0) roleMasks.push(mask);
+			}
+			return computePartyCountFromRoleMasks(roleMasks);
+		}
+		case 'attachmentsOn': {
+			const hostWork = amount.target === 'self' ? source : affected;
+			const hostId = hostWork.inst.instanceId;
+			let total = 0;
+			for (const w of workList) {
+				if (w.inst.attachedToId !== hostId) continue;
+				if (amount.filter && !matchesLayerFilter(amount.filter, w, source, state, workList)) {
+					continue;
+				}
+				total += 1;
+			}
+			return total;
+		}
+		// --- End Track P11 ---
 		// --- Track P8 ---
 		case 'distinctCardTypesInZone': {
 			const zones = Array.isArray(amount.zone) ? amount.zone : [amount.zone];
@@ -1672,6 +1897,10 @@ const READ_ALL_COUNTERS = 1024;
 const READ_HIDDEN_ZONES = 2048;
 // --- Track P7 ---
 const READ_TURN_HISTORY = 4096;
+// --- Track P11 ---
+const READ_KEYWORD_COUNTERS = 16384;
+const READ_CHOSEN_CARD_NAME = 32768;
+// --- End Track P11 ---
 
 /** Inputs read by the evaluation in progress (bits above). */
 let layerReads = 0;
@@ -1747,6 +1976,22 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 			fp.push(cKeys.length);
 			for (const ck of cKeys) fp.push(ck, (perm.counters as Record<string, number>)[ck] || 0);
 		}
+		// --- Track P11 ---
+		if (reads & READ_KEYWORD_COUNTERS) {
+			const kwMask = computeKeywordCounterMask(perm.counters);
+			fp.push(kwMask);
+			if (kwMask !== 0) {
+				for (const kw of KEYWORD_COUNTER_TYPES) {
+					if ((perm.counters[kw] || 0) > 0) {
+						fp.push(perm.counterTimestamps?.[kw] ?? 0);
+					}
+				}
+			}
+		}
+		if (reads & READ_CHOSEN_CARD_NAME) {
+			fp.push(perm.chosenCardName ?? '');
+		}
+		// --- End Track P11 ---
 		fp.push(
 			perm.counters['+1/+1'] || 0,
 			perm.counters['-1/-1'] || 0,
@@ -1947,6 +2192,10 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 	}
 	const readsTapped = (reads & READ_TAPPED) !== 0;
 	const readsAllCounters = (reads & READ_ALL_COUNTERS) !== 0;
+	// --- Track P11 ---
+	const readsKwCounters = (reads & READ_KEYWORD_COUNTERS) !== 0;
+	const readsChosenName = (reads & READ_CHOSEN_CARD_NAME) !== 0;
+	// --- End Track P11 ---
 	for (const entry of snap.active) {
 		const perm = entry.perm;
 		const kickedTags = perm.kickedTags;
@@ -1964,6 +2213,20 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 				}
 			}
 		}
+		// --- Track P11 ---
+		if (readsKwCounters) {
+			const kwMask = computeKeywordCounterMask(perm.counters);
+			if (fp[i++] !== kwMask) return false;
+			if (kwMask !== 0) {
+				for (const kw of KEYWORD_COUNTER_TYPES) {
+					if ((perm.counters[kw] || 0) > 0) {
+						if (fp[i++] !== (perm.counterTimestamps?.[kw] ?? 0)) return false;
+					}
+				}
+			}
+		}
+		if (readsChosenName && fp[i++] !== (perm.chosenCardName ?? '')) return false;
+		// --- End Track P11 ---
 		if (
 			fp[i++] !== (perm.counters['+1/+1'] || 0) ||
 			fp[i++] !== (perm.counters['-1/-1'] || 0) ||
@@ -2122,6 +2385,147 @@ function evaluateBoard(state: GameState, snap: BoardSnapshot): BoardLayerCache['
 	return buildBoardResults(workList);
 }
 
+// --- Track P11: Per-CardDefinition Layer 1 template memo for plain face-up permanents ---
+interface PlainLayer1Template {
+	cmc: number;
+	keywordsRef: ScryfallCard['keywords'];
+	keywordsJoin: string;
+	name: string;
+	manaValue: number;
+	baseTypeLine: string;
+	supertypes: readonly string[];
+	types: readonly string[];
+	subtypes: readonly string[];
+	colors: readonly ManaColor[];
+	isLegendary: boolean;
+	prefixLegendary: string;
+	hasAllCreatureTypes: boolean;
+	basePower: number | null;
+	baseToughness: number | null;
+	innateItems: ReadonlyArray<{
+		id: string;
+		canonicalKey: string;
+		name: string;
+		kind: 'keyword' | 'ability' | 'stat_mod' | 'type_mod';
+	}>;
+	statics: readonly StaticDef[];
+	grantsKeywordViaAbility: readonly string[];
+}
+
+const PLAIN_LAYER1_OPTS: ResolveObjectFacesOptions = {
+	zone: 'battlefield',
+	faceIndex: 0,
+	isFaceDown: false
+};
+
+const PLAIN_LAYER1_BY_DEF = new WeakMap<CardDefinition, PlainLayer1Template>();
+
+function staticLayerOrder(st: StaticDef): number {
+	if (st.k !== 'continuous') return 99;
+	switch (st.layer) {
+		case '1':
+			return 1;
+		case '2':
+			return 2;
+		case '3':
+			return 3;
+		case '4':
+			return 4;
+		case '5':
+			return 5;
+		case '6':
+			return 6;
+		case '7a':
+			return 7.1;
+		case '7b':
+			return 7.2;
+		case '7c':
+		default:
+			return 7.3;
+	}
+}
+
+function getPlainLayer1Template(baseCard: ScryfallCard): PlainLayer1Template {
+	const def = compileCard(baseCard);
+	const cached = PLAIN_LAYER1_BY_DEF.get(def);
+	if (
+		cached &&
+		cached.cmc === baseCard.cmc &&
+		(cached.keywordsRef === baseCard.keywords ||
+			(baseCard.keywords?.join('\u0001') ?? '') === cached.keywordsJoin)
+	) {
+		return cached;
+	}
+
+	const view = resolveObjectFaces(baseCard, PLAIN_LAYER1_OPTS);
+	const baseTypeLine = view.typeLine;
+	const supertypes = [...view.supertypes];
+	const types = [...view.types];
+	const subtypes = normalizeSubtypes(view.subtypes);
+	const colors = [...view.colors];
+	const isLegendary = supertypes.includes('Legendary');
+	const prefixLegendary = isLegendary ? 'Legendary ' : '';
+	const basePower = view.power ?? null;
+	const baseToughness = view.toughness ?? null;
+
+	const innateList = innateKeywordsAndAbilitiesOf(baseCard, PLAIN_LAYER1_OPTS);
+	const innateItems = innateList.map((entryItem, idx) => ({
+		id: `innate_${idx}_${entryItem.canonicalKey}`,
+		canonicalKey: entryItem.canonicalKey,
+		name: entryItem.name,
+		kind: entryItem.kind
+	}));
+	const hasAllCreatureTypes = innateItems.some((it) => it.canonicalKey === 'changeling');
+
+	const statics: StaticDef[] = [];
+	const grantsSet = new Set<string>();
+	for (const ab of activeAbilityDefs(baseCard, PLAIN_LAYER1_OPTS)) {
+		if (ab.kind === 'static') {
+			statics.push(ab.static);
+		} else if (ab.kind === 'keyword') {
+			const kwSpec = getKeywordSpec(ab.keyword.name);
+			if (kwSpec?.status === 'implemented' && kwSpec.implementation?.kind === 'static') {
+				for (const st of kwSpec.implementation.buildStatics(ab.keyword)) {
+					statics.push(st);
+				}
+			}
+		} else if (ab.kind === 'activated' || ab.kind === 'triggered') {
+			for (const step of ab.effect) {
+				if (step.verb === 'grant' && Array.isArray(step.params?.keywords)) {
+					for (const kw of step.params.keywords as string[]) {
+						grantsSet.add(kw.toLowerCase());
+					}
+				}
+			}
+		}
+	}
+	statics.sort((a, b) => staticLayerOrder(a) - staticLayerOrder(b));
+
+	const tpl: PlainLayer1Template = {
+		cmc: baseCard.cmc,
+		keywordsRef: baseCard.keywords,
+		keywordsJoin: baseCard.keywords?.join('\u0001') ?? '',
+		name: view.name,
+		manaValue: view.manaValue,
+		baseTypeLine,
+		supertypes,
+		types,
+		subtypes,
+		colors,
+		isLegendary,
+		prefixLegendary,
+		hasAllCreatureTypes,
+		basePower,
+		baseToughness,
+		innateItems,
+		statics,
+		grantsKeywordViaAbility: [...grantsSet]
+	};
+	PLAIN_LAYER1_BY_DEF.set(def, tpl);
+	return tpl;
+}
+// --- End Track P11 ---
+
 function evaluateLayer1(
 	state: GameState,
 	snap: BoardSnapshot,
@@ -2134,9 +2538,80 @@ function evaluateLayer1(
 
 		// Layer 1a (CR 613.2a): printed characteristics, active face, and copy effects/exceptions.
 		// --- Track P7 ---
-		const baseFaceOpts = instanceFaceOptions(inst, 'battlefield');
 		const timedLayer1a = activeTimedLayer1aForPermanent(state, inst);
 		const effectiveCopy = timedLayer1a ?? inst.copiableState;
+		// --- End Track P7 ---
+		const isFaceDown = Boolean(inst.isFaceDown);
+
+		// --- Track P11: Fast path for plain face-up permanents without copy/transform/prototype ---
+		if (
+			!isFaceDown &&
+			!effectiveCopy &&
+			!inst.transformed &&
+			!inst.activeFaceIndex &&
+			!(inst as { faceIndex?: number }).faceIndex &&
+			!inst.unlockedFaces?.length &&
+			!inst.prototyped
+		) {
+			const tpl = getPlainLayer1Template(baseCard);
+			const itemTimestamps = new Map<string, number>();
+			const items: AttributedKeywordOrEffect[] = new Array(tpl.innateItems.length);
+			for (let i = 0; i < tpl.innateItems.length; i++) {
+				const src = tpl.innateItems[i];
+				itemTimestamps.set(src.id, -Infinity);
+				items[i] = {
+					id: src.id,
+					canonicalKey: src.canonicalKey,
+					name: src.name,
+					kind: src.kind,
+					isInnate: true,
+					sources: ['innate'],
+					removed: false,
+					removedBy: []
+				};
+			}
+			const strippedByAttachment =
+				getAttachedAbilityStrippingAuraSources(snap, inst.instanceId).length > 0;
+			const work: PermWorkState = {
+				inst,
+				controllerId: inst.defaultControllerId ?? inst.controllerId,
+				baseCard,
+				timestamp: entry.timestamp,
+				name: tpl.name,
+				manaValue: tpl.manaValue,
+				isFaceDown: false,
+				baseTypeLine: tpl.baseTypeLine,
+				effectiveTypeLine: tpl.baseTypeLine,
+				supertypes: [...tpl.supertypes],
+				types: [...tpl.types],
+				subtypes: [...tpl.subtypes],
+				colors: [...tpl.colors],
+				isLegendary: tpl.isLegendary,
+				prefixLegendary: tpl.prefixLegendary,
+				hasAllCreatureTypes: tpl.hasAllCreatureTypes,
+				basePower: tpl.basePower,
+				baseToughness: tpl.baseToughness,
+				workingPower: tpl.basePower,
+				workingToughness: tpl.baseToughness,
+				typeModifiedBy: [],
+				ptModifiedBy: [],
+				allAbilityRemovalSources: [],
+				abilityRemovalEvents: [],
+				layer7bSetters: [],
+				items,
+				itemTimestamps,
+				statics: [...tpl.statics],
+				grantsKeywordViaAbility: new Set(tpl.grantsKeywordViaAbility),
+				strippedByAttachment
+			};
+			workList.push(work);
+			workMap.set(inst.instanceId, work);
+			continue;
+		}
+		// --- End Track P11 ---
+
+		// --- Track P7 ---
+		const baseFaceOpts = instanceFaceOptions(inst, 'battlefield');
 		const layer1aOpts: ResolveObjectFacesOptions = {
 			...baseFaceOpts,
 			...(timedLayer1a
@@ -2155,7 +2630,6 @@ function evaluateLayer1(
 		const layer1aView = resolveObjectFaces(baseCard, layer1aOpts);
 
 		// Layer 1b (CR 613.2b, CR 708.2): face-down status overrides Layer 1a copiable values.
-		const isFaceDown = Boolean(inst.isFaceDown);
 		const view = isFaceDown
 			? resolveObjectFaces(baseCard, {
 					zone: 'battlefield',
@@ -2445,6 +2919,9 @@ function evaluateAttachedTypes(
 	workList: PermWorkState[],
 	workMap: Map<string, PermWorkState>
 ): void {
+	// --- Track P11: O(1) skip when nothing on the board is attached ---
+	if (snap.attachedTo.size === 0) return;
+	// --- End Track P11 ---
 	// 2. Layer 4 Pass A: Attached type-setting effects, attached ability-removal registration, and attached 7b setters
 	for (const target of workList) {
 		for (const att of workList) {
@@ -2518,12 +2995,22 @@ function evaluateTypeOverwrites(
 				st.k !== 'continuous' ||
 				st.layer !== '4' ||
 				st.mod.k !== 'setSubtypes' ||
-				typeof st.affected !== 'object'
+				(typeof st.affected !== 'object' && st.affected !== 'attachedTo')
 			) {
 				continue;
 			}
-			for (const target of workList) {
-				if (!matchesLayerFilter(st.affected, target, source, state)) continue;
+			const candidates =
+				st.affected === 'attachedTo'
+					? (() => {
+							const hostId = source.inst.attachedToId;
+							const host = hostId ? workMap.get(hostId) : undefined;
+							return host ? [host] : [];
+						})()
+					: workList;
+			for (const target of candidates) {
+				if (typeof st.affected === 'object' && !matchesLayerFilter(st.affected, target, source, state)) {
+					continue;
+				}
 				if (st.condition && !evaluateLayerCondition(st.condition, state, workList, source, target, workMap)) {
 					continue;
 				}
@@ -2925,7 +3412,7 @@ function evaluateGlobalAbilityLoss(
 ): void {
 	// 5. Layer 6 Global "lose all abilities" (Humility, Dress Down)
 	for (const source of workList) {
-		if (source.strippedByAttachment) continue;
+		if (source.strippedByAttachment || source.statics.length === 0) continue;
 		for (const st of source.statics) {
 			if (st.k !== 'continuous' || typeof st.affected !== 'object') continue;
 			if (st.layer === '6' && st.mod.k === 'removeAllAbilities') {
@@ -3000,6 +3487,10 @@ function evaluatePerPermanent(
 		}
 	}
 
+	// --- Track P11 ---
+	let anyGrantedStaticInBoard = false;
+	const staticSources = workList.filter((w) => w.statics.length > 0 && !w.strippedByAttachment);
+	// --- End Track P11 ---
 	// 6b. Layer 6 across ALL permanents (CR 613.1f): innate removal, Layer 6 grants/removals, cantHaveLocks, Suspend/Blitz haste.
 	for (const target of workList) {
 		const targetVersion = target.inst.objectVersion ?? 1;
@@ -3061,6 +3552,26 @@ function evaluatePerPermanent(
 				});
 			}
 		}
+		// --- Track P11 (CR 122.1b, 613.7c): Keyword counters grant their keyword in Layer 6 at counter timestamp ---
+		layerReads |= READ_KEYWORD_COUNTERS;
+		const targetKwCounterMask = computeKeywordCounterMask(target.inst.counters);
+		if (targetKwCounterMask !== 0) {
+			for (let ki = 0; ki < KEYWORD_COUNTER_TYPES.length; ki++) {
+				if (!(targetKwCounterMask & (1 << ki))) continue;
+				const kw = KEYWORD_COUNTER_TYPES[ki];
+				const kwTs = target.inst.counterTimestamps?.[kw] ?? target.timestamp;
+				targetTimedEffects.push({
+					timestamp: kwTs,
+					sourceName: `${formatKeywordLabel(kw)} counter`,
+					controllerId: target.controllerId,
+					affected: [
+						{ instanceId: target.inst.instanceId, objectVersion: target.inst.objectVersion ?? 1 }
+					],
+					addKeywords: [kw]
+				});
+			}
+		}
+		// --- End Track P11 ---
 		if (targetTimedEffects.length > 1) {
 			targetTimedEffects.sort((a, b) => a.timestamp - b.timestamp);
 		}
@@ -3132,7 +3643,7 @@ function evaluatePerPermanent(
 			grantItem(target, 'haste', 'Haste', 'keyword', 'Riot', target.timestamp);
 		}
 
-		for (const source of workList) {
+		for (const source of staticSources) {
 			while (
 				timedIdx < targetTimedEffects.length &&
 				targetTimedEffects[timedIdx].timestamp <= source.timestamp
@@ -3142,7 +3653,6 @@ function evaluatePerPermanent(
 			if (target.abilityRemovalEvents.length > 0) {
 				applyRemovalsUpTo(target, source.timestamp);
 			}
-			if (source.strippedByAttachment) continue;
 
 			const sourceLostAbilities = source.allAbilityRemovalSources.length > 0;
 
@@ -3269,6 +3779,12 @@ function evaluatePerPermanent(
 								grantSourceId: source.inst.instanceId
 							});
 						}
+					// --- Track P11 ---
+					} else if (st.mod.k === 'grantAbility') {
+						if (grantNonActivatedAbility(target, source, st, st.mod.ability)) {
+							anyGrantedStaticInBoard = true;
+						}
+					// --- End Track P11 ---
 					} else if (st.mod.k === 'addKeywords') {
 						for (const kw of sortGrantedKeywords(st.mod.keywords)) {
 							const kwLow = kw.toLowerCase();
@@ -3392,6 +3908,12 @@ function evaluatePerPermanent(
 							grantSourceCard: source.baseCard,
 							grantSourceId: source.inst.instanceId
 						});
+					// --- Track P11 ---
+					} else if (st.layer === '6' && st.mod.k === 'grantAbility') {
+						if (grantNonActivatedAbility(target, source, st, st.mod.ability)) {
+							anyGrantedStaticInBoard = true;
+						}
+					// --- End Track P11 ---
 					} else if (st.layer === '6' && st.mod.k === 'addKeywords') {
 						if (st.affected === 'self' && !st.condition) continue; // already in innate items
 						for (const kw of sortGrantedKeywords(st.mod.keywords)) {
@@ -3494,8 +4016,7 @@ function evaluatePerPermanent(
 	}
 
 	// 7b. Layer 7b across ALL permanents: P/T-setting effects in timestamp order (CR 613.4b & 613.7)
-	for (const source of workList) {
-		if (source.strippedByAttachment) continue;
+	for (const source of staticSources) {
 		const startedEarlier = source.statics.some(
 			(s2) =>
 				s2.k === 'continuous' &&
@@ -3565,6 +4086,34 @@ function evaluatePerPermanent(
 				}
 			}
 		}
+		// --- Track P11: Layer 6 granted Layer 7b base-P/T statics (CR 613.4b, 107.3j) ---
+		if (anyGrantedStaticInBoard) {
+			for (const item of target.items) {
+				if (item.removed || !item.grantedStaticAbility) continue;
+				const gst = item.grantedStaticAbility;
+				if (gst.k !== 'continuous' || gst.layer !== '7b' || gst.mod.k !== 'setBasePT') continue;
+				const itemTs = target.itemTimestamps.get(item.id) ?? target.timestamp;
+				const srcName = item.sources[0] ?? target.name;
+				if (gst.affected === 'self') {
+					if (!isCreature) continue;
+					if (
+						gst.condition &&
+						!evaluateLayerCondition(gst.condition, state, workList, target, target, workMap)
+					) {
+						continue;
+					}
+					const p = evaluateLayerAmount(gst.mod.power, state, workList, target, target);
+					const t = evaluateLayerAmount(gst.mod.toughness, state, workList, target, target);
+					target.layer7bSetters.push({
+						sourceName: srcName,
+						power: p,
+						toughness: t,
+						timestamp: itemTs
+					});
+				}
+			}
+		}
+		// --- End Track P11 ---
 		target.layer7bSetters.sort((a, b) => a.timestamp - b.timestamp);
 		for (const setter of target.layer7bSetters) {
 			target.workingPower = setter.power;
@@ -3587,7 +4136,8 @@ function evaluatePerPermanent(
 		target.workingToughness += plusOnes - minusOnes + target.inst.tempToughnessMod;
 	}
 
-	for (const source of workList) {
+	const layer7cSources = anyGrantedStaticInBoard ? workList : staticSources;
+	for (const source of layer7cSources) {
 		if (source.strippedByAttachment) continue;
 
 		// A. Attached Layer 7c `pt` on host
@@ -3652,6 +4202,47 @@ function evaluatePerPermanent(
 				}
 			}
 		}
+		// --- Track P11: Layer 6 granted Layer 7c P/T statics (CR 613.4c, 107.3j) ---
+		if (anyGrantedStaticInBoard) {
+			for (const item of source.items) {
+				if (item.removed || !item.grantedStaticAbility) continue;
+				const gst = item.grantedStaticAbility;
+				if (
+					gst.k !== 'continuous' ||
+					gst.layer !== '7c' ||
+					gst.mod.k !== 'pt' ||
+					gst.affected === 'attachedTo'
+				) {
+					continue;
+				}
+				const itemTs = source.itemTimestamps.get(item.id) ?? source.timestamp;
+				const srcName = item.sources[0] ?? source.name;
+				const candidates = gst.affected === 'self' ? [source] : workList;
+				for (const target of candidates) {
+					if (target.workingPower === null || target.workingToughness === null) continue;
+					if (
+						typeof gst.affected === 'object' &&
+						!matchesLayerFilter(gst.affected, target, source, state)
+					) {
+						continue;
+					}
+					if (
+						gst.condition &&
+						!evaluateLayerCondition(gst.condition, state, workList, source, target, workMap)
+					) {
+						continue;
+					}
+					const dp = evaluateLayerAmount(gst.mod.power, state, workList, source, target);
+					const dt = evaluateLayerAmount(gst.mod.toughness, state, workList, source, target);
+					target.workingPower += dp;
+					target.workingToughness += dt;
+					const deltaStr = formatSignedDelta(dp, dt);
+					grantStatModItem(target, `pt_grant_${item.id}`, deltaStr, srcName, itemTs);
+					target.ptModifiedBy.push(`${deltaStr} (${srcName})`);
+				}
+			}
+		}
+		// --- End Track P11 ---
 	}
 
 	// Record counter & temporary P/T breakdown items and apply Layer 7d P/T switch (CR 613.4d)

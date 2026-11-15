@@ -8,17 +8,18 @@
 import { effectivePromptPurpose } from '../runtime/choices.ts';
 import { instanceFaceOptions, resolveObjectFaces, stackItemFaceOptions } from '../runtime/faces.ts';
 import { effectiveCardForObject, scrubFaceDownCard } from '../scryfall.ts';
-import type {
-	CardInstance,
-	ChoiceAnswer,
-	ChoiceRequest,
-	GameState,
-	PendingPrompt,
-	PlayerGameState,
-	PromptPurpose,
-	ScryfallCard,
-	StackItem,
-	ZoneType
+import {
+	createEmptyCounterMap,
+	type CardInstance,
+	type ChoiceAnswer,
+	type ChoiceRequest,
+	type GameState,
+	type PendingPrompt,
+	type PlayerGameState,
+	type PromptPurpose,
+	type ScryfallCard,
+	type StackItem,
+	type ZoneType
 } from '../types.ts';
 
 export const FACE_DOWN_ART_URI =
@@ -197,19 +198,9 @@ function createSyntheticStackInstance(item: StackItem, displayCard: ScryfallCard
 		summoningSick: false,
 		damageMarked: 0,
 		deathtouchDamageMarked: false,
-		counters: {
-			'+1/+1': 0,
-			'-1/-1': 0,
-			loyalty: 0,
-			charge: 0,
-			shield: 0,
-			stun: 0,
-			lore: 0,
-			time: 0,
-			age: 0,
-			level: 0,
-			fade: 0
-		},
+		// --- Track P11 ---
+		counters: createEmptyCounterMap(),
+		// --- End Track P11 ---
 		tempPowerMod: 0,
 		tempToughnessMod: 0,
 		grantedKeywords: [],

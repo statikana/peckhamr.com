@@ -48,6 +48,11 @@ describe('Cost grammar: activated ability costs', () => {
 		],
 		['Remove a +1/+1 counter from ~', [{ k: 'removeCounters', counter: '+1/+1', count: ONE, from: 'self' }]],
 		['Remove X charge counters from ~', [{ k: 'removeCounters', counter: 'charge', count: { k: 'x' }, from: 'self' }]],
+		['Remove a counter from ~', [{ k: 'removeCounters', counter: 'any', count: ONE, from: 'self' }]],
+		['Remove an oil counter from ~', [{ k: 'removeCounters', counter: 'oil', count: ONE, from: 'self' }]],
+		["Return ~ to its owner's hand", [{ k: 'returnToHand', count: ONE, filter: 'self' }]],
+		['Mill two cards', [{ k: 'mill', count: n(2) }]],
+		['{S}, {T}', [{ k: 'mana', cost: '{S}' }, { k: 'tapSelf' }]],
 		['Pay {E}{E}', [{ k: 'payEnergy', count: { k: 'const', n: 2 } }]],
 		['Pay six {E}', [{ k: 'payEnergy', count: { k: 'const', n: 6 } }]],
 		['Pay X {E}', [{ k: 'payEnergy', count: { k: 'x' } }]]
@@ -74,9 +79,6 @@ describe('Cost grammar: activated ability costs', () => {
 		for (const text of [
 			'Discard your hand',
 			'Exile any number of other cards from your graveyard with four or more card types among them',
-			'Remove a counter from ~',
-			'Remove an oil counter from ~',
-			'Return ~ to its owner\'s hand',
 			'Sacrifice a creature that dealt damage this turn',
 			'{E}{E}'
 		]) {

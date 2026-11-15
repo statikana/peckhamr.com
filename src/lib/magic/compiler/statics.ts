@@ -29,11 +29,22 @@ import type {
 } from '../ir.ts';
 import { STATIC_CONTINUOUS_KEYWORDS as KEYWORDS } from '../keywords.ts';
 import type { CounterType, ManaColor, ZoneType } from '../types.ts';
-import { parseCost, parseObjectPhrase } from './costs.ts';
+import {
+	COUNTERS,
+	parseAdditionalCostSentence,
+	parseCost,
+	parseCostModifierSentence,
+	parseObjectPhrase
+} from './costs.ts';
 import { parseEffects } from './effects.ts';
-import { staticallyInterpretable } from './interpretable.ts';
+import { staticallyInterpretable, triggerTargetsSupported } from './interpretable.ts';
 import { splitSentences } from './normalize.ts';
-import { parseActivatedIfConditionSentence, parseCondition } from './triggers.ts';
+import {
+	parseActivatedIfConditionSentence,
+	parseCondition,
+	parseTriggerHeader,
+	runtimeTriggerProblem
+} from './triggers.ts';
 
 export type StaticItem =
 	| { kind: 'static'; static: StaticDef }
@@ -80,20 +91,6 @@ const BASIC_LAND_TYPES: Record<string, string> = {
 	forest: 'Forest',
 	forests: 'Forest'
 };
-const COUNTERS: Record<string, CounterType> = {
-	'+1/+1': '+1/+1',
-	'-1/-1': '-1/-1',
-	'−1/−1': '-1/-1',
-	charge: 'charge',
-	loyalty: 'loyalty',
-	shield: 'shield',
-	stun: 'stun',
-	lore: 'lore',
-	time: 'time',
-	age: 'age',
-	level: 'level',
-	fade: 'fade'
-};
 
 /**
  * "flying, first strike, vigilance, trample, haste, and protection from black and from red" ->
@@ -133,6 +130,17 @@ function singularType(word: string): string {
 
 // ---- Affected objects -----------------------------------------------------------------------
 
+function scaleAmount(factor: number, per: Amount): Amount {
+	if (factor === 0) return n(0);
+	if (factor === 1) return per;
+	if (factor === -1) return { k: 'negate', of: per };
+	return { k: 'mul', factor, of: per };
+}
+
+function lookupStaticCounter(raw: string): CounterType | null {
+	return COUNTERS[raw.trim().toLowerCase().replace(/−/g, '-')] ?? null;
+}
+
 /**
  * The subject of a continuous effect: "~", "equipped creature", "Other Elf creatures you control",
  * "Creatures your opponents control", "All creatures", "Each land", "Nonbasic lands".
@@ -143,9 +151,12 @@ export function parseAffected(subject: string): Affected | null {
 	if (/^(?:equipped|enchanted) (?:creature|permanent|land|artifact|enchantment|planeswalker|plains|island|swamp|mountain|forest)$/i.test(s)) {
 		return 'attachedTo';
 	}
+	if (/^sources? (?:with|of) the chosen name$/i.test(s)) {
+		return { ofChosenName: true };
+	}
 	let phrase = s.replace(/^(?:all|each) /i, '');
 	let controller: ObjectFilter['controller'];
-	const opp = phrase.match(/^(.+) your opponents control$/i);
+	const opp = phrase.match(/^(.+) (?:your opponents control|an opponent controls)$/i);
 	if (opp) {
 		phrase = opp[1];
 		controller = 'opponent';
@@ -175,30 +186,98 @@ function parseCountAmount(text: string): Amount | null {
 		const right = parseCountAmount(plusLeft[2]);
 		if (left && right) return { k: 'sum', args: [left, right] };
 	}
+	// --- Track P11: multiplication, party, domain, energy, stats, attachments ---
+	const twiceMatch = t.match(/^twice (.+)$/i);
+	if (twiceMatch) {
+		const inner = parseCountAmount(twiceMatch[1]);
+		if (inner) return { k: 'mul', factor: 2, of: inner };
+	}
+	if (/^the number of creatures? in your party$/i.test(t)) {
+		return { k: 'partyCount', player: { k: 'you' } };
+	}
+	if (/^the number of basic land types? among lands you control$/i.test(t)) {
+		return { k: 'domain', player: { k: 'you' } };
+	}
+	if (/^(?:the amount of \{E\} you have|the number of energy counters? you have)$/i.test(t)) {
+		return { k: 'energyCount', player: { k: 'you' } };
+	}
+	if (/^~'s (power|toughness|mana value)$/i.test(t)) {
+		const kind = t.slice(4).toLowerCase();
+		const stat = kind === 'power' ? 'power' : kind === 'toughness' ? 'toughness' : 'manaValue';
+		return { k: 'stat', of: { k: 'self' }, stat };
+	}
+	const affStat = t.match(
+		/^(?:its|(?:enchanted|equipped) (?:creature|permanent|artifact|land|planeswalker)'s) (power|toughness|mana value)$/i
+	);
+	if (affStat) {
+		const kind = affStat[1].toLowerCase();
+		const stat = kind === 'power' ? 'power' : kind === 'toughness' ? 'toughness' : 'manaValue';
+		return { k: 'stat', of: { k: 'affected' }, stat };
+	}
+	const attachedSelf = t.match(/^the number of (.+?) attached to ~$/i);
+	if (attachedSelf) {
+		const f = parseObjectPhrase(attachedSelf[1].replace(/\s+and\s+/gi, ' or '));
+		if (f && !f.controller) {
+			return {
+				k: 'attachmentsOn',
+				target: 'self',
+				...(Object.keys(f).length > 0 ? { filter: f } : {})
+			};
+		}
+	}
+	const attachedHost = t.match(
+		/^the number of (.+?) attached to (?:it|enchanted (?:creature|permanent|land|artifact|enchantment|planeswalker)|equipped creature)$/i
+	);
+	if (attachedHost) {
+		const f = parseObjectPhrase(attachedHost[1].replace(/\s+and\s+/gi, ' or '));
+		if (f && !f.controller) {
+			return {
+				k: 'attachmentsOn',
+				target: 'attachedTo',
+				...(Object.keys(f).length > 0 ? { filter: f } : {})
+			};
+		}
+	}
+	// --- End Track P11 ---
 	if (/^your life total$/i.test(t)) return { k: 'life', of: { k: 'you' } };
-	if (/^the number of cards in your hand$/i.test(t)) return { k: 'cardsIn', zone: 'hand', of: { k: 'you' } };
-	if (/^the number of cards in your graveyard$/i.test(t)) {
+	if (/^the number of cards? in your hand$/i.test(t)) return { k: 'cardsIn', zone: 'hand', of: { k: 'you' } };
+	if (/^the number of cards? in your graveyard$/i.test(t)) {
 		return { k: 'cardsIn', zone: 'graveyard', of: { k: 'you' } };
 	}
-	if (/^the number of cards in all graveyards$/i.test(t)) {
+	if (/^the number of cards? in your exile$/i.test(t) || /^the number of cards? you own in exile$/i.test(t)) {
+		return { k: 'cardsIn', zone: 'exile', of: { k: 'you' } };
+	}
+	if (/^the number of cards? in all graveyards$/i.test(t)) {
 		return { k: 'count', of: { zone: 'graveyard' } };
 	}
-	if (/^the number of card types among cards in your graveyard$/i.test(t)) {
+	if (/^the number of card types? among cards in your graveyard$/i.test(t)) {
 		return { k: 'distinctCardTypesInZone', zone: 'graveyard', whose: 'you' };
 	}
-	if (/^the number of card types among cards in all graveyards$/i.test(t)) {
+	if (/^the number of card types? among cards in all graveyards$/i.test(t)) {
 		return { k: 'distinctCardTypesInZone', zone: 'graveyard', whose: 'all' };
 	}
-	if (/^the number of card types among cards in your opponents' graveyards$/i.test(t)) {
+	if (/^the number of card types? among cards in your opponents' graveyards$/i.test(t)) {
 		return { k: 'distinctCardTypesInZone', zone: 'graveyard', whose: 'opponents' };
 	}
 	if (/^the number of times? you've cast (?:your|a) commander from the command zone this game$/i.test(t)) {
 		return { k: 'commanderCastCount' };
 	}
-	const countersOnSelf = t.match(/^the number of (\S+) counters on (?:~|it)$/i);
+	if (/^the number of counters? on (?:~|it)$/i.test(t)) {
+		return { k: 'countersOn', counter: 'any', of: { k: 'self' } };
+	}
+	const countersOnSelf = t.match(/^the number of (.+?) counters? on (?:~|it)$/i);
 	if (countersOnSelf) {
-		const ctr = COUNTERS[countersOnSelf[1].toLowerCase().replace(/−/g, '-')];
+		const ctr = lookupStaticCounter(countersOnSelf[1]);
 		if (ctr) return { k: 'countersOn', counter: ctr, of: { k: 'self' } };
+	}
+	const countersOnHost = t.match(
+		/^the number of (.+?) counters? on (?:enchanted|equipped) (?:creature|permanent|artifact|land|planeswalker)$/i
+	);
+	if (countersOnHost) {
+		const rawC = countersOnHost[1].trim().toLowerCase();
+		if (rawC === '') return null;
+		const ctr = lookupStaticCounter(rawC);
+		if (ctr) return { k: 'countersOn', counter: ctr, of: { k: 'affected' } };
 	}
 	const graveAll = t.match(/^the number of (.+?) cards? in all graveyards$/i);
 	if (graveAll) {
@@ -217,14 +296,14 @@ function parseCountAmount(text: string): Amount | null {
 	}
 	const m = t.match(/^the number of (.+?)( on the battlefield)?$/i);
 	if (!m) return null;
-	const oppCtrl = m[1].match(/^(.+) your opponents control$/i);
+	const oppCtrl = m[1].match(/^(.+) (?:your opponents control|an opponent controls)$/i);
 	if (oppCtrl) {
-		const fOpp = parseObjectPhrase(oppCtrl[1]);
+		const fOpp = parseObjectPhrase(oppCtrl[1].replace(/\s+and\s+/gi, ' or '));
 		return fOpp && !fOpp.controller
 			? { k: 'count', of: { zone: 'battlefield', ...fOpp, controller: 'opponent' } }
 			: null;
 	}
-	const f = parseObjectPhrase(m[1]);
+	const f = parseObjectPhrase(m[1].replace(/\s+and\s+/gi, ' or '));
 	return f ? { k: 'count', of: { zone: 'battlefield', ...f } } : null;
 }
 
@@ -381,13 +460,22 @@ function manaStepComplete(step: EffectStep): boolean {
 	);
 }
 
+const QUOTED_SELF_REF =
+	/\bthis (?:creature|permanent|spell|card|artifact|enchantment|land|equipment|aura|vehicle|mount|spacecraft|planet|planeswalker|battle|saga|class|case|siege|token)(?='s\b|\b)/gi;
+
+function normalizeQuotedAbilityText(raw: string): string {
+	let out = raw.trim().replace(/,$/, '.').replace(QUOTED_SELF_REF, '~');
+	out = out.replace(/^(when|whenever)\s+it\b/i, '$1 ~');
+	return out;
+}
+
 /**
  * A quoted activated ability granted by a continuous effect (CR 613.1f, 201.5):
  * e.g. "{T}: Add {C}.", "{T}, Sacrifice ~: Add two mana of any one color.", "{1}, {T}: Draw a card."
  * Returns null if not an activated ability or if its cost or effect cannot be fully automated.
  */
 function parseGrantedActivatedAbility(quoted: string): ActivatedAbility | null {
-	const trimmed = quoted.trim();
+	const trimmed = normalizeQuotedAbilityText(quoted);
 	const colon = trimmed.indexOf(':');
 	if (colon <= 0 || /^(?:when|whenever|at|choose)\b/i.test(trimmed)) return null;
 
@@ -468,9 +556,100 @@ function parseGrantedActivatedAbility(quoted: string): ActivatedAbility | null {
 	};
 }
 
+function parseGrantedTriggeredAbility(quoted: string): AbilityDef | null {
+	const trimmed = normalizeQuotedAbilityText(quoted);
+	if (!/^(?:when|whenever|at)\b/i.test(trimmed)) return null;
+	const head = parseTriggerHeader(trimmed, 0);
+	if (!head || !head.trigger || head.unparsed.length > 0) return null;
+	const { trigger, condition } = head;
+	if (runtimeTriggerProblem(trigger)) return null;
+
+	let headerEffectText = trimmed.slice(head.effectStart);
+	const headerSentences = splitSentences(headerEffectText, head.effectStart);
+	if (
+		headerSentences.length >= 2 &&
+		/^this ability triggers only once each turn\.?$/i.test(
+			headerSentences[headerSentences.length - 1].text.trim()
+		)
+	) {
+		trigger.onlyOncePerTurn = true;
+		const lastSentence = headerSentences[headerSentences.length - 1];
+		headerEffectText = headerEffectText.slice(0, lastSentence.span.start - head.effectStart).trimEnd();
+	}
+
+	const effect = parseEffects(headerEffectText, head.effectStart, 'triggered', trigger);
+	if (!staticallyInterpretable(effect, true) || !triggerTargetsSupported(effect.targets)) {
+		return null;
+	}
+	const span = { start: 0, end: trimmed.length };
+	return {
+		kind: 'triggered',
+		trigger,
+		...(condition ? { condition } : {}),
+		targets: effect.targets,
+		effect: effect.steps,
+		text: trimmed,
+		span
+	};
+}
+
+/**
+ * Generalized quoted ability parser (CR 613.1f, CR 201.5, CR 107.3j):
+ * compiles quoted ActivatedAbility, TriggeredAbility, StaticDef, or ReplacementDef.
+ */
+function parseGrantedAbilities(quoted: string, depth = 0): AbilityDef[] | null {
+	const act = parseGrantedActivatedAbility(quoted);
+	if (act) return [act];
+	const trig = parseGrantedTriggeredAbility(quoted);
+	if (trig) return [trig];
+	if (depth >= 2) return null;
+	const norm = normalizeQuotedAbilityText(quoted);
+	if (!norm) return null;
+	const span = { start: 0, end: norm.length };
+	const costMod = parseCostModifierSentence(norm);
+	if (costMod) return [{ kind: 'static', static: costMod, span }];
+	const sub = parseStaticAbilityInner(norm, 0, depth + 1);
+	if (sub.unparsed.length === 0 && sub.items.length > 0) {
+		return sub.items.map((item): AbilityDef =>
+			item.kind === 'static'
+				? { kind: 'static', static: item.static, span }
+				: { kind: 'replacement', replacement: item.replacement, span }
+		);
+	}
+	return null;
+}
+
 // ---- Productions ----------------------------------------------------------------------------
 
 type Production = (s: string, span: Span) => StaticItem[] | null;
+
+function parseDamageSourcePhrase(raw: string): ObjectFilter | 'self' | 'attachedTo' | undefined | null {
+	const s = raw.trim();
+	if (s === '~') return 'self';
+	if (/^(?:enchanted|equipped) creature$/i.test(s)) return 'attachedTo';
+	if (/^(?:a|any) source$/i.test(s)) return undefined;
+	if (/^a source you control$/i.test(s)) return { controller: 'you' };
+	if (/^another source you control$/i.test(s)) return { other: true, controller: 'you' };
+	const sourceYouCtrl = s.match(/^(?:a|an) (.+?) source you control$/i);
+	if (sourceYouCtrl) {
+		const f = parseObjectPhrase(`${sourceYouCtrl[1]} card`);
+		if (f && !f.controller) return { ...f, controller: 'you' };
+		return null;
+	}
+	const anotherSrcYouCtrl = s.match(/^another (.+?) source you control$/i);
+	if (anotherSrcYouCtrl) {
+		const f = parseObjectPhrase(`another ${anotherSrcYouCtrl[1]} card`);
+		if (f && !f.controller) return { ...f, controller: 'you' };
+		return null;
+	}
+	const permYouCtrl = s.match(/^(?:(?:a|an)\s+|(?=(?:another|other)\b))(.+?) you control$/i);
+	if (permYouCtrl) {
+		const f = parseObjectPhrase(permYouCtrl[1]);
+		if (f && !f.controller) return { ...f, controller: 'you' };
+		return null;
+	}
+	return null;
+}
 
 /** "If a card or token would be put into a graveyard from anywhere, exile it instead." etc. */
 const replacements: Production = (s, span) => {
@@ -480,6 +659,190 @@ const replacements: Production = (s, span) => {
 	if (/^if a card(?: or token)? would be put into a graveyard from anywhere, shuffle it into its owner's library instead$/i.test(s)) {
 		return [{ kind: 'replacement', replacement: { replaces: { event: 'zoneChange', filter: { to: 'graveyard' } }, with: { k: 'modify', to: 'library', shuffleIntoLibrary: true } } }];
 	}
+	// --- Track P11: Opponent / controller graveyard & die-to-exile replacements ---
+	const oppOrYouGy = s.match(
+		/^if a card( or token)? would be put into (an opponent's|your) graveyard from anywhere, exile it instead$/i
+	);
+	if (oppOrYouGy) {
+		const includeTokens = Boolean(oppOrYouGy[1]);
+		const rel = oppOrYouGy[2].toLowerCase() === 'your' ? 'you' : 'opponent';
+		return [
+			{
+				kind: 'replacement',
+				replacement: {
+					replaces: {
+						event: 'zoneChange',
+						filter: {
+							...(includeTokens ? {} : { object: { token: false } }),
+							to: 'graveyard',
+							player: { relation: rel }
+						}
+					},
+					with: { k: 'modify', to: 'exile' }
+				}
+			}
+		];
+	}
+	const attachedDie = s.match(
+		/^if (?:enchanted|equipped) (?:creature|permanent) would die, (exile it|return it to its owner's hand) instead$/i
+	);
+	if (attachedDie) {
+		const to: ZoneType = attachedDie[1].toLowerCase().startsWith('exile') ? 'exile' : 'hand';
+		return [
+			{
+				kind: 'replacement',
+				replacement: {
+					replaces: {
+						event: 'zoneChange',
+						filter: { object: 'attachedTo', from: 'battlefield', to: 'graveyard' }
+					},
+					with: { k: 'modify', to }
+				}
+			}
+		];
+	}
+	const otherDieExile = s.match(
+		/^if (?:(?:a|an)\s+|(?=(?:another|other)\b))(.+?) would die, exile (?:it|that card) instead$/i
+	);
+	if (otherDieExile) {
+		let rawSubj = otherDieExile[1].trim();
+		let ctrl: 'you' | 'opponent' | undefined;
+		const oppCtrl = rawSubj.match(/^(.+?)\s+(?:an opponent controls|your opponents control)$/i);
+		if (oppCtrl) {
+			ctrl = 'opponent';
+			rawSubj = oppCtrl[1];
+		}
+		const filter = parseObjectPhrase(rawSubj);
+		if (filter && (!ctrl || !filter.controller)) {
+			return [
+				{
+					kind: 'replacement',
+					replacement: {
+						replaces: {
+							event: 'zoneChange',
+							filter: {
+								object: { ...filter, ...(ctrl ? { controller: ctrl } : {}) },
+								from: 'battlefield',
+								to: 'graveyard'
+							}
+						},
+						with: { k: 'modify', to: 'exile' }
+					}
+				}
+			];
+		}
+	}
+	// --- Track P11: Static damage modification (CR 614.7a) & life-gain modification (CR 119.6) ---
+	const dmgMod = s.match(
+		/^if (.+?) would deal (?:(noncombat|combat) )?damage(?: to (a permanent or player|any target|an opponent or a permanent an opponent controls|an opponent))?, it deals (double that damage|triple that damage|that much damage plus (\S+))(?: to that permanent or player| to that player)?(?: instead)?$/i
+	);
+	if (dmgMod) {
+		const sourceSpec = parseDamageSourcePhrase(dmgMod[1]);
+		if (sourceSpec !== null) {
+			const dmgKind = dmgMod[2]?.toLowerCase();
+			const rawTarget = dmgMod[3]?.toLowerCase() ?? '';
+			const targetFilter: 'any' | 'opponent' | 'opponentOrOpponentPerm' =
+				rawTarget === 'an opponent'
+					? 'opponent'
+					: rawTarget === 'an opponent or a permanent an opponent controls'
+						? 'opponentOrOpponentPerm'
+						: 'any';
+			const modStr = dmgMod[4].toLowerCase();
+			if (modStr.startsWith('double')) {
+				return [
+					{
+						kind: 'replacement',
+						replacement: {
+							replaces: { event: 'damage', filter: {} },
+							with: {
+								k: 'modify',
+								damageMod: {
+									mode: 'double',
+									...(dmgKind === 'noncombat' ? { noncombatOnly: true } : {}),
+									...(dmgKind === 'combat' ? { combatOnly: true } : {}),
+									...(sourceSpec !== undefined ? { sourceFilter: sourceSpec } : {}),
+									...(targetFilter !== 'any' ? { targetFilter } : {})
+								}
+							}
+						}
+					}
+				];
+			}
+			if (modStr.startsWith('triple')) {
+				return [
+					{
+						kind: 'replacement',
+						replacement: {
+							replaces: { event: 'damage', filter: {} },
+							with: {
+								k: 'modify',
+								damageMod: {
+									mode: 'triple',
+									...(dmgKind === 'noncombat' ? { noncombatOnly: true } : {}),
+									...(dmgKind === 'combat' ? { combatOnly: true } : {}),
+									...(sourceSpec !== undefined ? { sourceFilter: sourceSpec } : {}),
+									...(targetFilter !== 'any' ? { targetFilter } : {})
+								}
+							}
+						}
+					}
+				];
+			}
+			if (dmgMod[5]) {
+				const addAmt = count(dmgMod[5]);
+				if (addAmt) {
+					return [
+						{
+							kind: 'replacement',
+							replacement: {
+								replaces: { event: 'damage', filter: {} },
+								with: {
+									k: 'modify',
+									damageMod: {
+										mode: 'add',
+										add: addAmt,
+										...(dmgKind === 'noncombat' ? { noncombatOnly: true } : {}),
+										...(dmgKind === 'combat' ? { combatOnly: true } : {}),
+										...(sourceSpec !== undefined ? { sourceFilter: sourceSpec } : {}),
+										...(targetFilter !== 'any' ? { targetFilter } : {})
+									}
+								}
+							}
+						}
+					];
+				}
+			}
+		}
+	}
+
+	const lifeDouble = s.match(/^if you would gain life, you gain twice that much life instead$/i);
+	if (lifeDouble) {
+		return [
+			{
+				kind: 'replacement',
+				replacement: {
+					replaces: { event: 'lifeGain', filter: { player: { relation: 'you' } } },
+					with: { k: 'modify', lifeGainMod: { mode: 'double' } }
+				}
+			}
+		];
+	}
+	const lifePlus = s.match(/^if you would gain life, you gain that much life plus (\S+) instead$/i);
+	if (lifePlus) {
+		const addAmt = count(lifePlus[1]);
+		if (addAmt) {
+			return [
+				{
+					kind: 'replacement',
+					replacement: {
+						replaces: { event: 'lifeGain', filter: { player: { relation: 'you' } } },
+						with: { k: 'modify', lifeGainMod: { mode: 'add', add: addAmt } }
+					}
+				}
+			];
+		}
+	}
+	// --- End Track P11 ---
 	const selfDieOrGy = s.match(
 		/^if ~ would (die|be put into a graveyard from anywhere), (exile it|shuffle it into its owner's library|return it to its owner's hand|put it into its owner's hand) instead$/i
 	);
@@ -529,23 +892,55 @@ const replacements: Production = (s, span) => {
 		if (/^~ enters (?:the battlefield )?tapped$/i.test(body)) {
 			return { k: 'modify', tapped: true };
 		}
+		const choiceCounter = body.match(
+			/^~ enters (?:the battlefield )?(tapped )?with your choice of (?:either )?(?:a|an) (.+?) counter or (?:a|an) (.+?) counter on it$/i
+		);
+		if (choiceCounter) {
+			const c1 = lookupStaticCounter(choiceCounter[2]);
+			const c2 = lookupStaticCounter(choiceCounter[3]);
+			if (c1 && c2 && c1 !== c2) {
+				return {
+					k: 'modify',
+					...(choiceCounter[1] ? { tapped: true } : {}),
+					chooseCounter: [c1, c2]
+				};
+			}
+		}
 		const counters = body.match(
-			/^~ enters (?:the battlefield )?with (\S+) (\S+) counters? on it( for each time (?:it|~) was kicked| for each color of mana spent to cast (?:it|~))?$/i
+			/^~ enters (?:the battlefield )?(tapped )?with (\S+) (.+?) counters? on it(?: for each (.+))?$/i
 		);
 		if (counters) {
-			const baseAmount = count(counters[1]);
-			const counter = COUNTERS[counters[2].toLowerCase()];
+			const entersTapped = Boolean(counters[1]);
+			const baseAmount = count(counters[2]);
+			const counter = lookupStaticCounter(counters[3]);
 			if (baseAmount && counter) {
 				let amount: Amount | null = baseAmount;
-				if (counters[3]) {
-					if (/color of mana/i.test(counters[3])) {
+				if (counters[4]) {
+					const forEachRaw = counters[4].trim();
+					if (/^color of mana spent to cast (?:it|~)$/i.test(forEachRaw)) {
 						if (baseAmount.k === 'const' && baseAmount.n === 1) amount = { k: 'colorsOfManaSpentToCast' };
-						else amount = null;
-					} else if (baseAmount.k === 'const' && baseAmount.n === 1) amount = { k: 'kickedCount' };
-					else if (baseAmount.k === 'const' && baseAmount.n > 1) amount = { k: 'kickedCount', multiplier: baseAmount.n };
-					else amount = null;
+						else if (baseAmount.k === 'const' && baseAmount.n > 1) {
+							amount = scaleAmount(baseAmount.n, { k: 'colorsOfManaSpentToCast' });
+						} else amount = null;
+					} else if (/^time (?:it|~) was kicked$/i.test(forEachRaw)) {
+						if (baseAmount.k === 'const' && baseAmount.n === 1) amount = { k: 'kickedCount' };
+						else if (baseAmount.k === 'const' && baseAmount.n > 1) {
+							amount = { k: 'kickedCount', multiplier: baseAmount.n };
+						} else amount = null;
+					} else if (baseAmount.k === 'const' && baseAmount.n >= 1) {
+						const per = parseCountAmount(`the number of ${forEachRaw}`);
+						amount = per ? scaleAmount(baseAmount.n, per) : null;
+					} else {
+						amount = null;
+					}
 				}
-				if (amount) return { k: 'modify', counters: { counter, amount } };
+				if (amount) {
+					return {
+						k: 'modify',
+						...(entersTapped ? { tapped: true } : {}),
+						counters: { counter, amount }
+					};
+				}
 			}
 		}
 		const cloneMatch = body.match(
@@ -589,12 +984,19 @@ const replacements: Production = (s, span) => {
 			const ex = chooseCol[1] ? COLORS[chooseCol[1].toLowerCase()] : undefined;
 			return { k: 'modify', chooseColor: ex ? { exclude: ex } : {} };
 		}
+		const chooseName = body.match(/^as (?:~|it) enters(?: the battlefield)?, choose a (nonland )?card name$/i);
+		if (chooseName) {
+			return { k: 'modify', chooseCardName: chooseName[1] ? { nonlandOnly: true } : {} };
+		}
 		return null;
 	};
 	const direct = parseSelfEtbModify(s);
 	if (direct) {
 		const isSelfChoice = Boolean(
-			typeof direct === 'object' && !Array.isArray(direct) && direct.k === 'modify' && (direct.chooseSubType || direct.chooseColor)
+			typeof direct === 'object' &&
+				!Array.isArray(direct) &&
+				direct.k === 'modify' &&
+				(direct.chooseSubType || direct.chooseColor || direct.chooseCardName || direct.chooseCounter)
 		);
 		return [
 			{
@@ -607,6 +1009,75 @@ const replacements: Production = (s, span) => {
 			}
 		];
 	}
+
+	// --- Track P11: External ETB tapped & additional counters (CR 614.12) ---
+	const extEnterTapped = s.match(/^(.+?) enters? (?:the battlefield )?tapped$/i);
+	if (extEnterTapped && !/^(?:~|it)$/i.test(extEnterTapped[1].trim())) {
+		const rawSubj = extEnterTapped[1].trim();
+		const singleAff = parseAffected(rawSubj);
+		if (singleAff && typeof singleAff === 'object') {
+			return [
+				{
+					kind: 'replacement',
+					replacement: {
+						replaces: { event: 'zoneChange', filter: { object: singleAff, to: 'battlefield' } },
+						with: { k: 'modify', tapped: true }
+					}
+				}
+			];
+		}
+		const ctrlTail = rawSubj.match(/^(.+?)\s+(your opponents control|an opponent controls|you control)$/i);
+		const listBody = ctrlTail ? ctrlTail[1] : rawSubj;
+		const ctrlSuffix = ctrlTail ? ` ${ctrlTail[2]}` : '';
+		if (/\band\b/i.test(listBody)) {
+			const parts = listBody
+				.split(/,\s*and\s+|\s+and\s+|,\s*/i)
+				.map((p) => p.trim())
+				.filter(Boolean);
+			if (parts.length >= 2) {
+				const filters: ObjectFilter[] = [];
+				let allOk = true;
+				for (const part of parts) {
+					const aff = parseAffected(`${part}${ctrlSuffix}`);
+					if (!aff || typeof aff !== 'object') {
+						allOk = false;
+						break;
+					}
+					filters.push(aff);
+				}
+				if (allOk) {
+					return filters.map((f) => ({
+						kind: 'replacement' as const,
+						replacement: {
+							replaces: { event: 'zoneChange', filter: { object: f, to: 'battlefield' as const } },
+							with: { k: 'modify' as const, tapped: true }
+						}
+					}));
+				}
+			}
+		}
+	}
+
+	const extAddCounters = s.match(
+		/^(.+?) enters? (?:the battlefield )?with (\S+) additional (.+?) counters? on (?:it|them)$/i
+	);
+	if (extAddCounters && !/^(?:~|it)$/i.test(extAddCounters[1].trim())) {
+		const aff = parseAffected(extAddCounters[1]);
+		const amt = count(extAddCounters[2]);
+		const ctr = lookupStaticCounter(extAddCounters[3]);
+		if (aff && typeof aff === 'object' && amt && ctr) {
+			return [
+				{
+					kind: 'replacement',
+					replacement: {
+						replaces: { event: 'zoneChange', filter: { object: aff, to: 'battlefield' } },
+						with: { k: 'modify', additionalCounters: { counter: ctr, amount: amt } }
+					}
+				}
+			];
+		}
+	}
+	// --- End Track P11 ---
 
 	// --- Track P8: Conditional ETB Dual Lands ("~ enters tapped unless <condition>") ---
 	const entersTappedUnless = s.match(/^~ enters (?:the battlefield )?tapped unless (.+)$/i);
@@ -664,24 +1135,20 @@ const replacements: Production = (s, span) => {
 		}
 	}
 
-	const suffixKicked = s.match(
-		/^(.+?) (if (?:(?:it|~) (?:was(?:n't| not)? (?:kicked(?: with its .+? kicker| twice| \S+ times?)?|evoked|foretold|blitzed)|escaped|(?:didn't|did not) escape)|its (?:evoke|blitz) cost was(?:n't| not)? paid))$/i
-	);
-	if (suffixKicked) {
-		const cond = parseCondition(suffixKicked[2]);
-		const mod = parseSelfEtbModify(suffixKicked[1]);
+	const suffixCond = s.match(/^(.+?) (if .+)$/i);
+	if (suffixCond) {
+		const cond = parseCondition(suffixCond[2]) ?? parseStaticCondition(suffixCond[2].slice(3));
+		const mod = parseSelfEtbModify(suffixCond[1]);
 		if (cond && mod) {
 			return [{ kind: 'replacement', replacement: { replaces: entersSelf, with: mod, condition: cond } }];
 		}
 	}
 
-	const prefixKicked = s.match(
-		/^(if (?:(?:it|~) (?:was(?:n't| not)? (?:kicked(?: with its .+? kicker| twice| \S+ times?)?|evoked|foretold|blitzed)|escaped|(?:didn't|did not) escape)|its (?:evoke|blitz) cost was(?:n't| not)? paid)), (?:it )?(enters .+)$/i
-	);
-	if (prefixKicked) {
-		const cond = parseCondition(prefixKicked[1]);
+	const prefixCond = s.match(/^(if [^,]+),\s*(?:(?:it|~) )?(enters .+)$/i);
+	if (prefixCond) {
+		const cond = parseCondition(prefixCond[1]) ?? parseStaticCondition(prefixCond[1].slice(3));
 		if (cond) {
-			const etbBody = `~ ${prefixKicked[2]}`;
+			const etbBody = `~ ${prefixCond[2]}`;
 			const withKeywords = etbBody.match(/^(.+?) and with (.+)$/i);
 			if (withKeywords) {
 				const mod = parseSelfEtbModify(withKeywords[1]);
@@ -761,8 +1228,20 @@ function parseInlineCombatTail(
 	if (/^can't block$/i.test(low)) {
 		return { kind: 'static', static: { k: 'restriction', affected, restriction: 'cantBlock' } };
 	}
+	if (/^can't attack$/i.test(low)) {
+		return { kind: 'static', static: { k: 'restriction', affected, restriction: 'cantAttack' } };
+	}
 	if (/^can't attack or block$/i.test(low)) {
 		return { kind: 'static', static: { k: 'restriction', affected, restriction: 'cantAttackOrBlock' } };
+	}
+	if (/^(?:attacks|attack) each combat if able$/i.test(low)) {
+		return { kind: 'static', static: { k: 'restriction', affected, restriction: 'attacksEachCombat' } };
+	}
+	if (/^(?:blocks|block) each combat if able$/i.test(low)) {
+		return { kind: 'static', static: { k: 'restriction', affected, restriction: 'blocksEachCombat' } };
+	}
+	if (/^loses? all abilities$/i.test(low)) {
+		return continuous('6', affected, { k: 'removeAllAbilities' });
 	}
 	if (/^must be blocked if able$/i.test(low)) {
 		return { kind: 'static', static: { k: 'combatRule', affected, rule: { kind: 'mustBeBlockedIfAble' } } };
@@ -960,8 +1439,13 @@ const combatAndActivationRules: Production = (s) => {
 			}
 			const split = raw.split(/\s+(?:and\/or|or)\s+/i);
 			if (split.length === 2) {
+				let rightRaw = split[1];
+				const headWith = split[0].match(/^(.+?\bwith)\s+\S+$/i);
+				if (headWith && !parseCombatObjectPhrase(rightRaw)) {
+					rightRaw = `${headWith[1]} ${rightRaw}`;
+				}
 				const f1 = parseCombatObjectPhrase(split[0]);
-				const f2 = parseCombatObjectPhrase(split[1]);
+				const f2 = parseCombatObjectPhrase(rightRaw);
 				if (f1 && f2) {
 					return [
 						{
@@ -1105,6 +1589,21 @@ const combatAndActivationRules: Production = (s) => {
 		}
 	}
 
+	// --- Track P11: Untap choice (CR 502.3) & Toughness combat damage (CR 510.1a) ---
+	if (/^You may choose not to untap ~ during your untap step$/i.test(s)) {
+		return [{ kind: 'static', static: { k: 'mayChooseNotToUntap', affected: 'self' } }];
+	}
+	const toughDmg = s.match(
+		/^(.+?) assigns? combat damage equal to (?:its|their) toughness rather than (?:its|their) power$/i
+	);
+	if (toughDmg) {
+		const affected = parseAffected(toughDmg[1]);
+		if (affected) {
+			return [{ kind: 'static', static: { k: 'assignCombatDamageByToughness', affected } }];
+		}
+	}
+	// --- End Track P11 ---
+
 	return null;
 };
 
@@ -1126,6 +1625,36 @@ function parseSpellFilterForTopLibrary(raw: string): ObjectFilter | null {
 }
 
 const topOfLibraryAndGraveyardPlay: Production = (s) => {
+	// --- Track P11: Static alternative cast permissions (CR 118.9) ---
+	const selfAltCast = s.match(
+		/^You may pay ((?:\{[^}]+\})+) rather than pay (?:~'s|this spell's) mana cost$/i
+	);
+	if (selfAltCast) {
+		return [
+			{
+				kind: 'static',
+				static: { k: 'altCastPermission', affects: 'self', manaCost: selfAltCast[1] }
+			}
+		];
+	}
+	const extAltCast = s.match(
+		/^You may pay ((?:\{[^}]+\})+) rather than pay the mana cost for (?:(.+?) )?spells(?: that)? you cast$/i
+	);
+	if (extAltCast) {
+		let filter: ObjectFilter = {};
+		if (extAltCast[2]) {
+			const f = parseObjectPhrase(`${extAltCast[2].replace(/\s+and\s+/gi, ' or ')} card`);
+			if (!f) return null;
+			filter = f;
+		}
+		return [
+			{
+				kind: 'static',
+				static: { k: 'altCastPermission', affects: { k: 'spell', filter }, manaCost: extAltCast[1] }
+			}
+		];
+	}
+	// --- End Track P11 ---
 	if (/^You may look at the top card of your library any time$/i.test(s)) {
 		return [{ kind: 'static', static: { k: 'topOfLibraryVisibility', mode: 'look' } }];
 	}
@@ -1212,18 +1741,72 @@ const topOfLibraryAndGraveyardPlay: Production = (s) => {
 const multipliers: Production = (s) => {
 	const low = s.toLowerCase();
 	const mult = (def: Extract<StaticDef, { k: 'multiplier' }>): StaticItem[] => [{ kind: 'static', static: def }];
-	if (low === 'if one or more +1/+1 counters would be put on a creature you control, that many plus one +1/+1 counters are put on it instead') {
-		return mult({ k: 'multiplier', what: 'counters', factor: 1, delta: 1, filter: { types: ['Creature'], controller: 'you' }, counter: '+1/+1' });
+	// --- Track P11: Generalized counter & token multipliers ---
+	const ctrPlus = s.match(
+		/^if one or more (.+?) counters would be put on (?:a |an )?(.+?), that many plus (\S+) (.+?) counters are put on (?:it|that [a-z]+) instead$/i
+	);
+	if (ctrPlus) {
+		const c1 = lookupStaticCounter(ctrPlus[1]);
+		const c2 = lookupStaticCounter(ctrPlus[4]);
+		const filter = parseObjectPhrase(ctrPlus[2].replace(/\s+and\s+/gi, ' or '));
+		const delta = count(ctrPlus[3]);
+		if (c1 && c1 === c2 && filter && delta && delta.k === 'const' && delta.n >= 1) {
+			return mult({ k: 'multiplier', what: 'counters', factor: 1, delta: delta.n, filter, counter: c1 });
+		}
 	}
-	if (low === 'if one or more +1/+1 counters would be put on a creature you control, twice that many +1/+1 counters are put on it instead') {
-		return mult({ k: 'multiplier', what: 'counters', factor: 2, filter: { types: ['Creature'], controller: 'you' }, counter: '+1/+1' });
+	const ctrMult = s.match(
+		/^if (?:an effect would put )?one or more (.+?) counters (?:on|would be put on) (?:a |an )?(.+?), (?:it puts )?(twice|three times) that many (.+?) counters (?:on (?:it|that [a-z]+)|are put on (?:it|that [a-z]+)) instead$/i
+	);
+	if (ctrMult) {
+		const c1 = lookupStaticCounter(ctrMult[1]);
+		const c2 = lookupStaticCounter(ctrMult[4]);
+		const filter = parseObjectPhrase(ctrMult[2].replace(/\s+and\s+/gi, ' or '));
+		const factor = ctrMult[3].toLowerCase() === 'three times' ? 3 : 2;
+		if (c1 && c1 === c2 && filter) {
+			return mult({ k: 'multiplier', what: 'counters', factor, filter, counter: c1 });
+		}
 	}
-	if (low === 'if an effect would put one or more counters on a permanent you control, it puts twice that many of each of those kinds of counters on that permanent instead') {
-		return mult({ k: 'multiplier', what: 'counters', factor: 2, filter: { controller: 'you' } });
+	const anyCtrPlus = s.match(
+		/^if (?:an effect would put )?one or more counters (?:on|would be put on) (?:a |an )?(.+?), (?:it puts )?that many plus (\S+) of each of those kinds of counters (?:on (?:it|that [a-z]+)|are put on (?:it|that [a-z]+)) instead$/i
+	);
+	if (anyCtrPlus) {
+		const rawTarget = anyCtrPlus[1].trim();
+		const filter = /^permanent you control$/i.test(rawTarget)
+			? { controller: 'you' as const }
+			: parseObjectPhrase(rawTarget.replace(/\s+and\s+/gi, ' or '));
+		const delta = count(anyCtrPlus[2]);
+		if (filter && delta && delta.k === 'const' && delta.n >= 1) {
+			return mult({ k: 'multiplier', what: 'counters', factor: 1, delta: delta.n, filter });
+		}
 	}
-	if (low === 'if an effect would create one or more tokens under your control, it creates twice that many of those tokens instead' || low === 'if one or more tokens would be created under your control, twice that many of those tokens are created instead') {
-		return mult({ k: 'multiplier', what: 'tokens', factor: 2, filter: { controller: 'you' } });
+	const anyCtrMult = s.match(
+		/^if (?:an effect would put )?one or more counters (?:on|would be put on) (?:a |an )?(.+?), (?:it puts )?(twice|three times) that many of each of those kinds of counters (?:on (?:it|that [a-z]+)|are put on (?:it|that [a-z]+)) instead$/i
+	);
+	if (anyCtrMult) {
+		const rawTarget = anyCtrMult[1].trim();
+		const filter = /^permanent you control$/i.test(rawTarget)
+			? { controller: 'you' as const }
+			: parseObjectPhrase(rawTarget.replace(/\s+and\s+/gi, ' or '));
+		const factor = anyCtrMult[2].toLowerCase() === 'three times' ? 3 : 2;
+		if (filter) {
+			return mult({ k: 'multiplier', what: 'counters', factor, filter });
+		}
 	}
+	const tokUnderYou = low.match(
+		/^if (?:an effect would create one or more tokens under your control, it creates|one or more tokens would be created under your control,) (twice|three times) that many of those tokens(?: are created)? instead$/
+	);
+	if (tokUnderYou) {
+		const factor = tokUnderYou[1] === 'three times' ? 3 : 2;
+		return mult({ k: 'multiplier', what: 'tokens', factor, filter: { controller: 'you' } });
+	}
+	const tokGlobal = low.match(
+		/^if an effect would create one or more tokens, it creates (twice|three times) that many of those tokens instead$/
+	);
+	if (tokGlobal) {
+		const factor = tokGlobal[1] === 'three times' ? 3 : 2;
+		return mult({ k: 'multiplier', what: 'tokens', factor, filter: {} });
+	}
+	// --- End Track P11 ---
 	if (low === 'if you casting or copying an instant or sorcery spell causes a triggered ability of a permanent you control to trigger, that ability triggers an additional time') {
 		return mult({
 			k: 'multiplier',
@@ -1254,6 +1837,49 @@ const multipliers: Production = (s) => {
 const ruleModifiers: Production = (s) => {
 	const low = s.toLowerCase();
 	if (low === 'you have no maximum hand size') return [rule('noMaxHandSize', 'you')];
+	// --- Track P11: Life gain lock, draw step skip, max hand size, & chosen-name cast bans ---
+	if (low === 'players have no maximum hand size' || low === 'each player has no maximum hand size') {
+		return [rule('noMaxHandSize', 'each_player')];
+	}
+	if (low === "players can't gain life") return [rule('cantGainLife', 'each_player')];
+	if (low === "your opponents can't gain life") return [rule('cantGainLife', 'each_opponent')];
+	if (low === "you can't gain life") return [rule('cantGainLife', 'you')];
+	if (low === 'skip your draw step') return [rule('skipDrawStep', 'you')];
+	if (low === "spells with the chosen name can't be cast") {
+		return [rule('cantCastChosenName', 'each_player')];
+	}
+	if (low === "your opponents can't cast spells with the chosen name") {
+		return [rule('cantCastChosenName', 'each_opponent')];
+	}
+	const setHand = low.match(/^(your|each opponent's|each player's) maximum hand size is (\S+)$/);
+	if (setHand) {
+		const rel =
+			setHand[1] === 'your' ? 'you' : setHand[1] === "each opponent's" ? 'each_opponent' : 'each_player';
+		if (setHand[2] === 'zero' || setHand[2] === '0') {
+			return [rule('setMaxHandSize', rel, { size: 0 })];
+		}
+		const sz = count(setHand[2]);
+		if (sz && sz.k === 'const') {
+			return [rule('setMaxHandSize', rel, { size: sz.n })];
+		}
+	}
+	const deltaHand = low.match(
+		/^(your|each opponent's|each player's) maximum hand size is (reduced|increased) by (\S+)$/
+	);
+	if (deltaHand) {
+		const rel =
+			deltaHand[1] === 'your'
+				? 'you'
+				: deltaHand[1] === "each opponent's"
+					? 'each_opponent'
+					: 'each_player';
+		const amt = count(deltaHand[3]);
+		if (amt && amt.k === 'const' && amt.n >= 1) {
+			const signed = deltaHand[2] === 'reduced' ? -amt.n : amt.n;
+			return [rule('maxHandSizeDelta', rel, { delta: signed })];
+		}
+	}
+	// --- End Track P11 ---
 	if (low === "you can't lose the game and your opponents can't win the game") {
 		return [rule('cantLose', 'you'), rule('opponentsCantWin', 'each_opponent')];
 	}
@@ -1378,7 +2004,7 @@ function costModifiers(activeZones?: ZoneType[]): Production {
 		if (self) {
 			if (!self[3]) return build({ k: 'self' }, self[1], self[2], 'you');
 			const times = parseCountAmount(`the number of ${self[3]}`);
-			return times ? build({ k: 'self' }, self[1], self[2], 'you', times) : null;
+			if (times) return build({ k: 'self' }, self[1], self[2], 'you', times);
 		}
 		const spells = s.match(
 			/^(?:(.+?) )?[Ss]pells(?: of the chosen (type|color))?(?: (you|your opponents) cast)?(?: of the chosen (type|color))? cost (\{\d+\}) (less|more) to cast$/
@@ -1410,8 +2036,32 @@ function costModifiers(activeZones?: ZoneType[]): Production {
 		}
 		if (/^(?:Equipment you control have equip \{0\}|Equip abilities you activate cost \{0\})$/i.test(s)) {
 			const def: StaticDef = { k: 'costModifier', affects: { k: 'ability', keyword: 'equip' }, delta: { mode: 'setZero', generic: 0 }, who: { relation: 'you' } };
+			if (activeZones) def.activeZones = activeZones;
 			return [{ kind: 'static', static: def }];
 		}
+		// --- Track P11: Permanent spell additional costs & generalized cost modifiers ---
+		if (!activeZones) {
+			const selfAddCost = parseAdditionalCostSentence(s);
+			if (selfAddCost && selfAddCost.unparsed.length === 0 && selfAddCost.defs.length > 0) {
+				return [
+					{
+						kind: 'static',
+						static: {
+							k: 'costModifier',
+							affects: { k: 'self' },
+							delta: { mode: 'increase', generic: 0, additionalCosts: selfAddCost.defs },
+							who: { relation: 'you' }
+						}
+					}
+				];
+			}
+		}
+		const generalized = parseCostModifierSentence(s);
+		if (generalized) {
+			if (activeZones && generalized.k === 'costModifier') generalized.activeZones = activeZones;
+			return [{ kind: 'static', static: generalized }];
+		}
+		// --- End Track P11 ---
 		return null;
 	};
 }
@@ -1469,7 +2119,7 @@ function parseTypeDescription(
 		words.shift();
 	} else if (words[0] && COLORS[words[0]]) {
 		colors = [COLORS[words.shift()!]];
-		while (words.length >= 2) {
+		for (let guard = 0; guard < 16 && words.length >= 2; guard++) {
 			if (words[0] === ',' && words[1] === 'and' && words[2] && COLORS[words[2]]) {
 				words.shift();
 				words.shift();
@@ -1502,93 +2152,106 @@ function parseTypeDescription(
  * power and toughness 3/3.", "Enchanted permanent is a colorless Forest land.",
  * "Enchanted Mountain is a 7/7 red Giant creature with haste. It's still a land."
  */
-const attachedTypeChange: Production = (s) => {
-	const m = s.match(
-		/^(?:Enchanted|Equipped) (?:creature|permanent|land|artifact|enchantment|planeswalker|Plains|Island|Swamp|Mountain|Forest) (.+)$/
-	);
-	if (!m) return null;
-	let rest = m[1];
-	let typeDesc: ReturnType<typeof parseTypeDescription> = null;
-	let basePT: [number, number] | undefined;
-	let granted: AbilityDef | undefined;
-	let keywords: string[] | undefined;
-	let losesAll = false;
-	let losesTypes = false;
-	let keepTypes = false;
-	let sawIs = false;
-	const addParsedKeywords = (raw: string): boolean => {
-		const parsed = parseKeywordList(raw);
-		if (!parsed) return false;
-		keywords = keywords ? [...keywords, ...parsed] : parsed;
-		return true;
-	};
-	const steps: Array<[RegExp, (mm: RegExpMatchArray) => boolean]> = [
-		[/^(?:, and it|, and|and it|and|,)(?=\s)/, () => true],
-		[/^loses all other abilities, card types, and creature types/, () => ((losesAll = true), (losesTypes = true), true)],
-		[/^loses all other card types and creature types/, () => ((losesTypes = true), true)],
-		[/^loses all other card types and abilities/, () => ((losesAll = true), (losesTypes = true), true)],
-		[/^loses all (?:other )?abilities/, () => ((losesAll = true), true)],
-		[
-			/^is an? (.+?)(?= with | that's still | in addition to |,? and |$)/,
-			(mm) => {
-				typeDesc = parseTypeDescription(mm[1]);
-				sawIs = true;
-				if (typeDesc?.basePT) basePT = typeDesc.basePT;
-				return typeDesc !== null;
+function attachedTypeChange(depth = 0): Production {
+	return (s) => {
+		const m = s.match(
+			/^(?:Enchanted|Equipped) (?:creature|permanent|land|artifact|enchantment|planeswalker|Plains|Island|Swamp|Mountain|Forest) (.+)$/
+		);
+		if (!m) return null;
+		let rest = m[1];
+		let typeDesc: ReturnType<typeof parseTypeDescription> = null;
+		let basePT: [number, number] | undefined;
+		let grantedAbilities: AbilityDef[] | undefined;
+		let keywords: string[] | undefined;
+		let losesAll = false;
+		let losesTypes = false;
+		let keepTypes = false;
+		let sawIs = false;
+		const addParsedKeywords = (raw: string): boolean => {
+			const parsed = parseKeywordList(raw);
+			if (!parsed) return false;
+			keywords = keywords ? [...keywords, ...parsed] : parsed;
+			return true;
+		};
+		const addParsedQuotes = (raw: string): boolean => {
+			const parsed = parseGrantedAbilities(raw, depth);
+			if (!parsed) return false;
+			grantedAbilities = grantedAbilities ? [...grantedAbilities, ...parsed] : parsed;
+			return true;
+		};
+		const steps: Array<[RegExp, (mm: RegExpMatchArray) => boolean]> = [
+			[/^(?:, and it|, and|and it|and|,)(?=\s)/, () => true],
+			[/^loses all other abilities, card types, and creature types/, () => ((losesAll = true), (losesTypes = true), true)],
+			[/^loses all other card types and creature types/, () => ((losesTypes = true), true)],
+			[/^loses all other card types and abilities/, () => ((losesAll = true), (losesTypes = true), true)],
+			[/^loses all (?:other )?abilities/, () => ((losesAll = true), true)],
+			[
+				/^is an? (.+?)(?= with | that's still | in addition to |,? and |$)/,
+				(mm) => {
+					typeDesc = parseTypeDescription(mm[1]);
+					sawIs = true;
+					if (typeDesc?.basePT) basePT = typeDesc.basePT;
+					return typeDesc !== null;
+				}
+			],
+			[/^(?:with|has) base power and toughness (\d+)\/(\d+)/, (mm) => ((basePT = [parseInt(mm[1], 10), parseInt(mm[2], 10)]), true)],
+			[/^(?:with|has) (?:"([^"]+)"|'([^']+)')/, (mm) => addParsedQuotes(mm[1] ?? mm[2])],
+			[
+				/^with ([^"']+?)(?= that's still | in addition to |,? and |$)/,
+				(mm) => addParsedKeywords(mm[1])
+			],
+			[/^(?:that's |it's )?still an? (?:land|artifact|enchantment|planeswalker)/, () => ((keepTypes = true), true)],
+			[/^in addition to its other types/, () => ((keepTypes = true), true)],
+			[/^has (.+?)(?= that's still | in addition to |,? and it |,? and |$)/, (mm) => addParsedKeywords(mm[1])]
+		];
+		for (let guard = 0; guard < 32 && (rest = rest.trimStart()).length > 0; guard++) {
+			let matched = false;
+			for (const [re, apply] of steps) {
+				const mm = rest.match(re);
+				if (!mm || mm[0].length === 0) continue;
+				if (!apply(mm)) return null;
+				rest = rest.slice(mm[0].length);
+				matched = true;
+				break;
 			}
-		],
-		[/^(?:with|has) base power and toughness (\d+)\/(\d+)/, (mm) => ((basePT = [parseInt(mm[1], 10), parseInt(mm[2], 10)]), true)],
-		[/^with (?:"([^"]+)"|'([^']+)')/, (mm) => ((granted = parseGrantedActivatedAbility(mm[1] ?? mm[2]) ?? undefined), granted !== undefined)],
-		[
-			/^with ([^"']+?)(?= that's still | in addition to |,? and |$)/,
-			(mm) => addParsedKeywords(mm[1])
-		],
-		[/^(?:that's |it's )?still an? (?:land|artifact|enchantment|planeswalker)/, () => ((keepTypes = true), true)],
-		[/^in addition to its other types/, () => ((keepTypes = true), true)],
-		[/^has (.+?)(?= that's still | in addition to |,? and it |,? and |$)/, (mm) => addParsedKeywords(mm[1])]
-	];
-	while ((rest = rest.trimStart()).length > 0) {
-		let matched = false;
-		for (const [re, apply] of steps) {
-			const mm = rest.match(re);
-			if (!mm || mm[0].length === 0) continue;
-			if (!apply(mm)) return null;
-			rest = rest.slice(mm[0].length);
-			matched = true;
-			break;
+			if (!matched) return null;
 		}
-		if (!matched) return null;
-	}
-	if (!sawIs && !losesAll && !basePT) return null; // "Enchanted creature gets/has ..." is handled by grants.
+		if (rest.trimStart().length > 0) return null;
+		if (!sawIs && !losesAll && !basePT) return null; // "Enchanted creature gets/has ..." is handled by grants.
 
-	const items: StaticItem[] = [];
-	const desc = typeDesc as ReturnType<typeof parseTypeDescription>;
-	if (desc) {
-		const isArtifactCreature = desc.types.includes('Artifact') && desc.types.includes('Creature');
-		// CR 205.1b: "artifact creature" without subtypes keeps all prior card types and subtypes;
-		// "[subtype] artifact creature" keeps prior card types unless losesTypes is stated.
-		if (isArtifactCreature && !losesTypes && !keepTypes && desc.subtypes.length > 0) return null;
-		const additive = keepTypes || (isArtifactCreature && !losesTypes && desc.subtypes.length === 0);
-		if (additive) {
-			items.push(
-				continuous('4', 'attachedTo', {
-					k: 'addTypes',
-					types: desc.types,
-					...(desc.subtypes.length > 0 ? { subtypes: desc.subtypes } : {})
-				})
-			);
-		} else {
-			items.push(continuous('4', 'attachedTo', { k: 'setTypes', types: desc.types, subtypes: desc.subtypes }));
+		const items: StaticItem[] = [];
+		const desc = typeDesc as ReturnType<typeof parseTypeDescription>;
+		if (desc) {
+			const isArtifactCreature = desc.types.includes('Artifact') && desc.types.includes('Creature');
+			// CR 205.1b: "artifact creature" without subtypes keeps all prior card types and subtypes;
+			// "[subtype] artifact creature" keeps prior card types unless losesTypes is stated.
+			if (isArtifactCreature && !losesTypes && !keepTypes && desc.subtypes.length > 0) return null;
+			const additive = keepTypes || (isArtifactCreature && !losesTypes && desc.subtypes.length === 0);
+			if (additive) {
+				items.push(
+					continuous('4', 'attachedTo', {
+						k: 'addTypes',
+						types: desc.types,
+						...(desc.subtypes.length > 0 ? { subtypes: desc.subtypes } : {})
+					})
+				);
+			} else {
+				items.push(continuous('4', 'attachedTo', { k: 'setTypes', types: desc.types, subtypes: desc.subtypes }));
+			}
+			if (desc.colors) items.push(continuous('5', 'attachedTo', { k: 'setColors', colors: desc.colors }));
 		}
-		if (desc.colors) items.push(continuous('5', 'attachedTo', { k: 'setColors', colors: desc.colors }));
-	}
-	// Ability loss applies before grants from the same effect ("has indestructible, and it loses all other abilities").
-	if (losesAll) items.push(continuous('6', 'attachedTo', { k: 'removeAllAbilities' }));
-	if (granted) items.push(continuous('6', 'attachedTo', { k: 'grantAbility', ability: granted }));
-	if (keywords) items.push(continuous('6', 'attachedTo', { k: 'addKeywords', keywords }));
-	if (basePT) items.push(continuous('7b', 'attachedTo', { k: 'setBasePT', power: n(basePT[0]), toughness: n(basePT[1]) }));
-	return items;
-};
+		// Ability loss applies before grants from the same effect ("has indestructible, and it loses all other abilities").
+		if (losesAll) items.push(continuous('6', 'attachedTo', { k: 'removeAllAbilities' }));
+		if (grantedAbilities) {
+			for (const ability of grantedAbilities) {
+				items.push(continuous('6', 'attachedTo', { k: 'grantAbility', ability }));
+			}
+		}
+		if (keywords) items.push(continuous('6', 'attachedTo', { k: 'addKeywords', keywords }));
+		if (basePT) items.push(continuous('7b', 'attachedTo', { k: 'setBasePT', power: n(basePT[0]), toughness: n(basePT[1]) }));
+		return items;
+	};
+}
 
 /** Global type and ability changers: Humility, Blood Moon, Urborg, Opalescence, Mycosynth, Maskwood. */
 const globalChanges: Production = (s) => {
@@ -1615,6 +2278,32 @@ const globalChanges: Production = (s) => {
 	const nonbasic = s.match(/^Nonbasic lands are (Plains|Islands|Swamps|Mountains|Forests)$/);
 	if (nonbasic) {
 		return [continuous('4', { types: ['Land'], notSupertypes: ['Basic'] }, { k: 'setSubtypes', subtypes: [BASIC_LAND_TYPES[nonbasic[1].toLowerCase()]] })];
+	}
+	const enchLandBasic = s.match(
+		/^Enchanted land is an? (Plains|Island|Swamp|Mountain|Forest)$/i
+	);
+	if (enchLandBasic) {
+		return [
+			continuous('4', 'attachedTo', {
+				k: 'setSubtypes',
+				subtypes: [BASIC_LAND_TYPES[enchLandBasic[1].toLowerCase()]]
+			})
+		];
+	}
+	const allBasicTypes = s.match(
+		/^(.+?) are every basic land type in addition to their other types$/i
+	);
+	if (allBasicTypes) {
+		const affected = parseAffected(allBasicTypes[1]);
+		if (affected) {
+			return [
+				continuous('4', affected, {
+					k: 'addTypes',
+					types: [],
+					subtypes: ['Plains', 'Island', 'Swamp', 'Mountain', 'Forest']
+				})
+			];
+		}
 	}
 	const eachLand = s.match(/^Each land is an? (Plains|Island|Swamp|Mountain|Forest) in addition to its other land types$/);
 	if (eachLand) return [continuous('4', { types: ['Land'] }, { k: 'addTypes', types: [], subtypes: [eachLand[1]] })];
@@ -1675,48 +2364,204 @@ const keywordRemoval: Production = (s) => {
 	return [continuous('6', affected, { k: 'removeKeywords', keywords: kws, ...(m[3] ? { cantHaveOrGain: true } : {}) })];
 };
 
+// --- Track P11: Quote-aware grant tail splitting & quoted/dynamic Layer 6/7b/7c helpers ---
+
+function splitPtModifierAndTail(rest: string): { modifierPart: string; tailPart?: string } {
+	let inQuote: '"' | "'" | null = null;
+	for (let i = 0; i < rest.length; i++) {
+		const ch = rest[i];
+		if (inQuote === '"') {
+			if (ch === '"') inQuote = null;
+			continue;
+		}
+		if (inQuote === "'") {
+			if (ch === "'" && (i + 1 === rest.length || /[\s.,;]/.test(rest[i + 1]))) {
+				inQuote = null;
+			}
+			continue;
+		}
+		if (ch === '"') {
+			inQuote = '"';
+			continue;
+		}
+		if (ch === "'" && (i === 0 || /\s/.test(rest[i - 1]))) {
+			inQuote = "'";
+			continue;
+		}
+		const tailMatch = rest
+			.slice(i)
+			.match(/^(?:,\s*and\s+|,\s+|\s+and\s+)((?:has|have|can't|cannot|must|can block|attacks|attack|blocks|block|loses)\b[\s\S]+)$/i);
+		if (tailMatch) {
+			return { modifierPart: rest.slice(0, i), tailPart: tailMatch[1].trim() };
+		}
+	}
+	return { modifierPart: rest };
+}
+
+function parseHasGrantTail(
+	affected: Affected,
+	hasBodyRaw: string,
+	condition: Condition | undefined,
+	depth: number
+): StaticItem[] | null {
+	const hasBody = hasBodyRaw.trim();
+	if (/^protection from the chosen color$/i.test(hasBody)) {
+		return [continuous('6', affected, { k: 'protectionFromChosenColor' }, condition)];
+	}
+	const singleQuoted = hasBody.match(/^(?:"([^"]+)"|'([^']+)')$/);
+	if (singleQuoted) {
+		const abilities = parseGrantedAbilities(singleQuoted[1] ?? singleQuoted[2], depth);
+		return abilities
+			? abilities.map((ability) => continuous('6', affected, { k: 'grantAbility', ability }, condition))
+			: null;
+	}
+	const twoQuoted = hasBody.match(
+		/^(?:"([^"]+)"|'([^']+)')(?:,\s*and|\s+and)(?: (?:has|have))? (?:"([^"]+)"|'([^']+)')$/i
+	);
+	if (twoQuoted) {
+		const a1 = parseGrantedAbilities(twoQuoted[1] ?? twoQuoted[2], depth);
+		const a2 = parseGrantedAbilities(twoQuoted[3] ?? twoQuoted[4], depth);
+		if (!a1 || !a2) return null;
+		return [...a1, ...a2].map((ability) =>
+			continuous('6', affected, { k: 'grantAbility', ability }, condition)
+		);
+	}
+	const kwAndQuoted = hasBody.match(/^([^"']+?)(?:,\s*and|\s+and)(?: (?:has|have))? (?:"([^"]+)"|'([^']+)')$/i);
+	if (kwAndQuoted) {
+		const kws = parseKeywordList(kwAndQuoted[1]);
+		const abilities = parseGrantedAbilities(kwAndQuoted[2] ?? kwAndQuoted[3], depth);
+		if (kws && abilities) {
+			return [
+				keywordGrant(affected, kws, condition),
+				...abilities.map((ability) =>
+					continuous('6', affected, { k: 'grantAbility', ability }, condition)
+				)
+			];
+		}
+	}
+	const quotedAndKw = hasBody.match(/^(?:"([^"]+)"|'([^']+)')(?:,\s*and|\s+and)(?: (?:has|have))? ([^"']+)$/i);
+	if (quotedAndKw) {
+		const abilities = parseGrantedAbilities(quotedAndKw[1] ?? quotedAndKw[2], depth);
+		const kws = parseKeywordList(quotedAndKw[3]);
+		if (abilities && kws) {
+			return [
+				...abilities.map((ability) =>
+					continuous('6', affected, { k: 'grantAbility', ability }, condition)
+				),
+				keywordGrant(affected, kws, condition)
+			];
+		}
+	}
+	const kwAndCombat = hasBody.match(/^([^"']+?)(?:,\s*and|\s+and) ((?:can't|cannot|must|can block)\b.+)$/i);
+	if (kwAndCombat) {
+		const kws = parseKeywordList(kwAndCombat[1]);
+		const combatTail = parseInlineCombatTail(affected, kwAndCombat[2]);
+		if (kws && combatTail) {
+			if (condition) withCondition([combatTail], condition);
+			return [keywordGrant(affected, kws, condition), combatTail];
+		}
+	}
+	const kws = parseKeywordList(hasBody);
+	return kws ? [keywordGrant(affected, kws, condition)] : null;
+}
+
+// --- End Track P11 ---
+
 /**
  * Anthems, lords and attached grants: "Other Elf creatures you control get +1/+1.", "Equipped
  * creature gets +1/+1 and has trample and lifelink.", "Creatures you control have flying.",
  * "~ gets +1/+0 for each artifact you control.", 'Lands you control have "{T}: Add one mana of any color."'
  */
-function grants(condition?: Condition): Production {
+function grants(condition?: Condition, depth = 0): Production {
 	return (s) => {
-		const quoted = s.match(/^(.+?) (?:has|have) (?:"([^"]+)"|'([^']+)')$/);
-		if (quoted) {
-			const affected = parseAffected(quoted[1]);
-			const ability = parseGrantedActivatedAbility(quoted[2] ?? quoted[3]);
-			return affected && ability ? [continuous('6', affected, { k: 'grantAbility', ability }, condition)] : null;
+		// --- Track P11: Dynamic Layer 7b base P/T & generalized Layer 7c / Layer 6 grants ---
+		const basePtX = s.match(
+			/^([^"']+?) (?:has|have) base power and (?:base )?toughness X\/X,?\s+where X is (.+)$/i
+		);
+		if (basePtX) {
+			const affected = parseAffected(basePtX[1]);
+			const xAmt = parseCountAmount(basePtX[2]);
+			if (affected && xAmt) {
+				return [continuous('7b', affected, { k: 'setBasePT', power: xAmt, toughness: xAmt }, condition)];
+			}
 		}
-		const pt = s.match(/^(.+?) gets? ([+−-]\d+\/[+−-]\d+)(?: for each (.+?))?(?: and (.+))?$/);
+		const basePtEqual = s.match(
+			/^([^"']+?) (?:has|have) base power and (?:base )?toughness each equal to (.+)$/i
+		);
+		if (basePtEqual) {
+			const affected = parseAffected(basePtEqual[1]);
+			const amt = parseCountAmount(basePtEqual[2]);
+			if (affected && amt) {
+				return [continuous('7b', affected, { k: 'setBasePT', power: amt, toughness: amt }, condition)];
+			}
+		}
+		const basePtFixed = s.match(
+			/^([^"']+?) (?:has|have) base power and (?:base )?toughness (\d+)\/(\d+)$/i
+		);
+		if (basePtFixed) {
+			const affected = parseAffected(basePtFixed[1]);
+			if (affected) {
+				return [
+					continuous(
+						'7b',
+						affected,
+						{
+							k: 'setBasePT',
+							power: n(parseInt(basePtFixed[2], 10)),
+							toughness: n(parseInt(basePtFixed[3], 10))
+						},
+						condition
+					)
+				];
+			}
+		}
+
+		const pt = s.match(/^([^"']+?) gets? (?:an additional )?([+−-])(\d+|X)\/([+−-])(\d+|X)([\s\S]*)$/i);
 		if (pt) {
 			const affected = parseAffected(pt[1]);
-			const delta = ptDelta(pt[2]);
-			if (!affected || !delta) return null;
-			let power: Amount = n(delta[0]);
-			let toughness: Amount = n(delta[1]);
-			if (pt[3]) {
-				// Only "+1/+0 for each": Amount has no multiplication yet.
-				const per = parseCountAmount(`the number of ${pt[3]}`);
-				if (!per || ![0, 1].includes(Math.abs(delta[0])) || ![0, 1].includes(Math.abs(delta[1])) || delta[0] < 0 || delta[1] < 0) return null;
-				power = delta[0] ? per : n(0);
-				toughness = delta[1] ? per : n(0);
-			}
-			const items: StaticItem[] = [continuous('7c', affected, { k: 'pt', power, toughness }, condition)];
-			if (pt[4]) {
-				const tail = pt[4].trim();
-				const hasMatch = tail.match(/^(?:has|have) (.+)$/i);
-				if (hasMatch) {
-					const hasBody = hasMatch[1].trim();
-					if (/^protection from the chosen color$/i.test(hasBody)) {
-						items.push(continuous('6', affected, { k: 'protectionFromChosenColor' }, condition));
-					} else {
-						const kws = parseKeywordList(hasBody);
-						if (!kws) return null;
-						items.push(keywordGrant(affected, kws, condition));
-					}
+			if (!affected) return null;
+			const pSign = pt[2] === '+' ? 1 : -1;
+			const pTok = pt[3].toUpperCase();
+			const tSign = pt[4] === '+' ? 1 : -1;
+			const tTok = pt[5].toUpperCase();
+			const { modifierPart, tailPart } = splitPtModifierAndTail(pt[6]);
+			const modTrimmed = modifierPart.trim();
+
+			let power: Amount | null = null;
+			let toughness: Amount | null = null;
+
+			if (pTok === 'X' || tTok === 'X') {
+				const whereMatch = modTrimmed.match(/^,?\s*where X is (.+)$/i);
+				if (!whereMatch) return null;
+				const xAmt = parseCountAmount(whereMatch[1]);
+				if (!xAmt) return null;
+				power = pTok === 'X' ? scaleAmount(pSign, xAmt) : n(pSign * parseInt(pTok, 10));
+				toughness = tTok === 'X' ? scaleAmount(tSign, xAmt) : n(tSign * parseInt(tTok, 10));
+			} else {
+				const d0 = pSign * parseInt(pTok, 10);
+				const d1 = tSign * parseInt(tTok, 10);
+				if (modTrimmed === '') {
+					power = n(d0);
+					toughness = n(d1);
 				} else {
-					const combatTail = parseInlineCombatTail(affected, tail);
+					const forEach = modTrimmed.match(/^for each (.+)$/i);
+					if (!forEach) return null;
+					const per = parseCountAmount(`the number of ${forEach[1]}`);
+					if (!per) return null;
+					power = scaleAmount(d0, per);
+					toughness = scaleAmount(d1, per);
+				}
+			}
+
+			const items: StaticItem[] = [continuous('7c', affected, { k: 'pt', power, toughness }, condition)];
+			if (tailPart) {
+				const hasMatch = tailPart.match(/^(?:has|have) (.+)$/i);
+				if (hasMatch) {
+					const hasItems = parseHasGrantTail(affected, hasMatch[1], condition, depth);
+					if (!hasItems) return null;
+					items.push(...hasItems);
+				} else {
+					const combatTail = parseInlineCombatTail(affected, tailPart);
 					if (!combatTail) return null;
 					if (condition) withCondition([combatTail], condition);
 					items.push(combatTail);
@@ -1724,29 +2569,14 @@ function grants(condition?: Condition): Production {
 			}
 			return items;
 		}
-		const protChosen = s.match(/^(.+?) (?:has|have) protection from the chosen color$/i);
-		if (protChosen) {
-			const affected = parseAffected(protChosen[1]);
-			return affected
-				? [continuous('6', affected, { k: 'protectionFromChosenColor' }, condition)]
-				: null;
+
+		const hasAny = s.match(/^([^"']+?) (?:has|have) (.+)$/);
+		if (hasAny) {
+			const affected = parseAffected(hasAny[1]);
+			if (!affected) return null;
+			return parseHasGrantTail(affected, hasAny[2], condition, depth);
 		}
-		const kwWithCombat = s.match(/^(.+?) (?:has|have) (.+?) and ((?:can't|cannot|must|can block)\b.+)$/i);
-		if (kwWithCombat) {
-			const affected = parseAffected(kwWithCombat[1]);
-			const kws = parseKeywordList(kwWithCombat[2]);
-			const combatTail = affected ? parseInlineCombatTail(affected, kwWithCombat[3]) : null;
-			if (affected && kws && combatTail) {
-				if (condition) withCondition([combatTail], condition);
-				return [keywordGrant(affected, kws, condition), combatTail];
-			}
-		}
-		const kw = s.match(/^(.+?) (?:has|have) (.+)$/);
-		if (kw) {
-			const affected = parseAffected(kw[1]);
-			const kws = parseKeywordList(kw[2]);
-			return affected && kws ? [keywordGrant(affected, kws, condition)] : null;
-		}
+		// --- End Track P11 ---
 		return null;
 	};
 }
@@ -1889,6 +2719,27 @@ function parseStaticCondition(clause: string): Condition | null {
 		}
 	}
 
+	// Counter presence: "~ / it / enchanted creature / equipped creature has a/+1/+1/divinity/N or more ... counter(s) on it"
+	const hasCounters = t.match(
+		/^(~|it|(?:enchanted|equipped) (?:creature|permanent|artifact|land|planeswalker)) has (\S+)(?: or more)? (.+?) counters? on (?:~|it)$/i
+	);
+	if (hasCounters) {
+		const cnt = count(hasCounters[2]);
+		const ctr = lookupStaticCounter(hasCounters[3]);
+		if (cnt && cnt.k === 'const' && ctr) {
+			const ofTarget =
+				hasCounters[1] === '~' || /^it$/i.test(hasCounters[1])
+					? ({ k: 'self' } as const)
+					: ({ k: 'affected' } as const);
+			return {
+				k: 'compare',
+				left: { k: 'countersOn', counter: ctr, of: ofTarget },
+				op: '>=',
+				right: cnt
+			};
+		}
+	}
+
 	// Self state: "~ is tapped / untapped / equipped / enchanted / attacking / blocking / monstrous / saddled"
 	const selfState = t.match(/^(?:(?:~|it) is|it's) ([a-z]+)$/i);
 	if (selfState) {
@@ -1967,11 +2818,11 @@ function parseUnlessEtbCondition(clause: string): Condition | null {
 	return parseStaticCondition(t);
 }
 
-function parseSentence(sentence: string, span: Span): StaticItem[] | null {
+function parseSentence(sentence: string, span: Span, depth = 0): StaticItem[] | null {
 	let s = sentence.replace(/’/g, "'").replace(/\.$/, '').trim();
 	// Strip optional raw CR 207.2c ability-word prefix if caller bypassed normalize.ts
 	const abilityWordPrefix = s.match(
-		/^(?:Threshold|Metalcraft|Delirium|Ferocious|Formidable|Spell mastery|Coven|Fateful hour|Hellbent)\s*—\s*/i
+		/^(?:Threshold|Metalcraft|Delirium|Ferocious|Formidable|Spell mastery|Coven|Fateful hour|Hellbent|Domain)\s*—\s*/i
 	);
 	if (abilityWordPrefix) {
 		s = s.slice(abilityWordPrefix[0].length).trim();
@@ -2007,8 +2858,11 @@ function parseSentence(sentence: string, span: Span): StaticItem[] | null {
 		}
 	}
 
+	// Guard AS_LONG_AS_SUFFIX so "as long as ..." inside quoted abilities is not stripped off the outer sentence
+	// (contractions/possessives like `it's`, `can't`, `~'s`, `players'` are NOT quotes).
+	const hasQuotes = /"|(?:^|\s)'/.test(s);
 	const prefix = s.match(AS_LONG_AS_PREFIX);
-	const suffix = !prefix ? s.match(AS_LONG_AS_SUFFIX) : null;
+	const suffix = !prefix && !hasQuotes ? s.match(AS_LONG_AS_SUFFIX) : null;
 	if (prefix || suffix) {
 		const cond = parseStaticCondition((prefix ?? suffix)![1]);
 		if (!cond) return null;
@@ -2024,13 +2878,13 @@ function parseSentence(sentence: string, span: Span): StaticItem[] | null {
 		topOfLibraryAndGraveyardPlay,
 		costModifiers(),
 		cda,
-		attachedTypeChange,
+		attachedTypeChange(depth),
 		globalChanges,
 		controlChange,
 		combatAndActivationRules,
 		restrictions,
 		keywordRemoval,
-		grants()
+		grants(undefined, depth)
 	];
 	for (const p of productions) {
 		const items = p(s, span);
@@ -2041,8 +2895,7 @@ function parseSentence(sentence: string, span: Span): StaticItem[] | null {
 	return null;
 }
 
-/** Parses a static ability line (normalised body text). `offset` is its position in the caller's text. */
-export function parseStaticAbility(text: string, offset = 0): StaticParse {
+function parseStaticAbilityInner(text: string, offset = 0, depth = 0): StaticParse {
 	const items: StaticItem[] = [];
 	const unparsed: Span[] = [];
 	const sentences = splitSentences(text, offset);
@@ -2091,6 +2944,24 @@ export function parseStaticAbility(text: string, offset = 0): StaticParse {
 					}
 				}
 			}
+
+			// --- Track P11: Two-sentence cost modifiers (coloredOnly / minTotalMana: 1) ---
+			if (
+				/^This effect reduces only the amount of colored mana you pay$/i.test(nextTrimmed) ||
+				/^This effect can't reduce the (?:amount of )?mana (?:in that cost |that ability costs to activate )?to less than one mana$/i.test(
+					nextTrimmed
+				) ||
+				/^This cost can't be reduced to less than \{1\}$/i.test(nextTrimmed)
+			) {
+				const fused = `${trimmed}. ${nextTrimmed}.`;
+				const fusedCostMod = parseCostModifierSentence(fused);
+				if (fusedCostMod) {
+					items.push({ kind: 'static', static: fusedCostMod });
+					idx += 1;
+					continue;
+				}
+			}
+			// --- End Track P11 ---
 		}
 
 		if (/^(?:it's|they're|it is) still (?:a |an )?(?:lands?|artifacts?|enchantments?|planeswalkers?)$/i.test(trimmed)) {
@@ -2116,7 +2987,7 @@ export function parseStaticAbility(text: string, offset = 0): StaticParse {
 			}
 			if (converted) continue;
 		}
-		const parsed = parseSentence(sentence.text, sentence.span);
+		const parsed = parseSentence(sentence.text, sentence.span, depth);
 		if (parsed && (parsed.length > 0 || items.length > 0)) items.push(...parsed);
 		else unparsed.push(sentence.span);
 	}
@@ -2132,4 +3003,9 @@ export function parseStaticAbility(text: string, offset = 0): StaticParse {
 		}
 	}
 	return { items, unparsed };
+}
+
+/** Parses a static ability line (normalised body text). `offset` is its position in the caller's text. */
+export function parseStaticAbility(text: string, offset = 0): StaticParse {
+	return parseStaticAbilityInner(text, offset, 0);
 }
