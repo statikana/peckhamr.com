@@ -16,10 +16,11 @@
 		PlayerGameState, ScryfallCard, StackItem, TargetRef
 	} from './types.ts';
 	import AbilityMenuModal from './ui/AbilityMenuModal.svelte';
+	import AllocationStepperWidget, { type AllocationTargetItem } from './ui/AllocationStepperWidget.svelte';
 	import AltHoverPreview from './ui/AltHoverPreview.svelte';
 	import { previewAbilityAutoTap, previewSpellAutoTap, type AutoTapPreviewResult } from './ui/autoTapPreview.ts';
 	import {
-		buildBoardViewModel, computeArrowSignature, sortHandCards,
+		DUNGEON_ART_URI, EMBLEM_ART_URI, buildBoardViewModel, computeArrowSignature, sortHandCards,
 		type HandSortDir, type HandSortMode
 	} from './ui/boardViewModel.ts';
 	import CastOptionsModal, { type CastOptionSelection, type HoveredCastOptionContext } from './ui/CastOptionsModal.svelte';
@@ -27,9 +28,9 @@
 	import {
 		TURN_PHASE_GROUPS, assignSelectedBlockerToAttacker, buildDeclareAttackersPayload,
 		buildDeclareBlockersPayload, canViewerSelectAllAttackers, createEmptyCombatDraft,
-		deriveTurnControlView, pruneStaleCombatDraft, retargetDraftAttackersToPlaneswalker,
-		retargetDraftAttackersToPlayer, selectAllEligibleAttackers, toggleDraftAttacker,
-		toggleOrSelectBlocker, type CombatDraftState
+		deriveTurnControlView, pruneStaleCombatDraft, retargetDraftAttackersToBattle,
+		retargetDraftAttackersToPlaneswalker, retargetDraftAttackersToPlayer, selectAllEligibleAttackers,
+		toggleDraftAttacker, toggleOrSelectBlocker, type CombatDraftState
 	} from './ui/combatController.ts';
 	import HandTray from './ui/HandTray.svelte';
 	import HudBar from './ui/HudBar.svelte';
@@ -42,7 +43,7 @@
 	import TargetBanner from './ui/TargetBanner.svelte';
 	import {
 		beginAbilityTargeting, beginDropTargeting, beginModalTargeting, beginSpellTargeting,
-		canClickTargetCandidate, confirmCurrentSlot, describeCurrentTargetSlot,
+		canClickTargetCandidate, confirmCurrentSlot, confirmSlotDivisions, describeCurrentTargetSlot,
 		getPendingTargetArrowRefs, optionChoosesX, requiredZoneDrawerForCurrentSlot,
 		stepBackToPreviousSlot, toggleOrAdvanceTarget,
 		type CastableZone, type TargetingSession, type TargetingTransitionResult
@@ -50,7 +51,10 @@
 	import VictoryModal from './ui/VictoryModal.svelte';
 	import XCostModal from './ui/XCostModal.svelte';
 	import ZoneBrowserModal from './ui/ZoneBrowserModal.svelte';
-	import { ArenaVfxController, areArrowListsEqual, buildArenaArrowLines, computeBezierPath, type ArrowLine } from './vfx.ts';
+	import {
+		ArenaVfxController, areArrowListsEqual, buildArenaArrowLines, computeBezierPath,
+		getElementCenterByGameId, type ArrowLine
+	} from './vfx.ts';
 
 	interface Props {
 		gameState: GameState;
@@ -173,6 +177,7 @@
 	let xCostModal = $state.raw<XCostModalState | null>(null);
 	let selectedPermanentForAbility = $state.raw<CardInstance | null>(null);
 	let targetingSession = $state.raw<TargetingSession | null>(null);
+	let peekingDivisionBoard = $state(false);
 	let activeAutoTapPreview = $state.raw<AutoTapPreviewResult | null>(null);
 	let combatDraft = $state<CombatDraftState>(createEmptyCombatDraft());
 	let stepActionPending = $state(false);
@@ -201,6 +206,7 @@
 				modePickerModal ||
 				xCostModal ||
 				selectedPermanentForAbility ||
+				targetingSession?.awaitingDivision ||
 				gameState.status === 'finished'
 		)
 	);
@@ -295,10 +301,98 @@
 		for (const [atkId, defPlayerId] of Object.entries(combatDraft.draftAttackers)) {
 			combined[atkId] = {
 				defenderPlayerId: defPlayerId,
-				defenderPlaneswalkerId: combatDraft.draftAttackerWalkers[atkId] || null
+				defenderPlaneswalkerId:
+					combatDraft.draftAttackerWalkers[atkId] || combatDraft.draftAttackerBattles[atkId] || null
 			};
 		}
 		return computeCombatDamageForecast(gameState, combined, combatDraft.draftBlockers);
+	});
+
+	const attackedBattlesForecast = $derived.by(() => {
+		if (!combatForecast.active) return [];
+		const byBattleId: Record<
+			string,
+			{
+				instanceId: string;
+				name: string;
+				currentDefense: number;
+				defenseLoss: number;
+				projectedDefense: number;
+				willDefeat: boolean;
+			}
+		> = {};
+		const recordHit = (atkId: string, battleId: string | null | undefined) => {
+			if (!battleId || battleId === 'removed') return;
+			const bView = boardVM.permanentsById[battleId];
+			if (!bView?.isBattle) return;
+			const atkSum = combatForecast.attackerSummaries[atkId];
+			const dmg = atkSum ? atkSum.damageToDefender : 0;
+			const curDef = Math.max(0, bView.perm.counters.defense ?? 0);
+			const entry =
+				byBattleId[battleId] ??
+				(byBattleId[battleId] = {
+					instanceId: battleId,
+					name: bView.displayCard.name,
+					currentDefense: curDef,
+					defenseLoss: 0,
+					projectedDefense: curDef,
+					willDefeat: false
+				});
+			entry.defenseLoss += Math.max(0, dmg);
+			entry.projectedDefense = Math.max(0, curDef - entry.defenseLoss);
+			entry.willDefeat = entry.projectedDefense === 0 && curDef > 0;
+		};
+		if (gameState.combat.active && gameState.combat.attackers.length > 0) {
+			for (const atk of gameState.combat.attackers) {
+				recordHit(atk.attackerInstanceId, atk.defenderBattleId);
+			}
+		} else if (gameState.phase === 'declare_attackers') {
+			for (const atkId of Object.keys(combatDraft.draftAttackers)) {
+				recordHit(atkId, combatDraft.draftAttackerBattles[atkId]);
+			}
+		}
+		return Object.values(byBattleId);
+	});
+
+	const divisionTargetItems = $derived.by<AllocationTargetItem[]>(() => {
+		if (!targetingSession?.awaitingDivision) return [];
+		return targetingSession.selectedTargets.map((t) => {
+			if (t.kind === 'permanent') {
+				const pView = boardVM.permanentsById[t.id];
+				if (pView) {
+					const dmgMarked = pView.perm.damageMarked || 0;
+					const sublabel = pView.isCreature
+						? `${pView.power ?? 0}/${pView.toughness ?? 0}${dmgMarked > 0 ? ` (${dmgMarked} dmg)` : ''}`
+						: pView.isPlaneswalker
+							? `Loyalty: ${pView.perm.counters.loyalty ?? 0}`
+							: pView.isBattle
+								? `Def: ${pView.perm.counters.defense ?? 0}`
+								: pView.displayCard.typeLine;
+					return {
+						id: t.id,
+						label: pView.displayCard.name,
+						sublabel,
+						imageUrl: pView.displayCard.artCropUrl,
+						card: pView.displayCard.card,
+						instance: pView.perm
+					};
+				}
+			}
+			if (t.kind === 'player') {
+				const pl = gameState.players.find((p) => p.playerId === t.id);
+				if (pl) {
+					return {
+						id: t.id,
+						label: pl.playerId === me?.playerId ? `${pl.username} (You)` : pl.username,
+						sublabel: `Life: ${pl.life}`
+					};
+				}
+			}
+			return {
+				id: t.id,
+				label: t.label ?? t.id
+			};
+		});
 	});
 
 	const turnCtrl = $derived(deriveTurnControlView(gameState, me, combatDraft, targetingSession !== null));
@@ -349,6 +443,13 @@
 				id: perm.instanceId,
 				label: pView?.displayCard.name ?? perm.card.name
 			});
+		}
+		if (
+			turnCtrl.isConfirmingAttackers &&
+			Object.keys(combatDraft.draftAttackers).length > 0 &&
+			boardVM.permanentsById[perm.instanceId]?.canBeAttackedAsBattle
+		) {
+			return true;
 		}
 		if (owner.playerId === me?.playerId) {
 			return boardVM.permanentsById[perm.instanceId]?.actableSummary.isActable ?? false;
@@ -487,9 +588,12 @@
 		);
 	}
 
-	function isZoneCardPlayableNow(inst: CardInstance, zone: 'hand' | 'command' | 'exile' | 'graveyard'): boolean {
+	function isZoneCardPlayableNow(inst: CardInstance, zone: CastableZone): boolean {
 		if (!me || me.lost || gameState.status !== 'active' || !hasPriority || myPrompt || targetingSession) {
 			return false;
+		}
+		if (zone === 'battlefield') {
+			return Boolean(boardVM.permanentsById[inst.instanceId]?.actableSummary.preparationCopyOption);
 		}
 		if (zone === 'hand') return Boolean(boardVM.handPlayabilityById[inst.instanceId]?.playable);
 		if (zone === 'command') return Boolean(boardVM.commandPlayabilityById[inst.instanceId]);
@@ -644,6 +748,7 @@
 
 	function applyTargetingSessionUpdate(nextSession: TargetingSession | null): void {
 		targetingSession = nextSession;
+		if (!nextSession?.awaitingDivision) peekingDivisionBoard = false;
 		activeAutoTapPreview = null;
 		if (!nextSession || !me) {
 			if (zoneModal?.isAutoOpenedForTargeting) zoneModal = null;
@@ -699,6 +804,11 @@
 		await applyTransitionResult(confirmCurrentSlot(targetingSession));
 	}
 
+	async function handleConfirmTargetDivisions(divisions: Record<string, number>): Promise<void> {
+		if (!targetingSession) return;
+		await applyTransitionResult(confirmSlotDivisions(targetingSession, divisions));
+	}
+
 	function handleStepBackTargetSlot(): void {
 		if (!targetingSession) return;
 		applyTargetingSessionUpdate(stepBackToPreviousSlot(targetingSession));
@@ -707,6 +817,7 @@
 	function cancelTargetingAndDrafts(): void {
 		if (zoneModal?.isAutoOpenedForTargeting) zoneModal = null;
 		targetingSession = null;
+		peekingDivisionBoard = false;
 		combatDraft = { ...combatDraft, selectedBlockerId: null };
 		draggingCard = null;
 		dragOverZone = null;
@@ -817,7 +928,9 @@
 			option,
 			optionalCostCounts,
 			costAidIds,
-			costAidColorChoices
+			costAidColorChoices,
+			gameState,
+			actorId: me?.playerId
 		});
 		await applyTransitionResult(res, {
 			kind: 'spell',
@@ -835,7 +948,10 @@
 		castOptionsModal = null;
 		selectedPermanentForAbility = null;
 		activeAutoTapPreview = null;
-		await applyTransitionResult(beginAbilityTargeting({ inst, ability }), { kind: 'ability', inst, ability });
+		await applyTransitionResult(
+			beginAbilityTargeting({ inst, ability, gameState, actorId: me?.playerId }),
+			{ kind: 'ability', inst, ability }
+		);
 	}
 
 	async function handleConfirmModePicker(chosenModes: number[]): Promise<void> {
@@ -856,7 +972,9 @@
 					option: modalCtx.option,
 					optionalCostCounts: modalCtx.optionalCostCounts,
 					costAidIds: modalCtx.costAidIds,
-					costAidColorChoices: modalCtx.costAidColorChoices
+					costAidColorChoices: modalCtx.costAidColorChoices,
+					gameState,
+					actorId: me?.playerId
 				})
 			);
 			return;
@@ -869,7 +987,9 @@
 					modal: modalCtx.modal,
 					chosenModes,
 					allowAllModes: modalCtx.allowAllModes,
-					ability: modalCtx.ability
+					ability: modalCtx.ability,
+					gameState,
+					actorId: me?.playerId
 				})
 			);
 		}
@@ -885,17 +1005,15 @@
 			await dispatchGameAction({ type: 'turn_face_up', instanceId: ctx.inst.instanceId, xValue: chosenX });
 			return;
 		}
-		if (ctx.fromZone !== 'battlefield') {
-			await initiateCastSpell(
-				ctx.inst,
-				ctx.fromZone,
-				chosenX,
-				ctx.castOption,
-				ctx.optionalCostCounts,
-				ctx.costAidIds,
-				ctx.costAidColorChoices
-			);
-		}
+		await initiateCastSpell(
+			ctx.inst,
+			ctx.fromZone,
+			chosenX,
+			ctx.castOption,
+			ctx.optionalCostCounts,
+			ctx.costAidIds,
+			ctx.costAidColorChoices
+		);
 	}
 
 	async function handleDropOnTarget(e: DragEvent, target: TargetRef): Promise<void> {
@@ -982,6 +1100,18 @@
 			gameState.phase === 'declare_attackers' &&
 			isMyTurn &&
 			!gameState.combat.active &&
+			pView?.canBeAttackedAsBattle &&
+			!pView.actableSummary.canAttackNow &&
+			Object.keys(combatDraft.draftAttackers).length > 0
+		) {
+			combatDraft = retargetDraftAttackersToBattle(combatDraft, pView, me.playerId);
+			return;
+		}
+
+		if (
+			gameState.phase === 'declare_attackers' &&
+			isMyTurn &&
+			!gameState.combat.active &&
 			owner.playerId === me.playerId &&
 			pView?.isCreature
 		) {
@@ -1021,7 +1151,9 @@
 			} else if (
 				summary.activatedAbilities.length > 0 ||
 				summary.unlockableFaces.length > 0 ||
-				summary.turnFaceUp !== null
+				pView.roomDoors.some((d) => !d.unlocked) ||
+				summary.turnFaceUp !== null ||
+				summary.preparationCopyFaceName !== null
 			) {
 				activeAutoTapPreview = null;
 				selectedPermanentForAbility = perm;
@@ -1153,12 +1285,13 @@
 					gameState,
 					draftAttackers: combatDraft.draftAttackers,
 					draftAttackerWalkers: combatDraft.draftAttackerWalkers,
+					draftAttackerBattles: combatDraft.draftAttackerBattles,
 					draftBlockers: combatDraft.draftBlockers,
 					focusInstanceId: focusedPermanent?.instanceId ?? null,
 					pendingTarget: targetingSession
 						? {
 								instanceId: targetingSession.instanceId,
-								targetKind: `${targetingSession.slotIndex}:${targetingSession.currentRequirement.targetKind}`,
+								targetKind: `${targetingSession.slotIndex}:${targetingSession.currentRequirement.targetKind}${targetingSession.awaitingDivision ? ':div' : ''}`,
 								selectedTargets: pendingTargetArrowRefs
 							}
 						: combatDraft.selectedBlockerId
@@ -1182,11 +1315,17 @@
 			if (arrows.length > 0) arrows = [];
 			return;
 		}
+		const mergedDraftPermanentTargets: Record<string, string | null> = {
+			...combatDraft.draftAttackerWalkers
+		};
+		for (const [atkId, battleId] of Object.entries(combatDraft.draftAttackerBattles)) {
+			if (battleId) mergedDraftPermanentTargets[atkId] = battleId;
+		}
 		const next = buildArenaArrowLines({
 			gameState,
 			isMyTurn,
 			draftAttackers: combatDraft.draftAttackers,
-			draftAttackerWalkers: combatDraft.draftAttackerWalkers,
+			draftAttackerWalkers: mergedDraftPermanentTargets,
 			draftBlockers: combatDraft.draftBlockers,
 			selectedBlockerId: combatDraft.selectedBlockerId,
 			focusedInstanceId: focusedPermanent?.instanceId ?? null,
@@ -1201,6 +1340,18 @@
 			viewportWidth: viewportSize.w,
 			viewportHeight: viewportSize.h
 		});
+		if (gameState.combat.active) {
+			for (const atk of gameState.combat.attackers) {
+				if (!atk.defenderBattleId || atk.defenderBattleId === 'removed') continue;
+				const bPt = getElementCenterByGameId(atk.defenderBattleId);
+				if (!bPt) continue;
+				const ar = next.find((line) => line.id === `atk_${atk.attackerInstanceId}`);
+				if (ar) {
+					ar.x2 = bPt.x;
+					ar.y2 = bPt.y;
+				}
+			}
+		}
 		if (!areArrowListsEqual(next, arrows)) arrows = next;
 	}
 
@@ -1495,6 +1646,12 @@
 						{#if pwInc.willDie}<strong class="lethal-tag">💀 DESTROYED</strong>{/if}
 					</span>
 				{/each}
+				{#each attackedBattlesForecast as bInc (bInc.instanceId)}
+					<span class="cfb-pill battle-dmg" class:lethal={bInc.willDefeat} data-testid="combat-forecast-battle-pill">
+						<strong>⚔️ {bInc.name}:</strong> -{bInc.defenseLoss} Defense (Def:{bInc.currentDefense} → Def:{bInc.projectedDefense})
+						{#if bInc.willDefeat}<strong class="lethal-tag">⚔️ DEFEATED</strong>{/if}
+					</span>
+				{/each}
 				{#if dyingAttackers > 0 || dyingBlockers > 0}
 					<span class="cfb-pill casualties">
 						💀 Casualties:
@@ -1585,19 +1742,35 @@
 								<span class="pedestal-label">COMMAND ZONE</span>
 								<div class="pedestal-cards">
 									{#each me.command as cmd (cmd.instanceId)}
-										{@const playable = isZoneCardPlayableNow(cmd, 'command')}
+										{@const isNonCommanderObj = Boolean(cmd.isEmblem || cmd.isDungeon)}
+										{@const playable = !isNonCommanderObj && isZoneCardPlayableNow(cmd, 'command')}
+										{@const cmdArt =
+											cmd.card.artCropUrl ||
+											(cmd.isEmblem ? EMBLEM_ART_URI : cmd.isDungeon ? DUNGEON_ART_URI : '')}
 										<button
-											type="button" class="board-card cmd-card" class:playable={playable} class:unactable={!playable}
+											type="button" class="board-card cmd-card"
+											class:playable={playable}
+											class:unactable={!playable && !isNonCommanderObj}
+											class:emblem-cmd={Boolean(cmd.isEmblem)}
+											class:dungeon-cmd={Boolean(cmd.isDungeon)}
 											class:dragging-source={draggingCard?.inst.instanceId === cmd.instanceId}
 											draggable={playable} data-game-id={cmd.instanceId}
 											onmouseenter={() => handleEnterCommandCard(cmd, playable)} onmouseleave={() => handleLeaveCommandCard(cmd)}
 											ondragstart={(e) => handleCardDragStart(e, cmd, 'command')} ondragend={handleCardDragEnd}
-											onclick={() => handlePlayCardFromZone(cmd, 'command')}
+											onclick={() => (isNonCommanderObj ? setInspectedCard(cmd.card, cmd) : handlePlayCardFromZone(cmd, 'command'))}
 										>
-											<img src={cmd.card.artCropUrl} alt={cmd.card.name} />
+											{#if cmdArt}
+												<img src={cmdArt} alt={cmd.card.name} />
+											{/if}
 											<div class="bc-overlay">
 												<span class="bc-name">{cmd.card.name}</span>
-												<span class="badge gold">Tax: +{cmd.commanderCastCount * gameState.rules.commanderTaxIncrement}</span>
+												{#if cmd.isEmblem}
+													<span class="badge emblem-tag">🛡️ EMBLEM</span>
+												{:else if cmd.isDungeon}
+													<span class="badge dungeon-tag">🗺️ DUNGEON</span>
+												{:else}
+													<span class="badge gold">Tax: +{cmd.commanderCastCount * gameState.rules.commanderTaxIncrement}</span>
+												{/if}
 											</div>
 										</button>
 									{/each}
@@ -1744,6 +1917,10 @@
 				selectedPermanentForAbility = null; activeAutoTapPreview = null;
 				await dispatchGameAction({ type: 'unlock_room_door', instanceId: inst.instanceId, faceIndex });
 			}}
+			onCastPreparationCopy={async (inst, option) => {
+				selectedPermanentForAbility = null; activeAutoTapPreview = null;
+				await proceedCastWithOption({ inst, fromZone: 'battlefield', option });
+			}}
 			onHandSpecialAction={async (inst: CardInstance, action: HandSpecialActionOption) => {
 				selectedPermanentForAbility = null; activeAutoTapPreview = null;
 				await dispatchGameAction({ type: 'hand_special_action', instanceId: inst.instanceId, actionId: action.id });
@@ -1782,6 +1959,48 @@
 			costAidIds={xCostModal.costAidIds} costAidColorChoices={xCostModal.costAidColorChoices}
 			onConfirm={handleConfirmXCost} onCancel={() => { xCostModal = null; activeAutoTapPreview = null; }}
 		/>
+	{/if}
+
+	{#if targetingSession?.awaitingDivision}
+		<div class="division-modal-backdrop" class:peeking={peekingDivisionBoard} data-testid="target-division-modal">
+			{#if peekingDivisionBoard}
+				<div class="division-peek-bar">
+					<span>
+						Distributing {targetingSession.currentDivideAmount ?? 0} {targetingSession.currentDivideUnitLabel ?? 'damage'} for
+						<strong>{targetingSession.card.name}</strong>
+					</span>
+					<button type="button" class="division-peek-btn" onclick={() => (peekingDivisionBoard = false)}>
+						Return to Allocation
+					</button>
+				</div>
+			{:else}
+				<div class="division-modal-card" role="dialog" aria-modal="true" aria-label="Divide Amount Among Targets">
+					<div class="division-modal-hdr">
+						<div>
+							<span class="division-kicker">CR 601.2d · TARGET DIVISION</span>
+							<h3 class="division-title">
+								Distribute {targetingSession.currentDivideAmount ?? 0} {targetingSession.currentDivideUnitLabel ?? 'damage'} — {targetingSession.card.name}
+							</h3>
+						</div>
+						<button type="button" class="division-peek-btn" onclick={() => (peekingDivisionBoard = true)}>
+							👁️ Peek Board
+						</button>
+					</div>
+					<AllocationStepperWidget
+						targets={divisionTargetItems}
+						amountToDistribute={targetingSession.currentDivideAmount ?? 0}
+						minPerTarget={1}
+						unitLabel={targetingSession.currentDivideUnitLabel ?? 'damage'}
+						confirmLabel="Confirm Division"
+						cancellable={true}
+						onConfirm={handleConfirmTargetDivisions}
+						onCancel={handleStepBackTargetSlot}
+						onHoverCard={hoverCard}
+						onLeaveCard={leaveCard}
+					/>
+				</div>
+			{/if}
+		</div>
 	{/if}
 
 	{#if activeZoneModalView}
@@ -1914,13 +2133,14 @@
 	}
 	.cfb-pill.player-dmg { border-color: var(--mp-red); color: #ffd866; }
 	.cfb-pill.player-dmg.safe { border-color: var(--mp-cyan); color: var(--mp-cyan); }
-	.cfb-pill.player-dmg.lethal, .cfb-pill.walker-dmg.lethal {
+	.cfb-pill.player-dmg.lethal, .cfb-pill.walker-dmg.lethal, .cfb-pill.battle-dmg.lethal {
 		background: rgba(255, 97, 136, 0.24);
 		border-color: #ff6188;
 		color: #ff6188;
 		box-shadow: 0 0 10px rgba(255, 97, 136, 0.45);
 	}
 	.cfb-pill.walker-dmg { border-color: var(--mp-purple); color: var(--mp-purple); }
+	.cfb-pill.battle-dmg { border-color: #ffd866; color: #ffd866; }
 	.cfb-pill.casualties { border-color: var(--mp-orange, #fc9867); color: #fc9867; }
 	.cfb-sub { font-size: 0.64rem; opacity: 0.88; }
 	.lethal-tag { color: #ff6188; margin-left: 0.2rem; }
@@ -2038,6 +2258,89 @@
 	}
 	.bc-name { font-size: 0.62rem; font-weight: 600; color: #fcfcfa; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 	.badge.gold { align-self: flex-start; font-size: 0.54rem; font-weight: 700; padding: 1px 4px; border-radius: 3px; background: #ffd866; color: #19181a; }
+	.badge.emblem-tag { align-self: flex-start; font-size: 0.52rem; font-weight: 700; padding: 1px 4px; border-radius: 3px; background: rgba(171, 157, 242, 0.9); color: #19181a; }
+	.badge.dungeon-tag { align-self: flex-start; font-size: 0.52rem; font-weight: 700; padding: 1px 4px; border-radius: 3px; background: rgba(120, 220, 232, 0.9); color: #19181a; }
+	.board-card.cmd-card.emblem-cmd { border-color: var(--mp-purple); }
+	.board-card.cmd-card.dungeon-cmd { border-color: var(--mp-cyan); }
+
+	.division-modal-backdrop {
+		position: fixed;
+		inset: 0;
+		z-index: 235;
+		background: rgba(10, 9, 14, 0.68);
+		backdrop-filter: blur(2px);
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		padding: 1rem;
+	}
+	.division-modal-backdrop.peeking {
+		background: transparent;
+		backdrop-filter: none;
+		pointer-events: none;
+		align-items: flex-end;
+		padding-bottom: 1rem;
+	}
+	.division-modal-card {
+		width: min(560px, 94vw);
+		max-height: 86vh;
+		overflow-y: auto;
+		background: var(--mp-bg-elevated);
+		border: 1.5px solid var(--mp-accent);
+		border-radius: 10px;
+		padding: 0.85rem 1rem;
+		box-shadow: 0 18px 46px rgba(0, 0, 0, 0.65);
+		display: flex;
+		flex-direction: column;
+		gap: 0.65rem;
+	}
+	.division-modal-hdr {
+		display: flex;
+		align-items: flex-start;
+		justify-content: space-between;
+		gap: 0.75rem;
+	}
+	.division-kicker {
+		display: block;
+		font-size: 0.62rem;
+		font-weight: 700;
+		letter-spacing: 0.08em;
+		color: var(--mp-accent);
+	}
+	.division-title {
+		margin: 0.12rem 0 0;
+		font-size: 0.92rem;
+		font-weight: 700;
+		color: var(--mp-text);
+	}
+	.division-peek-bar {
+		pointer-events: auto;
+		display: inline-flex;
+		align-items: center;
+		gap: 0.75rem;
+		padding: 0.42rem 0.85rem;
+		border-radius: 999px;
+		background: var(--mp-bg-elevated);
+		border: 1.5px solid var(--mp-accent);
+		box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+		font-size: 0.76rem;
+	}
+	.division-peek-btn {
+		background: var(--mp-bg);
+		color: var(--mp-text);
+		border: 1px solid var(--mp-border-strong);
+		border-radius: 5px;
+		padding: 0.25rem 0.58rem;
+		font-family: inherit;
+		font-size: 0.7rem;
+		font-weight: 700;
+		cursor: pointer;
+		flex-shrink: 0;
+	}
+	.division-peek-btn:hover {
+		border-color: var(--mp-accent);
+		color: var(--mp-accent);
+	}
 
 	.lands-area {
 		position: relative;

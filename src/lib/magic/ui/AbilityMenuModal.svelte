@@ -4,7 +4,9 @@
 	import {
 		checkAbilityActivationLegality,
 		checkHandSpecialActionLegality,
+		checkSpellCastLegality,
 		checkUnlockRoomDoorLegality,
+		getCastOptions,
 		getEffectiveActivatedAbilities,
 		getHandSpecialActions,
 		getPlayerCommanderIdentity,
@@ -15,6 +17,7 @@
 	import { effectiveCardForObject } from '../scryfall.ts';
 	import type {
 		CardInstance,
+		CastOption,
 		EffectiveActivatedAbility,
 		GameActionPayload,
 		GameState,
@@ -38,6 +41,7 @@
 		onActivateAbility,
 		onTurnFaceUp,
 		onUnlockRoomDoor,
+		onCastPreparationCopy,
 		onHandSpecialAction,
 		onGameAction,
 		onHoverAbility,
@@ -54,6 +58,7 @@
 		) => void | Promise<void>;
 		onTurnFaceUp?: (inst: CardInstance, choosesX: boolean) => void | Promise<void>;
 		onUnlockRoomDoor?: (inst: CardInstance, faceIndex: number) => void | Promise<void>;
+		onCastPreparationCopy?: (inst: CardInstance, option: CastOption) => void | Promise<void>;
 		onHandSpecialAction?: (
 			inst: CardInstance,
 			action: HandSpecialActionOption
@@ -109,6 +114,41 @@
 			});
 		}
 		return out;
+	});
+
+	const preparationCopy = $derived.by<{
+		faceName: string;
+		manaCost: string;
+		option: CastOption | null;
+		check: { ok: boolean; error?: string };
+	} | null>(() => {
+		if (inst.zone !== 'battlefield' || inst.isFaceDown || !inst.isPrepared) return null;
+		const baseCard = inst.copiableCard ?? inst.card;
+		if ((baseCard.layout ?? 'normal') !== 'prepare') return null;
+		const prepFace = compileCard(baseCard).faces[1];
+		if (!prepFace) return null;
+		const legalOption =
+			getCastOptions(gameState, actor.playerId, inst, 'battlefield').find(
+				(o) => o.permission === 'preparation_copy' || o.id === 'battlefield:prepare_copy'
+			) ?? null;
+		const check = legalOption
+			? { ok: true }
+			: checkSpellCastLegality(
+					gameState,
+					actor.playerId,
+					inst,
+					'battlefield',
+					0,
+					'battlefield:prepare_copy',
+					undefined,
+					1
+				);
+		return {
+			faceName: prepFace.name,
+			manaCost: prepFace.characteristics.manaCost || '{0}',
+			option: legalOption,
+			check
+		};
 	});
 
 	const specialActions = $derived<HandSpecialActionOption[]>(
@@ -226,12 +266,40 @@
 							}
 						}}
 					>
-						Unlock Door: {door.name}
+						🚪 Unlock {door.name}
 						{#if door.manaCost}
 							(<ManaText text={door.manaCost} size={14} />)
 						{/if}
 					</button>
 				{/each}
+
+				{#if preparationCopy}
+					<button
+						type="button"
+						class="ability-choice-btn"
+						data-testid="cast-preparation-copy-btn"
+						disabled={!preparationCopy.check.ok}
+						title={preparationCopy.check.error || `Cast Preparation Copy (${preparationCopy.faceName})`}
+						onclick={async () => {
+							clearHover();
+							if (preparationCopy.option && onCastPreparationCopy) {
+								await onCastPreparationCopy(inst, preparationCopy.option);
+								return;
+							}
+							if (onGameAction) {
+								await onGameAction({
+									type: 'cast_preparation_copy',
+									instanceId: inst.instanceId
+								});
+							}
+						}}
+					>
+						📖 Cast Preparation Copy ({preparationCopy.faceName}) (<ManaText
+							text={preparationCopy.manaCost}
+							size={14}
+						/>)
+					</button>
+				{/if}
 
 				{#each specialActions as sa (sa.id)}
 					{@const saCheck = checkHandSpecialActionLegality(gameState, actor.playerId, inst, sa.id)}

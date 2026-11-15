@@ -8,6 +8,7 @@
 	} from '../compiler/support.ts';
 	import { inspectCardContinuousBreakdown, type CardContinuousBreakdown } from '../engine.ts';
 	import type { CardInstance, GameActionPayload, GameState, ScryfallCard } from '../types.ts';
+	import { DUNGEON_ART_URI, EMBLEM_ART_URI } from './boardViewModel.ts';
 	import { FACE_DOWN_ART_URI } from './promptViewModel.ts';
 
 	let {
@@ -52,7 +53,14 @@
 		{@const zoomName = inspectedActiveFace?.name || inspectedCard.name}
 		{@const rawImg = inspectedActiveFace?.imageUrl || inspectedCard.imageUrl}
 		{@const zoomImg =
-			inspectedCard.id === 'face_down' ? FACE_DOWN_ART_URI : rawImg || FACE_DOWN_ART_URI}
+			inspectedCard.id === 'face_down'
+				? FACE_DOWN_ART_URI
+				: rawImg ||
+					(inspectedInstance?.isEmblem
+						? EMBLEM_ART_URI
+						: inspectedInstance?.isDungeon
+							? DUNGEON_ART_URI
+							: FACE_DOWN_ART_URI)}
 		{@const zoomMana = inspectedActiveFace ? inspectedActiveFace.manaCost : inspectedCard.manaCost}
 		{@const zoomType = inspectedActiveFace ? inspectedActiveFace.typeLine : inspectedCard.typeLine}
 		{@const zoomRulesText = cardAbilityDisplayText(
@@ -91,6 +99,25 @@
 						</span>
 					{/if}
 				</div>
+				{#if inspectedInstance && (inspectedInstance.isEmblem || inspectedInstance.isPrepared || inspectedInstance.protectorId || (inspectedInstance.unlockedFaces && inspectedInstance.unlockedFaces.length > 0))}
+					<div class="zoom-status-tags">
+						{#if inspectedInstance.isEmblem}
+							<span class="inspector-tag purple">🛡️ Emblem</span>
+						{/if}
+						{#if inspectedInstance.isPrepared}
+							<span class="inspector-tag cyan">📖 Prepared</span>
+						{/if}
+						{#if inspectedInstance.protectorId && gameState}
+							{@const prot = gameState.players.find((p) => p.playerId === inspectedInstance.protectorId)}
+							{#if prot}
+								<span class="inspector-tag gold">🛡️ Protector: {prot.username}</span>
+							{/if}
+						{/if}
+						{#if inspectedInstance.counters.defense > 0}
+							<span class="inspector-tag gold">Def: {inspectedInstance.counters.defense}</span>
+						{/if}
+					</div>
+				{/if}
 				{#if inspectBreakdown && inspectBreakdown.items.length > 0}
 					<div class="alt-kw-section compact">
 						<div class="alt-kw-title">KEYWORDS &amp; EFFECTS</div>
@@ -198,6 +225,31 @@
 		align-items: center;
 		gap: 0.3rem;
 		color: var(--mp-text, #fcfcfa);
+	}
+	.zoom-status-tags {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.25rem;
+	}
+	.inspector-tag {
+		font-size: 0.6rem;
+		font-weight: 700;
+		padding: 0.06rem 0.32rem;
+		border-radius: 3px;
+		border: 1px solid var(--mp-border-strong);
+		background: var(--mp-bg);
+	}
+	.inspector-tag.purple {
+		border-color: var(--mp-purple);
+		color: var(--mp-purple);
+	}
+	.inspector-tag.cyan {
+		border-color: var(--mp-cyan);
+		color: var(--mp-cyan);
+	}
+	.inspector-tag.gold {
+		border-color: #ffd866;
+		color: #ffd866;
 	}
 	.zoom-type {
 		color: var(--mp-cyan, #78dce8);

@@ -30,8 +30,10 @@
 	const canSkip = $derived(canSkipOptionalSlot(session));
 	const canConfirm = $derived(canConfirmCurrentSlot(session));
 	const slotPrompt = $derived(describeCurrentTargetSlot(session));
+	const isDividing = $derived(Boolean(session.awaitingDivision));
+	const canStepBack = $derived(session.slotIndex > 0 || isDividing);
 	const showConfirmBtn = $derived(
-		(req.maxTargets > 1 || req.minTargets === 0) && !canSkip
+		!isDividing && (req.maxTargets > 1 || req.minTargets === 0) && !canSkip
 	);
 	const targetableHiddenZone = $derived<'graveyard' | 'exile' | null>(
 		req.zone === 'graveyard' || req.targetKind === 'graveyard_card'
@@ -70,14 +72,14 @@
 				{targetableHiddenZone === 'exile' ? 'Open Exile' : 'Open Graveyards'}
 			</button>
 		{/if}
-		{#if session.slotIndex > 0 && onBackSlot}
+		{#if canStepBack && onBackSlot}
 			<button
 				type="button"
 				class="hud-btn"
 				data-testid="target-back-slot-btn"
 				onclick={onBackSlot}
 			>
-				← Back to Previous Slot
+				{isDividing ? '← Edit Targets' : '← Back to Previous Slot'}
 			</button>
 		{/if}
 		{#if canSkip}

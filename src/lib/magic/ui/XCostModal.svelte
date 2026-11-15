@@ -100,7 +100,7 @@
 	);
 
 	const resolvedOption = $derived.by<CastOption | undefined>(() => {
-		if (actionKind === 'turn_face_up' || fromZone === 'battlefield') return undefined;
+		if (actionKind === 'turn_face_up') return undefined;
 		if (castOption) return castOption;
 		const opts = getCastOptions(gameState, actor.playerId, inst, fromZone);
 		return opts.find((o) => o.id === 'printed') ?? opts[0];
@@ -132,9 +132,6 @@
 		}
 		if (actionKind === 'turn_face_up') {
 			return checkTurnFaceUpLegality(gameState, actor.playerId, inst, xValue);
-		}
-		if (fromZone === 'battlefield') {
-			return { ok: false, error: 'Invalid spell zone.' };
 		}
 		const hasStrictAids = Boolean(costAidIds && Object.keys(costAidIds).length > 0);
 		return checkSpellCastLegality(

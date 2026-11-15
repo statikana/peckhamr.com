@@ -66,6 +66,8 @@
 				return 'red';
 			case 'loyalty':
 				return 'purple';
+			case 'defense':
+				return 'gold';
 			case 'lore':
 				return 'gold';
 			case 'charge':
@@ -96,6 +98,8 @@
 	class:sick={view.isSummoningSickVisual}
 	class:is-goaded={view.isGoaded}
 	class:is-mounted={view.isSaddled}
+	class:is-ring-bearer={view.isRingBearer}
+	class:is-battle={view.isBattle}
 	class:has-stack={effectiveStackDepth > 0}
 	class:attacking={Boolean(attackerForecast)}
 	class:blocking={Boolean(blockerForecast)}
@@ -154,6 +158,44 @@
 		<div class="mini-badges-strip">
 			{#if perm.phasedOut}
 				<span class="badge purple">PH</span>
+			{/if}
+			{#if view.isRingBearer}
+				<span
+					class="badge gold ring-bearer"
+					data-testid="ring-bearer-badge"
+					title="Ring-bearer (CR 701.54)"
+				>
+					💍 RING
+				</span>
+			{/if}
+			{#if view.isBattle && view.protectorName}
+				<span
+					class="badge amber"
+					data-testid="battle-protector-badge"
+					title="Battle Protector: {view.protectorName} (CR 310)"
+				>
+					🛡️ {view.protectorName}
+				</span>
+			{/if}
+			{#if view.roomDoors.length >= 2}
+				<span
+					class="badge cyan"
+					data-testid="room-doors-badge"
+					title={view.roomDoors
+						.map((d) => `${d.name} (${d.manaCost}): ${d.unlocked ? 'Unlocked' : 'Locked'}`)
+						.join(' | ')}
+				>
+					🚪{view.roomDoors.map((d) => (d.unlocked ? '🔓' : '🔒')).join('')}
+				</span>
+			{/if}
+			{#if view.isPrepared}
+				<span
+					class="badge cyan"
+					data-testid="prepared-badge"
+					title="Prepared (CR 723)"
+				>
+					📖 PREP
+				</span>
 			{/if}
 			{#if view.isGoaded}
 				<span class="badge red">GOADED</span>
@@ -230,6 +272,44 @@
 			<div class="bc-badges">
 				{#if perm.phasedOut}<span class="badge purple">PHASED</span>{/if}
 				{#if perm.isCommander}<span class="badge gold">CMD</span>{/if}
+				{#if view.isRingBearer}
+					<span
+						class="badge gold ring-bearer"
+						data-testid="ring-bearer-badge"
+						title="Your Ring-bearer (CR 701.54)"
+					>
+						💍 RING
+					</span>
+				{/if}
+				{#if view.isBattle && view.protectorName}
+					<span
+						class="badge amber"
+						data-testid="battle-protector-badge"
+						title="Protector: {view.protectorName} (CR 310.8b)"
+					>
+						🛡️ Prot: {view.protectorName}
+					</span>
+				{/if}
+				{#if view.roomDoors.length >= 2}
+					<span
+						class="badge cyan"
+						data-testid="room-doors-badge"
+						title={view.roomDoors
+							.map((d) => `${d.name} (${d.manaCost}): ${d.unlocked ? 'Unlocked' : 'Locked'}`)
+							.join(' | ')}
+					>
+						🚪 {view.roomDoors.map((d) => (d.unlocked ? '🔓' : '🔒')).join('/')}
+					</span>
+				{/if}
+				{#if view.isPrepared}
+					<span
+						class="badge cyan"
+						data-testid="prepared-badge"
+						title="Prepared (CR 723: may cast a copy of its preparation spell)"
+					>
+						📖 PREPARED
+					</span>
+				{/if}
 				{#if perm.isToken}<span class="badge cyan">TOK</span>{/if}
 				{#if view.isGoaded}<span class="badge red">GOADED</span>{/if}
 				{#if view.isSaddled}
@@ -653,6 +733,14 @@
 	.combat-mini-banner.blk {
 		background: rgba(120, 220, 232, 0.94);
 		color: #19181a;
+	}
+	.board-card.is-ring-bearer,
+	.mini-card.is-ring-bearer {
+		border-color: #ffd866;
+		box-shadow: 0 0 8px rgba(255, 216, 102, 0.55);
+	}
+	.badge.ring-bearer {
+		box-shadow: 0 0 6px rgba(255, 216, 102, 0.7);
 	}
 	.pw-dmg-layover {
 		position: absolute;

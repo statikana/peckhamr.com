@@ -11,13 +11,14 @@ import {
 	getCastOptions,
 	validateTargetLegality
 } from '../engine.ts';
-import type { ModalDef, TargetSpec } from '../ir.ts';
+import type { EffectStep, ModalDef, TargetSpec } from '../ir.ts';
 import {
 	NO_TARGET_REQUIREMENT,
 	getSpellTargetRequirement,
 	targetRequirementFromSpecs
 } from '../ruleTree.ts';
 import { activeCharacteristics } from '../runtime/faces.ts';
+import { evaluateAmount } from '../runtime/objectFilter.ts';
 import type {
 	CardInstance,
 	CastOption,
@@ -29,8 +30,13 @@ import type {
 	TargetRef,
 	TargetRequirementInfo
 } from '../types.ts';
+import {
+	createAllocationState,
+	isValidAllocation,
+	type AllocationState
+} from './promptViewModel.ts';
 
-export type CastableZone = 'hand' | 'command' | 'exile' | 'graveyard';
+export type CastableZone = 'hand' | 'command' | 'exile' | 'graveyard' | 'battlefield';
 
 export interface TargetingSession {
 	mode: 'spell' | 'ability';
@@ -65,6 +71,22 @@ export interface TargetingSession {
 	costAidColorChoices?: Record<string, ManaColor | 'generic'>;
 	isAuraSingleSlot?: boolean;
 	auraRequirement?: TargetRequirementInfo;
+	/** CR 601.2d: Per-target divided damage/counter allocations accumulated from prior slots. */
+	accumulatedDivisions?: Record<string, number>;
+	/** Per-slot division history aligned with `slotTargetHistory` (`0 .. slotIndex - 1`). */
+	slotDivisionHistory?: Array<Record<string, number>>;
+	/** Pre-evaluated `divideTotal` pool per slot (`null` when the slot does not divide). */
+	slotDivideAmounts?: Array<number | null>;
+	/** Unit label (`'damage'` or `'counters'`) per slot. */
+	slotDivideUnitLabels?: string[];
+	/** Active slot's `divideTotal` pool (`>= 0`) when the active slot divides, otherwise `null`. */
+	currentDivideAmount?: number | null;
+	/** Unit label (`'damage'` or `'counters'`) for the active slot's allocation stepper. */
+	currentDivideUnitLabel?: string;
+	/** True when targets for the active `divideTotal` slot are chosen and awaiting allocation. */
+	awaitingDivision?: boolean;
+	/** Draft `AllocationState` when `awaitingDivision` is true. */
+	draftAllocation?: AllocationState;
 }
 
 export interface PendingTargetArrowRef {
@@ -93,6 +115,8 @@ export type TargetingTransitionResult =
 export interface BeginSpellTargetingParams {
 	inst: CardInstance;
 	fromZone: CastableZone;
+	gameState?: GameState;
+	actorId?: string;
 	xValue?: number;
 	option?: CastOption;
 	modes?: number[];
@@ -104,6 +128,8 @@ export interface BeginSpellTargetingParams {
 export interface BeginAbilityTargetingParams {
 	inst: CardInstance;
 	ability: EffectiveActivatedAbility;
+	gameState?: GameState;
+	actorId?: string;
 	chosenModes?: number[];
 }
 
@@ -115,6 +141,8 @@ export type BeginModalTargetingParams =
 			chosenModes: number[];
 			allowAllModes?: boolean;
 			fromZone: CastableZone;
+			gameState?: GameState;
+			actorId?: string;
 			xValue?: number;
 			option?: CastOption;
 			optionalCostCounts?: Record<string, number>;
@@ -128,6 +156,8 @@ export type BeginModalTargetingParams =
 			modal: ModalDef;
 			chosenModes: number[];
 			allowAllModes?: boolean;
+			gameState?: GameState;
+			actorId?: string;
 	  };
 
 export interface ComputeMaxAffordableXParams {
@@ -196,14 +226,36 @@ function buildFinalPayload(
 		| 'costAidIds'
 		| 'costAidColorChoices'
 	>,
-	targets: TargetRef[]
+	targets: TargetRef[],
+	targetDivisions?: Record<string, number>
 ): GameActionPayload {
+	const hasDivisions = Boolean(targetDivisions && Object.keys(targetDivisions).length > 0);
 	if (base.mode === 'ability') {
 		return {
 			type: 'activate_ability',
 			instanceId: base.instanceId,
 			abilityId: base.abilityId ?? '',
 			...(base.modes ? { chosenModes: base.modes } : {}),
+			...(hasDivisions ? { targetDivisions } : {}),
+			targets
+		};
+	}
+	const hasOptCounts = Boolean(
+		base.optionalCostCounts && Object.keys(base.optionalCostCounts).length > 0
+	);
+	const hasAidIds = Boolean(base.costAidIds && Object.keys(base.costAidIds).length > 0);
+	if (
+		base.fromZone === 'battlefield' &&
+		base.optionId === 'battlefield:prepare_copy' &&
+		!hasOptCounts &&
+		!hasAidIds
+	) {
+		return {
+			type: 'cast_preparation_copy',
+			instanceId: base.instanceId,
+			...(base.xValue > 0 ? { xValue: base.xValue } : {}),
+			...(base.modes ? { modes: base.modes } : {}),
+			...(hasDivisions ? { targetDivisions } : {}),
 			targets
 		};
 	}
@@ -216,28 +268,86 @@ function buildFinalPayload(
 		...(base.optionId ? { optionId: base.optionId } : {}),
 		...(base.faceIndex !== undefined ? { faceIndex: base.faceIndex } : {}),
 		...(base.fused ? { fused: true } : {}),
-		...(base.optionalCostCounts && Object.keys(base.optionalCostCounts).length > 0
-			? { optionalCostCounts: base.optionalCostCounts }
-			: {}),
-		...(base.costAidIds && Object.keys(base.costAidIds).length > 0
-			? { costAidIds: base.costAidIds }
-			: {}),
+		...(hasOptCounts ? { optionalCostCounts: base.optionalCostCounts } : {}),
+		...(hasAidIds ? { costAidIds: base.costAidIds } : {}),
 		...(base.costAidColorChoices && Object.keys(base.costAidColorChoices).length > 0
 			? { costAidColorChoices: base.costAidColorChoices }
 			: {}),
+		...(hasDivisions ? { targetDivisions } : {}),
 		targets
 	};
+}
+
+function evaluateSlotDivideAmount(
+	spec: TargetSpec | undefined,
+	ctx: {
+		gameState?: GameState;
+		actorId?: string;
+		source?: CardInstance;
+		xValue: number;
+	}
+): number | null {
+	if (!spec?.divideTotal) return null;
+	const amt = spec.divideTotal;
+	if (amt.k === 'const') return Math.max(0, Math.trunc(amt.n));
+	if (amt.k === 'x') return Math.max(0, Math.trunc(ctx.xValue));
+	if (ctx.gameState) {
+		return Math.max(
+			0,
+			Math.trunc(
+				evaluateAmount(amt, {
+					state: ctx.gameState,
+					controllerId: ctx.actorId ?? ctx.source?.controllerId ?? '',
+					source: ctx.source,
+					xValue: ctx.xValue
+				})
+			)
+		);
+	}
+	if (amt.k === 'countersOn' && amt.of.k === 'self' && ctx.source) {
+		if (amt.counter === 'any') {
+			return Object.values(ctx.source.counters).reduce(
+				(sum, n) => sum + (n > 0 ? Math.trunc(n) : 0),
+				0
+			);
+		}
+		return Math.max(0, Math.trunc(ctx.source.counters[amt.counter] ?? 0));
+	}
+	return 0;
+}
+
+function inferDivideUnitLabel(steps?: readonly EffectStep[]): string {
+	if (steps?.some((st) => st.verb === 'putCounters')) return 'counters';
+	if (steps?.some((st) => st.verb === 'damage')) return 'damage';
+	return 'damage';
 }
 
 function requirementForSlot(
 	spec: TargetSpec,
 	isAuraSingleSlot?: boolean,
-	auraRequirement?: TargetRequirementInfo
+	auraRequirement?: TargetRequirementInfo,
+	divideAmount?: number | null
 ): TargetRequirementInfo {
-	if (isAuraSingleSlot && auraRequirement) {
-		return auraRequirement;
+	const base =
+		isAuraSingleSlot && auraRequirement ? auraRequirement : targetRequirementFromSpecs([spec]);
+	if (divideAmount === null || divideAmount === undefined) {
+		return base;
 	}
-	return targetRequirementFromSpecs([spec]);
+	// CR 601.2d: Each chosen target in a divided distribution must receive at least 1 unit.
+	if (divideAmount <= 0) {
+		return {
+			...base,
+			minTargets: 0,
+			maxTargets: 0
+		};
+	}
+	const cappedMax = Math.min(base.maxTargets, divideAmount);
+	const cappedMin = Math.min(base.minTargets, cappedMax);
+	return {
+		...base,
+		minTargets: cappedMin,
+		maxTargets: cappedMax
+	};
 }
 
 function createSessionFromSpecs(
@@ -247,6 +357,10 @@ function createSessionFromSpecs(
 		instanceId: string;
 		abilityId?: string;
 		card: ScryfallCard;
+		sourceInst?: CardInstance;
+		gameState?: GameState;
+		actorId?: string;
+		unitLabel?: string;
 		modes?: number[];
 		fromZone?: CastableZone;
 		xValue: number;
@@ -260,8 +374,25 @@ function createSessionFromSpecs(
 		auraRequirement?: TargetRequirementInfo;
 	}
 ): TargetingSession {
+	const slotDivideAmounts = specs.map((sp) =>
+		evaluateSlotDivideAmount(sp, {
+			gameState: meta.gameState,
+			actorId: meta.actorId,
+			source: meta.sourceInst,
+			xValue: meta.xValue
+		})
+	);
+	const defaultUnit = meta.unitLabel ?? 'damage';
+	const slotDivideUnitLabels = specs.map(() => defaultUnit);
 	const firstSpec = specs[0];
-	const firstReq = requirementForSlot(firstSpec, meta.isAuraSingleSlot, meta.auraRequirement);
+	const firstDivideAmount = slotDivideAmounts[0] ?? null;
+	const firstReq = requirementForSlot(
+		firstSpec,
+		meta.isAuraSingleSlot,
+		meta.auraRequirement,
+		firstDivideAmount
+	);
+	const hasAnyDividedSlot = slotDivideAmounts.some((d) => d !== null);
 	return {
 		mode: meta.mode,
 		instanceId: meta.instanceId,
@@ -278,6 +409,17 @@ function createSessionFromSpecs(
 		selectedTargets: [],
 		remainingSpecs: specs.slice(1),
 		slotTargetHistory: [],
+		...(hasAnyDividedSlot
+			? {
+					accumulatedDivisions: {},
+					slotDivisionHistory: [],
+					slotDivideAmounts,
+					slotDivideUnitLabels,
+					currentDivideAmount: firstDivideAmount,
+					currentDivideUnitLabel: slotDivideUnitLabels[0] ?? defaultUnit,
+					awaitingDivision: false
+				}
+			: {}),
 		...(meta.modes ? { modes: meta.modes } : {}),
 		...(meta.fromZone ? { fromZone: meta.fromZone } : {}),
 		xValue: meta.xValue,
@@ -467,6 +609,23 @@ export function extractAbilityTargetSpecs(
 	return synthesizeSpecFromRequirement(ability.targetInfo ?? NO_TARGET_REQUIREMENT);
 }
 
+function finalizeCreatedSession(session: TargetingSession): TargetingTransitionResult {
+	let cur = session;
+	for (let guard = 0; guard < 16; guard++) {
+		if (
+			cur.currentRequirement.minTargets === 0 &&
+			cur.currentRequirement.maxTargets === 0
+		) {
+			const advanced = confirmCurrentSlot(cur);
+			if (advanced.status !== 'targeting') return advanced;
+			cur = advanced.session;
+			continue;
+		}
+		break;
+	}
+	return { status: 'targeting', session: cur };
+}
+
 /**
  * Starts targeting for casting a spell (non-modal, all-modes modal, pre-selected modal, multi-face, or fused).
  */
@@ -475,9 +634,13 @@ export function beginSpellTargeting(params: BeginSpellTargetingParams): Targetin
 	const optionalCostCounts = normalizeOptionalCounts(params.optionalCostCounts);
 	const costAidIds = normalizeCostAidIds(params.costAidIds);
 	const costAidColorChoices = normalizeAidColors(params.costAidColorChoices, costAidIds);
+	const spellCard =
+		params.fromZone === 'battlefield'
+			? (params.inst.copiableCard ?? params.inst.card)
+			: params.inst.card;
 
 	const extracted = extractSpellTargetSpecs(
-		params.inst.card,
+		spellCard,
 		params.option,
 		optionalCostCounts
 	);
@@ -496,15 +659,26 @@ export function beginSpellTargeting(params: BeginSpellTargetingParams): Targetin
 			option: params.option,
 			optionalCostCounts,
 			costAidIds,
-			costAidColorChoices
+			costAidColorChoices,
+			gameState: params.gameState,
+			actorId: params.actorId
 		});
 	}
+
+	const compiledSpell = params.option?.fused
+		? null
+		: compileSpellEffects(spellCard, params.option?.faceIndex ?? 0, false);
+	const unitLabel = inferDivideUnitLabel(compiledSpell?.steps);
 
 	const effectiveModes = extracted.autoChosenModes ?? params.modes;
 	const baseMeta = {
 		mode: 'spell' as const,
 		instanceId: params.inst.instanceId,
-		card: params.inst.card,
+		card: spellCard,
+		sourceInst: params.inst,
+		gameState: params.gameState,
+		actorId: params.actorId,
+		unitLabel,
 		modes: effectiveModes,
 		fromZone: params.fromZone,
 		xValue,
@@ -525,10 +699,7 @@ export function beginSpellTargeting(params: BeginSpellTargetingParams): Targetin
 		};
 	}
 
-	return {
-		status: 'targeting',
-		session: createSessionFromSpecs(extracted.specs, baseMeta)
-	};
+	return finalizeCreatedSession(createSessionFromSpecs(extracted.specs, baseMeta));
 }
 
 /**
@@ -546,16 +717,33 @@ export function beginAbilityTargeting(
 			inst: params.inst,
 			ability: params.ability,
 			modal: params.ability.modal,
-			chosenModes: params.chosenModes
+			chosenModes: params.chosenModes,
+			gameState: params.gameState,
+			actorId: params.actorId
 		});
 	}
 
-	const specs = extractAbilityTargetSpecs(params.inst.card, params.ability);
+	const abCard = params.inst.copiableCard ?? params.inst.card;
+	const specs = extractAbilityTargetSpecs(abCard, params.ability);
+	const faceIndex = params.ability.faceIndex ?? 0;
+	const irAb =
+		params.ability.grantSourceCard && params.ability.id.startsWith('granted:')
+			? grantedAbilityById(
+					params.ability.grantSourceCard,
+					params.ability.id.slice(params.ability.id.lastIndexOf(':') + 1)
+				)
+			: abilityById(abCard, params.ability.id, faceIndex);
+	const unitLabel = inferDivideUnitLabel(effectOf(irAb)?.steps);
+
 	const baseMeta = {
 		mode: 'ability' as const,
 		instanceId: params.inst.instanceId,
 		abilityId: params.ability.id,
-		card: params.inst.card,
+		card: abCard,
+		sourceInst: params.inst,
+		gameState: params.gameState,
+		actorId: params.actorId,
+		unitLabel,
 		xValue: 0
 	};
 
@@ -566,10 +754,7 @@ export function beginAbilityTargeting(
 		};
 	}
 
-	return {
-		status: 'targeting',
-		session: createSessionFromSpecs(specs, baseMeta)
-	};
+	return finalizeCreatedSession(createSessionFromSpecs(specs, baseMeta));
 }
 
 /**
@@ -589,21 +774,31 @@ export function beginModalTargeting(params: BeginModalTargetingParams): Targetin
 		};
 	}
 
+	const unitLabel = inferDivideUnitLabel(expandModalEffects(modal, chosenModes)?.steps);
+
 	if (params.kind === 'spell') {
 		const optionalCostCounts = normalizeOptionalCounts(params.optionalCostCounts);
 		const costAidIds = normalizeCostAidIds(params.costAidIds);
 		const costAidColorChoices = normalizeAidColors(params.costAidColorChoices, costAidIds);
+		const spellCard =
+			params.fromZone === 'battlefield'
+				? (params.inst.copiableCard ?? params.inst.card)
+				: params.inst.card;
 		const specs = extractModalTargetSpecs(
 			modal,
 			chosenModes,
-			params.inst.card,
+			spellCard,
 			params.option,
 			optionalCostCounts
 		);
 		const baseMeta = {
 			mode: 'spell' as const,
 			instanceId: params.inst.instanceId,
-			card: params.inst.card,
+			card: spellCard,
+			sourceInst: params.inst,
+			gameState: params.gameState,
+			actorId: params.actorId,
+			unitLabel,
 			modes: chosenModes,
 			fromZone: params.fromZone,
 			xValue: params.xValue ?? 0,
@@ -620,18 +815,20 @@ export function beginModalTargeting(params: BeginModalTargetingParams): Targetin
 				payload: buildFinalPayload(baseMeta, [])
 			};
 		}
-		return {
-			status: 'targeting',
-			session: createSessionFromSpecs(specs, baseMeta)
-		};
+		return finalizeCreatedSession(createSessionFromSpecs(specs, baseMeta));
 	}
 
+	const abCard = params.inst.copiableCard ?? params.inst.card;
 	const specs = extractModalTargetSpecs(modal, chosenModes);
 	const baseMeta = {
 		mode: 'ability' as const,
 		instanceId: params.inst.instanceId,
 		abilityId: params.ability.id,
-		card: params.inst.card,
+		card: abCard,
+		sourceInst: params.inst,
+		gameState: params.gameState,
+		actorId: params.actorId,
+		unitLabel,
 		modes: chosenModes,
 		xValue: 0
 	};
@@ -641,10 +838,7 @@ export function beginModalTargeting(params: BeginModalTargetingParams): Targetin
 			payload: buildFinalPayload(baseMeta, [])
 		};
 	}
-	return {
-		status: 'targeting',
-		session: createSessionFromSpecs(specs, baseMeta)
-	};
+	return finalizeCreatedSession(createSessionFromSpecs(specs, baseMeta));
 }
 
 /**
@@ -683,7 +877,9 @@ export function beginDropTargeting(
 			inst,
 			fromZone,
 			xValue: 0,
-			option: opt
+			option: opt,
+			gameState: state,
+			actorId
 		});
 		if (started.status !== 'targeting') continue;
 		if (!isCandidateLegalForCurrentSlot(state, actorId, started.session, droppedTarget)) continue;
@@ -801,7 +997,7 @@ export function canClickTargetCandidate(
 	session: TargetingSession | null,
 	candidate: TargetRef
 ): boolean {
-	if (!session) return false;
+	if (!session || session.awaitingDivision) return false;
 	if (isCandidateSelectedInCurrentSlot(session, candidate.id, candidate.kind)) {
 		return true;
 	}
@@ -824,16 +1020,161 @@ export function canConfirmCurrentSlot(session: TargetingSession | null): boolean
  * Returns true when the active slot is optional (`minTargets === 0`) and zero targets are currently selected.
  */
 export function canSkipOptionalSlot(session: TargetingSession | null): boolean {
-	if (!session) return false;
+	if (!session || session.awaitingDivision) return false;
 	return (
 		session.currentRequirement.minTargets === 0 && session.selectedTargets.length === 0
 	);
 }
 
+function advanceOrSubmitSlot(
+	session: TargetingSession,
+	slotDivisions: Record<string, number>
+): TargetingTransitionResult {
+	const nextAccumulated = [...session.accumulatedTargets, ...session.selectedTargets];
+	const nextHistory = [...session.slotTargetHistory, [...session.selectedTargets]];
+	const hasDivTracking = session.slotDivideAmounts !== undefined;
+	const nextDivHistory = hasDivTracking
+		? [...(session.slotDivisionHistory ?? []), slotDivisions]
+		: undefined;
+	const nextDivisions = hasDivTracking
+		? { ...(session.accumulatedDivisions ?? {}), ...slotDivisions }
+		: session.accumulatedDivisions;
+
+	if (session.remainingSpecs.length > 0) {
+		const [nextSpec, ...restSpecs] = session.remainingSpecs;
+		const nextSlotIndex = session.slotIndex + 1;
+		const nextDivideAmount = session.slotDivideAmounts?.[nextSlotIndex] ?? null;
+		const nextDivideUnitLabel = session.slotDivideUnitLabels?.[nextSlotIndex] ?? 'damage';
+		const nextReq = requirementForSlot(nextSpec, false, undefined, nextDivideAmount);
+		return finalizeCreatedSession({
+			...session,
+			slotIndex: nextSlotIndex,
+			currentSpec: nextSpec,
+			currentRequirement: nextReq,
+			targetInfo: nextReq,
+			targetKind: nextReq.targetKind,
+			accumulatedTargets: nextAccumulated,
+			selectedTargets: [],
+			remainingSpecs: restSpecs,
+			slotTargetHistory: nextHistory,
+			...(hasDivTracking
+				? {
+						accumulatedDivisions: nextDivisions ?? {},
+						slotDivisionHistory: nextDivHistory ?? [],
+						currentDivideAmount: nextDivideAmount,
+						currentDivideUnitLabel: nextDivideUnitLabel,
+						awaitingDivision: false,
+						draftAllocation: undefined
+					}
+				: {})
+		});
+	}
+
+	return {
+		status: 'ready_to_submit',
+		payload: buildFinalPayload(session, nextAccumulated, nextDivisions)
+	};
+}
+
+/**
+ * Updates `session.draftAllocation` while in the `awaitingDivision` step.
+ */
+export function updateSlotDraftAllocation(
+	session: TargetingSession,
+	allocations: Record<string, number>
+): TargetingSession {
+	if (!session.awaitingDivision || session.currentDivideAmount === null || session.currentDivideAmount === undefined) {
+		return session;
+	}
+	return {
+		...session,
+		draftAllocation: createAllocationState({
+			targetIds: session.selectedTargets.map((t) => t.id),
+			amountToDistribute: session.currentDivideAmount,
+			minPerTarget: 1,
+			initial: allocations
+		})
+	};
+}
+
+/**
+ * Validates and locks per-target integer divisions (`CR 601.2d`: every chosen target receives >= 1
+ * and the shares sum exactly to `currentDivideAmount`), then advances to the next slot or submits.
+ */
+export function confirmSlotDivisions(
+	session: TargetingSession,
+	divisions: Record<string, number>
+): TargetingTransitionResult {
+	if (!canConfirmCurrentSlot(session)) {
+		return {
+			status: 'invalid',
+			error: `Select at least ${session.currentRequirement.minTargets} target(s) for slot ${session.slotIndex + 1}.`
+		};
+	}
+	const divideAmount = session.currentDivideAmount;
+	if (divideAmount === null || divideAmount === undefined) {
+		return {
+			status: 'invalid',
+			error: 'Current target slot does not divide an amount.'
+		};
+	}
+	if (session.selectedTargets.length === 0) {
+		if (Object.values(divisions).some((v) => v !== 0)) {
+			return { status: 'invalid', error: 'Cannot allocate units when zero targets are chosen.' };
+		}
+		return advanceOrSubmitSlot(session, {});
+	}
+
+	const targetIds = session.selectedTargets.map((t) => t.id);
+	const targetIdSet = new Set(targetIds);
+	for (const [k, v] of Object.entries(divisions)) {
+		if (!targetIdSet.has(k) && v !== 0) {
+			return {
+				status: 'invalid',
+				error: `Division includes unselected target "${k}".`
+			};
+		}
+	}
+
+	let sum = 0;
+	const cleanDivisions: Record<string, number> = {};
+	for (const id of targetIds) {
+		const share = divisions[id];
+		if (share === undefined || !Number.isInteger(share) || share < 1) {
+			return {
+				status: 'invalid',
+				error: 'Each chosen target must receive at least 1 (CR 601.2d).'
+			};
+		}
+		cleanDivisions[id] = share;
+		sum += share;
+	}
+	if (sum !== divideAmount) {
+		return {
+			status: 'invalid',
+			error: `Divided amounts must sum to ${divideAmount} (currently ${sum}).`
+		};
+	}
+	const checkState = createAllocationState({
+		targetIds,
+		amountToDistribute: divideAmount,
+		minPerTarget: 1,
+		initial: cleanDivisions
+	});
+	if (!isValidAllocation(checkState)) {
+		return {
+			status: 'invalid',
+			error: 'Invalid target division allocation.'
+		};
+	}
+
+	return advanceOrSubmitSlot(session, cleanDivisions);
+}
+
 /**
  * Confirms the current slot (including skipping with 0 targets when `minTargets === 0`).
- * Merges `selectedTargets` into `accumulatedTargets` and either advances to `remainingSpecs[0]`
- * or returns `{ status: 'ready_to_submit', payload }` once the final slot finishes.
+ * For `CR 601.2d` divided slots (`currentDivideAmount !== null`), auto-allocates trivial 0/1/`N`-for-`N`
+ * target sets immediately, or transitions into `awaitingDivision: true` for `<AllocationStepperWidget>`.
  */
 export function confirmCurrentSlot(session: TargetingSession): TargetingTransitionResult {
 	if (!canConfirmCurrentSlot(session)) {
@@ -843,33 +1184,43 @@ export function confirmCurrentSlot(session: TargetingSession): TargetingTransiti
 		};
 	}
 
-	const nextAccumulated = [...session.accumulatedTargets, ...session.selectedTargets];
-	const nextHistory = [...session.slotTargetHistory, [...session.selectedTargets]];
-
-	if (session.remainingSpecs.length > 0) {
-		const [nextSpec, ...restSpecs] = session.remainingSpecs;
-		const nextReq = targetRequirementFromSpecs([nextSpec]);
+	const divideAmount = session.currentDivideAmount ?? null;
+	if (divideAmount !== null) {
+		if (session.awaitingDivision) {
+			return confirmSlotDivisions(session, session.draftAllocation?.allocations ?? {});
+		}
+		const count = session.selectedTargets.length;
+		if (count === 0) {
+			return advanceOrSubmitSlot(session, {});
+		}
+		if (count === 1) {
+			return advanceOrSubmitSlot(session, {
+				[session.selectedTargets[0].id]: divideAmount
+			});
+		}
+		if (count === divideAmount) {
+			const unitSplit: Record<string, number> = {};
+			for (const t of session.selectedTargets) {
+				unitSplit[t.id] = 1;
+			}
+			return advanceOrSubmitSlot(session, unitSplit);
+		}
+		const draftAllocation = createAllocationState({
+			targetIds: session.selectedTargets.map((t) => t.id),
+			amountToDistribute: divideAmount,
+			minPerTarget: 1
+		});
 		return {
 			status: 'targeting',
 			session: {
 				...session,
-				slotIndex: session.slotIndex + 1,
-				currentSpec: nextSpec,
-				currentRequirement: nextReq,
-				targetInfo: nextReq,
-				targetKind: nextReq.targetKind,
-				accumulatedTargets: nextAccumulated,
-				selectedTargets: [],
-				remainingSpecs: restSpecs,
-				slotTargetHistory: nextHistory
+				awaitingDivision: true,
+				draftAllocation
 			}
 		};
 	}
 
-	return {
-		status: 'ready_to_submit',
-		payload: buildFinalPayload(session, nextAccumulated)
-	};
+	return advanceOrSubmitSlot(session, {});
 }
 
 /**
@@ -882,6 +1233,12 @@ export function toggleOrAdvanceTarget(
 	session: TargetingSession,
 	candidate: TargetRef
 ): TargetingTransitionResult {
+	if (session.awaitingDivision) {
+		return {
+			status: 'invalid',
+			error: 'Step back from division allocation before modifying targets.'
+		};
+	}
 	const existingIdx = session.selectedTargets.findIndex(
 		(t) => t.id === candidate.id && t.kind === candidate.kind
 	);
@@ -922,22 +1279,44 @@ export function toggleOrAdvanceTarget(
 }
 
 /**
- * Rewinds `session` to `slotIndex - 1` (restoring the previous slot's `selectedTargets`),
- * or returns `session` unchanged if already at slot 0.
+ * Rewinds `session` from `awaitingDivision` back to target selection on the active slot,
+ * or rewinds to `slotIndex - 1` (restoring the previous slot's `selectedTargets`).
  */
 export function stepBackToPreviousSlot(session: TargetingSession): TargetingSession {
+	if (session.awaitingDivision) {
+		const { draftAllocation: _discarded, ...rest } = session;
+		return {
+			...rest,
+			awaitingDivision: false
+		};
+	}
 	if (session.slotIndex <= 0) return session;
 	const prevIndex = session.slotIndex - 1;
 	const prevSpec = session.allSpecs[prevIndex];
 	if (!prevSpec) return session;
-	const prevReq = requirementForSlot(prevSpec, session.isAuraSingleSlot, session.auraRequirement);
+	const prevDivideAmount = session.slotDivideAmounts?.[prevIndex] ?? null;
+	const prevDivideUnitLabel = session.slotDivideUnitLabels?.[prevIndex] ?? 'damage';
+	const prevReq = requirementForSlot(
+		prevSpec,
+		session.isAuraSingleSlot,
+		session.auraRequirement,
+		prevDivideAmount
+	);
 	const prevHistory = session.slotTargetHistory.slice(0, prevIndex);
 	const prevSelected = session.slotTargetHistory[prevIndex] ?? [];
 	const prevAccumulated = prevHistory.flat();
 	const prevRemaining = session.allSpecs.slice(prevIndex + 1);
+	const hasDivTracking = session.slotDivideAmounts !== undefined;
+	const prevDivHistory = hasDivTracking
+		? (session.slotDivisionHistory ?? []).slice(0, prevIndex)
+		: undefined;
+	const prevAccumulatedDivisions = hasDivTracking
+		? Object.assign({}, ...(prevDivHistory ?? [{}]))
+		: undefined;
+	const { draftAllocation: _discarded, ...restSession } = session;
 
 	return {
-		...session,
+		...restSession,
 		slotIndex: prevIndex,
 		currentSpec: prevSpec,
 		currentRequirement: prevReq,
@@ -946,7 +1325,16 @@ export function stepBackToPreviousSlot(session: TargetingSession): TargetingSess
 		accumulatedTargets: prevAccumulated,
 		selectedTargets: [...prevSelected],
 		remainingSpecs: prevRemaining,
-		slotTargetHistory: prevHistory
+		slotTargetHistory: prevHistory,
+		...(hasDivTracking
+			? {
+					accumulatedDivisions: prevAccumulatedDivisions ?? {},
+					slotDivisionHistory: prevDivHistory ?? [],
+					currentDivideAmount: prevDivideAmount,
+					currentDivideUnitLabel: prevDivideUnitLabel,
+					awaitingDivision: false
+				}
+			: {})
 	};
 }
 
@@ -1048,6 +1436,9 @@ export function requiredZoneDrawerForCurrentSlot(
  * Builds a concise, human-readable prompt phrase for `session.currentSpec` / `session.currentRequirement`.
  */
 export function describeCurrentTargetSlot(session: TargetingSession): string {
+	if (session.awaitingDivision && (session.currentDivideAmount ?? 0) > 0) {
+		return `Distribute ${session.currentDivideAmount} ${session.currentDivideUnitLabel ?? 'damage'} among ${session.selectedTargets.length} targets`;
+	}
 	const req = session.currentRequirement;
 	const spec = session.currentSpec;
 	const min = req.minTargets;
@@ -1139,7 +1530,14 @@ export function describeCurrentTargetSlot(session: TargetingSession): string {
 		noun = `${base}${ctrlSuffix}`;
 	}
 
-	return `Select ${countPhrase}${noun}`;
+	const divSuffix =
+		session.currentDivideAmount !== null &&
+		session.currentDivideAmount !== undefined &&
+		session.currentDivideAmount > 0
+			? ` (${session.currentDivideAmount} ${session.currentDivideUnitLabel ?? 'damage'} divided)`
+			: '';
+
+	return `Select ${countPhrase}${noun}${divSuffix}`;
 }
 
 /**
@@ -1180,7 +1578,7 @@ export function computeMaxAffordableX(params: ComputeMaxAffordableXParams): numb
 
 	const hasStrictAids = Boolean((castOption?.paymentAids?.length ?? 0) > 0);
 	const isLegalAt = (x: number): boolean => {
-		if (actionKind === 'turn_face_up' || fromZone === 'battlefield') {
+		if (actionKind === 'turn_face_up' || (fromZone === 'battlefield' && !castOption)) {
 			return checkTurnFaceUpLegality(gameState, actorId, inst, x).ok;
 		}
 		return checkSpellCastLegality(

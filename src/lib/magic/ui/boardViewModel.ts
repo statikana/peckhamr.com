@@ -2,6 +2,7 @@ import { compileCard } from '../compiler/index.ts';
 import {
 	checkAbilityActivationLegality,
 	checkHandSpecialActionLegality,
+	checkSpellCastLegality,
 	checkSuspendLegality,
 	checkUnlockRoomDoorLegality,
 	getCastOptions,
@@ -11,11 +12,13 @@ import {
 	getPlayerCommanderIdentity,
 	getTurnFaceUpDisplay
 } from '../engine.ts';
+import { DUNGEON_SPECS } from '../oracle.ts';
 import { evaluatePermanent, type EvaluatedPermanent } from '../ruleTree.ts';
 import { getSuspendSpec } from '../runtime/costs.ts';
 import { instanceFaceOptions, resolveObjectFaces } from '../runtime/faces.ts';
 import { withStableLayerInputs } from '../runtime/layerCache.ts';
 import { splitSubtypes } from '../runtime/layers.ts';
+import { totalSnowManaInPool } from '../runtime/staticsDynamicAndCosts.ts';
 import { effectiveCardForObject } from '../scryfall.ts';
 import type {
 	CardInstance,
@@ -52,10 +55,36 @@ const KNOWN_CARD_TYPES = [
 	'Sorcery'
 ] as const;
 
+export const EMBLEM_ART_URI =
+	'data:image/svg+xml;utf8,' +
+	encodeURIComponent(
+		'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 168"><rect width="120" height="168" rx="8" fill="#181622" stroke="#ab9df2" stroke-width="4"/><polygon points="60,26 92,46 84,96 60,122 36,96 28,46" fill="#262038" stroke="#ffd866" stroke-width="3"/><circle cx="60" cy="70" r="14" fill="none" stroke="#ab9df2" stroke-width="2.5"/><text x="60" y="146" text-anchor="middle" fill="#ffd866" font-family="sans-serif" font-size="13" font-weight="bold">EMBLEM</text></svg>'
+	);
+
+export const DUNGEON_ART_URI =
+	'data:image/svg+xml;utf8,' +
+	encodeURIComponent(
+		'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 168"><rect width="120" height="168" rx="8" fill="#171920" stroke="#78dce8" stroke-width="4"/><path d="M36 118 V66 A24 24 0 0 1 84 66 V118 Z" fill="#232834" stroke="#ffd866" stroke-width="3"/><circle cx="60" cy="78" r="8" fill="#ffd866"/><text x="60" y="146" text-anchor="middle" fill="#78dce8" font-family="sans-serif" font-size="12" font-weight="bold">DUNGEON</text></svg>'
+	);
+
+/** CR 701.54c: Cumulative Ring-bearer abilities unlocked at each Ring temptation level (1..4). */
+export const RING_LEVEL_ABILITY_SUMMARIES: readonly string[] = [
+	"Lv. 1: Your Ring-bearer is legendary and can't be blocked by creatures with greater power.",
+	'Lv. 2: Whenever your Ring-bearer attacks, draw a card, then discard a card.',
+	"Lv. 3: Whenever your Ring-bearer becomes blocked by a creature, that creature's controller sacrifices it at end of combat.",
+	'Lv. 4: Whenever your Ring-bearer deals combat damage to a player, each opponent loses 3 life.'
+];
+
+export function getRingAbilitiesForLevel(ringLevel: number): string[] {
+	const clamped = Math.min(RING_LEVEL_ABILITY_SUMMARIES.length, Math.max(0, Math.trunc(ringLevel)));
+	return RING_LEVEL_ABILITY_SUMMARIES.slice(0, clamped);
+}
+
 export type CounterBadgeKind =
 	| 'plus'
 	| 'minus'
 	| 'loyalty'
+	| 'defense'
 	| 'lore'
 	| 'charge'
 	| 'shield'
@@ -88,6 +117,25 @@ export interface UnlockableFaceView {
 	check: { ok: boolean; error?: string };
 }
 
+export interface RoomDoorView {
+	faceIndex: number;
+	name: string;
+	manaCost: string;
+	unlocked: boolean;
+}
+
+export type DungeonId = keyof typeof DUNGEON_SPECS;
+
+export interface ActiveDungeonView {
+	dungeonId: DungeonId;
+	dungeonName: string;
+	roomIndex: number;
+	roomName: string;
+	roomEffectText: string;
+	totalRooms: number;
+	pendingCompletion: boolean;
+}
+
 export type TurnFaceUpSummary = NonNullable<ReturnType<typeof getTurnFaceUpDisplay>>;
 
 export interface PermanentActableSummary {
@@ -95,6 +143,10 @@ export interface PermanentActableSummary {
 	legalActivatedAbilityIds: string[];
 	turnFaceUp: TurnFaceUpSummary | null;
 	unlockableFaces: UnlockableFaceView[];
+	preparationCopyOption: CastOption | null;
+	preparationCopyFaceName: string | null;
+	preparationCopyManaCost: string | null;
+	preparationCopyCheck: { ok: boolean; error?: string } | null;
 	canAttackNow: boolean;
 	canBlockNow: boolean;
 	isSingleTapManaOnly: boolean;
@@ -113,6 +165,7 @@ export interface PermanentView {
 	hasLostAllAbilities: boolean;
 	isCreature: boolean;
 	isPlaneswalker: boolean;
+	isBattle: boolean;
 	isEquipment: boolean;
 	power: number;
 	toughness: number;
@@ -123,6 +176,12 @@ export interface PermanentView {
 	countersList: CounterBadgeEntry[];
 	isGoaded: boolean;
 	isSaddled: boolean;
+	isRingBearer: boolean;
+	isPrepared: boolean;
+	protectorId: string | null;
+	protectorName: string | null;
+	canBeAttackedAsBattle: boolean;
+	roomDoors: RoomDoorView[];
 	attachments: CardInstance[];
 	host: CardInstance | null;
 	actableSummary: PermanentActableSummary;
@@ -161,6 +220,21 @@ export interface PlayerStatusView {
 	experienceCounters: number;
 	radCounters: number;
 	isMonarch: boolean;
+	hasInitiative: boolean;
+	activeDungeon: ActiveDungeonView | null;
+	completedDungeonCount: number;
+	completedDungeonNames: string[];
+	speed: number;
+	isMaxSpeed: boolean;
+	hasCitysBlessing: boolean;
+	ringLevel: number;
+	ringBearerId: string | null;
+	ringAbilities: string[];
+	snowManaTotal: number;
+	snowManaByColor: Partial<Record<ManaColor, number>>;
+	commanders: CardInstance[];
+	emblems: CardInstance[];
+	dungeonCommandCards: CardInstance[];
 	restrictedManaEntries: RestrictedManaEntry[];
 	commanderDamageEntries: CommanderDamageEntry[];
 	protectionFromEverythingThisTurn: boolean;
@@ -190,6 +264,10 @@ export interface HandCardPlayabilityView {
 
 export interface BoardViewModel {
 	viewerId: string;
+	dayNight: 'day' | 'night' | null;
+	spellsCastByActivePlayerThisTurn: number;
+	prevTurnSpellsCastByActivePlayer: number;
+	initiativePlayerId: string | null;
 	attachmentsByHostId: Record<string, CardInstance[]>;
 	hostByAttachmentId: Record<string, CardInstance>;
 	permanentsById: Record<string, PermanentView>;
@@ -210,6 +288,7 @@ const KNOWN_COUNTER_ORDER: readonly CounterType[] = [
 	'+1/+1',
 	'-1/-1',
 	'loyalty',
+	'defense',
 	'lore',
 	'level',
 	'charge',
@@ -245,6 +324,14 @@ function classifyCounterBadge(type: string, count: number): CounterBadgeEntry {
 				badgeKind: 'loyalty',
 				label: `L:${count}`,
 				shortLabel: `L:${count}`
+			};
+		case 'defense':
+			return {
+				type: 'defense',
+				count,
+				badgeKind: 'defense',
+				label: `Def:${count}`,
+				shortLabel: `Def:${count}`
 			};
 		case 'lore':
 			return {
@@ -337,11 +424,34 @@ function parseTypesAndSubtypes(effectiveTypeLine: string): { types: string[]; su
 	return { types, subtypes };
 }
 
+export function getPermanentRoomDoors(perm: CardInstance): RoomDoorView[] {
+	if (perm.isFaceDown) return [];
+	const effCard = effectiveCardForObject(perm);
+	if ((effCard.layout ?? 'normal') !== 'split') return [];
+	const compiled = compileCard(effCard);
+	if (compiled.faces.length < 2) return [];
+	if (!compiled.faces.some((f) => f.characteristics.subtypes.includes('Room'))) return [];
+	const unlockedSet = new Set(perm.unlockedFaces ?? []);
+	const out: RoomDoorView[] = [];
+	for (let fi = 0; fi < compiled.faces.length; fi++) {
+		const f = compiled.faces[fi];
+		if (!f.characteristics.subtypes.includes('Room')) continue;
+		out.push({
+			faceIndex: fi,
+			name: f.name,
+			manaCost: f.characteristics.manaCost || '{0}',
+			unlocked: unlockedSet.has(fi)
+		});
+	}
+	return out;
+}
+
 export function getPermanentUnlockableFaces(
 	gameState: GameState,
 	viewerId: string,
 	perm: CardInstance
 ): UnlockableFaceView[] {
+	if (perm.isFaceDown) return [];
 	const effCard = effectiveCardForObject(perm);
 	const compiled = compileCard(effCard);
 	if (compiled.faces.length < 2) return [];
@@ -378,12 +488,70 @@ function describeRestriction(restriction: string): { label: string; description:
 	};
 }
 
+function extractActiveDungeonView(player: PlayerGameState): ActiveDungeonView | null {
+	const ad = player.activeDungeon;
+	if (!ad) return null;
+	const spec = DUNGEON_SPECS[ad.dungeonId];
+	if (!spec) return null;
+	const roomIdx = Math.max(0, Math.min(spec.rooms.length - 1, ad.roomIndex));
+	const room = spec.rooms[roomIdx];
+	return {
+		dungeonId: ad.dungeonId,
+		dungeonName: spec.name,
+		roomIndex: roomIdx,
+		roomName: room?.name ?? `Room ${roomIdx + 1}`,
+		roomEffectText: room?.effectText ?? '',
+		totalRooms: spec.rooms.length,
+		pendingCompletion: Boolean(ad.pendingCompletion)
+	};
+}
+
 function extractPlayerStatus(gameState: GameState, player: PlayerGameState): PlayerStatusView {
 	const poison = player.poison || 0;
 	const energyCounters = player.energyCounters || 0;
 	const experienceCounters = player.experienceCounters || 0;
 	const radCounters = (player as { radCounters?: number }).radCounters ?? 0;
 	const isMonarch = gameState.monarchPlayerId === player.playerId;
+	const hasInitiative = gameState.initiativePlayerId === player.playerId;
+	const activeDungeon = extractActiveDungeonView(player);
+	const completedDungeonNames = [...(player.completedDungeonNames ?? [])];
+	const completedDungeonCount = Math.max(
+		player.dungeonsCompletedCount ?? 0,
+		completedDungeonNames.length
+	);
+	const speed = Math.max(0, player.speed ?? 0);
+	const isMaxSpeed = speed >= 4;
+	const hasCitysBlessing = Boolean(player.hasCitysBlessing);
+	const ringLevel = Math.max(0, player.ringLevel ?? 0);
+	const ringBearerId = player.ringBearerId ?? null;
+	const ringAbilities = getRingAbilitiesForLevel(ringLevel);
+
+	const snowManaTotal = totalSnowManaInPool(player);
+	const snowManaByColor: Partial<Record<ManaColor, number>> = {};
+	if (player.snowManaByColor) {
+		for (const color of ALL_MANA_COLORS) {
+			const clamped = Math.max(
+				0,
+				Math.min(player.manaPool[color] || 0, player.snowManaByColor[color] || 0)
+			);
+			if (clamped > 0) {
+				snowManaByColor[color] = clamped;
+			}
+		}
+	}
+
+	const commanders: CardInstance[] = [];
+	const emblems: CardInstance[] = [];
+	const dungeonCommandCards: CardInstance[] = [];
+	for (const cmdObj of player.command) {
+		if (cmdObj.isEmblem) {
+			emblems.push(cmdObj);
+		} else if (cmdObj.isDungeon) {
+			dungeonCommandCards.push(cmdObj);
+		} else {
+			commanders.push(cmdObj);
+		}
+	}
 
 	const restrictedManaEntries: RestrictedManaEntry[] = [];
 	if (player.restrictedMana) {
@@ -485,6 +653,21 @@ function extractPlayerStatus(gameState: GameState, player: PlayerGameState): Pla
 		experienceCounters,
 		radCounters,
 		isMonarch,
+		hasInitiative,
+		activeDungeon,
+		completedDungeonCount,
+		completedDungeonNames,
+		speed,
+		isMaxSpeed,
+		hasCitysBlessing,
+		ringLevel,
+		ringBearerId,
+		ringAbilities,
+		snowManaTotal,
+		snowManaByColor,
+		commanders,
+		emblems,
+		dungeonCommandCards,
 		restrictedManaEntries,
 		commanderDamageEntries,
 		protectionFromEverythingThisTurn,
@@ -529,6 +712,10 @@ function buildViewModelStateSignature(gameState: GameState, viewerId: string): s
 		gameState.priorityPlayerIndex,
 		gameState.phase,
 		gameState.monarchPlayerId ?? '',
+		gameState.initiativePlayerId ?? '',
+		gameState.dayNight ?? '',
+		gameState.spellsCastByActivePlayerThisTurn ?? 0,
+		gameState.prevTurnSpellsCastByActivePlayer ?? 0,
 		gameState.stack.length,
 		gameState.combat.active,
 		gameState.combat.attackers.length,
@@ -545,6 +732,7 @@ function buildViewModelStateSignature(gameState: GameState, viewerId: string): s
 			atk.attackerInstanceId,
 			atk.defenderPlayerId,
 			atk.defenderPlaneswalkerId ?? '',
+			atk.defenderBattleId ?? '',
 			atk.blockerInstanceIds.join(',')
 		);
 	}
@@ -557,6 +745,16 @@ function buildViewModelStateSignature(gameState: GameState, viewerId: string): s
 			p.energyCounters,
 			p.experienceCounters,
 			(p as { radCounters?: number }).radCounters ?? 0,
+			p.speed ?? 0,
+			p.hasCitysBlessing ?? false,
+			p.ringLevel ?? 0,
+			p.ringBearerId ?? '',
+			p.activeDungeon
+				? `${p.activeDungeon.dungeonId}@${p.activeDungeon.roomIndex}:${p.activeDungeon.pendingCompletion ? 1 : 0}`
+				: '',
+			p.dungeonsCompletedCount ?? 0,
+			(p.completedDungeonNames ?? []).join(','),
+			totalSnowManaInPool(p),
 			p.landsPlayedThisTurn,
 			p.maxLandsPerTurn,
 			p.spellsCastThisTurn ?? 0,
@@ -572,6 +770,12 @@ function buildViewModelStateSignature(gameState: GameState, viewerId: string): s
 			p.manaPool.G,
 			p.manaPool.C
 		);
+		if (p.snowManaByColor) {
+			for (const col of ALL_MANA_COLORS) {
+				const sv = p.snowManaByColor[col] || 0;
+				if (sv) parts.push(`snow:${col}=${sv}`);
+			}
+		}
 		if (p.restrictedMana) {
 			for (const [rk, rpool] of Object.entries(p.restrictedMana)) {
 				if (!rpool) continue;
@@ -586,6 +790,7 @@ function buildViewModelStateSignature(gameState: GameState, viewerId: string): s
 				perm.instanceId,
 				perm.objectVersion ?? 0,
 				perm.controllerId,
+				perm.protectorId ?? '',
 				perm.tapped,
 				perm.summoningSick,
 				perm.damageMarked,
@@ -598,6 +803,7 @@ function buildViewModelStateSignature(gameState: GameState, viewerId: string): s
 				perm.transformed,
 				perm.activeFaceIndex ?? 0,
 				(perm.unlockedFaces ?? []).join(','),
+				perm.isPrepared ?? false,
 				perm.usedLoyaltyThisTurn,
 				(perm.activatedAbilityIdsThisTurn ?? []).join(','),
 				(perm.goadedByPlayerIds ?? []).join(','),
@@ -627,7 +833,14 @@ function buildViewModelStateSignature(gameState: GameState, viewerId: string): s
 			);
 		}
 		for (const c of p.command) {
-			parts.push(c.instanceId, c.commanderCastCount);
+			parts.push(
+				c.instanceId,
+				c.commanderCastCount,
+				c.isEmblem ?? false,
+				c.isRingEmblem ?? false,
+				c.isDungeon ?? false,
+				c.card.name
+			);
 		}
 	}
 	return parts.join('|');
@@ -774,6 +987,7 @@ function computeBoardViewModelInner(
 			const hasHaste = evaluated.keywords.some((kw) => kw.toLowerCase() === 'haste');
 			const isCreature = evaluated.isCreature;
 			const isPlaneswalker = evaluated.isPlaneswalker;
+			const isBattle = types.includes('Battle');
 			const isEquipment = evaluated.hasSubType('Equipment');
 			const power = evaluated.power;
 			const toughness = evaluated.toughness;
@@ -782,6 +996,29 @@ function computeBoardViewModelInner(
 			const countersList = extractCounterBadges(perm.counters);
 			const isGoaded = Boolean(perm.goadedByPlayerIds && perm.goadedByPlayerIds.length > 0);
 			const isSaddled = Boolean(perm.saddledThisTurn);
+			const controllerPlayer = gameState.players.find((pl) => pl.playerId === evaluated.controllerId);
+			const isRingBearer = Boolean(
+				!perm.phasedOut &&
+					isCreature &&
+					controllerPlayer &&
+					controllerPlayer.ringBearerId === perm.instanceId
+			);
+			const isPrepared = Boolean(perm.isPrepared);
+			const protectorId = isBattle ? (perm.protectorId ?? null) : null;
+			const protectorPlayer = protectorId
+				? gameState.players.find((pl) => pl.playerId === protectorId)
+				: undefined;
+			const protectorName = protectorPlayer?.username ?? null;
+			// CR 310.8b: A battle can be attacked by any player EXCEPT its protector, regardless of who controls it.
+			const canBeAttackedAsBattle = Boolean(
+				isBattle &&
+					!perm.phasedOut &&
+					protectorId &&
+					protectorId !== viewerId &&
+					protectorPlayer &&
+					!protectorPlayer.lost
+			);
+			const roomDoors = getPermanentRoomDoors(perm);
 			const attachments = attachmentsByHostId[perm.instanceId] ?? [];
 			const host = hostByAttachmentId[perm.instanceId] ?? null;
 
@@ -800,6 +1037,53 @@ function computeBoardViewModelInner(
 					: [];
 				const turnFaceUp = getTurnFaceUpDisplay(gameState, viewerId, perm);
 				const unlockableFaces = getPermanentUnlockableFaces(gameState, viewerId, perm);
+
+				let preparationCopyOption: CastOption | null = null;
+				let preparationCopyFaceName: string | null = null;
+				let preparationCopyManaCost: string | null = null;
+				let preparationCopyCheck: { ok: boolean; error?: string } | null = null;
+				if (isPrepared) {
+					const baseCard = perm.copiableCard ?? perm.card;
+					if ((baseCard.layout ?? 'normal') === 'prepare') {
+						const prepFace = compileCard(baseCard).faces[1];
+						if (prepFace) {
+							preparationCopyFaceName = prepFace.name;
+							preparationCopyManaCost = prepFace.characteristics.manaCost || '{0}';
+							if (viewerCanActNow) {
+								const prepOpts = getCastOptions(gameState, viewerId, perm, 'battlefield');
+								preparationCopyOption =
+									prepOpts.find(
+										(o) =>
+											o.permission === 'preparation_copy' || o.id === 'battlefield:prepare_copy'
+									) ?? null;
+								preparationCopyCheck = preparationCopyOption
+									? { ok: true }
+									: checkSpellCastLegality(
+											gameState,
+											viewerId,
+											perm,
+											'battlefield',
+											0,
+											'battlefield:prepare_copy',
+											undefined,
+											1
+										);
+							} else {
+								preparationCopyCheck = checkSpellCastLegality(
+									gameState,
+									viewerId,
+									perm,
+									'battlefield',
+									0,
+									'battlefield:prepare_copy',
+									undefined,
+									1
+								);
+							}
+						}
+					}
+				}
+
 				const canAttackNow = Boolean(
 					isAttackStepReady &&
 						isCreature &&
@@ -812,7 +1096,8 @@ function computeBoardViewModelInner(
 					activatedAbilities.length === 1 &&
 						activatedAbilities[0].isManaAbility &&
 						unlockableFaces.length === 0 &&
-						!turnFaceUp
+						!turnFaceUp &&
+						preparationCopyFaceName === null
 				);
 				const isActable = Boolean(
 					viewerCanActNow &&
@@ -820,13 +1105,18 @@ function computeBoardViewModelInner(
 							canBlockNow ||
 							legalActivatedAbilityIds.length > 0 ||
 							unlockableFaces.some((d) => d.check.ok) ||
-							turnFaceUp?.legal)
+							turnFaceUp?.legal ||
+							preparationCopyOption !== null)
 				);
 				actableSummary = {
 					activatedAbilities,
 					legalActivatedAbilityIds,
 					turnFaceUp,
 					unlockableFaces,
+					preparationCopyOption,
+					preparationCopyFaceName,
+					preparationCopyManaCost,
+					preparationCopyCheck,
 					canAttackNow,
 					canBlockNow,
 					isSingleTapManaOnly,
@@ -838,6 +1128,10 @@ function computeBoardViewModelInner(
 					legalActivatedAbilityIds: [],
 					turnFaceUp: null,
 					unlockableFaces: [],
+					preparationCopyOption: null,
+					preparationCopyFaceName: null,
+					preparationCopyManaCost: null,
+					preparationCopyCheck: null,
 					canAttackNow: false,
 					canBlockNow: false,
 					isSingleTapManaOnly: false,
@@ -857,6 +1151,7 @@ function computeBoardViewModelInner(
 				hasLostAllAbilities: evaluated.hasLostAllAbilities,
 				isCreature,
 				isPlaneswalker,
+				isBattle,
 				isEquipment,
 				power,
 				toughness,
@@ -867,6 +1162,12 @@ function computeBoardViewModelInner(
 				countersList,
 				isGoaded,
 				isSaddled,
+				isRingBearer,
+				isPrepared,
+				protectorId,
+				protectorName,
+				canBeAttackedAsBattle,
+				roomDoors,
 				attachments,
 				host,
 				actableSummary
@@ -953,6 +1254,10 @@ function computeBoardViewModelInner(
 		}
 
 		for (const cmd of viewer.command) {
+			if (cmd.isEmblem || cmd.isDungeon) {
+				commandPlayabilityById[cmd.instanceId] = false;
+				continue;
+			}
 			commandPlayabilityById[cmd.instanceId] = viewerCanActNow
 				? getCastOptions(gameState, viewerId, cmd, 'command').length > 0
 				: false;
@@ -1000,6 +1305,10 @@ function computeBoardViewModelInner(
 
 	return {
 		viewerId,
+		dayNight: gameState.dayNight ?? null,
+		spellsCastByActivePlayerThisTurn: gameState.spellsCastByActivePlayerThisTurn ?? 0,
+		prevTurnSpellsCastByActivePlayer: gameState.prevTurnSpellsCastByActivePlayer ?? 0,
+		initiativePlayerId: gameState.initiativePlayerId ?? null,
 		attachmentsByHostId,
 		hostByAttachmentId,
 		permanentsById,
@@ -1093,6 +1402,7 @@ export interface ArrowSignatureInputs {
 	gameState: GameState;
 	draftAttackers?: Record<string, string>;
 	draftAttackerWalkers?: Record<string, string | null>;
+	draftAttackerBattles?: Record<string, string | null>;
 	draftBlockers?: Record<string, string>;
 	focusInstanceId?: string | null;
 	pendingTarget?: ArrowSignatureTargetInfo | null;
@@ -1113,6 +1423,7 @@ export function computeArrowSignature(inputs: ArrowSignatureInputs): string {
 		gameState,
 		draftAttackers = {},
 		draftAttackerWalkers = {},
+		draftAttackerBattles = {},
 		draftBlockers = {},
 		focusInstanceId = null,
 		pendingTarget = null,
@@ -1132,13 +1443,13 @@ export function computeArrowSignature(inputs: ArrowSignatureInputs): string {
 	if (gameState.combat.active) {
 		for (const atk of gameState.combat.attackers) {
 			chunks.push(
-				`atk:${atk.attackerInstanceId}->${atk.defenderPlaneswalkerId || atk.defenderPlayerId}[${atk.blockerInstanceIds.join(',')}]`
+				`atk:${atk.attackerInstanceId}->${atk.defenderPlaneswalkerId || atk.defenderBattleId || atk.defenderPlayerId}[${atk.blockerInstanceIds.join(',')}]`
 			);
 		}
 	}
 
 	for (const [atkId, defId] of Object.entries(draftAttackers)) {
-		chunks.push(`da:${atkId}->${draftAttackerWalkers[atkId] || defId}`);
+		chunks.push(`da:${atkId}->${draftAttackerWalkers[atkId] || draftAttackerBattles[atkId] || defId}`);
 	}
 	for (const [blkId, atkId] of Object.entries(draftBlockers)) {
 		chunks.push(`db:${blkId}->${atkId}`);
