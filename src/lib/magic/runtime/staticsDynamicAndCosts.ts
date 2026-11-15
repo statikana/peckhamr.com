@@ -46,6 +46,9 @@ import { activeAbilityDefs, instanceFaceOptions, resolveObjectFaces } from './fa
 // --- Track P17a ---
 import { isP17aWave6AltCastVariant } from './staticsWave6.ts';
 // --- End Track P17a ---
+// --- Track P20b ---
+import { clampP20bSourceManaToPool, clearP20bSourceManaPool } from './costsWave7.ts';
+// --- End Track P20b ---
 import { activeTimedLayer1aForPermanent } from './layerCache.ts';
 import { evaluatePermanent, permanentHasLostAllAbilities } from './layers.ts';
 import {
@@ -374,7 +377,14 @@ function getCardP11Index(card: ScryfallCard): CardP11Index {
 			if (ab.kind === 'static') {
 				idx.hasAnyStatic = true;
 				idx.staticKinds.add(ab.static.k);
-				if (ab.static.k === 'costModifier') {
+				if (
+					ab.static.k === 'costModifier' ||
+					// --- Track P20b ---
+					ab.static.k === 'defilerCostReduction' ||
+					ab.static.k === 'firstActivationZeroCost' ||
+					ab.static.k === 'commanderTaxAsLife'
+					// --- End Track P20b ---
+				) {
 					idx.hasCostModifier = true;
 				}
 				if (
@@ -838,9 +848,12 @@ export function collectStaticAltCastOptions(
 			},
 			// --- Track P17b ---
 			timing: ab.static.grantFlash ? 'instant_only' : 'default',
-			spellMods: ab.static.enterCounters
-				? { altCastEnterCounters: ab.static.enterCounters }
-				: {},
+			spellMods: {
+				// --- Track P20b ---
+				altCostManaPaid: altMana || '{0}',
+				// --- End Track P20b ---
+				...(ab.static.enterCounters ? { altCastEnterCounters: ab.static.enterCounters } : {})
+			},
 			// --- End Track P17b ---
 			choosesX: altChoosesX,
 			requiresTarget
@@ -983,7 +996,12 @@ export function collectStaticAltCastOptions(
 				},
 				// --- Track P17b ---
 				timing: st.grantFlash ? 'instant_only' : 'default',
-				spellMods: st.enterCounters ? { altCastEnterCounters: st.enterCounters } : {},
+				spellMods: {
+					// --- Track P20b ---
+					altCostManaPaid: altMana || '{0}',
+					// --- End Track P20b ---
+					...(st.enterCounters ? { altCastEnterCounters: st.enterCounters } : {})
+				},
 				// --- End Track P17b ---
 				choosesX: altChoosesX,
 				requiresTarget
@@ -1652,9 +1670,15 @@ export function clearSnowManaPool(player: PlayerGameState): void {
 	if (player.snowManaByColor) {
 		delete player.snowManaByColor;
 	}
+	// --- Track P20b ---
+	clearP20bSourceManaPool(player);
+	// --- End Track P20b ---
 }
 
 export function clampSnowManaToPool(player: PlayerGameState): void {
+	// --- Track P20b ---
+	clampP20bSourceManaToPool(player);
+	// --- End Track P20b ---
 	const map = player.snowManaByColor;
 	if (!map) return;
 	let anyLeft = false;

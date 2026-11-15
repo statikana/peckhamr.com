@@ -116,6 +116,22 @@ import {
 	type P17bSpellCastMeta
 } from './costsWave6.ts';
 // --- End Track P17b ---
+// --- Track P20b ---
+import {
+	checkSimpleP20bCost,
+	computeDefilerColoredReduction,
+	describeP20bCost,
+	executeP20bCostPart,
+	getCommanderTaxLifeCostP20b,
+	hasActiveFirstActivationZeroCost,
+	p20bObjectCandidates,
+	pickGreedyP20bObjects,
+	planP20bSelfCounterPart,
+	planP20bSpecialCostPart,
+	serializeP20bCostPart,
+	type P20bPitchCounts
+} from './costsWave7.ts';
+// --- End Track P20b ---
 
 export type { SerializedPlannedCost };
 export {
@@ -406,9 +422,12 @@ export function effectiveSpellManaCost(
 	// --- Track P11 ---
 	chosenTargets?: TargetRef[],
 	// --- End Track P11 ---
-	// --- Track P17b ---
-	castMeta?: P17bSpellCastMeta
-	// --- End Track P17b ---
+	// --- Track P17b & P20b ---
+	castMeta?: P17bSpellCastMeta & {
+		optionalCostCounts?: Record<string, number>;
+		p20bPitchCounts?: P20bPitchCounts;
+	}
+	// --- End Track P17b & P20b ---
 ): ManaCostRequirement {
 	// Read-only: one layer-cache validation for the battlefield scan (Phase 6d).
 	return withStableLayerInputs(state, () =>
@@ -443,9 +462,12 @@ function effectiveSpellManaCostInner(
 	// --- Track P11 ---
 	chosenTargets?: TargetRef[],
 	// --- End Track P11 ---
-	// --- Track P17b ---
-	castMeta?: P17bSpellCastMeta
-	// --- End Track P17b ---
+	// --- Track P17b & P20b ---
+	castMeta?: P17bSpellCastMeta & {
+		optionalCostCounts?: Record<string, number>;
+		p20bPitchCounts?: P20bPitchCounts;
+	}
+	// --- End Track P17b & P20b ---
 ): ManaCostRequirement {
 	const card = inst.copiableCard ?? inst.card;
 	const stackFaceOpts = {
@@ -612,7 +634,18 @@ function effectiveSpellManaCostInner(
 			state,
 			controllerId: player.playerId,
 			source: stackProxy,
-			xValue: effectiveX
+			xValue: effectiveX,
+			// --- Track P20b ---
+			...(chosenTargets ? { spellTargets: chosenTargets } : {}),
+			...(castMeta?.p20bPitchCounts
+				? {
+						stackItem: {
+							spellMods: castMeta.p20bPitchCounts,
+							removedCounterCount: castMeta.p20bPitchCounts.removedCostCounterCount
+						} as FilterContext['stackItem']
+					}
+				: {})
+			// --- End Track P20b ---
 		};
 		for (const mod of costModifiersOf(card, stackFaceOpts)) {
 			if (mod.affects.k !== 'self') continue;
@@ -742,8 +775,35 @@ function effectiveSpellManaCostInner(
 	}
 	// --- End Track P17b ---
 
+	// --- Track P20b: Defiler optional life-for-colored-mana pip reductions (CR 118.7c) ---
+	const defilerRed = computeDefilerColoredReduction(
+		state,
+		player,
+		castMeta?.optionalCostCounts,
+		baseCostStr
+	);
+	if (defilerRed) {
+		for (const [col, amt] of Object.entries(defilerRed) as Array<[ManaColor, number]>) {
+			if (amt > 0) {
+				coloredReduction[col] = (coloredReduction[col] ?? 0) + amt;
+				hasColoredReduction = true;
+			}
+		}
+	}
+	// --- End Track P20b ---
+
 	// 3. Commander Tax from the command zone (CR 903.8).
-	if (inst.isCommander && inst.zone === 'command') {
+	// --- Track P20b: Suppress generic {2} tax when commanderTaxAsLife applies ---
+	const cmdLifeTax = getCommanderTaxLifeCostP20b(
+		state,
+		player,
+		inst,
+		faceIndex,
+		fused,
+		faceDownSpec
+	);
+	if (inst.isCommander && inst.zone === 'command' && !cmdLifeTax.applies) {
+	// --- End Track P20b ---
 		const castCount = player.commanderCastCounts?.[inst.instanceId] ?? inst.commanderCastCount ?? 0;
 		if (castCount > 0) {
 			genericIncrease += castCount * state.rules.commanderTaxIncrement;
@@ -1073,6 +1133,12 @@ function effectiveAbilityManaCostInner(
 		}
 	}
 	// --- End Track P15 ---
+	// --- Track P20b: First equip / power-up / cycling activation costs {0} ---
+	if (hasActiveFirstActivationZeroCost(state, actorId, kw)) {
+		forceZeroCost = true;
+		anyModifierApplied = true;
+	}
+	// --- End Track P20b ---
 
 	const parseOpts =
 		hasColoredReduction || coloredOnly || minTotalMana > 0
@@ -1199,6 +1265,10 @@ export function describeCost(defs: CostDef[]): string {
 	if (defs.length === 0) return "Don't pay";
 	return defs
 		.map((d): string => {
+			// --- Track P20b ---
+			const p20bDesc = describeP20bCost(d);
+			if (p20bDesc !== null) return p20bDesc;
+			// --- End Track P20b ---
 			// --- Track P17b ---
 			const p17bDesc = describeP17bCost(d);
 			if (p17bDesc !== null) return p17bDesc;
@@ -1370,8 +1440,11 @@ type ObjectCostDef = Extract<
 			| 'untapOthers'
 			| 'putOnBottomOfLibrary'
 			| 'processOpponentExile'
-			| 'putExiledWithSelfToGraveyard';
+			| 'putExiledWithSelfToGraveyard'
 			// --- End Track P17b ---
+			// --- Track P20b ---
+			| 'unattachOther';
+			// --- End Track P20b ---
 	}
 >;
 
@@ -1384,6 +1457,10 @@ export type PlannedCost =
 			// --- Track P17b ---
 			emitForaged?: boolean;
 			// --- End Track P17b ---
+			// --- Track P20b ---
+			counterCount?: number;
+			counterDistribution?: Record<string, number>;
+			// --- End Track P20b ---
 	  };
 
 export type CostPlan =
@@ -1436,6 +1513,10 @@ function deductMatchingCountersFrom(
 
 /** Does this cost need the player to choose objects, and which objects could pay it? */
 function objectCandidates(def: ObjectCostDef, ctx: CostContext, used: Set<string>): CardInstance[] | null {
+	// --- Track P20b ---
+	const p20bCand = p20bObjectCandidates(def, ctx, used, matchesObjectFilter);
+	if (p20bCand.handled) return p20bCand.candidates;
+	// --- End Track P20b ---
 	// --- Track P17b ---
 	const p17bCand = p17bObjectCandidates(def, ctx, used, matchesObjectFilter);
 	if (p17bCand.handled) return p17bCand.candidates;
@@ -1547,6 +1628,9 @@ function objectCandidates(def: ObjectCostDef, ctx: CostContext, used: Set<string
 		case 'putOnBottomOfLibrary':
 		case 'processOpponentExile':
 		case 'putExiledWithSelfToGraveyard':
+		// --- Track P20b ---
+		case 'unattachOther':
+		// --- End Track P20b ---
 			return null;
 		// --- End Track P17b ---
 	}
@@ -1554,6 +1638,10 @@ function objectCandidates(def: ObjectCostDef, ctx: CostContext, used: Set<string
 
 /** Checks a cost part that doesn't involve choosing objects. Returns an error or null. */
 function checkSimple(def: CostDef, ctx: CostContext): string | null {
+	// --- Track P20b ---
+	const p20bSimple = checkSimpleP20bCost(def, ctx, matchesObjectFilter);
+	if (p20bSimple.handled) return p20bSimple.error;
+	// --- End Track P20b ---
 	// --- Track P17b ---
 	const p17bSimple = checkSimpleP17bCost(def, ctx, matchesObjectFilter);
 	if (p17bSimple.handled) return p17bSimple.error;
@@ -1793,7 +1881,7 @@ function flatten(
 	// --- Track P17b: Preserve topLevel=false on branch mana costs across nested canPayCosts checks ---
 	nonTopLevelDefs?: ReadonlySet<CostDef>
 	// --- End Track P17b ---
-): { flat: Flat[] } | { error: string } | { question: CostQuestion } {
+): { flat: Flat[]; nextChoiceIndex: number } | { error: string } | { question: CostQuestion } {
 	const flat: Flat[] = [];
 	const work: Array<{ def: CostDef; topLevel: boolean; emitForaged?: boolean }> = defs.map((def) => ({
 		def,
@@ -1829,7 +1917,7 @@ function flatten(
 		);
 		// --- End Track P17b ---
 	}
-	return { flat };
+	return { flat, nextChoiceIndex: choiceIndex };
 }
 
 /**
@@ -1873,14 +1961,26 @@ export function planCosts(ctx: CostContext, defs: CostDef[], payment?: CostPayme
 	});
 	if ('error' in flattened) return { ok: false, error: flattened.error };
 	if ('question' in flattened) return { ok: true, question: flattened.question };
-	return planFlat(ctx, flattened.flat, payment?.objects);
+	return planFlat(ctx, flattened.flat, payment?.objects, payment, flattened.nextChoiceIndex, false);
 }
 
-function planFlat(ctx: CostContext, flat: Flat[], objects: string[][] | undefined): CostPlan {
+function planFlat(
+	ctx: CostContext,
+	flat: Flat[],
+	objects: string[][] | undefined,
+	// --- Track P20b ---
+	payment?: CostPayment,
+	initialOptionIndex = 0,
+	autoPickGreedy = false
+	// --- End Track P20b ---
+): CostPlan {
 	const parts: PlannedCost[] = [];
 	const used = new Set<string>(ctx.reservedObjectIds);
 	let mana: ManaCostRequirement | null = ctx.baseMana;
 	let objectIndex = 0;
+	// --- Track P20b ---
+	let optionIndex = initialOptionIndex;
+	// --- End Track P20b ---
 	// CR 118.3: with {T} in the cost, the source can't also be tapped for "Tap an untapped ...".
 	// Similarly, a discard-self cost can't use the source card to pay another discard/exile-from-hand cost.
 	const tapsSelf = flat.some((f) => f.def.k === 'tapSelf');
@@ -2027,6 +2127,21 @@ function planFlat(ctx: CostContext, flat: Flat[], objects: string[][] | undefine
 			};
 		}
 		// --- End Track P14 ---
+		// --- Track P20b: Self variable/exact counter removal tracking ---
+		const p20bSelfCtr = planP20bSelfCounterPart(def, ctx, payment, optionIndex, autoPickGreedy);
+		if (p20bSelfCtr.handled) {
+			const cRes = p20bSelfCtr.result;
+			if (!cRes.ok) return cRes;
+			if ('question' in cRes) return { ok: true, question: cRes.question };
+			optionIndex = cRes.nextOptionIndex;
+			parts.push({
+				def,
+				counterCount: cRes.counterCount,
+				...(emitForaged ? { emitForaged: true } : {})
+			});
+			continue;
+		}
+		// --- End Track P20b ---
 		if (
 			def.k !== 'tapOthers' &&
 			def.k !== 'tapSubsetSum' &&
@@ -2047,8 +2162,11 @@ function planFlat(ctx: CostContext, flat: Flat[], objects: string[][] | undefine
 			def.k !== 'untapOthers' &&
 			def.k !== 'putOnBottomOfLibrary' &&
 			def.k !== 'processOpponentExile' &&
-			def.k !== 'putExiledWithSelfToGraveyard'
+			def.k !== 'putExiledWithSelfToGraveyard' &&
 			// --- End Track P17b ---
+			// --- Track P20b ---
+			def.k !== 'unattachOther'
+			// --- End Track P20b ---
 		) {
 			parts.push({ def, ...(emitForaged ? { emitForaged: true } : {}) });
 			continue;
@@ -2077,6 +2195,42 @@ function planFlat(ctx: CostContext, flat: Flat[], objects: string[][] | undefine
 			if ('filter' in def && def.filter === 'self') used.add(ctx.source.instanceId);
 			continue;
 		}
+		// --- Track P20b: Multi-permanent counter removal, unattachOther, beholdExile, & multi-object constraints ---
+		const p20bSpecial = planP20bSpecialCostPart(
+			def,
+			candidates,
+			ctx,
+			used,
+			objects,
+			objectIndex,
+			payment,
+			(d) => describeCost([d])
+		);
+		if (p20bSpecial.handled) {
+			const spRes = p20bSpecial.result;
+			if (!spRes.ok) return spRes;
+			if ('question' in spRes) {
+				return {
+					ok: true,
+					question:
+						spRes.question.kind === 'objects'
+							? { ...spRes.question, costDef: def }
+							: spRes.question
+				};
+			}
+			objectIndex = spRes.nextObjectIndex;
+			parts.push({
+				def,
+				objects: spRes.chosen,
+				...(spRes.counterCount !== undefined ? { counterCount: spRes.counterCount } : {}),
+				...(spRes.counterDistribution !== undefined
+					? { counterDistribution: spRes.counterDistribution }
+					: {}),
+				...(emitForaged ? { emitForaged: true } : {})
+			});
+			continue;
+		}
+		// --- End Track P20b ---
 		// --- Track P17b: Special subset/group cost planning (Collect evidence, halfRoundedUp, shareCreatureType, etc.) ---
 		const p17bSpecial = planP17bSpecialCostPart(
 			def,
@@ -2449,12 +2603,33 @@ export function chooseCostPayment(
 			.map((c) => c.instanceId);
 	const objects: string[][] = [];
 	for (let guard = 0; guard < 32; guard++) {
-		const plan = planFlat(ctx, result.flat, objects);
+		// --- Track P20b ---
+		const plan = planFlat(
+			ctx,
+			result.flat,
+			objects,
+			{ options, objects },
+			result.nextChoiceIndex,
+			true
+		);
+		// --- End Track P20b ---
 		if (!plan.ok) return null;
 		if (!plan.question) {
+			// --- Track P20b: Include greedy counterCount if a variable self-counter cost was auto-picked ---
+			const autoCtr = plan.parts.find(
+				(p) =>
+					p.def.k === 'removeCounters' &&
+					p.def.from === 'self' &&
+					(p.def.oneOrMore || p.def.count.k === 'anyNumber') &&
+					p.counterCount !== undefined
+			)?.counterCount;
+			// --- End Track P20b ---
 			return {
 				...(options.length > 0 ? { options } : {}),
-				...(objects.length > 0 ? { objects } : {})
+				...(objects.length > 0 ? { objects } : {}),
+				// --- Track P20b ---
+				...(autoCtr !== undefined ? { counterCount: autoCtr } : {})
+				// --- End Track P20b ---
 			};
 		}
 		if (plan.question.kind !== 'objects') return null;
@@ -2462,6 +2637,15 @@ export function chooseCostPayment(
 		const candidates = q.candidateIds
 			.map((id) => findById(ctx, id))
 			.filter((c): c is CardInstance => c !== undefined);
+		// --- Track P20b ---
+		if (q.costDef) {
+			const p20bPick = pickGreedyP20bObjects(q.costDef, candidates, q.count, ctx);
+			if (p20bPick) {
+				objects[q.index] = p20bPick;
+				continue;
+			}
+		}
+		// --- End Track P20b ---
 		// --- Track P14: For waterbend, tap non-mana artifacts/creatures first (saving mana sources) ---
 		if (q.maxCount !== undefined) {
 			let pickCount = q.count;
@@ -2591,9 +2775,18 @@ export function serializeCostPlanParts(
 	const ordered = [...plan.parts.filter((p) => !p.random), ...plan.parts.filter((p) => p.random)];
 	return ordered.map((part): SerializedPlannedCost => {
 		const def = part.def;
-		// --- Track P17b ---
+		// --- Track P17b & P20b ---
 		const forageExtra = part.emitForaged ? { emitForaged: true } : {};
 		if (!part.random) {
+			const p20bSer = serializeP20bCostPart(
+				def,
+				ctx,
+				part.objects,
+				part.counterCount,
+				part.counterDistribution,
+				part.emitForaged
+			);
+			if (p20bSer) return p20bSer;
 			const p17bSer = serializeP17bCostPart(
 				def,
 				part.objects,
@@ -2603,7 +2796,7 @@ export function serializeCostPlanParts(
 			);
 			if (p17bSer) return p17bSer;
 		}
-		// --- End Track P17b ---
+		// --- End Track P17b & P20b ---
 		if (part.random) {
 			const pool = [...part.random.candidates];
 			const picked: CardInstance[] = [];
@@ -2779,6 +2972,18 @@ export function executeCostPaymentParts(
 		const def = part.def;
 		const objStart = partIdx === startPartIndex ? startObjectIndex : 0;
 		const targetLog = part.isCostAid && aidDescriptions ? aidDescriptions : descriptions;
+		// --- Track P20b ---
+		const p20bExec = executeP20bCostPart(ctx, part, partIdx, objStart, descriptions, targetLog, (id) =>
+			findById(ctx, id)
+		);
+		if (p20bExec.handled) {
+			if (p20bExec.pausedResult) return p20bExec.pausedResult;
+			if (part.emitForaged) {
+				emitEvent(ctx.state, { kind: 'Foraged', playerId: player.playerId });
+			}
+			continue;
+		}
+		// --- End Track P20b ---
 		// --- Track P17b ---
 		const p17bExec = executeP17bCostPart(ctx, part, partIdx, objStart, descriptions, targetLog);
 		if (p17bExec.handled) {

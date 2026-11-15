@@ -43,6 +43,9 @@ import {
 	playerCantGainLife
 } from './staticsDynamicAndCosts.ts';
 import { markHandCardRevealedToAll } from './staticsLayersAndRestrictions.ts';
+// --- Track P20b ---
+import { evaluateP20bAmount, evaluateP20bCondition } from './costsWave7.ts';
+// --- End Track P20b ---
 import { allocateTimestamp, moveObject, type MoveResult, type PlayerZone } from './zones.ts';
 
 const P17B_NON_CREATURE_SUBTYPES = new Set([
@@ -529,6 +532,14 @@ export function evaluateP17bAmount(
 			}
 			return sum;
 		}
+		// --- Track P20b ---
+		case 'exiledCostCardCount':
+			return evaluateP20bAmount({ k: 'p20bCostPaidCount', kind: 'exiled' }, ctx);
+		case 'sacrificedCostPermCount':
+			return evaluateP20bAmount({ k: 'p20bCostPaidCount', kind: 'sacrificed' }, ctx);
+		case 'removedCostCounterCount':
+			return evaluateP20bAmount({ k: 'p20bCostPaidCount', kind: 'removedCounters' }, ctx);
+		// --- End Track P20b ---
 	}
 }
 
@@ -697,6 +708,20 @@ export function evaluateP17bCondition(
 			// Pre-target speculative affordability check: true iff a matching spell is currently on the stack.
 			return state.stack.some(matchStackItem);
 		}
+		// --- Track P20b ---
+		case 'altCostPaid':
+			return evaluateP20bCondition(
+				{ k: 'p20bCondition', kind: 'altCostPaid', manaCost: cond.manaCost },
+				ctx,
+				matchesFilter
+			);
+		case 'additionalCostPaid':
+			return evaluateP20bCondition(
+				{ k: 'p20bCondition', kind: 'additionalCostPaid' },
+				ctx,
+				matchesFilter
+			);
+		// --- End Track P20b ---
 	}
 }
 

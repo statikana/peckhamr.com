@@ -212,7 +212,7 @@ export const COUNTERS: Record<string, CounterType> = {
 };
 
 const COST_VERBS =
-	'sacrifice|tap|untap|discard|pay|exile|remove|return|put|reveal|mill|collect|forage|exert|blight|waterbend|behold|have';
+	'sacrifice|tap|untap|unattach|discard|pay|exile|remove|return|put|reveal|mill|collect|forage|exert|blight|waterbend|behold|have|roll|flip';
 const COST_VERB = new RegExp(`^(?:\\{|(?:${COST_VERBS})\\b)`, 'i');
 const COST_SEPARATOR = new RegExp(`,\\s*|\\s+and\\s+(?=(?:${COST_VERBS})\\b)`, 'gi');
 
@@ -455,6 +455,14 @@ export function parseObjectPhrase(
 			rest = attachedSelf[1];
 			continue;
 		}
+		// --- Track P20b: trailing "other than ~" qualifier ---
+		const otherThanSelf = rest.match(/^(.+?)\s+other than ~$/i);
+		if (otherThanSelf && !filter.other) {
+			filter.other = true;
+			rest = otherThanSelf[1];
+			continue;
+		}
+		// --- End Track P20b ---
 		const attachedHost = rest.match(
 			/^(.+?)\s+attached to (?:it|enchanted (?:creature|permanent|land|artifact|enchantment|planeswalker)|equipped creature)$/i
 		);
@@ -722,6 +730,7 @@ export function parseObjectPhrase(
 			continue;
 		}
 		// --- End Track P17b ---
+		else if (low === 'unblocked') filter.unblockedAttacker = true;
 		else if (low === 'attacking') filter.attacking = true;
 		else if (low === 'blocking') filter.blocking = true;
 		else if (low === 'multicolored') filter.multicolored = true;
@@ -751,6 +760,11 @@ export function parseObjectPhrase(
 				}
 				continue;
 			}
+			// --- Track P20b: Do not consume color before `or <non-color>` ("black or artifact creature") ---
+			if (words.length >= 3 && /^(?:or|and\/or)$/i.test(words[1])) {
+				break;
+			}
+			// --- End Track P20b ---
 			(filter.colors ??= []).push(COLORS[low]);
 		}
 		else if (NON_COLORS[low]) (filter.notColors ??= []).push(NON_COLORS[low]);
@@ -800,6 +814,25 @@ export function parseObjectPhrase(
 				filter.anyOf = branchFilters;
 				return filter;
 			}
+			// --- Track P20b: Shared trailing head noun across modifier disjunction ("black or artifact creature") ---
+			const lastAltWords = alts[alts.length - 1].split(/\s+/).filter(Boolean);
+			if (lastAltWords.length >= 2) {
+				const sharedHead = lastAltWords[lastAltWords.length - 1];
+				const headExpanded = alts.map((a, idx) => {
+					const phraseWithHead =
+						idx === alts.length - 1 ? a : `${a} ${sharedHead}`;
+					const b = parseObjectPhrase(phraseWithHead, { ...opts, depth: 1 });
+					if (b && Object.keys(b).length > 0) return b;
+					return hadTrailingCard
+						? parseObjectPhrase(`${phraseWithHead} card`, { ...opts, depth: 1 })
+						: null;
+				});
+				if (headExpanded.every((b): b is ObjectFilter => b !== null && Object.keys(b).length > 0)) {
+					filter.anyOf = headExpanded;
+					return filter;
+				}
+			}
+			// --- End Track P20b ---
 		}
 		return null;
 	}
@@ -991,6 +1024,51 @@ function parseSingleSacrificeItem(rawBody: string): Extract<CostDef, { k: 'sacri
 			halfRoundedUp: true
 		};
 	}
+	// --- Track P20b: "one or more <phrase>", "up to N <phrase>", "N <phrase> with different names" ---
+	const oneOrMoreM = body.match(/^one or more (.+)$/i);
+	if (oneOrMoreM) {
+		const filter = /^permanents$/i.test(oneOrMoreM[1].trim())
+			? {}
+			: parseObjectPhrase(oneOrMoreM[1], { allowPluralAndDisjunction: true });
+		if (!filter || (filter.controller && filter.controller !== 'you')) return null;
+		return {
+			k: 'sacrifice',
+			count: ONE,
+			oneOrMore: true,
+			filter: { ...filter, controller: 'you' }
+		};
+	}
+	const upToM = body.match(/^up to (\S+) (.+)$/i);
+	if (upToM) {
+		const mx = count(upToM[1]);
+		if (!mx || mx.k !== 'const' || mx.n < 1) return null;
+		const filter = /^permanents$/i.test(upToM[2].trim())
+			? {}
+			: parseObjectPhrase(upToM[2], { allowPluralAndDisjunction: true });
+		if (!filter || (filter.controller && filter.controller !== 'you')) return null;
+		return {
+			k: 'sacrifice',
+			count: { k: 'const', n: 0 },
+			upTo: mx.n,
+			filter: { ...filter, controller: 'you' }
+		};
+	}
+	const diffNamesM = body.match(/^(.+?) with different names$/i);
+	if (diffNamesM) {
+		const leadDiff = parseLeadingCostCount(diffNamesM[1], false);
+		if (!leadDiff) return null;
+		const filter = /^permanents$/i.test(leadDiff.phrase)
+			? {}
+			: parseObjectPhrase(leadDiff.phrase, { allowPluralAndDisjunction: true });
+		if (!filter || (filter.controller && filter.controller !== 'you')) return null;
+		return {
+			k: 'sacrifice',
+			count: leadDiff.count,
+			differentNames: true,
+			filter: { ...filter, controller: 'you' }
+		};
+	}
+	// --- End Track P20b ---
 	const lead = parseLeadingCostCount(body, true);
 	if (!lead) return null;
 	const filter = parseObjectPhrase(lead.phrase);
@@ -1052,6 +1130,28 @@ const tapOthers: Production = (part) => {
 			}
 		];
 	}
+	// --- Track P20b: "Tap any number of untapped [other] <phrase> you control [other than ~] with total power N or greater" ---
+	const subsetPower = part.match(
+		/^tap any number of untapped (.+?) with total power (\S+) or (?:greater|more)$/i
+	);
+	if (subsetPower) {
+		const minTotal = count(subsetPower[2]);
+		const filter = parseObjectPhrase(subsetPower[1]);
+		if (!minTotal || !filter || filter.controller !== 'you') return null;
+		const excludeSelf = Boolean(filter.other);
+		const cleanFilter = { ...filter };
+		delete cleanFilter.other;
+		return [
+			{
+				k: 'tapSubsetSum',
+				minTotal,
+				metric: 'power',
+				filter: { ...cleanFilter, controller: 'you', tapped: false },
+				...(excludeSelf ? { excludeSelf: true } : {})
+			}
+		];
+	}
+	// --- End Track P20b ---
 	const anotherUntapped = part.match(/^tap (another|other) untapped (.+) you control$/i);
 	if (anotherUntapped) {
 		const filter = parseObjectPhrase(`other ${anotherUntapped[2]}`);
@@ -1065,11 +1165,14 @@ const tapOthers: Production = (part) => {
 		if (!n || !filter || filter.controller) return null;
 		return [{ k: 'tapOthers', count: n, filter: { ...filter, controller: 'you', tapped: false } }];
 	}
-	// Fallback when "you control" precedes trailing qualifiers ("Tap five untapped attacking creatures you control named ~").
+	// Fallback when "you control" precedes trailing qualifiers ("Tap five untapped attacking creatures you control named ~", "Tap another untapped creature you control with flying").
 	const trailingQual = part.match(/^tap (\S+) (other )?untapped (.+)$/i);
 	if (trailingQual) {
-		const n = count(trailingQual[1]);
-		const filter = parseObjectPhrase(`${trailingQual[2] ?? ''}${trailingQual[3]}`);
+		const isAnother = /^(?:another|other)$/i.test(trailingQual[1]);
+		const n = isAnother ? ONE : count(trailingQual[1]);
+		const filter = parseObjectPhrase(
+			`${isAnother ? 'other ' : (trailingQual[2] ?? '')}${trailingQual[3]}`
+		);
 		if (!n || !filter || filter.controller !== 'you') return null;
 		return [{ k: 'tapOthers', count: n, filter: { ...filter, tapped: false } }];
 	}
@@ -1106,6 +1209,16 @@ const untapCost: Production = (part) => {
 		if (!n || !filter || filter.controller) return null;
 		return [{ k: 'untapOthers', count: n, filter: { ...filter, controller: 'you', tapped: true } }];
 	}
+	const trailingUntapQual = part.match(/^untap (\S+) (other )?tapped (.+)$/i);
+	if (trailingUntapQual) {
+		const isAnother = /^(?:another|other)$/i.test(trailingUntapQual[1]);
+		const n = isAnother ? ONE : count(trailingUntapQual[1]);
+		const filter = parseObjectPhrase(
+			`${isAnother ? 'other ' : (trailingUntapQual[2] ?? '')}${trailingUntapQual[3]}`
+		);
+		if (!n || !filter || filter.controller !== 'you') return null;
+		return [{ k: 'untapOthers', count: n, filter: { ...filter, tapped: true } }];
+	}
 	return null;
 };
 
@@ -1123,6 +1236,20 @@ function parseSingleDiscardBody(bodyRaw: string): Extract<CostDef, { k: 'discard
 			sameNamePair: true
 		};
 	}
+	// --- Track P20b: "N [<phrase>] cards with different names" ---
+	const diffNames = body.match(/^(\S+) (?:(.+?) )?cards with different names$/i);
+	if (diffNames) {
+		const cnt = count(diffNames[1]);
+		const f = diffNames[2] ? parseObjectPhrase(`${diffNames[2]} card`) : {};
+		if (!cnt || !f) return null;
+		return {
+			k: 'discard',
+			count: cnt,
+			...(Object.keys(f).length > 0 ? { filter: f } : {}),
+			differentNames: true
+		};
+	}
+	// --- End Track P20b ---
 	// "a [<phrase>] card with the same name as a [<ctrlPhrase>] you control"
 	const sameControlled = body.match(
 		/^(?:a|an|one) (?:(.+?) )?card with the same name as (?:a|an) (.+?) you control$/i
@@ -1191,6 +1318,72 @@ const exileFrom: Production = (part) => {
 			}
 		];
 	}
+	// --- Track P20b: Araumi, Say Its Name, Corpseweft, Fabrication Foundry ---
+	const eqOpponents = part.match(
+		/^exile (?:(.+?) )?cards? from your (graveyard|hand) equal to the number of opponents you have$/i
+	);
+	if (eqOpponents) {
+		const filter = eqOpponents[1] ? parseObjectPhrase(`${eqOpponents[1]} card`) : {};
+		if (!filter) return null;
+		return [
+			{
+				k: 'exileFrom',
+				zone: eqOpponents[2].toLowerCase() as 'graveyard' | 'hand',
+				count: { k: 'opponentCount' },
+				...(Object.keys(filter).length > 0 ? { filter } : {})
+			}
+		];
+	}
+	const selfAndSameName = part.match(
+		/^exile ~ and (\S+) other cards? named ~ from your graveyard$/i
+	);
+	if (selfAndSameName) {
+		const extraCnt = count(selfAndSameName[1]);
+		if (!extraCnt) return null;
+		return [
+			{ k: 'exileFrom', zone: 'graveyard', count: ONE, filter: 'self' },
+			{
+				k: 'exileFrom',
+				zone: 'graveyard',
+				count: extraCnt,
+				filter: { sameNameAsSource: true, other: true }
+			}
+		];
+	}
+	const oneOrMoreZone = part.match(
+		/^exile one or more (?:(.+?) )?cards? from your (graveyard|hand)$/i
+	);
+	if (oneOrMoreZone) {
+		const filter = oneOrMoreZone[1] ? parseObjectPhrase(`${oneOrMoreZone[1]} card`) : {};
+		if (!filter) return null;
+		return [
+			{
+				k: 'exileFrom',
+				zone: oneOrMoreZone[2].toLowerCase() as 'graveyard' | 'hand',
+				count: ONE,
+				oneOrMore: true,
+				...(Object.keys(filter).length > 0 ? { filter } : {})
+			}
+		];
+	}
+	const oneOrMoreBfMvX = part.match(
+		/^exile one or more (.+?) you control with total mana value X$/i
+	);
+	if (oneOrMoreBfMvX) {
+		const filter = parseObjectPhrase(oneOrMoreBfMvX[1], { allowPluralAndDisjunction: true });
+		if (!filter || filter.controller) return null;
+		return [
+			{
+				k: 'exileFrom',
+				zone: 'battlefield',
+				count: ONE,
+				oneOrMore: true,
+				totalManaValueEqualsX: true,
+				filter: { ...filter, controller: 'you' }
+			}
+		];
+	}
+	// --- End Track P20b ---
 	// Compound "Exile <N> [<phrase>] cards from your graveyard and ~"
 	const gyAndSelf = part.match(/^exile (.+? from your graveyard) and ~$/i);
 	if (gyAndSelf) {
@@ -1358,6 +1551,69 @@ const removeCounters: Production = (part) => {
 			? [{ k: 'removeCounters', counter, count: { k: 'const', n: 0 }, removeAll: true, from: 'self' }]
 			: null;
 	}
+	// --- Track P20b: "Remove any number of / one or more [<counter>] counters from ~ / from among ..." ---
+	if (/^remove any number of counters? from ~$/i.test(part)) {
+		return [{ k: 'removeCounters', counter: 'any', count: { k: 'anyNumber' }, from: 'self' }];
+	}
+	const anyNumTypedSelf = part.match(/^remove any number of (.+?) counters? from ~$/i);
+	if (anyNumTypedSelf) {
+		const counter = lookupCounterWord(anyNumTypedSelf[1]);
+		return counter
+			? [{ k: 'removeCounters', counter, count: { k: 'anyNumber' }, from: 'self' }]
+			: null;
+	}
+	if (/^remove one or more counters? from ~$/i.test(part)) {
+		return [{ k: 'removeCounters', counter: 'any', count: ONE, oneOrMore: true, from: 'self' }];
+	}
+	const oneOrMoreTypedSelf = part.match(/^remove one or more (.+?) counters? from ~$/i);
+	if (oneOrMoreTypedSelf) {
+		const counter = lookupCounterWord(oneOrMoreTypedSelf[1]);
+		return counter
+			? [{ k: 'removeCounters', counter, count: ONE, oneOrMore: true, from: 'self' }]
+			: null;
+	}
+	const anyNumAmong = part.match(
+		/^remove any number of (?:(.+?) )?counters? from among (.+?) you control$/i
+	);
+	if (anyNumAmong) {
+		const counter = anyNumAmong[1] ? lookupCounterWord(anyNumAmong[1]) : 'any';
+		const filter = /^permanents$/i.test(anyNumAmong[2].trim())
+			? {}
+			: parseObjectPhrase(anyNumAmong[2], { allowPluralAndDisjunction: true });
+		return counter && filter && !filter.controller
+			? [
+					{
+						k: 'removeCounters',
+						counter,
+						count: { k: 'anyNumber' },
+						from: { ...filter, controller: 'you' },
+						among: true
+					}
+				]
+			: null;
+	}
+	const oneOrMoreAmong = part.match(
+		/^remove one or more (?:(.+?) )?counters? from among (.+?) you control$/i
+	);
+	if (oneOrMoreAmong) {
+		const counter = oneOrMoreAmong[1] ? lookupCounterWord(oneOrMoreAmong[1]) : 'any';
+		const filter = /^permanents$/i.test(oneOrMoreAmong[2].trim())
+			? {}
+			: parseObjectPhrase(oneOrMoreAmong[2], { allowPluralAndDisjunction: true });
+		return counter && filter && !filter.controller
+			? [
+					{
+						k: 'removeCounters',
+						counter,
+						count: ONE,
+						oneOrMore: true,
+						from: { ...filter, controller: 'you' },
+						among: true
+					}
+				]
+			: null;
+	}
+	// --- End Track P20b ---
 	const anySelf = part.match(/^remove (\S+) counters? from ~$/i);
 	if (anySelf) {
 		const n = count(anySelf[1]);
@@ -1372,7 +1628,9 @@ const removeCounters: Production = (part) => {
 	const anyAmong = part.match(/^remove (\S+) counters? from among (.+?) you control$/i);
 	if (anyAmong) {
 		const n = count(anyAmong[1]);
-		const filter = parseObjectPhrase(anyAmong[2]);
+		const filter = /^permanents$/i.test(anyAmong[2].trim())
+			? {}
+			: parseObjectPhrase(anyAmong[2], { allowPluralAndDisjunction: true });
 		return n && filter && !filter.controller
 			? [{ k: 'removeCounters', counter: 'any', count: n, from: { ...filter, controller: 'you' }, among: true }]
 			: null;
@@ -1381,7 +1639,9 @@ const removeCounters: Production = (part) => {
 	if (typedAmong) {
 		const n = count(typedAmong[1]);
 		const counter = lookupCounterWord(typedAmong[2]);
-		const filter = parseObjectPhrase(typedAmong[3]);
+		const filter = /^permanents$/i.test(typedAmong[3].trim())
+			? {}
+			: parseObjectPhrase(typedAmong[3], { allowPluralAndDisjunction: true });
 		return n && counter && filter && !filter.controller
 			? [{ k: 'removeCounters', counter, count: n, from: { ...filter, controller: 'you' }, among: true }]
 			: null;
@@ -1433,8 +1693,29 @@ const millCost: Production = (part) => {
 	return n ? [{ k: 'mill', count: n }] : null;
 };
 
-/** "Reveal a white card in/from your hand", "Reveal two red cards in/from your hand", "Reveal another Dragon card from your hand". */
+/** "Reveal a white card in/from your hand", "Reveal two red cards in/from your hand", "Reveal two cards from your hand that share a color". */
 const revealFromHand: Production = (part) => {
+	// --- Track P20b: "Reveal N [<phrase>] cards from your hand that share a color" ---
+	const shareColorM = part.match(
+		/^reveal (.+?) (?:in|from) your hand that share a color$/i
+	);
+	if (shareColorM) {
+		const leadShare = parseLeadingCostCount(shareColorM[1], false);
+		if (!leadShare) return null;
+		const filterShare = /^cards?$/i.test(leadShare.phrase)
+			? {}
+			: parseObjectPhrase(leadShare.phrase);
+		if (!filterShare) return null;
+		return [
+			{
+				k: 'revealFromHand',
+				count: leadShare.count,
+				...(Object.keys(filterShare).length > 0 ? { filter: filterShare } : {}),
+				shareColor: true
+			}
+		];
+	}
+	// --- End Track P20b ---
 	const m = part.match(/^reveal (.+?) (?:in|from) your hand$/i);
 	if (!m) return null;
 	const lead = parseLeadingCostCount(m[1], true);
@@ -1464,13 +1745,15 @@ const waterbendCost: Production = (part) => {
 	return [{ k: 'waterbend', cost: m[1] }];
 };
 
-/** CR 701.4a–b: "Behold a Dragon", "Behold an Elemental", "Behold a Dragon creature". */
+/** CR 701.4a–b: "Behold a Dragon", "Behold an Elemental", "Behold two Dragons", "Behold a Goblin and exile it". */
+/** "Behold a Dragon", "Behold an Elemental and exile it" (CR 701.60a). */
 const beholdCost: Production = (part) => {
-	const m = part.match(/^behold\s+(?:a|an|one)\s+(.+)$/i);
+	const m = part.match(/^behold\s+(?:a|an|one)\s+(.+?)(?:\s+and\s+exile\s+it)?$/i);
 	if (!m) return null;
+	const hasExile = /\s+and\s+exile\s+it$/i.test(part);
 	const filter = parseObjectPhrase(m[1]);
 	if (!filter || filter.controller) return null;
-	return [{ k: 'behold', count: ONE, filter }];
+	return [{ k: 'behold', count: ONE, filter, ...(hasExile ? { exile: true } : {}) }];
 };
 
 /** "Put a -1/-1 counter on ~", "Put two +1/+1 counters on ~", "Put a -1/-1 counter on a creature you control". */
@@ -1689,6 +1972,38 @@ const putExiledWithSelfCost: Production = (part) => {
 
 // --- End Track P17b ---
 
+// --- Track P20b: Unattach, Roll Die, & Flip Coin Cost Productions ---
+
+/** CR 701.3d: "Unattach ~", "Unattach an Equipment from ~". */
+const unattachCost: Production = (part) => {
+	if (/^unattach ~$/i.test(part)) {
+		return [{ k: 'unattachSelf' }];
+	}
+	const otherFromSelf = part.match(/^unattach (.+?) from ~$/i);
+	if (otherFromSelf) {
+		const lead = parseLeadingCostCount(otherFromSelf[1], false);
+		if (!lead) return null;
+		const filter = parseObjectPhrase(lead.phrase);
+		if (!filter || filter.controller) return null;
+		return [{ k: 'unattachOther', count: lead.count, filter, fromSelf: true }];
+	}
+	return null;
+};
+
+/** CR 706.2: "Roll a d8", "Roll a d20". */
+const rollDieCost: Production = (part) => {
+	const m = part.match(/^roll a d(\d+)$/i);
+	if (!m) return null;
+	const sides = parseInt(m[1], 10);
+	return sides >= 2 ? [{ k: 'rollDie', sides }] : null;
+};
+
+/** CR 705.1: "Flip a coin". */
+const flipCoinCost: Production = (part) =>
+	/^flip a coin$/i.test(part) ? [{ k: 'flipCoin' }] : null;
+
+// --- End Track P20b ---
+
 const PRODUCTIONS: Production[] = [
 	manaSymbols,
 	payLife,
@@ -1706,6 +2021,9 @@ const PRODUCTIONS: Production[] = [
 	putOnBottomOfLibraryCost,
 	processOpponentExileCost,
 	putExiledWithSelfCost,
+	unattachCost,
+	rollDieCost,
+	flipCoinCost,
 	sacrifice,
 	tapOthers,
 	untapCost,
@@ -1790,8 +2108,7 @@ export function parseCost(text: string, offset = 0): CostParse {
 	const defs: CostDef[] = [];
 	const unparsed: Span[] = [];
 	for (const part of splitCostParts(text, offset)) {
-		if (
-			/^sacrifice it$/i.test(part.text) &&
+		const hasSelfRefPart =
 			defs.length > 0 &&
 			defs.some(
 				(d) =>
@@ -1799,11 +2116,28 @@ export function parseCost(text: string, offset = 0): CostParse {
 					d.k === 'untapSelf' ||
 					(d.k === 'removeCounters' && d.from === 'self') ||
 					(d.k === 'putCounters' && d.on === 'self')
-			)
-		) {
+			);
+		if (/^sacrifice it$/i.test(part.text) && hasSelfRefPart) {
 			defs.push({ k: 'sacrifice', count: ONE, filter: 'self' });
 			continue;
 		}
+		// --- Track P20b: Compound pronoun followups ("behold a Goblin and exile it", "... and return it to its owner's hand", "... and exile it") ---
+		if (/^exile it$/i.test(part.text) && defs.length > 0) {
+			const prevDef = defs[defs.length - 1];
+			if (prevDef.k === 'behold' && !prevDef.exile) {
+				prevDef.exile = true;
+				continue;
+			}
+			if (hasSelfRefPart) {
+				defs.push({ k: 'exileFrom', zone: 'battlefield', count: ONE, filter: 'self' });
+				continue;
+			}
+		}
+		if (/^return it to its owner's hand$/i.test(part.text) && hasSelfRefPart) {
+			defs.push({ k: 'returnToHand', count: ONE, filter: 'self' });
+			continue;
+		}
+		// --- End Track P20b ---
 		const out = parsePart(part.text);
 		if (out) defs.push(...out);
 		else unparsed.push(part.span);
@@ -2126,6 +2460,17 @@ export function parseCostMetricAmount(metricRaw: string): Amount | null {
 		return { k: 'opponentCount' };
 	}
 	// --- End Track P14 ---
+	// --- Track P20b: Cost-paid count reductions ("card exiled this way", "creature/permanent sacrificed this way", "counter removed this way") ---
+	if (/^(?:.+? )?cards? exiled this way$/i.test(metric)) {
+		return { k: 'p20bCostPaidCount', kind: 'exiled' };
+	}
+	if (/^(?:creatures?|permanents?|artifacts?|lands?|nonland permanents?) sacrificed this way$/i.test(metric)) {
+		return { k: 'p20bCostPaidCount', kind: 'sacrificed' };
+	}
+	if (/^(?:.+? )?counters? removed this way$/i.test(metric)) {
+		return { k: 'p20bCostPaidCount', kind: 'removedCounters' };
+	}
+	// --- End Track P20b ---
 	if (/^time you've cast (?:your|a) commander from the command zone this game$/i.test(metric)) {
 		return { k: 'commanderCastCount' };
 	}
@@ -2680,6 +3025,119 @@ export function parseSelfCostCondition(condRaw: string): Condition | null {
 			};
 		}
 	}
+	// --- Track P20b: Zendikar Trap conditions, Blasphemous Edict, & Mastery/Additional cost checks ---
+	const thereAreBf = c.match(/^there are (\S+) or more (.+?) on the battlefield$/i);
+	if (thereAreBf) {
+		const min = count(thereAreBf[1]);
+		const f = /^permanents?$/i.test(thereAreBf[2].trim())
+			? {}
+			: parseObjectPhrase(thereAreBf[2].replace(/\s+and\s+/gi, ' or '));
+		if (min && f && !f.controller) {
+			return {
+				k: 'compare',
+				left: { k: 'count', of: { ...f, zone: 'battlefield' } },
+				op: '>=',
+				right: min
+			};
+		}
+	}
+	const oppPermEntered = c.match(
+		/^an opponent had (?:(a|an)|(\S+) or more) (.+?) enter(?: the battlefield)? under their control this turn$/i
+	);
+	if (oppPermEntered) {
+		const minCnt = oppPermEntered[1] ? ONE : count(oppPermEntered[2]);
+		const f = /^permanents?$/i.test(oppPermEntered[3].trim())
+			? {}
+			: parseObjectPhrase(oppPermEntered[3].replace(/\s+and\s+/gi, ' or '));
+		if (minCnt && minCnt.k === 'const' && f && !f.controller) {
+			return {
+				k: 'p20bCondition',
+				kind: 'opponentHadPermEnteredThisTurn',
+				min: minCnt.n,
+				...(Object.keys(f).length > 0 ? { filter: f } : {})
+			};
+		}
+	}
+	const oppCastTyped = c.match(
+		/^an opponent cast (?:(a|an)|(\S+) or more) (.+?) spells? this turn$/i
+	);
+	if (oppCastTyped) {
+		const minCnt = oppCastTyped[1] ? ONE : count(oppCastTyped[2]);
+		const sf = parseSpellFilterPhrase(oppCastTyped[3]);
+		if (minCnt && minCnt.k === 'const' && sf && !sf.other) {
+			return {
+				k: 'p20bCondition',
+				kind: 'opponentCastSpellThisTurn',
+				min: minCnt.n,
+				...(Object.keys(sf.filter).length > 0 ? { filter: sf.filter } : {})
+			};
+		}
+	}
+	const oppDrewCnt = c.match(/^an opponent drew (\S+) or more cards this turn$/i);
+	if (oppDrewCnt) {
+		const minCnt = count(oppDrewCnt[1]);
+		if (minCnt && minCnt.k === 'const') {
+			return { k: 'p20bCondition', kind: 'opponentDrewCardsAtLeastThisTurn', min: minCnt.n };
+		}
+	}
+	const oppGyTurnCnt = c.match(
+		/^an opponent had (\S+) or more cards put into their graveyard from anywhere this turn$/i
+	);
+	if (oppGyTurnCnt) {
+		const minCnt = count(oppGyTurnCnt[1]);
+		if (minCnt && minCnt.k === 'const') {
+			return {
+				k: 'p20bCondition',
+				kind: 'opponentCardsPutIntoGraveyardAtLeastThisTurn',
+				min: minCnt.n
+			};
+		}
+	}
+	if (/^an opponent searched their library this turn$/i.test(c)) {
+		return { k: 'p20bCondition', kind: 'opponentSearchedLibraryThisTurn' };
+	}
+	if (
+		/^a creature spell you cast this turn was countered by a spell or ability an opponent controlled$/i.test(
+			c
+		)
+	) {
+		return { k: 'p20bCondition', kind: 'yourCreatureSpellCounteredByOpponentThisTurn' };
+	}
+	if (
+		/^a noncreature permanent you controlled was destroyed this turn by a spell or ability an opponent controlled$/i.test(
+			c
+		)
+	) {
+		return { k: 'p20bCondition', kind: 'yourNoncreatureDestroyedByOpponentThisTurn' };
+	}
+	if (/^a creature dealt damage to you this turn$/i.test(c)) {
+		return { k: 'p20bCondition', kind: 'dealtDamageByCreaturesAtLeastThisTurn', min: 1 };
+	}
+	const dealtByCreatures = c.match(
+		/^you(?:'ve)? been dealt damage by (\S+) or more creatures this turn$/i
+	);
+	if (dealtByCreatures) {
+		const minCnt = count(dealtByCreatures[1]);
+		if (minCnt && minCnt.k === 'const') {
+			return {
+				k: 'p20bCondition',
+				kind: 'dealtDamageByCreaturesAtLeastThisTurn',
+				min: minCnt.n
+			};
+		}
+	}
+	const altManaPaidM = c.match(/^the ((?:\{[^}]+\})+) cost was paid$/i);
+	if (altManaPaidM) {
+		return {
+			k: 'p20bCondition',
+			kind: 'altCostPaid',
+			manaCost: altManaPaidM[1].replace(/\s+/g, '')
+		};
+	}
+	if (/^(?:~'s|this spell's|the) additional cost was paid$/i.test(c)) {
+		return { k: 'p20bCondition', kind: 'additionalCostPaid' };
+	}
+	// --- End Track P20b ---
 	return null;
 }
 
@@ -2816,8 +3274,62 @@ function parseSpellTargetClauseFilter(rawTarget: string): ObjectFilter | null {
  * - "Activated abilities of <filter> cost {N} less/more to activate."
  * Returns null unless the whole sentence is understood. Input is normalised (`~`, no reminder text).
  */
+// --- Track P20b: Helpers for mana-spend restrictions & non-legacy cast-payable additional costs ---
+function parseSpendColorWords(raw: string): ManaColor[] | null {
+	const parts = raw
+		.trim()
+		.toLowerCase()
+		.split(/\s*(?:,\s*(?:and\/or|or|and)?|\band\/or\b|\bor\b|\band\b)\s*/)
+		.filter(Boolean);
+	if (parts.length === 0) return null;
+	const out: ManaColor[] = [];
+	for (const p of parts) {
+		const c = COLORS[p];
+		if (!c) return null;
+		if (!out.includes(c)) out.push(c);
+	}
+	return out;
+}
+
+function isLegacyCardTsCastPayable(d: CostDef): boolean {
+	switch (d.k) {
+		case 'mana':
+		case 'payLife':
+		case 'payEnergy':
+		case 'tapSubsetSum':
+		case 'mill':
+			return true;
+		case 'sacrifice':
+		case 'discard':
+		case 'tapOthers':
+		case 'returnToHand':
+		case 'revealFromHand':
+			return d.filter !== 'self';
+		case 'exileFrom':
+			return (
+				d.filter !== 'self' &&
+				(d.zone === 'graveyard' || d.zone === 'hand' || d.zone === 'battlefield')
+			);
+		case 'choice':
+			return (
+				d.options.length > 0 &&
+				d.options.every((opt) => opt.length > 0 && opt.every(isLegacyCardTsCastPayable))
+			);
+		case 'optional':
+			return d.cost.length > 0 && d.cost.every(isLegacyCardTsCastPayable);
+		default:
+			return false;
+	}
+}
+// --- End Track P20b ---
+
 export function parseCostModifierSentence(sentence: string): StaticDef | null {
 	let text = sentence.trim().replace(/\.$/, '');
+	// --- Track P20b: Strip optional leading ability word ("Strive — ...") ---
+	if (/^[A-Za-z][A-Za-z' -]{0,24}\s*—\s*/.test(text) && !/^\{/.test(text)) {
+		text = text.replace(/^[A-Za-z][A-Za-z' -]{0,24}\s*—\s*/, '').trim();
+	}
+	// --- End Track P20b ---
 	if (/^it also costs\b/i.test(text)) {
 		text = text.replace(/^it also costs\b/i, '~ costs');
 	}
@@ -2917,6 +3429,153 @@ export function parseCostModifierSentence(sentence: string): StaticDef | null {
 
 	// --- Track P14 & P17b: Deck copy limits, pitch/bounce/conditional/graveyard/external alt-cast permissions ---
 	if (!coloredOnly && minTotalMana === undefined && maxReduction === undefined) {
+		// --- Track P20b: Defiler cycle, manaSpendRestriction, firstActivationZeroCost, commanderTaxAsLife, combined pitch+reduction, & non-legacy additionalCastCost ---
+		const defilerMatch = text.match(
+			/^as an additional cost to cast (white|blue|black|red|green) permanent spells,\s*you may pay (\d+) life\.\s*those spells cost \{([WUBRG])\} less to cast if you paid life this way\.\s*this effect reduces only the amount of \1 mana you pay$/i
+		);
+		if (defilerMatch) {
+			const wordCol = COLORS[defilerMatch[1].toLowerCase()];
+			const lifeAmount = parseInt(defilerMatch[2], 10);
+			const symCol = defilerMatch[3].toUpperCase() as ManaColor;
+			if (wordCol && wordCol === symCol && lifeAmount >= 1) {
+				return {
+					k: 'defilerCostReduction',
+					color: symCol,
+					lifeAmount,
+					filter: {
+						colors: [symCol],
+						types: ['Artifact', 'Battle', 'Creature', 'Enchantment', 'Planeswalker']
+					},
+					...(turnPrefixCondition ? { condition: turnPrefixCondition } : {})
+				};
+			}
+		}
+
+		const combinedPitchRed = text.match(
+			/^(as an additional cost to cast (?:~|this spell), .+?)\.\s*(?:~|this spell) costs ((?:\{[^}]+\})+) less to cast for each (.+)$/i
+		);
+		if (combinedPitchRed) {
+			const addParsed = parseAdditionalCostSentence(combinedPitchRed[1], 0, false);
+			const rawDelta = parseCostManaDelta(combinedPitchRed[2], 'reduce');
+			const per = parseCostMetricAmount(combinedPitchRed[3]);
+			if (
+				addParsed &&
+				addParsed.unparsed.length === 0 &&
+				addParsed.defs.length > 0 &&
+				rawDelta &&
+				per
+			) {
+				return {
+					k: 'costModifier',
+					affects: { k: 'self' },
+					delta: {
+						...rawDelta,
+						per,
+						additionalCosts: addParsed.defs
+					},
+					who: { relation: 'you' },
+					...(turnPrefixCondition ? { condition: turnPrefixCondition } : {})
+				};
+			}
+		}
+
+		if (/^as an additional cost to cast (?:~|this spell), /i.test(text)) {
+			const addParsed = parseAdditionalCostSentence(text, 0, false);
+			if (
+				addParsed &&
+				addParsed.unparsed.length === 0 &&
+				addParsed.defs.length > 0 &&
+				addParsed.defs.some((d) => !isLegacyCardTsCastPayable(d))
+			) {
+				return {
+					k: 'additionalCastCost',
+					costs: addParsed.defs,
+					...(turnPrefixCondition ? { condition: turnPrefixCondition } : {})
+				};
+			}
+		}
+
+		const spendXColoredOnly = text.match(
+			/^spend only colored mana on X(?:\.\s*(no more than one mana of each color may be spent this way))?$/i
+		);
+		if (spendXColoredOnly) {
+			return {
+				k: 'manaSpendRestriction',
+				scope: 'selfBoth',
+				xColoredOnly: true,
+				...(spendXColoredOnly[1] ? { xMaxOnePerColor: true } : {}),
+				...(turnPrefixCondition ? { condition: turnPrefixCondition } : {})
+			};
+		}
+
+		const spendXColors = text.match(/^spend only (.+?) mana on X$/i);
+		if (spendXColors) {
+			const cols = parseSpendColorWords(spendXColors[1]);
+			if (cols) {
+				return {
+					k: 'manaSpendRestriction',
+					scope: 'selfBoth',
+					xColors: cols,
+					...(turnPrefixCondition ? { condition: turnPrefixCondition } : {})
+				};
+			}
+		}
+
+		const spendSourceM = text.match(
+			/^spend only mana produced by (creatures|basic lands|snow sources|Treasures|sources of the chosen color) to cast (?:~|this spell)(?:\s+this way)?$/i
+		);
+		if (spendSourceM) {
+			const rawKind = spendSourceM[1].toLowerCase();
+			const sourceKind: 'creature' | 'basicLand' | 'snow' | 'treasure' | 'chosenColor' =
+				rawKind === 'creatures'
+					? 'creature'
+					: rawKind === 'basic lands'
+						? 'basicLand'
+						: rawKind === 'snow sources'
+							? 'snow'
+							: rawKind === 'treasures'
+								? 'treasure'
+								: 'chosenColor';
+			return {
+				k: 'manaSpendRestriction',
+				scope: 'selfSpell',
+				sourceKind,
+				...(turnPrefixCondition ? { condition: turnPrefixCondition } : {})
+			};
+		}
+
+		const firstActZero = text.match(
+			/^(during your turn,\s*)?you may pay \{0\} rather than pay the (equip|power-up|cycling) cost of the first (?:(equip|power-up) ability you activate|card you cycle) (?:each turn|during each of your turns)$/i
+		);
+		if (firstActZero) {
+			const kw = firstActZero[2].toLowerCase() as 'equip' | 'power-up' | 'cycling';
+			const kw2 = firstActZero[3]?.toLowerCase();
+			const yourTurnSuffix = /during each of your turns$/i.test(text);
+			if (!kw2 || kw === kw2) {
+				return {
+					k: 'firstActivationZeroCost',
+					abilityKeyword: kw,
+					...(firstActZero[1] || yourTurnSuffix ? { duringYourTurnOnly: true } : {}),
+					...(turnPrefixCondition ? { condition: turnPrefixCondition } : {})
+				};
+			}
+		}
+
+		const liesaMatch = text.match(
+			/^rather than pay \{2\} for each previous time you've cast (?:~|this spell) from the command zone this game,\s*pay (\d+) life that many times$/i
+		);
+		if (liesaMatch) {
+			const lifePerCast = parseInt(liesaMatch[1], 10);
+			if (lifePerCast >= 1) {
+				return {
+					k: 'commanderTaxAsLife',
+					lifePerCast,
+					...(turnPrefixCondition ? { condition: turnPrefixCondition } : {})
+				};
+			}
+		}
+		// --- End Track P20b ---
+
 		if (/^a deck can have any number of cards named ~$/i.test(text)) {
 			return { k: 'deckCopyLimit', limit: 'any' };
 		}
@@ -2958,13 +3617,19 @@ export function parseCostModifierSentence(sentence: string): StaticDef | null {
 			}
 		}
 
-		// "You may <cost> rather than pay this spell's/~'s mana cost."
+		// "You may <cost> rather than pay this spell's/~'s mana cost[ if <condition>]."
 		const selfPitchAlt = text.match(
-			/^you may (.+?) rather than pay (?:this spell's|~'s) mana cost$/i
+			/^you may (.+?) rather than pay (?:this spell's|~'s) mana cost(?:\s+if\s+(.+))?$/i
 		);
 		if (selfPitchAlt) {
-			const alt = buildSelfAltCastStatic(selfPitchAlt[1], turnPrefixCondition);
-			if (alt) return alt;
+			const trailingCond = selfPitchAlt[2] ? parseSelfCostCondition(selfPitchAlt[2]) : undefined;
+			if (!selfPitchAlt[2] || trailingCond) {
+				const alt = buildSelfAltCastStatic(
+					selfPitchAlt[1],
+					combineCond(turnPrefixCondition, trailingCond)
+				);
+				if (alt) return alt;
+			}
 		}
 
 		// "If <condition>, you may <cost> rather than pay this spell's/~'s mana cost."
