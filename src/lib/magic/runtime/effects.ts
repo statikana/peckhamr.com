@@ -160,6 +160,8 @@ import {
 // --- End Track P16a ---
 import { noteLayerInputsChanged } from './layerCache.ts';
 import {
+	evaluateAmount,
+	evaluateCondition,
 	matchesObjectFilter,
 	objectManaValue,
 	objectPower,
@@ -172,6 +174,15 @@ import {
 	evaluateP8Condition
 } from './staticsLayersAndRestrictions.ts';
 import { activeRuleModifiers, applySelfEtbReplacements, tokenMultiplier } from './replace.ts';
+// --- Track P20a ---
+import {
+	applyChosenPlayerDamageModifiers,
+	getGrantedSpellDamageKeywordsForStackItem,
+	hasGlobalAllDamageWither,
+	shouldDealDamageToPlayerAsInfect,
+	shouldReplaceNoncombatDamageWithMinusCounters
+} from './staticsWave7.ts';
+// --- End Track P20a ---
 import {
 	flushTriggers,
 	withSimultaneousDestroyLki,
@@ -645,6 +656,9 @@ export function sourceDamageInfo(
 	sourcePerm: CardInstance | null,
 	sourceCard: ScryfallCard
 ): SourceDamageInfo {
+	// --- Track P20a ---
+	const globalWither = hasGlobalAllDamageWither(state);
+	// --- End Track P20a ---
 	if (sourcePerm && sourcePerm.zone === 'battlefield') {
 		const ev = evaluatePermanent(state, sourcePerm);
 		const kws = ev.activeKeywords.map((k) => k.toLowerCase());
@@ -652,7 +666,7 @@ export function sourceDamageInfo(
 			hasDeathtouch: kws.includes('deathtouch'),
 			hasLifelink: kws.includes('lifelink'),
 			hasInfect: kws.includes('infect'),
-			hasWither: kws.includes('wither'),
+			hasWither: globalWither || kws.includes('wither'),
 			colors: sourcePerm.isFaceDown ? [] : [...ev.colors],
 			types: ev.typeLine
 				.split(/\s+[—-]\s+/)[0]
@@ -676,7 +690,7 @@ export function sourceDamageInfo(
 		hasDeathtouch: kws.has('deathtouch'),
 		hasLifelink: kws.has('lifelink'),
 		hasInfect: kws.has('infect'),
-		hasWither: kws.has('wither'),
+		hasWither: globalWither || kws.has('wither'),
 		colors: [...view.colors],
 		types: [...view.types],
 		// --- Track P11 ---
@@ -693,6 +707,11 @@ export function permanentProtectedFromSource(
 	evTarget?: ReturnType<typeof evaluatePermanent>
 ): boolean {
 	const ev = evTarget ?? evaluatePermanent(state, target);
+	// --- Track P20a (CR 702.16j): Protection from a player ---
+	if (srcInfo.sourceControllerId && ev.protectionFromPlayerIds?.includes(srcInfo.sourceControllerId)) {
+		return true;
+	}
+	// --- End Track P20a ---
 	const colorMap: Record<string, ManaColor> = {
 		white: 'W',
 		blue: 'U',
@@ -798,23 +817,45 @@ export function dealDamageToPermanent(
 	if (dmg <= 0) return 0;
 	// --- End Track P7 ---
 	// --- Track P11 (CR 614.7a): Static damage addition/multiplication replacements ---
+	let effSrcCtrlId: string | undefined;
 	{
 		const srcPerm = p.findPermanent(state, sourceId)?.inst;
 		const stackSrc = !srcPerm
 			? state.stack.find((s) => s.id === sourceId || s.sourceInstanceId === sourceId)
 			: undefined;
+		effSrcCtrlId = srcInfo.sourceControllerId ?? stackSrc?.controllerId ?? opts?.actorId;
 		dmg = applyStaticDamageModifiers(state, dmg, {
 			source: srcPerm,
 			sourceCard: srcInfo.sourceCard ?? stackSrc?.card,
-			sourceControllerId:
-				srcInfo.sourceControllerId ?? stackSrc?.controllerId ?? opts?.actorId,
+			sourceControllerId: effSrcCtrlId,
 			isCombat: combat,
 			targetKind: 'permanent',
 			targetPermanent: target
 		});
+		// --- Track P20a ---
+		dmg = applyChosenPlayerDamageModifiers(state, dmg, {
+			isCombat: combat,
+			targetKind: 'permanent',
+			targetPermanent: target
+		});
+		// --- End Track P20a ---
 		if (dmg <= 0) return 0;
 	}
 	// --- End Track P11 ---
+	// --- Track P20a (CR 614.1a): Replace noncombat damage to opponent creature with -1/-1 counters ---
+	if (
+		shouldReplaceNoncombatDamageWithMinusCounters(
+			state,
+			target,
+			evTarget.isCreature,
+			combat,
+			effSrcCtrlId
+		)
+	) {
+		p.addCounters(state, target, '-1/-1', dmg);
+		return 0;
+	}
+	// --- End Track P20a ---
 
 	// --- Track P15 (CR 120.3h / CR 310.6 / CR 310.11b): Damage dealt to a battle removes defense counters ---
 	const targetIsBattle = isPermanentBattle(state, target);
@@ -854,7 +895,8 @@ export function dealDamageToPermanent(
 			if (!dmgList.some((e) => e.sourceId === sourceId && e.sourceVersion === srcVer)) {
 				dmgList.push({
 					sourceId,
-					...(srcVer !== undefined ? { sourceVersion: srcVer } : {})
+					...(srcVer !== undefined ? { sourceVersion: srcVer } : {}),
+					...(effSrcCtrlId ? { sourceControllerId: effSrcCtrlId } : {})
 				});
 			}
 		}
@@ -955,11 +997,23 @@ export function dealDamageToPlayer(
 			targetKind: 'player',
 			targetPlayerId: pl.playerId
 		});
+		// --- Track P20a ---
+		dmg = applyChosenPlayerDamageModifiers(state, dmg, {
+			isCombat: combat,
+			targetKind: 'player',
+			targetPlayerId: pl.playerId
+		});
+		// --- End Track P20a ---
 		if (dmg <= 0) return 0;
 	}
 	// --- End Track P11 ---
 
-	if (srcInfo.hasInfect) {
+	if (
+		srcInfo.hasInfect ||
+		// --- Track P20a ---
+		shouldDealDamageToPlayerAsInfect(state, pl.playerId)
+		// --- End Track P20a ---
+	) {
 		// CR 702.90b: Damage dealt to a player by a source with infect is dealt in the form of poison counters.
 		pl.poison = (pl.poison || 0) + dmg;
 	} else {
@@ -2075,6 +2129,23 @@ class Run {
 				return getPlayerCounterCount(p, a.counter);
 			}
 			// --- End Track P16a ---
+			// --- Track P20a ---
+			case 'manaSpentToCast':
+			case 'opponentsWithLifeLessThanHalfStarting':
+			case 'chosenPlayerZoneCount': {
+				const srcFound = this.locate(this.ctx.sourceId);
+				return evaluateAmount(a, {
+					state: this.state,
+					controllerId: this.you.playerId,
+					source: srcFound?.inst ?? {
+						...(this.ctx.item as unknown as CardInstance),
+						manaSpentCount:
+							this.ctx.item.manaColorsSpent?.length ?? 0
+					},
+					xValue: this.ctx.xValue
+				});
+			}
+			// --- End Track P20a ---
 		}
 	}
 
@@ -2538,7 +2609,11 @@ class Run {
 			f.sharesColorWithSelf !== undefined ||
 			f.hasAnyCounter !== undefined ||
 			f.equipped !== undefined ||
-			f.enchanted !== undefined
+			f.enchanted !== undefined ||
+			f.toughnessGreaterThanPower !== undefined ||
+			f.manaValueParity !== undefined ||
+			f.controlledByChosenPlayer !== undefined ||
+			f.pairedWithSource !== undefined
 		) {
 			const srcInst = this.locate(this.ctx.sourceId)?.inst;
 			if (
@@ -2551,7 +2626,15 @@ class Run {
 							: {}),
 						...(f.hasAnyCounter !== undefined ? { hasAnyCounter: f.hasAnyCounter } : {}),
 						...(f.equipped !== undefined ? { equipped: f.equipped } : {}),
-						...(f.enchanted !== undefined ? { enchanted: f.enchanted } : {})
+						...(f.enchanted !== undefined ? { enchanted: f.enchanted } : {}),
+						...(f.toughnessGreaterThanPower !== undefined
+							? { toughnessGreaterThanPower: f.toughnessGreaterThanPower }
+							: {}),
+						...(f.manaValueParity !== undefined ? { manaValueParity: f.manaValueParity } : {}),
+						...(f.controlledByChosenPlayer !== undefined
+							? { controlledByChosenPlayer: f.controlledByChosenPlayer }
+							: {}),
+						...(f.pairedWithSource !== undefined ? { pairedWithSource: f.pairedWithSource } : {})
 					},
 					{ state: this.state, controllerId: you, source: srcInst }
 				)
@@ -5761,7 +5844,21 @@ class Run {
 		sourcePerm: CardInstance | null,
 		sourceCard: ScryfallCard
 	): SourceDamageInfo {
-		return sourceDamageInfo(this.state, sourcePerm, sourceCard);
+		const base = sourceDamageInfo(this.state, sourcePerm, sourceCard);
+		// --- Track P20a (CR 702.15d, 702.2): Spell damage keywords granted on the stack ---
+		if ((!sourcePerm || sourcePerm.zone !== 'battlefield') && this.ctx.item?.kind === 'spell') {
+			const granted = getGrantedSpellDamageKeywordsForStackItem(this.state, this.ctx.item);
+			return {
+				...base,
+				hasLifelink: base.hasLifelink || granted.hasLifelink,
+				hasDeathtouch: base.hasDeathtouch || granted.hasDeathtouch,
+				hasWither: base.hasWither || granted.hasWither,
+				hasInfect: base.hasInfect || granted.hasInfect,
+				sourceControllerId: base.sourceControllerId ?? this.ctx.item.controllerId
+			};
+		}
+		// --- End Track P20a ---
+		return base;
 	}
 
 	permanentProtectedFromSource(
@@ -9088,6 +9185,17 @@ class Run {
 			case 'diedThisWay':
 				return Boolean(evaluateP16aStepCondition(this.p16aHost(), c));
 			// --- End Track P16a ---
+			// --- Track P20a ---
+			case 'lifeCompareHalfStarting':
+			case 'mostCommonColorAmongPermanents': {
+				const srcFound = this.locate(this.ctx.sourceId);
+				return evaluateCondition(c, {
+					state: this.state,
+					controllerId: this.you.playerId,
+					source: srcFound?.inst
+				});
+			}
+			// --- End Track P20a ---
 		}
 	}
 

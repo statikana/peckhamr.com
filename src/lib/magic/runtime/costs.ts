@@ -87,6 +87,9 @@ import { effectiveCardForObject } from '../scryfall.ts';
 // --- Track P12 ---
 import { recordPlayerLifeLossWave4 } from './keywordsWave4.ts';
 // --- End Track P12 ---
+// --- Track P20a ---
+import { canActivateAsThoughHaste } from './staticsWave7.ts';
+// --- End Track P20a ---
 // --- Track P14 ---
 import {
 	addCountersForCostOnPermanent,
@@ -1572,7 +1575,10 @@ function checkSimple(def: CostDef, ctx: CostContext): string | null {
 				!(def.k === 'untapSelf' && def.viaSymbol === false) &&
 				evaluatePermanent(ctx.state, src).isCreature &&
 				src.summoningSick &&
-				!hasHaste(ctx.state, src)
+				!hasHaste(ctx.state, src) &&
+				// --- Track P20a (CR 602.5a): "activate abilities of [filter] as though those creatures had haste" ---
+				!canActivateAsThoughHaste(ctx.state, ctx.player.playerId, src)
+				// --- End Track P20a ---
 			) {
 				return `${name} has summoning sickness and cannot use {${def.k === 'tapSelf' ? 'T' : 'Q'}} abilities yet.`;
 			}

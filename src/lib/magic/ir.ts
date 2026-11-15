@@ -62,6 +62,12 @@ export interface CopyModificationSpec {
 	removeSupertypes?: string[];
 	addKeywords?: string[];
 	noManaCost?: boolean;
+	// --- Track P20a ---
+	/** CR 707.9a: Quoted ability rules-text lines added to the copy's copiable values ("..., except it has '<ability>'"). */
+	addedAbilityTexts?: string[];
+	/** CR 707.9a: Supertypes added to the copy's copiable values ("..., except it's legendary in addition to its other types"). */
+	addSupertypes?: string[];
+	// --- End Track P20a ---
 }
 
 export interface DamagePreventionSpec {
@@ -635,6 +641,16 @@ export interface ObjectFilter {
 	/** CR 701.72 / CR 607.2: matches permanents currently assimilated by `source` (matching `objectVersion`). */
 	assimilatedWithSelf?: boolean;
 	// --- End Track P16a ---
+	// --- Track P20a ---
+	/** CR 702.95a Soulbond: matches `source` itself and the creature `source` is currently paired with (`source.pairedWithId`). */
+	pairedWithSource?: boolean;
+	/** Matches objects whose toughness is strictly greater than their power (`T > P`). */
+	toughnessGreaterThanPower?: boolean;
+	/** CR 107.1c: matches objects by mana-value parity (`0` is even), or relative to `source.chosenParity` (`chosenQuality` / `notChosenQuality`). */
+	manaValueParity?: 'odd' | 'even' | 'chosenQuality' | 'notChosenQuality';
+	/** Matches permanents controlled by `source.chosenPlayerId` ("the chosen player controls"). */
+	controlledByChosenPlayer?: boolean;
+	// --- End Track P20a ---
 }
 
 export interface Compare {
@@ -814,8 +830,16 @@ export type Amount =
 			k: 'playerCounters';
 			counter: 'poison' | 'experience' | 'energy' | 'rad' | 'ticket';
 			player: PlayerRef;
-	  };
+	  }
 	// --- End Track P16a ---
+	// --- Track P20a ---
+	/** CR 601.2h / 400.7d: total amount of mana spent to cast this spell / permanent (`manaSpentCount`). */
+	| { k: 'manaSpentToCast' }
+	/** Count of cards matching optional `filter` in `source.chosenPlayerId`'s `zone` ("cards in the chosen player's hand/graveyard"). */
+	| { k: 'chosenPlayerZoneCount'; zone: ZoneType; filter?: ObjectFilter }
+	/** Number of non-lost opponents whose life total is strictly less than half their starting life total (*Anya, Merciless Angel*). */
+	| { k: 'opponentsWithLifeLessThanHalfStarting' };
+	// --- End Track P20a ---
 
 // ---- Costs ----------------------------------------------------------------------------------
 
@@ -2121,8 +2145,22 @@ export type Condition =
 	// --- End Track P18b ---
 	// --- Track P16a ---
 	/** True iff `ref` (or the object acted on by the preceding step) moved to a graveyard from the battlefield. */
-	| { k: 'diedThisWay'; ref?: Ref };
+	| { k: 'diedThisWay'; ref?: Ref }
 	// --- End Track P16a ---
+	// --- Track P20a ---
+	/** Compares `you` or `anyOpponent` life total against half the game's starting life total (`CR 107.1`). */
+	| {
+			k: 'lifeCompareHalfStarting';
+			who: 'you' | 'anyOpponent';
+			op: '<=' | '<' | '>=' | '>';
+	  }
+	/** True iff `color` is the most common color among permanents on the battlefield (or tied for most common when `allowTie`). */
+	| {
+			k: 'mostCommonColorAmongPermanents';
+			color: ManaColor;
+			allowTie: boolean;
+	  };
+	// --- End Track P20a ---
 
 // ---- Statics and replacements ---------------------------------------------------------------
 
@@ -2195,8 +2233,14 @@ export type LayerMod =
 	// --- End Track P14 ---
 	// --- Track P17a ---
 	/** CR 613.1e, 105.4: Layer 5 additive color from `source.chosenColor` ("is the chosen color in addition to its other colors"). */
-	| { k: 'addChosenColor' };
+	| { k: 'addChosenColor' }
 	// --- End Track P17a ---
+	// --- Track P20a ---
+	/** CR 702.16j: Layer 6 grants protection from `source.chosenPlayerId` ("has protection from the chosen player"). */
+	| { k: 'protectionFromChosenPlayer' }
+	/** CR 305.7 / 613.1d: Layer 4 replaces land/creature subtypes with `[source.chosenSubType]` ("is the chosen type"). */
+	| { k: 'setChosenSubtype' };
+	// --- End Track P20a ---
 
 export interface CostDelta {
 	/** 'setZero' makes the cost {0}; 'reduce'/'increase' change the generic component. */
@@ -2284,8 +2328,15 @@ export type RuleModKind =
 	| 'cantPayLifeOrSacrificeForCosts'
 	| 'legendRuleExempt'
 	| 'flagbearer'
-	| 'untapStepCap';
+	| 'untapStepCap'
 	// --- End Track P17a ---
+	// --- Track P20a ---
+	| 'graveyardCantBeTargeted'
+	| 'dontLoseAtZeroOrLessLife'
+	| 'damageToYouAsInfect'
+	| 'allDamageHasWither'
+	| 'skipExtraTurns';
+	// --- End Track P20a ---
 
 export type RestrictionKind =
 	| 'cantAttack'
@@ -2618,8 +2669,39 @@ export type StaticDef =
 			filter: ObjectFilter;
 			keywords: string[];
 			condition?: Condition;
-	  };
+	  }
 	// --- End Track P17a ---
+	// --- Track P20a ---
+	| {
+			/** CR 602.5a: "You may activate abilities of [filter] as though those creatures had haste." */
+			k: 'activateAsThoughHaste';
+			filter: ObjectFilter;
+			condition?: Condition;
+	  }
+	| {
+			/** CR 115.1 / 702.11 / 702.18: Source-filtered targeting restriction on permanents ("[affected] can't be the target of <sourceFilter> spells/abilities [your opponents control]"). */
+			k: 'cantBeTargetedBy';
+			affected: ObjectFilter | 'attachedTo' | 'self';
+			sourceFilter?: ObjectFilter;
+			spellsOnly?: boolean;
+			abilitiesOnly?: boolean;
+			opponentControllerOnly?: boolean;
+			condition?: Condition;
+	  }
+	| {
+			/** CR 106.12: "If you tap a [filter] for mana, it produces twice / three times as much of that mana instead." */
+			k: 'tapForManaMultiplier';
+			factor: number;
+			filter: ObjectFilter;
+			who?: 'you' | 'all';
+			condition?: Condition;
+	  }
+	| {
+			/** Draft-only rules text that has no effect during constructed/regular gameplay (*Deal Broker*, *Cogwork Librarian*, etc.). */
+			k: 'draftNoOp';
+			condition?: Condition;
+	  };
+	// --- End Track P20a ---
 
 // --- Track P18b ---
 export type CompanionDeckConditionId =
@@ -2657,8 +2739,8 @@ export interface ReplacementDef {
 				/** "You may have ~ enter as a copy of any creature on the battlefield" (CR 707). */
 				copyOf?: ObjectFilter;
 				// --- Track P4 ---
-				/** CR 614.1c / 614.12: "As ~ enters, choose a creature type." */
-				chooseSubType?: 'creature';
+				/** CR 614.1c / 614.12: "As ~ enters, choose a creature / basic land / land type." */
+				chooseSubType?: 'creature' | 'basicLand' | 'land';
 				/** CR 614.1c / 614.12 / 105.4: "As ~ enters, choose a color [other than <color>]." */
 				chooseColor?: { exclude?: ManaColor };
 				// --- Track P8 ---
@@ -2710,6 +2792,38 @@ export interface ReplacementDef {
 					skipFirstInYourDrawStep?: boolean;
 				};
 				// --- End Track P17a ---
+				// --- Track P20a ---
+				/** CR 730.2: "If it's neither day nor night, it becomes day as ~ enters." */
+				becomesDayIfNeither?: boolean;
+				/** CR 614.1c / 614.12: "As ~ enters, choose a player / an opponent." */
+				choosePlayer?: 'any' | 'opponent';
+				/** CR 614.1c / 614.12: "As ~ enters, choose odd or even." */
+				chooseParity?: boolean;
+				/** CR 614.12: "~ enters under the control of an opponent of your choice." */
+				enterUnderOpponentControl?: boolean;
+				/** CR 614.12: External ETB untapped override ("Lands you control enter untapped", "Gates you control enter untapped"). */
+				untapped?: boolean;
+				/** CR 614.1a: Opponent-caused discard puts `~` onto the battlefield instead of graveyard (*Obstinate Baloth*, *Loxodon Smiter*, *Dodecapod*). */
+				opponentDiscardToBattlefield?: {
+					counters?: { counter: CounterType; count: number };
+				};
+				/** CR 614.1a: "If a creature dealt damage by ~ / by a source you controlled this turn would die, exile it instead." */
+				dealtDamageBySelfExileOnDie?: boolean | 'controlledSource' | 'controlledSourceOpponentCreature';
+				/** CR 614.1a: "If a source you control would deal noncombat damage to a creature an opponent controls, put that many -1/-1 counters on that creature instead." (*Soul-Scar Mage*). */
+				noncombatDamageToOpponentCreatureAsMinusCounters?: boolean;
+				/** CR 701.19: "If ~ would be destroyed, regenerate it." (*Knight of the Holy Nimbus*, *Mossbridge Troll*). */
+				regenerateSelfOnDestroy?: boolean;
+				/** CR 614.1a: "If ~ would be put into a graveyard from the battlefield, instead exile it and take an extra turn after this one." (*Ugin's Nexus*). */
+				exileAndExtraTurnOnBattlefieldToGraveyard?: boolean;
+				/** CR 614.7a: Damage scaling targeting `chosenPlayerId` or permanents they control (*True-Name Nemesis* / *Archfiend* / *Obosh*-style chosen-player doublers). */
+				chosenPlayerDamageMod?: {
+					mode: 'double' | 'triple' | 'add';
+					add?: Amount;
+					noncombatOnly?: boolean;
+					combatOnly?: boolean;
+					sourceFilter?: ObjectFilter | 'self' | 'attachedTo';
+				};
+				// --- End Track P20a ---
 		  };
 	/** CR 614.15 / 616.1a: true when this is a self-replacement effect applied before other replacements. */
 	selfReplacement?: boolean;

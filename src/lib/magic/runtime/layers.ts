@@ -119,6 +119,15 @@ function collectP16aArbitraryPtCounters(
 	return items;
 }
 // --- End Track P16a ---
+// --- Track P20a ---
+import {
+	countOpponentsWithLifeLessThanHalfStarting,
+	evaluateChosenPlayerZoneCount,
+	evaluateLifeCompareHalfStarting,
+	evaluateMostCommonColorFromCounts,
+	matchesManaValueParity
+} from './staticsWave7.ts';
+// --- End Track P20a ---
 
 export interface AttributedKeywordOrEffect {
 	id: string;
@@ -141,6 +150,9 @@ export interface AttributedKeywordOrEffect {
 	// --- Track P14 ---
 	protectionExemption?: ProtectionAttachmentExemptionInfo;
 	// --- End Track P14 ---
+	// --- Track P20a ---
+	protectedFromPlayerId?: string;
+	// --- End Track P20a ---
 	grantSourceCard?: ScryfallCard;
 	grantSourceId?: string;
 	removed: boolean;
@@ -184,6 +196,9 @@ export interface EvaluatedPermanent {
 	keywords: string[];
 	breakdown: CardContinuousBreakdown;
 	hasSubType: (subType: string) => boolean;
+	// --- Track P20a ---
+	protectionFromPlayerIds?: string[];
+	// --- End Track P20a ---
 }
 
 /**
@@ -888,6 +903,9 @@ interface GrantedAbilityMeta {
 	// --- Track P14 ---
 	protectionExemption?: ProtectionAttachmentExemptionInfo;
 	// --- End Track P14 ---
+	// --- Track P20a ---
+	protectedFromPlayerId?: string;
+	// --- End Track P20a ---
 	grantSourceCard?: ScryfallCard;
 	grantSourceId?: string;
 }
@@ -958,8 +976,11 @@ function grantItem(
 	const existingActive =
 		keyLow === 'toxic' ||
 		// --- Track P14 (CR 702.16n): Keep attachment-exempt protection grants distinct ---
-		(keyLow === 'protection' && Boolean(grantMeta?.protectionExemption))
+		(keyLow === 'protection' && Boolean(grantMeta?.protectionExemption)) ||
 		// --- End Track P14 ---
+		// --- Track P20a ---
+		(keyLow === 'protection' && Boolean(grantMeta?.protectedFromPlayerId))
+		// --- End Track P20a ---
 			? undefined
 			: work.items.find(
 					(it) =>
@@ -1043,6 +1064,11 @@ function grantItem(
 						? { protectionExemption: grantMeta.protectionExemption }
 						: {}),
 					// --- End Track P14 ---
+					// --- Track P20a ---
+					...(grantMeta.protectedFromPlayerId
+						? { protectedFromPlayerId: grantMeta.protectedFromPlayerId }
+						: {}),
+					// --- End Track P20a ---
 					...(grantMeta.grantSourceCard ? { grantSourceCard: grantMeta.grantSourceCard } : {}),
 					...(grantMeta.grantSourceId ? { grantSourceId: grantMeta.grantSourceId } : {})
 				}
@@ -1301,8 +1327,14 @@ function offBattlefieldFilterNeedsExtendedMatch(f: ObjectFilter): boolean {
 			f.hasAdventure !== undefined ||
 			f.hasXInManaCost !== undefined ||
 			f.powerEqualsToughness !== undefined ||
-			f.manaValueEqualsSourcePower !== undefined
+			f.manaValueEqualsSourcePower !== undefined ||
 			// --- End Track P16b & P17b ---
+			// --- Track P20a ---
+			f.pairedWithSource !== undefined ||
+			f.toughnessGreaterThanPower !== undefined ||
+			f.manaValueParity !== undefined ||
+			f.controlledByChosenPlayer !== undefined
+			// --- End Track P20a ---
 	);
 }
 
@@ -1708,6 +1740,37 @@ function matchesLayerFilter(
 		}
 	}
 	// --- End Track P16a ---
+	// --- Track P20a ---
+	if (filter.pairedWithSource) {
+		layerReads |= READ_P20A;
+		const pairedId = source.inst.pairedWithId;
+		if (!pairedId) return false;
+		if (target.inst.instanceId !== source.inst.instanceId && target.inst.instanceId !== pairedId) {
+			return false;
+		}
+	}
+	if (filter.controlledByChosenPlayer) {
+		layerReads |= READ_P20A;
+		const chosenPid = source.inst.chosenPlayerId;
+		if (!chosenPid || target.controllerId !== chosenPid) return false;
+	}
+	if (filter.toughnessGreaterThanPower) {
+		if (!target.types.includes('Creature')) return false;
+		if (
+			target.workingPower === null ||
+			target.workingToughness === null ||
+			target.workingToughness <= target.workingPower
+		) {
+			return false;
+		}
+	}
+	if (filter.manaValueParity !== undefined) {
+		layerReads |= READ_P20A;
+		if (!matchesManaValueParity(target.manaValue, filter.manaValueParity, source.inst)) {
+			return false;
+		}
+	}
+	// --- End Track P20a ---
 	return true;
 }
 
@@ -2233,6 +2296,40 @@ function evaluateLayerAmount(
 			return 0;
 		}
 		// --- End Track P16a ---
+		// --- Track P20a ---
+		case 'manaSpentToCast':
+			layerReads |= READ_P20A;
+			return source.inst.manaSpentCount ?? 0;
+		case 'chosenPlayerZoneCount': {
+			layerReads |= READ_P20A | READ_ZONE_SIZES;
+			if (amount.zone === 'graveyard') layerReads |= READ_GRAVEYARDS;
+			else if (amount.zone === 'exile') layerReads |= READ_EXILE;
+			else if (amount.zone !== 'battlefield') layerReads |= READ_HIDDEN_ZONES;
+			if (amount.zone === 'battlefield') {
+				const chosenPid = source.inst.chosenPlayerId;
+				if (!chosenPid) return 0;
+				let count = 0;
+				for (const w of workList) {
+					if (w.controllerId !== chosenPid) continue;
+					if (amount.filter && !matchesLayerFilter(amount.filter, w, source, state, workList)) {
+						continue;
+					}
+					count++;
+				}
+				return count;
+			}
+			return evaluateChosenPlayerZoneCount(
+				state,
+				source.inst,
+				source.controllerId,
+				amount.zone,
+				amount.filter
+			);
+		}
+		case 'opponentsWithLifeLessThanHalfStarting':
+			layerReads |= READ_P20A | READ_LIFE;
+			return countOpponentsWithLifeLessThanHalfStarting(state, source.controllerId);
+		// --- End Track P20a ---
 		default:
 			return 0;
 	}
@@ -2672,6 +2769,23 @@ function evaluateLayerCondition(
 					)
 			);
 		// --- End Track P18b ---
+		// --- Track P20a ---
+		case 'lifeCompareHalfStarting':
+			layerReads |= READ_P20A | READ_LIFE;
+			return evaluateLifeCompareHalfStarting(state, source.controllerId, cond.who, cond.op);
+		case 'mostCommonColorAmongPermanents': {
+			layerReads |= READ_P20A;
+			const counts: Record<ManaColor, number> = { W: 0, U: 0, B: 0, R: 0, G: 0, C: 0 };
+			for (const w of workList) {
+				for (const c of w.colors) {
+					if (c === 'W' || c === 'U' || c === 'B' || c === 'R' || c === 'G') {
+						counts[c] += 1;
+					}
+				}
+			}
+			return evaluateMostCommonColorFromCounts(counts, cond.color, cond.allowTie);
+		}
+		// --- End Track P20a ---
 		default:
 			return false;
 	}
@@ -2837,6 +2951,9 @@ const READ_P18A = 1 << 24;
 // --- Track P18b ---
 const READ_P18B = 1 << 25;
 // --- End Track P18b ---
+// --- Track P20a ---
+const READ_P20A = 1 << 28;
+// --- End Track P20a ---
 
 /** Inputs read by the evaluation in progress (bits above). */
 let layerReads = 0;
@@ -3000,6 +3117,22 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 		fp.push(0);
 	}
 	// --- End Track P18b ---
+	// --- Track P20a ---
+	if (reads & READ_P20A) {
+		fp.push(state.rules?.startingLife ?? 20, state.players.length);
+		for (const p of state.players) {
+			fp.push(p.life, Boolean(p.lost));
+		}
+		for (const entry of snap.active) {
+			fp.push(
+				entry.perm.pairedWithId ?? '',
+				entry.perm.chosenPlayerId ?? '',
+				entry.perm.chosenParity ?? '',
+				entry.perm.manaSpentCount ?? 0
+			);
+		}
+	}
+	// --- End Track P20a ---
 	for (const p of state.players) {
 		if (reads & READ_LIFE) fp.push(p.life);
 		if (reads & READ_ENERGY) fp.push(p.energyCounters || 0);
@@ -3470,6 +3603,29 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 		if (fp[i++] !== 0) return false;
 	}
 	// --- End Track P18b ---
+	// --- Track P20a ---
+	if (reads & READ_P20A) {
+		if (
+			fp[i++] !== (state.rules?.startingLife ?? 20) ||
+			fp[i++] !== state.players.length
+		) {
+			return false;
+		}
+		for (const p of state.players) {
+			if (fp[i++] !== p.life || fp[i++] !== Boolean(p.lost)) return false;
+		}
+		for (const entry of snap.active) {
+			if (
+				fp[i++] !== (entry.perm.pairedWithId ?? '') ||
+				fp[i++] !== (entry.perm.chosenPlayerId ?? '') ||
+				fp[i++] !== (entry.perm.chosenParity ?? '') ||
+				fp[i++] !== (entry.perm.manaSpentCount ?? 0)
+			) {
+				return false;
+			}
+		}
+	}
+	// --- End Track P20a ---
 	for (const p of state.players) {
 		if (reads & READ_LIFE && fp[i++] !== p.life) return false;
 		if (reads & READ_ENERGY && fp[i++] !== (p.energyCounters || 0)) return false;
@@ -4614,19 +4770,29 @@ function evaluateTypeOverwrites(
 			if (
 				st.k !== 'continuous' ||
 				st.layer !== '4' ||
-				st.mod.k !== 'setSubtypes' ||
-				(typeof st.affected !== 'object' && st.affected !== 'attachedTo')
+				(st.mod.k !== 'setSubtypes' && st.mod.k !== 'setChosenSubtype')
 			) {
 				continue;
 			}
+			// --- Track P20a ---
+			const effectiveSubtypes =
+				st.mod.k === 'setChosenSubtype'
+					? source.inst.chosenSubType
+						? [source.inst.chosenSubType]
+						: []
+					: st.mod.subtypes;
+			if (effectiveSubtypes.length === 0) continue;
+			// --- End Track P20a ---
 			const candidates =
-				st.affected === 'attachedTo'
-					? (() => {
-							const hostId = source.inst.attachedToId;
-							const host = hostId ? workMap.get(hostId) : undefined;
-							return host ? [host] : [];
-						})()
-					: workList;
+				st.affected === 'self'
+					? [source]
+					: st.affected === 'attachedTo'
+						? (() => {
+								const hostId = source.inst.attachedToId;
+								const host = hostId ? workMap.get(hostId) : undefined;
+								return host ? [host] : [];
+							})()
+						: workList;
 			for (const target of candidates) {
 				if (typeof st.affected === 'object' && !matchesLayerFilter(st.affected, target, source, state, workList)) {
 					continue;
@@ -4636,7 +4802,7 @@ function evaluateTypeOverwrites(
 				}
 				// CR 205.1a, 205.4b, 305.7: Setting land subtypes replaces only land subtypes while
 				// preserving supertypes, all card types (e.g. Artifact, Creature), and non-land subtypes.
-				const settingLandSubtypes = st.mod.subtypes.some((sub) => LAND_SUBTYPES.has(sub));
+				const settingLandSubtypes = effectiveSubtypes.some((sub) => LAND_SUBTYPES.has(sub));
 				// --- Track P17a (CR 613.7): Track latest land-subtype overwrite timestamp per target ---
 				if (settingLandSubtypes) {
 					target.latestSetLandSubtypesTs = Math.max(
@@ -4648,13 +4814,16 @@ function evaluateTypeOverwrites(
 				const retainedSubtypes = settingLandSubtypes
 					? target.subtypes.filter((sub) => !LAND_SUBTYPES.has(sub))
 					: [];
-				target.subtypes = [...st.mod.subtypes, ...retainedSubtypes];
+				target.subtypes = [...effectiveSubtypes, ...retainedSubtypes];
 				const superPrefix = target.supertypes.length > 0 ? `${target.supertypes.join(' ')} ` : '';
 				const typeStr = target.types.join(' ');
 				const subStr = target.subtypes.length > 0 ? ` — ${target.subtypes.join(' ')}` : '';
 				target.effectiveTypeLine = `${superPrefix}${typeStr}${subStr}`;
 				if (!target.typeModifiedBy.includes(source.name)) target.typeModifiedBy.push(source.name);
-				if (st.mod.subtypes.some((sub) => BASIC_LAND_SUBTYPES.has(sub))) {
+				if (
+					effectiveSubtypes.some((sub) => BASIC_LAND_SUBTYPES.has(sub)) &&
+					target.inst.instanceId !== source.inst.instanceId
+				) {
 					recordAbilityRemoval(target, source.name, source.timestamp);
 				}
 			}
@@ -5785,6 +5954,45 @@ function evaluatePerPermanent(
 						if (st.mod.cantHaveOrGain) {
 							cantHaveLocks.push({ keywords: st.mod.keywords, sourceName: source.name });
 						}
+					// --- Track P20a ---
+					} else if (st.layer === '4' && (st.mod.k === 'setSubtypes' || st.mod.k === 'setChosenSubtype')) {
+						const sub =
+							st.mod.k === 'setChosenSubtype' ? source.inst.chosenSubType : st.mod.subtypes[0];
+						const info = sub ? BASIC_LAND_MANA_BY_SUBTYPE[sub.toLowerCase()] : undefined;
+						if (info) {
+							grantItem(
+								target,
+								`mana_${info.sym.toLowerCase()}`,
+								`Mana Ability: Add {${info.sym}}`,
+								'ability',
+								source.name,
+								source.timestamp,
+								{ grantedAbility: makeIntrinsicBasicManaAbility(info.sym as ManaColor) }
+							);
+							grantItem(
+								target,
+								`type_${info.subtype.toLowerCase()}`,
+								`Type: Land — ${info.subtype}`,
+								'type_mod',
+								source.name,
+								source.timestamp
+							);
+						}
+					} else if (st.layer === '6' && st.mod.k === 'protectionFromChosenPlayer') {
+						layerReads |= READ_P20A;
+						const chosenPid = source.inst.chosenPlayerId;
+						if (chosenPid) {
+							grantItem(
+								target,
+								'protection',
+								'Protection from chosen player',
+								'keyword',
+								source.name,
+								source.timestamp,
+								{ protectedFromPlayerId: chosenPid }
+							);
+						}
+					// --- End Track P20a ---
 					}
 				}
 			}
@@ -5806,8 +6014,9 @@ function evaluatePerPermanent(
 						continue;
 					}
 
-					if (st.layer === '4' && st.mod.k === 'setSubtypes') {
-						const sub = st.mod.subtypes[0];
+					if (st.layer === '4' && (st.mod.k === 'setSubtypes' || st.mod.k === 'setChosenSubtype')) {
+						const sub =
+							st.mod.k === 'setChosenSubtype' ? source.inst.chosenSubType : st.mod.subtypes[0];
 						const info = sub ? BASIC_LAND_MANA_BY_SUBTYPE[sub.toLowerCase()] : undefined;
 						if (info) {
 							grantItem(
@@ -5954,6 +6163,22 @@ function evaluatePerPermanent(
 						if (st.mod.cantHaveOrGain) {
 							cantHaveLocks.push({ keywords: st.mod.keywords, sourceName: source.name });
 						}
+					// --- Track P20a ---
+					} else if (st.layer === '6' && st.mod.k === 'protectionFromChosenPlayer') {
+						layerReads |= READ_P20A;
+						const chosenPid = source.inst.chosenPlayerId;
+						if (chosenPid) {
+							grantItem(
+								target,
+								'protection',
+								'Protection from chosen player',
+								'keyword',
+								source.name,
+								source.timestamp,
+								{ protectedFromPlayerId: chosenPid }
+							);
+						}
+					// --- End Track P20a ---
 					}
 				}
 			}
@@ -6429,9 +6654,19 @@ function buildBoardResults(workList: PermWorkState[]): BoardLayerCache['byInstan
 		// --- Track P14 ---
 		const activeKeywords: string[] = [];
 		let seenProtLabels: Set<string> | undefined;
+		// --- Track P20a ---
+		let protectionFromPlayerIds: string[] | undefined;
+		// --- End Track P20a ---
 		for (let ki = 0; ki < breakdown.items.length; ki++) {
 			const it = breakdown.items[ki];
 			if (it.kind !== 'keyword' || it.removed) continue;
+			// --- Track P20a ---
+			if (it.protectedFromPlayerId) {
+				if (!protectionFromPlayerIds?.includes(it.protectedFromPlayerId)) {
+					(protectionFromPlayerIds ??= []).push(it.protectedFromPlayerId);
+				}
+			}
+			// --- End Track P20a ---
 			if (it.canonicalKey === 'protection') {
 				const pLow = it.name.toLowerCase();
 				if (seenProtLabels?.has(pLow)) continue;
@@ -6466,6 +6701,9 @@ function buildBoardResults(workList: PermWorkState[]): BoardLayerCache['byInstan
 			activeKeywords,
 			keywords: activeKeywords,
 			breakdown,
+			// --- Track P20a ---
+			...(protectionFromPlayerIds ? { protectionFromPlayerIds } : {}),
+			// --- End Track P20a ---
 			hasSubType: (subType: string) => {
 				if (
 					(tLine.includes('Creature') || tLine.includes('Kindred') || tLine.includes('Tribal')) &&

@@ -120,6 +120,7 @@ export function getEffectiveActivatedAbilities(
 }
 import { STAPLE_CARDS } from './precons.ts';
 import {
+	activeRuleModifiers,
 	applySelfEtbReplacements,
 	checkGlobalAbilityActivationRestrictions,
 	counterMultiplier,
@@ -180,6 +181,18 @@ import {
 	validateFlagbearerTargets
 } from './runtime/staticsWave6.ts';
 // --- End Track P17a ---
+// --- Track P20a ---
+import {
+	applyWave7CopyModificationExtras,
+	getTapForManaMultiplier,
+	hasActiveSelfRegenerateOnDestroy,
+	isGraveyardTargetingBlocked,
+	isPermanentBlockedByCantBeTargetedBy,
+	playerDontLoseAtZeroOrLessLife,
+	shouldPlayerSkipExtraTurn,
+	spellReliesOnCleanupSacrificeFlash
+} from './runtime/staticsWave7.ts';
+// --- End Track P20a ---
 import {
 	allocateTimestamp,
 	attachObject,
@@ -562,11 +575,8 @@ import {
 import { chooseBotModalTriggerModes, chooseBotTriggerTargets } from './ai.ts';
 import { splitSubtypes } from './runtime/layers.ts';
 // --- Track P7 ---
-import type { Condition, CopyModificationSpec, CostDef, EffectStep, ModalDef, TargetSpec, TokenSpec } from './ir.ts';
+import type { Condition, CopyModificationSpec, CostDef, EffectStep, ModalDef, ObjectFilter, TargetSpec, TokenSpec } from './ir.ts';
 // --- End Track P7 ---
-// --- Track P16a ---
-import type { ObjectFilter } from './ir.ts';
-// --- End Track P16a ---
 import { deriveIdSalt, freshRngSeed, hash32, uid, type RngHolder, type UidHolder } from './runtime/random.ts';
 import { cardAbilityDisplayText, enteringNotices, stackItemDisplayText } from './compiler/support.ts';
 import {
@@ -2894,6 +2904,49 @@ function finalizeCastSpell(
 		? []
 		: getGrantedSpellKeywordsForSpell(state, actorId, inst, stackFaceIdx, stackFused);
 	// --- End Track P17a ---
+	// --- Track P20a: Cleanup-step sacrifice when relying solely on self flash ("If you cast it any time a sorcery couldn't have been cast...") ---
+	let effectiveSpellModsFinal = effectiveSpellMods;
+	if (!isPreparationCopy && !castFaceDownSpec) {
+		const activePl = state.players[state.activePlayerIndex];
+		const atSorceryTiming =
+			activePl?.playerId === actorId &&
+			(state.phase === 'main1' || state.phase === 'main2') &&
+			state.stack.length === 0;
+		if (!atSorceryTiming) {
+			const castDefs = activeAbilityDefs(spellSourceCard, {
+				zone: 'stack',
+				faceIndex: stackFaceIdx,
+				fused: stackFused
+			});
+			const hasInnateOrGrantedFlash =
+				(stackView.types.includes('Instant') && !stackView.types.includes('Sorcery')) ||
+				castDefs.some((a) => a.kind === 'keyword' && a.keyword.name.toLowerCase() === 'flash') ||
+				Boolean(inst.grantedKeywords?.some((k) => k.toLowerCase() === 'flash')) ||
+				castGrantedSpellKws.some((k) => k.toLowerCase() === 'flash') ||
+				activeRuleModifiers(state, 'castAsThoughFlash', actorId).some((mod) => {
+					const sf = mod.def.params?.spells as ObjectFilter | undefined;
+					if (!sf) return true;
+					const viewInst = inst.controllerId === actorId ? inst : { ...inst, controllerId: actorId };
+					return matchesObjectFilter(viewInst, sf, {
+						state,
+						controllerId: mod.controllerId,
+						source: mod.source
+					});
+				});
+			if (
+				spellReliesOnCleanupSacrificeFlash(
+					state,
+					actorId,
+					inst,
+					atSorceryTiming,
+					hasInnateOrGrantedFlash
+				)
+			) {
+				effectiveSpellModsFinal = { ...effectiveSpellModsFinal, sacrificeAtCleanupStep: true };
+			}
+		}
+	}
+	// --- End Track P20a ---
 	actor.spellsCastThisTurn = (actor.spellsCastThisTurn || 0) + 1;
 	// --- Track P15: Day/Night active-player spell count (CR 732.5) ---
 	if (state.players[state.activePlayerIndex]?.playerId === actorId) {
@@ -2905,7 +2958,7 @@ function finalizeCastSpell(
 	// --- End Track P12 ---
 
 	const { targets, targetsBySpec, chosenModes, xValue: xVal, castOptionId, optionalCostCounts } = opts;
-	const spellMods = effectiveSpellMods;
+	const spellMods = effectiveSpellModsFinal;
 	const hasSpellMods = Boolean(spellMods && Object.keys(spellMods).length > 0);
 	// --- Track P12: Awaken target capture (CR 702.113a) ---
 	const awakenLandRef =
@@ -4393,12 +4446,15 @@ function resolveActivatedManaAbility(
 	// --- Track P11: CR 107.4h track mana produced by a Snow permanent ---
 	const producedSnow = !ab?.manaRestriction && !ab?.manaRestrictionSpec && isSnowPermanent(state, perm);
 	// --- End Track P11 ---
+	// --- Track P20a (CR 106.12): Multiplicative tap-for-mana replacements ---
+	const tapMult = tappedForMana ? getTapForManaMultiplier(state, player.playerId, perm) : 1;
+	// --- End Track P20a ---
 	if (chosenBundle && chosenBundle.length > 0) {
 		for (const col of chosenBundle) {
-			addManaToPlayerPool(player, col, 1, ab?.manaRestriction, addOpts);
+			addManaToPlayerPool(player, col, tapMult, ab?.manaRestriction, addOpts);
 			// --- Track P11 ---
 			if (producedSnow) {
-				recordSnowManaAdded(player, col, 1);
+				recordSnowManaAdded(player, col, tapMult);
 			}
 			// --- End Track P11 ---
 		}
@@ -4410,23 +4466,26 @@ function resolveActivatedManaAbility(
 			for (const eff of abilityDef.effect) {
 				if (eff.verb === 'addMana' && eff.delayed) {
 					for (const col of chosenBundle) {
-						(player.manaRiders ??= []).push({
-							id: uid('rider', state),
-							color: col,
-							sourceInstanceId: perm.instanceId,
-							sourceCard: effectiveCardForObject(perm),
-							condition: { sharesCreatureTypeWithCommander: true },
-							scryAmount: 1
-						});
+						for (let m = 0; m < tapMult; m++) {
+							(player.manaRiders ??= []).push({
+								id: uid('rider', state),
+								color: col,
+								sourceInstanceId: perm.instanceId,
+								sourceCard: effectiveCardForObject(perm),
+								condition: { sharesCreatureTypeWithCommander: true },
+								scryAmount: 1
+							});
+						}
 					}
 				}
 			}
 		}
 	} else if (chosenColor && amount > 0) {
-		addManaToPlayerPool(player, chosenColor, amount, ab?.manaRestriction, addOpts);
+		const finalAmount = amount * tapMult;
+		addManaToPlayerPool(player, chosenColor, finalAmount, ab?.manaRestriction, addOpts);
 		// --- Track P11 ---
 		if (producedSnow) {
-			recordSnowManaAdded(player, chosenColor, amount);
+			recordSnowManaAdded(player, chosenColor, finalAmount);
 		}
 		// --- End Track P11 ---
 		const abilityDef = activeAbilityDefs(
@@ -4436,7 +4495,7 @@ function resolveActivatedManaAbility(
 		if (abilityDef && abilityDef.kind === 'activated') {
 			for (const eff of abilityDef.effect) {
 				if (eff.verb === 'addMana' && eff.delayed) {
-					for (let i = 0; i < amount; i++) {
+					for (let i = 0; i < finalAmount; i++) {
 						(player.manaRiders ??= []).push({
 							id: uid('rider', state),
 							color: chosenColor,
@@ -4658,6 +4717,12 @@ function simulateOrExecuteManaOnly(
 	) => {
 		const baseAmt = Math.max(1, ab?.producesAmount || 1);
 		const amount = getProducedAmount(perm, baseAmt, ab);
+		// --- Track P20a ---
+		const abDefs = ab ? activatedAbilityCost(perm.card, ab).defs : [{ k: 'tapSelf' as const }];
+		const tapMult = abDefs.some((d) => d.k === 'tapSelf')
+			? getTapForManaMultiplier(state, player.playerId, perm)
+			: 1;
+		// --- End Track P20a ---
 		availableEnergy -= abilityEnergyCost(perm, ab);
 		tappedSet.add(perm.instanceId);
 		// --- Track P11 ---
@@ -4673,9 +4738,9 @@ function simulateOrExecuteManaOnly(
 				manaReq,
 				preferredCol
 			);
-			for (const c of bundle) pool[c] += 1;
+			for (const c of bundle) pool[c] += tapMult;
 			// --- Track P11 ---
-			if (addsSnow) simSnow += bundle.length;
+			if (addsSnow) simSnow += bundle.length * tapMult;
 			// --- End Track P11 ---
 			manaChoices.set(perm.instanceId, {
 				color: bundle[0] ?? preferredCol ?? 'C',
@@ -4696,9 +4761,9 @@ function simulateOrExecuteManaOnly(
 				preferredCol,
 				player
 			);
-			for (const c of bundle) pool[c] += 1;
+			for (const c of bundle) pool[c] += tapMult;
 			// --- Track P11 ---
-			if (addsSnow) simSnow += bundle.length;
+			if (addsSnow) simSnow += bundle.length * tapMult;
 			// --- End Track P11 ---
 			manaChoices.set(perm.instanceId, {
 				color: bundle[0] ?? preferredCol ?? 'C',
@@ -4709,9 +4774,9 @@ function simulateOrExecuteManaOnly(
 			return;
 		}
 		const chosenColor: ManaColor = preferredCol ?? ab?.producesMana[0] ?? 'C';
-		pool[chosenColor] += amount;
+		pool[chosenColor] += amount * tapMult;
 		// --- Track P11 ---
-		if (addsSnow) simSnow += amount;
+		if (addsSnow) simSnow += amount * tapMult;
 		// --- End Track P11 ---
 		manaChoices.set(perm.instanceId, { color: chosenColor, amount, ab });
 	};
@@ -11419,13 +11484,22 @@ function runDelayedTriggers(state: GameState, phase: GamePhase, activePlayer: Pl
 						? 'Delayed Upkeep Trigger'
 						: phase === 'end_combat'
 							? 'Delayed End of Combat Trigger'
-							: 'Delayed End Step Trigger';
+							: phase === 'cleanup'
+								? 'Delayed Cleanup Step Trigger'
+								: 'Delayed End Step Trigger';
+				// --- Track P20a ---
+				const effControllerId =
+					delayedEffect?.kind === 'sacrifice' && delayedEffect.byCurrentController
+						? (findPermanentOnBoard(state, delayedEffect.targetInstanceId)?.controller.playerId ??
+							dt.controllerId)
+						: dt.controllerId;
+				// --- End Track P20a ---
 				const stkItem: StackItem = withStackItemText(
 					{
 						id: uid('stk', state),
 						sourceInstanceId: compiledMeta ? (dt.sourceInstanceId ?? dt.id) : dt.id,
 						card: dt.sourceCard,
-						controllerId: dt.controllerId,
+						controllerId: effControllerId,
 						kind: 'triggered',
 						title: `${dt.sourceCard.name} (${phaseLabel})`,
 						targets,
@@ -11868,7 +11942,14 @@ registerEventHandler('PhaseBegin', (state, ev) => {
 		flushTriggers(state);
 	}
 	// --- End Track P15 ---
-	if ((ev.phase === 'end_step' || ev.phase === 'upkeep' || ev.phase === 'end_combat') && activePlayer) {
+	if (
+		(ev.phase === 'end_step' ||
+			ev.phase === 'upkeep' ||
+			ev.phase === 'end_combat' ||
+			// --- Track P20a (CR 514.3a): Delayed cleanup-step triggers ---
+			ev.phase === 'cleanup') &&
+		activePlayer
+	) {
 		flushTriggers(state);
 		if (ev.phase === 'end_step' && !activePlayer.lost && state.monarchPlayerId === activePlayer.playerId) {
 			pushMonarchInherentTrigger(
@@ -12990,10 +13071,35 @@ function triggerSourceObject(state: GameState, item: StackItem): CardInstance | 
 }
 
 /** Whether a permanent can be targeted by an ability of `controllerId` from `sourceCard` (CR 702.11, 702.18, 702.16). */
-function permanentTargetable(state: GameState, inst: CardInstance, controllerId: string, owner: string, sourceCard: ScryfallCard): boolean {
+function permanentTargetable(
+	state: GameState,
+	inst: CardInstance,
+	controllerId: string,
+	owner: string,
+	sourceCard: ScryfallCard,
+	// --- Track P20a ---
+	sourcePerm?: CardInstance,
+	sourceKind: 'spell' | 'ability' = 'ability'
+	// --- End Track P20a ---
+): boolean {
 	if (hasKeyword(inst, 'Shroud', state)) return false;
 	if (owner !== controllerId && (hasKeyword(inst, 'Hexproof', state) || hasHexproofFromQuality(inst, sourceCard, state))) return false;
-	return !hasProtectionFrom(inst, sourceCard, state);
+	// --- Track P20a ---
+	if (hasProtectionFrom(inst, sourceCard, state, sourcePerm, false, controllerId)) return false;
+	if (
+		isPermanentBlockedByCantBeTargetedBy(
+			state,
+			inst,
+			controllerId,
+			sourceCard,
+			sourcePerm,
+			sourceKind
+		).blocked
+	) {
+		return false;
+	}
+	return true;
+	// --- End Track P20a ---
 }
 
 // --- Track P16a ---
@@ -13135,15 +13241,27 @@ export function specTargetCandidates(
 		}
 		return out;
 	}
+	// --- Track P20a ---
+	const sourceKind: 'spell' | 'ability' = stackItem
+		? stackItem.kind === 'spell'
+			? 'spell'
+			: 'ability'
+		: source && source.zone !== 'battlefield'
+			? 'spell'
+			: 'ability';
+	// --- End Track P20a ---
 	for (const p of state.players) {
 		if (p.lost) continue;
 		if (zone === 'battlefield') {
 			for (const perm of p.battlefield) {
 				if (perm.phasedOut || !matchesObjectFilter(perm, spec.filter, ctx)) continue;
-				if (!permanentTargetable(state, perm, controllerId, p.playerId, sourceCard)) continue;
+				if (!permanentTargetable(state, perm, controllerId, p.playerId, sourceCard, source, sourceKind)) continue;
 				out.push({ kind: 'permanent', id: perm.instanceId, label: perm.card.name });
 			}
 		} else if (zone === 'graveyard') {
+			// --- Track P20a ---
+			if (isGraveyardTargetingBlocked(state).blocked) continue;
+			// --- End Track P20a ---
 			for (const c of p.graveyard) {
 				if (matchesObjectFilter(c, spec.filter, ctx)) out.push({ kind: 'graveyard_card', id: c.instanceId, label: c.card.name });
 			}
@@ -13976,16 +14094,17 @@ function resolveDelayedTriggerEffect(
 		if (
 			found &&
 			!found.inst.phasedOut &&
-			found.controller.playerId === controller.playerId &&
+			(eff.byCurrentController || found.controller.playerId === controller.playerId) &&
 			(eff.targetObjectVersion === undefined || found.inst.objectVersion === eff.targetObjectVersion)
 		) {
+			const sacPlayer = eff.byCurrentController ? found.controller : controller;
 			const permName = found.inst.card.name;
 			movePermanentToZone(state, found.inst, 'graveyard');
 			addLog(
 				state,
 				'cast',
-				`${controller.username} sacrificed ${permName} (${item.title}).`,
-				controller.playerId
+				`${sacPlayer.username} sacrificed ${permName} (${item.title}).`,
+				sacPlayer.playerId
 			);
 		}
 		return;
@@ -14996,6 +15115,9 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 						item.card,
 						state
 					);
+					// --- Track P20a ---
+					applyWave7CopyModificationExtras(perm, cloneSpec.copyModifications);
+					// --- End Track P20a ---
 					if (cloneSpec.tapped) {
 						perm.tapped = true;
 					}
@@ -15073,6 +15195,29 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 				);
 			}
 			// --- End Track P9 ---
+			// --- Track P20a: Cleanup-step sacrifice delayed trigger ---
+			if (
+				item.spellMods?.sacrificeAtCleanupStep &&
+				(perm.zone === 'battlefield' || moveRes === 'pending')
+			) {
+				(state.delayedTriggers ??= []).push({
+					id: uid('dtrig', state),
+					sourceInstanceId: perm.instanceId,
+					sourceCard: item.card,
+					controllerId: perm.controllerId || controller.playerId,
+					triggerPhase: 'cleanup',
+					targetInstanceId: perm.instanceId,
+					targetObjectVersion: perm.objectVersion,
+					delayedEffect: {
+						kind: 'sacrifice',
+						targetInstanceId: perm.instanceId,
+						targetObjectVersion: perm.objectVersion,
+						byCurrentController: true
+					},
+					description: `Sacrifice ${item.card.name} at the beginning of the next cleanup step.`
+				});
+			}
+			// --- End Track P20a ---
 			if (perm.zone === 'battlefield') {
 				addLog(
 					state,
@@ -15460,8 +15605,12 @@ function tryRegenerateInsteadOfDestroy(
 ): boolean {
 	if (!canBeRegenerated || perm.cantBeRegeneratedThisTurn) return false;
 	const shields = perm.regenerationShields ?? 0;
-	if (shields <= 0) return false;
-	perm.regenerationShields = shields - 1 > 0 ? shields - 1 : undefined;
+	// --- Track P20a ---
+	if (shields <= 0 && !hasActiveSelfRegenerateOnDestroy(state, perm)) return false;
+	if (shields > 0) {
+		perm.regenerationShields = shields - 1 > 0 ? shields - 1 : undefined;
+	}
+	// --- End Track P20a ---
 	perm.damageMarked = 0;
 	perm.deathtouchDamageMarked = false;
 	tapPermanent(state, perm);
@@ -18617,10 +18766,22 @@ function completeTurnCleanupAndPassTurn(state: GameState): void {
 
 	// CR 500.7: Check if there is a queued extra turn in LIFO order
 	if (state.extraTurnQueue && state.extraTurnQueue.length > 0) {
-		while (state.extraTurnQueue.length > 0) {
+		// --- Track P20a ---
+		for (let guard = 0; guard < 64 && state.extraTurnQueue.length > 0; guard++) {
 			const extraPlayerId = state.extraTurnQueue.pop()!;
 			const extraIdx = state.players.findIndex((p) => p.playerId === extraPlayerId && !p.lost);
 			if (extraIdx >= 0) {
+				const skipCheck = shouldPlayerSkipExtraTurn(state, extraPlayerId);
+				if (skipCheck.skip) {
+					addLog(
+						state,
+						'rule',
+						`${state.players[extraIdx].username} skips their extra turn (${skipCheck.sourceName ?? 'Rule modifier'}).`,
+						extraPlayerId
+					);
+					continue;
+				}
+		// --- End Track P20a ---
 				if (state.lastNormalTurnPlayerIndex === undefined) {
 					state.lastNormalTurnPlayerIndex = state.activePlayerIndex;
 				}
@@ -19619,7 +19780,9 @@ export function checkStateBasedActions(state: GameState): void {
 				}
 				continue;
 			}
-			if (p.life <= 0) {
+			// --- Track P20a ---
+			if (p.life <= 0 && !playerDontLoseAtZeroOrLessLife(state, p.playerId)) {
+			// --- End Track P20a ---
 				newlyEliminated.push({
 					player: p,
 					reason: `Life total reached ${p.life}.`,
@@ -20058,13 +20221,26 @@ export function hasProtectionFrom(
 	state: GameState,
 	sourcePerm?: CardInstance,
 	// --- Track P14 ---
-	isAttachmentCheck = false
+	isAttachmentCheck = false,
 	// --- End Track P14 ---
+	// --- Track P20a ---
+	sourceControllerId?: string
+	// --- End Track P20a ---
 ): boolean {
 	if (!sourceCard || targetPerm.phasedOut) return false;
 	const evalTarget = evaluatePermanent(state, targetPerm);
 	const combined = evalTarget.activeKeywords.map((k) => k.toLowerCase()).join('\n');
-	if (!combined.includes('protection from')) return false;
+	// --- Track P20a ---
+	const hasPlayerProt = Boolean(evalTarget.protectionFromPlayerIds?.length);
+	if (!combined.includes('protection from') && !hasPlayerProt) return false;
+	const effSrcCtrl =
+		sourceControllerId ??
+		(sourcePerm
+			? sourcePerm.zone === 'battlefield' && !sourcePerm.phasedOut
+				? evaluatePermanent(state, sourcePerm).controllerId
+				: sourcePerm.controllerId
+			: undefined);
+	// --- End Track P20a ---
 
 	const { colors: srcColors, typeLine: srcTypeLine } = sourceEffectiveQualities(
 		state,
@@ -20080,6 +20256,11 @@ export function hasProtectionFrom(
 			if (isAttachmentExemptFromProtectionGrant(sourcePerm, state, it.protectionExemption)) {
 				continue;
 			}
+			// --- Track P20a: CR 702.16j protection from chosen player ---
+			if (it.protectedFromPlayerId && effSrcCtrl && it.protectedFromPlayerId === effSrcCtrl) {
+				return true;
+			}
+			// --- End Track P20a ---
 			if (doesProtectionQualityMatchSource(it.name.toLowerCase(), srcColors, srcTypeLine)) {
 				return true;
 			}
@@ -20087,6 +20268,12 @@ export function hasProtectionFrom(
 		return false;
 	}
 	// --- End Track P14 ---
+
+	// --- Track P20a: CR 702.16j protection from chosen player ---
+	if (effSrcCtrl && evalTarget.protectionFromPlayerIds?.includes(effSrcCtrl)) {
+		return true;
+	}
+	// --- End Track P20a ---
 
 	if (/protection from everything/i.test(combined)) return true;
 	if (/protection from all colors/i.test(combined) && srcColors.length > 0) return true;
@@ -20235,10 +20422,21 @@ export function validateTargetLegality(
 	target: TargetRef,
 	targetRequirementOrKind: TargetRequirementInfo | string,
 	sourceCard?: ScryfallCard,
-	sourceInstanceId?: string
+	sourceInstanceId?: string,
+	// --- Track P20a ---
+	sourceKindHint?: 'spell' | 'ability'
+	// --- End Track P20a ---
 ): { ok: boolean; error?: string } {
 	return withStableLayerInputs(state, () =>
-		validateTargetLegalityInner(state, actorId, target, targetRequirementOrKind, sourceCard, sourceInstanceId)
+		validateTargetLegalityInner(
+			state,
+			actorId,
+			target,
+			targetRequirementOrKind,
+			sourceCard,
+			sourceInstanceId,
+			sourceKindHint
+		)
 	);
 }
 
@@ -20248,7 +20446,10 @@ function validateTargetLegalityInner(
 	target: TargetRef,
 	targetRequirementOrKind: TargetRequirementInfo | string,
 	sourceCard?: ScryfallCard,
-	sourceInstanceId?: string
+	sourceInstanceId?: string,
+	// --- Track P20a ---
+	sourceKindHint?: 'spell' | 'ability'
+	// --- End Track P20a ---
 ): { ok: boolean; error?: string } {
 	const info = normalizeTargetRequirement(targetRequirementOrKind);
 	const targetKind = info.targetKind;
@@ -20475,6 +20676,15 @@ function validateTargetLegalityInner(
 				error: 'Strict Rules Violation: This spell or ability must target a card in a graveyard.'
 			};
 		}
+		// --- Track P20a ---
+		const gyBlock = isGraveyardTargetingBlocked(state);
+		if (gyBlock.blocked) {
+			return {
+				ok: false,
+				error: `Strict Rules Violation: Cards in graveyards can't be targeted (${gyBlock.sourceName ?? 'Rule modifier'}).`
+			};
+		}
+		// --- End Track P20a ---
 		let foundOwner: PlayerGameState | undefined;
 		let foundCard: CardInstance | undefined;
 		for (const p of state.players) {
@@ -20655,12 +20865,44 @@ function validateTargetLegalityInner(
 			error: `Strict Rules Violation: ${found.inst.card.name} has Hexproof and cannot be targeted by opponents.`
 		};
 	}
-	if (hasProtectionFrom(found.inst, sourceCard, state)) {
+	// --- Track P20a ---
+	const srcStackItem = sourceInstanceId
+		? state.stack.find(
+				(s) => s.id === sourceInstanceId || (s.kind === 'spell' && s.sourceInstanceId === sourceInstanceId)
+			)
+		: undefined;
+	const srcBoardPerm = sourceInstanceId ? findPermanentOnBoard(state, sourceInstanceId)?.inst : undefined;
+	const resolvedSrcKind: 'spell' | 'ability' =
+		sourceKindHint ??
+		(srcStackItem
+			? srcStackItem.kind === 'spell'
+				? 'spell'
+				: 'ability'
+			: srcBoardPerm
+				? 'ability'
+				: 'spell');
+	const srcPermForTarget = resolvedSrcKind === 'ability' ? srcBoardPerm : undefined;
+	if (hasProtectionFrom(found.inst, sourceCard, state, srcPermForTarget, false, actorId)) {
 		return {
 			ok: false,
 			error: `Strict Rules Violation: ${found.inst.card.name} has Protection from ${sourceCard?.name || 'this source'} and cannot be targeted.`
 		};
 	}
+	const cantTargetCheck = isPermanentBlockedByCantBeTargetedBy(
+		state,
+		found.inst,
+		actorId,
+		sourceCard,
+		srcPermForTarget,
+		resolvedSrcKind
+	);
+	if (cantTargetCheck.blocked) {
+		return {
+			ok: false,
+			error: `Strict Rules Violation: ${found.inst.card.name} can't be targeted (${cantTargetCheck.sourceName ?? 'Rule modifier'}).`
+		};
+	}
+	// --- End Track P20a ---
 
 	if (info.controllerFilter === 'you' && found.controller.playerId !== actorId) {
 		return {
@@ -20942,8 +21184,20 @@ export function validateChosenTargets(
 				}
 			}
 			const specInfo = targetRequirementFromSpecs([spec]);
+			// --- Track P20a ---
+			const chosenSrcKindHint: 'spell' | 'ability' | undefined =
+				typeof optionOrId === 'string' ? 'ability' : optionOrId ? 'spell' : undefined;
+			// --- End Track P20a ---
 			for (const t of specTargets) {
-				const res = validateTargetLegality(state, actorId, t, specInfo, sourceCard, sourceInstanceId);
+				const res = validateTargetLegality(
+					state,
+					actorId,
+					t,
+					specInfo,
+					sourceCard,
+					sourceInstanceId,
+					chosenSrcKindHint
+				);
 				if (!res.ok) return res;
 				seenInPriorSpecs.add(`${t.kind}:${t.id}`);
 			}
@@ -20957,8 +21211,20 @@ export function validateChosenTargets(
 			};
 		}
 
+		// --- Track P20a ---
+		const chosenSrcKindHint: 'spell' | 'ability' | undefined =
+			typeof optionOrId === 'string' ? 'ability' : optionOrId ? 'spell' : undefined;
+		// --- End Track P20a ---
 		for (const t of targets) {
-			const res = validateTargetLegality(state, actorId, t, info, sourceCard, sourceInstanceId);
+			const res = validateTargetLegality(
+				state,
+				actorId,
+				t,
+				info,
+				sourceCard,
+				sourceInstanceId,
+				chosenSrcKindHint
+			);
 			if (!res.ok) return res;
 		}
 	}
@@ -23143,6 +23409,9 @@ function isTargetStillValid(
 		return true;
 	}
 	if (target.kind === 'graveyard_card' || target.kind === 'card_in_graveyard') {
+		// --- Track P20a ---
+		if (isGraveyardTargetingBlocked(state).blocked) return false;
+		// --- End Track P20a ---
 		let foundCard: CardInstance | undefined;
 		for (const p of state.players) {
 			const c = p.graveyard.find((x) => x.instanceId === target.id);
@@ -23186,9 +23455,30 @@ function isTargetStillValid(
 	) {
 		return false;
 	}
-	if (hasProtectionFrom(found.inst, sourceCard, state)) {
+	// --- Track P20a ---
+	const effCtrlId = controllerId || item?.controllerId;
+	const itemSrcKind: 'spell' | 'ability' = item?.kind === 'spell' ? 'spell' : 'ability';
+	const itemSrcPerm =
+		item && item.kind !== 'spell' && item.sourceInstanceId
+			? findPermanentOnBoard(state, item.sourceInstanceId)?.inst
+			: undefined;
+	if (hasProtectionFrom(found.inst, sourceCard, state, itemSrcPerm, false, effCtrlId)) {
 		return false;
 	}
+	if (
+		effCtrlId &&
+		isPermanentBlockedByCantBeTargetedBy(
+			state,
+			found.inst,
+			effCtrlId,
+			sourceCard,
+			itemSrcPerm,
+			itemSrcKind
+		).blocked
+	) {
+		return false;
+	}
+	// --- End Track P20a ---
 	// A triggered ability with compiled target specs is checked against them instead (resolveTopOfStack).
 	if (item && !(item.kind === 'triggered' && triggerItemTargetSpecs(item).length > 0)) {
 		let targetInfo: TargetRequirementInfo | undefined;
@@ -23231,7 +23521,8 @@ function isTargetStillValid(
 							target,
 							b,
 							sourceCard,
-							item.sourceInstanceId
+							item.sourceInstanceId,
+							itemSrcKind
 						).ok
 				);
 				if (!anyBranchValid) return false;
@@ -23242,7 +23533,8 @@ function isTargetStillValid(
 					target,
 					targetInfo,
 					sourceCard,
-					item.sourceInstanceId
+					item.sourceInstanceId,
+					itemSrcKind
 				).ok
 			) {
 				return false;
