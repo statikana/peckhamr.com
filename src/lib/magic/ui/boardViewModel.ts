@@ -18,6 +18,7 @@ import { KEYWORD_LABELS, STATIC_CONTINUOUS_KEYWORDS } from '../keywords.ts';
 import { DUNGEON_SPECS, parseManaCost } from '../oracle.ts';
 import { evaluatePermanent, type EvaluatedPermanent } from '../ruleTree.ts';
 import { describeCost, getSuspendSpec } from '../runtime/costs.ts';
+import { getCommanderTaxLifeCostP20b } from '../runtime/costsWave7.ts';
 import { isP16aSourceConditionCurrentlyMet } from '../runtime/effectsWave6.ts';
 import { instanceFaceOptions, resolveObjectFaces } from '../runtime/faces.ts';
 import { checkCompanionSpecialActionLegality } from '../runtime/framesModalsWave6.ts';
@@ -289,6 +290,8 @@ export interface PermanentView {
 	cantBlockAttackerCount: number;
 	cantBlockAttackerNames: string[];
 	isMonstrous: boolean;
+	linkedExileCount: number;
+	linkedExileLabels: string[];
 	protectorId: string | null;
 	protectorName: string | null;
 	canBeAttackedAsBattle: boolean;
@@ -354,6 +357,13 @@ export interface PlayerStatusView {
 	ringAbilities: string[];
 	snowManaTotal: number;
 	snowManaByColor: Partial<Record<ManaColor, number>>;
+	creatureManaTotal: number;
+	creatureManaByColor: Partial<Record<ManaColor, number>>;
+	basicLandManaTotal: number;
+	basicLandManaByColor: Partial<Record<ManaColor, number>>;
+	treasureManaTotal: number;
+	treasureManaByColor: Partial<Record<ManaColor, number>>;
+	commanderTaxAsLifePerCast: number | null;
 	commanders: CardInstance[];
 	emblems: CardInstance[];
 	dungeonCommandCards: CardInstance[];
@@ -1203,6 +1213,7 @@ function extractPlayerStaticRuleTelemetry(
 	dontLoseAtZeroOrLessLife: boolean;
 	staticLifeTotalLocked: boolean;
 	unspentManaRetentionLabel: string | null;
+	commanderTaxAsLifePerCast: number | null;
 	activeRuleLocks: RuleLockBadge[];
 } {
 	const activeRuleLocks: RuleLockBadge[] = [];
@@ -1518,12 +1529,104 @@ function extractPlayerStaticRuleTelemetry(
 		});
 	}
 
+	let commanderTaxAsLifePerCast: number | null = null;
+	forEachActiveStaticOnBattlefield(
+		gameState,
+		(perm, controllerId, _sourceName, def) => {
+			if (def.k !== 'commanderTaxAsLife') return;
+			if (controllerId !== player.playerId) return;
+			if (
+				def.condition &&
+				!evaluateCondition(def.condition, { state: gameState, controllerId, source: perm })
+			) {
+				return;
+			}
+			if (
+				commanderTaxAsLifePerCast === null ||
+				def.lifePerCast < commanderTaxAsLifePerCast
+			) {
+				commanderTaxAsLifePerCast = def.lifePerCast;
+			}
+		},
+		'commanderTaxAsLife'
+	);
+
 	return {
 		staticCannotLoseGame,
 		dontLoseAtZeroOrLessLife,
 		staticLifeTotalLocked,
 		unspentManaRetentionLabel,
+		commanderTaxAsLifePerCast,
 		activeRuleLocks
+	};
+}
+
+function clampManaProvenanceByColor(
+	raw: Partial<Record<ManaColor, number>> | undefined,
+	pool: ManaPool
+): { byColor: Partial<Record<ManaColor, number>>; total: number } {
+	const byColor: Partial<Record<ManaColor, number>> = {};
+	let total = 0;
+	if (!raw) return { byColor, total };
+	for (const color of ALL_MANA_COLORS) {
+		const clamped = Math.max(0, Math.min(pool[color] || 0, raw[color] || 0));
+		if (clamped > 0) {
+			byColor[color] = clamped;
+			total += clamped;
+		}
+	}
+	return { byColor, total };
+}
+
+export interface CommanderTaxDisplay {
+	castCount: number;
+	isLifeTax: boolean;
+	lifePerCast: number | null;
+	totalLife: number;
+	manaIncrement: number;
+	badgeText: string;
+	compactText: string;
+}
+
+export function formatCommanderTaxDisplay(
+	gameState: GameState,
+	player: PlayerGameState,
+	cmd: CardInstance,
+	statusCommanderTaxAsLifePerCast?: number | null,
+	faceIndex = 0,
+	fused = false
+): CommanderTaxDisplay | null {
+	const castCount = player.commanderCastCounts?.[cmd.instanceId] ?? cmd.commanderCastCount ?? 0;
+	if (castCount <= 0) return null;
+	const selfTax = getCommanderTaxLifeCostP20b(gameState, player, cmd, faceIndex, fused);
+	let lifePerCast: number | null = statusCommanderTaxAsLifePerCast ?? null;
+	if (selfTax.applies && castCount > 0) {
+		const selfLifePerCast = Math.round(selfTax.totalLife / castCount);
+		if (lifePerCast === null || selfLifePerCast < lifePerCast) {
+			lifePerCast = selfLifePerCast;
+		}
+	}
+	if (lifePerCast !== null) {
+		const totalLife = Math.max(0, castCount * lifePerCast);
+		return {
+			castCount,
+			isLifeTax: true,
+			lifePerCast,
+			totalLife,
+			manaIncrement: 0,
+			badgeText: `Tax: ${totalLife} life`,
+			compactText: `Tax: ${totalLife} life`
+		};
+	}
+	const manaIncrement = castCount * (gameState.rules.commanderTaxIncrement || 2);
+	return {
+		castCount,
+		isLifeTax: false,
+		lifePerCast: null,
+		totalLife: 0,
+		manaIncrement,
+		badgeText: `Tax: +${manaIncrement}`,
+		compactText: `+${manaIncrement}`
 	};
 }
 
@@ -1571,6 +1674,36 @@ function extractPlayerStatus(
 				snowManaByColor[color] = clamped;
 			}
 		}
+	}
+
+	// CR 106.6 source-provenance mana telemetry clamped against live `player.manaPool`
+	const creatureProv = clampManaProvenanceByColor(player.creatureManaByColor, player.manaPool);
+	const basicLandProv = clampManaProvenanceByColor(player.basicLandManaByColor, player.manaPool);
+	const treasureProv = clampManaProvenanceByColor(player.treasureManaByColor, player.manaPool);
+	let totalUnrestrictedPoolMana = 0;
+	const nonZeroPoolColors: ManaColor[] = [];
+	for (const color of ALL_MANA_COLORS) {
+		const amt = Math.max(0, player.manaPool[color] || 0);
+		if (amt > 0) {
+			totalUnrestrictedPoolMana += amt;
+			nonZeroPoolColors.push(color);
+		}
+	}
+	const clampedScalarTreasure = Math.max(
+		0,
+		Math.min(totalUnrestrictedPoolMana, player.treasureManaInPool ?? 0)
+	);
+	const treasureManaTotal = Math.min(
+		totalUnrestrictedPoolMana,
+		Math.max(treasureProv.total, clampedScalarTreasure)
+	);
+	const treasureManaByColor: Partial<Record<ManaColor, number>> = { ...treasureProv.byColor };
+	if (treasureManaTotal > treasureProv.total && nonZeroPoolColors.length === 1) {
+		const onlyCol = nonZeroPoolColors[0];
+		treasureManaByColor[onlyCol] = Math.min(
+			player.manaPool[onlyCol] || 0,
+			treasureManaTotal
+		);
 	}
 
 	const commanders: CardInstance[] = [];
@@ -1683,6 +1816,7 @@ function extractPlayerStatus(
 		dontLoseAtZeroOrLessLife,
 		staticLifeTotalLocked,
 		unspentManaRetentionLabel,
+		commanderTaxAsLifePerCast,
 		activeRuleLocks
 	} = extractPlayerStaticRuleTelemetry(
 		gameState,
@@ -1720,6 +1854,13 @@ function extractPlayerStatus(
 			ringAbilities,
 			snowManaTotal,
 			snowManaByColor,
+			creatureManaTotal: creatureProv.total,
+			creatureManaByColor: creatureProv.byColor,
+			basicLandManaTotal: basicLandProv.total,
+			basicLandManaByColor: basicLandProv.byColor,
+			treasureManaTotal,
+			treasureManaByColor,
+			commanderTaxAsLifePerCast,
 			commanders,
 			emblems,
 			dungeonCommandCards,
@@ -1802,7 +1943,7 @@ function buildViewModelStateSignature(gameState: GameState, viewerId: string): s
 		(gameState.timedContinuousEffects ?? [])
 			.map(
 				(ce) =>
-					`${ce.timestamp}:${ce.layer2?.controllerId ?? ''}:${ce.sourceCondition?.broken ? 1 : 0}:${
+					`${ce.timestamp}:${ce.layer2?.controllerId ?? ''}:${ce.layer6?.removeAllAbilities ? 1 : 0}:${(ce.layer6?.addKeywords ?? []).join(',')}:${(ce.layer6?.removeKeywords ?? []).join(',')}:${ce.sourceCondition?.broken ? 1 : 0}:${
 						Array.isArray(ce.affected)
 							? ce.affected.map((a) => `${a.instanceId}:${a.objectVersion ?? ''}`).join(',')
 							: ''
@@ -1871,12 +2012,31 @@ function buildViewModelStateSignature(gameState: GameState, viewerId: string): s
 			p.manaPool.B,
 			p.manaPool.R,
 			p.manaPool.G,
-			p.manaPool.C
+			p.manaPool.C,
+			p.treasureManaInPool ?? 0
 		);
 		if (p.snowManaByColor) {
 			for (const col of ALL_MANA_COLORS) {
 				const sv = p.snowManaByColor[col] || 0;
 				if (sv) parts.push(`snow:${col}=${sv}`);
+			}
+		}
+		if (p.creatureManaByColor) {
+			for (const col of ALL_MANA_COLORS) {
+				const cv = p.creatureManaByColor[col] || 0;
+				if (cv) parts.push(`cmana:${col}=${cv}`);
+			}
+		}
+		if (p.basicLandManaByColor) {
+			for (const col of ALL_MANA_COLORS) {
+				const bv = p.basicLandManaByColor[col] || 0;
+				if (bv) parts.push(`blmana:${col}=${bv}`);
+			}
+		}
+		if (p.treasureManaByColor) {
+			for (const col of ALL_MANA_COLORS) {
+				const tv = p.treasureManaByColor[col] || 0;
+				if (tv) parts.push(`tmana:${col}=${tv}`);
 			}
 		}
 		if (p.restrictedMana) {
@@ -1887,6 +2047,9 @@ function buildViewModelStateSignature(gameState: GameState, viewerId: string): s
 		}
 		for (const [cid, cdmg] of Object.entries(p.commanderDamageTaken || {})) {
 			parts.push(cid, cdmg);
+		}
+		for (const [cid, ccnt] of Object.entries(p.commanderCastCounts || {})) {
+			parts.push(`cc:${cid}=${ccnt}`);
 		}
 		for (const perm of p.battlefield) {
 			parts.push(
@@ -1974,7 +2137,12 @@ function buildViewModelStateSignature(gameState: GameState, viewerId: string): s
 				c.plottedTurnNumber ?? -1,
 				c.isSuspended ?? false,
 				c.hauntingTargetId ?? '',
-				c.hauntingTargetVersion ?? -1
+				c.hauntingTargetVersion ?? -1,
+				c.exiledBy?.sourceInstanceId ?? '',
+				c.exiledBy?.sourceObjectVersion ?? -1,
+				c.isFaceDown ?? false,
+				(c.knownToPlayerIds ?? []).join(','),
+				c.copiableCard ? `${c.copiableCard.id}:${c.copiableCard.name}` : ''
 			);
 		}
 		for (const c of p.command) {
@@ -2142,6 +2310,30 @@ function computeBoardViewModelInner(
 	const assimilatedSourceIdByPermId: Record<string, string> = {};
 	const cantBlockIdsByPermId: Record<string, string[]> = {};
 
+	// Step 1.5 (O(E)): Index linked exile cards across all players by `${sourceInstanceId}:${sourceObjectVersion}` (CR 607.2a),
+	// strictly enforcing CR 406.3 face-down exile secrecy relative to `viewerId`.
+	const linkedExileLabelsBySourceKey = new Map<string, string[]>();
+	for (const exOwner of gameState.players) {
+		for (const exCard of exOwner.exile) {
+			const link = exCard.exiledBy;
+			if (!link) continue;
+			const key = `${link.sourceInstanceId}:${link.sourceObjectVersion}`;
+			let labels = linkedExileLabelsBySourceKey.get(key);
+			if (!labels) {
+				labels = [];
+				linkedExileLabelsBySourceKey.set(key, labels);
+			}
+			const isHiddenFaceDown =
+				Boolean(exCard.isFaceDown) &&
+				!(viewerId && exCard.knownToPlayerIds?.includes(viewerId));
+			if (isHiddenFaceDown) {
+				labels.push('Face-down card');
+			} else {
+				labels.push(effectiveCardForObject(exCard).name);
+			}
+		}
+	}
+
 	// Step 2 (O(B)): Evaluate every permanent ONCE and partition into viewer frontRow/backRow and opponent boards.
 	for (const player of gameState.players) {
 		const isViewerBoard = player.playerId === viewerId;
@@ -2305,6 +2497,11 @@ function computeBoardViewModelInner(
 			}
 			const cantBlockAttackerCount = uniqueCantBlockIds.length;
 			const isMonstrous = Boolean(perm.isMonstrous);
+			const linkedExileRaw = linkedExileLabelsBySourceKey.get(
+				`${perm.instanceId}:${perm.objectVersion ?? 1}`
+			);
+			const linkedExileLabels = linkedExileRaw ? [...linkedExileRaw] : [];
+			const linkedExileCount = linkedExileLabels.length;
 			const protectorId = isBattle ? (perm.protectorId ?? null) : null;
 			const protectorPlayer = protectorId
 				? gameState.players.find((pl) => pl.playerId === protectorId)
@@ -2495,6 +2692,8 @@ function computeBoardViewModelInner(
 				cantBlockAttackerCount,
 				cantBlockAttackerNames: [],
 				isMonstrous,
+				linkedExileCount,
+				linkedExileLabels,
 				protectorId,
 				protectorName,
 				canBeAttackedAsBattle,

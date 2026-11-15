@@ -24,6 +24,7 @@
 		inspectedFaceIndex = $bindable(0),
 		height = 240,
 		gameState,
+		viewerId,
 		breakdownOverride,
 		canResolveManually = false,
 		onGameAction
@@ -33,6 +34,7 @@
 		inspectedFaceIndex?: number;
 		height?: number;
 		gameState?: GameState;
+		viewerId?: string;
 		breakdownOverride?: CardContinuousBreakdown | null;
 		canResolveManually?: boolean;
 		onGameAction?: (action: GameActionPayload) => void | Promise<void>;
@@ -56,8 +58,8 @@
 
 	const inspectedPermView = $derived.by(() => {
 		if (!inspectedInstance || !gameState || inspectedInstance.zone !== 'battlefield') return null;
-		const fallbackViewerId = gameState.players[0]?.playerId ?? '';
-		const vm = buildBoardViewModel(gameState, fallbackViewerId);
+		const effectiveViewerId = viewerId || gameState.players[0]?.playerId || '';
+		const vm = buildBoardViewModel(gameState, effectiveViewerId);
 		return vm.permanentsById[inspectedInstance.instanceId] ?? null;
 	});
 
@@ -206,6 +208,8 @@
 	const inspectorIsMonstrous = $derived(
 		inspectedPermView ? inspectedPermView.isMonstrous : Boolean(inspectedInstance?.isMonstrous)
 	);
+	const inspectorLinkedExileLabels = $derived(inspectedPermView?.linkedExileLabels ?? []);
+	const inspectorLinkedExileCount = $derived(inspectedPermView?.linkedExileCount ?? 0);
 	const hasAnyStatusTags = $derived(
 		Boolean(
 			inspectedInstance &&
@@ -238,7 +242,8 @@
 					inspectorMustBeBlocked ||
 					inspectorNoCombatDamage ||
 					inspectorCantBlockCount > 0 ||
-					inspectorIsMonstrous)
+					inspectorIsMonstrous ||
+					inspectorLinkedExileCount > 0)
 		)
 	);
 </script>
@@ -433,6 +438,24 @@
 								🦖 Monstrous
 							</span>
 						{/if}
+						{#if inspectorLinkedExileCount > 0}
+							<span class="inspector-tag purple" data-testid="inspector-linked-exile-tag">
+								⛓️ Linked Exile: {inspectorLinkedExileCount}
+							</span>
+						{/if}
+					</div>
+				{/if}
+				{#if inspectorLinkedExileCount > 0}
+					<div class="alt-kw-section compact" data-testid="inspector-linked-exile">
+						<div class="alt-kw-title">LINKED EXILE (CR 607.2)</div>
+						<div class="alt-kw-list">
+							{#each inspectorLinkedExileLabels as exLabel, idx (idx)}
+								<div class="alt-kw-row">
+									<span class="kw-source granted">#{idx + 1}</span>
+									<span class="kw-name">{exLabel}</span>
+								</div>
+							{/each}
+						</div>
 					</div>
 				{/if}
 				{#if inspectorCountersList.length > 0}

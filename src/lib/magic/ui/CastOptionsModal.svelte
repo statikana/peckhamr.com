@@ -36,6 +36,7 @@
 	import ManaText from '../ManaText.svelte';
 	import { effectiveCardForObject, getCardFaces } from '../scryfall.ts';
 	import type { CastCostAid, GameState, PlayerGameState } from '../types.ts';
+	import { buildBoardViewModel, formatCommanderTaxDisplay } from './boardViewModel.ts';
 	import { optionChoosesX } from './targetingController.ts';
 
 	let {
@@ -102,6 +103,20 @@
 	const faces = $derived(getCardFaces(effCard));
 	const fullDisplayText = $derived(cardAbilityDisplayText(effCard));
 	const faceDisplayTexts = $derived(fullDisplayText.split(/\n\s*\/\/\s*\n/));
+
+	const actorStatus = $derived(
+		buildBoardViewModel(gameState, actor.playerId).playerStatusesById[actor.playerId] ?? null
+	);
+	const commanderTaxDisplay = $derived(
+		fromZone === 'command' && inst.isCommander
+			? formatCommanderTaxDisplay(
+					gameState,
+					actor,
+					inst,
+					actorStatus?.commanderTaxAsLifePerCast ?? null
+				)
+			: null
+	);
 
 	const modalOptionalCosts = $derived(
 		Array.from(
@@ -260,12 +275,34 @@
 				{/if}
 			</div>
 
+			{#if commanderTaxDisplay}
+				<div
+					class="commander-tax-banner"
+					class:life-tax={commanderTaxDisplay.isLifeTax}
+					data-testid="cast-modal-commander-tax"
+				>
+					{#if commanderTaxDisplay.isLifeTax}
+						<span>🩸 Commander Tax (CR 903.8): <strong>{commanderTaxDisplay.badgeText}</strong></span>
+					{:else}
+						<span>
+							Commander Tax (CR 903.8):
+							<ManaText text={`Tax: +{${commanderTaxDisplay.manaIncrement}}`} size={14} />
+						</span>
+					{/if}
+				</div>
+			{/if}
+
 			{#if modalOptionalCosts.length > 0}
 				<div class="optional-cost-section">
 					{#each modalOptionalCosts as oc (oc.id)}
 						{@const count = optionalCounts[oc.id] ?? 0}
+						{@const isDefilerPipLife = oc.id.startsWith('defiler:')}
 						{#if oc.maxCount === 1}
-							<label class="optional-cost-check">
+							<label
+								class="optional-cost-check"
+								class:defiler-pip-life={isDefilerPipLife}
+								data-testid={isDefilerPipLife ? `defiler-optional-cost-${oc.id}` : undefined}
+							>
 								<input
 									type="checkbox"
 									checked={count > 0}
@@ -275,15 +312,29 @@
 									}}
 								/>
 								<span>
-									Pay optional cost: <ManaText text={oc.costDisplay} size={14} />
+									{#if isDefilerPipLife}
+										<span class="pip-life-pill">🩸 Pip → Life</span>
+										<ManaText text={oc.label} size={14} />
+									{:else}
+										Pay optional cost: <ManaText text={oc.costDisplay} size={14} />
+									{/if}
 									{#if oc.enablesTarget}<small> (enables additional target)</small>{/if}
 									{#if oc.chooseAllModes}<small> (chooses all modes)</small>{/if}
 								</span>
 							</label>
 						{:else}
-							<div class="optional-cost-stepper-row">
+							<div
+								class="optional-cost-stepper-row"
+								class:defiler-pip-life={isDefilerPipLife}
+								data-testid={isDefilerPipLife ? `defiler-optional-cost-${oc.id}` : undefined}
+							>
 								<span>
-									Optional cost (<ManaText text={oc.costDisplay} size={14} /> each)
+									{#if isDefilerPipLife}
+										<span class="pip-life-pill">🩸 Pip → Life</span>
+										<ManaText text={oc.label} size={14} />
+									{:else}
+										Optional cost (<ManaText text={oc.costDisplay} size={14} /> each)
+									{/if}
 									{#if oc.enablesTarget}<small> (enables additional target)</small>{/if}
 									{#if oc.chooseAllModes}<small> (chooses all modes)</small>{/if}
 								</span>
@@ -410,10 +461,28 @@
 						.map((oc) =>
 							optCounts[oc.id] > 1 ? `${optCounts[oc.id]}× ${oc.costDisplay}` : oc.costDisplay
 						)}
+					{@const hasDefilerSelected = Object.entries(optCounts).some(
+						([id, cnt]) => cnt > 0 && id.startsWith('defiler:')
+					)}
+					{@const optCmdTax =
+						fromZone === 'command' && inst.isCommander
+							? formatCommanderTaxDisplay(
+									gameState,
+									actor,
+									inst,
+									actorStatus?.commanderTaxAsLifePerCast ?? null,
+									opt.faceIndex ?? 0,
+									Boolean(opt.fused)
+								)
+							: null}
 					{@const mainCostDisplay = aidPreview?.ok
 						? formatManaRequirement(aidPreview.remainingReq, isXOpt)
-						: opt.costDisplay}
-					{@const combinedDisplay = [mainCostDisplay, ...extraParts].join(' + ')}
+						: hasDefilerSelected && optReq
+							? formatManaRequirement(optReq, isXOpt)
+							: opt.costDisplay}
+					{@const lifeTaxParts =
+						optCmdTax?.isLifeTax && optCmdTax.totalLife > 0 ? [optCmdTax.badgeText] : []}
+					{@const combinedDisplay = [mainCostDisplay, ...lifeTaxParts, ...extraParts].join(' + ')}
 					{@const hasStrictAids = (opt.paymentAids?.length ?? 0) > 0}
 					{@const legalityPrimary = checkSpellCastLegality(
 						gameState,
@@ -568,6 +637,33 @@
 		display: flex;
 		flex-direction: column;
 		gap: 0.5rem;
+	}
+	.commander-tax-banner {
+		display: flex;
+		align-items: center;
+		gap: 0.45rem;
+		padding: 0.35rem 0.6rem;
+		border-radius: 6px;
+		border: 1px solid rgba(255, 216, 102, 0.55);
+		background: rgba(255, 216, 102, 0.1);
+		color: #ffd866;
+		font-size: 0.8rem;
+	}
+	.commander-tax-banner.life-tax {
+		border-color: var(--mp-purple);
+		background: rgba(171, 157, 242, 0.16);
+		color: var(--mp-purple);
+	}
+	.pip-life-pill {
+		display: inline-block;
+		margin-right: 0.3rem;
+		padding: 0.04rem 0.34rem;
+		border-radius: 4px;
+		font-size: 0.7rem;
+		font-weight: 700;
+		background: rgba(255, 97, 136, 0.18);
+		border: 1px solid var(--mp-red);
+		color: var(--mp-red);
 	}
 	.optional-cost-check {
 		display: flex;
