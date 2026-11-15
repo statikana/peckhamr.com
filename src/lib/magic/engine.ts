@@ -469,6 +469,34 @@ import {
 	registerP16aRuntimeHost
 } from './runtime/effectsWave6.ts';
 // --- End Track P16a ---
+// --- Track P20b ---
+import {
+	canSatisfyP20bManaSpendRestrictions,
+	cardUsesP20bCostPaidCount,
+	collectAbilityManaSpendRestrictionsP20b,
+	collectDefilerOptionalCosts,
+	collectSpellManaSpendRestrictionsP20b,
+	computeMaxAvailableP20bPitchCounts,
+	computeP20bPitchCountsFromPayment,
+	getCommanderTaxLifeCostP20b,
+	initP20bSimSourcePools,
+	isPitchPaymentSettledP20b,
+	lastRollResultFromSerializedParts,
+	permanentManaSourceFlagsP20b,
+	pickP20bPreferredColorForPass2,
+	recordP20bCardPutIntoGraveyard,
+	recordP20bCreatureDamageToPlayer,
+	recordP20bKeywordActivation,
+	recordP20bPermanentEnteredBattlefield,
+	recordP20bSourceManaAdded,
+	resetP20bPlayerTurnState,
+	rewriteAndDeductP20bSourceMana,
+	syncCastExiledByVersionP20b,
+	totalRemovedCountersFromSerializedParts,
+	wasAnyAdditionalCostPaidP20b,
+	type P20bPitchCounts
+} from './runtime/costsWave7.ts';
+// --- End Track P20b ---
 export { applyCastCostAids, formatManaRequirement, getSuspendSpec };
 import { getKeywordSpec } from './keywords.ts';
 import {
@@ -1205,7 +1233,16 @@ function enumerateCandidateCastOptions(
 		inst.isCommander && fromZone === 'command' && actor
 			? (actor.commanderCastCounts?.[inst.instanceId] ?? inst.commanderCastCount ?? 0)
 			: 0;
-	const taxSuffix = castCount > 0 ? ` + {${castCount * state.rules.commanderTaxIncrement}}` : '';
+	// --- Track P20b ---
+	const cmdLifeTaxPreview =
+		castCount > 0 && actor ? getCommanderTaxLifeCostP20b(state, actor, inst, 0, false) : null;
+	const taxSuffix =
+		castCount > 0
+			? cmdLifeTaxPreview?.applies
+				? ` + Pay ${cmdLifeTaxPreview.totalLife} life`
+				: ` + {${castCount * state.rules.commanderTaxIncrement}}`
+			: '';
+	// --- End Track P20b ---
 
 	const options: CastOption[] = [];
 
@@ -1232,8 +1269,21 @@ function enumerateCandidateCastOptions(
 		const optionalAdditionalCosts = [
 			...spellOptionalAdditionalCosts(card, fi, false),
 			// --- Track P15: Gift (CR 702.174) & Splice (CR 702.47) optional costs ---
-			...(actor ? buildWave5OptionalCastCosts(state, actor, inst, fi) : [])
+			...(actor ? buildWave5OptionalCastCosts(state, actor, inst, fi) : []),
 			// --- End Track P15 ---
+			// --- Track P20b ---
+			...(actor
+				? collectDefilerOptionalCosts(
+						state,
+						actor,
+						inst,
+						fi,
+						false,
+						faceManaCost,
+						matchesObjectFilter
+					)
+				: [])
+			// --- End Track P20b ---
 		];
 		const optionalProp =
 			optionalAdditionalCosts.length > 0 ? { optionalAdditionalCosts } : {};
@@ -2156,12 +2206,24 @@ export function getSpellOptionCostRequirement(
 	inst: CardInstance,
 	option: CastOption,
 	xValue = 0,
-	optionalCostCounts?: Record<string, number>
+	optionalCostCounts?: Record<string, number>,
+	// --- Track P20b ---
+	chosenTargets?: TargetRef[]
+	// --- End Track P20b ---
 ): ManaCostRequirement | null {
 	const actor = state.players.find((p) => p.playerId === actorId);
 	if (!actor) return null;
 	return withStableLayerInputs(state, () =>
-		getSpellCostRequirementForOption(actor, inst, state, xValue, option, optionalCostCounts)
+		getSpellCostRequirementForOption(
+			actor,
+			inst,
+			state,
+			xValue,
+			option,
+			optionalCostCounts,
+			undefined,
+			chosenTargets
+		)
 	);
 }
 
@@ -2192,6 +2254,31 @@ function getCastOptionsInner(
 		if (opt.choosesX && checkSpellCastOptionLegalityInner(state, actorId, inst, fromZone, 1, opt).ok) {
 			return true;
 		}
+		// --- Track P20b ---
+		if (opt.optionalAdditionalCosts?.some((o) => o.id.startsWith('defiler:'))) {
+			const defilerCounts: Record<string, number> = {};
+			for (const o of opt.optionalAdditionalCosts) {
+				if (o.id.startsWith('defiler:')) defilerCounts[o.id] = o.maxCount;
+			}
+			if (checkSpellCastOptionLegalityInner(state, actorId, inst, fromZone, 0, opt, defilerCounts).ok) {
+				return true;
+			}
+		}
+		if (opt.choosesX) {
+			for (let probeX = 2; probeX <= 16; probeX++) {
+				const probeRes = checkSpellCastOptionLegalityInner(
+					state,
+					actorId,
+					inst,
+					fromZone,
+					probeX,
+					opt
+				);
+				if (probeRes.ok) return true;
+				if (probeRes.error?.startsWith('Insufficient mana')) break;
+			}
+		}
+		// --- End Track P20b ---
 		return false;
 	});
 }
@@ -2308,8 +2395,11 @@ function getSpellCostRequirementForOption(
 	chosenModes?: number[],
 	// --- End Track P12 ---
 	// --- Track P11 ---
-	chosenTargets?: TargetRef[]
+	chosenTargets?: TargetRef[],
 	// --- End Track P11 ---
+	// --- Track P20b ---
+	p20bPitchCounts?: P20bPitchCounts
+	// --- End Track P20b ---
 ): ManaCostRequirement {
 	const applyAnyColorPermission = (req: ManaCostRequirement): ManaCostRequirement => {
 		const fromExile =
@@ -2382,9 +2472,14 @@ function getSpellCostRequirementForOption(
 			// --- Track P11 ---
 			chosenTargets,
 			// --- End Track P11 ---
-			// --- Track P17b ---
-			{ optionId: option.id, kickedTags: p17bKickerTags }
-			// --- End Track P17b ---
+			// --- Track P17b & P20b ---
+			{
+				optionId: option.id,
+				kickedTags: p17bKickerTags,
+				optionalCostCounts,
+				p20bPitchCounts
+			}
+			// --- End Track P17b & P20b ---
 		)
 	);
 }
@@ -2395,7 +2490,10 @@ export function getSpellCostRequirement(
 	state: GameState,
 	xValue = 0,
 	optionId?: string,
-	optionalCostCounts?: Record<string, number>
+	optionalCostCounts?: Record<string, number>,
+	// --- Track P20b ---
+	chosenTargets?: TargetRef[]
+	// --- End Track P20b ---
 ): ManaCostRequirement {
 	const fromZone: CastableSourceZone =
 		inst.zone === 'command' ||
@@ -2412,7 +2510,9 @@ export function getSpellCostRequirement(
 			state,
 			xValue,
 			resolved.option,
-			optionalCostCounts
+			optionalCostCounts,
+			undefined,
+			chosenTargets
 		);
 	}
 	const altMeta = optionId ? alternativeCostMetaById(optionId) : null;
@@ -2473,7 +2573,15 @@ export function chooseBotSpellCostPayment(
 	const spendCtx = spellSpendContext(inst, {
 		faceIndex: optFace,
 		fused: optFused,
-		isFaceDown: Boolean(resolved.ok && resolved.option.spellMods?.castFaceDown)
+		isFaceDown: Boolean(resolved.ok && resolved.option.spellMods?.castFaceDown),
+		// --- Track P20b ---
+		state,
+		xValue,
+		manaCostOverride:
+			resolved.ok && resolved.option.baseCost.kind === 'alternative'
+				? resolved.option.baseCost.manaCost
+				: undefined
+		// --- End Track P20b ---
 	});
 	return chooseCostPayment(costContext(state, player, inst, xValue, true, costReq, undefined, spendCtx), defs) ?? undefined;
 }
@@ -2553,7 +2661,16 @@ export function chooseBotAbilityCostPayment(
 /** Builds a ManaSpendContext for casting `inst` with the selected face/fuse/face-down mode. */
 export function spellSpendContext(
 	inst: CardInstance,
-	opts?: { faceIndex?: number; fused?: boolean; isFaceDown?: boolean }
+	opts?: {
+		faceIndex?: number;
+		fused?: boolean;
+		isFaceDown?: boolean;
+		// --- Track P20b ---
+		state?: GameState;
+		xValue?: number;
+		manaCostOverride?: string;
+		// --- End Track P20b ---
+	}
 ): ManaSpendContext {
 	if (opts?.isFaceDown) {
 		return {
@@ -2579,8 +2696,11 @@ export function spellSpendContext(
 		spellFaceIndex: opts?.faceIndex ?? 0,
 		spellFused: opts?.fused,
 		spellSourceZone: inst.zone,
-		isCommanderSpell: Boolean(inst.isCommander)
+		isCommanderSpell: Boolean(inst.isCommander),
 		// --- End Track P10 ---
+		// --- Track P20b ---
+		...collectSpellManaSpendRestrictionsP20b(opts?.state, inst, opts)
+		// --- End Track P20b ---
 	};
 }
 
@@ -2588,7 +2708,10 @@ export function spellSpendContext(
 function activatedAbilitySpendContext(
 	state: GameState,
 	perm: CardInstance,
-	ab?: Pick<EffectiveActivatedAbility, 'faceIndex'>
+	ab?: Partial<EffectiveActivatedAbility>,
+	// --- Track P20b ---
+	xValue = 0
+	// --- End Track P20b ---
 ): ManaSpendContext {
 	const effCard =
 		perm.zone === 'battlefield' ? getEffectiveCardForPermanent(state, perm) : effectiveCardForObject(perm);
@@ -2617,7 +2740,15 @@ function activatedAbilitySpendContext(
 					abilitySourceSubtypes,
 					abilitySourceColors: evalPerm.colors
 				}
-			: {})
+			: {}),
+		// --- Track P20b ---
+		...collectAbilityManaSpendRestrictionsP20b(
+			state,
+			perm,
+			(ab ?? { id: '', baseManaCost: '', manaCost: '' }) as EffectiveActivatedAbility,
+			xValue
+		)
+		// --- End Track P20b ---
 	};
 }
 
@@ -2641,8 +2772,11 @@ function getDynamicManaProducedAmount(
 	baseAmount: number,
 	ab?: EffectiveActivatedAbility,
 	// --- Track P17b ---
-	xValue = 0
+	xValue = 0,
 	// --- End Track P17b ---
+	// --- Track P20b ---
+	removedCounterCount?: number
+	// --- End Track P20b ---
 ): number {
 	const evalPerm = evaluatePermanent(state, perm);
 	if (evalPerm.losesAllAbilities && (!ab || (!ab.manaAmount && !ab.grantSourceCard))) {
@@ -2654,7 +2788,17 @@ function getDynamicManaProducedAmount(
 	if (!amount) return baseAmount;
 	return Math.max(
 		0,
-		evaluateAmount(amount, { state, controllerId: player.playerId, source: perm, xValue })
+		evaluateAmount(amount, {
+			state,
+			controllerId: player.playerId,
+			source: perm,
+			xValue: xValue > 0 ? xValue : (removedCounterCount ?? 0),
+			// --- Track P20b ---
+			...(removedCounterCount !== undefined
+				? { stackItem: { removedCounterCount } as StackItem }
+				: {})
+			// --- End Track P20b ---
+		})
 	);
 }
 
@@ -2899,11 +3043,17 @@ function finalizeCastSpell(
 		inst.giftPromised = isGiftPaid ? true : undefined;
 		inst.giftRecipientId = resolvedGiftRecipientId;
 		// --- End Track P15 ---
+		// --- Track P20b ---
+		const preStackVersion = inst.objectVersion ?? 1;
+		// --- End Track P20b ---
 		moveObject(state, inst, 'stack', {
 			from: { player: sourcePlayer, zone: sourceZone },
 			newTimestamp: true,
 			bumpVersion: true
 		});
+		// --- Track P20b ---
+		syncCastExiledByVersionP20b(state, inst.instanceId, preStackVersion, inst.objectVersion ?? 1);
+		// --- End Track P20b ---
 		inst.playableFromExileBy = undefined;
 		// --- Track P13 ---
 		delete inst.playableFromGraveyardBy;
@@ -3041,6 +3191,10 @@ function finalizeCastSpell(
 			xValue: xVal,
 			...(castOptionId ? { castOptionId } : {}),
 			...(hasSpellMods ? { spellMods } : {}),
+			// --- Track P20b ---
+			...(spellMods?.altCostManaPaid ? { altCostManaPaid: spellMods.altCostManaPaid } : {}),
+			...(spellMods?.additionalCostPaid ? { additionalCostPaid: true } : {}),
+			// --- End Track P20b ---
 			// --- Track P12 ---
 			...(awakenLandRef ? { awakenTargetId: awakenLandRef.id } : {}),
 			...(awakenLandPerm?.objectVersion !== undefined
@@ -3274,6 +3428,9 @@ function finalizeActivateAbility(
 		}
 	}
 	// --- End Track P15 ---
+	// --- Track P20b ---
+	recordP20bKeywordActivation(actor, pcp.costKeyword, pcp.abilityId);
+	// --- End Track P20b ---
 	const abModal =
 		// --- Track P10 ---
 		pcp.grantedAbilityText
@@ -3357,6 +3514,11 @@ function finalizeActivateAbility(
 			// --- Track P15 ---
 			...(craftedMaterialCards ? { splicedCards: craftedMaterialCards } : {}),
 			// --- End Track P15 ---
+			// --- Track P20b ---
+			...(pcp.removedCounterCount !== undefined
+				? { removedCounterCount: pcp.removedCounterCount }
+				: {}),
+			// --- End Track P20b ---
 			controllerId: actorId,
 			kind: 'activated',
 			abilityId: pcp.abilityId,
@@ -3659,14 +3821,23 @@ function resumePendingCostPayment(state: GameState): void {
 			? spellSpendContext(source, {
 					faceIndex: pcp.faceIndex,
 					fused: pcp.fused,
-					isFaceDown: Boolean(pcp.spellMods?.castFaceDown)
+					isFaceDown: Boolean(pcp.spellMods?.castFaceDown),
+					// --- Track P20b ---
+					state,
+					xValue: pcp.xValue ?? 0
+					// --- End Track P20b ---
 				})
-			: // --- Track P10 ---
+			: // --- Track P10 & P20b ---
 				pcp.kind === 'activate_ability'
-				? activatedAbilitySpendContext(state, source, { faceIndex: pcp.faceIndex })
+				? activatedAbilitySpendContext(
+						state,
+						source,
+						{ id: pcp.abilityId, faceIndex: pcp.faceIndex },
+						pcp.xValue ?? 0
+					)
 				: pcp.kind === 'hand_special_action' && pcp.specialActionId === 'special:foretell'
 					? { isSpell: false, isForetellAction: true }
-					: // --- End Track P10 ---
+					: // --- End Track P10 & P20b ---
 						{ isSpell: false };
 	const reservedIds =
 		pcp.kind === 'hand_special_action' ? new Set<string>([pcp.sourceInstanceId]) : undefined;
@@ -4505,6 +4676,9 @@ function resolveActivatedManaAbility(
 	// --- Track P20a (CR 106.12): Multiplicative tap-for-mana replacements ---
 	const tapMult = tappedForMana ? getTapForManaMultiplier(state, player.playerId, perm) : 1;
 	// --- End Track P20a ---
+	// --- Track P20b ---
+	const producedUnrestrictedPoolMana = !ab?.manaRestriction && !ab?.manaRestrictionSpec;
+	// --- End Track P20b ---
 	if (chosenBundle && chosenBundle.length > 0) {
 		for (const col of chosenBundle) {
 			addManaToPlayerPool(player, col, tapMult, ab?.manaRestriction, addOpts);
@@ -4513,6 +4687,11 @@ function resolveActivatedManaAbility(
 				recordSnowManaAdded(player, col, tapMult);
 			}
 			// --- End Track P11 ---
+			// --- Track P20b ---
+			if (producedUnrestrictedPoolMana) {
+				recordP20bSourceManaAdded(state, player, perm, col, tapMult);
+			}
+			// --- End Track P20b ---
 		}
 		const abilityDef = activeAbilityDefs(
 			effectiveCardForObject(perm),
@@ -4544,6 +4723,11 @@ function resolveActivatedManaAbility(
 			recordSnowManaAdded(player, chosenColor, finalAmount);
 		}
 		// --- End Track P11 ---
+		// --- Track P20b ---
+		if (producedUnrestrictedPoolMana) {
+			recordP20bSourceManaAdded(state, player, perm, chosenColor, finalAmount);
+		}
+		// --- End Track P20b ---
 		const abilityDef = activeAbilityDefs(
 			effectiveCardForObject(perm),
 			instanceFaceOptions(perm, 'battlefield')
@@ -4617,10 +4801,21 @@ function deductManaForSpendContextWithSnow(
 	// --- Track P19b ---
 	const p19bPoolBefore = totalUnrestrictedAndRestrictedPoolCount(player);
 	// --- End Track P19b ---
-	const snowReq = manaReq.snow ?? 0;
+	// --- Track P20b ---
+	const effReq = rewriteAndDeductP20bSourceMana(
+		combinedManaPoolForSpend(player, spendCtx),
+		manaReq,
+		spendCtx,
+		player
+	);
+	// --- End Track P20b ---
+	const snowReq = effReq.snow ?? 0;
 	const snowPool = totalSnowManaInPool(player);
 	if (snowReq === 0 && snowPool === 0) {
-		deductManaForSpendContext(player, manaReq, spendCtx);
+		deductManaForSpendContext(player, effReq, spendCtx);
+		// --- Track P20b ---
+		clampSnowManaToPool(player);
+		// --- End Track P20b ---
 		// --- Track P19b ---
 		recordP19bManaDeduction(
 			player,
@@ -4641,7 +4836,10 @@ function deductManaForSpendContextWithSnow(
 	const hasEligibleRestricted = getTotalPooledManaForContext(player, spendCtx) > unrestrictedTotal;
 	if (!hasEligibleRestricted) {
 		const beforePool = { ...player.manaPool };
-		deductManaConservingSnow(player, manaReq);
+		deductManaConservingSnow(player, effReq);
+		// --- Track P20b ---
+		clampSnowManaToPool(player);
+		// --- End Track P20b ---
 		const spentColors: ManaColor[] = [];
 		// --- Track P13 ---
 		const spentColorsAll: ManaColor[] = [];
@@ -4660,7 +4858,7 @@ function deductManaForSpendContextWithSnow(
 		spendCtx.capturedColorsAllSpent = spentColorsAll;
 		// --- End Track P13 ---
 	} else {
-		deductManaForSpendContext(player, manaReq, spendCtx);
+		deductManaForSpendContext(player, effReq, spendCtx);
 		clampSnowManaToPool(player);
 	}
 	// --- Track P19b ---
@@ -4692,7 +4890,21 @@ function simulateOrExecuteManaOnly(
 	const initialSnow = totalSnowManaInPool(player);
 	// --- End Track P11 ---
 	const initialPool = combinedManaPoolForSpend(player, spendCtx);
-	if (canPayManaCost(initialPool, manaReq, undefined, snowReq > 0 ? initialSnow : undefined)) {
+	// --- Track P20b ---
+	const initialSourcePools = initP20bSimSourcePools(player);
+	// --- End Track P20b ---
+	if (
+		canPayManaCost(initialPool, manaReq, undefined, snowReq > 0 ? initialSnow : undefined) &&
+		// --- Track P20b ---
+		canSatisfyP20bManaSpendRestrictions(
+			initialPool,
+			manaReq,
+			spendCtx,
+			initialSourcePools,
+			(subPool, req) => canPayManaCost(subPool, req)
+		)
+		// --- End Track P20b ---
+	) {
 		if (mutate) {
 			// --- Track P11 ---
 			deductManaForSpendContextWithSnow(player, manaReq, spendCtx);
@@ -4721,6 +4933,10 @@ function simulateOrExecuteManaOnly(
 	let simSnow = initialSnow;
 	const permSnow = new Map<string, number>();
 	// --- End Track P11 ---
+	// --- Track P20b ---
+	const simSourcePools = initP20bSimSourcePools(player);
+	const permSourceFlags = new Map<string, ReturnType<typeof permanentManaSourceFlagsP20b>>();
+	// --- End Track P20b ---
 	const cmdIdentity = getPlayerCommanderIdentity(player);
 
 	const getProducedAmount = (
@@ -4737,6 +4953,24 @@ function simulateOrExecuteManaOnly(
 		}
 		return abs;
 	};
+	// --- Track P20b ---
+	const permMatchesP20bSourceKind = (c: CardInstance): boolean => {
+		const kind = spendCtx.manaSourceSpendKind;
+		if (!kind) return true;
+		if (kind === 'chosenColor') {
+			const col = spendCtx.manaSourceChosenColor;
+			return col ? manaAbilitiesOf(c).some((a) => a.producesMana.includes(col)) : false;
+		}
+		if (kind === 'snow') return (permSnow.get(c.instanceId) ?? 0) === 1;
+		const flags = permSourceFlags.get(c.instanceId);
+		if (!flags) return false;
+		return kind === 'creature'
+			? flags.isCreature
+			: kind === 'basicLand'
+				? flags.isBasicLand
+				: flags.isTreasure;
+	};
+	// --- End Track P20b ---
 	const permCostTier = (perm: CardInstance): number => {
 		const abs = manaAbilitiesOf(perm);
 		return abs.some((a) => isTapOnlyManaCost(activatedAbilityCost(perm.card, a).defs)) ? 0 : 1;
@@ -4756,9 +4990,19 @@ function simulateOrExecuteManaOnly(
 			// --- Track P11 ---
 			if (ok) permSnow.set(perm.instanceId, isSnowPermanent(state, perm) ? 1 : 0);
 			// --- End Track P11 ---
+			// --- Track P20b ---
+			if (ok) permSourceFlags.set(perm.instanceId, permanentManaSourceFlagsP20b(state, perm));
+			// --- End Track P20b ---
 			return ok;
 		});
 		return filtered.sort((a, b) => {
+			// --- Track P20b ---
+			if (spendCtx.manaSourceSpendKind) {
+				const ma = permMatchesP20bSourceKind(a) ? 0 : 1;
+				const mb = permMatchesP20bSourceKind(b) ? 0 : 1;
+				if (ma !== mb) return ma - mb;
+			}
+			// --- End Track P20b ---
 			const ta = permCostTier(a);
 			const tb = permCostTier(b);
 			if (ta !== tb) return ta - tb;
@@ -4834,6 +5078,25 @@ function simulateOrExecuteManaOnly(
 		// --- Track P11 ---
 		const addsSnow = !ab?.manaRestriction && permSnow.get(perm.instanceId) === 1;
 		// --- End Track P11 ---
+		// --- Track P20b ---
+		const addsP20bSource = !ab?.manaRestriction && !ab?.manaRestrictionSpec;
+		const srcFlags = permSourceFlags.get(perm.instanceId);
+		const recordSimSource = (col: ManaColor, amt: number): void => {
+			if (!addsP20bSource || amt <= 0) return;
+			if (srcFlags?.isCreature) {
+				simSourcePools.creature[col] = (simSourcePools.creature[col] ?? 0) + amt;
+			}
+			if (srcFlags?.isBasicLand) {
+				simSourcePools.basicLand[col] = (simSourcePools.basicLand[col] ?? 0) + amt;
+			}
+			if (addsSnow) {
+				simSourcePools.snow[col] = (simSourcePools.snow[col] ?? 0) + amt;
+			}
+			if (srcFlags?.isTreasure) {
+				simSourcePools.treasure[col] = (simSourcePools.treasure[col] ?? 0) + amt;
+			}
+		};
+		// --- End Track P20b ---
 		if (ab?.manaBundles && ab.manaBundles.length > 0) {
 			const eligibleBundles = preferredCol
 				? ab.manaBundles.filter((b) => b.includes(preferredCol))
@@ -4844,7 +5107,12 @@ function simulateOrExecuteManaOnly(
 				manaReq,
 				preferredCol
 			);
-			for (const c of bundle) pool[c] += tapMult;
+			for (const c of bundle) {
+				pool[c] += tapMult;
+				// --- Track P20b ---
+				recordSimSource(c, tapMult);
+				// --- End Track P20b ---
+			}
 			// --- Track P11 ---
 			if (addsSnow) simSnow += bundle.length * tapMult;
 			// --- End Track P11 ---
@@ -4867,7 +5135,12 @@ function simulateOrExecuteManaOnly(
 				preferredCol,
 				player
 			);
-			for (const c of bundle) pool[c] += tapMult;
+			for (const c of bundle) {
+				pool[c] += tapMult;
+				// --- Track P20b ---
+				recordSimSource(c, tapMult);
+				// --- End Track P20b ---
+			}
 			// --- Track P11 ---
 			if (addsSnow) simSnow += bundle.length * tapMult;
 			// --- End Track P11 ---
@@ -4884,6 +5157,9 @@ function simulateOrExecuteManaOnly(
 		// --- Track P11 ---
 		if (addsSnow) simSnow += amount * tapMult;
 		// --- End Track P11 ---
+		// --- Track P20b ---
+		recordSimSource(chosenColor, amount * tapMult);
+		// --- End Track P20b ---
 		manaChoices.set(perm.instanceId, { color: chosenColor, amount, ab });
 	};
 
@@ -4897,7 +5173,7 @@ function simulateOrExecuteManaOnly(
 		while (pool[col] < manaReq.colored[col]) {
 			const perm =
 				candidates.find((c) => {
-					if (tappedSet.has(c.instanceId)) return false;
+					if (tappedSet.has(c.instanceId) || !permMatchesP20bSourceKind(c)) return false;
 					return manaAbilitiesOf(c).some(
 						(a) =>
 							!a.freezesSelfUntap &&
@@ -4906,7 +5182,7 @@ function simulateOrExecuteManaOnly(
 					);
 				}) ??
 				candidates.find((c) => {
-					if (tappedSet.has(c.instanceId)) return false;
+					if (tappedSet.has(c.instanceId) || !permMatchesP20bSourceKind(c)) return false;
 					return manaAbilitiesOf(c).some(
 						(a) => a.producesMana.includes(col) && abilityEnergyCost(c, a) <= availableEnergy
 					);
@@ -4985,6 +5261,7 @@ function simulateOrExecuteManaOnly(
 			candidates.find(
 				(c) =>
 					!tappedSet.has(c.instanceId) &&
+					permMatchesP20bSourceKind(c) &&
 					manaAbilitiesOf(c).some(
 						(a) => !a.freezesSelfUntap && abilityEnergyCost(c, a) <= availableEnergy
 					)
@@ -4992,6 +5269,7 @@ function simulateOrExecuteManaOnly(
 			candidates.find(
 				(c) =>
 					!tappedSet.has(c.instanceId) &&
+					permMatchesP20bSourceKind(c) &&
 					manaAbilitiesOf(c).some((a) => abilityEnergyCost(c, a) <= availableEnergy)
 			);
 		if (!perm) {
@@ -5002,8 +5280,60 @@ function simulateOrExecuteManaOnly(
 			manaAbilitiesOf(perm).find(
 				(a) => !a.freezesSelfUntap && abilityEnergyCost(perm, a) <= availableEnergy
 			) ?? manaAbilitiesOf(perm).find((a) => abilityEnergyCost(perm, a) <= availableEnergy);
-		applyChosenAbilityToPool(perm, ab0);
+		applyChosenAbilityToPool(
+			perm,
+			ab0,
+			pickP20bPreferredColorForPass2(pool, manaReq, spendCtx, ab0)
+		);
 	}
+
+	// --- Track P20b: Satisfy X-mana color & source-kind spending restrictions (CR 107.3i, CR 106.6) ---
+	for (
+		let p20bGuard = 0;
+		greedySucceeded &&
+		p20bGuard < 64 &&
+		!canSatisfyP20bManaSpendRestrictions(pool, manaReq, spendCtx, simSourcePools, (subPool, req) =>
+			canPayManaCost(subPool, req)
+		);
+		p20bGuard++
+	) {
+		const perm = candidates.find((c) => {
+			if (tappedSet.has(c.instanceId) || !permMatchesP20bSourceKind(c)) return false;
+			return manaAbilitiesOf(c).some(
+				(a) =>
+					abilityEnergyCost(c, a) <= availableEnergy &&
+					(spendCtx.manaSourceSpendKind
+						? !a.manaRestriction && !a.manaRestrictionSpec
+						: pickP20bPreferredColorForPass2(pool, manaReq, spendCtx, a) !== undefined)
+			);
+		});
+		if (!perm) {
+			greedySucceeded = false;
+			break;
+		}
+		const abP20b =
+			manaAbilitiesOf(perm).find(
+				(a) =>
+					!a.freezesSelfUntap &&
+					abilityEnergyCost(perm, a) <= availableEnergy &&
+					(spendCtx.manaSourceSpendKind
+						? !a.manaRestriction && !a.manaRestrictionSpec
+						: pickP20bPreferredColorForPass2(pool, manaReq, spendCtx, a) !== undefined)
+			) ??
+			manaAbilitiesOf(perm).find(
+				(a) =>
+					abilityEnergyCost(perm, a) <= availableEnergy &&
+					(spendCtx.manaSourceSpendKind
+						? !a.manaRestriction && !a.manaRestrictionSpec
+						: pickP20bPreferredColorForPass2(pool, manaReq, spendCtx, a) !== undefined)
+			);
+		applyChosenAbilityToPool(
+			perm,
+			abP20b,
+			pickP20bPreferredColorForPass2(pool, manaReq, spendCtx, abP20b)
+		);
+	}
+	// --- End Track P20b ---
 
 	if (!greedySucceeded) {
 		if (filterDepth >= 2) return false;
@@ -5013,6 +5343,11 @@ function simulateOrExecuteManaOnly(
 			// --- Track P11 ---
 			snowManaByColor: p.snowManaByColor ? { ...p.snowManaByColor } : undefined,
 			// --- End Track P11 ---
+			// --- Track P20b ---
+			creatureManaByColor: p.creatureManaByColor ? { ...p.creatureManaByColor } : undefined,
+			basicLandManaByColor: p.basicLandManaByColor ? { ...p.basicLandManaByColor } : undefined,
+			treasureManaByColor: p.treasureManaByColor ? { ...p.treasureManaByColor } : undefined,
+			// --- End Track P20b ---
 			restrictedMana: p.restrictedMana
 				? Object.fromEntries(
 						Object.entries(p.restrictedMana).map(([k, v]) => [k, v ? { ...v } : v])
@@ -6011,6 +6346,9 @@ export function runBeginningOfTurn(state: GameState): void {
 		// --- Track P17a ---
 		p.drewFirstCardInDrawStepThisTurn = false;
 		// --- End Track P17a ---
+		// --- Track P20b ---
+		resetP20bPlayerTurnState(p);
+		// --- End Track P20b ---
 	}
 	state.playersDrawnThisTurn = [];
 	state.triggeredOnceThisTurn = undefined;
@@ -6356,7 +6694,15 @@ function applyGameActionInner(
 				preferred && allowedColors.includes(preferred) ? preferred : allowedColors[0];
 
 			if (ab.activationRestrictions?.length || ab.activationCondition) {
-				const manaAbLegality = checkAbilityActivationLegality(state, actorId, perm, ab);
+				// --- Track P20b ---
+				const manaAbLegality = checkAbilityActivationLegality(
+					state,
+					actorId,
+					perm,
+					ab,
+					action.xValue !== undefined ? tapXValue : undefined
+				);
+				// --- End Track P20b ---
 				if (!manaAbLegality.ok) return manaAbLegality;
 			}
 
@@ -6371,6 +6717,10 @@ function applyGameActionInner(
 			const plan = planCosts(ctx, cost.defs, action.costPayment);
 			if (!plan.ok) return { ok: false, error: plan.error };
 			if (plan.question) return askCostChoice(state, actor, action, plan.question, perm.card.name);
+			// --- Track P20b ---
+			const parts = serializeCostPlanParts(ctx, plan);
+			const tapRemovedCounters = totalRemovedCountersFromSerializedParts(parts);
+			// --- End Track P20b ---
 
 			const baseAmount = Math.max(1, ab.producesAmount);
 			const dynamicAmount = getDynamicManaProducedAmount(
@@ -6379,7 +6729,10 @@ function applyGameActionInner(
 				perm,
 				baseAmount,
 				ab,
-				tapXValue
+				tapXValue,
+				// --- Track P20b ---
+				tapRemovedCounters
+				// --- End Track P20b ---
 			);
 			let chosenBundle: ManaColor[] | undefined;
 
@@ -6525,7 +6878,6 @@ function applyGameActionInner(
 					? dynamicAmount
 					: 0;
 
-			const parts = serializeCostPlanParts(ctx, plan);
 			const pcp: PendingCostPayment = {
 				kind: 'tap_mana',
 				actorId,
@@ -7375,6 +7727,38 @@ function applyGameActionInner(
 				compiledModal,
 				chosenModes
 			);
+			const isFaceDownCast = Boolean(castOption.spellMods?.castFaceDown);
+			// --- Track P20b ---
+			const cmdLifeTax =
+				sourceZone === 'command' && !isFaceDownCast
+					? getCommanderTaxLifeCostP20b(state, actor, inst, optFaceIdx, optFused, undefined)
+					: { applies: false, totalLife: 0 };
+			const cmdLifeTaxDefs =
+				cmdLifeTax.applies && cmdLifeTax.totalLife > 0
+					? [{ k: 'payLife' as const, amount: { k: 'const' as const, n: cmdLifeTax.totalLife } }]
+					: [];
+			const prePitchDefs = [
+				...(castOption.baseCost.kind === 'alternative' ? (castOption.baseCost.costDefs ?? []) : []),
+				...(castOption.mandatoryAdditionalCosts ?? []),
+				...extraNonManaDefs,
+				...modalExtraCosts.costDefs,
+				...cmdLifeTaxDefs
+			];
+			const usesPitchCostRed =
+				!isFaceDownCast && cardUsesP20bCostPaidCount(inst, optFaceIdx, optFused);
+			const hasExplicitPitchAnswer = isPitchPaymentSettledP20b(prePitchDefs, action.costPayment);
+			const p20bPitchCounts = usesPitchCostRed
+				? hasExplicitPitchAnswer
+					? computeP20bPitchCountsFromPayment(prePitchDefs, action.costPayment)
+					: computeMaxAvailableP20bPitchCounts(
+							state,
+							actor,
+							inst,
+							prePitchDefs,
+							matchesObjectFilter
+						)
+				: undefined;
+			// --- End Track P20b ---
 			const costReq = getSpellCostRequirementForOption(
 				actor,
 				inst,
@@ -7384,15 +7768,23 @@ function applyGameActionInner(
 				hasOptCounts ? normalizedOptCounts : undefined,
 				// --- Track P12 + P11 ---
 				chosenModes,
-				targets
+				targets,
 				// --- End Track P12 + P11 ---
+				// --- Track P20b ---
+				p20bPitchCounts
+				// --- End Track P20b ---
 			);
 			// --- End Track P12 ---
-			const isFaceDownCast = Boolean(castOption.spellMods?.castFaceDown);
 			const spendCtx = spellSpendContext(inst, {
 				faceIndex: optFaceIdx,
 				fused: optFused,
-				isFaceDown: isFaceDownCast
+				isFaceDown: isFaceDownCast,
+				// --- Track P20b ---
+				state,
+				xValue: xVal,
+				manaCostOverride:
+					castOption.baseCost.kind === 'alternative' ? castOption.baseCost.manaCost : undefined
+				// --- End Track P20b ---
 			});
 			const spellPromptName = isFaceDownCast ? 'Face-Down Spell' : inst.card.name;
 			const baseManaDisplay =
@@ -7696,6 +8088,9 @@ function applyGameActionInner(
 				// --- Track P12: Spree / Tiered / Escalate non-mana per-mode costs ---
 				...modalExtraCosts.costDefs,
 				// --- End Track P12 ---
+				// --- Track P20b ---
+				...cmdLifeTaxDefs,
+				// --- End Track P20b ---
 				// --- Track P17b: Per-target spell life costs (e.g. Phyrexian Purge) ---
 				...(isFaceDownCast
 					? []
@@ -7746,15 +8141,33 @@ function applyGameActionInner(
 			const nextSummarySuffix = `${castOption.spellMods?.castSummarySuffix ?? ''}${paidReturnToHand ? ' (Buyback)' : ''}${paidChooseAllModes ? ' (Entwined)' : ''}`;
 			const mutateTargetId =
 				castOption.spellMods?.mutating && targets[0]?.id ? targets[0].id : undefined;
+			// --- Track P20b ---
+			const p20bAltCostManaPaid =
+				castOption.spellMods?.altCostManaPaid ??
+				(castOption.baseCost.kind === 'alternative' && castOption.baseCost.manaCost
+					? castOption.baseCost.manaCost
+					: undefined);
+			const p20bAdditionalPaid = wasAnyAdditionalCostPaidP20b(
+				castOption.mandatoryAdditionalCosts,
+				action.costPayment,
+				hasOptCounts ? normalizedOptCounts : undefined
+			);
+			const hasP20bMods = Boolean(p20bAltCostManaPaid || p20bAdditionalPaid || p20bPitchCounts);
+			// --- End Track P20b ---
 			const effectiveSpellMods: SpellModifications | undefined =
-				paidReturnToHand || paidChooseAllModes || mutateTargetId
+				paidReturnToHand || paidChooseAllModes || mutateTargetId || hasP20bMods
 					? {
 							...castOption.spellMods,
 							...(paidReturnToHand ? { returnToHandOnResolve: true } : {}),
 							...(nextSummarySuffix ? { castSummarySuffix: nextSummarySuffix } : {}),
 							// --- Track P18a ---
-							...(mutateTargetId ? { mutateTargetId } : {})
+							...(mutateTargetId ? { mutateTargetId } : {}),
 							// --- End Track P18a ---
+							// --- Track P20b ---
+							...(p20bAltCostManaPaid ? { altCostManaPaid: p20bAltCostManaPaid } : {}),
+							...(p20bAdditionalPaid ? { additionalCostPaid: true } : {}),
+							...(p20bPitchCounts ? p20bPitchCounts : {})
+							// --- End Track P20b ---
 						}
 					: castOption.spellMods;
 			// --- Track P17a: CR 118.3, 601.2h static cost-payment locks (life / sacrifice) ---
@@ -7979,7 +8392,11 @@ function applyGameActionInner(
 				});
 			}
 
-			const abLegality = checkAbilityActivationLegality(state, actorId, perm, ab);
+			// --- Track P20b ---
+			const explicitAbX =
+				action.xValue !== undefined ? Math.max(0, Math.floor(action.xValue)) : undefined;
+			const abLegality = checkAbilityActivationLegality(state, actorId, perm, ab, explicitAbX);
+			// --- End Track P20b ---
 			if (!abLegality.ok) {
 				return abLegality;
 			}
@@ -8149,9 +8566,9 @@ function applyGameActionInner(
 				perm.card.name
 			);
 			if (phyAbilityChoice) return phyAbilityChoice;
-			// --- Track P10 ---
-			const abilitySpendCtx = activatedAbilitySpendContext(state, perm, ab);
-			// --- End Track P10 ---
+			// --- Track P10 & P20b ---
+			const abilitySpendCtx = activatedAbilitySpendContext(state, perm, ab, abXValue);
+			// --- End Track P10 & P20b ---
 			const hybAbilityChoice = resolveHybridCostChoice(
 				state,
 				actor,
@@ -8205,6 +8622,18 @@ function applyGameActionInner(
 				: Math.max(0, objectToughness(state, perm) ?? 0);
 			// --- End Track P9 ---
 			const parts = serializeCostPlanParts(abilityCtx, abilityPlan);
+			// --- Track P20b ---
+			const hasCounterRemovalPart = parts.some(
+				(pt) =>
+					pt.def.k === 'removeCounters' ||
+					pt.counterCount !== undefined ||
+					pt.counterDistribution !== undefined
+			);
+			const abRemovedCounters = totalRemovedCountersFromSerializedParts(parts);
+			const abLastRoll = lastRollResultFromSerializedParts(parts);
+			const effectiveAbX =
+				abXValue > 0 ? abXValue : !ab.choosesX && hasCounterRemovalPart ? abRemovedCounters : 0;
+			// --- End Track P20b ---
 			const pcp: PendingCostPayment = {
 				kind: 'activate_ability',
 				actorId,
@@ -8215,7 +8644,11 @@ function applyGameActionInner(
 				abilityId: ab.id,
 				...(ab.faceIndex !== undefined ? { faceIndex: ab.faceIndex } : {}),
 				...(ab.costKeyword ? { costKeyword: ab.costKeyword } : {}),
-				...(abXValue > 0 ? { xValue: abXValue } : {}),
+				...(effectiveAbX > 0 ? { xValue: effectiveAbX } : {}),
+				// --- Track P20b ---
+				...(hasCounterRemovalPart ? { removedCounterCount: abRemovedCounters } : {}),
+				...(abLastRoll !== undefined ? { lastRollResult: abLastRoll } : {}),
+				// --- End Track P20b ---
 				targets,
 				...(targetsBySpec ? { targetsBySpec } : {}),
 				// --- Track P7 ---
@@ -11990,6 +12423,12 @@ for (const kind of [
 		// --- Track P12 ---
 		if (ev.kind === 'DamageDealt') {
 			recordDamageSourceWave4(state, ev.sourceId, ev.amount);
+			// --- Track P20b ---
+			if (ev.targetKind === 'player') {
+				recordP20bCreatureDamageToPlayer(state, ev.targetId, ev.sourceId, ev.amount, ev.combat);
+				noteLayerInputsChanged(state);
+			}
+			// --- End Track P20b ---
 		}
 		// --- End Track P12 ---
 		// --- Track P16b ---
@@ -12017,6 +12456,18 @@ registerEventHandler('Cast', (state, ev) => {
 	noteUnautomatedOnCast(state, ev.object, ev.playerId);
 });
 registerEventHandler('ZoneChange', (state, ev) => {
+	// --- Track P20b ---
+	if (!ev.ceasedToExist) {
+		if (ev.to === 'battlefield' && ev.from !== 'battlefield') {
+			recordP20bPermanentEnteredBattlefield(state, ev.object);
+			noteLayerInputsChanged(state);
+		}
+		if (ev.to === 'graveyard' && ev.from !== 'graveyard') {
+			recordP20bCardPutIntoGraveyard(state, ev.object);
+			noteLayerInputsChanged(state);
+		}
+	}
+	// --- End Track P20b ---
 	matchTriggers(state, ev);
 	if (ev.to === 'battlefield' && !ev.ceasedToExist) noteUnautomatedOnEnter(state, ev.object);
 });
@@ -14206,6 +14657,22 @@ function resolveWardTrigger(
 			const stkIdx = state.stack.indexOf(targetItem);
 			if (stkIdx >= 0) {
 				const [countered] = state.stack.splice(stkIdx, 1);
+				// --- Track P20b ---
+				if (countered.kind === 'spell' && countered.controllerId !== controller.playerId) {
+					const cFace = resolveObjectFaces(countered.card, {
+						zone: 'stack',
+						faceIndex: countered.faceIndex ?? 0,
+						fused: countered.fused
+					});
+					if (countered.isFaceDown || cFace.types.includes('Creature')) {
+						const spCtrl = state.players.find((p) => p.playerId === countered.controllerId);
+						if (spCtrl) {
+							spCtrl.creatureSpellCounteredByOpponentThisTurn = true;
+							noteLayerInputsChanged(state);
+						}
+					}
+				}
+				// --- End Track P20b ---
 				moveStackSpellToZone(state, countered, 'graveyard');
 				addLog(
 					state,
@@ -14572,7 +15039,9 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 						t,
 						targetRequirementFromSpecs([bSpec]),
 						item.card,
-						item.sourceInstanceId
+						item.sourceInstanceId,
+						item.kind === 'spell' ? 'spell' : 'ability',
+						item.xValue
 					).ok;
 				});
 			});
@@ -15752,6 +16221,22 @@ function counterStackItemByEffect(
 	const stkIdx = state.stack.indexOf(candidate);
 	if (stkIdx < 0) return false;
 	const [countered] = state.stack.splice(stkIdx, 1);
+	// --- Track P20b ---
+	if (countered.kind === 'spell' && countered.controllerId !== controller.playerId) {
+		const cFace = resolveObjectFaces(countered.card, {
+			zone: 'stack',
+			faceIndex: countered.faceIndex ?? 0,
+			fused: countered.fused
+		});
+		if (countered.isFaceDown || cFace.types.includes('Creature')) {
+			const spCtrl = state.players.find((p) => p.playerId === countered.controllerId);
+			if (spCtrl) {
+				spCtrl.creatureSpellCounteredByOpponentThisTurn = true;
+				noteLayerInputsChanged(state);
+			}
+		}
+	}
+	// --- End Track P20b ---
 	// --- Track P10 ---
 	if (replacementZone === 'exile') {
 		moveStackSpellToZone(state, countered, 'exile');
@@ -15835,8 +16320,27 @@ function destroyPermanentByEffect(
 		return 'skipped';
 	}
 	// --- End Track P12 ---
+	// --- Track P20b ---
+	const wasCreatureBeforeDestroy = evaluatePermanent(state, inst).isCreature;
+	const destroyedPermControllerId = inst.controllerId;
+	// --- End Track P20b ---
 	emitVfx(state, { kind: 'destroy', targetId: inst.instanceId, label: inst.card.name });
 	const dest = movePermanentToZone(state, inst, 'graveyard');
+	// --- Track P20b ---
+	if (
+		dest !== 'pending' &&
+		!wasCreatureBeforeDestroy &&
+		actorId &&
+		destroyedPermControllerId &&
+		actorId !== destroyedPermControllerId
+	) {
+		const permCtrl = state.players.find((p) => p.playerId === destroyedPermControllerId);
+		if (permCtrl) {
+			permCtrl.noncreatureDestroyedByOpponentThisTurn = true;
+			noteLayerInputsChanged(state);
+		}
+	}
+	// --- End Track P20b ---
 	addLog(state, 'cast', `${title} destroyed ${inst.card.name}.`, actorId);
 	if (dest !== 'pending') {
 		flushTriggers(state);
@@ -17515,6 +18019,12 @@ function initiateLibrarySearch(
 	// --- Track P19b: CR 701.19a "Whenever a player / an opponent searches their library" ---
 	emitEvent(state, { kind: 'LibrarySearched', playerId: searchingPlayer.playerId });
 	// --- End Track P19b ---
+	// --- Track P20b ---
+	if (!searchingPlayer.searchedLibraryThisTurn) {
+		searchingPlayer.searchedLibraryThisTurn = true;
+		noteLayerInputsChanged(state);
+	}
+	// --- End Track P20b ---
 	const interceptor = getLibrarySearchInterceptor(state, searchingPlayer.playerId);
 	const decisionPlayer = interceptor
 		? state.players.find((p) => p.playerId === interceptor.controllerId) || searchingPlayer
@@ -20633,9 +21143,10 @@ export function validateTargetLegality(
 	targetRequirementOrKind: TargetRequirementInfo | string,
 	sourceCard?: ScryfallCard,
 	sourceInstanceId?: string,
-	// --- Track P20a ---
-	sourceKindHint?: 'spell' | 'ability'
-	// --- End Track P20a ---
+	// --- Track P20a + Track P20b ---
+	sourceKindHintOrXValue?: 'spell' | 'ability' | number,
+	xValueArg?: number
+	// --- End Track P20a + Track P20b ---
 ): { ok: boolean; error?: string } {
 	return withStableLayerInputs(state, () =>
 		validateTargetLegalityInner(
@@ -20645,7 +21156,8 @@ export function validateTargetLegality(
 			targetRequirementOrKind,
 			sourceCard,
 			sourceInstanceId,
-			sourceKindHint
+			sourceKindHintOrXValue,
+			xValueArg
 		)
 	);
 }
@@ -20657,10 +21169,15 @@ function validateTargetLegalityInner(
 	targetRequirementOrKind: TargetRequirementInfo | string,
 	sourceCard?: ScryfallCard,
 	sourceInstanceId?: string,
-	// --- Track P20a ---
-	sourceKindHint?: 'spell' | 'ability'
-	// --- End Track P20a ---
+	// --- Track P20a + Track P20b ---
+	sourceKindHintOrXValue?: 'spell' | 'ability' | number,
+	xValueArg?: number
+	// --- End Track P20a + Track P20b ---
 ): { ok: boolean; error?: string } {
+	const sourceKindHint: 'spell' | 'ability' | undefined =
+		typeof sourceKindHintOrXValue === 'string' ? sourceKindHintOrXValue : undefined;
+	const xValue: number | undefined =
+		typeof sourceKindHintOrXValue === 'number' ? sourceKindHintOrXValue : xValueArg;
 	const info = normalizeTargetRequirement(targetRequirementOrKind);
 	const targetKind = info.targetKind;
 
@@ -20994,7 +21511,17 @@ function validateTargetLegalityInner(
 		}
 		const sourceInst = sourceInstanceId ? findCardAnywhere(state, sourceInstanceId)?.inst : undefined;
 		const spec = info.targetSpecs?.[0];
-		if (spec?.kind === 'object' && !matchesObjectFilter(foundCard, spec.filter, { state, controllerId: actorId, source: sourceInst })) {
+		if (
+			spec?.kind === 'object' &&
+			!matchesObjectFilter(foundCard, spec.filter, {
+				state,
+				controllerId: actorId,
+				source: sourceInst,
+				// --- Track P20b ---
+				...(xValue !== undefined ? { xValue } : {})
+				// --- End Track P20b ---
+			})
+		) {
 			return {
 				ok: false,
 				error: `Strict Rules Violation: ${foundCard.card.name} does not match the exile target filter.`
@@ -21194,11 +21721,17 @@ function validateTargetLegalityInner(
 							(s) => s.sourceInstanceId === sourceInstanceId || s.id === sourceInstanceId
 						)
 					: undefined;
+			// --- Track P20b ---
+			const resolvedTargetX = xValue ?? sourceStackItem?.xValue;
+			// --- End Track P20b ---
 			const fctx: FilterContext = {
 				state,
 				controllerId: actorId,
 				source: sourceInst,
-				...(sourceStackItem ? { stackItem: sourceStackItem } : {})
+				...(sourceStackItem ? { stackItem: sourceStackItem } : {}),
+				// --- Track P20b ---
+				...(resolvedTargetX !== undefined ? { xValue: resolvedTargetX } : {})
+				// --- End Track P20b ---
 			};
 			// --- End Track P18a ---
 			const isAuraSpell = Boolean(sourceCard?.typeLine.includes('Aura'));
@@ -21406,7 +21939,8 @@ export function validateChosenTargets(
 					specInfo,
 					sourceCard,
 					sourceInstanceId,
-					chosenSrcKindHint
+					chosenSrcKindHint,
+					xValue
 				);
 				if (!res.ok) return res;
 				seenInPriorSpecs.add(`${t.kind}:${t.id}`);
@@ -21433,7 +21967,8 @@ export function validateChosenTargets(
 				info,
 				sourceCard,
 				sourceInstanceId,
-				chosenSrcKindHint
+				chosenSrcKindHint,
+				xValue
 			);
 			if (!res.ok) return res;
 		}
@@ -21462,7 +21997,19 @@ export function validateChosenTargets(
 					const fbPerm = findPermanentOnBoard(state, fbId)?.inst;
 					if (!fbPerm) continue;
 					const fbCandidate: TargetRef = { kind: 'permanent', id: fbId, label: fbPerm.card.name };
-					if (validateTargetLegality(state, actorId, fbCandidate, info, sourceCard, sourceInstanceId).ok) {
+					if (
+						validateTargetLegality(
+							state,
+							actorId,
+							fbCandidate,
+							info,
+							sourceCard,
+							sourceInstanceId,
+							// --- Track P20b ---
+							xValue
+							// --- End Track P20b ---
+						).ok
+					) {
 						return {
 							ok: false,
 							error: `Strict Rules Violation: You must choose at least one Flagbearer on the battlefield as a target if able (CR 115.1).`
@@ -21526,10 +22073,22 @@ export function getAllLegalTargetsForRequirement(
 	actorId: string,
 	info: TargetRequirementInfo,
 	sourceCard?: ScryfallCard,
-	sourceInstanceId?: string
+	sourceInstanceId?: string,
+	// --- Track P20b ---
+	xValue?: number
+	// --- End Track P20b ---
 ): TargetRef[] {
 	return withStableLayerInputs(state, () =>
-		getAllLegalTargetsForRequirementInner(state, actorId, info, sourceCard, sourceInstanceId)
+		getAllLegalTargetsForRequirementInner(
+			state,
+			actorId,
+			info,
+			sourceCard,
+			sourceInstanceId,
+			// --- Track P20b ---
+			xValue
+			// --- End Track P20b ---
+		)
 	);
 }
 
@@ -21538,14 +22097,20 @@ function getAllLegalTargetsForRequirementInner(
 	actorId: string,
 	info: TargetRequirementInfo,
 	sourceCard?: ScryfallCard,
-	sourceInstanceId?: string
+	sourceInstanceId?: string,
+	// --- Track P20b ---
+	xValue?: number
+	// --- End Track P20b ---
 ): TargetRef[] {
 	const results: TargetRef[] = [];
 
 	if (info.zone === 'stack' || info.targetKind === 'spell') {
 		for (const item of state.stack) {
 			const ref: TargetRef = { kind: 'stack', id: item.id, label: item.title };
-			if (validateTargetLegalityInner(state, actorId, ref, info, sourceCard, sourceInstanceId).ok) {
+			if (
+				validateTargetLegalityInner(state, actorId, ref, info, sourceCard, sourceInstanceId, xValue)
+					.ok
+			) {
 				results.push(ref);
 			}
 		}
@@ -21556,7 +22121,17 @@ function getAllLegalTargetsForRequirementInner(
 		for (const p of state.players) {
 			for (const c of p.graveyard) {
 				const ref: TargetRef = { kind: 'graveyard_card', id: c.instanceId, label: c.card.name };
-				if (validateTargetLegalityInner(state, actorId, ref, info, sourceCard, sourceInstanceId).ok) {
+				if (
+					validateTargetLegalityInner(
+						state,
+						actorId,
+						ref,
+						info,
+						sourceCard,
+						sourceInstanceId,
+						xValue
+					).ok
+				) {
 					results.push(ref);
 				}
 			}
@@ -21568,7 +22143,17 @@ function getAllLegalTargetsForRequirementInner(
 		for (const p of state.players) {
 			for (const c of p.exile) {
 				const ref: TargetRef = { kind: 'exile_card', id: c.instanceId, label: c.card.name };
-				if (validateTargetLegalityInner(state, actorId, ref, info, sourceCard, sourceInstanceId).ok) {
+				if (
+					validateTargetLegalityInner(
+						state,
+						actorId,
+						ref,
+						info,
+						sourceCard,
+						sourceInstanceId,
+						xValue
+					).ok
+				) {
 					results.push(ref);
 				}
 			}
@@ -21580,7 +22165,10 @@ function getAllLegalTargetsForRequirementInner(
 		for (const p of state.players) {
 			if (p.lost) continue;
 			const ref: TargetRef = { kind: 'player', id: p.playerId, label: p.username };
-			if (validateTargetLegalityInner(state, actorId, ref, info, sourceCard, sourceInstanceId).ok) {
+			if (
+				validateTargetLegalityInner(state, actorId, ref, info, sourceCard, sourceInstanceId, xValue)
+					.ok
+			) {
 				results.push(ref);
 			}
 		}
@@ -21592,7 +22180,17 @@ function getAllLegalTargetsForRequirementInner(
 			for (const perm of p.battlefield) {
 				if (perm.phasedOut) continue;
 				const ref: TargetRef = { kind: 'permanent', id: perm.instanceId, label: perm.card.name };
-				if (validateTargetLegalityInner(state, actorId, ref, info, sourceCard, sourceInstanceId).ok) {
+				if (
+					validateTargetLegalityInner(
+						state,
+						actorId,
+						ref,
+						info,
+						sourceCard,
+						sourceInstanceId,
+						xValue
+					).ok
+				) {
 					results.push(ref);
 				}
 			}
@@ -21708,7 +22306,19 @@ function hasRequiredLegalTargetsInner(
 				let validInThisGraveyard = 0;
 				for (const c of p.graveyard) {
 					const ref: TargetRef = { kind: 'graveyard_card', id: c.instanceId, label: c.card.name };
-					if (validateTargetLegality(state, actorId, ref, info, sourceCard, sourceInstanceId).ok) {
+					if (
+						validateTargetLegality(
+							state,
+							actorId,
+							ref,
+							info,
+							sourceCard,
+							sourceInstanceId,
+							// --- Track P20b ---
+							xValue
+							// --- End Track P20b ---
+						).ok
+					) {
 						validInThisGraveyard += 1;
 					}
 				}
@@ -21726,7 +22336,10 @@ function hasRequiredLegalTargetsInner(
 				actorId,
 				info,
 				sourceCard,
-				sourceInstanceId
+				sourceInstanceId,
+				// --- Track P20b ---
+				xValue
+				// --- End Track P20b ---
 			);
 			if (allGraveTargets.length < info.minTargets) {
 				return {
@@ -21744,7 +22357,10 @@ function hasRequiredLegalTargetsInner(
 			actorId,
 			info,
 			sourceCard,
-			sourceInstanceId
+			sourceInstanceId,
+			// --- Track P20b ---
+			xValue
+			// --- End Track P20b ---
 		);
 		if (allExileTargets.length < info.minTargets) {
 			return {
@@ -21760,7 +22376,10 @@ function hasRequiredLegalTargetsInner(
 		actorId,
 		info,
 		sourceCard,
-		sourceInstanceId
+		sourceInstanceId,
+		// --- Track P20b ---
+		xValue
+		// --- End Track P20b ---
 	);
 	if (legalTargets.length < info.minTargets) {
 		if (info.zone === 'stack' || info.targetKind === 'spell') {
@@ -22732,6 +23351,33 @@ function checkSpellCastOptionLegalityInner(
 	const normalizedOptCounts = optCountsValidation.normalized;
 	const hasOptCounts = Object.keys(normalizedOptCounts).length > 0;
 	const { nonManaDefs: extraNonManaDefs } = expandOptionalAdditionalCosts(option, normalizedOptCounts);
+	// --- Track P20b ---
+	const optFaceCheck = option.faceIndex ?? 0;
+	const optFusedCheck = Boolean(option.fused);
+	const isFaceDownCheck = Boolean(option.spellMods?.castFaceDown);
+	const checkCmdLife =
+		fromZone === 'command' && !isFaceDownCheck
+			? getCommanderTaxLifeCostP20b(state, actor, inst, optFaceCheck, optFusedCheck, undefined)
+			: { applies: false, totalLife: 0 };
+	if (checkCmdLife.applies && checkCmdLife.totalLife > 0 && actor.life < checkCmdLife.totalLife) {
+		return { ok: false, error: `Not enough life to pay commander tax (${checkCmdLife.totalLife} life).` };
+	}
+	const checkPrePitchDefs = [
+		...(option.baseCost.kind === 'alternative' ? (option.baseCost.costDefs ?? []) : []),
+		...(option.mandatoryAdditionalCosts ?? []),
+		...extraNonManaDefs
+	];
+	const checkPitchCounts =
+		!isFaceDownCheck && cardUsesP20bCostPaidCount(inst, optFaceCheck, optFusedCheck)
+			? computeMaxAvailableP20bPitchCounts(
+					state,
+					actor,
+					inst,
+					checkPrePitchDefs,
+					matchesObjectFilter
+				)
+			: undefined;
+	// --- End Track P20b ---
 	const costReq = getSpellCostRequirementForOption(
 		actor,
 		inst,
@@ -22740,12 +23386,22 @@ function checkSpellCastOptionLegalityInner(
 		effectiveXForCheck,
 		// --- End Track P18b ---
 		option,
-		hasOptCounts ? normalizedOptCounts : undefined
+		hasOptCounts ? normalizedOptCounts : undefined,
+		// --- Track P20b ---
+		undefined,
+		undefined,
+		checkPitchCounts
+		// --- End Track P20b ---
 	);
 	const spendCtx = spellSpendContext(inst, {
 		faceIndex: option.faceIndex,
 		fused: option.fused,
-		isFaceDown: Boolean(option.spellMods?.castFaceDown)
+		isFaceDown: Boolean(option.spellMods?.castFaceDown),
+		// --- Track P20b ---
+		state,
+		xValue: effectiveXForCheck,
+		manaCostOverride: option.baseCost.kind === 'alternative' ? option.baseCost.manaCost : undefined
+		// --- End Track P20b ---
 	});
 	let effectiveManaReq = costReq;
 	let reservedAidIds = new Set<string>();
@@ -23125,16 +23781,24 @@ export function checkAbilityActivationLegality(
 	state: GameState,
 	actorId: string,
 	perm: CardInstance,
-	ab: EffectiveActivatedAbility
+	ab: EffectiveActivatedAbility,
+	// --- Track P20b ---
+	xValue?: number
+	// --- End Track P20b ---
 ): { ok: boolean; error?: string } {
-	return withStableLayerInputs(state, () => checkAbilityActivationLegalityInner(state, actorId, perm, ab));
+	return withStableLayerInputs(state, () =>
+		checkAbilityActivationLegalityInner(state, actorId, perm, ab, xValue)
+	);
 }
 
 function checkAbilityActivationLegalityInner(
 	state: GameState,
 	actorId: string,
 	perm: CardInstance,
-	ab: EffectiveActivatedAbility
+	ab: EffectiveActivatedAbility,
+	// --- Track P20b ---
+	xValue?: number
+	// --- End Track P20b ---
 ): { ok: boolean; error?: string } {
 	if (state.status !== 'active') {
 		return { ok: false, error: 'Game is not currently active.' };
@@ -23248,36 +23912,50 @@ function checkAbilityActivationLegalityInner(
 
 	// Phase 4: the whole cost from the IR ({T}/{Q} with summoning sickness, sacrifices, discards,
 	// "tap N untapped ...", life, counters and mana), checked by runtime/costs.ts.
-	// --- Track P18b ---
+	// --- Track P18b & P20b ---
 	const minAbX = ab.xCantBeZero ? 1 : 0;
-	// --- End Track P18b ---
-	const abilityMana = effectiveAbilityManaCost(
-		state,
-		actorId,
-		ab.id,
-		// --- Track P17b ---
-		ab.baseManaCost ?? ab.manaCost,
-		// --- End Track P17b ---
-		ab.costKeyword,
-		// --- Track P11 & P15 & P18b ---
-		minAbX,
-		perm,
-		ab.isManaAbility,
-		ab.powerUpReduction,
-		// --- End Track P11 & P15 & P18b ---
-		// --- Track P17b ---
-		undefined,
-		ab.loyaltyCost !== null || Boolean(ab.loyaltySign)
-		// --- End Track P17b ---
-	).requirement;
+	const checkAbX = xValue !== undefined ? Math.max(minAbX, xValue) : minAbX;
+	const isLoyaltyAb = ab.loyaltyCost !== null || Boolean(ab.loyaltySign);
+	const manaReqForAbX = (abX: number): ManaCostRequirement =>
+		effectiveAbilityManaCost(
+			state,
+			actorId,
+			ab.id,
+			// --- Track P17b ---
+			ab.baseManaCost ?? ab.manaCost,
+			// --- End Track P17b ---
+			ab.costKeyword,
+			// --- Track P11 & P15 & P18b ---
+			abX,
+			perm,
+			ab.isManaAbility,
+			ab.powerUpReduction,
+			// --- End Track P11 & P15 & P18b ---
+			// --- Track P17b ---
+			undefined,
+			isLoyaltyAb
+			// --- End Track P17b ---
+		).requirement;
+	const abilityMana = manaReqForAbX(checkAbX);
+	// --- End Track P18b & P20b ---
 	// --- Track P7 ---
 	const permEffCard =
 		perm.zone === 'battlefield' ? getEffectiveCardForPermanent(state, perm) : perm.card;
 	const abilityCost = activatedAbilityCost(permEffCard, ab);
 	// --- End Track P7 ---
-	// --- Track P18b ---
-	const costCtx = costContext(state, actor, perm, minAbX, false, abilityMana);
-	// --- End Track P18b ---
+	// --- Track P18b & P20b ---
+	const checkAbSpendCtx = activatedAbilitySpendContext(state, perm, ab, checkAbX);
+	const costCtx = costContext(
+		state,
+		actor,
+		perm,
+		checkAbX,
+		false,
+		abilityMana,
+		undefined,
+		checkAbSpendCtx
+	);
+	// --- End Track P18b & P20b ---
 	const checkCost = (): { ok: boolean; error?: string } => {
 		// --- Track P17a: CR 118.3, 702.122a, 702.171a cost locks & Crew/Saddle virtual power ---
 		const costLock = checkWave6CostPaymentLocks(
@@ -23296,6 +23974,26 @@ function checkAbilityActivationLegalityInner(
 			abilityCost.defs
 		);
 		if (canPayCosts(costCtx, crewAdjusted.defs)) return { ok: true };
+		// --- Track P20b: Probe positive X values when UI/AI checks an X-cost ability without explicit xValue ---
+		if (xValue === undefined && ab.choosesX) {
+			for (let probeX = Math.max(1, minAbX); probeX <= 16; probeX++) {
+				const probeMana = manaReqForAbX(probeX);
+				const probeSpendCtx = activatedAbilitySpendContext(state, perm, ab, probeX);
+				if (!canPayOrAutoTap(actor, probeMana, state, undefined, probeSpendCtx)) break;
+				const probeCtx = costContext(
+					state,
+					actor,
+					perm,
+					probeX,
+					false,
+					probeMana,
+					undefined,
+					probeSpendCtx
+				);
+				if (canPayCosts(probeCtx, crewAdjusted.defs)) return { ok: true };
+			}
+		}
+		// --- End Track P20b ---
 		const plan = planCosts(costCtx, crewAdjusted.defs);
 		// --- End Track P17a ---
 		return { ok: false, error: plan.ok ? `You can't pay the cost of ${perm.card.name}'s ability.` : plan.error };
@@ -23542,10 +24240,54 @@ function checkAbilityActivationLegalityInner(
 			permEffCard,
 			// --- End Track P7 ---
 			perm.instanceId,
-			0
+			// --- Track P20b ---
+			checkAbX
+			// --- End Track P20b ---
 		);
 		if (!targetCheck.ok) {
-			return targetCheck;
+			// --- Track P20b ---
+			if (xValue === undefined && ab.choosesX) {
+				const crewAdjusted = adjustCostDefsForCrewSaddleVirtualPower(
+					state,
+					actor,
+					perm,
+					abilityCost.defs
+				);
+				let foundPlayableX = false;
+				for (let probeX = Math.max(1, minAbX); probeX <= 16; probeX++) {
+					const probeMana = manaReqForAbX(probeX);
+					const probeSpendCtx = activatedAbilitySpendContext(state, perm, ab, probeX);
+					if (!canPayOrAutoTap(actor, probeMana, state, undefined, probeSpendCtx)) break;
+					const probeCtx = costContext(
+						state,
+						actor,
+						perm,
+						probeX,
+						false,
+						probeMana,
+						undefined,
+						probeSpendCtx
+					);
+					if (!canPayCosts(probeCtx, crewAdjusted.defs)) continue;
+					if (
+						hasRequiredLegalTargets(
+							state,
+							actorId,
+							abTargetInfo,
+							permEffCard,
+							perm.instanceId,
+							probeX
+						).ok
+					) {
+						foundPlayableX = true;
+						break;
+					}
+				}
+				if (!foundPlayableX) return targetCheck;
+			} else {
+				return targetCheck;
+			}
+			// --- End Track P20b ---
 		}
 	}
 
@@ -23732,7 +24474,8 @@ function isTargetStillValid(
 							b,
 							sourceCard,
 							item.sourceInstanceId,
-							itemSrcKind
+							itemSrcKind,
+							item.xValue
 						).ok
 				);
 				if (!anyBranchValid) return false;
@@ -23744,7 +24487,8 @@ function isTargetStillValid(
 					targetInfo,
 					sourceCard,
 					item.sourceInstanceId,
-					itemSrcKind
+					itemSrcKind,
+					item.xValue
 				).ok
 			) {
 				return false;

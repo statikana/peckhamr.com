@@ -614,6 +614,15 @@ export interface ManaSpendContext {
 	// --- Track P15 ---
 	capturedPhyrexianLifePaidCount?: number;
 	// --- End Track P15 ---
+	// --- Track P20b ---
+	/** Total mana in the cost coming from `{X}` (`xValue * xCount`), used to enforce `"Spend only <colors> mana on X"`. */
+	xManaCount?: number;
+	xSpendColors?: ManaColor[];
+	xColoredOnly?: boolean;
+	xMaxOnePerColor?: boolean;
+	manaSourceSpendKind?: 'creature' | 'basicLand' | 'snow' | 'treasure' | 'chosenColor';
+	manaSourceChosenColor?: ManaColor;
+	// --- End Track P20b ---
 }
 
 // --- Track P10 ---
@@ -731,6 +740,12 @@ export interface EffectiveActivatedAbility {
 	/** CR 107.3a: "X can't be 0." on an X-cost activated ability. */
 	xCantBeZero?: boolean;
 	// --- End Track P18b ---
+	// --- Track P20b ---
+	xSpendColors?: ManaColor[];
+	xColoredOnly?: boolean;
+	xMaxOnePerColor?: boolean;
+	manaSourceSpendKind?: 'creature' | 'basicLand' | 'snow' | 'treasure' | 'chosenColor';
+	// --- End Track P20b ---
 }
 
 export interface LibrarySearchDestination {
@@ -1244,6 +1259,16 @@ export interface SpellModifications {
 	/** CR 603.7: permanent this spell becomes is sacrificed by its controller at the beginning of the next cleanup step. */
 	sacrificeAtCleanupStep?: boolean;
 	// --- End Track P20a ---
+	// --- Track P20b ---
+	/** CR 118.9: Alternative mana cost string paid when casting via a Mastery / Trap / static alt-cost ("If the {1}{B} cost was paid..."). */
+	altCostManaPaid?: string;
+	/** CR 118.8: True when an optional additional cost on the spell was paid. */
+	additionalCostPaid?: boolean;
+	/** Count of cards/permanents/counters paid into this spell's pitch additional cost (for "~ costs {N} less for each ... this way"). */
+	exiledCostCardCount?: number;
+	sacrificedCostPermCount?: number;
+	removedCostCounterCount?: number;
+	// --- End Track P20b ---
 }
 
 export interface CastOptionOptionalCost {
@@ -1670,6 +1695,14 @@ export interface StackItem {
 	/** CR 603.7a: id of the spell-created event delayed trigger entry on `state.wave7SpellDelayedTriggers`. */
 	wave7SpellDelayedId?: string;
 	// --- End Track P19b ---
+	// --- Track P20b ---
+	/** Count of counters removed while paying this stack item's cost (CR 602.2b / 601.2h). */
+	removedCounterCount?: number;
+	/** Alternative mana cost string paid when this spell was cast (e.g. `{1}{B}`). */
+	altCostManaPaid?: string;
+	/** True when an optional additional cost was paid to cast this spell. */
+	additionalCostPaid?: boolean;
+	// --- End Track P20b ---
 }
 
 // --- Track P10 ---
@@ -2263,6 +2296,10 @@ export interface CostPayment {
 	/** Per-Phyrexian-symbol payment choice ('life' | 'primary' | 'alt') for mixed/hybrid Phyrexian costs. */
 	phyrexianChoices?: Array<'life' | 'primary' | 'alt'>;
 	// --- End Track P11 ---
+	// --- Track P20b ---
+	counterCount?: number;
+	counterDistribution?: Record<string, number>;
+	// --- End Track P20b ---
 }
 
 export interface VfxEvent {
@@ -2501,6 +2538,32 @@ export interface PlayerGameState {
 		typeLine: string;
 	}>;
 	// --- End Track P19b ---
+	// --- Track P20b ---
+	/** Mana in pool produced by creature permanents, by color (for CR 106.6 creature-mana spend restrictions). */
+	creatureManaByColor?: Partial<Record<ManaColor, number>>;
+	/** Mana in pool produced by basic land permanents, by color (for CR 106.6 basic-land spend restrictions). */
+	basicLandManaByColor?: Partial<Record<ManaColor, number>>;
+	/** Mana in pool produced by Treasure permanents, by color (for CR 106.6 Treasure spend restrictions). */
+	treasureManaByColor?: Partial<Record<ManaColor, number>>;
+	/** Plain-JSON summary of permanents that entered the battlefield under this player's control this turn (for Trap conditions). */
+	permanentsEnteredSummaryThisTurn?: Array<{ types: string[]; subtypes: string[]; colors: ManaColor[] }>;
+	/** Total cards put into this player's graveyard from anywhere this turn. */
+	cardsPutIntoGraveyardCountThisTurn?: number;
+	/** True once this player has searched their library this turn. */
+	searchedLibraryThisTurn?: boolean;
+	/** True once a creature spell this player cast this turn was countered by an opponent's spell or ability. */
+	creatureSpellCounteredByOpponentThisTurn?: boolean;
+	/** True once a noncreature permanent this player controlled was destroyed by an opponent's spell or ability this turn. */
+	noncreatureDestroyedByOpponentThisTurn?: boolean;
+	/** Distinct creature `instanceId`s that dealt damage to this player this turn. */
+	creatureDamageSourceIdsThisTurn?: string[];
+	/** Number of equip abilities this player has activated this turn. */
+	equipActivatedCountThisTurn?: number;
+	/** Number of power-up abilities this player has activated this turn. */
+	powerUpActivatedCountThisTurn?: number;
+	/** Number of cards this player has cycled this turn. */
+	cycledCardCountThisTurn?: number;
+	// --- End Track P20b ---
 }
 
 export interface ManaRider {
@@ -2637,6 +2700,11 @@ export interface SerializedPlannedCost {
 	// --- Track P17b ---
 	emitForaged?: boolean;
 	// --- End Track P17b ---
+	// --- Track P20b ---
+	counterCount?: number;
+	counterDistribution?: Record<string, number>;
+	rollResult?: number;
+	// --- End Track P20b ---
 }
 
 /**
@@ -2731,6 +2799,12 @@ export interface PendingCostPayment {
 	nextObjectIndex: number;
 	descriptions: string[];
 	aidDescriptions?: string[];
+	// --- Track P20b ---
+	removedCounterCount?: number;
+	lastRollResult?: number;
+	altCostManaPaid?: string;
+	additionalCostPaid?: boolean;
+	// --- End Track P20b ---
 }
 
 // --- Track P7 ---

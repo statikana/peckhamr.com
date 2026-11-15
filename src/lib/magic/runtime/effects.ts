@@ -2146,6 +2146,16 @@ class Run {
 				});
 			}
 			// --- End Track P20a ---
+			default: {
+				const srcFound = this.locate(this.ctx.sourceId);
+				return evaluateAmount(a, {
+					state: this.state,
+					controllerId: this.you.playerId,
+					source: srcFound?.inst,
+					stackItem: this.ctx.item,
+					xValue: this.ctx.xValue
+				});
+			}
 		}
 	}
 

@@ -73,6 +73,9 @@ import {
 // --- Track P13 ---
 import { evaluateP13Condition } from './effectsWave5.ts';
 // --- End Track P13 ---
+// --- Track P20b ---
+import { evaluateP20bAmount, evaluateP20bCondition } from './costsWave7.ts';
+// --- End Track P20b ---
 // --- Track P16b ---
 import {
 	OUTLAW_SUBTYPES,
@@ -2330,6 +2333,15 @@ function evaluateLayerAmount(
 			layerReads |= READ_P20A | READ_LIFE;
 			return countOpponentsWithLifeLessThanHalfStarting(state, source.controllerId);
 		// --- End Track P20a ---
+		// --- Track P20b ---
+		case 'p20bCostPaidCount':
+			layerReads |= READ_P20B;
+			return evaluateP20bAmount(amount, {
+				state,
+				controllerId: source.controllerId,
+				source: source.inst
+			});
+		// --- End Track P20b ---
 		default:
 			return 0;
 	}
@@ -2786,6 +2798,15 @@ function evaluateLayerCondition(
 			return evaluateMostCommonColorFromCounts(counts, cond.color, cond.allowTie);
 		}
 		// --- End Track P20a ---
+		// --- Track P20b ---
+		case 'p20bCondition':
+			layerReads |= READ_P20B | READ_HIDDEN_ZONES | READ_ACTIVE_PLAYER;
+			return evaluateP20bCondition(
+				cond,
+				{ state, controllerId: source.controllerId, source: source.inst },
+				matchesObjectFilter
+			);
+		// --- End Track P20b ---
 		default:
 			return false;
 	}
@@ -2954,6 +2975,9 @@ const READ_P18B = 1 << 25;
 // --- Track P20a ---
 const READ_P20A = 1 << 28;
 // --- End Track P20a ---
+// --- Track P20b ---
+const READ_P20B = 1 << 29;
+// --- End Track P20b ---
 
 /** Inputs read by the evaluation in progress (bits above). */
 let layerReads = 0;
@@ -3133,6 +3157,23 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 		}
 	}
 	// --- End Track P20a ---
+	// --- Track P20b ---
+	if (reads & READ_P20B) {
+		fp.push(state.players.length);
+		for (const p of state.players) {
+			fp.push(
+				p.permanentsEnteredSummaryThisTurn?.length ?? 0,
+				p.cardsPutIntoGraveyardCountThisTurn ?? 0,
+				Boolean(p.searchedLibraryThisTurn),
+				Boolean(p.creatureSpellCounteredByOpponentThisTurn),
+				Boolean(p.noncreatureDestroyedByOpponentThisTurn),
+				p.creatureDamageSourceIdsThisTurn?.length ?? 0,
+				p.spellsCastThisTurn ?? 0,
+				p.cardsDrawnThisTurn ?? 0
+			);
+		}
+	}
+	// --- End Track P20b ---
 	for (const p of state.players) {
 		if (reads & READ_LIFE) fp.push(p.life);
 		if (reads & READ_ENERGY) fp.push(p.energyCounters || 0);
@@ -3626,6 +3667,25 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 		}
 	}
 	// --- End Track P20a ---
+	// --- Track P20b ---
+	if (reads & READ_P20B) {
+		if (fp[i++] !== state.players.length) return false;
+		for (const p of state.players) {
+			if (
+				fp[i++] !== (p.permanentsEnteredSummaryThisTurn?.length ?? 0) ||
+				fp[i++] !== (p.cardsPutIntoGraveyardCountThisTurn ?? 0) ||
+				fp[i++] !== Boolean(p.searchedLibraryThisTurn) ||
+				fp[i++] !== Boolean(p.creatureSpellCounteredByOpponentThisTurn) ||
+				fp[i++] !== Boolean(p.noncreatureDestroyedByOpponentThisTurn) ||
+				fp[i++] !== (p.creatureDamageSourceIdsThisTurn?.length ?? 0) ||
+				fp[i++] !== (p.spellsCastThisTurn ?? 0) ||
+				fp[i++] !== (p.cardsDrawnThisTurn ?? 0)
+			) {
+				return false;
+			}
+		}
+	}
+	// --- End Track P20b ---
 	for (const p of state.players) {
 		if (reads & READ_LIFE && fp[i++] !== p.life) return false;
 		if (reads & READ_ENERGY && fp[i++] !== (p.energyCounters || 0)) return false;

@@ -94,6 +94,9 @@ import {
 	matchesP17bObjectFilter
 } from './costsWave6.ts';
 // --- End Track P17b ---
+// --- Track P20b ---
+import { evaluateP20bAmount, evaluateP20bCondition } from './costsWave7.ts';
+// --- End Track P20b ---
 // --- Track P17a ---
 import {
 	getOffBattlefieldGrantedCharacteristics,
@@ -1136,6 +1139,10 @@ export function evaluateAmount(amount: Amount, ctx: FilterContext): number {
 		case 'opponentsWithLifeLessThanHalfStarting':
 			return countOpponentsWithLifeLessThanHalfStarting(ctx.state, ctx.controllerId);
 		// --- End Track P20a ---
+		// --- Track P20b ---
+		case 'p20bCostPaidCount':
+			return evaluateP20bAmount(amount, ctx);
+		// --- End Track P20b ---
 		default:
 			return 0;
 	}
@@ -1408,6 +1415,10 @@ export function evaluateCondition(cond: Condition, ctx: FilterContext): boolean 
 				) ?? false
 			);
 		// --- End Track P19b ---
+		// --- Track P20b ---
+		case 'p20bCondition':
+			return evaluateP20bCondition(cond, ctx, matchesObjectFilter);
+		// --- End Track P20b ---
 		default:
 			return false;
 	}

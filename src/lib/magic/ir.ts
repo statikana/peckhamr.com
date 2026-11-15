@@ -250,6 +250,11 @@ export interface ActivatedAbility {
 	// --- Track P6 ---
 	/** Existence condition for striated frames (CR 711.5 Leveler, CR 722.2 Station). */
 	grantCondition?: Condition;
+	// --- Track P20b ---
+	xSpendColors?: ManaColor[];
+	xColoredOnly?: boolean;
+	xMaxOnePerColor?: boolean;
+	// --- End Track P20b ---
 	span: Span;
 }
 
@@ -823,7 +828,12 @@ export type Amount =
 				| 'targetsMatchingCount'
 				| 'targetColorsCount'
 				| 'targetCounterCount'
-				| 'targetPower';
+				| 'targetPower'
+				// --- Track P20b ---
+				| 'exiledCostCardCount'
+				| 'sacrificedCostPermCount'
+				| 'removedCostCounterCount';
+				// --- End Track P20b ---
 			filter?: ObjectFilter;
 			counter?: CounterType | 'any';
 	  }
@@ -844,13 +854,24 @@ export type Amount =
 	/** Count of cards matching optional `filter` in `source.chosenPlayerId`'s `zone` ("cards in the chosen player's hand/graveyard"). */
 	| { k: 'chosenPlayerZoneCount'; zone: ZoneType; filter?: ObjectFilter }
 	/** Number of non-lost opponents whose life total is strictly less than half their starting life total (*Anya, Merciless Angel*). */
-	| { k: 'opponentsWithLifeLessThanHalfStarting' };
+	| { k: 'opponentsWithLifeLessThanHalfStarting' }
 	// --- End Track P20a ---
+	// --- Track P20b ---
+	| { k: 'p20bCostPaidCount'; kind: 'exiled' | 'sacrificed' | 'removedCounters' };
+	// --- End Track P20b ---
 
 // ---- Costs ----------------------------------------------------------------------------------
 
 export type CostDef =
-	| { k: 'mana'; cost: string }
+	| {
+			k: 'mana';
+			cost: string;
+			// --- Track P20b ---
+			xSpendColors?: ManaColor[];
+			xColoredOnly?: boolean;
+			xMaxOnePerColor?: boolean;
+			// --- End Track P20b ---
+	  }
 	| { k: 'tapSelf' }
 	// --- Track P17b: optional viaSymbol flag (default true for {Q}; false for spelled-out "Untap ~", CR 302.6) ---
 	| { k: 'untapSelf'; viaSymbol?: boolean }
@@ -867,6 +888,11 @@ export type CostDef =
 			sacrificeAll?: boolean;
 			halfRoundedUp?: boolean;
 			attachedCreature?: boolean;
+			// --- Track P20b ---
+			oneOrMore?: boolean;
+			upTo?: number;
+			differentNames?: boolean;
+			// --- End Track P20b ---
 	  }
 	| {
 			k: 'discard';
@@ -875,6 +901,9 @@ export type CostDef =
 			random?: boolean;
 			sameNamePair?: boolean;
 			sameNameAsControlledFilter?: ObjectFilter;
+			// --- Track P20b ---
+			differentNames?: boolean;
+			// --- End Track P20b ---
 	  }
 	| { k: 'payLife'; amount: Amount; halfLifeRoundedUp?: boolean }
 	// --- End Track P17b ---
@@ -889,6 +918,9 @@ export type CostDef =
 			removeAll?: boolean;
 			from: 'self' | ObjectFilter;
 			among?: boolean;
+			// --- Track P20b ---
+			oneOrMore?: boolean;
+			// --- End Track P20b ---
 	  }
 	// --- End Track P11 ---
 	// --- Track P17b: widened exileFrom & choice ---
@@ -902,9 +934,21 @@ export type CostDef =
 			singleGraveyard?: boolean;
 			minTotalManaValue?: number;
 			collectEvidence?: boolean;
+			// --- Track P20b ---
+			oneOrMore?: boolean;
+			totalManaValueEqualsX?: boolean;
+			andOtherSameNameCount?: number;
+			// --- End Track P20b ---
 	  }
 	/** Reveal N matching cards in hand as part of a cost ("Morph—Reveal a white card in your hand."). */
-	| { k: 'revealFromHand'; count: Amount; filter?: ObjectFilter | 'self' }
+	| {
+			k: 'revealFromHand';
+			count: Amount;
+			filter?: ObjectFilter | 'self';
+			// --- Track P20b ---
+			shareColor?: boolean;
+			// --- End Track P20b ---
+	  }
 	/** Pay exactly one of the options ("discard a card or pay 3 life", "sacrifice a creature or pay {3}{B}"). */
 	| { k: 'choice'; options: CostDef[][]; forage?: boolean }
 	// --- End Track P17b ---
@@ -935,7 +979,14 @@ export type CostDef =
 	/** CR 701.67a–b: "Waterbend [cost]" — pay [cost]; each {1} in [cost] may be paid by tapping an untapped artifact or creature you control. */
 	| { k: 'waterbend'; cost: string }
 	/** CR 701.4a–b: "Behold a [quality]" — choose a [quality] permanent you control OR reveal a [quality] card from your hand. */
-	| { k: 'behold'; count: Amount; filter: ObjectFilter }
+	| {
+			k: 'behold';
+			count: Amount;
+			filter: ObjectFilter;
+			// --- Track P20b ---
+			exile?: boolean;
+			// --- End Track P20b ---
+	  }
 	/** "Put N <counter> counter(s) on ~ / a <filter> you control" activation or additional cost. */
 	| { k: 'putCounters'; count: Amount; counter: CounterType; on: 'self' | ObjectFilter }
 	/** "Discard your hand" activation or additional cost. */
@@ -962,8 +1013,18 @@ export type CostDef =
 	/** Eldrazi Processor cost: "Put N card(s) an opponent owns from exile into that player's graveyard". */
 	| { k: 'processOpponentExile'; count: Amount; filter?: ObjectFilter }
 	/** "Put N <filter> card(s) exiled with ~ into its owner's graveyard" cost (CR 607.2a). */
-	| { k: 'putExiledWithSelfToGraveyard'; count: Amount; filter?: ObjectFilter };
+	| { k: 'putExiledWithSelfToGraveyard'; count: Amount; filter?: ObjectFilter }
 	// --- End Track P17b ---
+	// --- Track P20b ---
+	/** CR 701.3d: "Unattach ~" activation cost. */
+	| { k: 'unattachSelf' }
+	/** CR 701.3d: "Unattach an Equipment from ~" activation cost. */
+	| { k: 'unattachOther'; count: Amount; filter: ObjectFilter; fromSelf?: boolean }
+	/** CR 706.2: "Roll a dN" activation cost. */
+	| { k: 'rollDie'; sides: number }
+	/** CR 705.1: "Flip a coin" activation cost. */
+	| { k: 'flipCoin' };
+	// --- End Track P20b ---
 
 // ---- Effects --------------------------------------------------------------------------------
 
@@ -2194,7 +2255,12 @@ export type Condition =
 				| 'onlyNamedOrNoMatchingInHand'
 				| 'spellWasBargained'
 				| 'abilityTargetsFilter'
-				| 'targetsStackSpell';
+				| 'targetsStackSpell'
+				// --- Track P20b ---
+				| 'altCostPaid'
+				| 'additionalCostPaid';
+			manaCost?: string;
+				// --- End Track P20b ---
 			filter?: ObjectFilter;
 			n?: number;
 			op?: '>=' | '==' | '<=';
@@ -2250,8 +2316,27 @@ export type Condition =
 	/** "if ~ entered this turn". */
 	| { k: 'selfEnteredThisTurn' }
 	/** "if there are N or more mana values among cards in your graveyard". */
-	| { k: 'distinctManaValuesInGraveyardAtLeast'; min: number };
+	| { k: 'distinctManaValuesInGraveyardAtLeast'; min: number }
 	// --- End Track P19b ---
+	// --- Track P20b ---
+	| {
+			k: 'p20bCondition';
+			kind:
+				| 'opponentHadPermEnteredThisTurn'
+				| 'opponentCastSpellThisTurn'
+				| 'opponentDrewCardsAtLeastThisTurn'
+				| 'opponentCardsPutIntoGraveyardAtLeastThisTurn'
+				| 'opponentSearchedLibraryThisTurn'
+				| 'yourCreatureSpellCounteredByOpponentThisTurn'
+				| 'yourNoncreatureDestroyedByOpponentThisTurn'
+				| 'dealtDamageByCreaturesAtLeastThisTurn'
+				| 'altCostPaid'
+				| 'additionalCostPaid';
+			filter?: ObjectFilter;
+			min?: number;
+			manaCost?: string;
+	  };
+	// --- End Track P20b ---
 
 // ---- Statics and replacements ---------------------------------------------------------------
 
@@ -2791,8 +2876,41 @@ export type StaticDef =
 			/** Draft-only rules text that has no effect during constructed/regular gameplay (*Deal Broker*, *Cogwork Librarian*, etc.). */
 			k: 'draftNoOp';
 			condition?: Condition;
-	  };
+	  }
 	// --- End Track P20a ---
+	// --- Track P20b ---
+	| {
+			/** CR 107.3a, 106.6, 601.2h: Mana-spending restriction on `{X}` or mana source kind when casting `~` or activating `~`'s abilities. */
+			k: 'manaSpendRestriction';
+			scope: 'selfSpell' | 'selfAbility' | 'selfBoth';
+			xColors?: ManaColor[];
+			xColoredOnly?: boolean;
+			xMaxOnePerColor?: boolean;
+			sourceKind?: 'creature' | 'basicLand' | 'snow' | 'treasure' | 'chosenColor';
+			condition?: Condition;
+	  }
+	| {
+			/** CR 118.8d / 118.7b–c: Defiler cycle optional 2-life additional cost that reduces a colored mana pip by `{<C>}`. */
+			k: 'defilerCostReduction';
+			color: ManaColor;
+			lifeAmount: number;
+			filter: ObjectFilter;
+			condition?: Condition;
+	  }
+	| {
+			/** CR 602.2b / 118.9: First equip / cycling / power-up activation each turn costs `{0}` rather than its mana cost. */
+			k: 'firstActivationZeroCost';
+			abilityKeyword: 'equip' | 'power-up' | 'cycling';
+			duringYourTurnOnly?: boolean;
+			condition?: Condition;
+	  }
+	| {
+			/** CR 903.8: Commander tax replacement ("Rather than pay {2} for each previous time ..., pay 2 life that many times"). */
+			k: 'commanderTaxAsLife';
+			lifePerCast: number;
+			condition?: Condition;
+	  };
+	// --- End Track P20b ---
 
 // --- Track P18b ---
 export type CompanionDeckConditionId =
