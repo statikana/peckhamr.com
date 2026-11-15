@@ -750,7 +750,16 @@ interface PermWorkState {
 	typeModifiedBy: string[];
 	ptModifiedBy: string[];
 	allAbilityRemovalSources: string[];
-	abilityRemovalEvents: Array<{ sourceName: string; timestamp: number }>;
+	abilityRemovalEvents: Array<{
+		sourceName: string;
+		timestamp: number;
+		// --- Track P17a ---
+		keepManaAbilities?: boolean;
+		// --- End Track P17a ---
+	}>;
+	// --- Track P17a ---
+	latestSetLandSubtypesTs?: number;
+	// --- End Track P17a ---
 	layer7bSetters: Array<{
 		sourceName: string;
 		power?: number | null;
@@ -764,16 +773,30 @@ interface PermWorkState {
 	strippedByAttachment: boolean;
 }
 
-function recordAbilityRemoval(work: PermWorkState, sourceName: string, timestamp: number): void {
+function recordAbilityRemoval(
+	work: PermWorkState,
+	sourceName: string,
+	timestamp: number,
+	// --- Track P17a ---
+	keepManaAbilities = false
+	// --- End Track P17a ---
+): void {
 	if (!work.allAbilityRemovalSources.includes(sourceName)) {
 		work.allAbilityRemovalSources.push(sourceName);
 	}
 	if (
 		!work.abilityRemovalEvents.some(
-			(e) => e.sourceName === sourceName && e.timestamp === timestamp
+			(e) =>
+				e.sourceName === sourceName &&
+				e.timestamp === timestamp &&
+				Boolean(e.keepManaAbilities) === keepManaAbilities
 		)
 	) {
-		work.abilityRemovalEvents.push({ sourceName, timestamp });
+		work.abilityRemovalEvents.push({
+			sourceName,
+			timestamp,
+			...(keepManaAbilities ? { keepManaAbilities: true } : {})
+		});
 	}
 }
 
@@ -1035,6 +1058,9 @@ function applyRemovalsUpTo(work: PermWorkState, cutoffTimestamp: number): void {
 		if (ev.timestamp > cutoffTimestamp) continue;
 		for (const item of work.items) {
 			if (item.kind !== 'keyword' && item.kind !== 'ability' && !item.isInnate) continue;
+			// --- Track P17a ---
+			if (ev.keepManaAbilities && item.grantedAbility?.timing === 'mana') continue;
+			// --- End Track P17a ---
 			const itemTs = work.itemTimestamps.get(item.id) ?? -Infinity;
 			if (itemTs < ev.timestamp) {
 				item.removed = true;
@@ -1823,6 +1849,30 @@ function evaluateLayerAmount(
 				}
 				return total;
 			}
+			// --- Track P17a ---
+			if (zone === 'hand') {
+				layerReads |= READ_ZONE_SIZES | READ_HIDDEN_ZONES;
+				let total = 0;
+				for (const pl of state.players) {
+					if (pl.lost) continue;
+					if (f.controller === 'you' && pl.playerId !== source.controllerId) continue;
+					if (f.controller === 'opponent' && pl.playerId === source.controllerId) continue;
+					for (const h of pl.hand) {
+						if (
+							matchesObjectFilter(h, f, {
+								state,
+								controllerId: source.controllerId,
+								source: source.inst,
+								zone: 'hand'
+							})
+						) {
+							total += 1;
+						}
+					}
+				}
+				return total;
+			}
+			// --- End Track P17a ---
 			return 0;
 		}
 		// --- Track P12 ---
@@ -2391,7 +2441,13 @@ interface BoardLayerCache {
 		CardInstance,
 		{
 			breakdown: CardContinuousBreakdown;
-			lost: { lost: boolean; sources: string[] };
+			lost: {
+				lost: boolean;
+				sources: string[];
+				// --- Track P17a ---
+				keepManaAbilities?: boolean;
+				// --- End Track P17a ---
+			};
 			evaluated: EvaluatedPermanent;
 		}
 	>;
@@ -2460,6 +2516,33 @@ const READ_P16B = 1 << 21;
 // --- End Track P16b ---
 // --- Track P17a ---
 const READ_P17A = 1 << 22;
+const NON_STANDARD_PT_COUNTER_RE = /^([+-]\d+)\/([+-]\d+)$/;
+
+function sumNonStandardPtCountersInLayer(counters: Record<string, number> | undefined): {
+	power: number;
+	toughness: number;
+	entries: Array<[string, number]>;
+} {
+	let power = 0;
+	let toughness = 0;
+	const entries: Array<[string, number]> = [];
+	if (!counters) return { power, toughness, entries };
+	for (const key of Object.keys(counters)) {
+		if (key === '+1/+1' || key === '-1/-1') continue;
+		const count = counters[key];
+		if (!count || count <= 0) continue;
+		const m = NON_STANDARD_PT_COUNTER_RE.exec(key);
+		if (!m) continue;
+		const dp = Number.parseInt(m[1], 10);
+		const dt = Number.parseInt(m[2], 10);
+		if (!Number.isFinite(dp) || !Number.isFinite(dt)) continue;
+		power += dp * count;
+		toughness += dt * count;
+		entries.push([key, count]);
+	}
+	if (entries.length > 1) entries.sort((a, b) => a[0].localeCompare(b[0]));
+	return { power, toughness, entries };
+}
 // --- End Track P17a ---
 // --- Track P17b ---
 const READ_P17B = 1 << 23;
@@ -2553,7 +2636,11 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 	// --- End Track P16b ---
 	// --- Track P17a ---
 	if (reads & READ_P17A) {
-		fp.push(0);
+		for (const entry of snap.active) {
+			const ns = sumNonStandardPtCountersInLayer(entry.perm.counters);
+			fp.push(ns.power, ns.toughness, ns.entries.length);
+			for (const [ck, cv] of ns.entries) fp.push(ck, cv);
+		}
 	}
 	// --- End Track P17a ---
 	// --- Track P17b ---
@@ -2922,7 +3009,15 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 	// --- End Track P16b ---
 	// --- Track P17a ---
 	if (reads & READ_P17A) {
-		if (fp[i++] !== 0) return false;
+		for (const entry of snap.active) {
+			const ns = sumNonStandardPtCountersInLayer(entry.perm.counters);
+			if (fp[i++] !== ns.power || fp[i++] !== ns.toughness || fp[i++] !== ns.entries.length) {
+				return false;
+			}
+			for (const [ck, cv] of ns.entries) {
+				if (fp[i++] !== ck || fp[i++] !== cv) return false;
+			}
+		}
 	}
 	// --- End Track P17a ---
 	// --- Track P17b ---
@@ -4069,6 +4164,14 @@ function evaluateTypeOverwrites(
 				// CR 205.1a, 205.4b, 305.7: Setting land subtypes replaces only land subtypes while
 				// preserving supertypes, all card types (e.g. Artifact, Creature), and non-land subtypes.
 				const settingLandSubtypes = st.mod.subtypes.some((sub) => LAND_SUBTYPES.has(sub));
+				// --- Track P17a (CR 613.7): Track latest land-subtype overwrite timestamp per target ---
+				if (settingLandSubtypes) {
+					target.latestSetLandSubtypesTs = Math.max(
+						target.latestSetLandSubtypesTs ?? -Infinity,
+						source.timestamp
+					);
+				}
+				// --- End Track P17a ---
 				const retainedSubtypes = settingLandSubtypes
 					? target.subtypes.filter((sub) => !LAND_SUBTYPES.has(sub))
 					: [];
@@ -4312,6 +4415,14 @@ function evaluateAdditiveTypesAndColors(
 						}
 					}
 					for (const sub of st.mod.subtypes ?? []) {
+						// --- Track P17a (CR 613.7): Skip additive land subtypes overwritten by a later-timestamp setSubtypes ---
+						if (
+							LAND_SUBTYPES.has(sub) &&
+							(target.latestSetLandSubtypesTs ?? -Infinity) > source.timestamp
+						) {
+							continue;
+						}
+						// --- End Track P17a ---
 						if (!target.subtypes.includes(sub)) target.subtypes.push(sub);
 						const nextType = addSubtypeToTypeLine(target.effectiveTypeLine, sub);
 						if (nextType !== target.effectiveTypeLine) {
@@ -4525,19 +4636,24 @@ function evaluateLayer5Colors(
 			if (
 				st.mod.k !== 'setColors' &&
 				st.mod.k !== 'addColors' &&
-				st.mod.k !== 'setChosenColor'
+				st.mod.k !== 'setChosenColor' &&
+				// --- Track P17a ---
+				st.mod.k !== 'addChosenColor'
+				// --- End Track P17a ---
 			) {
 				continue;
 			}
 			const chosenColors =
-				st.mod.k === 'setChosenColor'
+				st.mod.k === 'setChosenColor' || st.mod.k === 'addChosenColor'
 					? source.inst.chosenColor
 						? source.inst.chosenColor === 'C'
 							? []
 							: [source.inst.chosenColor]
 						: undefined
 					: undefined;
-			if (st.mod.k === 'setChosenColor' && chosenColors === undefined) continue;
+			if ((st.mod.k === 'setChosenColor' || st.mod.k === 'addChosenColor') && chosenColors === undefined) {
+				continue;
+			}
 			let targets: PermWorkState[] = [];
 			if (st.affected === 'self') {
 				targets = [source];
@@ -4566,7 +4682,14 @@ function evaluateLayer5Colors(
 							: st.mod.k === 'setChosenColor'
 								? chosenColors
 								: undefined,
-					addColors: st.mod.k === 'addColors' ? st.mod.colors : undefined
+					addColors:
+						st.mod.k === 'addColors'
+							? st.mod.colors
+							: // --- Track P17a ---
+								st.mod.k === 'addChosenColor'
+								? chosenColors
+								: undefined
+					// --- End Track P17a ---
 				});
 			}
 		}
@@ -4617,7 +4740,9 @@ function evaluateGlobalAbilityLoss(
 					) {
 						continue;
 					}
-					recordAbilityRemoval(target, source.name, source.timestamp);
+					// --- Track P17a ---
+					recordAbilityRemoval(target, source.name, source.timestamp, Boolean(st.mod.keepManaAbilities));
+					// --- End Track P17a ---
 				}
 			}
 		}
@@ -5203,6 +5328,14 @@ function evaluatePerPermanent(
 						}
 					} else if (st.layer === '4' && st.mod.k === 'addTypes' && st.mod.subtypes?.length) {
 						for (const sub of st.mod.subtypes) {
+							// --- Track P17a (CR 613.7): Skip intrinsic mana grant when overwritten by later setSubtypes ---
+							if (
+								LAND_SUBTYPES.has(sub) &&
+								(target.latestSetLandSubtypesTs ?? -Infinity) > source.timestamp
+							) {
+								continue;
+							}
+							// --- End Track P17a ---
 							const info = BASIC_LAND_MANA_BY_SUBTYPE[sub.toLowerCase()];
 							if (info) {
 								grantItem(
@@ -5520,12 +5653,22 @@ function evaluatePerPermanent(
 	}
 
 	// 7c. Layer 7c across ALL permanents: counters, temp P/T, and continuous P/T modifications (CR 613.4c)
+	// --- Track P17a ---
+	if (workList.length > 0) layerReads |= READ_P17A;
+	// --- End Track P17a ---
 	for (const target of workList) {
 		if (target.workingPower === null || target.workingToughness === null) continue;
 		const plusOnes = target.inst.counters['+1/+1'] || 0;
 		const minusOnes = target.inst.counters['-1/-1'] || 0;
 		target.workingPower += plusOnes - minusOnes + target.inst.tempPowerMod;
 		target.workingToughness += plusOnes - minusOnes + target.inst.tempToughnessMod;
+		// --- Track P17a (CR 122.1a, 613.4c): Non-standard ±M/±N P/T counters ---
+		const nonStdPt = sumNonStandardPtCountersInLayer(target.inst.counters);
+		if (nonStdPt.entries.length > 0) {
+			target.workingPower += nonStdPt.power;
+			target.workingToughness += nonStdPt.toughness;
+		}
+		// --- End Track P17a ---
 		// --- Track P13 (CR 613.4c): Cross-turn / permanent Layer 7c P/T modifications ---
 		if (state.timedContinuousEffects?.length) {
 			const targetVersion = target.inst.objectVersion ?? 1;
@@ -5690,6 +5833,14 @@ function evaluatePerPermanent(
 			);
 			target.ptModifiedBy.push(`-${minusOnes}/-${minusOnes} (-1/-1 Counters)`);
 		}
+		// --- Track P17a ---
+		const nonStdBreakdown = sumNonStandardPtCountersInLayer(target.inst.counters);
+		if (nonStdBreakdown.entries.length > 0) {
+			const deltaStr = formatSignedDelta(nonStdBreakdown.power, nonStdBreakdown.toughness);
+			grantItem(target, 'counters_nonstd', deltaStr, 'stat_mod', 'P/T Counters');
+			target.ptModifiedBy.push(`${deltaStr} (P/T Counters)`);
+		}
+		// --- End Track P17a ---
 		if (target.inst.tempPowerMod !== 0 || target.inst.tempToughnessMod !== 0) {
 			const deltaStr = formatSignedDelta(target.inst.tempPowerMod, target.inst.tempToughnessMod);
 			grantItem(target, 'temp_pt', deltaStr, 'stat_mod', 'Temporary Effect');
@@ -5720,7 +5871,13 @@ function buildBoardResults(workList: PermWorkState[]): BoardLayerCache['byInstan
 		CardInstance,
 		{
 			breakdown: CardContinuousBreakdown;
-			lost: { lost: boolean; sources: string[] };
+			lost: {
+				lost: boolean;
+				sources: string[];
+				// --- Track P17a ---
+				keepManaAbilities?: boolean;
+				// --- End Track P17a ---
+			};
 			evaluated: EvaluatedPermanent;
 		}
 	>();
@@ -5742,9 +5899,18 @@ function buildBoardResults(workList: PermWorkState[]): BoardLayerCache['byInstan
 			items: work.items
 		};
 
+		// --- Track P17a ---
+		const keepManaAbilities =
+			!work.strippedByAttachment &&
+			work.abilityRemovalEvents.length > 0 &&
+			work.abilityRemovalEvents.every((e) => Boolean(e.keepManaAbilities));
+		// --- End Track P17a ---
 		const lost = {
 			lost: work.allAbilityRemovalSources.length > 0,
-			sources: work.allAbilityRemovalSources
+			sources: work.allAbilityRemovalSources,
+			// --- Track P17a ---
+			...(keepManaAbilities ? { keepManaAbilities: true } : {})
+			// --- End Track P17a ---
 		};
 
 		const tLine = breakdown.effectiveTypeLine;
@@ -6083,6 +6249,17 @@ export function permanentHasLostAllAbilities(
 	}
 	return out;
 }
+
+// --- Track P17a ---
+export function permanentRetainsInnateManaAbilities(
+	perm: CardInstance,
+	state: GameState
+): boolean {
+	const { cache } = getBoardLayerCache(state);
+	const entry = cache.byInstance.get(perm);
+	return Boolean(entry?.lost.lost && entry?.lost.keepManaAbilities);
+}
+// --- End Track P17a ---
 
 export function hasAllOffBattlefieldAndSpellsColorless(state: GameState): boolean {
 	for (const { perm, card } of abilityActivePermanents(state)) {

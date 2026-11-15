@@ -81,6 +81,13 @@ import {
 	matchesP15ObjectFilter
 } from './framesBattlesAndKeywordsWave5.ts';
 // --- End Track P15 ---
+// --- Track P17a ---
+import {
+	getOffBattlefieldGrantedCharacteristics,
+	sumNonStandardPtCounters
+} from './staticsWave6.ts';
+let inOffBattlefieldGrantLookup = false;
+// --- End Track P17a ---
 
 export interface FilterContext {
 	state: GameState;
@@ -202,7 +209,15 @@ export function objectPower(state: GameState, obj: CardInstance): number | null 
 			}
 		}
 	}
-	return base + (obj.counters['+1/+1'] || 0) - (obj.counters['-1/-1'] || 0) + (obj.tempPowerMod || 0);
+	return (
+		base +
+		(obj.counters['+1/+1'] || 0) -
+		(obj.counters['-1/-1'] || 0) +
+		// --- Track P17a ---
+		sumNonStandardPtCounters(obj.counters).power +
+		// --- End Track P17a ---
+		(obj.tempPowerMod || 0)
+	);
 }
 
 /** Toughness of an object (CR 107.1b, 208.2a, 208.3). */
@@ -240,7 +255,15 @@ export function objectToughness(state: GameState, obj: CardInstance): number | n
 			}
 		}
 	}
-	return base + (obj.counters['+1/+1'] || 0) - (obj.counters['-1/-1'] || 0) + (obj.tempToughnessMod || 0);
+	return (
+		base +
+		(obj.counters['+1/+1'] || 0) -
+		(obj.counters['-1/-1'] || 0) +
+		// --- Track P17a ---
+		sumNonStandardPtCounters(obj.counters).toughness +
+		// --- End Track P17a ---
+		(obj.tempToughnessMod || 0)
+	);
 }
 
 /**
@@ -396,7 +419,49 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 	const faceOpts = instanceFaceOptions(obj, objZone === 'stack' ? 'stack' : objZone);
 	const typeLine = evaluated ? evaluated.typeLine : resolveObjectFaces(card, faceOpts).typeLine;
 	const { types, subtypes } = splitTypeLine(typeLine);
-	const isPermanentType = (t: string) => types.some((pt) => pt.toLowerCase() === t.toLowerCase());
+
+	// --- Track P17a ---
+	let cachedOffBfGrants: ReturnType<typeof getOffBattlefieldGrantedCharacteristics> | null | undefined;
+	const getOffBfGrants = () => {
+		if (cachedOffBfGrants !== undefined) return cachedOffBfGrants;
+		if (onBattlefield || obj.isFaceDown || inOffBattlefieldGrantLookup) {
+			cachedOffBfGrants = null;
+			return null;
+		}
+		inOffBattlefieldGrantLookup = true;
+		try {
+			cachedOffBfGrants = getOffBattlefieldGrantedCharacteristics(
+				state,
+				obj.zone === objZone ? obj : ({ ...obj, zone: objZone as ZoneType } as CardInstance)
+			);
+		} finally {
+			inOffBattlefieldGrantLookup = false;
+		}
+		return cachedOffBfGrants;
+	};
+	const resolveOffBattlefieldColors = (): import('../types.ts').ManaColor[] => {
+		if (obj.isFaceDown || hasAllOffBattlefieldAndSpellsColorless(state)) return [];
+		const baseColors = resolveObjectFaces(card, faceOpts).colors;
+		const grants = getOffBfGrants();
+		if (!grants || grants.addedColors.length === 0) return baseColors;
+		const merged = [...baseColors];
+		for (const c of grants.addedColors) {
+			if (!merged.includes(c)) merged.push(c);
+		}
+		return merged;
+	};
+	// --- End Track P17a ---
+
+	const isPermanentType = (t: string) => {
+		if (types.some((pt) => pt.toLowerCase() === t.toLowerCase())) return true;
+		if (!evaluated) {
+			const grants = getOffBfGrants();
+			if (grants && grants.addedTypes.some((gt) => gt.toLowerCase() === t.toLowerCase())) {
+				return true;
+			}
+		}
+		return false;
+	};
 
 	if (filter.types && !filter.types.some(isPermanentType)) return false;
 	// --- Track P8 + Track P9 ---
@@ -409,14 +474,14 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 		if (evaluated) return evaluated.hasSubType(s);
 		if (subtypes.some((sub) => sub.toLowerCase() === s.toLowerCase())) return true;
 		// CR 702.73a: Changeling is a characteristic-defining ability that functions in all zones.
-		if (
+		const canHaveCreatureSubtypes =
 			types.some((t) => {
 				const tl = t.toLowerCase();
 				return tl === 'creature' || tl === 'kindred' || tl === 'tribal';
 			}) &&
 			!NON_CREATURE_SUBTYPES.has(s) &&
-			!obj.isFaceDown
-		) {
+			!obj.isFaceDown;
+		if (canHaveCreatureSubtypes) {
 			const hasChangeling = activeAbilityDefs(card, faceOpts).some(
 				(ab) =>
 					(ab.kind === 'keyword' && ab.keyword.name.toLowerCase() === 'changeling') ||
@@ -426,6 +491,17 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 			);
 			if (hasChangeling) return true;
 		}
+		// --- Track P17a ---
+		if (!obj.isFaceDown) {
+			const grants = getOffBfGrants();
+			if (grants) {
+				if (canHaveCreatureSubtypes && grants.allCreatureTypes) return true;
+				if (grants.addedSubtypes.some((sub) => sub.toLowerCase() === s.toLowerCase())) {
+					return true;
+				}
+			}
+		}
+		// --- End Track P17a ---
 		return false;
 	};
 
@@ -440,9 +516,7 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 		if (!chosenColor) return false;
 		const colors = onBattlefield
 			? (obj.isFaceDown ? [] : evaluated!.colors)
-			: hasAllOffBattlefieldAndSpellsColorless(state)
-				? []
-				: resolveObjectFaces(card, faceOpts).colors;
+			: resolveOffBattlefieldColors();
 		if (!colors.includes(chosenColor)) return false;
 	}
 	// --- Track P11 ---
@@ -523,16 +597,14 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 	if (filter.colors) {
 		const colors = onBattlefield
 			? (obj.isFaceDown ? [] : evaluated!.colors)
-			: hasAllOffBattlefieldAndSpellsColorless(state)
-				? []
-				: resolveObjectFaces(card, faceOpts).colors;
+			: resolveOffBattlefieldColors();
 		if (!matchesColorFilter(colors, filter.colors)) return false;
 	}
 	// --- Track P8 ---
 	if (filter.notColors?.length || filter.multicolored !== undefined || filter.monocolored !== undefined) {
 		const colors = onBattlefield
 			? (obj.isFaceDown ? [] : evaluated!.colors)
-			: resolveObjectFaces(card, faceOpts).colors;
+			: resolveOffBattlefieldColors();
 		if (filter.notColors?.length && matchesColorFilter(colors, filter.notColors)) return false;
 		if (filter.multicolored !== undefined && (colors.length >= 2) !== filter.multicolored) return false;
 		if (filter.monocolored !== undefined && (colors.length === 1) !== filter.monocolored) return false;

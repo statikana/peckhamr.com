@@ -40,6 +40,9 @@ import { withStableLayerInputs } from './runtime/layerCache.ts';
 // --- Track P7 ---
 import { evaluateAmount, evaluateCondition, matchesObjectFilter } from './runtime/objectFilter.ts';
 // --- End Track P7 ---
+// --- Track P17a ---
+import { getRequiredFlagbearerIdsForActor } from './runtime/staticsWave6.ts';
+// --- End Track P17a ---
 import type {
 	BotSpeed,
 	CardInstance,
@@ -182,6 +185,9 @@ function chooseBotModesForModal(
 		}
 		return undefined;
 	};
+	// --- Track P17a: CR 115.1 Flagbearer requirement when choosing spell/ability mode targets ---
+	const fbIds = getRequiredFlagbearerIdsForActor(state, bot.playerId);
+	// --- End Track P17a ---
 	const pickTargetsForMode = (modeIndex: number): TargetRef[] | null => {
 		const mode = modal.modes[modeIndex];
 		if (!mode) return null;
@@ -195,7 +201,23 @@ function chooseBotModesForModal(
 			const legal = enforceHarmfulFilter
 				? allCandidates.filter((t) => (ownerOf(t) === bot.playerId) !== harmful)
 				: allCandidates;
-			const chosen = chooseBotTriggerTargets(state, bot, mode.effect, sIdx, spec, legal);
+			let chosen = chooseBotTriggerTargets(state, bot, mode.effect, sIdx, spec, legal);
+			// --- Track P17a ---
+			if (
+				fbIds.size > 0 &&
+				(spec.min > 0 || chosen.length > 0) &&
+				!modeTargets.some((t) => t.kind === 'permanent' && fbIds.has(t.id)) &&
+				!chosen.some((t) => t.kind === 'permanent' && fbIds.has(t.id))
+			) {
+				const fbCand = allCandidates.find((t) => t.kind === 'permanent' && fbIds.has(t.id));
+				if (fbCand) {
+					chosen = [fbCand, ...chosen.filter((t) => t.id !== fbCand.id)].slice(
+						0,
+						Math.max(1, chosen.length)
+					);
+				}
+			}
+			// --- End Track P17a ---
 			if (chosen.length < spec.min) return null;
 			modeTargets.push(...chosen);
 		}
@@ -1625,6 +1647,19 @@ function chooseBotTargetsForSpec(
 		if (divCap <= 0 || divCap < spec.min) return [];
 	}
 	// --- End Track P7 ---
+	// --- Track P17a: CR 115.1 Flagbearer targeting requirement ---
+	const fbIds = getRequiredFlagbearerIdsForActor(state, bot.playerId);
+	if (fbIds.size > 0) {
+		const legalCands = specTargetCandidates(state, bot.playerId, cardInst.card, cardInst, spec);
+		const fbCand = legalCands.find((t) => t.kind === 'permanent' && fbIds.has(t.id));
+		if (fbCand) {
+			const needed = Math.max(1, spec.min);
+			const others = legalCands.filter((t) => !(t.kind === fbCand.kind && t.id === fbCand.id));
+			const picked = [fbCand, ...others].slice(0, needed);
+			if (picked.length >= spec.min) return picked;
+		}
+	}
+	// --- End Track P17a ---
 	const isControlledCreature =
 		spec.kind === 'object' &&
 		spec.filter.controller === 'you' &&

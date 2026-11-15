@@ -42,7 +42,7 @@ const SUPPORTED = synthetic({
 });
 const UNSUPPORTED_STATIC = synthetic({
 	name: 'Hushwater Sentinel',
-	oracleText: 'Players play with their hands revealed.'
+	oracleText: 'Players skip their combat phases.'
 });
 const SADDLED_TRIGGER = synthetic({
 	name: 'Dunetrot Charger',
@@ -92,7 +92,7 @@ describe('cardSupportReport', () => {
 		assert.equal(report.unsupported.length, 1);
 		const [u] = report.unsupported;
 		assert.equal(u.reason, 'static_not_compiled');
-		assert.equal(u.text, 'Players play with their hands revealed.');
+		assert.equal(u.text, 'Players skip their combat phases.');
 		assert.equal(u.face, 'Hushwater Sentinel');
 		assert.deepEqual(u.unparsed, [], 'the whole ability is the gap, so no narrower fragment');
 	});

@@ -202,7 +202,21 @@ describe('Static grammar: continuous effects', () => {
 				condition: { k: 'compare', left: { k: 'count', of: { types: ['Artifact'], controller: 'you' } }, op: '>=', right: n(3) }
 			}
 		]);
-		unparsed("Other creatures you control get +1/+1 as long as you've completed a dungeon.");
+		assert.deepEqual(
+			defs("Other creatures you control get +1/+1 as long as you've completed a dungeon."),
+			[
+				{
+					k: 'continuous',
+					layer: '7c',
+					affected: { other: true, types: ['Creature'], controller: 'you' },
+					mod: { k: 'pt', power: n(1), toughness: n(1) },
+					condition: { k: 'hasCompletedDungeon' }
+				}
+			]
+		);
+		unparsed(
+			'Other creatures you control get +1/+1 as long as your starting life total was at least 30.'
+		);
 	});
 });
 
@@ -390,8 +404,22 @@ describe('Static grammar: multipliers', () => {
 				cause: { event: 'zoneChange', filter: { object: { types: ['Creature'] }, from: 'battlefield', to: 'graveyard' } }
 			}
 		]);
-		// Abilities of particular permanents ("of an Ally you control") are a different filter, not a cause.
-		unparsed('If a triggered ability of an Ally you control triggers, that ability triggers an additional time.');
+		assert.deepEqual(
+			defs(
+				'If a triggered ability of an Ally you control triggers, that ability triggers an additional time.'
+			),
+			[
+				{
+					k: 'multiplier',
+					what: 'triggers',
+					factor: 2,
+					filter: { subtypes: ['Ally'], controller: 'you' }
+				}
+			]
+		);
+		unparsed(
+			'If a triggered ability of a colorless spell you control triggers, that ability triggers an additional time.'
+		);
 	});
 });
 

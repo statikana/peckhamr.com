@@ -1234,6 +1234,10 @@ export interface CastOption {
 	/** Turn-slotted static play permission slot key consumed when this spell becomes cast. */
 	staticPlaySlotKey?: string;
 	// --- End Track P14 ---
+	// --- Track P17a ---
+	/** CR 118.9: Static alternative cost that pays life equal to the spell's mana value rather than its mana cost. */
+	payLifeEqualToManaValue?: boolean;
+	// --- End Track P17a ---
 }
 
 // --- Track P3 ---
@@ -1522,6 +1526,10 @@ export interface StackItem {
 		nextIndex?: number;
 	};
 	// --- End Track P15 ---
+	// --- Track P17a ---
+	/** CR 613.1f / 113.6: Spell keywords statically granted to this spell on cast (e.g. cascade, rebound, storm, gravestorm). */
+	grantedSpellKeywords?: string[];
+	// --- End Track P17a ---
 }
 
 // --- Track P10 ---
@@ -2256,6 +2264,10 @@ export interface PlayerGameState {
 	/** CR 702.192a Paradigm: Paradigm spell cards whose exiled copies are created at the beginning of each of this player's precombat main phases. */
 	paradigmCards?: ScryfallCard[];
 	// --- End Track P15 ---
+	// --- Track P17a ---
+	/** CR 121.2 / CR 504.1: true once this player has drawn their first card during their draw step this turn. */
+	drewFirstCardInDrawStepThisTurn?: boolean;
+	// --- End Track P17a ---
 }
 
 export interface ManaRider {

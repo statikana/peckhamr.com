@@ -731,6 +731,16 @@ export function collectStaticAltCastOptions(
 		const ab = selfAbilities[i];
 		if (ab.kind !== 'static' || ab.static.k !== 'altCastPermission') continue;
 		if (ab.static.affects !== 'self') continue;
+		// --- Track P17a ---
+		if (
+			ab.static.payLifeEqualToManaValue ||
+			(ab.static.slotMode && ab.static.slotMode !== 'unlimited') ||
+			ab.static.duringYourTurnOnly ||
+			ab.static.entersWithCounters
+		) {
+			continue;
+		}
+		// --- End Track P17a ---
 		// --- Track P14 ---
 		if (ab.static.allowedZones) {
 			if (!ab.static.allowedZones.includes(fromZone)) continue;
@@ -771,6 +781,16 @@ export function collectStaticAltCastOptions(
 		(sourcePerm, controllerId, sourceName, st) => {
 			if (st.k !== 'altCastPermission' || st.affects === 'self') return;
 			if (controllerId !== actor.playerId) return;
+			// --- Track P17a ---
+			if (
+				st.payLifeEqualToManaValue ||
+				(st.slotMode && st.slotMode !== 'unlimited') ||
+				st.duringYourTurnOnly ||
+				st.entersWithCounters
+			) {
+				return;
+			}
+			// --- End Track P17a ---
 			// --- Track P14 ---
 			if (st.allowedZones) {
 				if (!st.allowedZones.includes(fromZone)) return;
