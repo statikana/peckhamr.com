@@ -13,10 +13,12 @@ import {
 	getPlayerCommanderIdentity,
 	getTurnFaceUpDisplay
 } from '../engine.ts';
-import type { CostDef, ModalDef } from '../ir.ts';
+import type { Amount, CostDef, ModalDef, ObjectFilter } from '../ir.ts';
+import { KEYWORD_LABELS, STATIC_CONTINUOUS_KEYWORDS } from '../keywords.ts';
 import { DUNGEON_SPECS, parseManaCost } from '../oracle.ts';
 import { evaluatePermanent, type EvaluatedPermanent } from '../ruleTree.ts';
 import { describeCost, getSuspendSpec } from '../runtime/costs.ts';
+import { isP16aSourceConditionCurrentlyMet } from '../runtime/effectsWave6.ts';
 import { instanceFaceOptions, resolveObjectFaces } from '../runtime/faces.ts';
 import { checkCompanionSpecialActionLegality } from '../runtime/framesModalsWave6.ts';
 import {
@@ -25,13 +27,21 @@ import {
 } from '../runtime/keywordsWave4.ts';
 import { withStableLayerInputs } from '../runtime/layerCache.ts';
 import { splitSubtypes } from '../runtime/layers.ts';
-import { totalSnowManaInPool } from '../runtime/staticsDynamicAndCosts.ts';
+import { evaluateAmount, evaluateCondition } from '../runtime/objectFilter.ts';
+import { activeRuleModifiers } from '../runtime/replace.ts';
+import {
+	forEachActiveStaticOnBattlefield,
+	KEYWORD_COUNTER_SET,
+	totalSnowManaInPool
+} from '../runtime/staticsDynamicAndCosts.ts';
 import { getPlayerTopOfLibraryVisibility } from '../runtime/staticsLayersAndRestrictions.ts';
 import {
 	getRequiredFlagbearerIdsForActor,
 	isPlayerHandRevealedToViewer,
-	isPlayerTopLibraryRevealedByGlobalStatic
+	isPlayerTopLibraryRevealedByGlobalStatic,
+	parseNonStandardPtCounter
 } from '../runtime/staticsWave6.ts';
+import { playerDontLoseAtZeroOrLessLife } from '../runtime/staticsWave7.ts';
 import { activeFaceIndexForObject, effectiveCardForObject } from '../scryfall.ts';
 import type {
 	CardInstance,
@@ -96,6 +106,7 @@ export function getRingAbilitiesForLevel(ringLevel: number): string[] {
 export type CounterBadgeKind =
 	| 'plus'
 	| 'minus'
+	| 'keyword'
 	| 'loyalty'
 	| 'defense'
 	| 'lore'
@@ -112,6 +123,9 @@ export interface CounterBadgeEntry {
 	badgeKind: CounterBadgeKind;
 	label: string;
 	shortLabel: string;
+	description: string;
+	powerDelta?: number;
+	toughnessDelta?: number;
 }
 
 export interface PermanentDisplayCard {
@@ -200,12 +214,23 @@ const CHOSEN_COLOR_NAMES: Record<ManaColor, string> = {
 	C: 'Colorless'
 };
 
-export function formatPermanentChosenDescriptor(perm: CardInstance): string | null {
+export function formatPermanentChosenDescriptor(
+	perm: CardInstance,
+	players?: ReadonlyArray<Pick<PlayerGameState, 'playerId' | 'username'>>
+): string | null {
 	const parts: string[] = [];
 	if (perm.chosenCardName) parts.push(perm.chosenCardName);
 	if (perm.chosenSubType) parts.push(perm.chosenSubType);
 	if (perm.chosenColor) parts.push(CHOSEN_COLOR_NAMES[perm.chosenColor] ?? perm.chosenColor);
 	if (perm.chosenAnchorWord) parts.push(`"${perm.chosenAnchorWord}"`);
+	if (perm.chosenPlayerId) {
+		const resolvedPlayerName =
+			players?.find((p) => p.playerId === perm.chosenPlayerId)?.username ?? perm.chosenPlayerId;
+		parts.push(`Player: ${resolvedPlayerName}`);
+	}
+	if (perm.chosenParity) {
+		parts.push(`Parity: ${perm.chosenParity === 'odd' ? 'Odd' : 'Even'}`);
+	}
 	return parts.length > 0 ? parts.join(' • ') : null;
 }
 
@@ -255,6 +280,14 @@ export interface PermanentView {
 	isStolen: boolean;
 	ownerName: string | null;
 	isFrozen: boolean;
+	frozenBySourceNames: string[];
+	assimilatedBySourceName: string | null;
+	assignsNoCombatDamageThisTurn: boolean;
+	mustAttackThisTurn: boolean;
+	mustBlockThisTurn: boolean;
+	mustBeBlockedThisTurn: boolean;
+	cantBlockAttackerCount: number;
+	cantBlockAttackerNames: string[];
 	isMonstrous: boolean;
 	protectorId: string | null;
 	protectorName: string | null;
@@ -289,6 +322,14 @@ export interface PlayerShieldBadge {
 	tone: 'gold' | 'cyan' | 'purple' | 'green';
 }
 
+export interface RuleLockBadge {
+	id: string;
+	label: string;
+	description: string;
+	sourceName: string | null;
+	tone: 'gold' | 'cyan' | 'purple' | 'green' | 'red' | 'amber';
+}
+
 export interface PlayerStatusView {
 	playerId: string;
 	username: string;
@@ -321,9 +362,16 @@ export interface PlayerStatusView {
 	protectionFromEverythingThisTurn: boolean;
 	cannotLoseGameThisTurn: boolean;
 	lifeTotalCannotChangeThisTurn: boolean;
+	staticCannotLoseGame: boolean;
+	dontLoseAtZeroOrLessLife: boolean;
+	staticLifeTotalLocked: boolean;
 	damagePreventionShield: number;
 	preventAllCombatDamageThisTurn: boolean;
 	turnShieldBadges: PlayerShieldBadge[];
+	attackTaxPerCreature: string | null;
+	attackTaxSources: string[];
+	unspentManaRetentionLabel: string | null;
+	activeRuleLocks: RuleLockBadge[];
 	companionView: CompanionView | null;
 	topOfLibraryView: TopOfLibraryView | null;
 }
@@ -350,7 +398,9 @@ export interface BoardViewModel {
 	dayNight: 'day' | 'night' | null;
 	spellsCastByActivePlayerThisTurn: number;
 	prevTurnSpellsCastByActivePlayer: number;
+	monarchPlayerId: string | null;
 	initiativePlayerId: string | null;
+	globalRuleLocks: RuleLockBadge[];
 	attachmentsByHostId: Record<string, CardInstance[]>;
 	hostByAttachmentId: Record<string, CardInstance>;
 	permanentsById: Record<string, PermanentView>;
@@ -374,9 +424,7 @@ export interface BoardViewModel {
 	waitingOnPlayerIds: string[];
 }
 
-const KNOWN_COUNTER_ORDER: readonly CounterType[] = [
-	'+1/+1',
-	'-1/-1',
+const KNOWN_CORE_COUNTER_ORDER: readonly CounterType[] = [
 	'loyalty',
 	'defense',
 	'lore',
@@ -389,7 +437,21 @@ const KNOWN_COUNTER_ORDER: readonly CounterType[] = [
 	'age'
 ];
 
-function classifyCounterBadge(type: string, count: number): CounterBadgeEntry {
+const KNOWN_CORE_COUNTER_SET: ReadonlySet<string> = new Set<string>(KNOWN_CORE_COUNTER_ORDER);
+
+function isKeywordAbilityCounterName(type: string): boolean {
+	const lower = type.trim().toLowerCase();
+	if (!lower || KNOWN_CORE_COUNTER_SET.has(lower)) return false;
+	return KEYWORD_COUNTER_SET.has(lower) || STATIC_CONTINUOUS_KEYWORDS.has(lower);
+}
+
+function formatSignedPtComponent(val: number, zeroSign: '+' | '-'): string {
+	if (val > 0) return `+${val}`;
+	if (val < 0) return `${val}`;
+	return `${zeroSign}0`;
+}
+
+export function classifyCounterBadge(type: string, count: number): CounterBadgeEntry {
 	switch (type) {
 		case '+1/+1':
 			return {
@@ -397,7 +459,10 @@ function classifyCounterBadge(type: string, count: number): CounterBadgeEntry {
 				count,
 				badgeKind: 'plus',
 				label: `+${count}/+${count}`,
-				shortLabel: `+${count}`
+				shortLabel: `+${count}`,
+				description: `${count} × +1/+1 counter${count === 1 ? '' : 's'} (+${count}/+${count} P/T, CR 122.1a)`,
+				powerDelta: count,
+				toughnessDelta: count
 			};
 		case '-1/-1':
 			return {
@@ -405,15 +470,44 @@ function classifyCounterBadge(type: string, count: number): CounterBadgeEntry {
 				count,
 				badgeKind: 'minus',
 				label: `-${count}/-${count}`,
-				shortLabel: `-${count}`
+				shortLabel: `-${count}`,
+				description: `${count} × -1/-1 counter${count === 1 ? '' : 's'} (-${count}/-${count} P/T, CR 122.1a)`,
+				powerDelta: -count,
+				toughnessDelta: -count
 			};
+	}
+
+	const arbitraryPt = parseNonStandardPtCounter(type);
+	if (arbitraryPt) {
+		const rawParts = type.split('/');
+		const pZeroSign: '+' | '-' = rawParts[0]?.startsWith('-') ? '-' : '+';
+		const tZeroSign: '+' | '-' = rawParts[1]?.startsWith('-') ? '-' : '+';
+		const dP = arbitraryPt.p * count || 0;
+		const dT = arbitraryPt.t * count || 0;
+		const deltaStr = `${formatSignedPtComponent(dP, pZeroSign)}/${formatSignedPtComponent(dT, tZeroSign)}`;
+		const badgeKind: CounterBadgeKind =
+			dP + dT >= 0 && (dP > 0 || dT > 0) ? 'plus' : 'minus';
+		return {
+			type: type as CounterType,
+			count,
+			badgeKind,
+			label: count === 1 ? deltaStr : `${deltaStr} (${count}×${type})`,
+			shortLabel: deltaStr,
+			description: `${count} × ${type} counter${count === 1 ? '' : 's'} (${deltaStr} P/T, CR 122.1a)`,
+			powerDelta: dP,
+			toughnessDelta: dT
+		};
+	}
+
+	switch (type) {
 		case 'loyalty':
 			return {
 				type: 'loyalty',
 				count,
 				badgeKind: 'loyalty',
 				label: `L:${count}`,
-				shortLabel: `L:${count}`
+				shortLabel: `L:${count}`,
+				description: `${count} loyalty counter${count === 1 ? '' : 's'} (CR 306.5)`
 			};
 		case 'defense':
 			return {
@@ -421,7 +515,8 @@ function classifyCounterBadge(type: string, count: number): CounterBadgeEntry {
 				count,
 				badgeKind: 'defense',
 				label: `Def:${count}`,
-				shortLabel: `Def:${count}`
+				shortLabel: `Def:${count}`,
+				description: `${count} defense counter${count === 1 ? '' : 's'} (CR 310.4)`
 			};
 		case 'lore':
 			return {
@@ -429,7 +524,8 @@ function classifyCounterBadge(type: string, count: number): CounterBadgeEntry {
 				count,
 				badgeKind: 'lore',
 				label: `Lore:${count}`,
-				shortLabel: `Lore:${count}`
+				shortLabel: `Lore:${count}`,
+				description: `${count} lore counter${count === 1 ? '' : 's'} (CR 714)`
 			};
 		case 'charge':
 			return {
@@ -437,7 +533,8 @@ function classifyCounterBadge(type: string, count: number): CounterBadgeEntry {
 				count,
 				badgeKind: 'charge',
 				label: `Chg:${count}`,
-				shortLabel: `Chg:${count}`
+				shortLabel: `Chg:${count}`,
+				description: `${count} charge counter${count === 1 ? '' : 's'}`
 			};
 		case 'shield':
 			return {
@@ -445,7 +542,8 @@ function classifyCounterBadge(type: string, count: number): CounterBadgeEntry {
 				count,
 				badgeKind: 'shield',
 				label: `Shld:${count}`,
-				shortLabel: `Shld:${count}`
+				shortLabel: `Shld:${count}`,
+				description: `${count} shield counter${count === 1 ? '' : 's'} (CR 122.1c)`
 			};
 		case 'stun':
 			return {
@@ -453,7 +551,8 @@ function classifyCounterBadge(type: string, count: number): CounterBadgeEntry {
 				count,
 				badgeKind: 'stun',
 				label: `Stun:${count}`,
-				shortLabel: `Stun:${count}`
+				shortLabel: `Stun:${count}`,
+				description: `${count} stun counter${count === 1 ? '' : 's'} (CR 122.1d)`
 			};
 		case 'time':
 			return {
@@ -461,7 +560,8 @@ function classifyCounterBadge(type: string, count: number): CounterBadgeEntry {
 				count,
 				badgeKind: 'time',
 				label: `Time:${count}`,
-				shortLabel: `Time:${count}`
+				shortLabel: `Time:${count}`,
+				description: `${count} time counter${count === 1 ? '' : 's'}`
 			};
 		case 'age':
 			return {
@@ -469,36 +569,98 @@ function classifyCounterBadge(type: string, count: number): CounterBadgeEntry {
 				count,
 				badgeKind: 'age',
 				label: `Age:${count}`,
-				shortLabel: `Age:${count}`
-			};
-		default:
-			return {
-				type: type as CounterType,
-				count,
-				badgeKind: 'other',
-				label: `${type}:${count}`,
-				shortLabel: `${type}:${count}`
+				shortLabel: `Age:${count}`,
+				description: `${count} age counter${count === 1 ? '' : 's'}`
 			};
 	}
+
+	if (isKeywordAbilityCounterName(type)) {
+		const lower = type.trim().toLowerCase();
+		const kwDisplay =
+			KEYWORD_LABELS[lower] ?? `${lower.charAt(0).toUpperCase()}${lower.slice(1)}`;
+		const displayWithCount = count > 1 ? `${kwDisplay} ×${count}` : kwDisplay;
+		return {
+			type: type as CounterType,
+			count,
+			badgeKind: 'keyword',
+			label: displayWithCount,
+			shortLabel: displayWithCount,
+			description: `${count} × ${kwDisplay} keyword counter${count === 1 ? '' : 's'} (grants ${kwDisplay}, CR 122.1b)`
+		};
+	}
+
+	return {
+		type: type as CounterType,
+		count,
+		badgeKind: 'other',
+		label: `${type}:${count}`,
+		shortLabel: `${type}:${count}`,
+		description: `${count} ${type} counter${count === 1 ? '' : 's'}`
+	};
 }
 
 export function extractCounterBadges(counters: Record<string, number> | undefined): CounterBadgeEntry[] {
 	if (!counters) return [];
 	const out: CounterBadgeEntry[] = [];
 	const seen = new Set<string>();
-	for (const known of KNOWN_COUNTER_ORDER) {
-		const raw = counters[known];
+
+	// 1. Standard +1/+1 and -1/-1 counters first.
+	for (const stdPt of ['+1/+1', '-1/-1'] as const) {
+		const raw = counters[stdPt];
 		if (typeof raw === 'number' && raw !== 0) {
-			out.push(classifyCounterBadge(known, raw));
-			seen.add(known);
+			out.push(classifyCounterBadge(stdPt, raw));
+			seen.add(stdPt);
 		}
 	}
+
+	// 2. Arbitrary ±M/±N counters (CR 122.1a), sorted deterministically (plus before minus, then lexicographical).
+	const arbitraryEntries = Object.keys(counters)
+		.filter(
+			(k) =>
+				!seen.has(k) &&
+				typeof counters[k] === 'number' &&
+				counters[k] !== 0 &&
+				parseNonStandardPtCounter(k) !== null
+		)
+		.map((k) => classifyCounterBadge(k, counters[k]))
+		.sort((a, b) => {
+			const aRank = a.badgeKind === 'plus' ? 0 : 1;
+			const bRank = b.badgeKind === 'plus' ? 0 : 1;
+			return aRank !== bRank ? aRank - bRank : a.type.localeCompare(b.type);
+		});
+	for (const arbEntry of arbitraryEntries) {
+		out.push(arbEntry);
+		seen.add(arbEntry.type);
+	}
+
+	// 3. Core mechanic counters (loyalty, defense, lore, level, charge, shield, stun, time, fade, age).
+	for (const coreKey of KNOWN_CORE_COUNTER_ORDER) {
+		if (seen.has(coreKey)) continue;
+		const raw = counters[coreKey];
+		if (typeof raw === 'number' && raw !== 0) {
+			out.push(classifyCounterBadge(coreKey, raw));
+			seen.add(coreKey);
+		}
+	}
+
+	// 4. Keyword ability counters (CR 122.1b).
+	for (const [key, raw] of Object.entries(counters)) {
+		if (seen.has(key)) continue;
+		if (typeof raw === 'number' && raw !== 0 && isKeywordAbilityCounterName(key)) {
+			out.push(classifyCounterBadge(key, raw));
+			seen.add(key);
+		}
+	}
+
+	// 5. Remaining named counters.
 	for (const [key, raw] of Object.entries(counters)) {
 		if (seen.has(key)) continue;
 		if (typeof raw === 'number' && raw !== 0) {
 			out.push(classifyCounterBadge(key, raw));
+			seen.add(key);
 		}
 	}
+
 	return out;
 }
 
@@ -829,6 +991,542 @@ function extractTopOfLibraryView(
 	};
 }
 
+function extractPlayerAttackTax(
+	gameState: GameState,
+	defenderPlayer: PlayerGameState
+): { attackTaxPerCreature: string | null; attackTaxSources: string[] } {
+	let genericTotal = 0;
+	const manaSymbols: string[] = [];
+	const sources: string[] = [];
+	const defenderPlayerId = defenderPlayer.playerId;
+
+	const pushSource = (name: string) => {
+		if (name && !sources.includes(name)) sources.push(name);
+	};
+
+	const accumulateTaxParams = (
+		params: Record<string, unknown> | undefined,
+		controllerId: string,
+		source: CardInstance | undefined,
+		sourceName: string
+	) => {
+		let added = false;
+		if (typeof params?.cost === 'string') {
+			const parsed = parseManaCost(params.cost);
+			if (parsed.generic > 0) {
+				genericTotal += parsed.generic;
+				added = true;
+			}
+			for (const col of ALL_MANA_COLORS) {
+				const count = parsed.colored[col] || 0;
+				for (let k = 0; k < count; k++) {
+					manaSymbols.push(`{${col}}`);
+					added = true;
+				}
+			}
+		} else if (typeof params?.manaSymbol === 'string') {
+			const sym = params.manaSymbol.startsWith('{')
+				? params.manaSymbol
+				: `{${params.manaSymbol}}`;
+			const perUnit =
+				params.dynamicAmount && source
+					? Math.max(
+							0,
+							evaluateAmount(params.dynamicAmount as Amount, {
+								state: gameState,
+								controllerId,
+								source
+							})
+						)
+					: 1;
+			for (let k = 0; k < perUnit; k++) {
+				manaSymbols.push(sym);
+				added = true;
+			}
+		} else {
+			const base = typeof params?.generic === 'number' ? params.generic : 0;
+			const dyn = params?.dynamicAmount as Amount | undefined;
+			let unit = Math.max(0, base);
+			if (dyn && source) {
+				const mult = Math.max(
+					0,
+					evaluateAmount(dyn, {
+						state: gameState,
+						controllerId,
+						source
+					})
+				);
+				unit = base > 0 ? base * mult : mult;
+			}
+			if (unit > 0) {
+				genericTotal += unit;
+				added = true;
+			}
+		}
+		if (added) pushSource(sourceName);
+	};
+
+	forEachActiveStaticOnBattlefield(
+		gameState,
+		(perm, controllerId, sourceName, def) => {
+			if (def.k !== 'ruleModifier' || def.rule !== 'attackTax') return;
+			if (
+				def.condition &&
+				!evaluateCondition(def.condition, { state: gameState, controllerId, source: perm })
+			) {
+				return;
+			}
+			const params = def.params;
+			if (params?.affected === 'self' || params?.affected === 'attachedTo') return;
+			const affectedFilter =
+				params?.affected && typeof params.affected === 'object'
+					? (params.affected as ObjectFilter)
+					: undefined;
+			const hasExplicitAffected = Boolean(params?.affected);
+			const defendingMode =
+				(params?.defending as
+					| 'you'
+					| 'planeswalkersYouControl'
+					| 'youOrPlaneswalkersYouControl'
+					| undefined) ?? (hasExplicitAffected ? undefined : 'you');
+
+			if (defendingMode === 'planeswalkersYouControl') return;
+			if (defendingMode === 'you' || defendingMode === 'youOrPlaneswalkersYouControl') {
+				if (controllerId !== defenderPlayerId) return;
+				if (affectedFilter?.controller === 'you') return;
+			} else {
+				// Global attack tax without defending restriction: verify opponents attacking defenderPlayerId are taxed.
+				if (affectedFilter?.controller === 'you' && controllerId === defenderPlayerId) return;
+				if (
+					!hasExplicitAffected &&
+					def.who.relation === 'you' &&
+					controllerId === defenderPlayerId
+				) {
+					return;
+				}
+			}
+
+			accumulateTaxParams(params, controllerId, perm, sourceName);
+		},
+		'ruleModifier',
+		['attackTax']
+	);
+
+	// Check command-zone emblems controlled by defenderPlayer for attackTax rules.
+	for (const cmdObj of defenderPlayer.command) {
+		if (!cmdObj.isEmblem) continue;
+		const compiled = compileCard(cmdObj.card);
+		for (const face of compiled.faces) {
+			for (const ab of face.abilities) {
+				if (ab.kind !== 'static' || ab.static.k !== 'ruleModifier') continue;
+				if (ab.static.rule !== 'attackTax') continue;
+				accumulateTaxParams(
+					ab.static.params,
+					defenderPlayerId,
+					cmdObj,
+					cmdObj.card.name
+				);
+			}
+		}
+	}
+
+	if (genericTotal <= 0 && manaSymbols.length === 0) {
+		return { attackTaxPerCreature: null, attackTaxSources: [] };
+	}
+	const parts: string[] = [];
+	if (genericTotal > 0) parts.push(`{${genericTotal}}`);
+	for (const sym of manaSymbols) parts.push(sym);
+	return {
+		attackTaxPerCreature: parts.join(''),
+		attackTaxSources: sources
+	};
+}
+
+function describeSpellLockFilterShort(
+	filter: ObjectFilter | undefined,
+	source: CardInstance | null
+): string {
+	if (!filter) return '';
+	if (filter.manaValueParity === 'even') return 'Even MV';
+	if (filter.manaValueParity === 'odd') return 'Odd MV';
+	if (filter.manaValueParity === 'chosenQuality') {
+		if (source?.chosenParity === 'even') return 'Even MV';
+		if (source?.chosenParity === 'odd') return 'Odd MV';
+		return 'Chosen Parity';
+	}
+	if (filter.manaValueParity === 'notChosenQuality') {
+		if (source?.chosenParity === 'even') return 'Odd MV';
+		if (source?.chosenParity === 'odd') return 'Even MV';
+		return 'Non-Chosen Parity';
+	}
+	if (filter.ofChosenColor) {
+		return source?.chosenColor
+			? (CHOSEN_COLOR_NAMES[source.chosenColor] ?? source.chosenColor)
+			: 'Chosen Color';
+	}
+	if (filter.ofChosenType) {
+		return source?.chosenSubType ?? 'Chosen Type';
+	}
+	if (filter.ofChosenName) {
+		return source?.chosenCardName ? `"${source.chosenCardName}"` : 'Chosen Name';
+	}
+	if (filter.notTypes && filter.notTypes.length > 0) {
+		if (filter.notTypes.length === 1) {
+			return `Non${filter.notTypes[0].toLowerCase()}`;
+		}
+		return `Non-(${filter.notTypes.join('/')})`;
+	}
+	if (filter.types && filter.types.length > 0) {
+		return filter.types.join('/');
+	}
+	if (filter.colors && filter.colors.length > 0) {
+		return filter.colors.map((c) => CHOSEN_COLOR_NAMES[c] ?? c).join('/');
+	}
+	if (filter.castNotFromHand || filter.castFromOutsideHand) {
+		return 'Non-Hand';
+	}
+	if (filter.castFromZoneFilter || filter.castFromZone) {
+		const z = filter.castFromZoneFilter ?? filter.castFromZone ?? '';
+		return z ? `${z.charAt(0).toUpperCase()}${z.slice(1)}` : 'Zone';
+	}
+	return 'Matching';
+}
+
+function extractPlayerStaticRuleTelemetry(
+	gameState: GameState,
+	player: PlayerGameState,
+	cannotLoseGameThisTurn: boolean,
+	lifeTotalCannotChangeThisTurn: boolean,
+	turnShieldBadges: PlayerShieldBadge[]
+): {
+	staticCannotLoseGame: boolean;
+	dontLoseAtZeroOrLessLife: boolean;
+	staticLifeTotalLocked: boolean;
+	unspentManaRetentionLabel: string | null;
+	activeRuleLocks: RuleLockBadge[];
+} {
+	const activeRuleLocks: RuleLockBadge[] = [];
+	const pushLock = (badge: RuleLockBadge) => {
+		if (!activeRuleLocks.some((b) => b.id === badge.id && b.label === badge.label)) {
+			activeRuleLocks.push(badge);
+		}
+	};
+
+	const cantLoseMods = activeRuleModifiers(gameState, 'cantLose', player.playerId);
+	const staticCannotLoseGame = cantLoseMods.length > 0;
+	if (staticCannotLoseGame) {
+		const srcNames = Array.from(new Set(cantLoseMods.map((m) => m.sourceName))).join(', ');
+		pushLock({
+			id: 'cant_lose_static',
+			label: "Can't Lose",
+			description: `${player.username} can't lose the game (${srcNames})`,
+			sourceName: cantLoseMods[0].sourceName,
+			tone: 'gold'
+		});
+		if (!cannotLoseGameThisTurn) {
+			turnShieldBadges.push({
+				id: 'static_cant_lose',
+				label: "Can't Lose",
+				description: `Can't lose the game (${srcNames})`,
+				tone: 'gold'
+			});
+		}
+	}
+
+	const zeroLifeMods = activeRuleModifiers(
+		gameState,
+		'dontLoseAtZeroOrLessLife',
+		player.playerId
+	);
+	const dontLoseAtZeroOrLessLife =
+		zeroLifeMods.length > 0 || playerDontLoseAtZeroOrLessLife(gameState, player.playerId);
+	if (dontLoseAtZeroOrLessLife) {
+		const srcNames =
+			zeroLifeMods.length > 0
+				? Array.from(new Set(zeroLifeMods.map((m) => m.sourceName))).join(', ')
+				: 'Active static';
+		pushLock({
+			id: 'zero_life_safe',
+			label: '≤0 Life Safe',
+			description: `${player.username} doesn't lose the game for having 0 or less life (${srcNames})`,
+			sourceName: zeroLifeMods[0]?.sourceName ?? null,
+			tone: 'gold'
+		});
+		turnShieldBadges.push({
+			id: 'static_zero_life_safe',
+			label: '≤0 Life Safe',
+			description: `Doesn't lose the game for having 0 or less life (${srcNames})`,
+			tone: 'gold'
+		});
+	}
+
+	const lifeLockMods = activeRuleModifiers(gameState, 'lifeTotalCantChange', player.playerId);
+	const staticLifeTotalLocked = lifeLockMods.length > 0;
+	if (staticLifeTotalLocked) {
+		const srcNames = Array.from(new Set(lifeLockMods.map((m) => m.sourceName))).join(', ');
+		pushLock({
+			id: 'life_locked_static',
+			label: 'Life Locked',
+			description: `${player.username}'s life total can't change (${srcNames})`,
+			sourceName: lifeLockMods[0].sourceName,
+			tone: 'purple'
+		});
+		if (!lifeTotalCannotChangeThisTurn) {
+			turnShieldBadges.push({
+				id: 'static_life_locked',
+				label: 'Life Locked',
+				description: `Life total can't change (${srcNames})`,
+				tone: 'purple'
+			});
+		}
+	}
+
+	// Unspent mana retention / conversion (CR 106.4 / CR 500.4)
+	let unspentManaRetentionLabel: string | null = null;
+	let manaRetentionSource: string | null = null;
+	let manaRetentionDesc = '';
+	forEachActiveStaticOnBattlefield(
+		gameState,
+		(perm, controllerId, sourceName, def) => {
+			if (def.k !== 'retainUnspentMana') return;
+			if (def.players !== 'all' && controllerId !== player.playerId) return;
+			if (
+				def.condition &&
+				!evaluateCondition(def.condition, { state: gameState, controllerId, source: perm })
+			) {
+				return;
+			}
+			if (def.convertTo) {
+				unspentManaRetentionLabel = `Mana → {${def.convertTo}}`;
+				manaRetentionSource = sourceName;
+				manaRetentionDesc = `Unspent mana becomes {${def.convertTo}} instead of emptying (${sourceName})`;
+			} else if (def.colors === 'all') {
+				unspentManaRetentionLabel = 'Retains Mana';
+				manaRetentionSource = sourceName;
+				manaRetentionDesc = `Doesn't lose unspent mana as steps and phases end (${sourceName})`;
+			} else if (def.colors.length > 0 && !unspentManaRetentionLabel) {
+				const symStr = def.colors.map((c) => `{${c}}`).join('');
+				unspentManaRetentionLabel = `Retains ${symStr}`;
+				manaRetentionSource = sourceName;
+				manaRetentionDesc = `Doesn't lose unspent ${symStr} mana as steps and phases end (${sourceName})`;
+			}
+		},
+		'retainUnspentMana'
+	);
+	if (!unspentManaRetentionLabel && player.unemptiedManaColorsThisTurn) {
+		if (player.unemptiedManaColorsThisTurn === 'all') {
+			unspentManaRetentionLabel = 'Retains Mana';
+			manaRetentionDesc = "Doesn't lose unspent mana as steps and phases end this turn";
+		} else if (player.unemptiedManaColorsThisTurn.length > 0) {
+			const symStr = player.unemptiedManaColorsThisTurn.map((c) => `{${c}}`).join('');
+			unspentManaRetentionLabel = `Retains ${symStr}`;
+			manaRetentionDesc = `Doesn't lose unspent ${symStr} mana as steps and phases end this turn`;
+		}
+	}
+	if (unspentManaRetentionLabel) {
+		pushLock({
+			id: 'retain_mana',
+			label: unspentManaRetentionLabel,
+			description: manaRetentionDesc,
+			sourceName: manaRetentionSource,
+			tone: 'green'
+		});
+	}
+
+	// Spell-per-turn caps & cast locks
+	const oneSpellMods = activeRuleModifiers(gameState, 'oneSpellPerTurn', player.playerId);
+	if (oneSpellMods.length > 0) {
+		const srcNames = Array.from(new Set(oneSpellMods.map((m) => m.sourceName))).join(', ');
+		const castCount = player.spellsCastThisTurn ?? 0;
+		pushLock({
+			id: 'one_spell_per_turn',
+			label: 'Max 1 Spell/Turn',
+			description: `Can't cast more than 1 spell each turn (${castCount}/1 cast this turn — ${srcNames})`,
+			sourceName: oneSpellMods[0].sourceName,
+			tone: 'amber'
+		});
+	}
+
+	const filteredCapMods = activeRuleModifiers(
+		gameState,
+		'filteredSpellCapPerTurn',
+		player.playerId
+	);
+	for (const mod of filteredCapMods) {
+		const max = typeof mod.def.params?.max === 'number' ? mod.def.params.max : 1;
+		const filterShort = describeSpellLockFilterShort(
+			mod.def.params?.filter as ObjectFilter | undefined,
+			mod.source
+		);
+		const label = filterShort
+			? `Max ${max} ${filterShort}/Turn`
+			: `Max ${max} Spell${max === 1 ? '' : 's'}/Turn`;
+		pushLock({
+			id: `filtered_cap:${label}`,
+			label,
+			description: `Can't cast more than ${max} ${filterShort ? filterShort.toLowerCase() + ' ' : ''}spell${max === 1 ? '' : 's'} each turn (${mod.sourceName})`,
+			sourceName: mod.sourceName,
+			tone: 'amber'
+		});
+	}
+
+	const cantCastMods = activeRuleModifiers(
+		gameState,
+		'cantCastMatchingSpells',
+		player.playerId
+	);
+	for (const mod of cantCastMods) {
+		const fromZones = mod.def.params?.fromZones as string[] | undefined;
+		if (fromZones && fromZones.length > 0) {
+			const zLabel =
+				fromZones.includes('graveyard') && fromZones.includes('library')
+					? 'No GY/Lib Cast'
+					: fromZones.includes('graveyard')
+						? 'No GY Cast'
+						: `No ${fromZones.join('/')} Cast`;
+			pushLock({
+				id: `cant_cast_zones:${fromZones.join(',')}`,
+				label: zLabel,
+				description: `Can't cast spells from ${fromZones.join(' or ')} (${mod.sourceName})`,
+				sourceName: mod.sourceName,
+				tone: 'red'
+			});
+			continue;
+		}
+		const filterShort = describeSpellLockFilterShort(
+			mod.def.params?.filter as ObjectFilter | undefined,
+			mod.source
+		);
+		const label = filterShort ? `No ${filterShort} Spells` : 'Spell Lock';
+		pushLock({
+			id: `cant_cast:${label}`,
+			label,
+			description: `Can't cast ${filterShort ? filterShort.toLowerCase() + ' ' : ''}spells (${mod.sourceName})`,
+			sourceName: mod.sourceName,
+			tone: 'red'
+		});
+	}
+
+	const chosenNameLockMods = activeRuleModifiers(
+		gameState,
+		'cantCastChosenName',
+		player.playerId
+	);
+	for (const mod of chosenNameLockMods) {
+		const chosen = mod.source?.chosenCardName;
+		if (!chosen) continue;
+		pushLock({
+			id: `cant_cast_name:${chosen}`,
+			label: `No "${chosen}"`,
+			description: `Can't cast spells with the chosen name "${chosen}" (${mod.sourceName})`,
+			sourceName: mod.sourceName,
+			tone: 'red'
+		});
+	}
+
+	const handOnlyMods = activeRuleModifiers(gameState, 'castOnlyFromHand', player.playerId);
+	if (handOnlyMods.length > 0) {
+		const srcNames = Array.from(new Set(handOnlyMods.map((m) => m.sourceName))).join(', ');
+		pushLock({
+			id: 'cast_only_from_hand',
+			label: 'Hand Cast Only',
+			description: `Can't cast spells from anywhere other than hand (${srcNames})`,
+			sourceName: handOnlyMods[0].sourceName,
+			tone: 'amber'
+		});
+	}
+
+	const sorceryOnlyMods = activeRuleModifiers(
+		gameState,
+		'castOnlySorcerySpeed',
+		player.playerId
+	);
+	if (sorceryOnlyMods.length > 0) {
+		const srcNames = Array.from(new Set(sorceryOnlyMods.map((m) => m.sourceName))).join(', ');
+		pushLock({
+			id: 'cast_sorcery_only',
+			label: 'Sorcery Speed Only',
+			description: `Can cast spells only any time a sorcery could be cast (${srcNames})`,
+			sourceName: sorceryOnlyMods[0].sourceName,
+			tone: 'amber'
+		});
+	}
+
+	const oppTurnMods = activeRuleModifiers(
+		gameState,
+		'opponentsCantCastDuringYourTurn',
+		player.playerId
+	);
+	if (oppTurnMods.length > 0) {
+		const activePid = gameState.players[gameState.activePlayerIndex]?.playerId;
+		const lockedRightNow = oppTurnMods.some((m) => m.controllerId === activePid);
+		const srcNames = Array.from(new Set(oppTurnMods.map((m) => m.sourceName))).join(', ');
+		pushLock({
+			id: 'opp_turn_lock',
+			label: lockedRightNow ? 'No Cast This Turn' : 'No Opp-Turn Cast',
+			description: `Can't cast spells during ${srcNames}'s controller's turn`,
+			sourceName: oppTurnMods[0].sourceName,
+			tone: lockedRightNow ? 'red' : 'amber'
+		});
+	}
+
+	const noSearchMods = activeRuleModifiers(gameState, 'cantSearchLibraries', player.playerId);
+	if (noSearchMods.length > 0) {
+		const srcNames = Array.from(new Set(noSearchMods.map((m) => m.sourceName))).join(', ');
+		pushLock({
+			id: 'no_search',
+			label: 'No Tutoring',
+			description: `Can't search libraries (${srcNames})`,
+			sourceName: noSearchMods[0].sourceName,
+			tone: 'red'
+		});
+	}
+
+	const noDrawMods = activeRuleModifiers(gameState, 'cantDrawCards', player.playerId);
+	if (noDrawMods.length > 0) {
+		const srcNames = Array.from(new Set(noDrawMods.map((m) => m.sourceName))).join(', ');
+		pushLock({
+			id: 'no_draws',
+			label: 'No Draws',
+			description: `Can't draw cards (${srcNames})`,
+			sourceName: noDrawMods[0].sourceName,
+			tone: 'red'
+		});
+	} else {
+		const extraDrawMods = activeRuleModifiers(gameState, 'cantDrawExtraCards', player.playerId);
+		if (extraDrawMods.length > 0) {
+			const srcNames = Array.from(new Set(extraDrawMods.map((m) => m.sourceName))).join(', ');
+			pushLock({
+				id: 'no_extra_draws',
+				label: 'Max 1 Draw/Turn',
+				description: `Can't draw more than one card each turn (${srcNames})`,
+				sourceName: extraDrawMods[0].sourceName,
+				tone: 'amber'
+			});
+		}
+	}
+
+	const untapCapMods = activeRuleModifiers(gameState, 'untapStepCap', player.playerId);
+	for (const mod of untapCapMods) {
+		const max = typeof mod.def.params?.max === 'number' ? mod.def.params.max : 1;
+		pushLock({
+			id: `untap_cap:${max}`,
+			label: `Untap Cap: ${max}`,
+			description: `No more than ${max} permanent${max === 1 ? '' : 's'} untap during untap step (${mod.sourceName})`,
+			sourceName: mod.sourceName,
+			tone: 'cyan'
+		});
+	}
+
+	return {
+		staticCannotLoseGame,
+		dontLoseAtZeroOrLessLife,
+		staticLifeTotalLocked,
+		unspentManaRetentionLabel,
+		activeRuleLocks
+	};
+}
+
 function extractPlayerStatus(
 	gameState: GameState,
 	player: PlayerGameState,
@@ -979,6 +1677,21 @@ function extractPlayerStatus(
 		});
 	}
 
+	const { attackTaxPerCreature, attackTaxSources } = extractPlayerAttackTax(gameState, player);
+	const {
+		staticCannotLoseGame,
+		dontLoseAtZeroOrLessLife,
+		staticLifeTotalLocked,
+		unspentManaRetentionLabel,
+		activeRuleLocks
+	} = extractPlayerStaticRuleTelemetry(
+		gameState,
+		player,
+		cannotLoseGameThisTurn,
+		lifeTotalCannotChangeThisTurn,
+		turnShieldBadges
+	);
+
 	const companionView = extractCompanionView(gameState, player, viewerId);
 	const topView = extractTopOfLibraryView(gameState, player, viewerId, viewerCanActNow);
 
@@ -1015,9 +1728,16 @@ function extractPlayerStatus(
 			protectionFromEverythingThisTurn,
 			cannotLoseGameThisTurn,
 			lifeTotalCannotChangeThisTurn,
+			staticCannotLoseGame,
+			dontLoseAtZeroOrLessLife,
+			staticLifeTotalLocked,
 			damagePreventionShield,
 			preventAllCombatDamageThisTurn,
 			turnShieldBadges,
+			attackTaxPerCreature,
+			attackTaxSources,
+			unspentManaRetentionLabel,
+			activeRuleLocks,
 			companionView,
 			topOfLibraryView: topView.topCard ? topView : null
 		},
@@ -1082,8 +1802,10 @@ function buildViewModelStateSignature(gameState: GameState, viewerId: string): s
 		(gameState.timedContinuousEffects ?? [])
 			.map(
 				(ce) =>
-					`${ce.timestamp}:${ce.layer2?.controllerId ?? ''}:${
-						Array.isArray(ce.affected) ? ce.affected.join(',') : ''
+					`${ce.timestamp}:${ce.layer2?.controllerId ?? ''}:${ce.sourceCondition?.broken ? 1 : 0}:${
+						Array.isArray(ce.affected)
+							? ce.affected.map((a) => `${a.instanceId}:${a.objectVersion ?? ''}`).join(',')
+							: ''
 					}`
 			)
 			.join(';')
@@ -1135,6 +1857,10 @@ function buildViewModelStateSignature(gameState: GameState, viewerId: string): s
 			p.landsPlayedThisTurn,
 			p.maxLandsPerTurn,
 			p.spellsCastThisTurn ?? 0,
+			(p.spellsCastThisTurnCards ?? []).length,
+			p.unemptiedManaColorsThisTurn === 'all'
+				? 'all'
+				: (p.unemptiedManaColorsThisTurn ?? []).join(','),
 			p.protectionFromEverythingThisTurn ?? false,
 			p.cannotLoseGameThisTurn ?? false,
 			p.lifeTotalCannotChangeThisTurn ?? false,
@@ -1190,7 +1916,23 @@ function buildViewModelStateSignature(gameState: GameState, viewerId: string): s
 				perm.chosenSubType ?? '',
 				perm.chosenColor ?? '',
 				perm.chosenAnchorWord ?? '',
+				perm.chosenPlayerId ?? '',
+				perm.chosenParity ?? '',
 				perm.doesntUntapNextUntapStep ?? false,
+				(perm.doesntUntapWhileSource ?? [])
+					.map(
+						(d) =>
+							`${d.sourceInstanceId}:${d.sourceObjectVersion}:${d.kind}:${d.controllerId}:${d.broken ? 1 : 0}`
+					)
+					.join(','),
+				perm.assimilatedBy
+					? `${perm.assimilatedBy.sourceInstanceId}:${perm.assimilatedBy.sourceObjectVersion}`
+					: '',
+				perm.assignsNoCombatDamageThisTurn ?? false,
+				perm.mustAttackThisTurn ?? false,
+				perm.mustBlockThisTurn ?? false,
+				perm.mustBeBlockedThisTurn ?? false,
+				(perm.cantBlockAttackerIdsThisTurn ?? []).join(','),
 				perm.isMonstrous ?? false,
 				perm.usedLoyaltyThisTurn,
 				(perm.activatedAbilityIdsThisTurn ?? []).join(','),
@@ -1396,6 +2138,10 @@ function computeBoardViewModelInner(
 		!(gameState.combat.declaredBlockersPlayerIds || []).includes(viewerId) &&
 		gameState.combat.attackers.some((a) => a.defenderPlayerId === viewerId);
 
+	const freezeSourceIdsByPermId: Record<string, string[]> = {};
+	const assimilatedSourceIdByPermId: Record<string, string> = {};
+	const cantBlockIdsByPermId: Record<string, string[]> = {};
+
 	// Step 2 (O(B)): Evaluate every permanent ONCE and partition into viewer frontRow/backRow and opponent boards.
 	for (const player of gameState.players) {
 		const isViewerBoard = player.playerId === viewerId;
@@ -1505,12 +2251,59 @@ function computeBoardViewModelInner(
 			const isPrototyped = Boolean(!isFaceDown && (perm.prototyped || perm.copiableState?.prototyped));
 			const regenerationShields = Math.max(0, perm.regenerationShields ?? 0);
 			const isFlagbearer = Boolean(!perm.phasedOut && activeFlagbearerIds.has(perm.instanceId));
-			const chosenDescriptor = !isFaceDown ? formatPermanentChosenDescriptor(perm) : null;
+			const chosenDescriptor = !isFaceDown
+				? formatPermanentChosenDescriptor(perm, gameState.players)
+				: null;
 			const isStolen = Boolean(perm.ownerId && perm.ownerId !== evaluated.controllerId);
 			const ownerName = perm.ownerId
 				? (gameState.players.find((pl) => pl.playerId === perm.ownerId)?.username ?? perm.ownerId)
 				: null;
-			const isFrozen = Boolean(perm.doesntUntapNextUntapStep);
+			const activeFreezeSourceIds: string[] = [];
+			if (!perm.phasedOut && perm.doesntUntapWhileSource && perm.doesntUntapWhileSource.length > 0) {
+				for (const entry of perm.doesntUntapWhileSource) {
+					if (entry.broken) continue;
+					if (
+						isP16aSourceConditionCurrentlyMet(
+							gameState,
+							entry.sourceInstanceId,
+							entry.sourceObjectVersion,
+							entry.kind,
+							entry.controllerId
+						)
+					) {
+						if (!activeFreezeSourceIds.includes(entry.sourceInstanceId)) {
+							activeFreezeSourceIds.push(entry.sourceInstanceId);
+						}
+					}
+				}
+			}
+			if (activeFreezeSourceIds.length > 0) {
+				freezeSourceIdsByPermId[perm.instanceId] = activeFreezeSourceIds;
+			}
+			const isFrozen =
+				Boolean(perm.doesntUntapNextUntapStep) || activeFreezeSourceIds.length > 0;
+			if (!perm.phasedOut && perm.assimilatedBy) {
+				const assimSrc = activeById.get(perm.assimilatedBy.sourceInstanceId);
+				if (assimSrc && (assimSrc.objectVersion ?? 1) === perm.assimilatedBy.sourceObjectVersion) {
+					assimilatedSourceIdByPermId[perm.instanceId] = assimSrc.instanceId;
+				}
+			}
+			const assignsNoCombatDamageThisTurn = Boolean(perm.assignsNoCombatDamageThisTurn);
+			const mustAttackThisTurn = Boolean(perm.mustAttackThisTurn);
+			const mustBlockThisTurn = Boolean(perm.mustBlockThisTurn);
+			const mustBeBlockedThisTurn = Boolean(perm.mustBeBlockedThisTurn);
+			const uniqueCantBlockIds: string[] = [];
+			if (perm.cantBlockAttackerIdsThisTurn && perm.cantBlockAttackerIdsThisTurn.length > 0) {
+				for (const aid of perm.cantBlockAttackerIdsThisTurn) {
+					if (aid && !uniqueCantBlockIds.includes(aid)) {
+						uniqueCantBlockIds.push(aid);
+					}
+				}
+			}
+			if (uniqueCantBlockIds.length > 0) {
+				cantBlockIdsByPermId[perm.instanceId] = uniqueCantBlockIds;
+			}
+			const cantBlockAttackerCount = uniqueCantBlockIds.length;
 			const isMonstrous = Boolean(perm.isMonstrous);
 			const protectorId = isBattle ? (perm.protectorId ?? null) : null;
 			const protectorPlayer = protectorId
@@ -1693,6 +2486,14 @@ function computeBoardViewModelInner(
 				isStolen,
 				ownerName,
 				isFrozen,
+				frozenBySourceNames: [],
+				assimilatedBySourceName: null,
+				assignsNoCombatDamageThisTurn,
+				mustAttackThisTurn,
+				mustBlockThisTurn,
+				mustBeBlockedThisTurn,
+				cantBlockAttackerCount,
+				cantBlockAttackerNames: [],
 				isMonstrous,
 				protectorId,
 				protectorName,
@@ -1716,10 +2517,29 @@ function computeBoardViewModelInner(
 		}
 	}
 
-	// Resolve Soulbond partner names in O(B) using already-evaluated `permanentsById` views.
+	// Resolve Soulbond partner names and P16a source-linked names in O(B) using already-evaluated `permanentsById` views.
 	for (const pv of Object.values(permanentsById)) {
 		if (pv.pairedWithId) {
 			pv.pairedPartnerName = permanentsById[pv.pairedWithId]?.displayCard.name ?? null;
+		}
+		const freezeSrcIds = freezeSourceIdsByPermId[pv.instanceId];
+		if (freezeSrcIds) {
+			pv.frozenBySourceNames = freezeSrcIds.map(
+				(sid) => permanentsById[sid]?.displayCard.name ?? activeById.get(sid)?.card.name ?? sid
+			);
+		}
+		const assimSrcId = assimilatedSourceIdByPermId[pv.instanceId];
+		if (assimSrcId) {
+			pv.assimilatedBySourceName =
+				permanentsById[assimSrcId]?.displayCard.name ??
+				activeById.get(assimSrcId)?.card.name ??
+				assimSrcId;
+		}
+		const cantBlkIds = cantBlockIdsByPermId[pv.instanceId];
+		if (cantBlkIds) {
+			pv.cantBlockAttackerNames = cantBlkIds.map(
+				(aid) => permanentsById[aid]?.displayCard.name ?? activeById.get(aid)?.card.name ?? aid
+			);
 		}
 	}
 
@@ -1866,12 +2686,28 @@ function computeBoardViewModelInner(
 	const topOfLibraryView = viewerTopView?.topCard ? viewerTopView : null;
 	const hasPlayableGraveyardActions = playableGraveyardIds.length > 0;
 
+	const globalRuleLocks: RuleLockBadge[] = [];
+	const seenGlobalLocks = new Set<string>();
+	for (const pl of gameState.players) {
+		if (pl.lost) continue;
+		const st = playerStatusesById[pl.playerId];
+		if (!st) continue;
+		for (const lock of st.activeRuleLocks) {
+			const dedupKey = `${lock.label}|${lock.sourceName ?? ''}`;
+			if (seenGlobalLocks.has(dedupKey)) continue;
+			seenGlobalLocks.add(dedupKey);
+			globalRuleLocks.push(lock);
+		}
+	}
+
 	return {
 		viewerId,
 		dayNight: gameState.dayNight ?? null,
 		spellsCastByActivePlayerThisTurn: gameState.spellsCastByActivePlayerThisTurn ?? 0,
 		prevTurnSpellsCastByActivePlayer: gameState.prevTurnSpellsCastByActivePlayer ?? 0,
+		monarchPlayerId: gameState.monarchPlayerId ?? null,
 		initiativePlayerId: gameState.initiativePlayerId ?? null,
+		globalRuleLocks,
 		attachmentsByHostId,
 		hostByAttachmentId,
 		permanentsById,

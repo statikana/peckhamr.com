@@ -89,6 +89,23 @@
 			? `Epic (CR 702.50): Can't cast spells for the rest of the game. Upkeep copies: ${status.epicSpellNames.join(', ')}`
 			: "Can't cast spells for the rest of the game (CR 702.50)"
 	);
+
+	const attackTaxTooltip = $derived(
+		status.attackTaxPerCreature
+			? `Creatures can't attack you unless their controller pays ${status.attackTaxPerCreature} per attacker${
+					status.attackTaxSources.length > 0 ? ` (${status.attackTaxSources.join(', ')})` : ''
+				} (CR 508.1d)`
+			: ''
+	);
+
+	const nonShieldRuleLocks = $derived(
+		status.activeRuleLocks.filter(
+			(l) =>
+				l.id !== 'cant_lose_static' &&
+				l.id !== 'zero_life_safe' &&
+				l.id !== 'life_locked_static'
+		)
+	);
 </script>
 
 <div class="my-vitals">
@@ -111,7 +128,11 @@
 		<div class="my-vitals-top">
 			<span class="my-life" class:low={status.life <= 10}>LIFE {status.life}</span>
 			{#if status.isMonarch}
-				<span class="status-pill monarch" title="You are the Monarch (draw at end step)">
+				<span
+					class="status-pill monarch"
+					data-testid="vitals-monarch-pill"
+					title="You are the Monarch (CR 724: draw a card at the beginning of your end step)"
+				>
 					👑 Monarch
 				</span>
 			{/if}
@@ -231,11 +252,29 @@
 			</div>
 		{/if}
 
-		{#if status.turnShieldBadges.length > 0}
+		{#if status.turnShieldBadges.length > 0 || status.attackTaxPerCreature || nonShieldRuleLocks.length > 0}
 			<div class="player-shields-row">
+				{#if status.attackTaxPerCreature}
+					<span
+						class="shield-pill cyan"
+						data-testid="vitals-attack-tax-pill"
+						title={attackTaxTooltip}
+					>
+						🛡️ Tax {status.attackTaxPerCreature}/atk
+					</span>
+				{/if}
 				{#each status.turnShieldBadges as shield (shield.id)}
-					<span class="shield-pill {shield.tone}" title={shield.description}>
+					<span class="shield-pill {shield.tone}" data-testid="vitals-shield-pill" title={shield.description}>
 						🛡️ {shield.label}
+					</span>
+				{/each}
+				{#each nonShieldRuleLocks as lock (lock.id)}
+					<span
+						class="shield-pill {lock.tone}"
+						data-testid="vitals-rule-lock-pill"
+						title={lock.description}
+					>
+						⚖️ {lock.label}
 					</span>
 				{/each}
 			</div>
@@ -650,6 +689,16 @@
 		border-color: var(--mp-purple);
 		color: var(--mp-purple);
 		background: rgba(171, 157, 242, 0.12);
+	}
+	.shield-pill.amber {
+		border-color: #f59e0b;
+		color: #ffd866;
+		background: rgba(245, 158, 11, 0.14);
+	}
+	.shield-pill.red {
+		border-color: var(--mp-red);
+		color: var(--mp-red);
+		background: rgba(255, 97, 136, 0.14);
 	}
 	.shield-pill.green {
 		border-color: var(--mp-green);
