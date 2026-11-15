@@ -83,6 +83,9 @@ export interface LeftBattlefieldInfo {
 	monstrous?: boolean;
 	// --- Track P6 ---
 	counters?: Partial<Record<CounterType, number>>;
+	// --- Track P9 ---
+	/** CR 603.10a / 704.8: non-innate Layer 6 granted 'dies' trigger keywords (e.g. undying, persist) active right before leaving. */
+	grantedDeathKeywords?: Record<string, number>;
 }
 
 /** A spell was cast (it is already on the stack). */

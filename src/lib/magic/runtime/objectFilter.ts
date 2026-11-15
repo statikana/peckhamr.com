@@ -27,6 +27,12 @@ import {
 	isObjectForetold
 } from './kicker.ts';
 import { splitSubtypes } from './layers.ts';
+// --- Track P9 ---
+import {
+	cameUnderControlSinceLastUpkeep,
+	isNinjutsuWindowOpen,
+	isUnblockedAttackerForPlayer
+} from './keywordsWave3.ts';
 
 export interface FilterContext {
 	state: GameState;
@@ -250,6 +256,8 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 	const isPermanentType = (t: string) => types.some((pt) => pt.toLowerCase() === t.toLowerCase());
 
 	if (filter.types && !filter.types.some(isPermanentType)) return false;
+	// --- Track P9 ---
+	if (filter.allTypes && !filter.allTypes.every(isPermanentType)) return false;
 	if (filter.notTypes && filter.notTypes.some(isPermanentType)) return false;
 	if (filter.supertypes && !filter.supertypes.some(isPermanentType)) return false;
 	if (filter.notSupertypes && filter.notSupertypes.some(isPermanentType)) return false;
@@ -351,6 +359,11 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 		const blocking = state.combat.attackers.some((a) => a.blockerInstanceIds.includes(obj.instanceId));
 		if (blocking !== filter.blocking) return false;
 	}
+	// --- Track P9 ---
+	if (filter.unblockedAttacker !== undefined) {
+		const isUnblocked = isUnblockedAttackerForPlayer(state, obj, ctx.controllerId);
+		if (isUnblocked !== filter.unblockedAttacker) return false;
+	}
 	return true;
 }
 
@@ -403,6 +416,9 @@ export function evaluateAmount(amount: Amount, ctx: FilterContext): number {
 			if (amount.of.k !== 'self' || !ctx.source) return 0;
 			return ctx.source.counters[amount.counter] ?? 0;
 		}
+		// --- Track P9 ---
+		case 'lkiCounterCount':
+			return ctx.stackItem?.eventLki?.counters?.[amount.counter] ?? ctx.source?.lastKnownCounters?.[amount.counter] ?? 0;
 		case 'kickedCount': {
 			const info = ctx.source
 				? getObjectKickerInfo(ctx.state, ctx.source.card, ctx.source.instanceId, undefined, ctx.source)
@@ -509,6 +525,21 @@ export function evaluateCondition(cond: Condition, ctx: FilterContext): boolean 
 			return Boolean(ctx.source?.exertedThisTurn || ctx.stackItem?.sourceExertedThisTurn);
 		case 'monstrous':
 			return Boolean(ctx.source?.isMonstrous);
+		// --- Track P9 ---
+		case 'cameUnderControlSinceLastUpkeep':
+			return ctx.source
+				? cameUnderControlSinceLastUpkeep(ctx.state, ctx.controllerId, ctx.source)
+				: false;
+		case 'ninjutsuWindow':
+			return isNinjutsuWindowOpen(ctx.state);
+		case 'lkiHasNoCounter': {
+			const c =
+				ctx.stackItem?.eventLki?.counters?.[cond.counter] ??
+				ctx.source?.lastKnownCounters?.[cond.counter] ??
+				ctx.source?.counters[cond.counter] ??
+				0;
+			return c <= 0;
+		}
 		default:
 			return false;
 	}

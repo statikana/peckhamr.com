@@ -23,6 +23,15 @@ import {
 	COLOR_CODE_BY_LABEL
 } from './tuckFreezeChosen.ts';
 import { flushTriggers } from './triggers.ts';
+// --- Track P9 ---
+import {
+	applyBotWave3EtbChoices,
+	applyWave3EtbCounters,
+	cardHasMadness,
+	extractGrantedDeathKeywords,
+	nextWave3EtbChoice,
+	type Wave3EtbChoicePromptSpec
+} from './keywordsWave3.ts';
 
 /**
  * The single zone-change module (ENGINE_ARCHITECTURE_PLAN.md section 2.3, Phase 2).
@@ -115,6 +124,9 @@ export interface MoveOptions {
 	discardReason?: 'discard' | 'cycle';
 	/** Player who discarded the card (defaults to `fromPlayerId ?? obj.ownerId`). */
 	discardPlayerId?: string;
+	// --- Track P9 ---
+	/** CR 614.1c: Counters the object enters the battlefield with (e.g. Undying / Persist). */
+	withCounters?: { counter: CounterType; count: number };
 	/**
 	 * When true, defers linked-exile one-shot returns (`CR 610.3`) to the caller (used by SBA
 	 * multi-object batching so simultaneous battlefield returns happen after all SBA deaths settle).
@@ -134,6 +146,46 @@ export type MoveResult = ZoneType | 'pending';
 export function allocateTimestamp(state: GameState): number {
 	state.nextTimestamp = (state.nextTimestamp || 100) + 1;
 	return state.nextTimestamp;
+}
+
+// --- Track P9 ---
+/**
+ * CR 702.30a Echo: Monotonic clock independent of CR 613 `state.nextTimestamp` so tracking upkeep
+ * boundaries and permanent control-gain never perturbs continuous-effect timestamps.
+ */
+export function allocateEchoTick(state: GameState): number {
+	state.echoClock = (state.echoClock ?? 0) + 1;
+	return state.echoClock;
+}
+
+/**
+ * CR 614.12 look-ahead helper: evaluates `fn` while `obj` is hypothetically present in
+ * `ctrl.battlefield` so entering-the-battlefield replacement checks stay inside `zones.ts`.
+ */
+export function withHypotheticalBattlefieldPresence<T>(
+	state: GameState,
+	ctrl: PlayerGameState,
+	obj: CardInstance,
+	fn: () => T
+): T {
+	const alreadyOnBf = ctrl.battlefield.includes(obj);
+	const prevZone = obj.zone;
+	const prevCtrl = obj.controllerId;
+	obj.zone = 'battlefield';
+	obj.controllerId = ctrl.playerId;
+	if (!alreadyOnBf) ctrl.battlefield.push(obj);
+	noteLayerInputsChanged(state);
+	try {
+		return fn();
+	} finally {
+		if (!alreadyOnBf) {
+			const idx = ctrl.battlefield.lastIndexOf(obj);
+			if (idx >= 0) ctrl.battlefield.splice(idx, 1);
+		}
+		obj.zone = prevZone;
+		obj.controllerId = prevCtrl;
+		noteLayerInputsChanged(state);
+	}
 }
 
 export function createEmptyCounters(): Record<CounterType, number> {
@@ -228,14 +280,15 @@ function enqueueNextEtbChoicePrompt(
 	state: GameState,
 	obj: CardInstance,
 	chooser: PlayerGameState,
-	spec: SelfEtbChoiceSpec,
+	spec: SelfEtbChoiceSpec | null,
+	wave3Choice: Wave3EtbChoicePromptSpec | null,
 	baseData: Record<string, unknown>
 ): boolean {
 	const objName = resolveObjectFaces(
 		effectiveCardForObject(obj),
 		instanceFaceOptions(obj, 'battlefield')
 	).name;
-	if (spec.chooseColor && !obj.chosenColor) {
+	if (spec?.chooseColor && !obj.chosenColor) {
 		const { labels } = buildColorChoiceOptions(spec.chooseColor.exclude);
 		const description = `As ${objName} enters the battlefield, choose a color${spec.chooseColor.exclude ? ` other than ${spec.chooseColor.exclude}` : ''} (CR 105.4, 614.12):`;
 		enqueueChoicePrompt(state, {
@@ -262,7 +315,7 @@ function enqueueNextEtbChoicePrompt(
 		});
 		return true;
 	}
-	if (spec.chooseSubType === 'creature' && !obj.chosenSubType) {
+	if (spec?.chooseSubType === 'creature' && !obj.chosenSubType) {
 		const subtypeLabels = buildCreatureSubtypeOptions(state, chooser, obj);
 		const description = `As ${objName} enters the battlefield, choose a creature type (CR 205.3m, 614.12):`;
 		enqueueChoicePrompt(state, {
@@ -283,6 +336,63 @@ function enqueueNextEtbChoicePrompt(
 			choice: {
 				kind: 'chooseMode',
 				modes: subtypeLabels,
+				min: 1,
+				max: 1
+			}
+		});
+		return true;
+	}
+	// --- Track P9 ---
+	if (wave3Choice?.kind === 'unleash') {
+		const description = `As ${objName} enters the battlefield, you may have it enter with a +1/+1 counter on it (CR 702.98a). It can't block as long as it has a +1/+1 counter on it.`;
+		enqueueChoicePrompt(state, {
+			id: uid('prm', state),
+			playerId: chooser.playerId,
+			kind: 'chooseMode',
+			purpose: 'etb_choice',
+			title: `${objName} — Unleash`,
+			description,
+			continuation: {
+				kind: 'handler',
+				name: 'etb_choice',
+				data: {
+					...baseData,
+					choiceField: 'unleash'
+				}
+			},
+			choice: {
+				kind: 'chooseMode',
+				modes: ['Enter with a +1/+1 counter (Unleash)', 'Enter without a +1/+1 counter'],
+				min: 1,
+				max: 1
+			}
+		});
+		return true;
+	}
+	if (wave3Choice?.kind === 'riot') {
+		const suffix =
+			(wave3Choice.riotTotal ?? 1) > 1
+				? ` (${wave3Choice.riotIndex}/${wave3Choice.riotTotal})`
+				: '';
+		const description = `As ${objName} enters the battlefield, choose one for Riot${suffix} (CR 702.136a):`;
+		enqueueChoicePrompt(state, {
+			id: uid('prm', state),
+			playerId: chooser.playerId,
+			kind: 'chooseMode',
+			purpose: 'etb_choice',
+			title: `${objName} — Riot${suffix}`,
+			description,
+			continuation: {
+				kind: 'handler',
+				name: 'etb_choice',
+				data: {
+					...baseData,
+					choiceField: 'riot'
+				}
+			},
+			choice: {
+				kind: 'chooseMode',
+				modes: ['Enter with a +1/+1 counter', 'Gain haste'],
 				min: 1,
 				max: 1
 			}
@@ -333,7 +443,12 @@ function finalizeZoneMove(
 
 	// CR 400.3: A card moving to hand, graveyard, library, or command zone always goes to its owner's zone.
 	const effectiveReceiver =
-		(dest === 'hand' || dest === 'graveyard' || dest === 'library' || dest === 'command') && owner
+		(dest === 'hand' ||
+			dest === 'graveyard' ||
+			dest === 'library' ||
+			dest === 'command' ||
+			(dest === 'exile' && effectiveReplacedBy === 'Madness')) &&
+		owner
 			? owner
 			: receiver;
 
@@ -402,6 +517,12 @@ function finalizeZoneMove(
 		// --- Track P5 (CR 701.37b / 400.7) ---
 		obj.isMonstrous = undefined;
 		obj.monstrosityX = undefined;
+		// --- Track P9 (CR 400.7) ---
+		obj.cameUnderControlAt = undefined;
+		obj.dashed = undefined;
+		obj.riotHaste = undefined;
+		obj.riotChoicesDone = undefined;
+		obj.unleashChoiceDone = undefined;
 		const prevObjVersion = obj.objectVersion || 1;
 		const pruneLeftPerm = <T extends { affected: Array<{ instanceId: string; objectVersion?: number }> }>(
 			list: T[] | undefined
@@ -441,7 +562,13 @@ function finalizeZoneMove(
 		// --- Track P5 (CR 701.37b / 400.7) ---
 		obj.isMonstrous = undefined;
 		obj.monstrosityX = undefined;
+		// --- Track P9 (CR 400.7) ---
+		obj.cameUnderControlAt = undefined;
+		obj.riotHaste = undefined;
+		obj.riotChoicesDone = undefined;
+		obj.unleashChoiceDone = undefined;
 		if (dest !== 'stack') {
+			obj.dashed = undefined;
 			obj.prototyped = undefined;
 			obj.activeFaceIndex = undefined;
 			obj.transformed = false;
@@ -454,6 +581,7 @@ function finalizeZoneMove(
 		obj.exiledBy = undefined;
 		obj.untilSourceLeavesReturn = undefined;
 		if (dest !== 'exile') {
+			obj.madnessOwnerId = undefined;
 			obj.foretoldByPlayerId = undefined;
 			obj.foretoldTurnNumber = undefined;
 			obj.plottedByPlayerId = undefined;
@@ -506,28 +634,42 @@ function finalizeZoneMove(
 	const ceases =
 		opts.ceaseToExist === 'always' ||
 		(opts.ceaseToExist === 'tokens' && obj.isToken && dest !== 'battlefield');
-	if (
+	const isEnteringBattlefield =
 		dest === 'battlefield' &&
 		!ceases &&
-		!obj.isFaceDown &&
-		(fromZone !== 'battlefield' || Boolean(opts.leaveBattlefieldReset))
-	) {
+		(fromZone !== 'battlefield' || Boolean(opts.leaveBattlefieldReset));
+	let wave3ExtraCounters = 0;
+	if (isEnteringBattlefield) {
+		// --- Track P9 ---
+		obj.cameUnderControlAt = allocateEchoTick(state);
+		obj.lastKnownCounters = undefined;
+		obj.lastKnownPower = undefined;
+		obj.lastKnownToughness = undefined;
+	}
+	if (isEnteringBattlefield && !obj.isFaceDown) {
 		const ctrlId = opts.controllerId ?? obj.controllerId ?? effectiveReceiver.playerId;
 		const ctrl = state.players.find((p) => p.playerId === ctrlId) ?? effectiveReceiver;
 		obj.controllerId = ctrl.playerId;
 		const etbSpec = selfEtbChoiceSpec(state, obj);
-		if (etbSpec) {
-			if (ctrl.isBot) {
+		if (ctrl.isBot) {
+			if (etbSpec) {
 				if (etbSpec.chooseColor && !obj.chosenColor) {
 					obj.chosenColor = chooseBotBestColor(state, ctrl, etbSpec.chooseColor.exclude, obj);
 				}
 				if (etbSpec.chooseSubType === 'creature' && !obj.chosenSubType) {
 					obj.chosenSubType = chooseBotBestCreatureSubtype(state, ctrl, obj);
 				}
-			} else if (
-				(etbSpec.chooseColor && !obj.chosenColor) ||
-				(etbSpec.chooseSubType === 'creature' && !obj.chosenSubType)
-			) {
+			}
+			const botWave3 = applyBotWave3EtbChoices(state, obj, ctrl);
+			wave3ExtraCounters = botWave3.unleashCounters + botWave3.riotCounters;
+		} else {
+			const needsSpecChoice = Boolean(
+				etbSpec &&
+					((etbSpec.chooseColor && !obj.chosenColor) ||
+						(etbSpec.chooseSubType === 'creature' && !obj.chosenSubType))
+			);
+			const wave3Choice = needsSpecChoice ? null : nextWave3EtbChoice(state, obj, ctrl);
+			if (needsSpecChoice || wave3Choice) {
 				const resolvedInsert = typeof opts.insert === 'function' ? opts.insert(dest) : opts.insert;
 				const insertSpec =
 					typeof resolvedInsert === 'number' ||
@@ -538,7 +680,7 @@ function finalizeZoneMove(
 						: 'end';
 				obj.zone = fromZone ?? 'hand';
 				(state.pendingZoneMoves ??= []).push(obj);
-				enqueueNextEtbChoicePrompt(state, obj, ctrl, etbSpec, {
+				enqueueNextEtbChoicePrompt(state, obj, ctrl, etbSpec, wave3Choice, {
 					objectId: obj.instanceId,
 					toPlayerId: effectiveReceiver.playerId,
 					fromZone,
@@ -549,6 +691,8 @@ function finalizeZoneMove(
 					insertSpec,
 					sbaLogJson: opts.sbaLog ? JSON.stringify(opts.sbaLog) : null,
 					replacedBy: effectiveReplacedBy,
+					wave3ExtraCounters: 0,
+					withCountersJson: opts.withCounters ? JSON.stringify(opts.withCounters) : null,
 					...(opts.resumeStackItemId ? { resumeStackItemId: opts.resumeStackItemId } : {}),
 					...(opts.resumeStepIndex !== undefined ? { resumeStepIndex: opts.resumeStepIndex } : {})
 				});
@@ -559,6 +703,15 @@ function finalizeZoneMove(
 	if (dest !== 'stack' && !ceases) {
 		const at = typeof opts.insert === 'function' ? opts.insert(dest) : opts.insert;
 		if (at !== 'deferred') insertInto(effectiveReceiver[dest as PlayerZone], obj, at);
+		if (isEnteringBattlefield) {
+			if (opts.withCounters && opts.withCounters.count > 0) {
+				placeRegisteredCounters(state, obj, opts.withCounters.counter, opts.withCounters.count);
+			}
+			if (!obj.isFaceDown) {
+				applyWave3EtbCounters(state, obj, placeRegisteredCounters, wave3ExtraCounters);
+			}
+			noteLayerInputsChanged(state);
+		}
 		if (shuffleDestLibrary && dest === 'library') {
 			shuffleLibrary(state, effectiveReceiver);
 		}
@@ -824,7 +977,13 @@ function moveObjectInner(
 						lki.toughness ??
 						stk.eventLki?.toughness ??
 						(parseInt(obj.card.toughness ?? '0', 10) || 0),
-					manaValue: stk.eventLki?.manaValue ?? (obj.card.cmc ?? 0)
+					manaValue: stk.eventLki?.manaValue ?? (obj.card.cmc ?? 0),
+					// --- Track P9 ---
+					...(lki.counters
+						? { counters: { ...lki.counters } }
+						: stk.eventLki?.counters
+							? { counters: stk.eventLki.counters }
+							: {})
 				};
 			}
 		}
@@ -872,7 +1031,20 @@ function moveObjectInner(
 	let shuffleDestLibrary = false;
 	let replacedBy: string | null = null;
 	let pendingZoneRep: ReturnType<typeof resolveZoneChangeReplacements> | undefined;
-	if (fromZone === 'battlefield' && obj.unearthLeaveExile && to !== 'exile' && to !== 'battlefield') {
+	// --- Track P9 ---
+	if (
+		fromZone === 'hand' &&
+		opts.discardReason &&
+		to === 'graveyard' &&
+		cardHasMadness(effectiveCardForObject(obj))
+	) {
+		// CR 702.35a / CR 614.15: Madness self-replacement exiles the discarded card instead of
+		// putting it into its owner's graveyard, applying before external graveyard replacements.
+		dest = 'exile';
+		shuffleDestLibrary = false;
+		replacedBy = 'Madness';
+		obj.madnessOwnerId = obj.ownerId;
+	} else if (fromZone === 'battlefield' && obj.unearthLeaveExile && to !== 'exile' && to !== 'battlefield') {
 		// CR 702.84a: "If it would leave the battlefield, exile it instead of putting it anywhere else."
 		dest = 'exile';
 		shuffleDestLibrary = false;
@@ -1138,6 +1310,11 @@ registerPromptHandler('etb_choice', (state, prompt, answer) => {
 		? (JSON.parse(sbaLogJson) as SbaMoveLog)
 		: undefined;
 	const replacedBy = typeof data.replacedBy === 'string' ? data.replacedBy : null;
+	let wave3ExtraCounters = typeof data.wave3ExtraCounters === 'number' ? data.wave3ExtraCounters : 0;
+	const withCountersJson = typeof data.withCountersJson === 'string' ? data.withCountersJson : null;
+	const withCounters: { counter: CounterType; count: number } | undefined = withCountersJson
+		? (JSON.parse(withCountersJson) as { counter: CounterType; count: number })
+		: undefined;
 	const resumeStackItemId =
 		typeof data.resumeStackItemId === 'string' ? data.resumeStackItemId : undefined;
 	const resumeStepIndex =
@@ -1169,6 +1346,18 @@ registerPromptHandler('etb_choice', (state, prompt, answer) => {
 			obj.chosenColor = COLOR_CODE_BY_LABEL[chosenLabel.toLowerCase()] ?? 'W';
 		} else if (choiceField === 'creatureSubtype') {
 			obj.chosenSubType = chosenLabel || 'Human';
+		} else if (choiceField === 'unleash') {
+			obj.unleashChoiceDone = true;
+			if (chosenIdx === 0) {
+				wave3ExtraCounters += 1;
+			}
+		} else if (choiceField === 'riot') {
+			obj.riotChoicesDone = (obj.riotChoicesDone ?? 0) + 1;
+			if (chosenIdx === 0) {
+				wave3ExtraCounters += 1;
+			} else {
+				obj.riotHaste = true;
+			}
 		}
 		state.log.push({
 			id: uid('log', state),
@@ -1184,12 +1373,14 @@ registerPromptHandler('etb_choice', (state, prompt, answer) => {
 		}
 
 		const remainingSpec = selfEtbChoiceSpec(state, obj);
-		if (
+		const needsRemainingSpec = Boolean(
 			remainingSpec &&
-			((remainingSpec.chooseColor && !obj.chosenColor) ||
-				(remainingSpec.chooseSubType === 'creature' && !obj.chosenSubType))
-		) {
-			enqueueNextEtbChoicePrompt(state, obj, chooser, remainingSpec, {
+				((remainingSpec.chooseColor && !obj.chosenColor) ||
+					(remainingSpec.chooseSubType === 'creature' && !obj.chosenSubType))
+		);
+		const remainingWave3 = needsRemainingSpec ? null : nextWave3EtbChoice(state, obj, chooser);
+		if (needsRemainingSpec || remainingWave3) {
+			enqueueNextEtbChoicePrompt(state, obj, chooser, remainingSpec, remainingWave3, {
 				objectId: obj.instanceId,
 				toPlayerId: receiver.playerId,
 				fromZone,
@@ -1200,6 +1391,8 @@ registerPromptHandler('etb_choice', (state, prompt, answer) => {
 				insertSpec,
 				sbaLogJson,
 				replacedBy,
+				wave3ExtraCounters,
+				withCountersJson,
 				...(resumeStackItemId !== undefined ? { resumeStackItemId } : {}),
 				...(resumeStepIndex !== undefined ? { resumeStepIndex } : {})
 			});
@@ -1219,6 +1412,12 @@ registerPromptHandler('etb_choice', (state, prompt, answer) => {
 				: 'end';
 		if (insertSpec !== 'deferred') {
 			insertInto(receiver.battlefield, obj, at);
+			if (withCounters && withCounters.count > 0) {
+				placeRegisteredCounters(state, obj, withCounters.counter, withCounters.count);
+			}
+			if (!obj.isFaceDown) {
+				applyWave3EtbCounters(state, obj, placeRegisteredCounters, wave3ExtraCounters);
+			}
 		}
 		noteLayerInputsChanged(state);
 
@@ -1301,7 +1500,12 @@ function captureLki(state: GameState, obj: CardInstance): LeftBattlefieldInfo {
 		...(obj.chosenSubType ? { chosenSubType: obj.chosenSubType } : {}),
 		...(obj.chosenColor ? { chosenColor: obj.chosenColor } : {}),
 		...(obj.isMonstrous ? { monstrous: true } : {}),
-		counters: { ...obj.counters }
+		// --- Track P9 ---
+		counters: { ...(obj.lastKnownCounters ?? obj.counters) },
+		...(() => {
+			const g = extractGrantedDeathKeywords(state, obj, evaluated);
+			return g ? { grantedDeathKeywords: g } : {};
+		})()
 	};
 }
 
@@ -1462,6 +1666,10 @@ export function transferBattlefieldControl(
 	perm.controllerId = toPlayer.playerId;
 	perm.summoningSick = true;
 	perm.castViaSuspend = false;
+	// --- Track P9 (CR 702.30a) ---
+	if (state) {
+		perm.cameUnderControlAt = allocateEchoTick(state);
+	}
 	toPlayer.battlefield.push(perm);
 	noteLayerInputsChanged(state);
 	removeFromCombat(state, perm.instanceId);
@@ -1555,6 +1763,8 @@ export function syncBattlefieldControllers(state: GameState): boolean {
 					perm.controllerId = targetControllerId;
 					perm.summoningSick = true;
 					perm.castViaSuspend = false;
+					// --- Track P9 (CR 702.30a) ---
+					perm.cameUnderControlAt = allocateTimestamp(state);
 					noteLayerInputsChanged(state);
 					removeFromCombat(state, perm.instanceId);
 				}

@@ -48,6 +48,9 @@ export interface AlternativeCostKeywordMeta {
 	// --- Track P6 ---
 	/** CR 702.185a: marks the cast spell / entering permanent as warped from hand. */
 	warped?: boolean;
+	// --- Track P9 ---
+	/** CR 702.109a: marks the cast spell / entering permanent as dashed. */
+	dashed?: boolean;
 	timing?: 'default' | 'instant_only' | 'sorcery_only';
 	stackBadgeLabel?: string;
 	/** CR 708: casting this card face down as a 2/2 colorless creature (Morph / Megamorph / Disguise). */
@@ -402,6 +405,171 @@ export function buildCumulativeUpkeepTriggers(
 			}
 		}
 	];
+}
+
+// --- Track P9 ---
+/**
+ * CR 702.30a: "Echo [cost]" means "At the beginning of your upkeep, if this permanent came under
+ * your control since the beginning of your last upkeep, sacrifice it unless you pay [cost]."
+ */
+export function buildEchoTriggers(
+	kw: KeywordDef,
+	abilityIndex: number,
+	span: Span
+): RuntimeTrigger[] {
+	const costDefs = kw.costDefs;
+	if (!costDefs || costDefs.length === 0) return [];
+	const rawCost = (kw.cost ?? kw.param ?? '').trim();
+	const isManaOnly = /^(\{[^}]+\})+$/.test(rawCost);
+	const text = rawCost ? (isManaOnly ? `Echo ${rawCost}` : `Echo—${rawCost}`) : 'Echo';
+	return [
+		{
+			abilityIndex,
+			trigger: {
+				event: 'phaseBegin',
+				filter: { phase: 'upkeep' },
+				scope: 'controller_turn'
+			},
+			condition: { k: 'cameUnderControlSinceLastUpkeep' },
+			effectSupported: true,
+			text,
+			effect: {
+				steps: [
+					{
+						verb: 'sacrifice',
+						subject: { k: 'self' },
+						optional: { chooser: { k: 'you' }, cost: costDefs, mode: 'doUnlessPaid' },
+						span
+					}
+				],
+				targets: [],
+				unparsed: []
+			}
+		}
+	];
+}
+
+/**
+ * CR 702.49a / 702.49d: "Ninjutsu [cost]" / "Commander ninjutsu [cost]" means "[Cost], Reveal this
+ * card from your hand [or command zone], Return an unblocked attacking creature you control to its
+ * owner's hand: Put this card onto the battlefield from your hand [or command zone] tapped and
+ * attacking."
+ */
+export function buildNinjutsuAbility(
+	kw: KeywordDef,
+	id: string,
+	span: Span
+): { ability: ActivatedAbility; costText: string; effectText: string; label: string } | null {
+	const costDefs = kw.costDefs;
+	if (!costDefs || costDefs.length === 0) return null;
+	const { name: kwId } = kw;
+	const isCommanderNinjutsu = kwId === 'commander ninjutsu';
+	const prefix = isCommanderNinjutsu ? 'Commander ninjutsu' : 'Ninjutsu';
+	const rawCost = (kw.cost ?? kw.param ?? '').trim();
+	const isManaOnly = /^(\{[^}]+\})+$/.test(rawCost);
+	const label = rawCost ? (isManaOnly ? `${prefix} ${rawCost}` : `${prefix}—${rawCost}`) : prefix;
+	const cost: CostDef[] = [
+		...costDefs,
+		{ k: 'revealFromHand', count: { k: 'const', n: 1 }, filter: 'self' },
+		{
+			k: 'returnToHand',
+			count: { k: 'const', n: 1 },
+			filter: {
+				zone: 'battlefield',
+				controller: 'you',
+				types: ['Creature'],
+				unblockedAttacker: true
+			}
+		}
+	];
+	const costText = `${label}, Return an unblocked attacking creature you control to its owner's hand`;
+	const effectText = isCommanderNinjutsu
+		? 'Put this card onto the battlefield from your hand or the command zone tapped and attacking.'
+		: 'Put this card onto the battlefield from your hand tapped and attacking.';
+	const effect: EffectStep[] = [
+		{
+			verb: 'move',
+			subject: { k: 'self' },
+			params: { to: 'battlefield', underYourControl: true, tapped: true },
+			span
+		}
+	];
+	return {
+		ability: {
+			kind: 'activated',
+			cost,
+			targets: [],
+			effect,
+			timing: 'instant',
+			isMana: false,
+			activationZones: isCommanderNinjutsu ? ['hand', 'command'] : ['hand'],
+			activationCondition: { k: 'ninjutsuWindow' },
+			costKeyword: isCommanderNinjutsu ? 'commander ninjutsu' : 'ninjutsu',
+			id,
+			text: `${label} (${costText}: ${effectText})`,
+			span
+		},
+		costText,
+		effectText,
+		label
+	};
+}
+
+/**
+ * CR 702.97a: "Scavenge [cost]" means "[Cost], Exile this card from your graveyard: Put a number
+ * of +1/+1 counters equal to this card's power on target creature. Activate only as a sorcery."
+ */
+export function buildScavengeAbility(
+	kw: KeywordDef,
+	id: string,
+	span: Span
+): { ability: ActivatedAbility; costText: string; effectText: string; label: string } | null {
+	const costDefs = kw.costDefs;
+	if (!costDefs || costDefs.length === 0) return null;
+	const rawCost = (kw.cost ?? kw.param ?? '').trim();
+	const isManaOnly = /^(\{[^}]+\})+$/.test(rawCost);
+	const label = rawCost ? (isManaOnly ? `Scavenge ${rawCost}` : `Scavenge—${rawCost}`) : 'Scavenge';
+	const cost: CostDef[] = [
+		...costDefs,
+		{ k: 'exileFrom', zone: 'graveyard', count: { k: 'const', n: 1 }, filter: 'self' }
+	];
+	const costText = `${label}, Exile this card from your graveyard`;
+	const effectText =
+		"Put a number of +1/+1 counters equal to this card's power on target creature. Scavenge only as a sorcery.";
+	const effect: EffectStep[] = [
+		{
+			verb: 'putCounters',
+			subject: { k: 'target', index: 0 },
+			params: { counter: '+1/+1' },
+			amount: { k: 'stat', of: { k: 'self' }, stat: 'power', lki: true },
+			span
+		}
+	];
+	return {
+		ability: {
+			kind: 'activated',
+			cost,
+			targets: [
+				{
+					kind: 'object',
+					filter: { zone: 'battlefield', types: ['Creature'] },
+					min: 1,
+					max: 1
+				}
+			],
+			effect,
+			timing: 'sorcery',
+			isMana: false,
+			activationZones: ['graveyard'],
+			costKeyword: 'scavenge',
+			id,
+			text: `${label} (${costText}: ${effectText})`,
+			span
+		},
+		costText,
+		effectText,
+		label
+	};
 }
 
 export interface KeywordSpec {
@@ -1193,7 +1361,18 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 			}
 		}
 	],
-	unimplemented('bloodthirst', '702.54', 'number'),
+	// --- Track P9 ---
+	[
+		'bloodthirst',
+		{
+			name: 'bloodthirst',
+			cr: '702.54',
+			parameterKind: 'number',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'static', buildStatics: () => [] }
+		}
+	],
 	unimplemented('boast', '702.142', 'text'),
 	[
 		'buyback',
@@ -1206,7 +1385,35 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 			implementation: { kind: 'castOption' }
 		}
 	],
-	unimplemented('cascade', '702.85'),
+	// --- Track P9 ---
+	[
+		'cascade',
+		{
+			name: 'cascade',
+			cr: '702.85',
+			parameterKind: 'none',
+			displayLabel: 'Cascade',
+			grantable: false,
+			status: 'implemented',
+			implementation: {
+				kind: 'trigger',
+				events: ['cast'],
+				buildTriggers: (_kw, abilityIndex, _span) => [
+					{
+						abilityIndex,
+						trigger: {
+							event: 'cast',
+							fromZone: 'stack',
+							filter: { object: 'self' }
+						},
+						effectSupported: true,
+						text: 'Cascade',
+						effect: { steps: [], targets: [], unparsed: [] }
+					}
+				]
+			}
+		}
+	],
 	// --- Track P6 ---
 	[
 		'casualty',
@@ -1239,6 +1446,18 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 	unimplemented('cipher', '702.99'),
 	unimplemented('cleave', '702.148', 'cost'),
 	unimplemented('companion', '702.139', 'text'),
+	// --- Track P9 ---
+	[
+		'commander ninjutsu',
+		{
+			name: 'commander ninjutsu',
+			cr: '702.49d',
+			parameterKind: 'cost',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'activated', buildActivated: buildNinjutsuAbility }
+		}
+	],
 	unimplemented('compleated', '702.150'),
 	// --- Track P6 ---
 	[
@@ -1320,7 +1539,30 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 			implementation: { kind: 'activated', buildActivated: buildCyclingAbility }
 		}
 	],
-	unimplemented('dash', '702.109', 'cost'),
+	// --- Track P9 ---
+	[
+		'dash',
+		{
+			name: 'dash',
+			cr: '702.109',
+			parameterKind: 'cost',
+			grantable: false,
+			status: 'implemented',
+			implementation: {
+				kind: 'castOption',
+				altCost: {
+					id: 'alt:dash',
+					label: 'Cast with Dash',
+					castSummarySuffix: ' (Dashed)',
+					zones: ['hand', 'command', 'exile'],
+					requiresZonePermission: true,
+					disallowLand: true,
+					dashed: true,
+					stackBadgeLabel: 'Dashed'
+				}
+			}
+		}
+	],
 	unimplemented('daybound', '702.145'),
 	unimplemented('decayed', '702.147'),
 	[
@@ -1387,7 +1629,22 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 	],
 	unimplemented('double team', '702.156'),
 	unimplemented('dredge', '702.52', 'number'),
-	unimplemented('echo', '702.30', 'cost'),
+	// --- Track P9 ---
+	[
+		'echo',
+		{
+			name: 'echo',
+			cr: '702.30',
+			parameterKind: 'cost',
+			grantable: false,
+			status: 'implemented',
+			implementation: {
+				kind: 'trigger',
+				events: ['phaseBegin'],
+				buildTriggers: buildEchoTriggers
+			}
+		}
+	],
 	unimplemented('embalm', '702.128', 'cost'),
 	unimplemented('emerge', '702.119', 'cost'),
 	unimplemented('encore', '702.141', 'cost'),
@@ -1468,8 +1725,60 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 		}
 	],
 	unimplemented('evolve', '702.100'),
-	unimplemented('extort', '702.101'),
-	unimplemented('fabricate', '702.123', 'number'),
+	// --- Track P9 ---
+	[
+		'extort',
+		{
+			name: 'extort',
+			cr: '702.101',
+			parameterKind: 'none',
+			displayLabel: 'Extort',
+			grantable: true,
+			status: 'implemented',
+			implementation: {
+				kind: 'trigger',
+				events: ['cast'],
+				buildTriggers: (_kw, abilityIndex, _span) => [
+					{
+						abilityIndex,
+						trigger: {
+							event: 'cast',
+							filter: { player: { relation: 'you' } }
+						},
+						effectSupported: true,
+						text: 'Extort',
+						effect: { steps: [], targets: [], unparsed: [] }
+					}
+				]
+			}
+		}
+	],
+	[
+		'fabricate',
+		{
+			name: 'fabricate',
+			cr: '702.123',
+			parameterKind: 'number',
+			grantable: false,
+			status: 'implemented',
+			implementation: {
+				kind: 'trigger',
+				events: ['zoneChange'],
+				buildTriggers: (kw, abilityIndex, _span) => {
+					const n = kw.n ?? 0;
+					return [
+						{
+							abilityIndex,
+							trigger: { event: 'zoneChange', filter: { object: 'self', to: 'battlefield' } },
+							effectSupported: true,
+							text: `Fabricate ${n}`,
+							effect: { steps: [], targets: [], unparsed: [] }
+						}
+					];
+				}
+			}
+		}
+	],
 	// --- Track P6 ---
 	[
 		'fading',
@@ -1482,7 +1791,46 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 			implementation: { kind: 'static', buildStatics: () => [] }
 		}
 	],
-	unimplemented('flanking', '702.25'),
+	// --- Track P9 ---
+	[
+		'flanking',
+		{
+			name: 'flanking',
+			cr: '702.25',
+			parameterKind: 'none',
+			displayLabel: 'Flanking',
+			grantable: true,
+			status: 'implemented',
+			implementation: {
+				kind: 'trigger',
+				events: ['becomesBlockedBy'],
+				buildTriggers: (_kw, abilityIndex, span) => [
+					{
+						abilityIndex,
+						trigger: {
+							event: 'becomesBlockedBy',
+							filter: { object: 'self', withoutFlanking: true }
+						},
+						effectSupported: true,
+						text: 'Flanking',
+						effect: {
+							steps: [
+								{
+									verb: 'pump',
+									subject: { k: 'eventObject' },
+									amount: { k: 'const', n: -1 },
+									params: { toughness: { k: 'const', n: -1 }, duration: 'endOfTurn' },
+									span
+								}
+							],
+							targets: [],
+							unparsed: []
+						}
+					}
+				]
+			}
+		}
+	],
 	unimplemented('forecast', '702.57', 'text'),
 	// --- Track P3 ---
 	[
@@ -1505,7 +1853,19 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 	unimplemented('haunt', '702.55'),
 	unimplemented('hidden agenda', '702.106'),
 	unimplemented('hideaway', '702.75', 'number'),
-	unimplemented('improvise', '702.126'),
+	// --- Track P9 ---
+	[
+		'improvise',
+		{
+			name: 'improvise',
+			cr: '702.126',
+			parameterKind: 'none',
+			displayLabel: 'Improvise',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'static', buildStatics: () => [] }
+		}
+	],
 	unimplemented('impending', '702.176', 'text'),
 	unimplemented('ingest', '702.115'),
 	// --- Track P3 ---
@@ -1567,18 +1927,110 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 		}
 	],
 	unimplemented('living metal', '702.161'),
-	unimplemented('madness', '702.35', 'cost'),
+	// --- Track P9 ---
+	[
+		'madness',
+		{
+			name: 'madness',
+			cr: '702.35',
+			parameterKind: 'cost',
+			grantable: false,
+			status: 'implemented',
+			implementation: {
+				kind: 'trigger',
+				events: ['discard'],
+				buildTriggers: (kw, abilityIndex, _span) => {
+					const rawCost = (kw.cost ?? kw.param ?? '').trim();
+					const isManaOnly = /^(\{[^}]+\})+$/.test(rawCost);
+					const text = rawCost ? (isManaOnly ? `Madness ${rawCost}` : `Madness—${rawCost}`) : 'Madness';
+					return [
+						{
+							abilityIndex,
+							trigger: {
+								event: 'discard',
+								fromZone: 'any',
+								filter: { object: 'self', madnessExiled: true }
+							},
+							effectSupported: true,
+							text,
+							effect: { steps: [], targets: [], unparsed: [] }
+						}
+					];
+				}
+			}
+		}
+	],
 	faceDownCostKeyword('megamorph', '702.37b', 'megamorph', 'Cast face down (Megamorph)'),
 	unimplemented('melee', '702.121'),
 	unimplemented('mentor', '702.134'),
 	unimplemented('miracle', '702.94', 'cost'),
-	unimplemented('modular', '702.43', 'number'),
+	// --- Track P9 ---
+	[
+		'modular',
+		{
+			name: 'modular',
+			cr: '702.43',
+			parameterKind: 'number',
+			grantable: false,
+			status: 'implemented',
+			implementation: {
+				kind: 'trigger',
+				events: ['zoneChange'],
+				buildTriggers: (kw, abilityIndex, span) => {
+					const n = kw.n ?? 0;
+					return [
+						{
+							abilityIndex,
+							trigger: {
+								event: 'zoneChange',
+								filter: { object: 'self', from: 'battlefield', to: 'graveyard' }
+							},
+							effectSupported: true,
+							text: `Modular ${n}`,
+							effect: {
+								steps: [
+									{
+										verb: 'putCounters',
+										subject: { k: 'target', index: 0 },
+										params: { counter: '+1/+1' },
+										amount: { k: 'lkiCounterCount', counter: '+1/+1' },
+										optional: { chooser: { k: 'you' } },
+										span
+									}
+								],
+								targets: [
+									{
+										kind: 'object',
+										filter: { zone: 'battlefield', allTypes: ['Artifact', 'Creature'] },
+										min: 1,
+										max: 1
+									}
+								],
+								unparsed: []
+							}
+						}
+					];
+				}
+			}
+		}
+	],
 	faceDownCostKeyword('morph', '702.37', 'morph', 'Cast face down (Morph)'),
 	unimplemented('more than meets the eye', '702.162', 'cost'),
 	unimplemented('mutate', '702.140', 'cost'),
 	unimplemented('myriad', '702.116'),
 	unimplemented('nightbound', '702.145'),
-	unimplemented('ninjutsu', '702.49', 'cost'),
+	// --- Track P9 ---
+	[
+		'ninjutsu',
+		{
+			name: 'ninjutsu',
+			cr: '702.49',
+			parameterKind: 'cost',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'activated', buildActivated: buildNinjutsuAbility }
+		}
+	],
 	unimplemented('offering', '702.48', 'quality'),
 	// --- Track P6 ---
 	[
@@ -1609,7 +2061,50 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 		}
 	],
 	unimplemented('outlast', '702.107', 'cost'),
-	unimplemented('persist', '702.79'),
+	// --- Track P9 ---
+	[
+		'persist',
+		{
+			name: 'persist',
+			cr: '702.79',
+			parameterKind: 'none',
+			displayLabel: 'Persist',
+			grantable: true,
+			status: 'implemented',
+			implementation: {
+				kind: 'trigger',
+				events: ['zoneChange'],
+				buildTriggers: (_kw, abilityIndex, span) => [
+					{
+						abilityIndex,
+						trigger: {
+							event: 'zoneChange',
+							filter: { object: 'self', from: 'battlefield', to: 'graveyard' }
+						},
+						condition: { k: 'lkiHasNoCounter', counter: '-1/-1' },
+						effectSupported: true,
+						text: 'Persist',
+						effect: {
+							steps: [
+								{
+									verb: 'move',
+									subject: { k: 'self' },
+									params: {
+										from: 'graveyard',
+										to: 'battlefield',
+										withCounters: { counter: '-1/-1', count: 1 }
+									},
+									span
+								}
+							],
+							targets: [],
+							unparsed: []
+						}
+					}
+				]
+			}
+		}
+	],
 	// --- Track P3 ---
 	[
 		'plot',
@@ -1640,7 +2135,19 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 	unimplemented('rampage', '702.23', 'number'),
 	unimplemented('ravenous', '702.156'),
 	unimplemented('read ahead', '702.155'),
-	unimplemented('rebound', '702.88'),
+	// --- Track P9 ---
+	[
+		'rebound',
+		{
+			name: 'rebound',
+			cr: '702.88',
+			parameterKind: 'none',
+			displayLabel: 'Rebound',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'static', buildStatics: () => [] }
+		}
+	],
 	unimplemented('reconfigure', '702.151', 'cost'),
 	unimplemented('recover', '702.59', 'cost'),
 	// --- Track P6 ---
@@ -1697,7 +2204,19 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 			implementation: { kind: 'castOption' }
 		}
 	],
-	unimplemented('riot', '702.136'),
+	// --- Track P9 ---
+	[
+		'riot',
+		{
+			name: 'riot',
+			cr: '702.136',
+			parameterKind: 'none',
+			displayLabel: 'Riot',
+			grantable: true,
+			status: 'implemented',
+			implementation: { kind: 'static', buildStatics: () => [] }
+		}
+	],
 	unimplemented('ripple', '702.60', 'number'),
 	// --- Track P3 ---
 	[
@@ -1711,10 +2230,74 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 			implementation: { kind: 'activated', buildActivated: buildSaddleAbility }
 		}
 	],
-	unimplemented('scavenge', '702.97', 'cost'),
+	// --- Track P9 ---
+	[
+		'scavenge',
+		{
+			name: 'scavenge',
+			cr: '702.97',
+			parameterKind: 'cost',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'activated', buildActivated: buildScavengeAbility }
+		}
+	],
 	unimplemented('skulk', '702.118'),
 	unimplemented('soulbond', '702.95'),
-	unimplemented('soulshift', '702.46', 'number'),
+	// --- Track P9 ---
+	[
+		'soulshift',
+		{
+			name: 'soulshift',
+			cr: '702.46',
+			parameterKind: 'number',
+			grantable: false,
+			status: 'implemented',
+			implementation: {
+				kind: 'trigger',
+				events: ['zoneChange'],
+				buildTriggers: (kw, abilityIndex, span) => {
+					const n = kw.n ?? 0;
+					return [
+						{
+							abilityIndex,
+							trigger: {
+								event: 'zoneChange',
+								filter: { object: 'self', from: 'battlefield', to: 'graveyard' }
+							},
+							effectSupported: true,
+							text: `Soulshift ${n}`,
+							effect: {
+								steps: [
+									{
+										verb: 'move',
+										subject: { k: 'target', index: 0 },
+										params: { from: 'graveyard', to: 'hand' },
+										optional: { chooser: { k: 'you' } },
+										span
+									}
+								],
+								targets: [
+									{
+										kind: 'object',
+										filter: {
+											zone: 'graveyard',
+											owner: 'you',
+											subtypes: ['Spirit'],
+											manaValue: { op: '<=', value: { k: 'const', n } }
+										},
+										min: 1,
+										max: 1
+									}
+								],
+								unparsed: []
+							}
+						}
+					];
+				}
+			}
+		}
+	],
 	unimplemented('space sculptor', '702.158'),
 	unimplemented('spectacle', '702.137', 'cost'),
 	unimplemented('splice', '702.47', 'text'),
@@ -1802,7 +2385,50 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 	unimplemented('tribute', '702.104', 'number'),
 	unimplemented('umbra armor', '702.89'),
 	unimplemented('undaunted', '702.125'),
-	unimplemented('undying', '702.93'),
+	// --- Track P9 ---
+	[
+		'undying',
+		{
+			name: 'undying',
+			cr: '702.93',
+			parameterKind: 'none',
+			displayLabel: 'Undying',
+			grantable: true,
+			status: 'implemented',
+			implementation: {
+				kind: 'trigger',
+				events: ['zoneChange'],
+				buildTriggers: (_kw, abilityIndex, span) => [
+					{
+						abilityIndex,
+						trigger: {
+							event: 'zoneChange',
+							filter: { object: 'self', from: 'battlefield', to: 'graveyard' }
+						},
+						condition: { k: 'lkiHasNoCounter', counter: '+1/+1' },
+						effectSupported: true,
+						text: 'Undying',
+						effect: {
+							steps: [
+								{
+									verb: 'move',
+									subject: { k: 'self' },
+									params: {
+										from: 'graveyard',
+										to: 'battlefield',
+										withCounters: { counter: '+1/+1', count: 1 }
+									},
+									span
+								}
+							],
+							targets: [],
+							unparsed: []
+						}
+					}
+				]
+			}
+		}
+	],
 	[
 		'unearth',
 		{
@@ -1814,7 +2440,19 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 			implementation: { kind: 'activated', buildActivated: buildUnearthAbility }
 		}
 	],
-	unimplemented('unleash', '702.98'),
+	// --- Track P9 ---
+	[
+		'unleash',
+		{
+			name: 'unleash',
+			cr: '702.98',
+			parameterKind: 'none',
+			displayLabel: 'Unleash',
+			grantable: true,
+			status: 'implemented',
+			implementation: { kind: 'static', buildStatics: () => [] }
+		}
+	],
 	// --- Track P6 ---
 	[
 		'vanishing',
@@ -1828,7 +2466,18 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 		}
 	],
 	unimplemented('visit', '702.159'),
-	unimplemented('toxic', '702.164', 'number'),
+	// --- Track P9 ---
+	[
+		'toxic',
+		{
+			name: 'toxic',
+			cr: '702.164',
+			parameterKind: 'number',
+			grantable: true,
+			status: 'implemented',
+			implementation: { kind: 'primitive' }
+		}
+	],
 	// --- Track P6 ---
 	[
 		'station',
@@ -1898,15 +2547,20 @@ const isSimpleContinuousGrantable = (name: string, spec: KeywordSpec): boolean =
 	spec.grantable &&
 	(spec.parameterKind === 'none' || name === 'hexproof');
 
+// --- Track P9 ---
+const TOXIC_GRANT_PHRASES = ['toxic 1', 'toxic 2', 'toxic 3', 'toxic 4', 'toxic 5', 'toxic 6'] as const;
+
 /** Bare keywords accepted in static continuous ability grants ("Creatures you control have ..."). */
-export const STATIC_CONTINUOUS_KEYWORDS: ReadonlySet<string> = new Set(
-	REGISTRY_ENTRIES.filter(([name, spec]) => isSimpleContinuousGrantable(name, spec)).map(([name]) => name)
-);
+export const STATIC_CONTINUOUS_KEYWORDS: ReadonlySet<string> = new Set([
+	...REGISTRY_ENTRIES.filter(([name, spec]) => isSimpleContinuousGrantable(name, spec)).map(([name]) => name),
+	...TOXIC_GRANT_PHRASES
+]);
 
 /** Bare keywords accepted by effect "gains <keyword>" clauses ("gains flying, battle cry until end of turn"). */
-export const GRANTABLE_KEYWORDS: readonly string[] = REGISTRY_ENTRIES.filter(([name, spec]) =>
-	isSimpleContinuousGrantable(name, spec)
-).map(([name]) => name);
+export const GRANTABLE_KEYWORDS: readonly string[] = [
+	...REGISTRY_ENTRIES.filter(([name, spec]) => isSimpleContinuousGrantable(name, spec)).map(([name]) => name),
+	...TOXIC_GRANT_PHRASES
+];
 
 /** Display labels for non-parameterized implemented keywords (insertion order preserved). */
 export const KEYWORD_LABELS: Readonly<Record<string, string>> = Object.fromEntries(

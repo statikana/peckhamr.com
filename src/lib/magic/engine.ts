@@ -163,6 +163,20 @@ import {
 	buildTrackP6CastOptions,
 	buildWarpExileDelayedTrigger
 } from './runtime/striatedFrames.ts';
+// --- Track P9 ---
+import {
+	buildDashBounceDelayedTrigger,
+	buildReboundDelayedTrigger,
+	captureNinjutsuAttackTargetFromParts,
+	cardHasRebound,
+	recordUpkeepBeginForEcho,
+	registerWave3Host,
+	resolveDashBounceDelayedTrigger,
+	resolveReboundDelayedTrigger,
+	resolveWave3StackItem,
+	sumPermanentToxic
+} from './runtime/keywordsWave3.ts';
+// --- End Track P9 ---
 export { applyCastCostAids, formatManaRequirement, getSuspendSpec };
 import { getKeywordSpec } from './keywords.ts';
 import {
@@ -170,6 +184,8 @@ import {
 	evaluateCondition,
 	matchesObjectFilter,
 	objectManaValue,
+	objectPower,
+	objectToughness,
 	type FilterContext
 } from './runtime/objectFilter.ts';
 import {
@@ -699,6 +715,25 @@ function buildCastPaymentAids(
 			});
 		}
 	}
+	// --- Track P9 ---
+	if (hasKw('improvise')) {
+		const candidateIds: string[] = [];
+		for (const perm of actor.battlefield) {
+			if (perm.tapped || perm.phasedOut) continue;
+			if (!evaluatePermanent(state, perm).isArtifact) continue;
+			candidateIds.push(perm.instanceId);
+		}
+		if (candidateIds.length > 0) {
+			aids.push({
+				id: 'aid:improvise',
+				label: 'Improvise — Tap artifacts to pay generic mana',
+				kind: 'tapPermanent',
+				candidateIds,
+				paysGeneric: 1
+			});
+		}
+	}
+	// --- End Track P9 ---
 	if (hasKw('delve')) {
 		const candidateIds = actor.graveyard
 			.filter((c) => !(fromZone === 'graveyard' && c.instanceId === inst.instanceId))
@@ -941,6 +976,9 @@ function enumerateCandidateCastOptions(
 					...(meta.escaped ? { escaped: true } : {}),
 					...(meta.blitzed ? { blitzed: true } : {}),
 					...(meta.warped ? { warped: true } : {}),
+					// --- Track P9 ---
+					...(meta.dashed ? { dashed: true } : {}),
+					// --- End Track P9 ---
 					...(meta.castSummarySuffix ? { castSummarySuffix: meta.castSummarySuffix } : {}),
 					...(meta.stackBadgeLabel ? { label: meta.stackBadgeLabel } : {})
 				};
@@ -1760,6 +1798,9 @@ function finalizeCastSpell(
 		inst.faceDownLabel = undefined;
 	}
 	inst.prototyped = effectiveSpellMods?.prototyped ? true : undefined;
+	// --- Track P9 ---
+	inst.dashed = effectiveSpellMods?.dashed ? true : undefined;
+	// --- End Track P9 ---
 	moveObject(state, inst, 'stack', {
 		from: { player: sourcePlayer, zone: sourceZone },
 		newTimestamp: true,
@@ -1803,6 +1844,9 @@ function finalizeCastSpell(
 			...(castOptionId ? { castOptionId } : {}),
 			...(hasSpellMods ? { spellMods } : {}),
 			...(optionalCostCounts ? { optionalCostCounts } : {}),
+			// --- Track P9 ---
+			castFromZone: sourceZone,
+			// --- End Track P9 ---
 			commanderCastCount: inst.commanderCastCount,
 			requiresGuidedResolution: false,
 			createdAt: Date.now()
@@ -1874,7 +1918,10 @@ function finalizeActivateAbility(
 	const effectText = pcp.effectText ?? '';
 	if (
 		pcp.onceEachTurn &&
-		(perm.zone === 'battlefield' || perm.zone === 'hand' || perm.zone === 'graveyard') &&
+		(perm.zone === 'battlefield' ||
+			perm.zone === 'hand' ||
+			perm.zone === 'graveyard' ||
+			perm.zone === 'command') &&
 		perm.objectVersion === pcp.sourceObjectVersion &&
 		pcp.abilityId
 	) {
@@ -1942,6 +1989,9 @@ function finalizeActivateAbility(
 			...(pcp.tappedCostPower !== undefined ? { tappedCostPower: pcp.tappedCostPower } : {}),
 			...(pcp.stationTappedId ? { stationTappedId: pcp.stationTappedId } : {}),
 			...(pcp.stationTappedVersion !== undefined ? { stationTappedVersion: pcp.stationTappedVersion } : {}),
+			// --- Track P9 ---
+			...(pcp.ninjutsuAttackTarget ? { ninjutsuAttackTarget: pcp.ninjutsuAttackTarget } : {}),
+			// --- End Track P9 ---
 			controllerId: actorId,
 			kind: 'activated',
 			abilityId: pcp.abilityId,
@@ -2054,6 +2104,11 @@ function executeOrResumePendingCostPayment(
 				}
 			}
 		}
+		// --- Track P9 ---
+		if (pcp.kind === 'activate_ability' && !pcp.ninjutsuAttackTarget) {
+			pcp.ninjutsuAttackTarget = captureNinjutsuAttackTargetFromParts(state, pcp.parts);
+		}
+		// --- End Track P9 ---
 		payTapAndManaCostParts(ctx, pcp.parts, pcp.manaPaid ?? null, pcp.descriptions, pcp.aidDescriptions);
 		pcp.tapsAndManaDone = true;
 	}
@@ -3563,6 +3618,9 @@ export function runBeginningOfTurn(state: GameState): void {
 	for (const p of state.players) {
 		p.spellsCastThisTurn = 0;
 		p.cardsDrawnThisTurn = 0;
+		// --- Track P9 ---
+		p.damageDealtToThisTurn = 0;
+		// --- End Track P9 ---
 	}
 	state.playersDrawnThisTurn = [];
 	state.triggeredOnceThisTurn = undefined;
@@ -4948,8 +5006,12 @@ function applyGameActionInner(
 			if (!abilityPlan.ok) return { ok: false, error: abilityPlan.error };
 			if (abilityPlan.question) return askCostChoice(state, actor, action, abilityPlan.question, perm.card.name);
 			const preCostEval = perm.zone === 'battlefield' ? evaluatePermanent(state, perm) : null;
-			const sourceLkiPower = preCostEval ? preCostEval.power : 0;
-			const sourceLkiToughness = preCostEval ? preCostEval.toughness : 0;
+			// --- Track P9 ---
+			const sourceLkiPower = preCostEval ? preCostEval.power : Math.max(0, objectPower(state, perm) ?? 0);
+			const sourceLkiToughness = preCostEval
+				? preCostEval.toughness
+				: Math.max(0, objectToughness(state, perm) ?? 0);
+			// --- End Track P9 ---
 			const parts = serializeCostPlanParts(abilityCtx, abilityPlan);
 			const pcp: PendingCostPayment = {
 				kind: 'activate_ability',
@@ -7072,7 +7134,11 @@ function advanceDiscardToHandSizeProcedure(state: GameState): void {
 			from: { player: actor, zone: 'hand' },
 			toPlayer: actor,
 			graveyardReplacement: true,
-			commanderRedirect: true
+			commanderRedirect: true,
+			// --- Track P9 ---
+			discardReason: 'discard',
+			discardPlayerId: actor.playerId
+			// --- End Track P9 ---
 		});
 		if (moveRes === 'pending' || hasBlockingReplacementOrCommanderPrompt(state)) {
 			return;
@@ -8157,7 +8223,12 @@ function noteUnautomatedOnEnter(state: GameState, obj: CardInstance): void {
 
 registerEventHandler('PhaseBegin', (state, ev) => {
 	const activePlayer = state.players.find((p) => p.playerId === ev.activePlayerId);
-	if (ev.phase === 'upkeep' && activePlayer) runSuspendUpkeep(state, activePlayer);
+	if (ev.phase === 'upkeep' && activePlayer) {
+		// --- Track P9 ---
+		recordUpkeepBeginForEcho(state, activePlayer);
+		// --- End Track P9 ---
+		runSuspendUpkeep(state, activePlayer);
+	}
 	matchTriggers(state, ev);
 	if ((ev.phase === 'end_step' || ev.phase === 'upkeep' || ev.phase === 'end_combat') && activePlayer) {
 		flushTriggers(state);
@@ -8185,16 +8256,25 @@ function triggerEventLki(state: GameState, t: PendingTrigger): TriggerEventLki |
 			ownerId: obj.ownerId,
 			power: ev.power,
 			toughness: ev.toughness,
-			manaValue: objectManaValue(state, onBattlefield.inst)
+			manaValue: objectManaValue(state, onBattlefield.inst),
+			// --- Track P9 ---
+			counters: { ...onBattlefield.inst.counters }
+			// --- End Track P9 ---
 		};
 	}
 	const lki = t.eventLki;
+	// --- Track P9 ---
+	const lkiCounters = lki?.counters ?? obj.lastKnownCounters;
+	// --- End Track P9 ---
 	return {
 		controllerId: lki?.controllerId ?? obj.controllerId,
 		ownerId: obj.ownerId,
 		power: lki?.power ?? obj.lastKnownPower ?? (parseInt(obj.card.power ?? '0', 10) || 0),
 		toughness: lki?.toughness ?? obj.lastKnownToughness ?? (parseInt(obj.card.toughness ?? '0', 10) || 0),
-		manaValue: objectManaValue(state, obj)
+		manaValue: objectManaValue(state, obj),
+		// --- Track P9 ---
+		...(lkiCounters ? { counters: { ...lkiCounters } } : {})
+		// --- End Track P9 ---
 	};
 }
 
@@ -9503,7 +9583,27 @@ function resolveDelayedTriggerEffect(
 	item: StackItem,
 	controller: PlayerGameState,
 	eff: DelayedTriggerEffect
-): void {
+): 'paused' | 'done' | void {
+	// --- Track P9 ---
+	if (eff.kind === 'dashBounce') {
+		resolveDashBounceDelayedTrigger(
+			state,
+			controller,
+			eff.targetInstanceId,
+			eff.targetObjectVersion
+		);
+		return 'done';
+	}
+	if (eff.kind === 'reboundCast') {
+		return resolveReboundDelayedTrigger(
+			state,
+			item,
+			controller,
+			eff.targetInstanceId,
+			eff.targetObjectVersion
+		);
+	}
+	// --- End Track P9 ---
 	if (eff.kind === 'sacrifice') {
 		const found = findPermanentOnBoard(state, eff.targetInstanceId);
 		if (
@@ -9901,7 +10001,9 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 			checkStateBasedActions(state);
 			return;
 		}
-		resolveDelayedTriggerEffect(state, item, controller, item.delayedEffect);
+		if (resolveDelayedTriggerEffect(state, item, controller, item.delayedEffect) === 'paused') {
+			return;
+		}
 		triggerPathCounts.interpreter++;
 		removeItemFromStack();
 		givePriorityToActiveOrNextPlayer(state);
@@ -9932,6 +10034,19 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 		checkStateBasedActions(state);
 		return;
 	}
+
+	// --- Track P9 ---
+	const wave3Res = resolveWave3StackItem(state, item, controller);
+	if (wave3Res === 'paused') return;
+	if (wave3Res === 'done') {
+		triggerPathCounts.interpreter++;
+		removeItemFromStack();
+		givePriorityToActiveOrNextPlayer(state);
+		state.passedPriorityPlayerIds = [];
+		checkStateBasedActions(state);
+		return;
+	}
+	// --- End Track P9 ---
 
 	// A spell or ability the compiler marked supported resolves on the IR interpreter
 	// (runtime/effects.ts); anything else isn't automated (below).
@@ -10140,6 +10255,9 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 			perm.escaped = item.spellMods?.escaped ? true : undefined;
 			perm.foretold = item.spellMods?.foretold ? true : undefined;
 			perm.blitzed = item.spellMods?.blitzed ? true : undefined;
+			// --- Track P9 ---
+			perm.dashed = item.spellMods?.dashed ? true : undefined;
+			// --- End Track P9 ---
 			perm.prototyped = isPrototypedSpell ? true : undefined;
 			// Reset pre-filled loyalty so moveObject initializes loyalty with counterMultiplier (CR 306.5b)
 			perm.counters.loyalty = 0;
@@ -10253,6 +10371,19 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 					buildWarpExileDelayedTrigger(uid('dtrig', state), controller.playerId, perm)
 				);
 			}
+			// --- Track P9 ---
+			if (item.spellMods?.dashed && (perm.zone === 'battlefield' || moveRes === 'pending')) {
+				(state.delayedTriggers ??= []).push(
+					buildDashBounceDelayedTrigger(
+						uid('dtrig', state),
+						controller.playerId,
+						perm,
+						item.card,
+						state.turnNumber
+					)
+				);
+			}
+			// --- End Track P9 ---
 			if (perm.zone === 'battlefield') {
 				addLog(
 					state,
@@ -10282,6 +10413,27 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 				moveStackSpellToZone(state, item, 'exile');
 			} else if (librarySelf) {
 				moveStackSpellToZone(state, item, 'library', librarySelf);
+			} else if (
+				// --- Track P9 ---
+				item.castFromZone === 'hand' &&
+				!item.spellMods?.returnToHandOnResolve &&
+				!item.spellMods?.exileOnLeaveStack &&
+				cardHasRebound(item.card, item.faceIndex ?? 0)
+				// --- End Track P9 ---
+			) {
+				moveStackSpellToZone(state, item, 'exile');
+				const exiledInst = cardOwner.exile.find((c) => c.instanceId === item.sourceInstanceId);
+				if (exiledInst && !exiledInst.isToken) {
+					(state.delayedTriggers ??= []).push(
+						buildReboundDelayedTrigger(
+							uid('dtrig', state),
+							controller.playerId,
+							exiledInst,
+							item.card,
+							state.turnNumber
+						)
+					);
+				}
 			} else {
 				const dest = item.spellMods?.returnToHandOnResolve ? 'hand' : 'graveyard';
 				moveStackSpellToZone(state, item, dest);
@@ -11292,6 +11444,40 @@ registerEffectPorts({
 	setMonarch,
 	allocateFaceDownLabel
 });
+
+// --- Track P9 ---
+registerWave3Host({
+	uid,
+	addLog,
+	canPayOrAutoTap: (player, req, state, phyrexianLifeCount, reservedObjectIds) =>
+		canPayOrAutoTap(player, req, state, phyrexianLifeCount, { isSpell: false }, reservedObjectIds),
+	payManaWithAutoTap: (player, req, state, phyrexianLifeCount, reservedObjectIds) =>
+		payManaWithAutoTap(player, req, state, phyrexianLifeCount, { isSpell: false }, reservedObjectIds),
+	costContext: (state, player, source, xValue, isSpell, baseMana) =>
+		costContext(state, player, source, xValue, isSpell, baseMana),
+	specTargetCandidates: (state, actorId, sourceCard, sourceInst, spec) =>
+		specTargetCandidates(state, actorId, sourceCard, sourceInst, spec),
+	validateModalChoice: (state, actorId, sourceCard, sourceInst, modal, providedModes, targets) =>
+		validateModalChoice(state, actorId, sourceCard, sourceInst, modal, providedModes, targets),
+	finalizeCastSpell: (state, actor, inst, sourcePlayer, sourceZone, opts) =>
+		finalizeCastSpell(state, actor, inst, sourcePlayer, sourceZone, opts),
+	resumeStackItem,
+	shuffleArray,
+	gainPlayerLife,
+	createTokens: (state, controller, spec, count) => {
+		const out: CardInstance[] = [];
+		const total = Math.max(0, count) * tokenMultiplier(state, controller.playerId);
+		for (let i = 0; i < total; i++) {
+			out.push(createTokenOnBoard(state, controller, spec));
+		}
+		return out;
+	},
+	addCountersToPermanent: (state, perm, counterType, amount) => {
+		addCountersToPermanent(state, perm, counterType, amount);
+		return amount;
+	}
+});
+// --- End Track P9 ---
 
 /**
  * CR 702.26: Phasing Out a permanent also indirectly phases out any Auras/Equipment attached to it.
@@ -12750,6 +12936,9 @@ function clearEndOfTurnAndDamage(state: GameState): void {
 		p.manaPool = createEmptyManaPool();
 		p.restrictedMana = {};
 		p.preventAllCombatDamageThisTurn = false;
+		// --- Track P9 ---
+		p.damageDealtToThisTurn = 0;
+		// --- End Track P9 ---
 		for (const perm of p.battlefield) {
 			perm.damageMarked = 0;
 			perm.deathtouchDamageMarked = false;
@@ -12819,7 +13008,11 @@ function runCleanupStep(state: GameState): void {
 					from: { player: activePlayer, zone: 'hand' },
 					toPlayer: activePlayer,
 					graveyardReplacement: true,
-					commanderRedirect: true
+					commanderRedirect: true,
+					// --- Track P9 ---
+					discardReason: 'discard',
+					discardPlayerId: activePlayer.playerId
+					// --- End Track P9 ---
 				});
 			}
 			beginPhase(state, 'cleanup', activePlayer);
@@ -16124,11 +16317,17 @@ function findActivatedAbilityTarget(
 	const handCard = bfPerm ? undefined : actor.hand.find((c) => c.instanceId === instanceId);
 	const graveCard =
 		bfPerm || handCard ? undefined : actor.graveyard.find((c) => c.instanceId === instanceId);
-	const source = bfPerm ?? handCard ?? graveCard;
+	// --- Track P9 ---
+	const cmdCard =
+		bfPerm || handCard || graveCard
+			? undefined
+			: actor.command.find((c) => c.instanceId === instanceId);
+	const source = bfPerm ?? handCard ?? graveCard ?? cmdCard;
+	// --- End Track P9 ---
 	if (!source) {
 		return {
 			ok: false,
-			error: 'Card not found on your battlefield, in your hand, or in your graveyard.'
+			error: 'Card not found on your battlefield, in your hand, in your graveyard, or in the command zone.'
 		};
 	}
 	if (source.zone === 'battlefield' && source.phasedOut) {
@@ -16218,6 +16417,18 @@ function checkAbilityActivationLegalityInner(
 				error: `${perm.card.name}: This ability cannot be activated from your graveyard.`
 			};
 		}
+	// --- Track P9 ---
+	} else if (perm.zone === 'command') {
+		if (!actor.command.some((c) => c.instanceId === perm.instanceId)) {
+			return { ok: false, error: 'Card not found in your command zone.' };
+		}
+		if (!allowedZones.includes('command')) {
+			return {
+				ok: false,
+				error: `${perm.card.name}: This ability cannot be activated from the command zone.`
+			};
+		}
+	// --- End Track P9 ---
 	} else {
 		return {
 			ok: false,
@@ -16621,6 +16832,11 @@ function applyDamageToTarget(
 			pTarget.life -= amount;
 		}
 		if (!pTarget.protectionFromEverythingThisTurn) {
+			// --- Track P9 ---
+			if (amount > 0) {
+				pTarget.damageDealtToThisTurn = (pTarget.damageDealtToThisTurn ?? 0) + amount;
+			}
+			// --- End Track P9 ---
 			emitEvent(state, {
 				kind: 'DamageDealt',
 				sourceId: sourcePlayerId,
@@ -17118,6 +17334,9 @@ export function computeCombatDamageForecast(
 		const atkDeathtouch = hasKeyword(atkCard, 'Deathtouch', state);
 		const atkTrample = hasKeyword(atkCard, 'Trample', state);
 		const atkInfect = hasKeyword(atkCard, 'Infect', state);
+		// --- Track P9 ---
+		const atkToxic = sumPermanentToxic(state, atkCard);
+		// --- End Track P9 ---
 		const atkLifelink = hasKeyword(atkCard, 'Lifelink', state);
 		const atkIndestructible = hasKeyword(atkCard, 'Indestructible', state);
 
@@ -17177,6 +17396,13 @@ export function computeCombatDamageForecast(
 							(inc.commanderDamageById[atkCard.instanceId] || 0) + rawDmg;
 					}
 				}
+				// --- Track P9 ---
+				if (atkToxic > 0 && rawDmg > 0) {
+					const toxicPoison = atkToxic * strikesRemaining;
+					poisonToDefender += toxicPoison;
+					inc.totalPoisonGain += toxicPoison;
+				}
+				// --- End Track P9 ---
 			}
 			if (atkLifelink && rawDmg > 0) {
 				totalLifeGainByPlayer[atk.controllerId] =
@@ -17273,6 +17499,15 @@ export function computeCombatDamageForecast(
 								(inc.commanderDamageById[atkCard.instanceId] || 0) + trampleDmg;
 						}
 					}
+					// --- Track P9 ---
+					if (atkToxic > 0 && trampleDmg > 0) {
+						const strikesReachingPlayer =
+							strikesRemaining === 2 && atkPower > atkPower * strikesRemaining - trampleDmg ? 2 : 1;
+						const toxicPoison = atkToxic * strikesReachingPlayer;
+						poisonToDefender += toxicPoison;
+						inc.totalPoisonGain += toxicPoison;
+					}
+					// --- End Track P9 ---
 				}
 			}
 
