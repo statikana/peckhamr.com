@@ -78,6 +78,18 @@ import {
 	tryStitchExileUntilFollowUp
 } from './effectsWave7.ts';
 // --- End Track P19a ---
+// --- Track P22d ---
+import {
+	parseDigKeepClauseWave8,
+	parseExtendedFilterWave8,
+	splitQuotedSentenceEndingsWave8,
+	tryParseAnimateInAdditionWave8,
+	tryParseFollowUpSentenceWave8,
+	tryParsePreventWave8,
+	type Wave8CompilerHelpers,
+	type Wave8ParserLike
+} from './effectsWave8.ts';
+// --- End Track P22d ---
 import { staticallyInterpretable } from './interpretable.ts';
 import { parseActivatedIfConditionSentence, parseCondition } from './triggers.ts';
 import {
@@ -205,7 +217,15 @@ function isSupportedEotQuotedAbility(abilityText: string): boolean {
 	const defs = compileQuotedAbilityString(abilityText, 'Permanent');
 	return (
 		defs.length > 0 &&
-		defs.every((d) => d.kind === 'activated' || d.kind === 'triggered' || d.kind === 'keyword')
+		defs.every(
+			(d) =>
+				d.kind === 'activated' ||
+				d.kind === 'triggered' ||
+				d.kind === 'keyword' ||
+				// --- Track P22d ---
+				d.kind === 'static'
+				// --- End Track P22d ---
+		)
 	);
 }
 
@@ -268,6 +288,11 @@ interface PendingDigState {
 	hasRest: boolean;
 	lookOnly?: boolean;
 	draft: NonNullable<EffectParams['dig']>;
+	// --- Track P22d ---
+	linkedStepIndices?: number[];
+	actor?: PlayerRef;
+	libraryOwner?: Selector;
+	// --- End Track P22d ---
 }
 
 interface PendingCoerciveState {
@@ -387,7 +412,13 @@ class Parser {
 			lastOptionalStep: this.lastOptionalStep,
 			definedX: this.definedX,
 			pendingDig: this.pendingDig
-				? { ...this.pendingDig, draft: { ...this.pendingDig.draft } }
+				? {
+						...this.pendingDig,
+						draft: { ...this.pendingDig.draft },
+						...(this.pendingDig.linkedStepIndices
+							? { linkedStepIndices: [...this.pendingDig.linkedStepIndices] }
+							: {})
+					}
 				: undefined,
 			pendingCoercive: this.pendingCoercive
 				? { ...this.pendingCoercive, spans: [...this.pendingCoercive.spans] }
@@ -431,6 +462,29 @@ class Parser {
 		const pd = this.pendingDig;
 		if (!pd) return;
 		this.pendingDig = undefined;
+		// --- Track P22d: Flush unfinished `exile/reveal cards until ...` into `exileUntil` (stayExiled) ---
+		if (!pd.hasKeep && !pd.hasRest && pd.draft.untilFilter) {
+			const indices = [pd.stepIndex, ...(pd.linkedStepIndices ?? [])];
+			for (const idx of indices) {
+				const st = this.steps[idx];
+				if (!st || st.verb !== 'dig') continue;
+				st.verb = 'exileUntil';
+				st.subject = { k: 'none' };
+				delete st.amount;
+				st.params = {
+					exileUntilSpec: {
+						filter: pd.draft.untilFilter,
+						hitAction: 'stayExiled',
+						restDestination: 'stayExiled',
+						...(pd.libraryOwner ? { libraryOwner: pd.libraryOwner } : {}),
+						...(pd.actor && pd.actor.k !== 'you' ? { actor: pd.actor } : {})
+					}
+				};
+			}
+			this.setLastObject(pd.stepIndex);
+			return;
+		}
+		// --- End Track P22d ---
 		if (!pd.hasKeep && !pd.hasRest && !pd.draft.untilFilter) {
 			const step = this.steps[pd.stepIndex];
 			if (step?.verb === 'dig' && step.amount?.k === 'const' && step.amount.n === 1) {
@@ -592,6 +646,10 @@ function objectFilter(phrase: string): ObjectFilter | null {
 	}
 	const ext = parseExtendedObjectPhrase(p);
 	if (ext) return withSuspect(ext);
+	// --- Track P22d ---
+	const extW8 = parseExtendedFilterWave8(p, objectFilter);
+	if (extW8) return withSuspect(extW8);
+	// --- End Track P22d ---
 	return null;
 }
 
@@ -2058,6 +2116,9 @@ function parseAnimatePredicate(
 	let additiveColors = false;
 	let basePT: { power: Amount; toughness: Amount } | null = null;
 	let addKeywords: string[] | undefined;
+	// --- Track P22d ---
+	let addGrantedAbilities: string[] | undefined;
+	// --- End Track P22d ---
 
 	// Strip trailing qualifiers from right to left so order variations ("... with haste until end of turn"
 	// vs "... that's still a land" vs "... in addition to its other types until end of turn") all parse.
@@ -2097,6 +2158,16 @@ function parseAnimatePredicate(
 			rest = inAddColorsMatch[1].trim();
 			continue;
 		}
+		// --- Track P22d: Strip trailing "and gains/has <keywords>" after "in addition to its other types" (Archangel Elspeth) ---
+		const gainsTailMatch = rest.match(/^(.+?)\s+and\s+(?:gains?|has|have)\s+(.+)$/i);
+		if (gainsTailMatch) {
+			const kws = keywordList(gainsTailMatch[2].trim());
+			if (!kws) return null;
+			addKeywords = addKeywords ? [...kws, ...addKeywords] : kws;
+			rest = gainsTailMatch[1].trim();
+			continue;
+		}
+		// --- End Track P22d ---
 		const inAddMatch = rest.match(/^(.+?) in addition to (?:its|their) other types$/i);
 		if (inAddMatch) {
 			keepExistingTypes = true;
@@ -2114,7 +2185,22 @@ function parseAnimatePredicate(
 		const withIdx = rest.indexOf(' with ');
 		if (withIdx > 0) {
 			const kwRaw = rest.slice(withIdx + ' with '.length).trim();
-			// Reject quoted granted abilities (e.g. with "Whenever ~ attacks...") so unmodeled text stays unparsed.
+			// --- Track P22d: Allow quoted static/activated/keyword abilities on animate (`Restless Spire`, etc.) ---
+			const quotedM = kwRaw.match(/^[“"]([^”"]+)[”"]$/);
+			if (quotedM) {
+				const qText = quotedM[1].trim();
+				const qDefs = compileQuotedAbilityString(qText, 'Permanent');
+				if (
+					qDefs.length === 0 ||
+					!qDefs.every((d) => d.kind === 'static' || d.kind === 'activated' || d.kind === 'keyword')
+				) {
+					return null;
+				}
+				addGrantedAbilities = addGrantedAbilities ? [qText, ...addGrantedAbilities] : [qText];
+				rest = rest.slice(0, withIdx).trim();
+				continue;
+			}
+			// --- End Track P22d ---
 			if (/["“”']/.test(kwRaw)) return null;
 			const kws = keywordList(kwRaw);
 			if (!kws) return null;
@@ -2132,6 +2218,10 @@ function parseAnimatePredicate(
 		rest = rest.replace(/\s*artifact creatures?$/, '').trim();
 	} else if (/(?:^|\s)creatures?$/.test(rest)) {
 		rest = rest.replace(/\s*creatures?$/, '').trim();
+	// --- Track P22d: "becomes a 0/0 Angel in addition to its other types" (omits "creature") ---
+	} else if (keepExistingTypes && /^(?:\d+|X)\/(?:\d+|X)\s+/.test(rest)) {
+		// Keep `rest` intact so `0/0` + `Angel` become P/T + subtype with `addTypes: ['Creature']`.
+	// --- End Track P22d ---
 	} else {
 		return null;
 	}
@@ -2206,6 +2296,11 @@ function parseAnimatePredicate(
 		else params.setColors = colors;
 	}
 	if (addKeywords && addKeywords.length > 0) params.addKeywords = addKeywords;
+	// --- Track P22d ---
+	if (addGrantedAbilities && addGrantedAbilities.length > 0) {
+		params.grantedAbilityTexts = addGrantedAbilities;
+	}
+	// --- End Track P22d ---
 	if (basePT) {
 		params.setPower = basePT.power;
 		params.setToughness = basePT.toughness;
@@ -2539,6 +2634,14 @@ function parseCombatRestrictionTail(raw: string, outerEot: boolean): TimedCombat
 	if (t === "can't block this turn" || (outerEot && t === "can't block")) {
 		return { kind: 'cantBlock' };
 	}
+	// --- Track P22d ---
+	if (t === "can't attack this turn" || (outerEot && t === "can't attack")) {
+		return { kind: 'cantAttack' };
+	}
+	if (t === "can't attack or block this turn" || (outerEot && t === "can't attack or block")) {
+		return { kind: 'cantAttackOrBlock' };
+	}
+	// --- End Track P22d ---
 	if (t === "can't be blocked this turn" || (outerEot && t === "can't be blocked")) {
 		return { kind: 'cantBeBlocked' };
 	}
@@ -2581,6 +2684,14 @@ function objectPredicate(p: Parser, subject: ObjectRes, vp: string, span: Span):
 			p.push(anim, true);
 			return true;
 		}
+		// --- Track P22d ---
+		if (
+			/\bin addition to (?:its|their) other types\b/i.test(predText) &&
+			tryParseAnimateInAdditionWave8(p, subject, predText, duration, span, getWave8Helpers())
+		) {
+			return true;
+		}
+		// --- End Track P22d ---
 		if (
 			/^becomes? (?:a|an) /.test(predText) &&
 			!/^becomes? (?:a|an) (?:Plains|Island|Swamp|Mountain|Forest)\b/i.test(predText)
@@ -2713,6 +2824,14 @@ function objectPredicate(p: Parser, subject: ObjectRes, vp: string, span: Span):
 		return true;
 	}
 	// --- End Track P19a ---
+	// --- Track P22d ---
+	if (
+		/^becomes?\s+(?:(?:a|an)\s+)?.+?\bin addition to (?:its|their) other types\b/i.test(predText) &&
+		tryParseAnimateInAdditionWave8(p, subject, predText, duration, span, getWave8Helpers())
+	) {
+		return true;
+	}
+	// --- End Track P22d ---
 	const ptAndLose = predText.match(/^gets? (\S+)(?:,)? and loses? (.+)$/);
 	if (ptAndLose && eot) {
 		const pt = ptChange(ptAndLose[1]);
@@ -3056,6 +3175,8 @@ function objectPredicate(p: Parser, subject: ObjectRes, vp: string, span: Span):
 	const dmgToEq = text.match(/^deals damage to (.+?) equal to (.+)$/);
 	if (dmgToEq && !eot && canDealDamage) {
 		const savedLastPl = p.lastPlayer;
+		// --- Track P22d: Preserve pre-recipient `lastObject` so "... to any target equal to that card's mana value" binds to the card, not the target ---
+		const savedLastObj = p.lastObject;
 		const rec = damageRecipientSpec(p, dmgToEq[1], subject.selector);
 		if (rec && (rec.subject.k === 'player' || rec.subject.k === 'playerRef')) {
 			p.lastPlayer = rec.subject;
@@ -3069,8 +3190,12 @@ function objectPredicate(p: Parser, subject: ObjectRes, vp: string, span: Span):
 			const stat = ownStat[1] === 'mana value' ? 'manaValue' : (ownStat[1] as 'power' | 'toughness');
 			amount = { k: 'stat', of: subject.ref, stat };
 		} else {
+			const postRecObj = p.lastObject;
+			p.lastObject = savedLastObj;
 			amount = equalTo(p, dmgToEq[2]);
+			p.lastObject = postRecObj;
 		}
+		// --- End Track P22d ---
 		if (!amount || !rec) {
 			p.lastPlayer = savedLastPl;
 			return false;
@@ -3463,6 +3588,42 @@ function playerPredicate(p: Parser, subject: Selector, vp: string, span: Span, f
 		return true;
 	}
 	// --- End Track P13 ---
+	// --- Track P22d: "<player> (reveals|exiles) cards from the top of their/your library until (they|you) \1 a <filter> card" ---
+	const exUntilM = text.match(
+		/^(reveals?|exiles?) cards from the top of (your|their|that player's) library until (?:you|they|that player) (?:reveal|exile)s? (?:a|an) (.+?) card$/i
+	);
+	if (exUntilM) {
+		const untilFilter = objectFilter(`${exUntilM[3].trim()} card`);
+		if (!untilFilter) return false;
+		const actor = singlePlayer(subject) ?? undefined;
+		const ownerKey = exUntilM[2].toLowerCase();
+		const libraryOwner =
+			ownerKey === 'your'
+				? YOU
+				: actor && actor.k !== 'you'
+					? subject
+					: p.lastPlayer;
+		if (!libraryOwner) return false;
+		if (subject.k === 'target' || subject.k === 'player') p.lastPlayer = subject;
+		const stepIndex = p.push({ verb: 'dig', subject: YOU, amount: n(999), span }, true);
+		p.pendingDig = {
+			stepIndex,
+			hasKeep: false,
+			hasRest: false,
+			...(actor ? { actor } : {}),
+			libraryOwner,
+			draft: {
+				keep: 1,
+				upTo: false,
+				keepTo: 'hand',
+				rest: 'libraryBottom',
+				revealAll: true,
+				untilFilter
+			}
+		};
+		return true;
+	}
+	// --- End Track P22d ---
 	let optional: EffectStep['optional'];
 	const may = text.match(/^may (.+)$/);
 	if (may) {
@@ -4985,6 +5146,33 @@ function tryWave6Clause(p: Parser, text: string, span: Span): boolean {
 	return true;
 }
 
+// --- Track P22d ---
+let cachedWave8Helpers: Wave8CompilerHelpers | undefined;
+function getWave8Helpers(): Wave8CompilerHelpers {
+	if (!cachedWave8Helpers) {
+		const built: Wave8CompilerHelpers = {
+			objectFilter: (phrase) => objectFilter(phrase),
+			objectPhrase: (p, phrase) => objectPhrase(p as Parser, phrase),
+			playerPhrase: (p, phrase) => playerPhrase(p as Parser, phrase),
+			singlePlayer: (sel) => singlePlayer(sel),
+			amountWord: (p, raw) => amountWord(p as Parser, raw),
+			equalTo: (p, raw) => equalTo(p as Parser, raw),
+			damageRecipientSpec: (p, phrase, src) => damageRecipientSpec(p as Parser, phrase, src),
+			keywordList: (raw) => keywordList(raw),
+			singularSubtype: (raw) => singularSubtype(raw),
+			colorWord: (w) => COLOR_WORDS[w] ?? null,
+			clauses: (p, text, offset) => clauses(p as Parser, text, offset),
+			sentence: (p, text, span, allowCond) => sentence(p as Parser, text, span, allowCond),
+			counterName: (raw) => parseUniversalCounterName(raw),
+			parseDurationTail: (raw) => stripDuration(raw).duration
+		};
+		cachedWave8Helpers = built;
+		return built;
+	}
+	return cachedWave8Helpers;
+}
+// --- End Track P22d ---
+
 // --- Track P19a ---
 function tryWave7Clause(p: Parser, text: string, span: Span): boolean {
 	const mark = p.mark();
@@ -5059,6 +5247,12 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 	// --- Track P19a ---
 	if (tryWave7Clause(p, t, span)) return true;
 	// --- End Track P19a ---
+
+	// --- Track P22d ---
+	if (/^(?:the next time\b|prevent\b)/i.test(t) && tryParsePreventWave8(p, t, span, getWave8Helpers())) {
+		return true;
+	}
+	// --- End Track P22d ---
 
 	// --- Track P7: Damage prevention shields & CR 615.12 unpreventable damage ---
 	if (parsePreventDamageClause(p, t, span)) return true;
@@ -5196,8 +5390,14 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 			const top = parseExileTopOfLibrary(p, expr, span);
 			if (top !== undefined) return untilSourceLeaves ? false : top;
 		}
-		const obj = objectPhrase(p, expr);
+		// --- Track P22d: Support "Destroy/Exile another target ..." just like tap/untap ---
+		const isAnotherTarget = /^another target\b/i.test(expr);
+		const obj = objectPhrase(p, isAnotherTarget ? expr.replace(/^another /i, '') : expr);
 		if (!obj) return false;
+		if (isAnotherTarget && obj.selector.k === 'target' && p.targets[obj.selector.index]) {
+			p.targets[obj.selector.index].filter.other = true;
+		}
+		// --- End Track P22d ---
 		const verb = m[1] as 'destroy' | 'exile';
 		if (verb === 'destroy' && obj.selector.k === 'self') return false;
 		p.push(
@@ -5640,7 +5840,25 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 		if (isAnother && obj.selector.k === 'target' && p.targets[obj.selector.index]) {
 			p.targets[obj.selector.index].filter.other = true;
 		}
-		p.push({ verb: 'putCounters', subject: obj.selector, amount, params: { counter }, span }, true);
+		// --- Track P22d: Allow placing counters (e.g. time counters) on bound cards exiled by prior steps ---
+		let allowExileCounters = false;
+		if (obj.selector.k === 'binding' && p.lastObject) {
+			const boundVerb = p.steps[p.lastObject.stepIndex]?.verb;
+			if (boundVerb === 'exile' || boundVerb === 'exileUntil' || boundVerb === 'dig') {
+				allowExileCounters = true;
+			}
+		}
+		p.push(
+			{
+				verb: 'putCounters',
+				subject: obj.selector,
+				amount,
+				params: { counter, ...(allowExileCounters ? { allowExileCounters: true } : {}) },
+				span
+			},
+			true
+		);
+		// --- End Track P22d ---
 		return true;
 	}
 	m = t.match(
@@ -5657,7 +5875,25 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 		if (isAnother && obj.selector.k === 'target' && p.targets[obj.selector.index]) {
 			p.targets[obj.selector.index].filter.other = true;
 		}
-		p.push({ verb: 'putCounters', subject: obj.selector, amount, params: { counter }, span }, true);
+		// --- Track P22d: Allow placing counters (e.g. time counters) on bound cards exiled by prior steps ---
+		let allowExileCounters = false;
+		if (obj.selector.k === 'binding' && p.lastObject) {
+			const boundVerb = p.steps[p.lastObject.stepIndex]?.verb;
+			if (boundVerb === 'exile' || boundVerb === 'exileUntil' || boundVerb === 'dig') {
+				allowExileCounters = true;
+			}
+		}
+		p.push(
+			{
+				verb: 'putCounters',
+				subject: obj.selector,
+				amount,
+				params: { counter, ...(allowExileCounters ? { allowExileCounters: true } : {}) },
+				span
+			},
+			true
+		);
+		// --- End Track P22d ---
 		return true;
 	}
 	m = t.match(
@@ -5885,16 +6121,31 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 		);
 		return true;
 	}
-	// --- Track P10 / P16a: "(Reveal|Exile) cards from the top of your library until you \1 a [filter] card" ---
-	m = t.match(/^(reveal|exile) cards from the top of your library until you \1 (?:a|an) (.+?) card$/i);
+	// --- Track P10 / P16a / P22d: "(Reveal|Exile) cards from the top of (your|their|...) library until (you|they) \1 a [filter] card" ---
+	m = t.match(
+		/^(reveals?|exiles?) cards from the top of (your|their|that player's|target opponent's|target player's) library until (?:you|they|that player) (?:reveal|exile)s? (?:a|an) (.+?) card$/i
+	);
 	if (m) {
-		const untilFilter = objectFilter(`${m[2].trim()} card`);
+		const untilFilter = objectFilter(`${m[3].trim()} card`);
 		if (!untilFilter) return false;
+		const ownerKey = m[2].toLowerCase();
+		let libraryOwner: Selector | undefined;
+		if (ownerKey === "target opponent's" || ownerKey === "target player's") {
+			const ownerSel = playerPhrase(p, ownerKey.replace(/'s$/, ''));
+			if (!ownerSel) return false;
+			libraryOwner = ownerSel;
+			p.lastPlayer = ownerSel;
+		} else if (ownerKey === 'their' || ownerKey === "that player's") {
+			const lastPr = p.lastPlayer ? singlePlayer(p.lastPlayer) : null;
+			if (!lastPr || lastPr.k === 'you') return false;
+			libraryOwner = p.lastPlayer;
+		}
 		const stepIndex = p.push({ verb: 'dig', subject: YOU, amount: n(999), span }, true);
 		p.pendingDig = {
 			stepIndex,
 			hasKeep: false,
 			hasRest: false,
+			...(libraryOwner ? { libraryOwner } : {}),
 			draft: {
 				keep: 1,
 				upTo: false,
@@ -5906,7 +6157,7 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 		};
 		return true;
 	}
-	// --- End Track P10 / P16a ---
+	// --- End Track P10 / P16a / P22d ---
 	m = t.match(/^(transform|convert|flip) (.+)$/);
 	if (m) {
 		const verb: 'transform' | 'convert' | 'flip' =
@@ -6399,6 +6650,9 @@ function splitClauses(text: string, offset: number): Clause[] {
 		// "gain trample and get +X/+X" / "get +X/+Y and gain/lose trample" / "loses all abilities and has base power..." stay one clause.
 		if (/^gets? /.test(after) && /(?:gains?|loses?) [a-z ]+$/.test(text.slice(last, m.index))) continue;
 		if (/^(?:gains?|loses?|has|have) /.test(after) && /\bgets? [+\-−](?:\d+|X)\/[+\-−](?:\d+|X)$/.test(text.slice(last, m.index))) continue;
+		// --- Track P22d ---
+		if (/^(?:gains?|has|have) /.test(after) && /\bin addition to (?:its|their) other types$/i.test(text.slice(last, m.index))) continue;
+		// --- End Track P22d ---
 		if (/^(?:has|have) base power and toughness\b/i.test(after) && /\bloses? all abilities$/i.test(text.slice(last, m.index))) continue;
 		if (/^loses? all abilities\b/i.test(after) && /\b(?:has|have) base power and toughness (?:\d+|X)\/(?:\d+|X)$/i.test(text.slice(last, m.index))) continue;
 		// "rolls a d20 / six-sided die and adds ..." stays one clause.
@@ -6425,12 +6679,23 @@ function splitClauses(text: string, offset: number): Clause[] {
 }
 
 function markTrailingDestroyCantRegen(p: Parser): boolean {
+	// --- Track P22d: Scan backwards through intermediate non-destroy steps in the same sentence (e.g. Kirtar's Wrath token creation) ---
 	let marked = false;
-	for (let i = p.steps.length - 1; i >= 0 && p.steps[i].verb === 'destroy'; i--) {
-		p.steps[i].params = { ...p.steps[i].params, cantBeRegenerated: true };
-		marked = true;
+	const floor = p.lastSentenceStepStart ?? Math.max(0, p.steps.length - 6);
+	for (let i = p.steps.length - 1; i >= 0; i--) {
+		const st = p.steps[i];
+		if (st.verb === 'destroy') {
+			st.params = { ...st.params, cantBeRegenerated: true };
+			marked = true;
+			continue;
+		}
+		if (i < floor && marked) break;
+		if (st.verb !== 'createToken' && st.verb !== 'draw' && st.verb !== 'gainLife' && st.verb !== 'loseLife' && st.verb !== 'putCounters') {
+			break;
+		}
 	}
 	return marked;
+	// --- End Track P22d ---
 }
 
 // --- Track P7 / P13: Turn-history, state, & cast-origin resolution-time condition helpers ---
@@ -6597,6 +6862,17 @@ function tryReplacementIfSentence(
 		const st = p.steps[i];
 		st.condition = st.condition ? { k: 'and', of: [cond, st.condition] } : cond;
 	}
+	// --- Track P22d: Link replaced pending dig steps (e.g. Farsight Ritual bargain dig 4 vs dig 8) ---
+	if (savedMark.pendingDig && p.pendingDig && !savedMark.pendingDig.hasKeep && !p.pendingDig.hasKeep) {
+		p.pendingDig = {
+			...p.pendingDig,
+			linkedStepIndices: [
+				...(savedMark.pendingDig.linkedStepIndices ?? []),
+				savedMark.pendingDig.stepIndex
+			]
+		};
+	}
+	// --- End Track P22d ---
 	if (baseSteps.length === 1) {
 		p.lastObject = directRef ? { ref: directRef, stepIndex: -1 } : undefined;
 	}
@@ -7473,8 +7749,9 @@ function sentenceBody(
 		p.flushPendingCardCopy();
 	}
 
+	// --- Track P22d: Allow "Then shuffle." after ANY dig step with a keep clause (not just untilFilter, e.g. Ajani) ---
 	if (
-		p.pendingDig?.draft.untilFilter &&
+		p.pendingDig &&
 		p.pendingDig.hasKeep &&
 		!p.pendingDig.hasRest &&
 		/^(?:then\s+)?shuffle(?: (?:the rest|all other cards revealed this way) into your library| your library)?\.?$/i.test(
@@ -7487,6 +7764,7 @@ function sentenceBody(
 		p.lastOptionalStep = undefined;
 		return true;
 	}
+	// --- End Track P22d ---
 	// --- End Track P16a ---
 
 	if (NEUTRAL_SENTENCES.some((re) => re.test(t0))) {
@@ -7513,7 +7791,13 @@ function sentenceBody(
 	// --- Track P16a: CR 603.2h "Do this only once each turn." ---
 	if (/^do this only once each turn$/i.test(t)) {
 		if (p.steps.length === 0) return fail();
-		if (p.steps.every((s) => s.verb === 'payCost' && !s.params?.reflexiveTrigger)) return fail();
+		if (
+			p.steps.every(
+				(s) => s.verb === 'payCost' && !s.params?.reflexiveTrigger && !s.delayed
+			)
+		) {
+			return fail();
+		}
 		if (p.lastOptionalStep !== undefined && p.steps[p.lastOptionalStep]) {
 			p.steps[p.lastOptionalStep].doThisOncePerTurn = true;
 		} else {
@@ -7607,6 +7891,39 @@ function sentenceBody(
 				return true;
 			}
 		}
+		// --- Track P22d: Delayed-step castFree / grantGraveyardCast exile replacement ---
+		const delSteps = prev?.delayed?.effect;
+		if (delSteps && delSteps.length > 0) {
+			const lastDel = delSteps[delSteps.length - 1];
+			if (lastDel?.verb === 'castFree' && lastDel.params?.castFreeSpec) {
+				const updated = [...delSteps];
+				updated[updated.length - 1] = {
+					...lastDel,
+					params: {
+						...lastDel.params,
+						castFreeSpec: { ...lastDel.params.castFreeSpec, exileIfPutIntoGraveyard: true }
+					}
+				};
+				prev.delayed = { ...prev.delayed!, effect: updated };
+				return true;
+			}
+			if (lastDel?.verb === 'grantGraveyardCast' && lastDel.params?.graveyardCastSpec) {
+				const updated = [...delSteps];
+				updated[updated.length - 1] = {
+					...lastDel,
+					params: {
+						...lastDel.params,
+						graveyardCastSpec: {
+							...lastDel.params.graveyardCastSpec,
+							exileIfWouldEnterGraveyard: true
+						}
+					}
+				};
+				prev.delayed = { ...prev.delayed!, effect: updated };
+				return true;
+			}
+		}
+		// --- End Track P22d ---
 		return fail();
 	}
 	if (p.steps.length > 0 && p.steps[p.steps.length - 1]?.verb === 'vote') {
@@ -8102,7 +8419,8 @@ function sentenceBody(
 			p.pendingDig &&
 			!p.pendingDig.hasKeep &&
 			!p.pendingDig.hasRest &&
-			!p.pendingDig.draft.untilFilter
+			!p.pendingDig.draft.untilFilter &&
+			!/\binstead\b/i.test(t)
 		) {
 			p.flushPendingDig();
 		}
@@ -8131,7 +8449,12 @@ function sentenceBody(
 			}
 			if (/\binstead\b/i.test(innerText)) return fail();
 			const preLastObject = p.lastObject;
-			innerText = innerText.replace(/^it (?:also )?deals\b/i, '~ deals').replace(/^also\s+/i, '');
+			// --- Track P22d: Strip "also" in "it also gets +3/+0 and gains menace" (*Goatnap*) ---
+			innerText = innerText
+				.replace(/^it (?:also )?deals\b/i, '~ deals')
+				.replace(/\bit also\s+(gets?|gains?|loses?)\b/i, 'it $1')
+				.replace(/^also\s+/i, '');
+			// --- End Track P22d ---
 			const innerStart = Math.max(span.start, span.end - innerText.length);
 			const leadMark = p.mark();
 			if (!sentence(p, innerText, { start: innerStart, end: span.end }, true)) {
@@ -8225,7 +8548,7 @@ function sentenceBody(
 	}
 	// --- End Track P16a ---
 
-	// --- Track P19a: Multi-sentence `exileUntil` (Cascade / exile-until-cast-free / play-this-turn) ---
+	// --- Track P19a / P22d: Multi-sentence `exileUntil` (Cascade / exile-until-cast-free / play-this-turn) ---
 	if (p.pendingDig && !p.pendingDig.hasKeep && p.pendingDig.draft.untilFilter) {
 		const pdStep = p.steps[p.pendingDig.stepIndex];
 		const exUntilSpec = pdStep
@@ -8233,28 +8556,54 @@ function sentenceBody(
 			: null;
 		if (pdStep && exUntilSpec) {
 			const idx = p.pendingDig.stepIndex;
-			pdStep.verb = 'exileUntil';
-			pdStep.subject = { k: 'none' };
-			delete pdStep.amount;
-			pdStep.params = { exileUntilSpec: exUntilSpec };
-			pdStep.span = { start: pdStep.span.start, end: span.end };
+			const fullSpec = {
+				...exUntilSpec,
+				...(p.pendingDig.libraryOwner ? { libraryOwner: p.pendingDig.libraryOwner } : {}),
+				// --- Track P22d: Only use exiling player as cast actor when sentence doesn't specify "You may ..." ---
+				...(p.pendingDig.actor && p.pendingDig.actor.k !== 'you' && !/^you\b/i.test(t)
+					? { actor: p.pendingDig.actor }
+					: {})
+				// --- End Track P22d ---
+			};
+			const indices = [idx, ...(p.pendingDig.linkedStepIndices ?? [])];
+			for (const si of indices) {
+				const st = p.steps[si];
+				if (!st || st.verb !== 'dig') continue;
+				st.verb = 'exileUntil';
+				st.subject = { k: 'none' };
+				delete st.amount;
+				st.params = { exileUntilSpec: { ...fullSpec } };
+				st.span = { start: st.span.start, end: span.end };
+			}
 			p.pendingDig = undefined;
 			p.setLastObject(idx);
 			p.lastOptionalStep = idx;
 			return true;
 		}
 	}
-	if (
-		p.steps[p.steps.length - 1]?.verb === 'exileUntil' &&
-		tryStitchExileUntilFollowUp(p.steps[p.steps.length - 1], t)
-	) {
-		p.steps[p.steps.length - 1].span = {
-			start: p.steps[p.steps.length - 1].span.start,
-			end: span.end
-		};
-		return true;
+	if (p.steps[p.steps.length - 1]?.verb === 'exileUntil') {
+		const lastEx = p.steps[p.steps.length - 1];
+		if (
+			/^(?:then\s+)?(?:(?:you|that player|they)\s+puts?\s+|put\s+)(?:the rest|the exiled cards(?: that (?:aren't|weren't|were not|are not) cast this way)?|all (?:other )?cards (?:exiled|revealed) this way(?: that (?:aren't|weren't|were not|are not) cast this way)?) on the bottom of (?:your|their|that|that player's) library in a random order$/i.test(
+				t
+			)
+		) {
+			lastEx.params = {
+				...lastEx.params,
+				exileUntilSpec: {
+					...lastEx.params!.exileUntilSpec!,
+					restDestination: 'libraryBottomRandom'
+				}
+			};
+			lastEx.span = { start: lastEx.span.start, end: span.end };
+			return true;
+		}
+		if (tryStitchExileUntilFollowUp(lastEx, t)) {
+			lastEx.span = { start: lastEx.span.start, end: span.end };
+			return true;
+		}
 	}
-	// --- End Track P19a ---
+	// --- End Track P19a / P22d ---
 
 	if (p.pendingDig && tryDigFollowUp(p, t)) {
 		if (!p.pendingDig && stepOptionalChooser(p.steps[p.steps.length - 1]) !== undefined) {
@@ -8267,6 +8616,11 @@ function sentenceBody(
 	if (p.pendingDig) {
 		p.flushPendingDig();
 	}
+	// --- Track P22d: Wave 8 post-flush follow-up sentences ---
+	if (tryParseFollowUpSentenceWave8(p, t, span, getWave8Helpers())) {
+		return true;
+	}
+	// --- End Track P22d ---
 	if (tryCoerciveStart(p, t, span)) {
 		return true;
 	}
@@ -8777,7 +9131,17 @@ function clauses(p: Parser, text: string, offset: number): boolean {
 
 type DigKeepSpec = Pick<
 	NonNullable<EffectParams['dig']>,
-	'keep' | 'upTo' | 'keepAllMatching' | 'keepFilter' | 'keepLabel' | 'keepTo' | 'keepTapped' | 'keepAttacking' | 'revealKept'
+	| 'keep'
+	| 'upTo'
+	| 'keepAllMatching'
+	| 'keepFilter'
+	| 'keepMaxManaValue'
+	| 'keepLabel'
+	| 'keepTo'
+	| 'keepTapped'
+	| 'keepAttacking'
+	| 'keepAttackingPlayer'
+	| 'revealKept'
 >;
 type DigRestSpec = Pick<NonNullable<EffectParams['dig']>, 'rest' | 'restRandom' | 'restOrder' | 'restToHand'>;
 
@@ -8791,11 +9155,17 @@ function parseDigDestination(dest: string): { keepTo: DigKeepSpec['keepTo']; kee
 	if (d === 'onto the battlefield tapped') return { keepTo: 'battlefield', keepTapped: true };
 	if (d === 'onto the battlefield') return { keepTo: 'battlefield' };
 	if (d === 'into your graveyard') return { keepTo: 'graveyard' };
+	// --- Track P22d ---
+	if (d === 'into exile' || d === 'into exile face up') return { keepTo: 'exile' };
+	// --- End Track P22d ---
 	return null;
 }
 
 function parseDigRestDestination(dest: string): DigRestSpec | null {
 	const d = dest.trim().toLowerCase();
+	// --- Track P22d ---
+	if (d === 'into exile') return { rest: 'exile' };
+	// --- End Track P22d ---
 	if (d === 'on the bottom of your library in a random order') {
 		return { rest: 'libraryBottom', restRandom: true };
 	}
@@ -8819,8 +9189,12 @@ function parseDigRestDestination(dest: string): DigRestSpec | null {
 	return null;
 }
 
-function parseDigKeepClause(clauseStr: string, hasUntilFilter = false): DigKeepSpec | null {
+function parseDigKeepClause(p: Parser, clauseStr: string, hasUntilFilter = false): DigKeepSpec | null {
 	const s = clauseStr.trim();
+	// --- Track P22d ---
+	const w8 = parseDigKeepClauseWave8(s, hasUntilFilter, getWave8Helpers(), p);
+	if (w8) return w8;
+	// --- End Track P22d ---
 	const mayPrefix = /^you may\s+/i.test(s);
 	const body = s.replace(/^you may\s+/i, '');
 
@@ -8920,17 +9294,36 @@ function parseDigKeepClause(clauseStr: string, hasUntilFilter = false): DigKeepS
 }
 
 function commitPendingDig(p: Parser, pd: PendingDigState): void {
-	const step = p.steps[pd.stepIndex];
-	if (step?.verb === 'dig') {
-		step.params = { ...step.params, dig: { ...pd.draft } };
+	// --- Track P22d: Commit draft onto both primary step and any replaced/linked bargain dig steps ---
+	const indices = [pd.stepIndex, ...(pd.linkedStepIndices ?? [])];
+	for (const idx of indices) {
+		const step = p.steps[idx];
+		if (step?.verb === 'dig') {
+			step.params = { ...step.params, dig: { ...pd.draft } };
+		}
 	}
+	p.setLastObject(pd.stepIndex);
 	p.pendingDig = undefined;
+	// --- End Track P22d ---
 }
 
 function tryDigFollowUp(p: Parser, text: string): boolean {
 	const pd = p.pendingDig;
 	if (!pd) return false;
 	const t = text.trim();
+
+	// --- Track P22d: "Exile the rest / the other cards revealed this way" ---
+	if (
+		pd.hasKeep &&
+		!pd.hasRest &&
+		/^(?:then\s+)?exile (?:the rest|the others|the other cards|all other cards revealed this way)$/i.test(t)
+	) {
+		pd.draft = { ...pd.draft, rest: 'exile' };
+		pd.hasRest = true;
+		commitPendingDig(p, pd);
+		return true;
+	}
+	// --- End Track P22d ---
 
 	if (/^put one of them into your hand, put one of them on the bottom of your library, and exile one of them$/i.test(t)) {
 		pd.draft = {
@@ -8972,7 +9365,7 @@ function tryDigFollowUp(p: Parser, text: string): boolean {
 				/^(.+?)(?:,\s*|\s+)(?:then shuffle(?: your library)?|and shuffle(?: the rest| all other cards revealed this way)? into your library)$/i
 			);
 			if (polyShuffle) {
-				const keepSpec = parseDigKeepClause(polyShuffle[1], true);
+				const keepSpec = parseDigKeepClause(p, polyShuffle[1], true);
 				if (keepSpec) {
 					pd.draft = { ...pd.draft, ...keepSpec, rest: 'libraryBottom', shuffleRest: true };
 					pd.hasKeep = true;
@@ -8982,11 +9375,26 @@ function tryDigFollowUp(p: Parser, text: string): boolean {
 				}
 			}
 		}
+		// --- Track P22d: "... and exile the rest" ---
+		const combExile = t.match(
+			/^(.+?)(?:,\s*|\s+)(?:and|then)\s+exile (?:the rest|the others|the other cards|all other cards revealed this way)$/i
+		);
+		if (combExile) {
+			const keepSpec = parseDigKeepClause(p, combExile[1], Boolean(pd.draft.untilFilter));
+			if (keepSpec) {
+				pd.draft = { ...pd.draft, ...keepSpec, rest: 'exile' };
+				pd.hasKeep = true;
+				pd.hasRest = true;
+				commitPendingDig(p, pd);
+				return true;
+			}
+		}
+		// --- End Track P22d ---
 		const combined = t.match(
 			/^(.+?)(?:,\s*|\s+)(?:and|then)\s+(?:put\s+)?(?:the rest|the other(?:s| cards)?|all other cards revealed this way)\s+(.+)$/i
 		);
 		if (combined) {
-			const keepSpec = parseDigKeepClause(combined[1], Boolean(pd.draft.untilFilter));
+			const keepSpec = parseDigKeepClause(p, combined[1], Boolean(pd.draft.untilFilter));
 			const restSpec = parseDigRestDestination(combined[2]);
 			if (!keepSpec || !restSpec) return false;
 			pd.draft = { ...pd.draft, ...keepSpec, ...restSpec };
@@ -8995,7 +9403,7 @@ function tryDigFollowUp(p: Parser, text: string): boolean {
 			commitPendingDig(p, pd);
 			return true;
 		}
-		const keepSpec = parseDigKeepClause(t, Boolean(pd.draft.untilFilter));
+		const keepSpec = parseDigKeepClause(p, t, Boolean(pd.draft.untilFilter));
 		if (!keepSpec) return false;
 		pd.draft = { ...pd.draft, ...keepSpec };
 		pd.hasKeep = true;
@@ -9048,6 +9456,25 @@ function parseCoerciveChooseClause(
 	filter?: ObjectFilter;
 	actionTail?: string;
 } {
+	// --- Track P22d: Handle "you choose one/two/... of them / of those cards" (*Blackmail*, *Acquisitions Expert*) ---
+	const ofThemM = rawChooseBody
+		.trim()
+		.match(
+			/^you (may )?choose (up to )?(one|two|three|four|five|\d+|x|that many) of (?:them|those cards)(?:,?\s+and\s+(.+))?$/i
+		);
+	if (ofThemM) {
+		const mayOpt = Boolean(ofThemM[1]);
+		const upTo = Boolean(ofThemM[2]);
+		const parsedAmt = amountWord(p, ofThemM[3].toLowerCase());
+		if (!parsedAmt) return { ok: false };
+		return {
+			ok: true,
+			optionalChoice: mayOpt || upTo || undefined,
+			coerciveCount: parsedAmt,
+			actionTail: ofThemM[4]?.trim()
+		};
+	}
+	// --- End Track P22d ---
 	const m = rawChooseBody
 		.trim()
 		.match(
@@ -9124,10 +9551,27 @@ function tryCoerciveFollowUp(p: Parser, text: string, span: Span): boolean {
 
 	if (pc.phase === 'awaitAction') {
 		const dest = parseCoerciveActionClause(t);
-		if (!dest) return false;
-		pc.spans.push(span);
-		commitPendingCoercive(p, pc, dest, span);
-		return true;
+		if (dest) {
+			pc.spans.push(span);
+			commitPendingCoercive(p, pc, dest, span);
+			return true;
+		}
+		// --- Track P22d: "<side effect>, then that player discards that card" (*Talara's Bane*) ---
+		const splitAct = t.match(/^(.+?),?\s+then\s+(.+)$/i);
+		if (splitAct) {
+			const tailDest = parseCoerciveActionClause(splitAct[2].trim());
+			if (tailDest) {
+				const mark = p.mark();
+				pc.spans.push(span);
+				commitPendingCoercive(p, pc, tailDest, span);
+				if (clauses(p, splitAct[1].trim(), span.start)) {
+					return true;
+				}
+				p.rollback(mark);
+			}
+		}
+		// --- End Track P22d ---
+		return false;
 	}
 
 	return false;
@@ -9151,6 +9595,21 @@ function tryCoerciveStart(p: Parser, text: string, span: Span): boolean {
 			chooseTail = revPartM[3]?.trim();
 		}
 	}
+	// --- Track P22d: "Target player reveals a number of cards from their hand equal to <expr>" ---
+	if (!whoStr) {
+		const revEqM = trimmed.match(
+			/^(.+?) reveals? a number of cards from their hand equal to ([^,]+?)(?:,?\s+(?:and\s+)?(you (?:may )?choose .+))?$/i
+		);
+		if (revEqM) {
+			const revAmt = equalTo(p, revEqM[2].trim());
+			if (revAmt) {
+				whoStr = revEqM[1].trim();
+				partialRevealCount = revAmt;
+				chooseTail = revEqM[3]?.trim();
+			}
+		}
+	}
+	// --- End Track P22d ---
 
 	if (!whoStr) {
 		const m = trimmed.match(/^(.+?) reveals? their hand(?:,?\s+(?:and\s+)?(you (?:may )?choose .+))?$/i);
@@ -9298,7 +9757,7 @@ export function parseEffects(
 					p.lastOptionalStep = undefined;
 				}
 			} else {
-				for (const s of splitSentences(rawLine, lineOffset)) {
+				for (const s of splitQuotedSentenceEndingsWave8(splitSentences(rawLine, lineOffset))) {
 					if (!sentence(p, s.text, s.span)) {
 						p.unparsed.push(s.span);
 						p.lastOptionalStep = undefined;
@@ -9308,7 +9767,7 @@ export function parseEffects(
 			lineOffset += rawLine.length + 1;
 		}
 	} else {
-		for (const s of splitSentences(text, offset)) {
+		for (const s of splitQuotedSentenceEndingsWave8(splitSentences(text, offset))) {
 			if (DIE_ROLL_ROW_RE.test(s.text.trim()) && tryParseDieRollBranch(p, s.text, s.span, context, trigger)) {
 				continue;
 			}
@@ -9501,7 +9960,7 @@ export function parseSpellFace(norm: NormalizedFace, include: (line: NormalizedL
 			continue;
 		}
 		// --- End Track P13 ---
-		for (const s of line.sentences) {
+		for (const s of splitQuotedSentenceEndingsWave8(line.sentences)) {
 			if (parseAdditionalCostSentence(s.text)) continue;
 			effectSentences.push(s);
 		}

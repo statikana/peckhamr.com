@@ -80,10 +80,22 @@ export interface DamagePreventionSpec {
 	fromSource?: Selector;
 	/** Also prevent damage dealt BY `subject` ("dealt to and dealt by ~ this turn", CR 615). */
 	alsoPreventDealtBySubject?: boolean;
+	// --- Track P22d ---
+	/** Controller chooses a source (permanent on battlefield or spell/ability on stack) on resolution ("a source of your choice"). */
+	chooseSource?: boolean;
+	/** CR 615.4: Shield prevents all damage from the next matching damage event only, then is consumed. */
+	nextDamageEventOnly?: boolean;
+	/** Replacement-attached / follow-up rider applied when damage is prevented by this shield. */
+	onPrevented?: {
+		kind: 'gainLifeEqual' | 'dealDamageEqual' | 'putCountersEqual' | 'drawEqual' | 'drawOne';
+		counter?: CounterType;
+		recipient?: Selector;
+	};
+	// --- End Track P22d ---
 }
 
 export interface TimedCombatRestrictionSpec {
-	kind: 'cantBlock' | 'cantBeBlocked';
+	kind: 'cantBlock' | 'cantBeBlocked' | 'cantAttack' | 'cantAttackOrBlock';
 	/** Optional blocker exception for `cantBeBlocked` ("except by walls", "except by two or more creatures", etc.). */
 	exceptBy?: {
 		types?: string[];
@@ -1423,6 +1435,9 @@ export interface EffectParams {
 		| 'nextSpellFlash'
 		| 'nextSpellCantBeCountered'
 		// --- End Track P16a ---
+		// --- Track P22d ---
+		| 'noMaxHandSizeRestOfGame'
+		// --- End Track P22d ---
 	>;
 	search?: SearchSpec;
 	to?: ZoneType;
@@ -1452,14 +1467,14 @@ export interface EffectParams {
 		keepFilter?: ObjectFilter;
 		keepAllMatching?: boolean;
 		keepLabel?: string;
-		keepTo: 'libraryTop' | 'hand' | 'battlefield' | 'graveyard';
+		keepTo: 'libraryTop' | 'hand' | 'battlefield' | 'graveyard' | 'exile' | 'castFree';
 		keepTapped?: boolean;
 		// --- Track P19a ---
 		keepAttacking?: boolean;
 		// --- End Track P19a ---
 		revealAll?: boolean;
 		revealKept?: boolean;
-		rest: 'libraryBottom' | 'graveyard' | 'libraryTop';
+		rest: 'libraryBottom' | 'graveyard' | 'libraryTop' | 'exile';
 		restRandom?: boolean;
 		restOrder?: 'any' | 'random';
 		// --- Track P10 ---
@@ -1472,6 +1487,14 @@ export interface EffectParams {
 		/** Shuffle the unkept cards back into the library (e.g. Polymorph / Chaos Warp / Transmogrify). */
 		shuffleRest?: boolean;
 		// --- End Track P16a ---
+		// --- Track P22d ---
+		/** Dynamic resolution-time maximum mana value for kept cards ("with mana value X or less"). */
+		keepMaxManaValue?: Amount;
+		/** Grant cast/play-from-exile permission on kept cards when `keepTo === 'exile'`. */
+		playFromExile?: EffectParams['playFromExile'];
+		/** Attacking defender override for `keepAttacking` ("that player"). */
+		keepAttackingPlayer?: PlayerRef;
+		// --- End Track P22d ---
 		/** Ordered multi-destination partition (e.g. Expressive Iteration: 1 hand, 1 bottom, 1 exile playable this turn). */
 		partitions?: Array<{
 			count: number;
@@ -1765,6 +1788,14 @@ export interface EffectParams {
 	/** setLife: sets player(s)' life total to `amount` (CR 119.5: gains or loses the necessary life, e.g. Magister Sphinx). */
 	setLifeTotal?: boolean;
 	// --- End Track P19a ---
+	// --- Track P22d ---
+	/** grant: Grant suspend (CR 702.62) only if the exiled card does not already have suspend. */
+	grantSuspendIfMissing?: boolean;
+	/** putCounters: Allow placing counters on bound cards in exile (e.g. time counters). */
+	allowExileCounters?: boolean;
+	/** move to battlefield: Attach an Aura/Equipment directly to the resolved target permanent ("attached to that creature"). */
+	attachedToSelector?: Selector;
+	// --- End Track P22d ---
 }
 
 // --- Track P19a ---
@@ -1776,6 +1807,9 @@ export interface RedirectTargetsSpec {
 export interface ExileUntilSpec {
 	filter: ObjectFilter;
 	libraryOwner?: Selector;
+	// --- Track P22d ---
+	actor?: PlayerRef;
+	// --- End Track P22d ---
 	hitAction:
 		| 'playThisTurn'
 		| 'playUntilEndOfNextTurn'
@@ -1783,6 +1817,7 @@ export interface ExileUntilSpec {
 		| 'hand'
 		| 'battlefield'
 		| 'battlefieldOrHand'
+		| 'stayExiled'
 		| 'none';
 	castFreeCondition?: Condition;
 	fallbackToHand?: boolean;

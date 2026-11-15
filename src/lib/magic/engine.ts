@@ -304,6 +304,9 @@ import {
 	evaluateP7Condition,
 	getEffectiveCardForPermanent,
 	getTimedMinBlockersRequired,
+	// --- Track P22d ---
+	isCantAttackThisTurn,
+	// --- End Track P22d ---
 	isCantBlockThisTurn,
 	isDamageUnpreventable,
 	recordAttackersDeclaredThisTurn,
@@ -9500,7 +9503,10 @@ function chooseBotRequiredAttackAssignments(
 					!c.canAttackAsThoughNoDefenderThisTurn &&
 					!creatureCanAttackDespiteDefender(state, c)) ||
 				// --- End Track P13 + Track P14 ---
-				hasRestriction(state, c, 'cantAttack')
+				// --- Track P22d ---
+				hasRestriction(state, c, 'cantAttack') ||
+				isCantAttackThisTurn(state, c)
+				// --- End Track P22d ---
 			) {
 				continue;
 			}
@@ -9563,7 +9569,10 @@ function chooseBotRequiredAttackAssignments(
 							!other.canAttackAsThoughNoDefenderThisTurn &&
 							!creatureCanAttackDespiteDefender(state, other)) ||
 						// --- End Track P13 + Track P14 ---
-						hasRestriction(state, other, 'cantAttack')
+						// --- Track P22d ---
+						hasRestriction(state, other, 'cantAttack') ||
+						isCantAttackThisTurn(state, other)
+						// --- End Track P22d ---
 					) {
 						continue;
 					}
@@ -9613,7 +9622,10 @@ export function chooseBotAttackAssignments(
 					Boolean(c.canAttackAsThoughNoDefenderThisTurn) ||
 					creatureCanAttackDespiteDefender(state, c)) &&
 				// --- End Track P13 + Track P14 ---
+				// --- Track P22d ---
 				!hasRestriction(state, c, 'cantAttack') &&
+				!isCantAttackThisTurn(state, c) &&
+				// --- End Track P22d ---
 				getCreaturePower(c, state) >= 2
 		)
 	);
@@ -9728,9 +9740,11 @@ function performDeclareAttackers(
 			return { ok: false, error: `${creature.card.name} has Defender and cannot attack.` };
 		}
 		// --- End Track P13 + Track P14 ---
-		if (hasRestriction(state, creature, 'cantAttack')) {
+		// --- Track P22d ---
+		if (hasRestriction(state, creature, 'cantAttack') || isCantAttackThisTurn(state, creature)) {
 			return { ok: false, error: `${creature.card.name} cannot attack.` };
 		}
+		// --- End Track P22d ---
 
 		// --- Track P15: CR 310.8–9 Attacking a Battle ---
 		if (assign.defenderPlaneswalkerId && assign.defenderBattleId) {
@@ -10687,7 +10701,10 @@ function findMandatoryAttackerViolation(
 						Boolean(perm.canAttackAsThoughNoDefenderThisTurn) ||
 						creatureCanAttackDespiteDefender(state, perm)) &&
 					// --- End Track P13 + Track P14 ---
-					!hasRestriction(state, perm, 'cantAttack');
+					// --- Track P22d ---
+					!hasRestriction(state, perm, 'cantAttack') &&
+					!isCantAttackThisTurn(state, perm);
+					// --- End Track P22d ---
 				if (!canAttack) continue;
 
 				// --- Track P8 (CR 508.1c–d): Check defender-specific restrictions, cantAttackAlone, and global caps ---
@@ -10732,7 +10749,10 @@ function findMandatoryAttackerViolation(
 								!other.canAttackAsThoughNoDefenderThisTurn &&
 								!creatureCanAttackDespiteDefender(state, other)) ||
 							// --- End Track P13 + Track P14 ---
-							hasRestriction(state, other, 'cantAttack')
+							// --- Track P22d ---
+							hasRestriction(state, other, 'cantAttack') ||
+							isCantAttackThisTurn(state, other)
+							// --- End Track P22d ---
 						) {
 							return false;
 						}
@@ -17339,6 +17359,9 @@ function payOptionalCost(
 			zone: inferObjectsZone(player, plan.question.candidateIds),
 			label: plan.question.label,
 			count: plan.question.count,
+			// --- Track P22d ---
+			...(plan.question.maxCount !== undefined ? { maxCount: plan.question.maxCount } : {}),
+			// --- End Track P22d ---
 			candidateIds: plan.question.candidateIds
 		};
 	}
@@ -20468,7 +20491,11 @@ function runCleanupStep(state: GameState): void {
 
 	// Check if activePlayer has Reliquary Tower / Thought Vessel for unlimited hand size
 	const hasNoMaxHandSize =
-		state.rules.maxHandSize >= 99 || playerHasNoMaxHandSize(state, activePlayer);
+		state.rules.maxHandSize >= 99 ||
+		// --- Track P22d ---
+		Boolean(activePlayer.noMaxHandSizeForRestOfGame) ||
+		// --- End Track P22d ---
+		playerHasNoMaxHandSize(state, activePlayer);
 
 	// --- Track P11: CR 402.2 / 613.10 effective maximum hand size (deltas, setMaxHandSize, noMaxHandSize) ---
 	const computedMaxHand = hasNoMaxHandSize
