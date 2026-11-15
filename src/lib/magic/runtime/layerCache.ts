@@ -145,6 +145,9 @@ function pushFingerprint(state: GameState, fp: unknown[]): void {
 				perm.defaultControllerId,
 				perm.chosenSubType ?? '',
 				perm.chosenColor ?? '',
+				// --- Track P11 ---
+				perm.chosenCardName ?? '',
+				// --- End Track P11 ---
 				Boolean(perm.exertedThisTurn),
 				// --- Track P7 ---
 				perm.copiableState?.except?.addKeywords,
@@ -232,6 +235,9 @@ function fingerprintMatches(state: GameState, fp: unknown[]): boolean {
 				fp[i++] !== perm.defaultControllerId ||
 				fp[i++] !== (perm.chosenSubType ?? '') ||
 				fp[i++] !== (perm.chosenColor ?? '') ||
+				// --- Track P11 ---
+				fp[i++] !== (perm.chosenCardName ?? '') ||
+				// --- End Track P11 ---
 				fp[i++] !== Boolean(perm.exertedThisTurn) ||
 				// --- Track P7 ---
 				fp[i++] !== perm.copiableState?.except?.addKeywords ||

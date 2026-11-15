@@ -22,6 +22,7 @@ import {
 } from './promptViewModel.ts';
 import {
 	DEFAULT_LOBBY_RULES,
+	createEmptyCounterMap,
 	type CardInstance,
 	type GameState,
 	type PendingPrompt,
@@ -71,19 +72,9 @@ function makeInstance(
 		summoningSick: false,
 		damageMarked: 0,
 		deathtouchDamageMarked: false,
-		counters: {
-			'+1/+1': 0,
-			'-1/-1': 0,
-			loyalty: 0,
-			charge: 0,
-			shield: 0,
-			stun: 0,
-			lore: 0,
-			time: 0,
-			age: 0,
-			level: 0,
-			fade: 0
-		},
+		// --- Track P11 ---
+		counters: createEmptyCounterMap(),
+		// --- End Track P11 ---
 		tempPowerMod: 0,
 		tempToughnessMod: 0,
 		grantedKeywords: [],

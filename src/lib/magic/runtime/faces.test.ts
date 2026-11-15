@@ -144,8 +144,8 @@ describe('Scryfall multi-face normalization & compiler support (B4 Phase 1)', ()
 		assert.equal(legacyFaces[1].name, 'Legacy Back');
 	});
 
-	it('tracks COMPILER_VERSION (36) and tracks layout, colorIndicator, and faces in memo caching', () => {
-		assert.equal(COMPILER_VERSION, 36);
+	it('tracks COMPILER_VERSION (37) and tracks layout, colorIndicator, and faces in memo caching', () => {
+		assert.equal(COMPILER_VERSION, 37);
 		clearCompileCache();
 		const card = synthCard({
 			id: 'memo_test',

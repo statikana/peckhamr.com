@@ -514,6 +514,9 @@ describe('Phase 5 (§6): ChoiceSpec and PromptPurpose exhaustiveness guards (#2)
 			// --- Track P10 ---
 			join(dir, 'reflexiveManaAndActions.ts'),
 			// --- End Track P10 ---
+			// --- Track P11 ---
+			join(dir, 'staticsDynamicAndCosts.ts'),
+			// --- End Track P11 ---
 			// --- Track P12 ---
 			join(dir, 'keywordsWave4.ts')
 			// --- End Track P12 ---

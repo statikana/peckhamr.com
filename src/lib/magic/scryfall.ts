@@ -1,4 +1,5 @@
 import { cardAbilities } from './compiler/index.ts';
+import { parseManaCost } from './oracle.ts';
 import { STAPLE_CARDS } from './precons.ts';
 import { splitSubtypes } from './runtime/layers.ts';
 import { isScryfallSyntaxQuery, matchesScryfallQuery } from './search.ts';
@@ -277,7 +278,9 @@ export function normalizeScryfallCard(raw: Record<string, any>): ScryfallCard {
 		...(layout ? { layout } : {}),
 		name,
 		manaCost,
-		cmc: Number(raw.cmc ?? 0),
+		// --- Track P11 (CR 202.3e-h): derive exact mana value from manaCost when raw.cmc is omitted ---
+		cmc: raw.cmc !== undefined ? Number(raw.cmc) : manaCost ? parseManaCost(manaCost).totalCmc : 0,
+		// --- End Track P11 ---
 		typeLine,
 		oracleText,
 		colors,

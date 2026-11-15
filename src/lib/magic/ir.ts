@@ -447,6 +447,16 @@ export interface ObjectFilter {
 	/** Disjunction of sub-filters ("creature or Vehicle", "artifact or non-Aura enchantment"). */
 	anyOf?: ObjectFilter[];
 	// --- End Track P12 ---
+	// --- Track P11 ---
+	/** CR 201.2a: matches objects whose name equals `source.chosenCardName` ("with the chosen name"). */
+	ofChosenName?: boolean;
+	/** Matches permanents attached to `'self'` or `'attachedTo'` ("Aura or Equipment attached to ~"). */
+	attachedToRef?: 'self' | 'attachedTo';
+	/** CR 700.6: matches historic objects (Artifacts, Legendaries, and Sagas). */
+	historic?: boolean;
+	/** Matches stack spells/abilities that target at least one object matching `targetsFilter`. */
+	targetsFilter?: ObjectFilter;
+	// --- End Track P11 ---
 }
 
 export interface Compare {
@@ -545,8 +555,17 @@ export type Amount =
 	/** CR 702.82b: number of permanents devoured by this permanent as it entered the battlefield. */
 	| { k: 'devouredCount' }
 	/** CR 702.125a–b Undaunted: number of opponents you have who haven't left the game. */
-	| { k: 'opponentCount' };
+	| { k: 'opponentCount' }
 	// --- End Track P12 ---
+	// --- Track P11 ---
+	| { k: 'mul'; factor: number; of: Amount }
+	/** CR 305.6 Domain: count of distinct basic land types (0..5) among lands `player` controls. */
+	| { k: 'domain'; player: PlayerRef }
+	/** CR 700.8a–b Party: maximum bipartite matching (0..4) across Cleric/Rogue/Warrior/Wizard creatures `player` controls. */
+	| { k: 'partyCount'; player: PlayerRef }
+	/** Count of attachments on `'self'` or `'attachedTo'` matching optional `filter`. */
+	| { k: 'attachmentsOn'; target: 'self' | 'attachedTo'; filter?: ObjectFilter };
+	// --- End Track P11 ---
 
 // ---- Costs ----------------------------------------------------------------------------------
 
@@ -559,7 +578,16 @@ export type CostDef =
 	| { k: 'discard'; count: Amount; filter?: ObjectFilter | 'self'; random?: boolean }
 	| { k: 'payLife'; amount: Amount }
 	| { k: 'loyalty'; delta: number }
-	| { k: 'removeCounters'; counter: CounterType; count: Amount; from: 'self' | ObjectFilter }
+	// --- Track P11: widened removeCounters & added mill ---
+	| {
+			k: 'removeCounters';
+			counter: CounterType | 'any';
+			count: Amount;
+			removeAll?: boolean;
+			from: 'self' | ObjectFilter;
+			among?: boolean;
+	  }
+	// --- End Track P11 ---
 	| { k: 'exileFrom'; zone: ZoneType; count: Amount; filter?: ObjectFilter | 'self' }
 	/** Reveal N matching cards in hand as part of a cost ("Morph—Reveal a white card in your hand."). */
 	| { k: 'revealFromHand'; count: Amount; filter?: ObjectFilter | 'self' }
@@ -583,7 +611,11 @@ export type CostDef =
 	| { k: 'exertSelf' }
 	// --- Track P9 ---
 	/** CR 702.49a: "Return an unblocked attacker you control to hand" (or return matching permanent to owner's hand). */
-	| { k: 'returnToHand'; count: Amount; filter: ObjectFilter | 'self' };
+	| { k: 'returnToHand'; count: Amount; filter: ObjectFilter | 'self' }
+	// --- Track P11 ---
+	/** CR 701.13: "Mill a card" / "Mill N cards" activation or additional cost. */
+	| { k: 'mill'; count: Amount };
+	// --- End Track P11 ---
 
 // ---- Effects --------------------------------------------------------------------------------
 
@@ -1380,11 +1412,23 @@ export interface CostDelta {
 	times?: Amount;
 	/** Non-mana additional costs imposed by a cost-increasing static (e.g. Terror of the Peaks: pay 3 life). */
 	additionalCosts?: CostDef[];
+	// --- Track P11 ---
+	/** CR 118.7b–f: colored/colorless mana reduction or increase per symbol. */
+	colored?: Partial<Record<ManaColor, number>>;
+	/** CR 118.7e: hybrid mana reduction symbols (e.g. {W/U} less to cast). */
+	hybridColored?: Array<[ManaColor, ManaColor]>;
+	/** CR 118.7b–c override: "This effect reduces only the amount of colored mana you pay." */
+	coloredOnly?: boolean;
+	/** Minimum total mana floor ("This effect can't reduce the mana in that cost to less than one mana"). */
+	minTotalMana?: number;
+	// --- End Track P11 ---
 }
 
 export type SpellOrAbilityFilter =
 	| { k: 'spell'; filter: ObjectFilter }
-	| { k: 'ability'; keyword: string }
+	// --- Track P11: widened ability filter for general activated abilities of permanents ---
+	| { k: 'ability'; keyword?: string; filter?: ObjectFilter }
+	// --- End Track P11 ---
 	/** The spell that has this ability ("This spell costs {1} less to cast ..."); works while it's being cast. */
 	| { k: 'self' };
 
@@ -1407,7 +1451,14 @@ export type RuleModKind =
 	| 'extraLandPlays'
 	| 'allOffBattlefieldAndSpellsColorless'
 	// --- Track P7 ---
-	| 'damageCantBePrevented';
+	| 'damageCantBePrevented'
+	// --- Track P11 ---
+	| 'cantGainLife'
+	| 'maxHandSizeDelta'
+	| 'setMaxHandSize'
+	| 'skipDrawStep'
+	| 'cantCastChosenName';
+	// --- End Track P11 ---
 
 export type RestrictionKind =
 	| 'cantAttack'
@@ -1525,8 +1576,30 @@ export type StaticDef =
 			k: 'additionalCastCost';
 			costs: CostDef[];
 			condition?: Condition;
-	  };
+	  }
 	// --- End Track P12 ---
+	// --- Track P11 ---
+	| {
+			/** CR 118.9: Static alternative casting cost permission (e.g. Fist of Suns, Rooftop Storm, Bringer cycle). */
+			k: 'altCastPermission';
+			manaCost: string;
+			costDefs?: CostDef[];
+			affects: 'self' | { filter: ObjectFilter };
+			condition?: Condition;
+	  }
+	| {
+			/** CR 502.3: "You may choose not to untap ~ during your untap step." */
+			k: 'mayChooseNotToUntap';
+			affected: 'self' | 'attachedTo' | ObjectFilter;
+			condition?: Condition;
+	  }
+	| {
+			/** CR 510.1a: "Each creature [you control] assigns combat damage equal to its toughness rather than its power." */
+			k: 'assignCombatDamageByToughness';
+			affected: 'self' | 'attachedTo' | ObjectFilter;
+			condition?: Condition;
+	  };
+	// --- End Track P11 ---
 
 export interface EventPattern {
 	event: EventKind | 'draw' | 'damage' | 'lifeGain';
@@ -1563,6 +1636,28 @@ export interface ReplacementDef {
 				copyOptional?: boolean;
 				/** Generalized Clone Layer 1a modifications ("..., except ...", CR 707.9). */
 				copyModifications?: CopyModificationSpec;
+				// --- Track P11 ---
+				/** CR 614.1c / 614.12: "As ~ enters, choose a [nonland] card name." */
+				chooseCardName?: { nonlandOnly?: boolean };
+				/** CR 614.1c / 614.12: "~ enters with your choice of a <c1> counter or a <c2> counter on it." */
+				chooseCounter?: CounterType[];
+				/** CR 614.12: External ETB additional counters ("Each other creature you control enters with an additional +1/+1 counter on it"). */
+				additionalCounters?: { counter: CounterType; amount: Amount };
+				/** CR 614.7a: Static damage scaling/addition ("deals that much damage plus 2 instead", "deals double/triple that damage instead"). */
+				damageMod?: {
+					mode: 'double' | 'triple' | 'add';
+					add?: Amount;
+					noncombatOnly?: boolean;
+					combatOnly?: boolean;
+					sourceFilter?: ObjectFilter | 'self' | 'attachedTo';
+					targetFilter?: 'any' | 'opponent' | 'opponentOrOpponentPerm';
+				};
+				/** CR 119.6 / 614: Static life gain modification ("you gain twice that much life instead", "you gain that much life plus N instead"). */
+				lifeGainMod?: {
+					mode: 'double' | 'add';
+					add?: Amount;
+				};
+				// --- End Track P11 ---
 		  };
 	/** CR 614.15 / 616.1a: true when this is a self-replacement effect applied before other replacements. */
 	selfReplacement?: boolean;

@@ -28,16 +28,17 @@ import type {
 	StaticDef
 } from '../ir.ts';
 import { permanentHasLostAllAbilities } from '../ruleTree.ts';
-import type {
-	CardInstance,
-	CounterType,
-	GameState,
-	LibrarySearchInterceptorInfo,
-	ManaColor,
-	PlayerGameState,
-	ScryfallCard,
-	StackItem,
-	ZoneType
+import {
+	createEmptyCounterMap,
+	type CardInstance,
+	type CounterType,
+	type GameState,
+	type LibrarySearchInterceptorInfo,
+	type ManaColor,
+	type PlayerGameState,
+	type ScryfallCard,
+	type StackItem,
+	type ZoneType
 } from '../types.ts';
 import type { LeftBattlefieldInfo } from './events.ts';
 import {
@@ -59,6 +60,18 @@ import {
 import { checkStaticActivatedAbilityLocks } from './staticsLayersAndRestrictions.ts';
 // --- Track P9 ---
 import { hasUnleashCantBlock } from './keywordsWave3.ts';
+// --- Track P11 ---
+import {
+	boardMayGrantReplacementAbility,
+	boardMayGrantStaticAbility,
+	chooseBotBestCardName,
+	collectActiveGrantedReplacementDefs,
+	collectActiveGrantedStaticDefs,
+	isActivationBannedByChosenName,
+	KEYWORD_COUNTER_SET,
+	peekPreLeaveGrantedReplacements
+} from './staticsDynamicAndCosts.ts';
+// --- End Track P11 ---
 
 // ---- Condition & Amount Evaluation ----------------------------------------------------------
 
@@ -98,6 +111,9 @@ export function evalReplaceAmount(amount: Amount, ctx: FilterContext): number {
 		return zoneOfPlayer(player, amount.zone).length;
 	}
 	if (amount.k === 'negate') return -evalReplaceAmount(amount.of, ctx);
+	// --- Track P11 ---
+	if (amount.k === 'mul') return amount.factor * evalReplaceAmount(amount.of, ctx);
+	// --- End Track P11 ---
 	if (amount.k === 'sum') {
 		return amount.args.reduce((acc, x) => acc + evalReplaceAmount(x, ctx), 0);
 	}
@@ -241,6 +257,39 @@ function activeRuleModifiersInner(
 			});
 		}
 	}
+	// --- Track P11: Include Layer 6 granted ruleModifier statics ---
+	if (boardMayGrantStaticAbility(state, 'ruleModifier', rule !== undefined ? [rule] : undefined)) {
+		for (const p of state.players) {
+			if (p.lost) continue;
+			for (const perm of p.battlefield) {
+				if (perm.phasedOut) continue;
+				const granted = collectActiveGrantedStaticDefs(state, perm);
+				if (granted.length === 0) continue;
+				const ev = evaluatePermanent(state, perm);
+				for (const def of granted) {
+					if (def.k !== 'ruleModifier') continue;
+					if (!isBattlefieldActiveZone(def)) continue;
+					if (rule !== undefined && def.rule !== rule) continue;
+					if (
+						affectedPlayerId !== undefined &&
+						!matchesPlayerFilter(def.who, ev.controllerId, affectedPlayerId, state)
+					) {
+						continue;
+					}
+					if (!evalReplaceCondition(def.condition, { state, controllerId: ev.controllerId, source: perm })) {
+						continue;
+					}
+					out.push({
+						def,
+						source: perm,
+						sourceName: ev.effectiveName,
+						controllerId: ev.controllerId
+					});
+				}
+			}
+		}
+	}
+	// --- End Track P11 ---
 	return out;
 }
 
@@ -509,6 +558,15 @@ export function checkGlobalAbilityActivationRestrictions(
 	// --- Track P8: CR 602.5a / 606.2 static activated-ability locks ---
 	const staticLock = checkStaticActivatedAbilityLocks(state, actorId, perm, isManaAbility);
 	if (!staticLock.ok) return staticLock;
+	// --- Track P11: Chosen card name activation bans (CR 602.5a, 707.2) ---
+	const chosenBan = isActivationBannedByChosenName(state, perm, isManaAbility);
+	if (chosenBan.banned) {
+		return {
+			ok: false,
+			error: `Illegal Activation: ${chosenBan.sourceName ?? 'Restriction'} prevents activating abilities of sources with the chosen name.`
+		};
+	}
+	// --- End Track P11 ---
 	const evalPerm = perm.zone === 'battlefield' ? evaluatePermanent(state, perm) : null;
 	const innateTypes = evalPerm
 		? null
@@ -699,6 +757,40 @@ function hasRestrictionInner(
 			}
 		}
 	}
+	// --- Track P11: Include Layer 6 granted restriction statics ---
+	if (boardMayGrantStaticAbility(state, 'restriction')) {
+		for (const p of state.players) {
+			if (p.lost) continue;
+			for (const perm of p.battlefield) {
+				if (perm.phasedOut) continue;
+				const granted = collectActiveGrantedStaticDefs(state, perm);
+				if (granted.length === 0) continue;
+				const ev = evaluatePermanent(state, perm);
+				for (const def of granted) {
+					if (def.k !== 'restriction') continue;
+					if (!isBattlefieldActiveZone(def)) continue;
+					if (!matchesRestrictionKind(def.restriction, restriction)) continue;
+					if (!evalReplaceCondition(def.condition, { state, controllerId: ev.controllerId, source: perm })) {
+						continue;
+					}
+					if (def.affected === 'self') {
+						if (perm.instanceId === obj.instanceId) return true;
+					} else if (def.affected === 'attachedTo') {
+						if (perm.attachedToId === obj.instanceId) return true;
+					} else if (
+						matchesObjectFilter(obj, def.affected, {
+							state,
+							controllerId: ev.controllerId,
+							source: perm
+						})
+					) {
+						return true;
+					}
+				}
+			}
+		}
+	}
+	// --- End Track P11 ---
 
 	return false;
 }
@@ -717,19 +809,9 @@ export function spellCannotBeCountered(state: GameState, item: StackItem): boole
 		zone: 'stack',
 		tapped: false,
 		summoningSick: false,
-		counters: {
-			'+1/+1': 0,
-			'-1/-1': 0,
-			loyalty: 0,
-			charge: 0,
-			shield: 0,
-			stun: 0,
-			lore: 0,
-			time: 0,
-			age: 0,
-			level: 0,
-			fade: 0
-		},
+		// --- Track P11 ---
+		counters: createEmptyCounterMap(),
+		// --- End Track P11 ---
 		...(item.spellMods?.prototyped || item.copiableState?.prototyped ? { prototyped: true } : {}),
 		isToken: false,
 		damageMarked: 0,
@@ -907,6 +989,119 @@ export function applicableReplacements(
 			});
 		}
 	}
+	// --- Track P11: Layer 6 granted ReplacementDefs & CR 122.1d Finality counter ---
+	const pushGrantedReplacementEntries = (
+		perm: CardInstance,
+		granted: ReplacementDef[],
+		controllerId: string,
+		sourceName: string,
+		fromMovingObject: boolean
+	) => {
+		for (let gIdx = 0; gIdx < granted.length; gIdx++) {
+			const def = granted[gIdx];
+			if (def.replaces.event !== event) continue;
+			const f = def.replaces.filter;
+			if (fromMovingObject && ctx?.from !== 'battlefield' && f?.object !== 'self') {
+				continue;
+			}
+			if (f) {
+				if (f.from !== undefined && ctx?.from !== undefined && f.from !== ctx.from) continue;
+				if (f.to !== undefined && ctx?.to !== undefined && f.to !== ctx.to) continue;
+				if (
+					f.player &&
+					ctx?.playerId !== undefined &&
+					!matchesPlayerFilter(f.player, controllerId, ctx.playerId, state)
+				) {
+					continue;
+				}
+				if (f.object !== undefined) {
+					if (f.object === 'self') {
+						if (ctx?.object?.instanceId !== perm.instanceId) continue;
+					} else if (f.object === 'attachedTo') {
+						if (!ctx?.object || perm.attachedToId !== ctx.object.instanceId) continue;
+					} else if (
+						ctx?.object &&
+						!matchesObjectFilter(ctx.object, f.object, {
+							state,
+							controllerId,
+							source: perm
+						})
+					) {
+						continue;
+					}
+				}
+			}
+			if (!evalReplaceCondition(def.condition, { state, controllerId, source: perm })) {
+				continue;
+			}
+			out.push({
+				id: `${perm.instanceId}:grep:${gIdx}`,
+				label: describeReplacementLabel(def, sourceName),
+				tier: replacementPriorityTier(def, perm, ctx?.object),
+				def,
+				source: perm,
+				sourceName,
+				controllerId
+			});
+		}
+	};
+
+	if (
+		ctx?.object &&
+		ctx.from === 'battlefield' &&
+		!ctx.object.phasedOut &&
+		!state.players.some((pl) => pl.battlefield.some((b) => b.instanceId === ctx.object!.instanceId))
+	) {
+		const preLeave = peekPreLeaveGrantedReplacements(ctx.object);
+		if (preLeave.length > 0) {
+			const objCard = effectiveCardForObject(ctx.object);
+			pushGrantedReplacementEntries(
+				ctx.object,
+				preLeave,
+				ctx.object.controllerId || ctx.object.ownerId,
+				objCard.name,
+				true
+			);
+		}
+	}
+
+	if (boardMayGrantReplacementAbility(state, event)) {
+		for (const p of state.players) {
+			if (p.lost) continue;
+			for (const perm of p.battlefield) {
+				if (perm.phasedOut) continue;
+				const granted = collectActiveGrantedReplacementDefs(state, perm);
+				if (granted.length === 0) continue;
+				const ev = evaluatePermanent(state, perm);
+				pushGrantedReplacementEntries(perm, granted, ev.controllerId, ev.effectiveName, false);
+			}
+		}
+	}
+	if (
+		event === 'zoneChange' &&
+		ctx?.from === 'battlefield' &&
+		ctx?.to === 'graveyard' &&
+		ctx.object &&
+		(ctx.object.counters.finality ?? 0) > 0
+	) {
+		const finalityDef: ReplacementDef = {
+			replaces: {
+				event: 'zoneChange',
+				filter: { object: 'self', from: 'battlefield', to: 'graveyard' }
+			},
+			with: { k: 'modify', to: 'exile' }
+		};
+		out.push({
+			id: `${ctx.object.instanceId}:finality_counter`,
+			label: 'Exile instead (Finality counter)',
+			tier: 5,
+			def: finalityDef,
+			source: ctx.object,
+			sourceName: 'Finality counter',
+			controllerId: ctx.object.controllerId || ctx.object.ownerId
+		});
+	}
+	// --- End Track P11 ---
 	return out;
 }
 
@@ -1075,6 +1270,12 @@ export function placeRegisteredCounters(
 	const added = amount * mult;
 	if (added > 0) {
 		perm.counters[type] = (perm.counters[type] ?? 0) + added;
+		// --- Track P11 (CR 613.7c) ---
+		if (KEYWORD_COUNTER_SET.has(type)) {
+			state.nextTimestamp = (state.nextTimestamp || 100) + 1;
+			(perm.counterTimestamps ??= {})[type] = state.nextTimestamp;
+		}
+		// --- End Track P11 ---
 	}
 	return added;
 }
@@ -1085,6 +1286,10 @@ export interface SelfEtbChoiceSpec {
 	// --- Track P8 ---
 	payLifeOrEnterTapped?: number;
 	revealFromHandOrEnterTapped?: ObjectFilter;
+	// --- Track P11 ---
+	chooseCardName?: { nonlandOnly?: boolean };
+	chooseCounter?: CounterType[];
+	// --- End Track P11 ---
 }
 
 /**
@@ -1107,6 +1312,10 @@ export function selfEtbChoiceSpec(state: GameState, perm: CardInstance): SelfEtb
 	// --- Track P8 ---
 	let payLifeOrEnterTapped: number | undefined;
 	let revealFromHandOrEnterTapped: ObjectFilter | undefined;
+	// --- Track P11 ---
+	let chooseCardName: { nonlandOnly?: boolean } | undefined;
+	let chooseCounter: CounterType[] | undefined;
+	// --- End Track P11 ---
 	for (const ability of abilities) {
 		if (ability.kind !== 'replacement') continue;
 		const rep = ability.replacement;
@@ -1128,12 +1337,22 @@ export function selfEtbChoiceSpec(state: GameState, perm: CardInstance): SelfEtb
 		if (rep.with.revealFromHandOrEnterTapped) {
 			revealFromHandOrEnterTapped = rep.with.revealFromHandOrEnterTapped;
 		}
+		// --- Track P11 ---
+		if (rep.with.chooseCardName) {
+			chooseCardName = { ...rep.with.chooseCardName };
+		}
+		if (rep.with.chooseCounter && rep.with.chooseCounter.length > 0) {
+			chooseCounter = [...rep.with.chooseCounter];
+		}
+		// --- End Track P11 ---
 	}
 	if (
 		!chooseSubType &&
 		!chooseColor &&
 		payLifeOrEnterTapped === undefined &&
-		!revealFromHandOrEnterTapped
+		!revealFromHandOrEnterTapped &&
+		!chooseCardName &&
+		!chooseCounter
 	) {
 		return null;
 	}
@@ -1141,7 +1360,9 @@ export function selfEtbChoiceSpec(state: GameState, perm: CardInstance): SelfEtb
 		...(chooseSubType ? { chooseSubType } : {}),
 		...(chooseColor ? { chooseColor } : {}),
 		...(payLifeOrEnterTapped !== undefined ? { payLifeOrEnterTapped } : {}),
-		...(revealFromHandOrEnterTapped ? { revealFromHandOrEnterTapped } : {})
+		...(revealFromHandOrEnterTapped ? { revealFromHandOrEnterTapped } : {}),
+		...(chooseCardName ? { chooseCardName } : {}),
+		...(chooseCounter ? { chooseCounter } : {})
 	};
 }
 
@@ -1183,6 +1404,36 @@ export function applySelfEtbReplacements(state: GameState, perm: CardInstance): 
 			if (rep.with.chooseSubType === 'creature' && !perm.chosenSubType) {
 				perm.chosenSubType = chooseBotBestCreatureSubtype(state, ctrl, perm);
 			}
+			// --- Track P11 ---
+			if (rep.with.chooseCardName && !perm.chosenCardName) {
+				perm.chosenCardName = chooseBotBestCardName(
+					state,
+					ctrl,
+					perm,
+					Boolean(rep.with.chooseCardName.nonlandOnly)
+				);
+			}
+			if (
+				rep.with.chooseCounter &&
+				rep.with.chooseCounter.length > 0 &&
+				!perm.etbCounterChoiceDone
+			) {
+				perm.etbCounterChoiceDone = true;
+				const chosenC = rep.with.chooseCounter[0];
+				if (placeCounters) {
+					const prevZone = perm.zone;
+					perm.zone = 'battlefield';
+					try {
+						placeCounters(state, perm, chosenC, 1);
+					} finally {
+						perm.zone = prevZone;
+					}
+				} else {
+					const mult = counterMultiplier(state, perm, chosenC);
+					perm.counters[chosenC] = (perm.counters[chosenC] ?? 0) + mult;
+				}
+			}
+			// --- End Track P11 ---
 		}
 		if (rep.with.counters) {
 			const baseAmount = Math.max(0, evalReplaceAmount(rep.with.counters.amount, ctx));
@@ -1272,6 +1523,55 @@ export function applicableCounterReplacements(
 			});
 		}
 	}
+	// --- Track P11: Include Layer 6 granted counter multipliers ---
+	if (boardMayGrantStaticAbility(state, 'multiplier')) {
+		for (const p of state.players) {
+			if (p.lost) continue;
+			for (const source of p.battlefield) {
+				if (source.phasedOut) continue;
+				const granted = collectActiveGrantedStaticDefs(state, source);
+				if (granted.length === 0) continue;
+				const ev = evaluatePermanent(state, source);
+				for (let gIdx = 0; gIdx < granted.length; gIdx++) {
+					const def = granted[gIdx];
+					if (def.k !== 'multiplier' || def.what !== 'counters') continue;
+					const id = `${source.instanceId}:gcmult:${gIdx}`;
+					if (alreadyApplied.has(id)) continue;
+					if (!isBattlefieldActiveZone(def)) continue;
+					if (def.counter !== undefined && def.counter !== counterType) continue;
+					if (!evalReplaceCondition(def.condition, { state, controllerId: ev.controllerId, source })) {
+						continue;
+					}
+					if (
+						def.filter &&
+						!matchesObjectFilter(perm, def.filter, {
+							state,
+							controllerId: ev.controllerId,
+							source
+						})
+					) {
+						continue;
+					}
+					const delta = def.delta ?? 0;
+					const factor = def.factor;
+					const desc =
+						delta > 0 && factor === 1
+							? `+${delta} ${counterType} counter(s) (${ev.effectiveName})`
+							: `×${factor} ${counterType} counters (${ev.effectiveName})`;
+					out.push({
+						id,
+						label: desc,
+						source,
+						sourceName: ev.effectiveName,
+						controllerId: ev.controllerId,
+						factor,
+						delta
+					});
+				}
+			}
+		}
+	}
+	// --- End Track P11 ---
 	return out;
 }
 

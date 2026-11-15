@@ -1175,8 +1175,17 @@ describe('Track P3 Orthogonal Keywords (CR 702)', () => {
 
 			assert.equal(compileCard(cumUpkeepPerm).fullySupported, true);
 			assert.equal(compileCard(solemnityLock).fullySupported, true);
-			// Snow mana {S} is not implemented -> must compile honestly as unsupported
-			assert.equal(compileCard(snowUpkeep).fullySupported, false);
+			// --- Track P11: Snow mana {S} is now implemented (CR 107.4h); unimplemented mana symbols stay unsupported ---
+			assert.equal(compileCard(snowUpkeep).fullySupported, true);
+			const unparsedUpkeep = synthCard({
+				name: 'Voidbound Relic',
+				manaCost: '{2}',
+				cmc: 2,
+				typeLine: 'Artifact',
+				oracleText: 'Cumulative upkeep—Flip a coin.'
+			});
+			assert.equal(compileCard(unparsedUpkeep).fullySupported, false);
+			// --- End Track P11 ---
 
 			const wall = addCardToZone(state, p1, cumUpkeepPerm, 'battlefield');
 

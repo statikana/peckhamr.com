@@ -72,6 +72,16 @@ import {
 	resolveQuotedAbilityDefs
 } from './reflexiveManaAndActions.ts';
 // --- End Track P10 ---
+// --- Track P11 ---
+import {
+	collectActiveGrantedTriggeredAbilities,
+	computeAttachmentsOnCount,
+	computeDomainCount,
+	computePartyCount,
+	resolveGrantedRuntimeTrigger,
+	type GrantedTriggeredAbilityInstance
+} from './staticsDynamicAndCosts.ts';
+// --- End Track P11 ---
 // --- Track P12 ---
 import {
 	attachWave4TagToBaseRuntimeTrigger,
@@ -147,6 +157,12 @@ export interface PendingTrigger {
 	// --- Track P10 ---
 	grantedAbilityText?: string;
 	// --- End Track P10 ---
+	// --- Track P11 ---
+	grantSourceCard?: ScryfallCard;
+	grantFaceIndex?: number;
+	grantAbilityIndex?: number;
+	sourceChosenCardName?: string;
+	// --- End Track P11 ---
 	// --- Track P12 ---
 	sourceIsRenowned?: boolean;
 	sourceDevouredCount?: number;
@@ -338,7 +354,25 @@ interface SimultaneousLkiEntry {
 	damagedByThisTurn?: Array<{ sourceId: string; sourceVersion?: number }>;
 	grantedAbilityTexts?: string[];
 	// --- End Track P10 ---
+	// --- Track P11 ---
+	chosenCardName?: string;
+	grantedTriggers?: GrantedTriggeredAbilityInstance[];
+	// --- End Track P11 ---
 }
+
+// --- Track P11: Transient pre-LTB Layer 6 granted triggered abilities (CR 603.10a) ---
+const preLeaveGrantedTriggers = new WeakMap<CardInstance, GrantedTriggeredAbilityInstance[]>();
+
+export function stashPreLeaveGrantedTriggers(state: GameState, perm: CardInstance): void {
+	if (perm.zone !== 'battlefield' || perm.phasedOut) return;
+	const granted = collectActiveGrantedTriggeredAbilities(state, perm);
+	if (granted.length > 0) {
+		preLeaveGrantedTriggers.set(perm, granted);
+	} else {
+		preLeaveGrantedTriggers.delete(perm);
+	}
+}
+// --- End Track P11 ---
 
 interface TriggerChannel {
 	pending: PendingTrigger[];
@@ -408,6 +442,12 @@ function persistPendingTriggers(state: GameState, triggers: PendingTrigger[]): v
 			// --- Track P10 ---
 			...(t.grantedAbilityText ? { grantedAbilityText: t.grantedAbilityText } : {}),
 			// --- End Track P10 ---
+			// --- Track P11 ---
+			...(t.grantSourceCard ? { grantSourceCard: t.grantSourceCard } : {}),
+			...(t.grantFaceIndex !== undefined ? { grantFaceIndex: t.grantFaceIndex } : {}),
+			...(t.grantAbilityIndex !== undefined ? { grantAbilityIndex: t.grantAbilityIndex } : {}),
+			...(t.sourceChosenCardName ? { sourceChosenCardName: t.sourceChosenCardName } : {}),
+			// --- End Track P11 ---
 			// --- Track P12 ---
 			...(t.sourceIsRenowned ? { sourceIsRenowned: true } : {}),
 			...(t.sourceDevouredCount !== undefined ? { sourceDevouredCount: t.sourceDevouredCount } : {}),
@@ -456,6 +496,12 @@ function hydratePendingTriggers(state: GameState, ch: TriggerChannel): void {
 		// --- Track P10 ---
 		...(t.grantedAbilityText ? { grantedAbilityText: t.grantedAbilityText } : {}),
 		// --- End Track P10 ---
+		// --- Track P11 ---
+		...(t.grantSourceCard ? { grantSourceCard: t.grantSourceCard } : {}),
+		...(t.grantFaceIndex !== undefined ? { grantFaceIndex: t.grantFaceIndex } : {}),
+		...(t.grantAbilityIndex !== undefined ? { grantAbilityIndex: t.grantAbilityIndex } : {}),
+		...(t.sourceChosenCardName ? { sourceChosenCardName: t.sourceChosenCardName } : {}),
+		// --- End Track P11 ---
 		// --- Track P12 ---
 		...(t.sourceIsRenowned ? { sourceIsRenowned: true } : {}),
 		...(t.sourceDevouredCount !== undefined ? { sourceDevouredCount: t.sourceDevouredCount } : {}),
@@ -556,8 +602,12 @@ export function withSimultaneousDestroyLki(
 					}
 				}
 				return texts.length > 0 ? { grantedAbilityTexts: texts } : {};
-			})()
+			})(),
 			// --- End Track P10 ---
+			// --- Track P11 ---
+			...(perm.chosenCardName ? { chosenCardName: perm.chosenCardName } : {}),
+			grantedTriggers: collectActiveGrantedTriggeredAbilities(state, perm)
+			// --- End Track P11 ---
 		});
 	}
 	const prevMap = ch.simultaneousLki;
@@ -624,6 +674,11 @@ interface Subject {
 	toughness: () => number | undefined;
 	manaValue: () => number;
 	// --- End Track P7 ---
+	// --- Track P11 ---
+	name: () => string;
+	attachedToId: string | null;
+	isFaceDown: boolean;
+	// --- End Track P11 ---
 }
 
 function battlefieldSubject(state: GameState, obj: CardInstance, controllerId: string): Subject {
@@ -661,8 +716,13 @@ function battlefieldSubject(state: GameState, obj: CardInstance, controllerId: s
 				}).manaValue;
 			}
 			return objectManaValue(state, obj);
-		}
+		},
 		// --- End Track P7 ---
+		// --- Track P11 ---
+		name: () => (obj.isFaceDown ? '' : ev().effectiveName),
+		attachedToId: obj.attachedToId,
+		isFaceDown: Boolean(obj.isFaceDown)
+		// --- End Track P11 ---
 	};
 }
 
@@ -706,8 +766,13 @@ function printedSubject(
 		manaValue: () => {
 			if (lkiStats?.manaValue !== undefined) return lkiStats.manaValue;
 			return objectManaValue(lkiStats?.state, obj);
-		}
+		},
 		// --- End Track P7 ---
+		// --- Track P11 ---
+		name: () => (obj.isFaceDown ? '' : resolveObjectFaces(card, instanceFaceOptions(obj)).name),
+		attachedToId: obj.attachedToId,
+		isFaceDown: Boolean(obj.isFaceDown)
+		// --- End Track P11 ---
 	};
 }
 
@@ -726,6 +791,10 @@ interface Viewer {
 	controllerId: string;
 	chosenSubType?: string;
 	chosenColor?: ManaColor;
+	// --- Track P11 ---
+	chosenCardName?: string;
+	attachedToId?: string | null;
+	// --- End Track P11 ---
 }
 
 const viewerOf = (source: Source): Viewer => ({
@@ -736,7 +805,13 @@ const viewerOf = (source: Source): Viewer => ({
 		: {}),
 	...(source.chosenColor ?? source.obj.chosenColor
 		? { chosenColor: source.chosenColor ?? source.obj.chosenColor }
-		: {})
+		: {}),
+	// --- Track P11 ---
+	...(source.chosenCardName ?? source.obj.chosenCardName
+		? { chosenCardName: source.chosenCardName ?? source.obj.chosenCardName }
+		: {}),
+	attachedToId: source.obj.attachedToId
+	// --- End Track P11 ---
 });
 
 // --- Track P7 ---
@@ -777,6 +852,28 @@ function filterMatches(f: ObjectFilter, subject: Subject, source: Viewer): boole
 	if (f.ofChosenColor) {
 		if (!source.chosenColor || !subject.colors.includes(source.chosenColor)) return false;
 	}
+	// --- Track P11 ---
+	if (f.ofChosenName) {
+		if (
+			!source.chosenCardName ||
+			subject.isFaceDown ||
+			subject.name().toLowerCase() !== source.chosenCardName.toLowerCase()
+		) {
+			return false;
+		}
+	}
+	if (f.attachedToRef !== undefined) {
+		const wantHost = f.attachedToRef === 'self' ? source.id : source.attachedToId;
+		if (!wantHost || subject.attachedToId !== wantHost) return false;
+	}
+	if (f.historic !== undefined) {
+		const tl = subject.typeLine();
+		const isHist =
+			!subject.isFaceDown &&
+			(hasWord(tl, 'Legendary') || hasWord(tl, 'Artifact') || subject.hasSubtype('Saga'));
+		if (isHist !== f.historic) return false;
+	}
+	// --- End Track P11 ---
 	if (f.controller === 'you' && subject.controllerId !== source.controllerId) return false;
 	if (f.controller === 'opponent' && subject.controllerId === source.controllerId) return false;
 	if (f.owner === 'you' && subject.obj.ownerId !== source.controllerId) return false;
@@ -864,6 +961,10 @@ interface Source {
 	damagedByThisTurn?: Array<{ sourceId: string; sourceVersion?: number }>;
 	grantedAbilityTexts?: string[];
 	// --- End Track P10 ---
+	// --- Track P11 ---
+	chosenCardName?: string;
+	grantedTrigger?: GrantedTriggeredAbilityInstance;
+	// --- End Track P11 ---
 }
 
 // --- Track P10: Compile quoted EOT-granted triggered abilities on demand ---
@@ -991,6 +1092,20 @@ function sources(state: GameState, kind: EventKind): Source[] {
 				});
 			}
 			// --- End Track P12 ---
+			// --- Track P11: Layer 6 granted triggered abilities (CR 113.7a, 613.1f) ---
+			for (const gt of collectActiveGrantedTriggeredAbilities(state, perm, kind)) {
+				if (host?.canExecute && !host.canExecute(gt.runtimeTrigger)) continue;
+				if (alternatives(gt.runtimeTrigger.trigger).some((alt) => alt.event === kind)) {
+					out.push({
+						obj: perm,
+						card,
+						controllerId: p.playerId,
+						zone: 'battlefield',
+						grantedTrigger: gt
+					});
+				}
+			}
+			// --- End Track P11 ---
 		}
 		for (const c of p.graveyard) {
 			for (const faceIndex of activeFacesForObject(c, c.card, 'graveyard', state)) {
@@ -1014,6 +1129,28 @@ function abilitiesFor(
 	kind: EventKind,
 	pre: (alt: TriggerDef) => boolean = () => true
 ): Array<{ ability: RuntimeTrigger; alts: TriggerDef[]; grantedAbilityText?: string }> {
+	// --- Track P11: Layer 6 granted triggered abilities (CR 113.7a, 613.7e) ---
+	if (source.grantedTrigger) {
+		const ability = source.grantedTrigger.runtimeTrigger;
+		const zone = ability.trigger.fromZone ?? 'battlefield';
+		if (ability.trigger.fromZone !== 'any' && zone !== source.zone) return [];
+		if (
+			ability.grantCondition &&
+			!evaluateCondition(
+				state,
+				ability.grantCondition,
+				source.controllerId,
+				source.obj.instanceId,
+				undefined,
+				source
+			)
+		) {
+			return [];
+		}
+		const alts = alternatives(ability.trigger).filter((a) => a.event === kind && pre(a));
+		return alts.length > 0 ? [{ ability, alts }] : [];
+	}
+	// --- End Track P11 ---
 	const out: Array<{ ability: RuntimeTrigger; alts: TriggerDef[]; grantedAbilityText?: string }> = [];
 	for (const ability of triggersOf(source.card, source.faceIndex ?? 0).all) {
 		const zone = ability.trigger.fromZone ?? 'battlefield';
@@ -1116,10 +1253,11 @@ function record(state: GameState, source: Source, ability: RuntimeTrigger, kind:
 	const grantedAbilityText =
 		extras.grantedAbilityText ?? (ability as { grantedAbilityText?: string }).grantedAbilityText;
 	if (ability.trigger.onlyOncePerTurn) {
-		const abilityTag =
-			grantedAbilityText ??
-			ability.grantedKeyword ??
-			`${source.faceIndex ?? 0}:${ability.abilityIndex}`;
+		// --- Track P10 + P11 ---
+		const abilityTag = source.grantedTrigger
+			? `grant:${source.grantedTrigger.grantSourceId ?? ''}:${source.grantedTrigger.grantFaceIndex}:${source.grantedTrigger.grantAbilityIndex}`
+			: (grantedAbilityText ?? ability.grantedKeyword ?? `${source.faceIndex ?? 0}:${ability.abilityIndex}`);
+		// --- End Track P10 + P11 ---
 		const onceKey = `${source.obj.instanceId}:${source.zone}:${abilityTag}`;
 		if (state.triggeredOnceThisTurn?.includes(onceKey)) {
 			return;
@@ -1137,6 +1275,9 @@ function record(state: GameState, source: Source, ability: RuntimeTrigger, kind:
 	const sourceWasCast = Boolean(source.wasCast ?? source.obj.wasCast);
 	const sourceCastFromZone = source.castFromZone ?? source.obj.castFromZone;
 	// --- End Track P7 ---
+	// --- Track P11 ---
+	const sourceChosenCardName = source.chosenCardName ?? source.obj.chosenCardName;
+	// --- End Track P11 ---
 	const ch = channel(state);
 	for (let i = 0; i < count; i++) {
 		ch.pending.push({
@@ -1164,11 +1305,21 @@ function record(state: GameState, source: Source, ability: RuntimeTrigger, kind:
 			...(sourceMonstrous ? { sourceMonstrous: true } : {}),
 			// --- Track P7 ---
 			...(sourceWasCast ? { sourceWasCast: true } : {}),
-			...(sourceCastFromZone ? { sourceCastFromZone } : {}),
+			...(sourceCastFromZone ? { sourceCastFromZone: sourceCastFromZone } : {}),
 			// --- End Track P7 ---
 			// --- Track P10 ---
 			...(grantedAbilityText ? { grantedAbilityText } : {}),
 			// --- End Track P10 ---
+			// --- Track P11 ---
+			...(source.grantedTrigger
+				? {
+						grantSourceCard: source.grantedTrigger.grantSourceCard,
+						grantFaceIndex: source.grantedTrigger.grantFaceIndex,
+						grantAbilityIndex: source.grantedTrigger.grantAbilityIndex
+					}
+				: {}),
+			...(sourceChosenCardName ? { sourceChosenCardName } : {}),
+			// --- End Track P11 ---
 			// --- Track P12 ---
 			...(source.obj.isRenowned ? { sourceIsRenowned: true } : {}),
 			...(source.obj.devouredCount !== undefined
@@ -2289,6 +2440,9 @@ function matchZoneChange(state: GameState, ev: Extract<GameEvent, { kind: 'ZoneC
 						...(info.exerted ? { exerted: true } : {}),
 						...(info.chosenSubType ? { chosenSubType: info.chosenSubType } : {}),
 						...(info.chosenColor ? { chosenColor: info.chosenColor } : {}),
+						// --- Track P11 ---
+						...(info.chosenCardName ? { chosenCardName: info.chosenCardName } : {}),
+						// --- End Track P11 ---
 						...(info.monstrous ? { monstrous: true } : {}),
 						// --- Track P7 ---
 						...(info.wasCast ? { wasCast: true } : {}),
@@ -2321,6 +2475,34 @@ function matchZoneChange(state: GameState, ev: Extract<GameEvent, { kind: 'ZoneC
 					}
 				}
 				// --- End Track P10 ---
+				// --- Track P11: LKI look-back for Layer 6 granted triggered abilities (CR 603.10a) ---
+				for (const gt of info.grantedTriggers ?? []) {
+					if (host?.canExecute && !host.canExecute(gt.runtimeTrigger)) continue;
+					if (!alternatives(gt.runtimeTrigger.trigger).some((alt) => alt.event === 'zoneChange')) {
+						continue;
+					}
+					candidates.push({
+						obj: peerPerm,
+						card: info.card,
+						controllerId: info.controllerId,
+						zone: 'battlefield',
+						lostAllAbilities: false,
+						isLookBack: true,
+						grantedTrigger: gt,
+						...(info.foretold ? { foretold: true } : {}),
+						...(info.blitzed ? { blitzed: true } : {}),
+						...(info.saddled ? { saddled: true } : {}),
+						...(info.exerted ? { exerted: true } : {}),
+						...(info.chosenSubType ? { chosenSubType: info.chosenSubType } : {}),
+						...(info.chosenColor ? { chosenColor: info.chosenColor } : {}),
+						...(info.chosenCardName ? { chosenCardName: info.chosenCardName } : {}),
+						...(info.monstrous ? { monstrous: true } : {}),
+						...(info.wasCast ? { wasCast: true } : {}),
+						...(info.castFromZone ? { castFromZone: info.castFromZone } : {}),
+						...(info.counters ? { counters: info.counters } : {})
+					});
+				}
+				// --- End Track P11 ---
 			}
 		} else if (ev.lki) {
 			let pushedSelf = false;
@@ -2371,6 +2553,33 @@ function matchZoneChange(state: GameState, ev: Extract<GameEvent, { kind: 'ZoneC
 				}
 			}
 			// --- End Track P10 ---
+			// --- Track P11: LKI look-back for Layer 6 granted triggered abilities (CR 603.10a) ---
+			const preGranted = preLeaveGrantedTriggers.get(obj);
+			preLeaveGrantedTriggers.delete(obj);
+			for (const gt of preGranted ?? []) {
+				if (host?.canExecute && !host.canExecute(gt.runtimeTrigger)) continue;
+				if (!alternatives(gt.runtimeTrigger.trigger).some((alt) => alt.event === 'zoneChange')) {
+					continue;
+				}
+				candidates.push({
+					obj,
+					card: ev.lki.card,
+					controllerId: ev.lki.controllerId,
+					zone: 'battlefield',
+					lostAllAbilities: false,
+					isLookBack: true,
+					grantedTrigger: gt,
+					...(ev.lki.foretold ? { foretold: true } : {}),
+					...(ev.lki.blitzed ? { blitzed: true } : {}),
+					...(ev.lki.saddled ? { saddled: true } : {}),
+					...(ev.lki.exerted ? { exerted: true } : {}),
+					...(ev.lki.chosenSubType ? { chosenSubType: ev.lki.chosenSubType } : {}),
+					...(ev.lki.chosenColor ? { chosenColor: ev.lki.chosenColor } : {}),
+					...(ev.lki.monstrous ? { monstrous: true } : {}),
+					...(ev.lki.counters ? { counters: ev.lki.counters } : {})
+				});
+			}
+			// --- End Track P11 ---
 		}
 	}
 	const lkiAttachedIds = objBatchInfo?.attachedIds ?? ev.lki?.attachedIds;
@@ -3664,6 +3873,17 @@ export function stackTriggerConditionHolds(
 		return evaluateCondition(state, quoted.ability.condition, controllerId, sourceInstanceId, stackItem);
 	}
 	// --- End Track P10 ---
+	// --- Track P11: Layer 6 granted triggered ability intervening-if check (CR 603.4) ---
+	if (stackItem?.grantFaceIndex !== undefined && stackItem?.grantAbilityIndex !== undefined) {
+		const grantedRt = resolveGrantedRuntimeTrigger(
+			stackItem.grantSourceCard ?? card,
+			stackItem.grantFaceIndex,
+			stackItem.grantAbilityIndex
+		);
+		if (!grantedRt?.condition) return true;
+		return evaluateCondition(state, grantedRt.condition, controllerId, sourceInstanceId, stackItem);
+	}
+	// --- End Track P11 ---
 	const ability = triggersOf(card, stackItem?.faceIndex ?? 0).all.find((t) => t.abilityIndex === abilityIndex);
 	if (!ability?.condition) return true;
 	return evaluateCondition(state, ability.condition, controllerId, sourceInstanceId, stackItem);
@@ -3998,7 +4218,13 @@ function amount(
 				id: sourceInstanceId,
 				controllerId,
 				...(srcFound?.obj.chosenSubType ? { chosenSubType: srcFound.obj.chosenSubType } : {}),
-				...(srcFound?.obj.chosenColor ? { chosenColor: srcFound.obj.chosenColor } : {})
+				...(srcFound?.obj.chosenColor ? { chosenColor: srcFound.obj.chosenColor } : {}),
+				// --- Track P11 ---
+				...(srcFound?.obj.chosenCardName ?? stackItem?.sourceChosenCardName
+					? { chosenCardName: srcFound?.obj.chosenCardName ?? stackItem?.sourceChosenCardName }
+					: {}),
+				attachedToId: srcFound?.obj.attachedToId ?? source?.obj.attachedToId
+				// --- End Track P11 ---
 			};
 			// --- Track P10: Support graveyard count conditions (Threshold / N+ creature cards in graveyard) ---
 			if (a.of.zone === 'graveyard') {
@@ -4032,6 +4258,33 @@ function amount(
 		case 'distinctCardTypesInZone':
 			return countDistinctCardTypesInZone(state, controllerId, a.zone, a.whose);
 		// --- End Track P10 ---
+		// --- Track P11 ---
+		case 'mul': {
+			const sub = amount(state, a.of, controllerId, sourceInstanceId, stackItem, source);
+			return sub === null ? null : a.factor * sub;
+		}
+		case 'domain': {
+			const pid =
+				a.player.k === 'you'
+					? controllerId
+					: (state.players[state.activePlayerIndex]?.playerId ?? controllerId);
+			return computeDomainCount(state, pid);
+		}
+		case 'partyCount': {
+			const pid =
+				a.player.k === 'you'
+					? controllerId
+					: (state.players[state.activePlayerIndex]?.playerId ?? controllerId);
+			return computePartyCount(state, pid);
+		}
+		case 'attachmentsOn': {
+			const srcFound = permanentById(state, sourceInstanceId);
+			const srcObj = srcFound?.obj ?? source?.obj;
+			const hostId = a.target === 'self' ? sourceInstanceId : (srcObj?.attachedToId ?? undefined);
+			if (!hostId) return 0;
+			return computeAttachmentsOnCount(state, hostId, a.filter, controllerId, srcObj);
+		}
+		// --- End Track P11 ---
 		default:
 			return null;
 	}

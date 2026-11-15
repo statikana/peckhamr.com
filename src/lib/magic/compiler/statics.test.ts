@@ -51,11 +51,22 @@ describe('Static grammar: continuous effects', () => {
 		]);
 	});
 
-	it('"for each" P/T, only in steps of one', () => {
+	it('"for each" P/T with arbitrary steps and attachments', () => {
 		assert.deepEqual(defs('~ gets +1/+0 for each artifact you control.'), [
 			{ k: 'continuous', layer: '7c', affected: 'self', mod: { k: 'pt', power: { k: 'count', of: { types: ['Artifact'], controller: 'you', zone: 'battlefield' } }, toughness: n(0) } }
 		]);
-		unparsed('Enchanted creature gets +2/+2 for each Aura attached to it.');
+		assert.deepEqual(defs('Enchanted creature gets +2/+2 for each Aura attached to it.'), [
+			{
+				k: 'continuous',
+				layer: '7c',
+				affected: 'attachedTo',
+				mod: {
+					k: 'pt',
+					power: { k: 'mul', factor: 2, of: { k: 'attachmentsOn', target: 'attachedTo', filter: { subtypes: ['Aura'] } } },
+					toughness: { k: 'mul', factor: 2, of: { k: 'attachmentsOn', target: 'attachedTo', filter: { subtypes: ['Aura'] } } }
+				}
+			}
+		]);
 	});
 
 	it('attached type changers, layer by layer', () => {
@@ -168,8 +179,14 @@ describe('Static grammar: continuous effects', () => {
 
 		// Uninterpretable quoted text stays honestly unparsed rather than half-compiling.
 		unparsed('Creatures you control have "{T}: Flip a coin and do a dance."');
-		// Quoted triggered/static text is out of scope for A1 and stays unparsed.
-		unparsed('Creatures you control have "Whenever ~ attacks, draw a card."');
+		const [trigGrant] = defs('Creatures you control have "Whenever ~ attacks, draw a card."') as Array<{
+			affected: unknown;
+			mod: { k: string; ability: { kind: string; effect: Array<{ verb: string }> } };
+		}>;
+		assert.deepEqual(trigGrant.affected, { types: ['Creature'], controller: 'you' });
+		assert.equal(trigGrant.mod.k, 'grantAbility');
+		assert.equal(trigGrant.mod.ability.kind, 'triggered');
+		assert.equal(trigGrant.mod.ability.effect[0].verb, 'draw');
 	});
 
 	it('conditions: "as long as" prefixes and suffixes', () => {
@@ -208,7 +225,7 @@ describe('Static grammar: cost modifiers', () => {
 		]);
 	});
 
-	it('"for each" self reductions', () => {
+	it('"for each" self and spell reductions', () => {
 		assert.deepEqual(defs('~ costs {1} less to cast for each creature on the battlefield.'), [
 			{
 				k: 'costModifier',
@@ -217,7 +234,18 @@ describe('Static grammar: cost modifiers', () => {
 				who: { relation: 'you' }
 			}
 		]);
-		unparsed('Creature spells you cast cost {1} less to cast for each +1/+1 counter on ~.');
+		assert.deepEqual(defs('Creature spells you cast cost {1} less to cast for each +1/+1 counter on ~.'), [
+			{
+				k: 'costModifier',
+				affects: { k: 'spell', filter: { types: ['Creature'] } },
+				delta: {
+					mode: 'reduce',
+					generic: 1,
+					per: { k: 'countersOn', counter: '+1/+1', of: { k: 'self' } }
+				},
+				who: { relation: 'you' }
+			}
+		]);
 	});
 });
 
@@ -377,4 +405,128 @@ describe('Static grammar: Layer 2 control changes (CR 613.1b)', () => {
 		]);
 	});
 });
+
+describe('Static grammar: Track P11 dynamic P/T, quoted grants, cost modifiers, and replacements', () => {
+	it('compiles dynamic +X/+X and base X/X continuous effects', () => {
+		assert.deepEqual(defs('Enchanted creature gets +X/+X, where X is the number of artifacts you control.'), [
+			{
+				k: 'continuous',
+				layer: '7c',
+				affected: 'attachedTo',
+				mod: {
+					k: 'pt',
+					power: { k: 'count', of: { zone: 'battlefield', types: ['Artifact'], controller: 'you' } },
+					toughness: { k: 'count', of: { zone: 'battlefield', types: ['Artifact'], controller: 'you' } }
+				}
+			}
+		]);
+		assert.deepEqual(defs('Enchanted creature has base power and toughness X/X, where X is the number of lands you control.'), [
+			{
+				k: 'continuous',
+				layer: '7b',
+				affected: 'attachedTo',
+				mod: {
+					k: 'setBasePT',
+					power: { k: 'count', of: { zone: 'battlefield', types: ['Land'], controller: 'you' } },
+					toughness: { k: 'count', of: { zone: 'battlefield', types: ['Land'], controller: 'you' } }
+				}
+			}
+		]);
+	});
+
+	it('compiles colored/hybrid cost modifiers, two-sentence floors, and activated ability cost reductions', () => {
+		assert.deepEqual(
+			defs('Dragon spells you cast cost {R} less to cast. This effect reduces only the amount of colored mana you pay.'),
+			[
+				{
+					k: 'costModifier',
+					affects: { k: 'spell', filter: { subtypes: ['Dragon'] } },
+					delta: { mode: 'reduce', generic: 0, colored: { R: 1 }, coloredOnly: true },
+					who: { relation: 'you' }
+				}
+			]
+		);
+		assert.deepEqual(
+			defs(
+				"Activated abilities of creatures you control cost {2} less to activate. This effect can't reduce the mana in that cost to less than one mana."
+			),
+			[
+				{
+					k: 'costModifier',
+					affects: { k: 'ability', filter: { types: ['Creature'], controller: 'you' } },
+					delta: { mode: 'reduce', generic: 2, minTotalMana: 1 },
+					who: { relation: 'you' }
+				}
+			]
+		);
+	});
+
+	it('compiles chosen-name ETB & bans, counter choice ETB, damage/lifegain replacements, and alt-cast permissions', () => {
+		assert.deepEqual(defs('As ~ enters, choose a nonland card name.'), [
+			{
+				replacement: {
+					replaces: { event: 'zoneChange', filter: { object: 'self', to: 'battlefield' } },
+					with: { k: 'modify', chooseCardName: { nonlandOnly: true } },
+					selfReplacement: true
+				}
+			}
+		]);
+		assert.deepEqual(defs("Spells with the chosen name can't be cast."), [
+			{ k: 'ruleModifier', rule: 'cantCastChosenName', who: { relation: 'each_player' } }
+		]);
+		assert.deepEqual(defs("Activated abilities of sources with the chosen name can't be activated unless they're mana abilities."), [
+			{ k: 'cantActivateAbilities', affected: { ofChosenName: true }, allowManaAbilities: true }
+		]);
+		assert.deepEqual(defs('~ enters with your choice of a flying counter or a reach counter on it.'), [
+			{
+				replacement: {
+					replaces: { event: 'zoneChange', filter: { object: 'self', to: 'battlefield' } },
+					with: { k: 'modify', chooseCounter: ['flying', 'reach'] },
+					selfReplacement: true
+				}
+			}
+		]);
+		assert.deepEqual(defs('If a red source you control would deal damage to an opponent or a permanent an opponent controls, it deals that much damage plus 2 instead.'), [
+			{
+				replacement: {
+					replaces: { event: 'damage', filter: {} },
+					with: {
+						k: 'modify',
+						damageMod: {
+							mode: 'add',
+							add: n(2),
+							sourceFilter: { colors: ['R'], controller: 'you' },
+							targetFilter: 'opponentOrOpponentPerm'
+						}
+					}
+				}
+			}
+		]);
+		assert.deepEqual(defs('If you would gain life, you gain twice that much life instead.'), [
+			{
+				replacement: {
+					replaces: { event: 'lifeGain', filter: { player: { relation: 'you' } } },
+					with: { k: 'modify', lifeGainMod: { mode: 'double' } }
+				}
+			}
+		]);
+		assert.deepEqual(defs('You may pay {W}{U}{B}{R}{G} rather than pay the mana cost for spells you cast.'), [
+			{
+				k: 'altCastPermission',
+				affects: { k: 'spell', filter: {} },
+				manaCost: '{W}{U}{B}{R}{G}'
+			}
+		]);
+		assert.deepEqual(defs('Each creature you control assigns combat damage equal to its toughness rather than its power.'), [
+			{
+				k: 'assignCombatDamageByToughness',
+				affected: { types: ['Creature'], controller: 'you' }
+			}
+		]);
+		assert.deepEqual(defs('You may choose not to untap ~ during your untap step.'), [
+			{ k: 'mayChooseNotToUntap', affected: 'self' }
+		]);
+	});
+});
+
 

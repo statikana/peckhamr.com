@@ -3,7 +3,14 @@ import { compileCard } from '../compiler/index.ts';
 import { enqueueChoicePrompt, registerPromptHandler } from './choices.ts';
 import { evaluatePermanent } from '../ruleTree.ts';
 import { effectiveCardForObject } from '../scryfall.ts';
-import type { CardInstance, CounterType, GameState, PlayerGameState, ZoneType } from '../types.ts';
+import {
+	createEmptyCounterMap,
+	type CardInstance,
+	type CounterType,
+	type GameState,
+	type PlayerGameState,
+	type ZoneType
+} from '../types.ts';
 import { emitEvent, type LeftBattlefieldInfo } from './events.ts';
 import { instanceFaceOptions, resolveObjectFaces } from './faces.ts';
 import { noteLayerInputsChanged, whileLayerInputsChange, withStableLayerInputs } from './layerCache.ts';
@@ -34,7 +41,7 @@ import {
 	chooseBotBestCreatureSubtype,
 	COLOR_CODE_BY_LABEL
 } from './tuckFreezeChosen.ts';
-import { flushTriggers } from './triggers.ts';
+import { flushTriggers, stashPreLeaveGrantedTriggers } from './triggers.ts';
 // --- Track P7 ---
 import {
 	recordZoneChangeTurnHistory,
@@ -56,6 +63,17 @@ import {
 	legalDevourSacrificeCandidates
 } from './keywordsWave4.ts';
 // --- End Track P12 ---
+// --- Track P11 ---
+import {
+	boardMayNeedControllerSync,
+	buildCardNameChoiceOptions,
+	chooseBotBestCardName,
+	collectExternalEtbCounters,
+	externalPermanentEntersTapped,
+	peekPreLeaveGrantedReplacements,
+	stashPreLeaveGrantedReplacements
+} from './staticsDynamicAndCosts.ts';
+// --- End Track P11 ---
 
 /**
  * The single zone-change module (ENGINE_ARCHITECTURE_PLAN.md section 2.3, Phase 2).
@@ -219,19 +237,9 @@ export function withHypotheticalBattlefieldPresence<T>(
 }
 
 export function createEmptyCounters(): Record<CounterType, number> {
-	return {
-		'+1/+1': 0,
-		'-1/-1': 0,
-		loyalty: 0,
-		charge: 0,
-		shield: 0,
-		stun: 0,
-		lore: 0,
-		time: 0,
-		age: 0,
-		level: 0,
-		fade: 0
-	};
+	// --- Track P11 ---
+	return createEmptyCounterMap();
+	// --- End Track P11 ---
 }
 
 /** Shuffles a copy of `items` with the game's seeded generator (ENGINE_INVARIANTS.md 7.2). */
@@ -442,6 +450,69 @@ function enqueueNextEtbChoicePrompt(
 		});
 		return true;
 	}
+	// --- Track P11: Choose Card Name & Choose Counter ETB choices (CR 201.2a, 614.12) ---
+	if (spec?.chooseCardName && !obj.chosenCardName) {
+		const cardNameLabels = buildCardNameChoiceOptions(
+			state,
+			chooser,
+			obj,
+			Boolean(spec.chooseCardName.nonlandOnly)
+		);
+		const qualifier = spec.chooseCardName.nonlandOnly ? 'nonland card name' : 'card name';
+		const description = `As ${objName} enters the battlefield, choose a ${qualifier} (CR 201.2a, 614.12):`;
+		enqueueChoicePrompt(state, {
+			id: uid('prm', state),
+			playerId: chooser.playerId,
+			kind: 'chooseMode',
+			purpose: 'etb_choice',
+			title: `${objName} — Choose a Card Name`,
+			description,
+			continuation: {
+				kind: 'handler',
+				name: 'etb_choice',
+				data: {
+					...baseData,
+					choiceField: 'cardName'
+				}
+			},
+			choice: {
+				kind: 'chooseMode',
+				modes: cardNameLabels,
+				min: 1,
+				max: 1
+			}
+		});
+		return true;
+	}
+	if (spec?.chooseCounter && spec.chooseCounter.length > 0 && !obj.etbCounterChoiceDone) {
+		const counterOptions = spec.chooseCounter;
+		const description = `As ${objName} enters the battlefield, choose a counter to put on it (CR 122.1b, 614.12):`;
+		enqueueChoicePrompt(state, {
+			id: uid('prm', state),
+			playerId: chooser.playerId,
+			kind: 'chooseMode',
+			purpose: 'etb_choice',
+			title: `${objName} — Choose a Counter`,
+			description,
+			continuation: {
+				kind: 'handler',
+				name: 'etb_choice',
+				data: {
+					...baseData,
+					choiceField: 'etbCounter',
+					counterOptions
+				}
+			},
+			choice: {
+				kind: 'chooseMode',
+				modes: counterOptions.map((c) => `Enter with a ${c} counter`),
+				min: 1,
+				max: 1
+			}
+		});
+		return true;
+	}
+	// --- End Track P11 ---
 	// --- Track P8: Shocklands (`As ~ enters, you may pay N life. If you don't, it enters tapped.`) ---
 	if (spec?.payLifeOrEnterTapped !== undefined && !baseData.shocklandAnswered) {
 		const lifeCost = spec.payLifeOrEnterTapped;
@@ -656,6 +727,17 @@ function finalizeZoneMove(
 		effectiveReplacedBy = effectiveReplacedBy ?? 'Exile instead of dying';
 	}
 	// --- End Track P7 ---
+	// --- Track P11 (CR 122.1d): Finality counter exiles instead of dying ---
+	if (
+		fromZone === 'battlefield' &&
+		dest === 'graveyard' &&
+		((lki?.counters?.finality ?? 0) > 0 || (obj.counters.finality ?? 0) > 0)
+	) {
+		dest = 'exile';
+		shuffleDestLibrary = false;
+		effectiveReplacedBy = effectiveReplacedBy ?? 'Finality counter';
+	}
+	// --- End Track P11 ---
 
 	if (
 		opts.commanderRedirect &&
@@ -762,6 +844,11 @@ function finalizeZoneMove(
 		obj.damagedByThisTurn = undefined;
 		obj.manaSpentCount = undefined;
 		// --- End Track P10 ---
+		// --- Track P11 (CR 400.7) ---
+		obj.chosenCardName = undefined;
+		obj.etbCounterChoiceDone = undefined;
+		obj.counterTimestamps = undefined;
+		// --- End Track P11 ---
 		const prevObjVersion = obj.objectVersion || 1;
 		const pruneLeftPerm = <T extends { affected: Array<{ instanceId: string; objectVersion?: number }> }>(
 			list: T[] | undefined
@@ -824,6 +911,11 @@ function finalizeZoneMove(
 		obj.devouredCount = undefined;
 		obj.encoreMustAttackPlayerId = undefined;
 		// --- End Track P12 ---
+		// --- Track P11 (CR 400.7) ---
+		obj.chosenCardName = undefined;
+		obj.etbCounterChoiceDone = undefined;
+		obj.counterTimestamps = undefined;
+		// --- End Track P11 ---
 		if (dest !== 'stack') {
 			obj.manaColorsSpent = undefined;
 			// --- Track P10 ---
@@ -904,6 +996,9 @@ function finalizeZoneMove(
 		!ceases &&
 		(fromZone !== 'battlefield' || Boolean(opts.leaveBattlefieldReset));
 	let wave3ExtraCounters = 0;
+	// --- Track P11 ---
+	let chosenEtbCounter: CounterType | undefined;
+	// --- End Track P11 ---
 	if (isEnteringBattlefield) {
 		// --- Track P9 ---
 		obj.cameUnderControlAt = allocateEchoTick(state);
@@ -990,6 +1085,16 @@ function finalizeZoneMove(
 		if (!obj.tapped && cardEntersTapped(effectiveCardForObject(obj), state, ctrl.playerId, obj)) {
 			obj.tapped = true;
 		}
+		// --- Track P11 (CR 614.12): External enters-tapped replacements ---
+		if (
+			!obj.tapped &&
+			withHypotheticalBattlefieldPresence(state, ctrl, obj, () =>
+				externalPermanentEntersTapped(state, obj, ctrl.playerId)
+			)
+		) {
+			obj.tapped = true;
+		}
+		// --- End Track P11 ---
 
 		const etbSpec = selfEtbChoiceSpec(state, obj);
 		if (ctrl.isBot) {
@@ -1000,6 +1105,24 @@ function finalizeZoneMove(
 				if (etbSpec.chooseSubType === 'creature' && !obj.chosenSubType) {
 					obj.chosenSubType = chooseBotBestCreatureSubtype(state, ctrl, obj);
 				}
+				// --- Track P11 ---
+				if (etbSpec.chooseCardName && !obj.chosenCardName) {
+					obj.chosenCardName = chooseBotBestCardName(
+						state,
+						ctrl,
+						obj,
+						Boolean(etbSpec.chooseCardName.nonlandOnly)
+					);
+				}
+				if (
+					etbSpec.chooseCounter &&
+					etbSpec.chooseCounter.length > 0 &&
+					!obj.etbCounterChoiceDone
+				) {
+					obj.etbCounterChoiceDone = true;
+					chosenEtbCounter = etbSpec.chooseCounter[0];
+				}
+				// --- End Track P11 ---
 				if (etbSpec.payLifeOrEnterTapped !== undefined) {
 					const lifeCost = etbSpec.payLifeOrEnterTapped;
 					const objName = resolveObjectFaces(
@@ -1093,6 +1216,19 @@ function finalizeZoneMove(
 			}
 			if (!obj.isFaceDown) {
 				applyWave3EtbCounters(state, obj, placeRegisteredCounters, wave3ExtraCounters);
+				// --- Track P11 ---
+				if (chosenEtbCounter) {
+					placeRegisteredCounters(state, obj, chosenEtbCounter, 1);
+				}
+				const extEtbCounters = collectExternalEtbCounters(
+					state,
+					obj,
+					obj.controllerId || effectiveReceiver.playerId
+				);
+				for (const ec of extEtbCounters) {
+					placeRegisteredCounters(state, obj, ec.counter, ec.amount);
+				}
+				// --- End Track P11 ---
 			}
 			// --- Track P12 ---
 			applyWave4EtbCountersAndSetup(state, obj, placeRegisteredCounters);
@@ -1374,6 +1510,12 @@ function moveObjectInner(
 	let fromZone: ZoneType | null = null;
 	let fromPlayerId: string | null = null;
 	// CR 603.10a: leaves-the-battlefield triggers look back at the object as it was on the battlefield.
+	// --- Track P11 ---
+	if (from === 'anyBattlefield' || (typeof from === 'object' && from.zone === 'battlefield')) {
+		stashPreLeaveGrantedTriggers(state, obj);
+		stashPreLeaveGrantedReplacements(state, obj);
+	}
+	// --- End Track P11 ---
 	const lki =
 		from === 'anyBattlefield' || (typeof from === 'object' && from.zone === 'battlefield')
 			? captureLki(state, obj)
@@ -1386,6 +1528,9 @@ function moveObjectInner(
 				if (lki.power !== undefined) stk.sourceLkiPower = lki.power;
 				if (lki.toughness !== undefined) stk.sourceLkiToughness = lki.toughness;
 				if (obj.exertedThisTurn) stk.sourceExertedThisTurn = true;
+				// --- Track P11 ---
+				if (obj.chosenCardName) stk.sourceChosenCardName = obj.chosenCardName;
+				// --- End Track P11 ---
 			}
 			if (
 				stk.eventObjectId === obj.instanceId &&
@@ -1481,7 +1626,14 @@ function moveObjectInner(
 		dest = 'exile';
 		shuffleDestLibrary = false;
 		replacedBy = 'Exile instead of dying';
-	} else if (opts.graveyardReplacement && (to === 'graveyard' || to === 'exile')) {
+	} else if (
+		(opts.graveyardReplacement && (to === 'graveyard' || to === 'exile')) ||
+		// --- Track P11 (CR 122.1d, CR 614.12): Finality counter & Layer 6 granted leave replacements ---
+		(fromZone === 'battlefield' &&
+			to === 'graveyard' &&
+			((obj.counters.finality ?? 0) > 0 || peekPreLeaveGrantedReplacements(obj).length > 0))
+		// --- End Track P11 ---
+	) {
 		pendingZoneRep = resolveZoneChangeReplacements(
 			state,
 			obj,
@@ -1846,6 +1998,16 @@ registerPromptHandler('etb_choice', (state, prompt, answer) => {
 					) {
 						obj.tapped = true;
 					}
+					// --- Track P11 (CR 614.12) ---
+					if (
+						!obj.tapped &&
+						withHypotheticalBattlefieldPresence(state, chooser, obj, () =>
+							externalPermanentEntersTapped(state, obj, chooser.playerId)
+						)
+					) {
+						obj.tapped = true;
+					}
+					// --- End Track P11 ---
 					bfView = resolveObjectFaces(
 						effectiveCardForObject(obj),
 						instanceFaceOptions(obj, 'battlefield')
@@ -1877,6 +2039,33 @@ registerPromptHandler('etb_choice', (state, prompt, answer) => {
 				chooser.playerId,
 				`${chooser.username} chose ${chosenLabel} for ${bfView.name}.`
 			);
+		// --- Track P11 ---
+		} else if (choiceField === 'cardName' && answer.kind === 'chooseMode') {
+			const options = prompt.choice?.kind === 'chooseMode' ? prompt.choice.modes : [];
+			const chosenIdx = answer.indices[0] ?? 0;
+			const chosenLabel = options[chosenIdx] ?? options[0] ?? '';
+			obj.chosenCardName = chosenLabel || 'Construct';
+			pushEtbRuleLog(
+				state,
+				chooser.playerId,
+				`${chooser.username} chose ${obj.chosenCardName} for ${bfView.name}.`
+			);
+		} else if (choiceField === 'etbCounter' && answer.kind === 'chooseMode') {
+			const counterOptions = Array.isArray(data.counterOptions)
+				? (data.counterOptions as CounterType[])
+				: [];
+			const chosenIdx = answer.indices[0] ?? 0;
+			const chosenCounter = counterOptions[chosenIdx] ?? counterOptions[0];
+			obj.etbCounterChoiceDone = true;
+			if (chosenCounter) {
+				nextData.chosenEtbCounter = chosenCounter;
+				pushEtbRuleLog(
+					state,
+					chooser.playerId,
+					`${chooser.username} chose a ${chosenCounter} counter for ${bfView.name}.`
+				);
+			}
+		// --- End Track P11 ---
 		} else if (choiceField === 'payLifeOrEnterTapped' && answer.kind === 'yesNo') {
 			nextData.shocklandAnswered = true;
 			const lifeCost = typeof data.lifeCost === 'number' ? data.lifeCost : 2;
@@ -1983,6 +2172,19 @@ registerPromptHandler('etb_choice', (state, prompt, answer) => {
 			}
 			if (!obj.isFaceDown) {
 				applyWave3EtbCounters(state, obj, placeRegisteredCounters, wave3ExtraCounters);
+				// --- Track P11 ---
+				if (typeof nextData.chosenEtbCounter === 'string') {
+					placeRegisteredCounters(state, obj, nextData.chosenEtbCounter as CounterType, 1);
+				}
+				const extEtbCounters = collectExternalEtbCounters(
+					state,
+					obj,
+					obj.controllerId || receiver.playerId
+				);
+				for (const ec of extEtbCounters) {
+					placeRegisteredCounters(state, obj, ec.counter, ec.amount);
+				}
+				// --- End Track P11 ---
 			}
 			// --- Track P12 ---
 			applyWave4EtbCountersAndSetup(state, obj, placeRegisteredCounters);
@@ -2305,6 +2507,10 @@ export function syncBattlefieldControllers(state: GameState): boolean {
 				noteLayerInputsChanged(state);
 			}
 		}
+
+		// --- Track P11: O(B) skip when no Layer 2 control effect or foreign permanent exists ---
+		if (!boardMayNeedControllerSync(state)) return false;
+		// --- End Track P11 ---
 
 		let anyMoved = false;
 		for (let pass = 0; pass < 8; pass++) {

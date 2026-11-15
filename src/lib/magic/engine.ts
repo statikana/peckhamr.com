@@ -226,6 +226,29 @@ import {
 	resolveReflexiveSpecFromCompiled
 } from './runtime/reflexiveManaAndActions.ts';
 // --- End Track P10 ---
+// --- Track P11 ---
+import {
+	ALL_COUNTER_TYPES,
+	KEYWORD_COUNTER_TYPES,
+	boardHasAnyChosenCardName,
+	boardMayGrantStaticAbility,
+	clampSnowManaToPool,
+	clearSnowManaPool,
+	collectActiveGrantedStaticDefs,
+	collectStaticAltCastOptions,
+	computeEffectiveMaxHandSize,
+	creatureAssignsCombatDamageByToughness,
+	deductManaConservingSnow,
+	isSnowPermanent,
+	isSpellBannedByChosenName,
+	permanentMayChooseNotToUntap,
+	playerCantPayLifeForCost,
+	playerSkipsDrawStep,
+	recordSnowManaAdded,
+	resolveGrantedRuntimeTrigger,
+	totalSnowManaInPool
+} from './runtime/staticsDynamicAndCosts.ts';
+// --- End Track P11 ---
 // --- Track P12 ---
 import {
 	applyAwakenOnSpellResolution,
@@ -1143,6 +1166,30 @@ function enumerateCandidateCastOptions(
 					requiresTarget: meta.targetsBecomeEach ? false : targetInfo.requiresTarget
 				});
 			}
+			// --- Track P11: Self & external static alternative cast permissions (CR 118.9) ---
+			if (actor && hasZonePermission && !isLandOnlyFace) {
+				const staticAltOpts = collectStaticAltCastOptions(
+					state,
+					actor,
+					inst,
+					fromZone,
+					isMultiFace ? fi : undefined,
+					targetInfo.requiresTarget
+				);
+				for (const sOpt of staticAltOpts) {
+					const isFreeAlt = sOpt.baseCost.kind === 'alternative' && sOpt.baseCost.manaCost === '{0}';
+					options.push({
+						...sOpt,
+						costDisplay: `${sOpt.costDisplay}${taxSuffix}`,
+						...(mandatoryAdditionalCosts ? { mandatoryAdditionalCosts } : {}),
+						...optionalProp,
+						...(isFreeAlt ? {} : paymentAidsProp),
+						spellMods: { ...adventureMods, ...sOpt.spellMods },
+						choosesX: spellChoosesX(card, sOpt.baseCost, undefined, fi, false)
+					});
+				}
+			}
+			// --- End Track P11 ---
 		}
 	}
 
@@ -1651,8 +1698,11 @@ function getSpellCostRequirementForOption(
 	option: CastOption,
 	optionalCostCounts?: Record<string, number>,
 	// --- Track P12 ---
-	chosenModes?: number[]
+	chosenModes?: number[],
 	// --- End Track P12 ---
+	// --- Track P11 ---
+	chosenTargets?: TargetRef[]
+	// --- End Track P11 ---
 ): ManaCostRequirement {
 	const applyAnyColorPermission = (req: ManaCostRequirement): ManaCostRequirement => {
 		const fromExile =
@@ -1701,7 +1751,10 @@ function getSpellCostRequirementForOption(
 			option.faceIndex ?? 0,
 			option.fused ?? false,
 			option.spellMods?.castFaceDown,
-			option.spellMods?.prototyped
+			option.spellMods?.prototyped,
+			// --- Track P11 ---
+			chosenTargets
+			// --- End Track P11 ---
 		)
 	);
 }
@@ -1808,7 +1861,12 @@ export function chooseBotAbilityCostPayment(
 		player.playerId,
 		ab.id,
 		ab.manaCost,
-		ab.costKeyword
+		ab.costKeyword,
+		// --- Track P11 ---
+		0,
+		perm,
+		ab.isManaAbility
+		// --- End Track P11 ---
 	).requirement;
 	return (
 		chooseCostPayment(costContext(state, player, perm, 0, false, abilityMana), abilityCost.defs) ??
@@ -2358,6 +2416,9 @@ function finalizeActivateAbility(
 	const sourceExertedThisTurn = Boolean(pcp.sourceExertedThisTurn || perm.exertedThisTurn);
 	const sourceChosenSubType = pcp.sourceChosenSubType ?? perm.chosenSubType;
 	const sourceChosenColor = pcp.sourceChosenColor ?? perm.chosenColor;
+	// --- Track P11 ---
+	const sourceChosenCardName = perm.chosenCardName;
+	// --- End Track P11 ---
 
 	const stackItem: StackItem = withStackItemText(
 		{
@@ -2373,6 +2434,9 @@ function finalizeActivateAbility(
 			...(sourceExertedThisTurn ? { sourceExertedThisTurn: true } : {}),
 			...(sourceChosenSubType ? { sourceChosenSubType } : {}),
 			...(sourceChosenColor ? { sourceChosenColor } : {}),
+			// --- Track P11 ---
+			...(sourceChosenCardName ? { sourceChosenCardName } : {}),
+			// --- End Track P11 ---
 			...(perm.isMonstrous ? { sourceMonstrous: true } : {}),
 			// --- Track P12 ---
 			...(perm.isRenowned ? { sourceIsRenowned: true } : {}),
@@ -3031,13 +3095,13 @@ function applyPhyrexianLifeChoice(
 	req: ManaCostRequirement,
 	lifeCount: number
 ): { manaReq: ManaCostRequirement; lifeToPay: number } {
-	if (lifeCount <= 0 || !req.flexibleSymbols?.some((s) => s.altLife)) {
+	if (!req.flexibleSymbols?.some((s) => s.altLife)) {
 		return { manaReq: req, lifeToPay: 0 };
 	}
 	const nextColored = { ...req.colored };
 	const remainingFlex = [...(req.flexibleSymbols ?? [])];
 	let lifeToPay = 0;
-	let remainingToConvert = lifeCount;
+	let remainingToConvert = Math.max(0, lifeCount);
 	for (let i = 0; i < remainingFlex.length && remainingToConvert > 0; ) {
 		const sym = remainingFlex[i];
 		if (sym.altLife && nextColored[sym.primaryColor] > 0) {
@@ -3049,11 +3113,22 @@ function applyPhyrexianLifeChoice(
 			i += 1;
 		}
 	}
+	// --- Track P11: CR 107.4g hybrid-Phyrexian symbols ({W/U/P}) not paid with life retain their hybrid alternative ---
+	const normalizedFlex = remainingFlex.map((sym) =>
+		sym.altLife && (sym.altColor !== undefined || sym.altGeneric !== undefined)
+			? {
+					primaryColor: sym.primaryColor,
+					...(sym.altColor !== undefined ? { altColor: sym.altColor } : {}),
+					...(sym.altGeneric !== undefined ? { altGeneric: sym.altGeneric } : {})
+				}
+			: sym
+	);
+	// --- End Track P11 ---
 	return {
 		manaReq: {
 			...req,
 			colored: nextColored,
-			flexibleSymbols: remainingFlex.length > 0 ? remainingFlex : undefined
+			flexibleSymbols: normalizedFlex.length > 0 ? normalizedFlex : undefined
 		},
 		lifeToPay
 	};
@@ -3082,7 +3157,9 @@ function maybeAskPhyrexianCostChoice(
 	if (actor.isBot || action.costPayment?.phyrexianLifeCount !== undefined) return null;
 	const phySymbols = req.flexibleSymbols?.filter((s) => s.altLife) ?? [];
 	if (phySymbols.length === 0) return null;
-	const canPayLife = !playerLifeTotalCantChange(state, actor);
+	// --- Track P11 ---
+	const canPayLife = !playerCantPayLifeForCost(state, actor, 2);
+	// --- End Track P11 ---
 	const maxLifeCount = canPayLife ? Math.min(phySymbols.length, Math.floor(actor.life / 2)) : 0;
 	if (maxLifeCount <= 0) return null;
 	// No mana possible: keep today's behavior of paying life without prompting (unless payment aids are available).
@@ -3100,7 +3177,13 @@ function maybeAskPhyrexianCostChoice(
 	for (let k = 0; k <= maxLifeCount; k++) {
 		const manaSymbols = phySymbols
 			.slice(k)
-			.map((s) => `{${s.primaryColor}}`)
+			// --- Track P11 ---
+			.map((s) =>
+				s.altColor !== undefined
+					? `{${s.primaryColor}/${s.altColor}}`
+					: `{${s.primaryColor}}`
+			)
+			// --- End Track P11 ---
 			.join('');
 		const lifeAmt = 2 * k;
 		if (k === 0) {
@@ -3181,6 +3264,35 @@ function resolveHybridCostChoice(
 	canPayCheck?: (candidateReq: ManaCostRequirement) => boolean
 ): { promptResult?: { ok: boolean; error?: string }; resolvedReq: ManaCostRequirement } {
 	let currentReq = req;
+	// --- Track P11: Convert hybrid-Phyrexian symbols ({W/U/P}) not paid with life into {W/U} ---
+	if (
+		currentReq.flexibleSymbols?.some((s) => s.altLife && (s.altColor !== undefined || s.altGeneric !== undefined)) &&
+		(action.costPayment?.phyrexianLifeCount !== undefined || playerCantPayLifeForCost(state, actor, 2))
+	) {
+		const committedLifeCount = playerCantPayLifeForCost(state, actor, 2)
+			? 0
+			: (action.costPayment?.phyrexianLifeCount ?? 0);
+		let skippedPhy = 0;
+		currentReq = {
+			...currentReq,
+			flexibleSymbols: currentReq.flexibleSymbols.map((sym) => {
+				if (!sym.altLife) return sym;
+				if (skippedPhy < committedLifeCount) {
+					skippedPhy += 1;
+					return sym;
+				}
+				if (sym.altColor !== undefined || sym.altGeneric !== undefined) {
+					return {
+						primaryColor: sym.primaryColor,
+						...(sym.altColor !== undefined ? { altColor: sym.altColor } : {}),
+						...(sym.altGeneric !== undefined ? { altGeneric: sym.altGeneric } : {})
+					};
+				}
+				return sym;
+			})
+		};
+	}
+	// --- End Track P11 ---
 	const hybridChoices = action.costPayment?.hybridChoices ?? [];
 	let choiceIdx = 0;
 	while (choiceIdx < hybridChoices.length && currentReq.flexibleSymbols?.some((s) => !s.altLife)) {
@@ -3354,9 +3466,17 @@ function resolveActivatedManaAbility(
 	// --- Track P10 ---
 	const addOpts = p10AddManaOptions(ab);
 	// --- End Track P10 ---
+	// --- Track P11: CR 107.4h track mana produced by a Snow permanent ---
+	const producedSnow = !ab?.manaRestriction && !ab?.manaRestrictionSpec && isSnowPermanent(state, perm);
+	// --- End Track P11 ---
 	if (chosenBundle && chosenBundle.length > 0) {
 		for (const col of chosenBundle) {
 			addManaToPlayerPool(player, col, 1, ab?.manaRestriction, addOpts);
+			// --- Track P11 ---
+			if (producedSnow) {
+				recordSnowManaAdded(player, col, 1);
+			}
+			// --- End Track P11 ---
 		}
 		const abilityDef = activeAbilityDefs(
 			effectiveCardForObject(perm),
@@ -3380,6 +3500,11 @@ function resolveActivatedManaAbility(
 		}
 	} else if (chosenColor && amount > 0) {
 		addManaToPlayerPool(player, chosenColor, amount, ab?.manaRestriction, addOpts);
+		// --- Track P11 ---
+		if (producedSnow) {
+			recordSnowManaAdded(player, chosenColor, amount);
+		}
+		// --- End Track P11 ---
 		const abilityDef = activeAbilityDefs(
 			effectiveCardForObject(perm),
 			instanceFaceOptions(perm, 'battlefield')
@@ -3413,6 +3538,41 @@ function resolveActivatedManaAbility(
 	}
 }
 
+// --- Track P11: Snow-conserving mana pool deduction (CR 107.4h) ---
+function deductManaForSpendContextWithSnow(
+	player: PlayerGameState,
+	manaReq: ManaCostRequirement,
+	spendCtx: ManaSpendContext
+): void {
+	const snowReq = manaReq.snow ?? 0;
+	const snowPool = totalSnowManaInPool(player);
+	if (snowReq === 0 && snowPool === 0) {
+		deductManaForSpendContext(player, manaReq, spendCtx);
+		return;
+	}
+	const unrestrictedTotal =
+		player.manaPool.W +
+		player.manaPool.U +
+		player.manaPool.B +
+		player.manaPool.R +
+		player.manaPool.G +
+		player.manaPool.C;
+	const hasEligibleRestricted = getTotalPooledManaForContext(player, spendCtx) > unrestrictedTotal;
+	if (!hasEligibleRestricted) {
+		const beforePool = { ...player.manaPool };
+		deductManaConservingSnow(player, manaReq);
+		const spentColors: ManaColor[] = [];
+		for (const c of FIVE_MANA_COLORS) {
+			if (beforePool[c] - player.manaPool[c] > 0) spentColors.push(c);
+		}
+		spendCtx.capturedColorsSpent = spentColors;
+	} else {
+		deductManaForSpendContext(player, manaReq, spendCtx);
+		clampSnowManaToPool(player);
+	}
+}
+// --- End Track P11 ---
+
 function simulateOrExecuteManaOnly(
 	player: PlayerGameState,
 	manaReq: ManaCostRequirement,
@@ -3423,13 +3583,19 @@ function simulateOrExecuteManaOnly(
 	reservedTapIds?: ReadonlySet<string>,
 	filterDepth = 0
 ): boolean {
-	if (lifeToPay > 0 && (playerLifeTotalCantChange(state, player) || player.life < lifeToPay)) {
+	// --- Track P11 ---
+	if (lifeToPay > 0 && playerCantPayLifeForCost(state, player, lifeToPay)) {
 		return false;
 	}
+	const snowReq = manaReq.snow ?? 0;
+	const initialSnow = totalSnowManaInPool(player);
+	// --- End Track P11 ---
 	const initialPool = combinedManaPoolForSpend(player, spendCtx);
-	if (canPayManaCost(initialPool, manaReq)) {
+	if (canPayManaCost(initialPool, manaReq, undefined, snowReq > 0 ? initialSnow : undefined)) {
 		if (mutate) {
-			deductManaForSpendContext(player, manaReq, spendCtx);
+			// --- Track P11 ---
+			deductManaForSpendContextWithSnow(player, manaReq, spendCtx);
+			// --- End Track P11 ---
 			if (lifeToPay > 0) {
 				player.life -= lifeToPay;
 				// --- Track P10 ---
@@ -3445,6 +3611,10 @@ function simulateOrExecuteManaOnly(
 	}
 
 	const pool: ManaPool = { ...initialPool };
+	// --- Track P11 ---
+	let simSnow = initialSnow;
+	const permSnow = new Map<string, number>();
+	// --- End Track P11 ---
 	const cmdIdentity = getPlayerCommanderIdentity(player);
 
 	const getProducedAmount = (
@@ -3472,49 +3642,59 @@ function simulateOrExecuteManaOnly(
 	// pain-free {T} sources before depletion-freezing {T} sources, restricted sources before unrestricted sources,
 	// then most-constrained (fewest colors) first, then non-creatures before creatures.
 	// Read-only scan: validate the layer cache once (Phase 6c).
-	const candidates = withStableLayerInputs(state, () =>
-		player.battlefield
-			.filter((perm) => {
-				if (perm.phasedOut) return false;
-				if (reservedTapIds?.has(perm.instanceId)) return false;
-				return manaAbilitiesOf(perm).length > 0;
-			})
-			.sort((a, b) => {
-				const ta = permCostTier(a);
-				const tb = permCostTier(b);
-				if (ta !== tb) return ta - tb;
-				if (ta === 0) {
-					const fa = permFreezes(a);
-					const fb = permFreezes(b);
-					if (fa !== fb) return fa - fb;
-				}
-				if (ta === 1) {
-					const aNonToken = a.isToken ? 0 : 1;
-					const bNonToken = b.isToken ? 0 : 1;
-					if (aNonToken !== bNonToken) return aNonToken - bNonToken;
-				}
-				const aRestr =
-					manaAbilitiesOf(a)[0]?.manaRestriction ||
-					// --- Track P10 ---
-					manaAbilitiesOf(a)[0]?.manaRestrictionSpec
-						? 0
-						: 1;
-				const bRestr =
-					manaAbilitiesOf(b)[0]?.manaRestriction || manaAbilitiesOf(b)[0]?.manaRestrictionSpec
-						? 0
-						: 1;
-				// --- End Track P10 ---
-				if (aRestr !== bRestr) return aRestr - bRestr;
-				const ca = manaAbilitiesOf(a)[0]?.producesMana ?? [];
-				const cb = manaAbilitiesOf(b)[0]?.producesMana ?? [];
-				if (ca.length !== cb.length) {
-					return ca.length - cb.length;
-				}
-				const aIsCreature = evaluatePermanent(state, a).isCreature ? 1 : 0;
-				const bIsCreature = evaluatePermanent(state, b).isCreature ? 1 : 0;
-				return aIsCreature - bIsCreature;
-			})
-	);
+	const candidates = withStableLayerInputs(state, () => {
+		const filtered = player.battlefield.filter((perm) => {
+			if (perm.phasedOut) return false;
+			if (reservedTapIds?.has(perm.instanceId)) return false;
+			const ok = manaAbilitiesOf(perm).length > 0;
+			// --- Track P11 ---
+			if (ok) permSnow.set(perm.instanceId, isSnowPermanent(state, perm) ? 1 : 0);
+			// --- End Track P11 ---
+			return ok;
+		});
+		return filtered.sort((a, b) => {
+			const ta = permCostTier(a);
+			const tb = permCostTier(b);
+			if (ta !== tb) return ta - tb;
+			if (ta === 0) {
+				const fa = permFreezes(a);
+				const fb = permFreezes(b);
+				if (fa !== fb) return fa - fb;
+			}
+			if (ta === 1) {
+				const aNonToken = a.isToken ? 0 : 1;
+				const bNonToken = b.isToken ? 0 : 1;
+				if (aNonToken !== bNonToken) return aNonToken - bNonToken;
+			}
+			const aRestr =
+				manaAbilitiesOf(a)[0]?.manaRestriction ||
+				// --- Track P10 ---
+				manaAbilitiesOf(a)[0]?.manaRestrictionSpec
+					? 0
+					: 1;
+			const bRestr =
+				manaAbilitiesOf(b)[0]?.manaRestriction || manaAbilitiesOf(b)[0]?.manaRestrictionSpec
+					? 0
+					: 1;
+			// --- End Track P10 ---
+			if (aRestr !== bRestr) return aRestr - bRestr;
+			const ca = manaAbilitiesOf(a)[0]?.producesMana ?? [];
+			const cb = manaAbilitiesOf(b)[0]?.producesMana ?? [];
+			if (ca.length !== cb.length) {
+				return ca.length - cb.length;
+			}
+			// --- Track P11: When {S} is not required, prefer non-snow sources before snow sources ---
+			if (snowReq === 0) {
+				const sa = permSnow.get(a.instanceId) ?? 0;
+				const sb = permSnow.get(b.instanceId) ?? 0;
+				if (sa !== sb) return sa - sb;
+			}
+			// --- End Track P11 ---
+			const aIsCreature = evaluatePermanent(state, a).isCreature ? 1 : 0;
+			const bIsCreature = evaluatePermanent(state, b).isCreature ? 1 : 0;
+			return aIsCreature - bIsCreature;
+		});
+	});
 
 	const tappedSet = new Set<string>();
 	let availableEnergy = player.energyCounters || 0;
@@ -3539,6 +3719,9 @@ function simulateOrExecuteManaOnly(
 		const amount = getProducedAmount(perm, baseAmt, ab);
 		availableEnergy -= abilityEnergyCost(perm, ab);
 		tappedSet.add(perm.instanceId);
+		// --- Track P11 ---
+		const addsSnow = !ab?.manaRestriction && permSnow.get(perm.instanceId) === 1;
+		// --- End Track P11 ---
 		if (ab?.manaBundles && ab.manaBundles.length > 0) {
 			const eligibleBundles = preferredCol
 				? ab.manaBundles.filter((b) => b.includes(preferredCol))
@@ -3550,6 +3733,9 @@ function simulateOrExecuteManaOnly(
 				preferredCol
 			);
 			for (const c of bundle) pool[c] += 1;
+			// --- Track P11 ---
+			if (addsSnow) simSnow += bundle.length;
+			// --- End Track P11 ---
 			manaChoices.set(perm.instanceId, {
 				color: bundle[0] ?? preferredCol ?? 'C',
 				amount: bundle.length,
@@ -3570,6 +3756,9 @@ function simulateOrExecuteManaOnly(
 				player
 			);
 			for (const c of bundle) pool[c] += 1;
+			// --- Track P11 ---
+			if (addsSnow) simSnow += bundle.length;
+			// --- End Track P11 ---
 			manaChoices.set(perm.instanceId, {
 				color: bundle[0] ?? preferredCol ?? 'C',
 				amount: bundle.length,
@@ -3580,6 +3769,9 @@ function simulateOrExecuteManaOnly(
 		}
 		const chosenColor: ManaColor = preferredCol ?? ab?.producesMana[0] ?? 'C';
 		pool[chosenColor] += amount;
+		// --- Track P11 ---
+		if (addsSnow) simSnow += amount;
+		// --- End Track P11 ---
 		manaChoices.set(perm.instanceId, { color: chosenColor, amount, ab });
 	};
 
@@ -3629,8 +3821,54 @@ function simulateOrExecuteManaOnly(
 		if (!greedySucceeded) break;
 	}
 
+	// --- Track P11: Pass 1.5 satisfy {S} snow mana pips using Snow sources (CR 107.4h) ---
+	for (let snowGuard = 0; greedySucceeded && snowGuard < 64 && simSnow < snowReq; snowGuard++) {
+		const perm =
+			candidates.find(
+				(c) =>
+					!tappedSet.has(c.instanceId) &&
+					permSnow.get(c.instanceId) === 1 &&
+					manaAbilitiesOf(c).some(
+						(a) =>
+							!a.manaRestriction &&
+							!a.freezesSelfUntap &&
+							abilityEnergyCost(c, a) <= availableEnergy
+					)
+			) ??
+			candidates.find(
+				(c) =>
+					!tappedSet.has(c.instanceId) &&
+					permSnow.get(c.instanceId) === 1 &&
+					manaAbilitiesOf(c).some(
+						(a) => !a.manaRestriction && abilityEnergyCost(c, a) <= availableEnergy
+					)
+			);
+		if (!perm) {
+			greedySucceeded = false;
+			break;
+		}
+		const abSnow =
+			manaAbilitiesOf(perm).find(
+				(a) =>
+					!a.manaRestriction &&
+					!a.freezesSelfUntap &&
+					abilityEnergyCost(perm, a) <= availableEnergy
+			) ??
+			manaAbilitiesOf(perm).find(
+				(a) => !a.manaRestriction && abilityEnergyCost(perm, a) <= availableEnergy
+			);
+		applyChosenAbilityToPool(perm, abSnow);
+	}
+	// --- End Track P11 ---
+
 	// Pass 2: Satisfy remaining generic / non-Phyrexian flexible mana cost using remaining untapped sources
-	while (greedySucceeded && !canPayManaCost(pool, manaReq)) {
+	for (
+		let pass2Guard = 0;
+		greedySucceeded &&
+		pass2Guard < 128 &&
+		!canPayManaCost(pool, manaReq, undefined, snowReq > 0 ? simSnow : undefined);
+		pass2Guard++
+	) {
 		const perm =
 			candidates.find(
 				(c) =>
@@ -3660,6 +3898,9 @@ function simulateOrExecuteManaOnly(
 		const clonePlayerMana = (p: PlayerGameState): PlayerGameState => ({
 			...p,
 			manaPool: { ...p.manaPool },
+			// --- Track P11 ---
+			snowManaByColor: p.snowManaByColor ? { ...p.snowManaByColor } : undefined,
+			// --- End Track P11 ---
 			restrictedMana: p.restrictedMana
 				? Object.fromEntries(
 						Object.entries(p.restrictedMana).map(([k, v]) => [k, v ? { ...v } : v])
@@ -3912,7 +4153,9 @@ function simulateOrExecuteManaOnly(
 				);
 			}
 		}
-		deductManaForSpendContext(player, manaReq, spendCtx);
+		// --- Track P11 ---
+		deductManaForSpendContextWithSnow(player, manaReq, spendCtx);
+		// --- End Track P11 ---
 		if (lifeToPay > 0) {
 			player.life -= lifeToPay;
 			// --- Track P10 ---
@@ -3942,7 +4185,9 @@ function simulateOrExecuteAutoTap(
 		return simulateOrExecuteManaOnly(player, req, state, mutate, 0, spendCtx, reservedTapIds);
 	}
 
-	const canPayLife = !playerLifeTotalCantChange(state, player);
+	// --- Track P11 ---
+	const canPayLife = !playerCantPayLifeForCost(state, player, 2);
+	// --- End Track P11 ---
 	const maxLifeCount = canPayLife ? Math.min(phySymbols.length, Math.floor(player.life / 2)) : 0;
 
 	if (phyrexianLifeCount !== undefined) {
@@ -4140,11 +4385,131 @@ export function emptyAllPlayersManaPools(state: GameState): void {
 			p.manaPool.R = Math.min(origR, p.manaPool.R + keepR);
 		}
 		// --- End Track P12 ---
+		// --- Track P11: clamp tracked snow mana to any remaining retained/firebending mana ---
+		clampSnowManaToPool(p);
+		// --- End Track P11 ---
 		p.manaRiders = [];
 	}
 }
 
-function executeUntapTurnBasedActions(state: GameState, activePlayer: PlayerGameState): void {
+// --- Track P11: Optional untap step choice ("You may choose not to untap ~ during your untap step.", CR 502.3) ---
+const UNTAP_STEP_CHOICE_HANDLER = 'untap_step_choice';
+
+function enqueueUntapChoicePrompt(
+	state: GameState,
+	playerId: string,
+	perm: CardInstance,
+	remainingIds: string[]
+): void {
+	const name = evaluatePermanent(state, perm).effectiveName;
+	enqueueChoicePrompt(state, {
+		id: uid('prm', state),
+		playerId,
+		kind: 'chooseMode',
+		purpose: 'generic',
+		title: `Untap Step — ${name}`,
+		description: `You may choose not to untap ${name} during your untap step (CR 502.3).`,
+		cancellable: false,
+		continuation: {
+			kind: 'handler',
+			name: UNTAP_STEP_CHOICE_HANDLER,
+			data: {
+				instanceId: perm.instanceId,
+				remainingIdsCsv: remainingIds.join(',')
+			}
+		},
+		choice: {
+			kind: 'chooseMode',
+			modes: [`Untap ${name}`, `Keep ${name} tapped`],
+			min: 1,
+			max: 1,
+			defaultIndices: [0]
+		}
+	});
+}
+
+function botPrefersKeepingTapped(state: GameState, perm: CardInstance): boolean {
+	const card = effectiveCardForObject(perm);
+	const abs = activeAbilityDefs(card, instanceFaceOptions(perm, 'battlefield'));
+	for (const ab of abs) {
+		if (
+			ab.kind === 'static' &&
+			ab.static.k === 'continuous' &&
+			((ab.static.condition?.k === 'objectState' &&
+				ab.static.condition.of === 'self' &&
+				ab.static.condition.tapped === true) ||
+				(ab.static.condition?.k === 'matchesFilter' &&
+					ab.static.condition.filter.tapped === true))
+		) {
+			return true;
+		}
+	}
+	return false;
+}
+
+registerPromptHandler(UNTAP_STEP_CHOICE_HANDLER, (state, prompt, answer) => {
+	const data = prompt.continuation?.kind === 'handler' ? prompt.continuation.data : undefined;
+	const instanceId = typeof data?.instanceId === 'string' ? data.instanceId : '';
+	const remainingIds =
+		typeof data?.remainingIdsCsv === 'string' && data.remainingIdsCsv.length > 0
+			? data.remainingIdsCsv.split(',').filter(Boolean)
+			: [];
+	const idx = answer.kind === 'chooseMode' ? (answer.indices[0] ?? 0) : 0;
+	const activePlayer =
+		state.players.find((p) => p.playerId === prompt.playerId) ??
+		state.players[state.activePlayerIndex];
+	if (!activePlayer || activePlayer.lost) return;
+
+	const perm = activePlayer.battlefield.find((c) => !c.phasedOut && c.instanceId === instanceId);
+	if (perm && perm.tapped && idx === 0) {
+		if (perm.counters.stun > 0) {
+			perm.counters.stun -= 1;
+			noteLayerInputsChanged(state);
+		} else {
+			perm.tapped = false;
+			noteLayerInputsChanged(state);
+			// --- Track P10 ---
+			emitEvent(state, {
+				kind: 'BecomesUntapped',
+				objectId: perm.instanceId,
+				object: perm
+			});
+			// --- End Track P10 ---
+		}
+	}
+
+	for (let i = 0; i < remainingIds.length; i++) {
+		const nextId = remainingIds[i];
+		const nextPerm = activePlayer.battlefield.find(
+			(c) => !c.phasedOut && c.tapped && c.instanceId === nextId
+		);
+		if (nextPerm) {
+			enqueueUntapChoicePrompt(state, activePlayer.playerId, nextPerm, remainingIds.slice(i + 1));
+			return;
+		}
+	}
+
+	emitEvent(state, {
+		kind: 'PhaseBegin',
+		phase: 'untap',
+		activePlayerId: activePlayer.playerId
+	});
+	flushTriggers(state);
+	emptyAllPlayersManaPools(state);
+	beginPhase(state, 'upkeep', activePlayer);
+	givePriorityToActiveOrNextPlayer(state);
+	state.passedPriorityPlayerIds = [];
+	state.turnStartedAt = Date.now();
+	state.priorityUpdatedAt = Date.now();
+	emitVfx(state, {
+		kind: 'phase_change',
+		label: `Turn ${state.turnNumber}: ${activePlayer.username} — Upkeep`
+	});
+	checkStateBasedActions(state);
+});
+// --- End Track P11 ---
+
+function executeUntapTurnBasedActions(state: GameState, activePlayer: PlayerGameState): boolean {
 	activePlayer.landsPlayedThisTurn = 0;
 	activePlayer.maxLandsPerTurn = 1;
 
@@ -4258,22 +4623,42 @@ function executeUntapTurnBasedActions(state: GameState, activePlayer: PlayerGame
 	// decided against the board before any of them untaps. Deciding it inside the untap loop made
 	// every `perm.tapped = false` invalidate the layer cache for the next permanent's check, a full
 	// board re-evaluation per permanent (Phase 6d).
-	const keptTapped = withStableLayerInputs(state, () => {
+	// --- Track P11 ---
+	const { keptTapped, mayChooseNotToUntapIds } = withStableLayerInputs(state, () => {
 		const ids = new Set<string>();
+		const optionalIds = new Set<string>();
 		for (const perm of activePlayer.battlefield) {
 			if (perm.phasedOut || !perm.tapped) continue;
-			if (hasRestriction(state, perm, 'doesntUntap')) ids.add(perm.instanceId);
+			if (hasRestriction(state, perm, 'doesntUntap')) {
+				ids.add(perm.instanceId);
+			} else if (permanentMayChooseNotToUntap(state, perm)) {
+				optionalIds.add(perm.instanceId);
+			}
 		}
-		return ids;
+		return { keptTapped: ids, mayChooseNotToUntapIds: optionalIds };
 	});
-	// --- Track P10 ---
+	// --- Track P10 + P11 ---
 	const untappedPerms: CardInstance[] = [];
-	// --- End Track P10 ---
+	const humanOptionalCandidates: CardInstance[] = [];
+	// --- End Track P10 + P11 ---
 	for (const perm of activePlayer.battlefield) {
 		if (perm.phasedOut) continue;
 		const frozenNextUntap = consumeNextUntapFreeze(perm);
 		if (!frozenNextUntap && perm.tapped && !keptTapped.has(perm.instanceId)) {
-			if (perm.counters.stun > 0) {
+			if (mayChooseNotToUntapIds.has(perm.instanceId)) {
+				if (activePlayer.isBot) {
+					if (!botPrefersKeepingTapped(state, perm)) {
+						if (perm.counters.stun > 0) {
+							perm.counters.stun -= 1;
+						} else {
+							perm.tapped = false;
+							untappedPerms.push(perm);
+						}
+					}
+				} else {
+					humanOptionalCandidates.push(perm);
+				}
+			} else if (perm.counters.stun > 0) {
 				perm.counters.stun -= 1;
 			} else {
 				perm.tapped = false;
@@ -4304,9 +4689,32 @@ function executeUntapTurnBasedActions(state: GameState, activePlayer: PlayerGame
 		hc.activatedAbilityIdsThisTurn = undefined;
 	}
 	// --- End Track P12 ---
+	// --- Track P11 ---
+	if (humanOptionalCandidates.length > 0) {
+		enqueueUntapChoicePrompt(
+			state,
+			activePlayer.playerId,
+			humanOptionalCandidates[0],
+			humanOptionalCandidates.slice(1).map((p) => p.instanceId)
+		);
+		return true;
+	}
+	return false;
+	// --- End Track P11 ---
 }
 
 function executeDrawTurnBasedAction(state: GameState, activePlayer: PlayerGameState): void {
+	// --- Track P11: CR 504.1 / 614.10a "Skip your draw step." ---
+	if (playerSkipsDrawStep(state, activePlayer.playerId)) {
+		addLog(
+			state,
+			'rule',
+			`${activePlayer.username} skips their draw step (static effect).`,
+			activePlayer.playerId
+		);
+		return;
+	}
+	// --- End Track P11 ---
 	const shouldSkipFirstDraw =
 		state.turnNumber === 1 &&
 		state.activePlayerIndex === 0 &&
@@ -4389,6 +4797,11 @@ export function runBeginningOfTurn(state: GameState): void {
 
 	// 1. Untap step (CR 502): turn-based actions execute before PhaseBegin('untap') triggers (CR 703.3)
 	beginPhase(state, 'untap', activePlayer);
+	// --- Track P11: Pause turn start if human player has an untap-step choice prompt ---
+	if (state.pendingPrompts.length > 0 && state.phase === 'untap') {
+		return;
+	}
+	// --- End Track P11 ---
 	emptyAllPlayersManaPools(state);
 
 	// 2. Upkeep step (CR 503): active player receives priority in upkeep (CR 503.1a / 500.2)
@@ -5511,7 +5924,10 @@ function applyGameActionInner(
 				xVal,
 				castOption,
 				hasOptCounts ? normalizedOptCounts : undefined,
-				chosenModes
+				// --- Track P12 + P11 ---
+				chosenModes,
+				targets
+				// --- End Track P12 + P11 ---
 			);
 			// --- End Track P12 ---
 			const isFaceDownCast = Boolean(castOption.spellMods?.castFaceDown);
@@ -5746,6 +6162,18 @@ function applyGameActionInner(
 							combinedCostDefs.push(...mod.delta.additionalCosts);
 						}
 					}
+					// --- Track P11: Layer 6 granted costModifier additionalCosts ---
+					if (boardMayGrantStaticAbility(state, 'costModifier')) {
+						for (const mod of collectActiveGrantedStaticDefs(state, perm)) {
+							if (mod.k !== 'costModifier') continue;
+							if (mod.affects.k !== 'spell' || !mod.affects.filter.targetsSelf) continue;
+							if (!matchesPlayerFilter(mod.who, perm.controllerId, actor.playerId, state)) continue;
+							if (mod.delta.additionalCosts) {
+								combinedCostDefs.push(...mod.delta.additionalCosts);
+							}
+						}
+					}
+					// --- End Track P11 ---
 				}
 			}
 			const paidReturnToHand = hasReturnToHandOptionalCost(castOption, normalizedOptCounts);
@@ -5989,7 +6417,11 @@ function applyGameActionInner(
 				ab.id,
 				ab.manaCost,
 				ab.costKeyword,
-				abXValue
+				abXValue,
+				// --- Track P11 ---
+				perm,
+				ab.isManaAbility
+				// --- End Track P11 ---
 			).requirement;
 			const phyAbilityChoice = maybeAskPhyrexianCostChoice(
 				state,
@@ -8903,6 +9335,11 @@ export function addCountersToPermanent(
 	const previousCount = perm.counters[type] || 0;
 	const newCount = previousCount + effectiveAmount;
 	perm.counters[type] = newCount;
+	// --- Track P11: CR 613.7c stamp timestamp when a keyword counter is placed on a permanent ---
+	if ((KEYWORD_COUNTER_TYPES as readonly string[]).includes(type)) {
+		(perm.counterTimestamps ??= {})[type] = allocateTimestamp(state);
+	}
+	// --- End Track P11 ---
 	noteLayerInputsChanged(state);
 	emitEvent(state, {
 		kind: 'CounterPlaced',
@@ -8978,6 +9415,11 @@ registerPromptHandler('counter_replacement_choice', (state, prompt, answer) => {
 	const previousCount = perm.counters[counterType] || 0;
 	const newCount = previousCount + effectiveAmount;
 	perm.counters[counterType] = newCount;
+	// --- Track P11 ---
+	if ((KEYWORD_COUNTER_TYPES as readonly string[]).includes(counterType)) {
+		(perm.counterTimestamps ??= {})[counterType] = allocateTimestamp(state);
+	}
+	// --- End Track P11 ---
 	noteLayerInputsChanged(state);
 	emitEvent(state, {
 		kind: 'CounterPlaced',
@@ -9216,7 +9658,9 @@ function beginPhase(state: GameState, phase: GamePhase, activePlayer?: PlayerGam
 	let stepTurnBasedPaused = false;
 	withTriggersDeferred(state, () => {
 		if (phase === 'untap' && active && !active.lost) {
-			executeUntapTurnBasedActions(state, active);
+			// --- Track P11 ---
+			stepTurnBasedPaused = executeUntapTurnBasedActions(state, active);
+			// --- End Track P11 ---
 		} else if (phase === 'draw' && active && !active.lost) {
 			executeDrawTurnBasedAction(state, active);
 		} else if (phase === 'main1' && active && !active.lost) {
@@ -9521,6 +9965,10 @@ function triggeredStackItem(state: GameState, t: PendingTrigger, idPrefix: strin
 		t.sourceChosenSubType ?? foundSource?.inst.chosenSubType ?? t.source.chosenSubType;
 	const sourceChosenColor =
 		t.sourceChosenColor ?? foundSource?.inst.chosenColor ?? t.source.chosenColor;
+	// --- Track P11 ---
+	const sourceChosenCardName =
+		t.sourceChosenCardName ?? foundSource?.inst.chosenCardName ?? t.source.chosenCardName;
+	// --- End Track P11 ---
 	const sourceMonstrous = t.sourceMonstrous ?? Boolean((foundSource?.inst ?? t.source).isMonstrous);
 	// --- Track P12 ---
 	const sourceIsRenowned = t.sourceIsRenowned ?? Boolean((foundSource?.inst ?? t.source).isRenowned);
@@ -9569,6 +10017,12 @@ function triggeredStackItem(state: GameState, t: PendingTrigger, idPrefix: strin
 			...(sourceExertedThisTurn ? { sourceExertedThisTurn: true } : {}),
 			...(sourceChosenSubType ? { sourceChosenSubType } : {}),
 			...(sourceChosenColor ? { sourceChosenColor } : {}),
+			// --- Track P11 ---
+			...(sourceChosenCardName ? { sourceChosenCardName } : {}),
+			...(t.grantSourceCard ? { grantSourceCard: t.grantSourceCard } : {}),
+			...(t.grantFaceIndex !== undefined ? { grantFaceIndex: t.grantFaceIndex } : {}),
+			...(t.grantAbilityIndex !== undefined ? { grantAbilityIndex: t.grantAbilityIndex } : {}),
+			// --- End Track P11 ---
 			...(sourceMonstrous ? { sourceMonstrous: true } : {}),
 			// --- Track P12 ---
 			...(sourceIsRenowned ? { sourceIsRenowned: true } : {}),
@@ -9677,6 +10131,20 @@ function triggerItemEffect(item: StackItem) {
 		);
 	}
 	// --- End Track P10 ---
+	// --- Track P11: Layer 6 granted triggered ability ---
+	if (item.grantSourceCard && item.grantAbilityIndex !== undefined) {
+		const gt = resolveGrantedRuntimeTrigger(
+			item.grantSourceCard,
+			item.grantFaceIndex ?? 0,
+			item.grantAbilityIndex
+		);
+		if (!gt?.effect) return null;
+		if (gt.effect.modal && item.chosenModes) {
+			return expandModalEffects(gt.effect.modal, item.chosenModes);
+		}
+		return gt.effect;
+	}
+	// --- End Track P11 ---
 	if (item.triggeredAbilityIndex === undefined) return null;
 	return compiledTriggerEffect(
 		item.card,
@@ -9702,13 +10170,27 @@ function triggerItemModal(item: StackItem): ModalDef | undefined {
 		)?.modal;
 	}
 	// --- End Track P10 ---
+	// --- Track P11: Layer 6 granted modal triggered ability ---
+	if (item.grantSourceCard && item.grantAbilityIndex !== undefined) {
+		return resolveGrantedRuntimeTrigger(
+			item.grantSourceCard,
+			item.grantFaceIndex ?? 0,
+			item.grantAbilityIndex
+		)?.effect?.modal;
+	}
+	// --- End Track P11 ---
 	if (item.triggeredAbilityIndex === undefined) return undefined;
 	return compiledTriggerEffect(item.card, item.triggeredAbilityIndex, item.grantedKeyword, item.faceIndex ?? 0)?.modal;
 }
 
 // --- Track P10 ---
 function resolveStackItemCompiledEffects(item: StackItem) {
-	if (item.kind === 'triggered' && (item.reflexiveTrigger || item.grantedAbilityText)) {
+	if (
+		item.kind === 'triggered' &&
+		(item.reflexiveTrigger ||
+			item.grantedAbilityText ||
+			(item.grantSourceCard && item.grantAbilityIndex !== undefined))
+	) {
 		return triggerItemEffect(item);
 	}
 	if (item.kind === 'activated' && item.grantedAbilityText) {
@@ -12973,6 +13455,8 @@ function pushCopiedStackItem(
 			xValue: orig.xValue,
 			...(orig.abilityId ? { abilityId: orig.abilityId } : {}),
 			...(orig.grantSourceCard ? { grantSourceCard: orig.grantSourceCard } : {}),
+			...(orig.grantFaceIndex !== undefined ? { grantFaceIndex: orig.grantFaceIndex } : {}),
+			...(orig.grantAbilityIndex !== undefined ? { grantAbilityIndex: orig.grantAbilityIndex } : {}),
 			...(orig.crewedByIds ? { crewedByIds: [...orig.crewedByIds] } : {}),
 			...(orig.saddledByIds ? { saddledByIds: [...orig.saddledByIds] } : {}),
 			...(orig.tappedCostPower !== undefined ? { tappedCostPower: orig.tappedCostPower } : {}),
@@ -13931,16 +14415,9 @@ export function executeProliferate(
 	controller: PlayerGameState,
 	chosenIds?: string[]
 ): void {
-	const allCounterTypes: CounterType[] = [
-		'+1/+1',
-		'-1/-1',
-		'loyalty',
-		'charge',
-		'shield',
-		'stun',
-		'lore',
-		'time'
-	];
+	// --- Track P11: Proliferate all 37 counter types (CR 701.27a) ---
+	const allCounterTypes: readonly CounterType[] = ALL_COUNTER_TYPES;
+	// --- End Track P11 ---
 	if (chosenIds) {
 		const chosenSet = new Set(chosenIds);
 		for (const pl of state.players) {
@@ -13963,15 +14440,17 @@ export function executeProliferate(
 			}
 		}
 	} else {
-		const controllerPositiveTypes: CounterType[] = [
-			'+1/+1',
-			'loyalty',
-			'charge',
-			'shield',
-			'lore',
-			'time'
+		// --- Track P11 ---
+		const opponentNegativeTypes: CounterType[] = [
+			'-1/-1',
+			'stun',
+			'finality',
+			'plague',
+			'blight'
 		];
-		const opponentNegativeTypes: CounterType[] = ['-1/-1', 'stun'];
+		const negSet = new Set<CounterType>(opponentNegativeTypes);
+		const controllerPositiveTypes: CounterType[] = allCounterTypes.filter((c) => !negSet.has(c));
+		// --- End Track P11 ---
 		for (const perm of controller.battlefield) {
 			if (perm.phasedOut) continue;
 			for (const cType of controllerPositiveTypes) {
@@ -14210,9 +14689,15 @@ function executeCombatDamageStep(
 		// as do creatures that currently have Double strike.
 		const dealsNow = isFirstStrikeStep ? hasFS || hasDS : hasDS || !alreadyDealtFS;
 		const srcInfo = sourceDamageInfo(state, perm, perm.copiableCard ?? perm.card);
+		// --- Track P11: CR 510.1a assign combat damage equal to toughness rather than power ---
+		const toughnessVal = getCreatureToughness(perm, state);
+		const combatStrikeAmount = creatureAssignsCombatDamageByToughness(state, perm)
+			? Math.max(0, toughnessVal)
+			: getCreaturePower(perm, state);
+		// --- End Track P11 ---
 		snapshots.set(perm.instanceId, {
-			power: getCreaturePower(perm, state),
-			toughness: getCreatureToughness(perm, state),
+			power: combatStrikeAmount,
+			toughness: toughnessVal,
 			damageMarkedBefore: perm.damageMarked,
 			hasFS,
 			hasDS,
@@ -14700,6 +15185,9 @@ function clearEndOfTurnAndDamage(state: GameState): void {
 		// --- Track P10 ---
 		clearPlayerManaPoolAtCleanup(p);
 		// --- End Track P10 ---
+		// --- Track P11 ---
+		clearSnowManaPool(p);
+		// --- End Track P11 ---
 		p.preventAllCombatDamageThisTurn = false;
 		// --- Track P9 ---
 		p.damageDealtToThisTurn = 0;
@@ -14764,7 +15252,12 @@ function runCleanupStep(state: GameState): void {
 	const hasNoMaxHandSize =
 		state.rules.maxHandSize >= 99 || playerHasNoMaxHandSize(state, activePlayer);
 
-	const maxHand = hasNoMaxHandSize ? 999 : state.rules.maxHandSize;
+	// --- Track P11: CR 402.2 / 613.10 effective maximum hand size (deltas, setMaxHandSize, noMaxHandSize) ---
+	const computedMaxHand = hasNoMaxHandSize
+		? null
+		: computeEffectiveMaxHandSize(state, activePlayer);
+	const maxHand = computedMaxHand === null ? 999 : computedMaxHand;
+	// --- End Track P11 ---
 	if (!activePlayer.lost && activePlayer.hand.length > maxHand) {
 		const excess = activePlayer.hand.length - maxHand;
 		if (activePlayer.isBot) {
@@ -15122,6 +15615,10 @@ export function checkStateBasedActions(state: GameState): void {
 			}
 		});
 
+		// --- Track P11 ---
+		let boardInvalidatedInPass = false;
+		// --- End Track P11 ---
+
 		// CR 506.4: Remove from combat any attacking or blocking permanent that left the battlefield,
 		// phased out, stopped being a creature, or became a battle.
 		if (state.combat.active && state.combat.attackers.length > 0) {
@@ -15154,7 +15651,10 @@ export function checkStateBasedActions(state: GameState): void {
 					}
 				}
 			}
-			if (combatChanged) noteLayerInputsChanged(state);
+			if (combatChanged) {
+				noteLayerInputsChanged(state);
+				boardInvalidatedInPass = true;
+			}
 		}
 
 		// 1. +1/+1 and -1/-1 counter annihilation (CR 704.5q)
@@ -15169,6 +15669,7 @@ export function checkStateBasedActions(state: GameState): void {
 					perm.counters['+1/+1'] -= cancel;
 					perm.counters['-1/-1'] -= cancel;
 					anyActionTaken = true;
+					boardInvalidatedInPass = true;
 				}
 			}
 		}
@@ -15195,13 +15696,18 @@ export function checkStateBasedActions(state: GameState): void {
 		// Steps 2-4 only read layer results, except the `attachedToId` writes, each followed by
 		// noteLayerInputsChanged (Phase 6c).
 		withStableLayerInputs(state, () => {
+			// --- Track P11: Reuse Step 0 evaluated snapshot while board inputs remain unchanged ---
+			const getSbaEval = (inst: CardInstance): EvaluatedPermanent =>
+				(!boardInvalidatedInPass ? prePassSnapshot.get(inst.instanceId)?.evalPerm : undefined) ??
+				evaluatePermanent(state, inst);
+			// --- End Track P11 ---
 			for (const p of state.players) {
 				if (p.lost) continue;
 
 				// 2. Unattach Auras/Equipment attached to illegal/missing/non-creature permanents (CR 303.4d, 702.16c-d, 704.5m-n)
 				for (const perm of p.battlefield) {
 					if (perm.phasedOut) continue;
-					const evalPerm = evaluatePermanent(state, perm);
+					const evalPerm = getSbaEval(perm);
 					const isAura = evalPerm.hasSubType('Aura') || evalPerm.typeLine.includes('Aura');
 					const isEquipment =
 						evalPerm.hasSubType('Equipment') || evalPerm.typeLine.includes('Equipment');
@@ -15212,6 +15718,7 @@ export function checkStateBasedActions(state: GameState): void {
 							if (perm.isBestowed) {
 								perm.isBestowed = false;
 								noteLayerInputsChanged(state);
+								boardInvalidatedInPass = true;
 								anyActionTaken = true;
 							} else {
 								queueToGraveyard(perm, p, 'aura');
@@ -15231,16 +15738,18 @@ export function checkStateBasedActions(state: GameState): void {
 									)
 								) {
 									perm.attachedToId = null;
-									// --- Track P12: CR 702.103f Bestow unattach ---
+									// --- Track P12 + P11: CR 702.103f Bestow unattach ---
 									if (perm.isBestowed) {
 										perm.isBestowed = false;
 										noteLayerInputsChanged(state);
+										boardInvalidatedInPass = true;
 										anyActionTaken = true;
 									} else {
 										noteLayerInputsChanged(state);
+										boardInvalidatedInPass = true;
 										queueToGraveyard(perm, p, 'aura');
 									}
-									// --- End Track P12 ---
+									// --- End Track P12 + P11 ---
 								}
 							} else {
 								const targetPlayer = state.players.find(
@@ -15251,16 +15760,18 @@ export function checkStateBasedActions(state: GameState): void {
 									!isAuraPlayerAttachmentLegal(perm, p, evalPerm, targetPlayer)
 								) {
 									perm.attachedToId = null;
-									// --- Track P12: CR 702.103f Bestow unattach ---
+									// --- Track P12 + P11: CR 702.103f Bestow unattach ---
 									if (perm.isBestowed) {
 										perm.isBestowed = false;
 										noteLayerInputsChanged(state);
+										boardInvalidatedInPass = true;
 										anyActionTaken = true;
 									} else {
 										noteLayerInputsChanged(state);
+										boardInvalidatedInPass = true;
 										queueToGraveyard(perm, p, 'aura');
 									}
-									// --- End Track P12 ---
+									// --- End Track P12 + P11 ---
 								}
 							}
 						}
@@ -15271,7 +15782,7 @@ export function checkStateBasedActions(state: GameState): void {
 							effectiveCardForObject(perm),
 							instanceFaceOptions(perm, 'battlefield')
 						).some((a) => a.kind === 'keyword' && Boolean(a.keyword.equipAllowPlaneswalker));
-						const targetEval = targetFound ? evaluatePermanent(state, targetFound.inst) : null;
+						const targetEval = targetFound ? getSbaEval(targetFound.inst) : null;
 						const validHostType = targetEval
 							? targetEval.typeLine.includes('Creature') || (allowPw && targetEval.isPlaneswalker)
 							: false;
@@ -15285,6 +15796,7 @@ export function checkStateBasedActions(state: GameState): void {
 						) {
 							perm.attachedToId = null;
 							noteLayerInputsChanged(state);
+							boardInvalidatedInPass = true;
 							anyActionTaken = true;
 						}
 					} else if (perm.attachedToId) {
@@ -15292,6 +15804,7 @@ export function checkStateBasedActions(state: GameState): void {
 						if (!targetFound) {
 							perm.attachedToId = null;
 							noteLayerInputsChanged(state);
+							boardInvalidatedInPass = true;
 							anyActionTaken = true;
 						}
 					}
@@ -15300,7 +15813,7 @@ export function checkStateBasedActions(state: GameState): void {
 				// 3. Creature lethal damage / 0 toughness / Deathtouch SBA (CR 704.5f-h) & Planeswalker 0 loyalty (CR 704.5i)
 				for (const perm of p.battlefield) {
 					if (perm.phasedOut || queuedIds.has(perm.instanceId)) continue;
-					const evalPerm = evaluatePermanent(state, perm);
+					const evalPerm = getSbaEval(perm);
 					let dies = false;
 					if (evalPerm.typeLine.includes('Creature')) {
 						const tough = evalPerm.toughness;
@@ -15312,8 +15825,10 @@ export function checkStateBasedActions(state: GameState): void {
 								if (perm.deathtouchDamageMarked) perm.deathtouchDamageMarked = false;
 							} else if (tryRegenerateInsteadOfDestroy(state, perm, true)) {
 								// CR 701.19a / 704.5g-h: Regenerated instead of lethal/deathtouch destruction
+								boardInvalidatedInPass = true;
 							// --- Track P12: CR 702.89a Umbra armor SBA replacement ---
 							} else if (tryUmbraArmorInsteadOfDestroy(state, perm)) {
+								boardInvalidatedInPass = true;
 								anyActionTaken = true;
 							// --- End Track P12 ---
 							} else {
@@ -15333,7 +15848,7 @@ export function checkStateBasedActions(state: GameState): void {
 				const legendaryByName = new Map<string, CardInstance[]>();
 				for (const perm of p.battlefield) {
 					if (perm.phasedOut || perm.isFaceDown || queuedIds.has(perm.instanceId)) continue;
-					const evalPerm = evaluatePermanent(state, perm);
+					const evalPerm = getSbaEval(perm);
 					const name = evalPerm.effectiveName || perm.card.name;
 					if (evalPerm.typeLine.includes('Legendary') && name) {
 						const list = legendaryByName.get(name) || [];
@@ -15349,7 +15864,7 @@ export function checkStateBasedActions(state: GameState): void {
 							let bestScore = -Infinity;
 							for (let idx = 0; idx < list.length; idx++) {
 								const cand = list[idx];
-								const ev = evaluatePermanent(state, cand);
+								const ev = getSbaEval(cand);
 								const score =
 									(!cand.isToken ? 100 : 0) +
 									(ev.power + ev.toughness) * 10 +
@@ -15412,6 +15927,10 @@ export function checkStateBasedActions(state: GameState): void {
 				const pendingNow = peekPendingTriggers(state);
 				for (const perm of p.battlefield) {
 					if (perm.phasedOut || perm.isFaceDown || queuedIds.has(perm.instanceId)) continue;
+					// --- Track P11: Skip Saga SBA lookup for non-Saga permanents ---
+					const evalPerm = getSbaEval(perm);
+					if (!evalPerm.hasSubType('Saga') && !evalPerm.typeLine.includes('Saga')) continue;
+					// --- End Track P11 ---
 					const finalCh = getSagaFinalChapterNumber(state, perm);
 					if (finalCh <= 0) continue;
 					if ((perm.counters.lore || 0) < finalCh) continue;
@@ -17984,6 +18503,18 @@ function checkSpellCastOptionLegalityInner(
 			: {})
 	};
 	const effectiveCard = effectiveCardForObject(inst);
+	// --- Track P11: CR 601.3 / 708.2a "Spells with the chosen name can't be cast" (face-down spells have no name) ---
+	if (!isFaceDownCast && boardHasAnyChosenCardName(state)) {
+		const castView = resolveObjectFaces(effectiveCard, castFaceOpts);
+		const chosenSpellBan = isSpellBannedByChosenName(state, actorId, castView.names);
+		if (chosenSpellBan.banned) {
+			return {
+				ok: false,
+				error: `Illegal Cast: ${chosenSpellBan.sourceName ?? 'Restriction'} prevents casting spells with the chosen name.`
+			};
+		}
+	}
+	// --- End Track P11 ---
 	const castChars = activeCharacteristics(effectiveCard, castFaceOpts);
 	const castAbilities = activeAbilityDefs(effectiveCard, castFaceOpts);
 	const hasFaceFlash =
@@ -18500,7 +19031,12 @@ function checkAbilityActivationLegalityInner(
 		actorId,
 		ab.id,
 		ab.manaCost,
-		ab.costKeyword
+		ab.costKeyword,
+		// --- Track P11 ---
+		0,
+		perm,
+		ab.isManaAbility
+		// --- End Track P11 ---
 	).requirement;
 	// --- Track P7 ---
 	const permEffCard =

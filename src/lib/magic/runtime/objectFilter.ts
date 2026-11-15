@@ -50,6 +50,13 @@ import {
 	matchesP12ObjectFilter
 } from './keywordsWave4.ts';
 // --- End Track P12 ---
+// --- Track P11 ---
+import {
+	computeAttachmentsOnCount,
+	computeDomainCount,
+	computePartyCount
+} from './staticsDynamicAndCosts.ts';
+// --- End Track P11 ---
 
 export interface FilterContext {
 	state: GameState;
@@ -414,6 +421,25 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 				: resolveObjectFaces(card, faceOpts).colors;
 		if (!colors.includes(chosenColor)) return false;
 	}
+	// --- Track P11 ---
+	if (filter.ofChosenName) {
+		const chosenName = ctx.source?.chosenCardName ?? ctx.stackItem?.sourceChosenCardName;
+		if (!chosenName || obj.isFaceDown) return false;
+		const effName = evaluated ? evaluated.effectiveName : resolveObjectFaces(card, faceOpts).name;
+		if (effName.toLowerCase() !== chosenName.toLowerCase()) return false;
+	}
+	if (filter.attachedToRef !== undefined) {
+		const wantHostId =
+			filter.attachedToRef === 'self' ? ctx.source?.instanceId : ctx.source?.attachedToId;
+		if (!wantHostId || obj.attachedToId !== wantHostId) return false;
+	}
+	if (filter.historic !== undefined) {
+		const isHist =
+			!obj.isFaceDown &&
+			(isPermanentType('Legendary') || isPermanentType('Artifact') || hasSubType('Saga'));
+		if (isHist !== filter.historic) return false;
+	}
+	// --- End Track P11 ---
 
 	const controllerId = onBattlefield ? obj.controllerId : obj.ownerId;
 	if (filter.controller === 'you' && controllerId !== ctx.controllerId) return false;
@@ -506,6 +532,52 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 		const targets = (obj as { targets?: Array<{ kind: string; id: string }> }).targets ?? [];
 		if (!targets.some((t) => (t.kind === 'permanent' || t.kind === 'card') && t.id === ctx.source?.instanceId)) return false;
 	}
+	// --- Track P11 ---
+	if (filter.targetsFilter) {
+		const targets = (obj as { targets?: Array<{ kind: string; id: string }> }).targets ?? [];
+		let matchedTarget = false;
+		for (const t of targets) {
+			if (
+				t.kind !== 'permanent' &&
+				t.kind !== 'card' &&
+				t.kind !== 'graveyard_card' &&
+				t.kind !== 'exile_card'
+			) {
+				continue;
+			}
+			for (const p of state.players) {
+				if (p.lost) continue;
+				if (t.kind === 'permanent' || !filter.targetsFilter.zone || filter.targetsFilter.zone === 'battlefield') {
+					const targetPerm = p.battlefield.find(
+						(perm) => !perm.phasedOut && perm.instanceId === t.id
+					);
+					if (targetPerm && matchesObjectFilter(targetPerm, filter.targetsFilter, ctx)) {
+						matchedTarget = true;
+						break;
+					}
+				}
+				if (
+					(t.kind === 'card' || t.kind === 'graveyard_card' || t.kind === 'exile_card') &&
+					(t.kind !== 'card' || (filter.targetsFilter.zone && filter.targetsFilter.zone !== 'battlefield'))
+				) {
+					const zName: PlayerZoneName =
+						t.kind === 'graveyard_card'
+							? 'graveyard'
+							: t.kind === 'exile_card'
+								? 'exile'
+								: (filter.targetsFilter.zone as PlayerZoneName);
+					const targetCard = p[zName]?.find((c) => c.instanceId === t.id);
+					if (targetCard && matchesObjectFilter(targetCard, filter.targetsFilter, ctx)) {
+						matchedTarget = true;
+						break;
+					}
+				}
+			}
+			if (matchedTarget) break;
+		}
+		if (!matchedTarget) return false;
+	}
+	// --- End Track P11 ---
 	if (
 		filter.manaValue &&
 		!compare(
@@ -654,6 +726,38 @@ export function evaluateAmount(amount: Amount, ctx: FilterContext): number {
 		case 'opponentCount':
 			return evaluateP12Amount(amount, ctx) ?? 0;
 		// --- End Track P12 ---
+		// --- Track P11 ---
+		case 'mul':
+			return amount.factor * evaluateAmount(amount.of, ctx);
+		case 'domain': {
+			const pid =
+				amount.player.k === 'you'
+					? ctx.controllerId
+					: (ctx.state.players[ctx.state.activePlayerIndex]?.playerId ?? ctx.controllerId);
+			return computeDomainCount(ctx.state, pid);
+		}
+		case 'partyCount': {
+			const pid =
+				amount.player.k === 'you'
+					? ctx.controllerId
+					: (ctx.state.players[ctx.state.activePlayerIndex]?.playerId ?? ctx.controllerId);
+			return computePartyCount(ctx.state, pid);
+		}
+		case 'attachmentsOn': {
+			const hostId =
+				amount.target === 'self'
+					? ctx.source?.instanceId
+					: (ctx.source?.attachedToId ?? undefined);
+			if (!hostId) return 0;
+			return computeAttachmentsOnCount(
+				ctx.state,
+				hostId,
+				amount.filter,
+				ctx.controllerId,
+				ctx.source
+			);
+		}
+		// --- End Track P11 ---
 		default:
 			return 0;
 	}

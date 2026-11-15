@@ -8,7 +8,7 @@
  *
  * Runs alongside the Phase 1 adapter for now. scripts/magic-costs-diff.ts compares the two.
  */
-import type { Amount, Compare, CostDef, ObjectFilter, Span, StaticDef } from '../ir.ts';
+import type { Amount, Compare, Condition, CostDef, CostDelta, ObjectFilter, Span, StaticDef } from '../ir.ts';
 import type { CounterType, ManaColor } from '../types.ts';
 
 export interface CostParse {
@@ -136,7 +136,7 @@ const IRREGULAR_PLURALS: Record<string, string> = {
 // Subtypes whose singular ends in "s".
 const SINGULAR_S = new Set(['Plains', 'Fungus', 'Octopus', 'Homunculus', 'Atog', 'Nephilim', 'Astartes']);
 
-const COUNTERS: Record<string, CounterType> = {
+export const COUNTERS: Record<string, CounterType> = {
 	'+1/+1': '+1/+1',
 	'-1/-1': '-1/-1',
 	'−1/−1': '-1/-1',
@@ -148,7 +148,34 @@ const COUNTERS: Record<string, CounterType> = {
 	time: 'time',
 	age: 'age',
 	level: 'level',
-	fade: 'fade'
+	fade: 'fade',
+	// --- Track P11: 12 keyword counters (CR 122.1b), finality (CR 122.1d), and 13 named counters ---
+	flying: 'flying',
+	'first strike': 'first strike',
+	'double strike': 'double strike',
+	deathtouch: 'deathtouch',
+	haste: 'haste',
+	hexproof: 'hexproof',
+	indestructible: 'indestructible',
+	lifelink: 'lifelink',
+	menace: 'menace',
+	reach: 'reach',
+	trample: 'trample',
+	vigilance: 'vigilance',
+	finality: 'finality',
+	oil: 'oil',
+	ki: 'ki',
+	quest: 'quest',
+	storage: 'storage',
+	verse: 'verse',
+	spore: 'spore',
+	divinity: 'divinity',
+	feather: 'feather',
+	gold: 'gold',
+	plague: 'plague',
+	blight: 'blight',
+	stash: 'stash',
+	vitality: 'vitality'
 };
 
 const COST_VERBS =
@@ -207,7 +234,7 @@ export function parseObjectPhrase(phrase: string): ObjectFilter | null {
 	let rest = phrase.trim();
 
 	// Trailing qualifiers, in either order: "creature you control with power 4 or greater".
-	for (;;) {
+	for (let guard = 0; guard < 24; guard++) {
 		const exiledWithSelf = rest.match(/^(.+?)\s+exiled with ~$/i);
 		if (exiledWithSelf && !filter.exiledWithSelf) {
 			filter.zone = 'exile';
@@ -227,6 +254,28 @@ export function parseObjectPhrase(phrase: string): ObjectFilter | null {
 			rest = ofChosenColor[1];
 			continue;
 		}
+		// --- Track P11 ---
+		const ofChosenName = rest.match(/^(.+?)\s+(?:of|with) the chosen name$/i);
+		if (ofChosenName && !filter.ofChosenName) {
+			filter.ofChosenName = true;
+			rest = ofChosenName[1];
+			continue;
+		}
+		const attachedSelf = rest.match(/^(.+?)\s+attached to ~$/i);
+		if (attachedSelf && !filter.attachedToRef) {
+			filter.attachedToRef = 'self';
+			rest = attachedSelf[1];
+			continue;
+		}
+		const attachedHost = rest.match(
+			/^(.+?)\s+attached to (?:it|enchanted (?:creature|permanent|land|artifact|enchantment|planeswalker)|equipped creature)$/i
+		);
+		if (attachedHost && !filter.attachedToRef) {
+			filter.attachedToRef = 'attachedTo';
+			rest = attachedHost[1];
+			continue;
+		}
+		// --- End Track P11 ---
 		const youControl = rest.match(/^(.+?)\s+you control$/i);
 		if (youControl && !filter.controller) {
 			filter.controller = 'you';
@@ -263,7 +312,7 @@ export function parseObjectPhrase(phrase: string): ObjectFilter | null {
 			continue;
 		}
 		const withTypedCounter = rest.match(
-			/^(.+?)\s+with (?:(?:a|an|one or more)\s+)?([+-−]\d+\/[+-−]\d+|[a-z]+) counters? on (?:it|them)$/i
+			/^(.+?)\s+with (?:(?:a|an|one or more)\s+)?([+-−]\d+\/[+-−]\d+|first strike|double strike|[a-z]+) counters? on (?:it|them)$/i
 		);
 		if (withTypedCounter && !filter.hasCounters) {
 			const rawCounter = withTypedCounter[2].toLowerCase().replace(/−/g, '-');
@@ -298,7 +347,7 @@ export function parseObjectPhrase(phrase: string): ObjectFilter | null {
 	const words = rest.split(/\s+/).filter(Boolean);
 
 	// Leading modifiers.
-	while (words.length > 0) {
+	for (let guard = 0; guard < 32 && words.length > 0; guard++) {
 		const rawWord = words[0].replace(/,$/, '');
 		const low = rawWord.toLowerCase();
 		if (low === 'another' || low === 'other') filter.other = true;
@@ -307,6 +356,8 @@ export function parseObjectPhrase(phrase: string): ObjectFilter | null {
 		else if (low === 'saddled') filter.saddled = true;
 		else if (low === 'monstrous') filter.monstrous = true;
 		else if (low === 'nontoken') filter.token = false;
+		else if (low === 'historic') filter.historic = true;
+		else if (low === 'nonhistoric') filter.historic = false;
 		else if (low === 'commander' || low === 'commanders') filter.isCommander = true;
 		else if (low === 'attacking') filter.attacking = true;
 		else if (low === 'blocking') filter.blocking = true;
@@ -380,7 +431,7 @@ type Production = (part: string) => CostDef[] | null;
 
 const ONE: Amount = { k: 'const', n: 1 };
 
-/** "{2}{U}", "{T}", "{Q}", "{2}{T}" (some older cards combine symbols). */
+/** "{2}{U}", "{T}", "{Q}", "{2}{T}", "{S}" (some older cards combine symbols). */
 const manaSymbols: Production = (part) => {
 	const symbols = part.replace(/\s+/g, '').match(/\{[^}]+\}/g);
 	if (!symbols || symbols.join('') !== part.replace(/\s+/g, '')) return null;
@@ -390,7 +441,7 @@ const manaSymbols: Production = (part) => {
 		const up = s.toUpperCase();
 		if (up === '{T}') defs.push({ k: 'tapSelf' });
 		else if (up === '{Q}') defs.push({ k: 'untapSelf' });
-		else if (up === '{E}' || up === '{TK}' || up === '{P}' || up === '{S}') return null; // energy, tickets, pawprints, snow
+		else if (up === '{E}' || up === '{TK}' || up === '{P}') return null; // energy, tickets, pawprints
 		else mana += s;
 	}
 	if (mana) defs.push({ k: 'mana', cost: mana });
@@ -416,12 +467,12 @@ const payEnergy: Production = (part) => {
 	return amount ? [{ k: 'payEnergy', count: amount }] : null;
 };
 
-/** "Pay {3}{B}" (an option of a choice between costs). */
+/** "Pay {3}{B}", "Pay {S}" (an option of a choice between costs). */
 const payMana: Production = (part) => {
 	const m = part.match(/^pay ((?:\{[^}]+\})+)$/i);
 	if (!m) return null;
 	const symbols = m[1].match(/\{[^}]+\}/g)!;
-	if (symbols.some((s) => /^\{(?:T|Q|E|TK|P|S)\}$/i.test(s))) return null;
+	if (symbols.some((s) => /^\{(?:T|Q|E|TK|P)\}$/i.test(s))) return null;
 	return [{ k: 'mana', cost: m[1] }];
 };
 
@@ -463,18 +514,44 @@ const discard: Production = (part) => {
 	return filter ? [{ k: 'discard', count: n, filter, random }] : null;
 };
 
-/** "Exile ~", "Exile ~ from your graveyard", "Exile two creature cards from your graveyard", "Exile five other cards from your graveyard". */
+/** "Exile ~", "Exile ~ from your graveyard/hand", "Exile two creature cards from your graveyard", "Exile an artifact you control". */
 const exileFrom: Production = (part) => {
 	if (/^exile ~$/i.test(part)) return [{ k: 'exileFrom', zone: 'battlefield', count: ONE, filter: 'self' }];
-	if (/^exile ~ from your graveyard$/i.test(part)) {
-		return [{ k: 'exileFrom', zone: 'graveyard', count: ONE, filter: 'self' }];
+	const selfZone = part.match(/^exile ~ from your (graveyard|hand)$/i);
+	if (selfZone) {
+		return [
+			{
+				k: 'exileFrom',
+				zone: selfZone[1].toLowerCase() as 'graveyard' | 'hand',
+				count: ONE,
+				filter: 'self'
+			}
+		];
+	}
+	const bf = part.match(/^exile (.+?) you control$/i);
+	if (bf) {
+		const [first, ...rest] = bf[1].trim().split(/\s+/);
+		const n = count(first);
+		const phrase = n ? rest.join(' ') : bf[1].trim();
+		if (!n && !/^(?:another|other)\b/i.test(phrase)) return null;
+		if (!phrase) return null;
+		const filter = parseObjectPhrase(phrase);
+		if (!filter || filter.controller) return null;
+		return [
+			{
+				k: 'exileFrom',
+				zone: 'battlefield',
+				count: n ?? ONE,
+				filter: { ...filter, controller: 'you' }
+			}
+		];
 	}
 	const m = part.match(/^exile (.+?) from your (graveyard|hand)$/i);
 	if (!m) return null;
 	const [first, ...rest] = m[1].trim().split(/\s+/);
 	const n = count(first);
 	const phrase = n ? rest.join(' ') : m[1].trim();
-	if (!n && !/^another\b/i.test(phrase)) return null;
+	if (!n && !/^(?:another|other)\b/i.test(phrase)) return null;
 	if (!phrase) return null;
 	const filter = /^cards?$/i.test(phrase) ? {} : parseObjectPhrase(phrase);
 	if (!filter) return null;
@@ -488,13 +565,97 @@ const exileFrom: Production = (part) => {
 	];
 };
 
-/** "Remove a +1/+1 counter from ~", "Remove X charge counters from ~". */
+function lookupCounterWord(raw: string): CounterType | null {
+	return COUNTERS[raw.trim().toLowerCase().replace(/−/g, '-')] ?? null;
+}
+
+/** "Remove a +1/+1 counter from ~", "Remove a counter from ~", "Remove all charge counters from ~", "Remove two +1/+1 counters from among creatures you control". */
 const removeCounters: Production = (part) => {
-	const m = part.match(/^remove (\S+) (\S+) counters? from ~$/i);
+	if (/^remove all counters? from ~$/i.test(part)) {
+		return [
+			{ k: 'removeCounters', counter: 'any', count: { k: 'const', n: 0 }, removeAll: true, from: 'self' }
+		];
+	}
+	const allTypedSelf = part.match(/^remove all (.+?) counters? from ~$/i);
+	if (allTypedSelf) {
+		const counter = lookupCounterWord(allTypedSelf[1]);
+		return counter
+			? [{ k: 'removeCounters', counter, count: { k: 'const', n: 0 }, removeAll: true, from: 'self' }]
+			: null;
+	}
+	const anySelf = part.match(/^remove (\S+) counters? from ~$/i);
+	if (anySelf) {
+		const n = count(anySelf[1]);
+		return n ? [{ k: 'removeCounters', counter: 'any', count: n, from: 'self' }] : null;
+	}
+	const typedSelf = part.match(/^remove (\S+) (.+?) counters? from ~$/i);
+	if (typedSelf) {
+		const n = count(typedSelf[1]);
+		const counter = lookupCounterWord(typedSelf[2]);
+		return n && counter ? [{ k: 'removeCounters', counter, count: n, from: 'self' }] : null;
+	}
+	const anyAmong = part.match(/^remove (\S+) counters? from among (.+?) you control$/i);
+	if (anyAmong) {
+		const n = count(anyAmong[1]);
+		const filter = parseObjectPhrase(anyAmong[2]);
+		return n && filter && !filter.controller
+			? [{ k: 'removeCounters', counter: 'any', count: n, from: { ...filter, controller: 'you' }, among: true }]
+			: null;
+	}
+	const typedAmong = part.match(/^remove (\S+) (.+?) counters? from among (.+?) you control$/i);
+	if (typedAmong) {
+		const n = count(typedAmong[1]);
+		const counter = lookupCounterWord(typedAmong[2]);
+		const filter = parseObjectPhrase(typedAmong[3]);
+		return n && counter && filter && !filter.controller
+			? [{ k: 'removeCounters', counter, count: n, from: { ...filter, controller: 'you' }, among: true }]
+			: null;
+	}
+	const anyCtrl = part.match(/^remove (\S+) counters? from (?:(?:a|an)\s+|(?=(?:another|other)\b))(.+?) you control$/i);
+	if (anyCtrl) {
+		const n = count(anyCtrl[1]);
+		const filter = parseObjectPhrase(anyCtrl[2]);
+		return n && filter && !filter.controller
+			? [{ k: 'removeCounters', counter: 'any', count: n, from: { ...filter, controller: 'you' } }]
+			: null;
+	}
+	const typedCtrl = part.match(
+		/^remove (\S+) (.+?) counters? from (?:(?:a|an)\s+|(?=(?:another|other)\b))(.+?) you control$/i
+	);
+	if (typedCtrl) {
+		const n = count(typedCtrl[1]);
+		const counter = lookupCounterWord(typedCtrl[2]);
+		const filter = parseObjectPhrase(typedCtrl[3]);
+		return n && counter && filter && !filter.controller
+			? [{ k: 'removeCounters', counter, count: n, from: { ...filter, controller: 'you' } }]
+			: null;
+	}
+	return null;
+};
+
+/** "Return ~ to its owner's hand", "Return a land you control to its owner's hand", "Return two Islands you control to their owners' hands". */
+const returnToHand: Production = (part) => {
+	if (/^return ~ to its owner's hand$/i.test(part)) {
+		return [{ k: 'returnToHand', count: ONE, filter: 'self' }];
+	}
+	const m = part.match(/^return (.+?) you control to (?:its|their) (?:owner's|owners') hands?$/i);
+	if (!m) return null;
+	const [first, ...rest] = m[1].trim().split(/\s+/);
+	const n = count(first);
+	const phrase = n ? rest.join(' ') : m[1].trim();
+	if (!n && !/^(?:another|other)\b/i.test(phrase)) return null;
+	if (!phrase) return null;
+	const filter = parseObjectPhrase(phrase);
+	if (!filter || filter.controller) return null;
+	return [{ k: 'returnToHand', count: n ?? ONE, filter: { ...filter, controller: 'you' } }];
+};
+
+/** "Mill a card", "Mill three cards", "Mill X cards". */
+const millCost: Production = (part) => {
+	const m = part.match(/^mill (\S+) cards?$/i);
 	if (!m) return null;
 	const n = count(m[1]);
-	const counter = COUNTERS[m[2].toLowerCase()];
-	return n && counter ? [{ k: 'removeCounters', counter, count: n, from: 'self' }] : null;
+	return n ? [{ k: 'mill', count: n }] : null;
 };
 
 /** "Reveal a white card in/from your hand", "Reveal two red cards in/from your hand". */
@@ -526,6 +687,8 @@ const PRODUCTIONS: Production[] = [
 	discard,
 	exileFrom,
 	removeCounters,
+	returnToHand,
+	millCost,
 	revealFromHand,
 	exertSelf
 ];
@@ -611,17 +774,282 @@ export function parseAdditionalCostSentence(sentence: string, offset = 0): CostP
 
 // ---- Cost modifiers -------------------------------------------------------------------------
 
+const COLOR_SYMBOLS = new Set<ManaColor>(['W', 'U', 'B', 'R', 'G', 'C']);
+const HYBRID_COLOR_SET = new Set<ManaColor>(['W', 'U', 'B', 'R', 'G']);
+
+export function parseCostManaDelta(costStr: string, mode: 'reduce' | 'increase'): CostDelta | null {
+	const clean = costStr.replace(/\s+/g, '');
+	const symbols = clean.match(/\{[^}]+\}/g);
+	if (!symbols || symbols.join('') !== clean) return null;
+	let generic = 0;
+	const colored: Partial<Record<ManaColor, number>> = {};
+	let hasColored = false;
+	const hybridColored: Array<[ManaColor, ManaColor]> = [];
+
+	for (const rawSym of symbols) {
+		const inner = rawSym.slice(1, -1).toUpperCase();
+		if (/^\d+$/.test(inner)) {
+			generic += parseInt(inner, 10);
+			continue;
+		}
+		if (COLOR_SYMBOLS.has(inner as ManaColor)) {
+			const c = inner as ManaColor;
+			colored[c] = (colored[c] ?? 0) + 1;
+			hasColored = true;
+			continue;
+		}
+		const hyb = inner.match(/^([WUBRG])\/([WUBRG])$/);
+		if (hyb && mode === 'reduce' && HYBRID_COLOR_SET.has(hyb[1] as ManaColor) && HYBRID_COLOR_SET.has(hyb[2] as ManaColor)) {
+			hybridColored.push([hyb[1] as ManaColor, hyb[2] as ManaColor]);
+			continue;
+		}
+		return null;
+	}
+
+	return {
+		mode,
+		generic,
+		...(hasColored ? { colored } : {}),
+		...(hybridColored.length > 0 ? { hybridColored } : {})
+	};
+}
+
+export function parseCostMetricAmount(metricRaw: string): Amount | null {
+	const metric = metricRaw.trim().replace(/^(?:a|an)\s+/i, '');
+	if (/^time you've cast (?:your|a) commander from the command zone this game$/i.test(metric)) {
+		return { k: 'commanderCastCount' };
+	}
+	if (/^creatures? in your party$/i.test(metric)) {
+		return { k: 'partyCount', player: { k: 'you' } };
+	}
+	if (/^basic land types? among lands you control$/i.test(metric)) {
+		return { k: 'domain', player: { k: 'you' } };
+	}
+	if (/^cards? in your graveyard$/i.test(metric)) {
+		return { k: 'cardsIn', zone: 'graveyard', of: { k: 'you' } };
+	}
+	if (/^cards? in your hand$/i.test(metric)) {
+		return { k: 'cardsIn', zone: 'hand', of: { k: 'you' } };
+	}
+	if (/^cards? in all graveyards$/i.test(metric)) {
+		return { k: 'count', of: { zone: 'graveyard' } };
+	}
+	if (/^card types? among cards in your graveyard$/i.test(metric)) {
+		return { k: 'distinctCardTypesInZone', zone: 'graveyard', whose: 'you' };
+	}
+	if (/^counters? on ~$/i.test(metric)) {
+		return { k: 'countersOn', counter: 'any', of: { k: 'self' } };
+	}
+	const counterOnSelf = metric.match(/^(.+?) counters? on ~$/i);
+	if (counterOnSelf) {
+		const c = lookupCounterWord(counterOnSelf[1]);
+		if (c) return { k: 'countersOn', counter: c, of: { k: 'self' } };
+	}
+	const gyCard = metric.match(/^(.+?) cards? in your graveyard$/i);
+	if (gyCard) {
+		const f = parseObjectPhrase(`${gyCard[1].replace(/\s+and\s+/gi, ' or ')} card`);
+		if (f && !f.controller) return { k: 'count', of: { ...f, zone: 'graveyard', owner: 'you' } };
+	}
+	const allGyCard = metric.match(/^(.+?) cards? in all graveyards$/i);
+	if (allGyCard) {
+		const f = parseObjectPhrase(`${allGyCard[1].replace(/\s+and\s+/gi, ' or ')} card`);
+		if (f && !f.controller) return { k: 'count', of: { ...f, zone: 'graveyard' } };
+	}
+	const attachedSelf = metric.match(/^(.+?) attached to ~$/i);
+	if (attachedSelf) {
+		const f = parseObjectPhrase(attachedSelf[1].replace(/\s+and\s+/gi, ' or '));
+		if (f && !f.controller) {
+			return {
+				k: 'attachmentsOn',
+				target: 'self',
+				...(Object.keys(f).length > 0 ? { filter: f } : {})
+			};
+		}
+	}
+	const youCtrl = metric.match(/^(.+?) you control$/i);
+	if (youCtrl) {
+		const f = parseObjectPhrase(youCtrl[1].replace(/\s+and\s+/gi, ' or '));
+		if (f && !f.controller) return { k: 'count', of: { ...f, controller: 'you', zone: 'battlefield' } };
+	}
+	const oppCtrl = metric.match(/^(.+?) (?:your opponents control|an opponent controls)$/i);
+	if (oppCtrl) {
+		const f = parseObjectPhrase(oppCtrl[1].replace(/\s+and\s+/gi, ' or '));
+		if (f && !f.controller) return { k: 'count', of: { ...f, controller: 'opponent', zone: 'battlefield' } };
+	}
+	const onBf = metric.match(/^(.+?) on the battlefield$/i);
+	if (onBf) {
+		const f = parseObjectPhrase(onBf[1].replace(/\s+and\s+/gi, ' or '));
+		if (f && !f.controller) return { k: 'count', of: { ...f, zone: 'battlefield' } };
+	}
+	return null;
+}
+
+export function parseSelfCostCondition(condRaw: string): Condition | null {
+	const c = condRaw.trim();
+	if (/^you control (?:a|your) commander$/i.test(c)) return { k: 'controlCommander' };
+	if (/^a creature died this turn$/i.test(c)) return { k: 'creatureDiedThisTurn' };
+	if (/^you attacked(?: with a creature)? this turn$/i.test(c)) return { k: 'attackedThisTurn' };
+	if (/^a permanent you controlled left the battlefield this turn$/i.test(c)) {
+		return { k: 'permanentLeftBattlefieldThisTurn' };
+	}
+	if (/^you gained life this turn$/i.test(c)) return { k: 'gainedLifeThisTurn' };
+	const gainedN = c.match(/^you gained (\S+) or more life this turn$/i);
+	if (gainedN) {
+		const min = count(gainedN[1]);
+		if (min) return { k: 'gainedLifeThisTurn', min };
+	}
+	if (/^you have a full party$/i.test(c)) {
+		return { k: 'compare', left: { k: 'partyCount', player: { k: 'you' } }, op: '>=', right: { k: 'const', n: 4 } };
+	}
+	if (/^it's your turn$/i.test(c)) return { k: 'isTurnOf', player: { k: 'you' } };
+	if (/^it's not your turn$/i.test(c)) return { k: 'not', of: { k: 'isTurnOf', player: { k: 'you' } } };
+	if (/^you're the monarch$/i.test(c)) return { k: 'isMonarch', relation: 'you' };
+
+	const targetsPhrase = c.match(/^it targets (?:a|an) (.+)$/i);
+	if (targetsPhrase) {
+		let rawTarget = targetsPhrase[1].trim();
+		let ctrl: 'you' | 'opponent' | undefined;
+		const oppCtrl = rawTarget.match(/^(.+?)\s+(?:an opponent controls|your opponents control)$/i);
+		if (oppCtrl) {
+			ctrl = 'opponent';
+			rawTarget = oppCtrl[1];
+		}
+		const tf = parseObjectPhrase(rawTarget);
+		if (tf) {
+			return {
+				k: 'matchesFilter',
+				filter: { targetsFilter: { ...tf, ...(ctrl ? { controller: ctrl } : {}) } }
+			};
+		}
+	}
+
+	const youCtrl = c.match(/^you control (\S+)(?: or more)? (.+)$/i);
+	if (youCtrl) {
+		const min = count(youCtrl[1]);
+		const f = parseObjectPhrase(youCtrl[2].replace(/\s+and\s+/gi, ' or '));
+		if (min && f && !f.controller) {
+			return {
+				k: 'compare',
+				left: { k: 'count', of: { ...f, controller: 'you', zone: 'battlefield' } },
+				op: '>=',
+				right: min
+			};
+		}
+	}
+	const oppCtrl = c.match(/^an opponent controls (\S+)(?: or more)? (.+)$/i);
+	if (oppCtrl) {
+		const min = count(oppCtrl[1]);
+		const f = parseObjectPhrase(oppCtrl[2].replace(/\s+and\s+/gi, ' or '));
+		if (min && f && !f.controller) {
+			return {
+				k: 'compare',
+				left: { k: 'count', of: { ...f, controller: 'opponent', zone: 'battlefield' } },
+				op: '>=',
+				right: min
+			};
+		}
+	}
+	const gyCards = c.match(/^there are (\S+) or more cards in your graveyard$/i);
+	if (gyCards) {
+		const min = count(gyCards[1]);
+		if (min) {
+			return {
+				k: 'compare',
+				left: { k: 'cardsIn', zone: 'graveyard', of: { k: 'you' } },
+				op: '>=',
+				right: min
+			};
+		}
+	}
+	const gyTyped = c.match(/^there are (\S+) or more (.+?) cards in your graveyard$/i);
+	if (gyTyped) {
+		const min = count(gyTyped[1]);
+		const f = parseObjectPhrase(`${gyTyped[2].replace(/\s+and\s+/gi, ' or ')} card`);
+		if (min && f && !f.controller) {
+			return {
+				k: 'compare',
+				left: { k: 'count', of: { ...f, zone: 'graveyard', owner: 'you' } },
+				op: '>=',
+				right: min
+			};
+		}
+	}
+	const delirium = c.match(/^there are (\S+) or more card types among cards in your graveyard$/i);
+	if (delirium) {
+		const min = count(delirium[1]);
+		if (min) {
+			return {
+				k: 'compare',
+				left: { k: 'distinctCardTypesInZone', zone: 'graveyard', whose: 'you' },
+				op: '>=',
+				right: min
+			};
+		}
+	}
+	return null;
+}
+
+function parseSpellFilterPhrase(rawPhrase: string): { filter: ObjectFilter; other: boolean } | null {
+	let phrase = rawPhrase.trim();
+	let other = false;
+	if (!phrase) return { filter: {}, other: false };
+	const otherMatch = phrase.match(/^other (.+)$/i);
+	if (otherMatch) {
+		other = true;
+		phrase = otherMatch[1].trim();
+	}
+	// "Elemental spells and Warrior spells" -> "Elemental or Warrior"
+	phrase = phrase.replace(/\bspells\s+and\s+/gi, 'or ');
+	// "Instant and sorcery spells" -> "Instant or sorcery"
+	phrase = phrase.replace(/\s+and\s+/gi, ' or ');
+	const baseFilter: ObjectFilter | null =
+		parseObjectPhrase(phrase) ?? parseObjectPhrase(`${phrase} card`);
+	if (!baseFilter || baseFilter.controller || baseFilter.other) return null;
+	return { filter: baseFilter, other };
+}
+
 /**
  * Parses a static cost-modifying sentence into a `costModifier` StaticDef:
- * - "<object phrase> spells you cast cost {N} less/more to cast." (any type or subtype; "other" excludes
- *   the source; "As long as ~ is in the command zone or on the battlefield, ..." also works from the
- *   command zone)
- * - "This spell costs {N} less to cast for each <object phrase> on the battlefield."
+ * - "<object phrase> spells you cast cost {N}/{W} less/more to cast [for each ...]."
+ * - "This spell/~ costs {N} less to cast [for each ... | if <condition>]."
+ * - "Spells your opponents cast that target ~ / a <filter> you control cost {N} more to cast."
+ * - "Activated abilities of <filter> cost {N} less/more to activate."
  * Returns null unless the whole sentence is understood. Input is normalised (`~`, no reminder text).
  */
 export function parseCostModifierSentence(sentence: string): StaticDef | null {
-	const text = sentence.trim().replace(/\.$/, '');
+	let text = sentence.trim().replace(/\.$/, '');
+	let coloredOnly = false;
+	let minTotalMana: number | undefined;
+
+	for (let guard = 0; guard < 4; guard++) {
+		const coloredClause = text.match(/^(.+?)\.\s*this effect reduces only the amount of colored mana you pay$/i);
+		if (coloredClause) {
+			coloredOnly = true;
+			text = coloredClause[1].trim();
+			continue;
+		}
+		const floorClause = text.match(
+			/^(.+?)\.\s*(?:this effect can't reduce the (?:amount of )?mana (?:in that cost|that ability costs to activate) to less than one mana|this cost can't be reduced to less than \{1\})$/i
+		);
+		if (floorClause) {
+			minTotalMana = 1;
+			text = floorClause[1].trim();
+			continue;
+		}
+		break;
+	}
+
+	const withFloorAndColored = (delta: CostDelta): CostDelta | null => {
+		if ((coloredOnly || minTotalMana !== undefined) && delta.mode !== 'reduce') return null;
+		return {
+			...delta,
+			...(coloredOnly ? { coloredOnly: true } : {}),
+			...(minTotalMana !== undefined ? { minTotalMana } : {})
+		};
+	};
+
 	if (/^if you control (?:a|your) commander, you may cast (?:this spell|~) without paying its mana cost$/i.test(text)) {
+		if (coloredOnly || minTotalMana !== undefined) return null;
 		return {
 			k: 'costModifier',
 			affects: { k: 'self' },
@@ -630,40 +1058,69 @@ export function parseCostModifierSentence(sentence: string): StaticDef | null {
 			condition: { k: 'controlCommander' }
 		};
 	}
-	const selfCmd = text.match(
-		/^(?:this spell|~) costs \{(\d+)\} (less|more) to cast for each time you've cast (?:your|a) commander from the command zone this game$/i
+
+	// Self cost modifier with "for each <metric>" or "if <condition>" or unconditional ("during your turn, ~ costs ...").
+	const selfTurnPrefix = text.match(/^during your turn,\s*((?:this spell|~) costs .+)$/i);
+	const selfBody = selfTurnPrefix ? selfTurnPrefix[1] : text;
+	const selfForEach = selfBody.match(
+		/^(?:this spell|~) costs ((?:\{[^}]+\})+) (less|more) to cast for each (.+)$/i
 	);
-	if (selfCmd) {
+	if (selfForEach) {
+		const rawDelta = parseCostManaDelta(selfForEach[1], selfForEach[2].toLowerCase() === 'less' ? 'reduce' : 'increase');
+		const per = parseCostMetricAmount(selfForEach[3]);
+		const delta = rawDelta && withFloorAndColored(rawDelta);
+		if (!delta || !per) return null;
 		return {
 			k: 'costModifier',
 			affects: { k: 'self' },
-			delta: {
-				mode: selfCmd[2].toLowerCase() === 'less' ? 'reduce' : 'increase',
-				generic: parseInt(selfCmd[1], 10),
-				per: { k: 'commanderCastCount' }
-			},
-			who: { relation: 'you' }
-		};
-	}
-	const self = text.match(/^(?:this spell|~) costs \{(\d+)\} (less|more) to cast for each (.+?) on the battlefield$/i);
-	if (self) {
-		const per = parseObjectPhrase(self[3]);
-		if (!per || per.controller) return null;
-		return {
-			k: 'costModifier',
-			affects: { k: 'self' },
-			delta: {
-				mode: self[2].toLowerCase() === 'less' ? 'reduce' : 'increase',
-				generic: parseInt(self[1], 10),
-				per: { k: 'count', of: { ...per, zone: 'battlefield' } }
-			},
-			who: { relation: 'you' }
+			delta: { ...delta, per },
+			who: { relation: 'you' },
+			...(selfTurnPrefix ? { condition: { k: 'isTurnOf', player: { k: 'you' } } } : {})
 		};
 	}
 
-	const targetTax = text.match(/^Spells your opponents cast that target ~ cost an additional (\d+) life to cast$/i);
-	if (targetTax) {
-		const life = parseInt(targetTax[1], 10);
+	const selfIf = selfBody.match(
+		/^(?:this spell|~) costs ((?:\{[^}]+\})+) (less|more) to cast if (.+)$/i
+	);
+	if (selfIf) {
+		const rawDelta = parseCostManaDelta(selfIf[1], selfIf[2].toLowerCase() === 'less' ? 'reduce' : 'increase');
+		const cond = parseSelfCostCondition(selfIf[3]);
+		const delta = rawDelta && withFloorAndColored(rawDelta);
+		if (!delta || !cond) return null;
+		const fullCond: Condition = selfTurnPrefix
+			? { k: 'and', of: [{ k: 'isTurnOf', player: { k: 'you' } }, cond] }
+			: cond;
+		return {
+			k: 'costModifier',
+			affects: { k: 'self' },
+			delta,
+			who: { relation: 'you' },
+			condition: fullCond
+		};
+	}
+
+	if (selfTurnPrefix) {
+		const selfPlain = selfBody.match(/^(?:this spell|~) costs ((?:\{[^}]+\})+) (less|more) to cast$/i);
+		if (selfPlain) {
+			const rawDelta = parseCostManaDelta(selfPlain[1], selfPlain[2].toLowerCase() === 'less' ? 'reduce' : 'increase');
+			const delta = rawDelta && withFloorAndColored(rawDelta);
+			if (!delta) return null;
+			return {
+				k: 'costModifier',
+				affects: { k: 'self' },
+				delta,
+				who: { relation: 'you' },
+				condition: { k: 'isTurnOf', player: { k: 'you' } }
+			};
+		}
+	}
+
+	// Targeting life tax ("Spells your opponents cast that target ~ cost an additional N life to cast").
+	const targetLifeTax = text.match(
+		/^Spells your opponents cast that target ~ cost an additional (\d+) life to cast$/i
+	);
+	if (targetLifeTax && !coloredOnly && minTotalMana === undefined) {
+		const life = parseInt(targetLifeTax[1], 10);
 		return {
 			k: 'costModifier',
 			affects: { k: 'spell', filter: { targetsSelf: true } },
@@ -672,32 +1129,156 @@ export function parseCostModifierSentence(sentence: string): StaticDef | null {
 		};
 	}
 
+	// Targeting mana cost modifier ("Spells your opponents cast that target ~ / a <filter> you control cost {N} more to cast",
+	// or "Spells you cast that target a <filter> [you control / an opponent controls] cost {N} less to cast").
+	const targetManaMod = text.match(
+		/^(?:(.+?) )?spells (you|your opponents) cast that target (~|(?:a|an) .+?) cost ((?:\{[^}]+\})+) (less|more) to cast$/i
+	);
+	if (targetManaMod) {
+		const spellPrefix = targetManaMod[1] ? parseSpellFilterPhrase(targetManaMod[1]) : { filter: {}, other: false };
+		if (!spellPrefix) return null;
+		const who = targetManaMod[2].toLowerCase() === 'you' ? 'you' : 'each_opponent';
+		const rawTarget = targetManaMod[3].trim();
+		const rawDelta = parseCostManaDelta(
+			targetManaMod[4],
+			targetManaMod[5].toLowerCase() === 'less' ? 'reduce' : 'increase'
+		);
+		const delta = rawDelta && withFloorAndColored(rawDelta);
+		if (!delta) return null;
+
+		let targetSpecFilter: ObjectFilter | null = null;
+		if (rawTarget === '~') {
+			targetSpecFilter = { targetsSelf: true };
+		} else {
+			let innerTarget = rawTarget.replace(/^(?:a|an)\s+/i, '');
+			let ctrl: 'you' | 'opponent' | undefined;
+			const oppCtrl = innerTarget.match(/^(.+?)\s+(?:an opponent controls|your opponents control)$/i);
+			if (oppCtrl) {
+				ctrl = 'opponent';
+				innerTarget = oppCtrl[1];
+			}
+			const parsedTarget = parseObjectPhrase(innerTarget.replace(/\s+and\s+/gi, ' or '));
+			if (!parsedTarget) return null;
+			targetSpecFilter = {
+				targetsFilter: {
+					...parsedTarget,
+					...(ctrl ? { controller: ctrl } : {})
+				}
+			};
+		}
+		return {
+			k: 'costModifier',
+			affects: {
+				k: 'spell',
+				filter: {
+					...spellPrefix.filter,
+					...(spellPrefix.other ? { other: true } : {}),
+					...targetSpecFilter
+				}
+			},
+			delta,
+			who: { relation: who }
+		};
+	}
+
+	// Activated ability cost modifiers:
+	// "Activated abilities of <phrase> cost [up to] {N} less/more to activate."
+	const actAbilMod = text.match(
+		/^activated abilities of (.+?) cost (?:(up to) )?((?:\{[^}]+\})+) (less|more) to activate$/i
+	);
+	if (actAbilMod) {
+		const mode = actAbilMod[4].toLowerCase() === 'less' ? 'reduce' : 'increase';
+		if (actAbilMod[2] && mode !== 'reduce') return null;
+		const rawDelta = parseCostManaDelta(actAbilMod[3], mode);
+		const delta = rawDelta && withFloorAndColored(rawDelta);
+		if (!delta) return null;
+		if (actAbilMod[2] && delta.colored) return null;
+		let rawTarget = actAbilMod[1].trim();
+		let ctrl: 'you' | 'opponent' | undefined;
+		const oppCtrl = rawTarget.match(/^(.+?)\s+(?:an opponent controls|your opponents control)$/i);
+		if (oppCtrl) {
+			ctrl = 'opponent';
+			rawTarget = oppCtrl[1];
+		}
+		const filter = parseObjectPhrase(rawTarget.replace(/\s+and\s+/gi, ' or '));
+		if (!filter) return null;
+		const finalFilter: ObjectFilter = {
+			...filter,
+			...(ctrl ? { controller: ctrl } : {})
+		};
+		return {
+			k: 'costModifier',
+			affects: { k: 'ability', filter: finalFilter },
+			delta,
+			who: {
+				relation:
+					finalFilter.controller === 'you'
+						? 'you'
+						: finalFilter.controller === 'opponent'
+							? 'each_opponent'
+							: 'each_player'
+			}
+		};
+	}
+
+	const equipAbilMod = text.match(
+		/^equip abilities you activate cost (?:(up to) )?((?:\{[^}]+\})+) (less|more) to activate$/i
+	);
+	if (equipAbilMod) {
+		const mode = equipAbilMod[3].toLowerCase() === 'less' ? 'reduce' : 'increase';
+		if (equipAbilMod[1] && mode !== 'reduce') return null;
+		const rawDelta = parseCostManaDelta(equipAbilMod[2], mode);
+		const delta = rawDelta && withFloorAndColored(rawDelta);
+		if (!delta) return null;
+		return {
+			k: 'costModifier',
+			affects: { k: 'ability', keyword: 'equip' },
+			delta,
+			who: { relation: 'you' }
+		};
+	}
+
+	// General spell cost modifiers:
+	// "[As long as ~ is in the command zone or on the battlefield, ][<phrase> ]spells [of the chosen type/color] [you/your opponents cast] [with power/toughness/mana value ...] cost <mana> less/more to cast [for each <metric>]"
 	const m = text.match(
-		/^(as long as ~ is in the command zone or on the battlefield, )?(?:(.+?) )?spells(?: of the chosen (type|color))?(?: (you|your opponents) cast)?(?: of the chosen (type|color))? cost \{(\d+)\} (less|more) to cast$/i
+		/^(as long as ~ is in the command zone or on the battlefield, )?(?:(.+?) )?spells(?: of the chosen (type|color))?(?: (you|your opponents) cast)?(?: of the chosen (type|color))?(?: with (power|toughness|mana value) (\S+)(?: or (greater|more|less|fewer))?)? cost ((?:\{[^}]+\})+) (less|more) to cast(?: for each (.+))?$/i
 	);
 	if (!m) return null;
 	const chosenKindA = m[3]?.toLowerCase();
 	const whoRaw = m[4]?.toLowerCase();
 	const chosenKindB = m[5]?.toLowerCase();
 	if (chosenKindA && chosenKindB && chosenKindA === chosenKindB) return null;
-	let phrase = (m[2] ?? '').trim();
-	let other = false;
-	if (phrase) {
-		const otherMatch = phrase.match(/^other (.+)$/i);
-		if (otherMatch) {
-			other = true;
-			phrase = otherMatch[1];
-		}
-		// "Instant and sorcery spells" means instant spells and sorcery spells: any of them.
-		phrase = phrase.replace(/\s+and\s+/gi, ' or ');
+
+	const parsedPhrase = parseSpellFilterPhrase(m[2] ?? '');
+	if (!parsedPhrase) return null;
+	const { filter: baseFilter, other } = parsedPhrase;
+
+	let extraStatFilter: Partial<ObjectFilter> = {};
+	if (m[6] && m[7]) {
+		const statVal = count(m[7]);
+		if (!statVal || (statVal.k === 'const' && m[7].toLowerCase() === 'a')) return null;
+		const dir = m[8]?.toLowerCase();
+		const cmp: Compare = { op: !dir ? '=' : dir === 'greater' || dir === 'more' ? '>=' : '<=', value: statVal };
+		const statKind = m[6].toLowerCase();
+		const key = statKind === 'power' ? 'power' : statKind === 'toughness' ? 'toughness' : 'manaValue';
+		if (baseFilter[key]) return null;
+		extraStatFilter = { [key]: cmp };
 	}
-	// "Noncreature spells": only modifiers, so the noun is the spell itself (any card).
-	const baseFilter: ObjectFilter | null = phrase
-		? (parseObjectPhrase(phrase) ?? parseObjectPhrase(`${phrase} card`))
-		: {};
-	if (!baseFilter || baseFilter.controller || baseFilter.other) return null;
+
+	const rawDelta = parseCostManaDelta(m[9], m[10].toLowerCase() === 'less' ? 'reduce' : 'increase');
+	const deltaBase = rawDelta && withFloorAndColored(rawDelta);
+	if (!deltaBase) return null;
+
+	let per: Amount | undefined;
+	if (m[11]) {
+		const parsedPer = parseCostMetricAmount(m[11]);
+		if (!parsedPer) return null;
+		per = parsedPer;
+	}
+
 	const filter: ObjectFilter = {
 		...baseFilter,
+		...extraStatFilter,
 		...(other ? { other: true } : {}),
 		...(chosenKindA === 'type' || chosenKindB === 'type' ? { ofChosenType: true } : {}),
 		...(chosenKindA === 'color' || chosenKindB === 'color' ? { ofChosenColor: true } : {})
@@ -706,7 +1287,10 @@ export function parseCostModifierSentence(sentence: string): StaticDef | null {
 	return {
 		k: 'costModifier',
 		affects: { k: 'spell', filter },
-		delta: { mode: m[7].toLowerCase() === 'less' ? 'reduce' : 'increase', generic: parseInt(m[6], 10) },
+		delta: {
+			...deltaBase,
+			...(per ? { per } : {})
+		},
 		who: { relation: who },
 		activeZones: m[1] ? ['battlefield', 'command'] : undefined
 	};
