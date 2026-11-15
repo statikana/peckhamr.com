@@ -13,6 +13,7 @@ import type { BoardViewModel, PermanentView } from './boardViewModel.ts';
 export interface CombatDraftState {
 	draftAttackers: Record<string, string>;
 	draftAttackerWalkers: Record<string, string | null>;
+	draftAttackerBattles: Record<string, string | null>;
 	draftBlockers: Record<string, string>;
 	selectedBlockerId: string | null;
 }
@@ -186,6 +187,7 @@ export function createEmptyCombatDraft(): CombatDraftState {
 	return {
 		draftAttackers: {},
 		draftAttackerWalkers: {},
+		draftAttackerBattles: {},
 		draftBlockers: {},
 		selectedBlockerId: null
 	};
@@ -195,6 +197,7 @@ export function isCombatDraftEmpty(draft: CombatDraftState): boolean {
 	return (
 		Object.keys(draft.draftAttackers).length === 0 &&
 		Object.keys(draft.draftAttackerWalkers).length === 0 &&
+		Object.keys(draft.draftAttackerBattles).length === 0 &&
 		Object.keys(draft.draftBlockers).length === 0 &&
 		draft.selectedBlockerId === null
 	);
@@ -242,12 +245,15 @@ export function toggleDraftAttacker(
 	if (draft.draftAttackers[id]) {
 		const nextAtk = { ...draft.draftAttackers };
 		const nextWalkers = { ...draft.draftAttackerWalkers };
+		const nextBattles = { ...draft.draftAttackerBattles };
 		delete nextAtk[id];
 		delete nextWalkers[id];
+		delete nextBattles[id];
 		return {
 			...draft,
 			draftAttackers: nextAtk,
-			draftAttackerWalkers: nextWalkers
+			draftAttackerWalkers: nextWalkers,
+			draftAttackerBattles: nextBattles
 		};
 	}
 	if (!permView.actableSummary.canAttackNow) {
@@ -274,6 +280,7 @@ export function selectAllEligibleAttackers(
 	if (!defaultDef) return draft;
 	const nextAtk: Record<string, string> = {};
 	const nextWalkers: Record<string, string | null> = {};
+	const nextBattles: Record<string, string | null> = {};
 	for (const row of [boardVM.frontRow, boardVM.backRow]) {
 		for (const pView of row) {
 			if (!pView.actableSummary.canAttackNow) continue;
@@ -281,12 +288,16 @@ export function selectAllEligibleAttackers(
 			if (draft.draftAttackerWalkers[pView.instanceId]) {
 				nextWalkers[pView.instanceId] = draft.draftAttackerWalkers[pView.instanceId];
 			}
+			if (draft.draftAttackerBattles[pView.instanceId]) {
+				nextBattles[pView.instanceId] = draft.draftAttackerBattles[pView.instanceId];
+			}
 		}
 	}
 	return {
 		...draft,
 		draftAttackers: nextAtk,
-		draftAttackerWalkers: nextWalkers
+		draftAttackerWalkers: nextWalkers,
+		draftAttackerBattles: nextBattles
 	};
 }
 
@@ -305,7 +316,8 @@ export function retargetDraftAttackersToPlayer(
 	return {
 		...draft,
 		draftAttackers: updated,
-		draftAttackerWalkers: {}
+		draftAttackerWalkers: {},
+		draftAttackerBattles: {}
 	};
 }
 
@@ -327,7 +339,43 @@ export function retargetDraftAttackersToPlaneswalker(
 	return {
 		...draft,
 		draftAttackers: updatedDef,
-		draftAttackerWalkers: updatedWalkers
+		draftAttackerWalkers: updatedWalkers,
+		draftAttackerBattles: {}
+	};
+}
+
+/**
+ * CR 310.8a–b: Retargets drafted attackers to attack `battleView`. Any player EXCEPT the battle's
+ * protector (`battleView.protectorId !== viewerId`) may attack it, including the player who
+ * cast/controls a Siege battle being protected by an opponent.
+ */
+export function retargetDraftAttackersToBattle(
+	draft: CombatDraftState,
+	battleView: PermanentView,
+	viewerId: string
+): CombatDraftState {
+	if (
+		!battleView.isBattle ||
+		battleView.perm.phasedOut ||
+		!battleView.protectorId ||
+		battleView.protectorId === viewerId ||
+		!battleView.canBeAttackedAsBattle
+	) {
+		return draft;
+	}
+	const attackerIds = Object.keys(draft.draftAttackers);
+	if (attackerIds.length === 0) return draft;
+	const updatedDef: Record<string, string> = {};
+	const updatedBattles: Record<string, string | null> = {};
+	for (const atkId of attackerIds) {
+		updatedDef[atkId] = battleView.protectorId;
+		updatedBattles[atkId] = battleView.instanceId;
+	}
+	return {
+		...draft,
+		draftAttackers: updatedDef,
+		draftAttackerWalkers: {},
+		draftAttackerBattles: updatedBattles
 	};
 }
 
@@ -408,7 +456,8 @@ export function pruneStaleCombatDraft(
 
 	const hasAtk =
 		Object.keys(draft.draftAttackers).length > 0 ||
-		Object.keys(draft.draftAttackerWalkers).length > 0;
+		Object.keys(draft.draftAttackerWalkers).length > 0 ||
+		Object.keys(draft.draftAttackerBattles).length > 0;
 	const hasBlk =
 		Object.keys(draft.draftBlockers).length > 0 || draft.selectedBlockerId !== null;
 
@@ -420,6 +469,7 @@ export function pruneStaleCombatDraft(
 	return {
 		draftAttackers: clearAtk ? {} : draft.draftAttackers,
 		draftAttackerWalkers: clearAtk ? {} : draft.draftAttackerWalkers,
+		draftAttackerBattles: clearAtk ? {} : draft.draftAttackerBattles,
 		draftBlockers: clearBlk ? {} : draft.draftBlockers,
 		selectedBlockerId: clearBlk ? null : draft.selectedBlockerId
 	};
@@ -431,11 +481,15 @@ export function buildDeclareAttackersPayload(
 	return {
 		type: 'declare_attackers',
 		assignments: Object.entries(draft.draftAttackers).map(
-			([attackerInstanceId, defenderPlayerId]) => ({
-				attackerInstanceId,
-				defenderPlayerId,
-				defenderPlaneswalkerId: draft.draftAttackerWalkers[attackerInstanceId] || null
-			})
+			([attackerInstanceId, defenderPlayerId]) => {
+				const defenderBattleId = draft.draftAttackerBattles[attackerInstanceId] || null;
+				return {
+					attackerInstanceId,
+					defenderPlayerId,
+					defenderPlaneswalkerId: draft.draftAttackerWalkers[attackerInstanceId] || null,
+					...(defenderBattleId ? { defenderBattleId } : {})
+				};
+			}
 		)
 	};
 }

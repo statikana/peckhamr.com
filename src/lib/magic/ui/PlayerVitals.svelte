@@ -43,6 +43,20 @@
 	}: Props = $props();
 
 	const MANA_ORB_COLORS: readonly ManaColor[] = ['W', 'U', 'B', 'R', 'G', 'C'];
+
+	const snowManaTooltip = $derived.by(() => {
+		if (status.snowManaTotal <= 0) return '';
+		const breakdown = MANA_ORB_COLORS.filter((c) => (status.snowManaByColor[c] ?? 0) > 0)
+			.map((c) => `${status.snowManaByColor[c]} {${c}}`)
+			.join(', ');
+		return `Snow mana in pool: ${status.snowManaTotal} {S}${breakdown ? ` (${breakdown})` : ''} — spendable on {S} costs (CR 107.4h)`;
+	});
+
+	const ringTooltip = $derived(
+		status.ringLevel > 0
+			? `The Ring (Level ${status.ringLevel}/4 — CR 701.54):\n${status.ringAbilities.join('\n')}`
+			: ''
+	);
 </script>
 
 <div class="my-vitals">
@@ -69,7 +83,68 @@
 					👑 Monarch
 				</span>
 			{/if}
+			{#if status.hasInitiative}
+				<span
+					class="status-pill initiative"
+					data-testid="vitals-initiative-pill"
+					title="You have the Initiative (CR 727: venture into Undercity at upkeep)"
+				>
+					🔦 Initiative
+				</span>
+			{/if}
 		</div>
+
+		{#if status.speed > 0 || status.hasCitysBlessing || status.ringLevel > 0 || status.activeDungeon || status.completedDungeonCount > 0}
+			<div class="player-designations-row">
+				{#if status.speed > 0}
+					<span
+						class="status-pill speed"
+						class:max-speed={status.isMaxSpeed}
+						data-testid="vitals-speed-pill"
+						title={status.isMaxSpeed
+							? 'Max Speed (4/4 — CR 702.179: Max speed abilities are unlocked)'
+							: `Speed ${status.speed}/4 (CR 702.178: increases once on your turn when an opponent loses life)`}
+					>
+						{status.isMaxSpeed ? '🔥 MAX SPEED 4' : `⚡ Speed ${status.speed}`}
+					</span>
+				{/if}
+				{#if status.hasCitysBlessing}
+					<span
+						class="status-pill blessing"
+						data-testid="vitals-blessing-pill"
+						title="You have the City's Blessing for the rest of the game (CR 702.131)"
+					>
+						🏛️ City's Blessing
+					</span>
+				{/if}
+				{#if status.ringLevel > 0}
+					<span
+						class="status-pill ring"
+						data-testid="vitals-ring-pill"
+						title={ringTooltip}
+					>
+						💍 Ring Lv.{status.ringLevel}
+					</span>
+				{/if}
+				{#if status.activeDungeon}
+					<span
+						class="status-pill dungeon"
+						data-testid="vitals-dungeon-pill"
+						title={`${status.activeDungeon.dungeonName} — Room ${status.activeDungeon.roomIndex + 1}/${status.activeDungeon.totalRooms} (${status.activeDungeon.roomName}): ${status.activeDungeon.roomEffectText}`}
+					>
+						🗺️ {status.activeDungeon.dungeonName}: {status.activeDungeon.roomName}
+					</span>
+				{/if}
+				{#if status.completedDungeonCount > 0}
+					<span
+						class="status-pill dungeon-done"
+						title={`Completed dungeons (${status.completedDungeonCount}): ${status.completedDungeonNames.join(', ') || status.completedDungeonCount}`}
+					>
+						🏆 ×{status.completedDungeonCount}
+					</span>
+				{/if}
+			</div>
+		{/if}
 
 		{#if status.poison > 0 || status.energyCounters > 0 || status.experienceCounters > 0 || status.radCounters > 0}
 			<div class="player-counters-row">
@@ -166,6 +241,16 @@
 				<span>{amt}</span>
 			</span>
 		{/each}
+		{#if status.snowManaTotal > 0}
+			<span
+				class="mana-orb filled snow-mana"
+				data-testid="vitals-snow-mana"
+				title={snowManaTooltip}
+			>
+				<ManaSymbol symbol="S" size={14} />
+				<span>Snow ({status.snowManaTotal})</span>
+			</span>
+		{/if}
 		{#each status.restrictedManaEntries as entry (entry.restriction)}
 			<span
 				class="mana-orb filled restricted-mana"
@@ -223,6 +308,22 @@
 		>
 			Exile {player.exile.length}
 		</button>
+		{#if status.emblems.length > 0}
+			<button
+				type="button"
+				class="z-chip clickable emblem-chip"
+				data-testid="vitals-emblems-chip"
+				title={status.emblems.map((em) => em.card.name).join(' · ')}
+				onclick={() =>
+					onOpenZoneModal?.({
+						title: 'Your Emblems',
+						cards: status.emblems,
+						ownerName: player.username
+					})}
+			>
+				🛡️ Emblems ({status.emblems.length})
+			</button>
+		{/if}
 		{#if permittedExileCards.length > 0}
 			<button
 				type="button"
@@ -323,6 +424,52 @@
 		color: #ffd866;
 		background: rgba(255, 216, 102, 0.14);
 	}
+	.status-pill.initiative {
+		border-color: #fc9867;
+		color: #fc9867;
+		background: rgba(252, 152, 103, 0.14);
+	}
+	.player-designations-row {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.18rem;
+		width: 100%;
+	}
+	.status-pill.speed {
+		border-color: #fc9867;
+		color: #fc9867;
+		background: rgba(252, 152, 103, 0.12);
+	}
+	.status-pill.speed.max-speed {
+		border-color: #ffd866;
+		color: #ffd866;
+		background: rgba(255, 97, 136, 0.22);
+		box-shadow: 0 0 8px rgba(255, 216, 102, 0.45);
+	}
+	.status-pill.blessing {
+		border-color: var(--mp-cyan);
+		color: var(--mp-cyan);
+		background: rgba(120, 220, 232, 0.12);
+	}
+	.status-pill.ring {
+		border-color: #ffd866;
+		color: #ffd866;
+		background: rgba(255, 216, 102, 0.15);
+	}
+	.status-pill.dungeon {
+		border-color: var(--mp-purple);
+		color: var(--mp-purple);
+		background: rgba(171, 157, 242, 0.14);
+		max-width: 100%;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.status-pill.dungeon-done {
+		border-color: var(--mp-green);
+		color: var(--mp-green);
+		background: rgba(169, 220, 118, 0.12);
+	}
 	.status-pill.energy {
 		border-color: #f59e0b;
 		color: #ffd866;
@@ -415,6 +562,15 @@
 		border-color: #f59e0b;
 		box-shadow: 0 0 8px rgba(245, 158, 11, 0.7);
 	}
+	.mana-orb.snow-mana {
+		grid-column: 1 / -1;
+		justify-content: center;
+		gap: 0.28rem;
+		border-color: var(--mp-cyan);
+		color: var(--mp-cyan);
+		background: rgba(120, 220, 232, 0.12);
+		font-size: 0.6rem;
+	}
 	.mana-orb.restricted-mana {
 		grid-column: 1 / -1;
 		justify-content: space-between;
@@ -462,6 +618,11 @@
 		border-color: #ffd866;
 		color: #ffd866;
 		box-shadow: 0 0 6px rgba(255, 216, 102, 0.35);
+	}
+	.emblem-chip {
+		grid-column: 1 / -1;
+		border-color: var(--mp-purple);
+		color: var(--mp-purple);
 	}
 	.exile-playable-chip {
 		grid-column: 1 / -1;

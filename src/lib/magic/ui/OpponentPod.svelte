@@ -2,7 +2,13 @@
 	import type { CombatDamageForecast, PlayerIncomingForecast } from '../engine.ts';
 	import ManaSymbol from '../ManaSymbol.svelte';
 	import type { CardInstance, PlayerGameState, ScryfallCard, TargetRef } from '../types.ts';
-	import type { PermanentView, PlayerStatusView } from './boardViewModel.ts';
+	import {
+		DUNGEON_ART_URI,
+		EMBLEM_ART_URI,
+		FACE_DOWN_ART_URI,
+		type PermanentView,
+		type PlayerStatusView
+	} from './boardViewModel.ts';
 	import PermanentCard from './PermanentCard.svelte';
 
 	interface ZoneModalRequest {
@@ -60,6 +66,11 @@
 		onInspectCard,
 		onPermanentClick
 	}: Props = $props();
+	const ringTooltip = $derived(
+		status.ringLevel > 0
+			? `The Ring (Level ${status.ringLevel}/4 — CR 701.54):\n${status.ringAbilities.join('\n')}`
+			: ''
+	);
 </script>
 
 <section
@@ -93,6 +104,62 @@
 
 			{#if status.isMonarch}
 				<span class="opp-pill monarch" title="{status.username} is the Monarch">👑 Monarch</span>
+			{/if}
+			{#if status.hasInitiative}
+				<span
+					class="opp-pill initiative"
+					data-testid="opp-initiative-pill"
+					title="{status.username} has the Initiative (CR 727)"
+				>
+					🔦 Initiative
+				</span>
+			{/if}
+			{#if status.speed > 0}
+				<span
+					class="opp-pill speed"
+					class:max-speed={status.isMaxSpeed}
+					data-testid="opp-speed-pill"
+					title={status.isMaxSpeed
+						? `${status.username} has Max Speed (4/4 — CR 702.179)`
+						: `${status.username} Speed: ${status.speed}/4 (CR 702.178)`}
+				>
+					{status.isMaxSpeed ? '🔥 MAX SPEED 4' : `⚡ Speed ${status.speed}`}
+				</span>
+			{/if}
+			{#if status.hasCitysBlessing}
+				<span
+					class="opp-pill blessing"
+					data-testid="opp-blessing-pill"
+					title="{status.username} has the City's Blessing (CR 702.131)"
+				>
+					🏛️ City's Blessing
+				</span>
+			{/if}
+			{#if status.ringLevel > 0}
+				<span
+					class="opp-pill ring"
+					data-testid="opp-ring-pill"
+					title={ringTooltip}
+				>
+					💍 Ring Lv.{status.ringLevel}
+				</span>
+			{/if}
+			{#if status.activeDungeon}
+				<span
+					class="opp-pill dungeon"
+					data-testid="opp-dungeon-pill"
+					title={`${status.activeDungeon.dungeonName} — Room ${status.activeDungeon.roomIndex + 1}/${status.activeDungeon.totalRooms} (${status.activeDungeon.roomName}): ${status.activeDungeon.roomEffectText}`}
+				>
+					🗺️ {status.activeDungeon.dungeonName}: {status.activeDungeon.roomName}
+				</span>
+			{/if}
+			{#if status.completedDungeonCount > 0}
+				<span
+					class="opp-pill dungeon-done"
+					title={`Completed dungeons (${status.completedDungeonCount}): ${status.completedDungeonNames.join(', ') || status.completedDungeonCount}`}
+				>
+					🏆 ×{status.completedDungeonCount}
+				</span>
 			{/if}
 			{#if status.energyCounters > 0}
 				<span class="opp-pill energy" title="Energy counters: {status.energyCounters}">
@@ -188,13 +255,23 @@
 		</div>
 	</div>
 
-	{#if status.turnShieldBadges.length > 0 || status.restrictedManaEntries.length > 0}
+	{#if status.turnShieldBadges.length > 0 || status.restrictedManaEntries.length > 0 || status.snowManaTotal > 0}
 		<div class="opp-status-strip">
 			{#each status.turnShieldBadges as shield (shield.id)}
 				<span class="shield-pill {shield.tone}" title={shield.description}>
 					🛡️ {shield.label}
 				</span>
 			{/each}
+			{#if status.snowManaTotal > 0}
+				<span
+					class="snow-pill"
+					data-testid="opp-snow-mana"
+					title="{status.username} has {status.snowManaTotal} snow mana in pool"
+				>
+					<ManaSymbol symbol="S" size={11} />
+					<span>Snow: {status.snowManaTotal}</span>
+				</span>
+			{/if}
 			{#each status.restrictedManaEntries as rm (rm.restriction)}
 				<span class="rm-pill" title={rm.description}>
 					{#each rm.colors as cItem (cItem.color)}
@@ -221,16 +298,32 @@
 
 	<div class="opp-field">
 		{#each opponent.command as cmd (cmd.instanceId)}
+			{@const isEmblem = Boolean(cmd.isEmblem)}
+			{@const isDungeon = Boolean(cmd.isDungeon)}
+			{@const thumbSrc =
+				cmd.card.artCropUrl ||
+				cmd.card.imageUrl ||
+				(isEmblem ? EMBLEM_ART_URI : isDungeon ? DUNGEON_ART_URI : FACE_DOWN_ART_URI)}
 			<button
 				type="button"
-				class="mini-card cmd-zone-card unactable"
+				class="mini-card unactable"
+				class:cmd-zone-card={!isEmblem && !isDungeon}
+				class:emblem-zone-card={isEmblem}
+				class:dungeon-zone-card={isDungeon}
 				data-game-id={cmd.instanceId}
+				title={isEmblem ? `Emblem: ${cmd.card.name}` : isDungeon ? `Dungeon: ${cmd.card.name}` : cmd.card.name}
 				onmouseenter={() => onHoverCard?.(cmd.card, cmd)}
 				onmouseleave={() => onLeaveCard?.(cmd.card, cmd)}
 				onclick={() => onInspectCard?.(cmd.card, cmd)}
 			>
-				<img src={cmd.card.artCropUrl} alt={cmd.card.name} loading="lazy" />
-				<span class="mc-tag">CMD (+{cmd.commanderCastCount * commanderTaxIncrement})</span>
+				<img src={thumbSrc} alt={cmd.card.name} loading="lazy" />
+				{#if isEmblem}
+					<span class="mc-tag emblem-tag">EMBLEM</span>
+				{:else if isDungeon}
+					<span class="mc-tag dungeon-tag">DUNGEON</span>
+				{:else}
+					<span class="mc-tag">CMD (+{cmd.commanderCastCount * commanderTaxIncrement})</span>
+				{/if}
 				<span class="mc-name">{cmd.card.name}</span>
 			</button>
 		{/each}
@@ -352,6 +445,42 @@
 		color: #ffd866;
 		background: rgba(255, 216, 102, 0.14);
 	}
+	.opp-pill.initiative {
+		border-color: #fc9867;
+		color: #fc9867;
+		background: rgba(252, 152, 103, 0.14);
+	}
+	.opp-pill.speed {
+		border-color: #fc9867;
+		color: #fc9867;
+		background: rgba(252, 152, 103, 0.12);
+	}
+	.opp-pill.speed.max-speed {
+		border-color: #ffd866;
+		color: #ffd866;
+		background: rgba(255, 97, 136, 0.22);
+		box-shadow: 0 0 8px rgba(255, 216, 102, 0.45);
+	}
+	.opp-pill.blessing {
+		border-color: var(--mp-cyan);
+		color: var(--mp-cyan);
+		background: rgba(120, 220, 232, 0.12);
+	}
+	.opp-pill.ring {
+		border-color: #ffd866;
+		color: #ffd866;
+		background: rgba(255, 216, 102, 0.15);
+	}
+	.opp-pill.dungeon {
+		border-color: var(--mp-purple);
+		color: var(--mp-purple);
+		background: rgba(171, 157, 242, 0.14);
+	}
+	.opp-pill.dungeon-done {
+		border-color: var(--mp-green);
+		color: var(--mp-green);
+		background: rgba(169, 220, 118, 0.12);
+	}
 	.opp-pill.energy {
 		border-color: #f59e0b;
 		color: #ffd866;
@@ -397,6 +526,18 @@
 	.shield-pill.green {
 		border-color: var(--mp-green);
 		color: var(--mp-green);
+	}
+	.snow-pill {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.16rem;
+		font-size: 0.58rem;
+		background: rgba(120, 220, 232, 0.12);
+		border: 1px solid var(--mp-cyan);
+		color: var(--mp-cyan);
+		padding: 0.04rem 0.28rem;
+		border-radius: 3px;
+		font-weight: 700;
 	}
 	.rm-pill {
 		display: inline-flex;
@@ -468,6 +609,12 @@
 	.mini-card.cmd-zone-card {
 		border-color: #ffd866;
 	}
+	.mini-card.emblem-zone-card {
+		border-color: var(--mp-purple);
+	}
+	.mini-card.dungeon-zone-card {
+		border-color: var(--mp-cyan);
+	}
 	.mini-card.unactable::after {
 		content: '';
 		position: absolute;
@@ -505,6 +652,15 @@
 		font-weight: 700;
 		padding: 0 3px;
 		border-radius: 2px;
+	}
+
+	.mc-tag.emblem-tag {
+		background: var(--mp-purple);
+		color: #19181a;
+	}
+	.mc-tag.dungeon-tag {
+		background: var(--mp-cyan);
+		color: #19181a;
 	}
 
 	.incoming-dmg-layover {

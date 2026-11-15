@@ -73,6 +73,15 @@
 		);
 	});
 
+	const dayNightTooltip = $derived.by(() => {
+		if (!gameState.dayNight) return '';
+		const castCount = gameState.spellsCastByActivePlayerThisTurn ?? 0;
+		if (gameState.dayNight === 'day') {
+			return `Day (CR 732.2a): If the active player casts 0 spells during their turn, it becomes Night as the next turn begins. Active player spells cast this turn: ${castCount}.`;
+		}
+		return `Night (CR 732.2b): If the active player casts 2 or more spells during their turn, it becomes Day as the next turn begins. Active player spells cast this turn: ${castCount}.`;
+	});
+
 	function isTextEntryTarget(target: EventTarget | null): boolean {
 		if (!target || !(target instanceof HTMLElement)) return false;
 		const tag = target.tagName;
@@ -135,6 +144,15 @@
 			Back to Pod ({lobbyCode})
 		</button>
 		<span class="turn-pill">TURN {gameState.turnNumber}</span>
+		{#if gameState.dayNight === 'day' || gameState.dayNight === 'night'}
+			<span
+				class="day-night-pill {gameState.dayNight}"
+				data-testid="hud-day-night-pill"
+				title={dayNightTooltip}
+			>
+				{gameState.dayNight === 'day' ? '☀️ DAY' : '🌙 NIGHT'}
+			</span>
+		{/if}
 		<span class="active-pill">
 			Active: <strong>{activePlayer?.username}</strong>
 		</span>
@@ -253,6 +271,7 @@
 		color: var(--mp-text-muted);
 	}
 	.turn-pill,
+	.day-night-pill,
 	.active-pill,
 	.priority-pill,
 	.rope-pill,
@@ -262,6 +281,20 @@
 		border-radius: 4px;
 		background: var(--mp-bg);
 		border: 1px solid var(--mp-border);
+	}
+	.day-night-pill {
+		font-weight: 700;
+		letter-spacing: 0.03em;
+	}
+	.day-night-pill.day {
+		border-color: #ffd866;
+		color: #ffd866;
+		background: rgba(255, 216, 102, 0.14);
+	}
+	.day-night-pill.night {
+		border-color: var(--mp-purple);
+		color: var(--mp-purple);
+		background: rgba(171, 157, 242, 0.15);
 	}
 	.priority-pill.mine {
 		border-color: var(--mp-accent);

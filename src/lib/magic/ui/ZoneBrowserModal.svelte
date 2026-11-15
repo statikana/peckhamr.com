@@ -16,7 +16,8 @@
 		ScryfallCard,
 		TargetRef
 	} from '../types.ts';
-	import { resolveCardInstanceDisplay } from './promptViewModel.ts';
+	import { DUNGEON_ART_URI, EMBLEM_ART_URI } from './boardViewModel.ts';
+	import { FACE_DOWN_ART_URI, resolveCardInstanceDisplay } from './promptViewModel.ts';
 
 	let {
 		ownerName,
@@ -178,8 +179,22 @@
 						onmouseenter={() => onHoverCard?.(disp.displayCard, c)}
 						onmouseleave={() => onLeaveCard?.(disp.displayCard)}
 					>
-						<img src={disp.imageUrl} alt={disp.displayCard.name} />
+						<img
+							src={disp.imageUrl ||
+								(c.isEmblem
+									? EMBLEM_ART_URI
+									: c.isDungeon
+										? DUNGEON_ART_URI
+										: FACE_DOWN_ART_URI)}
+							alt={disp.displayCard.name}
+						/>
 						<span>{disp.displayCard.name}</span>
+
+						{#if c.isEmblem}
+							<span class="badge purple">🛡️ Emblem (CR 114)</span>
+						{:else if c.isDungeon}
+							<span class="badge gold">🗺️ Dungeon (CR 309)</span>
+						{/if}
 
 						{#if c.isSuspended && c.counters.time > 0}
 							<span class="badge purple">⏳ {c.counters.time} Time (Suspended)</span>
