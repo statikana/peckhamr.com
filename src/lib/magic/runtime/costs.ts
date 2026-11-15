@@ -57,6 +57,9 @@ import { hasRestriction, playerLifeTotalCantChange } from './replace.ts';
 import { markHandCardRevealedToAll } from './staticsLayersAndRestrictions.ts';
 import { exertPermanent } from './tuckFreezeChosen.ts';
 import { moveObject, tapPermanent, type MoveResult, type PlayerZone } from './zones.ts';
+// --- Track P12 ---
+import { recordPlayerLifeLossWave4 } from './keywordsWave4.ts';
+// --- End Track P12 ---
 
 export type { SerializedPlannedCost };
 export {
@@ -128,6 +131,15 @@ export function spellAdditionalCost(card: ScryfallCard, faceIndex = 0, fused = f
 		if (a.kind === 'spell' && a.additionalCosts.length > 0) {
 			defs.push(...a.additionalCosts);
 			matched = true;
+		// --- Track P12 ---
+		} else if (
+			a.kind === 'static' &&
+			a.static.k === 'additionalCastCost' &&
+			a.static.costs.length > 0
+		) {
+			defs.push(...a.static.costs);
+			matched = true;
+		// --- End Track P12 ---
 		} else if (a.kind === 'unsupported' && a.id === 'cast') {
 			defs.push(...(a.cost ?? []));
 			if (!a.costComplete) complete = false;
@@ -244,6 +256,9 @@ export function spellChoosesX(
 	return abilitiesOf(card, faceIndex, fused).some(
 		(a) =>
 			(a.kind === 'spell' && mentionsX(a.additionalCosts)) ||
+			// --- Track P12 ---
+			(a.kind === 'static' && a.static.k === 'additionalCastCost' && mentionsX(a.static.costs)) ||
+			// --- End Track P12 ---
 			(a.kind === 'unsupported' && a.id === 'cast' && mentionsX(a.cost))
 	);
 }
@@ -573,9 +588,21 @@ export function manaAbilityAmount(
 		Partial<Pick<EffectiveActivatedAbility, 'manaAmount' | 'grantSourceCard' | 'faceIndex'>>
 ): Amount | null {
 	if (ab.manaAmount) return ab.manaAmount;
-	if (ab.grantSourceCard && ab.id.startsWith('granted:')) {
+	if (
+		ab.grantSourceCard &&
+		(ab.id.startsWith('granted:') ||
+			// --- Track P12 ---
+			ab.id.startsWith('backup_act:'))
+		// --- End Track P12 ---
+	) {
 		const localId = ab.id.slice(ab.id.lastIndexOf(':') + 1);
-		const granted = grantedAbilityById(ab.grantSourceCard, localId);
+		const granted =
+			grantedAbilityById(ab.grantSourceCard, localId) ??
+			// --- Track P12 ---
+			activeAbilityDefs(ab.grantSourceCard, { zone: 'battlefield', faceIndex: ab.faceIndex ?? 0 }).find(
+				(a) => a.kind === 'activated' && a.id === localId
+			);
+			// --- End Track P12 ---
 		if (granted?.kind !== 'activated') return null;
 		const step = granted.effect.find((e) => e.verb === 'addMana');
 		return step?.amount && step.amount.k !== 'const' ? step.amount : null;
@@ -1528,6 +1555,9 @@ export function executeCostPaymentParts(
 					const amount = n(def.amount, ctx);
 					if (amount > 0) {
 						player.life -= amount;
+						// --- Track P12 ---
+						recordPlayerLifeLossWave4(player, amount);
+						// --- End Track P12 ---
 						targetLog.push(`paid ${amount} life`);
 					}
 				}

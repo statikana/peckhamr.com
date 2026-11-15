@@ -53,6 +53,9 @@ import { evaluateAmount, matchesObjectFilter, playerCommanderCastCount } from '.
 // --- Track P8 ---
 import { compareNumbers, countDistinctCardTypesInZone } from './staticsLayersAndRestrictions.ts';
 import { PROTECTION_KEYWORD_BY_COLOR } from './tuckFreezeChosen.ts';
+// --- Track P12 ---
+import { collectBackupGrantedAbilityDefs } from './keywordsWave4.ts';
+// --- End Track P12 ---
 
 export interface AttributedKeywordOrEffect {
 	id: string;
@@ -1386,6 +1389,10 @@ function evaluateLayerAmount(
 			}
 			return 0;
 		}
+		// --- Track P12 ---
+		case 'devouredCount':
+			return source.inst.devouredCount ?? 0;
+		// --- End Track P12 ---
 		default:
 			return 0;
 	}
@@ -1577,6 +1584,86 @@ function evaluateLayerCondition(
 			return true;
 		}
 		// --- Track P9 ---
+		// --- Track P12 ---
+		case 'classLevelIs':
+			return (source.inst.classLevel ?? 1) === cond.level;
+		case 'classLevelAtLeast':
+			return (source.inst.classLevel ?? 1) >= cond.level;
+		case 'caseSolved':
+			return Boolean(source.inst.isSolved);
+		case 'caseUnsolved':
+			return !source.inst.isSolved;
+		case 'isRenowned':
+			return Boolean(source.inst.isRenowned);
+		case 'boastAttackedThisTurn':
+			return Boolean(source.inst.creatureAttackedThisTurn);
+		case 'exhaustUnused':
+			return !source.inst.exhaustedAbilityIds?.includes(cond.abilityId);
+		case 'creaturesAttackedCountThisTurn':
+			layerReads |= READ_P12;
+			return (state.creaturesAttackedCountThisTurn ?? 0) >= cond.min;
+		case 'totalPowerControlled': {
+			let sum = 0;
+			for (const w of workList) {
+				if (w.controllerId === source.controllerId && w.types.includes('Creature')) {
+					sum += Math.max(0, w.workingPower ?? 0);
+				}
+			}
+			return sum >= cond.min;
+		}
+		case 'colorsAmongControlledPermanents': {
+			const cSet = new Set<ManaColor>();
+			for (const w of workList) {
+				if (w.controllerId === source.controllerId) {
+					for (const c of w.colors) cSet.add(c);
+				}
+			}
+			return cSet.size >= cond.min;
+		}
+		case 'sourcesDealtDamageThisTurn': {
+			layerReads |= READ_P12;
+			const p = state.players.find((pl) => pl.playerId === source.controllerId);
+			return (p?.sourcesDealtDamageIdsThisTurn?.length ?? 0) >= cond.min;
+		}
+		case 'cardsPutIntoGraveyardFromAnywhereThisTurn':
+			layerReads |= READ_P12;
+			return (state.cardsPutIntoGraveyardThisTurn ?? 0) >= cond.min;
+		case 'spellsCastThisTurnCount': {
+			layerReads |= READ_P12;
+			const p = state.players.find((pl) => pl.playerId === source.controllerId);
+			if (!p) return false;
+			if (!cond.filter) return (p.spellsCastThisTurn ?? 0) >= cond.min;
+			const cards = p.spellsCastThisTurnCards ?? [];
+			let count = 0;
+			for (const card of cards) {
+				const stub: CardInstance = {
+					instanceId: 'cast-hist',
+					card,
+					ownerId: p.playerId,
+					controllerId: p.playerId,
+					zone: 'stack',
+					tapped: false,
+					summoningSick: false,
+					damageMarked: 0,
+					deathtouchDamageMarked: false,
+					counters: {} as CardInstance['counters'],
+					tempPowerMod: 0,
+					tempToughnessMod: 0,
+					grantedKeywords: [],
+					attachedToId: null,
+					isToken: false,
+					isCommander: false,
+					commanderCastCount: 0,
+					usedLoyaltyThisTurn: false,
+					transformed: false
+				};
+				if (matchesObjectFilter(stub, cond.filter, { state, controllerId: source.controllerId, source: source.inst })) {
+					count++;
+				}
+			}
+			return count >= cond.min;
+		}
+		// --- End Track P12 ---
 		default:
 			return false;
 	}
@@ -1672,6 +1759,9 @@ const READ_ALL_COUNTERS = 1024;
 const READ_HIDDEN_ZONES = 2048;
 // --- Track P7 ---
 const READ_TURN_HISTORY = 4096;
+// --- Track P12 ---
+const READ_P12 = 65536;
+// --- End Track P12 ---
 
 /** Inputs read by the evaluation in progress (bits above). */
 let layerReads = 0;
@@ -1696,6 +1786,21 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 	}
 	// --- Track P7 ---
 	if (reads & READ_TURN_HISTORY) fp.push(Boolean(state.creatureDiedThisTurn));
+	// --- Track P12 ---
+	if (reads & READ_P12) {
+		fp.push(
+			state.creaturesAttackedCountThisTurn ?? 0,
+			state.cardsPutIntoGraveyardThisTurn ?? 0
+		);
+		for (const p of state.players) {
+			fp.push(
+				p.spellsCastThisTurn ?? 0,
+				p.spellsCastThisTurnCards?.length ?? 0,
+				p.sourcesDealtDamageIdsThisTurn?.length ?? 0
+			);
+		}
+	}
+	// --- End Track P12 ---
 	for (const p of state.players) {
 		if (reads & READ_LIFE) fp.push(p.life);
 		if (reads & READ_ENERGY) fp.push(p.energyCounters || 0);
@@ -1768,6 +1873,15 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 			Boolean(perm.wasCast),
 			perm.castFromZone ?? '',
 			// --- End Track P7 ---
+			// --- Track P12 ---
+			perm.classLevel ?? 1,
+			Boolean(perm.isSolved),
+			Boolean(perm.isRenowned),
+			Boolean(perm.isBestowed),
+			Boolean(perm.creatureAttackedThisTurn),
+			perm.devouredCount ?? 0,
+			perm.exhaustedAbilityIds?.length ?? 0,
+			// --- End Track P12 ---
 			perm.kickedCount || 0,
 			perm.kickedTags?.length || 0,
 			perm.grantedKeywords?.length || 0
@@ -1824,8 +1938,13 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 				eff.layer7b?.setPower ?? 0,
 				eff.layer7b?.setToughness ?? 0,
 				// --- Track P7 ---
-				eff.layer1a
+				eff.layer1a,
 				// --- End Track P7 ---
+				// --- Track P12 ---
+				eff.backupGrant?.sourceCard,
+				eff.backupGrant?.faceIndex ?? 0,
+				eff.backupGrant?.startAbilityIndex ?? -1
+				// --- End Track P12 ---
 			);
 			for (const a of eff.affected) fp.push(a.instanceId, a.objectVersion ?? 1);
 			if (eff.layer4?.addTypes?.length) for (const t of eff.layer4.addTypes) fp.push(t);
@@ -1871,6 +1990,25 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 	}
 	// --- Track P7 ---
 	if (reads & READ_TURN_HISTORY && fp[i++] !== Boolean(state.creatureDiedThisTurn)) return false;
+	// --- Track P12 ---
+	if (reads & READ_P12) {
+		if (
+			fp[i++] !== (state.creaturesAttackedCountThisTurn ?? 0) ||
+			fp[i++] !== (state.cardsPutIntoGraveyardThisTurn ?? 0)
+		) {
+			return false;
+		}
+		for (const p of state.players) {
+			if (
+				fp[i++] !== (p.spellsCastThisTurn ?? 0) ||
+				fp[i++] !== (p.spellsCastThisTurnCards?.length ?? 0) ||
+				fp[i++] !== (p.sourcesDealtDamageIdsThisTurn?.length ?? 0)
+			) {
+				return false;
+			}
+		}
+	}
+	// --- End Track P12 ---
 	for (const p of state.players) {
 		if (reads & READ_LIFE && fp[i++] !== p.life) return false;
 		if (reads & READ_ENERGY && fp[i++] !== (p.energyCounters || 0)) return false;
@@ -1985,6 +2123,15 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 			fp[i++] !== Boolean(perm.wasCast) ||
 			fp[i++] !== (perm.castFromZone ?? '') ||
 			// --- End Track P7 ---
+			// --- Track P12 ---
+			fp[i++] !== (perm.classLevel ?? 1) ||
+			fp[i++] !== Boolean(perm.isSolved) ||
+			fp[i++] !== Boolean(perm.isRenowned) ||
+			fp[i++] !== Boolean(perm.isBestowed) ||
+			fp[i++] !== Boolean(perm.creatureAttackedThisTurn) ||
+			fp[i++] !== (perm.devouredCount ?? 0) ||
+			fp[i++] !== (perm.exhaustedAbilityIds?.length ?? 0) ||
+			// --- End Track P12 ---
 			fp[i++] !== (perm.kickedCount || 0) ||
 			fp[i++] !== kickedTagsLen ||
 			fp[i++] !== grantedLen
@@ -2070,8 +2217,13 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 				fp[i++] !== l7bP ||
 				fp[i++] !== l7bT ||
 				// --- Track P7 ---
-				fp[i++] !== eff.layer1a
+				fp[i++] !== eff.layer1a ||
 				// --- End Track P7 ---
+				// --- Track P12 ---
+				fp[i++] !== eff.backupGrant?.sourceCard ||
+				fp[i++] !== (eff.backupGrant?.faceIndex ?? 0) ||
+				fp[i++] !== (eff.backupGrant?.startAbilityIndex ?? -1)
+				// --- End Track P12 ---
 			) {
 				return false;
 			}
@@ -2258,6 +2410,20 @@ function evaluateLayer1(
 					}
 				}
 			}
+			// --- Track P12: Backup-granted statics & static keywords (CR 702.165a–d) ---
+			for (const bAb of collectBackupGrantedAbilityDefs(state, inst)) {
+				if (bAb.kind === 'static') {
+					statics.push(bAb.static);
+				} else if (bAb.kind === 'keyword') {
+					const kwSpec = getKeywordSpec(bAb.keyword.name);
+					if (kwSpec?.status === 'implemented' && kwSpec.implementation?.kind === 'static') {
+						for (const st of kwSpec.implementation.buildStatics(bAb.keyword)) {
+							statics.push(st);
+						}
+					}
+				}
+			}
+			// --- End Track P12 ---
 			const layerOrder = (st: StaticDef): number => {
 				if (st.k !== 'continuous') return 99;
 				switch (st.layer) {
@@ -3060,6 +3226,29 @@ function evaluatePerPermanent(
 					cantHaveOrGain: eff.layer6.cantHaveOrGain
 				});
 			}
+			// --- Track P12: Backup-granted keywords in Layer 6 (CR 702.165a–d) ---
+			if (eff.backupGrant) {
+				const bDef = compileCard(eff.backupGrant.sourceCard);
+				const faceAbs =
+					eff.backupGrant.faceIndex > 0 && bDef.faces?.[eff.backupGrant.faceIndex]
+						? bDef.faces[eff.backupGrant.faceIndex].abilities
+						: (bDef.faces[0]?.abilities ?? []);
+				const grantedKws: string[] = [];
+				for (let bi = Math.max(0, eff.backupGrant.startAbilityIndex); bi < faceAbs.length; bi++) {
+					const fAb = faceAbs[bi];
+					if (fAb.kind === 'keyword') grantedKws.push(fAb.keyword.name);
+				}
+				if (grantedKws.length > 0) {
+					targetTimedEffects.push({
+						timestamp: eff.timestamp,
+						sourceName: eff.sourceName,
+						controllerId: eff.controllerId,
+						affected: eff.affected,
+						addKeywords: grantedKws
+					});
+				}
+			}
+			// --- End Track P12 ---
 		}
 		if (targetTimedEffects.length > 1) {
 			targetTimedEffects.sort((a, b) => a.timestamp - b.timestamp);

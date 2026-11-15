@@ -367,6 +367,34 @@ export interface CounterRemovedEvent extends EventBase {
 	newCount: number;
 }
 
+// --- Track P12 ---
+/** A Class enchantment gained a new level via its level-up ability (CR 717.3a–b). */
+export interface ClassLevelGainedEvent extends EventBase {
+	kind: 'ClassLevelGained';
+	objectId: string;
+	object: CardInstance;
+	controllerId: string;
+	classLevel: number;
+}
+
+/** A Case enchantment became solved via its to-solve ability (CR 720.2b / 702.169c). */
+export interface CaseSolvedEvent extends EventBase {
+	kind: 'CaseSolved';
+	objectId: string;
+	object: CardInstance;
+	controllerId: string;
+}
+
+/** A creature became renowned via its renown trigger (CR 702.112a–b). */
+export interface BecameRenownedEvent extends EventBase {
+	kind: 'BecameRenowned';
+	objectId: string;
+	object: CardInstance;
+	controllerId: string;
+	amount: number;
+}
+// --- End Track P12 ---
+
 export type GameEvent =
 	| TappedForManaEvent
 	| GainLifeEvent
@@ -403,7 +431,12 @@ export type GameEvent =
 	| ManifestDreadEvent
 	| BecameMonstrousEvent
 	// --- Track P6 ---
-	| CounterRemovedEvent;
+	| CounterRemovedEvent
+	// --- Track P12 ---
+	| ClassLevelGainedEvent
+	| CaseSolvedEvent
+	| BecameRenownedEvent;
+	// --- End Track P12 ---
 
 export type GameEventKind = GameEvent['kind'];
 type EventOf<K extends GameEventKind> = Extract<GameEvent, { kind: K }>;

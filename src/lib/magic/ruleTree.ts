@@ -9,12 +9,18 @@ import {
 import { displayAbilityText } from './compiler/support.ts';
 import type { ActivatedAbility, CostDef, EffectStep, ModalDef, TargetSpec, UnsupportedAbility } from './ir.ts';
 import { getKeywordSpec } from './keywords.ts';
-import { effectiveAbilityManaCost } from './runtime/costs.ts';
+import { describeCost, effectiveAbilityManaCost } from './runtime/costs.ts';
 import { hasChooseAllModesOptionalCost, isCastConditionMet } from './runtime/kicker.ts';
 import { evaluateCondition as evaluateFilterCondition } from './runtime/objectFilter.ts';
 // --- Track P7 ---
 import { activeTimedLayer1aForPermanent } from './runtime/layerCache.ts';
 // --- End Track P7 ---
+// --- Track P12 ---
+import {
+	AWAKEN_LAND_TARGET_SPEC,
+	collectBackupGrantedAbilityGroups
+} from './runtime/keywordsWave4.ts';
+// --- End Track P12 ---
 import {
 	evaluatePermanent,
 	getAttachedAbilityStrippingAuraSources,
@@ -240,7 +246,14 @@ export function getSpellTargetRequirement(
 	if (option?.spellMods?.castFaceDown) {
 		return NO_TARGET_REQUIREMENT;
 	}
-	const faceOpts = { zone: 'stack' as const, faceIndex: option?.faceIndex ?? 0, fused: option?.fused };
+	const faceOpts = {
+		zone: 'stack' as const,
+		faceIndex: option?.faceIndex ?? 0,
+		fused: option?.fused,
+		// --- Track P12 ---
+		...(option?.spellMods?.bestowed ? { bestowed: true } : {})
+		// --- End Track P12 ---
+	};
 	const abilities = activeAbilityDefs(card, faceOpts);
 	const chars = activeCharacteristics(card, faceOpts);
 	const types = chars.types;
@@ -300,6 +313,11 @@ export function getSpellTargetRequirement(
 			nonModalSpecs.push(...activeSpecs(ab.targets));
 		}
 	}
+	// --- Track P12: Awaken N adds "target land you control" (CR 702.113a) ---
+	if ((option?.spellMods?.awakenCounters ?? 0) > 0) {
+		nonModalSpecs.push(AWAKEN_LAND_TARGET_SPEC);
+	}
+	// --- End Track P12 ---
 	return nonModalSpecs.length > 0 ? targetRequirementFromSpecs(nonModalSpecs) : NO_TARGET_REQUIREMENT;
 }
 
@@ -698,14 +716,62 @@ function buildFaceActivatedAbilities(
 		if (ab.kind === 'keyword') {
 			const { name: kwName, cost: kwCost, equipFilter } = ab.keyword;
 			if (kwName === 'equip') {
-				const equipCost = kwCost ?? '{0}';
+				// --- Track P12 ---
 				const filter = equipFilter ?? {};
+				const costDefs =
+					ab.keyword.costDefs ??
+					(kwCost && kwCost !== '{0}' ? [{ k: 'mana' as const, cost: kwCost }] : []);
+				const manaParts = costDefs.filter(
+					(d): d is Extract<CostDef, { k: 'mana' }> => d.k === 'mana'
+				);
+				const nonManaParts = costDefs.filter((d) => d.k !== 'mana');
+				const equipCost =
+					kwCost ?? (manaParts.length > 0 ? manaParts.map((m) => m.cost).join('') : '{0}');
+				const lifeCost = costDefs.reduce(
+					(sum, d) => (d.k === 'payLife' && d.amount.k === 'const' ? sum + d.amount.n : sum),
+					0
+				);
+				const requiresTap = costDefs.some((d) => d.k === 'tapSelf');
+				const requiresSacrificeSelf = costDefs.some(
+					(d) => d.k === 'sacrifice' && d.filter === 'self'
+				);
 				const qual = [
+					...(filter.token === true ? ['token'] : filter.token === false ? ['nontoken'] : []),
 					...(filter.supertypes?.map((s) => s.toLowerCase()) ?? []),
+					...(filter.notTypes?.map((t) => `non${t.toLowerCase()}`) ?? []),
+					...(filter.notSubtypes?.map((s) => `non-${s}`) ?? []),
 					...(filter.subtypes ?? [])
 				].join(' ');
-				const equipTargetPhrase = qual ? `${qual} creature` : 'creature';
-				const labelPrefix = qual ? `Equip ${qual} ${equipCost}` : `Equip ${equipCost}`;
+				const allowsPw = Boolean(
+					ab.keyword.equipAllowPlaneswalker || filter.types?.includes('Planeswalker')
+				);
+				const allowsCreature = !filter.types || filter.types.includes('Creature');
+				const baseNoun =
+					allowsPw && allowsCreature
+						? 'creature or planeswalker'
+						: allowsPw
+							? 'planeswalker'
+							: 'creature';
+				const equipTargetPhrase = ab.keyword.param
+					? ab.keyword.param
+					: qual
+						? `${qual} ${baseNoun}`
+						: baseNoun;
+				const hasCustomTarget = equipTargetPhrase !== 'creature';
+				let labelPrefix: string;
+				if (nonManaParts.length > 0) {
+					const costDesc = [
+						...(equipCost && equipCost !== '{0}' ? [equipCost] : []),
+						describeCost(nonManaParts)
+					].join(', ');
+					labelPrefix = hasCustomTarget
+						? `Equip ${equipTargetPhrase}—${costDesc}`
+						: `Equip—${costDesc}`;
+				} else {
+					labelPrefix = hasCustomTarget
+						? `Equip ${equipTargetPhrase} ${equipCost}`
+						: `Equip ${equipCost}`;
+				}
 				const spec: TargetSpec = {
 					kind: 'object',
 					filter: { zone: 'battlefield', types: ['Creature'], controller: 'you', ...filter },
@@ -719,11 +785,11 @@ function buildFaceActivatedAbilities(
 					label: `${labelPrefix}: Attach to target ${equipTargetPhrase} you control`,
 					costText: labelPrefix,
 					manaCost: equipCost,
-					cost: equipCost && equipCost !== '{0}' ? [{ k: 'mana', cost: equipCost }] : [],
+					cost: costDefs,
 					costComplete: true,
-					requiresTap: false,
-					requiresSacrificeSelf: false,
-					lifeCost: 0,
+					requiresTap,
+					requiresSacrificeSelf,
+					lifeCost,
 					loyaltyCost: null,
 					isManaAbility: false,
 					sorcerySpeedOnly: true,
@@ -732,9 +798,10 @@ function buildFaceActivatedAbilities(
 					producesAmount: 0,
 					effectText: `Attach to target ${equipTargetPhrase} you control.`,
 					requiresTarget: true,
-					targetKind: 'controlled_creature',
+					targetKind: targetInfo.targetKind,
 					targetInfo
 				});
+				// --- End Track P12 ---
 			} else {
 				const spec = getKeywordSpec(kwName);
 				if (
@@ -909,6 +976,26 @@ export function getEffectiveActivatedAbilities(
 			});
 			if (built) rawAbilities.push(built);
 		}
+		// --- Track P12: Backup-granted activated abilities (CR 702.165c) ---
+		if (!allInnateRemoved) {
+			for (const bg of collectBackupGrantedAbilityGroups(state, perm)) {
+				for (const ab of bg.abilities) {
+					if (ab.kind !== 'activated' || ab.intrinsic) continue;
+					const abId = `backup_act:${bg.sourceInstanceId}:${ab.id}`;
+					if (rawAbilities.some((a) => a.id === abId)) continue;
+					const built = buildEffectiveActivatedAbility(ab, commanderIdentity, resolveOppLands, {
+						idOverride: abId,
+						displayCardName: effectiveCard.name,
+						displayCard: bg.sourceCard,
+						grantSourceCard: bg.sourceCard,
+						grantSources: [bg.sourceName],
+						chosenColor: perm.chosenColor
+					});
+					if (built) rawAbilities.push(built);
+				}
+			}
+		}
+		// --- End Track P12 ---
 	}
 
 	return rawAbilities.map((ab) => {

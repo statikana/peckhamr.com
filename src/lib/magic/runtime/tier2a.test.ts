@@ -130,13 +130,32 @@ describe('Tier 2 Track A — Item 1: CR 207.2c Ability-Word Stripping', () => {
 			oracleText: 'Landfall — Whenever a land you control enters, you gain 1 life.'
 		});
 
-		assert.equal(compileCard(caseCard).fullySupported, false, 'Solved — is not an ability word (CR 702.169)');
-		assert.equal(cardSupportReport(caseCard).fullySupported, false);
+		// --- Track P12: Solved (CR 720), Boast (CR 702.142), and Exhaust (CR 702.177) now compile with explicit gating conditions; Max speed & Power-up remain unsupported ---
+		const caseDef = compileCard(caseCard);
+		assert.equal(caseDef.fullySupported, true, 'Solved — compiled as gated Case ability (CR 720)');
+		assert.ok(
+			caseDef.faces[0].abilities.every(
+				(a) => a.kind === 'static' && a.static.condition?.k === 'caseSolved'
+			)
+		);
 		assert.equal(compileCard(maxSpeedCard).fullySupported, false, 'Max speed — is not an ability word (CR 702.178)');
 		assert.equal(cardSupportReport(maxSpeedCard).fullySupported, false);
-		assert.equal(compileCard(boastCard).fullySupported, false, 'Boast — is not an ability word (CR 702.142)');
-		assert.equal(compileCard(exhaustCard).fullySupported, false, 'Exhaust — is not an ability word (CR 702.177)');
+		const boastDef = compileCard(boastCard);
+		assert.equal(boastDef.fullySupported, true, 'Boast — compiled with costKeyword: boast (CR 702.142)');
+		assert.ok(
+			boastDef.faces[0].abilities.some(
+				(a) => a.kind === 'activated' && a.costKeyword === 'boast'
+			)
+		);
+		const exhaustDef = compileCard(exhaustCard);
+		assert.equal(exhaustDef.fullySupported, true, 'Exhaust — compiled with costKeyword: exhaust (CR 702.177)');
+		assert.ok(
+			exhaustDef.faces[0].abilities.some(
+				(a) => a.kind === 'activated' && a.costKeyword === 'exhaust'
+			)
+		);
 		assert.equal(compileCard(powerUpCard).fullySupported, false, 'Power-up — is not an ability word (CR 702.193)');
+		// --- End Track P12 ---
 
 		// Genuine CR 207.2c ability word still compiles as fullySupported
 		const landfallDef = compileCard(landfallCard);

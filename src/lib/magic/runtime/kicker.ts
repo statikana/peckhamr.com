@@ -41,6 +41,9 @@ function rawOptionalEntriesForCard(
 	let replicateIdx = 0;
 	let conspireIdx = 0;
 	let casualtyIdx = 0;
+	// --- Track P12 ---
+	let bargainIdx = 0;
+	// --- End Track P12 ---
 	for (const ab of abilities) {
 		if (ab.kind !== 'keyword') continue;
 		if (
@@ -177,6 +180,29 @@ function rawOptionalEntriesForCard(
 			});
 			continue;
 		}
+		// --- Track P12 ---
+		if (kwName === 'bargain') {
+			out.push({
+				id: `bargain:${bargainIdx++}`,
+				label: 'Bargain (Sacrifice an artifact, enchantment, or token)',
+				costDisplay: 'Sacrifice an artifact, enchantment, or token',
+				costDefs: [
+					{
+						k: 'sacrifice',
+						count: { k: 'const', n: 1 },
+						filter: {
+							controller: 'you',
+							artifactEnchantmentOrToken: true
+						}
+					}
+				],
+				maxCount: 1,
+				kickedTag: 'bargain',
+				kickedTags: ['bargain']
+			});
+			continue;
+		}
+		// --- End Track P12 ---
 		const isMulti = KICKER_KEYWORDS[ab.keyword.name];
 		if (isMulti === undefined) continue;
 		for (const entry of ab.keyword.kickerCosts ?? []) {

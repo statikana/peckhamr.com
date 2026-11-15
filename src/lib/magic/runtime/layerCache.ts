@@ -149,8 +149,14 @@ function pushFingerprint(state: GameState, fp: unknown[]): void {
 				// --- Track P7 ---
 				perm.copiableState?.except?.addKeywords,
 				Boolean(perm.copiableState?.except?.noManaCost),
-				activeTimedLayer1aForPermanent(state, perm)
+				activeTimedLayer1aForPermanent(state, perm),
 				// --- End Track P7 ---
+				// --- Track P12 ---
+				perm.classLevel ?? 1,
+				Boolean(perm.isSolved),
+				Boolean(perm.isRenowned),
+				Boolean(perm.isBestowed)
+				// --- End Track P12 ---
 			);
 		}
 	}
@@ -227,8 +233,14 @@ function fingerprintMatches(state: GameState, fp: unknown[]): boolean {
 				// --- Track P7 ---
 				fp[i++] !== perm.copiableState?.except?.addKeywords ||
 				fp[i++] !== Boolean(perm.copiableState?.except?.noManaCost) ||
-				fp[i++] !== activeTimedLayer1aForPermanent(state, perm)
+				fp[i++] !== activeTimedLayer1aForPermanent(state, perm) ||
 				// --- End Track P7 ---
+				// --- Track P12 ---
+				fp[i++] !== (perm.classLevel ?? 1) ||
+				fp[i++] !== Boolean(perm.isSolved) ||
+				fp[i++] !== Boolean(perm.isRenowned) ||
+				fp[i++] !== Boolean(perm.isBestowed)
+				// --- End Track P12 ---
 			) {
 				return false;
 			}

@@ -18,12 +18,14 @@ import type {
 	AbilityDef,
 	ActivatedAbility,
 	ActivationRestriction,
+	Amount,
 	Characteristics,
 	Condition,
 	CostDef,
 	EffectStep,
 	FaceDefinition,
 	KeywordDef,
+	ModalDef,
 	ObjectFilter,
 	PrototypeSpec,
 	SpellAbility,
@@ -89,9 +91,28 @@ export function compileSingleFace(
 			? topCard.faces.reduce((sum, f) => sum + parseManaValueFromCostString(f.manaCost), 0)
 			: parseManaValueFromCostString(characteristics.manaCost);
 
+	const isClass = characteristics.subtypes.includes('Class');
+	const isCase = characteristics.subtypes.includes('Case');
+	const hasAnyKickerLine = norm.lines.some((l) => /\b(?:multikicker|kicker)\b/i.test(l.body));
+	const hasBargainKeyword =
+		!hasAnyKickerLine &&
+		norm.lines.some((l) => /^bargain$/i.test(l.body.trim()) || /(?:^|,\s*)bargain(?:\s*,|$)/i.test(l.body));
+	const hasRenownKeyword =
+		!norm.lines.some((l) => /\bmonstrosity\b/i.test(l.body)) &&
+		norm.lines.some((l) => /(?:^|,\s*)renown\s+\d+(?:\s*,|$)/i.test(l.body));
+	const hasDevourKeyword =
+		!hasAnyKickerLine &&
+		!norm.lines.some((l) => /\b(?:monstrosity|renown)\b/i.test(l.body)) &&
+		norm.lines.some((l) => /(?:^|,\s*)devour\b/i.test(l.body));
+
 	const ctx: Ctx = {
 		isSpell: characteristics.types.includes('Instant') || characteristics.types.includes('Sorcery'),
 		isPlaneswalker: characteristics.types.includes('Planeswalker'),
+		isClass,
+		isCase,
+		hasBargainKeyword,
+		hasRenownKeyword,
+		hasDevourKeyword,
 		manaTapTaken: false,
 		hasReadAhead: false,
 		cardManaValue
@@ -107,7 +128,10 @@ export function compileSingleFace(
 		}
 	}
 
-	const { baseLines, levelStriations, stationStriations } = partitionStriatedLines(norm);
+	const { baseLines, levelStriations, stationStriations, classStriations } = partitionStriatedLines(
+		norm,
+		isClass
+	);
 
 	for (const group of groupLines(baseLines)) {
 		const line = group[0];
@@ -116,13 +140,29 @@ export function compileSingleFace(
 			abilities.push(...sagaOut);
 			continue;
 		}
+		if (ctx.isCase) {
+			const solveOut = caseToSolveLine(group);
+			if (solveOut) {
+				abilities.push(...solveOut);
+				continue;
+			}
+			const solvedOut = caseSolvedLine(ctx, group, norm.text);
+			if (solvedOut) {
+				abilities.push(...solvedOut);
+				continue;
+			}
+		}
+		if (ctx.isSpell && (isSpreeGroup(group) || isTieredGroup(group))) {
+			spellLines.push(...group);
+			continue;
+		}
 		const skipSpellDelayedTrigger =
 			ctx.isSpell &&
 			/^at (?:the beginning of (?:the next|that turn's)|(?:the )?end of combat)\b/i.test(line.body);
 		const out =
 			(group.length === 1 ? keywordLine(ctx, line) : null) ??
 			(ctx.isSpell ? null : exertAttackLine(group)) ??
-			(skipSpellDelayedTrigger ? null : triggerLine(group)) ??
+			(skipSpellDelayedTrigger ? null : triggerLine(ctx, group)) ??
 			activatedLine(ctx, group);
 		if (out) abilities.push(...out);
 		else if (ctx.isSpell) {
@@ -136,7 +176,7 @@ export function compileSingleFace(
 			} else {
 				spellLines.push(...group);
 			}
-		} else abilities.push(...staticGroup(group));
+		} else abilities.push(...staticGroup(ctx, group));
 	}
 
 	// CR 711.5: Leveler striations ("LEVEL N1-N2" / "LEVEL N3+").
@@ -238,7 +278,61 @@ export function compileSingleFace(
 		}
 	}
 
-	if (spellLines.length > 0) abilities.push(...spellAbility(norm, spellLines));
+	// CR 717.2: Class striations ("{Cost}: Level N" followed by abilities active while level >= N).
+	for (const st of classStriations) {
+		const cost = parseCost(st.costText, st.costSpan.start);
+		const costOk =
+			cost.unparsed.length === 0 &&
+			cost.defs.length > 0 &&
+			cost.defs.every((d) => d.k !== 'mana' || !/\{X\}/i.test(d.cost));
+		const levelId = `class_level_${st.level}`;
+		const activateCond: Condition = { k: 'classLevelIs', level: st.level - 1 };
+		if (!costOk) {
+			abilities.push({
+				...unsupported(
+					'unparsed',
+					st.headerText,
+					st.headerSpan,
+					cost.unparsed.length > 0 ? cost.unparsed : [st.costSpan]
+				),
+				id: levelId,
+				cost: cost.defs,
+				costComplete: false,
+				timing: 'sorcery',
+				isMana: false,
+				activationCondition: activateCond
+			});
+		} else {
+			abilities.push({
+				kind: 'activated',
+				id: levelId,
+				cost: cost.defs,
+				targets: [],
+				effect: [],
+				timing: 'sorcery',
+				isMana: false,
+				activationCondition: activateCond,
+				text: st.headerText,
+				span: st.headerSpan
+			});
+		}
+		const gateCond: Condition = { k: 'classLevelAtLeast', level: st.level };
+		for (const innerGroup of groupLines(st.innerLines)) {
+			for (const ab of compilePermanentGroup(ctx, innerGroup)) {
+				abilities.push(...gateAbilityByStriationCondition(ab, gateCond, norm.text));
+			}
+		}
+	}
+
+	if (spellLines.length > 0) abilities.push(...spellAbility(ctx, norm, spellLines));
+
+	// CR 702.165b: Backup grants printed abilities below Backup on the card when targeting another creature.
+	for (let idx = 0; idx < abilities.length; idx++) {
+		const ab = abilities[idx];
+		if (ab.kind === 'keyword' && ab.keyword.name === 'backup') {
+			ab.keyword.backupAbilityStartIndex = idx + 1;
+		}
+	}
 
 	let grantIdx = 0;
 	for (const ab of abilities) {
@@ -284,6 +378,11 @@ export function compileFaces(card: ScryfallCard): FaceDefinition[] {
 interface Ctx {
 	isSpell: boolean;
 	isPlaneswalker: boolean;
+	isClass: boolean;
+	isCase: boolean;
+	hasBargainKeyword: boolean;
+	hasRenownKeyword: boolean;
+	hasDevourKeyword: boolean;
 	/** The first "{T}: Add ..." ability gets the id `mana_tap`. */
 	manaTapTaken: boolean;
 	hasReadAhead: boolean;
@@ -307,8 +406,18 @@ interface StationStriation {
 	innerLines: NormalizedLine[];
 }
 
+interface ClassStriation {
+	level: number;
+	costText: string;
+	costSpan: Span;
+	headerText: string;
+	headerSpan: Span;
+	innerLines: NormalizedLine[];
+}
+
 const LEVEL_HEADER_RE = /^LEVEL\s+(\d+)(?:\s*[—–-]\s*(\d+)|\+)(?:\s*(?:\|\s*)?(-?\d+|\*)\/(-?\d+|\*))?$/i;
 const STATION_HEADER_RE = /^(?:STATION\s+(\d+)\+(?:\s*\|\s*(.*))?|(\d+)\+\s*\|\s*(.*))$/i;
+const CLASS_HEADER_RE = /^(.+?):\s*Level\s+(\d+)\s*$/i;
 const STANDALONE_PT_RE = /^\[?(-?\d+|\*)\/(-?\d+|\*)\]?$/;
 
 function parsePTPair(pRaw: string, tRaw: string): { power: number | null; toughness: number | null } {
@@ -318,21 +427,55 @@ function parsePTPair(pRaw: string, tRaw: string): { power: number | null; toughn
 	};
 }
 
-function partitionStriatedLines(norm: NormalizedFace): {
+function partitionStriatedLines(
+	norm: NormalizedFace,
+	isClass: boolean
+): {
 	baseLines: NormalizedLine[];
 	levelStriations: LevelStriation[];
 	stationStriations: StationStriation[];
+	classStriations: ClassStriation[];
 } {
 	const baseLines: NormalizedLine[] = [];
 	const levelStriations: LevelStriation[] = [];
 	const stationStriations: StationStriation[] = [];
+	const classStriations: ClassStriation[] = [];
 	const hasStation = norm.lines.some(
 		(l) => /^station$/i.test(l.body.trim()) || /^STATION\s+\d+\+/i.test(l.text.trim())
 	);
 
-	let i = 0;
-	while (i < norm.lines.length) {
+	const total = norm.lines.length;
+	for (let i = 0; i < total; ) {
 		const line = norm.lines[i];
+		if (isClass) {
+			const classMatch = line.text.trim().match(CLASS_HEADER_RE);
+			const parsedLevel = classMatch ? parseInt(classMatch[2], 10) : 0;
+			if (classMatch && parsedLevel >= 2) {
+				const rawCostPart = classMatch[1];
+				const leadTrim = line.text.indexOf(rawCostPart);
+				const costStart = leadTrim >= 0 ? line.span.start + leadTrim : line.span.start;
+				const costText = rawCostPart.trim();
+				const costSpan: Span = { start: costStart, end: costStart + costText.length };
+				const innerLines: NormalizedLine[] = [];
+				i++;
+				for (; i < total; i++) {
+					const cand = norm.lines[i];
+					const nextClass = cand.text.trim().match(CLASS_HEADER_RE);
+					if (nextClass && parseInt(nextClass[2], 10) >= 2) break;
+					innerLines.push(cand);
+				}
+				classStriations.push({
+					level: parsedLevel,
+					costText,
+					costSpan,
+					headerText: line.text,
+					headerSpan: line.span,
+					innerLines
+				});
+				continue;
+			}
+		}
+
 		const levelMatch = line.text.trim().match(LEVEL_HEADER_RE);
 		if (levelMatch) {
 			const min = parseInt(levelMatch[1], 10);
@@ -340,7 +483,7 @@ function partitionStriatedLines(norm: NormalizedFace): {
 			let pt: LevelStriation['pt'] = null;
 			if (levelMatch[3] !== undefined && levelMatch[4] !== undefined) {
 				pt = { ...parsePTPair(levelMatch[3], levelMatch[4]), span: line.span };
-			} else if (i + 1 < norm.lines.length) {
+			} else if (i + 1 < total) {
 				const nextPt = norm.lines[i + 1].text.trim().match(STANDALONE_PT_RE);
 				if (nextPt) {
 					pt = { ...parsePTPair(nextPt[1], nextPt[2]), span: norm.lines[i + 1].span };
@@ -349,12 +492,11 @@ function partitionStriatedLines(norm: NormalizedFace): {
 			}
 			const innerLines: NormalizedLine[] = [];
 			i++;
-			while (i < norm.lines.length) {
+			for (; i < total; i++) {
 				const cand = norm.lines[i];
 				if (LEVEL_HEADER_RE.test(cand.text.trim())) break;
 				if (hasStation && STATION_HEADER_RE.test(cand.text.trim())) break;
 				innerLines.push(cand);
-				i++;
 			}
 			levelStriations.push({
 				min,
@@ -378,7 +520,7 @@ function partitionStriatedLines(norm: NormalizedFace): {
 				let afterPipe = line.text.slice(pipeIdx + 1);
 				const leadSpaces = afterPipe.length - afterPipe.trimStart().length;
 				afterPipe = afterPipe.trimStart();
-				let bodyStart = line.span.start + pipeIdx + 1 + leadSpaces;
+				const bodyStart = line.span.start + pipeIdx + 1 + leadSpaces;
 				const trailingBracketPT = afterPipe.match(/\s*\[(-?\d+)\/(-?\d+)\]\s*$/);
 				if (trailingBracketPT) {
 					explicitPT = {
@@ -403,7 +545,7 @@ function partitionStriatedLines(norm: NormalizedFace): {
 			}
 
 			i++;
-			while (i < norm.lines.length) {
+			for (; i < total; i++) {
 				const cand = norm.lines[i];
 				if (STATION_HEADER_RE.test(cand.text.trim()) || LEVEL_HEADER_RE.test(cand.text.trim())) {
 					break;
@@ -414,7 +556,6 @@ function partitionStriatedLines(norm: NormalizedFace): {
 				} else {
 					innerLines.push(cand);
 				}
-				i++;
 			}
 
 			stationStriations.push({
@@ -430,7 +571,7 @@ function partitionStriatedLines(norm: NormalizedFace): {
 		i++;
 	}
 
-	return { baseLines, levelStriations, stationStriations };
+	return { baseLines, levelStriations, stationStriations, classStriations };
 }
 
 function compilePermanentGroup(ctx: Ctx, group: NormalizedLine[]): AbilityDef[] {
@@ -439,9 +580,9 @@ function compilePermanentGroup(ctx: Ctx, group: NormalizedLine[]): AbilityDef[] 
 	if (sagaOut) return sagaOut;
 	return (
 		(group.length === 1 ? keywordLine(ctx, line) : null) ??
-		triggerLine(group) ??
+		triggerLine(ctx, group) ??
 		activatedLine(ctx, group) ??
-		staticGroup(group)
+		staticGroup(ctx, group)
 	);
 }
 
@@ -514,7 +655,15 @@ function gateAbilityByStriationCondition(
 				}
 			];
 		}
-		if (kw.name === 'toxic' && kw.n !== undefined) {
+		if (
+			(kw.name === 'toxic' ||
+				kw.name === 'afflict' ||
+				kw.name === 'firebending' ||
+				kw.name === 'mobilize' ||
+				kw.name === 'rampage' ||
+				kw.name === 'renown') &&
+			kw.n !== undefined
+		) {
 			return [
 				{
 					kind: 'static',
@@ -523,7 +672,7 @@ function gateAbilityByStriationCondition(
 						layer: '6',
 						affected: 'self',
 						condition: cond,
-						mod: { k: 'addKeywords', keywords: [`toxic ${kw.n}`] }
+						mod: { k: 'addKeywords', keywords: [`${kw.name} ${kw.n}`] }
 					},
 					span: ab.span
 				}
@@ -595,12 +744,13 @@ function gateAbilityByStriationCondition(
 
 // ---- Grouping -------------------------------------------------------------------------------
 
-/** A modal header and its bullet lines form one ability. */
+/** A modal header and its bullet lines (or Spree header and its `+ ` mode lines) form one ability. */
 function groupLines(lines: NormalizedLine[]): NormalizedLine[][] {
 	const groups: NormalizedLine[][] = [];
 	for (const line of lines) {
 		const prev = groups[groups.length - 1];
 		if (prev && line.text.startsWith('•')) prev.push(line);
+		else if (prev && /^spree$/i.test(prev[0].body.trim()) && /^\+\s+/.test(line.text.trim())) prev.push(line);
 		else groups.push([line]);
 	}
 	return groups;
@@ -674,7 +824,257 @@ function normalizeKeywordCostText(raw: string): string {
 			return payMultiSym[2].toUpperCase().repeat(n);
 		}
 	}
+	const manaOrMana = trimmed.match(/^((?:\{[^}]+\})+)\s+or\s+((?:\{[^}]+\})+)$/i);
+	if (manaOrMana) {
+		return `pay ${manaOrMana[1]} or pay ${manaOrMana[2]}`;
+	}
+	const manaOrOther = trimmed.match(/^((?:\{[^}]+\})+)\s+or\s+(.+)$/i);
+	if (manaOrOther) {
+		return `pay ${manaOrOther[1]} or ${manaOrOther[2]}`;
+	}
 	return trimmed;
+}
+
+function isCastPayableCostDef(d: CostDef): boolean {
+	switch (d.k) {
+		case 'mana':
+		case 'payLife':
+		case 'payEnergy':
+		case 'tapSubsetSum':
+			return true;
+		case 'sacrifice':
+		case 'discard':
+		case 'tapOthers':
+		case 'returnToHand':
+		case 'revealFromHand':
+			return d.filter !== 'self';
+		case 'exileFrom':
+			return (
+				d.filter !== 'self' &&
+				(d.zone === 'graveyard' || d.zone === 'hand' || d.zone === 'battlefield')
+			);
+		case 'choice':
+			return d.options.length > 0 && d.options.every((opt) => opt.length > 0 && opt.every(isCastPayableCostDef));
+		case 'optional':
+			return d.cost.length > 0 && d.cost.every(isCastPayableCostDef);
+		default:
+			return (d as { k: string }).k === 'mill';
+	}
+}
+
+function isWardPayableCostDef(d: CostDef): boolean {
+	switch (d.k) {
+		case 'mana':
+			return !/\{X\}/i.test(d.cost);
+		case 'payLife':
+			return d.amount.k === 'const';
+		case 'payEnergy':
+			return d.count.k === 'const';
+		case 'tapSubsetSum':
+			return d.minTotal.k === 'const' && !d.excludeSelf;
+		case 'sacrifice':
+		case 'discard':
+		case 'tapOthers':
+		case 'returnToHand':
+		case 'revealFromHand':
+			return d.count.k === 'const' && d.filter !== 'self';
+		case 'exileFrom':
+			return (
+				d.count.k === 'const' &&
+				d.filter !== 'self' &&
+				(d.zone === 'graveyard' || d.zone === 'hand' || d.zone === 'battlefield')
+			);
+		case 'choice':
+			return d.options.length > 0 && d.options.every((opt) => opt.length > 0 && opt.every(isWardPayableCostDef));
+		default: {
+			const extra = d as { k: string; count?: Amount };
+			return extra.k === 'mill' && extra.count?.k === 'const';
+		}
+	}
+}
+
+function isEquipPayableCostDef(d: CostDef): boolean {
+	switch (d.k) {
+		case 'mana':
+			return !/\{X\}/i.test(d.cost);
+		case 'tapSelf':
+		case 'untapSelf':
+		case 'exertSelf':
+		case 'payLife':
+		case 'payEnergy':
+		case 'tapSubsetSum':
+		case 'sacrifice':
+		case 'returnToHand':
+			return true;
+		case 'removeCounters':
+			return d.from === 'self';
+		case 'discard':
+		case 'tapOthers':
+		case 'revealFromHand':
+			return d.filter !== 'self';
+		case 'exileFrom':
+			return d.zone === 'graveyard' || d.zone === 'hand' || d.zone === 'battlefield';
+		case 'choice':
+			return d.options.length > 0 && d.options.every((opt) => opt.length > 0 && opt.every(isEquipPayableCostDef));
+		default:
+			return (d as { k: string }).k === 'mill';
+	}
+}
+
+function parseEquipQualityPhrase(
+	rawPhrase: string
+): { equipFilter: ObjectFilter; equipAllowPlaneswalker?: boolean } | null {
+	const phrase = rawPhrase.trim();
+	if (!phrase) return null;
+	if (/^planeswalkers?$/i.test(phrase)) {
+		return { equipFilter: { types: ['Planeswalker'] }, equipAllowPlaneswalker: true };
+	}
+	if (/^creatures?\s+or\s+planeswalkers?$/i.test(phrase)) {
+		return { equipFilter: { types: ['Creature', 'Planeswalker'] }, equipAllowPlaneswalker: true };
+	}
+	if (/^creature\s+tokens?$/i.test(phrase) || /^token\s+creatures?$/i.test(phrase)) {
+		return { equipFilter: { token: true } };
+	}
+	if (/\bor\b/i.test(phrase)) {
+		const subParts = phrase
+			.replace(/\s+creature$/i, '')
+			.split(/,\s*or\s+|\s+or\s+|,\s*/)
+			.map((s) => s.trim())
+			.filter(Boolean);
+		if (subParts.length >= 2) {
+			const parsedParts = subParts.map((sp) => parseObjectPhrase(sp));
+			if (
+				parsedParts.every(
+					(pf) =>
+						pf !== null &&
+						pf.subtypes &&
+						pf.subtypes.length > 0 &&
+						!pf.types &&
+						!pf.supertypes &&
+						!pf.colors
+				)
+			) {
+				return {
+					equipFilter: {
+						subtypes: parsedParts.flatMap((pf) => pf!.subtypes!)
+					}
+				};
+			}
+		}
+	}
+	const parsed = parseObjectPhrase(phrase);
+	if (!parsed) return null;
+	const filter: ObjectFilter = { ...parsed };
+	const allowsPw = Boolean(filter.types?.includes('Planeswalker'));
+	if (filter.types && filter.types.length === 1 && filter.types[0] === 'Creature') {
+		delete filter.types;
+	}
+	return {
+		equipFilter: filter,
+		...(allowsPw ? { equipAllowPlaneswalker: true } : {})
+	};
+}
+
+const COLOR_WORD_TO_MANA: Record<string, ManaColor> = {
+	white: 'W',
+	blue: 'U',
+	black: 'B',
+	red: 'R',
+	green: 'G'
+};
+
+function parseMultiOrObjectPhrase(phrase: string): ObjectFilter | null {
+	const direct = parseObjectPhrase(phrase);
+	if (direct) return direct;
+	if (!/\bor\b/i.test(phrase)) return null;
+	const colorDisj = phrase.match(
+		/^((?:white|blue|black|red|green)(?:\s*,\s*(?:white|blue|black|red|green))*\s*,?\s+or\s+(?:white|blue|black|red|green))\s+(.+)$/i
+	);
+	if (colorDisj) {
+		const colorWords = colorDisj[1]
+			.split(/,\s*or\s+|\s+or\s+|,\s*/i)
+			.map((w) => COLOR_WORD_TO_MANA[w.trim().toLowerCase()])
+			.filter(Boolean);
+		const tailFilter = parseMultiOrObjectPhrase(colorDisj[2].trim());
+		if (tailFilter && !tailFilter.colors && !tailFilter.anyOf && colorWords.length >= 2) {
+			return { ...tailFilter, colors: [...new Set(colorWords)] };
+		}
+	}
+	const parts = phrase
+		.split(/,\s*or\s+|\s+or\s+|,\s*/)
+		.map((s) => s.trim())
+		.filter(Boolean);
+	if (parts.length < 2) return null;
+	const parsed = parts.map((p) => parseObjectPhrase(p));
+	if (parsed.some((p) => !p)) return null;
+	const nonNull = parsed as ObjectFilter[];
+	const allPureTypes = nonNull.every(
+		(f) =>
+			f.types &&
+			f.types.length > 0 &&
+			!f.subtypes &&
+			!f.supertypes &&
+			!f.colors &&
+			!f.notTypes &&
+			!f.notSubtypes &&
+			f.token === undefined &&
+			f.tapped === undefined
+	);
+	if (allPureTypes) {
+		return { types: [...new Set(nonNull.flatMap((f) => f.types!))] };
+	}
+	const allPureSubtypes = nonNull.every(
+		(f) =>
+			f.subtypes &&
+			f.subtypes.length > 0 &&
+			!f.types &&
+			!f.supertypes &&
+			!f.colors &&
+			!f.notTypes &&
+			!f.notSubtypes &&
+			f.token === undefined &&
+			f.tapped === undefined
+	);
+	if (allPureSubtypes) {
+		return { subtypes: [...new Set(nonNull.flatMap((f) => f.subtypes!))] };
+	}
+	return { anyOf: nonNull };
+}
+
+function parseEnchantPhrase(rawParam: string): ObjectFilter | null {
+	let phrase = rawParam.trim();
+	if (!phrase || /\bgraveyard\b/i.test(phrase)) return null;
+	let controller: ObjectFilter['controller'];
+	let other: boolean | undefined;
+	let tapped: boolean | undefined;
+
+	if (/\s+you\s+control$/i.test(phrase)) {
+		controller = 'you';
+		phrase = phrase.replace(/\s+you\s+control$/i, '').trim();
+	} else if (/\s+(?:an\s+opponent\s+controls|you\s+don't\s+control)$/i.test(phrase)) {
+		controller = 'opponent';
+		phrase = phrase.replace(/\s+(?:an\s+opponent\s+controls|you\s+don't\s+control)$/i, '').trim();
+	}
+	if (/^another\s+/i.test(phrase)) {
+		other = true;
+		phrase = phrase.replace(/^another\s+/i, '').trim();
+	}
+	if (/^tapped\s+/i.test(phrase)) {
+		tapped = true;
+		phrase = phrase.replace(/^tapped\s+/i, '').trim();
+	} else if (/^untapped\s+/i.test(phrase)) {
+		tapped = false;
+		phrase = phrase.replace(/^untapped\s+/i, '').trim();
+	}
+
+	const base = parseMultiOrObjectPhrase(phrase);
+	if (!base) return null;
+	return {
+		...base,
+		...(controller ? { controller } : {}),
+		...(other ? { other: true } : {}),
+		...(tapped !== undefined ? { tapped } : {})
+	};
 }
 
 function parseKeyword(part: string): KeywordDef | null {
@@ -687,6 +1087,7 @@ function parseKeyword(part: string): KeywordDef | null {
 		const rawArg = rest.replace(/^\s*[—-]?\s*/, '').trim();
 		const arg =
 			kw === 'ward' ||
+			kw === 'equip' ||
 			kw === 'flashback' ||
 			kw === 'kicker' ||
 			kw === 'multikicker' ||
@@ -719,7 +1120,25 @@ function parseKeyword(part: string): KeywordDef | null {
 			kw === 'dash' ||
 			kw === 'ninjutsu' ||
 			kw === 'commander ninjutsu' ||
-			kw === 'scavenge'
+			kw === 'scavenge' ||
+			kw === 'outlast' ||
+			kw === 'embalm' ||
+			kw === 'eternalize' ||
+			kw === 'encore' ||
+			kw === 'bestow' ||
+			kw === 'escalate' ||
+			kw === 'recover' ||
+			kw === 'harmonize' ||
+			kw === 'miracle' ||
+			kw === 'spectacle' ||
+			kw === 'surge' ||
+			kw === 'awaken' ||
+			kw === 'emerge' ||
+			kw === 'devour' ||
+			kw === 'sneak' ||
+			kw === 'beam me up' ||
+			kw === 'mayhem' ||
+			kw === 'web-slinging'
 				? rawArg.replace(/\.$/, '').trim()
 				: rawArg;
 		if (kw === 'prototype') {
@@ -749,7 +1168,7 @@ function parseKeyword(part: string): KeywordDef | null {
 		}
 		if (/^(\{[^}]+\})+$/.test(arg)) return { name: kw, cost: arg };
 		if (/^\d+$/.test(arg)) return { name: kw, n: parseInt(arg, 10) };
-		const nCost = arg.match(/^(\d+)\s*—\s*((?:\{[^}]+\})+)$/);
+		const nCost = arg.match(/^(\d+)\s*[—–-]\s*((?:\{[^}]+\})+)$/);
 		if (nCost) return { name: kw, n: parseInt(nCost[1], 10), cost: nCost[2] };
 		if (/^from\b/i.test(arg) || kw === 'enchant' || kw === 'protection') {
 			return { name: kw, param: arg.replace(/^from\s+/i, '') };
@@ -765,7 +1184,11 @@ function parseKeyword(part: string): KeywordDef | null {
 		if (!quality || !/^[a-z][a-z -]*$/i.test(quality)) return null;
 		const arg = rest.replace(/^\s*[—-]?\s*/, '').replace(/\.$/, '').trim();
 		if (!arg) return null;
-		const filter = quality.toLowerCase() === 'type' ? null : parseObjectPhrase(quality);
+		const filter =
+			/^(?:type|a|an|the|any|each|another|other|all|target)$/i.test(quality)
+				? null
+				: (parseObjectPhrase(quality) ??
+					parseObjectPhrase(quality.replace(/\b[a-z]/g, (c) => c.toUpperCase())));
 		if (!filter) {
 			return { name: 'typecycling', param: arg };
 		}
@@ -785,6 +1208,12 @@ function parseAffinityQuality(phrase: string): ObjectFilter | null {
 		// CR 700.12a: Assassins, Mercenaries, Pirates, Rogues, and Warlocks are outlaws.
 		return { subtypes: ['Assassin', 'Mercenary', 'Pirate', 'Rogue', 'Warlock'] };
 	}
+	if (/^historic$/i.test(phrase)) {
+		// CR 700.6: Artifacts, legendaries, and Sagas are historic.
+		return {
+			anyOf: [{ types: ['Artifact'] }, { supertypes: ['Legendary'] }, { subtypes: ['Saga'] }]
+		};
+	}
 	return parseObjectPhrase(phrase);
 }
 
@@ -793,7 +1222,7 @@ function keywordLine(ctx: Ctx, line: NormalizedLine): AbilityDef[] | null {
 	if (
 		line.abilityWord ||
 		(/\.$/.test(line.body) &&
-			!/^(?:ward|flashback|kicker|multikicker|morph|megamorph|disguise|unearth|buyback|evoke|escape|foretell|plot|entwine|disturb|blitz|cumulative upkeep|offspring|squad|replicate|warp|transmute|level up|reinforce(?:\s+\d+)?|echo|madness|dash|commander ninjutsu|ninjutsu|scavenge|cycling|(?:[a-z][a-z -]*\s+)?[a-z]*cycling)\s*[—-]/i.test(
+			!/^(?:ward|equip(?:\s+[a-z][a-z ,'-]*?)?|flashback|kicker|multikicker|morph|megamorph|disguise|unearth|buyback|evoke|escape|foretell|plot|entwine|disturb|blitz|cumulative upkeep|offspring|squad|replicate|warp|transmute|level up|reinforce(?:\s+\d+)?|echo|madness|dash|commander ninjutsu|ninjutsu|scavenge|outlast|embalm|eternalize|encore|bestow|escalate|recover|harmonize|miracle|spectacle|surge|awaken(?:\s+\d+)?|emerge|sneak|beam me up|mayhem|web-slinging|cycling|(?:[a-z][a-z -]*\s+)?[a-z]*cycling)\s*[—–-]/i.test(
 				line.body
 			))
 	) {
@@ -802,7 +1231,7 @@ function keywordLine(ctx: Ctx, line: NormalizedLine): AbilityDef[] | null {
 	// "Enchant creature, land, or planeswalker", "Protection from white, from blue", and composite
 	// dash costs ("Ward—...", "Flashback—...", "Kicker—...", "Morph—...", "Cycling—...", "Escape—...") are one keyword.
 	const parts =
-		/^(?:enchant|protection from|hexproof from|partner with|prototype\b|(?:ward|flashback|kicker|multikicker|morph|megamorph|disguise|unearth|buyback|evoke|escape|foretell|plot|entwine|disturb|blitz|cumulative upkeep|offspring|squad|replicate|warp|transmute|level up|reinforce(?:\s+\d+)?|echo|madness|dash|commander ninjutsu|ninjutsu|scavenge|cycling|(?:[a-z][a-z -]*\s+)?[a-z]*cycling)\s*[—–-])/i.test(
+		/^(?:enchant|protection from|hexproof from|partner with|prototype\b|devour\s+x\b|equip\s+[a-z][a-z '-]*,\s*[a-z]|(?:ward|equip(?:\s+[a-z][a-z ,'-]*?)?|flashback|kicker|multikicker|morph|megamorph|disguise|unearth|buyback|evoke|escape|foretell|plot|entwine|disturb|blitz|cumulative upkeep|offspring|squad|replicate|warp|transmute|level up|reinforce(?:\s+\d+)?|echo|madness|dash|commander ninjutsu|ninjutsu|scavenge|outlast|embalm|eternalize|encore|bestow|escalate|recover|harmonize|miracle|spectacle|surge|awaken(?:\s+\d+)?|emerge|sneak|beam me up|mayhem|web-slinging|cycling|(?:[a-z][a-z -]*\s+)?[a-z]*cycling)\s*[—–-])/i.test(
 			line.body
 		)
 			? [line.body]
@@ -818,29 +1247,70 @@ function keywordLine(ctx: Ctx, line: NormalizedLine): AbilityDef[] | null {
 		cursor = span.end;
 		const keyword = keywords[i]!;
 		let implemented = IMPLEMENTED_KEYWORDS.has(keyword.name);
-		// Equip is an activated ability (CR 702.6a): "Equip {N}" or "Equip [quality] {N}".
+		// Equip is an activated ability (CR 702.6a): "Equip {N}", "Equip [quality] {N}", or "Equip—[cost]".
 		if (keyword.name === 'equip' && !keyword.cost) {
-			const q = keyword.param?.match(/^([A-Za-z ]+?)\s+creature\s*((?:\{[^}]+\})+)$/) ?? keyword.param?.match(/^([A-Za-z ]+?)\s*((?:\{[^}]+\})+)$/);
-			if (q) {
-				keyword.cost = q[2];
-				const words = q[1].trim().split(/\s+/);
-				keyword.equipFilter = {};
-				for (const w of words) {
-					if (/^legendary$/i.test(w)) keyword.equipFilter.supertypes = ['Legendary'];
-					else if (!/^creature$/i.test(w)) keyword.equipFilter.subtypes = [...(keyword.equipFilter.subtypes ?? []), w[0].toUpperCase() + w.slice(1)];
+			const dashEquip = part.match(/^equip(?:\s+([a-z][a-z ,'-]*?))?\s*[—–-]\s*([\s\S]+)$/i);
+			if (dashEquip) {
+				const rawQual = dashEquip[1]?.trim();
+				const rawCost = normalizeKeywordCostText(dashEquip[2].replace(/\.$/, '').trim());
+				const parsedCost = parseCost(rawCost);
+				const qualParsed = rawQual ? parseEquipQualityPhrase(rawQual) : null;
+				if (
+					(rawQual && !qualParsed) ||
+					parsedCost.unparsed.length > 0 ||
+					parsedCost.defs.length === 0 ||
+					!parsedCost.defs.every(isEquipPayableCostDef)
+				) {
+					out.push(unsupported('unparsed', part, span, [span]));
+					return;
 				}
-				delete keyword.param;
-			} else implemented = false;
+				if (qualParsed) {
+					keyword.equipFilter = qualParsed.equipFilter;
+					if (qualParsed.equipAllowPlaneswalker) keyword.equipAllowPlaneswalker = true;
+					keyword.param = rawQual;
+				} else {
+					delete keyword.param;
+				}
+				keyword.costDefs = parsedCost.defs;
+				if (parsedCost.defs.length === 1 && parsedCost.defs[0].k === 'mana') {
+					keyword.cost = parsedCost.defs[0].cost;
+				}
+			} else {
+				const directEquipCost = keyword.param
+					? parseCost(normalizeKeywordCostText(keyword.param))
+					: null;
+				if (
+					directEquipCost &&
+					directEquipCost.unparsed.length === 0 &&
+					directEquipCost.defs.length > 0 &&
+					directEquipCost.defs.every(isEquipPayableCostDef)
+				) {
+					keyword.costDefs = directEquipCost.defs;
+					if (directEquipCost.defs.length === 1 && directEquipCost.defs[0].k === 'mana') {
+						keyword.cost = directEquipCost.defs[0].cost;
+					}
+					delete keyword.param;
+				} else {
+					const q = keyword.param?.match(/^(.+?)\s*((?:\{[^}]+\})+)$/);
+					const qualParsed = q ? parseEquipQualityPhrase(q[1]) : null;
+					if (q && qualParsed && !/\{X\}/i.test(q[2])) {
+						keyword.cost = q[2];
+						keyword.equipFilter = qualParsed.equipFilter;
+						if (qualParsed.equipAllowPlaneswalker) keyword.equipAllowPlaneswalker = true;
+						delete keyword.param;
+					} else {
+						implemented = false;
+					}
+				}
+			}
 		}
 		if (keyword.name === 'ward') {
-			const wardCost = keyword.cost ?? keyword.param ?? '';
+			const wardCost = normalizeKeywordCostText(keyword.cost ?? keyword.param ?? '');
 			const parsed = parseCost(wardCost);
-			const singleDef = parsed.defs.length === 1 && parsed.unparsed.length === 0 ? parsed.defs[0] : undefined;
-			const supportedWardCost = Boolean(
-				singleDef &&
-					((singleDef.k === 'mana' && !/\{X\}/i.test(singleDef.cost)) ||
-						(singleDef.k === 'payLife' && singleDef.amount.k === 'const'))
-			);
+			const supportedWardCost =
+				parsed.unparsed.length === 0 &&
+				parsed.defs.length > 0 &&
+				parsed.defs.every(isWardPayableCostDef);
 			if (!supportedWardCost) {
 				out.push({
 					kind: 'unsupported',
@@ -873,21 +1343,30 @@ function keywordLine(ctx: Ctx, line: NormalizedLine): AbilityDef[] | null {
 			keyword.name === 'blitz' ||
 			keyword.name === 'warp' ||
 			keyword.name === 'madness' ||
-			keyword.name === 'dash'
+			keyword.name === 'dash' ||
+			keyword.name === 'bestow'
 		) {
 			const kwCost = normalizeKeywordCostText(keyword.cost ?? keyword.param ?? '');
 			const parsed = parseCost(kwCost);
-			if (parsed.unparsed.length > 0 || parsed.defs.length === 0) {
+			if (
+				parsed.unparsed.length > 0 ||
+				parsed.defs.length === 0 ||
+				(keyword.name === 'bestow' && !parsed.defs.every(isCastPayableCostDef))
+			) {
 				out.push(unsupported('unparsed', part, span, [span]));
 				return;
 			}
 			keyword.costDefs = parsed.defs;
+			if (keyword.name === 'bestow' && parsed.defs.length === 1 && parsed.defs[0].k === 'mana') {
+				keyword.cost = parsed.defs[0].cost;
+			}
 		}
 		if (
 			keyword.name === 'offspring' ||
 			keyword.name === 'squad' ||
 			keyword.name === 'replicate' ||
-			keyword.name === 'echo'
+			keyword.name === 'echo' ||
+			keyword.name === 'escalate'
 		) {
 			const kwCost = normalizeKeywordCostText(keyword.cost ?? keyword.param ?? '');
 			const parsed = parseCost(kwCost);
@@ -902,6 +1381,9 @@ function keywordLine(ctx: Ctx, line: NormalizedLine): AbilityDef[] | null {
 				return;
 			}
 			keyword.costDefs = parsed.defs;
+			if (keyword.name === 'escalate' && parsed.defs.length === 1 && parsed.defs[0].k === 'mana') {
+				keyword.cost = parsed.defs[0].cost;
+			}
 		}
 		if (
 			keyword.name === 'level up' ||
@@ -909,7 +1391,11 @@ function keywordLine(ctx: Ctx, line: NormalizedLine): AbilityDef[] | null {
 			keyword.name === 'reinforce' ||
 			keyword.name === 'ninjutsu' ||
 			keyword.name === 'commander ninjutsu' ||
-			keyword.name === 'scavenge'
+			keyword.name === 'scavenge' ||
+			keyword.name === 'outlast' ||
+			keyword.name === 'embalm' ||
+			keyword.name === 'eternalize' ||
+			keyword.name === 'encore'
 		) {
 			if (keyword.name === 'reinforce' && keyword.n === undefined) {
 				out.push(unsupported('unparsed', part, span, [span]));
@@ -929,6 +1415,130 @@ function keywordLine(ctx: Ctx, line: NormalizedLine): AbilityDef[] | null {
 			if (keyword.name === 'transmute') {
 				keyword.n = ctx.cardManaValue;
 			}
+		}
+		if (keyword.name === 'recover') {
+			const kwCost = normalizeKeywordCostText(keyword.cost ?? keyword.param ?? '');
+			const parsed = parseCost(kwCost);
+			if (
+				parsed.unparsed.length > 0 ||
+				parsed.defs.length !== 1 ||
+				parsed.defs[0].k !== 'mana' ||
+				/\{X\}/i.test(parsed.defs[0].cost)
+			) {
+				out.push(unsupported('unparsed', part, span, [span]));
+				return;
+			}
+			keyword.cost = parsed.defs[0].cost;
+			keyword.costDefs = parsed.defs;
+			delete keyword.param;
+		}
+		if (
+			keyword.name === 'harmonize' ||
+			keyword.name === 'miracle' ||
+			keyword.name === 'spectacle' ||
+			keyword.name === 'surge'
+		) {
+			const kwCost = normalizeKeywordCostText(keyword.cost ?? keyword.param ?? '');
+			const parsed = parseCost(kwCost);
+			if (parsed.unparsed.length > 0 || parsed.defs.length !== 1 || parsed.defs[0].k !== 'mana') {
+				out.push(unsupported('unparsed', part, span, [span]));
+				return;
+			}
+			keyword.cost = parsed.defs[0].cost;
+			keyword.costDefs = parsed.defs;
+			delete keyword.param;
+		}
+		if (
+			keyword.name === 'sneak' ||
+			keyword.name === 'beam me up' ||
+			keyword.name === 'web-slinging'
+		) {
+			const kwCost = normalizeKeywordCostText(keyword.cost ?? keyword.param ?? '');
+			const parsed = parseCost(kwCost);
+			const ok =
+				parsed.unparsed.length === 0 &&
+				parsed.defs.length > 0 &&
+				parsed.defs.every(
+					(d) => isCastPayableCostDef(d) && (d.k !== 'mana' || !/\{X\}/i.test(d.cost))
+				);
+			if (!ok) {
+				out.push(unsupported('unparsed', part, span, [span]));
+				return;
+			}
+			const manaParts = parsed.defs.filter(
+				(d): d is Extract<CostDef, { k: 'mana' }> => d.k === 'mana'
+			);
+			if (manaParts.length > 0) {
+				keyword.cost = manaParts.map((m) => m.cost).join('');
+			}
+			keyword.costDefs = parsed.defs;
+			delete keyword.param;
+		}
+		if (keyword.name === 'mayhem') {
+			if (!keyword.cost && !keyword.param && keyword.n === undefined) {
+				// Bare Mayhem (CR 702.187c, e.g. Oscorp Industries)
+			} else {
+				const kwCost = normalizeKeywordCostText(keyword.cost ?? keyword.param ?? '');
+				const parsed = parseCost(kwCost);
+				const ok =
+					parsed.unparsed.length === 0 &&
+					parsed.defs.length > 0 &&
+					parsed.defs.every(
+						(d) => isCastPayableCostDef(d) && (d.k !== 'mana' || !/\{X\}/i.test(d.cost))
+					);
+				if (!ok) {
+					out.push(unsupported('unparsed', part, span, [span]));
+					return;
+				}
+				const manaParts = parsed.defs.filter(
+					(d): d is Extract<CostDef, { k: 'mana' }> => d.k === 'mana'
+				);
+				if (manaParts.length > 0) {
+					keyword.cost = manaParts.map((m) => m.cost).join('');
+				}
+				keyword.costDefs = parsed.defs;
+				delete keyword.param;
+			}
+		}
+		if (keyword.name === 'awaken') {
+			if (
+				keyword.n === undefined ||
+				keyword.n <= 0 ||
+				!keyword.cost ||
+				!/^(\{[^}]+\})+$/.test(keyword.cost)
+			) {
+				out.push(unsupported('unparsed', part, span, [span]));
+				return;
+			}
+			keyword.awakenN = keyword.n;
+			keyword.costDefs = [{ k: 'mana', cost: keyword.cost }];
+		}
+		if (keyword.name === 'emerge') {
+			if (!keyword.cost && keyword.param) {
+				const em = keyword.param.match(/^(.+?)\s+((?:\{[^}]+\})+)$/);
+				const ef = em ? parseMultiOrObjectPhrase(em[1].trim()) : null;
+				if (!em || !ef) {
+					out.push(unsupported('unparsed', part, span, [span]));
+					return;
+				}
+				keyword.emergeFilter = ef;
+				keyword.cost = em[2];
+				delete keyword.param;
+			}
+			if (!keyword.cost || !/^(\{[^}]+\})+$/.test(keyword.cost) || /\{X\}/i.test(keyword.cost)) {
+				out.push(unsupported('unparsed', part, span, [span]));
+				return;
+			}
+			keyword.costDefs = [{ k: 'mana', cost: keyword.cost }];
+		}
+		if (keyword.name === 'champion') {
+			const rawChamp = (keyword.param ?? '').trim().replace(/^an?\s+/i, '').trim();
+			const cf = rawChamp ? parseMultiOrObjectPhrase(rawChamp) : null;
+			if (!cf || keyword.cost !== undefined || keyword.n !== undefined) {
+				out.push(unsupported('unparsed', part, span, [span]));
+				return;
+			}
+			keyword.championFilter = cf;
 		}
 		if (keyword.name === 'prototype') {
 			if (!keyword.prototypeSpec) {
@@ -1028,6 +1638,32 @@ function keywordLine(ctx: Ctx, line: NormalizedLine): AbilityDef[] | null {
 			} else if (!isBloodthirstN) {
 				implemented = false;
 			}
+		} else if (keyword.name === 'devour') {
+			if (keyword.n !== undefined && keyword.cost === undefined && keyword.param === undefined) {
+				// Devour N
+			} else if (
+				keyword.n === undefined &&
+				keyword.cost === undefined &&
+				keyword.param &&
+				/^x(?:\s*,\s*where\s+x\s+is\s+the\s+number\s+of\s+creatures\s+devoured\s+this\s+way)?$/i.test(
+					keyword.param.trim()
+				)
+			) {
+				keyword.devourX = true;
+				delete keyword.param;
+			} else if (keyword.n === undefined && keyword.cost === undefined && keyword.param) {
+				const dm = keyword.param.trim().match(/^(.+?)\s+(\d+)$/);
+				const df = dm ? parseMultiOrObjectPhrase(dm[1].trim()) : null;
+				if (dm && df) {
+					keyword.devourFilter = df;
+					keyword.n = parseInt(dm[2], 10);
+					delete keyword.param;
+				} else {
+					implemented = false;
+				}
+			} else {
+				implemented = false;
+			}
 		} else if (
 			kwSpec?.parameterKind === 'number' &&
 			(keyword.n === undefined || keyword.cost !== undefined || keyword.param !== undefined)
@@ -1060,7 +1696,7 @@ function keywordLine(ctx: Ctx, line: NormalizedLine): AbilityDef[] | null {
 			} else if (rawParam === 'you') {
 				keyword.enchantPlayer = { relation: 'you' };
 			} else {
-				const filter = parseObjectPhrase((keyword.param ?? '').trim());
+				const filter = parseEnchantPhrase((keyword.param ?? '').trim());
 				if (filter) keyword.enchantFilter = filter;
 				else {
 					out.push(unsupported('keyword_not_implemented', part, span, [span]));
@@ -1109,6 +1745,10 @@ function keywordLine(ctx: Ctx, line: NormalizedLine): AbilityDef[] | null {
 		const commanderNinjutsuId =
 			i === 0 ? `commander_ninjutsu_${line.rawIndex}` : `commander_ninjutsu_${line.rawIndex}_${i}`;
 		const scavengeId = i === 0 ? `scavenge_${line.rawIndex}` : `scavenge_${line.rawIndex}_${i}`;
+		const outlastId = i === 0 ? `outlast_${line.rawIndex}` : `outlast_${line.rawIndex}_${i}`;
+		const embalmId = i === 0 ? `embalm_${line.rawIndex}` : `embalm_${line.rawIndex}_${i}`;
+		const eternalizeId = i === 0 ? `eternalize_${line.rawIndex}` : `eternalize_${line.rawIndex}_${i}`;
+		const encoreId = i === 0 ? `encore_${line.rawIndex}` : `encore_${line.rawIndex}_${i}`;
 		out.push({
 			kind: 'keyword',
 			keyword,
@@ -1137,7 +1777,15 @@ function keywordLine(ctx: Ctx, line: NormalizedLine): AbilityDef[] | null {
 														? { id: commanderNinjutsuId }
 														: keyword.name === 'scavenge'
 															? { id: scavengeId }
-															: {})
+															: keyword.name === 'outlast'
+																? { id: outlastId }
+																: keyword.name === 'embalm'
+																	? { id: embalmId }
+																	: keyword.name === 'eternalize'
+																		? { id: eternalizeId }
+																		: keyword.name === 'encore'
+																			? { id: encoreId }
+																			: {})
 		});
 		if (keyword.name === 'vanishing') {
 			out.push(...buildVanishingAbilities(keyword.n, span));
@@ -1351,23 +1999,539 @@ function exertAttackLine(group: NormalizedLine[]): AbilityDef[] | null {
 	];
 }
 
-function triggerLine(group: NormalizedLine[]): AbilityDef[] | null {
+// ---- Case, Spree, Tiered, & Wave 4 Grammar Adapters -----------------------------------------
+
+const CASE_NUMBER_WORDS: Readonly<Record<string, number>> = {
+	a: 1,
+	an: 1,
+	one: 1,
+	two: 2,
+	three: 3,
+	four: 4,
+	five: 5,
+	six: 6,
+	seven: 7,
+	eight: 8,
+	nine: 9,
+	ten: 10,
+	eleven: 11,
+	twelve: 12,
+	thirteen: 13,
+	fourteen: 14,
+	fifteen: 15,
+	sixteen: 16,
+	seventeen: 17,
+	eighteen: 18,
+	nineteen: 19,
+	twenty: 20
+};
+
+function parseSmallNumberToken(raw: string): number | null {
+	const t = raw.trim().toLowerCase();
+	if (/^\d+$/.test(t)) return parseInt(t, 10);
+	return CASE_NUMBER_WORDS[t] ?? null;
+}
+
+function parseCaseSolveCondition(rawText: string): Condition | null {
+	const s = rawText.trim().replace(/\.$/, '').trim();
+	if (!s) return null;
+
+	const gainedLife = s.match(/^you've gained (\S+) or more life this turn$/i);
+	if (gainedLife) {
+		const n = parseSmallNumberToken(gainedLife[1]);
+		if (n !== null) return { k: 'gainedLifeThisTurn', min: { k: 'const', n } };
+	}
+
+	if (/^you have no cards in hand$/i.test(s)) {
+		return {
+			k: 'compare',
+			left: { k: 'cardsIn', zone: 'hand', of: { k: 'you' } },
+			op: '=',
+			right: { k: 'const', n: 0 }
+		};
+	}
+
+	const gyCount = s.match(/^there are (\S+) or more cards in your graveyard$/i);
+	if (gyCount) {
+		const n = parseSmallNumberToken(gyCount[1]);
+		if (n !== null) {
+			return {
+				k: 'compare',
+				left: { k: 'cardsIn', zone: 'graveyard', of: { k: 'you' } },
+				op: '>=',
+				right: { k: 'const', n }
+			};
+		}
+	}
+
+	const attacked = s.match(/^(\S+) or more creatures attacked this turn$/i);
+	if (attacked) {
+		const n = parseSmallNumberToken(attacked[1]);
+		if (n !== null) return { k: 'creaturesAttackedCountThisTurn', min: n };
+	}
+
+	const totalPower = s.match(/^creatures you control have total power (\S+) or greater$/i);
+	if (totalPower) {
+		const n = parseSmallNumberToken(totalPower[1]);
+		if (n !== null) return { k: 'totalPowerControlled', min: n };
+	}
+
+	const colors = s.match(/^there are (\S+) (?:or more )?colors among permanents you control$/i);
+	if (colors) {
+		const n = parseSmallNumberToken(colors[1]);
+		if (n !== null) return { k: 'colorsAmongControlledPermanents', min: n };
+	}
+
+	const sourcesDmg = s.match(/^(\S+) or more sources you controlled dealt damage this turn$/i);
+	if (sourcesDmg) {
+		const n = parseSmallNumberToken(sourcesDmg[1]);
+		if (n !== null) return { k: 'sourcesDealtDamageThisTurn', min: n };
+	}
+
+	const cardsToGy = s.match(
+		/^(\S+) or more (.+?) cards? were put into (your graveyard|graveyards) from anywhere this turn$/i
+	);
+	if (cardsToGy) {
+		const n = parseSmallNumberToken(cardsToGy[1]);
+		const qual = cardsToGy[2].trim();
+		const filter = /^cards?$/i.test(qual) ? {} : parseMultiOrObjectPhrase(qual);
+		if (n !== null && filter) {
+			return {
+				k: 'cardsPutIntoGraveyardFromAnywhereThisTurn',
+				min: n,
+				...(Object.keys(filter).length > 0 ? { filter } : {}),
+				whose: /^your\b/i.test(cardsToGy[3]) ? 'you' : 'any'
+			};
+		}
+	}
+
+	const spellsCast = s.match(/^you've cast (\S+) or more (?:(.+?) )?spells this turn$/i);
+	if (spellsCast) {
+		const n = parseSmallNumberToken(spellsCast[1]);
+		const rawQual = spellsCast[2]?.trim().replace(/\binstant and sorcery\b/i, 'instant or sorcery');
+		const filter = rawQual ? parseMultiOrObjectPhrase(rawQual) : {};
+		if (n !== null && filter) {
+			return {
+				k: 'spellsCastThisTurnCount',
+				min: n,
+				...(Object.keys(filter).length > 0 ? { filter } : {})
+			};
+		}
+	}
+
+	const controlNo = s.match(/^you control no (.+)$/i);
+	if (controlNo) {
+		const filter = parseMultiOrObjectPhrase(controlNo[1].trim());
+		if (filter) {
+			return {
+				k: 'compare',
+				left: { k: 'count', of: { ...filter, controller: 'you', zone: 'battlefield' } },
+				op: '=',
+				right: { k: 'const', n: 0 }
+			};
+		}
+	}
+
+	const controlOrMore = s.match(/^you control (\S+) or more (.+)$/i);
+	if (controlOrMore) {
+		const n = parseSmallNumberToken(controlOrMore[1]);
+		const filter = parseMultiOrObjectPhrase(controlOrMore[2].trim());
+		if (n !== null && filter) {
+			return {
+				k: 'compare',
+				left: { k: 'count', of: { ...filter, controller: 'you', zone: 'battlefield' } },
+				op: '>=',
+				right: { k: 'const', n }
+			};
+		}
+	}
+
+	const controlSingle = s.match(/^you control (?:an? )?(.+)$/i);
+	if (controlSingle) {
+		const filter = parseMultiOrObjectPhrase(controlSingle[1].trim());
+		if (filter) {
+			return {
+				k: 'compare',
+				left: { k: 'count', of: { ...filter, controller: 'you', zone: 'battlefield' } },
+				op: '>=',
+				right: { k: 'const', n: 1 }
+			};
+		}
+	}
+
+	return null;
+}
+
+function caseToSolveLine(group: NormalizedLine[]): AbilityDef[] | null {
+	if (group.length !== 1) return null;
+	const line = group[0];
+	const m = line.text.match(/^To solve\s*—\s*([\s\S]+)$/i);
+	if (!m) return null;
+	const solveCond = parseCaseSolveCondition(m[1]);
+	if (!solveCond) {
+		return [unsupported('unparsed', line.text, line.span, [line.span])];
+	}
+	return [
+		{
+			kind: 'triggered',
+			trigger: {
+				event: 'phaseBegin',
+				filter: { phase: 'end_step' },
+				scope: 'controller_turn'
+			},
+			condition: { k: 'and', of: [{ k: 'caseUnsolved' }, solveCond] },
+			targets: [],
+			effect: [],
+			text: line.text,
+			span: line.span
+		}
+	];
+}
+
+function caseSolvedLine(ctx: Ctx, group: NormalizedLine[], normText: string): AbilityDef[] | null {
+	const first = group[0];
+	const m = first.text.match(/^Solved\s*—\s*/i);
+	if (!m) return null;
+	const prefixLen = m[0].length;
+	const innerText = first.text.slice(prefixLen);
+	const innerStart = first.span.start + prefixLen;
+	const innerSpan: Span = { start: innerStart, end: first.span.end };
+	const strippedFirst: NormalizedLine = {
+		rawIndex: first.rawIndex,
+		raw: first.raw,
+		text: innerText,
+		span: innerSpan,
+		body: innerText,
+		bodySpan: innerSpan,
+		sentences: splitSentences(innerText, innerStart)
+	};
+	const innerGroup = [strippedFirst, ...group.slice(1)];
+	const compiled = compilePermanentGroup(ctx, innerGroup);
+	const out: AbilityDef[] = [];
+	const cond: Condition = { k: 'caseSolved' };
+	for (const ab of compiled) {
+		out.push(...gateAbilityByStriationCondition(ab, cond, normText));
+	}
+	return out;
+}
+
+function isSpreeGroup(group: NormalizedLine[]): boolean {
+	return /^spree$/i.test(group[0].body.trim());
+}
+
+function isTieredGroup(group: NormalizedLine[]): boolean {
+	return /^tiered$/i.test(group[0].body.trim());
+}
+
+interface Wave4TextRewriteOpts {
+	bargain: boolean;
+	renown: boolean;
+	devourCount: boolean;
+	devourCond: boolean;
+}
+
+function detectWave4Rewrites(ctx: Ctx, texts: readonly string[]): Wave4TextRewriteOpts | null {
+	const joined = texts.join('\n');
+	const bargain = ctx.hasBargainKeyword && /\bbargained\b/i.test(joined);
+	const renown = ctx.hasRenownKeyword && /\brenowned\b/i.test(joined);
+	const devourCount =
+		ctx.hasDevourKeyword && /\bfor each creature (?:it|~) devoured\b/i.test(joined);
+	const devourCond =
+		ctx.hasDevourKeyword && /\bif (?:it|~) devoured a creature\b/i.test(joined);
+	if (!bargain && !renown && !devourCount && !devourCond) return null;
+	return { bargain, renown, devourCount, devourCond };
+}
+
+function applyWave4TextRewrite(str: string, opts: Wave4TextRewriteOpts): string {
+	let out = str;
+	if (opts.bargain) {
+		out = out.replace(/\bbargained\b/gi, 'kicked');
+	}
+	if (opts.renown) {
+		out = out.replace(/\brenowned\b/gi, 'monstrous');
+	}
+	if (opts.devourCount) {
+		out = out.replace(/\bfor each creature (?:it|~) devoured\b/gi, 'for each time it was kicked');
+	}
+	if (opts.devourCond) {
+		out = out.replace(/\bif (?:it|~) devoured a creature\b/gi, 'if ~ is monstrous');
+	}
+	return out;
+}
+
+function rewriteNormalizedLine(line: NormalizedLine, opts: Wave4TextRewriteOpts): NormalizedLine {
+	const newText = applyWave4TextRewrite(line.text, opts);
+	const newBody = applyWave4TextRewrite(line.body, opts);
+	const start = line.span.start;
+	const bodyOffset = line.bodySpan.start - line.span.start;
+	const bodyStart = start + Math.min(bodyOffset, newText.length);
+	const newSpan: Span = { start, end: start + newText.length };
+	const newBodySpan: Span = { start: bodyStart, end: bodyStart + newBody.length };
+	return {
+		...line,
+		text: newText,
+		span: newSpan,
+		body: newBody,
+		bodySpan: newBodySpan,
+		sentences: splitSentences(newBody, bodyStart)
+	};
+}
+
+function mapAmountWave4(amount: Amount, opts: Wave4TextRewriteOpts): Amount {
+	if (opts.devourCount && amount.k === 'kickedCount') {
+		const mult = amount.multiplier ?? 1;
+		if (mult <= 1) return { k: 'devouredCount' };
+		return {
+			k: 'sum',
+			args: Array.from({ length: mult }, () => ({ k: 'devouredCount' as const }))
+		};
+	}
+	if (amount.k === 'sum' || amount.k === 'min' || amount.k === 'max') {
+		return { ...amount, args: amount.args.map((a) => mapAmountWave4(a, opts)) };
+	}
+	if (amount.k === 'negate') {
+		return { ...amount, of: mapAmountWave4(amount.of, opts) };
+	}
+	return amount;
+}
+
+function mapConditionWave4(cond: Condition, opts: Wave4TextRewriteOpts): Condition {
+	if (opts.bargain && cond.k === 'kicked' && !cond.tag) {
+		return { k: 'kicked', tag: 'bargain' };
+	}
+	if (opts.renown && cond.k === 'monstrous') {
+		return { k: 'isRenowned' };
+	}
+	if (opts.devourCond && cond.k === 'monstrous') {
+		return {
+			k: 'compare',
+			left: { k: 'devouredCount' },
+			op: '>=',
+			right: { k: 'const', n: 1 }
+		};
+	}
+	if (cond.k === 'not') {
+		return { k: 'not', of: mapConditionWave4(cond.of, opts) };
+	}
+	if (cond.k === 'and' || cond.k === 'or') {
+		return { k: cond.k, of: cond.of.map((c) => mapConditionWave4(c, opts)) };
+	}
+	if (cond.k === 'compare') {
+		return {
+			...cond,
+			left: mapAmountWave4(cond.left, opts),
+			right: mapAmountWave4(cond.right, opts)
+		};
+	}
+	return cond;
+}
+
+function mapStepWave4(step: EffectStep, opts: Wave4TextRewriteOpts): EffectStep {
+	return {
+		...step,
+		...(step.amount ? { amount: mapAmountWave4(step.amount, opts) } : {}),
+		...(step.condition ? { condition: mapConditionWave4(step.condition, opts) } : {}),
+		...(step.params
+			? {
+					params: {
+						...step.params,
+						...(step.params.toughness
+							? { toughness: mapAmountWave4(step.params.toughness, opts) }
+							: {}),
+						...(step.params.setPower
+							? { setPower: mapAmountWave4(step.params.setPower, opts) }
+							: {}),
+						...(step.params.setToughness
+							? { setToughness: mapAmountWave4(step.params.setToughness, opts) }
+							: {}),
+						...(step.params.count
+							? { count: mapAmountWave4(step.params.count, opts) }
+							: {})
+					}
+				}
+			: {})
+	};
+}
+
+function mapAbilityWave4(ab: AbilityDef, opts: Wave4TextRewriteOpts): AbilityDef {
+	if (ab.kind === 'triggered') {
+		const trigger: TriggerDef =
+			opts.renown && ab.trigger.event === 'becameMonstrous'
+				? { ...ab.trigger, event: 'becameRenowned' }
+				: ab.trigger;
+		return {
+			...ab,
+			trigger,
+			...(ab.condition ? { condition: mapConditionWave4(ab.condition, opts) } : {}),
+			effect: ab.effect.map((s) => mapStepWave4(s, opts)),
+			...(ab.modal
+				? {
+						modal: {
+							...ab.modal,
+							modes: ab.modal.modes.map((m) => ({
+								...m,
+								effect: m.effect.map((s) => mapStepWave4(s, opts))
+							}))
+						}
+					}
+				: {})
+		};
+	}
+	if (ab.kind === 'activated') {
+		return {
+			...ab,
+			...(ab.activationCondition
+				? { activationCondition: mapConditionWave4(ab.activationCondition, opts) }
+				: {}),
+			effect: ab.effect.map((s) => mapStepWave4(s, opts)),
+			...(ab.modal
+				? {
+						modal: {
+							...ab.modal,
+							modes: ab.modal.modes.map((m) => ({
+								...m,
+								effect: m.effect.map((s) => mapStepWave4(s, opts))
+							}))
+						}
+					}
+				: {})
+		};
+	}
+	if (ab.kind === 'spell') {
+		return {
+			...ab,
+			effect: ab.effect.map((s) => mapStepWave4(s, opts)),
+			...(ab.modal
+				? {
+						modal: {
+							...ab.modal,
+							modes: ab.modal.modes.map((m) => ({
+								...m,
+								effect: m.effect.map((s) => mapStepWave4(s, opts))
+							}))
+						}
+					}
+				: {})
+		};
+	}
+	if (ab.kind === 'static') {
+		const st = ab.static;
+		const mappedCond = st.condition ? mapConditionWave4(st.condition, opts) : undefined;
+		if (st.k === 'continuous' && (st.mod.k === 'pt' || st.mod.k === 'setBasePT')) {
+			return {
+				...ab,
+				static: {
+					...st,
+					...(mappedCond ? { condition: mappedCond } : {}),
+					mod: {
+						...st.mod,
+						power: mapAmountWave4(st.mod.power, opts),
+						toughness: mapAmountWave4(st.mod.toughness, opts)
+					}
+				}
+			};
+		}
+		if (mappedCond) {
+			return { ...ab, static: { ...st, condition: mappedCond } };
+		}
+	}
+	return ab;
+}
+
+function parseP12TriggerHeader(
+	body: string,
+	bodyStart: number
+): { trigger: TriggerDef; effectStart: number } | null {
+	const classLvl = body.match(/^when ~ becomes level (\d+),\s*/i);
+	if (classLvl) {
+		return {
+			trigger: {
+				event: 'classLevelGained',
+				filter: { object: 'self', classLevel: parseInt(classLvl[1], 10) }
+			},
+			effectStart: bodyStart + classLvl[0].length
+		};
+	}
+	const selfSolved = body.match(/^when ~ becomes solved,\s*/i);
+	if (selfSolved) {
+		return {
+			trigger: { event: 'caseSolved', filter: { object: 'self' } },
+			effectStart: bodyStart + selfSolved[0].length
+		};
+	}
+	const anyCaseSolved = body.match(/^whenever you solve a case,\s*/i);
+	if (anyCaseSolved) {
+		return {
+			trigger: { event: 'caseSolved', filter: { player: { relation: 'you' } } },
+			effectStart: bodyStart + anyCaseSolved[0].length
+		};
+	}
+	const selfRenowned = body.match(/^when ~ becomes renowned,\s*/i);
+	if (selfRenowned) {
+		return {
+			trigger: { event: 'becameRenowned', filter: { object: 'self' } },
+			effectStart: bodyStart + selfRenowned[0].length
+		};
+	}
+	return null;
+}
+
+function triggerLine(ctx: Ctx, group: NormalizedLine[]): AbilityDef[] | null {
+	const line = group[0];
+	if (!/^(when|whenever|at)\b/i.test(line.body)) return null;
+	const rewrites = detectWave4Rewrites(
+		ctx,
+		group.map((l) => l.text)
+	);
+	if (rewrites) {
+		const origSpan = groupSpan(group);
+		const origText = group.map((l) => l.text).join('\n');
+		const rewrittenGroup = group.map((l) => rewriteNormalizedLine(l, rewrites));
+		const adapted = triggerLineCore(rewrittenGroup);
+		if (adapted && adapted.every((a) => a.kind !== 'unsupported')) {
+			return adapted.map((a) => {
+				const mapped = mapAbilityWave4(a, rewrites);
+				return mapped.kind === 'triggered'
+					? { ...mapped, text: origText, span: origSpan }
+					: mapped;
+			});
+		}
+	}
+	return triggerLineCore(group);
+}
+
+function triggerLineCore(group: NormalizedLine[]): AbilityDef[] | null {
 	const line = group[0];
 	if (!/^(when|whenever|at)\b/i.test(line.body)) return null;
 	const span = groupSpan(group);
 	const fullText = group.map((l) => l.text).join('\n');
-	const head = parseTriggerHeader(line.body, line.bodySpan.start);
-	if (!head || !head.trigger || head.unparsed.length > 0) {
-		return [unsupported('unparsed', fullText, span, head?.unparsed.length ? head.unparsed : [line.bodySpan])];
-	}
-	const { trigger, condition } = head;
-	if (runtimeTriggerProblem(trigger)) {
-		const headSpan = { start: line.bodySpan.start, end: head.effectStart };
-		return [unsupported('event_not_implemented', fullText, span, [headSpan])];
+
+	const p12Head = parseP12TriggerHeader(line.body, line.bodySpan.start);
+	let trigger: TriggerDef;
+	let condition: Condition | undefined;
+	let effectStart: number;
+
+	if (p12Head) {
+		trigger = p12Head.trigger;
+		effectStart = p12Head.effectStart;
+	} else {
+		const head = parseTriggerHeader(line.body, line.bodySpan.start);
+		if (!head || !head.trigger || head.unparsed.length > 0) {
+			return [
+				unsupported('unparsed', fullText, span, head?.unparsed.length ? head.unparsed : [line.bodySpan])
+			];
+		}
+		trigger = head.trigger;
+		condition = head.condition;
+		effectStart = head.effectStart;
+		if (runtimeTriggerProblem(trigger)) {
+			const headSpan = { start: line.bodySpan.start, end: effectStart };
+			return [unsupported('event_not_implemented', fullText, span, [headSpan])];
+		}
 	}
 
-	let headerEffectText = line.text.slice(head.effectStart - line.span.start);
-	const headerSentences = splitSentences(headerEffectText, head.effectStart);
+	let headerEffectText = line.text.slice(effectStart - line.span.start);
+	const headerSentences = splitSentences(headerEffectText, effectStart);
 	if (
 		headerSentences.length >= 2 &&
 		/^this ability triggers only once each turn\.?$/i.test(
@@ -1376,12 +2540,12 @@ function triggerLine(group: NormalizedLine[]): AbilityDef[] | null {
 	) {
 		trigger.onlyOncePerTurn = true;
 		const lastSentence = headerSentences[headerSentences.length - 1];
-		headerEffectText = headerEffectText.slice(0, lastSentence.span.start - head.effectStart).trimEnd();
+		headerEffectText = headerEffectText.slice(0, lastSentence.span.start - effectStart).trimEnd();
 	}
 	if (group.length > 1) {
 		const bullets = group.slice(1).map((b) => ({ text: b.text, start: b.span.start, end: b.span.end }));
 		const modalParse = /^choose\b/i.test(headerEffectText.trim())
-			? parseModal(headerEffectText, bullets, 'triggered', head.effectStart, trigger)
+			? parseModal(headerEffectText, bullets, 'triggered', effectStart, trigger)
 			: null;
 		const modal = modalParse?.modal;
 		const modesOk =
@@ -1394,15 +2558,15 @@ function triggerLine(group: NormalizedLine[]): AbilityDef[] | null {
 		if (!modesOk) {
 			const gaps = modalParse?.unparsed.length
 				? modalParse.unparsed
-				: [{ start: head.effectStart, end: span.end }];
+				: [{ start: effectStart, end: span.end }];
 			return [{ ...unsupported('unparsed', fullText, span, gaps), trigger, condition }];
 		}
 		return [{ kind: 'triggered', trigger, condition, targets: [], effect: [], modal, text: fullText, span }];
 	}
 
-	const effect = parseEffects(headerEffectText, head.effectStart, 'triggered', trigger);
+	const effect = parseEffects(headerEffectText, effectStart, 'triggered', trigger);
 	if (!interpretableTrigger(effect)) {
-		const gaps = effect.unparsed.length > 0 ? effect.unparsed : [{ start: head.effectStart, end: span.end }];
+		const gaps = effect.unparsed.length > 0 ? effect.unparsed : [{ start: effectStart, end: span.end }];
 		return [{ ...unsupported('unparsed', fullText, span, gaps), trigger, condition }];
 	}
 	return [{ kind: 'triggered', trigger, condition, targets: effect.targets, effect: effect.steps, text: fullText, span }];
@@ -1540,12 +2704,69 @@ function activatedLine(ctx: Ctx, group: NormalizedLine[]): AbilityDef[] | null {
 	const colon = costColon(line.body);
 	if (colon < 0 || /^(?:when|whenever|at|choose)\b/i.test(line.body)) return null;
 
+	const rewrites = detectWave4Rewrites(
+		ctx,
+		group.map((l) => l.text)
+	);
+	if (rewrites) {
+		const origSpan = groupSpan(group);
+		const origText = group.map((l) => l.text).join('\n');
+		const savedManaTap = ctx.manaTapTaken;
+		const rewrittenGroup = group.map((l) => rewriteNormalizedLine(l, rewrites));
+		const adapted = activatedLineCore(ctx, rewrittenGroup);
+		if (adapted && adapted.every((a) => a.kind !== 'unsupported')) {
+			return adapted.map((a) => {
+				const mapped = mapAbilityWave4(a, rewrites);
+				return mapped.kind === 'activated'
+					? { ...mapped, text: origText, span: origSpan }
+					: mapped;
+			});
+		}
+		ctx.manaTapTaken = savedManaTap;
+	}
+	return activatedLineCore(ctx, group);
+}
+
+function activatedLineCore(ctx: Ctx, group: NormalizedLine[]): AbilityDef[] | null {
+	const line = group[0];
+	const colon = costColon(line.body);
+	if (colon < 0 || /^(?:when|whenever|at|choose)\b/i.test(line.body)) return null;
+
 	const span = groupSpan(group);
 	const fullText = group.map((l) => l.text).join('\n');
-	const costText = line.body.slice(0, colon).trim();
+	let costText = line.body.slice(0, colon).trim();
+	let costStartOffset = line.bodySpan.start;
 	const effectStart = line.bodySpan.start + colon + 1;
 	const effectText = line.body.slice(colon + 1);
-	const loyalty = ctx.isPlaneswalker ? costText.match(/^([+−-]?)(\d+|X)$/) : null;
+
+	let costKeyword: string | undefined;
+	let kwIdOverride: string | undefined;
+	let forcedZones: ZoneType[] | undefined;
+
+	const exhaustMatch = costText.match(/^Exhaust\s*—\s*([\s\S]+)$/i);
+	const boastMatch = !exhaustMatch ? costText.match(/^Boast\s*—\s*([\s\S]+)$/i) : null;
+	const forecastMatch =
+		!exhaustMatch && !boastMatch ? costText.match(/^Forecast\s*—\s*([\s\S]+)$/i) : null;
+
+	if (exhaustMatch) {
+		costKeyword = 'exhaust';
+		kwIdOverride = `exhaust_${line.rawIndex}`;
+		costStartOffset += costText.length - exhaustMatch[1].length;
+		costText = exhaustMatch[1].trim();
+	} else if (boastMatch) {
+		costKeyword = 'boast';
+		kwIdOverride = `boast_${line.rawIndex}`;
+		costStartOffset += costText.length - boastMatch[1].length;
+		costText = boastMatch[1].trim();
+	} else if (forecastMatch) {
+		costKeyword = 'forecast';
+		kwIdOverride = `forecast_${line.rawIndex}`;
+		forcedZones = ['hand'];
+		costStartOffset += costText.length - forecastMatch[1].length;
+		costText = forecastMatch[1].trim();
+	}
+
+	const loyalty = !costKeyword && ctx.isPlaneswalker ? costText.match(/^([+−-]?)(\d+|X)$/) : null;
 
 	let cost: { defs: CostDef[]; unparsed: Span[] };
 	if (loyalty) {
@@ -1553,13 +2774,37 @@ function activatedLine(ctx: Ctx, group: NormalizedLine[]): AbilityDef[] | null {
 		cost = Number.isNaN(n)
 			? { defs: [], unparsed: [{ start: line.bodySpan.start, end: line.bodySpan.start + colon }] }
 			: { defs: [{ k: 'loyalty', delta: loyalty[1] === '+' || loyalty[1] === '' ? n : -n }], unparsed: [] };
+	} else if (costKeyword === 'forecast') {
+		const revealSelfRe = /(?:,\s*|^)reveal\s+(?:~|this\s+[a-z]+)\s+from\s+your\s+hand\s*$/i;
+		if (!revealSelfRe.test(costText)) {
+			cost = {
+				defs: [],
+				unparsed: [{ start: costStartOffset, end: line.bodySpan.start + colon }]
+			};
+		} else {
+			const strippedCost = costText.replace(revealSelfRe, '').trim();
+			const selfRevealDef: CostDef = {
+				k: 'revealFromHand',
+				count: { k: 'const', n: 1 },
+				filter: 'self'
+			};
+			if (!strippedCost || strippedCost === '{0}') {
+				cost = { defs: [selfRevealDef], unparsed: [] };
+			} else {
+				const sub = parseCost(strippedCost, costStartOffset);
+				cost = {
+					defs: [...sub.defs, selfRevealDef],
+					unparsed: sub.unparsed
+				};
+			}
+		}
 	} else {
-		cost = parseCost(costText, line.bodySpan.start);
+		cost = parseCost(costText, costStartOffset);
 	}
 
 	const costComplete = cost.unparsed.length === 0;
 	if (group.length > 1) {
-		const id = loyalty ? `loyalty_${line.rawIndex}` : `act_${line.rawIndex}`;
+		const id = kwIdOverride ?? (loyalty ? `loyalty_${line.rawIndex}` : `act_${line.rawIndex}`);
 		const {
 			timing,
 			activationRestrictions,
@@ -1573,7 +2818,8 @@ function activatedLine(ctx: Ctx, group: NormalizedLine[]): AbilityDef[] | null {
 			: null;
 		const modal = modalParse?.modal;
 		const modalSteps = modal ? modal.modes.flatMap((m) => m.effect) : [];
-		const activationZones = inferActivatedZones(cost.defs, modalSteps, explicitActivationZones);
+		const activationZones =
+			forcedZones ?? inferActivatedZones(cost.defs, modalSteps, explicitActivationZones);
 		const effectOk =
 			Boolean(modalParse && modal) &&
 			modalParse!.unparsed.length === 0 &&
@@ -1594,6 +2840,7 @@ function activatedLine(ctx: Ctx, group: NormalizedLine[]): AbilityDef[] | null {
 					costComplete,
 					timing,
 					isMana: false,
+					...(costKeyword ? { costKeyword } : {}),
 					...(activationRestrictions.length > 0 ? { activationRestrictions } : {}),
 					...(activationCondition ? { activationCondition } : {})
 				}
@@ -1609,6 +2856,7 @@ function activatedLine(ctx: Ctx, group: NormalizedLine[]): AbilityDef[] | null {
 				modal,
 				timing,
 				isMana: false,
+				...(costKeyword ? { costKeyword } : {}),
 				...(activationRestrictions.length > 0 ? { activationRestrictions } : {}),
 				...(activationCondition ? { activationCondition } : {}),
 				...(activationZones ? { activationZones } : {}),
@@ -1621,6 +2869,7 @@ function activatedLine(ctx: Ctx, group: NormalizedLine[]): AbilityDef[] | null {
 	const effect = parseEffects(effectText, effectStart, 'activated');
 	const isMana =
 		!loyalty &&
+		!costKeyword &&
 		effect.steps.length > 0 &&
 		effect.targets.length === 0 &&
 		effect.steps.some((s) => s.verb === 'addMana') &&
@@ -1631,9 +2880,13 @@ function activatedLine(ctx: Ctx, group: NormalizedLine[]): AbilityDef[] | null {
 		);
 	const { timing, activationRestrictions, activationCondition, explicitActivationZones } =
 		extractActivatedTimingAndRestrictions(effectText, effectStart, Boolean(loyalty), isMana);
-	const activationZones = inferActivatedZones(cost.defs, effect.steps, explicitActivationZones);
-	const isManaTap = isMana && cost.defs.length === 1 && cost.defs[0].k === 'tapSelf' && !ctx.manaTapTaken;
-	const id = isManaTap ? 'mana_tap' : loyalty ? `loyalty_${line.rawIndex}` : `act_${line.rawIndex}`;
+	const activationZones =
+		forcedZones ?? inferActivatedZones(cost.defs, effect.steps, explicitActivationZones);
+	const isManaTap =
+		isMana && !kwIdOverride && cost.defs.length === 1 && cost.defs[0].k === 'tapSelf' && !ctx.manaTapTaken;
+	const id = isManaTap
+		? 'mana_tap'
+		: kwIdOverride ?? (loyalty ? `loyalty_${line.rawIndex}` : `act_${line.rawIndex}`);
 	if (isManaTap) ctx.manaTapTaken = true;
 
 	const effectOk = isMana ? effect.unparsed.length === 0 && effect.steps.every(manaStepComplete) : staticallyInterpretable(effect);
@@ -1648,6 +2901,7 @@ function activatedLine(ctx: Ctx, group: NormalizedLine[]): AbilityDef[] | null {
 				costComplete,
 				timing,
 				isMana,
+				...(costKeyword ? { costKeyword } : {}),
 				...(activationRestrictions.length > 0 ? { activationRestrictions } : {}),
 				...(activationCondition ? { activationCondition } : {}),
 				...(manaSteps ? { effect: manaSteps } : {}),
@@ -1663,6 +2917,7 @@ function activatedLine(ctx: Ctx, group: NormalizedLine[]): AbilityDef[] | null {
 		effect: effect.steps,
 		timing,
 		isMana,
+		...(costKeyword ? { costKeyword } : {}),
 		...(activationRestrictions.length > 0 ? { activationRestrictions } : {}),
 		...(activationCondition ? { activationCondition } : {}),
 		...(activationZones ? { activationZones } : {}),
@@ -1711,11 +2966,161 @@ const CAST_RESTRICTIONS: Array<[RegExp, NonNullable<SpellAbility['castRestrictio
 	[/^cast (?:~|this spell) only before attackers are declared\.?$/i, 'beforeAttackers']
 ];
 
+function compileSpreeOrTieredSpell(
+	kind: 'spree' | 'tiered',
+	lines: NormalizedLine[],
+	span: Span,
+	text: string,
+	statics: AbilityDef[],
+	additionalCosts: CostDef[],
+	castRestrictions: NonNullable<SpellAbility['castRestrictions']>,
+	costComplete: boolean,
+	priorUnparsed: Span[]
+): AbilityDef[] {
+	const modes: ModalDef['modes'] = [];
+	const perModeCosts: CostDef[][] = [];
+	const unparsed = [...priorUnparsed];
+	let sawHeader = false;
+
+	for (const line of lines) {
+		const trimmed = line.text.trim();
+		if (!sawHeader && new RegExp(`^${kind}$`, 'i').test(line.body.trim())) {
+			sawHeader = true;
+			continue;
+		}
+		if (kind === 'spree' && /^\+\s+/.test(trimmed)) {
+			const m = line.text.match(/^\s*\+\s*([^—]+?)\s*—\s*([\s\S]+)$/);
+			if (!m) {
+				unparsed.push(line.span);
+				continue;
+			}
+			const rawCost = m[1].trim();
+			const rawEffect = m[2];
+			const effectOffset = line.text.length - rawEffect.length;
+			const effectStart = line.span.start + effectOffset;
+			const parsedCost = parseCost(rawCost, line.span.start);
+			const costOk =
+				parsedCost.unparsed.length === 0 &&
+				parsedCost.defs.length > 0 &&
+				parsedCost.defs.every(
+					(d) => isCastPayableCostDef(d) && (d.k !== 'mana' || !/\{X\}/i.test(d.cost))
+				);
+			if (!costOk) {
+				unparsed.push(...(parsedCost.unparsed.length > 0 ? parsedCost.unparsed : [line.span]));
+			}
+			const eff = parseEffects(rawEffect, effectStart, 'spell');
+			if (eff.unparsed.length > 0 || !staticallyInterpretable(eff)) {
+				unparsed.push(...(eff.unparsed.length > 0 ? eff.unparsed : [{ start: effectStart, end: line.span.end }]));
+			}
+			modes.push({ targets: eff.targets, effect: eff.steps, span: line.span });
+			perModeCosts.push(parsedCost.defs);
+			continue;
+		}
+		if (kind === 'tiered' && line.text.startsWith('•')) {
+			const m = line.text.match(/^•\s*([^—]+?)\s*—\s*([^—]+?)\s*—\s*([\s\S]+)$/);
+			if (!m) {
+				unparsed.push(line.span);
+				continue;
+			}
+			const rawCost = m[2].trim();
+			const rawEffect = m[3];
+			const effectOffset = line.text.length - rawEffect.length;
+			const effectStart = line.span.start + effectOffset;
+			const parsedCost =
+				rawCost === '{0}'
+					? { defs: [] as CostDef[], unparsed: [] as Span[] }
+					: parseCost(rawCost, line.span.start);
+			const costOk =
+				parsedCost.unparsed.length === 0 &&
+				(rawCost === '{0}' ||
+					(parsedCost.defs.length > 0 &&
+						parsedCost.defs.every(
+							(d) => isCastPayableCostDef(d) && (d.k !== 'mana' || !/\{X\}/i.test(d.cost))
+						)));
+			if (!costOk) {
+				unparsed.push(...(parsedCost.unparsed.length > 0 ? parsedCost.unparsed : [line.span]));
+			}
+			const eff = parseEffects(rawEffect, effectStart, 'spell');
+			if (eff.unparsed.length > 0 || !staticallyInterpretable(eff)) {
+				unparsed.push(...(eff.unparsed.length > 0 ? eff.unparsed : [{ start: effectStart, end: line.span.end }]));
+			}
+			modes.push({ targets: eff.targets, effect: eff.steps, span: line.span });
+			perModeCosts.push(parsedCost.defs);
+			continue;
+		}
+		const allPreConsumed = line.sentences.every(
+			(s) =>
+				Boolean(parseCostModifierSentence(s.text)) ||
+				/^(?:~|this spell) can(?:'t|not) be countered\.?$/i.test(s.text) ||
+				Boolean(parseAdditionalCostSentence(s.text, s.span.start)) ||
+				CAST_RESTRICTIONS.some(([re]) => re.test(s.text))
+		);
+		if (!allPreConsumed) {
+			unparsed.push(line.span);
+		}
+	}
+
+	if (!sawHeader || modes.length === 0 || unparsed.length > 0) {
+		const gaps = unparsed.length > 0 ? unparsed : [span];
+		const u = unsupported('unparsed', text, span, gaps);
+		return [
+			...statics,
+			{
+				...u,
+				id: 'cast',
+				cost: additionalCosts,
+				costComplete,
+				...(castRestrictions.length > 0 ? { castRestrictions } : {})
+			}
+		];
+	}
+
+	const modal: ModalDef = {
+		min: 1,
+		max: kind === 'spree' ? modes.length : 1,
+		modes,
+		perModeCosts
+	};
+	const spell: SpellAbility = {
+		kind: 'spell',
+		additionalCosts,
+		targets: [],
+		effect: [],
+		modal,
+		span
+	};
+	if (castRestrictions.length > 0) spell.castRestrictions = castRestrictions;
+	return [...statics, spell];
+}
+
 /**
  * The spell ability of an instant or sorcery. Statics written on the spell (cost reductions, "can't
  * be countered") become their own abilities; additional costs and cast restrictions go on the spell.
  */
-function spellAbility(norm: NormalizedFace, lines: NormalizedLine[]): AbilityDef[] {
+function spellAbility(ctx: Ctx, norm: NormalizedFace, lines: NormalizedLine[]): AbilityDef[] {
+	const rewrites = detectWave4Rewrites(
+		ctx,
+		lines.map((l) => l.text)
+	);
+	if (rewrites) {
+		const origSpan: Span = { start: lines[0].span.start, end: lines[lines.length - 1].span.end };
+		const rewrittenText = applyWave4TextRewrite(norm.text, rewrites);
+		const rewrittenNormLines = norm.lines.map((l) => rewriteNormalizedLine(l, rewrites));
+		const rewrittenNorm: NormalizedFace = { text: rewrittenText, lines: rewrittenNormLines };
+		const lineIndices = new Set(lines.map((l) => l.rawIndex));
+		const rewrittenSpellLines = rewrittenNormLines.filter((l) => lineIndices.has(l.rawIndex));
+		const adapted = spellAbilityCore(rewrittenNorm, rewrittenSpellLines);
+		if (adapted.every((a) => a.kind !== 'unsupported')) {
+			return adapted.map((a) => {
+				const mapped = mapAbilityWave4(a, rewrites);
+				return mapped.kind === 'spell' ? { ...mapped, span: origSpan } : mapped;
+			});
+		}
+	}
+	return spellAbilityCore(norm, lines);
+}
+
+function spellAbilityCore(norm: NormalizedFace, lines: NormalizedLine[]): AbilityDef[] {
 	const span = { start: lines[0].span.start, end: lines[lines.length - 1].span.end };
 	const text = norm.text.slice(span.start, span.end);
 	const statics: AbilityDef[] = [];
@@ -1761,6 +3166,33 @@ function spellAbility(norm: NormalizedFace, lines: NormalizedLine[]): AbilityDef
 			const restriction = CAST_RESTRICTIONS.find(([re]) => re.test(s.text));
 			if (restriction) castRestrictions.push(restriction[1]);
 		}
+	}
+
+	if (lines.some((l) => /^spree$/i.test(l.body.trim()))) {
+		return compileSpreeOrTieredSpell(
+			'spree',
+			lines,
+			span,
+			text,
+			statics,
+			additionalCosts,
+			castRestrictions,
+			costComplete,
+			unparsed
+		);
+	}
+	if (lines.some((l) => /^tiered$/i.test(l.body.trim()))) {
+		return compileSpreeOrTieredSpell(
+			'tiered',
+			lines,
+			span,
+			text,
+			statics,
+			additionalCosts,
+			castRestrictions,
+			costComplete,
+			unparsed
+		);
 	}
 
 	const include = new Set(lines.map((l) => l.rawIndex));
@@ -1809,7 +3241,23 @@ function modalInterpretable(effect: EffectParse): boolean {
  * Statics and replacement effects (compiler/statics.ts), with the cost-modifier grammar first. One
  * line such as "Creatures you control get +1/+1 and have haste." produces two StaticDefs.
  */
-function staticGroup(group: NormalizedLine[]): AbilityDef[] {
+function staticGroup(ctx: Ctx, group: NormalizedLine[]): AbilityDef[] {
+	const rewrites = detectWave4Rewrites(
+		ctx,
+		group.map((l) => l.text)
+	);
+	if (rewrites) {
+		const origSpan = groupSpan(group);
+		const rewrittenGroup = group.map((l) => rewriteNormalizedLine(l, rewrites));
+		const adapted = staticGroupCore(rewrittenGroup);
+		if (adapted.every((a) => a.kind !== 'unsupported')) {
+			return adapted.map((a) => ({ ...mapAbilityWave4(a, rewrites), span: origSpan }));
+		}
+	}
+	return staticGroupCore(group);
+}
+
+function staticGroupCore(group: NormalizedLine[]): AbilityDef[] {
 	const span = groupSpan(group);
 	const text = group.map((l) => l.text).join('\n');
 	if (group.length === 1) {
@@ -1824,10 +3272,22 @@ function staticGroup(group: NormalizedLine[]): AbilityDef[] {
 					: { kind: 'replacement', replacement: item.replacement, span }
 			);
 		}
-		// A permanent spell's additional cost. The IR has no ability kind for it, so it stays
-		// unsupported but carries the parsed cost; the runtime still pays it (Phase 4).
+		// CR 118.8: A permanent spell's mandatory/optional additional cost.
 		const additional = parseAdditionalCostSentence(line.body, line.bodySpan.start);
 		if (additional) {
+			if (
+				additional.unparsed.length === 0 &&
+				additional.defs.length > 0 &&
+				additional.defs.every(isCastPayableCostDef)
+			) {
+				return [
+					{
+						kind: 'static',
+						static: { k: 'additionalCastCost', costs: additional.defs },
+						span
+					}
+				];
+			}
 			return [
 				{
 					...unsupported('static_not_compiled', text, span, [span]),
