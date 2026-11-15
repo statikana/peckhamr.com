@@ -497,6 +497,26 @@ import {
 	type P20bPitchCounts
 } from './runtime/costsWave7.ts';
 // --- End Track P20b ---
+// --- Track P21 ---
+import {
+	checkP21AuraPermanentAttachment,
+	collectGraveyardAuraAttachCandidates,
+	collectWave7LibrarySearchCastOptions,
+	computePlaneswalkerTrampleSplit,
+	enqueueP21CleanupDelayedTriggers,
+	ensureSpaceSculptorSectors,
+	findCastWhileSearchingLibraryCard,
+	getSuspendXSpec,
+	getTrampleCapabilities,
+	isAuraGraveyardAttachmentLegal,
+	isSpaceSectorBlockIllegal,
+	pruneCastCardFromActiveLibrarySearchPrompts,
+	registerWave7Host,
+	resolveWave7Effect,
+	selectCraftShareCardTypeMaterials,
+	substituteSuspendXManaCost
+} from './runtime/framesWave7.ts';
+// --- End Track P21 ---
 export { applyCastCostAids, formatManaRequirement, getSuspendSpec };
 import { getKeywordSpec } from './keywords.ts';
 import {
@@ -1501,6 +1521,30 @@ function enumerateCandidateCastOptions(
 			hasZonePermission = true;
 		}
 		// --- End Track P14 ---
+		// --- Track P21: Cast from library while searching (CR 601.3e, Panglacial Wurm) ---
+		if (fromZone === 'library') {
+			const w7LibOpts = collectWave7LibrarySearchCastOptions({
+				state,
+				actorId,
+				inst,
+				faceIndex: fi,
+				isMultiFace,
+				faceName,
+				faceManaCost,
+				taxSuffix,
+				mandatoryAdditionalCosts,
+				optionalAdditionalCosts,
+				paymentAids: facePaymentAids,
+				adventureMods,
+				requiresTarget: targetInfo.requiresTarget,
+				choosesX: spellChoosesX(card, { kind: 'printed' }, undefined, fi, false)
+			});
+			if (w7LibOpts.length > 0) {
+				options.push(...w7LibOpts);
+				hasZonePermission = true;
+			}
+		}
+		// --- End Track P21 ---
 
 		if (
 			!inst.castViaSuspend &&
@@ -3046,6 +3090,14 @@ function finalizeCastSpell(
 		// --- Track P20b ---
 		const preStackVersion = inst.objectVersion ?? 1;
 		// --- End Track P20b ---
+		// --- Track P21: Record non-sorcery timing & prune cast card from active library search prompts ---
+		const castAtSorceryWindow =
+			state.players[state.activePlayerIndex]?.playerId === actorId &&
+			(state.phase === 'main1' || state.phase === 'main2') &&
+			state.stack.length === 0 &&
+			state.pendingPrompts.length === 0;
+		inst.castAtNonSorceryTiming = !castAtSorceryWindow ? true : undefined;
+		// --- End Track P21 ---
 		moveObject(state, inst, 'stack', {
 			from: { player: sourcePlayer, zone: sourceZone },
 			newTimestamp: true,
@@ -3054,6 +3106,11 @@ function finalizeCastSpell(
 		// --- Track P20b ---
 		syncCastExiledByVersionP20b(state, inst.instanceId, preStackVersion, inst.objectVersion ?? 1);
 		// --- End Track P20b ---
+		// --- Track P21 ---
+		if (sourceZone === 'library') {
+			pruneCastCardFromActiveLibrarySearchPrompts(state, inst.instanceId);
+		}
+		// --- End Track P21 ---
 		inst.playableFromExileBy = undefined;
 		// --- Track P13 ---
 		delete inst.playableFromGraveyardBy;
@@ -3216,6 +3273,9 @@ function finalizeCastSpell(
 			// --- End Track P19b ---
 			...(optionalCostCounts ? { optionalCostCounts } : {}),
 			commanderCastCount: isPreparationCopy ? 0 : inst.commanderCastCount,
+			// --- Track P21 ---
+			...(inst.castAtNonSorceryTiming ? { castAtNonSorceryTiming: true } : {}),
+			// --- End Track P21 ---
 			requiresGuidedResolution: false,
 			createdAt: Date.now()
 		},
@@ -3416,12 +3476,22 @@ function finalizeActivateAbility(
 	}
 	let craftedMaterialCards: ScryfallCard[] | undefined;
 	if (pcp.costKeyword === 'craft') {
+		// --- Track P21: "Craft with two that share a card type" material selection ---
+		const sharedPair = selectCraftShareCardTypeMaterials(
+			state,
+			actor,
+			perm,
+			pcp.craftMaterialIds
+		);
+		const effectiveCraftIds =
+			sharedPair !== 'not_applicable' && sharedPair !== null ? sharedPair : pcp.craftMaterialIds;
+		// --- End Track P21 ---
 		const craftCards = payCraftMaterialsOnActivate(
 			state,
 			actor,
 			pcp.sourceInstanceId,
 			card,
-			pcp.craftMaterialIds
+			effectiveCraftIds
 		);
 		if (craftCards.length > 0) {
 			craftedMaterialCards = craftCards;
@@ -4118,10 +4188,37 @@ function checkActivationRestrictionsOnly(
 	) {
 		const w5Err = checkWave5AbilityActivation(state, actorObj, perm, ab.id, ab.costKeyword);
 		if (w5Err) return { ok: false, error: w5Err };
+		// --- Track P21: Craft with two that share a card type (CR 702.167) ---
+		if (
+			ab.costKeyword === 'craft' &&
+			selectCraftShareCardTypeMaterials(state, actorObj, perm) === null
+		) {
+			return {
+				ok: false,
+				error: `${perm.card.name}: Requires two other permanents you control and/or cards in your graveyard that share a card type to Craft (CR 702.167).`
+			};
+		}
+		// --- End Track P21 ---
 	}
 	// --- End Track P15 ---
 	const restrictions = ab.activationRestrictions;
 	if (!restrictions?.length) return { ok: true };
+	// --- Track P21 (CR 605.3c): "Activate only as an instant." ---
+	if (restrictions.includes('onlyAsInstant')) {
+		const priorityPl = state.players[state.priorityPlayerIndex];
+		if (
+			priorityPl?.playerId !== actorId ||
+			Boolean(state.pendingCostPayment) ||
+			state.pendingPrompts.length > 0 ||
+			getPendingCombatDeclarationError(state) !== null
+		) {
+			return {
+				ok: false,
+				error: `${perm.card.name}: Activate only as an instant (only while you hold priority, CR 605.3c).`
+			};
+		}
+	}
+	// --- End Track P21 ---
 	const activePlayer = state.players[state.activePlayerIndex];
 	if (restrictions.includes('onceEachTurn') && perm.activatedAbilityIdsThisTurn?.includes(ab.id)) {
 		return {
@@ -4209,6 +4306,9 @@ function autoTapManaAbilities(
 	}> = [];
 	for (const a of getEffectiveActivatedAbilities(state, player, perm, cmdIdentity)) {
 		if (!a.isManaAbility || a.producesMana.length === 0) continue;
+		// --- Track P21 (CR 605.3c): Never auto-tap "Activate only as an instant" mana abilities ---
+		if (a.activationRestrictions?.includes('onlyAsInstant')) continue;
+		// --- End Track P21 ---
 		if (a.manaRestriction && !canSpendRestrictedMana(a.manaRestriction, spendCtx)) continue;
 		// --- Track P10 ---
 		if (a.manaRestrictionSpec && !canSpendManaRestrictionSpec(a.manaRestrictionSpec, spendCtx)) continue;
@@ -5372,6 +5472,9 @@ function simulateOrExecuteManaOnly(
 			if (!checkGlobalAbilityActivationRestrictions(state, player.playerId, fPerm, true).ok) continue;
 			for (const fAb of getEffectiveActivatedAbilities(state, player, fPerm, cmdIdentity)) {
 				if (!fAb.isManaAbility || fAb.producesMana.length === 0) continue;
+				// --- Track P21 (CR 605.3c): Never auto-tap "Activate only as an instant" mana abilities ---
+				if (fAb.activationRestrictions?.includes('onlyAsInstant')) continue;
+				// --- End Track P21 ---
 				if (fAb.manaRestriction && !canSpendRestrictedMana(fAb.manaRestriction, spendCtx)) {
 					continue;
 				}
@@ -6496,13 +6599,19 @@ function applyGameActionInner(
 		return handleMulliganAction(state, actor, action);
 	}
 
+	// --- Track P21 (CR 601.3e, 701.23g): Allow casting a `castFromLibraryWhileSearching` card mid-search ---
+	const isCastWhileSearchingLibrary =
+		action.type === 'cast_spell' &&
+		Boolean(findCastWhileSearchingLibraryCard(state, actor, action.instanceId));
+	// --- End Track P21 ---
+
 	// Check if there is a blocking PendingPrompt for this player
 	const promptIdx = state.pendingPrompts.findIndex((p) => p.playerId === actorId);
-	if (promptIdx >= 0) {
+	if (promptIdx >= 0 && !isCastWhileSearchingLibrary) {
 		return handlePromptResolution(state, actor, promptIdx, action);
 	}
 
-	if (state.pendingPrompts.length > 0) {
+	if (state.pendingPrompts.length > 0 && !isCastWhileSearchingLibrary) {
 		const waitingOn = state.players.find((p) => p.playerId === state.pendingPrompts[0].playerId);
 		return {
 			ok: false,
@@ -7245,22 +7354,22 @@ function applyGameActionInner(
 				return { ok: false, error: 'Card not found in your hand to Suspend.' };
 			}
 			const inst = actor.hand[handIdx];
-			const legality = checkSuspendLegality(state, actorId, inst);
+			const legality = checkSuspendLegality(state, actorId, inst, action.xValue);
 			if (!legality.ok) {
 				return legality;
 			}
-			const suspClause = getSuspendSpec(inst.card)!;
-			const req = parseManaCost(suspClause.suspendCost);
+			const suspInfo = legality.suspendInfo!;
+			const req = parseManaCost(suspInfo.cost);
 			if (!payManaWithAutoTap(actor, req, state)) {
 				return {
 					ok: false,
-					error: `Insufficient mana to pay Suspend cost ${suspClause.suspendCost} for ${inst.card.name}.`
+					error: `Insufficient mana to pay Suspend cost ${suspInfo.cost} for ${inst.card.name}.`
 				};
 			}
 
 			inst.isSuspended = true;
 			inst.counters = createEmptyCounters();
-			inst.counters.time = suspClause.timeCounters;
+			inst.counters.time = suspInfo.timeCounters;
 			moveObject(state, inst, 'exile', {
 				from: { player: actor, zone: 'hand' },
 				toPlayer: actor,
@@ -7272,14 +7381,14 @@ function applyGameActionInner(
 			addLog(
 				state,
 				'rule',
-				`Suspend (CR 702.62): ${actor.username} exiled ${inst.card.name} from hand with ${suspClause.timeCounters} time counter(s) for ${suspClause.suspendCost}.`,
+				`Suspend (CR 702.62): ${actor.username} exiled ${inst.card.name} from hand with ${suspInfo.timeCounters} time counter(s) for ${suspInfo.cost}.`,
 				actorId
 			);
 			emitVfx(state, {
 				kind: 'exile',
 				sourceId: actorId,
 				targetId: inst.instanceId,
-				label: `Suspended (${suspClause.timeCounters} ⏳)`
+				label: `Suspended (${suspInfo.timeCounters} ⏳)`
 			});
 			resetTriggerLoopTracking(state);
 			checkStateBasedActions(state);
@@ -7456,7 +7565,7 @@ function applyGameActionInner(
 		}
 
 		case 'cast_spell': {
-			if (priorityPlayer.playerId !== actorId) {
+			if (priorityPlayer.playerId !== actorId && !isCastWhileSearchingLibrary) {
 				return { ok: false, error: 'You do not currently hold priority.' };
 			}
 
@@ -7530,6 +7639,20 @@ function applyGameActionInner(
 				sourcePlayer = actor;
 				sourceZone = 'library';
 			}
+			// --- Track P21 (CR 601.3e): Any library card with `castFromLibraryWhileSearching` while searching ---
+			if (!inst && (!action.fromZone || action.fromZone === 'library')) {
+				const whileSearchingCard = findCastWhileSearchingLibraryCard(
+					state,
+					actor,
+					action.instanceId
+				);
+				if (whileSearchingCard) {
+					inst = whileSearchingCard;
+					sourcePlayer = actor;
+					sourceZone = 'library';
+				}
+			}
+			// --- End Track P21 ---
 			// --- Track P15: Preparation spell copy cast from battlefield (CR 723.3c) ---
 			if (
 				!inst &&
@@ -8418,6 +8541,18 @@ function applyGameActionInner(
 				};
 			}
 			// --- End Track P15 ---
+			// --- Track P21: Validate explicit Craft material pair shares a card type (CR 702.167) ---
+			if (
+				ab.costKeyword === 'craft' &&
+				action.craftMaterialIds &&
+				selectCraftShareCardTypeMaterials(state, actor, perm, action.craftMaterialIds) === null
+			) {
+				return {
+					ok: false,
+					error: `${perm.card.name}: Selected Craft materials must be two distinct permanents/graveyard cards that share a card type (CR 702.167).`
+				};
+			}
+			// --- End Track P21 ---
 			const abTargetInfo: TargetRequirementInfo = ab.targetInfo;
 			// --- Track P7 ---
 			const permEffCard =
@@ -9703,6 +9838,11 @@ function getBlockerRestrictionReason(
 		return `Strict Rules Violation: ${blocker.card.name} cannot block ${attacker.card.name} this turn (CR 509.1b).`;
 	}
 	// --- End Track P16a ---
+	// --- Track P21: Space Beleren sector combat lock ---
+	if (isSpaceSectorBlockIllegal(state, attacker, blocker)) {
+		return `Strict Rules Violation: ${blocker.card.name} (${blocker.spaceSector ?? 'unassigned'} sector) cannot block ${attacker.card.name} (${attacker.spaceSector} sector) this turn.`;
+	}
+	// --- End Track P21 ---
 	if (hasProtectionFrom(attacker, blocker.copiableCard ?? blocker.card, state, blocker)) {
 		return `Strict Rules Violation: ${blocker.card.name} cannot block ${attacker.card.name} due to Protection (CR 702.16e).`;
 	}
@@ -12303,6 +12443,11 @@ function beginPhase(state: GameState, phase: GamePhase, activePlayer?: PlayerGam
 		enqueueEpicUpkeepTriggers(state, active);
 	}
 	// --- End Track P18a ---
+	// --- Track P21: CR 514.3a Cleanup-step sacrifice delayed triggers (Necromancy) ---
+	if (phase === 'cleanup') {
+		enqueueP21CleanupDelayedTriggers(state);
+	}
+	// --- End Track P21 ---
 	// Triggered abilities go on the stack now: the callers check the stack right after this.
 	flushTriggers(state);
 }
@@ -15310,6 +15455,20 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 	}
 	// --- End Track P12 ---
 
+	// --- Track P21: Cleanup sacrifice delayed trigger stack item ---
+	if (item.wave5Tag === 'p21:sacrificeSelfCleanup') {
+		const w7CleanRes = resolveWave7Effect(state, item, controller, 'sacrificeSelfCleanup');
+		if (w7CleanRes === 'paused') return;
+		triggerPathCounts.interpreter++;
+		removeItemFromStack();
+		flushTriggers(state);
+		givePriorityToActiveOrNextPlayer(state);
+		state.passedPriorityPlayerIds = [];
+		checkStateBasedActions(state);
+		return;
+	}
+	// --- End Track P21 ---
+
 	// --- Track P15 ---
 	if (isWave5StackItem(item)) {
 		const wave5Res = resolveWave5StackItem(state, item);
@@ -15450,7 +15609,12 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 	let librarySelf: { position: 'top' | 'bottom'; fromTop?: number; shuffle?: boolean } | undefined;
 	// --- End Track P16a ---
 	const steps: EffectStep[] = compiled?.steps ?? [];
-	if (interpreted && compiled) {
+	// --- Track P21: Wave 7 custom effect step dispatcher ---
+	const wave7Tag = steps.length === 1 ? steps[0]?.params?.wave7Effect : undefined;
+	if (wave7Tag) {
+		const w7Res = resolveWave7Effect(state, item, controller, wave7Tag);
+		if (w7Res === 'paused') return;
+	} else if (interpreted && compiled) {
 		// --- Track P19b ---
 		const p19bPreRng = state.rngState;
 		const p19bPreEnergy = capturePlayerEnergySnapshot(state);
@@ -15628,7 +15792,9 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 		if (isPermanent) {
 			const auraTargetId =
 				stackSubtypes.includes('Aura') &&
-				(item.targets[0]?.kind === 'permanent' || item.targets[0]?.kind === 'player')
+				(item.targets[0]?.kind === 'permanent' ||
+					item.targets[0]?.kind === 'player' ||
+					item.targets[0]?.kind === 'graveyard_card')
 					? item.targets[0].id
 					: null;
 			const perm = createCardInstance(
@@ -15664,6 +15830,9 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 			if (item.treasureManaSpent) perm.treasureManaSpent = true;
 			else delete perm.treasureManaSpent;
 			// --- End Track P19b ---
+			// --- Track P21 ---
+			if (item.castAtNonSorceryTiming) perm.castAtNonSorceryTiming = true;
+			// --- End Track P21 ---
 			const isPrototypedSpell = Boolean(
 				item.spellMods?.prototyped || item.copiableState?.prototyped
 			);
@@ -17328,6 +17497,24 @@ registerWave4Host({
 });
 // --- End Track P12 ---
 
+// --- Track P21 ---
+registerWave7Host({
+	uid,
+	addLog,
+	drawCards: (state, player, count) => drawCards(state, player, count),
+	addCountersToPermanent: (state, perm, counter, amount) =>
+		addCountersToPermanent(state, perm, counter, amount),
+	hasKeyword,
+	matchesObjectFilter,
+	resumeStackItem: (state, stackItemId) => {
+		const found = state.stack.find((s) => s.id === stackItemId);
+		if (found) resumeStackItem(state, found);
+	},
+	flushTriggers,
+	checkStateBasedActions
+});
+// --- End Track P21 ---
+
 // --- Track P15 ---
 registerWave5Host({
 	uid,
@@ -17685,7 +17872,8 @@ export function executeSuspendFreeCastFromExile(
 export function checkSuspendLegality(
 	state: GameState,
 	actorId: string,
-	inst: CardInstance
+	inst: CardInstance,
+	xValue?: number
 ): { ok: boolean; suspendInfo?: { timeCounters: number; cost: string }; error?: string } {
 	if (state.status !== 'active') {
 		return { ok: false, error: 'Game is not currently active.' };
@@ -17695,9 +17883,24 @@ export function checkSuspendLegality(
 		return { ok: false, error: 'Player is not active.' };
 	}
 	const suspSpec = getSuspendSpec(inst.card);
+	// --- Track P21: "Suspend X—{cost}. X can't be 0." (CR 702.62a) ---
+	const suspXSpec = !suspSpec ? getSuspendXSpec(inst.card) : null;
+	if (suspXSpec && xValue !== undefined && Math.floor(xValue) <= 0) {
+		return {
+			ok: false,
+			error: `Strict Rules Violation: X can't be 0 when suspending ${inst.card.name} (CR 702.62a).`
+		};
+	}
+	const chosenX = suspXSpec ? Math.max(1, Math.floor(xValue ?? 1)) : 0;
 	const suspendInfo = suspSpec
 		? { timeCounters: suspSpec.timeCounters, cost: suspSpec.suspendCost }
-		: null;
+		: suspXSpec
+			? {
+					timeCounters: chosenX,
+					cost: substituteSuspendXManaCost(suspXSpec.suspendCost, chosenX)
+				}
+			: null;
+	// --- End Track P21 ---
 	if (!suspendInfo) {
 		return { ok: false, error: `${inst.card.name} does not have Suspend.` };
 	}
@@ -18574,6 +18777,9 @@ function executeCombatDamageStep(
 		hasFS: boolean;
 		hasDS: boolean;
 		hasTrample: boolean;
+		// --- Track P21 ---
+		hasTrampleOverPlaneswalkers: boolean;
+		// --- End Track P21 ---
 		dealsNow: boolean;
 		srcInfo: SourceDamageInfo;
 	}
@@ -18596,13 +18802,17 @@ function executeCombatDamageStep(
 		const combatStrikeAmount = perm.assignsNoCombatDamageThisTurn ? 0 : rawStrikeAmount;
 		// --- End Track P16a ---
 		// --- End Track P11 ---
+		// --- Track P21 (CR 702.19c–f): Trample & Trample over planeswalkers ---
+		const trampleCaps = getTrampleCapabilities(perm, state, hasKeyword);
+		// --- End Track P21 ---
 		snapshots.set(perm.instanceId, {
 			power: combatStrikeAmount,
 			toughness: toughnessVal,
 			damageMarkedBefore: perm.damageMarked,
 			hasFS,
 			hasDS,
-			hasTrample: hasKeyword(perm, 'Trample', state),
+			hasTrample: trampleCaps.hasTrample,
+			hasTrampleOverPlaneswalkers: trampleCaps.hasTrampleOverPlaneswalkers,
 			dealsNow: perm.assignsNoCombatDamageThisTurn ? false : dealsNow,
 			srcInfo
 		});
@@ -18649,6 +18859,9 @@ function executeCombatDamageStep(
 
 	// CR 510.1: First compute all combat damage assignments before dealing any damage (CR 510.2).
 	const assignedDamageOnPerm = new Map<string, number>();
+	// --- Track P21 (CR 702.19c): Cumulative loyalty damage assigned across attackers on each planeswalker ---
+	const assignedDamageOnPlaneswalker = new Map<string, number>();
+	// --- End Track P21 ---
 	const assignedDeathtouchOnPerm = new Set<string>();
 	const scheduledCombats: ScheduledCombatEntry[] = [];
 	// --- Track P18a: Precompute multi-attacker blocking map for Banding / CR 510.1d & CR 702.22k ---
@@ -18693,6 +18906,9 @@ function executeCombatDamageStep(
 		const atkPower = atkSnap.power;
 		const atkDeathtouch = atkSnap.srcInfo.hasDeathtouch;
 		const atkTrample = atkSnap.hasTrample;
+		// --- Track P21 ---
+		const atkTrampleOverPlaneswalkers = atkSnap.hasTrampleOverPlaneswalkers;
+		// --- End Track P21 ---
 
 		const blockers = atkEntry.blockerInstanceIds
 			.map((id) => defPlayer.battlefield.find((c) => !c.phasedOut && c.instanceId === id))
@@ -18736,7 +18952,7 @@ function executeCombatDamageStep(
 			// --- Track P14: CR 510.1c–d "assign its combat damage as though it weren't blocked" ---
 			const atkSuperTrample =
 				creatureMayAssignCombatDamageAsThoughUnblocked(state, attacker) &&
-				(!attackingPlaneswalker || Boolean(defWalker));
+				(!attackingPlaneswalker || Boolean(defWalker) || atkTrampleOverPlaneswalkers);
 			let assignAsThoughUnblocked = false;
 			if (atkSuperTrample && (atkEntry.wasBlocked || blockers.length > 0)) {
 				if (atkPlayer.isBot) {
@@ -18775,14 +18991,35 @@ function executeCombatDamageStep(
 			// --- End Track P14 ---
 
 			if ((!atkEntry.wasBlocked && blockers.length === 0) || assignAsThoughUnblocked) {
-				if (defWalker) {
-					attackerAssignments.push({
-						kind: 'planeswalker',
-						target: defWalker,
-						amount: remainingDamage,
-						mode: 'unblocked'
-					});
+				// --- Track P21 (CR 702.19c–e): Trample over planeswalkers unblocked / PW-left split ---
+				const pwSplit = attackingPlaneswalker
+					? computePlaneswalkerTrampleSplit({
+							remainingDamage,
+							defWalker,
+							attackingPlaneswalker,
+							hasTrampleOverPlaneswalkers: atkTrampleOverPlaneswalkers,
+							assignedDamageOnPlaneswalker
+						})
+					: null;
+				if (pwSplit) {
+					if (pwSplit.pwDamage > 0 && defWalker) {
+						attackerAssignments.push({
+							kind: 'planeswalker',
+							target: defWalker,
+							amount: pwSplit.pwDamage,
+							mode: 'unblocked'
+						});
+					}
+					if (pwSplit.playerDamage > 0) {
+						attackerAssignments.push({
+							kind: 'player',
+							target: defPlayer,
+							amount: pwSplit.playerDamage,
+							mode: 'trample'
+						});
+					}
 				} else if (defBattle) {
+				// --- End Track P21 ---
 					attackerAssignments.push({
 						kind: 'battle',
 						target: defBattle,
@@ -18806,9 +19043,10 @@ function executeCombatDamageStep(
 			} else {
 				// CR 702.19f: A creature with Trample attacking a planeswalker/battle that left combat cannot assign excess
 				// damage to the defending player; all damage must be assigned to its blockers (or 0 if none remain).
+				// CR 702.19e: A creature with Trample over planeswalkers CAN assign damage to the defending player if the PW left combat.
 				const canTrampleOver =
 					atkTrample &&
-					(!attackingPlaneswalker || Boolean(defWalker)) &&
+					(!attackingPlaneswalker || Boolean(defWalker) || atkTrampleOverPlaneswalkers) &&
 					(!attackingBattle || Boolean(defBattle));
 				// --- Track P18a: CR 702.22j Defender divides attacker's combat damage if any blocker has Banding ---
 				const defenderAssignsViaBanding =
@@ -18914,14 +19152,35 @@ function executeCombatDamageStep(
 				}
 
 				if (canTrampleOver && allPriorBlockersLethal && remainingDamage > 0) {
-					if (defWalker) {
-						attackerAssignments.push({
-							kind: 'planeswalker',
-							target: defWalker,
-							amount: remainingDamage,
-							mode: 'trample'
-						});
+					// --- Track P21 (CR 702.19c–e): Trample over planeswalkers blocked carry-over ---
+					const pwSplit = attackingPlaneswalker
+						? computePlaneswalkerTrampleSplit({
+								remainingDamage,
+								defWalker,
+								attackingPlaneswalker,
+								hasTrampleOverPlaneswalkers: atkTrampleOverPlaneswalkers,
+								assignedDamageOnPlaneswalker
+							})
+						: null;
+					if (pwSplit) {
+						if (pwSplit.pwDamage > 0 && defWalker) {
+							attackerAssignments.push({
+								kind: 'planeswalker',
+								target: defWalker,
+								amount: pwSplit.pwDamage,
+								mode: 'trample'
+							});
+						}
+						if (pwSplit.playerDamage > 0) {
+							attackerAssignments.push({
+								kind: 'player',
+								target: defPlayer,
+								amount: pwSplit.playerDamage,
+								mode: 'trample'
+							});
+						}
 					} else if (defBattle) {
+					// --- End Track P21 ---
 						attackerAssignments.push({
 							kind: 'battle',
 							target: defBattle,
@@ -19624,6 +19883,18 @@ function isAuraAttachmentLegal(
 	// --- Track P14: CR 702.16n, 702.16p attachment exemption check ---
 	if (hasProtectionFrom(host, aura.copiableCard ?? aura.card, state, aura, true)) return false;
 	// --- End Track P14 ---
+	// --- Track P21: Structured `enchantFilter` & reanimated-creature Aura legality ---
+	const p21PermCheck = checkP21AuraPermanentAttachment(
+		state,
+		aura,
+		auraController,
+		evalAura,
+		host,
+		matchesObjectFilter
+	);
+	if (p21PermCheck === 'legal') return true;
+	if (p21PermCheck === 'illegal') return false;
+	// --- End Track P21 ---
 
 	const enchantParams = getAuraEnchantParams(aura, evalAura);
 	// CR 704.5m / 303.4c: If an Aura has lost all its enchant abilities, it can't legally enchant anything.
@@ -19732,7 +20003,10 @@ export function legalAuraAttachCandidates(
 
 	return [
 		...permCandidates.map((c) => c.id),
-		...playerCandidates.map((c) => c.id)
+		...playerCandidates.map((c) => c.id),
+		// --- Track P21: Graveyard card candidates for "Enchant [type] card in a graveyard" Auras ---
+		...collectGraveyardAuraAttachCandidates(state, aura, controller, matchesObjectFilter)
+		// --- End Track P21 ---
 	];
 }
 
@@ -19938,8 +20212,17 @@ export function checkStateBasedActions(state: GameState): void {
 									(pl) => pl.playerId === perm.attachedToId && !pl.lost
 								);
 								if (
-									!targetPlayer ||
-									!isAuraPlayerAttachmentLegal(perm, p, evalPerm, targetPlayer)
+									(!targetPlayer ||
+										!isAuraPlayerAttachmentLegal(perm, p, evalPerm, targetPlayer)) &&
+									// --- Track P21 (CR 303.4, 704.5m): Graveyard card attachment SBA ---
+									!isAuraGraveyardAttachmentLegal(
+										state,
+										perm,
+										p,
+										evalPerm,
+										matchesObjectFilter
+									)
+									// --- End Track P21 ---
 								) {
 									perm.attachedToId = null;
 									// --- Track P12 + P11: CR 702.103f Bestow unattach ---
@@ -20596,6 +20879,11 @@ export function checkStateBasedActions(state: GameState): void {
 			});
 		}
 	}
+	// --- Track P21: Assign Space Beleren sectors to any unassigned creatures ---
+	if (state.status === 'active') {
+		ensureSpaceSculptorSectors(state);
+	}
+	// --- End Track P21 ---
 }
 
 export function cleanupEliminatedPlayer(state: GameState, eliminated: PlayerGameState): void {
@@ -21479,6 +21767,25 @@ function validateTargetLegalityInner(
 				};
 			}
 		}
+		// --- Track P21: Full ObjectFilter check on `graveyard_card` targets ---
+		const gySourceInst = sourceInstanceId
+			? findCardAnywhere(state, sourceInstanceId)?.inst
+			: undefined;
+		const gySpec = info.targetSpecs?.[0];
+		if (
+			gySpec?.kind === 'object' &&
+			!matchesObjectFilter(foundCard, gySpec.filter, {
+				state,
+				controllerId: actorId,
+				source: gySourceInst
+			})
+		) {
+			return {
+				ok: false,
+				error: `Strict Rules Violation: ${foundCard.card.name} does not match the graveyard target filter.`
+			};
+		}
+		// --- End Track P21 ---
 		return { ok: true };
 	}
 
@@ -23084,13 +23391,17 @@ function checkSpellCastLegalityInner(
 	if (state.status !== 'active') {
 		return { ok: false, error: 'Game is not currently active.' };
 	}
-	if (state.pendingPrompts.length > 0) {
-		return { ok: false, error: 'Resolve the active prompt first.' };
-	}
 	const actor = state.players.find((p) => p.playerId === actorId);
 	if (!actor || actor.lost) {
 		return { ok: false, error: 'Player is not active in this game.' };
 	}
+	// --- Track P21 (CR 601.3e): Allow `castFromLibraryWhileSearching` while library search prompt is active ---
+	const allowWhileSearching =
+		fromZone === 'library' && Boolean(findCastWhileSearchingLibraryCard(state, actor, inst.instanceId));
+	if (state.pendingPrompts.length > 0 && !allowWhileSearching) {
+		return { ok: false, error: 'Resolve the active prompt first.' };
+	}
+	// --- End Track P21 ---
 	const resolved = resolveCastOptionForAction(
 		state,
 		actorId,
@@ -23132,13 +23443,19 @@ function checkSpellCastOptionLegalityInner(
 	if (state.status !== 'active') {
 		return { ok: false, error: 'Game is not currently active.' };
 	}
-	if (state.pendingPrompts.length > 0) {
-		return { ok: false, error: 'Resolve the active prompt first.' };
-	}
 	const actor = state.players.find((p) => p.playerId === actorId);
 	if (!actor || actor.lost) {
 		return { ok: false, error: 'Player is not active in this game.' };
 	}
+	// --- Track P21 (CR 601.3e, 701.23g): Allow `castFromLibraryWhileSearching` mid-search ---
+	const isCastWhileSearchingOpt =
+		fromZone === 'library' &&
+		option.id.startsWith('library:while-searching') &&
+		Boolean(findCastWhileSearchingLibraryCard(state, actor, inst.instanceId));
+	if (state.pendingPrompts.length > 0 && !isCastWhileSearchingOpt) {
+		return { ok: false, error: 'Resolve the active prompt first.' };
+	}
+	// --- End Track P21 ---
 
 	const activePlayer = state.players[state.activePlayerIndex];
 	const priorityPlayer = state.players[state.priorityPlayerIndex];
@@ -23146,7 +23463,7 @@ function checkSpellCastOptionLegalityInner(
 	if (pendingCombatErr) {
 		return { ok: false, error: pendingCombatErr };
 	}
-	if (priorityPlayer?.playerId !== actorId) {
+	if (priorityPlayer?.playerId !== actorId && !isCastWhileSearchingOpt) {
 		return { ok: false, error: 'You do not currently hold priority.' };
 	}
 
@@ -24066,8 +24383,35 @@ function checkAbilityActivationLegalityInner(
 		return { ok: false, error: w5AbErr };
 	}
 	// --- End Track P15 ---
+	// --- Track P21: Craft with two that share a card type (CR 702.167) ---
+	if (
+		ab.costKeyword === 'craft' &&
+		selectCraftShareCardTypeMaterials(state, actor, perm) === null
+	) {
+		return {
+			ok: false,
+			error: `${perm.card.name}: Requires two other permanents you control and/or cards in your graveyard that share a card type to Craft (CR 702.167).`
+		};
+	}
+	// --- End Track P21 ---
 	const restrictions = ab.activationRestrictions;
 	if (restrictions?.length) {
+		// --- Track P21 (CR 605.3c): "Activate only as an instant." ---
+		if (restrictions.includes('onlyAsInstant')) {
+			const priorityPl = state.players[state.priorityPlayerIndex];
+			if (
+				priorityPl?.playerId !== actorId ||
+				Boolean(state.pendingCostPayment) ||
+				state.pendingPrompts.length > 0 ||
+				getPendingCombatDeclarationError(state) !== null
+			) {
+				return {
+					ok: false,
+					error: `${perm.card.name}: Activate only as an instant (only while you hold priority, CR 605.3c).`
+				};
+			}
+		}
+		// --- End Track P21 ---
 		if (restrictions.includes('oncePerGame') && perm.usedOncePerGameAbilityIds?.includes(ab.id)) {
 			return {
 				ok: false,
@@ -25126,7 +25470,11 @@ export function computeCombatDamageForecast(
 		const atkFirstStrike = hasKeyword(atkCard, 'First strike', state);
 		const atkDoubleStrike = hasKeyword(atkCard, 'Double strike', state);
 		const atkDeathtouch = hasKeyword(atkCard, 'Deathtouch', state);
-		const atkTrample = hasKeyword(atkCard, 'Trample', state);
+		// --- Track P21 (CR 702.19c–f): Trample & Trample over planeswalkers forecast ---
+		const atkTrampleCaps = getTrampleCapabilities(atkCard, state, hasKeyword);
+		const atkTrample = atkTrampleCaps.hasTrample;
+		const atkTrampleOverPw = atkTrampleCaps.hasTrampleOverPlaneswalkers;
+		// --- End Track P21 ---
 		const atkInfect = hasKeyword(atkCard, 'Infect', state);
 		// --- Track P9 ---
 		const atkToxic = sumPermanentToxic(state, atkCard);
@@ -25159,7 +25507,6 @@ export function computeCombatDamageForecast(
 		if (!isBlocked) {
 			const rawDmg = atkPower * strikesRemaining;
 			if (defWalker) {
-				damageToDefender = rawDmg;
 				if (!planeswalkerIncoming[defWalker.instanceId]) {
 					planeswalkerIncoming[defWalker.instanceId] = {
 						instanceId: defWalker.instanceId,
@@ -25172,9 +25519,19 @@ export function computeCombatDamageForecast(
 					};
 				}
 				const pw = planeswalkerIncoming[defWalker.instanceId];
-				pw.loyaltyLoss += rawDmg;
+				const pwDmg = atkTrampleOverPw
+					? Math.min(rawDmg, Math.max(0, pw.currentLoyalty - pw.loyaltyLoss))
+					: rawDmg;
+				const carryToPlayer = atkTrampleOverPw ? Math.max(0, rawDmg - pwDmg) : 0;
+				damageToDefender = rawDmg;
+				pw.loyaltyLoss += pwDmg;
 				pw.projectedLoyalty = Math.max(0, pw.currentLoyalty - pw.loyaltyLoss);
 				pw.willDie = pw.projectedLoyalty <= 0;
+				if (carryToPlayer > 0 && defPlayer && !defPlayer.lifeTotalCannotChangeThisTurn) {
+					const inc = playerIncoming[defPlayer.playerId];
+					inc.trampleThroughDamage += carryToPlayer;
+					inc.totalLifeLoss += carryToPlayer;
+				}
 			} else if (defBattle) {
 				damageToDefender = rawDmg;
 			} else if (defPlayer && !attackingPlaneswalker && !attackingBattle) {
@@ -25264,7 +25621,6 @@ export function computeCombatDamageForecast(
 			if (atkTrample && totalAtkDmgPool > 0) {
 				const trampleDmg = totalAtkDmgPool;
 				if (defWalker) {
-					damageToDefender = trampleDmg;
 					if (!planeswalkerIncoming[defWalker.instanceId]) {
 						planeswalkerIncoming[defWalker.instanceId] = {
 							instanceId: defWalker.instanceId,
@@ -25277,9 +25633,19 @@ export function computeCombatDamageForecast(
 						};
 					}
 					const pw = planeswalkerIncoming[defWalker.instanceId];
-					pw.loyaltyLoss += trampleDmg;
+					const pwDmg = atkTrampleOverPw
+						? Math.min(trampleDmg, Math.max(0, pw.currentLoyalty - pw.loyaltyLoss))
+						: trampleDmg;
+					const carryToPlayer = atkTrampleOverPw ? Math.max(0, trampleDmg - pwDmg) : 0;
+					damageToDefender = trampleDmg;
+					pw.loyaltyLoss += pwDmg;
 					pw.projectedLoyalty = Math.max(0, pw.currentLoyalty - pw.loyaltyLoss);
 					pw.willDie = pw.projectedLoyalty <= 0;
+					if (carryToPlayer > 0 && defPlayer && !defPlayer.lifeTotalCannotChangeThisTurn) {
+						const inc = playerIncoming[defPlayer.playerId];
+						inc.trampleThroughDamage += carryToPlayer;
+						inc.totalLifeLoss += carryToPlayer;
+					}
 				} else if (defBattle) {
 					damageToDefender = trampleDmg;
 				} else if (defPlayer && !attackingPlaneswalker && !attackingBattle) {

@@ -1161,6 +1161,20 @@ export interface CardInstance {
 	/** True iff this permanent dealt damage to an opponent so far this turn; cleared at cleanup & zone exit. */
 	dealtDamageToOpponentThisTurn?: boolean;
 	// --- End Track P19b ---
+	// --- Track P21 ---
+	/** CR 303.4 / Animate Dead: instanceId of the reanimated battlefield creature this Aura switched its enchant ability to. */
+	auraReanimatedHostId?: string;
+	/** CR 400.7 / Animate Dead: linked Aura/Enchantment `(sourceInstanceId, sourceObjectVersion)` that put this creature onto the battlefield. */
+	reanimatedByAura?: { sourceInstanceId: string; sourceObjectVersion: number };
+	/** Pre-exit battlefield `objectVersion` stamped when this permanent leaves the battlefield (for LTB linked-object lookups). */
+	lastBattlefieldVersion?: number;
+	/** True when this permanent's spell was cast at a time a sorcery couldn't have been cast (e.g. Necromancy). */
+	castAtNonSorceryTiming?: boolean;
+	/** True when this permanent's controller must sacrifice it at the beginning of the next cleanup step. */
+	sacrificeAtNextCleanupStep?: boolean;
+	/** Space Beleren sector assignment on a battlefield creature; cleared on zone exit. */
+	spaceSector?: 'alpha' | 'beta' | 'gamma';
+	// --- End Track P21 ---
 }
 
 export interface TargetRef {
@@ -1398,6 +1412,10 @@ export interface StackItem {
 	spellMods?: SpellModifications;
 	optionalCostCounts?: Record<string, number>;
 	commanderCastCount?: number;
+	// --- Track P21 ---
+	/** True when this spell was cast at non-sorcery timing (copied onto resulting permanent for Necromancy). */
+	castAtNonSorceryTiming?: boolean;
+	// --- End Track P21 ---
 	requiresGuidedResolution: boolean;
 	createdAt: number;
 	isCopy?: boolean;
@@ -2977,6 +2995,10 @@ export interface GameState {
 	/** True while creatures are being tapped as part of declaring attackers (CR 508.1f, e.g. Verity Circle). */
 	declaringAttackersNow?: boolean;
 	// --- End Track P19b ---
+	// --- Track P21 ---
+	/** Space Beleren +1: `turnSerial ?? turnNumber` during which creatures in each sector can be blocked only by creatures in the same sector. */
+	spaceSectorBlockLockTurnSerial?: number;
+	// --- End Track P21 ---
 }
 
 // --- Track P19b ---
@@ -3112,7 +3134,9 @@ export type GameActionPayload =
 	  }
 	/** Compatibility alias for answering a `cost_choice` prompt. */
 	| { type: 'cost_choice'; promptId: string; option?: number; instanceIds?: string[]; cancel?: boolean }
-	| { type: 'suspend_card'; instanceId: string }
+	// --- Track P21: optional xValue for Suspend X (CR 702.62a) ---
+	| { type: 'suspend_card'; instanceId: string; xValue?: number }
+	// --- End Track P21 ---
 	// --- Track P3 ---
 	| {
 			type: 'hand_special_action';

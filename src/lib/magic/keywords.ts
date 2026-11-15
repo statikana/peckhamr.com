@@ -1135,6 +1135,9 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 	simpleImplemented('reach', '702.17', 'Reach'),
 	simpleImplemented('shroud', '702.18', 'Shroud'),
 	simpleImplemented('trample', '702.19', 'Trample'),
+	// --- Track P21 ---
+	simpleImplemented('trample over planeswalkers', '702.19c', 'Trample over planeswalkers'),
+	// --- End Track P21 ---
 	simpleImplemented('vigilance', '702.20', 'Vigilance'),
 	simpleImplemented('changeling', '702.73', 'Changeling'),
 	simpleImplemented('fear', '702.36', 'Fear'),
@@ -2039,7 +2042,19 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 			implementation: { kind: 'static', buildStatics: () => [] }
 		}
 	],
-	unimplemented('boast', '702.142', 'text'),
+	// --- Track P21 ---
+	[
+		'boast',
+		{
+			name: 'boast',
+			cr: '702.142',
+			parameterKind: 'text',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'static', buildStatics: () => [] }
+		}
+	],
+	// --- End Track P21 ---
 	[
 		'buyback',
 		{
@@ -2168,7 +2183,19 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 		}
 	],
 	// --- End Track P15 ---
-	unimplemented('companion', '702.139', 'text'),
+	// --- Track P21 ---
+	[
+		'companion',
+		{
+			name: 'companion',
+			cr: '702.139',
+			parameterKind: 'text',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'static', buildStatics: () => [] }
+		}
+	],
+	// --- End Track P21 ---
 	// --- Track P9 ---
 	[
 		'commander ninjutsu',
@@ -2487,7 +2514,9 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 			}
 		}
 	],
-	unimplemented('double team', '702.156'),
+	// --- Track P21: CR 702.156 is Ravenous; Double team is an Arena digital-only keyword ---
+	unimplemented('double team', 'digital:double-team'),
+	// --- End Track P21 ---
 	// --- Track P12 ---
 	[
 		'dredge',
@@ -2826,7 +2855,19 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 			}
 		}
 	],
-	unimplemented('forecast', '702.57', 'text'),
+	// --- Track P21 ---
+	[
+		'forecast',
+		{
+			name: 'forecast',
+			cr: '702.57',
+			parameterKind: 'text',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'static', buildStatics: () => [] }
+		}
+	],
+	// --- End Track P21 ---
 	// --- Track P3 ---
 	[
 		'foretell',
@@ -3542,7 +3583,19 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 			implementation: { kind: 'activated', buildActivated: buildNinjutsuAbility }
 		}
 	],
-	unimplemented('offering', '702.48', 'quality'),
+	// --- Track P21 ---
+	[
+		'offering',
+		{
+			name: 'offering',
+			cr: '702.48',
+			parameterKind: 'quality',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'static', buildStatics: () => [] }
+		}
+	],
+	// --- End Track P21 ---
 	// --- Track P6 ---
 	[
 		'offspring',
@@ -4237,7 +4290,30 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 		}
 	],
 	// --- End Track P12 ---
-	unimplemented('totem armor', '702.89'),
+	// --- Track P21: CR 702.89b Totem armor is the legacy print alias for Umbra armor ---
+	[
+		'totem armor',
+		{
+			name: 'totem armor',
+			cr: '702.89b',
+			parameterKind: 'none',
+			displayLabel: 'Umbra armor',
+			grantable: true,
+			status: 'implemented',
+			implementation: {
+				kind: 'static',
+				buildStatics: () => [
+					{
+						k: 'continuous',
+						layer: '6',
+						affected: 'self',
+						mod: { k: 'addKeywords', keywords: ['umbra armor'] }
+					}
+				]
+			}
+		}
+	],
+	// --- End Track P21 ---
 	// --- Track P12 ---
 	[
 		'training',
@@ -4445,7 +4521,19 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 			implementation: { kind: 'activated', buildActivated: buildStationActivatedAbility }
 		}
 	],
-	unimplemented('exhaust', '702.177', 'text'),
+	// --- Track P21 ---
+	[
+		'exhaust',
+		{
+			name: 'exhaust',
+			cr: '702.177',
+			parameterKind: 'text',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'static', buildStatics: () => [] }
+		}
+	],
+	// --- End Track P21 ---
 	// --- Track P12 ---
 	[
 		'harmonize',
@@ -4533,7 +4621,19 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 		}
 	],
 	// --- End Track P12 ---
-	unimplemented('waterbend', '701.67', 'cost'),
+	// --- Track P21 ---
+	[
+		'waterbend',
+		{
+			name: 'waterbend',
+			cr: '701.67',
+			parameterKind: 'cost',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'static', buildStatics: () => [] }
+		}
+	],
+	// --- End Track P21 ---
 	// --- Track P15 ---
 	[
 		'job select',

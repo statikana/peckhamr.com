@@ -203,8 +203,12 @@ export type ActivationRestriction =
 	| 'duringBlockers'
 	| 'afterBlockers'
 	| 'afterCombat'
-	| 'duringOpponentsTurn';
+	| 'duringOpponentsTurn'
 	// --- End Track P18b ---
+	// --- Track P21 ---
+	/** CR 605.3b / 304.5: "Activate only as an instant." (requires priority; never auto-tapped mid-cast). */
+	| 'onlyAsInstant';
+	// --- End Track P21 ---
 
 export interface ActivatedAbility {
 	kind: 'activated';
@@ -455,6 +459,14 @@ export interface KeywordDef {
 	/** Nonbasic / snow / supertype landwalk filter (CR 702.14). */
 	landwalkFilter?: ObjectFilter;
 	// --- End Track P15 ---
+	// --- Track P21 ---
+	/** CR 702.62a: "Suspend X—{cost}. X can't be 0." */
+	suspendX?: boolean;
+	/** CR 702.167: "Craft with two that share a card type {cost}" (e.g. Eye of Ojer Taq). */
+	craftShareCardType?: boolean;
+	/** CR 702.6: Inline activation cost reduction on Equip ("Equip {3}. This ability costs {1} less to activate for each ..."). */
+	equipCostReduction?: { delta: CostDelta; condition?: Condition };
+	// --- End Track P21 ---
 }
 
 // ---- Filters --------------------------------------------------------------------------------
@@ -557,8 +569,8 @@ export interface ObjectFilter {
 	// --- Track P11 ---
 	/** CR 201.2a: matches objects whose name equals `source.chosenCardName` ("with the chosen name"). */
 	ofChosenName?: boolean;
-	/** Matches permanents attached to `'self'` or `'attachedTo'` ("Aura or Equipment attached to ~"). */
-	attachedToRef?: 'self' | 'attachedTo';
+	/** Matches permanents attached to `'self'` or `'attachedTo'` ("Aura or Equipment attached to ~"), or Track P21 graveyard/reanimation host links. */
+	attachedToRef?: 'self' | 'attachedTo' | 'hostOfSelf' | 'reanimatedBySelf';
 	/** CR 700.6: matches historic objects (Artifacts, Legendaries, and Sagas). */
 	historic?: boolean;
 	/** Matches stack spells/abilities that target at least one object matching `targetsFilter`. */
@@ -662,6 +674,10 @@ export interface ObjectFilter {
 	/** CR 105.2: matches objects having ALL listed colors simultaneously ("that's both red and white"). */
 	allColors?: ManaColor[];
 	// --- End Track P19b ---
+	// --- Track P21 ---
+	/** CR 303.4 / 702.5a: "Enchant creature with another Aura attached to it" (excludes `source` itself). */
+	hasAnotherAuraAttached?: boolean;
+	// --- End Track P21 ---
 }
 
 export interface Compare {
@@ -1545,6 +1561,17 @@ export interface EffectParams {
 	/** grant / animate (CR 613.1f): affected permanent(s) lose all abilities in Layer 6 for the duration. */
 	removeAllAbilities?: boolean;
 	// --- End Track P16a ---
+	// --- Track P21 ---
+	/** Bespoke Wave 7 / override effect tag executed by `runtime/framesWave7.ts`. */
+	wave7Effect?:
+		| 'spellweaverVolute'
+		| 'spaceSectorLock'
+		| 'spaceSectorCounters'
+		| 'spaceSectorDestroy'
+		| 'necromancyFlashCleanup'
+		| 'sacrificeSelfCleanup'
+		| 'timetwister';
+	// --- End Track P21 ---
 }
 
 // --- Track P16a ---
@@ -2909,8 +2936,20 @@ export type StaticDef =
 			k: 'commanderTaxAsLife';
 			lifePerCast: number;
 			condition?: Condition;
-	  };
+	  }
 	// --- End Track P20b ---
+	// --- Track P21 ---
+	| {
+			/** CR 601.2 / Panglacial Wurm: "While you're searching your library, you may cast ~ from your library." */
+			k: 'castFromLibraryWhileSearching';
+			condition?: Condition;
+	  }
+	| {
+			/** Space Beleren: divides battlefield creatures into alpha, beta, and gamma sectors. */
+			k: 'spaceSculptorSectors';
+			condition?: Condition;
+	  };
+	// --- End Track P21 ---
 
 // --- Track P18b ---
 export type CompanionDeckConditionId =

@@ -1,0 +1,55 @@
+{
+	"oracleId": "3d92e5ce-9d30-4203-9f84-6c36117440cf",
+	"expectedTextHash": "dabdfb28",
+	"faces": [
+		{
+			"name": "Spellweaver Volute",
+			"characteristics": {
+				"manaCost": "{3}{U}{U}",
+				"types": ["Enchantment"],
+				"subtypes": ["Aura"],
+				"supertypes": [],
+				"colors": ["U"]
+			},
+			"abilities": [
+				{
+					"kind": "keyword",
+					"keyword": {
+						"name": "enchant",
+						"param": "instant card in a graveyard",
+						"enchantFilter": {
+							"types": ["Instant"],
+							"zone": "graveyard"
+						}
+					},
+					"span": { "start": 0, "end": 35 }
+				},
+				{
+					"kind": "triggered",
+					"trigger": {
+						"event": "cast",
+						"filter": {
+							"object": {
+								"types": ["Sorcery"]
+							},
+							"player": {
+								"relation": "you"
+							}
+						}
+					},
+					"targets": [],
+					"effect": [
+						{
+							"verb": "reveal",
+							"subject": { "k": "none" },
+							"params": { "wave7Effect": "spellweaverVolute" },
+							"span": { "start": 71, "end": 244 }
+						}
+					],
+					"text": "Whenever you cast a sorcery spell, copy the enchanted instant card. You may cast the copy without paying its mana cost. If you do, exile the enchanted card and attach ~ to another instant card in a graveyard.",
+					"span": { "start": 36, "end": 244 }
+				}
+			]
+		}
+	]
+}

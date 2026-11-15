@@ -97,6 +97,9 @@ import {
 // --- Track P20b ---
 import { evaluateP20bAmount, evaluateP20bCondition } from './costsWave7.ts';
 // --- End Track P20b ---
+// --- Track P21 ---
+import { matchesP21ObjectFilter } from './framesWave7.ts';
+// --- End Track P21 ---
 // --- Track P17a ---
 import {
 	getOffBattlefieldGrantedCharacteristics,
@@ -562,9 +565,30 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 		if (effName.toLowerCase() !== chosenName.toLowerCase()) return false;
 	}
 	if (filter.attachedToRef !== undefined) {
-		const wantHostId =
-			filter.attachedToRef === 'self' ? ctx.source?.instanceId : ctx.source?.attachedToId;
-		if (!wantHostId || obj.attachedToId !== wantHostId) return false;
+		// --- Track P21 ---
+		if (filter.attachedToRef === 'hostOfSelf') {
+			const hostId = ctx.source?.attachedToId;
+			if (!hostId || obj.instanceId !== hostId) return false;
+		} else if (filter.attachedToRef === 'reanimatedBySelf') {
+			const src = ctx.source;
+			const link = obj.reanimatedByAura;
+			if (!src || !link || link.sourceInstanceId !== src.instanceId) return false;
+			const wantVer =
+				ctx.stackItem?.sourceInstanceId === src.instanceId &&
+				ctx.stackItem.sourceObjectVersion !== undefined
+					? ctx.stackItem.sourceObjectVersion
+					: src.zone === 'battlefield'
+						? (src.objectVersion ?? 1)
+						: src.lastBattlefieldVersion;
+			if (wantVer !== undefined && link.sourceObjectVersion !== wantVer) return false;
+		} else {
+			// --- End Track P21 ---
+			const wantHostId =
+				filter.attachedToRef === 'self' ? ctx.source?.instanceId : ctx.source?.attachedToId;
+			if (!wantHostId || obj.attachedToId !== wantHostId) return false;
+			// --- Track P21 ---
+		}
+		// --- End Track P21 ---
 	}
 	if (filter.historic !== undefined) {
 		const isHist =
@@ -886,6 +910,9 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 		}
 	}
 	// --- End Track P20a ---
+	// --- Track P21 ---
+	if (!matchesP21ObjectFilter(obj, filter, ctx)) return false;
+	// --- End Track P21 ---
 	return true;
 }
 

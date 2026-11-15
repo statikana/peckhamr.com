@@ -518,8 +518,11 @@ describe('Phase 5 (§6): ChoiceSpec and PromptPurpose exhaustiveness guards (#2)
 			join(dir, 'staticsDynamicAndCosts.ts'),
 			// --- End Track P11 ---
 			// --- Track P12 ---
-			join(dir, 'keywordsWave4.ts')
+			join(dir, 'keywordsWave4.ts'),
 			// --- End Track P12 ---
+			// --- Track P21 ---
+			join(dir, 'framesWave7.ts')
+			// --- End Track P21 ---
 		];
 		const emittedPurposes = new Set<string>();
 		const purposeRegex = /\bpurpose\s*:\s*'([a-z_]+)'/g;

@@ -233,7 +233,16 @@ export const KEYWORD_COVERAGE_FILES: Record<string, readonly string[]> = {
 	soulbond: ['runtime/wave6-p18a-keywords.test.ts'],
 	storied: ['runtime/wave6-p18a-keywords.test.ts'],
 	teamwork: ['runtime/wave6-p18a-keywords.test.ts'],
-	tribute: ['runtime/wave6-p18a-keywords.test.ts']
+	tribute: ['runtime/wave6-p18a-keywords.test.ts'],
+	// --- Track P21 ---
+	boast: ['runtime/wave7-p21-frames-overrides.test.ts'],
+	companion: ['runtime/wave7-p21-frames-overrides.test.ts'],
+	exhaust: ['runtime/wave7-p21-frames-overrides.test.ts'],
+	forecast: ['runtime/wave7-p21-frames-overrides.test.ts'],
+	offering: ['runtime/wave7-p21-frames-overrides.test.ts'],
+	'totem armor': ['runtime/wave7-p21-frames-overrides.test.ts'],
+	'trample over planeswalkers': ['runtime/wave7-p21-frames-overrides.test.ts'],
+	waterbend: ['runtime/wave7-p21-frames-overrides.test.ts']
 };
 
 const SAMPLE_ORACLE_FOR_KEYWORD: Record<
@@ -455,7 +464,25 @@ const SAMPLE_ORACLE_FOR_KEYWORD: Record<
 	soulbond: { typeLine: 'Creature — Human Knight', oracleText: 'Soulbond' },
 	storied: { typeLine: 'Creature — Dwarf Bard', oracleText: 'Storied' },
 	teamwork: { typeLine: 'Instant', oracleText: 'Teamwork 2\nDraw a card.' },
-	tribute: { typeLine: 'Creature — Centaur Warrior', oracleText: 'Tribute 2' }
+	tribute: { typeLine: 'Creature — Centaur Warrior', oracleText: 'Tribute 2' },
+	// --- Track P21 ---
+	boast: { typeLine: 'Creature — Human Berserker', oracleText: 'Boast — {1}{R}: Draw a card.' },
+	companion: {
+		typeLine: 'Legendary Creature — Cat Nightmare',
+		oracleText: 'Companion — Each permanent card in your starting deck has mana value 2 or less.'
+	},
+	exhaust: { typeLine: 'Creature — Goblin Artificer', oracleText: 'Exhaust — {2}{R}: Draw two cards.' },
+	forecast: {
+		typeLine: 'Creature — Bird Soldier',
+		oracleText: 'Forecast — {1}{W}, Reveal ~ from your hand: You gain 2 life.'
+	},
+	offering: { typeLine: 'Legendary Creature — Rat Ninja', oracleText: 'Rat offering' },
+	'totem armor': { typeLine: 'Enchantment — Aura', oracleText: 'Enchant creature\nTotem armor' },
+	'trample over planeswalkers': {
+		typeLine: 'Creature — Phyrexian Thrull',
+		oracleText: 'Trample over planeswalkers'
+	},
+	waterbend: { typeLine: 'Creature — Human Monk', oracleText: 'Waterbend {3}: Draw a card.' }
 };
 
 describe('Implemented Keywords Coverage Guard', () => {
@@ -642,7 +669,14 @@ describe('Implemented Keywords Coverage Guard', () => {
 			'mutate',
 			'poisonous',
 			'teamwork',
-			'tribute'
+			'tribute',
+			// --- Track P21 ---
+			'boast',
+			'companion',
+			'exhaust',
+			'forecast',
+			'offering',
+			'waterbend'
 		]);
 
 		assert.deepEqual(
