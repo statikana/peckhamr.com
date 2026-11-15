@@ -3115,6 +3115,12 @@ const READ_P20B = 1 << 29;
 // --- Track P22a ---
 const READ_P22A = -2147483648; // 1 << 31
 // --- End Track P22a ---
+// --- Track P22b ---
+const READ_P22B = 1 << 27;
+// --- End Track P22b ---
+// --- Track P22c ---
+const READ_P22C = 1 << 30;
+// --- End Track P22c ---
 
 /** Inputs read by the evaluation in progress (bits above). */
 let layerReads = 0;
@@ -3343,6 +3349,16 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 		}
 	}
 	// --- End Track P22a ---
+	// --- Track P22b ---
+	if (reads & READ_P22B) {
+		fp.push(0);
+	}
+	// --- End Track P22b ---
+	// --- Track P22c ---
+	if (reads & READ_P22C) {
+		fp.push(0);
+	}
+	// --- End Track P22c ---
 	for (const p of state.players) {
 		if (reads & READ_LIFE) fp.push(p.life);
 		if (reads & READ_ENERGY) fp.push(p.energyCounters || 0);
@@ -3897,6 +3913,16 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 		}
 	}
 	// --- End Track P22a ---
+	// --- Track P22b ---
+	if (reads & READ_P22B) {
+		if (fp[i++] !== 0) return false;
+	}
+	// --- End Track P22b ---
+	// --- Track P22c ---
+	if (reads & READ_P22C) {
+		if (fp[i++] !== 0) return false;
+	}
+	// --- End Track P22c ---
 	for (const p of state.players) {
 		if (reads & READ_LIFE && fp[i++] !== p.life) return false;
 		if (reads & READ_ENERGY && fp[i++] !== (p.energyCounters || 0)) return false;
