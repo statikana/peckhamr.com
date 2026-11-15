@@ -18,7 +18,9 @@
 import type {
 	Amount,
 	Condition,
+	CopyModificationSpec,
 	CostDef,
+	DamagePreventionSpec,
 	Duration,
 	EffectParams,
 	EffectStep,
@@ -29,6 +31,7 @@ import type {
 	Selector,
 	Span,
 	TargetSpec,
+	TimedCombatRestrictionSpec,
 	TokenSpec,
 	TriggerDef,
 	Verb
@@ -348,7 +351,7 @@ function refSelector(ref: Ref): Selector {
 
 // ---- Object phrases -------------------------------------------------------------------------
 
-const IT_WORDS = /^(?:it|them|that creature|that permanent|that land|that card|that spell|that ability|that token|those tokens|the token|the creature|the land|the card|the spell|the ability|those cards|those creatures|those permanents|the amassed army|the army you amassed|the chosen creature|the manifested creature|the cloaked creature)$/i;
+const IT_WORDS = /^(?:it|them|that creature|that permanent|that creature or planeswalker|that permanent or player|that target|those targets|that land|that card|that spell|that ability|that token|those tokens|the token|the creature|the land|the card|the spell|the ability|those cards|those creatures|those permanents|the amassed army|the army you amassed|the chosen creature|the manifested creature|the cloaked creature)$/i;
 
 /** Controller qualifiers at the end of an object phrase. */
 function splitController(phrase: string): { phrase: string; controller?: ObjectFilter['controller'] } {
@@ -415,13 +418,25 @@ function targetPhrase(text: string): Omit<TargetSpec, 'min' | 'max'> | null {
 			return { kind: 'object', filter: withCtl({ ...filter, zone: 'stack' }) };
 		}
 	}
-	if (/^creature or player$/.test(phrase) && !ctl.controller) {
+	if (/^(?:creatures? (?:or|and\/or) players?|players? (?:or|and\/or) creatures?)$/.test(phrase) && !ctl.controller) {
 		return { kind: 'objectOrPlayer', filter: { zone: 'battlefield', types: ['Creature'] }, player: { relation: 'any' } };
 	}
-	if (/^(?:player or planeswalker|planeswalker or player)$/.test(phrase) && !ctl.controller) {
+	if (/^(?:players? (?:or|and\/or) planeswalkers?|planeswalkers? (?:or|and\/or) players?)$/.test(phrase) && !ctl.controller) {
 		return {
 			kind: 'objectOrPlayer',
 			filter: { zone: 'battlefield', types: ['Planeswalker'] },
+			player: { relation: 'any' }
+		};
+	}
+	if (/^(?:creatures? (?:or|and\/or) planeswalkers?|planeswalkers? (?:or|and\/or) creatures?)$/.test(phrase)) {
+		const out: ObjectFilter = { zone: 'battlefield', types: ['Creature', 'Planeswalker'] };
+		if (ctl.controller) out.controller = ctl.controller;
+		return { kind: 'object', filter: out };
+	}
+	if (/^creatures?,? planeswalkers?,? (?:or|and\/or) players?$/.test(phrase) && !ctl.controller) {
+		return {
+			kind: 'objectOrPlayer',
+			filter: { zone: 'battlefield', types: ['Creature', 'Planeswalker'] },
 			player: { relation: 'any' }
 		};
 	}
@@ -443,6 +458,66 @@ function targetPhrase(text: string): Omit<TargetSpec, 'min' | 'max'> | null {
 	if (ctl.controller) out.controller = ctl.controller;
 	if (owner) out.owner = owner;
 	return { kind: 'object', filter: out, ...(sameOwner ? { sameOwner: true } : {}) };
+}
+
+function parseAnyTargetQuantifier(text: string): { min: number; max: number } | null {
+	if (text === 'any number of targets') return { min: 0, max: 99 };
+	if (text === 'one or two targets') return { min: 1, max: 2 };
+	if (text === 'one, two, or three targets') return { min: 1, max: 3 };
+	if (text === 'one, two, three, or four targets') return { min: 1, max: 4 };
+	if (text === 'one, two, three, four, or five targets') return { min: 1, max: 5 };
+	const upTo = text.match(/^up to (\S+) targets?$/);
+	if (upTo) {
+		const c = count(upTo[1]);
+		if (c && c.k === 'const' && c.n >= 1) return { min: 0, max: c.n };
+	}
+	const exact = text.match(/^(\S+) targets$/);
+	if (exact && exact[1] !== 'a' && exact[1] !== 'an') {
+		const c = count(exact[1]);
+		if (c && c.k === 'const' && c.n >= 1) return { min: c.n, max: c.n };
+	}
+	return null;
+}
+
+function parseTypedMultiTargetQuantifier(text: string): { min: number; max: number; rest: string } | null {
+	let m = text.match(/^any number of target (.+)$/);
+	if (m) return { min: 0, max: 99, rest: m[1] };
+	m = text.match(/^(?:one or two target|target one or two) (.+)$/);
+	if (m) return { min: 1, max: 2, rest: m[1] };
+	m = text.match(/^(?:one, two, or three target|target one, two, or three) (.+)$/);
+	if (m) return { min: 1, max: 3, rest: m[1] };
+	m = text.match(/^(?:one, two, three, or four target|target one, two, three, or four) (.+)$/);
+	if (m) return { min: 1, max: 4, rest: m[1] };
+	m = text.match(/^(?:one, two, three, four, or five target|target one, two, three, four, or five) (.+)$/);
+	if (m) return { min: 1, max: 5, rest: m[1] };
+	return null;
+}
+
+function parseDividedTargets(
+	p: Parser,
+	amongText: string,
+	divideTotal: Amount,
+	requireObjectOnly = false
+): Selector | null {
+	if (divideTotal.k === 'resultCount' || divideTotal.k === 'eventAmount') return null;
+	const snapshot = p.targets.length;
+	const obj = objectPhrase(p, amongText.trim());
+	if (!obj || obj.selector.k !== 'target') {
+		p.targets.length = snapshot;
+		return null;
+	}
+	const spec = p.targets[obj.selector.index];
+	if (!spec || (spec.filter.zone && spec.filter.zone !== 'battlefield')) {
+		p.targets.length = snapshot;
+		return null;
+	}
+	if (requireObjectOnly && spec.kind !== 'object') {
+		p.targets.length = snapshot;
+		return null;
+	}
+	spec.divideTotal = divideTotal;
+	if (obj.ref) p.setLastTarget(obj.ref);
+	return obj.selector;
 }
 
 /**
@@ -476,6 +551,38 @@ function objectPhrase(p: Parser, text: string): ObjectRes | null {
 			max: 1
 		});
 		return { selector: { k: 'target', index }, ref: { k: 'target', index } };
+	}
+	const multiAny = parseAnyTargetQuantifier(t);
+	if (multiAny) {
+		const index = p.addTarget({
+			kind: 'objectOrPlayer',
+			filter: { zone: 'battlefield', types: ['Creature', 'Planeswalker', 'Battle'] },
+			player: { relation: 'any' },
+			min: multiAny.min,
+			max: multiAny.max
+		});
+		return {
+			selector: { k: 'target', index },
+			ref: { k: 'target', index },
+			plural: multiAny.max > 1
+		};
+	}
+	const multiTyped = parseTypedMultiTargetQuantifier(t);
+	if (multiTyped) {
+		const spec = targetPhrase(multiTyped.rest);
+		if (!spec) return null;
+		const { sameOwner, ...restSpec } = spec;
+		const index = p.addTarget({
+			...restSpec,
+			min: multiTyped.min,
+			max: multiTyped.max,
+			...(sameOwner && multiTyped.max > 1 ? { sameOwner: true } : {})
+		});
+		return {
+			selector: { k: 'target', index },
+			ref: { k: 'target', index },
+			plural: multiTyped.max > 1
+		};
 	}
 	const tgt = t.match(/^(?:(up to) )?(?:(\S+) )?target (?:(one|two|three|four|five|six|\d+) )?(.+)$/);
 	if (tgt) {
@@ -1053,10 +1160,359 @@ function parseAnimatePredicate(
 	return { verb: 'animate', subject: subject.selector, params, span };
 }
 
+// --- Track P7: Copy modifications, becomeCopy, and timed combat restrictions ---
+
+const COPY_CARD_TYPE_WORDS: Readonly<Record<string, string>> = {
+	artifact: 'Artifact',
+	artifacts: 'Artifact',
+	creature: 'Creature',
+	creatures: 'Creature',
+	enchantment: 'Enchantment',
+	enchantments: 'Enchantment',
+	land: 'Land',
+	lands: 'Land',
+	planeswalker: 'Planeswalker',
+	planeswalkers: 'Planeswalker'
+};
+
+function dedupeCopyList<T>(arr: readonly T[]): T[] {
+	const out: T[] = [];
+	for (const x of arr) {
+		if (!out.includes(x)) out.push(x);
+	}
+	return out;
+}
+
+function parseCopyModSubclause(rawSub: string, mod: CopyModificationSpec): boolean {
+	const s = rawSub.trim();
+	if (!s) return false;
+
+	if (
+		/^(?:(?:the tokens?|the cop(?:y|ies)|it|they) (?:isn't|is not|aren't|are not)|it's not|they're not|is not|isn't) legendary(?: if (?:that (?:creature|permanent)|it) is legendary)?$/i.test(
+			s
+		)
+	) {
+		mod.removeSupertypes = dedupeCopyList([...(mod.removeSupertypes ?? []), 'Legendary']);
+		return true;
+	}
+
+	let m = s.match(
+		/^(?:its name is|their names? (?:is|are)|(?:it's|it is|the token is) named) ([A-Z][A-Za-z0-9'’ -]+)$/
+	);
+	if (m) {
+		mod.name = m[1].trim();
+		return true;
+	}
+
+	m = s.match(/^(?:(?:the tokens?|the cop(?:y|ies)|it|they) )?(?:has|have) no mana cost$/i);
+	if (m) {
+		mod.noManaCost = true;
+		return true;
+	}
+
+	m = s.match(/^(?:(?:the tokens?|the cop(?:y|ies)|it|they) )?(?:has|have) base power and toughness (\d+)\/(\d+)$/i);
+	if (m) {
+		mod.power = parseInt(m[1], 10);
+		mod.toughness = parseInt(m[2], 10);
+		return true;
+	}
+
+	m = s.match(/^(?:(?:the tokens?|the cop(?:y|ies)|it|they) )?(?:has|have) (.+)$/i);
+	if (m) {
+		const kws = keywordList(m[1].trim());
+		if (!kws) return false;
+		mod.addKeywords = dedupeCopyList([...(mod.addKeywords ?? []), ...kws]);
+		return true;
+	}
+
+	m = s.match(/^(?:(?:the tokens?|the cop(?:y|ies)) (?:is|are)|it's|they're|it is|they are|is) (.+)$/i);
+	if (!m) return false;
+	let rest = m[1].trim();
+	let additiveColors = false;
+	let additiveTypes = false;
+
+	for (let iter = 0; iter < 8; iter++) {
+		const addColTypes = rest.match(/^(.+?) in addition to (?:its|their) other colors and types$/i);
+		if (addColTypes) {
+			additiveColors = true;
+			additiveTypes = true;
+			rest = addColTypes[1].trim();
+			continue;
+		}
+		const addTypesMatch = rest.match(/^(.+?) in addition to (?:its|their) other types$/i);
+		if (addTypesMatch) {
+			additiveTypes = true;
+			rest = addTypesMatch[1].trim();
+			continue;
+		}
+		const noMcMatch = rest.match(/^(.+?) with no mana cost$/i);
+		if (noMcMatch) {
+			mod.noManaCost = true;
+			rest = noMcMatch[1].trim();
+			continue;
+		}
+		const basePtMatch = rest.match(/^(.+?) with base power and toughness (\d+)\/(\d+)$/i);
+		if (basePtMatch) {
+			mod.power = parseInt(basePtMatch[2], 10);
+			mod.toughness = parseInt(basePtMatch[3], 10);
+			rest = basePtMatch[1].trim();
+			continue;
+		}
+		const withIdx = rest.lastIndexOf(' with ');
+		if (withIdx > 0) {
+			const kwRaw = rest.slice(withIdx + ' with '.length).trim();
+			const kws = keywordList(kwRaw);
+			if (!kws) return false;
+			mod.addKeywords = dedupeCopyList([...kws, ...(mod.addKeywords ?? [])]);
+			rest = rest.slice(0, withIdx).trim();
+			continue;
+		}
+		break;
+	}
+
+	rest = rest.replace(/^(?:a|an)\s+/i, '').trim();
+	if (/^nonlegendary$/i.test(rest)) {
+		mod.removeSupertypes = dedupeCopyList([...(mod.removeSupertypes ?? []), 'Legendary']);
+		return true;
+	}
+
+	const tokens = rest
+		.replace(/,/g, ' , ')
+		.split(/\s+/)
+		.filter(Boolean);
+	let touched = false;
+
+	if (tokens[0] && /^\d+\/\d+$/.test(tokens[0])) {
+		const [pw, tg] = tokens.shift()!.split('/');
+		mod.power = parseInt(pw, 10);
+		mod.toughness = parseInt(tg, 10);
+		touched = true;
+	}
+
+	let colors: ManaColor[] | undefined;
+	if (tokens[0]?.toLowerCase() === 'colorless') {
+		colors = [];
+		tokens.shift();
+		touched = true;
+	} else if (tokens[0] && COLOR_WORDS[tokens[0].toLowerCase()]) {
+		colors = [COLOR_WORDS[tokens.shift()!.toLowerCase()]];
+		touched = true;
+		while (tokens.length >= 2) {
+			if (tokens[0] === ',' && tokens[1]?.toLowerCase() === 'and' && tokens[2] && COLOR_WORDS[tokens[2].toLowerCase()]) {
+				tokens.shift();
+				tokens.shift();
+				colors.push(COLOR_WORDS[tokens.shift()!.toLowerCase()]);
+			} else if (tokens[0] === ',' && tokens[1] && COLOR_WORDS[tokens[1].toLowerCase()]) {
+				tokens.shift();
+				colors.push(COLOR_WORDS[tokens.shift()!.toLowerCase()]);
+			} else if (tokens[0]?.toLowerCase() === 'and' && tokens[1] && COLOR_WORDS[tokens[1].toLowerCase()]) {
+				tokens.shift();
+				colors.push(COLOR_WORDS[tokens.shift()!.toLowerCase()]);
+			} else {
+				break;
+			}
+		}
+	}
+	if (colors !== undefined) {
+		if (additiveColors) mod.addColors = dedupeCopyList([...(mod.addColors ?? []), ...colors]);
+		else mod.setColors = colors;
+	}
+
+	const cardTypes: string[] = [];
+	const subtypes: string[] = [];
+	for (const tok of tokens) {
+		if (tok === ',') continue;
+		const low = tok.toLowerCase();
+		if (low === 'nonlegendary') {
+			mod.removeSupertypes = dedupeCopyList([...(mod.removeSupertypes ?? []), 'Legendary']);
+			touched = true;
+			continue;
+		}
+		if (COPY_CARD_TYPE_WORDS[low]) {
+			cardTypes.push(COPY_CARD_TYPE_WORDS[low]);
+			touched = true;
+			continue;
+		}
+		if (/^[A-Z][A-Za-z'-]*$/.test(tok)) {
+			const sub = singularSubtype(tok) ?? tok;
+			subtypes.push(sub);
+			touched = true;
+			continue;
+		}
+		return false;
+	}
+
+	if (!touched) return false;
+
+	if (additiveTypes) {
+		if (cardTypes.length > 0) {
+			mod.addTypes = dedupeCopyList([...(mod.addTypes ?? []), ...cardTypes]);
+		} else if (subtypes.length > 0) {
+			mod.addTypes = dedupeCopyList([...(mod.addTypes ?? []), 'Creature']);
+		}
+		if (subtypes.length > 0) {
+			mod.addSubtypes = dedupeCopyList([...(mod.addSubtypes ?? []), ...subtypes]);
+		}
+	} else {
+		if (cardTypes.length > 0) mod.setTypes = dedupeCopyList(cardTypes);
+		if (subtypes.length > 0) mod.setSubtypes = dedupeCopyList(subtypes);
+	}
+	return true;
+}
+
+function parseCopyModifications(rawExcept: string): { notLegendary?: boolean; copyMod?: CopyModificationSpec } | null {
+	const trimmed = rawExcept.trim();
+	if (!trimmed || /["“”]/.test(trimmed)) return null;
+	if (/^(?:the tokens?|the cop(?:y|ies)|it|they) (?:isn't|aren't) legendary$/i.test(trimmed)) {
+		return { notLegendary: true };
+	}
+	const parts = trimmed.split(
+		/,\s+and\s+(?=(?:the tokens?|the cop(?:y|ies)|it's|they're|it is|they are|it|they|its name|their names?|is (?:a |an |not\b)|has\b|have\b|aren't\b|isn't\b)\b)|\s+and\s+(?=(?:the tokens?|the cop(?:y|ies)|it's|they're|it is|they are|it|they|its name|their names?|is (?:a |an |not\b)|has\b|have\b|aren't\b|isn't\b)\b)|,\s+(?=(?:the tokens?|the cop(?:y|ies)|it's|they're|it is|they are|it|they|its name|their names?|is (?:a |an |not\b)|has\b|have\b|aren't\b|isn't\b)\b)/i
+	);
+	const mod: CopyModificationSpec = {};
+	for (const part of parts) {
+		if (!parseCopyModSubclause(part, mod)) return null;
+	}
+	return Object.keys(mod).length > 0 ? { copyMod: mod } : null;
+}
+
+function parseBecomeCopyPredicate(
+	p: Parser,
+	subject: ObjectRes,
+	bodyAfterDuration: string,
+	eotFromPrefix: boolean,
+	span: Span
+): EffectStep | null {
+	if (subject.fromZone) return null;
+	const m = bodyAfterDuration.match(/^becomes? a copy of (.+)$/);
+	if (!m) return null;
+	let rest = m[1].trim();
+	let eot = eotFromPrefix;
+	const trailDur = rest.match(/^(.+?) until end of turn$/);
+	if (trailDur) {
+		eot = true;
+		rest = trailDur[1].trim();
+	}
+	let copyMod: CopyModificationSpec | undefined;
+	const excIdx = rest.indexOf(', except ');
+	if (excIdx > 0) {
+		let excRaw = rest.slice(excIdx + ', except '.length).trim();
+		const excDur = excRaw.match(/^(.+?) until end of turn$/);
+		if (excDur) {
+			eot = true;
+			excRaw = excDur[1].trim();
+		}
+		const parsedMod = parseCopyModifications(excRaw);
+		if (!parsedMod) return null;
+		copyMod = parsedMod.copyMod ?? (parsedMod.notLegendary ? { removeSupertypes: ['Legendary'] } : undefined);
+		rest = rest.slice(0, excIdx).trim();
+	}
+	const restDur = rest.match(/^(.+?) until end of turn$/);
+	if (restDur) {
+		eot = true;
+		rest = restDur[1].trim();
+	}
+
+	const snapshot = p.targets.length;
+	const isAnotherTarget = /^another target\b/.test(rest);
+	const srcObj = objectPhrase(p, isAnotherTarget ? rest.replace(/^another /, '') : rest);
+	if (!srcObj || srcObj.fromZone || srcObj.selector.k === 'all') {
+		p.targets.length = snapshot;
+		return null;
+	}
+	if (srcObj.selector.k === 'target') {
+		const spec = p.targets[srcObj.selector.index];
+		if (!spec || spec.kind !== 'object' || spec.max !== 1 || (spec.filter.zone ?? 'battlefield') !== 'battlefield') {
+			p.targets.length = snapshot;
+			return null;
+		}
+		if (isAnotherTarget) {
+			if (subject.selector.k === 'self') spec.filter.other = true;
+			else if (srcObj.selector.index > 0) spec.otherTarget = true;
+		}
+	}
+	return {
+		verb: 'becomeCopy',
+		subject: subject.selector,
+		params: {
+			copySource: srcObj.selector,
+			duration: eot ? 'endOfTurn' : 'permanent',
+			...(copyMod ? { copyMod } : {})
+		},
+		span
+	};
+}
+
+function parseExceptByBlockers(raw: string): NonNullable<TimedCombatRestrictionSpec['exceptBy']> | null {
+	const t = raw.trim();
+	let m = t.match(/^(\S+) or more creatures$/);
+	if (m) {
+		const c = count(m[1]);
+		if (c && c.k === 'const' && c.n >= 2) return { minBlockers: c.n };
+		return null;
+	}
+	m = t.match(/^artifact creatures and\/or (white|blue|black|red|green) creatures$/);
+	if (m) return { artifactOrColors: [COLOR_WORDS[m[1]]] };
+	m = t.match(/^creatures with power (\d+) or less$/);
+	if (m) return { maxPower: parseInt(m[1], 10) };
+	m = t.match(/^creatures with (.+)$/);
+	if (m) {
+		const kws = keywordList(m[1], true);
+		if (!kws) return null;
+		return { keywords: kws.map((k) => k.toLowerCase()) };
+	}
+	if (t === 'artifact creatures') return { types: ['Artifact'] };
+	m = t.match(/^non(white|blue|black|red|green) creatures$/);
+	if (m) return { notColors: [COLOR_WORDS[m[1]]] };
+	m = t.match(/^((?:(?:white|blue|black|red|green)(?:,? (?:and\/or|or) |, ))*(?:white|blue|black|red|green)) creatures$/);
+	if (m) {
+		const cols = m[1]
+			.split(/,? (?:and\/or|or) |, /)
+			.map((w) => COLOR_WORDS[w.trim()])
+			.filter(Boolean);
+		if (cols.length > 0) return { colors: dedupeCopyList(cols) };
+	}
+	m = t.match(/^([A-Z][A-Za-z'-]*)(?: creatures)?$/);
+	if (m) {
+		const sub = singularSubtype(m[1]);
+		if (sub) return { subtypes: [sub] };
+	}
+	return null;
+}
+
+function parseCombatRestrictionTail(raw: string, outerEot: boolean): TimedCombatRestrictionSpec | null {
+	const t = raw.trim();
+	if (t === "can't block this turn" || (outerEot && t === "can't block")) {
+		return { kind: 'cantBlock' };
+	}
+	if (t === "can't be blocked this turn" || (outerEot && t === "can't be blocked")) {
+		return { kind: 'cantBeBlocked' };
+	}
+	let m = t.match(/^can't be blocked except by (.+?) this turn$/);
+	if (!m) m = t.match(/^can't be blocked this turn except by (.+)$/);
+	if (!m && outerEot) m = t.match(/^can't be blocked except by (.+)$/);
+	if (m) {
+		const exceptBy = parseExceptByBlockers(m[1]);
+		if (!exceptBy) return null;
+		return { kind: 'cantBeBlocked', exceptBy };
+	}
+	return null;
+}
+// --- End Track P7 ---
+
 /** Verb phrases whose subject is an object ("~ gets +1/+0 until end of turn", "it phases out"). */
 function objectPredicate(p: Parser, subject: ObjectRes, vp: string, span: Span): ClauseResult {
 	const { text, eot } = stripDuration(vp);
 	const params = eot ? { duration: 'endOfTurn' as const } : {};
+
+	// --- Track P7: becomeCopy, multi-target "each", combat restrictions, divided/multi damage ---
+	if (/^becomes? a copy of /.test(text)) {
+		const copyStep = parseBecomeCopyPredicate(p, subject, text, eot, span);
+		if (!copyStep) return false;
+		p.push(copyStep, true);
+		return true;
+	}
+	// --- End Track P7 ---
 
 	if (/^becomes? (?:a|an) /.test(text)) {
 		const anim = parseAnimatePredicate(subject, text, eot, span);
@@ -1065,8 +1521,13 @@ function objectPredicate(p: Parser, subject: ObjectRes, vp: string, span: Span):
 		return true;
 	}
 
+	const predText =
+		subject.plural || subject.selector.k === 'target' || subject.selector.k === 'all'
+			? text.replace(/^each\s+/, '')
+			: text;
+
 	// "gain trample and get +X/+X" (Overrun templating): two steps on the same subject.
-	const both = text.match(/^gains? (.+?) and gets? (\S+)$/);
+	const both = predText.match(/^gains? (.+?) and gets? (\S+)$/);
 	if (both && eot) {
 		const kws = keywordList(both[1]);
 		const pt = ptChange(both[2]);
@@ -1075,21 +1536,106 @@ function objectPredicate(p: Parser, subject: ObjectRes, vp: string, span: Span):
 		p.push({ verb: 'pump', subject: subject.selector, amount: pt.power, params: { toughness: pt.toughness, ...params }, span }, true);
 		return true;
 	}
-	const get = text.match(/^gets? (\S+)$/);
+	// --- Track P7: "gets +X/+Y and gains <keywords> until end of turn" & compound combat restrictions ---
+	const ptAndGain = predText.match(/^gets? (\S+)(?:,)? and gains? (.+)$/);
+	if (ptAndGain && eot) {
+		const pt = ptChange(ptAndGain[1]);
+		const kws = keywordList(ptAndGain[2]);
+		if (!pt || !kws) return false;
+		p.push(
+			{
+				verb: 'pump',
+				subject: subject.selector,
+				amount: pt.power,
+				params: { toughness: pt.toughness, ...params },
+				span
+			},
+			true
+		);
+		p.push(
+			{ verb: 'grant', subject: subject.selector, params: { keywords: kws, ...params }, span },
+			true
+		);
+		return true;
+	}
+	const validBattlefieldObjectSubject =
+		!subject.fromZone &&
+		(subject.selector.k !== 'target' ||
+			(p.targets[subject.selector.index]?.kind === 'object' &&
+				(p.targets[subject.selector.index]?.filter.zone ?? 'battlefield') === 'battlefield'));
+	const modAndRestr = predText.match(
+		/^(?:gets? (\S+)|gains? (.+?))( until end of turn)?(?:,)? and (can't (?:block|be blocked).*)$/
+	);
+	if (modAndRestr && validBattlefieldObjectSubject && (eot || Boolean(modAndRestr[3]))) {
+		const combatRestriction = parseCombatRestrictionTail(modAndRestr[4], eot);
+		if (!combatRestriction) return false;
+		if (modAndRestr[1]) {
+			const pt = ptChange(modAndRestr[1]);
+			if (!pt) return false;
+			p.push(
+				{
+					verb: 'pump',
+					subject: subject.selector,
+					amount: pt.power,
+					params: { toughness: pt.toughness, duration: 'endOfTurn' },
+					span
+				},
+				true
+			);
+		} else if (modAndRestr[2]) {
+			const kws = keywordList(modAndRestr[2]);
+			if (!kws) return false;
+			p.push(
+				{
+					verb: 'grant',
+					subject: subject.selector,
+					params: { keywords: kws, duration: 'endOfTurn' },
+					span
+				},
+				true
+			);
+		}
+		p.push(
+			{
+				verb: 'combatRestriction',
+				subject: subject.selector,
+				params: { combatRestriction },
+				span
+			},
+			true
+		);
+		return true;
+	}
+	const combatRestriction = parseCombatRestrictionTail(predText, eot);
+	if (combatRestriction) {
+		if (!validBattlefieldObjectSubject) return false;
+		p.push(
+			{
+				verb: 'combatRestriction',
+				subject: subject.selector,
+				params: { combatRestriction },
+				span
+			},
+			true
+		);
+		return true;
+	}
+	// --- End Track P7 ---
+	const get = predText.match(/^gets? (\S+)$/);
 	if (get && eot) {
 		const pt = ptChange(get[1]);
 		if (!pt) return false;
 		p.push({ verb: 'pump', subject: subject.selector, amount: pt.power, params: { toughness: pt.toughness, ...params }, span }, true);
 		return true;
 	}
-	const gain = text.match(/^gains? (.+)$/);
+	const gain = predText.match(/^gains? (.+)$/);
 	if (gain && eot) {
 		const kws = keywordList(gain[1]);
 		if (!kws) return false;
 		p.push({ verb: 'grant', subject: subject.selector, params: { keywords: kws, ...params }, span }, true);
 		return true;
 	}
-	const lose = text.match(/^loses? (.+?)(?: and can't (?:have or gain|have|gain) (.+))?$/);
+	const lose = predText.match(/^loses? (.+?)(?: and can't (?:have or gain|have|gain) (.+))?$/);
 	if (lose && eot) {
 		const kws = keywordList(lose[1]);
 		if (!kws) return false;
@@ -1124,6 +1670,80 @@ function objectPredicate(p: Parser, subject: ObjectRes, vp: string, span: Span):
 		subject.selector.k === 'binding' ||
 		subject.selector.k === 'eventObject' ||
 		subject.selector.k === 'attachedTo';
+	// --- Track P7: Divided damage (CR 601.2d) & two-recipient damage (Arc Trail) ---
+	const divDmg = text.match(/^deals (that much|that many|\S+) damage divided as you choose among (.+)$/);
+	if (divDmg && !eot && canDealDamage) {
+		const amount = amountWord(p, divDmg[1]);
+		if (!amount) return false;
+		const divTarget = parseDividedTargets(p, divDmg[2], amount, false);
+		if (!divTarget) return false;
+		const dmgParams: EffectStep['params'] = {
+			divided: true,
+			...(subject.selector.k !== 'self' ? { damageSource: subject.selector } : {})
+		};
+		p.push({ verb: 'damage', subject: divTarget, amount, params: dmgParams, span }, false);
+		return true;
+	}
+	const divDmgEq = text.match(/^deals damage equal to (.+?) divided as you choose among (.+)$/);
+	if (divDmgEq && !eot && canDealDamage) {
+		const amount = equalTo(p, divDmgEq[1]);
+		if (!amount) return false;
+		const divTarget = parseDividedTargets(p, divDmgEq[2], amount, false);
+		if (!divTarget) return false;
+		const dmgParams: EffectStep['params'] = {
+			divided: true,
+			...(subject.selector.k !== 'self' ? { damageSource: subject.selector } : {})
+		};
+		p.push({ verb: 'damage', subject: divTarget, amount, params: dmgParams, span }, false);
+		return true;
+	}
+	const twoRecDmg = text.match(
+		/^deals (\S+) damage to (.+?) and (\S+) damage to ((?:another target|up to one other target).*)$/
+	);
+	if (twoRecDmg && !eot && canDealDamage) {
+		const snapshot = p.mark();
+		const amt1 = count(twoRecDmg[1]);
+		const amt2 = count(twoRecDmg[3]);
+		const rec1 = amt1 ? damageRecipientSpec(p, twoRecDmg[2], subject.selector) : null;
+		// Pass a non-'self' marker for rec2 when rec1 is a target so "another target" sets `otherTarget: true`!
+		const rec2SourceHint: Selector =
+			rec1?.subject.k === 'target' ? rec1.subject : subject.selector;
+		const rec2 = amt2 && rec1 ? damageRecipientSpec(p, twoRecDmg[4], rec2SourceHint) : null;
+		if (!amt1 || !amt2 || !rec1 || !rec2) {
+			p.rollback(snapshot);
+			return false;
+		}
+		const params1: EffectStep['params'] = {
+			...(subject.selector.k !== 'self' ? { damageSource: subject.selector } : {}),
+			...(rec1.alsoDamagePlayers ? { alsoDamagePlayers: rec1.alsoDamagePlayers } : {})
+		};
+		const params2: EffectStep['params'] = {
+			...(subject.selector.k !== 'self' ? { damageSource: subject.selector } : {}),
+			...(rec2.alsoDamagePlayers ? { alsoDamagePlayers: rec2.alsoDamagePlayers } : {})
+		};
+		p.push(
+			{
+				verb: 'damage',
+				subject: rec1.subject,
+				amount: amt1,
+				...(Object.keys(params1).length > 0 ? { params: params1 } : {}),
+				span
+			},
+			false
+		);
+		p.push(
+			{
+				verb: 'damage',
+				subject: rec2.subject,
+				amount: amt2,
+				...(Object.keys(params2).length > 0 ? { params: params2 } : {}),
+				span
+			},
+			false
+		);
+		return true;
+	}
+	// --- End Track P7 ---
 	const dmg = text.match(/^deals (\S+) damage to (.+)$/);
 	if (dmg && !eot && canDealDamage) {
 		const amount = count(dmg[1]);
@@ -1266,9 +1886,14 @@ function damageRecipientSpec(
 	}
 	const isAnotherTarget = /^(?:another target|up to one other target)\b/.test(t);
 	if (isAnotherTarget) {
-		const normalized = t
-			.replace(/^another target\b/, 'target')
-			.replace(/^up to one other target\b/, 'up to one target');
+		const normalized =
+			t === 'another target'
+				? 'any target'
+				: t === 'up to one other target'
+					? 'up to one target'
+					: t
+							.replace(/^another target\b/, 'target')
+							.replace(/^up to one other target\b/, 'up to one target');
 		const obj = objectPhrase(p, normalized);
 		if (!obj) return null;
 		if (obj.selector.k === 'target') {
@@ -1277,6 +1902,17 @@ function damageRecipientSpec(
 			} else if (obj.selector.index > 0) {
 				p.targets[obj.selector.index].otherTarget = true;
 			}
+		}
+		if (obj.ref) p.setLastTarget(obj.ref);
+		return { subject: obj.selector };
+	}
+	const eachOfTarget = t.match(/^each of (.+)$/);
+	if (eachOfTarget) {
+		const snapshot = p.targets.length;
+		const obj = objectPhrase(p, eachOfTarget[1]);
+		if (!obj || obj.selector.k !== 'target') {
+			p.targets.length = snapshot;
+			return null;
 		}
 		if (obj.ref) p.setLastTarget(obj.ref);
 		return { subject: obj.selector };
@@ -1393,6 +2029,98 @@ function parsePlayFromExilePredicate(
 	return true;
 }
 
+// --- Track P7: Token copy phrase parser (CR 707.2, 707.8a, 707.9a–d, 508.4) ---
+function parseTokenCopyPhrase(
+	p: Parser,
+	actor: PlayerRef,
+	opt: { optional?: EffectStep['optional'] },
+	raw: string,
+	span: Span
+): boolean {
+	const m = raw
+		.trim()
+		.match(/^(that many|\S+) (?:(tapped and attacking|tapped) )?tokens? (?:that's a copy|that are copies) of (.+)$/);
+	if (!m) return false;
+	const amount = amountWord(p, m[1]);
+	if (!amount) return false;
+
+	let objRaw = m[3].trim();
+	let exceptRaw: string | undefined;
+	const exceptIdx = objRaw.indexOf(', except ');
+	if (exceptIdx >= 0) {
+		exceptRaw = objRaw.slice(exceptIdx + ', except '.length).trim();
+		objRaw = objRaw.slice(0, exceptIdx).trim();
+	}
+
+	let tapped = m[2] === 'tapped' || m[2] === 'tapped and attacking';
+	let tappedAndAttacking = m[2] === 'tapped and attacking';
+	if (!m[2]) {
+		const trailTA = objRaw.match(/^(.+?)(?:,)? tapped and attacking$/);
+		const trailT = !trailTA ? objRaw.match(/^(.+?)(?:,)? tapped$/) : null;
+		if (trailTA) {
+			objRaw = trailTA[1].trim();
+			tapped = true;
+			tappedAndAttacking = true;
+		} else if (trailT) {
+			objRaw = trailT[1].trim();
+			tapped = true;
+		}
+	}
+
+	let notLegendary = false;
+	let copyMod: CopyModificationSpec | undefined;
+	if (exceptRaw !== undefined) {
+		const parsedMod = parseCopyModifications(exceptRaw);
+		if (!parsedMod) return false;
+		if (parsedMod.notLegendary) notLegendary = true;
+		if (parsedMod.copyMod) copyMod = parsedMod.copyMod;
+	}
+
+	const snapshot = p.targets.length;
+	const strippedEachOf = objRaw.replace(/^each of\s+/, '');
+	const isAnotherTarget = /^another target\b/.test(strippedEachOf);
+	if (isAnotherTarget && p.context === 'spell') return false;
+	const obj = objectPhrase(
+		p,
+		isAnotherTarget ? strippedEachOf.replace(/^another /, '') : strippedEachOf
+	);
+	if (!obj) {
+		p.targets.length = snapshot;
+		return false;
+	}
+	if (obj.selector.k === 'target') {
+		const tSpec = p.targets[obj.selector.index];
+		if (!tSpec || tSpec.kind !== 'object' || tSpec.filter.zone === 'stack') {
+			p.targets.length = snapshot;
+			return false;
+		}
+		if (isAnotherTarget) tSpec.filter.other = true;
+	}
+
+	const params: NonNullable<EffectStep['params']> = {};
+	if (notLegendary) params.notLegendary = true;
+	if (copyMod) params.copyMod = copyMod;
+	if (tappedAndAttacking) {
+		params.tapped = true;
+		params.tappedAndAttacking = true;
+	} else if (tapped) {
+		params.tapped = true;
+	}
+
+	const step: EffectStep = {
+		verb: 'copyPermanent',
+		subject: obj.selector,
+		...(amount.k === 'const' && amount.n === 1 ? {} : { amount }),
+		...(actor.k !== 'you' ? { actor } : {}),
+		...(Object.keys(params).length > 0 ? { params } : {}),
+		...opt,
+		span
+	};
+	p.push(step, true);
+	return true;
+}
+// --- End Track P7 ---
+
 /** Verb phrases whose subject is a player ("draws two cards", "loses 2 life", "creates a token"). */
 function playerPredicate(p: Parser, subject: Selector, vp: string, span: Span, fromImperative = false): ClauseResult {
 	let text = vp.trim();
@@ -1497,8 +2225,10 @@ function playerPredicate(p: Parser, subject: Selector, vp: string, span: Span, f
 	m = text.match(/^creates? (.+)$/);
 	if (m) {
 		const actor = singlePlayer(subject);
-		const tok = actor && tokenPhrase(p, m[1]);
-		if (!tok || !actor) return false;
+		if (!actor) return false;
+		if (parseTokenCopyPhrase(p, actor, opt, m[1], span)) return true;
+		const tok = tokenPhrase(p, m[1]);
+		if (!tok) return false;
 		const step: EffectStep = { verb: 'createToken', subject: { k: 'none' }, amount: tok.amount, params: { token: tok.token }, ...opt, span };
 		if (actor.k !== 'you') step.actor = actor;
 		p.push(step, true);
@@ -1644,30 +2374,70 @@ function playerPredicate(p: Parser, subject: Selector, vp: string, span: Span, f
 			return true;
 		}
 	}
-	// Step E2: "sacrifices a creature", "sacrifice two artifacts": the player chooses (CR 701.21a).
-	m = text.match(/^sacrifices? (a|an|one|two|three|\d+) (.+)$/);
+	// Step E2 / Track P7: "sacrifices a creature", "sacrifices a creature of their choice", "each player sacrifices ...": the player chooses (CR 701.21a).
+	m = text.match(/^sacrifices? (that many|a|an|one|two|three|four|five|six|\d+) (.+?)(?:\s+of (?:their|your) choice)?$/);
 	if (m) {
-		const amount = count(m[1] === 'a' || m[1] === 'an' ? 'one' : m[1]);
+		const amount = amountWord(p, m[1] === 'a' || m[1] === 'an' ? 'one' : m[1]);
 		const filter = amount && objectFilter(m[2]);
 		if (!amount || !filter || filter.zone || filter.controller) return false;
 		const step: EffectStep = { verb: 'sacrifice', subject: { k: 'all', filter: { ...filter, zone: 'battlefield' } }, amount, ...opt, span };
 		const actor = singlePlayer(subject);
 		if (subject.k === 'player' && subject.filter.relation === 'each_opponent') {
 			(step.subject as { filter: ObjectFilter }).filter.controller = 'opponent';
+		} else if (subject.k === 'player' && subject.filter.relation === 'each_player') {
+			(step.subject as { filter: ObjectFilter }).filter.controller = 'any';
 		} else if (actor && actor.k !== 'you') {
 			step.actor = actor;
 		} else if (!actor) {
-	return false;
+			return false;
 		}
 		p.push(step, true);
 		return true;
 	}
-	// Step E2: "discards two cards", "discards four cards" (the player chooses, CR 701.8b).
-	m = text.match(/^discards? (that many|\S+) cards?$/);
+	// --- Track P7: Wheel ("discards their hand[, then draws seven/that many cards]") & random discard ---
+	m = text.match(
+		/^discards? (?:their|your|all the cards in (?:their|your)) hands?(?:,?\s*(?:then|and) draws? (that many|\S+) cards?)?$/
+	);
+	if (m && (subject.k === 'player' || singlePlayer(subject) !== null)) {
+		let drawAfter: Amount | 'thatMany' | undefined;
+		if (m[1] !== undefined) {
+			if (m[1] === 'that many') {
+				drawAfter = 'thatMany';
+			} else {
+				const parsed = count(m[1]);
+				if (!parsed) return false;
+				drawAfter = parsed;
+			}
+		}
+		p.push(
+			{
+				verb: 'discardHand',
+				subject,
+				...(drawAfter !== undefined ? { params: { drawAfterDiscardHand: drawAfter } } : {}),
+				...opt,
+				span
+			},
+			true
+		);
+		return true;
+	}
+	// --- End Track P7 ---
+	// Step E2 / Track P7: "discards two cards", "discards a card at random" (CR 701.8b / 701.8c).
+	m = text.match(/^discards? (that many|\S+) cards?( at random)?$/);
 	if (m && (subject.k === 'player' || singlePlayer(subject) !== null)) {
 		const amount = amountWord(p, m[1]);
 		if (!amount) return false;
-		p.push({ verb: 'discard', subject, amount, ...opt, span }, true);
+		p.push(
+			{
+				verb: 'discard',
+				subject,
+				amount,
+				...(m[2] ? { params: { atRandom: true } } : {}),
+				...opt,
+				span
+			},
+			true
+		);
 		return true;
 	}
 	m = text.match(
@@ -1987,17 +2757,229 @@ function parseManifestOrCloak(
 	return true;
 }
 
+// --- Track P7: Damage prevention shield parser (CR 615.1–11) ---
+function parsePreventionSource(p: Parser, rawSrc: string): Selector | null {
+	const s = rawSrc.trim();
+	if (s === 'creatures') {
+		return { k: 'all', filter: { zone: 'battlefield', types: ['Creature'] } };
+	}
+	if (s === 'attacking creatures') {
+		return { k: 'all', filter: { zone: 'battlefield', types: ['Creature'], attacking: true } };
+	}
+	const snapshot = p.targets.length;
+	const obj = objectPhrase(p, s);
+	if (!obj || obj.fromZone || obj.selector.k === 'all') {
+		p.targets.length = snapshot;
+		return null;
+	}
+	if (obj.selector.k === 'target') {
+		const tSpec = p.targets[obj.selector.index];
+		if (
+			!tSpec ||
+			tSpec.kind !== 'object' ||
+			(tSpec.filter.zone ?? 'battlefield') !== 'battlefield' ||
+			tSpec.max !== 1
+		) {
+			p.targets.length = snapshot;
+			return null;
+		}
+	}
+	return obj.selector;
+}
+
+function parsePreventDamageClause(p: Parser, text: string, span: Span): boolean {
+	if (!/^prevent\b/.test(text)) return false;
+	let core = text;
+	let hasTurnDuration = false;
+	const endTurn = core.match(/^(.+?) (?:this turn|until end of turn)$/);
+	if (endTurn) {
+		core = endTurn[1].trim();
+		hasTurnDuration = true;
+	} else if (/\bthat would be dealt this turn\b/.test(core)) {
+		core = core.replace(/\bthat would be dealt this turn\b/, 'that would be dealt').trim();
+		hasTurnDuration = true;
+	}
+	if (!hasTurnDuration) return false;
+
+	const snapshot = p.mark();
+	const rollbackFail = (): false => {
+		p.rollback(snapshot);
+		return false;
+	};
+
+	let m = core.match(/^prevent all (combat )?damage that would be dealt(?: by (.+))?$/);
+	if (m) {
+		const fromSource = m[2] ? parsePreventionSource(p, m[2]) : undefined;
+		if (m[2] && !fromSource) return rollbackFail();
+		const preventSpec: DamagePreventionSpec = {
+			mode: 'all',
+			combatOnly: Boolean(m[1]),
+			scope: 'any',
+			...(fromSource ? { fromSource } : {})
+		};
+		p.push({ verb: 'preventDamage', subject: { k: 'none' }, params: { preventSpec }, span }, false);
+		return true;
+	}
+
+	m = core.match(/^prevent all (combat )?damage (.+?) would deal$/);
+	if (m) {
+		const fromSource = parsePreventionSource(p, m[2]);
+		if (!fromSource) return rollbackFail();
+		const preventSpec: DamagePreventionSpec = {
+			mode: 'all',
+			combatOnly: Boolean(m[1]),
+			scope: 'any',
+			fromSource
+		};
+		p.push({ verb: 'preventDamage', subject: { k: 'none' }, params: { preventSpec }, span }, false);
+		return true;
+	}
+
+	m = core.match(
+		/^prevent (all|the next (that much|that many|\S+)) (combat )?damage that would be dealt to you and creatures you control(?: by (.+))?$/
+	);
+	if (m) {
+		const isAll = m[1] === 'all';
+		const amount = isAll ? undefined : amountWord(p, m[2]) ?? undefined;
+		if (!isAll && !amount) return rollbackFail();
+		const fromSource = m[4] ? parsePreventionSource(p, m[4]) : undefined;
+		if (m[4] && !fromSource) return rollbackFail();
+		const preventSpec: DamagePreventionSpec = {
+			mode: isAll ? 'all' : 'next',
+			combatOnly: Boolean(m[3]),
+			scope: 'youAndCreaturesYouControl',
+			...(fromSource ? { fromSource } : {})
+		};
+		p.push(
+			{
+				verb: 'preventDamage',
+				subject: { k: 'none' },
+				...(amount ? { amount } : {}),
+				params: { preventSpec },
+				span
+			},
+			false
+		);
+		return true;
+	}
+
+	m = core.match(/^prevent all (combat )?damage that would be dealt to and dealt by (.+)$/);
+	if (m) {
+		const obj = objectPhrase(p, m[2]);
+		if (!obj || obj.fromZone) return rollbackFail();
+		if (obj.selector.k === 'target') {
+			const tSpec = p.targets[obj.selector.index];
+			if (!tSpec || tSpec.kind !== 'object' || (tSpec.filter.zone ?? 'battlefield') !== 'battlefield') {
+				return rollbackFail();
+			}
+		}
+		const preventSpec: DamagePreventionSpec = {
+			mode: 'all',
+			combatOnly: Boolean(m[1]),
+			scope: 'subject',
+			alsoPreventDealtBySubject: true
+		};
+		p.push({ verb: 'preventDamage', subject: obj.selector, params: { preventSpec }, span }, true);
+		return true;
+	}
+
+	m = core.match(
+		/^prevent (all|the next (that much|that many|\S+)) (combat )?damage that would be dealt to (.+?)(?: by (.+))?$/
+	);
+	if (m) {
+		const isAll = m[1] === 'all';
+		const amount = isAll ? undefined : amountWord(p, m[2]) ?? undefined;
+		if (!isAll && !amount) return rollbackFail();
+
+		const recRaw = m[4].trim();
+		let recSelector: Selector | null = playerPhrase(p, recRaw);
+		let actsOnObj = false;
+		if (!recSelector) {
+			const obj = objectPhrase(p, recRaw);
+			if (!obj || obj.fromZone) return rollbackFail();
+			if (!isAll && obj.selector.k === 'all' && !/^each\b/.test(recRaw)) {
+				return rollbackFail();
+			}
+			if (obj.selector.k === 'target') {
+				const tSpec = p.targets[obj.selector.index];
+				if (!tSpec || (tSpec.filter.zone && tSpec.filter.zone !== 'battlefield')) {
+					return rollbackFail();
+				}
+				if (tSpec.kind === 'object') {
+					actsOnObj = true;
+				} else if (obj.ref) {
+					p.setLastTarget(obj.ref);
+				}
+			} else {
+				actsOnObj = true;
+			}
+			recSelector = obj.selector;
+		}
+
+		const fromSource = m[5] ? parsePreventionSource(p, m[5]) : undefined;
+		if (m[5] && !fromSource) return rollbackFail();
+
+		const preventSpec: DamagePreventionSpec = {
+			mode: isAll ? 'all' : 'next',
+			combatOnly: Boolean(m[3]),
+			scope: 'subject',
+			...(fromSource ? { fromSource } : {})
+		};
+		p.push(
+			{
+				verb: 'preventDamage',
+				subject: recSelector,
+				...(amount ? { amount } : {}),
+				params: { preventSpec },
+				span
+			},
+			actsOnObj
+		);
+		return true;
+	}
+
+	return rollbackFail();
+}
+// --- End Track P7 ---
+
 /** Clauses without a subject: "Destroy target creature", "Draw a card", "Create a Treasure token". */
 function imperative(p: Parser, text: string, span: Span): ClauseResult {
 	const t = text.trim();
 	let m: RegExpMatchArray | null;
 
+	// --- Track P7: Damage prevention shields & CR 615.12 unpreventable damage ---
+	if (parsePreventDamageClause(p, t, span)) return true;
+	if (t === "damage can't be prevented this turn") {
+		p.push(
+			{
+				verb: 'grantPlayer',
+				subject: YOU,
+				params: { playerRules: ['damageCantBePrevented'], duration: 'endOfTurn' },
+				span
+			},
+			false
+		);
+		return true;
+	}
+	if (t === "combat damage can't be prevented this turn") {
+		p.push(
+			{
+				verb: 'grantPlayer',
+				subject: YOU,
+				params: { playerRules: ['combatDamageCantBePrevented'], duration: 'endOfTurn' },
+				span
+			},
+			false
+		);
+		return true;
+	}
+	// --- End Track P7 ---
+
 	if (
 		/^(?:draw|gain|lose|mill|create|search|take|scry|surveil|sacrifice|discard|investigate|goad|amass|incubate|populate|manifest|cloak|bolster)\b/.test(
 			t
 		) &&
-		!/^lose hexproof/.test(t) &&
-		!/^create a token that's a copy\b/.test(t)
+		!/^lose hexproof/.test(t)
 	) {
 		return playerPredicate(p, YOU, t, span, true);
 	}
@@ -2266,6 +3248,21 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 		p.push({ verb: 'bounce', subject: obj.selector, span }, true);
 		return true;
 	}
+	// --- Track P7: Distribute counters among targets (CR 601.2d) ---
+	m = t.match(/^distribute (that many|\S+) (\S+) counters? among (.+)$/);
+	if (m) {
+		const amount = amountWord(p, m[1]);
+		const counter = COUNTER_WORDS[m[2]];
+		if (!amount || !counter) return false;
+		const divTarget = parseDividedTargets(p, m[3], amount, true);
+		if (!divTarget) return false;
+		p.push(
+			{ verb: 'putCounters', subject: divTarget, amount, params: { counter, divided: true }, span },
+			true
+		);
+		return true;
+	}
+	// --- End Track P7 ---
 	m = t.match(/^put (that many|\S+) (\S+) counters? on (.+)$/);
 	if (m) {
 		const amount = m[1] === 'that many' ? p.thatMany() : count(m[1]);
@@ -2281,25 +3278,6 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 		if (!obj) return false;
 		p.push({ verb: 'switchPT', subject: obj.selector, params: { duration: 'endOfTurn' }, span }, true);
 		return true;
-	}
-	m = t.match(/^create (.+)$/);
-	if (m) {
-		const copy = m[1].match(/^a token that's a copy of (.+?)(?:, except the token isn't legendary)?$/);
-		if (copy) {
-			const notLegendary = m[1].endsWith("except the token isn't legendary");
-			const obj = objectPhrase(p, copy[1]);
-			if (!obj) return false;
-			p.push(
-				{
-					verb: 'copyPermanent',
-					subject: obj.selector,
-					...(notLegendary ? { params: { notLegendary: true } } : {}),
-					span
-				},
-				true
-			);
-			return true;
-		}
 	}
 	m = t.match(/^copy (.+)$/);
 	if (m) {
@@ -2832,7 +3810,7 @@ function addMana(p: Parser, text: string, span: Span): ClauseResult {
 
 // Words that start a new clause after " and " / ", then ".
 const CLAUSE_START =
-	/^(?:you|each opponent|each player|target player|target opponent|its controller|its owner|(?:that|the exiled) (?:card|creature|permanent|spell)'s (?:controller|owner)|that player|they|it (?=deals|fights?|gets?|gains?|loses?|explores?|connives?|adapts?|phases?|becomes?|doesn't|does not)|that creature |those creatures |that permanent |those permanents |the amassed [Aa]rmy |enchanted |equipped |until (?:end of turn|(?:the )?end of your next turn|your next end step), |for as long as |draw|draws|lose|loses|gain|gains|get|gets|become|becomes|put|exile|exert|exerts|destroy|return|create|creates|search|scry|surveil|surveils|investigate|investigates|mill|mills|sacrifice|deal|deals|add|take|takes|phase|phases|attach|counter|proliferate|switch|look|reveal|tap|untap|fight|fights|transform|transforms|convert|converts|flip|flips|discard|discards|connive|connives|explore|explores|goad|goads|regenerate|regenerates|amass|amasses|incubate|incubates|populate|populates|manifest|manifests|cloak|cloaks|bolster|bolsters|monstrosity|support|adapt|adapts)\b/;
+	/^(?:you|each opponent|each player|target player|target opponent|its controller|its owner|(?:that|the exiled) (?:card|creature|permanent|spell)'s (?:controller|owner)|that player|they|it (?=deals|fights?|gets?|gains?|loses?|explores?|connives?|adapts?|phases?|becomes?|can't|doesn't|does not)|that creature |those creatures |that permanent |those permanents |that target |those targets |that creature or planeswalker |that permanent or player |the amassed [Aa]rmy |enchanted |equipped |until (?:end of turn|(?:the )?end of your next turn|your next end step), |for as long as |draw|draws|lose|loses|gain|gains|get|gets|become|becomes|put|exile|exert|exerts|destroy|return|create|creates|search|scry|surveil|surveils|investigate|investigates|mill|mills|sacrifice|deal|deals|add|take|takes|phase|phases|attach|counter|proliferate|switch|look|reveal|tap|untap|fight|fights|transform|transforms|convert|converts|flip|flips|discard|discards|connive|connives|explore|explores|goad|goads|regenerate|regenerates|amass|amasses|incubate|incubates|populate|populates|manifest|manifests|cloak|cloaks|bolster|bolsters|monstrosity|support|adapt|adapts|prevent|prevents|distribute|distributes|damage|combat)\b/;
 
 /** Splits a sentence into clauses at ", then " and at " and " before a new verb or subject. */
 function splitClauses(text: string, offset: number): Clause[] {
@@ -2842,8 +3820,16 @@ function splitClauses(text: string, offset: number): Clause[] {
 	for (const m of text.matchAll(re)) {
 		const after = text.slice(m.index + m[0].length);
 		if (!CLAUSE_START.test(after)) continue;
-		// "gain trample and get +X/+X" stays one clause (handled by objectPredicate).
+		// "gain trample and get +X/+X" / "get +X/+Y and gain trample" stay one clause (handled by objectPredicate).
 		if (/^gets? /.test(after) && /gains? [a-z ]+$/.test(text.slice(last, m.index))) continue;
+		if (/^gains? /.test(after) && /\bgets? [+\-−](?:\d+|X)\/[+\-−](?:\d+|X)$/.test(text.slice(last, m.index))) continue;
+		// Wheel ("discards their hand, then draws seven/that many cards") stays one clause so "that many" is per-player.
+		if (
+			/^draws? (?:that many|\S+) cards?$/i.test(after) &&
+			/\bdiscards? (?:their|your|all the cards in (?:their|your)) hands?$/i.test(text.slice(last, m.index))
+		) {
+			continue;
+		}
 		out.push({ text: text.slice(last, m.index), span: { start: offset + last, end: offset + m.index } });
 		last = m.index + m[0].length;
 	}
@@ -2859,6 +3845,68 @@ function markTrailingDestroyCantRegen(p: Parser): boolean {
 	}
 	return marked;
 }
+
+// --- Track P7: Turn-history & cast-origin resolution-time condition helpers ---
+function isP7ResolutionCondition(cond: Condition): boolean {
+	if (cond.k === 'not') return isP7ResolutionCondition(cond.of);
+	return (
+		cond.k === 'creatureDiedThisTurn' ||
+		cond.k === 'attackedThisTurn' ||
+		cond.k === 'permanentLeftBattlefieldThisTurn' ||
+		cond.k === 'gainedLifeThisTurn' ||
+		cond.k === 'wasCast'
+	);
+}
+
+function tryReplacementIfSentence(
+	p: Parser,
+	innerClauseText: string,
+	cond: Condition,
+	stepsBefore: number,
+	targetsBefore: number,
+	span: Span
+): boolean {
+	if (stepsBefore !== 1) return false;
+	const baseStep = p.steps[0];
+	if (!baseStep || baseStep.condition || baseStep.optional) return false;
+
+	const savedMark = p.mark();
+	let directRef: Ref | null = null;
+	const subj = baseStep.subject;
+	if (subj.k === 'target') directRef = { k: 'target', index: subj.index };
+	else if (subj.k === 'self') directRef = { k: 'self' };
+	else if (subj.k === 'eventObject') directRef = { k: 'eventObject' };
+	else if (subj.k === 'attachedTo') directRef = { k: 'attachedTo' };
+
+	if (directRef) {
+		p.lastObject = { ref: directRef, stepIndex: -1 };
+		delete baseStep.bindAs;
+	}
+
+	let normInner = innerClauseText.trim();
+	if (/^[A-Z][a-z]*\b/.test(normInner) && LOWER_START.has(normInner.split(/[\s,']/)[0].toLowerCase())) {
+		normInner = normInner.charAt(0).toLowerCase() + normInner.slice(1);
+	}
+	normInner = normInner.replace(/^it deals\b/i, '~ deals');
+
+	if (
+		!clause(p, { text: normInner, span }, false) ||
+		p.steps.length !== 2 ||
+		p.targets.length !== targetsBefore ||
+		p.steps[1].verb !== baseStep.verb ||
+		Boolean(p.steps[1].optional)
+	) {
+		p.rollback(savedMark);
+		return false;
+	}
+
+	const negCond: Condition = cond.k === 'not' ? cond.of : { k: 'not', of: cond };
+	baseStep.condition = negCond;
+	p.steps[1].condition = cond;
+	p.lastObject = directRef ? { ref: directRef, stepIndex: -1 } : undefined;
+	return true;
+}
+// --- End Track P7 ---
 
 function tryUnlessClause(p: Parser, text: string, span: Span): boolean {
 	const unlessMatch = text.match(/^(.+?)(?:,)?\s+unless\s+(.+)$/i);
@@ -2884,6 +3932,29 @@ function tryUnlessClause(p: Parser, text: string, span: Span): boolean {
 		}
 		return true;
 	}
+	// --- Track P7: "unless you attacked this turn" / "unless a creature died this turn" / etc. ---
+	const p7UnlessCond = parseCondition(`if ${tail}`);
+	if (p7UnlessCond && isP7ResolutionCondition(p7UnlessCond)) {
+		const normalizedBase =
+			/^sacrifice it$/i.test(baseText) && !p.lastObject ? 'sacrifice ~' : baseText;
+		const mark = p.mark();
+		if (!clause(p, { text: normalizedBase, span }, false)) {
+			p.rollback(mark);
+			return false;
+		}
+		const added = p.steps.slice(mark.steps);
+		if (added.length === 0) {
+			p.rollback(mark);
+			return false;
+		}
+		const negCond: Condition =
+			p7UnlessCond.k === 'not' ? p7UnlessCond.of : { k: 'not', of: p7UnlessCond };
+		for (const step of added) {
+			step.condition = step.condition ? { k: 'and', of: [negCond, step.condition] } : negCond;
+		}
+		return true;
+	}
+	// --- End Track P7 ---
 	const pm = tail.match(
 		/^(you|that player|the player whose turn it is|the player|that opponent|they|target player|target opponent|each opponent|each player|(?:its|that card's|that creature's|that permanent's|that spell's|the exiled card's|the exiled creature's|the exiled permanent's|their) (?:controller|owner))\s+(.+)$/i
 	);
@@ -2932,7 +4003,10 @@ function tryUnlessClause(p: Parser, text: string, span: Span): boolean {
 
 /** One clause: an imperative, or a subject followed by a predicate. */
 function clause(p: Parser, c: Clause, allowUnless = true): ClauseResult {
-	const t = c.text.trim();
+	let t = c.text.trim();
+	if (p.steps.length > 0 && /^then,?\s+/i.test(t) && !/^then\s+if\b/i.test(t)) {
+		t = t.replace(/^then,?\s+/i, '').trim();
+	}
 	if (!t) return false;
 	if (allowUnless && /\bunless\b/i.test(t) && tryUnlessClause(p, t, c.span)) return true;
 	if (imperative(p, t, c.span)) return true;
@@ -3018,7 +4092,13 @@ function clause(p: Parser, c: Clause, allowUnless = true): ClauseResult {
 	for (let i = words.length - 1; i >= 1; i--) {
 		const subjText = words.slice(0, i).join(' ');
 		const vp = words.slice(i).join(' ') + (dur ? ' until end of turn' : '');
-		if (!/^(?:gets?|gains?|loses?|phases?|deals|fights?|explores?|connives?|adapts?|becomes?)\b/.test(vp)) continue;
+		if (
+			!/^(?:each\s+(?:gets?|gains?|can't)|gets?|gains?|loses?|phases?|deals|fights?|explores?|connives?|adapts?|becomes?|can't)\b/.test(
+				vp
+			)
+		) {
+			continue;
+		}
 		const snapshot = p.targets.length;
 		const subject =
 			subjText === 'it' && !p.lastObject && p.context === 'activated' && /^(?:deals|fights?)\b/.test(vp)
@@ -3099,10 +4179,10 @@ function clause(p: Parser, c: Clause, allowUnless = true): ClauseResult {
 
 /** Sentence-initial words that are not names or subtypes, so they can be lower-cased. */
 const LOWER_START = new Set([
-	'a', 'adapt', 'adapts', 'add', 'all', 'amass', 'amasses', 'an', 'another', 'any', 'artifacts', 'at', 'attach', 'become', 'bolster', 'bolsters', 'cloak', 'cloaks', 'connive', 'connives', 'convert', 'converts', 'copy', 'counter', 'create', 'creatures', 'deal', 'destroy', 'discard', 'discards', 'draw',
-	'each', 'enchanted', 'end', 'equipped', 'exert', 'exerts', 'exile', 'explore', 'explores', 'fight', 'flip', 'for', 'gain', 'goad', 'goads', 'if', 'incubate', 'incubates', 'investigate', 'it', 'its', 'lands', 'look', 'lose', 'mana', 'manifest', 'manifests', 'mill', 'monstrosity', 'otherwise', 'pay', 'permanents', 'populate', 'populates', 'proliferate', 'put',
-	'regenerate', 'regenerates', 'return', 'reveal', 'sacrifice', 'scry', 'search', 'support', 'surveil', 'switch', 'take', 'tap', 'target', 'that', 'the', 'then', 'they', 'those',
-	'transform', 'untap', 'until', 'up', 'when', 'you', 'your'
+	'a', 'adapt', 'adapts', 'add', 'all', 'amass', 'amasses', 'an', 'another', 'any', 'artifacts', 'at', 'attach', 'become', 'bolster', 'bolsters', 'cloak', 'cloaks', 'combat', 'connive', 'connives', 'convert', 'converts', 'copy', 'counter', 'create', 'creatures', 'damage', 'deal', 'destroy', 'discard', 'discards', 'distribute', 'distributes', 'draw',
+	'each', 'enchanted', 'end', 'equipped', 'exert', 'exerts', 'exile', 'explore', 'explores', 'fight', 'five', 'flip', 'for', 'four', 'gain', 'goad', 'goads', 'if', 'incubate', 'incubates', 'investigate', 'it', 'its', 'lands', 'look', 'lose', 'mana', 'manifest', 'manifests', 'mill', 'monstrosity', 'one', 'otherwise', 'pay', 'permanents', 'players', 'populate', 'populates', 'prevent', 'prevents', 'proliferate', 'put',
+	'regenerate', 'regenerates', 'return', 'reveal', 'sacrifice', 'scry', 'search', 'six', 'support', 'surveil', 'switch', 'take', 'tap', 'target', 'that', 'the', 'then', 'they', 'those', 'three',
+	'transform', 'two', 'untap', 'until', 'up', 'when', 'you', 'your'
 ]);
 
 // ---- Sentences ------------------------------------------------------------------------------
@@ -3250,6 +4330,104 @@ function sentence(p: Parser, text: string, span: Span): boolean {
 		return true;
 	}
 
+	// --- Track P7: Burn riders (CR 614.6 / CR 701.19) & Turn-history / wasCast conditionals ---
+	if (
+		/^a (?:creature|permanent|creature or planeswalker) dealt damage this way can't be regenerated this turn$/i.test(
+			t
+		)
+	) {
+		const dmgIndices: number[] = [];
+		for (let i = stepsBefore - 1; i >= 0 && p.steps[i]?.verb === 'damage'; i--) {
+			dmgIndices.unshift(i);
+		}
+		if (dmgIndices.length === 0) return fail();
+		for (const idx of dmgIndices) {
+			const bindName = p.steps[idx].bindAs ?? `b${idx}`;
+			p.steps[idx].bindAs = bindName;
+			p.push({ verb: 'cantRegenerate', subject: { k: 'binding', name: bindName }, span }, false);
+		}
+		p.lastOptionalStep = undefined;
+		return true;
+	}
+
+	if (
+		/^if (?:a|any) (?:creature|permanent|creature or planeswalker) dealt damage this way would die this turn, exile it instead$/i.test(
+			t
+		)
+	) {
+		const dmgIndices: number[] = [];
+		for (let i = stepsBefore - 1; i >= 0 && p.steps[i]?.verb === 'damage'; i--) {
+			dmgIndices.unshift(i);
+		}
+		if (dmgIndices.length === 0) return fail();
+		for (const idx of dmgIndices) {
+			const bindName = p.steps[idx].bindAs ?? `b${idx}`;
+			p.steps[idx].bindAs = bindName;
+			p.push(
+				{ verb: 'exileInsteadOfDying', subject: { k: 'binding', name: bindName }, span },
+				false
+			);
+		}
+		p.lastOptionalStep = undefined;
+		return true;
+	}
+
+	const exileOnDieSubj = t.match(/^if (.+?) would die this turn, exile (?:it|them) instead$/i);
+	if (
+		exileOnDieSubj &&
+		!/^(?:a|an|any)\b/i.test(exileOnDieSubj[1].trim()) &&
+		!/\bdealt damage this way\b/i.test(exileOnDieSubj[1])
+	) {
+		const obj = objectPhrase(p, exileOnDieSubj[1].trim());
+		if (!obj || obj.fromZone) return fail();
+		if (obj.selector.k === 'target') {
+			const tSpec = p.targets[obj.selector.index];
+			if (!tSpec || tSpec.kind !== 'object' || (tSpec.filter.zone ?? 'battlefield') !== 'battlefield') {
+				return fail();
+			}
+		}
+		p.push({ verb: 'exileInsteadOfDying', subject: obj.selector, span }, true);
+		p.lastOptionalStep = undefined;
+		return true;
+	}
+
+	const ifP7Lead = t.match(/^(?:then\s+)?(if [^,]+),\s*(.+)$/i);
+	if (ifP7Lead) {
+		const cond = parseCondition(ifP7Lead[1]);
+		if (cond && isP7ResolutionCondition(cond)) {
+			let innerText = ifP7Lead[2].trim();
+			if (/\s+instead$/i.test(innerText)) {
+				const stripped = innerText.replace(/\s+instead$/i, '').trim();
+				if (!tryReplacementIfSentence(p, stripped, cond, stepsBefore, targetsBefore, span)) {
+					return fail();
+				}
+				p.lastOptionalStep = undefined;
+				return true;
+			}
+			if (/\binstead\b/i.test(innerText)) return fail();
+			innerText = innerText.replace(/^it (?:also )?deals\b/i, '~ deals').replace(/^also\s+/i, '');
+			const innerStart = Math.max(span.start, span.end - ifP7Lead[2].length);
+			if (!sentence(p, innerText, { start: innerStart, end: span.end })) return fail();
+			for (const step of p.steps.slice(stepsBefore)) {
+				step.condition = step.condition ? { k: 'and', of: [cond, step.condition] } : cond;
+			}
+			return true;
+		}
+	}
+
+	const insteadIfTail = t.match(/^(.+?)\s+instead\s+(if .+)$/i);
+	if (insteadIfTail) {
+		const cond = parseCondition(insteadIfTail[2]);
+		if (cond && isP7ResolutionCondition(cond)) {
+			if (!tryReplacementIfSentence(p, insteadIfTail[1].trim(), cond, stepsBefore, targetsBefore, span)) {
+				return fail();
+			}
+			p.lastOptionalStep = undefined;
+			return true;
+		}
+	}
+	// --- End Track P7 ---
+
 	if (p.pendingCoercive) {
 		if (tryCoerciveFollowUp(p, t, span)) {
 			return true;
@@ -3375,6 +4553,9 @@ function sentence(p: Parser, text: string, span: Span): boolean {
 			if (s.params?.setPower) s.params.setPower = substituteX(s.params.setPower, resolvedX);
 			if (s.params?.setToughness) s.params.setToughness = substituteX(s.params.setToughness, resolvedX);
 			if (s.params?.count) s.params.count = substituteX(s.params.count, resolvedX);
+		}
+		for (const tSpec of p.targets.slice(targetsBefore)) {
+			if (tSpec.divideTotal) tSpec.divideTotal = substituteX(tSpec.divideTotal, resolvedX);
 		}
 	}
 	if (!p.steps.slice(stepsBefore).some((s) => stepOptionalChooser(s) !== undefined)) {

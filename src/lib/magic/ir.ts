@@ -36,6 +36,50 @@ export interface PrototypeSpec {
 	colors: ManaColor[];
 }
 
+// --- Track P7 ---
+export interface CopyModificationSpec {
+	name?: string;
+	power?: number;
+	toughness?: number;
+	setColors?: ManaColor[];
+	addColors?: ManaColor[];
+	addTypes?: string[];
+	setTypes?: string[];
+	addSubtypes?: string[];
+	setSubtypes?: string[];
+	removeSupertypes?: string[];
+	addKeywords?: string[];
+	noManaCost?: boolean;
+}
+
+export interface DamagePreventionSpec {
+	/** 'all': Prevent all [combat] damage this turn; 'next': Prevent the next `amount` [combat] damage this turn. */
+	mode: 'all' | 'next';
+	combatOnly: boolean;
+	/** Protected target scope ('any' for global Fog, 'subject' for explicit subject, or 'youAndCreaturesYouControl'). */
+	scope: 'any' | 'subject' | 'youAndCreaturesYouControl';
+	/** Optional source restriction ("by target/chosen source", "by creatures", "by attacking creatures", etc.). */
+	fromSource?: Selector;
+	/** Also prevent damage dealt BY `subject` ("dealt to and dealt by ~ this turn", CR 615). */
+	alsoPreventDealtBySubject?: boolean;
+}
+
+export interface TimedCombatRestrictionSpec {
+	kind: 'cantBlock' | 'cantBeBlocked';
+	/** Optional blocker exception for `cantBeBlocked` ("except by walls", "except by two or more creatures", etc.). */
+	exceptBy?: {
+		types?: string[];
+		subtypes?: string[];
+		colors?: ManaColor[];
+		notColors?: ManaColor[];
+		artifactOrColors?: ManaColor[];
+		keywords?: string[];
+		minBlockers?: number;
+		maxPower?: number;
+	};
+}
+// --- End Track P7 ---
+
 export interface FaceDefinition {
 	name: string;
 	characteristics: Characteristics;
@@ -354,6 +398,10 @@ export interface TargetSpec {
 	/** "another target ...": cannot choose the same object as an earlier TargetSpec (CR 115.3). */
 	otherTarget?: boolean;
 	// --- End Track P2 ---
+	// --- Track P7 ---
+	/** CR 601.2d: total amount divided as caster/activator chooses among targets (`>= 1` per chosen target). */
+	divideTotal?: Amount;
+	// --- End Track P7 ---
 }
 
 // ---- Amounts (replaces dynamicFormula strings) ----------------------------------------------
@@ -524,7 +572,13 @@ export type Verb =
 	| 'bolster'
 	| 'adapt'
 	// --- Track P6 ---
-	| 'removeCounters';
+	| 'removeCounters'
+	// --- Track P7 ---
+	| 'preventDamage'
+	| 'exileInsteadOfDying'
+	| 'combatRestriction'
+	| 'becomeCopy'
+	| 'discardHand';
 
 export type ManaRestriction = 'artifactSpellOrNonSpell';
 
@@ -582,7 +636,13 @@ export interface EffectParams {
 	/** addMana: spending restriction attached to the produced mana (CR 106.6). */
 	manaRestriction?: ManaRestriction;
 	/** grantPlayer: the rules the player gets. */
-	playerRules?: Array<'lifeTotalCantChange' | 'protectionFromEverything'>;
+	playerRules?: Array<
+		| 'lifeTotalCantChange'
+		| 'protectionFromEverything'
+		// --- Track P7 ---
+		| 'damageCantBePrevented'
+		| 'combatDamageCantBePrevented'
+	>;
 	search?: SearchSpec;
 	to?: ZoneType;
 	from?: ZoneType;
@@ -711,6 +771,22 @@ export interface EffectParams {
 	ifUnableSacrificeSelf?: boolean;
 	/** copyPermanent (CR 707.9b, 702.175a Offspring): Layer 1a base P/T exception on the token copy. */
 	exceptPT?: { power: number; toughness: number };
+	// --- Track P7 ---
+	/** preventDamage (CR 615): prevention shield specification. */
+	preventSpec?: DamagePreventionSpec;
+	/** copyPermanent / becomeCopy (CR 707.9a–d): Layer 1a copy modifications. */
+	copyMod?: CopyModificationSpec;
+	/** copyPermanent (CR 508.4): token enters tapped and attacking. */
+	tappedAndAttacking?: boolean;
+	/** becomeCopy: selector for the object whose copiable values are copied (`subject` becomes a copy of `copySource`). */
+	copySource?: Selector;
+	/** combatRestriction (CR 509.1b): timed block / evasion restriction until end of turn. */
+	combatRestriction?: TimedCombatRestrictionSpec;
+	/** damage / putCounters (CR 601.2d / 608.2b): each target receives its locked-in `targetDivisions[id]` amount. */
+	divided?: boolean;
+	/** discardHand: optional follow-up draw per player ("then draws N / that many cards"). */
+	drawAfterDiscardHand?: Amount | 'thatMany';
+	// --- End Track P7 ---
 }
 
 export interface CoerciveDiscardSpec {
@@ -899,7 +975,18 @@ export type Condition =
 	| { k: 'exertedThisTurn' }
 	// --- Track P5 ---
 	/** CR 701.37b: true when this permanent is monstrous. */
-	| { k: 'monstrous' };
+	| { k: 'monstrous' }
+	// --- Track P7 ---
+	/** Morbid: true when at least one creature died (battlefield -> graveyard) this turn. */
+	| { k: 'creatureDiedThisTurn' }
+	/** Raid (CR 508.1k / 508.4): true when controller declared at least one attacker this turn. */
+	| { k: 'attackedThisTurn' }
+	/** Revolt: true when a permanent controlled by controller left the battlefield this turn. */
+	| { k: 'permanentLeftBattlefieldThisTurn' }
+	/** True when controller gained at least `min` (default 1) life this turn. */
+	| { k: 'gainedLifeThisTurn'; min?: Amount }
+	/** True on an ETB trigger when the entering permanent resolved from a cast spell (optionally specifically from hand). */
+	| { k: 'wasCast'; fromHand?: boolean };
 
 // ---- Statics and replacements ---------------------------------------------------------------
 
@@ -969,7 +1056,9 @@ export type RuleModKind =
 	/** "During your turn, your opponents can't cast spells". */
 	| 'opponentsCantCastDuringYourTurn'
 	| 'lifeTotalCantChange'
-	| 'extraLandPlays';
+	| 'extraLandPlays'
+	// --- Track P7 ---
+	| 'damageCantBePrevented';
 
 export type RestrictionKind =
 	| 'cantAttack'

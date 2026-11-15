@@ -163,6 +163,24 @@ import {
 	buildTrackP6CastOptions,
 	buildWarpExileDelayedTrigger
 } from './runtime/striatedFrames.ts';
+// --- Track P7 ---
+import {
+	applyDamagePreventionShields,
+	buildModifiedCopiableState,
+	canBlockerSatisfyTimedEvasion,
+	clearP7EndOfTurnEffects,
+	evaluateP7Condition,
+	getEffectiveCardForPermanent,
+	getTimedCantBeBlockedReason,
+	getTimedMinBlockersRequired,
+	isCantBlockThisTurn,
+	isDamageUnpreventable,
+	recordAttackersDeclaredThisTurn,
+	registerEnteredAttackingCombatant,
+	resetTurnHistoryAtTurnStart,
+	validateAndNormalizeTargetDivisions
+} from './runtime/copyPreventionAndEffects.ts';
+// --- End Track P7 ---
 export { applyCastCostAids, formatManaRequirement, getSuspendSpec };
 import { getKeywordSpec } from './keywords.ts';
 import {
@@ -238,7 +256,9 @@ import {
 	type StackItemRetargetSlot
 } from './runtime/effects.ts';
 import { chooseBotModalTriggerModes, chooseBotTriggerTargets } from './ai.ts';
-import type { CostDef, EffectStep, ModalDef, TargetSpec, TokenSpec } from './ir.ts';
+// --- Track P7 ---
+import type { Condition, CopyModificationSpec, CostDef, EffectStep, ModalDef, TargetSpec, TokenSpec } from './ir.ts';
+// --- End Track P7 ---
 import { deriveIdSalt, freshRngSeed, hash32, uid, type RngHolder, type UidHolder } from './runtime/random.ts';
 import { cardAbilityDisplayText, enteringNotices, stackItemDisplayText } from './compiler/support.ts';
 import {
@@ -1693,6 +1713,9 @@ function finalizeCastSpell(
 	opts: {
 		targets: TargetRef[];
 		targetsBySpec?: TargetRef[][];
+		// --- Track P7 ---
+		targetDivisions?: Record<string, number>;
+		// --- End Track P7 ---
 		chosenModes?: number[];
 		xValue: number;
 		castOptionId?: string;
@@ -1797,6 +1820,10 @@ function finalizeCastSpell(
 				: {}),
 			targets,
 			...(targetsBySpec ? { targetsBySpec } : {}),
+			// --- Track P7 ---
+			...(opts.targetDivisions ? { targetDivisions: { ...opts.targetDivisions } } : {}),
+			castFromZone: sourceZone,
+			// --- End Track P7 ---
 			...(chosenModes ? { chosenModes: [...chosenModes] } : {}),
 			targetObjectVersions: captureTargetObjectVersions(state, targets),
 			xValue: xVal,
@@ -1948,6 +1975,9 @@ function finalizeActivateAbility(
 			title: `${resolveObjectFaces(card, { zone: perm.zone, faceIndex: pcp.faceIndex ?? 0 }).name} Ability`,
 			targets,
 			...(pcp.targetsBySpec ? { targetsBySpec: pcp.targetsBySpec } : {}),
+			// --- Track P7 ---
+			...(pcp.targetDivisions ? { targetDivisions: { ...pcp.targetDivisions } } : {}),
+			// --- End Track P7 ---
 			...(pcp.chosenModes ? { chosenModes: [...pcp.chosenModes] } : {}),
 			targetObjectVersions: captureTargetObjectVersions(state, targets),
 			xValue: pcp.xValue ?? 0,
@@ -2086,6 +2116,9 @@ function executeOrResumePendingCostPayment(
 			finalizeCastSpell(state, actor, inst, sourcePlayer, sourceZone, {
 				targets: pcp.targets ?? [],
 				targetsBySpec: pcp.targetsBySpec,
+				// --- Track P7 ---
+				targetDivisions: pcp.targetDivisions,
+				// --- End Track P7 ---
 				chosenModes: pcp.chosenModes,
 				xValue: pcp.xValue ?? 0,
 				castOptionId: pcp.castOptionId,
@@ -2226,6 +2259,99 @@ function isSacrificeSelfNonCreatureManaCost(defs: CostDef[], isCreature: boolean
 	);
 }
 
+// --- Track P7 ---
+function isAbilityActivationConditionMet(
+	state: GameState,
+	actorId: string,
+	perm: CardInstance,
+	cond: Condition
+): boolean {
+	if (
+		cond.k === 'creatureDiedThisTurn' ||
+		cond.k === 'attackedThisTurn' ||
+		cond.k === 'permanentLeftBattlefieldThisTurn' ||
+		cond.k === 'gainedLifeThisTurn' ||
+		cond.k === 'wasCast'
+	) {
+		return evaluateP7Condition(state, cond, actorId, { sourceObj: perm });
+	}
+	return evaluateCondition(cond, { state, controllerId: actorId, source: perm });
+}
+
+function evaluateSpecDivideTotal(
+	state: GameState,
+	actorId: string,
+	spec: TargetSpec,
+	sourceInst: CardInstance | undefined,
+	xValue: number
+): number | undefined {
+	if (!spec.divideTotal) return undefined;
+	if (spec.divideTotal.k === 'const') return spec.divideTotal.n;
+	if (spec.divideTotal.k === 'x') return Math.max(0, Math.floor(xValue));
+	return Math.max(
+		0,
+		evaluateAmount(spec.divideTotal, {
+			state,
+			controllerId: actorId,
+			source: sourceInst,
+			xValue
+		})
+	);
+}
+
+function resolveTargetDivisionsForSpecs(
+	state: GameState,
+	actorId: string,
+	specs: readonly TargetSpec[] | undefined,
+	targets: readonly TargetRef[],
+	targetsBySpec: readonly (readonly TargetRef[])[] | undefined,
+	sourceCard: ScryfallCard | undefined,
+	sourceInstanceId: string | undefined,
+	xValue: number,
+	providedDivisions: Record<string, number> | undefined
+): { ok: true; targetDivisions?: Record<string, number> } | { ok: false; error: string } {
+	if (!specs || !specs.some((sp) => Boolean(sp.divideTotal))) {
+		return { ok: true };
+	}
+	const sourceInst = sourceInstanceId ? findCardAnywhere(state, sourceInstanceId)?.inst : undefined;
+	const dividedSpecsCount = specs.filter((sp) => Boolean(sp.divideTotal)).length;
+	const combined: Record<string, number> = {};
+	for (let k = 0; k < specs.length; k++) {
+		const spec = specs[k];
+		if (!spec.divideTotal) continue;
+		const total = evaluateSpecDivideTotal(state, actorId, spec, sourceInst, xValue) ?? 0;
+		const specTargets = targetsBySpec ? (targetsBySpec[k] ?? []) : targets;
+		const specIds = specTargets.map((t) => t.id);
+		let providedForSpec: Record<string, number> | undefined;
+		if (providedDivisions !== undefined) {
+			if (dividedSpecsCount === 1) {
+				providedForSpec = providedDivisions;
+			} else {
+				providedForSpec = {};
+				const specIdSet = new Set(specIds);
+				for (const [id, amt] of Object.entries(providedDivisions)) {
+					if (specIdSet.has(id)) providedForSpec[id] = amt;
+				}
+			}
+		}
+		const res = validateAndNormalizeTargetDivisions(
+			specTargets,
+			total,
+			providedForSpec,
+			spec.min,
+			spec.max,
+			sourceCard?.name || 'Spell or ability'
+		);
+		if (!res.ok) return res;
+		Object.assign(combined, res.divisions);
+	}
+	return {
+		ok: true,
+		...(Object.keys(combined).length > 0 ? { targetDivisions: combined } : {})
+	};
+}
+// --- End Track P7 ---
+
 function checkActivationRestrictionsOnly(
 	state: GameState,
 	actorId: string,
@@ -2234,7 +2360,9 @@ function checkActivationRestrictionsOnly(
 ): { ok: boolean; error?: string } {
 	if (
 		ab.activationCondition &&
-		!evaluateCondition(ab.activationCondition, { state, controllerId: actorId, source: perm })
+		// --- Track P7 ---
+		!isAbilityActivationConditionMet(state, actorId, perm, ab.activationCondition)
+		// --- End Track P7 ---
 	) {
 		return {
 			ok: false,
@@ -3566,6 +3694,9 @@ export function runBeginningOfTurn(state: GameState): void {
 	}
 	state.playersDrawnThisTurn = [];
 	state.triggeredOnceThisTurn = undefined;
+	// --- Track P7 ---
+	resetTurnHistoryAtTurnStart(state);
+	// --- End Track P7 ---
 
 	// 1. Untap step (CR 502): turn-based actions execute before PhaseBegin('untap') triggers (CR 703.3)
 	beginPhase(state, 'untap', activePlayer);
@@ -3737,6 +3868,9 @@ function applyGameActionInner(
 			if (!perm || perm.phasedOut) {
 				return { ok: false, error: 'Permanent not found on your battlefield.' };
 			}
+			// --- Track P7 ---
+			const permEffCard = getEffectiveCardForPermanent(state, perm);
+			// --- End Track P7 ---
 			const cmdId = getPlayerCommanderIdentity(actor);
 			const manaAbs = getEffectiveActivatedAbilities(state, actor, perm, cmdId).filter((a) => a.isManaAbility);
 			if (manaAbs.length === 0) {
@@ -3760,7 +3894,9 @@ function applyGameActionInner(
 							: manaAbs.filter((a) => a.producesMana.length > 0);
 				const payableAbs = matchingAbs.filter((candidate) => {
 					if (!checkActivationRestrictionsOnly(state, actorId, perm, candidate).ok) return false;
-					const cDefs = activatedAbilityCost(perm.card, candidate).defs;
+					// --- Track P7 ---
+					const cDefs = activatedAbilityCost(permEffCard, candidate).defs;
+					// --- End Track P7 ---
 					const cReq = parseManaCost(candidate.manaCost === '{0}' ? '' : candidate.manaCost);
 					const cCtx = costContext(state, actor, perm, 0, false, cReq);
 					return canPayCosts(cCtx, cDefs);
@@ -3770,7 +3906,9 @@ function applyGameActionInner(
 				const distinctPayableAbs: EffectiveActivatedAbility[] = [];
 				const seenSignatures = new Set<string>();
 				for (const candidate of payableAbs) {
-					const cDefs = activatedAbilityCost(perm.card, candidate).defs;
+					// --- Track P7 ---
+					const cDefs = activatedAbilityCost(permEffCard, candidate).defs;
+					// --- End Track P7 ---
 					const amt = getDynamicManaProducedAmount(
 						state,
 						actor,
@@ -3858,7 +3996,9 @@ function applyGameActionInner(
 			}
 
 			// Phase 4: the ability's whole cost from the IR ({T}, and e.g. "Sacrifice this artifact").
-			const cost = activatedAbilityCost(perm.card, ab);
+			// --- Track P7 ---
+			const cost = activatedAbilityCost(permEffCard, ab);
+			// --- End Track P7 ---
 			const rawTapMana = parseManaCost(ab.manaCost === '{0}' ? '' : ab.manaCost);
 			const hybTapChoice = resolveHybridCostChoice(state, actor, action, rawTapMana, perm.card.name);
 			if (hybTapChoice.promptResult) return hybTapChoice.promptResult;
@@ -4012,7 +4152,9 @@ function applyGameActionInner(
 				kind: 'tap_mana',
 				actorId,
 				sourceInstanceId: perm.instanceId,
-				sourceCard: perm.card,
+				// --- Track P7 ---
+				sourceCard: permEffCard,
+				// --- End Track P7 ---
 				abilityId: ab.id,
 				...(ab.faceIndex !== undefined ? { faceIndex: ab.faceIndex } : {}),
 				chosenColor,
@@ -4594,6 +4736,29 @@ function applyGameActionInner(
 					targetsBySpec = partitionTargetsBySpecs(targets, spellTargetInfo, inst.card);
 				}
 			}
+			// --- Track P7 ---
+			let spellTargetDivisions: Record<string, number> | undefined;
+			if (!optionTargetsBecomeEach(inst.card, castOption)) {
+				const activeSpellSpecs = compiledModal
+					? (chosenModes ?? []).flatMap((mIdx) =>
+							(compiledModal.modes[mIdx]?.targets ?? []).filter(activeSpec)
+						)
+					: spellTargetInfo.targetSpecs?.filter((sp) => sp.max > 0);
+				const divRes = resolveTargetDivisionsForSpecs(
+					state,
+					actorId,
+					activeSpellSpecs,
+					targets,
+					targetsBySpec,
+					inst.card,
+					inst.instanceId,
+					xVal,
+					action.targetDivisions
+				);
+				if (!divRes.ok) return divRes;
+				spellTargetDivisions = divRes.targetDivisions;
+			}
+			// --- End Track P7 ---
 
 			// Check & pay mana cost (including Commander Tax if from Command Zone, or any-color mana if exiled with Opposition Agent!)
 			const costReq = getSpellCostRequirementForOption(
@@ -4788,6 +4953,9 @@ function applyGameActionInner(
 					sourceZone,
 					targets,
 					...(targetsBySpec ? { targetsBySpec } : {}),
+					// --- Track P7 ---
+					...(spellTargetDivisions ? { targetDivisions: spellTargetDivisions } : {}),
+					// --- End Track P7 ---
 					...(chosenModes ? { chosenModes: [...chosenModes] } : {}),
 					xValue: xVal,
 					castOptionId: castOption.id,
@@ -4825,6 +4993,9 @@ function applyGameActionInner(
 			finalizeCastSpell(state, actor, inst, sourcePlayer, sourceZone, {
 				targets,
 				targetsBySpec,
+				// --- Track P7 ---
+				targetDivisions: spellTargetDivisions,
+				// --- End Track P7 ---
 				chosenModes,
 				xValue: xVal,
 				castOptionId: castOption.id,
@@ -4871,17 +5042,25 @@ function applyGameActionInner(
 
 			const abXValue = Math.max(0, Math.floor(action.xValue ?? 0));
 			const abTargetInfo: TargetRequirementInfo = ab.targetInfo;
+			// --- Track P7 ---
+			const permEffCard =
+				perm.zone === 'battlefield' ? getEffectiveCardForPermanent(state, perm) : perm.card;
+			// --- End Track P7 ---
 
 			const targets = action.targets || [];
 			const abModal =
-				ab.modal ?? getAbilityModal(perm.card, ab.id, ab.faceIndex ?? 0, ab.grantSourceCard);
+				// --- Track P7 ---
+				ab.modal ?? getAbilityModal(permEffCard, ab.id, ab.faceIndex ?? 0, ab.grantSourceCard);
+			// --- End Track P7 ---
 			let chosenModes = action.chosenModes;
 			let targetsBySpec: TargetRef[][] | undefined;
 			if (abModal) {
 				const modalVal = validateModalChoice(
 					state,
 					actorId,
-					perm.card,
+					// --- Track P7 ---
+					permEffCard,
+					// --- End Track P7 ---
 					perm,
 					abModal,
 					chosenModes,
@@ -4898,19 +5077,43 @@ function applyGameActionInner(
 					actorId,
 					targets,
 					abTargetInfo,
-					perm.card,
+					// --- Track P7 ---
+					permEffCard,
+					// --- End Track P7 ---
 					perm.instanceId,
 					abXValue
 				);
 				if (!targetValidation.ok) {
 					return targetValidation;
 				}
-				targetsBySpec = partitionTargetsBySpecs(targets, abTargetInfo, perm.card);
+				// --- Track P7 ---
+				targetsBySpec = partitionTargetsBySpecs(targets, abTargetInfo, permEffCard);
+				// --- End Track P7 ---
 			}
+			// --- Track P7 ---
+			const activeAbSpecs = abModal
+				? (chosenModes ?? []).flatMap((mIdx) => abModal.modes[mIdx]?.targets ?? [])
+				: abTargetInfo.targetSpecs?.filter((sp) => sp.max > 0);
+			const abDivRes = resolveTargetDivisionsForSpecs(
+				state,
+				actorId,
+				activeAbSpecs,
+				targets,
+				targetsBySpec,
+				permEffCard,
+				perm.instanceId,
+				abXValue,
+				action.targetDivisions
+			);
+			if (!abDivRes.ok) return abDivRes;
+			const abTargetDivisions = abDivRes.targetDivisions;
+			// --- End Track P7 ---
 
 			// Phase 4: pay the whole cost from the IR. Mana comes from effectiveAbilityManaCost (cost
 			// modifiers applied); everything else from the ability's CostDefs.
-			const abilityCost = activatedAbilityCost(perm.card, ab);
+			// --- Track P7 ---
+			const abilityCost = activatedAbilityCost(permEffCard, ab);
+			// --- End Track P7 ---
 			const abilityMana = effectiveAbilityManaCost(
 				state,
 				actorId,
@@ -4955,13 +5158,18 @@ function applyGameActionInner(
 				kind: 'activate_ability',
 				actorId,
 				sourceInstanceId: perm.instanceId,
-				sourceCard: perm.card,
+				// --- Track P7 ---
+				sourceCard: permEffCard,
+				// --- End Track P7 ---
 				abilityId: ab.id,
 				...(ab.faceIndex !== undefined ? { faceIndex: ab.faceIndex } : {}),
 				...(ab.costKeyword ? { costKeyword: ab.costKeyword } : {}),
 				...(abXValue > 0 ? { xValue: abXValue } : {}),
 				targets,
 				...(targetsBySpec ? { targetsBySpec } : {}),
+				// --- Track P7 ---
+				...(abTargetDivisions ? { targetDivisions: abTargetDivisions } : {}),
+				// --- End Track P7 ---
 				...(chosenModes ? { chosenModes: [...chosenModes] } : {}),
 				sourceObjectVersion: perm.objectVersion,
 				sourceLkiPower,
@@ -5553,6 +5761,9 @@ function performDeclareAttackers(
 
 	resetTriggerLoopTracking(state);
 	if (validAttackers.length > 0) {
+		// --- Track P7 ---
+		recordAttackersDeclaredThisTurn(state, actor);
+		// --- End Track P7 ---
 		addLog(
 			state,
 			'combat',
@@ -5664,6 +5875,11 @@ function getBlockerRestrictionReason(
 	if (hasRestriction(state, attacker, 'cantBeBlocked')) {
 		return `Strict Rules Violation: ${attacker.card.name} cannot be blocked.`;
 	}
+	// --- Track P7 ---
+	if (!canBlockerSatisfyTimedEvasion(state, attacker, blocker)) {
+		return `Strict Rules Violation: ${blocker.card.name} cannot block ${attacker.card.name} this turn (CR 509.1b).`;
+	}
+	// --- End Track P7 ---
 	if (hasProtectionFrom(attacker, blocker.copiableCard ?? blocker.card, state, blocker)) {
 		return `Strict Rules Violation: ${blocker.card.name} cannot block ${attacker.card.name} due to Protection (CR 702.16e).`;
 	}
@@ -5743,12 +5959,18 @@ export function chooseBotBlockAssignments(
 			if (!atkCard) continue;
 			if (hasRestriction(state, atkCard, 'cantBeBlocked')) continue;
 			if (hasKeyword(atkCard, 'Menace', state)) continue;
+			// --- Track P7 ---
+			if (getTimedMinBlockersRequired(state, atkCard) > 1) continue;
+			// --- End Track P7 ---
 
 			const candidate = bot.battlefield.find((b) => {
 				if (b.phasedOut || usedBlockers.has(b.instanceId) || b.tapped) return false;
 				const evalBlocker = evaluatePermanent(state, b);
 				if (!evalBlocker.isCreature) return false;
 				if (hasRestriction(state, b, 'cantBlock')) return false;
+				// --- Track P7 ---
+				if (isCantBlockThisTurn(state, b)) return false;
+				// --- End Track P7 ---
 				if (!canBlock(state, b, atkCard)) return false;
 				const bTough = getCreatureToughness(b, state);
 				const aPwr = getCreaturePower(atkCard, state);
@@ -5770,6 +5992,9 @@ export function chooseBotBlockAssignments(
 			const evalBlocker = evaluatePermanent(state, b);
 			if (!evalBlocker.isCreature) continue;
 			if (hasRestriction(state, b, 'cantBlock')) continue;
+			// --- Track P7 ---
+			if (isCantBlockThisTurn(state, b)) continue;
+			// --- End Track P7 ---
 			if (!hasRestriction(state, b, 'blocksEachCombat')) continue;
 
 			const legalAtks = attacksAgainstBot.filter((atk) => {
@@ -5779,7 +6004,9 @@ export function chooseBotBlockAssignments(
 				);
 				if (!atkCard) return false;
 				if (!canBlock(state, b, atkCard)) return false;
-				if (hasKeyword(atkCard, 'Menace', state)) {
+				// --- Track P7 ---
+				if (hasKeyword(atkCard, 'Menace', state) || getTimedMinBlockersRequired(state, atkCard) > 1) {
+				// --- End Track P7 ---
 					const alreadyAssigned = assignments.some(
 						(a) => a.attackerInstanceId === atk.attackerInstanceId
 					);
@@ -5835,6 +6062,11 @@ function validateDefenderBlockerAssignments(
 		if (hasRestriction(state, blocker, 'cantBlock')) {
 			return { ok: false, error: `${blocker.card.name} cannot block.` };
 		}
+		// --- Track P7 ---
+		if (isCantBlockThisTurn(state, blocker)) {
+			return { ok: false, error: `${blocker.card.name} cannot block this turn (CR 509.1b).` };
+		}
+		// --- End Track P7 ---
 
 		const atkEntry = state.combat.attackers.find(
 			(a) => a.attackerInstanceId === assign.attackerInstanceId
@@ -5867,10 +6099,10 @@ function validateDefenderBlockerAssignments(
 
 	// Check Menace (cannot be blocked except by two or more creatures)
 	for (const [atkId, bIds] of blockerCountsByAttacker.entries()) {
+		const atkEntry = state.combat.attackers.find((a) => a.attackerInstanceId === atkId);
+		const atkOwner = state.players.find((p) => p.playerId === atkEntry?.controllerId);
+		const atkCard = atkOwner?.battlefield.find((c) => c.instanceId === atkId);
 		if (bIds.length === 1) {
-			const atkEntry = state.combat.attackers.find((a) => a.attackerInstanceId === atkId);
-			const atkOwner = state.players.find((p) => p.playerId === atkEntry?.controllerId);
-			const atkCard = atkOwner?.battlefield.find((c) => c.instanceId === atkId);
 			if (atkCard && hasKeyword(atkCard, 'Menace', state)) {
 				return {
 					ok: false,
@@ -5878,6 +6110,17 @@ function validateDefenderBlockerAssignments(
 				};
 			}
 		}
+		// --- Track P7 ---
+		if (atkCard && bIds.length > 0) {
+			const assignedBlockers = bIds
+				.map((bId) => actor.battlefield.find((c) => c.instanceId === bId))
+				.filter((c): c is CardInstance => Boolean(c));
+			const timedErr = getTimedCantBeBlockedReason(state, atkCard, assignedBlockers);
+			if (timedErr) {
+				return { ok: false, error: `Strict Rules Violation: ${timedErr}` };
+			}
+		}
+		// --- End Track P7 ---
 	}
 
 	// Enforce "blocks each combat if able" requirements (CR 509.1c)
@@ -5893,9 +6136,17 @@ function validateDefenderBlockerAssignments(
 		for (const perm of actor.battlefield) {
 			if (perm.phasedOut || perm.tapped || !evaluatePermanent(state, perm).isCreature) continue;
 			if (hasRestriction(state, perm, 'cantBlock')) continue;
+			// --- Track P7 ---
+			if (isCantBlockThisTurn(state, perm)) continue;
+			// --- End Track P7 ---
 			if (!hasRestriction(state, perm, 'blocksEachCombat')) continue;
 			const canBlockAny = attackersAgainstActor.some(
-				(atk) => canBlock(state, perm, atk) && !hasKeyword(atk, 'Menace', state)
+				(atk) =>
+					canBlock(state, perm, atk) &&
+					!hasKeyword(atk, 'Menace', state) &&
+					// --- Track P7 ---
+					getTimedMinBlockersRequired(state, atk) <= 1
+				// --- End Track P7 ---
 			);
 			if (canBlockAny && !assignedBlockerIds.has(perm.instanceId)) {
 				return {
@@ -8236,6 +8487,10 @@ function triggeredStackItem(state: GameState, t: PendingTrigger, idPrefix: strin
 	const sourcePrototyped = Boolean(
 		sourceObjForProto.prototyped || sourceObjForProto.copiableState?.prototyped
 	);
+	// --- Track P7 ---
+	const sourceWasCast = Boolean(t.sourceWasCast ?? sourceObjForProto.wasCast);
+	const sourceCastFromZone = t.sourceCastFromZone ?? sourceObjForProto.castFromZone;
+	// --- End Track P7 ---
 	const sourceIsFaceDown = Boolean(foundSource?.inst.isFaceDown);
 	const sourceFaceDownLabel = foundSource?.inst.faceDownLabel;
 	const sourceFaceDownSpec = foundSource?.inst.faceDownSpec;
@@ -8272,6 +8527,10 @@ function triggeredStackItem(state: GameState, t: PendingTrigger, idPrefix: strin
 			...(sourceChosenColor ? { sourceChosenColor } : {}),
 			...(sourceMonstrous ? { sourceMonstrous: true } : {}),
 			...(sourcePrototyped ? { sourcePrototyped: true } : {}),
+			// --- Track P7 ---
+			...(sourceWasCast ? { sourceWasCast: true } : {}),
+			...(sourceCastFromZone ? { sourceCastFromZone } : {}),
+			// --- End Track P7 ---
 			card: t.sourceCard,
 			...(t.faceIndex !== undefined ? { faceIndex: t.faceIndex } : {}),
 			...(sourceIsFaceDown
@@ -8934,6 +9193,10 @@ function assignOrPromptTriggerTargets(
 ): void {
 	const steps = triggerItemEffect(item)?.steps ?? [];
 	const targetsBySpec: TargetRef[][] = specs.map(() => []);
+	// --- Track P7 ---
+	const srcInstForDiv = triggerSourceObject(state, item);
+	const triggerDivisions: Record<string, number> = {};
+	// --- End Track P7 ---
 	specs.forEach((spec, i) => {
 		const priorChosen =
 			spec.otherTarget && i > 0
@@ -8947,7 +9210,17 @@ function assignOrPromptTriggerTargets(
 		const legal = priorChosen
 			? candidates[i].filter((c) => !priorChosen.has(`${c.kind}:${c.id}`))
 			: candidates[i];
-		const max = Math.min(spec.max, legal.length);
+		// --- Track P7 ---
+		const divTotal = evaluateSpecDivideTotal(
+			state,
+			controller.playerId,
+			spec,
+			srcInstForDiv,
+			item.xValue
+		);
+		const specMax = divTotal !== undefined ? Math.min(spec.max, Math.max(0, divTotal)) : spec.max;
+		const max = Math.min(specMax, legal.length);
+		// --- End Track P7 ---
 		if (controller.isBot) {
 			targetsBySpec[i] = chooseBotTriggerTargets(state, controller, steps, i, spec, legal);
 		} else if (legal.length === spec.min && max === spec.min) {
@@ -8977,10 +9250,28 @@ function assignOrPromptTriggerTargets(
 				}
 			});
 		}
+		// --- Track P7 ---
+		if (divTotal !== undefined && targetsBySpec[i].length > 0) {
+			const norm = validateAndNormalizeTargetDivisions(
+				targetsBySpec[i],
+				divTotal,
+				undefined,
+				spec.min,
+				spec.max,
+				item.title
+			);
+			if (norm.ok) Object.assign(triggerDivisions, norm.divisions);
+		}
+		// --- End Track P7 ---
 	});
 	if (specs.length > 0) {
 		item.targetsBySpec = targetsBySpec;
 		item.targets = targetsBySpec.flat();
+		// --- Track P7 ---
+		if (Object.keys(triggerDivisions).length > 0) {
+			item.targetDivisions = { ...(item.targetDivisions ?? {}), ...triggerDivisions };
+		}
+		// --- End Track P7 ---
 	}
 	item.targetObjectVersions = captureTargetObjectVersions(state, item.targets);
 	// CR 115.1, 603.3d, 702.21a: permanents targeted as a triggered ability goes on the stack trigger Ward / becomes-target abilities.
@@ -9356,6 +9647,29 @@ function resolveTriggerPrompt(
 		}
 		item.targetsBySpec[specIdx] = chosen;
 		item.targets = item.targetsBySpec.flat();
+		// --- Track P7 ---
+		if (spec.divideTotal) {
+			const divTotal =
+				evaluateSpecDivideTotal(
+					state,
+					item.controllerId,
+					spec,
+					triggerSourceObject(state, item),
+					item.xValue
+				) ?? 0;
+			const norm = validateAndNormalizeTargetDivisions(
+				chosen,
+				divTotal,
+				undefined,
+				spec.min,
+				spec.max,
+				item.title
+			);
+			if (norm.ok && Object.keys(norm.divisions).length > 0) {
+				item.targetDivisions = { ...(item.targetDivisions ?? {}), ...norm.divisions };
+			}
+		}
+		// --- End Track P7 ---
 		item.targetObjectVersions = captureTargetObjectVersions(state, item.targets);
 		addLog(
 			state,
@@ -10141,6 +10455,10 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 			perm.foretold = item.spellMods?.foretold ? true : undefined;
 			perm.blitzed = item.spellMods?.blitzed ? true : undefined;
 			perm.prototyped = isPrototypedSpell ? true : undefined;
+			// --- Track P7 ---
+			perm.wasCast = !item.isCopy ? true : undefined;
+			perm.castFromZone = !item.isCopy ? item.castFromZone : undefined;
+			// --- End Track P7 ---
 			// Reset pre-filled loyalty so moveObject initializes loyalty with counterMultiplier (CR 306.5b)
 			perm.counters.loyalty = 0;
 
@@ -10210,7 +10528,9 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 				if (targetCreature) {
 					// CR 707.2, 708.2, 712.6d: Copy Layer 1 copiable values (including face-down / active face state)
 					const { baseCardToCopy, copiableState, displayName } =
-						buildCopiedPermanentFields(targetCreature);
+						// --- Track P7 ---
+						buildCopiedPermanentFields(state, targetCreature);
+					// --- End Track P7 ---
 					perm.printedCard = item.card;
 					perm.copiableState = copiableState;
 					perm.copiableCard = baseCardToCopy;
@@ -10335,114 +10655,71 @@ function activePlayerMayEndTurn(
 	}
 }
 
-/** Builds Layer 1a copiable card and CopiableState from a target permanent (CR 707.2, 707.8a, 708.2, 712.6d, 719.3d). */
+/** Builds Layer 1a copiable card and CopiableState from a target permanent (CR 707.2, 707.8a, 707.9a–d, 708.2, 712.6d, 719.3d). */
 function buildCopiedPermanentFields(
+	// --- Track P7 ---
+	state: GameState,
+	// --- End Track P7 ---
 	target: CardInstance,
 	notLegendary = false,
 	exceptPT?: { power: number; toughness: number },
-	isTokenCopy = false
+	isTokenCopy = false,
+	// --- Track P7 ---
+	copyMod?: CopyModificationSpec
+	// --- End Track P7 ---
 ): {
 	baseCardToCopy: ScryfallCard;
 	copiableState: CopiableState;
 	displayName: string;
 } {
-	if (target.isFaceDown) {
-		const strippedSpec = target.faceDownSpec ? { ...target.faceDownSpec } : undefined;
-		if (strippedSpec) {
-			delete strippedSpec.turnUpCost;
-			delete strippedSpec.knownToPlayerIds;
-			if (notLegendary && strippedSpec.supertypes) {
-				strippedSpec.supertypes = strippedSpec.supertypes.filter(
-					(s) => s.toLowerCase() !== 'legendary'
-				);
-			}
-			if (exceptPT) {
-				strippedSpec.power = exceptPT.power;
-				strippedSpec.toughness = exceptPT.toughness;
-			}
-		}
-		const label = target.faceDownLabel || 'Face-Down Creature';
-		const baseCardToCopy = scrubFaceDownCard(label, 'battlefield', strippedSpec);
-		return {
-			baseCardToCopy,
-			copiableState: {
-				card: baseCardToCopy,
-				...(exceptPT
-					? { except: { power: exceptPT.power, toughness: exceptPT.toughness } }
-					: {})
-			},
-			displayName: label
-		};
-	}
-
-	const sourceCard = effectiveCardForObject(target);
-	const baseCardToCopy = JSON.parse(JSON.stringify(sourceCard)) as ScryfallCard;
-	if (notLegendary) {
-		baseCardToCopy.typeLine = baseCardToCopy.typeLine.replace(/\bLegendary\s+/g, '');
-		for (const f of baseCardToCopy.faces ?? []) {
-			if (f.typeLine) f.typeLine = f.typeLine.replace(/\bLegendary\s+/g, '');
-		}
-	}
-	const faceIdx = activeFaceIndexForObject(target);
-	// CR 707.8a: A token created as a copy of a transforming permanent is a transforming token
-	// with both faces (unless the copied permanent was itself a single-face copy).
-	const isTransformingTokenCopy =
-		isTokenCopy &&
-		baseCardToCopy.layout === 'transform' &&
-		!target.copiableState?.isSingleFaceCopy &&
-		(baseCardToCopy.faces?.length ?? 0) > 1;
-	const isSingleFaceCopy = isTransformingTokenCopy
-		? false
-		: faceIdx > 0 ||
-			Boolean(target.transformed) ||
-			Boolean(target.copiableState?.isSingleFaceCopy) ||
-			((baseCardToCopy.layout === 'transform' || baseCardToCopy.layout === 'modal_dfc') &&
-				(baseCardToCopy.faces?.length ?? 0) > 1);
-	const isPrototyped = Boolean(target.prototyped || target.copiableState?.prototyped);
-	const hasExcept = Boolean(target.copiableState?.except || notLegendary || exceptPT);
-	const copiableState: CopiableState = {
-		card: baseCardToCopy,
-		...(!isTransformingTokenCopy && (faceIdx > 0 || isSingleFaceCopy)
-			? { faceIndex: faceIdx, isSingleFaceCopy: true }
-			: {}),
-		...(isPrototyped ? { prototyped: true } : {}),
-		...(hasExcept
+	// --- Track P7 ---
+	const mergedMod: CopyModificationSpec | undefined =
+		copyMod || notLegendary || exceptPT
 			? {
-					except: {
-						...target.copiableState?.except,
-						...(notLegendary ? { removeSupertypes: ['Legendary'] } : {}),
-						...(exceptPT ? { power: exceptPT.power, toughness: exceptPT.toughness } : {})
-					}
+					...copyMod,
+					...(notLegendary
+						? {
+								removeSupertypes: Array.from(
+									new Set([...(copyMod?.removeSupertypes ?? []), 'Legendary'])
+								)
+							}
+						: {}),
+					...(exceptPT
+						? {
+								power: exceptPT.power,
+								toughness: exceptPT.toughness
+							}
+						: {})
 				}
-			: {})
-	};
-	const view = resolveObjectFaces(baseCardToCopy, {
-		zone: 'battlefield',
-		faceIndex: faceIdx,
-		isSingleFaceCopy,
-		prototyped: isPrototyped
-	});
-	return {
-		baseCardToCopy,
-		copiableState,
-		displayName: view.name || baseCardToCopy.name
-	};
+			: undefined;
+	return buildModifiedCopiableState(state, target, mergedMod, isTokenCopy);
+	// --- End Track P7 ---
 }
 
-/** "Create a token that's a copy of ..." (CR 707.2, CR 707.8a: copiable values + transforming DFC token support). */
+/** "Create a token that's a copy of ..." (CR 707.2, CR 707.8a, CR 707.9a–d: copiable values + transforming DFC token support). */
 function copyPermanentAsToken(
 	state: GameState,
 	controller: PlayerGameState,
 	original: CardInstance,
 	sourceName: string,
 	notLegendary = false,
-	exceptPT?: { power: number; toughness: number }
+	exceptPT?: { power: number; toughness: number },
+	// --- Track P7 ---
+	copyMod?: CopyModificationSpec,
+	copyOpts?: { tapped?: boolean; tappedAndAttacking?: boolean }
+	// --- End Track P7 ---
 ): CardInstance {
 	const { baseCardToCopy, copiableState, displayName } = buildCopiedPermanentFields(
+		// --- Track P7 ---
+		state,
+		// --- End Track P7 ---
 		original,
 		notLegendary,
 		exceptPT,
-		true
+		true,
+		// --- Track P7 ---
+		copyMod
+		// --- End Track P7 ---
 	);
 	const tokenInst = createCardInstance(
 		baseCardToCopy,
@@ -10468,7 +10745,18 @@ function copyPermanentAsToken(
 		tokenInst.prototyped = true;
 	}
 	tokenInst.summoningSick = true;
+	// --- Track P7 ---
+	if (copyOpts?.tapped || copyOpts?.tappedAndAttacking) {
+		tokenInst.tapped = true;
+	}
+	applySelfEtbReplacements(state, tokenInst);
+	// --- End Track P7 ---
 	moveObject(state, tokenInst, 'battlefield', { from: 'none', toPlayer: controller });
+	// --- Track P7 ---
+	if (copyOpts?.tappedAndAttacking && tokenInst.zone === 'battlefield') {
+		registerEnteredAttackingCombatant(state, controller, tokenInst);
+	}
+	// --- End Track P7 ---
 	addLog(
 		state,
 		'trigger',
@@ -11028,6 +11316,38 @@ function pushCopiedStackItem(
 
 	const copyCard = copiableState?.card ?? orig.card;
 	const targetObjectVersions = captureTargetObjectVersions(state, targets);
+	// --- Track P7 ---
+	let copiedTargetDivisions: Record<string, number> | undefined;
+	if (orig.targetDivisions && Object.keys(orig.targetDivisions).length > 0) {
+		if (
+			targets.length === orig.targets.length &&
+			targets.every((t, idx) => orig.targets[idx]?.id === t.id)
+		) {
+			copiedTargetDivisions = { ...orig.targetDivisions };
+		} else if (targets.length === orig.targets.length) {
+			copiedTargetDivisions = {};
+			for (let idx = 0; idx < targets.length; idx++) {
+				const origAmt = orig.targetDivisions[orig.targets[idx]?.id ?? ''];
+				if (origAmt !== undefined) {
+					copiedTargetDivisions[targets[idx].id] = origAmt;
+				}
+			}
+		} else {
+			const total = Object.values(orig.targetDivisions).reduce((a, b) => a + b, 0);
+			const norm = validateAndNormalizeTargetDivisions(
+				targets,
+				total,
+				undefined,
+				0,
+				targets.length,
+				orig.card.name
+			);
+			if (norm.ok && Object.keys(norm.divisions).length > 0) {
+				copiedTargetDivisions = norm.divisions;
+			}
+		}
+	}
+	// --- End Track P7 ---
 
 	if (orig.kind === 'spell') {
 		const copyInstanceId = uid('copy', state);
@@ -11055,6 +11375,9 @@ function pushCopiedStackItem(
 				...(targetsBySpec
 					? { targetsBySpec: targetsBySpec.map((b) => b.map((t) => ({ ...t }))) }
 					: {}),
+				// --- Track P7 ---
+				...(copiedTargetDivisions ? { targetDivisions: { ...copiedTargetDivisions } } : {}),
+				// --- End Track P7 ---
 				...(targetObjectVersions && Object.keys(targetObjectVersions).length > 0
 					? { targetObjectVersions }
 					: {}),
@@ -11154,6 +11477,10 @@ function pushCopiedStackItem(
 			...(orig.sourceChosenColor ? { sourceChosenColor: orig.sourceChosenColor } : {}),
 			...(orig.sourceMonstrous ? { sourceMonstrous: true } : {}),
 			...(orig.sourcePrototyped ? { sourcePrototyped: true } : {}),
+			// --- Track P7 ---
+			...(orig.sourceWasCast ? { sourceWasCast: true } : {}),
+			...(orig.sourceCastFromZone ? { sourceCastFromZone: orig.sourceCastFromZone } : {}),
+			// --- End Track P7 ---
 			card: orig.card,
 			...(orig.faceIndex !== undefined ? { faceIndex: orig.faceIndex } : {}),
 			...(orig.isFaceDown
@@ -11170,6 +11497,9 @@ function pushCopiedStackItem(
 			...(targetsBySpec
 				? { targetsBySpec: targetsBySpec.map((b) => b.map((t) => ({ ...t }))) }
 				: {}),
+			// --- Track P7 ---
+			...(copiedTargetDivisions ? { targetDivisions: { ...copiedTargetDivisions } } : {}),
+			// --- End Track P7 ---
 			...(targetObjectVersions && Object.keys(targetObjectVersions).length > 0
 				? { targetObjectVersions }
 				: {}),
@@ -12341,8 +12671,11 @@ function executeCombatDamageStep(
 			.filter((b): b is CardInstance => Boolean(b));
 
 		// Check if all combat damage is prevented this turn (e.g., Fog)
+		// --- Track P7 ---
 		const combatDamagePrevented =
-			atkPlayer.preventAllCombatDamageThisTurn || defPlayer.preventAllCombatDamageThisTurn;
+			!isDamageUnpreventable(state, true) &&
+			(atkPlayer.preventAllCombatDamageThisTurn || defPlayer.preventAllCombatDamageThisTurn);
+		// --- End Track P7 ---
 
 		const attackerAssignments: AttackerDamageAssignment[] = [];
 		if (attackerDealsNow && atkPower > 0 && !combatDamagePrevented) {
@@ -12739,6 +13072,9 @@ registerPromptHandler(COMBAT_DAMAGE_ASSIGNMENT_HANDLER, (state, prompt, answer) 
 });
 
 function clearEndOfTurnAndDamage(state: GameState): void {
+	// --- Track P7 ---
+	clearP7EndOfTurnEffects(state);
+	// --- End Track P7 ---
 	state.timedKeywordEffects = undefined;
 	if (state.timedContinuousEffects?.length) {
 		const persisting = state.timedContinuousEffects.filter(
@@ -14883,6 +15219,25 @@ export function validateChosenTargets(
 		}
 	}
 
+	// --- Track P7 ---
+	const dividedCheckSpecs = activeSpecs ?? info.targetSpecs?.filter((sp) => sp.max > 0);
+	if (dividedCheckSpecs?.some((sp) => Boolean(sp.divideTotal))) {
+		const partitioned = partitionTargetsBySpecs(targets, info, sourceCard);
+		const divCheck = resolveTargetDivisionsForSpecs(
+			state,
+			actorId,
+			dividedCheckSpecs,
+			targets,
+			partitioned,
+			sourceCard,
+			sourceInstanceId,
+			xValue,
+			undefined
+		);
+		if (!divCheck.ok) return divCheck;
+	}
+	// --- End Track P7 ---
+
 	// Enforce single-graveyard multi-target restriction ("target two cards in a graveyard")
 	if (info.zone === 'graveyard' && info.sameGraveyard && targets.length > 1) {
 		const graveyardOwnerIds = new Set<string>();
@@ -15050,6 +15405,21 @@ function hasRequiredLegalTargetsInner(
 	const activeSpecs = !sourceCard?.typeLine.includes('Aura')
 		? info.targetSpecs?.filter((sp) => sp.max > 0)
 		: undefined;
+	// --- Track P7 ---
+	if (activeSpecs?.some((sp) => Boolean(sp.divideTotal))) {
+		const srcInst = sourceInstanceId ? findCardAnywhere(state, sourceInstanceId)?.inst : undefined;
+		for (const spec of activeSpecs) {
+			if (!spec.divideTotal || spec.min <= 0) continue;
+			const total = evaluateSpecDivideTotal(state, actorId, spec, srcInst, xValue) ?? 0;
+			if (total < spec.min) {
+				return {
+					ok: false,
+					error: `Illegal Cast: ${sourceCard?.name || 'Spell'} requires a total of at least ${spec.min} to divide among targets (CR 601.2d).`
+				};
+			}
+		}
+	}
+	// --- End Track P7 ---
 	if (activeSpecs && activeSpecs.length > 1) {
 		for (const spec of activeSpecs) {
 			if (spec.min <= 0) continue;
@@ -16259,7 +16629,11 @@ function checkAbilityActivationLegalityInner(
 		ab.manaCost,
 		ab.costKeyword
 	).requirement;
-	const abilityCost = activatedAbilityCost(perm.card, ab);
+	// --- Track P7 ---
+	const permEffCard =
+		perm.zone === 'battlefield' ? getEffectiveCardForPermanent(state, perm) : perm.card;
+	const abilityCost = activatedAbilityCost(permEffCard, ab);
+	// --- End Track P7 ---
 	const costCtx = costContext(state, actor, perm, 0, false, abilityMana);
 	const checkCost = (): { ok: boolean; error?: string } => {
 		if (canPayCosts(costCtx, abilityCost.defs)) return { ok: true };
@@ -16272,7 +16646,9 @@ function checkAbilityActivationLegalityInner(
 	// CR 602.5b / 602.5c: Enforce activation restrictions ("Activate only ...").
 	if (
 		ab.activationCondition &&
-		!evaluateCondition(ab.activationCondition, { state, controllerId: actorId, source: perm })
+		// --- Track P7 ---
+		!isAbilityActivationConditionMet(state, actorId, perm, ab.activationCondition)
+		// --- End Track P7 ---
 	) {
 		return {
 			ok: false,
@@ -16380,12 +16756,16 @@ function checkAbilityActivationLegalityInner(
 	if (!costCheck.ok) return costCheck;
 
 	const abModal =
-		ab.modal ?? getAbilityModal(perm.card, ab.id, ab.faceIndex ?? 0, ab.grantSourceCard);
+		// --- Track P7 ---
+		ab.modal ?? getAbilityModal(permEffCard, ab.id, ab.faceIndex ?? 0, ab.grantSourceCard);
+	// --- End Track P7 ---
 	if (abModal) {
 		const status = modalCandidateModeStatus(
 			state,
 			actorId,
-			perm.card,
+			// --- Track P7 ---
+			permEffCard,
+			// --- End Track P7 ---
 			perm,
 			abModal,
 			perm.usedModalModesThisTurn
@@ -16403,7 +16783,9 @@ function checkAbilityActivationLegalityInner(
 			state,
 			actorId,
 			abTargetInfo,
-			perm.card,
+			// --- Track P7 ---
+			permEffCard,
+			// --- End Track P7 ---
 			perm.instanceId,
 			0
 		);
@@ -16615,21 +16997,36 @@ function applyDamageToTarget(
 	target: TargetRef,
 	amount: number
 ): void {
+	// --- Track P7 ---
+	if (amount <= 0) return;
+	const unpreventable = isDamageUnpreventable(state, false);
+	// --- End Track P7 ---
 	const pTarget = state.players.find((p) => p.playerId === target.id);
 	if (pTarget) {
-		if (!pTarget.lifeTotalCannotChangeThisTurn && !pTarget.protectionFromEverythingThisTurn) {
+		// --- Track P7 ---
+		if (!unpreventable && pTarget.protectionFromEverythingThisTurn) {
+			return;
+		}
+		amount = applyDamagePreventionShields(state, {
+			amount,
+			isCombat: false,
+			targetKind: 'player',
+			targetId: pTarget.playerId,
+			sourceId: sourcePlayerId
+		});
+		if (amount <= 0) return;
+		if (!pTarget.lifeTotalCannotChangeThisTurn) {
 			pTarget.life -= amount;
 		}
-		if (!pTarget.protectionFromEverythingThisTurn) {
-			emitEvent(state, {
-				kind: 'DamageDealt',
-				sourceId: sourcePlayerId,
-				targetId: pTarget.playerId,
-				targetKind: 'player',
-				amount,
-				combat: false
-			});
-		}
+		emitEvent(state, {
+			kind: 'DamageDealt',
+			sourceId: sourcePlayerId,
+			targetId: pTarget.playerId,
+			targetKind: 'player',
+			amount,
+			combat: false
+		});
+		// --- End Track P7 ---
 		emitVfx(state, {
 			kind: 'damage',
 			sourceId: sourcePlayerId,
@@ -16640,7 +17037,20 @@ function applyDamageToTarget(
 	}
 	const permFound = findPermanentOnBoard(state, target.id);
 	if (permFound) {
-		if (evaluatePermanent(state, permFound.inst).typeLine.includes('Planeswalker')) {
+		// --- Track P7 ---
+		const evalPerm = evaluatePermanent(state, permFound.inst);
+		amount = applyDamagePreventionShields(state, {
+			amount,
+			isCombat: false,
+			targetKind: 'permanent',
+			targetId: permFound.inst.instanceId,
+			targetPerm: permFound.inst,
+			targetControllerId: permFound.owner.playerId,
+			sourceId: sourcePlayerId
+		});
+		if (amount <= 0) return;
+		// --- End Track P7 ---
+		if (evalPerm.typeLine.includes('Planeswalker')) {
 			permFound.inst.counters.loyalty = Math.max(0, permFound.inst.counters.loyalty - amount);
 		} else {
 			permFound.inst.damageMarked += amount;

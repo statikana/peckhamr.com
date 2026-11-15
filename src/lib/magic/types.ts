@@ -131,6 +131,10 @@ export interface CopiableState {
 		colors?: ManaColor[];
 		names?: string[];
 		removeSupertypes?: string[];
+		// --- Track P7 ---
+		addKeywords?: string[];
+		noManaCost?: boolean;
+		// --- End Track P7 ---
 	};
 }
 
@@ -537,6 +541,12 @@ export interface CardInstance {
 	warpedByOwnerId?: string;
 	/** CR 702.185a: `state.turnSerial ?? state.turnNumber` of the turn this card was exiled by Warp's delayed trigger. */
 	warpedTurnSerial?: number;
+	// --- Track P7 ---
+	/** CR 400.7d / 603.4: true when this permanent entered the battlefield by resolving from a cast spell. */
+	wasCast?: boolean;
+	/** Zone from which the spell that became this permanent was cast ("if you cast it from your hand"). */
+	castFromZone?: ZoneType;
+	// --- End Track P7 ---
 }
 
 export interface TargetRef {
@@ -781,6 +791,15 @@ export interface StackItem {
 	tappedCostPower?: number;
 	stationTappedId?: string;
 	stationTappedVersion?: number;
+	// --- Track P7 ---
+	/** CR 601.2d / 608.2b: locked-in damage or counter division per target ID (`>= 1` each). */
+	targetDivisions?: Record<string, number>;
+	/** Zone from which this spell was cast (`'hand'`, `'graveyard'`, `'exile'`, `'command'`). */
+	castFromZone?: ZoneType;
+	/** LKI `wasCast` / `castFromZone` carried onto ETB triggered abilities (CR 603.4). */
+	sourceWasCast?: boolean;
+	sourceCastFromZone?: ZoneType;
+	// --- End Track P7 ---
 }
 
 /** One binding of the IR interpreter ("it", "that creature"): the objects and their LKI. */
@@ -850,6 +869,10 @@ export interface SerializedPendingTrigger {
 	// --- Track P5 ---
 	sourceMonstrous?: boolean;
 	isBecameMonstrous?: boolean;
+	// --- Track P7 ---
+	sourceWasCast?: boolean;
+	sourceCastFromZone?: ZoneType;
+	// --- End Track P7 ---
 	order: number;
 	// --- Track P1 ---
 	isChapterAbility?: boolean;
@@ -1314,6 +1337,14 @@ export interface PlayerGameState {
 	preventAllCombatDamageThisTurn?: boolean;
 	attemptedEmptyLibraryDraw?: boolean;
 	commanderColorIdentity?: ManaColor[];
+	// --- Track P7 ---
+	/** Raid (CR 508.1k / 508.4): true iff this player declared >= 1 attacker during declare attackers this turn. */
+	attackedThisTurn?: boolean;
+	/** Revolt: true iff a permanent controlled by this player left the battlefield this turn. */
+	permanentLeftBattlefieldThisTurn?: boolean;
+	/** Total life gained by this player so far this turn. */
+	lifeGainedThisTurn?: number;
+	// --- End Track P7 ---
 }
 
 export interface TriggerLoopEntry {
@@ -1375,6 +1406,10 @@ export interface TimedContinuousEffect {
 		setPower: number;
 		setToughness: number;
 	};
+	// --- Track P7 ---
+	/** CR 707.2 / 613.1a: Layer 1a copiable-value override ("becomes a copy of ... until end of turn"). */
+	layer1a?: CopiableState;
+	// --- End Track P7 ---
 }
 
 /**
@@ -1407,6 +1442,9 @@ export interface PendingCostPayment {
 	sourceZone?: 'hand' | 'command' | 'exile' | 'graveyard';
 	targets?: TargetRef[];
 	targetsBySpec?: TargetRef[][];
+	// --- Track P7 ---
+	targetDivisions?: Record<string, number>;
+	// --- End Track P7 ---
 	chosenModes?: number[];
 	xValue?: number;
 	castOptionId?: string;
@@ -1453,6 +1491,41 @@ export interface PendingCostPayment {
 	descriptions: string[];
 	aidDescriptions?: string[];
 }
+
+// --- Track P7 ---
+export interface DamagePreventionShieldEntry {
+	id: string;
+	controllerId: string;
+	sourceName: string;
+	targetKind: 'any' | 'permanent' | 'player' | 'permanentsControlledBy' | 'playerAndPermanentsControlledBy';
+	targetId?: string;
+	targetObjectVersion?: number;
+	targetTypes?: string[];
+	fromSourceInstanceId?: string;
+	fromSourceObjectVersion?: number;
+	fromSourceTypes?: string[];
+	fromAttackingOnly?: boolean;
+	alsoPreventDealtByTarget?: boolean;
+	combatOnly: boolean;
+	remaining: number | 'infinite';
+}
+
+export interface TimedCombatRestrictionEntry {
+	instanceId: string;
+	objectVersion: number;
+	kind: 'cantBlock' | 'cantBeBlocked';
+	exceptBy?: {
+		types?: string[];
+		subtypes?: string[];
+		colors?: ManaColor[];
+		notColors?: ManaColor[];
+		artifactOrColors?: ManaColor[];
+		keywords?: string[];
+		minBlockers?: number;
+		maxPower?: number;
+	};
+}
+// --- End Track P7 ---
 
 export interface GameState {
 	engineVersion: number;
@@ -1527,6 +1600,14 @@ export interface GameState {
 	faceDownLabelAllocCounter?: number;
 	// --- Track P1 ---
 	monarchPlayerId?: string | null;
+	// --- Track P7 ---
+	damagePreventionShields?: DamagePreventionShieldEntry[];
+	damageCantBePreventedThisTurn?: boolean;
+	combatDamageCantBePreventedThisTurn?: boolean;
+	exileInsteadOfDyingThisTurn?: Array<{ instanceId: string; objectVersion: number }>;
+	timedCombatRestrictions?: TimedCombatRestrictionEntry[];
+	creatureDiedThisTurn?: boolean;
+	// --- End Track P7 ---
 }
 
 export interface MagicLobby {
@@ -1582,6 +1663,9 @@ export type GameActionPayload =
 			type: 'cast_spell';
 			instanceId: string;
 			targets?: TargetRef[];
+			// --- Track P7 ---
+			targetDivisions?: Record<string, number>;
+			// --- End Track P7 ---
 			modes?: number[];
 			xValue?: number;
 			optionId?: string;
@@ -1610,6 +1694,9 @@ export type GameActionPayload =
 			instanceId: string;
 			abilityId: string;
 			targets?: TargetRef[];
+			// --- Track P7 ---
+			targetDivisions?: Record<string, number>;
+			// --- End Track P7 ---
 			chosenModes?: number[];
 			xValue?: number;
 			costPayment?: CostPayment;

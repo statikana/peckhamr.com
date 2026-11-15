@@ -83,7 +83,13 @@ export const INTERPRETED_VERBS: ReadonlySet<Verb> = new Set<Verb>([
 	'bolster',
 	'adapt',
 	// --- Track P6 ---
-	'removeCounters'
+	'removeCounters',
+	// --- Track P7 ---
+	'preventDamage',
+	'exileInsteadOfDying',
+	'combatRestriction',
+	'becomeCopy',
+	'discardHand'
 ]);
 
 export const SUPPORTED_OPTIONAL_COST_KINDS: ReadonlySet<CostDef['k']> = new Set<CostDef['k']>([
@@ -186,6 +192,34 @@ function stepSupported(step: EffectStep): boolean {
 		const d = step.params?.duration;
 		if (d !== undefined && d !== 'endOfTurn' && d !== 'permanent') return false;
 	}
+	// --- Track P7 ---
+	if (step.verb === 'preventDamage') {
+		const ps = step.params?.preventSpec;
+		if (!ps) return false;
+		if (ps.fromSource && !selectorSupported(ps.fromSource)) return false;
+	}
+	if (step.verb === 'exileInsteadOfDying' && step.subject.k === 'none') return false;
+	if (step.verb === 'combatRestriction') {
+		if (!step.params?.combatRestriction || step.subject.k === 'none') return false;
+	}
+	if (step.verb === 'becomeCopy') {
+		if (!step.params?.copySource || !selectorSupported(step.params.copySource) || step.subject.k === 'none') {
+			return false;
+		}
+		const d = step.params.duration;
+		if (d !== undefined && d !== 'endOfTurn' && d !== 'permanent') return false;
+	}
+	if (step.verb === 'discardHand') {
+		if (
+			step.subject.k !== 'none' &&
+			step.subject.k !== 'player' &&
+			step.subject.k !== 'playerRef' &&
+			step.subject.k !== 'target'
+		) {
+			return false;
+		}
+	}
+	// --- End Track P7 ---
 	if (step.verb === 'copySpell') {
 		if (
 			step.subject.k !== 'target' &&

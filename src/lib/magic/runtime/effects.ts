@@ -21,6 +21,9 @@
 import type {
 	Amount,
 	Condition,
+	// --- Track P7 ---
+	CopyModificationSpec,
+	// --- End Track P7 ---
 	CostDef,
 	EffectStep,
 	ObjectFilter,
@@ -117,6 +120,20 @@ import {
 	executePopulate,
 	type KeywordActionHost
 } from './keywordActions.ts';
+// --- Track P7 ---
+import {
+	addDamagePreventionShield,
+	applyBecomeCopyEffect,
+	applyDamagePreventionShields,
+	evaluateP7Condition,
+	getEffectiveCardForPermanent,
+	getLockedTargetDivisionAmount,
+	isDamageUnpreventable,
+	recordLifeGainedThisTurn,
+	registerExileInsteadOfDying,
+	registerTimedCombatRestriction
+} from './copyPreventionAndEffects.ts';
+// --- End Track P7 ---
 
 /** Seeded randomness lives in runtime/random.ts (re-exported here for existing importers). */
 export { nextRandom };
@@ -190,7 +207,11 @@ export interface EffectPorts {
 		inst: CardInstance,
 		title: string,
 		notLegendary?: boolean,
-		exceptPT?: { power: number; toughness: number }
+		exceptPT?: { power: number; toughness: number },
+		// --- Track P7 ---
+		copyMod?: CopyModificationSpec,
+		copyOpts?: { tapped?: boolean; tappedAndAttacking?: boolean }
+		// --- End Track P7 ---
 	): CardInstance;
 	triggerOnEtb(state: GameState, controller: PlayerGameState, inst: CardInstance): void;
 	triggerOnAttach(state: GameState, controller: PlayerGameState, attached: CardInstance, to: CardInstance): void;
@@ -518,30 +539,49 @@ export function dealDamageToPermanent(
 	if (dmg <= 0 || target.zone !== 'battlefield' || target.phasedOut) return 0;
 
 	const evTarget = evaluatePermanent(state, target);
+	// --- Track P7 ---
+	const unpreventable = isDamageUnpreventable(state, combat);
+	if (!unpreventable) {
+		// CR 702.16b / 702.16e: Protection prevents all damage from sources with the stated quality.
+		if (permanentProtectedFromSource(state, target, srcInfo, evTarget)) return 0;
 
-	// CR 702.16b / 702.16e: Protection prevents all damage from sources with the stated quality.
-	if (permanentProtectedFromSource(state, target, srcInfo, evTarget)) return 0;
-
-	// CR 120.3 / 615.7: Damage prevention shield on permanent.
-	if ((target.damagePreventionShield ?? 0) > 0) {
-		const prevented = Math.min(dmg, target.damagePreventionShield!);
-		target.damagePreventionShield! -= prevented;
-		dmg -= prevented;
-		if (dmg <= 0) return 0;
+		// CR 120.3 / 615.7: Damage prevention shield on permanent.
+		if ((target.damagePreventionShield ?? 0) > 0) {
+			const prevented = Math.min(dmg, target.damagePreventionShield!);
+			target.damagePreventionShield! -= prevented;
+			dmg -= prevented;
+			if (dmg <= 0) return 0;
+		}
 	}
 
-	// CR 122.1c: If a permanent with a shield counter on it would be dealt damage,
-	// prevent that damage and remove a shield counter from it.
+	// CR 122.1c / 615.12: If a permanent with a shield counter on it would be dealt damage,
+	// prevent that damage (unless damage can't be prevented) and remove a shield counter from it.
 	if ((target.counters.shield || 0) > 0) {
 		target.counters.shield = Math.max(0, (target.counters.shield || 0) - 1);
-		p.addLog(
-			state,
-			'rule',
-			`A shield counter prevented ${dmg} damage to ${target.card.name} and was removed (CR 122.1c).`,
-			opts?.actorId ?? target.controllerId
-		);
-		return 0;
+		if (!unpreventable) {
+			p.addLog(
+				state,
+				'rule',
+				`A shield counter prevented ${dmg} damage to ${target.card.name} and was removed (CR 122.1c).`,
+				opts?.actorId ?? target.controllerId
+			);
+			return 0;
+		}
 	}
+
+	dmg = applyDamagePreventionShields(state, {
+		amount: dmg,
+		isCombat: combat,
+		targetKind: 'permanent',
+		targetId: target.instanceId,
+		targetPerm: target,
+		targetControllerId: target.controllerId,
+		sourceInst: p.findPermanent(state, sourceId)?.inst,
+		sourceId,
+		sourceTypes: srcInfo.types
+	});
+	if (dmg <= 0) return 0;
+	// --- End Track P7 ---
 
 	if (evTarget.isPlaneswalker) {
 		// CR 120.3c / 306.8: Damage dealt to a planeswalker removes that many loyalty counters.
@@ -591,14 +631,30 @@ export function dealDamageToPlayer(
 	const combat = opts?.combat ?? false;
 	let dmg = rawAmount;
 	if (dmg <= 0 || pl.lost) return 0;
-	if (pl.protectionFromEverythingThisTurn) return 0;
+	// --- Track P7 ---
+	const unpreventable = isDamageUnpreventable(state, combat);
+	if (!unpreventable) {
+		if (pl.protectionFromEverythingThisTurn) return 0;
 
-	if ((pl.damagePreventionShield ?? 0) > 0) {
-		const prevented = Math.min(dmg, pl.damagePreventionShield!);
-		pl.damagePreventionShield! -= prevented;
-		dmg -= prevented;
-		if (dmg <= 0) return 0;
+		if ((pl.damagePreventionShield ?? 0) > 0) {
+			const prevented = Math.min(dmg, pl.damagePreventionShield!);
+			pl.damagePreventionShield! -= prevented;
+			dmg -= prevented;
+			if (dmg <= 0) return 0;
+		}
 	}
+
+	dmg = applyDamagePreventionShields(state, {
+		amount: dmg,
+		isCombat: combat,
+		targetKind: 'player',
+		targetId: pl.playerId,
+		sourceInst: p.findPermanent(state, sourceId)?.inst,
+		sourceId,
+		sourceTypes: srcInfo.types
+	});
+	if (dmg <= 0) return 0;
+	// --- End Track P7 ---
 
 	if (srcInfo.hasInfect) {
 		// CR 702.90b: Damage dealt to a player by a source with infect is dealt in the form of poison counters.
@@ -643,6 +699,9 @@ export function gainPlayerLife(
 		activeRuleModifiers(state, 'lifeTotalCantChange', player.playerId).length > 0;
 	if (cantChange) return 0;
 	player.life += amount;
+	// --- Track P7 ---
+	recordLifeGainedThisTurn(state, player, amount);
+	// --- End Track P7 ---
 	emitEvent(state, { kind: 'GainLife', playerId: player.playerId, amount });
 	flushTriggers(state);
 	return amount;
@@ -2006,13 +2065,25 @@ class Run {
 			case 'copyPermanent': {
 				const actor = step.actor ? this.playerRef(step.actor) : you;
 				if (!actor) return;
-				let objs = this.objects(step.subject).filter(
-					(o) =>
-						o.zone === 'battlefield' &&
-						(step.subject.k !== 'self' ||
-							this.ctx.item.sourceObjectVersion === undefined ||
-							(o.objectVersion ?? 1) === this.ctx.item.sourceObjectVersion)
-				);
+				// --- Track P7 ---
+				const allowOffBattlefieldCopy =
+					step.subject.k === 'binding' ||
+					step.subject.k === 'eventObject' ||
+					(step.subject.k === 'target' &&
+						this.ctx.targetSpecs[step.subject.index]?.filter.zone !== undefined &&
+						this.ctx.targetSpecs[step.subject.index]?.filter.zone !== 'battlefield');
+				let objs = this.objects(step.subject).filter((o) => {
+					if (!allowOffBattlefieldCopy && o.zone !== 'battlefield') return false;
+					if (
+						step.subject.k === 'self' &&
+						this.ctx.item.sourceObjectVersion !== undefined &&
+						(o.objectVersion ?? 1) !== this.ctx.item.sourceObjectVersion
+					) {
+						return false;
+					}
+					return true;
+				});
+				// --- End Track P7 ---
 				// CR 707.11: If the source of an effect creating a token copy of itself (e.g. Offspring, Squad)
 				// left the battlefield before resolution, use its last known copiable characteristics.
 				if (objs.length === 0 && step.subject.k === 'self' && this.ctx.item.sourceInstanceId) {
@@ -2030,10 +2101,20 @@ class Run {
 				if (copiesPerObj <= 0) return;
 				const notLegendary = Boolean(step.params?.notLegendary);
 				const exceptPT = step.params?.exceptPT;
+				// --- Track P7 ---
+				const copyMod = step.params?.copyMod;
+				const copyOpts =
+					step.params?.tapped || step.params?.tappedAndAttacking
+						? {
+								tapped: Boolean(step.params?.tapped || step.params?.tappedAndAttacking),
+								tappedAndAttacking: Boolean(step.params?.tappedAndAttacking)
+							}
+						: undefined;
+				// --- End Track P7 ---
 				const made: CardInstance[] = [];
 				for (const o of objs) {
 					for (let i = 0; i < copiesPerObj; i++) {
-						made.push(p.copyPermanentAsToken(s, actor, o, title, notLegendary, exceptPT));
+						made.push(p.copyPermanentAsToken(s, actor, o, title, notLegendary, exceptPT, copyMod, copyOpts));
 					}
 				}
 				this.bind(step, made);
@@ -2042,6 +2123,9 @@ class Run {
 			case 'putCounters': {
 				const counter = step.params?.counter ?? '+1/+1';
 				const n = this.amount(step.amount, 1);
+				// --- Track P7 ---
+				const isDivided = Boolean(step.params?.divided);
+				// --- End Track P7 ---
 				const { total, paused } = this.runIndexedBatch(
 					`batch:${this.stepIndex}`,
 					() => {
@@ -2055,9 +2139,15 @@ class Run {
 						this.bind(step, objs);
 						return objs.map((o) => o.instanceId);
 					},
-					(id) => {
+					(id, idx) => {
 						const f = this.locate(id);
-						if (f && f.zone === 'battlefield') p.addCounters(s, f.inst, counter, n);
+						if (!f || f.zone !== 'battlefield') return;
+						// --- Track P7 ---
+						const amt = isDivided
+							? getLockedTargetDivisionAmount(this.ctx.item, id, n, idx, Math.max(1, this.ctx.targets.length))
+							: n;
+						if (amt > 0) p.addCounters(s, f.inst, counter, amt);
+						// --- End Track P7 ---
 					}
 				);
 				if (!paused && step.subject.k === 'all') {
@@ -2189,13 +2279,99 @@ class Run {
 			}
 			case 'grantPlayer': {
 				const rules = step.params?.playerRules ?? [];
+				// --- Track P7 ---
+				if (rules.includes('damageCantBePrevented')) {
+					s.damageCantBePreventedThisTurn = true;
+					p.addLog(s, 'rule', `${title}: Damage can't be prevented this turn (CR 615.12).`, you.playerId);
+				}
+				if (rules.includes('combatDamageCantBePrevented')) {
+					s.combatDamageCantBePreventedThisTurn = true;
+					p.addLog(s, 'rule', `${title}: Combat damage can't be prevented this turn (CR 615.12).`, you.playerId);
+				}
+				// --- End Track P7 ---
 				for (const pl of this.players(step.subject)) {
 					if (rules.includes('lifeTotalCantChange')) pl.lifeTotalCannotChangeThisTurn = true;
 					if (rules.includes('protectionFromEverything')) pl.protectionFromEverythingThisTurn = true;
-					p.addLog(s, 'rule', `${pl.username}'s life total can't change and they have protection from everything until their next turn.`, you.playerId);
+					if (rules.includes('lifeTotalCantChange') || rules.includes('protectionFromEverything')) {
+						p.addLog(s, 'rule', `${pl.username}'s life total can't change and they have protection from everything until their next turn.`, you.playerId);
+					}
 				}
 				return;
 			}
+			// --- Track P7 ---
+			case 'preventDamage':
+				return this.preventDamageStep(step);
+			case 'exileInsteadOfDying': {
+				const objs = this.objects(step.subject).filter((o) => o.zone === 'battlefield');
+				this.bind(step, objs);
+				for (const o of objs) {
+					registerExileInsteadOfDying(s, o);
+				}
+				return;
+			}
+			case 'combatRestriction': {
+				const spec = step.params?.combatRestriction;
+				if (!spec) return;
+				const objs = this.objects(step.subject).filter((o) => {
+					if (o.zone !== 'battlefield' || o.phasedOut) return false;
+					if (
+						step.subject.k === 'self' &&
+						this.ctx.item.sourceObjectVersion !== undefined &&
+						(o.objectVersion ?? 1) !== this.ctx.item.sourceObjectVersion
+					) {
+						return false;
+					}
+					return true;
+				});
+				this.bind(step, objs);
+				for (const o of objs) {
+					registerTimedCombatRestriction(s, o, spec);
+				}
+				return;
+			}
+			case 'becomeCopy': {
+				const copySrcSel = step.params?.copySource;
+				if (!copySrcSel) return;
+				const affected = this.objects(step.subject).filter((o) => {
+					if (o.zone !== 'battlefield' || o.phasedOut) return false;
+					if (
+						step.subject.k === 'self' &&
+						this.ctx.item.sourceObjectVersion !== undefined &&
+						(o.objectVersion ?? 1) !== this.ctx.item.sourceObjectVersion
+					) {
+						return false;
+					}
+					return true;
+				});
+				const copySrc = this.objects(copySrcSel)[0];
+				if (!copySrc || copySrc.zone !== 'battlefield' || copySrc.phasedOut) {
+					this.bind(step, []);
+					return;
+				}
+				const updated = applyBecomeCopyEffect(
+					s,
+					affected,
+					copySrc,
+					step.params?.copyMod,
+					step.params?.duration,
+					you.playerId,
+					this.ctx.sourceCard.name || title,
+					allocateTimestamp
+				);
+				this.bind(step, updated);
+				if (updated.length > 0) {
+					p.addLog(
+						s,
+						'cast',
+						`${updated.length === 1 ? updated[0].card.name : `${updated.length} permanents`} became a copy of ${copySrc.card.name}${step.params?.duration === 'permanent' ? '' : ' until end of turn'}.`,
+						you.playerId
+					);
+				}
+				return;
+			}
+			case 'discardHand':
+				return this.discardHandStep(step);
+			// --- End Track P7 ---
 			case 'addMana': {
 				const times = Math.max(0, this.amount(step.amount, 1));
 				const restriction = step.params?.manaRestriction;
@@ -3208,32 +3384,304 @@ class Run {
 		};
 	}
 
+	// --- Track P7 ---
+	preventDamageStep(step: EffectStep): void {
+		const s = this.state;
+		const p = P();
+		const you = this.you;
+		const spec = step.params?.preventSpec;
+		if (!spec) return;
+		const remaining: number | 'infinite' =
+			spec.mode === 'all' ? 'infinite' : Math.max(0, this.amount(step.amount, 1));
+		if (remaining !== 'infinite' && remaining <= 0) return;
+
+		let fromSourceInstanceId: string | undefined;
+		let fromSourceObjectVersion: number | undefined;
+		let fromSourceTypes: string[] | undefined;
+		let fromAttackingOnly: boolean | undefined;
+
+		if (spec.fromSource) {
+			if (spec.fromSource.k === 'all') {
+				if (spec.fromSource.filter.types?.length) {
+					fromSourceTypes = [...spec.fromSource.filter.types];
+				}
+				if (spec.fromSource.filter.attacking) {
+					fromAttackingOnly = true;
+				}
+			} else {
+				const srcObj = this.objects(spec.fromSource)[0];
+				if (!srcObj) return;
+				fromSourceInstanceId = srcObj.instanceId;
+				if (srcObj.zone === 'battlefield') {
+					fromSourceObjectVersion = srcObj.objectVersion ?? 1;
+				}
+			}
+		}
+
+		const baseFields = {
+			controllerId: you.playerId,
+			sourceName: this.ctx.sourceCard.name || this.ctx.title,
+			combatOnly: spec.combatOnly,
+			remaining,
+			...(fromSourceInstanceId !== undefined ? { fromSourceInstanceId } : {}),
+			...(fromSourceObjectVersion !== undefined ? { fromSourceObjectVersion } : {}),
+			...(fromSourceTypes ? { fromSourceTypes } : {}),
+			...(fromAttackingOnly ? { fromAttackingOnly: true } : {})
+		};
+
+		if (spec.scope === 'any') {
+			addDamagePreventionShield(s, {
+				...baseFields,
+				id: p.uid('pshield', s),
+				targetKind: 'any'
+			});
+			return;
+		}
+
+		if (spec.scope === 'youAndCreaturesYouControl') {
+			if (remaining === 'infinite') {
+				addDamagePreventionShield(s, {
+					...baseFields,
+					id: p.uid('pshield', s),
+					targetKind: 'playerAndPermanentsControlledBy',
+					targetId: you.playerId,
+					targetTypes: ['Creature']
+				});
+			} else {
+				addDamagePreventionShield(s, {
+					...baseFields,
+					id: p.uid('pshield', s),
+					targetKind: 'player',
+					targetId: you.playerId
+				});
+				for (const perm of you.battlefield) {
+					if (perm.phasedOut || !this.matches(perm, { types: ['Creature'] }, 'battlefield')) continue;
+					addDamagePreventionShield(s, {
+						...baseFields,
+						id: p.uid('pshield', s),
+						targetKind: 'permanent',
+						targetId: perm.instanceId,
+						targetObjectVersion: perm.objectVersion ?? 1
+					});
+				}
+			}
+			return;
+		}
+
+		const sel = step.subject;
+		if (sel.k === 'target' && !(this.ctx.targetsBecomeEach ?? this.ctx.item.spellMods?.targetsBecomeEach)) {
+			const refs = this.targetsForSpecIndex(sel.index);
+			const boundPerms: CardInstance[] = [];
+			for (const t of refs) {
+				if (t.kind === 'player') {
+					const pl = this.player(t.id);
+					if (pl && !pl.lost) {
+						addDamagePreventionShield(s, {
+							...baseFields,
+							id: p.uid('pshield', s),
+							targetKind: 'player',
+							targetId: pl.playerId
+						});
+					}
+				} else if (t.kind === 'permanent') {
+					const perm = this.locate(t.id)?.inst;
+					if (perm && perm.zone === 'battlefield' && !perm.phasedOut) {
+						boundPerms.push(perm);
+						addDamagePreventionShield(s, {
+							...baseFields,
+							id: p.uid('pshield', s),
+							targetKind: 'permanent',
+							targetId: perm.instanceId,
+							targetObjectVersion: perm.objectVersion ?? 1,
+							...(spec.alsoPreventDealtBySubject ? { alsoPreventDealtByTarget: true } : {})
+						});
+					}
+				}
+			}
+			this.bind(step, boundPerms);
+			return;
+		}
+
+		if (sel.k === 'player' || sel.k === 'playerRef') {
+			for (const pl of this.players(sel)) {
+				addDamagePreventionShield(s, {
+					...baseFields,
+					id: p.uid('pshield', s),
+					targetKind: 'player',
+					targetId: pl.playerId
+				});
+			}
+			return;
+		}
+
+		if (
+			sel.k === 'all' &&
+			remaining === 'infinite' &&
+			!spec.alsoPreventDealtBySubject &&
+			sel.filter.controller === 'you' &&
+			Object.keys(sel.filter).every((k) => k === 'controller' || k === 'types' || k === 'zone')
+		) {
+			addDamagePreventionShield(s, {
+				...baseFields,
+				id: p.uid('pshield', s),
+				targetKind: 'permanentsControlledBy',
+				targetId: you.playerId,
+				...(sel.filter.types?.length ? { targetTypes: [...sel.filter.types] } : {})
+			});
+			return;
+		}
+
+		const objs = this.objects(sel).filter((o) => {
+			if (o.zone !== 'battlefield' || o.phasedOut) return false;
+			if (
+				sel.k === 'self' &&
+				this.ctx.item.sourceObjectVersion !== undefined &&
+				(o.objectVersion ?? 1) !== this.ctx.item.sourceObjectVersion
+			) {
+				return false;
+			}
+			return true;
+		});
+		this.bind(step, objs);
+		for (const o of objs) {
+			addDamagePreventionShield(s, {
+				...baseFields,
+				id: p.uid('pshield', s),
+				targetKind: 'permanent',
+				targetId: o.instanceId,
+				targetObjectVersion: o.objectVersion ?? 1,
+				...(spec.alsoPreventDealtBySubject ? { alsoPreventDealtByTarget: true } : {})
+			});
+		}
+	}
+
+	discardHandStep(step: EffectStep): void {
+		const s = this.state;
+		const p = P();
+		const you = this.you;
+		const batchKey = `batch:${this.stepIndex}:discardHand`;
+		const countsKey = `discardHandCounts:${this.stepIndex}`;
+
+		if (!this.answers[countsKey]) {
+			const actors = step.actor
+				? this.players({ k: 'playerRef', ref: step.actor })
+				: step.subject.k === 'none'
+					? [you]
+					: this.players(step.subject);
+			const encodedCounts: string[] = [];
+			const cardIds: string[] = [];
+			const allCards: CardInstance[] = [];
+			for (const pl of actors) {
+				encodedCounts.push(`${pl.playerId}|${pl.hand.length}`);
+				for (const c of pl.hand) {
+					cardIds.push(c.instanceId);
+					allCards.push(c);
+				}
+				p.addLog(
+					s,
+					'rule',
+					`${pl.username} discarded their hand (${pl.hand.length} card(s)).`,
+					pl.playerId
+				);
+			}
+			this.bind(step, allCards);
+			this.answers[countsKey] = { kind: 'chooseObjects', objectIds: encodedCounts };
+			this.answers[batchKey] = { kind: 'chooseObjects', objectIds: cardIds };
+		}
+
+		const { paused } = this.runIndexedBatch(
+			batchKey,
+			() => [],
+			(id) => {
+				const f = this.locate(id);
+				if (!f || f.zone !== 'hand') return;
+				return moveObject(s, f.inst, 'graveyard', {
+					from: { player: f.holder, zone: 'hand' },
+					toPlayer: f.holder,
+					graveyardReplacement: true,
+					bumpVersion: true,
+					newTimestamp: true,
+					discardReason: 'discard',
+					discardPlayerId: f.holder.playerId
+				});
+			}
+		);
+		if (paused) return;
+
+		const drawAfter = step.params?.drawAfterDiscardHand;
+		if (drawAfter !== undefined) {
+			const encoded =
+				this.answers[countsKey]?.kind === 'chooseObjects' ? this.answers[countsKey].objectIds : [];
+			for (const entry of encoded) {
+				const [pid, rawCount] = entry.split('|');
+				const pl = this.player(pid);
+				if (!pl || pl.lost) continue;
+				const prevCount = Number(rawCount) || 0;
+				const drawN =
+					drawAfter === 'thatMany' ? prevCount : Math.max(0, this.amount(drawAfter, 0));
+				if (drawN > 0) {
+					p.drawCards(s, pl, drawN);
+					p.addLog(s, 'rule', `${pl.username} drew ${drawN} card(s).`, you.playerId);
+				}
+			}
+		}
+	}
+	// --- End Track P7 ---
+
 	damage(step: EffectStep): void {
 		const s = this.state;
 		const p = P();
 		const you = this.you;
 		const resolvedSrc = this.resolveDamageSource(step.params?.damageSource);
-		if (!resolvedSrc) return;
+		if (!resolvedSrc) {
+			// --- Track P7 ---
+			this.bind(step, []);
+			// --- End Track P7 ---
+			return;
+		}
 		const n = this.amount(step.amount);
-		if (n <= 0) return;
+		if (n <= 0) {
+			// --- Track P7 ---
+			this.bind(step, []);
+			// --- End Track P7 ---
+			return;
+		}
 		const sel = step.subject;
 		const { srcPerm, srcId, srcCard, srcController } = resolvedSrc;
 		const srcInfo = this.sourceDamageInfo(srcPerm, srcCard);
 		let totalDealt = 0;
+		// --- Track P7 ---
+		const damagedPerms: CardInstance[] = [];
+		const isDivided = Boolean(step.params?.divided);
+		// --- End Track P7 ---
 
 		if (sel.k === 'target' && !(this.ctx.targetsBecomeEach ?? this.ctx.item.spellMods?.targetsBecomeEach)) {
 			const targetRefs = this.targetsForSpecIndex(sel.index);
-			for (const t of targetRefs) {
+			for (let idx = 0; idx < targetRefs.length; idx++) {
+				const t = targetRefs[idx];
+				// --- Track P7 ---
+				const amt = isDivided
+					? getLockedTargetDivisionAmount(this.ctx.item, t.id, n, idx, targetRefs.length)
+					: n;
+				if (amt <= 0) continue;
+				// --- End Track P7 ---
 				if (t.kind === 'player') {
 					const pl = this.player(t.id);
-					if (pl) totalDealt += this.dealDamageToPlayer(pl, n, srcId, srcInfo);
+					if (pl) totalDealt += this.dealDamageToPlayer(pl, amt, srcId, srcInfo);
 				} else if (t.kind === 'permanent') {
 					const perm = this.locate(t.id)?.inst;
 					if (perm && perm.zone === 'battlefield') {
-						totalDealt += this.dealDamageToPermanent(perm, n, srcId, srcInfo);
+						const dealt = this.dealDamageToPermanent(perm, amt, srcId, srcInfo);
+						totalDealt += dealt;
+						// --- Track P7 ---
+						if (dealt > 0) damagedPerms.push(perm);
+						// --- End Track P7 ---
 					}
 				}
 			}
+			// --- Track P7 ---
+			this.bind(step, damagedPerms);
+			// --- End Track P7 ---
 			if (srcInfo.hasLifelink) this.applyLifelinkGain(srcController, totalDealt);
 			return;
 		}
@@ -3241,13 +3689,23 @@ class Run {
 			for (const pl of this.players(sel)) {
 				totalDealt += this.dealDamageToPlayer(pl, n, srcId, srcInfo);
 			}
+			// --- Track P7 ---
+			this.bind(step, []);
+			// --- End Track P7 ---
 			if (srcInfo.hasLifelink) this.applyLifelinkGain(srcController, totalDealt);
 			return;
 		}
 		const objs = this.objects(sel).filter((o) => o.zone === 'battlefield');
 		for (const o of objs) {
-			totalDealt += this.dealDamageToPermanent(o, n, srcId, srcInfo);
+			const dealt = this.dealDamageToPermanent(o, n, srcId, srcInfo);
+			totalDealt += dealt;
+			// --- Track P7 ---
+			if (dealt > 0) damagedPerms.push(o);
+			// --- End Track P7 ---
 		}
+		// --- Track P7 ---
+		this.bind(step, damagedPerms);
+		// --- End Track P7 ---
 		const extraPlayers = step.params?.alsoDamagePlayers
 			? this.players({ k: 'player', filter: step.params.alsoDamagePlayers })
 			: [];
@@ -3375,7 +3833,11 @@ class Run {
 					? this.players(sel)
 					: sel.k === 'all' && sel.filter.controller === 'opponent'
 						? this.players({ k: 'player', filter: { relation: 'each_opponent' } })
-						: [you];
+						// --- Track P7 ---
+						: sel.k === 'all' && sel.filter.controller === 'any'
+							? this.players({ k: 'player', filter: { relation: 'each_player' } })
+							// --- End Track P7 ---
+							: [you];
 
 			const filter: ObjectFilter =
 				sel.k === 'all' ? { ...sel.filter, controller: undefined } : {};
@@ -3399,7 +3861,10 @@ class Run {
 					const actorKey = `actor:${this.stepIndex}:${actor.playerId}`;
 					if (actor.isBot || candidates.length <= count || this.answers[actorKey] || this.answers[actor.playerId]) continue;
 					const title = `${this.ctx.title} — Sacrifice ${count} permanent(s)`;
-					this.pauseForChoice(actor, title, `Choose ${count} permanent(s) to sacrifice.`, candidates.map((c) => c.instanceId), count, count, 'battlefield', undefined, actorKey);
+					// --- Track P7 ---
+					const defaultIds = candidates.slice(0, count).map((c) => c.instanceId);
+					this.pauseForChoice(actor, title, `Choose ${count} permanent(s) to sacrifice.`, candidates.map((c) => c.instanceId), count, count, 'battlefield', defaultIds, actorKey);
+					// --- End Track P7 ---
 					return;
 				}
 			}
@@ -5077,6 +5542,30 @@ class Run {
 				}
 				return Boolean(this.ctx.item.sourceMonstrous);
 			}
+			// --- Track P7 ---
+			case 'creatureDiedThisTurn':
+			case 'attackedThisTurn':
+			case 'permanentLeftBattlefieldThisTurn':
+			case 'gainedLifeThisTurn':
+			case 'wasCast': {
+				const f = this.locate(this.ctx.sourceId);
+				const liveObj =
+					f &&
+					f.zone === 'battlefield' &&
+					!f.inst.phasedOut &&
+					(this.ctx.item.sourceObjectVersion === undefined ||
+						(f.inst.objectVersion ?? 1) === this.ctx.item.sourceObjectVersion)
+						? f.inst
+						: undefined;
+				const minLife =
+					c.k === 'gainedLifeThisTurn' && c.min ? this.amount(c.min, 1) : undefined;
+				return evaluateP7Condition(this.state, c, this.you.playerId, {
+					minLife,
+					sourceObj: liveObj,
+					stackItem: this.ctx.item
+				});
+			}
+			// --- End Track P7 ---
 		}
 	}
 

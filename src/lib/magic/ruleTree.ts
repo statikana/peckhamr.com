@@ -12,6 +12,9 @@ import { getKeywordSpec } from './keywords.ts';
 import { effectiveAbilityManaCost } from './runtime/costs.ts';
 import { hasChooseAllModesOptionalCost, isCastConditionMet } from './runtime/kicker.ts';
 import { evaluateCondition as evaluateFilterCondition } from './runtime/objectFilter.ts';
+// --- Track P7 ---
+import { activeTimedLayer1aForPermanent } from './runtime/layerCache.ts';
+// --- End Track P7 ---
 import {
 	evaluatePermanent,
 	getAttachedAbilityStrippingAuraSources,
@@ -305,7 +308,12 @@ function opponentLandColors(state: GameState, actor: PlayerGameState): ManaColor
 			if (oppPerm.phasedOut) continue;
 			const oppEval = evaluatePermanent(state, oppPerm);
 			if (!oppEval.isLand) continue;
-			const oppCard = oppPerm.copiableCard ?? oppPerm.card;
+			// --- Track P7 ---
+			const oppCard =
+				activeTimedLayer1aForPermanent(state, oppPerm)?.card ??
+				oppPerm.copiableCard ??
+				oppPerm.card;
+			// --- End Track P7 ---
 			if (!oppEval.losesAllAbilities) {
 				for (const s of compiledCardManaSteps(oppCard)) {
 					const choice = s.params?.manaChoice;
@@ -834,14 +842,27 @@ export function getEffectiveActivatedAbilities(
 	} else {
 		const breakdown = inspectCardContinuousBreakdown(perm, state);
 		const allInnateRemoved = permanentHasLostAllAbilities(perm, state).lost;
-		const effectiveCard = perm.copiableCard ?? perm.card;
+		// --- Track P7 ---
+		const timedLayer1a = activeTimedLayer1aForPermanent(state, perm);
+		const effectiveCard = timedLayer1a?.card ?? perm.copiableCard ?? perm.card;
+		const baseFaceOpts = instanceFaceOptions(perm, 'battlefield');
+		const effectiveFaceOpts: ResolveObjectFacesOptions = timedLayer1a
+			? {
+					...baseFaceOpts,
+					copiableState: timedLayer1a,
+					faceIndex: timedLayer1a.faceIndex ?? 0,
+					isSingleFaceCopy: timedLayer1a.isSingleFaceCopy,
+					prototyped: Boolean(timedLayer1a.prototyped)
+				}
+			: baseFaceOpts;
+		// --- End Track P7 ---
 		rawAbilities = allInnateRemoved
 			? []
 			: getCardActivatedAbilities(
 					effectiveCard,
 					commanderIdentity,
 					resolveOppLands,
-					instanceFaceOptions(perm, 'battlefield'),
+					effectiveFaceOpts,
 					perm.chosenColor
 				).filter(
 					(ab) =>

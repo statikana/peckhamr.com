@@ -36,6 +36,9 @@ import {
 	type ResolveObjectFacesOptions
 } from './faces.ts';
 import {
+	// --- Track P7 ---
+	activeTimedLayer1aForPermanent,
+	// --- End Track P7 ---
 	boardSnapshotMatches,
 	buildBoardSnapshot,
 	crossCheckLayerResult,
@@ -1225,6 +1228,32 @@ function evaluateLayerCondition(
 		// --- Track P5 ---
 		case 'monstrous':
 			return Boolean(source.inst.isMonstrous);
+		// --- Track P7 ---
+		case 'creatureDiedThisTurn':
+			layerReads |= READ_TURN_HISTORY;
+			return Boolean(state.creatureDiedThisTurn);
+		case 'attackedThisTurn': {
+			layerReads |= READ_TURN_HISTORY;
+			const ctrl = state.players.find((p) => p.playerId === source.controllerId);
+			return Boolean(ctrl?.attackedThisTurn);
+		}
+		case 'permanentLeftBattlefieldThisTurn': {
+			layerReads |= READ_TURN_HISTORY;
+			const ctrl = state.players.find((p) => p.playerId === source.controllerId);
+			return Boolean(ctrl?.permanentLeftBattlefieldThisTurn);
+		}
+		case 'gainedLifeThisTurn': {
+			layerReads |= READ_TURN_HISTORY;
+			const ctrl = state.players.find((p) => p.playerId === source.controllerId);
+			const min = cond.min ? evaluateLayerAmount(cond.min, state, workList, source, affected) : 1;
+			return (ctrl?.lifeGainedThisTurn ?? 0) >= min;
+		}
+		case 'wasCast': {
+			if (!source.inst.wasCast) return false;
+			if (cond.fromHand) return source.inst.castFromZone === 'hand';
+			return true;
+		}
+		// --- End Track P7 ---
 	}
 }
 
@@ -1312,6 +1341,9 @@ const READ_COMMANDER_CAST_COUNT = 32;
 const READ_EXILE = 64;
 const READ_ENERGY = 128;
 const READ_MONARCH = 256;
+// --- Track P7 ---
+const READ_TURN_HISTORY = 512;
+// --- End Track P7 ---
 
 /** Inputs read by the evaluation in progress (bits above). */
 let layerReads = 0;
@@ -1320,9 +1352,21 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 	const fp: unknown[] = [(state as { version?: number }).version, reads];
 	if (reads & READ_ACTIVE_PLAYER) fp.push(state.activePlayerIndex);
 	if (reads & READ_MONARCH) fp.push(state.monarchPlayerId ?? null);
+	// --- Track P7 ---
+	if (reads & READ_TURN_HISTORY) fp.push(Boolean(state.creatureDiedThisTurn));
+	// --- End Track P7 ---
 	for (const p of state.players) {
 		if (reads & READ_LIFE) fp.push(p.life);
 		if (reads & READ_ENERGY) fp.push(p.energyCounters || 0);
+		// --- Track P7 ---
+		if (reads & READ_TURN_HISTORY) {
+			fp.push(
+				Boolean(p.attackedThisTurn),
+				Boolean(p.permanentLeftBattlefieldThisTurn),
+				p.lifeGainedThisTurn || 0
+			);
+		}
+		// --- End Track P7 ---
 		if (reads & READ_COMMANDER_CAST_COUNT) fp.push(playerCommanderCastCount(state, p.playerId));
 		if (reads & READ_ZONE_SIZES) {
 			fp.push(p.hand.length, p.graveyard.length, p.library.length, p.exile.length, p.command.length);
@@ -1364,6 +1408,10 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 			Boolean(perm.blitzed),
 			Boolean(perm.saddledThisTurn),
 			Boolean(perm.isMonstrous),
+			// --- Track P7 ---
+			Boolean(perm.wasCast),
+			perm.castFromZone ?? '',
+			// --- End Track P7 ---
 			perm.kickedCount || 0,
 			perm.kickedTags?.length || 0,
 			perm.grantedKeywords?.length || 0
@@ -1418,7 +1466,10 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 				eff.layer6?.removeKeywords?.length || 0,
 				eff.layer7b ? 1 : 0,
 				eff.layer7b?.setPower ?? 0,
-				eff.layer7b?.setToughness ?? 0
+				eff.layer7b?.setToughness ?? 0,
+				// --- Track P7 ---
+				eff.layer1a
+				// --- End Track P7 ---
 			);
 			for (const a of eff.affected) fp.push(a.instanceId, a.objectVersion ?? 1);
 			if (eff.layer4?.addTypes?.length) for (const t of eff.layer4.addTypes) fp.push(t);
@@ -1444,9 +1495,22 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 	const reads = fp[i++] as number;
 	if (reads & READ_ACTIVE_PLAYER && fp[i++] !== state.activePlayerIndex) return false;
 	if (reads & READ_MONARCH && fp[i++] !== (state.monarchPlayerId ?? null)) return false;
+	// --- Track P7 ---
+	if (reads & READ_TURN_HISTORY && fp[i++] !== Boolean(state.creatureDiedThisTurn)) return false;
+	// --- End Track P7 ---
 	for (const p of state.players) {
 		if (reads & READ_LIFE && fp[i++] !== p.life) return false;
 		if (reads & READ_ENERGY && fp[i++] !== (p.energyCounters || 0)) return false;
+		// --- Track P7 ---
+		if (
+			reads & READ_TURN_HISTORY &&
+			(fp[i++] !== Boolean(p.attackedThisTurn) ||
+				fp[i++] !== Boolean(p.permanentLeftBattlefieldThisTurn) ||
+				fp[i++] !== (p.lifeGainedThisTurn || 0))
+		) {
+			return false;
+		}
+		// --- End Track P7 ---
 		if (reads & READ_COMMANDER_CAST_COUNT && fp[i++] !== playerCommanderCastCount(state, p.playerId)) {
 			return false;
 		}
@@ -1506,6 +1570,10 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 			fp[i++] !== Boolean(perm.blitzed) ||
 			fp[i++] !== Boolean(perm.saddledThisTurn) ||
 			fp[i++] !== Boolean(perm.isMonstrous) ||
+			// --- Track P7 ---
+			fp[i++] !== Boolean(perm.wasCast) ||
+			fp[i++] !== (perm.castFromZone ?? '') ||
+			// --- End Track P7 ---
 			fp[i++] !== (perm.kickedCount || 0) ||
 			fp[i++] !== kickedTagsLen ||
 			fp[i++] !== grantedLen
@@ -1589,7 +1657,10 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 				fp[i++] !== l6Rem ||
 				fp[i++] !== hasL7b ||
 				fp[i++] !== l7bP ||
-				fp[i++] !== l7bT
+				fp[i++] !== l7bT ||
+				// --- Track P7 ---
+				fp[i++] !== eff.layer1a
+				// --- End Track P7 ---
 			) {
 				return false;
 			}
@@ -1651,12 +1722,25 @@ function evaluateLayer1(
 		const baseCard = entry.card;
 
 		// Layer 1a (CR 613.2a): printed characteristics, active face, and copy effects/exceptions.
+		// --- Track P7 ---
+		const baseFaceOpts = instanceFaceOptions(inst, 'battlefield');
+		const timedLayer1a = activeTimedLayer1aForPermanent(state, inst);
+		const effectiveCopy = timedLayer1a ?? inst.copiableState;
 		const layer1aOpts: ResolveObjectFacesOptions = {
-			...instanceFaceOptions(inst, 'battlefield'),
+			...baseFaceOpts,
+			...(timedLayer1a
+				? {
+						copiableState: timedLayer1a,
+						faceIndex: timedLayer1a.faceIndex ?? 0,
+						isSingleFaceCopy: timedLayer1a.isSingleFaceCopy,
+						prototyped: Boolean(timedLayer1a.prototyped)
+					}
+				: {}),
 			isFaceDown: false,
 			faceDownSpec: undefined,
 			faceDownLabel: undefined
 		};
+		// --- End Track P7 ---
 		const layer1aView = resolveObjectFaces(baseCard, layer1aOpts);
 
 		// Layer 1b (CR 613.2b, CR 708.2): face-down status overrides Layer 1a copiable values.
@@ -1708,7 +1792,38 @@ function evaluateLayer1(
 		const statics: StaticDef[] = [];
 		const grantsKeywordViaAbility = new Set<string>();
 		if (!isFaceDown) {
-			const hasCopyColorException = inst.copiableState?.except?.colors !== undefined;
+			// --- Track P7 ---
+			const hasCopyColorException = effectiveCopy?.except?.colors !== undefined;
+			if (effectiveCopy?.except?.addKeywords?.length) {
+				for (const rawKw of effectiveCopy.except.addKeywords) {
+					const kwLow = rawKw.trim().toLowerCase();
+					if (!kwLow) continue;
+					if (!items.some((it) => it.canonicalKey === kwLow)) {
+						const id = `innate_${items.length}_${kwLow}`;
+						itemTimestamps.set(id, -Infinity);
+						items.push({
+							id,
+							canonicalKey: kwLow,
+							name: formatKeywordLabel(kwLow),
+							kind: 'keyword',
+							isInnate: true,
+							sources: ['innate'],
+							removed: false,
+							removedBy: []
+						});
+					}
+					const kwSpec = getKeywordSpec(kwLow);
+					if (kwSpec?.status === 'implemented' && kwSpec.implementation?.kind === 'static') {
+						for (const st of kwSpec.implementation.buildStatics({ name: kwLow })) {
+							if (hasCopyColorException && st.k === 'continuous' && st.layer === '5' && st.affected === 'self') {
+								continue;
+							}
+							statics.push(st);
+						}
+					}
+				}
+			}
+			// --- End Track P7 ---
 			for (const ab of activeAbilityDefs(baseCard, layer1aOpts)) {
 				if (ab.kind === 'static') {
 					statics.push(ab.static);
@@ -1768,7 +1883,9 @@ function evaluateLayer1(
 			baseCard,
 			timestamp: entry.timestamp,
 			name: view.name,
-			manaValue: view.manaValue,
+			// --- Track P7 ---
+			manaValue: !isFaceDown && effectiveCopy?.except?.noManaCost ? 0 : view.manaValue,
+			// --- End Track P7 ---
 			isFaceDown,
 			baseTypeLine,
 			effectiveTypeLine: baseTypeLine,
@@ -2447,6 +2564,14 @@ function evaluatePerPermanent(
 			if (target.workingToughness === null) target.workingToughness = 0;
 
 			// Layer 7a: Characteristic-Defining Abilities (CR 604.3 / 613.4a)
+			// --- Track P7 (CR 707.9d): P/T-setting CDAs are not copied when copy specifies base P/T ---
+			const effectiveCopy7a =
+				activeTimedLayer1aForPermanent(state, target.inst) ?? target.inst.copiableState;
+			const hasCopyPTException =
+				!target.isFaceDown &&
+				(effectiveCopy7a?.except?.power !== undefined ||
+					effectiveCopy7a?.except?.toughness !== undefined);
+			// --- End Track P7 ---
 			if (target.allAbilityRemovalSources.length === 0) {
 				for (const st of target.statics) {
 					if (
@@ -2455,6 +2580,9 @@ function evaluatePerPermanent(
 						st.affected === 'self' &&
 						st.mod.k === 'setBasePT'
 					) {
+						// --- Track P7 ---
+						if (hasCopyPTException) continue;
+						// --- End Track P7 ---
 						if (
 							st.condition &&
 							!evaluateLayerCondition(st.condition, state, workList, target, target)
@@ -3323,7 +3451,9 @@ export function abilityActivePermanents(state: GameState): readonly AbilityActiv
 				for (const perm of player.battlefield) {
 					if (perm.phasedOut) continue;
 					if (fresh.byInstance.get(perm)?.lost.lost) continue;
-					const card = effectiveCardForObject(perm);
+					// --- Track P7 ---
+					const card = activeTimedLayer1aForPermanent(state, perm)?.card ?? effectiveCardForObject(perm);
+					// --- End Track P7 ---
 					out.push({
 						perm,
 						card,
