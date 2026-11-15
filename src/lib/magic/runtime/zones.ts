@@ -35,6 +35,11 @@ import {
 	COLOR_CODE_BY_LABEL
 } from './tuckFreezeChosen.ts';
 import { flushTriggers } from './triggers.ts';
+// --- Track P7 ---
+import {
+	recordZoneChangeTurnHistory,
+	shouldExileInsteadOfDying
+} from './copyPreventionAndEffects.ts';
 // --- Track P9 ---
 import {
 	applyBotWave3EtbChoices,
@@ -586,6 +591,13 @@ function finalizeZoneMove(
 		shuffleDestLibrary = false;
 		effectiveReplacedBy = effectiveReplacedBy ?? 'Unearth';
 	}
+	// --- Track P7 (CR 614.1a): "If that creature would die this turn, exile it instead." ---
+	if (fromZone === 'battlefield' && dest === 'graveyard' && shouldExileInsteadOfDying(state, obj)) {
+		dest = 'exile';
+		shuffleDestLibrary = false;
+		effectiveReplacedBy = effectiveReplacedBy ?? 'Exile instead of dying';
+	}
+	// --- End Track P7 ---
 
 	if (
 		opts.commanderRedirect &&
@@ -677,6 +689,9 @@ function finalizeZoneMove(
 		// --- Track P5 (CR 701.37b / 400.7) ---
 		obj.isMonstrous = undefined;
 		obj.monstrosityX = undefined;
+		// --- Track P7 (CR 400.7) ---
+		obj.wasCast = undefined;
+		obj.castFromZone = undefined;
 		// --- Track P9 (CR 400.7) ---
 		obj.cameUnderControlAt = undefined;
 		obj.dashed = undefined;
@@ -722,6 +737,9 @@ function finalizeZoneMove(
 		// --- Track P5 (CR 701.37b / 400.7) ---
 		obj.isMonstrous = undefined;
 		obj.monstrosityX = undefined;
+		// --- Track P7 (CR 400.7) ---
+		obj.wasCast = undefined;
+		obj.castFromZone = undefined;
 		// --- Track P9 (CR 400.7) ---
 		obj.cameUnderControlAt = undefined;
 		obj.riotHaste = undefined;
@@ -859,7 +877,8 @@ function finalizeZoneMove(
 							obj,
 							cloneCandidates[0],
 							cloneSpec.copyModifications,
-							origCard
+							origCard,
+							state
 						);
 						if (cloneSpec.tapped) obj.tapped = true;
 						ensureCopiedPlaneswalkerStartingLoyalty(state, obj);
@@ -988,6 +1007,17 @@ function finalizeZoneMove(
 			state.log.shift();
 		}
 	}
+	// --- Track P7: record Morbid / Revolt / LTB pruning BEFORE emitting ZoneChange triggers ---
+	const wasCreatureOnBf = Boolean(lki?.typeLine && lki.typeLine.split(/[\s—]+/).includes('Creature'));
+	recordZoneChangeTurnHistory(
+		state,
+		fromZone ?? 'none',
+		dest,
+		lki?.controllerId ?? fromPlayerId ?? obj.ownerId,
+		wasCreatureOnBf,
+		obj
+	);
+	// --- End Track P7 ---
 	if (opts.emit !== false) {
 		emitZoneChange(
 			state,
@@ -1304,6 +1334,16 @@ function moveObjectInner(
 		dest = 'exile';
 		shuffleDestLibrary = false;
 		replacedBy = 'Unearth';
+	} else if (
+		// --- Track P7 (CR 614.1a): "If that creature would die this turn, exile it instead." ---
+		fromZone === 'battlefield' &&
+		to === 'graveyard' &&
+		shouldExileInsteadOfDying(state, obj)
+		// --- End Track P7 ---
+	) {
+		dest = 'exile';
+		shuffleDestLibrary = false;
+		replacedBy = 'Exile instead of dying';
 	} else if (opts.graveyardReplacement && (to === 'graveyard' || to === 'exile')) {
 		pendingZoneRep = resolveZoneChangeReplacements(
 			state,
@@ -1640,7 +1680,8 @@ registerPromptHandler('etb_choice', (state, prompt, answer) => {
 						obj,
 						targetPerm,
 						cloneSpec?.copyModifications,
-						origCard
+						origCard,
+						state
 					);
 					if (cloneSpec?.tapped) obj.tapped = true;
 					ensureCopiedPlaneswalkerStartingLoyalty(state, obj);

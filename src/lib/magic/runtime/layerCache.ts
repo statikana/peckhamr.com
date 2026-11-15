@@ -26,7 +26,39 @@
  * trusted hit.
  */
 import { effectiveCardForObject } from '../scryfall.ts';
-import type { CardInstance, GameState, PlayerGameState, ScryfallCard } from '../types.ts';
+import type {
+	CardInstance,
+	// --- Track P7 ---
+	CopiableState,
+	// --- End Track P7 ---
+	GameState,
+	PlayerGameState,
+	ScryfallCard
+} from '../types.ts';
+
+// --- Track P7 ---
+export function activeTimedLayer1aForPermanent(
+	state: GameState,
+	perm: CardInstance
+): CopiableState | undefined {
+	const effects = state.timedContinuousEffects;
+	if (!effects || effects.length === 0) return undefined;
+	const ver = perm.objectVersion ?? 1;
+	let best: CopiableState | undefined;
+	let bestTs = -Infinity;
+	for (const eff of effects) {
+		if (!eff.layer1a) continue;
+		if (!eff.affected.some((a) => a.instanceId === perm.instanceId && (a.objectVersion ?? 1) === ver)) {
+			continue;
+		}
+		if (eff.timestamp >= bestTs) {
+			bestTs = eff.timestamp;
+			best = eff.layer1a;
+		}
+	}
+	return best;
+}
+// --- End Track P7 ---
 
 export interface BoardEntry {
 	perm: CardInstance;
@@ -113,7 +145,12 @@ function pushFingerprint(state: GameState, fp: unknown[]): void {
 				perm.defaultControllerId,
 				perm.chosenSubType ?? '',
 				perm.chosenColor ?? '',
-				Boolean(perm.exertedThisTurn)
+				Boolean(perm.exertedThisTurn),
+				// --- Track P7 ---
+				perm.copiableState?.except?.addKeywords,
+				Boolean(perm.copiableState?.except?.noManaCost),
+				activeTimedLayer1aForPermanent(state, perm)
+				// --- End Track P7 ---
 			);
 		}
 	}
@@ -186,7 +223,12 @@ function fingerprintMatches(state: GameState, fp: unknown[]): boolean {
 				fp[i++] !== perm.defaultControllerId ||
 				fp[i++] !== (perm.chosenSubType ?? '') ||
 				fp[i++] !== (perm.chosenColor ?? '') ||
-				fp[i++] !== Boolean(perm.exertedThisTurn)
+				fp[i++] !== Boolean(perm.exertedThisTurn) ||
+				// --- Track P7 ---
+				fp[i++] !== perm.copiableState?.except?.addKeywords ||
+				fp[i++] !== Boolean(perm.copiableState?.except?.noManaCost) ||
+				fp[i++] !== activeTimedLayer1aForPermanent(state, perm)
+				// --- End Track P7 ---
 			) {
 				return false;
 			}
@@ -213,13 +255,16 @@ export function buildBoardSnapshot(state: GameState): BoardSnapshot {
 		for (const perm of p.battlefield) {
 			if (perm.phasedOut) continue;
 			order += 1;
+			// --- Track P7 ---
+			const timedLayer1a = activeTimedLayer1aForPermanent(state, perm);
+			// --- End Track P7 ---
 			const entry: BoardEntry = {
 				perm,
 				playerId: p.playerId,
 				player: p,
 				order,
 				timestamp: perm.enteredTimestamp ?? order,
-				card: effectiveCardForObject(perm)
+				card: timedLayer1a?.card ?? effectiveCardForObject(perm)
 			};
 			active.push(entry);
 			if (perm.attachedToId) {

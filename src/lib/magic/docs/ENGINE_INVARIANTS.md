@@ -57,9 +57,10 @@ Identifiers are from `ir.ts`, `types.ts` and `runtime/`; CR numbers are from [`s
    - Copy effects (*Clone*) set `perm.copiableCard` (layer 1) and **never** overwrite the physical card's printed `perm.card`.
    - Copying an object copies only layer-1 characteristics (printed values + copy effects + face-down status + "as ~ enters" copiable choices), never counters, damage, tapped status, attached objects, or layer 2–7d effects.
 5. **All-Zone Characteristic-Defining Abilities (`CR 604.3, 208.2a, 702.73a`)**
-   - Characteristic-defining abilities (Changeling `CR 702.73a`, Devoid `CR 702.114a`, and `*/*` P/T CDAs `CR 208.2a`) function in **all zones** (`hand`, `library`, `graveyard`, `exile`, `command`, `stack`, and `battlefield`).
+   - Characteristic-defining abilities (Changeling `CR 702.73a`, Devoid `CR 702.114a`, and `*/*` / `*/N` / `N/*` / `1+*` P/T CDAs `CR 208.2a`) function in **all zones** (`hand`, `library`, `graveyard`, `exile`, `command`, `stack`, and `battlefield`).
+   - Off-battlefield Layer 7a P/T CDAs (`setBasePT`, `setBasePower`, `setBaseToughness`, including `distinctCardTypesInZone` across all zones) are evaluated in `runtime/objectFilter.ts` (`objectPower` / `objectToughness`) as well as on the battlefield in `runtime/layers.ts` (Track P8, `COMPILER_VERSION = 36`).
    - **Not yet enforced:**
-     - Devoid (`CR 702.114a`) is implemented across all zones (`keywords.ts`, `runtime/objectFilter.ts`, `runtime/layers.ts`, `runtime/keywords-devoid-and-dig.test.ts`); off-battlefield Changeling works in `runtime/objectFilter.ts` and layer breakdowns, while the audit found it missing from library-search matching (`oracle.ts`), layer-7 graveyard subtype counts, and trigger subject matching (`runtime/triggers.ts`).
+     - Off-battlefield Changeling works in `runtime/objectFilter.ts` and layer breakdowns, while library-search legacy helpers (`oracle.ts`) and some trigger subject checks remain audited separately.
 6. **Unclamped Signed Characteristics vs Action Clamping (`CR 107.1b, 208.5`)**
    - Evaluated power and toughness can be negative during layer calculation (so a `1/3` with `-3/-0` and `+2/+0` has power `0`, not `2`). Clamping to `0` happens only when an action uses the number for combat damage assignment (`CR 510.1a`), life gain/loss, token/counter creation, or card draw.
    - Non-creature permanents have no power or toughness (`CR 208.3`), even if P/T is printed on the card (e.g. uncrewed Vehicles or creatures turned into non-creature lands).

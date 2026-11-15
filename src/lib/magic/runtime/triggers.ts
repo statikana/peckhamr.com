@@ -21,7 +21,7 @@
 import { compileCard } from '../compiler/index.ts';
 import { parseCost } from '../compiler/costs.ts';
 import { runtimeTriggers, type RuntimeTrigger } from '../compiler/triggers.ts';
-import type { Amount, Condition, EventFilter, EventKind, ObjectFilter, TriggerDef } from '../ir.ts';
+import type { Amount, Compare, Condition, EventFilter, EventKind, ObjectFilter, TriggerDef } from '../ir.ts';
 import { getKeywordSpec, GRANTED_TRIGGER_KEYWORD_EVENTS } from '../keywords.ts';
 import { evaluatePermanent, inspectCardContinuousBreakdown, permanentHasLostAllAbilities } from '../ruleTree.ts';
 import type {
@@ -46,8 +46,18 @@ import {
 } from './kicker.ts';
 import { withStableLayerInputs } from './layerCache.ts';
 import { activeAbilityDefs, instanceFaceOptions, matchesColorFilter, resolveObjectFaces, stackItemFaceOptions } from './faces.ts';
-import { playerCommanderCastCount } from './objectFilter.ts';
+import {
+	// --- Track P7 ---
+	objectManaValue,
+	objectPower,
+	objectToughness,
+	// --- End Track P7 ---
+	playerCommanderCastCount
+} from './objectFilter.ts';
 import { triggerMultiplier } from './replace.ts';
+// --- Track P7 ---
+import { activeTimedLayer1aForPermanent } from './layerCache.ts';
+import { evaluateP7Condition } from './copyPreventionAndEffects.ts';
 // --- Track P9 ---
 import {
 	cameUnderControlSinceLastUpkeep,
@@ -108,6 +118,10 @@ export interface PendingTrigger {
 	// --- Track P5 ---
 	sourceMonstrous?: boolean;
 	isBecameMonstrous?: boolean;
+	// --- Track P7 ---
+	sourceWasCast?: boolean;
+	sourceCastFromZone?: ZoneType;
+	// --- End Track P7 ---
 	/** Match order (deterministic tie-break for a player's own simultaneous triggers). */
 	order: number;
 }
@@ -207,6 +221,17 @@ function activeFacesForObject(
 		if (stk) return resolveObjectFaces(card, stackItemFaceOptions(stk)).activeFaceIndices;
 	}
 	const opts = instanceFaceOptions(obj, zone);
+	// --- Track P7 ---
+	if (zone === 'battlefield' && state) {
+		const timedL1a = activeTimedLayer1aForPermanent(state, obj);
+		if (timedL1a) {
+			opts.copiableState = timedL1a;
+			opts.faceIndex = timedL1a.faceIndex ?? 0;
+			opts.isSingleFaceCopy = timedL1a.isSingleFaceCopy;
+			opts.prototyped = Boolean(timedL1a.prototyped);
+		}
+	}
+	// --- End Track P7 ---
 	if (overrideFace?.activeFaceIndex !== undefined) opts.faceIndex = overrideFace.activeFaceIndex;
 	if (overrideFace?.unlockedFaces !== undefined) opts.unlockedFaces = overrideFace.unlockedFaces;
 	return resolveObjectFaces(card, opts).activeFaceIndices;
@@ -241,6 +266,9 @@ interface SimultaneousLkiEntry {
 	chosenColor?: ManaColor;
 	monstrous?: boolean;
 	counters?: Partial<Record<CounterType, number>>;
+	// --- Track P7 ---
+	wasCast?: boolean;
+	castFromZone?: ZoneType;
 	// --- Track P9 ---
 	grantedDeathKeywords?: Record<string, number>;
 }
@@ -306,6 +334,10 @@ function persistPendingTriggers(state: GameState, triggers: PendingTrigger[]): v
 			...(t.sourceChosenColor ? { sourceChosenColor: t.sourceChosenColor } : {}),
 			...(t.sourceMonstrous ? { sourceMonstrous: true } : {}),
 			...(t.isBecameMonstrous ? { isBecameMonstrous: true } : {}),
+			// --- Track P7 ---
+			...(t.sourceWasCast ? { sourceWasCast: true } : {}),
+			...(t.sourceCastFromZone ? { sourceCastFromZone: t.sourceCastFromZone } : {}),
+			// --- End Track P7 ---
 			order: t.order
 		});
 	}
@@ -340,6 +372,10 @@ function hydratePendingTriggers(state: GameState, ch: TriggerChannel): void {
 		...(t.sourceChosenColor ? { sourceChosenColor: t.sourceChosenColor } : {}),
 		...(t.sourceMonstrous ? { sourceMonstrous: true } : {}),
 		...(t.isBecameMonstrous ? { isBecameMonstrous: true } : {}),
+		// --- Track P7 ---
+		...(t.sourceWasCast ? { sourceWasCast: true } : {}),
+		...(t.sourceCastFromZone ? { sourceCastFromZone: t.sourceCastFromZone } : {}),
+		// --- End Track P7 ---
 		order: t.order
 	}));
 	ch.pending = [...hydrated, ...ch.pending];
@@ -387,7 +423,9 @@ export function withSimultaneousDestroyLki(
 		const grantedDeathKeywords = lost ? undefined : extractGrantedDeathKeywords(state, perm, ev);
 		map.set(perm, {
 			obj: perm,
-			card: perm.copiableCard ?? perm.card,
+			// --- Track P7 ---
+			card: activeTimedLayer1aForPermanent(state, perm)?.card ?? perm.copiableCard ?? perm.card,
+			// --- End Track P7 ---
 			controllerId: perm.controllerId,
 			lostAllAbilities: lost,
 			typeLine: ev.typeLine,
@@ -406,6 +444,10 @@ export function withSimultaneousDestroyLki(
 			...(perm.chosenSubType ? { chosenSubType: perm.chosenSubType } : {}),
 			...(perm.chosenColor ? { chosenColor: perm.chosenColor } : {}),
 			...(perm.isMonstrous ? { monstrous: true } : {}),
+			// --- Track P7 ---
+			...(perm.wasCast ? { wasCast: true } : {}),
+			...(perm.castFromZone ? { castFromZone: perm.castFromZone } : {}),
+			// --- Track P9 ---
 			counters: { ...(perm.lastKnownCounters ?? perm.counters) },
 			...(grantedDeathKeywords ? { grantedDeathKeywords } : {})
 		});
@@ -460,6 +502,11 @@ interface Subject {
 	colors: string[];
 	typeLine: () => string;
 	hasSubtype: (subtype: string) => boolean;
+	// --- Track P7 ---
+	power: () => number | undefined;
+	toughness: () => number | undefined;
+	manaValue: () => number;
+	// --- End Track P7 ---
 }
 
 function battlefieldSubject(state: GameState, obj: CardInstance, controllerId: string): Subject {
@@ -476,7 +523,26 @@ function battlefieldSubject(state: GameState, obj: CardInstance, controllerId: s
 			return obj.isFaceDown ? [] : ev().colors;
 		},
 		typeLine: () => ev().typeLine,
-		hasSubtype: (s) => ev().hasSubType(s)
+		hasSubtype: (s) => ev().hasSubType(s),
+		// --- Track P7 ---
+		power: () => (ev().isCreature ? ev().power : undefined),
+		toughness: () => (ev().isCreature ? ev().toughness : undefined),
+		manaValue: () => {
+			if (obj.isFaceDown) return 0;
+			const timedL1a = activeTimedLayer1aForPermanent(state, obj);
+			if (timedL1a) {
+				if (timedL1a.except?.noManaCost) return 0;
+				return resolveObjectFaces(timedL1a.card, {
+					zone: 'battlefield',
+					faceIndex: timedL1a.faceIndex ?? 0,
+					isSingleFaceCopy: timedL1a.isSingleFaceCopy,
+					prototyped: Boolean(timedL1a.prototyped),
+					copiableState: timedL1a
+				}).manaValue;
+			}
+			return objectManaValue(state, obj);
+		}
+		// --- End Track P7 ---
 	};
 }
 
@@ -489,7 +555,10 @@ function printedSubject(
 	tapped = obj.tapped,
 	colors: string[] = resolveObjectFaces(card, instanceFaceOptions(obj)).colors,
 	saddled = Boolean(obj.saddledThisTurn),
-	monstrous = Boolean(obj.isMonstrous)
+	monstrous = Boolean(obj.isMonstrous),
+	// --- Track P7 ---
+	lkiStats?: { state?: GameState; power?: number; toughness?: number; manaValue?: number }
+	// --- End Track P7 ---
 ): Subject {
 	return {
 		obj,
@@ -500,7 +569,25 @@ function printedSubject(
 		monstrous,
 		colors,
 		typeLine: () => typeLine,
-		hasSubtype: (s) => hasWord(subtypePart(typeLine), s) || (allCreatureTypes && hasWord(typeLine, 'Creature'))
+		hasSubtype: (s) => hasWord(subtypePart(typeLine), s) || (allCreatureTypes && hasWord(typeLine, 'Creature')),
+		// --- Track P7 ---
+		power: () => {
+			if (lkiStats?.power !== undefined) return lkiStats.power;
+			if (!hasWord(typeLine, 'Creature')) return undefined;
+			if (lkiStats?.state) return objectPower(lkiStats.state, obj) ?? undefined;
+			return resolveObjectFaces(card, instanceFaceOptions(obj)).power ?? 0;
+		},
+		toughness: () => {
+			if (lkiStats?.toughness !== undefined) return lkiStats.toughness;
+			if (!hasWord(typeLine, 'Creature')) return undefined;
+			if (lkiStats?.state) return objectToughness(lkiStats.state, obj) ?? undefined;
+			return resolveObjectFaces(card, instanceFaceOptions(obj)).toughness ?? 0;
+		},
+		manaValue: () => {
+			if (lkiStats?.manaValue !== undefined) return lkiStats.manaValue;
+			return objectManaValue(lkiStats?.state, obj);
+		}
+		// --- End Track P7 ---
 	};
 }
 
@@ -532,6 +619,25 @@ const viewerOf = (source: Source): Viewer => ({
 		: {})
 });
 
+// --- Track P7 ---
+function matchesFilterCompare(actual: number | null | undefined, cmp: Compare): boolean {
+	if (actual === null || actual === undefined || cmp.value.k !== 'const') return false;
+	const target = cmp.value.n;
+	switch (cmp.op) {
+		case '=':
+			return actual === target;
+		case '<':
+			return actual < target;
+		case '<=':
+			return actual <= target;
+		case '>':
+			return actual > target;
+		case '>=':
+			return actual >= target;
+	}
+}
+// --- End Track P7 ---
+
 /** Does `subject` match an ObjectFilter, from the point of view of the trigger's source? */
 function filterMatches(f: ObjectFilter, subject: Subject, source: Viewer): boolean {
 	if (f.other && subject.obj.instanceId === source.id) return false;
@@ -561,6 +667,11 @@ function filterMatches(f: ObjectFilter, subject: Subject, source: Viewer): boole
 	if (f.saddled !== undefined && Boolean(subject.saddled) !== f.saddled) return false;
 	if (f.monstrous !== undefined && Boolean(subject.monstrous) !== f.monstrous) return false;
 	if (f.colors && !matchesColorFilter(subject.colors, f.colors)) return false;
+	// --- Track P7 ---
+	if (f.power && !matchesFilterCompare(subject.power(), f.power)) return false;
+	if (f.toughness && !matchesFilterCompare(subject.toughness(), f.toughness)) return false;
+	if (f.manaValue && !matchesFilterCompare(subject.manaValue(), f.manaValue)) return false;
+	// --- End Track P7 ---
 	return true;
 }
 
@@ -608,6 +719,9 @@ interface Source {
 	chosenColor?: ManaColor;
 	monstrous?: boolean;
 	counters?: Partial<Record<CounterType, number>>;
+	// --- Track P7 ---
+	wasCast?: boolean;
+	castFromZone?: ZoneType;
 	// --- Track P9 ---
 	grantedDeathKeywords?: Record<string, number>;
 }
@@ -623,7 +737,9 @@ function sources(state: GameState, kind: EventKind): Source[] {
 		if (p.lost) continue;
 		for (const perm of p.battlefield) {
 			if (perm.phasedOut) continue;
-			const card = perm.copiableCard ?? perm.card;
+			// --- Track P7 ---
+			const card = activeTimedLayer1aForPermanent(state, perm)?.card ?? perm.copiableCard ?? perm.card;
+			// --- End Track P7 ---
 			for (const faceIndex of activeFacesForObject(perm, card, 'battlefield', state)) {
 				if (triggersOf(card, faceIndex).events.has(kind)) {
 					out.push({ obj: perm, card, faceIndex, controllerId: p.playerId, zone: 'battlefield' });
@@ -726,6 +842,10 @@ function record(state: GameState, source: Source, ability: RuntimeTrigger, kind:
 	const sourceChosenSubType = source.chosenSubType ?? source.obj.chosenSubType;
 	const sourceChosenColor = source.chosenColor ?? source.obj.chosenColor;
 	const sourceMonstrous = Boolean(source.monstrous ?? source.obj.isMonstrous);
+	// --- Track P7 ---
+	const sourceWasCast = Boolean(source.wasCast ?? source.obj.wasCast);
+	const sourceCastFromZone = source.castFromZone ?? source.obj.castFromZone;
+	// --- End Track P7 ---
 	const ch = channel(state);
 	for (let i = 0; i < count; i++) {
 		ch.pending.push({
@@ -751,6 +871,10 @@ function record(state: GameState, source: Source, ability: RuntimeTrigger, kind:
 			...(sourceChosenSubType ? { sourceChosenSubType } : {}),
 			...(sourceChosenColor ? { sourceChosenColor } : {}),
 			...(sourceMonstrous ? { sourceMonstrous: true } : {}),
+			// --- Track P7 ---
+			...(sourceWasCast ? { sourceWasCast: true } : {}),
+			...(sourceCastFromZone ? { sourceCastFromZone } : {}),
+			// --- End Track P7 ---
 			eventPlayer: extras.eventPlayer ?? extras.eventPlayerId,
 			defendingPlayerId: extras.defendingPlayerId,
 			order: ch.nextOrder++
@@ -1294,7 +1418,10 @@ function matchZoneChange(state: GameState, ev: Extract<GameEvent, { kind: 'ZoneC
 						objBatchInfo.tapped,
 						objBatchInfo.colors,
 						Boolean(objBatchInfo.saddled),
-						Boolean(objBatchInfo.monstrous)
+						Boolean(objBatchInfo.monstrous),
+						// --- Track P7 ---
+						{ state, power: objBatchInfo.power, toughness: objBatchInfo.toughness }
+						// --- End Track P7 ---
 					)
 				: ev.lki
 					? printedSubject(
@@ -1306,9 +1433,25 @@ function matchZoneChange(state: GameState, ev: Extract<GameEvent, { kind: 'ZoneC
 							ev.lki.tapped,
 							undefined,
 							Boolean(ev.lki.saddled),
-							Boolean(ev.lki.monstrous)
+							Boolean(ev.lki.monstrous),
+							// --- Track P7 ---
+							{ state, power: ev.lki.power, toughness: ev.lki.toughness }
+							// --- End Track P7 ---
 						)
-					: printedSubject(obj, obj.card, obj.ownerId);
+					: printedSubject(
+							obj,
+							obj.card,
+							obj.ownerId,
+							false,
+							undefined,
+							undefined,
+							undefined,
+							false,
+							false,
+							// --- Track P7 ---
+							{ state }
+							// --- End Track P7 ---
+						);
 	const enters = ev.to === 'battlefield';
 	const label = (source: Source, alt: TriggerDef) => {
 		const self = source.obj === obj;
@@ -1356,6 +1499,10 @@ function matchZoneChange(state: GameState, ev: Extract<GameEvent, { kind: 'ZoneC
 						...(info.chosenSubType ? { chosenSubType: info.chosenSubType } : {}),
 						...(info.chosenColor ? { chosenColor: info.chosenColor } : {}),
 						...(info.monstrous ? { monstrous: true } : {}),
+						// --- Track P7 ---
+						...(info.wasCast ? { wasCast: true } : {}),
+						...(info.castFromZone ? { castFromZone: info.castFromZone } : {}),
+						// --- End Track P7 ---
 						...(info.counters ? { counters: info.counters } : {})
 					});
 				}
@@ -1493,7 +1640,9 @@ function boardCanGrantTriggerKeyword(
 		if (p.lost) continue;
 		for (const perm of p.battlefield) {
 			if (perm.phasedOut) continue;
-			const pCard = perm.copiableCard ?? perm.card;
+			// --- Track P7 ---
+			const pCard = activeTimedLayer1aForPermanent(state, perm)?.card ?? perm.copiableCard ?? perm.card;
+			// --- End Track P7 ---
 			if (activeFacesForObject(perm, pCard, 'battlefield', state).some((fi) => triggersOf(pCard, fi).grantedTriggerEvents.has(kind))) {
 				return true;
 			}
@@ -1512,7 +1661,9 @@ function emitGrantedTriggerKeywords(
 	multiplierFor: (perm: CardInstance) => number
 ): void {
 	const breakdown = inspectCardContinuousBreakdown(perm, state);
-	const card = perm.copiableCard ?? perm.card;
+	// --- Track P7 ---
+	const card = activeTimedLayer1aForPermanent(state, perm)?.card ?? perm.copiableCard ?? perm.card;
+	// --- End Track P7 ---
 	const source: Source = { obj: perm, card, controllerId, zone: 'battlefield' };
 	for (const item of breakdown.items) {
 		if (item.removed) continue;
@@ -1571,7 +1722,17 @@ function matchCast(state: GameState, casterId: string, spell: CardInstance, isCo
 		spellHasChangeling,
 		castView.typeLine,
 		spell.tapped,
-		castView.colors
+		castView.colors,
+		false,
+		false,
+		// --- Track P7 ---
+		{
+			state,
+			power: castView.power,
+			toughness: castView.toughness,
+			manaValue: stackSpell ? objectManaValue(state, stackSpell) : castView.manaValue
+		}
+		// --- End Track P7 ---
 	);
 	let triggerEventStackItem: StackItem | undefined;
 	if (stackSpell) {
@@ -1933,9 +2094,19 @@ function matchDamage(state: GameState, ev: Extract<GameEvent, { kind: 'DamageDea
 	if (dealerSubject) {
 		for (const source of sources(state, 'dealsDamage')) {
 			for (const { ability, alts } of abilitiesFor(state, source, 'dealsDamage')) {
-				const alt = alts.find(
-					(a) => (!a.filter.combat || ev.combat) && damageToFits(a.filter.damageTo) && objectMatches(a.filter, dealerSubject, source)
-				);
+				const alt = alts.find((a) => {
+					if ((a.filter.combat && !ev.combat) || !damageToFits(a.filter.damageTo)) return false;
+					// --- Track P7 ---
+					const rel = a.filter.player?.relation ?? 'any';
+					if (rel === 'you' && (ev.targetKind !== 'player' || ev.targetId !== source.controllerId)) {
+						return false;
+					}
+					if (rel === 'opponent' && (ev.targetKind !== 'player' || ev.targetId === source.controllerId)) {
+						return false;
+					}
+					// --- End Track P7 ---
+					return objectMatches(a.filter, dealerSubject, source);
+				});
 				if (!alt) continue;
 				record(state, source, ability, 'dealsDamage', {
 					label: ev.combat ? 'Combat Damage Trigger' : 'Damage Trigger',
@@ -2018,7 +2189,9 @@ function matchCounter(state: GameState, ev: Extract<GameEvent, { kind: 'CounterP
 		!candidates.some((c) => c.obj.instanceId === ev.objectId) &&
 		!permanentHasLostAllAbilities(ev.object, state).lost
 	) {
-		const card = ev.object.copiableCard ?? ev.object.card;
+		// --- Track P7 ---
+		const card = activeTimedLayer1aForPermanent(state, ev.object)?.card ?? ev.object.copiableCard ?? ev.object.card;
+		// --- End Track P7 ---
 		for (const faceIndex of activeFacesForObject(ev.object, card, 'battlefield', state)) {
 			if (triggersOf(card, faceIndex).events.has('counterPlaced')) {
 				candidates.push({
@@ -2070,7 +2243,9 @@ function matchCounterRemoved(state: GameState, ev: Extract<GameEvent, { kind: 'C
 		!candidates.some((c) => c.obj.instanceId === ev.objectId) &&
 		!permanentHasLostAllAbilities(ev.object, state).lost
 	) {
-		const card = ev.object.copiableCard ?? ev.object.card;
+		// --- Track P7 ---
+		const card = activeTimedLayer1aForPermanent(state, ev.object)?.card ?? ev.object.copiableCard ?? ev.object.card;
+		// --- End Track P7 ---
 		for (const faceIndex of activeFacesForObject(ev.object, card, 'battlefield', state)) {
 			if (triggersOf(card, faceIndex).events.has('counterRemoved')) {
 				candidates.push({
@@ -2130,7 +2305,11 @@ function matchTargeted(state: GameState, ev: Extract<GameEvent, { kind: 'BecameT
 				record(state, source, ability, 'becomesTarget', {
 					label,
 					eventObject: found.obj,
-					targetStackItemId: ev.stackItemId
+					targetStackItemId: ev.stackItemId,
+					// --- Track P7 ---
+					eventPlayerId: ev.controllerId,
+					eventPlayer: ev.controllerId
+					// --- End Track P7 ---
 				});
 			}
 		}
@@ -2397,6 +2576,26 @@ export function evaluateCondition(
 			const found = permanentById(state, sourceInstanceId);
 			if (found) return Boolean(found.obj.isMonstrous);
 			return Boolean(stackItem?.sourceMonstrous);
+		}
+		// --- Track P7 ---
+		case 'creatureDiedThisTurn':
+		case 'attackedThisTurn':
+		case 'permanentLeftBattlefieldThisTurn':
+		case 'gainedLifeThisTurn':
+		case 'wasCast': {
+			const minLife =
+				cond.k === 'gainedLifeThisTurn' && cond.min
+					? (amount(state, cond.min, controllerId, sourceInstanceId, stackItem, source) ?? 1)
+					: undefined;
+			const sourceObj = source?.obj ?? permanentById(state, sourceInstanceId)?.obj;
+			const res = evaluateP7Condition(state, cond, controllerId, {
+				sourceObj,
+				stackItem,
+				sourceWasCast: source?.wasCast ?? stackItem?.sourceWasCast,
+				sourceCastFromZone: source?.castFromZone ?? stackItem?.sourceCastFromZone,
+				minLife
+			});
+			return res;
 		}
 		// --- Track P9 ---
 		case 'cameUnderControlSinceLastUpkeep': {

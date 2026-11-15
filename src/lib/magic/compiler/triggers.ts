@@ -8,7 +8,7 @@
  *
  * compiler/card.ts uses it for every "When/Whenever/At" line.
  */
-import type { Amount, CardDefinition, Condition, CostDef, EffectStep, EventFilter, ModalDef, ObjectFilter, Span, TargetSpec, TriggerDef } from '../ir.ts';
+import type { Amount, CardDefinition, Compare, Condition, CostDef, EffectStep, EventFilter, ModalDef, ObjectFilter, Span, TargetSpec, TriggerDef } from '../ir.ts';
 import { getKeywordSpec } from '../keywords.ts';
 import type { GamePhase, TriggerScope } from '../types.ts';
 import { parseObjectPhrase, singularSubtype } from './costs.ts';
@@ -23,6 +23,7 @@ export interface TriggerParse {
 }
 
 const NUMBER_WORDS: Record<string, number> = {
+	zero: 0,
 	a: 1,
 	an: 1,
 	one: 1,
@@ -121,18 +122,38 @@ function objectSubject(text: string): Subject | null {
 	} else if (!/^another /.test(phrase)) {
 		return null;
 	}
-	// "a creature an opponent controls" / "a creature you don't control".
+	// "a creature an opponent controls" / "a creature you don't control" / "with toughness N [or greater/less]".
 	let controller: ObjectFilter['controller'];
-	const opp = phrase.match(/^(.+) (?:an opponent controls|your opponents control|you don't control)$/);
-	if (opp) {
-		phrase = opp[1];
-		controller = 'opponent';
+	let toughnessCmp: Compare | undefined;
+	while (true) {
+		const opp = phrase.match(/^(.+?)\s+(?:an opponent controls|your opponents control|you don't control)$/i);
+		if (opp && !controller) {
+			phrase = opp[1];
+			controller = 'opponent';
+			continue;
+		}
+		const withToughness = phrase.match(/^(.+?)\s+with toughness (\S+)(?: or (greater|more|less|fewer))?$/i);
+		if (withToughness && !toughnessCmp) {
+			const rawVal = withToughness[2];
+			if (rawVal.toLowerCase() === 'a' || rawVal.toLowerCase() === 'an') return null;
+			const numVal = number(rawVal);
+			if (numVal === null) return null;
+			const dir = withToughness[3]?.toLowerCase();
+			toughnessCmp = { op: !dir ? '=' : dir === 'greater' || dir === 'more' ? '>=' : '<=', value: n(numVal) };
+			phrase = withToughness[1];
+			continue;
+		}
+		break;
 	}
 	const filter = parseObjectPhrase(phrase);
 	if (!filter) return null;
 	if (controller) {
 		if (filter.controller) return null;
 		filter.controller = controller;
+	}
+	if (toughnessCmp) {
+		if (filter.toughness) return null;
+		filter.toughness = toughnessCmp;
 	}
 	return { object: filter, oneOrMore };
 }
@@ -207,7 +228,8 @@ function objectEvent(verb: string, subject: Subject): TriggerDef | null {
 		case 'block':
 			return def('blocks');
 		case 'becomes blocked':
-			return def('becomesBlocked');
+		case 'become blocked':
+			return subject.oneOrMore ? null : def('becomesBlocked');
 		case 'becomes tapped':
 			return def('becomesTapped');
 		case 'becomes crewed':
@@ -218,33 +240,58 @@ function objectEvent(verb: string, subject: Subject): TriggerDef | null {
 		case 'are exerted':
 			return def('exert');
 		case 'is dealt damage':
-			return def('dealtDamage');
+		case 'are dealt damage':
+			return subject.oneOrMore ? null : def('dealtDamage');
 		case 'deals combat damage to a player':
 		case 'deal combat damage to a player':
 			return subject.oneOrMore
 				? def('combatDamageBatchPlayer', { player: { relation: 'any' } })
 				: def('dealsDamage', { combat: true, damageTo: 'player' });
+		case 'deals combat damage to an opponent':
+		case 'deals combat damage to one of your opponents':
 		case 'deal combat damage to an opponent':
 		case 'deal combat damage to one of your opponents':
-			return subject.oneOrMore ? def('combatDamageBatchPlayer', { player: { relation: 'opponent' } }) : null;
+			return subject.oneOrMore
+				? def('combatDamageBatchPlayer', { player: { relation: 'opponent' } })
+				: def('dealsDamage', { combat: true, damageTo: 'player', player: { relation: 'opponent' } });
+		case 'deals combat damage to you':
 		case 'deal combat damage to you':
-			return subject.oneOrMore ? def('combatDamageBatchPlayer', { player: { relation: 'you' } }) : null;
+			return subject.oneOrMore
+				? def('combatDamageBatchPlayer', { player: { relation: 'you' } })
+				: def('dealsDamage', { combat: true, damageTo: 'player', player: { relation: 'you' } });
 		case 'deals combat damage to a creature':
-			return def('dealsDamage', { combat: true, damageTo: 'creature' });
+		case 'deal combat damage to a creature':
+			return subject.oneOrMore ? null : def('dealsDamage', { combat: true, damageTo: 'creature' });
 		case 'deals combat damage to a player or planeswalker':
-			return def('dealsDamage', { combat: true, damageTo: 'playerOrPlaneswalker' });
+		case 'deal combat damage to a player or planeswalker':
+			return subject.oneOrMore ? null : def('dealsDamage', { combat: true, damageTo: 'playerOrPlaneswalker' });
 		case 'deals combat damage':
-			return def('dealsDamage', { combat: true, damageTo: 'any' });
+		case 'deal combat damage':
+			return subject.oneOrMore ? null : def('dealsDamage', { combat: true, damageTo: 'any' });
 		case 'deals damage to a player':
-			return def('dealsDamage', { damageTo: 'player' });
+		case 'deal damage to a player':
+			return subject.oneOrMore ? null : def('dealsDamage', { damageTo: 'player' });
+		case 'deals damage to an opponent':
+		case 'deals damage to one of your opponents':
+		case 'deal damage to an opponent':
+		case 'deal damage to one of your opponents':
+			return subject.oneOrMore
+				? null
+				: def('dealsDamage', { damageTo: 'player', player: { relation: 'opponent' } });
+		case 'deals damage to you':
+		case 'deal damage to you':
+			return subject.oneOrMore
+				? null
+				: def('dealsDamage', { damageTo: 'player', player: { relation: 'you' } });
 		case 'deals damage':
-			return def('dealsDamage', { damageTo: 'any' });
+		case 'deal damage':
+			return subject.oneOrMore ? null : def('dealsDamage', { damageTo: 'any' });
 		case 'becomes the target of a spell or ability':
-			return def('becomesTarget', { targetedBy: 'spellOrAbility' });
+			return subject.oneOrMore ? null : def('becomesTarget', { targetedBy: 'spellOrAbility' });
 		case 'becomes the target of a spell':
-			return def('becomesTarget', { targetedBy: 'spell' });
+			return subject.oneOrMore ? null : def('becomesTarget', { targetedBy: 'spell' });
 		case 'becomes the target of an ability':
-			return def('becomesTarget', { targetedBy: 'ability' });
+			return subject.oneOrMore ? null : def('becomesTarget', { targetedBy: 'ability' });
 		case 'is tapped for mana':
 			return def('tappedForMana');
 		case 'becomes attached to a creature':
@@ -274,6 +321,21 @@ function objectEvent(verb: string, subject: Subject): TriggerDef | null {
 				const qual = parseObjectPhrase(phrase);
 				if (qual) return def('transforms', { toFaceFilter: qual });
 			}
+			const becomesTgt = verb.match(
+				/^becomes? the target of (a spell or ability|a spell|an ability)(?: (an opponent controls|your opponents control|you don't control|you control))?$/i
+			);
+			if (becomesTgt && !subject.oneOrMore) {
+				const rawBy = becomesTgt[1].toLowerCase();
+				const targetedBy: EventFilter['targetedBy'] =
+					rawBy === 'a spell' ? 'spell' : rawBy === 'an ability' ? 'ability' : 'spellOrAbility';
+				const rawCtrl = becomesTgt[2]?.toLowerCase();
+				const player: EventFilter['player'] = !rawCtrl
+					? undefined
+					: rawCtrl === 'you control'
+						? { relation: 'you' }
+						: { relation: 'opponent' };
+				return def('becomesTarget', { targetedBy, ...(player ? { player } : {}) });
+			}
 			return null;
 		}
 	}
@@ -296,9 +358,30 @@ function spellFilter(text: string): EventFilter['object'] | null {
 	const m = text.match(/^(?:a|an) (.+)$/);
 	if (!m) return null;
 	if (m[1] === 'spell') return {};
-	const spell = m[1].match(/^(?:(.+) )?spell((?:\s+of the chosen (?:type|color))+)?$/i);
+	const spell = m[1].match(
+		/^(?:(.+) )?spell((?:\s+(?:of the chosen (?:type|color)|with (?:power|toughness|mana value) \S+(?: or (?:greater|more|less|fewer))?))+)?$/i
+	);
+	if (!spell) return null;
 	// "card" gives modifier-only phrases a noun: "noncreature" -> "noncreature card".
-	return spell ? parseObjectPhrase(`${spell[1] ? `${spell[1]} ` : ''}card${spell[2] ?? ''}`) : null;
+	let phrase = `${spell[1] ? `${spell[1]} ` : ''}card${spell[2] ?? ''}`;
+	let toughnessCmp: Compare | undefined;
+	const withToughness = phrase.match(/^(.+?)\s+with toughness (\S+)(?: or (greater|more|less|fewer))?$/i);
+	if (withToughness) {
+		const rawVal = withToughness[2];
+		if (rawVal.toLowerCase() === 'a' || rawVal.toLowerCase() === 'an') return null;
+		const numVal = number(rawVal);
+		if (numVal === null) return null;
+		const dir = withToughness[3]?.toLowerCase();
+		toughnessCmp = { op: !dir ? '=' : dir === 'greater' || dir === 'more' ? '>=' : '<=', value: n(numVal) };
+		phrase = withToughness[1];
+	}
+	const parsed = parseObjectPhrase(phrase);
+	if (!parsed) return null;
+	if (toughnessCmp) {
+		if (parsed.toughness) return null;
+		parsed.toughness = toughnessCmp;
+	}
+	return parsed;
 }
 
 function discardedCardFilter(text: string): ObjectFilter | null {
@@ -574,6 +657,46 @@ export function parseCondition(text: string): Condition | null {
 	if (/^if an opponent is the monarch$/i.test(t)) return { k: 'isMonarch', relation: 'opponent' };
 	if (/^if a player is the monarch$/i.test(t)) return { k: 'isMonarch', relation: 'any' };
 	if (/^if there is no monarch$/i.test(t)) return { k: 'not', of: { k: 'isMonarch', relation: 'any' } };
+	// --- Track P7 ---
+	if (/^if a creature died this turn$/i.test(t)) return { k: 'creatureDiedThisTurn' };
+	if (/^if (?:no creatures? died|a creature didn't die|a creature did not die) this turn$/i.test(t)) {
+		return { k: 'not', of: { k: 'creatureDiedThisTurn' } };
+	}
+	if (/^if you attacked(?: with a creature)? this turn$/i.test(t)) return { k: 'attackedThisTurn' };
+	if (/^if you (?:didn't|did not) attack(?: with a creature)? this turn$/i.test(t)) {
+		return { k: 'not', of: { k: 'attackedThisTurn' } };
+	}
+	if (
+		/^if a permanent (?:you controlled left the battlefield|left the battlefield under your control) this turn$/i.test(
+			t
+		)
+	) {
+		return { k: 'permanentLeftBattlefieldThisTurn' };
+	}
+	if (
+		/^if no permanents? (?:you controlled left the battlefield|left the battlefield under your control) this turn$/i.test(
+			t
+		)
+	) {
+		return { k: 'not', of: { k: 'permanentLeftBattlefieldThisTurn' } };
+	}
+	if (/^if you(?:'ve| have)? gained life this turn$/i.test(t)) return { k: 'gainedLifeThisTurn' };
+	const gainedMin = t.match(/^if you(?:'ve| have)? gained (\S+) or more life this turn$/i);
+	if (gainedMin && number(gainedMin[1]) !== null) {
+		return { k: 'gainedLifeThisTurn', min: n(number(gainedMin[1])!) };
+	}
+	if (/^if you (?:didn't gain|did not gain|haven't gained|have not gained) life this turn$/i.test(t)) {
+		return { k: 'not', of: { k: 'gainedLifeThisTurn' } };
+	}
+	if (/^if you cast (?:it|~) from your hand$/i.test(t)) return { k: 'wasCast', fromHand: true };
+	if (/^if you (?:didn't|did not) cast (?:it|~) from your hand$/i.test(t)) {
+		return { k: 'not', of: { k: 'wasCast', fromHand: true } };
+	}
+	if (/^if (?:you cast (?:it|~)|(?:it|~) was cast)$/i.test(t)) return { k: 'wasCast' };
+	if (/^if (?:you (?:didn't|did not) cast (?:it|~)|(?:it|~) was(?:n't| not) cast)$/i.test(t)) {
+		return { k: 'not', of: { k: 'wasCast' } };
+	}
+	// --- End Track P7 ---
 	return null;
 }
 
@@ -686,7 +809,11 @@ const RUNTIME_OBJECT_FIELDS: ReadonlySet<string> = new Set([
 	'ofChosenType',
 	'ofChosenColor',
 	// --- Track P5 ---
-	'monstrous'
+	'monstrous',
+	// --- Track P7 ---
+	'power',
+	'toughness',
+	'manaValue'
 ]);
 
 /** EventFilter fields each event kind's matcher checks (runtime/triggers.ts). */
@@ -695,13 +822,13 @@ const RUNTIME_EVENT_FIELDS: Partial<Record<TriggerDef['event'], ReadonlySet<stri
 	cast: new Set(['object', 'player', 'orCopy', 'nthThisTurn', 'targetsSelf']),
 	attacks: new Set(['object', 'oneOrMore', 'player', 'saddled']),
 	combatDamageBatchPlayer: new Set(['object', 'oneOrMore', 'player']),
-	blocks: new Set(['object']),
-	becomesBlocked: new Set(['object']),
-	dealsDamage: new Set(['object', 'orSelf', 'combat', 'damageTo']),
-	dealtDamage: new Set(['object']),
+	blocks: new Set(['object', 'orSelf']),
+	becomesBlocked: new Set(['object', 'orSelf']),
+	dealsDamage: new Set(['object', 'orSelf', 'combat', 'damageTo', 'player']),
+	dealtDamage: new Set(['object', 'orSelf']),
 	phaseBegin: new Set(['phase']),
 	counterPlaced: new Set(['object', 'counter']),
-	becomesTarget: new Set(['object', 'targetedBy']),
+	becomesTarget: new Set(['object', 'orSelf', 'targetedBy', 'player']),
 	attached: new Set(['object', 'host']),
 	tappedForMana: new Set(['object', 'player']),
 	gainLife: new Set(['player']),
@@ -735,6 +862,9 @@ function objectFilterProblem(f: ObjectFilter | undefined): string | null {
 	for (const key of Object.keys(f)) {
 		if (!RUNTIME_OBJECT_FIELDS.has(key)) return `object filter field "${key}"`;
 	}
+	if (f.power && f.power.value.k !== 'const') return 'non-constant power filter';
+	if (f.toughness && f.toughness.value.k !== 'const') return 'non-constant toughness filter';
+	if (f.manaValue && f.manaValue.value.k !== 'const') return 'non-constant manaValue filter';
 	return null;
 }
 
@@ -761,13 +891,28 @@ export function runtimeTriggerProblem(def: TriggerDef): string | null {
 	if (p) return p;
 	if (
 		f.object === 'attachedTo' &&
-		!['attacks', 'dealsDamage', 'tappedForMana', 'becomesTapped'].includes(def.event) &&
+		![
+			'attacks',
+			'blocks',
+			'becomesBlocked',
+			'dealsDamage',
+			'dealtDamage',
+			'becomesTarget',
+			'tappedForMana',
+			'becomesTapped'
+		].includes(def.event) &&
 		!(def.event === 'zoneChange' && f.from === 'battlefield')
 	) {
 		return `"${def.event}" of the attached-to object`;
 	}
 	if (def.event === 'phaseBegin' && (!f.phase || !RUNTIME_PHASES.has(f.phase))) return `phase "${f.phase}"`;
-	if (def.event === 'becomesTarget' && f.targetedBy !== 'spell') return 'targeted by an ability';
+	if (
+		(def.event === 'becomesTarget' || def.event === 'dealsDamage') &&
+		f.player &&
+		!['you', 'opponent', 'any'].includes(f.player.relation)
+	) {
+		return `player "${f.player.relation}"`;
+	}
 	if (def.event === 'cast' && f.player && !['you', 'opponent', 'any'].includes(f.player.relation)) {
 		return `caster "${f.player.relation}"`;
 	}

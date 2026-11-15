@@ -37,7 +37,9 @@ import {
 import type { EffectStep, ModalDef, RestrictionKind, TargetSpec } from './ir.ts';
 import { chooseBotAnswer, effectivePromptChoice, effectivePromptPurpose } from './runtime/choices.ts';
 import { withStableLayerInputs } from './runtime/layerCache.ts';
-import { evaluateCondition, matchesObjectFilter } from './runtime/objectFilter.ts';
+// --- Track P7 ---
+import { evaluateAmount, evaluateCondition, matchesObjectFilter } from './runtime/objectFilter.ts';
+// --- End Track P7 ---
 import type {
 	BotSpeed,
 	CardInstance,
@@ -1612,6 +1614,17 @@ function chooseBotTargetsForSpec(
 	cardInst: CardInstance,
 	spec: TargetSpec
 ): TargetRef[] {
+	// --- Track P7 ---
+	if (spec.divideTotal) {
+		const divCap =
+			spec.divideTotal.k === 'const'
+				? spec.divideTotal.n
+				: spec.divideTotal.k === 'x'
+					? 0
+					: evaluateAmount(spec.divideTotal, { state, controllerId: bot.playerId, source: cardInst });
+		if (divCap <= 0 || divCap < spec.min) return [];
+	}
+	// --- End Track P7 ---
 	const isControlledCreature =
 		spec.kind === 'object' &&
 		spec.filter.controller === 'you' &&
@@ -1822,8 +1835,22 @@ function chooseBotTriggerTargetsInner(
 		// On the wrong side, prefer the least valuable; on the right side, the most.
 		return ga ? value(b) - value(a) : value(a) - value(b);
 	});
-	const wanted = Math.max(spec.min, Math.min(spec.max, ranked.filter(good).length));
-	return ranked.slice(0, Math.min(wanted, spec.max));
+	// --- Track P7 ---
+	let effectiveMax = spec.max;
+	if (spec.divideTotal) {
+		const divCap =
+			spec.divideTotal.k === 'const'
+				? spec.divideTotal.n
+				: spec.divideTotal.k === 'x'
+					? 0
+					: evaluateAmount(spec.divideTotal, { state, controllerId: bot.playerId });
+		if (divCap <= 0) return [];
+		if (divCap < spec.min) return [];
+		effectiveMax = Math.min(spec.max, divCap);
+	}
+	// --- End Track P7 ---
+	const wanted = Math.max(spec.min, Math.min(effectiveMax, ranked.filter(good).length));
+	return ranked.slice(0, Math.min(wanted, effectiveMax));
 }
 
 /**

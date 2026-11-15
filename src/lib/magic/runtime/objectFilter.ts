@@ -27,6 +27,8 @@ import {
 	isObjectForetold
 } from './kicker.ts';
 import { splitSubtypes, hasAllOffBattlefieldAndSpellsColorless } from './layers.ts';
+// --- Track P7 ---
+import { evaluateP7Condition } from './copyPreventionAndEffects.ts';
 // --- Track P8 ---
 import {
 	countDistinctCardTypesInZone,
@@ -687,6 +689,20 @@ export function evaluateCondition(cond: Condition, ctx: FilterContext): boolean 
 			return Boolean(ctx.source?.isMonstrous);
 		case 'matchesFilter':
 			return ctx.source ? matchesObjectFilter(ctx.source, cond.filter, ctx) : false;
+		// --- Track P7 ---
+		case 'creatureDiedThisTurn':
+		case 'attackedThisTurn':
+		case 'permanentLeftBattlefieldThisTurn':
+		case 'gainedLifeThisTurn':
+		case 'wasCast': {
+			const minLife =
+				cond.k === 'gainedLifeThisTurn' && cond.min ? evaluateAmount(cond.min, ctx) : undefined;
+			return evaluateP7Condition(ctx.state, cond, ctx.controllerId, {
+				sourceObj: ctx.source,
+				stackItem: ctx.stackItem,
+				minLife
+			});
+		}
 		// --- Track P8 ---
 		case 'objectState':
 		case 'opponentCount':

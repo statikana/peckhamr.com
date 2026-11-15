@@ -35,7 +35,12 @@ import {
 	resolveObjectFaces,
 	type ResolveObjectFacesOptions
 } from './faces.ts';
-import { withStableLayerInputs } from './layerCache.ts';
+import { activeTimedLayer1aForPermanent, withStableLayerInputs } from './layerCache.ts';
+import {
+	getTimedCantBeBlockedReason,
+	getTimedMinBlockersRequired,
+	isCantBlockThisTurn
+} from './copyPreventionAndEffects.ts';
 import { abilityActivePermanents, evaluatePermanent } from './layers.ts';
 import {
 	evaluateCondition,
@@ -561,6 +566,12 @@ export function getAttackerGroupRestrictionBounds(
 		}
 	}
 
+	const timedMin = getTimedMinBlockersRequired(state, attacker);
+	if (timedMin > minBlockers) {
+		minBlockers = timedMin;
+		minSource = 'Timed evasion';
+	}
+
 	return { minBlockers, maxBlockers, minSource, maxSource };
 }
 
@@ -639,6 +650,14 @@ export function validateAndSolveDefenderBlockersP8(
 			return {
 				ok: false,
 				error: `${blocker.card.name} cannot block.`,
+				bestLegalAssignment: [],
+				maxRequirements: 0
+			};
+		}
+		if (isCantBlockThisTurn(state, blocker)) {
+			return {
+				ok: false,
+				error: `${blocker.card.name} cannot block this turn (CR 509.1b).`,
 				bestLegalAssignment: [],
 				maxRequirements: 0
 			};
@@ -737,6 +756,18 @@ export function validateAndSolveDefenderBlockersP8(
 				maxRequirements: 0
 			};
 		}
+		const assignedBlockers = bIds
+			.map((bId) => defender.battlefield.find((c) => c.instanceId === bId))
+			.filter((c): c is CardInstance => Boolean(c));
+		const timedErr = getTimedCantBeBlockedReason(state, atkCard, assignedBlockers);
+		if (timedErr) {
+			return {
+				ok: false,
+				error: `Strict Rules Violation: ${timedErr}`,
+				bestLegalAssignment: [],
+				maxRequirements: 0
+			};
+		}
 	}
 
 	// Check global max blockers (Silent Arbiter / Dueling Grounds) and cantBlockAlone (CR 509.1b)
@@ -798,6 +829,7 @@ export function validateAndSolveDefenderBlockersP8(
 	for (const perm of defender.battlefield) {
 		if (perm.phasedOut || perm.tapped || !evaluatePermanent(state, perm).isCreature) continue;
 		if (hasRestriction(state, perm, 'cantBlock')) continue;
+		if (isCantBlockThisTurn(state, perm)) continue;
 		eligibleBlockers.push(perm);
 	}
 	if (eligibleBlockers.length === 0) {
@@ -1402,6 +1434,8 @@ export function applyCopyModificationSpecToState(
 		except.names = [selfOriginalName];
 	} else if (mods.overrideName !== undefined) {
 		except.names = [mods.overrideName];
+	} else if (mods.name !== undefined) {
+		except.names = [mods.name];
 	}
 	if (mods.power !== undefined) {
 		except.power = mods.power;
@@ -1430,6 +1464,10 @@ export function applyCopyModificationSpecToState(
 		} else {
 			except.addTypes = mergeUniqueStrings(except.addTypes, mods.addTypes);
 		}
+	}
+	if (mods.setSubtypes !== undefined) {
+		except.subtypes = [...mods.setSubtypes];
+		delete except.addSubtypes;
 	}
 	if (mods.addSubtypes?.length) {
 		if (except.subtypes) {
@@ -1468,7 +1506,8 @@ export function applyCopiedPermanentToInstance(
 	destPerm: CardInstance,
 	targetPerm: CardInstance,
 	mods?: CopyModificationSpec,
-	selfOriginalCard?: ScryfallCard
+	selfOriginalCard?: ScryfallCard,
+	state?: GameState
 ): string {
 	const originalCard = selfOriginalCard ?? destPerm.printedCard ?? destPerm.card;
 	if (targetPerm.isFaceDown) {
@@ -1492,23 +1531,26 @@ export function applyCopiedPermanentToInstance(
 		return resolveObjectFaces(baseCardToCopy, instanceFaceOptions(destPerm, 'battlefield')).name;
 	}
 
-	const sourceCard = effectiveCardForObject(targetPerm);
+	const priorCopy = state
+		? (activeTimedLayer1aForPermanent(state, targetPerm) ?? targetPerm.copiableState)
+		: targetPerm.copiableState;
+	const sourceCard = priorCopy?.card ?? effectiveCardForObject(targetPerm);
 	const baseCardToCopy = JSON.parse(JSON.stringify(sourceCard)) as ScryfallCard;
 	const targetOpts = instanceFaceOptions(targetPerm, 'battlefield');
-	const faceIdx = targetOpts.faceIndex ?? 0;
+	const faceIdx = priorCopy?.faceIndex !== undefined ? priorCopy.faceIndex : (targetOpts.faceIndex ?? 0);
 	const isSingleFaceCopy =
 		faceIdx > 0 ||
-		Boolean(targetPerm.transformed) ||
-		Boolean(targetPerm.copiableState?.isSingleFaceCopy) ||
+		Boolean(!priorCopy && targetPerm.transformed) ||
+		Boolean(priorCopy?.isSingleFaceCopy) ||
 		((baseCardToCopy.layout === 'transform' || baseCardToCopy.layout === 'modal_dfc') &&
 			(baseCardToCopy.faces?.length ?? 0) > 1);
-	const isPrototyped = Boolean(targetPerm.prototyped || targetPerm.copiableState?.prototyped);
+	const isPrototyped = Boolean((!priorCopy && targetPerm.prototyped) || priorCopy?.prototyped);
 	const copiableState: CopiableState = {
 		card: baseCardToCopy,
 		...(faceIdx > 0 || isSingleFaceCopy ? { faceIndex: faceIdx, isSingleFaceCopy: true } : {}),
 		...(isPrototyped ? { prototyped: true } : {}),
-		...(targetPerm.copiableState?.except
-			? { except: { ...targetPerm.copiableState.except } }
+		...(priorCopy?.except
+			? { except: { ...priorCopy.except } }
 			: {})
 	};
 	applyCopyModificationSpecToState(copiableState, baseCardToCopy, mods, originalCard.name);

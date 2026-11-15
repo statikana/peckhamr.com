@@ -508,6 +508,7 @@ describe('Phase 5 (§6): ChoiceSpec and PromptPurpose exhaustiveness guards (#2)
 			join(dir, 'tuckFreezeChosen.ts'),
 			join(dir, 'keywordActions.ts'),
 			join(dir, 'striatedFrames.ts'),
+			join(dir, 'copyPreventionAndEffects.ts'),
 			join(dir, 'staticsLayersAndRestrictions.ts'),
 			join(dir, 'keywordsWave3.ts')
 		];
