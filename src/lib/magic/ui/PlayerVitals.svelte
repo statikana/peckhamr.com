@@ -3,6 +3,7 @@
 	import ManaSymbol from '../ManaSymbol.svelte';
 	import type {
 		CardInstance,
+		CastOption,
 		ManaColor,
 		PlayerGameState,
 		ScryfallCard,
@@ -36,6 +37,8 @@
 		onCompanionToHand?: () => void | Promise<void>;
 		onPlayLandFromLibrary?: (inst: CardInstance, faceIndex?: number) => void | Promise<void>;
 		onCastFromLibrary?: (inst: CardInstance) => void | Promise<void>;
+		onHoverTopLibraryCast?: (inst: CardInstance, option?: CastOption) => void;
+		onLeaveTopLibraryCast?: () => void;
 		onDragTopLibraryCard?: (e: DragEvent, inst: CardInstance) => void;
 		onDragEndTopLibraryCard?: () => void;
 	}
@@ -60,19 +63,79 @@
 		onCompanionToHand,
 		onPlayLandFromLibrary,
 		onCastFromLibrary,
+		onHoverTopLibraryCast,
+		onLeaveTopLibraryCast,
 		onDragTopLibraryCard,
 		onDragEndTopLibraryCard
 	}: Props = $props();
 
 	const MANA_ORB_COLORS: readonly ManaColor[] = ['W', 'U', 'B', 'R', 'G', 'C'];
 
+	function formatColorBreakdown(map: Partial<Record<ManaColor, number>>): string {
+		return MANA_ORB_COLORS.filter((c) => (map[c] ?? 0) > 0)
+			.map((c) => `${map[c]} {${c}}`)
+			.join(', ');
+	}
+
+	function manaOrbTooltip(col: ManaColor, amt: number, previewSpent: number): string {
+		const provParts: string[] = [];
+		const snow = status.snowManaByColor[col] ?? 0;
+		const creature = status.creatureManaByColor[col] ?? 0;
+		const basicLand = status.basicLandManaByColor[col] ?? 0;
+		const treasure = status.treasureManaByColor[col] ?? 0;
+		if (snow > 0) provParts.push(`${snow} Snow`);
+		if (creature > 0) provParts.push(`${creature} from Creature`);
+		if (basicLand > 0) provParts.push(`${basicLand} from Basic Land`);
+		if (treasure > 0) provParts.push(`${treasure} from Treasure`);
+		const provSuffix = provParts.length > 0 ? ` (${provParts.join(', ')})` : '';
+		const spendSuffix = previewSpent > 0 ? ` — auto-tap spends ${previewSpent}` : '';
+		return `${amt} {${col}} in mana pool${provSuffix}${spendSuffix}`;
+	}
+
 	const snowManaTooltip = $derived.by(() => {
 		if (status.snowManaTotal <= 0) return '';
-		const breakdown = MANA_ORB_COLORS.filter((c) => (status.snowManaByColor[c] ?? 0) > 0)
-			.map((c) => `${status.snowManaByColor[c]} {${c}}`)
-			.join(', ');
+		const breakdown = formatColorBreakdown(status.snowManaByColor);
 		return `Snow mana in pool: ${status.snowManaTotal} {S}${breakdown ? ` (${breakdown})` : ''} — spendable on {S} costs (CR 107.4h)`;
 	});
+
+	const creatureManaTooltip = $derived.by(() => {
+		if (status.creatureManaTotal <= 0) return '';
+		const breakdown = formatColorBreakdown(status.creatureManaByColor);
+		return `Creature-produced mana in pool: ${status.creatureManaTotal}${breakdown ? ` (${breakdown})` : ''} — satisfies creature-mana spend restrictions (CR 106.6)`;
+	});
+
+	const basicLandManaTooltip = $derived.by(() => {
+		if (status.basicLandManaTotal <= 0) return '';
+		const breakdown = formatColorBreakdown(status.basicLandManaByColor);
+		return `Basic land mana in pool: ${status.basicLandManaTotal}${breakdown ? ` (${breakdown})` : ''} — satisfies basic-land spend restrictions (CR 106.6)`;
+	});
+
+	const treasureManaTooltip = $derived.by(() => {
+		if (status.treasureManaTotal <= 0) return '';
+		const breakdown = formatColorBreakdown(status.treasureManaByColor);
+		return `Treasure-produced mana in pool: ${status.treasureManaTotal}${breakdown ? ` (${breakdown})` : ''} — tracked for Treasure-mana spend abilities (CR 106.6)`;
+	});
+
+	const commanderTaxLifeLabel = $derived.by(() => {
+		const perCast = status.commanderTaxAsLifePerCast;
+		if (perCast === null || perCast === undefined) return null;
+		let maxCastCount = 0;
+		for (const cmd of status.commanders) {
+			const cnt = player.commanderCastCounts?.[cmd.instanceId] ?? cmd.commanderCastCount ?? 0;
+			if (cnt > maxCastCount) maxCastCount = cnt;
+		}
+		if (maxCastCount > 0) {
+			return `Tax: ${maxCastCount * perCast} life`;
+		}
+		return `Tax: ${perCast} life/cast`;
+	});
+
+	const gameStateTaxDefault = 2;
+	const commanderTaxLifeTooltip = $derived(
+		status.commanderTaxAsLifePerCast !== null
+			? `Commander tax replacement active: pay ${status.commanderTaxAsLifePerCast} life per previous command-zone cast instead of {${gameStateTaxDefault}} mana (CR 903.8)`
+			: ''
+	);
 
 	const ringTooltip = $derived(
 		status.ringLevel > 0
@@ -252,7 +315,7 @@
 			</div>
 		{/if}
 
-		{#if status.turnShieldBadges.length > 0 || status.attackTaxPerCreature || nonShieldRuleLocks.length > 0}
+		{#if status.turnShieldBadges.length > 0 || status.attackTaxPerCreature || commanderTaxLifeLabel || nonShieldRuleLocks.length > 0}
 			<div class="player-shields-row">
 				{#if status.attackTaxPerCreature}
 					<span
@@ -261,6 +324,15 @@
 						title={attackTaxTooltip}
 					>
 						🛡️ Tax {status.attackTaxPerCreature}/atk
+					</span>
+				{/if}
+				{#if commanderTaxLifeLabel}
+					<span
+						class="shield-pill purple"
+						data-testid="vitals-commander-tax-life-pill"
+						title={commanderTaxLifeTooltip}
+					>
+						🩸 {commanderTaxLifeLabel}
 					</span>
 				{/if}
 				{#each status.turnShieldBadges as shield (shield.id)}
@@ -315,7 +387,7 @@
 		</div>
 	{/if}
 
-	<!-- Mana Pool Orbs (Unrestricted + All Restricted Mana Buckets) -->
+	<!-- Mana Pool Orbs (Unrestricted + Provenance + All Restricted Mana Buckets) -->
 	<div class="mana-pool">
 		{#each MANA_ORB_COLORS as col (col)}
 			{@const amt = player.manaPool[col] || 0}
@@ -324,7 +396,7 @@
 				class="mana-orb"
 				class:filled={amt > 0}
 				class:preview-spend={previewSpent > 0}
-				title={`${amt} {${col}} in mana pool${previewSpent > 0 ? ` (auto-tap spends ${previewSpent})` : ''}`}
+				title={manaOrbTooltip(col, amt, previewSpent)}
 			>
 				<ManaSymbol symbol={col} size={15} />
 				<span>{amt}</span>
@@ -338,6 +410,33 @@
 			>
 				<ManaSymbol symbol="S" size={14} />
 				<span>Snow ({status.snowManaTotal})</span>
+			</span>
+		{/if}
+		{#if status.creatureManaTotal > 0}
+			<span
+				class="mana-orb filled provenance-mana creature-prov"
+				data-testid="vitals-creature-mana"
+				title={creatureManaTooltip}
+			>
+				<span>🐾 Creature ({status.creatureManaTotal})</span>
+			</span>
+		{/if}
+		{#if status.basicLandManaTotal > 0}
+			<span
+				class="mana-orb filled provenance-mana basic-prov"
+				data-testid="vitals-basic-land-mana"
+				title={basicLandManaTooltip}
+			>
+				<span>🏔️ Basic Land ({status.basicLandManaTotal})</span>
+			</span>
+		{/if}
+		{#if status.treasureManaTotal > 0}
+			<span
+				class="mana-orb filled provenance-mana treasure-prov"
+				data-testid="vitals-treasure-mana"
+				title={treasureManaTooltip}
+			>
+				<span>🪙 Treasure ({status.treasureManaTotal})</span>
 			</span>
 		{/if}
 		{#each status.restrictedManaEntries as entry (entry.restriction)}
@@ -472,8 +571,16 @@
 					draggable={topLibView.canPlayOrCast}
 					data-game-id={topCard.instanceId}
 					title={`Top of library (${topLibView.visibility === 'revealed' ? 'Revealed' : topLibView.visibility === 'look' ? 'Lookable' : 'Known'} — CR 401.5): ${topCard.card.name}`}
-					onmouseenter={() => onHoverCard?.(topCard.card, topCard)}
-					onmouseleave={() => onLeaveCard?.(topCard.card)}
+					onmouseenter={() => {
+						onHoverCard?.(topCard.card, topCard);
+						if (topLibView.libraryCastOptions.length > 0) {
+							onHoverTopLibraryCast?.(topCard, topLibView.libraryCastOptions[0]);
+						}
+					}}
+					onmouseleave={() => {
+						onLeaveCard?.(topCard.card);
+						onLeaveTopLibraryCast?.();
+					}}
 					onclick={() => onInspectCard?.(topCard.card, topCard)}
 					ondragstart={(e) => onDragTopLibraryCard?.(e, topCard)}
 					ondragend={() => onDragEndTopLibraryCard?.()}
@@ -497,6 +604,8 @@
 						type="button"
 						class="vitals-mini-action"
 						data-testid="vitals-top-lib-cast-btn"
+						onmouseenter={() => onHoverTopLibraryCast?.(topCard, topLibView.libraryCastOptions[0])}
+						onmouseleave={() => onLeaveTopLibraryCast?.()}
 						onclick={() => onCastFromLibrary?.(topCard)}
 					>
 						Cast
@@ -754,6 +863,28 @@
 		color: var(--mp-cyan);
 		background: rgba(120, 220, 232, 0.12);
 		font-size: 0.6rem;
+	}
+	.mana-orb.provenance-mana {
+		grid-column: 1 / -1;
+		justify-content: center;
+		gap: 0.24rem;
+		font-size: 0.58rem;
+		padding: 0.08rem 0.28rem;
+	}
+	.mana-orb.provenance-mana.creature-prov {
+		border-color: var(--mp-green);
+		color: var(--mp-green);
+		background: rgba(169, 220, 118, 0.12);
+	}
+	.mana-orb.provenance-mana.basic-prov {
+		border-color: var(--mp-cyan);
+		color: var(--mp-cyan);
+		background: rgba(120, 220, 232, 0.1);
+	}
+	.mana-orb.provenance-mana.treasure-prov {
+		border-color: #ffd866;
+		color: #ffd866;
+		background: rgba(255, 216, 102, 0.14);
 	}
 	.mana-orb.restricted-mana {
 		grid-column: 1 / -1;

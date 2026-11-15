@@ -105,6 +105,12 @@
 			? `Can't block this turn: ${view.cantBlockAttackerNames.join(', ')}`
 			: `Can't block ${view.cantBlockAttackerCount} creature(s) this turn`
 	);
+
+	const linkedExileTooltip = $derived(
+		view.linkedExileCount > 0
+			? `Linked exile (${view.linkedExileCount} — CR 607.2a): ${view.linkedExileLabels.join(', ')}`
+			: ''
+	);
 </script>
 
 <button
@@ -447,6 +453,15 @@
 					🦖 MONST
 				</span>
 			{/if}
+			{#if view.linkedExileCount > 0}
+				<span
+					class="badge purple"
+					data-testid="linked-exile-badge"
+					title={linkedExileTooltip}
+				>
+					⛓️ {view.linkedExileCount}
+				</span>
+			{/if}
 			{#if view.isSaddled}
 				<span class="badge amber" title="Active mount bonus this turn">🐎</span>
 			{/if}
@@ -776,6 +791,15 @@
 						title="Monstrous permanent (CR 701.37)"
 					>
 						🦖 {isCompact ? 'MONST' : 'Monstrous'}
+					</span>
+				{/if}
+				{#if view.linkedExileCount > 0}
+					<span
+						class="badge purple"
+						data-testid="linked-exile-badge"
+						title={linkedExileTooltip}
+					>
+						⛓️ {view.linkedExileCount}
 					</span>
 				{/if}
 				{#if view.isSaddled}

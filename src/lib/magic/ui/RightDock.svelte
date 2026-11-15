@@ -17,6 +17,7 @@
 
 	let {
 		gameState,
+		viewerId,
 		chatMessages,
 		inspectedCard,
 		inspectedInstance = null,
@@ -41,6 +42,7 @@
 		onSendChat
 	}: {
 		gameState: GameState;
+		viewerId?: string;
 		chatMessages: MagicChatMessage[];
 		inspectedCard: ScryfallCard | null;
 		inspectedInstance?: CardInstance | null;
@@ -109,6 +111,7 @@
 		bind:inspectedFaceIndex
 		height={inspectorHeight}
 		{gameState}
+		{viewerId}
 		breakdownOverride={inspectBreakdown}
 		canResolveManually={canResolveInspectedManually}
 		{onGameAction}

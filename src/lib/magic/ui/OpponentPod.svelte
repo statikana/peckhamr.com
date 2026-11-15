@@ -355,7 +355,7 @@
 		</div>
 	</div>
 
-	{#if status.turnShieldBadges.length > 0 || status.attackTaxPerCreature || nonShieldRuleLocks.length > 0 || status.restrictedManaEntries.length > 0 || status.snowManaTotal > 0}
+	{#if status.turnShieldBadges.length > 0 || status.attackTaxPerCreature || status.commanderTaxAsLifePerCast !== null || nonShieldRuleLocks.length > 0 || status.restrictedManaEntries.length > 0 || status.snowManaTotal > 0 || status.creatureManaTotal > 0 || status.basicLandManaTotal > 0 || status.treasureManaTotal > 0}
 		<div class="opp-status-strip">
 			{#if status.attackTaxPerCreature}
 				<span
@@ -364,6 +364,15 @@
 					title={attackTaxTooltip}
 				>
 					🛡️ Tax {status.attackTaxPerCreature}/atk
+				</span>
+			{/if}
+			{#if status.commanderTaxAsLifePerCast !== null}
+				<span
+					class="shield-pill purple"
+					data-testid="opp-commander-tax-life-pill"
+					title="{status.username} pays {status.commanderTaxAsLifePerCast} life per previous commander cast instead of generic mana (CR 903.8)"
+				>
+					🩸 Tax: {status.commanderTaxAsLifePerCast} life/cast
 				</span>
 			{/if}
 			{#each status.turnShieldBadges as shield (shield.id)}
@@ -388,6 +397,33 @@
 				>
 					<ManaSymbol symbol="S" size={11} />
 					<span>Snow: {status.snowManaTotal}</span>
+				</span>
+			{/if}
+			{#if status.creatureManaTotal > 0}
+				<span
+					class="rm-pill"
+					data-testid="opp-creature-mana"
+					title="{status.username} has {status.creatureManaTotal} creature-produced mana in pool (CR 106.6)"
+				>
+					<span>🐾 {status.creatureManaTotal}</span>
+				</span>
+			{/if}
+			{#if status.basicLandManaTotal > 0}
+				<span
+					class="rm-pill"
+					data-testid="opp-basic-land-mana"
+					title="{status.username} has {status.basicLandManaTotal} basic land mana in pool (CR 106.6)"
+				>
+					<span>🏔️ {status.basicLandManaTotal}</span>
+				</span>
+			{/if}
+			{#if status.treasureManaTotal > 0}
+				<span
+					class="rm-pill"
+					data-testid="opp-treasure-mana"
+					title="{status.username} has {status.treasureManaTotal} Treasure-produced mana in pool (CR 106.6)"
+				>
+					<span>🪙 {status.treasureManaTotal}</span>
 				</span>
 			{/if}
 			{#each status.restrictedManaEntries as rm (rm.restriction)}
@@ -440,7 +476,12 @@
 				{:else if isDungeon}
 					<span class="mc-tag dungeon-tag">DUNGEON</span>
 				{:else}
-					<span class="mc-tag">CMD (+{cmd.commanderCastCount * commanderTaxIncrement})</span>
+					{@const cmdCastCount = opponent.commanderCastCounts?.[cmd.instanceId] ?? cmd.commanderCastCount ?? 0}
+					{#if status.commanderTaxAsLifePerCast !== null && cmdCastCount > 0}
+						<span class="mc-tag">CMD (Tax: {cmdCastCount * status.commanderTaxAsLifePerCast} life)</span>
+					{:else}
+						<span class="mc-tag">CMD (+{cmdCastCount * commanderTaxIncrement})</span>
+					{/if}
 				{/if}
 				<span class="mc-name">{cmd.card.name}</span>
 			</button>

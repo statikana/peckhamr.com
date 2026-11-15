@@ -20,8 +20,8 @@
 	import AltHoverPreview from './ui/AltHoverPreview.svelte';
 	import { previewAbilityAutoTap, previewSpellAutoTap, type AutoTapPreviewResult } from './ui/autoTapPreview.ts';
 	import {
-		DUNGEON_ART_URI, EMBLEM_ART_URI, buildBoardViewModel, computeArrowSignature, sortHandCards,
-		type HandSortDir, type HandSortMode
+		DUNGEON_ART_URI, EMBLEM_ART_URI, buildBoardViewModel, computeArrowSignature,
+		formatCommanderTaxDisplay, sortHandCards, type HandSortDir, type HandSortMode
 	} from './ui/boardViewModel.ts';
 	import CastOptionsModal, { type CastOptionSelection, type HoveredCastOptionContext } from './ui/CastOptionsModal.svelte';
 	import ChoicePromptModal from './ui/ChoicePromptModal.svelte';
@@ -1115,6 +1115,16 @@
 		if (!hasOpenModal) activeAutoTapPreview = null;
 	}
 
+	function handleHoverTopLibraryCast(inst: CardInstance, option?: CastOption): void {
+		if (!me || hasOpenModal) return;
+		const preview = previewSpellAutoTap(gameState, me.playerId, inst.instanceId, option);
+		activeAutoTapPreview = preview.canAutoTap ? preview : null;
+	}
+
+	function handleLeaveTopLibraryCast(): void {
+		if (!hasOpenModal) activeAutoTapPreview = null;
+	}
+
 	// Board, Avatar & Stack Click Handlers
 	async function handlePermanentClick(perm: CardInstance, owner: PlayerGameState): Promise<void> {
 		setInspectedCard(perm.card, perm);
@@ -1807,7 +1817,14 @@
 												{:else if cmd.isDungeon}
 													<span class="badge dungeon-tag">🗺️ DUNGEON</span>
 												{:else}
-													<span class="badge gold">Tax: +{cmd.commanderCastCount * gameState.rules.commanderTaxIncrement}</span>
+													{@const cmdTax = formatCommanderTaxDisplay(gameState, me, cmd, myStatus?.commanderTaxAsLifePerCast ?? null)}
+													{#if cmdTax}
+														<span class="badge {cmdTax.isLifeTax ? 'purple' : 'gold'}" data-testid="pedestal-commander-tax">{cmdTax.badgeText}</span>
+													{:else if myStatus?.commanderTaxAsLifePerCast !== null && myStatus?.commanderTaxAsLifePerCast !== undefined}
+														<span class="badge purple" data-testid="pedestal-commander-tax">Tax: 0 life</span>
+													{:else}
+														<span class="badge gold" data-testid="pedestal-commander-tax">Tax: +0</span>
+													{/if}
 												{/if}
 											</div>
 										</button>
@@ -1911,6 +1928,8 @@
 										faceIndex
 									})}
 								onCastFromLibrary={handleCastFromLibrary}
+								onHoverTopLibraryCast={handleHoverTopLibraryCast}
+								onLeaveTopLibraryCast={handleLeaveTopLibraryCast}
 								onDragTopLibraryCard={(e, inst) => handleCardDragStart(e, inst, 'library')}
 								onDragEndTopLibraryCard={handleCardDragEnd}
 							/>
@@ -1981,7 +2000,7 @@
 		</div>
 
 		<RightDock
-			{gameState} {chatMessages} {inspectedCard} {inspectedInstance} bind:inspectedFaceIndex
+			{gameState} viewerId={me?.playerId ?? ''} {chatMessages} {inspectedCard} {inspectedInstance} bind:inspectedFaceIndex
 			{inspectorHeight} {stackHeight} {inspectBreakdown} {canResolveInspectedManually}
 			isStackDropValid={validDragZones.has('stack')} isStackDragOver={dragOverZone === 'stack' && validDragZones.has('stack')}
 			isDraggingCard={draggingCard !== null} isStackItemTargetable={isStackItemTargetableNow}
