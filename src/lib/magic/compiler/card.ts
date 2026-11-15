@@ -20,6 +20,7 @@ import type {
 	ActivationRestriction,
 	Amount,
 	Characteristics,
+	CompanionDeckConditionId,
 	Condition,
 	CostDef,
 	EffectStep,
@@ -29,6 +30,7 @@ import type {
 	ObjectFilter,
 	PrototypeSpec,
 	SpellAbility,
+	SpellCastRestrictionKind,
 	Span,
 	StaticDef,
 	TargetSpec,
@@ -49,7 +51,14 @@ import {
 	parsePrototypeColorsFromManaCost
 } from '../runtime/striatedFrames.ts';
 import { getCardFaces } from '../scryfall.ts';
-import type { CardLayout, ManaColor, ScryfallCard, ScryfallCardFace, ZoneType } from '../types.ts';
+import {
+	normalizeCounterName,
+	type CardLayout,
+	type ManaColor,
+	type ScryfallCard,
+	type ScryfallCardFace,
+	type ZoneType
+} from '../types.ts';
 import { parseAdditionalCostSentence, parseCost, parseCostModifierSentence, parseObjectPhrase } from './costs.ts';
 import { extractUnparsedTargets, parseEffects, parseModal, parseSpellFace, type EffectParse } from './effects.ts';
 import {
@@ -62,7 +71,7 @@ import { canonicalKickerTag, parseActivatedIfConditionSentence } from './trigger
 import { parseStaticAbility } from './statics.ts';
 import { parseTriggerHeader, runtimeTriggerProblem } from './triggers.ts';
 
-const SUPERTYPES = new Set(['Basic', 'Legendary', 'Snow', 'World', 'Ongoing', 'Elite', 'Host']);
+const SUPERTYPES = new Set(['Basic', 'Legendary', 'Snow', 'World', 'Ongoing', 'Elite', 'Host', 'Token']);
 
 const BASIC_LAND_MANA: Record<string, ManaColor> = {
 	Plains: 'W',
@@ -82,6 +91,7 @@ const SUPPORTED_MULTIFACE_LAYOUTS = new Set<CardLayout>([
 	'adventure',
 	'transform',
 	'flip',
+	'meld',
 	'prepare',
 	'omen'
 ]);
@@ -92,7 +102,10 @@ export function compileSingleFace(
 	layout?: CardLayout
 ): FaceDefinition {
 	const characteristics = buildCharacteristicsForFace(face, topCard, layout);
-	const norm = normalizeFace(face.name, face.oracleText);
+	const isCharacterLegend =
+		characteristics.supertypes.includes('Legendary') &&
+		(characteristics.types.includes('Creature') || characteristics.types.includes('Planeswalker'));
+	const norm = normalizeFace(face.name, face.oracleText, isCharacterLegend);
 
 	// CR 310.11 / playtest gate: non-Siege "Battle — Control Point" cards are explicitly unsupported.
 	if (characteristics.types.includes('Battle') && /\bControl\s+Point\b/i.test(face.typeLine)) {
@@ -195,6 +208,18 @@ export function compileSingleFace(
 		if (maxSpeedOut) {
 			abilities.push(...maxSpeedOut);
 			continue;
+		}
+		const infinityOut = infinityLine(ctx, group, norm.text);
+		if (infinityOut) {
+			abilities.push(...infinityOut);
+			continue;
+		}
+		if (!ctx.isSpell) {
+			const siegeOut = siegeAnchorChoiceGroup(ctx, group, norm.text);
+			if (siegeOut) {
+				abilities.push(...siegeOut);
+				continue;
+			}
 		}
 		if (ctx.isSpell && (isSpreeGroup(group) || isTieredGroup(group))) {
 			spellLines.push(...group);
@@ -827,12 +852,13 @@ function gateAbilityByStriationCondition(
 
 // ---- Grouping -------------------------------------------------------------------------------
 
-/** A modal header and its bullet lines (or Spree header and its `+ ` mode lines) form one ability. */
+/** A modal header and its bullet lines (or Spree `+ ` / Season `{P} —` mode lines) form one ability. */
 function groupLines(lines: NormalizedLine[]): NormalizedLine[][] {
 	const groups: NormalizedLine[][] = [];
 	for (const line of lines) {
 		const prev = groups[groups.length - 1];
 		if (prev && line.text.startsWith('•')) prev.push(line);
+		else if (prev && /^(?:\{P\})+\s*—\s*/i.test(line.text.trim())) prev.push(line);
 		else if (prev && /^spree$/i.test(prev[0].body.trim()) && /^\+\s+/.test(line.text.trim())) prev.push(line);
 		else groups.push([line]);
 	}
@@ -1421,8 +1447,109 @@ function isDashCostKeywordLine(body: string): boolean {
 	return false;
 }
 
-/** "Flying, vigilance", "Equip {2}", "Protection from black". A trailing period means an effect. */
+const SINGLE_KEYWORD_PART_RE =
+	/^(?:enchant|protection from|hexproof from|partner with|craft\s+with\b|gift\s+an?\b|splice\s+onto\b|prototype\b|devour\s+x\b|equip\s+[a-z][a-z '-]*,\s*[a-z]|(?:ward|equip(?:\s+[a-z][a-z ,'-]*?)?|flashback|kicker|multikicker|morph|megamorph|disguise|unearth|buyback|evoke|escape|foretell|plot|entwine|disturb|blitz|cumulative upkeep|offspring|squad|replicate|warp|transmute|level up|reinforce(?:\s+\d+)?|echo|madness|dash|commander ninjutsu|ninjutsu|scavenge|outlast|embalm|eternalize|encore|bestow|escalate|recover|harmonize|miracle|spectacle|surge|awaken(?:\s+\d+)?|emerge|sneak|beam me up|mayhem|web-slinging|partner|cleave|reconfigure|freerunning|impending(?:\s+\d+)?|prowl|more than meets the eye|transfigure|aura swap|cycling|(?:[a-z][a-z -]*\s+)?[a-z]*cycling)\s*[—–-])/i;
+
+const COMPANION_CONDITION_PATTERNS: ReadonlyArray<[RegExp, CompanionDeckConditionId]> = [
+	[
+		/^(?:each nonland card in your starting deck has an even mana value|your starting deck contains only cards with even mana values)\.?$/i,
+		'gyruda'
+	],
+	[
+		/^no card in your starting deck has more than one of the same mana symbol in its mana cost\.?$/i,
+		'jegantha'
+	],
+	[
+		/^each creature card in your starting deck is a cat, elemental, nightmare, dinosaur, or beast card\.?$/i,
+		'kaheera'
+	],
+	[
+		/^your starting deck contains only (?:land cards and cards with mana value 3 or greater|cards with mana value 3 or greater and land cards)\.?$/i,
+		'keruga'
+	],
+	[/^each permanent card in your starting deck has mana value 2 or less\.?$/i, 'lurrus'],
+	[/^each nonland card in your starting deck has a different name\.?$/i, 'lutri'],
+	[
+		/^your starting deck contains only (?:land cards and cards with odd mana values|cards with odd mana values and land cards)\.?$/i,
+		'obosh'
+	],
+	[/^each nonland card in your starting deck shares a card type\.?$/i, 'umori'],
+	[
+		/^your starting deck contains at least twenty cards more than the minimum deck size\.?$/i,
+		'yorion'
+	],
+	[/^each permanent card in your starting deck has an activated ability\.?$/i, 'zirda']
+];
+
+function parseP18bFrameKeywordLine(line: NormalizedLine): AbilityDef[] | null {
+	if (line.abilityWord) return null;
+	const trimmed = line.body.trim();
+	// CR 702.139: "Companion — <deckbuilding condition>"
+	const compMatch = trimmed.match(/^companion\s*—\s*([\s\S]+)$/i);
+	if (compMatch) {
+		const condBody = compMatch[1].trim();
+		const entry = COMPANION_CONDITION_PATTERNS.find(([re]) => re.test(condBody));
+		if (!entry) {
+			return [unsupported('keyword_not_implemented', line.text, line.span, [line.span])];
+		}
+		return [
+			{
+				kind: 'static',
+				static: { k: 'companionCondition', companionId: entry[1] },
+				span: line.span
+			}
+		];
+	}
+	// CR 702.48: "[Subtype / Type] offering" (no period).
+	const offMatch = !trimmed.endsWith('.')
+		? trimmed.match(/^([A-Za-z][A-Za-z -]*?)\s+offering$/i)
+		: null;
+	if (offMatch) {
+		const qualRaw = offMatch[1].trim();
+		const filter = parseMultiOrObjectPhrase(qualRaw);
+		if (!filter || Object.keys(filter).length === 0) {
+			return [unsupported('keyword_not_implemented', line.text, line.span, [line.span])];
+		}
+		return [
+			{
+				kind: 'static',
+				static: { k: 'offering', filter, quality: qualRaw },
+				span: line.span
+			}
+		];
+	}
+	// CR 702.43 + CR 702.44: "Modular—Sunburst" (Arcbound Wanderer).
+	if (/^modular\s*[—–-]\s*sunburst$/i.test(trimmed)) {
+		return [
+			{ kind: 'keyword', keyword: { name: 'sunburst' }, span: line.span },
+			{ kind: 'keyword', keyword: { name: 'modular', n: 0 }, span: line.span }
+		];
+	}
+	return null;
+}
+
+function splitKeywordLineParts(body: string): string[] {
+	const semiSegments =
+		body.includes(';') && !/["“”]/.test(body) ? body.split(/;\s*/) : [body];
+	const out: string[] = [];
+	for (const seg of semiSegments) {
+		const trimmedSeg = seg.trim();
+		if (!trimmedSeg) continue;
+		if (isDashCostKeywordLine(trimmedSeg) || SINGLE_KEYWORD_PART_RE.test(trimmedSeg)) {
+			out.push(trimmedSeg);
+		} else {
+			for (const p of trimmedSeg.split(/,\s*/)) {
+				if (p) out.push(p);
+			}
+		}
+	}
+	return out;
+}
+
+/** "Flying, vigilance", "Flying; fear", "Equip {2}", "Protection from black". A trailing period means an effect. */
 function keywordLine(ctx: Ctx, line: NormalizedLine): AbilityDef[] | null {
+	const frameKw = parseP18bFrameKeywordLine(line);
+	if (frameKw) return frameKw;
 	if (
 		line.abilityWord ||
 		(/\.$/.test(line.body) &&
@@ -1433,15 +1560,9 @@ function keywordLine(ctx: Ctx, line: NormalizedLine): AbilityDef[] | null {
 	) {
 		return null;
 	}
-	// "Enchant creature, land, or planeswalker", "Protection from white, from blue", and composite
-	// dash costs ("Ward—...", "Flashback—...", "Kicker—...", "Morph—...", "Cycling—...", "Escape—...") are one keyword.
-	const parts =
-		isDashCostKeywordLine(line.body) ||
-		/^(?:enchant|protection from|hexproof from|partner with|craft\s+with\b|gift\s+an?\b|splice\s+onto\b|prototype\b|devour\s+x\b|equip\s+[a-z][a-z '-]*,\s*[a-z]|(?:ward|equip(?:\s+[a-z][a-z ,'-]*?)?|flashback|kicker|multikicker|morph|megamorph|disguise|unearth|buyback|evoke|escape|foretell|plot|entwine|disturb|blitz|cumulative upkeep|offspring|squad|replicate|warp|transmute|level up|reinforce(?:\s+\d+)?|echo|madness|dash|commander ninjutsu|ninjutsu|scavenge|outlast|embalm|eternalize|encore|bestow|escalate|recover|harmonize|miracle|spectacle|surge|awaken(?:\s+\d+)?|emerge|sneak|beam me up|mayhem|web-slinging|partner|cleave|reconfigure|freerunning|impending(?:\s+\d+)?|prowl|more than meets the eye|transfigure|aura swap|cycling|(?:[a-z][a-z -]*\s+)?[a-z]*cycling)\s*[—–-])/i.test(
-			line.body
-		)
-			? [line.body]
-			: line.body.split(/,\s*/);
+	// "Enchant creature, land, or planeswalker", "Protection from white, from blue", semicolon-separated
+	// keyword lists ("Flying; ward {2}"), and composite dash costs ("Ward—...", "Flashback—...", ...)
+	const parts = splitKeywordLineParts(line.body);
 	const keywords = parts.map(parseKeyword);
 	if (keywords.some((k) => !k)) return null;
 
@@ -1873,7 +1994,7 @@ function keywordLine(ctx: Ctx, line: NormalizedLine): AbilityDef[] | null {
 		} else if (
 			kwSpec?.parameterKind === 'number' &&
 			!(
-				kwSpec.optionalParameter &&
+				(kwSpec.optionalParameter || keyword.name === 'vanishing') &&
 				keyword.n === undefined &&
 				keyword.cost === undefined &&
 				keyword.param === undefined
@@ -2245,6 +2366,7 @@ function keywordLine(ctx: Ctx, line: NormalizedLine): AbilityDef[] | null {
 								count: 1,
 								upTo: true,
 								statedQuality: true,
+								reveal: true,
 								destinations: [{ zone: 'hand' }],
 								description: `a card named ${partnerName}`
 							}
@@ -2316,9 +2438,11 @@ function sagaChapterLine(group: NormalizedLine[]): AbilityDef[] | null {
 
 	if (group.length > 1) {
 		const bullets = group.slice(1).map((b) => ({ text: b.text, start: b.span.start, end: b.span.end }));
-		const modalParse = /^choose\b/i.test(headerEffectText.trim())
-			? parseModal(headerEffectText, bullets, 'triggered', effectStart)
-			: null;
+		const modalParse =
+			parseExpandedModalP18b(headerEffectText, bullets, 'triggered', effectStart) ??
+			(/^choose\b/i.test(headerEffectText.trim())
+				? parseModal(headerEffectText, bullets, 'triggered', effectStart)
+				: null);
 		const modal = modalParse?.modal;
 		const modesOk =
 			Boolean(modalParse && modal) &&
@@ -2326,7 +2450,7 @@ function sagaChapterLine(group: NormalizedLine[]): AbilityDef[] | null {
 			modal!.modes.length > 0 &&
 			modal!.min >= 0 &&
 			modal!.max >= modal!.min &&
-			modal!.modes.every((m) => interpretableTrigger({ steps: m.effect, targets: m.targets, unparsed: [] }));
+			modalInterpretable(modalParse!, true);
 		if (!modesOk) {
 			const gaps = modalParse?.unparsed.length
 				? modalParse.unparsed
@@ -2336,7 +2460,9 @@ function sagaChapterLine(group: NormalizedLine[]): AbilityDef[] | null {
 		return [{ kind: 'triggered', trigger, targets: [], effect: [], modal, text: fullText, span }];
 	}
 
-	const effect = parseEffects(headerEffectText, effectStart, 'triggered');
+	const effect =
+		parseP18bEffectText(headerEffectText, effectStart, 'triggered', trigger) ??
+		parseEffects(headerEffectText, effectStart, 'triggered');
 	if (!interpretableTrigger(effect)) {
 		const gaps = effect.unparsed.length > 0 ? effect.unparsed : [{ start: effectStart, end: span.end }];
 		return [{ ...unsupported('unparsed', fullText, span, gaps), trigger }];
@@ -2681,17 +2807,135 @@ function maxSpeedLine(ctx: Ctx, group: NormalizedLine[], normText: string): Abil
 	return out;
 }
 
+// --- Track P18b: Infinity ("∞ — <ability>", CR 702.186) & Siege Anchor-Word ETB ("As ~ enters, choose A or B.", CR 614.12c) ---
+
+function infinityLine(ctx: Ctx, group: NormalizedLine[], normText: string): AbilityDef[] | null {
+	const first = group[0];
+	const m = first.text.match(/^∞\s*—\s*/);
+	if (!m) return null;
+	const prefixLen = m[0].length;
+	const innerText = first.text.slice(prefixLen);
+	const innerStart = first.span.start + prefixLen;
+	const innerSpan: Span = { start: innerStart, end: first.span.end };
+	const strippedFirst: NormalizedLine = {
+		rawIndex: first.rawIndex,
+		raw: first.raw,
+		text: innerText,
+		span: innerSpan,
+		body: innerText,
+		bodySpan: innerSpan,
+		sentences: splitSentences(innerText, innerStart)
+	};
+	const innerGroup = [strippedFirst, ...group.slice(1)];
+	const compiled = compilePermanentGroup(ctx, innerGroup);
+	const out: AbilityDef[] = [];
+	const cond: Condition = { k: 'isHarnessed' };
+	for (const ab of compiled) {
+		out.push(...gateAbilityByStriationCondition(ab, cond, normText));
+	}
+	return out;
+}
+
+function siegeAnchorChoiceGroup(
+	ctx: Ctx,
+	group: NormalizedLine[],
+	normText: string
+): AbilityDef[] | null {
+	if (group.length < 2) return null;
+	const first = group[0];
+	const headerMatch = first.body
+		.trim()
+		.match(/^as ~ enters(?: the battlefield)?,\s*choose\s+([A-Za-z][A-Za-z0-9'’ -]*?)\s+or\s+([A-Za-z][A-Za-z0-9'’ -]*?)\.?$/i);
+	if (!headerMatch) return null;
+	const wordA = headerMatch[1].trim();
+	const wordB = headerMatch[2].trim();
+	if (!wordA || !wordB || wordA.toLowerCase() === wordB.toLowerCase()) return null;
+
+	const parsedAnchors: Array<{ word: string; line: NormalizedLine; innerText: string; innerStart: number }> = [];
+	for (const bulletLine of group.slice(1)) {
+		const bm = bulletLine.text.match(/^•\s*([A-Za-z][A-Za-z0-9'’ -]*?)\s*—\s*([\s\S]+)$/);
+		if (!bm) return null;
+		const rawWord = bm[1].trim();
+		const canonicalWord =
+			rawWord.toLowerCase() === wordA.toLowerCase()
+				? wordA
+				: rawWord.toLowerCase() === wordB.toLowerCase()
+					? wordB
+					: null;
+		if (!canonicalWord) return null;
+		const innerText = bm[2];
+		const innerStart = bulletLine.span.end - innerText.length;
+		parsedAnchors.push({ word: canonicalWord, line: bulletLine, innerText, innerStart });
+	}
+
+	const out: AbilityDef[] = [
+		{
+			kind: 'replacement',
+			replacement: {
+				replaces: { event: 'zoneChange', filter: { object: 'self', to: 'battlefield' } },
+				with: { k: 'modify', chooseAnchorWord: [wordA, wordB] },
+				selfReplacement: true
+			},
+			span: first.span
+		}
+	];
+
+	for (const entry of parsedAnchors) {
+		const innerSpan: Span = { start: entry.innerStart, end: entry.line.span.end };
+		const subNorm = normalizeFace('~', entry.innerText);
+		const firstSub = subNorm.lines[0];
+		const bodyText = firstSub ? firstSub.body : entry.innerText;
+		const bodyOffset = Math.max(0, entry.innerText.length - bodyText.length);
+		const bodyStart = entry.innerStart + bodyOffset;
+		const strippedLine: NormalizedLine = {
+			rawIndex: entry.line.rawIndex,
+			raw: entry.line.raw,
+			text: entry.innerText,
+			span: innerSpan,
+			...(firstSub?.abilityWord ? { abilityWord: firstSub.abilityWord } : {}),
+			body: bodyText,
+			bodySpan: { start: bodyStart, end: innerSpan.end },
+			sentences: splitSentences(bodyText, bodyStart)
+		};
+		const compiled = compilePermanentGroup(ctx, [strippedLine]);
+		const cond: Condition = { k: 'anchorWordChosen', word: entry.word };
+		for (const ab of compiled) {
+			out.push(...gateAbilityByStriationCondition(ab, cond, normText));
+		}
+	}
+	return out;
+}
+
+function normalizeConditionForInterpretability(cond: Condition): Condition {
+	if (cond.k === 'anchorWordChosen' || cond.k === 'youWereAttackedThisCombat') {
+		return { k: 'caseSolved' };
+	}
+	if (cond.k === 'not') return { k: 'not', of: normalizeConditionForInterpretability(cond.of) };
+	if (cond.k === 'and' || cond.k === 'or') {
+		return { k: cond.k, of: cond.of.map(normalizeConditionForInterpretability) };
+	}
+	return cond;
+}
+
 function normalizeStepVerbForInterpretability(step: EffectStep): EffectStep {
 	const verb =
-		step.verb === 'prepare' || step.verb === 'unprepare' || step.verb === 'increaseSpeed'
+		step.verb === 'prepare' ||
+		step.verb === 'unprepare' ||
+		step.verb === 'increaseSpeed' ||
+		step.verb === 'meld' ||
+		step.verb === 'harness'
 			? ('suspect' as const)
 			: step.verb;
+	const condition = step.condition ? normalizeConditionForInterpretability(step.condition) : undefined;
 	const delayed = step.delayed
 		? { ...step.delayed, effect: step.delayed.effect.map(normalizeStepVerbForInterpretability) }
 		: undefined;
 	const params = step.params
 		? {
 				...step.params,
+				...(step.params.condition
+					? { condition: normalizeConditionForInterpretability(step.params.condition) }
+					: {}),
 				...(step.params.reflexiveTrigger
 					? {
 							reflexiveTrigger: {
@@ -2719,6 +2963,7 @@ function normalizeStepVerbForInterpretability(step: EffectStep): EffectStep {
 	return {
 		...step,
 		verb,
+		...(condition ? { condition } : {}),
 		...(delayed ? { delayed } : {}),
 		...(params ? { params } : {})
 	};
@@ -2728,9 +2973,40 @@ function staticallyInterpretableP15(
 	parse: { steps: EffectStep[]; targets: TargetSpec[]; modal?: ModalDef; unparsed: unknown[] },
 	allowOptionalPrefix = false
 ): boolean {
+	if (parse.modal?.prefixEffect && parse.modal.prefixEffect.length > 0) {
+		if (
+			!staticallyInterpretable(
+				{
+					steps: parse.modal.prefixEffect.map(normalizeStepVerbForInterpretability),
+					targets: [],
+					unparsed: []
+				},
+				allowOptionalPrefix
+			)
+		) {
+			return false;
+		}
+	}
+	if (parse.modal?.suffixEffect && parse.modal.suffixEffect.length > 0) {
+		if (
+			!staticallyInterpretable(
+				{
+					steps: parse.modal.suffixEffect.map(normalizeStepVerbForInterpretability),
+					targets: [],
+					unparsed: []
+				},
+				allowOptionalPrefix
+			)
+		) {
+			return false;
+		}
+	}
 	const mappedModal: ModalDef | undefined = parse.modal
 		? {
 				...parse.modal,
+				...(parse.modal.conditionalChooseAll
+					? { conditionalChooseAll: normalizeConditionForInterpretability(parse.modal.conditionalChooseAll) }
+					: {}),
 				modes: parse.modal.modes.map((m) => ({
 					...m,
 					effect: m.effect.map(normalizeStepVerbForInterpretability)
@@ -3174,7 +3450,7 @@ function mapAbilityWave4(ab: AbilityDef, opts: Wave4TextRewriteOpts): AbilityDef
 function parseP12TriggerHeader(
 	body: string,
 	bodyStart: number
-): { trigger: TriggerDef; effectStart: number } | null {
+): { trigger: TriggerDef; condition?: Condition; effectStart: number } | null {
 	const classLvl = body.match(/^when ~ becomes level (\d+),\s*/i);
 	if (classLvl) {
 		return {
@@ -3262,7 +3538,838 @@ function parseP12TriggerHeader(
 			effectStart: bodyStart + eerieSelfOrOther[0].length
 		};
 	}
+	// --- Track P18b: Meld step triggers (CR 713) & Kamigawa Flip end-step triggers (CR 710) ---
+	const meldStepHead = body.match(
+		/^at the beginning of (combat on your turn|your upkeep|your end step|your (?:first|precombat) main phase),\s*if (?:(.+?) and )?you both own and control ~ and an? ([a-z][a-z -]*?) named (.+?),\s*(?=(?:exile them\b|you may pay\b|then meld them\b))/i
+	);
+	if (meldStepHead) {
+		const rawStep = meldStepHead[1].toLowerCase();
+		const extraClause = meldStepHead[2]?.trim();
+		const typePhrase = meldStepHead[3].trim();
+		const partnerName = meldStepHead[4].trim();
+		const phase: 'begin_combat' | 'upkeep' | 'end_step' | 'main1' =
+			rawStep === 'combat on your turn'
+				? 'begin_combat'
+				: rawStep === 'your upkeep'
+					? 'upkeep'
+					: rawStep === 'your end step'
+						? 'end_step'
+						: 'main1';
+		const partnerFilter = parseMultiOrObjectPhrase(typePhrase) ?? {};
+		const partnerCond: Condition = {
+			k: 'compare',
+			left: {
+				k: 'count',
+				of: {
+					...partnerFilter,
+					named: partnerName,
+					controller: 'you',
+					zone: 'battlefield',
+					other: true
+				}
+			},
+			op: '>=',
+			right: { k: 'const', n: 1 }
+		};
+		let cond: Condition | null = partnerCond;
+		if (extraClause) {
+			const extraCond = parseP18bInterveningConditionClause(extraClause);
+			cond = extraCond ? { k: 'and', of: [extraCond, partnerCond] } : null;
+		}
+		if (cond) {
+			return {
+				trigger: {
+					event: 'phaseBegin',
+					filter: { phase },
+					scope: 'controller_turn'
+				},
+				condition: cond,
+				effectStart: bodyStart + meldStepHead[0].length
+			};
+		}
+	}
+	const flipCounterEndStep = body.match(
+		/^at the beginning of (the|each|your) end step,\s*if there (?:is|are) (\S+) or more ([a-z0-9 +'-]+?) counters? on ~,\s*/i
+	);
+	if (flipCounterEndStep) {
+		const scopeWord = flipCounterEndStep[1].toLowerCase();
+		const n = parseSmallNumberToken(flipCounterEndStep[2]);
+		const counter = flipCounterEndStep[3].trim().toLowerCase();
+		if (n !== null && counter) {
+			return {
+				trigger: {
+					event: 'phaseBegin',
+					filter: { phase: 'end_step' },
+					scope: scopeWord === 'your' ? 'controller_turn' : 'each_turn'
+				},
+				condition: {
+					k: 'compare',
+					left: { k: 'countersOn', counter, of: { k: 'self' } },
+					op: '>=',
+					right: { k: 'const', n }
+				},
+				effectStart: bodyStart + flipCounterEndStep[0].length
+			};
+		}
+	}
+	const flipDiedEndStep = body.match(
+		/^at the beginning of (the|each|your) end step,\s*if (\S+) or more creatures died this turn,\s*/i
+	);
+	if (flipDiedEndStep) {
+		const scopeWord = flipDiedEndStep[1].toLowerCase();
+		const n = parseSmallNumberToken(flipDiedEndStep[2]);
+		if (n !== null) {
+			return {
+				trigger: {
+					event: 'phaseBegin',
+					filter: { phase: 'end_step' },
+					scope: scopeWord === 'your' ? 'controller_turn' : 'each_turn'
+				},
+				condition: {
+					k: 'compare',
+					left: { k: 'gravestormCount' },
+					op: '>=',
+					right: { k: 'const', n }
+				},
+				effectStart: bodyStart + flipDiedEndStep[0].length
+			};
+		}
+	}
+	const flipEnchantedEndStep = body.match(
+		/^at the beginning of (the|each|your) end step,\s*if ~ is enchanted by (\S+) or more auras,\s*/i
+	);
+	if (flipEnchantedEndStep) {
+		const scopeWord = flipEnchantedEndStep[1].toLowerCase();
+		const n = parseSmallNumberToken(flipEnchantedEndStep[2]);
+		if (n !== null) {
+			return {
+				trigger: {
+					event: 'phaseBegin',
+					filter: { phase: 'end_step' },
+					scope: scopeWord === 'your' ? 'controller_turn' : 'each_turn'
+				},
+				condition: {
+					k: 'compare',
+					left: { k: 'attachmentsOn', target: 'self', filter: { subtypes: ['Aura'] } },
+					op: '>=',
+					right: { k: 'const', n }
+				},
+				effectStart: bodyStart + flipEnchantedEndStep[0].length
+			};
+		}
+	}
 	return null;
+}
+
+function parseP18bInterveningConditionClause(raw: string): Condition | null {
+	const s = raw.trim().replace(/\.$/, '').trim();
+	const gyQual = s.match(/^there are (\S+) or more (.+?) cards? in your graveyard$/i);
+	if (gyQual) {
+		const n = parseSmallNumberToken(gyQual[1]);
+		const filter = parseMultiOrObjectPhrase(gyQual[2].trim());
+		if (n !== null && filter) {
+			return {
+				k: 'compare',
+				left: { k: 'count', of: { ...filter, controller: 'you', zone: 'graveyard' } },
+				op: '>=',
+				right: { k: 'const', n }
+			};
+		}
+	}
+	const ctrSelf = s.match(/^there (?:is|are) (\S+) or more ([a-z0-9 +'-]+?) counters? on ~$/i);
+	if (ctrSelf) {
+		const n = parseSmallNumberToken(ctrSelf[1]);
+		const counter = normalizeCounterName(ctrSelf[2].trim()) ?? ctrSelf[2].trim().toLowerCase();
+		if (n !== null && counter) {
+			return {
+				k: 'compare',
+				left: { k: 'countersOn', counter, of: { k: 'self' } },
+				op: '>=',
+				right: { k: 'const', n }
+			};
+		}
+	}
+	if (/^(?:you['’]ve been attacked this step|you['’]re being attacked|a creature is attacking you)$/i.test(s)) {
+		return { k: 'youWereAttackedThisCombat' };
+	}
+	const castAnother = s.match(/^you['’]ve cast another (.+?) spell this turn$/i);
+	if (castAnother) {
+		const q = castAnother[1].trim();
+		const filter = parseMultiOrObjectPhrase(q) ?? parseMultiOrObjectPhrase(`${q} card`);
+		if (filter) {
+			return { k: 'spellsCastThisTurnCount', min: 1, filter };
+		}
+	}
+	const twoCtrl = s.match(/^you control an? ([a-z][a-z -]*?) and an? ([a-z][a-z -]*?)$/i);
+	if (twoCtrl) {
+		const f1 = parseMultiOrObjectPhrase(twoCtrl[1].trim());
+		const f2 = parseMultiOrObjectPhrase(twoCtrl[2].trim());
+		if (f1 && f2) {
+			return {
+				k: 'and',
+				of: [
+					{
+						k: 'compare',
+						left: { k: 'count', of: { ...f1, controller: 'you', zone: 'battlefield' } },
+						op: '>=',
+						right: { k: 'const', n: 1 }
+					},
+					{
+						k: 'compare',
+						left: { k: 'count', of: { ...f2, controller: 'you', zone: 'battlefield' } },
+						op: '>=',
+						right: { k: 'const', n: 1 }
+					}
+				]
+			};
+		}
+	}
+	return parseP15ActivatedIfConditionClause(s);
+}
+
+function parseP18bEffectText(
+	rawEffect: string,
+	effectStart: number,
+	context: 'spell' | 'activated' | 'triggered',
+	trigger?: TriggerDef
+): EffectParse | null {
+	const trimmed = rawEffect.trim();
+	if (!trimmed) return null;
+	const fullSpan: Span = { start: effectStart, end: effectStart + rawEffect.length };
+
+	// CR 701.64: "Harness ~." / "Harness it."
+	if (/^harness (?:~|it)\.?$/i.test(trimmed)) {
+		return {
+			steps: [{ verb: 'harness', subject: { k: 'self' }, span: fullSpan }],
+			targets: [],
+			unparsed: []
+		};
+	}
+
+	// CR 710: "return ~ / it to the battlefield flipped." (Homura, Human Ascendant)
+	if (
+		/^return (?:~|it) to the battlefield flipped(?:\s+under (?:its|your) owner's control)?\.?$/i.test(
+			trimmed
+		)
+	) {
+		return {
+			steps: [
+				{
+					verb: 'move',
+					subject: { k: 'self' },
+					params: { from: 'graveyard', to: 'battlefield', enteredFlipped: true },
+					span: fullSpan
+				}
+			],
+			targets: [],
+			unparsed: []
+		};
+	}
+
+	// CR 713 / CR 701.42: Direct or conditional Meld ("exile them, then meld them into <Result>.")
+	const condMeld = trimmed.match(
+		/^(?:if you both own and control ~ and an? ([a-z][a-z -]*?) named (.+?),\s*)?exile them,\s*then meld them into ([^.]+)\.(?:\s*it enters tapped and attacking\.)?$/i
+	);
+	if (condMeld) {
+		let partnerName = condMeld[2]?.trim();
+		if (!partnerName && trigger) {
+			// Recover partnerName from intervening-if condition in triggerLineCore via caller or rawEffect
+		}
+		if (partnerName) {
+			const tappedAtk = /\bit enters tapped and attacking\.?$/i.test(trimmed);
+			return {
+				steps: [
+					{
+						verb: 'meld',
+						subject: { k: 'self' },
+						params: {
+							meldPartnerName: partnerName,
+							meldResultName: condMeld[3].trim(),
+							...(tappedAtk ? { meldTappedAndAttacking: true } : {})
+						},
+						span: fullSpan
+					}
+				],
+				targets: [],
+				unparsed: []
+			};
+		}
+	}
+
+	// Synthetic / explicit Meld: "Exile ~ and a/target [permanent] named <Partner>, then meld them into <Result>."
+	const directMeld = trimmed.match(
+		/^exile ~ and (?:an?|target) [a-z][a-z -]*? (?:you (?:both own and )?control )?named (.+?),\s*then meld them into ([^.]+)\.(?:\s*it enters tapped and attacking\.)?$/i
+	);
+	if (directMeld) {
+		const tappedAtk = /\bit enters tapped and attacking\.?$/i.test(trimmed);
+		return {
+			steps: [
+				{
+					verb: 'meld',
+					subject: { k: 'self' },
+					params: {
+						meldPartnerName: directMeld[1].trim(),
+						meldResultName: directMeld[2].trim(),
+						...(tappedAtk ? { meldTappedAndAttacking: true } : {})
+					},
+					span: fullSpan
+				}
+			],
+			targets: [],
+			unparsed: []
+		};
+	}
+
+	// Attack trigger + Meld rider (Mishra, Claimed by Gix):
+	// "<PrefixSentence>. If ~ and a <type> named <Partner> are attacking, and you both own and control them, exile them, then meld them into <Result>. [It enters tapped and attacking.]"
+	const atkMeldRider = trimmed.match(
+		/^([\s\S]+?\.)\s+if ~ and an? [a-z][a-z -]*? named (.+?) are attacking,\s*and you both own and control them,\s*exile them,\s*then meld them into ([^.]+)\.(?:\s*it enters tapped and attacking\.)?$/i
+	);
+	if (atkMeldRider) {
+		const preText = atkMeldRider[1];
+		const preParse = parseEffects(preText, effectStart, context, trigger);
+		if (preParse.unparsed.length === 0 && preParse.steps.length > 0) {
+			const tappedAtk = /\bit enters tapped and attacking\.?$/i.test(trimmed);
+			const meldSpan: Span = { start: effectStart + preText.length + 1, end: fullSpan.end };
+			return {
+				steps: [
+					...preParse.steps,
+					{
+						verb: 'meld',
+						subject: { k: 'self' },
+						params: {
+							meldPartnerName: atkMeldRider[2].trim(),
+							meldResultName: atkMeldRider[3].trim(),
+							meldPartnerMustAttack: true,
+							...(tappedAtk ? { meldTappedAndAttacking: true } : {})
+						},
+						span: meldSpan
+					}
+				],
+				targets: preParse.targets,
+				unparsed: []
+			};
+		}
+	}
+
+	// CR 710: Kamigawa Flip conditional "flip ~." riders & standalone sentences:
+	// - "If you have <N> or more [<filter>] cards in [your] hand, flip ~." (Sasaya / Jushi Apprentice)
+	// - "<Prefix>. [Then] if you have <N> or more [<filter>] cards in [your] hand, flip ~."
+	// - "<Prefix>. [Then] if that player has no cards in hand, flip ~." (Nezumi Shortfang)
+	// - "<Prefix>. [Then] if no cards are in that graveyard, flip ~." (Nezumi Graverobber)
+	const standaloneHandFlip = trimmed.match(
+		/^if you have (\S+) or more (?:(.+?) )?cards? in (?:your )?hand,\s*flip (?:~|it)\.?$/i
+	);
+	if (standaloneHandFlip) {
+		const n = parseSmallNumberToken(standaloneHandFlip[1]);
+		const rawFilter = standaloneHandFlip[2]?.trim();
+		const filter = rawFilter ? parseMultiOrObjectPhrase(rawFilter) : {};
+		if (n !== null && filter !== null) {
+			const cond: Condition = rawFilter
+				? {
+						k: 'compare',
+						left: { k: 'count', of: { ...filter, controller: 'you', zone: 'hand' } },
+						op: '>=',
+						right: { k: 'const', n }
+					}
+				: {
+						k: 'compare',
+						left: { k: 'cardsIn', zone: 'hand', of: { k: 'you' } },
+						op: '>=',
+						right: { k: 'const', n }
+					};
+			return {
+				steps: [{ verb: 'flip', subject: { k: 'self' }, condition: cond, span: fullSpan }],
+				targets: [],
+				unparsed: []
+			};
+		}
+	}
+
+	const prefixCondFlip = trimmed.match(
+		/^([\s\S]+?\.)\s+(?:then\s+)?if (you have (\S+) or more (?:(.+?) )?cards? in (?:your )?hand|that player has no cards in hand|no cards are in that graveyard),\s*flip (?:~|it)\.?$/i
+	);
+	if (prefixCondFlip) {
+		const preText = prefixCondFlip[1];
+		const condText = prefixCondFlip[2].toLowerCase();
+		const preParse = parseEffects(preText, effectStart, context, trigger);
+		if (preParse.unparsed.length === 0 && preParse.steps.length > 0) {
+			let flipCond: Condition | null = null;
+			if (condText === 'that player has no cards in hand' && preParse.targets.length > 0) {
+				flipCond = {
+					k: 'compare',
+					left: { k: 'cardsIn', zone: 'hand', of: { k: 'target', index: 0 } },
+					op: '=',
+					right: { k: 'const', n: 0 }
+				};
+			} else if (condText === 'no cards are in that graveyard' && preParse.targets.length > 0) {
+				flipCond = {
+					k: 'compare',
+					left: {
+						k: 'cardsIn',
+						zone: 'graveyard',
+						of: { k: 'ownerOf', of: { k: 'target', index: 0 } }
+					},
+					op: '=',
+					right: { k: 'const', n: 0 }
+				};
+			} else if (prefixCondFlip[3]) {
+				const n = parseSmallNumberToken(prefixCondFlip[3]);
+				const rawFilter = prefixCondFlip[4]?.trim();
+				const filter = rawFilter ? parseMultiOrObjectPhrase(rawFilter) : {};
+				if (n !== null && filter !== null) {
+					flipCond = rawFilter
+						? {
+								k: 'compare',
+								left: { k: 'count', of: { ...filter, controller: 'you', zone: 'hand' } },
+								op: '>=',
+								right: { k: 'const', n }
+							}
+						: {
+								k: 'compare',
+								left: { k: 'cardsIn', zone: 'hand', of: { k: 'you' } },
+								op: '>=',
+								right: { k: 'const', n }
+							};
+				}
+			}
+			if (flipCond) {
+				const flipSpan: Span = { start: effectStart + preText.length + 1, end: fullSpan.end };
+				return {
+					steps: [
+						...preParse.steps,
+						{ verb: 'flip', subject: { k: 'self' }, condition: flipCond, span: flipSpan }
+					],
+					targets: preParse.targets,
+					unparsed: []
+				};
+			}
+		}
+	}
+
+	return null;
+}
+
+function parseTriggerMeldEffectWithPartner(
+	headerEffectText: string,
+	effectStart: number,
+	partnerNameFromCond: string | undefined
+): EffectParse | null {
+	if (!partnerNameFromCond) return null;
+	const trimmed = headerEffectText.trim();
+	const span: Span = { start: effectStart, end: effectStart + headerEffectText.length };
+	const simple = trimmed.match(
+		/^exile them,\s*then meld them into ([^.]+)\.(?:\s*it enters tapped and attacking\.)?$/i
+	);
+	if (simple) {
+		const tappedAtk = /\bit enters tapped and attacking\.?$/i.test(trimmed);
+		return {
+			steps: [
+				{
+					verb: 'meld',
+					subject: { k: 'self' },
+					params: {
+						meldPartnerName: partnerNameFromCond,
+						meldResultName: simple[1].trim(),
+						...(tappedAtk ? { meldTappedAndAttacking: true } : {})
+					},
+					span
+				}
+			],
+			targets: [],
+			unparsed: []
+		};
+	}
+	const optPay = trimmed.match(
+		/^you may pay ([^.]+)\.\s*if you do,\s*exile them,\s*then meld them into ([^.]+)\.(?:\s*it enters tapped and attacking\.)?$/i
+	);
+	if (optPay) {
+		const parsedCost = parseCost(optPay[1].trim(), effectStart);
+		if (
+			parsedCost.unparsed.length === 0 &&
+			parsedCost.defs.length > 0 &&
+			parsedCost.defs.every((d) => SUPPORTED_OPTIONAL_COST_KINDS.has(d.k))
+		) {
+			const tappedAtk = /\bit enters tapped and attacking\.?$/i.test(trimmed);
+			return {
+				steps: [
+					{
+						verb: 'meld',
+						subject: { k: 'self' },
+						optional: { chooser: { k: 'you' }, cost: parsedCost.defs },
+						params: {
+							meldPartnerName: partnerNameFromCond,
+							meldResultName: optPay[2].trim(),
+							...(tappedAtk ? { meldTappedAndAttacking: true } : {})
+						},
+						span
+					}
+				],
+				targets: [],
+				unparsed: []
+			};
+		}
+	}
+	return null;
+}
+
+function extractMeldPartnerFromCondition(cond: Condition | undefined): string | undefined {
+	if (!cond) return undefined;
+	if (cond.k === 'compare' && cond.left.k === 'count' && cond.left.of.named) {
+		return cond.left.of.named;
+	}
+	if (cond.k === 'and') {
+		for (const c of cond.of) {
+			const found = extractMeldPartnerFromCondition(c);
+			if (found) return found;
+		}
+	}
+	return undefined;
+}
+
+function parseExpandedModalHeaderClause(
+	rawHeader: string,
+	bulletCount: number
+): {
+	min: number;
+	max: number;
+	allowRepeat?: boolean;
+	oncePerTurnUnique?: boolean;
+	unchosenPermanent?: boolean;
+	upTo?: boolean;
+	conditionalChooseAll?: Condition;
+	opponentChooses?: 'opponent' | 'targetOpponent';
+	randomMode?: boolean;
+	dynamicMax?: Amount;
+	pawprintBudget?: number;
+} | null {
+	let rest = rawHeader.trim();
+	let allowRepeat = false;
+	const repeatRe = /\s*(?:\.|—)?\s*you may choose the same mode more than once\.?\s*/i;
+	if (repeatRe.test(rest)) {
+		allowRepeat = true;
+		rest = rest.replace(repeatRe, ' ').trim();
+	}
+
+	// CR 700.2i: Season pawprint budget ("Choose up to five {P} worth of modes")
+	const pawMatch = rest
+		.replace(/[—.]+$/g, '')
+		.trim()
+		.match(/^choose up to (\S+)\s+\{P\}\s+worth of modes$/i);
+	if (pawMatch) {
+		const budget = parseSmallNumberToken(pawMatch[1]);
+		if (budget !== null && budget >= 1) {
+			return {
+				min: 0,
+				max: budget,
+				upTo: true,
+				...(allowRepeat ? { allowRepeat: true } : {}),
+				pawprintBudget: budget
+			};
+		}
+		return null;
+	}
+
+	let conditionalChooseAll: Condition | undefined;
+	const cmdBothRe =
+		/\s*(?:\.|—)?\s*if you control a commander(?: as you cast (?:this spell|~))?,\s*(?:you may )?choose (?:both|all|one or more|any number) instead\.?\s*/i;
+	const kickedAllRe =
+		/\s*(?:\.|—)?\s*if (?:this spell|~) was kicked,\s*(?:you may )?choose (?:both|all|one or more|any number) instead\.?\s*/i;
+	const maxSpeedBothRe =
+		/\s*(?:\.|—)?\s*if you have max speed,\s*(?:you may )?choose (?:both|all|one or more|any number) instead\.?\s*/i;
+	const descendPermRe =
+		/\s*(?:\.|—)?\s*if there are (\S+) or more permanent cards in your graveyard(?: as you cast (?:this spell|~))?,\s*(?:you may )?choose (?:both|all|one or more|any number) instead\.?\s*/i;
+	const oppGyBothRe =
+		/\s*(?:\.|—)?\s*if an opponent has (\S+) or more cards in their graveyard,\s*(?:you may )?choose (?:both|all|one or more|any number) instead\.?\s*/i;
+	const generalChooseInsteadRe =
+		/\s*(?:\.|—)?\s*if (.+?)(?: as you cast (?:this spell|~))?,\s*(?:you may )?choose (?:both|all|one or more|any number) instead\.?\s*$/i;
+
+	if (cmdBothRe.test(rest)) {
+		conditionalChooseAll = { k: 'controlCommander' };
+		rest = rest.replace(cmdBothRe, ' ').trim();
+	} else if (kickedAllRe.test(rest)) {
+		conditionalChooseAll = { k: 'kicked' };
+		rest = rest.replace(kickedAllRe, ' ').trim();
+	} else if (maxSpeedBothRe.test(rest)) {
+		conditionalChooseAll = { k: 'maxSpeed' };
+		rest = rest.replace(maxSpeedBothRe, ' ').trim();
+	} else {
+		const dm = rest.match(descendPermRe);
+		const om = !dm ? rest.match(oppGyBothRe) : null;
+		if (dm) {
+			const n = parseSmallNumberToken(dm[1]);
+			if (n !== null) {
+				conditionalChooseAll = {
+					k: 'compare',
+					left: {
+						k: 'count',
+						of: {
+							types: ['Artifact', 'Battle', 'Creature', 'Enchantment', 'Land', 'Planeswalker'],
+							controller: 'you',
+							zone: 'graveyard'
+						}
+					},
+					op: '>=',
+					right: { k: 'const', n }
+				};
+				rest = rest.replace(descendPermRe, ' ').trim();
+			}
+		} else if (om) {
+			const n = parseSmallNumberToken(om[1]);
+			if (n !== null) {
+				conditionalChooseAll = { k: 'anyOpponentMetric', metric: 'graveyard', op: '>=', count: n };
+				rest = rest.replace(oppGyBothRe, ' ').trim();
+			}
+		} else {
+			const gm = rest.match(generalChooseInsteadRe);
+			if (gm) {
+				const condClause = gm[1].trim();
+				const parsedCond =
+					parseActivatedIfConditionSentence(`Activate only if ${condClause}.`)?.condition ??
+					parseP15ActivatedIfConditionClause(condClause) ??
+					parseP18bInterveningConditionClause(condClause);
+				if (parsedCond) {
+					conditionalChooseAll = parsedCond;
+					rest = rest.replace(generalChooseInsteadRe, ' ').trim();
+				}
+			}
+		}
+	}
+
+	rest = rest
+		.replace(/^(?:then,?\s+)/i, '')
+		.replace(/\s*[—.]+\s*$/g, '')
+		.trim();
+
+	let mayOptionalChoose = false;
+	if (/^you may choose\s+/i.test(rest)) {
+		mayOptionalChoose = true;
+		rest = `choose ${rest.replace(/^you may choose\s+/i, '').trim()}`;
+	}
+
+	let oncePerTurnUnique = false;
+	let unchosenPermanent = false;
+	const onceTurnRe = /\s+that hasn['’]t been chosen this turn$/i;
+	const unchosenPermRe = /\s+that hasn['’]t been chosen$/i;
+	if (onceTurnRe.test(rest)) {
+		oncePerTurnUnique = true;
+		rest = rest.replace(onceTurnRe, '').trim();
+	} else if (unchosenPermRe.test(rest)) {
+		unchosenPermanent = true;
+		rest = rest.replace(unchosenPermRe, '').trim();
+	}
+
+	let randomMode = false;
+	const randomRe = /\s+at random$/i;
+	if (randomRe.test(rest)) {
+		randomMode = true;
+		rest = rest.replace(randomRe, '').trim();
+	}
+
+	let opponentChooses: 'opponent' | 'targetOpponent' | undefined;
+	const oppChoosesMatch = rest.match(/^(an|target)\s+opponent\s+chooses\s+(.+)$/i);
+	if (oppChoosesMatch) {
+		opponentChooses = oppChoosesMatch[1].toLowerCase() === 'target' ? 'targetOpponent' : 'opponent';
+		rest = `choose ${oppChoosesMatch[2].trim()}`;
+	}
+
+	const lower = rest.toLowerCase();
+	let min = 1;
+	let max = 1;
+	let upTo = false;
+	let dynamicMax: Amount | undefined;
+
+	if (lower === 'choose one') {
+		min = 1;
+		max = 1;
+	} else if (lower === 'choose one or both') {
+		min = 1;
+		max = 2;
+	} else if (lower === 'choose one or more') {
+		min = 1;
+		max = bulletCount;
+	} else if (lower === 'choose two or more') {
+		min = 2;
+		max = bulletCount;
+	} else if (lower === 'choose any number') {
+		min = 0;
+		max = bulletCount;
+		upTo = true;
+	} else if (lower === 'choose x') {
+		min = 0;
+		max = allowRepeat ? 20 : bulletCount;
+		dynamicMax = { k: 'x' };
+	} else if (lower === 'choose up to x') {
+		min = 0;
+		max = allowRepeat ? 20 : bulletCount;
+		upTo = true;
+		dynamicMax = { k: 'x' };
+	} else {
+		const upToMatch = lower.match(/^choose up to (\S+)$/);
+		const exactMatch = !upToMatch ? lower.match(/^choose (\S+)$/) : null;
+		if (upToMatch) {
+			const n = parseSmallNumberToken(upToMatch[1]);
+			if (n === null || n < 1) return null;
+			min = 0;
+			max = n;
+			upTo = true;
+		} else if (exactMatch) {
+			const n = parseSmallNumberToken(exactMatch[1]);
+			if (n === null || n < 1) return null;
+			min = n;
+			max = n;
+		} else {
+			return null;
+		}
+	}
+
+	if (mayOptionalChoose) {
+		min = 0;
+		upTo = true;
+	}
+
+	if (!allowRepeat && !dynamicMax && bulletCount > 0 && max > bulletCount) {
+		if (upTo) {
+			max = bulletCount;
+		} else {
+			return null;
+		}
+	}
+	if (max < min) return null;
+
+	return {
+		min,
+		max,
+		...(allowRepeat ? { allowRepeat: true } : {}),
+		...(oncePerTurnUnique ? { oncePerTurnUnique: true } : {}),
+		...(unchosenPermanent ? { unchosenPermanent: true } : {}),
+		...(upTo ? { upTo: true } : {}),
+		...(conditionalChooseAll ? { conditionalChooseAll } : {}),
+		...(opponentChooses ? { opponentChooses } : {}),
+		...(randomMode ? { randomMode: true } : {}),
+		...(dynamicMax ? { dynamicMax } : {})
+	};
+}
+
+function stripModalBulletFlavorWord(body: string): { body: string; strippedLen: number } {
+	const flavor = body.match(/^([A-Z0-9][A-Za-z0-9'’ !?,.-]*?) — (?=[A-Z{~])/);
+	if (flavor && !/\bfaces a villainous choice$/i.test(flavor[1]) && !/^\{P\}/i.test(flavor[1])) {
+		return { body: body.slice(flavor[0].length), strippedLen: flavor[0].length };
+	}
+	return { body, strippedLen: 0 };
+}
+
+function parseExpandedModalP18b(
+	headerText: string,
+	bullets: Array<{ text: string; start: number; end: number }>,
+	context: 'spell' | 'activated' | 'triggered',
+	headerStart: number,
+	trigger?: TriggerDef,
+	extraPrefixSentences: Array<{ text: string; span: Span }> = [],
+	extraSuffixSentences: Array<{ text: string; span: Span }> = []
+): EffectParse | null {
+	if (bullets.length === 0) return null;
+
+	// Split headerText if there are pre-modal sentences before the Choose / Opponent-chooses clause.
+	const headerSents = splitSentences(headerText, headerStart);
+	let modalClauseIdx = headerSents.findIndex((s) =>
+		/^(?:(?:then,?\s+)?(?:you may\s+)?choose\b|(?:an|target)\s+opponent\s+chooses\b)/i.test(
+			s.text.trim()
+		)
+	);
+	if (modalClauseIdx < 0) return null;
+
+	const inlinePreSents = headerSents.slice(0, modalClauseIdx);
+	const modalHeaderCombined = headerSents
+		.slice(modalClauseIdx)
+		.map((s) => s.text)
+		.join(' ');
+	const spec = parseExpandedModalHeaderClause(modalHeaderCombined, bullets.length);
+	if (!spec) return null;
+
+	const allPreSents = [...extraPrefixSentences, ...inlinePreSents];
+	let prefixEffect: EffectStep[] | undefined;
+	if (allPreSents.length > 0) {
+		const preSteps: EffectStep[] = [];
+		for (const ps of allPreSents) {
+			const sub =
+				parseP18bEffectText(ps.text, ps.span.start, context, trigger) ??
+				parseEffects(ps.text, ps.span.start, context, trigger);
+			if (sub.unparsed.length > 0 || sub.targets.length > 0 || sub.steps.length === 0) {
+				return null;
+			}
+			preSteps.push(...sub.steps);
+		}
+		if (preSteps.length > 0) prefixEffect = preSteps;
+	}
+
+	let suffixEffect: EffectStep[] | undefined;
+	if (extraSuffixSentences.length > 0) {
+		const sufSteps: EffectStep[] = [];
+		for (const ss of extraSuffixSentences) {
+			const sub =
+				parseP18bEffectText(ss.text, ss.span.start, context, trigger) ??
+				parseEffects(ss.text, ss.span.start, context, trigger);
+			if (sub.unparsed.length > 0 || sub.targets.length > 0 || sub.steps.length === 0) {
+				return null;
+			}
+			sufSteps.push(...sub.steps);
+		}
+		if (sufSteps.length > 0) suffixEffect = sufSteps;
+	}
+
+	const isPawprint = spec.pawprintBudget !== undefined;
+	const pawprintCosts: number[] = [];
+	const unparsed: Span[] = [];
+	const modes: ModalDef['modes'] = [];
+
+	for (const b of bullets) {
+		let body: string;
+		let start: number;
+		if (isPawprint) {
+			const pm = b.text.match(/^((?:\{P\})+)\s*—\s*([\s\S]+)$/i);
+			if (!pm) return null;
+			const pCount = (pm[1].match(/\{P\}/gi) ?? []).length;
+			if (pCount < 1) return null;
+			pawprintCosts.push(pCount);
+			body = pm[2];
+			start = b.end - body.length;
+		} else {
+			if (!b.text.startsWith('•')) return null;
+			const noDot = b.text.replace(/^•\s*/, '');
+			start = b.start + (b.text.length - noDot.length);
+			const stripped = stripModalBulletFlavorWord(noDot);
+			body = stripped.body;
+			start += stripped.strippedLen;
+		}
+		const modeParse =
+			parseP18bEffectText(body, start, context, trigger) ??
+			parseEffects(body, start, context, trigger);
+		unparsed.push(...modeParse.unparsed);
+		modes.push({
+			targets: modeParse.targets,
+			effect: modeParse.steps,
+			span: { start: b.start, end: b.end }
+		});
+	}
+
+	const modal: ModalDef = {
+		min: spec.min,
+		max: spec.max,
+		...(spec.allowRepeat ? { allowRepeat: true } : {}),
+		...(spec.oncePerTurnUnique ? { oncePerTurnUnique: true } : {}),
+		...(spec.unchosenPermanent ? { unchosenPermanent: true } : {}),
+		...(spec.upTo ? { upTo: true } : {}),
+		...(spec.conditionalChooseAll ? { conditionalChooseAll: spec.conditionalChooseAll } : {}),
+		...(spec.opponentChooses ? { opponentChooses: spec.opponentChooses } : {}),
+		...(spec.randomMode ? { randomMode: true } : {}),
+		...(spec.dynamicMax ? { dynamicMax: spec.dynamicMax } : {}),
+		...(isPawprint ? { pawprintBudget: spec.pawprintBudget, pawprintCosts } : {}),
+		...(prefixEffect ? { prefixEffect } : {}),
+		...(suffixEffect ? { suffixEffect } : {}),
+		modes
+	};
+	return { steps: [], targets: [], modal, unparsed };
 }
 
 function triggerLine(ctx: Ctx, group: NormalizedLine[]): AbilityDef[] | null {
@@ -3302,6 +4409,7 @@ function triggerLineCore(group: NormalizedLine[]): AbilityDef[] | null {
 
 	if (p12Head) {
 		trigger = p12Head.trigger;
+		condition = p12Head.condition;
 		effectStart = p12Head.effectStart;
 	} else {
 		const head = parseTriggerHeader(line.body, line.bodySpan.start);
@@ -3333,17 +4441,21 @@ function triggerLineCore(group: NormalizedLine[]): AbilityDef[] | null {
 	}
 	if (group.length > 1) {
 		const bullets = group.slice(1).map((b) => ({ text: b.text, start: b.span.start, end: b.span.end }));
-		const modalParse = /^choose\b/i.test(headerEffectText.trim())
+		const stdModal = /^choose\b/i.test(headerEffectText.trim())
 			? parseModal(headerEffectText, bullets, 'triggered', effectStart, trigger)
 			: null;
+		const stdOk =
+			Boolean(stdModal?.modal) &&
+			stdModal!.unparsed.length === 0 &&
+			modalInterpretable(stdModal!, true);
+		const modalParse = stdOk
+			? stdModal
+			: parseExpandedModalP18b(headerEffectText, bullets, 'triggered', effectStart, trigger) ?? stdModal;
 		const modal = modalParse?.modal;
 		const modesOk =
 			Boolean(modalParse && modal) &&
 			modalParse!.unparsed.length === 0 &&
-			modal!.modes.length > 0 &&
-			modal!.min >= 0 &&
-			modal!.max >= modal!.min &&
-			modal!.modes.every((m) => interpretableTrigger({ steps: m.effect, targets: m.targets, unparsed: [] }));
+			modalInterpretable(modalParse!, true);
 		if (!modesOk) {
 			const gaps = modalParse?.unparsed.length
 				? modalParse.unparsed
@@ -3353,7 +4465,11 @@ function triggerLineCore(group: NormalizedLine[]): AbilityDef[] | null {
 		return [{ kind: 'triggered', trigger, condition, targets: [], effect: [], modal, text: fullText, span }];
 	}
 
-	const effect = parseEffects(headerEffectText, effectStart, 'triggered', trigger);
+	const meldPartnerFromCond = extractMeldPartnerFromCondition(condition);
+	const effect =
+		parseTriggerMeldEffectWithPartner(headerEffectText, effectStart, meldPartnerFromCond) ??
+		parseP18bEffectText(headerEffectText, effectStart, 'triggered', trigger) ??
+		parseEffects(headerEffectText, effectStart, 'triggered', trigger);
 	if (!interpretableTrigger(effect)) {
 		const gaps = effect.unparsed.length > 0 ? effect.unparsed : [{ start: effectStart, end: span.end }];
 		return [{ ...unsupported('unparsed', fullText, span, gaps), trigger, condition }];
@@ -3421,6 +4537,309 @@ function parseP15ActivatedIfConditionSentence(
 	return { condition: cond, ...(extra ? { extra } : {}) };
 }
 
+const CLAN_OR_SHARD_DEVOTION_REWRITES: Readonly<Record<string, string>> = {
+	abzan: 'white, black, and green',
+	jeskai: 'blue, red, and white',
+	sultai: 'black, green, and blue',
+	mardu: 'red, white, and black',
+	temur: 'green, blue, and red',
+	bant: 'green, white, and blue',
+	esper: 'white, blue, and black',
+	grixis: 'blue, black, and red',
+	jund: 'black, red, and green',
+	naya: 'red, green, and white'
+};
+
+function parseP18bCounterWordForCost(raw: string): string | null {
+	const t = raw.trim().toLowerCase().replace(/−/g, '-');
+	if (!t) return null;
+	if (/^[+-]\d+\/[+-]\d+$/.test(t)) return t;
+	if (/^[a-z][a-z0-9 '-]*$/.test(t)) return t;
+	return null;
+}
+
+function parseP18bActivationCostReductionSentence(
+	sentenceText: string
+): NonNullable<ActivatedAbility['activationCostReduction']> | null {
+	let s = sentenceText.trim();
+	if (!/\bthis ability costs\b/i.test(s) || !/\bless to activate\b/i.test(s)) return null;
+
+	// Expand clan/shard devotion names (e.g. "your devotion to Abzan" -> "your devotion to white, black, and green")
+	s = s.replace(/\byour devotion to ([a-z]+)\b/gi, (full, word: string) => {
+		const mapped = CLAN_OR_SHARD_DEVOTION_REWRITES[word.toLowerCase()];
+		return mapped ? `your devotion to ${mapped}` : full;
+	});
+
+	// Normalize bare "costs X less to activate" -> "costs {X} less to activate"
+	s = s.replace(/\bthis ability costs X less to activate\b/i, 'This ability costs {X} less to activate');
+
+	// Normalize trailing "during your turn" before optional floor sentence
+	s = s.replace(
+		/^(this ability costs .+?\bless to activate) during your turn(\.|$)/i,
+		'During your turn, $1$2'
+	);
+
+	// Extract optional floor / colored-only rider so direct P18b matchers preserve it too
+	let bodyNoRider = s.replace(/\.$/, '').trim();
+	let minTotalMana: number | undefined;
+	let coloredOnly = false;
+	for (let guard = 0; guard < 3; guard++) {
+		const coloredClause = bodyNoRider.match(
+			/^(.+?)\.\s*this effect reduces only the amount of colored mana you pay$/i
+		);
+		if (coloredClause) {
+			coloredOnly = true;
+			bodyNoRider = coloredClause[1].trim();
+			continue;
+		}
+		const floorClause = bodyNoRider.match(
+			/^(.+?)\.\s*(?:this effect can't reduce the (?:amount of )?mana (?:in that cost|that ability costs to activate) to less than one mana|this cost can't be reduced to less than \{1\})$/i
+		);
+		if (floorClause) {
+			minTotalMana = 1;
+			bodyNoRider = floorClause[1].trim();
+			continue;
+		}
+		break;
+	}
+
+	// First try rewriting to self spell cost modifier ("~ costs ... less to cast ...")
+	const rewritten = s
+		.replace(/\bthis ability costs\b/i, '~ costs')
+		.replace(/\b(less|more) to activate\b/i, '$1 to cast');
+	const delegated = parseCostModifierSentence(rewritten);
+	if (delegated && delegated.k === 'costModifier') {
+		return {
+			delta: delegated.delta,
+			...(delegated.condition ? { condition: delegated.condition } : {})
+		};
+	}
+
+	// Direct P18b patterns not covered by spell cost modifier grammar:
+	let turnCond: Condition | undefined;
+	const duringYou = bodyNoRider.match(/^during your turn,\s*(.+)$/i);
+	const duringOther = !duringYou ? bodyNoRider.match(/^during turns other than yours,\s*(.+)$/i) : null;
+	if (duringYou) {
+		turnCond = { k: 'isTurnOf', player: { k: 'you' } };
+		bodyNoRider = duringYou[1].trim();
+	} else if (duringOther) {
+		turnCond = { k: 'not', of: { k: 'isTurnOf', player: { k: 'you' } } };
+		bodyNoRider = duringOther[1].trim();
+	}
+
+	const buildGenericReduceDelta = (generic: number, per?: Amount): NonNullable<ActivatedAbility['activationCostReduction']>['delta'] => ({
+		mode: 'reduce',
+		generic,
+		...(per ? { per } : {}),
+		...(coloredOnly ? { coloredOnly: true } : {}),
+		...(minTotalMana !== undefined ? { minTotalMana } : {})
+	});
+
+	// 1. "This ability costs {X} less to activate, where X is ~'s (power|toughness|mana value)" or "... counters on ~"
+	const whereXMatch = bodyNoRider.match(
+		/^this ability costs \{X\} less to activate,\s*where X is (.+)$/i
+	);
+	if (whereXMatch) {
+		const xClause = whereXMatch[1].trim();
+		const selfStat = xClause.match(/^(?:~'s|its) (power|toughness|mana value)$/i);
+		if (selfStat) {
+			const stat: 'power' | 'toughness' | 'manaValue' =
+				selfStat[1].toLowerCase() === 'power'
+					? 'power'
+					: selfStat[1].toLowerCase() === 'toughness'
+						? 'toughness'
+						: 'manaValue';
+			return {
+				delta: buildGenericReduceDelta(1, { k: 'stat', stat, of: { k: 'self' } }),
+				...(turnCond ? { condition: turnCond } : {})
+			};
+		}
+		const selfCounters = xClause.match(/^the number of (?:(.+?) )?counters? on ~$/i);
+		if (selfCounters) {
+			const cWord = selfCounters[1] ? parseP18bCounterWordForCost(selfCounters[1]) : 'any';
+			if (cWord) {
+				return {
+					delta: buildGenericReduceDelta(1, { k: 'countersOn', counter: cWord, of: { k: 'self' } }),
+					...(turnCond ? { condition: turnCond } : {})
+				};
+			}
+		}
+	}
+
+	// 2. "This ability costs {N} less to activate for each (<counter> )?counter on ~"
+	const forEachCounterSelf = bodyNoRider.match(
+		/^this ability costs \{(\d+)\} less to activate for each (?:(.+?) )?counters? on ~$/i
+	);
+	if (forEachCounterSelf) {
+		const n = parseInt(forEachCounterSelf[1], 10);
+		const cWord = forEachCounterSelf[2] ? parseP18bCounterWordForCost(forEachCounterSelf[2]) : 'any';
+		if (!Number.isNaN(n) && cWord) {
+			return {
+				delta: buildGenericReduceDelta(n, { k: 'countersOn', counter: cWord, of: { k: 'self' } }),
+				...(turnCond ? { condition: turnCond } : {})
+			};
+		}
+	}
+
+	// 3. "This ability costs {N} less to activate if <cond>" (via P18b / P15 condition clause)
+	const ifCondMatch = bodyNoRider.match(/^this ability costs \{(\d+)\} less to activate if (.+)$/i);
+	if (ifCondMatch) {
+		const n = parseInt(ifCondMatch[1], 10);
+		const cond =
+			parseActivatedIfConditionSentence(`Activate only if ${ifCondMatch[2]}.`)?.condition ??
+			parseP18bInterveningConditionClause(ifCondMatch[2]);
+		if (!Number.isNaN(n) && cond) {
+			const fullCond: Condition = turnCond ? { k: 'and', of: [turnCond, cond] } : cond;
+			return {
+				delta: buildGenericReduceDelta(n),
+				condition: fullCond
+			};
+		}
+	}
+
+	// 4. "During your turn / During turns other than yours, this ability costs {N} less to activate"
+	const plainTurnMatch = turnCond
+		? bodyNoRider.match(/^this ability costs \{(\d+)\} less to activate$/i)
+		: null;
+	if (plainTurnMatch && turnCond) {
+		const n = parseInt(plainTurnMatch[1], 10);
+		if (!Number.isNaN(n)) {
+			return {
+				delta: buildGenericReduceDelta(n),
+				condition: turnCond
+			};
+		}
+	}
+
+	return null;
+}
+
+function parseP18bActivateOnlySentence(sentenceText: string): {
+	sorcery: boolean;
+	restrictions: ActivationRestriction[];
+	conditions: Condition[];
+	explicitZone?: 'hand' | 'graveyard';
+} | null {
+	const trimmed = sentenceText.trim().replace(/\.$/, '').trim();
+	const headMatch = trimmed.match(/^activate only\s+(.+)$/i);
+	if (!headMatch) return null;
+
+	const rawBody = headMatch[1].trim();
+	const parts = rawBody
+		.split(
+			/\s*,\s*and\s+only\s+|\s+and\s+only\s+|\s*,\s*(?=(?:as a sorcery|once\b|before\b|after\b|during\b|if\b))/i
+		)
+		.map((p) => p.trim())
+		.filter(Boolean);
+	if (parts.length === 0) return null;
+
+	let sorcery = false;
+	const restrictions: ActivationRestriction[] = [];
+	const conditions: Condition[] = [];
+	let explicitZone: 'hand' | 'graveyard' | undefined;
+
+	const pushRes = (r: ActivationRestriction) => {
+		if (!restrictions.includes(r)) restrictions.push(r);
+	};
+
+	for (const part of parts) {
+		let p = part.replace(/^only\s+/i, '').trim();
+		const oppTurnTail = /\s+on an opponent['’]s turn$/i;
+		if (oppTurnTail.test(p)) {
+			pushRes('duringOpponentsTurn');
+			p = p.replace(oppTurnTail, '').trim();
+		}
+		const yourTurnTail = /\s+on your turn$/i;
+		if (yourTurnTail.test(p)) {
+			pushRes('duringYourTurn');
+			p = p.replace(yourTurnTail, '').trim();
+		}
+		const lower = p.toLowerCase();
+		if (lower === 'as a sorcery' || lower === 'any time you could cast a sorcery') {
+			sorcery = true;
+			continue;
+		}
+		if (lower === 'once each turn') {
+			pushRes('onceEachTurn');
+			continue;
+		}
+		if (lower === 'once' || lower === 'once each game') {
+			pushRes('oncePerGame');
+			continue;
+		}
+		if (lower === 'during your turn') {
+			pushRes('duringYourTurn');
+			continue;
+		}
+		if (
+			lower === "during an opponent's turn" ||
+			lower === "during opponents' turns" ||
+			lower === 'during turns other than yours'
+		) {
+			pushRes('duringOpponentsTurn');
+			continue;
+		}
+		if (lower === 'during your upkeep') {
+			pushRes('duringYourUpkeep');
+			continue;
+		}
+		if (lower === 'during combat') {
+			pushRes('duringCombat');
+			continue;
+		}
+		if (
+			lower === 'before attackers are declared' ||
+			lower === 'during combat before attackers are declared'
+		) {
+			pushRes('beforeAttackers');
+			continue;
+		}
+		if (
+			lower === 'after attackers are declared' ||
+			lower === 'during combat after attackers are declared' ||
+			lower === 'during the declare attackers step'
+		) {
+			pushRes('afterAttackers');
+			continue;
+		}
+		if (lower === 'during the declare blockers step') {
+			pushRes('duringBlockers');
+			continue;
+		}
+		if (
+			lower === 'after blockers are declared' ||
+			lower === 'during combat after blockers are declared'
+		) {
+			pushRes('afterBlockers');
+			continue;
+		}
+		const zoneMatch = p.match(/^if ~ is in your (hand|graveyard)$/i);
+		if (zoneMatch) {
+			explicitZone = zoneMatch[1].toLowerCase() as 'hand' | 'graveyard';
+			continue;
+		}
+		if (/^if\s+/i.test(p)) {
+			const condClause = p.replace(/^if\s+/i, '').trim();
+			const cond =
+				parseActivatedIfConditionSentence(`Activate only if ${condClause}.`)?.condition ??
+				parseP15ActivatedIfConditionClause(condClause) ??
+				parseP18bInterveningConditionClause(condClause);
+			if (cond) {
+				conditions.push(cond);
+				continue;
+			}
+		}
+		return null;
+	}
+
+	return {
+		sorcery,
+		restrictions,
+		conditions,
+		...(explicitZone ? { explicitZone } : {})
+	};
+}
+
 function extractActivatedTimingAndRestrictions(
 	effectText: string,
 	effectStart: number,
@@ -3432,6 +4851,8 @@ function extractActivatedTimingAndRestrictions(
 	activationCondition?: Condition;
 	activatorWho?: 'any' | 'opponent';
 	explicitActivationZones?: ZoneType[];
+	xCantBeZero?: boolean;
+	activationCostReduction?: NonNullable<ActivatedAbility['activationCostReduction']>;
 	cleanedEffectForParse: string;
 	cleanedModalHeader: string;
 } {
@@ -3459,11 +4880,40 @@ function extractActivatedTimingAndRestrictions(
 		else if (extra === 'during combat') addRestriction('duringCombat');
 	}
 	let activatorWho: 'any' | 'opponent' | undefined;
+	let xCantBeZero = false;
+	let activationCostReduction: NonNullable<ActivatedAbility['activationCostReduction']> | undefined;
 	const activationConditions: Condition[] = [];
 	const strippedSpans: Span[] = [];
 	const parseBlankSpans: Span[] = [];
-	for (const sent of sentences) {
+	for (let sIdx = 0; sIdx < sentences.length; sIdx++) {
+		const sent = sentences[sIdx];
 		const sTrim = sent.text.trim();
+		if (/^x can['’]t be 0\.?$/i.test(sTrim)) {
+			xCantBeZero = true;
+			strippedSpans.push(sent.span);
+			parseBlankSpans.push(sent.span);
+			continue;
+		}
+		if (!activationCostReduction && /\bthis ability costs\b/i.test(sTrim)) {
+			const nextSent = sentences[sIdx + 1];
+			const nextIsFloorOrColorRider =
+				Boolean(nextSent) &&
+				/^(?:this effect (?:reduces only the amount of colored mana you pay|can't reduce the (?:amount of )?mana (?:in that cost|that ability costs to activate) to less than one mana)|this cost can't be reduced to less than \{1\})\.?$/i.test(
+					nextSent.text.trim()
+				);
+			const combinedText = nextIsFloorOrColorRider ? `${sTrim} ${nextSent.text.trim()}` : sTrim;
+			const parsedRed = parseP18bActivationCostReductionSentence(combinedText);
+			if (parsedRed) {
+				activationCostReduction = parsedRed;
+				const combinedSpan: Span = nextIsFloorOrColorRider
+					? { start: sent.span.start, end: nextSent.span.end }
+					: sent.span;
+				strippedSpans.push(combinedSpan);
+				parseBlankSpans.push(combinedSpan);
+				if (nextIsFloorOrColorRider) sIdx++;
+				continue;
+			}
+		}
 		if (/^activate only during your turn,\s*before attackers are declared\.?$/i.test(sTrim)) {
 			addRestriction('duringYourTurn');
 			addRestriction('beforeAttackers');
@@ -3524,6 +4974,16 @@ function extractActivatedTimingAndRestrictions(
 			else if (p15CondSpec.extra === 'during your turn') addRestriction('duringYourTurn');
 			else if (p15CondSpec.extra === 'during your upkeep') addRestriction('duringYourUpkeep');
 			else if (p15CondSpec.extra === 'during combat') addRestriction('duringCombat');
+			continue;
+		}
+		const p18bActOnly = parseP18bActivateOnlySentence(sTrim);
+		if (p18bActOnly) {
+			if (p18bActOnly.sorcery) sorcery = true;
+			for (const r of p18bActOnly.restrictions) addRestriction(r);
+			for (const c of p18bActOnly.conditions) activationConditions.push(c);
+			if (p18bActOnly.explicitZone) explicitActivationZones = [p18bActOnly.explicitZone];
+			strippedSpans.push(sent.span);
+			parseBlankSpans.push(sent.span);
 		}
 	}
 	const activationCondition: Condition | undefined =
@@ -3574,6 +5034,8 @@ function extractActivatedTimingAndRestrictions(
 		activationRestrictions,
 		...(activationCondition ? { activationCondition } : {}),
 		...(activatorWho ? { activatorWho } : {}),
+		...(xCantBeZero ? { xCantBeZero: true } : {}),
+		...(activationCostReduction ? { activationCostReduction } : {}),
 		explicitActivationZones,
 		cleanedEffectForParse,
 		cleanedModalHeader
@@ -3740,6 +5202,8 @@ function activatedLineCore(ctx: Ctx, group: NormalizedLine[]): AbilityDef[] | nu
 			activationRestrictions,
 			activationCondition,
 			activatorWho,
+			xCantBeZero,
+			activationCostReduction,
 			explicitActivationZones,
 			cleanedModalHeader
 		} = extractActivatedTimingAndRestrictions(effectText, effectStart, Boolean(loyalty), false);
@@ -3747,9 +5211,16 @@ function activatedLineCore(ctx: Ctx, group: NormalizedLine[]): AbilityDef[] | nu
 			activationRestrictions.push('oncePerGame');
 		}
 		const bullets = group.slice(1).map((b) => ({ text: b.text, start: b.span.start, end: b.span.end }));
-		const modalParse = /^choose\b/i.test(cleanedModalHeader)
+		const stdModal = /^choose\b/i.test(cleanedModalHeader)
 			? parseModal(cleanedModalHeader, bullets, 'activated', effectStart)
 			: null;
+		const stdModalOk =
+			Boolean(stdModal?.modal) &&
+			stdModal!.unparsed.length === 0 &&
+			modalInterpretable(stdModal!);
+		const modalParse = stdModalOk
+			? stdModal
+			: parseExpandedModalP18b(cleanedModalHeader, bullets, 'activated', effectStart) ?? stdModal;
 		const modal = modalParse?.modal;
 		const modalSteps = modal ? modal.modes.flatMap((m) => m.effect) : [];
 		const activationZones =
@@ -3757,12 +5228,7 @@ function activatedLineCore(ctx: Ctx, group: NormalizedLine[]): AbilityDef[] | nu
 		const effectOk =
 			Boolean(modalParse && modal) &&
 			modalParse!.unparsed.length === 0 &&
-			modal!.modes.length > 0 &&
-			modal!.min >= 0 &&
-			modal!.max >= modal!.min &&
-			modal!.modes.every((m) =>
-				staticallyInterpretableP15({ steps: m.effect, targets: m.targets, unparsed: [] })
-			);
+			modalInterpretable(modalParse!);
 		if (!costComplete || !effectOk) {
 			const gaps = [
 				...cost.unparsed,
@@ -3781,6 +5247,8 @@ function activatedLineCore(ctx: Ctx, group: NormalizedLine[]): AbilityDef[] | nu
 					...(activationRestrictions.length > 0 ? { activationRestrictions } : {}),
 					...(activationCondition ? { activationCondition } : {}),
 					...(activatorWho ? { activatorWho } : {}),
+					...(xCantBeZero ? { xCantBeZero: true } : {}),
+					...(activationCostReduction ? { activationCostReduction } : {}),
 					...(powerUpReduction ? { powerUpReduction: true } : {})
 				}
 			];
@@ -3800,6 +5268,8 @@ function activatedLineCore(ctx: Ctx, group: NormalizedLine[]): AbilityDef[] | nu
 				...(activationRestrictions.length > 0 ? { activationRestrictions } : {}),
 				...(activationCondition ? { activationCondition } : {}),
 				...(activatorWho ? { activatorWho } : {}),
+				...(xCantBeZero ? { xCantBeZero: true } : {}),
+				...(activationCostReduction ? { activationCostReduction } : {}),
 				...(powerUpReduction ? { powerUpReduction: true } : {}),
 				...(activationZones ? { activationZones } : {}),
 				text: fullText,
@@ -3809,7 +5279,9 @@ function activatedLineCore(ctx: Ctx, group: NormalizedLine[]): AbilityDef[] | nu
 	}
 
 	const preTiming = extractActivatedTimingAndRestrictions(effectText, effectStart, Boolean(loyalty), false);
-	const effect = parseEffects(preTiming.cleanedEffectForParse, effectStart, 'activated');
+	const effect =
+		parseP18bEffectText(preTiming.cleanedEffectForParse, effectStart, 'activated') ??
+		parseEffects(preTiming.cleanedEffectForParse, effectStart, 'activated');
 	const isMana =
 		!loyalty &&
 		!costKeyword &&
@@ -3828,6 +5300,8 @@ function activatedLineCore(ctx: Ctx, group: NormalizedLine[]): AbilityDef[] | nu
 	}
 	const activationCondition = preTiming.activationCondition;
 	const activatorWho = preTiming.activatorWho;
+	const xCantBeZero = preTiming.xCantBeZero;
+	const activationCostReduction = preTiming.activationCostReduction;
 	const activationZones =
 		forcedZones ?? inferActivatedZones(cost.defs, effect.steps, preTiming.explicitActivationZones);
 	const isManaTap =
@@ -3856,6 +5330,8 @@ function activatedLineCore(ctx: Ctx, group: NormalizedLine[]): AbilityDef[] | nu
 				...(activationRestrictions.length > 0 ? { activationRestrictions } : {}),
 				...(activationCondition ? { activationCondition } : {}),
 				...(activatorWho ? { activatorWho } : {}),
+				...(xCantBeZero ? { xCantBeZero: true } : {}),
+				...(activationCostReduction ? { activationCostReduction } : {}),
 				...(powerUpReduction ? { powerUpReduction: true } : {}),
 				...(manaSteps ? { effect: manaSteps } : {}),
 				...(effect.targets.length > 0 ? { targets: effect.targets } : {})
@@ -3874,6 +5350,8 @@ function activatedLineCore(ctx: Ctx, group: NormalizedLine[]): AbilityDef[] | nu
 		...(activationRestrictions.length > 0 ? { activationRestrictions } : {}),
 		...(activationCondition ? { activationCondition } : {}),
 		...(activatorWho ? { activatorWho } : {}),
+		...(xCantBeZero ? { xCantBeZero: true } : {}),
+		...(activationCostReduction ? { activationCostReduction } : {}),
 		...(powerUpReduction ? { powerUpReduction: true } : {}),
 		...(activationZones ? { activationZones } : {}),
 		text: fullText,
@@ -3920,6 +5398,225 @@ const CAST_RESTRICTIONS: Array<[RegExp, NonNullable<SpellAbility['castRestrictio
 	[/^cast (?:~|this spell) only during your turn\.?$/i, 'duringYourTurn'],
 	[/^cast (?:~|this spell) only before attackers are declared\.?$/i, 'beforeAttackers']
 ];
+
+function parseP18bCastRestrictionSentence(sentenceText: string): {
+	restrictions: SpellCastRestrictionKind[];
+	condition?: Condition;
+} | null {
+	const trimmed = sentenceText.trim().replace(/\.$/, '').trim();
+	const headMatch = trimmed.match(/^cast (?:~|this spell) only\s+(.+)$/i);
+	if (!headMatch) return null;
+
+	const rawBody = headMatch[1].trim();
+	const parts = rawBody
+		.split(
+			/\s*,\s*and\s+only\s+|\s+and\s+only\s+|\s*,\s*(?=(?:during\b|before\b|after\b|if\b))/i
+		)
+		.map((p) => p.trim())
+		.filter(Boolean);
+	if (parts.length === 0) return null;
+
+	const restrictions: SpellCastRestrictionKind[] = [];
+	const conditions: Condition[] = [];
+	const pushRes = (r: SpellCastRestrictionKind) => {
+		if (!restrictions.includes(r)) restrictions.push(r);
+	};
+
+	for (const part of parts) {
+		let p = part.replace(/^only\s+/i, '').trim();
+		const oppTurnTail = /\s+on an opponent['’]s turn$/i;
+		if (oppTurnTail.test(p)) {
+			pushRes('duringOpponentsTurn');
+			p = p.replace(oppTurnTail, '').trim();
+		}
+		const yourTurnTail = /\s+on your turn$/i;
+		if (yourTurnTail.test(p)) {
+			pushRes('duringYourTurn');
+			p = p.replace(yourTurnTail, '').trim();
+		}
+		const lower = p.toLowerCase();
+		if (lower === 'during combat') {
+			pushRes('duringCombat');
+			continue;
+		}
+		if (lower === 'during your turn') {
+			pushRes('duringYourTurn');
+			continue;
+		}
+		if (
+			lower === "during an opponent's turn" ||
+			lower === "during opponents' turns" ||
+			lower === 'during turns other than yours'
+		) {
+			pushRes('duringOpponentsTurn');
+			continue;
+		}
+		if (lower === 'during your upkeep') {
+			pushRes('duringYourUpkeep');
+			continue;
+		}
+		if (lower === 'before attackers are declared') {
+			pushRes('beforeAttackers');
+			continue;
+		}
+		if (lower === 'during combat before attackers are declared') {
+			pushRes('duringCombat');
+			pushRes('beforeAttackers');
+			continue;
+		}
+		if (
+			lower === 'after attackers are declared' ||
+			lower === 'during the declare attackers step'
+		) {
+			pushRes('afterAttackers');
+			continue;
+		}
+		if (lower === 'during combat after attackers are declared') {
+			pushRes('duringCombat');
+			pushRes('afterAttackers');
+			continue;
+		}
+		if (lower === 'before blockers are declared') {
+			pushRes('beforeBlockers');
+			continue;
+		}
+		if (lower === 'during combat before blockers are declared') {
+			pushRes('duringCombat');
+			pushRes('beforeBlockers');
+			continue;
+		}
+		if (lower === 'during the declare blockers step') {
+			pushRes('duringBlockers');
+			continue;
+		}
+		if (lower === 'after blockers are declared') {
+			pushRes('afterBlockers');
+			continue;
+		}
+		if (lower === 'during combat after blockers are declared') {
+			pushRes('duringCombat');
+			pushRes('afterBlockers');
+			continue;
+		}
+		if (
+			lower === 'during your postcombat main phase' ||
+			lower === 'after combat' ||
+			lower === 'during the end of combat step'
+		) {
+			pushRes('afterCombat');
+			continue;
+		}
+		if (/^if\s+/i.test(p)) {
+			const condClause = p.replace(/^if\s+/i, '').trim();
+			const cond =
+				parseActivatedIfConditionSentence(`Activate only if ${condClause}.`)?.condition ??
+				parseP15ActivatedIfConditionClause(condClause) ??
+				parseP18bInterveningConditionClause(condClause);
+			if (cond) {
+				conditions.push(cond);
+				continue;
+			}
+		}
+		return null;
+	}
+
+	const condition: Condition | undefined =
+		conditions.length === 1
+			? conditions[0]
+			: conditions.length > 1
+				? { k: 'and', of: conditions }
+				: undefined;
+	return {
+		restrictions,
+		...(condition ? { condition } : {})
+	};
+}
+
+function blankSpansInNormalizedFace(norm: NormalizedFace, blankSpans: Span[]): NormalizedFace {
+	if (blankSpans.length === 0) return norm;
+	const sorted = [...blankSpans].sort((a, b) => a.start - b.start);
+	let newFullText = '';
+	let cursor = 0;
+	for (const sp of sorted) {
+		const s = Math.max(cursor, Math.min(norm.text.length, sp.start));
+		const e = Math.max(s, Math.min(norm.text.length, sp.end));
+		newFullText += norm.text.slice(cursor, s) + ' '.repeat(e - s);
+		cursor = e;
+	}
+	newFullText += norm.text.slice(cursor);
+
+	const newLines: NormalizedLine[] = norm.lines.map((l) => {
+		const newLineText = newFullText.slice(l.span.start, l.span.end);
+		const newBodyText = newFullText.slice(l.bodySpan.start, l.bodySpan.end);
+		return {
+			...l,
+			text: newLineText,
+			body: newBodyText,
+			sentences: splitSentences(newBodyText, l.bodySpan.start)
+		};
+	});
+	return { text: newFullText, lines: newLines };
+}
+
+function parseP18bSpellModalFallback(
+	lines: NormalizedLine[],
+	preConsumedSpanKeys: ReadonlySet<string>
+): EffectParse | null {
+	const isModeLine = (l: NormalizedLine) =>
+		l.text.startsWith('•') || /^(?:\{P\})+\s*—/i.test(l.text);
+	const firstModeIdx = lines.findIndex(isModeLine);
+	if (firstModeIdx < 1) return null;
+	let lastModeIdx = firstModeIdx;
+	for (let i = firstModeIdx + 1; i < lines.length; i++) {
+		if (isModeLine(lines[i])) lastModeIdx = i;
+		else break;
+	}
+	// Reject if non-contiguous mode lines appear later
+	for (let i = lastModeIdx + 1; i < lines.length; i++) {
+		if (isModeLine(lines[i])) return null;
+	}
+
+	const spanKey = (sp: Span) => `${sp.start}:${sp.end}`;
+	const extraPrefixSentences: Array<{ text: string; span: Span }> = [];
+	for (let i = 0; i < firstModeIdx - 1; i++) {
+		for (const s of lines[i].sentences) {
+			if (!preConsumedSpanKeys.has(spanKey(s.span)) && s.text.trim()) {
+				extraPrefixSentences.push({ text: s.text, span: s.span });
+			}
+		}
+	}
+
+	const headerLine = lines[firstModeIdx - 1];
+	const headerKeptSents = headerLine.sentences.filter(
+		(s) => !preConsumedSpanKeys.has(spanKey(s.span)) && s.text.trim().length > 0
+	);
+	if (headerKeptSents.length === 0) return null;
+	const headerStart = headerKeptSents[0].span.start;
+	const headerText = headerKeptSents.map((s) => s.text).join(' ');
+
+	const extraSuffixSentences: Array<{ text: string; span: Span }> = [];
+	for (let i = lastModeIdx + 1; i < lines.length; i++) {
+		for (const s of lines[i].sentences) {
+			if (!preConsumedSpanKeys.has(spanKey(s.span)) && s.text.trim()) {
+				extraSuffixSentences.push({ text: s.text, span: s.span });
+			}
+		}
+	}
+
+	const bullets = lines
+		.slice(firstModeIdx, lastModeIdx + 1)
+		.map((b) => ({ text: b.text, start: b.span.start, end: b.span.end }));
+
+	return parseExpandedModalP18b(
+		headerText,
+		bullets,
+		'spell',
+		headerStart,
+		undefined,
+		extraPrefixSentences,
+		extraSuffixSentences
+	);
+}
 
 function compileSpreeOrTieredSpell(
 	kind: 'spree' | 'tiered',
@@ -4008,7 +5705,9 @@ function compileSpreeOrTieredSpell(
 				Boolean(parseCostModifierSentence(s.text)) ||
 				/^(?:~|this spell) can(?:'t|not) be countered\.?$/i.test(s.text) ||
 				Boolean(parseAdditionalCostSentence(s.text, s.span.start)) ||
-				CAST_RESTRICTIONS.some(([re]) => re.test(s.text))
+				CAST_RESTRICTIONS.some(([re]) => re.test(s.text)) ||
+				Boolean(parseP18bCastRestrictionSentence(s.text)) ||
+				/^x can['’]t be 0\.?$/i.test(s.text.trim())
 		);
 		if (!allPreConsumed) {
 			unparsed.push(line.span);
@@ -4214,19 +5913,32 @@ function spellAbilityCore(norm: NormalizedFace, lines: NormalizedLine[]): Abilit
 	const statics: AbilityDef[] = [];
 	const additionalCosts: CostDef[] = [];
 	const castRestrictions: NonNullable<SpellAbility['castRestrictions']> = [];
+	const castConditions: Condition[] = [];
+	let xCantBeZero = false;
+	const preConsumedSpanKeys = new Set<string>();
+	const p18bBlankSpans: Span[] = [];
 	const unparsed: Span[] = [];
 	let costComplete = true;
+
+	const addCastRestriction = (r: SpellCastRestrictionKind) => {
+		if (!castRestrictions.includes(r)) castRestrictions.push(r);
+	};
+	const markPreConsumed = (sp: Span) => {
+		preConsumedSpanKeys.add(`${sp.start}:${sp.end}`);
+	};
 
 	for (const line of lines) {
 		for (const s of line.sentences) {
 			const costModifier = parseCostModifierSentence(s.text);
 			if (costModifier) {
 				statics.push({ kind: 'static', static: costModifier, span: s.span });
+				markPreConsumed(s.span);
 				continue;
 			}
 			if (/^(?:~|this spell) can(?:'t|not) be countered\.?$/i.test(s.text)) {
 				const st: StaticDef = { k: 'restriction', affected: 'self', restriction: 'cantBeCountered' };
 				statics.push({ kind: 'static', static: st, span: s.span });
+				markPreConsumed(s.span);
 				continue;
 			}
 			if (/^if ~ would be put into a graveyard from anywhere\b/i.test(s.text)) {
@@ -4239,6 +5951,7 @@ function spellAbilityCore(norm: NormalizedFace, lines: NormalizedLine[]): Abilit
 								: { kind: 'replacement', replacement: item.replacement, span: s.span }
 						);
 					}
+					markPreConsumed(s.span);
 					continue;
 				}
 			}
@@ -4249,15 +5962,40 @@ function spellAbilityCore(norm: NormalizedFace, lines: NormalizedLine[]): Abilit
 					costComplete = false;
 					unparsed.push(...additional.unparsed);
 				}
+				markPreConsumed(s.span);
+				continue;
+			}
+			if (/^x can['’]t be 0\.?$/i.test(s.text.trim())) {
+				xCantBeZero = true;
+				markPreConsumed(s.span);
+				p18bBlankSpans.push(s.span);
 				continue;
 			}
 			const restriction = CAST_RESTRICTIONS.find(([re]) => re.test(s.text));
-			if (restriction) castRestrictions.push(restriction[1]);
+			if (restriction) {
+				addCastRestriction(restriction[1]);
+				markPreConsumed(s.span);
+				continue;
+			}
+			const p18bCastRes = parseP18bCastRestrictionSentence(s.text);
+			if (p18bCastRes) {
+				for (const r of p18bCastRes.restrictions) addCastRestriction(r);
+				if (p18bCastRes.condition) castConditions.push(p18bCastRes.condition);
+				markPreConsumed(s.span);
+				p18bBlankSpans.push(s.span);
+			}
 		}
 	}
 
+	const castCondition: Condition | undefined =
+		castConditions.length === 1
+			? castConditions[0]
+			: castConditions.length > 1
+				? { k: 'and', of: castConditions }
+				: undefined;
+
 	if (lines.some((l) => /^spree$/i.test(l.body.trim()))) {
-		return compileSpreeOrTieredSpell(
+		const res = compileSpreeOrTieredSpell(
 			'spree',
 			lines,
 			span,
@@ -4268,9 +6006,18 @@ function spellAbilityCore(norm: NormalizedFace, lines: NormalizedLine[]): Abilit
 			costComplete,
 			unparsed
 		);
+		return res.map((ab) =>
+			ab.kind === 'spell'
+				? {
+						...ab,
+						...(castCondition ? { castCondition } : {}),
+						...(xCantBeZero ? { xCantBeZero: true } : {})
+					}
+				: ab
+		);
 	}
 	if (lines.some((l) => /^tiered$/i.test(l.body.trim()))) {
-		return compileSpreeOrTieredSpell(
+		const res = compileSpreeOrTieredSpell(
 			'tiered',
 			lines,
 			span,
@@ -4281,15 +6028,47 @@ function spellAbilityCore(norm: NormalizedFace, lines: NormalizedLine[]): Abilit
 			costComplete,
 			unparsed
 		);
+		return res.map((ab) =>
+			ab.kind === 'spell'
+				? {
+						...ab,
+						...(castCondition ? { castCondition } : {}),
+						...(xCantBeZero ? { xCantBeZero: true } : {})
+					}
+				: ab
+		);
 	}
 
+	const normForSpellParse = blankSpansInNormalizedFace(norm, p18bBlankSpans);
 	const include = new Set(lines.map((l) => l.rawIndex));
-	const effect = parseSpellFace(norm, (l) => include.has(l.rawIndex));
-	unparsed.push(...effect.unparsed);
-	const interpretable = effect.modal
+	let effect = parseSpellFace(
+		normForSpellParse,
+		(l) => include.has(l.rawIndex) && l.body.trim().length > 0
+	);
+	let spellInterpretable = effect.modal
 		? modalInterpretable(effect)
 		: staticallyInterpretableP15(effect);
-	if (unparsed.length > 0 || !interpretable) {
+
+	if (
+		effect.unparsed.length > 0 ||
+		!spellInterpretable ||
+		(effect.modal !== undefined && effect.steps.length > 0)
+	) {
+		const fallbackModal = parseP18bSpellModalFallback(lines, preConsumedSpanKeys);
+		if (fallbackModal && fallbackModal.modal && fallbackModal.modal.modes.length > 0) {
+			const fbInterpretable =
+				fallbackModal.unparsed.length === 0 && modalInterpretable(fallbackModal);
+			if (fbInterpretable || !effect.modal || effect.steps.length > 0) {
+				effect = fallbackModal;
+				spellInterpretable = fbInterpretable;
+			}
+		} else if (effect.modal !== undefined && effect.steps.length > 0) {
+			spellInterpretable = false;
+		}
+	}
+
+	unparsed.push(...effect.unparsed);
+	if (unparsed.length > 0 || !spellInterpretable) {
 		const gaps = unparsed.length > 0 ? unparsed : [span];
 		const u = unsupported('unparsed', text, span, gaps);
 		const fallbackTargets =
@@ -4312,18 +6091,36 @@ function spellAbilityCore(norm: NormalizedFace, lines: NormalizedLine[]): Abilit
 		targets: effect.modal ? [] : effect.targets,
 		effect: effect.modal ? [] : effect.steps,
 		modal: effect.modal,
+		...(castCondition ? { castCondition } : {}),
+		...(xCantBeZero ? { xCantBeZero: true } : {}),
 		span
 	};
 	if (castRestrictions.length > 0) spell.castRestrictions = castRestrictions;
 	return [...statics, spell];
 }
 
-/** A modal spell resolves on the interpreter when every mode does. */
-function modalInterpretable(effect: EffectParse): boolean {
+/** A modal spell/ability resolves on the interpreter when every mode and pre/post rider does. */
+function modalInterpretable(effect: EffectParse, isTriggered = false): boolean {
 	const modal = effect.modal!;
 	if (modal.modes.length === 0 || modal.min < 0 || modal.max < modal.min) return false;
+	if (
+		modal.prefixEffect &&
+		modal.prefixEffect.length > 0 &&
+		!staticallyInterpretableP15({ steps: modal.prefixEffect, targets: [], unparsed: [] }, isTriggered)
+	) {
+		return false;
+	}
+	if (
+		modal.suffixEffect &&
+		modal.suffixEffect.length > 0 &&
+		!staticallyInterpretableP15({ steps: modal.suffixEffect, targets: [], unparsed: [] }, isTriggered)
+	) {
+		return false;
+	}
 	return modal.modes.every((m) =>
-		staticallyInterpretableP15({ steps: m.effect, targets: m.targets, unparsed: [] })
+		isTriggered
+			? interpretableTrigger({ steps: m.effect, targets: m.targets, unparsed: [] })
+			: staticallyInterpretableP15({ steps: m.effect, targets: m.targets, unparsed: [] })
 	);
 }
 
@@ -4354,6 +6151,81 @@ function staticGroupCore(group: NormalizedLine[]): AbilityDef[] {
 	const text = group.map((l) => l.text).join('\n');
 	if (group.length === 1) {
 		const line = group[0];
+		const bodyTrim = line.body.trim();
+
+		// --- Track P18b: Multi-loyalty activation static (Urza, Planeswalker, CR 606.3) & Permanent selfCastRestriction (CR 601.3, 107.3a) ---
+		const loyaltyMaxMatch = bodyTrim.match(
+			/^you may activate the loyalty abilities of ~ (twice|three times|(\d+) times) each turn rather than only once\.?$/i
+		);
+		if (loyaltyMaxMatch) {
+			const rawCount = loyaltyMaxMatch[1].toLowerCase();
+			const max =
+				rawCount === 'twice'
+					? 2
+					: rawCount === 'three times'
+						? 3
+						: parseInt(loyaltyMaxMatch[2], 10);
+			if (!Number.isNaN(max) && max >= 2) {
+				return [
+					{
+						kind: 'static',
+						static: { k: 'loyaltyActivationsPerTurn', max },
+						span
+					}
+				];
+			}
+		}
+		if (/^x can['’]t be 0\.?$/i.test(bodyTrim)) {
+			return [
+				{
+					kind: 'static',
+					static: { k: 'selfCastRestriction', xCantBeZero: true },
+					span
+				}
+			];
+		}
+		const selfCastRes = parseP18bCastRestrictionSentence(bodyTrim);
+		if (selfCastRes) {
+			return [
+				{
+					kind: 'static',
+					static: {
+						k: 'selfCastRestriction',
+						...(selfCastRes.restrictions.length > 0
+							? { restrictions: selfCastRes.restrictions }
+							: {}),
+						...(selfCastRes.condition ? { castCondition: selfCastRes.condition } : {})
+					},
+					span
+				}
+			];
+		}
+		const nonManaAbCostMod = bodyTrim.match(
+			/^abilities you activate that aren['’]t mana abilities cost \{(\d+)\} less to activate(?:\.\s*this effect can['’]t reduce the mana in that cost to less than one mana)?\.?$/i
+		);
+		if (nonManaAbCostMod) {
+			const generic = parseInt(nonManaAbCostMod[1], 10);
+			const hasFloor = /less than one mana/i.test(bodyTrim);
+			if (!Number.isNaN(generic) && generic >= 1) {
+				return [
+					{
+						kind: 'static',
+						static: {
+							k: 'costModifier',
+							affects: { k: 'ability' },
+							delta: {
+								mode: 'reduce',
+								generic,
+								...(hasFloor ? { minTotalMana: 1 } : {})
+							},
+							who: { relation: 'you' }
+						},
+						span
+					}
+				];
+			}
+		}
+
 		const costModifier = parseCostModifierSentence(line.body);
 		if (costModifier) return [{ kind: 'static', static: costModifier, span }];
 		const parsed = parseStaticAbility(line.body, line.bodySpan.start);

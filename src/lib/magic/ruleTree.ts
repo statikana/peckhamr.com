@@ -730,6 +730,9 @@ function buildEffectiveActivatedAbility(
 		...(activatorWho ? { activatorWho } : {}),
 		...(powerUpReduction ? { powerUpReduction: true } : {}),
 		// --- End Track P15 ---
+		// --- Track P18b ---
+		...(ab.xCantBeZero ? { xCantBeZero: true } : {}),
+		// --- End Track P18b ---
 		producesMana,
 		producesAmount,
 		...(manaAmount ? { manaAmount } : {}),

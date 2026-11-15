@@ -201,7 +201,7 @@ function jsonRoundTrip(state: GameState): GameState {
 }
 
 describe('Wave 3 Track P9 — Compiler, Validation & Rename Invariance', () => {
-	it('compiles all 20 Wave 3 keywords cleanly with rename invariance and rejects Modular—Sunburst', () => {
+	it('compiles all 20 Wave 3 keywords cleanly with rename invariance and supports Modular—Sunburst (Wave 6 P18b)', () => {
 		const samples: ScryfallCard[] = [
 			synthCard({ name: 'Echo Sample', typeLine: 'Creature — Goblin', oracleText: 'Echo {1}{R}', power: '2', toughness: '2' }),
 			synthCard({ name: 'Echo NonMana Sample', typeLine: 'Creature — Beast', oracleText: 'Echo—Discard a card.', power: '4', toughness: '4' }),
@@ -238,6 +238,7 @@ describe('Wave 3 Track P9 — Compiler, Validation & Rename Invariance', () => {
 			assert.deepEqual(defA.faces[0].abilities, defB.faces[0].abilities, `Rename invariance failed for ${sample.name}`);
 		}
 
+		// --- Track P18b ---
 		const modularSunburst = synthCard({
 			name: 'Arcbound Wanderer Probe',
 			typeLine: 'Artifact Creature — Golem',
@@ -246,13 +247,12 @@ describe('Wave 3 Track P9 — Compiler, Validation & Rename Invariance', () => {
 			toughness: '0'
 		});
 		const compiledSunburst = compileCard(modularSunburst);
-		assert.equal(definitionSupportReport(compiledSunburst).fullySupported, false);
+		assert.equal(definitionSupportReport(compiledSunburst).fullySupported, true);
 		assert.equal(
-			compiledSunburst.faces[0].abilities.some(
-				(a) => a.kind === 'unsupported' && a.reason === 'keyword_not_implemented'
-			),
-			true
+			compiledSunburst.faces[0].abilities.some((a) => a.kind === 'unsupported'),
+			false
 		);
+		// --- End Track P18b ---
 	});
 });
 

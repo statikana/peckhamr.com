@@ -108,6 +108,14 @@ import {
 	staticallyInterpretableP15
 } from './framesBattlesAndKeywordsWave5.ts';
 // --- End Track P15 ---
+// --- Track P18b ---
+import {
+	executeHarnessStep,
+	executeMeldStep,
+	isMeldedPermanent,
+	staticallyInterpretableP18b
+} from './framesModalsWave6.ts';
+// --- End Track P18b ---
 import { noteLayerInputsChanged } from './layerCache.ts';
 import {
 	matchesObjectFilter,
@@ -167,6 +175,9 @@ import {
 	captureLki,
 	// --- End Track P10 ---
 	createEmptyCounters,
+	// --- Track P18b ---
+	mergeExiledPairOntoBattlefield,
+	// --- End Track P18b ---
 	moveObject,
 	rearrangeLibrary,
 	shuffleLibrary,
@@ -479,8 +490,11 @@ type Bindings = Map<string, Bound[]>;
 
 export { INTERPRETED_VERBS, optionalPrefix, withoutOptional } from '../compiler/interpretable.ts';
 // --- Track P15 ---
-export { staticallyInterpretableP15 as staticallyInterpretable };
+export { staticallyInterpretableP15 };
 // --- End Track P15 ---
+// --- Track P18b ---
+export { staticallyInterpretableP18b as staticallyInterpretable };
+// --- End Track P18b ---
 
 function targetRefMatchesSpec(t: TargetRef, spec: TargetSpec): boolean {
 	if (spec.kind === 'player') return t.kind === 'player';
@@ -3890,9 +3904,11 @@ class Run {
 				const objs = this.objects(step.subject).filter((o) => o.zone === 'battlefield');
 				this.bind(step, objs);
 				// --- Track P15 (CR 702.145c,f): Daybound/Nightbound permanents can't transform via external effects ---
+				// --- Track P18b (CR 713.1c): Melded permanents cannot transform ---
 				for (const o of objs) {
-					if (canExternalEffectTransform(s, o)) p.transformPermanent(s, o);
+					if (!isMeldedPermanent(o) && canExternalEffectTransform(s, o)) p.transformPermanent(s, o);
 				}
+				// --- End Track P18b ---
 				// --- End Track P15 ---
 				return;
 			}
@@ -4598,7 +4614,11 @@ class Run {
 			}
 			case 'turnFace': {
 				const dir = step.params?.faceDirection ?? 'up';
-				const objs = this.objects(step.subject).filter((o) => o.zone === 'battlefield');
+				// --- Track P18b (CR 713.7): Melded permanents cannot be turned face down ---
+				const objs = this.objects(step.subject).filter(
+					(o) => o.zone === 'battlefield' && (dir !== 'down' || !isMeldedPermanent(o))
+				);
+				// --- End Track P18b ---
 				this.bind(step, objs);
 				executeTurnFace(s, objs, dir);
 				return;
@@ -4811,6 +4831,50 @@ class Run {
 				return;
 			}
 			// --- End Track P15 ---
+			// --- Track P18b ---
+			case 'harness': {
+				const objs = this.objects(step.subject).filter(
+					(o) =>
+						o.zone === 'battlefield' &&
+						!o.phasedOut &&
+						(step.subject.k !== 'self' ||
+							this.ctx.item.sourceObjectVersion === undefined ||
+							(o.objectVersion ?? 1) === this.ctx.item.sourceObjectVersion)
+				);
+				this.bind(step, objs);
+				for (const o of objs) {
+					if (executeHarnessStep(s, o)) {
+						p.addLog(
+							s,
+							'rule',
+							`${o.card.name} became harnessed (${title}, CR 701.64a).`,
+							you.playerId
+						);
+					}
+				}
+				return;
+			}
+			case 'meld': {
+				const melded = executeMeldStep(
+					s,
+					you,
+					this.ctx.sourceId,
+					this.ctx.item.sourceObjectVersion,
+					step.params,
+					{
+						evaluatePermanentName: (st, perm) => evaluatePermanent(st, perm).effectiveName,
+						moveFromBattlefield: (st, perm, dest) => p.moveFromBattlefield(st, perm, dest),
+						mergeExiledPairOntoBattlefield,
+						addLog: (st, kind, text, actorId) => p.addLog(st, kind, text, actorId)
+					}
+				);
+				if (melded) {
+					this.bind(step, [melded]);
+				}
+				flushTriggers(s);
+				return;
+			}
+			// --- End Track P18b ---
 			default:
 				// Not reachable: staticallyInterpretable rejects every other verb.
 				p.addLog(s, 'rule', `${title}: the "${step.verb}" step isn't supported yet and did nothing.`, you.playerId);
@@ -6668,7 +6732,7 @@ class Run {
 					const controller = params.underYourControl ? you : (actorPlayer ?? this.player(o.ownerId) ?? holder);
 					const view = resolveObjectFaces(o.copiableCard ?? o.card, {
 						zone: 'battlefield',
-						faceIndex: params.enteredTransformed ? 1 : o.activeFaceIndex
+						faceIndex: params.enteredTransformed || params.enteredFlipped ? 1 : o.activeFaceIndex
 					});
 					if (!view.subtypes.includes('Aura') && !view.typeLine.includes('Aura')) continue;
 					const attachCands = p.legalAuraAttachCandidates(s, o, controller);
@@ -6758,12 +6822,18 @@ class Run {
 					o.transformed = true;
 					o.activeFaceIndex = 1;
 				}
+				// --- Track P18b ---
+				if (params.enteredFlipped) {
+					o.isFlipped = true;
+					o.activeFaceIndex = 1;
+				}
+				// --- End Track P18b ---
 				o.isFaceDown = false;
 				o.faceDownSpec = undefined;
 				o.faceDownLabel = undefined;
 				const enteringView = resolveObjectFaces(o.copiableCard ?? o.card, {
 					zone: 'battlefield',
-					faceIndex: o.transformed ? 1 : o.activeFaceIndex
+					faceIndex: o.transformed || o.isFlipped ? 1 : o.activeFaceIndex
 				});
 				const isAura = enteringView.subtypes.includes('Aura') || enteringView.typeLine.includes('Aura');
 				if (isAura) {
@@ -6798,8 +6868,11 @@ class Run {
 					// --- Track P9 ---
 					...(params.withCounters ? { withCounters: params.withCounters } : {}),
 					// --- Track P10 ---
-					...(actualFrom === 'graveyard' ? { suppressGraveyardLeaveBatch: true } : {})
+					...(actualFrom === 'graveyard' ? { suppressGraveyardLeaveBatch: true } : {}),
 					// --- End Track P10 ---
+					// --- Track P18b ---
+					...(params.enteredFlipped ? { enteredFlipped: true } : {})
+					// --- End Track P18b ---
 				});
 				// --- Track P10 ---
 				if (actualFrom === 'graveyard' && o.zone !== 'graveyard') {
@@ -7821,6 +7894,27 @@ class Run {
 				return Boolean(liveObj?.isHarnessed);
 			}
 			// --- End Wave 6 Shared ---
+			// --- Track P18b ---
+			case 'anchorWordChosen': {
+				const f = this.locate(this.ctx.sourceId);
+				const liveObj =
+					f &&
+					f.zone === 'battlefield' &&
+					!f.inst.phasedOut &&
+					(this.ctx.item.sourceObjectVersion === undefined ||
+						(f.inst.objectVersion ?? 1) === this.ctx.item.sourceObjectVersion)
+						? f.inst
+						: undefined;
+				return (
+					(liveObj?.chosenAnchorWord ?? '').trim().toLowerCase() === c.word.trim().toLowerCase()
+				);
+			}
+			case 'youWereAttackedThisCombat':
+				return Boolean(
+					this.state.combat?.active &&
+						this.state.combat.attackers.some((a) => a.defenderPlayerId === this.you.playerId)
+				);
+			// --- End Track P18b ---
 		}
 	}
 

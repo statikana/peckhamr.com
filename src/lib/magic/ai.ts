@@ -40,6 +40,15 @@ import { withStableLayerInputs } from './runtime/layerCache.ts';
 // --- Track P7 ---
 import { evaluateAmount, evaluateCondition, matchesObjectFilter } from './runtime/objectFilter.ts';
 // --- End Track P7 ---
+// --- Track P18b ---
+import {
+	checkCompanionSpecialActionLegality,
+	collectSelfCastRestrictions,
+	getEffectiveUsedModalModes,
+	pickPawprintModesWithinBudget,
+	resolveModalEffectiveBounds
+} from './runtime/framesModalsWave6.ts';
+// --- End Track P18b ---
 import type {
 	BotSpeed,
 	CardInstance,
@@ -202,14 +211,32 @@ function chooseBotModesForModal(
 		return modeTargets;
 	};
 
+	// --- Track P18b ---
+	const effectiveUsedModes = usedModes ?? getEffectiveUsedModalModes(modal, sourceInst);
+	const fctx = { state, controllerId: bot.playerId, source: sourceInst };
+	const chooseAllByCond = Boolean(
+		modal.conditionalChooseAll && evaluateCondition(modal.conditionalChooseAll, fctx)
+	);
+	const evaluatedDynMax =
+		modal.dynamicMax && modal.dynamicMax.k !== 'x'
+			? evaluateAmount(modal.dynamicMax, fctx)
+			: undefined;
+	const { min: effectiveMin, max: effectiveMax } = resolveModalEffectiveBounds(
+		modal,
+		forceAllModes || chooseAllByCond,
+		0,
+		evaluatedDynMax
+	);
+	// --- End Track P18b ---
+
 	const eligible: Array<{ index: number; targets: TargetRef[] }> = [];
 	for (let i = 0; i < modal.modes.length; i++) {
-		if (modal.oncePerTurnUnique && usedModes?.includes(i)) continue;
+		if ((modal.oncePerTurnUnique || modal.unchosenPermanent) && effectiveUsedModes?.includes(i)) continue;
 		const picked = pickTargetsForMode(i);
 		if (picked !== null) eligible.push({ index: i, targets: picked });
 	}
 
-	if (forceAllModes) {
+	if (forceAllModes || chooseAllByCond) {
 		if (eligible.length !== modal.modes.length) return null;
 		return {
 			modes: eligible.map((e) => e.index),
@@ -217,26 +244,49 @@ function chooseBotModesForModal(
 		};
 	}
 
+	// --- Track P18b: Season pawprint budget mode selection (CR 700.2i) ---
+	if (modal.pawprintBudget !== undefined && modal.pawprintCosts) {
+		const pawModes = pickPawprintModesWithinBudget(
+			modal,
+			eligible.map((e) => e.index)
+		);
+		const pawTargets: TargetRef[] = [];
+		const outPawModes: number[] = [];
+		for (const mIdx of pawModes) {
+			const pickedT = pickTargetsForMode(mIdx);
+			if (pickedT === null) continue;
+			outPawModes.push(mIdx);
+			pawTargets.push(...pickedT);
+		}
+		if (outPawModes.length < effectiveMin) return null;
+		return { modes: outPawModes, targets: pawTargets };
+	}
+	// --- End Track P18b ---
+
 	const modes: number[] = [];
 	const targets: TargetRef[] = [];
 	for (const entry of eligible) {
-		if (modes.length >= modal.max) break;
+		if (modes.length >= effectiveMax) break;
 		modes.push(entry.index);
 		targets.push(...entry.targets);
 	}
-	if (modal.allowRepeat && !modal.oncePerTurnUnique && eligible.length > 0 && modes.length < modal.max) {
-		const targetCount = Math.max(modal.min, modal.max);
-		let k = 0;
-		while (modes.length < targetCount) {
-			const entry = eligible[k % eligible.length];
-			k++;
+	if (
+		modal.allowRepeat &&
+		!modal.oncePerTurnUnique &&
+		!modal.unchosenPermanent &&
+		eligible.length > 0 &&
+		modes.length < effectiveMax
+	) {
+		const targetCount = Math.min(20, Math.max(effectiveMin, effectiveMax));
+		for (let guard = 0; guard < 20 && modes.length < targetCount; guard++) {
+			const entry = eligible[guard % eligible.length];
 			const freshTargets = pickTargetsForMode(entry.index);
 			if (freshTargets === null) break;
 			modes.push(entry.index);
 			targets.push(...freshTargets);
 		}
 	}
-	if (modes.length < modal.min) return null;
+	if (modes.length < effectiveMin) return null;
 	return { modes, targets };
 }
 
@@ -1079,6 +1129,28 @@ export function executeBotStep(
 					? chooseBotTargetsForCard(state, bot, cardInst, normalOpt, optionalCostCounts)
 					: [];
 				if (targetReq.minTargets > 0 && targets.length < targetReq.minTargets) return null;
+				// --- Track P18b: respect X can't be 0 on spells/permanents ---
+				let botXValue: number | undefined;
+				if (normalOpt.choosesX && collectSelfCastRestrictions(cardInst.card, normalFace).xCantBeZero) {
+					for (const candX of [3, 2, 1]) {
+						if (
+							checkSpellCastLegality(
+								state,
+								bot.playerId,
+								cardInst,
+								fromZone,
+								candX,
+								normalOpt.id,
+								optionalCostCounts
+							).ok
+						) {
+							botXValue = candX;
+							break;
+						}
+					}
+					if (botXValue === undefined) return null;
+				}
+				// --- End Track P18b ---
 				const costAids = chooseBotCostPaymentAids(state, bot, cardInst, normalOpt, optionalCostCounts);
 				return {
 					targets,
@@ -1087,6 +1159,7 @@ export function executeBotStep(
 					faceIndex: normalOpt.faceIndex,
 					fused: normalOpt.fused,
 					optionalCostCounts,
+					xValue: botXValue,
 					costPayment: chooseBotSpellCostPayment(
 						state,
 						bot,
@@ -1110,6 +1183,7 @@ export function executeBotStep(
 				costAidIds,
 				costAidColorChoices
 			} = planned;
+			const plannedXValue = 'xValue' in planned ? planned.xValue : undefined;
 			const costBefore = countBotCostChoicePrompts(state, bot.playerId);
 			const res = applyGameAction(state, bot.playerId, {
 				type: 'cast_spell',
@@ -1121,6 +1195,7 @@ export function executeBotStep(
 				...(faceIndex !== undefined ? { faceIndex } : {}),
 				...(fused ? { fused: true } : {}),
 				...(optionalCostCounts ? { optionalCostCounts } : {}),
+				...(plannedXValue !== undefined ? { xValue: plannedXValue } : {}),
 				...(costPayment ? { costPayment } : {}),
 				...(costAidIds ? { costAidIds } : {}),
 				...(costAidColorChoices ? { costAidColorChoices } : {})
@@ -1235,7 +1310,7 @@ export function executeBotStep(
 							perm.card,
 							perm,
 							ab.modal,
-							perm.usedModalModesThisTurn
+							getEffectiveUsedModalModes(ab.modal, perm) ?? perm.usedModalModesThisTurn
 						);
 						if (!picked) continue;
 						return { perm, ab, picked };
@@ -1304,6 +1379,12 @@ export function executeBotStep(
 		if (state.phase === 'main2') {
 			const mainSpecialRes = tryBotHandSpecialAction(state, bot);
 			if (mainSpecialRes) return mainSpecialRes;
+			// --- Track P18b: CR 116.2g Companion {3} special action once per game ---
+			if (checkCompanionSpecialActionLegality(state, bot.playerId).ok) {
+				const compRes = applyGameAction(state, bot.playerId, { type: 'companion_to_hand' });
+				if (compRes.ok) return 'visible';
+			}
+			// --- End Track P18b ---
 		}
 	}
 

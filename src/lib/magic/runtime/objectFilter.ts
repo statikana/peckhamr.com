@@ -1082,6 +1082,20 @@ export function evaluateCondition(cond: Condition, ctx: FilterContext): boolean 
 		case 'isHarnessed':
 			return Boolean(ctx.source?.isHarnessed);
 		// --- End Wave 6 Shared ---
+		// --- Track P18b ---
+		case 'anchorWordChosen':
+			return (ctx.source?.chosenAnchorWord ?? '').trim().toLowerCase() === cond.word.trim().toLowerCase();
+		case 'youWereAttackedThisCombat':
+			return Boolean(
+				ctx.state.combat.active &&
+					ctx.state.combat.attackers.some(
+						(a) =>
+							a.defenderPlayerId === ctx.controllerId &&
+							!a.defenderPlaneswalkerId &&
+							!a.defenderBattleId
+					)
+			);
+		// --- End Track P18b ---
 		default:
 			return false;
 	}

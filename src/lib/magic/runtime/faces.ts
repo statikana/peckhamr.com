@@ -98,6 +98,9 @@ export interface ResolveObjectFacesOptions {
 	cleaved?: boolean;
 	giftPromised?: boolean;
 	// --- End Track P15 ---
+	// --- Track P18b ---
+	meldedComponents?: [ScryfallCard, ScryfallCard];
+	// --- End Track P18b ---
 }
 
 export interface ResolvedObjectView {
@@ -485,8 +488,44 @@ export function resolveObjectFaces(
 			view = viewFromSingleFace(layout, face, idx, mv, idx === 1 ? front : face);
 			break;
 		}
+		// --- Track P18b (CR 713.1–5): Meld layout characteristics & mana value ---
+		case 'meld': {
+			const idx = zone === 'battlefield' ? clampIdx(requestedIdx) : 0;
+			const face = allFaces[idx];
+			let mv: number;
+			if (idx === 1) {
+				if (
+					!isSingleFaceCopy &&
+					!opts?.copiableState &&
+					opts?.meldedComponents &&
+					opts.meldedComponents.length === 2
+				) {
+					// CR 713.3b: mana value of a melded permanent is the sum of the mana values of its front faces.
+					let sum = 0;
+					for (let ci = 0; ci < 2; ci++) {
+						const comp = opts.meldedComponents[ci];
+						const compFront = getCardFaces(comp)[0];
+						if (compFront?.manaCost) {
+							sum += parseManaCost(compFront.manaCost).totalCmc;
+						} else if (compFront?.cmc !== undefined) {
+							sum += compFront.cmc;
+						} else {
+							sum += comp.cmc ?? 0;
+						}
+					}
+					mv = sum;
+				} else {
+					// CR 713.5c: a permanent that's a copy of a melded permanent has no mana cost -> mana value 0.
+					mv = 0;
+				}
+			} else {
+				mv = faceManaValue(baseCard, face, 0, 'normal');
+			}
+			view = viewFromSingleFace(layout, face, idx, mv);
+			break;
+		}
+		// --- End Track P18b ---
 		case 'normal':
-		case 'meld':
 		case 'reversible_card':
 		default: {
 			const idx =
@@ -614,8 +653,11 @@ export function instanceFaceOptions(
 		isSingleFaceCopy: inst.copiableState?.isSingleFaceCopy,
 		prototyped: Boolean(inst.prototyped || inst.copiableState?.prototyped),
 		// --- Track P12 ---
-		bestowed: Boolean(inst.isBestowed)
+		bestowed: Boolean(inst.isBestowed),
 		// --- End Track P12 ---
+		// --- Track P18b ---
+		meldedComponents: inst.meldedComponents
+		// --- End Track P18b ---
 	};
 }
 

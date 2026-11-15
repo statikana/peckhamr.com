@@ -495,11 +495,44 @@ function escapeRegex(s: string): string {
 	return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-/** Names that refer to the card itself: the full name and, for "Name, Title", the short name. */
-export function selfNames(name: string): string[] {
+const NON_CHARACTER_LEGEND_FIRST_WORDS = new Set([
+	'the',
+	'lord',
+	'lady',
+	'king',
+	'queen',
+	'prince',
+	'princess',
+	'voice',
+	'spirit',
+	'avatar',
+	'scion',
+	'child',
+	'son',
+	'daughter',
+	'champion',
+	'patron',
+	'warden',
+	'keeper',
+	'master'
+]);
+
+/** Names that refer to the card itself: the full name and, for "Name, Title" (or legendary character "Name the/of ..."), the short name. */
+export function selfNames(name: string, isCharacterLegend = false): string[] {
 	const names = [name];
 	const comma = name.indexOf(', ');
 	if (comma > 0) names.push(name.slice(0, comma));
+	const nickTitle = name.match(/^([A-Z][A-Za-z.]+)\s+[A-Za-z'’-]+\s+"[^"]+"\s+([A-Z][A-Za-z'’-]+)$/);
+	if (nickTitle) {
+		const titled = `${nickTitle[1]} ${nickTitle[2]}`;
+		if (!names.includes(titled)) names.push(titled);
+	}
+	if (isCharacterLegend && comma < 0) {
+		const epithet = name.match(/^([A-Z][A-Za-z'’-]{2,})\s+(?:the|of)\s+[A-Z]/);
+		if (epithet && !NON_CHARACTER_LEGEND_FIRST_WORDS.has(epithet[1].toLowerCase())) {
+			if (!names.includes(epithet[1])) names.push(epithet[1]);
+		}
+	}
 	return names;
 }
 
@@ -507,12 +540,52 @@ export function stripReminderText(line: string): string {
 	return line.replace(/\s*\([^)]*\)/g, '').replace(/\s+/g, ' ').trim();
 }
 
-export function replaceSelfReferences(line: string, name: string): string {
+const SELF_OBJECT_HER_FOLLOW =
+	'(?=$|[.,;:!?"”\'’)]|\\s+(?:to|into|onto|from|on|with|under|in|at|by|for|as|until|this|that|instead|transformed|tapped|untapped|flipped|face|deal|and|or|then|unless|if|when|whenever|where|first|second|third|fourth|fifth|alone)\\b)';
+
+const SELF_POSSESSIVE_HER_NOUN =
+	'(?=\\s+(?:name|owner(?:\'s|’s)?|controller(?:\'s|’s)?|base\\s+power|base\\s+toughness|power|toughness|mana\\s+value|additional\\s+cost|sneak\\s+cost|colors?|other\\s+types|types|abilities|loyalty)\\b)';
+
+function preserveCaseIt(match: string, lowerReplacement: string): string {
+	const first = match[0];
+	if (first && first === first.toUpperCase() && first !== first.toLowerCase()) {
+		return `${lowerReplacement[0].toUpperCase()}${lowerReplacement.slice(1)}`;
+	}
+	return lowerReplacement;
+}
+
+function normalizeSelfPronounsSegment(seg: string): string {
+	return seg
+		.replace(/\b(?:himself|herself)\b/gi, (m) => preserveCaseIt(m, 'itself'))
+		.replace(/\b(?:he|she)(?:'s|’s)\b/gi, (m) => preserveCaseIt(m, "it's"))
+		.replace(new RegExp(`\\bher\\b${SELF_POSSESSIVE_HER_NOUN}`, 'gi'), (m) => preserveCaseIt(m, 'its'))
+		.replace(new RegExp(`\\bher\\b${SELF_OBJECT_HER_FOLLOW}`, 'gi'), (m) => preserveCaseIt(m, 'it'))
+		.replace(/\bhis\b/gi, (m) => preserveCaseIt(m, 'its'))
+		.replace(/\bhim\b/gi, (m) => preserveCaseIt(m, 'it'))
+		.replace(/\b(?:he|she)\b/gi, (m) => preserveCaseIt(m, 'it'));
+}
+
+function normalizeSelfPronounsOutsideQuotes(text: string): string {
+	if (!/\b(?:he|she|him|her|his|himself|herself)\b/i.test(text)) return text;
+	// Only normalize self-pronouns outside double-quoted ability/speech text.
+	const parts = text.split(/("[^"]*"|“[^”]*”)/g);
+	for (let i = 0; i < parts.length; i += 2) {
+		parts[i] = normalizeSelfPronounsSegment(parts[i]);
+	}
+	return parts.join('');
+}
+
+export function replaceSelfReferences(
+	line: string,
+	name: string,
+	isCharacterLegend = false
+): string {
 	let out = line;
-	for (const n of selfNames(name)) {
+	for (const n of selfNames(name, isCharacterLegend)) {
 		out = out.replace(new RegExp(`\\b${escapeRegex(n)}(?!\\w)`, 'g'), '~');
 	}
-	return out.replace(SELF_REFERENCE, '~');
+	out = out.replace(SELF_REFERENCE, '~');
+	return normalizeSelfPronounsOutsideQuotes(out);
 }
 
 /** Splits on sentence-ending periods that are outside quotation marks. */
@@ -556,13 +629,17 @@ function pushSentence(
 	out.push({ text: text.slice(s, end), span: { start: offset + s, end: offset + end } });
 }
 
-export function normalizeFace(name: string, rulesText: string): NormalizedFace {
+export function normalizeFace(
+	name: string,
+	rulesText: string,
+	isCharacterLegend = false
+): NormalizedFace {
 	const lines: NormalizedLine[] = [];
 	const parts: string[] = [];
 	let offset = 0;
 
 	rulesText.split('\n').forEach((raw, rawIndex) => {
-		const text = replaceSelfReferences(stripReminderText(raw), name);
+		const text = replaceSelfReferences(stripReminderText(raw), name, isCharacterLegend);
 		if (!text) return;
 		if (parts.length > 0) offset += 1; // the joining newline
 		const span = { start: offset, end: offset + text.length };
@@ -603,9 +680,17 @@ export function denormalize(text: string, name: string): string {
  * `rulesText`; a piece that isn't found there falls back to the card's name.
  */
 export function printedText(text: string, name: string, rulesText: string): string {
-	if (!text.includes('~')) return text;
-	const self = `(?:${selfNames(name).map(escapeRegex).join('|')}|[Tt]his (?:${SELF_REFERENCE_TYPES})\\b)`;
-	const pattern = new RegExp(text.split('~').map(escapeRegex).join(self));
+	const hasTilde = text.includes('~');
+	const hasPronoun = /\b(?:it|its|itself|it's)\b/i.test(text);
+	if (!hasTilde && !hasPronoun) return text;
+	const self = `(?:${selfNames(name, true).map(escapeRegex).join('|')}|[Tt]his (?:${SELF_REFERENCE_TYPES})\\b)`;
+	const expandPronouns = (chunk: string) =>
+		escapeRegex(chunk)
+			.replace(/\b([Ii])tself\b/g, '(?:$1tself|[Hh]imself|[Hh]erself)')
+			.replace(/\b([Ii])t\\'s\b/g, "(?:$1t's|[Hh]e's|[Ss]he's|[Hh]e’s|[Ss]he’s)")
+			.replace(/\b([Ii])ts\b/g, '(?:$1ts|[Hh]is|[Hh]er)')
+			.replace(/\b([Ii])t\b/g, '(?:$1t|[Hh]im|[Hh]er|[Hh]e|[Ss]he)');
+	const pattern = new RegExp(text.split('~').map(expandPronouns).join(self));
 	const printed = rulesText.split('\n').map(stripReminderText).join('\n');
 	return printed.match(pattern)?.[0] ?? denormalize(text, name);
 }

@@ -4659,6 +4659,12 @@ export function evaluateCondition(
 			return Boolean(srcObj?.isHarnessed);
 		}
 		// --- End Wave 6 Shared ---
+		// --- Track P18b ---
+		case 'anchorWordChosen': {
+			const srcObj = permanentById(state, sourceInstanceId)?.obj ?? source?.obj;
+			return (srcObj?.chosenAnchorWord ?? '').trim().toLowerCase() === cond.word.trim().toLowerCase();
+		}
+		// --- End Track P18b ---
 		case 'isTurnOf':
 			if (cond.player.k === 'you') return state.players[state.activePlayerIndex]?.playerId === controllerId;
 			return cond.player.k === 'activePlayer';
