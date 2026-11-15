@@ -24,6 +24,62 @@ import type {
 
 const SUPERTYPES = new Set(['Basic', 'Legendary', 'Snow', 'World', 'Ongoing', 'Elite', 'Host']);
 
+// --- Track P12 ---
+const BESTOW_NON_CREATURE_SUBTYPES = new Set([
+	'Plains',
+	'Island',
+	'Swamp',
+	'Mountain',
+	'Forest',
+	'Gate',
+	'Locus',
+	'Cave',
+	'Desert',
+	'Lair',
+	'Sphere',
+	'Tower',
+	'Mine',
+	'Power-Plant',
+	'Town',
+	"Urza's",
+	'Equipment',
+	'Treasure',
+	'Clue',
+	'Food',
+	'Blood',
+	'Map',
+	'Powerstone',
+	'Gold',
+	'Shard',
+	'Lander',
+	'Mutagen',
+	'Heartwood',
+	'Junk',
+	'Vibranium',
+	'Vehicle',
+	'Fortification',
+	'Spacecraft',
+	'Contraption',
+	'Attraction',
+	'Aura',
+	'Saga',
+	'Class',
+	'Case',
+	'Room',
+	'Background',
+	'Shrine',
+	'Role',
+	'Cartouche',
+	'Curse',
+	'Rune',
+	'Arcane',
+	'Adventure',
+	'Lesson',
+	'Trap',
+	'Chorus'
+]);
+// --- End Track P12 ---
+
 export interface ResolveObjectFacesOptions {
 	zone?: ZoneType;
 	faceIndex?: number;
@@ -35,6 +91,9 @@ export interface ResolveObjectFacesOptions {
 	isSingleFaceCopy?: boolean;
 	copiableState?: CopiableState;
 	prototyped?: boolean;
+	// --- Track P12 ---
+	bestowed?: boolean;
+	// --- End Track P12 ---
 }
 
 export interface ResolvedObjectView {
@@ -463,6 +522,33 @@ export function resolveObjectFaces(
 	if (opts?.copiableState?.except) {
 		view = applyCopyExceptions(view, opts.copiableState.except);
 	}
+
+	// --- Track P12 ---
+	// CR 702.103b: Bestowed spell on stack or Aura on battlefield becomes an Enchantment — Aura
+	// and loses Creature / Kindred / creature subtypes and base P/T.
+	if (
+		!opts?.isFaceDown &&
+		(zone === 'stack' || zone === 'battlefield') &&
+		Boolean(opts?.bestowed)
+	) {
+		const nextTypes = dedupe([
+			...view.types.filter((t) => t !== 'Creature' && t !== 'Kindred' && t !== 'Tribal'),
+			'Enchantment'
+		]);
+		const nextSubtypes = dedupe([
+			...view.subtypes.filter((st) => BESTOW_NON_CREATURE_SUBTYPES.has(st)),
+			'Aura'
+		]);
+		const { power: _p, toughness: _t, ptDefinedByAbility: _pt, ...restView } = view;
+		view = {
+			...restView,
+			types: nextTypes,
+			subtypes: nextSubtypes,
+			typeLine: formatTypeLine(view.supertypes, nextTypes, nextSubtypes)
+		};
+	}
+	// --- End Track P12 ---
+
 	return view;
 }
 
@@ -513,7 +599,10 @@ export function instanceFaceOptions(
 		faceDownLabel: inst.faceDownLabel,
 		copiableState: inst.copiableState,
 		isSingleFaceCopy: inst.copiableState?.isSingleFaceCopy,
-		prototyped: Boolean(inst.prototyped || inst.copiableState?.prototyped)
+		prototyped: Boolean(inst.prototyped || inst.copiableState?.prototyped),
+		// --- Track P12 ---
+		bestowed: Boolean(inst.isBestowed)
+		// --- End Track P12 ---
 	};
 }
 
@@ -527,7 +616,10 @@ export function stackItemFaceOptions(item: StackItem): ResolveObjectFacesOptions
 		faceDownLabel: item.faceDownLabel,
 		copiableState: item.copiableState,
 		isSingleFaceCopy: item.copiableState?.isSingleFaceCopy,
-		prototyped: Boolean(item.spellMods?.prototyped || item.copiableState?.prototyped)
+		prototyped: Boolean(item.spellMods?.prototyped || item.copiableState?.prototyped),
+		// --- Track P12 ---
+		bestowed: Boolean(item.spellMods?.bestowed)
+		// --- End Track P12 ---
 	};
 }
 
@@ -553,7 +645,28 @@ export function activeAbilityDefs(
 	card: ScryfallCard,
 	opts?: ResolveObjectFacesOptions
 ): AbilityDef[] {
-	return activeFaceDefs(card, opts).flatMap((f) => f.abilities);
+	const abilities = activeFaceDefs(card, opts).flatMap((f) => f.abilities);
+	// --- Track P12 ---
+	if (
+		!opts?.isFaceDown &&
+		(opts?.zone === 'stack' || opts?.zone === 'battlefield') &&
+		Boolean(opts?.bestowed)
+	) {
+		return [
+			...abilities,
+			{
+				kind: 'keyword',
+				keyword: {
+					name: 'enchant',
+					param: 'creature',
+					enchantFilter: { types: ['Creature'] }
+				},
+				span: { start: 0, end: 0 }
+			}
+		];
+	}
+	// --- End Track P12 ---
+	return abilities;
 }
 
 /**

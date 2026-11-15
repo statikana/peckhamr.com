@@ -1208,11 +1208,18 @@ describe('Keyword: Ward (CR 702.21)', () => {
 				(a) => a.kind === 'keyword' && a.keyword.name === 'ward' && a.keyword.param === 'Pay 2 life'
 			)
 		);
-		// Unsupported Ward cost compiles cleanly to unsupported (never silently swallowed)
-		const unsupWardIr = compileCard(
+		// --- Track P12: Ward—Discard a card is now supported; Ward—{X} remains unsupported ---
+		const discardWardIr = compileCard(
 			syntheticCard({ name: 'Discard Warder', oracleText: 'Ward—Discard a card.' })
 		).faces[0];
+		assert.ok(
+			discardWardIr.abilities.some((a) => a.kind === 'keyword' && a.keyword.name === 'ward')
+		);
+		const unsupWardIr = compileCard(
+			syntheticCard({ name: 'Variable Warder', oracleText: 'Ward—{X}.' })
+		).faces[0];
 		assert.ok(unsupWardIr.abilities.some((a) => a.kind === 'unsupported'));
+		// --- End Track P12 ---
 
 		const { state, p1, p2 } = makeGame();
 

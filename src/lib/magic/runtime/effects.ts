@@ -82,6 +82,9 @@ import {
 	type KickerTrackingInfo
 } from './kicker.ts';
 import { scaleCumulativeUpkeepCost } from './orthogonalKeywords.ts';
+// --- Track P12 ---
+import { evaluateP12Condition, recordPlayerLifeLossWave4 } from './keywordsWave4.ts';
+// --- End Track P12 ---
 import { noteLayerInputsChanged } from './layerCache.ts';
 import {
 	matchesObjectFilter,
@@ -741,15 +744,18 @@ export function dealDamageToPlayer(
 		const cantChange =
 			Boolean(pl.lifeTotalCannotChangeThisTurn) ||
 			activeRuleModifiers(state, 'lifeTotalCantChange', pl.playerId).length > 0;
-		// --- Track P10 ---
 		if (!cantChange) {
 			pl.life -= dmg;
+			// --- Track P10 ---
 			if (dmg > 0 && !pl.lostLifeThisTurn) {
 				pl.lostLifeThisTurn = true;
 				noteLayerInputsChanged(state);
 			}
+			// --- End Track P10 ---
+			// --- Track P12 ---
+			recordPlayerLifeLossWave4(pl, dmg);
+			// --- End Track P12 ---
 		}
-		// --- End Track P10 ---
 	}
 	// --- Track P9 ---
 	pl.damageDealtToThisTurn = (pl.damageDealtToThisTurn ?? 0) + dmg;
@@ -1684,6 +1690,12 @@ class Run {
 			case 'lastRollResult':
 				return this.lastRollResult ?? this.ctx.item.lastRollResult ?? 0;
 			// --- End Track P10 ---
+			// --- Track P12 ---
+			case 'devouredCount':
+				return this.ctx.item?.sourceDevouredCount ?? this.sourcePerm?.devouredCount ?? 0;
+			case 'opponentCount':
+				return this.state.players.filter((p) => !p.lost && p.playerId !== this.you.playerId).length;
+			// --- End Track P12 ---
 		}
 	}
 
@@ -2312,15 +2324,18 @@ class Run {
 						const cantChange =
 							Boolean(pl.lifeTotalCannotChangeThisTurn) ||
 							activeRuleModifiers(s, 'lifeTotalCantChange', pl.playerId).length > 0;
-						// --- Track P10 ---
 						if (!cantChange) {
 							pl.life += delta;
+							// --- Track P10 ---
 							if (n > 0 && !pl.lostLifeThisTurn) {
 								pl.lostLifeThisTurn = true;
 								noteLayerInputsChanged(s);
 							}
+							// --- End Track P10 ---
+							// --- Track P12 ---
+							recordPlayerLifeLossWave4(pl, n);
+							// --- End Track P12 ---
 						}
-						// --- End Track P10 ---
 					}
 					p.emitVfx(s, {
 						kind: delta >= 0 ? 'heal' : 'damage',
@@ -6877,6 +6892,38 @@ class Run {
 				});
 			}
 			// --- End Track P10 ---
+			// --- Track P12 ---
+			case 'classLevelIs':
+			case 'classLevelAtLeast':
+			case 'caseSolved':
+			case 'caseUnsolved':
+			case 'isRenowned':
+			case 'boastAttackedThisTurn':
+			case 'exhaustUnused':
+			case 'dethroneMostLife':
+			case 'trainingGreaterAttacker':
+			case 'creaturesAttackedCountThisTurn':
+			case 'totalPowerControlled':
+			case 'colorsAmongControlledPermanents':
+			case 'sourcesDealtDamageThisTurn':
+			case 'cardsPutIntoGraveyardFromAnywhereThisTurn':
+			case 'spellsCastThisTurnCount': {
+				const srcFound = this.locate(this.ctx.sourceId);
+				return (
+					evaluateP12Condition(
+						c,
+						{
+							state: this.state,
+							controllerId: this.you.playerId,
+							source: srcFound?.inst,
+							stackItem: this.ctx.item,
+							xValue: this.ctx.xValue
+						},
+						matchesObjectFilter
+					) ?? false
+				);
+			}
+			// --- End Track P12 ---
 		}
 	}
 

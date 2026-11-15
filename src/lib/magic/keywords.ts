@@ -572,6 +572,177 @@ export function buildScavengeAbility(
 	};
 }
 
+// --- Track P12 ---
+function formatKeywordCostLabel(prefix: string, kw: KeywordDef): string {
+	const rawCost = (kw.cost ?? kw.param ?? '').trim();
+	if (!rawCost) return prefix;
+	const isManaOnly = /^(\{[^}]+\})+$/.test(rawCost);
+	return isManaOnly ? `${prefix} ${rawCost}` : `${prefix}—${rawCost}`;
+}
+
+/**
+ * CR 702.107a: "Outlast [cost]" means "[Cost], {T}: Put a +1/+1 counter on this creature. Activate only as a sorcery."
+ */
+export function buildOutlastAbility(
+	kw: KeywordDef,
+	id: string,
+	span: Span
+): { ability: ActivatedAbility; costText: string; effectText: string; label: string } | null {
+	const costDefs = kw.costDefs;
+	if (!costDefs || costDefs.length === 0) return null;
+	const label = formatKeywordCostLabel('Outlast', kw);
+	const cost: CostDef[] = [...costDefs, { k: 'tapSelf' }];
+	const costText = `${label}, {T}`;
+	const effectText = 'Put a +1/+1 counter on this creature. Outlast only as a sorcery.';
+	const effect: EffectStep[] = [
+		{
+			verb: 'putCounters',
+			subject: { k: 'self' },
+			params: { counter: '+1/+1' },
+			amount: { k: 'const', n: 1 },
+			span
+		}
+	];
+	return {
+		ability: {
+			kind: 'activated',
+			cost,
+			targets: [],
+			effect,
+			timing: 'sorcery',
+			isMana: false,
+			costKeyword: 'outlast',
+			id,
+			text: `${label} (${costText}: ${effectText})`,
+			span
+		},
+		costText,
+		effectText,
+		label
+	};
+}
+
+/**
+ * CR 702.128a: "Embalm [cost]" means "[Cost], Exile this card from your graveyard: Create a token
+ * that's a copy of it, except it's a white Zombie in addition to its other types with no mana cost.
+ * Embalm only as a sorcery."
+ */
+export function buildEmbalmAbility(
+	kw: KeywordDef,
+	id: string,
+	span: Span
+): { ability: ActivatedAbility; costText: string; effectText: string; label: string } | null {
+	const costDefs = kw.costDefs;
+	if (!costDefs || costDefs.length === 0) return null;
+	const label = formatKeywordCostLabel('Embalm', kw);
+	const cost: CostDef[] = [
+		...costDefs,
+		{ k: 'exileFrom', zone: 'graveyard', count: { k: 'const', n: 1 }, filter: 'self' }
+	];
+	const costText = `${label}, Exile this card from your graveyard`;
+	const effectText =
+		"Create a token that's a copy of this card, except it's a white Zombie in addition to its other types with no mana cost. Embalm only as a sorcery.";
+	return {
+		ability: {
+			kind: 'activated',
+			cost,
+			targets: [],
+			effect: [],
+			timing: 'sorcery',
+			isMana: false,
+			activationZones: ['graveyard'],
+			costKeyword: 'embalm',
+			id,
+			text: `${label} (${costText}: ${effectText})`,
+			span
+		},
+		costText,
+		effectText,
+		label
+	};
+}
+
+/**
+ * CR 702.129a: "Eternalize [cost]" means "[Cost], Exile this card from your graveyard: Create a
+ * token that's a copy of it, except it's a 4/4 black Zombie creature in addition to its other types
+ * with no mana cost. Eternalize only as a sorcery."
+ */
+export function buildEternalizeAbility(
+	kw: KeywordDef,
+	id: string,
+	span: Span
+): { ability: ActivatedAbility; costText: string; effectText: string; label: string } | null {
+	const costDefs = kw.costDefs;
+	if (!costDefs || costDefs.length === 0) return null;
+	const label = formatKeywordCostLabel('Eternalize', kw);
+	const cost: CostDef[] = [
+		...costDefs,
+		{ k: 'exileFrom', zone: 'graveyard', count: { k: 'const', n: 1 }, filter: 'self' }
+	];
+	const costText = `${label}, Exile this card from your graveyard`;
+	const effectText =
+		"Create a token that's a copy of this card, except it's 4/4, it's a black Zombie creature in addition to its other types, and it has no mana cost. Eternalize only as a sorcery.";
+	return {
+		ability: {
+			kind: 'activated',
+			cost,
+			targets: [],
+			effect: [],
+			timing: 'sorcery',
+			isMana: false,
+			activationZones: ['graveyard'],
+			costKeyword: 'eternalize',
+			id,
+			text: `${label} (${costText}: ${effectText})`,
+			span
+		},
+		costText,
+		effectText,
+		label
+	};
+}
+
+/**
+ * CR 702.141a: "Encore [cost]" means "[Cost], Exile this card from your graveyard: For each
+ * opponent, create a token that's a copy of this card that attacks that opponent this turn if able.
+ * They gain haste. Sacrifice them at the beginning of the next end step. Activate only as a sorcery."
+ */
+export function buildEncoreAbility(
+	kw: KeywordDef,
+	id: string,
+	span: Span
+): { ability: ActivatedAbility; costText: string; effectText: string; label: string } | null {
+	const costDefs = kw.costDefs;
+	if (!costDefs || costDefs.length === 0) return null;
+	const label = formatKeywordCostLabel('Encore', kw);
+	const cost: CostDef[] = [
+		...costDefs,
+		{ k: 'exileFrom', zone: 'graveyard', count: { k: 'const', n: 1 }, filter: 'self' }
+	];
+	const costText = `${label}, Exile this card from your graveyard`;
+	const effectText =
+		"For each opponent, create a token copy that attacks that opponent this turn if able. They gain haste. Sacrifice them at the beginning of the next end step. Activate only as a sorcery.";
+	return {
+		ability: {
+			kind: 'activated',
+			cost,
+			targets: [],
+			effect: [],
+			timing: 'sorcery',
+			isMana: false,
+			activationZones: ['graveyard'],
+			costKeyword: 'encore',
+			id,
+			text: `${label} (${costText}: ${effectText})`,
+			span
+		},
+		costText,
+		effectText,
+		label
+	};
+}
+// --- End Track P12 ---
+
 export interface KeywordSpec {
 	/** Canonical lower-case keyword name. */
 	name: string;
@@ -1306,15 +1477,147 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 
 	// ---- Unimplemented CR 702 keywords recognized on keyword lines ----
 	unimplemented('absorb', '702.64', 'number'),
-	unimplemented('afflict', '702.130', 'number'),
+	// --- Track P12 ---
+	[
+		'aftermath',
+		{
+			name: 'aftermath',
+			cr: '702.127',
+			parameterKind: 'none',
+			displayLabel: 'Aftermath',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'castOption' }
+		}
+	],
+	[
+		'afflict',
+		{
+			name: 'afflict',
+			cr: '702.130',
+			parameterKind: 'number',
+			grantable: true,
+			status: 'implemented',
+			implementation: {
+				kind: 'trigger',
+				events: ['becomesBlocked'],
+				buildTriggers: (kw, abilityIndex, span) => {
+					const n = kw.n ?? 1;
+					return [
+						{
+							abilityIndex,
+							trigger: { event: 'becomesBlocked', filter: { object: 'self' } },
+							effectSupported: true,
+							text: `Afflict ${n}`,
+							effect: {
+								steps: [
+									{
+										verb: 'loseLife',
+										subject: { k: 'playerRef', ref: { k: 'defendingPlayer' } },
+										amount: { k: 'const', n },
+										span
+									}
+								],
+								targets: [],
+								unparsed: []
+							}
+						}
+					];
+				}
+			}
+		}
+	],
+	// --- End Track P12 ---
 	unimplemented('amplify', '702.38', 'number'),
 	unimplemented('ascend', '702.131'),
 	unimplemented('aura swap', '702.65', 'cost'),
-	unimplemented('awaken', '702.113', 'text'),
-	unimplemented('backup', '702.165', 'number'),
+	// --- Track P12 ---
+	[
+		'awaken',
+		{
+			name: 'awaken',
+			cr: '702.113',
+			parameterKind: 'text',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'castOption' }
+		}
+	],
+	[
+		'backup',
+		{
+			name: 'backup',
+			cr: '702.165',
+			parameterKind: 'number',
+			grantable: false,
+			status: 'implemented',
+			implementation: {
+				kind: 'trigger',
+				events: ['zoneChange'],
+				buildTriggers: (kw, abilityIndex, _span) => {
+					const n = kw.n ?? 1;
+					return [
+						{
+							abilityIndex,
+							trigger: { event: 'zoneChange', filter: { object: 'self', to: 'battlefield' } },
+							effectSupported: true,
+							text: `Backup ${n}`,
+							effect: {
+								steps: [],
+								targets: [
+									{
+										kind: 'object',
+										filter: { zone: 'battlefield', types: ['Creature'] },
+										min: 1,
+										max: 1
+									}
+								],
+								unparsed: []
+							}
+						}
+					];
+				}
+			}
+		}
+	],
+	// --- End Track P12 ---
 	unimplemented('banding', '702.22'),
-	unimplemented('bargain', '702.166'),
-	unimplemented('bestow', '702.103', 'cost'),
+	// --- Track P12 ---
+	[
+		'bargain',
+		{
+			name: 'bargain',
+			cr: '702.166',
+			parameterKind: 'none',
+			displayLabel: 'Bargain',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'castOption' }
+		}
+	],
+	[
+		'beam me up',
+		{
+			name: 'beam me up',
+			cr: '702.196',
+			parameterKind: 'cost',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'castOption' }
+		}
+	],
+	[
+		'bestow',
+		{
+			name: 'bestow',
+			cr: '702.103',
+			parameterKind: 'cost',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'castOption' }
+		}
+	],
+	// --- End Track P12 ---
 	// --- Track P3 ---
 	[
 		'blitz',
@@ -1444,7 +1747,41 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 			}
 		}
 	],
-	unimplemented('champion', '702.72', 'quality'),
+	// --- Track P12 ---
+	[
+		'champion',
+		{
+			name: 'champion',
+			cr: '702.72',
+			parameterKind: 'quality',
+			grantable: false,
+			status: 'implemented',
+			implementation: {
+				kind: 'trigger',
+				events: ['zoneChange'],
+				buildTriggers: (kw, abilityIndex, _span) => {
+					const desc = kw.param ?? 'a creature';
+					return [
+						{
+							abilityIndex,
+							trigger: { event: 'zoneChange', filter: { object: 'self', to: 'battlefield' } },
+							effectSupported: true,
+							text: `Champion ${desc} (ETB)`,
+							effect: { steps: [], targets: [], unparsed: [] }
+						},
+						{
+							abilityIndex,
+							trigger: { event: 'zoneChange', filter: { object: 'self', from: 'battlefield' } },
+							effectSupported: true,
+							text: `Champion ${desc} (LTB)`,
+							effect: { steps: [], targets: [], unparsed: [] }
+						}
+					];
+				}
+			}
+		}
+	],
+	// --- End Track P12 ---
 	unimplemented('cipher', '702.99'),
 	unimplemented('cleave', '702.148', 'cost'),
 	unimplemented('companion', '702.139', 'text'),
@@ -1566,7 +1903,32 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 		}
 	],
 	unimplemented('daybound', '702.145'),
-	unimplemented('decayed', '702.147'),
+	// --- Track P12 ---
+	[
+		'decayed',
+		{
+			name: 'decayed',
+			cr: '702.147',
+			parameterKind: 'none',
+			displayLabel: 'Decayed',
+			grantable: true,
+			status: 'implemented',
+			implementation: {
+				kind: 'trigger',
+				events: ['attacks'],
+				buildTriggers: (_kw, abilityIndex, _span) => [
+					{
+						abilityIndex,
+						trigger: { event: 'attacks', filter: { object: 'self' } },
+						effectSupported: true,
+						text: 'Decayed',
+						effect: { steps: [], targets: [], unparsed: [] }
+					}
+				]
+			}
+		}
+	],
+	// --- End Track P12 ---
 	[
 		'delve',
 		{
@@ -1580,7 +1942,44 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 		}
 	],
 	unimplemented('demonstrate', '702.144'),
-	unimplemented('dethrone', '702.105'),
+	// --- Track P12 ---
+	[
+		'dethrone',
+		{
+			name: 'dethrone',
+			cr: '702.105',
+			parameterKind: 'none',
+			displayLabel: 'Dethrone',
+			grantable: true,
+			status: 'implemented',
+			implementation: {
+				kind: 'trigger',
+				events: ['attacks'],
+				buildTriggers: (_kw, abilityIndex, span) => [
+					{
+						abilityIndex,
+						trigger: { event: 'attacks', filter: { object: 'self', dethroneMostLife: true } },
+						effectSupported: true,
+						text: 'Dethrone',
+						effect: {
+							steps: [
+								{
+									verb: 'putCounters',
+									subject: { k: 'self' },
+									amount: { k: 'const', n: 1 },
+									params: { counter: '+1/+1' },
+									span
+								}
+							],
+							targets: [],
+							unparsed: []
+						}
+					}
+				]
+			}
+		}
+	],
+	// --- End Track P12 ---
 	[
 		'devoid',
 		{
@@ -1603,7 +2002,19 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 			}
 		}
 	],
-	unimplemented('devour', '702.82', 'number'),
+	// --- Track P12 ---
+	[
+		'devour',
+		{
+			name: 'devour',
+			cr: '702.82',
+			parameterKind: 'number',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'static', buildStatics: () => [] }
+		}
+	],
+	// --- End Track P12 ---
 	faceDownCostKeyword('disguise', '702.168', 'disguise', 'Cast face down (Disguise)', '{2}'),
 	// --- Track P3 ---
 	[
@@ -1630,7 +2041,19 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 		}
 	],
 	unimplemented('double team', '702.156'),
-	unimplemented('dredge', '702.52', 'number'),
+	// --- Track P12 ---
+	[
+		'dredge',
+		{
+			name: 'dredge',
+			cr: '702.52',
+			parameterKind: 'number',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'static', buildStatics: () => [] }
+		}
+	],
+	// --- End Track P12 ---
 	// --- Track P9 ---
 	[
 		'echo',
@@ -1647,10 +2070,65 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 			}
 		}
 	],
-	unimplemented('embalm', '702.128', 'cost'),
-	unimplemented('emerge', '702.119', 'cost'),
-	unimplemented('encore', '702.141', 'cost'),
-	unimplemented('enlist', '702.154'),
+	// --- Track P12 ---
+	[
+		'embalm',
+		{
+			name: 'embalm',
+			cr: '702.128',
+			parameterKind: 'cost',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'activated', buildActivated: buildEmbalmAbility }
+		}
+	],
+	[
+		'emerge',
+		{
+			name: 'emerge',
+			cr: '702.119',
+			parameterKind: 'cost',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'castOption' }
+		}
+	],
+	[
+		'encore',
+		{
+			name: 'encore',
+			cr: '702.141',
+			parameterKind: 'cost',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'activated', buildActivated: buildEncoreAbility }
+		}
+	],
+	[
+		'enlist',
+		{
+			name: 'enlist',
+			cr: '702.154',
+			parameterKind: 'none',
+			displayLabel: 'Enlist',
+			grantable: true,
+			status: 'implemented',
+			implementation: {
+				kind: 'trigger',
+				events: ['attacks'],
+				buildTriggers: (_kw, abilityIndex, _span) => [
+					{
+						abilityIndex,
+						trigger: { event: 'attacks', filter: { object: 'self' } },
+						effectSupported: true,
+						text: 'Enlist',
+						effect: { steps: [], targets: [], unparsed: [] }
+					}
+				]
+			}
+		}
+	],
+	// --- End Track P12 ---
 	// --- Track P3 ---
 	[
 		'entwine',
@@ -1664,7 +2142,19 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 		}
 	],
 	unimplemented('epic', '702.50'),
-	unimplemented('escalate', '702.120', 'cost'),
+	// --- Track P12 ---
+	[
+		'escalate',
+		{
+			name: 'escalate',
+			cr: '702.120',
+			parameterKind: 'cost',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'castOption' }
+		}
+	],
+	// --- End Track P12 ---
 	[
 		'escape',
 		{
@@ -1688,7 +2178,19 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 			}
 		}
 	],
-	unimplemented('eternalize', '702.129', 'cost'),
+	// --- Track P12 ---
+	[
+		'eternalize',
+		{
+			name: 'eternalize',
+			cr: '702.129',
+			parameterKind: 'cost',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'activated', buildActivated: buildEternalizeAbility }
+		}
+	],
+	// --- End Track P12 ---
 	[
 		'evoke',
 		{
@@ -1892,7 +2394,43 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 	unimplemented('frenzy', '702.68', 'number'),
 	unimplemented('friends forever', '702.124i'),
 	unimplemented('gift', '702.174', 'quality'),
-	unimplemented('graft', '702.58', 'number'),
+	// --- Track P12 ---
+	[
+		'graft',
+		{
+			name: 'graft',
+			cr: '702.58',
+			parameterKind: 'number',
+			grantable: false,
+			status: 'implemented',
+			implementation: {
+				kind: 'trigger',
+				events: ['zoneChange'],
+				buildTriggers: (kw, abilityIndex, _span) => {
+					const n = kw.n ?? 1;
+					return [
+						{
+							abilityIndex,
+							trigger: {
+								event: 'zoneChange',
+								filter: { to: 'battlefield', object: { types: ['Creature'], other: true } }
+							},
+							condition: {
+								k: 'compare',
+								left: { k: 'countersOn', counter: '+1/+1', of: { k: 'self' } },
+								op: '>=',
+								right: { k: 'const', n: 1 }
+							},
+							effectSupported: true,
+							text: `Graft ${n}`,
+							effect: { steps: [], targets: [], unparsed: [] }
+						}
+					];
+				}
+			}
+		}
+	],
+	// --- End Track P12 ---
 	unimplemented('gravestorm', '702.69'),
 	unimplemented('haunt', '702.55'),
 	unimplemented('hidden agenda', '702.106'),
@@ -1911,7 +2449,46 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 		}
 	],
 	unimplemented('impending', '702.176', 'text'),
-	unimplemented('ingest', '702.115'),
+	// --- Track P12 ---
+	[
+		'ingest',
+		{
+			name: 'ingest',
+			cr: '702.115',
+			parameterKind: 'none',
+			displayLabel: 'Ingest',
+			grantable: true,
+			status: 'implemented',
+			implementation: {
+				kind: 'trigger',
+				events: ['dealsDamage'],
+				buildTriggers: (_kw, abilityIndex, span) => [
+					{
+						abilityIndex,
+						trigger: {
+							event: 'dealsDamage',
+							filter: { object: 'self', combat: true, damageTo: 'player' }
+						},
+						effectSupported: true,
+						text: 'Ingest',
+						effect: {
+							steps: [
+								{
+									verb: 'exile',
+									subject: { k: 'libraryTop', player: { k: 'eventPlayer' } },
+									amount: { k: 'const', n: 1 },
+									span
+								}
+							],
+							targets: [],
+							unparsed: []
+						}
+					}
+				]
+			}
+		}
+	],
+	// --- End Track P12 ---
 	// --- Track P3 ---
 	[
 		'jump-start',
@@ -2005,9 +2582,103 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 		}
 	],
 	faceDownCostKeyword('megamorph', '702.37b', 'megamorph', 'Cast face down (Megamorph)'),
-	unimplemented('melee', '702.121'),
-	unimplemented('mentor', '702.134'),
-	unimplemented('miracle', '702.94', 'cost'),
+	// --- Track P12 ---
+	[
+		'mayhem',
+		{
+			name: 'mayhem',
+			cr: '702.187',
+			parameterKind: 'cost',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'castOption' }
+		}
+	],
+	[
+		'melee',
+		{
+			name: 'melee',
+			cr: '702.121',
+			parameterKind: 'none',
+			displayLabel: 'Melee',
+			grantable: true,
+			status: 'implemented',
+			implementation: {
+				kind: 'trigger',
+				events: ['attacks'],
+				buildTriggers: (_kw, abilityIndex, _span) => [
+					{
+						abilityIndex,
+						trigger: { event: 'attacks', filter: { object: 'self' } },
+						effectSupported: true,
+						text: 'Melee',
+						effect: { steps: [], targets: [], unparsed: [] }
+					}
+				]
+			}
+		}
+	],
+	[
+		'mentor',
+		{
+			name: 'mentor',
+			cr: '702.134',
+			parameterKind: 'none',
+			displayLabel: 'Mentor',
+			grantable: true,
+			status: 'implemented',
+			implementation: {
+				kind: 'trigger',
+				events: ['attacks'],
+				buildTriggers: (_kw, abilityIndex, span) => [
+					{
+						abilityIndex,
+						trigger: { event: 'attacks', filter: { object: 'self' } },
+						effectSupported: true,
+						text: 'Mentor',
+						effect: {
+							steps: [
+								{
+									verb: 'putCounters',
+									subject: { k: 'target', index: 0 },
+									amount: { k: 'const', n: 1 },
+									params: { counter: '+1/+1' },
+									span
+								}
+							],
+							targets: [
+								{
+									kind: 'object',
+									filter: {
+										zone: 'battlefield',
+										types: ['Creature'],
+										attacking: true,
+										other: true,
+										powerLessThanSource: true
+									},
+									min: 1,
+									max: 1
+								}
+							],
+							unparsed: []
+						}
+					}
+				]
+			}
+		}
+	],
+	[
+		'miracle',
+		{
+			name: 'miracle',
+			cr: '702.94',
+			parameterKind: 'cost',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'castOption' }
+		}
+	],
+	// --- End Track P12 ---
 	// --- Track P9 ---
 	[
 		'modular',
@@ -2061,7 +2732,32 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 	faceDownCostKeyword('morph', '702.37', 'morph', 'Cast face down (Morph)'),
 	unimplemented('more than meets the eye', '702.162', 'cost'),
 	unimplemented('mutate', '702.140', 'cost'),
-	unimplemented('myriad', '702.116'),
+	// --- Track P12 ---
+	[
+		'myriad',
+		{
+			name: 'myriad',
+			cr: '702.116',
+			parameterKind: 'none',
+			displayLabel: 'Myriad',
+			grantable: true,
+			status: 'implemented',
+			implementation: {
+				kind: 'trigger',
+				events: ['attacks'],
+				buildTriggers: (_kw, abilityIndex, _span) => [
+					{
+						abilityIndex,
+						trigger: { event: 'attacks', filter: { object: 'self' } },
+						effectSupported: true,
+						text: 'Myriad',
+						effect: { steps: [], targets: [], unparsed: [] }
+					}
+				]
+			}
+		}
+	],
+	// --- End Track P12 ---
 	unimplemented('nightbound', '702.145'),
 	// --- Track P9 ---
 	[
@@ -2104,7 +2800,19 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 			}
 		}
 	],
-	unimplemented('outlast', '702.107', 'cost'),
+	// --- Track P12 ---
+	[
+		'outlast',
+		{
+			name: 'outlast',
+			cr: '702.107',
+			parameterKind: 'cost',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'activated', buildActivated: buildOutlastAbility }
+		}
+	],
+	// --- End Track P12 ---
 	// --- Track P9 ---
 	[
 		'persist',
@@ -2176,7 +2884,34 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 	],
 	unimplemented('provoke', '702.39'),
 	unimplemented('prowl', '702.76', 'cost'),
-	unimplemented('rampage', '702.23', 'number'),
+	// --- Track P12 ---
+	[
+		'rampage',
+		{
+			name: 'rampage',
+			cr: '702.23',
+			parameterKind: 'number',
+			grantable: true,
+			status: 'implemented',
+			implementation: {
+				kind: 'trigger',
+				events: ['becomesBlocked'],
+				buildTriggers: (kw, abilityIndex, _span) => {
+					const n = kw.n ?? 1;
+					return [
+						{
+							abilityIndex,
+							trigger: { event: 'becomesBlocked', filter: { object: 'self' } },
+							effectSupported: true,
+							text: `Rampage ${n}`,
+							effect: { steps: [], targets: [], unparsed: [] }
+						}
+					];
+				}
+			}
+		}
+	],
+	// --- End Track P12 ---
 	unimplemented('ravenous', '702.156'),
 	unimplemented('read ahead', '702.155'),
 	// --- Track P9 ---
@@ -2193,7 +2928,44 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 		}
 	],
 	unimplemented('reconfigure', '702.151', 'cost'),
-	unimplemented('recover', '702.59', 'cost'),
+	// --- Track P12 ---
+	[
+		'recover',
+		{
+			name: 'recover',
+			cr: '702.59',
+			parameterKind: 'cost',
+			grantable: false,
+			status: 'implemented',
+			implementation: {
+				kind: 'trigger',
+				events: ['zoneChange'],
+				buildTriggers: (kw, abilityIndex, _span) => {
+					const rawCost = (kw.cost ?? kw.param ?? '').trim();
+					const isManaOnly = /^(\{[^}]+\})+$/.test(rawCost);
+					const text = rawCost ? (isManaOnly ? `Recover ${rawCost}` : `Recover—${rawCost}`) : 'Recover';
+					return [
+						{
+							abilityIndex,
+							trigger: {
+								event: 'zoneChange',
+								fromZone: 'graveyard',
+								filter: {
+									object: { types: ['Creature'], owner: 'you', other: true },
+									from: 'battlefield',
+									to: 'graveyard'
+								}
+							},
+							effectSupported: true,
+							text,
+							effect: { steps: [], targets: [], unparsed: [] }
+						}
+					];
+				}
+			}
+		}
+	],
+	// --- End Track P12 ---
 	// --- Track P6 ---
 	[
 		'reinforce',
@@ -2206,7 +2978,38 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 			implementation: { kind: 'activated', buildActivated: buildReinforceActivatedAbility }
 		}
 	],
-	unimplemented('renown', '702.112', 'number'),
+	// --- Track P12 ---
+	[
+		'renown',
+		{
+			name: 'renown',
+			cr: '702.112',
+			parameterKind: 'number',
+			grantable: true,
+			status: 'implemented',
+			implementation: {
+				kind: 'trigger',
+				events: ['dealsDamage'],
+				buildTriggers: (kw, abilityIndex, _span) => {
+					const n = kw.n ?? 1;
+					return [
+						{
+							abilityIndex,
+							trigger: {
+								event: 'dealsDamage',
+								filter: { object: 'self', combat: true, damageTo: 'player' }
+							},
+							condition: { k: 'not', of: { k: 'isRenowned' } },
+							effectSupported: true,
+							text: `Renown ${n}`,
+							effect: { steps: [], targets: [], unparsed: [] }
+						}
+					];
+				}
+			}
+		}
+	],
+	// --- End Track P12 ---
 	// --- Track P6 ---
 	[
 		'replicate',
@@ -2342,9 +3145,23 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 		}
 	],
 	unimplemented('space sculptor', '702.158'),
-	unimplemented('spectacle', '702.137', 'cost'),
+	// --- Track P12 ---
+	[
+		'spectacle',
+		{
+			name: 'spectacle',
+			cr: '702.137',
+			parameterKind: 'cost',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'castOption' }
+		}
+	],
+	// --- End Track P12 ---
 	unimplemented('splice', '702.47', 'text'),
-	unimplemented('split second', '702.61'),
+	// --- Track P12 ---
+	simpleImplemented('split second', '702.61', 'Split second'),
+	// --- End Track P12 ---
 	// --- Track P6 ---
 	[
 		'squad',
@@ -2408,10 +3225,70 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 			}
 		}
 	],
-	unimplemented('sunburst', '702.44'),
-	unimplemented('surge', '702.117', 'cost'),
+	// --- Track P12 ---
+	[
+		'sunburst',
+		{
+			name: 'sunburst',
+			cr: '702.44',
+			parameterKind: 'none',
+			displayLabel: 'Sunburst',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'static', buildStatics: () => [] }
+		}
+	],
+	[
+		'surge',
+		{
+			name: 'surge',
+			cr: '702.117',
+			parameterKind: 'cost',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'castOption' }
+		}
+	],
+	// --- End Track P12 ---
 	unimplemented('totem armor', '702.89'),
-	unimplemented('training', '702.149'),
+	// --- Track P12 ---
+	[
+		'training',
+		{
+			name: 'training',
+			cr: '702.149',
+			parameterKind: 'none',
+			displayLabel: 'Training',
+			grantable: true,
+			status: 'implemented',
+			implementation: {
+				kind: 'trigger',
+				events: ['attacks'],
+				buildTriggers: (_kw, abilityIndex, span) => [
+					{
+						abilityIndex,
+						trigger: { event: 'attacks', filter: { object: 'self', trainingGreaterAttacker: true } },
+						effectSupported: true,
+						text: 'Training',
+						effect: {
+							steps: [
+								{
+									verb: 'putCounters',
+									subject: { k: 'self' },
+									amount: { k: 'const', n: 1 },
+									params: { counter: '+1/+1' },
+									span
+								}
+							],
+							targets: [],
+							unparsed: []
+						}
+					}
+				]
+			}
+		}
+	],
+	// --- End Track P12 ---
 	unimplemented('transfigure', '702.71', 'cost'),
 	// --- Track P6 ---
 	[
@@ -2426,8 +3303,31 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 		}
 	],
 	unimplemented('tribute', '702.104', 'number'),
-	unimplemented('umbra armor', '702.89'),
-	unimplemented('undaunted', '702.125'),
+	// --- Track P12 ---
+	simpleImplemented('umbra armor', '702.89', 'Umbra armor'),
+	[
+		'undaunted',
+		{
+			name: 'undaunted',
+			cr: '702.125',
+			parameterKind: 'none',
+			displayLabel: 'Undaunted',
+			grantable: false,
+			status: 'implemented',
+			implementation: {
+				kind: 'static',
+				buildStatics: () => [
+					{
+						k: 'costModifier',
+						affects: { k: 'self' },
+						delta: { mode: 'reduce', generic: 1, per: { k: 'opponentCount' } },
+						who: { relation: 'you' }
+					}
+				]
+			}
+		}
+	],
+	// --- End Track P12 ---
 	// --- Track P9 ---
 	[
 		'undying',
@@ -2535,11 +3435,93 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 		}
 	],
 	unimplemented('exhaust', '702.177', 'text'),
-	unimplemented('harmonize', '702.180', 'cost'),
-	unimplemented('mobilize', '702.181', 'number'),
-	unimplemented('web-slinging', '702.188', 'cost'),
-	unimplemented('sneak', '702.190', 'cost'),
-	unimplemented('firebending', '702.189', 'number'),
+	// --- Track P12 ---
+	[
+		'harmonize',
+		{
+			name: 'harmonize',
+			cr: '702.180',
+			parameterKind: 'cost',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'castOption' }
+		}
+	],
+	[
+		'mobilize',
+		{
+			name: 'mobilize',
+			cr: '702.181',
+			parameterKind: 'number',
+			grantable: true,
+			status: 'implemented',
+			implementation: {
+				kind: 'trigger',
+				events: ['attacks'],
+				buildTriggers: (kw, abilityIndex, _span) => {
+					const n = kw.n ?? 1;
+					return [
+						{
+							abilityIndex,
+							trigger: { event: 'attacks', filter: { object: 'self' } },
+							effectSupported: true,
+							text: `Mobilize ${n}`,
+							effect: { steps: [], targets: [], unparsed: [] }
+						}
+					];
+				}
+			}
+		}
+	],
+	[
+		'web-slinging',
+		{
+			name: 'web-slinging',
+			cr: '702.188',
+			parameterKind: 'cost',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'castOption' }
+		}
+	],
+	[
+		'sneak',
+		{
+			name: 'sneak',
+			cr: '702.190',
+			parameterKind: 'cost',
+			grantable: false,
+			status: 'implemented',
+			implementation: { kind: 'castOption' }
+		}
+	],
+	[
+		'firebending',
+		{
+			name: 'firebending',
+			cr: '702.189',
+			parameterKind: 'number',
+			grantable: true,
+			status: 'implemented',
+			implementation: {
+				kind: 'trigger',
+				events: ['attacks'],
+				buildTriggers: (kw, abilityIndex, _span) => {
+					const n = kw.n ?? 1;
+					return [
+						{
+							abilityIndex,
+							trigger: { event: 'attacks', filter: { object: 'self' } },
+							effectSupported: true,
+							text: `Firebending ${n}`,
+							effect: { steps: [], targets: [], unparsed: [] }
+						}
+					];
+				}
+			}
+		}
+	],
+	// --- End Track P12 ---
 	unimplemented('waterbend', '701.67', 'cost'),
 	unimplemented('job select', '702.182'),
 	// --- Track P6 ---
@@ -2592,17 +3574,46 @@ const isSimpleContinuousGrantable = (name: string, spec: KeywordSpec): boolean =
 
 // --- Track P9 ---
 const TOXIC_GRANT_PHRASES = ['toxic 1', 'toxic 2', 'toxic 3', 'toxic 4', 'toxic 5', 'toxic 6'] as const;
+// --- Track P12 ---
+const WAVE4_GRANT_PHRASES = [
+	'afflict 1',
+	'afflict 2',
+	'afflict 3',
+	'afflict 4',
+	'firebending 1',
+	'firebending 2',
+	'firebending 3',
+	'firebending 4',
+	'mobilize 1',
+	'mobilize 2',
+	'mobilize 3',
+	'mobilize 4',
+	'rampage 1',
+	'rampage 2',
+	'rampage 3',
+	'rampage 4',
+	'renown 1',
+	'renown 2',
+	'renown 3'
+] as const;
+// --- End Track P12 ---
 
 /** Bare keywords accepted in static continuous ability grants ("Creatures you control have ..."). */
 export const STATIC_CONTINUOUS_KEYWORDS: ReadonlySet<string> = new Set([
 	...REGISTRY_ENTRIES.filter(([name, spec]) => isSimpleContinuousGrantable(name, spec)).map(([name]) => name),
-	...TOXIC_GRANT_PHRASES
+	...TOXIC_GRANT_PHRASES,
+	// --- Track P12 ---
+	...WAVE4_GRANT_PHRASES
+	// --- End Track P12 ---
 ]);
 
 /** Bare keywords accepted by effect "gains <keyword>" clauses ("gains flying, battle cry until end of turn"). */
 export const GRANTABLE_KEYWORDS: readonly string[] = [
 	...REGISTRY_ENTRIES.filter(([name, spec]) => isSimpleContinuousGrantable(name, spec)).map(([name]) => name),
-	...TOXIC_GRANT_PHRASES
+	...TOXIC_GRANT_PHRASES,
+	// --- Track P12 ---
+	...WAVE4_GRANT_PHRASES
+	// --- End Track P12 ---
 ];
 
 /** Display labels for non-parameterized implemented keywords (insertion order preserved). */

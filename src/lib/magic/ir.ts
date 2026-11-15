@@ -296,6 +296,10 @@ export interface ModalDef {
 	/** "If you control a commander as you cast this spell, you may choose both." (CR 700.2) */
 	conditionalChooseAll?: Condition;
 	modes: Array<{ targets: TargetSpec[]; effect: EffectStep[]; span: Span }>;
+	// --- Track P12 ---
+	/** CR 702.172 (Spree) / CR 702.183 (Tiered): per-mode additional cost aligned by mode index. */
+	perModeCosts?: CostDef[][];
+	// --- End Track P12 ---
 }
 
 // ---- Keywords -------------------------------------------------------------------------------
@@ -328,6 +332,22 @@ export interface KeywordDef {
 	// --- Track P6 ---
 	/** Prototype (CR 719, 702.160): inset mana cost, derived colors, and power/toughness. */
 	prototypeSpec?: PrototypeSpec;
+	// --- Track P12 ---
+	/** Awaken N—[cost] (CR 702.113a): number of +1/+1 counters placed on the awakened land. */
+	awakenN?: number;
+	/** Emerge from [quality] [cost] (CR 702.119b): filter for the sacrificed permanent (default Creature). */
+	emergeFilter?: ObjectFilter;
+	/** Champion a [quality] (CR 702.72a): filter for the permanent you control exiled on ETB. */
+	championFilter?: ObjectFilter;
+	/** Devour [quality] N (CR 702.82c): filter for permanents you control sacrificed as ~ enters (default Creature). */
+	devourFilter?: ObjectFilter;
+	/** Devour X (CR 702.82a): X equals the number of creatures devoured this way (count * count counters). */
+	devourX?: boolean;
+	/** Equip planeswalker [cost] (CR 702.6e): targets planeswalker you control instead of creature. */
+	equipAllowPlaneswalker?: boolean;
+	/** Backup N (CR 702.165c): index of the Backup keyword ability so abilities after it are granted to another creature. */
+	backupAbilityStartIndex?: number;
+	// --- End Track P12 ---
 }
 
 // ---- Filters --------------------------------------------------------------------------------
@@ -417,6 +437,16 @@ export interface ObjectFilter {
 	/** Stack ability filter: `"from a [filter] source"`. */
 	abilitySourceFilter?: ObjectFilter;
 	// --- End Track P10 ---
+	// --- Track P12 ---
+	/** CR 702.166a Bargain: matches iff the permanent is an artifact, enchantment, or token. */
+	artifactEnchantmentOrToken?: boolean;
+	/** CR 702.134a Mentor: matches iff candidate's power is strictly less than source's power. */
+	powerLessThanSource?: boolean;
+	/** CR 702.154a Enlist: untapped nonattacking creature without summoning sickness (or with haste). */
+	untappedNonattackingSummoningReady?: boolean;
+	/** Disjunction of sub-filters ("creature or Vehicle", "artifact or non-Aura enchantment"). */
+	anyOf?: ObjectFilter[];
+	// --- End Track P12 ---
 }
 
 export interface Compare {
@@ -509,8 +539,14 @@ export type Amount =
 	| { k: 'lkiCounterCount'; counter: CounterType }
 	// --- Track P10 ---
 	/** Result of the most recent die roll or coin-flip streak in the resolving effect ("where X is the result"). */
-	| { k: 'lastRollResult' };
+	| { k: 'lastRollResult' }
 	// --- End Track P10 ---
+	// --- Track P12 ---
+	/** CR 702.82b: number of permanents devoured by this permanent as it entered the battlefield. */
+	| { k: 'devouredCount' }
+	/** CR 702.125a–b Undaunted: number of opponents you have who haven't left the game. */
+	| { k: 'opponentCount' };
+	// --- End Track P12 ---
 
 // ---- Costs ----------------------------------------------------------------------------------
 
@@ -1068,8 +1104,16 @@ export type EventKind =
 	| 'graveyardLeaveBatch'
 	/** CR 701.57: "Whenever you discover" / CR 701.61: "Whenever you forage". */
 	| 'discover'
-	| 'forage';
+	| 'forage'
 	// --- End Track P10 ---
+	// --- Track P12 ---
+	/** CR 717.3b: "When ~ becomes level N" on a Class enchantment. */
+	| 'classLevelGained'
+	/** CR 720.2b / 702.169c: "Whenever you solve a Case" when a Case becomes solved. */
+	| 'caseSolved'
+	/** CR 702.112b: "When ~ becomes renowned" when a creature becomes renowned. */
+	| 'becameRenowned';
+	// --- End Track P12 ---
 
 export interface EventFilter {
 	/**
@@ -1135,6 +1179,14 @@ export interface EventFilter {
 	/** dealsDamage: filter on target player ("to an opponent" vs "to a player"). */
 	damagePlayerRelation?: 'opponent' | 'you' | 'any';
 	// --- End Track P10 ---
+	// --- Track P12 ---
+	/** classLevelGained (CR 717.3b): target Class level N ("When ~ becomes level 2"). */
+	classLevel?: number;
+	/** attacks (CR 702.105a Dethrone): matches only when attacking the player with the most life or tied for most life. */
+	dethroneMostLife?: boolean;
+	/** attacks (CR 702.149a Training): matches only when at least one other attacking creature has greater power than self. */
+	trainingGreaterAttacker?: boolean;
+	// --- End Track P12 ---
 }
 
 export interface TriggerDef {
@@ -1237,8 +1289,45 @@ export type Condition =
 	| {
 			k: 'opponentComparison';
 			metric: 'lands' | 'creatures' | 'life' | 'hand';
-	  };
+	  }
 	// --- End Track P10 ---
+	// --- Track P12 ---
+	/** CR 717.3a: true iff this Class permanent's current level equals `level`. */
+	| { k: 'classLevelIs'; level: number }
+	/** CR 717.3a: true iff this Class permanent's current level is `>= level`. */
+	| { k: 'classLevelAtLeast'; level: number }
+	/** CR 720.2c: true iff this Case permanent is solved (`isSolved === true`). */
+	| { k: 'caseSolved' }
+	/** CR 720.2a / 702.169a: true iff this Case permanent is NOT yet solved (`!isSolved`). */
+	| { k: 'caseUnsolved' }
+	/** CR 702.112b: true iff this permanent has become renowned (`isRenowned === true`). */
+	| { k: 'isRenowned' }
+	/** CR 702.142a Boast: true iff this specific creature attacked this turn. */
+	| { k: 'boastAttackedThisTurn' }
+	/** CR 702.177a Exhaust: true iff `abilityId` has not yet been activated on this permanent. */
+	| { k: 'exhaustUnused'; abilityId: string }
+	/** CR 702.149a Training: true iff at least one other attacking creature has greater power than self. */
+	| { k: 'trainingGreaterAttacker' }
+	/** CR 702.105a Dethrone: true iff defending player has the most life or is tied for most life. */
+	| { k: 'dethroneMostLife' }
+	/** Case To-solve: true iff at least `min` creatures attacked this turn. */
+	| { k: 'creaturesAttackedCountThisTurn'; min: number }
+	/** Case To-solve: true iff creatures you control have total power >= `min`. */
+	| { k: 'totalPowerControlled'; min: number }
+	/** Case To-solve: true iff there are >= `min` distinct colors among permanents you control. */
+	| { k: 'colorsAmongControlledPermanents'; min: number }
+	/** Case To-solve: true iff >= `min` sources you controlled dealt damage this turn. */
+	| { k: 'sourcesDealtDamageThisTurn'; min: number }
+	/** Case To-solve: true iff >= `min` matching cards were put into (your/any) graveyards from anywhere this turn. */
+	| {
+			k: 'cardsPutIntoGraveyardFromAnywhereThisTurn';
+			min: number;
+			filter?: ObjectFilter;
+			whose?: 'you' | 'any';
+	  }
+	/** Case To-solve: true iff you have cast >= `min` matching spells this turn. */
+	| { k: 'spellsCastThisTurnCount'; min: number; filter?: ObjectFilter };
+	// --- End Track P12 ---
 
 // ---- Statics and replacements ---------------------------------------------------------------
 
@@ -1429,7 +1518,15 @@ export type StaticDef =
 			allowSpells?: boolean;
 			spellFilter?: ObjectFilter;
 			condition?: Condition;
+	  }
+	// --- Track P12 ---
+	| {
+			/** CR 601.2b,f–h: card-level additional cost to cast this spell ("As an additional cost to cast ~, <cost>."). */
+			k: 'additionalCastCost';
+			costs: CostDef[];
+			condition?: Condition;
 	  };
+	// --- End Track P12 ---
 
 export interface EventPattern {
 	event: EventKind | 'draw' | 'damage' | 'lifeGain';

@@ -72,6 +72,20 @@ import {
 	resolveQuotedAbilityDefs
 } from './reflexiveManaAndActions.ts';
 // --- End Track P10 ---
+// --- Track P12 ---
+import {
+	attachWave4TagToBaseRuntimeTrigger,
+	attackerHasGreaterPowerCoAttacker,
+	buildSingleWave4KeywordTriggers,
+	collectBackupGrantedAbilityDefs,
+	evaluateP12Amount,
+	evaluateP12Condition,
+	isPlayerTiedForMostLife,
+	parseGrantedWave4TriggerKeyword,
+	type Wave4RuntimeTrigger
+} from './keywordsWave4.ts';
+import { matchesObjectFilter } from './objectFilter.ts';
+// --- End Track P12 ---
 
 /**
  * How a pending trigger is executed. 'stack': a StackItem put on the stack the next time a player
@@ -133,6 +147,13 @@ export interface PendingTrigger {
 	// --- Track P10 ---
 	grantedAbilityText?: string;
 	// --- End Track P10 ---
+	// --- Track P12 ---
+	sourceIsRenowned?: boolean;
+	sourceDevouredCount?: number;
+	wave4Tag?: string;
+	wave4N?: number;
+	wave4CostText?: string;
+	// --- End Track P12 ---
 	/** Match order (deterministic tie-break for a player's own simultaneous triggers). */
 	order: number;
 }
@@ -177,6 +198,29 @@ interface CardTriggers {
 const CARD_TRIGGERS = new WeakMap<ScryfallCard, Map<number, CardTriggers>>();
 
 function grantedTriggerEventsForKeyword(kw: string): readonly EventKind[] | null {
+	// --- Track P12 ---
+	const parsedWave4 = parseGrantedWave4TriggerKeyword(kw);
+	if (parsedWave4) {
+		switch (parsedWave4.base) {
+			case 'decayed':
+			case 'dethrone':
+			case 'enlist':
+			case 'firebending':
+			case 'melee':
+			case 'mentor':
+			case 'mobilize':
+			case 'myriad':
+			case 'training':
+				return ['attacks'];
+			case 'afflict':
+			case 'rampage':
+				return ['becomesBlocked'];
+			case 'ingest':
+			case 'renown':
+				return ['dealsDamage'];
+		}
+	}
+	// --- End Track P12 ---
 	const spec = getKeywordSpec(kw);
 	if (
 		spec?.status === 'implemented' &&
@@ -198,7 +242,15 @@ function triggersOf(card: ScryfallCard, faceIndex = 0): CardTriggers {
 	let entry = byFace.get(faceIndex);
 	if (!entry) {
 		const def = compileCard(card);
-		const all = runtimeTriggers(def, faceIndex).filter((t) => !host?.canExecute || host.canExecute(t));
+		const faceAbs = def.faces[faceIndex]?.abilities ?? [];
+		// --- Track P12 ---
+		const baseRts = runtimeTriggers(def, faceIndex).map((rt): Wave4RuntimeTrigger =>
+			attachWave4TagToBaseRuntimeTrigger(rt, faceAbs)
+		);
+		const all: RuntimeTrigger[] = baseRts.filter(
+			(t) => Boolean(t.wave4Tag) || !host?.canExecute || host.canExecute(t)
+		);
+		// --- End Track P12 ---
 		const events = new Set<EventKind>();
 		for (const t of all) for (const alt of alternatives(t.trigger)) events.add(alt.event);
 		const grantedTriggerEvents = new Set<EventKind>();
@@ -356,6 +408,13 @@ function persistPendingTriggers(state: GameState, triggers: PendingTrigger[]): v
 			// --- Track P10 ---
 			...(t.grantedAbilityText ? { grantedAbilityText: t.grantedAbilityText } : {}),
 			// --- End Track P10 ---
+			// --- Track P12 ---
+			...(t.sourceIsRenowned ? { sourceIsRenowned: true } : {}),
+			...(t.sourceDevouredCount !== undefined ? { sourceDevouredCount: t.sourceDevouredCount } : {}),
+			...(t.wave4Tag ? { wave4Tag: t.wave4Tag } : {}),
+			...(t.wave4N !== undefined ? { wave4N: t.wave4N } : {}),
+			...(t.wave4CostText !== undefined ? { wave4CostText: t.wave4CostText } : {}),
+			// --- End Track P12 ---
 			order: t.order
 		});
 	}
@@ -397,6 +456,13 @@ function hydratePendingTriggers(state: GameState, ch: TriggerChannel): void {
 		// --- Track P10 ---
 		...(t.grantedAbilityText ? { grantedAbilityText: t.grantedAbilityText } : {}),
 		// --- End Track P10 ---
+		// --- Track P12 ---
+		...(t.sourceIsRenowned ? { sourceIsRenowned: true } : {}),
+		...(t.sourceDevouredCount !== undefined ? { sourceDevouredCount: t.sourceDevouredCount } : {}),
+		...(t.wave4Tag ? { wave4Tag: t.wave4Tag } : {}),
+		...(t.wave4N !== undefined ? { wave4N: t.wave4N } : {}),
+		...(t.wave4CostText !== undefined ? { wave4CostText: t.wave4CostText } : {}),
+		// --- End Track P12 ---
 		order: t.order
 	}));
 	ch.pending = [...hydrated, ...ch.pending];
@@ -905,9 +971,26 @@ function sources(state: GameState, kind: EventKind): Source[] {
 						zone: 'battlefield',
 						grantedAbilityTexts: grantedTexts
 					});
+					addedForPerm = true;
 				}
 			}
 			// --- End Track P10 ---
+			// --- Track P12: Backup-granted triggered abilities (CR 702.165a–d) ---
+			if (
+				!addedForPerm &&
+				!out.some((s) => s.obj === perm && s.zone === 'battlefield') &&
+				collectBackupGrantedAbilityDefs(state, perm).length > 0
+			) {
+				out.push({
+					obj: perm,
+					card,
+					faceIndex: 0,
+					controllerId: p.playerId,
+					zone: 'battlefield',
+					...(grantedTexts ? { grantedAbilityTexts: grantedTexts } : {})
+				});
+			}
+			// --- End Track P12 ---
 		}
 		for (const c of p.graveyard) {
 			for (const faceIndex of activeFacesForObject(c, c.card, 'graveyard', state)) {
@@ -962,6 +1045,24 @@ function abilitiesFor(
 		}
 	}
 	// --- End Track P10 ---
+	// --- Track P12: Backup-granted triggered abilities (CR 702.165a–d) ---
+	if (source.zone === 'battlefield' && state.timedContinuousEffects?.length) {
+		for (const eff of state.timedContinuousEffects) {
+			if (!eff.backupGrant) continue;
+			const aff = eff.affected.find((a) => a.instanceId === source.obj.instanceId);
+			if (!aff || (aff.objectVersion !== undefined && (source.obj.objectVersion ?? 1) !== aff.objectVersion)) {
+				continue;
+			}
+			const bTrigs = triggersOf(eff.backupGrant.sourceCard, eff.backupGrant.faceIndex).all;
+			for (const bt of bTrigs) {
+				const rawIdx = bt.abilityIndex >= 5000 ? bt.abilityIndex - 5000 : bt.abilityIndex;
+				if (rawIdx < eff.backupGrant.startAbilityIndex) continue;
+				const alts = alternatives(bt.trigger).filter((a) => a.event === kind && pre(a));
+				if (alts.length > 0) out.push({ ability: bt, alts });
+			}
+		}
+	}
+	// --- End Track P12 ---
 	if (out.length === 0) return out;
 	// CR 613 layer 6: a permanent that lost all abilities has no triggered abilities.
 	if (source.lostAllAbilities ?? (source.zone === 'battlefield' && permanentHasLostAllAbilities(source.obj, state).lost)) {
@@ -1068,6 +1169,21 @@ function record(state: GameState, source: Source, ability: RuntimeTrigger, kind:
 			// --- Track P10 ---
 			...(grantedAbilityText ? { grantedAbilityText } : {}),
 			// --- End Track P10 ---
+			// --- Track P12 ---
+			...(source.obj.isRenowned ? { sourceIsRenowned: true } : {}),
+			...(source.obj.devouredCount !== undefined
+				? { sourceDevouredCount: source.obj.devouredCount }
+				: {}),
+			...((ability as Wave4RuntimeTrigger).wave4Tag
+				? { wave4Tag: (ability as Wave4RuntimeTrigger).wave4Tag }
+				: {}),
+			...((ability as Wave4RuntimeTrigger).wave4N !== undefined
+				? { wave4N: (ability as Wave4RuntimeTrigger).wave4N }
+				: {}),
+			...((ability as Wave4RuntimeTrigger).wave4CostText !== undefined
+				? { wave4CostText: (ability as Wave4RuntimeTrigger).wave4CostText }
+				: {}),
+			// --- End Track P12 ---
 			eventPlayer: extras.eventPlayer ?? extras.eventPlayerId,
 			defendingPlayerId: extras.defendingPlayerId,
 			order: ch.nextOrder++
@@ -1189,8 +1305,49 @@ function matchTriggersInner(state: GameState, ev: GameEvent): void {
 		case 'Foraged':
 			return matchForaged(state, ev);
 		// --- End Track P10 ---
+		// --- Track P12 ---
+		case 'ClassLevelGained':
+			return matchWave4ObjectEvent(state, ev, 'classLevelGained', `Class Level ${ev.classLevel} Trigger`, ev.classLevel);
+		case 'CaseSolved':
+			return matchWave4ObjectEvent(state, ev, 'caseSolved', 'Case Solved Trigger');
+		case 'BecameRenowned':
+			return matchWave4ObjectEvent(state, ev, 'becameRenowned', 'Renown Trigger', undefined, ev.amount);
+		// --- End Track P12 ---
 	}
 }
+
+// --- Track P12 ---
+function matchWave4ObjectEvent(
+	state: GameState,
+	ev: { objectId: string; object: CardInstance; controllerId: string },
+	event: 'classLevelGained' | 'caseSolved' | 'becameRenowned',
+	label: string,
+	classLevel?: number,
+	amountVal?: number
+): void {
+	const found = permanentById(state, ev.objectId);
+	const subject = found
+		? battlefieldSubject(state, found.obj, found.controllerId)
+		: printedSubject(ev.object, ev.object.copiableCard ?? ev.object.card, ev.controllerId);
+	for (const source of sources(state, event)) {
+		for (const { ability, alts } of abilitiesFor(state, source, event)) {
+			const alt = alts.find(
+				(a) =>
+					(a.filter.classLevel === undefined || a.filter.classLevel === classLevel) &&
+					objectMatches(a.filter, subject, source)
+			);
+			if (alt) {
+				record(state, source, ability, event, {
+					label,
+					eventObject: found?.obj ?? ev.object,
+					eventPlayer: ev.controllerId,
+					...(amountVal !== undefined ? { amount: amountVal } : {})
+				});
+			}
+		}
+	}
+}
+// --- End Track P12 ---
 
 // --- Track P10 ---
 function matchUnblockedAttackers(
@@ -2326,7 +2483,17 @@ function boardCanGrantTriggerKeyword(
 	kind: EventKind,
 	focusPerms: readonly CardInstance[]
 ): boolean {
-	if (!GRANTED_TRIGGER_KEYWORD_EVENTS.has(kind)) return false;
+	// --- Track P12 ---
+	const isWave4GrantEvent =
+		kind === 'attacks' || kind === 'becomesBlocked' || kind === 'dealsDamage';
+	if (!GRANTED_TRIGGER_KEYWORD_EVENTS.has(kind) && !isWave4GrantEvent) return false;
+	for (const eff of state.timedContinuousEffects ?? []) {
+		if (eff.layer6?.addKeywords?.some((kw) => grantedTriggerEventsForKeyword(kw)?.includes(kind))) {
+			return true;
+		}
+		if (eff.backupGrant) return true;
+	}
+	// --- End Track P12 ---
 	for (const eff of state.timedKeywordEffects ?? []) {
 		if (eff.addKeywords?.some((kw) => grantedTriggerEventsForKeyword(kw)?.includes(kind))) {
 			return true;
@@ -2369,6 +2536,35 @@ function emitGrantedTriggerKeywords(
 	const source: Source = { obj: perm, card, controllerId, zone: 'battlefield' };
 	for (const item of breakdown.items) {
 		if (item.removed) continue;
+		// --- Track P12: support granted Wave 4 trigger keywords (including parameterized ones) ---
+		const parsedWave4 = parseGrantedWave4TriggerKeyword(item.canonicalKey);
+		if (parsedWave4) {
+			const evs = grantedTriggerEventsForKeyword(item.canonicalKey);
+			if (!evs || !evs.includes(kind)) continue;
+			let grantedCount = 0;
+			if (item.grantCount !== undefined) {
+				grantedCount = item.grantCount;
+			} else {
+				for (const src of item.sources) {
+					if (src !== 'innate') grantedCount += 1;
+				}
+			}
+			if (grantedCount <= 0) continue;
+			const built = buildSingleWave4KeywordTriggers(
+				{ name: parsedWave4.base, ...(parsedWave4.n !== undefined ? { n: parsedWave4.n } : {}) },
+				-1,
+				item.canonicalKey
+			);
+			for (const rt of built) {
+				if (!matches(rt, source)) continue;
+				const times = grantedCount * multiplierFor(perm);
+				if (times > 0) {
+					record(state, source, rt, kind, buildExtras(rt, times));
+				}
+			}
+			continue;
+		}
+		// --- End Track P12 ---
 		const spec = getKeywordSpec(item.canonicalKey);
 		if (
 			!spec ||
@@ -2603,6 +2799,18 @@ function matchAttack(state: GameState, attackingPlayerId: string, attackerIds: s
 							: f.alone && matching.length === 1
 								? attackerDefenderId(matching[0].obj.instanceId)
 								: undefined;
+					// --- Track P12: Dethrone (CR 702.105a) & Training (CR 702.149a) attack-time checks ---
+					if (f.dethroneMostLife && (!defendingPlayerId || !isPlayerTiedForMostLife(state, defendingPlayerId))) {
+						continue;
+					}
+					if (f.trainingGreaterAttacker && !attackerHasGreaterPowerCoAttacker(state, source.obj, source.controllerId)) {
+						continue;
+					}
+					const mentorPower =
+						(ability as Wave4RuntimeTrigger).wave4Tag === 'mentor' && source.zone === 'battlefield'
+							? evaluatePermanent(state, source.obj).power
+							: undefined;
+					// --- End Track P12 ---
 					const times =
 						source.zone === 'battlefield'
 							? triggerMultiplier(state, source.obj, source.controllerId, {
@@ -2615,7 +2823,8 @@ function matchAttack(state: GameState, attackingPlayerId: string, attackerIds: s
 						times,
 						...(f.alone && matching.length === 1 ? { eventObject: matching[0].obj } : {}),
 						...(defendingPlayerId ? { defendingPlayerId } : {}),
-						...(f.oneOrMore ? { amount: matching.length } : {})
+						...(f.oneOrMore ? { amount: matching.length } : {}),
+						...(mentorPower !== undefined ? { amount: mentorPower } : {})
 					});
 				} else {
 					for (const s of matching) {
@@ -2663,6 +2872,15 @@ function matchAttack(state: GameState, attackingPlayerId: string, attackerIds: s
 							if (a.filter.object === 'self') {
 								const s = attackerById.get(perm.instanceId);
 								if (s) {
+									// --- Track P12 ---
+									const defId = attackerDefenderId(perm.instanceId);
+									if (a.filter.dethroneMostLife && (!defId || !isPlayerTiedForMostLife(state, defId))) {
+										continue;
+									}
+									if (a.filter.trainingGreaterAttacker && !attackerHasGreaterPowerCoAttacker(state, perm, p.playerId)) {
+										continue;
+									}
+									// --- End Track P12 ---
 									matchedAttacker = s;
 									return true;
 								}
@@ -2745,7 +2963,18 @@ function matchBlocks(state: GameState, defenderId: string, blocks: Array<{ block
 				// --- End Track P10 ---
 				const matching = subjects.filter((s) => objectMatches(alt.filter, s, source));
 				if (alt.filter.object === 'self') {
-					if (matching.length > 0) record(state, source, ability, kind, { label: kind === 'blocks' ? 'Block' : 'Blocked' });
+					if (matching.length > 0) {
+						// --- Track P12 ---
+						const atkEntry =
+							kind === 'becomesBlocked'
+								? state.combat.attackers.find((a) => a.attackerInstanceId === source.obj.instanceId)
+								: undefined;
+						// --- End Track P12 ---
+						record(state, source, ability, kind, {
+							label: ability.text || (kind === 'blocks' ? 'Block' : 'Blocked'),
+							...(atkEntry ? { amount: atkEntry.blockerInstanceIds.length, defendingPlayerId: atkEntry.defenderPlayerId } : {})
+						});
+					}
 				} else {
 					for (const s of matching) record(state, source, ability, kind, { label: kind === 'blocks' ? 'Block' : 'Blocked', eventObject: s.obj });
 				}
@@ -2753,13 +2982,21 @@ function matchBlocks(state: GameState, defenderId: string, blocks: Array<{ block
 		}
 		if (boardCanGrantTriggerKeyword(state, kind, subjects.map((s) => s.obj))) {
 			for (const s of subjects) {
+				const atkEntry =
+					kind === 'becomesBlocked'
+						? state.combat.attackers.find((a) => a.attackerInstanceId === s.obj.instanceId)
+						: undefined;
 				emitGrantedTriggerKeywords(
 					state,
 					s.obj,
 					s.controllerId,
 					kind,
 					(rt) => alternatives(rt.trigger).some((a) => a.event === kind && a.filter.object === 'self'),
-					(rt, times) => ({ label: rt.text || (kind === 'blocks' ? 'Block' : 'Blocked'), times }),
+					(rt, times) => ({
+						label: rt.text || (kind === 'blocks' ? 'Block' : 'Blocked'),
+						times,
+						...(atkEntry ? { amount: atkEntry.blockerInstanceIds.length, defendingPlayerId: atkEntry.defenderPlayerId } : {})
+					}),
 					() => 1
 				);
 			}
@@ -2959,6 +3196,36 @@ function matchDamage(state: GameState, ev: Extract<GameEvent, { kind: 'DamageDea
 				});
 			}
 		}
+		// --- Track P12: Layer 6 granted combat-damage-to-player keywords (Ingest, Renown N) ---
+		if (
+			ev.combat &&
+			ev.targetKind === 'player' &&
+			boardCanGrantTriggerKeyword(state, 'dealsDamage', [dealerSubject.obj])
+		) {
+			emitGrantedTriggerKeywords(
+				state,
+				dealerSubject.obj,
+				dealerSubject.controllerId,
+				'dealsDamage',
+				(rt) =>
+					alternatives(rt.trigger).some(
+						(a) =>
+							a.event === 'dealsDamage' &&
+							a.filter.object === 'self' &&
+							(!a.filter.combat || ev.combat) &&
+							damageToFits(a.filter.damageTo)
+					),
+				(rt, times) => ({
+					label: rt.text || 'Combat Damage Trigger',
+					times,
+					eventObject: dealerSubject.obj,
+					eventPlayerId: ev.targetId,
+					amount: ev.amount
+				}),
+				() => 1
+			);
+		}
+		// --- End Track P12 ---
 	}
 	if (damagedSubject) {
 		for (const source of sources(state, 'dealtDamage')) {
@@ -3191,12 +3458,13 @@ function matchTargeted(state: GameState, ev: Extract<GameEvent, { kind: 'BecameT
 			if (grantedCount <= 0) continue;
 			const rawCost = item.name.replace(/^ward\s*[—-]?\s*/i, '').trim() || '{1}';
 			const parsed = parseCost(rawCost);
-			const singleDef = parsed.defs.length === 1 && parsed.unparsed.length === 0 ? parsed.defs[0] : undefined;
+			// --- Track P12 ---
 			const supported = Boolean(
-				singleDef &&
-					((singleDef.k === 'mana' && !/\{X\}/i.test(singleDef.cost)) ||
-						(singleDef.k === 'payLife' && singleDef.amount.k === 'const'))
+				parsed.unparsed.length === 0 &&
+					parsed.defs.length > 0 &&
+					parsed.defs.every((d) => !(d.k === 'mana' && /\{X\}/i.test(d.cost)))
 			);
+			// --- End Track P12 ---
 			if (!supported) continue;
 			const syntheticWard: RuntimeTrigger = {
 				abilityIndex: -2,
@@ -3518,6 +3786,36 @@ export function evaluateCondition(
 			});
 		}
 		// --- End Track P10 ---
+		// --- Track P12 ---
+		case 'classLevelIs':
+		case 'classLevelAtLeast':
+		case 'caseSolved':
+		case 'caseUnsolved':
+		case 'isRenowned':
+		case 'boastAttackedThisTurn':
+		case 'exhaustUnused':
+		case 'dethroneMostLife':
+		case 'trainingGreaterAttacker':
+		case 'creaturesAttackedCountThisTurn':
+		case 'totalPowerControlled':
+		case 'colorsAmongControlledPermanents':
+		case 'sourcesDealtDamageThisTurn':
+		case 'cardsPutIntoGraveyardFromAnywhereThisTurn':
+		case 'spellsCastThisTurnCount': {
+			const found = permanentById(state, sourceInstanceId);
+			const res = evaluateP12Condition(
+				cond,
+				{
+					state,
+					controllerId,
+					source: found?.obj ?? source?.obj,
+					stackItem
+				},
+				matchesObjectFilter
+			);
+			return res ?? false;
+		}
+		// --- End Track P12 ---
 		case 'isTurnOf':
 			if (cond.player.k === 'you') return state.players[state.activePlayerIndex]?.playerId === controllerId;
 			return cond.player.k === 'activePlayer';
@@ -3640,6 +3938,17 @@ function amount(
 			const lkiCounters = source?.counters ?? stackItem?.eventLki?.counters;
 			return lkiCounters?.[a.counter] ?? 0;
 		}
+		// --- Track P12 ---
+		case 'devouredCount': {
+			const found = permanentById(state, sourceInstanceId);
+			return evaluateP12Amount(a, {
+				state,
+				controllerId,
+				source: found?.obj ?? source?.obj,
+				stackItem
+			});
+		}
+		// --- End Track P12 ---
 		case 'countersOn': {
 			if (a.of.k !== 'self') return null;
 			// --- Track P8 ---

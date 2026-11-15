@@ -43,6 +43,13 @@ import {
 // --- Track P10 ---
 import { evaluateP10Condition } from './reflexiveManaAndActions.ts';
 // --- End Track P10 ---
+// --- Track P12 ---
+import {
+	evaluateP12Amount,
+	evaluateP12Condition,
+	matchesP12ObjectFilter
+} from './keywordsWave4.ts';
+// --- End Track P12 ---
 
 export interface FilterContext {
 	state: GameState;
@@ -107,7 +114,11 @@ const NON_CREATURE_SUBTYPES = new Set([
 	'Arcane',
 	'Adventure',
 	'Lesson',
-	'Trap'
+	'Trap',
+	// --- Track P12 ---
+	'Spacecraft',
+	'Planet'
+	// --- End Track P12 ---
 ]);
 
 /** Card types are the words before the dash; subtypes after it (preserving multi-word subtypes like "Time Lord", CR 205.3m). */
@@ -526,6 +537,9 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 		const isUnblocked = isUnblockedAttackerForPlayer(state, obj, ctx.controllerId);
 		if (isUnblocked !== filter.unblockedAttacker) return false;
 	}
+	// --- Track P12 ---
+	if (!matchesP12ObjectFilter(obj, filter, ctx, matchesObjectFilter)) return false;
+	// --- End Track P12 ---
 	return true;
 }
 
@@ -635,6 +649,11 @@ export function evaluateAmount(amount: Amount, ctx: FilterContext): number {
 		case 'lastRollResult':
 			return ctx.lastRollResult ?? ctx.stackItem?.lastRollResult ?? 0;
 		// --- End Track P10 ---
+		// --- Track P12 ---
+		case 'devouredCount':
+		case 'opponentCount':
+			return evaluateP12Amount(amount, ctx) ?? 0;
+		// --- End Track P12 ---
 		default:
 			return 0;
 	}
@@ -745,6 +764,24 @@ export function evaluateCondition(cond: Condition, ctx: FilterContext): boolean 
 		case 'opponentComparison':
 			return evaluateP10Condition(cond, ctx);
 		// --- End Track P10 ---
+		// --- Track P12 ---
+		case 'classLevelIs':
+		case 'classLevelAtLeast':
+		case 'caseSolved':
+		case 'caseUnsolved':
+		case 'isRenowned':
+		case 'boastAttackedThisTurn':
+		case 'exhaustUnused':
+		case 'dethroneMostLife':
+		case 'trainingGreaterAttacker':
+		case 'creaturesAttackedCountThisTurn':
+		case 'totalPowerControlled':
+		case 'colorsAmongControlledPermanents':
+		case 'sourcesDealtDamageThisTurn':
+		case 'cardsPutIntoGraveyardFromAnywhereThisTurn':
+		case 'spellsCastThisTurnCount':
+			return evaluateP12Condition(cond, ctx, matchesObjectFilter) ?? false;
+		// --- End Track P12 ---
 		default:
 			return false;
 	}

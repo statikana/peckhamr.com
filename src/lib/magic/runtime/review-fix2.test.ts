@@ -698,12 +698,9 @@ describe('Review 2 — Finding 7: strip CR 207.2c ability words and CR 207.2d fl
 			'Keen Sight attack trigger is placed on the stack when attacking'
 		);
 
-		// Rules prefixes (CR 701 / 702) must still NOT be stripped and must compile as fullySupported: false
+		// --- Track P12: Unimplemented rules prefixes stay unsupported; implemented ones (Solved, Boast, Exhaust) carry gating conditions instead of stripping ---
 		for (const [label, text] of [
-			['Solved', 'Solved — Creatures you control get +2/+2 and have vigilance.'],
 			['Max speed', 'Max speed — Other creatures you control get +1/+1 and have haste.'],
-			['Boast', 'Boast — Sacrifice a creature: Draw a card.'],
-			['Exhaust', 'Exhaust — Sacrifice a creature: Draw a card.'],
 			['Power-up', 'Power-up — Sacrifice a creature: Put a +1/+1 counter on ~.']
 		] as const) {
 			const c = synthCard({
@@ -717,6 +714,49 @@ describe('Review 2 — Finding 7: strip CR 207.2c ability words and CR 207.2d fl
 				`${label} — must not be stripped as a flavor/ability word`
 			);
 		}
+		const solvedDef = compileCard(
+			synthCard({
+				name: 'Rules Prefix Solved',
+				typeLine: 'Enchantment — Case',
+				oracleText: 'Solved — Creatures you control get +2/+2 and have vigilance.'
+			})
+		);
+		assert.equal(solvedDef.fullySupported, true);
+		assert.ok(
+			solvedDef.faces[0].abilities.every(
+				(a) => a.kind === 'static' && a.static.condition?.k === 'caseSolved'
+			),
+			'Solved — must gate static abilities on caseSolved instead of stripping as a flavor word'
+		);
+		const boastDef = compileCard(
+			synthCard({
+				name: 'Rules Prefix Boast',
+				typeLine: 'Creature — Test',
+				oracleText: 'Boast — Sacrifice a creature: Draw a card.'
+			})
+		);
+		assert.equal(boastDef.fullySupported, true);
+		assert.ok(
+			boastDef.faces[0].abilities.some(
+				(a) => a.kind === 'activated' && a.costKeyword === 'boast'
+			),
+			'Boast — must set costKeyword: boast instead of stripping as a flavor word'
+		);
+		const exhaustDef = compileCard(
+			synthCard({
+				name: 'Rules Prefix Exhaust',
+				typeLine: 'Creature — Test',
+				oracleText: 'Exhaust — Sacrifice a creature: Draw a card.'
+			})
+		);
+		assert.equal(exhaustDef.fullySupported, true);
+		assert.ok(
+			exhaustDef.faces[0].abilities.some(
+				(a) => a.kind === 'activated' && a.costKeyword === 'exhaust'
+			),
+			'Exhaust — must set costKeyword: exhaust instead of stripping as a flavor word'
+		);
+		// --- End Track P12 ---
 
 		// Genuine CR 207.2c ability words (Landfall) still compile as fullySupported: true
 		const landfallCard = synthCard({

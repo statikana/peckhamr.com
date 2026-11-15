@@ -647,6 +647,30 @@ export interface CardInstance {
 	/** CR 601.2h / 400.7d: total amount of mana spent to cast this spell / permanent. */
 	manaSpentCount?: number;
 	// --- End Track P10 ---
+	// --- Track P12 ---
+	/** CR 717.2b: current level designation of a Class enchantment on the battlefield (starts at 1). */
+	classLevel?: number;
+	/** CR 720.2b: true once this Case enchantment has become solved on the battlefield. */
+	isSolved?: boolean;
+	/** CR 702.112b: true once this permanent's Renown trigger has resolved while on the battlefield. */
+	isRenowned?: boolean;
+	/** CR 702.103b,f: true while cast/entering/attached as a bestowed Aura; cleared on unattachment. */
+	isBestowed?: boolean;
+	/** CR 702.177a: IDs of Exhaust abilities already activated on this permanent while on the battlefield. */
+	exhaustedAbilityIds?: string[];
+	/** CR 702.142a Boast: true iff this permanent was declared as an attacker this turn. */
+	creatureAttackedThisTurn?: boolean;
+	/** CR 702.82b Devour: number of permanents devoured as this permanent entered the battlefield. */
+	devouredCount?: number;
+	/** CR 702.141a Encore: defending player ID this token must attack this turn if able. */
+	encoreMustAttackPlayerId?: string;
+	/** CR 702.94a Miracle: `turnSerial` on which this card was drawn as the first card of the turn. */
+	miracleTurnSerial?: number;
+	/** CR 702.187b–c Mayhem: player ID who discarded this card into the graveyard this turn. */
+	discardedByPlayerIdThisTurn?: string;
+	/** CR 702.187b–c Mayhem: `turnSerial` on which this card was discarded into the graveyard. */
+	discardedTurnSerial?: number;
+	// --- End Track P12 ---
 }
 
 export interface TargetRef {
@@ -687,6 +711,22 @@ export interface SpellModifications {
 	// --- Track P9 ---
 	/** CR 702.109a: cast by paying its dash alternative cost. */
 	dashed?: boolean;
+	// --- Track P12 ---
+	/** CR 702.103a: cast by paying its bestow cost (becomes an Enchantment — Aura spell). */
+	bestowed?: boolean;
+	/** CR 702.113a: cast by paying its awaken cost (places N +1/+1 counters and animates target land). */
+	awakenCounters?: number;
+	/** CR 702.94a: cast via a resolving Miracle trigger. */
+	miracleCast?: boolean;
+	/** CR 702.119a: cast by paying its emerge cost. */
+	emerged?: boolean;
+	/** CR 702.180a: cast from graveyard by paying its harmonize cost. */
+	harmonized?: boolean;
+	/** CR 702.190a–b: cast during declare blockers step by paying its sneak cost. */
+	sneaked?: boolean;
+	/** CR 702.190b: player or planeswalker that the returned unblocked attacker was attacking. */
+	sneakAttackTarget?: { defenderPlayerId: string; defenderPlaneswalkerId?: string | null };
+	// --- End Track P12 ---
 }
 
 export interface CastOptionOptionalCost {
@@ -747,6 +787,14 @@ export interface CastOption {
 	spellMods: SpellModifications;
 	choosesX: boolean;
 	requiresTarget: boolean;
+	// --- Track P12 ---
+	/** CR 702.113a: Awaken N counter count when cast via Awaken. */
+	awakenCounters?: number;
+	/** CR 702.119a: Printed emerge mana cost before sacrificed permanent mana-value reduction. */
+	emergeBaseCost?: string;
+	/** CR 702.119a: Legal permanents you control matching emergeFilter that can be sacrificed for Emerge. */
+	emergeCandidateIds?: string[];
+	// --- End Track P12 ---
 }
 
 // --- Track P3 ---
@@ -933,6 +981,35 @@ export interface StackItem {
 	/** CR 601.2h: total amount of mana spent to cast this spell (or LKI carried onto its ETB trigger). */
 	manaSpentCount?: number;
 	// --- End Track P10 ---
+	// --- Track P12 ---
+	/** LKI `isRenowned` carried onto triggered abilities (CR 603.4). */
+	sourceIsRenowned?: boolean;
+	/** LKI `devouredCount` carried onto triggered abilities (CR 702.82b). */
+	sourceDevouredCount?: number;
+	/** CR 702.113a Awaken: target land instanceId and objectVersion chosen as the extra Awaken target. */
+	awakenTargetId?: string;
+	awakenTargetVersion?: number;
+	/** Plain-JSON tag identifying a Wave 4 keyword triggered/activated stack item. */
+	wave4Tag?: string;
+	/** Numeric parameter `N` for a Wave 4 keyword stack item (Backup N, Renown N, Rampage N, Afflict N, Mobilize N, Firebending N). */
+	wave4N?: number;
+	/** Cost string for Recover / Miracle / Ward on a Wave 4 stack item. */
+	wave4CostText?: string;
+	/** Plain-JSON continuation frame for Wave 4 keyword resolution prompts. */
+	wave4Resume?: {
+		step: string;
+		cardId?: string;
+		cardVersion?: number;
+		chosenObjectIds?: string[];
+		chosenTargetIds?: string[];
+		targetKinds?: string[];
+		chosenModes?: number[];
+		xValue?: number;
+		costOptions?: number[];
+		costObjects?: string[][];
+		opponentIndex?: number;
+	};
+	// --- End Track P12 ---
 }
 
 // --- Track P10 ---
@@ -1069,6 +1146,13 @@ export interface SerializedPendingTrigger {
 	// --- Track P10 ---
 	grantedAbilityText?: string;
 	// --- End Track P10 ---
+	// --- Track P12 ---
+	sourceIsRenowned?: boolean;
+	sourceDevouredCount?: number;
+	wave4Tag?: string;
+	wave4N?: number;
+	wave4CostText?: string;
+	// --- End Track P12 ---
 }
 
 /** Snapshot of an IR effect binding carried into a delayed trigger (CR 603.7c). */
@@ -1564,6 +1648,16 @@ export interface PlayerGameState {
 	/** CR 700.11 Descend: true iff a permanent card (nontoken) was put into this player's graveyard from anywhere this turn. */
 	descendedThisTurn?: boolean;
 	// --- End Track P10 ---
+	// --- Track P12 ---
+	/** CR 702.137a Spectacle: total life lost by this player so far this turn (damage or life loss/payment). */
+	lifeLostThisTurn?: number;
+	/** CR 702.189a Firebending: red mana retained across steps/phases until end of combat. */
+	firebendingRedMana?: number;
+	/** Case To-solve: distinct source IDs controlled by this player that dealt damage this turn. */
+	sourcesDealtDamageIdsThisTurn?: string[];
+	/** Case To-solve: spell cards cast by this player this turn (plain ScryfallCard snapshots). */
+	spellsCastThisTurnCards?: ScryfallCard[];
+	// --- End Track P12 ---
 }
 
 export interface ManaRider {
@@ -1641,6 +1735,14 @@ export interface TimedContinuousEffect {
 	/** CR 707.2 / 613.1a: Layer 1a copiable-value override ("becomes a copy of ... until end of turn"). */
 	layer1a?: CopiableState;
 	// --- End Track P7 ---
+	// --- Track P12 ---
+	/** CR 702.165a–d Backup: grants printed abilities after `startAbilityIndex` on `sourceCard` until end of turn. */
+	backupGrant?: {
+		sourceCard: ScryfallCard;
+		faceIndex: number;
+		startAbilityIndex: number;
+	};
+	// --- End Track P12 ---
 }
 
 /**
@@ -1704,6 +1806,9 @@ export interface PendingCostPayment {
 	stationTappedVersion?: number;
 	// --- Track P9 ---
 	ninjutsuAttackTarget?: { defenderPlayerId: string; defenderPlaneswalkerId?: string | null };
+	// --- Track P12 ---
+	sneakAttackTarget?: { defenderPlayerId: string; defenderPlaneswalkerId?: string | null };
+	// --- End Track P12 ---
 	onceEachTurn?: boolean;
 	effectText?: string;
 	abilityCostIncomplete?: boolean;
@@ -1857,6 +1962,12 @@ export interface GameState {
 	/** CR 603.12: reflexive triggered abilities waiting to be put onto the stack. */
 	pendingReflexiveTriggers?: PendingReflexiveTrigger[];
 	// --- End Track P10 ---
+	// --- Track P12 ---
+	/** Case To-solve: total number of creatures declared as attackers so far this turn. */
+	creaturesAttackedCountThisTurn?: number;
+	/** Case To-solve: count of cards put into graveyards from anywhere this turn. */
+	cardsPutIntoGraveyardThisTurn?: number;
+	// --- End Track P12 ---
 }
 
 export interface MagicLobby {

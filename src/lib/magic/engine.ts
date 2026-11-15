@@ -104,7 +104,10 @@ import {
 	getStaticAttackRestrictionReason,
 	getStaticBlockerPairRestrictionReason,
 	permanentCantAttackAlone,
-	validateAndSolveDefenderBlockersP8
+	validateAndSolveDefenderBlockersP8,
+	// --- Track P12 ---
+	markHandCardRevealedToAll
+	// --- End Track P12 ---
 } from './runtime/staticsLayersAndRestrictions.ts';
 import {
 	allocateTimestamp,
@@ -223,6 +226,33 @@ import {
 	resolveReflexiveSpecFromCompiled
 } from './runtime/reflexiveManaAndActions.ts';
 // --- End Track P10 ---
+// --- Track P12 ---
+import {
+	applyAwakenOnSpellResolution,
+	canPlayGraveyardLandViaMayhem,
+	cardFaceHasAftermath,
+	cardHasEscalate,
+	clearWave4StepScopedState,
+	collectWave4CastOptionsForCard,
+	computeModalModeAdditionalCosts,
+	findPayableEmergeCandidates,
+	findPayableHarmonizeOptions,
+	noteDrawnCardForMiracle,
+	placeSneakedPermanentIntoCombat,
+	preservedFirebendingRedMana,
+	recordDamageSourceWave4,
+	recordDeclaredAttackersWave4,
+	recordPlayerLifeLossWave4,
+	recordSpellCastWave4,
+	registerWave4Host,
+	resetWave4TurnStateAtTurnStart,
+	resolveWave4StackItem,
+	stackSpellWithSplitSecond,
+	tryDredgeBeforeSingleDraw,
+	tryUmbraArmorInsteadOfDestroy,
+	wave4TriggerTargetSpecs
+} from './runtime/keywordsWave4.ts';
+// --- End Track P12 ---
 export { applyCastCostAids, formatManaRequirement, getSuspendSpec };
 import { getKeywordSpec } from './keywords.ts';
 import {
@@ -907,7 +937,10 @@ function enumerateCandidateCastOptions(
 
 		if (fromZone === 'hand' || fromZone === 'command') {
 			hasZonePermission = true;
-			if (!isLandOnlyFace) {
+			// --- Track P12: CR 702.127a Aftermath half can only be cast from graveyard ---
+			const blockedByAftermath = fromZone === 'hand' && fi === 1 && cardFaceHasAftermath(card, 1);
+			// --- End Track P12 ---
+			if (!isLandOnlyFace && !blockedByAftermath) {
 				const baseCost: CastOption['baseCost'] = { kind: 'printed' };
 				const label = isAdventureFace
 					? `Cast Adventure: ${faceName}`
@@ -1148,7 +1181,21 @@ function enumerateCandidateCastOptions(
 					buildCastPaymentAids(state, actor, inst, zone, faceIdx, isFused, isFree),
 				getSpellTargetRequirement,
 				spellChoosesX
+			}),
+			// --- Track P12 ---
+			...collectWave4CastOptionsForCard({
+				state,
+				actor,
+				actorId,
+				inst,
+				fromZone,
+				taxSuffix,
+				matchesFilterFn: matchesObjectFilter,
+				buildPaymentAids: (zone, faceIdx, isFused, isFree) =>
+					buildCastPaymentAids(state, actor, inst, zone, faceIdx, isFused, isFree),
+				getSpellTargetRequirement
 			})
+			// --- End Track P12 ---
 		);
 	}
 
@@ -1602,7 +1649,10 @@ function getSpellCostRequirementForOption(
 	state: GameState,
 	xValue: number,
 	option: CastOption,
-	optionalCostCounts?: Record<string, number>
+	optionalCostCounts?: Record<string, number>,
+	// --- Track P12 ---
+	chosenModes?: number[]
+	// --- End Track P12 ---
 ): ManaCostRequirement {
 	const applyAnyColorPermission = (req: ManaCostRequirement): ManaCostRequirement => {
 		const fromExile =
@@ -1625,6 +1675,21 @@ function getSpellCostRequirementForOption(
 	};
 
 	const { manaCosts: extraManaCosts } = expandOptionalAdditionalCosts(option, optionalCostCounts);
+	// --- Track P12: Spree / Tiered / Escalate per-mode mana costs ---
+	const compiledModal = option.spellMods?.castFaceDown
+		? undefined
+		: compileSpellEffects(inst.card, option.faceIndex ?? 0, Boolean(option.fused))?.modal;
+	const modalExtra = computeModalModeAdditionalCosts(
+		inst.card,
+		option.faceIndex ?? 0,
+		compiledModal,
+		chosenModes
+	);
+	const allExtraManaCosts =
+		modalExtra.manaCosts.length > 0
+			? [...extraManaCosts, ...modalExtra.manaCosts]
+			: extraManaCosts;
+	// --- End Track P12 ---
 	return applyAnyColorPermission(
 		effectiveSpellManaCost(
 			state,
@@ -1632,7 +1697,7 @@ function getSpellCostRequirementForOption(
 			inst,
 			xValue,
 			option.baseCost,
-			extraManaCosts,
+			allExtraManaCosts,
 			option.faceIndex ?? 0,
 			option.fused ?? false,
 			option.spellMods?.castFaceDown,
@@ -2037,10 +2102,23 @@ function finalizeCastSpell(
 		actor.commanderCastCounts[inst.instanceId] = inst.commanderCastCount;
 	}
 	actor.spellsCastThisTurn = (actor.spellsCastThisTurn || 0) + 1;
+	// --- Track P12 ---
+	recordSpellCastWave4(state, actor, inst.card, stackFaceIdx);
+	// --- End Track P12 ---
 
 	const { targets, targetsBySpec, chosenModes, xValue: xVal, castOptionId, optionalCostCounts } = opts;
 	const spellMods = effectiveSpellMods;
 	const hasSpellMods = Boolean(spellMods && Object.keys(spellMods).length > 0);
+	// --- Track P12: Awaken target capture (CR 702.113a) ---
+	const awakenLandRef =
+		(spellMods?.awakenCounters ?? 0) > 0 && targets.length > 0
+			? targets[targets.length - 1]
+			: undefined;
+	const awakenLandPerm =
+		awakenLandRef?.kind === 'permanent'
+			? findPermanentOnBoard(state, awakenLandRef.id)?.inst
+			: undefined;
+	// --- End Track P12 ---
 	const stackItem: StackItem = withStackItemText(
 		{
 			id: uid('stk', state),
@@ -2071,6 +2149,12 @@ function finalizeCastSpell(
 			xValue: xVal,
 			...(castOptionId ? { castOptionId } : {}),
 			...(hasSpellMods ? { spellMods } : {}),
+			// --- Track P12 ---
+			...(awakenLandRef ? { awakenTargetId: awakenLandRef.id } : {}),
+			...(awakenLandPerm?.objectVersion !== undefined
+				? { awakenTargetVersion: awakenLandPerm.objectVersion }
+				: {}),
+			// --- End Track P12 ---
 			...(optionalCostCounts ? { optionalCostCounts } : {}),
 			commanderCastCount: inst.commanderCastCount,
 			requiresGuidedResolution: false,
@@ -2212,6 +2296,28 @@ function finalizeActivateAbility(
 			pcp.abilityId
 		];
 	}
+	// --- Track P12: Exhaust (CR 702.177a), Boast (CR 702.142a), Forecast (CR 702.57a) ---
+	if (pcp.abilityId && perm.objectVersion === pcp.sourceObjectVersion) {
+		if (pcp.costKeyword === 'exhaust' && perm.zone === 'battlefield') {
+			if (!perm.exhaustedAbilityIds?.includes(pcp.abilityId)) {
+				perm.exhaustedAbilityIds = [...(perm.exhaustedAbilityIds ?? []), pcp.abilityId];
+			}
+		} else if (
+			(pcp.costKeyword === 'boast' && perm.zone === 'battlefield') ||
+			(pcp.costKeyword === 'forecast' && perm.zone === 'hand')
+		) {
+			if (!perm.activatedAbilityIdsThisTurn?.includes(pcp.abilityId)) {
+				perm.activatedAbilityIdsThisTurn = [
+					...(perm.activatedAbilityIdsThisTurn ?? []),
+					pcp.abilityId
+				];
+			}
+			if (pcp.costKeyword === 'forecast' && perm.zone === 'hand') {
+				markHandCardRevealedToAll(state, perm);
+			}
+		}
+	}
+	// --- End Track P12 ---
 	const abModal =
 		// --- Track P10 ---
 		pcp.grantedAbilityText
@@ -2268,6 +2374,10 @@ function finalizeActivateAbility(
 			...(sourceChosenSubType ? { sourceChosenSubType } : {}),
 			...(sourceChosenColor ? { sourceChosenColor } : {}),
 			...(perm.isMonstrous ? { sourceMonstrous: true } : {}),
+			// --- Track P12 ---
+			...(perm.isRenowned ? { sourceIsRenowned: true } : {}),
+			...(perm.devouredCount !== undefined ? { sourceDevouredCount: perm.devouredCount } : {}),
+			// --- End Track P12 ---
 			card,
 			...(pcp.grantSourceCard ? { grantSourceCard: pcp.grantSourceCard } : {}),
 			...(pcp.faceIndex !== undefined ? { faceIndex: pcp.faceIndex } : {}),
@@ -2417,6 +2527,11 @@ function executeOrResumePendingCostPayment(
 			pcp.ninjutsuAttackTarget = captureNinjutsuAttackTargetFromParts(state, pcp.parts);
 		}
 		// --- End Track P9 ---
+		// --- Track P12 ---
+		if (pcp.kind === 'cast_spell' && pcp.spellMods?.sneaked && !pcp.sneakAttackTarget) {
+			pcp.sneakAttackTarget = captureNinjutsuAttackTargetFromParts(state, pcp.parts);
+		}
+		// --- End Track P12 ---
 		payTapAndManaCostParts(ctx, pcp.parts, pcp.manaPaid ?? null, pcp.descriptions, pcp.aidDescriptions);
 		pcp.tapsAndManaDone = true;
 		if (ctx.spendCtx?.capturedColorsSpent) {
@@ -2465,7 +2580,12 @@ function executeOrResumePendingCostPayment(
 				castOptionId: pcp.castOptionId,
 				faceIndex: pcp.faceIndex,
 				fused: pcp.fused,
-				spellMods: pcp.spellMods,
+				// --- Track P12 ---
+				spellMods:
+					pcp.sneakAttackTarget && pcp.spellMods
+						? { ...pcp.spellMods, sneakAttackTarget: pcp.sneakAttackTarget }
+						: pcp.spellMods,
+				// --- End Track P12 ---
 				optionalCostCounts: pcp.optionalCostCounts,
 				exSourceName: pcp.exSourceName,
 				descriptions: pcp.descriptions,
@@ -2720,6 +2840,53 @@ function checkActivationRestrictionsOnly(
 			error: `${perm.card.name}: Activation condition is not met.`
 		};
 	}
+	// --- Track P12: Class level, Exhaust, Boast, Forecast restrictions ---
+	const classMatch = /^class_level_(\d+)$/.exec(ab.id);
+	if (classMatch) {
+		const targetLevel = Number(classMatch[1]);
+		if ((perm.classLevel ?? 1) !== targetLevel - 1) {
+			return {
+				ok: false,
+				error: `${perm.card.name}: Must be level ${targetLevel - 1} to gain level ${targetLevel} (CR 717.2a).`
+			};
+		}
+	}
+	if (ab.costKeyword === 'exhaust' && perm.exhaustedAbilityIds?.includes(ab.id)) {
+		return {
+			ok: false,
+			error: `${perm.card.name}: An exhaust ability can't be activated if it has already been activated (CR 702.177a).`
+		};
+	}
+	if (ab.costKeyword === 'boast') {
+		if (!perm.creatureAttackedThisTurn) {
+			return {
+				ok: false,
+				error: `${perm.card.name}: Activate boast abilities only if this creature attacked this turn (CR 702.142a).`
+			};
+		}
+		if (perm.activatedAbilityIdsThisTurn?.includes(ab.id)) {
+			return {
+				ok: false,
+				error: `${perm.card.name}: A boast ability can only be activated once each turn (CR 702.142a).`
+			};
+		}
+	}
+	if (ab.costKeyword === 'forecast') {
+		const activePl = state.players[state.activePlayerIndex];
+		if (activePl?.playerId !== actorId || state.phase !== 'upkeep') {
+			return {
+				ok: false,
+				error: `${perm.card.name}: Forecast abilities can only be activated during your upkeep (CR 702.57b).`
+			};
+		}
+		if (perm.activatedAbilityIdsThisTurn?.includes(ab.id)) {
+			return {
+				ok: false,
+				error: `${perm.card.name}: A forecast ability can only be activated once each turn (CR 702.57b).`
+			};
+		}
+	}
+	// --- End Track P12 ---
 	const restrictions = ab.activationRestrictions;
 	if (!restrictions?.length) return { ok: true };
 	const activePlayer = state.players[state.activePlayerIndex];
@@ -3269,6 +3436,9 @@ function simulateOrExecuteManaOnly(
 				player.lostLifeThisTurn = true;
 				noteLayerInputsChanged(state);
 				// --- End Track P10 ---
+				// --- Track P12 ---
+				recordPlayerLifeLossWave4(player, lifeToPay);
+				// --- End Track P12 ---
 			}
 		}
 		return true;
@@ -3749,6 +3919,9 @@ function simulateOrExecuteManaOnly(
 			player.lostLifeThisTurn = true;
 			noteLayerInputsChanged(state);
 			// --- End Track P10 ---
+			// --- Track P12 ---
+			recordPlayerLifeLossWave4(player, lifeToPay);
+			// --- End Track P12 ---
 		}
 	}
 
@@ -3875,6 +4048,56 @@ export function loseTheGame(state: GameState, player: PlayerGameState, reason: s
 	return true;
 }
 
+// --- Track P12: Dredge draw replacement (CR 702.52a) & Miracle first-draw tracking (CR 702.94a) ---
+function drawSingleCardWithoutDredge(
+	state: GameState,
+	player: PlayerGameState,
+	deferSba = false
+): 'drawn' | 'stopped' {
+	if (player.library.length === 0) {
+		const replaced = replaceEmptyLibraryDraw(state, player);
+		if (replaced.replaced) {
+			if (replaced.winsGame) {
+				winTheGame(
+					state,
+					player,
+					`${replaced.sourceName ?? 'Replacement Effect'} (drew from an empty library)`
+				);
+			}
+			return 'stopped';
+		}
+		player.attemptedEmptyLibraryDraw = true;
+		if (!deferSba) {
+			checkStateBasedActions(state);
+		}
+		return 'stopped';
+	}
+	const drawnCard = player.library[0];
+	moveObject(state, drawnCard, 'hand', {
+		from: { player, zone: 'library' },
+		toPlayer: player,
+		commanderRedirect: true,
+		newTimestamp: true,
+		bumpVersion: true
+	});
+	if (state.status !== 'mulligan' && drawnCard.zone === 'hand') {
+		const drawnPlayers = state.playersDrawnThisTurn ?? (state.playersDrawnThisTurn = []);
+		if (!drawnPlayers.includes(player.playerId)) {
+			drawnPlayers.push(player.playerId);
+		}
+		player.cardsDrawnThisTurn = (player.cardsDrawnThisTurn ?? 0) + 1;
+		noteDrawnCardForMiracle(state, player, drawnCard);
+		emitEvent(state, {
+			kind: 'CardDrawn',
+			playerId: player.playerId,
+			objectId: drawnCard.instanceId,
+			object: drawnCard
+		});
+	}
+	return 'drawn';
+}
+// --- End Track P12 ---
+
 export function drawCards(
 	state: GameState,
 	player: PlayerGameState,
@@ -3882,47 +4105,21 @@ export function drawCards(
 	deferSba = false
 ): void {
 	for (let i = 0; i < count; i++) {
-		if (player.library.length === 0) {
-			// Check Replacement Effect: Laboratory Maniac ("If you would draw a card while your library has no cards in it, you win the game instead.")
-			const replaced = replaceEmptyLibraryDraw(state, player);
-			if (replaced.replaced) {
-				if (replaced.winsGame) {
-					winTheGame(
-						state,
-						player,
-						`${replaced.sourceName ?? 'Replacement Effect'} (drew from an empty library)`
-					);
-				}
-				break;
+		// --- Track P12 ---
+		const dredgeRes = tryDredgeBeforeSingleDraw(state, player, count - i - 1, deferSba);
+		if (dredgeRes === 'prompted') {
+			if (state.status !== 'mulligan' && !deferSba) {
+				flushTriggers(state);
 			}
-			// CR 104.3c / 704.5b: Attempting to draw from an empty library sets a flag checked by SBAs.
-			player.attemptedEmptyLibraryDraw = true;
-			if (!deferSba) {
-				checkStateBasedActions(state);
-			}
+			return;
+		}
+		if (dredgeRes === 'replaced') {
+			continue;
+		}
+		if (drawSingleCardWithoutDredge(state, player, deferSba) === 'stopped') {
 			break;
 		}
-		const drawnCard = player.library[0];
-		moveObject(state, drawnCard, 'hand', {
-			from: { player, zone: 'library' },
-			toPlayer: player,
-			commanderRedirect: true,
-			newTimestamp: true,
-			bumpVersion: true
-		});
-		if (state.status !== 'mulligan' && drawnCard.zone === 'hand') {
-			const drawnPlayers = state.playersDrawnThisTurn ?? (state.playersDrawnThisTurn = []);
-			if (!drawnPlayers.includes(player.playerId)) {
-				drawnPlayers.push(player.playerId);
-			}
-			player.cardsDrawnThisTurn = (player.cardsDrawnThisTurn ?? 0) + 1;
-			emitEvent(state, {
-				kind: 'CardDrawn',
-				playerId: player.playerId,
-				objectId: drawnCard.instanceId,
-				object: drawnCard
-			});
-		}
+		// --- End Track P12 ---
 	}
 	if (state.status !== 'mulligan' && !deferSba) {
 		flushTriggers(state);
@@ -3931,9 +4128,18 @@ export function drawCards(
 
 export function emptyAllPlayersManaPools(state: GameState): void {
 	for (const p of state.players) {
+		// --- Track P12: Firebending red mana persists until end of combat (CR 702.189a) ---
+		const origR = p.manaPool.R;
+		const keepR = preservedFirebendingRedMana(state, p);
+		// --- End Track P12 ---
 		// --- Track P10 ---
 		emptyPlayerManaPoolForStepEnd(p);
 		// --- End Track P10 ---
+		// --- Track P12 ---
+		if (keepR > 0) {
+			p.manaPool.R = Math.min(origR, p.manaPool.R + keepR);
+		}
+		// --- End Track P12 ---
 		p.manaRiders = [];
 	}
 }
@@ -4093,6 +4299,11 @@ function executeUntapTurnBasedActions(state: GameState, activePlayer: PlayerGame
 		}
 	}
 	// --- End Track P10 ---
+	// --- Track P12: reset once-per-turn Forecast activations on cards in hand ---
+	for (const hc of activePlayer.hand) {
+		hc.activatedAbilityIdsThisTurn = undefined;
+	}
+	// --- End Track P12 ---
 }
 
 function executeDrawTurnBasedAction(state: GameState, activePlayer: PlayerGameState): void {
@@ -4172,6 +4383,9 @@ export function runBeginningOfTurn(state: GameState): void {
 	// --- Track P7 ---
 	resetTurnHistoryAtTurnStart(state);
 	// --- End Track P7 ---
+	// --- Track P12 ---
+	resetWave4TurnStateAtTurnStart(state);
+	// --- End Track P12 ---
 
 	// 1. Untap step (CR 502): turn-based actions execute before PhaseBegin('untap') triggers (CR 703.3)
 	beginPhase(state, 'untap', activePlayer);
@@ -5283,14 +5497,23 @@ function applyGameActionInner(
 			// --- End Track P7 ---
 
 			// Check & pay mana cost (including Commander Tax if from Command Zone, or any-color mana if exiled with Opposition Agent!)
+			// --- Track P12: Spree / Tiered / Escalate modal per-mode costs ---
+			const modalExtraCosts = computeModalModeAdditionalCosts(
+				inst.card,
+				optFaceIdx,
+				compiledModal,
+				chosenModes
+			);
 			const costReq = getSpellCostRequirementForOption(
 				actor,
 				inst,
 				state,
 				xVal,
 				castOption,
-				hasOptCounts ? normalizedOptCounts : undefined
+				hasOptCounts ? normalizedOptCounts : undefined,
+				chosenModes
 			);
+			// --- End Track P12 ---
 			const isFaceDownCast = Boolean(castOption.spellMods?.castFaceDown);
 			const spendCtx = spellSpendContext(inst, {
 				faceIndex: optFaceIdx,
@@ -5370,10 +5593,95 @@ function applyGameActionInner(
 			if (!aidResult.ok) {
 				return { ok: false, error: aidResult.error };
 			}
-			const remainingCostReq = aidResult.remainingReq;
+			let remainingCostReq = aidResult.remainingReq;
 			const aidTapIds = aidResult.tapIds;
 			const aidExileIds = aidResult.exileIds;
 			const reservedAidIds = new Set<string>([...aidTapIds, ...aidExileIds]);
+			// --- Track P12: Emerge (CR 702.119a) & Harmonize (CR 702.180a) cost payment ---
+			const emergeSacParts: SerializedPlannedCost[] = [];
+			if (castOption.id === 'alt:emerge') {
+				const allExtraMana = [...extraManaCosts, ...modalExtraCosts.manaCosts];
+				const payableEmerge = findPayableEmergeCandidates(
+					state,
+					actor,
+					inst,
+					castOption,
+					xVal,
+					allExtraMana,
+					matchesObjectFilter
+				);
+				if (payableEmerge.length === 0) {
+					return { ok: false, error: manaError };
+				}
+				const explicitId = action.costPayment?.objects?.[0]?.[0];
+				let chosenEmerge = explicitId
+					? payableEmerge.find((e) => e.perm.instanceId === explicitId)
+					: undefined;
+				if (!chosenEmerge) {
+					if (payableEmerge.length === 1 || actor.isBot) {
+						chosenEmerge = [...payableEmerge].sort(
+							(a, b) => a.req.generic - b.req.generic
+						)[0];
+					} else {
+						return askCostChoice(
+							state,
+							actor,
+							action,
+							{
+								kind: 'objects',
+								index: 0,
+								count: 1,
+								label: 'Sacrifice a permanent for Emerge',
+								candidateIds: payableEmerge.map((e) => e.perm.instanceId)
+							},
+							spellPromptName
+						);
+					}
+				}
+				remainingCostReq = chosenEmerge.req;
+				reservedAidIds.add(chosenEmerge.perm.instanceId);
+				emergeSacParts.push({
+					def: {
+						k: 'sacrifice',
+						count: { k: 'const', n: 1 },
+						filter: { types: ['Permanent'] }
+					},
+					objectIds: [chosenEmerge.perm.instanceId],
+					objectNames: [chosenEmerge.perm.card.name]
+				});
+			} else if (castOption.id === 'graveyard:harmonize') {
+				const allExtraMana = [...extraManaCosts, ...modalExtraCosts.manaCosts];
+				const harmOpts = findPayableHarmonizeOptions(
+					state,
+					actor,
+					inst,
+					castOption,
+					xVal,
+					allExtraMana
+				);
+				const explicitTapIds = action.costAidIds?.['harmonize'];
+				if (explicitTapIds && explicitTapIds.length > 0) {
+					const chosenTap = harmOpts.tapCandidates.find(
+						(c) => c.perm.instanceId === explicitTapIds[0]
+					);
+					if (!chosenTap) {
+						return { ok: false, error: 'Selected creature cannot be tapped to pay Harmonize.' };
+					}
+					remainingCostReq = chosenTap.req;
+					aidTapIds.push(chosenTap.perm.instanceId);
+					reservedAidIds.add(chosenTap.perm.instanceId);
+				} else if (harmOpts.noTapReq !== null && (!explicitTapIds || explicitTapIds.length === 0)) {
+					remainingCostReq = harmOpts.noTapReq;
+				} else if (harmOpts.tapCandidates.length > 0) {
+					const chosenTap = harmOpts.tapCandidates[0];
+					remainingCostReq = chosenTap.req;
+					aidTapIds.push(chosenTap.perm.instanceId);
+					reservedAidIds.add(chosenTap.perm.instanceId);
+				} else {
+					return { ok: false, error: manaError };
+				}
+			}
+			// --- End Track P12 ---
 			const tapAidParts: SerializedPlannedCost[] =
 				aidTapIds.length > 0
 					? [
@@ -5417,7 +5725,10 @@ function applyGameActionInner(
 			const combinedCostDefs = [
 				...altCostDefs,
 				...(castOption.mandatoryAdditionalCosts ?? []),
-				...extraNonManaDefs
+				...extraNonManaDefs,
+				// --- Track P12: Spree / Tiered / Escalate non-mana per-mode costs ---
+				...modalExtraCosts.costDefs
+				// --- End Track P12 ---
 			];
 			for (const p of state.players) {
 				if (p.lost) continue;
@@ -5451,7 +5762,14 @@ function applyGameActionInner(
 							...(nextSummarySuffix ? { castSummarySuffix: nextSummarySuffix } : {})
 						}
 					: castOption.spellMods;
-			if (combinedCostDefs.length > 0 || tapAidParts.length > 0 || exileAidParts.length > 0) {
+			if (
+				combinedCostDefs.length > 0 ||
+				tapAidParts.length > 0 ||
+				exileAidParts.length > 0 ||
+				// --- Track P12 ---
+				emergeSacParts.length > 0
+				// --- End Track P12 ---
+			) {
 				const ctx = costContext(
 					state,
 					actor,
@@ -5508,7 +5826,14 @@ function applyGameActionInner(
 						: {}),
 					sourceCard: inst.card,
 					additionalIncomplete: Boolean(additional && !additional.complete),
-					parts: [...tapAidParts, ...parts, ...exileAidParts],
+					parts: [
+						...tapAidParts,
+						// --- Track P12 ---
+						...emergeSacParts,
+						// --- End Track P12 ---
+						...parts,
+						...exileAidParts
+					],
 					manaPaid,
 					tapsAndManaDone: false,
 					nextPartIndex: 0,
@@ -6328,6 +6653,33 @@ function performDeclareAttackers(
 			}
 		}
 
+		// --- Track P12: Encore mandatory opponent attack (CR 702.141a) ---
+		if (creature.encoreMustAttackPlayerId) {
+			const reqOpp = state.players.find(
+				(p) => p.playerId === creature.encoreMustAttackPlayerId && !p.lost
+			);
+			const canAttackReqOpp =
+				Boolean(reqOpp) &&
+				getAttackTaxGeneric(state, reqOpp!) === 0 &&
+				getStaticAttackRestrictionReason(
+					state,
+					creature,
+					reqOpp!.playerId,
+					Math.max(assignments.length, 1)
+				) === null;
+			if (
+				canAttackReqOpp &&
+				(defender.playerId !== creature.encoreMustAttackPlayerId ||
+					Boolean(assign.defenderPlaneswalkerId))
+			) {
+				return {
+					ok: false,
+					error: `Strict Rules Violation: ${creature.card.name} was created by Encore and must attack ${reqOpp!.username} this turn if able (CR 702.141a).`
+				};
+			}
+		}
+		// --- End Track P12 ---
+
 		// Check attack tax on defending player (CR 508.1d)
 		if (!assign.defenderPlaneswalkerId) {
 			totalPropagandaTaxGeneric += getAttackTaxGeneric(state, defender);
@@ -6416,6 +6768,14 @@ function performDeclareAttackers(
 		// --- Track P7 ---
 		recordAttackersDeclaredThisTurn(state, actor);
 		// --- End Track P7 ---
+		// --- Track P12 ---
+		recordDeclaredAttackersWave4(
+			state,
+			validAttackers
+				.map((v) => actor.battlefield.find((c) => c.instanceId === v.attackerInstanceId))
+				.filter((c): c is CardInstance => Boolean(c))
+		);
+		// --- End Track P12 ---
 		addLog(
 			state,
 			'combat',
@@ -6518,6 +6878,11 @@ function getBlockerRestrictionReason(
 	blocker: CardInstance,
 	attacker: CardInstance
 ): string | null {
+	// --- Track P12: Decayed creatures cannot block (CR 702.147a) ---
+	if (hasKeyword(blocker, 'Decayed', state)) {
+		return `Strict Rules Violation: ${blocker.card.name} has Decayed and cannot block (CR 702.147a).`;
+	}
+	// --- End Track P12 ---
 	if (
 		hasKeyword(attacker, 'Flying', state) &&
 		!hasKeyword(blocker, 'Flying', state) &&
@@ -6888,7 +7253,11 @@ function findMandatoryAttackerViolation(
 		for (const perm of actor.battlefield) {
 			if (perm.phasedOut || !evaluatePermanent(state, perm).isCreature) continue;
 			const isGoaded = Boolean(perm.goadedByPlayerIds && perm.goadedByPlayerIds.length > 0);
-			const mustAttack = isGoaded || hasRestriction(state, perm, 'attacksEachCombat');
+			// --- Track P12 ---
+			const isEncoreObligated = Boolean(perm.encoreMustAttackPlayerId);
+			// --- End Track P12 ---
+			const mustAttack =
+				isGoaded || isEncoreObligated || hasRestriction(state, perm, 'attacksEachCombat');
 			if (mustAttack && !assignedIds.has(perm.instanceId)) {
 				const canAttack =
 					!perm.tapped &&
@@ -8997,10 +9366,22 @@ for (const kind of [
 	'Sacrificed',
 	'GraveyardLeaveBatch',
 	'Discovered',
-	'Foraged'
+	'Foraged',
 	// --- End Track P10 ---
+	// --- Track P12 ---
+	'ClassLevelGained',
+	'CaseSolved',
+	'BecameRenowned'
+	// --- End Track P12 ---
 ] as const) {
-	registerEventHandler(kind, (state, ev) => matchTriggers(state, ev));
+	registerEventHandler(kind, (state, ev) => {
+		// --- Track P12 ---
+		if (ev.kind === 'DamageDealt') {
+			recordDamageSourceWave4(state, ev.sourceId, ev.amount);
+		}
+		// --- End Track P12 ---
+		matchTriggers(state, ev);
+	});
 }
 registerEventHandler('Cast', (state, ev) => {
 	matchTriggers(state, ev);
@@ -9141,6 +9522,11 @@ function triggeredStackItem(state: GameState, t: PendingTrigger, idPrefix: strin
 	const sourceChosenColor =
 		t.sourceChosenColor ?? foundSource?.inst.chosenColor ?? t.source.chosenColor;
 	const sourceMonstrous = t.sourceMonstrous ?? Boolean((foundSource?.inst ?? t.source).isMonstrous);
+	// --- Track P12 ---
+	const sourceIsRenowned = t.sourceIsRenowned ?? Boolean((foundSource?.inst ?? t.source).isRenowned);
+	const sourceDevouredCount =
+		t.sourceDevouredCount ?? (foundSource?.inst ?? t.source).devouredCount;
+	// --- End Track P12 ---
 	const sourceObjForProto = foundSource?.inst ?? t.source;
 	const sourcePrototyped = Boolean(
 		sourceObjForProto.prototyped || sourceObjForProto.copiableState?.prototyped
@@ -9184,6 +9570,13 @@ function triggeredStackItem(state: GameState, t: PendingTrigger, idPrefix: strin
 			...(sourceChosenSubType ? { sourceChosenSubType } : {}),
 			...(sourceChosenColor ? { sourceChosenColor } : {}),
 			...(sourceMonstrous ? { sourceMonstrous: true } : {}),
+			// --- Track P12 ---
+			...(sourceIsRenowned ? { sourceIsRenowned: true } : {}),
+			...(sourceDevouredCount !== undefined ? { sourceDevouredCount } : {}),
+			...(t.wave4Tag ? { wave4Tag: t.wave4Tag } : {}),
+			...(t.wave4N !== undefined ? { wave4N: t.wave4N } : {}),
+			...(t.wave4CostText !== undefined ? { wave4CostText: t.wave4CostText } : {}),
+			// --- End Track P12 ---
 			...(sourcePrototyped ? { sourcePrototyped: true } : {}),
 			// --- Track P7 ---
 			...(sourceWasCast ? { sourceWasCast: true } : {}),
@@ -9205,6 +9598,9 @@ function triggeredStackItem(state: GameState, t: PendingTrigger, idPrefix: strin
 			xValue:
 				t.ability.trigger.event === 'turnFaceUp' ||
 				t.ability.trigger.event === 'becameMonstrous' ||
+				// --- Track P12 ---
+				t.ability.trigger.event === 'becameRenowned' ||
+				// --- End Track P12 ---
 				Boolean(t.isBecameMonstrous)
 					? (t.amount ?? 0)
 					: 0,
@@ -9863,6 +10259,10 @@ function triggerSpecsSupported(specs: TargetSpec[]): boolean {
 
 /** The target specs a triggered stack item chooses on the interpreter path (empty: none / legacy). */
 function triggerItemTargetSpecs(item: StackItem): TargetSpec[] {
+	// --- Track P12: Backup & Mentor target specs ---
+	const w4Specs = wave4TriggerTargetSpecs(item);
+	if (w4Specs) return w4Specs;
+	// --- End Track P12 ---
 	const compiled = triggerItemEffect(item);
 	if (!compiled || !staticallyInterpretable(compiled, true) || !triggerSpecsSupported(compiled.targets)) return [];
 	return compiled.targets;
@@ -10575,18 +10975,44 @@ function resolveWardTrigger(
 	if (!targetItem) return true;
 	const opp = state.players.find((p) => p.playerId === targetItem.controllerId);
 	const wardCost = (ward.cost || '{1}').trim();
-	const lifeDef = ward.costDefs?.find((d): d is Extract<CostDef, { k: 'payLife' }> => d.k === 'payLife');
+	// --- Track P12: generalized Ward cost support (CR 702.21a) ---
+	const singleDef = ward.costDefs && ward.costDefs.length === 1 ? ward.costDefs[0] : undefined;
+	const lifeDef = singleDef?.k === 'payLife' ? singleDef : undefined;
 	const lifeCost = lifeDef && lifeDef.amount.k === 'const' ? lifeDef.amount.n : undefined;
-	const req = lifeCost === undefined ? parseManaCost(wardCost) : undefined;
+	const isComplexCost = Boolean(
+		ward.costDefs &&
+			ward.costDefs.length > 0 &&
+			lifeCost === undefined &&
+			!(singleDef?.k === 'mana')
+	);
+	const req = lifeCost === undefined && !isComplexCost ? parseManaCost(wardCost) : undefined;
+	const wardSrc =
+		isComplexCost && opp
+			? (findPermanentOnBoard(state, item.sourceInstanceId)?.inst ??
+				({
+					instanceId: item.sourceInstanceId,
+					card: item.card,
+					ownerId: controller.playerId,
+					controllerId: controller.playerId,
+					zone: 'battlefield'
+				} as CardInstance))
+			: undefined;
+	const wardCtx =
+		isComplexCost && opp && wardSrc
+			? costContext(state, opp, wardSrc, 0, false, null)
+			: undefined;
 	const canAfford = Boolean(
 		opp &&
 			!targetItem.declineWard &&
-			(lifeCost !== undefined
-				? !playerLifeTotalCantChange(state, opp) && opp.life >= lifeCost
-				: req
-					? canPayOrAutoTap(opp, req, state)
-					: false)
+			(isComplexCost
+				? Boolean(wardCtx && ward.costDefs && canPayCosts(wardCtx, ward.costDefs))
+				: lifeCost !== undefined
+					? !playerLifeTotalCantChange(state, opp) && opp.life >= lifeCost
+					: req
+						? canPayOrAutoTap(opp, req, state)
+						: false)
 	);
+	// --- End Track P12 ---
 	if (opp && !opp.isBot && canAfford && item.optionalAccepted === undefined) {
 		const question = `Pay ward cost ${wardCost}?`;
 		enqueueChoicePrompt(state, {
@@ -10612,8 +11038,23 @@ function resolveWardTrigger(
 	}
 	let paid = false;
 	if (opp && canAfford && (opp.isBot || item.optionalAccepted === true)) {
-		if (lifeCost !== undefined) {
+		// --- Track P12 ---
+		if (isComplexCost && wardCtx && ward.costDefs) {
+			const chosen = chooseCostPayment(wardCtx, ward.costDefs);
+			const plan = chosen ? planCosts(wardCtx, ward.costDefs, chosen) : null;
+			if (plan && plan.ok && !plan.question) {
+				payPlannedCosts(wardCtx, plan);
+				paid = true;
+				addLog(
+					state,
+					'rule',
+					`${opp.username} paid ${wardCost} for ${srcLabel}'s Ward (CR 702.21a).`,
+					opp.playerId
+				);
+			}
+		} else if (lifeCost !== undefined) {
 			opp.life -= lifeCost;
+			recordPlayerLifeLossWave4(opp, lifeCost);
 			paid = true;
 			addLog(
 				state,
@@ -10631,6 +11072,7 @@ function resolveWardTrigger(
 				opp.playerId
 			);
 		}
+		// --- End Track P12 ---
 	}
 	if (!paid) {
 		if (targetItem.kind === 'spell' && spellCannotBeCountered(state, targetItem)) {
@@ -10787,6 +11229,15 @@ registerPromptHandler('draw_up_to', (state, prompt, answer) => {
  * a permanent spell (it simply enters the battlefield).
  */
 function isUnautomatedStackItem(item: StackItem): boolean {
+	// --- Track P12 ---
+	if (item.wave4Tag) return false;
+	if (
+		item.abilityId &&
+		/^(?:class_level_|embalm_|eternalize_|encore_)/.test(item.abilityId)
+	) {
+		return false;
+	}
+	// --- End Track P12 ---
 	if (item.kind === 'activated') return true;
 	if (item.kind === 'spell') {
 		const types = resolveObjectFaces(item.card, stackItemFaceOptions(item)).types;
@@ -10996,31 +11447,48 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 			validTargets = item.targets.filter(isTargetValid);
 		}
 		if (validTargets.length === 0) {
-			removeItemFromStack();
-			addLog(
-				state,
-				'rule',
-				`${item.title} was countered on resolution (all targets became illegal / left the zone).`,
-				item.controllerId
-			);
-			// CR 608.2b: If a spell is countered on resolution because all its targets are illegal,
-			// it is put into its owner's graveyard (or Exile if Rest in Peace is active).
-			moveStackSpellToZone(state, item, 'graveyard');
-			givePriorityToActiveOrNextPlayer(state);
-			state.passedPriorityPlayerIds = [];
-			checkStateBasedActions(state);
-			return;
-		}
-		item.targets = validTargets;
+			// --- Track P12: CR 702.103e Bestow ceases to be bestowed instead of being countered ---
+			if (item.kind === 'spell' && item.spellMods?.bestowed) {
+				item.spellMods = { ...item.spellMods, bestowed: false };
+				item.targets = [];
+				item.targetsBySpec = undefined;
+				addLog(
+					state,
+					'rule',
+					`${item.title}'s target became illegal; it ceases to be bestowed and resolves as an Enchantment Creature (CR 702.103e).`,
+					item.controllerId
+				);
+			} else {
+				// --- End Track P12 ---
+				removeItemFromStack();
+				addLog(
+					state,
+					'rule',
+					`${item.title} was countered on resolution (all targets became illegal / left the zone).`,
+					item.controllerId
+				);
+				// CR 608.2b: If a spell is countered on resolution because all its targets are illegal,
+				// it is put into its owner's graveyard (or Exile if Rest in Peace is active).
+				moveStackSpellToZone(state, item, 'graveyard');
+				givePriorityToActiveOrNextPlayer(state);
+				state.passedPriorityPlayerIds = [];
+				checkStateBasedActions(state);
+				return;
+				// --- Track P12 ---
+			}
+			// --- End Track P12 ---
+		} else {
+			item.targets = validTargets;
 
-		// Record Last Known Information (LKI) of primary permanent target before effects move it
-		if (item.targets[0]?.kind === 'permanent') {
-			const foundFirst = findPermanentOnBoard(state, item.targets[0].id);
-			if (foundFirst && !foundFirst.inst.phasedOut) {
-				item.lkiControllerId = foundFirst.controller.playerId;
-				item.lkiPower = getCreaturePower(foundFirst.inst, state);
-				item.lkiToughness = getCreatureToughness(foundFirst.inst, state);
-				item.lkiTypeLine = evaluatePermanent(state, foundFirst.inst).typeLine;
+			// Record Last Known Information (LKI) of primary permanent target before effects move it
+			if (item.targets[0]?.kind === 'permanent') {
+				const foundFirst = findPermanentOnBoard(state, item.targets[0].id);
+				if (foundFirst && !foundFirst.inst.phasedOut) {
+					item.lkiControllerId = foundFirst.controller.playerId;
+					item.lkiPower = getCreaturePower(foundFirst.inst, state);
+					item.lkiToughness = getCreatureToughness(foundFirst.inst, state);
+					item.lkiTypeLine = evaluatePermanent(state, foundFirst.inst).typeLine;
+				}
 			}
 		}
 	}
@@ -11137,14 +11605,35 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 	}
 	// --- End Track P9 ---
 
+	// --- Track P12 ---
+	const wave4Res = resolveWave4StackItem(state, item, controller, matchesObjectFilter);
+	if (wave4Res === 'paused') return;
+	if (wave4Res === 'done') {
+		triggerPathCounts.interpreter++;
+		removeItemFromStack();
+		givePriorityToActiveOrNextPlayer(state);
+		state.passedPriorityPlayerIds = [];
+		checkStateBasedActions(state);
+		return;
+	}
+	// --- End Track P12 ---
+
 	// A spell or ability the compiler marked supported resolves on the IR interpreter
 	// (runtime/effects.ts); anything else isn't automated (below).
+	// --- Track P12: Backup-granted innate activated ability lookup ---
 	const compiled =
 		item.kind === 'triggered'
 			? triggerItemEffect(item)
-			: // --- Track P10 ---
-				resolveStackItemCompiledEffects(item);
-	// --- End Track P10 ---
+			: item.kind === 'activated' && item.abilityId?.startsWith('backup_act:') && item.grantSourceCard
+				? compiledStackItemEffects({
+						...item,
+						card: item.grantSourceCard,
+						abilityId: item.abilityId.slice(item.abilityId.lastIndexOf(':') + 1),
+						grantSourceCard: undefined
+					})
+				: // --- Track P10 ---
+					resolveStackItemCompiledEffects(item);
+	// --- End Track P10 & P12 ---
 	const targetsBecomeEach = Boolean(item.spellMods?.targetsBecomeEach);
 	const interpreted =
 		!item.manualResolution &&
@@ -11203,6 +11692,16 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 		exiledBySelfReference = result.exileSelf;
 		librarySelf = result.librarySelf;
 	}
+
+	// --- Track P12: CR 702.113a Awaken land animation & counters on resolution ---
+	if (
+		item.kind === 'spell' &&
+		(item.spellMods?.awakenCounters ?? 0) > 0 &&
+		item.awakenTargetId
+	) {
+		applyAwakenOnSpellResolution(state, item, controller);
+	}
+	// --- End Track P12 ---
 
 	if (item.kind === 'triggered') triggerPathCounts[interpreted ? 'interpreter' : 'manual']++;
 
@@ -11420,6 +11919,11 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 
 			if (auraTargetId) {
 				attachObject(state, perm, auraTargetId);
+				// --- Track P12: CR 702.103b Bestow Aura designation on battlefield ---
+				if (item.spellMods?.bestowed) {
+					perm.isBestowed = true;
+				}
+				// --- End Track P12 ---
 			}
 			const enteredName = perm.isFaceDown
 				? perm.faceDownLabel || 'Face-Down Permanent'
@@ -11428,11 +11932,21 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 						instanceFaceOptions(perm, 'battlefield')
 					).name;
 			applySelfEtbReplacements(state, perm);
+			// --- Track P12: CR 702.190b Sneak enters tapped and attacking if in combat ---
+			if (item.spellMods?.sneaked && state.combat.active) {
+				perm.tapped = true;
+			}
+			// --- End Track P12 ---
 			const moveRes = moveObject(state, perm, 'battlefield', {
 				from: 'stack',
 				toPlayer: controller
 			});
 			syncBattlefieldControllers(state);
+			// --- Track P12: CR 702.190b Sneak enters attacking the returned attacker's defender ---
+			if (item.spellMods?.sneaked && perm.zone === 'battlefield') {
+				placeSneakedPermanentIntoCombat(state, controller, perm, item.spellMods.sneakAttackTarget);
+			}
+			// --- End Track P12 ---
 			if (item.spellMods?.blitzed && (perm.zone === 'battlefield' || moveRes === 'pending')) {
 				(state.delayedTriggers ??= []).push(
 					buildBlitzSacrificeDelayedTrigger(uid('dtrig', state), controller.playerId, perm, item.card)
@@ -11770,6 +12284,11 @@ function destroyPermanentByEffect(
 	if (tryRegenerateInsteadOfDestroy(state, inst, canBeRegenerated)) {
 		return 'skipped';
 	}
+	// --- Track P12: CR 702.89a Umbra armor replacement ---
+	if (tryUmbraArmorInsteadOfDestroy(state, inst)) {
+		return 'skipped';
+	}
+	// --- End Track P12 ---
 	emitVfx(state, { kind: 'destroy', targetId: inst.instanceId, label: inst.card.name });
 	const dest = movePermanentToZone(state, inst, 'graveyard');
 	addLog(state, 'cast', `${title} destroyed ${inst.card.name}.`, actorId);
@@ -12650,6 +13169,51 @@ registerP10RuntimeHost({
 });
 // --- End Track P10 ---
 
+// --- Track P12 ---
+registerWave4Host({
+	uid,
+	addLog,
+	emitEvent,
+	flushTriggers,
+	canPayOrAutoTap: (player, req, state, phyrexianLifeCount, reservedObjectIds) =>
+		canPayOrAutoTap(player, req, state, phyrexianLifeCount, { isSpell: false }, reservedObjectIds),
+	payManaWithAutoTap: (player, req, state, phyrexianLifeCount, reservedObjectIds) =>
+		payManaWithAutoTap(player, req, state, phyrexianLifeCount, { isSpell: false }, reservedObjectIds),
+	costContext: (state, player, source, xValue, isSpell, baseMana) =>
+		costContext(state, player, source, xValue, isSpell, baseMana),
+	createTokens: (state, controller, spec, count) => {
+		const out: CardInstance[] = [];
+		const total = Math.max(0, count) * tokenMultiplier(state, controller.playerId);
+		for (let i = 0; i < total; i++) {
+			out.push(
+				createTokenOnBoard(state, controller, {
+					name: spec.name,
+					power: spec.power,
+					toughness: spec.toughness,
+					colors: [...spec.colors],
+					typeLine: spec.typeLine,
+					keywords: [...spec.keywords],
+					tapped: spec.tapped
+				})
+			);
+		}
+		return out;
+	},
+	copyPermanentAsToken,
+	addCountersToPermanent: (state, perm, counterType, amount) => {
+		addCountersToPermanent(state, perm, counterType, amount);
+		return amount;
+	},
+	tapPermanent,
+	finalizeCastSpell: (state, actor, inst, sourcePlayer, sourceZone, opts) =>
+		finalizeCastSpell(state, actor, inst, sourcePlayer, sourceZone, opts),
+	resumeStackItem,
+	drawSingleCardWithoutDredge,
+	drawCards: (state, player, count, deferSba) => drawCards(state, player, count, deferSba),
+	markHandCardRevealedToAll
+});
+// --- End Track P12 ---
+
 /**
  * CR 702.26: Phasing Out a permanent also indirectly phases out any Auras/Equipment attached to it.
  * Phased-out permanents do not change zones (no LTB/ETB triggers fire!).
@@ -12730,6 +13294,9 @@ export function endTheTurnImmediately(state: GameState, actorId: string): void {
  */
 export function enterEndStep(state: GameState, activePlayer: PlayerGameState): void {
 	emptyAllPlayersManaPools(state);
+	// --- Track P12 ---
+	clearWave4StepScopedState(state, state.phase);
+	// --- End Track P12 ---
 	emitVfx(state, { kind: 'phase_change', label: 'End Step' });
 	// Beginning-of-end-step and delayed end-step triggers run from the PhaseBegin handler
 	// (runEndStepTriggers), synchronously.
@@ -13453,6 +14020,9 @@ export function executeProliferate(
 export function advancePhaseOrStep(state: GameState): void {
 	// Drain unspent mana pools at the end of each step/phase (CR 106.4 / 500.4)
 	emptyAllPlayersManaPools(state);
+	// --- Track P12 ---
+	clearWave4StepScopedState(state, state.phase);
+	// --- End Track P12 ---
 
 	const activePlayer = state.players[state.activePlayerIndex];
 
@@ -14638,7 +15208,15 @@ export function checkStateBasedActions(state: GameState): void {
 
 					if (isAura) {
 						if (!perm.attachedToId) {
-							queueToGraveyard(perm, p, 'aura');
+							// --- Track P12: CR 702.103f Bestow ceases to be bestowed instead of going to graveyard ---
+							if (perm.isBestowed) {
+								perm.isBestowed = false;
+								noteLayerInputsChanged(state);
+								anyActionTaken = true;
+							} else {
+								queueToGraveyard(perm, p, 'aura');
+							}
+							// --- End Track P12 ---
 						} else {
 							const targetFound = findPermanentOnBoard(state, perm.attachedToId);
 							if (targetFound) {
@@ -14653,8 +15231,16 @@ export function checkStateBasedActions(state: GameState): void {
 									)
 								) {
 									perm.attachedToId = null;
-									noteLayerInputsChanged(state);
-									queueToGraveyard(perm, p, 'aura');
+									// --- Track P12: CR 702.103f Bestow unattach ---
+									if (perm.isBestowed) {
+										perm.isBestowed = false;
+										noteLayerInputsChanged(state);
+										anyActionTaken = true;
+									} else {
+										noteLayerInputsChanged(state);
+										queueToGraveyard(perm, p, 'aura');
+									}
+									// --- End Track P12 ---
 								}
 							} else {
 								const targetPlayer = state.players.find(
@@ -14665,18 +15251,36 @@ export function checkStateBasedActions(state: GameState): void {
 									!isAuraPlayerAttachmentLegal(perm, p, evalPerm, targetPlayer)
 								) {
 									perm.attachedToId = null;
-									noteLayerInputsChanged(state);
-									queueToGraveyard(perm, p, 'aura');
+									// --- Track P12: CR 702.103f Bestow unattach ---
+									if (perm.isBestowed) {
+										perm.isBestowed = false;
+										noteLayerInputsChanged(state);
+										anyActionTaken = true;
+									} else {
+										noteLayerInputsChanged(state);
+										queueToGraveyard(perm, p, 'aura');
+									}
+									// --- End Track P12 ---
 								}
 							}
 						}
 					} else if (isEquipment && perm.attachedToId) {
 						const targetFound = findPermanentOnBoard(state, perm.attachedToId);
+						// --- Track P12: Equip planeswalker SBA support (e.g. Luxior) ---
+						const allowPw = activeAbilityDefs(
+							effectiveCardForObject(perm),
+							instanceFaceOptions(perm, 'battlefield')
+						).some((a) => a.kind === 'keyword' && Boolean(a.keyword.equipAllowPlaneswalker));
+						const targetEval = targetFound ? evaluatePermanent(state, targetFound.inst) : null;
+						const validHostType = targetEval
+							? targetEval.typeLine.includes('Creature') || (allowPw && targetEval.isPlaneswalker)
+							: false;
+						// --- End Track P12 ---
 						if (
 							evalPerm.isCreature ||
 							perm.instanceId === perm.attachedToId ||
 							!targetFound ||
-							!evaluatePermanent(state, targetFound.inst).typeLine.includes('Creature') ||
+							!validHostType ||
 							hasProtectionFrom(targetFound.inst, perm.copiableCard ?? perm.card, state, perm)
 						) {
 							perm.attachedToId = null;
@@ -14708,6 +15312,10 @@ export function checkStateBasedActions(state: GameState): void {
 								if (perm.deathtouchDamageMarked) perm.deathtouchDamageMarked = false;
 							} else if (tryRegenerateInsteadOfDestroy(state, perm, true)) {
 								// CR 701.19a / 704.5g-h: Regenerated instead of lethal/deathtouch destruction
+							// --- Track P12: CR 702.89a Umbra armor SBA replacement ---
+							} else if (tryUmbraArmorInsteadOfDestroy(state, perm)) {
+								anyActionTaken = true;
+							// --- End Track P12 ---
 							} else {
 								dies = true;
 							}
@@ -16795,7 +17403,12 @@ function checkLandPlayLegalityInner(
 		if (!actor.graveyard.some((c) => c.instanceId === inst.instanceId)) {
 			return { ok: false, error: `${inst.card.name} is not in your graveyard.` };
 		}
-		if (!getActiveZoneLandPlayPermissionSource(state, actorId, 'graveyard', inst)) {
+		if (
+			!getActiveZoneLandPlayPermissionSource(state, actorId, 'graveyard', inst) &&
+			// --- Track P12 ---
+			!canPlayGraveyardLandViaMayhem(state, actorId, inst, faceIndex)
+			// --- End Track P12 ---
+		) {
 			return {
 				ok: false,
 				error: `You do not have permission to play ${inst.card.name} from your graveyard.`
@@ -17338,6 +17951,15 @@ function checkSpellCastOptionLegalityInner(
 		return { ok: false, error: 'You do not currently hold priority.' };
 	}
 
+	// --- Track P12: CR 702.61a Split second blocks casting spells ---
+	if (stackSpellWithSplitSecond(state) !== null) {
+		return {
+			ok: false,
+			error: 'Cannot cast spells while a spell with split second is on the stack (CR 702.61a).'
+		};
+	}
+	// --- End Track P12 ---
+
 	// Check global Rule-Modifying Cast Permissions & Restrictions (CR 101.2: "Can't beats Can")
 	// Covers Vedalken Orrery, Leyline of Anticipation, Rule of Law, Drannith Magistrate, Grand Abolisher, Teferi
 	const globalCastCheck = checkGlobalCastPermissionsAndRestrictions(
@@ -17470,7 +18092,41 @@ function checkSpellCastOptionLegalityInner(
 	});
 	let effectiveManaReq = costReq;
 	let reservedAidIds = new Set<string>();
-	if (
+	// --- Track P12: Emerge (CR 702.119a) & Harmonize (CR 702.180a) cast legality ---
+	if (option.id === 'alt:emerge') {
+		const emergePayable = findPayableEmergeCandidates(
+			state,
+			actor,
+			inst,
+			option,
+			xValue,
+			[],
+			matchesObjectFilter
+		);
+		if (emergePayable.length === 0) {
+			return {
+				ok: false,
+				error: `Insufficient mana or no legal permanent to sacrifice for Emerge on ${castName}.`
+			};
+		}
+		effectiveManaReq = emergePayable[0].req;
+		reservedAidIds.add(emergePayable[0].perm.instanceId);
+	} else if (option.id === 'graveyard:harmonize') {
+		const harmPayable = findPayableHarmonizeOptions(state, actor, inst, option, xValue, []);
+		if (!harmPayable.noTapReq && harmPayable.tapCandidates.length === 0) {
+			return {
+				ok: false,
+				error: `Insufficient mana to cast ${castName} via Harmonize.`
+			};
+		}
+		if (harmPayable.noTapReq) {
+			effectiveManaReq = harmPayable.noTapReq;
+		} else {
+			effectiveManaReq = harmPayable.tapCandidates[0].req;
+			reservedAidIds.add(harmPayable.tapCandidates[0].perm.instanceId);
+		}
+	} else if (
+	// --- End Track P12 ---
 		strictCostAids &&
 		!(costReq.flexibleSymbols?.length && costAidIds && Object.keys(costAidIds).length > 0)
 	) {
@@ -17583,7 +18239,68 @@ function checkSpellCastOptionLegalityInner(
 				ok: false,
 				error: `Illegal Cast: No valid mode combination of ${castName} has legal targets.`
 			};
+		// --- Track P12: Spree (CR 702.172) & Tiered (CR 702.183) per-mode cost legality ---
+		} else if (spellCompiled.modal.perModeCosts) {
+			const minModes = Math.max(1, spellCompiled.modal.min);
+			const legal = status.legalModes;
+			let foundPayableModeCombo = false;
+			const canPayCombo = (combo: number[]): boolean => {
+				const modeExtra = computeModalModeAdditionalCosts(
+					inst.card,
+					option.faceIndex ?? 0,
+					spellCompiled.modal,
+					combo
+				);
+				const comboManaReq = getSpellCostRequirementForOption(
+					actor,
+					inst,
+					state,
+					xValue,
+					option,
+					hasOptCounts ? normalizedOptCounts : undefined,
+					combo
+				);
+				const aidCheck = canPayManaWithPaymentAids(state, actor, option, comboManaReq, spendCtx);
+				if (!aidCheck.ok) return false;
+				const allDefs = [...combinedCostDefs, ...modeExtra.costDefs];
+				if (allDefs.length === 0) return true;
+				return canPayCosts(
+					costContext(
+						state,
+						actor,
+						inst,
+						xValue,
+						true,
+						comboManaReq,
+						undefined,
+						spendCtx,
+						aidCheck.reservedAidIds.size > 0 ? aidCheck.reservedAidIds : undefined,
+						(req, resIds) =>
+							canPayManaWithPaymentAids(state, actor, option, req, spendCtx, undefined, resIds).ok
+					),
+					allDefs
+				);
+			};
+			if (minModes === 1) {
+				foundPayableModeCombo = legal.some((m) => canPayCombo([m]));
+			} else {
+				const searchCombos = (start: number, acc: number[]): boolean => {
+					if (acc.length === minModes) return canPayCombo(acc);
+					for (let i = start; i <= legal.length - (minModes - acc.length); i++) {
+						if (searchCombos(i + 1, [...acc, legal[i]])) return true;
+					}
+					return false;
+				};
+				foundPayableModeCombo = searchCombos(0, []);
+			}
+			if (!foundPayableModeCombo) {
+				return {
+					ok: false,
+					error: `Insufficient mana or unpayable mode costs to cast ${castName}.`
+				};
+			}
 		}
+		// --- End Track P12 ---
 	} else {
 		const spellTargetInfo = getSpellTargetRequirement(
 			inst.card,
@@ -17758,6 +18475,14 @@ function checkAbilityActivationLegalityInner(
 	}
 
 	// CR 101.2, 602.5a–b, 604.1: Global rule-modifying & static ability-activation restrictions.
+	// --- Track P12: CR 702.61a–b Split second blocks non-mana activated abilities ---
+	if (!ab.isManaAbility && stackSpellWithSplitSecond(state) !== null) {
+		return {
+			ok: false,
+			error: 'Cannot activate non-mana abilities while a spell with split second is on the stack (CR 702.61a).'
+		};
+	}
+	// --- End Track P12 ---
 	const globalAbCheck = checkGlobalAbilityActivationRestrictions(
 		state,
 		actorId,
@@ -17803,6 +18528,53 @@ function checkAbilityActivationLegalityInner(
 			error: `${perm.card.name}: Activation condition is not met.`
 		};
 	}
+	// --- Track P12: Class level, Exhaust, Boast, Forecast restrictions ---
+	const classMatch = /^class_level_(\d+)$/.exec(ab.id);
+	if (classMatch) {
+		const targetLevel = Number(classMatch[1]);
+		if ((perm.classLevel ?? 1) !== targetLevel - 1) {
+			return {
+				ok: false,
+				error: `${perm.card.name}: Must be level ${targetLevel - 1} to gain level ${targetLevel} (CR 717.2a).`
+			};
+		}
+	}
+	if (ab.costKeyword === 'exhaust' && perm.exhaustedAbilityIds?.includes(ab.id)) {
+		return {
+			ok: false,
+			error: `${perm.card.name}: An exhaust ability can't be activated if it has already been activated (CR 702.177a).`
+		};
+	}
+	if (ab.costKeyword === 'boast') {
+		if (!perm.creatureAttackedThisTurn) {
+			return {
+				ok: false,
+				error: `${perm.card.name}: Activate boast abilities only if this creature attacked this turn (CR 702.142a).`
+			};
+		}
+		if (perm.activatedAbilityIdsThisTurn?.includes(ab.id)) {
+			return {
+				ok: false,
+				error: `${perm.card.name}: A boast ability can only be activated once each turn (CR 702.142a).`
+			};
+		}
+	}
+	if (ab.costKeyword === 'forecast') {
+		const activePl = state.players[state.activePlayerIndex];
+		if (activePl?.playerId !== actorId || state.phase !== 'upkeep') {
+			return {
+				ok: false,
+				error: `${perm.card.name}: Forecast abilities can only be activated during your upkeep (CR 702.57b).`
+			};
+		}
+		if (perm.activatedAbilityIdsThisTurn?.includes(ab.id)) {
+			return {
+				ok: false,
+				error: `${perm.card.name}: A forecast ability can only be activated once each turn (CR 702.57b).`
+			};
+		}
+	}
+	// --- End Track P12 ---
 	const restrictions = ab.activationRestrictions;
 	if (restrictions?.length) {
 		if (restrictions.includes('onceEachTurn') && perm.activatedAbilityIdsThisTurn?.includes(ab.id)) {
@@ -18064,7 +18836,9 @@ function isTargetStillValid(
 		if (item.kind === 'spell' && (sourceCard || item.card)) {
 			targetInfo = getSpellTargetRequirement(
 				(sourceCard ?? item.card)!,
-				{ faceIndex: item.faceIndex, fused: item.fused } as CastOption,
+				// --- Track P12 ---
+				{ faceIndex: item.faceIndex, fused: item.fused, spellMods: item.spellMods } as CastOption,
+				// --- End Track P12 ---
 				item.optionalCostCounts
 			);
 		} else if (item.kind === 'activated' && item.abilityId && (sourceCard || item.card)) {
@@ -18171,6 +18945,9 @@ function applyDamageToTarget(
 		if (amount <= 0) return;
 		if (!pTarget.lifeTotalCannotChangeThisTurn) {
 			pTarget.life -= amount;
+			// --- Track P12 ---
+			recordPlayerLifeLossWave4(pTarget, amount);
+			// --- End Track P12 ---
 		}
 		if (!pTarget.protectionFromEverythingThisTurn) {
 			// --- Track P9 ---

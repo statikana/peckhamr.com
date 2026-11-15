@@ -135,7 +135,49 @@ export const KEYWORD_COVERAGE_FILES: Record<string, readonly string[]> = {
 	soulshift: ['runtime/keywords-wave3-p9.test.ts'],
 	toxic: ['runtime/keywords-wave3-p9.test.ts'],
 	undying: ['runtime/keywords-wave3-p9.test.ts'],
-	unleash: ['runtime/keywords-wave3-p9.test.ts']
+	unleash: ['runtime/keywords-wave3-p9.test.ts'],
+	// --- Track P12 ---
+	afflict: ['runtime/keywords-wave4-p12.test.ts'],
+	aftermath: ['runtime/keywords-wave4-p12.test.ts'],
+	awaken: ['runtime/keywords-wave4-p12.test.ts'],
+	backup: ['runtime/keywords-wave4-p12.test.ts'],
+	bargain: ['runtime/keywords-wave4-p12.test.ts'],
+	'beam me up': ['runtime/keywords-wave4-p12.test.ts'],
+	bestow: ['runtime/keywords-wave4-p12.test.ts'],
+	champion: ['runtime/keywords-wave4-p12.test.ts'],
+	decayed: ['runtime/keywords-wave4-p12.test.ts'],
+	dethrone: ['runtime/keywords-wave4-p12.test.ts'],
+	devour: ['runtime/keywords-wave4-p12.test.ts'],
+	dredge: ['runtime/keywords-wave4-p12.test.ts'],
+	embalm: ['runtime/keywords-wave4-p12.test.ts'],
+	emerge: ['runtime/keywords-wave4-p12.test.ts'],
+	encore: ['runtime/keywords-wave4-p12.test.ts'],
+	enlist: ['runtime/keywords-wave4-p12.test.ts'],
+	escalate: ['runtime/keywords-wave4-p12.test.ts'],
+	eternalize: ['runtime/keywords-wave4-p12.test.ts'],
+	firebending: ['runtime/keywords-wave4-p12.test.ts'],
+	graft: ['runtime/keywords-wave4-p12.test.ts'],
+	harmonize: ['runtime/keywords-wave4-p12.test.ts'],
+	ingest: ['runtime/keywords-wave4-p12.test.ts'],
+	mayhem: ['runtime/keywords-wave4-p12.test.ts'],
+	melee: ['runtime/keywords-wave4-p12.test.ts'],
+	mentor: ['runtime/keywords-wave4-p12.test.ts'],
+	miracle: ['runtime/keywords-wave4-p12.test.ts'],
+	mobilize: ['runtime/keywords-wave4-p12.test.ts'],
+	myriad: ['runtime/keywords-wave4-p12.test.ts'],
+	outlast: ['runtime/keywords-wave4-p12.test.ts'],
+	rampage: ['runtime/keywords-wave4-p12.test.ts'],
+	recover: ['runtime/keywords-wave4-p12.test.ts'],
+	renown: ['runtime/keywords-wave4-p12.test.ts'],
+	sneak: ['runtime/keywords-wave4-p12.test.ts'],
+	spectacle: ['runtime/keywords-wave4-p12.test.ts'],
+	'split second': ['runtime/keywords-wave4-p12.test.ts'],
+	sunburst: ['runtime/keywords-wave4-p12.test.ts'],
+	surge: ['runtime/keywords-wave4-p12.test.ts'],
+	training: ['runtime/keywords-wave4-p12.test.ts'],
+	'umbra armor': ['runtime/keywords-wave4-p12.test.ts'],
+	undaunted: ['runtime/keywords-wave4-p12.test.ts'],
+	'web-slinging': ['runtime/keywords-wave4-p12.test.ts']
 };
 
 const SAMPLE_ORACLE_FOR_KEYWORD: Record<string, { typeLine: string; oracleText: string }> = {
@@ -234,7 +276,44 @@ const SAMPLE_ORACLE_FOR_KEYWORD: Record<string, { typeLine: string; oracleText: 
 	soulshift: { typeLine: 'Creature — Spirit', oracleText: 'Soulshift 3' },
 	toxic: { typeLine: 'Creature — Phyrexian Mite', oracleText: 'Toxic 1' },
 	undying: { typeLine: 'Creature — Wolf', oracleText: 'Undying' },
-	unleash: { typeLine: 'Creature — Devil', oracleText: 'Unleash' }
+	unleash: { typeLine: 'Creature — Devil', oracleText: 'Unleash' },
+	// --- Track P12 ---
+	afflict: { typeLine: 'Creature — Zombie Jackal', oracleText: 'Afflict 2' },
+	aftermath: { typeLine: 'Sorcery', oracleText: 'Aftermath\nDraw two cards.' },
+	awaken: { typeLine: 'Sorcery', oracleText: 'Destroy target creature.\nAwaken 3—{4}{B}{B}' },
+	backup: { typeLine: 'Creature — Human Knight', oracleText: 'Backup 1\nVigilance' },
+	bargain: { typeLine: 'Instant', oracleText: 'Bargain\nDraw two cards.' },
+	'beam me up': { typeLine: 'Sorcery', oracleText: 'Draw two cards.\nBeam me up {2}{U}' },
+	bestow: { typeLine: 'Enchantment Creature — Nymph', oracleText: 'Bestow {3}{W}' },
+	champion: { typeLine: 'Creature — Elf Warrior', oracleText: 'Champion an Elf' },
+	devour: { typeLine: 'Creature — Beast', oracleText: 'Devour 2' },
+	dredge: { typeLine: 'Creature — Plant Troll', oracleText: 'Dredge 4' },
+	embalm: { typeLine: 'Creature — Human Cleric', oracleText: 'Embalm {3}{W}' },
+	emerge: { typeLine: 'Creature — Eldrazi Crab', oracleText: 'Emerge {5}{U}{U}' },
+	encore: { typeLine: 'Creature — Human Pirate', oracleText: 'Encore {4}{R}' },
+	escalate: {
+		typeLine: 'Instant',
+		oracleText: 'Escalate {2}\nChoose one or more —\n• Draw a card.\n• You gain 3 life.'
+	},
+	eternalize: { typeLine: 'Creature — Naga Wizard', oracleText: 'Eternalize {4}{U}{U}' },
+	firebending: { typeLine: 'Creature — Human Monk', oracleText: 'Firebending 2' },
+	graft: { typeLine: 'Creature — Plant Mutant', oracleText: 'Graft 2' },
+	harmonize: { typeLine: 'Sorcery', oracleText: 'Draw two cards.\nHarmonize {3}{U}' },
+	mayhem: { typeLine: 'Sorcery', oracleText: 'Draw two cards.\nMayhem {1}{R}' },
+	miracle: { typeLine: 'Sorcery', oracleText: 'Draw two cards.\nMiracle {U}' },
+	mobilize: { typeLine: 'Creature — Human Warrior', oracleText: 'Mobilize 2' },
+	outlast: { typeLine: 'Creature — Human Soldier', oracleText: 'Outlast {1}{W}' },
+	rampage: { typeLine: 'Creature — Beast', oracleText: 'Rampage 2' },
+	recover: { typeLine: 'Creature — Zombie', oracleText: 'Recover {1}{B}' },
+	renown: { typeLine: 'Creature — Human Soldier', oracleText: 'Renown 1' },
+	sneak: { typeLine: 'Creature — Mutant Ninja Turtle', oracleText: 'Sneak {1}{B}' },
+	spectacle: { typeLine: 'Sorcery', oracleText: 'Draw two cards.\nSpectacle {R}' },
+	'split second': { typeLine: 'Instant', oracleText: 'Split second\nDestroy target artifact.' },
+	sunburst: { typeLine: 'Artifact Creature — Construct', oracleText: 'Sunburst' },
+	surge: { typeLine: 'Instant', oracleText: 'Draw two cards.\nSurge {1}{U}' },
+	'umbra armor': { typeLine: 'Enchantment — Aura', oracleText: 'Enchant creature\nUmbra armor' },
+	undaunted: { typeLine: 'Sorcery', oracleText: 'Undaunted\nDraw two cards.' },
+	'web-slinging': { typeLine: 'Creature — Spider Hero', oracleText: 'Web-slinging {2}{W}' }
 };
 
 describe('Implemented Keywords Coverage Guard', () => {
@@ -361,7 +440,35 @@ describe('Implemented Keywords Coverage Guard', () => {
 			'ninjutsu',
 			'scavenge',
 			'soulshift',
-			'toxic'
+			'toxic',
+			// --- Track P12 ---
+			'afflict',
+			'awaken',
+			'backup',
+			'beam me up',
+			'bestow',
+			'champion',
+			'devour',
+			'dredge',
+			'embalm',
+			'emerge',
+			'encore',
+			'escalate',
+			'eternalize',
+			'firebending',
+			'graft',
+			'harmonize',
+			'mayhem',
+			'miracle',
+			'mobilize',
+			'outlast',
+			'rampage',
+			'recover',
+			'renown',
+			'sneak',
+			'spectacle',
+			'surge',
+			'web-slinging'
 		]);
 
 		assert.deepEqual(
@@ -388,7 +495,7 @@ describe('Implemented Keywords Coverage Guard', () => {
 			'Every non-parameterized keyword in IMPLEMENTED_KEYWORDS must have a display label in KEYWORD_LABELS'
 		);
 
-		// Verify unimplemented keywords (Evolve, Mentor) do not render activeKeywords badges even if present in card.keywords
+		// Verify unimplemented keywords (Banding, Cipher) do not render activeKeywords badges even if present in card.keywords
 		const d = PRECON_DECKS[0];
 		const seats: LobbySeat[] = [
 			{
@@ -415,10 +522,10 @@ describe('Implemented Keywords Coverage Guard', () => {
 			manaCost: '{2}{G}{U}',
 			cmc: 4,
 			typeLine: 'Creature — Mutant',
-			oracleText: 'Mentor\nDredge',
+			oracleText: 'Banding\nCipher',
 			colors: ['G', 'U'],
 			colorIdentity: ['G', 'U'],
-			keywords: ['Mentor', 'Dredge'],
+			keywords: ['Banding', 'Cipher'],
 			power: '2',
 			toughness: '2',
 			imageUrl: '',

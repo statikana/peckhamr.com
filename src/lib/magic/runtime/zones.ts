@@ -48,6 +48,14 @@ import {
 	extractGrantedDeathKeywords,
 	nextWave3EtbChoice
 } from './keywordsWave3.ts';
+// --- Track P12 ---
+import {
+	applyWave4EtbCountersAndSetup,
+	executeDevourSacrifices,
+	findDevourKeywordDef,
+	legalDevourSacrificeCandidates
+} from './keywordsWave4.ts';
+// --- End Track P12 ---
 
 /**
  * The single zone-change module (ENGINE_ARCHITECTURE_PLAN.md section 2.3, Phase 2).
@@ -569,6 +577,50 @@ function enqueueNextEtbChoicePrompt(
 		});
 		return true;
 	}
+	// --- Track P12: Devour (CR 702.82a) ---
+	const devourKw = findDevourKeywordDef(obj);
+	if (devourKw && obj.devouredCount === undefined) {
+		const devourCands = legalDevourSacrificeCandidates(
+			state,
+			obj,
+			chooser.playerId,
+			devourKw,
+			matchesObjectFilter
+		);
+		if (devourCands.length > 0) {
+			const nLabel = devourKw.devourX ? 'X' : String(devourKw.n ?? 1);
+			const description = `As ${objName} enters the battlefield, you may sacrifice any number of matching permanents for Devour ${nLabel} (CR 702.82a).`;
+			enqueueChoicePrompt(state, {
+				id: uid('prm', state),
+				playerId: chooser.playerId,
+				kind: 'chooseObjects',
+				purpose: 'etb_choice',
+				title: `${objName} — Devour ${nLabel}`,
+				description,
+				candidateInstanceIds: devourCands.map((c) => c.instanceId),
+				countRequired: 0,
+				continuation: {
+					kind: 'handler',
+					name: 'etb_choice',
+					data: {
+						...(baseData as Record<string, string | number | boolean | null | string[] | Record<string, number>>),
+						choiceField: 'devour'
+					}
+				},
+				choice: {
+					kind: 'chooseObjects',
+					candidates: devourCands.map((c) => c.instanceId),
+					min: 0,
+					max: devourCands.length,
+					zone: 'battlefield',
+					reason: `Choose permanents to sacrifice for ${objName}'s Devour ${nLabel}.`
+				}
+			});
+			return true;
+		}
+		obj.devouredCount = 0;
+	}
+	// --- End Track P12 ---
 	return false;
 }
 
@@ -762,6 +814,16 @@ function finalizeZoneMove(
 		obj.detainedByPlayerIds = undefined;
 		obj.damagedByThisTurn = undefined;
 		// --- End Track P10 ---
+		// --- Track P12 (CR 400.7 / 717.2b / 720.3b) ---
+		obj.classLevel = undefined;
+		obj.isSolved = undefined;
+		obj.isRenowned = undefined;
+		obj.isBestowed = undefined;
+		obj.exhaustedAbilityIds = undefined;
+		obj.creatureAttackedThisTurn = undefined;
+		obj.devouredCount = undefined;
+		obj.encoreMustAttackPlayerId = undefined;
+		// --- End Track P12 ---
 		if (dest !== 'stack') {
 			obj.manaColorsSpent = undefined;
 			// --- Track P10 ---
@@ -798,6 +860,10 @@ function finalizeZoneMove(
 		// CR 400.7 / CR 701.20d: Zone change creates a new object and clears revealed-hand visibility
 		// as well as any once-per-turn trigger tracking in the destination zone (CR 603.2i).
 		obj.knownToPlayerIds = undefined;
+		// --- Track P12 ---
+		obj.discardedByPlayerIdThisTurn = undefined;
+		obj.discardedTurnSerial = undefined;
+		// --- End Track P12 ---
 		if (state.triggeredOnceThisTurn?.length) {
 			const prefix = `${obj.instanceId}:${dest}:`;
 			const remaining = state.triggeredOnceThisTurn.filter((k) => !k.startsWith(prefix));
@@ -985,6 +1051,24 @@ function finalizeZoneMove(
 			}
 			const botWave3 = applyBotWave3EtbChoices(state, obj, ctrl);
 			wave3ExtraCounters = botWave3.unleashCounters + botWave3.riotCounters;
+			// --- Track P12 ---
+			const botDevourKw = findDevourKeywordDef(obj);
+			if (botDevourKw && obj.devouredCount === undefined) {
+				const dCands = legalDevourSacrificeCandidates(
+					state,
+					obj,
+					ctrl.playerId,
+					botDevourKw,
+					matchesObjectFilter
+				);
+				const fodder = dCands.filter((c) => c.isToken).map((c) => c.instanceId);
+				if (fodder.length > 0) {
+					executeDevourSacrifices(state, obj, ctrl, fodder);
+				} else {
+					obj.devouredCount = 0;
+				}
+			}
+			// --- End Track P12 ---
 		} else {
 			const baseData = buildPendingEtbData();
 			if (enqueueNextEtbChoicePrompt(state, obj, ctrl, etbSpec, baseData, null)) {
@@ -997,6 +1081,12 @@ function finalizeZoneMove(
 	if (dest !== 'stack' && !ceases) {
 		const at = typeof opts.insert === 'function' ? opts.insert(dest) : opts.insert;
 		if (at !== 'deferred') insertInto(effectiveReceiver[dest as PlayerZone], obj, at);
+		// --- Track P12 ---
+		if (dest === 'graveyard' && fromZone !== 'graveyard') {
+			state.cardsPutIntoGraveyardThisTurn = (state.cardsPutIntoGraveyardThisTurn ?? 0) + 1;
+			noteLayerInputsChanged(state);
+		}
+		// --- End Track P12 ---
 		if (isEnteringBattlefield) {
 			if (opts.withCounters && opts.withCounters.count > 0) {
 				placeRegisteredCounters(state, obj, opts.withCounters.counter, opts.withCounters.count);
@@ -1004,6 +1094,9 @@ function finalizeZoneMove(
 			if (!obj.isFaceDown) {
 				applyWave3EtbCounters(state, obj, placeRegisteredCounters, wave3ExtraCounters);
 			}
+			// --- Track P12 ---
+			applyWave4EtbCountersAndSetup(state, obj, placeRegisteredCounters);
+			// --- End Track P12 ---
 			noteLayerInputsChanged(state);
 		}
 		if (shuffleDestLibrary && dest === 'library') {
@@ -1038,6 +1131,12 @@ function finalizeZoneMove(
 		obj
 	);
 	// --- End Track P7 ---
+	// --- Track P12: CR 702.187b–c Mayhem discard tracking ---
+	if (opts.discardReason && dest === 'graveyard' && !ceases) {
+		obj.discardedByPlayerIdThisTurn = opts.discardPlayerId ?? fromPlayerId ?? obj.ownerId;
+		obj.discardedTurnSerial = state.turnSerial ?? state.turnNumber;
+	}
+	// --- End Track P12 ---
 	if (opts.emit !== false) {
 		emitZoneChange(
 			state,
@@ -1848,6 +1947,15 @@ registerPromptHandler('etb_choice', (state, prompt, answer) => {
 				chooser.playerId,
 				`${chooser.username} chose ${chosenLabel} for ${bfView.name}.`
 			);
+		// --- Track P12 ---
+		} else if (choiceField === 'devour' && answer.kind === 'chooseObjects') {
+			executeDevourSacrifices(state, obj, chooser, answer.objectIds);
+			pushEtbRuleLog(
+				state,
+				chooser.playerId,
+				`${chooser.username} sacrificed ${obj.devouredCount ?? 0} permanent(s) for ${bfView.name}'s Devour (CR 702.82a).`
+			);
+		// --- End Track P12 ---
 		} else {
 			return;
 		}
@@ -1876,6 +1984,9 @@ registerPromptHandler('etb_choice', (state, prompt, answer) => {
 			if (!obj.isFaceDown) {
 				applyWave3EtbCounters(state, obj, placeRegisteredCounters, wave3ExtraCounters);
 			}
+			// --- Track P12 ---
+			applyWave4EtbCountersAndSetup(state, obj, placeRegisteredCounters);
+			// --- End Track P12 ---
 		}
 		noteLayerInputsChanged(state);
 
