@@ -2549,6 +2549,22 @@ function evaluateLayerCondition(
 				matchesObjectFilter
 			);
 		// --- End Track P17b ---
+		// --- Track P18b ---
+		case 'anchorWordChosen':
+			layerReads |= READ_P18B;
+			return (source.inst.chosenAnchorWord ?? '').trim().toLowerCase() === cond.word.trim().toLowerCase();
+		case 'youWereAttackedThisCombat':
+			layerReads |= READ_COMBAT;
+			return Boolean(
+				state.combat.active &&
+					state.combat.attackers.some(
+						(a) =>
+							a.defenderPlayerId === source.controllerId &&
+							!a.defenderPlaneswalkerId &&
+							!a.defenderBattleId
+					)
+			);
+		// --- End Track P18b ---
 		default:
 			return false;
 	}
@@ -2967,6 +2983,10 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 			Boolean(perm.isFlipped),
 			perm.mergedComponents?.length ?? 0,
 			// --- End Wave 6 Shared ---
+			// --- Track P18b ---
+			perm.chosenAnchorWord ?? '',
+			perm.meldedComponents?.length ?? 0,
+			// --- End Track P18b ---
 			perm.kickedCount || 0,
 			perm.kickedTags?.length || 0,
 			perm.grantedKeywords?.length || 0
@@ -3431,6 +3451,10 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 			fp[i++] !== Boolean(perm.isFlipped) ||
 			fp[i++] !== (perm.mergedComponents?.length ?? 0) ||
 			// --- End Wave 6 Shared ---
+			// --- Track P18b ---
+			fp[i++] !== (perm.chosenAnchorWord ?? '') ||
+			fp[i++] !== (perm.meldedComponents?.length ?? 0) ||
+			// --- End Track P18b ---
 			fp[i++] !== (perm.kickedCount || 0) ||
 			fp[i++] !== kickedTagsLen ||
 			fp[i++] !== grantedLen

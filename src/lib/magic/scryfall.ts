@@ -8,6 +8,9 @@ import {
 	getCardDeckCopyLimit
 } from './runtime/staticsAndCostsWave5.ts';
 // --- End Track P14 ---
+// --- Track P18b ---
+import { validateCompanionDeckCondition } from './runtime/framesModalsWave6.ts';
+// --- End Track P18b ---
 import { isScryfallSyntaxQuery, matchesScryfallQuery } from './search.ts';
 import type {
 	CardInstance,
@@ -424,11 +427,17 @@ export function activeFaceIndexForObject(obj: {
 	copiableState?: CopiableState;
 	activeFaceIndex?: number;
 	transformed?: boolean;
+	// --- Track P18b ---
+	isFlipped?: boolean;
+	// --- End Track P18b ---
 	faceIndex?: number;
 }): number {
 	if (obj.copiableState?.faceIndex !== undefined) return obj.copiableState.faceIndex;
 	if (obj.activeFaceIndex !== undefined) return obj.activeFaceIndex;
 	if (obj.faceIndex !== undefined) return obj.faceIndex;
+	// --- Track P18b (CR 710.2): flipped Kamigawa permanents use their flipped face (index 1) ---
+	if (obj.isFlipped) return 1;
+	// --- End Track P18b ---
 	return obj.transformed ? 1 : 0;
 }
 
@@ -639,12 +648,19 @@ export async function searchScryfallCards(
 		);
 		if (res.ok) {
 			const data = (await res.json()) as { data?: Array<Record<string, any>> };
-			const rawList = (data.data || []).slice(0, limit);
+			const rawList = data.data || [];
 			const out: ScryfallCard[] = [];
 			for (const raw of rawList) {
+				// --- Track P18b: Skip leaked non-playable token/emblem/helper records ---
+				if (isNonPlayableRawScryfallRecord(raw)) continue;
+				// --- End Track P18b ---
 				const card = normalizeScryfallCard(raw);
+				// --- Track P18b ---
+				if (isNonPlayableHelperCard(card)) continue;
+				// --- End Track P18b ---
 				STAPLE_CARDS[card.name.toLowerCase()] = card;
 				out.push(card);
+				if (out.length >= limit) break;
 			}
 			if (out.length > 0) return out;
 		}
@@ -813,7 +829,10 @@ function areValidCommanderPartners(c1: ScryfallCard, c2: ScryfallCard): boolean 
 
 export function validateCommanderDeck(
 	commanders: ScryfallCard[],
-	cards: DeckCardEntry[]
+	cards: DeckCardEntry[],
+	// --- Track P18b ---
+	companion?: ScryfallCard
+	// --- End Track P18b ---
 ): {
 	isLegal: boolean;
 	errors: string[];
@@ -912,6 +931,36 @@ export function validateCommanderDeck(
 		errors.push(`Deck has ${totalCards} cards total (Commander requires exactly 100 cards including Commander).`);
 	}
 
+	// --- Track P18b: Optional Companion validation (CR 702.139, CR 903.11) ---
+	if (companion) {
+		if (!companion.legalCommander) {
+			errors.push(`Companion ${companion.name} is banned or not legal in Commander.`);
+		}
+		for (const col of companion.colorIdentity) {
+			if (!ciSet.has(col)) {
+				errors.push(
+					`Companion color identity violation: ${companion.name} (${companion.colorIdentity.join('')}) is outside Commander color identity (${colorIdentity.join('') || 'C'}).`
+				);
+				break;
+			}
+		}
+		const compNameLow = companion.name.toLowerCase();
+		if ((nameCounts.get(compNameLow) || 0) > 0) {
+			errors.push(`Singleton violation: Companion ${companion.name} also appears in the starting deck.`);
+		}
+		const expandedStartingDeck: ScryfallCard[] = [...commanders];
+		for (const entry of cards) {
+			for (let q = 0; q < Math.max(0, Math.min(entry.quantity, 200)); q++) {
+				expandedStartingDeck.push(entry.card);
+			}
+		}
+		const compRes = validateCompanionDeckCondition(companion, expandedStartingDeck, 100);
+		if (!compRes.ok && compRes.error) {
+			errors.push(compRes.error);
+		}
+	}
+	// --- End Track P18b ---
+
 	return {
 		isLegal: errors.length === 0,
 		errors,
@@ -944,4 +993,203 @@ export function makeInherentAbilityCard(id: string, name: string, rulesSummary =
 	};
 }
 // --- End Track P15 ---
+
+// --- Track P18b ---
+const NON_PLAYABLE_RAW_LAYOUTS = new Set([
+	'token',
+	'double_faced_token',
+	'emblem',
+	'art_series',
+	'planar',
+	'scheme',
+	'vanguard',
+	'augment',
+	'host'
+]);
+
+export function isNonPlayableRawScryfallRecord(raw: Record<string, any>): boolean {
+	if (!raw || typeof raw !== 'object') return true;
+	if (raw.set_type === 'token' || raw.set_type === 'memorabilia') return true;
+	if (typeof raw.layout === 'string' && NON_PLAYABLE_RAW_LAYOUTS.has(raw.layout)) return true;
+	return false;
+}
+
+export function isNonPlayableHelperCard(
+	card: Pick<ScryfallCard, 'typeLine' | 'name' | 'oracleText' | 'manaCost' | 'setType'>
+): boolean {
+	if (card.setType === 'token' || card.setType === 'memorabilia') return true;
+	const tl = (card.typeLine || '').trim();
+	if (!tl) return true;
+	if (
+		/^Token\b/i.test(tl) ||
+		/\bToken\b.*\/\//i.test(tl) ||
+		/^Emblem\b/i.test(tl) ||
+		/^Dungeon\b/i.test(tl) ||
+		/^Phenomenon\b/i.test(tl) ||
+		/^Plane\s+—/i.test(tl) ||
+		/^Scheme\b/i.test(tl) ||
+		/^Vanguard\b/i.test(tl) ||
+		/^Conspiracy\b/i.test(tl) ||
+		/^Stickers?\b/i.test(tl) ||
+		/^Card(?:\s*\/\/\s*Card)?$/i.test(tl)
+	) {
+		return true;
+	}
+	return false;
+}
+
+interface MeldBackFaceSpec {
+	name: string;
+	typeLine: string;
+	oracleText: string;
+	colors: ManaColor[];
+	colorIndicator?: ManaColor[];
+	keywords: string[];
+	power?: string;
+	toughness?: string;
+	loyalty?: string;
+}
+
+const PRINTED_MELD_RESULTS: Readonly<Record<string, MeldBackFaceSpec>> = {
+	'chittering host': {
+		name: 'Chittering Host',
+		typeLine: 'Creature — Eldrazi Horror',
+		oracleText:
+			'Haste\nMenace\nWhen this creature enters, other creatures you control get +1/+0 and gain menace until end of turn.',
+		colors: [],
+		keywords: ['Haste', 'Menace'],
+		power: '5',
+		toughness: '6'
+	},
+	'hanweir, the writhing township': {
+		name: 'Hanweir, the Writhing Township',
+		typeLine: 'Legendary Creature — Eldrazi Ooze',
+		oracleText:
+			'Trample, haste\nWhenever Hanweir attacks, create two 3/2 colorless Eldrazi Horror creature tokens that are tapped and attacking.',
+		colors: [],
+		keywords: ['Trample', 'Haste'],
+		power: '7',
+		toughness: '4'
+	},
+	'brisela, voice of nightmares': {
+		name: 'Brisela, Voice of Nightmares',
+		typeLine: 'Legendary Creature — Eldrazi Angel',
+		oracleText:
+			"Flying, first strike, vigilance, lifelink\nYour opponents can't cast spells with mana value 3 or less.",
+		colors: [],
+		keywords: ['Flying', 'First strike', 'Vigilance', 'Lifelink'],
+		power: '9',
+		toughness: '10'
+	},
+	'urza, planeswalker': {
+		name: 'Urza, Planeswalker',
+		typeLine: 'Legendary Planeswalker — Urza',
+		oracleText:
+			'You may activate the loyalty abilities of Urza twice each turn rather than only once.\n+2: Artifact, instant, and sorcery spells you cast this turn cost {2} less to cast. You gain 2 life.\n+1: Draw two cards, then discard a card.\n0: Create two 1/1 colorless Soldier artifact creature tokens.\n−3: Exile target nonland permanent.\n−10: Artifacts and planeswalkers you control gain indestructible until end of turn. Destroy all nonland permanents.',
+		colors: ['W', 'U'],
+		colorIndicator: ['W', 'U'],
+		keywords: [],
+		loyalty: '7'
+	},
+	'titania, gaea incarnate': {
+		name: 'Titania, Gaea Incarnate',
+		typeLine: 'Legendary Creature — Elemental Avatar',
+		oracleText:
+			"Reach, vigilance, trample, haste\nTitania's power and toughness are each equal to the number of lands you control.\nWhen Titania enters, return all land cards from your graveyard to the battlefield tapped.\n{3}{G}: Put four +1/+1 counters on target land you control. It becomes a 0/0 Elemental creature with haste. It's still a land.",
+		colors: ['G'],
+		colorIndicator: ['G'],
+		keywords: ['Reach', 'Vigilance', 'Trample', 'Haste'],
+		power: '*',
+		toughness: '*'
+	},
+	'mishra, lost to phyrexia': {
+		name: 'Mishra, Lost to Phyrexia',
+		typeLine: 'Legendary Artifact Creature — Phyrexian Artificer',
+		oracleText:
+			"Whenever Mishra enters or attacks, choose three —\n• Target opponent discards two cards.\n• Mishra deals 3 damage to any target.\n• Destroy target artifact or planeswalker.\n• Creatures you control gain menace and trample until end of turn.\n• Creatures you don't control get -1/-1 until end of turn.\n• Create two tapped Powerstone tokens.",
+		colors: ['B', 'R'],
+		colorIndicator: ['B', 'R'],
+		keywords: [],
+		power: '9',
+		toughness: '9'
+	},
+	'ragnarok, divine deliverance': {
+		name: 'Ragnarok, Divine Deliverance',
+		typeLine: 'Legendary Creature — Beast Avatar',
+		oracleText:
+			'Reach, vigilance, menace, trample, haste\nWhen Ragnarok dies, destroy target permanent and return target nonlegendary permanent card from your graveyard to the battlefield.',
+		colors: ['B', 'G'],
+		colorIndicator: ['B', 'G'],
+		keywords: ['Reach', 'Vigilance', 'Menace', 'Trample', 'Haste'],
+		power: '7',
+		toughness: '6'
+	}
+};
+
+/**
+ * CR 713.4: Resolves the 2-face melded card representation for `frontA` + `frontB`.
+ * Supports both synthetic 2-face Meld cards (`faces.length >= 2`) and Scryfall's 1-face Meld cards
+ * (building `[frontFace(frontA), meldedBackFace]`).
+ */
+export function resolveMeldResultCard(
+	frontA: ScryfallCard,
+	frontB: ScryfallCard,
+	meldResultName?: string
+): ScryfallCard {
+	const facesA = getCardFaces(frontA);
+	if (facesA.length >= 2) return frontA;
+	const facesB = getCardFaces(frontB);
+	if (facesB.length >= 2) return frontB;
+
+	const key = (meldResultName ?? '').trim().toLowerCase();
+	const stapleBack = key ? STAPLE_CARDS[key] : undefined;
+	const spec: MeldBackFaceSpec | undefined = stapleBack
+		? {
+				name: stapleBack.name,
+				typeLine: stapleBack.typeLine,
+				oracleText: stapleBack.oracleText,
+				colors: stapleBack.colors,
+				...(stapleBack.colorIndicator ? { colorIndicator: stapleBack.colorIndicator } : {}),
+				keywords: stapleBack.keywords,
+				...(stapleBack.power !== undefined ? { power: stapleBack.power } : {}),
+				...(stapleBack.toughness !== undefined ? { toughness: stapleBack.toughness } : {}),
+				...(stapleBack.loyalty !== undefined ? { loyalty: stapleBack.loyalty } : {})
+			}
+		: PRINTED_MELD_RESULTS[key];
+
+	const frontFace = facesA[0];
+	const backFace: ScryfallCardFace = spec
+		? {
+				name: spec.name,
+				manaCost: '',
+				cmc: (frontA.cmc || 0) + (frontB.cmc || 0),
+				typeLine: spec.typeLine,
+				oracleText: spec.oracleText,
+				colors: spec.colors,
+				...(spec.colorIndicator ? { colorIndicator: spec.colorIndicator } : {}),
+				keywords: spec.keywords,
+				...(spec.power !== undefined ? { power: spec.power } : {}),
+				...(spec.toughness !== undefined ? { toughness: spec.toughness } : {}),
+				...(spec.loyalty !== undefined ? { loyalty: spec.loyalty } : {}),
+				imageUrl: frontA.imageUrl,
+				artCropUrl: frontA.artCropUrl
+			}
+		: {
+				name: meldResultName || `${frontA.name} // ${frontB.name}`,
+				manaCost: '',
+				cmc: (frontA.cmc || 0) + (frontB.cmc || 0),
+				typeLine: frontA.typeLine,
+				oracleText: '',
+				colors: frontA.colors,
+				imageUrl: frontA.imageUrl,
+				artCropUrl: frontA.artCropUrl
+			};
+
+	return {
+		...frontA,
+		layout: 'meld',
+		faces: [frontFace, backFace]
+	};
+}
+// --- End Track P18b ---
 

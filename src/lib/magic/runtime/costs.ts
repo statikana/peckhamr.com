@@ -15,7 +15,17 @@
 import { nextRandom } from './random.ts';
 import { grantedAbilityById } from '../compiler/index.ts';
 import { activeAbilityDefs, instanceFaceOptions, resolveObjectFaces } from './faces.ts';
-import type { AbilityDef, Amount, CostDef, KeywordDef, ObjectFilter, StaticDef } from '../ir.ts';
+import type {
+	AbilityDef,
+	Amount,
+	CostDef,
+	KeywordDef,
+	ObjectFilter,
+	// --- Track P18b ---
+	SpellCastRestrictionKind,
+	// --- End Track P18b ---
+	StaticDef
+} from '../ir.ts';
 import {
 	ALTERNATIVE_COST_KEYWORDS,
 	getKeywordSpec,
@@ -41,6 +51,9 @@ import type {
 } from '../types.ts';
 import { evaluateAmount, evaluateCondition, matchesObjectFilter, type FilterContext } from './objectFilter.ts';
 import { noteLayerInputsChanged, withStableLayerInputs } from './layerCache.ts';
+// --- Track P18b ---
+import { getPermanentMaxLoyaltyActivationsPerTurn } from './framesModalsWave6.ts';
+// --- End Track P18b ---
 import {
 	computeKickerTracking,
 	evaluateKickedCountAmount,
@@ -208,8 +221,8 @@ export function spellCastRestrictions(
 	card: ScryfallCard,
 	faceIndex = 0,
 	fused = false
-): Array<'duringCombat' | 'duringYourTurn' | 'beforeAttackers'> {
-	const out: Array<'duringCombat' | 'duringYourTurn' | 'beforeAttackers'> = [];
+): SpellCastRestrictionKind[] {
+	const out: SpellCastRestrictionKind[] = [];
 	for (const a of abilitiesOf(card, faceIndex, fused)) {
 		if ((a.kind === 'spell' || (a.kind === 'unsupported' && a.id === 'cast')) && a.castRestrictions) {
 			for (const r of a.castRestrictions) {
@@ -871,7 +884,7 @@ function effectiveAbilityManaCostInner(
 		ctx: FilterContext
 	) => {
 		if (mod.affects.k !== 'ability') return;
-		// --- Track P17b ---
+		// --- Track P17b & P18b ---
 		if (
 			!ctx.source ||
 			!matchesP17bAbilityCostMod(
@@ -990,6 +1003,38 @@ function effectiveAbilityManaCostInner(
 		// --- End Track P13 ---
 	}
 	// --- End Track P11 ---
+	// --- Track P18b: Self-referential "This ability costs {N} less to activate ..." rider ---
+	if (!isManaAb && sourcePerm) {
+		const selfCard = sourcePerm.copiableCard ?? sourcePerm.card;
+		const selfDefs = activeAbilityDefs(selfCard, instanceFaceOptions(sourcePerm, sourcePerm.zone));
+		const matchedAb = selfDefs.find((d) => 'id' in d && d.id === abilityId);
+		if (
+			matchedAb &&
+			(matchedAb.kind === 'activated' || matchedAb.kind === 'unsupported') &&
+			matchedAb.activationCostReduction
+		) {
+			const selfCtx: FilterContext = {
+				state,
+				controllerId: actorId,
+				source: sourcePerm,
+				xValue
+			};
+			visitAbilityMod(
+				{
+					k: 'costModifier',
+					affects: { k: 'ability' },
+					delta: matchedAb.activationCostReduction.delta,
+					who: { relation: 'you' },
+					...(matchedAb.activationCostReduction.condition
+						? { condition: matchedAb.activationCostReduction.condition }
+						: {})
+				},
+				actorId,
+				selfCtx
+			);
+		}
+	}
+	// --- End Track P18b ---
 	// --- Track P15: CR 702.193a–b Power-up reduces activation mana cost by permanent's mana cost if it entered this turn ---
 	if (
 		powerUpReduction &&
@@ -2785,7 +2830,15 @@ export function executeCostPaymentParts(
 					source.counters.loyalty = (source.counters.loyalty || 0) + delta;
 					noteLayerInputsChanged(ctx.state);
 					// --- End Track P15 ---
-					source.usedLoyaltyThisTurn = true;
+					// --- Track P18b (CR 606.3 / Urza, Planeswalker) ---
+					source.loyaltyActivationsThisTurn = (source.loyaltyActivationsThisTurn ?? 0) + 1;
+					const losesAll =
+						source.zone === 'battlefield' && !source.phasedOut
+							? evaluatePermanent(ctx.state, source).losesAllAbilities
+							: false;
+					const maxLoy = getPermanentMaxLoyaltyActivationsPerTurn(ctx.state, source, losesAll);
+					source.usedLoyaltyThisTurn = source.loyaltyActivationsThisTurn >= maxLoy;
+					// --- End Track P18b ---
 				}
 				break;
 			case 'exertSelf':

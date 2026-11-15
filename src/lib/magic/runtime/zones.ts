@@ -12,6 +12,7 @@ import {
 	type CounterType,
 	type GameState,
 	type PlayerGameState,
+	type ScryfallCard,
 	type ZoneType
 } from '../types.ts';
 import { emitEvent, type LeftBattlefieldInfo } from './events.ts';
@@ -100,6 +101,9 @@ import {
 	syncHideawayExilePeekPermissions
 } from './keywordsWave6.ts';
 // --- End Track P18a ---
+// --- Track P18b ---
+import { findAnchorWordChoiceSpec } from './framesModalsWave6.ts';
+// --- End Track P18b ---
 
 /**
  * The single zone-change module (ENGINE_ARCHITECTURE_PLAN.md section 2.3, Phase 2).
@@ -206,6 +210,10 @@ export interface MoveOptions {
 	/** Suppresses per-card `GraveyardLeaveBatch` when a caller emits a single batch event for simultaneous graveyard leaves. */
 	suppressGraveyardLeaveBatch?: boolean;
 	// --- End Track P10 ---
+	// --- Track P18b ---
+	/** CR 710.1 / Homura: Permanent enters the battlefield already flipped to its alternative face. */
+	enteredFlipped?: boolean;
+	// --- End Track P18b ---
 }
 
 export interface SbaMoveLog {
@@ -925,6 +933,45 @@ function enqueueNextEtbChoicePrompt(
 		// --- End Track P18a ---
 	}
 	// --- End Track P15 ---
+	// --- Track P18b: Siege / Anchor Word ETB Choice ("As ~ enters, choose Khans or Dragons.") ---
+	if (!obj.isFaceDown && !obj.chosenAnchorWord) {
+		const anchorSpec = findAnchorWordChoiceSpec(obj);
+		if (anchorSpec) {
+			const objName = resolveObjectFaces(
+				effectiveCardForObject(obj),
+				instanceFaceOptions(obj, 'battlefield')
+			).name;
+			const [wordA, wordB] = anchorSpec;
+			enqueueChoicePrompt(state, {
+				id: uid('prm', state),
+				playerId: chooser.playerId,
+				kind: 'chooseMode',
+				purpose: 'etb_choice',
+				title: `${objName} — Choose ${wordA} or ${wordB}`,
+				description: `As ${objName} enters the battlefield, choose ${wordA} or ${wordB} (CR 614.12c):`,
+				continuation: {
+					kind: 'handler',
+					name: 'etb_choice',
+					data: {
+						...(baseData as Record<
+							string,
+							string | number | boolean | null | string[] | Record<string, number>
+						>),
+						choiceField: 'anchorWord',
+						anchorOptions: [wordA, wordB]
+					}
+				},
+				choice: {
+					kind: 'chooseMode',
+					modes: [wordA, wordB],
+					min: 1,
+					max: 1
+				}
+			});
+			return true;
+		}
+	}
+	// --- End Track P18b ---
 	return false;
 }
 
@@ -1026,6 +1073,12 @@ function finalizeZoneMove(
 		obj.isToken = Boolean(savedMergedTokens[0]);
 	}
 	// --- End Track P18a ---
+	// --- Track P18b (CR 713.8): capture melded component pair before LTB reset ---
+	const leavingMeldedComponents =
+		fromZone === 'battlefield' && dest !== 'battlefield' && obj.meldedComponents?.length === 2
+			? obj.meldedComponents
+			: undefined;
+	// --- End Track P18b ---
 	if (opts.leaveBattlefieldReset) {
 		if (obj.printedCard) {
 			obj.card = obj.printedCard;
@@ -1145,6 +1198,18 @@ function finalizeZoneMove(
 		delete obj.hauntedByCards;
 		delete obj.hasEnduringStory;
 		// --- End Track P18a ---
+		// --- Track P18b (CR 400.7 / 710.2 / 713.8) ---
+		delete obj.isFlipped;
+		delete obj.isHarnessed;
+		delete obj.meldedComponents;
+		delete obj.usedModalModesPermanent;
+		delete obj.chosenAnchorWord;
+		delete obj.loyaltyActivationsThisTurn;
+		if (leavingMeldedComponents) {
+			obj.card = leavingMeldedComponents[0];
+			obj.printedCard = undefined;
+		}
+		// --- End Track P18b ---
 		const prevObjVersion = obj.objectVersion || 1;
 		const pruneLeftPerm = <T extends { affected: Array<{ instanceId: string; objectVersion?: number }> }>(
 			list: T[] | undefined
@@ -1246,6 +1311,18 @@ function finalizeZoneMove(
 		delete obj.hauntedByCards;
 		delete obj.hasEnduringStory;
 		// --- End Track P18a ---
+		// --- Track P18b (CR 400.7 / 710.2 / 713.8) ---
+		delete obj.isFlipped;
+		delete obj.isHarnessed;
+		delete obj.meldedComponents;
+		delete obj.usedModalModesPermanent;
+		delete obj.chosenAnchorWord;
+		delete obj.loyaltyActivationsThisTurn;
+		if (leavingMeldedComponents) {
+			obj.card = leavingMeldedComponents[0];
+			obj.printedCard = undefined;
+		}
+		// --- End Track P18b ---
 		if (dest !== 'stack') {
 			obj.manaColorsSpent = undefined;
 			// --- Track P10 ---
@@ -1347,6 +1424,12 @@ function finalizeZoneMove(
 			applyDayboundEtbReplacement(state, obj);
 		}
 		// --- End Track P15 ---
+		// --- Track P18b: Entered flipped (CR 710.1 / Homura, Human Ascendant) ---
+		if (opts.enteredFlipped && !obj.isFaceDown) {
+			obj.isFlipped = true;
+			obj.activeFaceIndex = 1;
+		}
+		// --- End Track P18b ---
 		const bfView = resolveObjectFaces(
 			effectiveCardForObject(obj),
 			instanceFaceOptions(obj, 'battlefield')
@@ -1616,6 +1699,12 @@ function finalizeZoneMove(
 				wave5AmplifyCounters = botAmpN * ampCands.length;
 			}
 			// --- End Track P15 ---
+			// --- Track P18b: Bot ETB choice for Siege / Anchor Word ---
+			const botAnchorSpec = findAnchorWordChoiceSpec(obj);
+			if (botAnchorSpec && !obj.chosenAnchorWord) {
+				obj.chosenAnchorWord = botAnchorSpec[0];
+			}
+			// --- End Track P18b ---
 			// --- Track P18a: Tribute N (CR 702.104a) — opponent may be human even when caster is a bot ---
 			const botTribN = getTributeTotalN(obj);
 			if (botTribN > 0 && !obj.tributeDone) {
@@ -1645,6 +1734,37 @@ function finalizeZoneMove(
 			noteLayerInputsChanged(state);
 		}
 		// --- End Track P12 ---
+		// --- Track P18b (CR 713.8): Melded permanent leaving battlefield puts BOTH component cards into dest ---
+		if (leavingMeldedComponents && at !== 'deferred') {
+			const secondComp: CardInstance = {
+				instanceId: uid('ci', state),
+				card: leavingMeldedComponents[1],
+				ownerId: obj.ownerId,
+				controllerId: obj.ownerId,
+				zone: dest,
+				tapped: false,
+				summoningSick: false,
+				damageMarked: 0,
+				deathtouchDamageMarked: false,
+				counters: createEmptyCounters(),
+				tempPowerMod: 0,
+				tempToughnessMod: 0,
+				grantedKeywords: [],
+				attachedToId: null,
+				isToken: false,
+				isCommander: false,
+				commanderCastCount: 0,
+				usedLoyaltyThisTurn: false,
+				transformed: false,
+				objectVersion: 1
+			};
+			insertInto(effectiveReceiver[dest as PlayerZone], secondComp, at);
+			if (dest === 'graveyard' && fromZone !== 'graveyard') {
+				state.cardsPutIntoGraveyardThisTurn = (state.cardsPutIntoGraveyardThisTurn ?? 0) + 1;
+				noteLayerInputsChanged(state);
+			}
+		}
+		// --- End Track P18b ---
 		if (isEnteringBattlefield) {
 			if (opts.withCounters && opts.withCounters.count > 0) {
 				placeRegisteredCounters(state, obj, opts.withCounters.counter, opts.withCounters.count);
@@ -2816,6 +2936,24 @@ registerPromptHandler('etb_choice', (state, prompt, answer) => {
 				`${opp?.username ?? 'Opponent'} ${pay ? `paid Tribute ${tribN} (${tribN} +1/+1 counter${tribN === 1 ? '' : 's'})` : `declined Tribute ${tribN}`} for ${bfView.name} (CR 702.104a).`
 			);
 		// --- End Track P18a ---
+		// --- Track P18b ---
+		} else if (choiceField === 'anchorWord' && answer.kind === 'chooseMode') {
+			const optsList = Array.isArray(data.anchorOptions)
+				? data.anchorOptions.map(String)
+				: prompt.choice?.kind === 'chooseMode'
+					? prompt.choice.modes
+					: [];
+			const chosenIdx = answer.indices[0] ?? 0;
+			const chosenWord = optsList[chosenIdx] ?? optsList[0] ?? '';
+			if (chosenWord) {
+				obj.chosenAnchorWord = chosenWord;
+				pushEtbRuleLog(
+					state,
+					chooser.playerId,
+					`${chooser.username} chose ${chosenWord} for ${bfView.name} (CR 614.12c).`
+				);
+			}
+		// --- End Track P18b ---
 		} else {
 			return;
 		}
@@ -3404,3 +3542,84 @@ export function putIntoCommandZone(
 	noteLayerInputsChanged(state);
 }
 // --- End Track P13 ---
+
+// --- Track P18b ---
+/**
+ * CR 713.4: Merges two exiled Meld front cards onto the battlefield as a single melded permanent
+ * through `zones.ts` (preserving `directZoneMutation === 0`).
+ */
+export function mergeExiledPairOntoBattlefield(
+	state: GameState,
+	controller: PlayerGameState,
+	exiledPrimary: CardInstance,
+	exiledPartner: CardInstance,
+	meldedCard: ScryfallCard,
+	components: [ScryfallCard, ScryfallCard],
+	enterTapped: boolean
+): CardInstance | null {
+	let primaryHolder: PlayerGameState | undefined;
+	for (const pl of state.players) {
+		if (pl.exile.some((e) => e.instanceId === exiledPrimary.instanceId)) {
+			primaryHolder = pl;
+		}
+		const pIdx = pl.exile.findIndex((e) => e.instanceId === exiledPartner.instanceId);
+		if (pIdx >= 0) {
+			pl.exile.splice(pIdx, 1);
+		}
+	}
+	if (!primaryHolder) return null;
+
+	exiledPrimary.printedCard = components[0];
+	exiledPrimary.card = meldedCard;
+	exiledPrimary.meldedComponents = components;
+	exiledPrimary.activeFaceIndex = 1;
+	exiledPrimary.tapped = enterTapped;
+	exiledPrimary.summoningSick = true;
+
+	moveObject(state, exiledPrimary, 'battlefield', {
+		from: { player: primaryHolder, zone: 'exile' },
+		toPlayer: controller,
+		controllerId: controller.playerId,
+		bumpVersion: true,
+		newTimestamp: true
+	});
+	noteLayerInputsChanged(state);
+	return exiledPrimary.zone === 'battlefield' ? exiledPrimary : null;
+}
+
+/**
+ * CR 116.2g / CR 702.139a: Puts a designated Companion card from outside the game into `player`'s
+ * hand through `zones.ts` (preserving `directZoneMutation === 0`).
+ */
+export function putCompanionIntoHand(
+	state: GameState,
+	player: PlayerGameState,
+	companionCard: ScryfallCard
+): CardInstance {
+	const inst: CardInstance = {
+		instanceId: uid('ci', state),
+		card: companionCard,
+		ownerId: player.playerId,
+		controllerId: player.playerId,
+		zone: 'hand',
+		tapped: false,
+		summoningSick: false,
+		damageMarked: 0,
+		deathtouchDamageMarked: false,
+		counters: createEmptyCounters(),
+		tempPowerMod: 0,
+		tempToughnessMod: 0,
+		grantedKeywords: [],
+		attachedToId: null,
+		isToken: false,
+		isCommander: false,
+		commanderCastCount: 0,
+		usedLoyaltyThisTurn: false,
+		transformed: false,
+		objectVersion: 1
+	};
+	player.hand.push(inst);
+	noteLayerInputsChanged(state);
+	return inst;
+}
+// --- End Track P18b ---

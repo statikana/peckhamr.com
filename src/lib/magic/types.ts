@@ -171,6 +171,9 @@ export interface ScryfallCard {
 	artCropUrl: string;
 	rarity?: string;
 	setCode?: string;
+	// --- Track P18b ---
+	setType?: string;
+	// --- End Track P18b ---
 	collectorNumber?: string;
 	legalCommander: boolean;
 	canBeCommander: boolean;
@@ -205,6 +208,10 @@ export interface MagicDeck {
 	name: string;
 	description: string;
 	commanders: ScryfallCard[];
+	// --- Track P18b ---
+	/** CR 702.139a: Optional designated Companion card starting outside the game. */
+	companion?: ScryfallCard;
+	// --- End Track P18b ---
 	cards: DeckCardEntry[];
 	colorIdentity: ManaColor[];
 	cardCount: number;
@@ -720,6 +727,10 @@ export interface EffectiveActivatedAbility {
 	/** CR 702.193a–b Power-up: reduce activation mana cost by permanent's mana cost if it entered this turn. */
 	powerUpReduction?: boolean;
 	// --- End Track P15 ---
+	// --- Track P18b ---
+	/** CR 107.3a: "X can't be 0." on an X-cost activated ability. */
+	xCantBeZero?: boolean;
+	// --- End Track P18b ---
 }
 
 export interface LibrarySearchDestination {
@@ -1085,6 +1096,14 @@ export interface CardInstance {
 	/** CR 702.55a–c Haunt: `objectVersion` of `hauntingTargetId` when this exiled card began haunting it. */
 	hauntingTargetVersion?: number;
 	// --- End Track P18a ---
+	// --- Track P18b ---
+	/** CR 607.2d / 700.2: mode indices chosen across this permanent's battlefield lifetime ("Choose one that hasn't been chosen —"). */
+	usedModalModesPermanent?: number[];
+	/** CR 614.12c: anchor word chosen as this permanent entered ("As ~ enters, choose Khans or Dragons"). */
+	chosenAnchorWord?: string;
+	/** CR 606.3: number of loyalty abilities activated on this permanent this turn. */
+	loyaltyActivationsThisTurn?: number;
+	// --- End Track P18b ---
 }
 
 export interface TargetRef {
@@ -1262,6 +1281,14 @@ export interface CastOption {
 	/** CR 702.140a: True when this option casts the card as a mutating creature spell. */
 	mutate?: boolean;
 	// --- End Track P18a ---
+	// --- Track P18b ---
+	/** CR 702.48a–c: Printed mana cost before Offering sacrificed-permanent mana-cost reduction. */
+	offeringBaseCost?: string;
+	/** CR 702.48a–c: Legal permanents you control matching Offering filter that can be sacrificed. */
+	offeringCandidateIds?: string[];
+	/** CR 702.48a: Offering quality label (e.g. "Fox", "Artifact"). */
+	offeringQuality?: string;
+	// --- End Track P18b ---
 }
 
 // --- Track P3 ---
@@ -2338,6 +2365,12 @@ export interface PlayerGameState {
 		triggerEventStackItem?: StackItem;
 	}>;
 	// --- End Track P18a ---
+	// --- Track P18b ---
+	/** CR 702.139: Designated companion card starting outside the game for this player. */
+	companion?: ScryfallCard;
+	/** CR 116.2g / 702.139a: true once this player has taken the `{3}` special action to put their companion into hand. */
+	companionMovedToHand?: boolean;
+	// --- End Track P18b ---
 }
 
 export interface ManaRider {
@@ -2901,4 +2934,7 @@ export type GameActionPayload =
 	| { type: 'resolve_manually'; instanceId: string; abilityIndex?: number }
 	| { type: 'toggle_full_control'; enabled: boolean }
 	| { type: 'toggle_stop_phase'; phase: GamePhase }
-	| { type: 'concede' };
+	| { type: 'concede' }
+	// --- Track P18b ---
+	| { type: 'companion_to_hand'; costPayment?: CostPayment };
+	// --- End Track P18b ---

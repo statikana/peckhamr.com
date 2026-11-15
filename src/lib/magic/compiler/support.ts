@@ -9,6 +9,7 @@
  * UI (for display) may read.
  */
 import type { CardDefinition, Span, UnsupportedReason } from '../ir.ts';
+import { isNonPlayableHelperCard } from '../scryfall.ts';
 import type { DeckCardEntry, LobbyRulesConfig, MagicDeck, ScryfallCard, StackItem } from '../types.ts';
 import { compileCard } from './index.ts';
 import { printedText } from './normalize.ts';
@@ -158,6 +159,9 @@ export function cardAbilityDisplayText(card: ScryfallCard, unsupportedIndex?: nu
 /** Which of the card's abilities the engine won't automate. Never throws; a compiler error counts
  * as one unsupported ability covering the whole card. */
 export function cardSupportReport(card: ScryfallCard): CardSupportReport {
+	if (isNonPlayableHelperCard(card)) {
+		return { fullySupported: true, unsupported: [] };
+	}
 	try {
 		return definitionSupportReport(compileCard(card));
 	} catch {
@@ -189,7 +193,8 @@ export interface DeckUnsupportedCard {
 /** The deck's distinct cards (commanders first) that have at least one unsupported ability. */
 export function deckUnsupportedCards(
 	commanders: ScryfallCard[] | undefined,
-	cards: DeckCardEntry[] | undefined
+	cards: DeckCardEntry[] | undefined,
+	companion?: ScryfallCard | null
 ): DeckUnsupportedCard[] {
 	const out: DeckUnsupportedCard[] = [];
 	const seen = new Set<string>();
@@ -201,6 +206,7 @@ export function deckUnsupportedCards(
 		if (!report.fullySupported) out.push({ card, isCommander, report });
 	};
 	for (const c of commanders ?? []) visit(c, true);
+	if (companion) visit(companion, false);
 	for (const e of cards ?? []) visit(e.card, false);
 	return out;
 }
@@ -214,12 +220,15 @@ const MAX_NAMES_PER_SEAT = 10;
  */
 export function unsupportedCardsStartError(
 	rules: Pick<LobbyRulesConfig, 'allowUnsupportedCards'>,
-	seats: Array<{ username: string; deck: Pick<MagicDeck, 'name' | 'commanders' | 'cards'> }>
+	seats: Array<{
+		username: string;
+		deck: Pick<MagicDeck, 'name' | 'commanders' | 'cards'> & { companion?: ScryfallCard | null };
+	}>
 ): string | null {
 	if (rules.allowUnsupportedCards !== false) return null;
 	const problems: string[] = [];
 	for (const { username, deck } of seats) {
-		const bad = deckUnsupportedCards(deck.commanders, deck.cards);
+		const bad = deckUnsupportedCards(deck.commanders, deck.cards, deck.companion);
 		if (bad.length === 0) continue;
 		const names = bad.slice(0, MAX_NAMES_PER_SEAT).map((b) => b.card.name);
 		const more = bad.length - names.length;

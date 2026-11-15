@@ -2081,14 +2081,19 @@ export function matchesP17bAbilityCostMod(
 	} else {
 		if (isManaAb) return false;
 		if (aff.loyaltyOnly && !isLoyaltyAb) return false;
-		if (!sourcePerm) return false;
-		if (aff.sourceZone && sourcePerm.zone !== aff.sourceZone) return false;
-		if (!aff.sourceZone && sourcePerm.zone !== 'battlefield') return false;
-		if (aff.selfSourceOnly && sourcePerm.instanceId !== modSource.instanceId) return false;
-		if (aff.attachedSourceOnly && modSource.attachedToId !== sourcePerm.instanceId) {
-			return false;
+		const requiresBattlefieldSource = Boolean(
+			aff.filter || aff.loyaltyOnly || aff.selfSourceOnly || aff.attachedSourceOnly || aff.sourceZone
+		);
+		if (requiresBattlefieldSource) {
+			if (!sourcePerm) return false;
+			if (aff.sourceZone && sourcePerm.zone !== aff.sourceZone) return false;
+			if (!aff.sourceZone && sourcePerm.zone !== 'battlefield') return false;
+			if (aff.selfSourceOnly && sourcePerm.instanceId !== modSource.instanceId) return false;
+			if (aff.attachedSourceOnly && modSource.attachedToId !== sourcePerm.instanceId) {
+				return false;
+			}
+			if (aff.filter && !matchesFilter(sourcePerm, aff.filter, ctx)) return false;
 		}
-		if (aff.filter && !matchesFilter(sourcePerm, aff.filter, ctx)) return false;
 	}
 
 	if (aff.targetsSelf) {

@@ -1157,6 +1157,20 @@ export function evaluateCondition(cond: Condition, ctx: FilterContext): boolean 
 		case 'p17bCondition':
 			return evaluateP17bCondition(cond, ctx, matchesObjectFilter);
 		// --- End Track P17b ---
+		// --- Track P18b ---
+		case 'anchorWordChosen':
+			return (ctx.source?.chosenAnchorWord ?? '').trim().toLowerCase() === cond.word.trim().toLowerCase();
+		case 'youWereAttackedThisCombat':
+			return Boolean(
+				ctx.state.combat.active &&
+					ctx.state.combat.attackers.some(
+						(a) =>
+							a.defenderPlayerId === ctx.controllerId &&
+							!a.defenderPlaneswalkerId &&
+							!a.defenderBattleId
+					)
+			);
+		// --- End Track P18b ---
 		default:
 			return false;
 	}

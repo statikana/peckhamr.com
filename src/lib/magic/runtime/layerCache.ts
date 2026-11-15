@@ -208,8 +208,12 @@ function pushFingerprint(state: GameState, fp: unknown[]): void {
 				Boolean(perm.hasEnduringStory),
 				Boolean(perm.isHarnessed),
 				Boolean(perm.isFlipped),
-				perm.mergedComponents?.length ?? 0
+				perm.mergedComponents?.length ?? 0,
 				// --- End Wave 6 Shared ---
+				// --- Track P18b ---
+				perm.chosenAnchorWord ?? '',
+				perm.meldedComponents?.length ?? 0
+				// --- End Track P18b ---
 			);
 			// --- Track P18a ---
 			if (perm.mergedComponents?.length) {
@@ -350,8 +354,12 @@ function fingerprintMatches(state: GameState, fp: unknown[]): boolean {
 				fp[i++] !== Boolean(perm.hasEnduringStory) ||
 				fp[i++] !== Boolean(perm.isHarnessed) ||
 				fp[i++] !== Boolean(perm.isFlipped) ||
-				fp[i++] !== (perm.mergedComponents?.length ?? 0)
+				fp[i++] !== (perm.mergedComponents?.length ?? 0) ||
 				// --- End Wave 6 Shared ---
+				// --- Track P18b ---
+				fp[i++] !== (perm.chosenAnchorWord ?? '') ||
+				fp[i++] !== (perm.meldedComponents?.length ?? 0)
+				// --- End Track P18b ---
 			) {
 				return false;
 			}

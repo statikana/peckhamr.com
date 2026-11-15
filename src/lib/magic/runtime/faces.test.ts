@@ -180,19 +180,32 @@ describe('Scryfall multi-face normalization & compiler support (B4 Phase 1)', ()
 				}
 			]
 		});
+		// --- Track P18b: Meld & Flip now compile both faces natively without unsupported('multiface') ---
 		const def1 = compileCard(card);
 		assert.equal(def1.layout, 'meld');
-		assert.deepEqual(def1.faces[0].characteristics.colorIndicator, ['G']);
+		assert.equal(def1.faces.length, 2);
+		assert.deepEqual(def1.faces[1].characteristics.colorIndicator, ['G']);
 		assert.equal(
-			def1.faces[0].abilities.some((a) => a.kind === 'unsupported' && a.reason === 'multiface'),
+			def1.faces.some((f) => f.abilities.some((a) => a.kind === 'unsupported' && a.reason === 'multiface')),
+			false
+		);
+
+		// Unimplemented multiface layouts still surface unsupported('multiface') and bust memo
+		card.layout = 'reversible_card' as typeof card.layout;
+		const defUnsupported = compileCard(card);
+		assert.notEqual(defUnsupported, def1);
+		assert.deepEqual(defUnsupported.faces[0].characteristics.colorIndicator, ['G']);
+		assert.equal(
+			defUnsupported.faces[0].abilities.some((a) => a.kind === 'unsupported' && a.reason === 'multiface'),
 			true
 		);
+		// --- End Track P18b ---
 
 		// Mutate layout & faces on same object id to ensure memoMatches invalidates;
 		// transform compiles both faces natively in Phase 3 without unsupported('multiface')
 		card.layout = 'transform';
 		const def2 = compileCard(card);
-		assert.notEqual(def2, def1);
+		assert.notEqual(def2, defUnsupported);
 		assert.equal(def2.layout, 'transform');
 		assert.equal(def2.faces.length, 2);
 		assert.deepEqual(def2.faces[1].characteristics.colorIndicator, ['G']);

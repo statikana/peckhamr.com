@@ -151,6 +151,20 @@ export interface KeywordAbility {
 	span: Span;
 }
 
+// --- Track P18b ---
+export type SpellCastRestrictionKind =
+	| 'duringCombat'
+	| 'duringYourTurn'
+	| 'beforeAttackers'
+	| 'afterAttackers'
+	| 'duringBlockers'
+	| 'beforeBlockers'
+	| 'afterBlockers'
+	| 'duringOpponentsTurn'
+	| 'duringYourUpkeep'
+	| 'afterCombat';
+// --- End Track P18b ---
+
 export interface SpellAbility {
 	kind: 'spell';
 	additionalCosts: CostDef[];
@@ -158,7 +172,13 @@ export interface SpellAbility {
 	effect: EffectStep[];
 	modal?: ModalDef;
 	/** CR 601.3: "Cast ~ only during combat." and similar timing restrictions. */
-	castRestrictions?: Array<'duringCombat' | 'duringYourTurn' | 'beforeAttackers'>;
+	// --- Track P18b ---
+	castRestrictions?: SpellCastRestrictionKind[];
+	/** CR 601.3: "Cast ~ only if <condition>." */
+	castCondition?: Condition;
+	/** CR 107.3a: "X can't be 0." on an X-cost spell. */
+	xCantBeZero?: boolean;
+	// --- End Track P18b ---
 	span: Span;
 }
 
@@ -169,8 +189,16 @@ export type ActivationRestriction =
 	| 'duringCombat'
 	// --- Track P15 ---
 	| 'beforeAttackers'
-	| 'oncePerGame';
+	| 'oncePerGame'
 	// --- End Track P15 ---
+	// --- Track P18b ---
+	| 'afterAttackers'
+	| 'beforeBlockers'
+	| 'duringBlockers'
+	| 'afterBlockers'
+	| 'afterCombat'
+	| 'duringOpponentsTurn';
+	// --- End Track P18b ---
 
 export interface ActivatedAbility {
 	kind: 'activated';
@@ -191,6 +219,12 @@ export interface ActivatedAbility {
 	/** CR 702.193a–b Power-up: reduce activation mana cost by this permanent's mana cost if it entered this turn. */
 	powerUpReduction?: boolean;
 	// --- End Track P15 ---
+	// --- Track P18b ---
+	/** CR 107.3a: "X can't be 0." on an X-cost activated ability. */
+	xCantBeZero?: boolean;
+	/** CR 602.2b / 118.7: "This ability costs {N}/{X} less to activate [for each ... / if ...]." */
+	activationCostReduction?: { delta: CostDelta; condition?: Condition };
+	// --- End Track P18b ---
 	/** Zones from which this ability can be activated; omitted defaults to `['battlefield']`. */
 	activationZones?: ZoneType[];
 	/** Canonical keyword tag for ability cost modifiers (`'equip'`, `'cycling'`), CR 702.6 / 702.29f. */
@@ -295,8 +329,13 @@ export interface UnsupportedAbility {
 	/** CR 702.193a–b Power-up cost reduction flag on an unsupported activated ability. */
 	powerUpReduction?: boolean;
 	// --- End Track P15 ---
+	// --- Track P18b ---
+	xCantBeZero?: boolean;
+	activationCostReduction?: { delta: CostDelta; condition?: Condition };
 	/** CR 601.3: timing restrictions recognized on an unsupported spell. */
-	castRestrictions?: Array<'duringCombat' | 'duringYourTurn' | 'beforeAttackers'>;
+	castRestrictions?: SpellCastRestrictionKind[];
+	castCondition?: Condition;
+	// --- End Track P18b ---
 	/**
 	 * Phase 5: a triggered ability whose trigger head (and intervening-if) is understood but whose
 	 * effect isn't. The runtime still knows when it triggers (section 2.7).
@@ -326,6 +365,24 @@ export interface ModalDef {
 	/** CR 702.172 (Spree) / CR 702.183 (Tiered): per-mode additional cost aligned by mode index. */
 	perModeCosts?: CostDef[][];
 	// --- End Track P12 ---
+	// --- Track P18b ---
+	/** CR 607.2d / 700.2: "Choose one that hasn't been chosen —" (across permanent's battlefield lifetime). */
+	unchosenPermanent?: boolean;
+	/** CR 700.2e: "Target opponent chooses one —" / "An opponent chooses one —". */
+	opponentChooses?: 'targetOpponent' | 'opponent';
+	/** CR 700.2i: Bloomburrow Season pawprint budget (`{P}` modes). */
+	pawprintBudget?: number;
+	/** CR 700.2i: Pawprint `{P}` cost per mode index. */
+	pawprintCosts?: number[];
+	/** Dynamic maximum modes ("Choose X." / "Choose up to X —"). */
+	dynamicMax?: Amount;
+	/** "Choose one at random —". */
+	randomMode?: boolean;
+	/** Pre-modal rider steps executed before chosen mode effects on resolution. */
+	prefixEffect?: EffectStep[];
+	/** Post-modal rider steps executed after chosen mode effects on resolution. */
+	suffixEffect?: EffectStep[];
+	// --- End Track P18b ---
 }
 
 // ---- Keywords -------------------------------------------------------------------------------
@@ -991,8 +1048,12 @@ export type Verb =
 	// --- Track P15 ---
 	| 'prepare'
 	| 'unprepare'
-	| 'increaseSpeed';
+	| 'increaseSpeed'
 	// --- End Track P15 ---
+	// --- Track P18b ---
+	| 'meld'
+	| 'harness';
+	// --- End Track P18b ---
 
 export type ManaRestriction = 'artifactSpellOrNonSpell';
 
@@ -1292,6 +1353,15 @@ export interface EffectParams {
 	/** grant: allows creature(s) to attack this turn as though they didn't have defender. */
 	canAttackNoDefender?: boolean;
 	// --- End Track P13 ---
+	// --- Track P18b ---
+	/** meld (CR 701.42 / CR 713): partner front-card name and melded back-face result name. */
+	meldPartnerName?: string;
+	meldResultName?: string;
+	meldTappedAndAttacking?: boolean;
+	meldPartnerMustAttack?: boolean;
+	/** move to battlefield (CR 710): "return ~ to the battlefield flipped" (e.g. Homura, Human Ascendant). */
+	enteredFlipped?: boolean;
+	// --- End Track P18b ---
 }
 
 // --- Track P13 ---
@@ -1933,8 +2003,14 @@ export type Condition =
 			filter?: ObjectFilter;
 			n?: number;
 			op?: '>=' | '==' | '<=';
-	  };
+	  }
 	// --- End Track P17b ---
+	// --- Track P18b ---
+	/** CR 614.12c: true iff this permanent's chosen ETB anchor word matches `word` (case-insensitive). */
+	| { k: 'anchorWordChosen'; word: string }
+	/** CR 508.5: true iff at least one creature is currently attacking the controller directly. */
+	| { k: 'youWereAttackedThisCombat' };
+	// --- End Track P18b ---
 
 // ---- Statics and replacements ---------------------------------------------------------------
 
@@ -2303,8 +2379,51 @@ export type StaticDef =
 			/** CR 723.3: "~ enters prepared." */
 			k: 'entersPrepared';
 			condition?: Condition;
-	  };
+	  }
 	// --- End Track P15 ---
+	// --- Track P18b ---
+	| {
+			/** CR 702.139: Companion deckbuilding condition. */
+			k: 'companionCondition';
+			companionId: CompanionDeckConditionId;
+			condition?: Condition;
+	  }
+	| {
+			/** CR 702.48: "[Quality] offering" flash + sacrifice cost reduction static ability. */
+			k: 'offering';
+			filter: ObjectFilter;
+			quality: string;
+			condition?: Condition;
+	  }
+	| {
+			/** CR 601.3: Self casting restriction on a permanent/nonland card ("Cast ~ only ..."). */
+			k: 'selfCastRestriction';
+			restrictions?: SpellCastRestrictionKind[];
+			castCondition?: Condition;
+			xCantBeZero?: boolean;
+			condition?: Condition;
+	  }
+	| {
+			/** CR 606.3: "You may activate the loyalty abilities of ~ twice each turn rather than only once." */
+			k: 'loyaltyActivationsPerTurn';
+			max: number;
+			condition?: Condition;
+	  };
+	// --- End Track P18b ---
+
+// --- Track P18b ---
+export type CompanionDeckConditionId =
+	| 'lurrus'
+	| 'yorion'
+	| 'kaheera'
+	| 'jegantha'
+	| 'obosh'
+	| 'gyruda'
+	| 'zirda'
+	| 'umori'
+	| 'keruga'
+	| 'lutri';
+// --- End Track P18b ---
 
 export interface EventPattern {
 	event: EventKind | 'draw' | 'damage' | 'lifeGain';
@@ -2367,6 +2486,10 @@ export interface ReplacementDef {
 				/** CR 723.3a: "~ enters prepared." */
 				entersPrepared?: boolean;
 				// --- End Track P14 & P15 ---
+				// --- Track P18b ---
+				/** CR 614.1c / 614.12c: "As ~ enters, choose <wordA> or <wordB>." (Sieges, Mirrodin Besieged, etc.) */
+				chooseAnchorWord?: [string, string];
+				// --- End Track P18b ---
 		  };
 	/** CR 614.15 / 616.1a: true when this is a self-replacement effect applied before other replacements. */
 	selfReplacement?: boolean;
