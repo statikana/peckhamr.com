@@ -375,6 +375,9 @@ import {
 	// --- Track P15 ---
 	enqueuePendingTrigger,
 	// --- End Track P15 ---
+	// --- Track P16b ---
+	checkStateTriggers,
+	// --- End Track P16b ---
 	flushInlineTriggers,
 	flushTriggers,
 	matchTriggers,
@@ -2748,6 +2751,15 @@ function finalizeCastSpell(
 	});
 
 	emitEvent(state, { kind: 'Cast', playerId: actor.playerId, objectId: inst.instanceId, object: inst });
+	// --- Track P16b ---
+	if (chosenModes && chosenModes.length > 0) {
+		emitEvent(state, {
+			kind: 'FacedDilemma',
+			playerId: actor.playerId,
+			stackItemId: stackItem.id
+		});
+	}
+	// --- End Track P16b ---
 	for (const t of targets) {
 		const targeted = t.kind === 'permanent' ? findPermanentOnBoard(state, t.id) : null;
 		if (targeted) {
@@ -2760,6 +2772,17 @@ function finalizeCastSpell(
 				stackItemId: stackItem.id
 			});
 		}
+		// --- Track P16b ---
+		if (t.kind === 'player') {
+			emitEvent(state, {
+				kind: 'PlayerTargeted',
+				targetPlayerId: t.id,
+				by: 'spell',
+				controllerId: actor.playerId,
+				stackItemId: stackItem.id
+			});
+		}
+		// --- End Track P16b ---
 	}
 	// --- Track P10 ---
 	checkAndEmitCrimeCommitted(state, actor.playerId, targets);
@@ -2952,6 +2975,29 @@ function finalizeActivateAbility(
 	state.stack.push(stackItem);
 	state.passedPriorityPlayerIds = [];
 	addLog(state, 'cast', `${actor.username} activated ${card.name}: "${effectText}".`, actorId);
+	// --- Track P16b ---
+	if (
+		pcp.costKeyword === 'exhaust' &&
+		pcp.abilityId &&
+		perm.zone === 'battlefield' &&
+		perm.objectVersion === pcp.sourceObjectVersion
+	) {
+		emitEvent(state, {
+			kind: 'ExhaustActivated',
+			playerId: actor.playerId,
+			objectId: perm.instanceId,
+			object: perm,
+			abilityId: pcp.abilityId
+		});
+	}
+	if (pcp.chosenModes && pcp.chosenModes.length > 0) {
+		emitEvent(state, {
+			kind: 'FacedDilemma',
+			playerId: actor.playerId,
+			stackItemId: stackItem.id
+		});
+	}
+	// --- End Track P16b ---
 	for (const t of targets) {
 		const targeted = t.kind === 'permanent' ? findPermanentOnBoard(state, t.id) : null;
 		if (targeted) {
@@ -2964,6 +3010,17 @@ function finalizeActivateAbility(
 				stackItemId: stackItem.id
 			});
 		}
+		// --- Track P16b ---
+		if (t.kind === 'player') {
+			emitEvent(state, {
+				kind: 'PlayerTargeted',
+				targetPlayerId: t.id,
+				by: 'ability',
+				controllerId: actor.playerId,
+				stackItemId: stackItem.id
+			});
+		}
+		// --- End Track P16b ---
 	}
 	// --- Track P10 ---
 	checkAndEmitCrimeCommitted(state, actor.playerId, targets);
@@ -5141,12 +5198,18 @@ function executeUntapTurnBasedActions(state: GameState, activePlayer: PlayerGame
 	// 3. Apply phasing in and phasing out simultaneously
 	const phasedInNames: string[] = [];
 	const phasedOutNames: string[] = [];
+	// --- Track P16b ---
+	const phasedInPerms: CardInstance[] = [];
+	// --- End Track P16b ---
 	for (const p of state.players) {
 		for (const perm of p.battlefield) {
 			if (phasingInIds.has(perm.instanceId)) {
 				perm.phasedOut = false;
 				perm.phasedOutIndirectly = false;
 				phasedInNames.push(perm.card.name);
+				// --- Track P16b ---
+				phasedInPerms.push(perm);
+				// --- End Track P16b ---
 			} else if (phasingOutDirectIds.has(perm.instanceId)) {
 				perm.phasedOut = true;
 				perm.phasedOutIndirectly = false;
@@ -5162,6 +5225,16 @@ function executeUntapTurnBasedActions(state: GameState, activePlayer: PlayerGame
 		noteLayerInputsChanged(state);
 		syncBattlefieldControllers(state);
 	}
+	// --- Track P16b ---
+	for (const perm of phasedInPerms) {
+		emitEvent(state, {
+			kind: 'PhasedIn',
+			objectId: perm.instanceId,
+			object: perm,
+			controllerId: perm.controllerId
+		});
+	}
+	// --- End Track P16b ---
 	if (phasedInNames.length > 0) {
 		addLog(
 			state,
@@ -5353,9 +5426,17 @@ export function runBeginningOfTurn(state: GameState): void {
 		delete p.dealtCombatDamageWithSubtypesThisTurn;
 		delete p.dealtCombatDamageWithCommanderThisTurn;
 		// --- End Track P15 ---
+		// --- Track P16b ---
+		delete p.committedCrimeThisTurn;
+		delete p.cardLeftGraveyardThisTurn;
+		// --- End Track P16b ---
 	}
 	state.playersDrawnThisTurn = [];
 	state.triggeredOnceThisTurn = undefined;
+	// --- Track P16b ---
+	state.doThisOnceTakenThisTurn = undefined;
+	state.combatPhasesCountThisTurn = 0;
+	// --- End Track P16b ---
 	// --- Track P15: Day/Night spell history (CR 732.5) & Gravestorm counter (CR 702.69a) ---
 	state.prevTurnSpellsCastByActivePlayer = state.spellsCastByActivePlayerThisTurn ?? 0;
 	state.spellsCastByActivePlayerThisTurn = 0;
@@ -5966,6 +6047,15 @@ function applyGameActionInner(
 			});
 			actor.landsPlayedThisTurn += 1;
 			state.passedPriorityPlayerIds = [];
+			// --- Track P16b ---
+			emitEvent(state, {
+				kind: 'LandPlayed',
+				playerId: actorId,
+				objectId: landInst.instanceId,
+				object: landInst,
+				fromZone: sourceZone
+			});
+			// --- End Track P16b ---
 
 			addLog(
 				state,
@@ -10247,6 +10337,10 @@ export function addCountersToPermanent(
 	}
 	// --- End Track P11 ---
 	noteLayerInputsChanged(state);
+	// --- Track P16b ---
+	const actorId =
+		state.stack.findLast((s) => Boolean(s.resolutionStarted))?.controllerId ?? perm.controllerId;
+	// --- End Track P16b ---
 	emitEvent(state, {
 		kind: 'CounterPlaced',
 		objectId: perm.instanceId,
@@ -10254,7 +10348,10 @@ export function addCountersToPermanent(
 		counterType: type,
 		amount: effectiveAmount,
 		previousCount,
-		newCount
+		newCount,
+		// --- Track P16b ---
+		actorId
+		// --- End Track P16b ---
 	});
 	// "Whenever a +1/+1 counter is put on ~" ran here before Phase 5; keep that timing when already on board.
 	if (findPermanentOnBoard(state, perm.instanceId)) {
@@ -10639,11 +10736,22 @@ function beginPhase(state: GameState, phase: GamePhase, activePlayer?: PlayerGam
 		emitUnblockedAttackersEvents(state);
 	}
 	// --- End Track P10 ---
+	// --- Track P16b ---
+	if (phase === 'begin_combat') {
+		state.combatPhasesCountThisTurn = (state.combatPhasesCountThisTurn ?? 0) + 1;
+		noteLayerInputsChanged(state);
+	}
+	// --- End Track P16b ---
 	emitEvent(state, {
 		kind: 'PhaseBegin',
 		phase,
 		activePlayerId: active?.playerId ?? null
 	});
+	// --- Track P16b ---
+	if (phase === 'upkeep' && active) {
+		active.hadUpkeepThisGame = true;
+	}
+	// --- End Track P16b ---
 	// Triggered abilities go on the stack now: the callers check the stack right after this.
 	flushTriggers(state);
 }
@@ -10732,8 +10840,22 @@ for (const kind of [
 	'RingTempted',
 	'DungeonRoomEntered',
 	'DungeonCompleted',
-	'TookInitiative'
+	'TookInitiative',
 	// --- End Track P13 & P15 ---
+	// --- Track P16b ---
+	'Mutated',
+	'SoulbondPaired',
+	'HauntedCreatureDied',
+	'DayNightChanged',
+	'FacedDilemma',
+	'LifeLost',
+	'ExhaustActivated',
+	'Unattached',
+	'PhasedIn',
+	'CollectedEvidence',
+	'LandPlayed',
+	'PlayerTargeted'
+	// --- End Track P16b ---
 ] as const) {
 	registerEventHandler(kind, (state, ev) => {
 		// --- Track P12 ---
@@ -10741,6 +10863,15 @@ for (const kind of [
 			recordDamageSourceWave4(state, ev.sourceId, ev.amount);
 		}
 		// --- End Track P12 ---
+		// --- Track P16b ---
+		if (ev.kind === 'CrimeCommitted') {
+			const actor = state.players.find((p) => p.playerId === ev.playerId);
+			if (actor && !actor.committedCrimeThisTurn) {
+				actor.committedCrimeThisTurn = true;
+				noteLayerInputsChanged(state);
+			}
+		}
+		// --- End Track P16b ---
 		matchTriggers(state, ev);
 		// --- Track P13: Record per-turn targeting history AFTER matching Valiant triggers ---
 		if (ev.kind === 'BecameTarget') {
@@ -12000,6 +12131,17 @@ function assignOrPromptTriggerTargets(
 				stackItemId: item.id
 			});
 		}
+		// --- Track P16b ---
+		if (t.kind === 'player') {
+			emitEvent(state, {
+				kind: 'PlayerTargeted',
+				targetPlayerId: t.id,
+				by: 'ability',
+				controllerId: item.controllerId,
+				stackItemId: item.id
+			});
+		}
+		// --- End Track P16b ---
 	}
 	// --- Track P10 ---
 	if (
@@ -12208,6 +12350,15 @@ function putTriggerOnStack(state: GameState, t: PendingTrigger): StackItem | nul
 	state.stack.push(item);
 	placed.count++;
 	addLog(state, 'trigger', `${triggerSourcePublicName(state, t)}'s ${t.label} was put onto the Stack.`, t.controllerId);
+	// --- Track P16b ---
+	if (!needsHumanModePrompt && modal && item.chosenModes && item.chosenModes.length > 0) {
+		emitEvent(state, {
+			kind: 'FacedDilemma',
+			playerId: controller.playerId,
+			stackItemId: item.id
+		});
+	}
+	// --- End Track P16b ---
 
 	if (needsHumanModePrompt && modal) {
 		const modeLabels = describeModalModes(item.card, modal, item.faceIndex ?? 0);
@@ -12337,6 +12488,15 @@ function resolveTriggerPrompt(
 		}
 		item.chosenModes = [...answer.indices];
 		recordUsedModalModes(foundSrcPerm?.inst, item.sourceObjectVersion, modal, item.chosenModes);
+		// --- Track P16b ---
+		if (item.chosenModes.length > 0) {
+			emitEvent(state, {
+				kind: 'FacedDilemma',
+				playerId: controller.playerId,
+				stackItemId: item.id
+			});
+		}
+		// --- End Track P16b ---
 		addLog(
 			state,
 			'trigger',
@@ -12412,6 +12572,17 @@ function resolveTriggerPrompt(
 					stackItemId: item.id
 				});
 			}
+			// --- Track P16b ---
+			if (t.kind === 'player') {
+				emitEvent(state, {
+					kind: 'PlayerTargeted',
+					targetPlayerId: t.id,
+					by: 'ability',
+					controllerId: item.controllerId,
+					stackItemId: item.id
+				});
+			}
+			// --- End Track P16b ---
 		}
 		// --- Track P10 ---
 		if (
@@ -17216,18 +17387,41 @@ export function checkStateBasedActions(state: GameState): void {
 							hasProtectionFrom(targetFound.inst, perm.copiableCard ?? perm.card, state, perm, true)
 							// --- End Track P14 ---
 						) {
+							// --- Track P16b ---
+							const prevHostId = perm.attachedToId;
+							// --- End Track P16b ---
 							perm.attachedToId = null;
 							noteLayerInputsChanged(state);
 							boardInvalidatedInPass = true;
 							anyActionTaken = true;
+							// --- Track P16b ---
+							emitEvent(state, {
+								kind: 'Unattached',
+								attachmentId: perm.instanceId,
+								attachment: perm,
+								hostId: prevHostId,
+								...(targetFound ? { host: targetFound.inst } : {})
+							});
+							// --- End Track P16b ---
 						}
 					} else if (perm.attachedToId) {
 						const targetFound = findPermanentOnBoard(state, perm.attachedToId);
 						if (!targetFound) {
+							// --- Track P16b ---
+							const prevHostId = perm.attachedToId;
+							// --- End Track P16b ---
 							perm.attachedToId = null;
 							noteLayerInputsChanged(state);
 							boardInvalidatedInPass = true;
 							anyActionTaken = true;
+							// --- Track P16b ---
+							emitEvent(state, {
+								kind: 'Unattached',
+								attachmentId: perm.instanceId,
+								attachment: perm,
+								hostId: prevHostId
+							});
+							// --- End Track P16b ---
 						}
 					}
 				}
@@ -17724,6 +17918,11 @@ export function checkStateBasedActions(state: GameState): void {
 
 	// CR 704.3: Flush all triggers generated during the SBA loop once after the loop stabilizes
 	flushTriggers(state);
+	// --- Track P16b: CR 603.8 state triggers ---
+	if ((state.status as string) !== 'finished' && checkStateTriggers(state) > 0) {
+		flushTriggers(state);
+	}
+	// --- End Track P16b ---
 
 	// Check Win / Draw Condition (CR 104.2a / 104.4a)
 	const remaining = state.players.filter((p) => !p.lost);

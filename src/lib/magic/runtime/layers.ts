@@ -73,6 +73,14 @@ import {
 // --- Track P13 ---
 import { evaluateP13Condition } from './effectsWave5.ts';
 // --- End Track P13 ---
+// --- Track P16b ---
+import {
+	OUTLAW_SUBTYPES,
+	cardHasAdventure,
+	evaluateP16bCondition,
+	objectHasXInManaCost
+} from './triggersWave6.ts';
+// --- End Track P16b ---
 // --- Track P14 ---
 import {
 	cardHasGraveyardContinuousStatic,
@@ -1175,8 +1183,16 @@ function offBattlefieldFilterNeedsExtendedMatch(f: ObjectFilter): boolean {
 			// --- End Track P14 ---
 			// --- Track P15 ---
 			f.isPrepared !== undefined ||
-			Boolean(f.sharesCreatureTypeWithSelf)
+			Boolean(f.sharesCreatureTypeWithSelf) ||
 			// --- End Track P15 ---
+			// --- Track P16b ---
+			f.modified !== undefined ||
+			f.outlaw !== undefined ||
+			f.hasAdventure !== undefined ||
+			f.hasXInManaCost !== undefined ||
+			f.powerEqualsToughness !== undefined ||
+			f.manaValueEqualsSourcePower !== undefined
+			// --- End Track P16b ---
 	);
 }
 
@@ -1499,6 +1515,64 @@ function matchesLayerFilter(
 		if (isEnch !== filter.enchanted) return false;
 	}
 	// --- End Track P13 + Track P14 ---
+	// --- Track P16b ---
+	if (filter.modified !== undefined) {
+		layerReads |= READ_ALL_COUNTERS;
+		const hasCtr = Object.values(target.inst.counters).some((v) => v > 0);
+		const isMod =
+			hasCtr ||
+			workList.some(
+				(w) =>
+					w.inst.attachedToId === target.inst.instanceId &&
+					(w.subtypes.includes('Equipment') ||
+						(w.subtypes.includes('Aura') && w.controllerId === target.controllerId))
+			);
+		if (isMod !== filter.modified) return false;
+	}
+	if (filter.outlaw !== undefined) {
+		const isOutlaw =
+			target.hasAllCreatureTypes ||
+			target.subtypes.some((st) => (OUTLAW_SUBTYPES as readonly string[]).includes(st));
+		if (isOutlaw !== filter.outlaw) return false;
+	}
+	if (filter.hasAdventure !== undefined) {
+		const hasAdv =
+			!target.isFaceDown && cardHasAdventure(target.inst.copiableCard ?? target.inst.card);
+		if (hasAdv !== filter.hasAdventure) return false;
+	}
+	if (filter.hasXInManaCost !== undefined) {
+		const hasX = objectHasXInManaCost(target.inst, 'battlefield');
+		if (hasX !== filter.hasXInManaCost) return false;
+	}
+	if (filter.powerGreaterThanBase !== undefined) {
+		const gt =
+			target.types.includes('Creature') &&
+			(target.workingPower ?? 0) > (target.basePower ?? 0);
+		if (gt !== filter.powerGreaterThanBase) return false;
+	}
+	if (filter.powerEqualsToughness !== undefined) {
+		const eq =
+			target.types.includes('Creature') &&
+			target.workingPower !== null &&
+			target.workingToughness !== null &&
+			target.workingPower === target.workingToughness;
+		if (eq !== filter.powerEqualsToughness) return false;
+	}
+	if (filter.controlledByEnchantedPlayer !== undefined) {
+		const enchPid = source.inst.attachedToId ?? null;
+		const ok = Boolean(enchPid && target.controllerId === enchPid);
+		if (ok !== filter.controlledByEnchantedPlayer) return false;
+	}
+	if (filter.renowned !== undefined) {
+		layerReads |= READ_P16B;
+		if (Boolean(target.inst.isRenowned) !== filter.renowned) return false;
+	}
+	if (filter.goaded !== undefined) {
+		layerReads |= READ_P16B;
+		const isGoaded = (target.inst.goadedByPlayerIds?.length ?? 0) > 0;
+		if (isGoaded !== filter.goaded) return false;
+	}
+	// --- End Track P16b ---
 	return true;
 }
 
@@ -2338,6 +2412,35 @@ function evaluateLayerCondition(
 		case 'isHarnessed':
 			return Boolean(source.inst.isHarnessed);
 		// --- End Wave 6 Shared ---
+		// --- Track P16b ---
+		case 'attackingTotalPowerAtLeast':
+			layerReads |= READ_COMBAT | READ_P16B;
+			return (
+				evaluateP16bCondition(
+					cond,
+					{ state, controllerId: source.controllerId, source: source.inst },
+					matchesObjectFilter
+				) ?? false
+			);
+		case 'firstCombatPhaseOfTurn':
+		case 'eventPlayerHandCount':
+		case 'notEventPlayerTurn':
+		case 'cardLeftYourGraveyardThisTurn':
+		case 'committedCrimeThisTurn':
+		case 'controlledByOtherThanOwner':
+		case 'youLostLifeThisTurn':
+		case 'playerLostLifeAtLeastThisTurn':
+		case 'moreCardsInHandThanEachOpponent':
+		case 'eventObjectMatchedLki':
+			layerReads |= READ_P16B | READ_ACTIVE_PLAYER;
+			return (
+				evaluateP16bCondition(
+					cond,
+					{ state, controllerId: source.controllerId, source: source.inst },
+					matchesObjectFilter
+				) ?? false
+			);
+		// --- End Track P16b ---
 		default:
 			return false;
 	}
@@ -2548,7 +2651,18 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 	// --- End Track P16a ---
 	// --- Track P16b ---
 	if (reads & READ_P16B) {
-		fp.push(0);
+		fp.push(state.combatPhasesCountThisTurn ?? 0);
+		for (const p of state.players) {
+			fp.push(
+				Boolean(p.committedCrimeThisTurn),
+				Boolean(p.cardLeftGraveyardThisTurn),
+				p.lifeLostThisTurn ?? 0,
+				p.hand.length
+			);
+		}
+		for (const entry of snap.active) {
+			fp.push(Boolean(entry.perm.isRenowned), entry.perm.goadedByPlayerIds?.length ?? 0);
+		}
 	}
 	// --- End Track P16b ---
 	// --- Track P17a ---
@@ -2917,7 +3031,25 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 	// --- End Track P16a ---
 	// --- Track P16b ---
 	if (reads & READ_P16B) {
-		if (fp[i++] !== 0) return false;
+		if (fp[i++] !== (state.combatPhasesCountThisTurn ?? 0)) return false;
+		for (const p of state.players) {
+			if (
+				fp[i++] !== Boolean(p.committedCrimeThisTurn) ||
+				fp[i++] !== Boolean(p.cardLeftGraveyardThisTurn) ||
+				fp[i++] !== (p.lifeLostThisTurn ?? 0) ||
+				fp[i++] !== p.hand.length
+			) {
+				return false;
+			}
+		}
+		for (const entry of snap.active) {
+			if (
+				fp[i++] !== Boolean(entry.perm.isRenowned) ||
+				fp[i++] !== (entry.perm.goadedByPlayerIds?.length ?? 0)
+			) {
+				return false;
+			}
+		}
 	}
 	// --- End Track P16b ---
 	// --- Track P17a ---

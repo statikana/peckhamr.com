@@ -534,6 +534,28 @@ export interface ObjectFilter {
 	/** CR 702.38 / 702.76: matches cards/permanents sharing at least one creature subtype with `source`. */
 	sharesCreatureTypeWithSelf?: boolean;
 	// --- End Track P15 ---
+	// --- Track P16b ---
+	/** CR 700.9: matches modified creatures (has a counter, is equipped, or is enchanted by an Aura you control). */
+	modified?: boolean;
+	/** CR 700.12: matches outlaws (Assassin, Mercenary, Pirate, Rogue, or Warlock). */
+	outlaw?: boolean;
+	/** CR 715: matches spells/cards that have an Adventure side. */
+	hasAdventure?: boolean;
+	/** Matches spells/cards with {X} in their mana cost. */
+	hasXInManaCost?: boolean;
+	/** Matches creatures on the battlefield whose effective power is greater than their base power. */
+	powerGreaterThanBase?: boolean;
+	/** Matches creatures/cards whose power equals their toughness. */
+	powerEqualsToughness?: boolean;
+	/** Matches spells/cards whose mana value equals the source permanent's power. */
+	manaValueEqualsSourcePower?: boolean;
+	/** Matches permanents controlled by the player the source Aura enchants. */
+	controlledByEnchantedPlayer?: boolean;
+	/** CR 702.112b: matches renowned (`true`) or non-renowned (`false`) permanents. */
+	renowned?: boolean;
+	/** CR 701.58: matches goaded permanents (`true`). */
+	goaded?: boolean;
+	// --- End Track P16b ---
 }
 
 export interface Compare {
@@ -1406,8 +1428,28 @@ export type EventKind =
 	/** CR 702.95a: Soulbond pairing trigger. */
 	| 'soulbondPaired'
 	/** CR 702.55c: "When the creature ~ haunts dies". */
-	| 'hauntedCreatureDies';
+	| 'hauntedCreatureDies'
 	// --- End Wave 6 Shared ---
+	// --- Track P16b ---
+	/** CR 603.8: State-triggered ability checked during state-based actions. */
+	| 'stateTriggered'
+	/** CR 732: Game-wide day/night designation changed. */
+	| 'dayNightChanged'
+	/** CR 701.55: A player faced a villainous choice / dilemma. */
+	| 'facedDilemma'
+	/** CR 119.4 / 120.3a: A player lost life. */
+	| 'loseLife'
+	/** CR 702.177a: A player activated an exhaust ability. */
+	| 'exhaustActivated'
+	/** CR 701.3d: An Equipment/Aura/Fortification became unattached from a permanent. */
+	| 'unattached'
+	/** CR 702.26: A phased-out permanent phased in. */
+	| 'phasedIn'
+	/** CR 701.59: A player collected evidence. */
+	| 'collectEvidence'
+	/** CR 305.1: A player played a land. */
+	| 'landPlayed';
+	// --- End Track P16b ---
 
 export interface EventFilter {
 	/**
@@ -1497,6 +1539,52 @@ export interface EventFilter {
 	/** doorUnlocked (CR 709.5h): 0-based Room face index when the ability says "When you unlock this door". */
 	thisDoorFaceIndex?: number;
 	// --- End Track P13 ---
+	// --- Track P16b ---
+	/** CR 603.6c: zoneChange to graveyard from any zone (including battlefield). */
+	fromAnywhere?: boolean;
+	/** zoneChange: excludes moves originating from this zone ("from anywhere other than the battlefield / your hand"). */
+	notFromZone?: ZoneType;
+	/** zoneChange (ETB): requires the entering permanent to enter untapped. */
+	entersUntapped?: boolean;
+	/** CR 603.8: condition checked for a state-triggered ability. */
+	stateCondition?: Condition;
+	/** discard: requires the discard to have been caused by a spell or ability an opponent controls. */
+	causedByOpponent?: boolean;
+	/** Timing qualifier on event: during controller's turn ('your'), opponent's turn ('opponent'), or the acting event-player's turn ('eventPlayer'). */
+	duringTurn?: 'your' | 'opponent' | 'eventPlayer';
+	/** Ordinal filter for matching spells cast by that player this turn (1 = first, 2 = second, 3 = third, -1 = other than first). */
+	spellOrdinal?: 1 | 2 | 3 | -1;
+	/** counterPlaced: optional filter on who put the counter(s) ('you' | 'opponent' | 'any'). */
+	putByPlayer?: 'you' | 'opponent' | 'any';
+	/** becomesTarget: optional filter on the targeting spell or ability on the stack. */
+	targetingSourceFilter?: ObjectFilter;
+	/** becomesTarget: matches when a player ('you' | 'opponent' | 'any') becomes the target. */
+	targetPlayer?: 'you' | 'opponent' | 'any';
+	/** Compound self-or-attached subject ("Whenever ~ or equipped/enchanted creature ..."). */
+	orAttachedToSelf?: boolean;
+	/** attacks: filter on who is being attacked. */
+	attackedTarget?:
+		| 'you'
+		| 'youOrPlaneswalkerYouControl'
+		| 'opponent'
+		| 'opponentOrPlaneswalkerOpponentControls'
+		| 'enchantedPlayer'
+		| 'planeswalker'
+		| 'battle';
+	/** attacks: requires at least `coAttackerMin` (default 1) other attacking creatures matching `coAttackerFilter`. */
+	coAttackerFilter?: ObjectFilter;
+	coAttackerMin?: number;
+	/** dealsDamage / dealtDamage: requires noncombat damage (`!ev.combat`). */
+	noncombatOnly?: boolean;
+	/** dealsDamage: widens `damageTo` to include Battles ('playerOrBattle') or Planeswalkers ('planeswalker'). */
+	damageTargetKind?: 'any' | 'battle' | 'playerOrBattle' | 'planeswalker' | 'permanent';
+	/** dealtDamage: matches when a player ('you' | 'opponent' | 'any') is dealt damage. */
+	damagedPlayer?: 'you' | 'opponent' | 'any';
+	/** dayNightChanged: transition direction ('any' | 'dayNightFlip' | 'toDay' | 'toNight'). */
+	dayNightDirection?: 'any' | 'dayNightFlip' | 'toDay' | 'toNight';
+	/** phaseBegin: matches only on first upkeep or monarch's turn. */
+	phaseTurnFilter?: 'firstOfGame' | 'yourFirstUpkeep' | 'monarch';
+	// --- End Track P16b ---
 }
 
 export interface TriggerDef {
@@ -1703,8 +1791,32 @@ export type Condition =
 	| { k: 'isPaired' }
 	| { k: 'tributePaid' }
 	| { k: 'hasEnduringStory' }
-	| { k: 'isHarnessed' };
+	| { k: 'isHarnessed' }
 	// --- End Wave 6 Shared ---
+	// --- Track P16b ---
+	/** True iff attacking creatures you control have total power >= `min`. */
+	| { k: 'attackingTotalPowerAtLeast'; min: number }
+	/** True iff this is the first combat phase of the current turn. */
+	| { k: 'firstCombatPhaseOfTurn' }
+	/** True iff the event player's hand size satisfies `op count`. */
+	| { k: 'eventPlayerHandCount'; op: '>=' | '<=' | '=' | '>' | '<'; count: number }
+	/** True iff it is NOT the event player's turn. */
+	| { k: 'notEventPlayerTurn' }
+	/** True iff one or more cards left controller's graveyard this turn. */
+	| { k: 'cardLeftYourGraveyardThisTurn' }
+	/** CR 700.13: true iff controller committed a crime this turn. */
+	| { k: 'committedCrimeThisTurn' }
+	/** True iff the source permanent's controller is different from its owner. */
+	| { k: 'controlledByOtherThanOwner' }
+	/** True iff controller lost life this turn. */
+	| { k: 'youLostLifeThisTurn' }
+	/** True iff any player (or an opponent when `opponentOnly`) lost >= `min` life this turn. */
+	| { k: 'playerLostLifeAtLeastThisTurn'; min: number; opponentOnly?: boolean }
+	/** True iff controller has strictly more cards in hand than each non-lost opponent. */
+	| { k: 'moreCardsInHandThanEachOpponent' }
+	/** LKI check on dying/leaving eventObject ("if it was a Human"). */
+	| { k: 'eventObjectMatchedLki'; filter: ObjectFilter };
+	// --- End Track P16b ---
 
 // ---- Statics and replacements ---------------------------------------------------------------
 

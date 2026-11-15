@@ -81,6 +81,12 @@ import {
 	matchesP15ObjectFilter
 } from './framesBattlesAndKeywordsWave5.ts';
 // --- End Track P15 ---
+// --- Track P16b ---
+import {
+	evaluateP16bCondition,
+	matchesP16bObjectFilter
+} from './triggersWave6.ts';
+// --- End Track P16b ---
 
 export interface FilterContext {
 	state: GameState;
@@ -679,6 +685,19 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 	// --- Track P15 ---
 	if (!matchesP15ObjectFilter(filter, obj, ctx)) return false;
 	// --- End Track P15 ---
+	// --- Track P16b ---
+	if (
+		!matchesP16bObjectFilter(obj, filter, {
+			state,
+			controllerId: ctx.controllerId,
+			source: ctx.source,
+			zone: objZone,
+			stackItem: ctx.stackItem
+		})
+	) {
+		return false;
+	}
+	// --- End Track P16b ---
 	return true;
 }
 
@@ -1082,6 +1101,31 @@ export function evaluateCondition(cond: Condition, ctx: FilterContext): boolean 
 		case 'isHarnessed':
 			return Boolean(ctx.source?.isHarnessed);
 		// --- End Wave 6 Shared ---
+		// --- Track P16b ---
+		case 'attackingTotalPowerAtLeast':
+		case 'firstCombatPhaseOfTurn':
+		case 'eventPlayerHandCount':
+		case 'notEventPlayerTurn':
+		case 'cardLeftYourGraveyardThisTurn':
+		case 'committedCrimeThisTurn':
+		case 'controlledByOtherThanOwner':
+		case 'youLostLifeThisTurn':
+		case 'playerLostLifeAtLeastThisTurn':
+		case 'moreCardsInHandThanEachOpponent':
+		case 'eventObjectMatchedLki':
+			return (
+				evaluateP16bCondition(
+					cond,
+					{
+						state: ctx.state,
+						controllerId: ctx.controllerId,
+						source: ctx.source,
+						stackItem: ctx.stackItem
+					},
+					matchesObjectFilter
+				) ?? false
+			);
+		// --- End Track P16b ---
 		default:
 			return false;
 	}

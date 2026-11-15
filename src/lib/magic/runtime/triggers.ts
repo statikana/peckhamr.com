@@ -115,6 +115,20 @@ import {
 	type Wave5RuntimeTrigger
 } from './framesBattlesAndKeywordsWave5.ts';
 // --- End Track P15 ---
+// --- Track P16b ---
+import { evaluateWave5Condition } from './staticsAndCostsWave5.ts';
+import {
+	abilityHasDoThisOncePerTurn,
+	collectReadyStateTriggers,
+	doThisOnceKey,
+	evaluateP16bCondition,
+	isDoThisOnceTakenThisTurn,
+	makeSynthCardInstance,
+	matchesDuringTurnFilter,
+	matchesP16bObjectFilter,
+	matchesSpellCastOrdinal
+} from './triggersWave6.ts';
+// --- End Track P16b ---
 
 /**
  * How a pending trigger is executed. 'stack': a StackItem put on the stack the next time a player
@@ -414,6 +428,10 @@ interface TriggerChannel {
 	// --- Track P13: CR 603.2c oneOrMore simultaneous zone-change batching ---
 	zoneBatchTriggeredKeys?: Set<string>;
 	// --- End Track P13 ---
+	// --- Track P16b ---
+	discardBatchTriggeredKeys?: Set<string>;
+	counterBatchTriggeredKeys?: Set<string>;
+	// --- End Track P16b ---
 }
 
 const channels = new WeakMap<GameState, TriggerChannel>();
@@ -1108,6 +1126,56 @@ function filterMatches(f: ObjectFilter, subject: Subject, source: Viewer): boole
 		if (!objectsShareCreatureSubtype(st, source.sourceObj, subject.obj)) return false;
 	}
 	// --- End Track P15 ---
+	// --- Track P16b ---
+	const stP16b = subject.state ?? source.state;
+	if (stP16b) {
+		const srcPerm = source.sourceObj ?? permanentById(stP16b, source.id)?.obj;
+		if (
+			f.sameNameAsSource !== undefined ||
+			f.sharesColorWithSelf !== undefined ||
+			f.hasAnyCounter !== undefined ||
+			f.equipped !== undefined ||
+			f.enchanted !== undefined
+		) {
+			if (
+				!matchesObjectFilter(
+					subject.obj,
+					{
+						...(f.sameNameAsSource !== undefined ? { sameNameAsSource: f.sameNameAsSource } : {}),
+						...(f.sharesColorWithSelf !== undefined
+							? { sharesColorWithSelf: f.sharesColorWithSelf }
+							: {}),
+						...(f.hasAnyCounter !== undefined ? { hasAnyCounter: f.hasAnyCounter } : {}),
+						...(f.equipped !== undefined ? { equipped: f.equipped } : {}),
+						...(f.enchanted !== undefined ? { enchanted: f.enchanted } : {})
+					},
+					{
+						state: stP16b,
+						controllerId: source.controllerId,
+						source: srcPerm,
+						stackItem: subject.stackItem
+					}
+				)
+			) {
+				return false;
+			}
+		}
+		if (
+			!matchesP16bObjectFilter(subject.obj, f, {
+				state: stP16b,
+				controllerId: source.controllerId,
+				source: srcPerm,
+				zone: subject.zone ?? subject.obj.zone,
+				stackItem: subject.stackItem,
+				powerOverride: subject.power(),
+				toughnessOverride: subject.toughness(),
+				manaValueOverride: subject.manaValue()
+			})
+		) {
+			return false;
+		}
+	}
+	// --- End Track P16b ---
 	return true;
 }
 
@@ -1120,6 +1188,19 @@ function objectMatches(
 ): boolean {
 	const o = filter.object;
 	const isSelf = subject.obj.instanceId === source.obj.instanceId;
+	// --- Track P16b ---
+	if (filter.orAttachedToSelf) {
+		const wasAttached =
+			source.obj.attachedToId === subject.obj.instanceId ||
+			Boolean(lkiAttachedIds && lkiAttachedIds.includes(source.obj.instanceId));
+		if (isSelf) return true;
+		if (!wasAttached) return false;
+		if (filter.attachedFilter && !filterMatches(filter.attachedFilter, subject, viewerOf(source))) {
+			return false;
+		}
+		return true;
+	}
+	// --- End Track P16b ---
 	if (o === 'self') return isSelf;
 	if (o === 'attachedTo') {
 		const wasAttached =
@@ -1313,11 +1394,37 @@ function sources(state: GameState, kind: EventKind): Source[] {
 		for (const c of p.graveyard) {
 			for (const faceIndex of activeFacesForObject(c, c.card, 'graveyard', state)) {
 				const t = triggersOf(c.card, faceIndex);
-				if (t.events.has(kind) && t.all.some((a) => a.trigger.fromZone === 'graveyard')) {
+				// --- Track P16b: per-alternative fromZone support for compound triggers ---
+				if (
+					t.events.has(kind) &&
+					t.all.some((a) =>
+						alternatives(a.trigger).some(
+							(alt) => alt.event === kind && (alt.fromZone ?? a.trigger.fromZone) === 'graveyard'
+						)
+					)
+				) {
 					out.push({ obj: c, card: c.card, faceIndex, controllerId: p.playerId, zone: 'graveyard' });
+				}
+				// --- End Track P16b ---
+			}
+		}
+		// --- Track P16b: Exile-zone trigger sources (CR 702.55c Haunt, time-counter removal) ---
+		for (const ex of p.exile) {
+			for (const faceIndex of activeFacesForObject(ex, ex.card, 'exile', state)) {
+				const t = triggersOf(ex.card, faceIndex);
+				if (
+					t.events.has(kind) &&
+					t.all.some((a) =>
+						alternatives(a.trigger).some(
+							(alt) => alt.event === kind && (alt.fromZone ?? a.trigger.fromZone) === 'exile'
+						)
+					)
+				) {
+					out.push({ obj: ex, card: ex.card, faceIndex, controllerId: p.playerId, zone: 'exile' });
 				}
 			}
 		}
+		// --- End Track P16b ---
 		// --- Track P13: Emblems in command zone have functioning triggered abilities (CR 114.4) ---
 		for (const cmd of p.command) {
 			if (!cmd.isEmblem || cmd.isRingEmblem) continue;
@@ -1374,16 +1481,18 @@ function abilitiesFor(
 	const isEmblemSource = Boolean(source.obj.isEmblem && source.zone === 'command');
 	// --- End Track P13 ---
 	for (const ability of triggersOf(source.card, source.faceIndex ?? 0).all) {
-		const zone = ability.trigger.fromZone ?? 'battlefield';
-		// "When you cast ~" functions while the spell is on the stack (CR 603.2, 113.6).
-		// "When you cycle ~" (`fromZone: 'any'`) triggers from whatever zone the card winds up in (CR 702.29c).
-		if (
-			ability.trigger.fromZone !== 'any' &&
-			!isEmblemSource &&
-			(source.zone === 'stack' ? kind !== 'cast' : zone !== source.zone)
-		) {
-			continue;
-		}
+		// --- Track P16b: per-alternative fromZone matching for mixed-zone compound triggers (CR 603.1b) ---
+		const altMatchesZone = (a: TriggerDef): boolean => {
+			const zone = a.fromZone ?? ability.trigger.fromZone ?? 'battlefield';
+			if (zone === 'any' || isEmblemSource) return true;
+			if (source.zone === 'stack') return kind === 'cast';
+			return zone === source.zone;
+		};
+		const candidateAlts = alternatives(ability.trigger).filter(
+			(a) => a.event === kind && altMatchesZone(a)
+		);
+		if (candidateAlts.length === 0) continue;
+		// --- End Track P16b ---
 		// CR 711.2 / CR 722.2: Striated Leveler and Station abilities exist only while their counter threshold holds.
 		if (
 			ability.grantCondition &&
@@ -1391,7 +1500,7 @@ function abilitiesFor(
 		) {
 			continue;
 		}
-		const alts = alternatives(ability.trigger).filter((a) => a.event === kind && pre(a));
+		const alts = candidateAlts.filter(pre);
 		if (alts.length > 0) out.push({ ability, alts });
 	}
 	// --- Track P10 ---
@@ -1466,13 +1575,32 @@ function record(state: GameState, source: Source, ability: RuntimeTrigger, kind:
 			undefined,
 			source,
 			extras.eventObject,
-			extras.eventLki
+			extras.eventLki,
+			// --- Track P16b ---
+			{
+				eventPlayerId: extras.eventPlayerId ?? extras.eventPlayer,
+				triggerEventStackItem: extras.triggerEventStackItem
+			}
+			// --- End Track P16b ---
 		)
 	) {
 		return;
 	}
 	let count = extras.times ?? 1;
 	if (count <= 0) return;
+	// --- Track P16b: CR 603.2h "Do this only once each turn" stops triggering once taken this turn ---
+	if (abilityHasDoThisOncePerTurn(ability)) {
+		const doOnceKey = doThisOnceKey(
+			source.obj.instanceId,
+			source.obj.objectVersion,
+			source.faceIndex,
+			ability.abilityIndex
+		);
+		if (isDoThisOnceTakenThisTurn(state, doOnceKey)) {
+			return;
+		}
+	}
+	// --- End Track P16b ---
 	// CR 603.2i: "This ability triggers only once each turn" cannot trigger more than once per turn
 	// per object identity in that zone (CR 400.7), even under trigger multipliers.
 	const grantedAbilityText =
@@ -1732,8 +1860,388 @@ function matchTriggersInner(state: GameState, ev: GameEvent): void {
 		case 'TookInitiative':
 			return matchP13PlayerEvent(state, 'tookInitiative', ev.playerId, 'Initiative Trigger');
 		// --- End Track P13 & P15 ---
+		// --- Track P16b ---
+		case 'Mutated':
+			return matchMutated(state, ev);
+		case 'SoulbondPaired':
+			return matchSoulbondPaired(state, ev);
+		case 'HauntedCreatureDied':
+			return matchHauntedCreatureDied(state, ev);
+		case 'DayNightChanged':
+			return matchDayNightChanged(state, ev);
+		case 'FacedDilemma':
+			return matchP13PlayerEvent(state, 'facedDilemma', ev.playerId, 'Dilemma Trigger');
+		case 'LifeLost':
+			return matchLifeLost(state, ev);
+		case 'ExhaustActivated':
+			return matchExhaustActivated(state, ev);
+		case 'Unattached':
+			return matchUnattached(state, ev);
+		case 'PhasedIn':
+			return matchPhasedIn(state, ev);
+		case 'CollectedEvidence':
+			return matchP13PlayerEvent(
+				state,
+				'collectEvidence',
+				ev.playerId,
+				'Collect Evidence Trigger',
+				ev.totalManaValue ?? ev.amount
+			);
+		case 'LandPlayed':
+			return matchLandPlayed(state, ev);
+		case 'PlayerTargeted':
+			return matchPlayerTargeted(state, ev);
+		// --- End Track P16b ---
 	}
 }
+
+// --- Track P16b ---
+/**
+ * CR 603.8: Checks all battlefield permanents for state-triggered abilities whose state condition
+ * holds and that do not already have an instance on the stack or pending queue. Returns the number
+ * of state triggers queued.
+ */
+export function checkStateTriggers(state: GameState): number {
+	return withStableLayerInputs(state, () => {
+		const ready = collectReadyStateTriggers(
+			state,
+			peekPendingTriggers(state),
+			(st, cond, cid, sid) => evaluateCondition(st, cond, cid, sid),
+			host?.canExecute
+		);
+		for (const item of ready) {
+			const src: Source = {
+				obj: item.perm,
+				card: item.card,
+				faceIndex: item.faceIndex,
+				controllerId: item.controllerId,
+				zone: 'battlefield'
+			};
+			record(state, src, item.ability, 'stateTriggered', {
+				label: 'State Trigger'
+			});
+		}
+		return ready.length;
+	});
+}
+
+function matchesTargetingSourceFilter(
+	state: GameState,
+	stackItemId: string | undefined,
+	by: 'spell' | 'ability',
+	controllerId: string,
+	filter: ObjectFilter,
+	source: Source
+): boolean {
+	const stk = stackItemId ? state.stack.find((s) => s.id === stackItemId) : undefined;
+	if (!stk) return false;
+	if (by === 'spell' || stk.kind === 'spell') {
+		const synthSpell = makeSynthCardInstance(
+			stk.sourceInstanceId || stk.id,
+			stk.card,
+			controllerId,
+			'stack'
+		);
+		return matchesObjectFilter(synthSpell, filter, {
+			state,
+			controllerId: source.controllerId,
+			source: source.obj,
+			stackItem: stk,
+			zone: 'stack'
+		});
+	}
+	const foundPerm = stk.sourceInstanceId ? permanentById(state, stk.sourceInstanceId) : null;
+	if (foundPerm) {
+		return matchesObjectFilter(foundPerm.obj, filter, {
+			state,
+			controllerId: source.controllerId,
+			source: source.obj,
+			stackItem: stk
+		});
+	}
+	const synthSrc = makeSynthCardInstance(
+		stk.sourceInstanceId || stk.id,
+		stk.card,
+		controllerId,
+		'battlefield'
+	);
+	return matchesObjectFilter(synthSrc, filter, {
+		state,
+		controllerId: source.controllerId,
+		source: source.obj,
+		stackItem: stk,
+		zone: 'stack'
+	});
+}
+
+function matchMutated(state: GameState, ev: Extract<GameEvent, { kind: 'Mutated' }>): void {
+	const found = permanentById(state, ev.objectId);
+	const subject = found
+		? battlefieldSubject(state, found.obj, found.controllerId)
+		: printedSubject(ev.object, ev.object.copiableCard ?? ev.object.card, ev.playerId, false, undefined, undefined, undefined, false, false, { state });
+	for (const source of sources(state, 'mutates')) {
+		for (const { ability, alts } of abilitiesFor(state, source, 'mutates')) {
+			const alt = alts.find((a) => {
+				const rel = a.filter.player?.relation ?? 'any';
+				if (rel === 'you' && ev.playerId !== source.controllerId) return false;
+				if (rel === 'opponent' && ev.playerId === source.controllerId) return false;
+				return objectMatches(a.filter, subject, source);
+			});
+			if (!alt) continue;
+			const times =
+				source.zone === 'battlefield'
+					? triggerMultiplier(state, source.obj, source.controllerId, {
+							event: 'mutates',
+							object: found?.obj ?? ev.object
+						})
+					: 1;
+			record(state, source, ability, 'mutates', {
+				label: 'Mutate Trigger',
+				eventObject: found?.obj ?? ev.object,
+				eventPlayer: ev.playerId,
+				eventPlayerId: ev.playerId,
+				amount: ev.mutateCount,
+				times
+			});
+		}
+	}
+}
+
+function matchSoulbondPaired(
+	state: GameState,
+	ev: Extract<GameEvent, { kind: 'SoulbondPaired' }>
+): void {
+	for (const source of sources(state, 'soulbondPaired')) {
+		for (const { ability, alts } of abilitiesFor(state, source, 'soulbondPaired')) {
+			const alt = alts.find((a) => {
+				if (a.filter.object === 'self') return source.obj.instanceId === ev.objectId;
+				return true;
+			});
+			if (!alt) continue;
+			record(state, source, ability, 'soulbondPaired', {
+				label: 'Soulbond',
+				eventObject: ev.partner
+			});
+		}
+	}
+}
+
+function matchHauntedCreatureDied(
+	state: GameState,
+	ev: Extract<GameEvent, { kind: 'HauntedCreatureDied' }>
+): void {
+	for (const source of sources(state, 'hauntedCreatureDies')) {
+		if (source.obj.instanceId !== ev.haunterId) continue;
+		for (const { ability } of abilitiesFor(state, source, 'hauntedCreatureDies')) {
+			record(state, source, ability, 'hauntedCreatureDies', {
+				label: 'Haunt Trigger',
+				eventObject: ev.hauntedObject,
+				...(ev.lki
+					? {
+							eventLki: {
+								controllerId: ev.lki.controllerId,
+								power: ev.lki.power,
+								toughness: ev.lki.toughness,
+								...(ev.lki.counters ? { counters: { ...ev.lki.counters } } : {})
+							}
+						}
+					: {})
+			});
+		}
+	}
+}
+
+function matchDayNightChanged(
+	state: GameState,
+	ev: Extract<GameEvent, { kind: 'DayNightChanged' }>
+): void {
+	for (const source of sources(state, 'dayNightChanged')) {
+		for (const { ability, alts } of abilitiesFor(state, source, 'dayNightChanged')) {
+			const alt = alts.find((a) => {
+				const dir = a.filter.dayNightDirection ?? 'any';
+				if (dir === 'toDay') return ev.current === 'day';
+				if (dir === 'toNight') return ev.current === 'night';
+				if (dir === 'dayNightFlip') {
+					return (
+						(ev.previous === 'day' && ev.current === 'night') ||
+						(ev.previous === 'night' && ev.current === 'day')
+					);
+				}
+				return true;
+			});
+			if (!alt) continue;
+			record(state, source, ability, 'dayNightChanged', {
+				label: ev.current === 'day' ? 'Daybreak' : 'Nightfall'
+			});
+		}
+	}
+}
+
+function matchLifeLost(state: GameState, ev: Extract<GameEvent, { kind: 'LifeLost' }>): void {
+	if (ev.amount <= 0) return;
+	for (const source of sources(state, 'loseLife')) {
+		for (const { ability, alts } of abilitiesFor(state, source, 'loseLife')) {
+			const alt = alts.find((a) => {
+				const rel = a.filter.player?.relation ?? 'any';
+				if (rel === 'you' && ev.playerId !== source.controllerId) return false;
+				if (rel === 'opponent' && ev.playerId === source.controllerId) return false;
+				if (
+					!matchesDuringTurnFilter(state, a.filter.duringTurn, source.controllerId, ev.playerId)
+				) {
+					return false;
+				}
+				return true;
+			});
+			if (!alt) continue;
+			record(state, source, ability, 'loseLife', {
+				label: 'Life Loss Trigger',
+				amount: ev.amount,
+				eventPlayer: ev.playerId,
+				eventPlayerId: ev.playerId
+			});
+		}
+	}
+}
+
+function matchExhaustActivated(
+	state: GameState,
+	ev: Extract<GameEvent, { kind: 'ExhaustActivated' }>
+): void {
+	const found = permanentById(state, ev.objectId);
+	const subject = found
+		? battlefieldSubject(state, found.obj, found.controllerId)
+		: printedSubject(ev.object, ev.object.copiableCard ?? ev.object.card, ev.playerId, false, undefined, undefined, undefined, false, false, { state });
+	for (const source of sources(state, 'exhaustActivated')) {
+		for (const { ability, alts } of abilitiesFor(state, source, 'exhaustActivated')) {
+			const alt = alts.find((a) => {
+				const rel = a.filter.player?.relation ?? 'any';
+				if (rel === 'you' && ev.playerId !== source.controllerId) return false;
+				if (rel === 'opponent' && ev.playerId === source.controllerId) return false;
+				if (a.filter.object !== undefined && !objectMatches(a.filter, subject, source)) {
+					return false;
+				}
+				return true;
+			});
+			if (!alt) continue;
+			record(state, source, ability, 'exhaustActivated', {
+				label: 'Exhaust Trigger',
+				eventObject: found?.obj ?? ev.object,
+				eventPlayer: ev.playerId,
+				eventPlayerId: ev.playerId
+			});
+		}
+	}
+}
+
+function matchUnattached(state: GameState, ev: Extract<GameEvent, { kind: 'Unattached' }>): void {
+	const found = permanentById(state, ev.attachmentId);
+	const subject = found
+		? battlefieldSubject(state, found.obj, found.controllerId)
+		: printedSubject(ev.attachment, ev.attachment.copiableCard ?? ev.attachment.card, ev.attachment.controllerId, false, undefined, undefined, undefined, false, false, { state });
+	for (const source of sources(state, 'unattached')) {
+		for (const { ability, alts } of abilitiesFor(state, source, 'unattached')) {
+			const alt = alts.find((a) => objectMatches(a.filter, subject, source));
+			if (!alt) continue;
+			record(state, source, ability, 'unattached', {
+				label: 'Unattached Trigger',
+				eventObject: ev.host ?? (found?.obj ?? ev.attachment)
+			});
+		}
+	}
+}
+
+function matchPhasedIn(state: GameState, ev: Extract<GameEvent, { kind: 'PhasedIn' }>): void {
+	const found = permanentById(state, ev.objectId);
+	if (!found) return;
+	const subject = battlefieldSubject(state, found.obj, found.controllerId);
+	for (const source of sources(state, 'phasedIn')) {
+		for (const { ability, alts } of abilitiesFor(state, source, 'phasedIn')) {
+			const alt = alts.find((a) => objectMatches(a.filter, subject, source));
+			if (!alt) continue;
+			record(state, source, ability, 'phasedIn', {
+				label: 'Phase In Trigger',
+				eventObject: found.obj
+			});
+		}
+	}
+}
+
+function matchLandPlayed(state: GameState, ev: Extract<GameEvent, { kind: 'LandPlayed' }>): void {
+	const found = permanentById(state, ev.objectId);
+	const subject = found
+		? battlefieldSubject(state, found.obj, found.controllerId)
+		: printedSubject(ev.object, ev.object.copiableCard ?? ev.object.card, ev.playerId, false, undefined, undefined, undefined, false, false, { state });
+	for (const source of sources(state, 'landPlayed')) {
+		for (const { ability, alts } of abilitiesFor(state, source, 'landPlayed')) {
+			const alt = alts.find((a) => {
+				const rel = a.filter.player?.relation ?? 'any';
+				if (rel === 'you' && ev.playerId !== source.controllerId) return false;
+				if (rel === 'opponent' && ev.playerId === source.controllerId) return false;
+				if (
+					!matchesDuringTurnFilter(state, a.filter.duringTurn, source.controllerId, ev.playerId)
+				) {
+					return false;
+				}
+				if (a.filter.object !== undefined && !objectMatches(a.filter, subject, source)) {
+					return false;
+				}
+				return true;
+			});
+			if (!alt) continue;
+			record(state, source, ability, 'landPlayed', {
+				label: 'Land Played Trigger',
+				eventObject: found?.obj ?? ev.object,
+				eventPlayer: ev.playerId,
+				eventPlayerId: ev.playerId
+			});
+		}
+	}
+}
+
+function matchPlayerTargeted(
+	state: GameState,
+	ev: Extract<GameEvent, { kind: 'PlayerTargeted' }>
+): void {
+	for (const source of sources(state, 'becomesTarget')) {
+		for (const { ability, alts } of abilitiesFor(state, source, 'becomesTarget')) {
+			const alt = alts.find((a) => {
+				if (!a.filter.targetPlayer) return false;
+				if (a.filter.targetPlayer === 'you' && ev.targetPlayerId !== source.controllerId) {
+					return false;
+				}
+				if (a.filter.targetPlayer === 'opponent' && ev.targetPlayerId === source.controllerId) {
+					return false;
+				}
+				if (a.filter.targetedBy !== 'spellOrAbility' && a.filter.targetedBy !== ev.by) return false;
+				const rel = a.filter.player?.relation ?? 'any';
+				if (rel === 'you' && ev.controllerId !== source.controllerId) return false;
+				if (rel === 'opponent' && ev.controllerId === source.controllerId) return false;
+				if (
+					a.filter.targetingSourceFilter &&
+					!matchesTargetingSourceFilter(
+						state,
+						ev.stackItemId,
+						ev.by,
+						ev.controllerId,
+						a.filter.targetingSourceFilter,
+						source
+					)
+				) {
+					return false;
+				}
+				return true;
+			});
+			if (!alt) continue;
+			record(state, source, ability, 'becomesTarget', {
+				label: 'Targeted',
+				targetStackItemId: ev.stackItemId,
+				eventPlayerId: ev.controllerId,
+				eventPlayer: ev.controllerId
+			});
+		}
+	}
+}
+// --- End Track P16b ---
 
 // --- Track P13 & P15 ---
 function matchDoorUnlocked(
@@ -1834,7 +2342,13 @@ function matchRoomFullyUnlocked(
 
 function matchP13PlayerEvent(
 	state: GameState,
-	event: 'ringTempted' | 'dungeonRoomEntered' | 'dungeonCompleted' | 'tookInitiative',
+	event:
+		| 'ringTempted'
+		| 'dungeonRoomEntered'
+		| 'dungeonCompleted'
+		| 'tookInitiative'
+		| 'facedDilemma'
+		| 'collectEvidence',
 	playerId: string,
 	label: string,
 	amountVal?: number,
@@ -2012,6 +2526,13 @@ function matchScried(state: GameState, ev: Extract<GameEvent, { kind: 'Scried' }
 				const rel = a.filter.player?.relation ?? 'any';
 				if (rel === 'you' && ev.playerId !== source.controllerId) return false;
 				if (rel === 'opponent' && ev.playerId === source.controllerId) return false;
+				// --- Track P16b ---
+				if (
+					!matchesDuringTurnFilter(state, a.filter.duringTurn, source.controllerId, ev.playerId)
+				) {
+					return false;
+				}
+				// --- End Track P16b ---
 				return true;
 			});
 			if (!alt) continue;
@@ -2040,6 +2561,13 @@ function matchCrimeCommitted(
 				const rel = a.filter.player?.relation ?? 'any';
 				if (rel === 'you' && ev.playerId !== source.controllerId) return false;
 				if (rel === 'opponent' && ev.playerId === source.controllerId) return false;
+				// --- Track P16b ---
+				if (
+					!matchesDuringTurnFilter(state, a.filter.duringTurn, source.controllerId, ev.playerId)
+				) {
+					return false;
+				}
+				// --- End Track P16b ---
 				return true;
 			});
 			if (!alt) continue;
@@ -2273,6 +2801,13 @@ function matchDiscovered(state: GameState, ev: Extract<GameEvent, { kind: 'Disco
 				const rel = a.filter.player?.relation ?? 'any';
 				if (rel === 'you' && ev.playerId !== source.controllerId) return false;
 				if (rel === 'opponent' && ev.playerId === source.controllerId) return false;
+				// --- Track P16b ---
+				if (
+					!matchesDuringTurnFilter(state, a.filter.duringTurn, source.controllerId, ev.playerId)
+				) {
+					return false;
+				}
+				// --- End Track P16b ---
 				return true;
 			});
 			if (!alt) continue;
@@ -2299,6 +2834,13 @@ function matchForaged(state: GameState, ev: Extract<GameEvent, { kind: 'Foraged'
 				const rel = a.filter.player?.relation ?? 'any';
 				if (rel === 'you' && ev.playerId !== source.controllerId) return false;
 				if (rel === 'opponent' && ev.playerId === source.controllerId) return false;
+				// --- Track P16b ---
+				if (
+					!matchesDuringTurnFilter(state, a.filter.duringTurn, source.controllerId, ev.playerId)
+				) {
+					return false;
+				}
+				// --- End Track P16b ---
 				return true;
 			});
 			if (!alt) continue;
@@ -2387,6 +2929,13 @@ function matchManifestDread(
 				const rel = a.filter.player?.relation ?? 'any';
 				if (rel === 'you' && ev.playerId !== source.controllerId) return false;
 				if (rel === 'opponent' && ev.playerId === source.controllerId) return false;
+				// --- Track P16b ---
+				if (
+					!matchesDuringTurnFilter(state, a.filter.duringTurn, source.controllerId, ev.playerId)
+				) {
+					return false;
+				}
+				// --- End Track P16b ---
 				return true;
 			});
 			if (alt) {
@@ -2408,6 +2957,13 @@ function matchBecameMonarch(state: GameState, ev: Extract<GameEvent, { kind: 'Be
 				const rel = a.filter.player?.relation ?? 'any';
 				if (rel === 'you' && ev.playerId !== source.controllerId) return false;
 				if (rel === 'opponent' && ev.playerId === source.controllerId) return false;
+				// --- Track P16b ---
+				if (
+					!matchesDuringTurnFilter(state, a.filter.duringTurn, source.controllerId, ev.playerId)
+				) {
+					return false;
+				}
+				// --- End Track P16b ---
 				return true;
 			});
 			if (alt) {
@@ -2465,6 +3021,13 @@ function matchGainLife(state: GameState, ev: Extract<GameEvent, { kind: 'GainLif
 				const rel = a.filter.player?.relation ?? 'any';
 				if (rel === 'you' && ev.playerId !== source.controllerId) return false;
 				if (rel === 'opponent' && ev.playerId === source.controllerId) return false;
+				// --- Track P16b ---
+				if (
+					!matchesDuringTurnFilter(state, a.filter.duringTurn, source.controllerId, ev.playerId)
+				) {
+					return false;
+				}
+				// --- End Track P16b ---
 				return true;
 			});
 			if (alt) {
@@ -2503,7 +3066,7 @@ function matchCardDrawn(state: GameState, ev: Extract<GameEvent, { kind: 'CardDr
 }
 
 function matchCardDiscarded(state: GameState, ev: Extract<GameEvent, { kind: 'CardDiscarded' }>): void {
-	const subject = printedSubject(ev.object, ev.object.card, ev.playerId);
+	const subject = printedSubject(ev.object, ev.object.card, ev.playerId, false, undefined, undefined, undefined, false, false, { state });
 	const label = ev.reason === 'cycle' ? 'Cycle Trigger' : 'Discard Trigger';
 	const matchEventKind = (kind: 'cycle' | 'discard', candidates: Source[]) => {
 		for (const source of candidates) {
@@ -2516,9 +3079,31 @@ function matchCardDiscarded(state: GameState, ev: Extract<GameEvent, { kind: 'Ca
 					if (a.filter.madnessExiled && !(ev.destZone === 'exile' && Boolean(ev.object.madnessOwnerId))) {
 						return false;
 					}
+					// --- Track P16b ---
+					if (
+						a.filter.causedByOpponent &&
+						!(ev.causeControllerId && ev.causeControllerId !== ev.playerId)
+					) {
+						return false;
+					}
+					if (
+						!matchesDuringTurnFilter(state, a.filter.duringTurn, source.controllerId, ev.playerId)
+					) {
+						return false;
+					}
+					// --- End Track P16b ---
 					return objectMatches(a.filter, subject, source);
 				});
 				if (!alt) continue;
+				// --- Track P16b: batch "discard one or more [filter] cards" once per flush window ---
+				if (alt.filter.oneOrMore) {
+					const ch = channel(state);
+					const batchSet = (ch.discardBatchTriggeredKeys ??= new Set());
+					const batchKey = `${source.obj.instanceId}:${source.zone}:${source.faceIndex ?? 0}:${ability.abilityIndex}:${ev.playerId}`;
+					if (batchSet.has(batchKey)) continue;
+					batchSet.add(batchKey);
+				}
+				// --- End Track P16b ---
 				const times =
 					source.zone === 'battlefield'
 						? triggerMultiplier(state, source.obj, source.controllerId, {
@@ -2547,10 +3132,10 @@ function matchCardDiscarded(state: GameState, ev: Extract<GameEvent, { kind: 'Ca
 					(c) => c.obj.instanceId === ev.object.instanceId && (c.faceIndex ?? 0) === faceIndex
 				) &&
 				objTriggers.events.has('cycle') &&
-				objTriggers.all.some(
-					(a) =>
-						a.trigger.fromZone === 'any' &&
-						alternatives(a.trigger).some((alt) => alt.event === 'cycle')
+				objTriggers.all.some((a) =>
+					alternatives(a.trigger).some(
+						(alt) => alt.event === 'cycle' && (alt.fromZone ?? a.trigger.fromZone) === 'any'
+					)
 				)
 			) {
 				cycleCandidates.push({
@@ -2574,10 +3159,10 @@ function matchCardDiscarded(state: GameState, ev: Extract<GameEvent, { kind: 'Ca
 				(c) => c.obj.instanceId === ev.object.instanceId && (c.faceIndex ?? 0) === faceIndex
 			) &&
 			objTriggers.events.has('discard') &&
-			objTriggers.all.some(
-				(a) =>
-					a.trigger.fromZone === 'any' &&
-					alternatives(a.trigger).some((alt) => alt.event === 'discard')
+			objTriggers.all.some((a) =>
+				alternatives(a.trigger).some(
+					(alt) => alt.event === 'discard' && (alt.fromZone ?? a.trigger.fromZone) === 'any'
+				)
 			)
 		) {
 			discardCandidates.push({
@@ -2792,6 +3377,20 @@ function matchZoneChange(state: GameState, ev: Extract<GameEvent, { kind: 'ZoneC
 							{ state }
 							// --- End Track P7 ---
 						);
+	// --- Track P16b: CR 603.6c "from anywhere" checks characteristics as the object exists in the destination zone ---
+	const postMoveSubject: Subject = printedSubject(
+		obj,
+		obj.card,
+		obj.ownerId,
+		false,
+		undefined,
+		undefined,
+		undefined,
+		false,
+		false,
+		{ state }
+	);
+	// --- End Track P16b ---
 	const enters = ev.to === 'battlefield';
 	const label = (source: Source, alt: TriggerDef) => {
 		const self = source.obj === obj;
@@ -2803,6 +3402,10 @@ function matchZoneChange(state: GameState, ev: Extract<GameEvent, { kind: 'ZoneC
 	};
 	const fits = (alt: TriggerDef) =>
 		(alt.filter.from === undefined || alt.filter.from === ev.from) &&
+		// --- Track P16b ---
+		(alt.filter.notFromZone === undefined || ev.from !== alt.filter.notFromZone) &&
+		(!alt.filter.entersUntapped || (enters && !obj.tapped)) &&
+		// --- End Track P16b ---
 		(alt.filter.to === undefined || alt.filter.to === ev.to) &&
 		(alt.filter.from !== undefined || alt.filter.to !== undefined);
 	let amount: number | undefined;
@@ -3002,14 +3605,45 @@ function matchZoneChange(state: GameState, ev: Extract<GameEvent, { kind: 'ZoneC
 					}
 				}
 				// --- End Track P10 ---
-				return objectMatches(a.filter, subject, source, lkiAttachedIds);
+				// --- Track P16b ---
+				if (
+					!matchesDuringTurnFilter(
+						state,
+						a.filter.duringTurn,
+						source.controllerId,
+						ev.toPlayerId ?? ev.fromPlayerId ?? obj.ownerId
+					)
+				) {
+					return false;
+				}
+				// --- End Track P16b ---
+				return objectMatches(
+					a.filter,
+					a.filter.fromAnywhere ? postMoveSubject : subject,
+					source,
+					lkiAttachedIds
+				);
 			});
 			if (!alt) continue;
 			// Only look-back objects check leaves-the-battlefield triggers; other permanents see the event normally.
-			if ((source.obj === obj || source.isLookBack) && ev.from === 'battlefield' && alt.filter.from !== 'battlefield') continue;
+			// --- Track P16b: CR 603.6c "put into a graveyard from anywhere" on self functions from graveyard ---
+			if (
+				(source.obj === obj || source.isLookBack) &&
+				ev.from === 'battlefield' &&
+				alt.filter.from !== 'battlefield' &&
+				!(alt.filter.fromAnywhere && source.zone === 'graveyard')
+			) {
+				continue;
+			}
+			// --- End Track P16b ---
 			// --- Track P13: CR 603.2c oneOrMore simultaneous zone-change batching ---
 			if (alt.filter.oneOrMore) {
-				const batchSet = channel(state).zoneBatchTriggeredKeys;
+				const ch = channel(state);
+				const batchSet =
+					ch.zoneBatchTriggeredKeys ??
+					(isResolutionPaused(state) || ch.deferFlush > 0
+						? (ch.zoneBatchTriggeredKeys = new Set())
+						: undefined);
 				if (batchSet) {
 					const batchKey = `${source.obj.instanceId}:${source.zone}:${source.faceIndex ?? 0}:${ability.abilityIndex}:${ev.from ?? ''}->${ev.to}`;
 					if (batchSet.has(batchKey)) continue;
@@ -3352,6 +3986,30 @@ function matchCast(state: GameState, casterId: string, spell: CardInstance, isCo
 					return false;
 				}
 				// --- End Track P13 ---
+				// --- Track P16b ---
+				if (
+					!matchesDuringTurnFilter(state, a.filter.duringTurn, source.controllerId, casterId)
+				) {
+					return false;
+				}
+				if (a.filter.spellOrdinal !== undefined) {
+					if (isCopy) return false;
+					const srcPerm = permanentById(state, source.obj.instanceId)?.obj ?? source.obj;
+					if (
+						!matchesSpellCastOrdinal(
+							state,
+							casterForCount,
+							a.filter.spellOrdinal,
+							a.filter.object,
+							source.controllerId,
+							srcPerm,
+							matchesObjectFilter
+						)
+					) {
+						return false;
+					}
+				}
+				// --- End Track P16b ---
 				// "When you cast ~" only from the stack; other cast triggers only from other zones.
 				if ((a.filter.object === 'self') !== (source.zone === 'stack')) return false;
 				if (a.filter.targetsSelf) {
@@ -3459,6 +4117,73 @@ function matchAttack(state: GameState, attackingPlayerId: string, attackerIds: s
 			for (const alt of alts) {
 				const f = alt.filter;
 				if (f.alone && attackers.length !== 1) continue;
+				// --- Track P16b: attackedTarget & coAttackerFilter ---
+				const matchesAttackedTarget = (atkId: string): boolean => {
+					if (!f.attackedTarget) return true;
+					const entry = state.combat.attackers.find((a) => a.attackerInstanceId === atkId);
+					if (!entry) return false;
+					const hasPermTarget = Boolean(entry.defenderPlaneswalkerId || entry.defenderBattleId);
+					switch (f.attackedTarget) {
+						case 'you':
+							return !hasPermTarget && entry.defenderPlayerId === source.controllerId;
+						case 'youOrPlaneswalkerYouControl': {
+							if (!hasPermTarget && entry.defenderPlayerId === source.controllerId) {
+								return true;
+							}
+							if (entry.defenderPlaneswalkerId) {
+								const pw = permanentById(state, entry.defenderPlaneswalkerId);
+								return Boolean(
+									pw &&
+										pw.controllerId === source.controllerId &&
+										evaluatePermanent(state, pw.obj).isPlaneswalker
+								);
+							}
+							return false;
+						}
+						case 'opponent':
+							return !hasPermTarget && entry.defenderPlayerId !== source.controllerId;
+						case 'opponentOrPlaneswalkerOpponentControls': {
+							if (!hasPermTarget && entry.defenderPlayerId !== source.controllerId) {
+								return true;
+							}
+							if (entry.defenderPlaneswalkerId) {
+								const pw = permanentById(state, entry.defenderPlaneswalkerId);
+								return Boolean(
+									pw &&
+										pw.controllerId !== source.controllerId &&
+										evaluatePermanent(state, pw.obj).isPlaneswalker
+								);
+							}
+							return false;
+						}
+						case 'enchantedPlayer':
+							return (
+								!hasPermTarget &&
+								Boolean(source.obj.attachedToId) &&
+								entry.defenderPlayerId === source.obj.attachedToId
+							);
+						case 'planeswalker': {
+							if (!entry.defenderPlaneswalkerId) return false;
+							const pw = permanentById(state, entry.defenderPlaneswalkerId);
+							return Boolean(pw && evaluatePermanent(state, pw.obj).isPlaneswalker);
+						}
+						case 'battle': {
+							if (!entry.defenderBattleId) return false;
+							const b = permanentById(state, entry.defenderBattleId);
+							return Boolean(b && evaluatePermanent(state, b.obj).typeLine.includes('Battle'));
+						}
+					}
+				};
+				if (f.coAttackerFilter) {
+					const coViewer = viewerOf(source);
+					const coCount = attackers.filter(
+						(s) =>
+							s.obj.instanceId !== source.obj.instanceId &&
+							filterMatches(f.coAttackerFilter!, s, coViewer)
+					).length;
+					if (coCount < (f.coAttackerMin ?? 1)) continue;
+				}
+				// --- End Track P16b ---
 				// --- Track P10 ---
 				if (
 					f.minAttackers !== undefined &&
@@ -3475,12 +4200,15 @@ function matchAttack(state: GameState, attackingPlayerId: string, attackerIds: s
 							: rel === 'opponent'
 								? attackingPlayerId !== source.controllerId
 								: true;
-					if (playerMatches && attackers.length > 0) {
+					const targetFiltered = f.attackedTarget
+						? attackers.filter((s) => matchesAttackedTarget(s.obj.instanceId))
+						: attackers;
+					if (playerMatches && targetFiltered.length > 0) {
 						const times =
 							source.zone === 'battlefield'
 								? triggerMultiplier(state, source.obj, source.controllerId, {
 										event: 'attacks',
-										attackers: attackers.map((s) => s.obj)
+										attackers: targetFiltered.map((s) => s.obj)
 									})
 								: 1;
 						record(state, source, ability, 'attacks', {
@@ -3488,14 +4216,16 @@ function matchAttack(state: GameState, attackingPlayerId: string, attackerIds: s
 							times,
 							eventPlayer: attackingPlayerId,
 							eventPlayerId: attackingPlayerId,
-							amount: attackers.length
+							amount: targetFiltered.length
 						});
 						break;
 					}
 					continue;
 				}
 				// --- End Track P10 ---
-				const matching = attackers.filter((s) => objectMatches(f, s, source));
+				const matching = attackers.filter(
+					(s) => objectMatches(f, s, source) && matchesAttackedTarget(s.obj.instanceId)
+				);
 				if (matching.length === 0) continue;
 				if (f.minAttackers !== undefined && f.object !== 'self' && matching.length < f.minAttackers) {
 					continue;
@@ -3705,6 +4435,24 @@ function matchBlocks(state: GameState, defenderId: string, blocks: Array<{ block
 							...(atkEntry ? { amount: atkEntry.blockerInstanceIds.length, defendingPlayerId: atkEntry.defenderPlayerId } : {})
 						});
 					}
+				} else if (alt.filter.oneOrMore) {
+					// --- Track P16b: batch "blocks / becomes blocked" with oneOrMore ---
+					if (matching.length > 0) {
+						const times =
+							source.zone === 'battlefield'
+								? triggerMultiplier(state, source.obj, source.controllerId, {
+										event: kind,
+										object: matching[0].obj
+									})
+								: 1;
+						record(state, source, ability, kind, {
+							label: kind === 'blocks' ? 'Block' : 'Blocked',
+							eventObject: matching[0].obj,
+							amount: matching.length,
+							times
+						});
+					}
+					// --- End Track P16b ---
 				} else {
 					for (const s of matching) record(state, source, ability, kind, { label: kind === 'blocks' ? 'Block' : 'Blocked', eventObject: s.obj });
 				}
@@ -3892,6 +4640,21 @@ function matchDamage(state: GameState, ev: Extract<GameEvent, { kind: 'DamageDea
 				return true;
 		}
 	};
+	// --- Track P16b ---
+	const isDamagedBattle = Boolean(
+		damaged && !damaged.obj.isFaceDown && damagedEval?.typeLine.includes('Battle')
+	);
+	const damageTargetKindFits = (tk: EventFilter['damageTargetKind']) => {
+		if (!tk || tk === 'any') return true;
+		if (tk === 'battle') return isDamagedBattle;
+		if (tk === 'playerOrBattle') return ev.targetKind === 'player' || isDamagedBattle;
+		if (tk === 'planeswalker') {
+			return Boolean(damaged && !damaged.obj.isFaceDown && damagedEval?.isPlaneswalker);
+		}
+		if (tk === 'permanent') return ev.targetKind === 'permanent';
+		return true;
+	};
+	// --- End Track P16b ---
 	const dealerSubject = dealer ? battlefieldSubject(state, dealer.obj, dealer.controllerId) : null;
 	const damagedSubject = damaged ? battlefieldSubject(state, damaged.obj, damaged.controllerId) : null;
 
@@ -3900,6 +4663,10 @@ function matchDamage(state: GameState, ev: Extract<GameEvent, { kind: 'DamageDea
 			for (const { ability, alts } of abilitiesFor(state, source, 'dealsDamage')) {
 				const alt = alts.find((a) => {
 					if ((a.filter.combat && !ev.combat) || !damageToFits(a.filter.damageTo)) return false;
+					// --- Track P16b ---
+					if (a.filter.noncombatOnly && ev.combat) return false;
+					if (!damageTargetKindFits(a.filter.damageTargetKind)) return false;
+					// --- End Track P16b ---
 					// --- Track P7 ---
 					const rel = a.filter.damagePlayerRelation ?? a.filter.player?.relation ?? 'any';
 					const damagedPid =
@@ -3960,11 +4727,53 @@ function matchDamage(state: GameState, ev: Extract<GameEvent, { kind: 'DamageDea
 	if (damagedSubject) {
 		for (const source of sources(state, 'dealtDamage')) {
 			for (const { ability, alts } of abilitiesFor(state, source, 'dealtDamage')) {
-				if (!alts.some((a) => objectMatches(a.filter, damagedSubject, source))) continue;
+				if (
+					!alts.some(
+						(a) =>
+							!a.filter.damagedPlayer &&
+							(!a.filter.combat || ev.combat) &&
+							(!a.filter.noncombatOnly || !ev.combat) &&
+							objectMatches(a.filter, damagedSubject, source)
+					)
+				) {
+					continue;
+				}
 				record(state, source, ability, 'dealtDamage', { label: 'Dealt Damage', eventObject: damagedSubject.obj, amount: ev.amount });
 			}
 		}
 	}
+	// --- Track P16b: "Whenever you're / an opponent is dealt [combat/noncombat] damage" ---
+	if (ev.targetKind === 'player') {
+		for (const source of sources(state, 'dealtDamage')) {
+			for (const { ability, alts } of abilitiesFor(state, source, 'dealtDamage')) {
+				const alt = alts.find((a) => {
+					if (!a.filter.damagedPlayer) return false;
+					if (a.filter.combat && !ev.combat) return false;
+					if (a.filter.noncombatOnly && ev.combat) return false;
+					if (a.filter.damagedPlayer === 'you' && ev.targetId !== source.controllerId) {
+						return false;
+					}
+					if (a.filter.damagedPlayer === 'opponent' && ev.targetId === source.controllerId) {
+						return false;
+					}
+					if (a.filter.object !== undefined) {
+						if (!dealerSubject) return false;
+						if (!objectMatches(a.filter, dealerSubject, source)) return false;
+					}
+					return true;
+				});
+				if (!alt) continue;
+				record(state, source, ability, 'dealtDamage', {
+					label: 'Dealt Damage',
+					...(dealer ? { eventObject: dealer.obj } : {}),
+					eventPlayerId: ev.targetId,
+					eventPlayer: ev.targetId,
+					amount: ev.amount
+				});
+			}
+		}
+	}
+	// --- End Track P16b ---
 }
 
 function matchCombatDamageBatchPlayer(
@@ -4018,13 +4827,35 @@ function matchPhase(state: GameState, ev: Extract<GameEvent, { kind: 'PhaseBegin
 				if (a.filter.enchantedPlayerUpkeep) {
 					if (source.obj.attachedToId !== ev.activePlayerId) return false;
 				}
+				// --- Track P16b ---
+				if (a.filter.phaseTurnFilter === 'monarch') {
+					if (!state.monarchPlayerId || state.monarchPlayerId !== ev.activePlayerId) return false;
+				} else if (
+					a.filter.phaseTurnFilter === 'yourFirstUpkeep' ||
+					a.filter.phaseTurnFilter === 'firstOfGame'
+				) {
+					if (
+						ev.phase !== 'upkeep' ||
+						(a.filter.phaseTurnFilter === 'yourFirstUpkeep' &&
+							source.controllerId !== ev.activePlayerId)
+					) {
+						return false;
+					}
+					const actPl = state.players.find((p) => p.playerId === ev.activePlayerId);
+					if (actPl?.hadUpkeepThisGame) return false;
+				}
+				const altScope = a.scope ?? ability.trigger.scope ?? 'each_turn';
+				if (altScope === 'controller_turn' && source.controllerId !== ev.activePlayerId) {
+					return false;
+				}
+				if (altScope === 'opponent_turn' && source.controllerId === ev.activePlayerId) {
+					return false;
+				}
+				// --- End Track P16b ---
 				return true;
 			});
 			if (!phaseAlt) continue;
 			// --- End Track P10 ---
-			const scope = ability.trigger.scope ?? 'each_turn';
-			if (scope === 'controller_turn' && source.controllerId !== ev.activePlayerId) continue;
-			if (scope === 'opponent_turn' && source.controllerId === ev.activePlayerId) continue;
 			const step = ev.phase === 'upkeep' ? 'Upkeep' : ev.phase === 'end_step' ? 'End Step' : 'Phase';
 			record(state, source, ability, 'phaseBegin', {
 				label: source.zone === 'graveyard' ? `Graveyard ${step}` : `${step} Trigger`,
@@ -4062,11 +4893,17 @@ function matchCounter(state: GameState, ev: Extract<GameEvent, { kind: 'CounterP
 			}
 		}
 	}
+	// --- Track P16b ---
+	const foundCounterPerm = permanentById(state, ev.objectId);
+	const counterSubject = foundCounterPerm
+		? battlefieldSubject(state, foundCounterPerm.obj, foundCounterPerm.controllerId)
+		: printedSubject(ev.object, ev.object.copiableCard ?? ev.object.card, ev.object.controllerId, false, undefined, undefined, undefined, false, false, { state });
+	// --- End Track P16b ---
 	for (const source of candidates) {
-		if (source.obj.instanceId !== ev.objectId) continue;
 		for (const { ability, alts } of abilitiesFor(state, source, 'counterPlaced')) {
 			const chapterAlt = alts.find((a) => a.isChapterAbility && a.chapterNumbers?.length);
 			if (chapterAlt) {
+				if (source.obj.instanceId !== ev.objectId) continue;
 				// CR 715.2b–c: Chapter N triggers iff lore counters on this Saga went from < N to >= N.
 				if (ev.counterType !== 'lore') continue;
 				const next = ev.newCount ?? (ev.object.counters.lore || 0);
@@ -4089,8 +4926,35 @@ function matchCounter(state: GameState, ev: Extract<GameEvent, { kind: 'CounterP
 				}
 				continue;
 			}
-			if (!alts.some((a) => !a.isChapterAbility && a.filter.object === 'self' && (!a.filter.counter || a.filter.counter === ev.counterType))) continue;
-			record(state, source, ability, 'counterPlaced', { label: 'Counter Placed', amount: ev.amount });
+			// --- Track P16b: non-self permanent counter triggers, putByPlayer, and oneOrMore batching ---
+			const matchedAlt = alts.find((a) => {
+				if (a.isChapterAbility) return false;
+				if (a.filter.counter && a.filter.counter !== ev.counterType) return false;
+				if (a.filter.putByPlayer === 'you' && ev.actorId !== source.controllerId) return false;
+				if (a.filter.putByPlayer === 'opponent' && (!ev.actorId || ev.actorId === source.controllerId)) {
+					return false;
+				}
+				if (!matchesDuringTurnFilter(state, a.filter.duringTurn, source.controllerId, ev.actorId)) {
+					return false;
+				}
+				return objectMatches(a.filter, counterSubject, source);
+			});
+			if (!matchedAlt) continue;
+			if (matchedAlt.filter.oneOrMore && matchedAlt.filter.object !== 'self') {
+				const ch = channel(state);
+				if (isResolutionPaused(state) || ch.deferFlush > 0) {
+					const batchSet = (ch.counterBatchTriggeredKeys ??= new Set());
+					const batchKey = `${source.obj.instanceId}:${source.zone}:${source.faceIndex ?? 0}:${ability.abilityIndex}:${ev.counterType}`;
+					if (batchSet.has(batchKey)) continue;
+					batchSet.add(batchKey);
+				}
+			}
+			record(state, source, ability, 'counterPlaced', {
+				label: 'Counter Placed',
+				eventObject: foundCounterPerm?.obj ?? ev.object,
+				amount: ev.amount
+			});
+			// --- End Track P16b ---
 		}
 	}
 }
@@ -4163,6 +5027,9 @@ function matchTargeted(state: GameState, ev: Extract<GameEvent, { kind: 'BecameT
 				if (wardRemoved) continue;
 			}
 			const alt = alts.find((a) => {
+				// --- Track P16b ---
+				if (a.filter.targetPlayer && a.filter.object === undefined) return false;
+				// --- End Track P16b ---
 				if (a.filter.targetedBy !== 'spellOrAbility' && a.filter.targetedBy !== ev.by) return false;
 				const rel = a.filter.player?.relation ?? 'any';
 				if (rel === 'you' && ev.controllerId !== source.controllerId) return false;
@@ -4172,6 +5039,21 @@ function matchTargeted(state: GameState, ev: Extract<GameEvent, { kind: 'BecameT
 					if (ev.controllerId !== source.controllerId || !wasFirstTargetByController) return false;
 				}
 				// --- End Track P13 ---
+				// --- Track P16b ---
+				if (
+					a.filter.targetingSourceFilter &&
+					!matchesTargetingSourceFilter(
+						state,
+						ev.stackItemId,
+						ev.by,
+						ev.controllerId,
+						a.filter.targetingSourceFilter,
+						source
+					)
+				) {
+					return false;
+				}
+				// --- End Track P16b ---
 				return objectMatches(a.filter, subject, source);
 			});
 			if (alt) {
@@ -4341,6 +5223,13 @@ export function flushTriggers(state: GameState): void {
 		}
 	} finally {
 		ch.flushing -= 1;
+		// --- Track P16b ---
+		if (ch.flushing === 0) {
+			ch.discardBatchTriggeredKeys = undefined;
+			ch.counterBatchTriggeredKeys = undefined;
+			ch.zoneBatchTriggeredKeys = undefined;
+		}
+		// --- End Track P16b ---
 	}
 }
 
@@ -4440,21 +5329,59 @@ export function evaluateCondition(
 	stackItem?: StackItem,
 	source?: Source,
 	eventObject?: CardInstance,
-	eventLki?: PendingTrigger['eventLki']
+	eventLki?: PendingTrigger['eventLki'],
+	// --- Track P16b ---
+	matchExtras?: { eventPlayerId?: string; triggerEventStackItem?: StackItem }
+	// --- End Track P16b ---
 ): boolean {
 	const controller = state.players.find((p) => p.playerId === controllerId);
 	if (!controller) return false;
+	// --- Track P16b ---
+	const effEventPlayerId = stackItem?.eventPlayerId ?? matchExtras?.eventPlayerId;
+	const effTriggerEventStackItem =
+		stackItem?.triggerEventStackItem ?? matchExtras?.triggerEventStackItem;
+	// --- End Track P16b ---
 	switch (cond.k) {
 		case 'and':
 			return cond.of.every((c) =>
-				evaluateCondition(state, c, controllerId, sourceInstanceId, stackItem, source, eventObject, eventLki)
+				evaluateCondition(
+					state,
+					c,
+					controllerId,
+					sourceInstanceId,
+					stackItem,
+					source,
+					eventObject,
+					eventLki,
+					matchExtras
+				)
 			);
 		case 'or':
 			return cond.of.some((c) =>
-				evaluateCondition(state, c, controllerId, sourceInstanceId, stackItem, source, eventObject, eventLki)
+				evaluateCondition(
+					state,
+					c,
+					controllerId,
+					sourceInstanceId,
+					stackItem,
+					source,
+					eventObject,
+					eventLki,
+					matchExtras
+				)
 			);
 		case 'not':
-			return !evaluateCondition(state, cond.of, controllerId, sourceInstanceId, stackItem, source, eventObject, eventLki);
+			return !evaluateCondition(
+				state,
+				cond.of,
+				controllerId,
+				sourceInstanceId,
+				stackItem,
+				source,
+				eventObject,
+				eventLki,
+				matchExtras
+			);
 		case 'kicked':
 			return evaluateKickerCondition(
 				cond,
@@ -4537,8 +5464,12 @@ export function evaluateCondition(
 			return evaluateP10Condition(cond, {
 				state,
 				controllerId,
-				source: srcObj,
-				stackItem,
+				source:
+					cond.k === 'manaColorSpentToCast' && effTriggerEventStackItem ? undefined : srcObj,
+				stackItem:
+					cond.k === 'manaColorSpentToCast'
+						? (effTriggerEventStackItem ?? stackItem)
+						: stackItem,
 				eventLkiCounters:
 					eventLki?.counters ??
 					stackItem?.eventLki?.counters ??
@@ -4607,8 +5538,14 @@ export function evaluateCondition(
 				evaluateP13Condition(cond, {
 					state,
 					controllerId,
-					source: srcObj,
-					stackItem,
+					source:
+						cond.k === 'sameColorManaSpentAtLeast' && effTriggerEventStackItem
+							? undefined
+							: srcObj,
+					stackItem:
+						cond.k === 'sameColorManaSpentAtLeast'
+							? (effTriggerEventStackItem ?? stackItem)
+							: stackItem,
 					zone: source?.zone ?? srcObj?.zone
 				}) ?? false
 			);
@@ -4673,7 +5610,7 @@ export function evaluateCondition(
 					return monarchId === state.players[state.activePlayerIndex]?.playerId;
 				}
 				if (cond.player.k === 'eventPlayer') {
-					const thatId = stackItem?.eventPlayerId;
+					const thatId = effEventPlayerId;
 					return Boolean(thatId && monarchId === thatId);
 				}
 				return false;
@@ -4776,6 +5713,30 @@ export function evaluateCondition(
 			return false;
 		}
 	}
+	// --- Track P16b ---
+	const srcObjFallback = permanentById(state, sourceInstanceId)?.obj ?? source?.obj;
+	const w5 = evaluateWave5Condition(cond, {
+		state,
+		controllerId,
+		source: srcObjFallback,
+		stackItem
+	});
+	if (w5 !== null) return w5;
+	const p16b = evaluateP16bCondition(
+		cond,
+		{
+			state,
+			controllerId,
+			source: srcObjFallback,
+			stackItem,
+			eventPlayerId: effEventPlayerId,
+			eventObject,
+			eventLki
+		},
+		matchesObjectFilter
+	);
+	if (p16b !== null) return p16b;
+	// --- End Track P16b ---
 	return false;
 }
 

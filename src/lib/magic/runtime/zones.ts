@@ -87,6 +87,9 @@ import {
 	sagaHasReadAhead as getSagaReadAheadSpec
 } from './framesBattlesAndKeywordsWave5.ts';
 // --- End Track P15 ---
+// --- Track P16b ---
+import { clearDoThisOnceKeysForObject } from './triggersWave6.ts';
+// --- End Track P16b ---
 
 /**
  * The single zone-change module (ENGINE_ARCHITECTURE_PLAN.md section 2.3, Phase 2).
@@ -1183,6 +1186,16 @@ function finalizeZoneMove(
 			const remaining = state.triggeredOnceThisTurn.filter((k) => !k.startsWith(prefix));
 			state.triggeredOnceThisTurn = remaining.length > 0 ? remaining : undefined;
 		}
+		// --- Track P16b ---
+		clearDoThisOnceKeysForObject(state, obj.instanceId);
+		if (fromZone === 'graveyard') {
+			const gyOwner = state.players.find((p) => p.playerId === (fromPlayerId ?? obj.ownerId));
+			if (gyOwner && !gyOwner.cardLeftGraveyardThisTurn) {
+				gyOwner.cardLeftGraveyardThisTurn = true;
+				noteLayerInputsChanged(state);
+			}
+		}
+		// --- End Track P16b ---
 	}
 	if (opts.bumpVersion) obj.objectVersion = (obj.objectVersion || 1) + 1;
 	if (opts.newTimestamp) obj.enteredTimestamp = allocateTimestamp(state);
@@ -1587,14 +1600,63 @@ function finalizeZoneMove(
 			ceases,
 			lki
 		);
+		// --- Track P16b ---
+		if (
+			fromZone === 'battlefield' &&
+			dest !== 'battlefield' &&
+			opts.detachAttachments &&
+			lki?.attachedIds?.length
+		) {
+			for (const attId of lki.attachedIds) {
+				for (const pl of state.players) {
+					const att = pl.battlefield.find(
+						(c) => c.instanceId === attId && !c.phasedOut && !c.attachedToId
+					);
+					if (att) {
+						emitEvent(state, {
+							kind: 'Unattached',
+							attachmentId: att.instanceId,
+							attachment: att,
+							hostId: obj.instanceId,
+							host: obj
+						});
+						break;
+					}
+				}
+			}
+		}
+		if (fromZone === 'battlefield' && dest === 'graveyard' && lki) {
+			for (const pl of state.players) {
+				for (const ex of pl.exile) {
+					if (ex.hauntingTargetId === obj.instanceId) {
+						emitEvent(state, {
+							kind: 'HauntedCreatureDied',
+							haunterId: ex.instanceId,
+							haunter: ex,
+							hauntedId: obj.instanceId,
+							hauntedObject: obj,
+							lki
+						});
+					}
+				}
+			}
+		}
+		// --- End Track P16b ---
 		if (opts.discardReason) {
+			// --- Track P16b ---
+			const causeControllerId = state.stack.findLast((s) => Boolean(s.resolutionStarted))
+				?.controllerId;
+			// --- End Track P16b ---
 			emitEvent(state, {
 				kind: 'CardDiscarded',
 				playerId: opts.discardPlayerId ?? fromPlayerId ?? obj.ownerId,
 				objectId: obj.instanceId,
 				object: obj,
 				reason: opts.discardReason,
-				destZone: dest
+				destZone: dest,
+				// --- Track P16b ---
+				...(causeControllerId ? { causeControllerId } : {})
+				// --- End Track P16b ---
 			});
 		}
 		// --- Track P10 ---
@@ -3057,9 +3119,22 @@ export function tapPermanent(state: GameState, perm: CardInstance): boolean {
  */
 export function attachObject(state: GameState, obj: CardInstance, hostId: string): boolean {
 	if (obj.attachedToId === hostId) return false;
+	// --- Track P16b ---
+	const prevHostId = obj.zone === 'battlefield' && !obj.phasedOut ? obj.attachedToId : null;
+	// --- End Track P16b ---
 	obj.attachedToId = hostId;
 	obj.enteredTimestamp = allocateTimestamp(state);
 	noteLayerInputsChanged(state);
+	// --- Track P16b ---
+	if (prevHostId) {
+		emitEvent(state, {
+			kind: 'Unattached',
+			attachmentId: obj.instanceId,
+			attachment: obj,
+			hostId: prevHostId
+		});
+	}
+	// --- End Track P16b ---
 	return true;
 }
 
