@@ -315,7 +315,21 @@ export type CounterType =
 	| 'plague'
 	| 'blight'
 	| 'stash'
-	| 'vitality';
+	| 'vitality'
+	// --- Track P13 ---
+	| 'page'
+	| 'study'
+	| 'luck'
+	| 'supply'
+	| 'aim'
+	| 'brick'
+	| 'landmark'
+	| 'rad'
+	| 'rev'
+	| 'slime'
+	| 'soul'
+	| 'flood';
+	// --- End Track P13 ---
 
 export function createEmptyCounterMap(): Record<CounterType, number> {
 	return {
@@ -355,7 +369,21 @@ export function createEmptyCounterMap(): Record<CounterType, number> {
 		plague: 0,
 		blight: 0,
 		stash: 0,
-		vitality: 0
+		vitality: 0,
+		// --- Track P13 ---
+		page: 0,
+		study: 0,
+		luck: 0,
+		supply: 0,
+		aim: 0,
+		brick: 0,
+		landmark: 0,
+		rad: 0,
+		rev: 0,
+		slime: 0,
+		soul: 0,
+		flood: 0
+		// --- End Track P13 ---
 	};
 }
 	// --- End Track P11 ---
@@ -379,6 +407,9 @@ export interface ManaSpendContext {
 	isSpell: boolean;
 	isArtifactSpell?: boolean;
 	capturedColorsSpent?: ManaColor[];
+	// --- Track P13 ---
+	capturedColorsAllSpent?: ManaColor[];
+	// --- End Track P13 ---
 	// --- Track P10 ---
 	spellCard?: ScryfallCard;
 	spellFaceIndex?: number;
@@ -544,6 +575,20 @@ export interface PlayableFromExilePermission {
 	// --- End Track P2 ---
 }
 
+// --- Track P13 ---
+export interface PlayableFromGraveyardPermission {
+	playerId: string;
+	sourceName: string;
+	expiresAtEndOfTurn?: boolean;
+	expiresOnCleanupOfPlayerId?: string;
+	grantedOnTurnSerial?: number;
+	flashbackEqualManaCost?: boolean;
+	alternativeManaCost?: string;
+	withoutPayingManaCost?: boolean;
+	exileIfWouldEnterGraveyard?: boolean;
+}
+// --- End Track P13 ---
+
 export interface LibrarySearchInterceptorInfo {
 	controllerId: string;
 	sourceInstanceId: string;
@@ -564,6 +609,13 @@ export interface TokenCreationSpec {
 	// --- Track P10 ---
 	quotedAbilities?: string[];
 	// --- End Track P10 ---
+	// --- Track P13 ---
+	roleKind?: 'cursed' | 'monster' | 'royal' | 'sorcerer' | 'virtuous' | 'wicked' | 'young_hero';
+	emblemAbilities?: readonly string[];
+	ringLevel?: number;
+	dungeonId?: 'lost_mine' | 'mad_mage' | 'tomb' | 'undercity';
+	dungeonRoomIndex?: number;
+	// --- End Track P13 ---
 }
 
 export interface CardInstance {
@@ -749,6 +801,32 @@ export interface CardInstance {
 	/** CR 613.7c: per-counter-type timestamp allocated when counters of that kind are placed on this permanent. */
 	counterTimestamps?: Partial<Record<CounterType, number>>;
 	// --- End Track P11 ---
+	// --- Track P13 ---
+	/** CR 114: true when this command-zone object is a synthesized Emblem (not a card or permanent). */
+	isEmblem?: boolean;
+	/** CR 701.54: true when this Emblem is `The Ring` emblem (levels 1..4 evaluated via CR 701.54 hooks). */
+	isRingEmblem?: boolean;
+	/** CR 309: true when this command-zone object is an active Dungeon card. */
+	isDungeon?: boolean;
+	/** True iff this permanent entered the battlefield so far this turn; cleared at turn rollover & zone exit. */
+	enteredThisTurn?: boolean;
+	/** True iff this permanent was dealt >= 1 damage so far this turn; cleared at cleanup & zone exit. */
+	dealtDamageThisTurn?: boolean;
+	/** Valiant: controller IDs whose spells/abilities have targeted this permanent so far this turn. */
+	targetedByControllerIdsThisTurn?: string[];
+	/** CR 701.66a Earthbend: when this animated land dies or is exiled, return it to the battlefield tapped. */
+	earthbentReturn?: boolean;
+	/** CR 701.65a Airbend: owner may cast this exiled card for `{2}` rather than paying its mana cost. */
+	airbentCastPermission?: { playerId: string };
+	/** Temporary permission to cast this card from its owner's graveyard (e.g. Snapcaster Mage, Yawgmoth's Will-style). */
+	playableFromGraveyardBy?: PlayableFromGraveyardPermission;
+	/** CR 614.1a: "can attack this turn as though it didn't have defender". */
+	canAttackAsThoughNoDefenderThisTurn?: boolean;
+	/** CR 701.54c Level 3: Ring-bearer controller IDs whose Ring-bearer this creature blocked this combat. */
+	ringBlockedForPlayerIds?: string[];
+	/** Full multiset of mana colors spent to cast this spell/permanent (for Adamant single-color counts). */
+	manaColorsAllSpent?: ManaColor[];
+	// --- End Track P13 ---
 }
 
 export interface TargetRef {
@@ -851,7 +929,7 @@ export interface CastOption {
 	// --- Track P8: widened fromZone & permission for top-of-library spell casting ---
 	fromZone: 'hand' | 'command' | 'exile' | 'graveyard' | 'library';
 	// --- Track P11: added 'static_alt' for static alternative cast permissions ---
-	permission: 'zone_default' | 'keyword_alt' | 'exile_permission' | 'library_top_permission' | 'static_alt';
+	permission: 'zone_default' | 'keyword_alt' | 'exile_permission' | 'library_top_permission' | 'static_alt' | 'graveyard_permission';
 	faceIndex?: number;
 	fused?: boolean;
 	baseCost:
@@ -999,7 +1077,32 @@ export interface StackItem {
 	isChapterAbility?: boolean;
 	inherentTrigger?:
 		| { kind: 'monarchEndStepDraw'; drawPlayerId: string }
-		| { kind: 'monarchCombatDamage'; newMonarchPlayerId: string };
+		| { kind: 'monarchCombatDamage'; newMonarchPlayerId: string }
+		// --- Track P13 ---
+		| { kind: 'initiativeUpkeepVenture'; playerId: string }
+		| { kind: 'initiativeCombatDamage'; newInitiativePlayerId: string }
+		| {
+				kind: 'dungeonRoomAbility';
+				playerId: string;
+				dungeonId: 'lost_mine' | 'mad_mage' | 'tomb' | 'undercity';
+				roomIndex: number;
+		  }
+		| { kind: 'ringLevel2AttackLoot'; playerId: string }
+		| {
+				kind: 'ringLevel3BlockedSacrifice';
+				blockerId: string;
+				blockerObjectVersion: number;
+				blockerControllerId: string;
+		  }
+		| { kind: 'ringLevel4DamageLifeLoss'; playerId: string }
+		| {
+				kind: 'earthbendDelayedReturn';
+				cardId: string;
+				cardObjectVersion: number;
+				fromZone: 'graveyard' | 'exile';
+				ownerId: string;
+		  };
+		// --- End Track P13 ---
 	// --- Track P3 ---
 	/** LKI foretold tracking on triggered abilities whose source left the battlefield before resolution (CR 603.4). */
 	sourceForetold?: boolean;
@@ -1096,6 +1199,14 @@ export interface StackItem {
 	/** LKI chosenCardName carried onto triggered abilities. */
 	sourceChosenCardName?: string;
 	// --- End Track P11 ---
+	// --- Track P13 ---
+	/** Full multiset of mana colors spent to cast this spell (for Adamant single-color counts). */
+	manaColorsAllSpent?: ManaColor[];
+	/** Excess damage dealt in the most recent `damage` step of this resolving spell/ability (CR 120.10). */
+	lastExcessDamage?: number;
+	/** Numeric result of the most recent effect step (damage dealt, life lost/gained, cards milled/drawn). */
+	lastEffectAmount?: number;
+	// --- End Track P13 ---
 }
 
 // --- Track P10 ---
@@ -1167,6 +1278,10 @@ export interface EffectResumeFrame {
 	// --- Track P10 ---
 	lastRollResult?: number;
 	// --- End Track P10 ---
+	// --- Track P13 ---
+	lastExcessDamage?: number;
+	lastEffectAmount?: number;
+	// --- End Track P13 ---
 	pendingOptionalCost?: {
 		stepIndex: number;
 		parts: SerializedPlannedCost[];
@@ -1764,6 +1879,36 @@ export interface PlayerGameState {
 	/** CR 502.3: instanceIds already prompted/decided for 'You may choose not to untap ~' during this untap step. */
 	untapChoiceEvaluatedIds?: string[];
 	// --- End Track P11 ---
+	// --- Track P13 ---
+	/** CR 309 / 701.49: active dungeon venture marker (`roomIndex` in `DUNGEON_SPECS[dungeonId]`). */
+	activeDungeon?: {
+		dungeonId: 'lost_mine' | 'mad_mage' | 'tomb' | 'undercity';
+		roomIndex: number;
+		pendingCompletion?: boolean;
+	};
+	/** CR 309.7: distinct or total dungeon names completed by this player this game. */
+	completedDungeonNames?: string[];
+	dungeonsCompletedCount?: number;
+	/** CR 701.54: current Ring temptation level (1..4) on this player's `The Ring` emblem. */
+	ringLevel?: number;
+	/** CR 701.54a: instanceId of the creature controlled by this player designated as their Ring-bearer. */
+	ringBearerId?: string | null;
+	/** CR 702.131c Ascend: permanent designation once granted for the rest of the game. */
+	hasCitysBlessing?: boolean;
+	/** CR 702.179 Speed: player speed (1..4; 4 = max speed). */
+	speed?: number;
+	/** Additional land plays granted until end of turn ("You may play an additional land this turn"). */
+	extraLandPlaysThisTurn?: number;
+	/** Celebration: count of nonland permanents that entered the battlefield under this player's control this turn. */
+	nonlandPermanentsEnteredThisTurn?: number;
+	/** Void: true iff a nonland permanent left the battlefield this turn. */
+	nonlandPermanentLeftThisTurn?: boolean;
+	/** Void: true iff a spell was warped this turn. */
+	spellWarpedThisTurn?: boolean;
+	/** Timed player hexproof granted by resolving spell/ability ("You gain hexproof until end of turn / until your next turn"). */
+	hexproofThisTurn?: boolean;
+	hexproofUntilNextTurn?: boolean;
+	// --- End Track P13 ---
 }
 
 export interface ManaRider {
@@ -1809,7 +1954,25 @@ export interface TimedContinuousEffect {
 	controllerId: string;
 	affected: Array<{ instanceId: string; objectVersion?: number }>;
 	/** Omitted defaults to `'endOfTurn'` for backward compatibility with Crew etc. */
-	expires?: 'endOfTurn' | 'never' | 'untilSourceLeaves';
+	// --- Track P13: added 'untilYourNextTurn' & 'untilEndOfYourNextTurn' & layer7c ---
+	expires?:
+		| 'endOfTurn'
+		| 'never'
+		| 'untilSourceLeaves'
+		| 'untilYourNextTurn'
+		| 'untilEndOfYourNextTurn';
+	/** CR 611.2b / 800.4m: player whose next turn start expires `'untilYourNextTurn'`. */
+	expiresOnTurnStartOfPlayerId?: string;
+	/** CR 611.2b / 800.4m: player whose next turn cleanup expires `'untilEndOfYourNextTurn'`. */
+	expiresOnCleanupOfPlayerId?: string;
+	/** `state.turnSerial ?? state.turnNumber` when this effect was created. */
+	grantedOnTurnSerial?: number;
+	/** CR 613.4c: Layer 7c power/toughness modification (+X/+Y) with explicit cross-turn/permanent duration. */
+	layer7c?: {
+		power: number;
+		toughness: number;
+	};
+	// --- End Track P13 ---
 	layer2?: {
 		controllerId: string;
 		/** When set, this Layer 2 effect expires as soon as the source permanent is no longer on the battlefield with matching objectVersion. */
@@ -1893,6 +2056,9 @@ export interface PendingCostPayment {
 	spellMods?: SpellModifications;
 	optionalCostCounts?: Record<string, number>;
 	manaColorsSpent?: ManaColor[];
+	// --- Track P13 ---
+	manaColorsAllSpent?: ManaColor[];
+	// --- End Track P13 ---
 	exSourceName?: string;
 	sourceCard?: ScryfallCard;
 	additionalIncomplete?: boolean;
@@ -2074,6 +2240,14 @@ export interface GameState {
 	/** Case To-solve: count of cards put into graveyards from anywhere this turn. */
 	cardsPutIntoGraveyardThisTurn?: number;
 	// --- End Track P12 ---
+	// --- Track P13 ---
+	/** CR 727: playerId of the player who currently has the initiative (`null` / `undefined` before first taken). */
+	initiativePlayerId?: string | null;
+	/** Total spells cast by all players during the immediately preceding turn (Daybound/Nightbound & Werewolves). */
+	spellsCastLastTurnTotal?: number;
+	/** Maximum spells cast by any single player during the immediately preceding turn. */
+	maxSpellsCastBySinglePlayerLastTurn?: number;
+	// --- End Track P13 ---
 }
 
 export interface MagicLobby {

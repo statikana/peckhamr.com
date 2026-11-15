@@ -457,6 +457,22 @@ export interface ObjectFilter {
 	/** Matches stack spells/abilities that target at least one object matching `targetsFilter`. */
 	targetsFilter?: ObjectFilter;
 	// --- End Track P11 ---
+	// --- Track P13 ---
+	/** Matches creatures that are currently attacking OR blocking ("attacking or blocking creature"). */
+	attackingOrBlocking?: boolean;
+	/** Matches permanents dealt >= 1 damage so far this turn ("creature that was dealt damage this turn"). */
+	dealtDamageThisTurn?: boolean;
+	/** Matches permanents that entered the battlefield this turn ("creature that entered this turn"). */
+	enteredThisTurn?: boolean;
+	/** CR 708: matches face-down (`true`) or face-up (`false`) permanents/spells. */
+	faceDown?: boolean;
+	/** Stack filter: matches spells that were kicked (`kickedCount >= 1`). */
+	kickedSpell?: boolean;
+	/** Stack filter: matches spells cast from anywhere other than hand (`castFromZone !== 'hand'`). */
+	castNotFromHand?: boolean;
+	/** Stack filter: matches spells cast from a specific zone (e.g. `'graveyard'`, `'exile'`). */
+	castFromZoneFilter?: ZoneType;
+	// --- End Track P13 ---
 }
 
 export interface Compare {
@@ -564,8 +580,26 @@ export type Amount =
 	/** CR 700.8a–b Party: maximum bipartite matching (0..4) across Cleric/Rogue/Warrior/Wizard creatures `player` controls. */
 	| { k: 'partyCount'; player: PlayerRef }
 	/** Count of attachments on `'self'` or `'attachedTo'` matching optional `filter`. */
-	| { k: 'attachmentsOn'; target: 'self' | 'attachedTo'; filter?: ObjectFilter };
+	| { k: 'attachmentsOn'; target: 'self' | 'attachedTo'; filter?: ObjectFilter }
 	// --- End Track P11 ---
+	// --- Track P13 ---
+	/** CR 709.5: total number of unlocked doors among Rooms `player` controls. */
+	| { k: 'unlockedDoorsCount'; player: PlayerRef }
+	/** CR 120.10: excess damage dealt to a permanent/planeswalker in the preceding `damage` step. */
+	| { k: 'excessDamage' }
+	/** Amount dealt / gained / lost / milled / discarded / sacrificed / drawn in the preceding step. */
+	| { k: 'lastEffectAmount' }
+	/** Number of distinct colors (0..5) among permanents `player` controls matching optional `filter`. */
+	| { k: 'colorsAmongPermanents'; filter?: ObjectFilter; player: PlayerRef }
+	/** Half of `of`, rounded up (`ceil`) or down (`floor`). */
+	| { k: 'half'; of: Amount; round: 'up' | 'down' }
+	/** CR 309.7: number of dungeons `player` has completed this game. */
+	| { k: 'dungeonsCompleted'; player: PlayerRef }
+	/** Greatest power / toughness / mana value among matching battlefield permanents (0 if none). */
+	| { k: 'greatestStatAmong'; filter: ObjectFilter; stat: 'power' | 'toughness' | 'manaValue' }
+	/** Total power / toughness / mana value across matching battlefield permanents. */
+	| { k: 'totalStatAmong'; filter: ObjectFilter; stat: 'power' | 'toughness' | 'manaValue' };
+	// --- End Track P13 ---
 
 // ---- Costs ----------------------------------------------------------------------------------
 
@@ -722,12 +756,36 @@ export type Verb =
 	| 'fateseal'
 	| 'flipCoin'
 	| 'rollDie'
-	| 'retainMana';
+	| 'retainMana'
 	// --- End Track P10 ---
+	// --- Track P13 ---
+	| 'createEmblem'
+	| 'createRoleToken'
+	| 'doubleOrTriple'
+	| 'exchange'
+	| 'turnFace'
+	| 'chooseDesignation'
+	| 'grantGraveyardCast'
+	| 'ventureIntoDungeon'
+	| 'takeInitiative'
+	| 'temptWithRing'
+	| 'earthbend'
+	| 'airbend'
+	| 'learn'
+	| 'villainousChoice'
+	| 'vote';
+	// --- End Track P13 ---
 
 export type ManaRestriction = 'artifactSpellOrNonSpell';
 
-export type Duration = 'endOfTurn' | 'permanent' | 'untilYourNextTurn' | 'untilSourceLeaves';
+// --- Track P13: added 'untilEndOfYourNextTurn' ---
+export type Duration =
+	| 'endOfTurn'
+	| 'permanent'
+	| 'untilYourNextTurn'
+	| 'untilEndOfYourNextTurn'
+	| 'untilSourceLeaves';
+// --- End Track P13 ---
 
 export interface OptionalSpec {
 	chooser: PlayerRef;
@@ -789,6 +847,11 @@ export interface EffectParams {
 		// --- Track P7 ---
 		| 'damageCantBePrevented'
 		| 'combatDamageCantBePrevented'
+		// --- Track P13 ---
+		| 'extraLandPlay'
+		| 'cannotLoseGame'
+		| 'hexproof'
+		// --- End Track P13 ---
 	>;
 	search?: SearchSpec;
 	to?: ZoneType;
@@ -976,7 +1039,80 @@ export interface EffectParams {
 	/** rollDie (CR 706.2): result table branches (`1—9 | ...`, `10—19 | ...`, `20 | ...`). */
 	dieRollTable?: DieRollBranch[];
 	// --- End Track P10 ---
+	// --- Track P13 ---
+	/** createEmblem (CR 114): raw oracle ability strings granted to the created emblem. */
+	emblemAbilities?: string[];
+	/** createRoleToken (CR 111.10k–r): predefined Role Aura token kind attached to `subject`. */
+	roleKind?: RoleTokenKind;
+	/** doubleOrTriple (CR 701.10–11): target attribute/counter/life and factor (2 or 3). */
+	doubleSpec?: DoubleOrTripleSpec;
+	/** exchange (CR 701.12): exchange control of two permanents, life totals, or life total with P/T. */
+	exchangeSpec?: ExchangeSpec;
+	/** turnFace (CR 708): turn permanent(s) face up or face down. */
+	faceDirection?: 'up' | 'down';
+	/** chooseDesignation: sets `chosenColor`, `chosenSubType`, or `chosenCardName` on source permanent. */
+	chooseKind?: 'color' | 'creatureType' | 'cardName' | 'nonlandCardName';
+	/** grantGraveyardCast: grants temporary casting permission (or flashback) to card(s) in graveyard. */
+	graveyardCastSpec?: GraveyardCastGrantSpec;
+	/** ventureIntoDungeon (CR 701.49): `'dungeon'` (standard 3 dungeons) or `'undercity'` (CR 701.49d). */
+	dungeonKind?: 'dungeon' | 'undercity';
+	/** villainousChoice (CR 701.55): two opponent-chosen branches and prompt labels. */
+	villainousOptions?: [EffectStep[], EffectStep[]];
+	villainousOptionLabels?: [string, string];
+	/** vote (CR 701.38): council vote options, extra votes for actor, and outcome effects. */
+	voteSpec?: VoteSpec;
+	/** move to library bottom: shuffle the moved cards into a random order on the bottom. */
+	randomOrder?: boolean;
+	/** reveal: look at top library cards / target player's hand (visible only to `actor`). */
+	lookOnly?: boolean;
+	/** grantPlayer: number of additional lands `actor` may play this turn. */
+	extraLandPlays?: number;
+	/** grant: allows creature(s) to attack this turn as though they didn't have defender. */
+	canAttackNoDefender?: boolean;
+	// --- End Track P13 ---
 }
+
+// --- Track P13 ---
+export type RoleTokenKind =
+	| 'cursed'
+	| 'monster'
+	| 'royal'
+	| 'sorcerer'
+	| 'virtuous'
+	| 'wicked'
+	| 'young_hero';
+
+export type DungeonId = 'lost_mine' | 'mad_mage' | 'tomb' | 'undercity';
+
+export interface DoubleOrTripleSpec {
+	factor: 2 | 3;
+	target: 'power' | 'toughness' | 'pt' | 'counters' | 'life';
+	counter?: CounterType | 'each';
+	duration?: Duration;
+}
+
+export interface ExchangeSpec {
+	kind: 'control' | 'lifeTotals' | 'lifeAndPower' | 'lifeAndToughness';
+	second?: Selector;
+}
+
+export interface GraveyardCastGrantSpec {
+	duration: 'thisTurn' | 'untilEndOfYourNextTurn';
+	flashbackEqualManaCost?: boolean;
+	alternativeManaCost?: string;
+	withoutPayingManaCost?: boolean;
+	exileIfWouldEnterGraveyard?: boolean;
+}
+
+export interface VoteSpec {
+	options: string[];
+	extraVotesForActor?: number;
+	/** Effects executed once per vote cast for `options[i]`. */
+	perOptionEffect?: EffectStep[][];
+	/** Effects executed if `options[i]` gets the most votes or is tied for most votes. */
+	perWinningEffect?: EffectStep[][];
+}
+// --- End Track P13 ---
 
 // --- Track P10 ---
 export interface ReflexiveTriggerSpec {
@@ -1144,8 +1280,22 @@ export type EventKind =
 	/** CR 720.2b / 702.169c: "Whenever you solve a Case" when a Case becomes solved. */
 	| 'caseSolved'
 	/** CR 702.112b: "When ~ becomes renowned" when a creature becomes renowned. */
-	| 'becameRenowned';
+	| 'becameRenowned'
 	// --- End Track P12 ---
+	// --- Track P13 ---
+	/** CR 709.5h: "When you unlock this door" / "Whenever you unlock a door of a Room you control". */
+	| 'doorUnlocked'
+	/** CR 709.5i (Eerie): "Whenever you fully unlock a Room". */
+	| 'roomFullyUnlocked'
+	/** CR 701.54: "Whenever the Ring tempts you". */
+	| 'ringTempted'
+	/** CR 309.4c / 701.49: "Whenever you venture into the dungeon" (room entered). */
+	| 'dungeonRoomEntered'
+	/** CR 309.7: "Whenever you complete a dungeon". */
+	| 'dungeonCompleted'
+	/** CR 727.2: "Whenever you take the initiative". */
+	| 'tookInitiative';
+	// --- End Track P13 ---
 
 export interface EventFilter {
 	/**
@@ -1219,6 +1369,22 @@ export interface EventFilter {
 	/** attacks (CR 702.149a Training): matches only when at least one other attacking creature has greater power than self. */
 	trainingGreaterAttacker?: boolean;
 	// --- End Track P12 ---
+	// --- Track P13 ---
+	/** Valiant: "for the first time each turn" when targeted by a spell or ability you control. */
+	firstTimeTargetedByYouThisTurn?: boolean;
+	/** cast: "Whenever you cast a spell during an opponent's turn". */
+	duringOpponentTurn?: boolean;
+	/** cast: "Whenever you cast a spell from anywhere other than your hand". */
+	castFromNotHand?: boolean;
+	/** cast: "Whenever you cast a spell from your graveyard / from exile". */
+	castFromZone?: ZoneType;
+	/** cast: "Whenever you cast a kicked spell". */
+	wasKicked?: boolean;
+	/** blocks: optional filter on the blocked attacker ("Whenever ~ blocks a [filter]"). */
+	blockedAttackerFilter?: ObjectFilter;
+	/** doorUnlocked (CR 709.5h): 0-based Room face index when the ability says "When you unlock this door". */
+	thisDoorFaceIndex?: number;
+	// --- End Track P13 ---
 }
 
 export interface TriggerDef {
@@ -1358,8 +1524,30 @@ export type Condition =
 			whose?: 'you' | 'any';
 	  }
 	/** Case To-solve: true iff you have cast >= `min` matching spells this turn. */
-	| { k: 'spellsCastThisTurnCount'; min: number; filter?: ObjectFilter };
+	| { k: 'spellsCastThisTurnCount'; min: number; filter?: ObjectFilter }
 	// --- End Track P12 ---
+	// --- Track P13 ---
+	/** True iff the source card is currently in `zone` (e.g. "if ~ is in your graveyard"). */
+	| { k: 'selfInZone'; zone: ZoneType }
+	/** True iff last turn's spell count satisfies `mode` ("if no spells were cast last turn" / "if a player cast two or more spells last turn"). */
+	| { k: 'spellsCastLastTurn'; mode: 'none' | 'singlePlayerAtLeast'; count: number }
+	/** CR 309.7: true iff controller has completed at least one dungeon this game. */
+	| { k: 'hasCompletedDungeon' }
+	/** CR 727: true iff controller currently has the initiative. */
+	| { k: 'hasInitiative' }
+	/** CR 702.131c Ascend: true iff controller has the city's blessing. */
+	| { k: 'hasCitysBlessing' }
+	/** CR 702.179 Max speed: true iff controller's speed is >= 4. */
+	| { k: 'hasMaxSpeed' }
+	/** Corrupted: true iff at least one opponent has >= `min` poison counters. */
+	| { k: 'opponentPoisonAtLeast'; min: number }
+	/** Celebration: true iff >= `min` nonland permanents entered the battlefield under your control this turn. */
+	| { k: 'nonlandEnteredThisTurn'; min: number }
+	/** Void: true iff a nonland permanent left the battlefield this turn or a spell was warped this turn. */
+	| { k: 'voidThisTurn' }
+	/** Adamant: true iff >= `min` mana of `color` (or of any single color when omitted) was spent to cast this spell. */
+	| { k: 'sameColorManaSpentAtLeast'; min: number; color?: ManaColor };
+	// --- End Track P13 ---
 
 // ---- Statics and replacements ---------------------------------------------------------------
 

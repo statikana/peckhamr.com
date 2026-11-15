@@ -3,6 +3,9 @@ import { compileCard } from '../compiler/index.ts';
 import { enqueueChoicePrompt, registerPromptHandler } from './choices.ts';
 import { evaluatePermanent } from '../ruleTree.ts';
 import { effectiveCardForObject } from '../scryfall.ts';
+// --- Track P13 ---
+import { withStackItemText } from '../oracle.ts';
+// --- End Track P13 ---
 import {
 	createEmptyCounterMap,
 	type CardInstance,
@@ -768,6 +771,9 @@ function finalizeZoneMove(
 			? (obj.faceDownLabel || 'Face-Down Permanent')
 			: null;
 
+	// --- Track P13: capture earthbentReturn before leaveBattlefieldReset clears it ---
+	const hadEarthbentReturn = Boolean(fromZone === 'battlefield' && obj.earthbentReturn);
+	// --- End Track P13 ---
 	if (opts.leaveBattlefieldReset) {
 		if (obj.printedCard) {
 			obj.card = obj.printedCard;
@@ -849,6 +855,14 @@ function finalizeZoneMove(
 		obj.etbCounterChoiceDone = undefined;
 		obj.counterTimestamps = undefined;
 		// --- End Track P11 ---
+		// --- Track P13 (CR 400.7) ---
+		delete obj.enteredThisTurn;
+		delete obj.dealtDamageThisTurn;
+		delete obj.targetedByControllerIdsThisTurn;
+		delete obj.earthbentReturn;
+		delete obj.canAttackAsThoughNoDefenderThisTurn;
+		delete obj.ringBlockedForPlayerIds;
+		// --- End Track P13 ---
 		const prevObjVersion = obj.objectVersion || 1;
 		const pruneLeftPerm = <T extends { affected: Array<{ instanceId: string; objectVersion?: number }> }>(
 			list: T[] | undefined
@@ -916,6 +930,14 @@ function finalizeZoneMove(
 		obj.etbCounterChoiceDone = undefined;
 		obj.counterTimestamps = undefined;
 		// --- End Track P11 ---
+		// --- Track P13 (CR 400.7) ---
+		delete obj.enteredThisTurn;
+		delete obj.dealtDamageThisTurn;
+		delete obj.targetedByControllerIdsThisTurn;
+		delete obj.earthbentReturn;
+		delete obj.canAttackAsThoughNoDefenderThisTurn;
+		delete obj.ringBlockedForPlayerIds;
+		// --- End Track P13 ---
 		if (dest !== 'stack') {
 			obj.manaColorsSpent = undefined;
 			// --- Track P10 ---
@@ -956,6 +978,28 @@ function finalizeZoneMove(
 		obj.discardedByPlayerIdThisTurn = undefined;
 		obj.discardedTurnSerial = undefined;
 		// --- End Track P12 ---
+		// --- Track P13 ---
+		if (fromZone === 'graveyard') {
+			delete obj.playableFromGraveyardBy;
+		}
+		if (fromZone === 'exile') {
+			delete obj.airbentCastPermission;
+		}
+		if (fromZone === 'battlefield' && dest !== 'battlefield') {
+			for (const pl of state.players) {
+				if (pl.ringBearerId === obj.instanceId) {
+					pl.ringBearerId = null;
+					noteLayerInputsChanged(state);
+				}
+			}
+			if (lki && !lki.typeLine.split(/[\s—]+/).includes('Land')) {
+				for (const pl of state.players) {
+					pl.nonlandPermanentLeftThisTurn = true;
+				}
+				noteLayerInputsChanged(state);
+			}
+		}
+		// --- End Track P13 ---
 		if (state.triggeredOnceThisTurn?.length) {
 			const prefix = `${obj.instanceId}:${dest}:`;
 			const remaining = state.triggeredOnceThisTurn.filter((k) => !k.startsWith(prefix));
@@ -1005,6 +1049,9 @@ function finalizeZoneMove(
 		obj.lastKnownCounters = undefined;
 		obj.lastKnownPower = undefined;
 		obj.lastKnownToughness = undefined;
+		// --- Track P13 ---
+		obj.enteredThisTurn = true;
+		// --- End Track P13 ---
 	}
 	if (isEnteringBattlefield && !obj.isFaceDown) {
 		const ctrlId = opts.controllerId ?? obj.controllerId ?? effectiveReceiver.playerId;
@@ -1233,6 +1280,21 @@ function finalizeZoneMove(
 			// --- Track P12 ---
 			applyWave4EtbCountersAndSetup(state, obj, placeRegisteredCounters);
 			// --- End Track P12 ---
+			// --- Track P13: Celebration nonland ETB count ---
+			const enteredCtrl = state.players.find(
+				(pl) => pl.playerId === (obj.controllerId || effectiveReceiver.playerId)
+			);
+			if (enteredCtrl) {
+				const enteredView = resolveObjectFaces(
+					effectiveCardForObject(obj),
+					instanceFaceOptions(obj, 'battlefield')
+				);
+				if (!enteredView.types.includes('Land')) {
+					enteredCtrl.nonlandPermanentsEnteredThisTurn =
+						(enteredCtrl.nonlandPermanentsEnteredThisTurn ?? 0) + 1;
+				}
+			}
+			// --- End Track P13 ---
 			noteLayerInputsChanged(state);
 		}
 		if (shuffleDestLibrary && dest === 'library') {
@@ -1315,6 +1377,43 @@ function finalizeZoneMove(
 		if (dest === 'battlefield' && fromZone !== 'battlefield' && !ceases) {
 			maybePlaceSagaEtbLoreCounter(state, obj);
 		}
+		// --- Track P13 (CR 701.66a Earthbend delayed return trigger when animated land dies or is exiled) ---
+		if (
+			hadEarthbentReturn &&
+			fromZone === 'battlefield' &&
+			(dest === 'graveyard' || dest === 'exile') &&
+			!ceases &&
+			!obj.isToken
+		) {
+			const trigCtrlId = lki?.controllerId ?? fromPlayerId ?? obj.ownerId;
+			state.stack.push(
+				withStackItemText(
+					{
+						id: uid('stk', state),
+						sourceInstanceId: obj.instanceId,
+						card: obj.card,
+						ownerId: obj.ownerId,
+						controllerId: trigCtrlId,
+						kind: 'triggered',
+						title: `${obj.card.name} — Earthbend Return`,
+						targets: [],
+						xValue: 0,
+						requiresGuidedResolution: false,
+						createdAt: Date.now(),
+						inherentTrigger: {
+							kind: 'earthbendDelayedReturn',
+							cardId: obj.instanceId,
+							cardObjectVersion: obj.objectVersion ?? 1,
+							fromZone: dest,
+							ownerId: effectiveReceiver.playerId
+						}
+					},
+					'Return that card to the battlefield tapped under your control.'
+				)
+			);
+			noteLayerInputsChanged(state);
+		}
+		// --- End Track P13 ---
 	}
 	if (
 		promptCommanderRedirect &&
@@ -2654,3 +2753,19 @@ export function attachObject(state: GameState, obj: CardInstance, hostId: string
 	noteLayerInputsChanged(state);
 	return true;
 }
+
+// --- Track P13 ---
+/**
+ * CR 114.1 / CR 309.4: Places a synthesized Emblem or Dungeon object into `player.command` through
+ * `zones.ts` (preserving `directZoneMutation === 0`) and notifies the layer cache.
+ */
+export function putIntoCommandZone(
+	state: GameState,
+	player: PlayerGameState,
+	inst: CardInstance
+): void {
+	inst.zone = 'command';
+	player.command.push(inst);
+	noteLayerInputsChanged(state);
+}
+// --- End Track P13 ---

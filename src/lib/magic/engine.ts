@@ -352,6 +352,24 @@ import {
 	type SourceDamageInfo,
 	type StackItemRetargetSlot
 } from './runtime/effects.ts';
+// --- Track P13 ---
+import {
+	applyDungeonCompletionSba,
+	applyRoleTokenSba,
+	cleanupP13TurnState,
+	collectP13GraveyardAndAirbendCastOptions,
+	expireP13UntilNextTurnEffects,
+	getRingBearerBlockRestriction,
+	handleInitiativePlayerEliminated,
+	pushInitiativeCombatDamageTrigger,
+	pushInitiativeUpkeepTrigger,
+	pushRingAttackTriggers,
+	pushRingCombatDamageTriggers,
+	pushRingEndOfCombatTriggers,
+	registerRingBlockedEndOfCombatSacrifice,
+	resolveP13InherentTrigger
+} from './runtime/effectsWave5.ts';
+// --- End Track P13 ---
 import { chooseBotModalTriggerModes, chooseBotTriggerTargets } from './ai.ts';
 import { splitSubtypes } from './runtime/layers.ts';
 // --- Track P7 ---
@@ -1042,7 +1060,57 @@ function enumerateCandidateCastOptions(
 					});
 				}
 			}
+			// --- Track P13: Airbend {2} cast permission from exile (CR 701.65a) ---
+			if (actor && !isLandOnlyFace && inst.airbentCastPermission?.playerId === actorId) {
+				hasZonePermission = true;
+				const airOpts = collectP13GraveyardAndAirbendCastOptions(
+					actor,
+					inst,
+					'exile',
+					isMultiFace ? fi : undefined,
+					faceManaCost || '{0}',
+					targetInfo.requiresTarget
+				);
+				for (const aOpt of airOpts) {
+					options.push({
+						...aOpt,
+						costDisplay: `${aOpt.costDisplay}${taxSuffix}`,
+						...(mandatoryAdditionalCosts ? { mandatoryAdditionalCosts } : {}),
+						...optionalProp,
+						...paymentAidsProp,
+						spellMods: { ...adventureMods, ...aOpt.spellMods },
+						choosesX: spellChoosesX(card, aOpt.baseCost, undefined, fi, false)
+					});
+				}
+			}
+			// --- End Track P13 ---
 		// --- Track P8 ---
+		} else if (fromZone === 'graveyard') {
+			// --- Track P13: Temporary graveyard cast permission (e.g. Snapcaster Mage / Yawgmoth's Will) ---
+			if (actor && !isLandOnlyFace && inst.playableFromGraveyardBy?.playerId === actorId) {
+				hasZonePermission = true;
+				const gyOpts = collectP13GraveyardAndAirbendCastOptions(
+					actor,
+					inst,
+					'graveyard',
+					isMultiFace ? fi : undefined,
+					faceManaCost || '{0}',
+					targetInfo.requiresTarget
+				);
+				for (const gOpt of gyOpts) {
+					const isFreeGy = gOpt.baseCost.kind === 'free';
+					options.push({
+						...gOpt,
+						costDisplay: `${gOpt.costDisplay}${taxSuffix}`,
+						...(mandatoryAdditionalCosts ? { mandatoryAdditionalCosts } : {}),
+						...optionalProp,
+						...(isFreeGy ? {} : paymentAidsProp),
+						spellMods: { ...adventureMods, ...gOpt.spellMods },
+						choosesX: spellChoosesX(card, gOpt.baseCost, undefined, fi, false)
+					});
+				}
+			}
+			// --- End Track P13 ---
 		} else if (fromZone === 'library') {
 			if (actor?.library[0]?.instanceId === inst.instanceId) {
 				const srcName = getActiveTopOfLibrarySpellPermissionSource(
@@ -1326,6 +1394,9 @@ function resolveCastOptionForAction(
 	if (
 		fromZone === 'exile' &&
 		inst.playableFromExileBy?.playerId !== actorId &&
+		// --- Track P13 ---
+		inst.airbentCastPermission?.playerId !== actorId &&
+		// --- End Track P13 ---
 		!inst.castViaSuspend &&
 		!hasExileKeywordPermission(inst, actorId)
 	) {
@@ -2078,6 +2149,9 @@ function finalizeCastSpell(
 		aidDescriptions?: string[];
 		additionalIncomplete?: boolean;
 		manaColorsSpent?: ManaColor[];
+		// --- Track P13 ---
+		manaColorsAllSpent?: ManaColor[];
+		// --- End Track P13 ---
 		// --- Track P10 ---
 		manaSpentCount?: number;
 		// --- End Track P10 ---
@@ -2138,6 +2212,10 @@ function finalizeCastSpell(
 	}
 	inst.prototyped = effectiveSpellMods?.prototyped ? true : undefined;
 	inst.manaColorsSpent = opts.manaColorsSpent ? [...opts.manaColorsSpent] : undefined;
+	// --- Track P13 ---
+	if (opts.manaColorsAllSpent) inst.manaColorsAllSpent = [...opts.manaColorsAllSpent];
+	else delete inst.manaColorsAllSpent;
+	// --- End Track P13 ---
 	// --- Track P10 ---
 	inst.manaSpentCount = opts.manaSpentCount;
 	// --- End Track P10 ---
@@ -2150,6 +2228,13 @@ function finalizeCastSpell(
 		bumpVersion: true
 	});
 	inst.playableFromExileBy = undefined;
+	// --- Track P13 ---
+	delete inst.playableFromGraveyardBy;
+	delete inst.airbentCastPermission;
+	if (effectiveSpellMods?.warped) {
+		actor.spellWarpedThisTurn = true;
+	}
+	// --- End Track P13 ---
 
 	if (!actor.commanderCastCounts) {
 		actor.commanderCastCounts = {};
@@ -2188,6 +2273,9 @@ function finalizeCastSpell(
 			kind: 'spell',
 			title: spellDisplayName,
 			...(opts.manaColorsSpent ? { manaColorsSpent: [...opts.manaColorsSpent] } : {}),
+			// --- Track P13 ---
+			...(opts.manaColorsAllSpent ? { manaColorsAllSpent: [...opts.manaColorsAllSpent] } : {}),
+			// --- End Track P13 ---
 			// --- Track P10 ---
 			...(opts.manaSpentCount !== undefined ? { manaSpentCount: opts.manaSpentCount } : {}),
 			// --- End Track P10 ---
@@ -2601,6 +2689,11 @@ function executeOrResumePendingCostPayment(
 		if (ctx.spendCtx?.capturedColorsSpent) {
 			pcp.manaColorsSpent = ctx.spendCtx.capturedColorsSpent;
 		}
+		// --- Track P13 ---
+		if (ctx.spendCtx?.capturedColorsAllSpent) {
+			pcp.manaColorsAllSpent = ctx.spendCtx.capturedColorsAllSpent;
+		}
+		// --- End Track P13 ---
 		// --- Track P10 ---
 		if (ctx.spendCtx?.capturedManaSpentCount) {
 			pcp.manaSpentCount = ctx.spendCtx.capturedManaSpentCount;
@@ -2656,6 +2749,9 @@ function executeOrResumePendingCostPayment(
 				aidDescriptions: pcp.aidDescriptions,
 				additionalIncomplete: pcp.additionalIncomplete,
 				manaColorsSpent: pcp.manaColorsSpent,
+				// --- Track P13 ---
+				manaColorsAllSpent: pcp.manaColorsAllSpent,
+				// --- End Track P13 ---
 				// --- Track P10 ---
 				manaSpentCount: pcp.manaSpentCount
 				// --- End Track P10 ---
@@ -3562,10 +3658,22 @@ function deductManaForSpendContextWithSnow(
 		const beforePool = { ...player.manaPool };
 		deductManaConservingSnow(player, manaReq);
 		const spentColors: ManaColor[] = [];
+		// --- Track P13 ---
+		const spentColorsAll: ManaColor[] = [];
+		// --- End Track P13 ---
 		for (const c of FIVE_MANA_COLORS) {
-			if (beforePool[c] - player.manaPool[c] > 0) spentColors.push(c);
+			const diff = beforePool[c] - player.manaPool[c];
+			if (diff > 0) {
+				spentColors.push(c);
+				// --- Track P13 ---
+				for (let k = 0; k < diff; k++) spentColorsAll.push(c);
+				// --- End Track P13 ---
+			}
 		}
 		spendCtx.capturedColorsSpent = spentColors;
+		// --- Track P13 ---
+		spendCtx.capturedColorsAllSpent = spentColorsAll;
+		// --- End Track P13 ---
 	} else {
 		deductManaForSpendContext(player, manaReq, spendCtx);
 		clampSnowManaToPool(player);
@@ -4771,6 +4879,9 @@ export function expirePlayerUntilNextTurnEffects(state: GameState, playerId: str
 	// --- Track P10 ---
 	expireDetainedEffectsForPlayer(state, playerId);
 	// --- End Track P10 ---
+	// --- Track P13 ---
+	expireP13UntilNextTurnEffects(state, playerId);
+	// --- End Track P13 ---
 }
 
 export function runBeginningOfTurn(state: GameState): void {
@@ -5533,6 +5644,23 @@ function applyGameActionInner(
 				`${actor.username} unlocked ${faceDef.name} on ${perm.card.name} (CR 709.5e).`,
 				actorId
 			);
+			// --- Track P13 (CR 709.5e–f): Emit DoorUnlocked & RoomFullyUnlocked ---
+			emitEvent(state, {
+				kind: 'DoorUnlocked',
+				playerId: actorId,
+				objectId: perm.instanceId,
+				object: perm,
+				faceIndex: action.faceIndex
+			});
+			if (perm.unlockedFaces.length >= 2) {
+				emitEvent(state, {
+					kind: 'RoomFullyUnlocked',
+					playerId: actorId,
+					objectId: perm.instanceId,
+					object: perm
+				});
+			}
+			// --- End Track P13 ---
 			resetTriggerLoopTracking(state);
 			flushTriggers(state);
 			checkStateBasedActions(state);
@@ -5749,12 +5877,32 @@ function applyGameActionInner(
 					if (gyIdx >= 0 && (!action.fromZone || action.fromZone === 'graveyard')) {
 						inst = actor.graveyard[gyIdx];
 						sourceZone = 'graveyard';
-					} else if (!action.fromZone || action.fromZone === 'exile') {
+					} else if (!action.fromZone || action.fromZone === 'graveyard') {
+						// --- Track P13: Foreign graveyard cast permission ---
+						for (const p of state.players) {
+							const fGyIdx = p.graveyard.findIndex(
+								(c) =>
+									c.instanceId === action.instanceId &&
+									c.playableFromGraveyardBy?.playerId === actorId
+							);
+							if (fGyIdx >= 0) {
+								inst = p.graveyard[fGyIdx];
+								sourcePlayer = p;
+								sourceZone = 'graveyard';
+								break;
+							}
+						}
+						// --- End Track P13 ---
+					}
+					if (!inst && (!action.fromZone || action.fromZone === 'exile')) {
 						for (const p of state.players) {
 							const exIdx = p.exile.findIndex(
 								(c) =>
 									c.instanceId === action.instanceId &&
 									(c.playableFromExileBy?.playerId === actorId ||
+										// --- Track P13 ---
+										c.airbentCastPermission?.playerId === actorId ||
+										// --- End Track P13 ---
 										hasExileKeywordPermission(c, actorId))
 							);
 							if (exIdx >= 0) {
@@ -6298,6 +6446,9 @@ function applyGameActionInner(
 				...(hasOptCounts ? { optionalCostCounts: normalizedOptCounts } : {}),
 				additionalIncomplete: Boolean(additional && !additional.complete),
 				manaColorsSpent: spendCtx.capturedColorsSpent,
+				// --- Track P13 ---
+				manaColorsAllSpent: spendCtx.capturedColorsAllSpent,
+				// --- End Track P13 ---
 				// --- Track P10 ---
 				manaSpentCount: spendCtx.capturedManaSpentCount
 				// --- End Track P10 ---
@@ -6834,7 +6985,7 @@ function chooseBotRequiredAttackAssignments(
 				!evaluatePermanent(state, c).isCreature ||
 				c.tapped ||
 				(c.summoningSick && !hasKeyword(c, 'Haste', state)) ||
-				hasKeyword(c, 'Defender', state) ||
+				(hasKeyword(c, 'Defender', state) && !c.canAttackAsThoughNoDefenderThisTurn) ||
 				hasRestriction(state, c, 'cantAttack')
 			) {
 				continue;
@@ -6880,7 +7031,7 @@ function chooseBotRequiredAttackAssignments(
 						!evaluatePermanent(state, other).isCreature ||
 						other.tapped ||
 						(other.summoningSick && !hasKeyword(other, 'Haste', state)) ||
-						hasKeyword(other, 'Defender', state) ||
+						(hasKeyword(other, 'Defender', state) && !other.canAttackAsThoughNoDefenderThisTurn) ||
 						hasRestriction(state, other, 'cantAttack')
 					) {
 						continue;
@@ -6926,7 +7077,7 @@ export function chooseBotAttackAssignments(
 				evaluatePermanent(state, c).isCreature &&
 				!c.tapped &&
 				(!c.summoningSick || hasKeyword(c, 'Haste', state)) &&
-				!hasKeyword(c, 'Defender', state) &&
+				(!hasKeyword(c, 'Defender', state) || Boolean(c.canAttackAsThoughNoDefenderThisTurn)) &&
 				!hasRestriction(state, c, 'cantAttack') &&
 				getCreaturePower(c, state) >= 2
 		)
@@ -7020,7 +7171,9 @@ function performDeclareAttackers(
 				error: `${creature.card.name} has summoning sickness and cannot attack this turn.`
 			};
 		}
-		if (hasKeyword(creature, 'Defender', state)) {
+		// --- Track P13 ---
+		if (hasKeyword(creature, 'Defender', state) && !creature.canAttackAsThoughNoDefenderThisTurn) {
+		// --- End Track P13 ---
 			return { ok: false, error: `${creature.card.name} has Defender and cannot attack.` };
 		}
 		if (hasRestriction(state, creature, 'cantAttack')) {
@@ -7225,6 +7378,13 @@ function performDeclareAttackers(
 			playerId: actor.playerId,
 			attackerIds: validAttackers.map((a) => a.attackerInstanceId)
 		});
+		// --- Track P13 (CR 701.54c): Ring Level 2 attack loot trigger ---
+		pushRingAttackTriggers(
+			state,
+			actor,
+			validAttackers.map((a) => a.attackerInstanceId)
+		);
+		// --- End Track P13 ---
 	} else {
 		addLog(state, 'combat', `${actor.username} declared no attackers.`, actorId);
 	}
@@ -7377,6 +7537,10 @@ function getBlockerRestrictionReason(
 			}
 		}
 	}
+	// --- Track P13 (CR 701.54c): Ring Level 1 greater-power block restriction ---
+	const ringBlockErr = getRingBearerBlockRestriction(state, blocker, attacker);
+	if (ringBlockErr) return ringBlockErr;
+	// --- End Track P13 ---
 	// --- Track P8 (CR 509.1b, 702.118b) ---
 	return getStaticBlockerPairRestrictionReason(state, blocker, attacker);
 }
@@ -7547,6 +7711,9 @@ function applyValidatedDefenderBlockers(
 				attackerId: a.attackerInstanceId
 			}))
 		});
+		// --- Track P13 (CR 701.54c): Ring Level 3 end-of-combat blocker sacrifice registration ---
+		registerRingBlockedEndOfCombatSacrifice(state, assignments);
+		// --- End Track P13 ---
 	} else {
 		addLog(state, 'combat', `${actor.username} declared no blockers.`, actorId);
 	}
@@ -7694,7 +7861,7 @@ function findMandatoryAttackerViolation(
 				const canAttack =
 					!perm.tapped &&
 					(!perm.summoningSick || hasKeyword(perm, 'Haste', state)) &&
-					!hasKeyword(perm, 'Defender', state) &&
+					(!hasKeyword(perm, 'Defender', state) || Boolean(perm.canAttackAsThoughNoDefenderThisTurn)) &&
 					!hasRestriction(state, perm, 'cantAttack');
 				if (!canAttack) continue;
 
@@ -7725,7 +7892,7 @@ function findMandatoryAttackerViolation(
 							!evaluatePermanent(state, other).isCreature ||
 							other.tapped ||
 							(other.summoningSick && !hasKeyword(other, 'Haste', state)) ||
-							hasKeyword(other, 'Defender', state) ||
+							(hasKeyword(other, 'Defender', state) && !other.canAttackAsThoughNoDefenderThisTurn) ||
 							hasRestriction(state, other, 'cantAttack')
 						) {
 							return false;
@@ -9815,8 +9982,16 @@ for (const kind of [
 	// --- Track P12 ---
 	'ClassLevelGained',
 	'CaseSolved',
-	'BecameRenowned'
+	'BecameRenowned',
 	// --- End Track P12 ---
+	// --- Track P13 ---
+	'DoorUnlocked',
+	'RoomFullyUnlocked',
+	'RingTempted',
+	'DungeonRoomEntered',
+	'DungeonCompleted',
+	'TookInitiative'
+	// --- End Track P13 ---
 ] as const) {
 	registerEventHandler(kind, (state, ev) => {
 		// --- Track P12 ---
@@ -9825,6 +10000,14 @@ for (const kind of [
 		}
 		// --- End Track P12 ---
 		matchTriggers(state, ev);
+		// --- Track P13: Record per-turn targeting history AFTER matching Valiant triggers ---
+		if (ev.kind === 'BecameTarget') {
+			const list = (ev.object.targetedByControllerIdsThisTurn ??= []);
+			if (!list.includes(ev.controllerId)) {
+				list.push(ev.controllerId);
+			}
+		}
+		// --- End Track P13 ---
 	});
 }
 registerEventHandler('Cast', (state, ev) => {
@@ -9895,6 +10078,14 @@ registerEventHandler('PhaseBegin', (state, ev) => {
 				"At the beginning of the monarch's end step, that player draws a card."
 			);
 		}
+		// --- Track P13 (CR 725.2 & CR 701.54c): Initiative upkeep venture & Ring Level 3 end-of-combat triggers ---
+		if (ev.phase === 'upkeep' && !activePlayer.lost) {
+			pushInitiativeUpkeepTrigger(state, activePlayer);
+		}
+		if (ev.phase === 'end_combat') {
+			pushRingEndOfCombatTriggers(state);
+		}
+		// --- End Track P13 ---
 		runDelayedTriggers(state, ev.phase, activePlayer);
 	}
 });
@@ -12065,7 +12256,70 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 			}
 		} else if (inh.kind === 'monarchCombatDamage') {
 			setMonarch(state, inh.newMonarchPlayerId);
+		// --- Track P13 ---
+		} else {
+			resolveP13InherentTrigger(state, item, {
+				drawCards: (pl, cnt) => {
+					drawCards(state, pl, cnt, true);
+				},
+				gainLife: (s, pl, amt) => gainPlayerLife(s, pl, amt),
+				loseLife: (s, pl, amt) => {
+					if (amt <= 0 || pl.lost) return 0;
+					if (pl.lifeTotalCannotChangeThisTurn || playerLifeTotalCantChange(s, pl.playerId)) {
+						return 0;
+					}
+					pl.life -= amt;
+					if (!pl.lostLifeThisTurn) {
+						pl.lostLifeThisTurn = true;
+						noteLayerInputsChanged(s);
+					}
+					recordPlayerLifeLossWave4(pl, amt);
+					emitVfx(s, {
+						kind: 'damage',
+						sourceId: item.controllerId,
+						targetId: pl.playerId,
+						amount: amt,
+						label: `-${amt} Life`
+					});
+					return amt;
+				},
+				scry: (pl, cnt) => {
+					initiateLibraryScryOrSurveil(state, pl, item, cnt, 'scry', false);
+				},
+				goadPermanent: (perm, goaderId) => {
+					const list = (perm.goadedByPlayerIds ??= []);
+					if (!list.includes(goaderId)) list.push(goaderId);
+					const exp = (perm.goadExpirations ??= {});
+					exp[goaderId] = 'untilYourNextTurn';
+					noteLayerInputsChanged(state);
+				},
+				createSimpleToken: (pl, spec, count = 1) => {
+					for (let k = 0; k < count; k++) {
+						createTokenOnBoard(state, pl, spec);
+					}
+				},
+				searchBasicLandToHand: (pl) => {
+					initiateLibrarySearch(
+						state,
+						pl,
+						{
+							statedQuality: true,
+							upTo: false,
+							count: 1,
+							requireBasic: true,
+							allowedTypes: ['Land'],
+							allowedSubtypes: [],
+							disallowedTypes: [],
+							destinations: [{ zone: 'hand' }],
+							reveal: true,
+							rawCriteriaText: 'a basic land card'
+						},
+						item
+					);
+				}
+			});
 		}
+		// --- End Track P13 ---
 		triggerPathCounts.interpreter++;
 		removeItemFromStack();
 		givePriorityToActiveOrNextPlayer(state);
@@ -12296,6 +12550,10 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 			// --- Track P10 ---
 			perm.manaSpentCount = item.manaSpentCount;
 			// --- End Track P10 ---
+			// --- Track P13 ---
+			if (item.manaColorsAllSpent) perm.manaColorsAllSpent = [...item.manaColorsAllSpent];
+			else delete perm.manaColorsAllSpent;
+			// --- End Track P13 ---
 			const isPrototypedSpell = Boolean(
 				item.spellMods?.prototyped || item.copiableState?.prototyped
 			);
@@ -12471,6 +12729,27 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 						});
 					}
 				}
+				// --- Track P13 (CR 709.5e): Room entering from cast with an unlocked door emits DoorUnlocked ---
+				if (stackSubtypes.includes('Room') && perm.unlockedFaces?.length) {
+					for (const fi of perm.unlockedFaces) {
+						emitEvent(state, {
+							kind: 'DoorUnlocked',
+							playerId: controller.playerId,
+							objectId: perm.instanceId,
+							object: perm,
+							faceIndex: fi
+						});
+					}
+					if (perm.unlockedFaces.length >= 2) {
+						emitEvent(state, {
+							kind: 'RoomFullyUnlocked',
+							playerId: controller.playerId,
+							objectId: perm.instanceId,
+							object: perm
+						});
+					}
+				}
+				// --- End Track P13 ---
 			}
 			flushTriggers(state);
 		} else if (!item.isCopy) {
@@ -15130,6 +15409,20 @@ function executeCombatDamageStep(
 				}
 			}
 		}
+		// --- Track P13 (CR 701.54c Level 4 & CR 725.2): Ring-bearer combat damage & Initiative steal ---
+		for (const atk of attackers) {
+			pushRingCombatDamageTriggers(state, atk);
+		}
+		if (state.initiativePlayerId === damagedPlayerId) {
+			const seenControllerIds = new Set<string>();
+			for (const atk of attackers) {
+				const atkCtrlId = atk.controllerId || atk.ownerId;
+				if (seenControllerIds.has(atkCtrlId)) continue;
+				seenControllerIds.add(atkCtrlId);
+				pushInitiativeCombatDamageTrigger(state, damagedPlayerId, atkCtrlId);
+			}
+		}
+		// --- End Track P13 ---
 	}
 
 	if (isFirstStrikeStep) {
@@ -15171,6 +15464,9 @@ registerPromptHandler(COMBAT_DAMAGE_ASSIGNMENT_HANDLER, (state, prompt, answer) 
 });
 
 function clearEndOfTurnAndDamage(state: GameState): void {
+	// --- Track P13 ---
+	cleanupP13TurnState(state, state.players[state.activePlayerIndex]?.playerId ?? '');
+	// --- End Track P13 ---
 	// --- Track P7 ---
 	clearP7EndOfTurnEffects(state);
 	// --- End Track P7 ---
@@ -16207,6 +16503,10 @@ export function checkStateBasedActions(state: GameState): void {
 		if (syncBattlefieldControllers(state)) {
 			anyActionTaken = true;
 		}
+		// --- Track P13 (CR 704.5t & CR 309.7): Role token uniqueness & Dungeon completion SBAs ---
+		if (applyRoleTokenSba(state)) anyActionTaken = true;
+		if (applyDungeonCompletionSba(state)) anyActionTaken = true;
+		// --- End Track P13 ---
 
 		// 7. Simultaneous Player Loss SBAs (CR 104.3c, 104.4a, 704.5a-c, 903.10a) — respects Platinum Angel!
 		const newlyEliminated: Array<{
@@ -16436,7 +16736,19 @@ export function cleanupEliminatedPlayer(state: GameState, eliminated: PlayerGame
 			if (exCard.playableFromExileBy?.playerId === elimId) {
 				exCard.playableFromExileBy = undefined;
 			}
+			// --- Track P13 ---
+			if (exCard.airbentCastPermission?.playerId === elimId) {
+				delete exCard.airbentCastPermission;
+			}
+			// --- End Track P13 ---
 		}
+		// --- Track P13 ---
+		for (const gyCard of other.graveyard) {
+			if (gyCard.playableFromGraveyardBy?.playerId === elimId) {
+				delete gyCard.playableFromGraveyardBy;
+			}
+		}
+		// --- End Track P13 ---
 	}
 	for (const other of state.players) {
 		if (other.playerId === elimId) continue;
@@ -16482,6 +16794,18 @@ export function cleanupEliminatedPlayer(state: GameState, eliminated: PlayerGame
 			noteLayerInputsChanged(state);
 		}
 	}
+	// --- Track P13 (CR 725.4 / CR 800.4k): Initiative succession when holder leaves the game ---
+	if (state.initiativePlayerId === elimId) {
+		if (alive.length > 1 && state.status === 'active') {
+			handleInitiativePlayerEliminated(state, elimId);
+			state.passedPriorityPlayerIds = [];
+		} else {
+			const nextAlive = alive.find((p) => p.playerId !== elimId);
+			state.initiativePlayerId = nextAlive?.playerId ?? null;
+			noteLayerInputsChanged(state);
+		}
+	}
+	// --- End Track P13 ---
 
 	// 5. CR 800.4a / 800.4j: If the game continues (2+ alive players remain) and the eliminated
 	// player held priority, pass priority to the next alive player in turn order (or resolve top
@@ -17954,7 +18278,9 @@ function checkLandPlayLegalityInner(
 	if (state.stack.length > 0) {
 		return { ok: false, error: 'You cannot play a land while the Stack is not empty.' };
 	}
-	let effectiveMaxLands = actor.maxLandsPerTurn;
+	// --- Track P13 ---
+	let effectiveMaxLands = actor.maxLandsPerTurn + (actor.extraLandPlaysThisTurn ?? 0);
+	// --- End Track P13 ---
 	for (const perm of actor.battlefield) {
 		if (perm.phasedOut || permanentHasLostAllAbilities(perm, state).lost) continue;
 		for (const ab of activeAbilityDefs(

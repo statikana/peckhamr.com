@@ -453,8 +453,16 @@ export type GameEvent =
 	// --- Track P12 ---
 	| ClassLevelGainedEvent
 	| CaseSolvedEvent
-	| BecameRenownedEvent;
+	| BecameRenownedEvent
 	// --- End Track P12 ---
+	// --- Track P13 ---
+	| DoorUnlockedEvent
+	| RoomFullyUnlockedEvent
+	| RingTemptedEvent
+	| DungeonRoomEnteredEvent
+	| DungeonCompletedEvent
+	| TookInitiativeEvent;
+	// --- End Track P13 ---
 
 // --- Track P10 ---
 export interface UnblockedAttackersEvent extends EventBase {
@@ -526,6 +534,50 @@ export interface ForagedEvent extends EventBase {
 	playerId: string;
 }
 // --- End Track P10 ---
+
+// --- Track P13 ---
+export interface DoorUnlockedEvent extends EventBase {
+	kind: 'DoorUnlocked';
+	playerId: string;
+	objectId: string;
+	object: CardInstance;
+	faceIndex: number;
+}
+
+export interface RoomFullyUnlockedEvent extends EventBase {
+	kind: 'RoomFullyUnlocked';
+	playerId: string;
+	objectId: string;
+	object: CardInstance;
+}
+
+export interface RingTemptedEvent extends EventBase {
+	kind: 'RingTempted';
+	playerId: string;
+	ringLevel: number;
+	ringBearerId?: string | null;
+}
+
+export interface DungeonRoomEnteredEvent extends EventBase {
+	kind: 'DungeonRoomEntered';
+	playerId: string;
+	dungeonId: 'lost_mine' | 'mad_mage' | 'tomb' | 'undercity';
+	roomIndex: number;
+	roomName: string;
+}
+
+export interface DungeonCompletedEvent extends EventBase {
+	kind: 'DungeonCompleted';
+	playerId: string;
+	dungeonId: 'lost_mine' | 'mad_mage' | 'tomb' | 'undercity';
+	dungeonName: string;
+}
+
+export interface TookInitiativeEvent extends EventBase {
+	kind: 'TookInitiative';
+	playerId: string;
+}
+// --- End Track P13 ---
 
 export type GameEventKind = GameEvent['kind'];
 type EventOf<K extends GameEventKind> = Extract<GameEvent, { kind: K }>;
