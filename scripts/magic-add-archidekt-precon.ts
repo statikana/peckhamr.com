@@ -282,7 +282,9 @@ function writeUpdatedStoreAndFixture(store: ArchidektPreconStore): void {
 	const existingFixture = readOracleFixture();
 	const activeCardMap = new Map<string, ScryfallCard>();
 	for (const c of Object.values(STAPLE_CARDS)) {
-		if (c.id.startsWith('card_')) activeCardMap.set(c.name, c);
+		// Every staple (incl. built-in commanders, whose ids aren't `card_*`) is checked by the
+		// "Precon data integrity" test, so all of them must stay in the fixture.
+		activeCardMap.set(c.name, c);
 	}
 	for (const c of store.cards) {
 		activeCardMap.set(c.name, c);
@@ -361,14 +363,16 @@ async function importArchidektDeck(args: CliArgs): Promise<void> {
 			continue;
 		}
 
-		// Skip Maybeboard / Sideboard / Considering categories excluded from deck
+		// Skip Maybeboard / Sideboard / Considering categories excluded from deck.
+		// Archidekt excludes a card from the deck if ANY of its categories is excluded
+		// (e.g. a card tagged ["Maybeboard", "Counters"] is still a maybeboard card).
 		if (cats.length > 0) {
-			const includedInDeck = cats.some((c) => {
+			const excludedFromDeck = cats.some((c) => {
 				const meta = categoryMap.get(c);
-				if (!meta) return c !== 'maybeboard' && c !== 'sideboard' && c !== 'considering';
-				return meta.includedInDeck !== false;
+				if (!meta) return c === 'maybeboard' || c === 'sideboard' || c === 'considering';
+				return meta.includedInDeck === false;
 			});
-			if (!includedInDeck) continue;
+			if (excludedFromDeck) continue;
 		}
 
 		rawMainCounts.set(cardName, (rawMainCounts.get(cardName) ?? 0) + entry.quantity);

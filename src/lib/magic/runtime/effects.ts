@@ -354,6 +354,7 @@ import {
 	executeRedirectTargetsP19a as executeP19aRedirectTargets,
 	executeP19aSetLifeTotal,
 	executeSkipTurnP19a as executeP19aSkipTurn,
+	executeSkipCombatPhase,
 	resolveP19aChosenColorsForAnimate,
 	resolveP19aChosenPumpDelta,
 	resolveP19aManaChoiceColors,
@@ -443,6 +444,10 @@ export interface EffectPorts {
 		}
 		// --- End Track P10 ---
 	): string;
+	// --- Precon Bragos Spirit ---
+	/** Returns a spell on the stack to its owner's hand without countering it (a copy ceases to exist, CR 707.10a). */
+	moveStackSpellToHand(state: GameState, target: StackItem): void;
+	// --- End Precon Bragos Spirit ---
 	/** Moves a spell on the stack into its owner's library without countering it (CR 401.2, 401.7). */
 	moveStackSpellToLibrary(
 		state: GameState,
@@ -631,6 +636,9 @@ function targetRefMatchesSpec(t: TargetRef, spec: TargetSpec): boolean {
 	if (spec.kind === 'objectOrPlayer') return t.kind === 'player' || t.kind === 'permanent';
 	const zone = spec.filter.zone;
 	if (zone === 'stack') return t.kind === 'stack';
+	// --- Precon Bragos Spirit ---
+	if (spec.alsoSpells && t.kind === 'stack') return true;
+	// --- End Precon Bragos Spirit ---
 	if (zone === 'graveyard') return t.kind === 'graveyard_card' || t.kind === 'card_in_graveyard';
 	if (zone === 'exile') return t.kind === 'exile_card';
 	return t.kind === 'permanent';
@@ -2657,6 +2665,25 @@ class Run {
 			}
 			case 'affected':
 				return null;
+			// --- Precon Bragos Spirit: CR 607.2a the card exiled with this object ---
+			case 'linkedExile': {
+				const linked = (x: CardInstance): boolean => {
+					if (this.matches(x, { zone: 'exile', exiledWithSelf: true }, 'exile')) return true;
+					// A leaves-the-battlefield ability looks back at the permanent as it last existed on the
+					// battlefield (CR 603.10a): the source has since become a new object (one version later).
+					if (!x.exiledBy || x.exiledBy.sourceInstanceId !== this.ctx.sourceId) return false;
+					const src = this.locate(this.ctx.sourceId);
+					if (src?.zone === 'battlefield') return false;
+					const nowVer = this.ctx.item.sourceObjectVersion ?? src?.inst.objectVersion ?? 1;
+					return x.exiledBy.sourceObjectVersion === nowVer - 1;
+				};
+				for (const pl of this.state.players) {
+					const c = pl.exile.find(linked);
+					if (c) return c.instanceId;
+				}
+				return null;
+			}
+			// --- End Precon Bragos Spirit ---
 		}
 	}
 
@@ -3568,6 +3595,17 @@ class Run {
 					};
 				}
 				// --- End Track P16a ---
+				// --- Precon Bragos Spirit: CR 115.1 targeted spells on the stack return to their owner's hand ---
+				if (step.subject.k === 'target') {
+					for (const t of this.targetsForSpecIndex(step.subject.index)) {
+						if (t.kind !== 'stack') continue;
+						const stk = s.stack.find((x) => x.id === t.id && x.kind === 'spell');
+						if (!stk || stk.id === this.ctx.item.id) continue;
+						p.moveStackSpellToHand(s, stk);
+						p.addLog(s, 'cast', `${title} returned ${stk.title} to its owner's hand.`, you.playerId);
+					}
+				}
+				// --- End Precon Bragos Spirit ---
 				this.runIndexedBatch(
 					batchKey,
 					() => {
@@ -6226,7 +6264,10 @@ class Run {
 					this.sourcePerm,
 					chooseKind,
 					`p13_desig:${this.stepIndex}`,
-					this.p13AskFn()
+					this.p13AskFn(),
+					// --- Precon Bragos Spirit ---
+					this.ctx.item
+					// --- End Precon Bragos Spirit ---
 				);
 				return;
 			}
@@ -6493,6 +6534,12 @@ class Run {
 				return executeP19aRedirectTargets(this.p19aHost(), step);
 			case 'skipTurn':
 				return executeP19aSkipTurn(this.p19aHost(), step);
+			// --- Precon Bragos Spirit ---
+			case 'skipCombatPhase':
+				return executeSkipCombatPhase(this.p19aHost(), step);
+			case 'castNameLock':
+				return this.castNameLock(step);
+			// --- End Precon Bragos Spirit ---
 			case 'exileUntil':
 				// --- Track P22d ---
 				if (
@@ -6513,6 +6560,35 @@ class Run {
 				p.addLog(s, 'rule', `${title}: the "${step.verb}" step isn't supported yet and did nothing.`, you.playerId);
 		}
 	}
+
+	// --- Precon Bragos Spirit: CR 101.2 "can't cast spells with the same name as that creature until your next turn" ---
+	castNameLock(step: EffectStep): void {
+		const ref = step.params?.castNameLockRef;
+		if (!ref) return;
+		const id = this.refId(ref);
+		const found = id ? this.locate(id) : null;
+		if (!found) return;
+		const name =
+			found.zone === 'battlefield'
+				? evaluatePermanent(this.state, found.inst).effectiveName
+				: resolveObjectFaces(found.inst.card, { zone: found.zone }).name || found.inst.card.name;
+		if (!name?.trim()) return;
+		for (const pl of this.players(step.subject)) {
+			if (pl.lost) continue;
+			(pl.castNameLocks ??= []).push({
+				name,
+				untilTurnStartOf: this.ctx.controller.playerId,
+				sourceName: this.ctx.sourceCard.name
+			});
+			P().addLog(
+				this.state,
+				'rule',
+				`${pl.username} can't cast spells named ${name} until ${this.ctx.controller.username}'s next turn.`,
+				pl.playerId
+			);
+		}
+	}
+	// --- End Precon Bragos Spirit ---
 
 	sourceDamageInfo(
 		sourcePerm: CardInstance | null,

@@ -754,6 +754,10 @@ function objectEvent(verb: string, subject: Subject): TriggerDef | null {
 			});
 		case 'is put into exile from the battlefield':
 		case 'are put into exile from the battlefield':
+		// --- Precon Bragos Spirit: "is exiled from the battlefield" is the same event (CR 406.3) ---
+		case 'is exiled from the battlefield':
+		case 'are exiled from the battlefield':
+		// --- End Precon Bragos Spirit ---
 			return def('zoneChange', {
 				from: 'battlefield',
 				to: 'exile',
@@ -773,6 +777,15 @@ function objectEvent(verb: string, subject: Subject): TriggerDef | null {
 				from: 'battlefield',
 				...(subject.attachedFilter ? { attachedFilter: subject.attachedFilter } : {})
 			});
+		// --- Precon Bragos Spirit: CR 700.4 "dies" = put into a graveyard from the battlefield ---
+		case 'leaves the battlefield without dying':
+		case 'leave the battlefield without dying':
+			return def('zoneChange', {
+				from: 'battlefield',
+				notToZone: 'graveyard',
+				...(subject.attachedFilter ? { attachedFilter: subject.attachedFilter } : {})
+			});
+		// --- End Precon Bragos Spirit ---
 		case 'attacks':
 		case 'attack':
 			return def('attacks');
@@ -4469,6 +4482,7 @@ const RUNTIME_EVENT_FIELDS: Partial<Record<TriggerDef['event'], ReadonlySet<stri
 		'to',
 		'fromAnywhere',
 		'notFromZone',
+		'notToZone',
 		'entersUntapped',
 		'duringTurn',
 		'attachedFilter',

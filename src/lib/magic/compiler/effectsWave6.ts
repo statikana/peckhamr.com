@@ -1105,6 +1105,25 @@ export function tryParseWave6Sentence(
 		];
 	}
 
+	// --- Precon Bragos Spirit: "That creature's owner can't cast spells with the same name as that creature until your next turn" ---
+	m = t.match(
+		/^(.+?) can't cast spells with the same name as (?:that (?:creature|permanent|card)|it) until your next turn$/i
+	);
+	if (m) {
+		const pSel = helpers.playerSubject(m[1].trim());
+		const nameRef = helpers.itRef();
+		if (!pSel || !nameRef) return null;
+		return [
+			{
+				verb: 'castNameLock',
+				subject: pSel,
+				params: { castNameLockRef: nameRef, duration: 'untilYourNextTurn' },
+				span
+			}
+		];
+	}
+	// --- End Precon Bragos Spirit ---
+
 	if (
 		/^spells you control can't be countered this turn$/i.test(t) ||
 		/^this spell can't be countered, and spells you control can't be countered this turn$/i.test(t)

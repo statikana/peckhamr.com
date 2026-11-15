@@ -141,8 +141,12 @@ export const INTERPRETED_VERBS: ReadonlySet<Verb> = new Set<Verb>([
 	'skipTurn',
 	'exileUntil',
 	'delayedTapManaTrigger',
-	'delayedNextSpellCopy'
+	'delayedNextSpellCopy',
 	// --- End Track P19a ---
+	// --- Precon Bragos Spirit ---
+	'skipCombatPhase',
+	'castNameLock'
+	// --- End Precon Bragos Spirit ---
 ]);
 
 export const SUPPORTED_OPTIONAL_COST_KINDS: ReadonlySet<CostDef['k']> = new Set<CostDef['k']>([
@@ -490,9 +494,14 @@ function stepSupported(step: EffectStep): boolean {
 	if (step.verb === 'redirectTargets') {
 		return Boolean(step.params?.redirectSpec && step.subject.k !== 'none');
 	}
-	if (step.verb === 'skipTurn') {
+	if (step.verb === 'skipTurn' || step.verb === 'skipCombatPhase') {
 		return step.subject.k !== 'none';
 	}
+	// --- Precon Bragos Spirit ---
+	if (step.verb === 'castNameLock') {
+		return step.subject.k !== 'none' && Boolean(step.params?.castNameLockRef) && step.params?.duration === 'untilYourNextTurn';
+	}
+	// --- End Precon Bragos Spirit ---
 	if (step.verb === 'exileUntil') {
 		return Boolean(step.params?.exileUntilSpec);
 	}

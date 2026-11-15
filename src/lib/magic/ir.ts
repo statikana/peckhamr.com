@@ -761,6 +761,12 @@ export interface TargetSpec {
 	/** Maximum total mana value across chosen targets ("up to two target creatures with total mana value 6 or less"). */
 	maxTotalManaValue?: number;
 	// --- End Track P19a ---
+	// --- Precon Bragos Spirit ---
+	/** CR 115.1: "target spell or permanent": a spell on the stack is also a legal choice besides permanents matching `filter`. */
+	alsoSpells?: boolean;
+	/** CR 115.1 "For each opponent, ... up to one target ... that player controls": at most one chosen target per controlling opponent. */
+	perOpponent?: boolean;
+	// --- End Precon Bragos Spirit ---
 }
 
 // ---- Amounts (replaces dynamicFormula strings) ----------------------------------------------
@@ -776,8 +782,12 @@ export type Ref =
 	| { k: 'affected' }
 	// --- Track P2 ---
 	/** The permanent this Aura/Equipment is attached to ("Enchanted creature deals damage equal to its power"). */
-	| { k: 'attachedTo' };
+	| { k: 'attachedTo' }
 	// --- End Track P2 ---
+	// --- Precon Bragos Spirit ---
+	/** CR 607.2a: the card exiled with this object by its linked ability ("the exiled card" in a leaves-the-battlefield trigger). */
+	| { k: 'linkedExile' };
+// --- End Precon Bragos Spirit ---
 
 export type PlayerRef =
 	| { k: 'you' }
@@ -1324,8 +1334,14 @@ export type Verb =
 	| 'skipTurn'
 	| 'exileUntil'
 	| 'delayedTapManaTrigger'
-	| 'delayedNextSpellCopy';
+	| 'delayedNextSpellCopy'
 	// --- End Track P19a ---
+	// --- Precon Bragos Spirit ---
+	/** CR 500.11: "[Player] skips their next combat phase" (subject players, `amount` phases). */
+	| 'skipCombatPhase'
+	/** CR 101.2: subject players can't cast spells with the same name as `params.castNameLockRef` for `params.duration`. */
+	| 'castNameLock';
+	// --- End Precon Bragos Spirit ---
 
 export type ManaRestriction = 'artifactSpellOrNonSpell';
 
@@ -1381,6 +1397,10 @@ export interface EffectStep {
 }
 
 export interface EffectParams {
+	// --- Precon Bragos Spirit ---
+	/** castNameLock: the object whose name is locked ("the same name as that creature"). */
+	castNameLockRef?: Ref;
+	// --- End Precon Bragos Spirit ---
 	toughness?: Amount;
 	keywords?: string[];
 	/** grant: keywords removed until `duration` ("lose hexproof and indestructible until end of turn"). */
@@ -2230,6 +2250,10 @@ export interface EventFilter {
 	fromAnywhere?: boolean;
 	/** zoneChange: excludes moves originating from this zone ("from anywhere other than the battlefield / your hand"). */
 	notFromZone?: ZoneType;
+	// --- Precon Bragos Spirit ---
+	/** zoneChange: excludes moves whose destination is this zone ("leave the battlefield without dying", CR 700.4). */
+	notToZone?: ZoneType;
+	// --- End Precon Bragos Spirit ---
 	/** zoneChange (ETB): requires the entering permanent to enter untapped. */
 	entersUntapped?: boolean;
 	/** CR 603.8: condition checked for a state-triggered ability. */

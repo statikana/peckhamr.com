@@ -430,7 +430,8 @@ export function parseObjectPhrase(
 			rest = exiledWithSelf[1];
 			continue;
 		}
-		const ofChosenType = rest.match(/^(.+?)\s+of the chosen type$/i);
+		// Precon Bragos Spirit: "Choose a creature type. ... of that type" is the chosen type (CR 205.3m).
+		const ofChosenType = rest.match(/^(.+?)\s+of (?:the chosen|that) type$/i);
 		if (ofChosenType && !filter.ofChosenType) {
 			filter.ofChosenType = true;
 			rest = ofChosenType[1];

@@ -530,6 +530,14 @@ export function expireP13UntilNextTurnEffects(state: GameState, startingPlayerId
 	if (startingPlayer?.hexproofUntilNextTurn) {
 		delete startingPlayer.hexproofUntilNextTurn;
 	}
+	// --- Precon Bragos Spirit: expire "until your next turn" spell-name cast locks (CR 611.2b) ---
+	for (const pl of state.players) {
+		if (!pl.castNameLocks?.length) continue;
+		const remaining = pl.castNameLocks.filter((l) => l.untilTurnStartOf !== startingPlayerId);
+		if (remaining.length > 0) pl.castNameLocks = remaining;
+		else delete pl.castNameLocks;
+	}
+	// --- End Precon Bragos Spirit ---
 }
 
 /**
@@ -1060,8 +1068,55 @@ export function executeChooseDesignation(
 	sourcePerm: CardInstance | null,
 	chooseKind: 'color' | 'creatureType' | 'cardName' | 'nonlandCardName',
 	answerKey: string,
-	ask: P13StepAskFn
+	ask: P13StepAskFn,
+	// --- Precon Bragos Spirit ---
+	resolvingSpell?: StackItem
+	// --- End Precon Bragos Spirit ---
 ): 'DONE' | 'PAUSED' {
+	// --- Precon Bragos Spirit: CR 608.2c a resolving spell's "Choose a creature type / color" is recorded on the spell ---
+	if ((!sourcePerm || sourcePerm.zone !== 'battlefield') && resolvingSpell?.kind === 'spell') {
+		if (chooseKind === 'creatureType') {
+			let sub: string;
+			if (actor.isBot) {
+				sub = chooseBotBestCreatureSubtype(state, actor);
+			} else {
+				const options = buildCreatureSubtypeOptions(state, actor);
+				const ans = ask(
+					actor,
+					answerKey,
+					{ kind: 'chooseMode', modes: options, min: 1, max: 1 },
+					'Choose a Creature Type',
+					`Choose a creature type for ${resolvingSpell.card.name}.`
+				);
+				if (ans === 'PAUSED') return 'PAUSED';
+				const idx = ans.kind === 'chooseMode' ? (ans.indices[0] ?? 0) : 0;
+				sub = options[idx] ?? options[0] ?? 'Human';
+			}
+			resolvingSpell.sourceChosenSubType = sub;
+			return 'DONE';
+		}
+		if (chooseKind === 'color') {
+			let color: ManaColor;
+			if (actor.isBot) {
+				color = chooseBotBestColor(state, actor);
+			} else {
+				const { labels } = buildColorChoiceOptions();
+				const ans = ask(
+					actor,
+					answerKey,
+					{ kind: 'chooseMode', modes: labels, min: 1, max: 1 },
+					'Choose a Color',
+					`Choose a color for ${resolvingSpell.card.name}.`
+				);
+				if (ans === 'PAUSED') return 'PAUSED';
+				const idx = ans.kind === 'chooseMode' ? (ans.indices[0] ?? 0) : 0;
+				color = COLOR_CODE_BY_LABEL[(labels[idx] ?? labels[0] ?? 'White').toLowerCase()] ?? 'W';
+			}
+			resolvingSpell.sourceChosenColor = color;
+			return 'DONE';
+		}
+	}
+	// --- End Precon Bragos Spirit ---
 	if (!sourcePerm || sourcePerm.zone !== 'battlefield') return 'DONE';
 	if (chooseKind === 'color') {
 		if (actor.isBot) {

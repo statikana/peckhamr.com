@@ -14370,6 +14370,23 @@ export function specTargetCandidates(
 		}
 	}
 	if (spec.kind === 'player') return out;
+	// --- Precon Bragos Spirit: CR 115.1 "target spell or permanent" ---
+	if (spec.alsoSpells) {
+		const { alsoSpells: _also, ...permSpec } = spec;
+		return [
+			...specTargetCandidates(
+				state,
+				controllerId,
+				sourceCard,
+				source,
+				{ ...permSpec, kind: 'object', filter: { zone: 'stack', stackKind: 'spell' } },
+				excludeStackItemId,
+				stackItem
+			),
+			...specTargetCandidates(state, controllerId, sourceCard, source, permSpec, excludeStackItemId, stackItem)
+		];
+	}
+	// --- End Precon Bragos Spirit ---
 	const ctx: FilterContext = {
 		state,
 		controllerId,
@@ -14466,6 +14483,43 @@ export function specTargetCandidates(
 	return out;
 }
 
+// --- Precon Bragos Spirit: CR 115.1 "For each opponent, ... up to one target ... that player controls" ---
+function targetControllerId(state: GameState, t: TargetRef): string | undefined {
+	return t.kind === 'permanent' ? findPermanentOnBoard(state, t.id)?.inst.controllerId : undefined;
+}
+
+/** Number of distinct opponents controlling a legal candidate (unbounded for other specs). */
+function perOpponentTargetCap(state: GameState, spec: TargetSpec, legal: readonly TargetRef[]): number {
+	if (!spec.perOpponent) return Number.POSITIVE_INFINITY;
+	return new Set(legal.map((t) => targetControllerId(state, t)).filter(Boolean)).size;
+}
+
+/** An error iff two chosen permanents for a `perOpponent` spec share a controller. */
+function perOpponentTargetError(state: GameState, spec: TargetSpec, chosen: readonly TargetRef[]): string | null {
+	if (!spec.perOpponent) return null;
+	const seen = new Set<string>();
+	for (const t of chosen) {
+		const ctl = targetControllerId(state, t);
+		if (!ctl) continue;
+		if (seen.has(ctl)) return 'Choose at most one target controlled by each opponent (CR 115.1).';
+		seen.add(ctl);
+	}
+	return null;
+}
+
+/** Keeps the first chosen target per controlling opponent (bot choices for `perOpponent` specs). */
+function onePerOpponentTargets(state: GameState, spec: TargetSpec, chosen: TargetRef[]): TargetRef[] {
+	if (!spec.perOpponent) return chosen;
+	const seen = new Set<string>();
+	return chosen.filter((t) => {
+		const ctl = targetControllerId(state, t) ?? t.id;
+		if (seen.has(ctl)) return false;
+		seen.add(ctl);
+		return true;
+	});
+}
+// --- End Precon Bragos Spirit ---
+
 /** Every legal target for one target spec of a triggered ability (CR 115, 603.3d). */
 function triggerTargetCandidates(state: GameState, item: StackItem, spec: TargetSpec): TargetRef[] {
 	return specTargetCandidates(
@@ -14533,10 +14587,16 @@ function assignOrPromptTriggerTargets(
 			item.xValue
 		);
 		const specMax = divTotal !== undefined ? Math.min(spec.max, Math.max(0, divTotal)) : spec.max;
-		const max = Math.min(specMax, legal.length);
+		// --- Precon Bragos Spirit: CR 115.1 one target per opponent ---
+		const max = Math.min(specMax, legal.length, perOpponentTargetCap(state, spec, legal));
+		// --- End Precon Bragos Spirit ---
 		// --- End Track P7 ---
 		if (controller.isBot) {
-			targetsBySpec[i] = chooseBotTriggerTargets(state, controller, steps, i, spec, legal);
+			targetsBySpec[i] = onePerOpponentTargets(
+				state,
+				spec,
+				chooseBotTriggerTargets(state, controller, steps, i, spec, legal)
+			);
 		} else if (legal.length === spec.min && max === spec.min) {
 			// Forced: exactly as many legal targets as required.
 			targetsBySpec[i] = [...legal];
@@ -15048,6 +15108,14 @@ function resolveTriggerPrompt(
 		if (!spec) {
 			return { ok: false, error: 'That target requirement is no longer valid.' };
 		}
+		// --- Precon Bragos Spirit: CR 115.1 one target per opponent ---
+		const perOppError = perOpponentTargetError(
+			state,
+			spec,
+			answer.objectIds.map((id) => ({ kind: 'permanent', id, label: id }))
+		);
+		if (perOppError) return { ok: false, error: perOppError };
+		// --- End Precon Bragos Spirit ---
 		state.pendingPrompts.splice(promptIdx, 1);
 		const baseLegal = triggerTargetCandidates(state, item, spec);
 		// --- Track P22c ---
@@ -17916,6 +17984,15 @@ registerEffectPorts({
 	payOptionalCost,
 	moveFromBattlefield: (state, inst, to, libraryOpts) =>
 		movePermanentToZone(state, inst, to, undefined, libraryOpts),
+	// --- Precon Bragos Spirit ---
+	moveStackSpellToHand: (state, target) => {
+		const idx = state.stack.indexOf(target);
+		if (idx >= 0) {
+			const [removed] = state.stack.splice(idx, 1);
+			moveStackSpellToZone(state, removed, 'hand');
+		}
+	},
+	// --- End Precon Bragos Spirit ---
 	moveStackSpellToLibrary: (state, target, libraryOpts) => {
 		const idx = state.stack.indexOf(target);
 		if (idx >= 0) {
@@ -19399,6 +19476,30 @@ export function executeProliferate(
 	});
 }
 
+// --- Precon Bragos Spirit: CR 500.11 skipped combat phases ---
+/** Consumes one pending "skip your next combat phase" for the active player; true iff the phase is skipped. */
+function consumeSkippedCombatPhase(state: GameState, activePlayer: PlayerGameState): boolean {
+	if ((activePlayer.skipNextCombatPhases ?? 0) <= 0) return false;
+	activePlayer.skipNextCombatPhases = Math.max(0, (activePlayer.skipNextCombatPhases ?? 0) - 1) || undefined;
+	addLog(state, 'rule', `${activePlayer.username} skips their combat phase (CR 500.11).`, activePlayer.playerId);
+	return true;
+}
+
+/** After a combat phase ends (or is skipped): begin a pending additional combat phase, else the postcombat main phase. */
+function beginPostCombatOrAdditionalCombat(state: GameState, activePlayer: PlayerGameState): void {
+	while ((state.additionalCombatPhases ?? 0) > 0) {
+		state.additionalCombatPhases!--;
+		if (consumeSkippedCombatPhase(state, activePlayer)) continue;
+		beginPhase(state, 'begin_combat', activePlayer);
+		emitVfx(state, { kind: 'phase_change', label: 'Combat — Beginning of Additional Combat' });
+		addLog(state, 'rule', `${activePlayer.username} begins an additional combat phase.`);
+		return;
+	}
+	beginPhase(state, 'main2', activePlayer);
+	emitVfx(state, { kind: 'phase_change', label: 'Postcombat Main Phase 2' });
+}
+// --- End Precon Bragos Spirit ---
+
 export function advancePhaseOrStep(state: GameState): void {
 	// Drain unspent mana pools at the end of each step/phase (CR 106.4 / 500.4)
 	emptyAllPlayersManaPools(state);
@@ -19428,6 +19529,12 @@ export function advancePhaseOrStep(state: GameState): void {
 			break;
 
 		case 'main1':
+			// --- Precon Bragos Spirit: CR 500.11 skipped combat phase ---
+			if (consumeSkippedCombatPhase(state, activePlayer)) {
+				beginPostCombatOrAdditionalCombat(state, activePlayer);
+				break;
+			}
+			// --- End Precon Bragos Spirit ---
 			beginPhase(state, 'begin_combat', activePlayer);
 			emitVfx(state, { kind: 'phase_change', label: 'Combat — Beginning of Combat' });
 			break;
@@ -19471,15 +19578,7 @@ export function advancePhaseOrStep(state: GameState): void {
 				expireP16aEndOfCombatEffects(state);
 				// --- End Track P16a ---
 				noteLayerInputsChanged(state);
-				if ((state.additionalCombatPhases ?? 0) > 0) {
-					state.additionalCombatPhases!--;
-					beginPhase(state, 'begin_combat', activePlayer);
-					emitVfx(state, { kind: 'phase_change', label: 'Combat — Beginning of Additional Combat' });
-					addLog(state, 'rule', `${activePlayer.username} begins an additional combat phase.`);
-				} else {
-					beginPhase(state, 'main2', activePlayer);
-					emitVfx(state, { kind: 'phase_change', label: 'Postcombat Main Phase 2' });
-				}
+				beginPostCombatOrAdditionalCombat(state, activePlayer);
 			}
 			break;
 
@@ -19525,15 +19624,7 @@ export function advancePhaseOrStep(state: GameState): void {
 			expireP16aEndOfCombatEffects(state);
 			// --- End Track P16a ---
 			noteLayerInputsChanged(state);
-			if ((state.additionalCombatPhases ?? 0) > 0) {
-				state.additionalCombatPhases!--;
-				beginPhase(state, 'begin_combat', activePlayer);
-				emitVfx(state, { kind: 'phase_change', label: 'Combat — Beginning of Additional Combat' });
-				addLog(state, 'rule', `${activePlayer.username} begins an additional combat phase.`);
-			} else {
-				beginPhase(state, 'main2', activePlayer);
-				emitVfx(state, { kind: 'phase_change', label: 'Postcombat Main Phase 2' });
-			}
+			beginPostCombatOrAdditionalCombat(state, activePlayer);
 			break;
 
 		case 'main2':
@@ -22313,6 +22404,25 @@ function normalizeTargetRequirement(
 	};
 }
 
+// --- Precon Bragos Spirit ---
+/** CR 115.1: the spell-target view of a "target spell or permanent" requirement (null when no spec allows spells). */
+function alsoSpellsStackRequirement(info: TargetRequirementInfo): TargetRequirementInfo | null {
+	const specs = info.targetSpecs;
+	if (!specs?.some((s) => s.alsoSpells)) return null;
+	return {
+		...info,
+		targetKind: 'spell',
+		zone: 'stack',
+		stackKind: 'spell',
+		controllerFilter: 'any',
+		cardTypeFilter: undefined,
+		targetSpecs: specs.map((s) =>
+			s.alsoSpells ? { ...s, alsoSpells: undefined, kind: 'object', filter: { zone: 'stack', stackKind: 'spell' } } : s
+		)
+	};
+}
+// --- End Precon Bragos Spirit ---
+
 /** Whether `target` is legal for the requirement. Read-only, one validation (Phase 6d). */
 export function validateTargetLegality(
 	state: GameState,
@@ -22356,7 +22466,13 @@ function validateTargetLegalityInner(
 		typeof sourceKindHintOrXValue === 'string' ? sourceKindHintOrXValue : undefined;
 	const xValue: number | undefined =
 		typeof sourceKindHintOrXValue === 'number' ? sourceKindHintOrXValue : xValueArg;
-	const info = normalizeTargetRequirement(targetRequirementOrKind);
+	let info = normalizeTargetRequirement(targetRequirementOrKind);
+	// --- Precon Bragos Spirit: CR 115.1 "target spell or permanent" validates stack picks as a spell target ---
+	if (target.kind === 'stack' && info.zone !== 'stack') {
+		const spellInfo = alsoSpellsStackRequirement(info);
+		if (spellInfo) info = spellInfo;
+	}
+	// --- End Precon Bragos Spirit ---
 	const targetKind = info.targetKind;
 
 	// 1. Stack spell or ability target validation
@@ -23098,6 +23214,12 @@ export function validateChosenTargets(
 			error: `${sourceCard?.name || 'Spell or ability'} requires ${info.minTargets === info.maxTargets ? `exactly ${info.minTargets}` : `at least ${info.minTargets}`} legal target(s).`
 		};
 	}
+	// --- Precon Bragos Spirit: CR 115.1 one target per opponent ---
+	for (const sp of info.targetSpecs ?? []) {
+		const perOppError = perOpponentTargetError(state, sp, targets);
+		if (perOppError) return { ok: false, error: perOppError };
+	}
+	// --- End Precon Bragos Spirit ---
 	if (info.maxTargets > 0 && targets.length > info.maxTargets) {
 		return {
 			ok: false,
@@ -23332,6 +23454,19 @@ function getAllLegalTargetsForRequirementInner(
 	// --- End Track P20b ---
 ): TargetRef[] {
 	const results: TargetRef[] = [];
+
+	// --- Precon Bragos Spirit: CR 115.1 "target spell or permanent" also offers spells on the stack ---
+	const alsoSpellInfo = info.zone !== 'stack' ? alsoSpellsStackRequirement(info) : null;
+	if (alsoSpellInfo) {
+		for (const item of state.stack) {
+			if (item.kind !== 'spell') continue;
+			const ref: TargetRef = { kind: 'stack', id: item.id, label: item.title };
+			if (validateTargetLegalityInner(state, actorId, ref, info, sourceCard, sourceInstanceId, xValue).ok) {
+				results.push(ref);
+			}
+		}
+	}
+	// --- End Precon Bragos Spirit ---
 
 	if (info.zone === 'stack' || info.targetKind === 'spell') {
 		for (const item of state.stack) {

@@ -4191,6 +4191,9 @@ function matchZoneChange(state: GameState, ev: Extract<GameEvent, { kind: 'ZoneC
 		(alt.filter.from === undefined || alt.filter.from === ev.from) &&
 		// --- Track P16b ---
 		(alt.filter.notFromZone === undefined || ev.from !== alt.filter.notFromZone) &&
+		// --- Precon Bragos Spirit ---
+		(alt.filter.notToZone === undefined || ev.to !== alt.filter.notToZone) &&
+		// --- End Precon Bragos Spirit ---
 		(!alt.filter.entersUntapped || (enters && !obj.tapped)) &&
 		// --- End Track P16b ---
 		// --- Track P19b ---
@@ -4486,7 +4489,10 @@ function matchZoneChange(state: GameState, ev: Extract<GameEvent, { kind: 'ZoneC
 					const playerSuffix = alt.filter.player
 						? `:${ev.toPlayerId ?? ev.fromPlayerId ?? obj.ownerId}`
 						: '';
-					const batchKey = `${source.obj.instanceId}:${source.zone}:${source.faceIndex ?? 0}:${ability.abilityIndex}:${ev.from ?? ''}->${ev.to}${playerSuffix}`;
+					// --- Precon Bragos Spirit: "leave without dying" batches every non-graveyard destination together (CR 603.2c) ---
+					const batchTo = alt.filter.notToZone ? `!${alt.filter.notToZone}` : ev.to;
+					const batchKey = `${source.obj.instanceId}:${source.zone}:${source.faceIndex ?? 0}:${ability.abilityIndex}:${ev.from ?? ''}->${batchTo}${playerSuffix}`;
+					// --- End Precon Bragos Spirit ---
 					// --- End Track P19b ---
 					if (batchSet.has(batchKey)) continue;
 					batchSet.add(batchKey);

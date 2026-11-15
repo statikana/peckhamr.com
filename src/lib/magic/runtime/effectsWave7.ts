@@ -1056,6 +1056,27 @@ export function executeSkipTurnP19a(host: P19aStepHost, step: EffectStep): void 
 	}
 }
 
+// ---- Precon Bragos Spirit: CR 500.11 "skips their next combat phase" ------------------------
+
+export function executeSkipCombatPhase(host: P19aStepHost, step: EffectStep): void {
+	const rt = getP19aRuntimeHost();
+	const count = Math.max(1, host.amount(step.amount, 1));
+	const targets =
+		step.subject.k === 'player' || step.subject.k === 'playerRef'
+			? host.players(step.subject)
+			: [host.you];
+	for (const pl of targets) {
+		if (pl.lost) continue;
+		pl.skipNextCombatPhases = (pl.skipNextCombatPhases ?? 0) + count;
+		rt?.addLog(
+			host.state,
+			'rule',
+			`${pl.username} will skip their next ${count === 1 ? 'combat phase' : `${count} combat phases`} (CR 500.11).`,
+			pl.playerId
+		);
+	}
+}
+
 // ---- Slice P19a.4: `exileUntil` + Impulse Exile (`CR 609.4b`) -------------------------------
 
 function shuffleIdsDeterministic(state: GameState, ids: string[]): string[] {

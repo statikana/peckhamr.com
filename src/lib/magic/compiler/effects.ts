@@ -343,6 +343,10 @@ class Parser {
 	/** Multi-sentence "Copy <card>. You may cast the copy without paying its mana cost." (CR 707.12). */
 	pendingCardCopy?: { stepIndex: number; span: Span };
 	// --- End Track P16a ---
+	// --- Precon Bragos Spirit ---
+	/** Verb of the enclosing ability's step that bound the seeded `lastObject` (die-roll rows; stepIndex -1). */
+	outerBoundVerb?: Verb;
+	// --- End Precon Bragos Spirit ---
 
 	constructor(context: EffectContext, trigger?: TriggerDef) {
 		this.context = context;
@@ -590,8 +594,24 @@ function refSelector(ref: Ref): Selector {
 			return { k: 'eventObject' };
 		case 'attachedTo':
 			return { k: 'attachedTo' };
+		// --- Precon Bragos Spirit ---
+		case 'linkedExile':
+			return { k: 'all', filter: { zone: 'exile', exiledWithSelf: true } };
+		// --- End Precon Bragos Spirit ---
 	}
 }
+
+// --- Precon Bragos Spirit ---
+/**
+ * CR 607.2a: "the exiled card" in a triggered ability with no earlier object in the same ability (and
+ * whose trigger isn't itself about an object being exiled) refers to the card exiled with this object.
+ */
+function linkedExileRef(p: Parser, phrase: string): Ref | null {
+	if (!/^the exiled card$/i.test(phrase.trim())) return null;
+	if (p.lastObject || p.context !== 'triggered' || p.trigger?.filter.to === 'exile') return null;
+	return { k: 'linkedExile' };
+}
+// --- End Precon Bragos Spirit ---
 
 // ---- Object phrases -------------------------------------------------------------------------
 
@@ -660,6 +680,14 @@ function objectFilter(phrase: string): ObjectFilter | null {
  */
 function targetPhrase(text: string, p?: Parser): Omit<TargetSpec, 'min' | 'max'> | null {
 	let phrase = text.trim();
+	// --- Precon Bragos Spirit: CR 115.1 "target spell or permanent" (a spell on the stack OR a matching permanent) ---
+	const spellOr = phrase.match(/^spell or ((?:[a-z-]+ )?permanent)$/i);
+	if (spellOr) {
+		const permSpec = targetPhrase(spellOr[1], p);
+		if (!permSpec || permSpec.kind !== 'object' || (permSpec.filter.zone ?? 'battlefield') !== 'battlefield') return null;
+		return { ...permSpec, alsoSpells: true };
+	}
+	// --- End Precon Bragos Spirit ---
 	if (/^(?:player|players)$/.test(phrase)) return { kind: 'player', filter: {}, player: { relation: 'any' } };
 	if (/^(?:opponent|opponents)$/.test(phrase)) return { kind: 'player', filter: {}, player: { relation: 'opponent' } };
 
@@ -1268,7 +1296,9 @@ function playerPhrase(p: Parser, text: string): Selector | null {
 		/^(?:its|(?:that|the exiled|the sacrificed|the destroyed|the discarded) (?:card|creature|permanent|spell|artifact|enchantment|land|planeswalker|battle|token)'s|their) (controller|owner)$/
 	);
 	if (of) {
-		const ref = p.itRef();
+		// --- Precon Bragos Spirit: "the exiled card's owner" (CR 607.2a linked exile) ---
+		const ref = linkedExileRef(p, t.replace(/'s (?:controller|owner)$/, '')) ?? p.itRef();
+		// --- End Precon Bragos Spirit ---
 		if (!ref) return null;
 		return { k: 'playerRef', ref: of[1] === 'controller' ? { k: 'controllerOf', of: ref } : { k: 'ownerOf', of: ref } };
 	}
@@ -1432,6 +1462,9 @@ function numberOf(text: string): Amount | null {
 	});
 	if (w7Count) return w7Count;
 	// --- End Track P19a ---
+	// --- Precon Bragos Spirit: "the number of opponents you have" (CR 102.3, opponents still in the game) ---
+	if (/^opponents you have$/i.test(text.trim())) return { k: 'opponentCount' };
+	// --- End Precon Bragos Spirit ---
 	const hand = text.match(/^cards in (your|target opponent's) hand$/);
 	if (hand && hand[1] === 'your') return { k: 'cardsIn', zone: 'hand', of: { k: 'you' } };
 	// --- Track P10: graveyard counts & card types among cards in graveyards ---
@@ -1533,6 +1566,19 @@ function whereX(
 	if (/^your life total$/i.test(rhs)) {
 		return { text: m[1], x: { k: 'life', of: { k: 'you' } } };
 	}
+	// --- Precon Bragos Spirit: "the mana value of the exiled card" (CR 607.2a linked exile) ---
+	const linkedStat = rhs.match(
+		/^(?:the (power|toughness|mana value) of (the exiled card)|(the exiled card)'s (power|toughness|mana value))$/i
+	);
+	if (linkedStat) {
+		const ref = linkedExileRef(p, linkedStat[2] ?? linkedStat[3]);
+		const statWord = (linkedStat[1] ?? linkedStat[4]).toLowerCase();
+		if (ref) {
+			const stat = statWord === 'mana value' ? 'manaValue' : (statWord as 'power' | 'toughness');
+			return { text: m[1], x: { k: 'stat', of: ref, stat } };
+		}
+	}
+	// --- End Precon Bragos Spirit ---
 	const eq = equalTo(p, rhs);
 	if (eq) return { text: m[1], x: eq };
 	const p13X = parseP13Amount(
@@ -5233,7 +5279,9 @@ function tryWave7Clause(p: Parser, text: string, span: Span): boolean {
 
 /** Clauses without a subject: "Destroy target creature", "Draw a card", "Create a Treasure token". */
 function imperative(p: Parser, text: string, span: Span): ClauseResult {
-	const t = text.trim();
+	// --- Precon Bragos Spirit: "exile them again" is an ordinary exile of the (new) objects (CR 400.7) ---
+	const t = text.trim().replace(/^(exile (?:it|them|that card|those cards|that creature|those creatures)) again$/i, '$1');
+	// --- End Precon Bragos Spirit ---
 	let m: RegExpMatchArray | null;
 
 	// --- Track P16a: Wave 6 keyword actions, counters, free-cast, & selective returns ---
@@ -5638,7 +5686,13 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 		}
 		const boundFromExile =
 			obj.selector.k === 'binding' &&
-			p.steps.some((s) => s.bindAs === (obj.selector as { k: 'binding'; name: string }).name && s.verb === 'exile');
+			(p.steps.some((s) => s.bindAs === (obj.selector as { k: 'binding'; name: string }).name && s.verb === 'exile') ||
+				// --- Precon Bragos Spirit: object exiled by the enclosing ability before a die roll ---
+				(p.outerBoundVerb === 'exile' &&
+					p.lastObject?.stepIndex === -1 &&
+					p.lastObject.ref.k === 'binding' &&
+					p.lastObject.ref.name === obj.selector.name));
+		// --- End Precon Bragos Spirit ---
 		const boundFromLibrary =
 			obj.selector.k === 'binding' &&
 			p.steps.some(
@@ -5690,7 +5744,13 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 		}
 		const boundFromExile =
 			obj.selector.k === 'binding' &&
-			p.steps.some((s) => s.bindAs === (obj.selector as { k: 'binding'; name: string }).name && s.verb === 'exile');
+			(p.steps.some((s) => s.bindAs === (obj.selector as { k: 'binding'; name: string }).name && s.verb === 'exile') ||
+				// --- Precon Bragos Spirit: object exiled by the enclosing ability before a die roll ---
+				(p.outerBoundVerb === 'exile' &&
+					p.lastObject?.stepIndex === -1 &&
+					p.lastObject.ref.k === 'binding' &&
+					p.lastObject.ref.name === obj.selector.name));
+		// --- End Precon Bragos Spirit ---
 		const fromExile =
 			obj.fromZone === 'exile' ||
 			boundFromExile ||
@@ -7688,6 +7748,11 @@ function delayedTrigger(when: string): { trigger: TriggerDef; nextTurn?: boolean
 }
 
 /** One sentence. Returns false if any part of it wasn't understood (no steps are kept then). */
+// --- Precon Bragos Spirit ---
+/** Static upper bound for `perOpponent` target specs; the runtime caps it to one target per opponent. */
+const PER_OPPONENT_TARGET_CAP = 99;
+// --- End Precon Bragos Spirit ---
+
 function sentence(p: Parser, text: string, span: Span, isNested = false): boolean {
 	if (isNested) {
 		return sentenceBody(p, text, span, undefined);
@@ -7724,6 +7789,26 @@ function sentenceBody(
 	if (/^[A-Z][a-z]*\b/.test(t) && LOWER_START.has(t.split(/[\s,']/)[0].toLowerCase())) {
 		t = t.charAt(0).toLowerCase() + t.slice(1);
 	}
+
+	// --- Precon Bragos Spirit: CR 115.1 "For each opponent, <verb> up to one target <noun> that player controls ..." ---
+	// One target slot per opponent; each chosen target must be controlled by a different opponent (`perOpponent`).
+	const perOpp = t.match(/^for each opponent, (.*?\bup to one target )(.+?) that player controls\b(.*)$/i);
+	if (perOpp) {
+		const mark = p.mark();
+		const before = p.targets.length;
+		const rewritten = `${perOpp[1]}${perOpp[2]} an opponent controls${perOpp[3]}`;
+		if (sentenceBody(p, rewritten, span, prevLastConditional) && p.targets.length === before + 1) {
+			const spec = p.targets[before];
+			if (spec.kind === 'object' && spec.min === 0 && spec.max === 1 && spec.filter.controller === 'opponent') {
+				spec.perOpponent = true;
+				spec.max = PER_OPPONENT_TARGET_CAP;
+				return true;
+			}
+		}
+		p.rollback(mark);
+		return false;
+	}
+	// --- End Precon Bragos Spirit ---
 
 	// --- Track P16a: Off-stack card copy follow-up (CR 707.12) & Polymorph "Then shuffle." ---
 	if (p.pendingCardCopy) {
@@ -9723,7 +9808,24 @@ function tryParseDieRollBranch(
 	const bodyText = afterPipeRaw.trim();
 	if (!bodyText) return false;
 	const bodyOffset = span.start + (pipeIdx >= 0 ? pipeIdx + 1 + leadSpaces : 0);
-	const subParse = parseEffects(bodyText, bodyOffset, context, trigger);
+	// --- Precon Bragos Spirit: rows may refer back to objects of the steps before the roll ("those cards") ---
+	const outer = p.lastObject && p.lastObject.stepIndex >= 0 ? p.lastObject : undefined;
+	const outerName = outer?.ref.k === 'binding' ? outer.ref.name : undefined;
+	let subParse = parseEffects(bodyText, bodyOffset, context, trigger);
+	if ((subParse.unparsed.length > 0 || subParse.steps.length === 0) && outer && outerName) {
+		// The row is parsed with a sentinel name for the outer object so its own bindings (b0, b1, ...)
+		// can't be confused with it, then every name is rewritten into the enclosing ability's namespace.
+		const seeded = parseEffects(bodyText, bodyOffset, context, trigger, {
+			ref: { k: 'binding', name: OUTER_ROW_BINDING },
+			verb: p.steps[outer.stepIndex].verb
+		});
+		if (seeded.unparsed.length === 0 && seeded.steps.length > 0) {
+			const rowTag = `d${(rollStep.params?.dieRollTable ?? []).length}`;
+			subParse = { ...seeded, steps: renameBranchBindings(seeded.steps, rowTag, outerName) };
+			p.steps[outer.stepIndex].bindAs = outerName;
+		}
+	}
+	// --- End Precon Bragos Spirit ---
 	if (subParse.unparsed.length > 0 || subParse.targets.length > 0 || subParse.steps.length === 0) {
 		return false;
 	}
@@ -9734,6 +9836,33 @@ function tryParseDieRollBranch(
 	};
 	return true;
 }
+
+// --- Precon Bragos Spirit ---
+/**
+ * Prefixes a die-roll row's own binding names with `tag` so they can't collide with the enclosing
+ * ability's bindings (rows run inline in the same resolution), keeping `keep` (the outer object) as is.
+ */
+const OUTER_ROW_BINDING = '__outer__';
+
+function renameBranchBindings(steps: EffectStep[], tag: string, outerName: string): EffectStep[] {
+	const rename = (name: string): string => (name === OUTER_ROW_BINDING ? outerName : `${tag}_${name}`);
+	const walk = (val: unknown): unknown => {
+		if (Array.isArray(val)) return val.map(walk);
+		if (!val || typeof val !== 'object') return val;
+		const obj = val as Record<string, unknown>;
+		const out: Record<string, unknown> = {};
+		for (const [key, v] of Object.entries(obj)) {
+			if (typeof v === 'string' && (key === 'bindAs' || (key === 'name' && obj.k === 'binding') || (key === 'of' && obj.k === 'resultCount'))) {
+				out[key] = rename(v);
+			} else {
+				out[key] = walk(v);
+			}
+		}
+		return out;
+	};
+	return walk(steps) as EffectStep[];
+}
+// --- End Precon Bragos Spirit ---
 // --- End Track P10 ---
 
 /**
@@ -9744,9 +9873,16 @@ export function parseEffects(
 	text: string,
 	offset = 0,
 	context: EffectContext = 'spell',
-	trigger?: TriggerDef
+	trigger?: TriggerDef,
+	// --- Precon Bragos Spirit: an enclosing ability's object ("those cards") for die-roll rows ---
+	seedLastObject?: { ref: Ref; verb: Verb }
+	// --- End Precon Bragos Spirit ---
 ): EffectParse {
 	const p = new Parser(context, trigger);
+	if (seedLastObject) {
+		p.lastObject = { ref: seedLastObject.ref, stepIndex: -1 };
+		p.outerBoundVerb = seedLastObject.verb;
+	}
 	if (text.includes('\n')) {
 		let lineOffset = offset;
 		for (const rawLine of text.split('\n')) {

@@ -1155,6 +1155,13 @@ export function checkWave8SpellCastLocks(
 		const view = resolveObjectFaces(spellCard, { zone: 'stack', faceIndex: faceIndex ?? 0 });
 		const spellName = (view.name || spellCard.name || '').trim().toLowerCase();
 		if (spellName) {
+			// --- Precon Bragos Spirit: player-scoped spell-name cast locks (Reflector Mage) ---
+			const actor = state.players.find((p) => p.playerId === actorId);
+			const lock = actor?.castNameLocks?.find((l) => l.name.trim().toLowerCase() === spellName);
+			if (lock) {
+				return `Illegal Cast: ${lock.sourceName} prevents casting spells named ${lock.name} this turn cycle.`;
+			}
+			// --- End Precon Bragos Spirit ---
 			for (const m of activeRuleModifiers(state, 'cantCastSameNameAsLinkedExile', actorId)) {
 				const exiledNames = linkedExileNamesForSourceWave8(state, m.source);
 				if (exiledNames.has(spellName)) {

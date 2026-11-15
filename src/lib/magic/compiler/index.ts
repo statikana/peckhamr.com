@@ -33,7 +33,7 @@ import { hashText, normalizeFace, printedText } from './normalize.ts';
 import { runtimeTriggers } from './triggers.ts';
 
 /** Bump whenever the IR produced for the same text could change. */
-export const COMPILER_VERSION = 40;
+export const COMPILER_VERSION = 41;
 
 const CACHE = new Map<string, CardDefinition>();
 
@@ -358,11 +358,36 @@ export function resolveCompiledDelayedSteps(eff: CompiledDelayedEffect): Compile
 	}
 	if (!root || eff.stepPath.length === 0) return null;
 	let steps: EffectStep[] = root.steps;
+	// --- Precon Bragos Spirit: negative tags descend into inline branches (die-roll rows, coin flips),
+	// matching `stepPathPrefix` from the runtime's inline branch runner (resolveReflexiveSpecFromCompiled) ---
+	let branchHost: EffectStep | undefined;
 	for (let i = 0; i < eff.stepPath.length; i++) {
-		const step = steps[eff.stepPath[i]];
-		if (!step?.delayed) return null;
+		const idx = eff.stepPath[i];
+		if (idx < 0) {
+			if (!branchHost) return null;
+			const branch =
+				idx === -1
+					? branchHost.params?.winFlipEffect
+					: idx === -2
+						? branchHost.params?.loseFlipEffect
+						: idx <= -10
+							? branchHost.params?.dieRollTable?.[-(idx + 10)]?.effect
+							: undefined;
+			if (!branch) return null;
+			steps = branch;
+			branchHost = undefined;
+			continue;
+		}
+		const step = steps[idx];
+		if (!step) return null;
+		if (i + 1 < eff.stepPath.length && eff.stepPath[i + 1] < 0) {
+			branchHost = step;
+			continue;
+		}
+		if (!step.delayed) return null;
 		steps = step.delayed.effect;
 	}
+	// --- End Precon Bragos Spirit ---
 	return { steps, targets: root.targets, unparsed: [] };
 }
 

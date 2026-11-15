@@ -1121,6 +1121,19 @@ export function tryParseWave7Sentence(
 		}
 	}
 
+	// --- Precon Bragos Spirit: CR 500.11 "Target opponent skips their next combat phase" ---
+	const skipCombatM = t.match(
+		/^(?:(you|target player|target opponent|that player|they|each opponent|each player)\s+)?skips? (?:your|their) next (?:(two|three|four|\d+) )?combat phases?$/i
+	);
+	if (skipCombatM) {
+		const pSel = helpers.playerSubject((skipCombatM[1] ?? 'you').toLowerCase());
+		const amt = skipCombatM[2] ? parseConstOrX(skipCombatM[2]) : n(1);
+		if (pSel && amt) {
+			return [{ verb: 'skipCombatPhase', subject: pSel, amount: amt, span }];
+		}
+	}
+	// --- End Precon Bragos Spirit ---
+
 	// 6. CR 119.5 Set Life Total ("Your life total becomes 20", "Target player's life total becomes 10", "Each player's life total becomes ...")
 	const setLifeM = t.match(
 		/^(your|target player's|target opponent's|that player's|their|each player's|each opponent's) life total becomes (.+)$/i

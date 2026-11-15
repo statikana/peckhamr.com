@@ -2679,6 +2679,12 @@ export interface PlayerGameState {
 	// --- Track P19a ---
 	/** CR 614.10: Number of upcoming turns this player skips ("You skip your next turn"). */
 	skipNextTurns?: number;
+	// --- Precon Bragos Spirit ---
+	/** CR 500.11: Number of upcoming combat phases this player skips ("skips their next combat phase"). */
+	skipNextCombatPhases?: number;
+	/** CR 101.2 (Reflector Mage): names this player can't cast spells with, until `untilTurnStartOf`'s next turn begins. */
+	castNameLocks?: Array<{ name: string; untilTurnStartOf: string; sourceName: string }>;
+	// --- End Precon Bragos Spirit ---
 	/** CR 609.4b: True iff this player may spend mana as though it were mana of any color to cast spells from the top of libraries this turn. */
 	spendManaAsAnyColorFromTopOfLibraryThisTurn?: boolean;
 	// --- End Track P19a ---

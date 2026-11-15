@@ -24,7 +24,11 @@ import type {
 import type { CounterType, ManaColor, ZoneType } from '../types.ts';
 
 function asSelector(ref: Ref): Selector {
-	return ref.k === 'affected' ? { k: 'self' } : ref;
+	if (ref.k === 'affected') return { k: 'self' };
+	// --- Precon Bragos Spirit ---
+	if (ref.k === 'linkedExile') return { k: 'all', filter: { zone: 'exile', exiledWithSelf: true } };
+	// --- End Precon Bragos Spirit ---
+	return ref;
 }
 
 export interface Wave8LastObject {
