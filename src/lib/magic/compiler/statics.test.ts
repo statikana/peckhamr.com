@@ -777,5 +777,363 @@ describe('Static grammar: Track P14 devotion, protection exemption, combat rules
 	});
 });
 
+describe('Static grammar: Track P20a filters, clones, CDAs, ETB anchors, replacements, and stax', () => {
+	it('compiles Soulbond paired grants, toughness>power, odd/even/chosen parity, and controlledByChosenPlayer filters', () => {
+		assert.deepEqual(
+			defs('As long as ~ is paired with another creature, both creatures have double strike.'),
+			[
+				{
+					k: 'continuous',
+					layer: '6',
+					affected: { types: ['Creature'], pairedWithSource: true },
+					mod: { k: 'addKeywords', keywords: ['double strike'] },
+					condition: { k: 'isPaired' }
+				}
+			]
+		);
+		assert.deepEqual(
+			defs('Each creature you control with toughness greater than its power gets +1/+1.'),
+			[
+				{
+					k: 'continuous',
+					layer: '7c',
+					affected: {
+						types: ['Creature'],
+						controller: 'you',
+						toughnessGreaterThanPower: true
+					},
+					mod: { k: 'pt', power: n(1), toughness: n(1) }
+				}
+			]
+		);
+		assert.deepEqual(
+			defs("Your opponents can't block with creatures with even mana values."),
+			[
+				{
+					k: 'restriction',
+					affected: {
+						types: ['Creature'],
+						manaValueParity: 'even',
+						controller: 'opponent'
+					},
+					restriction: 'cantBlock'
+				}
+			]
+		);
+		assert.deepEqual(
+			defs("Your opponents can't cast spells with even mana values."),
+			[
+				{
+					k: 'ruleModifier',
+					rule: 'cantCastMatchingSpells',
+					who: { relation: 'each_opponent' },
+					params: { filter: { manaValueParity: 'even' } }
+				}
+			]
+		);
+		assert.deepEqual(
+			defs('Each creature with mana value of the chosen quality has haste.'),
+			[
+				{
+					k: 'continuous',
+					layer: '6',
+					affected: { types: ['Creature'], manaValueParity: 'chosenQuality' },
+					mod: { k: 'addKeywords', keywords: ['haste'] }
+				}
+			]
+		);
+	});
+
+	it('compiles Layer 1 clone modifications, multi-subtype CDAs, spell damage keywords, and Layer 2/4/6 chosen grants', () => {
+		assert.deepEqual(
+			defs(
+				'You may have ~ enter as a copy of any creature on the battlefield, except it\'s a 0/0 Construct artifact creature in addition to its other types, it\'s legendary, and it has "{T}: Add {C}."'
+			),
+			[
+				{
+					replacement: {
+						replaces: { event: 'zoneChange', filter: { object: 'self', to: 'battlefield' } },
+						with: {
+							k: 'modify',
+							copyOf: {
+								types: ['Creature'],
+								zone: 'battlefield',
+								other: true
+							},
+							copyModifications: {
+								power: 0,
+								toughness: 0,
+								addTypes: ['Artifact', 'Creature'],
+								addSubtypes: ['Construct'],
+								addSupertypes: ['Legendary'],
+								addedAbilityTexts: ['{T}: Add {C}.']
+							}
+						}
+					}
+				}
+			]
+		);
+		assert.deepEqual(defs('~ is also a Cleric, Rogue, Warrior, and Wizard.'), [
+			{
+				k: 'continuous',
+				layer: '4',
+				affected: 'self',
+				mod: {
+					k: 'addTypes',
+					types: [],
+					subtypes: ['Cleric', 'Rogue', 'Warrior', 'Wizard']
+				}
+			}
+		]);
+		assert.deepEqual(defs('Enchanted land is the chosen type.'), [
+			{
+				k: 'continuous',
+				layer: '4',
+				affected: 'attachedTo',
+				mod: { k: 'setChosenSubtype' }
+			}
+		]);
+		assert.deepEqual(defs('~ has protection from the chosen player.'), [
+			{
+				k: 'continuous',
+				layer: '6',
+				affected: 'self',
+				mod: { k: 'protectionFromChosenPlayer' }
+			}
+		]);
+		assert.deepEqual(defs('Instant and sorcery spells you control have lifelink.'), [
+			{
+				k: 'spellGrantKeyword',
+				filter: { types: ['Instant', 'Sorcery'] },
+				keywords: ['lifelink']
+			}
+		]);
+		assert.deepEqual(
+			defs(
+				"Each creature you control with defender assigns combat damage equal to its toughness rather than its power and can attack as though it didn't have defender."
+			),
+			[
+				{
+					k: 'assignCombatDamageByToughness',
+					affected: { types: ['Creature'], controller: 'you', hasKeywords: ['defender'] }
+				},
+				{
+					k: 'combatRule',
+					affected: { types: ['Creature'], controller: 'you', hasKeywords: ['defender'] },
+					rule: { kind: 'canAttackDespiteDefender' }
+				}
+			]
+		);
+	});
+
+	it('compiles P20a ETB anchors, mana-tap multipliers, damage/discard/extra-turn/regeneration replacements, and conditions', () => {
+		assert.deepEqual(
+			defs('As ~ enters, choose a player. ~ has protection from the chosen player.'),
+			[
+				{
+					replacement: {
+						replaces: { event: 'zoneChange', filter: { object: 'self', to: 'battlefield' } },
+						with: { k: 'modify', choosePlayer: 'any' },
+						selfReplacement: true
+					}
+				},
+				{
+					k: 'continuous',
+					layer: '6',
+					affected: 'self',
+					mod: { k: 'protectionFromChosenPlayer' }
+				}
+			]
+		);
+		assert.deepEqual(
+			defs('As ~ enters, choose a basic land type. Then you may pay 2 life. If you don\'t, it enters tapped.'),
+			[
+				{
+					replacement: {
+						replaces: { event: 'zoneChange', filter: { object: 'self', to: 'battlefield' } },
+						with: { k: 'modify', chooseSubType: 'basicLand' },
+						selfReplacement: true
+					}
+				},
+				{
+					replacement: {
+						replaces: { event: 'zoneChange', filter: { object: 'self', to: 'battlefield' } },
+						with: { k: 'modify', payLifeOrEnterTapped: 2 },
+						selfReplacement: true
+					}
+				}
+			]
+		);
+		assert.deepEqual(defs("If it's neither day nor night, it becomes day as ~ enters."), [
+			{
+				replacement: {
+					replaces: { event: 'zoneChange', filter: { object: 'self', to: 'battlefield' } },
+					with: { k: 'modify', becomesDayIfNeither: true },
+					selfReplacement: true
+				}
+			}
+		]);
+		assert.deepEqual(defs('Gates you control enter untapped.'), [
+			{
+				replacement: {
+					replaces: {
+						event: 'zoneChange',
+						filter: {
+							object: { subtypes: ['Gate'], controller: 'you' },
+							to: 'battlefield'
+						}
+					},
+					with: { k: 'modify', untapped: true }
+				}
+			}
+		]);
+		assert.deepEqual(
+			defs('If you tap a permanent for mana, it produces three times as much of that mana instead.'),
+			[
+				{
+					k: 'tapForManaMultiplier',
+					factor: 3,
+					filter: {},
+					who: 'you'
+				}
+			]
+		);
+		assert.deepEqual(
+			defs(
+				'If a spell or ability an opponent controls causes you to discard ~, put it onto the battlefield instead of putting it into your graveyard.'
+			),
+			[
+				{
+					replacement: {
+						replaces: { event: 'discard', filter: { object: 'self' } },
+						with: { k: 'modify', opponentDiscardToBattlefield: {} },
+						selfReplacement: true
+					}
+				}
+			]
+		);
+		assert.deepEqual(
+			defs(
+				'If a source you control would deal noncombat damage to a creature an opponent controls, put that many -1/-1 counters on that creature instead.'
+			),
+			[
+				{
+					replacement: {
+						replaces: { event: 'damage', filter: {} },
+						with: { k: 'modify', noncombatDamageToOpponentCreatureAsMinusCounters: true }
+					}
+				}
+			]
+		);
+		assert.deepEqual(defs('If ~ would be destroyed, regenerate it.'), [
+			{
+				replacement: {
+					replaces: {
+						event: 'zoneChange',
+						filter: { object: 'self', from: 'battlefield', to: 'graveyard' }
+					},
+					with: { k: 'modify', regenerateSelfOnDestroy: true },
+					selfReplacement: true
+				}
+			}
+		]);
+		assert.deepEqual(
+			defs('As long as an opponent has 10 or less life, ~ has haste.'),
+			[
+				{
+					k: 'continuous',
+					layer: '6',
+					affected: 'self',
+					mod: { k: 'addKeywords', keywords: ['haste'] },
+					condition: { k: 'anyOpponentMetric', metric: 'life', op: '<=', count: 10 }
+				}
+			]
+		);
+		assert.deepEqual(
+			defs('As long as you have half your starting life total or less, ~ gets +2/+2.'),
+			[
+				{
+					k: 'continuous',
+					layer: '7c',
+					affected: 'self',
+					mod: { k: 'pt', power: n(2), toughness: n(2) },
+					condition: { k: 'lifeCompareHalfStarting', who: 'you', op: '<=' }
+				}
+			]
+		);
+	});
+
+	it('compiles P20a rule-modifying stax, cantBeTargetedBy, activateAsThoughHaste, cleanup-sacrifice flash, and selfCastRestriction', () => {
+		assert.deepEqual(
+			defs("You don't lose the game for having 0 or less life. As long as you have 0 or less life, all damage is dealt to you as though its source had infect."),
+			[
+				{
+					k: 'ruleModifier',
+					rule: 'dontLoseAtZeroOrLessLife',
+					who: { relation: 'you' }
+				},
+				{
+					k: 'ruleModifier',
+					rule: 'damageToYouAsInfect',
+					who: { relation: 'you' },
+					condition: {
+						k: 'compare',
+						left: { k: 'life', of: { k: 'you' } },
+						op: '<=',
+						right: n(0)
+					}
+				}
+			]
+		);
+		assert.deepEqual(defs("Cards in graveyards can't be the targets of spells or abilities."), [
+			{
+				k: 'ruleModifier',
+				rule: 'graveyardCantBeTargeted',
+				who: { relation: 'each_player' }
+			}
+		]);
+		assert.deepEqual(
+			defs('You may activate abilities of creatures you control as though those creatures had haste.'),
+			[
+				{
+					k: 'activateAsThoughHaste',
+					filter: { types: ['Creature'], controller: 'you' }
+				}
+			]
+		);
+		assert.deepEqual(
+			defs("~ can't be the target of nongreen spells your opponents control or abilities from nongreen sources your opponents control."),
+			[
+				{
+					k: 'cantBeTargetedBy',
+					affected: 'self',
+					sourceFilter: { notColors: ['G'] },
+					opponentControllerOnly: true
+				}
+			]
+		);
+		assert.deepEqual(
+			defs(
+				"You may cast ~ as though it had flash. If you cast it any time a sorcery couldn't have been cast, the controller of the permanent it becomes sacrifices it at the beginning of the next cleanup step."
+			),
+			[
+				{
+					k: 'ruleModifier',
+					rule: 'castAsThoughFlash',
+					who: { relation: 'you' },
+					params: { selfOnly: true, sacrificeAtNextCleanupIfNonSorcery: true }
+				}
+			]
+		);
+		assert.deepEqual(defs("Cast this spell only if you've cast another spell this turn."), [
+			{
+				k: 'selfCastRestriction',
+				castCondition: { k: 'spellsCastThisTurnCount', min: 1 }
+			}
+		]);
+	});
+});
+
+
 
 

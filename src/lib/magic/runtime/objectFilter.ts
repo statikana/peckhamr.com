@@ -101,6 +101,16 @@ import {
 } from './staticsWave6.ts';
 let inOffBattlefieldGrantLookup = false;
 // --- End Track P17a ---
+// --- Track P20a ---
+import {
+	countOpponentsWithLifeLessThanHalfStarting,
+	evaluateChosenPlayerZoneCount,
+	evaluateLifeCompareHalfStarting,
+	evaluateMostCommonColorOnBattlefield,
+	getSelfCdaAddedSubtypes,
+	matchesManaValueParity
+} from './staticsWave7.ts';
+// --- End Track P20a ---
 
 export interface FilterContext {
 	state: GameState;
@@ -515,6 +525,12 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 			}
 		}
 		// --- End Track P17a ---
+		// --- Track P20a (CR 604.3a): Self multi-subtype CDA in off-battlefield zones ---
+		if (!obj.isFaceDown) {
+			const cdaSubs = getSelfCdaAddedSubtypes(card, faceOpts);
+			if (cdaSubs.some((sub) => sub.toLowerCase() === s.toLowerCase())) return true;
+		}
+		// --- End Track P20a ---
 		return false;
 	};
 
@@ -786,6 +802,27 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 	// --- Track P17b ---
 	if (!matchesP17bObjectFilter(filter, obj, ctx, matchesObjectFilter)) return false;
 	// --- End Track P17b ---
+	// --- Track P20a ---
+	if (filter.pairedWithSource) {
+		const pairedId = ctx.source?.pairedWithId;
+		if (!ctx.source || !pairedId) return false;
+		if (obj.instanceId !== ctx.source.instanceId && obj.instanceId !== pairedId) return false;
+	}
+	if (filter.controlledByChosenPlayer) {
+		const chosenPid = ctx.source?.chosenPlayerId;
+		if (!chosenPid || controllerId !== chosenPid) return false;
+	}
+	if (filter.toughnessGreaterThanPower) {
+		const p = objectPower(state, obj);
+		const t = objectToughness(state, obj);
+		if (p === null || t === null || t <= p) return false;
+	}
+	if (filter.manaValueParity !== undefined) {
+		if (!matchesManaValueParity(objectManaValue(state, obj), filter.manaValueParity, ctx.source)) {
+			return false;
+		}
+	}
+	// --- End Track P20a ---
 	return true;
 }
 
@@ -1007,6 +1044,20 @@ export function evaluateAmount(amount: Amount, ctx: FilterContext): number {
 		case 'p17bMetric':
 			return evaluateP17bAmount(amount, ctx, matchesObjectFilter);
 		// --- End Track P17b ---
+		// --- Track P20a ---
+		case 'manaSpentToCast':
+			return ctx.source?.manaSpentCount ?? ctx.stackItem?.manaSpentCount ?? 0;
+		case 'chosenPlayerZoneCount':
+			return evaluateChosenPlayerZoneCount(
+				ctx.state,
+				ctx.source,
+				ctx.controllerId,
+				amount.zone,
+				amount.filter
+			);
+		case 'opponentsWithLifeLessThanHalfStarting':
+			return countOpponentsWithLifeLessThanHalfStarting(ctx.state, ctx.controllerId);
+		// --- End Track P20a ---
 		default:
 			return 0;
 	}
@@ -1243,6 +1294,12 @@ export function evaluateCondition(cond: Condition, ctx: FilterContext): boolean 
 					)
 			);
 		// --- End Track P18b ---
+		// --- Track P20a ---
+		case 'lifeCompareHalfStarting':
+			return evaluateLifeCompareHalfStarting(ctx.state, ctx.controllerId, cond.who, cond.op);
+		case 'mostCommonColorAmongPermanents':
+			return evaluateMostCommonColorOnBattlefield(ctx.state, cond.color, cond.allowTie);
+		// --- End Track P20a ---
 		default:
 			return false;
 	}

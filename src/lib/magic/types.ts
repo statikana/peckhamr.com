@@ -969,8 +969,8 @@ export interface CardInstance {
 	isSuspected?: boolean;
 	/** CR 701.35a Detain: playerIds whose detain effect stops this permanent from attacking, blocking, or activating abilities until their next turn. */
 	detainedByPlayerIds?: string[];
-	/** Source permanent `(sourceId, sourceVersion)` entries that dealt damage to this creature this turn; cleared on zone change & cleanup. */
-	damagedByThisTurn?: Array<{ sourceId: string; sourceVersion?: number }>;
+	/** Source permanent `(sourceId, sourceVersion, sourceControllerId)` entries that dealt damage to this creature this turn; cleared on zone change & cleanup. */
+	damagedByThisTurn?: Array<{ sourceId: string; sourceVersion?: number; sourceControllerId?: string }>;
 	/** CR 601.2h / 400.7d: total amount of mana spent to cast this spell / permanent. */
 	manaSpentCount?: number;
 	// --- End Track P10 ---
@@ -1104,6 +1104,12 @@ export interface CardInstance {
 	/** CR 606.3: number of loyalty abilities activated on this permanent this turn. */
 	loyaltyActivationsThisTurn?: number;
 	// --- End Track P18b ---
+	// --- Track P20a ---
+	/** CR 614.1c / 614.12: player ID chosen as this permanent entered ("As ~ enters, choose a player / an opponent"); not copiable (CR 707.2). */
+	chosenPlayerId?: string;
+	/** CR 614.1c / 614.12: mana-value parity chosen as this permanent entered ("As ~ enters, choose odd or even"); not copiable (CR 707.2). */
+	chosenParity?: 'odd' | 'even';
+	// --- End Track P20a ---
 }
 
 export interface TargetRef {
@@ -1194,6 +1200,10 @@ export interface SpellModifications {
 	/** CR 118.8 / 601.2f: Extra mana added on top of printed mana cost when casting via a conditional/graveyard/flash permission. */
 	additionalManaCost?: string;
 	// --- End Track P17b ---
+	// --- Track P20a ---
+	/** CR 603.7: permanent this spell becomes is sacrificed by its controller at the beginning of the next cleanup step. */
+	sacrificeAtCleanupStep?: boolean;
+	// --- End Track P20a ---
 }
 
 export interface CastOptionOptionalCost {
@@ -1831,7 +1841,14 @@ export type DelayedTriggerEffect =
 	| { kind: 'scry'; amount: number }
 	| CompiledDelayedEffect
 	// --- Track P3 ---
-	| { kind: 'sacrifice'; targetInstanceId: string; targetObjectVersion?: number }
+	| {
+			kind: 'sacrifice';
+			targetInstanceId: string;
+			targetObjectVersion?: number;
+			// --- Track P20a ---
+			byCurrentController?: boolean;
+			// --- End Track P20a ---
+	  }
 	// --- Track P6 ---
 	| { kind: 'warpExile'; targetInstanceId: string; targetObjectVersion?: number }
 	// --- Track P9 ---

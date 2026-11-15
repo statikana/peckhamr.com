@@ -80,6 +80,14 @@ import {
 	recordPendingExileReplacementCounter
 } from './staticsWave6.ts';
 // --- End Track P17a ---
+// --- Track P20a ---
+import { setDayNight } from './framesBattlesAndKeywordsWave5.ts';
+import {
+	checkWave7SelfCastRestrictions,
+	chooseBotLandSubtype,
+	chooseBotPlayerForEtb
+} from './staticsWave7.ts';
+// --- End Track P20a ---
 
 // ---- Condition & Amount Evaluation ----------------------------------------------------------
 
@@ -589,6 +597,18 @@ export function checkGlobalCastPermissionsAndRestrictions(
 		};
 	}
 	// --- End Track P17a ---
+	// --- Track P20a: Self cast restrictions (`k: 'selfCastRestriction'`) ---
+	const w7SelfCast = checkWave7SelfCastRestrictions(state, actor.playerId, spellInst);
+	if (!w7SelfCast.ok) {
+		return {
+			allowedAsThoughFlash,
+			grantsFlash: allowedAsThoughFlash,
+			blocked: true,
+			ok: false,
+			error: w7SelfCast.error
+		};
+	}
+	// --- End Track P20a ---
 
 	return {
 		allowedAsThoughFlash,
@@ -1375,7 +1395,7 @@ export function placeRegisteredCounters(
 }
 
 export interface SelfEtbChoiceSpec {
-	chooseSubType?: 'creature';
+	chooseSubType?: 'creature' | 'basicLand' | 'land';
 	chooseColor?: { exclude?: ManaColor };
 	// --- Track P8 ---
 	payLifeOrEnterTapped?: number;
@@ -1384,6 +1404,10 @@ export interface SelfEtbChoiceSpec {
 	chooseCardName?: { nonlandOnly?: boolean };
 	chooseCounter?: CounterType[];
 	// --- End Track P11 ---
+	// --- Track P20a ---
+	choosePlayer?: 'any' | 'opponent';
+	chooseParity?: boolean;
+	// --- End Track P20a ---
 }
 
 /**
@@ -1401,7 +1425,7 @@ export function selfEtbChoiceSpec(state: GameState, perm: CardInstance): SelfEtb
 		source: perm,
 		xValue: perm.enteredWithX
 	};
-	let chooseSubType: 'creature' | undefined;
+	let chooseSubType: 'creature' | 'basicLand' | 'land' | undefined;
 	let chooseColor: { exclude?: ManaColor } | undefined;
 	// --- Track P8 ---
 	let payLifeOrEnterTapped: number | undefined;
@@ -1410,6 +1434,10 @@ export function selfEtbChoiceSpec(state: GameState, perm: CardInstance): SelfEtb
 	let chooseCardName: { nonlandOnly?: boolean } | undefined;
 	let chooseCounter: CounterType[] | undefined;
 	// --- End Track P11 ---
+	// --- Track P20a ---
+	let choosePlayer: 'any' | 'opponent' | undefined;
+	let chooseParity: boolean | undefined;
+	// --- End Track P20a ---
 	for (const ability of abilities) {
 		if (ability.kind !== 'replacement') continue;
 		const rep = ability.replacement;
@@ -1419,8 +1447,8 @@ export function selfEtbChoiceSpec(state: GameState, perm: CardInstance): SelfEtb
 		}
 		if (Array.isArray(rep.with) || rep.with.k !== 'modify') continue;
 		if (!evalReplaceCondition(rep.condition, ctx)) continue;
-		if (rep.with.chooseSubType === 'creature') {
-			chooseSubType = 'creature';
+		if (rep.with.chooseSubType) {
+			chooseSubType = rep.with.chooseSubType;
 		}
 		if (rep.with.chooseColor) {
 			chooseColor = { ...rep.with.chooseColor };
@@ -1439,6 +1467,14 @@ export function selfEtbChoiceSpec(state: GameState, perm: CardInstance): SelfEtb
 			chooseCounter = [...rep.with.chooseCounter];
 		}
 		// --- End Track P11 ---
+		// --- Track P20a ---
+		if (rep.with.choosePlayer) {
+			choosePlayer = rep.with.choosePlayer;
+		}
+		if (rep.with.chooseParity) {
+			chooseParity = true;
+		}
+		// --- End Track P20a ---
 	}
 	if (
 		!chooseSubType &&
@@ -1446,7 +1482,9 @@ export function selfEtbChoiceSpec(state: GameState, perm: CardInstance): SelfEtb
 		payLifeOrEnterTapped === undefined &&
 		!revealFromHandOrEnterTapped &&
 		!chooseCardName &&
-		!chooseCounter
+		!chooseCounter &&
+		!choosePlayer &&
+		!chooseParity
 	) {
 		return null;
 	}
@@ -1456,7 +1494,9 @@ export function selfEtbChoiceSpec(state: GameState, perm: CardInstance): SelfEtb
 		...(payLifeOrEnterTapped !== undefined ? { payLifeOrEnterTapped } : {}),
 		...(revealFromHandOrEnterTapped ? { revealFromHandOrEnterTapped } : {}),
 		...(chooseCardName ? { chooseCardName } : {}),
-		...(chooseCounter ? { chooseCounter } : {})
+		...(chooseCounter ? { chooseCounter } : {}),
+		...(choosePlayer ? { choosePlayer } : {}),
+		...(chooseParity ? { chooseParity } : {})
 	};
 }
 
@@ -1496,6 +1536,11 @@ export function applySelfEtbReplacements(state: GameState, perm: CardInstance): 
 			perm.isPrepared = true;
 		}
 		// --- End Track P14 & P15 ---
+		// --- Track P20a (CR 732.1c): "As ~ enters, if it's neither day nor night, it becomes day." ---
+		if (rep.with.becomesDayIfNeither && !state.dayNight) {
+			setDayNight(state, 'day');
+		}
+		// --- End Track P20a ---
 		if (ctrl?.isBot) {
 			if (rep.with.chooseColor && !perm.chosenColor) {
 				perm.chosenColor = chooseBotBestColor(state, ctrl, rep.with.chooseColor.exclude, perm);
@@ -1503,6 +1548,20 @@ export function applySelfEtbReplacements(state: GameState, perm: CardInstance): 
 			if (rep.with.chooseSubType === 'creature' && !perm.chosenSubType) {
 				perm.chosenSubType = chooseBotBestCreatureSubtype(state, ctrl, perm);
 			}
+			// --- Track P20a ---
+			if (
+				(rep.with.chooseSubType === 'basicLand' || rep.with.chooseSubType === 'land') &&
+				!perm.chosenSubType
+			) {
+				perm.chosenSubType = chooseBotLandSubtype(state, ctrl, rep.with.chooseSubType);
+			}
+			if (rep.with.choosePlayer && !perm.chosenPlayerId) {
+				perm.chosenPlayerId = chooseBotPlayerForEtb(state, ctrl, rep.with.choosePlayer);
+			}
+			if (rep.with.chooseParity && !perm.chosenParity) {
+				perm.chosenParity = 'odd';
+			}
+			// --- End Track P20a ---
 			// --- Track P11 ---
 			if (rep.with.chooseCardName && !perm.chosenCardName) {
 				perm.chosenCardName = chooseBotBestCardName(
