@@ -194,6 +194,9 @@ export interface TappedForManaEvent extends EventBase {
 	playerId: string;
 	objectId: string;
 	object: CardInstance;
+	// --- Track P19b ---
+	producedColors?: ManaColor[];
+	// --- End Track P19b ---
 }
 
 /** A player gained a positive amount of life (CR 119.9, 119.10: 0 life is not a life-gain event). */
@@ -216,6 +219,9 @@ export interface BecomesTappedEvent extends EventBase {
 	kind: 'BecomesTapped';
 	objectId: string;
 	object: CardInstance;
+	// --- Track P19b ---
+	actorId?: string;
+	// --- End Track P19b ---
 }
 
 /** A card was discarded from a player's hand (CR 701.9, CR 702.29c–d). */
@@ -485,8 +491,19 @@ export type GameEvent =
 	| PhasedInEvent
 	| CollectedEvidenceEvent
 	| LandPlayedEvent
-	| PlayerTargetedEvent;
+	| PlayerTargetedEvent
 	// --- End Track P16b & P18a ---
+	// --- Track P19b ---
+	| ManaAddedByLandAbilityEvent
+	| LibrarySearchedEvent
+	| PlayerLostGameEvent
+	| CoinFlippedEvent
+	| DieRolledEvent
+	| EnergyGainedEvent
+	| ProliferatedEvent
+	| EvolvedEvent
+	| CrewedVehicleEvent;
+	// --- End Track P19b ---
 
 // --- Track P10 ---
 export interface UnblockedAttackersEvent extends EventBase {
@@ -694,6 +711,70 @@ export interface PlayerTargetedEvent extends EventBase {
 	stackItemId?: string;
 }
 // --- End Track P16b ---
+
+// --- Track P19b ---
+export interface ManaAddedByLandAbilityEvent extends EventBase {
+	kind: 'ManaAddedByLandAbility';
+	playerId: string;
+	objectId: string;
+	object: CardInstance;
+	producedColors: ManaColor[];
+}
+
+export interface LibrarySearchedEvent extends EventBase {
+	kind: 'LibrarySearched';
+	playerId: string;
+}
+
+export interface PlayerLostGameEvent extends EventBase {
+	kind: 'PlayerLostGame';
+	playerId: string;
+}
+
+export interface CoinFlippedEvent extends EventBase {
+	kind: 'CoinFlipped';
+	playerId: string;
+	won: boolean;
+	wins?: number;
+	flips?: number;
+}
+
+export interface DieRolledEvent extends EventBase {
+	kind: 'DieRolled';
+	playerId: string;
+	result: number;
+	naturalResult?: number;
+	sides?: number;
+	count?: number;
+}
+
+export interface EnergyGainedEvent extends EventBase {
+	kind: 'EnergyGained';
+	playerId: string;
+	amount: number;
+}
+
+export interface ProliferatedEvent extends EventBase {
+	kind: 'Proliferated';
+	playerId: string;
+}
+
+export interface EvolvedEvent extends EventBase {
+	kind: 'Evolved';
+	objectId: string;
+	object: CardInstance;
+	playerId: string;
+}
+
+export interface CrewedVehicleEvent extends EventBase {
+	kind: 'CrewedVehicle';
+	creatureId: string;
+	creature: CardInstance;
+	vehicleId: string;
+	vehicle: CardInstance;
+	playerId: string;
+}
+// --- End Track P19b ---
 
 export type GameEventKind = GameEvent['kind'];
 type EventOf<K extends GameEventKind> = Extract<GameEvent, { kind: K }>;

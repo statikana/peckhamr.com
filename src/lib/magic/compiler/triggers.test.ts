@@ -132,6 +132,9 @@ describe('Trigger grammar: intervening-if conditions', () => {
 			k: 'manaColorSpentToCast',
 			minTotal: 4
 		});
+		assert.deepEqual(parseCondition('if mana from a Treasure was spent to cast it'), {
+			k: 'treasureManaSpentToCast'
+		});
 	});
 
 	it('marks a graveyard condition on ~ as functioning from the graveyard', () => {
@@ -143,12 +146,12 @@ describe('Trigger grammar: intervening-if conditions', () => {
 	});
 
 	it('reports an unknown condition as unparsed but keeps the trigger', () => {
-		const text = 'Whenever you cast a noncreature spell, if mana from a Treasure was spent to cast it, draw a card.';
+		const text = 'Whenever you cast a noncreature spell, if an opponent voted for grace, draw a card.';
 		const parsed = parseTriggerHeader(text)!;
 		assert.ok(parsed.trigger);
 		assert.deepEqual(
 			parsed.unparsed.map((s) => text.slice(s.start, s.end)),
-			['if mana from a Treasure was spent to cast it']
+			['if an opponent voted for grace']
 		);
 		assert.equal(text.slice(parsed.effectStart), 'draw a card.');
 	});

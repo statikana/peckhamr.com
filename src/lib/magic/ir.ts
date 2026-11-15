@@ -631,6 +631,12 @@ export interface ObjectFilter {
 	/** CR 205.3m: matches objects having ALL listed subtypes simultaneously (e.g. `['Eldrazi', 'Scion']`, `['Eldrazi', 'Spawn']`). */
 	allSubtypes?: string[];
 	// --- End Track P17b ---
+	// --- Track P19b ---
+	/** CR 607.2a: matches objects with the same name as a face-up card exiled with `source` (e.g. Extraplanar Lens). */
+	sameNameAsLinkedExile?: boolean;
+	/** CR 105.2: matches objects having ALL listed colors simultaneously ("that's both red and white"). */
+	allColors?: ManaColor[];
+	// --- End Track P19b ---
 }
 
 export interface Compare {
@@ -1121,6 +1127,10 @@ export interface EffectParams {
 	mana?: ManaColor[];
 	/** addMana: `amount` mana of one colour chosen from this set ("Add {W} or {U}", "any color"). */
 	manaChoice?: ManaColor[] | 'any' | 'commanderIdentity' | 'opponentLandColors' | 'chosenColor';
+	// --- Track P19b ---
+	/** addMana: CR 605.1b / 106.7 mana of any type that the triggering land/permanent produced. */
+	manaFromProducedEvent?: boolean;
+	// --- End Track P19b ---
 	/** addMana: spending restriction attached to the produced mana (CR 106.6). */
 	manaRestriction?: ManaRestriction;
 	/** grantPlayer: the rules the player gets. */
@@ -1614,8 +1624,28 @@ export type EventKind =
 	/** CR 701.59: A player collected evidence. */
 	| 'collectEvidence'
 	/** CR 305.1: A player played a land. */
-	| 'landPlayed';
+	| 'landPlayed'
 	// --- End Track P16b ---
+	// --- Track P19b ---
+	/** CR 605.1b: A land's mana ability caused a player to add mana (e.g. Caged Sun). */
+	| 'manaAddedByLandAbility'
+	/** CR 701.19: A player searched their library (e.g. Archivist of Oghma). */
+	| 'librarySearched'
+	/** CR 104.3: A player lost the game (e.g. Blood Tyrant, Ramses). */
+	| 'playerLostGame'
+	/** CR 705: A player flipped one or more coins. */
+	| 'coinFlipped'
+	/** CR 706: A player rolled one or more dice. */
+	| 'dieRolled'
+	/** CR 122.1e: A player got one or more {E} (energy counters). */
+	| 'energyGained'
+	/** CR 701.27: A player proliferated. */
+	| 'proliferated'
+	/** CR 702.100: A permanent evolved. */
+	| 'evolved'
+	/** CR 702.122c: A creature crewed a Vehicle. */
+	| 'crewedVehicle';
+	// --- End Track P19b ---
 
 export interface EventFilter {
 	/**
@@ -1751,6 +1781,35 @@ export interface EventFilter {
 	/** phaseBegin: matches only on first upkeep or monarch's turn. */
 	phaseTurnFilter?: 'firstOfGame' | 'yourFirstUpkeep' | 'monarch';
 	// --- End Track P16b ---
+	// --- Track P19b ---
+	/** tappedForMana / manaAddedByLandAbility: specific mana symbol produced ("for {C}"). */
+	tappedManaColor?: ManaColor;
+	/** tappedForMana / manaAddedByLandAbility: requires mana of `source.chosenColor` ("for mana of the chosen color"). */
+	tappedManaChosenColor?: boolean;
+	/** attacks (CR 508.3e): fires once per attacked defending player ("Whenever you attack a player"). */
+	perAttackedPlayer?: boolean;
+	/** counterPlaced: threshold crossing `prev < N && next >= N` on `self` ("When the fourth plan counter is put on ~"). */
+	nthCounterOnSelf?: number;
+	/** Event ordinal per turn (1 for "for the first time each turn", N for "for the Nth time each turn"). */
+	firstTimeEachTurn?: boolean;
+	nthEventThisTurn?: number;
+	/** zoneChange: step restriction ("When ~ enters during the declare attackers step"). */
+	duringStep?: GamePhase;
+	/** zoneChange: combat phase restriction ("When ~ dies during combat"). */
+	duringCombat?: boolean;
+	/** becomesTapped: player whose spell/ability/cost caused the tap ("Whenever you tap an untapped creature an opponent controls"). */
+	tappedByPlayer?: 'you' | 'opponent';
+	/** dieRolled: minimum result threshold ("Whenever you roll a 10 or higher on a die"). */
+	dieRollMin?: number;
+	/** dieRolled: exact result set ("Whenever you roll a 1 or 2"). */
+	dieRollValues?: number[];
+	/** coinFlipped: requires winning at least one flip ("Whenever you win a coin flip"). */
+	wonCoinFlip?: boolean;
+	/** dealsDamage: filter on damaged permanent ("Whenever ~ deals damage to a Dinosaur"). */
+	damageTargetFilter?: ObjectFilter;
+	/** dealsDamage: requires damaged player to be `source.attachedToId` ("Whenever a creature deals combat damage to enchanted player"). */
+	damageTargetEnchantedPlayer?: boolean;
+	// --- End Track P19b ---
 }
 
 export interface TriggerDef {
@@ -1772,6 +1831,10 @@ export interface TriggerDef {
 	/** CR 603.8: State-triggered ability (won't trigger again while already on the stack). */
 	isStateTrigger?: boolean;
 	// --- End Wave 6 Shared ---
+	// --- Track P19b ---
+	/** CR 603.7a: Event-driven delayed trigger created by a resolving Instant or Sorcery spell. */
+	spellDelayed?: 'nextThisTurn' | 'thisTurn' | 'nextUpkeep';
+	// --- End Track P19b ---
 }
 
 export type Condition =
@@ -2009,8 +2072,36 @@ export type Condition =
 	/** CR 614.12c: true iff this permanent's chosen ETB anchor word matches `word` (case-insensitive). */
 	| { k: 'anchorWordChosen'; word: string }
 	/** CR 508.5: true iff at least one creature is currently attacking the controller directly. */
-	| { k: 'youWereAttackedThisCombat' };
+	| { k: 'youWereAttackedThisCombat' }
 	// --- End Track P18b ---
+	// --- Track P19b ---
+	/** "if a creature died under your control this turn". */
+	| { k: 'creatureDiedUnderYourControlThisTurn' }
+	/** "if mana from a Treasure was spent to cast it". */
+	| { k: 'treasureManaSpentToCast' }
+	/** "if you haven't cast a spell from your hand this turn". */
+	| { k: 'noSpellCastFromHandThisTurn' }
+	/** CR 702.62a: "if ~ is suspended" (in exile with `isSuspended` designation). */
+	| { k: 'isSuspended' }
+	/** CR 701.54a: "if you chose a creature other than ~ as your Ring-bearer". */
+	| { k: 'choseOtherRingBearer' }
+	/** "if N or more [filter] entered the battlefield under your control this turn". */
+	| { k: 'enteredUnderYourControlThisTurn'; filter: ObjectFilter; min?: number }
+	/** "if its surge / prowl / spectacle cost was paid". */
+	| { k: 'paidAltCost'; kind: 'surge' | 'prowl' | 'spectacle' }
+	/** "if it isn't being declared as an attacker" (e.g. Verity Circle). */
+	| { k: 'notBeingDeclaredAsAttacker' }
+	/** "if ~ dealt damage to an opponent this turn". */
+	| { k: 'selfDealtDamageToOpponentThisTurn' }
+	/** "if N or more damage was dealt to it this turn". */
+	| { k: 'damageDealtToSelfThisTurnAtLeast'; min: number }
+	/** "if that creature / permanent entered this turn". */
+	| { k: 'eventObjectEnteredThisTurn' }
+	/** "if ~ entered this turn". */
+	| { k: 'selfEnteredThisTurn' }
+	/** "if there are N or more mana values among cards in your graveyard". */
+	| { k: 'distinctManaValuesInGraveyardAtLeast'; min: number };
+	// --- End Track P19b ---
 
 // ---- Statics and replacements ---------------------------------------------------------------
 

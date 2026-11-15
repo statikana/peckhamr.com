@@ -1104,6 +1104,20 @@ export interface CardInstance {
 	/** CR 606.3: number of loyalty abilities activated on this permanent this turn. */
 	loyaltyActivationsThisTurn?: number;
 	// --- End Track P18b ---
+	// --- Track P19b ---
+	/** Number of times this permanent has been declared as an attacker so far this turn. */
+	attacksCountThisTurn?: number;
+	/** Number of times this permanent has become the target of a spell or ability so far this turn. */
+	targetedCountThisTurn?: number;
+	/** Number of times this Vehicle permanent has become crewed so far this turn. */
+	crewedCountThisTurn?: number;
+	/** True iff mana from a Treasure was spent to cast this spell / permanent. */
+	treasureManaSpent?: boolean;
+	/** Total damage dealt to this permanent so far this turn; cleared at cleanup & zone exit. */
+	damageTakenThisTurn?: number;
+	/** True iff this permanent dealt damage to an opponent so far this turn; cleared at cleanup & zone exit. */
+	dealtDamageToOpponentThisTurn?: boolean;
+	// --- End Track P19b ---
 }
 
 export interface TargetRef {
@@ -1293,6 +1307,10 @@ export interface CastOption {
 	/** CR 118.9: Static alternative cost that pays life equal to the spell's mana value rather than its mana cost. */
 	payLifeEqualToManaValue?: boolean;
 	// --- End Track P17a ---
+	// --- Track P19b ---
+	/** CR 702.117a: cast by paying its surge cost. */
+	surged?: boolean;
+	// --- End Track P19b ---
 }
 
 // --- Track P3 ---
@@ -1602,6 +1620,14 @@ export interface StackItem {
 	/** CR 613.1f / 113.6: Spell keywords statically granted to this spell on cast (e.g. cascade, rebound, storm, gravestorm). */
 	grantedSpellKeywords?: string[];
 	// --- End Track P17a ---
+	// --- Track P19b ---
+	/** Colors/types of mana produced by the permanent/land ability that triggered a CR 605.1b mana ability. */
+	lastTappedManaColors?: ManaColor[];
+	/** True iff mana from a Treasure was spent to cast this spell (or carried onto its ETB trigger). */
+	treasureManaSpent?: boolean;
+	/** CR 603.7a: id of the spell-created event delayed trigger entry on `state.wave7SpellDelayedTriggers`. */
+	wave7SpellDelayedId?: string;
+	// --- End Track P19b ---
 }
 
 // --- Track P10 ---
@@ -1774,6 +1800,11 @@ export interface SerializedPendingTrigger {
 	wave6FaceIndex?: number;
 	sourceTributePaid?: boolean;
 	// --- End Track P18a ---
+	// --- Track P19b ---
+	lastTappedManaColors?: ManaColor[];
+	treasureManaSpent?: boolean;
+	wave7SpellDelayedId?: string;
+	// --- End Track P19b ---
 }
 
 /** Snapshot of an IR effect binding carried into a delayed trigger (CR 603.7c). */
@@ -2383,6 +2414,27 @@ export interface PlayerGameState {
 	/** CR 121.2 / CR 504.1: true once this player has drawn their first card during their draw step this turn. */
 	drewFirstCardInDrawStepThisTurn?: boolean;
 	// --- End Track P17a ---
+	// --- Track P19b ---
+	/** True iff a creature controlled by this player died (battlefield -> graveyard) so far this turn. */
+	creatureDiedUnderControlThisTurn?: boolean;
+	/** Number of spells cast by this player from their hand so far this turn. */
+	spellsCastFromHandThisTurn?: number;
+	/** Count of mana currently in this player's mana pool that was produced by a Treasure permanent. */
+	treasureManaInPool?: number;
+	/** Transient flag set during spell mana payment when >= 1 Treasure mana was spent on that spell. */
+	spentTreasureManaOnCurrentSpell?: boolean;
+	/** Number of life-gain events (`GainLife` with `amount > 0`) for this player so far this turn. */
+	lifeGainEventsThisTurn?: number;
+	/** Number of life-loss events (`LifeLost` with `amount > 0`) for this player so far this turn. */
+	lifeLossEventsThisTurn?: number;
+	/** Snapshots of permanents that entered the battlefield under this player's control so far this turn. */
+	enteredBattlefieldThisTurnCards?: Array<{
+		card: ScryfallCard;
+		instanceId: string;
+		isToken: boolean;
+		typeLine: string;
+	}>;
+	// --- End Track P19b ---
 }
 
 export interface ManaRider {
@@ -2759,7 +2811,27 @@ export interface GameState {
 	/** CR 103.2: playerId of the starting player for the game (defaults to `players[0]?.playerId`). */
 	startingPlayerId?: string;
 	// --- End Track P17b ---
+	// --- Track P19b ---
+	/** CR 603.7a: Plain-JSON event-driven delayed triggers created by resolving Instants/Sorceries (zero IR in state). */
+	wave7SpellDelayedTriggers?: Wave7SpellDelayedTrigger[];
+	/** True while creatures are being tapped as part of declaring attackers (CR 508.1f, e.g. Verity Circle). */
+	declaringAttackersNow?: boolean;
+	// --- End Track P19b ---
 }
+
+// --- Track P19b ---
+export interface Wave7SpellDelayedTrigger {
+	id: string;
+	controllerId: string;
+	sourceInstanceId: string;
+	sourceCard: ScryfallCard;
+	faceIndex: number;
+	abilityIndex: number;
+	oneShot: boolean;
+	expiresEndOfTurn: boolean;
+	waitForNextUpkeepOfPlayerId?: string;
+}
+// --- End Track P19b ---
 
 export interface MagicLobby {
 	code: string;
