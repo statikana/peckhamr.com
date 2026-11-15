@@ -97,6 +97,18 @@ function pushFingerprint(state: GameState, fp: unknown[]): void {
 	fp.push(state.players, state.players.length, state.monarchPlayerId ?? null);
 	for (const p of state.players) {
 		fp.push(p, p.lost, p.playerId, p.battlefield, p.battlefield.length);
+		// --- Track P13 ---
+		fp.push(p.ringBearerId ?? null, p.ringLevel ?? 0, p.command.length);
+		for (const cmd of p.command) {
+			fp.push(
+				Boolean(cmd.isEmblem),
+				Boolean(cmd.isRingEmblem),
+				cmd.instanceId,
+				cmd.enteredTimestamp,
+				cmd.card
+			);
+		}
+		// --- End Track P13 ---
 		for (const perm of p.battlefield) {
 			fp.push(
 				perm,
@@ -187,6 +199,26 @@ function fingerprintMatches(state: GameState, fp: unknown[]): boolean {
 		) {
 			return false;
 		}
+		// --- Track P13 ---
+		if (
+			fp[i++] !== (p.ringBearerId ?? null) ||
+			fp[i++] !== (p.ringLevel ?? 0) ||
+			fp[i++] !== p.command.length
+		) {
+			return false;
+		}
+		for (const cmd of p.command) {
+			if (
+				fp[i++] !== Boolean(cmd.isEmblem) ||
+				fp[i++] !== Boolean(cmd.isRingEmblem) ||
+				fp[i++] !== cmd.instanceId ||
+				fp[i++] !== cmd.enteredTimestamp ||
+				fp[i++] !== cmd.card
+			) {
+				return false;
+			}
+		}
+		// --- End Track P13 ---
 		for (const perm of p.battlefield) {
 			if (
 				fp[i++] !== perm ||

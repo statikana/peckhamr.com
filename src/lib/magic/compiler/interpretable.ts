@@ -106,7 +106,24 @@ export const INTERPRETED_VERBS: ReadonlySet<Verb> = new Set<Verb>([
 	'fateseal',
 	'flipCoin',
 	'rollDie',
-	'retainMana'
+	'retainMana',
+	// --- Track P13 ---
+	'createEmblem',
+	'createRoleToken',
+	'doubleOrTriple',
+	'exchange',
+	'turnFace',
+	'chooseDesignation',
+	'grantGraveyardCast',
+	'ventureIntoDungeon',
+	'takeInitiative',
+	'temptWithRing',
+	'earthbend',
+	'airbend',
+	'learn',
+	'villainousChoice',
+	'vote'
+	// --- End Track P13 ---
 ]);
 
 export const SUPPORTED_OPTIONAL_COST_KINDS: ReadonlySet<CostDef['k']> = new Set<CostDef['k']>([
@@ -234,14 +251,29 @@ function stepSupported(step: EffectStep): boolean {
 	if (step.verb === 'gainControl') {
 		if (step.subject.k === 'none') return false;
 		const d = step.params?.duration;
-		if (d !== undefined && d !== 'endOfTurn' && d !== 'permanent' && d !== 'untilSourceLeaves') {
+		if (
+			d !== undefined &&
+			d !== 'endOfTurn' &&
+			d !== 'untilYourNextTurn' &&
+			d !== 'untilEndOfYourNextTurn' &&
+			d !== 'permanent' &&
+			d !== 'untilSourceLeaves'
+		) {
 			return false;
 		}
 	}
 	if (step.verb === 'animate') {
 		if (step.subject.k === 'none') return false;
 		const d = step.params?.duration;
-		if (d !== undefined && d !== 'endOfTurn' && d !== 'permanent') return false;
+		if (
+			d !== undefined &&
+			d !== 'endOfTurn' &&
+			d !== 'untilYourNextTurn' &&
+			d !== 'untilEndOfYourNextTurn' &&
+			d !== 'permanent'
+		) {
+			return false;
+		}
 	}
 	// --- Track P7 ---
 	if (step.verb === 'preventDamage') {
@@ -281,15 +313,95 @@ function stepSupported(step: EffectStep): boolean {
 			return false;
 		}
 	}
-	if ((step.verb === 'pump' || step.verb === 'grant' || step.verb === 'switchPT') && step.params?.duration !== 'endOfTurn') return false;
+	if (step.verb === 'switchPT' && step.params?.duration !== 'endOfTurn') return false;
+	if (step.verb === 'pump' || step.verb === 'grant') {
+		const d = step.params?.duration;
+		if (
+			d !== 'endOfTurn' &&
+			d !== 'untilYourNextTurn' &&
+			d !== 'untilEndOfYourNextTurn' &&
+			d !== 'permanent'
+		) {
+			return false;
+		}
+	}
 	if (
 		step.verb === 'grant' &&
 		!step.params?.keywords?.length &&
 		!step.params?.removeKeywords?.length &&
-		!step.params?.grantedAbilityTexts?.length
+		!step.params?.grantedAbilityTexts?.length &&
+		!step.params?.canAttackNoDefender
 	) {
 		return false;
 	}
+	// --- Track P13 ---
+	if (step.verb === 'createEmblem') {
+		return Boolean(step.params?.emblemAbilities && step.params.emblemAbilities.length > 0);
+	}
+	if (step.verb === 'createRoleToken') {
+		return Boolean(step.params?.roleKind && step.subject.k !== 'none');
+	}
+	if (step.verb === 'doubleOrTriple') {
+		const ds = step.params?.doubleSpec;
+		if (!ds || (ds.factor !== 2 && ds.factor !== 3)) return false;
+		if (ds.duration !== undefined) {
+			const d = ds.duration;
+			if (
+				d !== 'endOfTurn' &&
+				d !== 'untilYourNextTurn' &&
+				d !== 'untilEndOfYourNextTurn' &&
+				d !== 'permanent'
+			) {
+				return false;
+			}
+		}
+		return step.subject.k !== 'none';
+	}
+	if (step.verb === 'exchange') {
+		const ex = step.params?.exchangeSpec;
+		if (!ex || step.subject.k === 'none') return false;
+		if (ex.second && !selectorSupported(ex.second)) return false;
+		return true;
+	}
+	if (step.verb === 'turnFace') {
+		const fd = step.params?.faceDirection;
+		return (fd === 'up' || fd === 'down') && step.subject.k !== 'none';
+	}
+	if (step.verb === 'chooseDesignation') {
+		return Boolean(step.params?.chooseKind);
+	}
+	if (step.verb === 'grantGraveyardCast') {
+		return Boolean(step.params?.graveyardCastSpec && step.subject.k !== 'none');
+	}
+	if (
+		step.verb === 'ventureIntoDungeon' ||
+		step.verb === 'takeInitiative' ||
+		step.verb === 'temptWithRing' ||
+		step.verb === 'learn'
+	) {
+		return true;
+	}
+	if (step.verb === 'earthbend' || step.verb === 'airbend') {
+		return step.subject.k !== 'none';
+	}
+	if (step.verb === 'villainousChoice') {
+		const opts = step.params?.villainousOptions;
+		return Boolean(
+			opts && opts.length === 2 && stepsSupported(opts[0]) && stepsSupported(opts[1])
+		);
+	}
+	if (step.verb === 'vote') {
+		const vs = step.params?.voteSpec;
+		if (!vs || vs.options.length < 2) return false;
+		if (vs.perOptionEffect && !vs.perOptionEffect.every((eff) => eff.length === 0 || stepsSupported(eff))) {
+			return false;
+		}
+		if (vs.perWinningEffect && !vs.perWinningEffect.every((eff) => eff.length === 0 || stepsSupported(eff))) {
+			return false;
+		}
+		return true;
+	}
+	// --- End Track P13 ---
 	if (step.verb === 'createToken' && !step.params?.token) return false;
 	if (step.verb === 'delayedTrigger') return delayedSupported(step);
 	if (step.params?.damageSource && (step.verb !== 'damage' || !selectorSupported(step.params.damageSource))) {

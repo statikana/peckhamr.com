@@ -10,8 +10,9 @@
  */
 import type { Amount, CardDefinition, Compare, Condition, CostDef, EffectStep, EventFilter, ModalDef, ObjectFilter, Span, TargetSpec, TriggerDef } from '../ir.ts';
 import { getKeywordSpec } from '../keywords.ts';
-import type { CounterType, GamePhase, ManaColor, TriggerScope } from '../types.ts';
-import { parseObjectPhrase, singularSubtype } from './costs.ts';
+import type { CounterType, GamePhase, ManaColor, TriggerScope, ZoneType } from '../types.ts';
+import { COUNTERS, singularSubtype } from './costs.ts';
+import { parseExtendedObjectPhrase } from './effectsWave5.ts';
 
 export interface TriggerParse {
 	trigger?: TriggerDef;
@@ -124,7 +125,14 @@ const ATTACHED_SUBJ_TYPES: Record<string, string> = {
 };
 
 function objectSubject(text: string): Subject | null {
-	if (text === '~') return { object: 'self' };
+	if (
+		text === '~' ||
+		/^this (?:creature|permanent|artifact|enchantment|land|planeswalker|room|vehicle|aura|equipment)$/i.test(
+			text
+		)
+	) {
+		return { object: 'self' };
+	}
 	if (text === 'equipped creature') {
 		return { object: 'attachedTo', attachedFilter: { types: ['Creature'] } };
 	}
@@ -154,7 +162,7 @@ function objectSubject(text: string): Subject | null {
 	// "a creature an opponent controls" / "a creature you don't control" / "with toughness N [or greater/less]".
 	let controller: ObjectFilter['controller'];
 	let toughnessCmp: Compare | undefined;
-	while (true) {
+	for (let guard = 0; guard < 16; guard++) {
 		const opp = phrase.match(/^(.+?)\s+(?:an opponent controls|your opponents control|you don't control)$/i);
 		if (opp && !controller) {
 			phrase = opp[1];
@@ -174,10 +182,10 @@ function objectSubject(text: string): Subject | null {
 		}
 		break;
 	}
-	const filter = parseObjectPhrase(phrase);
+	const filter = parseExtendedObjectPhrase(phrase);
 	if (!filter) return null;
 	if (controller) {
-		if (filter.controller) return null;
+		if (filter.controller && filter.controller !== controller) return null;
 		filter.controller = controller;
 	}
 	if (toughnessCmp) {
@@ -409,7 +417,7 @@ function objectEvent(verb: string, subject: Subject): TriggerDef | null {
 			// --- Track P10 ---
 			const bobb = verb.match(/^blocks? or becomes? blocked by (?:a|an) (.+)$/i);
 			if (bobb && !subject.oneOrMore) {
-				const host = parseObjectPhrase(bobb[1]);
+				const host = parseExtendedObjectPhrase(bobb[1]);
 				if (host) {
 					return def('blocksOrBecomesBlocked', {
 						host,
@@ -419,7 +427,7 @@ function objectEvent(verb: string, subject: Subject): TriggerDef | null {
 			}
 			const blocksHost = verb.match(/^blocks? (?:a|an) (.+)$/i);
 			if (blocksHost && !subject.oneOrMore) {
-				const host = parseObjectPhrase(blocksHost[1]);
+				const host = parseExtendedObjectPhrase(blocksHost[1]);
 				if (host) {
 					return def('blocks', {
 						host,
@@ -429,7 +437,7 @@ function objectEvent(verb: string, subject: Subject): TriggerDef | null {
 			}
 			const blockedByHost = verb.match(/^becomes? blocked by (?:a|an) (.+)$/i);
 			if (blockedByHost && !subject.oneOrMore) {
-				const host = parseObjectPhrase(blockedByHost[1]);
+				const host = parseExtendedObjectPhrase(blockedByHost[1]);
 				if (host) {
 					return def('becomesBlocked', {
 						host,
@@ -438,10 +446,33 @@ function objectEvent(verb: string, subject: Subject): TriggerDef | null {
 				}
 			}
 			// --- End Track P10 ---
+			// --- Track P13 ---
+			if (/^transforms? into ~$/i.test(verb) && subject.object === 'self') {
+				return def('transforms');
+			}
+			const becomesAttached = verb.match(/^becomes? attached to (?:a|an) (.+)$/i);
+			if (becomesAttached && !subject.oneOrMore) {
+				const host = parseExtendedObjectPhrase(becomesAttached[1]);
+				if (host) return def('attached', { host });
+			}
+			const valiantTgt = verb.match(
+				/^becomes? the target of (a spell or ability|a spell|an ability) you control for the first time each turn$/i
+			);
+			if (valiantTgt && !subject.oneOrMore) {
+				const rawBy = valiantTgt[1].toLowerCase();
+				const targetedBy: EventFilter['targetedBy'] =
+					rawBy === 'a spell' ? 'spell' : rawBy === 'an ability' ? 'ability' : 'spellOrAbility';
+				return def('becomesTarget', {
+					targetedBy,
+					player: { relation: 'you' },
+					firstTimeTargetedByYouThisTurn: true
+				});
+			}
+			// --- End Track P13 ---
 			const transInto = verb.match(/^transforms? into (.+)$/i);
 			if (transInto) {
 				const phrase = transInto[1].replace(/^(?:a|an)\s+/i, '').trim();
-				const qual = parseObjectPhrase(phrase);
+				const qual = parseExtendedObjectPhrase(phrase);
 				if (qual) return def('transforms', { toFaceFilter: qual });
 			}
 			const becomesTgt = verb.match(
@@ -481,30 +512,9 @@ function spellFilter(text: string): EventFilter['object'] | null {
 	const m = text.match(/^(?:a|an) (.+)$/);
 	if (!m) return null;
 	if (m[1] === 'spell') return {};
-	const spell = m[1].match(
-		/^(?:(.+) )?spell((?:\s+(?:of the chosen (?:type|color)|with (?:power|toughness|mana value) \S+(?: or (?:greater|more|less|fewer))?))+)?$/i
-	);
-	if (!spell) return null;
-	// "card" gives modifier-only phrases a noun: "noncreature" -> "noncreature card".
-	let phrase = `${spell[1] ? `${spell[1]} ` : ''}card${spell[2] ?? ''}`;
-	let toughnessCmp: Compare | undefined;
-	const withToughness = phrase.match(/^(.+?)\s+with toughness (\S+)(?: or (greater|more|less|fewer))?$/i);
-	if (withToughness) {
-		const rawVal = withToughness[2];
-		if (rawVal.toLowerCase() === 'a' || rawVal.toLowerCase() === 'an') return null;
-		const numVal = number(rawVal);
-		if (numVal === null) return null;
-		const dir = withToughness[3]?.toLowerCase();
-		toughnessCmp = { op: !dir ? '=' : dir === 'greater' || dir === 'more' ? '>=' : '<=', value: n(numVal) };
-		phrase = withToughness[1];
-	}
-	const parsed = parseObjectPhrase(phrase);
-	if (!parsed) return null;
-	if (toughnessCmp) {
-		if (parsed.toughness) return null;
-		parsed.toughness = toughnessCmp;
-	}
-	return parsed;
+	if (!/\bspell\b/i.test(m[1])) return null;
+	const parsed = parseExtendedObjectPhrase(m[1], { allowSpellNoun: true });
+	return parsed ?? null;
 }
 
 function discardedCardFilter(text: string): ObjectFilter | null {
@@ -514,7 +524,7 @@ function discardedCardFilter(text: string): ObjectFilter | null {
 	const inner = m[1].trim();
 	if (/^card$/i.test(inner)) return {};
 	if (!/\bcard$/i.test(inner)) return null;
-	return parseObjectPhrase(inner);
+	return parseExtendedObjectPhrase(inner);
 }
 
 const ORDINAL_WORDS: Record<string, number> = {
@@ -555,6 +565,39 @@ function playerEvent(player: EventFilter['player'], rest: string): TriggerDef | 
 		if (/copy|copies/.test(castTargetsSelf[1])) filter.orCopy = true;
 		return { event: 'cast', filter };
 	}
+	// --- Track P13: Cast qualifiers (opponent's turn, Paradox, from graveyard/exile, kicked) ---
+	const castOppTurn = rest.match(
+		/^(cast or copy|casts or copies|casts?) (.+?) during an opponent's turn$/i
+	);
+	if (castOppTurn) {
+		const object = spellFilter(castOppTurn[2]);
+		if (object === null) return null;
+		const filter: EventFilter = { object, player, duringOpponentTurn: true };
+		if (/copy|copies/i.test(castOppTurn[1])) filter.orCopy = true;
+		return { event: 'cast', filter };
+	}
+	const castNotHand = rest.match(
+		/^(cast or copy|casts or copies|casts?) (.+?) from anywhere other than (?:your|their|its owner's) hand$/i
+	);
+	if (castNotHand) {
+		const object = spellFilter(castNotHand[2]);
+		if (object === null) return null;
+		const filter: EventFilter = { object, player, castFromNotHand: true };
+		if (/copy|copies/i.test(castNotHand[1])) filter.orCopy = true;
+		return { event: 'cast', filter };
+	}
+	const castZone = rest.match(
+		/^(cast or copy|casts or copies|casts?) (.+?) from (?:your |a |their )?(graveyard|exile)$/i
+	);
+	if (castZone) {
+		const object = spellFilter(castZone[2]);
+		if (object === null) return null;
+		const castFromZone: ZoneType = castZone[3].toLowerCase() === 'exile' ? 'exile' : 'graveyard';
+		const filter: EventFilter = { object, player, castFromZone };
+		if (/copy|copies/i.test(castZone[1])) filter.orCopy = true;
+		return { event: 'cast', filter };
+	}
+	// --- End Track P13 ---
 	const cast = rest.match(/^(cast or copy|casts or copies|casts?) (.+)$/);
 	if (cast) {
 		const object = spellFilter(cast[2]);
@@ -570,7 +613,7 @@ function playerEvent(player: EventFilter['player'], rest: string): TriggerDef | 
 	// "Whenever you tap a land for mana" / "Whenever a player taps a Forest for mana".
 	const tap = rest.match(/^taps? (?:a|an) (.+) for mana$/);
 	if (tap) {
-		const object = parseObjectPhrase(tap[1]);
+		const object = parseExtendedObjectPhrase(tap[1]);
 		if (object) return { event: 'tappedForMana', filter: { object, player } };
 	}
 	const nthDraw = rest.match(/^draws? (your|their) (first|second|third) card each turn$/);
@@ -594,7 +637,7 @@ function playerEvent(player: EventFilter['player'], rest: string): TriggerDef | 
 	if (/^becomes? the monarch$/i.test(rest)) return { event: 'becameMonarch', filter: { player } };
 	const turnUp = rest.match(/^turns? (?:a|an) (.+) face up$/);
 	if (turnUp) {
-		const object = parseObjectPhrase(turnUp[1]);
+		const object = parseExtendedObjectPhrase(turnUp[1]);
 		if (object) return { event: 'turnFaceUp', filter: { object, player } };
 	}
 	const foretell = rest.match(/^foretells? (.+)$/);
@@ -609,7 +652,7 @@ function playerEvent(player: EventFilter['player'], rest: string): TriggerDef | 
 	}
 	const exert = rest.match(/^exerts? (?:(another .+?)|(?:a|an) (.+))$/);
 	if (exert) {
-		const object = parseObjectPhrase(exert[1] ?? exert[2]);
+		const object = parseExtendedObjectPhrase(exert[1] ?? exert[2]);
 		if (object) return { event: 'exert', filter: { object, player } };
 	}
 	// --- Track P10 ---
@@ -617,14 +660,14 @@ function playerEvent(player: EventFilter['player'], rest: string): TriggerDef | 
 		const atkMin = rest.match(/^attacks? with (\S+) or more (.+)$/i);
 		if (atkMin) {
 			const minN = number(atkMin[1]);
-			const object = parseObjectPhrase(atkMin[2]);
+			const object = parseExtendedObjectPhrase(atkMin[2]);
 			if (minN !== null && minN >= 1 && object) {
 				return { event: 'attacks', filter: { player, oneOrMore: true, minAttackers: minN, object } };
 			}
 		}
 		const atkOne = rest.match(/^attacks? with (?:a|an) (.+)$/i);
 		if (atkOne && !/\balone$/i.test(atkOne[1])) {
-			const object = parseObjectPhrase(atkOne[1]);
+			const object = parseExtendedObjectPhrase(atkOne[1]);
 			if (object) {
 				return { event: 'attacks', filter: { player, oneOrMore: true, minAttackers: 1, object } };
 			}
@@ -637,7 +680,7 @@ function playerEvent(player: EventFilter['player'], rest: string): TriggerDef | 
 	if (sac) {
 		const oneOrMore = /^one or more /i.test(sac[1]);
 		const phrase = /^another /i.test(sac[1]) ? `another ${sac[2]}` : sac[2];
-		const object = parseObjectPhrase(phrase);
+		const object = parseExtendedObjectPhrase(phrase);
 		if (object) {
 			return {
 				event: 'sacrificed',
@@ -659,6 +702,29 @@ function playerEvent(player: EventFilter['player'], rest: string): TriggerDef | 
 	if (rest === 'discover' || rest === 'discovers') return { event: 'discover', filter: { player } };
 	if (rest === 'forage' || rest === 'forages') return { event: 'forage', filter: { player } };
 	// --- End Track P10 ---
+	// --- Track P13: Room doors, Dungeons, Initiative ---
+	if (player?.relation === 'you' && /^unlock this door$/i.test(rest)) {
+		return {
+			event: 'doorUnlocked',
+			filter: { object: 'self', player, thisDoorFaceIndex: -1 }
+		};
+	}
+	if (/^unlocks? a door(?: of a room you control)?$/i.test(rest)) {
+		return { event: 'doorUnlocked', filter: { player } };
+	}
+	if (/^fully unlocks? a room$/i.test(rest)) {
+		return { event: 'roomFullyUnlocked', filter: { player } };
+	}
+	if (/^ventures? into (?:the )?(?:dungeon|undercity)$/i.test(rest)) {
+		return { event: 'dungeonRoomEntered', filter: { player } };
+	}
+	if (/^completes? a dungeon$/i.test(rest)) {
+		return { event: 'dungeonCompleted', filter: { player } };
+	}
+	if (/^takes? the initiative$/i.test(rest)) {
+		return { event: 'tookInitiative', filter: { player } };
+	}
+	// --- End Track P13 ---
 	return null;
 }
 
@@ -669,16 +735,34 @@ function parseGraveyardLeaveCardFilter(raw: string | undefined): ObjectFilter | 
 	const trimmed = raw.trim();
 	if (/^permanents?$/i.test(trimmed)) return { types: [...PERMANENT_TYPES_LIST] };
 	const normalized = trimmed.replace(/\s+(?:and\/or|and)\s+/gi, ' or ');
-	return parseObjectPhrase(`${normalized} card`);
+	return parseExtendedObjectPhrase(`${normalized} card`);
 }
 
-/** "a +1/+1 counter is put on ~", "one or more +1/+1 counters are put on ~". */
+/** "a +1/+1 counter is put on ~", "one or more +1/+1 counters are put on ~", "an oil counter is put on ~". */
 function counterEvent(head: string): TriggerDef | null {
-	const m = head.match(/^(?:a|one or more) \+1\/\+1 counters? (?:is|are) (?:put|placed) on ~$/);
-	return m ? { event: 'counterPlaced', filter: { object: 'self', counter: '+1/+1' } } : null;
+	const m = head.match(
+		/^(?:a|an|one or more) ([+-−]\d+\/[+-−]\d+|first strike|double strike|[a-z]+) counters? (?:is|are) (?:put|placed) on ~$/i
+	);
+	if (!m) return null;
+	const ctr = COUNTERS[m[1].toLowerCase().replace(/−/g, '-')];
+	return ctr ? { event: 'counterPlaced', filter: { object: 'self', counter: ctr } } : null;
 }
 
-function triggerHead(head: string): TriggerDef | null {
+function triggerHead(head: string, depth = 0): TriggerDef | null {
+	if (depth < 2) {
+		const compound = head.match(/^((?:when|whenever) .+?)\s+(?:and|or)\s+((?:when|whenever) .+)$/i);
+		if (compound) {
+			const left = triggerHead(compound[1].trim(), depth + 1);
+			const right = triggerHead(compound[2].trim(), depth + 1);
+			if (left && right) {
+				const rightAlts = right.or ? [{ ...right, or: undefined }, ...right.or] : [right];
+				return {
+					...left,
+					or: [...(left.or ?? []), ...rightAlts]
+				};
+			}
+		}
+	}
 	const at = head.match(/^at the beginning of (.+)$/i);
 	if (at) return phaseBegin(at[1].toLowerCase());
 	if (/^at (?:the )?end of combat$/i.test(head)) {
@@ -690,6 +774,12 @@ function triggerHead(head: string): TriggerDef | null {
 	const body = ww[1];
 	const counter = counterEvent(body);
 	if (counter) return counter;
+
+	// --- Track P13: The Ring tempts you ---
+	if (/^the ring tempts you$/i.test(body)) {
+		return { event: 'ringTempted', filter: { player: { relation: 'you' } } };
+	}
+	// --- End Track P13 ---
 
 	// --- Track P10 ---
 	const dealtDmgDies = body.match(
@@ -761,7 +851,10 @@ export function canonicalKickerTag(raw: string): string {
 	return t.toLowerCase();
 }
 
-export function parseCondition(text: string): Condition | null {
+export function parseCondition(
+	text: string,
+	opts?: { allowDungeonCompletion?: boolean }
+): Condition | null {
 	const t = text.trim();
 	if (/^if (?:it|~) was kicked$/i.test(t)) {
 		return { k: 'kicked' };
@@ -844,21 +937,21 @@ export function parseCondition(text: string): Condition | null {
 	}
 	m = t.match(/^if you control (\S+) or more (.+)$/);
 	if (m && number(m[1]) !== null) {
-		const filter = parseObjectPhrase(m[2]);
+		const filter = parseExtendedObjectPhrase(m[2]);
 		if (filter && !filter.controller) {
 			return { k: 'compare', left: { k: 'count', of: { ...filter, controller: 'you' } }, op: '>=', right: n(number(m[1])!) };
 		}
 	}
 	m = t.match(/^if you control (?:(?:a|an) (.+)|(another .+))$/i);
 	if (m) {
-		const filter = parseObjectPhrase(m[1] ?? m[2]);
+		const filter = parseExtendedObjectPhrase(m[1] ?? m[2]);
 		if (filter && !filter.controller) {
 			return { k: 'compare', left: { k: 'count', of: { ...filter, controller: 'you' } }, op: '>=', right: n(1) };
 		}
 	}
 	m = t.match(/^if you control no (.+)$/);
 	if (m) {
-		const filter = parseObjectPhrase(m[1]);
+		const filter = parseExtendedObjectPhrase(m[1]);
 		if (filter && !filter.controller) {
 			return { k: 'compare', left: { k: 'count', of: { ...filter, controller: 'you' } }, op: '=', right: n(0) };
 		}
@@ -933,47 +1026,21 @@ export function parseCondition(text: string): Condition | null {
 		return { k: 'not', of: { k: 'descendedThisTurn' } };
 	}
 	const hadCtr = t.match(
-		/^if (?:it|~|that (?:creature|permanent)) had (?:a|an|one or more) (?:(\S+) )?counters? on it$/i
+		/^if (?:it|~|that (?:creature|permanent)) had (?:a|an|one or more) (?:([+-−]\d+\/[+-−]\d+|first strike|double strike|[a-z]+) )?counters? on it$/i
 	);
 	if (hadCtr) {
 		const rawCtr = hadCtr[1]?.toLowerCase().replace(/−/g, '-');
-		const ctrMap: Record<string, CounterType> = {
-			'+1/+1': '+1/+1',
-			'-1/-1': '-1/-1',
-			charge: 'charge',
-			loyalty: 'loyalty',
-			shield: 'shield',
-			stun: 'stun',
-			lore: 'lore',
-			time: 'time',
-			age: 'age',
-			level: 'level',
-			fade: 'fade'
-		};
 		if (!rawCtr) return { k: 'hadCounterOnIt', counter: 'any' };
-		const mapped = ctrMap[rawCtr];
+		const mapped = COUNTERS[rawCtr];
 		if (mapped) return { k: 'hadCounterOnIt', counter: mapped };
 	}
 	const hadNoCtr = t.match(
-		/^if (?:it|~|that (?:creature|permanent)) (?:had no|didn't have a|did not have a) (?:(\S+) )?counters? on it$/i
+		/^if (?:it|~|that (?:creature|permanent)) (?:had no|didn't have a|did not have a) (?:([+-−]\d+\/[+-−]\d+|first strike|double strike|[a-z]+) )?counters? on it$/i
 	);
 	if (hadNoCtr) {
 		const rawCtr = hadNoCtr[1]?.toLowerCase().replace(/−/g, '-');
-		const ctrMap: Record<string, CounterType> = {
-			'+1/+1': '+1/+1',
-			'-1/-1': '-1/-1',
-			charge: 'charge',
-			loyalty: 'loyalty',
-			shield: 'shield',
-			stun: 'stun',
-			lore: 'lore',
-			time: 'time',
-			age: 'age',
-			level: 'level',
-			fade: 'fade'
-		};
 		if (!rawCtr) return { k: 'not', of: { k: 'hadCounterOnIt', counter: 'any' } };
-		const mapped = ctrMap[rawCtr];
+		const mapped = COUNTERS[rawCtr];
 		if (mapped) return { k: 'not', of: { k: 'hadCounterOnIt', counter: mapped } };
 	}
 	const singleSpent = t.match(/^if \{([WUBRG])\} was spent to cast (?:it|~)$/i);
@@ -1049,6 +1116,158 @@ export function parseCondition(text: string): Condition | null {
 		}
 	}
 	// --- End Track P10 ---
+	// --- Track P13: Unified Trigger & Resolution Conditions ---
+	if (/^if ~ is in your graveyard$/i.test(t)) return { k: 'selfInZone', zone: 'graveyard' };
+	if (/^if ~ is in exile$/i.test(t)) return { k: 'selfInZone', zone: 'exile' };
+	if (/^if ~ is on the battlefield$/i.test(t)) return { k: 'selfInZone', zone: 'battlefield' };
+	if (/^if no spells were cast last turn$/i.test(t)) {
+		return { k: 'spellsCastLastTurn', mode: 'none', count: 0 };
+	}
+	const spellsLastTurn = t.match(/^if a player cast (\S+) or more spells last turn$/i);
+	if (spellsLastTurn && number(spellsLastTurn[1]) !== null) {
+		return {
+			k: 'spellsCastLastTurn',
+			mode: 'singlePlayerAtLeast',
+			count: number(spellsLastTurn[1])!
+		};
+	}
+	if (opts?.allowDungeonCompletion) {
+		if (/^if you(?:'ve| have) completed a dungeon$/i.test(t)) return { k: 'hasCompletedDungeon' };
+		if (/^if you (?:haven't|have not) completed a dungeon$/i.test(t)) {
+			return { k: 'not', of: { k: 'hasCompletedDungeon' } };
+		}
+	}
+	if (/^if you have the initiative$/i.test(t)) return { k: 'hasInitiative' };
+	if (/^if you have the city's blessing$/i.test(t)) return { k: 'hasCitysBlessing' };
+	if (/^if you (?:don't|do not) have the city's blessing$/i.test(t)) {
+		return { k: 'not', of: { k: 'hasCitysBlessing' } };
+	}
+	if (/^if you have max speed$/i.test(t)) return { k: 'hasMaxSpeed' };
+	const poisonCond = t.match(/^if an opponent has (\S+) or more poison counters$/i);
+	if (poisonCond && number(poisonCond[1]) !== null) {
+		return { k: 'opponentPoisonAtLeast', min: number(poisonCond[1])! };
+	}
+	const celebCond = t.match(
+		/^if (\S+) or more nonland permanents entered(?: the battlefield)? under your control this turn$/i
+	);
+	if (celebCond && number(celebCond[1]) !== null) {
+		return { k: 'nonlandEnteredThisTurn', min: number(celebCond[1])! };
+	}
+	if (
+		/^if a nonland permanent left the battlefield this turn or a spell was warped this turn$/i.test(
+			t
+		)
+	) {
+		return { k: 'voidThisTurn' };
+	}
+	const adamantAny = t.match(
+		/^if at least (\S+) mana of the same color was spent to cast (?:it|~|this spell)$/i
+	);
+	if (adamantAny && number(adamantAny[1]) !== null) {
+		return { k: 'sameColorManaSpentAtLeast', min: number(adamantAny[1])! };
+	}
+	const adamantCol = t.match(
+		/^if at least (\S+) (white|blue|black|red|green) mana was spent to cast (?:it|~|this spell)$/i
+	);
+	if (adamantCol && number(adamantCol[1]) !== null) {
+		const colMap: Record<string, ManaColor> = {
+			white: 'W',
+			blue: 'U',
+			black: 'B',
+			red: 'R',
+			green: 'G'
+		};
+		return {
+			k: 'sameColorManaSpentAtLeast',
+			min: number(adamantCol[1])!,
+			color: colMap[adamantCol[2].toLowerCase()]
+		};
+	}
+	const covenCond = t.match(
+		/^if you control (\S+) or more creatures with different powers$/i
+	);
+	if (covenCond && number(covenCond[1]) !== null) {
+		return { k: 'distinctControlledCreaturePowers', count: number(covenCond[1])! };
+	}
+	const totalPwrCond = t.match(
+		/^if creatures you control have total power (\S+) or (?:greater|more)$/i
+	);
+	if (totalPwrCond && number(totalPwrCond[1]) !== null) {
+		return { k: 'totalPowerControlled', min: number(totalPwrCond[1])! };
+	}
+	const spellsThisTurn = t.match(/^if you(?:'ve| have) cast (\S+) or more spells this turn$/i);
+	if (spellsThisTurn && number(spellsThisTurn[1]) !== null) {
+		return { k: 'spellsCastThisTurnCount', min: number(spellsThisTurn[1])! };
+	}
+	const typedSpellsThisTurn = t.match(
+		/^if you(?:'ve| have) cast (?:(?:a|an)|(\S+) or more) (.+?) spells? this turn$/i
+	);
+	if (typedSpellsThisTurn) {
+		const min = typedSpellsThisTurn[1] ? number(typedSpellsThisTurn[1]) : 1;
+		const sf = spellFilter(`a ${typedSpellsThisTurn[2]} spell`);
+		if (min !== null && sf && sf !== 'self' && sf !== 'attachedTo') {
+			return { k: 'spellsCastThisTurnCount', min, filter: sf };
+		}
+	}
+	const gyCardsTurn = t.match(
+		/^if (\S+) or more cards were put into your graveyard from anywhere this turn$/i
+	);
+	if (gyCardsTurn && number(gyCardsTurn[1]) !== null) {
+		return {
+			k: 'cardsPutIntoGraveyardFromAnywhereThisTurn',
+			min: number(gyCardsTurn[1])!
+		};
+	}
+	if (/^if ~ attacked this turn$/i.test(t)) return { k: 'boastAttackedThisTurn' };
+	const selfStatCond = t.match(
+		/^if ~'s (power|toughness) is (\S+) or (greater|more|less|fewer)$/i
+	);
+	if (selfStatCond && number(selfStatCond[2]) !== null) {
+		const stat: 'power' | 'toughness' =
+			selfStatCond[1].toLowerCase() === 'power' ? 'power' : 'toughness';
+		const dir = selfStatCond[3].toLowerCase();
+		const op = dir === 'greater' || dir === 'more' ? '>=' : '<=';
+		return {
+			k: 'compare',
+			left: { k: 'stat', stat, of: { k: 'self' } },
+			op,
+			right: n(number(selfStatCond[2])!)
+		};
+	}
+	const selfStateCond = t.match(
+		/^if (?:(?:~|it) is|it's) (not )?(tapped|untapped|attacking|blocking|enchanted|equipped|saddled|monstrous)$/i
+	);
+	if (selfStateCond) {
+		const neg = Boolean(selfStateCond[1]);
+		const st = selfStateCond[2].toLowerCase();
+		const baseCond: Condition =
+			st === 'tapped'
+				? { k: 'objectState', of: 'self', tapped: true }
+				: st === 'untapped'
+					? { k: 'objectState', of: 'self', tapped: false }
+					: st === 'attacking'
+						? { k: 'objectState', of: 'self', attacking: true }
+						: st === 'blocking'
+							? { k: 'objectState', of: 'self', blocking: true }
+							: st === 'enchanted'
+								? { k: 'objectState', of: 'self', enchanted: true }
+								: st === 'equipped'
+									? { k: 'objectState', of: 'self', equipped: true }
+									: st === 'saddled'
+										? { k: 'objectState', of: 'self', saddled: true }
+										: { k: 'objectState', of: 'self', monstrous: true };
+		return neg ? { k: 'not', of: baseCond } : baseCond;
+	}
+	const selfFilterCond = t.match(/^if (?:(?:~|it) is|it's) (not )?(?:a|an) (.+)$/i);
+	if (selfFilterCond) {
+		const neg = Boolean(selfFilterCond[1]);
+		const f = parseExtendedObjectPhrase(selfFilterCond[2]);
+		if (f) {
+			const baseCond: Condition = { k: 'matchesFilter', target: { k: 'self' }, filter: f };
+			return neg ? { k: 'not', of: baseCond } : baseCond;
+		}
+	}
+	// --- End Track P13 ---
 	return null;
 }
 
@@ -1073,7 +1292,7 @@ export function parseActivatedIfConditionSentence(
 		/^activate only if (.+?)(?: and only (as a sorcery|once each turn|during your turn|during your upkeep|during combat))?$/i
 	);
 	if (ifFirst) {
-		const condition = parseCondition(`if ${ifFirst[1].trim()}`);
+		const condition = parseCondition(`if ${ifFirst[1].trim()}`, { allowDungeonCompletion: true });
 		if (!condition) return null;
 		const extra = ifFirst[2]?.toLowerCase() as ActivatedExtraRestriction | undefined;
 		return { condition, ...(extra ? { extra } : {}) };
@@ -1082,7 +1301,7 @@ export function parseActivatedIfConditionSentence(
 		/^activate only (as a sorcery|once each turn|during your turn|during your upkeep|during combat) and only if (.+)$/i
 	);
 	if (extraFirst) {
-		const condition = parseCondition(`if ${extraFirst[2].trim()}`);
+		const condition = parseCondition(`if ${extraFirst[2].trim()}`, { allowDungeonCompletion: true });
 		if (!condition) return null;
 		const extra = extraFirst[1].toLowerCase() as ActivatedExtraRestriction;
 		return { condition, extra };
@@ -1117,11 +1336,18 @@ export function parseTriggerHeader(body: string, offset = 0): TriggerParse | nul
 			unparsed.push({ start: offset + condStart, end: offset + body.length });
 			return { trigger, effectStart: offset + body.length, unparsed };
 		}
-		condition = parseCondition(body.slice(condStart, condEnd)) ?? undefined;
+		condition = parseCondition(body.slice(condStart, condEnd), { allowDungeonCompletion: true }) ?? undefined;
 		if (!condition) unparsed.push({ start: offset + condStart, end: offset + condEnd });
 		effectStart = condEnd + 1;
 	}
-	if (trigger && condition && condition.k === 'graveyardAbove') trigger.fromZone = 'graveyard';
+	if (
+		trigger &&
+		condition &&
+		(condition.k === 'graveyardAbove' ||
+			(condition.k === 'selfInZone' && condition.zone === 'graveyard'))
+	) {
+		trigger.fromZone = 'graveyard';
+	}
 
 	const after = body.slice(effectStart);
 	effectStart += after.length - after.trimStart().length;
@@ -1171,7 +1397,28 @@ const RUNTIME_OBJECT_FIELDS: ReadonlySet<string> = new Set([
 	'allTypes',
 	'notColors',
 	'multicolored',
-	'monocolored'
+	'monocolored',
+	// --- Track P13 ---
+	'anyOf',
+	'historic',
+	'ofChosenName',
+	'attachedToRef',
+	'targetsSelf',
+	'targetsFilter',
+	'hasKeywords',
+	'lacksKeywords',
+	'hasCounters',
+	'attacking',
+	'blocking',
+	'attackingOrBlocking',
+	'dealtDamageThisTurn',
+	'enteredThisTurn',
+	'faceDown',
+	'kickedSpell',
+	'castNotFromHand',
+	'castFromZoneFilter',
+	'controllerRef'
+	// --- End Track P13 ---
 ]);
 
 /** EventFilter fields each event kind's matcher checks (runtime/triggers.ts). */
@@ -1182,12 +1429,23 @@ const RUNTIME_EVENT_FIELDS: Partial<Record<TriggerDef['event'], ReadonlySet<stri
 		'from',
 		'to',
 		'attachedFilter',
-		'dealtDamageBySelfThisTurn'
+		'dealtDamageBySelfThisTurn',
+		'oneOrMore'
 	]),
-	cast: new Set(['object', 'player', 'orCopy', 'nthThisTurn', 'targetsSelf']),
+	cast: new Set([
+		'object',
+		'player',
+		'orCopy',
+		'nthThisTurn',
+		'targetsSelf',
+		'duringOpponentTurn',
+		'castFromNotHand',
+		'castFromZone',
+		'wasKicked'
+	]),
 	attacks: new Set(['object', 'orSelf', 'oneOrMore', 'player', 'saddled', 'alone', 'minAttackers', 'attachedFilter']),
 	combatDamageBatchPlayer: new Set(['object', 'oneOrMore', 'player']),
-	blocks: new Set(['object', 'orSelf', 'host', 'attachedFilter']),
+	blocks: new Set(['object', 'orSelf', 'host', 'attachedFilter', 'blockedAttackerFilter']),
 	becomesBlocked: new Set(['object', 'orSelf', 'host', 'attachedFilter']),
 	dealsDamage: new Set(['object', 'orSelf', 'combat', 'damageTo', 'player']),
 	dealtDamage: new Set(['object', 'orSelf']),
@@ -1198,7 +1456,7 @@ const RUNTIME_EVENT_FIELDS: Partial<Record<TriggerDef['event'], ReadonlySet<stri
 		'attachedFilter'
 	]),
 	counterPlaced: new Set(['object', 'counter']),
-	becomesTarget: new Set(['object', 'orSelf', 'targetedBy', 'player']),
+	becomesTarget: new Set(['object', 'orSelf', 'targetedBy', 'player', 'firstTimeTargetedByYouThisTurn']),
 	attached: new Set(['object', 'host']),
 	tappedForMana: new Set(['object', 'player']),
 	gainLife: new Set(['player']),
@@ -1236,7 +1494,15 @@ const RUNTIME_EVENT_FIELDS: Partial<Record<TriggerDef['event'], ReadonlySet<stri
 	blocksOrBecomesBlocked: new Set(['object', 'orSelf', 'host', 'attachedFilter']),
 	graveyardLeaveBatch: new Set(['object', 'player', 'oneOrMore']),
 	discover: new Set(['player']),
-	forage: new Set(['player'])
+	forage: new Set(['player']),
+	// --- Track P13 ---
+	doorUnlocked: new Set(['object', 'player', 'thisDoorFaceIndex']),
+	roomFullyUnlocked: new Set(['object', 'player']),
+	ringTempted: new Set(['player']),
+	dungeonRoomEntered: new Set(['player']),
+	dungeonCompleted: new Set(['player']),
+	tookInitiative: new Set(['player'])
+	// --- End Track P13 ---
 };
 
 function objectFilterProblem(f: ObjectFilter | undefined): string | null {
@@ -1247,6 +1513,26 @@ function objectFilterProblem(f: ObjectFilter | undefined): string | null {
 	if (f.power && f.power.value.k !== 'const') return 'non-constant power filter';
 	if (f.toughness && f.toughness.value.k !== 'const') return 'non-constant toughness filter';
 	if (f.manaValue && f.manaValue.value.k !== 'const') return 'non-constant manaValue filter';
+	// --- Track P13 ---
+	if (f.anyOf) {
+		for (const branch of f.anyOf) {
+			const bp = objectFilterProblem(branch);
+			if (bp) return bp;
+		}
+	}
+	if (f.targetsFilter) {
+		const tp = objectFilterProblem(f.targetsFilter);
+		if (tp) return tp;
+	}
+	if (
+		f.controllerRef &&
+		f.controllerRef.k !== 'you' &&
+		f.controllerRef.k !== 'activePlayer' &&
+		!(f.controllerRef.k === 'controllerOf' && f.controllerRef.of.k === 'attachedTo')
+	) {
+		return `controllerRef "${f.controllerRef.k}"`;
+	}
+	// --- End Track P13 ---
 	return null;
 }
 
@@ -1269,7 +1555,8 @@ export function runtimeTriggerProblem(def: TriggerDef): string | null {
 	const p =
 		objectFilterProblem(f.host) ??
 		objectFilterProblem(f.toFaceFilter) ??
-		objectFilterProblem(f.attachedFilter);
+		objectFilterProblem(f.attachedFilter) ??
+		objectFilterProblem(f.blockedAttackerFilter);
 	if (p) return p;
 	if (
 		f.object === 'attachedTo' &&
@@ -1360,6 +1647,17 @@ const RUNTIME_TRIGGERS = new WeakMap<CardDefinition, Map<number, RuntimeTrigger[
  * Abilities whose trigger head isn't understood (or names an event the engine never emits) can't
  * be matched; the engine mentions them when the permanent enters (compiler/support.ts).
  */
+function resolveDoorFaceTrigger(def: TriggerDef, faceIndex: number): TriggerDef {
+	const needsSelf = def.filter.thisDoorFaceIndex === -1;
+	const needsOr = def.or?.some((alt) => alt.filter.thisDoorFaceIndex === -1);
+	if (!needsSelf && !needsOr) return def;
+	return {
+		...def,
+		...(needsSelf ? { filter: { ...def.filter, thisDoorFaceIndex: faceIndex } } : {}),
+		...(def.or ? { or: def.or.map((alt) => resolveDoorFaceTrigger(alt, faceIndex)) } : {})
+	};
+}
+
 export function runtimeTriggers(def: CardDefinition, faceIndex = 0): RuntimeTrigger[] {
 	let byFace = RUNTIME_TRIGGERS.get(def);
 	const cached = byFace?.get(faceIndex);
@@ -1380,7 +1678,7 @@ export function runtimeTriggers(def: CardDefinition, faceIndex = 0): RuntimeTrig
 		if (ab.kind === 'triggered') {
 			out.push({
 				abilityIndex,
-				trigger: ab.trigger,
+				trigger: resolveDoorFaceTrigger(ab.trigger, faceIndex),
 				condition: ab.condition,
 				...(ab.grantCondition ? { grantCondition: ab.grantCondition } : {}),
 				effectSupported: true,
@@ -1392,7 +1690,7 @@ export function runtimeTriggers(def: CardDefinition, faceIndex = 0): RuntimeTrig
 			// the trigger head (no ab.trigger), so they never get here.
 			out.push({
 				abilityIndex,
-				trigger: ab.trigger,
+				trigger: resolveDoorFaceTrigger(ab.trigger, faceIndex),
 				condition: ab.condition,
 				...(ab.grantCondition ? { grantCondition: ab.grantCondition } : {}),
 				effectSupported: false,

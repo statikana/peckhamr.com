@@ -169,6 +169,35 @@ function activePermanents(state: GameState): readonly ActivePermanent[] {
 	return abilityActivePermanents(state);
 }
 
+// --- Track P13: Emblems in command zone have functioning static/replacement abilities (CR 114.4) ---
+function activeEmblems(
+	state: GameState
+): Array<{ perm: CardInstance; card: ScryfallCard; controllerId: string }> {
+	const out: Array<{ perm: CardInstance; card: ScryfallCard; controllerId: string }> = [];
+	for (const p of state.players) {
+		if (p.lost) continue;
+		for (const cmd of p.command) {
+			if (!cmd.isEmblem || cmd.isRingEmblem) continue;
+			out.push({
+				perm: cmd,
+				card: cmd.card,
+				controllerId: cmd.controllerId || p.playerId
+			});
+		}
+	}
+	return out;
+}
+
+function activeStaticSources(
+	state: GameState
+): Array<{ perm: CardInstance; card: ScryfallCard; controllerId: string }> {
+	const perms = activePermanents(state);
+	const emblems = activeEmblems(state);
+	if (emblems.length === 0) return [...perms];
+	return [...perms, ...emblems];
+}
+// --- End Track P13 ---
+
 function resolvePlayer(
 	state: GameState,
 	playerOrId: PlayerGameState | string
@@ -198,12 +227,15 @@ export function matchesPlayerFilter(
 	}
 }
 
-function isBattlefieldActiveZone(def: StaticDef): boolean {
+// --- Track P13 ---
+function isBattlefieldActiveZone(def: StaticDef, source?: CardInstance): boolean {
+	if (source?.isEmblem) return true;
 	if ('activeZones' in def && def.activeZones && !def.activeZones.includes('battlefield')) {
 		return false;
 	}
 	return true;
 }
+// --- End Track P13 ---
 
 // ---- Rule Modifiers -------------------------------------------------------------------------
 
@@ -233,12 +265,15 @@ function activeRuleModifiersInner(
 	affectedPlayerId?: string
 ): ActiveRuleModifier[] {
 	const out: ActiveRuleModifier[] = [];
-	for (const { perm, card, controllerId } of activePermanents(state)) {
-		const abilities = activeAbilityDefs(card, instanceFaceOptions(perm, 'battlefield'));
+	for (const { perm, card, controllerId } of activeStaticSources(state)) {
+		const abilities = activeAbilityDefs(
+			card,
+			instanceFaceOptions(perm, perm.isEmblem ? 'command' : 'battlefield')
+		);
 		for (const ability of abilities) {
 			if (ability.kind !== 'static' || ability.static.k !== 'ruleModifier') continue;
 			const def = ability.static;
-			if (!isBattlefieldActiveZone(def)) continue;
+			if (!isBattlefieldActiveZone(def, perm)) continue;
 			if (rule !== undefined && def.rule !== rule) continue;
 			if (
 				affectedPlayerId !== undefined &&
@@ -365,6 +400,9 @@ export function playerHasHexproofFrom(
 	actorId: string
 ): boolean {
 	if (targetPlayer.playerId === actorId) return false;
+	// --- Track P13 ---
+	if (targetPlayer.hexproofThisTurn || targetPlayer.hexproofUntilNextTurn) return true;
+	// --- End Track P13 ---
 	return activeRuleModifiers(state, 'playerHexproof', targetPlayer.playerId).length > 0;
 }
 
@@ -732,12 +770,15 @@ function hasRestrictionInner(
 		}
 	}
 
-	for (const { perm, card, controllerId } of activePermanents(state)) {
-		const abilities = activeAbilityDefs(card, instanceFaceOptions(perm, 'battlefield'));
+	for (const { perm, card, controllerId } of activeStaticSources(state)) {
+		const abilities = activeAbilityDefs(
+			card,
+			instanceFaceOptions(perm, perm.isEmblem ? 'command' : 'battlefield')
+		);
 		for (const ability of abilities) {
 			if (ability.kind !== 'static' || ability.static.k !== 'restriction') continue;
 			const def = ability.static;
-			if (!isBattlefieldActiveZone(def)) continue;
+			if (!isBattlefieldActiveZone(def, perm)) continue;
 			if (!matchesRestrictionKind(def.restriction, restriction)) continue;
 			if (!evalReplaceCondition(def.condition, { state, controllerId, source: perm })) {
 				continue;
@@ -914,7 +955,7 @@ export function applicableReplacements(
 	ctx?: ReplacementQueryContext
 ): ActiveReplacement[] {
 	const out: ActiveReplacement[] = [];
-	const active = activePermanents(state);
+	const active = activeStaticSources(state);
 	const candidates: Array<{
 		perm: CardInstance;
 		card: ScryfallCard;
@@ -1479,8 +1520,11 @@ export function applicableCounterReplacements(
 	alreadyApplied: ReadonlySet<string> = new Set()
 ): ActiveCounterReplacement[] {
 	const out: ActiveCounterReplacement[] = [];
-	for (const { perm: source, card, controllerId } of activePermanents(state)) {
-		const abilities = activeAbilityDefs(card, instanceFaceOptions(source, 'battlefield'));
+	for (const { perm: source, card, controllerId } of activeStaticSources(state)) {
+		const abilities = activeAbilityDefs(
+			card,
+			instanceFaceOptions(source, source.isEmblem ? 'command' : 'battlefield')
+		);
 		for (let abIdx = 0; abIdx < abilities.length; abIdx++) {
 			const ability = abilities[abIdx];
 			if (
@@ -1493,7 +1537,7 @@ export function applicableCounterReplacements(
 			const id = `${source.instanceId}:cmult:${abIdx}`;
 			if (alreadyApplied.has(id)) continue;
 			const def = ability.static;
-			if (!isBattlefieldActiveZone(def)) continue;
+			if (!isBattlefieldActiveZone(def, source)) continue;
 			if (def.counter !== undefined && def.counter !== counterType) continue;
 			if (!evalReplaceCondition(def.condition, { state, controllerId, source })) continue;
 			if (
@@ -1661,8 +1705,11 @@ export function counterMultiplier(
  */
 export function tokenMultiplier(state: GameState, recipientPlayerId: string): number {
 	let factor = 1;
-	for (const { perm: source, card, controllerId } of activePermanents(state)) {
-		for (const ability of activeAbilityDefs(card, instanceFaceOptions(source, 'battlefield'))) {
+	for (const { perm: source, card, controllerId } of activeStaticSources(state)) {
+		for (const ability of activeAbilityDefs(
+			card,
+			instanceFaceOptions(source, source.isEmblem ? 'command' : 'battlefield')
+		)) {
 			if (
 				ability.kind !== 'static' ||
 				ability.static.k !== 'multiplier' ||
@@ -1671,7 +1718,7 @@ export function tokenMultiplier(state: GameState, recipientPlayerId: string): nu
 				continue;
 			}
 			const def = ability.static;
-			if (!isBattlefieldActiveZone(def)) continue;
+			if (!isBattlefieldActiveZone(def, source)) continue;
 			if (!evalReplaceCondition(def.condition, { state, controllerId, source })) continue;
 			if (def.filter?.controller === 'you' && controllerId !== recipientPlayerId) continue;
 			if (def.filter?.controller === 'opponent' && controllerId === recipientPlayerId) continue;
@@ -1710,8 +1757,11 @@ export function triggerMultiplier(
 			? triggeredPerm
 			: { ...triggeredPerm, controllerId: triggeredControllerId };
 
-	for (const { perm: source, card, controllerId } of activePermanents(state)) {
-		for (const ability of activeAbilityDefs(card, instanceFaceOptions(source, 'battlefield'))) {
+	for (const { perm: source, card, controllerId } of activeStaticSources(state)) {
+		for (const ability of activeAbilityDefs(
+			card,
+			instanceFaceOptions(source, source.isEmblem ? 'command' : 'battlefield')
+		)) {
 			if (
 				ability.kind !== 'static' ||
 				ability.static.k !== 'multiplier' ||
@@ -1720,7 +1770,7 @@ export function triggerMultiplier(
 				continue;
 			}
 			const def = ability.static;
-			if (!isBattlefieldActiveZone(def)) continue;
+			if (!isBattlefieldActiveZone(def, source)) continue;
 			if (!evalReplaceCondition(def.condition, { state, controllerId, source })) continue;
 			if (
 				def.filter &&

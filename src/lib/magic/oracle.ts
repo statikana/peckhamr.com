@@ -245,6 +245,23 @@ export function buildTokenScryfallCard(
 	id: string,
 	spec: TokenCreationSpec
 ): ScryfallCard {
+	// --- Track P13 ---
+	if (spec.roleKind) {
+		return buildRoleTokenScryfallCard(id, spec.roleKind);
+	}
+	if (spec.ringLevel !== undefined) {
+		return buildRingEmblemScryfallCard(id, spec.ringLevel);
+	}
+	if (spec.emblemAbilities) {
+		return buildEmblemScryfallCard(id, spec.name, spec.emblemAbilities);
+	}
+	if (spec.dungeonId && spec.dungeonRoomIndex !== undefined) {
+		return buildDungeonRoomTriggerCard(id, spec.dungeonId, spec.dungeonRoomIndex);
+	}
+	if (spec.dungeonId) {
+		return buildDungeonScryfallCard(id, spec.dungeonId);
+	}
+	// --- End Track P13 ---
 	const predefined = matchPredefinedTokenDef(spec);
 	const isCreature = /\bCreature\b/.test(spec.typeLine);
 	const kwText = spec.keywords.join(', ');
@@ -969,3 +986,300 @@ export function describeLibrarySearchDestination(dest: LibrarySearchDestination)
 	}
 	return 'into hand';
 }
+
+// --- Track P13 ---
+import type { DungeonId, RoleTokenKind } from './ir.ts';
+
+export interface RoleTokenSpec {
+	name: string;
+	oracleText: string;
+}
+
+/** CR 111.10k–r: Predefined Role Aura token specifications. */
+export const ROLE_TOKEN_SPECS: Record<RoleTokenKind, RoleTokenSpec> = {
+	cursed: {
+		name: 'Cursed',
+		oracleText: 'Enchant creature\nEnchanted creature has base power and toughness 1/1.'
+	},
+	monster: {
+		name: 'Monster',
+		oracleText: 'Enchant creature\nEnchanted creature gets +1/+1 and has trample.'
+	},
+	royal: {
+		name: 'Royal',
+		oracleText: 'Enchant creature\nEnchanted creature gets +1/+1 and has ward {1}.'
+	},
+	sorcerer: {
+		name: 'Sorcerer',
+		oracleText:
+			'Enchant creature\nEnchanted creature gets +1/+1 and has "Whenever this creature attacks, scry 1."'
+	},
+	virtuous: {
+		name: 'Virtuous',
+		oracleText: 'Enchant creature\nEnchanted creature gets +1/+1 for each enchantment you control.'
+	},
+	wicked: {
+		name: 'Wicked',
+		oracleText:
+			'Enchant creature\nEnchanted creature gets +1/+1.\nWhen this Aura is put into a graveyard from the battlefield, each opponent loses 1 life.'
+	},
+	young_hero: {
+		name: 'Young Hero',
+		oracleText:
+			'Enchant creature\nWhenever enchanted creature attacks, if its toughness is 3 or less, put a +1/+1 counter on it.'
+	}
+};
+
+function buildRoleTokenScryfallCard(id: string, roleKind: RoleTokenKind): ScryfallCard {
+	const spec = ROLE_TOKEN_SPECS[roleKind];
+	return {
+		id,
+		name: spec.name,
+		manaCost: '',
+		cmc: 0,
+		typeLine: 'Token Enchantment — Aura Role',
+		oracleText: spec.oracleText,
+		colors: [],
+		colorIdentity: [],
+		keywords: ['Enchant'],
+		imageUrl: `https://api.scryfall.com/cards/named?fuzzy=${encodeURIComponent(spec.name)}&format=image&version=normal`,
+		artCropUrl: `https://api.scryfall.com/cards/named?fuzzy=${encodeURIComponent(spec.name)}&format=image&version=art_crop`,
+		legalCommander: true,
+		canBeCommander: false,
+		hasPartner: false,
+		hasChooseBackground: false,
+		isBackground: false
+	};
+}
+
+/** CR 114.1–114.5: Synthesize a plain-JSON `ScryfallCard` representing an Emblem in the command zone. */
+function buildEmblemScryfallCard(
+	id: string,
+	name: string,
+	abilities: readonly string[]
+): ScryfallCard {
+	return {
+		id,
+		name,
+		manaCost: '',
+		cmc: 0,
+		typeLine: 'Emblem',
+		oracleText: abilities.join('\n'),
+		colors: [],
+		colorIdentity: [],
+		keywords: [],
+		imageUrl: '',
+		artCropUrl: '',
+		legalCommander: true,
+		canBeCommander: false,
+		hasPartner: false,
+		hasChooseBackground: false,
+		isBackground: false
+	};
+}
+
+/** CR 701.54c: Cumulative ability lines on `The Ring` emblem for levels 1..4. */
+export const THE_RING_EMBLEM_ABILITIES: readonly string[] = [
+	"Your Ring-bearer is legendary and can't be blocked by creatures with greater power.",
+	'Whenever your Ring-bearer attacks, draw a card, then discard a card.',
+	'Whenever your Ring-bearer becomes blocked by a creature, that creature\'s controller sacrifices it at end of combat.',
+	'Whenever your Ring-bearer deals combat damage to a player, each opponent loses 3 life.'
+];
+
+function buildRingEmblemScryfallCard(id: string, ringLevel: number): ScryfallCard {
+	const clamped = Math.max(1, Math.min(4, ringLevel));
+	return buildEmblemScryfallCard(id, 'The Ring', THE_RING_EMBLEM_ABILITIES.slice(0, clamped));
+}
+
+export interface DungeonRoomSpec {
+	name: string;
+	effectText: string;
+	nextRooms: number[];
+}
+
+export interface DungeonSpec {
+	id: DungeonId;
+	name: string;
+	rooms: DungeonRoomSpec[];
+}
+
+/** CR 309 / 701.49 / 727: Authoritative room graphs and room abilities for the 3 standard dungeons + Undercity. */
+export const DUNGEON_SPECS: Record<DungeonId, DungeonSpec> = {
+	lost_mine: {
+		id: 'lost_mine',
+		name: 'Lost Mine of Phandelver',
+		rooms: [
+			{ name: 'Cave Entrance', effectText: 'Scry 1.', nextRooms: [1, 2] },
+			{
+				name: 'Goblin Lair',
+				effectText: 'Create a 1/1 red Goblin creature token.',
+				nextRooms: [3, 4]
+			},
+			{ name: 'Mine Tunnels', effectText: 'Create a Treasure token.', nextRooms: [4, 5] },
+			{
+				name: 'Storeroom',
+				effectText: 'Put a +1/+1 counter on target creature.',
+				nextRooms: [6]
+			},
+			{
+				name: 'Dark Pool',
+				effectText: 'Each opponent loses 1 life and you gain 1 life.',
+				nextRooms: [6]
+			},
+			{
+				name: 'Fungi Cavern',
+				effectText: 'Target creature gets -4/-0 until your next turn.',
+				nextRooms: [6]
+			},
+			{ name: 'Temple of Dumathoin', effectText: 'Draw a card.', nextRooms: [] }
+		]
+	},
+	mad_mage: {
+		id: 'mad_mage',
+		name: 'Dungeon of the Mad Mage',
+		rooms: [
+			{ name: 'Yawning Portal', effectText: 'You gain 1 life.', nextRooms: [1] },
+			{ name: 'Dungeon Level', effectText: 'Scry 1.', nextRooms: [2, 3] },
+			{ name: 'Goblin Bazaar', effectText: 'Create a Treasure token.', nextRooms: [4] },
+			{
+				name: 'Twisted Caverns',
+				effectText: "Target creature can't attack until your next turn.",
+				nextRooms: [4]
+			},
+			{ name: 'Lost Level', effectText: 'Scry 2.', nextRooms: [5, 6] },
+			{
+				name: 'Runestone Caverns',
+				effectText: 'Exile the top two cards of your library. You may play them this turn.',
+				nextRooms: [7]
+			},
+			{
+				name: 'Muiral\'s Graveyard',
+				effectText: 'Create two 1/1 black Skeleton creature tokens.',
+				nextRooms: [7]
+			},
+			{ name: 'Deep Mines', effectText: 'Scry 3.', nextRooms: [8] },
+			{
+				name: 'Mad Wizard\'s Lair',
+				effectText: 'Draw three cards.',
+				nextRooms: []
+			}
+		]
+	},
+	tomb: {
+		id: 'tomb',
+		name: 'Tomb of Annihilation',
+		rooms: [
+			{ name: 'Trapped Entry', effectText: 'Each player loses 1 life.', nextRooms: [1, 2] },
+			{
+				name: 'Veils of Fear',
+				effectText: 'Each player loses 2 life unless they discard a card.',
+				nextRooms: [3]
+			},
+			{
+				name: 'Oubliette',
+				effectText: 'Discard a card and sacrifice a creature, an artifact, and a land.',
+				nextRooms: [4]
+			},
+			{
+				name: 'Sandfall Cell',
+				effectText: 'Each player loses 2 life unless they sacrifice a creature, artifact, or land.',
+				nextRooms: [4]
+			},
+			{
+				name: 'Cradle of the Death God',
+				effectText: 'Create The Atropal, a legendary 4/4 black God Horror creature token with deathtouch.',
+				nextRooms: []
+			}
+		]
+	},
+	undercity: {
+		id: 'undercity',
+		name: 'Undercity',
+		rooms: [
+			{
+				name: 'Secret Entrance',
+				effectText: 'Search your library for a basic land card, reveal it, put it into your hand, then shuffle.',
+				nextRooms: [1, 2]
+			},
+			{
+				name: 'Forge',
+				effectText: 'Put two +1/+1 counters on target creature.',
+				nextRooms: [3, 4]
+			},
+			{ name: 'Lost Well', effectText: 'Scry 2.', nextRooms: [4, 5] },
+			{
+				name: 'Trap!',
+				effectText: 'Target player loses 5 life.',
+				nextRooms: [6]
+			},
+			{ name: 'Arena', effectText: 'Goad target creature.', nextRooms: [6] },
+			{ name: 'Stash', effectText: 'Create a Treasure token.', nextRooms: [6] },
+			{
+				name: 'Archives',
+				effectText: 'Draw a card.',
+				nextRooms: [7]
+			},
+			{
+				name: 'Catacombs',
+				effectText: 'Create a 4/1 black Skeleton creature token with menace.',
+				nextRooms: [8]
+			},
+			{
+				name: 'Throne of the Dead Three',
+				effectText: 'Draw a card.',
+				nextRooms: []
+			}
+		]
+	}
+};
+
+function buildDungeonScryfallCard(id: string, dungeonId: DungeonId): ScryfallCard {
+	const spec = DUNGEON_SPECS[dungeonId];
+	return {
+		id,
+		name: spec.name,
+		manaCost: '',
+		cmc: 0,
+		typeLine: 'Dungeon',
+		oracleText: spec.rooms.map((r) => `${r.name} — ${r.effectText}`).join('\n'),
+		colors: [],
+		colorIdentity: [],
+		keywords: [],
+		imageUrl: `https://api.scryfall.com/cards/named?fuzzy=${encodeURIComponent(spec.name)}&format=image&version=normal`,
+		artCropUrl: `https://api.scryfall.com/cards/named?fuzzy=${encodeURIComponent(spec.name)}&format=image&version=art_crop`,
+		legalCommander: true,
+		canBeCommander: false,
+		hasPartner: false,
+		hasChooseBackground: false,
+		isBackground: false
+	};
+}
+
+/** Build a single-ability synthesized ScryfallCard for resolving a specific Dungeon room trigger. */
+function buildDungeonRoomTriggerCard(
+	id: string,
+	dungeonId: DungeonId,
+	roomIndex: number
+): ScryfallCard {
+	const spec = DUNGEON_SPECS[dungeonId];
+	const room = spec.rooms[roomIndex] ?? spec.rooms[0];
+	return {
+		id,
+		name: `${spec.name} — ${room.name}`,
+		manaCost: '',
+		cmc: 0,
+		typeLine: 'Dungeon',
+		oracleText: room.effectText,
+		colors: [],
+		colorIdentity: [],
+		keywords: [],
+		imageUrl: '',
+		artCropUrl: '',
+		legalCommander: true,
+		canBeCommander: false,
+		hasPartner: false,
+		hasChooseBackground: false,
+		isBackground: false
+	};
+}
+// --- End Track P13 ---

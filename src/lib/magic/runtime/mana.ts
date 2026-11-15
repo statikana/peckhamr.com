@@ -422,6 +422,9 @@ export function deductManaForSpendContext(
 	// --- End Track P10 ---
 
 	const spentColors: ManaColor[] = [];
+	// --- Track P13 ---
+	const spentColorsAll: ManaColor[] = [];
+	// --- End Track P13 ---
 	// --- Track P10 ---
 	let totalManaSpent = 0;
 	for (const c of ALL_MANA_COLORS) {
@@ -440,11 +443,17 @@ export function deductManaForSpendContext(
 		totalManaSpent += spent;
 		if (FIVE_COLORS.includes(c) && spent > 0) {
 			spentColors.push(c);
+			// --- Track P13 ---
+			for (let k = 0; k < spent; k++) spentColorsAll.push(c);
+			// --- End Track P13 ---
 		}
 	}
 	// --- End Track P10 ---
 	if (spendCtx) {
 		spendCtx.capturedColorsSpent = spentColors;
+		// --- Track P13 ---
+		spendCtx.capturedColorsAllSpent = spentColorsAll;
+		// --- End Track P13 ---
 		// --- Track P10 ---
 		spendCtx.capturedManaSpentCount = totalManaSpent;
 		// --- End Track P10 ---

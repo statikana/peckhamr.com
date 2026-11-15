@@ -54,7 +54,8 @@ import type {
 } from '../types.ts';
 import { buildTokenSpec, parseLibrarySearchSpec, PREDEFINED_TOKEN_DEFS } from '../oracle.ts';
 import { compileSingleFace } from './card.ts';
-import { parseAdditionalCostSentence, parseCost, parseObjectPhrase, singularSubtype } from './costs.ts';
+import { COUNTERS, parseAdditionalCostSentence, parseCost, parseObjectPhrase, singularSubtype } from './costs.ts';
+import { parseExtendedObjectPhrase, parseP13Amount, tryParseP13Sentence } from './effectsWave5.ts';
 import { staticallyInterpretable } from './interpretable.ts';
 import { parseActivatedIfConditionSentence, parseCondition } from './triggers.ts';
 import {
@@ -115,17 +116,8 @@ function count(word: string): Amount | null {
 }
 
 const COUNTER_WORDS: Record<string, CounterType> = {
-	'+1/+1': '+1/+1',
-	'-1/-1': '-1/-1',
-	'−1/−1': '-1/-1',
-	charge: 'charge',
-	shield: 'shield',
-	stun: 'stun',
-	lore: 'lore',
-	time: 'time',
-	loyalty: 'loyalty',
-	level: 'level',
-	fade: 'fade'
+	...COUNTERS,
+	'−1/−1': '-1/-1'
 };
 
 /** Sentences that carry no effect of their own. */
@@ -199,6 +191,19 @@ function isSupportedTokenQuotedAbility(abilityText: string): boolean {
 	const defs = compileQuotedAbilityString(abilityText, 'Token');
 	return defs.length > 0;
 }
+
+function isSupportedEmblemQuotedAbility(abilityText: string): boolean {
+	const defs = compileQuotedAbilityString(abilityText, 'Emblem');
+	return (
+		defs.length > 0 &&
+		defs.every(
+			(d) =>
+				d.kind === 'triggered' ||
+				(d.kind === 'static' &&
+					!(d.static.k === 'continuous' && d.static.affected === 'self'))
+		)
+	);
+}
 // --- End Track P10 ---
 
 /** Activation and cast restrictions; enforced by the cast/activation legality checks, not effects. */
@@ -239,12 +244,14 @@ interface PendingDigState {
 	stepIndex: number;
 	hasKeep: boolean;
 	hasRest: boolean;
+	lookOnly?: boolean;
 	draft: NonNullable<EffectParams['dig']>;
 }
 
 interface PendingCoerciveState {
 	stepIndex: number;
 	phase: 'awaitChoose' | 'awaitAction';
+	lookOnly?: boolean;
 	optionalChoice?: boolean;
 	filter?: ObjectFilter;
 	spans: Span[];
@@ -357,9 +364,41 @@ class Parser {
 		});
 	}
 
+	flushPendingDig(): void {
+		const pd = this.pendingDig;
+		if (!pd) return;
+		this.pendingDig = undefined;
+		if (!pd.hasKeep && !pd.hasRest && !pd.draft.untilFilter) {
+			const step = this.steps[pd.stepIndex];
+			if (step?.verb === 'dig' && step.amount?.k === 'const' && step.amount.n === 1) {
+				step.verb = 'reveal';
+				step.subject = { k: 'libraryTop' };
+				delete step.amount;
+				if (pd.lookOnly) {
+					step.params = { ...step.params, lookOnly: true };
+				}
+				this.setLastObject(pd.stepIndex);
+			}
+		}
+	}
+
 	flushIncompleteCoercive(): void {
 		if (!this.pendingCoercive) return;
-		for (const sp of this.pendingCoercive.spans) {
+		const pc = this.pendingCoercive;
+		if (pc.phase === 'awaitChoose') {
+			const step = this.steps[pc.stepIndex];
+			const ref = step ? singlePlayer(step.subject) : null;
+			if (step?.verb === 'revealAndDiscard' && ref) {
+				step.verb = 'reveal';
+				step.subject = { k: 'all', filter: { zone: 'hand', controllerRef: ref } };
+				if (pc.lookOnly) {
+					step.params = { ...step.params, lookOnly: true };
+				}
+				this.pendingCoercive = undefined;
+				return;
+			}
+		}
+		for (const sp of pc.spans) {
 			this.unparsed.push(sp);
 		}
 		this.pendingCoercive = undefined;
@@ -440,7 +479,7 @@ function refSelector(ref: Ref): Selector {
 
 // ---- Object phrases -------------------------------------------------------------------------
 
-const IT_WORDS = /^(?:it|them|that creature|that permanent|that creature or planeswalker|that permanent or player|that target|those targets|that land|that card|that spell|that ability|that artifact|that enchantment|that planeswalker|that token|those tokens|the token|the creature|the land|the card|the spell|the ability|the sacrificed creature|the sacrificed permanent|the sacrificed artifact|the discarded card|the exiled card|the detained permanent|the detained creature|the suspected creature|the discovered card|those cards|those creatures|those permanents|the amassed army|the army you amassed|the chosen creature|the manifested creature|the cloaked creature)$/i;
+const IT_WORDS = /^(?:it|them|they|that creature|that permanent|that creature or planeswalker|that permanent or player|that target|those targets|that land|that card|that spell|that ability|that artifact|that enchantment|that planeswalker|that token|those tokens|the token|the tokens|the creature|the creatures|the land|the card|the spell|the ability|the sacrificed creature|the sacrificed permanent|the sacrificed artifact|the discarded card|the exiled card|the detained permanent|the detained creature|the suspected creature|the discovered card|those cards|those creatures|those permanents|the amassed army|the army you amassed|the chosen creature|the chosen permanent|the chosen card|the manifested creature|the cloaked creature)$/i;
 
 /** Controller qualifiers at the end of an object phrase. */
 function splitController(phrase: string): { phrase: string; controller?: ObjectFilter['controller'] } {
@@ -477,6 +516,8 @@ function objectFilter(phrase: string): ObjectFilter | null {
 	if (/^instant and sorcery cards?$/i.test(p)) {
 		return withSuspect({ types: ['Instant', 'Sorcery'] });
 	}
+	const ext = parseExtendedObjectPhrase(p);
+	if (ext) return withSuspect(ext);
 	return null;
 }
 
@@ -596,7 +637,7 @@ function targetPhrase(text: string): Omit<TargetSpec, 'min' | 'max'> | null {
 	const filter = objectFilter(phrase);
 	if (!filter) return null;
 	const resolvedZone = filter.zone ?? zone;
-	if (resolvedZone === 'graveyard' && !/\bcards?$/.test(phrase)) return null;
+	if (resolvedZone === 'graveyard' && !/\bcards?\b/.test(phrase)) return null;
 	if (resolvedZone === 'battlefield' && /\bcards?$/.test(phrase)) return null;
 	const out: ObjectFilter = { ...filter, zone: resolvedZone };
 	if (ctl.controller) out.controller = ctl.controller;
@@ -679,12 +720,13 @@ function objectPhrase(p: Parser, text: string): ObjectRes | null {
 		return { selector: { k: 'attachedTo' }, ref: { k: 'attachedTo' } };
 	}
 	if (IT_WORDS.test(t)) {
+		if (/^they$/i.test(t) && !p.lastObject) return null;
 		if (!p.lastObject && p.context === 'triggered' && p.trigger?.filter.targetsSelf) {
 			const heroRef: Ref = /^(?:that|the) spell$/i.test(t) ? { k: 'eventObject' } : { k: 'self' };
 			return { selector: refSelector(heroRef), ref: heroRef };
 		}
 		const ref = p.itRef();
-		return ref ? { selector: refSelector(ref), ref } : null;
+		return ref ? { selector: refSelector(ref), ref, plural: /^(?:they|them|those\b|the tokens\b|the creatures\b)/i.test(t) } : null;
 	}
 	if (t === 'any target') {
 		const index = p.addTarget({
@@ -728,36 +770,10 @@ function objectPhrase(p: Parser, text: string): ObjectRes | null {
 			plural: multiTyped.max > 1
 		};
 	}
-	const tgt = t.match(/^(?:(up to) )?(?:(\S+) )?target (?:(one|two|three|four|five|six|\d+) )?(.+)$/);
-	if (tgt) {
-		const countWord = tgt[2] ?? tgt[3];
-		const c = countWord ? count(countWord) : n(1);
-		if (!c || c.k !== 'const') return null;
-		const spec = targetPhrase(tgt[4]);
-		if (!spec) return null;
-		const { sameOwner, ...restSpec } = spec;
-		const index = p.addTarget({
-			...restSpec,
-			min: tgt[1] ? 0 : c.n,
-			max: c.n,
-			...(sameOwner && c.n > 1 ? { sameOwner: true } : {})
-		});
-		return { selector: { k: 'target', index }, ref: { k: 'target', index }, plural: c.n > 1 };
-	}
-	const top = t.match(/^the top (.+) card of your graveyard$/);
-	if (top) {
-		const filter = objectFilter(`${top[1]} card`);
-		if (!filter) return null;
-		return {
-			selector: { k: 'all', filter: { ...filter, zone: 'graveyard', owner: 'you' } },
-			topmostOnly: true,
-			fromZone: 'graveyard'
-		};
-	}
 	if (/^all (?:cards from all )?graveyards$/.test(t) || t === 'all cards from all graveyards') {
 		return { selector: { k: 'all', filter: { zone: 'graveyard' } }, plural: true };
 	}
-	// --- Track P10: "<player>'s graveyard" / "all cards from <player>'s graveyard" ---
+	// --- Track P10 / P13: "<player>'s graveyard" / "all cards from <player>'s graveyard" (must precede `tgt`) ---
 	const gyOwner = t.match(
 		/^(?:all cards (?:from|in) )?(your|each opponent's|opponents'|target player's|target opponent's|that player's|their) graveyards?$/i
 	);
@@ -786,14 +802,50 @@ function objectPhrase(p: Parser, text: string): ObjectRes | null {
 			plural: true
 		};
 	}
-	// --- End Track P10 ---
+	// --- End Track P10 / P13 ---
+	const tgt = t.match(/^(?:(up to) )?(?:(\S+) )?target (?:(one|two|three|four|five|six|\d+) )?(.+)$/);
+	if (tgt) {
+		const countWord = tgt[2] ?? tgt[3];
+		const c = countWord ? count(countWord) : n(1);
+		if (!c || c.k !== 'const') return null;
+		const spec = targetPhrase(tgt[4]);
+		if (!spec) return null;
+		const { sameOwner, ...restSpec } = spec;
+		const index = p.addTarget({
+			...restSpec,
+			min: tgt[1] ? 0 : c.n,
+			max: c.n,
+			...(sameOwner && c.n > 1 ? { sameOwner: true } : {})
+		});
+		return { selector: { k: 'target', index }, ref: { k: 'target', index }, plural: c.n > 1 };
+	}
+	const top = t.match(/^the top (.+) card of your graveyard$/);
+	if (top) {
+		const filter = objectFilter(`${top[1]} card`);
+		if (!filter) return null;
+		return {
+			selector: { k: 'all', filter: { ...filter, zone: 'graveyard', owner: 'you' } },
+			topmostOnly: true,
+			fromZone: 'graveyard'
+		};
+	}
 	const all = t.match(/^(?:all|each) (.+)$/);
-	const bare =
+	const barePluralBoard =
 		!all &&
-		/\b(?:you control|your opponents control|you don't control|target player controls|target opponent controls|that player controls)$/.test(
+		!/^(?:a|an|another|target|up to|one|two|three|four|five|six|seven|eight|nine|ten|\d+|that|the|this|those|it|they|you|your|each|all)\b/i.test(
 			t
 		) &&
-		!/^(?:a|an|another|target)\b/.test(t);
+		/\b(?:creatures|permanents|artifacts|enchantments|lands|planeswalkers|battles|tokens|vehicles|walls|elves|goblins|zombies|soldiers|spirits|vampires|wizards|warriors|knights|dragons|angels|demons|beasts|birds|cats|dogs|elementals|faeries|fungi|giants|humans|horrors|insects|merfolk|mice|pirates|plants|rats|rogues|saprolings|skeletons|slivers|snakes|spiders|squirrels|thopters|treefolk|trolls|wurms)\b/i.test(
+			t
+		) &&
+		!/\bcards?\b/i.test(t);
+	const bare =
+		(!all &&
+			/\b(?:you control|your opponents control|opponents control|an opponent controls|you don't control|target player controls|target opponent controls|that player controls)$/.test(
+				t
+			) &&
+			!/^(?:a|an|another|target)\b/.test(t)) ||
+		barePluralBoard;
 	if (all || bare) {
 		const inner = all ? all[1] : t;
 		const parseUnionObjectFilter = (raw: string): ObjectFilter | null =>
@@ -907,8 +959,14 @@ function equalTo(p: Parser, text: string): Amount | null {
 		if (/^(?:coin )?flips you won(?: this way)?$/i.test(num[1].trim())) {
 			return { k: 'lastRollResult' };
 		}
-		return numberOf(num[1]);
+		const nRes = numberOf(num[1]);
+		if (nRes) return nRes;
 	}
+	const p13Amt = parseP13Amount(
+		t,
+		(sub) => equalTo(p, sub) ?? numberOf(sub) ?? amountWord(p, sub.toLowerCase())
+	);
+	if (p13Amt) return p13Amt;
 	return null;
 }
 
@@ -947,6 +1005,8 @@ function numberOf(text: string): Amount | null {
 	if (/^times? you've cast (?:your|a) commander from the command zone this game$/i.test(text.trim())) {
 		return { k: 'commanderCastCount' };
 	}
+	const p13Num = parseP13Amount(`the number of ${text.trim()}`);
+	if (p13Num) return p13Num;
 	const ctl = splitController(text.trim());
 	const filter = objectFilter(ctl.phrase);
 	if (!filter) return null;
@@ -994,7 +1054,7 @@ function whereX(
 	const num = rhs.match(/^the number of (.+)$/);
 	if (num) {
 		const x = numberOf(num[1]);
-		return x ? { text: m[1], x } : { text, bad: true };
+		if (x) return { text: m[1], x };
 	}
 	const dev = rhs.match(/^your devotion to (white|blue|black|red|green)$/);
 	if (dev) {
@@ -1006,6 +1066,11 @@ function whereX(
 	}
 	const eq = equalTo(p, rhs);
 	if (eq) return { text: m[1], x: eq };
+	const p13X = parseP13Amount(
+		rhs,
+		(sub) => equalTo(p, sub) ?? numberOf(sub) ?? amountWord(p, sub.toLowerCase())
+	);
+	if (p13X) return { text: m[1], x: p13X };
 	if (
 		/^(?:its|that card's|that creature's|that permanent's|that spell's|the exiled card's|the exiled creature's|the sacrificed creature's|the sacrificed permanent's|the discarded card's) (?:power|toughness|mana value)$/i.test(
 			rhs
@@ -1020,6 +1085,8 @@ function substituteX(a: Amount, x: Amount | undefined): Amount {
 	if (!x) return a;
 	if (a.k === 'x') return x;
 	if (a.k === 'negate') return { k: 'negate', of: substituteX(a.of, x) };
+	if (a.k === 'half') return { k: 'half', of: substituteX(a.of, x), round: a.round };
+	if (a.k === 'sum') return { k: 'sum', args: a.args.map((arg) => substituteX(arg, x)) };
 	return a;
 }
 
@@ -1054,7 +1121,7 @@ function tokenPhrase(p: Parser, text: string): { amount: Amount; token: TokenSpe
 		return { amount, token: base.token };
 	}
 	// --- End Track P10 ---
-	const pre = t.match(/^(that many|\S+) (tapped )?([a-z]+) tokens?( tapped)?$/i);
+	const pre = t.match(/^(that many|\S+) (tapped )?([a-z]+(?: [a-z]+)?) tokens?( tapped)?$/i);
 	if (pre && !(pre[2] && pre[4])) {
 		const def = PREDEFINED_TOKEN_DEFS[pre[3].toLowerCase() as keyof typeof PREDEFINED_TOKEN_DEFS];
 		if (def) {
@@ -1436,12 +1503,20 @@ interface Clause {
 	span: Span;
 }
 
-/** "until end of turn" at either end of a clause. */
-function stripDuration(text: string): { text: string; eot: boolean } {
+/** Duration qualifier at either end of a clause ("until end of turn", "until your next turn", "until the end of your next turn"). */
+function stripDuration(text: string): { text: string; eot: boolean; duration?: Duration } {
 	let m = text.match(/^(.+?) until end of turn$/);
-	if (m) return { text: m[1], eot: true };
+	if (m) return { text: m[1], eot: true, duration: 'endOfTurn' };
 	m = text.match(/^until end of turn, (.+)$/);
-	if (m) return { text: m[1], eot: true };
+	if (m) return { text: m[1], eot: true, duration: 'endOfTurn' };
+	m = text.match(/^(.+?) until your next turn$/i);
+	if (m) return { text: m[1], eot: true, duration: 'untilYourNextTurn' };
+	m = text.match(/^until your next turn, (.+)$/i);
+	if (m) return { text: m[1], eot: true, duration: 'untilYourNextTurn' };
+	m = text.match(/^(.+?) until (?:the )?end of your next turn$/i);
+	if (m) return { text: m[1], eot: true, duration: 'untilEndOfYourNextTurn' };
+	m = text.match(/^until (?:the )?end of your next turn, (.+)$/i);
+	if (m) return { text: m[1], eot: true, duration: 'untilEndOfYourNextTurn' };
 	return { text, eot: false };
 }
 
@@ -1498,14 +1573,14 @@ function parseBasePT(raw: string): { power: Amount; toughness: Amount } | null {
 function parseAnimatePredicate(
 	subject: ObjectRes,
 	bodyAfterDuration: string,
-	eotFromPrefix: boolean,
+	durationFromPrefix: Duration | undefined,
 	span: Span
 ): EffectStep | null {
 	if (subject.fromZone) return null;
 	const m = bodyAfterDuration.match(/^becomes? (?:a|an) (.+)$/);
 	if (!m) return null;
 	let rest = m[1].trim();
-	let eot = eotFromPrefix;
+	let animDuration: Duration | undefined = durationFromPrefix;
 	let keepExistingTypes = false;
 	let additiveColors = false;
 	let basePT: { power: Amount; toughness: Amount } | null = null;
@@ -1513,10 +1588,18 @@ function parseAnimatePredicate(
 
 	// Strip trailing qualifiers from right to left so order variations ("... with haste until end of turn"
 	// vs "... that's still a land" vs "... in addition to its other types until end of turn") all parse.
-	for (;;) {
-		const durMatch = rest.match(/^(.+?) until end of turn$/);
+	for (let guard = 0; guard < 12; guard++) {
+		const durMatch = rest.match(
+			/^(.+?) (until end of turn|until your next turn|until (?:the )?end of your next turn)$/i
+		);
 		if (durMatch) {
-			eot = true;
+			const dLow = durMatch[2].toLowerCase();
+			animDuration =
+				dLow === 'until end of turn'
+					? 'endOfTurn'
+					: dLow === 'until your next turn'
+						? 'untilYourNextTurn'
+						: 'untilEndOfYourNextTurn';
 			rest = durMatch[1].trim();
 			continue;
 		}
@@ -1617,7 +1700,7 @@ function parseAnimatePredicate(
 	}
 
 	const params: NonNullable<EffectStep['params']> = {
-		duration: eot ? 'endOfTurn' : 'permanent'
+		duration: animDuration ?? 'permanent'
 	};
 	const targetTypes = isArtifactCreature ? ['Artifact', 'Creature'] : ['Creature'];
 	if (keepExistingTypes) {
@@ -1994,12 +2077,14 @@ function parseCombatRestrictionTail(raw: string, outerEot: boolean): TimedCombat
 
 /** Verb phrases whose subject is an object ("~ gets +1/+0 until end of turn", "it phases out"). */
 function objectPredicate(p: Parser, subject: ObjectRes, vp: string, span: Span): ClauseResult {
-	const { text, eot } = stripDuration(vp);
-	const params = eot ? { duration: 'endOfTurn' as const } : {};
+	const { text, eot, duration } = stripDuration(vp);
+	const isEndOfTurn = duration === 'endOfTurn';
+	const params = duration ? { duration } : {};
 
 	// --- Track P7: becomeCopy, multi-target "each", combat restrictions, divided/multi damage ---
 	if (/^becomes? a copy of /.test(text)) {
-		const copyStep = parseBecomeCopyPredicate(p, subject, text, eot, span);
+		if (duration && !isEndOfTurn) return false;
+		const copyStep = parseBecomeCopyPredicate(p, subject, text, isEndOfTurn, span);
 		if (!copyStep) return false;
 		p.push(copyStep, true);
 		return true;
@@ -2007,7 +2092,7 @@ function objectPredicate(p: Parser, subject: ObjectRes, vp: string, span: Span):
 	// --- End Track P7 ---
 
 	if (/^becomes? (?:a|an) /.test(text)) {
-		const anim = parseAnimatePredicate(subject, text, eot, span);
+		const anim = parseAnimatePredicate(subject, text, duration, span);
 		if (!anim) return false;
 		p.push(anim, true);
 		return true;
@@ -2058,8 +2143,8 @@ function objectPredicate(p: Parser, subject: ObjectRes, vp: string, span: Span):
 	const modAndRestr = predText.match(
 		/^(?:gets? (\S+)|gains? (.+?))( until end of turn)?(?:,)? and (can't (?:block|be blocked).*)$/
 	);
-	if (modAndRestr && validBattlefieldObjectSubject && (eot || Boolean(modAndRestr[3]))) {
-		const combatRestriction = parseCombatRestrictionTail(modAndRestr[4], eot);
+	if (modAndRestr && validBattlefieldObjectSubject && (isEndOfTurn || Boolean(modAndRestr[3]))) {
+		const combatRestriction = parseCombatRestrictionTail(modAndRestr[4], isEndOfTurn);
 		if (!combatRestriction) return false;
 		if (modAndRestr[1]) {
 			const pt = ptChange(modAndRestr[1]);
@@ -2098,7 +2183,7 @@ function objectPredicate(p: Parser, subject: ObjectRes, vp: string, span: Span):
 		);
 		return true;
 	}
-	const combatRestriction = parseCombatRestrictionTail(predText, eot);
+	const combatRestriction = (!duration || isEndOfTurn) ? parseCombatRestrictionTail(predText, isEndOfTurn) : null;
 	if (combatRestriction) {
 		if (!validBattlefieldObjectSubject) return false;
 		p.push(
@@ -2194,11 +2279,37 @@ function objectPredicate(p: Parser, subject: ObjectRes, vp: string, span: Span):
 		return true;
 	}
 	// --- End Track P10 ---
+	// --- Track P13: Defender bypass & permanent grant on bound objects ---
+	if (
+		validBattlefieldObjectSubject &&
+		((!duration && /^can attack this turn as though (?:it|they) didn't have defender$/i.test(predText)) ||
+			(isEndOfTurn && /^can attack as though (?:it|they) didn't have defender$/i.test(predText)))
+	) {
+		p.push(
+			{
+				verb: 'grant',
+				subject: subject.selector,
+				params: { canAttackNoDefender: true, duration: 'endOfTurn' },
+				span
+			},
+			true
+		);
+		return true;
+	}
+	// --- End Track P13 ---
 	const gain = predText.match(/^gains? (.+)$/);
-	if (gain && eot) {
+	if (gain && (eot || subject.selector.k === 'binding')) {
 		const kws = keywordList(gain[1]);
 		if (!kws) return false;
-		p.push({ verb: 'grant', subject: subject.selector, params: { keywords: kws, ...params }, span }, true);
+		p.push(
+			{
+				verb: 'grant',
+				subject: subject.selector,
+				params: { keywords: kws, ...(duration ? { duration } : { duration: 'permanent' }) },
+				span
+			},
+			true
+		);
 		return true;
 	}
 	const lose = predText.match(/^loses? (.+?)(?: and can't (?:have or gain|have|gain) (.+))?$/);
@@ -2691,6 +2802,42 @@ function parseTokenCopyPhrase(
 function playerPredicate(p: Parser, subject: Selector, vp: string, span: Span, fromImperative = false): ClauseResult {
 	let text = vp.trim();
 	if (parsePlayFromExilePredicate(p, subject, text, span)) return true;
+	// --- Track P13: Extra land play & player rules ---
+	const extraLand = text.match(/^may play (an|a|one|two|three|four|\d+) additional lands? this turn$/i);
+	if (extraLand && subject.k === 'player' && subject.filter.relation === 'you') {
+		const cWord = extraLand[1].toLowerCase();
+		const cnt = cWord === 'a' || cWord === 'an' ? 1 : (count(cWord)?.k === 'const' ? (count(cWord) as { n: number }).n : 0);
+		if (cnt < 1) return false;
+		p.lastPlayer = subject;
+		p.push(
+			{
+				verb: 'grantPlayer',
+				subject,
+				params: { playerRules: ['extraLandPlay'], extraLandPlays: cnt, duration: 'endOfTurn' },
+				span
+			},
+			false
+		);
+		return true;
+	}
+	if (
+		/^can't lose the game this turn(?: and your opponents can't win the game this turn)?$/i.test(text) &&
+		subject.k === 'player' &&
+		subject.filter.relation === 'you'
+	) {
+		p.lastPlayer = subject;
+		p.push(
+			{
+				verb: 'grantPlayer',
+				subject,
+				params: { playerRules: ['cannotLoseGame'], duration: 'endOfTurn' },
+				span
+			},
+			false
+		);
+		return true;
+	}
+	// --- End Track P13 ---
 	let optional: EffectStep['optional'];
 	const may = text.match(/^may (.+)$/);
 	if (may) {
@@ -2877,6 +3024,35 @@ function playerPredicate(p: Parser, subject: Selector, vp: string, span: Span, f
 		p.push({ verb: m[1].startsWith('gain') ? 'gainLife' : 'loseLife', subject, amount, ...opt, span }, false);
 		return true;
 	}
+	// --- Track P13: Half life / half library rounded up/down ---
+	m = text.match(/^(gains?|loses?) half (?:your|their) life,?\s*rounded (up|down)$/i);
+	if (m) {
+		const whoRef = singlePlayer(subject);
+		if (!whoRef) return false;
+		const round: 'up' | 'down' = m[2].toLowerCase() === 'up' ? 'up' : 'down';
+		const amount: Amount = { k: 'half', of: { k: 'life', of: whoRef }, round };
+		p.push(
+			{
+				verb: m[1].toLowerCase().startsWith('gain') ? 'gainLife' : 'loseLife',
+				subject,
+				amount,
+				...opt,
+				span
+			},
+			false
+		);
+		return true;
+	}
+	m = text.match(/^mills? half (?:your|their) library,?\s*rounded (up|down)$/i);
+	if (m) {
+		const whoRef = singlePlayer(subject);
+		if (!whoRef) return false;
+		const round: 'up' | 'down' = m[1].toLowerCase() === 'up' ? 'up' : 'down';
+		const amount: Amount = { k: 'half', of: { k: 'cardsIn', zone: 'library', of: whoRef }, round };
+		p.push({ verb: 'mill', subject, amount, ...opt, span }, false);
+		return true;
+	}
+	// --- End Track P13 ---
 	m = text.match(/^mills? (that many|\S+) cards?$/);
 	if (m) {
 		const amount = amountWord(p, m[1]);
@@ -3352,8 +3528,27 @@ function playerPredicate(p: Parser, subject: Selector, vp: string, span: Span, f
 		return true;
 	}
 	// --- End Track P10 ---
+	// --- Track P13: Player hexproof / protection & cross-turn gainControl ---
+	m = text.match(/^gains? (hexproof|protection from everything) (until end of turn|until your next turn)$/i);
+	if (m && (subject.k === 'player' || singlePlayer(subject) !== null)) {
+		const rule = m[1].toLowerCase() === 'hexproof' ? 'hexproof' : 'protectionFromEverything';
+		const duration: Duration =
+			m[2].toLowerCase() === 'until your next turn' ? 'untilYourNextTurn' : 'endOfTurn';
+		p.push(
+			{
+				verb: 'grantPlayer',
+				subject,
+				params: { playerRules: [rule], duration },
+				...opt,
+				span
+			},
+			false
+		);
+		return true;
+	}
+	// --- End Track P13 ---
 	m = text.match(
-		/^gains? control of (.+?)(?: (until end of turn|for as long as (?:you control ~|~ remains on the battlefield)))?$/
+		/^gains? control of (.+?)(?: (until end of turn|until your next turn|until (?:the )?end of your next turn|for as long as (?:you control ~|~ remains on the battlefield)))?$/
 	);
 	if (m) {
 		const actor = singlePlayer(subject);
@@ -3363,12 +3558,17 @@ function playerPredicate(p: Parser, subject: Selector, vp: string, span: Span, f
 		if (obj.selector.k === 'target' && p.targets[obj.selector.index]?.kind === 'player') {
 			return false;
 		}
+		const durRaw = m[2]?.toLowerCase();
 		const duration: Duration =
-			m[2] === 'until end of turn'
+			durRaw === 'until end of turn'
 				? 'endOfTurn'
-				: m[2]?.startsWith('for as long as')
-					? 'untilSourceLeaves'
-					: 'permanent';
+				: durRaw === 'until your next turn'
+					? 'untilYourNextTurn'
+					: durRaw?.startsWith('until ') && durRaw.endsWith('next turn')
+						? 'untilEndOfYourNextTurn'
+						: durRaw?.startsWith('for as long as')
+							? 'untilSourceLeaves'
+							: 'permanent';
 		p.push(
 			{
 				verb: 'gainControl',
@@ -3856,10 +4056,61 @@ function parsePreventDamageClause(p: Parser, text: string, span: Span): boolean 
 }
 // --- End Track P7 ---
 
+function tryP13Clause(p: Parser, text: string, span: Span): boolean {
+	const mark = p.mark();
+	const steps = tryParseP13Sentence(text, {
+		addTarget: (spec) => p.addTarget(spec),
+		subjectSelector: (phrase) => {
+			const strippedEach = phrase.replace(/^each of\s+/i, '');
+			const isAnother = /^another target\b/i.test(strippedEach);
+			const obj = objectPhrase(p, isAnother ? strippedEach.replace(/^another /i, '') : strippedEach);
+			if (!obj) return null;
+			if (isAnother && obj.selector.k === 'target') {
+				p.targets[obj.selector.index].filter.other = true;
+			}
+			return { sel: obj.selector, bind: true };
+		},
+		playerSubject: (phrase) => playerPhrase(p, phrase),
+		validateEmblemAbility: (q) => isSupportedEmblemQuotedAbility(q),
+		parseSubSteps: (subText) => {
+			const sub = parseEffects(subText, span.start, 'triggered', p.trigger);
+			if (sub.unparsed.length > 0 || sub.targets.length > 0 || sub.steps.length === 0) {
+				return null;
+			}
+			return sub.steps;
+		},
+		parseAmount: (amtText) =>
+			amountWord(p, amtText.toLowerCase()) ??
+			equalTo(p, amtText) ??
+			parseP13Amount(
+				amtText,
+				(sub) => equalTo(p, sub) ?? numberOf(sub) ?? amountWord(p, sub.toLowerCase())
+			),
+		parseDuration: (raw) => {
+			const sd = stripDuration(raw);
+			return { body: sd.text, duration: sd.duration };
+		}
+	});
+	if (!steps || steps.length === 0) {
+		p.rollback(mark);
+		return false;
+	}
+	for (const st of steps) {
+		const actsOnObj = Boolean(st.bindAs);
+		const { bindAs: _unusedBind, ...restStep } = st;
+		p.push({ ...restStep, span }, actsOnObj);
+	}
+	return true;
+}
+
 /** Clauses without a subject: "Destroy target creature", "Draw a card", "Create a Treasure token". */
 function imperative(p: Parser, text: string, span: Span): ClauseResult {
 	const t = text.trim();
 	let m: RegExpMatchArray | null;
+
+	// --- Track P13: Imperative P13 keyword actions & designations ---
+	if (tryP13Clause(p, t, span)) return true;
+	// --- End Track P13 ---
 
 	// --- Track P7: Damage prevention shields & CR 615.12 unpreventable damage ---
 	if (parsePreventDamageClause(p, t, span)) return true;
@@ -4237,15 +4488,51 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 		return true;
 	}
 	// --- End Track P7 ---
-	m = t.match(/^put (that many|\S+) (\S+) counters? on (.+)$/);
+	// --- Track P13: Generalized putCounters & removeCounters ---
+	m = t.match(
+		/^put (?:a|the) number of ([+-−]\d+\/[+-−]\d+|first strike|double strike|[a-z]+) counters? on (.+?) equal to (.+)$/i
+	);
 	if (m) {
-		const amount = m[1] === 'that many' ? p.thatMany() : count(m[1]);
-		const counter = COUNTER_WORDS[m[2]];
-		const obj = objectPhrase(p, m[3]);
-		if (!amount || !counter || !obj) return false;
+		const counter = COUNTER_WORDS[m[1].toLowerCase()];
+		const rawObj = m[2].replace(/^each of\s+/i, '');
+		const isAnother = /^another target\b/i.test(rawObj);
+		const obj = counter ? objectPhrase(p, isAnother ? rawObj.replace(/^another /i, '') : rawObj) : null;
+		const amount = obj ? equalTo(p, m[3].trim()) : null;
+		if (!counter || !obj || !amount || obj.fromZone) return false;
+		if (isAnother && obj.selector.k === 'target') p.targets[obj.selector.index].filter.other = true;
 		p.push({ verb: 'putCounters', subject: obj.selector, amount, params: { counter }, span }, true);
 		return true;
 	}
+	m = t.match(
+		/^put (that many|that much|\S+) ([+-−]\d+\/[+-−]\d+|first strike|double strike|[a-z]+) counters? on (.+)$/i
+	);
+	if (m) {
+		const amount = amountWord(p, m[1].toLowerCase());
+		const counter = COUNTER_WORDS[m[2].toLowerCase()];
+		const rawObj = m[3].replace(/^each of\s+/i, '');
+		const isAnother = /^another target\b/i.test(rawObj);
+		const obj = amount && counter ? objectPhrase(p, isAnother ? rawObj.replace(/^another /i, '') : rawObj) : null;
+		if (!amount || !counter || !obj || obj.fromZone) return false;
+		if (isAnother && obj.selector.k === 'target') p.targets[obj.selector.index].filter.other = true;
+		p.push({ verb: 'putCounters', subject: obj.selector, amount, params: { counter }, span }, true);
+		return true;
+	}
+	m = t.match(
+		/^remove (all|that many|\S+) ([+-−]\d+\/[+-−]\d+|first strike|double strike|[a-z]+) counters? from (.+)$/i
+	);
+	if (m) {
+		const isAll = m[1].toLowerCase() === 'all';
+		const amount = isAll ? n(999) : amountWord(p, m[1].toLowerCase());
+		const counter = COUNTER_WORDS[m[2].toLowerCase()];
+		const rawObj = m[3].replace(/^each of\s+/i, '');
+		const isAnother = /^another target\b/i.test(rawObj);
+		const obj = amount && counter ? objectPhrase(p, isAnother ? rawObj.replace(/^another /i, '') : rawObj) : null;
+		if (!amount || !counter || !obj || obj.fromZone) return false;
+		if (isAnother && obj.selector.k === 'target') p.targets[obj.selector.index].filter.other = true;
+		p.push({ verb: 'removeCounters', subject: obj.selector, amount, params: { counter }, span }, true);
+		return true;
+	}
+	// --- End Track P13 ---
 	m = t.match(/^switch (.+?)'s power and toughness until end of turn$/);
 	if (m) {
 		const obj = objectPhrase(p, m[1]);
@@ -4354,23 +4641,52 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 		p.push({ verb: 'lookAndReorder', subject: YOU, amount, span }, false);
 		return true;
 	}
-	m = t.match(/^(look at|reveal) the top (\S+) cards? of your library$/);
+	m = t.match(/^(look at|reveal) the top (?:(that many|\S+) )?cards? of your library$/);
 	if (m) {
-		const amount = amountWord(p, m[2]);
+		const amount = m[2] ? amountWord(p, m[2]) : n(1);
 		if (!amount) return false;
+		const isLook = m[1] === 'look at';
 		const stepIndex = p.push({ verb: 'dig', subject: YOU, amount, span }, false);
 		p.pendingDig = {
 			stepIndex,
 			hasKeep: false,
 			hasRest: false,
+			...(isLook ? { lookOnly: true } : {}),
 			draft: {
 				keep: 0,
 				upTo: false,
 				keepTo: 'hand',
 				rest: 'libraryBottom',
-				...(m[1] === 'reveal' ? { revealAll: true } : {})
+				...(!isLook ? { revealAll: true } : {})
 			}
 		};
+		return true;
+	}
+	m = t.match(/^(look at|reveal) the top card of (target player's|target opponent's|that player's|their) library$/i);
+	if (m) {
+		const isLook = m[1].toLowerCase() === 'look at';
+		const ownerKey = m[2].toLowerCase();
+		const pPhrase =
+			ownerKey === "target player's"
+				? 'target player'
+				: ownerKey === "target opponent's"
+					? 'target opponent'
+					: ownerKey === "that player's"
+						? 'that player'
+						: 'they';
+		const sel = playerPhrase(p, pPhrase);
+		const pr = sel ? singlePlayer(sel) : null;
+		if (!pr) return false;
+		if (ownerKey.startsWith('target ')) p.lastPlayer = sel!;
+		p.push(
+			{
+				verb: 'reveal',
+				subject: { k: 'libraryTop', ...(pr.k !== 'you' ? { player: pr } : {}) },
+				...(isLook ? { params: { lookOnly: true } } : {}),
+				span
+			},
+			true
+		);
 		return true;
 	}
 	// --- Track P10: "Reveal cards from the top of your library until you reveal a [filter] card" ---
@@ -4833,7 +5149,7 @@ function addMana(p: Parser, text: string, span: Span): ClauseResult {
 
 // Words that start a new clause after " and " / ", then ".
 const CLAUSE_START =
-	/^(?:you|each opponent|each player|target player|target opponent|its controller|its owner|(?:that|the exiled) (?:card|creature|permanent|spell)'s (?:controller|owner)|that player|they|it (?=deals|fights?|gets?|gains?|loses?|explores?|connives?|adapts?|phases?|becomes?|endures?|is |can't|doesn't|does not)|that creature |those creatures |that permanent |those permanents |that target |those targets |that creature or planeswalker |that permanent or player |the amassed [Aa]rmy |enchanted |equipped |until (?:end of turn|(?:the )?end of your next turn|your next end step), |for as long as |draw|draws|lose|loses|gain|gains|get|gets|become|becomes|put|exile|exert|exerts|destroy|return|create|creates|search|scry|surveil|surveils|investigate|investigates|mill|mills|sacrifice|deal|deals|add|take|takes|phase|phases|attach|counter|proliferate|switch|look|reveal|reveals|shuffle|shuffles|tap|untap|fight|fights|transform|transforms|convert|converts|flip|flips|roll|rolls|discover|discovers|clash|clashes|detain|detains|suspect|suspects|collect|collects|forage|forages|endure|endures|time|blight|blights|fateseal|fateseals|discard|discards|connive|connives|explore|explores|goad|goads|regenerate|regenerates|amass|amasses|incubate|incubates|populate|populates|manifest|manifests|cloak|cloaks|bolster|bolsters|monstrosity|support|adapt|adapts|prevent|prevents|distribute|distributes|damage|combat|after|there)\b/;
+	/^(?:you|each opponent|each player|target player|target opponent|its controller|its owner|(?:that|the exiled) (?:card|creature|permanent|spell)'s (?:controller|owner)|that player|they|it (?=deals|fights?|gets?|gains?|loses?|explores?|connives?|adapts?|phases?|becomes?|endures?|is |can't|doesn't|does not)|that creature |those creatures |that permanent |those permanents |that target |those targets |that creature or planeswalker |that permanent or player |the amassed [Aa]rmy |the ring tempts you|enchanted |equipped |until (?:end of turn|your next turn|(?:the )?end of your next turn|your next end step), |for as long as |draw|draws|lose|loses|gain|gains|get|gets|become|becomes|put|remove|exile|exert|exerts|destroy|return|create|creates|search|scry|surveil|surveils|investigate|investigates|mill|mills|sacrifice|deal|deals|add|take|takes|phase|phases|attach|counter|proliferate|switch|look|reveal|reveals|shuffle|shuffles|tap|untap|fight|fights|transform|transforms|convert|converts|flip|flips|roll|rolls|discover|discovers|clash|clashes|detain|detains|suspect|suspects|collect|collects|forage|forages|endure|endures|time|blight|blights|fateseal|fateseals|discard|discards|connive|connives|explore|explores|goad|goads|regenerate|regenerates|amass|amasses|incubate|incubates|populate|populates|manifest|manifests|cloak|cloaks|bolster|bolsters|monstrosity|support|adapt|adapts|prevent|prevents|distribute|distributes|choose|double|triple|exchange|turn|venture|ventures|earthbend|airbend|learn|learns|damage|combat|after|there)\b/i;
 
 /** Splits a sentence into clauses at ", then " and at " and " before a new verb or subject. */
 function splitClauses(text: string, offset: number): Clause[] {
@@ -4879,9 +5195,10 @@ function markTrailingDestroyCantRegen(p: Parser): boolean {
 	return marked;
 }
 
-// --- Track P7: Turn-history & cast-origin resolution-time condition helpers ---
+// --- Track P7 / P13: Turn-history, state, & cast-origin resolution-time condition helpers ---
 function isP7ResolutionCondition(cond: Condition): boolean {
 	if (cond.k === 'not') return isP7ResolutionCondition(cond.of);
+	if (cond.k === 'and' || cond.k === 'or') return cond.of.every(isP7ResolutionCondition);
 	return (
 		cond.k === 'creatureDiedThisTurn' ||
 		cond.k === 'attackedThisTurn' ||
@@ -4893,11 +5210,30 @@ function isP7ResolutionCondition(cond: Condition): boolean {
 		cond.k === 'descendedThisTurn' ||
 		cond.k === 'manaColorSpentToCast' ||
 		cond.k === 'opponentComparison' ||
-		(cond.k === 'compare' &&
-			((cond.left.k === 'cardsIn' && cond.left.zone === 'graveyard') ||
-				cond.left.k === 'distinctCardTypesInZone' ||
-				(cond.left.k === 'count' && cond.left.of.zone === 'graveyard')))
-		// --- End Track P10 ---
+		// --- Track P13 ---
+		cond.k === 'controlCommander' ||
+		cond.k === 'isTurnOf' ||
+		cond.k === 'isMonarch' ||
+		cond.k === 'hasCompletedDungeon' ||
+		cond.k === 'hasInitiative' ||
+		cond.k === 'hasCitysBlessing' ||
+		cond.k === 'hasMaxSpeed' ||
+		cond.k === 'opponentPoisonAtLeast' ||
+		cond.k === 'nonlandEnteredThisTurn' ||
+		cond.k === 'voidThisTurn' ||
+		cond.k === 'sameColorManaSpentAtLeast' ||
+		cond.k === 'spellsCastLastTurn' ||
+		cond.k === 'totalPowerControlled' ||
+		cond.k === 'distinctControlledCreaturePowers' ||
+		cond.k === 'colorsAmongControlledPermanents' ||
+		cond.k === 'cardsPutIntoGraveyardFromAnywhereThisTurn' ||
+		cond.k === 'spellsCastThisTurnCount' ||
+		cond.k === 'boastAttackedThisTurn' ||
+		cond.k === 'objectState' ||
+		cond.k === 'matchesFilter' ||
+		cond.k === 'selfInZone' ||
+		cond.k === 'compare'
+		// --- End Track P13 ---
 	);
 }
 
@@ -4976,7 +5312,7 @@ function tryUnlessClause(p: Parser, text: string, span: Span): boolean {
 		return true;
 	}
 	// --- Track P7: "unless you attacked this turn" / "unless a creature died this turn" / etc. ---
-	const p7UnlessCond = parseCondition(`if ${tail}`);
+	const p7UnlessCond = parseCondition(`if ${tail}`, { allowDungeonCompletion: true });
 	if (p7UnlessCond && isP7ResolutionCondition(p7UnlessCond)) {
 		const normalizedBase =
 			/^sacrifice it$/i.test(baseText) && !p.lastObject ? 'sacrifice ~' : baseText;
@@ -5053,6 +5389,7 @@ function clause(p: Parser, c: Clause, allowUnless = true): ClauseResult {
 	if (!t) return false;
 	if (allowUnless && /\bunless\b/i.test(t) && tryUnlessClause(p, t, c.span)) return true;
 	if (imperative(p, t, c.span)) return true;
+	if (tryP13Clause(p, t, c.span)) return true;
 
 	// "It/They can't be regenerated" / "<object> can't be regenerated this turn"
 	const cantRegen = t.match(/^(.+?) can't be regenerated(?: this turn)?$/i);
@@ -5131,17 +5468,19 @@ function clause(p: Parser, c: Clause, allowUnless = true): ClauseResult {
 			return true;
 		}
 	}
-	const dur = t.match(/^until end of turn, (.+)$/);
+	const dur = t.match(/^(until end of turn|until your next turn|until (?:the )?end of your next turn), (.+)$/i);
 	if (dur) {
-		if (imperative(p, `${dur[1].trim()} until end of turn`, c.span)) return true;
+		const durTail = dur[1].toLowerCase();
+		if (imperative(p, `${dur[2].trim()} ${durTail}`, c.span)) return true;
 	}
-	const body = dur ? dur[1] : t;
+	const body = dur ? dur[2] : t;
+	const durSuffix = dur ? ` ${dur[1].toLowerCase()}` : '';
 	const words = body.split(' ');
 	for (let i = words.length - 1; i >= 1; i--) {
 		const subjText = words.slice(0, i).join(' ');
-		const vp = words.slice(i).join(' ') + (dur ? ' until end of turn' : '');
+		const vp = words.slice(i).join(' ') + durSuffix;
 		if (
-			!/^(?:each\s+(?:gets?|gains?|can't)|gets?|gains?|has\b|have\b|loses?|phases?|deals|fights?|explores?|connives?|adapts?|endures?|becomes?|is\b|can't)\b/.test(
+			!/^(?:each\s+(?:gets?|gains?|can't)|gets?|gains?|has\b|have\b|loses?|phases?|deals|fights?|explores?|connives?|adapts?|endures?|becomes?|is\b|can't|can\b)\b/.test(
 				vp
 			)
 		) {
@@ -5222,15 +5561,52 @@ function clause(p: Parser, c: Clause, allowUnless = true): ClauseResult {
 		});
 		if (ok) return true;
 	}
+	// --- Track P13: Generalized "<clause> for each <filter / zone count>" scaling ---
+	const perGeneral = t.match(
+		/^(.+?) for each (.+?)( (?:until end of turn|until your next turn|until (?:the )?end of your next turn))?$/i
+	);
+	if (
+		perGeneral &&
+		!/^(?:add|copy)\b/i.test(perGeneral[1]) &&
+		!/\b(?:players?|opponents?|votes?|target|targets|time|times|mana|counters?\s+(?:removed|put))\b/i.test(
+			perGeneral[2]
+		)
+	) {
+		const normWhat = perGeneral[2]
+			.trim()
+			.replace(/\s+on the battlefield$/i, '')
+			.replace(/^card in /i, 'cards in ')
+			.replace(/^card type among /i, 'card types among ')
+			.replace(/^color among /i, 'colors among ')
+			.replace(/^unlocked door among /i, 'unlocked doors among ');
+		const countAmt = numberOf(normWhat);
+		if (countAmt) {
+			const multiplyAmount = (base: Amount, mult: number): Amount | null => {
+				if (mult === 0) return n(0);
+				if (mult === 1) return base;
+				if (mult === -1) return { k: 'negate', of: base };
+				const abs = Math.abs(mult);
+				if (abs > 5) return null;
+				const sumAmt: Amount = { k: 'sum', args: Array.from({ length: abs }, () => base) };
+				return mult < 0 ? { k: 'negate', of: sumAmt } : sumAmt;
+			};
+			const ok = scalePerClause(`${perGeneral[1]}${perGeneral[3] ?? ''}`, (a) => {
+				if (!a || a.k !== 'const') return null;
+				return multiplyAmount(countAmt, a.n);
+			});
+			if (ok) return true;
+		}
+	}
+	// --- End Track P13 ---
 	return false;
 }
 
 /** Sentence-initial words that are not names or subtypes, so they can be lower-cased. */
 const LOWER_START = new Set([
-	'a', 'adapt', 'adapts', 'add', 'all', 'amass', 'amasses', 'an', 'another', 'any', 'artifacts', 'at', 'attach', 'become', 'blight', 'blights', 'bolster', 'bolsters', 'clash', 'clashes', 'cloak', 'cloaks', 'collect', 'collects', 'combat', 'connive', 'connives', 'convert', 'converts', 'copy', 'counter', 'create', 'creatures', 'damage', 'deal', 'destroy', 'detain', 'detains', 'discard', 'discards', 'discover', 'discovers', 'distribute', 'distributes', 'draw',
-	'each', 'enchanted', 'end', 'endure', 'endures', 'equipped', 'exert', 'exerts', 'exile', 'explore', 'explores', 'fateseal', 'fateseals', 'fight', 'five', 'flip', 'for', 'forage', 'forages', 'four', 'gain', 'goad', 'goads', 'if', 'incubate', 'incubates', 'investigate', 'it', 'its', 'lands', 'look', 'lose', 'mana', 'manifest', 'manifests', 'mill', 'monstrosity', 'one', 'otherwise', 'pay', 'permanents', 'players', 'populate', 'populates', 'prevent', 'prevents', 'proliferate', 'put',
-	'regenerate', 'regenerates', 'return', 'reveal', 'roll', 'rolls', 'sacrifice', 'scry', 'search', 'shuffle', 'six', 'spend', 'support', 'surveil', 'suspect', 'suspects', 'switch', 'take', 'tap', 'target', 'that', 'the', 'then', 'they', 'this', 'those', 'three', 'time',
-	'transform', 'two', 'untap', 'until', 'up', 'when', 'whenever', 'you', 'your'
+	'a', 'adapt', 'adapts', 'add', 'airbend', 'all', 'amass', 'amasses', 'an', 'another', 'any', 'artifacts', 'at', 'attach', 'attacking', 'become', 'black', 'blight', 'blights', 'blocking', 'blue', 'bolster', 'bolsters', 'choose', 'clash', 'clashes', 'cloak', 'cloaks', 'collect', 'collects', 'combat', 'connive', 'connives', 'convert', 'converts', 'copy', 'counter', 'create', 'creatures', 'damage', 'deal', 'destroy', 'detain', 'detains', 'discard', 'discards', 'discover', 'discovers', 'distribute', 'distributes', 'double', 'draw',
+	'each', 'earthbend', 'enchanted', 'enchantments', 'end', 'endure', 'endures', 'equipped', 'exchange', 'exert', 'exerts', 'exile', 'explore', 'explores', 'face-down', 'fateseal', 'fateseals', 'fight', 'five', 'flip', 'for', 'forage', 'forages', 'four', 'gain', 'goad', 'goads', 'green', 'historic', 'if', 'incubate', 'incubates', 'investigate', 'it', 'its', 'lands', 'learn', 'look', 'lose', 'mana', 'manifest', 'manifests', 'mill', 'monstrosity', 'multicolored', 'nonland', 'nontoken', 'one', 'other', 'otherwise', 'pay', 'permanents', 'planeswalkers', 'players', 'populate', 'populates', 'prevent', 'prevents', 'proliferate', 'put',
+	'red', 'regenerate', 'regenerates', 'remove', 'return', 'reveal', 'roll', 'rolls', 'sacrifice', 'scry', 'search', 'shuffle', 'six', 'spend', 'starting', 'support', 'surveil', 'suspect', 'suspects', 'switch', 'take', 'tap', 'tapped', 'target', 'that', 'the', 'then', 'they', 'this', 'those', 'three', 'time',
+	'tokens', 'transform', 'triple', 'turn', 'two', 'untap', 'untapped', 'until', 'up', 'venture', 'when', 'whenever', 'white', 'you', 'your'
 ]);
 
 // --- Track P10: Mana Spending Restriction Parser (CR 106.6, CR 106.6a) ---
@@ -5485,6 +5861,77 @@ function sentence(p: Parser, text: string, span: Span): boolean {
 		return true;
 	}
 
+	// --- Track P13: Flashback / graveyard-cast riders & multi-sentence Council vote follow-ups ---
+	if (/^the flashback cost is equal to its mana cost$/i.test(t)) {
+		const prev = p.steps[p.steps.length - 1];
+		if (prev?.verb !== 'grantGraveyardCast' || !prev.params?.graveyardCastSpec) return fail();
+		prev.params = {
+			...prev.params,
+			graveyardCastSpec: { ...prev.params.graveyardCastSpec, flashbackEqualManaCost: true }
+		};
+		return true;
+	}
+	if (
+		/^if (?:that spell|that card|a spell cast this way) would be put into (?:your|a) graveyard(?: this turn)?, exile it instead$/i.test(
+			t
+		)
+	) {
+		const prev = p.steps[p.steps.length - 1];
+		if (prev?.verb !== 'grantGraveyardCast' || !prev.params?.graveyardCastSpec) return fail();
+		prev.params = {
+			...prev.params,
+			graveyardCastSpec: { ...prev.params.graveyardCastSpec, exileIfWouldEnterGraveyard: true }
+		};
+		return true;
+	}
+	if (p.steps.length > 0 && p.steps[p.steps.length - 1]?.verb === 'vote') {
+		const voteStep = p.steps[p.steps.length - 1];
+		const vs = voteStep.params?.voteSpec;
+		if (vs) {
+			const dilemmaFollow = t.match(/^for each ([a-z]+) vote,\s*(.+)$/i);
+			if (dilemmaFollow) {
+				const optName = dilemmaFollow[1].toLowerCase();
+				const optIdx = vs.options.indexOf(optName);
+				if (optIdx === 0 || optIdx === 1) {
+					const innerParse = parseEffects(dilemmaFollow[2].trim(), span.start, p.context, p.trigger);
+					if (innerParse.unparsed.length === 0 && innerParse.targets.length === 0 && innerParse.steps.length > 0) {
+						const prevPer: [EffectStep[], EffectStep[]] = vs.perOptionEffect
+							? [[...vs.perOptionEffect[0]], [...vs.perOptionEffect[1]]]
+							: [[], []];
+						prevPer[optIdx] = innerParse.steps;
+						voteStep.params = {
+							...voteStep.params,
+							voteSpec: { ...vs, perOptionEffect: prevPer }
+						};
+						return true;
+					}
+				}
+			}
+			const councilFollow = t.match(
+				/^if ([a-z]+) gets more votes(?: or the vote is tied)?,\s*(.+)$/i
+			);
+			if (councilFollow) {
+				const optName = councilFollow[1].toLowerCase();
+				const optIdx = vs.options.indexOf(optName);
+				if (optIdx === 0 || optIdx === 1) {
+					const innerParse = parseEffects(councilFollow[2].trim(), span.start, p.context, p.trigger);
+					if (innerParse.unparsed.length === 0 && innerParse.targets.length === 0 && innerParse.steps.length > 0) {
+						const prevWin: [EffectStep[], EffectStep[]] = vs.perWinningEffect
+							? [[...vs.perWinningEffect[0]], [...vs.perWinningEffect[1]]]
+							: [[], []];
+						prevWin[optIdx] = innerParse.steps;
+						voteStep.params = {
+							...voteStep.params,
+							voteSpec: { ...vs, perWinningEffect: prevWin }
+						};
+						return true;
+					}
+				}
+			}
+		}
+	}
+	// --- End Track P13 ---
+
 	if (/^this mana can't be spent to cast (?:a )?nonartifact spells?$/i.test(t)) {
 		const prev = p.steps[p.steps.length - 1];
 		if (prev?.verb !== 'addMana') return fail();
@@ -5525,8 +5972,13 @@ function sentence(p: Parser, text: string, span: Span): boolean {
 		/^(?:then )?(?:that player|that opponent|they) (?:then )?shuffles?(?: their library)?$/i.test(t)
 	) {
 		const prev = p.steps[p.steps.length - 1];
-		if (prev?.verb !== 'search') return fail();
-		return true;
+		if (prev?.verb === 'search') return true;
+		if (p.lastPlayer && playerPredicate(p, p.lastPlayer, 'shuffles', span)) return true;
+		if (p.lastObject) {
+			const ownerSel = playerPhrase(p, 'its owner');
+			if (ownerSel && playerPredicate(p, ownerSel, 'shuffles', span)) return true;
+		}
+		return fail();
 	}
 
 	const counterRep = t.match(
@@ -5783,7 +6235,7 @@ function sentence(p: Parser, text: string, span: Span): boolean {
 
 	const ifP7Lead = t.match(/^(?:then\s+)?(if [^,]+),\s*(.+)$/i);
 	if (ifP7Lead) {
-		const cond = parseCondition(ifP7Lead[1]);
+		const cond = parseCondition(ifP7Lead[1], { allowDungeonCompletion: true });
 		if (cond && isP7ResolutionCondition(cond)) {
 			let innerText = ifP7Lead[2].trim();
 			if (/\s+instead$/i.test(innerText)) {
@@ -5807,7 +6259,7 @@ function sentence(p: Parser, text: string, span: Span): boolean {
 
 	const insteadIfTail = t.match(/^(.+?)\s+instead\s+(if .+)$/i);
 	if (insteadIfTail) {
-		const cond = parseCondition(insteadIfTail[2]);
+		const cond = parseCondition(insteadIfTail[2], { allowDungeonCompletion: true });
 		if (cond && isP7ResolutionCondition(cond)) {
 			if (!tryReplacementIfSentence(p, insteadIfTail[1].trim(), cond, stepsBefore, targetsBefore, span)) {
 				return fail();
@@ -5834,7 +6286,7 @@ function sentence(p: Parser, text: string, span: Span): boolean {
 		return true;
 	}
 	if (p.pendingDig) {
-		p.pendingDig = undefined;
+		p.flushPendingDig();
 	}
 	if (tryCoerciveStart(p, t, span)) {
 		return true;
@@ -6338,7 +6790,7 @@ function parseDigKeepClause(clauseStr: string, hasUntilFilter = false): DigKeepS
 	let keepFilter: ObjectFilter | undefined;
 	let keepLabel: string | undefined;
 	if (filterStr !== '' && !/^cards?$/i.test(filterStr)) {
-		const parsed = parseObjectPhrase(filterStr);
+		const parsed = objectFilter(filterStr);
 		if (!parsed) return null;
 		keepFilter = parsed;
 		keepLabel = filterStr.replace(/\s+cards?$/i, '').trim();
@@ -6444,7 +6896,7 @@ function parseCoerciveCardPhrase(phrase: string): { ok: boolean; filter?: Object
 	const trimmed = phrase.trim();
 	if (/^card$/i.test(trimmed)) return { ok: true };
 	if (!/\bcards?\b/i.test(trimmed)) return { ok: false };
-	const parsed = parseObjectPhrase(trimmed);
+	const parsed = objectFilter(trimmed);
 	if (!parsed) return { ok: false };
 	return { ok: true, filter: Object.keys(parsed).length > 0 ? parsed : undefined };
 }
@@ -6520,11 +6972,29 @@ function tryCoerciveFollowUp(p: Parser, text: string, span: Span): boolean {
 }
 
 function tryCoerciveStart(p: Parser, text: string, span: Span): boolean {
-	const m = text
-		.trim()
-		.match(
-			/^(.+?) reveals? their hand(?:,?\s+(?:and\s+)?you (may )?choose (?:a|an) (.+?) from it(?:,?\s+and\s+((?:if you do,\s*)?(?:(?:that player|the player|that opponent|they) discards? (?:that card|it)|(?:you )?exile (?:that card|it))))?)?$/i
+	const trimmed = text.trim();
+	let lookOnly = false;
+	let m = trimmed.match(
+		/^(.+?) reveals? their hand(?:,?\s+(?:and\s+)?you (may )?choose (?:a|an) (.+?) from it(?:,?\s+and\s+((?:if you do,\s*)?(?:(?:that player|the player|that opponent|they) discards? (?:that card|it)|(?:you )?exile (?:that card|it))))?)?$/i
+	);
+	if (!m) {
+		const lookM = trimmed.match(
+			/^look at (target player's|target opponent's|that player's|their) hand(?:,?\s+(?:and\s+)?you (may )?choose (?:a|an) (.+?) from it(?:,?\s+and\s+((?:if you do,\s*)?(?:(?:that player|the player|that opponent|they) discards? (?:that card|it)|(?:you )?exile (?:that card|it))))?)?$/i
 		);
+		if (lookM) {
+			lookOnly = true;
+			const whoPoss = lookM[1].toLowerCase();
+			const whoNom =
+				whoPoss === "target player's"
+					? 'target player'
+					: whoPoss === "target opponent's"
+						? 'target opponent'
+						: whoPoss === "that player's"
+							? 'that player'
+							: 'they';
+			m = [lookM[0], whoNom, lookM[2], lookM[3], lookM[4]];
+		}
+	}
 	if (!m) return false;
 	const mark = p.mark();
 	const sel = playerPhrase(p, m[1].trim());
@@ -6554,6 +7024,7 @@ function tryCoerciveStart(p: Parser, text: string, span: Span): boolean {
 	const pc: PendingCoerciveState = {
 		stepIndex,
 		phase,
+		...(lookOnly ? { lookOnly: true } : {}),
 		...(optionalChoice ? { optionalChoice: true } : {}),
 		...(filter ? { filter } : {}),
 		spans: [span]
@@ -6657,6 +7128,7 @@ export function parseEffects(
 			}
 		}
 	}
+	p.flushPendingDig();
 	p.flushIncompleteCoercive();
 	return { steps: p.steps, targets: p.targets, unparsed: p.unparsed };
 }
@@ -6755,7 +7227,7 @@ export function parseModal(
 		let body = b.text.replace(/^•\s*/, '');
 		let start = b.start + (b.text.length - body.length);
 		const flavor = body.match(/^([A-Z][A-Za-z0-9'’ !?-]*?) — (?=[A-Z{~])/);
-		if (flavor) {
+		if (flavor && !/\bfaces a villainous choice$/i.test(flavor[1])) {
 			body = body.slice(flavor[0].length);
 			start += flavor[0].length;
 		}
@@ -6829,6 +7301,15 @@ export function parseSpellFace(norm: NormalizedFace, include: (line: NormalizedL
 			effectSentences.push({ text: line.body, span: line.bodySpan });
 			continue;
 		}
+		// --- Track P13: Restore "Each/Target opponent faces a villainous choice — <Capital>..." ---
+		if (line.abilityWord && /\bfaces a villainous choice$/i.test(line.abilityWord)) {
+			for (const s of splitSentences(line.text, line.span.start)) {
+				if (parseAdditionalCostSentence(s.text)) continue;
+				effectSentences.push(s);
+			}
+			continue;
+		}
+		// --- End Track P13 ---
 		for (const s of line.sentences) {
 			if (parseAdditionalCostSentence(s.text)) continue;
 			effectSentences.push(s);
@@ -6846,6 +7327,7 @@ export function parseSpellFace(norm: NormalizedFace, include: (line: NormalizedL
 			p.lastOptionalStep = undefined;
 		}
 	}
+	p.flushPendingDig();
 	p.flushIncompleteCoercive();
 	steps.push(...p.steps);
 	targets.push(...p.targets);

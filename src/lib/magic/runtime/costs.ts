@@ -595,15 +595,18 @@ function effectiveSpellManaCostInner(
 			// --- End Track P11 ---
 		}
 		for (const cmd of p.command) {
+			// --- Track P13: Ring emblem does not carry cost modifiers; custom emblems function in command zone (CR 114.4) ---
+			if (cmd.isRingEmblem) continue;
 			const cCard = cmd.copiableCard ?? cmd.card;
 			const ctx: FilterContext = { state, controllerId: p.playerId, source: cmd, xValue: effectiveX };
 			for (const mod of costModifiersOf(cCard, instanceFaceOptions(cmd, cmd.zone))) {
-				if (!mod.activeZones?.includes('command')) continue;
+				if (!cmd.isEmblem && !mod.activeZones?.includes('command')) continue;
 				if (!matchesWho(mod, p.playerId)) continue;
 				if (mod.condition && !evaluateCondition(mod.condition, ctx)) continue;
 				if (!matchesSpell(mod, p.playerId, cmd)) continue;
 				applyDelta(mod, ctx);
 			}
+			// --- End Track P13 ---
 		}
 	}
 
@@ -801,6 +804,17 @@ function effectiveAbilityManaCostInner(
 				}
 			}
 		}
+		// --- Track P13: Command-zone emblem ability cost modifiers (CR 114.4) ---
+		for (const cmd of p.command) {
+			if (cmd.isRingEmblem) continue;
+			const cCard = cmd.copiableCard ?? cmd.card;
+			const ctx: FilterContext = { state, controllerId: p.playerId, source: cmd, xValue };
+			for (const mod of costModifiersOf(cCard, instanceFaceOptions(cmd, cmd.zone))) {
+				if (!cmd.isEmblem && !mod.activeZones?.includes('command')) continue;
+				visitAbilityMod(mod, p.playerId, ctx);
+			}
+		}
+		// --- End Track P13 ---
 	}
 	// --- End Track P11 ---
 
@@ -1008,7 +1022,13 @@ export interface CostContext {
 	/** Object IDs already committed to another payment (e.g. CastCostAid) that cannot be reused (CR 118.10). */
 	reservedObjectIds?: ReadonlySet<string>;
 	// --- Track P10 ---
-	spendCtx?: { capturedColorsSpent?: ManaColor[]; capturedManaSpentCount?: number };
+	spendCtx?: {
+		capturedColorsSpent?: ManaColor[];
+		capturedManaSpentCount?: number;
+		// --- Track P13 ---
+		capturedColorsAllSpent?: ManaColor[];
+		// --- End Track P13 ---
+	};
 	// --- End Track P10 ---
 	canPayMana: (req: ManaCostRequirement, reservedIds?: ReadonlySet<string>) => boolean;
 	payMana: (req: ManaCostRequirement) => boolean;

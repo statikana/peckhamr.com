@@ -57,6 +57,16 @@ import {
 	computePartyCount
 } from './staticsDynamicAndCosts.ts';
 // --- End Track P11 ---
+// --- Track P13 ---
+import {
+	computeColorsAmongPermanents,
+	computeDevotionTo,
+	computeStatAggregateAmong,
+	computeUnlockedDoorsCount,
+	evaluateP13Condition,
+	matchesP13ObjectFilterFields
+} from './effectsWave5.ts';
+// --- End Track P13 ---
 
 export interface FilterContext {
 	state: GameState;
@@ -444,6 +454,24 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 	const controllerId = onBattlefield ? obj.controllerId : obj.ownerId;
 	if (filter.controller === 'you' && controllerId !== ctx.controllerId) return false;
 	if (filter.controller === 'opponent' && controllerId === ctx.controllerId) return false;
+	// --- Track P13 ---
+	if (filter.controllerRef) {
+		let wantPid: string | undefined = ctx.controllerId;
+		if (filter.controllerRef.k === 'activePlayer') {
+			wantPid = state.players[state.activePlayerIndex]?.playerId ?? ctx.controllerId;
+		} else if (filter.controllerRef.k === 'ownerOf') {
+			wantPid = ctx.source?.ownerId ?? ctx.controllerId;
+		} else if (filter.controllerRef.k === 'controllerOf') {
+			wantPid = ctx.source?.controllerId ?? ctx.controllerId;
+		} else if (filter.controllerRef.k === 'target') {
+			const tRef = ctx.stackItem?.targets?.[filter.controllerRef.index];
+			wantPid = tRef?.kind === 'player' ? tRef.id : undefined;
+		} else if (filter.controllerRef.k === 'eventPlayer') {
+			wantPid = ctx.stackItem?.eventPlayerId;
+		}
+		if (wantPid !== undefined && controllerId !== wantPid) return false;
+	}
+	// --- End Track P13 ---
 	if (filter.owner === 'you' && obj.ownerId !== ctx.controllerId) return false;
 	if (filter.owner === 'opponent' && obj.ownerId === ctx.controllerId) return false;
 
@@ -612,6 +640,17 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 	// --- Track P12 ---
 	if (!matchesP12ObjectFilter(obj, filter, ctx, matchesObjectFilter)) return false;
 	// --- End Track P12 ---
+	// --- Track P13 ---
+	if (
+		!matchesP13ObjectFilterFields(obj, filter, {
+			state,
+			zone: objZone,
+			stackItem: ctx.stackItem
+		})
+	) {
+		return false;
+	}
+	// --- End Track P13 ---
 	return true;
 }
 
@@ -758,6 +797,54 @@ export function evaluateAmount(amount: Amount, ctx: FilterContext): number {
 			);
 		}
 		// --- End Track P11 ---
+		// --- Track P13 ---
+		case 'devotion':
+			return computeDevotionTo(ctx.state, ctx.controllerId, amount.colors);
+		case 'unlockedDoorsCount': {
+			const pid =
+				amount.player.k === 'activePlayer'
+					? (ctx.state.players[ctx.state.activePlayerIndex]?.playerId ?? ctx.controllerId)
+					: ctx.controllerId;
+			return computeUnlockedDoorsCount(ctx.state, pid);
+		}
+		case 'excessDamage':
+			return ctx.stackItem?.lastExcessDamage ?? 0;
+		case 'lastEffectAmount':
+			return ctx.stackItem?.lastEffectAmount ?? 0;
+		case 'colorsAmongPermanents': {
+			const pid =
+				amount.player.k === 'activePlayer'
+					? (ctx.state.players[ctx.state.activePlayerIndex]?.playerId ?? ctx.controllerId)
+					: ctx.controllerId;
+			return computeColorsAmongPermanents(
+				ctx.state,
+				pid,
+				amount.filter,
+				(perm, f) => matchesObjectFilter(perm, f, ctx)
+			);
+		}
+		case 'half': {
+			const inner = evaluateAmount(amount.of, ctx);
+			return amount.round === 'up' ? Math.ceil(inner / 2) : Math.floor(inner / 2);
+		}
+		case 'dungeonsCompleted': {
+			const pid =
+				amount.player.k === 'activePlayer'
+					? (ctx.state.players[ctx.state.activePlayerIndex]?.playerId ?? ctx.controllerId)
+					: ctx.controllerId;
+			const pl = ctx.state.players.find((p) => p.playerId === pid);
+			return pl?.dungeonsCompletedCount ?? 0;
+		}
+		case 'greatestStatAmong':
+		case 'totalStatAmong':
+			return computeStatAggregateAmong(
+				ctx.state,
+				amount.filter,
+				amount.stat,
+				amount.k === 'greatestStatAmong' ? 'greatest' : 'total',
+				(perm, f) => matchesObjectFilter(perm, f, ctx)
+			);
+		// --- End Track P13 ---
 		default:
 			return 0;
 	}
@@ -886,6 +973,27 @@ export function evaluateCondition(cond: Condition, ctx: FilterContext): boolean 
 		case 'spellsCastThisTurnCount':
 			return evaluateP12Condition(cond, ctx, matchesObjectFilter) ?? false;
 		// --- End Track P12 ---
+		// --- Track P13 ---
+		case 'selfInZone':
+		case 'spellsCastLastTurn':
+		case 'hasCompletedDungeon':
+		case 'hasInitiative':
+		case 'hasCitysBlessing':
+		case 'hasMaxSpeed':
+		case 'opponentPoisonAtLeast':
+		case 'nonlandEnteredThisTurn':
+		case 'voidThisTurn':
+		case 'sameColorManaSpentAtLeast':
+			return (
+				evaluateP13Condition(cond, {
+					state: ctx.state,
+					controllerId: ctx.controllerId,
+					source: ctx.source,
+					stackItem: ctx.stackItem,
+					zone: ctx.zone
+				}) ?? false
+			);
+		// --- End Track P13 ---
 		default:
 			return false;
 	}
