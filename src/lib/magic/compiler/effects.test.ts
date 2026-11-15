@@ -844,9 +844,9 @@ describe('Track D Slice 1: Draw-then-discard, Goad, Explore, Map, and Connive', 
 		const multiUnless = parseSpellText('Mass Tax', 'Counter target spell unless each opponent pays {2}.');
 		assert.equal(staticallyInterpretable(multiUnless), false);
 
-		// Unsupported optional cost variant ("choice" via "or") rejected by staticallyInterpretable.
+		// Supported optional cost variant ("choice" via "or") accepted since Track P19a.
 		const choiceCost = parseSpellText('Split Tax', 'You may pay {2} or pay 3 life.');
-		assert.equal(staticallyInterpretable(choiceCost), false);
+		assert.equal(staticallyInterpretable(choiceCost), true);
 	});
 
 	it('compiles gainControl spells and abilities with explicit duration and target guards', () => {
