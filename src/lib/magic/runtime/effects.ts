@@ -85,6 +85,13 @@ import { scaleCumulativeUpkeepCost } from './orthogonalKeywords.ts';
 // --- Track P12 ---
 import { evaluateP12Condition, recordPlayerLifeLossWave4 } from './keywordsWave4.ts';
 // --- End Track P12 ---
+// --- Track P14 ---
+import {
+	computeDevotionToColors,
+	evaluateWave5Amount,
+	evaluateWave5Condition
+} from './staticsAndCostsWave5.ts';
+// --- End Track P14 ---
 import { noteLayerInputsChanged } from './layerCache.ts';
 import {
 	matchesObjectFilter,
@@ -670,7 +677,11 @@ export function dealDamageToPermanent(
 		targetControllerId: target.controllerId,
 		sourceInst: p.findPermanent(state, sourceId)?.inst,
 		sourceId,
-		sourceTypes: srcInfo.types
+		sourceTypes: srcInfo.types,
+		// --- Track P14 ---
+		sourceCard: srcInfo.sourceCard,
+		sourceControllerId: srcInfo.sourceControllerId
+		// --- End Track P14 ---
 	});
 	if (dmg <= 0) return 0;
 	// --- End Track P7 ---
@@ -774,7 +785,11 @@ export function dealDamageToPlayer(
 		targetId: pl.playerId,
 		sourceInst: p.findPermanent(state, sourceId)?.inst,
 		sourceId,
-		sourceTypes: srcInfo.types
+		sourceTypes: srcInfo.types,
+		// --- Track P14 ---
+		sourceCard: srcInfo.sourceCard,
+		sourceControllerId: srcInfo.sourceControllerId
+		// --- End Track P14 ---
 	});
 	if (dmg <= 0) return 0;
 	// --- End Track P7 ---
@@ -1683,8 +1698,15 @@ class Run {
 				const p = this.playerRef(a.of);
 				return p ? p[a.zone === 'stack' ? 'hand' : (a.zone as 'hand')].length : 0;
 			}
-			case 'devotion':
+			case 'devotion': {
+				// --- Track P14 ---
+				if (a.player) {
+					const p = this.playerRef(a.player);
+					return p ? computeDevotionToColors(this.state, p.playerId, a.colors) : 0;
+				}
+				// --- End Track P14 ---
 				return devotion(this.you, a.colors);
+			}
 			case 'commanderCastCount':
 				return playerCommanderCastCount(this.state, this.you.playerId);
 			case 'stormCount':
@@ -1773,6 +1795,24 @@ class Run {
 				);
 			}
 			// --- End Track P11 ---
+			// --- Track P14 ---
+			case 'targetsBeyondFirst':
+			case 'colorsOfObject':
+			case 'greatestStatAmong':
+			case 'totalStatOf':
+			case 'anyNumber': {
+				const srcFound = this.locate(this.ctx.sourceId);
+				return (
+					evaluateWave5Amount(a, {
+						state: this.state,
+						controllerId: this.you.playerId,
+						source: srcFound?.inst,
+						stackItem: this.ctx.item,
+						xValue: this.ctx.xValue
+					}) ?? 0
+				);
+			}
+			// --- End Track P14 ---
 		}
 	}
 
@@ -7001,6 +7041,22 @@ class Run {
 				);
 			}
 			// --- End Track P12 ---
+			// --- Track P14 ---
+			case 'anyOpponentMetric':
+			case 'cardsDrawnThisTurnAtLeast':
+			case 'nthMatchingSpellThisTurn': {
+				const srcFound = this.locate(this.ctx.sourceId);
+				return (
+					evaluateWave5Condition(c, {
+						state: this.state,
+						controllerId: this.you.playerId,
+						source: srcFound?.inst,
+						stackItem: this.ctx.item,
+						xValue: this.ctx.xValue
+					}) ?? false
+				);
+			}
+			// --- End Track P14 ---
 		}
 	}
 

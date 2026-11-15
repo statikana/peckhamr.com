@@ -17,6 +17,7 @@ import type {
 	Amount,
 	Condition,
 	CopyModificationSpec,
+	CostDef,
 	EffectStep,
 	EventPattern,
 	Layer,
@@ -34,6 +35,7 @@ import {
 	parseAdditionalCostSentence,
 	parseCost,
 	parseCostModifierSentence,
+	parseDevotionColorList,
 	parseObjectPhrase
 } from './costs.ts';
 import { parseEffects } from './effects.ts';
@@ -104,14 +106,29 @@ export function parseKeywordList(text: string): string[] | null {
 	if (prot >= 0) {
 		protection = rest.slice(prot).trim().toLowerCase();
 		rest = rest.slice(0, prot).replace(/(?:,\s*and|,|\band)\s*$/i, '').trim();
-		if (!/^protection from (?:[a-z]+(?:,? (?:and )?from [a-z]+)*|everything)$/.test(protection)) return null;
+		if (protection === 'protection from each color') {
+			protection = 'protection from all colors';
+		}
+		if (
+			!/^protection from (?:[a-z]+(?:,? (?:and )?from [a-z]+)*|everything|all colors)$/.test(
+				protection
+			)
+		) {
+			return null;
+		}
 	}
 	if (rest) {
 		for (const raw of rest.split(/,\s*(?:and\s+)?|\s+and\s+/)) {
 			const kw = raw.trim().toLowerCase();
 			if (!kw) continue;
-			if (KEYWORDS.has(kw) || /^ward \{[^}]+\}$/.test(kw) || /^hexproof from [a-z]+$/.test(kw)) out.push(kw);
-			else return null;
+			if (
+				KEYWORDS.has(kw) ||
+				/^ward \{[^}]+\}$/.test(kw) ||
+				/^ward\s*[—-]\s*waterbend \{[^}]+\}$/.test(kw) ||
+				/^hexproof from [a-z]+$/.test(kw)
+			) {
+				out.push(kw);
+			} else return null;
 		}
 	}
 	if (protection) out.push(protection);
@@ -148,7 +165,11 @@ function lookupStaticCounter(raw: string): CounterType | null {
 export function parseAffected(subject: string): Affected | null {
 	const s = subject.trim();
 	if (s === '~' || /^it$/i.test(s)) return 'self';
-	if (/^(?:equipped|enchanted) (?:creature|permanent|land|artifact|enchantment|planeswalker|plains|island|swamp|mountain|forest)$/i.test(s)) {
+	if (
+		/^(?:equipped|enchanted) (?:creature|permanent|land|artifact|enchantment|planeswalker|vehicle|plains|island|swamp|mountain|forest)$/i.test(
+			s
+		)
+	) {
 		return 'attachedTo';
 	}
 	if (/^sources? (?:with|of) the chosen name$/i.test(s)) {
@@ -161,7 +182,7 @@ export function parseAffected(subject: string): Affected | null {
 		phrase = opp[1];
 		controller = 'opponent';
 	}
-	const filter = parseObjectPhrase(phrase);
+	const filter = parseObjectPhrase(phrase, { allowPluralAndDisjunction: true });
 	if (!filter) return null;
 	if (controller) {
 		if (filter.controller) return null;
@@ -239,6 +260,55 @@ function parseCountAmount(text: string): Amount | null {
 		}
 	}
 	// --- End Track P11 ---
+	// --- Track P14: devotion, greatestStatAmong, totalStatOf, opponentCount, colorsOfObject ---
+	const devotionMatch = t.match(/^your devotion to (.+)$/i);
+	if (devotionMatch) {
+		const colors = parseDevotionColorList(devotionMatch[1]);
+		if (colors) return { k: 'devotion', colors, player: { k: 'you' } };
+	}
+	const greatestMatch = t.match(
+		/^the greatest (power|toughness|mana value) among (.+?) you control$/i
+	);
+	if (greatestMatch) {
+		const rawStat = greatestMatch[1].toLowerCase();
+		const stat =
+			rawStat === 'power' ? 'power' : rawStat === 'toughness' ? 'toughness' : 'manaValue';
+		const f = parseObjectPhrase(greatestMatch[2].replace(/\s+and\s+/gi, ' or '));
+		if (f && !f.controller) {
+			return {
+				k: 'greatestStatAmong',
+				stat,
+				filter: { ...f, zone: 'battlefield', controller: 'you' }
+			};
+		}
+	}
+	const totalMatch = t.match(/^the total (power|toughness|mana value) of (.+?) you control$/i);
+	if (totalMatch) {
+		const rawStat = totalMatch[1].toLowerCase();
+		const stat =
+			rawStat === 'power' ? 'power' : rawStat === 'toughness' ? 'toughness' : 'manaValue';
+		const f = parseObjectPhrase(totalMatch[2].replace(/\s+and\s+/gi, ' or '));
+		if (f && !f.controller) {
+			return {
+				k: 'totalStatOf',
+				stat,
+				filter: { ...f, zone: 'battlefield', controller: 'you' }
+			};
+		}
+	}
+	if (/^the number of opponents you have$/i.test(t)) {
+		return { k: 'opponentCount' };
+	}
+	if (/^the number of ~'s colors$/i.test(t) || /^the number of colors ~ is$/i.test(t)) {
+		return { k: 'colorsOfObject', of: 'self' };
+	}
+	if (
+		/^the number of (?:enchanted|equipped) (?:creature|permanent)'s colors$/i.test(t) ||
+		/^the number of colors (?:enchanted|equipped) (?:creature|permanent) is$/i.test(t)
+	) {
+		return { k: 'colorsOfObject', of: 'attachedTo' };
+	}
+	// --- End Track P14 ---
 	if (/^your life total$/i.test(t)) return { k: 'life', of: { k: 'you' } };
 	if (/^the number of cards? in your hand$/i.test(t)) return { k: 'cardsIn', zone: 'hand', of: { k: 'you' } };
 	if (/^the number of cards? in your graveyard$/i.test(t)) {
@@ -844,7 +914,7 @@ const replacements: Production = (s, span) => {
 	}
 	// --- End Track P11 ---
 	const selfDieOrGy = s.match(
-		/^if ~ would (die|be put into a graveyard from anywhere), (exile it|shuffle it into its owner's library|return it to its owner's hand|put it into its owner's hand) instead$/i
+		/^if ~ would (die|be put into a graveyard from anywhere), (?:reveal ~ and )?(exile it|shuffle it into its owner's library|return it to its owner's hand|put it into its owner's hand) instead$/i
 	);
 	if (selfDieOrGy) {
 		const isDie = selfDieOrGy[1].toLowerCase() === 'die';
@@ -892,8 +962,32 @@ const replacements: Production = (s, span) => {
 		if (/^~ enters (?:the battlefield )?tapped$/i.test(body)) {
 			return { k: 'modify', tapped: true };
 		}
+		// --- Track P14: CR 723.3a "~ enters prepared" & dynamic X ETB counters ---
+		const preparedMatch = body.match(/^~ enters (?:the battlefield )?(tapped and )?prepared$/i);
+		if (preparedMatch) {
+			return {
+				k: 'modify',
+				...(preparedMatch[1] ? { tapped: true } : {}),
+				entersPrepared: true
+			};
+		}
+		const xCountersMatch = body.match(
+			/^~ enters (?:the battlefield )?(tapped )?with X (.+?) counters? on (?:it|him|her|them),?\s+where X is (.+)$/i
+		);
+		if (xCountersMatch) {
+			const counter = lookupStaticCounter(xCountersMatch[2]);
+			const amount = parseCountAmount(xCountersMatch[3]);
+			if (counter && amount) {
+				return {
+					k: 'modify',
+					...(xCountersMatch[1] ? { tapped: true } : {}),
+					counters: { counter, amount }
+				};
+			}
+		}
+		// --- End Track P14 ---
 		const choiceCounter = body.match(
-			/^~ enters (?:the battlefield )?(tapped )?with your choice of (?:either )?(?:a|an) (.+?) counter or (?:a|an) (.+?) counter on it$/i
+			/^~ enters (?:the battlefield )?(tapped )?with your choice of (?:either )?(?:a|an) (.+?) counter or (?:a|an) (.+?) counter on (?:it|him|her|them)$/i
 		);
 		if (choiceCounter) {
 			const c1 = lookupStaticCounter(choiceCounter[2]);
@@ -907,7 +1001,7 @@ const replacements: Production = (s, span) => {
 			}
 		}
 		const counters = body.match(
-			/^~ enters (?:the battlefield )?(tapped )?with (\S+) (.+?) counters? on it(?: for each (.+))?$/i
+			/^~ enters (?:the battlefield )?(tapped )?with (\S+) (.+?) counters? on (?:it|him|her|them)(?: for each (.+))?$/i
 		);
 		if (counters) {
 			const entersTapped = Boolean(counters[1]);
@@ -1169,6 +1263,365 @@ const replacements: Production = (s, span) => {
 	return null;
 };
 
+// --- Track P14: Static Damage Prevention & Phantom Counter Removal (CR 615.1, 615.5–6, 615.10, 615.12) ---
+
+function parsePreventionSourceFilter(
+	raw: string
+): ObjectFilter | 'blockingOrBlockedBySelf' | 'blockingSelf' | 'blockedBySelf' | null {
+	const s = raw.trim();
+	if (/^(?:(?:a|an)\s+)?creatures? blocking or blocked by (?:~|it)$/i.test(s)) {
+		return 'blockingOrBlockedBySelf';
+	}
+	if (/^(?:(?:a|an)\s+)?creatures? blocking (?:~|it)$/i.test(s)) {
+		return 'blockingSelf';
+	}
+	if (/^(?:(?:a|an)\s+)?creatures? (?:blocked by (?:~|it)|(?:~ is|it's) blocking)$/i.test(s)) {
+		return 'blockedBySelf';
+	}
+	if (/^sources? (?:with|of) the chosen name$/i.test(s)) {
+		return { ofChosenName: true };
+	}
+	if (/^sources? (?:your opponents control|an opponent controls|you don't control)$/i.test(s)) {
+		return { controller: 'opponent' };
+	}
+	if (/^sources? you control$/i.test(s)) {
+		return { controller: 'you' };
+	}
+	if (/^another source you control$/i.test(s)) {
+		return { other: true, controller: 'you' };
+	}
+	let body = s;
+	let ctrl: 'you' | 'opponent' | undefined;
+	const ctrlMatch = body.match(
+		/^(.+?)\s+(you control|your opponents control|an opponent controls|you don't control)$/i
+	);
+	if (ctrlMatch) {
+		body = ctrlMatch[1].trim();
+		ctrl = ctrlMatch[2].toLowerCase() === 'you control' ? 'you' : 'opponent';
+	}
+	const srcMatch = body.match(/^(?:(?:a|an)\s+)?(.+?)\s+sources?$/i);
+	if (srcMatch) {
+		const q = srcMatch[1].trim();
+		const f =
+			parseCombatObjectPhrase(`${q} cards`) ??
+			parseObjectPhrase(`${q.replace(/\s+and(?:\/or)?\s+/gi, ' or ')} card`);
+		if (f && (!ctrl || !f.controller)) {
+			return ctrl ? { ...f, controller: ctrl } : f;
+		}
+		return null;
+	}
+	const spellNormalized = body
+		.replace(/^(?:a|an)\s+/i, '')
+		.replace(/\bspells\b/gi, 'cards')
+		.replace(/\s+and(?:\/or)?\s+/gi, ' or ');
+	const f = parseCombatObjectPhrase(body) ?? parseObjectPhrase(spellNormalized);
+	if (f && (!ctrl || !f.controller)) {
+		return ctrl ? { ...f, controller: ctrl } : f;
+	}
+	return null;
+}
+
+const damagePrevention: Production = (s) => {
+	// 1. Single-sentence Phantom / Oathsworn Knight / Polukranos / Ugin's Conjurant counter-removal prevention
+	const phantomOne = s.match(
+		/^if (combat |noncombat )?damage would be dealt to ~(?: while it has (?:a|an|one) (.+?) counter on (?:it|~))?, prevent (?:all of )?that damage and remove (a|an|one|that many) (.+?) counters? from (?:it|~)$/i
+	);
+	if (phantomOne) {
+		const kindRaw = phantomOne[1]?.trim().toLowerCase();
+		const whileCtr = phantomOne[2] ? lookupStaticCounter(phantomOne[2]) : undefined;
+		const modeRaw = phantomOne[3].toLowerCase();
+		const remCtr = lookupStaticCounter(phantomOne[4]);
+		if (remCtr && (!phantomOne[2] || whileCtr === remCtr)) {
+			return [
+				{
+					kind: 'static',
+					static: {
+						k: 'staticDamagePrevention',
+						...(kindRaw === 'combat' ? { combatOnly: true } : {}),
+						...(kindRaw === 'noncombat' ? { noncombatOnly: true } : {}),
+						amount: 'all',
+						target: 'self',
+						phantomCounterRemoval: {
+							counter: remCtr,
+							mode: modeRaw === 'that many' ? 'thatMany' : 'one',
+							...(whileCtr ? { requireCounterPresent: true } : {})
+						}
+					}
+				}
+			];
+		}
+	}
+
+	// 2. "Prevent all [combat/noncombat] damage that would be dealt to and dealt by ~ / enchanted creature"
+	const toAndBy = s.match(
+		/^prevent all (combat |noncombat )?damage that would be dealt to and dealt by (~|(?:enchanted|equipped) (?:creature|permanent))$/i
+	);
+	if (toAndBy) {
+		const kindRaw = toAndBy[1]?.trim().toLowerCase();
+		const isSelf = toAndBy[2].trim() === '~';
+		return [
+			{
+				kind: 'static',
+				static: {
+					k: 'staticDamagePrevention',
+					...(kindRaw === 'combat' ? { combatOnly: true } : {}),
+					...(kindRaw === 'noncombat' ? { noncombatOnly: true } : {}),
+					amount: 'all',
+					target: isSelf ? 'self' : 'attachedTo',
+					alsoPreventDealtBy: true
+				}
+			}
+		];
+	}
+
+	// 3. "Prevent all [combat/noncombat] damage that would be dealt by ~ / enchanted creature" (or "that ~ would deal")
+	const dealtBy =
+		s.match(
+			/^prevent all (combat |noncombat )?damage that would be dealt by (~|(?:enchanted|equipped) (?:creature|permanent))$/i
+		) ??
+		s.match(
+			/^prevent all (combat |noncombat )?damage (?:that )?(~|(?:enchanted|equipped) (?:creature|permanent)) would deal$/i
+		);
+	if (dealtBy) {
+		const kindRaw = dealtBy[1]?.trim().toLowerCase();
+		const isSelf = dealtBy[2].trim() === '~';
+		return [
+			{
+				kind: 'static',
+				static: {
+					k: 'staticDamagePrevention',
+					...(kindRaw === 'combat' ? { combatOnly: true } : {}),
+					...(kindRaw === 'noncombat' ? { noncombatOnly: true } : {}),
+					amount: 'all',
+					target: 'self',
+					dealtByOnly: isSelf ? 'self' : 'attachedTo'
+				}
+			}
+		];
+	}
+
+	// 3b. "Prevent all [combat/noncombat] damage [that] ~ / enchanted creature would deal to <permanents>"
+	const dealtByTo = s.match(
+		/^prevent all (combat |noncombat )?damage (?:that )?(~|(?:enchanted|equipped) (?:creature|permanent)) would deal to (.+)$/i
+	);
+	if (dealtByTo) {
+		const kindRaw = dealtByTo[1]?.trim().toLowerCase();
+		const isSelf = dealtByTo[2].trim() === '~';
+		const aff = parseAffected(dealtByTo[3].trim());
+		if (aff && typeof aff === 'object') {
+			return [
+				{
+					kind: 'static',
+					static: {
+						k: 'staticDamagePrevention',
+						...(kindRaw === 'combat' ? { combatOnly: true } : {}),
+						...(kindRaw === 'noncombat' ? { noncombatOnly: true } : {}),
+						amount: 'all',
+						target: 'self',
+						dealtByOnly: isSelf ? 'self' : 'attachedTo',
+						dealtByTargetFilter: aff
+					}
+				}
+			];
+		}
+	}
+
+	// 3c. "Prevent all [combat/noncombat] damage that would be dealt [by <source>]" (e.g. Gideon's Intervention, Fog-like statics)
+	const dealtAny = s.match(
+		/^prevent all (combat |noncombat )?damage that would be dealt(?: by (.+))?$/i
+	);
+	if (dealtAny) {
+		const kindRaw = dealtAny[1]?.trim().toLowerCase();
+		const rawBy = dealtAny[2]?.trim();
+		let sourceFilter:
+			| ObjectFilter
+			| 'blockingOrBlockedBySelf'
+			| 'blockingSelf'
+			| 'blockedBySelf'
+			| undefined;
+		if (rawBy) {
+			const parsedSrc = parsePreventionSourceFilter(rawBy);
+			if (!parsedSrc) return null;
+			sourceFilter = parsedSrc;
+		}
+		return [
+			{
+				kind: 'static',
+				static: {
+					k: 'staticDamagePrevention',
+					...(kindRaw === 'combat' ? { combatOnly: true } : {}),
+					...(kindRaw === 'noncombat' ? { noncombatOnly: true } : {}),
+					...(sourceFilter ? { sourceFilter } : {}),
+					amount: 'all',
+					target: 'any'
+				}
+			}
+		];
+	}
+
+	// 4. "Prevent all [combat/noncombat] damage that would be dealt to <target> [by <source>]"
+	const dealtTo = s.match(
+		/^prevent all (combat |noncombat )?damage that would be dealt to (.+?)(?: by (.+))?$/i
+	);
+	if (dealtTo) {
+		const kindRaw = dealtTo[1]?.trim().toLowerCase();
+		const rawTarget = dealtTo[2].trim();
+		const rawBy = dealtTo[3]?.trim();
+		let sourceFilter:
+			| ObjectFilter
+			| 'blockingOrBlockedBySelf'
+			| 'blockingSelf'
+			| 'blockedBySelf'
+			| undefined;
+		if (rawBy) {
+			const parsedSrc = parsePreventionSourceFilter(rawBy);
+			if (!parsedSrc) return null;
+			sourceFilter = parsedSrc;
+		}
+		const baseFlags = {
+			...(kindRaw === 'combat' ? { combatOnly: true } : {}),
+			...(kindRaw === 'noncombat' ? { noncombatOnly: true } : {}),
+			...(sourceFilter ? { sourceFilter } : {})
+		};
+		if (rawTarget === '~') {
+			return [
+				{
+					kind: 'static',
+					static: { k: 'staticDamagePrevention', ...baseFlags, amount: 'all', target: 'self' }
+				}
+			];
+		}
+		if (/^(?:enchanted|equipped) (?:creature|permanent|planeswalker)$/i.test(rawTarget)) {
+			return [
+				{
+					kind: 'static',
+					static: {
+						k: 'staticDamagePrevention',
+						...baseFlags,
+						amount: 'all',
+						target: 'attachedTo'
+					}
+				}
+			];
+		}
+		if (/^you$/i.test(rawTarget)) {
+			return [
+				{
+					kind: 'static',
+					static: { k: 'staticDamagePrevention', ...baseFlags, amount: 'all', target: 'you' }
+				}
+			];
+		}
+		if (/^you and permanents you control$/i.test(rawTarget)) {
+			return [
+				{
+					kind: 'static',
+					static: {
+						k: 'staticDamagePrevention',
+						...baseFlags,
+						amount: 'all',
+						target: 'youAndControlled'
+					}
+				}
+			];
+		}
+		const youAndSub = rawTarget.match(/^you and (.+?) you control$/i);
+		if (youAndSub) {
+			const f = parseObjectPhrase(youAndSub[1].replace(/\s+and\s+/gi, ' or '));
+			if (f && !f.controller) {
+				return [
+					{
+						kind: 'static',
+						static: { k: 'staticDamagePrevention', ...baseFlags, amount: 'all', target: 'you' }
+					},
+					{
+						kind: 'static',
+						static: {
+							k: 'staticDamagePrevention',
+							...baseFlags,
+							amount: 'all',
+							target: { filter: { ...f, controller: 'you' } }
+						}
+					}
+				];
+			}
+		}
+		const aff = parseAffected(rawTarget);
+		if (aff && typeof aff === 'object') {
+			return [
+				{
+					kind: 'static',
+					static: {
+						k: 'staticDamagePrevention',
+						...baseFlags,
+						amount: 'all',
+						target: { filter: aff }
+					}
+				}
+			];
+		}
+	}
+
+	// 5. "If a [quality] source would deal [combat/noncombat] damage to <target>, prevent N of that damage"
+	const preventN = s.match(
+		/^if (any source|a source|.+?) would deal (combat |noncombat )?damage to (~|(?:enchanted|equipped) (?:creature|permanent|planeswalker)|you|you or a permanent you control|a permanent you control|(?:a|an) .+? you control), prevent (\S+) of that damage$/i
+	);
+	if (preventN) {
+		const rawSrc = preventN[1].trim();
+		const kindRaw = preventN[2]?.trim().toLowerCase();
+		const rawTarget = preventN[3].trim();
+		const amt = count(preventN[4]);
+		if (amt && amt.k === 'const' && amt.n >= 1) {
+			let sourceFilter:
+				| ObjectFilter
+				| 'blockingOrBlockedBySelf'
+				| 'blockingSelf'
+				| 'blockedBySelf'
+				| undefined;
+			if (!/^(?:a|any) source$/i.test(rawSrc)) {
+				const parsedSrc = parsePreventionSourceFilter(rawSrc);
+				if (!parsedSrc) return null;
+				sourceFilter = parsedSrc;
+			}
+			let target: Extract<StaticDef, { k: 'staticDamagePrevention' }>['target'] | null = null;
+			if (rawTarget === '~') target = 'self';
+			else if (/^(?:enchanted|equipped) (?:creature|permanent|planeswalker)$/i.test(rawTarget)) {
+				target = 'attachedTo';
+			} else if (/^you$/i.test(rawTarget)) {
+				target = 'you';
+			} else if (/^you or a permanent you control$/i.test(rawTarget)) {
+				target = 'youAndControlled';
+			} else if (/^a permanent you control$/i.test(rawTarget)) {
+				target = { filter: { controller: 'you' } };
+			} else {
+				const sub = rawTarget.match(/^(?:a|an) (.+?) you control$/i);
+				if (sub) {
+					const f = parseObjectPhrase(sub[1]);
+					if (f && !f.controller) target = { filter: { ...f, controller: 'you' } };
+				}
+			}
+			if (target) {
+				return [
+					{
+						kind: 'static',
+						static: {
+							k: 'staticDamagePrevention',
+							...(kindRaw === 'combat' ? { combatOnly: true } : {}),
+							...(kindRaw === 'noncombat' ? { noncombatOnly: true } : {}),
+							...(sourceFilter ? { sourceFilter } : {}),
+							amount: amt.n,
+							target
+						}
+					}
+				];
+			}
+		}
+	}
+
+	return null;
+};
+// --- End Track P14 ---
+
 const RESTRICTIONS: Array<[RegExp, Extract<StaticDef, { k: 'restriction' }>['restriction']]> = [
 	[/^(.+?) can't attack or block$/, 'cantAttackOrBlock'],
 	[/^(.+?) can't attack$/, 'cantAttack'],
@@ -1184,36 +1637,58 @@ const RESTRICTIONS: Array<[RegExp, Extract<StaticDef, { k: 'restriction' }>['res
 ];
 
 /** "~ can't block.", "Enchanted creature can't attack or block.", "Creatures your opponents control can't block." */
-const restrictions: Production = (s, span) => {
-	const bothBlock = s.match(/^(.+?) can't block and can't be blocked$/i);
-	if (bothBlock) {
-		const affected = parseAffected(bothBlock[1]);
-		if (!affected) return null;
-		return [
-			{ kind: 'static', static: { k: 'restriction', affected, restriction: 'cantBlock' } },
-			{ kind: 'static', static: { k: 'restriction', affected, restriction: 'cantBeBlocked' } }
-		];
-	}
-	for (const [re, restriction] of RESTRICTIONS) {
-		const m = s.match(re);
-		if (!m) continue;
-		const subj = restriction === 'cantBeCountered' ? m[1].replace(/\bspells?\b/gi, 'cards') : m[1];
-		const affected = parseAffected(subj);
-		if (!affected) return null;
-		return [{ kind: 'static', static: { k: 'restriction', affected, restriction } }];
-	}
-	const withUnless = s.match(/^(.+?)\s+unless\s+(.+)$/i);
-	if (withUnless) {
-		const unlessCond = parseUnlessEtbCondition(withUnless[2]);
-		if (unlessCond) {
-			const baseItems = restrictions(withUnless[1], span);
-			if (baseItems && withCondition(baseItems, { k: 'not', of: unlessCond })) {
-				return baseItems;
+function restrictions(depth = 0): Production {
+	const inner: Production = (s, span) => {
+		const bothBlock = s.match(/^(.+?) can't block and can't be blocked$/i);
+		if (bothBlock) {
+			const affected = parseAffected(bothBlock[1]);
+			if (!affected) return null;
+			return [
+				{ kind: 'static', static: { k: 'restriction', affected, restriction: 'cantBlock' } },
+				{ kind: 'static', static: { k: 'restriction', affected, restriction: 'cantBeBlocked' } }
+			];
+		}
+		for (const [re, restriction] of RESTRICTIONS) {
+			const m = s.match(re);
+			if (!m) continue;
+			const subj =
+				restriction === 'cantBeCountered' ? m[1].replace(/\bspells?\b/gi, 'cards') : m[1];
+			const affected = parseAffected(subj);
+			if (!affected) return null;
+			return [{ kind: 'static', static: { k: 'restriction', affected, restriction } }];
+		}
+		const withUnless = s.match(/^(.+?)\s+unless\s+(.+)$/i);
+		if (withUnless) {
+			const unlessCond = parseUnlessEtbCondition(withUnless[2]);
+			if (unlessCond) {
+				const baseItems = inner(withUnless[1], span);
+				if (baseItems && withCondition(baseItems, { k: 'not', of: unlessCond })) {
+					return baseItems;
+				}
 			}
 		}
-	}
-	return null;
-};
+		// --- Track P14: Restriction with inline static tail (e.g. "Enchanted creature doesn't untap ... and has '...'") ---
+		const { modifierPart, tailPart } = splitPtModifierAndTail(s);
+		if (tailPart) {
+			const baseItems = inner(modifierPart.trim(), span);
+			if (
+				baseItems &&
+				baseItems.length > 0 &&
+				baseItems[0].kind === 'static' &&
+				baseItems[0].static.k === 'restriction'
+			) {
+				const affected = baseItems[0].static.affected;
+				const tailItems = parseInlineStaticTail(affected, tailPart, undefined, depth);
+				if (tailItems) {
+					return [...baseItems, ...tailItems];
+				}
+			}
+		}
+		// --- End Track P14 ---
+		return null;
+	};
+	return inner;
+}
 
 // --- Track P8: Static Combat Blocking/Evasion Rules (CR 508.1c, 509.1a–c) & Activated-Ability Locks (CR 602.5a) ---
 
@@ -1262,6 +1737,84 @@ function parseInlineCombatTail(
 			return { kind: 'static', static: { k: 'combatRule', affected, rule: { kind: 'maxBlockers', max: num.n } } };
 		}
 	}
+	// --- Track P14: Inline goad, defender override, untap lock, toughness damage, super-trample, & keyword loss ---
+	if (/^(?:is|are) goaded$/i.test(low)) {
+		return { kind: 'static', static: { k: 'combatRule', affected, rule: { kind: 'isGoaded' } } };
+	}
+	if (/^can attack as though (?:it|they) didn't have defender$/i.test(low)) {
+		return {
+			kind: 'static',
+			static: { k: 'combatRule', affected, rule: { kind: 'canAttackDespiteDefender' } }
+		};
+	}
+	if (
+		/^assigns? combat damage equal to (?:its|their) toughness rather than (?:its|their) power$/i.test(
+			low
+		)
+	) {
+		return { kind: 'static', static: { k: 'assignCombatDamageByToughness', affected } };
+	}
+	if (/^assigns? (?:its|their) combat damage as though (?:it|they) weren't blocked$/i.test(low)) {
+		return {
+			kind: 'static',
+			static: { k: 'combatRule', affected, rule: { kind: 'assignCombatDamageAsThoughUnblocked' } }
+		};
+	}
+	if (/^can't attack alone$/i.test(low)) {
+		return {
+			kind: 'static',
+			static: { k: 'combatRule', affected, rule: { kind: 'cantAttackAlone' } }
+		};
+	}
+	if (/^can't block alone$/i.test(low)) {
+		return {
+			kind: 'static',
+			static: { k: 'combatRule', affected, rule: { kind: 'cantBlockAlone' } }
+		};
+	}
+	const cantBlkByInline = low.match(/^can't be blocked by (.+)$/i);
+	if (cantBlkByInline) {
+		const f = parseCombatObjectPhrase(cantBlkByInline[1]);
+		if (f) {
+			return {
+				kind: 'static',
+				static: { k: 'combatRule', affected, rule: { kind: 'cantBeBlockedBy', filter: f } }
+			};
+		}
+	}
+	const cantBlkInline = low.match(/^can't block (.+)$/i);
+	if (cantBlkInline && !/^alone$/i.test(cantBlkInline[1]) && !/^or be blocked\b/i.test(cantBlkInline[1])) {
+		const f = parseCombatObjectPhrase(cantBlkInline[1]);
+		if (f) {
+			return {
+				kind: 'static',
+				static: { k: 'combatRule', affected, rule: { kind: 'cantBlockFilter', filter: f } }
+			};
+		}
+	}
+	if (
+		/^(?:doesn't|don't) untap during (?:your|its controller's|their controllers') untap steps?$/i.test(
+			low
+		)
+	) {
+		return { kind: 'static', static: { k: 'restriction', affected, restriction: 'doesntUntap' } };
+	}
+	const loseKw = low.match(/^loses? (.+?)(?: and can't have or gain (.+))?$/i);
+	if (loseKw && !/\babilities\b/i.test(loseKw[1])) {
+		const kws = parseKeywordList(loseKw[1]);
+		if (kws) {
+			if (loseKw[2]) {
+				const again = parseKeywordList(loseKw[2]);
+				if (!again || again.join() !== kws.join()) return null;
+			}
+			return continuous('6', affected, {
+				k: 'removeKeywords',
+				keywords: kws,
+				...(loseKw[2] ? { cantHaveOrGain: true } : {})
+			});
+		}
+	}
+	// --- End Track P14 ---
 	return null;
 }
 
@@ -1343,6 +1896,174 @@ const combatAndActivationRules: Production = (s) => {
 			}
 		];
 	}
+	// --- Track P14: Super-trample (CR 510.1c–d), defender override, goad, & Wave 5 block restrictions ---
+	if (
+		/^Creatures with power greater than (?:~'s|(?:enchanted|equipped) creature's) power can't block (?:it|~|(?:enchanted|equipped) creature)$/i.test(
+			s
+		)
+	) {
+		const isAtt = /enchanted|equipped/i.test(s);
+		return [
+			{
+				kind: 'static',
+				static: {
+					k: 'combatRule',
+					affected: isAtt ? 'attachedTo' : 'self',
+					rule: { kind: 'cantBeBlockedByPowerGreaterThanSelf' }
+				}
+			}
+		];
+	}
+	const cantBlkGreaterSelf = s.match(
+		/^(.+?) can't be blocked by creatures with (?:power greater than (~'s|its|their) power|greater power)$/i
+	);
+	if (cantBlkGreaterSelf) {
+		const affected = parseAffected(cantBlkGreaterSelf[1]);
+		if (affected && (cantBlkGreaterSelf[2]?.toLowerCase() !== "~'s" || affected === 'self')) {
+			return [
+				{
+					kind: 'static',
+					static: {
+						k: 'combatRule',
+						affected,
+						rule: { kind: 'cantBeBlockedByPowerGreaterThanSelf' }
+					}
+				}
+			];
+		}
+	}
+	const cantBlkLessSelf = s.match(
+		/^(.+?) can't be blocked by creatures with (?:power less than (~'s|its|their) power|less power)$/i
+	);
+	if (cantBlkLessSelf) {
+		const affected = parseAffected(cantBlkLessSelf[1]);
+		if (affected && (cantBlkLessSelf[2]?.toLowerCase() !== "~'s" || affected === 'self')) {
+			return [
+				{
+					kind: 'static',
+					static: {
+						k: 'combatRule',
+						affected,
+						rule: { kind: 'cantBeBlockedByPowerLessThanSelf' }
+					}
+				}
+			];
+		}
+	}
+	const cantBlkDefCtrl = s.match(
+		/^(.+?) can't be blocked as long as defending player controls (?:a |an )?(.+)$/i
+	);
+	if (cantBlkDefCtrl) {
+		const affected = parseAffected(cantBlkDefCtrl[1]);
+		const filter = parseCombatObjectPhrase(cantBlkDefCtrl[2]);
+		if (affected && filter) {
+			return [
+				{
+					kind: 'static',
+					static: {
+						k: 'combatRule',
+						affected,
+						rule: { kind: 'cantBeBlockedIfDefenderControls', filter }
+					}
+				}
+			];
+		}
+	}
+	const superTrample = s.match(
+		/^You may have (.+?) assign (?:its|their) combat damage as though (?:it|they) weren't blocked$/i
+	);
+	if (superTrample) {
+		const affected = parseAffected(superTrample[1]);
+		if (affected) {
+			return [
+				{
+					kind: 'static',
+					static: {
+						k: 'combatRule',
+						affected,
+						rule: { kind: 'assignCombatDamageAsThoughUnblocked' }
+					}
+				}
+			];
+		}
+	}
+	const superTrampleEach = s.match(
+		/^For each (.+?), you may have that (?:creature|permanent) assign its combat damage as though it weren't blocked$/i
+	);
+	if (superTrampleEach) {
+		const affected = parseAffected(superTrampleEach[1]);
+		if (affected) {
+			return [
+				{
+					kind: 'static',
+					static: {
+						k: 'combatRule',
+						affected,
+						rule: { kind: 'assignCombatDamageAsThoughUnblocked' }
+					}
+				}
+			];
+		}
+	}
+	const despiteDefender = s.match(
+		/^(.+?) can attack as though (?:it|they) didn't have defender$/i
+	);
+	if (despiteDefender) {
+		const affected = parseAffected(despiteDefender[1]);
+		if (affected) {
+			return [
+				{
+					kind: 'static',
+					static: { k: 'combatRule', affected, rule: { kind: 'canAttackDespiteDefender' } }
+				}
+			];
+		}
+	}
+	const goadedRule = s.match(/^(.+?) (?:is|are) goaded$/i);
+	if (goadedRule) {
+		const affected = parseAffected(goadedRule[1]);
+		if (affected) {
+			return [
+				{
+					kind: 'static',
+					static: { k: 'combatRule', affected, rule: { kind: 'isGoaded' } }
+				}
+			];
+		}
+	}
+
+	const cantBlkPwr = s.match(
+		/^(.+?) can't block creatures with power (greater|less) than (?:~'s|its|their) power$/i
+	);
+	if (cantBlkPwr) {
+		const affected = parseAffected(cantBlkPwr[1]);
+		if (affected) {
+			const kind =
+				cantBlkPwr[2].toLowerCase() === 'greater'
+					? 'cantBlockPowerGreaterThanSelf'
+					: 'cantBlockPowerLessThanSelf';
+			return [{ kind: 'static', static: { k: 'combatRule', affected, rule: { kind } } }];
+		}
+	}
+
+	const cantBlkOrBeBlk = s.match(/^(.+?) can't block or be blocked by (.+)$/i);
+	if (cantBlkOrBeBlk) {
+		const affected = parseAffected(cantBlkOrBeBlk[1]);
+		const filter = parseCombatObjectPhrase(cantBlkOrBeBlk[2]);
+		if (affected && filter) {
+			return [
+				{
+					kind: 'static',
+					static: { k: 'combatRule', affected, rule: { kind: 'cantBlockFilter', filter } }
+				},
+				{
+					kind: 'static',
+					static: { k: 'combatRule', affected, rule: { kind: 'cantBeBlockedBy', filter } }
+				}
+			];
+		}
+	}
+	// --- End Track P14 ---
 
 	const canBlockOnly = s.match(/^(.+?) can block only (.+)$/i);
 	if (canBlockOnly) {
@@ -1551,6 +2272,27 @@ const combatAndActivationRules: Production = (s) => {
 		}
 	}
 
+	// --- Track P14: Generalized "[affected] can't block <filter>" ---
+	const cantBlkFilter = s.match(/^(.+?) can't block (.+)$/i);
+	if (
+		cantBlkFilter &&
+		!/^alone$/i.test(cantBlkFilter[2]) &&
+		!/^and can't be blocked$/i.test(cantBlkFilter[2]) &&
+		!/^or be blocked\b/i.test(cantBlkFilter[2])
+	) {
+		const affected = parseAffected(cantBlkFilter[1]);
+		const filter = parseCombatObjectPhrase(cantBlkFilter[2]);
+		if (affected && filter) {
+			return [
+				{
+					kind: 'static',
+					static: { k: 'combatRule', affected, rule: { kind: 'cantBlockFilter', filter } }
+				}
+			];
+		}
+	}
+	// --- End Track P14 ---
+
 	const globalMaxAtk = s.match(/^No more than (\S+) creatures? can attack( you)? each combat$/i);
 	if (globalMaxAtk) {
 		const amt = count(globalMaxAtk[1]);
@@ -1611,20 +2353,301 @@ const combatAndActivationRules: Production = (s) => {
 
 function parseSpellFilterForTopLibrary(raw: string): ObjectFilter | null {
 	const trimmed = raw.trim();
-	const chosenType = trimmed.match(/^(.+?) spells of the chosen type$/i);
+	const chosenType = trimmed.match(/^(.+?) spells? of the chosen type$/i);
 	if (chosenType) {
 		const base = parseObjectPhrase(`${chosenType[1]} card`);
 		return base ? { ...base, ofChosenType: true } : null;
 	}
-	if (/^spells of the chosen type$/i.test(trimmed)) {
+	if (/^spells? of the chosen type$/i.test(trimmed)) {
 		return { ofChosenType: true };
 	}
+	// --- Track P14: "permanent spell(s) [with ...]" and singular/plural spell filters ---
+	const permSpell = trimmed.match(/^(?:(?:a|an)\s+)?permanent spells?(?:\s+with\s+(.+))?$/i);
+	if (permSpell) {
+		if (!permSpell[1]) return { types: [...PERMANENT_CARD_TYPES] };
+		const qual = parseObjectPhrase(`card with ${permSpell[1]}`);
+		return qual ? { ...qual, types: [...PERMANENT_CARD_TYPES] } : null;
+	}
+	const singleOrPlural = trimmed.match(/^(?:(?:a|an)\s+)?(.+?) spells?(\s+with\s+.+)?$/i);
+	if (singleOrPlural) {
+		const head = singleOrPlural[1].replace(/\s+and(?:\/or)?\s+/gi, ' or ');
+		const tail = singleOrPlural[2] ?? '';
+		return parseObjectPhrase(`${head} card${tail}`);
+	}
+	// --- End Track P14 ---
 	const spellMatch = trimmed.match(/^(.+?) spells$/i);
 	if (!spellMatch) return null;
 	return parseObjectPhrase(`${spellMatch[1]} card`);
 }
 
-const topOfLibraryAndGraveyardPlay: Production = (s) => {
+const topOfLibraryAndGraveyardPlay: Production = (s, span) => {
+	// --- Track P14: Turn-slotted & self graveyard / exile / top-of-library play permissions ---
+	const lookAndPlay = s.match(
+		/^You may look at the top card of your library any time,?\s+and (you may (?:play|cast) .+)$/i
+	);
+	if (lookAndPlay) {
+		const tailSentence = lookAndPlay[1].charAt(0).toUpperCase() + lookAndPlay[1].slice(1);
+		const sub = topOfLibraryAndGraveyardPlay(tailSentence, span);
+		if (sub && sub.length > 0) {
+			return [
+				{ kind: 'static', static: { k: 'topOfLibraryVisibility', mode: 'look' } },
+				...sub
+			];
+		}
+	}
+	if (
+		/^During each of your turns, you may play a land and cast a permanent spell of each permanent type from your graveyard$/i.test(
+			s
+		)
+	) {
+		return [
+			{
+				kind: 'static',
+				static: {
+					k: 'zonePlayPermission',
+					zone: 'graveyard',
+					allowLands: true,
+					allowSpells: true,
+					spellFilter: { types: [...PERMANENT_CARD_TYPES] },
+					duringYourTurnOnly: true,
+					slotMode: 'perPermanentType'
+				}
+			}
+		];
+	}
+	const onceSlot = s.match(
+		/^Once (?:during )?each (of your )?turns?, you may (play a land(?: (and|or) cast (.+?))?|cast (.+?)) from (your graveyard|exile|the top of your library)$/i
+	);
+	if (onceSlot) {
+		const duringYourTurnOnly = Boolean(onceSlot[1]) || /^Once during each of your turns/i.test(s);
+		const rawZone = onceSlot[6].toLowerCase();
+		const zone: 'graveyard' | 'exile' | 'library' =
+			rawZone === 'exile' ? 'exile' : rawZone === 'your graveyard' ? 'graveyard' : 'library';
+		const isPlayLand = onceSlot[2].toLowerCase().startsWith('play a land');
+		const conj = onceSlot[3]?.toLowerCase();
+		const rawSpell = (onceSlot[4] ?? onceSlot[5])?.trim();
+		if (isPlayLand && !rawSpell) {
+			return [
+				{
+					kind: 'static',
+					static: {
+						k: 'zonePlayPermission',
+						zone,
+						allowLands: true,
+						...(duringYourTurnOnly ? { duringYourTurnOnly: true } : {}),
+						slotMode: 'oncePerTurn'
+					}
+				}
+			];
+		}
+		let spellFilter: ObjectFilter | undefined;
+		let spellOk = false;
+		if (rawSpell) {
+			if (/^(?:a )?spell$/i.test(rawSpell)) {
+				spellOk = true;
+			} else {
+				const parsed = parseSpellFilterForTopLibrary(rawSpell);
+				if (parsed) {
+					spellFilter = parsed;
+					spellOk = true;
+				}
+			}
+		}
+		if (spellOk) {
+			if (isPlayLand && conj === 'and') {
+				return [
+					{
+						kind: 'static',
+						static: {
+							k: 'zonePlayPermission',
+							zone,
+							allowLands: true,
+							...(duringYourTurnOnly ? { duringYourTurnOnly: true } : {}),
+							slotMode: 'oncePerTurn'
+						}
+					},
+					{
+						kind: 'static',
+						static: {
+							k: 'zonePlayPermission',
+							zone,
+							allowSpells: true,
+							...(spellFilter ? { spellFilter } : {}),
+							...(duringYourTurnOnly ? { duringYourTurnOnly: true } : {}),
+							slotMode: 'oncePerTurn'
+						}
+					}
+				];
+			}
+			return [
+				{
+					kind: 'static',
+					static: {
+						k: 'zonePlayPermission',
+						zone,
+						...(isPlayLand ? { allowLands: true } : {}),
+						allowSpells: true,
+						...(spellFilter ? { spellFilter } : {}),
+						...(duringYourTurnOnly ? { duringYourTurnOnly: true } : {}),
+						slotMode: 'oncePerTurn'
+					}
+				}
+			];
+		}
+	}
+	const duringEachYourTurnBoth = s.match(
+		/^During each of your turns, you may play a land (and|or) cast (.+?) from (your graveyard|exile|the top of your library)$/i
+	);
+	if (duringEachYourTurnBoth) {
+		const conj = duringEachYourTurnBoth[1].toLowerCase();
+		const rawSpell = duringEachYourTurnBoth[2].trim();
+		const rawZone = duringEachYourTurnBoth[3].toLowerCase();
+		const zone: 'graveyard' | 'exile' | 'library' =
+			rawZone === 'exile' ? 'exile' : rawZone === 'your graveyard' ? 'graveyard' : 'library';
+		const spellFilter = /^(?:a )?spell$/i.test(rawSpell)
+			? undefined
+			: parseSpellFilterForTopLibrary(rawSpell);
+		if (/^(?:a )?spell$/i.test(rawSpell) || spellFilter) {
+			if (conj === 'and') {
+				return [
+					{
+						kind: 'static',
+						static: {
+							k: 'zonePlayPermission',
+							zone,
+							allowLands: true,
+							duringYourTurnOnly: true,
+							slotMode: 'oncePerTurn'
+						}
+					},
+					{
+						kind: 'static',
+						static: {
+							k: 'zonePlayPermission',
+							zone,
+							allowSpells: true,
+							...(spellFilter ? { spellFilter } : {}),
+							duringYourTurnOnly: true,
+							slotMode: 'oncePerTurn'
+						}
+					}
+				];
+			}
+			return [
+				{
+					kind: 'static',
+					static: {
+						k: 'zonePlayPermission',
+						zone,
+						allowLands: true,
+						allowSpells: true,
+						...(spellFilter ? { spellFilter } : {}),
+						duringYourTurnOnly: true,
+						slotMode: 'oncePerTurn'
+					}
+				}
+			];
+		}
+	}
+	const selfGyOrExile = s.match(
+		/^You may cast ~ from (your graveyard or from exile|your graveyard|exile)(?: if (.+))?$/i
+	);
+	if (selfGyOrExile) {
+		let cond: Condition | undefined;
+		if (selfGyOrExile[2]) {
+			const parsedCond =
+				parseCondition(`if ${selfGyOrExile[2]}`) ?? parseStaticCondition(selfGyOrExile[2]);
+			if (!parsedCond) return null;
+			cond = parsedCond;
+		}
+		const where = selfGyOrExile[1].toLowerCase();
+		if (where === 'your graveyard or from exile') {
+			return [
+				{
+					kind: 'static',
+					static: {
+						k: 'zonePlayPermission',
+						zone: 'graveyard',
+						allowSpells: true,
+						affects: 'self',
+						...(cond ? { condition: cond } : {})
+					}
+				},
+				{
+					kind: 'static',
+					static: {
+						k: 'zonePlayPermission',
+						zone: 'exile',
+						allowSpells: true,
+						affects: 'self',
+						...(cond ? { condition: cond } : {})
+					}
+				}
+			];
+		}
+		const zone: 'graveyard' | 'exile' = where === 'exile' ? 'exile' : 'graveyard';
+		return [
+			{
+				kind: 'static',
+				static: {
+					k: 'zonePlayPermission',
+					zone,
+					allowSpells: true,
+					affects: 'self',
+					...(cond ? { condition: cond } : {})
+				}
+			}
+		];
+	}
+	if (/^You may play lands and cast spells from your graveyard$/i.test(s)) {
+		return [
+			{
+				kind: 'static',
+				static: { k: 'zonePlayPermission', zone: 'graveyard', allowLands: true, allowSpells: true }
+			}
+		];
+	}
+	const playLandsAndGySpells = s.match(
+		/^You may play lands and cast (.+?) from your graveyard$/i
+	);
+	if (playLandsAndGySpells) {
+		const spellFilter = parseSpellFilterForTopLibrary(playLandsAndGySpells[1]);
+		if (spellFilter) {
+			return [
+				{
+					kind: 'static',
+					static: {
+						k: 'zonePlayPermission',
+						zone: 'graveyard',
+						allowLands: true,
+						allowSpells: true,
+						spellFilter
+					}
+				}
+			];
+		}
+	}
+	if (/^You may cast spells from your graveyard$/i.test(s)) {
+		return [{ kind: 'static', static: { k: 'zonePlayPermission', zone: 'graveyard', allowSpells: true } }];
+	}
+	const castGySpells = s.match(/^You may cast (.+?) from your graveyard$/i);
+	if (castGySpells && castGySpells[1].trim() !== '~') {
+		const spellFilter = parseSpellFilterForTopLibrary(castGySpells[1]);
+		if (spellFilter) {
+			return [
+				{
+					kind: 'static',
+					static: {
+						k: 'zonePlayPermission',
+						zone: 'graveyard',
+						allowSpells: true,
+						spellFilter
+					}
+				}
+			];
+		}
+	}
+	// --- End Track P14 ---
 	// --- Track P11: Static alternative cast permissions (CR 118.9) ---
 	const selfAltCast = s.match(
 		/^You may pay ((?:\{[^}]+\})+) rather than pay (?:~'s|this spell's) mana cost$/i
@@ -1920,11 +2943,50 @@ const ruleModifiers: Production = (s) => {
 	const tax = s.match(/^Creatures can't attack you unless their controller pays (\{\d+\}) for each creature they control that's attacking you$/);
 	if (tax) return [rule('attackTax', 'you', { cost: tax[1] })];
 	if (low === 'you may cast spells as though they had flash') return [rule('castAsThoughFlash', 'you')];
-	const flashFor = low.match(/^you may cast (.+) spells as though they had flash$/);
-	if (flashFor) {
-		const filter = parseObjectPhrase(`${flashFor[1].replace(/ and /g, ' or ')} card`);
-		if (filter) return [rule('castAsThoughFlash', 'you', { spells: filter })];
+	// --- Track P14: Case-preserved subtype flash grants, global flash, commander & deck designations ---
+	if (/^(?:any|each) player may cast spells as though they had flash$/i.test(s)) {
+		return [rule('castAsThoughFlash', 'each_player')];
 	}
+	const flashFor = s.match(/^(You|Any player|Each player) may cast (.+?) spells as though they had flash$/i);
+	if (flashFor) {
+		const whoRel = flashFor[1].toLowerCase() === 'you' ? 'you' : 'each_player';
+		const filter = parseObjectPhrase(`${flashFor[2].replace(/\s+and\s+/gi, ' or ')} card`, {
+			allowPluralAndDisjunction: true
+		});
+		if (filter) return [rule('castAsThoughFlash', whoRel, { spells: filter })];
+	}
+	const ownHaveFlash = s.match(/^(.+?) cards you own that aren't on the battlefield have flash$/i);
+	if (ownHaveFlash) {
+		const filter = parseObjectPhrase(`${ownHaveFlash[1].replace(/\s+and\s+/gi, ' or ')} card`, {
+			allowPluralAndDisjunction: true
+		});
+		if (filter) {
+			return [rule('castAsThoughFlash', 'you', { spells: { ...filter, owner: 'you' } })];
+		}
+	}
+	if (/^~ can be your commander$/i.test(s)) {
+		return [{ kind: 'static', static: { k: 'commanderDesignation' } }];
+	}
+	if (/^A deck can have any number of cards named ~$/i.test(s)) {
+		return [{ kind: 'static', static: { k: 'deckCopyLimit', limit: 'any' } }];
+	}
+	const upToCards = s.match(/^A deck can have up to (\S+) cards named ~$/i);
+	if (upToCards) {
+		const lim = count(upToCards[1]);
+		if (lim && lim.k === 'const' && lim.n >= 1) {
+			return [{ kind: 'static', static: { k: 'deckCopyLimit', limit: lim.n } }];
+		}
+	}
+	if (low === "your opponents can't cast spells during your turn") {
+		return [rule('opponentsCantCastDuringYourTurn', 'each_opponent', { spellsOnly: true })];
+	}
+	if (low === "you can't cast more than one spell each turn") {
+		return [rule('oneSpellPerTurn', 'you')];
+	}
+	if (low === "damage can't be prevented") {
+		return [rule('damageCantBePrevented', 'each_player')];
+	}
+	// --- End Track P14 ---
 	if (low === "each player can't cast more than one spell each turn") return [rule('oneSpellPerTurn', 'each_player')];
 	if (low === "your opponents can't cast spells from anywhere other than their hands") return [rule('castOnlyFromHand', 'each_opponent')];
 	if (low === 'each opponent can cast spells only any time they could cast a sorcery') return [rule('castOnlySorcerySpeed', 'each_opponent')];
@@ -2039,29 +3101,71 @@ function costModifiers(activeZones?: ZoneType[]): Production {
 			if (activeZones) def.activeZones = activeZones;
 			return [{ kind: 'static', static: def }];
 		}
-		// --- Track P11: Permanent spell additional costs & generalized cost modifiers ---
+		// --- Track P11 & P14: Permanent spell additional costs & generalized cost modifiers ---
+		const generalized = parseCostModifierSentence(s);
+		if (generalized) {
+			if (activeZones && generalized.k !== 'costModifier') return null;
+			if (activeZones && generalized.k === 'costModifier') generalized.activeZones = activeZones;
+			return [{ kind: 'static', static: generalized }];
+		}
 		if (!activeZones) {
-			const selfAddCost = parseAdditionalCostSentence(s);
-			if (selfAddCost && selfAddCost.unparsed.length === 0 && selfAddCost.defs.length > 0) {
+			const isPermCastPayable = (d: CostDef): boolean => {
+				switch (d.k) {
+					case 'mana':
+					case 'payLife':
+					case 'payEnergy':
+					case 'tapSubsetSum':
+					case 'mill':
+					case 'waterbend':
+					case 'behold':
+					case 'discardHand':
+					case 'putFromHandOnTopOfLibrary':
+						return true;
+					case 'sacrifice':
+					case 'discard':
+					case 'tapOthers':
+					case 'returnToHand':
+					case 'revealFromHand':
+						return d.filter !== 'self';
+					case 'removeCounters':
+						return d.from !== 'self';
+					case 'putCounters':
+						return d.on !== 'self';
+					case 'exileFrom':
+						return (
+							d.filter !== 'self' &&
+							(d.zone === 'graveyard' || d.zone === 'hand' || d.zone === 'battlefield')
+						);
+					case 'choice':
+						return (
+							d.options.length > 0 &&
+							d.options.every((opt) => opt.length > 0 && opt.every(isPermCastPayable))
+						);
+					case 'optional':
+						return d.cost.length > 0 && d.cost.every(isPermCastPayable);
+					default:
+						return false;
+				}
+			};
+			const selfAddCost = parseAdditionalCostSentence(s, 1);
+			if (
+				selfAddCost &&
+				selfAddCost.unparsed.length === 0 &&
+				selfAddCost.defs.length > 0 &&
+				selfAddCost.defs.every(isPermCastPayable)
+			) {
 				return [
 					{
 						kind: 'static',
 						static: {
-							k: 'costModifier',
-							affects: { k: 'self' },
-							delta: { mode: 'increase', generic: 0, additionalCosts: selfAddCost.defs },
-							who: { relation: 'you' }
+							k: 'additionalCastCost',
+							costs: selfAddCost.defs
 						}
 					}
 				];
 			}
 		}
-		const generalized = parseCostModifierSentence(s);
-		if (generalized) {
-			if (activeZones && generalized.k === 'costModifier') generalized.activeZones = activeZones;
-			return [{ kind: 'static', static: generalized }];
-		}
-		// --- End Track P11 ---
+		// --- End Track P11 & P14 ---
 		return null;
 	};
 }
@@ -2184,6 +3288,9 @@ function attachedTypeChange(depth = 0): Production {
 			[/^loses all other abilities, card types, and creature types/, () => ((losesAll = true), (losesTypes = true), true)],
 			[/^loses all other card types and creature types/, () => ((losesTypes = true), true)],
 			[/^loses all other card types and abilities/, () => ((losesAll = true), (losesTypes = true), true)],
+			// --- Track P14: "loses all other card types" (e.g. One with the Stars) ---
+			[/^loses all other card types/, () => ((losesTypes = true), true)],
+			// --- End Track P14 ---
 			[/^loses all (?:other )?abilities/, () => ((losesAll = true), true)],
 			[
 				/^is an? (.+?)(?= with | that's still | in addition to |,? and |$)/,
@@ -2305,8 +3412,15 @@ const globalChanges: Production = (s) => {
 			];
 		}
 	}
-	const eachLand = s.match(/^Each land is an? (Plains|Island|Swamp|Mountain|Forest) in addition to its other land types$/);
-	if (eachLand) return [continuous('4', { types: ['Land'] }, { k: 'addTypes', types: [], subtypes: [eachLand[1]] })];
+	const eachLand = s.match(
+		/^(?:Each|All) lands? (?:is|are) (?:an? )?(Plains|Islands?|Swamps?|Mountains?|Forests?) in addition to (?:its|their) other(?: land)? types$/i
+	);
+	if (eachLand) {
+		const basicSub = BASIC_LAND_TYPES[eachLand[1].toLowerCase()];
+		if (basicSub) {
+			return [continuous('4', { types: ['Land'] }, { k: 'addTypes', types: [], subtypes: [basicSub] })];
+		}
+	}
 	const addType = s.match(/^(?:Each|All) (.+?) (?:is|are) (?:an? )?([a-z]+?)s? in addition to (?:its|their) other types( and (?:has|have) base power and (?:base )?toughness each equal to (?:its|their) mana value)?$/);
 	if (addType && CARD_TYPES[addType[2]]) {
 		const affected = parseAffected(addType[1]);
@@ -2318,7 +3432,9 @@ const globalChanges: Production = (s) => {
 		}
 		return items;
 	}
-	const every = s.match(/^(.+?) are every creature type$/);
+	const every = s.match(
+		/^(.+?) (?:is|are) (?:every creature type|all creature types)(?: in addition to (?:its|their) other types)?$/i
+	);
 	if (every) {
 		const affected = parseAffected(every[1]);
 		return affected ? [continuous('4', affected, { k: 'allCreatureTypes' })] : null;
@@ -2336,6 +3452,93 @@ const globalChanges: Production = (s) => {
 	if (/^The same is true for creature spells you control and creature cards you own that aren't on the battlefield$/i.test(s)) {
 		return [];
 	}
+	// --- Track P14: Layer 4 type removal & generalized additive types/colors (CR 105.3, 205.1a–b, 613.1d, 700.5) ---
+	const isntUnless = s.match(
+		/^(.+?) (?:isn't|aren't|is not|are not) (?:a |an )?(creatures?|artifacts?|enchantments?|lands?|planeswalkers?) unless (.+)$/i
+	);
+	if (isntUnless) {
+		const affected = parseAffected(isntUnless[1]);
+		const tKey = singularType(isntUnless[2].toLowerCase());
+		const cardType = CARD_TYPES[tKey];
+		const unlessCond = parseUnlessEtbCondition(isntUnless[3]);
+		if (affected && cardType && unlessCond) {
+			return [
+				continuous(
+					'4',
+					affected,
+					{ k: 'removeTypes', types: [cardType] },
+					{ k: 'not', of: unlessCond }
+				)
+			];
+		}
+	}
+	const isntType = s.match(
+		/^(.+?) (?:isn't|aren't|is not|are not) (?:a |an )?(creatures?|artifacts?|enchantments?|lands?|planeswalkers?)([\s\S]*)$/i
+	);
+	if (isntType) {
+		const { modifierPart, tailPart } = splitPtModifierAndTail(isntType[3]);
+		if (modifierPart.trim() === '') {
+			const affected = parseAffected(isntType[1]);
+			const tKey = singularType(isntType[2].toLowerCase());
+			const cardType = CARD_TYPES[tKey];
+			if (affected && cardType) {
+				const out: StaticItem[] = [continuous('4', affected, { k: 'removeTypes', types: [cardType] })];
+				if (tailPart) {
+					const tailItems = parseInlineStaticTail(affected, tailPart, undefined, 0);
+					if (!tailItems) return null;
+					out.push(...tailItems);
+				}
+				return out;
+			}
+		}
+	}
+	const addTypesGen = s.match(
+		/^([^"']+?) (?:is|are) (.+?) in addition to (?:its|their) other (?:land |creature )?types([\s\S]*)$/i
+	);
+	if (addTypesGen) {
+		const { modifierPart, tailPart } = splitPtModifierAndTail(addTypesGen[3]);
+		if (modifierPart.trim() === '') {
+			const affected = parseAffected(addTypesGen[1]);
+			const desc = parseAdditiveTypesAndColors(addTypesGen[2]);
+			if (affected && desc) {
+				const out: StaticItem[] = [
+					continuous('4', affected, {
+						k: 'addTypes',
+						types: desc.types,
+						...(desc.subtypes.length > 0 ? { subtypes: desc.subtypes } : {})
+					})
+				];
+				if (desc.colors !== undefined) {
+					out.push(continuous('5', affected, { k: 'setColors', colors: desc.colors }));
+				}
+				if (tailPart) {
+					const tailItems = parseInlineStaticTail(affected, tailPart, undefined, 0);
+					if (!tailItems) return null;
+					out.push(...tailItems);
+				}
+				return out;
+			}
+		}
+	}
+	const addColsGen = s.match(
+		/^([^"']+?) (?:is|are) (.+?) in addition to (?:its|their) other colors$/i
+	);
+	if (addColsGen) {
+		const affected = parseAffected(addColsGen[1]);
+		const cols = parseStaticColorWordList(addColsGen[2]);
+		if (affected && cols && cols.length > 0) {
+			return [continuous('5', affected, { k: 'addColors', colors: cols })];
+		}
+	}
+	const setColsGen = s.match(/^([^"']+?) (?:is|are) (colorless|(?:white|blue|black|red|green)(?:(?:,\s*(?:and\s+)?|\s+and\s+)(?:white|blue|black|red|green))*)$/i);
+	if (setColsGen) {
+		const affected = parseAffected(setColsGen[1]);
+		const cols = parseStaticColorWordList(setColsGen[2]);
+		if (affected && cols !== null) {
+			return [continuous('5', affected, { k: 'setColors', colors: cols })];
+		}
+	}
+	// --- End Track P14 ---
 	return null;
 };
 
@@ -2366,6 +3569,9 @@ const keywordRemoval: Production = (s) => {
 
 // --- Track P11: Quote-aware grant tail splitting & quoted/dynamic Layer 6/7b/7c helpers ---
 
+const INLINE_TAIL_CLAUSE_START_RE =
+	/^(?:,\s*and\s+|,\s+|\s+and\s+)(?!can't have or gain\b|cannot have or gain\b)((?:has|have|gets|get|is|are|isn't|aren't|assigns|assign|can't|cannot|must|can block|can attack|doesn't untap|don't untap|attacks|attack|blocks|block|loses|lose)(?:\b[\s\S]*))$/i;
+
 function splitPtModifierAndTail(rest: string): { modifierPart: string; tailPart?: string } {
 	let inQuote: '"' | "'" | null = null;
 	for (let i = 0; i < rest.length; i++) {
@@ -2388,15 +3594,214 @@ function splitPtModifierAndTail(rest: string): { modifierPart: string; tailPart?
 			inQuote = "'";
 			continue;
 		}
-		const tailMatch = rest
-			.slice(i)
-			.match(/^(?:,\s*and\s+|,\s+|\s+and\s+)((?:has|have|can't|cannot|must|can block|attacks|attack|blocks|block|loses)\b[\s\S]+)$/i);
+		const tailMatch = rest.slice(i).match(INLINE_TAIL_CLAUSE_START_RE);
 		if (tailMatch) {
 			return { modifierPart: rest.slice(0, i), tailPart: tailMatch[1].trim() };
 		}
 	}
 	return { modifierPart: rest };
 }
+
+// --- Track P14: Color/type additive helpers & multi-clause inline static tail parser ---
+function parseStaticColorWordList(raw: string): ManaColor[] | null {
+	const t = raw.trim().toLowerCase();
+	if (t === 'colorless') return [];
+	const parts = t.split(/,\s*and\s+|\s+and\s+|,\s*/);
+	const out: ManaColor[] = [];
+	for (const p of parts) {
+		const c = COLORS[p.trim()];
+		if (!c) return null;
+		if (!out.includes(c)) out.push(c);
+	}
+	return out.length > 0 ? out : null;
+}
+
+function parseAdditiveTypesAndColors(
+	raw: string
+): { colors?: ManaColor[]; types: string[]; subtypes: string[] } | null {
+	const words = raw
+		.trim()
+		.replace(/^(?:a|an)\s+/i, '')
+		.replace(/,/g, ' , ')
+		.split(/\s+/)
+		.filter(Boolean);
+	if (words.length === 0) return null;
+	let colors: ManaColor[] | undefined;
+	if (words[0].toLowerCase() === 'colorless') {
+		colors = [];
+		words.shift();
+	} else if (COLORS[words[0].toLowerCase()]) {
+		colors = [COLORS[words.shift()!.toLowerCase()]];
+		for (let guard = 0; guard < 16 && words.length >= 2; guard++) {
+			const w0 = words[0].toLowerCase();
+			const w1 = words[1].toLowerCase();
+			const w2 = words[2]?.toLowerCase();
+			if (w0 === ',' && w1 === 'and' && w2 && COLORS[w2]) {
+				words.shift();
+				words.shift();
+				colors.push(COLORS[words.shift()!.toLowerCase()]);
+			} else if (w0 === ',' && COLORS[w1]) {
+				words.shift();
+				colors.push(COLORS[words.shift()!.toLowerCase()]);
+			} else if (w0 === 'and' && COLORS[w1]) {
+				words.shift();
+				colors.push(COLORS[words.shift()!.toLowerCase()]);
+			} else {
+				break;
+			}
+		}
+	}
+	if (words.length === 0 || words.includes(',')) return null;
+	const rem = words.join(' ');
+	const basicSub = BASIC_LAND_TYPES[rem.toLowerCase()];
+	if (basicSub) {
+		return { ...(colors !== undefined ? { colors } : {}), types: [], subtypes: [basicSub] };
+	}
+	const f = parseObjectPhrase(rem, { allowPluralAndDisjunction: true });
+	if (!f) return null;
+	const keys = Object.keys(f);
+	if (!keys.every((k) => k === 'types' || k === 'subtypes')) return null;
+	const types = f.types ?? [];
+	const subtypes = f.subtypes ?? [];
+	if (types.length === 0 && subtypes.length === 0) return null;
+	return { ...(colors !== undefined ? { colors } : {}), types, subtypes };
+}
+
+function parseSingleInlineStaticClause(
+	affected: Affected,
+	clauseRaw: string,
+	condition: Condition | undefined,
+	depth: number
+): StaticItem[] | null {
+	const c = clauseRaw.trim();
+	const basePt = c.match(/^(?:has|have) base power and (?:base )?toughness (\d+)\/(\d+)$/i);
+	if (basePt) {
+		return [
+			continuous(
+				'7b',
+				affected,
+				{
+					k: 'setBasePT',
+					power: n(parseInt(basePt[1], 10)),
+					toughness: n(parseInt(basePt[2], 10))
+				},
+				condition
+			)
+		];
+	}
+	const baseP = c.match(/^(?:has|have) base power (\d+)$/i);
+	if (baseP) {
+		return [
+			continuous('7b', affected, { k: 'setBasePower', power: n(parseInt(baseP[1], 10)) }, condition)
+		];
+	}
+	const baseT = c.match(/^(?:has|have) base toughness (\d+)$/i);
+	if (baseT) {
+		return [
+			continuous(
+				'7b',
+				affected,
+				{ k: 'setBaseToughness', toughness: n(parseInt(baseT[1], 10)) },
+				condition
+			)
+		];
+	}
+	const hasMatch = c.match(/^(?:has|have) ([\s\S]+)$/i);
+	if (hasMatch) {
+		return parseHasGrantTail(affected, hasMatch[1], condition, depth);
+	}
+	const getsMatch = c.match(/^gets? (?:an additional )?([+−-]\d+\/[+−-]\d+)$/i);
+	if (getsMatch) {
+		const d = ptDelta(getsMatch[1]);
+		if (d) {
+			return [continuous('7c', affected, { k: 'pt', power: n(d[0]), toughness: n(d[1]) }, condition)];
+		}
+	}
+	if (/^(?:is|are) (?:every creature type|all creature types)(?: in addition to (?:its|their) other types)?$/i.test(c)) {
+		return [continuous('4', affected, { k: 'allCreatureTypes' }, condition)];
+	}
+	const addTypesM = c.match(
+		/^(?:is|are) (.+?) in addition to (?:its|their) other (?:land |creature )?types$/i
+	);
+	if (addTypesM) {
+		const desc = parseAdditiveTypesAndColors(addTypesM[1]);
+		if (desc) {
+			const out: StaticItem[] = [
+				continuous(
+					'4',
+					affected,
+					{
+						k: 'addTypes',
+						types: desc.types,
+						...(desc.subtypes.length > 0 ? { subtypes: desc.subtypes } : {})
+					},
+					condition
+				)
+			];
+			if (desc.colors !== undefined) {
+				out.push(continuous('5', affected, { k: 'setColors', colors: desc.colors }, condition));
+			}
+			return out;
+		}
+	}
+	const addColsM = c.match(/^(?:is|are) (.+?) in addition to (?:its|their) other colors$/i);
+	if (addColsM) {
+		const cols = parseStaticColorWordList(addColsM[1]);
+		if (cols && cols.length > 0) {
+			return [continuous('5', affected, { k: 'addColors', colors: cols }, condition)];
+		}
+	}
+	const setColsM = c.match(
+		/^(?:is|are) (colorless|(?:white|blue|black|red|green)(?:(?:,\s*(?:and\s+)?|\s+and\s+)(?:white|blue|black|red|green))*)$/i
+	);
+	if (setColsM) {
+		const cols = parseStaticColorWordList(setColsM[1]);
+		if (cols !== null) {
+			return [continuous('5', affected, { k: 'setColors', colors: cols }, condition)];
+		}
+	}
+	const isntM = c.match(
+		/^(?:isn't|aren't|is not|are not) (?:a |an )?(creatures?|artifacts?|enchantments?|lands?|planeswalkers?)$/i
+	);
+	if (isntM) {
+		const cardType = CARD_TYPES[singularType(isntM[1].toLowerCase())];
+		if (cardType) {
+			return [continuous('4', affected, { k: 'removeTypes', types: [cardType] }, condition)];
+		}
+	}
+	if (/^can't attack or block alone$/i.test(c)) {
+		const items: StaticItem[] = [
+			{ kind: 'static', static: { k: 'combatRule', affected, rule: { kind: 'cantAttackAlone' } } },
+			{ kind: 'static', static: { k: 'combatRule', affected, rule: { kind: 'cantBlockAlone' } } }
+		];
+		if (condition && !withCondition(items, condition)) return null;
+		return items;
+	}
+	const combatItem = parseInlineCombatTail(affected, c);
+	if (combatItem) {
+		if (condition && !withCondition([combatItem], condition)) return null;
+		return [combatItem];
+	}
+	return null;
+}
+
+function parseInlineStaticTail(
+	affected: Affected,
+	tail: string,
+	condition: Condition | undefined,
+	depth: number
+): StaticItem[] | null {
+	const direct = parseSingleInlineStaticClause(affected, tail, condition, depth);
+	if (direct) return direct;
+	const { modifierPart, tailPart } = splitPtModifierAndTail(tail);
+	if (!tailPart || !modifierPart.trim()) return null;
+	const headItems = parseSingleInlineStaticClause(affected, modifierPart, condition, depth);
+	if (!headItems) return null;
+	const restItems = parseInlineStaticTail(affected, tailPart, condition, depth);
+	if (!restItems) return null;
+	return [...headItems, ...restItems];
+}
+// --- End Track P14 ---
 
 function parseHasGrantTail(
 	affected: Affected,
@@ -2452,17 +3857,17 @@ function parseHasGrantTail(
 			];
 		}
 	}
-	const kwAndCombat = hasBody.match(/^([^"']+?)(?:,\s*and|\s+and) ((?:can't|cannot|must|can block)\b.+)$/i);
-	if (kwAndCombat) {
-		const kws = parseKeywordList(kwAndCombat[1]);
-		const combatTail = parseInlineCombatTail(affected, kwAndCombat[2]);
-		if (kws && combatTail) {
-			if (condition) withCondition([combatTail], condition);
-			return [keywordGrant(affected, kws, condition), combatTail];
+	const kwsDirect = parseKeywordList(hasBody);
+	if (kwsDirect) return [keywordGrant(affected, kwsDirect, condition)];
+	const { modifierPart, tailPart } = splitPtModifierAndTail(hasBody);
+	if (tailPart && modifierPart.trim()) {
+		const headHas = parseHasGrantTail(affected, modifierPart, condition, depth);
+		const tailItems = parseInlineStaticTail(affected, tailPart, condition, depth);
+		if (headHas && tailItems) {
+			return [...headHas, ...tailItems];
 		}
 	}
-	const kws = parseKeywordList(hasBody);
-	return kws ? [keywordGrant(affected, kws, condition)] : null;
+	return null;
 }
 
 // --- End Track P11 ---
@@ -2496,25 +3901,69 @@ function grants(condition?: Condition, depth = 0): Production {
 			}
 		}
 		const basePtFixed = s.match(
-			/^([^"']+?) (?:has|have) base power and (?:base )?toughness (\d+)\/(\d+)$/i
+			/^([^"']+?) (?:has|have) base power and (?:base )?toughness (\d+)\/(\d+)([\s\S]*)$/i
 		);
 		if (basePtFixed) {
-			const affected = parseAffected(basePtFixed[1]);
-			if (affected) {
-				return [
-					continuous(
-						'7b',
-						affected,
-						{
-							k: 'setBasePT',
-							power: n(parseInt(basePtFixed[2], 10)),
-							toughness: n(parseInt(basePtFixed[3], 10))
-						},
-						condition
-					)
-				];
+			const { modifierPart, tailPart } = splitPtModifierAndTail(basePtFixed[4]);
+			if (modifierPart.trim() === '') {
+				const affected = parseAffected(basePtFixed[1]);
+				if (affected) {
+					const out: StaticItem[] = [
+						continuous(
+							'7b',
+							affected,
+							{
+								k: 'setBasePT',
+								power: n(parseInt(basePtFixed[2], 10)),
+								toughness: n(parseInt(basePtFixed[3], 10))
+							},
+							condition
+						)
+					];
+					if (tailPart) {
+						const tailItems = parseInlineStaticTail(affected, tailPart, condition, depth);
+						if (tailItems) {
+							out.push(...tailItems);
+						} else {
+							const kws = parseKeywordList(tailPart);
+							if (!kws) return null;
+							out.push(keywordGrant(affected, kws, condition));
+						}
+					}
+					return out;
+				}
 			}
 		}
+		// --- Track P14: Single-axis Layer 7b base power / toughness (e.g. Maha, Its Feathers Night) ---
+		const baseSingleAxis = s.match(
+			/^([^"']+?) (?:has|have) base (power|toughness) (\d+)([\s\S]*)$/i
+		);
+		if (baseSingleAxis) {
+			const { modifierPart, tailPart } = splitPtModifierAndTail(baseSingleAxis[4]);
+			if (modifierPart.trim() === '') {
+				const affected = parseAffected(baseSingleAxis[1]);
+				if (affected) {
+					const val = n(parseInt(baseSingleAxis[3], 10));
+					const mod: LayerMod =
+						baseSingleAxis[2].toLowerCase() === 'power'
+							? { k: 'setBasePower', power: val }
+							: { k: 'setBaseToughness', toughness: val };
+					const out: StaticItem[] = [continuous('7b', affected, mod, condition)];
+					if (tailPart) {
+						const tailItems = parseInlineStaticTail(affected, tailPart, condition, depth);
+						if (tailItems) {
+							out.push(...tailItems);
+						} else {
+							const kws = parseKeywordList(tailPart);
+							if (!kws) return null;
+							out.push(keywordGrant(affected, kws, condition));
+						}
+					}
+					return out;
+				}
+			}
+		}
+		// --- End Track P14 ---
 
 		const pt = s.match(/^([^"']+?) gets? (?:an additional )?([+−-])(\d+|X)\/([+−-])(\d+|X)([\s\S]*)$/i);
 		if (pt) {
@@ -2546,7 +3995,26 @@ function grants(condition?: Condition, depth = 0): Production {
 				} else {
 					const forEach = modTrimmed.match(/^for each (.+)$/i);
 					if (!forEach) return null;
-					const per = parseCountAmount(`the number of ${forEach[1]}`);
+					const forEachBody = forEach[1].trim();
+					// --- Track P14: "for each of its colors" / "for each opponent you have" ---
+					let per: Amount | null = null;
+					if (/^of its colors$/i.test(forEachBody)) {
+						per = {
+							k: 'colorsOfObject',
+							of: affected === 'self' || affected === 'attachedTo' ? affected : 'affected'
+						};
+					} else if (/^of ~'s colors$/i.test(forEachBody)) {
+						per = { k: 'colorsOfObject', of: 'self' };
+					} else if (
+						/^of (?:enchanted|equipped) (?:creature|permanent)'s colors$/i.test(forEachBody)
+					) {
+						per = { k: 'colorsOfObject', of: 'attachedTo' };
+					} else if (/^opponent you have$/i.test(forEachBody)) {
+						per = { k: 'opponentCount' };
+					} else {
+						per = parseCountAmount(`the number of ${forEachBody}`);
+					}
+					// --- End Track P14 ---
 					if (!per) return null;
 					power = scaleAmount(d0, per);
 					toughness = scaleAmount(d1, per);
@@ -2555,17 +4023,9 @@ function grants(condition?: Condition, depth = 0): Production {
 
 			const items: StaticItem[] = [continuous('7c', affected, { k: 'pt', power, toughness }, condition)];
 			if (tailPart) {
-				const hasMatch = tailPart.match(/^(?:has|have) (.+)$/i);
-				if (hasMatch) {
-					const hasItems = parseHasGrantTail(affected, hasMatch[1], condition, depth);
-					if (!hasItems) return null;
-					items.push(...hasItems);
-				} else {
-					const combatTail = parseInlineCombatTail(affected, tailPart);
-					if (!combatTail) return null;
-					if (condition) withCondition([combatTail], condition);
-					items.push(combatTail);
-				}
+				const tailItems = parseInlineStaticTail(affected, tailPart, condition, depth);
+				if (!tailItems) return null;
+				items.push(...tailItems);
 			}
 			return items;
 		}
@@ -2595,6 +4055,9 @@ function withCondition(items: StaticItem[], condition: Condition): boolean {
 		if (item.kind === 'replacement') {
 			item.replacement.condition = combine(item.replacement.condition, condition);
 		} else {
+			if (item.static.k === 'commanderDesignation' || item.static.k === 'deckCopyLimit') {
+				return false;
+			}
 			item.static.condition = combine(item.static.condition, condition);
 		}
 	}
@@ -2628,10 +4091,49 @@ function parseObjectStateWord(
 	}
 }
 
-function parseStaticCondition(clause: string): Condition | null {
+function parseStaticCondition(
+	clause: string,
+	defaultSubject: 'self' | 'attachedTo' = 'self'
+): Condition | null {
 	const t = clause.trim();
+
+	// --- Track P14: Check explicit self/attached state & controller predicates before `parseCondition` ---
+	const youCtrlAtt = t.match(
+		/^you control (?:(?:enchanted|equipped) (?:creature|permanent|artifact|land|planeswalker)|(it))$/i
+	);
+	if (youCtrlAtt && (!youCtrlAtt[1] || defaultSubject === 'attachedTo')) {
+		return { k: 'objectState', of: 'attachedTo', filter: { controller: 'you' } };
+	}
+	const oppCtrlAtt = t.match(
+		/^(?:(?:an opponent|another player) controls|you don't control) (?:(?:enchanted|equipped) (?:creature|permanent|artifact|land|planeswalker)|(it))$/i
+	);
+	if (oppCtrlAtt && (!oppCtrlAtt[1] || defaultSubject === 'attachedTo')) {
+		return { k: 'objectState', of: 'attachedTo', filter: { controller: 'opponent' } };
+	}
+
+	const pronounState = t.match(/^(?:(~|it) (is|isn't|is not)|(it's)) (.+)$/i);
+	if (pronounState && !/^it's (?:your|not your) turn$/i.test(t)) {
+		const isSelfTilde = pronounState[1] === '~';
+		const isNeg = Boolean(pronounState[2] && /^(?:isn't|is not)$/i.test(pronounState[2]));
+		const rhs = pronounState[4].trim();
+		const subjOf: 'self' | 'attachedTo' = isSelfTilde ? 'self' : defaultSubject;
+		const stWord = parseObjectStateWord(subjOf, rhs);
+		if (stWord) {
+			return isNeg ? { k: 'not', of: stWord } : stWord;
+		}
+		const qual = rhs.replace(/^(?:a|an)\s+/i, '');
+		const filter =
+			parseObjectPhrase(qual, { allowPluralAndDisjunction: true }) ??
+			parseObjectPhrase(`${qual} permanent`);
+		if (filter) {
+			const objCond: Condition = { k: 'objectState', of: subjOf, filter };
+			return isNeg ? { k: 'not', of: objCond } : objCond;
+		}
+	}
+	// --- End Track P14 ---
+
 	const cond = parseCondition(`if ${t}`);
-	if (cond) return cond;
+	if (cond && cond.k !== 'matchesFilter') return cond;
 
 	const twoColor = t.match(
 		/^you control (?:a|an) (white|blue|black|red|green) or (white|blue|black|red|green) permanent$/i
@@ -2747,19 +4249,301 @@ function parseStaticCondition(clause: string): Condition | null {
 		if (st) return st;
 	}
 
-	// Attached state: "enchanted creature is tapped / white / a Human / ..."
+	// Attached state: "enchanted creature is/isn't tapped / white / a Human / ..."
 	const attState = t.match(
-		/^(?:enchanted|equipped) (?:creature|permanent|artifact|land|planeswalker) is (.+)$/i
+		/^(?:enchanted|equipped) (?:creature|permanent|artifact|land|planeswalker) (is|isn't|is not) (.+)$/i
 	);
 	if (attState) {
-		const st = parseObjectStateWord('attachedTo', attState[1]);
-		if (st) return st;
-		const qual = attState[1].trim().replace(/^(?:a|an)\s+/i, '');
-		const filter = parseObjectPhrase(qual) ?? parseObjectPhrase(`${qual} permanent`);
+		const isNeg = /^(?:isn't|is not)$/i.test(attState[1]);
+		const st = parseObjectStateWord('attachedTo', attState[2]);
+		if (st) return isNeg ? { k: 'not', of: st } : st;
+		const qual = attState[2].trim().replace(/^(?:a|an)\s+/i, '');
+		const filter =
+			parseObjectPhrase(qual, { allowPluralAndDisjunction: true }) ??
+			parseObjectPhrase(`${qual} permanent`);
 		if (filter) {
-			return { k: 'objectState', of: 'attachedTo', filter };
+			const objCond: Condition = { k: 'objectState', of: 'attachedTo', filter };
+			return isNeg ? { k: 'not', of: objCond } : objCond;
 		}
 	}
+
+	// --- Track P14: Devotion comparisons (CR 700.5a–b), opponent controls, & counter absence/presence ---
+	const devLess = t.match(/^your devotion to (.+?) is less than (\S+)$/i);
+	if (devLess) {
+		const colors = parseDevotionColorList(devLess[1]);
+		const cnt = count(devLess[2]);
+		if (colors && cnt && cnt.k === 'const') {
+			return {
+				k: 'compare',
+				left: { k: 'devotion', colors, player: { k: 'you' } },
+				op: '<',
+				right: cnt
+			};
+		}
+	}
+	const devAtLeast =
+		t.match(/^your devotion to (.+?) is (\S+) or (?:more|greater)$/i) ??
+		t.match(/^your devotion to (.+?) is at least (\S+)$/i);
+	if (devAtLeast) {
+		const colors = parseDevotionColorList(devAtLeast[1]);
+		const cnt = count(devAtLeast[2]);
+		if (colors && cnt && cnt.k === 'const') {
+			return {
+				k: 'compare',
+				left: { k: 'devotion', colors, player: { k: 'you' } },
+				op: '>=',
+				right: cnt
+			};
+		}
+	}
+	const devAtMost = t.match(/^your devotion to (.+?) is (\S+) or (?:less|fewer)$/i);
+	if (devAtMost) {
+		const colors = parseDevotionColorList(devAtMost[1]);
+		const cnt = count(devAtMost[2]);
+		if (colors && cnt && cnt.k === 'const') {
+			return {
+				k: 'compare',
+				left: { k: 'devotion', colors, player: { k: 'you' } },
+				op: '<=',
+				right: cnt
+			};
+		}
+	}
+
+	const oppControls = t.match(
+		/^(?:an opponent controls|your opponents control) (?:(?:a|an)|(\S+)(?: or more)?) (.+)$/i
+	);
+	if (oppControls) {
+		const cnt = oppControls[1] ? count(oppControls[1]) : n(1);
+		const rawObj = oppControls[2].trim();
+		const f =
+			parseCombatObjectPhrase(rawObj) ??
+			parseObjectPhrase(rawObj.replace(/\s+and\s+/gi, ' or '));
+		if (cnt && cnt.k === 'const' && f && !f.controller) {
+			return {
+				k: 'compare',
+				left: { k: 'count', of: { ...f, zone: 'battlefield', controller: 'opponent' } },
+				op: '>=',
+				right: cnt
+			};
+		}
+	}
+
+	const noCounters = t.match(
+		/^(~|it|(?:enchanted|equipped) (?:creature|permanent|artifact|land|planeswalker)) has no counters on (?:~|it)$/i
+	);
+	if (noCounters) {
+		const ofTarget =
+			noCounters[1] === '~' || /^it$/i.test(noCounters[1])
+				? ({ k: 'self' } as const)
+				: ({ k: 'affected' } as const);
+		return {
+			k: 'compare',
+			left: { k: 'countersOn', counter: 'any', of: ofTarget },
+			op: '=',
+			right: n(0)
+		};
+	}
+	const anyCounters = t.match(
+		/^(~|it|(?:enchanted|equipped) (?:creature|permanent|artifact|land|planeswalker)) has (?:a|one or more) counters? on (?:~|it)$/i
+	);
+	if (anyCounters) {
+		const ofTarget =
+			anyCounters[1] === '~' || /^it$/i.test(anyCounters[1])
+				? ({ k: 'self' } as const)
+				: ({ k: 'affected' } as const);
+		return {
+			k: 'compare',
+			left: { k: 'countersOn', counter: 'any', of: ofTarget },
+			op: '>=',
+			right: n(1)
+		};
+	}
+	const thereAreCtrs = t.match(
+		/^there (?:is|are) (\S+)(?: or more)? (.+?) counters? on (~|it|(?:enchanted|equipped) (?:creature|permanent|artifact|land|planeswalker))$/i
+	);
+	if (thereAreCtrs) {
+		const cnt = count(thereAreCtrs[1]);
+		const ctr = lookupStaticCounter(thereAreCtrs[2]);
+		if (cnt && cnt.k === 'const' && ctr) {
+			const ofTarget =
+				thereAreCtrs[3] === '~' || /^it$/i.test(thereAreCtrs[3])
+					? ({ k: 'self' } as const)
+					: ({ k: 'affected' } as const);
+			return {
+				k: 'compare',
+				left: { k: 'countersOn', counter: ctr, of: ofTarget },
+				op: '>=',
+				right: cnt
+			};
+		}
+	}
+	const thereAreNoCtrs = t.match(
+		/^there are no (.+?) counters on (~|it|(?:enchanted|equipped) (?:creature|permanent|artifact|land|planeswalker))$/i
+	);
+	if (thereAreNoCtrs) {
+		const ctr = lookupStaticCounter(thereAreNoCtrs[1]);
+		if (ctr) {
+			const ofTarget =
+				thereAreNoCtrs[2] === '~' || /^it$/i.test(thereAreNoCtrs[2])
+					? ({ k: 'self' } as const)
+					: ({ k: 'affected' } as const);
+			return {
+				k: 'compare',
+				left: { k: 'countersOn', counter: ctr, of: ofTarget },
+				op: '=',
+				right: n(0)
+			};
+		}
+	}
+
+	const lifeOrMore = t.match(/^you have (\S+) or more life$/i);
+	if (lifeOrMore) {
+		const cnt = count(lifeOrMore[1]);
+		if (cnt && cnt.k === 'const') {
+			return { k: 'compare', left: { k: 'life', of: { k: 'you' } }, op: '>=', right: cnt };
+		}
+	}
+
+	if (/^you have no cards in hand$/i.test(t)) {
+		return {
+			k: 'compare',
+			left: { k: 'cardsIn', zone: 'hand', of: { k: 'you' } },
+			op: '=',
+			right: n(0)
+		};
+	}
+	const youHandCmp = t.match(/^you have (\S+) or (fewer|less|more) cards in hand$/i);
+	if (youHandCmp) {
+		const cnt = count(youHandCmp[1]);
+		if (cnt && cnt.k === 'const') {
+			const op = youHandCmp[2].toLowerCase() === 'more' ? '>=' : '<=';
+			return {
+				k: 'compare',
+				left: { k: 'cardsIn', zone: 'hand', of: { k: 'you' } },
+				op,
+				right: cnt
+			};
+		}
+	}
+	if (/^an opponent has no cards in hand$/i.test(t)) {
+		return { k: 'anyOpponentMetric', metric: 'hand', op: '=', count: 0 };
+	}
+	const oppHandCmp = t.match(/^an opponent has (\S+) or (fewer|less|more) cards in hand$/i);
+	if (oppHandCmp) {
+		const cnt = count(oppHandCmp[1]);
+		if (cnt && cnt.k === 'const') {
+			const op = oppHandCmp[2].toLowerCase() === 'more' ? '>=' : '<=';
+			return { k: 'anyOpponentMetric', metric: 'hand', op, count: cnt.n };
+		}
+	}
+	const oppLifeCmp = t.match(/^an opponent has (\S+) or (less|fewer|more) life$/i);
+	if (oppLifeCmp) {
+		const cnt = count(oppLifeCmp[1]);
+		if (cnt && cnt.k === 'const') {
+			const op = oppLifeCmp[2].toLowerCase() === 'more' ? '>=' : '<=';
+			return { k: 'anyOpponentMetric', metric: 'life', op, count: cnt.n };
+		}
+	}
+	const oppGyCmp = t.match(
+		/^(?:an opponent has (\S+) or more cards in their graveyard|there are (\S+) or more cards in an opponent's graveyard)$/i
+	);
+	if (oppGyCmp) {
+		const cnt = count(oppGyCmp[1] ?? oppGyCmp[2]);
+		if (cnt && cnt.k === 'const') {
+			return { k: 'anyOpponentMetric', metric: 'graveyard', op: '>=', count: cnt.n };
+		}
+	}
+
+	const drawnTurn = t.match(/^you(?:'ve| have) drawn (\S+) or more cards this turn$/i);
+	if (drawnTurn) {
+		const cnt = count(drawnTurn[1]);
+		if (cnt && cnt.k === 'const') {
+			return { k: 'cardsDrawnThisTurnAtLeast', min: cnt.n };
+		}
+	}
+	if (/^you(?:'ve| have) cast (?:a |one or more )?spells? this turn$/i.test(t)) {
+		return { k: 'spellsCastThisTurnCount', min: 1 };
+	}
+	const castSpellsTurn = t.match(/^you(?:'ve| have) cast (\S+) or more spells this turn$/i);
+	if (castSpellsTurn) {
+		const cnt = count(castSpellsTurn[1]);
+		if (cnt && cnt.k === 'const') {
+			return { k: 'spellsCastThisTurnCount', min: cnt.n };
+		}
+	}
+
+	const gySingleTyped = t.match(/^there is (?:a|an) (.+?) card in your graveyard$/i);
+	if (gySingleTyped) {
+		const f = parseGraveyardCardFilter(gySingleTyped[1]);
+		if (f) {
+			return {
+				k: 'compare',
+				left: { k: 'count', of: { ...f, zone: 'graveyard', controller: 'you' } },
+				op: '>=',
+				right: n(1)
+			};
+		}
+	}
+	const allGyCards = t.match(
+		/^(?:there are )?(\S+) or more (?:(.+?) )?cards(?: total)?(?: are)? in all graveyards$/i
+	);
+	if (allGyCards) {
+		const cnt = count(allGyCards[1]);
+		if (cnt && cnt.k === 'const') {
+			if (!allGyCards[2]) {
+				return {
+					k: 'compare',
+					left: { k: 'count', of: { zone: 'graveyard' } },
+					op: '>=',
+					right: cnt
+				};
+			}
+			const f = parseGraveyardCardFilter(allGyCards[2]);
+			if (f) {
+				return {
+					k: 'compare',
+					left: { k: 'count', of: { ...f, zone: 'graveyard' } },
+					op: '>=',
+					right: cnt
+				};
+			}
+		}
+	}
+	const ctrlExactOne = t.match(/^you control (?:exactly one|only one) (.+)$/i);
+	if (ctrlExactOne) {
+		const f = parseObjectPhrase(ctrlExactOne[1], { allowPluralAndDisjunction: true });
+		if (f && !f.controller) {
+			return {
+				k: 'compare',
+				left: { k: 'count', of: { ...f, zone: 'battlefield', controller: 'you' } },
+				op: '=',
+				right: n(1)
+			};
+		}
+	}
+	const anyPlayerCtrl = t.match(/^(?:a|any) player controls (?:a |an )?(.+)$/i);
+	if (anyPlayerCtrl) {
+		const f = parseObjectPhrase(anyPlayerCtrl[1], { allowPluralAndDisjunction: true });
+		if (f && !f.controller) {
+			return {
+				k: 'compare',
+				left: { k: 'count', of: { ...f, zone: 'battlefield' } },
+				op: '>=',
+				right: n(1)
+			};
+		}
+	}
+
+	if (/\s+and\s+/i.test(t)) {
+		const andParts = t.split(/\s+and\s+/i);
+		if (andParts.length === 2) {
+			const c1 = parseStaticCondition(andParts[0], defaultSubject);
+			const c2 = parseStaticCondition(andParts[1], defaultSubject);
+			if (c1 && c2) return { k: 'and', of: [c1, c2] };
+		}
+	}
+	// --- End Track P14 ---
 
 	return null;
 }
@@ -2822,7 +4606,7 @@ function parseSentence(sentence: string, span: Span, depth = 0): StaticItem[] | 
 	let s = sentence.replace(/’/g, "'").replace(/\.$/, '').trim();
 	// Strip optional raw CR 207.2c ability-word prefix if caller bypassed normalize.ts
 	const abilityWordPrefix = s.match(
-		/^(?:Threshold|Metalcraft|Delirium|Ferocious|Formidable|Spell mastery|Coven|Fateful hour|Hellbent|Domain)\s*—\s*/i
+		/^(?:Threshold|Metalcraft|Delirium|Ferocious|Formidable|Spell mastery|Coven|Fateful hour|Hellbent|Domain|Morbid|Raid|Revolt|Undergrowth|Chroma|Constellation|Lieutenant|Descend 4|Descend 8|Fathomless descent|Corrupted)\s*—\s*/i
 	);
 	if (abilityWordPrefix) {
 		s = s.slice(abilityWordPrefix[0].length).trim();
@@ -2836,6 +4620,40 @@ function parseSentence(sentence: string, span: Span, depth = 0): StaticItem[] | 
 		const rest = s.slice(eminence[0].length);
 		return costModifiers(['battlefield', 'command'])(rest.charAt(0).toUpperCase() + rest.slice(1), span);
 	}
+
+	// --- Track P14: CR 113.6b Graveyard Incarnation statics ("As long as ~ is in your graveyard [and ...], ...") ---
+	const gyStatic = s.match(/^As long as ~ is in your graveyard(?: and (.+?))?,\s+(.+)$/i);
+	if (gyStatic) {
+		let extraCond: Condition | undefined;
+		if (gyStatic[1]) {
+			const parsedExtra = parseStaticCondition(gyStatic[1]);
+			if (!parsedExtra) return null;
+			extraCond = parsedExtra;
+		}
+		const restBody = gyStatic[2].charAt(0).toUpperCase() + gyStatic[2].slice(1);
+		const subItems = parseSentence(restBody, span, depth);
+		if (
+			!subItems ||
+			subItems.length === 0 ||
+			!subItems.every(
+				(it) =>
+					it.kind === 'static' &&
+					it.static.k === 'continuous' &&
+					it.static.affected !== 'self' &&
+					it.static.affected !== 'attachedTo'
+			)
+		) {
+			return null;
+		}
+		for (const it of subItems) {
+			if (it.kind === 'static' && it.static.k === 'continuous') {
+				it.static.activeInZone = 'graveyard';
+			}
+		}
+		if (extraCond && !withCondition(subItems, extraCond)) return null;
+		return subItems;
+	}
+	// --- End Track P14 ---
 
 	// Preserve exact multi-part ruleModifiers like "During your turn, your opponents can't cast spells"
 	const directRule = ruleModifiers(s, span);
@@ -2851,10 +4669,22 @@ function parseSentence(sentence: string, span: Span, depth = 0): StaticItem[] | 
 		addCond({ k: 'isTurnOf', player: { k: 'you' } });
 		s = duringTurnPrefix[1].charAt(0).toUpperCase() + duringTurnPrefix[1].slice(1);
 	} else {
-		const duringTurnSuffix = s.match(/^(.+?)(?<!untap)\s+during your turn$/i);
-		if (duringTurnSuffix && !/^you may play\b/i.test(duringTurnSuffix[1])) {
-			addCond({ k: 'isTurnOf', player: { k: 'you' } });
-			s = duringTurnSuffix[1];
+		const duringOtherTurnPrefix = s.match(/^During turns other than yours,\s+(.+)$/i);
+		if (duringOtherTurnPrefix) {
+			addCond({ k: 'not', of: { k: 'isTurnOf', player: { k: 'you' } } });
+			s = duringOtherTurnPrefix[1].charAt(0).toUpperCase() + duringOtherTurnPrefix[1].slice(1);
+		} else {
+			const duringTurnSuffix = s.match(/^(.+?)(?<!untap)\s+during your turn$/i);
+			if (duringTurnSuffix && !/^you may play\b/i.test(duringTurnSuffix[1])) {
+				addCond({ k: 'isTurnOf', player: { k: 'you' } });
+				s = duringTurnSuffix[1];
+			} else {
+				const duringOtherTurnSuffix = s.match(/^(.+?)(?<!untap)\s+during turns other than yours$/i);
+				if (duringOtherTurnSuffix) {
+					addCond({ k: 'not', of: { k: 'isTurnOf', player: { k: 'you' } } });
+					s = duringOtherTurnSuffix[1];
+				}
+			}
 		}
 	}
 
@@ -2863,16 +4693,44 @@ function parseSentence(sentence: string, span: Span, depth = 0): StaticItem[] | 
 	const hasQuotes = /"|(?:^|\s)'/.test(s);
 	const prefix = s.match(AS_LONG_AS_PREFIX);
 	const suffix = !prefix && !hasQuotes ? s.match(AS_LONG_AS_SUFFIX) : null;
-	if (prefix || suffix) {
-		const cond = parseStaticCondition((prefix ?? suffix)![1]);
+	if (prefix) {
+		const prefixMentionsAttached =
+			/\b(?:enchanted|equipped) (?:creature|permanent|artifact|land|planeswalker)\b/i.test(
+				prefix[1]
+			);
+		const cond = parseStaticCondition(
+			prefix[1],
+			prefixMentionsAttached ? 'attachedTo' : 'self'
+		);
 		if (!cond) return null;
 		addCond(cond);
-		s = prefix ? s.slice(prefix[0].length) : s.slice(0, suffix!.index);
+		s = s.slice(prefix[0].length);
+		if (prefixMentionsAttached) {
+			if (/^it's\b/i.test(s)) {
+				s = `Enchanted permanent is${s.slice(4)}`;
+			} else if (/^it\s+/i.test(s)) {
+				s = `Enchanted permanent ${s.slice(3)}`;
+			}
+		}
 		s = s.charAt(0).toUpperCase() + s.slice(1);
+	} else if (suffix) {
+		const suffixAttached =
+			/^(?:enchanted|equipped) (?:creature|permanent|artifact|land|planeswalker|vehicle|plains|island|swamp|mountain|forest)\b/i.test(
+				s
+			);
+		const cond = parseStaticCondition(suffix[1], suffixAttached ? 'attachedTo' : 'self');
+		if (cond) {
+			addCond(cond);
+			s = s.slice(0, suffix.index);
+			s = s.charAt(0).toUpperCase() + s.slice(1);
+		}
 	}
 
 	const productions: Production[] = [
 		replacements,
+		// --- Track P14 ---
+		damagePrevention,
+		// --- End Track P14 ---
 		multipliers,
 		ruleModifiers,
 		topOfLibraryAndGraveyardPlay,
@@ -2882,7 +4740,7 @@ function parseSentence(sentence: string, span: Span, depth = 0): StaticItem[] | 
 		globalChanges,
 		controlChange,
 		combatAndActivationRules,
-		restrictions,
+		restrictions(depth),
 		keywordRemoval,
 		grants(undefined, depth)
 	];
@@ -2962,6 +4820,173 @@ function parseStaticAbilityInner(text: string, offset = 0, depth = 0): StaticPar
 				}
 			}
 			// --- End Track P11 ---
+
+			// --- Track P14: Self-safe Aura protection (CR 702.16n, 702.16p), 2-sentence Phantom prevention, & Kess exile ---
+			const auraExempt = nextTrimmed.match(
+				/^This effect doesn't remove (~|Auras|Auras you control|Auras and Equipment you control)(?: that are already attached to (?:it|~|that creature|enchanted creature))?$/i
+			);
+			if (auraExempt) {
+				const headParsed = parseSentence(sentence.text, sentence.span, depth);
+				if (headParsed && headParsed.length > 0) {
+					const rawKind = auraExempt[1].toLowerCase();
+					const exMode:
+						| 'self'
+						| 'allAuras'
+						| 'controlledAuras'
+						| 'controlledAttachments' =
+						rawKind === '~'
+							? 'self'
+							: rawKind === 'auras'
+								? 'allAuras'
+								: rawKind === 'auras you control'
+									? 'controlledAuras'
+									: 'controlledAttachments';
+					let attachedAny = false;
+					for (const hi of headParsed) {
+						if (hi.kind === 'static' && hi.static.k === 'continuous' && hi.static.layer === '6') {
+							if (
+								hi.static.mod.k === 'addKeywords' &&
+								hi.static.mod.keywords.some((kw) => kw.includes('protection from'))
+							) {
+								hi.static.mod.protectionAttachmentExemption = exMode;
+								attachedAny = true;
+							} else if (hi.static.mod.k === 'protectionFromChosenColor') {
+								hi.static.mod.protectionAttachmentExemption = exMode;
+								attachedAny = true;
+							}
+						}
+					}
+					if (attachedAny) {
+						items.push(...headParsed);
+						idx += 1;
+						continue;
+					}
+				}
+			}
+
+			const phantomHead = trimmed.match(
+				/^If (combat |noncombat )?damage would be dealt to ~(?: while it has (?:a|an|one) (.+?) counter on (?:it|~))?, prevent (?:all of )?that damage$/i
+			);
+			const phantomTail = nextTrimmed.match(
+				/^Remove (a|an|one|that many) (.+?) counters? from (?:~|it)$/i
+			);
+			if (phantomHead && phantomTail) {
+				const kindRaw = phantomHead[1]?.trim().toLowerCase();
+				const whileCtr = phantomHead[2] ? lookupStaticCounter(phantomHead[2]) : undefined;
+				const modeRaw = phantomTail[1].toLowerCase();
+				const remCtr = lookupStaticCounter(phantomTail[2]);
+				if (remCtr && (!phantomHead[2] || whileCtr === remCtr)) {
+					items.push({
+						kind: 'static',
+						static: {
+							k: 'staticDamagePrevention',
+							...(kindRaw === 'combat' ? { combatOnly: true } : {}),
+							...(kindRaw === 'noncombat' ? { noncombatOnly: true } : {}),
+							amount: 'all',
+							target: 'self',
+							phantomCounterRemoval: {
+								counter: remCtr,
+								mode: modeRaw === 'that many' ? 'thatMany' : 'one',
+								...(whileCtr ? { requireCounterPresent: true } : {})
+							}
+						}
+					});
+					idx += 1;
+					continue;
+				}
+			}
+
+			if (
+				/^If a spell cast this way would be put into (?:your|a) graveyard, exile it instead$/i.test(
+					nextTrimmed
+				)
+			) {
+				const headParsed = parseSentence(sentence.text, sentence.span, depth);
+				if (
+					headParsed &&
+					headParsed.length > 0 &&
+					headParsed.every(
+						(hi) =>
+							hi.kind === 'static' &&
+							hi.static.k === 'zonePlayPermission' &&
+							Boolean(hi.static.allowSpells)
+					)
+				) {
+					for (const hi of headParsed) {
+						if (hi.kind === 'static' && hi.static.k === 'zonePlayPermission') {
+							hi.static.exileIfPutIntoGraveyard = true;
+						}
+					}
+					items.push(...headParsed);
+					idx += 1;
+					continue;
+				}
+			}
+
+			const otherwiseMatch = nextTrimmed.match(/^Otherwise,\s+(.+)$/i);
+			if (otherwiseMatch) {
+				const headParsed = parseSentence(sentence.text, sentence.span, depth);
+				if (
+					headParsed &&
+					headParsed.length > 0 &&
+					headParsed.every(
+						(hi) =>
+							hi.kind === 'static' &&
+							'condition' in hi.static &&
+							Boolean(hi.static.condition)
+					)
+				) {
+					const firstStatic = (headParsed[0] as Extract<StaticItem, { kind: 'static' }>).static;
+					const headCond =
+						'condition' in firstStatic ? firstStatic.condition : undefined;
+					const condJson = headCond ? JSON.stringify(headCond) : '';
+					const sameCond =
+						Boolean(headCond) &&
+						headParsed.every(
+							(hi) =>
+								hi.kind === 'static' &&
+								'condition' in hi.static &&
+								JSON.stringify(hi.static.condition) === condJson
+						);
+					if (sameCond && headCond) {
+						const allAttached = headParsed.every(
+							(hi) =>
+								hi.kind === 'static' &&
+								'affected' in hi.static &&
+								hi.static.affected === 'attachedTo'
+						);
+						let tailBody = otherwiseMatch[1].trim();
+						if (allAttached) {
+							if (/^it's\b/i.test(tailBody)) {
+								tailBody = `Enchanted permanent is${tailBody.slice(4)}`;
+							} else if (/^it\s+/i.test(tailBody)) {
+								tailBody = `Enchanted permanent ${tailBody.slice(3)}`;
+							}
+						}
+						tailBody = tailBody.charAt(0).toUpperCase() + tailBody.slice(1);
+						const tailParsed = parseSentence(
+							`${tailBody}.`,
+							sentences[idx + 1].span,
+							depth
+						);
+						if (
+							tailParsed &&
+							tailParsed.length > 0 &&
+							tailParsed.every((ti) =>
+								ti.kind === 'replacement'
+									? !ti.replacement.condition
+									: !('condition' in ti.static && ti.static.condition)
+							) &&
+							withCondition(tailParsed, { k: 'not', of: headCond })
+						) {
+							items.push(...headParsed, ...tailParsed);
+							idx += 1;
+							continue;
+						}
+					}
+				}
+			}
+			// --- End Track P14 ---
 		}
 
 		if (/^(?:it's|they're|it is) still (?:a |an )?(?:lands?|artifacts?|enchantments?|planeswalkers?)$/i.test(trimmed)) {

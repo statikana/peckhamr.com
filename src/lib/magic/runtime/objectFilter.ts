@@ -57,6 +57,13 @@ import {
 	computePartyCount
 } from './staticsDynamicAndCosts.ts';
 // --- End Track P11 ---
+// --- Track P14 ---
+import {
+	evaluateWave5Amount,
+	evaluateWave5Condition,
+	matchesWave5ObjectFilter
+} from './staticsAndCostsWave5.ts';
+// --- End Track P14 ---
 
 export interface FilterContext {
 	state: GameState;
@@ -612,6 +619,9 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 	// --- Track P12 ---
 	if (!matchesP12ObjectFilter(obj, filter, ctx, matchesObjectFilter)) return false;
 	// --- End Track P12 ---
+	// --- Track P14 ---
+	if (!matchesWave5ObjectFilter(obj, filter, ctx)) return false;
+	// --- End Track P14 ---
 	return true;
 }
 
@@ -758,6 +768,15 @@ export function evaluateAmount(amount: Amount, ctx: FilterContext): number {
 			);
 		}
 		// --- End Track P11 ---
+		// --- Track P14 ---
+		case 'devotion':
+		case 'targetsBeyondFirst':
+		case 'colorsOfObject':
+		case 'greatestStatAmong':
+		case 'totalStatOf':
+		case 'anyNumber':
+			return evaluateWave5Amount(amount, ctx) ?? 0;
+		// --- End Track P14 ---
 		default:
 			return 0;
 	}
@@ -886,6 +905,12 @@ export function evaluateCondition(cond: Condition, ctx: FilterContext): boolean 
 		case 'spellsCastThisTurnCount':
 			return evaluateP12Condition(cond, ctx, matchesObjectFilter) ?? false;
 		// --- End Track P12 ---
+		// --- Track P14 ---
+		case 'anyOpponentMetric':
+		case 'cardsDrawnThisTurnAtLeast':
+		case 'nthMatchingSpellThisTurn':
+			return evaluateWave5Condition(cond, ctx) ?? false;
+		// --- End Track P14 ---
 		default:
 			return false;
 	}

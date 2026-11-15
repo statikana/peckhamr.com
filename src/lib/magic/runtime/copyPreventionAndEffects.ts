@@ -22,6 +22,9 @@ import {
 	effectiveCardForObject,
 	scrubFaceDownCard
 } from '../scryfall.ts';
+// --- Track P14 ---
+import { applyStaticDamagePreventionWave5 } from './staticsAndCostsWave5.ts';
+// --- End Track P14 ---
 import type {
 	CardInstance,
 	CopiableState,
@@ -297,15 +300,37 @@ export function applyDamagePreventionShields(
 		sourceInst?: CardInstance;
 		sourceId?: string;
 		sourceTypes?: readonly string[];
+		// --- Track P14 ---
+		sourceCard?: ScryfallCard;
+		sourceControllerId?: string;
+		// --- End Track P14 ---
 	}
 ): number {
 	if (opts.amount <= 0) return 0;
-	if (isDamageUnpreventable(state, opts.isCombat)) return opts.amount;
+	// --- Track P14 (CR 615.1, 615.5–6, 615.10, 615.12): Static damage prevention & Phantom counter removal ---
+	const unpreventable = isDamageUnpreventable(state, opts.isCombat);
+	let remainingDamage = applyStaticDamagePreventionWave5(
+		state,
+		{
+			amount: opts.amount,
+			isCombat: opts.isCombat,
+			targetKind: opts.targetKind,
+			targetPerm: opts.targetPerm,
+			targetPlayerId: opts.targetKind === 'player' ? opts.targetId : undefined,
+			sourceInstanceId: opts.sourceInst?.instanceId ?? opts.sourceId,
+			sourceInfo:
+				opts.sourceCard || opts.sourceControllerId
+					? { card: opts.sourceCard, controllerId: opts.sourceControllerId }
+					: undefined
+		},
+		unpreventable
+	);
+	if (remainingDamage <= 0) return 0;
+	if (unpreventable) return remainingDamage;
+	// --- End Track P14 ---
 
 	const shields = state.damagePreventionShields;
-	if (!shields || shields.length === 0) return opts.amount;
-
-	let remainingDamage = opts.amount;
+	if (!shields || shields.length === 0) return remainingDamage;
 
 	// First check infinite shields (e.g. "Prevent all [combat] damage ...") so finite "next N" shields
 	// aren't needlessly consumed when an infinite shield already prevents all of this event's damage.

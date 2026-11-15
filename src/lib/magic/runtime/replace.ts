@@ -579,6 +579,9 @@ export function checkGlobalAbilityActivationRestrictions(
 	}
 	const activePlayer = state.players[state.activePlayerIndex];
 	for (const mod of activeRuleModifiers(state, 'opponentsCantCastDuringYourTurn', actorId)) {
+		// --- Track P14: spell-only "Your opponents can't cast spells during your turn" leaves abilities legal ---
+		if (mod.def.params?.spellsOnly) continue;
+		// --- End Track P14 ---
 		if (activePlayer?.playerId === mod.controllerId) {
 			const p = state.players.find((pl) => pl.playerId === mod.controllerId);
 			return {
@@ -1397,6 +1400,11 @@ export function applySelfEtbReplacements(state: GameState, perm: CardInstance): 
 		if (rep.with.tapped && !rep.with.copyOf) {
 			perm.tapped = true;
 		}
+		// --- Track P14 (CR 723.3a): "~ enters prepared." ---
+		if (rep.with.entersPrepared) {
+			perm.isPrepared = true;
+		}
+		// --- End Track P14 ---
 		if (ctrl?.isBot) {
 			if (rep.with.chooseColor && !perm.chosenColor) {
 				perm.chosenColor = chooseBotBestColor(state, ctrl, rep.with.chooseColor.exclude, perm);

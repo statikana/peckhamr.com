@@ -490,6 +490,31 @@ export function getStaticBlockerPairRestrictionReason(
 				return `Strict Rules Violation: ${blocker.card.name} cannot block ${attacker.card.name} (${entry.sourceName} restriction, CR 509.1b).`;
 			}
 		}
+		// --- Track P14 ---
+		if (entry.rule.kind === 'cantBlockFilter') {
+			if (
+				matchesObjectFilter(attacker, entry.rule.filter, {
+					state,
+					controllerId: entry.sourceControllerId,
+					source: entry.sourcePerm
+				})
+			) {
+				return `Strict Rules Violation: ${blocker.card.name} cannot block ${attacker.card.name} (${entry.sourceName} restriction, CR 509.1b).`;
+			}
+		} else if (entry.rule.kind === 'cantBlockPowerGreaterThanSelf') {
+			const blkP = objectPower(state, blocker) ?? 0;
+			const atkP = objectPower(state, attacker) ?? 0;
+			if (atkP > blkP) {
+				return `Strict Rules Violation: ${blocker.card.name} (power ${blkP}) cannot block ${attacker.card.name} (power ${atkP}, CR 509.1b).`;
+			}
+		} else if (entry.rule.kind === 'cantBlockPowerLessThanSelf') {
+			const blkP = objectPower(state, blocker) ?? 0;
+			const atkP = objectPower(state, attacker) ?? 0;
+			if (atkP < blkP) {
+				return `Strict Rules Violation: ${blocker.card.name} (power ${blkP}) cannot block ${attacker.card.name} (power ${atkP}, CR 509.1b).`;
+			}
+		}
+		// --- End Track P14 ---
 	}
 
 	// 2. Attacker's evasion abilities
@@ -524,6 +549,36 @@ export function getStaticBlockerPairRestrictionReason(
 				}
 				break;
 			}
+			// --- Track P14 ---
+			case 'cantBeBlockedIfDefenderControls': {
+				const atkEntry = state.combat.attackers.find(
+					(a) => a.attackerInstanceId === attacker.instanceId
+				);
+				const defPlayerId =
+					atkEntry?.defenderPlayerId ?? evaluatePermanent(state, blocker).controllerId;
+				const defPlayer = state.players.find((p) => p.playerId === defPlayerId && !p.lost);
+				const filterWithoutCtrl: ObjectFilter = {
+					...entry.rule.filter,
+					controller: undefined
+				};
+				if (
+					defPlayer?.battlefield.some(
+						(perm) => !perm.phasedOut && matchesObjectFilter(perm, filterWithoutCtrl, ctx)
+					)
+				) {
+					return `Strict Rules Violation: ${blocker.card.name} cannot block ${attacker.card.name} (${entry.sourceName} evasion, CR 509.1b).`;
+				}
+				break;
+			}
+			case 'cantBeBlockedByPowerGreaterThanSelf': {
+				const blkP = objectPower(state, blocker) ?? 0;
+				const refP = objectPower(state, attacker) ?? 0;
+				if (blkP > refP) {
+					return `Strict Rules Violation: ${blocker.card.name} (power ${blkP}) cannot block ${attacker.card.name} (power ${refP}, CR 509.1b).`;
+				}
+				break;
+			}
+			// --- End Track P14 ---
 		}
 	}
 
@@ -1633,6 +1688,12 @@ export function getActiveZoneLandPlayPermissionSource(
 				if (ab.kind !== 'static' || ab.static.k !== 'zonePlayPermission') continue;
 				const st = ab.static;
 				if (st.zone !== zone || !st.allowLands) continue;
+				// --- Track P14: slotted & self-only permissions are resolved via Wave 5 slot helpers ---
+				if (st.affects === 'self' || (st.slotMode && st.slotMode !== 'unlimited')) continue;
+				if (st.duringYourTurnOnly && state.players[state.activePlayerIndex]?.playerId !== playerId) {
+					continue;
+				}
+				// --- End Track P14 ---
 				if (
 					st.condition &&
 					!evaluateCondition(st.condition, {
@@ -1694,6 +1755,12 @@ export function getActiveTopOfLibrarySpellPermissionSource(
 				if (ab.kind !== 'static' || ab.static.k !== 'zonePlayPermission') continue;
 				const st = ab.static;
 				if (st.zone !== 'library' || !st.allowSpells) continue;
+				// --- Track P14 ---
+				if (st.affects === 'self' || (st.slotMode && st.slotMode !== 'unlimited')) continue;
+				if (st.duringYourTurnOnly && state.players[state.activePlayerIndex]?.playerId !== playerId) {
+					continue;
+				}
+				// --- End Track P14 ---
 				if (
 					st.condition &&
 					!evaluateCondition(st.condition, {

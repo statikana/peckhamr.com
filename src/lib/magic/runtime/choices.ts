@@ -162,7 +162,9 @@ export function buildCostChoiceRequest(
 		kind: 'chooseObjects',
 		candidates: question.candidateIds,
 		min: question.count,
-		max: question.count,
+		// --- Track P14 ---
+		max: question.maxCount ?? question.count,
+		// --- End Track P14 ---
 		zone,
 		reason: question.label
 	};

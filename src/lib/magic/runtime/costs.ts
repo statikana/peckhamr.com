@@ -71,9 +71,17 @@ import { moveObject, tapPermanent, type MoveResult, type PlayerZone } from './zo
 // --- Track P10 ---
 import { resolveQuotedAbilityDefs } from './reflexiveManaAndActions.ts';
 // --- End Track P10 ---
+import { effectiveCardForObject } from '../scryfall.ts';
 // --- Track P12 ---
 import { recordPlayerLifeLossWave4 } from './keywordsWave4.ts';
 // --- End Track P12 ---
+// --- Track P14 ---
+import {
+	addCountersForCostOnPermanent,
+	findBeholdCandidates,
+	findWaterbendTapCandidates
+} from './staticsAndCostsWave5.ts';
+// --- End Track P14 ---
 
 export type { SerializedPlannedCost };
 export {
@@ -275,7 +283,13 @@ export function spellChoosesX(
 	}
 	if (/\{X\}/i.test(costStr)) return true;
 	if (extraManaCosts?.some((c) => /\{X\}/i.test(c))) return true;
-	const mentionsX = (defs: CostDef[] | undefined) => JSON.stringify(defs ?? []).includes('"k":"x"');
+	// --- Track P14 ---
+	const mentionsX = (defs: CostDef[] | undefined): boolean => {
+		if (!defs || defs.length === 0) return false;
+		const serialized = JSON.stringify(defs);
+		return serialized.includes('"k":"x"') || /\{X\}/i.test(serialized);
+	};
+	// --- End Track P14 ---
 	if (mentionsX(altCostDefs)) return true;
 	if (isFaceDown) return false;
 	return abilitiesOf(card, faceIndex, fused).some(
@@ -479,7 +493,7 @@ function effectiveSpellManaCostInner(
 		return true;
 	};
 
-	const stackProxy: CardInstance & { targets?: TargetRef[] } = {
+	const stackProxy: CardInstance & { targets?: TargetRef[]; castSourceZone?: CardInstance['zone'] } = {
 		...inst,
 		zone: 'stack',
 		activeFaceIndex: faceIndex,
@@ -487,8 +501,11 @@ function effectiveSpellManaCostInner(
 		...(faceDownSpec ? { isFaceDown: true, faceDownSpec } : {}),
 		...(fused ? { copiableState: { ...(inst.copiableState ?? { card }), faceIndex, fused: true } } : {}),
 		// --- Track P11 ---
-		...(chosenTargets !== undefined ? { targets: chosenTargets } : {})
+		...(chosenTargets !== undefined ? { targets: chosenTargets } : {}),
 		// --- End Track P11 ---
+		// --- Track P14 ---
+		castSourceZone: inst.zone
+		// --- End Track P14 ---
 	};
 	const matchesSpell = (
 		mod: Extract<StaticDef, { k: 'costModifier' }>,
@@ -893,7 +910,13 @@ export function manaAbilityAmount(
 // ---- Describing costs (display only) ---------------------------------------------------------
 
 function amountText(a: Amount): string {
-	return a.k === 'const' ? String(a.n) : a.k === 'x' ? 'X' : 'N';
+	return a.k === 'const'
+		? String(a.n)
+		: a.k === 'x'
+			? 'X'
+			: a.k === 'anyNumber'
+				? 'any number of'
+				: 'N';
 }
 
 function filterText(f: ObjectFilter, n: Amount): string {
@@ -978,6 +1001,25 @@ export function describeCost(defs: CostDef[]): string {
 					return d.options.map((o) => describeCost(o)).join(' or ');
 				case 'optional':
 					return `You may: ${describeCost(d.cost)}`;
+				// --- Track P14 ---
+				case 'waterbend':
+					return `Waterbend ${d.cost}`;
+				case 'behold':
+					return `Behold ${filterText(d.filter, d.count)}`;
+				case 'putCounters': {
+					const onStr =
+						d.on === 'self'
+							? 'on this'
+							: `on ${filterText(d.on, { k: 'const', n: 1 })} you control`;
+					return `Put ${amountText(d.count)} ${d.counter} counter(s) ${onStr}`;
+				}
+				case 'discardHand':
+					return 'Discard your hand';
+				case 'putFromHandOnTopOfLibrary':
+					return `Put ${filterText(d.filter ?? {}, d.count)} from your hand on top of your library`;
+				case 'tapAttached':
+					return 'Tap attached permanent';
+				// --- End Track P14 ---
 				default: {
 					const extra = d as { k: string; count?: Amount };
 					if (extra.k === 'mill' && extra.count) {
@@ -1021,6 +1063,9 @@ export type CostQuestion =
 			index: number;
 			label: string;
 			count: number;
+			// --- Track P14 ---
+			maxCount?: number;
+			// --- End Track P14 ---
 			candidateIds: string[];
 			minTotal?: number;
 			metric?: 'power';
@@ -1040,7 +1085,12 @@ type ObjectCostDef = Extract<
 			// --- Track P9 ---
 			| 'returnToHand'
 			// --- Track P11 ---
-			| 'removeCounters';
+			| 'removeCounters'
+			// --- Track P14 ---
+			| 'behold'
+			| 'putCounters'
+			| 'putFromHandOnTopOfLibrary';
+			// --- End Track P14 ---
 	}
 >;
 
@@ -1195,6 +1245,34 @@ function objectCandidates(def: ObjectCostDef, ctx: CostContext, used: Set<string
 					totalMatchingCountersOn(c, def.counter) >= needed
 			);
 		}
+		// --- Track P14 ---
+		case 'behold':
+			return findBeholdCandidates(
+				ctx.state,
+				ctx.player,
+				ctx.source,
+				ctx.isSpell,
+				def.filter,
+				used
+			);
+		case 'putCounters': {
+			if (def.on === 'self') return null;
+			const onFilter = def.on;
+			return ctx.player.battlefield.filter(
+				(c) =>
+					!(ctx.isSpell && c.instanceId === ctx.source.instanceId) &&
+					!c.phasedOut &&
+					!hasRestriction(ctx.state, c, 'cantHaveCounters') &&
+					matchesObjectFilter(c, { ...onFilter, controller: 'you' }, fctx)
+			);
+		}
+		case 'putFromHandOnTopOfLibrary': {
+			const filter = def.filter;
+			return ctx.player.hand.filter(
+				(c) => free(c) && (!filter || matchesObjectFilter(c, filter, fctx))
+			);
+		}
+		// --- End Track P14 ---
 	}
 }
 
@@ -1313,6 +1391,50 @@ function checkSimple(def: CostDef, ctx: CostContext): string | null {
 				return `${name} must be on the battlefield to be returned to hand.`;
 			}
 			return null;
+		// --- Track P14 ---
+		case 'putCounters': {
+			const count = n(def.count, ctx);
+			if (def.on === 'self') {
+				if (!sourceOnBattlefield(ctx)) {
+					return `${name} must be on the battlefield.`;
+				}
+				if (count > 0 && hasRestriction(ctx.state, src, 'cantHaveCounters')) {
+					return `${name} cannot have counters put on it.`;
+				}
+				return null;
+			}
+			const onFilter: ObjectFilter = def.on;
+			const fctx = filterCtx(ctx);
+			const hasEligible = ctx.player.battlefield.some(
+				(c) =>
+					!(ctx.isSpell && c.instanceId === src.instanceId) &&
+					!c.phasedOut &&
+					!hasRestriction(ctx.state, c, 'cantHaveCounters') &&
+					matchesObjectFilter(c, { ...onFilter, controller: 'you' }, fctx)
+			);
+			if (!hasEligible) {
+				return 'No eligible permanent you control to put counters on.';
+			}
+			return null;
+		}
+		case 'tapAttached': {
+			if (!src.attachedToId) {
+				return `${name} is not attached to a permanent.`;
+			}
+			const host = ctx.state.players
+				.flatMap((pl) => pl.battlefield)
+				.find((c) => !c.phasedOut && c.instanceId === src.attachedToId);
+			if (!host) {
+				return `${name} is not attached to a permanent on the battlefield.`;
+			}
+			if (host.tapped) {
+				return `${host.card.name} is already tapped.`;
+			}
+			return null;
+		}
+		case 'discardHand':
+			return null;
+		// --- End Track P14 ---
 		default: {
 			const extra = def as { k: string; count?: Amount };
 			if (extra.k === 'mill' && extra.count) {
@@ -1452,6 +1574,125 @@ function planFlat(ctx: CostContext, flat: Flat[], objects: string[][] | undefine
 			parts.push({ def });
 			continue;
 		}
+		// --- Track P14 (CR 701.67a–b): Waterbend [cost] ---
+		if (def.k === 'waterbend') {
+			const wbReq = parseManaCost(def.cost, ctx.xValue);
+			const nonGenWb: ManaCostRequirement = {
+				...wbReq,
+				generic: 0,
+				totalCmc: Math.max(0, wbReq.totalCmc - wbReq.generic)
+			};
+			if (
+				nonGenWb.totalCmc > 0 ||
+				(nonGenWb.snow ?? 0) > 0 ||
+				(nonGenWb.flexibleSymbols?.length ?? 0) > 0
+			) {
+				mana = addRequirements(mana, nonGenWb);
+			}
+			const wbExclude = tapsSelf ? new Set([...used, ctx.source.instanceId]) : used;
+			const rawCandidates = findWaterbendTapCandidates(
+				ctx.state,
+				ctx.player,
+				ctx.source,
+				ctx.isSpell,
+				wbExclude
+			);
+			const candidates = [...rawCandidates].sort((a, b) => {
+				const aMana = activeAbilityDefs(
+					effectiveCardForObject(a),
+					instanceFaceOptions(a, 'battlefield')
+				).some((ab) => ab.kind === 'activated' && ab.isMana);
+				const bMana = activeAbilityDefs(
+					effectiveCardForObject(b),
+					instanceFaceOptions(b, 'battlefield')
+				).some((ab) => ab.kind === 'activated' && ab.isMana);
+				if (aMana !== bMana) return aMana ? 1 : -1;
+				if (a.isToken !== b.isToken) return a.isToken ? -1 : 1;
+				return (a.card.cmc ?? 0) - (b.card.cmc ?? 0);
+			});
+			const maxTap = Math.min(wbReq.generic, candidates.length);
+			if (maxTap <= 0) {
+				if (wbReq.generic > 0) {
+					mana = addRequirements(mana, {
+						colored: { W: 0, U: 0, B: 0, R: 0, G: 0, C: 0 },
+						generic: wbReq.generic,
+						hasX: false,
+						xCount: 0,
+						totalCmc: wbReq.generic
+					});
+				}
+				parts.push({ def, objects: [] });
+				continue;
+			}
+			const index = objectIndex++;
+			const chosenIds = objects?.[index];
+			if (chosenIds !== undefined) {
+				if (new Set(chosenIds).size !== chosenIds.length) {
+					return { ok: false, error: `Duplicate choice for: ${describeCost([def])}.` };
+				}
+				if (chosenIds.length > wbReq.generic) {
+					return {
+						ok: false,
+						error: `Cannot tap more than ${wbReq.generic} permanent(s) for ${describeCost([def])} (CR 701.67b).`
+					};
+				}
+				const byId = new Map(candidates.map((c) => [c.instanceId, c]));
+				if (chosenIds.some((id) => !byId.has(id))) {
+					return { ok: false, error: `Illegal choice for: ${describeCost([def])}.` };
+				}
+				const chosen = chosenIds.map((id) => byId.get(id)!);
+				const remGen = Math.max(0, wbReq.generic - chosen.length);
+				if (remGen > 0) {
+					mana = addRequirements(mana, {
+						colored: { W: 0, U: 0, B: 0, R: 0, G: 0, C: 0 },
+						generic: remGen,
+						hasX: false,
+						xCount: 0,
+						totalCmc: remGen
+					});
+				}
+				for (const c of chosen) used.add(c.instanceId);
+				parts.push({ def, objects: chosen });
+				continue;
+			}
+			let minTap = maxTap + 1;
+			for (let k = 0; k <= maxTap; k++) {
+				const picked = candidates.slice(0, k);
+				const remGen = Math.max(0, wbReq.generic - k);
+				const testMana =
+					remGen > 0
+						? addRequirements(mana, {
+								colored: { W: 0, U: 0, B: 0, R: 0, G: 0, C: 0 },
+								generic: remGen,
+								hasX: false,
+								xCount: 0,
+								totalCmc: remGen
+							})
+						: mana;
+				const testUsed = new Set(used);
+				for (const p of picked) testUsed.add(p.instanceId);
+				const testParts = [...parts, { def, objects: picked }];
+				if (!testMana || canPayManaAfterTaps(ctx, testParts, testMana, testUsed)) {
+					minTap = k;
+					break;
+				}
+			}
+			if (minTap > maxTap) {
+				return { ok: false, error: `Insufficient mana to pay ${describeCost([def])}.` };
+			}
+			return {
+				ok: true,
+				question: {
+					kind: 'objects',
+					index,
+					label: describeCost([def]),
+					count: minTap,
+					maxCount: maxTap,
+					candidateIds: candidates.map((c) => c.instanceId)
+				}
+			};
+		}
+		// --- End Track P14 ---
 		if (
 			def.k !== 'tapOthers' &&
 			def.k !== 'tapSubsetSum' &&
@@ -1462,7 +1703,12 @@ function planFlat(ctx: CostContext, flat: Flat[], objects: string[][] | undefine
 			// --- Track P9 ---
 			def.k !== 'returnToHand' &&
 			// --- Track P11 ---
-			def.k !== 'removeCounters'
+			def.k !== 'removeCounters' &&
+			// --- Track P14 ---
+			def.k !== 'behold' &&
+			def.k !== 'putCounters' &&
+			def.k !== 'putFromHandOnTopOfLibrary'
+			// --- End Track P14 ---
 		) {
 			parts.push({ def });
 			continue;
@@ -1471,7 +1717,12 @@ function planFlat(ctx: CostContext, flat: Flat[], objects: string[][] | undefine
 			((def.k === 'tapOthers' || def.k === 'tapSubsetSum') && tapsSelf) ||
 			(discardsSelf &&
 				(def.k === 'revealFromHand' ||
+					// --- Track P14 ---
+					def.k === 'behold' ||
+					def.k === 'putFromHandOnTopOfLibrary' ||
+					// --- End Track P14 ---
 					(def.k !== 'removeCounters' &&
+						def.k !== 'putCounters' &&
 						def.filter !== 'self' &&
 						(def.k === 'discard' || (def.k === 'exileFrom' && def.zone === 'hand'))))) ||
 			(exilesSelfFromGraveyard &&
@@ -1545,9 +1796,47 @@ function planFlat(ctx: CostContext, flat: Flat[], objects: string[][] | undefine
 			parts.push({ def, objects: chosen });
 			continue;
 		}
-		// --- Track P11: removeCounters from a single permanent chooses 1 object with >= N counters ---
-		const count = def.k === 'removeCounters' ? 1 : n(def.count, ctx);
-		// --- End Track P11 ---
+		// --- Track P14: anyNumber variable-count object selection & putCounters single-permanent choice ---
+		const isAnyNumber = 'count' in def && def.count.k === 'anyNumber';
+		if (isAnyNumber) {
+			if (candidates.length === 0) {
+				parts.push({ def, objects: [] });
+				continue;
+			}
+			const index = objectIndex++;
+			const chosenIds = objects?.[index];
+			if (chosenIds !== undefined) {
+				if (new Set(chosenIds).size !== chosenIds.length) {
+					return { ok: false, error: `Duplicate choice for: ${describeCost([def])}.` };
+				}
+				const byId = new Map(candidates.map((c) => [c.instanceId, c]));
+				if (chosenIds.some((id) => !byId.has(id))) {
+					return { ok: false, error: `Illegal choice for: ${describeCost([def])}.` };
+				}
+				const chosen = chosenIds.map((id) => byId.get(id)!);
+				if (def.k !== 'removeCounters' && def.k !== 'putCounters' && def.k !== 'behold') {
+					for (const c of chosen) used.add(c.instanceId);
+				}
+				parts.push({ def, objects: chosen });
+				continue;
+			}
+			return {
+				ok: true,
+				question: {
+					kind: 'objects',
+					index,
+					label: describeCost([def]),
+					count: 0,
+					maxCount: candidates.length,
+					candidateIds: candidates.map((c) => c.instanceId)
+				}
+			};
+		}
+		// --- End Track P14 ---
+		// --- Track P11 + Track P14: removeCounters / putCounters from/on a single permanent chooses 1 object ---
+		const count =
+			def.k === 'removeCounters' || def.k === 'putCounters' ? 1 : n(def.count, ctx);
+		// --- End Track P11 + Track P14 ---
 		if (candidates.length < count) {
 			return { ok: false, error: `Can't pay the cost: ${describeCost([def])} (not enough to choose from).` };
 		}
@@ -1583,7 +1872,7 @@ function planFlat(ctx: CostContext, flat: Flat[], objects: string[][] | undefine
 				}
 			};
 		}
-		if (def.k !== 'removeCounters') {
+		if (def.k !== 'removeCounters' && def.k !== 'putCounters' && def.k !== 'behold') {
 			for (const c of chosen) used.add(c.instanceId);
 		}
 		parts.push({ def, objects: chosen });
@@ -1627,7 +1916,23 @@ function tapTargets(ctx: CostContext, parts: PlannedCost[]): CardInstance[] {
 	const out: CardInstance[] = [];
 	for (const p of parts) {
 		if (p.def.k === 'tapSelf') out.push(ctx.source);
-		if (p.def.k === 'tapOthers' || p.def.k === 'tapSubsetSum') out.push(...(p.objects ?? []));
+		if (
+			p.def.k === 'tapOthers' ||
+			p.def.k === 'tapSubsetSum' ||
+			// --- Track P14 ---
+			p.def.k === 'waterbend'
+			// --- End Track P14 ---
+		) {
+			out.push(...(p.objects ?? []));
+		}
+		// --- Track P14 ---
+		if (p.def.k === 'tapAttached' && ctx.source.attachedToId) {
+			const host = ctx.state.players
+				.flatMap((pl) => pl.battlefield)
+				.find((c) => !c.phasedOut && c.instanceId === ctx.source.attachedToId);
+			if (host) out.push(host);
+		}
+		// --- End Track P14 ---
 	}
 	return out;
 }
@@ -1737,7 +2042,7 @@ export function chooseCostPayment(ctx: CostContext, defs: CostDef[]): CostPaymen
 			.slice(0, count)
 			.map((c) => c.instanceId);
 	const objects: string[][] = [];
-	for (;;) {
+	for (let guard = 0; guard < 32; guard++) {
 		const plan = planFlat(ctx, result.flat, objects);
 		if (!plan.ok) return null;
 		if (!plan.question) {
@@ -1751,11 +2056,31 @@ export function chooseCostPayment(ctx: CostContext, defs: CostDef[]): CostPaymen
 		const candidates = q.candidateIds
 			.map((id) => findById(ctx, id))
 			.filter((c): c is CardInstance => c !== undefined);
+		// --- Track P14: For waterbend, tap non-mana artifacts/creatures first (saving mana sources) ---
+		if (q.maxCount !== undefined) {
+			let pickCount = q.count;
+			if (q.label.startsWith('Waterbend ')) {
+				let nonManaPrefix = 0;
+				for (let ci = 0; ci < candidates.length && ci < q.maxCount; ci++) {
+					const hasMana = activeAbilityDefs(
+						effectiveCardForObject(candidates[ci]),
+						instanceFaceOptions(candidates[ci], 'battlefield')
+					).some((ab) => ab.kind === 'activated' && ab.isMana);
+					if (hasMana) break;
+					nonManaPrefix += 1;
+				}
+				if (nonManaPrefix > pickCount) pickCount = nonManaPrefix;
+			}
+			objects[q.index] = candidates.slice(0, pickCount).map((c) => c.instanceId);
+			continue;
+		}
+		// --- End Track P14 ---
 		objects[q.index] =
 			q.minTotal !== undefined && q.candidateWeights
 				? selectSubsetForMinSum(candidates, q.minTotal, q.candidateWeights)
 				: greedy(candidates, q.count);
 	}
+	return null;
 }
 
 /** Can `defs` be paid in some way? Object choices are made greedily (tokens first, then cheapest). */
@@ -1870,7 +2195,13 @@ export function serializeCostPlanParts(
 			// --- Track P9 ---
 			def.k === 'returnToHand' ||
 			// --- Track P11 ---
-			(def.k === 'removeCounters' && part.objects !== undefined)
+			(def.k === 'removeCounters' && part.objects !== undefined) ||
+			// --- Track P14 ---
+			def.k === 'waterbend' ||
+			def.k === 'behold' ||
+			(def.k === 'putCounters' && part.objects !== undefined) ||
+			def.k === 'putFromHandOnTopOfLibrary'
+			// --- End Track P14 ---
 		) {
 			const objs = 'filter' in def && def.filter === 'self' ? [ctx.source] : (part.objects ?? []);
 			return {
@@ -1879,6 +2210,18 @@ export function serializeCostPlanParts(
 				objectNames: objs.map((c) => c.card.name)
 			};
 		}
+		// --- Track P14 ---
+		if (def.k === 'discardHand') {
+			const handCards = ctx.player.hand.filter(
+				(c) => !(ctx.isSpell && c.instanceId === ctx.source.instanceId)
+			);
+			return {
+				def,
+				objectIds: handCards.map((c) => c.instanceId),
+				objectNames: handCards.map((c) => c.card.name)
+			};
+		}
+		// --- End Track P14 ---
 		if ((def as { k: string }).k === 'mill') {
 			const extra = def as { k: string; count?: Amount };
 			const millTotal = extra.count ? n(extra.count, ctx) : 0;
@@ -1912,7 +2255,13 @@ export function payTapAndManaCostParts(
 			}
 		}
 		// --- End Track P10 ---
-		if (part.def.k === 'tapOthers' || part.def.k === 'tapSubsetSum') {
+		if (
+			part.def.k === 'tapOthers' ||
+			part.def.k === 'tapSubsetSum' ||
+			// --- Track P14 ---
+			part.def.k === 'waterbend'
+			// --- End Track P14 ---
+		) {
 			const ids = part.objectIds ?? [];
 			const names: string[] = [];
 			for (const id of ids) {
@@ -1923,9 +2272,26 @@ export function payTapAndManaCostParts(
 				}
 			}
 			const labelNames = part.objectNames && part.objectNames.length > 0 ? part.objectNames : names;
-			const targetLog = part.isCostAid && aidDescriptions ? aidDescriptions : descriptions;
-			targetLog.push(`tapped ${labelNames.join(', ')}`);
+			if (labelNames.length > 0) {
+				const targetLog = part.isCostAid && aidDescriptions ? aidDescriptions : descriptions;
+				targetLog.push(
+					part.def.k === 'waterbend'
+						? `tapped ${labelNames.join(', ')} to waterbend`
+						: `tapped ${labelNames.join(', ')}`
+				);
+			}
 		}
+		// --- Track P14 ---
+		if (part.def.k === 'tapAttached' && source.attachedToId) {
+			const host = ctx.state.players
+				.flatMap((pl) => pl.battlefield)
+				.find((c) => !c.phasedOut && c.instanceId === source.attachedToId);
+			if (host) {
+				tapPermanent(ctx.state, host);
+				descriptions.push(`tapped ${host.card.name}`);
+			}
+		}
+		// --- End Track P14 ---
 	}
 	if (mana) {
 		const energyReserved = parts.reduce(
@@ -2187,6 +2553,100 @@ export function executeCostPaymentParts(
 				);
 				break;
 			}
+			// --- Track P14 ---
+			case 'behold': {
+				if (objStart === 0) {
+					const ids = part.objectIds ?? [];
+					for (const id of ids) {
+						const handCard =
+							player.hand.find((c) => c.instanceId === id) ??
+							player.command.find((c) => c.instanceId === id);
+						if (handCard) {
+							markHandCardRevealedToAll(ctx.state, handCard);
+							targetLog.push(`revealed ${handCard.card.name} to behold`);
+							continue;
+						}
+						const perm = player.battlefield.find((c) => c.instanceId === id);
+						if (perm) {
+							targetLog.push(`beheld ${perm.card.name}`);
+						}
+					}
+				}
+				break;
+			}
+			case 'putCounters': {
+				if (objStart === 0) {
+					const amount = n(def.count, ctx);
+					if (amount > 0) {
+						if (def.on === 'self') {
+							if (source.zone === 'battlefield' && !source.phasedOut) {
+								addCountersForCostOnPermanent(ctx.state, source, def.counter, amount);
+								targetLog.push(
+									`put ${amount} ${def.counter} counter(s) on ${source.card.name}`
+								);
+							}
+						} else {
+							const onFilter: ObjectFilter = def.on;
+							const chosenId = part.objectIds?.[0];
+							const fctx = filterCtx(ctx);
+							const targetPerm =
+								(chosenId
+									? player.battlefield.find((c) => c.instanceId === chosenId)
+									: undefined) ??
+								player.battlefield.find(
+									(c) =>
+										!c.phasedOut &&
+										!hasRestriction(ctx.state, c, 'cantHaveCounters') &&
+										matchesObjectFilter(c, { ...onFilter, controller: 'you' }, fctx)
+								);
+							if (targetPerm) {
+								addCountersForCostOnPermanent(ctx.state, targetPerm, def.counter, amount);
+								targetLog.push(
+									`put ${amount} ${def.counter} counter(s) on ${targetPerm.card.name}`
+								);
+							}
+						}
+					}
+				}
+				break;
+			}
+			case 'discardHand': {
+				const ids = part.objectIds ?? [];
+				const names = part.objectNames ?? [];
+				for (let j = objStart; j < ids.length; j++) {
+					const card = player.hand.find((c) => c.instanceId === ids[j]);
+					if (!card) continue;
+					if (moveFromZone(ctx, card, 'hand', 'graveyard', 'discard') === 'pending') {
+						return { descriptions, paused: true, nextPartIndex: partIdx, nextObjectIndex: j + 1 };
+					}
+				}
+				targetLog.push(names.length > 0 ? `discarded hand (${names.join(', ')})` : 'discarded hand');
+				break;
+			}
+			case 'putFromHandOnTopOfLibrary': {
+				const ids = part.objectIds ?? [];
+				const names = part.objectNames ?? [];
+				for (let j = objStart; j < ids.length; j++) {
+					const card = player.hand.find((c) => c.instanceId === ids[j]);
+					if (!card) continue;
+					if (
+						moveObject(ctx.state, card, 'library', {
+							from: { player, zone: 'hand' },
+							toPlayer: player,
+							insert: () => 'start',
+							newTimestamp: true,
+							bumpVersion: true
+						}) === 'pending'
+					) {
+						return { descriptions, paused: true, nextPartIndex: partIdx, nextObjectIndex: j + 1 };
+					}
+				}
+				if (names.length > 0) {
+					targetLog.push(`put ${names.join(', ')} on top of library`);
+				}
+				break;
+			}
+			// --- End Track P14 ---
 			default: {
 				const extra = def as { k: string; count?: Amount };
 				if (extra.k === 'mill' && extra.count) {
@@ -2318,11 +2778,12 @@ export function applyCastCostAids(
 			return { ok: false, error: `Unknown payment aid "${aidId}".` };
 		}
 		const eligible = new Set(aid.candidateIds);
+		// --- Track P14 ---
 		if (
-			aid.kind === 'exileCard' &&
 			aid.maxGenericReduction !== undefined &&
 			rawIds.length * aid.paysGeneric > aid.maxGenericReduction
 		) {
+			// --- End Track P14 ---
 			return {
 				ok: false,
 				error: `Selected ${rawIds.length} card(s) for ${aid.label}, exceeding max reduction ${aid.maxGenericReduction}.`

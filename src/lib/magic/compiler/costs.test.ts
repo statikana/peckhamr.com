@@ -1,7 +1,12 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { parseAdditionalCostSentence, parseCost, parseObjectPhrase } from './costs.ts';
+import {
+	parseAdditionalCostSentence,
+	parseCost,
+	parseCostModifierSentence,
+	parseObjectPhrase
+} from './costs.ts';
 
 const ONE = { k: 'const', n: 1 } as const;
 const n = (value: number) => ({ k: 'const', n: value }) as const;
@@ -28,6 +33,7 @@ describe('Cost grammar: activated ability costs', () => {
 			[{ k: 'tapOthers', count: ONE, filter: { subtypes: ['Elf', 'Goblin', 'Wizard'], controller: 'you', tapped: false } }]
 		],
 		['Discard ~', [{ k: 'discard', count: ONE, filter: 'self' }]],
+		['Discard your hand', [{ k: 'discardHand' }]],
 		['Discard a card', [{ k: 'discard', count: ONE }]],
 		['Discard two cards', [{ k: 'discard', count: n(2) }]],
 		['Discard a card at random', [{ k: 'discard', count: ONE, random: true }]],
@@ -77,7 +83,6 @@ describe('Cost grammar: activated ability costs', () => {
 
 	it('does not claim costs it cannot represent', () => {
 		for (const text of [
-			'Discard your hand',
 			'Exile any number of other cards from your graveyard with four or more card types among them',
 			'Sacrifice a creature that dealt damage this turn',
 			'{E}{E}'
@@ -128,4 +133,174 @@ describe('Cost grammar: object phrases', () => {
 		assert.deepEqual(parseObjectPhrase('Goblin creature'), { subtypes: ['Goblin'], types: ['Creature'] });
 		assert.deepEqual(parseObjectPhrase('basic land card'), { supertypes: ['Basic'], types: ['Land'] });
 	});
+
+	it('parses Track P14 equipped/enchanted qualifiers and trailing "that\'s ..." clauses', () => {
+		assert.deepEqual(parseObjectPhrase("creature that's equipped"), { types: ['Creature'], equipped: true });
+		assert.deepEqual(parseObjectPhrase("creature that's enchanted"), { types: ['Creature'], enchanted: true });
+		assert.deepEqual(parseObjectPhrase('equipped creatures', { allowPlural: true }), {
+			types: ['Creature'],
+			equipped: true
+		});
+		assert.deepEqual(parseObjectPhrase("creature that's a Wolf or a Werewolf"), {
+			types: ['Creature'],
+			subtypes: ['Wolf', 'Werewolf']
+		});
+	});
 });
+
+describe('Cost grammar: Track P14 waterbend, behold, put counters, tuck, Grandeur, and disjunctive costs', () => {
+	const p14Cases: Array<[string, unknown[]]> = [
+		['Waterbend {4}', [{ k: 'waterbend', cost: '{4}' }]],
+		['Waterbend {2}{U}', [{ k: 'waterbend', cost: '{2}{U}' }]],
+		['Behold a Dragon', [{ k: 'behold', count: ONE, filter: { subtypes: ['Dragon'] } }]],
+		[
+			'Behold a Dragon or pay {2}',
+			[
+				{
+					k: 'choice',
+					options: [[{ k: 'behold', count: ONE, filter: { subtypes: ['Dragon'] } }], [{ k: 'mana', cost: '{2}' }]]
+				}
+			]
+		],
+		['Put a -1/-1 counter on ~', [{ k: 'putCounters', count: ONE, counter: '-1/-1', on: 'self' }]],
+		[
+			'Put a -1/-1 counter on a creature you control',
+			[{ k: 'putCounters', count: ONE, counter: '-1/-1', on: { types: ['Creature'], controller: 'you' } }]
+		],
+		[
+			'Put a card from your hand on top of your library',
+			[{ k: 'putFromHandOnTopOfLibrary', count: ONE }]
+		],
+		['Tap equipped creature', [{ k: 'tapAttached' }]],
+		['Tap enchanted creature', [{ k: 'tapAttached' }]],
+		[
+			'Discard another card named ~',
+			[{ k: 'discard', count: ONE, filter: { other: true, sameNameAsSource: true } }]
+		],
+		[
+			'{2} or {U}',
+			[{ k: 'choice', options: [[{ k: 'mana', cost: '{2}' }], [{ k: 'mana', cost: '{U}' }]] }]
+		],
+		[
+			'Sacrifice any number of creatures',
+			[{ k: 'sacrifice', count: { k: 'anyNumber' }, filter: { types: ['Creature'], controller: 'you' } }]
+		],
+		[
+			'Remove all charge counters from ~',
+			[{ k: 'removeCounters', counter: 'charge', count: n(0), removeAll: true, from: 'self' }]
+		],
+		[
+			'Remove two +1/+1 counters from among creatures you control',
+			[
+				{
+					k: 'removeCounters',
+					counter: '+1/+1',
+					count: n(2),
+					from: { types: ['Creature'], controller: 'you' },
+					among: true
+				}
+			]
+		]
+	];
+	for (const [text, defs] of p14Cases) {
+		it(`parses "${text}"`, () => {
+			const parsed = parseCost(text);
+			assert.deepEqual(parsed.unparsed, []);
+			assert.deepEqual(JSON.parse(JSON.stringify(parsed.defs)), defs);
+		});
+	}
+
+	it('parses Track P14 cost modifiers, Strive, Familiar dual-color, devotion/greatest-stat X, ordinal, non-hand, and pitch alt-casts', () => {
+		assert.deepEqual(parseCostModifierSentence('~ costs {2}{R} more to cast for each target beyond the first.'), {
+			k: 'costModifier',
+			affects: { k: 'self' },
+			delta: { mode: 'increase', generic: 2, colored: { R: 1 }, per: { k: 'targetsBeyondFirst' } },
+			who: { relation: 'you' }
+		});
+		assert.deepEqual(parseCostModifierSentence('Blue spells and red spells you cast cost {1} less to cast.'), {
+			k: 'costModifier',
+			affects: { k: 'spell', filter: { colors: ['U', 'R'] } },
+			delta: { mode: 'reduce', generic: 1 },
+			who: { relation: 'you' },
+			activeZones: undefined
+		});
+		assert.deepEqual(
+			parseCostModifierSentence('~ costs {1} less to cast for each creature you control with a +1/+1 counter on it.'),
+			{
+				k: 'costModifier',
+				affects: { k: 'self' },
+				delta: {
+					mode: 'reduce',
+					generic: 1,
+					per: {
+						k: 'count',
+						of: { zone: 'battlefield', types: ['Creature'], controller: 'you', hasCounters: '+1/+1' }
+					}
+				},
+				who: { relation: 'you' }
+			}
+		);
+		assert.deepEqual(parseCostModifierSentence('~ costs {X} less to cast, where X is your devotion to green.'), {
+			k: 'costModifier',
+			affects: { k: 'self' },
+			delta: { mode: 'reduce', generic: 1, per: { k: 'devotion', colors: ['G'], player: { k: 'you' } } },
+			who: { relation: 'you' }
+		});
+		assert.deepEqual(
+			parseCostModifierSentence('~ costs {X} less to cast, where X is the greatest power among creatures you control.'),
+			{
+				k: 'costModifier',
+				affects: { k: 'self' },
+				delta: {
+					mode: 'reduce',
+					generic: 1,
+					per: {
+						k: 'greatestStatAmong',
+						stat: 'power',
+						filter: { types: ['Creature'], controller: 'you', zone: 'battlefield' }
+					}
+				},
+				who: { relation: 'you' }
+			}
+		);
+		assert.deepEqual(
+			parseCostModifierSentence('The first creature spell you cast each turn costs {2} less to cast.'),
+			{
+				k: 'costModifier',
+				affects: { k: 'spell', filter: { types: ['Creature'] } },
+				delta: { mode: 'reduce', generic: 2 },
+				who: { relation: 'you' },
+				condition: { k: 'nthMatchingSpellThisTurn', ordinal: 1, filter: { types: ['Creature'] } }
+			}
+		);
+		assert.deepEqual(parseCostModifierSentence('Spells you cast from your graveyard cost {1} less to cast.'), {
+			k: 'costModifier',
+			affects: { k: 'spell', filter: { castFromZone: 'graveyard' } },
+			delta: { mode: 'reduce', generic: 1 },
+			who: { relation: 'you' }
+		});
+		assert.deepEqual(
+			parseCostModifierSentence(
+				"You may pay 1 life and exile a blue card from your hand rather than pay this spell's mana cost."
+			),
+			{
+				k: 'altCastPermission',
+				affects: 'self',
+				manaCost: '{0}',
+				costDefs: [
+					{ k: 'payLife', amount: ONE },
+					{ k: 'exileFrom', zone: 'hand', count: ONE, filter: { colors: ['U'] } }
+				]
+			}
+		);
+		assert.deepEqual(parseCostModifierSentence('A deck can have any number of cards named ~.'), {
+			k: 'deckCopyLimit',
+			limit: 'any'
+		});
+		assert.deepEqual(parseCostModifierSentence('A deck can have up to seven cards named ~.'), {
+			k: 'deckCopyLimit',
+			limit: 7
+		});
+	});
+});
+
