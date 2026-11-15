@@ -277,7 +277,16 @@ describe('Static grammar: restrictions', () => {
 		assert.deepEqual(defs("Creature spells you control can't be countered."), [
 			{ k: 'restriction', affected: { types: ['Creature'], controller: 'you' }, restriction: 'cantBeCountered' }
 		]);
-		unparsed("~ can't be blocked by creatures with power 2 or less.");
+		assert.deepEqual(defs("~ can't be blocked by creatures with power 2 or less."), [
+			{
+				k: 'combatRule',
+				affected: 'self',
+				rule: {
+					kind: 'cantBeBlockedBy',
+					filter: { types: ['Creature'], power: { op: '<=', value: n(2) } }
+				}
+			}
+		]);
 	});
 });
 
@@ -302,8 +311,25 @@ describe('Static grammar: replacements', () => {
 		]);
 	});
 
-	it('leaves conditional "enters tapped unless" unparsed', () => {
-		unparsed('~ enters tapped unless you control a Plains or an Island.');
+	it('compiles conditional "enters tapped unless" checklands', () => {
+		assert.deepEqual(defs('~ enters tapped unless you control a Plains or an Island.'), [
+			{
+				replacement: {
+					replaces: { event: 'zoneChange', filter: { object: 'self', to: 'battlefield' } },
+					with: { k: 'modify', tapped: true },
+					selfReplacement: true,
+					condition: {
+						k: 'not',
+						of: {
+							k: 'compare',
+							left: { k: 'count', of: { subtypes: ['Plains', 'Island'], controller: 'you' } },
+							op: '>=',
+							right: n(1)
+						}
+					}
+				}
+			}
+		]);
 	});
 });
 

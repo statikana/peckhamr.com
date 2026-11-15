@@ -49,6 +49,8 @@ import {
 	matchesObjectFilter,
 	type FilterContext
 } from './objectFilter.ts';
+// --- Track P8 ---
+import { checkStaticActivatedAbilityLocks } from './staticsLayersAndRestrictions.ts';
 
 // ---- Condition & Amount Evaluation ----------------------------------------------------------
 
@@ -484,8 +486,13 @@ export function checkGlobalCastPermissionsAndRestrictions(
 export function checkGlobalAbilityActivationRestrictions(
 	state: GameState,
 	actorId: string,
-	perm: CardInstance
+	perm: CardInstance,
+	// --- Track P8 ---
+	isManaAbility = false
 ): { ok: boolean; error?: string } {
+	// --- Track P8: CR 602.5a / 606.2 static activated-ability locks ---
+	const staticLock = checkStaticActivatedAbilityLocks(state, actorId, perm, isManaAbility);
+	if (!staticLock.ok) return staticLock;
 	const evalPerm = perm.zone === 'battlefield' ? evaluatePermanent(state, perm) : null;
 	const innateTypes = evalPerm
 		? null
@@ -996,7 +1003,9 @@ export function cardEntersTapped(
 		if (rep.replaces.filter?.object !== 'self' || rep.replaces.filter?.to !== 'battlefield') {
 			continue;
 		}
-		if (Array.isArray(rep.with) || rep.with.k !== 'modify' || !rep.with.tapped) continue;
+		if (Array.isArray(rep.with) || rep.with.k !== 'modify' || !rep.with.tapped || rep.with.copyOf) {
+			continue;
+		}
 		if (rep.condition) {
 			if (!state || !controllerId) return false;
 			if (!evalReplaceCondition(rep.condition, { state, controllerId, source })) continue;
@@ -1039,12 +1048,15 @@ export function placeRegisteredCounters(
 export interface SelfEtbChoiceSpec {
 	chooseSubType?: 'creature';
 	chooseColor?: { exclude?: ManaColor };
+	// --- Track P8 ---
+	payLifeOrEnterTapped?: number;
+	revealFromHandOrEnterTapped?: ObjectFilter;
 }
 
 /**
  * CR 614.1c, CR 614.12, CR 105.4, CR 205.3m: Inspects active self-ETB replacement abilities
- * (`"As ~ enters, choose a creature type / choose a color..."`) for a face-up permanent entering
- * the battlefield.
+ * (`"As ~ enters, choose a creature type / choose a color / you may pay N life / you may reveal..."`)
+ * for a face-up permanent entering the battlefield.
  */
 export function selfEtbChoiceSpec(state: GameState, perm: CardInstance): SelfEtbChoiceSpec | null {
 	if (perm.isFaceDown) return null;
@@ -1058,6 +1070,9 @@ export function selfEtbChoiceSpec(state: GameState, perm: CardInstance): SelfEtb
 	};
 	let chooseSubType: 'creature' | undefined;
 	let chooseColor: { exclude?: ManaColor } | undefined;
+	// --- Track P8 ---
+	let payLifeOrEnterTapped: number | undefined;
+	let revealFromHandOrEnterTapped: ObjectFilter | undefined;
 	for (const ability of abilities) {
 		if (ability.kind !== 'replacement') continue;
 		const rep = ability.replacement;
@@ -1073,11 +1088,26 @@ export function selfEtbChoiceSpec(state: GameState, perm: CardInstance): SelfEtb
 		if (rep.with.chooseColor) {
 			chooseColor = { ...rep.with.chooseColor };
 		}
+		if (rep.with.payLifeOrEnterTapped !== undefined) {
+			payLifeOrEnterTapped = rep.with.payLifeOrEnterTapped;
+		}
+		if (rep.with.revealFromHandOrEnterTapped) {
+			revealFromHandOrEnterTapped = rep.with.revealFromHandOrEnterTapped;
+		}
 	}
-	if (!chooseSubType && !chooseColor) return null;
+	if (
+		!chooseSubType &&
+		!chooseColor &&
+		payLifeOrEnterTapped === undefined &&
+		!revealFromHandOrEnterTapped
+	) {
+		return null;
+	}
 	return {
 		...(chooseSubType ? { chooseSubType } : {}),
-		...(chooseColor ? { chooseColor } : {})
+		...(chooseColor ? { chooseColor } : {}),
+		...(payLifeOrEnterTapped !== undefined ? { payLifeOrEnterTapped } : {}),
+		...(revealFromHandOrEnterTapped ? { revealFromHandOrEnterTapped } : {})
 	};
 }
 
@@ -1109,7 +1139,7 @@ export function applySelfEtbReplacements(state: GameState, perm: CardInstance): 
 		if (Array.isArray(rep.with) || rep.with.k !== 'modify') continue;
 		if (!evalReplaceCondition(rep.condition, ctx)) continue;
 
-		if (rep.with.tapped) {
+		if (rep.with.tapped && !rep.with.copyOf) {
 			perm.tapped = true;
 		}
 		if (ctrl?.isBot) {

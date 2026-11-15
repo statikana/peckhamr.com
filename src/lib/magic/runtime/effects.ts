@@ -80,7 +80,18 @@ import {
 } from './kicker.ts';
 import { scaleCumulativeUpkeepCost } from './orthogonalKeywords.ts';
 import { noteLayerInputsChanged } from './layerCache.ts';
-import { matchesObjectFilter, objectManaValue, playerCommanderCastCount } from './objectFilter.ts';
+import {
+	matchesObjectFilter,
+	objectManaValue,
+	objectPower,
+	objectToughness,
+	playerCommanderCastCount
+} from './objectFilter.ts';
+// --- Track P8 ---
+import {
+	countDistinctCardTypesInZone,
+	evaluateP8Condition
+} from './staticsLayersAndRestrictions.ts';
 import { activeRuleModifiers, applySelfEtbReplacements, tokenMultiplier } from './replace.ts';
 import { flushTriggers, withSimultaneousDestroyLki } from './triggers.ts';
 import { nextRandom } from './random.ts';
@@ -1406,6 +1417,10 @@ class Run {
 				) {
 					return 0;
 				}
+				// --- Track P8 ---
+				if (a.counter === 'any') {
+					return Object.values(found.inst.counters).reduce((acc, n) => acc + (n > 0 ? n : 0), 0);
+				}
 				return found.inst.counters[a.counter] ?? 0;
 			}
 			case 'stat': {
@@ -1413,6 +1428,9 @@ class Run {
 				if (!snap) return 0;
 				return a.stat === 'power' ? snap.power : a.stat === 'toughness' ? snap.toughness : snap.manaValue;
 			}
+			// --- Track P8 ---
+			case 'distinctCardTypesInZone':
+				return countDistinctCardTypesInZone(this.state, this.you.playerId, a.zone, a.whose);
 		}
 	}
 
@@ -1707,6 +1725,8 @@ class Run {
 		const hasSub = (s: string) =>
 			ev ? ev.hasSubType(s) : matchesObjectFilter(c, { subtypes: [s] }, { state: this.state, controllerId: this.you.playerId });
 		if (f.types && !f.types.some((t) => typeLine.includes(t))) return false;
+		// --- Track P8 ---
+		if (f.allTypes && !f.allTypes.every((t) => typeLine.includes(t))) return false;
 		if (f.subtypes && !f.subtypes.some(hasSub)) return false;
 		if (f.notSubtypes && f.notSubtypes.some(hasSub)) return false;
 		if (f.ofChosenType) {
@@ -1748,7 +1768,46 @@ class Run {
 			if (name.toLowerCase() !== f.named.toLowerCase()) return false;
 		}
 		const cols = ev ? (c.isFaceDown ? [] : ev.colors) : (card.colors ?? []);
-		if (f.colors && !f.colors.some((col) => cols.includes(col))) return false;
+		if (f.colors && !f.colors.some((col) => (col === 'C' ? cols.length === 0 : cols.includes(col)))) return false;
+		// --- Track P8 ---
+		if (f.notColors?.length && f.notColors.some((col) => (col === 'C' ? cols.length === 0 : cols.includes(col)))) {
+			return false;
+		}
+		if (f.multicolored !== undefined && (cols.length >= 2) !== f.multicolored) return false;
+		if (f.monocolored !== undefined && (cols.length === 1) !== f.monocolored) return false;
+		if (f.hasKeywords?.length || f.lacksKeywords?.length) {
+			if (
+				!matchesObjectFilter(
+					c,
+					{
+						...(f.hasKeywords ? { hasKeywords: f.hasKeywords } : {}),
+						...(f.lacksKeywords ? { lacksKeywords: f.lacksKeywords } : {})
+					},
+					{ state: this.state, controllerId: you }
+				)
+			) {
+				return false;
+			}
+		}
+		if (f.hasCounters !== undefined) {
+			if (f.hasCounters === 'any') {
+				if (!Object.values(c.counters).some((n) => n > 0)) return false;
+			} else if (((c.counters as Record<string, number>)[f.hasCounters] ?? 0) <= 0) {
+				return false;
+			}
+		}
+		if (f.power) {
+			const p = objectPower(this.state, c);
+			if (p === null || !compare(p, f.power.op, this.amount(f.power.value))) return false;
+		}
+		if (f.toughness) {
+			const t = objectToughness(this.state, c);
+			if (t === null || !compare(t, f.toughness.op, this.amount(f.toughness.value))) return false;
+		}
+		if (f.blocking !== undefined) {
+			const blocking = this.state.combat.attackers.some((a) => a.blockerInstanceIds.includes(c.instanceId));
+			if (blocking !== f.blocking) return false;
+		}
 		if (f.ofChosenColor) {
 			const chosenCol = this.sourceChosenColor();
 			if (!chosenCol || !cols.includes(chosenCol)) return false;
@@ -5508,6 +5567,20 @@ class Run {
 				}
 				if (enterPower === undefined || enterToughness === undefined) return false;
 				return enterPower > srcEval.power || enterToughness > srcEval.toughness;
+			}
+			// --- Track P8 ---
+			case 'objectState':
+			case 'opponentCount':
+			case 'anyPlayerLife':
+			case 'distinctControlledCreaturePowers': {
+				const srcFound = this.locate(this.ctx.sourceId);
+				return evaluateP8Condition(c, {
+					state: this.state,
+					controllerId: this.you.playerId,
+					source: srcFound?.inst,
+					stackItem: this.ctx.item,
+					xValue: this.ctx.xValue
+				});
 			}
 		}
 	}

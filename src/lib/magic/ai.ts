@@ -321,6 +321,13 @@ function hasAnyLegalInstantResponseInner(state: GameState, player: PlayerGameSta
 			return true;
 		}
 	}
+	// --- Track P8 ---
+	if (
+		player.library[0] &&
+		getCastOptions(state, player.playerId, player.library[0], 'library').length > 0
+	) {
+		return true;
+	}
 	for (const perm of player.battlefield) {
 		if (perm.phasedOut) continue;
 		if (getTurnFaceUpDisplay(state, player.playerId, perm)?.legal) {
@@ -734,6 +741,31 @@ export function executeBotStep(
 				});
 				if (res.ok) return 'visible';
 			}
+			// --- Track P8: Play lands from top of library or graveyard first for free card advantage ---
+			if (bot.library[0]) {
+				const topCard = bot.library[0];
+				const landOpts = getLandPlayOptions(state, bot.playerId, topCard, 'library');
+				if (landOpts.length > 0) {
+					const res = applyGameAction(state, bot.playerId, {
+						type: 'play_land',
+						instanceId: topCard.instanceId,
+						fromZone: 'library',
+						faceIndex: landOpts[0].faceIndex
+					});
+					if (res.ok) return 'visible';
+				}
+			}
+			for (const card of bot.graveyard) {
+				const landOpts = getLandPlayOptions(state, bot.playerId, card, 'graveyard');
+				if (landOpts.length === 0) continue;
+				const res = applyGameAction(state, bot.playerId, {
+					type: 'play_land',
+					instanceId: card.instanceId,
+					fromZone: 'graveyard',
+					faceIndex: landOpts[0].faceIndex
+				});
+				if (res.ok) return 'visible';
+			}
 			for (const card of bot.hand) {
 				const landOpts = getLandPlayOptions(state, bot.playerId, card, 'hand');
 				if (landOpts.length === 0) continue;
@@ -838,7 +870,10 @@ export function executeBotStep(
 				(b) => !b.phasedOut && !evaluatePermanent(state, b).isLand
 			).length;
 
-			const isCandidateSpell = (c: CardInstance, zone: 'hand' | 'graveyard' | 'exile'): boolean => {
+			const isCandidateSpell = (
+				c: CardInstance,
+				zone: 'hand' | 'graveyard' | 'exile' | 'library'
+			): boolean => {
 				const options = getCastOptions(state, bot.playerId, c, zone);
 				if (options.length === 0) return false;
 				return options.some((opt) => {
@@ -853,6 +888,10 @@ export function executeBotStep(
 			};
 
 			return [
+				// --- Track P8 ---
+				...(bot.library[0] && isCandidateSpell(bot.library[0], 'library')
+					? [{ cardInst: bot.library[0], fromZone: 'library' as const }]
+					: []),
 				...bot.hand
 					.filter((c) => isCandidateSpell(c, 'hand'))
 					.sort((a, b) => a.card.cmc - b.card.cmc)
@@ -1519,7 +1558,7 @@ function chooseBotOptionalCostCounts(
 	state: GameState,
 	bot: PlayerGameState,
 	cardInst: CardInstance,
-	fromZone: 'hand' | 'command' | 'exile' | 'graveyard',
+	fromZone: 'hand' | 'command' | 'exile' | 'graveyard' | 'library',
 	option: CastOption,
 	allowChooseAllModes = false
 ): Record<string, number> | undefined {

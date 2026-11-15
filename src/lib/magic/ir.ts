@@ -335,6 +335,21 @@ export interface ObjectFilter {
 	sharesTypeWithCommander?: boolean;
 	/** "Spells your opponents cast that target ~" (Terror of the Peaks). */
 	targetsSelf?: boolean;
+	// --- Track P8 ---
+	/** "nonwhite", "nonblack", etc. */
+	notColors?: ManaColor[];
+	/** CR 105.2b: true iff the object has two or more colors. */
+	multicolored?: boolean;
+	/** CR 105.2a: true iff the object has exactly one color (colorless is neither). */
+	monocolored?: boolean;
+	/** Matches iff the object has ALL listed keywords (Layer 6 on battlefield, activeAbilityDefs off-battlefield). */
+	hasKeywords?: string[];
+	/** Matches iff the object has NONE of the listed keywords. */
+	lacksKeywords?: string[];
+	/** Matches iff the object has >= 1 counter of the specified type (or `'any'` for any counter). */
+	hasCounters?: CounterType | string | 'any';
+	/** CR 205.2b AND-semantics for compound card types ("artifact creature" requires BOTH Artifact and Creature). */
+	allTypes?: string[];
 }
 
 export interface Compare {
@@ -411,10 +426,13 @@ export type Amount =
 	// --- Track P1 ---
 	| { k: 'energyCount'; player: PlayerRef }
 	// --- Track P6 ---
-	| { k: 'countersOn'; counter: CounterType; of: Ref }
+	| { k: 'countersOn'; counter: CounterType | 'any'; of: Ref }
 	| { k: 'tappedCostPower' }
 	/** Converge: number of distinct colors of mana spent to cast this spell (CR 608.2b / 400.7d). */
-	| { k: 'colorsOfManaSpentToCast' };
+	| { k: 'colorsOfManaSpentToCast' }
+	// --- Track P8 ---
+	/** CR 300.1: count of distinct MTG card types (of the 9 card types) among cards in `zone` across `whose` players. */
+	| { k: 'distinctCardTypesInZone'; zone: ZoneType; whose: 'you' | 'opponents' | 'all' };
 
 // ---- Costs ----------------------------------------------------------------------------------
 
@@ -922,7 +940,27 @@ export type Condition =
 	/** CR 702.100a: entering creature's power > self's power OR entering creature's toughness > self's toughness. */
 	| { k: 'evolveCompare' }
 	/** Checks whether `target` (or event/bound object) matches `filter` (e.g. Chaos Warp "if it's a permanent card"). */
-	| { k: 'matchesFilter'; target?: Ref; filter: ObjectFilter };
+	| { k: 'matchesFilter'; target?: Ref; filter: ObjectFilter }
+	// --- Track P8 ---
+	/** Evaluates whether `'self'` or `'attachedTo'` satisfies state/attachment/filter predicates. */
+	| {
+			k: 'objectState';
+			of: 'self' | 'attachedTo';
+			tapped?: boolean;
+			attacking?: boolean;
+			blocking?: boolean;
+			monstrous?: boolean;
+			saddled?: boolean;
+			equipped?: boolean;
+			enchanted?: boolean;
+			filter?: ObjectFilter;
+	  }
+	/** Count of non-lost opponents ("unless you have two or more opponents"). */
+	| { k: 'opponentCount'; op: '>=' | '<=' | '=' | '>' | '<'; count: number }
+	/** True iff any non-lost player's life satisfies `op count` ("unless a player has 13 or less life"). */
+	| { k: 'anyPlayerLife'; op: '>=' | '<=' | '=' | '>' | '<'; count: number }
+	/** Coven — true iff you control >= `count` creatures with different powers. */
+	| { k: 'distinctControlledCreaturePowers'; count: number };
 
 // ---- Statics and replacements ---------------------------------------------------------------
 
@@ -958,7 +996,28 @@ export type LayerMod =
 	/** Layer 5: sets color to `[source.chosenColor]` ("~ is the chosen color", CR 105.4). */
 	| { k: 'setChosenColor' }
 	/** Layer 6: grants protection from `source.chosenColor` ("has protection from the chosen color", CR 702.16). */
-	| { k: 'protectionFromChosenColor' };
+	| { k: 'protectionFromChosenColor' }
+	// --- Track P8 ---
+	/** Layer 7a/7b single-axis base power setter ("~'s power is equal to ...", CR 208.2a, 613.4a). */
+	| { k: 'setBasePower'; power: Amount }
+	/** Layer 7a/7b single-axis base toughness setter ("~'s toughness is equal to ...", CR 208.2a, 613.4a). */
+	| { k: 'setBaseToughness'; toughness: Amount };
+
+// --- Track P8 ---
+export interface CopyModificationSpec {
+	keepSelfName?: boolean;
+	overrideName?: string;
+	power?: number;
+	toughness?: number;
+	setColors?: ManaColor[];
+	addColors?: ManaColor[];
+	addTypes?: string[];
+	setTypes?: string[];
+	addSubtypes?: string[];
+	removeSupertypes?: string[];
+	addKeywords?: string[];
+	noManaCost?: boolean;
+}
 
 export interface CostDelta {
 	/** 'setZero' makes the cost {0}; 'reduce'/'increase' change the generic component. */
@@ -1010,6 +1069,23 @@ export type RestrictionKind =
 	// --- Track P3 ---
 	| 'cantHaveCounters';
 
+// --- Track P8 ---
+export type CombatRuleSpec =
+	| { kind: 'cantBlockExcept'; filter: ObjectFilter }
+	| { kind: 'additionalBlockCount'; count: number | 'unlimited' }
+	| { kind: 'cantBeBlockedBy'; filter: ObjectFilter }
+	| { kind: 'cantBeBlockedByPowerLessThanSelf' }
+	| { kind: 'cantBeBlockedExceptBy'; filter: ObjectFilter; orFilter?: ObjectFilter }
+	| { kind: 'maxBlockers'; max: number }
+	| { kind: 'minBlockers'; min: number }
+	| { kind: 'mustBeBlockedIfAble' }
+	| { kind: 'allAbleBlockers' }
+	| { kind: 'cantAttackUnlessDefenderControls'; filter: ObjectFilter }
+	| { kind: 'cantAttackAlone' }
+	| { kind: 'cantBlockAlone' }
+	| { kind: 'globalMaxAttackers'; max: number; againstYouOnly?: boolean }
+	| { kind: 'globalMaxBlockers'; max: number };
+
 export type StaticDef =
 	| {
 			k: 'continuous';
@@ -1059,6 +1135,36 @@ export type StaticDef =
 			k: 'pregameAction';
 			action: 'beginOnBattlefield';
 			condition?: Condition;
+	  }
+	// --- Track P8 ---
+	| {
+			/** CR 508.1c, 509.1a–c: parameterized static combat restrictions, evasions, and requirements. */
+			k: 'combatRule';
+			affected: ObjectFilter | 'attachedTo' | 'self';
+			rule: CombatRuleSpec;
+			condition?: Condition;
+	  }
+	| {
+			/** CR 602.5a: "Activated abilities of [affected] can't be activated [unless they're mana abilities]." */
+			k: 'cantActivateAbilities';
+			affected: ObjectFilter | 'attachedTo' | 'self';
+			allowManaAbilities?: boolean;
+			condition?: Condition;
+	  }
+	| {
+			/** CR 401.5: "You may look at the top card of your library any time" / "Play with the top card of your library revealed." */
+			k: 'topOfLibraryVisibility';
+			mode: 'look' | 'reveal';
+			condition?: Condition;
+	  }
+	| {
+			/** CR 305.1, 601.3e: play lands or cast spells from non-hand zones (`library` top card or `graveyard`). */
+			k: 'zonePlayPermission';
+			zone: 'library' | 'graveyard';
+			allowLands?: boolean;
+			allowSpells?: boolean;
+			spellFilter?: ObjectFilter;
+			condition?: Condition;
 	  };
 
 export interface EventPattern {
@@ -1087,6 +1193,15 @@ export interface ReplacementDef {
 				chooseSubType?: 'creature';
 				/** CR 614.1c / 614.12 / 105.4: "As ~ enters, choose a color [other than <color>]." */
 				chooseColor?: { exclude?: ManaColor };
+				// --- Track P8 ---
+				/** Shocklands / Bolt lands (CR 614.12, 119.4, 119.8): "As ~ enters, you may pay N life. If you don't, it enters tapped." */
+				payLifeOrEnterTapped?: number;
+				/** Reveal / Snarl lands (CR 614.12): "As ~ enters, you may reveal a [filter] card from your hand. If you don't, ~ enters tapped." */
+				revealFromHandOrEnterTapped?: ObjectFilter;
+				/** Generalized Clone (CR 707.5): false when mandatory ("~ enters as a copy of ..."), default true ("You may have ~ enter as a copy of ..."). */
+				copyOptional?: boolean;
+				/** Generalized Clone Layer 1a modifications ("..., except ...", CR 707.9). */
+				copyModifications?: CopyModificationSpec;
 		  };
 	/** CR 614.15 / 616.1a: true when this is a self-replacement effect applied before other replacements. */
 	selfReplacement?: boolean;

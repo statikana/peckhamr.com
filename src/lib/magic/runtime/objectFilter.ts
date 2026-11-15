@@ -27,6 +27,11 @@ import {
 	isObjectForetold
 } from './kicker.ts';
 import { splitSubtypes, hasAllOffBattlefieldAndSpellsColorless } from './layers.ts';
+// --- Track P8 ---
+import {
+	countDistinctCardTypesInZone,
+	evaluateP8Condition
+} from './staticsLayersAndRestrictions.ts';
 
 export interface FilterContext {
 	state: GameState;
@@ -36,6 +41,8 @@ export interface FilterContext {
 	source?: CardInstance;
 	stackItem?: StackItem;
 	xValue?: number;
+	// --- Track P8 ---
+	zone?: ZoneType | 'stack';
 }
 
 const ZONES = ['library', 'hand', 'battlefield', 'graveyard', 'exile', 'command'] as const;
@@ -120,18 +127,23 @@ export function objectPower(state: GameState, obj: CardInstance): number | null 
 	}
 	const raw = view.power;
 	let base = raw ?? 0;
-	for (const ab of activeAbilityDefs(card, faceOpts)) {
-		if (
-			ab.kind === 'static' &&
-			ab.static.k === 'continuous' &&
-			ab.static.layer === '7a' &&
-			ab.static.mod.k === 'setBasePT'
-		) {
-			base = evaluateAmount(ab.static.mod.power, {
-				state,
-				controllerId: obj.ownerId || obj.controllerId,
-				source: obj
-			});
+	// --- Track P8 (CR 604.3, 208.2a, 707.9d) ---
+	if (obj.copiableState?.except?.power === undefined) {
+		for (const ab of activeAbilityDefs(card, faceOpts)) {
+			if (
+				ab.kind === 'static' &&
+				ab.static.k === 'continuous' &&
+				ab.static.layer === '7a' &&
+				ab.static.affected === 'self'
+			) {
+				if (ab.static.mod.k === 'setBasePT' || ab.static.mod.k === 'setBasePower') {
+					base = evaluateAmount(ab.static.mod.power, {
+						state,
+						controllerId: obj.ownerId || obj.controllerId,
+						source: obj
+					});
+				}
+			}
 		}
 	}
 	return base + (obj.counters['+1/+1'] || 0) - (obj.counters['-1/-1'] || 0) + (obj.tempPowerMod || 0);
@@ -153,18 +165,23 @@ export function objectToughness(state: GameState, obj: CardInstance): number | n
 	}
 	const raw = view.toughness;
 	let base = raw ?? 0;
-	for (const ab of activeAbilityDefs(card, faceOpts)) {
-		if (
-			ab.kind === 'static' &&
-			ab.static.k === 'continuous' &&
-			ab.static.layer === '7a' &&
-			ab.static.mod.k === 'setBasePT'
-		) {
-			base = evaluateAmount(ab.static.mod.toughness, {
-				state,
-				controllerId: obj.ownerId || obj.controllerId,
-				source: obj
-			});
+	// --- Track P8 (CR 604.3, 208.2a, 707.9d) ---
+	if (obj.copiableState?.except?.toughness === undefined) {
+		for (const ab of activeAbilityDefs(card, faceOpts)) {
+			if (
+				ab.kind === 'static' &&
+				ab.static.k === 'continuous' &&
+				ab.static.layer === '7a' &&
+				ab.static.affected === 'self'
+			) {
+				if (ab.static.mod.k === 'setBasePT' || ab.static.mod.k === 'setBaseToughness') {
+					base = evaluateAmount(ab.static.mod.toughness, {
+						state,
+						controllerId: obj.ownerId || obj.controllerId,
+						source: obj
+					});
+				}
+			}
 		}
 	}
 	return base + (obj.counters['+1/+1'] || 0) - (obj.counters['-1/-1'] || 0) + (obj.tempToughnessMod || 0);
@@ -310,21 +327,24 @@ function sharesCreatureTypeWithCommander(
 /** Does `obj` match `filter`? Zone is checked only if the filter names one. */
 export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx: FilterContext): boolean {
 	const { state } = ctx;
+	const objZone = ctx.zone ?? obj.zone;
 	if (filter.zone) {
 		const zones = Array.isArray(filter.zone) ? filter.zone : [filter.zone];
-		if (!zones.includes(obj.zone as ZoneType)) return false;
+		if (!zones.includes(objZone as ZoneType)) return false;
 	}
-	if (obj.zone === 'battlefield' && obj.phasedOut) return false;
+	if (objZone === 'battlefield' && obj.phasedOut) return false;
 
-	const onBattlefield = obj.zone === 'battlefield';
+	const onBattlefield = objZone === 'battlefield';
 	const evaluated = onBattlefield ? evaluatePermanent(state, obj) : null;
 	const card = effectiveCardForObject(obj);
-	const faceOpts = instanceFaceOptions(obj);
+	const faceOpts = instanceFaceOptions(obj, objZone === 'stack' ? 'stack' : objZone);
 	const typeLine = evaluated ? evaluated.typeLine : resolveObjectFaces(card, faceOpts).typeLine;
 	const { types, subtypes } = splitTypeLine(typeLine);
 	const isPermanentType = (t: string) => types.some((pt) => pt.toLowerCase() === t.toLowerCase());
 
 	if (filter.types && !filter.types.some(isPermanentType)) return false;
+	// --- Track P8 ---
+	if (filter.allTypes && !filter.allTypes.every(isPermanentType)) return false;
 	if (filter.notTypes && filter.notTypes.some(isPermanentType)) return false;
 	if (filter.supertypes && !filter.supertypes.some(isPermanentType)) return false;
 	if (filter.notSupertypes && filter.notSupertypes.some(isPermanentType)) return false;
@@ -403,6 +423,39 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 				? []
 				: resolveObjectFaces(card, faceOpts).colors;
 		if (!matchesColorFilter(colors, filter.colors)) return false;
+	}
+	// --- Track P8 ---
+	if (filter.notColors?.length || filter.multicolored !== undefined || filter.monocolored !== undefined) {
+		const colors = onBattlefield
+			? (obj.isFaceDown ? [] : evaluated!.colors)
+			: resolveObjectFaces(card, faceOpts).colors;
+		if (filter.notColors?.length && matchesColorFilter(colors, filter.notColors)) return false;
+		if (filter.multicolored !== undefined && (colors.length >= 2) !== filter.multicolored) return false;
+		if (filter.monocolored !== undefined && (colors.length === 1) !== filter.monocolored) return false;
+	}
+	if (filter.hasKeywords?.length || filter.lacksKeywords?.length) {
+		const hasKw = (wanted: string): boolean => {
+			const wLow = wanted.toLowerCase();
+			if (evaluated) {
+				return evaluated.activeKeywords.some((k) => k.toLowerCase() === wLow);
+			}
+			if (obj.isFaceDown) return false;
+			const view = resolveObjectFaces(card, faceOpts);
+			if (view.keywords.some((k) => k.toLowerCase() === wLow)) return true;
+			if (obj.grantedKeywords?.some((k) => k.toLowerCase() === wLow)) return true;
+			return activeAbilityDefs(card, faceOpts).some(
+				(ab) => ab.kind === 'keyword' && ab.keyword.name.toLowerCase() === wLow
+			);
+		};
+		if (filter.hasKeywords?.length && !filter.hasKeywords.some(hasKw)) return false;
+		if (filter.lacksKeywords?.length && filter.lacksKeywords.some(hasKw)) return false;
+	}
+	if (filter.hasCounters !== undefined) {
+		if (filter.hasCounters === 'any') {
+			if (!Object.values(obj.counters).some((n) => n > 0)) return false;
+		} else {
+			if (((obj.counters as Record<string, number>)[filter.hasCounters] ?? 0) <= 0) return false;
+		}
 	}
 	if (
 		filter.sharesTypeWithCommander &&
@@ -503,6 +556,10 @@ export function evaluateAmount(amount: Amount, ctx: FilterContext): number {
 			return 0;
 		case 'countersOn': {
 			if (amount.of.k !== 'self' || !ctx.source) return 0;
+			// --- Track P8 ---
+			if (amount.counter === 'any') {
+				return Object.values(ctx.source.counters).reduce((acc, n) => acc + (n > 0 ? n : 0), 0);
+			}
 			return ctx.source.counters[amount.counter] ?? 0;
 		}
 		case 'kickedCount': {
@@ -546,6 +603,9 @@ export function evaluateAmount(amount: Amount, ctx: FilterContext): number {
 			return Math.min(...amount.args.map((a) => evaluateAmount(a, ctx)));
 		case 'max':
 			return Math.max(...amount.args.map((a) => evaluateAmount(a, ctx)));
+		// --- Track P8 ---
+		case 'distinctCardTypesInZone':
+			return countDistinctCardTypesInZone(ctx.state, ctx.controllerId, amount.zone, amount.whose);
 		default:
 			return 0;
 	}
@@ -613,6 +673,12 @@ export function evaluateCondition(cond: Condition, ctx: FilterContext): boolean 
 			return Boolean(ctx.source?.isMonstrous);
 		case 'matchesFilter':
 			return ctx.source ? matchesObjectFilter(ctx.source, cond.filter, ctx) : false;
+		// --- Track P8 ---
+		case 'objectState':
+		case 'opponentCount':
+		case 'anyPlayerLife':
+		case 'distinctControlledCreaturePowers':
+			return evaluateP8Condition(cond, ctx);
 		default:
 			return false;
 	}

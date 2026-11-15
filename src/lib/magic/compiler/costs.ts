@@ -40,6 +40,8 @@ const CARD_TYPES: Record<string, string> = {
 	creature: 'Creature',
 	enchantment: 'Enchantment',
 	instant: 'Instant',
+	kindred: 'Kindred',
+	tribal: 'Kindred',
 	land: 'Land',
 	planeswalker: 'Planeswalker',
 	sorcery: 'Sorcery'
@@ -55,6 +57,68 @@ const COLORS: Record<string, ManaColor> = {
 	green: 'G',
 	colorless: 'C'
 };
+
+// --- Track P8 ---
+const NON_COLORS: Record<string, ManaColor> = {
+	nonwhite: 'W',
+	nonblue: 'U',
+	nonblack: 'B',
+	nonred: 'R',
+	nongreen: 'G'
+};
+
+const FILTER_KEYWORDS = new Set([
+	'flying',
+	'first strike',
+	'double strike',
+	'deathtouch',
+	'defender',
+	'flash',
+	'haste',
+	'hexproof',
+	'indestructible',
+	'lifelink',
+	'menace',
+	'reach',
+	'shroud',
+	'trample',
+	'vigilance',
+	'ward',
+	'fear',
+	'intimidate',
+	'shadow',
+	'horsemanship',
+	'skulk',
+	'flanking',
+	'infect',
+	'wither',
+	'changeling',
+	'prowess',
+	'toxic',
+	'undying',
+	'persist',
+	'devoid',
+	'islandwalk',
+	'swampwalk',
+	'mountainwalk',
+	'forestwalk',
+	'plainswalk'
+]);
+
+function parseKeywordList(raw: string, allowOr: boolean): string[] | null {
+	const trimmed = raw.trim().toLowerCase();
+	if (!trimmed) return null;
+	if (!allowOr && /\bor\b/.test(trimmed)) return null;
+	const sep = allowOr
+		? /\s*(?:,\s*(?:or|and\/or|and)?|\bor\b|\band\/or\b|\band\b)\s*/
+		: /\s*(?:,\s*(?:and\s+)?|\band\b)\s*/;
+	const parts = trimmed.split(sep).filter(Boolean);
+	if (parts.length === 0) return null;
+	for (const p of parts) {
+		if (!FILTER_KEYWORDS.has(p)) return null;
+	}
+	return parts;
+}
 
 const IRREGULAR_PLURALS: Record<string, string> = {
 	Elves: 'Elf',
@@ -175,17 +239,59 @@ export function parseObjectPhrase(phrase: string): ObjectFilter | null {
 			rest = youOwn[1];
 			continue;
 		}
-		const withStat = rest.match(/^(.+?)\s+with (power|mana value) (\S+)(?: or (greater|more|less|fewer))?$/i);
+		const withStat = rest.match(/^(.+?)\s+with (power|toughness|mana value) (\S+)(?: or (greater|more|less|fewer))?$/i);
 		if (withStat) {
 			const value = count(withStat[3]);
 			if (!value || value.k === 'const' && withStat[3].toLowerCase() === 'a') return null;
 			const dir = withStat[4]?.toLowerCase();
 			const cmp: Compare = { op: !dir ? '=' : dir === 'greater' || dir === 'more' ? '>=' : '<=', value };
-			const key = withStat[2].toLowerCase() === 'power' ? 'power' : 'manaValue';
+			const statKind = withStat[2].toLowerCase();
+			const key =
+				statKind === 'power' ? 'power' : statKind === 'toughness' ? 'toughness' : 'manaValue';
 			if (filter[key]) return null;
 			filter[key] = cmp;
 			rest = withStat[1];
 			continue;
+		}
+		// --- Track P8: counters, keywords, and lacksKeywords ---
+		const withAnyCounters = rest.match(
+			/^(.+?)\s+with (?:(?:a|an|one or more)\s+)?counters? on (?:it|them)$/i
+		);
+		if (withAnyCounters && !filter.hasCounters) {
+			filter.hasCounters = 'any';
+			rest = withAnyCounters[1];
+			continue;
+		}
+		const withTypedCounter = rest.match(
+			/^(.+?)\s+with (?:(?:a|an|one or more)\s+)?([+-−]\d+\/[+-−]\d+|[a-z]+) counters? on (?:it|them)$/i
+		);
+		if (withTypedCounter && !filter.hasCounters) {
+			const rawCounter = withTypedCounter[2].toLowerCase().replace(/−/g, '-');
+			if (!/^(?:a|an|one|or|more|no|any)$/.test(rawCounter)) {
+				filter.hasCounters = COUNTERS[rawCounter] ?? rawCounter;
+				rest = withTypedCounter[1];
+				continue;
+			}
+		}
+		const withoutKw = rest.match(/^(.+?)\s+without ([a-z ,/]+)$/i);
+		if (withoutKw) {
+			const kws = parseKeywordList(withoutKw[2], true);
+			if (kws) {
+				const existing = filter.lacksKeywords ?? [];
+				filter.lacksKeywords = [...existing, ...kws.filter((k) => !existing.includes(k))];
+				rest = withoutKw[1];
+				continue;
+			}
+		}
+		const withKw = rest.match(/^(.+?)\s+with ([a-z ,]+)$/i);
+		if (withKw) {
+			const kws = parseKeywordList(withKw[2], false);
+			if (kws) {
+				const existing = filter.hasKeywords ?? [];
+				filter.hasKeywords = [...existing, ...kws.filter((k) => !existing.includes(k))];
+				rest = withKw[1];
+				continue;
+			}
 		}
 		break;
 	}
@@ -204,8 +310,11 @@ export function parseObjectPhrase(phrase: string): ObjectFilter | null {
 		else if (low === 'commander' || low === 'commanders') filter.isCommander = true;
 		else if (low === 'attacking') filter.attacking = true;
 		else if (low === 'blocking') filter.blocking = true;
+		else if (low === 'multicolored') filter.multicolored = true;
+		else if (low === 'monocolored') filter.monocolored = true;
 		else if (SUPERTYPES[low]) (filter.supertypes ??= []).push(SUPERTYPES[low]);
 		else if (COLORS[low]) (filter.colors ??= []).push(COLORS[low]);
+		else if (NON_COLORS[low]) (filter.notColors ??= []).push(NON_COLORS[low]);
 		else if (/^non[a-z]+$/.test(low) && CARD_TYPES[low.slice(3)]) {
 			(filter.notTypes ??= []).push(CARD_TYPES[low.slice(3)]);
 		} else if (/^non[a-z]+$/.test(low) && SUPERTYPES[low.slice(3)]) {
@@ -239,13 +348,14 @@ export function parseObjectPhrase(phrase: string): ObjectFilter | null {
 	}
 
 	// Conjunction: "Goblin creature", "Elf Warrior", "artifact creature" (all must hold).
+	const matchedTypes: string[] = [];
 	for (const w of words) {
 		const n = noun(w);
 		if (!n) return null;
 		if (n.types) {
-			// "artifact creature" means both types; ObjectFilter.types is any-of, so it isn't expressible.
-			if (filter.types) return null;
-			filter.types = n.types;
+			for (const t of n.types) {
+				if (!matchedTypes.includes(t)) matchedTypes.push(t);
+			}
 		}
 		if (n.subtypes) {
 			// "Elf Warrior" means both subtypes; likewise not expressible as any-of.
@@ -254,6 +364,12 @@ export function parseObjectPhrase(phrase: string): ObjectFilter | null {
 		}
 		if (n.token) filter.token = true;
 		if (n.isCommander) filter.isCommander = true;
+	}
+	if (matchedTypes.length === 1) {
+		filter.types = matchedTypes;
+	} else if (matchedTypes.length >= 2) {
+		// CR 205.2b: "artifact creature", "enchantment creature", "land creature" require ALL listed card types.
+		filter.allTypes = matchedTypes;
 	}
 	return filter;
 }

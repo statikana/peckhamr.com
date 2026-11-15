@@ -507,7 +507,8 @@ describe('Phase 5 (§6): ChoiceSpec and PromptPurpose exhaustiveness guards (#2)
 			join(dir, 'orthogonalKeywords.ts'),
 			join(dir, 'tuckFreezeChosen.ts'),
 			join(dir, 'keywordActions.ts'),
-			join(dir, 'striatedFrames.ts')
+			join(dir, 'striatedFrames.ts'),
+			join(dir, 'staticsLayersAndRestrictions.ts')
 		];
 		const emittedPurposes = new Set<string>();
 		const purposeRegex = /\bpurpose\s*:\s*'([a-z_]+)'/g;

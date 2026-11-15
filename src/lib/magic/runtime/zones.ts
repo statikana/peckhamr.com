@@ -10,11 +10,23 @@ import { noteLayerInputsChanged, whileLayerInputsChange, withStableLayerInputs }
 import {
 	counterMultiplier,
 	applySelfEtbReplacements,
+	cardEntersTapped,
 	placeRegisteredCounters,
 	resolveZoneChangeReplacements,
 	selfEtbChoiceSpec,
 	type SelfEtbChoiceSpec
 } from './replace.ts';
+import { matchesObjectFilter } from './objectFilter.ts';
+// --- Track P8 ---
+import {
+	applyCopiedPermanentToInstance,
+	botShouldPayShocklandLife,
+	findLegalCloneCandidates,
+	findSelfCloneReplacementSpec,
+	markHandCardRevealedToAll,
+	playerCantPayLifeForEtb,
+	type SelfCloneReplacementSpec
+} from './staticsLayersAndRestrictions.ts';
 import {
 	buildColorChoiceOptions,
 	buildCreatureSubtypeOptions,
@@ -224,18 +236,89 @@ function pushSbaLog(
 	}
 }
 
+function pushEtbRuleLog(state: GameState, actorId: string, text: string): void {
+	state.log.push({
+		id: uid('log', state),
+		timestamp: Date.now(),
+		turn: state.turnNumber,
+		phase: state.phase,
+		actorId,
+		kind: 'rule',
+		text
+	});
+	if (state.log.length > 160) {
+		state.log.shift();
+	}
+}
+
+function ensureCopiedPlaneswalkerStartingLoyalty(state: GameState, obj: CardInstance): void {
+	const bfView = resolveObjectFaces(
+		effectiveCardForObject(obj),
+		instanceFaceOptions(obj, 'battlefield')
+	);
+	if (
+		!bfView.isFaceDown &&
+		bfView.types.includes('Planeswalker') &&
+		bfView.loyalty !== undefined &&
+		(obj.counters.loyalty || 0) === 0
+	) {
+		const baseLoyalty = bfView.loyalty;
+		if (baseLoyalty > 0) {
+			const mult = counterMultiplier(state, obj, 'loyalty');
+			obj.counters.loyalty = baseLoyalty * mult;
+		}
+	}
+}
+
 function enqueueNextEtbChoicePrompt(
 	state: GameState,
 	obj: CardInstance,
 	chooser: PlayerGameState,
-	spec: SelfEtbChoiceSpec,
-	baseData: Record<string, unknown>
+	spec: SelfEtbChoiceSpec | null,
+	baseData: Record<string, unknown>,
+	// --- Track P8 ---
+	cloneSpec?: SelfCloneReplacementSpec | null
 ): boolean {
 	const objName = resolveObjectFaces(
 		effectiveCardForObject(obj),
 		instanceFaceOptions(obj, 'battlefield')
 	).name;
-	if (spec.chooseColor && !obj.chosenColor) {
+	// --- Track P8: Non-stack Generalized Clone self-ETB choice ---
+	if (cloneSpec && !baseData.cloneAnswered) {
+		const candidates = findLegalCloneCandidates(state, chooser.playerId, obj, cloneSpec.copyOf);
+		if (candidates.length > 0) {
+			const description = cloneSpec.copyOptional
+				? `You may have ${objName} enter the battlefield as a copy of a legal permanent on the battlefield (CR 707.5).`
+				: `Choose a permanent on the battlefield for ${objName} to enter as a copy of (CR 707.5).`;
+			enqueueChoicePrompt(state, {
+				id: uid('prm', state),
+				playerId: chooser.playerId,
+				kind: 'chooseObjects',
+				purpose: 'etb_choice',
+				title: `${objName} — Choose Permanent to Copy`,
+				description,
+				continuation: {
+					kind: 'handler',
+					name: 'etb_choice',
+					data: {
+						...baseData,
+						choiceField: 'cloneCopy'
+					}
+				},
+				choice: {
+					kind: 'chooseObjects',
+					candidates: candidates.map((c) => c.instanceId),
+					defaultObjectIds: [candidates[0].instanceId],
+					min: cloneSpec.copyOptional ? 0 : 1,
+					max: 1,
+					zone: 'battlefield',
+					reason: description
+				}
+			});
+			return true;
+		}
+	}
+	if (spec?.chooseColor && !obj.chosenColor) {
 		const { labels } = buildColorChoiceOptions(spec.chooseColor.exclude);
 		const description = `As ${objName} enters the battlefield, choose a color${spec.chooseColor.exclude ? ` other than ${spec.chooseColor.exclude}` : ''} (CR 105.4, 614.12):`;
 		enqueueChoicePrompt(state, {
@@ -262,7 +345,7 @@ function enqueueNextEtbChoicePrompt(
 		});
 		return true;
 	}
-	if (spec.chooseSubType === 'creature' && !obj.chosenSubType) {
+	if (spec?.chooseSubType === 'creature' && !obj.chosenSubType) {
 		const subtypeLabels = buildCreatureSubtypeOptions(state, chooser, obj);
 		const description = `As ${objName} enters the battlefield, choose a creature type (CR 205.3m, 614.12):`;
 		enqueueChoicePrompt(state, {
@@ -288,6 +371,83 @@ function enqueueNextEtbChoicePrompt(
 			}
 		});
 		return true;
+	}
+	// --- Track P8: Shocklands (`As ~ enters, you may pay N life. If you don't, it enters tapped.`) ---
+	if (spec?.payLifeOrEnterTapped !== undefined && !baseData.shocklandAnswered) {
+		const lifeCost = spec.payLifeOrEnterTapped;
+		if (playerCantPayLifeForEtb(state, chooser, lifeCost)) {
+			obj.tapped = true;
+		} else if (!obj.tapped) {
+			const description = `As ${objName} enters the battlefield, pay ${lifeCost} life? If you don't, ${objName} enters tapped (CR 614.12).`;
+			enqueueChoicePrompt(state, {
+				id: uid('prm', state),
+				playerId: chooser.playerId,
+				kind: 'yesNo',
+				purpose: 'etb_choice',
+				title: `${objName} — Pay ${lifeCost} Life?`,
+				description,
+				yesLabel: `Pay ${lifeCost} life (enter untapped)`,
+				noLabel: 'Enter tapped',
+				continuation: {
+					kind: 'handler',
+					name: 'etb_choice',
+					data: {
+						...baseData,
+						choiceField: 'payLifeOrEnterTapped',
+						lifeCost
+					}
+				},
+				choice: {
+					kind: 'yesNo',
+					question: description
+				}
+			});
+			return true;
+		}
+	}
+	// --- Track P8: Reveal lands (`As ~ enters, you may reveal a <filter> card from your hand. If you don't, ~ enters tapped.`) ---
+	if (spec?.revealFromHandOrEnterTapped && !baseData.revealLandAnswered) {
+		const revealCandidates = chooser.hand.filter(
+			(c) =>
+				c.instanceId !== obj.instanceId &&
+				matchesObjectFilter(c, spec.revealFromHandOrEnterTapped!, {
+					state,
+					controllerId: chooser.playerId,
+					source: obj,
+					zone: 'hand'
+				})
+		);
+		if (revealCandidates.length === 0) {
+			obj.tapped = true;
+		} else if (!obj.tapped) {
+			const description = `As ${objName} enters the battlefield, you may reveal a matching card from your hand. If you don't, ${objName} enters tapped (CR 614.12, 701.20a).`;
+			enqueueChoicePrompt(state, {
+				id: uid('prm', state),
+				playerId: chooser.playerId,
+				kind: 'chooseObjects',
+				purpose: 'etb_choice',
+				title: `${objName} — Reveal a Card from Hand?`,
+				description,
+				continuation: {
+					kind: 'handler',
+					name: 'etb_choice',
+					data: {
+						...baseData,
+						choiceField: 'revealFromHandOrEnterTapped'
+					}
+				},
+				choice: {
+					kind: 'chooseObjects',
+					candidates: revealCandidates.map((c) => c.instanceId),
+					defaultObjectIds: [revealCandidates[0].instanceId],
+					min: 0,
+					max: 1,
+					zone: 'hand',
+					reason: description
+				}
+			});
+			return true;
+		}
 	}
 	return false;
 }
@@ -517,6 +677,79 @@ function finalizeZoneMove(
 		const ctrlId = opts.controllerId ?? obj.controllerId ?? effectiveReceiver.playerId;
 		const ctrl = state.players.find((p) => p.playerId === ctrlId) ?? effectiveReceiver;
 		obj.controllerId = ctrl.playerId;
+
+		const buildPendingEtbData = (): Record<string, unknown> => {
+			const resolvedInsert = typeof opts.insert === 'function' ? opts.insert(dest) : opts.insert;
+			const insertSpec =
+				typeof resolvedInsert === 'number' ||
+				resolvedInsert === 'start' ||
+				resolvedInsert === 'end' ||
+				resolvedInsert === 'deferred'
+					? resolvedInsert
+					: 'end';
+			return {
+				objectId: obj.instanceId,
+				toPlayerId: effectiveReceiver.playerId,
+				fromZone,
+				fromPlayerId,
+				lkiJson: lki ? JSON.stringify(lki) : null,
+				setZone: opts.setZone !== false,
+				emit: opts.emit !== false,
+				insertSpec,
+				sbaLogJson: opts.sbaLog ? JSON.stringify(opts.sbaLog) : null,
+				replacedBy: effectiveReplacedBy,
+				...(opts.resumeStackItemId ? { resumeStackItemId: opts.resumeStackItemId } : {}),
+				...(opts.resumeStepIndex !== undefined ? { resumeStepIndex: opts.resumeStepIndex } : {})
+			};
+		};
+
+		// --- Track P8: Non-stack Generalized Clone self-ETB replacement (CR 707.5, 707.9) ---
+		if (fromZone !== 'stack' && !obj.copiableState && !obj.copiableCard) {
+			const cloneSpec = findSelfCloneReplacementSpec(
+				effectiveCardForObject(obj),
+				instanceFaceOptions(obj, 'battlefield')
+			);
+			if (cloneSpec) {
+				const cloneCandidates = findLegalCloneCandidates(
+					state,
+					ctrl.playerId,
+					obj,
+					cloneSpec.copyOf
+				);
+				if (cloneCandidates.length > 0) {
+					if (ctrl.isBot) {
+						const origCard = obj.printedCard ?? obj.card;
+						const displayName = applyCopiedPermanentToInstance(
+							obj,
+							cloneCandidates[0],
+							cloneSpec.copyModifications,
+							origCard
+						);
+						if (cloneSpec.tapped) obj.tapped = true;
+						ensureCopiedPlaneswalkerStartingLoyalty(state, obj);
+						applySelfEtbReplacements(state, obj);
+						pushEtbRuleLog(
+							state,
+							ctrl.playerId,
+							`${origCard.name} entered the battlefield as a copy of ${displayName} (CR 707.2).`
+						);
+					} else {
+						const baseData = buildPendingEtbData();
+						if (enqueueNextEtbChoicePrompt(state, obj, ctrl, null, baseData, cloneSpec)) {
+							obj.zone = fromZone ?? 'hand';
+							(state.pendingZoneMoves ??= []).push(obj);
+							return 'pending';
+						}
+					}
+				}
+			}
+		}
+
+		// --- Track P8: Conditional ETB tapped duals (Fast, Slow, Check, Tango, Crowd) ---
+		if (!obj.tapped && cardEntersTapped(effectiveCardForObject(obj), state, ctrl.playerId, obj)) {
+			obj.tapped = true;
+		}
+
 		const etbSpec = selfEtbChoiceSpec(state, obj);
 		if (etbSpec) {
 			if (ctrl.isBot) {
@@ -526,35 +759,61 @@ function finalizeZoneMove(
 				if (etbSpec.chooseSubType === 'creature' && !obj.chosenSubType) {
 					obj.chosenSubType = chooseBotBestCreatureSubtype(state, ctrl, obj);
 				}
-			} else if (
-				(etbSpec.chooseColor && !obj.chosenColor) ||
-				(etbSpec.chooseSubType === 'creature' && !obj.chosenSubType)
-			) {
-				const resolvedInsert = typeof opts.insert === 'function' ? opts.insert(dest) : opts.insert;
-				const insertSpec =
-					typeof resolvedInsert === 'number' ||
-					resolvedInsert === 'start' ||
-					resolvedInsert === 'end' ||
-					resolvedInsert === 'deferred'
-						? resolvedInsert
-						: 'end';
-				obj.zone = fromZone ?? 'hand';
-				(state.pendingZoneMoves ??= []).push(obj);
-				enqueueNextEtbChoicePrompt(state, obj, ctrl, etbSpec, {
-					objectId: obj.instanceId,
-					toPlayerId: effectiveReceiver.playerId,
-					fromZone,
-					fromPlayerId,
-					lkiJson: lki ? JSON.stringify(lki) : null,
-					setZone: opts.setZone !== false,
-					emit: opts.emit !== false,
-					insertSpec,
-					sbaLogJson: opts.sbaLog ? JSON.stringify(opts.sbaLog) : null,
-					replacedBy: effectiveReplacedBy,
-					...(opts.resumeStackItemId ? { resumeStackItemId: opts.resumeStackItemId } : {}),
-					...(opts.resumeStepIndex !== undefined ? { resumeStepIndex: opts.resumeStepIndex } : {})
-				});
-				return 'pending';
+				if (etbSpec.payLifeOrEnterTapped !== undefined) {
+					const lifeCost = etbSpec.payLifeOrEnterTapped;
+					const objName = resolveObjectFaces(
+						effectiveCardForObject(obj),
+						instanceFaceOptions(obj, 'battlefield')
+					).name;
+					if (
+						!playerCantPayLifeForEtb(state, ctrl, lifeCost) &&
+						!obj.tapped &&
+						botShouldPayShocklandLife(state, ctrl, obj, lifeCost)
+					) {
+						ctrl.life -= lifeCost;
+						noteLayerInputsChanged(state);
+						pushEtbRuleLog(
+							state,
+							ctrl.playerId,
+							`${ctrl.username} paid ${lifeCost} life for ${objName}.`
+						);
+					} else {
+						obj.tapped = true;
+					}
+				}
+				if (etbSpec.revealFromHandOrEnterTapped) {
+					const revealCandidates = ctrl.hand.filter(
+						(c) =>
+							c.instanceId !== obj.instanceId &&
+							matchesObjectFilter(c, etbSpec.revealFromHandOrEnterTapped!, {
+								state,
+								controllerId: ctrl.playerId,
+								source: obj,
+								zone: 'hand'
+							})
+					);
+					if (revealCandidates.length > 0 && !obj.tapped) {
+						const objName = resolveObjectFaces(
+							effectiveCardForObject(obj),
+							instanceFaceOptions(obj, 'battlefield')
+						).name;
+						markHandCardRevealedToAll(state, revealCandidates[0]);
+						pushEtbRuleLog(
+							state,
+							ctrl.playerId,
+							`${ctrl.username} revealed ${revealCandidates[0].card.name} from hand for ${objName}.`
+						);
+					} else {
+						obj.tapped = true;
+					}
+				}
+			} else {
+				const baseData = buildPendingEtbData();
+				if (enqueueNextEtbChoicePrompt(state, obj, ctrl, etbSpec, baseData, null)) {
+					obj.zone = fromZone ?? 'hand';
+					(state.pendingZoneMoves ??= []).push(obj);
+					return 'pending';
+				}
 			}
 		}
 	}
@@ -1120,7 +1379,13 @@ registerPromptHandler('zone_replacement_choice', (state, prompt, answer) => {
 });
 
 registerPromptHandler('etb_choice', (state, prompt, answer) => {
-	if (answer.kind !== 'chooseMode') return;
+	if (
+		answer.kind !== 'chooseMode' &&
+		answer.kind !== 'yesNo' &&
+		answer.kind !== 'chooseObjects'
+	) {
+		return;
+	}
 	const data = prompt.continuation?.kind === 'handler' ? prompt.continuation.data : undefined;
 	if (!data) return;
 	const objectId = typeof data.objectId === 'string' ? data.objectId : '';
@@ -1157,54 +1422,142 @@ registerPromptHandler('etb_choice', (state, prompt, answer) => {
 	const chooser =
 		state.players.find((p) => p.playerId === (obj.controllerId || receiver.playerId)) ?? receiver;
 
-	const options = prompt.choice?.kind === 'chooseMode' ? prompt.choice.modes : [];
-	const chosenIdx = answer.indices[0] ?? 0;
-	const chosenLabel = options[chosenIdx] ?? options[0] ?? '';
+	const nextData: Record<string, unknown> = {
+		...data,
+		objectId: obj.instanceId,
+		toPlayerId: receiver.playerId,
+		fromZone,
+		fromPlayerId,
+		lkiJson,
+		setZone,
+		emit,
+		insertSpec,
+		sbaLogJson,
+		replacedBy,
+		...(resumeStackItemId !== undefined ? { resumeStackItemId } : {}),
+		...(resumeStepIndex !== undefined ? { resumeStepIndex } : {})
+	};
 
 	let awaitingMore = false;
 	whileLayerInputsChange(state, () => {
-		const bfView = resolveObjectFaces(
+		let bfView = resolveObjectFaces(
 			effectiveCardForObject(obj),
 			instanceFaceOptions(obj, 'battlefield')
 		);
-		if (choiceField === 'color') {
+		if (choiceField === 'cloneCopy' && answer.kind === 'chooseObjects') {
+			nextData.cloneAnswered = true;
+			const chosenId = answer.objectIds[0];
+			if (chosenId) {
+				let targetPerm: CardInstance | undefined;
+				for (const pl of state.players) {
+					if (pl.lost) continue;
+					const found = pl.battlefield.find((b) => !b.phasedOut && b.instanceId === chosenId);
+					if (found) {
+						targetPerm = found;
+						break;
+					}
+				}
+				const cloneSpec = findSelfCloneReplacementSpec(
+					effectiveCardForObject(obj),
+					instanceFaceOptions(obj, 'battlefield')
+				);
+				if (targetPerm) {
+					const origCard = obj.printedCard ?? obj.card;
+					const displayName = applyCopiedPermanentToInstance(
+						obj,
+						targetPerm,
+						cloneSpec?.copyModifications,
+						origCard
+					);
+					if (cloneSpec?.tapped) obj.tapped = true;
+					ensureCopiedPlaneswalkerStartingLoyalty(state, obj);
+					applySelfEtbReplacements(state, obj);
+					if (
+						!obj.tapped &&
+						cardEntersTapped(effectiveCardForObject(obj), state, chooser.playerId, obj)
+					) {
+						obj.tapped = true;
+					}
+					bfView = resolveObjectFaces(
+						effectiveCardForObject(obj),
+						instanceFaceOptions(obj, 'battlefield')
+					);
+					pushEtbRuleLog(
+						state,
+						chooser.playerId,
+						`${origCard.name} entered the battlefield as a copy of ${displayName} (CR 707.2).`
+					);
+				}
+			}
+		} else if (choiceField === 'color' && answer.kind === 'chooseMode') {
+			const options = prompt.choice?.kind === 'chooseMode' ? prompt.choice.modes : [];
+			const chosenIdx = answer.indices[0] ?? 0;
+			const chosenLabel = options[chosenIdx] ?? options[0] ?? '';
 			obj.chosenColor = COLOR_CODE_BY_LABEL[chosenLabel.toLowerCase()] ?? 'W';
-		} else if (choiceField === 'creatureSubtype') {
+			pushEtbRuleLog(
+				state,
+				chooser.playerId,
+				`${chooser.username} chose ${chosenLabel} for ${bfView.name}.`
+			);
+		} else if (choiceField === 'creatureSubtype' && answer.kind === 'chooseMode') {
+			const options = prompt.choice?.kind === 'chooseMode' ? prompt.choice.modes : [];
+			const chosenIdx = answer.indices[0] ?? 0;
+			const chosenLabel = options[chosenIdx] ?? options[0] ?? '';
 			obj.chosenSubType = chosenLabel || 'Human';
-		}
-		state.log.push({
-			id: uid('log', state),
-			timestamp: Date.now(),
-			turn: state.turnNumber,
-			phase: state.phase,
-			actorId: chooser.playerId,
-			kind: 'rule',
-			text: `${chooser.username} chose ${chosenLabel} for ${bfView.name}.`
-		});
-		if (state.log.length > 160) {
-			state.log.shift();
+			pushEtbRuleLog(
+				state,
+				chooser.playerId,
+				`${chooser.username} chose ${chosenLabel} for ${bfView.name}.`
+			);
+		} else if (choiceField === 'payLifeOrEnterTapped' && answer.kind === 'yesNo') {
+			nextData.shocklandAnswered = true;
+			const lifeCost = typeof data.lifeCost === 'number' ? data.lifeCost : 2;
+			if (answer.yes && !playerCantPayLifeForEtb(state, chooser, lifeCost)) {
+				chooser.life -= lifeCost;
+				noteLayerInputsChanged(state);
+				pushEtbRuleLog(
+					state,
+					chooser.playerId,
+					`${chooser.username} paid ${lifeCost} life for ${bfView.name}.`
+				);
+			} else {
+				obj.tapped = true;
+				pushEtbRuleLog(
+					state,
+					chooser.playerId,
+					`${chooser.username} chose to have ${bfView.name} enter tapped.`
+				);
+			}
+		} else if (choiceField === 'revealFromHandOrEnterTapped' && answer.kind === 'chooseObjects') {
+			nextData.revealLandAnswered = true;
+			const chosenId = answer.objectIds[0];
+			const revealedCard = chosenId
+				? chooser.hand.find((c) => c.instanceId === chosenId)
+				: undefined;
+			if (revealedCard) {
+				markHandCardRevealedToAll(state, revealedCard);
+				pushEtbRuleLog(
+					state,
+					chooser.playerId,
+					`${chooser.username} revealed ${revealedCard.card.name} from hand for ${bfView.name}.`
+				);
+			} else {
+				obj.tapped = true;
+				pushEtbRuleLog(
+					state,
+					chooser.playerId,
+					`${chooser.username} chose not to reveal a card for ${bfView.name}.`
+				);
+			}
+		} else {
+			return;
 		}
 
 		const remainingSpec = selfEtbChoiceSpec(state, obj);
 		if (
 			remainingSpec &&
-			((remainingSpec.chooseColor && !obj.chosenColor) ||
-				(remainingSpec.chooseSubType === 'creature' && !obj.chosenSubType))
+			enqueueNextEtbChoicePrompt(state, obj, chooser, remainingSpec, nextData, null)
 		) {
-			enqueueNextEtbChoicePrompt(state, obj, chooser, remainingSpec, {
-				objectId: obj.instanceId,
-				toPlayerId: receiver.playerId,
-				fromZone,
-				fromPlayerId,
-				lkiJson,
-				setZone,
-				emit,
-				insertSpec,
-				sbaLogJson,
-				replacedBy,
-				...(resumeStackItemId !== undefined ? { resumeStackItemId } : {}),
-				...(resumeStepIndex !== undefined ? { resumeStepIndex } : {})
-			});
 			awaitingMore = true;
 			return;
 		}

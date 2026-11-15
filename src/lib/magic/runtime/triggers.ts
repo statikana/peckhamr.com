@@ -2340,12 +2340,20 @@ function amount(
 			return stackItem?.tappedCostPower ?? 0;
 		case 'countersOn': {
 			if (a.of.k !== 'self') return null;
+			// --- Track P8 ---
+			const readCtrs = (ctrs: Partial<Record<CounterType, number>> | undefined): number => {
+				if (!ctrs) return 0;
+				if (a.counter === 'any') {
+					return Object.values(ctrs).reduce((acc, n) => acc + (n && n > 0 ? n : 0), 0);
+				}
+				return ctrs[a.counter] ?? 0;
+			};
 			if (source?.isLookBack && source.counters) {
-				return source.counters[a.counter] ?? 0;
+				return readCtrs(source.counters);
 			}
 			const found = permanentById(state, sourceInstanceId);
-			if (found) return found.obj.counters[a.counter] ?? 0;
-			if (source) return source.counters?.[a.counter] ?? source.obj.counters[a.counter] ?? 0;
+			if (found) return readCtrs(found.obj.counters);
+			if (source) return readCtrs(source.counters ?? source.obj.counters);
 			return 0;
 		}
 		case 'kickedCount':

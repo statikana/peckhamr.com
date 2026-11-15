@@ -53,6 +53,8 @@ import {
 } from './kicker.ts';
 import { emitEvent } from './events.ts';
 import { hasRestriction, playerLifeTotalCantChange } from './replace.ts';
+// --- Track P8 ---
+import { markHandCardRevealedToAll } from './staticsLayersAndRestrictions.ts';
 import { exertPermanent } from './tuckFreezeChosen.ts';
 import { moveObject, tapPermanent, type MoveResult, type PlayerZone } from './zones.ts';
 
@@ -1572,6 +1574,11 @@ export function executeCostPaymentParts(
 				break;
 			}
 			case 'revealFromHand': {
+				// --- Track P8: CR 701.20a stamp revealed hand cards as known to all living players ---
+				for (const id of part.objectIds ?? []) {
+					const card = player.hand.find((c) => c.instanceId === id);
+					if (card) markHandCardRevealedToAll(ctx.state, card);
+				}
 				const names = part.objectNames ?? [];
 				if (names.length > 0) targetLog.push(`revealed ${names.join(', ')}`);
 				break;

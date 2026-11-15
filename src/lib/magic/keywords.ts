@@ -546,6 +546,8 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 	simpleImplemented('wither', '702.80', 'Wither'),
 	simpleImplemented('horsemanship', '702.31', 'Horsemanship'),
 	simpleImplemented('shadow', '702.28', 'Shadow'),
+	// --- Track P8 ---
+	simpleImplemented('skulk', '702.118', 'Skulk'),
 	[
 		'prowess',
 		{
@@ -1754,7 +1756,6 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 		}
 	],
 	unimplemented('scavenge', '702.97', 'cost'),
-	unimplemented('skulk', '702.118'),
 	unimplemented('soulbond', '702.95'),
 	unimplemented('soulshift', '702.46', 'number'),
 	unimplemented('space sculptor', '702.158'),

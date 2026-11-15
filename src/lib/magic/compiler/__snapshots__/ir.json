@@ -2449,24 +2449,31 @@
 						}
 					},
 					{
-						"kind": "unsupported",
-						"reason": "static_not_compiled",
-						"text": "~'s power is equal to the number of cards in your hand.",
+						"kind": "static",
+						"static": {
+							"k": "continuous",
+							"layer": "7a",
+							"affected": "self",
+							"mod": {
+								"k": "setBasePower",
+								"power": {
+									"k": "cardsIn",
+									"zone": "hand",
+									"of": {
+										"k": "you"
+									}
+								}
+							}
+						},
 						"span": {
 							"start": 144,
 							"end": 199
-						},
-						"unparsed": [
-							{
-								"start": 144,
-								"end": 199
-							}
-						]
+						}
 					}
 				]
 			}
 		],
-		"fullySupported": false
+		"fullySupported": true
 	},
 	"Twinned Lantern Wardens": {
 		"oracleId": "synthetic_twinned_lantern_wardens",

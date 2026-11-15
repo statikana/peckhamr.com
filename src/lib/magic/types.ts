@@ -131,6 +131,12 @@ export interface CopiableState {
 		colors?: ManaColor[];
 		names?: string[];
 		removeSupertypes?: string[];
+		// --- Track P8 ---
+		addColors?: ManaColor[];
+		addTypes?: string[];
+		addSubtypes?: string[];
+		addKeywords?: string[];
+		noManaCost?: boolean;
 	};
 }
 
@@ -600,7 +606,8 @@ export interface LandPlayOption {
 	faceIndex: number;
 	label: string;
 	typeLine: string;
-	fromZone: 'hand' | 'exile';
+	// --- Track P8: widened fromZone for top-of-library & graveyard land play ---
+	fromZone: 'hand' | 'exile' | 'library' | 'graveyard';
 }
 
 export interface CastCostAid {
@@ -619,8 +626,9 @@ export interface CastOption {
 	id: string;
 	label: string;
 	costDisplay: string;
-	fromZone: 'hand' | 'command' | 'exile' | 'graveyard';
-	permission: 'zone_default' | 'keyword_alt' | 'exile_permission';
+	// --- Track P8: widened fromZone & permission for top-of-library spell casting ---
+	fromZone: 'hand' | 'command' | 'exile' | 'graveyard' | 'library';
+	permission: 'zone_default' | 'keyword_alt' | 'exile_permission' | 'library_top_permission';
 	faceIndex?: number;
 	fused?: boolean;
 	baseCost:
@@ -1421,7 +1429,8 @@ export interface PendingCostPayment {
 	// --- Track P3 ---
 	specialActionId?: string;
 	sourcePlayerId?: string;
-	sourceZone?: 'hand' | 'command' | 'exile' | 'graveyard';
+	// --- Track P8: widened sourceZone for top-of-library casting ---
+	sourceZone?: 'hand' | 'command' | 'exile' | 'graveyard' | 'library';
 	targets?: TargetRef[];
 	targetsBySpec?: TargetRef[][];
 	chosenModes?: number[];
@@ -1589,7 +1598,13 @@ export type GameActionPayload =
 	| { type: 'london_bottom'; instanceIds: string[] }
 	| { type: 'pass_priority' }
 	| { type: 'end_turn' }
-	| { type: 'play_land'; instanceId: string; fromZone?: 'hand' | 'exile'; faceIndex?: number }
+	// --- Track P8: widened play_land & cast_spell fromZone ---
+	| {
+			type: 'play_land';
+			instanceId: string;
+			fromZone?: 'hand' | 'exile' | 'library' | 'graveyard';
+			faceIndex?: number;
+	  }
 	| {
 			type: 'tap_mana';
 			instanceId: string;
@@ -1610,7 +1625,7 @@ export type GameActionPayload =
 			optionalCostCounts?: Record<string, number>;
 			costAidIds?: Record<string, string[]>;
 			costAidColorChoices?: Record<string, ManaColor | 'generic'>;
-			fromZone?: 'hand' | 'command' | 'graveyard' | 'exile';
+			fromZone?: 'hand' | 'command' | 'graveyard' | 'exile' | 'library';
 			costPayment?: CostPayment;
 	  }
 	| {
