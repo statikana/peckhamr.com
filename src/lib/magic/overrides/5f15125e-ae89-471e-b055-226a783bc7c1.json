@@ -1,0 +1,70 @@
+{
+  "oracleId": "5f15125e-ae89-471e-b055-226a783bc7c1",
+  "cardName": "Aetherflux Reservoir",
+  "expectedTextHash": "085536f8",
+  "compiledVersion": 39,
+  "notes": "Wave 8 P22c override: Cast-spell trigger gains life equal to spellsCastThisTurnCount; pay 50 life deals 50 damage to any target.",
+  "faces": [
+    {
+      "name": "Aetherflux Reservoir",
+      "characteristics": {
+        "manaCost": "{4}",
+        "types": ["Artifact"],
+        "subtypes": [],
+        "supertypes": [],
+        "colors": []
+      },
+      "abilities": [
+        {
+          "kind": "triggered",
+          "trigger": {
+            "event": "cast",
+            "filter": { "object": {}, "player": { "relation": "you" } }
+          },
+          "targets": [],
+          "effect": [
+            {
+              "verb": "gainLife",
+              "subject": { "k": "player", "filter": { "relation": "you" } },
+              "amount": { "k": "spellsCastThisTurnCount", "who": "you" },
+              "span": { "start": 25, "end": 78 }
+            }
+          ],
+          "text": "Whenever you cast a spell, you gain 1 life for each spell you've cast this turn.",
+          "span": { "start": 0, "end": 79 }
+        },
+        {
+          "kind": "activated",
+          "id": "act_1",
+          "cost": [
+            { "k": "payLife", "amount": { "k": "const", "n": 50 } }
+          ],
+          "targets": [
+            {
+              "kind": "objectOrPlayer",
+              "filter": {
+                "zone": "battlefield",
+                "types": ["Creature", "Planeswalker", "Battle"]
+              },
+              "player": { "relation": "any" },
+              "min": 1,
+              "max": 1
+            }
+          ],
+          "effect": [
+            {
+              "verb": "damage",
+              "subject": { "k": "target", "index": 0 },
+              "amount": { "k": "const", "n": 50 },
+              "span": { "start": 93, "end": 138 }
+            }
+          ],
+          "timing": "instant",
+          "isMana": false,
+          "text": "Pay 50 life: ~ deals 50 damage to any target.",
+          "span": { "start": 80, "end": 138 }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,75 @@
+{
+  "oracleId": "e11966cd-2ee3-4df4-b099-abf42dcdf0db",
+  "cardName": "Urza's Power Plant",
+  "expectedTextHash": "174bd0bd",
+  "compiledVersion": 39,
+  "notes": "Wave 8 P22c override: Urzatron Power Plant mana ability ({C}{C} if you control an Urza's Mine and an Urza's Tower, else {C}).",
+  "faces": [
+    {
+      "name": "Urza's Power Plant",
+      "characteristics": {
+        "manaCost": "",
+        "types": ["Land"],
+        "subtypes": ["Urza's", "Power-Plant"],
+        "supertypes": [],
+        "colors": []
+      },
+      "abilities": [
+        {
+          "kind": "activated",
+          "id": "mana_tap",
+          "cost": [{ "k": "tapSelf" }],
+          "targets": [],
+          "effect": [
+            {
+              "verb": "addMana",
+              "subject": { "k": "none" },
+              "amount": {
+                "k": "conditional",
+                "condition": {
+                  "k": "and",
+                  "of": [
+                    {
+                      "k": "compare",
+                      "left": {
+                        "k": "count",
+                        "of": {
+                          "zone": "battlefield",
+                          "controller": "you",
+                          "subtypes": ["Mine"]
+                        }
+                      },
+                      "op": ">=",
+                      "right": { "k": "const", "n": 1 }
+                    },
+                    {
+                      "k": "compare",
+                      "left": {
+                        "k": "count",
+                        "of": {
+                          "zone": "battlefield",
+                          "controller": "you",
+                          "subtypes": ["Tower"]
+                        }
+                      },
+                      "op": ">=",
+                      "right": { "k": "const", "n": 1 }
+                    }
+                  ]
+                },
+                "then": { "k": "const", "n": 2 },
+                "else": { "k": "const", "n": 1 }
+              },
+              "params": { "mana": ["C"] },
+              "span": { "start": 4, "end": 84 }
+            }
+          ],
+          "timing": "mana",
+          "isMana": true,
+          "text": "{T}: Add {C}. If you control an Urza's Mine and an Urza's Tower, add {C}{C} instead.",
+          "span": { "start": 0, "end": 84 }
+        }
+      ]
+    }
+  ]
+}

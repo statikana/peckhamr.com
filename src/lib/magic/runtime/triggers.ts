@@ -47,6 +47,10 @@ import {
 import { withStableLayerInputs } from './layerCache.ts';
 import { activeAbilityDefs, instanceFaceOptions, matchesColorFilter, resolveObjectFaces, stackItemFaceOptions } from './faces.ts';
 import {
+	// --- Track P22c ---
+	evaluateAmount as evaluateObjectFilterAmount,
+	evaluateCondition as evaluateObjectFilterCondition,
+	// --- End Track P22c ---
 	// --- Track P7 ---
 	objectManaValue,
 	objectPower,
@@ -6854,6 +6858,16 @@ export function evaluateCondition(
 	);
 	if (p19b !== undefined) return p19b;
 	// --- End Track P19b ---
+	// --- Track P22c ---
+	if (cond.k === 'youDiscardedThisTurn') {
+		return evaluateObjectFilterCondition(cond, {
+			state,
+			controllerId,
+			source: srcObjFallback,
+			stackItem
+		});
+	}
+	// --- End Track P22c ---
 	return false;
 }
 
@@ -7095,6 +7109,21 @@ function amount(
 				gravestormOverride: stackItem?.gravestormCount
 			});
 		// --- End Track P15 ---
+		// --- Track P22c ---
+		case 'distinctNamesCount':
+		case 'creaturesDiedThisTurn':
+		case 'spellsCastThisTurnCount':
+		case 'playerCounters':
+		case 'conditional': {
+			const srcFound = permanentById(state, sourceInstanceId);
+			return evaluateObjectFilterAmount(a, {
+				state,
+				controllerId,
+				source: srcFound?.obj ?? source?.obj,
+				stackItem
+			});
+		}
+		// --- End Track P22c ---
 		default:
 			return null;
 	}

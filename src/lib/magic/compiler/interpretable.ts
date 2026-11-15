@@ -222,9 +222,20 @@ function stepSupported(step: EffectStep): boolean {
 	if (step.params?.reflexiveTrigger) {
 		const rt = step.params.reflexiveTrigger;
 		if (!triggerTargetsSupported(rt.targets)) return false;
-		if (!staticallyInterpretable({ steps: rt.effect, targets: rt.targets, unparsed: [] })) {
+		// --- Track P22c ---
+		if (rt.modal?.prefixEffect?.length && !stepsSupported(rt.modal.prefixEffect)) return false;
+		if (rt.modal?.suffixEffect?.length && !stepsSupported(rt.modal.suffixEffect)) return false;
+		if (
+			!staticallyInterpretable({
+				steps: rt.effect,
+				targets: rt.targets,
+				...(rt.modal ? { modal: rt.modal } : {}),
+				unparsed: []
+			})
+		) {
 			return false;
 		}
+		// --- End Track P22c ---
 	}
 	if (step.verb === 'attach' && step.params?.attachObject && !selectorSupported(step.params.attachObject)) {
 		return false;

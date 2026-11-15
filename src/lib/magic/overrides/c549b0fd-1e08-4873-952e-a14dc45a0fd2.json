@@ -1,0 +1,58 @@
+{
+  "oracleId": "c549b0fd-1e08-4873-952e-a14dc45a0fd2",
+  "cardName": "Champion of Lambholt",
+  "expectedTextHash": "088e259a",
+  "compiledVersion": 39,
+  "notes": "Wave 8 P22c override: Combat evasion rule (power less than self can't block your creatures) + +1/+1 counter when another creature you control enters.",
+  "faces": [
+    {
+      "name": "Champion of Lambholt",
+      "characteristics": {
+        "manaCost": "{1}{G}{G}",
+        "types": ["Creature"],
+        "subtypes": ["Human", "Warrior"],
+        "supertypes": [],
+        "colors": ["G"],
+        "power": 1,
+        "toughness": 1
+      },
+      "abilities": [
+        {
+          "kind": "static",
+          "static": {
+            "k": "combatRule",
+            "affected": { "controller": "you", "types": ["Creature"] },
+            "rule": { "kind": "cantBeBlockedByPowerLessThanSelf" }
+          },
+          "span": { "start": 0, "end": 81 }
+        },
+        {
+          "kind": "triggered",
+          "trigger": {
+            "event": "zoneChange",
+            "filter": {
+              "to": "battlefield",
+              "object": {
+                "types": ["Creature"],
+                "controller": "you",
+                "notSelf": true
+              }
+            }
+          },
+          "targets": [],
+          "effect": [
+            {
+              "verb": "putCounters",
+              "subject": { "k": "self" },
+              "amount": { "k": "const", "n": 1 },
+              "params": { "counter": "+1/+1" },
+              "span": { "start": 127, "end": 171 }
+            }
+          ],
+          "text": "Whenever another creature you control enters, put a +1/+1 counter on ~.",
+          "span": { "start": 82, "end": 171 }
+        }
+      ]
+    }
+  ]
+}

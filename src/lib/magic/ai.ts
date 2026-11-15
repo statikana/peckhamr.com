@@ -45,13 +45,15 @@ import {
 	checkCompanionSpecialActionLegality,
 	collectSelfCastRestrictions,
 	getEffectiveUsedModalModes,
-	pickPawprintModesWithinBudget,
-	resolveModalEffectiveBounds
+	pickPawprintModesWithinBudget
 } from './runtime/framesModalsWave6.ts';
 // --- End Track P18b ---
 // --- Track P17a ---
 import { getRequiredFlagbearerIdsForActor } from './runtime/staticsWave6.ts';
 // --- End Track P17a ---
+// --- Track P22c ---
+import { resolveWave8ModalEffectiveBounds } from './runtime/framesWave8.ts';
+// --- End Track P22c ---
 import type {
 	BotSpeed,
 	CardInstance,
@@ -243,11 +245,16 @@ function chooseBotModesForModal(
 		modal.dynamicMax && modal.dynamicMax.k !== 'x'
 			? evaluateAmount(modal.dynamicMax, fctx)
 			: undefined;
-	const { min: effectiveMin, max: effectiveMax } = resolveModalEffectiveBounds(
+	const condRangeMet = Boolean(
+		modal.conditionalChooseRange &&
+			evaluateCondition(modal.conditionalChooseRange.condition, fctx)
+	);
+	const { min: effectiveMin, max: effectiveMax } = resolveWave8ModalEffectiveBounds(
 		modal,
 		forceAllModes || chooseAllByCond,
 		0,
-		evaluatedDynMax
+		evaluatedDynMax,
+		condRangeMet
 	);
 	// --- End Track P18b ---
 

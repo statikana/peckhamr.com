@@ -1,0 +1,52 @@
+{
+  "oracleId": "a54f0869-94c8-42af-9080-166efb9486a4",
+  "cardName": "Gamble",
+  "expectedTextHash": "635e437a",
+  "compiledVersion": 39,
+  "notes": "Wave 8 P22c override: Search library for a card, put it into hand, shuffle, and discard a card at random.",
+  "faces": [
+    {
+      "name": "Gamble",
+      "characteristics": {
+        "manaCost": "{R}",
+        "types": ["Sorcery"],
+        "subtypes": [],
+        "supertypes": [],
+        "colors": ["R"]
+      },
+      "abilities": [
+        {
+          "kind": "spell",
+          "additionalCosts": [],
+          "targets": [],
+          "effect": [
+            {
+              "verb": "search",
+              "subject": { "k": "none" },
+              "amount": { "k": "const", "n": 1 },
+              "params": {
+                "search": {
+                  "filter": {},
+                  "count": 1,
+                  "upTo": false,
+                  "statedQuality": false,
+                  "destinations": [{ "zone": "hand" }],
+                  "description": "a card"
+                }
+              },
+              "span": { "start": 0, "end": 55 }
+            },
+            {
+              "verb": "discard",
+              "subject": { "k": "player", "filter": { "relation": "you" } },
+              "amount": { "k": "const", "n": 1 },
+              "params": { "atRandom": true },
+              "span": { "start": 57, "end": 101 }
+            }
+          ],
+          "span": { "start": 0, "end": 101 }
+        }
+      ]
+    }
+  ]
+}

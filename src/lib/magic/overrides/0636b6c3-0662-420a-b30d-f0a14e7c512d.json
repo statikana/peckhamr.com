@@ -1,0 +1,61 @@
+{
+  "oracleId": "0636b6c3-0662-420a-b30d-f0a14e7c512d",
+  "cardName": "Mirkwood Bats",
+  "expectedTextHash": "db593f4b",
+  "compiledVersion": 39,
+  "notes": "Wave 8 P22c override: Flying + token creation (zoneChange token enters) or token sacrifice drains each opponent for 1.",
+  "faces": [
+    {
+      "name": "Mirkwood Bats",
+      "characteristics": {
+        "manaCost": "{3}{B}",
+        "types": ["Creature"],
+        "subtypes": ["Bat"],
+        "supertypes": [],
+        "colors": ["B"],
+        "power": 2,
+        "toughness": 3
+      },
+      "abilities": [
+        {
+          "kind": "keyword",
+          "keyword": { "name": "flying" },
+          "span": { "start": 0, "end": 6 }
+        },
+        {
+          "kind": "triggered",
+          "trigger": {
+            "event": "zoneChange",
+            "filter": {
+              "to": "battlefield",
+              "object": { "token": true, "controller": "you" }
+            },
+            "or": [
+              {
+                "event": "sacrificed",
+                "filter": {
+                  "player": { "relation": "you" },
+                  "object": { "token": true }
+                }
+              }
+            ]
+          },
+          "targets": [],
+          "effect": [
+            {
+              "verb": "loseLife",
+              "subject": {
+                "k": "player",
+                "filter": { "relation": "each_opponent" }
+              },
+              "amount": { "k": "const", "n": 1 },
+              "span": { "start": 49, "end": 76 }
+            }
+          ],
+          "text": "Whenever you create or sacrifice a token, each opponent loses 1 life.",
+          "span": { "start": 7, "end": 76 }
+        }
+      ]
+    }
+  ]
+}

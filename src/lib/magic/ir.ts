@@ -398,6 +398,14 @@ export interface ModalDef {
 	/** Post-modal rider steps executed after chosen mode effects on resolution. */
 	suffixEffect?: EffectStep[];
 	// --- End Track P18b ---
+	// --- Track P22c ---
+	/** CR 700.2a: Conditional alternative bounds ("If you control a Wizard as you cast ~, you may choose two instead."). */
+	conditionalChooseRange?: { condition: Condition; min: number; max: number };
+	/** Condition that overrides `randomMode` and lets controller choose modes normally. */
+	conditionalNotRandom?: Condition;
+	/** "Each mode must target a different player." */
+	differentPlayerTargetsPerMode?: boolean;
+	// --- End Track P22c ---
 }
 
 // ---- Keywords -------------------------------------------------------------------------------
@@ -933,8 +941,11 @@ export type Amount =
 	/** Number of creatures that died this turn (optionally scoped to `controller`: `'you'` | `'opponent'` | `'any'`). */
 	| { k: 'creaturesDiedThisTurn'; controller?: 'you' | 'opponent' | 'any' }
 	/** Number of spells cast this turn by `who` (default `'you'`) matching optional `filter` (*Ral, Monsoon Mage*). */
-	| { k: 'spellsCastThisTurnCount'; filter?: ObjectFilter; who?: 'you' | 'activePlayer' };
+	| { k: 'spellsCastThisTurnCount'; filter?: ObjectFilter; who?: 'you' | 'activePlayer' }
 	// --- End Track P22a ---
+	// --- Track P22c ---
+	| { k: 'conditional'; condition: Condition; then: Amount; else: Amount };
+	// --- End Track P22c ---
 
 // ---- Costs ----------------------------------------------------------------------------------
 
@@ -2539,7 +2550,11 @@ export type Condition =
 	/** True iff `you` have begun at least `min` turns of your own (or when `onlyDuringYourTurn` is true and it's not your turn, *Serra Avenger*). */
 	| { k: 'yourTurnsTakenAtLeast'; min: number; onlyDuringYourTurn?: boolean }
 	/** True iff a permanent matching `filter` entered the battlefield under `you`r control this turn (*Mechan Shieldmate*, *Swordsworn Cavalier*). */
-	| { k: 'enteredBattlefieldUnderYourControlThisTurn'; filter: ObjectFilter };
+	| { k: 'enteredBattlefieldUnderYourControlThisTurn'; filter: ObjectFilter }
+	// --- Track P22c ---
+	/** True iff controller discarded one or more cards this turn (*Typhoid Mary, Fractured*). */
+	| { k: 'youDiscardedThisTurn' };
+	// --- End Track P22c ---
 	// --- End Track P22a ---
 
 // ---- Statics and replacements ---------------------------------------------------------------
@@ -2748,8 +2763,11 @@ export type RestrictionKind =
 	// --- Track P17a ---
 	| 'attacksOrBlocksEachCombat'
 	| 'cantAttackYou'
-	| 'cantAttackYouOrPlaneswalkers';
+	| 'cantAttackYouOrPlaneswalkers'
 	// --- End Track P17a ---
+	// --- Track P22c ---
+	| 'cantBeCopied';
+	// --- End Track P22c ---
 
 // --- Track P8 ---
 export type CombatRuleSpec =

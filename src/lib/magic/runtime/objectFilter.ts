@@ -1281,6 +1281,10 @@ export function evaluateAmount(amount: Amount, ctx: FilterContext): number {
 				amount.who
 			);
 		// --- End Track P22a ---
+		// --- Track P22c ---
+		case 'conditional':
+			return evaluateAmount(evaluateCondition(amount.condition, ctx) ? amount.then : amount.else, ctx);
+		// --- End Track P22c ---
 		default:
 			return 0;
 	}
@@ -1571,6 +1575,18 @@ export function evaluateCondition(cond: Condition, ctx: FilterContext): boolean 
 		case 'enteredBattlefieldUnderYourControlThisTurn':
 			return evaluateWave8Condition(cond, ctx.state, ctx.controllerId, ctx.source) ?? false;
 		// --- End Track P22a ---
+		// --- Track P22c ---
+		case 'youDiscardedThisTurn': {
+			const turnKey = ctx.state.turnSerial ?? ctx.state.turnNumber;
+			return ctx.state.players.some((p) =>
+				p.graveyard.some(
+					(c) =>
+						c.discardedByPlayerIdThisTurn === ctx.controllerId &&
+						c.discardedTurnSerial === turnKey
+				)
+			);
+		}
+		// --- End Track P22c ---
 		default:
 			return false;
 	}

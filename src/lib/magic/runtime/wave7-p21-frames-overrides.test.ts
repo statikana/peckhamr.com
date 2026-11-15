@@ -1256,8 +1256,8 @@ describe('Track P21 — Compiler Cleave, Punctuation, Quoted Grants, and Colon F
 // ============================================================================
 
 describe('Track P21 — JSON Override Registry, Schema Validation, & 8 Iconic Cards', () => {
-	it('validates all 8 registered overrides, rejects malformed JSON schemas, and falls back cleanly on textHash drift', () => {
-		assert.equal(OVERRIDES_BY_ORACLE_ID.size, 8);
+	it('validates all 8+ registered overrides, rejects malformed JSON schemas, and falls back cleanly on textHash drift', () => {
+		assert.ok(OVERRIDES_BY_ORACLE_ID.size >= 8);
 
 		assert.throws(() =>
 			validateOverrideEntry({ oracleId: 'not-a-uuid', expectedTextHash: '12345678', faces: [] })

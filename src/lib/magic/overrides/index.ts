@@ -11,14 +11,33 @@ import { getKeywordSpec } from '../keywords.ts';
 import { staticallyInterpretable, triggerTargetsSupported } from '../compiler/interpretable.ts';
 import type { CardLayout } from '../types.ts';
 
+import ov0636b6c3 from './0636b6c3-0662-420a-b30d-f0a14e7c512d.json' with { type: 'json' };
+import ov08becc07 from './08becc07-28bc-4a2f-a6b0-28a2998d2f50.json' with { type: 'json' };
+import ov1313da2f from './1313da2f-92bb-4862-9153-373972cc1520.json' with { type: 'json' };
 import ov15d5b198 from './15d5b198-edbe-40f3-87e2-d72f7f0c58ab.json' with { type: 'json' };
+import ov240e85d3 from './240e85d3-e495-4877-8609-4b4056c402f7.json' with { type: 'json' };
+import ov2962fe4c from './2962fe4c-bf48-454b-8a6b-0f8253352ae8.json' with { type: 'json' };
+import ov32fbb638 from './32fbb638-ab14-4e8b-a07a-d4c44e3496f2.json' with { type: 'json' };
+import ov33e85a8a from './33e85a8a-86df-4cdc-a9cc-8cbabe92c3c0.json' with { type: 'json' };
 import ov3d92e5ce from './3d92e5ce-9d30-4203-9f84-6c36117440cf.json' with { type: 'json' };
 import ov49d4aef7 from './49d4aef7-d2d1-4f66-bc2a-79ec8cc96565.json' with { type: 'json' };
+import ov4ff07b7c from './4ff07b7c-e97a-4b57-bcf1-2f22c37a8bd6.json' with { type: 'json' };
+import ov5f15125e from './5f15125e-ae89-471e-b055-226a783bc7c1.json' with { type: 'json' };
 import ov699b192c from './699b192c-f3f2-4ac5-9ca9-e35bcf08ad8a.json' with { type: 'json' };
+import ov6f4ac4a4 from './6f4ac4a4-53ec-4bc9-8f5c-d4b801d867b2.json' with { type: 'json' };
+import ov9b9a10ff from './9b9a10ff-5a5d-4df8-88aa-18d84ff9117c.json' with { type: 'json' };
+import ovA54f0869 from './a54f0869-94c8-42af-9080-166efb9486a4.json' with { type: 'json' };
+import ovAa959340 from './aa959340-c869-4caa-92c7-572bd8d23eef.json' with { type: 'json' };
+import ovAb8d5f5c from './ab8d5f5c-1976-4f77-8ed2-8d28ee666741.json' with { type: 'json' };
 import ovC0d8fef4 from './c0d8fef4-65f4-4769-982d-b397d2b7e977.json' with { type: 'json' };
+import ovC549b0fd from './c549b0fd-1e08-4873-952e-a14dc45a0fd2.json' with { type: 'json' };
 import ovC823e687 from './c823e687-6311-4c99-974b-fd77d204141a.json' with { type: 'json' };
 import ovCfca44cb from './cfca44cb-8ca5-4ebb-bd5c-b621eca41944.json' with { type: 'json' };
+import ovE11966cd from './e11966cd-2ee3-4df4-b099-abf42dcdf0db.json' with { type: 'json' };
+import ovE8863518 from './e8863518-0bfa-49c3-8c6e-6c9116a81051.json' with { type: 'json' };
 import ovEe6099b0 from './ee6099b0-fb1f-42f1-b862-7708c6e36d05.json' with { type: 'json' };
+import ovFb60739e from './fb60739e-1dc3-481d-a056-ad72e665c680.json' with { type: 'json' };
+import ovFd949f82 from './fd949f82-fc10-4e37-8aa9-6c7569fe3c55.json' with { type: 'json' };
 
 export interface CardOverrideEntry {
 	oracleId: string;
@@ -155,8 +174,12 @@ function validateAbilityDef(ab: unknown, oracleId: string, faceIdx: number, abId
 			return;
 		}
 		case 'replacement': {
-			if (!isRecord(typed.replacement) || typeof typed.replacement.event !== 'string') {
-				throw new Error(`${loc}: replacement ability missing replacement.event`);
+			if (
+				!isRecord(typed.replacement) ||
+				!isRecord(typed.replacement.replaces) ||
+				typeof typed.replacement.replaces.event !== 'string'
+			) {
+				throw new Error(`${loc}: replacement ability missing replacement.replaces.event`);
 			}
 			return;
 		}
@@ -212,14 +235,33 @@ export function validateOverrideEntry(raw: unknown): CardOverrideEntry {
 }
 
 const RAW_ENTRIES: readonly unknown[] = [
+	ov0636b6c3,
+	ov08becc07,
+	ov1313da2f,
 	ov15d5b198,
+	ov240e85d3,
+	ov2962fe4c,
+	ov32fbb638,
+	ov33e85a8a,
 	ov3d92e5ce,
 	ov49d4aef7,
+	ov4ff07b7c,
+	ov5f15125e,
 	ov699b192c,
+	ov6f4ac4a4,
+	ov9b9a10ff,
+	ovA54f0869,
+	ovAa959340,
+	ovAb8d5f5c,
 	ovC0d8fef4,
+	ovC549b0fd,
 	ovC823e687,
 	ovCfca44cb,
-	ovEe6099b0
+	ovE11966cd,
+	ovE8863518,
+	ovEe6099b0,
+	ovFb60739e,
+	ovFd949f82
 ];
 
 function buildOverrideRegistry(entries: readonly unknown[]): ReadonlyMap<string, CardOverrideEntry> {

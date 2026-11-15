@@ -183,7 +183,14 @@ import {
 	countDistinctCardTypesInZone,
 	evaluateP8Condition
 } from './staticsLayersAndRestrictions.ts';
-import { activeRuleModifiers, applySelfEtbReplacements, tokenMultiplier } from './replace.ts';
+import {
+	activeRuleModifiers,
+	applySelfEtbReplacements,
+	// --- Track P22c ---
+	spellCannotBeCopied,
+	// --- End Track P22c ---
+	tokenMultiplier
+} from './replace.ts';
 // --- Track P20a ---
 import {
 	applyChosenPlayerDamageModifiers,
@@ -2396,6 +2403,10 @@ class Run {
 					xValue: this.ctx.xValue
 				});
 			}
+			// --- Track P22c ---
+			case 'conditional':
+				return this.condition(a.condition) ? this.amount(a.then) : this.amount(a.else);
+			// --- End Track P22c ---
 			// --- Track P19a ---
 			case 'countedThisWay':
 				return this.lastCountedByKind?.[a.kind] ?? this.ctx.item.lastCountedByKind?.[a.kind] ?? 0;
@@ -3560,9 +3571,16 @@ class Run {
 				return;
 			}
 			case 'createToken': {
-				const actor = step.actor ? this.playerRef(step.actor) : you;
+				// --- Track P22c: Support multi-player createToken when subject is a player selector ---
+				const actors = step.actor
+					? [this.playerRef(step.actor)].filter((pl): pl is PlayerGameState => Boolean(pl))
+					: step.subject.k === 'player' || step.subject.k === 'playerRef'
+						? this.players(step.subject)
+						: you
+							? [you]
+							: [];
 				const baseSpec = step.params?.token;
-				if (!actor || !baseSpec) return;
+				if (actors.length === 0 || !baseSpec) return;
 				// --- Track P19a: Dynamic X/X tokens & tapped-and-attacking tokens (CR 508.4) ---
 				const enterTapped = Boolean(
 					step.params?.tapped || step.params?.tappedAndAttacking || baseSpec.tapped
@@ -3579,25 +3597,33 @@ class Run {
 						: {})
 				};
 				// --- End Track P19a ---
-				const n = Math.max(0, this.amount(step.amount, 1)) * tokenMultiplier(s, actor.playerId);
+				const baseAmount = Math.max(0, this.amount(step.amount, 1));
 				const made: CardInstance[] = [];
+				const perPlayerCounts: Array<{ actor: PlayerGameState; count: number }> = [];
 				// --- Track P13 (CR 603.2c): Simultaneous multi-token batch for "one or more" triggers ---
 				withSimultaneousZoneBatch(s, () => {
-					for (let i = 0; i < n; i++) {
-						const tok = p.createToken(s, actor, spec);
-						// --- Track P19a ---
-						if (step.params?.tappedAndAttacking) {
-							registerEnteredAttackingCombatant(s, actor, tok);
+					for (const actor of actors) {
+						const n = baseAmount * tokenMultiplier(s, actor.playerId);
+						perPlayerCounts.push({ actor, count: n });
+						for (let i = 0; i < n; i++) {
+							const tok = p.createToken(s, actor, spec);
+							// --- Track P19a ---
+							if (step.params?.tappedAndAttacking) {
+								registerEnteredAttackingCombatant(s, actor, tok);
+							}
+							// --- End Track P19a ---
+							made.push(tok);
 						}
-						// --- End Track P19a ---
-						made.push(tok);
 					}
 				});
 				this.recordEffectAmount(made.length);
 				// --- End Track P13 ---
-				if (n > 0) p.addLog(s, 'cast', `${actor.username} created ${n}x ${spec.name}.`, actor.playerId);
+				for (const { actor, count } of perPlayerCounts) {
+					if (count > 0) p.addLog(s, 'cast', `${actor.username} created ${count}x ${spec.name}.`, actor.playerId);
+				}
 				this.bind(step, made);
 				return;
+				// --- End Track P22c ---
 			}
 			case 'copyPermanent': {
 				const actor = step.actor ? this.playerRef(step.actor) : you;
@@ -5183,6 +5209,9 @@ class Run {
 						: undefined;
 				}
 				if (!orig) return;
+				// --- Track P22c ---
+				if (spellCannotBeCopied(s, orig)) return;
+				// --- End Track P22c ---
 
 				const count = step.params?.count ? Math.max(0, this.amount(step.params.count)) : 1;
 				if (count <= 0) return;
