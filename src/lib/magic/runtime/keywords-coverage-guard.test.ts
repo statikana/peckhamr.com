@@ -111,7 +111,9 @@ export const KEYWORD_COVERAGE_FILES: Record<string, readonly string[]> = {
 	station: ['runtime/striated-frames-and-keywords-p6.test.ts'],
 	transmute: ['runtime/striated-frames-and-keywords-p6.test.ts'],
 	vanishing: ['runtime/striated-frames-and-keywords-p6.test.ts'],
-	warp: ['runtime/striated-frames-and-keywords-p6.test.ts']
+	warp: ['runtime/striated-frames-and-keywords-p6.test.ts'],
+	// --- Track P8 ---
+	skulk: ['runtime/statics-layers-restrictions.test.ts']
 };
 
 const SAMPLE_ORACLE_FOR_KEYWORD: Record<string, { typeLine: string; oracleText: string }> = {

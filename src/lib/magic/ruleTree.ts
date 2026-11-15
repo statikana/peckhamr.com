@@ -147,6 +147,8 @@ export function targetRequirementFromSpecs(specs: TargetSpec[]): TargetRequireme
 		specs.every(
 			(s) =>
 				JSON.stringify(s.filter.types ?? null) === JSON.stringify(f.types ?? null) &&
+				// --- Track P8 ---
+				JSON.stringify(s.filter.allTypes ?? null) === JSON.stringify(f.allTypes ?? null) &&
 				JSON.stringify(s.filter.notTypes ?? null) === JSON.stringify(f.notTypes ?? null) &&
 				JSON.stringify(s.filter.subtypes ?? null) === JSON.stringify(f.subtypes ?? null) &&
 				JSON.stringify(s.filter.supertypes ?? null) === JSON.stringify(f.supertypes ?? null)
@@ -156,6 +158,14 @@ export function targetRequirementFromSpecs(specs: TargetSpec[]): TargetRequireme
 	if (!allSameTypes) {
 		targetKind = 'permanent';
 		cardTypeFilter = undefined;
+	} else if (f.allTypes?.length) {
+		// --- Track P8 ---
+		targetKind = f.allTypes.includes('Creature')
+			? controllerFilter === 'you'
+				? 'controlled_creature'
+				: 'creature'
+			: 'permanent';
+		cardTypeFilter = f.allTypes.join('');
 	} else if (f.types?.length === 1 && f.types[0] === 'Creature') {
 		targetKind = controllerFilter === 'you' ? 'controlled_creature' : 'creature';
 		const qual = [...(f.supertypes ?? []), ...(f.subtypes ?? [])];

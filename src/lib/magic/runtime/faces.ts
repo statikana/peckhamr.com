@@ -177,9 +177,24 @@ function applyCopyExceptions(
 		const rm = new Set(except.removeSupertypes.map((s) => s.toLowerCase()));
 		supertypes = supertypes.filter((s) => !rm.has(s.toLowerCase()));
 	}
-	const types = except.types ? [...except.types] : [...view.types];
-	const subtypes = except.subtypes ? [...except.subtypes] : [...view.subtypes];
-	const colors = except.colors ? [...except.colors] : [...view.colors];
+	let types = except.types ? [...except.types] : [...view.types];
+	let subtypes = except.subtypes ? [...except.subtypes] : [...view.subtypes];
+	let colors = except.colors ? [...except.colors] : [...view.colors];
+	// --- Track P8 ---
+	if (except.addTypes?.length) {
+		types = dedupe([...types, ...except.addTypes]);
+	}
+	if (except.addSubtypes?.length) {
+		subtypes = dedupe([...subtypes, ...except.addSubtypes]);
+	}
+	if (except.addColors?.length) {
+		colors = dedupe([...colors, ...except.addColors]);
+	}
+	const keywords = except.addKeywords?.length
+		? dedupe([...view.keywords, ...except.addKeywords])
+		: view.keywords;
+	const manaCost = except.noManaCost ? '' : view.manaCost;
+	const manaValue = except.noManaCost ? 0 : view.manaValue;
 	const power = except.power !== undefined ? except.power : view.power;
 	const toughness = except.toughness !== undefined ? except.toughness : view.toughness;
 	const typeLine = formatTypeLine(supertypes, types, subtypes);
@@ -187,11 +202,14 @@ function applyCopyExceptions(
 		...view,
 		name,
 		names,
+		manaCost,
+		manaValue,
 		supertypes,
 		types,
 		subtypes,
 		typeLine,
 		colors,
+		keywords,
 		...(power !== undefined ? { power } : {}),
 		...(toughness !== undefined ? { toughness } : {})
 	};

@@ -117,9 +117,8 @@ describe('Cost grammar: additional costs', () => {
 });
 
 describe('Cost grammar: object phrases', () => {
-	it('keeps "artifact creature" (both types) and "Elf Warrior" (both subtypes) unparsed', () => {
-		// ObjectFilter list fields are any-of, so these conjunctions can't be expressed yet.
-		assert.equal(parseObjectPhrase('artifact creature'), null);
+	it('compiles "artifact creature" via allTypes and keeps "Elf Warrior" (two subtypes) unparsed', () => {
+		assert.deepEqual(parseObjectPhrase('artifact creature'), { allTypes: ['Artifact', 'Creature'] });
 		assert.equal(parseObjectPhrase('Elf Warrior'), null);
 	});
 

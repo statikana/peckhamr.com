@@ -84,6 +84,17 @@ function pushFingerprint(state: GameState, fp: unknown[]): void {
 				perm.copiableState?.except,
 				perm.copiableState?.except?.power,
 				perm.copiableState?.except?.toughness,
+				// --- Track P8 ---
+				perm.copiableState?.except?.names?.[0],
+				perm.copiableState?.except?.types?.length,
+				perm.copiableState?.except?.subtypes?.length,
+				perm.copiableState?.except?.colors?.length,
+				perm.copiableState?.except?.addColors?.length,
+				perm.copiableState?.except?.addTypes?.length,
+				perm.copiableState?.except?.addSubtypes?.length,
+				perm.copiableState?.except?.addKeywords?.length,
+				perm.copiableState?.except?.removeSupertypes?.length,
+				perm.copiableState?.except?.noManaCost,
 				perm.prototyped,
 				perm.transformed,
 				perm.activeFaceIndex,
@@ -146,6 +157,17 @@ function fingerprintMatches(state: GameState, fp: unknown[]): boolean {
 				fp[i++] !== perm.copiableState?.except ||
 				fp[i++] !== perm.copiableState?.except?.power ||
 				fp[i++] !== perm.copiableState?.except?.toughness ||
+				// --- Track P8 ---
+				fp[i++] !== perm.copiableState?.except?.names?.[0] ||
+				fp[i++] !== perm.copiableState?.except?.types?.length ||
+				fp[i++] !== perm.copiableState?.except?.subtypes?.length ||
+				fp[i++] !== perm.copiableState?.except?.colors?.length ||
+				fp[i++] !== perm.copiableState?.except?.addColors?.length ||
+				fp[i++] !== perm.copiableState?.except?.addTypes?.length ||
+				fp[i++] !== perm.copiableState?.except?.addSubtypes?.length ||
+				fp[i++] !== perm.copiableState?.except?.addKeywords?.length ||
+				fp[i++] !== perm.copiableState?.except?.removeSupertypes?.length ||
+				fp[i++] !== perm.copiableState?.except?.noManaCost ||
 				fp[i++] !== perm.prototyped ||
 				fp[i++] !== perm.transformed ||
 				fp[i++] !== perm.activeFaceIndex ||

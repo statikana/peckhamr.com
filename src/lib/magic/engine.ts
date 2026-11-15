@@ -85,6 +85,20 @@ import {
 	spellCannotBeCountered,
 	tokenMultiplier
 } from './runtime/replace.ts';
+// --- Track P8 ---
+import {
+	applyCopiedPermanentToInstance,
+	findLegalCloneCandidates,
+	findSelfCloneReplacementSpec,
+	getActiveTopOfLibrarySpellPermissionSource,
+	getActiveZoneLandPlayPermissionSource,
+	getGlobalAttackCapError,
+	getPlayerTopOfLibraryVisibility,
+	getStaticAttackRestrictionReason,
+	getStaticBlockerPairRestrictionReason,
+	permanentCantAttackAlone,
+	validateAndSolveDefenderBlockersP8
+} from './runtime/staticsLayersAndRestrictions.ts';
 import {
 	allocateTimestamp,
 	attachObject,
@@ -639,7 +653,7 @@ export function getPlayerCommanderIdentity(player: PlayerGameState): ManaColor[]
 	return Array.from(set);
 }
 
-type CastableSourceZone = 'hand' | 'command' | 'exile' | 'graveyard';
+type CastableSourceZone = 'hand' | 'command' | 'exile' | 'graveyard' | 'library';
 
 function optionTargetsBecomeEach(
 	sourceCard: ScryfallCard | undefined,
@@ -876,6 +890,42 @@ function enumerateCandidateCastOptions(
 					});
 				}
 			}
+		// --- Track P8 ---
+		} else if (fromZone === 'library') {
+			if (actor?.library[0]?.instanceId === inst.instanceId) {
+				const srcName = getActiveTopOfLibrarySpellPermissionSource(
+					state,
+					actorId,
+					inst,
+					fi,
+					false
+				);
+				if (srcName !== null && !isLandOnlyFace) {
+					hasZonePermission = true;
+					const baseCost: CastOption['baseCost'] = { kind: 'printed' };
+					const label = isAdventureFace
+						? `Cast Adventure: ${faceName} from Library (${srcName})`
+						: isMultiFace
+							? `Cast ${faceName} from Library (${srcName})`
+							: `Cast from Top of Library (${srcName})`;
+					options.push({
+						id: idFor('library:top'),
+						label,
+						costDisplay: `${faceManaCost || '{0}'}${taxSuffix}`,
+						fromZone: 'library',
+						permission: 'library_top_permission',
+						...faceIndexProp,
+						baseCost,
+						...(mandatoryAdditionalCosts ? { mandatoryAdditionalCosts } : {}),
+						...optionalProp,
+						...paymentAidsProp,
+						timing: 'default',
+						spellMods: { ...adventureMods },
+						choosesX: spellChoosesX(card, baseCost, undefined, fi, false),
+						requiresTarget: targetInfo.requiresTarget
+					});
+				}
+			}
 		}
 
 		if (
@@ -886,7 +936,7 @@ function enumerateCandidateCastOptions(
 				if (meta.castTransformedBackFace) continue;
 				const altCost = keywordAltCost(card, kwName, fi);
 				if (!altCost) continue;
-				if (!meta.zones.includes(fromZone)) continue;
+				if (!(meta.zones as readonly string[]).includes(fromZone)) continue;
 				if (meta.requiresZonePermission && !hasZonePermission) continue;
 				if (meta.faceDown) {
 					if (isMultiFace && layout !== 'modal_dfc' && fi > 0) continue;
@@ -964,42 +1014,44 @@ function enumerateCandidateCastOptions(
 		}
 	}
 
-	options.push(
-		...buildTrackP3CastOptions({
-			state,
-			actorId,
-			inst,
-			card,
-			def,
-			fromZone,
-			taxSuffix,
-			keywordAltCost,
-			spellAdditionalCost,
-			spellOptionalAdditionalCosts,
-			buildPaymentAids: (zone, faceIdx, isFused, isFree) =>
-				buildCastPaymentAids(state, actor, inst, zone, faceIdx, isFused, isFree),
-			getSpellTargetRequirement,
-			spellChoosesX
-		}),
-		...buildTrackP6CastOptions({
-			state,
-			actorId,
-			inst,
-			card,
-			def,
-			fromZone,
-			isMultiFace,
-			layout,
-			candidateFaceIndices,
-			taxSuffix,
-			spellAdditionalCost,
-			spellOptionalAdditionalCosts,
-			buildPaymentAids: (zone, faceIdx, isFused, isFree) =>
-				buildCastPaymentAids(state, actor, inst, zone, faceIdx, isFused, isFree),
-			getSpellTargetRequirement,
-			spellChoosesX
-		})
-	);
+	if (fromZone !== 'library') {
+		options.push(
+			...buildTrackP3CastOptions({
+				state,
+				actorId,
+				inst,
+				card,
+				def,
+				fromZone,
+				taxSuffix,
+				keywordAltCost,
+				spellAdditionalCost,
+				spellOptionalAdditionalCosts,
+				buildPaymentAids: (zone, faceIdx, isFused, isFree) =>
+					buildCastPaymentAids(state, actor, inst, zone, faceIdx, isFused, isFree),
+				getSpellTargetRequirement,
+				spellChoosesX
+			}),
+			...buildTrackP6CastOptions({
+				state,
+				actorId,
+				inst,
+				card,
+				def,
+				fromZone,
+				isMultiFace,
+				layout,
+				candidateFaceIndices,
+				taxSuffix,
+				spellAdditionalCost,
+				spellOptionalAdditionalCosts,
+				buildPaymentAids: (zone, faceIdx, isFused, isFree) =>
+					buildCastPaymentAids(state, actor, inst, zone, faceIdx, isFused, isFree),
+				getSpellTargetRequirement,
+				spellChoosesX
+			})
+		);
+	}
 
 	// CR 702.102: Split card with Fuse cast from hand as both halves (left then right).
 	if (
@@ -1073,7 +1125,8 @@ function resolveCastOptionForAction(
 		fromZone !== 'hand' &&
 		fromZone !== 'command' &&
 		fromZone !== 'exile' &&
-		fromZone !== 'graveyard'
+		fromZone !== 'graveyard' &&
+		fromZone !== 'library'
 	) {
 		return { ok: false, error: 'Spells can only be cast from your Hand, Command Zone, or Exile.' };
 	}
@@ -1171,6 +1224,7 @@ function resolveCastOptionForAction(
 
 	const defaultOpt =
 		candidates.find((o) => o.id === 'normal') ??
+		candidates.find((o) => o.id === 'library:top') ??
 		candidates.find((o) => o.id === 'exile:suspend') ??
 		candidates.find((o) => o.id === 'exile:permission') ??
 		candidates.find((o) => o.id === 'exile:foretell') ??
@@ -1473,7 +1527,10 @@ export function getSpellCostRequirement(
 	optionalCostCounts?: Record<string, number>
 ): ManaCostRequirement {
 	const fromZone: CastableSourceZone =
-		inst.zone === 'command' || inst.zone === 'exile' || inst.zone === 'graveyard'
+		inst.zone === 'command' ||
+		inst.zone === 'exile' ||
+		inst.zone === 'graveyard' ||
+		inst.zone === 'library'
 			? inst.zone
 			: 'hand';
 	const resolved = resolveCastOptionForAction(state, player.playerId, inst, fromZone, optionId);
@@ -1509,7 +1566,10 @@ export function chooseBotSpellCostPayment(
 	optionalCostCounts?: Record<string, number>
 ): CostPayment | undefined {
 	const fromZone: CastableSourceZone =
-		inst.zone === 'command' || inst.zone === 'exile' || inst.zone === 'graveyard'
+		inst.zone === 'command' ||
+		inst.zone === 'exile' ||
+		inst.zone === 'graveyard' ||
+		inst.zone === 'library'
 			? inst.zone
 			: 'hand';
 	const resolved = resolveCastOptionForAction(state, player.playerId, inst, fromZone, optionId);
@@ -1689,7 +1749,7 @@ function finalizeCastSpell(
 	actor: PlayerGameState,
 	inst: CardInstance,
 	sourcePlayer: PlayerGameState,
-	sourceZone: 'hand' | 'command' | 'exile' | 'graveyard',
+	sourceZone: 'hand' | 'command' | 'exile' | 'graveyard' | 'library',
 	opts: {
 		targets: TargetRef[];
 		targetsBySpec?: TargetRef[][];
@@ -1830,7 +1890,7 @@ function finalizeCastSpell(
 	addLog(
 		state,
 		'cast',
-		`${actor.username} cast ${spellDisplayName}${summarySuffix}${sourceZone === 'command' ? ` from Command Zone (Cast #${inst.commanderCastCount})` : sourceZone === 'graveyard' ? ' from Graveyard' : sourceZone === 'exile' ? ` from Exile (${exSourceName || 'Exile Permission'})` : ''}${targetDesc}.`,
+		`${actor.username} cast ${spellDisplayName}${summarySuffix}${sourceZone === 'command' ? ` from Command Zone (Cast #${inst.commanderCastCount})` : sourceZone === 'graveyard' ? ' from Graveyard' : sourceZone === 'library' ? ' from Top of Library' : sourceZone === 'exile' ? ` from Exile (${exSourceName || 'Exile Permission'})` : ''}${targetDesc}.`,
 		actorId
 	);
 
@@ -2299,7 +2359,7 @@ function autoTapManaAbilities(
 	cmdIdentity: ManaColor[],
 	spendCtx: ManaSpendContext = { isSpell: false }
 ): EffectiveActivatedAbility[] {
-	if (!checkGlobalAbilityActivationRestrictions(state, player.playerId, perm).ok) {
+	if (!checkGlobalAbilityActivationRestrictions(state, player.playerId, perm, true).ok) {
 		return [];
 	}
 	const evalPerm = evaluatePermanent(state, perm);
@@ -2956,7 +3016,7 @@ function simulateOrExecuteManaOnly(
 
 		for (const fPerm of player.battlefield) {
 			if (fPerm.phasedOut || fPerm.tapped || reservedTapIds?.has(fPerm.instanceId)) continue;
-			if (!checkGlobalAbilityActivationRestrictions(state, player.playerId, fPerm).ok) continue;
+			if (!checkGlobalAbilityActivationRestrictions(state, player.playerId, fPerm, true).ok) continue;
 			for (const fAb of getEffectiveActivatedAbilities(state, player, fPerm, cmdIdentity)) {
 				if (!fAb.isManaAbility || fAb.producesMana.length === 0) continue;
 				if (fAb.manaRestriction && !canSpendRestrictedMana(fAb.manaRestriction, spendCtx)) {
@@ -3742,7 +3802,7 @@ function applyGameActionInner(
 			if (manaAbs.length === 0) {
 				return { ok: false, error: `${perm.card.name} does not have an active mana ability.` };
 			}
-			const globalAbCheck = checkGlobalAbilityActivationRestrictions(state, actorId, perm);
+			const globalAbCheck = checkGlobalAbilityActivationRestrictions(state, actorId, perm, true);
 			if (!globalAbCheck.ok) return globalAbCheck;
 
 			const preferred = action.preferredColor;
@@ -4035,14 +4095,14 @@ function applyGameActionInner(
 		case 'play_land': {
 			let landInst: CardInstance | undefined;
 			let sourcePlayer: PlayerGameState = actor;
-			let sourceZone: 'hand' | 'exile' = 'hand';
+			let sourceZone: 'hand' | 'exile' | 'library' | 'graveyard' = 'hand';
 
 			const handIdx = actor.hand.findIndex((c) => c.instanceId === action.instanceId);
-			if (handIdx >= 0) {
+			if (handIdx >= 0 && (!action.fromZone || action.fromZone === 'hand')) {
 				landInst = actor.hand[handIdx];
 				sourcePlayer = actor;
 				sourceZone = 'hand';
-			} else {
+			} else if (!action.fromZone || action.fromZone === 'exile') {
 				for (const p of state.players) {
 					const exIdx = p.exile.findIndex(
 						(c) => c.instanceId === action.instanceId && c.playableFromExileBy?.playerId === actorId
@@ -4053,6 +4113,24 @@ function applyGameActionInner(
 						sourceZone = 'exile';
 						break;
 					}
+				}
+			}
+			// --- Track P8 ---
+			if (
+				!landInst &&
+				(!action.fromZone || action.fromZone === 'library') &&
+				actor.library[0]?.instanceId === action.instanceId
+			) {
+				landInst = actor.library[0];
+				sourcePlayer = actor;
+				sourceZone = 'library';
+			}
+			if (!landInst && (!action.fromZone || action.fromZone === 'graveyard')) {
+				const gyIdx = actor.graveyard.findIndex((c) => c.instanceId === action.instanceId);
+				if (gyIdx >= 0) {
+					landInst = actor.graveyard[gyIdx];
+					sourcePlayer = actor;
+					sourceZone = 'graveyard';
 				}
 			}
 
@@ -4078,7 +4156,13 @@ function applyGameActionInner(
 			);
 			if (!resolvedFace.ok) return resolvedFace;
 
-			const exSourceName = landInst.playableFromExileBy?.sourceName;
+			const exSourceName =
+				sourceZone === 'exile'
+					? landInst.playableFromExileBy?.sourceName
+					: sourceZone === 'library' || sourceZone === 'graveyard'
+						? (getActiveZoneLandPlayPermissionSource(state, actorId, sourceZone, landInst) ??
+							undefined)
+						: undefined;
 			landInst.playableFromExileBy = undefined;
 			landInst.tapped = false;
 			landInst.summoningSick = true;
@@ -4104,7 +4188,7 @@ function applyGameActionInner(
 			addLog(
 				state,
 				'rule',
-				`${actor.username} played ${playedFaceName}${sourceZone === 'exile' ? ` from Exile (${exSourceName || 'Exile Permission'})` : ''}.`,
+				`${actor.username} played ${playedFaceName}${sourceZone === 'exile' ? ` from Exile (${exSourceName || 'Exile Permission'})` : sourceZone === 'library' ? ` from Top of Library (${exSourceName || 'Library Permission'})` : sourceZone === 'graveyard' ? ` from Graveyard (${exSourceName || 'Graveyard Permission'})` : ''}.`,
 				actorId
 			);
 
@@ -4449,26 +4533,26 @@ function applyGameActionInner(
 				return { ok: false, error: 'You do not currently hold priority.' };
 			}
 
-			// Locate card in hand, command zone, graveyard, or playable exile
+			// Locate card in hand, command zone, graveyard, playable exile, or top of library
 			let inst: CardInstance | undefined;
 			let sourcePlayer: PlayerGameState = actor;
-			let sourceZone: 'hand' | 'command' | 'exile' | 'graveyard' = 'hand';
+			let sourceZone: 'hand' | 'command' | 'exile' | 'graveyard' | 'library' = 'hand';
 
 			const handIdx = actor.hand.findIndex((c) => c.instanceId === action.instanceId);
-			if (handIdx >= 0) {
+			if (handIdx >= 0 && (!action.fromZone || action.fromZone === 'hand')) {
 				inst = actor.hand[handIdx];
 				sourceZone = 'hand';
 			} else {
 				const cmdIdx = actor.command.findIndex((c) => c.instanceId === action.instanceId);
-				if (cmdIdx >= 0) {
+				if (cmdIdx >= 0 && (!action.fromZone || action.fromZone === 'command')) {
 					inst = actor.command[cmdIdx];
 					sourceZone = 'command';
 				} else {
 					const gyIdx = actor.graveyard.findIndex((c) => c.instanceId === action.instanceId);
-					if (gyIdx >= 0) {
+					if (gyIdx >= 0 && (!action.fromZone || action.fromZone === 'graveyard')) {
 						inst = actor.graveyard[gyIdx];
 						sourceZone = 'graveyard';
-					} else {
+					} else if (!action.fromZone || action.fromZone === 'exile') {
 						for (const p of state.players) {
 							const exIdx = p.exile.findIndex(
 								(c) =>
@@ -4485,6 +4569,16 @@ function applyGameActionInner(
 						}
 					}
 				}
+			}
+			// --- Track P8 ---
+			if (
+				!inst &&
+				(!action.fromZone || action.fromZone === 'library') &&
+				actor.library[0]?.instanceId === action.instanceId
+			) {
+				inst = actor.library[0];
+				sourcePlayer = actor;
+				sourceZone = 'library';
 			}
 
 			if (!inst) {
@@ -5104,6 +5198,11 @@ function applyGameActionInner(
 					state.combat.declaredBlockersPlayerIds = [];
 				}
 				if (!state.combat.declaredBlockersPlayerIds.includes(actorId)) {
+					// --- Track P8 (CR 509.1c) ---
+					const zeroBlockerCheck = validateDefenderBlockerAssignments(state, actor, []);
+					if (!zeroBlockerCheck.ok) {
+						return { ok: false, error: zeroBlockerCheck.error };
+					}
 					let allDeclared = false;
 					withTriggersDeferred(state, () => {
 						applyValidatedDefenderBlockers(state, actor, [], new Map());
@@ -5311,9 +5410,12 @@ function chooseBotRequiredAttackAssignments(
 			const mustAttack = isGoaded || hasRestriction(state, c, 'attacksEachCombat');
 			if (!mustAttack) continue;
 
-			let candidateDefenders = taxFreeOpponents;
+			let candidateDefenders = taxFreeOpponents.filter(
+				(p) => getStaticAttackRestrictionReason(state, c, p.playerId) === null
+			);
+			if (candidateDefenders.length === 0) continue;
 			if (isGoaded) {
-				const nonGoaders = taxFreeOpponents.filter(
+				const nonGoaders = candidateDefenders.filter(
 					(p) => !c.goadedByPlayerIds!.includes(p.playerId)
 				);
 				if (nonGoaders.length > 0) {
@@ -5321,10 +5423,51 @@ function chooseBotRequiredAttackAssignments(
 				}
 			}
 			const idx = assignments.length;
-			assignments.push({
-				attackerInstanceId: c.instanceId,
-				defenderPlayerId: candidateDefenders[idx % candidateDefenders.length]!.playerId
-			});
+			const nextCandidate = [
+				...assignments,
+				{
+					attackerInstanceId: c.instanceId,
+					defenderPlayerId: candidateDefenders[idx % candidateDefenders.length]!.playerId
+				}
+			];
+			if (getGlobalAttackCapError(state, nextCandidate) !== null) continue;
+			assignments.push(nextCandidate[nextCandidate.length - 1]!);
+		}
+		// CR 508.1c–d: If a single required creature has cantAttackAlone, join another legal creature if possible; else return [].
+		if (assignments.length === 1) {
+			const solePerm = bot.battlefield.find(
+				(c) => c.instanceId === assignments[0]!.attackerInstanceId
+			);
+			if (solePerm && permanentCantAttackAlone(state, solePerm)) {
+				let partnerAdded = false;
+				for (const other of bot.battlefield) {
+					if (
+						other.instanceId === solePerm.instanceId ||
+						other.phasedOut ||
+						!evaluatePermanent(state, other).isCreature ||
+						other.tapped ||
+						(other.summoningSick && !hasKeyword(other, 'Haste', state)) ||
+						hasKeyword(other, 'Defender', state) ||
+						hasRestriction(state, other, 'cantAttack')
+					) {
+						continue;
+					}
+					const partnerDef = taxFreeOpponents.find(
+						(p) => getStaticAttackRestrictionReason(state, other, p.playerId, 2) === null
+					);
+					if (!partnerDef) continue;
+					const pair = [
+						assignments[0]!,
+						{ attackerInstanceId: other.instanceId, defenderPlayerId: partnerDef.playerId }
+					];
+					if (getGlobalAttackCapError(state, pair) === null) {
+						assignments.push(pair[1]!);
+						partnerAdded = true;
+						break;
+					}
+				}
+				if (!partnerAdded) return [];
+			}
 		}
 		return assignments;
 	});
@@ -5358,11 +5501,28 @@ export function chooseBotAttackAssignments(
 
 	const assignments = [...requiredAssignments];
 	for (const atk of optionalAttackers) {
+		const legalOpponents = opponents.filter(
+			(p) => getStaticAttackRestrictionReason(state, atk, p.playerId) === null
+		);
+		if (legalOpponents.length === 0) continue;
 		const idx = assignments.length;
-		assignments.push({
-			attackerInstanceId: atk.instanceId,
-			defenderPlayerId: opponents[idx % opponents.length]!.playerId
-		});
+		const nextCandidate = [
+			...assignments,
+			{
+				attackerInstanceId: atk.instanceId,
+				defenderPlayerId: legalOpponents[idx % legalOpponents.length]!.playerId
+			}
+		];
+		if (getGlobalAttackCapError(state, nextCandidate) !== null) continue;
+		assignments.push(nextCandidate[nextCandidate.length - 1]!);
+	}
+	if (assignments.length === 1) {
+		const solePerm = bot.battlefield.find(
+			(c) => c.instanceId === assignments[0]!.attackerInstanceId
+		);
+		if (solePerm && permanentCantAttackAlone(state, solePerm)) {
+			return requiredAssignments;
+		}
 	}
 	return assignments;
 }
@@ -5441,6 +5601,17 @@ function performDeclareAttackers(
 			return { ok: false, error: 'Invalid defending player.' };
 		}
 
+		// --- Track P8 (CR 508.1c) ---
+		const staticAtkErr = getStaticAttackRestrictionReason(
+			state,
+			creature,
+			defender.playerId,
+			assignments.length
+		);
+		if (staticAtkErr) {
+			return { ok: false, error: staticAtkErr };
+		}
+
 		// CR 508.1b: Validate defenderPlaneswalkerId if provided
 		if (assign.defenderPlaneswalkerId) {
 			const targetPw = defender.battlefield.find(
@@ -5461,7 +5632,13 @@ function performDeclareAttackers(
 					p.playerId !== actorId &&
 					!p.lost &&
 					!creature.goadedByPlayerIds!.includes(p.playerId) &&
-					getAttackTaxGeneric(state, p) === 0
+					getAttackTaxGeneric(state, p) === 0 &&
+					getStaticAttackRestrictionReason(
+						state,
+						creature,
+						p.playerId,
+						Math.max(assignments.length, 1)
+					) === null
 			);
 			if (
 				nonGoaderAvailable &&
@@ -5481,11 +5658,17 @@ function performDeclareAttackers(
 		}
 	}
 
+	// --- Track P8 (CR 508.1c): Global attacker caps (Silent Arbiter / Dueling Grounds / Crawlspace) ---
+	const globalAtkCapErr = getGlobalAttackCapError(state, assignments);
+	if (globalAtkCapErr) {
+		return { ok: false, error: globalAtkCapErr };
+	}
+
 	// Enforce Goad / Attack requirements (CR 508.1d: must satisfy as many requirements as possible without violating restrictions)
 	const assignedIds = new Set(assignments.map((a) => a.attackerInstanceId));
 	const mandatoryViolation = ignoreAttackRequirements
 		? null
-		: findMandatoryAttackerViolation(state, actor, assignedIds);
+		: findMandatoryAttackerViolation(state, actor, assignedIds, assignments);
 	if (mandatoryViolation) {
 		return { ok: false, error: mandatoryViolation };
 	}
@@ -5550,6 +5733,7 @@ function performDeclareAttackers(
 	state.combat.damageDealtFirstStrike = false;
 	state.combat.damageDealtNormal = false;
 	state.combat.dealtFirstStrikeDamageIds = [];
+	noteLayerInputsChanged(state);
 
 	resetTriggerLoopTracking(state);
 	if (validAttackers.length > 0) {
@@ -5630,6 +5814,7 @@ function completeUnconfirmedZeroAttackersDeclaration(
 	state.combat.attackers = [];
 	state.combat.declaredBlockersPlayerIds = [];
 	state.combat.blockersDeclared = false;
+	noteLayerInputsChanged(state);
 	if (logActor) {
 		addLog(state, 'combat', `${logActor.username} declared no attackers.`, logActor.playerId);
 	}
@@ -5711,7 +5896,8 @@ function getBlockerRestrictionReason(
 			}
 		}
 	}
-	return null;
+	// --- Track P8 (CR 509.1b, 702.118b) ---
+	return getStaticBlockerPairRestrictionReason(state, blocker, attacker);
 }
 
 export function canBlock(
@@ -5811,102 +5997,16 @@ function validateDefenderBlockerAssignments(
 ):
 	| { ok: true; blockerCountsByAttacker: Map<string, string[]> }
 	| { ok: false; error: string } {
-	const actorId = actor.playerId;
-	const blockerCountsByAttacker = new Map<string, string[]>();
-	const seenBlockerIds = new Set<string>();
-	for (const assign of assignments) {
-		if (seenBlockerIds.has(assign.blockerInstanceId)) {
-			return {
-				ok: false,
-				error: 'Strict Rules Violation: A creature cannot block more than one attacking creature (CR 509.1a).'
-			};
-		}
-		seenBlockerIds.add(assign.blockerInstanceId);
-
-		const blocker = actor.battlefield.find(
-			(c) => c.instanceId === assign.blockerInstanceId
-		);
-		if (!blocker || blocker.phasedOut || !evaluatePermanent(state, blocker).isCreature) {
-			return { ok: false, error: 'Invalid blocking creature.' };
-		}
-		if (blocker.tapped) {
-			return { ok: false, error: `${blocker.card.name} is tapped and cannot block.` };
-		}
-		if (hasRestriction(state, blocker, 'cantBlock')) {
-			return { ok: false, error: `${blocker.card.name} cannot block.` };
-		}
-
-		const atkEntry = state.combat.attackers.find(
-			(a) => a.attackerInstanceId === assign.attackerInstanceId
-		);
-		if (!atkEntry) {
-			return { ok: false, error: 'Target attacker is not attacking.' };
-		}
-		if (atkEntry.defenderPlayerId !== actorId) {
-			return {
-				ok: false,
-				error: `${blocker.card.name} can only block creatures attacking you.`
-			};
-		}
-
-		const atkOwner = state.players.find((p) => p.playerId === atkEntry.controllerId);
-		const atkCard = atkOwner?.battlefield.find(
-			(c) => c.instanceId === atkEntry.attackerInstanceId
-		);
-		if (atkCard && !canBlock(state, blocker, atkCard)) {
-			return {
-				ok: false,
-				error: getBlockerRestrictionReason(state, blocker, atkCard)!
-			};
-		}
-
-		const list = blockerCountsByAttacker.get(atkEntry.attackerInstanceId) || [];
-		list.push(blocker.instanceId);
-		blockerCountsByAttacker.set(atkEntry.attackerInstanceId, list);
-	}
-
-	// Check Menace (cannot be blocked except by two or more creatures)
-	for (const [atkId, bIds] of blockerCountsByAttacker.entries()) {
-		if (bIds.length === 1) {
-			const atkEntry = state.combat.attackers.find((a) => a.attackerInstanceId === atkId);
-			const atkOwner = state.players.find((p) => p.playerId === atkEntry?.controllerId);
-			const atkCard = atkOwner?.battlefield.find((c) => c.instanceId === atkId);
-			if (atkCard && hasKeyword(atkCard, 'Menace', state)) {
-				return {
-					ok: false,
-					error: `Strict Rules Violation: ${atkCard.card.name} has Menace and cannot be blocked by only 1 creature (requires 2 or more blockers).`
-				};
-			}
-		}
-	}
-
-	// Enforce "blocks each combat if able" requirements (CR 509.1c)
-	const assignedBlockerIds = new Set(assignments.map((a) => a.blockerInstanceId));
-	const attackersAgainstActor = state.combat.attackers
-		.filter((a) => a.defenderPlayerId === actorId)
-		.map((a) => {
-			const owner = state.players.find((p) => p.playerId === a.controllerId);
-			return owner?.battlefield.find((c) => c.instanceId === a.attackerInstanceId);
-		})
-		.filter((c): c is CardInstance => Boolean(c));
-	if (attackersAgainstActor.length > 0) {
-		for (const perm of actor.battlefield) {
-			if (perm.phasedOut || perm.tapped || !evaluatePermanent(state, perm).isCreature) continue;
-			if (hasRestriction(state, perm, 'cantBlock')) continue;
-			if (!hasRestriction(state, perm, 'blocksEachCombat')) continue;
-			const canBlockAny = attackersAgainstActor.some(
-				(atk) => canBlock(state, perm, atk) && !hasKeyword(atk, 'Menace', state)
-			);
-			if (canBlockAny && !assignedBlockerIds.has(perm.instanceId)) {
-				return {
-					ok: false,
-					error: `Strict Rules Violation: ${perm.card.name} must block this combat if able.`
-				};
-			}
-		}
-	}
-
-	return { ok: true, blockerCountsByAttacker };
+	// --- Track P8 (CR 509.1a–c) ---
+	const res = validateAndSolveDefenderBlockersP8(
+		state,
+		actor,
+		assignments,
+		getBlockerRestrictionReason
+	);
+	return res.ok
+		? { ok: true, blockerCountsByAttacker: res.blockerCountsByAttacker }
+		: { ok: false, error: res.error };
 }
 
 function applyValidatedDefenderBlockers(
@@ -5925,6 +6025,7 @@ function applyValidatedDefenderBlockers(
 			}
 		}
 	}
+	noteLayerInputsChanged(state);
 
 	if (!state.combat.declaredBlockersPlayerIds) {
 		state.combat.declaredBlockersPlayerIds = [];
@@ -6028,49 +6129,37 @@ function advanceBotBlockerDeclarations(state: GameState): boolean {
 			validated = validateDefenderBlockerAssignments(state, defPlayer, assignments);
 		}
 		if (!validated.ok) {
-			// Even [] failed validation (e.g. an unsatisfied blocksEachCombat requirement):
-			// log a rule line and build the legal declaration satisfying the most requirements (CR 509.1c).
-			addLog(state, 'rule', validated.error, defPlayer.playerId);
-			const requiredAssignments: Array<{ blockerInstanceId: string; attackerInstanceId: string }> =
-				[];
-			const attacksAgainstBot = state.combat.attackers.filter(
-				(a) => a.defenderPlayerId === defPlayer.playerId
-			);
-			for (const perm of defPlayer.battlefield) {
-				if (perm.phasedOut || perm.tapped || !evaluatePermanent(state, perm).isCreature) continue;
-				if (hasRestriction(state, perm, 'cantBlock')) continue;
-				if (!hasRestriction(state, perm, 'blocksEachCombat')) continue;
-				for (const atk of attacksAgainstBot) {
-					const atkOwner = state.players.find((p) => p.playerId === atk.controllerId);
-					const atkCard = atkOwner?.battlefield.find(
-						(c) => !c.phasedOut && c.instanceId === atk.attackerInstanceId
-					);
-					if (atkCard && canBlock(state, perm, atkCard) && !hasKeyword(atkCard, 'Menace', state)) {
-						requiredAssignments.push({
-							blockerInstanceId: perm.instanceId,
-							attackerInstanceId: atk.attackerInstanceId
-						});
-						break;
-					}
-				}
-			}
-			const reqValidated = validateDefenderBlockerAssignments(
+			// --- Track P8 (CR 509.1c): Use exact maximum-requirement solver assignment ---
+			const solved = validateAndSolveDefenderBlockersP8(
 				state,
 				defPlayer,
-				requiredAssignments
+				[],
+				getBlockerRestrictionReason
 			);
-			if (reqValidated.ok) {
+			if (solved.ok) {
 				applyValidatedDefenderBlockers(
 					state,
 					defPlayer,
-					requiredAssignments,
-					reqValidated.blockerCountsByAttacker
+					[],
+					solved.blockerCountsByAttacker
 				);
 			} else {
-				// No validated declaration exists. Declaring no blocks breaks only requirements, never a
-				// restriction, which CR 509.1c ranks above requirements; log it and block with nothing.
-				addLog(state, 'rule', reqValidated.error, defPlayer.playerId);
-				applyValidatedDefenderBlockers(state, defPlayer, [], new Map());
+				const optValidated = validateDefenderBlockerAssignments(
+					state,
+					defPlayer,
+					solved.bestLegalAssignment
+				);
+				if (optValidated.ok) {
+					applyValidatedDefenderBlockers(
+						state,
+						defPlayer,
+						solved.bestLegalAssignment,
+						optValidated.blockerCountsByAttacker
+					);
+				} else {
+					addLog(state, 'rule', validated.error, defPlayer.playerId);
+					applyValidatedDefenderBlockers(state, defPlayer, [], new Map());
+				}
 			}
 		} else {
 			applyValidatedDefenderBlockers(
@@ -6088,10 +6177,19 @@ function advanceBotBlockerDeclarations(state: GameState): boolean {
 function findMandatoryAttackerViolation(
 	state: GameState,
 	actor: PlayerGameState,
-	assignedIds: Set<string> = new Set()
+	assignedIds: Set<string> = new Set(),
+	currentAssignments: ReadonlyArray<{
+		attackerInstanceId: string;
+		defenderPlayerId: string;
+		defenderPlaneswalkerId?: string | null;
+	}> = []
 ): string | null {
 	return withStableLayerInputs(state, () => {
-		let taxFreeDefenderAvailable: boolean | undefined;
+		const taxFreeOpponents = state.players.filter(
+			(p) => p.playerId !== actor.playerId && !p.lost && getAttackTaxGeneric(state, p) === 0
+		);
+		if (taxFreeOpponents.length === 0) return null;
+
 		for (const perm of actor.battlefield) {
 			if (perm.phasedOut || !evaluatePermanent(state, perm).isCreature) continue;
 			const isGoaded = Boolean(perm.goadedByPlayerIds && perm.goadedByPlayerIds.length > 0);
@@ -6102,13 +6200,56 @@ function findMandatoryAttackerViolation(
 					(!perm.summoningSick || hasKeyword(perm, 'Haste', state)) &&
 					!hasKeyword(perm, 'Defender', state) &&
 					!hasRestriction(state, perm, 'cantAttack');
-				if (canAttack) {
-					taxFreeDefenderAvailable ??= state.players.some(
-						(p) => p.playerId !== actor.playerId && !p.lost && getAttackTaxGeneric(state, p) === 0
+				if (!canAttack) continue;
+
+				// --- Track P8 (CR 508.1c–d): Check defender-specific restrictions, cantAttackAlone, and global caps ---
+				const legalDefender = taxFreeOpponents.find((p) => {
+					if (getStaticAttackRestrictionReason(state, perm, p.playerId) !== null) return false;
+					if (currentAssignments.length > 0) {
+						return (
+							getGlobalAttackCapError(state, [
+								...currentAssignments,
+								{ attackerInstanceId: perm.instanceId, defenderPlayerId: p.playerId }
+							]) === null
+						);
+					}
+					return (
+						getGlobalAttackCapError(state, [
+							{ attackerInstanceId: perm.instanceId, defenderPlayerId: p.playerId }
+						]) === null
 					);
-					if (!taxFreeDefenderAvailable) return null;
-					return `Strict Rules Violation: ${perm.card.name} ${isGoaded ? 'is Goaded and ' : ''}must attack this combat if able.`;
+				});
+				if (!legalDefender) continue;
+
+				if (assignedIds.size === 0 && permanentCantAttackAlone(state, perm)) {
+					const hasLegalPartner = actor.battlefield.some((other) => {
+						if (
+							other.instanceId === perm.instanceId ||
+							other.phasedOut ||
+							!evaluatePermanent(state, other).isCreature ||
+							other.tapped ||
+							(other.summoningSick && !hasKeyword(other, 'Haste', state)) ||
+							hasKeyword(other, 'Defender', state) ||
+							hasRestriction(state, other, 'cantAttack')
+						) {
+							return false;
+						}
+						return taxFreeOpponents.some(
+							(p) =>
+								getStaticAttackRestrictionReason(state, other, p.playerId, 2) === null &&
+								getGlobalAttackCapError(state, [
+									{
+										attackerInstanceId: perm.instanceId,
+										defenderPlayerId: legalDefender.playerId
+									},
+									{ attackerInstanceId: other.instanceId, defenderPlayerId: p.playerId }
+								]) === null
+						);
+					});
+					if (!hasLegalPartner) continue;
 				}
+
+				return `Strict Rules Violation: ${perm.card.name} ${isGoaded ? 'is Goaded and ' : ''}must attack this combat if able.`;
 			}
 		}
 		return null;
@@ -8011,6 +8152,7 @@ function beginPhase(state: GameState, phase: GamePhase, activePlayer?: PlayerGam
 			state.combat.damageDealtNormal = false;
 			state.combat.dealtFirstStrikeDamageIds = [];
 			state.combat.awaitingAttackersDeclaration = false;
+			noteLayerInputsChanged(state);
 			if (active && !active.lost) {
 				if (active.isBot) {
 					executeBotDeclareAttackersTurnBasedAction(state, active);
@@ -10008,38 +10150,26 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 		item.cloneCopyChoice === undefined &&
 		item.targets[0]?.kind !== 'permanent'
 	) {
-		const entersAsCopyOfAnyCreature = activeAbilityDefs(item.card, stackItemFaceOptions(item)).some(
-			(ab) =>
-				ab.kind === 'replacement' &&
-				ab.replacement.replaces.event === 'zoneChange' &&
-				ab.replacement.replaces.filter?.object === 'self' &&
-				ab.replacement.replaces.filter?.to === 'battlefield' &&
-				!Array.isArray(ab.replacement.with) &&
-				ab.replacement.with.k === 'modify' &&
-				Boolean(ab.replacement.with.copyOf?.types?.includes('Creature'))
-		);
-		if (entersAsCopyOfAnyCreature) {
-			const allCreatures: CardInstance[] = [];
-			for (const p of state.players) {
-				for (const b of p.battlefield) {
-					if (!b.phasedOut && evaluatePermanent(state, b).typeLine.includes('Creature')) {
-						allCreatures.push(b);
-					}
-				}
-			}
-			allCreatures.sort(
-				(a, b) =>
-					effectiveManaValue(effectiveCardForObject(b), instanceFaceOptions(b, 'battlefield')) -
-					effectiveManaValue(effectiveCardForObject(a), instanceFaceOptions(a, 'battlefield'))
+		// --- Track P8: Generalized Clone (CR 707.5, 707.9) ---
+		const cloneSpec = findSelfCloneReplacementSpec(item.card, stackItemFaceOptions(item));
+		if (cloneSpec) {
+			const cloneCandidates = findLegalCloneCandidates(
+				state,
+				controller.playerId,
+				undefined,
+				cloneSpec.copyOf
 			);
-			if (allCreatures.length > 0) {
+			if (cloneCandidates.length > 0) {
+				const reasonText = cloneSpec.copyOptional
+					? `You may have ${item.card.name} enter the battlefield as a copy of a matching permanent (CR 707.5).`
+					: `Choose a matching permanent for ${item.card.name} to enter the battlefield as a copy of (CR 707.5).`;
 				enqueueChoicePrompt(state, {
 					id: uid('prm', state),
 					playerId: controller.playerId,
 					kind: 'chooseObjects',
 					purpose: 'generic',
-					title: `${item.card.name} — Choose a Creature to Copy`,
-					description: `You may have ${item.card.name} enter the battlefield as a copy of any creature on the battlefield (CR 707.5).`,
+					title: `${item.card.name} — Choose a Permanent to Copy`,
+					description: reasonText,
 					continuation: {
 						kind: 'procedure',
 						procedure: {
@@ -10049,12 +10179,12 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 					},
 					choice: {
 						kind: 'chooseObjects',
-						min: 0,
+						min: cloneSpec.copyOptional ? 0 : 1,
 						max: 1,
-						candidates: allCreatures.map((c) => c.instanceId),
-						defaultObjectIds: [allCreatures[0].instanceId],
+						candidates: cloneCandidates.map((c) => c.instanceId),
+						defaultObjectIds: [cloneCandidates[0].instanceId],
 						zone: 'battlefield',
-						reason: `You may have ${item.card.name} enter the battlefield as a copy of any creature on the battlefield (CR 707.5).`
+						reason: reasonText
 					}
 				});
 				return;
@@ -10171,54 +10301,38 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 				perm.unlockedFaces = [item.faceIndex ?? 0];
 			}
 
-			// CR 707: "enter the battlefield as a copy of any creature on the battlefield"
-			const entersAsCopyOfAnyCreature = activeAbilityDefs(item.card, stackFaceOpts).some(
-				(ab) =>
-					ab.kind === 'replacement' &&
-					ab.replacement.replaces.event === 'zoneChange' &&
-					ab.replacement.replaces.filter?.object === 'self' &&
-					ab.replacement.replaces.filter?.to === 'battlefield' &&
-					!Array.isArray(ab.replacement.with) &&
-					ab.replacement.with.k === 'modify' &&
-					Boolean(ab.replacement.with.copyOf?.types?.includes('Creature'))
-			);
-			if (entersAsCopyOfAnyCreature) {
-				let targetCreature: CardInstance | undefined;
+			// --- Track P8: Generalized Clone (CR 707.2, 707.5, 707.9) ---
+			const cloneSpec = findSelfCloneReplacementSpec(item.card, stackFaceOpts);
+			if (cloneSpec) {
+				const cloneCandidates = findLegalCloneCandidates(
+					state,
+					controller.playerId,
+					perm,
+					cloneSpec.copyOf
+				);
+				let targetPerm: CardInstance | undefined;
 				if (item.cloneCopyChoice !== undefined) {
-					targetCreature = item.cloneCopyChoice
-						? findPermanentOnBoard(state, item.cloneCopyChoice)?.inst
+					targetPerm = item.cloneCopyChoice
+						? cloneCandidates.find((c) => c.instanceId === item.cloneCopyChoice)
 						: undefined;
-				} else if (item.targets[0]?.kind === 'permanent') {
-					targetCreature = findPermanentOnBoard(state, item.targets[0].id)?.inst;
-				} else {
-					// Pick the highest-CMC creature on the battlefield
-					const allCreatures: CardInstance[] = [];
-					for (const p of state.players) {
-						for (const b of p.battlefield) {
-							if (!b.phasedOut && evaluatePermanent(state, b).typeLine.includes('Creature')) {
-								allCreatures.push(b);
-							}
-						}
+					if (!targetPerm && !cloneSpec.copyOptional) {
+						targetPerm = cloneCandidates[0];
 					}
-					allCreatures.sort(
-						(a, b) =>
-							effectiveManaValue(effectiveCardForObject(b), instanceFaceOptions(b, 'battlefield')) -
-							effectiveManaValue(effectiveCardForObject(a), instanceFaceOptions(a, 'battlefield'))
-					);
-					targetCreature = allCreatures[0];
+				} else if (item.targets[0]?.kind === 'permanent') {
+					targetPerm = findPermanentOnBoard(state, item.targets[0].id)?.inst;
+				} else {
+					targetPerm = cloneCandidates[0];
 				}
-				if (targetCreature) {
-					// CR 707.2, 708.2, 712.6d: Copy Layer 1 copiable values (including face-down / active face state)
-					const { baseCardToCopy, copiableState, displayName } =
-						buildCopiedPermanentFields(targetCreature);
-					perm.printedCard = item.card;
-					perm.copiableState = copiableState;
-					perm.copiableCard = baseCardToCopy;
-					perm.card = baseCardToCopy;
-					perm.isFaceDown = false;
-					perm.transformed = false;
-					perm.activeFaceIndex = undefined;
-					perm.unlockedFaces = undefined;
+				if (targetPerm) {
+					const displayName = applyCopiedPermanentToInstance(
+						perm,
+						targetPerm,
+						cloneSpec.copyModifications,
+						item.card
+					);
+					if (cloneSpec.tapped) {
+						perm.tapped = true;
+					}
 					addLog(
 						state,
 						'cast',
@@ -10521,6 +10635,7 @@ function removePermanentFromCombat(state: GameState, instanceId: string): void {
 			(id) => id !== instanceId
 		);
 	}
+	noteLayerInputsChanged(state);
 }
 
 /**
@@ -11352,6 +11467,7 @@ export function endTheTurnImmediately(state: GameState, actorId: string): void {
 	state.combat.active = false;
 	state.combat.attackers = [];
 	state.combat.declaredBlockersPlayerIds = [];
+	noteLayerInputsChanged(state);
 
 	addLog(
 		state,
@@ -12154,6 +12270,7 @@ export function advancePhaseOrStep(state: GameState): void {
 				state.combat.declaredBlockersPlayerIds = [];
 				state.combat.blockersDeclared = false;
 				state.combat.dealtFirstStrikeDamageIds = [];
+				noteLayerInputsChanged(state);
 				beginPhase(state, 'main2', activePlayer);
 				emitVfx(state, { kind: 'phase_change', label: 'Postcombat Main Phase 2' });
 			}
@@ -12187,6 +12304,7 @@ export function advancePhaseOrStep(state: GameState): void {
 			state.combat.declaredBlockersPlayerIds = [];
 			state.combat.blockersDeclared = false;
 			state.combat.dealtFirstStrikeDamageIds = [];
+			noteLayerInputsChanged(state);
 			beginPhase(state, 'main2', activePlayer);
 			emitVfx(state, { kind: 'phase_change', label: 'Postcombat Main Phase 2' });
 			break;
@@ -13173,12 +13291,17 @@ export function checkStateBasedActions(state: GameState): void {
 					snap && snap.evalPerm.isCreature && !snap.evalPerm.typeLine.includes('Battle')
 				);
 			};
+			const prevAtkCount = state.combat.attackers.length;
+			let combatChanged = false;
 			state.combat.attackers = state.combat.attackers.filter((atk) =>
 				isCombatCreature(atk.attackerInstanceId)
 			);
+			if (state.combat.attackers.length !== prevAtkCount) combatChanged = true;
 			for (const atk of state.combat.attackers) {
 				if (atk.blockerInstanceIds.length > 0) {
+					const prevBlkLen = atk.blockerInstanceIds.length;
 					atk.blockerInstanceIds = atk.blockerInstanceIds.filter(isCombatCreature);
+					if (atk.blockerInstanceIds.length !== prevBlkLen) combatChanged = true;
 				}
 				if (atk.defenderPlaneswalkerId && atk.defenderPlaneswalkerId !== 'removed') {
 					const pwSnap = prePassSnapshot.get(atk.defenderPlaneswalkerId);
@@ -13191,6 +13314,7 @@ export function checkStateBasedActions(state: GameState): void {
 					}
 				}
 			}
+			if (combatChanged) noteLayerInputsChanged(state);
 		}
 
 		// 1. +1/+1 and -1/-1 counter annihilation (CR 704.5q)
@@ -13849,6 +13973,7 @@ export function cleanupEliminatedPlayer(state: GameState, eliminated: PlayerGame
 	if (state.combat.attackers.length === 0 && state.combat.active) {
 		state.combat.active = false;
 	}
+	noteLayerInputsChanged(state);
 
 	// 4. Handle permanents on the eliminated player's battlefield (CR 800.4a, 800.4c):
 	// - First, any control-changing TimedContinuousEffects giving the eliminated player control end.
@@ -15242,7 +15367,7 @@ export function getLandPlayOptions(
 	state: GameState,
 	actorId: string,
 	inst: CardInstance,
-	fromZone: 'hand' | 'exile' = 'hand'
+	fromZone: 'hand' | 'exile' | 'library' | 'graveyard' = 'hand'
 ): LandPlayOption[] {
 	return withStableLayerInputs(state, () => {
 		const card = effectiveCardForObject(inst);
@@ -15304,6 +15429,27 @@ function checkLandPlayLegalityInner(
 			return {
 				ok: false,
 				error: `${inst.card.name} may only be cast as a spell from Exile, not played as a land (CR 601.1a).`
+			};
+		}
+	// --- Track P8 (CR 305.1, 401.5) ---
+	} else if (fromZone === 'library') {
+		if (actor.library[0]?.instanceId !== inst.instanceId) {
+			return { ok: false, error: `${inst.card.name} is not the top card of your library.` };
+		}
+		if (!getActiveZoneLandPlayPermissionSource(state, actorId, 'library', inst)) {
+			return {
+				ok: false,
+				error: `You do not have permission to play ${inst.card.name} from the top of your library.`
+			};
+		}
+	} else if (fromZone === 'graveyard') {
+		if (!actor.graveyard.some((c) => c.instanceId === inst.instanceId)) {
+			return { ok: false, error: `${inst.card.name} is not in your graveyard.` };
+		}
+		if (!getActiveZoneLandPlayPermissionSource(state, actorId, 'graveyard', inst)) {
+			return {
+				ok: false,
+				error: `You do not have permission to play ${inst.card.name} from your graveyard.`
 			};
 		}
 	} else if (fromZone !== 'hand') {
@@ -16244,8 +16390,13 @@ function checkAbilityActivationLegalityInner(
 		return { ok: false, error: `Ability not found on ${perm.card.name}.` };
 	}
 
-	// CR 101.2, 602.5b, 604.1: Global rule-modifying ability-activation restrictions (e.g. Grand Abolisher).
-	const globalAbCheck = checkGlobalAbilityActivationRestrictions(state, actorId, perm);
+	// CR 101.2, 602.5a–b, 604.1: Global rule-modifying & static ability-activation restrictions.
+	const globalAbCheck = checkGlobalAbilityActivationRestrictions(
+		state,
+		actorId,
+		perm,
+		ab.isManaAbility
+	);
 	if (!globalAbCheck.ok) {
 		return globalAbCheck;
 	}
@@ -16792,6 +16943,8 @@ function scrubFaceDownInstance(
 }
 
 export function sanitizeGameStateForViewer(state: GameState, viewerId: string | null): GameState {
+	// --- Track P8 (CR 401.5): Capture mid-cast/activation flag before deleting pendingCostPayment ---
+	const midCastOrActivation = Boolean(state.pendingCostPayment);
 	const clone: GameState = JSON.parse(JSON.stringify(state));
 	delete clone.rngState;
 	delete clone.nextUid;
@@ -16866,7 +17019,19 @@ export function sanitizeGameStateForViewer(state: GameState, viewerId: string | 
 		if (scryIds) {
 			p.library = p.library.filter((c) => scryIds.includes(c.instanceId));
 		} else if (!isSearchingThisLibrary) {
-			p.library = [];
+			// --- Track P8 (CR 401.5): Top-of-library look / reveal visibility ---
+			const topVis = getPlayerTopOfLibraryVisibility(state, p.playerId);
+			if (topVis.revealToAll) {
+				p.library = p.library.slice(0, 1);
+			} else if (
+				topVis.lookByController &&
+				viewerId === p.playerId &&
+				!midCastOrActivation
+			) {
+				p.library = p.library.slice(0, 1);
+			} else {
+				p.library = [];
+			}
 		}
 	}
 
