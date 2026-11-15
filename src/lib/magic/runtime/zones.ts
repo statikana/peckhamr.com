@@ -122,6 +122,27 @@ import {
 	shouldExileCreatureDealtDamageBySourceOnDie
 } from './staticsWave7.ts';
 // --- End Track P20a ---
+// --- Track P22a ---
+import {
+	buildCardTypeChoiceOptions,
+	buildNumberChoiceBounds,
+	buildTwoPlayersCandidates,
+	cardKeepsCountersAcrossZonesWave8,
+	checkLandsCantEnterWave8,
+	chooseBotBestCardType,
+	chooseBotBestEtbObject,
+	chooseBotBestNumber,
+	chooseBotTwoColors,
+	chooseBotTwoPlayers,
+	findEtbObjectChoiceCandidates,
+	parseTwoColorPairIndex,
+	recordCreatureDiedWave8,
+	recordEnteredBattlefieldWave8,
+	revealOpponentHandForEtbLook,
+	syncMayLookAtExiledWithSelfPermissionsWave8,
+	TWO_COLOR_PAIR_LABELS
+} from './staticsWave8.ts';
+// --- End Track P22a ---
 
 /**
  * The single zone-change module (ENGINE_ARCHITECTURE_PLAN.md section 2.3, Phase 2).
@@ -602,6 +623,11 @@ function enqueueNextEtbChoicePrompt(
 	// --- End Track P20a ---
 	// --- Track P11: Choose Card Name & Choose Counter ETB choices (CR 201.2a, 614.12) ---
 	if (spec?.chooseCardName && !obj.chosenCardName) {
+		// --- Track P22a ---
+		if (spec.lookAtOpponentHandBeforeCardName) {
+			revealOpponentHandForEtbLook(state, chooser.playerId);
+		}
+		// --- End Track P22a ---
 		const cardNameLabels = buildCardNameChoiceOptions(
 			state,
 			chooser,
@@ -634,6 +660,205 @@ function enqueueNextEtbChoicePrompt(
 		});
 		return true;
 	}
+	// --- Track P22a: CardType, Number, TwoColors, TwoPlayers, ObjectOnBattlefield, SubTypeOptions ETB choices ---
+	type EtbContinuationData = Record<
+		string,
+		string | number | boolean | null | string[] | Record<string, number>
+	>;
+	if (spec?.chooseCardType && !obj.chosenCardType) {
+		if (spec.chooseCardType.lookAtOpponentHand) {
+			revealOpponentHandForEtbLook(state, chooser.playerId);
+		}
+		const cardTypeOptions = buildCardTypeChoiceOptions(spec.chooseCardType);
+		const description = `As ${objName} enters the battlefield, choose a card type (CR 300.1, 614.12):`;
+		enqueueChoicePrompt(state, {
+			id: uid('prm', state),
+			playerId: chooser.playerId,
+			kind: 'chooseMode',
+			purpose: 'etb_choice',
+			title: `${objName} — Choose a Card Type`,
+			description,
+			continuation: {
+				kind: 'handler',
+				name: 'etb_choice',
+				data: {
+					...(baseData as EtbContinuationData),
+					choiceField: 'cardType',
+					cardTypeOptions
+				}
+			},
+			choice: {
+				kind: 'chooseMode',
+				modes: cardTypeOptions,
+				min: 1,
+				max: 1
+			}
+		});
+		return true;
+	}
+	if (spec?.chooseNumber && obj.chosenNumber === undefined) {
+		const { min, max } = buildNumberChoiceBounds(spec.chooseNumber);
+		const defaultNum = chooseBotBestNumber(state, chooser.playerId, spec.chooseNumber);
+		const description = `As ${objName} enters the battlefield, choose a number (CR 107.1, 614.12):`;
+		enqueueChoicePrompt(state, {
+			id: uid('prm', state),
+			playerId: chooser.playerId,
+			kind: 'chooseNumber',
+			purpose: 'etb_choice',
+			title: `${objName} — Choose a Number`,
+			description,
+			continuation: {
+				kind: 'handler',
+				name: 'etb_choice',
+				data: {
+					...(baseData as EtbContinuationData),
+					choiceField: 'etbNumber'
+				}
+			},
+			choice: {
+				kind: 'chooseNumber',
+				min,
+				max,
+				reason: description,
+				defaultNumber: defaultNum
+			}
+		});
+		return true;
+	}
+	if (spec?.chooseTwoColors && !obj.chosenColors) {
+		const modes = [...TWO_COLOR_PAIR_LABELS];
+		const description = `As ${objName} enters the battlefield, choose two colors (CR 105.4, 614.12):`;
+		enqueueChoicePrompt(state, {
+			id: uid('prm', state),
+			playerId: chooser.playerId,
+			kind: 'chooseMode',
+			purpose: 'etb_choice',
+			title: `${objName} — Choose Two Colors`,
+			description,
+			continuation: {
+				kind: 'handler',
+				name: 'etb_choice',
+				data: {
+					...(baseData as EtbContinuationData),
+					choiceField: 'twoColors'
+				}
+			},
+			choice: {
+				kind: 'chooseMode',
+				modes,
+				min: 1,
+				max: 1
+			}
+		});
+		return true;
+	}
+	if (spec?.chooseTwoPlayers && !obj.chosenPlayerIds) {
+		const candPids = buildTwoPlayersCandidates(state);
+		if (candPids.length <= 1) {
+			obj.chosenPlayerIds = candPids;
+			if (candPids[0]) obj.chosenPlayerId = candPids[0];
+		} else {
+			const countNeeded = Math.min(2, candPids.length);
+			const modes = candPids.map((pid) => {
+				const pl = state.players.find((p) => p.playerId === pid);
+				return pl ? `${pl.username} (${pl.life} life)` : pid;
+			});
+			const description = `As ${objName} enters the battlefield, choose two players (CR 614.12):`;
+			enqueueChoicePrompt(state, {
+				id: uid('prm', state),
+				playerId: chooser.playerId,
+				kind: 'chooseMode',
+				purpose: 'etb_choice',
+				title: `${objName} — Choose Two Players`,
+				description,
+				continuation: {
+					kind: 'handler',
+					name: 'etb_choice',
+					data: {
+						...(baseData as EtbContinuationData),
+						choiceField: 'twoPlayers',
+						candidatePlayerIds: candPids
+					}
+				},
+				choice: {
+					kind: 'chooseMode',
+					modes,
+					min: countNeeded,
+					max: countNeeded
+				}
+			});
+			return true;
+		}
+	}
+	if (spec?.chooseObjectOnBattlefield && !obj.chosenObjectId && !baseData.etbObjectChosen) {
+		const candidates = findEtbObjectChoiceCandidates(
+			state,
+			chooser.playerId,
+			obj,
+			spec.chooseObjectOnBattlefield.filter
+		);
+		if (candidates.length > 0) {
+			const isOpt = Boolean(spec.chooseObjectOnBattlefield.optional);
+			const description = isOpt
+				? `As ${objName} enters the battlefield, you may choose another permanent on the battlefield (CR 614.12):`
+				: `As ${objName} enters the battlefield, choose another permanent on the battlefield (CR 614.12):`;
+			enqueueChoicePrompt(state, {
+				id: uid('prm', state),
+				playerId: chooser.playerId,
+				kind: 'chooseObjects',
+				purpose: 'etb_choice',
+				title: `${objName} — Choose Permanent`,
+				description,
+				continuation: {
+					kind: 'handler',
+					name: 'etb_choice',
+					data: {
+						...(baseData as EtbContinuationData),
+						choiceField: 'etbObject'
+					}
+				},
+				choice: {
+					kind: 'chooseObjects',
+					candidates: candidates.map((c) => c.instanceId),
+					defaultObjectIds: [candidates[0].instanceId],
+					min: isOpt ? 0 : 1,
+					max: 1,
+					zone: 'battlefield',
+					reason: description
+				}
+			});
+			return true;
+		}
+	}
+	if (spec?.chooseSubTypeOptions && spec.chooseSubTypeOptions.length > 0 && !obj.chosenSubType) {
+		const subOpts = [...spec.chooseSubTypeOptions];
+		const description = `As ${objName} enters the battlefield, choose ${subOpts.join(' or ')} (CR 205.3m, 614.12):`;
+		enqueueChoicePrompt(state, {
+			id: uid('prm', state),
+			playerId: chooser.playerId,
+			kind: 'chooseMode',
+			purpose: 'etb_choice',
+			title: `${objName} — Choose a Type`,
+			description,
+			continuation: {
+				kind: 'handler',
+				name: 'etb_choice',
+				data: {
+					...(baseData as EtbContinuationData),
+					choiceField: 'subTypeOptions',
+					subTypeOptions: subOpts
+				}
+			},
+			choice: {
+				kind: 'chooseMode',
+				modes: subOpts,
+				min: 1,
+				max: 1
+			}
+		});
+		return true;
+	}
+	// --- End Track P22a ---
 	if (spec?.chooseCounter && spec.chooseCounter.length > 0 && !obj.etbCounterChoiceDone) {
 		const counterOptions = spec.chooseCounter;
 		const description = `As ${objName} enters the battlefield, choose a counter to put on it (CR 122.1b, 614.12):`;
@@ -1237,7 +1462,16 @@ function finalizeZoneMove(
 		obj.tempToughnessMod = 0;
 		obj.grantedKeywords = [];
 		obj.attachedToId = null;
-		obj.counters = createEmptyCounters();
+		// --- Track P22a (CR 122.2): Zone-persistent counters (*Skullbriar* / *Me, the Immortal*) ---
+		if (
+			dest === 'hand' ||
+			dest === 'library' ||
+			Boolean(lki?.lostAllAbilities) ||
+			!cardKeepsCountersAcrossZonesWave8(obj, state)
+		) {
+			obj.counters = createEmptyCounters();
+		}
+		// --- End Track P22a ---
 		obj.phasedOut = false;
 		obj.phasedOutIndirectly = false;
 		obj.isSuspended = false;
@@ -1370,6 +1604,16 @@ function finalizeZoneMove(
 		delete obj.sacrificeAtNextCleanupStep;
 		delete obj.spaceSector;
 		// --- End Track P21 ---
+		// --- Track P22a (CR 400.7 / CR 903.4) ---
+		delete obj.chosenCardType;
+		delete obj.chosenNumber;
+		delete obj.chosenColors;
+		delete obj.chosenPlayerIds;
+		delete obj.chosenObjectId;
+		delete obj.dealtDamageEver;
+		delete obj.attackedPlayerIdsThisTurn;
+		if (obj.preGameChosenColor) obj.chosenColor = obj.preGameChosenColor;
+		// --- End Track P22a ---
 		const prevObjVersion = obj.objectVersion || 1;
 		const pruneLeftPerm = <T extends { affected: Array<{ instanceId: string; objectVersion?: number }> }>(
 			list: T[] | undefined
@@ -1502,6 +1746,19 @@ function finalizeZoneMove(
 		delete obj.sacrificeAtNextCleanupStep;
 		delete obj.spaceSector;
 		// --- End Track P21 ---
+		// --- Track P22a (CR 400.7 / CR 122.2 / CR 903.4) ---
+		delete obj.chosenCardType;
+		delete obj.chosenNumber;
+		delete obj.chosenColors;
+		delete obj.chosenPlayerIds;
+		delete obj.chosenObjectId;
+		delete obj.dealtDamageEver;
+		delete obj.attackedPlayerIdsThisTurn;
+		if (dest === 'hand' || dest === 'library') {
+			obj.counters = createEmptyCounters();
+		}
+		if (obj.preGameChosenColor) obj.chosenColor = obj.preGameChosenColor;
+		// --- End Track P22a ---
 		if (dest !== 'stack') {
 			delete obj.castAtNonSorceryTiming;
 			obj.manaColorsSpent = undefined;
@@ -1539,6 +1796,11 @@ function finalizeZoneMove(
 			delete obj.hauntingTargetId;
 			delete obj.hauntingTargetVersion;
 			// --- End Track P18a ---
+			// --- Track P22a ---
+			if (dest !== 'stack') {
+				delete obj.grantedForetellCost;
+			}
+			// --- End Track P22a ---
 			if (dest !== 'battlefield' && dest !== 'stack' && obj.isFaceDown) {
 				obj.isFaceDown = false;
 				obj.faceDownSpec = undefined;
@@ -1842,6 +2104,11 @@ function finalizeZoneMove(
 				// --- End Track P20a ---
 				// --- Track P11 ---
 				if (etbSpec.chooseCardName && !obj.chosenCardName) {
+					// --- Track P22a ---
+					if (etbSpec.lookAtOpponentHandBeforeCardName) {
+						revealOpponentHandForEtbLook(state, ctrl.playerId);
+					}
+					// --- End Track P22a ---
 					obj.chosenCardName = chooseBotBestCardName(
 						state,
 						ctrl,
@@ -1849,6 +2116,43 @@ function finalizeZoneMove(
 						Boolean(etbSpec.chooseCardName.nonlandOnly)
 					);
 				}
+				// --- Track P22a ---
+				if (etbSpec.chooseCardType && !obj.chosenCardType) {
+					if (etbSpec.chooseCardType.lookAtOpponentHand) {
+						revealOpponentHandForEtbLook(state, ctrl.playerId);
+					}
+					const opts = buildCardTypeChoiceOptions(etbSpec.chooseCardType);
+					obj.chosenCardType = chooseBotBestCardType(state, ctrl.playerId, opts);
+				}
+				if (etbSpec.chooseNumber && obj.chosenNumber === undefined) {
+					obj.chosenNumber = chooseBotBestNumber(state, ctrl.playerId, etbSpec.chooseNumber);
+				}
+				if (etbSpec.chooseTwoColors && !obj.chosenColors) {
+					const pair = chooseBotTwoColors(state, ctrl.playerId);
+					obj.chosenColors = pair;
+					if (!obj.chosenColor) obj.chosenColor = pair[0];
+				}
+				if (etbSpec.chooseTwoPlayers && !obj.chosenPlayerIds) {
+					const pids = chooseBotTwoPlayers(state, ctrl.playerId);
+					obj.chosenPlayerIds = pids;
+					if (!obj.chosenPlayerId && pids.length > 0) obj.chosenPlayerId = pids[0];
+				}
+				if (etbSpec.chooseObjectOnBattlefield && !obj.chosenObjectId) {
+					obj.chosenObjectId = chooseBotBestEtbObject(
+						state,
+						ctrl.playerId,
+						obj,
+						etbSpec.chooseObjectOnBattlefield.filter
+					);
+				}
+				if (
+					etbSpec.chooseSubTypeOptions &&
+					etbSpec.chooseSubTypeOptions.length > 0 &&
+					!obj.chosenSubType
+				) {
+					obj.chosenSubType = etbSpec.chooseSubTypeOptions[0];
+				}
+				// --- End Track P22a ---
 				if (
 					etbSpec.chooseCounter &&
 					etbSpec.chooseCounter.length > 0 &&
@@ -2082,8 +2386,21 @@ function finalizeZoneMove(
 			enforceSoulbondPairs(state);
 			syncHideawayExilePeekPermissions(state);
 			// --- End Track P18a ---
+			// --- Track P22a ---
+			recordEnteredBattlefieldWave8(
+				state,
+				obj.controllerId || effectiveReceiver.playerId,
+				obj
+			);
+			syncMayLookAtExiledWithSelfPermissionsWave8(state);
+			// --- End Track P22a ---
 			noteLayerInputsChanged(state);
 		}
+		// --- Track P22a ---
+		if (dest === 'exile') {
+			syncMayLookAtExiledWithSelfPermissionsWave8(state);
+		}
+		// --- End Track P22a ---
 		if (shuffleDestLibrary && dest === 'library') {
 			shuffleLibrary(state, effectiveReceiver);
 		}
@@ -2168,6 +2485,11 @@ function finalizeZoneMove(
 	if (fromZone === 'battlefield' && dest === 'graveyard' && opts.emit !== false) {
 		state.permanentsPutIntoGraveyardFromBattlefieldThisTurn =
 			(state.permanentsPutIntoGraveyardFromBattlefieldThisTurn ?? 0) + 1;
+		// --- Track P22a ---
+		if (wasCreatureOnBf) {
+			recordCreatureDiedWave8(state, lki?.controllerId ?? fromPlayerId ?? obj.ownerId);
+		}
+		// --- End Track P22a ---
 		noteLayerInputsChanged(state);
 	}
 	// --- End Track P15 ---
@@ -2470,6 +2792,14 @@ function moveObjectInner(
 			effectiveCardForObject(obj),
 			instanceFaceOptions(obj, 'battlefield')
 		).typeLine;
+		// --- Track P22a (CR 614.17c): "Lands can't enter the battlefield." (*Worms of the Earth*) ---
+		if (effectiveTypeLine.includes('Land') && checkLandsCantEnterWave8(state)) {
+			if (typeof from === 'object') return from.zone;
+			if (from === 'anyBattlefield') return 'battlefield';
+			if (from === 'stack') return 'stack';
+			return obj.zone;
+		}
+		// --- End Track P22a ---
 		const isInstantOrSorcery =
 			effectiveTypeLine.includes('Instant') || effectiveTypeLine.includes('Sorcery');
 		const hasPermanentType =
@@ -2519,6 +2849,10 @@ function moveObjectInner(
 				// --- Track P11 ---
 				if (obj.chosenCardName) stk.sourceChosenCardName = obj.chosenCardName;
 				// --- End Track P11 ---
+				// --- Track P22a ---
+				if (obj.chosenCardType) stk.sourceChosenCardType = obj.chosenCardType;
+				if (obj.chosenNumber !== undefined) stk.sourceChosenNumber = obj.chosenNumber;
+				// --- End Track P22a ---
 			}
 			if (
 				stk.eventObjectId === obj.instanceId &&
@@ -2928,7 +3262,10 @@ registerPromptHandler('etb_choice', (state, prompt, answer) => {
 	if (
 		answer.kind !== 'chooseMode' &&
 		answer.kind !== 'yesNo' &&
-		answer.kind !== 'chooseObjects'
+		answer.kind !== 'chooseObjects' &&
+		// --- Track P22a ---
+		answer.kind !== 'chooseNumber'
+		// --- End Track P22a ---
 	) {
 		return;
 	}
@@ -3356,10 +3693,133 @@ registerPromptHandler('etb_choice', (state, prompt, answer) => {
 						if (botSpec.chooseParity && !obj.chosenParity) {
 							obj.chosenParity = 'odd';
 						}
+						// --- Track P22a ---
+						if (botSpec.chooseCardType && !obj.chosenCardType) {
+							if (botSpec.chooseCardType.lookAtOpponentHand) {
+								revealOpponentHandForEtbLook(state, chosenOpp.playerId);
+							}
+							const opts = buildCardTypeChoiceOptions(botSpec.chooseCardType);
+							obj.chosenCardType = chooseBotBestCardType(state, chosenOpp.playerId, opts);
+						}
+						if (botSpec.chooseNumber && obj.chosenNumber === undefined) {
+							obj.chosenNumber = chooseBotBestNumber(state, chosenOpp.playerId, botSpec.chooseNumber);
+						}
+						if (botSpec.chooseTwoColors && !obj.chosenColors) {
+							const pair = chooseBotTwoColors(state, chosenOpp.playerId);
+							obj.chosenColors = pair;
+							if (!obj.chosenColor) obj.chosenColor = pair[0];
+						}
+						if (botSpec.chooseTwoPlayers && !obj.chosenPlayerIds) {
+							const pids = chooseBotTwoPlayers(state, chosenOpp.playerId);
+							obj.chosenPlayerIds = pids;
+							if (!obj.chosenPlayerId && pids.length > 0) obj.chosenPlayerId = pids[0];
+						}
+						if (botSpec.chooseObjectOnBattlefield && !obj.chosenObjectId) {
+							obj.chosenObjectId = chooseBotBestEtbObject(
+								state,
+								chosenOpp.playerId,
+								obj,
+								botSpec.chooseObjectOnBattlefield.filter
+							);
+						}
+						if (
+							botSpec.chooseSubTypeOptions &&
+							botSpec.chooseSubTypeOptions.length > 0 &&
+							!obj.chosenSubType
+						) {
+							obj.chosenSubType = botSpec.chooseSubTypeOptions[0];
+						}
+						// --- End Track P22a ---
 					}
 				}
 			}
 		// --- End Track P20a ---
+		// --- Track P22a ---
+		} else if (choiceField === 'cardType' && answer.kind === 'chooseMode') {
+			const optsList = Array.isArray(data.cardTypeOptions)
+				? data.cardTypeOptions.map(String)
+				: prompt.choice?.kind === 'chooseMode'
+					? prompt.choice.modes
+					: [];
+			const chosenIdx = answer.indices[0] ?? 0;
+			const chosenType = optsList[chosenIdx] ?? optsList[0] ?? 'Creature';
+			obj.chosenCardType = chosenType;
+			pushEtbRuleLog(
+				state,
+				chooser.playerId,
+				`${chooser.username} chose ${chosenType} for ${bfView.name} (CR 614.12).`
+			);
+		} else if (choiceField === 'etbNumber' && answer.kind === 'chooseNumber') {
+			obj.chosenNumber = answer.n;
+			pushEtbRuleLog(
+				state,
+				chooser.playerId,
+				`${chooser.username} chose ${answer.n} for ${bfView.name} (CR 614.12).`
+			);
+		} else if (choiceField === 'twoColors' && answer.kind === 'chooseMode') {
+			const chosenIdx = answer.indices[0] ?? 0;
+			const pair = parseTwoColorPairIndex(chosenIdx);
+			obj.chosenColors = pair;
+			if (!obj.chosenColor) obj.chosenColor = pair[0];
+			const label = TWO_COLOR_PAIR_LABELS[chosenIdx] ?? TWO_COLOR_PAIR_LABELS[0] ?? '';
+			pushEtbRuleLog(
+				state,
+				chooser.playerId,
+				`${chooser.username} chose ${label} for ${bfView.name} (CR 614.12).`
+			);
+		} else if (choiceField === 'twoPlayers' && answer.kind === 'chooseMode') {
+			const candPids = Array.isArray(data.candidatePlayerIds)
+				? data.candidatePlayerIds.map(String)
+				: [];
+			const chosenPids = answer.indices
+				.map((i) => candPids[i])
+				.filter((x): x is string => Boolean(x));
+			obj.chosenPlayerIds = chosenPids;
+			if (!obj.chosenPlayerId && chosenPids.length > 0) obj.chosenPlayerId = chosenPids[0];
+			const names = chosenPids
+				.map((pid) => state.players.find((p) => p.playerId === pid)?.username ?? pid)
+				.join(' and ');
+			pushEtbRuleLog(
+				state,
+				chooser.playerId,
+				`${chooser.username} chose ${names} for ${bfView.name} (CR 614.12).`
+			);
+		} else if (choiceField === 'etbObject' && answer.kind === 'chooseObjects') {
+			nextData.etbObjectChosen = true;
+			const chosenId = answer.objectIds[0];
+			if (chosenId) {
+				obj.chosenObjectId = chosenId;
+				let chosenName = chosenId;
+				for (const pl of state.players) {
+					const found = pl.battlefield.find((b) => !b.phasedOut && b.instanceId === chosenId);
+					if (found) {
+						chosenName = found.card.name;
+						break;
+					}
+				}
+				pushEtbRuleLog(
+					state,
+					chooser.playerId,
+					`${chooser.username} chose ${chosenName} for ${bfView.name} (CR 614.12).`
+				);
+			}
+		} else if (choiceField === 'subTypeOptions' && answer.kind === 'chooseMode') {
+			const optsList = Array.isArray(data.subTypeOptions)
+				? data.subTypeOptions.map(String)
+				: prompt.choice?.kind === 'chooseMode'
+					? prompt.choice.modes
+					: [];
+			const chosenIdx = answer.indices[0] ?? 0;
+			const chosenSub = optsList[chosenIdx] ?? optsList[0] ?? '';
+			if (chosenSub) {
+				obj.chosenSubType = chosenSub;
+				pushEtbRuleLog(
+					state,
+					chooser.playerId,
+					`${chooser.username} chose ${chosenSub} for ${bfView.name} (CR 614.12).`
+				);
+			}
+		// --- End Track P22a ---
 		} else {
 			return;
 		}
@@ -3438,6 +3898,14 @@ registerPromptHandler('etb_choice', (state, prompt, answer) => {
 			enforceSoulbondPairs(state);
 			syncHideawayExilePeekPermissions(state);
 			// --- End Track P18a ---
+			// --- Track P22a ---
+			recordEnteredBattlefieldWave8(
+				state,
+				obj.controllerId || receiver.playerId,
+				obj
+			);
+			syncMayLookAtExiledWithSelfPermissionsWave8(state);
+			// --- End Track P22a ---
 		}
 		noteLayerInputsChanged(state);
 

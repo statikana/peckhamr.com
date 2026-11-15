@@ -38,6 +38,9 @@ import type {
 } from '../ir.ts';
 import { parseManaCost, type ManaCostRequirement } from '../oracle.ts';
 import { effectiveCardForObject } from '../scryfall.ts';
+// --- Track P22a ---
+import { hasSelfGraveyardKeywordCastWave8 } from './staticsWave8.ts';
+// --- End Track P22a ---
 import type {
 	CardInstance,
 	CastCostAid,
@@ -1121,8 +1124,14 @@ export function collectWave4CastOptionsForCard(ctx: Wave4CastOptionsContext): Ca
 
 	const isCommanderFromCommand =
 		fromZone === 'command' && Boolean(inst.isCommander) && inst.ownerId === actor.playerId;
+	// --- Track P22a ---
+	const isSelfGyBestow =
+		fromZone === 'graveyard' &&
+		inst.ownerId === actor.playerId &&
+		hasSelfGraveyardKeywordCastWave8(card, 0, 'bestow', state, actor.playerId, inst);
+	// --- End Track P22a ---
 
-	if (fromZone === 'hand' || isCommanderFromCommand) {
+	if (fromZone === 'hand' || isCommanderFromCommand || isSelfGyBestow) {
 		const abilities = activeAbilityDefs(card, { zone: fromZone, faceIndex: 0 });
 		for (const ab of abilities) {
 			if (ab.kind !== 'keyword') continue;
@@ -1137,14 +1146,14 @@ export function collectWave4CastOptionsForCard(ctx: Wave4CastOptionsContext): Ca
 			const disp = kw.cost || '{0}';
 			switch (kwName) {
 				case 'bestow': {
-					if (fromZone !== 'hand') break;
+					if (fromZone !== 'hand' && !isSelfGyBestow) break;
 					if (kw.cost === undefined && !kw.costDefs?.length) break;
 					out.push(
 						makeOption({
-							id: 'alt:bestow',
+							id: isSelfGyBestow ? 'graveyard:bestow' : 'alt:bestow',
 							label: `Bestow ${disp}`,
 							costDisplay: disp,
-							zone: 'hand',
+							zone: fromZone,
 							baseCost: altBaseCost,
 							spellMods: { bestowed: true, castSummarySuffix: ' (Bestowed)', label: 'Bestow' },
 							requiresTargetOverride: true

@@ -127,6 +127,17 @@ import {
 // --- Track P19b ---
 import { evaluateP19bCondition } from './triggersWave7.ts';
 // --- End Track P19b ---
+// --- Track P22a ---
+import {
+	evaluateCreaturesDiedThisTurnWave8,
+	evaluateDistinctNamesFilterCountWave8,
+	evaluatePlayerCountersAmountWave8,
+	evaluateSpellsCastThisTurnWave8,
+	evaluateWave8Condition,
+	matchesChosenCardType,
+	matchesSameNameAsNontokenPermanentWave8
+} from './staticsWave8.ts';
+// --- End Track P22a ---
 
 export interface FilterContext {
 	state: GameState;
@@ -480,7 +491,12 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 	};
 	const resolveOffBattlefieldColors = (): import('../types.ts').ManaColor[] => {
 		if (obj.isFaceDown || hasAllOffBattlefieldAndSpellsColorless(state)) return [];
-		const baseColors = resolveObjectFaces(card, faceOpts).colors;
+		// --- Track P22a: Pre-game commander chosen color applies in all zones (CR 903.4) ---
+		const baseColors =
+			obj.preGameChosenColor && obj.preGameChosenColor !== 'C'
+				? [obj.preGameChosenColor]
+				: resolveObjectFaces(card, faceOpts).colors;
+		// --- End Track P22a ---
 		const grants = getOffBfGrants();
 		if (!grants || grants.addedColors.length === 0) return baseColors;
 		const merged = [...baseColors];
@@ -553,8 +569,17 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 	if (filter.subtypes && !filter.subtypes.some(hasSubType)) return false;
 	if (filter.notSubtypes && filter.notSubtypes.some(hasSubType)) return false;
 	if (filter.ofChosenType) {
-		const chosenType = ctx.source?.chosenSubType ?? ctx.stackItem?.sourceChosenSubType;
-		if (!chosenType || !hasSubType(chosenType)) return false;
+		// --- Track P22a: Support both chosenSubType and chosenCardType (CR 614.12 / 300.1) ---
+		const chosenSub = ctx.source?.chosenSubType ?? ctx.stackItem?.sourceChosenSubType;
+		const chosenCardType = ctx.source?.chosenCardType ?? ctx.stackItem?.sourceChosenCardType;
+		if (chosenSub) {
+			if (!hasSubType(chosenSub)) return false;
+		} else if (chosenCardType) {
+			if (!matchesChosenCardType(types, chosenCardType)) return false;
+		} else {
+			return false;
+		}
+		// --- End Track P22a ---
 	}
 	if (filter.ofChosenColor) {
 		const chosenColor = ctx.source?.chosenColor ?? ctx.stackItem?.sourceChosenColor;
@@ -920,6 +945,21 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 	// --- Track P21 ---
 	if (!matchesP21ObjectFilter(obj, filter, ctx)) return false;
 	// --- End Track P21 ---
+	// --- Track P22a ---
+	if (filter.manaValueEqualsChosenNumber) {
+		const chosenNum = ctx.source?.chosenNumber ?? ctx.stackItem?.sourceChosenNumber;
+		if (chosenNum === undefined || objectManaValue(state, obj) !== chosenNum) return false;
+	}
+	if (filter.chosenObject) {
+		const chosenObjId = ctx.source?.chosenObjectId;
+		if (!chosenObjId || obj.instanceId !== chosenObjId) return false;
+	}
+	if (filter.sameNameAsNontokenPermanent) {
+		if (obj.isFaceDown) return false;
+		const effName = evaluated ? evaluated.effectiveName : resolveObjectFaces(card, faceOpts).name;
+		if (!matchesSameNameAsNontokenPermanentWave8(state, effName)) return false;
+	}
+	// --- End Track P22a ---
 	return true;
 }
 
@@ -1167,6 +1207,19 @@ export function evaluateAmount(amount: Amount, ctx: FilterContext): number {
 		case 'countersRemovedThisWay':
 			return ctx.stackItem?.lastCountersRemoved ?? 0;
 		case 'playerCounters': {
+			// --- Track P22a ---
+			if (amount.players) {
+				return evaluatePlayerCountersAmountWave8(
+					ctx.state,
+					ctx.controllerId,
+					amount.counter,
+					amount.player.k,
+					amount.players,
+					ctx.source,
+					ctx.stackItem?.defendingPlayerId
+				);
+			}
+			// --- End Track P22a ---
 			const pid =
 				amount.player.k === 'activePlayer'
 					? (ctx.state.players[ctx.state.activePlayerIndex]?.playerId ?? ctx.controllerId)
@@ -1206,6 +1259,28 @@ export function evaluateAmount(amount: Amount, ctx: FilterContext): number {
 		case 'difference':
 			return evaluateP19aAmount(amount, ctx, (sub) => evaluateAmount(sub, ctx)) ?? 0;
 		// --- End Track P19a ---
+		// --- Track P22a ---
+		case 'distinctNamesCount':
+			return evaluateDistinctNamesFilterCountWave8(
+				ctx.state,
+				ctx.controllerId,
+				amount.of,
+				ctx.source
+			);
+		case 'creaturesDiedThisTurn':
+			return evaluateCreaturesDiedThisTurnWave8(
+				ctx.state,
+				ctx.controllerId,
+				amount.controller
+			);
+		case 'spellsCastThisTurnCount':
+			return evaluateSpellsCastThisTurnWave8(
+				ctx.state,
+				ctx.controllerId,
+				amount.filter,
+				amount.who
+			);
+		// --- End Track P22a ---
 		default:
 			return 0;
 	}
@@ -1488,6 +1563,14 @@ export function evaluateCondition(cond: Condition, ctx: FilterContext): boolean 
 		case 'abilityActivatedCountThisTurn':
 			return evaluateP19aCondition(cond, ctx) ?? false;
 		// --- End Track P19a ---
+		// --- Track P22a ---
+		case 'lifeAtLeastAboveStarting':
+		case 'isAttackingAlone':
+		case 'hasntDealtDamageYet':
+		case 'yourTurnsTakenAtLeast':
+		case 'enteredBattlefieldUnderYourControlThisTurn':
+			return evaluateWave8Condition(cond, ctx.state, ctx.controllerId, ctx.source) ?? false;
+		// --- End Track P22a ---
 		default:
 			return false;
 	}

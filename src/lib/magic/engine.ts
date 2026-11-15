@@ -546,6 +546,24 @@ import {
 	resolveP19aManaChoiceColors
 } from './runtime/effectsWave7.ts';
 // --- End Track P19a ---
+// --- Track P22a ---
+import {
+	applyCommanderPreGameColorChoices,
+	buildGrantedHandForetellActionOptionWave8,
+	canPutCounterOnPermanentWave8,
+	cardKeepsCountersAcrossZonesWave8,
+	checkLandPlayLocksWave8,
+	collectWave8GraveyardEscapeCastOptions,
+	computeExtraLandPlaysWave8,
+	finalizeCommanderPreGameColorChoice,
+	getActiveGrantedHandForetellCostWave8,
+	hasSelfGraveyardKeywordCastWave8,
+	permanentKeepsDamageInCleanupWave8,
+	playerProtectedFromSourceWave8,
+	resetWave8TurnStateAtTurnStart,
+	resolveWave8GrantedActivatedEffects
+} from './runtime/staticsWave8.ts';
+// --- End Track P22a ---
 export { applyCastCostAids, formatManaRequirement, getSuspendSpec };
 import { getKeywordSpec } from './keywords.ts';
 import {
@@ -1018,6 +1036,11 @@ function checkIfAllKeptMulligan(state: GameState): void {
 	if (anyMulliganPrompts) return;
 
 	if (state.players.every((p) => p.hasKeptHand)) {
+		// --- Track P22a: CR 903.4 Commander pre-game color choice before Turn 1 ---
+		if (applyCommanderPreGameColorChoices(state, enqueueChoicePrompt, uid)) {
+			return;
+		}
+		// --- End Track P22a ---
 		for (const p of state.players) {
 			const pregameBattlefieldCards = p.hand.filter((c) => {
 				const abilities = activeAbilityDefs(effectiveCardForObject(c));
@@ -1058,6 +1081,31 @@ function checkIfAllKeptMulligan(state: GameState): void {
 		}
 	}
 }
+
+// --- Track P22a: CR 903.4 Commander pre-game color choice prompt handler ---
+registerPromptHandler('commander_pregame_color', (state, prompt, answer) => {
+	const data = prompt.continuation?.kind === 'handler' ? prompt.continuation.data : undefined;
+	const playerId = typeof data?.playerId === 'string' ? data.playerId : prompt.playerId;
+	const commanderInstanceId =
+		typeof data?.commanderInstanceId === 'string' ? data.commanderInstanceId : '';
+	const fiveCols: readonly ManaColor[] = ['W', 'U', 'B', 'R', 'G'];
+	const chosenColor: ManaColor =
+		answer.kind === 'chooseMode' ? (fiveCols[answer.indices[0] ?? 0] ?? 'W') : 'W';
+	const player = state.players.find((pl) => pl.playerId === playerId);
+	const cmd = player?.command.find((c) => c.instanceId === commanderInstanceId);
+	if (player && cmd) {
+		finalizeCommanderPreGameColorChoice(player, cmd, chosenColor);
+		addLog(
+			state,
+			'rule',
+			`${player.username} chose ${chosenColor} for ${cmd.card.name} before the game began (CR 903.4).`,
+			player.playerId
+		);
+		noteLayerInputsChanged(state);
+	}
+	checkIfAllKeptMulligan(state);
+});
+// --- End Track P22a ---
 
 export function getCreaturePower(inst: CardInstance, state: GameState): number {
 	const breakdown = inspectCardContinuousBreakdown(inst, state);
@@ -1583,8 +1631,16 @@ function enumerateCandidateCastOptions(
 				if (meta.castTransformedBackFace) continue;
 				const altCost = keywordAltCost(card, kwName, fi);
 				if (!altCost) continue;
-				if (!(meta.zones as readonly string[]).includes(fromZone)) continue;
-				if (meta.requiresZonePermission && !hasZonePermission) continue;
+				// --- Track P22a: Self graveyard keyword cast ("You may cast ~ from your graveyard using its <kw> ability") ---
+				const isSelfGyKw =
+					fromZone === 'graveyard' &&
+					inst.ownerId === actorId &&
+					hasSelfGraveyardKeywordCastWave8(card, fi, kwName, state, actorId, inst);
+				if (!isSelfGyKw) {
+					if (!(meta.zones as readonly string[]).includes(fromZone)) continue;
+					if (meta.requiresZonePermission && !hasZonePermission) continue;
+				}
+				// --- End Track P22a ---
 				// --- Track P14 ---
 				const viaWave5Slot =
 					meta.requiresZonePermission && !hadBaseZonePermission && wave5ZoneOpt ? wave5ZoneOpt : undefined;
@@ -1719,8 +1775,20 @@ function enumerateCandidateCastOptions(
 						targetInfo.requiresTarget,
 						spellChoosesX(card, { kind: 'printed' }, undefined, fi, false),
 						hasZonePermission
-					)
+					),
 					// --- End Track P17a ---
+					// --- Track P22a ---
+					...(fromZone === 'graveyard'
+						? collectWave8GraveyardEscapeCastOptions(
+								state,
+								actorId,
+								inst,
+								fi,
+								isMultiFace,
+								targetInfo.requiresTarget
+							)
+						: [])
+					// --- End Track P22a ---
 				];
 				for (const sOpt of staticAltOpts) {
 					const isFreeAlt =
@@ -3310,6 +3378,13 @@ function finalizeCastSpell(
 			// --- Track P19a ---
 			...(opts.sacrificedCostLki?.length ? { sacrificedCostLki: opts.sacrificedCostLki } : {}),
 			// --- End Track P19a ---
+			// --- Track P22a: CR 122.2 carry zone-persistent counters onto stack ---
+			...(!isPreparationCopy &&
+			cardKeepsCountersAcrossZonesWave8(inst, state) &&
+			Object.values(inst.counters).some((n) => (n ?? 0) > 0)
+				? { carriedCounters: { ...inst.counters } }
+				: {}),
+			// --- End Track P22a ---
 			...(optionalCostCounts ? { optionalCostCounts } : {}),
 			commanderCastCount: isPreparationCopy ? 0 : inst.commanderCastCount,
 			// --- Track P21 ---
@@ -3592,6 +3667,10 @@ function finalizeActivateAbility(
 	// --- Track P11 ---
 	const sourceChosenCardName = perm.chosenCardName;
 	// --- End Track P11 ---
+	// --- Track P22a ---
+	const sourceChosenCardType = perm.chosenCardType;
+	const sourceChosenNumber = perm.chosenNumber;
+	// --- End Track P22a ---
 
 	const stackItem: StackItem = withStackItemText(
 		{
@@ -3610,6 +3689,10 @@ function finalizeActivateAbility(
 			// --- Track P11 ---
 			...(sourceChosenCardName ? { sourceChosenCardName } : {}),
 			// --- End Track P11 ---
+			// --- Track P22a ---
+			...(sourceChosenCardType ? { sourceChosenCardType } : {}),
+			...(sourceChosenNumber !== undefined ? { sourceChosenNumber } : {}),
+			// --- End Track P22a ---
 			...(perm.isMonstrous ? { sourceMonstrous: true } : {}),
 			// --- Track P12 ---
 			...(perm.isRenowned ? { sourceIsRenowned: true } : {}),
@@ -6496,6 +6579,9 @@ export function runBeginningOfTurn(state: GameState): void {
 
 	// Clear "until your next turn" effects (e.g., Teferi's Protection, goad per CR 701.15a)
 	expirePlayerUntilNextTurnEffects(state, activePlayer.playerId);
+	// --- Track P22a ---
+	resetWave8TurnStateAtTurnStart(state, activePlayer);
+	// --- End Track P22a ---
 	for (const p of state.players) {
 		p.spellsCastThisTurn = 0;
 		p.cardsDrawnThisTurn = 0;
@@ -7505,9 +7591,11 @@ function applyGameActionInner(
 			if (!legality.ok) {
 				return legality;
 			}
-			const actionOpt = enumerateHandSpecialActions(effectiveCardForObject(inst)).find(
+			// --- Track P22a ---
+			const actionOpt = getHandSpecialActions(state, actorId, inst).find(
 				(o) => o.id === action.actionId
 			)!;
+			// --- End Track P22a ---
 			const topManaStr = actionOpt.costDefs
 				.filter((d): d is Extract<CostDef, { k: 'mana' }> => d.k === 'mana')
 				.map((d) => d.cost)
@@ -9707,6 +9795,12 @@ function performDeclareAttackers(
 		const defender = state.players.find(
 			(p) => p.playerId === effectiveDefId && !p.lost
 		)!;
+		// --- Track P22a: Record attacked player for cantAttackSamePlayerTwiceInTurn ---
+		const attackedList = (creature.attackedPlayerIdsThisTurn ??= []);
+		if (!attackedList.includes(defender.playerId)) {
+			attackedList.push(defender.playerId);
+		}
+		// --- End Track P22a ---
 		if (!vigilantIds.has(creature.instanceId)) {
 			// --- Track P19b: CR 508.1f "if it isn't being declared as an attacker" ---
 			state.declaringAttackersNow = true;
@@ -10510,6 +10604,15 @@ function handleMulliganAction(
 				instanceIds: action.answer.objectIds
 			});
 		}
+		// --- Track P22a: CR 903.4 Commander pre-game color choice prompt during pregame ---
+		const pregameHandler = pr.continuation?.kind === 'handler' ? pr.continuation.name : undefined;
+		if (pregameHandler === 'commander_pregame_color') {
+			const cIdx = state.pendingPrompts.indexOf(pr);
+			if (cIdx >= 0) {
+				return handlePromptResolution(state, actor, cIdx, action);
+			}
+		}
+		// --- End Track P22a ---
 		return { ok: false, error: 'Invalid choice for mulligan prompt.' };
 	}
 
@@ -11981,6 +12084,13 @@ export function moveStackSpellToZone(
 	cardInst.instanceId = stackItem.sourceInstanceId;
 	cardInst.commanderCastCount = castCount;
 	cardInst.zone = 'stack' as ZoneType;
+	// --- Track P22a: CR 122.2 restore zone-persistent counters from stack spell ---
+	if (stackItem.carriedCounters) {
+		for (const [ck, cv] of Object.entries(stackItem.carriedCounters)) {
+			if ((cv ?? 0) > 0) cardInst.counters[ck as CounterType] = cv;
+		}
+	}
+	// --- End Track P22a ---
 	if (stackItem.faceIndex !== undefined) {
 		cardInst.activeFaceIndex = stackItem.faceIndex;
 	}
@@ -12037,6 +12147,9 @@ export function addCountersToPermanent(
 ): number {
 	if (amount <= 0) return 0;
 	if (hasRestriction(state, perm, 'cantHaveCounters')) return 0;
+	// --- Track P22a: CR 122.6 cantHaveCounterType lock ---
+	if (!canPutCounterOnPermanentWave8(state, perm, type)) return 0;
+	// --- End Track P22a ---
 	const res = resolveCounterReplacements(state, perm, type, amount);
 	if (res.pendingOptions && res.pendingOptions.length >= 2) {
 		const description = `Multiple replacement effects would modify putting ${res.amount} ${type} counter(s) on ${perm.card.name}. Choose which applies first (CR 616.1):`;
@@ -12835,6 +12948,12 @@ function triggeredStackItem(state: GameState, t: PendingTrigger, idPrefix: strin
 	const sourceChosenCardName =
 		t.sourceChosenCardName ?? foundSource?.inst.chosenCardName ?? t.source.chosenCardName;
 	// --- End Track P11 ---
+	// --- Track P22a ---
+	const sourceChosenCardType =
+		foundSource?.inst.chosenCardType ?? t.source.chosenCardType;
+	const sourceChosenNumber =
+		foundSource?.inst.chosenNumber ?? t.source.chosenNumber;
+	// --- End Track P22a ---
 	const sourceMonstrous = t.sourceMonstrous ?? Boolean((foundSource?.inst ?? t.source).isMonstrous);
 	// --- Track P12 ---
 	const sourceIsRenowned = t.sourceIsRenowned ?? Boolean((foundSource?.inst ?? t.source).isRenowned);
@@ -12896,6 +13015,10 @@ function triggeredStackItem(state: GameState, t: PendingTrigger, idPrefix: strin
 			...(t.grantFaceIndex !== undefined ? { grantFaceIndex: t.grantFaceIndex } : {}),
 			...(t.grantAbilityIndex !== undefined ? { grantAbilityIndex: t.grantAbilityIndex } : {}),
 			// --- End Track P11 ---
+			// --- Track P22a ---
+			...(sourceChosenCardType ? { sourceChosenCardType } : {}),
+			...(sourceChosenNumber !== undefined ? { sourceChosenNumber } : {}),
+			// --- End Track P22a ---
 			...(sourceMonstrous ? { sourceMonstrous: true } : {}),
 			// --- Track P12 ---
 			...(sourceIsRenowned ? { sourceIsRenowned: true } : {}),
@@ -13145,6 +13268,11 @@ function resolveStackItemCompiledEffects(item: StackItem) {
 			item.chosenModes
 		);
 	}
+	// --- Track P22a: Statically granted graveyard Scavenge / Unearth activated abilities ---
+	if (item.kind === 'activated' && item.abilityId?.startsWith('wave8_granted:')) {
+		return resolveWave8GrantedActivatedEffects(item.abilityId);
+	}
+	// --- End Track P22a ---
 	// --- Track P15: Cleave (CR 702.148), Gift-promised (CR 702.174b), & Splice (CR 702.47c) ---
 	if (item.kind === 'spell') {
 		const cleaved = Boolean(item.spellMods?.cleaved);
@@ -13993,6 +14121,9 @@ export function specTargetCandidates(
 			if ((rel === 'opponent' || rel === 'each_opponent') && p.playerId === controllerId) continue;
 			if (rel === 'you' && p.playerId !== controllerId) continue;
 			if (playerHasShroud(state, p) || playerHasHexproofFrom(state, p, controllerId)) continue;
+			// --- Track P22a: CR 702.16j Player protection from chosen card type ---
+			if (playerProtectedFromSourceWave8(state, p.playerId, sourceCard, source)) continue;
+			// --- End Track P22a ---
 			out.push({ kind: 'player', id: p.playerId, label: p.username });
 		}
 	}
@@ -15047,6 +15178,9 @@ function isUnautomatedStackItem(item: StackItem): boolean {
 	// --- Track P19b ---
 	if (isPureSpellDelayedInstantSorceryP19b(item)) return false;
 	// --- End Track P19b ---
+	// --- Track P22a ---
+	if (item.abilityId?.startsWith('wave8_granted:')) return false;
+	// --- End Track P22a ---
 	if (item.kind === 'activated') return true;
 	if (item.kind === 'spell') {
 		const types = resolveObjectFaces(item.card, stackItemFaceOptions(item)).types;
@@ -15946,6 +16080,13 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 			// --- End Track P15 ---
 			// Reset pre-filled loyalty so moveObject initializes loyalty with counterMultiplier (CR 306.5b)
 			perm.counters.loyalty = 0;
+			// --- Track P22a: CR 122.2 restore zone-persistent counters onto resolving permanent ---
+			if (item.carriedCounters) {
+				for (const [ck, cv] of Object.entries(item.carriedCounters)) {
+					if ((cv ?? 0) > 0) perm.counters[ck as CounterType] = (perm.counters[ck as CounterType] ?? 0) + cv;
+				}
+			}
+			// --- End Track P22a ---
 
 			if (item.isFaceDown) {
 				perm.isFaceDown = true;
@@ -18084,12 +18225,23 @@ export function checkSuspendLegality(
  * Enumerates intrinsic hand special actions (CR 116.2h Foretell, CR 116.2k Plot) on `inst`.
  */
 export function getHandSpecialActions(
-	_state: GameState,
+	// --- Track P22a ---
+	state: GameState,
+	// --- End Track P22a ---
 	actorId: string,
 	inst: CardInstance
 ): HandSpecialActionOption[] {
 	if (inst.zone !== 'hand' || inst.ownerId !== actorId) return [];
-	return enumerateHandSpecialActions(effectiveCardForObject(inst));
+	// --- Track P22a ---
+	const innate = enumerateHandSpecialActions(effectiveCardForObject(inst));
+	if (!innate.some((o) => o.id === 'special:foretell')) {
+		const grantedForetell = buildGrantedHandForetellActionOptionWave8(state, actorId, inst);
+		if (grantedForetell) {
+			return [...innate, grantedForetell];
+		}
+	}
+	return innate;
+	// --- End Track P22a ---
 }
 
 /**
@@ -18116,9 +18268,11 @@ export function checkHandSpecialActionLegality(
 		if (inst.zone !== 'hand' || !actor.hand.some((c) => c.instanceId === inst.instanceId)) {
 			return { ok: false, error: 'Card must be in your hand.' };
 		}
-		const actionOpt = enumerateHandSpecialActions(effectiveCardForObject(inst)).find(
+		// --- Track P22a ---
+		const actionOpt = getHandSpecialActions(state, actorId, inst).find(
 			(o) => o.id === actionId
 		);
+		// --- End Track P22a ---
 		if (!actionOpt) {
 			return { ok: false, error: 'Special action is not available on this card.' };
 		}
@@ -18193,9 +18347,11 @@ export function chooseBotHandSpecialActionCostPayment(
 	inst: CardInstance,
 	actionId: string
 ): CostPayment | undefined {
-	const actionOpt = enumerateHandSpecialActions(effectiveCardForObject(inst)).find(
+	// --- Track P22a ---
+	const actionOpt = getHandSpecialActions(state, player.playerId, inst).find(
 		(o) => o.id === actionId
 	);
+	// --- End Track P22a ---
 	if (!actionOpt) return undefined;
 	const topManaStr = actionOpt.costDefs
 		.filter((d): d is Extract<CostDef, { k: 'mana' }> => d.k === 'mana')
@@ -18223,6 +18379,14 @@ function completeHandSpecialAction(
 	const actorId = actor.playerId;
 	const costSuffix = descriptions.length > 0 ? ` (${descriptions.join('; ')})` : '';
 	if (actionId === 'special:foretell') {
+		// --- Track P22a: Snapshot statically granted Foretell cast cost before leaving hand (CR 702.143a) ---
+		const hasInnateForetell = enumerateHandSpecialActions(effectiveCardForObject(inst)).some(
+			(o) => o.id === 'special:foretell'
+		);
+		const grantedForetellCost = hasInnateForetell
+			? undefined
+			: (getActiveGrantedHandForetellCostWave8(state, actorId, inst) ?? undefined);
+		// --- End Track P22a ---
 		const faceDownLabel = allocateFaceDownLabel(state);
 		inst.isFaceDown = true;
 		inst.faceDownLabel = faceDownLabel;
@@ -18237,6 +18401,11 @@ function completeHandSpecialAction(
 					moved.knownToPlayerIds = [actorId];
 					moved.foretoldByPlayerId = actorId;
 					moved.foretoldTurnNumber = state.turnNumber;
+					// --- Track P22a ---
+					if (grantedForetellCost) {
+						moved.grantedForetellCost = grantedForetellCost;
+					}
+					// --- End Track P22a ---
 				} else {
 					moved.isFaceDown = false;
 					moved.faceDownLabel = undefined;
@@ -19736,8 +19905,12 @@ function clearEndOfTurnAndDamage(state: GameState): void {
 		p.damageDealtToThisTurn = 0;
 		// --- End Track P9 ---
 		for (const perm of p.battlefield) {
-			perm.damageMarked = 0;
-			perm.deathtouchDamageMarked = false;
+			// --- Track P22a: CR 514.2 damageNotRemovedInCleanup ---
+			if (!permanentKeepsDamageInCleanupWave8(state, perm)) {
+				perm.damageMarked = 0;
+				perm.deathtouchDamageMarked = false;
+			}
+			// --- End Track P22a ---
 			perm.tempPowerMod = 0;
 			perm.tempToughnessMod = 0;
 			perm.grantedKeywords = [];
@@ -20071,11 +20244,27 @@ function isAuraPlayerAttachmentLegal(
 	aura: CardInstance,
 	auraController: PlayerGameState,
 	evalAura: EvaluatedPermanent,
-	hostPlayer: PlayerGameState
+	hostPlayer: PlayerGameState,
+	// --- Track P22a ---
+	state?: GameState
+	// --- End Track P22a ---
 ): boolean {
 	if (hostPlayer.lost) return false;
 	if (evalAura.isCreature) return false;
 	if (hostPlayer.protectionFromEverythingThisTurn) return false;
+	// --- Track P22a: CR 702.16j Player protection from chosen card type unattaches/blocks Auras ---
+	if (
+		state &&
+		playerProtectedFromSourceWave8(
+			state,
+			hostPlayer.playerId,
+			aura.copiableCard ?? aura.card,
+			aura
+		)
+	) {
+		return false;
+	}
+	// --- End Track P22a ---
 
 	const enchantParams = getAuraEnchantParams(aura, evalAura);
 	if (enchantParams.length === 0) return false;
@@ -20150,7 +20339,9 @@ export function legalAuraAttachCandidates(
 
 	const playerCandidates: Array<{ id: string; preferred: boolean; score: number }> = [];
 	for (const p of state.players) {
-		if (!p.lost && isAuraPlayerAttachmentLegal(aura, controller, evalAura, p)) {
+		// --- Track P22a ---
+		if (!p.lost && isAuraPlayerAttachmentLegal(aura, controller, evalAura, p, state)) {
+		// --- End Track P22a ---
 			const isOwn = p.playerId === controller.playerId;
 			const preferred = harmful ? !isOwn : isOwn;
 			playerCandidates.push({ id: p.playerId, preferred, score: p.life });
@@ -20373,7 +20564,7 @@ export function checkStateBasedActions(state: GameState): void {
 								);
 								if (
 									(!targetPlayer ||
-										!isAuraPlayerAttachmentLegal(perm, p, evalPerm, targetPlayer)) &&
+										!isAuraPlayerAttachmentLegal(perm, p, evalPerm, targetPlayer, state)) &&
 									// --- Track P21 (CR 303.4, 704.5m): Graveyard card attachment SBA ---
 									!isAuraGraveyardAttachmentLegal(
 										state,
@@ -21474,6 +21665,17 @@ export function hasProtectionFrom(
 	if (/protection from planeswalkers/i.test(combined) && srcTypeLine.includes('Planeswalker')) {
 		return true;
 	}
+	// --- Track P22a ---
+	if (/protection from battles/i.test(combined) && srcTypeLine.includes('Battle')) {
+		return true;
+	}
+	if (
+		/protection from (?:kindred|tribal)/i.test(combined) &&
+		(srcTypeLine.includes('Kindred') || srcTypeLine.includes('Tribal'))
+	) {
+		return true;
+	}
+	// --- End Track P22a ---
 
 	return false;
 }
@@ -22061,6 +22263,21 @@ function validateTargetLegalityInner(
 				error: `Strict Rules Violation: ${p.username} has Hexproof and cannot be targeted by opponents.`
 			};
 		}
+		// --- Track P22a ---
+		if (
+			playerProtectedFromSourceWave8(
+				state,
+				p.playerId,
+				sourceCard,
+				sourceInstanceId ? findPermanentOnBoard(state, sourceInstanceId)?.inst : undefined
+			)
+		) {
+			return {
+				ok: false,
+				error: `Strict Rules Violation: ${p.username} has Protection from ${sourceCard?.name ?? 'this source'}'s card type and cannot be targeted.`
+			};
+		}
+		// --- End Track P22a ---
 		return { ok: true };
 	}
 
@@ -23102,24 +23319,13 @@ function checkLandPlayLegalityInner(
 	if (state.stack.length > 0) {
 		return { ok: false, error: 'You cannot play a land while the Stack is not empty.' };
 	}
-	// --- Track P13 ---
-	let effectiveMaxLands = actor.maxLandsPerTurn + (actor.extraLandPlaysThisTurn ?? 0);
-	// --- End Track P13 ---
-	for (const perm of actor.battlefield) {
-		if (perm.phasedOut || permanentHasLostAllAbilities(perm, state).lost) continue;
-		for (const ab of activeAbilityDefs(
-			effectiveCardForObject(perm),
-			instanceFaceOptions(perm, 'battlefield')
-		)) {
-			if (
-				ab.kind === 'static' &&
-				ab.static.k === 'ruleModifier' &&
-				ab.static.rule === 'extraLandPlays'
-			) {
-				effectiveMaxLands += Number(ab.static.params?.count ?? 1);
-			}
-		}
+	// --- Track P22a ---
+	const landLockErr = checkLandPlayLocksWave8(state, actorId);
+	if (landLockErr) {
+		return { ok: false, error: `Strict Rules Violation: ${landLockErr}` };
 	}
+	const effectiveMaxLands = actor.maxLandsPerTurn + computeExtraLandPlaysWave8(state, actorId);
+	// --- End Track P22a ---
 	if (actor.landsPlayedThisTurn >= effectiveMaxLands) {
 		return {
 			ok: false,
@@ -24864,6 +25070,15 @@ function isTargetStillValid(
 		if (!p) return false;
 		if (playerHasShroud(state, p)) return false;
 		if (controllerId && playerHasHexproofFrom(state, p, controllerId)) return false;
+		// --- Track P22a ---
+		const pItemSrcPerm =
+			item && item.kind !== 'spell' && item.sourceInstanceId
+				? findPermanentOnBoard(state, item.sourceInstanceId)?.inst
+				: undefined;
+		if (playerProtectedFromSourceWave8(state, p.playerId, sourceCard, pItemSrcPerm)) {
+			return false;
+		}
+		// --- End Track P22a ---
 		return true;
 	}
 	if (target.kind === 'stack') {

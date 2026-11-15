@@ -126,7 +126,10 @@ function pushFingerprint(state: GameState, fp: unknown[]): void {
 				Boolean(cmd.isRingEmblem),
 				cmd.instanceId,
 				cmd.enteredTimestamp,
-				cmd.card
+				cmd.card,
+				// --- Track P22a ---
+				cmd.chosenColor ?? cmd.preGameChosenColor ?? ''
+				// --- End Track P22a ---
 			);
 		}
 		// --- End Track P13 ---
@@ -218,8 +221,15 @@ function pushFingerprint(state: GameState, fp: unknown[]): void {
 				perm.chosenPlayerId ?? '',
 				perm.chosenParity ?? '',
 				perm.copiableState?.except?.supertypes?.length ?? 0,
-				perm.copiableState?.mergedComponents?.length ?? 0
+				perm.copiableState?.mergedComponents?.length ?? 0,
 				// --- End Track P20a ---
+				// --- Track P22a ---
+				perm.chosenCardType ?? '',
+				perm.chosenNumber ?? -1,
+				perm.chosenObjectId ?? '',
+				perm.preGameChosenColor ?? '',
+				Boolean(perm.dealtDamageEver)
+				// --- End Track P22a ---
 			);
 			// --- Track P18a ---
 			if (perm.mergedComponents?.length) {
@@ -276,7 +286,10 @@ function fingerprintMatches(state: GameState, fp: unknown[]): boolean {
 				fp[i++] !== Boolean(cmd.isRingEmblem) ||
 				fp[i++] !== cmd.instanceId ||
 				fp[i++] !== cmd.enteredTimestamp ||
-				fp[i++] !== cmd.card
+				fp[i++] !== cmd.card ||
+				// --- Track P22a ---
+				fp[i++] !== (cmd.chosenColor ?? cmd.preGameChosenColor ?? '')
+				// --- End Track P22a ---
 			) {
 				return false;
 			}
@@ -370,8 +383,15 @@ function fingerprintMatches(state: GameState, fp: unknown[]): boolean {
 				fp[i++] !== (perm.chosenPlayerId ?? '') ||
 				fp[i++] !== (perm.chosenParity ?? '') ||
 				fp[i++] !== (perm.copiableState?.except?.supertypes?.length ?? 0) ||
-				fp[i++] !== (perm.copiableState?.mergedComponents?.length ?? 0)
+				fp[i++] !== (perm.copiableState?.mergedComponents?.length ?? 0) ||
 				// --- End Track P20a ---
+				// --- Track P22a ---
+				fp[i++] !== (perm.chosenCardType ?? '') ||
+				fp[i++] !== (perm.chosenNumber ?? -1) ||
+				fp[i++] !== (perm.chosenObjectId ?? '') ||
+				fp[i++] !== (perm.preGameChosenColor ?? '') ||
+				fp[i++] !== Boolean(perm.dealtDamageEver)
+				// --- End Track P22a ---
 			) {
 				return false;
 			}
