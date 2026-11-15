@@ -250,6 +250,21 @@ function shieldProtectsTarget(
 	}
 }
 
+// --- Track P22d ---
+export type DamagePreventedHandler = (
+	state: GameState,
+	shield: DamagePreventionShieldEntry,
+	preventedAmount: number,
+	opts: { sourceId?: string; sourceInst?: CardInstance }
+) => void;
+
+let onDamagePreventedHook: DamagePreventedHandler | null = null;
+
+export function registerDamagePreventedHandler(fn: DamagePreventedHandler): void {
+	onDamagePreventedHook = fn;
+}
+// --- End Track P22d ---
+
 function shieldMatchesDamageSource(
 	state: GameState,
 	shield: DamagePreventionShieldEntry,
@@ -257,7 +272,17 @@ function shieldMatchesDamageSource(
 	sourceId?: string,
 	sourceTypes?: readonly string[]
 ): boolean {
-	if (shield.fromSourceInstanceId !== undefined) {
+	// --- Track P22d ---
+	if (shield.fromSourceStackItemId !== undefined) {
+		const actualId = sourceInst?.instanceId ?? sourceId;
+		if (
+			!actualId ||
+			(actualId !== shield.fromSourceStackItemId && actualId !== shield.fromSourceInstanceId)
+		) {
+			return false;
+		}
+	} else if (shield.fromSourceInstanceId !== undefined) {
+	// --- End Track P22d ---
 		const actualId = sourceInst?.instanceId ?? sourceId;
 		if (!actualId || actualId !== shield.fromSourceInstanceId) return false;
 		if (shield.fromSourceObjectVersion !== undefined) {
@@ -372,7 +397,8 @@ export function applyDamagePreventionShields(
 
 	// First check infinite shields (e.g. "Prevent all [combat] damage ...") so finite "next N" shields
 	// aren't needlessly consumed when an infinite shield already prevents all of this event's damage.
-	for (const shield of shields) {
+	for (let sIdx = 0; sIdx < shields.length; sIdx++) {
+		const shield = shields[sIdx];
 		if (shield.remaining !== 'infinite') continue;
 		if (shield.combatOnly && !opts.isCombat) continue;
 		if (
@@ -389,11 +415,25 @@ export function applyDamagePreventionShields(
 			continue;
 		}
 		if (!shieldMatchesDamageSource(state, shield, opts.sourceInst, opts.sourceId, opts.sourceTypes)) continue;
+		// --- Track P22d ---
+		if (shield.nextEventOnly) {
+			state.damagePreventionShields = shields.filter((_, idx) => idx !== sIdx);
+		}
+		if (shield.onPrevented && onDamagePreventedHook) {
+			onDamagePreventedHook(state, shield, remainingDamage, {
+				sourceId: opts.sourceId,
+				sourceInst: opts.sourceInst
+			});
+		}
+		// --- End Track P22d ---
 		return 0;
 	}
 
 	// Apply finite "Prevent the next N damage" shields in creation order (CR 615.7).
 	const kept: DamagePreventionShieldEntry[] = [];
+	// --- Track P22d ---
+	const preventedRiders: Array<{ shield: DamagePreventionShieldEntry; prevented: number }> = [];
+	// --- End Track P22d ---
 	for (const shield of shields) {
 		// Prune shields on permanents whose objectVersion changed (CR 400.7).
 		if (shield.targetKind === 'permanent' && shield.targetId) {
@@ -428,12 +468,27 @@ export function applyDamagePreventionShields(
 		}
 		const prevented = Math.min(remainingDamage, shield.remaining);
 		remainingDamage -= prevented;
-		const left = shield.remaining - prevented;
+		// --- Track P22d ---
+		if (prevented > 0 && shield.onPrevented) {
+			preventedRiders.push({ shield, prevented });
+		}
+		const left = shield.nextEventOnly ? 0 : shield.remaining - prevented;
+		// --- End Track P22d ---
 		if (left > 0) {
 			kept.push({ ...shield, remaining: left });
 		}
 	}
 	state.damagePreventionShields = kept;
+	// --- Track P22d ---
+	if (preventedRiders.length > 0 && onDamagePreventedHook) {
+		for (const entry of preventedRiders) {
+			onDamagePreventedHook(state, entry.shield, entry.prevented, {
+				sourceId: opts.sourceId,
+				sourceInst: opts.sourceInst
+			});
+		}
+	}
+	// --- End Track P22d ---
 	return remainingDamage;
 }
 
@@ -501,9 +556,28 @@ export function isCantBlockThisTurn(state: GameState, blocker: CardInstance): bo
 	if (!list || list.length === 0) return false;
 	const ver = blocker.objectVersion ?? 1;
 	return list.some(
-		(r) => r.kind === 'cantBlock' && r.instanceId === blocker.instanceId && r.objectVersion === ver
+		(r) =>
+			// --- Track P22d ---
+			(r.kind === 'cantBlock' || r.kind === 'cantAttackOrBlock') &&
+			// --- End Track P22d ---
+			r.instanceId === blocker.instanceId &&
+			r.objectVersion === ver
 	);
 }
+
+// --- Track P22d ---
+export function isCantAttackThisTurn(state: GameState, attacker: CardInstance): boolean {
+	const list = state.timedCombatRestrictions;
+	if (!list || list.length === 0) return false;
+	const ver = attacker.objectVersion ?? 1;
+	return list.some(
+		(r) =>
+			(r.kind === 'cantAttack' || r.kind === 'cantAttackOrBlock') &&
+			r.instanceId === attacker.instanceId &&
+			r.objectVersion === ver
+	);
+}
+// --- End Track P22d ---
 
 function blockerMatchesExceptBy(
 	state: GameState,

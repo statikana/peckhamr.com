@@ -169,8 +169,11 @@ export const SUPPORTED_OPTIONAL_COST_KINDS: ReadonlySet<CostDef['k']> = new Set<
 	'opponentGainsLife',
 	'processOpponentExile',
 	'putExiledWithSelfToGraveyard',
-	'mill'
+	'mill',
 	// --- End Track P19a ---
+	// --- Track P22d ---
+	'waterbend'
+	// --- End Track P22d ---
 ]);
 
 // --- Track P19a ---
@@ -358,6 +361,9 @@ function stepSupported(step: EffectStep): boolean {
 		const ps = step.params?.preventSpec;
 		if (!ps) return false;
 		if (ps.fromSource && !selectorSupported(ps.fromSource)) return false;
+		// --- Track P22d ---
+		if (ps.onPrevented?.recipient && !selectorSupported(ps.onPrevented.recipient)) return false;
+		// --- End Track P22d ---
 	}
 	if (step.verb === 'exileInsteadOfDying' && step.subject.k === 'none') return false;
 	if (step.verb === 'combatRestriction') {
@@ -423,8 +429,11 @@ function stepSupported(step: EffectStep): boolean {
 		!step.params?.removeAllAbilities &&
 		// --- Track P19a ---
 		!step.params?.chooseLoseKeywordOptions?.length &&
-		!step.params?.chooseColorForAnimate
+		!step.params?.chooseColorForAnimate &&
 		// --- End Track P19a ---
+		// --- Track P22d ---
+		!step.params?.grantSuspendIfMissing
+		// --- End Track P22d ---
 	) {
 		return false;
 	}
@@ -595,7 +604,8 @@ function stepProducesDecision(step: EffectStep | undefined): boolean {
 		step.verb === 'sacrifice' ||
 		step.verb === 'discard' ||
 		step.verb === 'removeCounters' ||
-		(step.verb === 'dig' && Boolean(step.params?.dig?.upTo)) ||
+		(step.verb === 'dig' &&
+			(Boolean(step.params?.dig?.upTo) || step.params?.dig?.keepTo === 'castFree')) ||
 		(step.verb === 'moveCounters' && Boolean(step.params?.moveCounterSpec)) ||
 		((step.verb === 'bounce' ||
 			step.verb === 'exile' ||

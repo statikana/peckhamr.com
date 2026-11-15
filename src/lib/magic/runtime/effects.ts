@@ -273,6 +273,9 @@ import {
 	// --- Track P19a ---
 	registerEnteredAttackingCombatant,
 	// --- End Track P19a ---
+	// --- Track P22d ---
+	registerDamagePreventedHandler,
+	// --- End Track P22d ---
 	registerExileInsteadOfDying,
 	registerTimedCombatRestriction
 } from './copyPreventionAndEffects.ts';
@@ -347,6 +350,14 @@ import {
 	type P19aStepHost
 } from './effectsWave7.ts';
 // --- End Track P19a ---
+// --- Track P22d ---
+import {
+	executeDigWave8,
+	executeExileUntilWave8,
+	executePreventWave8,
+	handleDamagePreventedWave8
+} from './effectsWave8.ts';
+// --- End Track P22d ---
 
 /** Seeded randomness lives in runtime/random.ts (re-exported here for existing importers). */
 export { nextRandom };
@@ -363,6 +374,9 @@ export type PayOptionalCostResult =
 			zone: ZoneType;
 			label: string;
 			count: number;
+			// --- Track P22d ---
+			maxCount?: number;
+			// --- End Track P22d ---
 			candidateIds: string[];
 	  }
 	// --- Track P19a ---
@@ -514,6 +528,18 @@ let ports: EffectPorts | null = null;
 
 export function registerEffectPorts(p: EffectPorts): void {
 	ports = p;
+	// --- Track P22d ---
+	registerDamagePreventedHandler((state, shield, preventedAmount) => {
+		handleDamagePreventedWave8(state, shield, preventedAmount, {
+			gainLife: gainPlayerLife,
+			drawCards: p.drawCards,
+			addCounters: p.addCounters,
+			damageTarget: p.damageTarget,
+			findPermanent: p.findPermanent,
+			addLog: p.addLog
+		});
+	});
+	// --- End Track P22d ---
 }
 
 function P(): EffectPorts {
@@ -1419,7 +1445,17 @@ class Run {
 			this.stepIndex = resume.stepIndex;
 			this.subStepIndex = resume.subStepIndex ?? 0;
 			this.phase = resume.phase ?? 'step';
-			for (const [name, bound] of resume.bindings) this.bindings.set(name, bound.map((b) => ({ id: b.id, lki: { ...b.lki } })));
+			// --- Track P22d ---
+			for (const [name, bound] of resume.bindings)
+				this.bindings.set(
+					name,
+					bound.map((b) => ({
+						id: b.id,
+						lki: { ...b.lki },
+						...(b.counteredStackLki ? { counteredStackLki: b.counteredStackLki } : {})
+					}))
+				);
+			// --- End Track P22d ---
 			this.result.exileSelf = Boolean(resume.exileSelf);
 			if (resume.librarySelf) this.result.librarySelf = { ...resume.librarySelf };
 			this.answers = { ...resume.answers };
@@ -1432,9 +1468,18 @@ class Run {
 					}
 				: undefined;
 		} else if (ctx.initialBindings) {
+			// --- Track P22d ---
 			for (const [name, bound] of Object.entries(ctx.initialBindings)) {
-				this.bindings.set(name, bound.map((b) => ({ id: b.id, lki: { ...b.lki } })));
+				this.bindings.set(
+					name,
+					bound.map((b) => ({
+						id: b.id,
+						lki: { ...b.lki },
+						...(b.counteredStackLki ? { counteredStackLki: b.counteredStackLki } : {})
+					}))
+				);
 			}
+			// --- End Track P22d ---
 		}
 	}
 
@@ -1761,18 +1806,23 @@ class Run {
 				this.stepDecisions[this.stepIndex] = false;
 				return executeIfPaid(false);
 			}
+			// --- Track P22d ---
+			const maxChoice = res.maxCount ?? res.count;
+			const countLabel =
+				maxChoice > res.count ? `${res.count} to ${maxChoice}` : `${res.count}`;
 			this.pauseForChoice(
 				chooser,
 				`${this.ctx.title} — Pay Optional Cost`,
-				`Choose ${res.count}: ${res.label}.`,
+				`Choose ${countLabel}: ${res.label}.`,
 				res.candidateIds,
 				res.count,
-				res.count,
+				maxChoice,
 				res.zone,
 				undefined,
 				res.answerKey,
 				'optional'
 			);
+			// --- End Track P22d ---
 			return false;
 		}
 		if (res.status === 'paused') {
@@ -1942,7 +1992,16 @@ class Run {
 			stepIndex,
 			...(subStepIndex > 0 ? { subStepIndex } : {}),
 			phase,
-			bindings: [...this.bindings.entries()].map(([name, bound]) => [name, bound.map((b) => ({ id: b.id, lki: { ...b.lki } }))]),
+			// --- Track P22d ---
+			bindings: [...this.bindings.entries()].map(([name, bound]) => [
+				name,
+				bound.map((b) => ({
+					id: b.id,
+					lki: { ...b.lki },
+					...(b.counteredStackLki ? { counteredStackLki: b.counteredStackLki } : {})
+				}))
+			]),
+			// --- End Track P22d ---
 			exileSelf: this.result.exileSelf || undefined,
 			...(this.result.librarySelf ? { librarySelf: { ...this.result.librarySelf } } : {}),
 			answers: { ...answers },
@@ -3544,7 +3603,20 @@ class Run {
 							power: 0,
 							toughness: 0,
 							manaValue: mv
+						},
+						// --- Track P22d (CR 707.10b) ---
+						counteredStackLki: {
+							...target,
+							targets: target.targets.map((trg) => ({ ...trg })),
+							...(target.targetsBySpec
+								? {
+										targetsBySpec: target.targetsBySpec.map((bucket) =>
+											bucket.map((trg) => ({ ...trg }))
+										)
+									}
+								: {})
 						}
+						// --- End Track P22d ---
 					});
 					// --- Track P19a ---
 					counteredManaMetric += mv;
@@ -3726,12 +3798,15 @@ class Run {
 					};
 				}
 				// --- End Track P16a ---
+				// --- Track P22d ---
+				const allowExile = Boolean(step.params?.allowExileCounters);
+				// --- End Track P22d ---
 				const { total, paused } = this.runIndexedBatch(
 					ctrBatchKey,
 					() => {
 						const objs = this.objects(step.subject).filter(
 							(o) =>
-								o.zone === 'battlefield' &&
+								(o.zone === 'battlefield' || (allowExile && o.zone === 'exile')) &&
 								(step.subject.k !== 'self' ||
 									this.ctx.item.sourceObjectVersion === undefined ||
 									(o.objectVersion ?? 1) === this.ctx.item.sourceObjectVersion)
@@ -3741,7 +3816,26 @@ class Run {
 					},
 					(id, idx) => {
 						const f = this.locate(id);
-						if (!f || f.zone !== 'battlefield') return;
+						if (!f || (f.zone !== 'battlefield' && !(allowExile && f.zone === 'exile'))) return;
+						if (f.zone === 'exile') {
+							if (multiSpecs?.length) {
+								for (const mc of multiSpecs) {
+									const cnt = this.amount(mc.count, 1);
+									if (cnt > 0) {
+										f.inst.counters[mc.counter] = (f.inst.counters[mc.counter] ?? 0) + cnt;
+									}
+								}
+								return;
+							}
+							const amt = isDivided
+								? getLockedTargetDivisionAmount(this.ctx.item, id, n, idx, Math.max(1, this.ctx.targets.length))
+								: n;
+							if (amt > 0) {
+								f.inst.counters[counter] = (f.inst.counters[counter] ?? 0) + amt;
+								p.addLog(s, 'rule', `${title}: put ${amt} ${counter} counter(s) on ${f.inst.card.name} in exile.`, you.playerId);
+							}
+							return;
+						}
 						// --- Track P16a ---
 						if (multiSpecs?.length) {
 							for (const mc of multiSpecs) {
@@ -4163,6 +4257,33 @@ class Run {
 				return;
 			}
 			case 'grant': {
+				// --- Track P22d (CR 702.62) ---
+				if (step.params?.grantSuspendIfMissing) {
+					const exiledObjs = this.objects(step.subject).filter((o) => o.zone === 'exile');
+					this.bind(step, exiledObjs);
+					for (const o of exiledObjs) {
+						const faceView = resolveObjectFaces(o.copiableCard ?? o.card, {
+							zone: 'exile',
+							faceIndex: o.activeFaceIndex
+						});
+						const hasSuspend =
+							faceView.keywords.includes('Suspend') || o.grantedKeywords.includes('Suspend');
+						if (!hasSuspend) {
+							o.grantedKeywords.push('Suspend');
+							o.isSuspended = true;
+							p.addLog(
+								s,
+								'rule',
+								`${title}: ${o.card.name} gained suspend (CR 702.62).`,
+								you.playerId
+							);
+						} else if ((o.counters.time || 0) > 0) {
+							o.isSuspended = true;
+						}
+					}
+					return;
+				}
+				// --- End Track P22d ---
 				const objs = this.objects(step.subject).filter((o) => o.zone === 'battlefield');
 				this.bind(step, objs);
 				// --- Track P16a: Choice-based keyword / protection grant & combat flags ---
@@ -4397,6 +4518,17 @@ class Run {
 				}
 				// --- End Track P7 ---
 				for (const pl of this.players(step.subject)) {
+					// --- Track P22d ---
+					if (rules.includes('noMaxHandSizeRestOfGame')) {
+						pl.noMaxHandSizeForRestOfGame = true;
+						p.addLog(
+							s,
+							'rule',
+							`${pl.username} has no maximum hand size for the rest of the game (${title}).`,
+							you.playerId
+						);
+					}
+					// --- End Track P22d ---
 					if (rules.includes('lifeTotalCantChange')) pl.lifeTotalCannotChangeThisTurn = true;
 					if (rules.includes('protectionFromEverything')) pl.protectionFromEverythingThisTurn = true;
 					// --- Track P19a ---
@@ -5154,6 +5286,22 @@ class Run {
 						t?.kind === 'stack'
 							? s.stack.find((item) => item.id === t.id || item.sourceInstanceId === t.id)
 							: undefined;
+					// --- Track P22d (CR 707.10b): fallback to countered spell LKI in bindings ---
+					if (!orig && t?.kind === 'stack') {
+						for (const list of this.bindings.values()) {
+							const hit = list.find(
+								(b) =>
+									b.counteredStackLki &&
+									(b.counteredStackLki.id === t.id ||
+										b.counteredStackLki.sourceInstanceId === t.id)
+							);
+							if (hit?.counteredStackLki) {
+								orig = hit.counteredStackLki;
+								break;
+							}
+						}
+					}
+					// --- End Track P22d ---
 				} else if (sel.k === 'eventObject') {
 					orig =
 						(this.ctx.eventObjectId
@@ -5173,7 +5321,8 @@ class Run {
 								(item.sourceInstanceId === this.ctx.sourceId || item.id === this.ctx.sourceId)
 						) ?? this.ctx.item.triggerEventStackItem;
 				} else if (sel.k === 'binding') {
-					const bId = this.bindings.get(sel.name)?.[0]?.id;
+					const boundList = this.bindings.get(sel.name);
+					const bId = boundList?.[0]?.id;
 					orig = bId
 						? s.stack.find(
 								(item) =>
@@ -5181,6 +5330,11 @@ class Run {
 									(item.id === bId || item.sourceInstanceId === bId)
 							)
 						: undefined;
+					// --- Track P22d (CR 707.10b): copy countered bound spell using captured LKI ---
+					if (!orig && boundList?.[0]?.counteredStackLki) {
+						orig = boundList[0].counteredStackLki;
+					}
+					// --- End Track P22d ---
 				}
 				if (!orig) return;
 
@@ -6286,6 +6440,14 @@ class Run {
 			case 'skipTurn':
 				return executeP19aSkipTurn(this.p19aHost(), step);
 			case 'exileUntil':
+				// --- Track P22d ---
+				if (
+					step.params?.exileUntilSpec?.hitAction === 'stayExiled' ||
+					step.params?.exileUntilSpec?.actor
+				) {
+					return executeExileUntilWave8(this.p19aHost(), step);
+				}
+				// --- End Track P22d ---
 				return executeP19aExileUntil(this.p19aHost(), step);
 			case 'delayedTapManaTrigger':
 				return executeP19aDelayedTapManaTrigger(this.p19aHost(), step);
@@ -6430,6 +6592,24 @@ class Run {
 
 	// --- Track P7 ---
 	preventDamageStep(step: EffectStep): void {
+		// --- Track P22d ---
+		if (
+			executePreventWave8(this.p19aHost(), step, {
+				objects: (sel) => this.objects(sel),
+				players: (sel) => this.players(sel),
+				targetsForSpecIndex: (idx) => this.targetsForSpecIndex(idx),
+				locate: (id) => this.locate(id) ?? undefined,
+				matches: (inst, filter, zone) =>
+					zone === 'command' || zone === 'stack' ? false : this.matches(inst, filter, zone),
+				targetsBecomeEach: Boolean(
+					this.ctx.targetsBecomeEach ?? this.ctx.item.spellMods?.targetsBecomeEach
+				),
+				uid: (prefix) => P().uid(prefix, this.state)
+			})
+		) {
+			return;
+		}
+		// --- End Track P22d ---
 		const s = this.state;
 		const p = P();
 		const you = this.you;
@@ -8407,7 +8587,9 @@ class Run {
 				}
 			}
 			// --- End Track P16a ---
-			if (params.to !== 'hand' && params.to !== 'graveyard' && this.canPause) {
+			// --- Track P22d: Skip interactive Aura-host prompt when attachedToSelector specifies exact host ---
+			if (params.to !== 'hand' && params.to !== 'graveyard' && this.canPause && !params.attachedToSelector) {
+			// --- End Track P22d ---
 				for (const o of objs) {
 					if (!canEnterTransformed(o)) continue;
 					const holder = this.locate(o.instanceId)?.holder;
@@ -8544,6 +8726,29 @@ class Run {
 				const isAura = enteringView.subtypes.includes('Aura') || enteringView.typeLine.includes('Aura');
 				if (isAura) {
 					const attachCands = p.legalAuraAttachCandidates(s, o, controller);
+					// --- Track P22d: Direct host selector ("return ~ attached to <host>") ---
+					let forcedHostId: string | undefined;
+					if (params.attachedToSelector) {
+						const hostObjs = this.objects(params.attachedToSelector).filter(
+							(h) => h.zone === 'battlefield' && !h.phasedOut
+						);
+						const hostPls = hostObjs.length === 0 ? this.players(params.attachedToSelector) : [];
+						const wantedIds = [
+							...hostObjs.map((h) => h.instanceId),
+							...hostPls.map((pl) => pl.playerId)
+						];
+						forcedHostId = wantedIds.find((wid) => attachCands.includes(wid));
+						if (!forcedHostId) {
+							p.addLog(
+								s,
+								'rule',
+								`${enteringView.name} remained in ${holder.username}'s ${actualFrom} because the specified host is not legal to enchant (CR 303.4g).`,
+								controller.playerId
+							);
+							return;
+						}
+					}
+					// --- End Track P22d ---
 					if (attachCands.length === 0) {
 						p.addLog(
 							s,
@@ -8555,7 +8760,11 @@ class Run {
 					}
 					const auraAns = this.answers[`aura:${o.instanceId}`];
 					const pickedId = auraAns?.kind === 'chooseObjects' ? auraAns.objectIds[0] : undefined;
-					attachObject(s, o, pickedId && attachCands.includes(pickedId) ? pickedId : attachCands[0]);
+					attachObject(
+						s,
+						o,
+						forcedHostId ?? (pickedId && attachCands.includes(pickedId) ? pickedId : attachCands[0])
+					);
 				}
 				o.summoningSick = params.unearth ? false : !enteringView.keywords.includes('Haste');
 				o.tapped = Boolean(params.tapped || params.entersTappedAndAttacking);
@@ -8783,6 +8992,29 @@ class Run {
 	}
 
 	dig(step: EffectStep): void {
+		// --- Track P22d ---
+		if (
+			executeDigWave8(this.p19aHost(), step, {
+				matches: (inst, filter, zone) =>
+					zone === 'command' || zone === 'stack' ? false : this.matches(inst, filter, zone),
+				answered: (key, cands, min, max) => this.answered(key, cands, min, max),
+				setStepDecision: (idx, dec) => {
+					this.stepDecisions[idx] = dec;
+				},
+				addLog: (msg, pid) => P().addLog(this.state, 'rule', msg, pid),
+				moveDigCardToBattlefield: (o, pl, tapped, attacking) =>
+					this.moveDigCardToBattlefield(o, pl, tapped, attacking),
+				pauseForOrder: (chooser, title, desc, ids, key) =>
+					this.pauseForOrder(chooser, title, desc, ids, key),
+				subStepIndex: this.subStepIndex,
+				setSubStepIndex: (idx) => {
+					this.subStepIndex = idx;
+				}
+			})
+		) {
+			return;
+		}
+		// --- End Track P22d ---
 		const s = this.state;
 		const p = P();
 		const dig = step.params?.dig;
@@ -9868,10 +10100,16 @@ class Run {
 		}
 		// --- End Track P19a ---
 		for (const [name, bound] of this.bindings.entries()) {
+			// --- Track P22d ---
 			childRun.bindings.set(
 				name,
-				bound.map((b) => ({ id: b.id, lki: { ...b.lki } }))
+				bound.map((b) => ({
+					id: b.id,
+					lki: { ...b.lki },
+					...(b.counteredStackLki ? { counteredStackLki: b.counteredStackLki } : {})
+				}))
 			);
+			// --- End Track P22d ---
 		}
 		childRun.result.exileSelf = this.result.exileSelf;
 		if (this.result.librarySelf) childRun.result.librarySelf = { ...this.result.librarySelf };

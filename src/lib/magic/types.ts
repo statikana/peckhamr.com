@@ -1816,6 +1816,10 @@ export interface PendingReflexiveTrigger {
 export interface EffectBindingSnapshot {
 	id: string;
 	lki: TriggerEventLki;
+	// --- Track P22d ---
+	/** CR 707.10b: LKI snapshot when a bound spell on the stack is countered mid-resolution. */
+	counteredStackLki?: StackItem;
+	// --- End Track P22d ---
 }
 
 /**
@@ -2440,6 +2444,9 @@ export interface PlayerGameState {
 	cannotLoseGameThisTurn?: boolean;
 	lifeTotalCannotChangeThisTurn?: boolean;
 	protectionFromEverythingThisTurn?: boolean;
+	// --- Track P22d ---
+	noMaxHandSizeForRestOfGame?: boolean;
+	// --- End Track P22d ---
 	damagePreventionShield?: number;
 	preventAllCombatDamageThisTurn?: boolean;
 	attemptedEmptyLibraryDraw?: boolean;
@@ -2910,12 +2917,23 @@ export interface DamagePreventionShieldEntry {
 	alsoPreventDealtByTarget?: boolean;
 	combatOnly: boolean;
 	remaining: number | 'infinite';
+	// --- Track P22d ---
+	fromSourceStackItemId?: string;
+	nextEventOnly?: boolean;
+	onPrevented?: {
+		kind: 'gainLifeEqual' | 'dealDamageEqual' | 'putCountersEqual' | 'drawEqual' | 'drawOne';
+		counter?: string;
+		targetKind?: 'player' | 'permanent';
+		targetId?: string;
+		targetObjectVersion?: number;
+	};
+	// --- End Track P22d ---
 }
 
 export interface TimedCombatRestrictionEntry {
 	instanceId: string;
 	objectVersion: number;
-	kind: 'cantBlock' | 'cantBeBlocked';
+	kind: 'cantBlock' | 'cantBeBlocked' | 'cantAttack' | 'cantAttackOrBlock';
 	exceptBy?: {
 		types?: string[];
 		subtypes?: string[];
