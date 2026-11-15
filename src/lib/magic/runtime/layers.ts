@@ -386,9 +386,11 @@ function extractInnateFromIR(
 	const addResult = (canonicalKey: string, name: string, kind: 'keyword' | 'ability') => {
 		const k = canonicalKey.toLowerCase();
 		const dedupKey =
-			k === 'toxic'
-				? `toxic::${results.length}`
-				: k === 'protection' ||
+			// --- Track P18a: Absorb, Frenzy, and Poisonous stack across multiple instances (CR 702.64c, 702.68b, 702.70b) ---
+			k === 'toxic' || k === 'absorb' || k === 'frenzy' || k === 'poisonous'
+				? `${k}::${results.length}`
+				: // --- End Track P18a ---
+					k === 'protection' ||
 					  k === 'ward' ||
 					  k === 'afterlife' ||
 					  k === 'bushido' ||
@@ -397,7 +399,14 @@ function extractInnateFromIR(
 					  k === 'modular' ||
 					  k === 'soulshift' ||
 					  k === 'fabricate' ||
-					  k === 'bloodthirst'
+					  k === 'bloodthirst' ||
+					  // --- Track P18a ---
+					  k === 'tribute' ||
+					  k === 'hideaway' ||
+					  k === 'fortify' ||
+					  k === 'mutate' ||
+					  k === 'teamwork'
+					  // --- End Track P18a ---
 					? `${k}::${name.toLowerCase()}`
 					: k;
 		if (seenKeys.has(dedupKey)) return;
@@ -482,6 +491,34 @@ function extractInnateFromIR(
 				addResult('ripple', `Ripple ${ab.keyword.n ?? 1}`, 'keyword');
 				selfGrantedKeywords.add('ripple');
 			// --- End Track P15 ---
+			// --- Track P18a ---
+			} else if (kwName === 'absorb') {
+				addResult('absorb', `Absorb ${ab.keyword.n ?? 1}`, 'keyword');
+				selfGrantedKeywords.add('absorb');
+			} else if (kwName === 'frenzy') {
+				addResult('frenzy', `Frenzy ${ab.keyword.n ?? 1}`, 'keyword');
+				selfGrantedKeywords.add('frenzy');
+			} else if (kwName === 'poisonous') {
+				addResult('poisonous', `Poisonous ${ab.keyword.n ?? 1}`, 'keyword');
+				selfGrantedKeywords.add('poisonous');
+			} else if (kwName === 'tribute') {
+				addResult('tribute', `Tribute ${ab.keyword.n ?? 1}`, 'keyword');
+				selfGrantedKeywords.add('tribute');
+			} else if (kwName === 'hideaway') {
+				addResult('hideaway', `Hideaway ${ab.keyword.n ?? 4}`, 'keyword');
+				selfGrantedKeywords.add('hideaway');
+			} else if (kwName === 'fortify') {
+				const costStr = ab.keyword.cost ?? (ab.keyword.n !== undefined ? `${ab.keyword.n}` : '{0}');
+				addResult('fortify', `Fortify ${costStr}`, 'keyword');
+				selfGrantedKeywords.add('fortify');
+			} else if (kwName === 'mutate') {
+				const costStr = ab.keyword.cost ?? ab.keyword.param ?? '';
+				addResult('mutate', `Mutate ${costStr}`.trim(), 'keyword');
+				selfGrantedKeywords.add('mutate');
+			} else if (kwName === 'teamwork') {
+				addResult('teamwork', `Teamwork ${ab.keyword.n ?? 1}`, 'keyword');
+				selfGrantedKeywords.add('teamwork');
+			// --- End Track P18a ---
 			} else {
 				addResult(kwName, formatKeywordLabel(kwName), 'keyword');
 				selfGrantedKeywords.add(kwName);
@@ -697,6 +734,9 @@ function innateKeywordsAndAbilitiesOf(
 			!faceOpts.unlockedFaces?.length &&
 			!faceOpts.copiableState &&
 			!faceOpts.fused &&
+			// --- Track P18a ---
+			!faceOpts.mergedComponents?.length &&
+			// --- End Track P18a ---
 			(card.layout === undefined || card.layout === 'normal'));
 	if (!canUseDefaultMemo) {
 		return extractInnateFromIR(card, faceOpts);
@@ -1076,13 +1116,28 @@ function removeMatchingKeywordsUpTo(
 			if (item.kind !== 'keyword') continue;
 			const itemTs = work.itemTimestamps.get(item.id) ?? -Infinity;
 			if (itemTs > cutoffTimestamp) continue;
+			// --- Track P18a ---
+			const { name: itemLabel } = item;
+			const itemLabelLow = itemLabel.toLowerCase();
+			// --- End Track P18a ---
 			if (
 				item.canonicalKey === kwLow ||
 				(kwLow === 'hexproof' && item.canonicalKey.startsWith('hexproof from ')) ||
 				(kwLow === 'protection' && item.canonicalKey.startsWith('protection')) ||
 				(kwLow === 'ward' && item.canonicalKey.startsWith('ward')) ||
 				(kwLow === 'toxic' && item.canonicalKey === 'toxic') ||
-				(kwLow.startsWith('toxic ') && item.name.toLowerCase() === kwLow)
+				(kwLow.startsWith('toxic ') && item.name.toLowerCase() === kwLow) ||
+				// --- Track P18a ---
+				(kwLow === 'absorb' &&
+					(item.canonicalKey === 'absorb' || item.canonicalKey.startsWith('absorb '))) ||
+				(kwLow.startsWith('absorb ') && itemLabelLow === kwLow) ||
+				(kwLow === 'frenzy' &&
+					(item.canonicalKey === 'frenzy' || item.canonicalKey.startsWith('frenzy '))) ||
+				(kwLow.startsWith('frenzy ') && itemLabelLow === kwLow) ||
+				(kwLow === 'poisonous' &&
+					(item.canonicalKey === 'poisonous' || item.canonicalKey.startsWith('poisonous '))) ||
+				(kwLow.startsWith('poisonous ') && itemLabelLow === kwLow)
+				// --- End Track P18a ---
 			) {
 				item.removed = true;
 				if (!item.removedBy.includes(sourceName)) {
@@ -2334,7 +2389,13 @@ function evaluateLayerCondition(
 		case 'tributePaid':
 			return Boolean(source.inst.tributePaid);
 		case 'hasEnduringStory':
-			return Boolean(source.inst.hasEnduringStory);
+			// --- Track P18a ---
+			layerReads |= READ_P18A;
+			return Boolean(
+				source.inst.hasEnduringStory ||
+					state.players.find((pl) => pl.playerId === source.controllerId)?.hasEnduringStory
+			);
+		// --- End Track P18a ---
 		case 'isHarnessed':
 			return Boolean(source.inst.isHarnessed);
 		// --- End Wave 6 Shared ---
@@ -2563,7 +2624,10 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 	// --- End Track P17b ---
 	// --- Track P18a ---
 	if (reads & READ_P18A) {
-		fp.push(0);
+		fp.push(state.players.length);
+		for (const p of state.players) {
+			fp.push(Boolean(p.hasEnduringStory));
+		}
 	}
 	// --- End Track P18a ---
 	// --- Track P18b ---
@@ -2740,6 +2804,11 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 		if (perm.grantedKeywords?.length) {
 			for (const kw of perm.grantedKeywords) fp.push(kw);
 		}
+		// --- Track P18a ---
+		if (perm.mergedComponents?.length) {
+			for (const mc of perm.mergedComponents) fp.push(mc);
+		}
+		// --- End Track P18a ---
 	}
 	const timedKw = state.timedKeywordEffects;
 	fp.push(timedKw?.length || 0);
@@ -2932,7 +3001,10 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 	// --- End Track P17b ---
 	// --- Track P18a ---
 	if (reads & READ_P18A) {
-		if (fp[i++] !== 0) return false;
+		if (fp[i++] !== state.players.length) return false;
+		for (const p of state.players) {
+			if (fp[i++] !== Boolean(p.hasEnduringStory)) return false;
+		}
 	}
 	// --- End Track P18a ---
 	// --- Track P18b ---
@@ -3164,6 +3236,13 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 		if (grantedLen) {
 			for (const kw of granted) if (fp[i++] !== kw) return false;
 		}
+		// --- Track P18a ---
+		if (perm.mergedComponents?.length) {
+			for (const mc of perm.mergedComponents) {
+				if (fp[i++] !== mc) return false;
+			}
+		}
+		// --- End Track P18a ---
 	}
 	const timedKw = state.timedKeywordEffects;
 	const timedLen = timedKw?.length || 0;
@@ -3553,7 +3632,10 @@ function evaluateLayer1(
 			!(inst as { faceIndex?: number }).faceIndex &&
 			!inst.unlockedFaces?.length &&
 			!inst.prototyped &&
-			!inst.isBestowed
+			!inst.isBestowed &&
+			// --- Track P18a ---
+			!inst.mergedComponents?.length
+			// --- End Track P18a ---
 		) {
 			const tpl = getPlainLayer1Template(baseCard);
 			const itemTimestamps = new Map<string, number>();

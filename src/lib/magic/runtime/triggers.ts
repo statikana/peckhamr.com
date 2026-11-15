@@ -115,6 +115,15 @@ import {
 	type Wave5RuntimeTrigger
 } from './framesBattlesAndKeywordsWave5.ts';
 // --- End Track P15 ---
+// --- Track P18a ---
+import {
+	attachWave6TagToBaseRuntimeTrigger,
+	buildGrantedWave6KeywordTriggers,
+	grantedWave6TriggerEvents,
+	parseGrantedWave6TriggerKeyword,
+	type Wave6RuntimeTrigger
+} from './keywordsWave6.ts';
+// --- End Track P18a ---
 
 /**
  * How a pending trigger is executed. 'stack': a StackItem put on the stack the next time a player
@@ -201,6 +210,13 @@ export interface PendingTrigger {
 	wave5CostText?: string;
 	wave5Card?: ScryfallCard;
 	// --- End Track P15 ---
+	// --- Track P18a ---
+	wave6Tag?: string;
+	wave6N?: number;
+	wave6Card?: ScryfallCard;
+	wave6FaceIndex?: number;
+	sourceTributePaid?: boolean;
+	// --- End Track P18a ---
 	/** Match order (deterministic tie-break for a player's own simultaneous triggers). */
 	order: number;
 }
@@ -268,6 +284,10 @@ function grantedTriggerEventsForKeyword(kw: string): readonly EventKind[] | null
 		}
 	}
 	// --- End Track P12 ---
+	// --- Track P18a ---
+	const wave6Evs = grantedWave6TriggerEvents(kw);
+	if (wave6Evs) return wave6Evs;
+	// --- End Track P18a ---
 	const spec = getKeywordSpec(kw);
 	if (
 		spec?.status === 'implemented' &&
@@ -290,14 +310,22 @@ function triggersOf(card: ScryfallCard, faceIndex = 0): CardTriggers {
 	if (!entry) {
 		const def = compileCard(card);
 		const faceAbs = def.faces[faceIndex]?.abilities ?? [];
-		// --- Track P12 ---
-		const baseRts = runtimeTriggers(def, faceIndex).map((rt): Wave4RuntimeTrigger =>
-			attachWave4TagToBaseRuntimeTrigger(rt, faceAbs)
+		// --- Track P12 & P18a ---
+		const baseRts = runtimeTriggers(def, faceIndex).map(
+			(rt): Wave4RuntimeTrigger & Wave6RuntimeTrigger =>
+				attachWave6TagToBaseRuntimeTrigger(
+					attachWave4TagToBaseRuntimeTrigger(rt, faceAbs),
+					faceAbs
+				)
 		);
 		const all: RuntimeTrigger[] = baseRts.filter(
-			(t) => Boolean(t.wave4Tag) || !host?.canExecute || host.canExecute(t)
+			(t) =>
+				Boolean(t.wave4Tag) ||
+				Boolean(t.wave6Tag) ||
+				!host?.canExecute ||
+				host.canExecute(t)
 		);
-		// --- End Track P12 ---
+		// --- End Track P12 & P18a ---
 		const events = new Set<EventKind>();
 		for (const t of all) for (const alt of alternatives(t.trigger)) events.add(alt.event);
 		const grantedTriggerEvents = new Set<EventKind>();
@@ -389,6 +417,9 @@ interface SimultaneousLkiEntry {
 	chosenCardName?: string;
 	grantedTriggers?: GrantedTriggeredAbilityInstance[];
 	// --- End Track P11 ---
+	// --- Track P18a ---
+	mergedComponents?: ScryfallCard[];
+	// --- End Track P18a ---
 }
 
 // --- Track P11: Transient pre-LTB Layer 6 granted triggered abilities (CR 603.10a) ---
@@ -501,6 +532,13 @@ function persistPendingTriggers(state: GameState, triggers: PendingTrigger[]): v
 			...(t.wave5CostText !== undefined ? { wave5CostText: t.wave5CostText } : {}),
 			...(t.wave5Card ? { wave5Card: t.wave5Card } : {}),
 			// --- End Track P15 ---
+			// --- Track P18a ---
+			...(t.wave6Tag ? { wave6Tag: t.wave6Tag } : {}),
+			...(t.wave6N !== undefined ? { wave6N: t.wave6N } : {}),
+			...(t.wave6Card ? { wave6Card: t.wave6Card } : {}),
+			...(t.wave6FaceIndex !== undefined ? { wave6FaceIndex: t.wave6FaceIndex } : {}),
+			...(t.sourceTributePaid ? { sourceTributePaid: true } : {}),
+			// --- End Track P18a ---
 			order: t.order
 		});
 	}
@@ -567,6 +605,13 @@ function hydratePendingTriggers(state: GameState, ch: TriggerChannel): void {
 		...(t.wave5CostText !== undefined ? { wave5CostText: t.wave5CostText } : {}),
 		...(t.wave5Card ? { wave5Card: t.wave5Card } : {}),
 		// --- End Track P15 ---
+		// --- Track P18a ---
+		...(t.wave6Tag ? { wave6Tag: t.wave6Tag } : {}),
+		...(t.wave6N !== undefined ? { wave6N: t.wave6N } : {}),
+		...(t.wave6Card ? { wave6Card: t.wave6Card } : {}),
+		...(t.wave6FaceIndex !== undefined ? { wave6FaceIndex: t.wave6FaceIndex } : {}),
+		...(t.sourceTributePaid ? { sourceTributePaid: true } : {}),
+		// --- End Track P18a ---
 		order: t.order
 	}));
 	ch.pending = [...hydrated, ...ch.pending];
@@ -664,8 +709,11 @@ export function withSimultaneousDestroyLki(
 			// --- End Track P10 ---
 			// --- Track P11 ---
 			...(perm.chosenCardName ? { chosenCardName: perm.chosenCardName } : {}),
-			grantedTriggers: collectActiveGrantedTriggeredAbilities(state, perm)
+			grantedTriggers: collectActiveGrantedTriggeredAbilities(state, perm),
 			// --- End Track P11 ---
+			// --- Track P18a ---
+			...(perm.mergedComponents?.length ? { mergedComponents: [...perm.mergedComponents] } : {})
+			// --- End Track P18a ---
 		});
 	}
 	const prevMap = ch.simultaneousLki;
@@ -1263,6 +1311,27 @@ function sources(state: GameState, kind: EventKind): Source[] {
 					addedForPerm = true;
 				}
 			}
+			// --- Track P18a: Merged permanents also inherit triggered abilities of underneath components (CR 731.2b / CR 707.2) ---
+			const effCopyForMerged = activeTimedLayer1aForPermanent(state, perm) ?? perm.copiableState;
+			const effMergedForTriggers = effCopyForMerged
+				? effCopyForMerged.mergedComponents
+				: perm.mergedComponents;
+			if (!perm.isFaceDown && effMergedForTriggers && effMergedForTriggers.length > 1) {
+				for (let cIdx = 1; cIdx < effMergedForTriggers.length; cIdx++) {
+					const mc = effMergedForTriggers[cIdx]!;
+					if (triggersOf(mc, 0).events.has(kind)) {
+						out.push({
+							obj: perm,
+							card: mc,
+							faceIndex: 0,
+							controllerId: p.playerId,
+							zone: 'battlefield'
+						});
+						addedForPerm = true;
+					}
+				}
+			}
+			// --- End Track P18a ---
 			// --- Track P10 ---
 			if (!addedForPerm && grantedTexts) {
 				const qts = quotedTriggersForTexts(card.name, grantedTexts);
@@ -1318,6 +1387,23 @@ function sources(state: GameState, kind: EventKind): Source[] {
 				}
 			}
 		}
+		// --- Track P18a: Exiled cards haunting a creature trigger from exile when haunted creature dies (CR 702.55c) ---
+		if (kind === 'hauntedCreatureDies') {
+			for (const ex of p.exile) {
+				if (!ex.hauntingTargetId) continue;
+				const t = triggersOf(ex.card, 0);
+				if (t.events.has('hauntedCreatureDies')) {
+					out.push({
+						obj: ex,
+						card: ex.card,
+						faceIndex: 0,
+						controllerId: ex.ownerId,
+						zone: 'exile'
+					});
+				}
+			}
+		}
+		// --- End Track P18a ---
 		// --- Track P13: Emblems in command zone have functioning triggered abilities (CR 114.4) ---
 		for (const cmd of p.command) {
 			if (!cmd.isEmblem || cmd.isRingEmblem) continue;
@@ -1373,6 +1459,11 @@ function abilitiesFor(
 	// --- Track P13: Emblems function in the command zone (CR 114.4) ---
 	const isEmblemSource = Boolean(source.obj.isEmblem && source.zone === 'command');
 	// --- End Track P13 ---
+	// --- Track P18a: Exiled Haunt cards function from exile on `hauntedCreatureDies` (CR 702.55c) ---
+	const isHauntExileSource = Boolean(
+		source.zone === 'exile' && source.obj.hauntingTargetId && kind === 'hauntedCreatureDies'
+	);
+	// --- End Track P18a ---
 	for (const ability of triggersOf(source.card, source.faceIndex ?? 0).all) {
 		const zone = ability.trigger.fromZone ?? 'battlefield';
 		// "When you cast ~" functions while the spell is on the stack (CR 603.2, 113.6).
@@ -1380,6 +1471,9 @@ function abilitiesFor(
 		if (
 			ability.trigger.fromZone !== 'any' &&
 			!isEmblemSource &&
+			// --- Track P18a ---
+			!isHauntExileSource &&
+			// --- End Track P18a ---
 			(source.zone === 'stack' ? kind !== 'cast' : zone !== source.zone)
 		) {
 			continue;
@@ -1580,6 +1674,21 @@ function record(state: GameState, source: Source, ability: RuntimeTrigger, kind:
 				? { wave5Card: (ability as Wave5RuntimeTrigger).wave5Card }
 				: {}),
 			// --- End Track P15 ---
+			// --- Track P18a ---
+			...(source.obj.tributePaid ? { sourceTributePaid: true } : {}),
+			...((ability as Wave6RuntimeTrigger).wave6Tag
+				? { wave6Tag: (ability as Wave6RuntimeTrigger).wave6Tag }
+				: {}),
+			...((ability as Wave6RuntimeTrigger).wave6N !== undefined
+				? { wave6N: (ability as Wave6RuntimeTrigger).wave6N }
+				: {}),
+			...((ability as Wave6RuntimeTrigger).wave6Card
+				? { wave6Card: (ability as Wave6RuntimeTrigger).wave6Card }
+				: {}),
+			...((ability as Wave6RuntimeTrigger).wave6FaceIndex !== undefined
+				? { wave6FaceIndex: (ability as Wave6RuntimeTrigger).wave6FaceIndex }
+				: {}),
+			// --- End Track P18a ---
 			eventPlayer: extras.eventPlayer ?? extras.eventPlayerId,
 			defendingPlayerId: extras.defendingPlayerId,
 			order: ch.nextOrder++
@@ -1732,8 +1841,164 @@ function matchTriggersInner(state: GameState, ev: GameEvent): void {
 		case 'TookInitiative':
 			return matchP13PlayerEvent(state, 'tookInitiative', ev.playerId, 'Initiative Trigger');
 		// --- End Track P13 & P15 ---
+		// --- Track P18a ---
+		case 'Mutated':
+			return matchMutated(state, ev);
+		case 'SoulbondPaired':
+			return matchSoulbondPaired(state, ev);
+		case 'HauntedCreatureDies':
+			return matchHauntedCreatureDies(state, ev);
+		// --- End Track P18a ---
 	}
 }
+
+// --- Track P18a ---
+function matchMutated(
+	state: GameState,
+	ev: Extract<GameEvent, { kind: 'Mutated' }>
+): void {
+	const found = permanentById(state, ev.objectId);
+	const subject = found
+		? battlefieldSubject(state, found.obj, found.controllerId)
+		: printedSubject(
+				ev.object,
+				ev.object.copiableCard ?? ev.object.card,
+				ev.playerId,
+				false,
+				undefined,
+				undefined,
+				undefined,
+				false,
+				false,
+				{ state }
+			);
+	for (const source of sources(state, 'mutates')) {
+		if (source.zone === 'battlefield' && permanentHasLostAllAbilities(source.obj, state).lost) {
+			continue;
+		}
+		for (const { ability, alts } of abilitiesFor(state, source, 'mutates')) {
+			const alt = alts.find((a) => {
+				const rel = a.filter.player?.relation ?? 'any';
+				if (rel === 'you' && ev.playerId !== source.controllerId) return false;
+				if (rel === 'opponent' && ev.playerId === source.controllerId) return false;
+				if (a.filter.object !== undefined && !objectMatches(a.filter, subject, source)) {
+					return false;
+				}
+				return true;
+			});
+			if (!alt) continue;
+			const times =
+				source.zone === 'battlefield'
+					? triggerMultiplier(state, source.obj, source.controllerId, {
+							event: 'mutates',
+							object: found?.obj ?? ev.object
+						})
+					: 1;
+			record(state, source, ability, 'mutates', {
+				label: 'Mutate Trigger',
+				eventObject: found?.obj ?? ev.object,
+				eventPlayer: ev.playerId,
+				eventPlayerId: ev.playerId,
+				amount: ev.mutateCount,
+				times
+			});
+		}
+	}
+}
+
+function matchSoulbondPaired(
+	state: GameState,
+	ev: Extract<GameEvent, { kind: 'SoulbondPaired' }>
+): void {
+	const foundPrimary = permanentById(state, ev.objectId);
+	const foundPartner = permanentById(state, ev.partnerId);
+	const subjPrimary = foundPrimary
+		? battlefieldSubject(state, foundPrimary.obj, foundPrimary.controllerId)
+		: printedSubject(ev.object, ev.object.card, ev.playerId, false, undefined, undefined, undefined, false, false, { state });
+	const subjPartner = foundPartner
+		? battlefieldSubject(state, foundPartner.obj, foundPartner.controllerId)
+		: printedSubject(ev.partner, ev.partner.card, ev.playerId, false, undefined, undefined, undefined, false, false, { state });
+
+	for (const source of sources(state, 'soulbondPaired')) {
+		if (source.zone === 'battlefield' && permanentHasLostAllAbilities(source.obj, state).lost) {
+			continue;
+		}
+		for (const { ability, alts } of abilitiesFor(state, source, 'soulbondPaired')) {
+			let matchedPartnerObj: CardInstance | undefined;
+			const alt = alts.find((a) => {
+				const rel = a.filter.player?.relation ?? 'any';
+				if (rel === 'you' && ev.playerId !== source.controllerId) return false;
+				if (rel === 'opponent' && ev.playerId === source.controllerId) return false;
+				if (a.filter.object === 'self') {
+					if (source.obj.instanceId === ev.objectId) {
+						matchedPartnerObj = foundPartner?.obj ?? ev.partner;
+						return true;
+					}
+					if (source.obj.instanceId === ev.partnerId) {
+						matchedPartnerObj = foundPrimary?.obj ?? ev.object;
+						return true;
+					}
+					return false;
+				}
+				if (a.filter.object !== undefined) {
+					if (objectMatches(a.filter, subjPrimary, source)) {
+						matchedPartnerObj = foundPartner?.obj ?? ev.partner;
+						return true;
+					}
+					if (objectMatches(a.filter, subjPartner, source)) {
+						matchedPartnerObj = foundPrimary?.obj ?? ev.object;
+						return true;
+					}
+					return false;
+				}
+				matchedPartnerObj = foundPartner?.obj ?? ev.partner;
+				return true;
+			});
+			if (!alt) continue;
+			const times =
+				source.zone === 'battlefield'
+					? triggerMultiplier(state, source.obj, source.controllerId, {
+							event: 'soulbondPaired',
+							object: source.obj
+						})
+					: 1;
+			record(state, source, ability, 'soulbondPaired', {
+				label: 'Soulbond Trigger',
+				eventObject: matchedPartnerObj,
+				eventPlayer: ev.playerId,
+				eventPlayerId: ev.playerId,
+				times
+			});
+		}
+	}
+}
+
+function matchHauntedCreatureDies(
+	state: GameState,
+	ev: Extract<GameEvent, { kind: 'HauntedCreatureDies' }>
+): void {
+	for (const source of sources(state, 'hauntedCreatureDies')) {
+		if (source.zone !== 'exile' || source.obj.instanceId !== ev.objectId) continue;
+		for (const { ability, alts } of abilitiesFor(state, source, 'hauntedCreatureDies')) {
+			if (alts.length === 0) continue;
+			const eventLki = ev.lki
+				? {
+						controllerId: ev.lki.controllerId,
+						...(ev.lki.power !== undefined ? { power: ev.lki.power } : {}),
+						...(ev.lki.toughness !== undefined ? { toughness: ev.lki.toughness } : {}),
+						...(ev.lki.counters ? { counters: { ...ev.lki.counters } } : {})
+					}
+				: undefined;
+			record(state, source, ability, 'hauntedCreatureDies', {
+				label: `${source.card.name} — Haunt`,
+				eventObject: ev.dyingObject,
+				eventLki,
+				times: 1
+			});
+		}
+	}
+}
+// --- End Track P18a ---
 
 // --- Track P13 & P15 ---
 function matchDoorUnlocked(
@@ -1974,6 +2239,37 @@ function matchUnblockedAttackers(
 			}
 		}
 	}
+	// --- Track P18a: Layer 6 granted unblocked-attacker keywords (Frenzy N, CR 702.68a–b) ---
+	if (boardCanGrantTriggerKeyword(state, 'attackedAndUnblocked', attackers.map((s) => s.obj))) {
+		for (const atkSubj of attackers) {
+			const defendingPlayerId = attackerDefenderId(atkSubj.obj.instanceId);
+			emitGrantedTriggerKeywords(
+				state,
+				atkSubj.obj,
+				atkSubj.controllerId,
+				'attackedAndUnblocked',
+				(rt) =>
+					alternatives(rt.trigger).some(
+						(a) => a.event === 'attackedAndUnblocked' && a.filter.object === 'self'
+					),
+				(rt, times) => ({
+					label: rt.text || 'Frenzy Trigger',
+					times,
+					eventObject: atkSubj.obj,
+					...(defendingPlayerId
+						? { defendingPlayerId, eventPlayerId: defendingPlayerId, eventPlayer: defendingPlayerId }
+						: {})
+				}),
+				(perm) =>
+					triggerMultiplier(state, perm, atkSubj.controllerId, {
+						event: 'attackedAndUnblocked',
+						object: perm,
+						attackers: [perm]
+					})
+			);
+		}
+	}
+	// --- End Track P18a ---
 }
 
 function matchBecomesUntapped(
@@ -2856,6 +3152,25 @@ function matchZoneChange(state: GameState, ev: Extract<GameEvent, { kind: 'ZoneC
 					});
 					pushedPeer = true;
 				}
+				// --- Track P18a: Merged permanent underneath components LTB look-back (CR 731.2b / 603.10a) ---
+				if (info.mergedComponents && info.mergedComponents.length > 1) {
+					for (let cIdx = 1; cIdx < info.mergedComponents.length; cIdx++) {
+						const mc = info.mergedComponents[cIdx]!;
+						if (!triggersOf(mc, 0).events.has('zoneChange')) continue;
+						candidates.push({
+							obj: peerPerm,
+							card: mc,
+							faceIndex: 0,
+							controllerId: info.controllerId,
+							zone: 'battlefield',
+							lostAllAbilities: info.lostAllAbilities,
+							isLookBack: true,
+							...(info.counters ? { counters: info.counters } : {})
+						});
+						pushedPeer = true;
+					}
+				}
+				// --- End Track P18a ---
 				// --- Track P10 ---
 				if (!pushedPeer && info.grantedAbilityTexts?.length) {
 					const qts = quotedTriggersForTexts(info.card.name, info.grantedAbilityTexts);
@@ -2934,6 +3249,25 @@ function matchZoneChange(state: GameState, ev: Extract<GameEvent, { kind: 'ZoneC
 				});
 				pushedSelf = true;
 			}
+			// --- Track P18a: Merged permanent underneath components LTB look-back (CR 731.2b / 603.10a) ---
+			if (ev.lki.mergedComponents && ev.lki.mergedComponents.length > 1) {
+				for (let cIdx = 1; cIdx < ev.lki.mergedComponents.length; cIdx++) {
+					const mc = ev.lki.mergedComponents[cIdx]!;
+					if (!triggersOf(mc, 0).events.has('zoneChange')) continue;
+					candidates.push({
+						obj,
+						card: mc,
+						faceIndex: 0,
+						controllerId: ev.lki.controllerId,
+						zone: 'battlefield',
+						lostAllAbilities: ev.lki.lostAllAbilities,
+						isLookBack: true,
+						...(ev.lki.counters ? { counters: ev.lki.counters } : {})
+					});
+					pushedSelf = true;
+				}
+			}
+			// --- End Track P18a ---
 			// --- Track P10 ---
 			if (!pushedSelf && ev.lki.grantedAbilityTexts?.length) {
 				const qts = quotedTriggersForTexts(ev.lki.card.name, ev.lki.grantedAbilityTexts);
@@ -3127,17 +3461,72 @@ function matchZoneChange(state: GameState, ev: Extract<GameEvent, { kind: 'ZoneC
 				for (const rt of built) {
 					const times = grantedCount * mult;
 					if (times > 0) {
-						record(state, deathSource, { ...rt, grantedKeyword: kwName }, 'zoneChange', {
-							label: spec.displayLabel || 'Dies',
-							eventObject: obj,
-							times,
-							eventLki: deathEventLki
-						});
+						// --- Track P18a ---
+						const w6Tag = kwName.toLowerCase() === 'haunt' ? 'haunt_exile' : undefined;
+						// --- End Track P18a ---
+						record(
+							state,
+							deathSource,
+							{ ...rt, grantedKeyword: kwName, ...(w6Tag ? { wave6Tag: w6Tag } : {}) },
+							'zoneChange',
+							{
+								label: spec.displayLabel || 'Dies',
+								eventObject: obj,
+								times,
+								eventLki: deathEventLki,
+								...(w6Tag ? { wave6Tag: w6Tag } : {})
+							}
+						);
 					}
 				}
 			}
 		}
 	}
+	// --- Track P18a: Layer 6 granted ETB trigger keywords (Soulbond, CR 702.95a) ---
+	if (enters && obj.zone === 'battlefield' && !obj.phasedOut) {
+		const ctrlPlayer = state.players.find((p) => !p.lost && p.playerId === obj.controllerId);
+		const focus = ctrlPlayer ? ctrlPlayer.battlefield.filter((c) => !c.phasedOut) : [obj];
+		if (boardCanGrantTriggerKeyword(state, 'zoneChange', focus)) {
+			for (const bfPerm of focus) {
+				emitGrantedTriggerKeywords(
+					state,
+					bfPerm,
+					bfPerm.controllerId,
+					'zoneChange',
+					(rt, src) =>
+						alternatives(rt.trigger).some(
+							(a) =>
+								a.event === 'zoneChange' &&
+								a.filter.to === 'battlefield' &&
+								objectMatches(a.filter, subject, src)
+						) &&
+						(!rt.condition ||
+							evaluateCondition(
+								state,
+								rt.condition,
+								src.controllerId,
+								src.obj.instanceId,
+								undefined,
+								src
+							)),
+					(rt, times) => ({
+						label: rt.text || 'Soulbond',
+						times,
+						eventObject: obj,
+						amount: enteredPower()
+					}),
+					(perm) =>
+						triggerMultiplier(state, perm, perm.controllerId, {
+							event: 'zoneChange',
+							object: obj,
+							from: ev.from,
+							to: ev.to
+						})
+				);
+			}
+		}
+	}
+	// --- End Track P18a ---
 }
 
 function boardCanGrantTriggerKeyword(
@@ -3145,9 +3534,13 @@ function boardCanGrantTriggerKeyword(
 	kind: EventKind,
 	focusPerms: readonly CardInstance[]
 ): boolean {
-	// --- Track P12 ---
+	// --- Track P12 & P18a ---
 	const isWave4GrantEvent =
-		kind === 'attacks' || kind === 'becomesBlocked' || kind === 'dealsDamage';
+		kind === 'attacks' ||
+		kind === 'becomesBlocked' ||
+		kind === 'dealsDamage' ||
+		kind === 'attackedAndUnblocked' ||
+		kind === 'zoneChange';
 	if (!GRANTED_TRIGGER_KEYWORD_EVENTS.has(kind) && !isWave4GrantEvent) return false;
 	for (const eff of state.timedContinuousEffects ?? []) {
 		if (eff.layer6?.addKeywords?.some((kw) => grantedTriggerEventsForKeyword(kw)?.includes(kind))) {
@@ -3155,7 +3548,7 @@ function boardCanGrantTriggerKeyword(
 		}
 		if (eff.backupGrant) return true;
 	}
-	// --- End Track P12 ---
+	// --- End Track P12 & P18a ---
 	for (const eff of state.timedKeywordEffects ?? []) {
 		if (eff.addKeywords?.some((kw) => grantedTriggerEventsForKeyword(kw)?.includes(kind))) {
 			return true;
@@ -3227,6 +3620,31 @@ function emitGrantedTriggerKeywords(
 			continue;
 		}
 		// --- End Track P12 ---
+		// --- Track P18a: support granted Wave 6 trigger keywords (Frenzy N, Poisonous N, Soulbond) ---
+		const parsedWave6 = parseGrantedWave6TriggerKeyword(item.canonicalKey);
+		if (parsedWave6) {
+			const evs = grantedTriggerEventsForKeyword(item.canonicalKey);
+			if (!evs || !evs.includes(kind)) continue;
+			let grantedCount = 0;
+			if (item.grantCount !== undefined) {
+				grantedCount = item.grantCount;
+			} else {
+				for (const src of item.sources) {
+					if (src !== 'innate') grantedCount += 1;
+				}
+			}
+			if (grantedCount <= 0) continue;
+			const built = buildGrantedWave6KeywordTriggers(parsedWave6, item.canonicalKey);
+			for (const rt of built) {
+				if (!matches(rt, source)) continue;
+				const times = grantedCount * multiplierFor(perm);
+				if (times > 0) {
+					record(state, source, rt, kind, buildExtras(rt, times));
+				}
+			}
+			continue;
+		}
+		// --- End Track P18a ---
 		const spec = getKeywordSpec(item.canonicalKey);
 		if (
 			!spec ||
@@ -4394,6 +4812,17 @@ export function stackTriggerConditionHolds(
 	sourceInstanceId: string,
 	stackItem?: StackItem
 ): boolean {
+	// --- Track P18a: Soulbond other-creature ETB intervening-if (CR 702.95a, CR 603.4) ---
+	if (stackItem?.wave6Tag === 'soulbond_other') {
+		return evaluateCondition(
+			state,
+			{ k: 'not', of: { k: 'isPaired' } },
+			controllerId,
+			sourceInstanceId,
+			stackItem
+		);
+	}
+	// --- End Track P18a ---
 	// --- Track P9 ---
 	if (stackItem?.grantedKeyword) {
 		const spec = getKeywordSpec(stackItem.grantedKeyword);
@@ -4648,11 +5077,15 @@ export function evaluateCondition(
 		}
 		case 'tributePaid': {
 			const srcObj = permanentById(state, sourceInstanceId)?.obj ?? source?.obj;
-			return Boolean(srcObj?.tributePaid);
+			// --- Track P18a ---
+			return Boolean(srcObj?.tributePaid || stackItem?.sourceTributePaid);
+			// --- End Track P18a ---
 		}
 		case 'hasEnduringStory': {
 			const srcObj = permanentById(state, sourceInstanceId)?.obj ?? source?.obj;
-			return Boolean(srcObj?.hasEnduringStory);
+			// --- Track P18a ---
+			return Boolean(srcObj?.hasEnduringStory || controller.hasEnduringStory);
+			// --- End Track P18a ---
 		}
 		case 'isHarnessed': {
 			const srcObj = permanentById(state, sourceInstanceId)?.obj ?? source?.obj;

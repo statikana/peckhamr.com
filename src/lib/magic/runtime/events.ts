@@ -92,6 +92,10 @@ export interface LeftBattlefieldInfo {
 	/** CR 603.10a: EOT-granted quoted ability texts active on this permanent right before leaving the battlefield. */
 	grantedAbilityTexts?: string[];
 	// --- End Track P10 ---
+	// --- Track P18a ---
+	/** CR 731.2b / 603.10a: Merged permanent components active right before leaving the battlefield. */
+	mergedComponents?: ScryfallCard[];
+	// --- End Track P18a ---
 }
 
 /** A spell was cast (it is already on the stack). */
@@ -461,8 +465,13 @@ export type GameEvent =
 	| RingTemptedEvent
 	| DungeonRoomEnteredEvent
 	| DungeonCompletedEvent
-	| TookInitiativeEvent;
+	| TookInitiativeEvent
 	// --- End Track P13 & P15 ---
+	// --- Track P18a ---
+	| MutatedEvent
+	| SoulbondPairedEvent
+	| HauntedCreatureDiesEvent;
+	// --- End Track P18a ---
 
 // --- Track P10 ---
 export interface UnblockedAttackersEvent extends EventBase {
@@ -665,3 +674,31 @@ export function endAction(state: GameState): void {
 	ch.depth = Math.max(0, ch.depth - 1);
 	if (ch.depth === 0) ch.queue = [];
 }
+
+// --- Track P18a ---
+export interface MutatedEvent extends EventBase {
+	kind: 'Mutated';
+	playerId: string;
+	objectId: string;
+	object: CardInstance;
+	mutateCount: number;
+}
+
+export interface SoulbondPairedEvent extends EventBase {
+	kind: 'SoulbondPaired';
+	playerId: string;
+	objectId: string;
+	object: CardInstance;
+	partnerId: string;
+	partner: CardInstance;
+}
+
+export interface HauntedCreatureDiesEvent extends EventBase {
+	kind: 'HauntedCreatureDies';
+	objectId: string;
+	exiledCard: CardInstance;
+	dyingObjectId: string;
+	dyingObject: CardInstance;
+	lki?: LeftBattlefieldInfo;
+}
+// --- End Track P18a ---

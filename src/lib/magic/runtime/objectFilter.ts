@@ -496,6 +496,12 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 	// --- End Track P13 ---
 	if (filter.owner === 'you' && obj.ownerId !== ctx.controllerId) return false;
 	if (filter.owner === 'opponent' && obj.ownerId === ctx.controllerId) return false;
+	// --- Track P18a ---
+	if (filter.sameOwnerAsSource) {
+		const srcOwnerId = ctx.source?.ownerId ?? ctx.stackItem?.ownerId ?? ctx.controllerId;
+		if (obj.ownerId !== srcOwnerId) return false;
+	}
+	// --- End Track P18a ---
 
 	if (filter.tapped !== undefined && obj.tapped !== filter.tapped) return false;
 	if (filter.saddled !== undefined && Boolean(obj.saddledThisTurn) !== filter.saddled) return false;
@@ -1076,9 +1082,16 @@ export function evaluateCondition(cond: Condition, ctx: FilterContext): boolean 
 		case 'isPaired':
 			return Boolean(ctx.source?.pairedWithId);
 		case 'tributePaid':
-			return Boolean(ctx.source?.tributePaid);
+			// --- Track P18a ---
+			return Boolean(ctx.source?.tributePaid || ctx.stackItem?.sourceTributePaid);
+		// --- End Track P18a ---
 		case 'hasEnduringStory':
-			return Boolean(ctx.source?.hasEnduringStory);
+			// --- Track P18a ---
+			return Boolean(
+				ctx.source?.hasEnduringStory ||
+					ctx.state.players.find((pl) => pl.playerId === ctx.controllerId)?.hasEnduringStory
+			);
+		// --- End Track P18a ---
 		case 'isHarnessed':
 			return Boolean(ctx.source?.isHarnessed);
 		// --- End Wave 6 Shared ---

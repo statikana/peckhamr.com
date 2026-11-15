@@ -534,6 +534,10 @@ export interface ObjectFilter {
 	/** CR 702.38 / 702.76: matches cards/permanents sharing at least one creature subtype with `source`. */
 	sharesCreatureTypeWithSelf?: boolean;
 	// --- End Track P15 ---
+	// --- Track P18a ---
+	/** CR 702.140a Mutate: matches objects whose `ownerId` equals the spell/ability source's `ownerId`. */
+	sameOwnerAsSource?: boolean;
+	// --- End Track P18a ---
 }
 
 export interface Compare {

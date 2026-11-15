@@ -24,6 +24,9 @@ import {
 	collectBackupGrantedAbilityGroups
 } from './runtime/keywordsWave4.ts';
 // --- End Track P12 ---
+// --- Track P18a ---
+import { mutateTargetSpec } from './runtime/keywordsWave6.ts';
+// --- End Track P18a ---
 import {
 	evaluatePermanent,
 	getAttachedAbilityStrippingAuraSources,
@@ -249,6 +252,11 @@ export function getSpellTargetRequirement(
 	if (option?.spellMods?.castFaceDown) {
 		return NO_TARGET_REQUIREMENT;
 	}
+	// --- Track P18a: Mutate cast option targets non-Human creature with same owner (CR 702.140a) ---
+	if (option?.spellMods?.mutating) {
+		return targetRequirementFromSpecs([mutateTargetSpec()]);
+	}
+	// --- End Track P18a ---
 	const faceOpts = {
 		zone: 'stack' as const,
 		faceIndex: option?.faceIndex ?? 0,
@@ -1136,6 +1144,73 @@ export function getEffectiveActivatedAbilities(
 			}
 		}
 		// --- End Track P12 ---
+
+		// --- Track P18a: Merged permanent underneath component activated abilities (CR 731.2b / CR 707.2) ---
+		const effCopyLayer1 = timedLayer1a ?? perm.copiableState;
+		const effMergedComponents = effCopyLayer1
+			? effCopyLayer1.mergedComponents
+			: perm.mergedComponents;
+		if (
+			!allInnateRemoved &&
+			!perm.isFaceDown &&
+			effMergedComponents &&
+			effMergedComponents.length > 1
+		) {
+			for (let cIdx = 1; cIdx < effMergedComponents.length; cIdx++) {
+				const compCard = effMergedComponents[cIdx]!;
+				const compDef = compileCard(compCard);
+				const compFace = compDef.faces[0];
+				if (!compFace) continue;
+				for (const ab of compFace.abilities) {
+					if (ab.kind === 'activated' && !ab.intrinsic) {
+						const abId = `backup_act:merged_${cIdx}:${ab.id}`;
+						if (rawAbilities.some((a) => a.id === abId)) continue;
+						const built = buildEffectiveActivatedAbility(ab, commanderIdentity, resolveOppLands, {
+							idOverride: abId,
+							displayCardName: effectiveCard.name,
+							displayCard: compCard,
+							grantSourceCard: compCard,
+							grantSources: [compCard.name],
+							chosenColor: perm.chosenColor
+						});
+						if (built) rawAbilities.push(built);
+					} else if (ab.kind === 'keyword') {
+						const { name: kwName } = ab.keyword;
+						const spec = getKeywordSpec(kwName);
+						if (
+							spec?.status === 'implemented' &&
+							spec.implementation?.kind === 'activated' &&
+							spec.implementation.buildActivated
+						) {
+							const baseId = ab.id ?? `${kwName}_0`;
+							const kwBuilt = spec.implementation.buildActivated(ab.keyword, baseId, ab.span);
+							if (kwBuilt) {
+								const abId = `backup_act:merged_${cIdx}:${kwBuilt.ability.id}`;
+								if (rawAbilities.some((a) => a.id === abId)) continue;
+								const built = buildEffectiveActivatedAbility(
+									kwBuilt.ability,
+									commanderIdentity,
+									resolveOppLands,
+									{
+										idOverride: abId,
+										displayCardName: effectiveCard.name,
+										displayCard: compCard,
+										grantSourceCard: compCard,
+										grantSources: [compCard.name],
+										labelOverride: kwBuilt.label,
+										costTextOverride: kwBuilt.costText,
+										effectTextOverride: kwBuilt.effectText,
+										chosenColor: perm.chosenColor
+									}
+								);
+								if (built) rawAbilities.push(built);
+							}
+						}
+					}
+				}
+			}
+		}
+		// --- End Track P18a ---
 	}
 
 	return rawAbilities.map((ab) => {

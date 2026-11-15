@@ -98,6 +98,9 @@ export interface ResolveObjectFacesOptions {
 	cleaved?: boolean;
 	giftPromised?: boolean;
 	// --- End Track P15 ---
+	// --- Track P18a ---
+	mergedComponents?: ScryfallCard[];
+	// --- End Track P18a ---
 }
 
 export interface ResolvedObjectView {
@@ -614,8 +617,17 @@ export function instanceFaceOptions(
 		isSingleFaceCopy: inst.copiableState?.isSingleFaceCopy,
 		prototyped: Boolean(inst.prototyped || inst.copiableState?.prototyped),
 		// --- Track P12 ---
-		bestowed: Boolean(inst.isBestowed)
+		bestowed: Boolean(inst.isBestowed),
 		// --- End Track P12 ---
+		// --- Track P18a ---
+		...(() => {
+			if (inst.isFaceDown) return {};
+			const effMerged = inst.copiableState
+				? inst.copiableState.mergedComponents
+				: inst.mergedComponents;
+			return effMerged && effMerged.length > 1 ? { mergedComponents: effMerged } : {};
+		})()
+		// --- End Track P18a ---
 	};
 }
 
@@ -664,6 +676,25 @@ export function activeAbilityDefs(
 ): AbilityDef[] {
 	const faceDefs = activeFaceDefs(card, opts);
 	let abilities = faceDefs.flatMap((f) => f.abilities);
+	// --- Track P18a: Merged permanents inherit abilities of all underneath components (CR 731.2b / CR 707.2) ---
+	const effectiveMerged = opts?.copiableState
+		? opts.copiableState.mergedComponents
+		: opts?.mergedComponents;
+	if (!opts?.isFaceDown && effectiveMerged && effectiveMerged.length > 1) {
+		const extra: AbilityDef[] = [];
+		for (let i = 1; i < effectiveMerged.length; i++) {
+			const mc = effectiveMerged[i]!;
+			const mcDef = compileCard(mc);
+			const mcFace = mcDef.faces[0];
+			if (mcFace) {
+				extra.push(...mcFace.abilities);
+			}
+		}
+		if (extra.length > 0) {
+			abilities = [...abilities, ...extra];
+		}
+	}
+	// --- End Track P18a ---
 	// --- Track P15 ---
 	if (!opts?.isFaceDown && opts?.zone === 'stack' && faceDefs.length === 1) {
 		const activeFace = faceDefs[0];

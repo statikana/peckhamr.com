@@ -25,6 +25,9 @@ import {
 // --- Track P14 ---
 import { applyStaticDamagePreventionWave5 } from './staticsAndCostsWave5.ts';
 // --- End Track P14 ---
+// --- Track P18a ---
+import { applyAbsorbDamagePrevention } from './keywordsWave6.ts';
+// --- End Track P18a ---
 import type {
 	CardInstance,
 	CopiableState,
@@ -328,6 +331,16 @@ export function applyDamagePreventionShields(
 	if (remainingDamage <= 0) return 0;
 	if (unpreventable) return remainingDamage;
 	// --- End Track P14 ---
+
+	// --- Track P18a: Absorb N (CR 702.64a–c) ---
+	remainingDamage = applyAbsorbDamagePrevention(
+		state,
+		opts.targetKind,
+		opts.targetPerm,
+		remainingDamage
+	);
+	if (remainingDamage <= 0) return 0;
+	// --- End Track P18a ---
 
 	const shields = state.damagePreventionShields;
 	if (!shields || shields.length === 0) return remainingDamage;
@@ -823,6 +836,15 @@ export function buildModifiedCopiableState(
 	if (addKeywords.length > 0) except.addKeywords = addKeywords;
 	if (noManaCost) except.noManaCost = true;
 
+	// --- Track P18a (CR 707.2 / CR 731.2a): Copy effects on a merged permanent copy its merged abilities ---
+	const rawMergedToCopy =
+		priorCopy?.mergedComponents ?? (!priorCopy ? target.mergedComponents : undefined);
+	const copiedMerged =
+		rawMergedToCopy && rawMergedToCopy.length > 1
+			? rawMergedToCopy.map((mc) => JSON.parse(JSON.stringify(mc)) as ScryfallCard)
+			: undefined;
+	// --- End Track P18a ---
+
 	const hasExcept = Object.keys(except).length > 0;
 	const copiableState: CopiableState = {
 		card: baseCardToCopy,
@@ -830,6 +852,9 @@ export function buildModifiedCopiableState(
 			? { faceIndex: faceIdx, isSingleFaceCopy: true }
 			: {}),
 		...(isPrototyped ? { prototyped: true } : {}),
+		// --- Track P18a ---
+		...(copiedMerged ? { mergedComponents: copiedMerged } : {}),
+		// --- End Track P18a ---
 		...(hasExcept ? { except } : {})
 	};
 

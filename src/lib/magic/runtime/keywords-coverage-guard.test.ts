@@ -219,7 +219,21 @@ export const KEYWORD_COVERAGE_FILES: Record<string, readonly string[]> = {
 	'snow swampwalk': ['runtime/wave5-p15-frames-keywords.test.ts'],
 	splice: ['runtime/wave5-p15-frames-keywords.test.ts'],
 	'start your engines!': ['runtime/wave5-p15-frames-keywords.test.ts'],
-	transfigure: ['runtime/wave5-p15-frames-keywords.test.ts']
+	transfigure: ['runtime/wave5-p15-frames-keywords.test.ts'],
+	// --- Track P18a ---
+	absorb: ['runtime/wave6-p18a-keywords.test.ts'],
+	banding: ['runtime/wave6-p18a-keywords.test.ts'],
+	epic: ['runtime/wave6-p18a-keywords.test.ts'],
+	fortify: ['runtime/wave6-p18a-keywords.test.ts'],
+	frenzy: ['runtime/wave6-p18a-keywords.test.ts'],
+	haunt: ['runtime/wave6-p18a-keywords.test.ts'],
+	hideaway: ['runtime/wave6-p18a-keywords.test.ts'],
+	mutate: ['runtime/wave6-p18a-keywords.test.ts'],
+	poisonous: ['runtime/wave6-p18a-keywords.test.ts'],
+	soulbond: ['runtime/wave6-p18a-keywords.test.ts'],
+	storied: ['runtime/wave6-p18a-keywords.test.ts'],
+	teamwork: ['runtime/wave6-p18a-keywords.test.ts'],
+	tribute: ['runtime/wave6-p18a-keywords.test.ts']
 };
 
 const SAMPLE_ORACLE_FOR_KEYWORD: Record<
@@ -427,7 +441,21 @@ const SAMPLE_ORACLE_FOR_KEYWORD: Record<
 	reconfigure: { typeLine: 'Artifact Creature — Equipment Jellyfish', oracleText: 'Reconfigure {2}' },
 	ripple: { typeLine: 'Sorcery', oracleText: 'Ripple 4\n~ deals 2 damage to any target.' },
 	splice: { typeLine: 'Instant — Arcane', oracleText: 'Draw a card.\nSplice onto Arcane {1}{U}' },
-	transfigure: { typeLine: 'Creature — Fleshbag', oracleText: 'Transfigure {1}{B}{B}' }
+	transfigure: { typeLine: 'Creature — Fleshbag', oracleText: 'Transfigure {1}{B}{B}' },
+	// --- Track P18a ---
+	absorb: { typeLine: 'Creature — Sliver', oracleText: 'Absorb 1' },
+	banding: { typeLine: 'Creature — Human Soldier', oracleText: 'Banding' },
+	epic: { typeLine: 'Sorcery', oracleText: 'Draw a card.\nEpic' },
+	fortify: { typeLine: 'Artifact — Fortification', oracleText: 'Fortify {3}' },
+	frenzy: { typeLine: 'Creature — Goblin Berserker', oracleText: 'Frenzy 2' },
+	haunt: { typeLine: 'Creature — Spirit', oracleText: 'Haunt' },
+	hideaway: { typeLine: 'Land', oracleText: 'Hideaway 4' },
+	mutate: { typeLine: 'Creature — Beast', oracleText: 'Mutate {2}{G}' },
+	poisonous: { typeLine: 'Creature — Snake', oracleText: 'Poisonous 1' },
+	soulbond: { typeLine: 'Creature — Human Knight', oracleText: 'Soulbond' },
+	storied: { typeLine: 'Creature — Dwarf Bard', oracleText: 'Storied' },
+	teamwork: { typeLine: 'Instant', oracleText: 'Teamwork 2\nDraw a card.' },
+	tribute: { typeLine: 'Creature — Centaur Warrior', oracleText: 'Tribute 2' }
 };
 
 describe('Implemented Keywords Coverage Guard', () => {
@@ -605,7 +633,16 @@ describe('Implemented Keywords Coverage Guard', () => {
 			'reconfigure',
 			'ripple',
 			'splice',
-			'transfigure'
+			'transfigure',
+			// --- Track P18a ---
+			'absorb',
+			'fortify',
+			'frenzy',
+			'hideaway',
+			'mutate',
+			'poisonous',
+			'teamwork',
+			'tribute'
 		]);
 
 		assert.deepEqual(
@@ -632,7 +669,7 @@ describe('Implemented Keywords Coverage Guard', () => {
 			'Every non-parameterized keyword in IMPLEMENTED_KEYWORDS must have a display label in KEYWORD_LABELS'
 		);
 
-		// Verify unimplemented keywords (Banding, Epic) do not render activeKeywords badges even if present in card.keywords
+		// Verify unimplemented keywords (Hidden agenda, Visit) do not render activeKeywords badges even if present in card.keywords
 		const d = PRECON_DECKS[0];
 		const seats: LobbySeat[] = [
 			{
@@ -659,10 +696,10 @@ describe('Implemented Keywords Coverage Guard', () => {
 			manaCost: '{2}{G}{U}',
 			cmc: 4,
 			typeLine: 'Creature — Mutant',
-			oracleText: 'Banding\nEpic',
+			oracleText: 'Hidden agenda\nVisit',
 			colors: ['G', 'U'],
 			colorIdentity: ['G', 'U'],
-			keywords: ['Banding', 'Epic'],
+			keywords: ['Hidden agenda', 'Visit'],
 			power: '2',
 			toughness: '2',
 			imageUrl: '',

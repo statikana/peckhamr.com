@@ -112,8 +112,11 @@ function pushFingerprint(state: GameState, fp: unknown[]): void {
 			p.battlefield.length,
 			// --- Track P15 ---
 			p.speed ?? 0,
-			Boolean(p.hasCitysBlessing)
+			Boolean(p.hasCitysBlessing),
 			// --- End Track P15 ---
+			// --- Track P18a ---
+			Boolean(p.hasEnduringStory)
+			// --- End Track P18a ---
 		);
 		// --- Track P13 ---
 		fp.push(p.ringBearerId ?? null, p.ringLevel ?? 0, p.command.length);
@@ -208,6 +211,13 @@ function pushFingerprint(state: GameState, fp: unknown[]): void {
 				perm.mergedComponents?.length ?? 0
 				// --- End Wave 6 Shared ---
 			);
+			// --- Track P18a ---
+			if (perm.mergedComponents?.length) {
+				for (const mc of perm.mergedComponents) {
+					fp.push(mc);
+				}
+			}
+			// --- End Track P18a ---
 		}
 	}
 }
@@ -234,8 +244,11 @@ function fingerprintMatches(state: GameState, fp: unknown[]): boolean {
 			fp[i++] !== p.battlefield.length ||
 			// --- Track P15 ---
 			fp[i++] !== (p.speed ?? 0) ||
-			fp[i++] !== Boolean(p.hasCitysBlessing)
+			fp[i++] !== Boolean(p.hasCitysBlessing) ||
 			// --- End Track P15 ---
+			// --- Track P18a ---
+			fp[i++] !== Boolean(p.hasEnduringStory)
+			// --- End Track P18a ---
 		) {
 			return false;
 		}
@@ -342,6 +355,13 @@ function fingerprintMatches(state: GameState, fp: unknown[]): boolean {
 			) {
 				return false;
 			}
+			// --- Track P18a ---
+			if (perm.mergedComponents?.length) {
+				for (const mc of perm.mergedComponents) {
+					if (fp[i++] !== mc) return false;
+				}
+			}
+			// --- End Track P18a ---
 		}
 	}
 	return i === fp.length;
