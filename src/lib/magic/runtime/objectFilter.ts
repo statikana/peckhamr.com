@@ -100,6 +100,13 @@ import { evaluateP20bAmount, evaluateP20bCondition } from './costsWave7.ts';
 // --- Track P21 ---
 import { matchesP21ObjectFilter } from './framesWave7.ts';
 // --- End Track P21 ---
+// --- Track P19a ---
+import {
+	computeP19aMultiZoneStatAggregate,
+	evaluateP19aAmount,
+	evaluateP19aCondition
+} from './effectsWave7.ts';
+// --- End Track P19a ---
 // --- Track P17a ---
 import {
 	getOffBattlefieldGrantedCharacteristics,
@@ -1100,6 +1107,17 @@ export function evaluateAmount(amount: Amount, ctx: FilterContext): number {
 			return pl?.dungeonsCompletedCount ?? 0;
 		}
 		case 'greatestStatAmong': {
+			// --- Track P19a ---
+			if (Array.isArray(amount.filter.zone)) {
+				return computeP19aMultiZoneStatAggregate(
+					ctx.state,
+					amount.filter,
+					amount.stat,
+					'greatest',
+					ctx
+				);
+			}
+			// --- End Track P19a ---
 			if (amount.filter.zone && amount.filter.zone !== 'battlefield') {
 				return evaluateWave5Amount(amount, ctx) ?? 0;
 			}
@@ -1112,6 +1130,17 @@ export function evaluateAmount(amount: Amount, ctx: FilterContext): number {
 			);
 		}
 		case 'totalStatAmong':
+			// --- Track P19a ---
+			if (Array.isArray(amount.filter.zone) || (amount.filter.zone && amount.filter.zone !== 'battlefield')) {
+				return computeP19aMultiZoneStatAggregate(
+					ctx.state,
+					amount.filter,
+					amount.stat,
+					'total',
+					ctx
+				);
+			}
+			// --- End Track P19a ---
 			return computeStatAggregateAmong(
 				ctx.state,
 				amount.filter,
@@ -1170,6 +1199,13 @@ export function evaluateAmount(amount: Amount, ctx: FilterContext): number {
 		case 'p20bCostPaidCount':
 			return evaluateP20bAmount(amount, ctx);
 		// --- End Track P20b ---
+		// --- Track P19a ---
+		case 'sacrificedCostStat':
+		case 'leastStatAmong':
+		case 'countedThisWay':
+		case 'difference':
+			return evaluateP19aAmount(amount, ctx, (sub) => evaluateAmount(sub, ctx)) ?? 0;
+		// --- End Track P19a ---
 		default:
 			return 0;
 	}
@@ -1446,6 +1482,12 @@ export function evaluateCondition(cond: Condition, ctx: FilterContext): boolean 
 		case 'p20bCondition':
 			return evaluateP20bCondition(cond, ctx, matchesObjectFilter);
 		// --- End Track P20b ---
+		// --- Track P19a ---
+		case 'anyGraveyardAtLeast':
+		case 'controlledTargetAtResolution':
+		case 'abilityActivatedCountThisTurn':
+			return evaluateP19aCondition(cond, ctx) ?? false;
+		// --- End Track P19a ---
 		default:
 			return false;
 	}

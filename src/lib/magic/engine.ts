@@ -108,6 +108,24 @@ export function getEffectiveActivatedAbilities(
 							}
 						}
 					}
+					// --- Track P19a ---
+					if (
+						st.verb === 'addMana' &&
+						(st.params?.manaChoice === 'controlledLandProducedTypes' ||
+							st.params?.manaChoice === 'controlledLandProducedColors')
+					) {
+						const landCols = resolveP19aManaChoiceColors(
+							state,
+							actor,
+							st.params.manaChoice
+						);
+						for (const col of landCols) {
+							if (!next.producesMana.includes(col) && !(extraCols ?? []).includes(col)) {
+								(extraCols ??= []).push(col);
+							}
+						}
+					}
+					// --- End Track P19a ---
 				}
 				if (extraCols?.length) {
 					next = { ...next, producesMana: [...extraCols, ...next.producesMana] };
@@ -517,6 +535,17 @@ import {
 	substituteSuspendXManaCost
 } from './runtime/framesWave7.ts';
 // --- End Track P21 ---
+// --- Track P19a ---
+import type { SacrificedCostLkiEntry } from './types.ts';
+import {
+	cleanupP19aTurnState,
+	consumeP19aDelayedSpellCopyOnCast,
+	matchesP19aStackTargetSpec,
+	registerP19aRuntimeHost,
+	resolveP19aDelayedTappedManaTriggers,
+	resolveP19aManaChoiceColors
+} from './runtime/effectsWave7.ts';
+// --- End Track P19a ---
 export { applyCastCostAids, formatManaRequirement, getSuspendSpec };
 import { getKeywordSpec } from './keywords.ts';
 import {
@@ -2451,7 +2480,11 @@ function getSpellCostRequirementForOption(
 			inst.playableFromExileBy?.playerId === player.playerId &&
 			inst.playableFromExileBy.spendManaAsAnyColor;
 		const fromGlobal = hasGlobalSpendManaAsAnyColor(state, player);
-		if (fromExile || fromGlobal) {
+		// --- Track P19a ---
+		const fromLibrary =
+			inst.zone === 'library' && Boolean(player.spendManaAsAnyColorFromTopOfLibraryThisTurn);
+		if (fromExile || fromGlobal || fromLibrary) {
+		// --- End Track P19a ---
 			const coloredTotal =
 				req.colored.W + req.colored.U + req.colored.B + req.colored.R + req.colored.G;
 			if (coloredTotal > 0) {
@@ -2978,6 +3011,9 @@ function finalizeCastSpell(
 		phyrexianLifePaidCount?: number;
 		giftRecipientId?: string;
 		// --- End Track P15 ---
+		// --- Track P19a ---
+		sacrificedCostLki?: SacrificedCostLkiEntry[];
+		// --- End Track P19a ---
 	}
 ): void {
 	const actorId = actor.playerId;
@@ -3271,6 +3307,9 @@ function finalizeCastSpell(
 			// --- Track P19b ---
 			...(treasureManaSpentOnSpell ? { treasureManaSpent: true } : {}),
 			// --- End Track P19b ---
+			// --- Track P19a ---
+			...(opts.sacrificedCostLki?.length ? { sacrificedCostLki: opts.sacrificedCostLki } : {}),
+			// --- End Track P19a ---
 			...(optionalCostCounts ? { optionalCostCounts } : {}),
 			commanderCastCount: isPreparationCopy ? 0 : inst.commanderCastCount,
 			// --- Track P21 ---
@@ -3286,6 +3325,9 @@ function finalizeCastSpell(
 	// --- Track P16a: Consume next-spell flash / uncounterable grants on cast ---
 	consumeP16aOnSpellCast(actor, stackView.types, stackItem);
 	// --- End Track P16a ---
+	// --- Track P19a (CR 603.7, CR 707.10): Trigger delayed next-spell copy ---
+	consumeP19aDelayedSpellCopyOnCast(state, actor, stackView.types, stackView.colors, stackItem);
+	// --- End Track P19a ---
 
 	if (actor.manaRiders && actor.manaRiders.length > 0) {
 		const matchingRiders: ManaRider[] = [];
@@ -3442,6 +3484,12 @@ function finalizeActivateAbility(
 			...(perm.activatedAbilityIdsThisTurn ?? []),
 			pcp.abilityId
 		];
+		// --- Track P19a ---
+		perm.abilityActivationCountsThisTurn = {
+			...(perm.abilityActivationCountsThisTurn ?? {}),
+			[pcp.abilityId]: (perm.abilityActivationCountsThisTurn?.[pcp.abilityId] ?? 0) + 1
+		};
+		// --- End Track P19a ---
 	}
 	// --- Track P12: Exhaust (CR 702.177a), Boast (CR 702.142a), Forecast (CR 702.57a) ---
 	if (pcp.abilityId && perm.objectVersion === pcp.sourceObjectVersion) {
@@ -3589,6 +3637,9 @@ function finalizeActivateAbility(
 				? { removedCounterCount: pcp.removedCounterCount }
 				: {}),
 			// --- End Track P20b ---
+			// --- Track P19a ---
+			...(pcp.sacrificedCostLki?.length ? { sacrificedCostLki: pcp.sacrificedCostLki } : {}),
+			// --- End Track P19a ---
 			controllerId: actorId,
 			kind: 'activated',
 			abilityId: pcp.abilityId,
@@ -3801,6 +3852,9 @@ function executeOrResumePendingCostPayment(
 		}
 		// --- End Track P15 ---
 	}
+	// --- Track P19a (CR 707.10, CR 608.2h): Capture sacrificed-cost LKI across payment & resume ---
+	ctx.sacrificedLkiOut = (pcp.sacrificedCostLki ??= []);
+	// --- End Track P19a ---
 	const paid = executeCostPaymentParts(
 		ctx,
 		pcp.parts,
@@ -3861,8 +3915,11 @@ function executeOrResumePendingCostPayment(
 				// --- End Track P14 ---
 				// --- Track P15 ---
 				phyrexianLifePaidCount: pcp.phyrexianLifePaidCount,
-				giftRecipientId: pcp.giftRecipientId
+				giftRecipientId: pcp.giftRecipientId,
 				// --- End Track P15 ---
+				// --- Track P19a ---
+				sacrificedCostLki: pcp.sacrificedCostLki
+				// --- End Track P19a ---
 			});
 		}
 	} else if (pcp.kind === 'activate_ability') {
@@ -4864,6 +4921,10 @@ function resolveActivatedManaAbility(
 				: 0;
 	recordP19bTreasureManaAdded(state, player, perm, totalManaAdded);
 	// --- End Track P19b ---
+	// --- Track P19a (CR 605.1b, CR 605.4a): Record mana types produced & resolve High Tide-style delayed triggers ---
+	perm.lastManaProduced = [...producedColors];
+	state.lastTappedManaProduced = [...producedColors];
+	// --- End Track P19a ---
 	if (tappedForMana) {
 		// CR 605.1b, 605.4a: triggered mana abilities ("Whenever you tap a land for mana") resolve immediately.
 		emitEvent(state, {
@@ -4876,6 +4937,9 @@ function resolveActivatedManaAbility(
 			// --- End Track P19b ---
 		});
 		flushInlineTriggers(state);
+		// --- Track P19a ---
+		resolveP19aDelayedTappedManaTriggers(state, player, perm);
+		// --- End Track P19a ---
 	}
 	// --- Track P19b: CR 605.1b second prong ("Whenever a land's ability causes you to add ...") ---
 	if (producedColors.length > 0 && isPermanentLandForManaP19b(state, perm)) {
@@ -13989,6 +14053,9 @@ export function specTargetCandidates(
 				if (!stackSpellMatchesFilterQualifiers(state, stk, spec.filter, ctx)) continue;
 				// --- End Track P16a ---
 			}
+			// --- Track P19a (CR 115.9) ---
+			if (!matchesP19aStackTargetSpec(state, stk, spec, ctx)) continue;
+			// --- End Track P19a ---
 			out.push({ kind: 'stack', id: stk.id, label: stk.title });
 		}
 		return out;
@@ -16760,13 +16827,39 @@ function payOptionalCost(
 				break;
 			}
 		}
-		if (objects.length > 0) payment = { objects };
+		// --- Track P19a: Support `choice` ("pays {B} or {3}", "sacrifice ... or discard ...") optional costs ---
+		const options: number[] = [];
+		for (let qIdx = 0; qIdx < defs.length + 4; qIdx++) {
+			const optAns = answers[`__opt_cost_${stepIndex}_opt_${qIdx}`];
+			if (optAns?.kind === 'chooseMode' && optAns.indices[0] !== undefined) {
+				options[qIdx] = optAns.indices[0];
+			} else {
+				break;
+			}
+		}
+		if (objects.length > 0 || options.length > 0) {
+			payment = {
+				...(objects.length > 0 ? { objects } : {}),
+				...(options.length > 0 ? { options } : {})
+			};
+		}
+		// --- End Track P19a ---
 	}
 
 	const plan = planCosts(ctx, defs, payment);
 	if (!plan.ok) return { status: 'failed' };
 	if (plan.question) {
-		if (plan.question.kind !== 'objects' || player.isBot) return { status: 'failed' };
+		if (player.isBot) return { status: 'failed' };
+		// --- Track P19a ---
+		if (plan.question.kind === 'option') {
+			return {
+				status: 'needOptionChoice',
+				answerKey: `__opt_cost_${stepIndex}_opt_${plan.question.index}`,
+				labels: plan.question.labels
+			};
+		}
+		// --- End Track P19a ---
+		if (plan.question.kind !== 'objects') return { status: 'failed' };
 		return {
 			status: 'needChoice',
 			answerKey: `__opt_cost_${stepIndex}_obj_${plan.question.index}`,
@@ -17088,6 +17181,18 @@ function pushCopiedStackItem(
 						}
 					: {}),
 				// --- End Track P15 ---
+				// --- Track P19a (CR 707.10): Copy sacrificed-cost LKI onto copied spell ---
+				...(orig.sacrificedCostLki?.length
+					? {
+							sacrificedCostLki: orig.sacrificedCostLki.map((e) => ({
+								...e,
+								colors: [...e.colors],
+								types: [...e.types],
+								subtypes: [...e.subtypes]
+							}))
+						}
+					: {}),
+				// --- End Track P19a ---
 				requiresGuidedResolution: orig.requiresGuidedResolution,
 				isCopy: true,
 				createdAt: Date.now()
@@ -17257,6 +17362,18 @@ function pushCopiedStackItem(
 			...(orig.wave5CostText !== undefined ? { wave5CostText: orig.wave5CostText } : {}),
 			...(orig.wave5Card ? { wave5Card: orig.wave5Card } : {}),
 			// --- End Track P15 ---
+			// --- Track P19a (CR 707.10b): Copy sacrificed-cost LKI onto copied ability ---
+			...(orig.sacrificedCostLki?.length
+				? {
+						sacrificedCostLki: orig.sacrificedCostLki.map((e) => ({
+							...e,
+							colors: [...e.colors],
+							types: [...e.types],
+							subtypes: [...e.subtypes]
+						}))
+					}
+				: {}),
+			// --- End Track P19a ---
 			requiresGuidedResolution: orig.requiresGuidedResolution,
 			isCopy: true,
 			createdAt: Date.now()
@@ -17442,6 +17559,20 @@ registerP16aRuntimeHost({
 		finalizeCastSpell(state, actor, inst, sourcePlayer, sourceZone, opts)
 });
 // --- End Track P16a ---
+
+// --- Track P19a ---
+registerP19aRuntimeHost({
+	uid,
+	addLog,
+	findPermanent: findPermanentOnBoard,
+	triggerOnEtb: (state) => flushTriggers(state),
+	getStackItemRetargetSlots,
+	validateStackItemRetarget,
+	chooseBotStackItemRetarget,
+	pushCopiedStackItem,
+	captureTargetObjectVersions
+});
+// --- End Track P19a ---
 
 // --- Track P12 ---
 registerWave4Host({
@@ -19580,6 +19711,9 @@ function clearEndOfTurnAndDamage(state: GameState): void {
 	// --- Track P16a ---
 	cleanupP16aTurnState(state);
 	// --- End Track P16a ---
+	// --- Track P19a ---
+	cleanupP19aTurnState(state);
+	// --- End Track P19a ---
 	// --- Track P7 ---
 	clearP7EndOfTurnEffects(state);
 	// --- End Track P7 ---
@@ -19742,7 +19876,7 @@ function completeTurnCleanupAndPassTurn(state: GameState): void {
 
 	// CR 500.7: Check if there is a queued extra turn in LIFO order
 	if (state.extraTurnQueue && state.extraTurnQueue.length > 0) {
-		// --- Track P20a ---
+		// --- Track P20a & P19a ---
 		for (let guard = 0; guard < 64 && state.extraTurnQueue.length > 0; guard++) {
 			const extraPlayerId = state.extraTurnQueue.pop()!;
 			const extraIdx = state.players.findIndex((p) => p.playerId === extraPlayerId && !p.lost);
@@ -19757,7 +19891,19 @@ function completeTurnCleanupAndPassTurn(state: GameState): void {
 					);
 					continue;
 				}
-		// --- End Track P20a ---
+				const extraCand = state.players[extraIdx];
+				if ((extraCand.skipNextTurns ?? 0) > 0) {
+					extraCand.skipNextTurns =
+						Math.max(0, (extraCand.skipNextTurns ?? 0) - 1) || undefined;
+					addLog(
+						state,
+						'rule',
+						`${extraCand.username} skips their extra turn (CR 614.10).`,
+						extraPlayerId
+					);
+					continue;
+				}
+				// --- End Track P20a & P19a ---
 				if (state.lastNormalTurnPlayerIndex === undefined) {
 					state.lastNormalTurnPlayerIndex = state.activePlayerIndex;
 				}
@@ -19780,20 +19926,34 @@ function completeTurnCleanupAndPassTurn(state: GameState): void {
 	const baseIdx = state.lastNormalTurnPlayerIndex ?? state.activePlayerIndex;
 	state.lastNormalTurnPlayerIndex = undefined;
 	const count = state.players.length;
-	for (let step = 1; step <= count; step++) {
+	// --- Track P19a (CR 614.10, CR 614.10a): Bounded step loop supporting skipped turns ---
+	const maxSteps = Math.max(count, count * 16);
+	for (let step = 1; step <= maxSteps; step++) {
 		const nextIdx = (baseIdx + step) % count;
 		if (state.players[nextIdx].lost) {
 			// CR 800.4m: "until your next turn" effects created by a player who left the game expire when their next turn would begin.
 			expirePlayerUntilNextTurnEffects(state, state.players[nextIdx].playerId);
 			continue;
 		}
-		if (nextIdx <= baseIdx) {
+		const candPlayer = state.players[nextIdx];
+		if ((candPlayer.skipNextTurns ?? 0) > 0) {
+			candPlayer.skipNextTurns = Math.max(0, (candPlayer.skipNextTurns ?? 0) - 1) || undefined;
+			addLog(
+				state,
+				'rule',
+				`${candPlayer.username} skips their turn (CR 614.10).`,
+				candPlayer.playerId
+			);
+			continue;
+		}
+		if (nextIdx <= baseIdx || step > count) {
 			state.turnNumber += 1;
 		}
 		state.turnSerial = (state.turnSerial ?? state.turnNumber) + 1;
 		state.activePlayerIndex = nextIdx;
 		break;
 	}
+	// --- End Track P19a ---
 
 	runBeginningOfTurn(state);
 }
@@ -21673,6 +21833,23 @@ function validateTargetLegalityInner(
 				}
 			}
 			// --- End Track P16a ---
+			// --- Track P19a (CR 115.9) ---
+			const castingSrcP19a = sourceInstanceId
+				? findCardAnywhere(state, sourceInstanceId)?.inst
+				: undefined;
+			if (
+				!matchesP19aStackTargetSpec(state, inStack, stackSpec, {
+					state,
+					controllerId: actorId,
+					source: castingSrcP19a
+				})
+			) {
+				return {
+					ok: false,
+					error: `Strict Rules Violation: ${inStack.title} does not satisfy the stack target requirement (CR 115.9).`
+				};
+			}
+			// --- End Track P19a ---
 		}
 		// --- End Track P10 ---
 		return { ok: true };

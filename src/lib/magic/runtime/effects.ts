@@ -260,6 +260,9 @@ import {
 	getLockedTargetDivisionAmount,
 	isDamageUnpreventable,
 	recordLifeGainedThisTurn,
+	// --- Track P19a ---
+	registerEnteredAttackingCombatant,
+	// --- End Track P19a ---
 	registerExileInsteadOfDying,
 	registerTimedCombatRestriction
 } from './copyPreventionAndEffects.ts';
@@ -316,6 +319,24 @@ import {
 	type P13StepAskFn
 } from './effectsWave5.ts';
 // --- End Track P13 ---
+// --- Track P19a ---
+import {
+	computeP19aMultiZoneStatAggregate,
+	evaluateP19aAmount,
+	evaluateP19aCondition,
+	executeDelayedNextSpellCopyP19a as executeP19aDelayedNextSpellCopy,
+	executeDelayedTapManaTriggerP19a as executeP19aDelayedTapManaTrigger,
+	executeExileUntilP19a as executeP19aExileUntil,
+	executeP19aExtendedRevealAndDiscard,
+	executeRedirectTargetsP19a as executeP19aRedirectTargets,
+	executeP19aSetLifeTotal,
+	executeSkipTurnP19a as executeP19aSkipTurn,
+	resolveP19aChosenColorsForAnimate,
+	resolveP19aChosenPumpDelta,
+	resolveP19aManaChoiceColors,
+	type P19aStepHost
+} from './effectsWave7.ts';
+// --- End Track P19a ---
 
 /** Seeded randomness lives in runtime/random.ts (re-exported here for existing importers). */
 export { nextRandom };
@@ -334,6 +355,13 @@ export type PayOptionalCostResult =
 			count: number;
 			candidateIds: string[];
 	  }
+	// --- Track P19a ---
+	| {
+			status: 'needOptionChoice';
+			answerKey: string;
+			labels: string[];
+	  }
+	// --- End Track P19a ---
 	| {
 			status: 'paused';
 			pending: NonNullable<EffectResumeFrame['pendingOptionalCost']>;
@@ -1191,6 +1219,9 @@ class Run {
 	lastCountersRemoved?: number;
 	private prevStepDiedIds = new Set<string>();
 	// --- End Track P16a ---
+	// --- Track P19a ---
+	lastCountedByKind?: Record<string, number>;
+	// --- End Track P19a ---
 	currentSteps: EffectStep[] = [];
 	subPathPrefix?: number[];
 	private stepActedIds: string[] = [];
@@ -1219,6 +1250,23 @@ class Run {
 		// --- Track P16a ---
 		this.lastCountersRemoved = ctx.item.lastCountersRemoved;
 		// --- End Track P16a ---
+		// --- Track P19a ---
+		const rawCounted = resume?.lastCountedByKind ?? ctx.item.lastCountedByKind;
+		if (rawCounted) this.lastCountedByKind = { ...rawCounted };
+		if (!resume && !ctx.item.targetWasControlledByActor && ctx.targets.length > 0) {
+			const snapCtrl: Record<number, boolean> = {};
+			for (let ti = 0; ti < ctx.targets.length; ti++) {
+				const t = ctx.targets[ti];
+				if (t.kind === 'permanent') {
+					const f = this.locate(t.id);
+					if (f && f.zone === 'battlefield') {
+						snapCtrl[ti] = f.inst.controllerId === ctx.controller.playerId;
+					}
+				}
+			}
+			ctx.item.targetWasControlledByActor = snapCtrl;
+		}
+		// --- End Track P19a ---
 		for (const t of ctx.targets) {
 			const f = this.locate(t.id);
 			if (f) this.initialSnapshots.set(t.id, this.snapshot(f.inst));
@@ -1539,6 +1587,38 @@ class Run {
 			this.answers,
 			this.pendingOptionalCost
 		);
+		// --- Track P19a: Support `choice` ("pays {B} or {3}") optional cost prompt ---
+		if (res.status === 'needOptionChoice') {
+			if (!this.canPause) {
+				this.pendingOptionalCost = undefined;
+				this.stepDecisions[this.stepIndex] = false;
+				return executeIfPaid(false);
+			}
+			const item = this.saveFrame(this.stepIndex, this.answers, 'optional', this.subStepIndex);
+			enqueueChoicePrompt(this.state, {
+				id: P().uid('prompt', this.state),
+				kind: 'chooseMode',
+				playerId: chooser.playerId,
+				title: `${this.ctx.title} — Choose Cost Option`,
+				description: `Choose how to pay (${res.labels.join(' or ')}).`,
+				continuation: {
+					kind: 'effect_choice',
+					stackItemId: item.id,
+					stepIndex: this.stepIndex,
+					answerKey: res.answerKey
+				},
+				choice: {
+					kind: 'chooseMode',
+					modes: res.labels,
+					min: 1,
+					max: 1,
+					defaultIndices: [0]
+				}
+			});
+			this.result.paused = true;
+			return false;
+		}
+		// --- End Track P19a ---
 		if (res.status === 'needChoice') {
 			if (!this.canPause) {
 				this.pendingOptionalCost = undefined;
@@ -1739,8 +1819,13 @@ class Run {
 			// --- End Track P10 ---
 			// --- Track P13 ---
 			...(this.lastExcessDamage !== undefined ? { lastExcessDamage: this.lastExcessDamage } : {}),
-			...(this.lastEffectAmount !== undefined ? { lastEffectAmount: this.lastEffectAmount } : {})
+			...(this.lastEffectAmount !== undefined ? { lastEffectAmount: this.lastEffectAmount } : {}),
 			// --- End Track P13 ---
+			// --- Track P19a ---
+			...(this.lastCountedByKind
+				? { lastCountedByKind: { ...this.lastCountedByKind } }
+				: {})
+			// --- End Track P19a ---
 		};
 		return item;
 	}
@@ -2056,6 +2141,18 @@ class Run {
 				return p ? (p.dungeonsCompletedCount ?? 0) : 0;
 			}
 			case 'greatestStatAmong': {
+				// --- Track P19a ---
+				if (Array.isArray(a.filter.zone)) {
+					const srcFound = this.locate(this.ctx.sourceId);
+					return computeP19aMultiZoneStatAggregate(this.state, a.filter, a.stat, 'greatest', {
+						state: this.state,
+						controllerId: this.you.playerId,
+						source: srcFound?.inst,
+						stackItem: this.ctx.item,
+						xValue: this.ctx.xValue
+					});
+				}
+				// --- End Track P19a ---
 				const z = (Array.isArray(a.filter.zone) ? a.filter.zone[0] : (a.filter.zone ?? 'battlefield')) as
 					| 'battlefield'
 					| 'graveyard'
@@ -2067,6 +2164,18 @@ class Run {
 				);
 			}
 			case 'totalStatAmong': {
+				// --- Track P19a ---
+				if (Array.isArray(a.filter.zone) || (a.filter.zone && a.filter.zone !== 'battlefield')) {
+					const srcFound = this.locate(this.ctx.sourceId);
+					return computeP19aMultiZoneStatAggregate(this.state, a.filter, a.stat, 'total', {
+						state: this.state,
+						controllerId: this.you.playerId,
+						source: srcFound?.inst,
+						stackItem: this.ctx.item,
+						xValue: this.ctx.xValue
+					});
+				}
+				// --- End Track P19a ---
 				const z = (Array.isArray(a.filter.zone) ? a.filter.zone[0] : (a.filter.zone ?? 'battlefield')) as
 					| 'battlefield'
 					| 'graveyard'
@@ -2146,6 +2255,29 @@ class Run {
 				});
 			}
 			// --- End Track P20a ---
+			// --- Track P19a ---
+			case 'countedThisWay':
+				return this.lastCountedByKind?.[a.kind] ?? this.ctx.item.lastCountedByKind?.[a.kind] ?? 0;
+			case 'difference':
+				return Math.max(0, this.amount(a.left) - this.amount(a.right));
+			case 'sacrificedCostStat':
+			case 'leastStatAmong': {
+				const srcFound = this.locate(this.ctx.sourceId);
+				return (
+					evaluateP19aAmount(
+						a,
+						{
+							state: this.state,
+							controllerId: this.you.playerId,
+							source: srcFound?.inst,
+							stackItem: this.ctx.item,
+							xValue: this.ctx.xValue
+						},
+						(sub) => this.amount(sub)
+					) ?? 0
+				);
+			}
+			// --- End Track P19a ---
 			default: {
 				const srcFound = this.locate(this.ctx.sourceId);
 				return evaluateAmount(a, {
@@ -2852,8 +2984,34 @@ class Run {
 				continue;
 			}
 			// --- End Track P16b ---
-			if (step.optional && this.phase !== 'afterStep') {
-				const accepted = this.resolveOptional(step);
+			// --- Track P19a: Dynamic generic mana "unless ... pays {X}" ---
+			const effectiveStep: EffectStep =
+				!step.optional && step.params?.unlessPaysGenericAmount
+					? (() => {
+							const dynN = Math.max(0, this.amount(step.params.unlessPaysGenericAmount, 0));
+							const chooser: NonNullable<EffectStep['optional']>['chooser'] =
+								step.subject.k === 'eventObject'
+									? { k: 'controllerOf', of: { k: 'eventObject' } }
+									: step.subject.k === 'target'
+										? this.targetsForSpecIndex(step.subject.index)[0]?.kind === 'player'
+											? { k: 'target', index: step.subject.index }
+											: { k: 'controllerOf', of: { k: 'target', index: step.subject.index } }
+										: step.subject.k === 'playerRef'
+											? step.subject.ref
+											: (step.actor ?? { k: 'controllerOf', of: { k: 'target', index: 0 } });
+							return {
+								...step,
+								optional: {
+									chooser,
+									cost: [{ k: 'mana', cost: `{${dynN}}` }],
+									mode: 'doUnlessPaid'
+								}
+							};
+						})()
+					: step;
+			// --- End Track P19a ---
+			if (effectiveStep.optional && this.phase !== 'afterStep') {
+				const accepted = this.resolveOptional(effectiveStep);
 				if (this.result.paused) return;
 				if (!accepted) {
 					this.subStepIndex = 0;
@@ -2948,6 +3106,12 @@ class Run {
 			}
 			case 'gainLife':
 			case 'loseLife': {
+				// --- Track P19a (CR 119.5): Set player life total ---
+				if (step.params?.setLifeTotal) {
+					executeP19aSetLifeTotal(this.p19aHost(), step);
+					return;
+				}
+				// --- End Track P19a ---
 				const n = Math.max(0, this.amount(step.amount));
 				const targets =
 					step.subject.k === 'none' && step.actor
@@ -3067,8 +3231,13 @@ class Run {
 						).paused;
 					});
 				}
-				if (!paused && step.subject.k === 'all') {
-					p.addLog(s, 'cast', `${title} destroyed ${ids.length} permanent(s).`, you.playerId);
+				if (!paused) {
+					// --- Track P19a ---
+					this.recordCountedKind('destroyedThisWay', this.stepActedIds.length);
+					// --- End Track P19a ---
+					if (step.subject.k === 'all') {
+						p.addLog(s, 'cast', `${title} destroyed ${ids.length} permanent(s).`, you.playerId);
+					}
 				}
 				return;
 			}
@@ -3208,6 +3377,9 @@ class Run {
 						? [this.ctx.eventObjectId]
 						: this.ctx.targets.filter((t) => t.kind === 'stack').map((t) => t.id);
 				const countered: Bound[] = [];
+				// --- Track P19a ---
+				let counteredManaMetric = 0;
+				// --- End Track P19a ---
 				for (const id of ids) {
 					const target = s.stack.find((x) => x.id === id || x.sourceInstanceId === id);
 					if (!target) continue;
@@ -3222,6 +3394,7 @@ class Run {
 						continue;
 					}
 					// --- End Track P16a ---
+					const mv = objectManaValue(s, target);
 					countered.push({
 						id: target.sourceInstanceId,
 						lki: {
@@ -3229,13 +3402,19 @@ class Run {
 							ownerId: target.ownerId ?? target.controllerId,
 							power: 0,
 							toughness: 0,
-							manaValue: objectManaValue(s, target)
+							manaValue: mv
 						}
 					});
+					// --- Track P19a ---
+					counteredManaMetric += mv;
+					// --- End Track P19a ---
 					// --- Track P10 ---
 					p.counterSpell(s, this.ctx.item, target, you, step.params?.counterReplacementZone);
 					// --- End Track P10 ---
 				}
+				// --- Track P19a ---
+				if (countered.length > 0) this.recordEffectAmount(counteredManaMetric);
+				// --- End Track P19a ---
 				if (step.bindAs) this.bindings.set(step.bindAs, countered);
 				return;
 			}
@@ -3243,12 +3422,35 @@ class Run {
 				const actor = step.actor ? this.playerRef(step.actor) : you;
 				const baseSpec = step.params?.token;
 				if (!actor || !baseSpec) return;
-				const spec = step.params?.tapped && !baseSpec.tapped ? { ...baseSpec, tapped: true } : baseSpec;
+				// --- Track P19a: Dynamic X/X tokens & tapped-and-attacking tokens (CR 508.4) ---
+				const enterTapped = Boolean(
+					step.params?.tapped || step.params?.tappedAndAttacking || baseSpec.tapped
+				);
+				const dynPT = step.params?.dynamicTokenPT;
+				const spec = {
+					...baseSpec,
+					...(enterTapped ? { tapped: true } : {}),
+					...(dynPT
+						? {
+								power: Math.max(0, this.amount(dynPT.power, 0)),
+								toughness: Math.max(0, this.amount(dynPT.toughness, 0))
+							}
+						: {})
+				};
+				// --- End Track P19a ---
 				const n = Math.max(0, this.amount(step.amount, 1)) * tokenMultiplier(s, actor.playerId);
 				const made: CardInstance[] = [];
 				// --- Track P13 (CR 603.2c): Simultaneous multi-token batch for "one or more" triggers ---
 				withSimultaneousZoneBatch(s, () => {
-					for (let i = 0; i < n; i++) made.push(p.createToken(s, actor, spec));
+					for (let i = 0; i < n; i++) {
+						const tok = p.createToken(s, actor, spec);
+						// --- Track P19a ---
+						if (step.params?.tappedAndAttacking) {
+							registerEnteredAttackingCombatant(s, actor, tok);
+						}
+						// --- End Track P19a ---
+						made.push(tok);
+					}
 				});
 				this.recordEffectAmount(made.length);
 				// --- End Track P13 ---
@@ -3740,8 +3942,20 @@ class Run {
 			case 'pump': {
 				const objs = this.objects(step.subject).filter((o) => o.zone === 'battlefield');
 				this.bind(step, objs);
-				const pw = this.amount(step.amount);
-				const tg = this.amount(step.params?.toughness);
+				let pw = this.amount(step.amount);
+				let tg = this.amount(step.params?.toughness);
+				// --- Track P19a: Choice-based pump delta ("gets +2/+0 or +0/+2 until end of turn") ---
+				if (objs.length > 0 && step.params?.pumpChoices?.length) {
+					const chosenDelta = resolveP19aChosenPumpDelta(
+						this.p19aHost(),
+						step.params.pumpChoices,
+						objs[0]
+					);
+					if (chosenDelta === null) return;
+					pw = chosenDelta.power;
+					tg = chosenDelta.toughness;
+				}
+				// --- End Track P19a ---
 				// --- Track P13 (CR 611.2b): Cross-turn / permanent P/T modifiers ---
 				const dur = step.params?.duration;
 				// --- Track P16a (CR 511.2, CR 611.2b) ---
@@ -3857,7 +4071,17 @@ class Run {
 					for (const o of objs) o.assignsNoCombatDamageThisTurn = true;
 				}
 				// --- End Track P16a ---
-				const removeKws = step.params?.removeKeywords;
+				let removeKws = step.params?.removeKeywords ? [...step.params.removeKeywords] : undefined;
+				// --- Track P19a: Choice-based lose-keyword ("loses flying or first strike") ---
+				if (objs.length > 0 && step.params?.chooseLoseKeywordOptions?.length) {
+					const chosenLostKw = resolveChosenKeywordFromOptions(
+						this.p16aHost(),
+						step.params.chooseLoseKeywordOptions
+					);
+					if (chosenLostKw === null) return;
+					(removeKws ??= []).push(chosenLostKw);
+				}
+				// --- End Track P19a ---
 				const grantedTexts = step.params?.grantedAbilityTexts;
 				// --- Track P16a ---
 				const remAllAbs = Boolean(step.params?.removeAllAbilities);
@@ -4034,6 +4258,11 @@ class Run {
 				for (const pl of this.players(step.subject)) {
 					if (rules.includes('lifeTotalCantChange')) pl.lifeTotalCannotChangeThisTurn = true;
 					if (rules.includes('protectionFromEverything')) pl.protectionFromEverythingThisTurn = true;
+					// --- Track P19a ---
+					if (step.params?.spendManaAsAnyColorTopOfLibraryThisTurn) {
+						pl.spendManaAsAnyColorFromTopOfLibraryThisTurn = true;
+					}
+					// --- End Track P19a ---
 					// --- Track P13 ---
 					if (rules.includes('extraLandPlay')) {
 						const addLands = Math.max(1, step.params?.extraLandPlays ?? 1);
@@ -4196,6 +4425,10 @@ class Run {
 				return this.discardHandStep(step);
 			// --- End Track P7 ---
 			case 'addMana': {
+				// --- Track P19a (CR 605.1b, CR 106.7): Honor `step.actor` (e.g. `eventPlayer` on Mana Flare / Dictate of Karametra) ---
+				const recipient = (step.actor ? this.playerRef(step.actor) : null) ?? you;
+				if (recipient.lost) return;
+				// --- End Track P19a ---
 				const times = Math.max(0, this.amount(step.amount, 1));
 				const restriction = step.params?.manaRestriction;
 				// --- Track P10 ---
@@ -4219,11 +4452,11 @@ class Run {
 				// --- End Track P10 ---
 				if (step.params?.manaWithChosenColor) {
 					for (const c of step.params.manaWithChosenColor) {
-						addManaToPlayerPool(you, c, 1, restriction, addOpts);
+						addManaToPlayerPool(recipient, c, 1, restriction, addOpts);
 					}
 					const chosenCol = this.sourceChosenColor();
 					if (chosenCol) {
-						addManaToPlayerPool(you, chosenCol, 1, restriction, addOpts);
+						addManaToPlayerPool(recipient, chosenCol, 1, restriction, addOpts);
 					}
 					return;
 				}
@@ -4239,17 +4472,17 @@ class Run {
 					let chosenBundle =
 						orBundles.length === 1
 							? orBundles[0]
-							: pickBestBundleForRequirement(orBundles, you.manaPool, null, this.ctx.preferredColor);
-					if (!you.isBot && orBundles.length > 1 && this.canPause) {
+							: pickBestBundleForRequirement(orBundles, recipient.manaPool, null, this.ctx.preferredColor);
+					if (!recipient.isBot && orBundles.length > 1 && this.canPause) {
 						const manaKey = `manaorchosen:${this.stepIndex}`;
-						const ans = this.answers[manaKey] ?? this.answers[you.playerId];
+						const ans = this.answers[manaKey] ?? this.answers[recipient.playerId];
 						if (!ans) {
 							const item = this.saveFrame(this.stepIndex, this.answers, 'step', this.subStepIndex);
 							const modes = orBundles.map((b) => formatManaBundle(b));
 							enqueueChoicePrompt(s, {
 								id: p.uid('prompt', s),
 								kind: 'chooseMode',
-								playerId: you.playerId,
+								playerId: recipient.playerId,
 								title: `${title} — Choose Mana Color`,
 								description: `Choose mana to add (${modes.join(', ')}).`,
 								continuation: {
@@ -4274,7 +4507,7 @@ class Run {
 						}
 					}
 					for (const c of chosenBundle) {
-						addManaToPlayerPool(you, c, 1, restriction, addOpts);
+						addManaToPlayerPool(recipient, c, 1, restriction, addOpts);
 					}
 					return;
 				}
@@ -4284,17 +4517,17 @@ class Run {
 					let chosenBundle =
 						bundles.length === 1
 							? bundles[0]
-							: pickBestBundleForRequirement(bundles, you.manaPool, null, this.ctx.preferredColor);
-					if (!you.isBot && bundles.length > 1 && this.canPause) {
+							: pickBestBundleForRequirement(bundles, recipient.manaPool, null, this.ctx.preferredColor);
+					if (!recipient.isBot && bundles.length > 1 && this.canPause) {
 						const manaKey = `manabundle:${this.stepIndex}`;
-						const ans = this.answers[manaKey] ?? this.answers[you.playerId];
+						const ans = this.answers[manaKey] ?? this.answers[recipient.playerId];
 						if (!ans) {
 							const item = this.saveFrame(this.stepIndex, this.answers, 'step', this.subStepIndex);
 							const modes = bundles.map((b) => formatManaBundle(b));
 							enqueueChoicePrompt(s, {
 								id: p.uid('prompt', s),
 								kind: 'chooseMode',
-								playerId: you.playerId,
+								playerId: recipient.playerId,
 								title: `${title} — Choose Mana Combination`,
 								description: `Choose mana to add (${modes.join(', ')}).`,
 								continuation: {
@@ -4319,7 +4552,7 @@ class Run {
 						}
 					}
 					for (const c of chosenBundle) {
-						addManaToPlayerPool(you, c, 1, restriction, addOpts);
+						addManaToPlayerPool(recipient, c, 1, restriction, addOpts);
 					}
 					return;
 				}
@@ -4333,23 +4566,23 @@ class Run {
 					let chosenBundle = pickCombinationForRequirement(
 						allowedCols,
 						times,
-						you.manaPool,
+						recipient.manaPool,
 						null,
 						this.ctx.preferredColor,
-						you
+						recipient
 					);
-					if (!you.isBot && allowedCols.length > 1 && this.canPause) {
+					if (!recipient.isBot && allowedCols.length > 1 && this.canPause) {
 						const bundles = times <= 5 ? expandCombinationBundles(allowedCols, times) : [];
 						if (bundles.length > 1) {
 							const manaKey = `manacomb:${this.stepIndex}`;
-							const ans = this.answers[manaKey] ?? this.answers[you.playerId];
+							const ans = this.answers[manaKey] ?? this.answers[recipient.playerId];
 							if (!ans) {
 								const item = this.saveFrame(this.stepIndex, this.answers, 'step', this.subStepIndex);
 								const modes = bundles.map((b) => formatManaBundle(b));
 								enqueueChoicePrompt(s, {
 									id: p.uid('prompt', s),
 									kind: 'chooseMode',
-									playerId: you.playerId,
+									playerId: recipient.playerId,
 									title: `${title} — Choose Mana Combination`,
 									description: `Choose ${times} mana in any combination (${allowedCols.map((c) => `{${c}}`).join(', ')}).`,
 									continuation: {
@@ -4375,7 +4608,7 @@ class Run {
 						}
 					}
 					for (const c of chosenBundle) {
-						addManaToPlayerPool(you, c, 1, restriction, addOpts);
+						addManaToPlayerPool(recipient, c, 1, restriction, addOpts);
 					}
 					return;
 				}
@@ -4384,9 +4617,9 @@ class Run {
 					const loops = mana.length > 1 ? 1 : times;
 					for (let i = 0; i < loops; i++) {
 						for (const c of mana) {
-							addManaToPlayerPool(you, c, 1, restriction, addOpts);
+							addManaToPlayerPool(recipient, c, 1, restriction, addOpts);
 							if (step.delayed) {
-								(you.manaRiders ??= []).push({
+								(recipient.manaRiders ??= []).push({
 									id: p.uid('rider', s),
 									color: c,
 									sourceInstanceId: this.ctx.sourceId,
@@ -4400,23 +4633,29 @@ class Run {
 					return;
 				}
 				if (step.params?.manaChoice) {
-					const allowed = manaChoiceColors(s, you, step.params.manaChoice, this.sourceChosenColor());
+					const allowed = manaChoiceColors(
+						s,
+						recipient,
+						step.params.manaChoice,
+						this.sourceChosenColor(),
+						this.ctx.eventObjectId
+					);
 					if (allowed.length === 0 || times <= 0) return;
 					const defaultColor =
 						this.ctx.preferredColor && allowed.includes(this.ctx.preferredColor)
 							? this.ctx.preferredColor
 							: allowed[0];
 					let chosen = defaultColor;
-					if (!you.isBot && !this.ctx.preferredColor && allowed.length > 1 && this.canPause) {
+					if (!recipient.isBot && !this.ctx.preferredColor && allowed.length > 1 && this.canPause) {
 						const manaKey = `mana:${this.stepIndex}`;
-						const ans = this.answers[manaKey] ?? this.answers[you.playerId];
+						const ans = this.answers[manaKey] ?? this.answers[recipient.playerId];
 						if (!ans) {
 							const item = this.saveFrame(this.stepIndex, this.answers, 'step', this.subStepIndex);
 							const defaultIdx = Math.max(0, allowed.indexOf(defaultColor));
 							enqueueChoicePrompt(s, {
 								id: p.uid('prompt', s),
 								kind: 'chooseMode',
-								playerId: you.playerId,
+								playerId: recipient.playerId,
 								title: `${title} — Choose Mana Color`,
 								description: `Choose a color of mana to add (${allowed.join(', ')}).`,
 								continuation: {
@@ -4444,10 +4683,10 @@ class Run {
 									: undefined;
 						if (picked && allowed.includes(picked)) chosen = picked;
 					}
-					addManaToPlayerPool(you, chosen, times, restriction, addOpts);
+					addManaToPlayerPool(recipient, chosen, times, restriction, addOpts);
 					if (step.delayed) {
 						for (let i = 0; i < times; i++) {
-							(you.manaRiders ??= []).push({
+							(recipient.manaRiders ??= []).push({
 								id: p.uid('rider', s),
 								color: chosen,
 								sourceInstanceId: this.ctx.sourceId,
@@ -4608,6 +4847,9 @@ class Run {
 				// --- End Track P16a ---
 				this.bind(step, objs);
 				const explicitTap = (step.params as { tap?: boolean } | undefined)?.tap;
+				// --- Track P19a ---
+				let tappedThisWayCount = 0;
+				// --- End Track P19a ---
 				for (const o of objs) {
 					const shouldTap =
 						step.verb === 'tap'
@@ -4624,6 +4866,9 @@ class Run {
 						tapPermanent(s, o);
 						if (!wasTapped && o.tapped) {
 							this.recordStepActedObject(o, preSnap, false);
+							// --- Track P19a ---
+							tappedThisWayCount++;
+							// --- End Track P19a ---
 						}
 						// --- End Track P10 ---
 					} else if (o.tapped) {
@@ -4673,6 +4918,11 @@ class Run {
 						}
 					}
 				}
+				// --- Track P19a ---
+				if (step.verb === 'tap' || Boolean(explicitTap)) {
+					this.recordCountedKind('tappedThisWay', tappedThisWayCount);
+				}
+				// --- End Track P19a ---
 				return;
 			}
 			case 'freezeUntap': {
@@ -5015,11 +5265,21 @@ class Run {
 			case 'search': {
 				const actor = step.actor ? this.playerRef(step.actor) : you;
 				if (!actor || actor.lost) return;
-				const search = step.params?.search;
-				if (!search) return;
+				const rawSearch = step.params?.search;
+				if (!rawSearch) return;
+				// --- Track P19a: Dynamic `step.amount` on `search` ("up to X basic land cards") ---
+				const search =
+					step.amount && step.amount.k !== 'const'
+						? { ...rawSearch, count: Math.max(0, this.amount(step.amount, rawSearch.count)) }
+						: rawSearch;
+				const searchStep =
+					search === rawSearch
+						? step
+						: { ...step, params: { ...step.params, search } };
+				// --- End Track P19a ---
 				// --- Track P10 ---
 				if (isP10ExtendedSearch(search)) {
-					return executeMultiZoneSearchP10(this.p10Host(), step);
+					return executeMultiZoneSearchP10(this.p10Host(), searchStep);
 				}
 				// --- End Track P10 ---
 				p.search(s, actor, legacySearchSpec(search), this.ctx.item);
@@ -5102,6 +5362,7 @@ class Run {
 					Boolean(
 						pParams.chooseBasicLandType ||
 							pParams.chooseCreatureType ||
+							pParams.chooseColorForAnimate ||
 							pParams.keepExistingTypes ||
 							isPureBasicLandSubtypeShift
 					);
@@ -5132,13 +5393,30 @@ class Run {
 				};
 				const layer4 = Object.keys(layer4Raw).length > 0 ? layer4Raw : undefined;
 				// --- End Track P16a ---
+				// --- Track P19a: Choice-based color change ("becomes the color of your choice" / "in addition to its other colors") ---
+				let animSetColors =
+					pParams.setColors !== undefined ? [...pParams.setColors] : undefined;
+				let animAddColors = pParams.addColors?.length ? [...pParams.addColors] : undefined;
+				if (pParams.chooseColorForAnimate) {
+					const chosenColRes = resolveP19aChosenColorsForAnimate(
+						this.p19aHost(),
+						pParams.chooseColorForAnimate
+					);
+					if (chosenColRes === null) return;
+					if (pParams.addColors?.length) {
+						animAddColors = [...new Set([...pParams.addColors, ...chosenColRes])];
+					} else {
+						animSetColors = chosenColRes;
+					}
+				}
 				const layer5 =
-					pParams.setColors !== undefined || pParams.addColors?.length
+					animSetColors !== undefined || animAddColors?.length
 						? {
-								...(pParams.setColors !== undefined ? { setColors: [...pParams.setColors] } : {}),
-								...(pParams.addColors?.length ? { addColors: [...pParams.addColors] } : {})
+								...(animSetColors !== undefined ? { setColors: animSetColors } : {}),
+								...(animAddColors?.length ? { addColors: animAddColors } : {})
 							}
 						: undefined;
+				// --- End Track P19a ---
 				const layer6 =
 					pParams.addKeywords?.length ||
 					pParams.grantedAbilityTexts?.length ||
@@ -5151,13 +5429,19 @@ class Run {
 								...(pParams.removeAllAbilities ? { removeAllAbilities: true } : {})
 							}
 						: undefined;
-				const layer7b =
-					pParams.setPower !== undefined && pParams.setToughness !== undefined
-						? {
-								setPower: this.amount(pParams.setPower),
-								setToughness: this.amount(pParams.setToughness)
-							}
-						: undefined;
+				// --- Track P19a: Support `{ k: 'stat', of: { k: 'affected' } }` per animated object (e.g. Sydri, Karn) ---
+				const evalAnimAmountFor = (amt: Amount, obj: CardInstance): number => {
+					if (amt.k === 'stat' && amt.of.k === 'affected') {
+						const snap = this.snapshot(obj);
+						return amt.stat === 'power'
+							? snap.power
+							: amt.stat === 'toughness'
+								? snap.toughness
+								: snap.manaValue;
+					}
+					return this.amount(amt);
+				};
+				// --- End Track P19a ---
 				// --- Track P13 + Track P16a ---
 				const animDur = pParams.duration ?? 'endOfTurn';
 				let expiryFields: ReturnType<typeof buildDurationExpiryFields>;
@@ -5184,6 +5468,13 @@ class Run {
 				}
 				// --- End Track P13 + Track P16a ---
 				for (const o of objs) {
+					const layer7b =
+						pParams.setPower !== undefined && pParams.setToughness !== undefined
+							? {
+									setPower: evalAnimAmountFor(pParams.setPower, o),
+									setToughness: evalAnimAmountFor(pParams.setToughness, o)
+								}
+							: undefined;
 					const ts = allocateTimestamp(s);
 					(s.timedContinuousEffects ??= []).push({
 						timestamp: ts,
@@ -5844,6 +6135,18 @@ class Run {
 			case 'heal':
 				return executeHeal(this.p16aHost(), step);
 			// --- End Track P16a ---
+			// --- Track P19a ---
+			case 'redirectTargets':
+				return executeP19aRedirectTargets(this.p19aHost(), step);
+			case 'skipTurn':
+				return executeP19aSkipTurn(this.p19aHost(), step);
+			case 'exileUntil':
+				return executeP19aExileUntil(this.p19aHost(), step);
+			case 'delayedTapManaTrigger':
+				return executeP19aDelayedTapManaTrigger(this.p19aHost(), step);
+			case 'delayedNextSpellCopy':
+				return executeP19aDelayedNextSpellCopy(this.p19aHost(), step);
+			// --- End Track P19a ---
 			default:
 				// Not reachable: staticallyInterpretable rejects every other verb.
 				p.addLog(s, 'rule', `${title}: the "${step.verb}" step isn't supported yet and did nothing.`, you.playerId);
@@ -6167,7 +6470,13 @@ class Run {
 			const encodedCounts: string[] = [];
 			const cardIds: string[] = [];
 			const allCards: CardInstance[] = [];
+			// --- Track P19a ---
+			let maxHandDiscarded = 0;
+			// --- End Track P19a ---
 			for (const pl of actors) {
+				// --- Track P19a ---
+				if (pl.hand.length > maxHandDiscarded) maxHandDiscarded = pl.hand.length;
+				// --- End Track P19a ---
 				encodedCounts.push(`${pl.playerId}|${pl.hand.length}`);
 				for (const c of pl.hand) {
 					cardIds.push(c.instanceId);
@@ -6180,6 +6489,11 @@ class Run {
 					pl.playerId
 				);
 			}
+			// --- Track P19a ---
+			this.recordCountedKind('greatestDiscarded', maxHandDiscarded);
+			this.recordCountedKind('discardedThisWay', allCards.length);
+			this.recordEffectAmount(allCards.length);
+			// --- End Track P19a ---
 			this.bind(step, allCards);
 			this.answers[countsKey] = { kind: 'chooseObjects', objectIds: encodedCounts };
 			this.answers[batchKey] = { kind: 'chooseObjects', objectIds: cardIds };
@@ -6267,11 +6581,27 @@ class Run {
 				} else if (t.kind === 'permanent') {
 					const perm = this.locate(t.id)?.inst;
 					if (perm && perm.zone === 'battlefield') {
+						const permCtrl = this.player(perm.controllerId);
 						const dealt = this.dealDamageToPermanent(perm, amt, srcId, srcInfo);
 						totalDealt += dealt;
 						// --- Track P7 ---
 						if (dealt > 0) damagedPerms.push(perm);
 						// --- End Track P7 ---
+						// --- Track P19a (CR 120.10): Excess damage dealt to that permanent's controller ---
+						if (
+							step.params?.excessDamageToController &&
+							(this.lastExcessDamage ?? 0) > 0 &&
+							permCtrl &&
+							!permCtrl.lost
+						) {
+							totalDealt += this.dealDamageToPlayer(
+								permCtrl,
+								this.lastExcessDamage!,
+								srcId,
+								srcInfo
+							);
+						}
+						// --- End Track P19a ---
 					}
 				}
 			}
@@ -6524,6 +6854,9 @@ class Run {
 			// --- Track P16a ---
 			this.stepDecisions[this.stepIndex] = sacrificed.length > 0;
 			// --- End Track P16a ---
+			// --- Track P19a ---
+			this.recordCountedKind('sacrificedThisWay', sacrificed.length);
+			// --- End Track P19a ---
 			this.answers[batchKey] = {
 				kind: 'chooseObjects',
 				objectIds: sacrificed.map((o) => o.instanceId)
@@ -6663,6 +6996,10 @@ class Run {
 			const flatCards = discarded.flatMap((x) => x.cards);
 			this.stepDecisions[this.stepIndex] = flatCards.length > 0;
 			// --- End Track P16a ---
+			// --- Track P19a ---
+			this.recordCountedKind('discardedThisWay', flatCards.length);
+			this.recordEffectAmount(flatCards.length);
+			// --- End Track P19a ---
 			this.bind(step, flatCards);
 			for (const { pl, cards } of discarded) {
 				p.addLog(s, 'rule', `${pl.username} discarded ${cards.length} card(s)${atRandom ? ' at random' : ''}.`, pl.playerId);
@@ -6685,6 +7022,11 @@ class Run {
 	}
 
 	revealAndDiscard(step: EffectStep): void {
+		// --- Track P19a: Extended reveal-and-discard / exile modes ---
+		if (executeP19aExtendedRevealAndDiscard(this.p19aHost(), step)) {
+			return;
+		}
+		// --- End Track P19a ---
 		const s = this.state;
 		const p = P();
 		const spec = step.params?.coerciveDiscard;
@@ -6982,6 +7324,10 @@ class Run {
 				if (step.params?.upTo) {
 					this.stepDecisions[this.stepIndex] = pickedAll.length > 0;
 				}
+				// --- Track P19a ---
+				this.recordCountedKind('exiledFromHand', pickedAll.length);
+				this.recordCountedKind('exiledThisWay', pickedAll.length);
+				// --- End Track P19a ---
 				this.bind(step, pickedAll);
 				this.answers[batchKey] = {
 					kind: 'chooseObjects',
@@ -7186,6 +7532,9 @@ class Run {
 		}
 		if (gyLeftGeneral.size > 0) flushTriggers(s);
 		// --- End Track P10 ---
+		// --- Track P19a ---
+		this.recordCountedKind('exiledThisWay', this.stepActedIds.length);
+		// --- End Track P19a ---
 	}
 
 	private resolveLibraryPlacementChoice(
@@ -8041,7 +8390,7 @@ class Run {
 					attachObject(s, o, pickedId && attachCands.includes(pickedId) ? pickedId : attachCands[0]);
 				}
 				o.summoningSick = params.unearth ? false : !enteringView.keywords.includes('Haste');
-				o.tapped = Boolean(params.tapped);
+				o.tapped = Boolean(params.tapped || params.entersTappedAndAttacking);
 				o.defaultControllerId = controller.playerId;
 				const res = moveObject(s, o, 'battlefield', {
 					from: { player: holder, zone: actualFrom },
@@ -8076,6 +8425,23 @@ class Run {
 					this.recordStepActedObject(o, preSnap, false);
 				}
 				// --- End Track P10 ---
+				// --- Track P19a: Enters tapped and attacking (CR 508.4) & Enduring cycle "as an enchantment" (Layer 4) ---
+				if (params.entersTappedAndAttacking && o.zone === 'battlefield') {
+					registerEnteredAttackingCombatant(s, controller, o);
+				}
+				if (params.asEnchantmentOnly && o.zone === 'battlefield') {
+					const ts = allocateTimestamp(s);
+					(s.timedContinuousEffects ??= []).push({
+						timestamp: ts,
+						sourceName: this.ctx.sourceCard.name,
+						controllerId: controller.playerId,
+						affected: [{ instanceId: o.instanceId, objectVersion: o.objectVersion ?? 1 }],
+						expires: 'never',
+						layer4: { setTypes: ['Enchantment'], setSubtypes: [] }
+					});
+					noteLayerInputsChanged(s);
+				}
+				// --- End Track P19a ---
 				if (params.unearth && o.zone === 'battlefield') {
 					// CR 702.84a: permanent Haste, leave-battlefield exile replacement, and next-end-step exile delayed trigger.
 					o.unearthLeaveExile = true;
@@ -8175,7 +8541,14 @@ class Run {
 		return candidates.slice(0, max);
 	}
 
-	private moveDigCardToBattlefield(o: CardInstance, pl: PlayerGameState, tapped: boolean): MoveResult | void {
+	private moveDigCardToBattlefield(
+		o: CardInstance,
+		pl: PlayerGameState,
+		tapped: boolean,
+		// --- Track P19a ---
+		attacking = false
+		// --- End Track P19a ---
+	): MoveResult | void {
 		const s = this.state;
 		const p = P();
 		o.isFaceDown = false;
@@ -8221,6 +8594,11 @@ class Run {
 			bumpVersion: true
 		});
 		if (o.zone === 'battlefield') {
+			// --- Track P19a ---
+			if (attacking) {
+				registerEnteredAttackingCombatant(s, pl, o);
+			}
+			// --- End Track P19a ---
 			p.addLog(
 				s,
 				'cast',
@@ -8565,7 +8943,12 @@ class Run {
 						});
 					}
 					if (dig.keepTo === 'battlefield') {
-						return this.moveDigCardToBattlefield(o, pl, Boolean(dig.keepTapped));
+						return this.moveDigCardToBattlefield(
+							o,
+							pl,
+							Boolean(dig.keepTapped),
+							Boolean(dig.keepAttacking)
+						);
 					}
 				}
 			);
@@ -8608,6 +8991,19 @@ class Run {
 			);
 			if (batch.paused) return;
 		// --- End Track P16a ---
+		// --- Track P19a: `rest === 'libraryTop'` ("Look at the top two cards... Put one into your graveyard", "Put the rest back on top...") ---
+		} else if (dig.rest === 'libraryTop') {
+			const keptInLib =
+				dig.keepTo === 'libraryTop'
+					? keptIds
+							.map((id) => pl.library.find((c) => c.instanceId === id))
+							.filter((c): c is CardInstance => Boolean(c))
+					: [];
+			const restInLib = orderedRestIds
+				.map((id) => pl.library.find((c) => c.instanceId === id))
+				.filter((c): c is CardInstance => Boolean(c));
+			rearrangeLibrary(pl, [...keptInLib, ...restInLib], [...keptInLib, ...restInLib], []);
+		// --- End Track P19a ---
 		} else {
 			const keptInLib =
 				dig.keepTo === 'libraryTop'
@@ -9206,6 +9602,22 @@ class Run {
 				});
 			}
 			// --- End Track P20a ---
+			// --- Track P19a ---
+			case 'anyGraveyardAtLeast':
+			case 'controlledTargetAtResolution':
+			case 'abilityActivatedCountThisTurn': {
+				const srcFound = this.locate(this.ctx.sourceId);
+				return Boolean(
+					evaluateP19aCondition(c, {
+						state: this.state,
+						controllerId: this.you.playerId,
+						source: srcFound?.inst,
+						stackItem: this.ctx.item,
+						xValue: this.ctx.xValue
+					})
+				);
+			}
+			// --- End Track P19a ---
 			// --- Track P19b ---
 			default: {
 				const srcFound = this.locate(this.ctx.sourceId);
@@ -9275,6 +9687,11 @@ class Run {
 		childRun.lastCountersRemoved = this.lastCountersRemoved;
 		for (const did of this.prevStepDiedIds) childRun.prevStepDiedIds.add(did);
 		// --- End Track P16a ---
+		// --- Track P19a ---
+		if (this.lastCountedByKind) {
+			childRun.lastCountedByKind = { ...this.lastCountedByKind };
+		}
+		// --- End Track P19a ---
 		for (const [name, bound] of this.bindings.entries()) {
 			childRun.bindings.set(
 				name,
@@ -9305,6 +9722,12 @@ class Run {
 				this.ctx.item.lastCountersRemoved = this.lastCountersRemoved;
 			}
 			// --- End Track P16a ---
+			// --- Track P19a ---
+			if (childRun.lastCountedByKind) {
+				this.lastCountedByKind = { ...childRun.lastCountedByKind };
+				this.ctx.item.lastCountedByKind = { ...childRun.lastCountedByKind };
+			}
+			// --- End Track P19a ---
 			this.bindings.clear();
 			for (const [name, bound] of childRun.bindings.entries()) {
 				this.bindings.set(name, bound);
@@ -9542,6 +9965,102 @@ class Run {
 		this.lastEffectAmount = n;
 		this.ctx.item.lastEffectAmount = n;
 	}
+	// --- Track P19a ---
+	private recordCountedKind(
+		kind: NonNullable<Extract<Amount, { k: 'countedThisWay' }>['kind']>,
+		n: number
+	): void {
+		const next = { ...(this.lastCountedByKind ?? {}), [kind]: n };
+		this.lastCountedByKind = next;
+		this.ctx.item.lastCountedByKind = { ...next };
+	}
+
+	private p19aHost(): P19aStepHost {
+		const self = this;
+		const lifeFunnels = this.p13LifeFunnels();
+		return {
+			get state() {
+				return self.state;
+			},
+			get you() {
+				return self.you;
+			},
+			get sourceId() {
+				return self.ctx.sourceId;
+			},
+			get sourceCard() {
+				return self.ctx.sourceCard;
+			},
+			get title() {
+				return self.ctx.title;
+			},
+			get item() {
+				return self.ctx.item;
+			},
+			get stepIndex() {
+				return self.stepIndex;
+			},
+			get subStepIndex() {
+				return self.subStepIndex;
+			},
+			get canPause() {
+				return self.canPause;
+			},
+			get answers() {
+				return self.answers;
+			},
+			get targets() {
+				return self.ctx.targets;
+			},
+			get eventObjectId() {
+				return self.ctx.eventObjectId;
+			},
+			get eventPlayerId() {
+				return self.ctx.eventPlayerId;
+			},
+			get sourceChosenCardName() {
+				const src = self.locate(self.ctx.sourceId)?.inst;
+				return src?.chosenCardName ?? self.ctx.item.sourceChosenCardName;
+			},
+			amount: (a, fb) => self.amount(a, fb),
+			evalCondition: (c) => self.condition(c),
+			objects: (sel) => self.objects(sel),
+			players: (sel) => self.players(sel),
+			targetsForSpecIndex: (idx) => self.targetsForSpecIndex(idx),
+			locate: (id) => {
+				const f = self.locate(id);
+				return f ? { inst: f.inst, player: f.holder, zone: f.zone } : undefined;
+			},
+			bind: (st, objs) => self.bind(st, objs),
+			recordEffectAmount: (n) => self.recordEffectAmount(n),
+			recordCountedKind: (kind, n) => self.recordCountedKind(kind, n),
+			saveFrame: (stepIndex, answers, phase, subStepIndex) =>
+				self.saveFrame(stepIndex, answers, phase, subStepIndex),
+			pauseForChoice: (chooser, title, desc, cands, min, max, zone, defaults, ansKey) =>
+				self.pauseForChoice(chooser, title, desc, cands, min, max, zone, defaults, ansKey),
+			pauseForYesNo: (chooser, title, desc, answerKey, labels) =>
+				self.pauseForYesNo(
+					chooser,
+					title,
+					desc,
+					answerKey,
+					labels?.yesLabel && labels?.noLabel
+						? { yesLabel: labels.yesLabel, noLabel: labels.noLabel }
+						: undefined
+				),
+			markPaused: () => {
+				self.result.paused = true;
+			},
+			gainLifeForPlayer: (pl, amt) => {
+				lifeFunnels.gainLife(self.state, pl, amt);
+			},
+			loseLifeForPlayer: (pl, amt) => {
+				lifeFunnels.loseLife(self.state, pl, amt);
+			},
+			p16aHost: () => self.p16aHost()
+		};
+	}
+	// --- End Track P19a ---
 
 	private p13AskFn(): P13StepAskFn {
 		return (player, answerKey, choice, title, description) => {
@@ -10451,9 +10970,22 @@ export function manaChoiceColors(
 	state: GameState,
 	controller: PlayerGameState,
 	choice: NonNullable<NonNullable<EffectStep['params']>['manaChoice']>,
-	chosenColor?: ManaColor
+	chosenColor?: ManaColor,
+	// --- Track P19a ---
+	eventObjectId?: string
+	// --- End Track P19a ---
 ): ManaColor[] {
 	if (Array.isArray(choice)) return choice;
+	// --- Track P19a ---
+	if (
+		choice === 'eventProducedTypes' ||
+		choice === 'eventProducedColors' ||
+		choice === 'controlledLandProducedTypes' ||
+		choice === 'controlledLandProducedColors'
+	) {
+		return resolveP19aManaChoiceColors(state, controller, choice, eventObjectId);
+	}
+	// --- End Track P19a ---
 	if (choice === 'any') return [...FIVE_COLORS];
 	if (choice === 'commanderIdentity') {
 		return commanderColors(controller);

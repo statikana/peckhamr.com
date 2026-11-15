@@ -3002,6 +3002,9 @@ const READ_P18A = 1 << 24;
 // --- Track P18b ---
 const READ_P18B = 1 << 25;
 // --- End Track P18b ---
+// --- Track P19a ---
+const READ_P19A = 1 << 26; // 67108864
+// --- End Track P19a ---
 // --- Track P20a ---
 const READ_P20A = 1 << 28;
 // --- End Track P20a ---
@@ -3171,6 +3174,11 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 		fp.push(0);
 	}
 	// --- End Track P18b ---
+	// --- Track P19a ---
+	if (reads & READ_P19A) {
+		fp.push(0);
+	}
+	// --- End Track P19a ---
 	// --- Track P20a ---
 	if (reads & READ_P20A) {
 		fp.push(state.rules?.startingLife ?? 20, state.players.length);
@@ -3674,6 +3682,11 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 		if (fp[i++] !== 0) return false;
 	}
 	// --- End Track P18b ---
+	// --- Track P19a ---
+	if (reads & READ_P19A) {
+		if (fp[i++] !== 0) return false;
+	}
+	// --- End Track P19a ---
 	// --- Track P20a ---
 	if (reads & READ_P20A) {
 		if (

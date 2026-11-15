@@ -45,6 +45,9 @@ import type {
 	PlayerGameState,
 	ScryfallCard,
 	SerializedPlannedCost,
+	// --- Track P19a ---
+	SacrificedCostLkiEntry,
+	// --- End Track P19a ---
 	// --- Track P11 ---
 	TargetRef
 	// --- End Track P11 ---
@@ -135,6 +138,9 @@ import {
 	type P20bPitchCounts
 } from './costsWave7.ts';
 // --- End Track P20b ---
+// --- Track P19a ---
+import { captureP19aSacrificedCostLki } from './effectsWave7.ts';
+// --- End Track P19a ---
 
 export type { SerializedPlannedCost };
 export {
@@ -1397,6 +1403,9 @@ export interface CostContext {
 	// --- Track P17b ---
 	spellColors?: ManaColor[];
 	// --- End Track P17b ---
+	// --- Track P19a ---
+	sacrificedLkiOut?: SacrificedCostLkiEntry[];
+	// --- End Track P19a ---
 	canPayMana: (req: ManaCostRequirement, reservedIds?: ReadonlySet<string>) => boolean;
 	payMana: (req: ManaCostRequirement) => boolean;
 }
@@ -3121,6 +3130,11 @@ export function executeCostPaymentParts(
 						ctx.state.players.flatMap((pl) => pl.battlefield).find((c) => c.instanceId === ids[j]) ??
 						(def.filter === 'self' && source.zone === 'battlefield' ? source : undefined);
 					if (!perm) continue;
+					// --- Track P19a (CR 608.2h / CR 707.10): Snapshot sacrificed-cost LKI before battlefield departure ---
+					if (ctx.sacrificedLkiOut && perm.zone === 'battlefield') {
+						ctx.sacrificedLkiOut.push(captureP19aSacrificedCostLki(ctx.state, perm));
+					}
+					// --- End Track P19a ---
 					if (sacrifice(ctx, perm) === 'pending') {
 						return { descriptions, paused: true, nextPartIndex: partIdx, nextObjectIndex: j + 1 };
 					}
