@@ -56,6 +56,15 @@ import { buildTokenSpec, parseLibrarySearchSpec, PREDEFINED_TOKEN_DEFS } from '.
 import { compileSingleFace } from './card.ts';
 import { COUNTERS, parseAdditionalCostSentence, parseCost, parseObjectPhrase, singularSubtype } from './costs.ts';
 import { parseExtendedObjectPhrase, parseP13Amount, tryParseP13Sentence } from './effectsWave5.ts';
+import {
+	isWave6ResolutionCondition,
+	parseUniversalCounterName,
+	parseWave6Amount,
+	parseWave6EffectCondition,
+	tryParsePileSplitFollowUp,
+	tryParseWave6ObjectPredicate,
+	tryParseWave6Sentence
+} from './effectsWave6.ts';
 import { staticallyInterpretable } from './interpretable.ts';
 import { parseActivatedIfConditionSentence, parseCondition } from './triggers.ts';
 import {
@@ -277,6 +286,20 @@ class Parser {
 	pendingCoercive?: PendingCoerciveState;
 	/** Most recent `flipCoin` step index for multi-sentence "If you win/lose the flip, ...". */
 	lastCoinFlipStep?: number;
+	// --- Track P16a ---
+	/** Most recent non-optional conditional step range for "Otherwise, <effect>." */
+	lastConditional?: {
+		cond: Condition;
+		stepStart: number;
+		preLastObject?: { ref: Ref; stepIndex: number };
+	};
+	/** Object bound before a conditional optional step (e.g. "If it's a land card, you may put it..."). */
+	preOptionalLastObject?: { ref: Ref; stepIndex: number };
+	/** Start index in `this.steps` of the immediately preceding parsed sentence (for replacement "instead"). */
+	lastSentenceStepStart?: number;
+	/** Multi-sentence "Copy <card>. You may cast the copy without paying its mana cost." (CR 707.12). */
+	pendingCardCopy?: { stepIndex: number; span: Span };
+	// --- End Track P16a ---
 
 	constructor(context: EffectContext, trigger?: TriggerDef) {
 		this.context = context;
@@ -328,6 +351,14 @@ class Parser {
 		pendingDig?: PendingDigState;
 		pendingCoercive?: PendingCoerciveState;
 		lastCoinFlipStep?: number;
+		lastConditional?: {
+			cond: Condition;
+			stepStart: number;
+			preLastObject?: { ref: Ref; stepIndex: number };
+		};
+		preOptionalLastObject?: { ref: Ref; stepIndex: number };
+		lastSentenceStepStart?: number;
+		pendingCardCopy?: { stepIndex: number; span: Span };
 		binds: Array<string | undefined>;
 	} {
 		return {
@@ -344,6 +375,10 @@ class Parser {
 				? { ...this.pendingCoercive, spans: [...this.pendingCoercive.spans] }
 				: undefined,
 			lastCoinFlipStep: this.lastCoinFlipStep,
+			lastConditional: this.lastConditional ? { ...this.lastConditional } : undefined,
+			preOptionalLastObject: this.preOptionalLastObject,
+			lastSentenceStepStart: this.lastSentenceStepStart,
+			pendingCardCopy: this.pendingCardCopy ? { ...this.pendingCardCopy } : undefined,
 			binds: this.steps.map((s) => s.bindAs)
 		};
 	}
@@ -358,10 +393,20 @@ class Parser {
 		this.pendingDig = m.pendingDig;
 		this.pendingCoercive = m.pendingCoercive;
 		this.lastCoinFlipStep = m.lastCoinFlipStep;
+		this.lastConditional = m.lastConditional;
+		this.preOptionalLastObject = m.preOptionalLastObject;
+		this.lastSentenceStepStart = m.lastSentenceStepStart;
+		this.pendingCardCopy = m.pendingCardCopy;
 		this.steps.forEach((s, i) => {
 			if (m.binds[i] === undefined) delete s.bindAs;
 			else s.bindAs = m.binds[i];
 		});
+	}
+
+	flushPendingCardCopy(): void {
+		if (!this.pendingCardCopy) return;
+		this.unparsed.push(this.pendingCardCopy.span);
+		this.pendingCardCopy = undefined;
 	}
 
 	flushPendingDig(): void {
@@ -415,7 +460,7 @@ class Parser {
 		// A step acting on an existing binding keeps that binding as "it" (Corpse Dance: the
 		// creature that gained haste is still the returned creature).
 		if (actsOnObjects && step.subject.k !== 'binding') this.setLastObject(idx);
-		if (step.optional) this.lastOptionalStep = idx;
+		if (stepOptionalChooser(step) !== undefined) this.lastOptionalStep = idx;
 		return idx;
 	}
 
@@ -507,6 +552,18 @@ function objectFilter(phrase: string): ObjectFilter | null {
 	const namedCard = p.match(/^cards? named (.+)$/i);
 	if (namedCard && namedCard[1].trim()) return withSuspect({ named: namedCard[1].trim() });
 	// --- End Track P10 ---
+	// --- Track P16a: Linked memory CR 607.2a / CR 701.72 ---
+	const exWithSelf = p.match(/^(.+?) exiled with ~$/i);
+	if (exWithSelf) {
+		const sub = objectFilter(exWithSelf[1].trim());
+		if (sub) return withSuspect({ ...sub, zone: 'exile', exiledWithSelf: true });
+	}
+	const assimWithSelf = p.match(/^(.+?) assimilated with ~$/i);
+	if (assimWithSelf) {
+		const sub = objectFilter(assimWithSelf[1].trim());
+		if (sub) return withSuspect({ ...sub, assimilatedWithSelf: true });
+	}
+	// --- End Track P16a ---
 	const direct = parseObjectPhrase(p);
 	if (direct) return withSuspect(direct);
 	if (/\band\/or\b/i.test(p)) {
@@ -526,7 +583,7 @@ function objectFilter(phrase: string): ObjectFilter | null {
  * graveyard", "noncreature spell", "activated or triggered ability", "player", "opponent".
  * Returns a TargetSpec without counts.
  */
-function targetPhrase(text: string): Omit<TargetSpec, 'min' | 'max'> | null {
+function targetPhrase(text: string, p?: Parser): Omit<TargetSpec, 'min' | 'max'> | null {
 	let phrase = text.trim();
 	if (/^(?:player|players)$/.test(phrase)) return { kind: 'player', filter: {}, player: { relation: 'any' } };
 	if (/^(?:opponent|opponents)$/.test(phrase)) return { kind: 'player', filter: {}, player: { relation: 'opponent' } };
@@ -540,16 +597,57 @@ function targetPhrase(text: string): Omit<TargetSpec, 'min' | 'max'> | null {
 
 	let zone: ObjectFilter['zone'] = 'battlefield';
 	let owner: ObjectFilter['owner'];
+	let gyControllerRef: PlayerRef | undefined;
 	let sameOwner: boolean | undefined;
-	const gy = phrase.match(/^(.+?) (?:from|in) (?:(a|a single|the same|your|an opponent's|any number of|opponents') )?(graveyards?)$/);
+	const gy = phrase.match(
+		/^(.+?) (?:from|in) (?:(a|a single|the same|your|an opponent's|any number of|opponents'|their|that player's|target player's|target opponent's|defending player's) )?(graveyards?)$/
+	);
 	if (gy) {
 		phrase = gy[1];
 		zone = 'graveyard';
 		const qual = gy[2];
 		const plural = gy[3] === 'graveyards';
 		owner = qual === 'your' ? 'you' : qual === "an opponent's" || qual === "opponents'" ? 'opponent' : undefined;
+		if (
+			qual === 'their' ||
+			qual === "that player's" ||
+			qual === "target player's" ||
+			qual === "target opponent's" ||
+			qual === "defending player's"
+		) {
+			if (!p) return null;
+			const pPhrase =
+				qual === 'their'
+					? 'they'
+					: qual === "that player's"
+						? 'that player'
+						: qual === "target player's"
+							? 'target player'
+							: qual === "target opponent's"
+								? 'target opponent'
+								: 'defending player';
+			const pSel = playerPhrase(p, pPhrase);
+			const pRef = pSel ? singlePlayer(pSel) : null;
+			if (!pRef) return null;
+			if (pPhrase.startsWith('target ')) p.lastPlayer = pSel!;
+			gyControllerRef = pRef;
+		}
 		if (!plural) sameOwner = true;
 	}
+	// --- Track P16a: Targeted exile cards ("target ... card in exile" / "target card exiled with ~") & "other than ~" ---
+	let otherThanSelf = false;
+	if (/\s+other than ~$/i.test(phrase)) {
+		otherThanSelf = true;
+		phrase = phrase.replace(/\s+other than ~$/i, '').trim();
+	}
+	let targetExiledWithSelf = false;
+	const exZoneMatch = phrase.match(/^(.+?) (?:in exile|from exile|exiled with ~)$/i);
+	if (exZoneMatch && zone === 'battlefield') {
+		zone = 'exile';
+		if (/exiled with ~$/i.test(phrase)) targetExiledWithSelf = true;
+		phrase = exZoneMatch[1].trim();
+	}
+	// --- End Track P16a ---
 	// --- Track P10: Extract "from a <filter> source" before `splitController` so "ability you control from a colorless source" parses cleanly ---
 	let abilitySourceFilter: ObjectFilter | undefined;
 	const rawFromSrc = phrase.match(/^(.+?) from (?:a|an) (.+?) source$/i);
@@ -595,12 +693,27 @@ function targetPhrase(text: string): Omit<TargetSpec, 'min' | 'max'> | null {
 				})
 			};
 		}
-		const spell = phrase.match(/^(?:(.+) )?spells?$/);
-		if (spell) {
-			const filter = spell[1] ? objectFilter(`${spell[1]} card`) : {};
-			if (!filter) return null;
-			return { kind: 'object', filter: withCtl({ ...filter, zone: 'stack' }) };
+		// --- Track P16a: Qualified stack spell targets ("spell with mana value 3 or less", "spell an opponent controls with ...") ---
+		let spellPhrase = phrase;
+		let midCtl: ObjectFilter['controller'] | undefined;
+		const ctlMid = spellPhrase.match(
+			/^(.+?)\s+(you control|you don't control|an opponent controls)(\s+with\b.+)?$/
+		);
+		if (ctlMid && !ctl.controller) {
+			spellPhrase = `${ctlMid[1]}${ctlMid[3] ?? ''}`;
+			midCtl = ctlMid[2] === 'you control' ? 'you' : 'opponent';
 		}
+		const spell = spellPhrase.match(/^(?:(.+?) )?spells?(?:\s+(with\b.+))?$/);
+		if (spell) {
+			const cardPhrase = `${spell[1] ? `${spell[1]} ` : ''}card${spell[2] ? ` ${spell[2]}` : ''}`;
+			const filter = cardPhrase === 'card' ? {} : objectFilter(cardPhrase);
+			if (!filter) return null;
+			return {
+				kind: 'object',
+				filter: withCtl({ ...filter, ...(midCtl ? { controller: midCtl } : {}), zone: 'stack' })
+			};
+		}
+		// --- End Track P16a ---
 	}
 	if (wasNotCast) return null;
 	if (/^(?:creatures? (?:or|and\/or) players?|players? (?:or|and\/or) creatures?)$/.test(phrase) && !ctl.controller) {
@@ -639,14 +752,43 @@ function targetPhrase(text: string): Omit<TargetSpec, 'min' | 'max'> | null {
 	const resolvedZone = filter.zone ?? zone;
 	if (resolvedZone === 'graveyard' && !/\bcards?\b/.test(phrase)) return null;
 	if (resolvedZone === 'battlefield' && /\bcards?$/.test(phrase)) return null;
-	const out: ObjectFilter = { ...filter, zone: resolvedZone };
+	const out: ObjectFilter = {
+		...filter,
+		zone: resolvedZone,
+		...(targetExiledWithSelf ? { exiledWithSelf: true } : {}),
+		...(otherThanSelf ? { other: true } : {})
+	};
 	if (ctl.controller) out.controller = ctl.controller;
+	if (gyControllerRef) out.controllerRef = gyControllerRef;
 	if (owner) out.owner = owner;
 	return { kind: 'object', filter: out, ...(sameOwner ? { sameOwner: true } : {}) };
 }
 
+function applyOtherTargetQualifier(p: Parser, index: number): boolean {
+	const spec = p.targets[index];
+	if (!spec) return false;
+	const curZone = spec.filter.zone ?? 'battlefield';
+	const hasPriorSameZoneTarget = p.targets
+		.slice(0, index)
+		.some((prev) => prev.kind !== 'player' && (prev.filter.zone ?? 'battlefield') === curZone);
+	if (hasPriorSameZoneTarget) {
+		delete spec.filter.other;
+		spec.otherTarget = true;
+		return true;
+	}
+	if (
+		p.context === 'activated' ||
+		(p.context === 'triggered' && (!p.trigger?.filter.object || p.trigger.filter.object === 'self'))
+	) {
+		spec.filter.other = true;
+		return true;
+	}
+	return false;
+}
+
 function parseAnyTargetQuantifier(text: string): { min: number; max: number } | null {
 	if (text === 'any number of targets') return { min: 0, max: 99 };
+	if (text === 'one or more targets') return { min: 1, max: 99 };
 	if (text === 'one or two targets') return { min: 1, max: 2 };
 	if (text === 'one, two, or three targets') return { min: 1, max: 3 };
 	if (text === 'one, two, three, or four targets') return { min: 1, max: 4 };
@@ -667,6 +809,8 @@ function parseAnyTargetQuantifier(text: string): { min: number; max: number } | 
 function parseTypedMultiTargetQuantifier(text: string): { min: number; max: number; rest: string } | null {
 	let m = text.match(/^any number of target (.+)$/);
 	if (m) return { min: 0, max: 99, rest: m[1] };
+	m = text.match(/^one or more target (.+)$/);
+	if (m) return { min: 1, max: 99, rest: m[1] };
 	m = text.match(/^(?:one or two target|target one or two) (.+)$/);
 	if (m) return { min: 1, max: 2, rest: m[1] };
 	m = text.match(/^(?:one, two, or three target|target one, two, or three) (.+)$/);
@@ -716,9 +860,25 @@ function objectPhrase(p: Parser, text: string): ObjectRes | null {
 	if (t === '~ from your graveyard' || t === "~ from its owner's graveyard") {
 		return { selector: { k: 'self' }, ref: { k: 'self' }, fromZone: 'graveyard' };
 	}
+	if (t === '~ from exile') {
+		return { selector: { k: 'self' }, ref: { k: 'self' }, fromZone: 'exile' };
+	}
 	if (/^(?:equipped creature|enchanted (?:creature|permanent|land|artifact|enchantment|planeswalker))$/.test(t)) {
 		return { selector: { k: 'attachedTo' }, ref: { k: 'attachedTo' } };
 	}
+	// --- Track P16a: Linked LTB exile return (CR 607.2a: "When ~ leaves the battlefield, return the exiled card(s)...") ---
+	if (
+		!p.lastObject &&
+		p.context === 'triggered' &&
+		/^the exiled (?:cards?|creatures?|permanents?)$/i.test(t)
+	) {
+		return {
+			selector: { k: 'all', filter: { zone: 'exile', exiledWithSelf: true } },
+			plural: /s$/i.test(t),
+			fromZone: 'exile'
+		};
+	}
+	// --- End Track P16a ---
 	if (IT_WORDS.test(t)) {
 		if (/^they$/i.test(t) && !p.lastObject) return null;
 		if (!p.lastObject && p.context === 'triggered' && p.trigger?.filter.targetsSelf) {
@@ -755,7 +915,7 @@ function objectPhrase(p: Parser, text: string): ObjectRes | null {
 	}
 	const multiTyped = parseTypedMultiTargetQuantifier(t);
 	if (multiTyped) {
-		const spec = targetPhrase(multiTyped.rest);
+		const spec = targetPhrase(multiTyped.rest, p);
 		if (!spec) return null;
 		const { sameOwner, ...restSpec } = spec;
 		const index = p.addTarget({
@@ -803,21 +963,75 @@ function objectPhrase(p: Parser, text: string): ObjectRes | null {
 		};
 	}
 	// --- End Track P10 / P13 ---
-	const tgt = t.match(/^(?:(up to) )?(?:(\S+) )?target (?:(one|two|three|four|five|six|\d+) )?(.+)$/);
-	if (tgt) {
-		const countWord = tgt[2] ?? tgt[3];
-		const c = countWord ? count(countWord) : n(1);
-		if (!c || c.k !== 'const') return null;
-		const spec = targetPhrase(tgt[4]);
+	// --- Track P16a: Generalized "another target" / "up to N other target" / "any number of other target" ---
+	if (t === 'another target' || t === 'up to one other target') {
+		const snapshot = p.targets.length;
+		const isUpTo = t.startsWith('up to');
+		const index = p.addTarget({
+			kind: 'objectOrPlayer',
+			filter: { zone: 'battlefield', types: ['Creature', 'Planeswalker', 'Battle'] },
+			player: { relation: 'any' },
+			min: isUpTo ? 0 : 1,
+			max: 1
+		});
+		if (!applyOtherTargetQualifier(p, index)) {
+			p.targets.length = snapshot;
+			return null;
+		}
+		return { selector: { k: 'target', index }, ref: { k: 'target', index } };
+	}
+	const otherTargetM = t.match(
+		/^(?:(another) target|(any number of) other target|(?:(up to) )?(\S+) other target) (.+)$/i
+	);
+	if (otherTargetM) {
+		const snapshot = p.targets.length;
+		let min = 1;
+		let max = 1;
+		if (otherTargetM[1]) {
+			min = 1;
+			max = 1;
+		} else if (otherTargetM[2]) {
+			min = 0;
+			max = 99;
+		} else {
+			const c = count(otherTargetM[4]);
+			if (!c || c.k !== 'const' || c.n < 1) return null;
+			min = otherTargetM[3] ? 0 : c.n;
+			max = c.n;
+		}
+		const spec = targetPhrase(otherTargetM[5], p);
 		if (!spec) return null;
 		const { sameOwner, ...restSpec } = spec;
 		const index = p.addTarget({
 			...restSpec,
-			min: tgt[1] ? 0 : c.n,
-			max: c.n,
-			...(sameOwner && c.n > 1 ? { sameOwner: true } : {})
+			min,
+			max,
+			...(sameOwner && max > 1 ? { sameOwner: true } : {})
 		});
-		return { selector: { k: 'target', index }, ref: { k: 'target', index }, plural: c.n > 1 };
+		if (!applyOtherTargetQualifier(p, index)) {
+			p.targets.length = snapshot;
+			return null;
+		}
+		return { selector: { k: 'target', index }, ref: { k: 'target', index }, plural: max > 1 };
+	}
+	// --- End Track P16a ---
+	const tgt = t.match(/^(?:(up to) )?(?:(\S+) )?target (?:(one|two|three|four|five|six|\d+) )?(.+)$/);
+	if (tgt) {
+		const countWord = tgt[2] ?? tgt[3];
+		const c = countWord ? count(countWord) : n(1);
+		if (c && c.k === 'const') {
+			const spec = targetPhrase(tgt[4], p);
+			if (!spec) return null;
+			const { sameOwner, ...restSpec } = spec;
+			const index = p.addTarget({
+				...restSpec,
+				min: tgt[1] ? 0 : c.n,
+				max: c.n,
+				...(sameOwner && c.n > 1 ? { sameOwner: true } : {})
+			});
+			return { selector: { k: 'target', index }, ref: { k: 'target', index }, plural: c.n > 1 };
+		}
+		if (tgt[1]) return null;
 	}
 	const top = t.match(/^the top (.+) card of your graveyard$/);
 	if (top) {
@@ -829,6 +1043,29 @@ function objectPhrase(p: Parser, text: string): ObjectRes | null {
 			fromZone: 'graveyard'
 		};
 	}
+	// --- Track P16a: Linked memory selectors ("all cards exiled with ~", "creatures assimilated with ~") ---
+	const allExSelf = t.match(/^(?:(?:all|each)\s+)?(.+?) exiled with ~$/i);
+	if (allExSelf && !/^target\b/i.test(allExSelf[1])) {
+		const sub = objectFilter(allExSelf[1].trim());
+		if (sub) {
+			return {
+				selector: { k: 'all', filter: { ...sub, zone: 'exile', exiledWithSelf: true } },
+				plural: true,
+				fromZone: 'exile'
+			};
+		}
+	}
+	const allAssimSelf = t.match(/^(?:(?:all|each)\s+)?(.+?) assimilated with ~$/i);
+	if (allAssimSelf && !/^target\b/i.test(allAssimSelf[1])) {
+		const sub = objectFilter(allAssimSelf[1].trim());
+		if (sub) {
+			return {
+				selector: { k: 'all', filter: { ...sub, zone: 'battlefield', assimilatedWithSelf: true } },
+				plural: true
+			};
+		}
+	}
+	// --- End Track P16a ---
 	const all = t.match(/^(?:all|each) (.+)$/);
 	const barePluralBoard =
 		!all &&
@@ -841,7 +1078,7 @@ function objectPhrase(p: Parser, text: string): ObjectRes | null {
 		!/\bcards?\b/i.test(t);
 	const bare =
 		(!all &&
-			/\b(?:you control|your opponents control|opponents control|an opponent controls|you don't control|target player controls|target opponent controls|that player controls)$/.test(
+			/\b(?:you control|your opponents control|opponents control|an opponent controls|you don't control|target player controls|target opponent controls|that player controls|that opponent controls|defending player controls)$/.test(
 				t
 			) &&
 			!/^(?:a|an|another|target)\b/.test(t)) ||
@@ -851,12 +1088,15 @@ function objectPhrase(p: Parser, text: string): ObjectRes | null {
 		const parseUnionObjectFilter = (raw: string): ObjectFilter | null =>
 			objectFilter(raw) ??
 			(/\band\b/.test(raw) ? objectFilter(raw.replace(/,?\s+and\s+/gi, ' or ')) : null);
-		const refCtl = inner.match(/^(.+?) (target player|target opponent|that player) controls$/);
+		const refCtl = inner.match(
+			/^(.+?) (target player|target opponent|that player|that opponent|defending player) controls$/
+		);
 		if (refCtl) {
 			const filter = parseUnionObjectFilter(refCtl[1]);
 			const playerSel = playerPhrase(p, refCtl[2]);
 			const ref = playerSel ? singlePlayer(playerSel) : null;
 			if (!filter || !ref) return null;
+			if (refCtl[2].startsWith('target ')) p.lastPlayer = playerSel!;
 			const out: ObjectFilter = { zone: 'battlefield', ...filter, controllerRef: ref };
 			if (/^other\b/.test(refCtl[1])) out.other = true;
 			return { selector: { k: 'all', filter: out }, plural: true };
@@ -880,6 +1120,11 @@ function playerPhrase(p: Parser, text: string): Selector | null {
 	if (t === 'you') return { k: 'player', filter: { relation: 'you' } };
 	if (t === 'each opponent') return { k: 'player', filter: { relation: 'each_opponent' } };
 	if (t === 'each player') return { k: 'player', filter: { relation: 'each_player' } };
+	if (t === "~'s owner") return { k: 'playerRef', ref: { k: 'ownerOf', of: { k: 'self' } } };
+	if (t === "~'s controller") return { k: 'playerRef', ref: { k: 'controllerOf', of: { k: 'self' } } };
+	if (t === 'defending player' && p.context === 'triggered') {
+		return { k: 'playerRef', ref: { k: 'defendingPlayer' } };
+	}
 	if (t === 'target player' || t === 'target opponent') {
 		const index = p.addTarget({
 			kind: 'player',
@@ -891,7 +1136,7 @@ function playerPhrase(p: Parser, text: string): Selector | null {
 		return { k: 'playerRef', ref: { k: 'target', index } };
 	}
 	const of = t.match(
-		/^(?:its|that card's|that creature's|that permanent's|that spell's|the exiled card's|the exiled creature's|the exiled permanent's|their) (controller|owner)$/
+		/^(?:its|(?:that|the exiled|the sacrificed|the destroyed|the discarded) (?:card|creature|permanent|spell|artifact|enchantment|land|planeswalker|battle|token)'s|their) (controller|owner)$/
 	);
 	if (of) {
 		const ref = p.itRef();
@@ -907,7 +1152,13 @@ function playerPhrase(p: Parser, text: string): Selector | null {
 		return { k: 'playerRef', ref: { k: 'ownerOf', of: { k: 'target', index } } };
 	}
 	if (t === 'the player whose turn it is') return { k: 'playerRef', ref: { k: 'activePlayer' } };
-	if ((t === 'that player' || t === 'the player' || t === 'that opponent') && p.context === 'triggered') {
+	if (
+		(t === 'that player' ||
+			t === 'the player' ||
+			t === 'that opponent' ||
+			(t === 'they' && !p.lastPlayer && !p.lastObject)) &&
+		p.context === 'triggered'
+	) {
 		// In a triggered ability "that player" is the player the event was about ("Whenever an
 		// opponent casts a spell, that player ..."), unless an earlier clause chose a target player.
 		const last = p.lastPlayer;
@@ -933,11 +1184,16 @@ function equalTo(p: Parser, text: string): Amount | null {
 	if (/^(?:the result|the number of flips you won(?: this way)?|the number of coin flips you won(?: this way)?)$/i.test(t)) {
 		return { k: 'lastRollResult' };
 	}
-	if (/^your life total$/i.test(t)) {
-		return { k: 'life', of: { k: 'you' } };
+	const lifeTot = t.match(/^(your|that player's|their|target player's|target opponent's) life total$/i);
+	if (lifeTot) {
+		const poss = lifeTot[1].toLowerCase();
+		const whoPhrase = poss === 'your' ? 'you' : poss === 'their' ? 'they' : poss.replace(/'s$/i, '');
+		const pSel = playerPhrase(p, whoPhrase);
+		const pRef = pSel ? singlePlayer(pSel) : null;
+		if (pRef) return { k: 'life', of: pRef };
 	}
 	const stat = t.match(
-		/^(?:(its)|that card's|that creature's|that permanent's|that spell's|the exiled card's|the exiled creature's|the sacrificed creature's|the sacrificed permanent's|the sacrificed artifact's|the discarded card's|the amassed army's) (power|toughness|mana value)$/i
+		/^(?:(its)|(?:that|the exiled|the sacrificed|the destroyed|the discarded) (?:card|creature|permanent|spell|artifact|enchantment|land|planeswalker|battle|token)'s|the amassed army's) (power|toughness|mana value)$/i
 	);
 	if (stat) {
 		const it = p.itRef();
@@ -946,6 +1202,16 @@ function equalTo(p: Parser, text: string): Amount | null {
 		const lowStat = stat[2].toLowerCase();
 		const which = lowStat === 'mana value' ? 'manaValue' : (lowStat as 'power' | 'toughness');
 		return it ? { k: 'stat', of: ref, stat: which, lki: true } : { k: 'stat', of: ref, stat: which };
+	}
+	const statOf = t.match(
+		/^the (power|toughness|mana value) of (?:the [a-z -]+ (?:exiled|sacrificed|discarded|destroyed) this way|that [a-z -]+)$/i
+	);
+	if (statOf) {
+		const it = p.itRef();
+		if (!it) return null;
+		const lowStat = statOf[1].toLowerCase();
+		const which = lowStat === 'mana value' ? 'manaValue' : (lowStat as 'power' | 'toughness');
+		return { k: 'stat', of: it, stat: which, lki: true };
 	}
 	// "the entering creature's power" (CR 603.6a: the object that entered, as it is now).
 	const entering = t.match(/^the entering (?:creature|permanent)'s (power|toughness)$/);
@@ -959,9 +1225,27 @@ function equalTo(p: Parser, text: string): Amount | null {
 		if (/^(?:coin )?flips you won(?: this way)?$/i.test(num[1].trim())) {
 			return { k: 'lastRollResult' };
 		}
+		const w6Num = parseWave6Amount(num[1], {
+			itRef: () => p.itRef(),
+			resolveObjectRef: (phrase) => objectPhrase(p, phrase)?.ref ?? null,
+			resolvePlayerRef: (phrase) => {
+				const sel = playerPhrase(p, phrase);
+				return sel ? singlePlayer(sel) : null;
+			}
+		});
+		if (w6Num) return w6Num;
 		const nRes = numberOf(num[1]);
 		if (nRes) return nRes;
 	}
+	const w6Direct = parseWave6Amount(t, {
+		itRef: () => p.itRef(),
+		resolveObjectRef: (phrase) => objectPhrase(p, phrase)?.ref ?? null,
+		resolvePlayerRef: (phrase) => {
+			const sel = playerPhrase(p, phrase);
+			return sel ? singlePlayer(sel) : null;
+		}
+	});
+	if (w6Direct) return w6Direct;
 	const p13Amt = parseP13Amount(
 		t,
 		(sub) => equalTo(p, sub) ?? numberOf(sub) ?? amountWord(p, sub.toLowerCase())
@@ -972,6 +1256,19 @@ function equalTo(p: Parser, text: string): Amount | null {
 
 /** "creatures you control", "Elves you control", "cards in your hand". */
 function numberOf(text: string): Amount | null {
+	const w6Count = parseWave6Amount(text, {
+		itRef: () => null,
+		resolveObjectRef: (phrase) => {
+			const tr = phrase.trim();
+			if (tr === '~') return { k: 'self' };
+			if (/^(?:equipped creature|enchanted (?:creature|permanent|land|artifact|enchantment|planeswalker))$/i.test(tr)) {
+				return { k: 'attachedTo' };
+			}
+			return null;
+		},
+		resolvePlayerRef: (phrase) => (phrase.trim().toLowerCase() === 'you' ? { k: 'you' } : null)
+	});
+	if (w6Count) return w6Count;
 	const hand = text.match(/^cards in (your|target opponent's) hand$/);
 	if (hand && hand[1] === 'your') return { k: 'cardsIn', zone: 'hand', of: { k: 'you' } };
 	// --- Track P10: graveyard counts & card types among cards in graveyards ---
@@ -1017,7 +1314,16 @@ function numberOf(text: string): Amount | null {
 
 /** A count before a noun: "two", "X", "that many". */
 function amountWord(p: Parser, word: string): Amount | null {
-	if (word === 'that many' || word === 'that much') return p.thatMany();
+	if (word === 'that many' || word === 'that much') {
+		const prevStep =
+			p.lastOptionalStep !== undefined
+				? p.steps[p.lastOptionalStep]
+				: p.steps[p.steps.length - 1];
+		if (prevStep?.verb === 'removeCounters') {
+			return { k: 'countersRemovedThisWay' };
+		}
+		return p.thatMany();
+	}
 	return count(word);
 }
 
@@ -1072,11 +1378,22 @@ function whereX(
 	);
 	if (p13X) return { text: m[1], x: p13X };
 	if (
-		/^(?:its|that card's|that creature's|that permanent's|that spell's|the exiled card's|the exiled creature's|the sacrificed creature's|the sacrificed permanent's|the discarded card's) (?:power|toughness|mana value)$/i.test(
+		/^(?:its|(?:that|the exiled|the sacrificed|the destroyed|the discarded) (?:card|creature|permanent|spell|artifact|enchantment|land|planeswalker|battle|token)'s) (?:power|toughness|mana value)$/i.test(
+			rhs
+		) ||
+		/^the (?:power|toughness|mana value) of (?:the [a-z -]+ (?:exiled|sacrificed|discarded|destroyed) this way|that [a-z -]+)$/i.test(
 			rhs
 		)
 	) {
 		return { text: m[1], deferredStat: rhs };
+	}
+	// Mid-sentence ", where X is <rhs>, then ..." ("Look at the top X cards of your library, where X is ..., then put ...")
+	const midCont = rhs.match(/^(.+?)(,\s*(?:then|and)\s+.+)$/i);
+	if (midCont) {
+		const subWx = whereX(p, `${m[1]}, where X is ${midCont[1].trim()}`);
+		if (!subWx.bad && (subWx.x || subWx.deferredStat || subWx.deferredExileCount)) {
+			return { ...subWx, text: `${subWx.text}${midCont[2]}` };
+		}
 	}
 	return { text, bad: true };
 }
@@ -1086,7 +1403,10 @@ function substituteX(a: Amount, x: Amount | undefined): Amount {
 	if (a.k === 'x') return x;
 	if (a.k === 'negate') return { k: 'negate', of: substituteX(a.of, x) };
 	if (a.k === 'half') return { k: 'half', of: substituteX(a.of, x), round: a.round };
-	if (a.k === 'sum') return { k: 'sum', args: a.args.map((arg) => substituteX(arg, x)) };
+	if (a.k === 'mul') return { k: 'mul', factor: a.factor, of: substituteX(a.of, x) };
+	if (a.k === 'min' || a.k === 'max' || a.k === 'sum') {
+		return { k: a.k, args: a.args.map((arg) => substituteX(arg, x)) };
+	}
 	return a;
 }
 
@@ -1329,17 +1649,17 @@ function searchClause(rest: string): NonNullable<EffectStep['params']>['search']
 
 // --- Track P10: Multi-zone, different-names, opponent-library, & exile/graveyard search (CR 701.23b) ---
 function parseExtendedSearchZones(raw: string): Array<'library' | 'graveyard' | 'hand'> | null {
-	const z = raw.trim().toLowerCase();
+	const z = raw.trim().toLowerCase().replace(/\band\/or\b/g, 'and');
 	if (z === 'library') return ['library'];
 	if (z === 'graveyard') return ['graveyard'];
-	if (z === 'library and/or graveyard' || z === 'graveyard and/or library' || z === 'library and graveyard') {
+	if (z === 'library and graveyard' || z === 'graveyard and library') {
 		return ['library', 'graveyard'];
 	}
 	if (
-		z === 'library, graveyard, and/or hand' ||
-		z === 'graveyard, hand, and/or library' ||
-		z === 'hand, graveyard, and/or library' ||
-		z === 'library, hand, and/or graveyard'
+		z === 'library, graveyard, and hand' ||
+		z === 'graveyard, hand, and library' ||
+		z === 'hand, graveyard, and library' ||
+		z === 'library, hand, and graveyard'
 	) {
 		return ['library', 'graveyard', 'hand'];
 	}
@@ -1349,7 +1669,7 @@ function parseExtendedSearchZones(raw: string): Array<'library' | 'graveyard' | 
 function extendedSearchClause(p: Parser, rest: string): SearchSpec | null {
 	const t = rest.replace(/\.$/, '').trim();
 	const m = t.match(
-		/^search (your|their|that player's|target player's|target opponent's) (library(?:,\s*graveyard,\s*and\/or hand|(?:\s+and\/or|\s+and)\s+graveyard)?|graveyard(?:,\s*hand,\s*and\/or library|\s+and\/or\s+library)?) for (.+?)((?:,\s*|\s+and\s+)(?:reveal|put|then|shuffle|exile)\b.*)$/i
+		/^search (your|their|that player's|target player's|target opponent's|its controller's|its owner's) (library(?:,\s*(?:graveyard|hand),\s*(?:and\/or|and)\s+(?:hand|graveyard)|(?:\s+and\/or|\s+and)\s+graveyard)?|graveyard(?:,\s*hand,\s*(?:and\/or|and)\s+library|(?:\s+and\/or|\s+and)\s+library)?|hand,\s*graveyard,\s*(?:and\/or|and)\s+library) for (.+?)((?:,\s*|\s+and\s+)(?:reveal|put|then|shuffle|exile)\b.*)$/i
 	);
 	if (!m) return null;
 
@@ -1365,8 +1685,8 @@ function extendedSearchClause(p: Parser, rest: string): SearchSpec | null {
 		}
 		p.lastPlayer = pSel!;
 		searchedPlayer = pRef;
-	} else if (whoRaw === "that player's") {
-		const pSel = playerPhrase(p, 'that player');
+	} else if (whoRaw === "that player's" || whoRaw === "its controller's" || whoRaw === "its owner's") {
+		const pSel = playerPhrase(p, whoRaw.replace(/'s$/i, ''));
 		const pRef = pSel ? singlePlayer(pSel) : null;
 		if (!pRef) return null;
 		searchedPlayer = pRef;
@@ -1392,20 +1712,35 @@ function extendedSearchClause(p: Parser, rest: string): SearchSpec | null {
 	}
 
 	let searchCount = 1;
-	const cntMatch = criteria.match(/^(a|an|one|two|three|four|five|six|\d+)\s+(.+)$/i);
-	if (!cntMatch) {
-		p.targets.length = snapshot;
-		return null;
+	let filterRaw = '';
+	const anyOrAllMatch = criteria.match(/^(?:any number of|all)\s+(.+)$/i);
+	if (anyOrAllMatch) {
+		upTo = true;
+		searchCount = 999;
+		filterRaw = anyOrAllMatch[1].trim();
+	} else {
+		const cntMatch = criteria.match(/^(a|an|one|two|three|four|five|six|\d+)\s+(.+)$/i);
+		if (!cntMatch) {
+			p.targets.length = snapshot;
+			return null;
+		}
+		const parsedCnt = count(
+			cntMatch[1].toLowerCase() === 'a' || cntMatch[1].toLowerCase() === 'an' ? 'one' : cntMatch[1]
+		);
+		if (!parsedCnt || parsedCnt.k !== 'const' || parsedCnt.n < 1) {
+			p.targets.length = snapshot;
+			return null;
+		}
+		searchCount = parsedCnt.n;
+		filterRaw = cntMatch[2].trim();
 	}
-	const parsedCnt = count(cntMatch[1].toLowerCase() === 'a' || cntMatch[1].toLowerCase() === 'an' ? 'one' : cntMatch[1]);
-	if (!parsedCnt || parsedCnt.k !== 'const' || parsedCnt.n < 1) {
-		p.targets.length = snapshot;
-		return null;
-	}
-	searchCount = parsedCnt.n;
-	const filterRaw = cntMatch[2].trim();
-	const statedQuality = !/^cards?$/i.test(filterRaw);
-	const filter = statedQuality ? objectFilter(filterRaw) : {};
+	const isChosenNameCards = /^cards? with (?:that|the chosen) name$/i.test(filterRaw);
+	const statedQuality = isChosenNameCards || !/^cards?$/i.test(filterRaw);
+	const filter: ObjectFilter | null = isChosenNameCards
+		? { ofChosenName: true }
+		: statedQuality
+			? objectFilter(filterRaw)
+			: {};
 	if (!filter) {
 		p.targets.length = snapshot;
 		return null;
@@ -1453,7 +1788,7 @@ function extendedSearchClause(p: Parser, rest: string): SearchSpec | null {
 			destinations.push({ zone: 'battlefield', ...(bfMatch[1] ? { tapped: true } : {}) });
 			continue;
 		}
-		if (/^put (?:it|that card|them|those cards) on top of (?:your|their) library$/i.test(part)) {
+		if (/^put (?:it|that card|them|those cards) on top(?: of (?:your|their) library)?$/i.test(part)) {
 			destinations.push({ zone: 'library', onTop: true });
 			continue;
 		}
@@ -1503,12 +1838,16 @@ interface Clause {
 	span: Span;
 }
 
-/** Duration qualifier at either end of a clause ("until end of turn", "until your next turn", "until the end of your next turn"). */
+/** Duration qualifier at either end of a clause ("until end of turn", "until end of combat", "until your next turn", "for as long as ..."). */
 function stripDuration(text: string): { text: string; eot: boolean; duration?: Duration } {
 	let m = text.match(/^(.+?) until end of turn$/);
 	if (m) return { text: m[1], eot: true, duration: 'endOfTurn' };
 	m = text.match(/^until end of turn, (.+)$/);
 	if (m) return { text: m[1], eot: true, duration: 'endOfTurn' };
+	m = text.match(/^(.+?) until end of combat$/i);
+	if (m) return { text: m[1], eot: true, duration: 'untilEndOfCombat' };
+	m = text.match(/^until end of combat, (.+)$/i);
+	if (m) return { text: m[1], eot: true, duration: 'untilEndOfCombat' };
 	m = text.match(/^(.+?) until your next turn$/i);
 	if (m) return { text: m[1], eot: true, duration: 'untilYourNextTurn' };
 	m = text.match(/^until your next turn, (.+)$/i);
@@ -1517,6 +1856,14 @@ function stripDuration(text: string): { text: string; eot: boolean; duration?: D
 	if (m) return { text: m[1], eot: true, duration: 'untilEndOfYourNextTurn' };
 	m = text.match(/^until (?:the )?end of your next turn, (.+)$/i);
 	if (m) return { text: m[1], eot: true, duration: 'untilEndOfYourNextTurn' };
+	m = text.match(/^(.+?) for as long as you control ~$/i);
+	if (m) return { text: m[1], eot: true, duration: 'forAsLongAsYouControlSelf' };
+	m = text.match(/^for as long as you control ~, (.+)$/i);
+	if (m) return { text: m[1], eot: true, duration: 'forAsLongAsYouControlSelf' };
+	m = text.match(/^(.+?) for as long as ~ remains tapped$/i);
+	if (m) return { text: m[1], eot: true, duration: 'forAsLongAsSelfRemainsTapped' };
+	m = text.match(/^for as long as ~ remains tapped, (.+)$/i);
+	if (m) return { text: m[1], eot: true, duration: 'forAsLongAsSelfRemainsTapped' };
 	return { text, eot: false };
 }
 
@@ -1577,7 +1924,7 @@ function parseAnimatePredicate(
 	span: Span
 ): EffectStep | null {
 	if (subject.fromZone) return null;
-	const m = bodyAfterDuration.match(/^becomes? (?:a|an) (.+)$/);
+	const m = bodyAfterDuration.match(/^becomes? (?:(?:a|an) )?(.+)$/);
 	if (!m) return null;
 	let rest = m[1].trim();
 	let animDuration: Duration | undefined = durationFromPrefix;
@@ -1590,16 +1937,22 @@ function parseAnimatePredicate(
 	// vs "... that's still a land" vs "... in addition to its other types until end of turn") all parse.
 	for (let guard = 0; guard < 12; guard++) {
 		const durMatch = rest.match(
-			/^(.+?) (until end of turn|until your next turn|until (?:the )?end of your next turn)$/i
+			/^(.+?) (until end of turn|until end of combat|until your next turn|until (?:the )?end of your next turn|for as long as you control ~|for as long as ~ remains tapped)$/i
 		);
 		if (durMatch) {
 			const dLow = durMatch[2].toLowerCase();
 			animDuration =
 				dLow === 'until end of turn'
 					? 'endOfTurn'
-					: dLow === 'until your next turn'
-						? 'untilYourNextTurn'
-						: 'untilEndOfYourNextTurn';
+					: dLow === 'until end of combat'
+						? 'untilEndOfCombat'
+						: dLow === 'until your next turn'
+							? 'untilYourNextTurn'
+							: dLow === 'for as long as you control ~'
+								? 'forAsLongAsYouControlSelf'
+								: dLow === 'for as long as ~ remains tapped'
+									? 'forAsLongAsSelfRemainsTapped'
+									: 'untilEndOfYourNextTurn';
 			rest = durMatch[1].trim();
 			continue;
 		}
@@ -1695,7 +2048,7 @@ function parseAnimatePredicate(
 
 	const subtypes: string[] = [];
 	for (const tok of tokens) {
-		if (/^[A-Z][A-Za-z'-]*$/.test(tok)) subtypes.push(tok);
+		if (/^[A-Z][A-Za-z'-]*$/.test(tok)) subtypes.push(singularSubtype(tok) ?? tok);
 		else return null;
 	}
 
@@ -2091,17 +2444,24 @@ function objectPredicate(p: Parser, subject: ObjectRes, vp: string, span: Span):
 	}
 	// --- End Track P7 ---
 
-	if (/^becomes? (?:a|an) /.test(text)) {
-		const anim = parseAnimatePredicate(subject, text, duration, span);
-		if (!anim) return false;
-		p.push(anim, true);
-		return true;
-	}
-
 	const predText =
 		subject.plural || subject.selector.k === 'target' || subject.selector.k === 'all'
 			? text.replace(/^each\s+/, '')
 			: text;
+
+	if (/^becomes? (?:(?:a|an) |.+(?:^|\s)creatures?\b)/.test(predText)) {
+		const anim = parseAnimatePredicate(subject, predText, duration, span);
+		if (anim) {
+			p.push(anim, true);
+			return true;
+		}
+		if (
+			/^becomes? (?:a|an) /.test(predText) &&
+			!/^becomes? (?:a|an) (?:Plains|Island|Swamp|Mountain|Forest)\b/i.test(predText)
+		) {
+			return false;
+		}
+	}
 
 	// "gain trample and get +X/+X" (Overrun templating): two steps on the same subject.
 	const both = predText.match(/^gains? (.+?) and gets? (\S+)$/);
@@ -2198,7 +2558,65 @@ function objectPredicate(p: Parser, subject: ObjectRes, vp: string, span: Span):
 		return true;
 	}
 	// --- End Track P7 ---
-	const get = predText.match(/^gets? (\S+)$/);
+	// --- Track P16a: Choice grants, choice animations, combat overrides, harness/convert ---
+	const w6ObjSteps = tryParseWave6ObjectPredicate(
+		subject.selector,
+		validBattlefieldObjectSubject,
+		predText,
+		eot,
+		duration,
+		span
+	);
+	if (w6ObjSteps) {
+		for (const st of w6ObjSteps) p.push(st, true);
+		return true;
+	}
+	// --- End Track P16a ---
+	const ptAndLose = predText.match(/^gets? (\S+)(?:,)? and loses? (.+)$/);
+	if (ptAndLose && eot) {
+		const pt = ptChange(ptAndLose[1]);
+		const kws = keywordList(ptAndLose[2]);
+		if (pt && kws) {
+			p.push(
+				{
+					verb: 'pump',
+					subject: subject.selector,
+					amount: pt.power,
+					params: { toughness: pt.toughness, ...params },
+					span
+				},
+				true
+			);
+			p.push(
+				{ verb: 'grant', subject: subject.selector, params: { removeKeywords: kws, ...params }, span },
+				true
+			);
+			return true;
+		}
+	}
+	const loseAndPt = predText.match(/^loses? (.+?)(?:,)? and gets? (\S+)$/);
+	if (loseAndPt && eot) {
+		const kws = keywordList(loseAndPt[1]);
+		const pt = ptChange(loseAndPt[2]);
+		if (kws && pt) {
+			p.push(
+				{ verb: 'grant', subject: subject.selector, params: { removeKeywords: kws, ...params }, span },
+				true
+			);
+			p.push(
+				{
+					verb: 'pump',
+					subject: subject.selector,
+					amount: pt.power,
+					params: { toughness: pt.toughness, ...params },
+					span
+				},
+				true
+			);
+			return true;
+		}
+	}
+	const get = predText.match(/^gets? (?:an additional )?(\S+)$/);
 	if (get && eot) {
 		const pt = ptChange(get[1]);
 		if (!pt) return false;
@@ -2375,7 +2793,7 @@ function objectPredicate(p: Parser, subject: ObjectRes, vp: string, span: Span):
 		return true;
 	}
 	const twoRecDmg = text.match(
-		/^deals (\S+) damage to (.+?) and (\S+) damage to ((?:another target|up to one other target).*)$/
+		/^deals (\S+) damage to ([^,]+?) and (\S+) damage to (.+)$/
 	);
 	if (twoRecDmg && !eot && canDealDamage) {
 		const snapshot = p.mark();
@@ -2494,6 +2912,44 @@ function objectPredicate(p: Parser, subject: ObjectRes, vp: string, span: Span):
 		);
 		return true;
 	}
+	const dmgToEq = text.match(/^deals damage to (.+?) equal to (.+)$/);
+	if (dmgToEq && !eot && canDealDamage) {
+		const savedLastPl = p.lastPlayer;
+		const rec = damageRecipientSpec(p, dmgToEq[1], subject.selector);
+		if (rec && (rec.subject.k === 'player' || rec.subject.k === 'playerRef')) {
+			p.lastPlayer = rec.subject;
+		}
+		let amount: Amount | null = null;
+		const ownStat =
+			subject.selector.k !== 'self' && subject.ref
+				? dmgToEq[2].trim().match(/^its (power|toughness|mana value)$/)
+				: null;
+		if (ownStat && subject.ref) {
+			const stat = ownStat[1] === 'mana value' ? 'manaValue' : (ownStat[1] as 'power' | 'toughness');
+			amount = { k: 'stat', of: subject.ref, stat };
+		} else {
+			amount = equalTo(p, dmgToEq[2]);
+		}
+		if (!amount || !rec) {
+			p.lastPlayer = savedLastPl;
+			return false;
+		}
+		const dmgParams: EffectStep['params'] = {
+			...(subject.selector.k !== 'self' ? { damageSource: subject.selector } : {}),
+			...(rec.alsoDamagePlayers ? { alsoDamagePlayers: rec.alsoDamagePlayers } : {})
+		};
+		p.push(
+			{
+				verb: 'damage',
+				subject: rec.subject,
+				amount,
+				...(Object.keys(dmgParams).length > 0 ? { params: dmgParams } : {}),
+				span
+			},
+			false
+		);
+		return true;
+	}
 	const fight = text.match(/^fights? (.+)$/);
 	if (fight && !eot) {
 		const other = parseFightOpponent(p, fight[1], subject.selector);
@@ -2547,14 +3003,27 @@ function damageRecipientSpec(
 	sourceSelector: Selector
 ): { subject: Selector; alsoDamagePlayers?: EffectParams['alsoDamagePlayers'] } | null {
 	const t = text.trim();
-	const eachCreatureAndPlayer = t.match(/^each creature and each (player|opponent)$/);
+	if (
+		t === 'itself' &&
+		sourceSelector.k !== 'player' &&
+		sourceSelector.k !== 'playerRef' &&
+		sourceSelector.k !== 'none'
+	) {
+		return { subject: sourceSelector };
+	}
+	const eachCreatureAndPlayer = t.match(/^each (.+?) and each (player|opponent)$/);
 	if (eachCreatureAndPlayer) {
-		return {
-			subject: { k: 'all', filter: { zone: 'battlefield', types: ['Creature'] } },
-			alsoDamagePlayers: {
-				relation: eachCreatureAndPlayer[1] === 'player' ? 'each_player' : 'each_opponent'
-			}
-		};
+		const rawFilt = eachCreatureAndPlayer[1].trim();
+		const filt: ObjectFilter | null =
+			rawFilt === 'creature' ? { types: ['Creature'] } : objectFilter(rawFilt);
+		if (filt && !filt.zone && !filt.controller && filt.types?.includes('Creature')) {
+			return {
+				subject: { k: 'all', filter: { zone: 'battlefield', ...filt } },
+				alsoDamagePlayers: {
+					relation: eachCreatureAndPlayer[2] === 'player' ? 'each_player' : 'each_opponent'
+				}
+			};
+		}
 	}
 	if (/^each creature and (?:each )?planeswalker$/.test(t)) {
 		return {
@@ -2603,19 +3072,34 @@ function damageRecipientSpec(
 }
 
 function parseOptionalCostBody(costText: string): CostDef[] | null {
-	const t = costText
-		.trim()
-		.replace(/^pays\b/i, 'pay')
-		.replace(/^sacrifices\b/i, 'sacrifice')
-		.replace(/^discards\b/i, 'discard')
-		.replace(/^exiles\b/i, 'exile')
-		.replace(/^taps\b/i, 'tap')
-		.replace(/^removes\b/i, 'remove')
-		.replace(/\bfrom their (graveyard|hand)\b/gi, 'from your $1')
-		.replace(/\bthey control\b/gi, 'you control');
+	const normalizeOneCost = (s: string): string =>
+		s
+			.trim()
+			.replace(/^pays\b/i, 'pay')
+			.replace(/^sacrifices\b/i, 'sacrifice')
+			.replace(/^discards\b/i, 'discard')
+			.replace(/^exiles\b/i, 'exile')
+			.replace(/^taps\b/i, 'tap')
+			.replace(/^removes\b/i, 'remove')
+			.replace(/\bfrom their (graveyard|hand)\b/gi, 'from your $1')
+			.replace(/\bthey control\b/gi, 'you control');
+	const t = normalizeOneCost(costText);
 	const parsed = parseCost(t);
-	if (parsed.unparsed.length > 0 || parsed.defs.length === 0) return null;
-	return parsed.defs;
+	if (parsed.unparsed.length === 0 && parsed.defs.length > 0) return parsed.defs;
+	const orParts = costText.split(/\s+or\s+/i);
+	if (orParts.length === 2) {
+		const left = parseCost(normalizeOneCost(orParts[0]));
+		const right = parseCost(normalizeOneCost(orParts[1]));
+		if (
+			left.unparsed.length === 0 &&
+			left.defs.length === 1 &&
+			right.unparsed.length === 0 &&
+			right.defs.length === 1
+		) {
+			return [{ k: 'choice', options: [left.defs, right.defs] }];
+		}
+	}
+	return null;
 }
 
 type ImpulseDuration = NonNullable<EffectParams['playFromExile']>['duration'];
@@ -2930,9 +3414,9 @@ function playerPredicate(p: Parser, subject: Selector, vp: string, span: Span, f
 	const opt = optional ? { optional } : {};
 	p.lastPlayer = subject;
 
-	const moveC = text.match(/^moves? (any number of|\S+) (\S+) counters from (~|it|this creature) onto (.+)$/i);
+	const moveC = text.match(/^moves? (any number of|\S+) (.+?) counters from (~|it|this creature) onto (.+)$/i);
 	if (moveC) {
-		const counter = COUNTER_WORDS[moveC[2].toLowerCase()];
+		const counter = parseUniversalCounterName(moveC[2]);
 		const toFilter = objectFilter(moveC[4]);
 		if (counter) {
 			p.push(
@@ -2948,11 +3432,129 @@ function playerPredicate(p: Parser, subject: Selector, vp: string, span: Span, f
 			return true;
 		}
 	}
+	if (/^shuffles?(?: (?:your|their) library)?$/i.test(text)) {
+		const actor = singlePlayer(subject);
+		if (actor) {
+			p.push(
+				{
+					verb: 'search',
+					subject: { k: 'none' },
+					amount: n(0),
+					...(actor.k !== 'you' ? { actor } : {}),
+					params: {
+						search: {
+							filter: { types: ['Conspiracy'] },
+							count: 0,
+							upTo: true,
+							statedQuality: true,
+							destinations: []
+						}
+					},
+					...opt,
+					span
+				},
+				false
+			);
+			return true;
+		}
+		if (
+			subject.k === 'player' &&
+			(subject.filter.relation === 'each_player' || subject.filter.relation === 'each_opponent')
+		) {
+			p.push(
+				{
+					verb: 'move',
+					subject: {
+						k: 'all',
+						filter: {
+							zone: 'command',
+							named: '__none__',
+							...(subject.filter.relation === 'each_opponent' ? { owner: 'opponent' } : {})
+						}
+					},
+					params: { to: 'library', mayShuffle: true },
+					...opt,
+					span
+				},
+				false
+			);
+			return true;
+		}
+	}
+	const shuffleZonesIntoLib = text.match(
+		/^shuffles? (?:their|your) (hand and graveyard|graveyard and hand|graveyard|hand)s? into (?:their|your) librar(?:y|ies)$/i
+	);
+	if (shuffleZonesIntoLib) {
+		const actor = singlePlayer(subject);
+		const isEachPl = subject.k === 'player' && subject.filter.relation === 'each_player';
+		const isEachOpp = subject.k === 'player' && subject.filter.relation === 'each_opponent';
+		if (actor || isEachPl || isEachOpp) {
+			const ownerFilter: Partial<ObjectFilter> =
+				actor?.k === 'you'
+					? { owner: 'you' }
+					: actor
+						? { controllerRef: actor }
+						: isEachOpp
+							? { owner: 'opponent' }
+							: {};
+			const zRaw = shuffleZonesIntoLib[1].toLowerCase();
+			if (isEachPl && zRaw === 'hand') return false;
+			const zonesToShuffle: ('hand' | 'graveyard')[] = zRaw.includes('and')
+				? ['hand', 'graveyard']
+				: [zRaw as 'hand' | 'graveyard'];
+			for (const z of zonesToShuffle) {
+				p.push(
+					{
+						verb: 'move',
+						subject: { k: 'all', filter: { zone: z, ...ownerFilter } },
+						...(actor && actor.k !== 'you' ? { actor } : {}),
+						params: { to: 'library', mayShuffle: true },
+						...opt,
+						span
+					},
+					false
+				);
+			}
+			return true;
+		}
+	}
+	const shuffleTargetedGyIntoLib = text.match(
+		/^shuffles? ((?:up to (?:one|two|three|four|five|\d+) )?target .+?) from (?:their|your) graveyard into (?:their|your) library$/i
+	);
+	if (shuffleTargetedGyIntoLib) {
+		const actor = singlePlayer(subject);
+		if (actor) {
+			const snapshot = p.targets.length;
+			const gyTail = actor.k === 'you' ? 'from your graveyard' : 'from their graveyard';
+			const obj = objectPhrase(p, `${shuffleTargetedGyIntoLib[1]} ${gyTail}`);
+			if (!obj || obj.selector.k !== 'target') {
+				p.targets.length = snapshot;
+				return false;
+			}
+			p.push(
+				{
+					verb: 'move',
+					subject: obj.selector,
+					...(actor.k !== 'you' ? { actor } : {}),
+					params: { from: 'graveyard', to: 'library', mayShuffle: true },
+					...opt,
+					span
+				},
+				true
+			);
+			return true;
+		}
+	}
 	const shuffleIntoLib = text.match(/^shuffles? (.+?) into (?:their|your|its owner's) library$/i);
 	if (shuffleIntoLib) {
 		const actor = singlePlayer(subject);
 		if (!actor) return false;
-		const it = p.itRef();
+		const selfOwnerFallback =
+			shuffleIntoLib[1] === '~' ||
+			(shuffleIntoLib[1].toLowerCase() === 'it' &&
+				actor.k === 'ownerOf' &&
+				actor.of.k === 'self');
+		const it = selfOwnerFallback ? ({ k: 'self' } as Ref) : p.itRef();
 		if (!it) return false;
 		p.push(
 			{
@@ -2960,6 +3562,7 @@ function playerPredicate(p: Parser, subject: Selector, vp: string, span: Span, f
 				subject: refSelector(it),
 				...(actor.k !== 'you' ? { actor } : {}),
 				params: { to: 'library', mayShuffle: true },
+				...opt,
 				span
 			},
 			true
@@ -2981,15 +3584,25 @@ function playerPredicate(p: Parser, subject: Selector, vp: string, span: Span, f
 		);
 		return true;
 	}
+	// --- Track P16a: "(you may) reveal it / that card / those cards" (Kinship & reveal follow-ups) ---
+	const revObj = text.match(/^reveals? (it|that card|those cards)$/i);
+	if (revObj && subject.k === 'player' && subject.filter.relation === 'you') {
+		const obj = objectPhrase(p, revObj[1]);
+		if (obj) {
+			p.push({ verb: 'reveal', subject: obj.selector, ...opt, span }, false);
+			return true;
+		}
+	}
+	// --- End Track P16a ---
 
-	let m = text.match(/^draws? (?:(up to) )?(\S+) cards?$/);
+	let m = text.match(/^draws? (?:(up to) )?(\S+) (?:additional )?cards?$/);
 	if (m) {
 		const amount = count(m[2]);
 		if (!amount) return false;
 		p.push({ verb: 'draw', subject, amount, ...(m[1] ? { params: { upTo: true } } : {}), ...opt, span }, false);
 		return true;
 	}
-	m = text.match(/^draws? (that many) cards$/);
+	m = text.match(/^draws? (that many) (?:additional )?cards$/);
 	if (m) {
 		const amount = amountWord(p, m[1]);
 		if (!amount) return false;
@@ -3548,7 +4161,7 @@ function playerPredicate(p: Parser, subject: Selector, vp: string, span: Span, f
 	}
 	// --- End Track P13 ---
 	m = text.match(
-		/^gains? control of (.+?)(?: (until end of turn|until your next turn|until (?:the )?end of your next turn|for as long as (?:you control ~|~ remains on the battlefield)))?$/
+		/^gains? control of (.+?)(?: (until end of turn|until end of combat|until your next turn|until (?:the )?end of your next turn|for as long as ~ remains tapped|for as long as (?:you control ~|~ remains on the battlefield)))?$/
 	);
 	if (m) {
 		const actor = singlePlayer(subject);
@@ -3562,13 +4175,17 @@ function playerPredicate(p: Parser, subject: Selector, vp: string, span: Span, f
 		const duration: Duration =
 			durRaw === 'until end of turn'
 				? 'endOfTurn'
-				: durRaw === 'until your next turn'
-					? 'untilYourNextTurn'
-					: durRaw?.startsWith('until ') && durRaw.endsWith('next turn')
-						? 'untilEndOfYourNextTurn'
-						: durRaw?.startsWith('for as long as')
-							? 'untilSourceLeaves'
-							: 'permanent';
+				: durRaw === 'until end of combat'
+					? 'untilEndOfCombat'
+					: durRaw === 'until your next turn'
+						? 'untilYourNextTurn'
+						: durRaw?.startsWith('until ') && durRaw.endsWith('next turn')
+							? 'untilEndOfYourNextTurn'
+							: durRaw === 'for as long as ~ remains tapped'
+								? 'forAsLongAsSelfRemainsTapped'
+								: durRaw?.startsWith('for as long as')
+									? 'untilSourceLeaves'
+									: 'permanent';
 		p.push(
 			{
 				verb: 'gainControl',
@@ -3651,24 +4268,58 @@ function playerPredicate(p: Parser, subject: Selector, vp: string, span: Span, f
 	// Imperatives with "you" as an explicit subject ("You draw a card" is handled above).
 	if (fromImperative) return false;
 	if (subject.k === 'player' && subject.filter.relation === 'you' && !optional) {
-		return imperative(p, text, span);
+		return imperative(p, text, span) || tryWave6Clause(p, text, span);
 	}
 	if (subject.k === 'player' && subject.filter.relation === 'you' && optional) {
-		const haveBecome = text.match(/^have (.+?) become ((?:a|an) .+)$/);
-		if (haveBecome) {
-			const obj = objectPhrase(p, haveBecome[1]);
-			if (!obj || obj.fromZone) return false;
+		const haveObjVp = text.match(/^have (.+?) ((?:deal|get|gain|lose|become)\b.+)$/);
+		if (haveObjVp) {
+			const mark = p.mark();
+			const obj = objectPhrase(p, haveObjVp[1]);
+			if (obj && !obj.fromZone) {
+				const inflected = haveObjVp[2].replace(
+					/^(deal|get|gain|lose|become)\b/,
+					(w) => `${w}s`
+				);
+				const before = p.steps.length;
+				if (objectPredicate(p, obj, inflected, span)) {
+					for (const s of p.steps.slice(before)) s.optional = optional;
+					if (p.steps.length > before) p.lastOptionalStep = p.steps.length - 1;
+					return true;
+				}
+			}
+			p.rollback(mark);
+		}
+		const mayCopyRetarget = text.match(
+			/^copy (.+?)(?:,?\s+and)?\s+(?:you )?may choose new targets for (?:the|each|any|any of the) cop(?:y|ies)$/i
+		);
+		if (mayCopyRetarget) {
 			const before = p.steps.length;
-			if (!objectPredicate(p, obj, `becomes ${haveBecome[2]}`, span)) return false;
+			if (!imperative(p, `copy ${mayCopyRetarget[1]} and you may choose new targets for the copy`, span)) {
+				return false;
+			}
 			for (const s of p.steps.slice(before)) s.optional = optional;
 			if (p.steps.length > before) p.lastOptionalStep = p.steps.length - 1;
 			return true;
 		}
 		const before = p.steps.length;
-		if (!imperative(p, text, span)) return false;
+		if (!imperative(p, text, span) && !tryWave6Clause(p, text, span)) return false;
 		for (const s of p.steps.slice(before)) {
 			if (s.verb === 'move' && s.params?.from === 'hand' && s.params?.to === 'battlefield') {
 				s.params = { ...s.params, upTo: true };
+			} else if (
+				(s.verb === 'move' ||
+					s.verb === 'exile' ||
+					s.verb === 'bounce' ||
+					s.verb === 'putCounters' ||
+					s.verb === 'tap' ||
+					s.verb === 'untap') &&
+				s.params?.choiceCount
+			) {
+				s.params = { ...s.params, upTo: true };
+			} else if (s.verb === 'discard' && s.params?.upTo) {
+				// upTo discard natively sets stepDecisions and prompts 0..count.
+			} else if (s.verb === 'castFree') {
+				// castFree natively prompts with a Decline choice and sets stepDecisions.
 			} else {
 				s.optional = optional;
 			}
@@ -3979,7 +4630,9 @@ function parsePreventDamageClause(p: Parser, text: string, span: Span): boolean 
 
 	m = core.match(/^prevent all (combat )?damage that would be dealt to and dealt by (.+)$/);
 	if (m) {
-		const obj = objectPhrase(p, m[2]);
+		const subRaw = m[2].trim();
+		const isSelfPronoun = /^(?:~|him|her|himself|herself)$/i.test(subRaw);
+		const obj = isSelfPronoun ? { selector: { k: 'self' } as Selector, fromZone: undefined } : objectPhrase(p, subRaw);
 		if (!obj || obj.fromZone) return rollbackFail();
 		if (obj.selector.k === 'target') {
 			const tSpec = p.targets[obj.selector.index];
@@ -4006,8 +4659,10 @@ function parsePreventDamageClause(p: Parser, text: string, span: Span): boolean 
 		if (!isAll && !amount) return rollbackFail();
 
 		const recRaw = m[4].trim();
-		let recSelector: Selector | null = playerPhrase(p, recRaw);
-		let actsOnObj = false;
+		let recSelector: Selector | null = /^(?:~|him|her|himself|herself)$/i.test(recRaw)
+			? { k: 'self' }
+			: playerPhrase(p, recRaw);
+		let actsOnObj = recSelector?.k === 'self';
 		if (!recSelector) {
 			const obj = objectPhrase(p, recRaw);
 			if (!obj || obj.fromZone) return rollbackFail();
@@ -4098,7 +4753,82 @@ function tryP13Clause(p: Parser, text: string, span: Span): boolean {
 	for (const st of steps) {
 		const actsOnObj = Boolean(st.bindAs);
 		const { bindAs: _unusedBind, ...restStep } = st;
-		p.push({ ...restStep, span }, actsOnObj);
+		const idx = p.push({ ...restStep, span }, actsOnObj);
+		if (stepOptionalChooser(p.steps[idx]) !== undefined) {
+			p.lastOptionalStep = idx;
+		}
+	}
+	return true;
+}
+
+function tryWave6Clause(p: Parser, text: string, span: Span): boolean {
+	const mark = p.mark();
+	const steps = tryParseWave6Sentence(
+		text,
+		{
+			addTarget: (spec) => p.addTarget(spec),
+			getTarget: (index) => p.targets[index],
+			itRef: () => p.itRef(),
+			isSpellContext: p.context === 'spell',
+			ensureLastStepBound: () => {
+				if (p.steps.length === 0) return null;
+				const lastIdx = p.steps.length - 1;
+				const prev = p.steps[lastIdx];
+				if (
+					prev.verb !== 'mill' &&
+					prev.verb !== 'dig' &&
+					prev.verb !== 'reveal' &&
+					prev.verb !== 'discard' &&
+					prev.verb !== 'discardHand' &&
+					prev.verb !== 'exile'
+				) {
+					return null;
+				}
+				const bindName = prev.bindAs ?? `b${lastIdx}`;
+				prev.bindAs = bindName;
+				return { k: 'binding', name: bindName };
+			},
+			subjectSelector: (phrase) => {
+				const strippedEach = phrase.replace(/^each of\s+/i, '');
+				const isAnother = /^another target\b/i.test(strippedEach);
+				const obj = objectPhrase(
+					p,
+					isAnother ? strippedEach.replace(/^another /i, '') : strippedEach
+				);
+				if (!obj) return null;
+				if (isAnother && obj.selector.k === 'target' && p.targets[obj.selector.index]) {
+					p.targets[obj.selector.index].filter.other = true;
+				}
+				return { sel: obj.selector, fromZone: obj.fromZone, bind: true };
+			},
+			playerSubject: (phrase) => {
+				const sel = playerPhrase(p, phrase);
+				if (sel) p.lastPlayer = sel;
+				return sel;
+			},
+			singlePlayer: (sel) => singlePlayer(sel),
+			objectFilter: (phrase) => objectFilter(phrase),
+			parseAmount: (amtText) =>
+				amountWord(p, amtText.toLowerCase()) ??
+				equalTo(p, amtText) ??
+				parseP13Amount(
+					amtText,
+					(sub) => equalTo(p, sub) ?? numberOf(sub) ?? amountWord(p, sub.toLowerCase())
+				)
+		},
+		span
+	);
+	if (!steps || steps.length === 0) {
+		p.rollback(mark);
+		return false;
+	}
+	for (const st of steps) {
+		const actsOnObj = Boolean(st.bindAs);
+		const { bindAs: _unusedBind, ...restStep } = st;
+		const idx = p.push({ ...restStep, span }, actsOnObj);
+		if (stepOptionalChooser(p.steps[idx]) !== undefined) {
+			p.lastOptionalStep = idx;
+		}
 	}
 	return true;
 }
@@ -4107,6 +4837,10 @@ function tryP13Clause(p: Parser, text: string, span: Span): boolean {
 function imperative(p: Parser, text: string, span: Span): ClauseResult {
 	const t = text.trim();
 	let m: RegExpMatchArray | null;
+
+	// --- Track P16a: Wave 6 keyword actions, counters, free-cast, & selective returns ---
+	if (tryWave6Clause(p, t, span)) return true;
+	// --- End Track P16a ---
 
 	// --- Track P13: Imperative P13 keyword actions & designations ---
 	if (tryP13Clause(p, t, span)) return true;
@@ -4268,7 +5002,7 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 		const isAnotherTarget = /^another target\b/.test(m[2]);
 		const obj = objectPhrase(p, isAnotherTarget ? m[2].replace(/^another /, '') : m[2]);
 		if (!obj || obj.fromZone) return false;
-		if (isAnotherTarget && obj.selector.k === 'target') {
+		if (isAnotherTarget && obj.selector.k === 'target' && p.targets[obj.selector.index]) {
 			p.targets[obj.selector.index].filter.other = true;
 		}
 		const verb: Verb = m[1] === 'tap' ? 'tap' : m[1] === 'untap' ? 'untap' : 'tapOrUntap';
@@ -4287,7 +5021,7 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 		) {
 			return false;
 		}
-		if (isAnotherTarget && obj.selector.k === 'target') {
+		if (isAnotherTarget && obj.selector.k === 'target' && p.targets[obj.selector.index]) {
 			p.targets[obj.selector.index].filter.other = true;
 		}
 		p.push({ verb: 'exert', subject: obj.selector, span }, true);
@@ -4296,7 +5030,7 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 	m = t.match(/^counter (.+)$/);
 	if (m) {
 		const obj = objectPhrase(p, m[1]);
-		if (!obj || obj.selector.k !== 'target' || p.targets[obj.selector.index].filter.zone !== 'stack') return false;
+		if (!obj || obj.selector.k !== 'target' || p.targets[obj.selector.index]?.filter.zone !== 'stack') return false;
 		p.push({ verb: 'counterSpell', subject: obj.selector, span }, true);
 		return true;
 	}
@@ -4307,6 +5041,54 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 		p.setLastTarget(obj.ref);
 		return true;
 	}
+	// --- Track P16a: Standalone "Choose [any] target <phrase>" & two-target fight setup ---
+	m = t.match(/^choose ((?:target .+?))\s+and\s+((?:another )?target .+)$/i);
+	if (m) {
+		const snapshot = p.targets.length;
+		const objA = objectPhrase(p, m[1].trim());
+		const objB = objA ? objectPhrase(p, m[2].trim()) : null;
+		if (
+			objA &&
+			objB &&
+			objA.selector.k === 'target' &&
+			objB.selector.k === 'target' &&
+			p.targets[objA.selector.index]?.kind === 'object' &&
+			p.targets[objB.selector.index]?.kind === 'object'
+		) {
+			if (objB.ref) p.setLastTarget(objB.ref);
+			return true;
+		}
+		p.targets.length = snapshot;
+	}
+	if (/^(?:those creatures|they) fight each other$/i.test(t) && p.targets.length === 2) {
+		if (p.targets[0]?.kind === 'object' && p.targets[1]?.kind === 'object') {
+			p.push(
+				{
+					verb: 'fight',
+					subject: { k: 'target', index: 0 },
+					params: { with: { k: 'target', index: 1 } },
+					span
+				},
+				false
+			);
+			return true;
+		}
+	}
+	m = t.match(/^choose (any target|(?:(?:up to (?:one|two|three|four|five|\d+)|any number of) )?target .+)$/i);
+	if (m && !/\band\s+(?:up to\s+|another\s+)?target\b/i.test(m[1])) {
+		const pSel = playerPhrase(p, m[1]);
+		if (pSel) {
+			p.lastPlayer = pSel;
+			return true;
+		}
+		const obj = objectPhrase(p, m[1]);
+		if (obj && obj.ref) {
+			p.setLastTarget(obj.ref);
+			return true;
+		}
+		return false;
+	}
+	// --- End Track P16a ---
 	m = t.match(/^return (.+?) to (?:its|their) owners?'s? hands?$/);
 	if (m) {
 		const selfTrigGy =
@@ -4356,7 +5138,7 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 				return true;
 			}
 		}
-		const tgtZone = obj.selector.k === 'target' ? p.targets[obj.selector.index].filter.zone : undefined;
+		const tgtZone = obj.selector.k === 'target' ? p.targets[obj.selector.index]?.filter.zone : undefined;
 		if (tgtZone === 'graveyard' || tgtZone === 'exile') {
 			p.push({ verb: 'move', subject: obj.selector, params: { from: tgtZone, to: 'hand' }, span }, true);
 			return true;
@@ -4364,15 +5146,30 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 		p.push({ verb: 'bounce', subject: obj.selector, span }, true);
 		return true;
 	}
-	m = t.match(/^put (a|an|one|two|three|\d+) (.+?) from your hand (?:(on top|on the bottom) of your library(?: in any order)?|onto the battlefield( tapped)?)$/);
+	m = t.match(
+		/^put (a|an|one|two|three|\d+) (.+?) from your hand (?:(on top|on the bottom) of your library(?: in any order)?|onto the battlefield( tapped)?(?: with (a|an|one|two|three|four|\d+) (.+?) counters? on (?:it|them))?)$/
+	);
 	if (m) {
 		const amount = count(m[1] === 'a' || m[1] === 'an' ? 'one' : m[1]);
 		const filter = amount && objectFilter(m[2]);
-		if (!amount || !filter || filter.zone || filter.controller) return false;
+		const wcCount = m[5] ? count(m[5] === 'a' || m[5] === 'an' ? 'one' : m[5]) : null;
+		const wcName = m[6] ? parseUniversalCounterName(m[6]) : null;
+		if (
+			!amount ||
+			!filter ||
+			filter.zone ||
+			filter.controller ||
+			(m[5] && (!wcCount || wcCount.k !== 'const' || !wcName))
+		) {
+			return false;
+		}
 		const to = m[3] ? ('library' as const) : ('battlefield' as const);
 		const params: NonNullable<EffectStep['params']> = { from: 'hand', to };
 		if (m[3]) params.position = m[3] === 'on top' ? 'top' : 'bottom';
 		if (m[4]) params.tapped = true;
+		if (wcCount && wcCount.k === 'const' && wcName) {
+			params.withCounters = { counter: wcName, count: wcCount.n };
+		}
 		p.push(
 			{
 				verb: 'move',
@@ -4388,8 +5185,13 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 	if (tryImperativeLibraryMove(p, t, span)) {
 		return true;
 	}
-	m = t.match(/^(?:return|put) (.+) (?:to|onto) the battlefield( tapped)?(?: (?:and )?(transformed))?( under your control| under its owner's control)?$/);
+	m = t.match(
+		/^(?:return|put) (.+) (?:to|onto) the battlefield( tapped)?(?: (?:and )?(transformed))?( under your control| under (?:its owner's|their owner's|their owners') control)?(?: with (a|an|one|two|three|four|\d+) (.+?) counters? on (?:it|them))?$/
+	);
 	if (m) {
+		const wcCount = m[5] ? count(m[5] === 'a' || m[5] === 'an' ? 'one' : m[5]) : null;
+		const wcName = m[6] ? parseUniversalCounterName(m[6]) : null;
+		if (m[5] && (!wcCount || wcCount.k !== 'const' || !wcName)) return false;
 		const exiledSelf = m[1] === '~' && p.steps.some((s) => s.verb === 'exile' && s.subject.k === 'self');
 		const selfFromGy =
 			!exiledSelf && (m[1] === '~ from your graveyard' || (m[1] === '~' && p.context === 'triggered'));
@@ -4423,44 +5225,66 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 		const boundFromExile =
 			obj.selector.k === 'binding' &&
 			p.steps.some((s) => s.bindAs === (obj.selector as { k: 'binding'; name: string }).name && s.verb === 'exile');
+		const boundFromLibrary =
+			obj.selector.k === 'binding' &&
+			p.steps.some(
+				(s) =>
+					s.bindAs === (obj.selector as { k: 'binding'; name: string }).name &&
+					s.verb === 'reveal' &&
+					s.subject.k === 'libraryTop'
+			);
 		const fromExile =
 			eventObjFrom === 'exile' ||
 			obj.fromZone === 'exile' ||
 			boundFromExile ||
-			(obj.selector.k === 'target' && p.targets[obj.selector.index].filter.zone === 'exile');
+			(obj.selector.k === 'target' && p.targets[obj.selector.index]?.filter.zone === 'exile');
 		const fromGy =
 			!fromExile &&
 			(eventObjFrom === 'graveyard' ||
 				obj.fromZone === 'graveyard' ||
-				(obj.selector.k === 'target' && p.targets[obj.selector.index].filter.zone === 'graveyard'));
-		const fromEither = !fromExile && !fromGy && eventObjFrom === 'either';
-		if (!fromGy && !fromExile && !fromEither) return false;
+				(obj.selector.k === 'target' && p.targets[obj.selector.index]?.filter.zone === 'graveyard'));
+		const fromLibrary = !fromExile && !fromGy && boundFromLibrary;
+		const fromEither = !fromExile && !fromGy && !fromLibrary && eventObjFrom === 'either';
+		if (!fromGy && !fromExile && !fromLibrary && !fromEither) return false;
 		const params: EffectStep['params'] = {
-			...(fromEither ? {} : { from: fromExile ? 'exile' : 'graveyard' }),
+			...(fromEither
+				? {}
+				: { from: fromExile ? 'exile' : fromLibrary ? 'library' : 'graveyard' }),
 			to: 'battlefield'
 		};
 		if ('topmostOnly' in obj && obj.topmostOnly) params.topmostOnly = true;
 		if (m[2]) params.tapped = true;
 		if (m[3]) params.enteredTransformed = true;
 		if (m[4]?.trim() === 'under your control') params.underYourControl = true;
+		if (wcCount && wcCount.k === 'const' && wcName) {
+			params.withCounters = { counter: wcName, count: wcCount.n };
+		}
 		p.push({ verb: 'move', subject: obj.selector, params, span }, true);
 		return true;
 	}
-	m = t.match(/^return (.+) to (?:your|its owner's|their owner's|their owners') hands?$/);
+	m = t.match(/^return (.+) to (your|its owner's|their owner's|their owners'|their) hands?$/);
 	if (m) {
+		const snapshot = p.mark();
 		const obj = objectPhrase(p, m[1]);
 		if (!obj) return false;
+		if (
+			m[2] === 'their' &&
+			!(obj.selector.k === 'target' && p.targets[obj.selector.index]?.filter.owner === 'opponent')
+		) {
+			p.rollback(snapshot);
+			return false;
+		}
 		const boundFromExile =
 			obj.selector.k === 'binding' &&
 			p.steps.some((s) => s.bindAs === (obj.selector as { k: 'binding'; name: string }).name && s.verb === 'exile');
 		const fromExile =
 			obj.fromZone === 'exile' ||
 			boundFromExile ||
-			(obj.selector.k === 'target' && p.targets[obj.selector.index].filter.zone === 'exile');
+			(obj.selector.k === 'target' && p.targets[obj.selector.index]?.filter.zone === 'exile');
 		const fromGy =
 			!fromExile &&
 			(obj.fromZone === 'graveyard' ||
-				(obj.selector.k === 'target' && p.targets[obj.selector.index].filter.zone === 'graveyard'));
+				(obj.selector.k === 'target' && p.targets[obj.selector.index]?.filter.zone === 'graveyard'));
 		if (fromExile) {
 			p.push({ verb: 'move', subject: obj.selector, params: { from: 'exile', to: 'hand' }, span }, true);
 			return true;
@@ -4473,11 +5297,111 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 		p.push({ verb: 'bounce', subject: obj.selector, span }, true);
 		return true;
 	}
-	// --- Track P7: Distribute counters among targets (CR 601.2d) ---
-	m = t.match(/^distribute (that many|\S+) (\S+) counters? among (.+)$/);
+	// --- Track P16a: Imperative "put <bound/target card> into your hand / graveyard" & "reveal it and put it into your hand" ---
+	m = t.match(/^reveal (it|that card) and put (?:it|that card) into your hand$/);
+	if (m) {
+		const snapshot = p.mark();
+		const obj = objectPhrase(p, m[1]);
+		const boundFromLibrary =
+			obj?.selector.k === 'binding' &&
+			p.steps.some(
+				(s) =>
+					s.bindAs === (obj.selector as { k: 'binding'; name: string }).name &&
+					s.verb === 'reveal' &&
+					s.subject.k === 'libraryTop'
+			);
+		if (obj && boundFromLibrary) {
+			p.push({ verb: 'reveal', subject: obj.selector, span }, false);
+			p.push(
+				{ verb: 'move', subject: obj.selector, params: { from: 'library', to: 'hand' }, span },
+				true
+			);
+			return true;
+		}
+		p.rollback(snapshot);
+	}
+	m = t.match(/^put (.+) into (your|its owner's|their owner's|their owners') hands?$/);
+	if (m) {
+		const snapshot = p.mark();
+		const obj = objectPhrase(p, m[1]);
+		if (obj) {
+			const boundFromExile =
+				obj.selector.k === 'binding' &&
+				p.steps.some(
+					(s) =>
+						s.bindAs === (obj.selector as { k: 'binding'; name: string }).name && s.verb === 'exile'
+				);
+			const boundFromLibrary =
+				obj.selector.k === 'binding' &&
+				p.steps.some(
+					(s) =>
+						s.bindAs === (obj.selector as { k: 'binding'; name: string }).name &&
+						s.verb === 'reveal' &&
+						s.subject.k === 'libraryTop'
+				);
+			const fromExile =
+				obj.fromZone === 'exile' ||
+				boundFromExile ||
+				(obj.selector.k === 'target' && p.targets[obj.selector.index]?.filter.zone === 'exile');
+			const fromGy =
+				!fromExile &&
+				(obj.fromZone === 'graveyard' ||
+					(obj.selector.k === 'target' && p.targets[obj.selector.index]?.filter.zone === 'graveyard'));
+			if (fromExile || fromGy || boundFromLibrary) {
+				const fromZone = fromExile ? 'exile' : fromGy ? 'graveyard' : 'library';
+				p.push(
+					{ verb: 'move', subject: obj.selector, params: { from: fromZone, to: 'hand' }, span },
+					true
+				);
+				return true;
+			}
+		}
+		p.rollback(snapshot);
+	}
+	m = t.match(/^put (.+) into (your|its owner's|their owner's|their owners') graveyards?$/);
+	if (m) {
+		const snapshot = p.mark();
+		const obj = objectPhrase(p, m[1]);
+		if (obj) {
+			const boundFromExile =
+				obj.selector.k === 'binding' &&
+				p.steps.some(
+					(s) =>
+						s.bindAs === (obj.selector as { k: 'binding'; name: string }).name && s.verb === 'exile'
+				);
+			const boundFromLibrary =
+				obj.selector.k === 'binding' &&
+				p.steps.some(
+					(s) =>
+						s.bindAs === (obj.selector as { k: 'binding'; name: string }).name &&
+						s.verb === 'reveal' &&
+						s.subject.k === 'libraryTop'
+				);
+			const fromExile =
+				obj.fromZone === 'exile' ||
+				boundFromExile ||
+				(obj.selector.k === 'target' && p.targets[obj.selector.index]?.filter.zone === 'exile');
+			if (boundFromLibrary || fromExile) {
+				p.push(
+					{
+						verb: 'move',
+						subject: obj.selector,
+						params: { from: boundFromLibrary ? 'library' : 'exile', to: 'graveyard' },
+						span
+					},
+					true
+				);
+				return true;
+			}
+		}
+		p.rollback(snapshot);
+	}
+	// --- End Track P16a ---
+	// --- Track P7 / P16a: Distribute counters among targets (CR 601.2d) ---
+	m = t.match(/^distribute (that many|\S+) (.+?) counters? among (.+)$/);
 	if (m) {
 		const amount = amountWord(p, m[1]);
-		const counter = COUNTER_WORDS[m[2]];
+		const counter = parseUniversalCounterName(m[2]);
 		if (!amount || !counter) return false;
 		const divTarget = parseDividedTargets(p, m[3], amount, true);
 		if (!divTarget) return false;
@@ -4487,52 +5411,73 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 		);
 		return true;
 	}
-	// --- End Track P7 ---
-	// --- Track P13: Generalized putCounters & removeCounters ---
+	// --- End Track P7 / P16a ---
+	// --- Track P13 / P16a: Universal putCounters & removeCounters ---
 	m = t.match(
-		/^put (?:a|the) number of ([+-−]\d+\/[+-−]\d+|first strike|double strike|[a-z]+) counters? on (.+?) equal to (.+)$/i
+		/^put (?:a|the) number of (.+?) counters? on (.+?) equal to (.+)$/i
 	);
 	if (m) {
-		const counter = COUNTER_WORDS[m[1].toLowerCase()];
+		const counter = parseUniversalCounterName(m[1]);
 		const rawObj = m[2].replace(/^each of\s+/i, '');
 		const isAnother = /^another target\b/i.test(rawObj);
 		const obj = counter ? objectPhrase(p, isAnother ? rawObj.replace(/^another /i, '') : rawObj) : null;
 		const amount = obj ? equalTo(p, m[3].trim()) : null;
 		if (!counter || !obj || !amount || obj.fromZone) return false;
-		if (isAnother && obj.selector.k === 'target') p.targets[obj.selector.index].filter.other = true;
+		if (isAnother && obj.selector.k === 'target' && p.targets[obj.selector.index]) {
+			p.targets[obj.selector.index].filter.other = true;
+		}
 		p.push({ verb: 'putCounters', subject: obj.selector, amount, params: { counter }, span }, true);
 		return true;
 	}
 	m = t.match(
-		/^put (that many|that much|\S+) ([+-−]\d+\/[+-−]\d+|first strike|double strike|[a-z]+) counters? on (.+)$/i
+		/^put (that many|that much|another|\S+) (.+?) counters? on (.+)$/i
 	);
 	if (m) {
-		const amount = amountWord(p, m[1].toLowerCase());
-		const counter = COUNTER_WORDS[m[2].toLowerCase()];
+		const amount =
+			m[1].toLowerCase() === 'another' ? n(1) : amountWord(p, m[1].toLowerCase());
+		const counter = parseUniversalCounterName(m[2]);
 		const rawObj = m[3].replace(/^each of\s+/i, '');
 		const isAnother = /^another target\b/i.test(rawObj);
 		const obj = amount && counter ? objectPhrase(p, isAnother ? rawObj.replace(/^another /i, '') : rawObj) : null;
 		if (!amount || !counter || !obj || obj.fromZone) return false;
-		if (isAnother && obj.selector.k === 'target') p.targets[obj.selector.index].filter.other = true;
+		if (isAnother && obj.selector.k === 'target' && p.targets[obj.selector.index]) {
+			p.targets[obj.selector.index].filter.other = true;
+		}
 		p.push({ verb: 'putCounters', subject: obj.selector, amount, params: { counter }, span }, true);
 		return true;
 	}
 	m = t.match(
-		/^remove (all|that many|\S+) ([+-−]\d+\/[+-−]\d+|first strike|double strike|[a-z]+) counters? from (.+)$/i
+		/^remove (all|that many|up to \S+|\S+)(?: (.+?))? counters? from (.+)$/i
 	);
 	if (m) {
-		const isAll = m[1].toLowerCase() === 'all';
-		const amount = isAll ? n(999) : amountWord(p, m[1].toLowerCase());
-		const counter = COUNTER_WORDS[m[2].toLowerCase()];
+		const rawQty = m[1].toLowerCase();
+		const isAll = rawQty === 'all';
+		const isUpTo = rawQty.startsWith('up to ');
+		const amount = isAll
+			? n(999)
+			: amountWord(p, isUpTo ? rawQty.slice('up to '.length).trim() : rawQty);
+		const counter: CounterType | 'any' | null = m[2] ? parseUniversalCounterName(m[2]) : 'any';
 		const rawObj = m[3].replace(/^each of\s+/i, '');
 		const isAnother = /^another target\b/i.test(rawObj);
 		const obj = amount && counter ? objectPhrase(p, isAnother ? rawObj.replace(/^another /i, '') : rawObj) : null;
 		if (!amount || !counter || !obj || obj.fromZone) return false;
-		if (isAnother && obj.selector.k === 'target') p.targets[obj.selector.index].filter.other = true;
-		p.push({ verb: 'removeCounters', subject: obj.selector, amount, params: { counter }, span }, true);
+		if (isAnother && obj.selector.k === 'target' && p.targets[obj.selector.index]) {
+			p.targets[obj.selector.index].filter.other = true;
+		}
+		const idx = p.push(
+			{
+				verb: 'removeCounters',
+				subject: obj.selector,
+				amount,
+				params: { counter, ...(isUpTo ? { upTo: true } : {}) },
+				span
+			},
+			true
+		);
+		if (isUpTo) p.lastOptionalStep = idx;
 		return true;
 	}
-	// --- End Track P13 ---
+	// --- End Track P13 / P16a ---
 	m = t.match(/^switch (.+?)'s power and toughness until end of turn$/);
 	if (m) {
 		const obj = objectPhrase(p, m[1]);
@@ -4614,7 +5559,42 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 						st.subject.k === 'target' &&
 						p.targets[st.subject.index]?.filter.zone === 'stack'
 				));
-		if (!validStackSubject) return false;
+		if (!validStackSubject) {
+			// --- Track P16a: Off-stack card copy ("Copy target ... card in exile/graveyard. You may cast the copy without paying its mana cost.") ---
+			const validOffStackCardCopy =
+				!mayChooseNewTargets &&
+				!nonLegendary &&
+				exceptColors === undefined &&
+				!copyCount &&
+				((sel.k === 'target' &&
+					(p.targets[sel.index]?.filter.zone === 'graveyard' ||
+						p.targets[sel.index]?.filter.zone === 'exile')) ||
+					(sel.k === 'binding' &&
+						p.steps.some(
+							(st) => st.bindAs === sel.name && (st.verb === 'exile' || st.verb === 'move')
+						)) ||
+					(sel.k === 'all' && sel.filter.zone === 'exile' && Boolean(sel.filter.exiledWithSelf)));
+			if (validOffStackCardCopy) {
+				const stepIndex = p.push(
+					{
+						verb: 'castFree',
+						subject: sel,
+						params: {
+							castFreeSpec: {
+								copyCardFirst: true,
+								withoutPayingManaCost: true
+							}
+						},
+						span
+					},
+					true
+				);
+				p.pendingCardCopy = { stepIndex, span };
+				return true;
+			}
+			// --- End Track P16a ---
+			return false;
+		}
 		const params: NonNullable<EffectStep['params']> = {
 			...(copyCount ? { count: copyCount } : {}),
 			...(mayChooseNewTargets ? { mayChooseNewTargets: true } : {}),
@@ -4641,11 +5621,13 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 		p.push({ verb: 'lookAndReorder', subject: YOU, amount, span }, false);
 		return true;
 	}
-	m = t.match(/^(look at|reveal) the top (?:(that many|\S+) )?cards? of your library$/);
+	m =
+		t.match(/^(look at|reveal) the top (?:(that many|\S+) )?cards? of your library$/) ??
+		t.match(/^(look at|reveal) (that many|\S+) cards from the top of your library$/i);
 	if (m) {
 		const amount = m[2] ? amountWord(p, m[2]) : n(1);
 		if (!amount) return false;
-		const isLook = m[1] === 'look at';
+		const isLook = m[1].toLowerCase() === 'look at';
 		const stepIndex = p.push({ verb: 'dig', subject: YOU, amount, span }, false);
 		p.pendingDig = {
 			stepIndex,
@@ -4689,10 +5671,10 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 		);
 		return true;
 	}
-	// --- Track P10: "Reveal cards from the top of your library until you reveal a [filter] card" ---
-	m = t.match(/^reveal cards from the top of your library until you reveal (?:a|an) (.+?) card$/i);
+	// --- Track P10 / P16a: "(Reveal|Exile) cards from the top of your library until you \1 a [filter] card" ---
+	m = t.match(/^(reveal|exile) cards from the top of your library until you \1 (?:a|an) (.+?) card$/i);
 	if (m) {
-		const untilFilter = objectFilter(`${m[1].trim()} card`);
+		const untilFilter = objectFilter(`${m[2].trim()} card`);
 		if (!untilFilter) return false;
 		const stepIndex = p.push({ verb: 'dig', subject: YOU, amount: n(999), span }, true);
 		p.pendingDig = {
@@ -4710,10 +5692,11 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 		};
 		return true;
 	}
-	// --- End Track P10 ---
+	// --- End Track P10 / P16a ---
 	m = t.match(/^(transform|convert|flip) (.+)$/);
 	if (m) {
-		const verb: 'transform' | 'flip' = m[1] === 'flip' ? 'flip' : 'transform';
+		const verb: 'transform' | 'convert' | 'flip' =
+			m[1] === 'flip' ? 'flip' : m[1] === 'convert' ? 'convert' : 'transform';
 		const obj = objectPhrase(p, m[2]);
 		if (!obj) return false;
 		p.push({ verb, subject: obj.selector, span }, true);
@@ -4770,7 +5753,7 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 		p.push({ verb: 'regenerate', subject: obj.selector, span }, true);
 		return true;
 	}
-	if (/^(?:after this phase, )?there is an additional combat phase$/i.test(t)) {
+	if (/^(?:after this (?:main )?phase, )?there is an additional combat phase(?: followed by an additional main phase)?$/i.test(t)) {
 		p.push({ verb: 'extraCombatPhase', subject: { k: 'none' }, span }, false);
 		return true;
 	}
@@ -4825,6 +5808,7 @@ function resolveLibraryMoveSourceZone(p: Parser, obj: ObjectRes): ZoneType | 'an
 	if (sel.k === 'binding') {
 		const bound = p.steps.find((s) => s.bindAs === sel.name);
 		if (bound?.verb === 'exile') return 'exile';
+		if (bound?.verb === 'reveal' && bound.subject.k === 'libraryTop') return 'library';
 		if (bound?.subject.k === 'target') {
 			const spec = p.targets[bound.subject.index];
 			return spec && spec.kind === 'object' ? normZone(spec.filter.zone) : 'battlefield';
@@ -5050,6 +6034,27 @@ function addMana(p: Parser, text: string, span: Span): ClauseResult {
 			return true;
 		}
 	}
+	// --- Track P16a: "Add {W} or one mana of the chosen color" (Thriving / Gate lands) ---
+	m = t.match(
+		/^((?:\{[WUBRGC]\}(?:,?\s*\{[WUBRGC]\})*))(?:,\s*|\s+)or (?:one|1) mana of the chosen color$/i
+	);
+	if (m) {
+		const cols = symbols(m[1]);
+		if (cols.length > 0) {
+			p.push(
+				{
+					verb: 'addMana',
+					subject: { k: 'none' },
+					amount: n(1),
+					params: { manaChoice: 'chosenColor', manaOrChosenColor: cols },
+					span
+				},
+				false
+			);
+			return true;
+		}
+	}
+	// --- End Track P16a ---
 	m = t.match(/^(that much|that many|\S+) mana in any combination of colors$/i);
 	if (m) {
 		const amount = amountWord(p, m[1].toLowerCase());
@@ -5126,7 +6131,8 @@ function addMana(p: Parser, text: string, span: Span): ClauseResult {
 			p.push({ verb: 'addMana', subject: { k: 'none' }, amount: of, params: { mana: [m[1] as ManaColor] }, span }, false);
 			return true;
 		}
-		const amount = numberOf(m[2].replace(/^(\S+)/, (w) => w));
+		const normManaEach = m[2].replace(/\bcounter\b/i, 'counters');
+		const amount = numberOf(m[2].replace(/^(\S+)/, (w) => w)) ?? numberOf(normManaEach);
 		const each = m[2].match(/^(\S+) (you control|on the battlefield)$/);
 		let of: Amount | null = amount;
 		if (each) {
@@ -5149,20 +6155,23 @@ function addMana(p: Parser, text: string, span: Span): ClauseResult {
 
 // Words that start a new clause after " and " / ", then ".
 const CLAUSE_START =
-	/^(?:you|each opponent|each player|target player|target opponent|its controller|its owner|(?:that|the exiled) (?:card|creature|permanent|spell)'s (?:controller|owner)|that player|they|it (?=deals|fights?|gets?|gains?|loses?|explores?|connives?|adapts?|phases?|becomes?|endures?|is |can't|doesn't|does not)|that creature |those creatures |that permanent |those permanents |that target |those targets |that creature or planeswalker |that permanent or player |the amassed [Aa]rmy |the ring tempts you|enchanted |equipped |until (?:end of turn|your next turn|(?:the )?end of your next turn|your next end step), |for as long as |draw|draws|lose|loses|gain|gains|get|gets|become|becomes|put|remove|exile|exert|exerts|destroy|return|create|creates|search|scry|surveil|surveils|investigate|investigates|mill|mills|sacrifice|deal|deals|add|take|takes|phase|phases|attach|counter|proliferate|switch|look|reveal|reveals|shuffle|shuffles|tap|untap|fight|fights|transform|transforms|convert|converts|flip|flips|roll|rolls|discover|discovers|clash|clashes|detain|detains|suspect|suspects|collect|collects|forage|forages|endure|endures|time|blight|blights|fateseal|fateseals|discard|discards|connive|connives|explore|explores|goad|goads|regenerate|regenerates|amass|amasses|incubate|incubates|populate|populates|manifest|manifests|cloak|cloaks|bolster|bolsters|monstrosity|support|adapt|adapts|prevent|prevents|distribute|distributes|choose|double|triple|exchange|turn|venture|ventures|earthbend|airbend|learn|learns|damage|combat|after|there)\b/i;
+	/^(?:you|an opponent|your opponents|opponents|each opponent|each player|target player|target opponent|defending player|~'s owner|~'s controller|its controller|its owner|(?:that|the exiled|the sacrificed|the destroyed|the discarded) (?:card|creature|permanent|spell|artifact|enchantment|land|planeswalker|battle|token)'s (?:controller|owner)|that player|they|it (?=deals|fights?|gets?|gains?|loses?|explores?|connives?|adapts?|phases?|becomes?|endures?|converts?|is |can't|doesn't|does not)|that creature |those creatures |that permanent |those permanents |that target |those targets |that creature or planeswalker |that permanent or player |the amassed [Aa]rmy |the ring tempts you|the next |spells you control |enchanted |equipped |until (?:end of turn|end of combat|your next turn|(?:the )?end of your next turn|your next end step), |for as long as |draw|draws|lose|loses|gain|gains|get|gets|become|becomes|must|can't|can|has|have|assigns|put|move|moves|remove|exile|exert|exerts|destroy|return|create|creates|search|scry|surveil|surveils|investigate|investigates|mill|mills|sacrifice|deal|deals|add|take|takes|phase|phases|attach|counter|proliferate|switch|look|reveal|reveals|shuffle|shuffles|separate|separates|tap|untap|fight|fights|transform|transforms|convert|converts|harness|harnesses|empower|empowers|assimilate|assimilates|recruit|recruits|heal|heals|cast|flip|flips|roll|rolls|discover|discovers|clash|clashes|detain|detains|suspect|suspects|collect|collects|forage|forages|endure|endures|time|blight|blights|fateseal|fateseals|discard|discards|connive|connives|explore|explores|goad|goads|regenerate|regenerates|amass|amasses|incubate|incubates|populate|populates|manifest|manifests|cloak|cloaks|bolster|bolsters|monstrosity|support|adapt|adapts|prevent|prevents|distribute|distributes|choose|double|triple|exchange|turn|venture|ventures|earthbend|airbend|learn|learns|damage|combat|after|there)\b/i;
 
-/** Splits a sentence into clauses at ", then " and at " and " before a new verb or subject. */
+/** Splits a sentence into clauses at ", then ", at " and " before a new verb or subject, and 3-part comma verb lists. */
 function splitClauses(text: string, offset: number): Clause[] {
 	const out: Clause[] = [];
-	const re = /,? then |,? and /g;
+	const re =
+		/,? then |,? and |, (?=(?:lose|loses|gain|gains|draw|draws|mill|mills|scry|scries|surveil|surveils|proliferate|investigate|investigates)\b)/g;
 	let last = 0;
 	for (const m of text.matchAll(re)) {
 		if (isInsideQuotes(text, m.index)) continue;
 		const after = text.slice(m.index + m[0].length);
 		if (!CLAUSE_START.test(after)) continue;
-		// "gain trample and get +X/+X" / "get +X/+Y and gain trample" stay one clause (handled by objectPredicate).
-		if (/^gets? /.test(after) && /gains? [a-z ]+$/.test(text.slice(last, m.index))) continue;
-		if (/^(?:gains?|has|have) /.test(after) && /\bgets? [+\-−](?:\d+|X)\/[+\-−](?:\d+|X)$/.test(text.slice(last, m.index))) continue;
+		// "gain trample and get +X/+X" / "get +X/+Y and gain/lose trample" / "loses all abilities and has base power..." stay one clause.
+		if (/^gets? /.test(after) && /(?:gains?|loses?) [a-z ]+$/.test(text.slice(last, m.index))) continue;
+		if (/^(?:gains?|loses?|has|have) /.test(after) && /\bgets? [+\-−](?:\d+|X)\/[+\-−](?:\d+|X)$/.test(text.slice(last, m.index))) continue;
+		if (/^(?:has|have) base power and toughness\b/i.test(after) && /\bloses? all abilities$/i.test(text.slice(last, m.index))) continue;
+		if (/^loses? all abilities\b/i.test(after) && /\b(?:has|have) base power and toughness (?:\d+|X)\/(?:\d+|X)$/i.test(text.slice(last, m.index))) continue;
 		// "rolls a d20 / six-sided die and adds ..." stays one clause.
 		if (
 			/^adds?\b/i.test(after) &&
@@ -5237,6 +6246,55 @@ function isP7ResolutionCondition(cond: Condition): boolean {
 	);
 }
 
+function parseEffectResolutionCondition(p: Parser, rawCondText: string): Condition | null {
+	const hasNonSelfPronoun =
+		p.lastObject !== undefined &&
+		p.lastObject.ref.k !== 'self' &&
+		/^if\s+(?:it\b|it's\b|that\b|the\b)/i.test(rawCondText.trim());
+	const p7 = !hasNonSelfPronoun
+		? parseCondition(rawCondText, { allowDungeonCompletion: true })
+		: null;
+	if (p7 && isP7ResolutionCondition(p7)) return p7;
+	return parseWave6EffectCondition(rawCondText, {
+		definedX: p.definedX,
+		hasNonSelfPronounTarget: p.lastObject !== undefined && p.lastObject.ref.k !== 'self',
+		itRef: () => p.itRef(),
+		ensureLastStepBound: () => {
+			if (p.steps.length === 0) return null;
+			const lastIdx = p.steps.length - 1;
+			const prev = p.steps[lastIdx];
+			if (
+				prev.verb !== 'mill' &&
+				prev.verb !== 'dig' &&
+				prev.verb !== 'reveal' &&
+				prev.verb !== 'discard' &&
+				prev.verb !== 'discardHand' &&
+				prev.verb !== 'exile'
+			) {
+				return null;
+			}
+			const bindName = prev.bindAs ?? `b${lastIdx}`;
+			prev.bindAs = bindName;
+			return { k: 'binding', name: bindName };
+		},
+		objectFilter: (phrase) => objectFilter(phrase),
+		parseAmount: (amtText) =>
+			amountWord(p, amtText.toLowerCase()) ??
+			equalTo(p, amtText) ??
+			numberOf(amtText) ??
+			parseP13Amount(
+				amtText,
+				(sub) => equalTo(p, sub) ?? numberOf(sub) ?? amountWord(p, sub.toLowerCase())
+			),
+		lastPlayerRef: () =>
+			p.lastPlayer
+				? singlePlayer(p.lastPlayer)
+				: p.context === 'triggered'
+					? { k: 'eventPlayer' }
+					: null
+	});
+}
+
 function tryReplacementIfSentence(
 	p: Parser,
 	innerClauseText: string,
@@ -5245,21 +6303,25 @@ function tryReplacementIfSentence(
 	targetsBefore: number,
 	span: Span
 ): boolean {
-	if (stepsBefore !== 1) return false;
-	const baseStep = p.steps[0];
-	if (!baseStep || baseStep.condition || baseStep.optional) return false;
+	const startIdx = p.lastSentenceStepStart ?? 0;
+	if (stepsBefore <= startIdx) return false;
+	const baseSteps = p.steps.slice(startIdx, stepsBefore);
+	if (baseSteps.some((s) => Boolean(s.condition) || Boolean(s.optional))) return false;
 
 	const savedMark = p.mark();
 	let directRef: Ref | null = null;
-	const subj = baseStep.subject;
-	if (subj.k === 'target') directRef = { k: 'target', index: subj.index };
-	else if (subj.k === 'self') directRef = { k: 'self' };
-	else if (subj.k === 'eventObject') directRef = { k: 'eventObject' };
-	else if (subj.k === 'attachedTo') directRef = { k: 'attachedTo' };
+	if (baseSteps.length === 1) {
+		const baseStep = baseSteps[0];
+		const subj = baseStep.subject;
+		if (subj.k === 'target') directRef = { k: 'target', index: subj.index };
+		else if (subj.k === 'self') directRef = { k: 'self' };
+		else if (subj.k === 'eventObject') directRef = { k: 'eventObject' };
+		else if (subj.k === 'attachedTo') directRef = { k: 'attachedTo' };
 
-	if (directRef) {
-		p.lastObject = { ref: directRef, stepIndex: -1 };
-		delete baseStep.bindAs;
+		if (directRef) {
+			p.lastObject = { ref: directRef, stepIndex: -1 };
+			delete baseStep.bindAs;
+		}
 	}
 
 	let normInner = innerClauseText.trim();
@@ -5269,20 +6331,26 @@ function tryReplacementIfSentence(
 	normInner = normInner.replace(/^it deals\b/i, '~ deals');
 
 	if (
-		!clause(p, { text: normInner, span }, false) ||
-		p.steps.length !== 2 ||
+		!clauses(p, normInner, span.start) ||
+		p.steps.length <= stepsBefore ||
 		p.targets.length !== targetsBefore ||
-		p.steps[1].verb !== baseStep.verb ||
-		Boolean(p.steps[1].optional)
+		p.steps.slice(stepsBefore).some((s) => Boolean(s.optional))
 	) {
 		p.rollback(savedMark);
 		return false;
 	}
 
 	const negCond: Condition = cond.k === 'not' ? cond.of : { k: 'not', of: cond };
-	baseStep.condition = negCond;
-	p.steps[1].condition = cond;
-	p.lastObject = directRef ? { ref: directRef, stepIndex: -1 } : undefined;
+	for (let i = startIdx; i < stepsBefore; i++) {
+		p.steps[i].condition = negCond;
+	}
+	for (let i = stepsBefore; i < p.steps.length; i++) {
+		const st = p.steps[i];
+		st.condition = st.condition ? { k: 'and', of: [cond, st.condition] } : cond;
+	}
+	if (baseSteps.length === 1) {
+		p.lastObject = directRef ? { ref: directRef, stepIndex: -1 } : undefined;
+	}
 	return true;
 }
 // --- End Track P7 ---
@@ -5311,9 +6379,9 @@ function tryUnlessClause(p: Parser, text: string, span: Span): boolean {
 		}
 		return true;
 	}
-	// --- Track P7: "unless you attacked this turn" / "unless a creature died this turn" / etc. ---
-	const p7UnlessCond = parseCondition(`if ${tail}`, { allowDungeonCompletion: true });
-	if (p7UnlessCond && isP7ResolutionCondition(p7UnlessCond)) {
+	// --- Track P7 / P16a: "unless <resolution condition>" ---
+	const unlessCond = parseEffectResolutionCondition(p, `if ${tail}`);
+	if (unlessCond) {
 		const normalizedBase =
 			/^sacrifice it$/i.test(baseText) && !p.lastObject ? 'sacrifice ~' : baseText;
 		const mark = p.mark();
@@ -5327,15 +6395,15 @@ function tryUnlessClause(p: Parser, text: string, span: Span): boolean {
 			return false;
 		}
 		const negCond: Condition =
-			p7UnlessCond.k === 'not' ? p7UnlessCond.of : { k: 'not', of: p7UnlessCond };
+			unlessCond.k === 'not' ? unlessCond.of : { k: 'not', of: unlessCond };
 		for (const step of added) {
 			step.condition = step.condition ? { k: 'and', of: [negCond, step.condition] } : negCond;
 		}
 		return true;
 	}
-	// --- End Track P7 ---
+	// --- End Track P7 / P16a ---
 	const pm = tail.match(
-		/^(you|that player|the player whose turn it is|the player|that opponent|they|target player|target opponent|each opponent|each player|(?:its|that card's|that creature's|that permanent's|that spell's|the exiled card's|the exiled creature's|the exiled permanent's|their) (?:controller|owner))\s+(.+)$/i
+		/^(you|that player|the player whose turn it is|the player|that opponent|they|target player|target opponent|each opponent|each player|(?:its|(?:that|the exiled|the sacrificed|the destroyed|the discarded) (?:card|creature|permanent|spell|artifact|enchantment|land|planeswalker|battle|token)'s|their) (?:controller|owner))\s+(.+)$/i
 	);
 	if (!pm) return false;
 	const costDefs = parseOptionalCostBody(pm[2]);
@@ -5383,12 +6451,13 @@ function tryUnlessClause(p: Parser, text: string, span: Span): boolean {
 /** One clause: an imperative, or a subject followed by a predicate. */
 function clause(p: Parser, c: Clause, allowUnless = true): ClauseResult {
 	let t = c.text.trim();
-	if (p.steps.length > 0 && /^then,?\s+/i.test(t) && !/^then\s+if\b/i.test(t)) {
+	if (/^then,?\s+/i.test(t) && !/^then\s+if\b/i.test(t)) {
 		t = t.replace(/^then,?\s+/i, '').trim();
 	}
 	if (!t) return false;
 	if (allowUnless && /\bunless\b/i.test(t) && tryUnlessClause(p, t, c.span)) return true;
 	if (imperative(p, t, c.span)) return true;
+	if (tryWave6Clause(p, t, c.span)) return true;
 	if (tryP13Clause(p, t, c.span)) return true;
 
 	// "It/They can't be regenerated" / "<object> can't be regenerated this turn"
@@ -5433,6 +6502,108 @@ function clause(p: Parser, c: Clause, allowUnless = true): ClauseResult {
 		}
 	}
 
+	// --- Track P16a: CR 611.2b duration-locked untap freeze ("doesn't untap during its controller's untap step for as long as ~ remains tapped / you control ~") ---
+	const ptAndFreezeDur = t.match(
+		/^(.+?) gets? ([+\-−](?:\d+|X)\/[+\-−](?:\d+|X))(?: (until end of turn))? and (?:doesn't|don't|does not|do not) untap during (?:its controller's|their controller's|their controllers'|that player's|their|your) (next )?untap steps?(?: (for as long as (?:~ remains tapped|you control ~)))?$/i
+	);
+	if (ptAndFreezeDur && (ptAndFreezeDur[4] || ptAndFreezeDur[5]) && !(ptAndFreezeDur[4] && ptAndFreezeDur[5])) {
+		const delta = ptChange(ptAndFreezeDur[2]);
+		if (delta) {
+			const snapshot = p.mark();
+			const obj = objectPhrase(p, ptAndFreezeDur[1].trim());
+			const validTarget =
+				!obj ||
+				obj.selector.k !== 'target' ||
+				(p.targets[obj.selector.index]?.kind === 'object' &&
+					(p.targets[obj.selector.index]?.filter.zone ?? 'battlefield') === 'battlefield');
+			if (obj && !obj.fromZone && validTarget) {
+				const freezeDur: Duration | undefined = ptAndFreezeDur[5]
+					? /remains tapped$/i.test(ptAndFreezeDur[5])
+						? 'forAsLongAsSelfRemainsTapped'
+						: 'forAsLongAsYouControlSelf'
+					: undefined;
+				const ptDur: Duration = ptAndFreezeDur[3]
+					? 'endOfTurn'
+					: (freezeDur ?? 'endOfTurn');
+				p.push(
+					{
+						verb: 'pump',
+						subject: obj.selector,
+						amount: delta.power,
+						params: { toughness: delta.toughness, duration: ptDur },
+						span: c.span
+					},
+					true
+				);
+				const freezeSubj =
+					obj.selector.k === 'target'
+						? obj.selector
+						: (() => {
+								const r = p.itRef();
+								return r ? refSelector(r) : obj.selector;
+							})();
+				p.push(
+					{
+						verb: 'freezeUntap',
+						subject: freezeSubj,
+						...(freezeDur ? { params: { duration: freezeDur } } : {}),
+						span: c.span
+					},
+					true
+				);
+				return true;
+			}
+			p.rollback(snapshot);
+		}
+	}
+
+	const freezeDurUntap = t.match(
+		/^(.+?) (?:doesn't|don't|does not|do not) untap during (?:its controller's|their controller's|their controllers'|that player's|their|your) untap steps? (for as long as (?:~ remains tapped|you control ~))$/i
+	);
+	if (freezeDurUntap && !/^(?:for as long as|until|as long as)\b/i.test(freezeDurUntap[1])) {
+		const rawSubj = freezeDurUntap[1].trim();
+		const freezeDur: Duration = /remains tapped$/i.test(freezeDurUntap[2])
+			? 'forAsLongAsSelfRemainsTapped'
+			: 'forAsLongAsYouControlSelf';
+		if (/^they$/i.test(rawSubj)) {
+			const ref = p.itRef();
+			if (ref) {
+				p.push(
+					{
+						verb: 'freezeUntap',
+						subject: refSelector(ref),
+						params: { duration: freezeDur },
+						span: c.span
+					},
+					true
+				);
+				return true;
+			}
+		} else {
+			const snapshot = p.mark();
+			const obj = objectPhrase(p, rawSubj);
+			const validTarget =
+				!obj ||
+				obj.selector.k !== 'target' ||
+				(p.targets[obj.selector.index]?.kind === 'object' &&
+					(p.targets[obj.selector.index]?.filter.zone ?? 'battlefield') === 'battlefield');
+			if (obj && !obj.fromZone && validTarget) {
+				p.push(
+					{
+						verb: 'freezeUntap',
+						subject: obj.selector,
+						params: { duration: freezeDur },
+						span: c.span
+					},
+					true
+				);
+				return true;
+			}
+			p.rollback(snapshot);
+		}
+	}
+	// --- End Track P16a ---
+
 	if (tryOwnerLibraryMoveClause(p, t, c.span)) return true;
 
 	// Player subjects.
@@ -5441,12 +6612,33 @@ function clause(p: Parser, c: Clause, allowUnless = true): ClauseResult {
 		const subject = playerPhrase(p, ownerMatch[1]);
 		if (subject && playerPredicate(p, subject, ownerMatch[2], c.span)) return true;
 	}
+	// --- Track P16a: Shared player compound ("you and target opponent each draw two cards / gain 3 life / lose 2 life") ---
+	const youAndTargetEach = t.match(
+		/^you and (target opponent|target player|that player|that opponent) each ((?:draws?|gains?|loses?|mills?|discards?|scrys?|surveils?|sacrifices?|creates?)\b.+)$/i
+	);
+	if (youAndTargetEach) {
+		const mark = p.mark();
+		const otherSel = playerPhrase(p, youAndTargetEach[1].toLowerCase());
+		const vp = youAndTargetEach[2].trim();
+		if (
+			otherSel &&
+			playerPredicate(p, YOU, vp, c.span) &&
+			playerPredicate(p, otherSel, vp, c.span)
+		) {
+			p.lastPlayer = otherSel;
+			return true;
+		}
+		p.rollback(mark);
+	}
+	// --- End Track P16a ---
 	const ps = t.match(
-		/^(you|each opponent|each player|target player|target opponent|its controller|its owner|that player|they|the player whose turn it is|(?:that card's|that creature's|that permanent's|that spell's|the exiled card's|the exiled creature's|the exiled permanent's) (?:controller|owner)) (.+)$/
+		/^(you|each opponent|each player|target player|target opponent|defending player|~'s owner|~'s controller|its controller|its owner|that player|they|the player whose turn it is|(?:(?:that|the exiled|the sacrificed|the destroyed|the discarded) (?:card|creature|permanent|spell|artifact|enchantment|land|planeswalker|battle|token)'s) (?:controller|owner)) (.+)$/
 	);
 	if (ps) {
+		const psMark = p.mark();
 		const subject = playerPhrase(p, ps[1]);
 		if (subject && playerPredicate(p, subject, ps[2], c.span)) return true;
+		p.rollback(psMark);
 	}
 	// A continued predicate with the previous player as subject ("... and loses 2 life").
 	if (
@@ -5468,19 +6660,34 @@ function clause(p: Parser, c: Clause, allowUnless = true): ClauseResult {
 			return true;
 		}
 	}
-	const dur = t.match(/^(until end of turn|until your next turn|until (?:the )?end of your next turn), (.+)$/i);
+	const dur = t.match(
+		/^(until end of turn|until end of combat|until your next turn|until (?:the )?end of your next turn|for as long as you control ~|for as long as ~ remains tapped), (.+)$/i
+	);
 	if (dur) {
 		const durTail = dur[1].toLowerCase();
 		if (imperative(p, `${dur[2].trim()} ${durTail}`, c.span)) return true;
 	}
 	const body = dur ? dur[2] : t;
 	const durSuffix = dur ? ` ${dur[1].toLowerCase()}` : '';
+	// --- Track P16a: Continued predicate with the previous object as subject ("... and gains trample", "... and must be blocked this turn if able") ---
+	if (
+		p.lastObject &&
+		/^(?:gets?|gains?|loses?|has\b|have\b|becomes?|can't\b|can\b|must\b|assigns? no combat damage\b|deals\b|fights?\b|explores?\b|connives?\b)\b/i.test(
+			body.trim()
+		)
+	) {
+		const lastObjMark = p.mark();
+		const lastObjSubj = { selector: refSelector(p.lastObject.ref), ref: p.lastObject.ref };
+		if (objectPredicate(p, lastObjSubj, `${body.trim()}${durSuffix}`, c.span)) return true;
+		p.rollback(lastObjMark);
+	}
+	// --- End Track P16a ---
 	const words = body.split(' ');
 	for (let i = words.length - 1; i >= 1; i--) {
 		const subjText = words.slice(0, i).join(' ');
 		const vp = words.slice(i).join(' ') + durSuffix;
 		if (
-			!/^(?:each\s+(?:gets?|gains?|can't)|gets?|gains?|has\b|have\b|loses?|phases?|deals|fights?|explores?|connives?|adapts?|endures?|becomes?|is\b|can't|can\b)\b/.test(
+			!/^(?:each\s+(?:gets?|gains?|can't|becomes?|loses?|has|have)|gets?|gains?|has\b|have\b|loses?|phases?|deals|fights?|explores?|connives?|adapts?|endures?|becomes?|is\b|can't|can\b|attacks?|blocks?|must\b|assigns?|converts?)\b/.test(
 				vp
 			)
 		) {
@@ -5491,7 +6698,10 @@ function clause(p: Parser, c: Clause, allowUnless = true): ClauseResult {
 			subjText === 'it' && !p.lastObject && p.context === 'activated' && /^(?:deals|fights?|endures?)\b/.test(vp)
 				? { selector: { k: 'self' } as Selector, ref: { k: 'self' } as Ref }
 				: objectPhrase(p, subjText);
-		if (!subject) continue;
+		if (!subject) {
+			p.targets.length = snapshot;
+			continue;
+		}
 		if (objectPredicate(p, subject, vp, c.span)) return true;
 		p.targets.length = snapshot;
 	}
@@ -5521,7 +6731,7 @@ function clause(p: Parser, c: Clause, allowUnless = true): ClauseResult {
 			if (ok) return true;
 		}
 		p.rollback(mark);
-	return false;
+		return false;
 	};
 	const perCmdCast = t.match(
 		/^(.+?) for each time you've cast (?:your|a) commander from the command zone this game( until end of turn)?$/i
@@ -5561,25 +6771,83 @@ function clause(p: Parser, c: Clause, allowUnless = true): ClauseResult {
 		});
 		if (ok) return true;
 	}
-	// --- Track P13: Generalized "<clause> for each <filter / zone count>" scaling ---
+	// --- Track P13 / P16a: Generalized "<clause> for each <filter / zone / counter count>" & leading "For each <what>, <clause>" scaling ---
+	const leadForEach = t.match(/^for each ([^,]+),\s*(.+)$/i);
+	if (leadForEach && !/\bfor each\b/i.test(leadForEach[2])) {
+		if (clause(p, { text: `${leadForEach[2].trim()} for each ${leadForEach[1].trim()}`, span: c.span })) {
+			return true;
+		}
+	}
+	const midDurForEach = t.match(
+		/^(.+?)\s+(until end of turn|until end of combat|until your next turn)\s+for each\s+(.+)$/i
+	);
+	if (midDurForEach) {
+		if (
+			clause(p, {
+				text: `${midDurForEach[1].trim()} for each ${midDurForEach[3].trim()} ${midDurForEach[2].toLowerCase()}`,
+				span: c.span
+			})
+		) {
+			return true;
+		}
+	}
 	const perGeneral = t.match(
-		/^(.+?) for each (.+?)( (?:until end of turn|until your next turn|until (?:the )?end of your next turn))?$/i
+		/^(.+?) for each (.+?)( (?:until end of turn|until end of combat|until your next turn|until (?:the )?end of your next turn|for as long as you control ~|for as long as ~ remains tapped))?$/i
 	);
 	if (
 		perGeneral &&
 		!/^(?:add|copy)\b/i.test(perGeneral[1]) &&
-		!/\b(?:players?|opponents?|votes?|target|targets|time|times|mana|counters?\s+(?:removed|put))\b/i.test(
+		!/\b(?:votes?|target|targets|time|times|mana|counters?\s+put)\b/i.test(
 			perGeneral[2]
 		)
 	) {
-		const normWhat = perGeneral[2]
-			.trim()
+		const rawWhat = perGeneral[2].trim();
+		const normWhat = rawWhat
 			.replace(/\s+on the battlefield$/i, '')
 			.replace(/^card in /i, 'cards in ')
+			.replace(/^creature blocking /i, 'creatures blocking ')
 			.replace(/^card type among /i, 'card types among ')
 			.replace(/^color among /i, 'colors among ')
-			.replace(/^unlocked door among /i, 'unlocked doors among ');
-		const countAmt = numberOf(normWhat);
+			.replace(/^unlocked door among /i, 'unlocked doors among ')
+			.replace(/^counter removed this way$/i, 'counters removed this way')
+			.replace(/^(.+?) counter (on |among |removed |you have$)/i, '$1 counters $2');
+		const savedMark = p.mark();
+		let countAmt: Amount | null = null;
+		// "<filter> (exiled|destroyed|discarded|sacrificed) this way" -> `thatMany()` on preceding batch step
+		const thisWayM = rawWhat.match(/^.+?\s+(exiled|destroyed|discarded|sacrificed) this way$/i);
+		if (thisWayM && p.steps.length > 0) {
+			const lastVerb = p.steps[p.steps.length - 1]?.verb;
+			const w = thisWayM[1].toLowerCase();
+			if (
+				(w === 'exiled' && lastVerb === 'exile') ||
+				(w === 'destroyed' && lastVerb === 'destroy') ||
+				(w === 'discarded' && (lastVerb === 'discard' || lastVerb === 'discardHand')) ||
+				(w === 'sacrificed' && lastVerb === 'sacrifice')
+			) {
+				countAmt = p.thatMany();
+			}
+		}
+		// "<filter> (target opponent|target player|that player|that opponent) controls"
+		if (!countAmt) {
+			const refCtlM = normWhat.match(
+				/^(.+?) (target opponent|target player|that player|that opponent) controls$/i
+			);
+			if (refCtlM) {
+				const f = objectFilter(refCtlM[1].trim());
+				const pSel = f ? playerPhrase(p, refCtlM[2].toLowerCase()) : null;
+				const pRef = pSel ? singlePlayer(pSel) : null;
+				if (f && pRef) {
+					countAmt = { k: 'count', of: { zone: 'battlefield', ...f, controllerRef: pRef } };
+				}
+			}
+		}
+		if (!countAmt && !/\b(?:players?|opponents?)\b/i.test(rawWhat)) {
+			countAmt = numberOf(normWhat) ?? equalTo(p, `the number of ${normWhat}`);
+			if (p.targets.length !== savedMark.targets) {
+				p.rollback(savedMark);
+				countAmt = null;
+			}
+		}
 		if (countAmt) {
 			const multiplyAmount = (base: Amount, mult: number): Amount | null => {
 				if (mult === 0) return n(0);
@@ -5596,16 +6864,82 @@ function clause(p: Parser, c: Clause, allowUnless = true): ClauseResult {
 			});
 			if (ok) return true;
 		}
+		p.rollback(savedMark);
 	}
-	// --- End Track P13 ---
+	// --- End Track P13 / P16a ---
+	// --- Track P16a: Trailing inline conditional suffix ("<clause> if <condition>") ---
+	if (allowUnless && /\s+if\s+/i.test(t) && !/\b(?:instead|unless|whether)\b/i.test(t)) {
+		const ifRe = /\s+if\s+/gi;
+		for (let guard = 0; guard < 12; guard++) {
+			const match = ifRe.exec(t);
+			if (!match) break;
+			const idx = match.index;
+			if (idx <= 0 || isInsideQuotes(t, idx)) continue;
+			const baseClause = t.slice(0, idx).trim().replace(/,$/, '').trim();
+			const condRaw = t.slice(idx).trim();
+			if (!baseClause) continue;
+			const mark = p.mark();
+			const preBaseLastObj = p.lastObject;
+			if (
+				!clause(p, { text: baseClause, span: c.span }, false) ||
+				p.steps.length <= mark.steps ||
+				p.steps.slice(mark.steps).some((s) => Boolean(s.optional?.cost))
+			) {
+				p.rollback(mark);
+				continue;
+			}
+			const afterBaseLastObj = p.lastObject;
+			if (afterBaseLastObj && afterBaseLastObj.stepIndex >= mark.steps) {
+				const subj = p.steps[afterBaseLastObj.stepIndex]?.subject;
+				let preExecRef: Ref | undefined;
+				if (subj?.k === 'target') preExecRef = { k: 'target', index: subj.index };
+				else if (subj?.k === 'self') preExecRef = { k: 'self' };
+				else if (subj?.k === 'eventObject') preExecRef = { k: 'eventObject' };
+				else if (subj?.k === 'attachedTo') preExecRef = { k: 'attachedTo' };
+				else if (subj?.k === 'binding') preExecRef = { k: 'binding', name: subj.name };
+				p.lastObject = preExecRef ? { ref: preExecRef, stepIndex: -1 } : preBaseLastObj;
+			} else if (p.steps.length === mark.steps + 1) {
+				const subj = p.steps[mark.steps]?.subject;
+				let preExecRef: Ref | undefined;
+				if (subj?.k === 'target') preExecRef = { k: 'target', index: subj.index };
+				else if (subj?.k === 'self') preExecRef = { k: 'self' };
+				else if (subj?.k === 'eventObject') preExecRef = { k: 'eventObject' };
+				else if (subj?.k === 'attachedTo') preExecRef = { k: 'attachedTo' };
+				else if (subj?.k === 'binding') preExecRef = { k: 'binding', name: subj.name };
+				if (preExecRef) p.lastObject = { ref: preExecRef, stepIndex: -1 };
+			}
+			const cond = parseEffectResolutionCondition(p, condRaw);
+			p.lastObject = afterBaseLastObj;
+			if (!cond) {
+				p.rollback(mark);
+				continue;
+			}
+			for (const st of p.steps.slice(mark.steps)) {
+				st.condition = st.condition ? { k: 'and', of: [st.condition, cond] } : cond;
+			}
+			const afterStepSubj =
+				afterBaseLastObj && afterBaseLastObj.stepIndex >= mark.steps
+					? p.steps[afterBaseLastObj.stepIndex]?.subject
+					: undefined;
+			const otherwiseObj =
+				afterBaseLastObj?.ref.k === 'target'
+					? { ref: afterBaseLastObj.ref, stepIndex: -1 }
+					: afterStepSubj?.k === 'target'
+						? { ref: { k: 'target' as const, index: afterStepSubj.index }, stepIndex: -1 }
+						: preBaseLastObj;
+			p.lastConditional = { cond, stepStart: mark.steps, preLastObject: otherwiseObj };
+			return true;
+		}
+	}
+	// --- End Track P16a ---
 	return false;
 }
 
 /** Sentence-initial words that are not names or subtypes, so they can be lower-cased. */
 const LOWER_START = new Set([
-	'a', 'adapt', 'adapts', 'add', 'airbend', 'all', 'amass', 'amasses', 'an', 'another', 'any', 'artifacts', 'at', 'attach', 'attacking', 'become', 'black', 'blight', 'blights', 'blocking', 'blue', 'bolster', 'bolsters', 'choose', 'clash', 'clashes', 'cloak', 'cloaks', 'collect', 'collects', 'combat', 'connive', 'connives', 'convert', 'converts', 'copy', 'counter', 'create', 'creatures', 'damage', 'deal', 'destroy', 'detain', 'detains', 'discard', 'discards', 'discover', 'discovers', 'distribute', 'distributes', 'double', 'draw',
-	'each', 'earthbend', 'enchanted', 'enchantments', 'end', 'endure', 'endures', 'equipped', 'exchange', 'exert', 'exerts', 'exile', 'explore', 'explores', 'face-down', 'fateseal', 'fateseals', 'fight', 'five', 'flip', 'for', 'forage', 'forages', 'four', 'gain', 'goad', 'goads', 'green', 'historic', 'if', 'incubate', 'incubates', 'investigate', 'it', 'its', 'lands', 'learn', 'look', 'lose', 'mana', 'manifest', 'manifests', 'mill', 'monstrosity', 'multicolored', 'nonland', 'nontoken', 'one', 'other', 'otherwise', 'pay', 'permanents', 'planeswalkers', 'players', 'populate', 'populates', 'prevent', 'prevents', 'proliferate', 'put',
-	'red', 'regenerate', 'regenerates', 'remove', 'return', 'reveal', 'roll', 'rolls', 'sacrifice', 'scry', 'search', 'shuffle', 'six', 'spend', 'starting', 'support', 'surveil', 'suspect', 'suspects', 'switch', 'take', 'tap', 'tapped', 'target', 'that', 'the', 'then', 'they', 'this', 'those', 'three', 'time',
+	'a', 'adapt', 'adapts', 'add', 'airbend', 'all', 'amass', 'amasses', 'an', 'another', 'any', 'artifacts', 'assimilate', 'assimilates', 'at', 'attach', 'attacking', 'become', 'black', 'blight', 'blights', 'blocking', 'blue', 'bolster', 'bolsters', 'cast', 'choose', 'clash', 'clashes', 'cloak', 'cloaks', 'collect', 'collects', 'combat', 'connive', 'connives', 'convert', 'converts', 'copy', 'counter', 'create', 'creatures', 'damage', 'deal', 'defending', 'destroy', 'detain', 'detains', 'discard', 'discards', 'discover', 'discovers', 'distribute', 'distributes', 'do', 'double', 'draw',
+	'each', 'earthbend', 'eight', 'empower', 'empowers', 'enchanted', 'enchantments', 'end', 'endure', 'endures', 'equipped', 'exchange', 'exert', 'exerts', 'exile', 'explore', 'explores', 'face-down', 'fateseal', 'fateseals', 'fight', 'five', 'flip', 'for', 'forage', 'forages', 'four', 'gain', 'goad', 'goads', 'green', 'harness', 'harnesses', 'heal', 'heals', 'historic', 'if', 'incubate', 'incubates', 'investigate', 'it', 'its', 'lands', 'learn', 'look', 'lose', 'mana', 'manifest', 'manifests', 'mill', 'monstrosity', 'move', 'moves', 'multicolored', 'nine', 'noncreature', 'nonland', 'nontoken', 'one', 'opponents', 'other', 'otherwise', 'pay', 'permanents', 'planeswalkers', 'players', 'populate', 'populates', 'prevent', 'prevents', 'proliferate', 'put',
+	'recruit', 'recruits', 'red', 'regenerate', 'regenerates', 'remove', 'return', 'reveal', 'roll', 'rolls', 'sacrifice', 'scry', 'search', 'separate', 'separates', 'seven', 'shuffle', 'six', 'spend', 'starting', 'support', 'surveil', 'suspect', 'suspects', 'switch', 'take', 'tap', 'tapped', 'target', 'ten', 'that', 'the', 'then', 'they', 'this', 'those', 'three', 'time',
 	'tokens', 'transform', 'triple', 'turn', 'two', 'untap', 'untapped', 'until', 'up', 'venture', 'when', 'whenever', 'white', 'you', 'your'
 ]);
 
@@ -5818,21 +7152,91 @@ const NEXT_TURNS_UPKEEP: TriggerDef = { event: 'phaseBegin', filter: { phase: 'u
 const END_OF_COMBAT: TriggerDef = { event: 'phaseBegin', filter: { phase: 'end_combat' }, scope: 'each_turn' };
 
 function delayedTrigger(when: string): { trigger: TriggerDef; nextTurn?: boolean } | null {
-	if (when === 'the next end step') return { trigger: NEXT_END_STEP };
-	if (when === "that turn's end step") return { trigger: THAT_TURNS_END_STEP };
+	if (when === 'the next end step' || when === 'the end step') return { trigger: NEXT_END_STEP };
+	if (when === "that turn's end step" || when === 'your next end step') return { trigger: THAT_TURNS_END_STEP };
 	if (when === "the next turn's upkeep") return { trigger: NEXT_TURNS_UPKEEP, nextTurn: true };
 	if (when === 'end of combat' || when === 'the end of combat') return { trigger: END_OF_COMBAT };
 	return null;
 }
 
 /** One sentence. Returns false if any part of it wasn't understood (no steps are kept then). */
-function sentence(p: Parser, text: string, span: Span): boolean {
+function sentence(p: Parser, text: string, span: Span, isNested = false): boolean {
+	if (isNested) {
+		return sentenceBody(p, text, span, undefined);
+	}
+	const prevStepsLen = p.steps.length;
+	const prevLastCond = p.lastConditional;
+	p.lastConditional = undefined;
+	const ok = sentenceBody(p, text, span, prevLastCond);
+	if (!ok) {
+		p.lastConditional = prevLastCond;
+		return false;
+	}
+	if (p.steps.length > prevStepsLen) {
+		p.lastSentenceStepStart = prevStepsLen;
+	}
+	return true;
+}
+
+function sentenceBody(
+	p: Parser,
+	text: string,
+	span: Span,
+	prevLastConditional:
+		| {
+				cond: Condition;
+				stepStart: number;
+				preLastObject?: { ref: Ref; stepIndex: number };
+		  }
+		| undefined
+): boolean {
 	let t = text.replace(/[.!]$/, '').trim();
 	const t0 = t;
 	// Lower-case the first letter so productions don't have to care, unless it's "~".
 	if (/^[A-Z][a-z]*\b/.test(t) && LOWER_START.has(t.split(/[\s,']/)[0].toLowerCase())) {
 		t = t.charAt(0).toLowerCase() + t.slice(1);
 	}
+
+	// --- Track P16a: Off-stack card copy follow-up (CR 707.12) & Polymorph "Then shuffle." ---
+	if (p.pendingCardCopy) {
+		const copyIdx = p.pendingCardCopy.stepIndex;
+		const castCopyMatch = t.match(
+			/^you may cast (?:the copy|that copy|it)( without paying its mana cost)?$/i
+		);
+		if (castCopyMatch) {
+			const copyStep = p.steps[copyIdx];
+			if (copyStep?.verb === 'castFree' && copyStep.params?.castFreeSpec) {
+				copyStep.params = {
+					...copyStep.params,
+					castFreeSpec: {
+						...copyStep.params.castFreeSpec,
+						withoutPayingManaCost: Boolean(castCopyMatch[1])
+					}
+				};
+			}
+			p.pendingCardCopy = undefined;
+			p.lastOptionalStep = copyIdx;
+			return true;
+		}
+		p.flushPendingCardCopy();
+	}
+
+	if (
+		p.pendingDig?.draft.untilFilter &&
+		p.pendingDig.hasKeep &&
+		!p.pendingDig.hasRest &&
+		/^(?:then\s+)?shuffle(?: (?:the rest|all other cards revealed this way) into your library| your library)?\.?$/i.test(
+			t0
+		)
+	) {
+		p.pendingDig.draft = { ...p.pendingDig.draft, rest: 'libraryBottom', shuffleRest: true };
+		p.pendingDig.hasRest = true;
+		commitPendingDig(p, p.pendingDig);
+		p.lastOptionalStep = undefined;
+		return true;
+	}
+	// --- End Track P16a ---
+
 	if (NEUTRAL_SENTENCES.some((re) => re.test(t0))) {
 		p.lastOptionalStep = undefined;
 		return true;
@@ -5851,8 +7255,26 @@ function sentence(p: Parser, text: string, span: Span): boolean {
 	const fail = () => {
 		p.steps.length = stepsBefore;
 		p.targets.length = targetsBefore;
-	return false;
+		return false;
 	};
+
+	// --- Track P16a: CR 603.2h "Do this only once each turn." ---
+	if (/^do this only once each turn$/i.test(t)) {
+		if (p.steps.length === 0) return fail();
+		if (p.steps.every((s) => s.verb === 'payCost' && !s.params?.reflexiveTrigger)) return fail();
+		if (p.lastOptionalStep !== undefined && p.steps[p.lastOptionalStep]) {
+			p.steps[p.lastOptionalStep].doThisOncePerTurn = true;
+		} else {
+			const fromIdx = p.lastSentenceStepStart ?? 0;
+			if (fromIdx >= p.steps.length) return fail();
+			for (let i = fromIdx; i < p.steps.length; i++) {
+				p.steps[i].doThisOncePerTurn = true;
+			}
+		}
+		p.lastOptionalStep = undefined;
+		return true;
+	}
+	// --- End Track P16a ---
 
 	if (/^you may shuffle$/.test(t)) {
 		const prev = p.steps[p.steps.length - 1];
@@ -5877,12 +7299,58 @@ function sentence(p: Parser, text: string, span: Span): boolean {
 		)
 	) {
 		const prev = p.steps[p.steps.length - 1];
-		if (prev?.verb !== 'grantGraveyardCast' || !prev.params?.graveyardCastSpec) return fail();
-		prev.params = {
-			...prev.params,
-			graveyardCastSpec: { ...prev.params.graveyardCastSpec, exileIfWouldEnterGraveyard: true }
-		};
-		return true;
+		if (prev?.verb === 'grantGraveyardCast' && prev.params?.graveyardCastSpec) {
+			prev.params = {
+				...prev.params,
+				graveyardCastSpec: { ...prev.params.graveyardCastSpec, exileIfWouldEnterGraveyard: true }
+			};
+			return true;
+		}
+		if (prev?.verb === 'castFree' && prev.params?.castFreeSpec) {
+			prev.params = {
+				...prev.params,
+				castFreeSpec: { ...prev.params.castFreeSpec, exileIfPutIntoGraveyard: true }
+			};
+			return true;
+		}
+		const reflSteps = prev?.params?.reflexiveTrigger?.effect;
+		if (reflSteps && reflSteps.length > 0) {
+			const lastRefl = reflSteps[reflSteps.length - 1];
+			if (lastRefl?.verb === 'castFree' && lastRefl.params?.castFreeSpec) {
+				const updated = [...reflSteps];
+				updated[updated.length - 1] = {
+					...lastRefl,
+					params: {
+						...lastRefl.params,
+						castFreeSpec: { ...lastRefl.params.castFreeSpec, exileIfPutIntoGraveyard: true }
+					}
+				};
+				prev.params = {
+					...prev.params,
+					reflexiveTrigger: { ...prev.params!.reflexiveTrigger!, effect: updated }
+				};
+				return true;
+			}
+			if (lastRefl?.verb === 'grantGraveyardCast' && lastRefl.params?.graveyardCastSpec) {
+				const updated = [...reflSteps];
+				updated[updated.length - 1] = {
+					...lastRefl,
+					params: {
+						...lastRefl.params,
+						graveyardCastSpec: {
+							...lastRefl.params.graveyardCastSpec,
+							exileIfWouldEnterGraveyard: true
+						}
+					}
+				};
+				prev.params = {
+					...prev.params,
+					reflexiveTrigger: { ...prev.params!.reflexiveTrigger!, effect: updated }
+				};
+				return true;
+			}
+		}
+		return fail();
 	}
 	if (p.steps.length > 0 && p.steps[p.steps.length - 1]?.verb === 'vote') {
 		const voteStep = p.steps[p.steps.length - 1];
@@ -6021,13 +7489,16 @@ function sentence(p: Parser, text: string, span: Span): boolean {
 		const flipIdx = p.lastCoinFlipStep;
 		const isWin = flipOutcome[1].toLowerCase() === 'win';
 		const childParser = new Parser(p.context, p.trigger);
+		for (const ts of p.targets) {
+			childParser.targets.push(ts.kind === 'player' ? { ...ts } : { ...ts, filter: { ...ts.filter } });
+		}
 		childParser.definedX = p.definedX;
 		childParser.lastPlayer = p.lastPlayer;
 		childParser.lastObject = p.lastObject ? { ...p.lastObject, stepIndex: -1 } : undefined;
 		const innerStart = Math.max(span.start, span.end - flipOutcome[2].length);
 		if (
 			!sentence(childParser, flipOutcome[2].trim(), { start: innerStart, end: span.end }) ||
-			childParser.targets.length > 0 ||
+			childParser.targets.length > p.targets.length ||
 			childParser.steps.length === 0
 		) {
 			return fail();
@@ -6106,11 +7577,49 @@ function sentence(p: Parser, text: string, span: Span): boolean {
 		return true;
 	}
 
-	if (/^you may choose new targets for (?:the|each|any|any of the) cop(?:y|ies)$/i.test(t)) {
+	if (/^(?:you|they|that player) may choose new targets for (?:the|that|those|each|any|any of the) cop(?:y|ies)$/i.test(t)) {
 		const prev = p.steps[p.steps.length - 1];
-		if (prev?.verb !== 'copySpell') return fail();
-		prev.params = { ...prev.params, mayChooseNewTargets: true };
-		return true;
+		if (prev?.verb === 'copySpell') {
+			prev.params = { ...prev.params, mayChooseNewTargets: true };
+			return true;
+		}
+		const delSteps = prev?.delayed?.effect;
+		if (delSteps && delSteps.length > 0 && delSteps[delSteps.length - 1]?.verb === 'copySpell') {
+			const updated = [...delSteps];
+			const lastIdx = updated.length - 1;
+			updated[lastIdx] = {
+				...updated[lastIdx],
+				params: { ...updated[lastIdx].params, mayChooseNewTargets: true }
+			};
+			prev.delayed = { ...prev.delayed!, effect: updated };
+			return true;
+		}
+		const reflSteps = prev?.params?.reflexiveTrigger?.effect;
+		if (reflSteps && reflSteps.length > 0 && reflSteps[reflSteps.length - 1]?.verb === 'copySpell') {
+			const updated = [...reflSteps];
+			const lastIdx = updated.length - 1;
+			updated[lastIdx] = {
+				...updated[lastIdx],
+				params: { ...updated[lastIdx].params, mayChooseNewTargets: true }
+			};
+			prev.params = {
+				...prev.params,
+				reflexiveTrigger: { ...prev.params!.reflexiveTrigger!, effect: updated }
+			};
+			return true;
+		}
+		const winSteps = prev?.params?.winFlipEffect;
+		if (winSteps && winSteps.length > 0 && winSteps[winSteps.length - 1]?.verb === 'copySpell') {
+			const updated = [...winSteps];
+			const lastIdx = updated.length - 1;
+			updated[lastIdx] = {
+				...updated[lastIdx],
+				params: { ...updated[lastIdx].params, mayChooseNewTargets: true }
+			};
+			prev.params = { ...prev.params, winFlipEffect: updated };
+			return true;
+		}
+		return fail();
 	}
 
 	if (
@@ -6138,13 +7647,14 @@ function sentence(p: Parser, text: string, span: Span): boolean {
 		if (/\binstead\b/i.test(innerText)) return fail();
 		innerText = innerText.replace(/^it (?:also )?deals\b/i, '~ deals').replace(/^also\s+/i, '');
 		const innerStart = Math.max(span.start, span.end - ifKicked[2].length);
-		if (!sentence(p, innerText, { start: innerStart, end: span.end })) return fail();
+		if (!sentence(p, innerText, { start: innerStart, end: span.end }, true)) return fail();
 		for (const step of p.steps.slice(stepsBefore)) {
 			step.condition = step.condition ? { k: 'and', of: [cond, step.condition] } : cond;
 		}
 		for (const target of p.targets.slice(targetsBefore)) {
 			target.condition = target.condition ? { k: 'and', of: [cond, target.condition] } : cond;
 		}
+		p.lastConditional = { cond, stepStart: stepsBefore };
 		return true;
 	}
 
@@ -6157,17 +7667,23 @@ function sentence(p: Parser, text: string, span: Span): boolean {
 		const innerText = ifMonarch[2].trim();
 		if (/\binstead\b/i.test(innerText)) return fail();
 		const innerStart = Math.max(span.start, span.end - ifMonarch[2].length);
-		if (!sentence(p, innerText, { start: innerStart, end: span.end })) return fail();
+		if (!sentence(p, innerText, { start: innerStart, end: span.end }, true)) return fail();
 		for (const step of p.steps.slice(stepsBefore)) {
 			step.condition = step.condition ? { k: 'and', of: [cond, step.condition] } : cond;
 		}
 		for (const target of p.targets.slice(targetsBefore)) {
 			target.condition = target.condition ? { k: 'and', of: [cond, target.condition] } : cond;
 		}
+		p.lastConditional = { cond, stepStart: stepsBefore };
 		return true;
 	}
 
-	if (/^(?:it|they) can't be regenerated$/i.test(t) && markTrailingDestroyCantRegen(p)) {
+	if (
+		/^(?:it|they|a (?:creature|permanent) destroyed this way|creatures destroyed this way) can't be regenerated(?: this turn)?$/i.test(
+			t
+		) &&
+		markTrailingDestroyCantRegen(p)
+	) {
 		p.lastOptionalStep = undefined;
 		return true;
 	}
@@ -6233,13 +7749,45 @@ function sentence(p: Parser, text: string, span: Span): boolean {
 		return true;
 	}
 
-	const ifP7Lead = t.match(/^(?:then\s+)?(if [^,]+),\s*(.+)$/i);
-	if (ifP7Lead) {
-		const cond = parseCondition(ifP7Lead[1], { allowDungeonCompletion: true });
-		if (cond && isP7ResolutionCondition(cond)) {
-			let innerText = ifP7Lead[2].trim();
-			if (/\s+instead$/i.test(innerText)) {
-				const stripped = innerText.replace(/\s+instead$/i, '').trim();
+	// --- Track P16a: Multi-zone search "If you search(ed) your library this way, shuffle." ---
+	if (/^if you search(?:ed)? your library this way, shuffle(?: your library)?$/i.test(t)) {
+		const prevSearch = stepsBefore > 0 ? p.steps[stepsBefore - 1] : undefined;
+		if (prevSearch?.verb === 'search' && prevSearch.params?.search?.zones?.includes('library')) {
+			prevSearch.params = {
+				...prevSearch.params,
+				search: { ...prevSearch.params.search, shuffleOnlyIfLibrary: true }
+			};
+			p.lastOptionalStep = undefined;
+			return true;
+		}
+	}
+
+	if (/^(?:then\s+)?if\s+/i.test(t) && !/^if your devotion\b|^if x is greater than or equal to the number of cards in your library\b/i.test(t)) {
+		if (
+			p.pendingDig &&
+			!p.pendingDig.hasKeep &&
+			!p.pendingDig.hasRest &&
+			!p.pendingDig.draft.untilFilter
+		) {
+			p.flushPendingDig();
+		}
+		const strippedLead = t.replace(/^then\s+/i, '');
+		let searchFrom = 0;
+		for (let commaGuard = 0; commaGuard < 8; commaGuard++) {
+			const commaIdx = strippedLead.indexOf(',', searchFrom);
+			if (commaIdx < 0) break;
+			searchFrom = commaIdx + 1;
+			if (isInsideQuotes(strippedLead, commaIdx)) continue;
+			const rawCondPart = strippedLead.slice(0, commaIdx).trim();
+			let innerText = strippedLead.slice(commaIdx + 1).trim();
+			if (!innerText) continue;
+			const cond = parseEffectResolutionCondition(p, rawCondPart);
+			if (!cond) continue;
+			const leadInstead = innerText.match(/^instead,?\s+(.+)$/i);
+			if (/\s+instead$/i.test(innerText) || leadInstead) {
+				const stripped = leadInstead
+					? leadInstead[1].trim()
+					: innerText.replace(/\s+instead$/i, '').trim();
 				if (!tryReplacementIfSentence(p, stripped, cond, stepsBefore, targetsBefore, span)) {
 					return fail();
 				}
@@ -6247,20 +7795,39 @@ function sentence(p: Parser, text: string, span: Span): boolean {
 				return true;
 			}
 			if (/\binstead\b/i.test(innerText)) return fail();
+			const preLastObject = p.lastObject;
 			innerText = innerText.replace(/^it (?:also )?deals\b/i, '~ deals').replace(/^also\s+/i, '');
-			const innerStart = Math.max(span.start, span.end - ifP7Lead[2].length);
-			if (!sentence(p, innerText, { start: innerStart, end: span.end })) return fail();
+			const innerStart = Math.max(span.start, span.end - innerText.length);
+			const leadMark = p.mark();
+			if (!sentence(p, innerText, { start: innerStart, end: span.end }, true)) {
+				p.rollback(leadMark);
+				continue;
+			}
 			for (const step of p.steps.slice(stepsBefore)) {
 				step.condition = step.condition ? { k: 'and', of: [cond, step.condition] } : cond;
 			}
+			if (p.lastOptionalStep !== undefined && p.lastOptionalStep >= stepsBefore) {
+				p.preOptionalLastObject = preLastObject;
+			}
+			const afterStepSubj =
+				p.lastObject && p.lastObject.stepIndex >= stepsBefore
+					? p.steps[p.lastObject.stepIndex]?.subject
+					: undefined;
+			const otherwiseObj =
+				p.lastObject?.ref.k === 'target'
+					? { ref: p.lastObject.ref, stepIndex: -1 }
+					: afterStepSubj?.k === 'target'
+						? { ref: { k: 'target' as const, index: afterStepSubj.index }, stepIndex: -1 }
+						: preLastObject;
+			p.lastConditional = { cond, stepStart: stepsBefore, preLastObject: otherwiseObj };
 			return true;
 		}
 	}
 
 	const insteadIfTail = t.match(/^(.+?)\s+instead\s+(if .+)$/i);
 	if (insteadIfTail) {
-		const cond = parseCondition(insteadIfTail[2], { allowDungeonCompletion: true });
-		if (cond && isP7ResolutionCondition(cond)) {
+		const cond = parseEffectResolutionCondition(p, insteadIfTail[2]);
+		if (cond) {
 			if (!tryReplacementIfSentence(p, insteadIfTail[1].trim(), cond, stepsBefore, targetsBefore, span)) {
 				return fail();
 			}
@@ -6268,7 +7835,7 @@ function sentence(p: Parser, text: string, span: Span): boolean {
 			return true;
 		}
 	}
-	// --- End Track P7 ---
+	// --- End Track P7 / P16a ---
 
 	if (p.pendingCoercive) {
 		if (tryCoerciveFollowUp(p, t, span)) {
@@ -6277,12 +7844,58 @@ function sentence(p: Parser, text: string, span: Span): boolean {
 		p.flushIncompleteCoercive();
 	}
 
+	// --- Track P16a: "Otherwise, <effect>." following a non-optional conditional sentence ---
+	if (p.lastOptionalStep === undefined && prevLastConditional !== undefined) {
+		const otherwiseMatch = t.match(/^otherwise,\s*(.+)$/i);
+		if (otherwiseMatch) {
+			const innerText = otherwiseMatch[1].trim();
+			const innerStart = Math.max(span.start, span.end - innerText.length);
+			const savedObj = p.lastObject;
+			if (prevLastConditional.preLastObject !== undefined) {
+				p.lastObject = prevLastConditional.preLastObject;
+			}
+			if (!sentence(p, innerText, { start: innerStart, end: span.end }, true)) {
+				p.lastObject = savedObj;
+				return fail();
+			}
+			const negCond: Condition =
+				prevLastConditional.cond.k === 'not'
+					? prevLastConditional.cond.of
+					: { k: 'not', of: prevLastConditional.cond };
+			for (const step of p.steps.slice(stepsBefore)) {
+				step.condition = step.condition ? { k: 'and', of: [negCond, step.condition] } : negCond;
+			}
+			return true;
+		}
+	}
+	// --- End Track P16a ---
+
 	const followUp = parseOptionalFollowUp(p, t, span, (innerText, innerStart) =>
-		sentence(p, innerText, { start: innerStart, end: span.end })
+		sentence(p, innerText, { start: innerStart, end: span.end }, true)
 	);
 	if (followUp !== null) return followUp;
-	if (p.pendingDig && tryDigFollowUp(p, t)) {
+
+	// --- Track P16a: Multi-sentence CR 700.3 two-pile library split ---
+	if (p.pendingDig && !p.pendingDig.hasKeep && tryParsePileSplitFollowUp(p.steps, t)) {
+		if (/^target opponent separates/i.test(t)) {
+			playerPhrase(p, 'target opponent');
+		}
+		p.pendingDig = undefined;
 		p.lastOptionalStep = undefined;
+		return true;
+	}
+	if (p.steps[p.steps.length - 1]?.verb === 'pileSplit' && tryParsePileSplitFollowUp(p.steps, t)) {
+		p.lastOptionalStep = undefined;
+		return true;
+	}
+	// --- End Track P16a ---
+
+	if (p.pendingDig && tryDigFollowUp(p, t)) {
+		if (!p.pendingDig && stepOptionalChooser(p.steps[p.steps.length - 1]) !== undefined) {
+			p.lastOptionalStep = p.steps.length - 1;
+		} else {
+			p.lastOptionalStep = undefined;
+		}
 		return true;
 	}
 	if (p.pendingDig) {
@@ -6328,8 +7941,8 @@ function sentence(p: Parser, text: string, span: Span): boolean {
 	}
 
 	// Delayed effects: "At the beginning of the next end step, exile it." / "Sacrifice it at end of combat."
-	const lead = t.match(/^at (?:the beginning of (the next end step|that turn's end step|the next turn's upkeep)|(end of combat|the end of combat)), (.+)$/);
-	const trail = t.match(/^(.+) at (?:the beginning of (the next end step|that turn's end step|the next turn's upkeep)|(end of combat|the end of combat))$/);
+	const lead = t.match(/^at (?:the beginning of (the next end step|the end step|your next end step|that turn's end step|the next turn's upkeep)|(end of combat|the end of combat)), (.+)$/);
+	const trail = t.match(/^(.+) at (?:the beginning of (the next end step|the end step|your next end step|that turn's end step|the next turn's upkeep)|(end of combat|the end of combat))$/);
 	if (lead || trail) {
 		const when = lead ? (lead[1] ?? lead[2]) : (trail![2] ?? trail![3]);
 		const dt = delayedTrigger(when);
@@ -6395,7 +8008,31 @@ function sentence(p: Parser, text: string, span: Span): boolean {
 			if (s.params?.setPower) s.params.setPower = substituteX(s.params.setPower, resolvedX);
 			if (s.params?.setToughness) s.params.setToughness = substituteX(s.params.setToughness, resolvedX);
 			if (s.params?.count) s.params.count = substituteX(s.params.count, resolvedX);
+			if (s.params?.choiceCount) s.params.choiceCount = substituteX(s.params.choiceCount, resolvedX);
 			if (s.params?.dieBonus) s.params.dieBonus = substituteX(s.params.dieBonus, resolvedX);
+			if (s.params?.castFreeSpec?.filter?.manaValue?.value) {
+				s.params.castFreeSpec.filter.manaValue.value = substituteX(
+					s.params.castFreeSpec.filter.manaValue.value,
+					resolvedX
+				);
+			}
+			if (s.subject.k === 'all') {
+				if (s.subject.filter.manaValue?.value) {
+					s.subject.filter.manaValue.value = substituteX(
+						s.subject.filter.manaValue.value,
+						resolvedX
+					);
+				}
+				if (s.subject.filter.power?.value) {
+					s.subject.filter.power.value = substituteX(s.subject.filter.power.value, resolvedX);
+				}
+				if (s.subject.filter.toughness?.value) {
+					s.subject.filter.toughness.value = substituteX(
+						s.subject.filter.toughness.value,
+						resolvedX
+					);
+				}
+			}
 			if (s.params?.reflexiveTrigger) {
 				for (const rs of s.params.reflexiveTrigger.effect) {
 					if (rs.amount) rs.amount = substituteX(rs.amount, resolvedX);
@@ -6421,6 +8058,28 @@ function stepOptionalChooser(step: EffectStep | undefined): PlayerRef | undefine
 	if (step.verb === 'move' && step.params?.from === 'hand' && step.params?.to === 'battlefield' && step.params?.upTo) {
 		return step.actor ?? { k: 'you' };
 	}
+	// --- Track P16a ---
+	if (step.verb === 'dig' && step.params?.dig?.upTo) return { k: 'you' };
+	if (step.verb === 'castFree') return step.actor ?? { k: 'you' };
+	if (step.verb === 'sacrifice') return step.actor ?? singlePlayer(step.subject) ?? { k: 'you' };
+	if (step.verb === 'discard') return step.actor ?? singlePlayer(step.subject) ?? { k: 'you' };
+	if (step.verb === 'removeCounters') return step.actor ?? { k: 'you' };
+	if (step.verb === 'moveCounters' && step.params?.moveCounterSpec) {
+		return step.actor ?? { k: 'you' };
+	}
+	if (
+		(step.verb === 'bounce' ||
+			step.verb === 'exile' ||
+			step.verb === 'move' ||
+			step.verb === 'putCounters' ||
+			step.verb === 'tap' ||
+			step.verb === 'untap') &&
+		step.params?.choiceCount &&
+		step.params?.upTo
+	) {
+		return step.actor ?? { k: 'you' };
+	}
+	// --- End Track P16a ---
 	return undefined;
 }
 
@@ -6586,9 +8245,16 @@ function parseOptionalFollowUp(
 	const ifDo = ifWinClash
 		? (['', 'if', 'you do', ifWinClash[1]] as unknown as RegExpMatchArray)
 		: text.match(/^(if) (you do|that player does|the player does|they do), (.+)$/i);
+	const ifDontPut = !ifDo
+		? text.match(
+				/^if (you (?:don't|do not|didn't|did not)) put (?:a card|that card|the card|it|one) (?:into your hand|onto the battlefield)(?: this way)?, (.+)$/i
+			)
+		: null;
 	const ifDont = ifDo
 		? null
-		: text.match(/^(?:if (you don't|that player doesn't|the player doesn't|they don't)|otherwise), (.+)$/i);
+		: ifDontPut
+			? ([ifDontPut[0], "you don't", ifDontPut[2]] as unknown as RegExpMatchArray)
+			: text.match(/^(?:if (you don't|that player doesn't|the player doesn't|they don't)|otherwise), (.+)$/i);
 	if (!ifDo && !ifDont) return null;
 
 	const optIdx = p.lastOptionalStep;
@@ -6613,6 +8279,9 @@ function parseOptionalFollowUp(
 	const innerText = (ifDo ? ifDo[3] : ifDont![2]).trim();
 	const innerStart = Math.max(span.start, span.end - innerText.length);
 	const mark = p.mark();
+	if (!isAccept && p.preOptionalLastObject !== undefined) {
+		p.lastObject = p.preOptionalLastObject;
+	}
 	if (!parseInner(innerText, innerStart)) {
 		p.rollback(mark);
 		return false;
@@ -6652,7 +8321,7 @@ function clauses(p: Parser, text: string, offset: number): boolean {
 		return false;
 	}
 	// A search clause consumes the rest of the sentence ("..., put it into your hand, then shuffle").
-	const search = text.match(/^(.*?)\b((?:its controller may |its owner may |target player may |target opponent may |that player may |you may |they may )?search(?:es)? (?:your|their|that player's|target player's|target opponent's) (?:library|graveyard) .+)$/i);
+	const search = text.match(/^(.*?)\b((?:its controller may |its owner may |target player may |target opponent may |that player may |you may |they may )?search(?:es)? (?:your|their|that player's|target player's|target opponent's) (?:library|graveyard|hand) .+)$/i);
 	if (search && !isInsideQuotes(text, text.indexOf(search[2]))) {
 		const head = search[1].replace(/,?\s*(?:then|and)?\s*$/, '');
 		if (head && !clauses(p, head, offset)) return false;
@@ -6667,7 +8336,38 @@ function clauses(p: Parser, text: string, offset: number): boolean {
 	p.rollback(mark);
 	const parts = splitClauses(text, offset);
 	if (parts.length === 1) return false;
+	// --- Track P16a: Propagate sentence-leading duration ("Until end of turn, A and B") across compound clauses ---
+	const leadSentDur = parts[0].text
+		.trim()
+		.match(
+			/^(until end of turn|until end of combat|until your next turn|until (?:the )?end of your next turn|for as long as you control ~|for as long as ~ remains tapped),\s+/i
+		);
+	if (leadSentDur) {
+		const durHead = leadSentDur[1];
+		for (let i = 1; i < parts.length; i++) {
+			const pt = parts[i].text.trim();
+			if (
+				!/\b(?:until|for as long as|this turn)\b/i.test(pt) &&
+				/^(?:gets?|gains?|loses?|has\b|have\b|becomes?|can't\b|can\b|must\b|assigns?\b|target\b|each\b|all\b|creatures?\b|permanents?\b|artifacts?\b|lands?\b|it\b|they\b|that\b|those\b|~)/i.test(
+					pt
+				)
+			) {
+				parts[i] = { text: `${durHead}, ${pt}`, span: parts[i].span };
+			}
+		}
+	}
+	// --- End Track P16a ---
 	for (const c of parts) {
+		if (p.pendingDig && !p.pendingDig.hasKeep && tryParsePileSplitFollowUp(p.steps, c.text)) {
+			if (/^target opponent separates/i.test(c.text.trim())) {
+				playerPhrase(p, 'target opponent');
+			}
+			p.pendingDig = undefined;
+			continue;
+		}
+		if (p.steps[p.steps.length - 1]?.verb === 'pileSplit' && tryParsePileSplitFollowUp(p.steps, c.text)) {
+			continue;
+		}
 		if (p.pendingDig && tryDigFollowUp(p, c.text)) continue;
 		if (!clause(p, c)) {
 			p.rollback(mark);
@@ -6686,7 +8386,7 @@ type DigRestSpec = Pick<NonNullable<EffectParams['dig']>, 'rest' | 'restRandom' 
 function parseDigDestination(dest: string): { keepTo: DigKeepSpec['keepTo']; keepTapped?: true } | null {
 	const d = dest.trim().toLowerCase();
 	if (d === 'into your hand') return { keepTo: 'hand' };
-	if (d === 'on top of your library') return { keepTo: 'libraryTop' };
+	if (d === 'on top of your library' || d === 'back on top of your library') return { keepTo: 'libraryTop' };
 	if (d === 'onto the battlefield tapped') return { keepTo: 'battlefield', keepTapped: true };
 	if (d === 'onto the battlefield') return { keepTo: 'battlefield' };
 	if (d === 'into your graveyard') return { keepTo: 'graveyard' };
@@ -6734,7 +8434,7 @@ function parseDigKeepClause(clauseStr: string, hasUntilFilter = false): DigKeepS
 	let revealKept = false;
 
 	let m = body.match(
-		/^reveal (.+?) (?:from among (?:them|those cards)|of (?:them|those cards)|revealed this way),?\s*(?:and\s+)?put (?:it|them|that card|those cards) (.+)$/i
+		/^reveal (.+?) (?:from among (?:them|those cards)|of (?:them|those cards)|revealed this way),?\s*(?:and\s+)?put (?:it|them|that card|those cards|the revealed cards?) (.+)$/i
 	);
 	if (m) {
 		revealKept = true;
@@ -6856,6 +8556,21 @@ function tryDigFollowUp(p: Parser, text: string): boolean {
 	}
 
 	if (!pd.hasKeep) {
+		if (pd.draft.untilFilter) {
+			const polyShuffle = t.match(
+				/^(.+?)(?:,\s*|\s+)(?:then shuffle(?: your library)?|and shuffle(?: the rest| all other cards revealed this way)? into your library)$/i
+			);
+			if (polyShuffle) {
+				const keepSpec = parseDigKeepClause(polyShuffle[1], true);
+				if (keepSpec) {
+					pd.draft = { ...pd.draft, ...keepSpec, rest: 'libraryBottom', shuffleRest: true };
+					pd.hasKeep = true;
+					pd.hasRest = true;
+					commitPendingDig(p, pd);
+					return true;
+				}
+			}
+		}
 		const combined = t.match(
 			/^(.+?)(?:,\s*|\s+)(?:and|then)\s+(?:put\s+)?(?:the rest|the other(?:s| cards)?|all other cards revealed this way)\s+(.+)$/i
 		);
@@ -7128,6 +8843,7 @@ export function parseEffects(
 			}
 		}
 	}
+	p.flushPendingCardCopy();
 	p.flushPendingDig();
 	p.flushIncompleteCoercive();
 	return { steps: p.steps, targets: p.targets, unparsed: p.unparsed };
@@ -7327,6 +9043,7 @@ export function parseSpellFace(norm: NormalizedFace, include: (line: NormalizedL
 			p.lastOptionalStep = undefined;
 		}
 	}
+	p.flushPendingCardCopy();
 	p.flushPendingDig();
 	p.flushIncompleteCoercive();
 	steps.push(...p.steps);

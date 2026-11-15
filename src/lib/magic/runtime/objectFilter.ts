@@ -226,9 +226,9 @@ export function objectPower(state: GameState, obj: CardInstance): number | null 
 		base +
 		(obj.counters['+1/+1'] || 0) -
 		(obj.counters['-1/-1'] || 0) +
-		// --- Track P17a ---
+		// --- Track P17a & P16a (CR 122.1a): Non-standard ±M/±N counters ---
 		sumNonStandardPtCounters(obj.counters).power +
-		// --- End Track P17a ---
+		// --- End Track P17a & P16a ---
 		(obj.tempPowerMod || 0)
 	);
 }
@@ -272,9 +272,9 @@ export function objectToughness(state: GameState, obj: CardInstance): number | n
 		base +
 		(obj.counters['+1/+1'] || 0) -
 		(obj.counters['-1/-1'] || 0) +
-		// --- Track P17a ---
+		// --- Track P17a & P16a (CR 122.1a): Non-standard ±M/±N counters ---
 		sumNonStandardPtCounters(obj.counters).toughness +
-		// --- End Track P17a ---
+		// --- End Track P17a & P16a ---
 		(obj.tempToughnessMod || 0)
 	);
 }
@@ -786,6 +786,18 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 	// --- Track P17b ---
 	if (!matchesP17bObjectFilter(filter, obj, ctx, matchesObjectFilter)) return false;
 	// --- End Track P17b ---
+	// --- Track P16a (CR 701.72, CR 607.2a) ---
+	if (filter.assimilatedWithSelf) {
+		if (!ctx.source || !obj.assimilatedBy) return false;
+		const srcVer = ctx.source.objectVersion ?? 1;
+		if (
+			obj.assimilatedBy.sourceInstanceId !== ctx.source.instanceId ||
+			obj.assimilatedBy.sourceObjectVersion !== srcVer
+		) {
+			return false;
+		}
+	}
+	// --- End Track P16a ---
 	return true;
 }
 
@@ -1007,6 +1019,24 @@ export function evaluateAmount(amount: Amount, ctx: FilterContext): number {
 		case 'p17bMetric':
 			return evaluateP17bAmount(amount, ctx, matchesObjectFilter);
 		// --- End Track P17b ---
+		// --- Track P16a ---
+		case 'countersRemovedThisWay':
+			return ctx.stackItem?.lastCountersRemoved ?? 0;
+		case 'playerCounters': {
+			const pid =
+				amount.player.k === 'activePlayer'
+					? (ctx.state.players[ctx.state.activePlayerIndex]?.playerId ?? ctx.controllerId)
+					: ctx.controllerId;
+			const pl = ctx.state.players.find((p) => p.playerId === pid);
+			if (!pl) return 0;
+			if (amount.counter === 'poison') return pl.poison ?? 0;
+			if (amount.counter === 'experience') return pl.experienceCounters ?? 0;
+			if (amount.counter === 'energy') return pl.energyCounters ?? 0;
+			if (amount.counter === 'rad') return pl.radCounters ?? 0;
+			if (amount.counter === 'ticket') return pl.ticketCounters ?? 0;
+			return 0;
+		}
+		// --- End Track P16a ---
 		default:
 			return 0;
 	}

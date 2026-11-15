@@ -122,8 +122,20 @@ export const INTERPRETED_VERBS: ReadonlySet<Verb> = new Set<Verb>([
 	'airbend',
 	'learn',
 	'villainousChoice',
-	'vote'
+	'vote',
 	// --- End Track P13 ---
+	// --- Track P16a ---
+	'pileSplit',
+	'castFree',
+	'putPlayerCounters',
+	'removeFromCombat',
+	'harness',
+	'convert',
+	'empowerJace',
+	'assimilate',
+	'recruit',
+	'heal'
+	// --- End Track P16a ---
 ]);
 
 export const SUPPORTED_OPTIONAL_COST_KINDS: ReadonlySet<CostDef['k']> = new Set<CostDef['k']>([
@@ -223,13 +235,32 @@ function stepSupported(step: EffectStep): boolean {
 		// "may search" requires a stated quality (CR 701.19b) so the chooser can fail to find.
 		if (step.optional && !s.statedQuality && !s.filter.named) return false;
 	}
-	if (step.verb === 'addMana' && !step.params?.mana && !step.params?.manaChoice) return false;
-	if (step.verb === 'extraCombatPhase' || step.verb === 'moveCounters') return true;
+	if (
+		step.verb === 'addMana' &&
+		!step.params?.mana &&
+		!step.params?.manaChoice &&
+		!step.params?.manaBundles?.length &&
+		!step.params?.manaWithChosenColor?.length &&
+		!step.params?.manaOrChosenColor?.length &&
+		!step.params?.manaCombinationColors
+	) {
+		return false;
+	}
+	if (step.verb === 'extraCombatPhase') return true;
+	if (step.verb === 'moveCounters') {
+		if (step.params?.moveCounterSpec) {
+			return selectorSupported(step.params.moveCounterSpec.from) && step.subject.k !== 'none';
+		}
+		return true;
+	}
+	if (step.verb === 'putCounters' && step.params?.copyCountersFrom) {
+		if (!selectorSupported(step.params.copyCountersFrom) || step.subject.k === 'none') return false;
+	}
 	if (step.verb === 'dig') {
 		const d = step.params?.dig;
 		if (!d) return false;
 		if (d.partitions && d.partitions.length > 0) return true;
-		if (!d.keepTo || !d.rest) return false;
+		if (!d.keepTo || (!d.rest && !d.shuffleRest)) return false;
 		if (!d.untilFilter && !d.keepAllMatching && (typeof d.keep !== 'number' || d.keep < 0)) return false;
 	}
 	if (
@@ -254,10 +285,13 @@ function stepSupported(step: EffectStep): boolean {
 		if (
 			d !== undefined &&
 			d !== 'endOfTurn' &&
+			d !== 'untilEndOfCombat' &&
 			d !== 'untilYourNextTurn' &&
 			d !== 'untilEndOfYourNextTurn' &&
 			d !== 'permanent' &&
-			d !== 'untilSourceLeaves'
+			d !== 'untilSourceLeaves' &&
+			d !== 'forAsLongAsYouControlSelf' &&
+			d !== 'forAsLongAsSelfRemainsTapped'
 		) {
 			return false;
 		}
@@ -268,9 +302,12 @@ function stepSupported(step: EffectStep): boolean {
 		if (
 			d !== undefined &&
 			d !== 'endOfTurn' &&
+			d !== 'untilEndOfCombat' &&
 			d !== 'untilYourNextTurn' &&
 			d !== 'untilEndOfYourNextTurn' &&
-			d !== 'permanent'
+			d !== 'permanent' &&
+			d !== 'forAsLongAsYouControlSelf' &&
+			d !== 'forAsLongAsSelfRemainsTapped'
 		) {
 			return false;
 		}
@@ -318,9 +355,12 @@ function stepSupported(step: EffectStep): boolean {
 		const d = step.params?.duration;
 		if (
 			d !== 'endOfTurn' &&
+			d !== 'untilEndOfCombat' &&
 			d !== 'untilYourNextTurn' &&
 			d !== 'untilEndOfYourNextTurn' &&
-			d !== 'permanent'
+			d !== 'permanent' &&
+			d !== 'forAsLongAsYouControlSelf' &&
+			d !== 'forAsLongAsSelfRemainsTapped'
 		) {
 			return false;
 		}
@@ -330,10 +370,42 @@ function stepSupported(step: EffectStep): boolean {
 		!step.params?.keywords?.length &&
 		!step.params?.removeKeywords?.length &&
 		!step.params?.grantedAbilityTexts?.length &&
-		!step.params?.canAttackNoDefender
+		!step.params?.canAttackNoDefender &&
+		!step.params?.chooseKeywordOptions?.length &&
+		!step.params?.chooseProtectionColor &&
+		!step.params?.mustAttackThisTurn &&
+		!step.params?.mustBeBlockedThisTurn &&
+		!step.params?.mustBlockThisTurn &&
+		!step.params?.mustBlockSelfThisTurn &&
+		!step.params?.cantBlockSelfThisTurn &&
+		!step.params?.assignsNoCombatDamageThisTurn &&
+		!step.params?.removeAllAbilities
 	) {
 		return false;
 	}
+	// --- Track P16a ---
+	if (step.verb === 'pileSplit') {
+		return Boolean(step.params?.pileSplit);
+	}
+	if (step.verb === 'castFree') {
+		return step.subject.k !== 'none';
+	}
+	if (step.verb === 'putPlayerCounters') {
+		return Boolean(step.params?.playerCounter);
+	}
+	if (
+		step.verb === 'removeFromCombat' ||
+		step.verb === 'harness' ||
+		step.verb === 'convert' ||
+		step.verb === 'assimilate' ||
+		step.verb === 'heal'
+	) {
+		return step.subject.k !== 'none';
+	}
+	if (step.verb === 'empowerJace' || step.verb === 'recruit') {
+		return true;
+	}
+	// --- End Track P16a ---
 	// --- Track P13 ---
 	if (step.verb === 'createEmblem') {
 		return Boolean(step.params?.emblemAbilities && step.params.emblemAbilities.length > 0);
@@ -415,7 +487,7 @@ function stepSupported(step: EffectStep): boolean {
 		step.verb === 'exile' &&
 		step.subject.k === 'all' &&
 		step.subject.filter.zone === 'hand' &&
-		step.amount !== undefined
+		(step.amount !== undefined || step.params?.choiceCount !== undefined)
 	) {
 		return true;
 	}
@@ -445,6 +517,25 @@ function stepProducesDecision(step: EffectStep | undefined): boolean {
 		return true;
 	}
 	// --- End Track P10 ---
+	// --- Track P16a ---
+	if (
+		step.verb === 'castFree' ||
+		step.verb === 'sacrifice' ||
+		step.verb === 'discard' ||
+		step.verb === 'removeCounters' ||
+		(step.verb === 'dig' && Boolean(step.params?.dig?.upTo)) ||
+		(step.verb === 'moveCounters' && Boolean(step.params?.moveCounterSpec)) ||
+		((step.verb === 'bounce' ||
+			step.verb === 'exile' ||
+			step.verb === 'move' ||
+			step.verb === 'putCounters' ||
+			step.verb === 'tap' ||
+			step.verb === 'untap') &&
+			Boolean(step.params?.choiceCount && step.params?.upTo))
+	) {
+		return true;
+	}
+	// --- End Track P16a ---
 	return false;
 }
 
@@ -499,15 +590,14 @@ export function staticallyInterpretable(
 		);
 	}
 	if (parse.steps.length === 0) return false;
+	// --- Track P16a: Backtracking multi-spec partitioner supports multiple min>=0 / max>=1 specs ---
 	if (
 		parse.targets.length > 1 &&
-		!(
-			parse.targets.every((t) => (t.min === 0 || t.min === 1) && t.max === 1) &&
-			parse.targets.filter((t) => t.min === 0).length <= 1
-		)
+		!parse.targets.every((t) => t.min >= 0 && t.max >= t.min && t.max >= 1)
 	) {
 		return false;
 	}
+	// --- End Track P16a ---
 	return stepsSupported(parse.steps);
 }
 

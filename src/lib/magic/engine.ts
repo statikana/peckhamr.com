@@ -65,7 +65,7 @@ export function getEffectiveActivatedAbilities(
 	commanderIdentity: ManaColor[] = []
 ): EffectiveActivatedAbility[] {
 	// Read-only: one layer-cache validation for all of this permanent's ability lookups (Phase 6c).
-	return withStableLayerInputs(state, () => {
+	const rawAbs = withStableLayerInputs(state, () => {
 		const raw = getEffectiveActivatedAbilitiesRaw(state, actor, perm, commanderIdentity);
 		// --- Track P17a: CR 613.1f keepManaAbilities ("lose all abilities except mana abilities") ---
 		if (
@@ -84,11 +84,39 @@ export function getEffectiveActivatedAbilities(
 		}
 		// --- End Track P17a ---
 		return raw;
-	}).map((ab) =>
-		ab.id.startsWith('equip_') && ab.manaCost === '{0}' && !ab.costText.includes('{0}')
-			? { ...ab, costText: 'Equip {0}' }
-			: ab
-	);
+	});
+	// --- Track P16a: Include fixed manaOrChosenColor options alongside chosenColor in producesMana ---
+	let defsCache: ReturnType<typeof activeAbilityDefs> | null = null;
+	return rawAbs.map((ab) => {
+		let next =
+			ab.id.startsWith('equip_') && ab.manaCost === '{0}' && !ab.costText.includes('{0}')
+				? { ...ab, costText: 'Equip {0}' }
+				: ab;
+		if (next.isManaAbility) {
+			defsCache ??= activeAbilityDefs(
+				effectiveCardForObject(perm),
+				instanceFaceOptions(perm, 'battlefield')
+			);
+			const def = defsCache.find((d) => d.kind === 'activated' && d.id === next.id);
+			if (def && def.kind === 'activated') {
+				let extraCols: ManaColor[] | undefined;
+				for (const st of def.effect) {
+					if (st.verb === 'addMana' && st.params?.manaOrChosenColor?.length) {
+						for (const col of st.params.manaOrChosenColor) {
+							if (!next.producesMana.includes(col) && !(extraCols ?? []).includes(col)) {
+								(extraCols ??= []).push(col);
+							}
+						}
+					}
+				}
+				if (extraCols?.length) {
+					next = { ...next, producesMana: [...extraCols, ...next.producesMana] };
+				}
+			}
+		}
+		return next;
+	});
+	// --- End Track P16a ---
 }
 import { STAPLE_CARDS } from './precons.ts';
 import {
@@ -414,6 +442,20 @@ import {
 	validatePawprintBudget
 } from './runtime/framesModalsWave6.ts';
 // --- End Track P18b ---
+// --- Track P16a ---
+import {
+	cleanupP16aTurnState,
+	consumeP16aOnSpellCast,
+	expireP16aEndOfCombatEffects,
+	isNegativeArbitraryCounter,
+	isPermanentFrozenByP16aSourceCondition,
+	isSpellUncounterableByP16a,
+	latchBrokenP16aSourceConditions,
+	partitionMultiTargetsBacktracking,
+	playerHasP16aFlashGrantForTypes,
+	registerP16aRuntimeHost
+} from './runtime/effectsWave6.ts';
+// --- End Track P16a ---
 export { applyCastCostAids, formatManaRequirement, getSuspendSpec };
 import { getKeywordSpec } from './keywords.ts';
 import {
@@ -522,6 +564,9 @@ import { splitSubtypes } from './runtime/layers.ts';
 // --- Track P7 ---
 import type { Condition, CopyModificationSpec, CostDef, EffectStep, ModalDef, TargetSpec, TokenSpec } from './ir.ts';
 // --- End Track P7 ---
+// --- Track P16a ---
+import type { ObjectFilter } from './ir.ts';
+// --- End Track P16a ---
 import { deriveIdSalt, freshRngSeed, hash32, uid, type RngHolder, type UidHolder } from './runtime/random.ts';
 import { cardAbilityDisplayText, enteringNotices, stackItemDisplayText } from './compiler/support.ts';
 import {
@@ -2932,6 +2977,9 @@ function finalizeCastSpell(
 	);
 
 	state.stack.push(stackItem);
+	// --- Track P16a: Consume next-spell flash / uncounterable grants on cast ---
+	consumeP16aOnSpellCast(actor, stackView.types, stackItem);
+	// --- End Track P16a ---
 
 	if (actor.manaRiders && actor.manaRiders.length > 0) {
 		const matchingRiders: ManaRider[] = [];
@@ -5603,7 +5651,16 @@ function executeUntapTurnBasedActions(state: GameState, activePlayer: PlayerGame
 	for (const perm of activePlayer.battlefield) {
 		if (perm.phasedOut) continue;
 		const frozenNextUntap = consumeNextUntapFreeze(perm);
-		if (!frozenNextUntap && perm.tapped && !keptTapped.has(perm.instanceId) && canUntapUnderCaps(perm)) {
+		// --- Track P16a: Source-conditioned untap lock ("doesn't untap as long as ...") ---
+		const frozenBySourceCond = isPermanentFrozenByP16aSourceCondition(state, perm);
+		// --- End Track P16a ---
+		if (
+			!frozenNextUntap &&
+			!frozenBySourceCond &&
+			perm.tapped &&
+			!keptTapped.has(perm.instanceId) &&
+			canUntapUnderCaps(perm)
+		) {
 			if (mayChooseNotToUntapIds.has(perm.instanceId)) {
 				if (activePlayer.isBot) {
 					if (!botPrefersKeepingTapped(state, perm)) {
@@ -5650,6 +5707,9 @@ function executeUntapTurnBasedActions(state: GameState, activePlayer: PlayerGame
 	// --- Track P10 ---
 	if (untappedPerms.length > 0) {
 		noteLayerInputsChanged(state);
+		// --- Track P16a (CR 611.2b): Permanently latch remainsTapped continuous effects ---
+		latchBrokenP16aSourceConditions(state);
+		// --- End Track P16a ---
 		for (const perm of untappedPerms) {
 			emitEvent(state, {
 				kind: 'BecomesUntapped',
@@ -5781,6 +5841,9 @@ export function runBeginningOfTurn(state: GameState): void {
 	state.doThisOnceTakenThisTurn = undefined;
 	state.combatPhasesCountThisTurn = 0;
 	// --- End Track P16b ---
+	// --- Track P16a (CR 603.2h): Reset "Do this only once each turn" keys ---
+	state.doneOnceThisTurnKeys = undefined;
+	// --- End Track P16a ---
 	// --- Track P15: Day/Night spell history (CR 732.5) & Gravestorm counter (CR 702.69a) ---
 	state.prevTurnSpellsCastByActivePlayer = state.spellsCastByActivePlayerThisTurn ?? 0;
 	state.spellsCastByActivePlayerThisTurn = 0;
@@ -7090,7 +7153,14 @@ function applyGameActionInner(
 					return targetValidation;
 				}
 				if (!optionTargetsBecomeEach(inst.card, castOption)) {
-					targetsBySpec = partitionTargetsBySpecs(targets, spellTargetInfo, inst.card);
+					targetsBySpec = partitionTargetsBySpecs(
+						targets,
+						spellTargetInfo,
+						inst.card,
+						state,
+						actorId,
+						inst.instanceId
+					);
 				}
 			}
 			// --- Track P7 ---
@@ -7818,9 +7888,16 @@ function applyGameActionInner(
 				if (!targetValidation.ok) {
 					return targetValidation;
 				}
-				// --- Track P7 ---
-				targetsBySpec = partitionTargetsBySpecs(targets, abTargetInfo, permEffCard);
-				// --- End Track P7 ---
+				// --- Track P7 + Track P16a ---
+				targetsBySpec = partitionTargetsBySpecs(
+					targets,
+					abTargetInfo,
+					permEffCard,
+					state,
+					actorId,
+					perm.instanceId
+				);
+				// --- End Track P7 + Track P16a ---
 			}
 			// --- Track P7 ---
 			const activeAbSpecs = abModal
@@ -8344,11 +8421,12 @@ function chooseBotRequiredAttackAssignments(
 			) {
 				continue;
 			}
-			// --- Track P14 ---
+			// --- Track P14 + Track P16a ---
 			const goaderIds = getEffectiveGoaderPlayerIds(state, c);
 			const isGoaded = goaderIds.length > 0;
-			// --- End Track P14 ---
-			const mustAttack = isGoaded || hasRestriction(state, c, 'attacksEachCombat');
+			const mustAttack =
+				isGoaded || Boolean(c.mustAttackThisTurn) || hasRestriction(state, c, 'attacksEachCombat');
+			// --- End Track P14 + Track P16a ---
 			if (!mustAttack) continue;
 
 			let candidateDefenders = taxFreeOpponents.filter(
@@ -9000,6 +9078,11 @@ function getBlockerRestrictionReason(
 		return `Strict Rules Violation: ${blocker.card.name} cannot block ${attacker.card.name} this turn (CR 509.1b).`;
 	}
 	// --- End Track P7 ---
+	// --- Track P16a ---
+	if (blocker.cantBlockAttackerIdsThisTurn?.includes(attacker.instanceId)) {
+		return `Strict Rules Violation: ${blocker.card.name} cannot block ${attacker.card.name} this turn (CR 509.1b).`;
+	}
+	// --- End Track P16a ---
 	if (hasProtectionFrom(attacker, blocker.copiableCard ?? blocker.card, state, blocker)) {
 		return `Strict Rules Violation: ${blocker.card.name} cannot block ${attacker.card.name} due to Protection (CR 702.16e).`;
 	}
@@ -9123,12 +9206,39 @@ export function chooseBotBlockAssignments(
 			// --- Track P7 ---
 			if (isCantBlockThisTurn(state, b)) continue;
 			// --- End Track P7 ---
-			// --- Track P15: Provoke requirement (CR 702.39a) ---
-			if (!hasRestriction(state, b, 'blocksEachCombat') && !b.provokeMustBlockId) continue;
+			// --- Track P15: Provoke requirement (CR 702.39a) + Track P16a mustBeBlockedThisTurn ---
+			const lureAtkIds = new Set(
+				attacksAgainstBot
+					.filter((atk) => {
+						const atkOwner = state.players.find((p) => p.playerId === atk.controllerId);
+						const atkCard = atkOwner?.battlefield.find(
+							(c) => !c.phasedOut && c.instanceId === atk.attackerInstanceId
+						);
+						return Boolean(atkCard?.mustBeBlockedThisTurn);
+					})
+					.map((atk) => atk.attackerInstanceId)
+			);
+			if (
+				!hasRestriction(state, b, 'blocksEachCombat') &&
+				!b.mustBlockThisTurn &&
+				!b.provokeMustBlockId &&
+				lureAtkIds.size === 0
+			) {
+				continue;
+			}
 
 			const legalAtks = attacksAgainstBot.filter((atk) => {
 				if (b.provokeMustBlockId && atk.attackerInstanceId !== b.provokeMustBlockId) return false;
-				// --- End Track P15 ---
+				if (
+					!b.provokeMustBlockId &&
+					!hasRestriction(state, b, 'blocksEachCombat') &&
+					!b.mustBlockThisTurn &&
+					lureAtkIds.size > 0 &&
+					!lureAtkIds.has(atk.attackerInstanceId)
+				) {
+					return false;
+				}
+				// --- End Track P15 + Track P16a ---
 				const atkOwner = state.players.find((p) => p.playerId === atk.controllerId);
 				const atkCard = atkOwner?.battlefield.find(
 					(c) => !c.phasedOut && c.instanceId === atk.attackerInstanceId
@@ -9177,15 +9287,81 @@ function validateDefenderBlockerAssignments(
 		getBlockerRestrictionReason,
 		(combinedCost) => canPayOrAutoTap(actor, parseManaCost(combinedCost), state)
 	);
-	return res.ok
-		? {
-				ok: true,
-				blockerCountsByAttacker: res.blockerCountsByAttacker,
-				...(res.combinedBlockTaxManaCost
-					? { combinedBlockTaxManaCost: res.combinedBlockTaxManaCost }
-					: {})
+	if (!res.ok) return { ok: false, error: res.error };
+	// --- Track P16a (CR 509.1c): Enforce mustBeBlockedThisTurn (Lure) ---
+	const lureAttackers = state.combat.attackers
+		.filter((atk) => atk.defenderPlayerId === actor.playerId)
+		.map((atk) => {
+			const atkOwner = state.players.find((p) => p.playerId === atk.controllerId);
+			const atkCard = atkOwner?.battlefield.find(
+				(c) => !c.phasedOut && c.instanceId === atk.attackerInstanceId
+			);
+			return atkCard?.mustBeBlockedThisTurn ? atkCard : undefined;
+		})
+		.filter((c): c is CardInstance => Boolean(c));
+	if (lureAttackers.length > 0) {
+		const assignedByBlocker = new Map<string, string>();
+		for (const a of assignments) {
+			assignedByBlocker.set(a.blockerInstanceId, a.attackerInstanceId);
+		}
+		for (const b of actor.battlefield) {
+			if (b.phasedOut || b.tapped || !evaluatePermanent(state, b).isCreature) continue;
+			if (hasRestriction(state, b, 'cantBlock') || isCantBlockThisTurn(state, b)) continue;
+			const curTargetId = assignedByBlocker.get(b.instanceId);
+			if (curTargetId && lureAttackers.some((la) => la.instanceId === curTargetId)) continue;
+			if (b.provokeMustBlockId && curTargetId === b.provokeMustBlockId) continue;
+			const blockableLure = lureAttackers.find(
+				(la) =>
+					canBlock(state, b, la) &&
+					getBlockerRestrictionReason(state, b, la) === null &&
+					(!(hasKeyword(la, 'Menace', state) || getTimedMinBlockersRequired(state, la) > 1) ||
+						(res.blockerCountsByAttacker.get(la.instanceId)?.length ?? 0) >= 1)
+			);
+			if (blockableLure) {
+				return {
+					ok: false,
+					error: `Blocking Requirement: ${b.card.name} must block ${blockableLure.card.name} if able (CR 509.1c).`
+				};
 			}
-		: { ok: false, error: res.error };
+		}
+	}
+	const defenderAttackers = state.combat.attackers
+		.filter((atk) => atk.defenderPlayerId === actor.playerId)
+		.map((atk) => {
+			const atkOwner = state.players.find((p) => p.playerId === atk.controllerId);
+			return atkOwner?.battlefield.find(
+				(c) => !c.phasedOut && c.instanceId === atk.attackerInstanceId
+			);
+		})
+		.filter((c): c is CardInstance => Boolean(c));
+	if (defenderAttackers.length > 0) {
+		const assignedBlockers = new Set(assignments.map((a) => a.blockerInstanceId));
+		for (const b of actor.battlefield) {
+			if (!b.mustBlockThisTurn || assignedBlockers.has(b.instanceId)) continue;
+			if (b.phasedOut || b.tapped || !evaluatePermanent(state, b).isCreature) continue;
+			if (hasRestriction(state, b, 'cantBlock') || isCantBlockThisTurn(state, b)) continue;
+			const canBlockAny = defenderAttackers.some(
+				(atk) =>
+					canBlock(state, b, atk) &&
+					(!(hasKeyword(atk, 'Menace', state) || getTimedMinBlockersRequired(state, atk) > 1) ||
+						(res.blockerCountsByAttacker.get(atk.instanceId)?.length ?? 0) >= 1)
+			);
+			if (canBlockAny) {
+				return {
+					ok: false,
+					error: `Blocking Requirement: ${b.card.name} must block this turn if able (CR 509.1c).`
+				};
+			}
+		}
+	}
+	// --- End Track P16a ---
+	return {
+		ok: true,
+		blockerCountsByAttacker: res.blockerCountsByAttacker,
+		...(res.combinedBlockTaxManaCost
+			? { combinedBlockTaxManaCost: res.combinedBlockTaxManaCost }
+			: {})
+	};
 	// --- End Track P8 + Track P17a ---
 }
 
@@ -9395,7 +9571,12 @@ function findMandatoryAttackerViolation(
 			const isEncoreObligated = Boolean(perm.encoreMustAttackPlayerId);
 			// --- End Track P12 ---
 			const mustAttack =
-				isGoaded || isEncoreObligated || hasRestriction(state, perm, 'attacksEachCombat');
+				isGoaded ||
+				isEncoreObligated ||
+				// --- Track P16a ---
+				Boolean(perm.mustAttackThisTurn) ||
+				// --- End Track P16a ---
+				hasRestriction(state, perm, 'attacksEachCombat');
 			if (mustAttack && !assignedIds.has(perm.instanceId)) {
 				const canAttack =
 					!perm.tapped &&
@@ -12815,6 +12996,63 @@ function permanentTargetable(state: GameState, inst: CardInstance, controllerId:
 	return !hasProtectionFrom(inst, sourceCard, state);
 }
 
+// --- Track P16a ---
+function stackSpellMatchesFilterQualifiers(
+	state: GameState,
+	stk: StackItem,
+	filter: ObjectFilter,
+	ctx: FilterContext
+): boolean {
+	if (stk.kind !== 'spell' || !stk.card) return true;
+	const stkFace = resolveObjectFaces(stk.card, stackItemFaceOptions(stk));
+	if (filter.types?.length && !filter.types.some((t) => stkFace.types.includes(t))) return false;
+	if (filter.allTypes?.length && !filter.allTypes.every((t) => stkFace.types.includes(t))) return false;
+	if (filter.notTypes?.length && filter.notTypes.some((t) => stkFace.types.includes(t))) return false;
+	if (filter.supertypes?.length && !filter.supertypes.some((t) => stkFace.supertypes.includes(t))) {
+		return false;
+	}
+	if (filter.notSupertypes?.length && filter.notSupertypes.some((t) => stkFace.supertypes.includes(t))) {
+		return false;
+	}
+	if (filter.subtypes?.length && !filter.subtypes.some((t) => stkFace.subtypes.includes(t))) {
+		return false;
+	}
+	if (filter.colors?.length && !matchesColorFilter(stkFace.colors, filter.colors)) return false;
+	if (filter.notColors?.length && matchesColorFilter(stkFace.colors, filter.notColors)) return false;
+	if (filter.multicolored !== undefined && (stkFace.colors.length >= 2) !== filter.multicolored) {
+		return false;
+	}
+	if (filter.monocolored !== undefined && (stkFace.colors.length === 1) !== filter.monocolored) {
+		return false;
+	}
+	if (filter.historic !== undefined) {
+		const isHist =
+			!stk.isFaceDown &&
+			(stkFace.supertypes.includes('Legendary') ||
+				stkFace.types.includes('Artifact') ||
+				stkFace.subtypes.includes('Saga'));
+		if (isHist !== filter.historic) return false;
+	}
+	if (filter.manaValue) {
+		const mv = objectManaValue(state, stk);
+		const rhs = evaluateAmount(filter.manaValue.value, ctx);
+		const op = filter.manaValue.op;
+		const ok =
+			op === '='
+				? mv === rhs
+				: op === '<'
+					? mv < rhs
+					: op === '<='
+						? mv <= rhs
+						: op === '>'
+							? mv > rhs
+							: mv >= rhs;
+		if (!ok) return false;
+	}
+	return true;
+}
+// --- End Track P16a ---
+
 /** Every legal target for one target spec (CR 115, 603.3d). */
 export function specTargetCandidates(
 	state: GameState,
@@ -12889,6 +13127,9 @@ export function specTargetCandidates(
 				if (spec.filter.colors?.length && !matchesColorFilter(stkFace.colors, spec.filter.colors)) {
 					continue;
 				}
+				// --- Track P16a ---
+				if (!stackSpellMatchesFilterQualifiers(state, stk, spec.filter, ctx)) continue;
+				// --- End Track P16a ---
 			}
 			out.push({ kind: 'stack', id: stk.id, label: stk.title });
 		}
@@ -13677,7 +13918,10 @@ function resolveWardTrigger(
 		// --- End Track P12 ---
 	}
 	if (!paid) {
-		if (targetItem.kind === 'spell' && spellCannotBeCountered(state, targetItem)) {
+		if (
+			targetItem.kind === 'spell' &&
+			(spellCannotBeCountered(state, targetItem) || isSpellUncounterableByP16a(state, targetItem))
+		) {
 			addLog(
 				state,
 				'rule',
@@ -14454,7 +14698,10 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 	}
 	// --- End Track P15 ---
 	let exiledBySelfReference = false;
-	let librarySelf: { position: 'top' | 'bottom'; fromTop?: number } | undefined;
+	// --- Track P16a: added optional `shuffle` on librarySelf & `exileSelfWithCounters` ---
+	let exileSelfWithCounters: { counter: CounterType; count: number } | undefined;
+	let librarySelf: { position: 'top' | 'bottom'; fromTop?: number; shuffle?: boolean } | undefined;
+	// --- End Track P16a ---
 	const steps: EffectStep[] = compiled?.steps ?? [];
 	if (interpreted && compiled) {
 		const result = executeEffectSteps(
@@ -14490,6 +14737,9 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 		}
 		if (result.turnEnded) return;
 		exiledBySelfReference = result.exileSelf;
+		// --- Track P16a ---
+		exileSelfWithCounters = result.exileSelfWithCounters;
+		// --- End Track P16a ---
 		librarySelf = result.librarySelf;
 	}
 
@@ -14873,7 +15123,22 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 			// instead of into that player's graveyard (moveStackSpellToZone still overrides with
 			// exileOnLeaveStack per CR 702.34a when cast via Flashback).
 			if (exiledBySelfReference || item.spellMods?.exileAdventureOnResolve) {
+				const exileLenBefore = cardOwner.exile.length;
 				moveStackSpellToZone(state, item, 'exile');
+				// --- Track P16a: Apply counters when spell exiles itself with counters ---
+				if (
+					exileSelfWithCounters &&
+					exileSelfWithCounters.count > 0 &&
+					cardOwner.exile.length > exileLenBefore
+				) {
+					const exiledCard = cardOwner.exile[cardOwner.exile.length - 1];
+					if (exiledCard) {
+						exiledCard.counters[exileSelfWithCounters.counter] =
+							(exiledCard.counters[exileSelfWithCounters.counter] ?? 0) +
+							exileSelfWithCounters.count;
+					}
+				}
+				// --- End Track P16a ---
 			} else if (item.spellMods?.shuffleOmenOnResolve && !item.spellMods?.exileOnLeaveStack) {
 				// --- Track P15: CR 721.3d Omen spell shuffles into owner's library on resolution ---
 				moveStackSpellToZone(state, item, 'library', { position: 'top' });
@@ -14887,6 +15152,17 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 				// --- End Track P15 ---
 			} else if (librarySelf) {
 				moveStackSpellToZone(state, item, 'library', librarySelf);
+				// --- Track P16a: Shuffle resolving spell into owner's library ---
+				if (librarySelf.shuffle) {
+					shuffleLibrary(state, cardOwner);
+					addLog(
+						state,
+						'rule',
+						`${item.title} was shuffled into ${cardOwner.username}'s library.`,
+						controller.playerId
+					);
+				}
+				// --- End Track P16a ---
 			} else if (
 				!item.spellMods?.returnToHandOnResolve &&
 				!item.spellMods?.exileOnLeaveStack &&
@@ -15125,7 +15401,7 @@ function counterStackItemByEffect(
 	replacementZone?: 'exile' | 'libraryTop' | 'libraryBottom'
 	// --- End Track P10 ---
 ): boolean {
-	if (spellCannotBeCountered(state, candidate)) {
+	if (spellCannotBeCountered(state, candidate) || isSpellUncounterableByP16a(state, candidate)) {
 		addLog(
 			state,
 			'rule',
@@ -16134,6 +16410,23 @@ registerP10RuntimeHost({
 });
 // --- End Track P10 ---
 
+// --- Track P16a ---
+registerP16aRuntimeHost({
+	uid,
+	addLog,
+	canPayOrAutoTap: (player, req, state) =>
+		canPayOrAutoTap(player, req, state, undefined, { isSpell: false }),
+	payManaWithAutoTap: (player, req, state) =>
+		payManaWithAutoTap(player, req, state, undefined, { isSpell: false }),
+	costContext: (state, player, source, xValue, isSpell, baseMana) =>
+		costContext(state, player, source, xValue, isSpell, baseMana),
+	specTargetCandidates: (state, actorId, sourceCard, sourceInst, spec) =>
+		specTargetCandidates(state, actorId, sourceCard, sourceInst, spec),
+	finalizeCastSpell: (state, actor, inst, sourcePlayer, sourceZone, opts) =>
+		finalizeCastSpell(state, actor, inst, sourcePlayer, sourceZone, opts)
+});
+// --- End Track P16a ---
+
 // --- Track P12 ---
 registerWave4Host({
 	uid,
@@ -16445,6 +16738,18 @@ export function executeSuspendFreeCastFromExile(
 		suspCard,
 		'exile'
 	);
+	// --- Track P16a: Turn-scoped cast ban ---
+	if (owner.cantCastSpellsThisTurn) {
+		suspCard.isSuspended = false;
+		addLog(
+			state,
+			'rule',
+			`${suspCard.card.name}'s last time counter was removed, but ${owner.username} can't cast spells this turn; it remains in Exile.`,
+			owner.playerId
+		);
+		return;
+	}
+	// --- End Track P16a ---
 	if (!globalCheck.ok) {
 		suspCard.isSuspended = false;
 		addLog(
@@ -16500,6 +16805,13 @@ export function executeSuspendFreeCastFromExile(
 		suspCard.card
 	);
 	state.stack.push(stackItem);
+	// --- Track P16a: Consume next-spell flash / uncounterable grants on suspended spell cast ---
+	consumeP16aOnSpellCast(
+		owner,
+		resolveObjectFaces(suspCard.card, { zone: 'stack' }).types,
+		stackItem
+	);
+	// --- End Track P16a ---
 	addLog(
 		state,
 		'cast',
@@ -16548,6 +16860,12 @@ export function checkSuspendLegality(
 	}
 	// CR 702.62a: You can exile a card from your hand with Suspend any time you could begin to cast it
 	const activePlayer = state.players[state.activePlayerIndex];
+	// --- Track P16a ---
+	if (actor.cantCastSpellsThisTurn) {
+		return { ok: false, error: 'You cannot cast spells this turn.' };
+	}
+	const suspTypes = resolveObjectFaces(inst.card, { zone: 'stack' }).types;
+	// --- End Track P16a ---
 	const globalCheck = checkGlobalCastPermissionsAndRestrictions(state, actorId, inst, 'hand');
 	if (!globalCheck.ok) {
 		return { ok: false, error: globalCheck.error };
@@ -16555,7 +16873,10 @@ export function checkSuspendLegality(
 	const isInstantTiming =
 		inst.card.typeLine.includes('Instant') ||
 		hasKeyword(inst, 'Flash', state) ||
-		globalCheck.grantsFlash;
+		globalCheck.grantsFlash ||
+		// --- Track P16a ---
+		playerHasP16aFlashGrantForTypes(actor, suspTypes);
+		// --- End Track P16a ---
 	if (!isInstantTiming) {
 		if (
 			activePlayer?.playerId !== actorId ||
@@ -17070,17 +17391,17 @@ export function executeProliferate(
 	controller: PlayerGameState,
 	chosenIds?: string[]
 ): void {
-	// --- Track P11: Proliferate all 37 counter types (CR 701.27a) ---
-	const allCounterTypes: readonly CounterType[] = ALL_COUNTER_TYPES;
-	// --- End Track P11 ---
+	// --- Track P11 + Track P16a: Proliferate all counters including arbitrary & rad/ticket (CR 701.27a) ---
+	void ALL_COUNTER_TYPES;
+	// --- End Track P11 + Track P16a ---
 	if (chosenIds) {
 		const chosenSet = new Set(chosenIds);
 		for (const pl of state.players) {
 			for (const perm of pl.battlefield) {
 				if (perm.phasedOut || !chosenSet.has(perm.instanceId)) continue;
-				for (const cType of allCounterTypes) {
-					if ((perm.counters[cType] || 0) > 0) {
-						addCountersToPermanent(state, perm, cType, 1);
+				for (const [cType, cnt] of Object.entries(perm.counters)) {
+					if ((cnt || 0) > 0) {
+						addCountersToPermanent(state, perm, cType as CounterType, 1);
 					}
 				}
 			}
@@ -17099,31 +17420,34 @@ export function executeProliferate(
 						(pl.energyCounters || 0) +
 						scalePlayerCountersPlaced(state, pl.playerId, 'energy', 1, controller.playerId);
 				}
-				// --- End Track P17a ---
+				// --- Track P16a ---
+				if ((pl.radCounters || 0) > 0) {
+					pl.radCounters =
+						(pl.radCounters || 0) +
+						scalePlayerCountersPlaced(state, pl.playerId, 'rad', 1, controller.playerId);
+				}
+				if ((pl.ticketCounters || 0) > 0) {
+					pl.ticketCounters =
+						(pl.ticketCounters || 0) +
+						scalePlayerCountersPlaced(state, pl.playerId, 'ticket', 1, controller.playerId);
+				}
+				// --- End Track P16a & P17a ---
 			}
 		}
 	} else {
-		// --- Track P11 ---
-		const opponentNegativeTypes: CounterType[] = [
-			'-1/-1',
-			'stun',
-			'finality',
-			'plague',
-			'blight'
-		];
-		const negSet = new Set<CounterType>(opponentNegativeTypes);
-		const controllerPositiveTypes: CounterType[] = allCounterTypes.filter((c) => !negSet.has(c));
-		// --- End Track P11 ---
+		// --- Track P11 + Track P16a ---
+		const negSet = new Set<string>(['-1/-1', 'stun', 'finality', 'plague', 'blight']);
+		// --- End Track P11 + Track P16a ---
 		for (const perm of controller.battlefield) {
 			if (perm.phasedOut) continue;
-			for (const cType of controllerPositiveTypes) {
-				if ((perm.counters[cType] || 0) > 0) {
-					addCountersToPermanent(state, perm, cType, 1);
+			for (const [cType, cnt] of Object.entries(perm.counters)) {
+				if ((cnt || 0) > 0 && !negSet.has(cType) && !isNegativeArbitraryCounter(cType)) {
+					addCountersToPermanent(state, perm, cType as CounterType, 1);
 				}
 			}
 		}
-		if (controller.poison === 0) {
-			// --- Track P17a ---
+		if (controller.poison === 0 && (controller.radCounters || 0) === 0) {
+			// --- Track P17a & P16a ---
 			if ((controller.experienceCounters || 0) > 0) {
 				controller.experienceCounters =
 					(controller.experienceCounters || 0) +
@@ -17134,21 +17458,33 @@ export function executeProliferate(
 					(controller.energyCounters || 0) +
 					scalePlayerCountersPlaced(state, controller.playerId, 'energy', 1, controller.playerId);
 			}
-			// --- End Track P17a ---
+			if ((controller.ticketCounters || 0) > 0) {
+				controller.ticketCounters =
+					(controller.ticketCounters || 0) +
+					scalePlayerCountersPlaced(state, controller.playerId, 'ticket', 1, controller.playerId);
+			}
+			// --- End Track P17a & P16a ---
 		}
 		for (const opp of state.players) {
 			if (opp.playerId === controller.playerId) continue;
 			for (const perm of opp.battlefield) {
 				if (perm.phasedOut) continue;
-				for (const cType of opponentNegativeTypes) {
-					if ((perm.counters[cType] || 0) > 0) {
-						addCountersToPermanent(state, perm, cType, 1);
+				for (const [cType, cnt] of Object.entries(perm.counters)) {
+					if ((cnt || 0) > 0 && (negSet.has(cType) || isNegativeArbitraryCounter(cType))) {
+						addCountersToPermanent(state, perm, cType as CounterType, 1);
 					}
 				}
 			}
-			if (opp.poison > 0) {
-				// --- Track P17a ---
-				opp.poison += scalePlayerCountersPlaced(state, opp.playerId, 'poison', 1, controller.playerId);
+			if (opp.poison > 0 || (opp.radCounters || 0) > 0) {
+				// --- Track P17a & P16a ---
+				if (opp.poison > 0) {
+					opp.poison += scalePlayerCountersPlaced(state, opp.playerId, 'poison', 1, controller.playerId);
+				}
+				if ((opp.radCounters || 0) > 0) {
+					opp.radCounters =
+						(opp.radCounters || 0) +
+						scalePlayerCountersPlaced(state, opp.playerId, 'rad', 1, controller.playerId);
+				}
 				if ((opp.experienceCounters || 0) > 0) {
 					opp.experienceCounters =
 						(opp.experienceCounters || 0) +
@@ -17159,7 +17495,12 @@ export function executeProliferate(
 						(opp.energyCounters || 0) +
 						scalePlayerCountersPlaced(state, opp.playerId, 'energy', 1, controller.playerId);
 				}
-				// --- End Track P17a ---
+				if ((opp.ticketCounters || 0) > 0) {
+					opp.ticketCounters =
+						(opp.ticketCounters || 0) +
+						scalePlayerCountersPlaced(state, opp.playerId, 'ticket', 1, controller.playerId);
+				}
+				// --- End Track P17a & P16a ---
 			}
 		}
 	}
@@ -17239,6 +17580,9 @@ export function advancePhaseOrStep(state: GameState): void {
 				state.combat.declaredBlockersPlayerIds = [];
 				state.combat.blockersDeclared = false;
 				state.combat.dealtFirstStrikeDamageIds = [];
+				// --- Track P16a (CR 511.2): Expire untilEndOfCombat continuous effects ---
+				expireP16aEndOfCombatEffects(state);
+				// --- End Track P16a ---
 				noteLayerInputsChanged(state);
 				if ((state.additionalCombatPhases ?? 0) > 0) {
 					state.additionalCombatPhases!--;
@@ -17290,6 +17634,9 @@ export function advancePhaseOrStep(state: GameState): void {
 				}
 			}
 			// --- End Track P15 ---
+			// --- Track P16a (CR 511.2): Expire untilEndOfCombat continuous effects ---
+			expireP16aEndOfCombatEffects(state);
+			// --- End Track P16a ---
 			noteLayerInputsChanged(state);
 			if ((state.additionalCombatPhases ?? 0) > 0) {
 				state.additionalCombatPhases!--;
@@ -17379,9 +17726,12 @@ function executeCombatDamageStep(
 		const srcInfo = sourceDamageInfo(state, perm, perm.copiableCard ?? perm.card);
 		// --- Track P11: CR 510.1a assign combat damage equal to toughness rather than power ---
 		const toughnessVal = getCreatureToughness(perm, state);
-		const combatStrikeAmount = creatureAssignsCombatDamageByToughness(state, perm)
+		const rawStrikeAmount = creatureAssignsCombatDamageByToughness(state, perm)
 			? Math.max(0, toughnessVal)
 			: getCreaturePower(perm, state);
+		// --- Track P16a: "assigns no combat damage this turn" ---
+		const combatStrikeAmount = perm.assignsNoCombatDamageThisTurn ? 0 : rawStrikeAmount;
+		// --- End Track P16a ---
 		// --- End Track P11 ---
 		snapshots.set(perm.instanceId, {
 			power: combatStrikeAmount,
@@ -17390,7 +17740,7 @@ function executeCombatDamageStep(
 			hasFS,
 			hasDS,
 			hasTrample: hasKeyword(perm, 'Trample', state),
-			dealsNow,
+			dealsNow: perm.assignsNoCombatDamageThisTurn ? false : dealsNow,
 			srcInfo
 		});
 	};
@@ -18102,6 +18452,9 @@ function clearEndOfTurnAndDamage(state: GameState): void {
 	// --- Track P13 ---
 	cleanupP13TurnState(state, state.players[state.activePlayerIndex]?.playerId ?? '');
 	// --- End Track P13 ---
+	// --- Track P16a ---
+	cleanupP16aTurnState(state);
+	// --- End Track P16a ---
 	// --- Track P7 ---
 	clearP7EndOfTurnEffects(state);
 	// --- End Track P7 ---
@@ -20085,6 +20438,25 @@ function validateTargetLegalityInner(
 					};
 				}
 			}
+			// --- Track P16a ---
+			if (inStack.kind === 'spell') {
+				const castingSrc = sourceInstanceId
+					? findCardAnywhere(state, sourceInstanceId)?.inst
+					: undefined;
+				if (
+					!stackSpellMatchesFilterQualifiers(state, inStack, stackSpec.filter, {
+						state,
+						controllerId: actorId,
+						source: castingSrc
+					})
+				) {
+					return {
+						ok: false,
+						error: `Strict Rules Violation: ${inStack.card.name} does not match the required spell filter.`
+					};
+				}
+			}
+			// --- End Track P16a ---
 		}
 		// --- End Track P10 ---
 		return { ok: true };
@@ -20396,11 +20768,34 @@ function validateTargetLegalityInner(
 function partitionTargetsBySpecs(
 	targets: TargetRef[],
 	info: TargetRequirementInfo,
-	sourceCard?: ScryfallCard
+	sourceCard?: ScryfallCard,
+	// --- Track P16a ---
+	state?: GameState,
+	actorId?: string,
+	sourceInstanceId?: string
+	// --- End Track P16a ---
 ): TargetRef[][] | undefined {
 	if (sourceCard?.typeLine.includes('Aura')) return undefined;
 	const specs = info.targetSpecs;
 	if (!specs || specs.length === 0) return undefined;
+	// --- Track P16a: Exact multi-spec backtracking partitioner when state & actorId are known ---
+	if (specs.length > 1 && state && actorId) {
+		const normalizedSpecs = specs.map((sp) => (sp.max > 0 ? sp : { ...sp, min: 0, max: 0 }));
+		const solved = partitionMultiTargetsBacktracking(normalizedSpecs, targets, (specIdx, t) => {
+			const spec = normalizedSpecs[specIdx];
+			if (!spec || spec.max <= 0) return false;
+			return validateTargetLegality(
+				state,
+				actorId,
+				t,
+				targetRequirementFromSpecs([spec]),
+				sourceCard,
+				sourceInstanceId
+			).ok;
+		});
+		if (solved) return solved;
+	}
+	// --- End Track P16a ---
 	const counts = specs.map((sp) => (sp.max > 0 ? sp.min : 0));
 	let extra = targets.length - counts.reduce((a, b) => a + b, 0);
 	for (let k = 0; k < specs.length && extra > 0; k++) {
@@ -20500,6 +20895,18 @@ export function validateChosenTargets(
 		? info.targetSpecs?.filter((sp) => sp.max > 0)
 		: undefined;
 	if (activeSpecs && activeSpecs.length > 1) {
+		// --- Track P16a: Backtracking multi-spec partition so optional specs (min=0) assign legally ---
+		const backtracked = partitionMultiTargetsBacktracking(activeSpecs, targets, (specIdx, t) =>
+			validateTargetLegality(
+				state,
+				actorId,
+				t,
+				targetRequirementFromSpecs([activeSpecs[specIdx]]),
+				sourceCard,
+				sourceInstanceId
+			).ok
+		);
+		// --- End Track P16a ---
 		const counts = activeSpecs.map((sp) => sp.min);
 		let extra = targets.length - counts.reduce((a, b) => a + b, 0);
 		for (let k = 0; k < activeSpecs.length && extra > 0; k++) {
@@ -20513,8 +20920,10 @@ export function validateChosenTargets(
 		const seenInPriorSpecs = new Set<string>();
 		for (let k = 0; k < activeSpecs.length; k++) {
 			const spec = activeSpecs[k];
-			const specTargets = targets.slice(cursor, cursor + counts[k]);
-			cursor += counts[k];
+			const specTargets = backtracked
+				? backtracked[k]
+				: targets.slice(cursor, cursor + counts[k]);
+			if (!backtracked) cursor += counts[k];
 			const uniqueInSpec = new Set(specTargets.map((t) => `${t.kind}:${t.id}`));
 			if (uniqueInSpec.size !== specTargets.length) {
 				return {
@@ -20592,7 +21001,14 @@ export function validateChosenTargets(
 	// --- Track P7 ---
 	const dividedCheckSpecs = activeSpecs ?? info.targetSpecs?.filter((sp) => sp.max > 0);
 	if (dividedCheckSpecs?.some((sp) => Boolean(sp.divideTotal))) {
-		const partitioned = partitionTargetsBySpecs(targets, info, sourceCard);
+		const partitioned = partitionTargetsBySpecs(
+			targets,
+			info,
+			sourceCard,
+			state,
+			actorId,
+			sourceInstanceId
+		);
 		const divCheck = resolveTargetDivisionsForSpecs(
 			state,
 			actorId,
@@ -21665,6 +22081,14 @@ function checkSpellCastOptionLegalityInner(
 			? { ...inst, activeFaceIndex: option.faceIndex }
 			: inst;
 	// --- End Track P14 ---
+	// --- Track P16a: Turn-scoped cast ban ("can't cast spells this turn" / Silence) ---
+	if (actor.cantCastSpellsThisTurn) {
+		return {
+			ok: false,
+			error: `Illegal Cast: ${actor.username} can't cast spells this turn.`
+		};
+	}
+	// --- End Track P16a ---
 	const globalCastCheck = checkGlobalCastPermissionsAndRestrictions(
 		state,
 		actorId,
@@ -21712,7 +22136,10 @@ function checkSpellCastOptionLegalityInner(
 		(option.timing === 'instant_only' ||
 			(castChars.types.includes('Instant') && !castChars.types.includes('Sorcery')) ||
 			hasFaceFlash ||
-			globalCastCheck.grantsFlash);
+			globalCastCheck.grantsFlash ||
+			// --- Track P16a: Turn/next-spell flash grant (Quicken, Savage Summoning, etc.) ---
+			playerHasP16aFlashGrantForTypes(actor, castChars.types));
+			// --- End Track P16a ---
 	if (!isInstantSpeed) {
 		if (activePlayer?.playerId !== actorId) {
 			return {

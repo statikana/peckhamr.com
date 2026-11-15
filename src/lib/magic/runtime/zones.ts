@@ -1210,6 +1210,15 @@ function finalizeZoneMove(
 			obj.printedCard = undefined;
 		}
 		// --- End Track P18b ---
+		// --- Track P16a (CR 400.7) ---
+		delete obj.assimilatedBy;
+		delete obj.doesntUntapWhileSource;
+		delete obj.assignsNoCombatDamageThisTurn;
+		delete obj.mustAttackThisTurn;
+		delete obj.mustBeBlockedThisTurn;
+		delete obj.mustBlockThisTurn;
+		delete obj.cantBlockAttackerIdsThisTurn;
+		// --- End Track P16a ---
 		const prevObjVersion = obj.objectVersion || 1;
 		const pruneLeftPerm = <T extends { affected: Array<{ instanceId: string; objectVersion?: number }> }>(
 			list: T[] | undefined
@@ -1323,6 +1332,15 @@ function finalizeZoneMove(
 			obj.printedCard = undefined;
 		}
 		// --- End Track P18b ---
+		// --- Track P16a (CR 400.7) ---
+		delete obj.assimilatedBy;
+		delete obj.doesntUntapWhileSource;
+		delete obj.assignsNoCombatDamageThisTurn;
+		delete obj.mustAttackThisTurn;
+		delete obj.mustBeBlockedThisTurn;
+		delete obj.mustBlockThisTurn;
+		delete obj.cantBlockAttackerIdsThisTurn;
+		// --- End Track P16a ---
 		if (dest !== 'stack') {
 			obj.manaColorsSpent = undefined;
 			// --- Track P10 ---
@@ -2242,6 +2260,15 @@ function moveObjectInner(
 	if (lki) {
 		if (lki.power !== undefined) obj.lastKnownPower = lki.power;
 		if (lki.toughness !== undefined) obj.lastKnownToughness = lki.toughness;
+		// --- Track P16a (CR 122.8 / 608.2h): Preserve last-known counters on leaving permanent ---
+		if (lki.counters) {
+			const snap: Record<CounterType, number> = {} as Record<CounterType, number>;
+			for (const [k, v] of Object.entries(lki.counters)) {
+				if (typeof v === 'number' && v > 0) snap[k as CounterType] = v;
+			}
+			obj.lastKnownCounters = snap;
+		}
+		// --- End Track P16a ---
 		for (const stk of state.stack) {
 			if (stk.sourceInstanceId === obj.instanceId) {
 				if (lki.power !== undefined) stk.sourceLkiPower = lki.power;
@@ -3343,24 +3370,51 @@ export function syncBattlefieldControllers(state: GameState): boolean {
 	if (syncingControllers) return false;
 	syncingControllers = true;
 	try {
-		if (state.timedContinuousEffects?.length) {
-			const boardVersions = new Map<string, number>();
+		// --- Track P16a (CR 611.2b) ---
+		const pruneBrokenSourceDurations = (): void => {
+			if (!state.timedContinuousEffects?.length) return;
+			const boardPerms = new Map<string, CardInstance>();
 			for (const p of state.players) {
 				if (p.lost) continue;
 				for (const c of p.battlefield) {
-					boardVersions.set(c.instanceId, c.objectVersion ?? 1);
+					boardPerms.set(c.instanceId, c);
 				}
 			}
 			const remaining = state.timedContinuousEffects.filter((eff) => {
 				const usl = eff.layer2?.untilSourceLeaves;
-				if (!usl) return true;
-				return boardVersions.get(usl.sourceInstanceId) === usl.sourceObjectVersion;
+				if (usl) {
+					const src = boardPerms.get(usl.sourceInstanceId);
+					if (!src || (src.objectVersion ?? 1) !== usl.sourceObjectVersion) return false;
+				}
+				if (
+					eff.expires === 'forAsLongAsYouControlSelf' ||
+					eff.expires === 'forAsLongAsSelfRemainsTapped'
+				) {
+					const cond = eff.sourceCondition;
+					if (!cond || cond.broken) return false;
+					const src = boardPerms.get(cond.sourceInstanceId);
+					if (!src || src.phasedOut || (src.objectVersion ?? 1) !== cond.sourceObjectVersion) {
+						cond.broken = true;
+						return false;
+					}
+					const holds =
+						cond.kind === 'controlledByPlayer'
+							? src.controllerId === cond.controllerId
+							: Boolean(src.tapped);
+					if (!holds) {
+						cond.broken = true;
+						return false;
+					}
+				}
+				return true;
 			});
 			if (remaining.length !== state.timedContinuousEffects.length) {
 				state.timedContinuousEffects = remaining.length > 0 ? remaining : undefined;
 				noteLayerInputsChanged(state);
 			}
-		}
+		};
+		pruneBrokenSourceDurations();
+		// --- End Track P16a ---
 
 		// --- Track P11: O(B) skip when no Layer 2 control effect or foreign permanent exists ---
 		if (!boardMayNeedControllerSync(state)) return false;
@@ -3424,6 +3478,9 @@ export function syncBattlefieldControllers(state: GameState): boolean {
 				anyMoved = true;
 			}
 			if (!passMoved) break;
+			// --- Track P16a ---
+			pruneBrokenSourceDurations();
+			// --- End Track P16a ---
 		}
 		// --- Track P18a (CR 702.95e, 702.75a, 702.195b) ---
 		enforceSoulbondPairs(state);
